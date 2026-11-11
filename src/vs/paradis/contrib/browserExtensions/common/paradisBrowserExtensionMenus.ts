@@ -661,7 +661,7 @@ export type ParadisShortcutRefusal =
  * ショートカットを付けるときに押したキーを読む。Para Code のキーかは `paraCodeCommand` が決める（実物では
  * workbench のキーの割り当てを、ページのキーを走らせるときと同じく softDispatch で引く）。
  */
-export function paradisShortcutFromKeyEvent(event: { readonly code: string; readonly key: string; readonly ctrlKey: boolean; readonly metaKey: boolean; readonly altKey: boolean; readonly shiftKey: boolean }, platform: ParadisPlatform, paraCodeCommand: () => string | undefined): { readonly binding: IParadisShortcut; readonly shortcut: string } | { readonly refusal: Exclude<ParadisShortcutRefusal, 'paraCode'> } | { readonly refusal: 'paraCode'; readonly shortcut: string; readonly command: string } {
+export function paradisShortcutFromKeyEvent(event: { readonly code: string; readonly key: string; readonly ctrlKey: boolean; readonly metaKey: boolean; readonly altKey: boolean; readonly shiftKey: boolean }, platform: ParadisPlatform, paraCodeCommand: () => string | undefined): { readonly refusal: undefined; readonly binding: IParadisShortcut; readonly shortcut: string } | { readonly refusal: Exclude<ParadisShortcutRefusal, 'paraCode'> } | { readonly refusal: 'paraCode'; readonly shortcut: string; readonly command: string } {
 	if (['Shift', 'Control', 'Meta', 'Alt', 'AltGraph', 'CapsLock', 'OS'].includes(event.key)) {
 		return { refusal: 'modifierOnly' };
 	}
@@ -682,7 +682,7 @@ export function paradisShortcutFromKeyEvent(event: { readonly code: string; read
 	if (command !== undefined) {
 		return { refusal: 'paraCode', shortcut, command };
 	}
-	return { binding, shortcut };
+	return { refusal: undefined, binding, shortcut };
 }
 
 /** 保存してあった利用者のキーを読む（`ids` にある拡張機能だけ。読めない値は捨てる）。 */

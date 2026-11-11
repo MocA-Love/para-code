@@ -568,7 +568,7 @@
 .paradis-browser-extensions-area .pbe-sc-warn > .codicon,
 .paradis-browser-extensions-area .pbe-sc-conflict > .codicon {
 	flex: none;
-	font-size: 14px;
+	font-size: var(--vscode-codiconFontSize-compact);
 	color: var(--vscode-paradis-warning);
 }
 

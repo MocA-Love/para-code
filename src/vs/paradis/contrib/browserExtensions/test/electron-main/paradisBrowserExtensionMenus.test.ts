@@ -244,9 +244,9 @@ suite('ParadisBrowserExtensionMenus model', () => {
 			metaOnLinux: paradisShortcutFromKeyEvent({ code: 'KeyL', key: 'l', ctrlKey: false, metaKey: true, altKey: false, shiftKey: false }, 'linux', () => undefined),
 			paraCode: press('KeyP', 'P', { ctrlKey: true, shiftKey: true }, 'Show All Commands'),
 		}, {
-			ok: { binding: { key: 'L', control: true, meta: false, alt: false, shift: true }, shortcut: 'Ctrl+Shift+L' },
-			macOption: { binding: { key: 'K', control: false, meta: true, alt: true, shift: false }, shortcut: '⌥⌘K' },
-			arrow: { binding: { key: 'Up', control: false, meta: false, alt: true, shift: false }, shortcut: 'Alt+Up' },
+			ok: { refusal: undefined, binding: { key: 'L', control: true, meta: false, alt: false, shift: true }, shortcut: 'Ctrl+Shift+L' },
+			macOption: { refusal: undefined, binding: { key: 'K', control: false, meta: true, alt: true, shift: false }, shortcut: '⌥⌘K' },
+			arrow: { refusal: undefined, binding: { key: 'Up', control: false, meta: false, alt: true, shift: false }, shortcut: 'Alt+Up' },
 			modifierOnly: { refusal: 'modifierOnly' },
 			shiftOnly: { refusal: 'noModifier' },
 			unsupported: { refusal: 'unsupportedKey' },

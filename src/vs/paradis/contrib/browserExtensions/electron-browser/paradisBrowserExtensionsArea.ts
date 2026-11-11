@@ -956,7 +956,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 			return;
 		}
 		const read = paradisShortcutFromKeyEvent(event, SHORTCUT_PLATFORM, () => this._paraCodeCommand(event));
-		if ('refusal' in read) {
+		if (read.refusal !== undefined) {
 			switch (read.refusal) {
 				case 'modifierOnly':
 					return;
