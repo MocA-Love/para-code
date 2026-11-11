@@ -19,6 +19,7 @@ import type { IParadisInstallPrompt } from './paradisBrowserExtensionWebStore.js
 import type { IParadisUpdatePrompt } from './paradisBrowserExtensionsMain.js';
 import type { IParadisExtensionNotification, IParadisExtensionNotificationOptions } from './paradisBrowserExtensionServices.js';
 import type { IParadisRect } from '../common/paradisBrowserExtensionAction.js';
+import { paradisBrowserExtensionPermissionLabel } from '../common/paradisBrowserExtensionPermissionLabels.js';
 import { paradisKeepOnExtensionPages, paradisMarkBrowserExtensionWindow } from './paradisBrowserExtensionWindows.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { DisposableMap, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
@@ -184,35 +185,6 @@ export function paradisWorkAreaFor(rect: IParadisRect): IParadisRect {
 	return screen.getDisplayMatching(rect).workArea;
 }
 
-/** 権限の名前の、利用者に見せる言い方（知らないものは名前のまま）。 */
-function permissionLabel(permission: string): string {
-	switch (permission) {
-		case 'cookies': return localize('paradis.browserExtensions.permission.cookies', "サイトの cookie の読み取りと変更");
-		case 'downloads': return localize('paradis.browserExtensions.permission.downloads', "ファイルのダウンロード");
-		case 'notifications': return localize('paradis.browserExtensions.permission.notifications', "通知の表示");
-		case 'management': return localize('paradis.browserExtensions.permission.management', "ほかの拡張機能の有効・無効の切り替え");
-		case 'tabs': return localize('paradis.browserExtensions.permission.tabs', "タブの URL とタイトルの読み取り");
-		case 'contextMenus': return localize('paradis.browserExtensions.permission.contextMenus', "右クリックのメニューへの項目の追加");
-		case 'clipboardRead': return localize('paradis.browserExtensions.permission.clipboardRead', "クリップボードの読み取り");
-		case 'clipboardWrite': return localize('paradis.browserExtensions.permission.clipboardWrite', "クリップボードへの書き込み");
-		case 'webNavigation': return localize('paradis.browserExtensions.permission.webNavigation', "ページの移動の読み取り");
-		case 'storage': return localize('paradis.browserExtensions.permission.storage', "拡張機能のデータの保存");
-		case 'unlimitedStorage': return localize('paradis.browserExtensions.permission.unlimitedStorage', "上限の無いデータの保存");
-		case 'activeTab': return localize('paradis.browserExtensions.permission.activeTab', "拡張機能を押したタブの読み取りと変更");
-		case 'alarms': return localize('paradis.browserExtensions.permission.alarms', "決まった時刻の処理");
-		case 'nativeMessaging': return localize('paradis.browserExtensions.permission.nativeMessaging', "パソコンに入っているアプリとのやりとり");
-		case 'history': return localize('paradis.browserExtensions.permission.history', "閲覧の履歴の読み取りと変更");
-		case 'bookmarks': return localize('paradis.browserExtensions.permission.bookmarks', "ブックマークの読み取りと変更");
-		case 'privacy': return localize('paradis.browserExtensions.permission.privacy', "プライバシーの設定の変更");
-		case 'proxy': return localize('paradis.browserExtensions.permission.proxy', "プロキシの設定の変更");
-		case 'webRequest': return localize('paradis.browserExtensions.permission.webRequest', "ページの通信の読み取り");
-		case 'declarativeNetRequest': return localize('paradis.browserExtensions.permission.declarativeNetRequest', "ページの通信の遮断・書き換え");
-		case 'scripting': return localize('paradis.browserExtensions.permission.scripting', "ページへのスクリプトの挿入");
-		case 'debugger': return localize('paradis.browserExtensions.permission.debugger', "ページのデバッガーへの接続");
-		default: return permission;
-	}
-}
-
 /** サイトの権限の、利用者に見せる言い方。 */
 function originLabel(origin: string): string {
 	return origin === '<all_urls>' || origin === '*://*/*'
@@ -227,7 +199,7 @@ export function paradisCreateBrowserExtensionPermissionPrompt(dialogMainService:
 		if (!window || window.isDestroyed()) {
 			return false;
 		}
-		const items = [...prompt.add.permissions.map(permissionLabel), ...prompt.add.origins.map(originLabel)].slice(0, 20);
+		const items = [...prompt.add.permissions.map(paradisBrowserExtensionPermissionLabel), ...prompt.add.origins.map(originLabel)].slice(0, 20);
 		const { response } = await dialogMainService.showMessageBox({
 			type: 'question',
 			message: localize('paradis.browserExtensions.permission.message', "「{0}」に次の権限を許しますか？", prompt.extensionName),
@@ -248,7 +220,7 @@ export function paradisCreateBrowserExtensionInstallPrompt(dialogMainService: ID
 		if (!window || window.isDestroyed()) {
 			return false;
 		}
-		const items = [...prompt.access.permissions.map(permissionLabel), ...prompt.access.hostPermissions.map(originLabel)];
+		const items = [...prompt.access.permissions.map(paradisBrowserExtensionPermissionLabel), ...prompt.access.hostPermissions.map(originLabel)];
 		const shown = items.slice(0, 20);
 		const list = shown.length > 0
 			? `${shown.map(item => `・${item}`).join('\n')}${items.length > shown.length ? `\n${localize('paradis.browserExtensions.install.more', "ほか {0} 件", items.length - shown.length)}` : ''}`
@@ -275,7 +247,7 @@ export function paradisCreateBrowserExtensionUpdatePrompt(dialogMainService: IDi
 		if (!window || window.isDestroyed()) {
 			return false;
 		}
-		const items = [...prompt.added.permissions.map(permissionLabel), ...prompt.added.hostPermissions.map(originLabel)];
+		const items = [...prompt.added.permissions.map(paradisBrowserExtensionPermissionLabel), ...prompt.added.hostPermissions.map(originLabel)];
 		const shown = items.slice(0, 20);
 		const list = `${shown.map(item => `・${item}`).join('\n')}${items.length > shown.length ? `\n${localize('paradis.browserExtensions.install.more', "ほか {0} 件", items.length - shown.length)}` : ''}`;
 		const { response } = await dialogMainService.showMessageBox({
