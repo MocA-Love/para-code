@@ -158,15 +158,22 @@
 	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
 
+/* Antigravity の列もあるとき（Claude・Codex・Antigravity の3列）。 */
+.paradis-limits-panel .plm-body.three-columns {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .paradis-limits-panel .plm-column {
 	min-width: 0;
 }
 
-.paradis-limits-panel .plm-body.two-columns .plm-column + .plm-column {
+.paradis-limits-panel .plm-body.two-columns .plm-column + .plm-column,
+.paradis-limits-panel .plm-body.three-columns .plm-column + .plm-column {
 	border-left: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
 }
 
-.paradis-limits-panel .plm-body:not(.two-columns) .plm-column + .plm-column {
+.paradis-limits-panel .plm-body:not(.two-columns):not(.three-columns) .plm-column + .plm-column {
 	border-top: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
 }
 
@@ -693,6 +700,13 @@
 	color: var(--vscode-descriptionForeground);
 	font-size: 11px;
 	text-align: right;
+}
+
+/* 枠の補足（Antigravity の「7日の枠」）。カードの左下に置く。 */
+.paradis-limits-panel .plm-card-note {
+	margin-top: 4px;
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
 }
 
 /* 差し込み部品がプロバイダの節の末尾に足す案内・カード列。 */

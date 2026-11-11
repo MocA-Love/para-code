@@ -4,6 +4,10 @@
 
 Para Code が本家 VS Code に加えた変更の一覧です。新しいバージョンが上に来ます。
 
+## 未リリース
+
+- タイトルバーの「AI 利用リミット」に **Antigravity CLI** の残りを足しました。`agy` を入れてサインインしていると、パネルの 3 列目に「Gemini」と「Claude・GPT」の 7 日の枠の使用率とリセットまでの時間が出て、タイトルバーにも輪が 1 つ増えます。値は数分おきに取り直します。`agy` を入れていない・サインインしていないときは何も変わりません
+
 ## paracode-186（2026-11-12）
 
 - Antigravity CLI（`agy`）の状態を、Claude Code・Codex と同じくタブの印・状態の帯・通知・モバイルの一覧に出すようにしました。作業中・許可待ち・質問中・完了（失敗はエラーとして知らせます）が出ます。Para Code が起動したとき、`agy` を一度でも起動したことがあれば、`agy` の全体の hook の設定（`~/.gemini/config/hooks.json`）に Para Code の hook を足します（ほかの hook はそのまま残し、「設定 (Para Code)」の「Claude Code・Codex・Antigravity CLI に Para Code の hook を自動で入れる」を切ると外します）。会話の中身をチャット表示やモバイルに写すのは、まだできません

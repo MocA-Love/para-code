@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// shared process から Claude Code / Codex の CLI を短時間だけ起こすための共通部品。
+// shared process から Claude Code / Codex / Antigravity CLI の CLI を短時間だけ起こすための共通部品。
 //
 // - 実行ファイルの解決: GUI 起動ではログインシェルの PATH が継承されないことがあるので、
 //   PATH で見つからなければ、よくあるインストール先を直接見る。limitsMonitor・ccusage・codexAccounts・
@@ -23,7 +23,7 @@ import { findExecutable } from '../../base/node/processes.js';
 import { paradisWrapWindowsScriptShim } from '../common/paradisWindowsScriptShim.js';
 import { paradisKillChildProcessTree, paradisKillExitedProcessGroup } from './paradisKillChildProcess.js';
 
-export type ParadisAgentCliName = 'claude' | 'codex' | 'ccusage';
+export type ParadisAgentCliName = 'claude' | 'codex' | 'ccusage' | 'agy';
 
 export interface IParadisResolveAgentCliOptions {
 	/** PATH から外すディレクトリ（Para Code のペイン用ランチャーの置き場所など）。 */
@@ -156,6 +156,8 @@ export interface IParadisRunAgentCliResult {
 	readonly stdout: string;
 	readonly stderr: string;
 	readonly exitCode: number | null;
+	/** {@link IParadisRunAgentCliOptions.stopWhen} が true を返したので、終わるのを待たずに止めた。 */
+	readonly stopped?: boolean;
 }
 
 export interface IParadisRunAgentCliOptions {
@@ -166,6 +168,11 @@ export interface IParadisRunAgentCliOptions {
 	readonly timeoutMs: number;
 	/** stdout / stderr それぞれの上限。超えた分は捨てる。 */
 	readonly maxOutputBytes?: number;
+	/**
+	 * 出力が届くたびに、ここまでの stdout / stderr で呼ぶ。true を返したら、終わるのを待たずにグループごと止め、
+	 * そこまでの出力を `stopped: true` で返す（ログインを待ち続ける CLI を時間切れまで待たないため）。
+	 */
+	readonly stopWhen?: (stdout: string, stderr: string) => boolean;
 }
 
 const DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
@@ -206,17 +213,32 @@ export function paradisRunAgentCli(command: string, args: readonly string[], opt
 			paradisKillChildProcessTree(child, undefined, { processGroup: true });
 			finish(new Error(`${command} timed out after ${options.timeoutMs}ms`), null);
 		}, options.timeoutMs);
+		const checkStop = () => {
+			if (settled || options.stopWhen === undefined) {
+				return;
+			}
+			const out = Buffer.concat(stdout).toString('utf8');
+			const err = Buffer.concat(stderr).toString('utf8');
+			if (options.stopWhen(out, err)) {
+				settled = true;
+				clearTimeout(timer);
+				paradisKillChildProcessTree(child, undefined, { processGroup: true });
+				resolve({ stdout: out, stderr: err, exitCode: null, stopped: true });
+			}
+		};
 		child.stdout.on('data', (chunk: Buffer) => {
 			if (stdoutBytes < maxBytes) {
 				stdout.push(chunk);
 				stdoutBytes += chunk.length;
 			}
+			checkStop();
 		});
 		child.stderr.on('data', (chunk: Buffer) => {
 			if (stderrBytes < maxBytes) {
 				stderr.push(chunk);
 				stderrBytes += chunk.length;
 			}
+			checkStop();
 		});
 		child.on('error', error => finish(error, null));
 		// CLI が終わった時点で、グループに残した子（裏で起こしたものなど）も止める。

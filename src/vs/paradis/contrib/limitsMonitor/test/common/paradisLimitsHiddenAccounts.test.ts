@@ -65,4 +65,17 @@ suite('Paradis limits hidden accounts', () => {
 			none: true,
 		});
 	});
+
+	test('also removes a hidden Antigravity account, and leaves a snapshot without Antigravity as it is', () => {
+		const antigravity = { provider: 'antigravity', id: '/home/example/.gemini', homeLabel: '~/.gemini', status: 'ok' } as const;
+		const snapshot = { fetchedAt: 1, claude: { accounts: [] }, codex: { accounts: [] }, antigravity: { accounts: [antigravity] } };
+		const hidden = new Map([['/home/example/.gemini', undefined]]);
+		assert.deepStrictEqual({
+			hidden: paradisLimitsWithoutHidden(snapshot, hidden),
+			noAntigravity: paradisLimitsWithoutHidden({ fetchedAt: 1, claude: { accounts: [] }, codex: { accounts: [] } }, hidden),
+		}, {
+			hidden: { fetchedAt: 1, claude: { accounts: [] }, codex: { accounts: [] }, antigravity: { accounts: [] } },
+			noAntigravity: { fetchedAt: 1, claude: { accounts: [] }, codex: { accounts: [] } },
+		});
+	});
 });

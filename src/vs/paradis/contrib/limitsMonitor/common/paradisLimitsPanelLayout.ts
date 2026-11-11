@@ -12,6 +12,8 @@
 //  1. 800px が入る: 800px の2列。ボタンの左端に揃え、右端からはみ出すなら左へ押し戻す
 //  2. 800px は入らないが 2列の最小幅（640px）は入る: ウィンドウの幅いっぱい（左右の余白を除く）の2列
 //  3. それも入らない: 400px（入らなければウィンドウの幅いっぱい）の1列（Claude の下に Codex）
+// Antigravity の列もあるときは3列（1140px、最小 960px）にし、入らなければ 2列にせず 1列に積む
+// （2列にすると Antigravity だけが下の段に回り、左の列の下にぶら下がって見えるため）。
 
 /** 2列のときの幅（CSS の `.paradis-limits-panel` の width と揃える）。 */
 export const PARADIS_LIMITS_PANEL_TWO_COLUMN_WIDTH = 800;
@@ -19,6 +21,10 @@ export const PARADIS_LIMITS_PANEL_TWO_COLUMN_WIDTH = 800;
 export const PARADIS_LIMITS_PANEL_ONE_COLUMN_WIDTH = 400;
 /** 2列にする最小の幅（1列あたり 320px）。これより狭いと1列にする。 */
 export const PARADIS_LIMITS_PANEL_MIN_TWO_COLUMN_WIDTH = 640;
+/** 3列のときの幅（1列 380px）。 */
+export const PARADIS_LIMITS_PANEL_THREE_COLUMN_WIDTH = 1140;
+/** 3列にする最小の幅（1列あたり 320px）。 */
+export const PARADIS_LIMITS_PANEL_MIN_THREE_COLUMN_WIDTH = 960;
 /** ウィンドウの端との間に空ける余白。 */
 export const PARADIS_LIMITS_PANEL_MARGIN = 8;
 /** どんなに狭いウィンドウでも、これより細くはしない（その場合だけ右端が欠けうる）。 */
@@ -27,19 +33,28 @@ const MIN_WIDTH = 200;
 export interface IParadisLimitsPanelLayout {
 	readonly left: number;
 	readonly width: number;
-	readonly columns: 1 | 2;
+	readonly columns: 1 | 2 | 3;
 }
 
 /**
  * @param anchorLeft パネルを開いたボタンの左端（ウィンドウの左端からの px）
  * @param viewportWidth ウィンドウの幅（px）
+ * @param providerCount 並べる列の数（Antigravity の列があれば 3）
  */
-export function paradisLimitsPanelLayout(anchorLeft: number, viewportWidth: number): IParadisLimitsPanelLayout {
+export function paradisLimitsPanelLayout(anchorLeft: number, viewportWidth: number, providerCount: 2 | 3 = 2): IParadisLimitsPanelLayout {
 	const margin = PARADIS_LIMITS_PANEL_MARGIN;
 	const available = Math.max(0, viewportWidth - margin * 2);
 	let width: number;
-	let columns: 1 | 2;
-	if (available >= PARADIS_LIMITS_PANEL_TWO_COLUMN_WIDTH) {
+	let columns: 1 | 2 | 3;
+	if (providerCount === 3) {
+		if (available >= PARADIS_LIMITS_PANEL_MIN_THREE_COLUMN_WIDTH) {
+			width = Math.min(PARADIS_LIMITS_PANEL_THREE_COLUMN_WIDTH, available);
+			columns = 3;
+		} else {
+			width = Math.max(MIN_WIDTH, Math.min(PARADIS_LIMITS_PANEL_ONE_COLUMN_WIDTH, available));
+			columns = 1;
+		}
+	} else if (available >= PARADIS_LIMITS_PANEL_TWO_COLUMN_WIDTH) {
 		width = PARADIS_LIMITS_PANEL_TWO_COLUMN_WIDTH;
 		columns = 2;
 	} else if (available >= PARADIS_LIMITS_PANEL_MIN_TWO_COLUMN_WIDTH) {

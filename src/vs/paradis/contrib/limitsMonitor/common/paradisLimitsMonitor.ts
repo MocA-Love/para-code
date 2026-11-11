@@ -13,12 +13,14 @@
 //   - Codex: node/paradisLimitsMonitorChannel.ts。 ~/.codex* 各ホームの auth.json を読み、wham/usage API をHTTP直叩き。トークンの
 //     リフレッシュ/永続化は行わず、401時のみ `codex app-server` RPC にフォールバックして
 //     codex CLI 自身にリフレッシュさせる(auth.jsonへの書き込みを自前で行わないため)
+//   - Antigravity: node/paradisAntigravityUsage.ts。`agy -p "/usage" --output-format json` を数分おきに動かして読む
+//     （ログインは1つだけ。切り替え・追加は無い）
 
 import { localize } from '../../../../nls.js';
 
 export const PARADIS_LIMITS_MONITOR_CHANNEL = 'paradisLimitsMonitor';
 
-export type ParadisLimitsProvider = 'claude' | 'codex';
+export type ParadisLimitsProvider = 'claude' | 'codex' | 'antigravity';
 
 /** 1つのレート制限ウィンドウ(5時間枠・7日枠・モデル別枠)。 */
 export interface IParadisLimitsWindow {
@@ -142,7 +144,7 @@ export interface IParadisLimitsAccount {
 	readonly provider: ParadisLimitsProvider;
 	/**
 	 * 安定ID。Claude は Para Code に登録したアカウントが 'para-claude:<uuid>'、登録していない
-	 * いまのログインが 'claude-live'。Codex はホームの絶対パス。
+	 * いまのログインが 'claude-live'。Codex はホームの絶対パス。Antigravity は `~/.gemini` の絶対パス。
 	 */
 	readonly id: string;
 	readonly email?: string;
@@ -156,7 +158,7 @@ export interface IParadisLimitsAccount {
 	readonly organizationName?: string;
 	/** 使用状況を最後に取れた時刻（epoch ms）。 */
 	readonly fetchedAt?: number;
-	/** Codex: '~/.codex-2' のような表示用ホームラベル。 */
+	/** Codex: '~/.codex-2' のような表示用ホームラベル。Antigravity: '~/.gemini'。 */
 	readonly homeLabel?: string;
 	/** Codex: Para Codeが自動作成した追加ホームで、安全な削除条件を満たすか。 */
 	readonly removable?: boolean;
@@ -210,14 +212,38 @@ export interface IParadisLimitsProviderSnapshot {
 export interface IParadisLimitsSnapshot {
 	readonly claude: IParadisLimitsProviderSnapshot;
 	readonly codex: IParadisLimitsProviderSnapshot;
+	/**
+	 * Antigravity CLI（agy）の分。agy が見つからない（入れていない）・サインインしていないときと、このキーを知らない古い PC・接続先では
+	 * 無い。そのときパネルとタイトルバーは Antigravity を出さない。任意項目なので、知らないモバイルは無視する。
+	 */
+	readonly antigravity?: IParadisLimitsProviderSnapshot;
+	/**
+	 * Antigravity: いま agy を起こしたら「サインインしていない」と答えた。`stamp` はそのときのログインの置き場所の印
+	 * （ファイルの更新時刻と大きさだけ）。レンダラーはこれを覚え、印が変わるまで自動では起こさせない
+	 * （{@link IParadisAntigravityFetchHint}）。
+	 */
+	readonly antigravitySignedOut?: { readonly stamp: string };
 	/** Codex の分を取り終えた時刻（epoch ms）。Claude の古さはアカウントごとの `fetchedAt` で見る。 */
 	readonly fetchedAt: number;
 	/** Codex の分が TTL を過ぎた前回の値（裏で取り直している）。古い PC・接続先では未設定。 */
 	readonly stale?: boolean;
 }
 
+/**
+ * Antigravity を自動で取りに行ってよいかの、レンダラーが覚えている手がかり（Para Code を起動し直しても残す）。
+ * agy はログインを macOS のキーチェーンに置くことがあり、ファイルだけではサインインしているか分からないため。
+ */
+export interface IParadisAntigravityFetchHint {
+	/** Para Code が前に agy から値を取れたことがある。 */
+	readonly seen?: boolean;
+	/** 前に自動で起こしたら「サインインしていない」と答えたときの印。印が同じ間は、自動では起こさない。 */
+	readonly signedOutStamp?: string;
+}
+
 export interface IParadisLimitsFetchOptions {
 	readonly bypassCache?: boolean;
+	/** Antigravity を自動で取りに行ってよいかの手がかり。 */
+	readonly antigravity?: IParadisAntigravityFetchHint;
 	/** 設定 paradis.limitsMonitor.codexHomes の値(自動走査に追加するホーム)。 */
 	readonly codexHomes?: readonly string[];
 }

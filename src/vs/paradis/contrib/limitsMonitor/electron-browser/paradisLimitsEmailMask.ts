@@ -61,6 +61,10 @@ class ParadisLimitsEmailMaskService extends Disposable implements IParadisLimits
 		if (this._masked && account.email !== undefined) {
 			return this.maskedName(account.provider, paradisLimitsAccountNumber(account, this.accounts(account.provider)));
 		}
+		if (account.email === undefined && account.provider === 'antigravity') {
+			// agy はメールを出さない。ログインは1つだけなので、名前はエージェントの名前にする
+			return localize('paradis.limitsMonitor.antigravityAccount', "Antigravity");
+		}
 		return account.email ?? account.homeLabel ?? account.id;
 	}
 
@@ -74,16 +78,22 @@ class ParadisLimitsEmailMaskService extends Disposable implements IParadisLimits
 	}
 
 	private accounts(provider: ParadisLimitsProvider): readonly IParadisLimitsAccount[] {
-		return (provider === 'claude' ? this.snapshot?.claude.accounts : this.snapshot?.codex.accounts) ?? [];
+		switch (provider) {
+			case 'claude': return this.snapshot?.claude.accounts ?? [];
+			case 'codex': return this.snapshot?.codex.accounts ?? [];
+			case 'antigravity': return this.snapshot?.antigravity?.accounts ?? [];
+		}
 	}
 
 	private maskedName(provider: ParadisLimitsProvider, accountNumber: number | undefined): string {
 		if (accountNumber === undefined) {
 			return localize('paradis.limitsMonitor.maskedOtherAccount', "（メールアドレスを伏せています）");
 		}
-		return provider === 'claude'
-			? localize('paradis.limitsMonitor.maskedClaudeAccount', "Claude {0}", accountNumber)
-			: localize('paradis.limitsMonitor.maskedCodexAccount', "Codex {0}", accountNumber);
+		switch (provider) {
+			case 'claude': return localize('paradis.limitsMonitor.maskedClaudeAccount', "Claude {0}", accountNumber);
+			case 'codex': return localize('paradis.limitsMonitor.maskedCodexAccount', "Codex {0}", accountNumber);
+			case 'antigravity': return localize('paradis.limitsMonitor.maskedAntigravityAccount', "Antigravity {0}", accountNumber);
+		}
 	}
 }
 

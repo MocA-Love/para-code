@@ -1449,7 +1449,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		key: 'paradis.limitsMonitor.enabled',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.limitsMonitor', "利用上限の残りをタイトルバーに表示"),
-		keywords: 'limits monitor claude codex usage titlebar',
+		keywords: 'limits monitor claude codex antigravity agy usage titlebar',
 	},
 	{
 		sectionId: PARADIS_SETTINGS_TITLEBAR_SECTION_ID,
