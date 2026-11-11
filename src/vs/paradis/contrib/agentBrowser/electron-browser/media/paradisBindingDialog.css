@@ -200,7 +200,7 @@
 }
 
 .paradis-binding-dialog .pbd-nav {
-	width: 200px;
+	width: 220px;
 	flex: none;
 	display: flex;
 	flex-direction: column;
@@ -286,6 +286,11 @@
 	flex: 1;
 	overflow-y: auto;
 	padding: var(--vscode-spacing-size160) var(--vscode-spacing-size240);
+}
+
+/* The page bar, the search and the pane rows stop at 760 so a wide box does not stretch the rows (Q612); the rest stays empty. */
+.paradis-binding-dialog .pbd-body > * {
+	max-width: 760px;
 }
 
 /* ---------- terminal panes view ---------- */

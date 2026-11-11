@@ -57,6 +57,7 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { paradisFormatCrossJumpAgo } from '../../crossJump/common/paradisCrossJump.js';
 import { IParadisBranchCandidates, IParadisExistingBranchChoice, IParadisExistingBranchState, ParadisExistingBranchPlan, ParadisExistingBranchSource, paradisPlanExistingBranch } from '../common/paradisWorktreeExistingBranch.js';
+import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
 
 const $ = dom.$;
 
@@ -323,6 +324,7 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		// 案D レイアウトは修飾子クラスで囲う。同じ CSS ファイルを共有する
 		// paradisWorkspaceLifecycleDialog は修飾子を付けないので従来の見た目のまま残る
 		this._dialog = $('.paradis-create-worktree-dialog.pcw-d');
+		this._dialog.classList.add(...paradisModalClasses(ParadisModalSize.Small));
 		this._backdrop.appendChild(this._dialog);
 
 		this._register(dom.addDisposableListener(this._backdrop, 'mousedown', e => {

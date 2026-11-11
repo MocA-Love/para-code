@@ -20,9 +20,9 @@
 	background: var(--vscode-paradis-scrim);
 }
 
-/* The import boxes take the widest S (the kit lets an S box choose between 420 and 560). */
+/* The import boxes take a wider S: at least 560, then they grow with the S tier (paradisModal.css, Q612). */
 .monaco-workbench .paradis-notif-nested-dialog.paradis-modal.paradis-modal-s:is(.pns-myinstants, .pns-youtube) {
-	width: 560px;
+	width: clamp(560px, 30vw, 680px);
 }
 
 /* A box whose footer has no buttons (an error while loading, the download in progress) drops the empty bar. */

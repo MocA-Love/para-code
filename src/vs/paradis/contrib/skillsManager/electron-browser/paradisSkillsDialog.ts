@@ -49,6 +49,7 @@ import {
 import { paradisResolveSkillRoots } from './paradisSkillRoots.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
+import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
 
 const $ = dom.$;
 
@@ -82,7 +83,8 @@ export class ParadisSkillsDialog extends Disposable {
 	) {
 		super();
 		this.backdrop = $('.paradis-skills-backdrop.paradis-modal-backdrop');
-		this.modal = dom.append(this.backdrop, $('.paradis-skills.paradis-focus-none'));
+		this.modal = dom.append(this.backdrop, $('.paradis-skills'));
+		this.modal.classList.add(...paradisModalClasses(ParadisModalSize.Large));
 		this.modal.setAttribute('role', 'dialog');
 		this.modal.setAttribute('aria-modal', 'true');
 

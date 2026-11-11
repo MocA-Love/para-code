@@ -25,6 +25,7 @@ import { IInstantiationService } from '../../../../platform/instantiation/common
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IParadisBrowserProfile, PARADIS_BROWSER_PROFILE_COLORS } from '../common/paradisBrowserProfileModel.js';
 import { IParadisBrowserProfilesService } from './paradisBrowserProfilesService.js';
+import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
 
 const $ = dom.$;
 
@@ -53,7 +54,8 @@ export abstract class ParadisProfileModal extends Disposable {
 		this._previouslyFocused = dom.isHTMLElement(active) ? active : undefined;
 
 		this._backdrop = $('.paradis-browser-profile-backdrop.paradis-modal-backdrop');
-		const modal = $('.paradis-browser-profile-modal.paradis-focus-none');
+		const modal = $('.paradis-browser-profile-modal');
+		modal.classList.add(...paradisModalClasses(ParadisModalSize.Small));
 		this._modal = modal;
 		this._backdrop.appendChild(modal);
 

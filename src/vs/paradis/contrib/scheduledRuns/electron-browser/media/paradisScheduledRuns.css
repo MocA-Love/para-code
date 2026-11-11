@@ -19,22 +19,7 @@
 	justify-content: center;
 }
 
-.monaco-workbench .paradis-scheduled-runs {
-	width: clamp(900px, 72vw, 1500px);
-	max-width: 95vw;
-	height: clamp(620px, 84vh, 1100px);
-	max-height: 92vh;
-	background: var(--vscode-editor-background);
-	color: var(--vscode-foreground);
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 8px;
-	display: flex;
-	flex-direction: column;
-	box-shadow: var(--vscode-shadow-xl);
-	overflow: hidden;
-	font-size: 13px;
-	outline: none;
-}
+/* The box's size, surface and font come from the modal L tier (paradisModal.css, Q612). */
 
 /* ---------- header ---------- */
 
