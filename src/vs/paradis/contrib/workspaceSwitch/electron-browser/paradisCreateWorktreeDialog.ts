@@ -122,6 +122,8 @@ const STR_PROMPT_FIELD = localize('paradis.createWorktree.promptField', "指示�
 // allow-any-unicode-next-line
 const STR_IMAGES_NO_AGENT = localize('paradis.createWorktree.imagesNoAgent', "実行しないときは画像を添えられません");
 // allow-any-unicode-next-line
+const STR_IMAGES_NO_AGENT_DETAIL = localize('paradis.createWorktree.imagesNoAgentDetail', "エージェントを実行しないので、添えた画像は使いません。エージェントを選び直せば使えます");
+// allow-any-unicode-next-line
 const STR_NAME_FIELD = localize('paradis.createWorktree.nameField', "スペース名");
 // allow-any-unicode-next-line
 const STR_BRANCH_FIELD = localize('paradis.createWorktree.branchField', "ブランチ名");
@@ -478,18 +480,21 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		// フィールドの箱そのものを label にして、見出しと入力を暗黙に関連付ける
 		// (placeholder を短くしたので、支援技術に読ませる名前はここにしか無い)
 		// 画像を添えられるよう、指示の欄・サムネイル・クリップを 1 つの枠にまとめる（Q615 の案 B）。枠の中にボタンがあるので
-		// label では包まず、見出しの id で欄に名前を付ける
+		// 箱を label で包まず、見出しの label の `for` で欄を指す（見出しを押すと欄へ移る）
 		const promptField = dom.append(body, $('.pcw-d-field'));
-		const promptLabel = dom.append(promptField, $('span'));
-		promptLabel.id = `paradis-create-worktree-prompt-${ParadisCreateWorktreeDialog._nextId++}`;
+		const promptLabel = dom.append(promptField, $('label')) as HTMLLabelElement;
+		promptLabel.htmlFor = `paradis-create-worktree-prompt-${ParadisCreateWorktreeDialog._nextId++}`;
 		promptLabel.textContent = STR_PROMPT_FIELD;
 		this._imageComposer = this._register(new ParadisWorktreeImageComposer(promptField, {
-			labelId: promptLabel.id,
+			inputId: promptLabel.htmlFor,
 			placeholder: STR_PROMPT_PLACEHOLDER,
 			images: prefill?.images,
 		}));
 		this._promptInput = this._imageComposer.textarea;
-		this._register(this._imageComposer.onDidChange(() => this._updateCommandPreview()));
+		this._register(this._imageComposer.onDidChange(() => {
+			this._updateCommandPreview();
+			this._updateCreateEnabled();
+		}));
 
 		// スペース名 + ブランチ名
 		const nameRow = dom.append(body, $('.pcw-d-two'));
@@ -815,19 +820,27 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		// 種類の分からないシェル（undefined）ではバックスラッシュを含む指示を断る作りなので、表記に合わせて bash として組む
 		// 添えた画像は、作るときに付く名前（時刻はプレビューを作った時点のもの）で見せる
 		const now = Date.now();
-		const imagePaths = this._imageComposer.images.map((image, index) => `${PASTED_IMAGE_DIR}/${paradisWorktreeImageFileName(now, index, image.mime)}`);
+		const imagePaths = paradisAgentImageMode(agent.id) === 'unsupported' ? [] : this._imageComposer.images.map((image, index) => `${PASTED_IMAGE_DIR}/${paradisWorktreeImageFileName(now, index, image.mime)}`);
 		const command = paradisBuildAgentCommand(agent, prompt, PosixShellType.Bash, this._currentLaunchOptions(), imagePaths);
 		this._cmdPreview.textContent = `$ ${command}`;
+		// 画像のパスは末尾に付くので、添えたときは折り返して全部見せる
+		this._cmdPreview.classList.toggle('pcw-cmd-preview-wrap', imagePaths.length > 0);
 	}
 
 	/** 選んだエージェントに画像を渡せるかを、添付の枠へ伝える。 */
 	private _updateImageBlock(): void {
 		const agent = this._selectedAgent;
 		if (!agent) {
-			this._imageComposer.setBlock(ParadisWorktreeImageBlock.NoAgent, STR_IMAGES_NO_AGENT);
+			this._imageComposer.setBlock(ParadisWorktreeImageBlock.NoAgent, STR_IMAGES_NO_AGENT, STR_IMAGES_NO_AGENT_DETAIL);
 		} else if (paradisAgentImageMode(agent.id) === 'unsupported') {
-			// allow-any-unicode-next-line
-			this._imageComposer.setBlock(ParadisWorktreeImageBlock.Unsupported, localize('paradis.createWorktree.imagesUnsupported', "{0} には画像を渡せません（git が無視するファイルを読まないため）", agent.label ?? agent.id));
+			const label = agent.label ?? agent.id;
+			this._imageComposer.setBlock(
+				ParadisWorktreeImageBlock.Unsupported,
+				// allow-any-unicode-next-line
+				localize('paradis.createWorktree.imagesUnsupported', "{0} には画像を渡せません", label),
+				// allow-any-unicode-next-line
+				localize('paradis.createWorktree.imagesUnsupportedDetail', "{0} は git が無視するファイルを読まないため、添えた画像は渡しません。エージェントを選び直せば使えます", label),
+			);
 		} else {
 			this._imageComposer.setBlock(ParadisWorktreeImageBlock.None, '');
 		}
@@ -979,7 +992,7 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		const repository = this._selectedRepository;
 		const baseRef = this._branchSelect.value;
 		// ⌘⏎ はボタンを通らないので、押せない状態ならここでも止める
-		if (!repository || !this._canCreate()) {
+		if (!repository || !this._canCreate() || this._imageComposer.busy) {
 			return;
 		}
 		const existingBranch = this._mode === 'existing' ? this._existingBranchChoice() : undefined;
@@ -1037,7 +1050,7 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 
 	private _updateCreateEnabled(): void {
 		if (this._createBtn) {
-			this._createBtn.disabled = !this._canCreate();
+			this._createBtn.disabled = !this._canCreate() || this._imageComposer.busy;
 		}
 	}
 

@@ -110,6 +110,12 @@
 	border-top: 1px solid var(--vscode-paradis-lineSubtle);
 }
 
+/* The clip's codicon is drawn inside the label (see paradisWorktreeImageComposer.ts); keep it from shrinking to nothing
+	in the square button. */
+.monaco-workbench .paradis-image-composer-clip > .codicon {
+	flex: none;
+}
+
 .monaco-workbench .paradis-image-composer-hint {
 	min-width: 0;
 	overflow: hidden;

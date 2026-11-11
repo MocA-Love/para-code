@@ -58,8 +58,8 @@ interface IComposerImage extends IParadisWorktreeImage {
 }
 
 export interface IParadisWorktreeImageComposerOptions {
-	/** 見出しの要素の id（指示の欄の読み上げの名前）。 */
-	readonly labelId: string;
+	/** 指示の欄の id（見出しの label の `for` が指す）。 */
+	readonly inputId: string;
 	readonly placeholder: string;
 	/** 再表示のときに戻す画像。 */
 	readonly images?: readonly IParadisWorktreeImage[];
@@ -85,10 +85,11 @@ export class ParadisWorktreeImageComposer extends Disposable {
 	private _pending = 0;
 	private _block = ParadisWorktreeImageBlock.None;
 	private _blockReason = '';
+	private _blockDetail: string | undefined;
 	private _remote = false;
 
 	private readonly _onDidChange = this._register(new Emitter<void>());
-	/** 添えた画像が増えた・減ったとき。 */
+	/** 添えた画像が増えた・減ったとき、読み込みを始めた・終えたとき。 */
 	readonly onDidChange: Event<void> = this._onDidChange.event;
 
 	constructor(parent: HTMLElement, options: IParadisWorktreeImageComposerOptions) {
@@ -97,13 +98,15 @@ export class ParadisWorktreeImageComposer extends Disposable {
 		this.textarea = dom.append(this._frame, $('textarea.pcw-prompt.paradis-image-composer-area')) as HTMLTextAreaElement;
 		this.textarea.rows = 3;
 		this.textarea.placeholder = options.placeholder;
-		this.textarea.setAttribute('aria-labelledby', options.labelId);
+		this.textarea.id = options.inputId;
 
 		this._thumbs = dom.append(this._frame, $('.paradis-image-composer-thumbs'));
 		this._thumbs.setAttribute('role', 'list');
 
 		const bar = dom.append(this._frame, $('.paradis-image-composer-bar'));
-		this._clip = this._register(new ParadisButton(bar, { kind: 'ghost', small: true, icon: Codicon.attach, ariaLabel: STR_ATTACH, title: STR_ATTACH }));
+		// アイコンは `icon` ではなく文字の中の `$(attach)` で描く。`icon` はボタンの要素そのものに codicon のクラスを付け、
+		// 土台の `.paradis-button` の font-family がそれを上書きしてアイコンが四角になる（2026-11-12 に dev で確認）
+		this._clip = this._register(new ParadisButton(bar, { kind: 'icon', small: true, label: `$(${Codicon.attach.id})`, ariaLabel: STR_ATTACH, title: STR_ATTACH }));
 		this._clip.element.classList.add('paradis-image-composer-clip');
 		this._hint = dom.append(bar, $('span.paradis-image-composer-hint'));
 		dom.append(bar, $('span.paradis-image-composer-grow'));
@@ -151,15 +154,24 @@ export class ParadisWorktreeImageComposer extends Disposable {
 		this._render();
 	}
 
+	/** 添えたファイルを読み込んでいる間 true（作成を待たせる。待たせないと読み込み中の画像が黙って落ちる）。 */
+	get busy(): boolean {
+		return this._pending > 0;
+	}
+
 	/** 添えた画像（添えた順）。 */
 	get images(): readonly IParadisWorktreeImage[] {
 		return this._images.map(({ name, mime, data }) => ({ name, mime, data }));
 	}
 
-	/** 添えられるかを切り替える。添えられないときも、添えた画像は外さずに残す（選び直せば使える）。 */
-	setBlock(block: ParadisWorktreeImageBlock, reason: string): void {
+	/**
+	 * 添えられるかを切り替える。添えられないときも、添えた画像は外さずに残す（選び直せば使える）。
+	 * `reason` は帯に出す短い文、`detail` は画像を添えてあるときに枠の下へ出す説明。
+	 */
+	setBlock(block: ParadisWorktreeImageBlock, reason: string, detail?: string): void {
 		this._block = block;
 		this._blockReason = reason;
+		this._blockDetail = detail;
 		this._render();
 	}
 
@@ -246,6 +258,7 @@ export class ParadisWorktreeImageComposer extends Disposable {
 			return;
 		}
 		this._pending += check.accepted.length;
+		this._onDidChange.fire();
 		try {
 			const read = await Promise.all(check.accepted.map(async ({ index, mime }) => {
 				const file = files[index];
@@ -325,7 +338,10 @@ export class ParadisWorktreeImageComposer extends Disposable {
 		this._count.classList.toggle('full', count >= PARADIS_WORKTREE_IMAGE_MAX_COUNT);
 
 		dom.clearNode(this._note);
-		if (this._remote && !blocked && count > 0) {
+		if (blocked && this._blockDetail && count > 0) {
+			dom.append(this._note, $('span' + ThemeIcon.asCSSSelector(Codicon.info)));
+			dom.append(this._note, $('span')).textContent = this._blockDetail;
+		} else if (this._remote && !blocked && count > 0) {
 			dom.append(this._note, $('span' + ThemeIcon.asCSSSelector(Codicon.remote)));
 			dom.append(this._note, $('span')).textContent = STR_REMOTE_NOTE;
 		}
