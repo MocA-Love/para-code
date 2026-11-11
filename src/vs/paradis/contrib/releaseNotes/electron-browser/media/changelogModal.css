@@ -168,37 +168,6 @@
 	color: var(--vscode-descriptionForeground);
 	min-width: 0;
 }
-
-/* ---------- ボタン ---------- */
-
-.paradis-changelog-area .para-cl-btn {
-	font-family: inherit;
-	font-size: 12.5px;
-	line-height: 18px;
-	padding: 4px 13px;
-	border-radius: 2px;
-	cursor: pointer;
-	border: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, transparent));
-	background: var(--vscode-button-secondaryBackground);
-	color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
-	white-space: nowrap;
-}
-
-.paradis-changelog-area .para-cl-btn:hover {
-	background: var(--vscode-button-secondaryHoverBackground);
-}
-
-.paradis-changelog-area .para-cl-btn.primary {
-	border: none;
-	background: var(--vscode-button-background);
-	color: var(--vscode-button-foreground);
-}
-
-.paradis-changelog-area .para-cl-btn.primary:hover {
-	background: var(--vscode-button-hoverBackground, var(--vscode-button-background));
-}
-
-
 .paradis-changelog-area .para-cl-items {
 	list-style: none;
 	padding: 0;
