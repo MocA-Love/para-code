@@ -26,7 +26,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
-			description: localize('paradis.palette.preview.setting', "「エージェント・タブ・スペースへ移動」とコマンドパレットで、窓が広いとき（1100px 以上）にパレットを広げ、選んだ行の中身（エージェントの最後の発言、スペースの差分、ファイルの先頭など）を右に出します。パレットの中のボタンか Alt+P でも切り替えられます。"),
+			description: localize('paradis.palette.preview.setting', "「エージェント・タブ・スペースへ移動」とコマンドパレットで、窓が広いとき（1100px 以上）にパレットを広げ、選んだ行の中身（エージェントの最後の発言、スペースの差分、ファイルの先頭など）を右に出します。パレットの中のボタンか Alt+P（macOS は Cmd+Option+P）でも切り替えられます。"),
 		},
 	},
 });

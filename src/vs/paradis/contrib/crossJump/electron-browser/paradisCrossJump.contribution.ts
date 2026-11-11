@@ -60,6 +60,7 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { EditorResourceAccessor, EditorsOrder, IEditorIdentifier, SideBySideEditor } from '../../../../workbench/common/editor.js';
 import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { FILE_EDITOR_INPUT_ID } from '../../../../workbench/contrib/files/common/files.js';
 import { TerminalCommandId } from '../../../../workbench/contrib/terminal/common/terminal.js';
 import { IEditorService, SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
@@ -75,7 +76,7 @@ import { paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-br
 import { PARADIS_PALETTE_PREVIEW_SETTING } from '../browser/paradisPaletteConfiguration.js';
 import { IParadisPaletteKindsState, ParadisPaletteKindsBar, paradisPaletteKindLabel } from '../browser/paradisPaletteKinds.js';
 import { ParadisPalettePreviewModel, paradisPalettePreviewState } from '../browser/paradisPalettePreview.js';
-import { IParadisPalettePreviewItem, PARADIS_COMMANDS_PICKER_CONTEXT_KEY, PARADIS_CROSS_JUMP_CONTEXT_KEY, PARADIS_PALETTE_TOGGLE_PREVIEW_COMMAND_ID, PARADIS_PALETTE_TOGGLE_PREVIEW_KEYBINDING } from './paradisPalettePreview.contribution.js';
+import { IParadisPalettePreviewItem, PARADIS_COMMANDS_PICKER_CONTEXT_KEY, PARADIS_CROSS_JUMP_CONTEXT_KEY, PARADIS_PALETTE_TOGGLE_PREVIEW_COMMAND_ID } from './paradisPalettePreview.contribution.js';
 import {
 	IParadisPaletteRecent,
 	paradisCyclePaletteKind,
@@ -449,7 +450,7 @@ class ParadisCrossJumpSession extends Disposable {
 		const query = prefix.rest.trim();
 		const attention = this.agentItems.filter(item => item.kind === 'agent' && isAttention(item.entry.status) && paradisPaletteMatches(query, item.label, item.description)).length;
 		const selected = prefix.kind === 'agent' || prefix.kind === 'editor' || prefix.kind === 'space' ? prefix.kind : this.kind;
-		this.kindsBar.update({ selected, counts: this.counts(query), attention, ...paradisPalettePreviewToggle(this.layoutService, this.configurationService, this.keyLabel(PARADIS_PALETTE_TOGGLE_PREVIEW_KEYBINDING)) });
+		this.kindsBar.update({ selected, counts: this.counts(query), attention, ...paradisPalettePreviewToggle(this.layoutService, this.configurationService, this.keybindingService.lookupKeybinding(PARADIS_PALETTE_TOGGLE_PREVIEW_COMMAND_ID)?.getLabel() ?? undefined) });
 	}
 
 	// --- 行 --------------------------------------------------------------------------------------------------
@@ -519,8 +520,9 @@ class ParadisCrossJumpSession extends Disposable {
 				kind: 'editor',
 				title: identifier.editor.getName(),
 				location: identifier.editor.getDescription(),
-				// 読めるもの（ファイル・接続先のファイルなど）だけ先頭を出す。ターミナルなどは場所だけ
-				resource: iconResource && this.fileService.hasProvider(iconResource) ? iconResource : undefined,
+				// テキストのエディタで開いているファイルだけ先頭を出す。Office・画像・PDF のビューア、ターミナルなどは
+				// 「プレビューできません」（テキストでも先頭に NUL があれば同じ。paradisPalettePreview.ts）
+				resource: identifier.editor.typeId === FILE_EDITOR_INPUT_ID && iconResource && this.fileService.hasProvider(iconResource) ? iconResource : undefined,
 			},
 			iconClasses: getIconClasses(this.modelService, this.languageService, iconResource, undefined, icon).concat(identifier.editor.getLabelExtraClasses()),
 			buttons: [
@@ -825,7 +827,7 @@ function holdKindsVisible(key: IContextKey<boolean>): IDisposable {
 }
 
 /** 種類のタブの段の、プレビューの切り替えのボタンの状態。 */
-function paradisPalettePreviewToggle(layoutService: ILayoutService, configurationService: IConfigurationService, keybinding: string): Pick<IParadisPaletteKindsState, 'preview' | 'previewKeybinding'> {
+function paradisPalettePreviewToggle(layoutService: ILayoutService, configurationService: IConfigurationService, keybinding: string | undefined): Pick<IParadisPaletteKindsState, 'preview' | 'previewKeybinding'> {
 	return {
 		preview: paradisPalettePreviewState(layoutService.activeContainerDimension.width, configurationService.getValue<boolean>(PARADIS_PALETTE_PREVIEW_SETTING) !== false),
 		previewKeybinding: keybinding,
@@ -981,8 +983,7 @@ class ParadisPaletteCommandsKinds extends Disposable implements IWorkbenchContri
 			onTogglePreview: () => void this.commandService.executeCommand(PARADIS_PALETTE_TOGGLE_PREVIEW_COMMAND_ID),
 		}));
 		const update = () => {
-			const decoded = decodeKeybinding(PARADIS_PALETTE_TOGGLE_PREVIEW_KEYBINDING, OS);
-			const keybinding = (decoded && this.keybindingService.resolveKeybinding(decoded)[0]?.getLabel()) ?? '';
+			const keybinding = this.keybindingService.lookupKeybinding(PARADIS_PALETTE_TOGGLE_PREVIEW_COMMAND_ID)?.getLabel() ?? undefined;
 			bar.update({ selected: 'command', counts: {}, attention: 0, ...paradisPalettePreviewToggle(this.layoutService, this.configurationService, keybinding) });
 		};
 		update();

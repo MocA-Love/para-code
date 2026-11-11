@@ -69,7 +69,8 @@ export function paradisComputeQuickInputLayout(windowWidth: number, upstreamWidt
 
 const registered = new Map<string, IParadisQuickInputLayoutOptions>();
 let previewEnabled = true;
-let current: IParadisQuickInputLayout = { width: 0, previewWidth: 0, listWidth: 0, inlineDetail: false };
+const INITIAL_LAYOUT: IParadisQuickInputLayout = { width: 0, previewWidth: 0, listWidth: 0, inlineDetail: false };
+let current: IParadisQuickInputLayout = INITIAL_LAYOUT;
 const onDidChange = new Emitter<IParadisQuickInputLayout>();
 
 /** 器の幅か 1 行化が変わったとき（fork が面の付け外しと行の入れ直しをする）。 */
@@ -84,6 +85,12 @@ export function paradisRegisterQuickInputLayout(contextKey: string, options: IPa
 /** プレビューの on/off（設定 `paradis.palette.preview`）。次の layout から効く。 */
 export function paradisSetQuickInputPreviewEnabled(enabled: boolean): void {
 	previewEnabled = enabled;
+}
+
+/** プレビューの on/off と覚えている器の幅を始めの状態に戻す（単体テストが終わるたびに呼ぶ。登録は各自の dispose で外す）。 */
+export function paradisResetQuickInputLayout(): void {
+	previewEnabled = true;
+	current = INITIAL_LAYOUT;
 }
 
 /** 今の器の幅・面・1 行化。 */

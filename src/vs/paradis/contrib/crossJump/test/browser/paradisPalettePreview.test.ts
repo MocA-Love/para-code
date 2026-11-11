@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisIsPalettePreviewMarkdown, PARADIS_PALETTE_PREVIEW_MAX_LINES, paradisPalettePreviewHead, paradisPalettePreviewState } from '../../browser/paradisPalettePreview.js';
+import { paradisIsPalettePreviewMarkdown, paradisLooksBinary, PARADIS_PALETTE_PREVIEW_BINARY_SNIFF_BYTES, PARADIS_PALETTE_PREVIEW_MAX_LINES, paradisPalettePreviewHead, paradisPalettePreviewState } from '../../browser/paradisPalettePreview.js';
 
 suite('paradisPalettePreview', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -32,6 +32,18 @@ suite('paradisPalettePreview', () => {
 			longTruncated: true,
 			markdown: [true, true, false],
 		});
+	});
+
+	test('a NUL in the first bytes means binary (not shown as text)', () => {
+		const text = new TextEncoder().encode('const x = 1;\n');
+		const late = new Uint8Array(PARADIS_PALETTE_PREVIEW_BINARY_SNIFF_BYTES + 10).fill(65);
+		late[PARADIS_PALETTE_PREVIEW_BINARY_SNIFF_BYTES + 5] = 0;
+		assert.deepStrictEqual([
+			paradisLooksBinary(text),
+			paradisLooksBinary(new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00])),
+			paradisLooksBinary(late),
+			paradisLooksBinary(new Uint8Array()),
+		], [false, true, false, false]);
 	});
 
 	test('the preview toggle shows on/off only where the window can hold the preview', () => {

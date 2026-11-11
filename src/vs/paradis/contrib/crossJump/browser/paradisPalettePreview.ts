@@ -17,7 +17,7 @@
 // 読み込み（ファイル・差分・PR）は選んだ行が止まってから（PREVIEW_DELAY_MS）始め、行が替わったら取りやめる。
 
 import * as dom from '../../../../base/browser/dom.js';
-import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
+import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
@@ -67,6 +67,7 @@ export type ParadisPalettePreviewModel =
 		readonly kind: 'editor';
 		readonly title: string;
 		readonly location: string | undefined;
+		/** 先頭を出すファイル。テキストのエディタで開いていないタブ（Office・画像・PDF・ターミナルなど）は undefined。 */
 		readonly resource: URI | undefined;
 	}
 	| {
@@ -108,6 +109,25 @@ export function paradisPalettePreviewHead(text: string): { readonly text: string
 		return { text, truncated: false };
 	}
 	return { text: lines.slice(0, PARADIS_PALETTE_PREVIEW_MAX_LINES).join('\n'), truncated: true };
+}
+
+/** 先頭の何バイトに NUL があればバイナリとみなすか（本家のテキストのエディタと同じく、NUL の有無で見分ける）。 */
+export const PARADIS_PALETTE_PREVIEW_BINARY_SNIFF_BYTES = 4096;
+
+/** 先頭に NUL があるか（バイナリのファイルを文字として出さない）。 */
+export function paradisLooksBinary(bytes: Uint8Array): boolean {
+	const end = Math.min(bytes.length, PARADIS_PALETTE_PREVIEW_BINARY_SNIFF_BYTES);
+	for (let index = 0; index < end; index++) {
+		if (bytes[index] === 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/** 面の本文に「プレビューできません」を出す。 */
+function showUnavailable(body: HTMLElement): void {
+	dom.append(body, dom.$('.paradis-palette-preview-empty')).textContent = localize('paradis.palette.preview.unavailable', "このタブはプレビューできません");
 }
 
 /** 今の窓でプレビューを出せるか（窓が狭くて出せないときは undefined、出せるなら設定の on/off）。 */
@@ -208,10 +228,12 @@ export class ParadisPalettePreviewPane extends Disposable {
 			}
 			case 'editor': {
 				row(localize('paradis.palette.preview.location', "場所"), model.location || localize('paradis.palette.preview.root', "（ルート）"));
+				const body = dom.append(this.element, dom.$('.paradis-palette-preview-body'));
 				if (model.resource) {
-					const body = dom.append(this.element, dom.$('.paradis-palette-preview-body'));
 					const resource = model.resource;
-					this.later(token => this.loadFile(resource, body, () => token.isCancellationRequested));
+					this.later(token => this.loadFile(resource, body, token));
+				} else {
+					showUnavailable(body);
 				}
 				break;
 			}
@@ -227,7 +249,7 @@ export class ParadisPalettePreviewPane extends Disposable {
 	}
 
 	/** 選んだ行が止まってから読み込む。行が替わったら取りやめる。 */
-	private later(load: (token: { readonly isCancellationRequested: boolean }) => Promise<void>): void {
+	private later(load: (token: CancellationToken) => Promise<void>): void {
 		const source = new CancellationTokenSource();
 		const handle = dom.getWindow(this.element).setTimeout(() => void load(source.token).catch(() => { /* 面の読み込みの失敗は出さない */ }), PREVIEW_DELAY_MS);
 		this.pending.value = {
@@ -264,9 +286,15 @@ export class ParadisPalettePreviewPane extends Disposable {
 		}
 	}
 
-	private async loadFile(resource: URI, body: HTMLElement, cancelled: () => boolean): Promise<void> {
-		const content = await this.fileService.readFile(resource, { length: PARADIS_PALETTE_PREVIEW_MAX_BYTES });
+	private async loadFile(resource: URI, body: HTMLElement, token: CancellationToken): Promise<void> {
+		const cancelled = () => token.isCancellationRequested;
+		// 行が替わったら読み込みも止める
+		const content = await this.fileService.readFile(resource, { length: PARADIS_PALETTE_PREVIEW_MAX_BYTES }, token);
 		if (cancelled()) {
+			return;
+		}
+		if (paradisLooksBinary(content.value.buffer)) {
+			showUnavailable(body);
 			return;
 		}
 		const head = paradisPalettePreviewHead(content.value.toString());

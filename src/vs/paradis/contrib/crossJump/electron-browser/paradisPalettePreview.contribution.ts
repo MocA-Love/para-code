@@ -41,10 +41,13 @@ import { ParadisPalettePreviewModel, ParadisPalettePreviewPane } from '../browse
 export const PARADIS_CROSS_JUMP_CONTEXT_KEY = 'paradisInCrossJump';
 /** コマンドパレットの contextKey（本家の quickAccess.contribution.ts）。 */
 export const PARADIS_COMMANDS_PICKER_CONTEXT_KEY = 'inCommandsPicker';
-/** プレビューの切り替え（Alt+P）。 */
+/** プレビューの切り替え（Alt+P、macOS は Cmd+Option+P）。 */
 export const PARADIS_PALETTE_TOGGLE_PREVIEW_COMMAND_ID = 'paradis.palette.togglePreview';
-/** プレビューの切り替えの既定のキー。 */
-export const PARADIS_PALETTE_TOGGLE_PREVIEW_KEYBINDING = KeyMod.Alt | KeyCode.KeyP;
+/**
+ * プレビューの切り替えの既定のキー。Windows・Linux は Alt+P、macOS は Option+P が文字（π）を打つので Cmd+Option+P。
+ */
+const TOGGLE_PREVIEW_KEYBINDING = KeyMod.Alt | KeyCode.KeyP;
+const TOGGLE_PREVIEW_KEYBINDING_MAC = KeyMod.CtrlCmd | KeyMod.Alt | KeyCode.KeyP;
 
 /** 器に付ける印（CSS: paradisPalette.css）。 */
 const INLINE_DETAIL_CLASS = 'paradis-palette-inline-detail';
@@ -196,7 +199,8 @@ registerAction2(class extends Action2 {
 			category: localize2('paradis.category', "Para Code"),
 			f1: true,
 			keybinding: {
-				primary: PARADIS_PALETTE_TOGGLE_PREVIEW_KEYBINDING,
+				primary: TOGGLE_PREVIEW_KEYBINDING,
+				mac: { primary: TOGGLE_PREVIEW_KEYBINDING_MAC },
 				when: ContextKeyExpr.and(
 					ContextKeyExpr.has('inQuickInput'),
 					ContextKeyExpr.or(ContextKeyExpr.has(PARADIS_CROSS_JUMP_CONTEXT_KEY), ContextKeyExpr.has(PARADIS_COMMANDS_PICKER_CONTEXT_KEY)),
