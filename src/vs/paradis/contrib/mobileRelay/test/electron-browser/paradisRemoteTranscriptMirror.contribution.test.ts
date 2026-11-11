@@ -46,11 +46,14 @@ interface IRelayCall {
 	readonly data?: VSBuffer;
 	readonly result?: unknown;
 	readonly catchingUp?: unknown;
+	readonly remoteSize?: unknown;
+	readonly failed?: unknown;
 }
 
 class TranscriptFileService extends TestFileService {
 	private data = VSBuffer.alloc(0);
 	private shortReadBytes: number | undefined;
+	readError: Error | undefined;
 	readonly rangeReads: IReadCall[] = [];
 	watchDisposals = 0;
 
@@ -73,6 +76,9 @@ class TranscriptFileService extends TestFileService {
 		const requestedLength = options?.length ?? this.data.byteLength - position;
 		const returnedLength = Math.min(requestedLength, this.shortReadBytes ?? requestedLength);
 		this.rangeReads.push({ position, length: requestedLength });
+		if (this.readError !== undefined) {
+			throw this.readError;
+		}
 		return {
 			...await super.readFileStream(resource, options),
 			value: bufferToStream(this.data.slice(position, position + returnedLength)),
@@ -99,6 +105,8 @@ class TranscriptRelayChannel implements IChannel {
 	beginOffset = 0;
 	resetOffset = 0;
 	appendUnavailable = false;
+	/** 台帳が追記の後に返す次の位置を、追記の大きさではなくこの値にする（窓の始まりへ飛ぶ台帳を模す）。 */
+	appendJumpTo: number | undefined;
 	/** shared process からのシェルの出力の頼み（`onDidRequestRemoteShellOutput`）。テストが作って渡す。 */
 	shellOutputRequests: Event<IParadisRemoteShellOutputRequest> = Event.None;
 	private offset = 0;
@@ -119,7 +127,7 @@ class TranscriptRelayChannel implements IChannel {
 		const ownerId = typeof parameters[0] === 'string' ? parameters[0] : '';
 		const remotePath = typeof parameters[1] === 'string' ? parameters[1] : undefined;
 		const data = parameters[2] instanceof VSBuffer ? parameters[2] : undefined;
-		this.calls.push({ command, ownerId, remotePath, data, ...(command === 'completeRemoteShellOutput' ? { result: parameters[2] } : {}), ...(command === 'appendRemoteTranscriptMirror' ? { catchingUp: parameters[3] } : {}) });
+		this.calls.push({ command, ownerId, remotePath, data, ...(command === 'completeRemoteShellOutput' ? { result: parameters[2] } : {}), ...(command === 'appendRemoteTranscriptMirror' ? { catchingUp: parameters[3] } : {}), ...(command === 'beginRemoteTranscriptMirror' ? { remoteSize: parameters[2] } : {}), ...(command === 'reportRemoteTranscriptMirrorReadFailure' ? { failed: parameters[2] } : {}) });
 
 		switch (command) {
 			case 'listRemoteTranscriptMirrors':
@@ -131,12 +139,17 @@ class TranscriptRelayChannel implements IChannel {
 				}) as Promise<T>;
 			case 'appendRemoteTranscriptMirror':
 				this.offset += data?.byteLength ?? 0;
+				if (this.appendJumpTo !== undefined) {
+					this.offset = this.appendJumpTo;
+					this.appendJumpTo = undefined;
+				}
 				return Promise.resolve(this.appendUnavailable ? -1 : this.offset) as Promise<T>;
 			case 'resetRemoteTranscriptMirror':
 				this.offset = this.resetOffset;
 				return Promise.resolve(this.resetOffset) as Promise<T>;
 			case 'releaseRemoteTranscriptMirrors':
 			case 'completeRemoteShellOutput':
+			case 'reportRemoteTranscriptMirrorReadFailure':
 				return Promise.resolve(undefined) as Promise<T>;
 			default:
 				throw new Error(`Unexpected relay command: ${command}`);
@@ -396,8 +409,9 @@ suite('ParadisRemoteTranscriptMirror contribution', () => {
 			.map(call => [call.data?.toString(), call.catchingUp]), [['past', true], ['new', false]]);
 	});
 
-	test('does not mark the rest of a copy that continues from the middle as catching up', async () => {
-		// 再接続・ウィンドウの再読み込みで写しの途中から続けるときは、切れていた間の分も今の出来事として写す
+	test('marks what the host had from the ledger offset as catching up, and leaves accepting it to the ledger', async () => {
+		// 写しの途中から続けるとき（再接続・ウィンドウの再読み込み）も、末尾の窓から写し始めるときも、担当を取った時点で
+		// 接続先にあった分には印を付ける。途中から続けるときに印を受け付けない（切れていた間を鳴らす）のは台帳が決める
 		const fileService = new TranscriptFileService();
 		const channel = new TranscriptRelayChannel();
 		channel.beginOffset = 4;
@@ -407,7 +421,46 @@ suite('ParadisRemoteTranscriptMirror contribution', () => {
 
 		assert.deepStrictEqual(channel.calls
 			.filter(call => call.command === 'appendRemoteTranscriptMirror')
-			.map(call => [call.data?.toString(), call.catchingUp]), [['gap', false]]);
+			.map(call => [call.data?.toString(), call.catchingUp]), [['gap', true]]);
+	});
+
+	test('tells the ledger how big the host transcript is, and follows the ledger when it jumps to the window', async () => {
+		// 台帳は大きな会話を末尾の窓から写す。Codex は先頭行を読んだ後に窓の始まりへ飛ぶので、返された位置から続けて読む
+		const fileService = new TranscriptFileService();
+		const channel = new TranscriptRelayChannel();
+		fileService.setTranscript(VSBuffer.fromString('meta\nold old old\nnew\n'));
+		channel.appendJumpTo = 17;
+		createMirror(fileService, channel);
+		await waitUntil(() => channel.calls.filter(call => call.command === 'appendRemoteTranscriptMirror').length === 2, 500);
+
+		assert.deepStrictEqual({
+			remoteSize: channel.calls.find(call => call.command === 'beginRemoteTranscriptMirror')?.remoteSize,
+			reads: fileService.rangeReads,
+		}, {
+			remoteSize: 21,
+			reads: [{ position: 0, length: 21 }, { position: 17, length: 4 }],
+		});
+	});
+
+	test('reports to the ledger when the host transcript cannot be read, and when it can be read again', async () => {
+		// 読めないまま黙ると、チャットは古い会話のまま固まる。ログだけにせず台帳へ知らせる（チャットに知らせが出る）
+		const fileService = new TranscriptFileService();
+		const channel = new TranscriptRelayChannel();
+		fileService.setTranscript(VSBuffer.fromString('line\n'));
+		fileService.readError = new Error('connection lost');
+		createMirror(fileService, channel);
+		await waitUntil(() => channel.calls.some(call => call.command === 'reportRemoteTranscriptMirrorReadFailure'), 500);
+
+		fileService.readError = undefined;
+		fileService.fireFileChanges(new FileChangesEvent([{
+			resource: remoteTranscriptUri(),
+			type: FileChangeType.UPDATED,
+		}], false));
+		await waitUntil(() => channel.calls.filter(call => call.command === 'reportRemoteTranscriptMirrorReadFailure').length === 2, 500);
+
+		assert.deepStrictEqual(channel.calls
+			.filter(call => call.command === 'reportRemoteTranscriptMirrorReadFailure')
+			.map(call => call.failed), [true, false]);
 	});
 
 	test('appends immediately when an UPDATED event arrives after initial follow', async () => {

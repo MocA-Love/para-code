@@ -232,6 +232,11 @@ export interface IParadisAgentSessionInfo {
 	 * モバイルはモデルの選択を開かず、表示だけにする。項目が無ければ従来どおり（古い PC）。
 	 */
 	readonly modelControl?: 'none';
+	/**
+	 * SSH の接続先の会話の写しを続けられていない（手元へ書けない・接続先を読めない）。会話の表示は古いままの
+	 * ことがあるので、モバイルと PC のチャット表示に「最新を取得できていません」と出す。続けられたら消える。
+	 */
+	readonly transcriptStale?: true;
 }
 
 export type IParadisAgentInteraction =

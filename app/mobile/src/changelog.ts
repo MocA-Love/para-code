@@ -40,6 +40,17 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.21',
+		date: '2026-11-11',
+		items: [
+			{
+				icon: 'cloud-offline-outline',
+				title: 'SSH 先の会話を PC が読み込めていないとき、トークに「この会話は最新を取得できていません」と出すようにしました',
+				body: 'SSH 先の長い会話でトークが古いまま止まることがあったのも、PC の Para Code を更新すると直ります。',
+			},
+		],
+	},
+	{
 		version: '0.12.20',
 		date: '2026-11-10',
 		items: [

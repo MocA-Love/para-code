@@ -510,13 +510,16 @@ export class ParadisAgentChatView extends Disposable {
 			status = localize('paradisAgentChat.statusQuestion', "質問に答えるのを待っています");
 		} else if (state?.interaction?.kind === 'approval') {
 			status = localize('paradisAgentChat.statusApproval', "許可を待っています");
+		} else if (state?.info?.transcriptStale === true) {
+			// SSH の接続先の会話を手元へ写せていない。下の会話は古いままのことがある
+			status = localize('paradisAgentChat.statusStale', "この会話は最新を取得できていません");
 		} else if (state?.agentExited) {
 			status = localize('paradisAgentChat.statusExited', "終了しました");
 		} else if (state?.busy) {
 			status = localize('paradisAgentChat.statusBusy', "作業中");
 		}
 		this.headerStatus.textContent = status;
-		this.headerStatus.classList.toggle('attention', state?.interaction !== null && state?.interaction !== undefined);
+		this.headerStatus.classList.toggle('attention', (state?.interaction !== null && state?.interaction !== undefined) || state?.info?.transcriptStale === true);
 		this.headerStatus.classList.toggle('busy', state?.busy === true && (state.interaction === null || state.interaction === undefined));
 	}
 

@@ -2619,8 +2619,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		return this.remoteTranscriptMirror.list(ownerId);
 	}
 
-	async beginRemoteTranscriptMirror(ownerId: string, remotePath: string): Promise<number> {
-		return this.remoteTranscriptMirror.begin(ownerId, remotePath);
+	async beginRemoteTranscriptMirror(ownerId: string, remotePath: string, remoteSize?: number): Promise<number> {
+		return this.remoteTranscriptMirror.begin(ownerId, remotePath, typeof remoteSize === 'number' && Number.isSafeInteger(remoteSize) && remoteSize >= 0 ? remoteSize : undefined);
 	}
 
 	async appendRemoteTranscriptMirror(ownerId: string, remotePath: string, data: VSBuffer, catchingUp?: boolean): Promise<number> {
@@ -2633,6 +2633,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	async releaseRemoteTranscriptMirrors(ownerId: string): Promise<void> {
 		this.remoteTranscriptMirror.release(ownerId);
+	}
+
+	async reportRemoteTranscriptMirrorReadFailure(ownerId: string, remotePath: string, failed: boolean): Promise<void> {
+		this.remoteTranscriptMirror.reportReadFailure(ownerId, remotePath, failed === true);
 	}
 
 	async completeRemoteShellOutput(ownerId: string, requestId: string, result: unknown): Promise<void> {

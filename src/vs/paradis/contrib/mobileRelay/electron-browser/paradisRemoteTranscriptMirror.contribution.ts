@@ -15,6 +15,9 @@
 // 追記だけを送るので、長い会話でも毎回読み直すことにはならない。ファイルが縮んだとき
 // （別セッションに置き換わった）だけ写しを捨てて取り直す。
 //
+// 写し始める位置は台帳が決める（大きな会話は接続先の末尾の窓から。paradisRemoteTranscriptMirror.ts）。
+// ここは台帳が返した位置から読み、台帳が返した次の位置へ進むだけ（窓の始まりへ飛ぶことがある）。
+//
 // 写しの担当は「接続先に繋いでいて、その transcript が実在する」ウィンドウなので、同じ会話のバックグラウンドの
 // シェルの出力も担当が読む（shared process の頼みを受けて、接続先の REH のチャネルで読む。agent.shells.v1。
 // 取り決めは common/paradisRemoteShellOutput.ts）。
@@ -66,6 +69,8 @@ export class ParadisRemoteTranscriptMirror extends Disposable implements IWorkbe
 	/** 担当を取ったが、まだ接続先の大きさを見ていない（次の読みで {@link catchUpEnds} を決める）。 */
 	private readonly pendingCatchUp = new Set<string>();
 	private readonly reading = new Set<string>();
+	/** 読めなかったと台帳へ知らせた transcript（読めたら取り消す）。 */
+	private readonly failing = new Set<string>();
 	private readonly readAgain = new Set<string>();
 	private syncing = false;
 
@@ -163,10 +168,12 @@ export class ParadisRemoteTranscriptMirror extends Disposable implements IWorkbe
 	 */
 	private async adopt(remotePath: string): Promise<void> {
 		const uri = this.remoteUri(remotePath);
-		if (!await this.fileService.exists(uri).catch(() => false)) {
+		const stat = await this.fileService.stat(uri).catch(() => undefined);
+		if (stat === undefined || stat.isDirectory) {
 			return;
 		}
-		const offset = await this.service.beginRemoteTranscriptMirror(this.ownerId, remotePath);
+		// 接続先の大きさを渡す。写しを一から作るなら、台帳は末尾の窓から写し始める位置を返す
+		const offset = await this.service.beginRemoteTranscriptMirror(this.ownerId, remotePath, stat.size);
 		if (offset === UNAVAILABLE) {
 			return;
 		}
@@ -177,15 +184,11 @@ export class ParadisRemoteTranscriptMirror extends Disposable implements IWorkbe
 			return;
 		}
 		this.offsets.set(remotePath, offset);
-		// 手元に写しがまだ無ければ、担当を取った後の最初の読みで見た大きさまでを、接続先に既にあった分（過去の会話）として
-		// 印を付けて写す。印を受け付けるのは再開した会話だけ（台帳が決める）。写しの途中から続けるときは付けない
-		// （切れていた間の質問・ターンの終わりは鳴らす）
+		// 担当を取った後の最初の読みで見た大きさまでを、接続先に既にあった分（過去の会話）として印を付けて写す。
+		// 印を受け付けるかは台帳が決める（写しを一から作るときのうち、再開した会話・末尾の窓から写すときだけ。
+		// 写しの途中から続けるときは受け付けず、切れていた間の質問・ターンの終わりは鳴らす）
 		this.catchUpEnds.delete(remotePath);
-		if (offset === 0) {
-			this.pendingCatchUp.add(remotePath);
-		} else {
-			this.pendingCatchUp.delete(remotePath);
-		}
+		this.pendingCatchUp.add(remotePath);
 		let watcher: IDisposable;
 		try {
 			watcher = this.fileService.watch(uri);
@@ -204,6 +207,7 @@ export class ParadisRemoteTranscriptMirror extends Disposable implements IWorkbe
 		this.offsets.delete(remotePath);
 		this.catchUpEnds.delete(remotePath);
 		this.pendingCatchUp.delete(remotePath);
+		this.failing.delete(remotePath);
 	}
 
 	/** 同じファイルの読みが重ならないようにしつつ、続きを読む。 */
@@ -215,9 +219,19 @@ export class ParadisRemoteTranscriptMirror extends Disposable implements IWorkbe
 		}
 		this.reading.add(remotePath);
 		this.readAppended(remotePath)
-			// 読めないと会話が黙って止まる（上限超過など、原因が出ないと気付けない）。
-			// stat が通らない間は readAppended が静かに戻るので、ここは実際の失敗だけが来る
-			.catch(error => this.logService.warn(`[paradis] could not read ${remotePath} on the host`, error))
+			.then(() => {
+				if (this.failing.delete(remotePath)) {
+					this.service.reportRemoteTranscriptMirrorReadFailure(this.ownerId, remotePath, false).catch(() => undefined);
+				}
+			}, error => {
+				// 読めないと会話が黙って止まる。ログだけにせず台帳へ知らせ、チャットに「最新を取得できていません」と出す。
+				// stat が通らない間は readAppended が静かに戻るので、ここは実際の失敗だけが来る
+				this.logService.warn(`[paradis] could not read ${remotePath} on the host`, error);
+				if (this.tracked.has(remotePath) && !this.failing.has(remotePath)) {
+					this.failing.add(remotePath);
+					this.service.reportRemoteTranscriptMirrorReadFailure(this.ownerId, remotePath, true).catch(() => undefined);
+				}
+			})
 			.finally(() => {
 				this.reading.delete(remotePath);
 				if (this.readAgain.delete(remotePath) && this.tracked.has(remotePath)) {

@@ -14,7 +14,7 @@ import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { paradisClaudeConfigDir } from '../../../agentBrowser/node/paradisAgentHome.js';
-import { PARADIS_REMOTE_TRANSCRIPT_MIRROR_UNAVAILABLE, ParadisRemoteTranscriptMirrorStore, paradisIsRemoteAgentTranscriptMirrorPath, paradisIsRemoteAgentTranscriptPath, paradisRemoteTranscriptMirrorPathFor, paradisRemoteTranscriptMirrorRoots } from '../../node/paradisRemoteTranscriptMirror.js';
+import { PARADIS_REMOTE_TRANSCRIPT_MIRROR_UNAVAILABLE, ParadisRemoteTranscriptMirrorStore, paradisIsRemoteAgentTranscriptMirrorPath, paradisIsRemoteAgentTranscriptPath, paradisRemoteTranscriptCatchUpEnd, paradisRemoteTranscriptCopyState, paradisRemoteTranscriptMirrorPathFor, paradisRemoteTranscriptMirrorRoots } from '../../node/paradisRemoteTranscriptMirror.js';
 
 const REMOTE_PATH = '/home/other/.claude/projects/-srv-app/9d1f.jsonl';
 
@@ -157,40 +157,137 @@ suite('ParadisRemoteTranscriptMirror', () => {
 		});
 	});
 
-	test('resumes from the end of an existing copy after a restart', async () => {
+	test('takes the copy again after a restart instead of guessing where the old one ended on the host', async () => {
+		// 写しは接続先の末尾の窓のことがある。立て直した shared process は写しの先頭が接続先のどこかを知らないので、
+		// 写しの大きさを接続先の位置とみなして続けると中身が混ざる。一から取り直し、tailer には作り直しを伝える
 		const dir = await fs.mkdtemp(join(tmpdir(), 'paradis-remote-transcript-'));
 		try {
 			const first = new ParadisRemoteTranscriptMirrorStore(dir, new NullLogService());
-			first.localPathForHookPath(REMOTE_PATH, 'pane-1');
+			const localPath = first.localPathForHookPath(REMOTE_PATH, 'pane-1')!;
 			await first.begin('window-a', REMOTE_PATH);
 			await first.append('window-a', REMOTE_PATH, Buffer.from('{"a":1}\n'));
 			first.dispose();
 
 			const second = new ParadisRemoteTranscriptMirrorStore(dir, new NullLogService());
 			second.localPathForHookPath(REMOTE_PATH, 'pane-1');
-			assert.strictEqual(await second.begin('window-a', REMOTE_PATH), 8);
+			const begun = await second.begin('window-a', REMOTE_PATH, 8);
+			const caughtUp = await second.append('window-a', REMOTE_PATH, Buffer.from('{"a":1}\n'), true);
+			assert.deepStrictEqual({
+				begun, caughtUp,
+				content: await fs.readFile(localPath, 'utf8'),
+				replaced: (paradisRemoteTranscriptCopyState(localPath)?.generation ?? 0) > 0,
+				// 取り直した分は過去の会話（読み手は鳴らさない）
+				catchUpEnd: paradisRemoteTranscriptCatchUpEnd(localPath),
+			}, { begun: 0, caughtUp: 8, content: '{"a":1}\n', replaced: true, catchUpEnd: 8 });
 			second.dispose();
 		} finally {
 			await fs.rm(dir, { recursive: true, force: true });
 		}
 	});
 
-	test('gives up on a copy that hits its size limit instead of re-reading it forever', async () => {
+	test('starts a large host transcript from a window at its end, aligned to a line', async () => {
 		const dir = await fs.mkdtemp(join(tmpdir(), 'paradis-remote-transcript-'));
-		const store = new ParadisRemoteTranscriptMirrorStore(dir, new NullLogService(), 8);
+		const store = new ParadisRemoteTranscriptMirrorStore(dir, new NullLogService(), 64, 16);
 		try {
-			store.localPathForHookPath(REMOTE_PATH, 'pane-1');
-			assert.strictEqual(await store.begin('window-a', REMOTE_PATH), 0);
-			assert.strictEqual(await store.append('window-a', REMOTE_PATH, Buffer.from('{"a":1}\n')), 8);
-			assert.strictEqual(await store.append('window-a', REMOTE_PATH, Buffer.from('{"b":2}\n')), PARADIS_REMOTE_TRANSCRIPT_MIRROR_UNAVAILABLE);
-
-			// ここで一覧に出し続けると、担当ウィンドウが取り直しては読んで捨てる、を延々と繰り返す
-			assert.deepStrictEqual(store.list('window-a'), []);
-			assert.strictEqual(await store.begin('window-a', REMOTE_PATH), PARADIS_REMOTE_TRANSCRIPT_MIRROR_UNAVAILABLE);
+			const localPath = store.localPathForHookPath(REMOTE_PATH, 'pane-1')!;
+			const host = '{"old":"aaaaaaaa"}\n{"mid":"bbbb"}\n{"new":1}\n';
+			// 窓の始まり（末尾から 16 バイト手前）は行の途中。そこから読んで、最初の改行の後から写す
+			const begun = await store.begin('window-a', REMOTE_PATH, host.length);
+			const next = await store.append('window-a', REMOTE_PATH, Buffer.from(host.slice(begun)), true);
+			const later = await store.append('window-a', REMOTE_PATH, Buffer.from('{"later":2}\n'));
+			assert.deepStrictEqual({
+				begun, next, later,
+				content: await fs.readFile(localPath, 'utf8'),
+				state: paradisRemoteTranscriptCopyState(localPath),
+				listed: store.list('window-a'),
+			}, {
+				begun: host.length - 16, next: host.length, later: host.length + 12,
+				content: '{"new":1}\n{"later":2}\n',
+				state: { generation: 0, partial: true },
+				listed: [REMOTE_PATH],
+			});
 		} finally {
 			store.dispose();
 			await fs.rm(dir, { recursive: true, force: true });
 		}
+	});
+
+	test('keeps the first line of a large Codex rollout, then copies the window at its end', async () => {
+		// Codex は先頭行（session_meta）で素性（root / SubAgent）を見分けるので、窓にしても先頭行は残す
+		const codexPath = '/home/other/.codex/sessions/2026/11/11/rollout-2026-11-11T00-00-00-a.jsonl';
+		const dir = await fs.mkdtemp(join(tmpdir(), 'paradis-remote-transcript-'));
+		const store = new ParadisRemoteTranscriptMirrorStore(dir, new NullLogService(), 64, 16);
+		try {
+			const localPath = store.localPathForHookPath(codexPath, 'pane-1')!;
+			const host = '{"type":"session_meta"}\n{"old":"aaaaaaaaaaaa"}\n{"mid":"b"}\n{"new":1}\n';
+			const begun = await store.begin('window-a', codexPath, host.length);
+			const jumped = await store.append('window-a', codexPath, Buffer.from(host.slice(begun, begun + 30)), true);
+			const next = await store.append('window-a', codexPath, Buffer.from(host.slice(jumped)), true);
+			assert.deepStrictEqual({
+				begun, jumped, next,
+				content: await fs.readFile(localPath, 'utf8'),
+			}, {
+				begun: 0, jumped: host.length - 16, next: host.length,
+				content: '{"type":"session_meta"}\n{"new":1}\n',
+			});
+		} finally {
+			store.dispose();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('keeps the latest window of a copy that reaches its size limit, and keeps following', async () => {
+		// 上限で止めると、以後は二度と写されず会話が過去のまま固まる。手元の末尾で作り直して続ける
+		const dir = await fs.mkdtemp(join(tmpdir(), 'paradis-remote-transcript-'));
+		const store = new ParadisRemoteTranscriptMirrorStore(dir, new NullLogService(), 24, 12);
+		try {
+			const localPath = store.localPathForHookPath(REMOTE_PATH, 'pane-1')!;
+			assert.strictEqual(await store.begin('window-a', REMOTE_PATH, 0), 0);
+			const positions = [
+				await store.append('window-a', REMOTE_PATH, Buffer.from('{"a":1}\n')),
+				await store.append('window-a', REMOTE_PATH, Buffer.from('{"b":2}\n')),
+				await store.append('window-a', REMOTE_PATH, Buffer.from('{"c":3}\n')),
+				await store.append('window-a', REMOTE_PATH, Buffer.from('{"d":4}\n')),
+			];
+			const content = await fs.readFile(localPath, 'utf8');
+			const state = paradisRemoteTranscriptCopyState(localPath);
+			const listed = store.list('window-a');
+			// 書きかけは残さない
+			const leftovers = (await fs.readdir(join(localPath, '..'))).filter(name => name !== '9d1f.jsonl');
+			// 作り直した後に担当を取り直しても、接続先の続きの位置が返る
+			store.release('window-a');
+			const again = await store.begin('window-b', REMOTE_PATH, 32);
+			assert.deepStrictEqual({ positions, content, state, listed, leftovers, again }, {
+				positions: [8, 16, 24, 32],
+				content: '{"c":3}\n{"d":4}\n',
+				state: { generation: 1, partial: true },
+				listed: [REMOTE_PATH],
+				leftovers: [],
+				again: 32,
+			});
+		} finally {
+			store.dispose();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('marks a copy as stalled while the host transcript cannot be read, and clears it once it can', async () => {
+		await withStore(async store => {
+			const localPath = store.localPathForHookPath(REMOTE_PATH, 'pane-1')!;
+			const changes: string[] = [];
+			const listener = store.onDidChangeStalled(path => changes.push(path));
+			try {
+				await store.begin('window-a', REMOTE_PATH);
+				store.reportReadFailure('window-b', REMOTE_PATH, true); // 担当ではないウィンドウの知らせは聞かない
+				const otherWindow = store.isStalled(localPath);
+				store.reportReadFailure('window-a', REMOTE_PATH, true);
+				const failed = store.isStalled(localPath);
+				store.reportReadFailure('window-a', REMOTE_PATH, false);
+				assert.deepStrictEqual({ otherWindow, failed, recovered: store.isStalled(localPath), changes }, { otherWindow: false, failed: true, recovered: false, changes: [localPath, localPath] });
+			} finally {
+				listener.dispose();
+			}
+		});
 	});
 
 	test('stops following transcripts whose pane is gone, but rides out a window reload', async () => {
@@ -215,7 +312,7 @@ suite('ParadisRemoteTranscriptMirror', () => {
 		await withStore(async store => {
 			// 追いかけるのをやめる猶予は10分だが、退避したペインが戻ってくる猶予は7日ある。
 			// ここで消すと、15分後に戻したペインの会話が空になり、次のhookで接続先の
-			// transcript を先頭から丸ごと取り直す（1本で最大64MB）
+			// transcript を末尾の窓から取り直す
 			const localPath = store.localPathForHookPath(REMOTE_PATH, 'pane-1')!;
 			await store.begin('window-a', REMOTE_PATH);
 			await store.append('window-a', REMOTE_PATH, Buffer.from('{"a":1}\n'));
