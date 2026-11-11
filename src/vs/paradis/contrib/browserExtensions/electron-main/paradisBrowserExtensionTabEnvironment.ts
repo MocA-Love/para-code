@@ -10,7 +10,7 @@
 // プロファイルの main（paradisRegisterBrowserProfiles）から呼ぶ。browserViewMainService などは型だけを読む
 // （値を読むと browserSession.ts → 拡張機能の main → ここ、と読み込みが輪になるため）。
 
-import { app, BrowserWindow, Notification, nativeImage, screen, type Session, type WebContents } from 'electron';
+import { app, BrowserWindow, Notification, nativeImage, screen, webContents, type Session, type WebContents } from 'electron';
 import { localize } from '../../../../nls.js';
 import { join } from '../../../../base/common/path.js';
 import type { IDialogMainService } from '../../../../platform/dialogs/electron-main/dialogMainService.js';
@@ -101,6 +101,21 @@ export function paradisCreateBrowserExtensionTabEnvironment(browserViewMainServi
 				}
 			}
 			return [...windows.values()];
+		},
+		windowsForWorkbenchId: windowId => {
+			const candidates: BrowserWindow[] = [];
+			// 本体のウィンドウ（CodeWindow の id は BrowserWindow の id）
+			const codeWindow = windowsMainService.getWindowById(windowId)?.win;
+			if (codeWindow && !codeWindow.isDestroyed()) {
+				candidates.push(codeWindow);
+			}
+			// 補助ウィンドウ（AuxiliaryWindow の id は webContents の id）
+			const contents = webContents.fromId(windowId);
+			const auxiliary = contents && !contents.isDestroyed() ? BrowserWindow.fromWebContents(contents) : null;
+			if (auxiliary && !auxiliary.isDestroyed() && auxiliary !== codeWindow) {
+				candidates.push(auxiliary);
+			}
+			return candidates;
 		},
 		lastActiveWindowId: () => windowsMainService.getLastActiveWindow()?.win?.id,
 		// 新しいタブはいつも後ろで開く（前に出すときは呼び出し側が activateTab する）

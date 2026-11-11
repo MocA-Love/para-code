@@ -862,7 +862,7 @@ class ParadisBrowserExtensionsMenuAction extends Action2 {
 	constructor() {
 		super({
 			id: MENU_ACTION_ID,
-			title: localize2('paradis.browserExtensions.action.menu', "Browser Extensions"),
+			title: localize2('paradis.browserExtensions.action.menu', "拡張機能"),
 			icon: Codicon.extensions,
 			f1: false,
 			menu: {

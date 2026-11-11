@@ -41,6 +41,7 @@ import {
 	paradisMenuItemProperties,
 	paradisMenuTargetFromParams,
 	paradisParseStoredMenuItems,
+	paradisAssignExtensionCommands,
 	paradisReadExtensionCommands,
 	paradisRemoveMenuItem,
 	paradisUpdateMenuItem,
@@ -58,8 +59,10 @@ export interface IParadisMenusEnvironment {
 	findView(viewId: string): IParadisTabView | undefined;
 	/** その WebContents のセッションに読み込んだ、利用者が入れた拡張機能。拡張機能が入らないセッションなら undefined。 */
 	sessionOf(contents: WebContents): { readonly session: ParadisApiSession; readonly extensions: readonly IParadisLoadedExtension[] } | undefined;
-	/** 拡張機能を読み込んだすべてのセッションの拡張機能（ショートカットの一覧に使う）。 */
+	/** 拡張機能を読み込んだすべてのセッションの拡張機能（ショートカットの一覧に使う）。先に入れた順。 */
 	allLoaded(): readonly IParadisLoadedExtension[];
+	/** そのセッションに読み込んだ、利用者が入れた拡張機能（先に入れた順。commands.getAll のキーの重なりを決める）。 */
+	loadedIn?(session: ParadisApiSession): readonly IParadisLoadedExtension[];
 	nameOf(extension: IParadisLoadedExtension): string;
 	/** 利用者の操作をその拡張機能へ渡した（P5c、permissions）。 */
 	noteUserGesture?(session: ParadisApiSession, extensionId: string): void;
@@ -205,8 +208,9 @@ export class ParadisBrowserExtensionMenus implements IDisposable {
 		});
 		this._host.registerNamespace('commands', {
 			methods: {
+				// 先に入れた拡張機能とキーが重なったコマンドは、Chrome と同じく shortcut を '' にする
 				getAll: paradisDefineExtensionMethod(args => args.length === 0 ? [] as [] : undefined, caller =>
-					paradisReadExtensionCommands(caller.extension.manifest, paradisCommandPlatform(this._platform)).map(command => ({ name: command.name, description: command.description, shortcut: command.shortcut }))),
+					this._commandsOf(this._environment.loadedIn?.(caller.session) ?? [], caller.extension).map(command => ({ name: command.name, description: command.description, shortcut: command.shortcut }))),
 			},
 			events: ['onCommand'],
 		});
@@ -345,6 +349,16 @@ export class ParadisBrowserExtensionMenus implements IDisposable {
 	// --- ショートカット ---
 
 	/** 拡張機能のショートカット（workbench がページから届いたキーと比べる）。割り当ての無いものは除く。 */
+	/** その場所の拡張機能（先に入れた順）の中で、`extension` に割り当たったコマンド。 */
+	private _commandsOf(loaded: readonly IParadisLoadedExtension[], extension: IParadisApiExtension): IParadisExtensionCommand[] {
+		const extensions = loaded.some(candidate => candidate.id === extension.id) ? loaded : [...loaded, extension];
+		return paradisAssignExtensionCommands(extensions, paradisCommandPlatform(this._platform)).get(extension.id) ?? [];
+	}
+
+	/**
+	 * workbench がページのキーと照らす一覧（先に入れた順）。workbench はそのタブに入っている拡張機能のうち、一覧の先にあるものに
+	 * 渡すので、同じキーなら先に入れた方が取る（Chrome と同じ。場所ごとに入っているものが違っても、そのタブの中で決まる）。
+	 */
 	getCommands(): IParadisBrowserExtensionCommand[] {
 		const seen = new Set<string>();
 		const commands: IParadisBrowserExtensionCommand[] = [];
@@ -370,7 +384,8 @@ export class ParadisBrowserExtensionMenus implements IDisposable {
 		const view = typeof viewId === 'string' ? this._environment.findView(viewId) : undefined;
 		const info = view && !view.isAgentTab() ? this._environment.sessionOf(view.webContents) : undefined;
 		const extension = info?.extensions.find(candidate => candidate.id === extensionId);
-		const command = extension ? paradisReadExtensionCommands(extension.manifest, paradisCommandPlatform(this._platform)).find((candidate: IParadisExtensionCommand) => candidate.name === name && candidate.binding) : undefined;
+		// 先に入れた拡張機能にキーを取られたコマンドは走らせない
+		const command = extension && info ? this._commandsOf(info.extensions, extension).find((candidate: IParadisExtensionCommand) => candidate.name === name && candidate.binding) : undefined;
 		if (!view || !info || !extension || !command || PARADIS_EXECUTE_ACTION_COMMANDS.has(name)) {
 			return { ok: false, error: 'This shortcut is not on for this tab' };
 		}

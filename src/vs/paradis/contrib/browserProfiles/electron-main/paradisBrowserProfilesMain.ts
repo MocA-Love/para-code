@@ -23,6 +23,10 @@ import { IEnvironmentMainService } from '../../../../platform/environment/electr
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IApplicationStorageMainService } from '../../../../platform/storage/electron-main/storageMainService.js';
+import { StorageScope } from '../../../../platform/storage/common/storage.js';
+import { BrowserViewStorageScope } from '../../../../platform/browserView/common/browserView.js';
+import { paradisDeserializeProfiles, PARADIS_BROWSER_PROFILES_STORAGE_KEY } from '../common/paradisBrowserProfileModel.js';
+import { PARADIS_DEFAULT_EXTENSION_PROFILE } from '../../browserExtensions/common/paradisBrowserExtensions.js';
 import { paradisRegisterBrowserLoginImport } from './paradisBrowserLoginImportMain.js';
 import { paradisRegisterBrowserExtensions } from '../../browserExtensions/electron-main/paradisBrowserExtensionsMain.js';
 import { paradisCreateBrowserExtensionActionPopup, paradisCreateBrowserExtensionInstallPrompt, paradisCreateBrowserExtensionNotification, paradisCreateBrowserExtensionPermissionPrompt, paradisCreateBrowserExtensionPopout, paradisCreateBrowserExtensionRemovePrompt, paradisCreateBrowserExtensionUpdatePrompt, paradisCreateBrowserExtensionSavePathChooser, paradisCreateBrowserExtensionTabEnvironment, paradisWorkAreaFor } from '../../browserExtensions/electron-main/paradisBrowserExtensionTabEnvironment.js';
@@ -164,6 +168,35 @@ export function paradisRegisterBrowserProfiles(
 		const browserViewMainService = accessor.get(IBrowserViewMainService);
 		const windowsMainService = accessor.get(IWindowsMainService);
 		const dialogMainService = accessor.get(IDialogMainService);
+		const applicationStorageMainService = accessor.get(IApplicationStorageMainService) as unknown as IApplicationStorageMainService;
+		const workspaceStorageHome = accessor.get(IEnvironmentMainService).workspaceStorageHome;
+		// 拡張機能のために、タブより先に作ったセッション（タブが無くても手放さない。手放すと configure が二度走りうる）
+		const sessionsForExtensions = new Map<string, BrowserSession>();
+		/**
+		 * 拡張機能を有効にしてある場所のセッションを作る（拡張機能の main から。足した・有効にした・起動したとき）。
+		 * `getOrCreate()` は configure() を走らせるので、ここでも消したプロファイル・壊れた id では作らない。
+		 */
+		const createSessionForExtensions = async (place: string): Promise<void> => {
+			if (sessionsForExtensions.has(place)) {
+				return;
+			}
+			if (place === PARADIS_DEFAULT_EXTENSION_PROFILE) {
+				sessionsForExtensions.set(place, BrowserSession.getOrCreateGlobal(instantiationService));
+				return;
+			}
+			// 場所の `profile:<id>` は BrowserSession の id と同じ形
+			const profileId = paradisProfileIdFromSessionId(place);
+			if (profileId === undefined || !paradisBrowserProfilePartition({ scope: PARADIS_BROWSER_PROFILE_SCOPE, profileId })) {
+				return;
+			}
+			// 拡張機能の台帳には、消したプロファイルの場所が残りうる。プロファイルの台帳に今あるものだけ作る
+			await applicationStorageMainService.whenReady;
+			const profiles = paradisDeserializeProfiles(applicationStorageMainService.get(PARADIS_BROWSER_PROFILES_STORAGE_KEY, StorageScope.APPLICATION));
+			if (!profiles.some(profile => profile.id === profileId) || sessionsForExtensions.has(place)) {
+				return;
+			}
+			sessionsForExtensions.set(place, BrowserSession.getOrCreate(instantiationService, place, { scope: BrowserViewStorageScope.Profile, profileId }, workspaceStorageHome));
+		};
 		return paradisRegisterBrowserExtensions(
 			channelHost,
 			instantiationService,
@@ -181,6 +214,7 @@ export function paradisRegisterBrowserProfiles(
 				askRemove: paradisCreateBrowserExtensionRemovePrompt(dialogMainService, () => windowsMainService.getLastActiveWindow()?.win ?? undefined),
 				askUpdate: paradisCreateBrowserExtensionUpdatePrompt(dialogMainService, () => windowsMainService.getLastActiveWindow()?.win ?? undefined),
 			}),
+			createSessionForExtensions,
 		);
 	}));
 	return disposables;
