@@ -29,10 +29,13 @@ suite('ParadisAgentSessionStore', () => {
 	test('persists and reloads agent sessions across restarts', async () => {
 		await withTempFile(async filePath => {
 			const store = new ParadisAgentSessionStore(filePath, new NullLogService());
+			// 保存は新しい順に並べ替える。時刻を 1 件ずつ Date.now() で取ると途中でミリ秒が進んだときだけ
+			// 順が変わるので、決まった時刻を渡す（新しい順 = pane-1, pane-2, pane-3）。
+			const now = Date.now();
 			store.persist([
-				{ token: 'pane-1', agent: 'claude', transcriptPath: '/home/user/.claude/projects/p/s.jsonl', sessionId: 'session-1', savedAt: Date.now() },
-				{ token: 'pane-2', agent: 'codex', transcriptPath: '/home/user/.codex/sessions/r.jsonl', savedAt: Date.now() },
-				{ token: 'pane-3', agent: 'opencode', transcriptPath: '/data/opencode/opencode.db', sessionId: 'ses_example', savedAt: Date.now() },
+				{ token: 'pane-1', agent: 'claude', transcriptPath: '/home/user/.claude/projects/p/s.jsonl', sessionId: 'session-1', savedAt: now },
+				{ token: 'pane-2', agent: 'codex', transcriptPath: '/home/user/.codex/sessions/r.jsonl', savedAt: now - 1 },
+				{ token: 'pane-3', agent: 'opencode', transcriptPath: '/data/opencode/opencode.db', sessionId: 'ses_example', savedAt: now - 2 },
 			]);
 			await store.flush();
 			const reloaded = await new ParadisAgentSessionStore(filePath, new NullLogService()).load();

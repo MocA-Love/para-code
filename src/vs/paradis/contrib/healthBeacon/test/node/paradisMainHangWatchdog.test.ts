@@ -10,10 +10,10 @@
 // Node でも配布版の Electron でも同じ経路を通る（Node の組み込みしか使わないため）。
 
 import * as assert from 'assert';
-import { existsSync, promises as fs } from 'fs';
+import { existsSync, readFileSync, watch, promises as fs } from 'fs';
 import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
-import { timeout } from '../../../../../base/common/async.js';
+import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisMainHangRecovery, ParadisMainHangWatchdog, paradisMainHangExtra, paradisTakeMainHangMarker } from '../../node/paradisMainHangWatchdog.js';
 
@@ -21,6 +21,35 @@ function blockFor(ms: number): void {
 	const until = Date.now() + ms;
 	while (Date.now() < until) {
 		// 本体を固める
+	}
+}
+
+/**
+ * 置き場所のファイルが変わるたびに確かめ、条件を満たしたら解決する。CI の負荷で worker の起動や
+ * 書き込みが遅れても、決まった時間で打ち切らずに済むようにする（待ちの上限はテストの timeout）。
+ */
+function whenFiles(dir: string, condition: () => boolean): Promise<void> {
+	return new Promise<void>(resolve => {
+		const watcher = watch(dir, () => {
+			if (condition()) {
+				watcher.close();
+				resolve();
+			}
+		});
+		if (condition()) {
+			watcher.close();
+			resolve();
+		}
+	});
+}
+
+/** 印が読める形で置かれているか。消さずに読む（`paradisTakeMainHangMarker` は読むと消す）。 */
+function markerReadable(markerPath: string): boolean {
+	try {
+		JSON.parse(readFileSync(markerPath, 'utf8'));
+		return true;
+	} catch {
+		return false;
 	}
 }
 
@@ -36,7 +65,7 @@ suite('ParadisMainHangWatchdog', () => {
 		await fs.rm(dir, { recursive: true, force: true });
 	});
 
-	function start(markerPath: string, recoveries: IParadisMainHangRecovery[], heartbeatMs: number = 20): ParadisMainHangWatchdog {
+	function start(markerPath: string, recoveries: IParadisMainHangRecovery[], heartbeatMs: number = 20, recovered?: DeferredPromise<void>): ParadisMainHangWatchdog {
 		return store.add(new ParadisMainHangWatchdog({
 			markerPath,
 			hangMs: 200,
@@ -45,7 +74,10 @@ suite('ParadisMainHangWatchdog', () => {
 			sleepGapMs: 5_000,
 			markerUpdateMs: 50,
 			maxPauseMs: 400,
-			onRecovered: recovery => recoveries.push(recovery),
+			onRecovered: recovery => {
+				recoveries.push(recovery);
+				recovered?.complete();
+			},
 		}));
 	}
 
@@ -53,10 +85,14 @@ suite('ParadisMainHangWatchdog', () => {
 		this.timeout(10_000);
 		const markerPath = join(dir, 'hang.json');
 		const recoveries: IParadisMainHangRecovery[] = [];
-		start(markerPath, recoveries);
+		const recovered = new DeferredPromise<void>();
+		const watchdog = start(markerPath, recoveries, undefined, recovered);
+		await watchdog.whenStarted;
 		await timeout(100);
 		blockFor(600);
-		await timeout(300);
+		await recovered.p;
+		// 二度知らせないことも確かめる。
+		await timeout(100);
 		assert.deepStrictEqual({
 			count: recoveries.length,
 			longEnough: (recoveries[0]?.blockedMs ?? 0) >= 400,
@@ -71,11 +107,13 @@ suite('ParadisMainHangWatchdog', () => {
 		const recoveries: IParadisMainHangRecovery[] = [];
 		// 心拍を事実上止める（本体を固めずに「戻ってこない」を作る）。
 		const watchdog = start(markerPath, recoveries, 60_000);
-		await timeout(500);
+		await watchdog.whenStarted;
+		await whenFiles(dir, () => markerReadable(markerPath));
 		const marker = await paradisTakeMainHangMarker(markerPath);
 		// 止める合図で worker が印を消す（閉じるときの main は生きているので、固まりは続いていない）。
+		// 読んだ後に worker が書き足すことがあるので、消えるのを待つ。
 		watchdog.dispose();
-		await timeout(300);
+		await whenFiles(dir, () => !existsSync(markerPath));
 		assert.deepStrictEqual({
 			version: marker?.version,
 			blockedAtLeastHang: (marker?.blockedMs ?? 0) >= 200,
@@ -103,12 +141,15 @@ suite('ParadisMainHangWatchdog', () => {
 		this.timeout(10_000);
 		const markerPath = join(dir, 'hang.json');
 		const recoveries: IParadisMainHangRecovery[] = [];
-		const watchdog = start(markerPath, recoveries);
+		const recovered = new DeferredPromise<void>();
+		const watchdog = start(markerPath, recoveries, undefined, recovered);
+		await watchdog.whenStarted;
 		watchdog.pause();
 		// resume は来ない。心拍が続くうちに数え直しへ戻る。
 		await timeout(600);
 		blockFor(600);
-		await timeout(300);
+		await recovered.p;
+		await timeout(100);
 		assert.deepStrictEqual(recoveries.length, 1);
 	});
 
