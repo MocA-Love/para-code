@@ -9,7 +9,21 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisAgentLiveEntry, ParadisAgentLiveStatus } from '../../../agentLiveWindow/common/paradisAgentLiveWindow.js';
-import { paradisFormatCrossJumpAgo, paradisShouldOfferCrossJumpCreate, paradisSortCrossJumpAgents } from '../../common/paradisCrossJump.js';
+import {
+	IParadisPaletteRecent,
+	paradisCyclePaletteKind,
+	paradisFormatCrossJumpAgo,
+	paradisGroupPaletteSpaces,
+	paradisPaletteActionsToShow,
+	paradisPaletteMatches,
+	paradisPaletteRecentsToShow,
+	paradisParsePalettePrefix,
+	paradisParsePaletteRecents,
+	paradisRecordPaletteRecent,
+	paradisShouldOfferCrossJumpCreate,
+	paradisSortCrossJumpAgents,
+	paradisTogglePalettePin,
+} from '../../common/paradisCrossJump.js';
 
 function entry(token: string, status: ParadisAgentLiveStatus, since: number): IParadisAgentLiveEntry {
 	return { token, instanceId: 1, stateKey: undefined, spaceName: 's', spaceColor: undefined, detail: '', title: token, status, since, lastOutputAt: 0 };
@@ -43,6 +57,81 @@ suite('paradisCrossJump', () => {
 		}, {
 			ago: ['今', '今', '1 分前', '59 分前', '2 時間前', '2 日前'],
 			create: [false, false, false, true],
+		});
+	});
+
+	test('kinds cycle with Tab and Shift+Tab, wrapping at both ends', () => {
+		assert.deepStrictEqual({
+			next: (['all', 'agent', 'editor', 'space', 'command'] as const).map(kind => paradisCyclePaletteKind(kind, 1)),
+			previous: (['all', 'agent', 'editor', 'space', 'command'] as const).map(kind => paradisCyclePaletteKind(kind, -1)),
+		}, {
+			next: ['agent', 'editor', 'space', 'command', 'all'],
+			previous: ['command', 'all', 'agent', 'editor', 'space'],
+		});
+	});
+
+	test('prefixes pick a kind only with a space after the letter; > and ? switch the palette', () => {
+		assert.deepStrictEqual(['a codex', 'T paradis', 's ', '>reload', '?', 'abc', 'a', 'x foo', ' a foo'].map(paradisParsePalettePrefix), [
+			{ kind: 'agent', rest: 'codex' },
+			{ kind: 'editor', rest: 'paradis' },
+			{ kind: 'space', rest: '' },
+			{ kind: 'command', rest: 'reload' },
+			{ kind: 'help', rest: '' },
+			{ kind: undefined, rest: 'abc' },
+			{ kind: undefined, rest: 'a' },
+			{ kind: undefined, rest: 'x foo' },
+			{ kind: undefined, rest: ' a foo' },
+		]);
+	});
+
+	test('matching follows the quick pick list (label or description, icons ignored)', () => {
+		assert.deepStrictEqual([
+			paradisPaletteMatches('', '$(repo) Paracode', undefined),
+			paradisPaletteMatches('para', '$(repo) Paracode', undefined),
+			paradisPaletteMatches('repo', '$(repo) Paracode', undefined),
+			paradisPaletteMatches('f15', 'codex', 'fix/security-f15-ssrf'),
+			paradisPaletteMatches('zzz', 'codex', 'fix/security-f15-ssrf'),
+		], [true, true, false, true, false]);
+	});
+
+	test('spaces are grouped by repository in the given order', () => {
+		const groups = paradisGroupPaletteSpaces([
+			{ repositoryId: 'r1', name: 'r1' },
+			{ repositoryId: 'r2', name: 'r2' },
+			{ repositoryId: 'r1', name: 'r1-wt' },
+		]);
+		assert.deepStrictEqual(groups.map(group => [group.repositoryId, group.items.map(item => item.name)]), [['r1', ['r1', 'r1-wt']], ['r2', ['r2']]]);
+	});
+
+	test('recent jumps keep pins, move to the top and show pins plus the newest up to four', () => {
+		let list: IParadisPaletteRecent[] = paradisParsePaletteRecents('not json');
+		list = paradisRecordPaletteRecent(list, 'space', 's1', 1);
+		list = paradisRecordPaletteRecent(list, 'agent', 'a1', 2);
+		list = paradisTogglePalettePin(list, 'space', 's1', 3);
+		list = paradisRecordPaletteRecent(list, 'editor', 'e1', 4);
+		list = paradisRecordPaletteRecent(list, 'editor', 'e2', 5);
+		list = paradisRecordPaletteRecent(list, 'editor', 'e3', 6);
+		list = paradisRecordPaletteRecent(list, 'space', 's1', 7);
+		const roundTrip = paradisParsePaletteRecents(JSON.stringify(list));
+		assert.deepStrictEqual({
+			stored: roundTrip.map(entry => `${entry.kind}:${entry.key}${entry.pinned ? '*' : ''}`),
+			shown: paradisPaletteRecentsToShow(roundTrip, entry => entry.key !== 'e2').map(entry => entry.key),
+			unpinned: paradisTogglePalettePin(roundTrip, 'space', 's1', 8).find(entry => entry.key === 's1')?.pinned,
+		}, {
+			stored: ['space:s1*', 'editor:e3', 'editor:e2', 'editor:e1', 'agent:a1'],
+			shown: ['s1', 'e3', 'e1', 'a1'],
+			unpinned: undefined,
+		});
+	});
+
+	test('actions: three when the input is empty, matching ones (up to five) when typing', () => {
+		const actions = ['新しいスペース', 'ターミナルを開く', 'Claude Code を起動', 'Codex を起動', 'エージェント一覧のウィンドウを開く'].map(label => ({ label }));
+		assert.deepStrictEqual({
+			empty: paradisPaletteActionsToShow(actions, '').map(action => action.label),
+			launch: paradisPaletteActionsToShow(actions, '起動').map(action => action.label),
+		}, {
+			empty: ['新しいスペース', 'ターミナルを開く', 'Claude Code を起動'],
+			launch: ['Claude Code を起動', 'Codex を起動'],
 		});
 	});
 });
