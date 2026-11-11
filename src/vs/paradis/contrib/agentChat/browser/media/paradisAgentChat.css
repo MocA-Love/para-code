@@ -77,6 +77,11 @@
 }
 
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-header-model {
+	/* A long model name shrinks with an ellipsis so "back to the terminal" stays in a narrow pane. */
+	flex: 0 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
 	padding: 0 var(--vscode-spacing-size60);
 	border-radius: var(--vscode-cornerRadius-circle);
 	color: var(--vscode-badge-foreground);
@@ -337,7 +342,13 @@
 }
 
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-step-namespace {
-	flex: none;
+	/* A long MCP server name shrinks with an ellipsis instead of pushing the row out. */
+	flex: 0 1 auto;
+	min-width: 0;
+	max-width: 40%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-step-arg {
@@ -956,7 +967,13 @@
 }
 
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-slash-args {
-	flex: none;
+	/* A long argument hint shrinks with an ellipsis and leaves room for the description. */
+	flex: 0 1 auto;
+	min-width: 0;
+	max-width: 40%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 	color: var(--vscode-descriptionForeground);
 	font-family: var(--monaco-monospace-font);
 }
