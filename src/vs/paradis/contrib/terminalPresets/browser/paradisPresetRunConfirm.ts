@@ -153,7 +153,11 @@ export function paradisShowPresetRunConfirm(container: HTMLElement, entries: rea
 		run.classList.add(...paradisButtonClasses('danger'));
 		run.textContent = STR_RUN;
 		const canRun = () => nameChecks.every(check => paradisPresetTypedNameMatches(check.input.value, check.name));
-		const updateRun = () => { run.disabled = !canRun(); };
+		const updateRun = () => {
+			// キットのボタンは `.disabled` で押せない見た目になる（paradisButton.css）
+			run.disabled = !canRun();
+			run.classList.toggle('disabled', run.disabled);
+		};
 		updateRun();
 		for (const check of nameChecks) {
 			store.add(check.input.onDidChange(updateRun));

@@ -2211,7 +2211,7 @@ class ParadisPresetEditorDialog extends Disposable {
 			CONFIRM_LABELS.map(({ level, label }) => ({ value: level, label })),
 			(editing ? paradisPresetConfirmLevel(editing) : undefined) ?? 'none',
 			{ ariaLabel: STR_SAFETY }));
-		dom.append(safetyField, $('.ppe-check-hint')).textContent = STR_CONFIRM_HINT;
+		dom.append(safetyField, $('.ppe-hint')).textContent = STR_CONFIRM_HINT;
 
 		const promptField = field(STR_PROMPT);
 		const promptInput = dom.append(promptField, $('textarea.ppe-input.ppe-commands')) as HTMLTextAreaElement;
