@@ -95,8 +95,9 @@ let spanRunner: ParadisSpanRunner | undefined;
  * Connects fork-owned code to the process-specific Sentry SDK for performance spans, mirroring
  * {@link configureParadisDiagnosticReporter}. Domain modules stay free of Electron/Sentry imports
  * and keep working in unit tests, where no runner is registered and spans are a pass-through.
+ * `undefined` disconnects it (unit tests).
  */
-export function configureParadisSpanRunner(value: ParadisSpanRunner): void {
+export function configureParadisSpanRunner(value: ParadisSpanRunner | undefined): void {
 	spanRunner = value;
 }
 

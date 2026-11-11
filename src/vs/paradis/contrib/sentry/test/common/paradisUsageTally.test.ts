@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { configureParadisUsageSpanSender, ParadisSpanAttributes, recordParadisUsageSpan } from '../../common/paradisSentryDiagnostics.js';
+import { configureParadisSpanRunner, configureParadisUsageSpanSender, ParadisSpanAttributes, recordParadisUsageSpan } from '../../common/paradisSentryDiagnostics.js';
 import { isParadisUsageNameSendable, ParadisUsageSettingValue, ParadisUsageTally, paradisUsageBand } from '../../common/paradisUsageTally.js';
 import { ParadisFakeUsageClock } from './paradisFakeUsageClock.js';
 
@@ -66,6 +66,8 @@ suite('Para Code usage tally (Sentry)', () => {
 
 	test('main の送り口が繋がる前の記録は、繋がったときに送る', () => {
 		const received: string[] = [];
+		// ほかの suite が繋いだ span runner を外し、SDK の無い main と同じ状態にする
+		configureParadisSpanRunner(undefined);
 		recordParadisUsageSpan('demo', 'early', { safe_value: 1 });
 		configureParadisUsageSpanSender((feature, operation) => received.push(`${feature}.${operation}`));
 		recordParadisUsageSpan('demo', 'late', { safe_value: 2 });
