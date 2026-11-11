@@ -465,6 +465,32 @@ function formatShortcut(parsed: IParadisShortcut, platform: ParadisPlatform): st
 	return [parsed.control ? 'Ctrl' : '', parsed.alt ? 'Alt' : '', parsed.shift ? 'Shift' : '', parsed.key].filter(Boolean).join('+');
 }
 
+/**
+ * 1 つの場所に入っている拡張機能（先に入れた順）の commands。Chrome と同じく、先に入れた拡張機能が使っているキーは、
+ * 後から入れた拡張機能には割り当てない（そのコマンドのキーは ''）。拡張機能を更新しても入れた順は変わらない。
+ */
+export function paradisAssignExtensionCommands(extensions: readonly { readonly id: string; readonly manifest: Record<string, unknown> | undefined }[], platform: ParadisPlatform): Map<string, IParadisExtensionCommand[]> {
+	const taken = new Set<string>();
+	const assigned = new Map<string, IParadisExtensionCommand[]>();
+	for (const extension of extensions) {
+		if (assigned.has(extension.id)) {
+			continue;
+		}
+		assigned.set(extension.id, paradisReadExtensionCommands(extension.manifest, platform).map(command => {
+			if (!command.binding) {
+				return command;
+			}
+			const key = formatShortcut(command.binding, platform);
+			if (taken.has(key)) {
+				return { ...command, shortcut: '', binding: undefined };
+			}
+			taken.add(key);
+			return command;
+		}));
+	}
+	return assigned;
+}
+
 /** manifest の commands。おすすめのキーは Chrome と同じく 4 つまで割り当てる。 */
 export function paradisReadExtensionCommands(manifest: Record<string, unknown> | undefined, platform: ParadisPlatform): IParadisExtensionCommand[] {
 	const commands = isRecord(manifest?.commands) ? manifest.commands : {};

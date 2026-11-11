@@ -12,6 +12,8 @@ import { PARADIS_EXTENSION_API_CALL_URL, paradisDecodeExtensionWire, paradisEnco
 import { IParadisShimBridge, PARADIS_SHIM_TTS_NAMESPACE, paradisInstallTts } from '../../common/paradisBrowserExtensionShim.js';
 import { ParadisApiSession, ParadisExtensionApiHost } from '../../electron-main/paradisBrowserExtensionApiHost.js';
 import { paradisBrowsingDataRemoval, paradisRegisterBrowsingDataApis } from '../../electron-main/paradisBrowserExtensionBrowsingData.js';
+import { paradisSpeakInPage, paradisVoicesInPage } from '../../electron-main/paradisBrowserExtensionTts.js';
+import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 
 const ID = 'abcdefghijklmnopabcdefghijklmnop';
 const silentLog = { warn: () => { } };
@@ -132,4 +134,56 @@ suite('ParadisBrowserExtensionTts', () => {
 			voices: [{ voiceName: 'Kyoko', lang: 'ja-JP', remote: false }],
 		});
 	});
+
+	/** Chromium の speechSynthesis の代わり（面を作った直後は声が空で、読み込めたら voiceschanged を出す）。 */
+	class FakeSynth extends EventTarget {
+		voices: { name: string; lang: string; localService: boolean }[] = [];
+		readonly spoken: { text: string; voice: unknown }[] = [];
+		getVoices() { return this.voices; }
+		cancel() { }
+		speak(utterance: { text: string; voice: unknown }) { this.spoken.push({ text: utterance.text, voice: utterance.voice }); }
+		loadVoices() {
+			this.voices = [{ name: 'Kyoko', lang: 'ja-JP', localService: true }];
+			this.dispatchEvent(new Event('voiceschanged'));
+		}
+	}
+
+	/** 面の中と同じく、関数を文字にしてから動かす（本体の外を参照していれば、ここで落ちる）。 */
+	function inPage<T>(fn: T, synth: FakeSynth): T {
+		class Utterance {
+			voice: unknown = null;
+			constructor(readonly text: string) { }
+		}
+		return new Function('globalThis', 'SpeechSynthesisUtterance', `return (${String(fn)});`)({ speechSynthesis: synth }, Utterance) as T;
+	}
+
+	test('getVoices waits for voiceschanged when the list starts empty, and gives up after 2 seconds', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const loading = new FakeSynth();
+		const waiting = inPage(paradisVoicesInPage, loading)(loading as unknown as SpeechSynthesis, 2_000);
+		setTimeout(() => loading.loadVoices(), 300);
+		const silent = new FakeSynth();
+		const neverLoads = inPage(paradisVoicesInPage, silent)(silent as unknown as SpeechSynthesis, 2_000);
+		const ready = new FakeSynth();
+		ready.loadVoices();
+		assert.deepStrictEqual({
+			loaded: (await waiting).map(voice => voice.name),
+			neverLoads: await neverLoads,
+			alreadyThere: (await inPage(paradisVoicesInPage, ready)(ready as unknown as SpeechSynthesis, 2_000)).map(voice => voice.name),
+		}, { loaded: ['Kyoko'], neverLoads: [], alreadyThere: ['Kyoko'] });
+	}));
+
+	test('speak with a voice name waits for the voices of a new page and uses that voice', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const synth = new FakeSynth();
+		const speak = inPage(paradisSpeakInPage, synth);
+		const voicesInPage = inPage(paradisVoicesInPage, synth);
+		const named = speak('a', 'こんにちは', { voiceName: 'Kyoko' }, '__test__', voicesInPage, 2_000);
+		const spokenBeforeVoices = synth.spoken.length;
+		setTimeout(() => synth.loadVoices(), 100);
+		await named;
+		speak('b', 'さようなら', {}, '__test__', voicesInPage, 2_000);
+		assert.deepStrictEqual({ spokenBeforeVoices, spoken: synth.spoken.map(entry => [entry.text, (entry.voice as { name?: string } | null)?.name ?? null]) }, {
+			spokenBeforeVoices: 0,
+			spoken: [['こんにちは', 'Kyoko'], ['さようなら', null]],
+		});
+	}));
 });

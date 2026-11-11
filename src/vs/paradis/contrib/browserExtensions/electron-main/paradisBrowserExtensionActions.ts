@@ -67,8 +67,11 @@ export interface IParadisActionsEnvironment {
 	nameOf(extension: IParadisLoadedExtension): string;
 	/** 利用者の操作をその拡張機能へ渡した（P5c、permissions）。 */
 	noteUserGesture?(session: ParadisApiSession, extensionId: string): void;
-	/** Para Code のウィンドウ（補助ウィンドウを含む。それ以外の id なら undefined）。 */
-	windowById(windowId: number): BrowserWindow | undefined;
+	/**
+	 * workbench のウィンドウの id（renderer の `vscodeWindowId`）に当たりうる Para Code のウィンドウ。本体のウィンドウでは
+	 * BrowserWindow の id、補助ウィンドウでは webContents の id なので、両方の読み方の候補を返す（呼び出し側がタブの窓と比べる）。
+	 */
+	windowsForWorkbenchId(windowId: number): readonly BrowserWindow[];
 	/** ポップアップの窓を作る（まだ見せない）。 */
 	createPopupWindow(parent: BrowserWindow, bounds: IParadisRect, session: Session): BrowserWindow;
 	/** 画面の座標の四角がある画面の作業領域。 */
@@ -639,8 +642,9 @@ export class ParadisBrowserExtensionActions implements IDisposable {
 				throw new ParadisExtensionApiError('This extension is not on for this tab');
 			}
 			const { view, session, extension } = resolved;
-			// ボタンはそのタブを出しているウィンドウにある。違うウィンドウの位置は受け取らない
-			const window = anchor.windowId === view.windowId ? this._environment.windowById(anchor.windowId) : undefined;
+			// ボタンはそのタブを出しているウィンドウにある。違うウィンドウの位置は受け取らない。ボタンの id は workbench の
+			// 数え方（補助ウィンドウでは webContents の id）、タブの windowId は BrowserWindow の id なので、窓どうしで比べる
+			const window = this._environment.windowsForWorkbenchId(anchor.windowId).find(candidate => candidate.id === view.windowId && !candidate.isDestroyed());
 			if (!window) {
 				// #912 の「no window」。ボタンの位置が別のウィンドウから来たのか、ウィンドウが見つからないのかを分けて数える
 				paradisBrowserExtensionsUsage().notePopup(anchor.windowId === view.windowId ? 'no_window_missing' : 'no_window_other', false);

@@ -125,6 +125,15 @@ export interface IParadisRemovedExtensionData {
 /** 1 つの印に覚える保存先の数の上限（古いものから忘れる。忘れた保存先はもう一度消すだけ）。 */
 const MAX_CLEARED_PATHS = 1_000;
 
+/**
+ * 既定の場所（`default`）の拡張機能のために、タブより先に Global のセッションを作るか。内蔵ブラウザの通常のタブが Global の
+ * セッションを使う人だけ作る（`workbench.browser.dataStorage` が `global`、または既定のままで SSH 先の窓を開いていない）。
+ * Workspace のセッションを使う人（SSH の窓・設定が `workspace`）に作ると、使わないセッションで拡張機能が動くだけになる。
+ */
+export function paradisUsesGlobalBrowserSession(configuredStorage: unknown, hasRemoteWindow: boolean): boolean {
+	return configuredStorage === 'global' || ((configuredStorage === undefined || configuredStorage === 'default') && !hasRemoteWindow);
+}
+
 /** 空の台帳。 */
 export const PARADIS_EMPTY_EXTENSIONS_LEDGER: IParadisBrowserExtensionsLedger = { version: 1, extensions: [], enabled: {}, removed: [], pinned: {} };
 
