@@ -12,6 +12,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import type { IClipboardService } from '../../../../../platform/clipboard/common/clipboardService.js';
 import type { IFileService } from '../../../../../platform/files/common/files.js';
 import { Severity, type INotification, type INotificationService } from '../../../../../platform/notification/common/notification.js';
+import { configureParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisIsLocalImagePathText, paradisTryTerminalImagePaste } from '../../browser/paradisTerminalImagePaste.js';
 
 type XtermFake = { raw: Pick<RawXtermTerminal, 'input'> };
@@ -257,7 +258,9 @@ suite('ParadisTerminalImagePaste', () => {
 	test('notifies and reports handled (no empty paste) when connected but no working directory is known', async () => {
 		const inputs: string[] = [];
 		const notified: Severity[] = [];
+		const reports: Array<{ operation: string; safeExtra: Record<string, unknown> | undefined }> = [];
 		let writeCalls = 0;
+		configureParadisDiagnosticReporter((_scope, _feature, operation, _error, safeExtra) => reports.push({ operation, safeExtra }));
 		const result = await paradisTryTerminalImagePaste(
 			{ readImage: async () => new Uint8Array([137]) } as unknown as IClipboardService,
 			{ raw: { input: (data: string) => inputs.push(data) } } as unknown as { raw: RawXtermTerminal },
@@ -275,11 +278,17 @@ suite('ParadisTerminalImagePaste', () => {
 			}
 		);
 
+		configureParadisDiagnosticReporter(() => { });
+
 		// true を返すので呼び出し元は空の bracketed paste を送らない。接続先の TUI はこちらの
-		// クリップボードを読めないので、0x16 も送らない
+		// クリップボードを読めないので、0x16 も送らない。Sentry の属性名は sensitiveFields
+		// （cwd・path 等）に部分一致するとサーバー側で消されるので、その語を含まない名前にする
 		assert.deepStrictEqual(
-			{ result, sentCtrlV: inputs.length, writeCalls, notified },
-			{ result: true, sentCtrlV: 0, writeCalls: 0, notified: [Severity.Warning] }
+			{ result, sentCtrlV: inputs.length, writeCalls, notified, reports },
+			{
+				result: true, sentCtrlV: 0, writeCalls: 0, notified: [Severity.Warning],
+				reports: [{ operation: 'remote-cwd-missing', safeExtra: { safe_has_fallback_dir: true, safe_fallback_dir_failed: false } }]
+			}
 		);
 	});
 

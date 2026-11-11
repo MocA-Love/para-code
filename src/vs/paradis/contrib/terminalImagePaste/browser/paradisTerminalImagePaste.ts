@@ -9,6 +9,7 @@
 import type { Terminal as RawXtermTerminal } from '@xterm/xterm';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Schemas } from '../../../../base/common/network.js';
+import { isString } from '../../../../base/common/types.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
@@ -83,9 +84,9 @@ export async function paradisTryTerminalImagePaste(
 	}
 
 	if (target?.remoteAuthority) {
-		const path = await writeImageToRemote(image, target);
-		if (path) {
-			return path;
+		const written = await writeImageToRemote(image, target);
+		if (isString(written)) {
+			return written;
 		}
 		// 書き出せなかった場合でも 0x16 の経路へは落とさない。接続先の TUI は
 		// こちらのクリップボードを読めないので、送っても何も起きずに紛らわしいだけ。
@@ -93,7 +94,9 @@ export async function paradisTryTerminalImagePaste(
 		// 黙って何も起きないと分からないので、通知で知らせて貼り付けを終える。
 		target.notificationService?.notify({
 			severity: Severity.Warning,
-			message: localize('paradis.terminalImagePaste.remoteFailed', "画像を接続先に置けませんでした。画像のファイルを接続先へ送ってから、そのパスを貼り付けてください。"),
+			message: written === RemoteImageFailure.NoWorkingDirectory
+				? localize('paradis.terminalImagePaste.remoteNoDirectory', "作業フォルダが分からないため、画像を接続先に置けませんでした。シェルのプロンプトを一度出すと直ることがあります。")
+				: localize('paradis.terminalImagePaste.remoteWriteFailed', "画像を接続先に書き込めませんでした。画像のファイルを接続先へ送ってから、そのパスを貼り付けてください。"),
 		});
 		return true;
 	}
@@ -118,11 +121,17 @@ export function paradisIsLocalImagePathText(text: string, remoteAuthority: strin
 	return !!remoteAuthority && LOCAL_IMAGE_PATH.test(text.trim());
 }
 
-/** 画像を接続先へ書き、そのパスを返す。書けなければ undefined。 */
-async function writeImageToRemote(image: Uint8Array, target: IParadisTerminalImagePasteTarget): Promise<string | undefined> {
+/** 画像を接続先へ書き、そのパスを返す。書けなければその理由を返す。 */
+/** 接続先へ画像を置けなかった理由。通知の文を分けるために使う。 */
+const enum RemoteImageFailure {
+	NoWorkingDirectory = 1,
+	WriteFailed = 2,
+}
+
+async function writeImageToRemote(image: Uint8Array, target: IParadisTerminalImagePasteTarget): Promise<string | RemoteImageFailure> {
 	const cwd = await resolveRemoteCwd(target);
 	if (!cwd) {
-		return undefined;
+		return RemoteImageFailure.NoWorkingDirectory;
 	}
 	const directory = URI.joinPath(cwd, PASTED_IMAGE_DIR);
 	const file = URI.joinPath(directory, `${Date.now()}.png`);
@@ -134,7 +143,7 @@ async function writeImageToRemote(image: Uint8Array, target: IParadisTerminalIma
 		await target.fileService.writeFile(file, VSBuffer.wrap(image));
 	} catch (error) {
 		reportParadisDiagnosticError('owned', 'terminal-image-paste', 'remote-write-failed', error);
-		return undefined;
+		return RemoteImageFailure.WriteFailed;
 	}
 	// 過去に置いたものの掃除はユーザーから見える効果が無いので、待たずに投げっぱなしにする。
 	void cleanupOldImages(directory, target.fileService, file);
@@ -165,10 +174,11 @@ async function resolveRemoteCwd(target: IParadisTerminalImagePasteTarget): Promi
 		}
 	}
 	if (!cwd) {
-		// パスは送らない。どちらの手段が空だったかだけを送る
+		// パスは送らない。どちらの手段が空だったかだけを送る。属性名に cwd・path 等の
+		// sensitiveFields の語を含めると Sentry のサーバー側で値ごと消されるので避ける
 		reportParadisDiagnosticError('owned', 'terminal-image-paste', 'remote-cwd-missing', new Error('Terminal has no working directory'), {
-			safe_has_speculative_cwd: !!target.getSpeculativeCwd,
-			safe_speculative_cwd_failed: speculativeFailed,
+			safe_has_fallback_dir: !!target.getSpeculativeCwd,
+			safe_fallback_dir_failed: speculativeFailed,
 		});
 		return undefined;
 	}
