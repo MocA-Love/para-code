@@ -101,6 +101,7 @@ const { workerData, parentPort } = require('worker_threads');
 const fs = require('fs');
 const shared = new Float64Array(workerData.buffer);
 const { markerPath, hangMs, pollMs, sleepGapMs, markerUpdateMs } = workerData;
+const tempPath = markerPath + '.tmp';
 let lastPoll = Date.now();
 let graceUntil = 0;
 let hangBeat = 0;
@@ -108,13 +109,19 @@ let lastWrite = 0;
 function snapshot(blockedMs) {
 	return { version: 1, lastBeatAt: hangBeat, blockedMs: Math.round(blockedMs), heapUsed: shared[1], rss: shared[2], uptimeMs: Math.max(0, Math.round(hangBeat - shared[4])) };
 }
+// Write a temporary file and rename it over the marker, so that a reader (or a forced quit in the
+// middle of an update) never sees a truncated marker.
 function write(blockedMs) {
 	try {
-		fs.writeFileSync(markerPath, JSON.stringify(snapshot(blockedMs)), { mode: 0o600 });
-	} catch (e) { }
+		fs.writeFileSync(tempPath, JSON.stringify(snapshot(blockedMs)), { mode: 0o600 });
+		fs.renameSync(tempPath, markerPath);
+	} catch (e) {
+		try { fs.unlinkSync(tempPath); } catch (e2) { }
+	}
 }
 function clear() {
 	try { fs.unlinkSync(markerPath); } catch (e) { }
+	try { fs.unlinkSync(tempPath); } catch (e) { }
 }
 const timer = setInterval(() => {
 	const now = Date.now();
@@ -168,6 +175,8 @@ export class ParadisMainHangWatchdog extends Disposable {
 
 	private readonly shared: Float64Array;
 	private readonly worker: Worker;
+	/** worker が動き出したら解決する（テストが、見張りが始まる前に本体を固めないために待つ）。 */
+	readonly whenStarted: Promise<void>;
 	private readonly maxPauseMs: number;
 	private pausedAt: number | undefined;
 
@@ -194,6 +203,7 @@ export class ParadisMainHangWatchdog extends Disposable {
 		});
 		// 見張りのためにプロセスを生かし続けない。
 		this.worker.unref();
+		this.whenStarted = new Promise<void>(resolve => this.worker.once('online', () => resolve()));
 		this.worker.on('message', (message: { type?: string } & Partial<IParadisMainHangRecovery>) => {
 			if (message?.type === 'recovered') {
 				options.onRecovered({
