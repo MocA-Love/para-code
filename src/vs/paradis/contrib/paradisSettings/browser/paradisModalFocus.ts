@@ -34,6 +34,11 @@ export interface IParadisModalFocusOptions {
 	 * 別のモーダルが開いたときは、下のモーダルと一緒に閉じられる。
 	 */
 	readonly nested?: boolean;
+	/**
+	 * 閉じるときに、開く前にフォーカスがあった要素が描き直しで DOM から外れていたら、代わりに戻す先を返す
+	 * （作り直された同じ役目のボタンなど）。省くと何もしない。
+	 */
+	readonly restoreFallback?: () => HTMLElement | undefined;
 }
 
 /** 開いているモーダル（開いた順）。 */
@@ -167,6 +172,8 @@ export class ParadisModalFocus extends Disposable {
 		const previous = this.previousFocus;
 		if (previous?.isConnected && !this.options.backdrop.contains(previous)) {
 			previous.focus();
+		} else if (previous && !previous.isConnected) {
+			this.options.restoreFallback?.()?.focus();
 		}
 	}
 
