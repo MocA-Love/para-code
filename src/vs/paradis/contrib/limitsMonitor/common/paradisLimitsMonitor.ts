@@ -217,14 +217,33 @@ export interface IParadisLimitsSnapshot {
 	 * 無い。そのときパネルとタイトルバーは Antigravity を出さない。任意項目なので、知らないモバイルは無視する。
 	 */
 	readonly antigravity?: IParadisLimitsProviderSnapshot;
+	/**
+	 * Antigravity: いま agy を起こしたら「サインインしていない」と答えた。`stamp` はそのときのログインの置き場所の印
+	 * （ファイルの更新時刻と大きさだけ）。レンダラーはこれを覚え、印が変わるまで自動では起こさせない
+	 * （{@link IParadisAntigravityFetchHint}）。
+	 */
+	readonly antigravitySignedOut?: { readonly stamp: string };
 	/** Codex の分を取り終えた時刻（epoch ms）。Claude の古さはアカウントごとの `fetchedAt` で見る。 */
 	readonly fetchedAt: number;
 	/** Codex の分が TTL を過ぎた前回の値（裏で取り直している）。古い PC・接続先では未設定。 */
 	readonly stale?: boolean;
 }
 
+/**
+ * Antigravity を自動で取りに行ってよいかの、レンダラーが覚えている手がかり（Para Code を起動し直しても残す）。
+ * agy はログインを macOS のキーチェーンに置くことがあり、ファイルだけではサインインしているか分からないため。
+ */
+export interface IParadisAntigravityFetchHint {
+	/** Para Code が前に agy から値を取れたことがある。 */
+	readonly seen?: boolean;
+	/** 前に自動で起こしたら「サインインしていない」と答えたときの印。印が同じ間は、自動では起こさない。 */
+	readonly signedOutStamp?: string;
+}
+
 export interface IParadisLimitsFetchOptions {
 	readonly bypassCache?: boolean;
+	/** Antigravity を自動で取りに行ってよいかの手がかり。 */
+	readonly antigravity?: IParadisAntigravityFetchHint;
 	/** 設定 paradis.limitsMonitor.codexHomes の値(自動走査に追加するホーム)。 */
 	readonly codexHomes?: readonly string[];
 }

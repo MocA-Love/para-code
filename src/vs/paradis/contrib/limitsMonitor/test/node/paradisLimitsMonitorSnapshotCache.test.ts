@@ -14,6 +14,7 @@ import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisLimitsAccount, IParadisLimitsSnapshot } from '../../common/paradisLimitsMonitor.js';
+import { IParadisAntigravityUsage } from '../../node/paradisAntigravityUsage.js';
 import { ICodexAccountResult, ParadisLimitsMonitorService, paradisHashCodexAccountId, paradisIsTransientCodexSnapshotFailure } from '../../node/paradisLimitsMonitorChannel.js';
 
 const TTL_MS = 150_000;
@@ -25,8 +26,8 @@ class TestLimitsMonitorService extends ParadisLimitsMonitorService {
 	failing = false;
 
 	// 本物の agy を起こさない（Antigravity の取り方は paradisAntigravityUsage.test.ts で見る）
-	protected override async fetchAntigravityUsage(): Promise<undefined> {
-		return undefined;
+	protected override async fetchAntigravityUsage(): Promise<IParadisAntigravityUsage> {
+		return {};
 	}
 
 	protected override async fetchCodexAccount(homePath: string): Promise<ICodexAccountResult> {

@@ -27,8 +27,10 @@ import { localize } from '../../../../nls.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILabelService } from '../../../../platform/label/common/label.js';
+import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { IRemoteAgentConnection, IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { paradisResolveMobileWindowHost } from '../../mobileRelay/common/paradisMobileHost.js';
+import { paradisAntigravityHintAfter, paradisReadAntigravityHints, paradisStoreAntigravityHints } from '../common/paradisAntigravityHint.js';
 import {
 	IParadisLimitsCodexRemovalTarget,
 	IParadisLimitsFetchOptions,
@@ -61,7 +63,13 @@ export class ParadisLimitsMonitorClient {
 		@IFileService private readonly fileService: IFileService,
 		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 		@ILabelService private readonly labelService: ILabelService,
+		@IStorageService private readonly storageService: IStorageService,
 	) { }
+
+	/** Antigravity の手がかりを覚える単位（手元か、接続先ごと）。 */
+	private get antigravityHintKey(): string {
+		return this.remoteAgentService.getConnection()?.remoteAuthority ?? 'local';
+	}
 
 	private get channel() {
 		// 上限は、そのエージェントが使っている認証情報の側で数えられている。SSH で繋いでいる
@@ -88,7 +96,8 @@ export class ParadisLimitsMonitorClient {
 		if (bypassCache) {
 			options.bypassCache = true;
 		}
-		return options;
+		const antigravity = paradisReadAntigravityHints(this.storageService).get(this.antigravityHintKey);
+		return antigravity ? { ...options, antigravity } : options;
 	}
 
 	/** アカウントの一覧・切り替え・登録を持つところ（手元のウィンドウは shared process、SSH のウィンドウは接続先）。 */
@@ -167,11 +176,29 @@ export class ParadisLimitsMonitorClient {
 	 * 接続先のログインを表示するだけで、登録したほかのアカウントや切り替えは扱わない）。
 	 */
 	async getSnapshot(bypassCache = false, claudeFromLocal = false, claudeHostLoginOnly = false): Promise<IParadisLimitsSnapshot> {
+		const hintKey = this.antigravityHintKey;
 		const [snapshot, claudeState] = await Promise.all([
 			this.channel.call<IParadisLimitsSnapshot>('getSnapshot', [this.fetchOptions(bypassCache)]),
 			this.getClaudeState(bypassCache, false, claudeFromLocal, claudeHostLoginOnly),
 		]);
+		this.rememberAntigravityHint(hintKey, snapshot);
 		return ParadisLimitsMonitorClient.mergeClaudeState(snapshot, claudeState);
+	}
+
+	/** Antigravity の結果から、次に自動で取りに行ってよいかの手がかりを覚える（Para Code を起動し直しても残す）。 */
+	private rememberAntigravityHint(hintKey: string, snapshot: IParadisLimitsSnapshot): void {
+		const hints = paradisReadAntigravityHints(this.storageService);
+		const before = hints.get(hintKey);
+		const after = paradisAntigravityHintAfter(before, snapshot);
+		if (JSON.stringify(before) === JSON.stringify(after)) {
+			return;
+		}
+		if (after) {
+			hints.set(hintKey, after);
+		} else {
+			hints.delete(hintKey);
+		}
+		paradisStoreAntigravityHints(this.storageService, hints);
 	}
 
 	/** Codexアカウント追加(existingHome指定時は既存ホームの再ログイン)を開始する。 */

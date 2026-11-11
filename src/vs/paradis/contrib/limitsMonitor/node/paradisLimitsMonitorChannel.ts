@@ -60,7 +60,7 @@ import {
 	paradisNormalizeCodexLimitWindows
 } from '../common/paradisLimitsMonitor.js';
 import { IParadisClaudeStateRequest, PARADIS_CLAUDE_HOST_STATE_COMMAND } from '../common/paradisClaudeAccounts.js';
-import { ParadisAntigravityUsageFetcher } from './paradisAntigravityUsage.js';
+import { IParadisAntigravityUsage, ParadisAntigravityUsageFetcher } from './paradisAntigravityUsage.js';
 import { ParadisClaudeHostUsage } from './paradisClaudeHostUsage.js';
 import { ParadisClaudeOAuthClient } from './paradisClaudeOAuthClient.js';
 
@@ -396,18 +396,24 @@ export class ParadisLimitsMonitorService {
 	private async doGetSnapshot(options: IParadisLimitsFetchOptions): Promise<IParadisLimitsSnapshot> {
 		const [codex, antigravity] = await Promise.all([
 			this.fetchCodexAccounts(options.codexHomes),
-			this.fetchAntigravityUsage(options.bypassCache === true).catch(error => {
+			this.fetchAntigravityUsage(options).catch((error): IParadisAntigravityUsage => {
 				this.logService.trace(`[ParadisLimitsMonitor] failed to read Antigravity usage: ${error}`);
-				return undefined;
+				return {};
 			}),
 		]);
 		// Claude はレンダラー側で paradisClaudeAccounts チャネルの結果を差し込む。
-		return { claude: { accounts: [] }, codex, ...(antigravity ? { antigravity } : {}), fetchedAt: Date.now() };
+		return {
+			claude: { accounts: [] },
+			codex,
+			...(antigravity.snapshot ? { antigravity: antigravity.snapshot } : {}),
+			...(antigravity.signedOutStamp !== undefined ? { antigravitySignedOut: { stamp: antigravity.signedOutStamp } } : {}),
+			fetchedAt: Date.now(),
+		};
 	}
 
-	/** Antigravity CLI の分（agy が無ければ undefined）。テストで本物の agy を起こさないよう差し替えられる。 */
-	protected fetchAntigravityUsage(bypassCache: boolean): Promise<IParadisLimitsProviderSnapshot | undefined> {
-		return this.antigravity.fetch(bypassCache);
+	/** Antigravity CLI の分。テストで本物の agy を起こさないよう差し替えられる。 */
+	protected fetchAntigravityUsage(options: IParadisLimitsFetchOptions): Promise<IParadisAntigravityUsage> {
+		return this.antigravity.fetch(options.bypassCache === true, options.antigravity);
 	}
 
 	// ---------- Codex (auth.json + wham/usage) ----------
