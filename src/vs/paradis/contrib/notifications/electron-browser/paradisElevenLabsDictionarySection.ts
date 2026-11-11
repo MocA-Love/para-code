@@ -32,7 +32,7 @@ import {
 import { PARADIS_NOTIFICATIONS_CHANNEL } from '../common/paradisNotifications.js';
 import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
 import { paradisElevenLabsDictionaryCache } from './paradisElevenLabsApiCache.js';
-import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
+import { paradisPreserveScroll, ParadisSectionFocusCarrier, paradisSetFocusKey } from './paradisNotificationSettingsDomUtils.js';
 import { ParadisModalSize } from '../../../browser/paradisModal.js';
 import { ParadisButton } from '../../../browser/paradisButton.js';
 import { ParadisInputField } from '../../../browser/paradisInputField.js';
@@ -75,6 +75,8 @@ const STR_DELETE_DETAIL = localize('paradis.notif.elevenlabsDict.deleteDetail', 
 export class ParadisElevenLabsDictionarySection extends Disposable {
 
 	private readonly _renderDisposables = this._register(new DisposableStore());
+	/** 描き直しで作り直されたボタンへフォーカスを引き継ぐ（入れ子の箱を閉じた後の戻し先も探す）。 */
+	private readonly _focus: ParadisSectionFocusCarrier;
 	private readonly _nestedDialog = this._register(new MutableDisposable<Disposable>());
 	private _actionErrorEl: HTMLElement | undefined;
 
@@ -88,6 +90,7 @@ export class ParadisElevenLabsDictionarySection extends Disposable {
 		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super();
+		this._focus = new ParadisSectionFocusCarrier(this.container);
 		this._register(this.settingsService.onDidChange(scope => {
 			if (scope === 'aivis') {
 				this._render();
@@ -100,16 +103,20 @@ export class ParadisElevenLabsDictionarySection extends Disposable {
 		if (this._store.isDisposed) {
 			return;
 		}
-		paradisPreserveScroll(this.container, () => this._renderBody());
+		this._focus.capture();
+		let listPending = false;
+		paradisPreserveScroll(this.container, () => { listPending = this._renderBody(); });
+		this._focus.restore(!listPending);
 	}
 
-	private _renderBody(): void {
+	/** 一覧を後から（取得の後に）足すときは true を返す。 */
+	private _renderBody(): boolean {
 		dom.clearNode(this.container);
 		this._renderDisposables.clear();
 
 		const settings = this.settingsService.getAivisSettings();
 		if (settings.engine !== 'elevenlabs') {
-			return;
+			return false;
 		}
 		const apiKey = settings.elevenLabsApiKey;
 
@@ -118,12 +125,13 @@ export class ParadisElevenLabsDictionarySection extends Disposable {
 		dom.append(titles, $('.pns-section-title')).textContent = STR_TITLE;
 		dom.append(titles, $('.pns-section-desc')).textContent = STR_DESC;
 		const newBtn = paradisNotifButton(header, 'secondary', { icon: Codicon.add, label: STR_NEW });
+		paradisSetFocusKey(newBtn, 'new');
 		newBtn.disabled = !apiKey;
 		this._renderDisposables.add(dom.addDisposableListener(newBtn, 'click', () => this._openEditor(apiKey, undefined)));
 
 		if (!apiKey) {
 			dom.append(this.container, $('.pns-empty')).textContent = STR_NO_KEY;
-			return;
+			return false;
 		}
 
 		// 書き出し・削除の失敗はここに出す。
@@ -132,7 +140,7 @@ export class ParadisElevenLabsDictionarySection extends Disposable {
 		const cached = paradisElevenLabsDictionaryCache.get(apiKey);
 		if (cached) {
 			this._populateList(listEl, cached, apiKey, settings.elevenLabsDictionaryId);
-			return;
+			return false;
 		}
 		listEl.textContent = STR_LOADING;
 		void this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call<IParadisElevenLabsDictionaryListItem[]>('listElevenLabsDictionaries', [apiKey]).then(list => {
@@ -147,18 +155,22 @@ export class ParadisElevenLabsDictionarySection extends Disposable {
 			}
 			dom.clearNode(listEl);
 			dom.append(listEl, $('.pns-error')).textContent = error instanceof Error ? error.message : String(error);
+			this._focus.restore(true);
 		});
+		return true;
 	}
 
 	private _populateList(listEl: HTMLElement, list: readonly IParadisElevenLabsDictionaryListItem[], apiKey: string, activeId: string): void {
 		dom.clearNode(listEl);
 		if (list.length === 0) {
 			dom.append(listEl, $('.pns-empty')).textContent = STR_EMPTY;
+			this._focus.restore(true);
 			return;
 		}
 		for (const dict of list) {
 			this._renderCard(listEl, dict, apiKey, activeId);
 		}
+		this._focus.restore(true);
 	}
 
 	private _renderCard(container: HTMLElement, dict: IParadisElevenLabsDictionaryListItem, apiKey: string, activeId: string): void {
@@ -186,18 +198,22 @@ export class ParadisElevenLabsDictionarySection extends Disposable {
 
 		if (!isActive) {
 			const applyBtn = paradisNotifButton(actions, 'secondary', { label: STR_APPLY });
+			paradisSetFocusKey(applyBtn, `apply:${dict.id}`);
 			this._renderDisposables.add(dom.addDisposableListener(applyBtn, 'click', () => {
 				this.settingsService.setAivisSettings({ elevenLabsDictionaryId: dict.id });
 			}));
 		}
 		const editBtn = paradisNotifButton(actions, 'secondary', { label: STR_EDIT });
+		paradisSetFocusKey(editBtn, `edit:${dict.id}`);
 		this._renderDisposables.add(dom.addDisposableListener(editBtn, 'click', () => this._openEditor(apiKey, dict)));
 
 		const hover = { service: this.hoverService, store: this._renderDisposables };
 		const exportBtn = paradisNotifButton(actions, 'icon', { icon: Codicon.arrowDown, title: STR_EXPORT, hover });
+		paradisSetFocusKey(exportBtn, `export:${dict.id}`);
 		this._renderDisposables.add(dom.addDisposableListener(exportBtn, 'click', () => this._export(apiKey, dict)));
 
 		const deleteBtn = paradisNotifButton(actions, 'icon', { icon: Codicon.trash, title: STR_DELETE, className: 'pns-delete', hover });
+		paradisSetFocusKey(deleteBtn, `delete:${dict.id}`);
 		this._renderDisposables.add(dom.addDisposableListener(deleteBtn, 'click', () => this._delete(apiKey, dict, isActive)));
 	}
 
@@ -257,7 +273,7 @@ export class ParadisElevenLabsDictionarySection extends Disposable {
 			} else {
 				this._render();
 			}
-		});
+		}, () => this._focus.find(dict ? `edit:${dict.id}` : 'new'));
 	}
 }
 

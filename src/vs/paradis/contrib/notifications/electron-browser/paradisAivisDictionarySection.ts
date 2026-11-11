@@ -32,7 +32,7 @@ import {
 } from '../common/paradisNotifications.js';
 import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
 import { getCachedAivisDictionaryList, invalidateAivisDictionaryListCache, setCachedAivisDictionaryList } from './paradisAivisApiCache.js';
-import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
+import { paradisPreserveScroll, ParadisSectionFocusCarrier, paradisSetFocusKey } from './paradisNotificationSettingsDomUtils.js';
 import { ParadisModalSize } from '../../../browser/paradisModal.js';
 import { ParadisButton } from '../../../browser/paradisButton.js';
 import { ParadisInputField } from '../../../browser/paradisInputField.js';
@@ -73,6 +73,8 @@ const STR_DELETE = localize('paradis.notif.dict.delete', "削除");
 export class ParadisAivisDictionarySection extends Disposable {
 
 	private readonly _renderDisposables = this._register(new DisposableStore());
+	/** 描き直しで作り直されたボタンへフォーカスを引き継ぐ（入れ子の箱を閉じた後の戻し先も探す）。 */
+	private readonly _focus: ParadisSectionFocusCarrier;
 	private readonly _fileInput: HTMLInputElement;
 	private _importTargetUuid: string | undefined;
 	// 新規作成/編集ダイアログは同時に1つしか開かない前提。開くたびに差し替えて、
@@ -91,6 +93,7 @@ export class ParadisAivisDictionarySection extends Disposable {
 		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super();
+		this._focus = new ParadisSectionFocusCarrier(this.container);
 
 		this._fileInput = document.createElement('input');
 		this._fileInput.type = 'file';
@@ -117,16 +120,20 @@ export class ParadisAivisDictionarySection extends Disposable {
 		}
 		// 再描画で直前にフォーカスされていた要素がDOMから外れることでスクロール位置が
 		// 先頭に戻ってしまう問題への対策(paradisNotificationSettingsDomUtils.ts参照)。
-		paradisPreserveScroll(this.container, () => this._renderBody());
+		this._focus.capture();
+		let listPending = false;
+		paradisPreserveScroll(this.container, () => { listPending = this._renderBody(); });
+		this._focus.restore(!listPending);
 	}
 
-	private _renderBody(): void {
+	/** 一覧を後から（取得の後に）足すときは true を返す。 */
+	private _renderBody(): boolean {
 		dom.clearNode(this.container);
 		this._renderDisposables.clear();
 
 		// 読み上げエンジンが ElevenLabs のときは ElevenLabs 用のセクションが描く。こちらは空にして API も叩かない。
 		if (this.settingsService.getAivisSettings().engine !== 'aivis') {
-			return;
+			return false;
 		}
 
 		const header = dom.append(this.container, $('.setting-row'));
@@ -136,6 +143,7 @@ export class ParadisAivisDictionarySection extends Disposable {
 
 		const settings = this.settingsService.getAivisSettings();
 		const newBtn = paradisNotifButton(header, 'secondary', { icon: Codicon.add, label: STR_NEW });
+		paradisSetFocusKey(newBtn, 'new');
 		newBtn.disabled = !settings.apiKey;
 		this._renderDisposables.add(dom.addDisposableListener(newBtn, 'click', () => this._openCreateDialog()));
 
@@ -143,7 +151,7 @@ export class ParadisAivisDictionarySection extends Disposable {
 
 		if (!settings.apiKey) {
 			dom.append(this.container, $('.pns-empty')).textContent = STR_NO_KEY;
-			return;
+			return false;
 		}
 
 		const listEl = dom.append(this.container, $('div'));
@@ -154,7 +162,7 @@ export class ParadisAivisDictionarySection extends Disposable {
 		const cached = getCachedAivisDictionaryList(settings.apiKey);
 		if (cached) {
 			this._populateList(listEl, cached, settings.apiKey, settings.userDictionaryUuid);
-			return;
+			return false;
 		}
 
 		listEl.textContent = STR_LOADING;
@@ -170,18 +178,22 @@ export class ParadisAivisDictionarySection extends Disposable {
 			}
 			dom.clearNode(listEl);
 			dom.append(listEl, $('.pns-error')).textContent = error instanceof Error ? error.message : String(error);
+			this._focus.restore(true);
 		});
+		return true;
 	}
 
 	private _populateList(listEl: HTMLElement, list: readonly IParadisAivisDictionaryListItem[], apiKey: string, activeUuid: string): void {
 		dom.clearNode(listEl);
 		if (list.length === 0) {
 			dom.append(listEl, $('.pns-empty')).textContent = STR_EMPTY;
+			this._focus.restore(true);
 			return;
 		}
 		for (const dict of list) {
 			this._renderCard(listEl, dict, apiKey, activeUuid);
 		}
+		this._focus.restore(true);
 	}
 
 	private _renderCard(container: HTMLElement, dict: IParadisAivisDictionaryListItem, apiKey: string, activeUuid: string): void {
@@ -205,25 +217,30 @@ export class ParadisAivisDictionarySection extends Disposable {
 
 		if (!isActive) {
 			const applyBtn = paradisNotifButton(actions, 'secondary', { label: STR_APPLY });
+			paradisSetFocusKey(applyBtn, `apply:${dict.uuid}`);
 			this._renderDisposables.add(dom.addDisposableListener(applyBtn, 'click', () => {
 				this.settingsService.setAivisSettings({ userDictionaryUuid: dict.uuid });
 			}));
 		}
 
 		const editBtn = paradisNotifButton(actions, 'secondary', { label: STR_EDIT });
+		paradisSetFocusKey(editBtn, `edit:${dict.uuid}`);
 		this._renderDisposables.add(dom.addDisposableListener(editBtn, 'click', () => this._openEditDialog(dict.uuid, apiKey)));
 
 		const hover = { service: this.hoverService, store: this._renderDisposables };
 		const importBtn = paradisNotifButton(actions, 'icon', { icon: Codicon.arrowUp, title: STR_IMPORT, hover });
+		paradisSetFocusKey(importBtn, `import:${dict.uuid}`);
 		this._renderDisposables.add(dom.addDisposableListener(importBtn, 'click', () => {
 			this._importTargetUuid = dict.uuid;
 			this._fileInput.click();
 		}));
 
 		const exportBtn = paradisNotifButton(actions, 'icon', { icon: Codicon.arrowDown, title: STR_EXPORT, hover });
+		paradisSetFocusKey(exportBtn, `export:${dict.uuid}`);
 		this._renderDisposables.add(dom.addDisposableListener(exportBtn, 'click', () => this._exportDictionary(dict.uuid, dict.name, apiKey)));
 
 		const deleteBtn = paradisNotifButton(actions, 'icon', { icon: Codicon.trash, title: STR_DELETE, className: 'pns-delete', hover });
+		paradisSetFocusKey(deleteBtn, `delete:${dict.uuid}`);
 		this._renderDisposables.add(dom.addDisposableListener(deleteBtn, 'click', () => this._deleteDictionary(dict.uuid, dict.name, apiKey, isActive)));
 	}
 
@@ -291,16 +308,17 @@ export class ParadisAivisDictionarySection extends Disposable {
 		const dialog = new ParadisCreateDictionaryDialog(this.layoutService, this.sharedProcessService, settings.apiKey, uuid => {
 			invalidateAivisDictionaryListCache(settings.apiKey);
 			this._render();
-			this._openEditDialog(uuid, settings.apiKey);
-		});
+			// 作った辞書の編集は「新規辞書」から続く流れなので、閉じたら「新規辞書」へ戻す
+			this._openEditDialog(uuid, settings.apiKey, 'new');
+		}, () => this._focus.find('new'));
 		this._nestedDialog.value = dialog;
 	}
 
-	private _openEditDialog(uuid: string, apiKey: string): void {
+	private _openEditDialog(uuid: string, apiKey: string, openerKey = `edit:${uuid}`): void {
 		const dialog = new ParadisDictionaryEditorDialog(this.layoutService, this.sharedProcessService, uuid, apiKey, () => {
 			invalidateAivisDictionaryListCache(apiKey);
 			this._render();
-		}, this.contextViewService, this.configurationService);
+		}, this.contextViewService, this.configurationService, () => this._focus.find(openerKey));
 		this._nestedDialog.value = dialog;
 	}
 }

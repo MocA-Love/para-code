@@ -31,6 +31,31 @@ export function paradisPreserveScroll(container: HTMLElement, render: () => void
 	}
 }
 
+/** `root` の子孫のうち、`predicate` に合う最初の要素（文書の順）。 */
+function firstDescendant(root: HTMLElement, predicate: (element: HTMLElement) => boolean): HTMLElement | undefined {
+	for (const child of root.children) {
+		if (!dom.isHTMLElement(child)) {
+			continue;
+		}
+		if (predicate(child)) {
+			return child;
+		}
+		const nested = firstDescendant(child, predicate);
+		if (nested) {
+			return nested;
+		}
+	}
+	return undefined;
+}
+
+/** フォーカスを受けられる要素か（押せないボタン・入力欄は除く）。 */
+function isFocusable(element: HTMLElement): boolean {
+	if (dom.isHTMLButtonElement(element) || dom.isHTMLInputElement(element)) {
+		return !element.disabled;
+	}
+	return element.tabIndex >= 0 && element.getAttribute('tabindex') !== null;
+}
+
 /** {@link ParadisSectionFocusCarrier} が描き直しの後に同じ役目の要素を見つけるための印（`data-paradis-focus-key`）。 */
 export function paradisSetFocusKey(element: HTMLElement, key: string): void {
 	element.dataset.paradisFocusKey = key;
@@ -55,9 +80,11 @@ export class ParadisSectionFocusCarrier {
 	 * 入れ子の箱を閉じたとき、開いたボタンが描き直しで作り直されていたら、ここで見つけた要素へ戻す。
 	 */
 	find(key: string): HTMLElement | undefined {
-		return [...this.container.querySelectorAll<HTMLElement>('[data-paradis-focus-key]')].find(element => element.dataset.paradisFocusKey === key)
-			?? this.container.querySelector<HTMLElement>('button:not(:disabled), [tabindex="0"], input:not(:disabled)')
-			?? undefined;
+		return this.findKey(key) ?? firstDescendant(this.container, isFocusable);
+	}
+
+	private findKey(key: string): HTMLElement | undefined {
+		return key ? firstDescendant(this.container, element => element.dataset.paradisFocusKey === key) : undefined;
 	}
 
 	/** フォーカスが節の中にあれば、その要素の印を覚える（印が無ければ節の中にあったことだけを覚える）。 */
@@ -81,7 +108,7 @@ export class ParadisSectionFocusCarrier {
 			this.pendingKey = undefined;
 			return;
 		}
-		const match = key ? [...this.container.querySelectorAll<HTMLElement>('[data-paradis-focus-key]')].find(element => element.dataset.paradisFocusKey === key) : undefined;
+		const match = this.findKey(key);
 		if (!match && !final) {
 			return;
 		}
