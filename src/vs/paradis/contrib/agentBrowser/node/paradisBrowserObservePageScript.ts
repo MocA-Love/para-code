@@ -13,11 +13,18 @@
 // - 記録はページの window に、呼び出しごとの乱数の名前（列挙されない）で置く。60 秒で自分で止まる
 // - aria-hidden の中（Para Code のカーソルの演出など）の変化は数えない
 // - 見えない要素・script / style などは報告しない。文字は 1 行 160 字で切る
+// - 落ち着いたかの判定（`rec.last`）には、同じ値の属性の書き直しを数えず、style の変化は要素ごとに
+//   {@link STYLE_THROTTLE_MS} に 1 回だけ数える（browser-use 1.0 と同じ。アニメーションの間ずっと「変化中」にしない）。
+//   間引いた style の変化も、報告（changed）には入れる
 
 import { paradisScriptStringLiteral } from '../../../common/paradisScriptLiteral.js';
 
+/** style の変化を、要素ごとにこれだけの間に 1 回だけ「変化」と数える（browser-use 1.0 の 200 ms）。 */
+const STYLE_THROTTLE_MS = 200;
+
 /** 記録を始める関数の本体（`rec` を作って window に置く）。`N` は記録の名前、`NAV` は遷移の後に作り直したか。 */
 const INSTALL_BODY = String.raw`
+	const STYLE_MS = ${STYLE_THROTTLE_MS};
 	const SKIP = new Set(['SCRIPT', 'STYLE', 'LINK', 'META', 'NOSCRIPT', 'TEMPLATE', 'HEAD', 'TITLE']);
 	const hiddenFromA11y = node => {
 		const el = node && (node.nodeType === 1 ? node : node.parentElement);
@@ -31,11 +38,23 @@ const INSTALL_BODY = String.raw`
 	};
 	const old = window[N];
 	if (old && old.mo) { old.mo.disconnect(); }
-	const rec = { last: performance.now(), added: [], removed: [], changed: new Set(), overflow: 0, url: location.href, title: document.title, focusBefore: document.activeElement, navigated: NAV };
+	const rec = { last: performance.now(), lastKind: undefined, styleCounted: new WeakMap(), added: [], removed: [], changed: new Set(), overflow: 0, url: location.href, title: document.title, focusBefore: document.activeElement, navigated: NAV };
 	rec.mo = new MutationObserver(list => {
 		for (const m of list) {
 			if (hiddenFromA11y(m.target)) { continue; }
-			rec.last = performance.now();
+			const now = performance.now();
+			if (m.type === 'attributes') {
+				// 同じ値の書き直しは変化ではない（報告にも入れない）
+				if (m.target.nodeType !== 1 || m.oldValue === m.target.getAttribute(m.attributeName)) { continue; }
+				if (m.attributeName === 'style') {
+					rec.changed.add(m.target);
+					const counted = rec.styleCounted.get(m.target);
+					if (counted !== undefined && now - counted < STYLE_MS) { continue; }
+					rec.styleCounted.set(m.target, now);
+				}
+			}
+			rec.last = now;
+			rec.lastKind = m.type === 'attributes' ? (m.attributeName === 'style' ? 'style' : m.attributeName === 'class' ? 'class' : 'attribute') : m.type === 'childList' ? 'elements' : 'text';
 			if (m.type === 'childList') {
 				for (const n of m.addedNodes) {
 					if (n.nodeType === 3) { if (n.parentElement) { rec.changed.add(n.parentElement); } continue; }
@@ -56,7 +75,7 @@ const INSTALL_BODY = String.raw`
 			}
 		}
 	});
-	rec.mo.observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true,
+	rec.mo.observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true, attributeOldValue: true,
 		attributeFilter: ['disabled', 'checked', 'selected', 'value', 'hidden', 'open', 'class', 'style', 'aria-expanded', 'aria-checked', 'aria-selected', 'aria-disabled', 'aria-invalid', 'aria-pressed', 'aria-busy'] });
 	// 読まれずに残った記録（道具の失敗・ダイアログ）は 60 秒で止めて消す
 	setTimeout(() => { rec.mo.disconnect(); if (window[N] === rec) { delete window[N]; } }, 60000);
@@ -79,9 +98,11 @@ export function paradisObserveReadFunction(name: string): string {
 	let navigated = false;
 	if (!window[N]) { navigated = true; const NAV = true; ${INSTALL_BODY} }
 	const rec = window[N];
-	// 読み込み中の印（スピナー・aria-busy など）が見えている間は落ち着いたとみなさない
-	const busy = Array.from(document.querySelectorAll('[aria-busy="true"], [role="progressbar"], .spinner, .loading, [class*="spinner"], [class*="loading"]')).some(el => !el.closest('[aria-hidden="true"]') && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden');
-	return { age: Math.round(performance.now() - rec.last), ready: document.readyState === 'complete', busy, navigated: navigated || rec.navigated };
+	// 読み込み中の印（スピナー・aria-busy など）が見えている間は落ち着いたとみなさない。クラス名の部分一致
+	// （[class*="spinner"]・[class*="loading"]）は使わない。lazy-loading・preloading・btn-spinner-icon のような
+	// 飾りや読み込みの終わった要素にも当たり、出ている間ずっと上限まで待たせるため（browser-use 1.0 は印を見ない）
+	const busy = Array.from(document.querySelectorAll('[aria-busy="true"], [role="progressbar"], .spinner, .loading')).some(el => !el.closest('[aria-hidden="true"]') && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden');
+	return { age: Math.round(performance.now() - rec.last), lastKind: rec.lastKind, ready: document.readyState === 'complete', busy, navigated: navigated || rec.navigated };
 }`;
 }
 

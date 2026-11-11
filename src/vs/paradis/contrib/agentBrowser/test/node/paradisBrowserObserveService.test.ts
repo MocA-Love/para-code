@@ -57,7 +57,7 @@ function service(log: string[], overrides: Record<string, unknown> = {}): IObser
 			log.push(`inner ${params.name} ${JSON.stringify(params.arguments)} held=${heldLane === TAB_KEY}`);
 			return { content: [{ type: 'text', text: 'done' }] };
 		},
-		_cdpGateway: { getNetworkActivity: (key: string) => { log.push(`network ${key}`); return { inflight: 0, quietMs: 1000 }; } },
+		_cdpGateway: { getNetworkActivity: (key: string, ignoreOlderThanMs: number) => { log.push(`network ${key} ${ignoreOlderThanMs}`); return { inflight: 0, quietMs: 1000 }; } },
 		_devtoolsProxy: { evaluateObserves: true },
 		...overrides,
 	}) as unknown as IObserveServiceInternals;
@@ -172,10 +172,11 @@ suite('Paradis browser observe in the service', () => {
 		assert.deepStrictEqual({ log, result }, { log: ['returned', 'after current=false'], result: failure });
 	}));
 
-	test('the network wait looks at the tab, not the whole pane', () => {
+	// Q618: 1.5 秒より前に始まった要求（長いポーリング）は待たない
+	test('the network wait looks at the tab, not the whole pane, and only at requests younger than 1.5 s', () => {
 		const log: string[] = [];
 		service(log)._observeHost({ token: TOKEN }, { token: TOKEN, pageKey: TAB_KEY }).network();
-		assert.deepStrictEqual(log, [`network ${TAB_KEY}`]);
+		assert.deepStrictEqual(log, [`network ${TAB_KEY} 1500`]);
 	});
 	test('a caller that cannot be verified is refused before it queues on the tab\'s lane', async () => {
 		const log: string[] = [];

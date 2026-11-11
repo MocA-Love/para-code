@@ -92,7 +92,7 @@ import { PARADIS_PAGE_OPS_TOOL_NAME_SET, ParadisBrowserPageOps, paradisPageOpsOw
 import { paradisAdjustDevtoolsToolResult, paradisStripInternalDevtoolsArguments, paradisWithScriptHints } from './paradisDevtoolsToolAdjustments.js';
 import { PARADIS_BROWSER_QUERY_TOOL_NAME_SET, ParadisBrowserQuery } from './paradisBrowserQuery.js';
 import { PARADIS_BROWSER_ACT_TOOL_NAME_SET, ParadisBrowserActBy } from './paradisBrowserActBy.js';
-import { IParadisObserveHost, IParadisObserveOptions, PARADIS_FAILED_STATE_DEADLINE_MS, ParadisBrowserObserver, paradisFailureWasUnanswered, paradisObserveOptionsFor, paradisTakeObserveArguments, paradisWithObserveArguments } from './paradisBrowserObserve.js';
+import { IParadisObserveHost, IParadisObserveOptions, PARADIS_FAILED_STATE_DEADLINE_MS, PARADIS_SETTLE_NETWORK_WINDOW_MS, ParadisBrowserObserver, paradisFailureWasUnanswered, paradisObserveOptionsFor, paradisTakeObserveArguments, paradisWithObserveArguments } from './paradisBrowserObserve.js';
 import { ParadisSnapshotDiffMode, paradisTakeSnapshotDiffMode, paradisWithSnapshotDiffArgument } from './paradisBrowserSnapshotDiff.js';
 import { paradisFillFallbackArgs, paradisFillNeedsInsertTextFallback, paradisMergeFillFallbackResult } from './paradisBrowserFillFallback.js';
 import { paradisRunSteps } from './paradisBrowserRunSteps.js';
@@ -6368,7 +6368,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			listPages: () => this._callDevtoolsTool(tabLease, 'list_pages', {}, signal, true, undefined, 'observe'),
 			snapshot: async () => paradisAdjustDevtoolsToolResult('take_snapshot', { args: {}, snapshotOffset: 0 }, await this._callDevtoolsTool(tabLease, 'take_snapshot', {}, signal, true, undefined, 'observe')),
 			// 通信はタブの鍵で見る（ペインの鍵では対象のタブの通信を数えない。wait_until と同じ）
-			network: () => this._cdpGateway.getNetworkActivity(this._pageKeyOf(tabLease), 30_000),
+			network: () => this._cdpGateway.getNetworkActivity(this._pageKeyOf(tabLease), PARADIS_SETTLE_NETWORK_WINDOW_MS),
 			tabs: () => this._listPaneTabs(ingressLease, signal),
 			downloads: async () => {
 				const directory = await this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL).call<string | null>('getAgentDownloadsDirectory').catch(() => null);

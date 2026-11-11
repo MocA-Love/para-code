@@ -35,11 +35,12 @@ suite('Para Browser experimental feature usage (Sentry)', () => {
 		for (const observe of ['changes', 'none', 'snapshot'] as const) {
 			usage.noteObserved(observe, 0, true);
 		}
-		for (const outcome of ['quiet', 'timeout', 'unresponsive', 'dialog'] as const) {
+		for (const outcome of ['quiet', 'timeout', 'unresponsive', 'dialog', 'stopped'] as const) {
 			for (const waited of [100, 1_000, 3_000]) {
 				usage.noteSettle(outcome, waited);
 			}
 		}
+		usage.noteSettle('timeout', 2_000, { dom: 'style', network: 1, busy: true, loading: true });
 		const features = { forEach: true, repeatUntil: true, expect: true, sleep: true, reference: true };
 		for (const stop of ['none', 'failure', 'step_limit', 'time_limit', 'cancelled'] as const) {
 			usage.noteRunSteps(true, features, { ...noRun, stop, failed: stop === 'none' ? 1 : 0, expectFailed: 1 });
@@ -100,7 +101,8 @@ suite('Para Browser experimental feature usage (Sentry)', () => {
 		usage.noteObserved('none', 2_000, true);
 		usage.noteObserved('changes', 0, true);
 		usage.noteSettle('quiet', 240);
-		usage.noteSettle('timeout', 2_010);
+		usage.noteSettle('timeout', 2_010, { dom: 'style', network: 2 });
+		usage.noteSettle('stopped', 300, { loading: true });
 		usage.noteArgumentRefusal('write_site_note', { note: 'try the second button' });
 		usage.noteSiteNote('write', 'ok', 296);
 		usage.noteRunSteps(true, paradisRunStepsFeatures({ steps: [{ tool: 'click_by', args: { text: '$item' } }] }), { refused: false, executed: 3, failed: 1, expectFailed: 0, stop: 'failure' });
@@ -111,7 +113,8 @@ suite('Para Browser experimental feature usage (Sentry)', () => {
 			safe_set_settle: 'on', safe_set_state: 'off', safe_set_snapshot_diff: 'off', safe_set_site_notes: 'on', safe_set_site_recipes: 'off', safe_set_steps_flow: 'off',
 			safe_calls: 2, safe_call_failures: 1,
 			safe_observe_calls: 2, safe_observe_none: 1, safe_settle_zero: 1,
-			safe_settle_quiet: 1, safe_settle_quiet_ms: 240, safe_settle_timeout: 1, safe_settle_timeout_ms: 2_010, safe_settle_wait_ms: 2_250, safe_settle_wait_le_500: 1, safe_settle_wait_gt_2000: 1,
+			safe_settle_quiet: 1, safe_settle_quiet_ms: 240, safe_settle_timeout: 1, safe_settle_timeout_ms: 2_010, safe_settle_wait_ms: 2_550, safe_settle_wait_le_500: 2, safe_settle_wait_gt_2000: 1,
+			safe_settle_timeout_dom: 1, safe_settle_timeout_dom_style: 1, safe_settle_timeout_network: 1, safe_settle_stopped: 1, safe_settle_stopped_ms: 300,
 			safe_arg_refused: 1, safe_note_arg_refused: 1, safe_note_arg_note: 1,
 			safe_note_write_ok: 1, safe_note_len_le_400: 1,
 			safe_steps_calls: 1, safe_steps_flow_calls: 1, safe_steps_used_reference: 1, safe_steps_executed: 3, safe_steps_stop_failure: 1,
