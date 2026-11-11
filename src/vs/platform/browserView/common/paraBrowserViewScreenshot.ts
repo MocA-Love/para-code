@@ -450,3 +450,36 @@ export function browserViewDocumentRectClip(pageRect: { readonly x: number; read
 	const bottom = Math.ceil((pageRect.y + pageRect.height) * zoomFactor);
 	return { x: left, y: top, width: Math.max(1, right - left), height: Math.max(1, bottom - top), scale: 1 / zoomFactor };
 }
+
+/**
+ * The part of an image captured with {@link browserViewDocumentRectClip} that shows `pageRect` itself, in image
+ * pixels. Chromium truncates a fractional clip to whole zoomed units (measured on Electron 43: at a zoom of 0.3745
+ * a clip 718.9999 wide came back 1917 px wide and one 719 wide 1920 px), so the clip is widened to whole units,
+ * which adds up to 1 / zoom CSS px on each edge (about 2.7 px at a shrink of 0.37). Cropping that margin off makes
+ * the image start at the requested point and keeps it the size of the request, on the device pixel grid of the image.
+ * undefined when nothing needs to be cut off (no zoom, or a margin of less than half an image pixel).
+ */
+export function browserViewDocumentRectCrop(
+	pageRect: { readonly x: number; readonly y: number; readonly width: number; readonly height: number },
+	clip: { readonly x: number; readonly y: number; readonly width: number; readonly height: number; readonly scale: number },
+	image: { readonly width: number; readonly height: number },
+): { x: number; y: number; width: number; height: number } | undefined {
+	// CSS px of the clip, and image pixels per CSS px (the device pixel ratio of the image)
+	const clipLeft = clip.x * clip.scale;
+	const clipTop = clip.y * clip.scale;
+	const clipWidth = clip.width * clip.scale;
+	const clipHeight = clip.height * clip.scale;
+	if (!(clipWidth > 0) || !(clipHeight > 0) || !(image.width > 0) || !(image.height > 0)) {
+		return undefined;
+	}
+	const ratioX = image.width / clipWidth;
+	const ratioY = image.height / clipHeight;
+	const x = Math.max(0, Math.round((pageRect.x - clipLeft) * ratioX));
+	const y = Math.max(0, Math.round((pageRect.y - clipTop) * ratioY));
+	const width = Math.max(1, Math.min(image.width - x, Math.round(pageRect.width * ratioX)));
+	const height = Math.max(1, Math.min(image.height - y, Math.round(pageRect.height * ratioY)));
+	if (x === 0 && y === 0 && width === image.width && height === image.height) {
+		return undefined;
+	}
+	return { x, y, width, height };
+}
