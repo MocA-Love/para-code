@@ -18,6 +18,7 @@ import {
 	paradisThrowIfAgentAwaitingAnswer,
 	paradisGetPresetTasks,
 	paradisPresetAction,
+	paradisPresetConfirmLevel,
 	paradisPresetCommandSignature,
 	paradisPresetFingerprint,
 	paradisParsePresetFileForUpdate,
@@ -154,6 +155,25 @@ suite('ParadisPresetAction', () => {
 			entries: [{ key: key1, name: 'Dev' }],
 			remembered: [{ key: key2, name: 'Test' }, { key: key1, name: 'Dev 2' }],
 			broken: [],
+		});
+	});
+
+	test('confirmation before running: only for run presets, unknown values show the details, older definitions keep their fingerprint', () => {
+		const base = { name: 'db', commands: ['migrate'] };
+		const levelOf = (confirmBeforeRun: unknown, action?: 'insert') => paradisPresetConfirmLevel({ ...base, action, prompt: 'x', confirmBeforeRun } as Parameters<typeof paradisPresetConfirmLevel>[0]);
+		assert.deepStrictEqual({
+			levels: [undefined, false, 'none', 'confirm', 'details', 'type-name', true, 'newer-level'].map(value => levelOf(value)),
+			insert: levelOf('type-name', 'insert'),
+			// 古い版は知らない項目で定義を弾かない（読み飛ばすだけ）
+			valid: isValidPresetDefinition({ ...base, confirmBeforeRun: 'type-name' }),
+			sameFingerprintWithoutConfirm: paradisPresetFingerprint(base) === paradisPresetFingerprint({ ...base, confirmBeforeRun: undefined }),
+			differentFingerprintWithConfirm: paradisPresetFingerprint(base) !== paradisPresetFingerprint({ ...base, confirmBeforeRun: 'details' }),
+		}, {
+			levels: [undefined, undefined, undefined, 'confirm', 'details', 'type-name', 'details', 'details'],
+			insert: undefined,
+			valid: true,
+			sameFingerprintWithoutConfirm: true,
+			differentFingerprintWithConfirm: true,
 		});
 	});
 });

@@ -75,7 +75,10 @@ import {
 	paradisParsePresetTitles,
 	paradisPresetTitleKey,
 	paradisRememberPresetTitleEntry,
+	paradisPresetConfirmLevel,
 } from '../common/paradisTerminalPresets.js';
+import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+import { IParadisPresetRunConfirmEntry, IParadisPresetRunConfirmTerminal, paradisShowPresetRunConfirm } from './paradisPresetRunConfirm.js';
 import { IParadisPresetMovePlan, paradisMovePresetDefinitions } from '../common/paradisPresetReorder.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
@@ -189,6 +192,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		@IParadisAuxiliaryWindowScopeService private readonly auxiliaryWindowScopeService: IParadisAuxiliaryWindowScopeService,
 		@IParadisWorkspaceSwitchService private readonly workspaceSwitchService: IParadisWorkspaceSwitchService,
 		@IParadisWorktreeService private readonly worktreeService: IParadisWorktreeService,
+		@ILayoutService private readonly layoutService: ILayoutService,
 	) {
 		super();
 
@@ -1247,6 +1251,11 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 	}
 
 	async runPreset(preset: IParadisResolvedPreset, options?: IParadisRunPresetOptions): Promise<void> {
+		// 実行の前の確認（Q613）。入り口（タブバー・ドロップダウン・キー・コマンドパレット・プリセットの画面）を
+		// 問わずここで掛ける。やめたら何もしない。まとめて実行とモバイルは呼び出し側で確認して confirmed を渡す。
+		if (!options?.confirmed && paradisPresetConfirmLevel(preset) !== undefined && !await this._confirmRuns([preset], 0, options?.cwd)) {
+			return;
+		}
 		const action = paradisPresetAction(preset);
 		if (action === 'agent-prompt') {
 			await this._insertAgentPrompt(preset, options);
@@ -1457,6 +1466,43 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 
 	private _readPresetTitles(): IParadisPresetTitleEntry[] {
 		return paradisParsePresetTitles(this.storageService.get(PRESET_TITLE_STORAGE_KEY, StorageScope.WORKSPACE));
+	}
+
+	async confirmPresetRuns(presets: readonly IParadisResolvedPreset[]): Promise<boolean> {
+		const needed = presets.filter(preset => paradisPresetConfirmLevel(preset) !== undefined);
+		return needed.length === 0 || this._confirmRuns(needed, presets.length - needed.length, undefined);
+	}
+
+	private _confirmRuns(presets: readonly IParadisResolvedPreset[], others: number, baseOverride: URI | undefined): Promise<boolean> {
+		const entries = presets.map(preset => this._describeForConfirm(preset, baseOverride));
+		return paradisShowPresetRunConfirm(this.layoutService.activeContainer, entries, others);
+	}
+
+	/** 確認の画面に出す内容。作業フォルダは runPreset と同じ決め方（起動を始める時点のスペースの基準）で解く。 */
+	private _describeForConfirm(preset: IParadisResolvedPreset, baseOverride: URI | undefined): IParadisPresetRunConfirmEntry {
+		const launchScope = this.auxiliaryWindowScopeService.resolveGroup(this.editorGroupsService.activeGroup);
+		const base = baseOverride ?? this._launchBaseFolder(preset, launchScope.kind === 'managed' ? launchScope.stateKey : undefined);
+		const { tasks, layout } = paradisGetPresetTasks(preset);
+		const show = (uri: URI | undefined) => uri === undefined ? undefined : uri.scheme === 'file' ? uri.fsPath : uri.path;
+		let terminals: IParadisPresetRunConfirmTerminal[];
+		if (layout === 'current' || layout === 'smart') {
+			// 今のターミナルへ送る並べ方は、作業フォルダの指定が無ければ cd しない（今のターミナルのまま）
+			terminals = [{ name: preset.name, cwd: preset.cwd ? show(this._resolveCwd(preset, preset.cwd, base)) : undefined, commands: tasks.flatMap(task => task.commands) }];
+		} else {
+			terminals = tasks.map((task, index) => ({
+				name: task.name?.trim() || (tasks.length > 1 ? `${preset.name} ${index + 1}` : preset.name),
+				cwd: show(this._resolveCwd(preset, task.cwd ?? preset.cwd, base)),
+				commands: task.commands,
+			}));
+		}
+		const authority = this.environmentService.remoteAuthority;
+		return {
+			name: preset.name,
+			level: paradisPresetConfirmLevel(preset) ?? 'details',
+			host: authority ? localize('paradis.presetConfirm.remoteHost', "{0}（SSH 接続中）", authority.replace(/^ssh-remote\+/, '')) : localize('paradis.presetConfirm.localHost', "このマシン"),
+			repository: show(base),
+			terminals,
+		};
 	}
 
 	private _resolveCwd(preset: IParadisResolvedPreset, cwdSpec: string | undefined, baseOverride?: URI): URI | undefined {

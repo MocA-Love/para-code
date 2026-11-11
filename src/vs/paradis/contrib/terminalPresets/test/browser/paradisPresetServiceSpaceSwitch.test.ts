@@ -24,6 +24,7 @@ import { IWorkbenchEnvironmentService } from '../../../../../workbench/services/
 import { IParadisAgentStatusStore, IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { ParadisPresetService } from '../../browser/paradisPresetService.js';
 import { IParadisResolvedPreset } from '../../common/paradisTerminalPresets.js';
+import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
 
 suite('ParadisPresetService space switch', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -92,6 +93,7 @@ suite('ParadisPresetService space switch', () => {
 				],
 			}),
 			upcastPartial<IParadisWorktreeService>({ onDidChangeWorktrees: Event.None, getWorktrees: () => [] }),
+			upcastPartial<ILayoutService>({}),
 		));
 		// フォルダの監視を張らせないよう、サービスを作った後でスペース A のフォルダを開いた状態にする。
 		state.folders = [URI.file('/repos/a')];

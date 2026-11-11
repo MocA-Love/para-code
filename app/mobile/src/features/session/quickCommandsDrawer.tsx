@@ -9,7 +9,8 @@ import { useAppStore } from '../../appState.js';
 import { haptic } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import { runPresetInBackground } from '../../presetLaunch.js';
-import { presetApprovalKey, presetCommandSummary, presetTerminalCount, visiblePresets } from '../../presets.js';
+import { presetApprovalKey, presetCommandSummary, presetConfirmLevel, presetTerminalCount, presetTypedNameMatches, visiblePresets } from '../../presets.js';
+import { PresetTypeName } from '../../components/presetTypeName.js';
 import { routes } from '../../routes.js';
 import type { PresetDef } from '../../store.js';
 import { HIT_SIZE, colors, radius, space, squircle, type } from '../../theme.js';
@@ -48,6 +49,8 @@ export function QuickCommandsDrawer({ visible, ws, wsLabel, onClose, onRan }: {
 	const [presets, setPresets] = useState<PresetDef[] | undefined>(undefined);
 	const [error, setError] = useState<string | undefined>(undefined);
 	const [confirming, setConfirming] = useState<PresetDef | undefined>(undefined);
+	// 「名前を打って確認」の段で打った名前
+	const [typedName, setTypedName] = useState('');
 	const [query, setQuery] = useState('');
 	const afterClose = useRef<(() => void) | undefined>(undefined);
 
@@ -91,16 +94,22 @@ export function QuickCommandsDrawer({ visible, ws, wsLabel, onClose, onRan }: {
 		onClose();
 	};
 	const press = (preset: PresetDef) => {
-		if (approvedKeys.has(presetApprovalKey(preset))) {
+		// 実行の前に確認するプリセットは、承認済みでも毎回ここで確認する
+		if (presetConfirmLevel(preset) === undefined && approvedKeys.has(presetApprovalKey(preset))) {
 			run(preset);
 			return;
 		}
 		haptic('move');
+		setTypedName('');
 		setConfirming(preset);
 	};
+	const confirmLevel = confirming !== undefined ? presetConfirmLevel(confirming) : undefined;
+	const nameTyped = confirming === undefined || confirmLevel !== 'type-name' || presetTypedNameMatches(typedName, confirming.name);
 	const confirm = () => {
-		if (confirming !== undefined) {
-			approvePreset(presetApprovalKey(confirming));
+		if (confirming !== undefined && nameTyped) {
+			if (confirmLevel === undefined) {
+				approvePreset(presetApprovalKey(confirming));
+			}
 			run(confirming);
 		}
 	};
@@ -136,8 +145,13 @@ export function QuickCommandsDrawer({ visible, ws, wsLabel, onClose, onRan }: {
 					{confirming.truncated === true ? (
 						<Text style={styles.warn}>コマンドが長い、または多いため一部だけを出しています。実行されるのは PC にある定義の全部です。</Text>
 					) : null}
-					<Text style={styles.note}>確認するのは最初の1回だけです。次からは押すとすぐ実行します（PC 側で中身が書き換わったら、もう一度確認します）。</Text>
-					<Button label="実行" onPress={confirm} />
+					{confirmLevel === 'type-name' ? <PresetTypeName name={confirming.name} value={typedName} onChange={setTypedName} /> : null}
+					<Text style={styles.note}>
+						{confirmLevel !== undefined
+							? 'このプリセットは、実行の前に毎回確認する設定です。'
+							: '確認するのは最初の1回だけです。次からは押すとすぐ実行します（PC 側で中身が書き換わったら、もう一度確認します）。'}
+					</Text>
+					<Button label="実行" onPress={confirm} disabled={!nameTyped} />
 					<Button label="戻る" variant="ghost" onPress={() => setConfirming(undefined)} />
 				</View>
 			) : (

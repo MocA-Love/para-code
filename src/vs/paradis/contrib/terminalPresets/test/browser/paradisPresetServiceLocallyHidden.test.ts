@@ -24,6 +24,7 @@ import { IWorkbenchEnvironmentService } from '../../../../../workbench/services/
 import { IParadisAgentStatusStore, IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { ParadisPresetService } from '../../browser/paradisPresetService.js';
 import { IParadisPresetDefinition, paradisPresetFingerprint } from '../../common/paradisTerminalPresets.js';
+import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
 
 suite('ParadisPresetService locally hidden presets', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -61,6 +62,7 @@ suite('ParadisPresetService locally hidden presets', () => {
 				repositories: [upcastPartial<IParadisWorkspaceRepository>({ id: 'app', name: 'app', uri: repositoryUri })],
 			}),
 			upcastPartial<IParadisWorktreeService>({ onDidChangeWorktrees: worktrees.changed.event, getDetectedWorktrees: (id: string) => id === 'app' ? worktrees.list : [] }),
+			upcastPartial<ILayoutService>({}),
 		));
 	}
 

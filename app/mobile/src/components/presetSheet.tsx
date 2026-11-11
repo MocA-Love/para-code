@@ -9,7 +9,8 @@ import { useAppStore } from '../appState.js';
 import { BottomSheet, useSheetCloseThen } from './bottomSheet.js';
 import { Button } from './button.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
-import { presetApprovalKey, presetCommandSummary, presetIonicon, presetTerminalCount, visiblePresets } from '../presets.js';
+import { presetApprovalKey, presetCommandSummary, presetConfirmLevel, presetIonicon, presetTerminalCount, presetTypedNameMatches, visiblePresets } from '../presets.js';
+import { PresetTypeName } from './presetTypeName.js';
 import { runPresetInBackground } from '../presetLaunch.js';
 import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
@@ -50,6 +51,8 @@ export function PresetSheet({ visible, ws, wsLabel, onClose }: {
 	const [error, setError] = useState<string | undefined>(undefined);
 	// 確認待ちのプリセット。ここに入っている間はシートが確認の面に切り替わる。
 	const [confirming, setConfirming] = useState<PresetDef | undefined>(undefined);
+	// 「名前を打って確認」の段で打った名前
+	const [typedName, setTypedName] = useState('');
 
 	// 開くたびに取り直す。PCで定義を書き換えた直後でも、開き直せば追いつく。
 	useEffect(() => {
@@ -87,11 +90,13 @@ export function PresetSheet({ visible, ws, wsLabel, onClose }: {
 	}, [ws, wsLabel, onClose]);
 
 	const press = useCallback((preset: PresetDef) => {
-		if (approvedKeys.has(presetApprovalKey(preset))) {
+		// 実行の前に確認するプリセットは、承認済みでも毎回ここで確認する
+		if (presetConfirmLevel(preset) === undefined && approvedKeys.has(presetApprovalKey(preset))) {
 			run(preset);
 			return;
 		}
 		hapticSelection();
+		setTypedName('');
 		setConfirming(preset);
 	}, [approvedKeys, run]);
 
@@ -99,9 +104,15 @@ export function PresetSheet({ visible, ws, wsLabel, onClose }: {
 		if (confirming === undefined) {
 			return;
 		}
-		approvePreset(presetApprovalKey(confirming));
+		const level = presetConfirmLevel(confirming);
+		if (level === 'type-name' && !presetTypedNameMatches(typedName, confirming.name)) {
+			return;
+		}
+		if (level === undefined) {
+			approvePreset(presetApprovalKey(confirming));
+		}
 		run(confirming);
-	}, [confirming, approvePreset, run]);
+	}, [confirming, typedName, approvePreset, run]);
 
 	if (confirming !== undefined) {
 		return (
@@ -134,10 +145,20 @@ export function PresetSheet({ visible, ws, wsLabel, onClose }: {
 							コマンドが長い、または数が多いため、ここに出しているのは一部です。実行されるのはPCにある定義の全部です。
 						</Text>
 					) : null}
+					{presetConfirmLevel(confirming) === 'type-name' ? (
+						<PresetTypeName name={confirming.name} value={typedName} onChange={setTypedName} />
+					) : null}
 					<Text style={styles.note}>
-						このプリセットの確認はこれが最初の1回だけです。次からは押すとすぐ実行します（PC側でコマンドや作業ディレクトリが書き換わったら、もう一度ここに戻ります）。
+						{presetConfirmLevel(confirming) !== undefined
+							? 'このプリセットは、実行の前に毎回確認する設定です。'
+							: 'このプリセットの確認はこれが最初の1回だけです。次からは押すとすぐ実行します（PC側でコマンドや作業ディレクトリが書き換わったら、もう一度ここに戻ります）。'}
 					</Text>
-					<Button label="実行" icon="flash" onPress={confirm} />
+					<Button
+						label="実行"
+						icon="flash"
+						onPress={confirm}
+						disabled={presetConfirmLevel(confirming) === 'type-name' && !presetTypedNameMatches(typedName, confirming.name)}
+					/>
 					<Pressable style={styles.secondary} onPress={() => setConfirming(undefined)} accessibilityRole="button">
 						<Text style={styles.secondaryText}>戻る</Text>
 					</Pressable>

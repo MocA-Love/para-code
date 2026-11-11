@@ -4,7 +4,7 @@ import { paraAlert } from './paraAlert.js';
 import { useAppStore } from './appState.js';
 import { haptic } from './haptics.js';
 import { useParaToast } from './paraToast.js';
-import { presetTerminalCount } from './presets.js';
+import { presetConfirmLevel, presetTerminalCount } from './presets.js';
 import type { PresetDef } from './store.js';
 
 /**
@@ -36,7 +36,8 @@ export function runPresetInBackground(request: { ws: string; wsLabel: string; pr
 		tone: 'info',
 		spinner: true,
 	});
-	useAppStore.getState().presetRun(ws, preset.key, preset.signature).then(result => {
+	// 確認付きのものは、呼ぶ側（一覧・クイックコマンド）が毎回確認を出してから来る。PC はこの印が無いと走らせない
+	useAppStore.getState().presetRun(ws, preset.key, preset.signature, presetConfirmLevel(preset) !== undefined).then(result => {
 		revealCreatedTerminal(result.created);
 		const created = result.created?.length ?? expected;
 		useParaToast.getState().show({
@@ -53,6 +54,10 @@ export function runPresetInBackground(request: { ws: string; wsLabel: string; pr
 		// PC側でコマンドや作業ディレクトリが書き換わっていた場合はここに来る。
 		// 「通信に失敗した」と読める文面にすると、内容が変わったことに気づけない。
 		const message = String(e instanceof Error ? e.message : e);
+		if (message.includes('confirmation required')) {
+			paraAlert.alert('実行の前の確認が必要です', 'PC側で、実行の前に確認する設定に変わりました。一覧を開き直してから実行してください。');
+			return;
+		}
 		if (message.includes('preset changed')) {
 			paraAlert.alert('プリセットの内容が変わりました', 'PC側で書き換えられたため実行していません。一覧を開き直すと、新しい内容を確認してから実行できます。');
 			return;

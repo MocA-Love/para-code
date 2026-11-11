@@ -43,6 +43,26 @@ export function isValidPresetDef(value: unknown): value is PresetDef {
 			&& Array.isArray(task.commands) && task.commands.every(command => typeof command === 'string'));
 }
 
+/** 実行の前に確認する段階（PC の編集画面の「安全」で選ぶもの）。 */
+export type PresetConfirmLevel = 'confirm' | 'details' | 'type-name';
+
+/**
+ * そのプリセットが実行の前に確認を求めるか。付いているものは、初回だけの承認を使わず**毎回**この端末で確認する。
+ * 知らない値（新しい PC が足した段階）は、確認を外す側ではなく「内容を見せて確認」へ倒す。
+ */
+export function presetConfirmLevel(preset: PresetDef): PresetConfirmLevel | undefined {
+	const value: unknown = preset.confirm;
+	if (value === undefined || value === null || value === '') {
+		return undefined;
+	}
+	return value === 'confirm' || value === 'details' || value === 'type-name' ? value : 'details';
+}
+
+/** 名前を打つ段で、打った文字が名前と一致しているか（前後の空白は見ない）。 */
+export function presetTypedNameMatches(typed: string, name: string): boolean {
+	return typed.trim() === name.trim();
+}
+
 /** この端末で非表示にしたものを除いた一覧（順序はPC側の定義順のまま）。 */
 export function visiblePresets(presets: readonly PresetDef[], hidden: ReadonlySet<string>): PresetDef[] {
 	return presets.filter(preset => !hidden.has(preset.key));
