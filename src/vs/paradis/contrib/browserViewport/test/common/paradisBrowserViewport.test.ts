@@ -23,7 +23,7 @@ import {
 	paradisViewportDevice,
 	paradisViewportSpecMatches,
 } from '../../common/paradisBrowserViewport.js';
-import { ParadisAgentEmulationLedger, paradisEffectiveTouchEmulation, paradisEmulatedScreenshotSize, paradisParseTouchEmulation, paradisFoldDeviceMetricsOverride, paradisMergeEmulatedMedia, paradisScaleCdpInputCoordinates } from '../../common/paradisBrowserViewportCdp.js';
+import { ParadisAgentEmulationLedger, paradisEffectiveTouchEmulation, paradisEmulatedDocumentCaptureRect, paradisEmulatedScreenshotSize, paradisParseTouchEmulation, paradisFoldDeviceMetricsOverride, paradisMergeEmulatedMedia, paradisScaleCdpInputCoordinates } from '../../common/paradisBrowserViewportCdp.js';
 import { paradisFormatSetViewportResult, paradisViewportForAgent } from '../../common/paradisBrowserViewportTools.js';
 
 const SIZES: readonly IParadisViewportSize[] = [
@@ -266,6 +266,29 @@ suite('paradisBrowserViewportCdp', () => {
 			viewport: { width: 1920, height: 1081 },
 			rect: { width: 100, height: 50 },
 			same: undefined,
+		});
+	});
+
+	test('a shrunk tab captures the visible page and a rect of it in document coordinates at the page size', () => {
+		const fullHd = { width: 1920, height: 1080 };
+		const metrics = { cssVisualViewport: { pageX: 0, pageY: 300, clientWidth: 1905, clientHeight: 1080, scale: 1 }, cssLayoutViewport: { pageX: 0, pageY: 300, clientWidth: 1905, clientHeight: 1080 } };
+		assert.deepStrictEqual({
+			viewport: paradisEmulatedDocumentCaptureRect({}, fullHd, metrics),
+			rect: paradisEmulatedDocumentCaptureRect({ pageRect: { x: 10, y: 20, width: 600, height: 200 } }, fullHd, metrics),
+			// 幅だけ決めた大きさは、高さを表示域から取る
+			widthOnly: paradisEmulatedDocumentCaptureRect({}, { width: 1920 }, metrics),
+			fullPage: paradisEmulatedDocumentCaptureRect({ fullPage: true }, fullHd, metrics),
+			beyond: paradisEmulatedDocumentCaptureRect({ pageRect: { x: 0, y: 0, width: 10, height: 10 }, captureBeyondViewport: true }, fullHd, metrics),
+			pinched: paradisEmulatedDocumentCaptureRect({}, fullHd, { cssVisualViewport: { pageX: 0, pageY: 0, scale: 2 } }),
+			unmeasured: paradisEmulatedDocumentCaptureRect({}, fullHd, undefined),
+		}, {
+			viewport: { x: 0, y: 300, width: 1920, height: 1080 },
+			rect: { x: 10, y: 320, width: 600, height: 200 },
+			widthOnly: { x: 0, y: 300, width: 1920, height: 1080 },
+			fullPage: undefined,
+			beyond: undefined,
+			pinched: undefined,
+			unmeasured: undefined,
 		});
 	});
 });

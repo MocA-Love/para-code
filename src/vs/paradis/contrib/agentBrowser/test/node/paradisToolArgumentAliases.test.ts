@@ -117,6 +117,12 @@ suite('paradisToolArgumentAliases', () => {
 		});
 	});
 
+	test('take_screenshot offers "sharp", which Para Code takes off before the embedded DevTools server sees the call', () => {
+		const adjusted = paradisAdjustDevtoolsToolDescriptor({ name: 'take_screenshot', description: 'Take a screenshot.', inputSchema: { type: 'object', properties: { format: { type: 'string' } }, additionalProperties: false } });
+		const properties = (adjusted.inputSchema as { properties: Record<string, { type?: string; description?: string }> }).properties;
+		assert.deepStrictEqual({ type: properties.sharp?.type, mentionsResize: /resize/.test(properties.sharp?.description ?? '') }, { type: 'boolean', mentionsResize: true });
+	});
+
 	test('tools/call reads the old names first, then checks the arguments, then gives chrome-devtools-mcp its milliseconds back', async () => {
 		const routed: string[] = [];
 		const upstreamTimeout = { type: 'integer', description: 'Maximum wait time in milliseconds.' };

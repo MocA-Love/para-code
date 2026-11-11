@@ -964,6 +964,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	/** 呼び出しの lease → エージェントが呼んだ道具の名前（内蔵の道具の失敗の報告に載せる。q.html Q462 の D2）。 */
 	private readonly _leaseAgentTools = new WeakMap<IParadisAgentBrowserIngressLease, string>();
 	/**
+	 * `sharp` 付きの take_screenshot を内蔵 chrome-devtools-mcp へ渡している最中のタブ（スコープキー → 数）。その間に
+	 * CDP ゲートウェイから来る撮影だけ、ページの座標で描き直して撮る（{@link IParadisCdpScreenshotOptions.sharp}）。
+	 */
+	private readonly _sharpScreenshotKeys = new Map<string, number>();
+	/**
 	 * ターミナルのペインを持たない拡張機能ホスト（およびそこから起動されるCodex等）が、
 	 * 音声取込の宛先を認証するためのインスタンススコープのトークン。
 	 * ペインの所有権もバインディング操作も一切与えず、音声ticketの発行にだけ使える。
@@ -3323,6 +3328,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		const binding = this._bindingForKey(key);
 		if (!binding) {
 			throw new Error('PARA_BROWSER_RETRYABLE: no browser page is bound to this pane; share the page and retry the screenshot.');
+		}
+		if (this._sharpScreenshotKeys.has(key) && !options.sharp) {
+			options = { ...options, sharp: true };
 		}
 		const route = options.fullPage ? 'full-page'
 			: options.pageRect && options.captureBeyondViewport ? 'document-rect'
@@ -7162,7 +7170,29 @@ export class ParadisAgentBrowserService extends Disposable {
 					return this._toolError(NOT_BOUND_MESSAGE);
 				}
 				const agentTool = this._leaseAgentTools?.get(ingressLease);
-				const result = await this._devtoolsProxy.tryCallTool(token, generation, wsEndpoint, name, args, signal, snapshotDiff, { ...(agentTool !== undefined ? { agentTool } : {}), ...(internal !== undefined ? { internal } : {}) });
+				// `sharp` は Para Code の引数。内蔵 chrome-devtools-mcp へは渡さず、その間の撮影に印を付ける
+				const screenshotArgs = name === 'take_screenshot' && args && typeof args === 'object' && Object.hasOwn(args, 'sharp') ? args as Record<string, unknown> : undefined;
+				if (screenshotArgs && typeof screenshotArgs.sharp !== 'boolean') {
+					return this._toolError('"sharp" must be true or false.');
+				}
+				const forwardedArgs = screenshotArgs ? Object.fromEntries(Object.entries(screenshotArgs).filter(([key]) => key !== 'sharp')) : args;
+				const sharp = screenshotArgs?.sharp === true;
+				if (sharp) {
+					this._sharpScreenshotKeys.set(token, (this._sharpScreenshotKeys.get(token) ?? 0) + 1);
+				}
+				let result: unknown;
+				try {
+					result = await this._devtoolsProxy.tryCallTool(token, generation, wsEndpoint, name, forwardedArgs, signal, snapshotDiff, { ...(agentTool !== undefined ? { agentTool } : {}), ...(internal !== undefined ? { internal } : {}) });
+				} finally {
+					if (sharp) {
+						const count = (this._sharpScreenshotKeys.get(token) ?? 1) - 1;
+						if (count > 0) {
+							this._sharpScreenshotKeys.set(token, count);
+						} else {
+							this._sharpScreenshotKeys.delete(token);
+						}
+					}
+				}
 				this._requireIngressLease(ingressLease);
 				const current = this._bindingForKey(token);
 				if (current !== binding || !this._devtoolsGenerationCoordinator.isCurrentGeneration(token, generation)) {

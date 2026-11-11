@@ -157,7 +157,11 @@ export class ParadisBrowserCapture {
 		if (saveTo !== undefined && (typeof saveTo !== 'string' || saveTo.length === 0 || saveTo.length > 4096)) {
 			return error('"saveTo" must be a file path.');
 		}
-		const base: IParadisCdpScreenshotOptions = { format, ...(typeof quality === 'number' ? { quality } : {}) };
+		const sharp = args.sharp;
+		if (sharp !== undefined && typeof sharp !== 'boolean') {
+			return error('"sharp" must be true or false.');
+		}
+		const base: IParadisCdpScreenshotOptions = { format, ...(typeof quality === 'number' ? { quality } : {}), ...(sharp === true ? { sharp } : {}) };
 
 		const shots: IShot[] = [];
 		const locatorKeys = ['uid', 'selector', 'role', 'name', 'text', 'within', 'within_uid', 'exact', 'index'];

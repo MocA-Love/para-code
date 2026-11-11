@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as assert from 'assert';
+import { nativeImage } from 'electron';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { BrowserViewAutomationKeyFailureReason, IBrowserViewAutomationKeyFailureDetail } from '../../../../../platform/browserView/common/paraBrowserViewAutomationInput.js';
@@ -56,6 +57,8 @@ interface ITestViewState {
 	/** Device Emulation state of the fake view (upstream BrowserViewEmulator). */
 	emulatedDevice?: { readonly width?: number; readonly height?: number; readonly mobile?: boolean; readonly deviceScaleFactor?: number; readonly userAgent?: string };
 	emulatedScale?: number;
+	/** `Page.getLayoutMetrics` の答え（無ければ測れない）。 */
+	layoutMetrics?: unknown;
 }
 
 interface ITestViewCounters {
@@ -182,6 +185,12 @@ function createTestView(overrides: Partial<ITestViewState> = {}): {
 					const targetId = state.targetId;
 					state.onTargetRead?.();
 					return targetId;
+				},
+				sendCommand: async (method: string) => {
+					if (method === 'Page.getLayoutMetrics' && state.layoutMetrics !== undefined) {
+						return state.layoutMetrics;
+					}
+					throw new Error(`unexpected ${method}`);
 				},
 				sendCommandRaw: (method: string, params: unknown, sessionId?: string) => {
 					// The hit test of the extension input guard; not an input.
@@ -378,6 +387,8 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 		assert.strictEqual(paradisParseExactCdpScreenshotOptions({ captureBeyondViewport: true }), undefined);
 		assert.strictEqual(paradisParseExactCdpScreenshotOptions({ fullPage: true, captureBeyondViewport: true }), undefined);
 		assert.deepStrictEqual(paradisParseExactCdpScreenshotOptions({ captureBeyondViewport: false }), { captureBeyondViewport: false });
+		assert.deepStrictEqual(paradisParseExactCdpScreenshotOptions({ format: 'png', sharp: true }), { format: 'png', sharp: true });
+		assert.strictEqual(paradisParseExactCdpScreenshotOptions({ sharp: 'yes' }), undefined);
 		assert.deepStrictEqual(paradisParseExactCdpScreenshotOptions(Object.create({ format: 'png' })), {});
 		let formatReads = 0;
 		const changingFormat: Record<string, unknown> = {};
@@ -629,6 +640,57 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 		assert.strictEqual(Object.isFrozen(current.captureOptions[0]), true);
 		assert.strictEqual(Object.isFrozen((current.captureOptions[0] as { pageRect: object }).pageRect), true);
 		assert.strictEqual(Object.isFrozen(current.captureOptions[1]), true);
+	});
+
+	test('on a page drawn shrunk by Device Emulation, a sharp capture of the visible page and a rect is taken in document coordinates, and every other capture as before', async () => {
+		const current = createTestView({
+			emulatedDevice: { width: 1920, height: 1080 },
+			emulatedScale: 0.43,
+			layoutMetrics: { cssVisualViewport: { pageX: 0, pageY: 300, clientWidth: 1905, clientHeight: 1080, scale: 1 }, cssLayoutViewport: { clientWidth: 1905, clientHeight: 1080 } },
+		});
+		const registry = createRegistry({ 'view-1': current.view });
+		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1');
+		const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
+		// 頼まれていない撮影は、縮めた面を写す今の撮り方（撮る間にページへ resize が届かない）
+		await service.captureExactViewScreenshot(exact, { format: 'png' });
+		await service.captureExactViewScreenshot(exact, { format: 'png', pageRect: { x: 10, y: 20, width: 600, height: 200 } });
+		await service.captureExactViewScreenshot(exact, { format: 'png', sharp: true });
+		await service.captureExactViewScreenshot(exact, { format: 'png', pageRect: { x: 10, y: 20, width: 600, height: 200 }, sharp: true });
+		await service.captureExactViewScreenshot(exact, { format: 'png', fullPage: true, sharp: true });
+		current.state.emulatedScale = 1;
+		await service.captureExactViewScreenshot(exact, { format: 'png', sharp: true });
+		current.state.emulatedScale = 0.43;
+		current.state.emulatedDevice = undefined;
+		await service.captureExactViewScreenshot(exact, { format: 'png', sharp: true });
+		assert.deepStrictEqual(current.captureOptions, [
+			{ format: 'png' },
+			{ format: 'png', pageRect: { x: 10, y: 20, width: 600, height: 200 } },
+			{ format: 'png', pageRect: { x: 0, y: 300, width: 1920, height: 1080 }, captureBeyondViewport: true },
+			{ format: 'png', pageRect: { x: 10, y: 320, width: 600, height: 200 }, captureBeyondViewport: true },
+			{ format: 'png', fullPage: true },
+			{ format: 'png' },
+			{ format: 'png' },
+		]);
+	});
+
+	test('a capture in document coordinates of a shrunk page is returned at the CSS size of the rect, not stretched', async () => {
+		const png = (width: number, height: number) => VSBuffer.wrap(nativeImage.createFromBitmap(Buffer.alloc(width * height * 4, 0x80), { width, height }).toPNG());
+		const sizeOf = (data: string | null) => nativeImage.createFromBuffer(Buffer.from(data ?? '', 'base64')).getSize();
+		const current = createTestView({
+			emulatedDevice: { width: 1920, height: 1080 },
+			emulatedScale: 0.43,
+			layoutMetrics: { cssVisualViewport: { pageX: 0, pageY: 300, scale: 1 } },
+		});
+		const registry = createRegistry({ 'view-1': current.view });
+		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1');
+		const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
+		const rect = { format: 'png' as const, pageRect: { x: 10, y: 20, width: 60, height: 20 }, sharp: true };
+		current.state.captureResult = Promise.resolve(png(60, 20));
+		const sameSize = await service.captureExactViewScreenshot(exact, rect);
+		// devicePixelRatio 2 で返った（縮め方によってはページの倍率のまま撮れる）
+		current.state.captureResult = Promise.resolve(png(120, 40));
+		const doubled = await service.captureExactViewScreenshot(exact, rect);
+		assert.deepStrictEqual({ sameSize: sizeOf(sameSize), doubled: sizeOf(doubled) }, { sameSize: { width: 60, height: 20 }, doubled: { width: 60, height: 20 } });
 	});
 
 	test('exact throttling touches only a live exact object and reports synchronous failures', async () => {

@@ -20,9 +20,10 @@ import { basename } from '../../../../base/common/path.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import type { BrowserView } from '../../../../platform/browserView/electron-main/browserView.js';
-import { ParadisAgentEmulationLedger, paradisEffectiveTouchEmulation, paradisEmulatedScreenshotSize, paradisIsCdpEmulationMethod, paradisMergeEmulatedMedia, paradisParseTouchEmulation, paradisScaleCdpInputCoordinates } from '../../browserViewport/common/paradisBrowserViewportCdp.js';
+import { ParadisAgentEmulationLedger, paradisEffectiveTouchEmulation, paradisEmulatedDocumentCaptureRect, paradisEmulatedScreenshotSize, paradisIsCdpEmulationMethod, paradisMergeEmulatedMedia, paradisParseTouchEmulation, paradisScaleCdpInputCoordinates } from '../../browserViewport/common/paradisBrowserViewportCdp.js';
 import type { IBrowserViewMainService } from '../../../../platform/browserView/electron-main/browserViewMainService.js';
 import { paraSetBrowserViewOpener } from '../../../../platform/browserView/electron-main/paraBrowserViewLoadWatchdog.js';
+import { paraBrowserViewZoomShrink } from '../../../../platform/browserView/electron-main/paraBrowserViewZoom.js';
 import { browserViewAutomationKeySignatureFromCdp, type BrowserViewAutomationKeyFailureReason, type IBrowserViewAutomationKeyFailureDetail } from '../../../../platform/browserView/common/paraBrowserViewAutomationInput.js';
 import {
 	IParadisCdpExactViewService,
@@ -860,7 +861,10 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		await this.cursorOverlay.hideForCapture(view);
 		let captured = false;
 		try {
-			const buffer = this.normalizeEmulatedScreenshot(view, await view.captureScreenshot(options), options);
+			const capture = await this.emulatedDocumentCapture(view, options);
+			// 置き換えた撮影も、返った画像を置き換えた範囲の CSS の大きさへ揃える（ページの devicePixelRatio 倍で
+			// 返る縮め方でも、画像の座標をページの座標のままにする。1 倍で返ればそのまま）
+			const buffer = this.normalizeEmulatedScreenshot(view, await view.captureScreenshot(paradisWithoutSharp(capture)), capture === options ? options : { ...options, pageRect: capture.pageRect });
 			captured = this.resolveExistingExactView(descriptor) === view;
 			return captured ? encodeBase64(buffer) : null;
 		} catch (error) {
@@ -882,10 +886,39 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 	}
 
 	/**
+	 * 縮めて描いているタブ（Device Emulation）の、見えている範囲・範囲指定の撮影を、頼まれたとき（`sharp`）だけ、
+	 * 文書の座標で描き直す撮影（ページの外まで写す撮影と同じ経路）に置き換える。ビューの面を写して引き伸ばすと、
+	 * ペインの大きさぶんの細かさしか残らず小さい字がつぶれる。描き直すとくっきり写るが、撮る間に Chromium が
+	 * 表示域を作り直すので、ページへ resize（と ResizeObserver の通知）が届く。メニューが閉じる・canvas が作り直される
+	 * などがありうるため既定にはしない（撮るたびに resize を起こさない手段は無かった。NOTES.md）。
+	 * 頼まれていない・縮めていない・エミュレートしていない・寸法を測れないときは、渡された指定のまま返す。
+	 */
+	private async emulatedDocumentCapture(view: BrowserView, options: IParadisCdpScreenshotOptions): Promise<IParadisCdpScreenshotOptions> {
+		const device = view.emulator.device;
+		if (!options.sharp || !device || options.fullPage || options.captureBeyondViewport) {
+			return options;
+		}
+		// 縮め方は 2 通り（ページの拡大率・エミュレーションの倍率）。どちらでも縮めていなければ今のまま
+		const shrink = Math.min(paraBrowserViewZoomShrink(view.webContents), view.emulator.emulatedScaleFactor);
+		if (!(shrink < 0.99)) {
+			return options;
+		}
+		let metrics: unknown;
+		try {
+			metrics = await view.debugger.sendCommand('Page.getLayoutMetrics');
+		} catch {
+			return options;
+		}
+		const pageRect = paradisEmulatedDocumentCaptureRect(options, device, metrics);
+		return pageRect ? { ...options, pageRect, captureBeyondViewport: true } : options;
+	}
+
+	/**
 	 * 縮小して描いているタブ（Device Emulation）の、見えている範囲の撮影を、ページの CSS の大きさ（エミュレート
 	 * した幅×高さ）の画像に揃える。upstream の撮影はビューの面（縮めた枠 × 画面の DPR）を写すので、そのままだと
 	 * 画像の座標とページの座標（click_at などが使う）が倍率の分ずれる。ページ全体・ページの外まで写す撮影は CDP が
-	 * ページの座標で撮るので触らない。直せないときは元の画像を返す。
+	 * ページの座標で撮るので触らない。直せないときは元の画像を返す。`sharp` で頼まれた撮影は、先に
+	 * {@link emulatedDocumentCapture} でページの座標の撮影へ置き換わる（置き換えた撮影も、ここで範囲の CSS の大きさへ揃える）。
 	 */
 	private normalizeEmulatedScreenshot(view: BrowserView, buffer: VSBuffer, options: IParadisCdpScreenshotOptions): VSBuffer {
 		const device = view.emulator.device;
@@ -1965,6 +1998,21 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 /** カーソルの写し（一覧ウィンドウ・モバイル）に付ける持ち主。 */
 function ownerOfEvent(owner: IParadisCursorOwner | undefined): { ownerId?: string; name?: string; mark?: string; color?: string } {
 	return owner ? { ownerId: owner.id, name: owner.name, mark: owner.mark, color: owner.color } : {};
+}
+
+/** BrowserView の撮影へ渡す指定（`sharp` はこのサービスの中だけで使う）。 */
+function paradisWithoutSharp(options: IParadisCdpScreenshotOptions): IParadisCdpScreenshotOptions {
+	if (!Object.hasOwn(options, 'sharp')) {
+		return options;
+	}
+	const { format, quality, pageRect, captureBeyondViewport, fullPage } = options;
+	return {
+		...(format !== undefined ? { format } : {}),
+		...(quality !== undefined ? { quality } : {}),
+		...(pageRect !== undefined ? { pageRect } : {}),
+		...(captureBeyondViewport !== undefined ? { captureBeyondViewport } : {}),
+		...(fullPage !== undefined ? { fullPage } : {}),
+	};
 }
 
 /** スクリプトの名前（`s1` など）か。 */
