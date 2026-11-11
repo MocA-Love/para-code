@@ -40,6 +40,7 @@ import { QuickInputTreeController } from './tree/quickInputTreeController.js';
 import { QuickTree } from './tree/quickTree.js';
 import { AnchorAlignment, AnchorPosition, IRect, layout2d } from '../../../base/common/layout.js';
 import { getAnchorRect, IAnchor } from '../../../base/browser/ui/contextview/contextview.js';
+import { paradisQuickInputWidth } from './paradisQuickInputLayout.js'; // PARA-PATCH: the centered palette's width tiers (Q609)
 
 const $ = dom.$;
 
@@ -1006,7 +1007,8 @@ export class QuickInputController extends Disposable {
 	private updateLayout() {
 		if (this.ui && this.isVisible()) {
 			const style = this.ui.container.style;
-			let width = Math.min(this.dimension!.width * 0.62 /* golden cut */, QuickInputController.MAX_WIDTH);
+			// PARA-PATCH: Para Code's centered palette (cross jump, command palette) widens by window width tiers for its preview pane (Q609).
+			let width = paradisQuickInputWidth(this.dimension!.width, Math.min(this.dimension!.width * 0.62 /* golden cut */, QuickInputController.MAX_WIDTH), this.controller);
 			style.width = width + 'px';
 
 			let listHeight = this.dimension && this.dimension.height * 0.4;

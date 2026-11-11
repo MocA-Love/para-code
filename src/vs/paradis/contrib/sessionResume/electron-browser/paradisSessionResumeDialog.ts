@@ -33,6 +33,7 @@ import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import Severity from '../../../../base/common/severity.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { paradisButtonClasses } from '../../../browser/paradisButton.js';
+import { ParadisCheck } from '../../../browser/paradisCheck.js';
 import { ParadisInputField } from '../../../browser/paradisInputField.js';
 import { PARADIS_MODAL_COMPACT_CLASS, paradisModalClasses, ParadisModalSize, renderParadisModalHead } from '../../../browser/paradisModal.js';
 import '../../../browser/media/paradisSegmented.css';
@@ -112,7 +113,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 	private readonly expandedRepositories = new Set<string>();
 	private readonly periodNavButtons = new Map<PeriodFilter, { button: HTMLButtonElement; count: HTMLElement }>();
 	private railSummary: HTMLElement | undefined;
-	private archivedInput: HTMLInputElement | undefined;
+	private archivedInput: ParadisCheck | undefined;
 	/** 更新ボタン(左ナビのフッターとリスト列ヘッダーの2箇所)。loading 状態は両方へ同期する。 */
 	private readonly refreshButtons: HTMLButtonElement[] = [];
 	/** 狭い幅で折りたたんだ左ナビを出し入れするトグル。広い幅では CSS で隠れる。 */
@@ -327,11 +328,9 @@ export class ParadisSessionResumeDialog extends Disposable {
 			this.render();
 		}));
 
-		const archivedLabel = dom.append(rail, $('label.paradis-session-resume-check'));
-		this.archivedInput = dom.append(archivedLabel, $('input')) as HTMLInputElement;
-		this.archivedInput.type = 'checkbox';
-		dom.append(archivedLabel, $('span')).textContent = localize('paradis.sessionResume.archived', "アーカイブ済みを含む");
-		this._register(dom.addDisposableListener(this.archivedInput, dom.EventType.CHANGE, () => this.refreshController.requestImmediate()));
+		this.archivedInput = this._register(new ParadisCheck(rail, { label: localize('paradis.sessionResume.archived', "アーカイブ済みを含む"), checked: false }));
+		this.archivedInput.element.classList.add('paradis-session-resume-check');
+		this._register(this.archivedInput.onDidChange(() => this.refreshController.requestImmediate()));
 
 		const footer = dom.append(rail, $('.rail-footer'));
 		this.railSummary = dom.append(footer, $('span.rail-summary'));
@@ -435,13 +434,10 @@ export class ParadisSessionResumeDialog extends Disposable {
 			sort => this.setListOptions({ ...this.listOptions, sort }));
 		addSelect<ParadisResumeGrouping>(localize('paradis.sessionResume.groupLabel', "グループ"), ['space', 'folder', 'agent'], this.listOptions.group, paradisResumeGroupLabel,
 			group => this.setListOptions({ ...this.listOptions, group }));
-		const hideEmpty = dom.append(this.listBar, $('label.listbar-check'));
-		const checkbox = dom.append(hideEmpty, $('input')) as HTMLInputElement;
-		checkbox.type = 'checkbox';
-		checkbox.checked = this.listOptions.hideEmpty;
-		dom.append(hideEmpty, $('span')).textContent = localize('paradis.sessionResume.hideEmpty', "空を隠す");
-		hideEmpty.title = localize('paradis.sessionResume.hideEmptyTitle', "依頼が1つも無いセッション（起動しただけで閉じたもの）を隠します");
-		this._register(dom.addDisposableListener(checkbox, dom.EventType.CHANGE, () => this.setListOptions({ ...this.listOptions, hideEmpty: checkbox.checked })));
+		const hideEmpty = this._register(new ParadisCheck(this.listBar, { label: localize('paradis.sessionResume.hideEmpty', "空を隠す"), checked: this.listOptions.hideEmpty }));
+		hideEmpty.element.classList.add('listbar-check');
+		hideEmpty.labelElement.title = localize('paradis.sessionResume.hideEmptyTitle', "依頼が1つも無いセッション（起動しただけで閉じたもの）を隠します");
+		this._register(hideEmpty.onDidChange(checked => this.setListOptions({ ...this.listOptions, hideEmpty: checked })));
 		dom.append(this.listBar, $('span.listbar-spacer'));
 		this.indexStatus = dom.append(this.listBar, $('span.paradis-session-index-status'));
 		this.indexController.renderStatus(this.indexStatus);
