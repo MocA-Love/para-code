@@ -255,6 +255,29 @@ export function paradisCollectTreeWorktrees(entries: Iterable<IObjectTreeElement
 	return worktrees;
 }
 
+/**
+ * ピン留めの控えが、直前の閉じた行（プロジェクトか、セクションの見出し）のものか。
+ * 閉じたプロジェクトの控えは 1 段、閉じたセクションの控えは 2 段寄せてあり、中のプロジェクトで持ち主が分かる。
+ */
+export function paradisKeepBelongsTo(keep: IPinnedKeepElement, owner: WorkspaceTreeElement): boolean {
+	if (isSectionHeader(owner)) {
+		return keep.keepLevels === 2 && owner.repositories.some(repository => repository.id === keep.repositoryId);
+	}
+	return isRepository(owner) && keep.keepLevels === 1 && keep.repositoryId === owner.id;
+}
+
+/**
+ * ピン留めの控えの読み上げの階層（aria-level）。控えは閉じた行の兄弟としてツリーに入るのでツリーの深さは浅いが、
+ * 見た目は本来のスペースの段に寄せてあるので、読み上げもその段にそろえる。
+ * 閉じたセクションの下（2 段寄せ）は深さ 3、閉じたプロジェクトの下（1 段寄せ）はプロジェクトの深さ + 1。
+ */
+export function paradisPinnedKeepAriaLevel(keep: IPinnedKeepElement, sectioned: boolean): number {
+	if (keep.keepLevels === 2) {
+		return 3;
+	}
+	return sectioned ? 3 : 2;
+}
+
 /** ドラッグできる行（見出し・プロジェクト・スペース）。 */
 export type ParadisDraggedElement = IParadisWorkspaceRepository | IParadisWorktree | ISectionHeaderElement;
 

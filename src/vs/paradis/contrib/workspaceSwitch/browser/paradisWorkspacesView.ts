@@ -53,7 +53,7 @@ import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowse
 import { IParadisAgentStatusStore, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, PARADIS_GET_DIFF_STATS_COMMAND_ID, PARADIS_WORKSPACE_COLORS, paradisSortAgentStatuses, paradisWorkspaceColorHex, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisSpaceNotesService, IParadisSpaceNoteSummary } from '../common/paradisSpaceNotes.js';
 import { IParadisWorkspaceSectionsService } from '../common/paradisWorkspaceSections.js';
-import { ICreatingSpaceElement, isCreating, isPinnedKeep, isRepository, isSectionEmpty, isSectionHeader, ISectionEmptyElement, ISectionHeaderElement, isWorktree, PARADIS_SECTION_TREE_INDENT, ParadisDraggedElement, paradisBuildWorkspaceTree, paradisCollectTreeWorktrees, paradisWorkspaceDropDecision, paradisWorkspaceTreeElementId, SECTION_DRAFT_KEY, worktreeStateKeyFor, WorkspaceTreeElement } from './paradisWorkspaceSectionTree.js';
+import { ICreatingSpaceElement, isCreating, isPinnedKeep, isRepository, isSectionEmpty, isSectionHeader, ISectionEmptyElement, ISectionHeaderElement, isWorktree, PARADIS_SECTION_TREE_INDENT, ParadisDraggedElement, paradisKeepBelongsTo, paradisPinnedKeepAriaLevel, paradisBuildWorkspaceTree, paradisCollectTreeWorktrees, paradisWorkspaceDropDecision, paradisWorkspaceTreeElementId, SECTION_DRAFT_KEY, worktreeStateKeyFor, WorkspaceTreeElement } from './paradisWorkspaceSectionTree.js';
 import { ParadisCountBadge } from '../../../browser/paradisBadges.js';
 import { ParadisCollapsedRepositoryStateController } from './paradisCollapsedRepositoryStateController.js';
 import { ParadisWorkspacesNav } from './paradisWorkspacesNav.js';
@@ -1181,8 +1181,8 @@ class ParadisWorkspacesDragAndDrop implements ITreeDragAndDrop<WorkspaceTreeElem
 	constructor(
 		private readonly worktreeService: IParadisWorktreeService,
 		private readonly sectionsService: IParadisWorkspaceSectionsService,
-		/** 見出しの下に今見えている行の数（開いたセクションの中身。閉じていれば 0） */
-		private readonly visibleDescendantCount: (element: ISectionHeaderElement) => number,
+		/** 行のまとまりとしてその行の下に今見えている行の数（開いた中身と、閉じた行の控え） */
+		private readonly visibleRowsBelow: (element: WorkspaceTreeElement) => number,
 	) { }
 
 	getDragURI(element: WorkspaceTreeElement): string | null {
@@ -1223,9 +1223,9 @@ class ParadisWorkspacesDragAndDrop implements ITreeDragAndDrop<WorkspaceTreeElem
 		if (!decision.after) {
 			return { accept: true, effect: { type: ListDragOverEffectType.Move, position: ListDragOverEffectPosition.Before }, feedback: [targetIndex ?? -1] };
 		}
-		// 開いたセクションの見出しの「後」は、セクションの中身ごと後ろへ置く。線は見出しの直下ではなく、
-		// そのセクションの最後に見えている行の下に引く（落とした結果と線の位置を合わせる）
-		const below = isSectionHeader(targetElement) ? this.visibleDescendantCount(targetElement) : 0;
+		// 開いたセクション・プロジェクトの「後」は、中身ごと後ろへ置く。線は行の直下ではなく、そのまとまりの
+		// 最後に見えている行（閉じていれば控えの行）の下に引く（落とした結果と線の位置を合わせる）
+		const below = isSectionHeader(targetElement) || isRepository(targetElement) ? this.visibleRowsBelow(targetElement) : 0;
 		return { accept: true, effect: { type: ListDragOverEffectType.Move, position: ListDragOverEffectPosition.After }, feedback: [targetIndex === undefined ? -1 : targetIndex + below] };
 	}
 
@@ -1580,7 +1580,7 @@ export class ParadisWorkspacesView extends ViewPane {
 				},
 				horizontalScrolling: false,
 				// ドラッグ&ドロップ並び替え (案B)。リポジトリ同士・同一リポジトリ内 worktree 同士のみ許可
-				dnd: new ParadisWorkspacesDragAndDrop(this.worktreeService, this.sectionsService, header => this.visibleDescendantCount(header)),
+				dnd: new ParadisWorkspacesDragAndDrop(this.worktreeService, this.sectionsService, element => this.visibleRowsBelow(element)),
 				// worktree 行本体のクリックは「切り替え」専用にし、リポジトリ見出しの開閉は
 				// 左端の chevron でのみ行う (見出し行本体のクリックは何もしない)
 				expandOnlyOnTwistieClick: true,
@@ -1600,7 +1600,11 @@ export class ParadisWorkspacesView extends ViewPane {
 						const summary = isWorktree(element) && !element.missing ? agentStatusSummaryTooltip(getBreakdown(worktreeStateKeyFor(element))) : '';
 						return summary ? localize('paradis.workspaceSwitch.worktreeAriaLabel', "{0}、{1}", element.name, summary) : element.name;
 					},
-					getWidgetAriaLabel: () => localize('paradisWorkspaces', "スペース")
+					getWidgetAriaLabel: () => localize('paradisWorkspaces', "スペース"),
+					// 控えの行は閉じた行の兄弟なのでツリーの深さが見た目より浅い。見た目の段にそろえる（ほかはツリーの深さのまま）
+					getAriaLevel: (element: WorkspaceTreeElement) => isPinnedKeep(element)
+						? paradisPinnedKeepAriaLevel(element, this.sectioned)
+						: this.treeDepth(element)
 				}
 			}
 		));
@@ -2097,9 +2101,12 @@ export class ParadisWorkspacesView extends ViewPane {
 		return { member: true, last: this.sectionLastRowIds.has(paradisWorkspaceTreeElementId(element)) };
 	}
 
-	/** 見出しの下に今見えている行の数（ドラッグの線をセクションの最後の行の下に引くのに使う）。 */
-	private visibleDescendantCount(header: ISectionHeaderElement): number {
-		if (!this.tree?.hasElement(header)) {
+	/**
+	 * 行のまとまり（開いていれば中身、閉じていればその下の控え）として、その行の下に今見えている行の数。
+	 * ドラッグで「後」に落とすときの線を、まとまりの最後の行の下に引くのに使う。
+	 */
+	private visibleRowsBelow(element: WorkspaceTreeElement): number {
+		if (!this.tree?.hasElement(element)) {
 			return 0;
 		}
 		const count = (node: ITreeNode<WorkspaceTreeElement | null, FuzzyScore>): number => {
@@ -2114,7 +2121,23 @@ export class ParadisWorkspacesView extends ViewPane {
 			}
 			return rows;
 		};
-		return count(this.tree.getNode(header));
+		let rows = count(this.tree.getNode(element));
+		// 閉じた行の控えは兄弟として直後に並ぶので、続く控えのうちその行のものも数える
+		const siblings = this.tree.getNode(this.tree.getParentElement(element)).children;
+		const index = siblings.findIndex(sibling => sibling.element === element);
+		for (let i = index + 1; i < siblings.length; i++) {
+			const sibling = siblings[i].element;
+			if (!sibling || !isPinnedKeep(sibling) || !paradisKeepBelongsTo(sibling, element)) {
+				break;
+			}
+			rows++;
+		}
+		return rows;
+	}
+
+	/** ツリーの深さ（本家の既定の aria-level と同じ値）。 */
+	private treeDepth(element: WorkspaceTreeElement): number {
+		return this.tree?.hasElement(element) ? this.tree.getNode(element).depth : 1;
 	}
 
 	/** いまツリーが使う 1 段の字下げ（控えの行の寄せにも使う）。 */

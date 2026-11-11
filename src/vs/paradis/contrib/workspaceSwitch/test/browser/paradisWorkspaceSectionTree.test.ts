@@ -11,7 +11,7 @@ import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisWorkspaceRepository, IParadisWorktree } from '../../common/paradisWorkspaceSwitch.js';
 import { IParadisSectionGroup, IParadisWorkspaceSection } from '../../common/paradisWorkspaceSections.js';
-import { ICreatingSpaceElement, IParadisWorkspaceTreeSource, ISectionHeaderElement, isPinnedKeep, paradisBuildWorkspaceTree, paradisCollectTreeWorktrees, paradisWorkspaceDropDecision, paradisWorkspaceTreeElementId, SECTION_DRAFT_KEY, WorkspaceTreeElement } from '../../browser/paradisWorkspaceSectionTree.js';
+import { ICreatingSpaceElement, IParadisWorkspaceTreeSource, ISectionHeaderElement, isPinnedKeep, paradisBuildWorkspaceTree, paradisKeepBelongsTo, paradisPinnedKeepAriaLevel, paradisCollectTreeWorktrees, paradisWorkspaceDropDecision, paradisWorkspaceTreeElementId, SECTION_DRAFT_KEY, WorkspaceTreeElement } from '../../browser/paradisWorkspaceSectionTree.js';
 
 function repository(id: string): IParadisWorkspaceRepository {
 	return { id, name: id, uri: URI.file(`/repos/${id}`) };
@@ -201,6 +201,36 @@ suite('paradisWorkspaceSectionTree', () => {
 			'pinnedKeep:worktree:file:///worktrees/alpha/a1',
 			'worktree:gamma',
 		]);
+	});
+
+	test('keeps belong to the closed project or the closed section just above them', () => {
+		const closedProject = paradisBuildWorkspaceTree(sectioned({ collapsedRepositories: ['beta'], pinned: ['b1'] }));
+		const closedSection = paradisBuildWorkspaceTree(sectioned({ collapsedSections: ['work'], pinned: ['b1'] }));
+		const projectKeep = paradisCollectTreeWorktrees(closedProject.elements).find(wt => isPinnedKeep(wt))!;
+		const sectionKeep = paradisCollectTreeWorktrees(closedSection.elements).find(wt => isPinnedKeep(wt))!;
+		assert.ok(isPinnedKeep(projectKeep) && isPinnedKeep(sectionKeep));
+		const work = closedSection.headers.get('work')!;
+		const uncategorized = closedSection.headers.get('uncategorized')!;
+		assert.deepStrictEqual([
+			paradisKeepBelongsTo(projectKeep, beta),
+			paradisKeepBelongsTo(projectKeep, alpha),
+			paradisKeepBelongsTo(projectKeep, work),
+			paradisKeepBelongsTo(sectionKeep, work),
+			paradisKeepBelongsTo(sectionKeep, uncategorized),
+			paradisKeepBelongsTo(sectionKeep, beta),
+		], [true, false, false, true, false, false]);
+	});
+
+	test('keeps are read at the level they are drawn at', () => {
+		const flat = paradisBuildWorkspaceTree(source({ collapsedRepositories: ['beta'], pinned: ['b1'] }));
+		const closedProject = paradisBuildWorkspaceTree(sectioned({ collapsedRepositories: ['beta'], pinned: ['b1'] }));
+		const closedSection = paradisBuildWorkspaceTree(sectioned({ collapsedSections: ['work'], pinned: ['b1'] }));
+		const levels = [flat, closedProject, closedSection].map(built => {
+			const keep = paradisCollectTreeWorktrees(built.elements).find(wt => isPinnedKeep(wt))!;
+			assert.ok(isPinnedKeep(keep));
+			return paradisPinnedKeepAriaLevel(keep, built.sectioned);
+		});
+		assert.deepStrictEqual(levels, [2, 3, 3]);
 	});
 
 	test('drop decisions follow the kind of row, not its depth', () => {
