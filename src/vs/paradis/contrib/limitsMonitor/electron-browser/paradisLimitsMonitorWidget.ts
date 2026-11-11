@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// AIリミットモニターのタイトルバートリガー(案C: プロバイダーロゴ＋アカウントごとのリングゲージ)。
+// AIリミットモニターのタイトルバートリガー(案C: プロバイダーロゴ＋アカウントごとのリングゲージ。Claude・Codex・Antigravity の順)。
 // titlebarPart.ts の PARA-PATCH 点(resourceMonitorウィジェットの隣)から
 // createParadisLimitsMonitorWidget(instantiationService, container) として1回だけ生成される。
 //
@@ -496,7 +496,10 @@ class ParadisLimitsMonitorWidget extends Disposable {
 
 		this.renderProvider('claude', snapshot.claude.accounts);
 		this.renderProvider('codex', snapshot.codex.accounts);
-		const allAccounts = [...snapshot.claude.accounts, ...snapshot.codex.accounts];
+		// agy を入れていなければ antigravity は無い（ロゴも出さない）
+		const antigravityAccounts = snapshot.antigravity?.accounts ?? [];
+		this.renderProvider('antigravity', antigravityAccounts);
+		const allAccounts = [...snapshot.claude.accounts, ...snapshot.codex.accounts, ...antigravityAccounts];
 		const visibleAccounts = allAccounts.filter(account => !this.isAccountHidden(account));
 		this.updateTriggerAria(visibleAccounts, allAccounts.length - visibleAccounts.length);
 

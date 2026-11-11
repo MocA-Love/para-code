@@ -24,6 +24,11 @@ class TestLimitsMonitorService extends ParadisLimitsMonitorService {
 	hold = false;
 	failing = false;
 
+	// 本物の agy を起こさない（Antigravity の取り方は paradisAntigravityUsage.test.ts で見る）
+	protected override async fetchAntigravityUsage(): Promise<undefined> {
+		return undefined;
+	}
+
 	protected override async fetchCodexAccount(homePath: string): Promise<ICodexAccountResult> {
 		this.fetches++;
 		const round = this.fetches;

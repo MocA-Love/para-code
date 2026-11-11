@@ -37,13 +37,30 @@ suite('Paradis limits panel layout', () => {
 		});
 	});
 
+	test('uses three columns for the Antigravity column and stacks into one column when they do not fit', () => {
+		assert.deepStrictEqual({
+			// 1140px が入る → 1140px の3列
+			wide: paradisLimitsPanelLayout(100, 1600, 3),
+			// 1140px は入らないが 3列の最小幅は入る → 幅いっぱいの3列
+			narrowThreeColumns: paradisLimitsPanelLayout(500, 1000, 3),
+			// 3列が入らない → 2列にはせず 400px の1列
+			oneColumn: paradisLimitsPanelLayout(500, 900, 3),
+		}, {
+			wide: { left: 100, width: 1140, columns: 3 },
+			narrowThreeColumns: { left: 8, width: 984, columns: 3 },
+			oneColumn: { left: 492, width: 400, columns: 1 },
+		});
+	});
+
 	test('never lets either edge leave the window at any width', () => {
 		const clipped: string[] = [];
 		for (let viewport = 216; viewport <= 2000; viewport += 37) {
 			for (const anchor of [0, viewport / 2, viewport - 10]) {
-				const layout = paradisLimitsPanelLayout(anchor, viewport);
-				if (layout.left < 8 || layout.left + layout.width > viewport - 8) {
-					clipped.push(`${viewport}:${anchor}`);
+				for (const providerCount of [2, 3] as const) {
+					const layout = paradisLimitsPanelLayout(anchor, viewport, providerCount);
+					if (layout.left < 8 || layout.left + layout.width > viewport - 8) {
+						clipped.push(`${viewport}:${anchor}:${providerCount}`);
+					}
 				}
 			}
 		}

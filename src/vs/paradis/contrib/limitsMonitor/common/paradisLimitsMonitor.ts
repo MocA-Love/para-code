@@ -13,12 +13,14 @@
 //   - Codex: node/paradisLimitsMonitorChannel.ts。 ~/.codex* 各ホームの auth.json を読み、wham/usage API をHTTP直叩き。トークンの
 //     リフレッシュ/永続化は行わず、401時のみ `codex app-server` RPC にフォールバックして
 //     codex CLI 自身にリフレッシュさせる(auth.jsonへの書き込みを自前で行わないため)
+//   - Antigravity: node/paradisAntigravityUsage.ts。`agy -p "/usage" --output-format json` を数分おきに動かして読む
+//     （ログインは1つだけ。切り替え・追加は無い）
 
 import { localize } from '../../../../nls.js';
 
 export const PARADIS_LIMITS_MONITOR_CHANNEL = 'paradisLimitsMonitor';
 
-export type ParadisLimitsProvider = 'claude' | 'codex';
+export type ParadisLimitsProvider = 'claude' | 'codex' | 'antigravity';
 
 /** 1つのレート制限ウィンドウ(5時間枠・7日枠・モデル別枠)。 */
 export interface IParadisLimitsWindow {
@@ -142,7 +144,7 @@ export interface IParadisLimitsAccount {
 	readonly provider: ParadisLimitsProvider;
 	/**
 	 * 安定ID。Claude は Para Code に登録したアカウントが 'para-claude:<uuid>'、登録していない
-	 * いまのログインが 'claude-live'。Codex はホームの絶対パス。
+	 * いまのログインが 'claude-live'。Codex はホームの絶対パス。Antigravity は `~/.gemini` の絶対パス。
 	 */
 	readonly id: string;
 	readonly email?: string;
@@ -156,7 +158,7 @@ export interface IParadisLimitsAccount {
 	readonly organizationName?: string;
 	/** 使用状況を最後に取れた時刻（epoch ms）。 */
 	readonly fetchedAt?: number;
-	/** Codex: '~/.codex-2' のような表示用ホームラベル。 */
+	/** Codex: '~/.codex-2' のような表示用ホームラベル。Antigravity: '~/.gemini'。 */
 	readonly homeLabel?: string;
 	/** Codex: Para Codeが自動作成した追加ホームで、安全な削除条件を満たすか。 */
 	readonly removable?: boolean;
@@ -210,6 +212,11 @@ export interface IParadisLimitsProviderSnapshot {
 export interface IParadisLimitsSnapshot {
 	readonly claude: IParadisLimitsProviderSnapshot;
 	readonly codex: IParadisLimitsProviderSnapshot;
+	/**
+	 * Antigravity CLI（agy）の分。agy が見つからない（入れていない）ときと、このキーを知らない古い PC・接続先では
+	 * 無い。そのときパネルとタイトルバーは Antigravity を出さない。任意項目なので、知らないモバイルは無視する。
+	 */
+	readonly antigravity?: IParadisLimitsProviderSnapshot;
 	/** Codex の分を取り終えた時刻（epoch ms）。Claude の古さはアカウントごとの `fetchedAt` で見る。 */
 	readonly fetchedAt: number;
 	/** Codex の分が TTL を過ぎた前回の値（裏で取り直している）。古い PC・接続先では未設定。 */

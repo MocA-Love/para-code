@@ -64,9 +64,11 @@ export interface IParadisMobileLimitsProviderSnapshot extends Omit<IParadisLimit
 	readonly hiddenAccounts?: readonly IParadisMobileLimitsHiddenAccount[];
 }
 
-export interface IParadisMobileLimitsSnapshot extends Omit<IParadisLimitsSnapshot, 'claude' | 'codex'> {
+export interface IParadisMobileLimitsSnapshot extends Omit<IParadisLimitsSnapshot, 'claude' | 'codex' | 'antigravity'> {
 	readonly claude: IParadisMobileLimitsProviderSnapshot;
 	readonly codex: IParadisMobileLimitsProviderSnapshot;
+	/** Antigravity CLI の分（agy を入れていない PC では無い）。任意項目なので、知らないアプリは無視する。 */
+	readonly antigravity?: IParadisMobileLimitsProviderSnapshot;
 }
 
 /**
@@ -125,13 +127,15 @@ function paradisMobileLimitsProvider(provider: IParadisLimitsProviderSnapshot, h
 }
 
 /**
- * モバイルへ送る使用量（{@link paradisMobileLimitsAccount} を両方のプロバイダに当てる）。PC の使用量のパネルで
+ * モバイルへ送る使用量（{@link paradisMobileLimitsAccount} をすべてのプロバイダに当てる）。PC の使用量のパネルで
  * 隠したアカウント（`hidden`）は `accounts` から除き、`hiddenAccounts` へ移す。
  */
 export function paradisMobileLimitsSnapshot(snapshot: IParadisLimitsSnapshot, hidden: ParadisLimitsHiddenAccounts = new Map()): IParadisMobileLimitsSnapshot {
+	const { antigravity, ...rest } = snapshot;
 	return {
-		...snapshot,
+		...rest,
 		claude: paradisMobileLimitsProvider(snapshot.claude, hidden),
 		codex: paradisMobileLimitsProvider(snapshot.codex, hidden),
+		...(antigravity ? { antigravity: paradisMobileLimitsProvider(antigravity, hidden) } : {}),
 	};
 }

@@ -25,7 +25,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			scope: ConfigurationScope.WINDOW,
-			description: localize('paradis.limitsMonitor.enabled', "タイトルバーに Claude Code / Codex のレート制限モニターを表示するかどうかを制御します。")
+			description: localize('paradis.limitsMonitor.enabled', "タイトルバーに Claude Code / Codex / Antigravity CLI のレート制限モニターを表示するかどうかを制御します。")
 		},
 		'paradis.limitsMonitor.codexHomes': {
 			type: 'array',

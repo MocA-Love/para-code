@@ -18,7 +18,8 @@
 // アカウントの追加・切り替え・登録・claude-swap の案内（差し込み部品を含む）は出さない。直し方の案内も
 // 接続先のターミナルでの /login に変える。
 //
-// 幅は 800px で、左に Claude、右に Codex の2列にする（列の高さは揃えない）。ウィンドウが狭いときは
+// 幅は 800px で、左に Claude、右に Codex の2列にする（列の高さは揃えない）。agy を入れていると右端に
+// Antigravity の列を足して 1140px の3列にする（ログインは1つだけなので、追加・切り替え・再ログインのボタンは出さない）。ウィンドウが狭いときは
 // 幅を縮めるか1列にし、ウィンドウの端からはみ出さないようにする（paradisLimitsPanelLayout.ts）。
 // 使用状況を取得できていない（'unavailable'）カードは1行に縮め、押したときだけ理由とボタンを出す。
 //
@@ -192,6 +193,8 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 
 	updateSnapshot(snapshot: IParadisLimitsSnapshot): void {
 		this.lastSnapshot = snapshot;
+		// Antigravity の列が出たり消えたりすると列の数が変わる
+		this.reposition();
 		this.renderMaskButton();
 		this.renderBody(snapshot);
 		const secondsAgo = Math.max(0, Math.round((Date.now() - snapshot.fetchedAt) / 1000));
@@ -236,12 +239,13 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 	private reposition(): void {
 		const rect = this.anchor.getBoundingClientRect();
 		const win = dom.getActiveWindow();
-		const layout = paradisLimitsPanelLayout(rect.left, win.innerWidth);
+		const layout = paradisLimitsPanelLayout(rect.left, win.innerWidth, this.lastSnapshot?.antigravity ? 3 : 2);
 		const maxTop = win.innerHeight - 40;
 		this.element.style.top = `${Math.min(rect.bottom + 6, maxTop)}px`;
 		this.element.style.left = `${layout.left}px`;
 		this.element.style.width = `${layout.width}px`;
 		this.bodyElement.classList.toggle('two-columns', layout.columns === 2);
+		this.bodyElement.classList.toggle('three-columns', layout.columns === 3);
 	}
 
 	private renderEmpty(message: string): void {
@@ -264,6 +268,9 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		// 2列のときは左に Claude、右に Codex。1列のときは同じ2つの列が縦に並ぶ（.plm-body.two-columns の有無だけで切り替える）。
 		this.renderProviderSection(dom.append(this.bodyElement, $('.plm-column')), 'claude', localize('paradis.limitsMonitor.claude', "Claude"), snapshot.claude);
 		this.renderProviderSection(dom.append(this.bodyElement, $('.plm-column')), 'codex', localize('paradis.limitsMonitor.codex', "Codex"), snapshot.codex);
+		if (snapshot.antigravity) {
+			this.renderProviderSection(dom.append(this.bodyElement, $('.plm-column')), 'antigravity', localize('paradis.limitsMonitor.antigravity', "Antigravity"), snapshot.antigravity);
+		}
 		if (focusKey !== undefined) {
 			(this.focusTargets.get(focusKey) ?? this.element).focus();
 		}
@@ -287,6 +294,11 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 			? localize('paradis.limitsMonitor.accountCountWithHidden', "{0} / {1} アカウント", visible, total)
 			: localize('paradis.limitsMonitor.accountCount', "{0} アカウント", total);
 		dom.append(header, $('.plm-provider-count')).textContent = countLabel;
+		// Antigravity のログインは1つだけ（agy にはログインの置き場所を変える方法が無い）なので、追加は出さない。
+		if (provider === 'antigravity') {
+			this.renderProviderAccounts(parent, provider, providerSnapshot);
+			return;
+		}
 		const addButton = dom.append(header, $('button.plm-icon-btn.plm-add-btn.paradis-focus-ring-inset')) as HTMLButtonElement;
 		addButton.type = 'button';
 		addButton.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.add)}`));
@@ -386,7 +398,7 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		for (const account of accounts) {
 			const row = dom.append(list, $('.plm-hidden-row'));
 			dom.append(row, $('.plm-hidden-mail')).textContent = this.options.displayName(account);
-			if (account.provider === 'codex' && account.homeLabel) {
+			if (account.provider !== 'claude' && account.homeLabel) {
 				dom.append(row, $('.plm-hidden-home')).textContent = account.homeLabel;
 			}
 			const unhideButton = dom.append(row, $('button.plm-hidden-unhide')) as HTMLButtonElement;
@@ -459,8 +471,8 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 				: this.statusBadgeLabel(account.status);
 		}
 
-		// Codex のホームはメールの下の副題に出す（まとめた同じアカウントのホームも並べる。隠したものは出さない）。
-		if (account.provider === 'codex' && account.homeLabel) {
+		// Codex・Antigravity のホームはメールの下の副題に出す（まとめた同じアカウントのホームも並べる。隠したものは出さない）。
+		if (account.provider !== 'claude' && account.homeLabel) {
 			const labels = [account.homeLabel, ...others.map(other => other.homeLabel ?? other.id)];
 			dom.append(card, $('.plm-account-homes')).textContent = labels.length > 1
 				? localize('paradis.limitsMonitor.sameAccountHomes', "{0}（同じアカウント）", labels.join(localize('paradis.limitsMonitor.homeSeparator', "・")))
@@ -497,7 +509,11 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 			dom.append(errorRow, $('span')).textContent = remoteHost
 				? this.remoteHostStatusMessage(account)
 				: paradisLimitsNeedsRelogin(account.status) && !canRelogin
-					? localize('paradis.limitsMonitor.claudeLiveRelogin', "ターミナルで claude を起動し、/login でログインし直してください")
+					? account.provider === 'antigravity'
+						? account.status === 'error'
+							? this.statusMessage(account)
+							: localize('paradis.limitsMonitor.antigravitySignIn', "Antigravity CLI にサインインしていません。ターミナルで agy を起動してサインインすると表示されます")
+						: localize('paradis.limitsMonitor.claudeLiveRelogin', "ターミナルで claude を起動し、/login でログインし直してください")
 					: this.statusMessage(account);
 			if (paradisLimitsNeedsRelogin(account.status) && canRelogin) {
 				const reloginButton = dom.append(errorRow, $('button.plm-relogin-btn'));
@@ -509,6 +525,9 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 			this.renderMeters(card, account, false);
 			if (!account.fiveHour && !account.sevenDay && (account.scoped ?? []).length === 0) {
 				dom.append(card, $('.plm-error-row')).textContent = localize('paradis.limitsMonitor.noWindows', "使用状況データがありません");
+			} else if (account.provider === 'antigravity') {
+				// 枠の名前がモデルのグループなので、窓の長さを書き添える（agy の枠は 7 日だけ）
+				dom.append(card, $('.plm-card-note')).textContent = localize('paradis.limitsMonitor.antigravityNote', "7日の枠。モデルのグループごとに数えます");
 			}
 			// Claude はアカウントごとに数分〜十数分おきに取るので、古い値にはそのことを書き添える
 			// （パネル下端の「N 秒前に更新」は最後に問い合わせた時刻で、カードの値の古さとは限らない）。
