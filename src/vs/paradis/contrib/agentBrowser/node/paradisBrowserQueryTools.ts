@@ -182,6 +182,12 @@ export const PARADIS_BROWSER_FILE_TOOL_NAMES = [
 	'read_download',
 ] as const;
 
+/**
+ * 縮めて描いているタブの撮影を、ページの座標で描き直して撮る引数（take_screenshot・capture_screenshot の `sharp`）の説明。
+ * 撮る間にページへ resize が届くので、既定にはせず頼まれたときだけ使う。
+ */
+export const PARADIS_SHARP_SCREENSHOT_DESCRIPTION = 'Use when small text in the screenshot is unreadable on a tab fixed to a size larger than the editor (set_viewport): the viewport or rect is drawn again at page coordinates, sharp at the page size. While it captures, the page receives resize events (and ResizeObserver callbacks), which can close open menus or tooltips, so leave it off by default.';
+
 /** Tool definitions for cropped / multiple screenshots and for reading downloaded files. */
 export const PARADIS_MCP_BROWSER_FILE_TOOLS = [
 	{
@@ -207,6 +213,7 @@ export const PARADIS_MCP_BROWSER_FILE_TOOLS = [
 				padding: { type: 'number', minimum: 0, maximum: 200, description: 'CSS pixels of margin around each element (default 0).' },
 				format: { type: 'string', enum: ['png', 'jpeg'], description: 'Image format (default png).' },
 				quality: { type: 'number', minimum: 0, maximum: 100, description: 'jpeg only: quality.' },
+				sharp: { type: 'boolean', description: PARADIS_SHARP_SCREENSHOT_DESCRIPTION },
 				saveTo: { type: 'string', description: 'Absolute path of the image file to write, inside the folder of this terminal pane\'s space or the temporary folder. The images are then not returned inline. An existing file is never overwritten: choose a new file name for each capture, for example by adding -2.' },
 			},
 			additionalProperties: false,

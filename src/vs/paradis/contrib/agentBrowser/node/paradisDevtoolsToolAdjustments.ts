@@ -23,6 +23,7 @@
 
 import { paradisIsAllowedAgentTabUrl } from '../common/paradisAgentBrowserTabs.js';
 import { isRecord } from '../../../common/paradisGuards.js';
+import { PARADIS_SHARP_SCREENSHOT_DESCRIPTION } from './paradisBrowserQueryTools.js';
 
 /** take_snapshot が 1 回に返す本文の上限（文字数）。 */
 export const PARADIS_SNAPSHOT_MAX_CHARS = 20_000;
@@ -189,8 +190,12 @@ export function paradisAdjustDevtoolsToolDescriptor<T extends { readonly name: s
 			description: 'uid of an element from an earlier snapshot. Only that element and its descendants are returned (for example one dialog, form or table), which keeps the response short. The uids stay the same as in the full snapshot. Not combined with filePath.',
 		};
 		withCaptureNoOverwriteNote(properties);
-	} else if (tool.name === 'take_screenshot' && properties.filePath !== undefined) {
-		withCaptureNoOverwriteNote(properties);
+	} else if (tool.name === 'take_screenshot') {
+		// Para Code の引数。内蔵 chrome-devtools-mcp へは渡さない（paradisAgentBrowserService.ts が取り除く）
+		properties.sharp = { type: 'boolean', description: PARADIS_SHARP_SCREENSHOT_DESCRIPTION };
+		if (properties.filePath !== undefined) {
+			withCaptureNoOverwriteNote(properties);
+		}
 	}
 	return { ...tool, ...(description !== undefined ? { description } : {}), inputSchema: { ...tool.inputSchema, properties } };
 }

@@ -3038,6 +3038,24 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
 - tools/list の `full` の引数と説明は、設定がオンのときだけ足す。オンにした後に起動したエージェントから見える（差分そのものは、オンにしたときから返る）
 - 台での比較では精度は変わらず、スナップショットの文字数が 16〜40% 減った。効き目は素の take_snapshot の読み直しに限られ、`filePath` に保存して grep する使い方では減らない（`filePath` への保存は既にあるファイルを上書きしないので、保存のたびに新しい名前（`snapshot-2.txt` など）を付ける。2026-10-24、q.html Q413）
 
+## 縮めて表示している固定サイズのタブの撮り方と resize（agentBrowser、2026-11-12、PR #916）
+
+`set_viewport` でペインより大きい大きさ（フル HD など）に固定したタブは、ページの拡大率（タブの拡大率を切り離せる永続のプロファイル）か、エミュレーションの倍率（エージェントの一時タブなど、切り離せないとき）で縮めて描いている。撮り方によって、撮る間にページへ resize が届くかどうかが違う。Electron 43 の dev（Linux、DPR 1、ペイン 732×437、フル HD）で、`window` の `resize` と `ResizeObserver` を見て測った。
+
+| 撮り方 | いつ使うか | 撮る間の resize | 写り方 |
+|---|---|---|---|
+| 縮めた面を写して CSS の大きさへ揃える（`capturePage`、`viewport`・`viewport-rect` の経路） | `take_screenshot` の見えている範囲と `capture_screenshot` の `rect` の既定 | 届かない | ペインの画素ぶんの細かさを引き伸ばすので、9px の字は読めない |
+| ページの座標で描き直す（`captureBeyondViewport` と clip、`document-rect` の経路） | `sharp: true` を付けたとき、要素の撮影（`capture_screenshot` の要素、もとから） | 届く。見えている範囲 1 回で `resize` が 2 回（innerHeight 1081→1078→1081）。`rect` の撮影で、窓が一瞬 2×2 になる `resize` が 1 回届いたことがある（100vh のページ） | くっきり。スクロールバーは写らない。`position: fixed` の帯は画像の上下に写る（下の帯は約 3 px 上） |
+| ページ全体（`fullPage`、`full-page` の経路） | `take_screenshot` の `fullPage` | 届く（`captureBeyondViewport` を使うため） | エミュレーションの倍率ではくっきり。ページの拡大率では縮めた大きさのまま返る（703×607、未対応） |
+
+撮るたびに resize を起こさずにくっきり撮る方法（案 3）は、成り立たなかった。撮る間だけ deviceScaleFactor を上げ、幅・高さ・`scale` は変えない形を試した。
+- resize と ResizeObserver の通知は届かず、innerWidth・innerHeight も変わらなかった。
+- 元のパラメータで当て直すと、devicePixelRatio は元に戻った。
+- ただし `capturePage` が写す面は、どちらの方式でもビューの画素（719×404）のままだった。字はくっきりしない。
+そのため、ページの座標で描き直す撮り方は道具の引数 `sharp` で頼まれたときだけ使い、説明にも「撮る間にページへ resize が届く」と書いた（`PARADIS_SHARP_SCREENSHOT_DESCRIPTION`）。
+
+ページの拡大率で縮めているとき、Chromium は小数を含む clip を、拡大した後の単位の整数に切り捨てる（拡大率 0.3745 で、幅 719 の clip は 1920 px、718.9999 の clip は 1917 px で返った）。そのため clip は整数に広げて撮り、返った画像から余分を切り落とす（`browserViewDocumentRectCrop`）。clip そのものを丸めて渡すと、画像が右と下で最大 3 px 欠ける。
+
 ## モバイルの HTML の埋め込み画像は 1 枚ずつ送る（mobileRelay、2026-10-10、Q325 A）
 
 アプリが fs の `read` に `htmlImages: true` を付けたとき（capability `fs.html-images.v1`）、PC は HTML から `<img src="data:image/...">` の中身を抜き、同じ縦横の空の SVG を仮の `src` に置いた本文を返す。画像は fs の `htmlImage` で 1 枚ずつ返し、アプリは元の `data:` の文字列のまま戻す。実体は `src/vs/paradis/contrib/mobileRelay/common/paradisMobileHtmlImages.ts`（抜き出し）、`electron-browser/paradisMobileHtmlImageRequests.ts`（控えと `htmlImage`）、`app/mobile/src/features/code/htmlImages.ts`（取り寄せのスクリプトと順番待ち）。

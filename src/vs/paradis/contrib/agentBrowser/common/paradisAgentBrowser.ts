@@ -449,6 +449,11 @@ export interface IParadisCdpScreenshotOptions {
 	readonly captureBeyondViewport?: boolean;
 	/** CDP `captureBeyondViewport`（clipなし）由来のフルページ指定。 */
 	readonly fullPage?: boolean;
+	/**
+	 * 縮めて描いているタブの見えている範囲・範囲指定の撮影を、ページの座標で描き直して撮る（道具の `sharp`）。
+	 * 小さい字も読めるが、撮る間にページへ resize が届く。既定（false）は縮めた面を写して CSS の大きさへ揃える。
+	 */
+	readonly sharp?: boolean;
 }
 
 /** IPCへ公開するexact BrowserView descriptor各文字列の上限。 */
@@ -888,7 +893,7 @@ export function paradisParseExactCdpScreenshotOptions(value: unknown): IParadisC
 
 function paradisParseExactCdpScreenshotOptionsUnsafe(value: unknown): IParadisCdpScreenshotOptions | undefined {
 	if (!paradisIsExactRecord(value)
-		|| !paradisHasExactKeys(value, [], ['format', 'quality', 'pageRect', 'captureBeyondViewport', 'fullPage'])) {
+		|| !paradisHasExactKeys(value, [], ['format', 'quality', 'pageRect', 'captureBeyondViewport', 'fullPage', 'sharp'])) {
 		return undefined;
 	}
 	const hasFormat = Object.hasOwn(value, 'format');
@@ -896,11 +901,13 @@ function paradisParseExactCdpScreenshotOptionsUnsafe(value: unknown): IParadisCd
 	const hasPageRect = Object.hasOwn(value, 'pageRect');
 	const hasCaptureBeyondViewport = Object.hasOwn(value, 'captureBeyondViewport');
 	const hasFullPage = Object.hasOwn(value, 'fullPage');
+	const hasSharp = Object.hasOwn(value, 'sharp');
 	const format = hasFormat ? value.format : undefined;
 	const quality = hasQuality ? value.quality : undefined;
 	const pageRectValue = hasPageRect ? value.pageRect : undefined;
 	const captureBeyondViewport = hasCaptureBeyondViewport ? value.captureBeyondViewport : undefined;
 	const fullPage = hasFullPage ? value.fullPage : undefined;
+	const sharp = hasSharp ? value.sharp : undefined;
 	if (hasFormat && format !== 'jpeg' && format !== 'png') {
 		return undefined;
 	}
@@ -912,6 +919,9 @@ function paradisParseExactCdpScreenshotOptionsUnsafe(value: unknown): IParadisCd
 		return undefined;
 	}
 	if (hasFullPage && typeof fullPage !== 'boolean') {
+		return undefined;
+	}
+	if (hasSharp && typeof sharp !== 'boolean') {
 		return undefined;
 	}
 
@@ -946,6 +956,7 @@ function paradisParseExactCdpScreenshotOptionsUnsafe(value: unknown): IParadisCd
 		...(pageRect !== undefined ? { pageRect } : {}),
 		...(hasCaptureBeyondViewport ? { captureBeyondViewport: captureBeyondViewport as boolean } : {}),
 		...(hasFullPage ? { fullPage: fullPage as boolean } : {}),
+		...(hasSharp ? { sharp: sharp as boolean } : {}),
 	});
 }
 

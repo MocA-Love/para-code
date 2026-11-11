@@ -387,6 +387,8 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 		assert.strictEqual(paradisParseExactCdpScreenshotOptions({ captureBeyondViewport: true }), undefined);
 		assert.strictEqual(paradisParseExactCdpScreenshotOptions({ fullPage: true, captureBeyondViewport: true }), undefined);
 		assert.deepStrictEqual(paradisParseExactCdpScreenshotOptions({ captureBeyondViewport: false }), { captureBeyondViewport: false });
+		assert.deepStrictEqual(paradisParseExactCdpScreenshotOptions({ format: 'png', sharp: true }), { format: 'png', sharp: true });
+		assert.strictEqual(paradisParseExactCdpScreenshotOptions({ sharp: 'yes' }), undefined);
 		assert.deepStrictEqual(paradisParseExactCdpScreenshotOptions(Object.create({ format: 'png' })), {});
 		let formatReads = 0;
 		const changingFormat: Record<string, unknown> = {};
@@ -640,7 +642,7 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 		assert.strictEqual(Object.isFrozen(current.captureOptions[1]), true);
 	});
 
-	test('on a page drawn shrunk by Device Emulation, the visible page and a rect are captured in document coordinates, and an unshrunk page as before', async () => {
+	test('on a page drawn shrunk by Device Emulation, a sharp capture of the visible page and a rect is taken in document coordinates, and every other capture as before', async () => {
 		const current = createTestView({
 			emulatedDevice: { width: 1920, height: 1080 },
 			emulatedScale: 0.43,
@@ -649,15 +651,20 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 		const registry = createRegistry({ 'view-1': current.view });
 		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1');
 		const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
+		// 頼まれていない撮影は、縮めた面を写す今の撮り方（撮る間にページへ resize が届かない）
 		await service.captureExactViewScreenshot(exact, { format: 'png' });
 		await service.captureExactViewScreenshot(exact, { format: 'png', pageRect: { x: 10, y: 20, width: 600, height: 200 } });
-		await service.captureExactViewScreenshot(exact, { format: 'png', fullPage: true });
+		await service.captureExactViewScreenshot(exact, { format: 'png', sharp: true });
+		await service.captureExactViewScreenshot(exact, { format: 'png', pageRect: { x: 10, y: 20, width: 600, height: 200 }, sharp: true });
+		await service.captureExactViewScreenshot(exact, { format: 'png', fullPage: true, sharp: true });
 		current.state.emulatedScale = 1;
-		await service.captureExactViewScreenshot(exact, { format: 'png' });
+		await service.captureExactViewScreenshot(exact, { format: 'png', sharp: true });
 		current.state.emulatedScale = 0.43;
 		current.state.emulatedDevice = undefined;
-		await service.captureExactViewScreenshot(exact, { format: 'png' });
+		await service.captureExactViewScreenshot(exact, { format: 'png', sharp: true });
 		assert.deepStrictEqual(current.captureOptions, [
+			{ format: 'png' },
+			{ format: 'png', pageRect: { x: 10, y: 20, width: 600, height: 200 } },
 			{ format: 'png', pageRect: { x: 0, y: 300, width: 1920, height: 1080 }, captureBeyondViewport: true },
 			{ format: 'png', pageRect: { x: 10, y: 320, width: 600, height: 200 }, captureBeyondViewport: true },
 			{ format: 'png', fullPage: true },
@@ -677,7 +684,7 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 		const registry = createRegistry({ 'view-1': current.view });
 		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1');
 		const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
-		const rect = { format: 'png' as const, pageRect: { x: 10, y: 20, width: 60, height: 20 } };
+		const rect = { format: 'png' as const, pageRect: { x: 10, y: 20, width: 60, height: 20 }, sharp: true };
 		current.state.captureResult = Promise.resolve(png(60, 20));
 		const sameSize = await service.captureExactViewScreenshot(exact, rect);
 		// devicePixelRatio 2 で返った（縮め方によってはページの倍率のまま撮れる）
