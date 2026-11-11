@@ -105,14 +105,19 @@ export class ParadisNetworkActivity {
 		this._lastActivityAt = undefined;
 	}
 
-	snapshot(ignoreOlderThanMs: number): IParadisNetworkActivitySnapshot {
+	/**
+	 * @param ignoreOlderThanMs これより長く続いている要求は数えない（長いポーリング・ストリーミング）。
+	 * @param keepStartedAfter この時刻（`_now` の時計）より後に始まった要求は、長く続いても外さない（操作の後に
+	 * 始まった遅い要求を待つため。外すのは操作の前から続いている要求だけ）。省けば始まった時刻を問わない。
+	 */
+	snapshot(ignoreOlderThanMs: number, keepStartedAfter?: number): IParadisNetworkActivitySnapshot {
 		const now = this._now();
 		let inflight = 0;
 		let longLived = 0;
 		let lastActivityAt = this._lastActivityAt;
 		const pendingUrls: string[] = [];
 		for (const entry of this._inflight.values()) {
-			if (now - entry.startedAt > ignoreOlderThanMs) {
+			if (now - entry.startedAt > ignoreOlderThanMs && (keepStartedAfter === undefined || entry.startedAt < keepStartedAfter)) {
 				longLived++;
 				continue;
 			}

@@ -2739,7 +2739,8 @@ main は span runner を持たない（繋ぐと素通しだった既存の span
 |---|---|---|
 | 共通 | `calls`・`call_failures`・`arg_refused` | エージェントが呼んだ道具（run_steps の中の手順は数えない）、失敗した結果、引数の検査で断った数 |
 | settleAfterAction | `observe_calls`・`observe_none`・`observe_snapshot`・`settle_zero` | 観測を添える道具の呼び出しと、`observe: "none"`・`"snapshot"`・待ち 0 を渡した数 |
-| | `settle_quiet`・`settle_timeout`・`settle_unresponsive`・`settle_dialog` と各 `_ms`、`settle_wait_ms`、`settle_wait_le_500/le_2000/gt_2000` | 実際に待った結末（落ち着いた・上限で打ち切った・ページが答えない・ダイアログ）と待ったミリ秒の合計・帯 |
+| | `settle_quiet`・`settle_timeout`・`settle_unresponsive`・`settle_dialog`・`settle_stopped` と各 `_ms`、`settle_wait_ms`、`settle_wait_le_500/le_2000/gt_2000` | 実際に待った結末（落ち着いた・上限で打ち切った・ページが答えない・ダイアログ・上限の前に読めなくなってやめた）と待ったミリ秒の合計・帯。`settle_stopped` は 2026-11-12（Q618）から。それより前の版では、評価の失敗・取り消しで上限の前に抜けた回も `settle_timeout` に入っていた |
+| | `settle_timeout_dom`・`settle_timeout_dom_style`・`settle_timeout_network`・`settle_timeout_busy`・`settle_timeout_loading` | 上限で打ち切った回に、最後に読んだ時点で残っていた理由（DOM が静かな時間に届かない・そのうち最後の変化が style・通信・読み込み中の印・文書の読み込み中）。理由は重なりうるので、それぞれ 1 回ずつ数え、和は `settle_timeout` を超えうる。2026-11-12（Q618）から |
 | runStepsFlow | `steps_calls`・`steps_flow_calls`・`steps_used_for_each/repeat_until/expect/sleep/reference` | run_steps の数、手順書の経路を通った数、使った書き方 |
 | | `steps_ok`・`steps_partial`・`steps_refused`・`steps_stop_failure/step_limit/time_limit/cancelled`・`steps_expect_failed`・`steps_executed` | 結末（`partial` は continue_on_error で失敗を含んで最後まで）、成り立たなかった expect を含んだ回、動いた手順の合計 |
 | | `steps_arg_refused`・`steps_step_refused`・`steps_step_observe_refused` | run_steps 自体の引数・手順の引数を断った数。最後は手順の args に `observe`・`settle_seconds` を書いて断られた数 |
@@ -2755,7 +2756,8 @@ Explore の spans（または Discover の transactions）で見る例。どれ�
 
 | 見たいこと | 絞り込み | 集計 |
 |---|---|---|
-| settle が時間切れで打ち切る割合（オンの人だけ） | `transaction:para.agentBrowser.usage safe_set_settle:on` | `sum(tags[safe_settle_timeout,number])` ÷ (`settle_quiet`+`settle_timeout`+`settle_unresponsive`+`settle_dialog` の sum)。`sum(tags[safe_settle_timeout_ms,number])` ÷ `sum(tags[safe_settle_wait_ms,number])` が待ちの無駄 |
+| settle が時間切れで打ち切る割合（オンの人だけ） | `transaction:para.agentBrowser.usage safe_set_settle:on` | `sum(tags[safe_settle_timeout,number])` ÷ (`settle_quiet`+`settle_timeout`+`settle_unresponsive`+`settle_dialog`+`settle_stopped` の sum)。`settle_stopped` が無い前の版と比べるときは、分子に `settle_stopped` を足して前の数え方に揃える。`sum(tags[safe_settle_timeout_ms,number])` ÷ `sum(tags[safe_settle_wait_ms,number])` が待ちの無駄（前の版と比べるときは、`settle_timeout_ms` に `settle_stopped_ms` を足す） |
+| settle が上限まで待った理由（Q618 の判定の後） | 同上 | `settle_timeout_dom`・`_dom_style`・`_network`・`_busy`・`_loading` の sum を `settle_timeout` の sum で割る（重なるので和は 1 を超えうる）。`_dom_style` が多ければアニメーションの間引きがまだ足りない、`_busy` が多ければ読み込み中の印が飾りに当たっている |
 | observe: none で外す割合 | 同上 | `sum(tags[safe_observe_none,number])` ÷ `sum(tags[safe_observe_calls,number])` |
 | オンとオフで道具の失敗率が変わるか | `transaction:para.agentBrowser.usage`、`safe_set_settle` で group by | `sum(tags[safe_call_failures,number])` ÷ `sum(tags[safe_calls,number])` |
 | run_steps の手順書が壊れていないか | `transaction:para.agentBrowser.usage safe_set_steps_flow:on` | `steps_ok`・`steps_stop_failure`・`steps_refused`・`steps_step_observe_refused` の sum。`steps_step_observe_refused` が 0 でなければ「手順の中の observe を断る」件がまだ起きている |

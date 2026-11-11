@@ -37,8 +37,26 @@ export interface IParadisAgentBrowserUsageSettings {
 	readonly runStepsFlow: boolean;
 }
 
-/** 操作の後の待ち（settleAfterAction）の結末。`timeout` は待ちの上限で打ち切った。 */
-export type ParadisSettleOutcome = 'quiet' | 'timeout' | 'unresponsive' | 'dialog';
+/**
+ * 操作の後の待ち（settleAfterAction）の結末。`timeout` は待ちの上限で打ち切った。`stopped` は上限の前に
+ * ページを読めなくなって（評価の失敗・取り消し）待つのをやめた。
+ */
+export type ParadisSettleOutcome = 'quiet' | 'timeout' | 'unresponsive' | 'dialog' | 'stopped';
+
+/** 落ち着く前の最後の DOM の変化の種類（要素の増減・文字・class・style・ほかの属性）。 */
+export type ParadisSettleChangeKind = 'elements' | 'text' | 'class' | 'style' | 'attribute';
+
+/** 上限まで待っても落ち着かなかったとき、最後に読んだ時点で残っていた理由（いくつも立ちうる）。 */
+export interface IParadisSettleBlocked {
+	/** DOM が静かな時間に届いていなかった（最後の変化の種類）。 */
+	readonly dom?: ParadisSettleChangeKind;
+	/** 通信が落ち着いていなかった（終わっていない要求の数。0 なら終わった直後）。 */
+	readonly network?: number;
+	/** 読み込み中の印が見えていた。 */
+	readonly busy?: boolean;
+	/** 文書の読み込みが終わっていなかった（遷移の途中を含む）。 */
+	readonly loading?: boolean;
+}
 
 /** take_snapshot を差分にする設定（snapshotDiff）で、何を返したか。 */
 export type ParadisSnapshotDiffOutcome =
@@ -258,13 +276,35 @@ export class ParadisAgentBrowserUsage implements IDisposable {
 		}
 	}
 
-	/** 操作の後の待ちが終わった。 */
-	noteSettle(outcome: ParadisSettleOutcome, waitedMs: number): void {
+	/**
+	 * 操作の後の待ちが終わった。
+	 * @param blocked 上限で打ち切ったときに残っていた理由。立っている理由をそれぞれ 1 回ずつ数える（重なりうるので、
+	 * 理由の数の和は `settle_timeout` を超えうる）。
+	 */
+	noteSettle(outcome: ParadisSettleOutcome, waitedMs: number, blocked?: IParadisSettleBlocked): void {
 		const waited = Math.max(0, Math.round(waitedMs));
 		this.tally.add(`settle_${outcome}`);
 		this.tally.add('settle_wait_ms', waited);
 		this.tally.add(`settle_${outcome}_ms`, waited);
 		this.tally.add(`settle_wait_${paradisUsageBand(waited, [500, 2_000])}`);
+		if (outcome === 'timeout' && blocked !== undefined) {
+			if (blocked.dom !== undefined) {
+				this.tally.add('settle_timeout_dom');
+				// アニメーション（style の繰り返し）がまだ上限を作っているかを分けて見る
+				if (blocked.dom === 'style') {
+					this.tally.add('settle_timeout_dom_style');
+				}
+			}
+			if (blocked.network !== undefined) {
+				this.tally.add('settle_timeout_network');
+			}
+			if (blocked.busy) {
+				this.tally.add('settle_timeout_busy');
+			}
+			if (blocked.loading) {
+				this.tally.add('settle_timeout_loading');
+			}
+		}
 	}
 
 	/** run_steps が終わった（`flow` は手順書の経路を通ったか）。 */

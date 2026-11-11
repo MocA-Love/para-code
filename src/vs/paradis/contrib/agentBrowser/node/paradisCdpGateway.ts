@@ -561,10 +561,11 @@ export class ParadisCdpGateway extends Disposable {
 
 	/**
 	 * 共有中のタブの通信の様子（wait_until の network idle）。内蔵 chrome-devtools-mcp が接続して
-	 * いる間に流れた Network.* だけを数える。`ignoreOlderThanMs` より長く続く要求は数えない。
+	 * いる間に流れた Network.* だけを数える。`ignoreOlderThanMs` より長く続く要求は数えない。ただし
+	 * `keepStartedAfter`（Date.now の時刻）以後に始まった要求は長く続いても数える（操作の後の待ち）。
 	 */
-	getNetworkActivity(token: string, ignoreOlderThanMs: number): IParadisNetworkActivitySnapshot | undefined {
-		return this._networkActivity.get(token)?.snapshot(ignoreOlderThanMs);
+	getNetworkActivity(token: string, ignoreOlderThanMs: number, keepStartedAfter?: number): IParadisNetworkActivitySnapshot | undefined {
+		return this._networkActivity.get(token)?.snapshot(ignoreOlderThanMs, keepStartedAfter);
 	}
 
 	override dispose(): void {

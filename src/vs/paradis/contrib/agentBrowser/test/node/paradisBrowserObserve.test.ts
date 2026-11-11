@@ -8,8 +8,12 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisAgentTabScopeKey } from '../../common/paradisAgentTabScope.js';
-import { IParadisObserveHost, ParadisBrowserObserver, paradisFormatChanges, paradisObserveOptionsFor, paradisParseListPages, paradisTakeObserveArguments, paradisWithObserveArguments } from '../../node/paradisBrowserObserve.js';
+import { IParadisObserveHost, PARADIS_SETTLE_NETWORK_WINDOW_MS, ParadisBrowserObserver, paradisFormatChanges, paradisObserveOptionsFor, paradisParseListPages, paradisTakeObserveArguments, paradisWithObserveArguments } from '../../node/paradisBrowserObserve.js';
 import { paradisObserveCollectFunction, paradisObserveInstallFunction, paradisObserveReadFunction } from '../../node/paradisBrowserObservePageScript.js';
+import { ParadisAgentBrowserUsage } from '../../common/paradisAgentBrowserUsage.js';
+import { ParadisSpanAttributes } from '../../../sentry/common/paradisSentryDiagnostics.js';
+import { ParadisFakeUsageClock } from '../../../sentry/test/common/paradisFakeUsageClock.js';
+import { ParadisNetworkActivity } from '../../node/paradisCdpNetworkActivity.js';
 
 function text(value: string): unknown {
 	return { content: [{ type: 'text', text: value }] };
@@ -24,8 +28,12 @@ const PAGES_TWO = text('## Pages\n1: Orders (http://127.0.0.1/orders) [selected]
 
 interface IFakeHostOptions {
 	readonly pages: readonly unknown[];
-	/** read の答え（既定は落ち着いた記録）。 */
+	/** read の答え（既定は落ち着いた記録）。`reads` があれば読むたびに順に返す（最後の答えを繰り返す）。 */
 	readonly read?: unknown;
+	readonly reads?: readonly unknown[];
+	/** 通信の様子（既定は静か）。`networkOf` があれば、操作を始めた時刻と今の時刻から作る。 */
+	readonly network?: { readonly inflight: number; readonly quietMs: number | undefined };
+	readonly networkOf?: (actionStartedAt: number, now: number) => { readonly inflight: number; readonly quietMs: number | undefined };
 	/** 待たない評価に対応していない vendored を真似る。 */
 	readonly cannotEvaluate?: boolean;
 	readonly collect?: unknown;
@@ -36,6 +44,7 @@ function fakeHost(options: IFakeHostOptions): { readonly host: IParadisObserveHo
 	const calls: string[] = [];
 	let pageCall = 0;
 	let downloadCall = 0;
+	let readCall = 0;
 	let clock = 0;
 	const host: IParadisObserveHost = {
 		evaluate: async source => {
@@ -45,6 +54,9 @@ function fakeHost(options: IFakeHostOptions): { readonly host: IParadisObserveHo
 				return evaluateResult({ url: 'http://127.0.0.1/orders', title: 'Orders' });
 			}
 			if (kind === 'read') {
+				if (options.reads) {
+					return evaluateResult(options.reads[Math.min(readCall++, options.reads.length - 1)]);
+				}
 				return options.read ?? evaluateResult({ age: 500, ready: true, busy: false, navigated: false });
 			}
 			return evaluateResult(options.collect);
@@ -54,7 +66,7 @@ function fakeHost(options: IFakeHostOptions): { readonly host: IParadisObserveHo
 			return options.pages[Math.min(pageCall++, options.pages.length - 1)];
 		},
 		snapshot: async () => text('## Latest page snapshot\nuid=1_0 RootWebArea'),
-		network: () => ({ inflight: 0, quietMs: 500 }),
+		network: actionStartedAt => options.networkOf?.(actionStartedAt, clock) ?? options.network ?? { inflight: 0, quietMs: 500 },
 		tabs: async () => [{ tabId: 't1', url: 'http://127.0.0.1/orders', title: 'Orders', current: true, shared: false }],
 		downloads: async () => options.downloads?.[Math.min(downloadCall++, (options.downloads?.length ?? 1) - 1)],
 		isCurrent: () => true,
@@ -116,11 +128,15 @@ suite('Paradis browser observe', () => {
 		const settled = { quiet: true, waited: 320, navigated: false };
 		assert.deepStrictEqual({
 			changes: paradisFormatChanges({ url: 'http://a/', title: 'A' }, { url: 'http://a/#2', title: 'A', added: ['dialog "Cancel?"', '  button "Confirm" [disabled]'], changed: ['cell "Cancelled"'], removed: ['"Loading..."'], focus: 'checkbox "I understand" [not checked]', more: 2 }, settled),
-			none: paradisFormatChanges({ url: 'http://a/', title: 'A' }, { url: 'http://a/', title: 'A', added: [], changed: [], removed: [], more: 0 }, { quiet: false, waited: 2000, navigated: false }),
+			none: paradisFormatChanges({ url: 'http://a/', title: 'A' }, { url: 'http://a/', title: 'A', added: [], changed: [], removed: [], more: 0 }, { quiet: false, waited: 2000, navigated: false, blocked: {} }),
+			reasons: paradisFormatChanges({ url: 'http://a/', title: 'A' }, { url: 'http://a/', title: 'A', added: [], changed: [], removed: [], more: 0 }, { quiet: false, waited: 2000, navigated: false, blocked: { dom: 'style', network: 1, busy: true, loading: true } }),
+			stopped: paradisFormatChanges({ url: 'http://a/', title: 'A' }, { url: 'http://a/', title: 'A', added: [], changed: [], removed: [], more: 0 }, { quiet: false, waited: 300, navigated: false }),
 			navigated: paradisFormatChanges({ url: 'http://a/', title: 'A' }, { missing: true, url: 'http://b/', title: 'B', text: 'Welcome' }, { quiet: true, waited: 900, navigated: true }),
 		}, {
 			changes: '[Page after the action] Settled after 320 ms.\nURL: http://a/ -> http://a/#2\nAppeared:\n- dialog "Cancel?"\n-   button "Confirm" [disabled]\nChanged:\n- cell "Cancelled"\nDisappeared:\n- "Loading..."\nFocus: checkbox "I understand" [not checked]\n(2 more changes not listed; call take_snapshot for the whole page.)',
 			none: '[Page after the action] Still changing or loading after 2000 ms (the wait limit); use wait_until if you expect a slower update.\nNo visible change on the page.',
+			reasons: '[Page after the action] Still changing or loading after 2000 ms (the wait limit: the page kept changing (last: style), 1 network request still pending, a loading indicator is visible, the document is still loading); use wait_until if you expect a slower update.\nNo visible change on the page.',
+			stopped: '[Page after the action] Stopped waiting after 300 ms; the page may still be changing.\nNo visible change on the page.',
 			navigated: '[Page after the action] Settled after 900 ms.\nA new document loaded: http://b/ "B"\nStart of its text: Welcome',
 		});
 	});
@@ -239,8 +255,42 @@ suite('Paradis browser observe', () => {
 		const before = await observer.before(host, options, 'changes', 2000);
 		const report = await observer.after(host, 'pane', options, before, 'changes', 2000);
 		assert.deepStrictEqual({ calls, report }, {
-			calls: ['list_pages', 'install', 'list_pages', 'read', 'read', 'read', 'list_pages', 'collect'],
-			report: '[Page after the action] Settled after 200 ms.\nAppeared:\n- text "Report ID: RPT-1"',
+			calls: ['list_pages', 'install', 'list_pages', 'read', 'read', 'list_pages', 'collect'],
+			report: '[Page after the action] Settled after 100 ms.\nAppeared:\n- text "Report ID: RPT-1"',
+		});
+	});
+
+	// Q618: 静かな時間は 100 ms。上限まで待ったときだけ timeout と数え、残っていた理由を返答と Sentry に載せる
+	test('the page settles after 100 quiet ms, and a wait that hits the limit reports and counts why it did not settle', async () => {
+		const options = { settle: true, state: false };
+		const collect = { url: 'http://127.0.0.1/orders', title: 'Orders', added: [], changed: [], removed: [], more: 0 };
+		const run = async (host: IParadisObserveHost, usage?: ParadisAgentBrowserUsage) => {
+			const observer = new ParadisBrowserObserver(usage);
+			const before = await observer.before(host, options, 'changes', 2000);
+			return (await observer.after(host, 'pane', options, before, 'changes', 2000))?.split('\n')[0];
+		};
+		const sent: ParadisSpanAttributes[] = [];
+		const usage = new ParadisAgentBrowserUsage(() => ({ settle: true, state: false, snapshotDiff: false, siteNotes: false, siteRecipes: false, runStepsFlow: false }), (_feature, _operation, attributes) => sent.push(attributes), new ParadisFakeUsageClock());
+		const quiet = await run(fakeHost({ pages: [PAGES_ONE], collect, reads: [{ age: 0, lastKind: 'elements', ready: true, busy: false }, { age: 100, lastKind: 'elements', ready: true, busy: false }] }).host, usage);
+		const animating = await run(fakeHost({ pages: [PAGES_ONE], collect, reads: [{ age: 40, lastKind: 'style', ready: true, busy: false }] }).host, usage);
+		const polling = await run(fakeHost({ pages: [PAGES_ONE], collect, network: { inflight: 2, quietMs: 0 }, read: evaluateResult({ age: 900, lastKind: 'text', ready: true, busy: true }) }).host, usage);
+		const unknownKind = await run(fakeHost({ pages: [PAGES_ONE], collect, reads: [{ age: 0, lastKind: '<b>secret</b>', ready: false, busy: false }] }).host, usage);
+		const failed = await run(fakeHost({ pages: [PAGES_ONE], collect, read: { content: [{ type: 'text', text: 'Error: boom' }], isError: true } }).host, usage);
+		usage.dispose();
+		const settleTags = Object.fromEntries(Object.entries(sent[0]).filter(([key]) => key.startsWith('safe_settle_')));
+		assert.deepStrictEqual({ quiet, animating, polling, unknownKind, failed, settleTags }, {
+			quiet: '[Page after the action] Settled after 100 ms.',
+			animating: '[Page after the action] Still changing or loading after 2000 ms (the wait limit: the page kept changing (last: style)); use wait_until if you expect a slower update.',
+			polling: '[Page after the action] Still changing or loading after 2000 ms (the wait limit: 2 network requests still pending, a loading indicator is visible); use wait_until if you expect a slower update.',
+			unknownKind: '[Page after the action] Still changing or loading after 2000 ms (the wait limit: the page kept changing (last: elements), the document is still loading); use wait_until if you expect a slower update.',
+			failed: '[Page after the action] Stopped waiting after 0 ms; the page may still be changing.',
+			settleTags: {
+				safe_settle_quiet: 1, safe_settle_quiet_ms: 100,
+				safe_settle_timeout: 3, safe_settle_timeout_ms: 6000,
+				safe_settle_timeout_dom: 2, safe_settle_timeout_dom_style: 1, safe_settle_timeout_network: 1, safe_settle_timeout_busy: 1, safe_settle_timeout_loading: 1,
+				safe_settle_stopped: 1,
+				safe_settle_wait_ms: 6100, safe_settle_wait_le_500: 2, safe_settle_wait_le_2000: 3,
+			},
 		});
 	});
 
@@ -302,6 +352,123 @@ suite('Paradis browser observe', () => {
 		assert.deepStrictEqual({ calls, report }, {
 			calls: ['list_pages', 'list_pages'],
 			report: '[Browser state]\nYour tabs: t1 (current) "Orders" http://127.0.0.1/orders',
+		});
+	});
+
+	// Q618: ページの記録は、同じ値の書き直しを数えず、style は要素ごとに 200 ms に 1 回だけ数え、読み込み中の印に
+	// クラス名の部分一致を使わない（ページの関数を、MutationObserver と文書を差し替えて動かす。実物のページでの
+	// 確かめは PR に書いた）
+	test('the page record ignores same-value rewrites, counts style changes once per 200 ms per element, and does not match class name parts as loading', () => {
+		let clock = 0;
+		let deliver: (records: readonly object[]) => void = () => { };
+		const selectors: string[] = [];
+		const page: Record<string, unknown> = {};
+		const element = (attributes: Record<string, string>) => ({ nodeType: 1, tagName: 'DIV', parentElement: null, closest: () => null, getAttribute: (name: string) => attributes[name] ?? null });
+		const globals = {
+			window: page,
+			document: { readyState: 'complete', title: 'T', activeElement: null, documentElement: {}, querySelectorAll: (selector: string) => { selectors.push(selector); return []; } },
+			performance: { now: () => clock },
+			MutationObserver: class { constructor(callback: (records: readonly object[]) => void) { deliver = callback; } observe() { } disconnect() { } },
+			location: { href: 'http://a/' },
+			setTimeout: () => 0,
+		};
+		const compile = (source: string) => new Function(...Object.keys(globals), `return (${source});`)(...Object.values(globals)) as () => { readonly age: number; readonly lastKind?: string; readonly busy: boolean };
+		compile(paradisObserveInstallFunction('__rec'))();
+		const read = compile(paradisObserveReadFunction('__rec'));
+		const card = element({ class: 'card active', style: 'width: 10px' });
+		const bar = element({ style: 'width: 12px' });
+		clock = 1_000;
+		deliver([{ type: 'attributes', target: card, attributeName: 'class', oldValue: 'card active' }]);
+		const sameValue = read();
+		deliver([{ type: 'attributes', target: card, attributeName: 'style', oldValue: 'width: 9px' }]);
+		clock = 1_150;
+		deliver([{ type: 'attributes', target: card, attributeName: 'style', oldValue: 'width: 8px' }]);
+		const styleThrottled = read();
+		deliver([{ type: 'attributes', target: bar, attributeName: 'style', oldValue: 'width: 11px' }]);
+		const otherElement = read();
+		clock = 1_250;
+		deliver([{ type: 'attributes', target: card, attributeName: 'style', oldValue: 'width: 7px' }]);
+		const styleAgain = read();
+		deliver([{ type: 'attributes', target: card, attributeName: 'class', oldValue: 'card' }]);
+		const classChanged = read();
+		assert.deepStrictEqual({
+			sameValue: [sameValue.age, sameValue.lastKind],
+			styleThrottled: [styleThrottled.age, styleThrottled.lastKind],
+			otherElement: [otherElement.age],
+			styleAgain: [styleAgain.age],
+			classChanged: [classChanged.age, classChanged.lastKind],
+			partialClassSelector: selectors.some(selector => selector.includes('class*=')),
+			busySelector: selectors[0],
+		}, {
+			sameValue: [1_000, undefined],
+			styleThrottled: [150, 'style'],
+			otherElement: [0],
+			styleAgain: [0],
+			classChanged: [0, 'class'],
+			partialClassSelector: false,
+			busySelector: '[aria-busy="true"], [role="progressbar"], .spinner, .loading, .spinner-border, .spinner-grow',
+		});
+	});
+
+	// Q618（レビュー MEDIUM 1）: 1.5 秒で外すのは操作の前から続く要求だけ。操作の後に始まった遅い要求は終わるまで数える
+	test('a long poll from before the action is dropped after 1.5 s, and a slow request started by the action is counted until it ends', () => {
+		let clock = 0;
+		const activity = new ParadisNetworkActivity(() => clock);
+		const connection = {};
+		activity.onEvent(connection, 't', 'Network.requestWillBeSent', { requestId: 'poll', request: { url: 'http://a/poll' } });
+		clock = 1_000;
+		const actionAt = clock;
+		const young = activity.snapshot(PARADIS_SETTLE_NETWORK_WINDOW_MS, actionAt);
+		activity.onEvent(connection, 't', 'Network.requestWillBeSent', { requestId: 'save', request: { url: 'http://a/save' } });
+		clock = 1_600;
+		const pollOld = activity.snapshot(PARADIS_SETTLE_NETWORK_WINDOW_MS, actionAt);
+		clock = 3_900;
+		const saveSlow = activity.snapshot(PARADIS_SETTLE_NETWORK_WINDOW_MS, actionAt);
+		const saveSlowWaitUntil = activity.snapshot(PARADIS_SETTLE_NETWORK_WINDOW_MS);
+		clock = 4_000;
+		activity.onEvent(connection, 't', 'Network.loadingFinished', { requestId: 'save' });
+		const done = activity.snapshot(PARADIS_SETTLE_NETWORK_WINDOW_MS, actionAt);
+		const counts = (snapshot: { readonly inflight: number; readonly longLived: number; readonly pendingUrls: readonly string[] }) => [snapshot.inflight, snapshot.longLived, snapshot.pendingUrls];
+		assert.deepStrictEqual({ young: counts(young), pollOld: counts(pollOld), saveSlow: counts(saveSlow), saveSlowWaitUntil: counts(saveSlowWaitUntil), done: counts(done) }, {
+			young: [1, 0, ['http://a/poll']],
+			pollOld: [1, 1, ['http://a/save']],
+			saveSlow: [1, 1, ['http://a/save']],
+			saveSlowWaitUntil: [0, 2, []],
+			done: [0, 1, []],
+		});
+	});
+
+	test('the wait goes on until a slow request started by the action ends, and does not wait for a long poll from before', async () => {
+		const options = { settle: true, state: false };
+		const collect = { url: 'http://127.0.0.1/orders', title: 'Orders', added: ['text "Loaded"'], changed: [], removed: [], more: 0 };
+		const run = async (settleMs: number, withXhr: boolean) => {
+			let activityClock = 0;
+			const activity = new ParadisNetworkActivity(() => activityClock);
+			const connection = {};
+			activityClock = -5_000;
+			activity.onEvent(connection, 't', 'Network.requestWillBeSent', { requestId: 'poll', request: { url: 'http://a/poll' } });
+			let started = false;
+			const { host } = fakeHost({
+				pages: [PAGES_ONE], collect, networkOf: (actionStartedAt, now) => {
+					activityClock = now;
+					if (withXhr && !started) {
+						started = true;
+						activity.onEvent(connection, 't', 'Network.requestWillBeSent', { requestId: 'xhr', request: { url: 'http://a/slow' } });
+					}
+					if (withXhr && now >= 3_000) {
+						activity.onEvent(connection, 't', 'Network.loadingFinished', { requestId: 'xhr' });
+					}
+					return activity.snapshot(PARADIS_SETTLE_NETWORK_WINDOW_MS, actionStartedAt);
+				},
+			});
+			const observer = new ParadisBrowserObserver();
+			const before = await observer.before(host, options, 'changes', settleMs);
+			return (await observer.after(host, 'pane', options, before, 'changes', settleMs))?.split('\n')[0];
+		};
+		assert.deepStrictEqual({ pollOnly: await run(2000, false), xhrWithinLimit: await run(5000, true), xhrOverLimit: await run(2000, true) }, {
+			pollOnly: '[Page after the action] Settled after 100 ms.',
+			xhrWithinLimit: '[Page after the action] Settled after 3100 ms.',
+			xhrOverLimit: '[Page after the action] Still changing or loading after 2000 ms (the wait limit: 1 network request still pending); use wait_until if you expect a slower update.',
 		});
 	});
 
