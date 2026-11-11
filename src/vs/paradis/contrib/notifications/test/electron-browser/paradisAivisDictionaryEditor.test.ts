@@ -48,7 +48,7 @@ suite('ParadisAivisDictionaryEditor', () => {
 			first.dispose();
 			const second = await open();
 			const afterReopen = { name: nameInput().value, note: (root.textContent ?? '').includes('保存する前に閉じた編集を戻しました') };
-			const cancel = [...root.querySelectorAll<HTMLButtonElement>('.pns-nested-footer button')].find(button => !button.classList.contains('pns-btn-primary'))!;
+			const cancel = [...root.querySelectorAll<HTMLElement>('.paradis-modal-foot .paradis-button')].find(button => !button.classList.contains('paradis-button-primary'))!;
 			cancel.click();
 			const third = await open();
 			const afterCancel = nameInput().value;
@@ -81,7 +81,7 @@ suite('ParadisAivisDictionaryEditor', () => {
 			other.dispose();
 			const second = open();
 			const afterReopen = { values: inputs().map(input => input.value), note: (root.textContent ?? '').includes('保存する前に閉じた編集を戻しました') };
-			const cancel = [...root.querySelectorAll<HTMLButtonElement>('.pns-nested-footer button')].find(button => !button.classList.contains('pns-btn-primary'))!;
+			const cancel = [...root.querySelectorAll<HTMLElement>('.paradis-modal-foot .paradis-button')].find(button => !button.classList.contains('paradis-button-primary'))!;
 			cancel.click();
 			const third = open();
 			const afterCancel = inputs().map(input => input.value);

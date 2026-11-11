@@ -23,6 +23,7 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { formatInlineMarkdown, IParadisChangelogRelease, IParadisChangelogSection } from '../common/paradisChangelogModel.js';
 import { IParadisHubAreaContainers } from '../../paradisHub/electron-browser/paradisHub.js';
+import { ParadisButton } from '../../../browser/paradisButton.js';
 import { IParadisHubNavItem, paradisHubNavCaption, paradisHubNavItem } from '../../paradisHub/electron-browser/paradisHubNav.js';
 
 const $ = dom.$;
@@ -114,10 +115,8 @@ export class ParadisChangelogView extends Disposable {
 		this.bannerElement.style.display = 'none';
 		this.bannerElement.append($(ThemeIcon.asClassName(Codicon.info)));
 		this.bannerTextElement = dom.append(this.bannerElement, $('span.para-cl-banner-text'));
-		const checkUpdateButton = dom.append(this.bannerElement, $('button.para-cl-btn')) as HTMLButtonElement;
-		checkUpdateButton.type = 'button';
-		checkUpdateButton.textContent = localize('paradis.changelog.checkUpdate', "更新を確認…");
-		this._register(dom.addDisposableListener(checkUpdateButton, dom.EventType.CLICK, () => this.delegate.onCheckForUpdate()));
+		const checkUpdateButton = this._register(new ParadisButton(this.bannerElement, { kind: 'secondary', label: localize('paradis.changelog.checkUpdate', "更新を確認…") }));
+		this._register(checkUpdateButton.onDidClick(() => this.delegate.onCheckForUpdate()));
 
 		this.contentElement = dom.append(main, $('.para-cl-content'));
 

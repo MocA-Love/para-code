@@ -24,6 +24,10 @@ import {
 } from '../common/paradisNotifications.js';
 import { IParadisYtDlpCheckResult, IParadisYtDlpStatus, ParadisYtDlpPrecursor } from '../common/paradisYtDlp.js';
 import { ParadisAudioEditor, paradisAudioEditorOutputExceedsMessage } from './paradisAudioEditor.js';
+import { ParadisInputField } from '../../../browser/paradisInputField.js';
+import { IParadisModalHead, ParadisModalSize } from '../../../browser/paradisModal.js';
+import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
+import { paradisNotifNestedButton, paradisNotifNestedModal } from './paradisNotificationNestedModal.js';
 
 const $ = dom.$;
 
@@ -88,11 +92,11 @@ const YOUTUBE_URL_HINT = /^https?:\/\/(?:www\.|m\.|music\.)?(?:youtube\.com|yout
 
 type Step = 'url' | 'installing' | 'downloading' | 'editor';
 
-export function openParadisYouTubeImportDialog(accessor: ServicesAccessor, onImported: () => void): void {
+export function openParadisYouTubeImportDialog(accessor: ServicesAccessor, onImported: () => void, restoreFallback?: () => HTMLElement | undefined): void {
 	const layoutService = accessor.get(ILayoutService);
 	const sharedProcessService = accessor.get(ISharedProcessService);
 	// ダイアログは自身のcloseで自己disposeするため、呼び出し元での追跡・登録は不要。
-	const dialog = new ParadisYouTubeImportDialog(layoutService, sharedProcessService, onImported);
+	const dialog = new ParadisYouTubeImportDialog(layoutService, sharedProcessService, onImported, restoreFallback);
 	void dialog;
 }
 
@@ -100,6 +104,9 @@ class ParadisYouTubeImportDialog extends Disposable {
 
 	private readonly _backdrop: HTMLElement;
 	private readonly _dialog: HTMLElement;
+	private readonly _head: IParadisModalHead;
+	private readonly _body: HTMLElement;
+	private readonly _foot: HTMLElement;
 	// ステップ再描画のたびに破棄済みDOMのリスナが蓄積しないよう、ステップ単位で束ねて
 	// 各 _renderXxxStep 冒頭で clear する（設定ダイアログ本体の _renderDisposables と同方式）。
 	private readonly _stepDisposables = this._register(new DisposableStore());
@@ -113,12 +120,19 @@ class ParadisYouTubeImportDialog extends Disposable {
 		layoutService: ILayoutService,
 		private readonly sharedProcessService: ISharedProcessService,
 		private readonly onImported: () => void,
+		/** 閉じるときに、開いたボタンが描き直しで外れていたら代わりに戻す先（{@link ParadisSectionFocusCarrier.find}）。 */
+		restoreFallback?: () => HTMLElement | undefined,
 	) {
 		super();
 
-		this._backdrop = $('.paradis-notif-nested-backdrop.paradis-modal-backdrop.paradis-modal-backdrop-nested');
-		this._dialog = $('.paradis-notif-nested-dialog');
-		this._backdrop.appendChild(this._dialog);
+		// URL の入力・入れ方の案内は段 S、音の編集（波形と切り出し）は段 M の箱にする
+		const { backdrop, modal, head, close, body, foot } = paradisNotifNestedModal(ParadisModalSize.Small, STR_TITLE, 'pns-youtube');
+		this._backdrop = backdrop;
+		this._dialog = modal;
+		this._head = head;
+		this._body = body;
+		this._foot = foot;
+		this._register(dom.addDisposableListener(close, 'click', () => this.dispose()));
 
 		this._register(dom.addDisposableListener(this._backdrop, 'mousedown', e => {
 			if (e.target === this._backdrop) {
@@ -126,6 +140,8 @@ class ParadisYouTubeImportDialog extends Disposable {
 			}
 		}));
 
+		// フォーカスと Esc は fork のモーダルに共通の扱いに乗せる。Hub の中から開く入れ子の箱なので Hub は閉じない。
+		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal: this._dialog, nested: true, onEscape: () => this.dispose(), close: () => this.dispose(), restoreFallback }));
 		layoutService.activeContainer.appendChild(this._backdrop);
 		this._renderUrlStep();
 	}
@@ -139,13 +155,24 @@ class ParadisYouTubeImportDialog extends Disposable {
 		super.dispose();
 	}
 
+	/** 次の段の前に、本文と下の帯を空にして箱の大きさを決める。 */
+	private _clearStep(size: ParadisModalSize): void {
+		dom.clearNode(this._body);
+		dom.clearNode(this._foot);
+		this._dialog.classList.toggle('paradis-modal-s', size === ParadisModalSize.Small);
+		this._dialog.classList.toggle('paradis-modal-m', size === ParadisModalSize.Medium);
+		// 消した中身にフォーカスがあると箱の外（body）へ落ちて Esc が届かないので、箱そのものへ移しておく
+		if (this._dialog.isConnected) {
+			this._dialog.focus();
+		}
+	}
+
 	private _renderUrlStep(initialError?: string): void {
 		this._step = 'url';
 		const generation = ++this._urlStepGeneration;
 		this._stepDisposables.clear();
-		dom.clearNode(this._dialog);
-		this._dialog.classList.remove('wide');
-		dom.append(this._dialog, $('h3')).textContent = STR_TITLE;
+		this._clearStep(ParadisModalSize.Small);
+		this._head.title.textContent = STR_TITLE;
 
 		void this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call<IParadisYtDlpCheckResult>('checkYtDlp').then(result => {
 			if (this._store.isDisposed || this._step !== 'url' || generation !== this._urlStepGeneration) {
@@ -155,7 +182,7 @@ class ParadisYouTubeImportDialog extends Disposable {
 				this._renderMissingBinariesNotice(result.missing);
 			}
 			if (result.optionalMissing?.includes('deno')) {
-				const notice = dom.append(this._dialog, $('.pns-field'));
+				const notice = dom.append(this._body, $('.pns-field'));
 				dom.append(notice, $('.pns-row-hint')).textContent = STR_DENO_MISSING;
 			}
 			if (result.ytDlp && result.ytDlp.status !== 'ok') {
@@ -163,27 +190,25 @@ class ParadisYouTubeImportDialog extends Disposable {
 			}
 		});
 
-		const urlField = dom.append(this._dialog, $('.pns-field'));
+		const urlField = dom.append(this._body, $('.pns-field'));
 		dom.append(urlField, $('label.pns-label')).textContent = STR_URL_LABEL;
-		const urlInput = dom.append(urlField, $('input')) as HTMLInputElement;
+		const urlInput = this._stepDisposables.add(new ParadisInputField(urlField, { ariaLabel: STR_URL_LABEL })).inputElement;
 		urlInput.type = 'url';
 		urlInput.placeholder = STR_URL_PLACEHOLDER;
 		urlInput.autofocus = true;
 
 		const urlErrorEl = dom.append(urlField, $('.pns-error'));
 
-		const errorEl = dom.append(this._dialog, $('.pns-error'));
+		const errorEl = dom.append(this._body, $('.pns-error'));
 		if (initialError) {
 			errorEl.textContent = initialError;
 		}
 
-		const footer = dom.append(this._dialog, $('.pns-nested-footer'));
-		const cancelBtn = dom.append(footer, $('button.pns-btn')) as HTMLButtonElement;
-		cancelBtn.textContent = STR_CANCEL;
+		const footer = this._foot;
+		const cancelBtn = paradisNotifNestedButton(footer, 'secondary', STR_CANCEL);
 		this._stepDisposables.add(dom.addDisposableListener(cancelBtn, 'click', () => this.dispose()));
 
-		const loadBtn = dom.append(footer, $('button.pns-btn.pns-btn-primary')) as HTMLButtonElement;
-		loadBtn.textContent = STR_LOAD;
+		const loadBtn = paradisNotifNestedButton(footer, 'primary', STR_LOAD);
 
 		const doLoad = () => {
 			const url = urlInput.value.trim();
@@ -199,32 +224,30 @@ class ParadisYouTubeImportDialog extends Disposable {
 				doLoad();
 			}
 		}));
+		// 箱の中へフォーカスを移す（Esc で閉じる・Tab が箱の中を回るのはフォーカスが中にあるときだけ）
+		urlInput.focus();
 	}
 
 	private _renderMissingBinariesNotice(missing: string[]): void {
-		const notice = dom.append(this._dialog, $('.pns-field'));
+		const notice = dom.append(this._body, $('.pns-field'));
 		const hint = dom.append(notice, $('.pns-row-hint'));
 		hint.textContent = strMissingBinaries(missing.join(', '));
 		if (process.platform === 'darwin') {
-			const installBtn = dom.append(notice, $('button.pns-btn')) as HTMLButtonElement;
-			installBtn.textContent = STR_INSTALL_HOMEBREW;
-			installBtn.style.marginTop = '6px';
+			const installBtn = paradisNotifNestedButton(notice, 'secondary', STR_INSTALL_HOMEBREW);
 			this._stepDisposables.add(dom.addDisposableListener(installBtn, 'click', () => this._renderInstallingStep()));
 		}
 	}
 
 	/** 既知の壊れた版・古すぎる版の yt-dlp に、入れ方に応じた更新の手段を添えて知らせる。更新は押したときだけ実行する。 */
 	private _renderUpdateNotice(ytDlp: IParadisYtDlpStatus): void {
-		const notice = dom.append(this._dialog, $('.pns-field'));
+		const notice = dom.append(this._body, $('.pns-field'));
 		const hint = dom.append(notice, $('.pns-row-hint'));
 		hint.textContent = ytDlp.status === 'broken' ? strYtDlpBroken(ytDlp.version) : strYtDlpOutdated(ytDlp.version, ytDlp.ageDays);
 		dom.append(notice, $('.pns-row-hint')).textContent = !ytDlp.update.command
 			? STR_UPDATE_UNKNOWN
 			: ytDlp.installMethod === 'pip' ? strUpdatePip(ytDlp.update.command) : strUpdateCommand(ytDlp.update.command);
 		if (ytDlp.update.runnable) {
-			const updateBtn = dom.append(notice, $('button.pns-btn')) as HTMLButtonElement;
-			updateBtn.textContent = STR_UPDATE_BUTTON;
-			updateBtn.style.marginTop = '6px';
+			const updateBtn = paradisNotifNestedButton(notice, 'secondary', STR_UPDATE_BUTTON);
 			this._stepDisposables.add(dom.addDisposableListener(updateBtn, 'click', () => this._renderInstallingStep('update')));
 		}
 	}
@@ -232,14 +255,13 @@ class ParadisYouTubeImportDialog extends Disposable {
 	private _renderInstallingStep(mode: 'install' | 'update' = 'install'): void {
 		this._step = 'installing';
 		this._stepDisposables.clear();
-		dom.clearNode(this._dialog);
-		dom.append(this._dialog, $('h3')).textContent = mode === 'update' ? STR_UPDATING_TITLE : STR_INSTALLING_TITLE;
+		this._clearStep(ParadisModalSize.Small);
+		this._head.title.textContent = mode === 'update' ? STR_UPDATING_TITLE : STR_INSTALLING_TITLE;
 
-		const consoleEl = dom.append(this._dialog, $('.pns-log-console'));
+		const consoleEl = dom.append(this._body, $('.pns-log-console'));
 
-		const footer = dom.append(this._dialog, $('.pns-nested-footer'));
-		const backBtn = dom.append(footer, $('button.pns-btn')) as HTMLButtonElement;
-		backBtn.textContent = STR_BACK;
+		const footer = this._foot;
+		const backBtn = paradisNotifNestedButton(footer, 'secondary', STR_BACK);
 		backBtn.style.display = 'none';
 		this._stepDisposables.add(dom.addDisposableListener(backBtn, 'click', () => this._renderUrlStep()));
 
@@ -277,9 +299,9 @@ class ParadisYouTubeImportDialog extends Disposable {
 	private _renderDownloadingStep(url: string): void {
 		this._step = 'downloading';
 		this._stepDisposables.clear();
-		dom.clearNode(this._dialog);
-		dom.append(this._dialog, $('h3')).textContent = STR_TITLE;
-		dom.append(this._dialog, $('.pns-nested-desc')).textContent = STR_DOWNLOADING;
+		this._clearStep(ParadisModalSize.Small);
+		this._head.title.textContent = STR_TITLE;
+		dom.append(this._body, $('.pns-nested-desc')).textContent = STR_DOWNLOADING;
 
 		void this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call<IParadisYouTubeDownloadResult>('downloadYouTubeAudio', [url]).then(result => {
 			if (this._store.isDisposed) {
@@ -298,11 +320,10 @@ class ParadisYouTubeImportDialog extends Disposable {
 	private _renderEditorStep(url: string, downloaded: IParadisYouTubeDownloadResult): void {
 		this._step = 'editor';
 		this._stepDisposables.clear();
-		dom.clearNode(this._dialog);
-		this._dialog.classList.add('wide');
-		dom.append(this._dialog, $('h3')).textContent = STR_TITLE;
+		this._clearStep(ParadisModalSize.Medium);
+		this._head.title.textContent = STR_TITLE;
 
-		const editorContainer = dom.append(this._dialog, $('div'));
+		const editorContainer = dom.append(this._body, $('div'));
 		this._audioEditor = this._stepDisposables.add(new ParadisAudioEditor(editorContainer, {
 			tempId: downloaded.tempId,
 			videoTitle: downloaded.info.title,
@@ -312,18 +333,16 @@ class ParadisYouTubeImportDialog extends Disposable {
 
 		// 取り込めたが、yt-dlp の警告に壊れる前兆が出ていたら短く知らせる（詳しい警告はログにある）。
 		for (const precursor of downloaded.precursors ?? []) {
-			dom.append(this._dialog, $('.pns-row-hint')).textContent = PRECURSOR_MESSAGES[precursor];
+			dom.append(this._body, $('.pns-row-hint')).textContent = PRECURSOR_MESSAGES[precursor];
 		}
 
-		const errorEl = dom.append(this._dialog, $('.pns-error'));
+		const errorEl = dom.append(this._body, $('.pns-error'));
 
-		const footer = dom.append(this._dialog, $('.pns-nested-footer'));
-		const cancelBtn = dom.append(footer, $('button.pns-btn')) as HTMLButtonElement;
-		cancelBtn.textContent = STR_CANCEL;
+		const footer = this._foot;
+		const cancelBtn = paradisNotifNestedButton(footer, 'secondary', STR_CANCEL);
 		this._stepDisposables.add(dom.addDisposableListener(cancelBtn, 'click', () => this.dispose()));
 
-		const importBtn = dom.append(footer, $('button.pns-btn.pns-btn-primary')) as HTMLButtonElement;
-		importBtn.textContent = STR_IMPORT;
+		const importBtn = paradisNotifNestedButton(footer, 'primary', STR_IMPORT);
 		this._stepDisposables.add(dom.addDisposableListener(importBtn, 'click', async () => {
 			if (!this._audioEditor) {
 				return;

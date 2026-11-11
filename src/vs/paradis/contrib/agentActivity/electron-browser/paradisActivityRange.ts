@@ -8,9 +8,9 @@
 
 // 使用量ダイアログの「スペース別」「作業実績」タブで共通の期間（直近 7 / 30 / 90 日）と表示の整形。
 
-import * as dom from '../../../../base/browser/dom.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
+import { ParadisSegmented } from '../../../browser/paradisSegmented.js';
 import { paradisActivityDayKey } from '../common/paradisAgentActivity.js';
 
 export type ParadisActivityRangeDays = 7 | 30 | 90;
@@ -31,26 +31,24 @@ export function paradisActivityRange(days: ParadisActivityRangeDays, today = new
 	return { since: list[0], until: list[list.length - 1], days: list };
 }
 
-/** 「7日間 / 30日間 / 90日間」の切り替えボタンを作る。押されたら `onChange` を呼ぶ。 */
+/** 切り替えの組の値（ParadisSegmented は文字列の値を持つ）。 */
+type RangeValue = `${ParadisActivityRangeDays}`;
+
+/** 「7日間 / 30日間 / 90日間」の切り替えの組（UI キットの ParadisSegmented）を作る。押されたら `onChange` を呼ぶ。 */
 export function paradisAppendRangeSegment(parent: HTMLElement, store: DisposableStore, current: () => ParadisActivityRangeDays, onChange: (days: ParadisActivityRangeDays) => void): () => void {
-	const seg = dom.append(parent, dom.$('.paradis-ccusage-seg'));
-	const buttons = new Map<ParadisActivityRangeDays, HTMLButtonElement>();
-	for (const days of [7, 30, 90] as const) {
-		const button = dom.append(seg, dom.$('button')) as HTMLButtonElement;
-		button.type = 'button';
-		// allow-any-unicode-next-line
-		button.textContent = localize('paradis.activity.rangeDays', "{0}日間", days);
-		buttons.set(days, button);
-		store.add(dom.addDisposableListener(button, 'click', () => onChange(days)));
-	}
-	const sync = () => {
-		for (const [days, button] of buttons) {
-			button.classList.toggle('checked', days === current());
-			button.setAttribute('aria-pressed', String(days === current()));
-		}
+	const seg = store.add(new ParadisSegmented<RangeValue>(parent, {
+		ariaLabel: localize('paradis.activity.rangeAria', "期間"),
+		value: `${current()}`,
+		items: ([7, 30, 90] as const).map(days => ({
+			value: `${days}` as const,
+			// allow-any-unicode-next-line
+			label: localize('paradis.activity.rangeDays', "{0}日間", days),
+		})),
+	}));
+	store.add(seg.onDidChange(value => onChange(Number(value) as ParadisActivityRangeDays)));
+	return () => {
+		seg.value = `${current()}`;
 	};
-	sync();
-	return sync;
 }
 
 /** 「3 時間 20 分」のような稼働時間の表記。 */

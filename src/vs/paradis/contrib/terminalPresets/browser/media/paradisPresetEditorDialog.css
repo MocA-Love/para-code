@@ -225,6 +225,10 @@
 	right: 4px;
 	transform: translateY(calc(-100% - 3px));
 	padding: 1px 8px;
+	box-sizing: border-box;
+	max-width: calc(100% - 8px);
+	overflow: hidden;
+	text-overflow: ellipsis;
 	border-radius: 4px;
 	font-size: 11px;
 	white-space: nowrap;
@@ -437,9 +441,13 @@
 	border: 1px solid var(--vscode-paradis-lineSubtle);
 	color: var(--vscode-paradis-text);
 	max-width: 220px;
+	white-space: nowrap;
+}
+
+.paradis-preset-editor-dialog .ppe-chip-text {
+	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
-	white-space: nowrap;
 }
 
 .paradis-preset-editor-dialog .ppe-chip-x {
@@ -824,6 +832,10 @@
 }
 
 .paradis-preset-editor-dialog .ppe-folder-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 	font-weight: var(--vscode-fontWeight-semiBold);
 	color: var(--vscode-paradis-textStrong);
 }
