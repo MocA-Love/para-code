@@ -28,47 +28,7 @@
 	gap: 10px;
 	flex-wrap: wrap;
 	padding: 10px 20px 8px;
-	border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
-}
-
-.paradis-rtk-seg {
-	display: flex;
-	border: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
-	border-radius: 5px;
-	overflow: hidden;
-}
-
-.paradis-rtk-seg button {
-	background: transparent;
-	border: none;
-	border-right: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
-	color: var(--vscode-descriptionForeground);
-	font-size: 12px;
-	font-family: inherit;
-	padding: 4px 11px;
-	cursor: pointer;
-}
-
-.paradis-rtk-seg button:last-child {
-	border-right: none;
-}
-
-.paradis-rtk-seg button.checked {
-	background: var(--vscode-inputOption-activeBackground);
-	color: var(--vscode-inputOption-activeForeground, var(--vscode-foreground));
-}
-
-.paradis-rtk-seg button:not(.checked):hover {
-	background: var(--vscode-toolbar-hoverBackground);
-}
-
-.paradis-rtk-seg button:disabled {
-	opacity: 0.4;
-	cursor: not-allowed;
-}
-
-.paradis-rtk-seg button:disabled:hover {
-	background: transparent;
+	border-bottom: 1px solid var(--vscode-paradis-lineSubtle);
 }
 
 .paradis-rtk-toolbar-spacer {
@@ -76,26 +36,8 @@
 }
 
 .paradis-rtk-updated {
-	color: var(--vscode-descriptionForeground);
-	font-size: 12px;
-}
-
-.paradis-rtk-refresh {
-	display: flex;
-	align-items: center;
-	gap: 5px;
-	background: transparent;
-	border: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
-	border-radius: 5px;
-	color: var(--vscode-foreground);
-	font-size: 12px;
-	font-family: inherit;
-	padding: 4px 10px;
-	cursor: pointer;
-}
-
-.paradis-rtk-refresh:hover {
-	background: var(--vscode-toolbar-hoverBackground);
+	color: var(--vscode-paradis-textMuted);
+	font-size: var(--vscode-fontSize-label1);
 }
 
 .paradis-rtk-refresh .codicon.spin {
@@ -138,13 +80,7 @@
 
 /* ---- cards & grids ---- */
 
-.paradis-rtk-card {
-	background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
-	border: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
-	border-radius: 8px;
-	padding: 13px 16px;
-	min-width: 0;
-}
+/* The surface, line, radius and padding of a card are the kit's (paradis-card, paradisCard.css). */
 
 .paradis-rtk-kpis {
 	display: grid;
@@ -168,63 +104,57 @@
 	margin-bottom: 12px;
 }
 
+/* Two stacked columns (Q537 decision 15 B): the period on the left, the breakdowns on the right, as on the AI cost page.
+	Defined before the container query so a narrow panel folds them into one column. */
+.paradis-rtk-columns {
+	display: grid;
+	grid-template-columns: 1.5fr 1fr;
+	gap: 12px;
+	margin-bottom: 12px;
+	align-items: start;
+}
+
+.paradis-rtk-col {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	min-width: 0;
+}
+
 @container paradis-rtk-panel (max-width: 900px) {
 	.paradis-rtk-kpis { grid-template-columns: 1fr 1fr; }
 	.paradis-rtk-grid2 { grid-template-columns: 1fr; }
 	.paradis-rtk-columns { grid-template-columns: 1fr; }
 }
 
-/* ---- stat tiles ---- */
+/* ---- stat tiles: the kit's label, number and note (paradisCard.css); the four numbers share one size ---- */
 
-.paradis-rtk-stat-label {
-	font-size: 12px;
-	color: var(--vscode-descriptionForeground);
-	margin-bottom: 5px;
+.paradis-rtk-kpis .paradis-card-label {
+	margin-bottom: var(--vscode-spacing-size40);
 }
 
-.paradis-rtk-stat-value {
-	font-size: 25px;
-	font-weight: 600;
-	letter-spacing: -0.01em;
-	font-variant-numeric: tabular-nums;
+.paradis-rtk-kpis .paradis-card-note {
+	margin-top: var(--vscode-spacing-size40);
 }
 
-.paradis-rtk-stat-value.hero {
-	font-size: 37px;
-}
-
-.paradis-rtk-stat-sub {
-	font-size: 11.5px;
-	color: var(--vscode-descriptionForeground);
-	margin-top: 4px;
-}
-
-/* ---- savings meter (today's KPI) ---- */
-
-.paradis-rtk-meter-track {
-	height: 9px;
-	border-radius: 5px;
-	overflow: hidden;
-	margin-top: 8px;
-}
-
-.paradis-rtk-meter-fill {
-	height: 100%;
-	border-radius: 5px;
+/* The savings rate is the kit's 4px progress bar. */
+.paradis-rtk-kpis .paradis-progress {
+	margin-top: var(--vscode-spacing-size80);
 }
 
 /* ---- chart cards ---- */
 
 .paradis-rtk-card h3 {
-	font-size: 13px;
-	font-weight: 600;
+	font-size: var(--vscode-fontSize-heading3);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textStrong);
 	margin: 0 0 2px;
 }
 
 .paradis-rtk-card .desc {
-	font-size: 11.5px;
-	color: var(--vscode-descriptionForeground);
-	margin-bottom: 10px;
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+	margin-bottom: var(--vscode-spacing-size120);
 }
 
 .paradis-rtk svg text {
@@ -262,9 +192,13 @@
 	text-overflow: ellipsis;
 }
 
+/* The bars are the kit's 4px progress shape (the series color stays the chart's), as on the AI cost page. */
 .paradis-rtk-hbar-row .track {
-	height: 12px;
+	height: 4px;
 	position: relative;
+	border-radius: var(--vscode-cornerRadius-circle);
+	background: var(--vscode-paradis-fillNeutral);
+	overflow: hidden;
 }
 
 .paradis-rtk-hbar-row .bar {
@@ -272,7 +206,7 @@
 	left: 0;
 	top: 0;
 	height: 100%;
-	border-radius: 0 4px 4px 0;
+	border-radius: inherit;
 	min-width: 2px;
 }
 
@@ -283,45 +217,24 @@
 	white-space: nowrap;
 }
 
-/* ---- history table ---- */
+/* ---- history table: the kit's table (paradis-table, paradisCard.css) ---- */
 
-.paradis-rtk table {
-	/* カード幅を超えないよう固定レイアウト(セル内容は ellipsis で切る) */
-	table-layout: fixed;
+
+.paradis-rtk :is(th, td) {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* The command column takes the rest of the width and is cut with an ellipsis (the full text is the hover); the other
+	columns are as wide as their content. `max-width: 0` lets the cell shrink below its text in an auto-layout table. */
+.paradis-rtk table :is(th, td) {
+	width: 1%;
+}
+
+.paradis-rtk table :is(th, td).command {
 	width: 100%;
-	border-collapse: collapse;
-	font-size: 12px;
-}
-
-.paradis-rtk th {
-	text-align: left;
-	color: var(--vscode-descriptionForeground);
-	font-weight: 500;
-	padding: 5px 8px;
-	border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
-}
-
-/* 履歴表の固定列幅(コマンド列が残り幅を取る) */
-.paradis-rtk-history th:nth-child(1) { width: 84px; }
-.paradis-rtk-history th:nth-child(3) { width: 58px; }
-.paradis-rtk-history th:nth-child(4) { width: 68px; }
-
-.paradis-rtk td {
-	padding: 5px 8px;
-	border-bottom: 1px solid color-mix(in srgb, var(--vscode-foreground) 7%, transparent);
-	color: var(--vscode-descriptionForeground);
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
-}
-
-.paradis-rtk td.num,
-.paradis-rtk th.num {
-	text-align: right;
-	font-variant-numeric: tabular-nums;
+	max-width: 0;
 }
 
 /* ---- tooltip ---- */
@@ -372,25 +285,3 @@
 	font-variant-numeric: tabular-nums;
 }
 
-/* Two stacked columns (Q537 decision 15 B): the period on the left, the breakdowns on the right, as on the AI cost page. */
-.paradis-rtk-columns {
-	display: grid;
-	grid-template-columns: 1.5fr 1fr;
-	gap: 12px;
-	margin-bottom: 12px;
-	align-items: start;
-}
-
-.paradis-rtk-col {
-	display: flex;
-	flex-direction: column;
-	gap: 12px;
-	min-width: 0;
-}
-
-.paradis-rtk-commands td:first-child {
-	max-width: 260px;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
