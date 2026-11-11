@@ -239,15 +239,17 @@ export class ParadisMainHangWatchdog extends Disposable {
 	}
 
 	private beat(now: number): void {
-		// resume を取りこぼした（OS が知らせなかった）ときに、見張りが止まったままにならないようにする。
-		if (this.pausedAt !== undefined && now - this.pausedAt >= this.maxPauseMs) {
-			this.pausedAt = undefined;
-			this.shared[Slot.Paused] = 0;
-		}
 		const memory = process.memoryUsage();
 		this.shared[Slot.HeapUsed] = memory.heapUsed;
 		this.shared[Slot.Rss] = memory.rss;
 		this.shared[Slot.LastBeat] = now;
+		// resume を取りこぼした（OS が知らせなかった）ときに、見張りが止まったままにならないようにする。
+		// 心拍の時刻を書いた後で数え直しに戻す。先に戻すと、worker が止める前の古い心拍を読んで
+		// 止めていた間（スリープの長さ）を固まりとして数える。
+		if (this.pausedAt !== undefined && now - this.pausedAt >= this.maxPauseMs) {
+			this.pausedAt = undefined;
+			this.shared[Slot.Paused] = 0;
+		}
 	}
 }
 
