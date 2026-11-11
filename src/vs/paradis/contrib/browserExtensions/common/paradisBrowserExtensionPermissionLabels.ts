@@ -8,7 +8,8 @@
 
 // 拡張機能の権限の名前を、確認のダイアログで利用者に見せる言い方へ変える。
 // 名前の一覧は Chrome の公式の権限の一覧（developer.chrome.com/docs/extensions/reference/permissions-list）に合わせる。
-// webRequestAuthProvider はその一覧に無く、chrome.webRequest の参照（onAuthRequired を asyncBlocking で使うとき）にある
+// 一覧に無いものは、API の参照のページ（webRequestAuthProvider は chrome.webRequest、wallpaper・systemLog はそれぞれの API）と、
+// Chromium の _permission_features.json で許可リスト無しに使えるもの（downloads.shelf・input・enterprise.login・enterprise.kioskInput）から足す
 import { localize } from '../../../../nls.js';
 
 /**
@@ -19,6 +20,7 @@ export function paradisBrowserExtensionPermissionLabel(permission: string): stri
 		case 'cookies': return localize('paradis.browserExtensions.permission.cookies', "サイトの cookie の読み取りと変更");
 		case 'downloads': return localize('paradis.browserExtensions.permission.downloads', "ファイルのダウンロード");
 		case 'downloads.open': return localize('paradis.browserExtensions.permission.downloadsOpen', "ダウンロードしたファイルを開く");
+		case 'downloads.shelf': return localize('paradis.browserExtensions.permission.downloadsShelf', "ダウンロードの表示の切り替え");
 		case 'downloads.ui': return localize('paradis.browserExtensions.permission.downloadsUi', "ダウンロードの表示の変更");
 		case 'notifications': return localize('paradis.browserExtensions.permission.notifications', "通知の表示");
 		case 'management': return localize('paradis.browserExtensions.permission.management', "ほかの拡張機能の有効・無効の切り替え");
@@ -60,7 +62,7 @@ export function paradisBrowserExtensionPermissionLabel(permission: string): stri
 		case 'idle': return localize('paradis.browserExtensions.permission.idle', "パソコンが使われていないかの検出");
 		case 'power': return localize('paradis.browserExtensions.permission.power', "パソコンのスリープの抑止");
 		case 'geolocation': return localize('paradis.browserExtensions.permission.geolocation', "現在地の読み取り");
-		case 'identity': return localize('paradis.browserExtensions.permission.identity', "Google アカウントでのログイン");
+		case 'identity': return localize('paradis.browserExtensions.permission.identity', "アカウントでのログイン");
 		case 'identity.email': return localize('paradis.browserExtensions.permission.identityEmail', "メールアドレスの読み取り");
 		case 'gcm': return localize('paradis.browserExtensions.permission.gcm', "サーバーからのメッセージの受け取り");
 		case 'offscreen': return localize('paradis.browserExtensions.permission.offscreen', "見えないページでの処理");
@@ -71,7 +73,7 @@ export function paradisBrowserExtensionPermissionLabel(permission: string): stri
 		case 'ttsEngine': return localize('paradis.browserExtensions.permission.ttsEngine', "読み上げの音声の提供");
 		case 'dns': return localize('paradis.browserExtensions.permission.dns', "ホスト名の IP アドレスの読み取り");
 		case 'processes': return localize('paradis.browserExtensions.permission.processes', "ブラウザのプロセスの読み取り");
-		case 'runtime': return localize('paradis.browserExtensions.permission.runtime', "ブラウザの再起動");
+		case 'runtime': return localize('paradis.browserExtensions.permission.runtime', "パソコンに入っているアプリへの接続");
 		case 'publicSuffix': return localize('paradis.browserExtensions.permission.publicSuffix', "ドメインの区切りの一覧の読み取り");
 		case 'audio': return localize('paradis.browserExtensions.permission.audio', "音の入出力の機器の読み取りと変更");
 		case 'printing': return localize('paradis.browserExtensions.permission.printing', "プリンターへの印刷");
@@ -91,6 +93,11 @@ export function paradisBrowserExtensionPermissionLabel(permission: string): stri
 		case 'enterprise.hardwarePlatform': return localize('paradis.browserExtensions.permission.enterpriseHardwarePlatform', "端末の製造元と機種の読み取り");
 		case 'enterprise.networkingAttributes': return localize('paradis.browserExtensions.permission.enterpriseNetworkingAttributes', "端末のネットワークの情報の読み取り");
 		case 'enterprise.platformKeys': return localize('paradis.browserExtensions.permission.enterprisePlatformKeys', "管理された端末の証明書と鍵の使用");
+		case 'enterprise.login': return localize('paradis.browserExtensions.permission.enterpriseLogin', "管理された端末のログインの操作");
+		case 'enterprise.kioskInput': return localize('paradis.browserExtensions.permission.enterpriseKioskInput', "キオスク端末の入力の設定の変更");
+		case 'input': return localize('paradis.browserExtensions.permission.input', "文字の入力の方法（IME）の提供");
+		case 'wallpaper': return localize('paradis.browserExtensions.permission.wallpaper', "デスクトップの壁紙の変更");
+		case 'systemLog': return localize('paradis.browserExtensions.permission.systemLog', "端末のログへの書き込み");
 		case 'system.cpu': return localize('paradis.browserExtensions.permission.systemCpu', "CPU の情報の読み取り");
 		case 'system.display': return localize('paradis.browserExtensions.permission.systemDisplay', "画面の情報の読み取り");
 		case 'system.memory': return localize('paradis.browserExtensions.permission.systemMemory', "メモリの情報の読み取り");

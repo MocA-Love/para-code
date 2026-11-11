@@ -10,7 +10,11 @@ import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisBrowserExtensionPermissionLabel } from '../../common/paradisBrowserExtensionPermissionLabels.js';
 
-/** Chrome の公式の権限の一覧（developer.chrome.com/docs/extensions/reference/permissions-list）と、chrome.webRequest の参照にある webRequestAuthProvider。 */
+/**
+ * Chrome の公式の権限の一覧（developer.chrome.com/docs/extensions/reference/permissions-list）と、その一覧に無いもの
+ * （API の参照のページにある webRequestAuthProvider・wallpaper・systemLog、Chromium の _permission_features.json で許可リスト無しに使える
+ * downloads.shelf・input・enterprise.login・enterprise.kioskInput）。
+ */
 const CHROME_PERMISSIONS = [
 	'accessibilityFeatures.modify', 'accessibilityFeatures.read', 'activeTab', 'alarms', 'audio', 'background', 'bookmarks', 'browsingData',
 	'certificateProvider', 'clipboardRead', 'clipboardWrite', 'contentSettings', 'contextMenus', 'cookies', 'debugger', 'declarativeContent',
@@ -21,7 +25,7 @@ const CHROME_PERMISSIONS = [
 	'printerProvider', 'printing', 'printingMetrics', 'privacy', 'processes', 'proxy', 'publicSuffix', 'readingList', 'runtime', 'scripting', 'search',
 	'sessions', 'sidePanel', 'storage', 'system.cpu', 'system.display', 'system.memory', 'system.storage', 'tabCapture', 'tabGroups', 'tabs', 'topSites',
 	'tts', 'ttsEngine', 'unlimitedStorage', 'userScripts', 'vpnProvider', 'webAuthenticationProxy', 'webNavigation', 'webRequest', 'webRequestBlocking',
-	'webRequestAuthProvider',
+	'webRequestAuthProvider', 'wallpaper', 'systemLog', 'downloads.shelf', 'input', 'enterprise.login', 'enterprise.kioskInput',
 ];
 
 suite('Para Code browser extension permission labels', () => {
