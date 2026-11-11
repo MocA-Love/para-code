@@ -73,29 +73,6 @@
 
 /* ---- 作業実績 ---- */
 
-.paradis-ccusage.paradis-activity-panel .paradis-work-share-button {
-	display: inline-flex;
-	align-items: center;
-	gap: var(--vscode-spacing-size60);
-	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size100);
-	border: 1px solid var(--vscode-button-border, transparent);
-	border-radius: var(--vscode-cornerRadius-small);
-	background: var(--vscode-button-secondaryBackground);
-	color: var(--vscode-button-secondaryForeground);
-	font-family: inherit;
-	font-size: var(--vscode-fontSize-label1);
-	cursor: pointer;
-}
-
-.paradis-ccusage.paradis-activity-panel .paradis-work-share-button:hover:not(:disabled) {
-	background: var(--vscode-button-secondaryHoverBackground);
-}
-
-.paradis-ccusage.paradis-activity-panel .paradis-work-share-button:disabled {
-	opacity: 0.5;
-	cursor: default;
-}
-
 .paradis-ccusage.paradis-activity-panel .paradis-work-chart {
 	display: block;
 	width: 100%;
@@ -148,20 +125,6 @@
 	font-weight: var(--vscode-fontWeight-semiBold);
 }
 
-.paradis-ccusage.paradis-activity-panel .paradis-work-share-preview .close {
-	display: flex;
-	padding: var(--vscode-spacing-size20);
-	border: none;
-	border-radius: var(--vscode-cornerRadius-small);
-	background: transparent;
-	color: var(--vscode-foreground);
-	cursor: pointer;
-}
-
-.paradis-ccusage.paradis-activity-panel .paradis-work-share-preview .close:hover {
-	background: var(--vscode-toolbar-hoverBackground);
-}
-
 .paradis-ccusage.paradis-activity-panel .paradis-work-share-preview img {
 	display: block;
 	width: 100%;
@@ -174,30 +137,6 @@
 	display: flex;
 	justify-content: flex-end;
 	gap: var(--vscode-spacing-size80);
-}
-
-.paradis-ccusage.paradis-activity-panel .paradis-work-share-preview .actions button {
-	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size120);
-	border: 1px solid var(--vscode-button-border, transparent);
-	border-radius: var(--vscode-cornerRadius-small);
-	background: var(--vscode-button-secondaryBackground);
-	color: var(--vscode-button-secondaryForeground);
-	font-family: inherit;
-	font-size: var(--vscode-fontSize-label1);
-	cursor: pointer;
-}
-
-.paradis-ccusage.paradis-activity-panel .paradis-work-share-preview .actions button.primary {
-	background: var(--vscode-button-background);
-	color: var(--vscode-button-foreground);
-}
-
-.paradis-ccusage.paradis-activity-panel .paradis-work-share-preview .actions button:hover {
-	background: var(--vscode-button-secondaryHoverBackground);
-}
-
-.paradis-ccusage.paradis-activity-panel .paradis-work-share-preview .actions button.primary:hover {
-	background: var(--vscode-button-hoverBackground);
 }
 
 .paradis-ccusage.paradis-activity-panel .paradis-work-share-preview .hint {
