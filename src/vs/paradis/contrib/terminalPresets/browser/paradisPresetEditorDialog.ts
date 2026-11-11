@@ -1704,7 +1704,9 @@ class ParadisPresetEditorDialog extends Disposable {
 		dom.append(row, $('span.ppe-row-icon')).classList.add(...ThemeIcon.asClassNameArray(Codicon.folder));
 		const main = dom.append(row, $('.ppe-row-main'));
 		const nameLine = dom.append(main, $('.ppe-folder-name-line'));
-		dom.append(nameLine, $('span.ppe-folder-name')).textContent = group.folder;
+		const folderName = dom.append(nameLine, $('span.ppe-folder-name'));
+		folderName.textContent = group.folder;
+		folderName.title = group.folder;
 		dom.append(nameLine, $('span.ppe-name-spacer'));
 		if (group.presets[0].source === 'workspace') {
 			dom.append(nameLine, $('span.ppe-badge.workspace')).textContent = STR_SOURCE_WORKSPACE;
@@ -2474,7 +2476,10 @@ class ParadisPresetEditorDialog extends Disposable {
 			dom.clearNode(chipsList);
 			for (const [index, host] of hostChips.entries()) {
 				const chip = dom.append(chipsList, $('span.ppe-chip'));
-				chip.textContent = host;
+				// 名前は札の中の span に入れて「…」で切る（札に直に入れると ✕ ごと外へ押し出される）
+				const chipText = dom.append(chip, $('span.ppe-chip-text'));
+				chipText.textContent = host;
+				chipText.title = host;
 				const removeBtn = dom.append(chip, $('button.ppe-chip-x')) as HTMLButtonElement;
 				removeBtn.type = 'button';
 				removeBtn.textContent = '✕';
