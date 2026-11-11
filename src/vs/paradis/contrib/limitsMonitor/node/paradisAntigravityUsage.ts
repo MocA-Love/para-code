@@ -19,7 +19,12 @@
 // - 同時に起こすのは1本だけ（取り直しの最中に来た要求は相乗りする）
 // - 手動の更新（bypassCache）は上の待ちを無視して取り直す
 // サインインしていない agy はログインの URL を出して入力を待ち続けるので、その文が出た時点で止める。
-// token のファイルは中身を読まない（更新時刻と大きさだけを見る）。
+// 自動の取得では、token のファイル（~/.gemini/antigravity-cli/antigravity-oauth-token）が無ければ agy を起こさず、
+// サインインしていないとみなす（起動のたびに agy を1回起こさないため）。ただしこのプロセスで一度でも取れていれば
+// 起こす（token を OS のキーリングに置く環境では、ファイルが無くても手動の更新で取れた後は自動で取り続ける）。
+// token のファイルは中身を読まない（あるか・更新時刻・大きさだけを見る）。
+// agy は毎回 mkdtemp で作った自分だけの空のフォルダで動かし、終わったら消す（決まった名前の共有のフォルダだと、
+// 同じマシンの別の人が先に作ったフォルダやリンクを作業場所として読ませられるため）。
 
 import * as fs from 'fs';
 import * as os from 'os';
@@ -50,13 +55,32 @@ export interface IParadisAntigravityUsageDeps {
 	readonly runCli?: ParadisAntigravityCliRunner;
 	/** ログインし直したかを見るための印（token のファイルの更新時刻と大きさ。中身は読まない）。 */
 	readonly signInStamp?: (geminiDir: string) => Promise<string | undefined>;
-	/** agy を動かす空のフォルダ。 */
-	readonly workDir?: () => Promise<string>;
+	/** サインインしたことがあるか（token のファイルがあるか。中身は読まない）。 */
+	readonly hasSignInToken?: (geminiDir: string) => Promise<boolean>;
+	/** agy を動かす空のフォルダを作る（終わったら dispose で消す）。 */
+	readonly workDir?: () => Promise<IParadisAntigravityWorkDir>;
+}
+
+export interface IParadisAntigravityWorkDir {
+	readonly path: string;
+	dispose(): Promise<void>;
+}
+
+function tokenFile(geminiDir: string): string {
+	return path.join(geminiDir, 'antigravity-cli', 'antigravity-oauth-token');
+}
+
+async function defaultHasSignInToken(geminiDir: string): Promise<boolean> {
+	try {
+		return (await fs.promises.stat(tokenFile(geminiDir))).isFile();
+	} catch {
+		return false;
+	}
 }
 
 async function defaultSignInStamp(geminiDir: string): Promise<string | undefined> {
 	const stamps: string[] = [];
-	for (const file of [path.join(geminiDir, 'antigravity-cli', 'antigravity-oauth-token'), path.join(geminiDir, 'antigravity-cli')]) {
+	for (const file of [tokenFile(geminiDir), path.join(geminiDir, 'antigravity-cli')]) {
 		try {
 			const stat = await fs.promises.stat(file);
 			stamps.push(`${stat.mtimeMs}:${stat.size}`);
@@ -67,11 +91,16 @@ async function defaultSignInStamp(geminiDir: string): Promise<string | undefined
 	return stamps.join('|');
 }
 
-async function defaultWorkDir(): Promise<string> {
-	// ホームやリポジトリで動かすと、agy がそのフォルダを作業場所として扱いうる。中身の無いフォルダで動かす。
-	const dir = path.join(os.tmpdir(), 'para-code-agy-usage');
-	await fs.promises.mkdir(dir, { recursive: true });
-	return dir;
+/**
+ * agy を動かす空のフォルダを作る。ホームやリポジトリで動かすと、agy がそのフォルダを作業場所として扱いうるので、
+ * 毎回 mkdtemp で自分だけ（0700）の新しいフォルダを作り、終わったら消す。
+ */
+export async function paradisCreateAntigravityWorkDir(parent: string = os.tmpdir()): Promise<IParadisAntigravityWorkDir> {
+	const dir = await fs.promises.mkdtemp(path.join(parent, 'para-code-agy-usage-'));
+	return {
+		path: dir,
+		dispose: () => fs.promises.rm(dir, { recursive: true, force: true }).catch(() => undefined),
+	};
 }
 
 export class ParadisAntigravityUsageFetcher {
@@ -81,7 +110,8 @@ export class ParadisAntigravityUsageFetcher {
 	private readonly resolveCommand: (env: NodeJS.ProcessEnv) => Promise<string | undefined>;
 	private readonly runCli: ParadisAntigravityCliRunner;
 	private readonly signInStamp: (geminiDir: string) => Promise<string | undefined>;
-	private readonly workDir: () => Promise<string>;
+	private readonly hasSignInToken: (geminiDir: string) => Promise<boolean>;
+	private readonly workDir: () => Promise<IParadisAntigravityWorkDir>;
 
 	/** 最後に返したアカウントと、agy を起こした時刻。 */
 	private last: { readonly account: IParadisLimitsAccount; readonly ranAt: number } | undefined;
@@ -101,7 +131,8 @@ export class ParadisAntigravityUsageFetcher {
 		this.resolveCommand = deps.resolveCommand ?? (env => paradisResolveAgentCli('agy', env));
 		this.runCli = deps.runCli ?? paradisRunAgentCli;
 		this.signInStamp = deps.signInStamp ?? defaultSignInStamp;
-		this.workDir = deps.workDir ?? defaultWorkDir;
+		this.hasSignInToken = deps.hasSignInToken ?? defaultHasSignInToken;
+		this.workDir = deps.workDir ?? (() => paradisCreateAntigravityWorkDir());
 	}
 
 	/**
@@ -116,8 +147,12 @@ export class ParadisAntigravityUsageFetcher {
 			return undefined;
 		}
 		const account = await this.fetchAccount(command, env, bypassCache);
-		// サインインしていなければ出さない。手動の更新か、ログインの置き場所が変わったときに取り直し、サインインしていれば出す
-		return account.status === 'relogin_required' ? undefined : { accounts: [account] };
+		// サインインしていなければ出さない。手動の更新か、ログインの置き場所が変わったときに取り直し、サインインしていれば出す。
+		// 取れても枠が1つも無ければ出さない（空の列を出さない）
+		if (account.status === 'relogin_required' || (account.status === 'ok' && (account.scoped ?? []).length === 0)) {
+			return undefined;
+		}
+		return { accounts: [account] };
 	}
 
 	private async fetchAccount(command: string, env: NodeJS.ProcessEnv, bypassCache: boolean): Promise<IParadisLimitsAccount> {
@@ -126,6 +161,10 @@ export class ParadisAntigravityUsageFetcher {
 		}
 		const geminiDir = path.join(this.homedir(), '.gemini');
 		const now = this.now();
+		// 自動の取得では、サインインしたことが無ければ（token のファイルが無く、このプロセスでまだ取れていない）起こさない
+		if (!bypassCache && this.lastGood === undefined && !await this.hasSignInToken(geminiDir)) {
+			return { ...this.base(geminiDir), status: 'relogin_required', statusDetail: 'Antigravity CLI is not signed in' };
+		}
 		if (!bypassCache && this.last) {
 			const recent = now - this.last.ranAt < MIN_RUN_INTERVAL_MS;
 			const inFailureCooldown = this.failureAt !== undefined && now - this.failureAt < FAILURE_COOLDOWN_MS;
@@ -134,6 +173,10 @@ export class ParadisAntigravityUsageFetcher {
 			if (recent || inFailureCooldown || inSignInBackoff) {
 				return this.last.account;
 			}
+		}
+		// 上の確かめの途中（await の間）に別の要求が起こしていれば、それに相乗りする
+		if (this.inflight) {
+			return this.inflight;
 		}
 		const promise = this.run(command, env, geminiDir).finally(() => {
 			if (this.inflight === promise) {
@@ -144,17 +187,27 @@ export class ParadisAntigravityUsageFetcher {
 		return promise;
 	}
 
+	private base(geminiDir: string): Pick<IParadisLimitsAccount, 'provider' | 'id' | 'homeLabel' | 'active'> {
+		return { provider: 'antigravity', id: geminiDir, homeLabel: '~/.gemini', active: true };
+	}
+
 	private async run(command: string, env: NodeJS.ProcessEnv, geminiDir: string): Promise<IParadisLimitsAccount> {
-		const base = { provider: 'antigravity' as const, id: geminiDir, homeLabel: '~/.gemini', active: true };
+		const base = this.base(geminiDir);
 		const ranAt = this.now();
 		let account: IParadisLimitsAccount;
 		try {
-			const result = await this.runCli(command, USAGE_ARGS, {
-				env,
-				cwd: await this.workDir(),
-				timeoutMs: RUN_TIMEOUT_MS,
-				stopWhen: paradisAntigravityNeedsSignIn,
-			});
+			const workDir = await this.workDir();
+			let result: IParadisRunAgentCliResult;
+			try {
+				result = await this.runCli(command, USAGE_ARGS, {
+					env,
+					cwd: workDir.path,
+					timeoutMs: RUN_TIMEOUT_MS,
+					stopWhen: paradisAntigravityNeedsSignIn,
+				});
+			} finally {
+				await workDir.dispose();
+			}
 			const parsed = paradisParseAntigravityUsage(result.stdout, result.stderr);
 			switch (parsed.kind) {
 				case 'ok':
@@ -174,7 +227,8 @@ export class ParadisAntigravityUsageFetcher {
 					break;
 			}
 		} catch (error) {
-			account = this.failed(base, (error as Error).message);
+			// 失敗の文（パネル・モバイルへ出る）には実行ファイルの絶対パスを含めない
+			account = this.failed(base, ((error as Error).message ?? '').split(command).join('agy'));
 		}
 		this.last = { account, ranAt };
 		return account;
