@@ -24,26 +24,32 @@
 	font-size: var(--vscode-fontSize-body1);
 }
 
-/* S: confirmations and small forms. Width 480 (a dialog may set its own width between 420 and 560), height follows the content. */
+/*
+	Each tier's width is a share of the window, clamped between a floor and a ceiling (Q612), so the tiers keep their
+	ratio (M/S and L/M at least 1.5) from a 1440 window to a 4K one. Small windows still fit through max-width and
+	max-height. The confirmation dialog (paradisConfirmDialog.css) repeats the S width because it is upstream's Dialog.
+*/
+
+/* S: confirmations and small forms. Height follows the content. */
 .monaco-workbench .paradis-modal.paradis-modal-s {
-	width: 480px;
+	width: clamp(440px, 26vw, 600px);
 	max-width: 94vw;
 	max-height: 88vh;
 }
 
-/* M: work in context (Q600: 720, so M and L differ clearly). Fixed height so switching views inside does not resize the box. */
+/* M: work in context. Fixed height so switching views inside does not resize the box. */
 .monaco-workbench .paradis-modal.paradis-modal-m {
-	width: 720px;
+	width: clamp(720px, 50vw, 1120px);
 	max-width: 94vw;
-	height: clamp(520px, 72vh, 820px);
+	height: clamp(560px, 76vh, 1000px);
 	max-height: 92vh;
 }
 
 /* L: screens with their own areas (usage, settings, notifications, extensions). */
 .monaco-workbench .paradis-modal.paradis-modal-l {
-	width: clamp(1040px, 78vw, 2000px);
+	width: clamp(1040px, 76vw, 1680px);
 	max-width: 95vw;
-	height: clamp(726px, 88vh, 1400px);
+	height: clamp(720px, 86vh, 1200px);
 	max-height: 92vh;
 }
 

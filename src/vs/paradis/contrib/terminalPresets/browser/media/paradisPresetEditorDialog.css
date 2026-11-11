@@ -38,7 +38,7 @@
 }
 
 .paradis-preset-editor-dialog .ppe-nav {
-	width: 216px;
+	width: 240px;
 	flex-shrink: 0;
 	display: flex;
 	flex-direction: column;
@@ -51,7 +51,7 @@
 	flex: 1;
 	min-width: 0;
 	overflow-y: auto;
-	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size120) var(--vscode-spacing-size160);
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size200) var(--vscode-spacing-size160);
 	display: flex;
 	flex-direction: column;
 	gap: var(--vscode-spacing-size80);
@@ -487,7 +487,9 @@
 
 .paradis-preset-editor-dialog .ppe-form-grid {
 	display: grid;
-	grid-template-columns: minmax(120px, 160px) minmax(0, 1fr);
+	/* Labels take 140 to 200 (a share of the form, so a narrow box keeps its room for the values). The values stop at 760
+		so a wide box does not stretch the inputs (Q612); the rest of the box stays empty. */
+	grid-template-columns: clamp(140px, 30%, 200px) minmax(0, 760px);
 	gap: var(--vscode-spacing-size160);
 	align-items: start;
 	padding: var(--vscode-spacing-size40) 2px;
@@ -542,7 +544,9 @@
 }
 
 /* The drop-downs (paradisSelect.ts) are as high as the text fields next to them. */
+/* The select fills its column like the inputs, so the chevron drawn on the wrapper stays on the select's right edge. */
 .paradis-preset-editor-dialog .paradis-select > select {
+	flex: 1;
 	height: var(--paradis-height-lg);
 }
 
@@ -758,6 +762,7 @@
 	gap: var(--vscode-spacing-size80);
 	margin: 0 calc(var(--vscode-spacing-size120) * -1) calc(var(--vscode-spacing-size160) * -1);
 	padding: var(--vscode-spacing-size120);
+	max-width: 960px;
 	background: var(--vscode-paradis-overlay);
 	border-top: 1px solid var(--vscode-paradis-lineSubtle);
 }

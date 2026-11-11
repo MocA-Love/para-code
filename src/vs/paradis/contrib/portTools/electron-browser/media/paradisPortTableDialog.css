@@ -7,7 +7,8 @@
 /* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
 
 /*
- * ポートパネルの「…」から開く表のダイアログ（paradisPortTableDialog.ts）。箱は共通の S 段（paradisModal.css）で、幅だけ 560 に広げる。
+ * ポートパネルの「…」から開く表のダイアログ（paradisPortTableDialog.ts）。表の列が多いので箱は共通の M 段（paradisModal.css、Q612）。
+ * M は高さが決まっているので、本文が残りの高さを埋め、表はその中でスクロールする。
  * 見出しの帯・本文・下端の帯は「残したブランチを確かめる」のダイアログ（paradisWorktreeBranchCleanup.css）と同じ段で書く。
  */
 
@@ -18,10 +19,6 @@
 	display: flex;
 	align-items: center;
 	justify-content: center;
-}
-
-.monaco-workbench .paradis-port-dialog.paradis-modal-s {
-	width: 560px;
 }
 
 .monaco-workbench .paradis-port-dialog .ppd-header {
@@ -49,6 +46,7 @@
 	flex-direction: column;
 	gap: var(--vscode-spacing-size80);
 	padding: var(--paradis-modal-body-top) var(--vscode-spacing-size160) var(--vscode-spacing-size160);
+	flex: 1;
 	min-height: 0;
 	overflow: auto;
 }
@@ -62,6 +60,8 @@
 .monaco-workbench .paradis-port-dialog .ppd-box {
 	border: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
 	border-radius: var(--vscode-cornerRadius-medium);
+	display: flex;
+	flex-direction: column;
 	min-height: 0;
 }
 
@@ -80,7 +80,7 @@
 }
 
 .monaco-workbench .paradis-port-dialog .ppd-scroll {
-	max-height: 320px;
+	min-height: 0;
 	overflow: auto;
 }
 
