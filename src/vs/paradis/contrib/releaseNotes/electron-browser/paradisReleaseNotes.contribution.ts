@@ -35,6 +35,7 @@ import * as dom from '../../../../base/browser/dom.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubAreaViewState, IParadisHubHost, ParadisHubAreaId, paradisRegisterHubArea } from '../../paradisHub/electron-browser/paradisHub.js';
 import { paradisOpenHub } from '../../paradisHub/electron-browser/paradisHubOpen.js';
+import { ParadisButton } from '../../../browser/paradisButton.js';
 
 const $ = dom.$;
 
@@ -120,11 +121,9 @@ class ParadisChangelogArea extends Disposable implements IParadisHubAreaView {
 		const message = dom.append(this.containers.content, $('.para-cl-empty'));
 		// allow-any-unicode-next-line
 		dom.append(message, $('p')).textContent = localize('paradis.changelog.loadFailed', "このアプリに同梱された更新履歴を読めませんでした。");
-		const button = dom.append(message, $('button.para-cl-btn')) as HTMLButtonElement;
-		button.type = 'button';
 		// allow-any-unicode-next-line
-		button.textContent = localize('paradis.changelog.openMarkdown', "Markdown のプレビューで開く");
-		this._register(dom.addDisposableListener(button, dom.EventType.CLICK, async () => {
+		const button = this._register(new ParadisButton(message, { kind: 'secondary', label: localize('paradis.changelog.openMarkdown', "Markdown のプレビューで開く") }));
+		this._register(button.onDidClick(async () => {
 			this.host.close();
 			try {
 				await this.commandService.executeCommand('markdown.showPreview', changelogUri);

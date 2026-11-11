@@ -229,6 +229,12 @@
 	text-align: left;
 }
 
+/* rtl cuts the path from its start; the marks keep the leading and trailing "/" where they are in the path. */
+.paradis-create-worktree-dialog .pcw-path-preview::before,
+.paradis-create-worktree-dialog .pcw-path-preview::after {
+	content: '\200E';
+}
+
 .paradis-create-worktree-dialog .pcw-error {
 	color: var(--vscode-errorForeground);
 	font-size: 12px;
