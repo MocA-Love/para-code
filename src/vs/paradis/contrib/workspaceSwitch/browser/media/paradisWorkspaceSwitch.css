@@ -1126,9 +1126,9 @@
 }
 
 /* allow-any-unicode-next-line */
-/* セクションの見出し（Q601 案 A）。リポジトリと同じ最上位の行なので字下げは増やさない。
- * 文字は小さめ・補助の色にして、中のリポジトリの名前（太字・本文の色）より一段引いて見せる。
- * 区切りの線はリポジトリの見出しと同じ panel.border。一覧の先頭の見出しと、見出しの直下のリポジトリは線を引かない
+/* セクションの見出し（Q601 で作り、Q607 案 B で帯にした）。中のリポジトリを子に持つ最上位の行。
+ * 帯の色・文字の大きさと色はファイルの末尾の「セクションの範囲を見せる」で上書きする。
+ * 見出しの直下のリポジトリは上の線を引かない
  * （行は仮想化で絶対配置なので、隣のセレクタではなくレンダラがクラスで知らせる）。 */
 .paradis-workspaces-list .paradis-section-row {
 	display: flex;
@@ -1244,4 +1244,71 @@
 	font-size: var(--vscode-fontSize-label1);
 	color: var(--vscode-paradis-textFaint);
 	cursor: default;
+}
+
+/* allow-any-unicode-next-line */
+/* セクションの範囲を見せる（Q607 案 B）。セクションがあるときだけ一覧の器に paradis-workspaces-sectioned が付き、
+ * 中身（プロジェクト・スペース）は本当の子として 1 段 12px ずつ字下げされる（字下げはビューがツリーへ渡す）。
+ * 見出しの行は面の色の帯にし、中身の行には見出しの矢印の下から中立の色の細い罫線を引く。罫線と字下げがずれるので
+ * 本家の案内線は消す。左端のプロジェクトの色の線（::before）はそのまま。セクションが 0 個なら何も変わらない。 */
+.paradis-workspaces-list.paradis-workspaces-sectioned .monaco-tl-indent {
+	display: none;
+}
+
+.paradis-workspaces-list .monaco-list-row.paradis-section-band {
+	background-color: var(--vscode-paradis-band);
+}
+
+/* allow-any-unicode-next-line */
+/* 上に貼り付いた見出し（本家の sticky scroll）も帯にする。本家は貼り付いた行を一覧の地の色で塗るため、それより強く当てる */
+.paradis-workspaces-list .monaco-list .monaco-scrollable-element .monaco-tree-sticky-container .monaco-tree-sticky-row.paradis-section-band {
+	background-color: var(--vscode-paradis-band);
+}
+
+/* allow-any-unicode-next-line */
+/* 帯の上でもポインタを重ねたことが分かるよう、帯の色に重ね塗りする（本家の塗りは帯の色を置き換えてしまう） */
+.paradis-workspaces-list .monaco-list:not(.drop-target):not(.dragging) .monaco-list-row.paradis-section-band:hover:not(.selected):not(.focused) {
+	background-color: var(--vscode-paradis-band);
+	background-image: linear-gradient(var(--vscode-paradis-fillHover), var(--vscode-paradis-fillHover));
+}
+
+/* allow-any-unicode-next-line */
+/* 帯が続くと 1 つの塊に見えるので、先頭以外の帯の上に地の色で 1px の切れ目を入れる */
+.paradis-workspaces-list .monaco-list-row.paradis-section-band:not(.paradis-section-band-first) {
+	box-shadow: inset 0 1px 0 var(--vscode-paradis-surface);
+}
+
+/* allow-any-unicode-next-line */
+/* 帯は四隅とも角を付けない（Modern UI は行の角丸を !important で付ける） */
+.modern-ui .paradis-workspaces-list .monaco-list .monaco-list-row.paradis-section-band {
+	border-radius: 0 !important;
+}
+
+.paradis-workspaces-list .monaco-list-row.paradis-section-band .paradis-section-row {
+	border-top-color: transparent;
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-workspaces-list .monaco-list-row.paradis-section-band .paradis-section-count {
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+}
+
+/* allow-any-unicode-next-line */
+/* 罫線の位置は見出しの矢印の中心: 色線 3px + 矢印の左の余白 8px（見出しは常に深さ 1）+ 矢印の箱の半分 8px + 本家の translateX 3px。
+ * セクションの最後に見えている行では、次の帯の手前で止める */
+.paradis-workspaces-list .monaco-list-row.paradis-section-member > .monaco-tl-row::after {
+	content: '';
+	position: absolute;
+	left: 22px;
+	top: 0;
+	bottom: 0;
+	width: 1px;
+	background-color: var(--vscode-paradis-guide);
+	pointer-events: none;
+}
+
+.paradis-workspaces-list .monaco-list-row.paradis-section-member.paradis-section-last > .monaco-tl-row::after {
+	bottom: 6px;
 }

@@ -122,7 +122,9 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 				'paradis.lineButton': '#00000000',
 				// 選んでいる行の地（paradisColors.ts の paradis.fillSelected）は、テーマの水色の薄い地のまま
 				// （既定の list.inactiveSelectionBackground #17191e は面より暗く、選んだ印に見えにくい）
-				'paradis.fillSelected': '#09AFD933'
+				'paradis.fillSelected': '#09AFD933',
+				// 一覧の中の見出しの帯（paradisColors.ts の paradis.band）。Houston は見出しの面に地と違う色を持つので、その色をそのまま使う
+				'paradis.band': '#343841'
 			},
 			'[Dark 2026]': {
 				'statusBar.background': '#09AFD9',
