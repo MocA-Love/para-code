@@ -31,6 +31,7 @@ import { PARADIS_TASK_BOARD_BRIDGE_CHANNEL, paradisTaskBoardTerminalId } from '.
 import { paradisIsWorkbenchWindowFocused } from '../../workspaceSwitch/browser/paradisWindowFocus.js';
 import { paradisForgetRemoteTerminalViewing, paradisIsRemoteTerminalViewing, paradisLastRemoteTerminalViewAt, paradisSetHibernationWakeHandler } from '../browser/paradisAgentHibernationRemoteViews.js';
 import { IParadisHibernationPaneFacts, PARADIS_AGENT_HIBERNATION_ENABLED_SETTING, PARADIS_AGENT_HIBERNATION_IDLE_MINUTES_SETTING, PARADIS_AGENT_HIBERNATION_RETRY_MS, PARADIS_AGENT_HIBERNATION_TICK_MS, ParadisComposerState, ParadisHibernationSkipReason, paradisAgentHibernationIdleMs, paradisClaudeComposerState, paradisHibernationVerdict, paradisIsUserTypedInput, paradisNextPendingDraft, paradisParseHibernationResult } from '../common/paradisAgentHibernation.js';
+import { IParadisHibernationSettings, paradisHibernationAttemptAttributes, paradisHibernationRefusalWord, paradisHibernationResumeAttributes, recordParadisHibernation } from '../common/paradisAgentHibernationDiagnostics.js';
 
 const LOG = '[ParadisAgentHibernation]';
 
@@ -76,6 +77,10 @@ export class ParadisAgentHibernationController extends Disposable {
 	private readonly autoWakeTried = new Set<number>();
 	/** タブ → 最後にログへ出した、休止しない理由（同じ理由を毎分出さない）。 */
 	private readonly lastSkip = new Map<number, ParadisHibernationSkipReason>();
+	/** 止めた時刻（この起動の中で止めたタブだけ。Sentry の集計用）。 */
+	private readonly hibernatedAt = new Map<number, number>();
+	/** 休止中のタブへ打たれた入力の数（起こしたときに Sentry へ載せる）。 */
+	private readonly inputsWhileHibernated = new Map<number, number>();
 	private snapshot: IParadisAgentStatusSnapshot | undefined;
 	private readonly wakeHandler = this._register(new MutableDisposable());
 
@@ -116,6 +121,14 @@ export class ParadisAgentHibernationController extends Disposable {
 		return this.configurationService.getValue<boolean>(PARADIS_AGENT_HIBERNATION_ENABLED_SETTING) === true;
 	}
 
+	/** Sentry へ送る設定の値（paradisAgentHibernationDiagnostics.ts）。 */
+	private diagnosticSettings(): IParadisHibernationSettings {
+		return {
+			enabled: this.enabled(),
+			idleMinutes: paradisAgentHibernationIdleMs(this.configurationService.getValue(PARADIS_AGENT_HIBERNATION_IDLE_MINUTES_SETTING)) / 60_000,
+		};
+	}
+
 	// --- 見ているもの -------------------------------------------------------------------
 
 	private watchInstance(instance: ITerminalInstance): void {
@@ -128,6 +141,10 @@ export class ParadisAgentHibernationController extends Disposable {
 		const listeners = instance.onDidInputData(data => {
 			if (paradisIsUserTypedInput(data)) {
 				activity.lastInputAt = Date.now();
+				if (this.host.isHibernated(instance.instanceId)) {
+					// 休止中（エージェントが止まっている）のタブへ打たれた入力。起こしたときに Sentry へ載せる
+					this.inputsWhileHibernated.set(instance.instanceId, (this.inputsWhileHibernated.get(instance.instanceId) ?? 0) + 1);
+				}
 			}
 			activity.pendingDraft = paradisNextPendingDraft(activity.pendingDraft, data);
 		});
@@ -136,6 +153,8 @@ export class ParadisAgentHibernationController extends Disposable {
 			this.lastSkip.delete(instance.instanceId);
 			this.busy.delete(instance.instanceId);
 			this.autoWakeTried.delete(instance.instanceId);
+			this.hibernatedAt.delete(instance.instanceId);
+			this.inputsWhileHibernated.delete(instance.instanceId);
 			paradisForgetRemoteTerminalViewing(instance.instanceId);
 			store.deleteAndDispose(instance.instanceId);
 		});
@@ -205,13 +224,25 @@ export class ParadisAgentHibernationController extends Disposable {
 		}
 		this.busy.add(instanceId);
 		this.logService.info(`${LOG} waking terminal ${instanceId} (${reason === 'mobile' ? 'opened on the phone' : 'the tab came to the front'})`);
+		const hibernatedAt = this.hibernatedAt.get(instanceId);
+		const record = (outcome: ParadisHibernationResumeOutcome | 'error') => {
+			recordParadisHibernation('resume', paradisHibernationResumeAttributes(outcome, reason, this.diagnosticSettings(), hibernatedAt === undefined ? undefined : Date.now() - hibernatedAt, this.inputsWhileHibernated.get(instanceId) ?? 0));
+			if (outcome === 'sent') {
+				this.hibernatedAt.delete(instanceId);
+				this.inputsWhileHibernated.delete(instanceId);
+			}
+		};
 		void this.host.resumeHibernated(instanceId, reason === 'visible').then(outcome => {
+			record(outcome);
 			if (outcome === 'sent') {
 				this.logService.info(`${LOG} sent the resume command to terminal ${instanceId}`);
 			} else {
 				this.logService.info(`${LOG} could not send the resume command to terminal ${instanceId}: ${outcome} (the banner stays)`);
 			}
-		}, error => this.logService.warn(`${LOG} resuming terminal ${instanceId} failed`, error)).finally(() => this.busy.delete(instanceId));
+		}, error => {
+			record('error');
+			this.logService.warn(`${LOG} resuming terminal ${instanceId} failed`, error);
+		}).finally(() => this.busy.delete(instanceId));
 	}
 
 	// --- 止める ---------------------------------------------------------------------------
@@ -292,7 +323,10 @@ export class ParadisAgentHibernationController extends Disposable {
 			}
 			this.lastSkip.delete(instance.instanceId);
 			if (verdict.kind === 'hibernate' && session !== undefined && facts.completedAt !== undefined) {
-				await this.hibernate(instance, token, session.sessionId, facts.completedAt);
+				// 最後に終わった・見た・触った時刻から止めるまで（判定と同じ取り方。Sentry の集計用）
+				const since = Math.max(...[facts.completedAt, facts.lastVisibleAt, facts.lastInputAt, facts.lastRemoteViewAt]
+					.map(value => typeof value === 'number' && Number.isFinite(value) ? value : 0));
+				await this.hibernate(instance, token, session.sessionId, facts.completedAt, now - since);
 			}
 		}
 	}
@@ -332,17 +366,30 @@ export class ParadisAgentHibernationController extends Disposable {
 		}
 	}
 
-	private async hibernate(instance: ITerminalInstance, token: string, sessionId: string, completedAt: number): Promise<void> {
+	private async hibernate(instance: ITerminalInstance, token: string, sessionId: string, completedAt: number, idleMs: number): Promise<void> {
 		const instanceId = instance.instanceId;
 		// 止める前に印を付ける。止めた後に印を付けると、エージェントのコマンドの終わりで台帳から会話が消える
 		if (!this.host.markHibernated(instanceId, sessionId, completedAt)) {
 			this.logService.info(`${LOG} not hibernating terminal ${instanceId}: the conversation is not in the resume ledger`);
+			recordParadisHibernation('hibernate', paradisHibernationAttemptAttributes('no_ledger', this.diagnosticSettings(), idleMs));
 			return;
 		}
 		this.busy.add(instanceId);
 		try {
-			const result = paradisParseHibernationResult(await this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL).call('hibernatePane', [token, sessionId]).catch(() => undefined));
+			let ipcFailed = false;
+			const result = paradisParseHibernationResult(await this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL).call('hibernatePane', [token, sessionId]).catch(() => {
+				ipcFailed = true;
+				return undefined;
+			}));
+			recordParadisHibernation('hibernate', paradisHibernationAttemptAttributes(
+				result.ok ? 'ok' : ipcFailed ? 'ipc_failed' : paradisHibernationRefusalWord(result.reason),
+				this.diagnosticSettings(),
+				idleMs,
+				result.ok ? { killed: result.killed, bypass: result.bypass } : undefined,
+			));
 			if (result.ok) {
+				this.hibernatedAt.set(instanceId, Date.now());
+				this.inputsWhileHibernated.delete(instanceId);
 				this.host.setHibernatedBypass(instanceId, result.bypass);
 				this.retryAfter.delete(token);
 				this.logService.info(`${LOG} hibernated terminal ${instanceId} (${result.killed ? 'needed SIGKILL' : 'stopped with SIGTERM'}${result.bypass ? ', resumes without permission prompts' : ''})`);

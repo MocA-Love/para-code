@@ -17,6 +17,7 @@
 
 import { PARADIS_SNAPSHOT_MAX_CHARS } from './paradisDevtoolsToolAdjustments.js';
 import { isRecord } from '../../../common/paradisGuards.js';
+import { ParadisSnapshotDiffOutcome } from '../common/paradisAgentBrowserUsage.js';
 
 /** vendored の take_snapshot が本文の前に置く見出し。 */
 const SNAPSHOT_HEADING = '## Latest page snapshot';
@@ -234,8 +235,19 @@ export class ParadisSnapshotBaselines {
 	/** 控えの本文の文字数の合計。 */
 	private total = 0;
 
-	/** @param maxTotalChars 控え全体の文字数の上限（テストで小さくする）。 */
-	constructor(private readonly now: () => number = Date.now, private readonly maxTotalChars: number = MAX_TOTAL_BASELINE_CHARS) { }
+	/**
+	 * @param maxTotalChars 控え全体の文字数の上限（テストで小さくする）。
+	 * @param onOutcome 差分にしたか・全体を返した理由（Sentry の集計用。paradisAgentBrowserUsage.ts）。
+	 */
+	constructor(private readonly now: () => number = Date.now, private readonly maxTotalChars: number = MAX_TOTAL_BASELINE_CHARS, private readonly onOutcome?: (token: string, outcome: ParadisSnapshotDiffOutcome) => void) { }
+
+	private report(token: string, outcome: ParadisSnapshotDiffOutcome): void {
+		try {
+			this.onOutcome?.(token, outcome);
+		} catch {
+			// 集計の失敗で結果を変えない
+		}
+	}
 
 	private remove(token: string): void {
 		const entry = this.entries.get(token);
@@ -289,12 +301,15 @@ export class ParadisSnapshotBaselines {
 			this.prune(at);
 		}
 		if (mode !== 'diff' || previous === undefined || previous.truncated || previous.child !== child || previous.generation !== generation) {
+			this.report(token, mode !== 'diff' ? 'full_requested' : previous === undefined ? 'full_no_baseline' : previous.truncated ? 'full_truncated' : 'full_child_changed');
 			return result;
 		}
 		const diff = paradisDiffSnapshotBodies(previous.body, parts.body, previous.at);
 		if (diff === undefined) {
+			this.report(token, 'full_too_large');
 			return result;
 		}
+		this.report(token, 'diff');
 		const content = [...result.content];
 		content[index] = { ...(content[index] as object), text: `${parts.head}${diff}` };
 		// structuredContent（vendored の --experimental-structured-content。Para Code は付けない）には全体が入るので外す

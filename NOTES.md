@@ -2718,6 +2718,61 @@ renderer の待ちは、Long Animation Frames で「何から呼ばれた処理�
 
 `safe_main_loop_p50_ms` などの main のイベントループの値は、遅れではなくタイマーの実際の間隔なので、分解能（切り替えの区間は 10ms）を含みます。暇でも p50 は約 10ms です。定期の計測（分解能 200ms）の「混んでいた」ログ（`[paradisMainLoad] ... congested`）は、分解能を引いてから p99 100ms・最大 1 秒と比べるように直しました（直す前は暇な main でもほぼ毎分出ていました）。
 
+## Sentry で試験的な設定 12 件が働いているかを見る（2026-11-12、Q611）
+
+試験的な設定 12 件（`paradis.agentBrowser.*` 6 件・`agentHibernation.*` 2 件・`browser.extensions.*` 2 件・`terminal.daemon.*` 2 件）の扱いを Sentry を見て決めるための計装です。どれもエラーではなく時間の無い transaction（`recordParadisUsageSpan`、`sentry/common/paradisSentryDiagnostics.ts`）で送るので、エラーの枠と「10 分 3 件」の上限を使いません。値はすべて `safe_` の span attribute で、custom measurement（10 個まで）は使いません。設定の値は `safe_set_<名前>` に `on` / `off`（分は数）で載せ、オンとオフを同じ transaction の中で比べられるようにしています。呼び出しの多い 2 つ（内蔵ブラウザの道具・拡張機能）は `sentry/common/paradisUsageTally.ts` で 30 分ごとの 1 件にまとめ、窓の途中で設定が変わったらそれまでの分を先に送ります（1 件の中でオンとオフが混ざらない）。回数は別々の数値の属性なので、Explore の spans で `sum(tags[safe_x,number])` を設定ごとに足せます。
+
+main は span runner を持たない（繋ぐと素通しだった既存の span が一斉に届く）ので、`configureParadisUsageSpanSender` で集計の送り口だけを繋いでいます。main が Sentry の読み込みより前に送った記録（飼い方の 1 件）は 20 件まで溜め、読み込みの後に送ります。renderer と shared process で SDK の前に送った記録は送られません（起動の直後の数秒だけ）。
+
+| transaction | 送る場所 | 何を見るか |
+|---|---|---|
+| `para.agentBrowser.usage` | shared process、30 分ごと | 6 件の設定（`safe_set_settle`・`state`・`snapshot_diff`・`site_notes`・`site_recipes`・`steps_flow`）と、道具の呼び出しの回数。`safe_calls`・`safe_call_failures`・`safe_snap_calls`・`safe_steps_calls` は設定がオフでも数える（比べの母数） |
+| `para.agentHibernation.hibernate` / `.resume` | renderer、1 回ごと | `safe_outcome`（休止は `ok`・`no_ledger`・`ipc_failed`・shared process の断りの理由、再開は `sent` か送れなかった理由）、`safe_idle_ms`（最後に終わった・見た・触った時刻から止めるまで）、`safe_hibernated_ms`、`safe_inputs_while_hibernated`、`safe_trigger`（`visible`・`mobile`）、`safe_set_enabled`・`safe_set_idle_minutes` |
+| `para.browserExtensions.usage` | main、30 分ごと | 入れている数の帯（`safe_ext_count_le_0/le_1/le_3/le_10/gt_10`）、読み込みの結末（`safe_load_ok`・`prepare_failed`・`id_mismatch`・`error`）、`safe_worker_start_failed`（`_script` は worker の評価のエラーが理由）、ポップアップ（`safe_popup_opened`・`no_window_other`・`no_window_missing`・`load_failed`。#912 の「no window」は後ろの 2 つ）、共有中のタブで出した回数（`safe_popup_on_shared`・`safe_side_panel_on_shared`）と断った回数（`safe_side_panel_refused_shared`） |
+| `para.ptyDaemon.mode` | main、起動ごとに 1 件 | 実際に選んだ飼い方 `safe_pty_mode`（`handover`・`daemon`・`in_app`）、倒した理由 `safe_pty_fallback`（`none`・`windows`・`path_too_long`）、`safe_set_daemon_enabled`・`safe_set_reattach` |
+| 既存の `para.ptyHandover.adopt` / `.reattach` | renderer | `safe_daemon` を足した（pty ホストが引き継ぎの常駐に繋がっているか） |
+| 既存の `para.pty-daemon.startup-revive` | renderer（手元だけ） | `safe_set_daemon_enabled`・`safe_set_reattach` を足した（今の設定の値。起動の後に切り替えるとずれる） |
+
+`para.agentBrowser.usage` の回数の名前（`safe_` の後）:
+
+| 機能 | 名前 | 中身 |
+|---|---|---|
+| 共通 | `calls`・`call_failures`・`arg_refused` | エージェントが呼んだ道具（run_steps の中の手順は数えない）、失敗した結果、引数の検査で断った数 |
+| settleAfterAction | `observe_calls`・`observe_none`・`observe_snapshot`・`settle_zero` | 観測を添える道具の呼び出しと、`observe: "none"`・`"snapshot"`・待ち 0 を渡した数 |
+| | `settle_quiet`・`settle_timeout`・`settle_unresponsive`・`settle_dialog` と各 `_ms`、`settle_wait_ms`、`settle_wait_le_500/le_2000/gt_2000` | 実際に待った結末（落ち着いた・上限で打ち切った・ページが答えない・ダイアログ）と待ったミリ秒の合計・帯 |
+| runStepsFlow | `steps_calls`・`steps_flow_calls`・`steps_used_for_each/repeat_until/expect/sleep/reference` | run_steps の数、手順書の経路を通った数、使った書き方 |
+| | `steps_ok`・`steps_partial`・`steps_refused`・`steps_stop_failure/step_limit/time_limit/cancelled`・`steps_expect_failed`・`steps_executed` | 結末（`partial` は continue_on_error で失敗を含んで最後まで）、成り立たなかった expect を含んだ回、動いた手順の合計 |
+| | `steps_arg_refused`・`steps_step_refused`・`steps_step_observe_refused` | run_steps 自体の引数・手順の引数を断った数。最後は手順の args に `observe`・`settle_seconds` を書いて断られた数 |
+| snapshotDiff | `snap_calls`、`snap_diff`、`snap_full_requested/no_baseline/truncated/child_changed/too_large`、`snap_refetch_after_diff` | take_snapshot の数、差分を返した数、全体を返した理由、差分の後 60 秒以内に同じタブで `full: true` を取り直した数 |
+| siteNotes | `note_write_<結末>`・`note_list_<結末>`・`note_delete_<結末>` | 結末は `ok`・`no_text`・`card_number`・`private_text`・`store_full`・`site_not_open`・`no_site`・`no_space`・`no_tabs`・`unverified`・`missing`・`error` |
+| | `note_len_le_200/le_400/le_600`、`note_arg_refused`・`note_arg_note`、`note_hint_shown`・`note_hint_chars`・`note_hint_le_2000/le_5000/gt_5000` | 保存したメモの文字数の帯、引数の検査で断った数とそのうち `note` を渡した数、サイトを開いたときに添えたメモの見出しの数と文字数 |
+| siteRecipes | `recipe_save/run/list/delete_<結末>`、`recipe_run_<same_pane/other_pane/unknown>_<ok/failed>`、`recipe_arg_refused`・`recipe_hint_shown` | 結末は `ok`・`failed`・`invalid`・`store_full`・`missing` ほか siteNotes と同じ。動かした手順を保存したのが同じペインか別のペインか（この起動の中で保存したものだけ分かる。前の起動で保存したものは `unknown`） |
+| reportBrowserState | `state_added`・`state_on_failure`・`state_tabs_only`・`state_new_page`・`state_download`・`state_dialog`・`state_unchanged`・`state_chars`・`state_len_le_500/le_1500/gt_1500` | 添えた回数、失敗した結果へ添えた回数、中身の種類、前回と同じで省いた回数、文字数の合計と帯 |
+
+送らないもの: ページの中身・URL・ホスト名・メモや手順の文・道具の引数の値（`note` などは鍵の有無だけを見る）・拡張機能の ID と名前・会話の ID。キーと固定の値は `isParadisSentryScrubbedWord` に当たらないことを単体テストで確かめています（`not-at-prompt` は `not_at_shell_input`、`no-session` は `no_conversation`、秘密らしいメモは `private_text` に言い換え）。新しい `safe_*` キーが本番で null なら、まずプロジェクトの `sensitiveFields` を疑います（`para-code-sentry-instrumentation-pitfalls` の 1）。
+
+Explore の spans（または Discover の transactions）で見る例。どれも `release` を計装の入った版（paracode-186 以降）に絞ります。
+
+| 見たいこと | 絞り込み | 集計 |
+|---|---|---|
+| settle が時間切れで打ち切る割合（オンの人だけ） | `transaction:para.agentBrowser.usage safe_set_settle:on` | `sum(tags[safe_settle_timeout,number])` ÷ (`settle_quiet`+`settle_timeout`+`settle_unresponsive`+`settle_dialog` の sum)。`sum(tags[safe_settle_timeout_ms,number])` ÷ `sum(tags[safe_settle_wait_ms,number])` が待ちの無駄 |
+| observe: none で外す割合 | 同上 | `sum(tags[safe_observe_none,number])` ÷ `sum(tags[safe_observe_calls,number])` |
+| オンとオフで道具の失敗率が変わるか | `transaction:para.agentBrowser.usage`、`safe_set_settle` で group by | `sum(tags[safe_call_failures,number])` ÷ `sum(tags[safe_calls,number])` |
+| run_steps の手順書が壊れていないか | `transaction:para.agentBrowser.usage safe_set_steps_flow:on` | `steps_ok`・`steps_stop_failure`・`steps_refused`・`steps_step_observe_refused` の sum。`steps_step_observe_refused` が 0 でなければ「手順の中の observe を断る」件がまだ起きている |
+| 差分の効き目と取り違え | `transaction:para.agentBrowser.usage safe_set_snapshot_diff:on` | `snap_diff` ÷ `snap_calls`、`snap_refetch_after_diff` ÷ `snap_diff`、`snap_full_too_large` と `snap_full_child_changed` の比（調べた記録で理由の分からなかった 225 件の内訳） |
+| サイトメモの書き込みの失敗 | `transaction:para.agentBrowser.usage safe_set_site_notes:on` | `note_write_ok` と `note_write_*`（失敗）の sum、`note_arg_note`、`note_hint_gt_5000` |
+| 手順を別のペインが動かして通るか | `transaction:para.agentBrowser.usage safe_set_site_recipes:on` | `recipe_run_other_pane_ok` ÷ (`_ok`+`_failed`)、`unknown` も同様 |
+| 添え書きの中身 | `transaction:para.agentBrowser.usage safe_set_state:on` | `state_tabs_only` ÷ `state_added`、`state_chars` ÷ `state_added` |
+| 休止が働いているか | `transaction:para.agentHibernation.hibernate`、`safe_outcome` で group by | `count()`、`p50(tags[safe_idle_ms,number])`。`ok` 以外が多ければ理由を見る |
+| 休止中のタブに打ってしまうか・再開できるか | `transaction:para.agentHibernation.resume`、`safe_outcome` で group by | `count()`、`sum(tags[safe_inputs_while_hibernated,number])`、`p50(tags[safe_hibernated_ms,number])` |
+| 拡張機能の読み込みとポップアップ | `transaction:para.browserExtensions.usage` | `load_*`・`worker_start_failed`・`popup_no_window_*` の sum、`ext_count_*` の sum（入れている数の分布） |
+| 旧い常駐だけの人がどれだけいるか | `transaction:para.ptyDaemon.mode`、`safe_pty_mode` で group by | `count()`（起動の数）。`daemon` がほぼ 0 なら旧い常駐を引き継ぎへ寄せて消す案を検討する。`safe_pty_fallback` が `none` 以外なら、常駐を使う設定なのにアプリの中へ倒した起動 |
+| 引き継ぎの失敗（11 月の直しの効き目） | `transaction:para.ptyHandover.adopt safe_daemon:true` | `count()` を `safe_reachable` で分け、`sum(tags[safe_failed,number])` ÷ `sum(tags[safe_adopted,number])` を release で分ける。起動時の取り残しは `transaction:para.pty-daemon.startup-revive` の `safe_left_behind`・`safe_revived_unclaimed` を `safe_set_reattach` で分けて見る |
+
+利用者の数は数えられません（`user` を送っていないため）。上の `count()` は起動・窓・30 分の窓の数です。
+
+【要確認】Sentry が使えない期間に作ったので、上のクエリは実データで試していません。文字列の属性（`safe_set_settle:on`）を spans の絞り込み・group by にそのまま使えるか、1 件の transaction に 60 前後の属性を載せても欠けないかは、paracode-186 のデータが届いたら最初に確かめます。
+
 ## 2 画面のファイル転送は IFileService だけで流し、権限だけを専用のチャネルで読む（fileTransfer、2026-10-02、段階 1）
 
 エディタのタブ 1 枚（`ParadisFileTransferEditor` / `ParadisFileTransferInput`、シリアライザーで左右の場所ごと復元）で、左にこのマシン（`file://`）、右にこのウィンドウの接続先（`vscode-remote://`）を並べる。見た目は案C（`dual-pane-transfer-mock.html`）で、表・選択・キーボード・ドラッグは `WorkbenchTable` に任せ、見出し・2 段の名前（名前の下に権限）・足元の件数・下の待ち行列だけを `src/vs/paradis/contrib/fileTransfer/` で描く。片側の画面は、表（`paradisFileTransferPaneTable.ts`）・操作（`paradisFileTransferPaneOperations.ts`）・ドラッグ＆ドロップ（`paradisFileTransferPaneDnd.ts`）に分けてある。狭い（760px 未満）と左右を上下に積み、待ち行列は見出しの 1 行に縮める。

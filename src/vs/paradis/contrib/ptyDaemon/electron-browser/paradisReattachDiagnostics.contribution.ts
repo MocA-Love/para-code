@@ -23,12 +23,15 @@ import { raceTimeout, timeout } from '../../../../base/common/async.js';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { isWindows } from '../../../../base/common/platform.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ILocalPtyService } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { paradisUsageSwitch } from '../../sentry/common/paradisUsageTally.js';
 import { paradisReattachSpanAttributes } from '../common/paradisReattachDiagnostics.js';
+import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
 
 /** 起動してから聞くまで。起こし直した画面へタブが繋ぎに来るのを待つ。 */
 const REPORT_DELAY_MS = 60_000;
@@ -43,6 +46,7 @@ class ParadisReattachDiagnosticsContribution extends Disposable implements IWork
 		@ILocalPtyService private readonly _localPtyService: ILocalPtyService,
 		@IWorkspaceContextService private readonly _workspaceContextService: IWorkspaceContextService,
 		@ILogService private readonly _logService: ILogService,
+		@IConfigurationService private readonly _configurationService: IConfigurationService,
 	) {
 		super();
 		if (isWindows) {
@@ -60,7 +64,13 @@ class ParadisReattachDiagnosticsContribution extends Disposable implements IWork
 			const tally = await raceTimeout(this._localPtyService.paradisTakeReattachTally?.(this._workspaceContextService.getWorkspace().id) ?? Promise.resolve(undefined), TALLY_TIMEOUT_MS);
 			const attributes = paradisReattachSpanAttributes(tally);
 			if (attributes && !cancellation.token.isCancellationRequested) {
-				runInParadisSpan('pty-daemon', 'startup-revive', attributes, () => undefined, { forceTransaction: true });
+				// 旧い常駐（enabled）と引き継ぎ（reattachAcrossUpdates）のどちらを使う人の起動かを分ける（q.html Q611）。
+				// 今の設定の値なので、起動の後に切り替えていればずれる（実際に選んだ飼い方は main の `para.ptyDaemon.mode`）
+				runInParadisSpan('pty-daemon', 'startup-revive', {
+					...attributes,
+					safe_set_daemon_enabled: paradisUsageSwitch(this._configurationService.getValue(PARADIS_PTY_DAEMON_ENABLED) === true),
+					safe_set_reattach: paradisUsageSwitch(this._configurationService.getValue(PARADIS_PTY_HOST_DAEMON_ENABLED) === true),
+				}, () => undefined, { forceTransaction: true });
 			}
 		} catch (error) {
 			// 診断のために振る舞いを変えない（キャンセルや pty ホストの再起動を含む）。更新をまたいで

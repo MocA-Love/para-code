@@ -35,6 +35,7 @@ import {
 } from '../common/paradisBrowserExtensionApiWire.js';
 import type { IParadisWorkerLogLine } from '../common/paradisBrowserExtensions.js';
 import { isRecord } from '../../../common/paradisGuards.js';
+import { paradisBrowserExtensionsUsage } from '../common/paradisBrowserExtensionsUsage.js';
 
 /** 拡張機能（Electron の Extension の、ここで使うところ）。 */
 export interface IParadisApiExtension {
@@ -692,6 +693,7 @@ export class ParadisExtensionApiHost implements IDisposable {
 				const fromConsole = context.consoleErrors.at(-1);
 				const detail = fromConsole ?? (error instanceof Error ? error.message : String(error));
 				context.startFailure = { detail, fromConsole: fromConsole !== undefined };
+				paradisBrowserExtensionsUsage().noteWorkerStartFailed(fromConsole !== undefined);
 				this._logService.warn(`[paradis] could not start a browser extension worker (${context.scope.slice('chrome-extension://'.length, -1)}): ${detail}`);
 				this._onDidChangeWorkers.fire();
 			})

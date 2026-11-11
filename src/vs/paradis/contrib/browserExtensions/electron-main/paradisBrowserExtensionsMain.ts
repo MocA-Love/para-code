@@ -172,6 +172,7 @@ const WEB_STORE_PRELOAD = 'vs/paradis/contrib/browserExtensions/electron-browser
 const USER_SCRIPTS_PRELOAD = 'vs/paradis/contrib/browserExtensions/electron-browser/paradisUserScriptsPreload.js';
 import { paradisProfileIdFromSessionId } from '../../browserProfiles/common/paradisBrowserProfileId.js';
 import { ParadisJsonStateWriter } from '../../../node/paradisJsonStateWriter.js';
+import { paradisBrowserExtensionsUsage } from '../common/paradisBrowserExtensionsUsage.js';
 
 /** 拡張機能を読み込むセッションの持ち主（BrowserSession の一部）。 */
 export interface IParadisExtensionSessionOwner {
@@ -484,6 +485,8 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		webStoreOptions?: IParadisWebStoreOptions,
 	) {
 		this.active = _readSetting();
+		// Sentry の集計に載せる設定の値（paradisBrowserExtensionsUsage.ts）
+		paradisBrowserExtensionsUsage().setEnabled(this.active);
 		this._apiHost = new ParadisExtensionApiHost(_logService);
 		this._workerDevTools = this.active && tabsOptions ? new ParadisBrowserExtensionWorkerDevTools(_logService) : undefined;
 		this._syncStore = new ParadisBrowserExtensionSyncStore(join(_root, 'sync-storage'), _logService);
@@ -940,7 +943,9 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	}
 
 	private async _loadAll(entry: ISessionEntry, kind: ParadisExtensionLoadKind): Promise<void> {
-		for (const extension of paradisEnabledExtensions(this._ledger, entry.profile)) {
+		const extensions = paradisEnabledExtensions(this._ledger, entry.profile);
+		paradisBrowserExtensionsUsage().noteLoadAll(extensions.length);
+		for (const extension of extensions) {
 			await this._load(entry, extension, kind);
 		}
 	}
@@ -1001,6 +1006,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		const prepareError = await this._prepare(extension);
 		if (prepareError !== undefined) {
 			this._loadErrors.set(extension.id, prepareError);
+			paradisBrowserExtensionsUsage().noteLoad('prepare_failed');
 			return;
 		}
 		try {
@@ -1008,6 +1014,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 			if (loaded.id !== extension.id) {
 				entry.session.extensions.removeExtension(loaded.id);
 				this._loadErrors.set(extension.id, `unexpected extension id ${loaded.id}`);
+				paradisBrowserExtensionsUsage().noteLoad('id_mismatch');
 				return;
 			}
 			// 読み込みの途中でトンネルが始まった（「SSH 先のページでも使う」がオフ）・無効にされた・削除されたときは外す
@@ -1016,12 +1023,14 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 				return;
 			}
 			this._loadErrors.delete(extension.id);
+			paradisBrowserExtensionsUsage().noteLoad('ok');
 			this._actions?.notifyChanged();
 			// ユーザースクリプトの js の file を先に読んでおく（注入の問いは同期で答えるため）
 			await this._userScripts?.warm(extension.id, extension.path);
 			await this._fireRuntimeLifecycle(entry, loaded, kind);
 		} catch (error) {
 			this._loadErrors.set(extension.id, error instanceof Error ? error.message : String(error));
+			paradisBrowserExtensionsUsage().noteLoad('error');
 		}
 	}
 

@@ -33,6 +33,7 @@ import type { IParadisTabView, ParadisBrowserExtensionTabs } from './paradisBrow
 import { paradisKeepOnExtensionPages, paradisMarkBrowserExtensionWindow } from './paradisBrowserExtensionWindows.js';
 import { isRecord } from '../../../common/paradisGuards.js';
 import { ParadisJsonStateWriter } from '../../../node/paradisJsonStateWriter.js';
+import { paradisBrowserExtensionsUsage } from '../common/paradisBrowserExtensionsUsage.js';
 
 const DEFAULT_TAB = -1;
 const WINDOW_ID_CURRENT = -2;
@@ -444,6 +445,7 @@ export class ParadisBrowserExtensionSidePanel implements IDisposable {
 	private _open(view: IParadisTabView, session: ParadisApiSession, place: string, extension: IParadisSidePanelExtension, tabId: number | undefined): void {
 		if (!paradisSidePanelAllowedFor(view)) {
 			// 拡張機能への答えは Chromium に無い断りなので、利用者には何も見えない。理由を renderer に見せてもらう
+			paradisBrowserExtensionsUsage().noteSidePanel('refused_shared', true);
 			this._onDidRefuse.fire({ viewId: view.id, name: this._environment.nameOf(extension) });
 			throw new ParadisExtensionApiError('Para Code does not show extension panels next to a tab that an agent is using');
 		}
@@ -465,6 +467,7 @@ export class ParadisBrowserExtensionSidePanel implements IDisposable {
 		}
 		const panel: IPanel = { windowId: view.windowId, session, place, extension, tabId, path: url, view: undefined, shownFor: undefined, shownForWatch: undefined, disposables: new DisposableStore() };
 		this._panels.set(view.windowId, panel);
+		paradisBrowserExtensionsUsage().noteSidePanel('opened', paradisIsExtensionPageHeld(view.webContents));
 		this._emitPanel(panel, 'onOpened');
 		this._onDidChange.fire();
 	}

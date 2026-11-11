@@ -140,6 +140,8 @@ export function paradisPtyHandoverSpans(report: IParadisPtyHandoverReport, remot
 		safe_host_os: report.platform,
 		safe_remote: remote,
 		safe_foreign_held: report.foreignHeld,
+		// pty ホストが今、引き継ぎの常駐（reattachAcrossUpdates）に繋がっているか。旧い常駐（enabled）だけの起動は false（q.html Q611）
+		safe_daemon: report.daemon,
 	};
 	const spans: IParadisPtyHandoverSpan[] = report.adoptions.map(run => ({
 		operation: 'adopt',

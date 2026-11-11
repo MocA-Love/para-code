@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { isRecord } from '../../../common/paradisGuards.js';
+import { IParadisRunStepsStats, paradisReportRunSteps } from '../common/paradisAgentBrowserUsage.js';
 
 // para-browser MCP の run_steps（操作・待機・検証・撮影を 1 回の呼び出しで順に行う）。
 // 各手順はサービス本体の通常のツール呼び出し（_callTool）へそのまま渡すので、接続元の確認・パスの
@@ -30,6 +31,8 @@ export interface IParadisRunStepsCall {
 	readonly signal?: AbortSignal;
 	/** 通常のツール呼び出し。戻り値は MCP のツールの結果。 */
 	callTool(name: string, args: Record<string, unknown>): Promise<unknown>;
+	/** 終わったときの回数（Sentry の集計用。paradisAgentBrowserUsage.ts）。 */
+	report?(stats: IParadisRunStepsStats): void;
 }
 
 interface IContentItem {
@@ -68,8 +71,10 @@ export function paradisParseRunSteps(rawArgs: unknown): { readonly ok: true; rea
 export async function paradisRunSteps(call: IParadisRunStepsCall, rawArgs: unknown): Promise<unknown> {
 	const parsed = paradisParseRunSteps(rawArgs);
 	if (!parsed.ok) {
+		paradisReportRunSteps(call, { refused: true, executed: 0, failed: 0, expectFailed: 0, stop: 'none' });
 		return error(parsed.error);
 	}
+	let stop: IParadisRunStepsStats['stop'] = 'none';
 	const content: IContentItem[] = [];
 	let images = 0;
 	let failed = 0;
@@ -77,6 +82,7 @@ export async function paradisRunSteps(call: IParadisRunStepsCall, rawArgs: unkno
 	for (const [index, step] of parsed.steps.entries()) {
 		if (call.signal?.aborted) {
 			content.push({ type: 'text', text: `run_steps was cancelled before step ${index + 1}.` });
+			stop = 'cancelled';
 			break;
 		}
 		// 共有やペインが無くなった（ingress lease の失効など）の例外は、そのまま呼び出し全体の失敗にする
@@ -100,10 +106,12 @@ export async function paradisRunSteps(call: IParadisRunStepsCall, rawArgs: unkno
 		if (isError) {
 			failed++;
 			if (!parsed.continueOnError) {
+				stop = 'failure';
 				break;
 			}
 		}
 	}
+	paradisReportRunSteps(call, { refused: false, executed: ran, failed, expectFailed: 0, stop });
 	const skipped = parsed.steps.length - ran;
 	const summary = `run_steps: ${ran} of ${parsed.steps.length} step(s) ran, ${failed} failed${skipped > 0 ? `, ${skipped} not run (stopped at the first failure)` : ''}.${images > MAX_TOTAL_IMAGES ? ` Only the first ${MAX_TOTAL_IMAGES} images are included.` : ''}`;
 	return { content: [{ type: 'text', text: summary }, ...content], ...(failed > 0 ? { isError: true } : {}) };

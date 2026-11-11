@@ -116,6 +116,53 @@ export function runInParadisSpan<T>(
 	return spanRunner ? spanRunner(feature, operation, attributes, callback, options) : callback();
 }
 
+let usageSpanSender: ((feature: string, operation: string, attributes: ParadisSpanAttributes) => void) | undefined;
+
+/**
+ * Usage records made before main's SDK finished loading (its import is dynamic). Main decides how
+ * terminals are hosted before Sentry is up, and that record would otherwise be lost. Only
+ * {@link configureParadisUsageSpanSender} (main) sends them; in a process whose SDK never loads (opted
+ * out, development build, the renderer and shared process, unit tests) they stay here, at most 20.
+ */
+const pendingUsageSpans: { readonly feature: string; readonly operation: string; readonly attributes: ParadisSpanAttributes }[] = [];
+const MAX_PENDING_USAGE_SPANS = 20;
+
+function flushPendingUsageSpans(): void {
+	for (const pending of pendingUsageSpans.splice(0)) {
+		recordParadisUsageSpan(pending.feature, pending.operation, pending.attributes);
+	}
+}
+
+/**
+ * Connects {@link recordParadisUsageSpan} to a process whose SDK has no span runner. Electron main
+ * registers this instead of {@link configureParadisSpanRunner}, so its existing pass-through spans keep
+ * sending nothing and only the explicit usage records become transactions. `undefined` disconnects it
+ * (unit tests).
+ */
+export function configureParadisUsageSpanSender(value: ((feature: string, operation: string, attributes: ParadisSpanAttributes) => void) | undefined): void {
+	usageSpanSender = value;
+	flushPendingUsageSpans();
+}
+
+/**
+ * Sends one zero-length transaction `para.<feature>.<operation>` carrying `attributes`, for aggregated
+ * usage counts (see `paradisUsageTally.ts`). Every value is passed when the span is created, so it also
+ * works in the renderer after an `await`. Transactions do not use the error quota or its rate limit.
+ */
+export function recordParadisUsageSpan(feature: string, operation: string, attributes: ParadisSpanAttributes): void {
+	try {
+		if (usageSpanSender !== undefined) {
+			usageSpanSender(feature, operation, attributes);
+		} else if (spanRunner !== undefined) {
+			spanRunner(feature, operation, attributes, () => { }, { forceTransaction: true });
+		} else if (pendingUsageSpans.length < MAX_PENDING_USAGE_SPANS) {
+			pendingUsageSpans.push({ feature, operation, attributes });
+		}
+	} catch {
+		// Diagnostics must never change the behavior they observe.
+	}
+}
+
 /**
  * Words Sentry scrubs wherever they appear: Relay's default key pattern (`PASSWORD_KEY_REGEX` in
  * relay-pii/src/regexes.rs: `password`, `secret`, `passwd`, `api_key`, `apikey`, `auth`, `credentials`,
