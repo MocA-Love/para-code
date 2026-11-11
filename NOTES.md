@@ -2756,7 +2756,7 @@ Explore の spans（または Discover の transactions）で見る例。どれ�
 
 | 見たいこと | 絞り込み | 集計 |
 |---|---|---|
-| settle が時間切れで打ち切る割合（オンの人だけ） | `transaction:para.agentBrowser.usage safe_set_settle:on` | `sum(tags[safe_settle_timeout,number])` ÷ (`settle_quiet`+`settle_timeout`+`settle_unresponsive`+`settle_dialog`+`settle_stopped` の sum)。`settle_stopped` が無い前の版と比べるときは、分子に `settle_stopped` を足して前の数え方に揃える。`sum(tags[safe_settle_timeout_ms,number])` ÷ `sum(tags[safe_settle_wait_ms,number])` が待ちの無駄 |
+| settle が時間切れで打ち切る割合（オンの人だけ） | `transaction:para.agentBrowser.usage safe_set_settle:on` | `sum(tags[safe_settle_timeout,number])` ÷ (`settle_quiet`+`settle_timeout`+`settle_unresponsive`+`settle_dialog`+`settle_stopped` の sum)。`settle_stopped` が無い前の版と比べるときは、分子に `settle_stopped` を足して前の数え方に揃える。`sum(tags[safe_settle_timeout_ms,number])` ÷ `sum(tags[safe_settle_wait_ms,number])` が待ちの無駄（前の版と比べるときは、`settle_timeout_ms` に `settle_stopped_ms` を足す） |
 | settle が上限まで待った理由（Q618 の判定の後） | 同上 | `settle_timeout_dom`・`_dom_style`・`_network`・`_busy`・`_loading` の sum を `settle_timeout` の sum で割る（重なるので和は 1 を超えうる）。`_dom_style` が多ければアニメーションの間引きがまだ足りない、`_busy` が多ければ読み込み中の印が飾りに当たっている |
 | observe: none で外す割合 | 同上 | `sum(tags[safe_observe_none,number])` ÷ `sum(tags[safe_observe_calls,number])` |
 | オンとオフで道具の失敗率が変わるか | `transaction:para.agentBrowser.usage`、`safe_set_settle` で group by | `sum(tags[safe_call_failures,number])` ÷ `sum(tags[safe_calls,number])` |

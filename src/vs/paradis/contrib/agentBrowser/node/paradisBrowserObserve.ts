@@ -40,8 +40,9 @@ const STATE_TOOLS: ReadonlySet<string> = new Set([...PARADIS_SETTLE_TOOLS, 'down
 /** DOM の変化がこれだけ止まったら落ち着いたとみなす（browser-use 1.0 は 80 ms）。 */
 const QUIET_MS = 100;
 /**
- * 待つ通信は、始まってからこれより新しい要求だけ（browser-use 1.0 と同じ 1.5 秒）。これより長く続く要求は
- * 長いポーリング・解析の送信とみなして待たない（wait_until の network idle は別の値を使う）。
+ * 操作の前から続いている要求は、始まってからこれより新しいものだけ待つ（browser-use 1.0 と同じ 1.5 秒）。これより
+ * 長く続く要求は長いポーリング・解析の送信とみなして待たない。操作の後に始まった要求は、長くかかっても待つ
+ * （wait_until の network idle は別の値を使う）。
  */
 export const PARADIS_SETTLE_NETWORK_WINDOW_MS = 1_500;
 /** 待ちの上限の既定と最大。 */
@@ -136,7 +137,7 @@ export interface IParadisObserveHost {
 	/** take_snapshot を呼ぶ（observe: snapshot）。 */
 	snapshot(): Promise<unknown>;
 	/** ペインの通信の様子（終わっていない要求の数と、最後の出入りからの経過）。 */
-	network(): { readonly inflight: number; readonly quietMs: number | undefined } | undefined;
+	network(actionStartedAt: number): { readonly inflight: number; readonly quietMs: number | undefined } | undefined;
 	/** エージェントが使えるタブ（I1）。取れなければ undefined。 */
 	tabs(): Promise<readonly { readonly tabId: string; readonly url: string; readonly title: string; readonly current: boolean; readonly shared: boolean }[] | undefined>;
 	/** ダウンロードの保存先の中のファイル（名前 → 大きさ）。取れなければ undefined。 */
@@ -187,6 +188,8 @@ interface IBefore {
 	readonly title?: string;
 	readonly pages?: IPagesState;
 	readonly downloads?: ReadonlyMap<string, number>;
+	/** 操作を始める直前の時刻（{@link IParadisObserveHost.now}）。これより後に始まった通信は長くても待つ。 */
+	readonly actionStartedAt: number;
 }
 
 /** 待ちの見出しに要るもの。`blocked` は上限まで待っても落ち着かなかったときだけある。 */
@@ -262,7 +265,7 @@ export class ParadisBrowserObserver {
 				title = typeof info.title === 'string' ? info.title : undefined;
 			}
 		}
-		return { name, installed, url, title, pages, downloads };
+		return { name, installed, url, title, pages, downloads, actionStartedAt: host.now() };
 	}
 
 	/**
@@ -276,7 +279,7 @@ export class ParadisBrowserObserver {
 		let pages = paradisParseListPages(await host.listPages().catch(() => undefined));
 		// 記録を始められたときだけページを読む（ダイアログ・未対応の vendored・評価の失敗では読まない）
 		if (options.settle && before.installed && pages?.dialog === undefined) {
-			const settled = await this._settle(host, before.name, settleMs);
+			const settled = await this._settle(host, before.name, settleMs, before.actionStartedAt);
 			if (settleMs > 0) {
 				// 実際に待った結末を数える（待ちを 0 にした呼び出しは noteObserved が数える）
 				// 上限まで待ったときだけ timeout と、そのとき落ち着いていなかった理由を数える（評価の失敗・取り消しで
@@ -340,7 +343,7 @@ export class ParadisBrowserObserver {
 	 * ページの中では待たず、{@link POLL_MS} ごとに記録を読む。読むのは待たない評価（vendored の PARA-PATCH
 	 * `paraCodeObserve`）で、ダイアログが開いていれば断られる（閉じない）。
 	 */
-	private async _settle(host: IParadisObserveHost, name: string, settleMs: number): Promise<ISettled> {
+	private async _settle(host: IParadisObserveHost, name: string, settleMs: number, actionStartedAt: number): Promise<ISettled> {
 		const start = host.now();
 		let navigated = false;
 		let quiet = settleMs === 0;
@@ -375,7 +378,7 @@ export class ParadisBrowserObserver {
 				lastBlocked = { loading: true };
 			} else {
 				navigated = navigated || value.navigated === true;
-				const network = host.network();
+				const network = host.network(actionStartedAt);
 				const networkIdle = network === undefined || (network.inflight === 0 && (network.quietMs === undefined || network.quietMs >= QUIET_MS));
 				const domQuiet = typeof value.age === 'number' && value.age >= QUIET_MS && host.now() - start >= QUIET_MS;
 				if (value.ready === true && domQuiet && value.busy !== true && networkIdle) {

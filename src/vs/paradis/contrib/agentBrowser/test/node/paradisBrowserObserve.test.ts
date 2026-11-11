@@ -31,8 +31,9 @@ interface IFakeHostOptions {
 	/** read の答え（既定は落ち着いた記録）。`reads` があれば読むたびに順に返す（最後の答えを繰り返す）。 */
 	readonly read?: unknown;
 	readonly reads?: readonly unknown[];
-	/** 通信の様子（既定は静か）。 */
+	/** 通信の様子（既定は静か）。`networkOf` があれば、操作を始めた時刻と今の時刻から作る。 */
 	readonly network?: { readonly inflight: number; readonly quietMs: number | undefined };
+	readonly networkOf?: (actionStartedAt: number, now: number) => { readonly inflight: number; readonly quietMs: number | undefined };
 	/** 待たない評価に対応していない vendored を真似る。 */
 	readonly cannotEvaluate?: boolean;
 	readonly collect?: unknown;
@@ -65,7 +66,7 @@ function fakeHost(options: IFakeHostOptions): { readonly host: IParadisObserveHo
 			return options.pages[Math.min(pageCall++, options.pages.length - 1)];
 		},
 		snapshot: async () => text('## Latest page snapshot\nuid=1_0 RootWebArea'),
-		network: () => options.network ?? { inflight: 0, quietMs: 500 },
+		network: actionStartedAt => options.networkOf?.(actionStartedAt, clock) ?? options.network ?? { inflight: 0, quietMs: 500 },
 		tabs: async () => [{ tabId: 't1', url: 'http://127.0.0.1/orders', title: 'Orders', current: true, shared: false }],
 		downloads: async () => options.downloads?.[Math.min(downloadCall++, (options.downloads?.length ?? 1) - 1)],
 		isCurrent: () => true,
@@ -405,27 +406,69 @@ suite('Paradis browser observe', () => {
 			styleAgain: [0],
 			classChanged: [0, 'class'],
 			partialClassSelector: false,
-			busySelector: '[aria-busy="true"], [role="progressbar"], .spinner, .loading',
+			busySelector: '[aria-busy="true"], [role="progressbar"], .spinner, .loading, .spinner-border, .spinner-grow',
 		});
 	});
 
-	// Q618: 長いポーリングは 1.5 秒を過ぎたら待たない（新しく始まった要求は待つ）
-	test('a request that has been open for more than 1.5 s is not waited for, and a new one still is', () => {
+	// Q618（レビュー MEDIUM 1）: 1.5 秒で外すのは操作の前から続く要求だけ。操作の後に始まった遅い要求は終わるまで数える
+	test('a long poll from before the action is dropped after 1.5 s, and a slow request started by the action is counted until it ends', () => {
 		let clock = 0;
 		const activity = new ParadisNetworkActivity(() => clock);
 		const connection = {};
 		activity.onEvent(connection, 't', 'Network.requestWillBeSent', { requestId: 'poll', request: { url: 'http://a/poll' } });
 		clock = 1_000;
-		const young = activity.snapshot(PARADIS_SETTLE_NETWORK_WINDOW_MS);
-		clock = 1_600;
-		const old = activity.snapshot(PARADIS_SETTLE_NETWORK_WINDOW_MS);
+		const actionAt = clock;
+		const young = activity.snapshot(PARADIS_SETTLE_NETWORK_WINDOW_MS, actionAt);
 		activity.onEvent(connection, 't', 'Network.requestWillBeSent', { requestId: 'save', request: { url: 'http://a/save' } });
-		clock = 1_800;
-		const withNew = activity.snapshot(PARADIS_SETTLE_NETWORK_WINDOW_MS);
-		assert.deepStrictEqual({ young: [young.inflight, young.longLived], old: [old.inflight, old.longLived], withNew: [withNew.inflight, withNew.longLived, withNew.pendingUrls] }, {
-			young: [1, 0],
-			old: [0, 1],
-			withNew: [1, 1, ['http://a/save']],
+		clock = 1_600;
+		const pollOld = activity.snapshot(PARADIS_SETTLE_NETWORK_WINDOW_MS, actionAt);
+		clock = 3_900;
+		const saveSlow = activity.snapshot(PARADIS_SETTLE_NETWORK_WINDOW_MS, actionAt);
+		const saveSlowWaitUntil = activity.snapshot(PARADIS_SETTLE_NETWORK_WINDOW_MS);
+		clock = 4_000;
+		activity.onEvent(connection, 't', 'Network.loadingFinished', { requestId: 'save' });
+		const done = activity.snapshot(PARADIS_SETTLE_NETWORK_WINDOW_MS, actionAt);
+		const counts = (snapshot: { readonly inflight: number; readonly longLived: number; readonly pendingUrls: readonly string[] }) => [snapshot.inflight, snapshot.longLived, snapshot.pendingUrls];
+		assert.deepStrictEqual({ young: counts(young), pollOld: counts(pollOld), saveSlow: counts(saveSlow), saveSlowWaitUntil: counts(saveSlowWaitUntil), done: counts(done) }, {
+			young: [1, 0, ['http://a/poll']],
+			pollOld: [1, 1, ['http://a/save']],
+			saveSlow: [1, 1, ['http://a/save']],
+			saveSlowWaitUntil: [0, 2, []],
+			done: [0, 1, []],
+		});
+	});
+
+	test('the wait goes on until a slow request started by the action ends, and does not wait for a long poll from before', async () => {
+		const options = { settle: true, state: false };
+		const collect = { url: 'http://127.0.0.1/orders', title: 'Orders', added: ['text "Loaded"'], changed: [], removed: [], more: 0 };
+		const run = async (settleMs: number, withXhr: boolean) => {
+			let activityClock = 0;
+			const activity = new ParadisNetworkActivity(() => activityClock);
+			const connection = {};
+			activityClock = -5_000;
+			activity.onEvent(connection, 't', 'Network.requestWillBeSent', { requestId: 'poll', request: { url: 'http://a/poll' } });
+			let started = false;
+			const { host } = fakeHost({
+				pages: [PAGES_ONE], collect, networkOf: (actionStartedAt, now) => {
+					activityClock = now;
+					if (withXhr && !started) {
+						started = true;
+						activity.onEvent(connection, 't', 'Network.requestWillBeSent', { requestId: 'xhr', request: { url: 'http://a/slow' } });
+					}
+					if (withXhr && now >= 3_000) {
+						activity.onEvent(connection, 't', 'Network.loadingFinished', { requestId: 'xhr' });
+					}
+					return activity.snapshot(PARADIS_SETTLE_NETWORK_WINDOW_MS, actionStartedAt);
+				},
+			});
+			const observer = new ParadisBrowserObserver();
+			const before = await observer.before(host, options, 'changes', settleMs);
+			return (await observer.after(host, 'pane', options, before, 'changes', settleMs))?.split('\n')[0];
+		};
+		assert.deepStrictEqual({ pollOnly: await run(2000, false), xhrWithinLimit: await run(5000, true), xhrOverLimit: await run(2000, true) }, {
+			pollOnly: '[Page after the action] Settled after 100 ms.',
+			xhrWithinLimit: '[Page after the action] Settled after 3100 ms.',
+			xhrOverLimit: '[Page after the action] Still changing or loading after 2000 ms (the wait limit: 1 network request still pending); use wait_until if you expect a slower update.',
 		});
 	});
 

@@ -21,7 +21,7 @@ const TAB_KEY = paradisAgentTabScopeKey(TOKEN, 'tab-1');
 interface IObserveServiceInternals {
 	_callTool(ingressLease: object, params: { name?: unknown; arguments?: unknown }, signal?: AbortSignal): Promise<unknown>;
 	_callToolObserved(ingressLease: object, name: string, params: { name?: unknown; arguments?: unknown }, options: { settle: boolean; state: boolean }): Promise<unknown>;
-	_observeHost(ingressLease: object, tabLease: object, signal?: AbortSignal): { network(): unknown; isCurrent(): boolean; sleep(ms: number): Promise<void> };
+	_observeHost(ingressLease: object, tabLease: object, signal?: AbortSignal): { network(actionStartedAt: number): unknown; isCurrent(): boolean; sleep(ms: number): Promise<void> };
 	_runInLane(key: string, heldLane: string | undefined, operation: () => Promise<unknown>): Promise<unknown>;
 	_toolCallLanes: ParadisToolCallLanes;
 }
@@ -57,7 +57,7 @@ function service(log: string[], overrides: Record<string, unknown> = {}): IObser
 			log.push(`inner ${params.name} ${JSON.stringify(params.arguments)} held=${heldLane === TAB_KEY}`);
 			return { content: [{ type: 'text', text: 'done' }] };
 		},
-		_cdpGateway: { getNetworkActivity: (key: string, ignoreOlderThanMs: number) => { log.push(`network ${key} ${ignoreOlderThanMs}`); return { inflight: 0, quietMs: 1000 }; } },
+		_cdpGateway: { getNetworkActivity: (key: string, ignoreOlderThanMs: number, keepStartedAfter?: number) => { log.push(`network ${key} ${ignoreOlderThanMs} ${keepStartedAfter}`); return { inflight: 0, quietMs: 1000 }; } },
 		_devtoolsProxy: { evaluateObserves: true },
 		...overrides,
 	}) as unknown as IObserveServiceInternals;
@@ -172,11 +172,11 @@ suite('Paradis browser observe in the service', () => {
 		assert.deepStrictEqual({ log, result }, { log: ['returned', 'after current=false'], result: failure });
 	}));
 
-	// Q618: 1.5 秒より前に始まった要求（長いポーリング）は待たない
-	test('the network wait looks at the tab, not the whole pane, and only at requests younger than 1.5 s', () => {
+	// Q618: 操作の前から 1.5 秒より長く続く要求（長いポーリング）は待たず、操作の後に始まった要求は待つ
+	test('the network wait looks at the tab, not the whole pane, and drops only requests that began before the action and run longer than 1.5 s', () => {
 		const log: string[] = [];
-		service(log)._observeHost({ token: TOKEN }, { token: TOKEN, pageKey: TAB_KEY }).network();
-		assert.deepStrictEqual(log, [`network ${TAB_KEY} 1500`]);
+		service(log)._observeHost({ token: TOKEN }, { token: TOKEN, pageKey: TAB_KEY }).network(1234);
+		assert.deepStrictEqual(log, [`network ${TAB_KEY} 1500 1234`]);
 	});
 	test('a caller that cannot be verified is refused before it queues on the tab\'s lane', async () => {
 		const log: string[] = [];

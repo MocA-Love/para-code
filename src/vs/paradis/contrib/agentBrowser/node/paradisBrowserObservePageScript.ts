@@ -100,8 +100,9 @@ export function paradisObserveReadFunction(name: string): string {
 	const rec = window[N];
 	// 読み込み中の印（スピナー・aria-busy など）が見えている間は落ち着いたとみなさない。クラス名の部分一致
 	// （[class*="spinner"]・[class*="loading"]）は使わない。lazy-loading・preloading・btn-spinner-icon のような
-	// 飾りや読み込みの終わった要素にも当たり、出ている間ずっと上限まで待たせるため（browser-use 1.0 は印を見ない）
-	const busy = Array.from(document.querySelectorAll('[aria-busy="true"], [role="progressbar"], .spinner, .loading')).some(el => !el.closest('[aria-hidden="true"]') && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden');
+	// 飾りや読み込みの終わった要素にも当たり、出ている間ずっと上限まで待たせるため（browser-use 1.0 は印を見ない）。
+	// Bootstrap のスピナー（.spinner-border・.spinner-grow）は名指しで見る
+	const busy = Array.from(document.querySelectorAll('[aria-busy="true"], [role="progressbar"], .spinner, .loading, .spinner-border, .spinner-grow')).some(el => !el.closest('[aria-hidden="true"]') && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden');
 	return { age: Math.round(performance.now() - rec.last), lastKind: rec.lastKind, ready: document.readyState === 'complete', busy, navigated: navigated || rec.navigated };
 }`;
 }

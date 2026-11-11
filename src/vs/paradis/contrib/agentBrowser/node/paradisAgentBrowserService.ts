@@ -6368,7 +6368,8 @@ export class ParadisAgentBrowserService extends Disposable {
 			listPages: () => this._callDevtoolsTool(tabLease, 'list_pages', {}, signal, true, undefined, 'observe'),
 			snapshot: async () => paradisAdjustDevtoolsToolResult('take_snapshot', { args: {}, snapshotOffset: 0 }, await this._callDevtoolsTool(tabLease, 'take_snapshot', {}, signal, true, undefined, 'observe')),
 			// 通信はタブの鍵で見る（ペインの鍵では対象のタブの通信を数えない。wait_until と同じ）
-			network: () => this._cdpGateway.getNetworkActivity(this._pageKeyOf(tabLease), PARADIS_SETTLE_NETWORK_WINDOW_MS),
+			// 操作の前から続く要求は 1.5 秒で外し、操作の後に始まった要求は長くても待つ
+			network: actionStartedAt => this._cdpGateway.getNetworkActivity(this._pageKeyOf(tabLease), PARADIS_SETTLE_NETWORK_WINDOW_MS, actionStartedAt),
 			tabs: () => this._listPaneTabs(ingressLease, signal),
 			downloads: async () => {
 				const directory = await this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL).call<string | null>('getAgentDownloadsDirectory').catch(() => null);
