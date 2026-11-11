@@ -76,6 +76,14 @@ export class ParadisNodeTunnelService extends TunnelService {
 	}
 
 	/**
+	 * How many leases (one per window that forwards the port) the tunnel to `remoteHost:remotePort`
+	 * has, or undefined when there is no such tunnel.
+	 */
+	referenceCount(remoteHost: string, remotePort: number): number | undefined {
+		return this.getTunnelFromMap(remoteHost, remotePort)?.refcount;
+	}
+
+	/**
 	 * Close the tunnel regardless of its reference count, keeping the references that are still
 	 * open for the next tunnel to the same host and port.
 	 */
@@ -237,6 +245,14 @@ export class ParadisSharedTunnelsService extends Disposable implements ISharedTu
 			}));
 		}
 		return this._tunnelServices.get(authority)!.openTunnel(addressProvider, remoteHost, remotePort, localHost, localPort, elevateIfNeeded, privacy, protocol);
+	}
+
+	/**
+	 * How many windows hold the tunnel to `remoteHost:remotePort` for `authority` (each window that
+	 * forwards the port holds one reference), or undefined when there is no such tunnel.
+	 */
+	referenceCount(authority: string, remoteHost: string, remotePort: number): number | undefined {
+		return this._tunnelServices.get(authority)?.referenceCount(remoteHost, remotePort);
 	}
 
 	/**

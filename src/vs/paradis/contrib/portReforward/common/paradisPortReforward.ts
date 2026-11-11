@@ -28,6 +28,64 @@ export interface IParadisPortReforwardCloseRequest {
 	readonly remotePort: number;
 }
 
+/**
+ * 同じ SSH 先の転送を、いくつの窓が使っているか（shared process の転送の参照の数）を問う。
+ * 引数は {@link IParadisPortReforwardReferencesRequest}、戻り値はポートごとの参照の数（分からなければ null）。
+ */
+export const PARADIS_PORT_REFORWARD_REFERENCES = 'references';
+
+/**
+ * 手元の受け口（127.0.0.1）から 1 回つないで、SSH 先まで届くか確かめる。
+ * 引数は {@link IParadisPortReforwardProbeRequest}、戻り値は {@link ParadisPortReforwardProbeResult}。
+ */
+export const PARADIS_PORT_REFORWARD_PROBE = 'probe';
+
+export interface IParadisPortReforwardReferencesRequest {
+	readonly authority: string;
+	readonly remoteHost: string;
+	readonly remotePorts: readonly number[];
+}
+
+export interface IParadisPortReforwardProbeRequest {
+	readonly authority: string;
+	readonly localPort: number;
+	readonly remotePort: number;
+}
+
+/**
+ * 確かめた結果。
+ * - `reachable`: SSH 先のポートまで転送を作れた
+ * - `reset`: SSH 先へ転送を作れなかった（手元の受け口が接続を切った）
+ * - `timeout`: 決めた時間（やり直しの結果が出るまでの長さ）のうちに答えが無かった。繋がるかは分からない
+ * - `refused`: 手元の受け口に繋がらなかった
+ * - `untested`: 確かめられなかった（shared process にその転送が見当たらない。handshake の結果が届かない）
+ */
+export type ParadisPortReforwardProbeResult = 'reachable' | 'reset' | 'timeout' | 'refused' | 'untested';
+
+function isPort(value: unknown): value is number {
+	return typeof value === 'number' && Number.isInteger(value) && value > 0 && value <= 65535;
+}
+
+/** 渡ってきた値が {@link IParadisPortReforwardReferencesRequest} の形をしているか。 */
+export function isParadisPortReforwardReferencesRequest(value: unknown): value is IParadisPortReforwardReferencesRequest {
+	if (!value || typeof value !== 'object') {
+		return false;
+	}
+	const request = value as Partial<IParadisPortReforwardReferencesRequest>;
+	return typeof request.authority === 'string' && request.authority.length > 0
+		&& typeof request.remoteHost === 'string' && request.remoteHost.length > 0
+		&& Array.isArray(request.remotePorts) && request.remotePorts.length > 0 && request.remotePorts.length <= 100 && request.remotePorts.every(isPort);
+}
+
+/** 渡ってきた値が {@link IParadisPortReforwardProbeRequest} の形をしているか。 */
+export function isParadisPortReforwardProbeRequest(value: unknown): value is IParadisPortReforwardProbeRequest {
+	if (!value || typeof value !== 'object') {
+		return false;
+	}
+	const request = value as Partial<IParadisPortReforwardProbeRequest>;
+	return typeof request.authority === 'string' && request.authority.length > 0 && isPort(request.localPort) && isPort(request.remotePort);
+}
+
 /** 渡ってきた値が {@link IParadisPortReforwardCloseRequest} の形をしているか。 */
 export function isParadisPortReforwardCloseRequest(value: unknown): value is IParadisPortReforwardCloseRequest {
 	if (!value || typeof value !== 'object') {

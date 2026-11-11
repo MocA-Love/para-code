@@ -120,11 +120,13 @@ export class NodeRemoteTunnel extends Disposable implements RemoteTunnel {
 		localSocket.pause();
 
 		const tunnelRemoteHost = (isLocalhost(this.tunnelRemoteHost) || isAllInterfaces(this.tunnelRemoteHost)) ? 'localhost' : this.tunnelRemoteHost;
-		// PARA-PATCH: bound the handshake. `connectRemoteAgentTunnel` waits forever for the remote agent's control message, so a wedged remote would hang here with the local socket already accepted. A timeout is retried once so that a remote that is only slow (or mid-reconnect) is not reset.
+		// PARA-PATCH: bound the handshake. `connectRemoteAgentTunnel` waits forever for the remote agent's control message, so a wedged remote would hang here with the local socket already accepted. A timeout is retried once so that a remote that is only slow (or mid-reconnect) is not reset. The client's port tells a test connection (paradisPortReforwardProbe.ts) which handshake is its own.
 		const protocol = await paraConnectTunnelWithRetry(
 			() => connectRemoteAgentTunnel(this._options, tunnelRemoteHost, this.tunnelRemotePort),
 			`${tunnelRemoteHost}:${this.tunnelRemotePort}`,
-			this._options.logService
+			this._options.logService,
+			undefined,
+			localSocket.remotePort
 		);
 		const remoteSocket = protocol.getSocket();
 		const dataChunk = protocol.readEntireBuffer();

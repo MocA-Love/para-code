@@ -17,7 +17,7 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IRemoteExplorerService } from '../../../../workbench/services/remote/common/remoteExplorerService.js';
 import { Tunnel, TunnelCloseReason, TunnelProperties } from '../../../../workbench/services/remote/common/tunnelModel.js';
-import { IParadisPortReforwardCloseRequest, PARADIS_PORT_REFORWARD_CHANNEL, PARADIS_PORT_REFORWARD_FORCE_CLOSE } from '../common/paradisPortReforward.js';
+import { IParadisPortReforwardCloseRequest, IParadisPortReforwardProbeRequest, IParadisPortReforwardReferencesRequest, PARADIS_PORT_REFORWARD_CHANNEL, PARADIS_PORT_REFORWARD_FORCE_CLOSE, PARADIS_PORT_REFORWARD_PROBE, PARADIS_PORT_REFORWARD_REFERENCES, ParadisPortReforwardProbeResult } from '../common/paradisPortReforward.js';
 
 /** 張り直しに使うサービス。`ServicesAccessor` は `await` の後では使えないので、先に取り出しておく。 */
 export interface IParadisReforwardServices {
@@ -60,4 +60,36 @@ export async function paradisReforwardTunnel({ remoteExplorerService, sharedProc
 		return result;
 	}
 	return undefined;
+}
+
+/**
+ * 転送ごとに、shared process でその転送を使っている窓の数（この窓を含む）を問う。
+ * 数が分からなければ（問えなかった・その転送が shared process に無い）その件は undefined。
+ */
+export async function paradisReforwardReferenceCounts({ sharedProcessService, authority, logService }: Omit<IParadisReforwardServices, 'remoteExplorerService'>, remoteHost: string, remotePorts: readonly number[]): Promise<readonly (number | undefined)[]> {
+	if (!authority || remotePorts.length === 0) {
+		return remotePorts.map(() => undefined);
+	}
+	const request: IParadisPortReforwardReferencesRequest = { authority, remoteHost, remotePorts };
+	try {
+		const counts = await sharedProcessService.getChannel(PARADIS_PORT_REFORWARD_CHANNEL).call<(number | null)[]>(PARADIS_PORT_REFORWARD_REFERENCES, request);
+		return remotePorts.map((_, index) => typeof counts[index] === 'number' ? counts[index] : undefined);
+	} catch (err) {
+		logService.warn('[ParadisPortReforward] Could not ask how many windows use the forwards:', err);
+		return remotePorts.map(() => undefined);
+	}
+}
+
+/** 手元の受け口から 1 回つないで、SSH 先まで届くか確かめる。確かめられなければ undefined。 */
+export async function paradisProbeReforwardedPort({ sharedProcessService, authority, logService }: Omit<IParadisReforwardServices, 'remoteExplorerService'>, localPort: number, remotePort: number): Promise<ParadisPortReforwardProbeResult | undefined> {
+	if (!authority) {
+		return undefined;
+	}
+	const request: IParadisPortReforwardProbeRequest = { authority, localPort, remotePort };
+	try {
+		return await sharedProcessService.getChannel(PARADIS_PORT_REFORWARD_CHANNEL).call<ParadisPortReforwardProbeResult>(PARADIS_PORT_REFORWARD_PROBE, request);
+	} catch (err) {
+		logService.warn(`[ParadisPortReforward] Could not test the forward on local port ${localPort}:`, err);
+		return undefined;
+	}
 }

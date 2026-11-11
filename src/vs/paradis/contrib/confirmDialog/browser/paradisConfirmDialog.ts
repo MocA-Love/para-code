@@ -20,6 +20,7 @@
 import './media/paradisConfirmDialog.css';
 import { Dialog } from '../../../../base/browser/ui/dialog/dialog.js';
 import { IButtonStyles } from '../../../../base/browser/ui/button/button.js';
+import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { localize } from '../../../../nls.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
@@ -46,6 +47,17 @@ export interface IParadisConfirmOptions<T> {
 	readonly buttons: readonly IParadisConfirmButton<T>[];
 	/** 取消のボタンの文字（Esc でも同じ）。省くと「キャンセル」。 */
 	readonly cancelLabel?: string;
+	/**
+	 * 取消のボタンを足さず、`buttons` のこの番号を取消（Esc・閉じる）として扱う。押すと undefined を返す。
+	 * 既定（Enter）のボタンを取消にしたいとき（エージェントの求めの確認の「拒否」など）に 0 を渡す。
+	 */
+	readonly cancelIndex?: number;
+	/** 補足の下に描く本文。 */
+	readonly renderBody?: (container: HTMLElement) => void;
+	/** 箱に足すクラス。 */
+	readonly extraClasses?: readonly string[];
+	/** 取り消されたら閉じ、取消と同じく undefined を返す。 */
+	readonly token?: CancellationToken;
 }
 
 /** 確認のダイアログに要るサービス。 */
@@ -72,16 +84,18 @@ const PARADIS_CONFIRM_BUTTON_STYLES: IButtonStyles = {
  * 確認のダイアログを出し、押したボタンの `run` の結果を返す。取消・Esc・閉じるでは undefined。
  */
 export async function paradisConfirm<T>(services: IParadisConfirmServices, options: IParadisConfirmOptions<T>): Promise<T | undefined> {
+	const ownCancel = options.cancelIndex === undefined;
 	// allow-any-unicode-next-line
-	const labels = [...options.buttons.map(button => button.label), options.cancelLabel ?? localize('paradis.confirm.cancel', "キャンセル")];
-	const cancelId = labels.length - 1;
-	const kinds: ParadisButtonKind[] = [...options.buttons.map((button, index) => button.kind ?? (index === 0 ? 'primary' : 'secondary')), 'secondary'];
+	const labels = [...options.buttons.map(button => button.label), ...(ownCancel ? [options.cancelLabel ?? localize('paradis.confirm.cancel', "キャンセル")] : [])];
+	const cancelId = options.cancelIndex ?? labels.length - 1;
+	const kinds: ParadisButtonKind[] = [...options.buttons.map((button, index) => button.kind ?? (index === 0 ? 'primary' : 'secondary')), ...(ownCancel ? ['secondary' as const] : [])];
 	const dialog = new Dialog(services.layoutService.activeContainer, options.message, labels, {
 		...createWorkbenchDialogOptions({
 			detail: options.detail,
 			cancelId,
 			type: 'none',
-			extraClasses: [PARADIS_CONFIRM_DIALOG_CLASS],
+			extraClasses: [PARADIS_CONFIRM_DIALOG_CLASS, ...(options.extraClasses ?? [])],
+			renderBody: options.renderBody,
 			buttonOptions: kinds.map(kind => ({ styleButton: button => button.element.classList.add(...paradisButtonClasses(kind)) })),
 		}, services.keybindingService, services.layoutService, services.hostService),
 		buttonStyles: PARADIS_CONFIRM_BUTTON_STYLES,
@@ -96,10 +110,13 @@ export async function paradisConfirm<T>(services: IParadisConfirmServices, optio
 			textLinkForeground: asCssVariable('textLink.foreground'),
 		},
 	});
+	// 閉じると本家の Dialog は取消（cancelId）で答える
+	const cancellation = options.token?.onCancellationRequested(() => dialog.dispose());
 	try {
 		const result = await dialog.show();
-		return result.button === cancelId ? undefined : options.buttons[result.button]?.run();
+		return result.button === cancelId || options.token?.isCancellationRequested ? undefined : options.buttons[result.button]?.run();
 	} finally {
+		cancellation?.dispose();
 		dialog.dispose();
 	}
 }

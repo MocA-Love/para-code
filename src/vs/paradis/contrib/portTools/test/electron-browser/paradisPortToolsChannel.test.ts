@@ -13,16 +13,18 @@ import { paradisImplicitTunnelSource } from '../../../../../platform/tunnel/comm
 import { RemoteTunnel, TunnelProtocol } from '../../../../../platform/tunnel/common/tunnel.js';
 import { CandidatePort, Tunnel, TunnelProperties, TunnelSource } from '../../../../../workbench/services/remote/common/tunnelModel.js';
 import { ParadisAgentApprovalOutcome } from '../../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
+import { ParadisPortReforwardProbeResult } from '../../../portReforward/common/paradisPortReforward.js';
+import { IParadisReforwardConfirm } from '../../common/paradisPortReforwardConfirm.js';
 import { ParadisPortToolRequest, ParadisPortToolResult } from '../../common/paradisPortTools.js';
 import { paradisIsLoopbackLocalAddress } from '../../common/paradisPortSelection.js';
-import { IParadisPortToolsWindow, ParadisPortToolsChannel } from '../../electron-browser/paradisPortToolsChannel.js';
+import { IParadisPortToolsWindow, PARADIS_REFORWARD_UNREACHABLE_MEMORY_MS, ParadisPortToolsChannel } from '../../electron-browser/paradisPortToolsChannel.js';
 
 const PANE = 'pane-token';
 const SSH = 'ssh-remote+devbox';
 
-function tunnel(remotePort: number, localPort: number, options: { readonly source?: TunnelSource; readonly implicit?: boolean; readonly listening?: boolean; readonly name?: string; readonly closeable?: boolean } = {}): Tunnel {
+function tunnel(remotePort: number, localPort: number, options: { readonly source?: TunnelSource; readonly implicit?: boolean; readonly listening?: boolean; readonly name?: string; readonly closeable?: boolean; readonly remoteHost?: string } = {}): Tunnel {
 	return {
-		remoteHost: 'localhost',
+		remoteHost: options.remoteHost ?? 'localhost',
 		remotePort,
 		localAddress: `localhost:${localPort}`,
 		localUri: URI.parse(`http://localhost:${localPort}`),
@@ -47,6 +49,13 @@ class FakeWindow implements IParadisPortToolsWindow {
 	usedLocalPorts = new Set<number>();
 	/** 張り直しが失敗するポート。 */
 	readonly failingReforwards = new Set<number>();
+	/** 張り直しの一瞬に手元の番号を取られ、別の番号で開き直すポート（リモート → 開き直した手元の番号）。 */
+	readonly takenOnReforward = new Map<number, number>();
+	/** shared process の参照の数（この窓を含む）。無ければ 1（この窓だけ）。undefined なら分からない。 */
+	readonly references = new Map<number, number | undefined>();
+	/** 手元から確かめた結果（手元の番号ごと）。無ければ reachable。 */
+	readonly probeResults = new Map<number, ParadisPortReforwardProbeResult | undefined>();
+	readonly probes: number[] = [];
 
 	constructor(readonly remoteAuthority: string | undefined, tunnels: readonly Tunnel[] = []) {
 		for (const item of tunnels) {
@@ -79,8 +88,15 @@ class FakeWindow implements IParadisPortToolsWindow {
 		if (this.failingReforwards.has(item.remotePort)) {
 			return 'the SSH connection refused it';
 		}
-		this.ledger.set(item.remotePort, tunnel(item.remotePort, local));
+		this.ledger.set(item.remotePort, tunnel(item.remotePort, this.takenOnReforward.get(item.remotePort) ?? local, { remoteHost: item.remoteHost }));
 		return undefined;
+	}
+	async referenceCounts(tunnels: readonly Tunnel[]): Promise<readonly (number | undefined)[]> {
+		return tunnels.map(item => this.references.has(item.remotePort) ? this.references.get(item.remotePort) : 1);
+	}
+	async probe(localPort: number, _remotePort: number): Promise<ParadisPortReforwardProbeResult | undefined> {
+		this.probes.push(localPort);
+		return this.probeResults.has(localPort) ? this.probeResults.get(localPort) : 'reachable';
 	}
 	async isLocalPortFree(port: number): Promise<boolean> {
 		return !this.usedLocalPorts.has(port);
@@ -90,13 +106,17 @@ class FakeWindow implements IParadisPortToolsWindow {
 	}
 }
 
-function setup(window: FakeWindow, answer: ParadisAgentApprovalOutcome | 'timedOut') {
+function setup(window: FakeWindow, answer: ParadisAgentApprovalOutcome | 'timedOut', now?: () => number) {
 	const dialogs: string[][] = [];
+	const confirms: IParadisReforwardConfirm[] = [];
 	const channel = new ParadisPortToolsChannel(window, token => token === PANE, async (_token, request) => {
 		dialogs.push([request.messageTemplate('pane'), ...request.detail, `[${request.approveLabel}]`]);
+		if (request.reforward) {
+			confirms.push(request.reforward);
+		}
 		return answer;
-	});
-	return { channel, dialogs };
+	}, now);
+	return { channel, dialogs, confirms };
 }
 
 function summary(result: ParadisPortToolResult): unknown {
@@ -219,14 +239,17 @@ suite('ParadisPortToolsChannel', () => {
 		const aligned = summary(await channel.handle(PANE, { op: 'reforward', items: [{ remotePort: 21004, alignLocalPort: true }], batch: false }));
 		assert.deepStrictEqual({ inUse: inUse.ok, aligned, calls: window.calls, dialogs }, {
 			inUse: false,
-			aligned: { reforwarded: true, remote_port: 21004, local_address: 'localhost:21004', local_port: 21004, local_port_taken: false },
+			aligned: { reforwarded: true, remote_port: 21004, local_address: 'localhost:21004', local_port: 21004, local_port_taken: false, reachable: true },
 			calls: ['reforward 21004 -> 21004'],
 			dialogs: [[
-				'pane のエージェントが、ポートの転送を 1 件張り直そうとしています',
-				'21004 → localhost:65459：手元の番号を 65459 から 21004 に変えます',
-				'手元の番号を変える転送は、元の番号を開いているブラウザのタブが繋がらなくなります。',
-				'張り直すときは、同じ SSH 先のほかの窓の同じポートの転送も一度まとめて閉じてから張り直します。',
-				'[1 件を張り直す]',
+				'エージェントが転送 1 件のつなぎ直しを求めています',
+				'エージェントは理由を書いていません',
+				'SSH 先のポート 1 件の転送を一度閉じて開き直します。1 件はこの PC で開くアドレスが変わります。',
+				'21004 → localhost:65459 を localhost:21004 に変える',
+				'この窓: 開いている通信が一度切れます。アドレスが変わるポートは、元のアドレスのタブが繋がらなくなります。',
+				'ほかの窓: ほかの窓では、このポートを使っていません。影響はありません。',
+				'拒否すると何も変わりません。このターミナルからのポートの変更は 3 分間、自動で断ります。',
+				'[1 件をつなぎ直す]',
 			]],
 		});
 	});
@@ -293,8 +316,10 @@ suite('ParadisPortToolsChannel', () => {
 			aligned: result.results.filter(row => row.ok).length,
 			dialogs: dialogs.length,
 			title: dialogs[0][0],
-			more: dialogs[0][21],
+			more: dialogs[0][23],
+			inUse: dialogs[0][24],
 			approve: dialogs[0].at(-1),
+			localPortInUse: (result as { local_port_in_use?: number[] }).local_port_in_use,
 		}, {
 			results: [
 				[21100, true, 21100],
@@ -306,9 +331,11 @@ suite('ParadisPortToolsChannel', () => {
 			last: [9999, false],
 			aligned: 21,
 			dialogs: 1,
-			title: 'pane のエージェントが、ポートの転送を 22 件張り直そうとしています',
+			title: 'エージェントが転送 22 件のつなぎ直しを求めています',
 			more: 'ほか 2 件: 21121, 21122',
-			approve: '[22 件を張り直す]',
+			inUse: '手元の番号が使用中のため変えないもの: 21101（この PC でほかのアプリがその番号を使っています。今のアドレスのまま残します）',
+			approve: '[22 件をつなぎ直す]',
+			localPortInUse: [21101],
 		});
 	});
 
@@ -332,8 +359,8 @@ suite('ParadisPortToolsChannel', () => {
 		release!();
 		const results = [(await first).ok, (await second).ok, read.ok];
 		assert.deepStrictEqual({ beforeRelease, events, results }, {
-			beforeRelease: ['ask pane のエージェントが、ポートの転送を 1 件張り直そうとしています'],
-			events: ['ask pane のエージェントが、ポートの転送を 1 件張り直そうとしています', 'answered', 'ask pane のエージェントが、SSH 先のポートの転送を 1 件追加しようとしています', 'answered'],
+			beforeRelease: ['ask エージェントが転送 1 件のつなぎ直しを求めています'],
+			events: ['ask エージェントが転送 1 件のつなぎ直しを求めています', 'answered', 'ask pane のエージェントが、SSH 先のポートの転送を 1 件追加しようとしています', 'answered'],
 			results: [true, true, true],
 		});
 	});
@@ -343,6 +370,101 @@ suite('ParadisPortToolsChannel', () => {
 		const { channel } = setup(window, 'recentlyDenied');
 		const result = await channel.handle(PANE, { op: 'reforward', items: [{ remotePort: 21004, alignLocalPort: true }], batch: false });
 		assert.deepStrictEqual(result.ok ? undefined : [result.error.includes('clicked "Deny"'), result.error.includes('"ports"'), result.error.includes('mode "mismatched"')], [true, true, true]);
+	});
+
+	test('lists a forwarded port once even when the server listens on all interfaces', async () => {
+		const window = sshWindow();
+		window.detection = [
+			{ host: '0.0.0.0', port: 21002, detail: 'vite', pid: 42 },
+			{ host: '::', port: 21002, detail: 'vite', pid: 42 },
+			{ host: '0.0.0.0', port: 5432, detail: 'docker-proxy', pid: 9 },
+			{ host: '0:0:0:0:0:0:0:0', port: 5432, detail: 'docker-proxy', pid: 9 },
+		];
+		const { channel } = setup(window, 'approve');
+		const result = summary(await channel.handle(PANE, { op: 'list', includeDetected: true })) as { forwards: Record<string, unknown>[] };
+		assert.deepStrictEqual(result.forwards.map(row => [row.remote_host, row.remote_port, row.forwarded]), [
+			['localhost', 21002, true],
+			['localhost', 21004, true],
+			['localhost', 33355, true],
+			['localhost', 21021, true],
+			['0.0.0.0', 5432, false],
+		]);
+	});
+
+	test('reforwards and stops forwards whose remote host is 0.0.0.0', async () => {
+		const window = new FakeWindow(SSH, [tunnel(4545, 4545, { remoteHost: '0.0.0.0' }), tunnel(4546, 4546, { remoteHost: '::' })]);
+		const { channel } = setup(window, 'approve');
+		const reforwarded = summary(await channel.handle(PANE, { op: 'reforward', items: [{ remotePort: 4545, alignLocalPort: false }], batch: false }));
+		const stopped = summary(await channel.handle(PANE, { op: 'stop', remotePorts: [4546] }));
+		assert.deepStrictEqual({ reforwarded, stopped, calls: window.calls }, {
+			reforwarded: { remote_port: 4545, reforwarded: true, local_address: 'localhost:4545', local_port: 4545, local_port_taken: false, reachable: true },
+			stopped: { results: [{ remote_port: 4546, ok: true, stopped: true }] },
+			calls: ['reforward 4545 -> 4545', 'close 4546'],
+		});
+	});
+
+	test('says so when another app takes the local port while a forward keeps its number', async () => {
+		const window = sshWindow();
+		window.takenOnReforward.set(21002, 65500);
+		const { channel } = setup(window, 'approve');
+		const result = summary(await channel.handle(PANE, { op: 'reforward', items: [{ remotePort: 21002, alignLocalPort: false }], batch: false }));
+		assert.deepStrictEqual(result, { remote_port: 21002, reforwarded: true, local_address: 'localhost:65500', local_port: 65500, local_port_taken: true, reachable: true });
+	});
+
+	test('tests each reopened forward from this computer, and does not ask again for 5 minutes when it did not connect', async () => {
+		const window = sshWindow();
+		window.probeResults.set(21002, 'reset');
+		// やり直しの結果まで待っても答えが無い: 分からない（覚えない）
+		window.probeResults.set(33355, 'timeout');
+		let now = 1_000_000;
+		const { channel, dialogs } = setup(window, 'approve', () => now);
+		const ports = (remotePorts: number[]) => ({ op: 'reforward', items: remotePorts.map(remotePort => ({ remotePort, alignLocalPort: false })), batch: true } as const);
+		const first = summary(await channel.handle(PANE, ports([21002, 21004, 33355]))) as { results: Record<string, unknown>[] };
+		now += 2 * 60_000;
+		const again = summary(await channel.handle(PANE, ports([21002]))) as { results: { ok: boolean; error: string }[] };
+		const mixed = summary(await channel.handle(PANE, ports([21002, 21004, 33355]))) as { results: { ok: boolean }[] };
+		now += PARADIS_REFORWARD_UNREACHABLE_MEMORY_MS;
+		const later = summary(await channel.handle(PANE, ports([21002]))) as { results: { ok: boolean }[] };
+		channel.forgetUnreachable();
+		const afterReconnect = summary(await channel.handle(PANE, ports([21002]))) as { results: { ok: boolean }[] };
+		assert.deepStrictEqual({
+			first: first.results.map(row => [row.remote_port, row.reachable, typeof row.hint === 'string' ? (row.hint as string).slice(0, 40) : undefined]),
+			again: [again.results[0].ok, again.results[0].error.slice(0, 60), again.results[0].error.includes('Reload Window')],
+			mixed: mixed.results.map(row => row.ok),
+			later: later.results.map(row => row.ok),
+			afterReconnect: afterReconnect.results.map(row => row.ok),
+			dialogs: dialogs.length,
+			probes: window.probes,
+		}, {
+			first: [
+				[21002, false, 'The forward was opened again, but a test'],
+				[21004, true, undefined],
+				[33355, null, 'Para Code could not test the forward fro'],
+			],
+			again: [false, 'Port 21002 was forwarded again 2 minutes ago, and a test con', true],
+			mixed: [false, true, true],
+			later: [true],
+			afterReconnect: [true],
+			// 2 回目は確認を出さない。3 回目は 21004 だけを聞く
+			dialogs: 4,
+			probes: [21002, 65459, 33355, 65459, 33355, 21002, 21002],
+		});
+	});
+
+	test('tells whether other windows use the forwards, and does not claim none when it cannot tell', async () => {
+		const window = sshWindow();
+		const { channel, confirms } = setup(window, 'denied');
+		const ask = () => channel.handle(PANE, { op: 'reforward', items: [{ remotePort: 21002, alignLocalPort: false }, { remotePort: 21004, alignLocalPort: false }], batch: true, reason: 'The page on localhost:21002 does not load' });
+		await ask();
+		window.references.set(21004, 3);
+		await ask();
+		window.references.set(21004, undefined);
+		await ask();
+		assert.deepStrictEqual(confirms.map(confirm => [confirm.reason, confirm.otherWindows.tone, confirm.otherWindows.text]), [
+			['エージェントが書いた理由: The page on localhost:21002 does not load', 'success', 'ほかの窓では、このポートを使っていません。影響はありません。'],
+			['エージェントが書いた理由: The page on localhost:21002 does not load', 'warning', '同じ SSH 先のほかの窓（2 つ）でも、同じポートの通信が一度切れます。転送そのものは残ります。'],
+			['エージェントが書いた理由: The page on localhost:21002 does not load', 'info', '同じ SSH 先のほかの窓で同じポートを使っていれば、そちらの通信も一度切れます。'],
+		]);
 	});
 
 	test('recognizes loopback local addresses', () => {
