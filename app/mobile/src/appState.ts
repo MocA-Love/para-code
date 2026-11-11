@@ -436,7 +436,7 @@ interface AppState extends StoreState {
 	 * signature は一覧で受け取った承認署名。PCが実行の直前に作り直して突き合わせるので、
 	 * 手元で確認したあとに定義が書き換わっていれば実行されない。
 	 */
-	presetRun(ws: string, key: string, signature: string): Promise<PresetRunResult>;
+	presetRun(ws: string, key: string, signature: string, confirmed?: boolean): Promise<PresetRunResult>;
 	/** スペースのメモ本文（PC版 Workspaces ビュー下部のメモ欄と同じ内容）。 */
 	noteGet(ws: string): Promise<SpaceNoteResult>;
 	/** スペースのメモ本文を更新する。 */
@@ -2482,10 +2482,10 @@ export const useAppStore = create<AppState>(set => ({
 		return controller.presetList(ws);
 	},
 
-	presetRun(ws: string, key: string, signature: string) {
+	presetRun(ws: string, key: string, signature: string, confirmed?: boolean) {
 		if (!controller) { return Promise.reject(new Error('not initialized')); }
 		if (!isActiveWorkspace(ws)) { return Promise.reject(wrongPcWorkspaceError()); }
-		return controller.presetRun(ws, key, signature);
+		return controller.presetRun(ws, key, signature, confirmed);
 	},
 
 	noteGet(ws: string) {

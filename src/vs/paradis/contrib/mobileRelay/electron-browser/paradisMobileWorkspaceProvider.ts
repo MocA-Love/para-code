@@ -61,7 +61,7 @@ import { IParadisGithubMetricsSnapshot } from '../../githubMetrics/common/paradi
 import { IParadisResourceMonitorMobileReport } from '../../resourceMonitor/common/paradisResourceMonitor.js';
 import { IParadisSpaceDiskResult } from '../../spaceDisk/common/paradisSpaceDisk.js';
 import { hash } from '../../../../base/common/hash.js';
-import { IParadisPresetService, IParadisResolvedPreset, paradisGetPresetTasks, paradisPresetAction, paradisPresetApprovalSignature, paradisPresetQualifiers } from '../../terminalPresets/common/paradisTerminalPresets.js';
+import { IParadisPresetService, IParadisResolvedPreset, paradisGetPresetTasks, paradisPresetAction, paradisPresetApprovalSignature, paradisPresetConfirmLevel, ParadisPresetConfirmLevel, paradisPresetQualifiers } from '../../terminalPresets/common/paradisTerminalPresets.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisAgentModelSwitchGuard } from './paradisAgentModelSwitchGuard.js';
 import { paradisCreateTerminalOutputConsumer, paradisQueueTerminalRelayOutput } from '../common/paradisTerminalOutputHotPath.js';
@@ -427,7 +427,7 @@ type ScmInbound =
 	| { t: 'presets'; id: string; ws: string }
 	// signature は一覧で受け取った承認署名。実行の直前に PC 側で計算し直して突き合わせる
 	// （詳細は paradisPresetMobileSignature）。
-	| { t: 'runPreset'; id: string; ws: string; key: string; signature: string };
+	| { t: 'runPreset'; id: string; ws: string; key: string; signature: string; confirmed?: boolean };
 
 /** モバイルへ渡すコマンドの最大長。プレビューではなく実行される本文をそのまま見せるための上限。 */
 const PRESET_COMMAND_MAX_LENGTH = 500;
@@ -472,6 +472,11 @@ interface IParadisMobilePreset {
 	readonly qualifier?: string;
 	/** 上限で切り詰めた表示であること（実行される内容はこれより多い）。 */
 	readonly truncated?: boolean;
+	/**
+	 * 実行の前に確認する段階（Q613）。付いているものは、端末が毎回この段階の確認を出す（初回だけの承認を使わない）。
+	 * 実行の要求に `confirmed: true` が無ければ PC は走らせない（この項目を知らない古いアプリから押されたとき）。
+	 */
+	readonly confirm?: ParadisPresetConfirmLevel;
 	readonly tasks: readonly { readonly name?: string; readonly commands: readonly string[] }[];
 }
 
@@ -500,6 +505,7 @@ function paradisDescribePresetForMobile(preset: IParadisResolvedPreset, qualifie
 		...(preset.icon ? { icon: preset.icon } : {}),
 		...(qualifiers?.get(preset.key) ? { qualifier: qualifiers.get(preset.key) } : {}),
 		...(truncated ? { truncated: true } : {}),
+		...(paradisPresetConfirmLevel(preset) ? { confirm: paradisPresetConfirmLevel(preset) } : {}),
 		tasks: shown,
 	};
 }
@@ -2254,6 +2260,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					reply({ error: 'preset changed', code: 'signature-mismatch' });
 					return;
 				}
+				// 確認付きのプリセット（Q613）は、端末で確認したと言ってきた要求だけ走らせる。確認の段階を知らない
+				// 古いアプリは初回だけの承認で押せてしまうので、ここで断る（PC の前には確認する人がいない）。
+				if (paradisPresetConfirmLevel(preset) !== undefined && msg.confirmed !== true) {
+					reply({ error: 'confirmation required', code: 'confirm-required' });
+					return;
+				}
 				// 実行で増えたターミナルを拾ってモバイルへ返す（実行後にそこへ切り替えるため）。
 				// **前後の差分では見ない。** 1タスクごとにプロセスの起動を待つので実行は実時間で
 				// 数秒かかり、その間にPCの操作や別のモバイル要求が作ったターミナルまで混ざる。
@@ -2266,6 +2278,8 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					// 「PC 側でアクティブなターミナル」へ送る挙動だが、そのターミナルはモバイルからは
 					// 見えていないので、手元で見えていない作業中の端末を汚す事故になる。
 					forceNewTerminal: true,
+					// 端末で確認させた（上で確かめた）。PC には確認の画面を出さない
+					confirmed: true,
 					onDidCreateTerminal: instanceId => createdIds.push(instanceId),
 				});
 				const created = createdIds

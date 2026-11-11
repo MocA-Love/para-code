@@ -79,6 +79,8 @@ import {
 	PARADIS_PRESET_HOST_REMOTE,
 	PARADIS_PROJECT_ROOT_ENV_VAR,
 	PARADIS_WORKSPACE_PRESET_FILE,
+	paradisPresetConfirmLevel,
+	ParadisPresetConfirmLevel,
 } from '../common/paradisTerminalPresets.js';
 import { paradisFolderLabelMoves } from '../common/paradisPresetLocalLedger.js';
 import { ParadisCountBadge } from '../../../browser/paradisBadges.js';
@@ -266,6 +268,20 @@ const STR_DISPLAY = localize('paradis.presetEditor.display', "表示");
 const STR_AUTORUN = localize('paradis.presetEditor.autoRun', "「新しいスペース（worktree）を作成」直後に自動実行する");
 // allow-any-unicode-next-line
 const STR_AUTORUN_HINT = localize('paradis.presetEditor.autoRunHint', "実行時は環境変数 {0} に親リポジトリの絶対パスが渡されます", PARADIS_PROJECT_ROOT_ENV_VAR);
+// allow-any-unicode-next-line
+const STR_SAFETY = localize('paradis.presetEditor.safety', "安全");
+// allow-any-unicode-next-line
+const STR_CONFIRM_SWITCH = localize('paradis.presetEditor.confirm.switch', "実行の前に確認する");
+// allow-any-unicode-next-line
+const STR_CONFIRM_SIMPLE = localize('paradis.presetEditor.confirm.simple', "確認だけ");
+// allow-any-unicode-next-line
+const STR_CONFIRM_DETAILS = localize('paradis.presetEditor.confirm.details', "内容を見せて確認");
+// allow-any-unicode-next-line
+const STR_CONFIRM_TYPE_NAME = localize('paradis.presetEditor.confirm.typeName', "名前を打って確認");
+// allow-any-unicode-next-line
+const STR_CONFIRM_HINT = localize('paradis.presetEditor.confirm.hint', "「確認だけ」は実行・やめるの 2 つ。「内容を見せて確認」は実行するコマンドの全文・作業フォルダ・接続先・対象のリポジトリを出します。「名前を打って確認」は、さらにプリセットの名前を打たないと実行できません。Enter では実行されません。");
+// allow-any-unicode-next-line
+const STR_AUTORUN_BLOCKED = localize('paradis.presetEditor.autoRunBlocked', "実行の前に確認するプリセットは、新しいスペースの直後に自動では実行できません（確認する人がいないまま走らないように）。");
 // allow-any-unicode-next-line
 const STR_TARGET = localize('paradis.presetEditor.target', "保存先");
 // allow-any-unicode-next-line
@@ -502,6 +518,19 @@ const ACTION_LABELS: readonly { action: ParadisPresetAction; label: string }[] =
 	{ action: 'insert', label: STR_ACTION_INSERT },
 	{ action: 'agent-prompt', label: STR_ACTION_AGENT_PROMPT },
 ];
+
+/**
+ * 実行の前に確認するとき（「安全」のスイッチがオン）の段階（Q613）。スイッチをオンにしたときの初めの段階は
+ * {@link CONFIRM_LEVEL_WHEN_TURNED_ON}。
+ */
+const CONFIRM_LABELS: readonly { level: ParadisPresetConfirmLevel; label: string }[] = [
+	{ level: 'confirm', label: STR_CONFIRM_SIMPLE },
+	{ level: 'details', label: STR_CONFIRM_DETAILS },
+	{ level: 'type-name', label: STR_CONFIRM_TYPE_NAME },
+];
+
+/** 「実行の前に確認する」をオンにしたときの初めの段階（Q613: 押した瞬間に何がどこで走るかを見せるのが基本）。 */
+const CONFIRM_LEVEL_WHEN_TURNED_ON: ParadisPresetConfirmLevel = 'details';
 
 const LAYOUT_LABELS: readonly { layout: ParadisPresetLayout; label: string }[] = [
 	{ layout: 'tabs', label: STR_LAYOUT_TABS },
@@ -1343,9 +1372,13 @@ class ParadisPresetEditorDialog extends Disposable {
 			runBtn.title = strRunDisabledTooltip(paradisPresetHostsLabel(preset.hosts));
 		}
 		this._viewStore.add(dom.addDisposableListener(runBtn, 'click', async () => {
+			// 確認付きのもの（Q613）は、この画面を閉じる前に一覧の上で確認する（やめたら画面はそのまま）
+			if (!await this.presetService.confirmPresetRuns([preset])) {
+				return;
+			}
 			this.dispose();
 			try {
-				await this.presetService.runPreset(preset);
+				await this.presetService.runPreset(preset, { confirmed: true });
 			} catch (error) {
 				// エージェント向けは「今のターミナルでエージェントが動いていない」等の理由で入れられない
 				// ことがあり、その理由は例外のメッセージで届く。
@@ -1369,6 +1402,7 @@ class ParadisPresetEditorDialog extends Disposable {
 				pinned: preset.pinned,
 				pinnedLabel: preset.pinnedLabel,
 				autoRun: preset.autoRun,
+				confirmBeforeRun: preset.confirmBeforeRun,
 				appliesTo: preset.appliesTo ? [...preset.appliesTo] : undefined,
 				hosts: preset.hosts ? [...preset.hosts] : undefined,
 			};
@@ -1773,7 +1807,13 @@ class ParadisPresetEditorDialog extends Disposable {
 		this._viewStore.add(dom.addDisposableListener(runBtn, 'click', async () => {
 			// 削除と同じく、まとまった数を1クリックでノークリック実行させない
 			// （layout: 'current' のプリセットが複数選ばれていると、同じ端末へ次々流し込むことにもなる）。
-			if (selected.length >= BULK_RUN_CONFIRM_THRESHOLD || skippedCount > 0) {
+			// 確認付きのもの（Q613）があれば、それらを 1 回の確認にまとめて並べる（ほかの件数もそこで知らせる）。
+			// その確認で済ませたので、下の実行には confirmed を渡し、1 件ずつ聞き直さない。
+			if (runnable.some(preset => paradisPresetConfirmLevel(preset) !== undefined)) {
+				if (!await this.presetService.confirmPresetRuns(runnable, skippedCount > 0 ? strBulkRunSkipped(skippedCount) : undefined)) {
+					return;
+				}
+			} else if (selected.length >= BULK_RUN_CONFIRM_THRESHOLD || skippedCount > 0) {
 				const result = await this.dialogService.confirm({
 					message: strBulkRunMessage(runnable.length),
 					detail: [
@@ -1790,7 +1830,7 @@ class ParadisPresetEditorDialog extends Disposable {
 			const failed: string[] = [];
 			for (const preset of runnable) {
 				try {
-					await this.presetService.runPreset(preset);
+					await this.presetService.runPreset(preset, { confirmed: true });
 				} catch {
 					// 1件失敗しても残りは続ける。ダイアログは既に閉じているので、失敗はまとめて
 					// 最後に知らせる（黙って一部だけ実行されなかった、を防ぐ）。
@@ -2174,6 +2214,36 @@ class ParadisPresetEditorDialog extends Disposable {
 			{ ariaLabel: STR_ACTION }));
 		const actionHint = dom.append(actionField, $('.ppe-check-hint'));
 
+		// 安全: 実行の前の確認（Q613）。種別のすぐ下に置き、作るときに最初に目に入るようにする。「実行」の種別だけ
+		const safetyField = field(STR_SAFETY);
+		// スイッチ（既定はオフ）をオンにすると段階の選択欄が出て、初めは「内容を見せて確認」を選んだ状態にする。
+		// オフに戻して再びオンにしたときも初めの段階から（前の段階は覚えない。オフは「確認しない」に戻すことなので、
+		// 次にオンにしたときは推奨の段階から選び直してもらう）
+		const initialConfirmLevel = editing ? paradisPresetConfirmLevel(editing) : undefined;
+		const confirmSwitchRow = dom.append(safetyField, $('.ppe-switch-row.ppe-confirm-switch'));
+		const confirmSwitchLabel = dom.append(confirmSwitchRow, $('span.ppe-check-label'));
+		confirmSwitchLabel.textContent = STR_CONFIRM_SWITCH;
+		const confirmSwitch = this._viewStore.add(new ParadisSwitch(confirmSwitchRow, { checked: initialConfirmLevel !== undefined, ariaLabel: STR_CONFIRM_SWITCH }));
+		this._viewStore.add(dom.addDisposableListener(confirmSwitchLabel, 'click', () => confirmSwitch.element.click()));
+		const confirmLevelRow = dom.append(safetyField, $('.ppe-confirm-level'));
+		const confirmSelect = this._viewStore.add(new ParadisSelect(confirmLevelRow, this.contextViewService, this.configurationService,
+			CONFIRM_LABELS.map(({ level, label }) => ({ value: level, label })),
+			initialConfirmLevel ?? CONFIRM_LEVEL_WHEN_TURNED_ON,
+			{ ariaLabel: STR_SAFETY }));
+		dom.append(confirmLevelRow, $('.ppe-hint')).textContent = STR_CONFIRM_HINT;
+		/** 保存する段階。スイッチがオフなら確認しない。 */
+		const confirmLevel = (): ParadisPresetConfirmLevel | undefined => confirmSwitch.checked ? confirmSelect.value as ParadisPresetConfirmLevel : undefined;
+		const updateConfirmLevelVisibility = (): void => {
+			confirmLevelRow.style.display = confirmSwitch.checked ? '' : 'none';
+		};
+		updateConfirmLevelVisibility();
+		this._viewStore.add(confirmSwitch.onDidChange(checked => {
+			if (checked) {
+				confirmSelect.value = CONFIRM_LEVEL_WHEN_TURNED_ON;
+			}
+			updateConfirmLevelVisibility();
+		}));
+
 		const promptField = field(STR_PROMPT);
 		const promptInput = dom.append(promptField, $('textarea.ppe-input.ppe-commands')) as HTMLTextAreaElement;
 		promptInput.rows = 5;
@@ -2350,9 +2420,23 @@ class ParadisPresetEditorDialog extends Disposable {
 		};
 		updatePinnedLabelVisibility();
 		this._viewStore.add(pinnedInput.onDidChange(updatePinnedLabelVisibility));
-		const autoRunInput = switchRow(STR_AUTORUN, editing?.autoRun === true, displayControl);
+		// 確認付きと自動実行は同時に選べない（自動実行のときは PC の前に確認する人がいない）。保存済みの定義に両方が
+		// 入っていたら確認を優先し、自動実行は切った状態で開く
+		const autoRunInput = switchRow(STR_AUTORUN, editing?.autoRun === true && (editing ? paradisPresetConfirmLevel(editing) : undefined) === undefined, displayControl);
+		const autoRunBlockedHint = dom.append(displayControl, $('.ppe-check-hint'));
+		autoRunBlockedHint.textContent = STR_AUTORUN_BLOCKED;
 		const autoRunHint = dom.append(displayControl, $('.ppe-check-hint'));
 		autoRunHint.textContent = STR_AUTORUN_HINT;
+		const updateAutoRunAvailability = (): void => {
+			const confirmOn = confirmLevel() !== undefined;
+			if (confirmOn) {
+				autoRunInput.checked = false;
+			}
+			autoRunInput.enabled = !confirmOn;
+			autoRunBlockedHint.style.display = confirmOn ? '' : 'none';
+		};
+		updateAutoRunAvailability();
+		this._viewStore.add(confirmSwitch.onDidChange(updateAutoRunAvailability));
 
 		// 種別ごとの行の出し分け。行はラベル列（直前の兄弟）とコントロール列の2セルで1行。
 		const setRowVisible = (control: HTMLElement, visible: boolean): void => {
@@ -2377,10 +2461,13 @@ class ParadisPresetEditorDialog extends Disposable {
 			// 並べ方と既定の作業ディレクトリは「実行」だけ（入れるだけは今のターミナルへ入れる）
 			setRowVisible(layoutSelect.element.parentElement as HTMLElement, action === 'run');
 			setRowVisible(cwdInput.parentElement as HTMLElement, action === 'run');
+			// 実行の前の確認は「実行」だけ（入れるだけ・エージェント向けは Enter を送らない）
+			setRowVisible(safetyField, action === 'run');
 			// スペース作成直後の自動実行も「実行」だけ
 			for (const element of [autoRunInput.element.parentElement as HTMLElement, autoRunHint]) {
 				element.style.display = action === 'run' ? '' : 'none';
 			}
+			autoRunBlockedHint.style.display = action === 'run' && confirmLevel() !== undefined ? '' : 'none';
 			actionHint.textContent = action === 'insert' ? STR_ACTION_HINT_INSERT : action === 'agent-prompt' ? STR_ACTION_HINT_AGENT_PROMPT : '';
 		};
 		updateActionVisibility();
@@ -2556,6 +2643,7 @@ class ParadisPresetEditorDialog extends Disposable {
 			pinned: pinnedInput.checked,
 			pinnedLabel: pinnedLabelInput.checked,
 			autoRun: autoRunInput.checked,
+			confirmBeforeRun: confirmLevel() ?? 'none',
 			target: workspaceRadio.checked ? 'workspace' : 'user',
 			hostLocal: hostLocalInput.checked,
 			hostRemote: hostRemoteInput.checked,
@@ -2622,7 +2710,10 @@ class ParadisPresetEditorDialog extends Disposable {
 				cwd: action === 'run' ? cwdInput.value.trim() || undefined : undefined,
 				pinned: pinnedInput.checked,
 				pinnedLabel: pinnedInput.checked && pinnedLabelInput.checked ? true : undefined,
-				autoRun: action === 'run' && autoRunInput.checked,
+				// 確認付きは自動実行と同時に保存しない（フォームでも選べないが、念のため保存の形でも守る）
+				autoRun: action === 'run' && autoRunInput.checked && confirmLevel() === undefined,
+				// 確認しないときは書かない（従来の定義と同じ形のまま保存し、古い版でも読めるようにする）
+				confirmBeforeRun: action === 'run' ? confirmLevel() : undefined,
 				appliesTo: userRadio.checked && appliesTo.length > 0 ? appliesTo : undefined,
 				hosts,
 			};

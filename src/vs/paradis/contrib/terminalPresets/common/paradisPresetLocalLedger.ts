@@ -43,7 +43,8 @@ export interface IParadisLocallyHiddenKeys {
  *  - 隠したプリセットを消して同じ名前で作り直すと、最初から隠れている
  */
 export function paradisLocallyHiddenKeys(repositoryPresetFile: URI, relatedPresetFiles: readonly URI[], definition: IParadisPresetDefinition, nameIsShared: boolean): IParadisLocallyHiddenKeys {
-	const fingerprint = paradisPresetFingerprint(definition, { ignoreAppliesTo: true });
+	// 実行の前の確認（Q613）は見た目の同一性に関わらないので外す。後から確認を付けても隠したままにする
+	const fingerprint = paradisPresetFingerprint(definition, { ignoreAppliesTo: true, ignoreConfirm: true });
 	const identity = JSON.stringify(nameIsShared ? [definition.name.trim(), fingerprint] : [definition.name.trim()]);
 	const primary = `${LOCALLY_HIDDEN_KEY_PREFIX}${repositoryPresetFile.toString()}::${identity}`;
 	const files = [...new Set([repositoryPresetFile, ...relatedPresetFiles].map(uri => uri.toString()))];

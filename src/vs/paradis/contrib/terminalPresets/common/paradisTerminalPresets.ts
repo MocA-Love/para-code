@@ -99,6 +99,15 @@ export type ParadisPresetAction = typeof PARADIS_PRESET_ACTIONS[number];
 /** エージェント向けプロンプトの長さの上限（Orca の MAX_QUICK_COMMAND_AGENT_PROMPT_LENGTH と同じ値）。 */
 export const PARADIS_PRESET_AGENT_PROMPT_MAX_LENGTH = 6000;
 
+/**
+ * 実行の前に確認する段階（Q613）。定義の `confirmBeforeRun` に書く。未指定は確認しない。
+ * - confirm: 「実行しますか？」とやめる・実行だけ
+ * - details: さらにコマンドの全文・作業フォルダ・接続先・対象のリポジトリを見せる
+ * - type-name: さらにプリセットの名前を打ち終わるまで実行を押せない
+ */
+export const PARADIS_PRESET_CONFIRM_LEVELS = ['confirm', 'details', 'type-name'] as const;
+export type ParadisPresetConfirmLevel = typeof PARADIS_PRESET_CONFIRM_LEVELS[number];
+
 /** 1タスク = 1ターミナル。名前・作業ディレクトリ・そのターミナルで順に実行するコマンド列を持つ。 */
 export interface IParadisPresetTask {
 	/** ターミナルのタイトル。未指定はプリセット名。 */
@@ -151,6 +160,14 @@ export interface IParadisPresetDefinition {
 	readonly pinnedLabel?: boolean;
 	/** 「新しいスペース（worktree）を作成」直後に自動実行するか。 */
 	readonly autoRun?: boolean;
+	/**
+	 * 実行の前に確認する段階（{@link ParadisPresetConfirmLevel}）。未指定は確認しない。手で `true` と書いたときは
+	 * 「内容を見せて確認」として扱う（{@link paradisPresetConfirmLevel}）。
+	 *
+	 * 古い版はこの項目を知らないまま読み飛ばす（読み込みの検査は知らない項目で定義を弾かない）。古い版の編集画面で
+	 * 保存し直すと項目は消える。
+	 */
+	readonly confirmBeforeRun?: ParadisPresetConfirmLevel | boolean;
 	/**
 	 * ユーザーレベル専用: このプリセットを表示するリポジトリの条件。
 	 * フォルダ名（basename）または絶対パスで指定。未指定は全リポジトリで有効。
@@ -251,6 +268,12 @@ export interface IParadisRunPresetOptions {
 	 * 別の要求が作った無関係なターミナルまで拾ってしまう。
 	 */
 	readonly onDidCreateTerminal?: (instanceId: number) => void;
+	/**
+	 * 実行の前の確認（{@link paradisPresetConfirmLevel}）を、呼び出し側で済ませたか。省くと、確認付きの
+	 * プリセットは PC に確認の画面を出し、やめたら何もしない。まとめて実行（1 回の確認にまとめる）と、
+	 * 端末で確認させたモバイルからの実行だけが true を渡す。
+	 */
+	readonly confirmed?: boolean;
 }
 
 /** 保存時の指定。 */
@@ -288,6 +311,14 @@ export interface IParadisPresetService {
 	 *   worktree 作成直後などワークスペースフォルダの反映を待てない場面で使う。
 	 */
 	runPreset(preset: IParadisResolvedPreset, options?: IParadisRunPresetOptions): Promise<void>;
+
+	/**
+	 * 確認付きのプリセット（{@link paradisPresetConfirmLevel}）をまとめて 1 回の確認の画面に並べる。
+	 * 名前を打つ段のものがあれば、その名前を打たせる。確認付きが無ければ聞かずに true。
+	 * 押されたら true。この後の runPreset には `confirmed: true` を渡す。
+	 * @param note 本文の最後に添える一言（実行環境が違うため外したものの件数など）。
+	 */
+	confirmPresetRuns(presets: readonly IParadisResolvedPreset[], note?: string): Promise<boolean>;
 
 	/**
 	 * プリセットを保存する。
@@ -420,7 +451,7 @@ export function paradisUsablePresetId(definition: IParadisPresetDefinition, take
  * 違う2件は、この機能では**正規に並べて登録できる**。片方が外部で消えたときに、残った双子を
  * 当人と誤認して上書き・削除してしまう。ユーザーが編集できる項目はすべて突き合わせる。
  */
-export function paradisPresetFingerprint(definition: IParadisPresetDefinition, options?: { readonly ignoreAppliesTo?: boolean }): string {
+export function paradisPresetFingerprint(definition: IParadisPresetDefinition, options?: { readonly ignoreAppliesTo?: boolean; readonly ignoreConfirm?: boolean }): string {
 	const { tasks, layout } = paradisGetPresetTasks(definition);
 	return JSON.stringify([
 		definition.name.trim(),
@@ -437,6 +468,10 @@ export function paradisPresetFingerprint(definition: IParadisPresetDefinition, o
 		definition.autoRun === true,
 		layout,
 		tasks.map(task => [task.name ?? '', task.cwd ?? '', task.commands]),
+		// 確認の段階は付いているときだけ足す（従来のプリセットの指紋を変えない。理由は下の種別と同じ）。
+		// 「このマシンだけ隠した」台帳（paradisPresetLocalLedger.ts）は ignoreConfirm で外す。後から確認を付けただけで、
+		// 隠したものが出てこないように。双子の見分け（上書き・削除の相手の確認）では外さない
+		...(options?.ignoreConfirm || paradisPresetConfirmLevel(definition) === undefined ? [] : [['confirm', paradisPresetConfirmLevel(definition)]]),
 		// 種別は run 以外のときだけ足す。指紋は「このマシンだけ隠したリポジトリのプリセット」の
 		// 台帳キーにも使われ保存されるので、従来のプリセットの指紋を変えると隠したものが出てくる。
 		...(paradisPresetAction(definition) === 'run' ? [] : [[paradisPresetAction(definition), definition.prompt ?? '']]),
@@ -828,6 +863,23 @@ export function isValidPresetDefinition(value: unknown): value is IParadisPreset
 		return candidate.tasks.length > 0 && candidate.tasks.every(isValidPresetTask);
 	}
 	return isValidCommandList(candidate.commands);
+}
+
+/**
+ * 実行の前に確認する段階。確認しないなら undefined。
+ *
+ * 確認は「コマンドを実行する」種別だけに掛ける（入れるだけ・エージェント向けは Enter を送らない）。
+ * 知らない値（新しい版が足した段階など）は、確認を外す側ではなく「内容を見せて確認」へ倒す。
+ */
+export function paradisPresetConfirmLevel(definition: IParadisPresetDefinition): ParadisPresetConfirmLevel | undefined {
+	if (paradisPresetAction(definition) !== 'run') {
+		return undefined;
+	}
+	const value: unknown = definition.confirmBeforeRun;
+	if (value === undefined || value === null || value === false || value === 'none') {
+		return undefined;
+	}
+	return (PARADIS_PRESET_CONFIRM_LEVELS as readonly unknown[]).includes(value) ? value as ParadisPresetConfirmLevel : 'details';
 }
 
 /** 定義の種別（未指定・不正値は run）。 */

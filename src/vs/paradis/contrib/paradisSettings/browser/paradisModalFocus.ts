@@ -74,6 +74,12 @@ function findFocusable(root: HTMLElement, predicate: (element: HTMLElement) => b
 
 export class ParadisModalFocus extends Disposable {
 
+	/** `element` と同じウィンドウに、fork のモーダルが開いているか（入れ子の箱で開くかを決めるのに使う）。 */
+	static isModalOpenIn(element: HTMLElement): boolean {
+		const targetWindow = dom.getWindow(element);
+		return openModals.some(modal => modal.targetWindow === targetWindow);
+	}
+
 	private readonly previousFocus: HTMLElement | undefined;
 	private lastFocusedIdentity: string | undefined;
 	private closed = false;

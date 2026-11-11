@@ -40,6 +40,17 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.21',
+		date: '2026-11-12',
+		items: [
+			{
+				icon: 'shield-checkmark-outline',
+				title: 'PC で「実行の前に確認する」にしたコマンドプリセットは、スマホから押すたびに確認を出すようにしました',
+				body: '「名前を打って確認」にしたものは、プリセットの名前を打つまで実行できません。PC の Para Code を更新すると使えます。',
+			},
+		],
+	},
+	{
 		version: '0.12.20',
 		date: '2026-11-10',
 		items: [
