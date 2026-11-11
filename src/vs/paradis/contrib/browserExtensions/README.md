@@ -17,6 +17,7 @@
 1. CRX を取得: `https://clients2.google.com/service/update2/crx?response=redirect&prodversion=<Chromeバージョン>&acceptformat=crx2,crx3&x=id%3D<拡張ID>%26uc`
 2. CRX3 ヘッダ（`Cr24` マジック + 4byte version + 4byte header 長 + header）を除去して ZIP として展開
 3. `media/<拡張名>/` を丸ごと差し替え、この表のバージョンと取得日を更新
+4. 展開した中の `_metadata/` フォルダは消してから入れる（`git rm -r`）。Electron は展開済みの拡張機能を `loadExtension` で読み込むたびに `_metadata/` を消すので（`shell/browser/extensions/electron_extension_loader.cc` の `LoadUnpacked`）、アプリの中に残すと起動のたびに macOS の署名の封が破れる。`build/lib/test/paradisBundledBrowserExtensions.test.ts` がこれを検査する
 
 ## 制約（Electron の拡張サポートは部分実装）
 
