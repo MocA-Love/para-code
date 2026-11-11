@@ -164,7 +164,10 @@ export function paradisTasksRenderProjectTable(container: HTMLElement, result: I
 		const row = dom.append(body, $('tr.paradis-tasks-item.paradis-focus-subtle'));
 		appendTitle(dom.append(row, $('td.title')), item);
 		for (const field of fields) {
-			appendFieldValue(dom.append(row, $('td.field')), item, field);
+			const cell = dom.append(row, $('td.field'));
+			appendFieldValue(cell, item, field);
+			// 1 行で省略記号にするので、切れた値はポインタを重ねて読めるようにする（担当者は顔の絵ごとに名前が出る）
+			cell.title = field.dataType === 'ASSIGNEES' ? '' : field.dataType === 'LABELS' ? item.labels.map(label => label.name).join(', ') : cell.textContent ?? '';
 		}
 		const updated = dom.append(row, $('td.updated'));
 		const time = item.updatedAt ? Date.parse(item.updatedAt) : NaN;
@@ -195,7 +198,9 @@ export function paradisTasksRenderProjectBoard(container: HTMLElement, result: I
 		for (const item of column.items) {
 			const card = dom.append(cards, $('.paradis-tasks-card.paradis-focus-subtle'));
 			const top = dom.append(card, $('.paradis-tasks-card-top'));
-			dom.append(top, $('span.paradis-tasks-card-ref')).textContent = itemReference(item);
+			const reference = dom.append(top, $('span.paradis-tasks-card-ref'));
+			reference.textContent = itemReference(item);
+			reference.title = reference.textContent;
 			menuButton(store, top, item, host);
 			dom.append(card, $('.paradis-tasks-card-title')).textContent = item.title;
 			const meta = dom.append(card, $('.paradis-tasks-item-context'));
