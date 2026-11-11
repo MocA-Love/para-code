@@ -68,7 +68,9 @@
 	font-family: var(--monaco-monospace-font);
 }
 
-.monaco-dialog-box.paradis-port-reforward-confirm .pprc-toggle {
+/* A text link beside the chips: no side padding, so a toggle that wraps to the next line lines up with the chips. */
+.monaco-dialog-box.paradis-port-reforward-confirm .pprc-ports > .pprc-toggle {
+	padding-inline: 0;
 	cursor: pointer;
 	text-decoration: none;
 }
