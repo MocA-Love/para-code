@@ -44,6 +44,8 @@ import { IParadisApiExtension, IParadisExtensionApiCaller, IParadisExtensionApiM
 import type { IParadisTabView, ParadisBrowserExtensionTabs } from './paradisBrowserExtensionTabs.js';
 import { paradisKeepOnExtensionPages } from './paradisBrowserExtensionWindows.js';
 import { isRecord } from '../../../common/paradisGuards.js';
+import { paradisIsExtensionPageHeld } from '../../../../platform/browserView/common/paradisExtensionPageHold.js';
+import { paradisBrowserExtensionsUsage } from '../common/paradisBrowserExtensionsUsage.js';
 
 /** 読み込んだ拡張機能（Electron の Extension の、ここで使うところ）。 */
 export interface IParadisLoadedExtension extends IParadisApiExtension {
@@ -644,6 +646,8 @@ export class ParadisBrowserExtensionActions implements IDisposable {
 			// 数え方（補助ウィンドウでは webContents の id）、タブの windowId は BrowserWindow の id なので、窓どうしで比べる
 			const window = this._environment.windowsForWorkbenchId(anchor.windowId).find(candidate => candidate.id === view.windowId && !candidate.isDestroyed());
 			if (!window) {
+				// #912 の「no window」。ボタンの位置が別のウィンドウから来たのか、ウィンドウが見つからないのかを分けて数える
+				paradisBrowserExtensionsUsage().notePopup(anchor.windowId === view.windowId ? 'no_window_missing' : 'no_window_other', false);
 				throw new ParadisExtensionApiError('Para Code has no window to show the popup in');
 			}
 			// 押したタブを、そのウィンドウの前のタブにする（ポップアップの tabs.query({ active }) が見つけられるように）
@@ -668,6 +672,7 @@ export class ParadisBrowserExtensionActions implements IDisposable {
 				this._environment.noteUserGesture?.(session, extension.id);
 			}
 			if (details.popup !== '') {
+				paradisBrowserExtensionsUsage().notePopup('opened', paradisIsExtensionPageHeld(view.webContents));
 				this._openPopup(resolved, details.popup, window, anchor);
 				this._settlePending(session, extensionId);
 				return { ok: true };
@@ -818,7 +823,10 @@ export class ParadisBrowserExtensionActions implements IDisposable {
 				}
 			});
 		});
-		window.loadURL(url.href).catch((error: unknown) => this._logService.warn('[paradis] a browser extension popup failed to load', error));
+		window.loadURL(url.href).catch((error: unknown) => {
+			paradisBrowserExtensionsUsage().notePopup('load_failed', false);
+			this._logService.warn('[paradis] a browser extension popup failed to load', error);
+		});
 	}
 
 	private _settlePending(session: ParadisApiSession, extensionId: string): void {

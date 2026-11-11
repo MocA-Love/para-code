@@ -30,6 +30,7 @@ import { ParadisDaemonPtyHostStarter } from './paradisDaemonPtyHostStarter.js';
 import { ParadisScopedEnvPtyHostStarter } from './paradisScopedEnvPtyHostStarter.js';
 import { IParadisPtyDaemonPaths, ParadisDaemonPlatform, paradisPtyDaemonPaths } from '../common/paradisPtyDaemonPaths.js';
 import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
+import { ParadisPtyHostingFallback, ParadisPtyHostingMode, paradisPtyModeAttributes, recordParadisPtyMode } from '../common/paradisPtyModeDiagnostics.js';
 
 /**
  * 常駐の身元。ビルドが変われば別の常駐になる。
@@ -122,6 +123,15 @@ export function paradisCreatePtyHostStarter(
 	}
 
 	const inApp = () => new ElectronPtyHostStarter(reconnectConstants, configurationService, environmentMainService, lifecycleMainService, logService, ipc);
+	// 選んだ飼い方を Sentry へ 1 件送る（paradisPtyModeDiagnostics.ts）
+	const settings = {
+		daemonEnabled: configurationService.getValue(PARADIS_PTY_DAEMON_ENABLED) === true,
+		reattachAcrossUpdates: configurationService.getValue(PARADIS_PTY_HOST_DAEMON_ENABLED) === true,
+	};
+	const chose = <T>(mode: ParadisPtyHostingMode, fallback: ParadisPtyHostingFallback, starter: T): T => {
+		recordParadisPtyMode(paradisPtyModeAttributes(mode, fallback, settings));
+		return starter;
+	};
 
 	// 更新をまたいで繋ぎ直せる薄い常駐。**pty ホストはアプリの中のまま**で、その中から常駐へ
 	// 繋ぐので、ここは今までどおりの起こし方でよい。渡すのは置き場所だけ
@@ -134,21 +144,21 @@ export function paradisCreatePtyHostStarter(
 		// **「動かない前提」で書いたものが、実際には止められていなかった。**
 		if (currentPlatform() === 'win32') {
 			logService.info('[ParadisPtyHost] not using a daemon on Windows yet: the named pipe cannot tell us who it is talking to');
-			return inApp();
+			return chose('in_app', 'windows', inApp());
 		}
 		const hostPaths = paradisPtyHostPaths({ stateDir: environmentMainService.userDataPath, platform: currentPlatform() });
 		if (hostPaths.socketPathTooLong) {
 			// 黙って落とすと、症状は「毎回ターミナルが作り直される」だけになり原因に辿り着けない。
 			logService.warn(`[ParadisPtyHost] not using a daemon: the socket path is too long for this platform (${hostPaths.socketPath.length} chars at ${hostPaths.socketPath}). Try a shorter --user-data-dir.`);
-			return inApp();
+			return chose('in_app', 'path_too_long', inApp());
 		}
 		// 置き場所は pty ホストを起こす瞬間だけ渡す。main の `process.env` へ入れっぱなしにすると、
 		// 拡張ホストなど main が起こすものすべてに漏れる（paradisScopedEnvPtyHostStarter.ts）。
-		return new ParadisScopedEnvPtyHostStarter(inApp(), { [PARADIS_PTY_HOST_STATE_DIR]: environmentMainService.userDataPath });
+		return chose('handover', 'none', new ParadisScopedEnvPtyHostStarter(inApp(), { [PARADIS_PTY_HOST_STATE_DIR]: environmentMainService.userDataPath }));
 	}
 
 	if (configurationService.getValue(PARADIS_PTY_DAEMON_ENABLED) !== true) {
-		return inApp();
+		return chose('in_app', 'none', inApp());
 	}
 
 	// Windows はここで止める。**名前付きパイプを使う限り、こちらでは塞げない穴が残るため。**
@@ -181,18 +191,18 @@ export function paradisCreatePtyHostStarter(
 	// 台帳に書けばよい。`ipc.net` の `serve`/`connect` は両方に対応している。
 	if (currentPlatform() === 'win32') {
 		logService.info('[ParadisPtyDaemon] not using a daemon on Windows yet: the named pipe cannot tell us who it is talking to');
-		return inApp();
+		return chose('in_app', 'windows', inApp());
 	}
 
 	const paths = paradisPtyDaemonPathsFor(environmentMainService, productService);
 	if (paths.socketPathTooLong) {
 		// 黙って落とすと、症状は「毎回ターミナルが作り直される」だけになり原因に辿り着けない。
 		logService.warn(`[ParadisPtyDaemon] not using a daemon: the socket path is too long for this platform (${paths.socketPath.length} chars at ${paths.socketPath}). Try a shorter --user-data-dir.`);
-		return inApp();
+		return chose('in_app', 'path_too_long', inApp());
 	}
 
 	logService.info(`[ParadisPtyDaemon] terminals will run in a daemon at ${paths.socketPath}`);
-	return new ParadisDaemonPtyHostStarter(
+	return chose('daemon', 'none', new ParadisDaemonPtyHostStarter(
 		reconnectConstants,
 		paths,
 		paradisPtyDaemonBuildId(productService),
@@ -200,5 +210,5 @@ export function paradisCreatePtyHostStarter(
 		lifecycleMainService,
 		logService,
 		ipc,
-	);
+	));
 }

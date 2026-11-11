@@ -27,6 +27,7 @@ import { PARADIS_RUN_STEPS_ALLOWED_TOOLS } from './paradisBrowserRunSteps.js';
 import { paradisNormalizeLegacyToolArguments } from './paradisToolArgumentAliases.js';
 import { isRecord } from '../../../common/paradisGuards.js';
 import { paradisScriptStringLiteral } from '../../../common/paradisScriptLiteral.js';
+import { IParadisRunStepsStats, paradisReportRunSteps } from '../common/paradisAgentBrowserUsage.js';
 
 /** 実行する手順（ループの中の繰り返しを含む）の合計の上限。 */
 export const PARADIS_RUN_STEPS_FLOW_MAX_EXECUTED = 200;
@@ -58,6 +59,8 @@ export interface IParadisRunStepsFlowCall {
 	callTool(name: string, args: Record<string, unknown>): Promise<unknown>;
 	now?(): number;
 	sleep?(ms: number): Promise<void>;
+	/** 終わったときの回数（Sentry の集計用。paradisAgentBrowserUsage.ts）。 */
+	report?(stats: IParadisRunStepsStats): void;
 }
 
 type Locator = Readonly<Record<string, unknown>>;
@@ -349,6 +352,10 @@ class FlowRun {
 	images = 0;
 	textLength = 0;
 	stopped: string | undefined;
+	/** 止まった理由の種類（Sentry の集計用。文は {@link stopped}）。 */
+	stopKind: IParadisRunStepsStats['stop'] = 'none';
+	/** 成り立たなかった expect の数。 */
+	expectFailed = 0;
 	private readonly now: () => number;
 	private readonly sleep: (ms: number) => Promise<void>;
 	private readonly deadline: number;
@@ -376,10 +383,13 @@ class FlowRun {
 		}
 		if (this.call.signal?.aborted) {
 			this.stopped = 'run_steps was cancelled.';
+			this.stopKind = 'cancelled';
 		} else if (this.executed >= PARADIS_RUN_STEPS_FLOW_MAX_EXECUTED) {
 			this.stopped = `run_steps stopped after ${PARADIS_RUN_STEPS_FLOW_MAX_EXECUTED} executed steps (the limit).`;
+			this.stopKind = 'step_limit';
 		} else if (this.now() >= this.deadline) {
 			this.stopped = 'run_steps stopped at its time limit (max_seconds).';
+			this.stopKind = 'time_limit';
 		}
 		return this.stopped === undefined;
 	}
@@ -422,6 +432,7 @@ class FlowRun {
 			this.failed++;
 			if (!this.continueOnError) {
 				this.stopped = `run_steps stopped at the first failure (${label}).`;
+				this.stopKind = 'failure';
 				return false;
 			}
 		}
@@ -459,6 +470,9 @@ class FlowRun {
 					const startedAt = this.now();
 					const met = await this.waitFor(condition, Math.min(step.timeoutMs, this.remainingMs()));
 					const seconds = ((this.now() - startedAt) / 1000).toFixed(1);
+					if (!met.ok) {
+						this.expectFailed++;
+					}
 					this.record(`${label}: expect ${describeCondition(condition)}`, met.ok, { content: [{ type: 'text', text: met.ok ? `Met after ${seconds} s.` : `Not met within ${(step.timeoutMs / 1000).toFixed(1)} s.${met.detail ? ` ${met.detail}` : ''}` }] });
 					break;
 				}
@@ -641,10 +655,12 @@ function resolveList(source: unknown, scope: IScope): string[] | string {
 export async function paradisRunStepsFlow(call: IParadisRunStepsFlowCall, rawArgs: unknown): Promise<unknown> {
 	const parsed = paradisParseRunStepsFlow(rawArgs);
 	if (!parsed.ok) {
+		paradisReportRunSteps(call, { refused: true, executed: 0, failed: 0, expectFailed: 0, stop: 'none' });
 		return failure(parsed.error);
 	}
 	const run = new FlowRun(call, parsed.continueOnError, parsed.maxMs);
 	await run.runBlock(parsed.steps, { results: new Map() }, '', true);
+	paradisReportRunSteps(call, { refused: false, executed: run.executed, failed: run.failed, expectFailed: run.expectFailed, stop: run.stopKind });
 	const summary = `run_steps: ${run.executed} step(s) executed, ${run.failed} failed.${run.stopped !== undefined ? ` ${run.stopped}` : ''}${run.images > MAX_TOTAL_IMAGES ? ` Only the first ${MAX_TOTAL_IMAGES} images are included.` : ''}`;
 	const stoppedWithoutFailure = run.stopped !== undefined && run.failed === 0;
 	return { content: [{ type: 'text', text: summary }, ...run.content], ...(run.failed > 0 || stoppedWithoutFailure ? { isError: true } : {}) };

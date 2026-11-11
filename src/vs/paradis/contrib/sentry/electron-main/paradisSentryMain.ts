@@ -15,7 +15,7 @@ import type { IProductConfiguration } from '../../../../base/common/product.js';
 import { ParadisPrivilegedSchemeRecorder } from '../common/paradisPrivilegedSchemes.js';
 import { IParadisCrashReportingInputs, isParadisSentryOptedOut, setParadisSentryDisabledEnv } from '../../../../platform/environment/common/paradisSentryOptOut.js';
 import { isParadisSentryDevelopmentBuild, PARADIS_SENTRY_DESKTOP_DSN, paradisSentryEnvironment, paradisSentryRelease } from '../common/paradisSentryConfiguration.js';
-import { configureParadisDiagnosticEventSink, configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, ParadisDiagnosticSeverity, paradisDedupeFingerprint, paradisSafeErrorExtra, paradisSafeErrorTags, toParadisSentrySafeError } from '../common/paradisSentryDiagnostics.js';
+import { configureParadisDiagnosticEventSink, configureParadisDiagnosticReporter, configureParadisDiagnosticTagSetter, configureParadisUsageSpanSender, ParadisDiagnosticSeverity, paradisDedupeFingerprint, paradisSafeErrorExtra, paradisSafeErrorTags, toParadisSentrySafeError } from '../common/paradisSentryDiagnostics.js';
 import { paradisPrepareSentryBreadcrumb, paradisPrepareSentryEvent, paradisPrepareSentryTransaction } from '../common/paradisSentryEvent.js';
 import { registerParadisProcessGoneDiagnostics } from './paradisProcessGoneDiagnostics.js';
 
@@ -129,6 +129,20 @@ export function initializeParadisSentryMain(product: Pick<IProductConfiguration,
 					contexts: { [context.name]: context.data },
 				});
 			},
+		});
+		// main には span runner を繋がない（繋ぐと素通しだった既存の span が一斉に届き始める）。集計の記録だけを送る
+		configureParadisUsageSpanSender((feature, operation, attributes) => {
+			Sentry.startSpan({
+				name: `para.${feature}.${operation}`,
+				op: `para.${feature}`,
+				forceTransaction: true,
+				attributes: {
+					...attributes,
+					'para.scope': 'owned',
+					'para.feature': feature,
+					'para.operation': operation,
+				},
+			}, () => { });
 		});
 		sentry = Sentry;
 	}).catch(error => {

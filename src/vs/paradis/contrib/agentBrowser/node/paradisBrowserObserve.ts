@@ -28,6 +28,7 @@ import { PARADIS_PAGE_UNRESPONSIVE, paradisIsTransientEvaluateFailure, paradisPa
 import { TERMINATED_ERROR_MESSAGE } from './paradisDevtoolsMcpProxy.js';
 import { paradisObserveCollectFunction, paradisObserveInstallFunction, paradisObserveReadFunction } from './paradisBrowserObservePageScript.js';
 import { isRecord } from '../../../common/paradisGuards.js';
+import { ParadisAgentBrowserUsage } from '../common/paradisAgentBrowserUsage.js';
 
 /** 変化を添える道具（E1）。前の名前の `settle_ms` を読み替える道具も同じ（paradisToolArgumentAliases.ts）。 */
 export const PARADIS_SETTLE_TOOLS: ReadonlySet<string> = new Set([
@@ -218,6 +219,9 @@ function evaluated<T>(result: unknown): T | undefined {
  * 操作の前後を見て、結果に添える文を作る。ペインごとに前回報告した状態を覚え、同じなら省く。
  */
 export class ParadisBrowserObserver {
+	/** @param usage Sentry の集計（paradisAgentBrowserUsage.ts）。テストでは省く。 */
+	constructor(private readonly usage?: ParadisAgentBrowserUsage) { }
+
 	/** ペイン（とタブ）ごとに、前回報告した状態の鍵。 */
 	private readonly _lastState = new Map<string, string>();
 	/** ペイン（とタブ）ごとに、前回見たタブの一覧（tabId → 中身の鍵）。tab_id を渡した呼び出しで、変わったタブを選ぶ。 */
@@ -247,13 +251,18 @@ export class ParadisBrowserObserver {
 	 * 操作の後に呼ぶ。添える文（無ければ undefined）。失敗した操作の後は、呼び出し側が `settle: false` で呼ぶ。
 	 * @param ownTabId 呼び出しが tab_id を渡したときのそのタブ。タブの一覧はそのタブと、前回から変わったタブだけにする
 	 * （並列のサブエージェントに、ほかのタブを毎回並べない。q.html Q461 の 4）。
+	 * @param failed 失敗した道具の結果に添えるか（Sentry の集計にだけ使う）。
 	 */
-	async after(host: IParadisObserveHost, stateKey: string, options: IParadisObserveOptions, before: IBefore, observe: 'changes' | 'none' | 'snapshot', settleMs: number, ownTabId?: string): Promise<string | undefined> {
+	async after(host: IParadisObserveHost, stateKey: string, options: IParadisObserveOptions, before: IBefore, observe: 'changes' | 'none' | 'snapshot', settleMs: number, ownTabId?: string, failed: boolean = false): Promise<string | undefined> {
 		const parts: string[] = [];
 		let pages = paradisParseListPages(await host.listPages().catch(() => undefined));
 		// 記録を始められたときだけページを読む（ダイアログ・未対応の vendored・評価の失敗では読まない）
 		if (options.settle && before.installed && pages?.dialog === undefined) {
 			const settled = await this._settle(host, before.name, settleMs);
+			if (settleMs > 0) {
+				// 実際に待った結末を数える（待ちを 0 にした呼び出しは noteObserved が数える）
+				this.usage?.noteSettle(settled.dialog !== undefined ? 'dialog' : settled.unresponsive ? 'unresponsive' : settled.quiet ? 'quiet' : 'timeout', settled.waited);
+			}
 			if (settled.dialog !== undefined) {
 				pages = { pages: pages?.pages ?? [], dialog: settled.dialog };
 			} else if (settled.unresponsive) {
@@ -282,7 +291,7 @@ export class ParadisBrowserObserver {
 			}
 		}
 		if (options.state) {
-			const state = await this._state(host, stateKey, before, pages, ownTabId);
+			const state = await this._state(host, stateKey, before, pages, ownTabId, failed);
 			if (state) {
 				parts.push(state);
 			}
@@ -357,7 +366,7 @@ export class ParadisBrowserObserver {
 		return { quiet, waited: host.now() - start, navigated, ...(dialog !== undefined ? { dialog } : {}), ...(unresponsive !== undefined ? { unresponsive } : {}) };
 	}
 
-	private async _state(host: IParadisObserveHost, stateKey: string, before: IBefore, pages: IPagesState | undefined, ownTabId: string | undefined): Promise<string | undefined> {
+	private async _state(host: IParadisObserveHost, stateKey: string, before: IBefore, pages: IPagesState | undefined, ownTabId: string | undefined, failed: boolean): Promise<string | undefined> {
 		// 打ち切られた（取り消された・失敗の後の締め切りを過ぎた）観測は、状態を取らず、報告したことにもしない
 		if (!host.isCurrent()) {
 			return undefined;
@@ -425,9 +434,14 @@ export class ParadisBrowserObserver {
 		}
 		this._lastState.set(stateKey, key);
 		if (unchanged || lines.length === 0) {
+			if (unchanged) {
+				this.usage?.noteBrowserStateUnchanged();
+			}
 			return undefined;
 		}
-		return `[Browser state]\n${lines.join('\n')}`;
+		const text = `[Browser state]\n${lines.join('\n')}`;
+		this.usage?.noteBrowserState({ tabs: tabs !== undefined && (shownTabs?.length ?? 0) > 0, newPage: opened.length > 0, download: newDownloads.length > 0, dialog: pages?.dialog !== undefined, chars: text.length }, failed);
+		return text;
 	}
 }
 

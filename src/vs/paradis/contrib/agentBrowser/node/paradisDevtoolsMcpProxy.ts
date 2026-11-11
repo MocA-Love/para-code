@@ -41,6 +41,7 @@ import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryD
 import { IParadisDevtoolsRoot, paradisDevtoolsExplainRootsDenial, paradisDevtoolsRoots } from './paradisDevtoolsPathPolicy.js';
 import { ParadisDevtoolsTemporaryDirectory } from './paradisDevtoolsTemporaryDirectory.js';
 import { ParadisSnapshotBaselines, ParadisSnapshotDiffMode } from './paradisBrowserSnapshotDiff.js';
+import { ParadisSnapshotDiffOutcome } from '../common/paradisAgentBrowserUsage.js';
 import { IParadisDevtoolsRecycleLimits, PARADIS_DEVTOOLS_HEALTH_INTERVAL_MS, PARADIS_DEVTOOLS_RECYCLE_LIMITS, PARADIS_DEVTOOLS_RECYCLE_QUIET_MS, ParadisDevtoolsReplacedReason, paradisAppendStderrTail, paradisDevtoolsReadsRecords, paradisDevtoolsRecordsResetNote, paradisDevtoolsRecycleReason, paradisDevtoolsStaleUidMessage, paradisNewUidTag, PARADIS_UID_TAG_HISTORY, paradisParseV8FatalStderr, paradisReadProcessRssMib, paradisTagChildUids, paradisTagSnapshotFileText, paradisUntagUids } from './paradisDevtoolsChildHealth.js';
 import { ParadisSnapshotCache, paradisAdjustCachedSnapshotResult, paradisAttachSnapshotRootRect, paradisSnapshotCacheUsable, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotMeasuresRoot, paradisTakeSnapshotRootRect, paradisEvaluateObserves, paradisEvaluateHasDeadline, paradisDevtoolsTimeoutTools, paradisDevtoolsToolIsRetrySafe } from './paradisDevtoolsToolAdjustments.js';
 import { IParadisDevtoolsCallOrigin, paradisDevtoolsCallOriginExtra } from './paradisDevtoolsCallOrigin.js';
@@ -140,6 +141,8 @@ export interface IParadisDevtoolsMcpProxyOptions {
 	 * 共有中のタブのフォーカス診断（Sentry のパンくずとまとめのイベント）へ回す。
 	 */
 	readonly onToolFailure?: (token: string, failure: { readonly tool: string; readonly errorKind: string; readonly gateReason?: string }) => void;
+	/** take_snapshot を差分にしたか・全体を返した理由（設定 snapshotDiff が有効なときだけ。Sentry の集計用）。 */
+	readonly onSnapshotDiffOutcome?: (token: string, outcome: ParadisSnapshotDiffOutcome) => void;
 	/** 子プロセスを作り直す目安（テスト用。既定 {@link PARADIS_DEVTOOLS_RECYCLE_LIMITS}）。 */
 	readonly recycleLimits?: IParadisDevtoolsRecycleLimits;
 	/** 最後の呼び出しからこれだけ経つまでは作り直さない（テスト用）。 */
@@ -312,7 +315,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 	/** take_snapshot の続き（offset）用に、上限より長かった直近のスナップショット（ペインごと）。 */
 	private readonly _snapshots = new ParadisSnapshotCache();
 	/** エージェントが前回 take_snapshot で受け取ったページ（差分の元。設定 snapshotDiff が有効なときだけ使う）。 */
-	private readonly _snapshotBaselines = new ParadisSnapshotBaselines();
+	private readonly _snapshotBaselines = new ParadisSnapshotBaselines(Date.now, undefined, (token, outcome) => this.options.onSnapshotDiffOutcome?.(token, outcome));
 	/** kill要求済みでも実process exit/errorを観測するまではslotを占有する。 */
 	private readonly _childSlots = new Set<IChildEntry>();
 	private readonly _generationHighWatermarks = new Map<string, number>();
