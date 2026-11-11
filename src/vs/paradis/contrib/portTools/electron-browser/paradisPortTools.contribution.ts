@@ -120,6 +120,7 @@ registerAction2(class extends Action2 {
 		super({
 			id: 'paradis.dev.previewPortReforwardConfirm',
 			title: localize2('paradis.dev.previewPortReforwardConfirm', "Para Code (Dev): Preview Port Reforward Confirmation"),
+			precondition: IsDevelopmentContext,
 			menu: { id: MenuId.CommandPalette, when: IsDevelopmentContext },
 		});
 	}

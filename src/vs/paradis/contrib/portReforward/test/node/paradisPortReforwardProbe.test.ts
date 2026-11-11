@@ -48,9 +48,11 @@ suite('paradisProbeLocalForward', () => {
 				if (outcome === 'reset') {
 					socket.resetAndDestroy();
 				} else if (outcome !== 'none' && outcome !== undefined) {
-					// ほかのポートの handshake は見ない
-					handshakes.fire({ target: 'localhost:9999', outcome: 'connected' });
-					handshakes.fire({ target: 'localhost:4545', outcome });
+					// ほかのポート・同じポートへのほかの接続の handshake は見ない
+					handshakes.fire({ target: 'localhost:9999', clientPort: socket.remotePort, outcome: 'connected' });
+					handshakes.fire({ target: 'localhost:4545', clientPort: socket.remotePort! + 1, outcome: outcome === 'connected' ? 'failed' : 'connected' });
+					handshakes.fire({ target: 'localhost:4545', outcome: outcome === 'connected' ? 'failed' : 'connected' });
+					handshakes.fire({ target: 'localhost:4545', clientPort: socket.remotePort, outcome });
 				}
 			}, 10);
 		});

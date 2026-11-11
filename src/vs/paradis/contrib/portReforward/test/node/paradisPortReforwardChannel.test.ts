@@ -91,6 +91,8 @@ suite('ParadisPortReforwardChannel', () => {
 			malformed: await attempt(() => channel.call('window:1', PARADIS_PORT_REFORWARD_REFERENCES, { authority: 'ssh-remote+box', remoteHost: 'localhost', remotePorts: [] })),
 			probe: await attempt(() => channel.call('window:1', PARADIS_PORT_REFORWARD_PROBE, { authority: 'ssh-remote+box', localPort: 21004, remotePort: 4545 })),
 			probeFromLocalWindow: await attempt(() => channel.call('window:4', PARADIS_PORT_REFORWARD_PROBE, { authority: 'ssh-remote+box', localPort: 21005, remotePort: 4545 })),
+			// shared process に無い転送は、待たずに「確かめられない」
+			probeUnknownForward: await attempt(() => channel.call('window:1', PARADIS_PORT_REFORWARD_PROBE, { authority: 'ssh-remote+box', localPort: 21006, remotePort: 4000 })),
 			probed,
 		}, {
 			references: [1, 2, null],
@@ -98,6 +100,7 @@ suite('ParadisPortReforwardChannel', () => {
 			malformed: 'refused: Invalid references request',
 			probe: 'reset',
 			probeFromLocalWindow: 'refused: The remote is not the one of the calling window',
+			probeUnknownForward: 'untested',
 			probed: [21004, 4545],
 		});
 	});

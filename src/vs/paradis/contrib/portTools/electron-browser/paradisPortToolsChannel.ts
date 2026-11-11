@@ -495,7 +495,7 @@ export class ParadisPortToolsChannel implements IServerChannel {
 		const probes = await Promise.all(reopened.map(({ remotePort, localPort }) => localPort !== undefined ? this._window.probe(localPort, remotePort) : Promise.resolve(undefined)));
 		reopened.forEach(({ remotePort }, index) => {
 			const probe = probes[index];
-			const reachable = probe === undefined ? null : probe === 'reachable';
+			const reachable = probe === undefined || probe === 'untested' ? null : probe === 'reachable';
 			if (reachable === false) {
 				this._unreachable.set(remotePort, this._now());
 			} else {

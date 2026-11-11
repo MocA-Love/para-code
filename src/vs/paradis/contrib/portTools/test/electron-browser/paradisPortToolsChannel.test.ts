@@ -414,7 +414,7 @@ suite('ParadisPortToolsChannel', () => {
 	test('tests each reopened forward from this computer, and does not ask again for 5 minutes when it did not connect', async () => {
 		const window = sshWindow();
 		window.probeResults.set(21002, 'reset');
-		window.probeResults.set(33355, undefined);
+		window.probeResults.set(33355, 'untested');
 		let now = 1_000_000;
 		const { channel, dialogs } = setup(window, 'approve', () => now);
 		const ports = (remotePorts: number[]) => ({ op: 'reforward', items: remotePorts.map(remotePort => ({ remotePort, alignLocalPort: false })), batch: true } as const);

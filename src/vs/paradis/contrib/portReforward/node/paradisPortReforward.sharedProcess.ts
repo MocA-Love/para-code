@@ -95,6 +95,10 @@ export class ParadisPortReforwardChannel<TContext> implements IServerChannel<TCo
 		if (!await this._isCallersAuthority(ctx, arg.authority)) {
 			throw new Error('The remote is not the one of the calling window');
 		}
+		// 手元の受け口が fork の転送の台帳に無ければ、handshake の結果は届かない。待って「繋がらない」と言わない
+		if (!(this._tunnels instanceof ParadisSharedTunnelsService) || this._tunnels.referenceCount(arg.authority, 'localhost', arg.remotePort) === undefined) {
+			return 'untested';
+		}
 		return this._probe(arg.localPort, arg.remotePort);
 	}
 

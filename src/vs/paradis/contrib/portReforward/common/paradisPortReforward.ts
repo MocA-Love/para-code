@@ -58,8 +58,9 @@ export interface IParadisPortReforwardProbeRequest {
  * - `reset`: SSH 先へ転送を作れなかった（手元の受け口が接続を切った）
  * - `timeout`: SSH 先へ転送を作るのが時間切れになった、または決めた時間のうちに答えが無かった（詰まっている）
  * - `refused`: 手元の受け口に繋がらなかった
+ * - `untested`: 確かめられなかった（shared process にその転送が見当たらない。handshake の結果が届かない）
  */
-export type ParadisPortReforwardProbeResult = 'reachable' | 'reset' | 'timeout' | 'refused';
+export type ParadisPortReforwardProbeResult = 'reachable' | 'reset' | 'timeout' | 'refused' | 'untested';
 
 function isPort(value: unknown): value is number {
 	return typeof value === 'number' && Number.isInteger(value) && value > 0 && value <= 65535;

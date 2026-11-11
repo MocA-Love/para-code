@@ -11,7 +11,7 @@
 // 手元の受け口（platform/tunnel/node/tunnelService.ts の NodeRemoteTunnel、この shared process の中にある）は TCP の
 // 接続を先に受け付け、その後で SSH 先へ転送を作る（handshake）。作れなければ手元の接続をリセットし、詰まっていると
 // 20 秒の時間切れを 1 回やり直す。手元の側からは「つながった」だけでは何も分からないので、同じプロセスで起きた
-// handshake の結果（paraTunnelConnect.ts の onParaTunnelHandshake）を見る。何も送らないので、SSH 先のサーバーに要求は届かない。
+// handshake の結果（paraTunnelConnect.ts の onParaTunnelHandshake）のうち、この接続のもの（手元の番号で見分ける）を見る。何も送らないので、SSH 先のサーバーに要求は届かない。
 
 import * as net from 'net';
 import { Event } from '../../../../base/common/event.js';
@@ -32,6 +32,8 @@ export function paradisProbeLocalForward(localPort: number, remotePort: number, 
 	return new Promise(resolve => {
 		let connected = false;
 		let done = false;
+		/** この接続の手元の番号。受け口から見た相手の番号なので、自分の handshake だけを見分けられる。 */
+		let clientPort: number | undefined;
 		const target = `localhost:${remotePort}`;
 		const finish = (result: ParadisPortReforwardProbeResult) => {
 			if (done) {
@@ -44,13 +46,17 @@ export function paradisProbeLocalForward(localPort: number, remotePort: number, 
 			resolve(result);
 		};
 		const listener = handshakes(handshake => {
-			if (connected && handshake.target === target) {
+			// 同じポートへのほかの接続（ブラウザ・別の SSH 先の窓）の結果は使わない
+			if (connected && handshake.target === target && handshake.clientPort !== undefined && handshake.clientPort === clientPort) {
 				finish(handshake.outcome === 'connected' ? 'reachable' : handshake.outcome === 'timedOut' ? 'timeout' : 'reset');
 			}
 		});
 		const timer = setTimeout(() => finish('timeout'), timeoutMs);
 		const socket = net.connect({ host: '127.0.0.1', port: localPort });
-		socket.on('connect', () => connected = true);
+		socket.on('connect', () => {
+			connected = true;
+			clientPort = socket.localPort;
+		});
 		// 向こうから何か届いたなら、SSH 先まで繋がっている
 		socket.on('data', () => finish('reachable'));
 		socket.on('error', () => finish(connected ? 'reset' : 'refused'));

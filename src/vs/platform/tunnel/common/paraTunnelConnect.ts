@@ -135,25 +135,27 @@ export async function paraConnectTunnelWithRetry<T extends IParaTunnelProtocol>(
 	connect: () => Promise<T>,
 	target: string,
 	logService: ILogService,
-	timeoutMs: number = PARA_TUNNEL_CONNECT_TIMEOUT
+	timeoutMs: number = PARA_TUNNEL_CONNECT_TIMEOUT,
+	clientPort?: number
 ): Promise<T> {
+	const fire = (outcome: IParaTunnelHandshake['outcome']) => onDidTunnelHandshake.fire({ target, clientPort, outcome });
 	try {
 		const protocol = await paraConnectTunnelWithTimeout(connect, target, logService, timeoutMs);
-		onDidTunnelHandshake.fire({ target, outcome: 'connected' });
+		fire('connected');
 		return protocol;
 	} catch (err) {
 		if (!(err instanceof ParaTunnelConnectTimeoutError)) {
-			onDidTunnelHandshake.fire({ target, outcome: 'failed' });
+			fire('failed');
 			throw err;
 		}
-		onDidTunnelHandshake.fire({ target, outcome: 'timedOut' });
+		fire('timedOut');
 		logService.warn(`[ParaTunnel] Retrying the tunnel to ${target} once after the first attempt timed out.`);
 		try {
 			const protocol = await paraConnectTunnelWithTimeout(connect, target, logService, timeoutMs);
-			onDidTunnelHandshake.fire({ target, outcome: 'connected' });
+			fire('connected');
 			return protocol;
 		} catch (retryErr) {
-			onDidTunnelHandshake.fire({ target, outcome: 'failed' });
+			fire('failed');
 			throw retryErr;
 		}
 	}
@@ -167,6 +169,8 @@ export async function paraConnectTunnelWithRetry<T extends IParaTunnelProtocol>(
 export interface IParaTunnelHandshake {
 	/** The `target` passed to {@link paraConnectTunnelWithRetry} (`localhost:<remote port>` for local forwards). */
 	readonly target: string;
+	/** The port of the local client whose connection this handshake serves (the accepted socket's remote port), if known. */
+	readonly clientPort?: number;
 	readonly outcome: 'connected' | 'failed' | 'timedOut';
 }
 
