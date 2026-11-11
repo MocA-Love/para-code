@@ -49,9 +49,12 @@ const MAJORITY = 2;
 // docs の設計（2026-07-14 の terminal recovery performance）の基準: relay 無効時に対して 10% 以内かつ 5ms 以内。
 const RELATIVE_LIMIT = 1.10;
 const ABSOLUTE_P95_LIMIT_MS = 5;
-// 判定が裾を見ていることを確かめる偽の経路: 4 区切りに 1 回だけ、区切りまるごと 20ms 遅くする。
+// 判定が裾を見ていることを確かめる偽の経路 2 つ: 4 区切りに 1 回だけ区切りまるごと 20ms 遅くするものと、
+// 呼び出し 1500 回に 1 回だけ 5ms 止まるもの（区切りの中の間欠の固まり）。
 const SPIKE_EVERY_SLICES = 4;
 const SPIKE_MS = 20;
+const STALL_EVERY_CALLS = 1_500;
+const STALL_MS = 5;
 let rendererWorkSink = 0;
 
 suite('ParadisTerminalOutputPerformance', () => {
@@ -79,6 +82,12 @@ suite('ParadisTerminalOutputPerformance', () => {
 		this.timeout(60_000);
 		const verdict = await judge(() => createSpikingRoute());
 		assert.ok(!verdict.passed, `a route that adds ${SPIKE_MS}ms to every ${SPIKE_EVERY_SLICES}th slice passed: ${formatRounds(verdict.rounds)}`);
+	});
+
+	test('rejects an output route that stalls now and then inside a slice', async function () {
+		this.timeout(60_000);
+		const verdict = await judge(() => createStallingRoute());
+		assert.ok(!verdict.passed, `a route that stalls ${STALL_MS}ms once every ${STALL_EVERY_CALLS} calls passed: ${formatRounds(verdict.rounds)}`);
 	});
 });
 
@@ -167,6 +176,23 @@ function createSpikingRoute(): BenchmarkOutputRoute {
 	};
 }
 
+/** 呼び出しの回数で数え、`STALL_EVERY_CALLS` 回に 1 回だけ `STALL_MS` 止まる。 */
+function createStallingRoute(): BenchmarkOutputRoute {
+	let calls = 0;
+	return {
+		consume: () => {
+			calls++;
+			if (calls % STALL_EVERY_CALLS === 0) {
+				const until = performance.now() + STALL_MS;
+				while (performance.now() < until) {
+					// 間欠に止まる
+				}
+			}
+		},
+		dispose: () => { },
+	};
+}
+
 function createOutputRoute(condition: BenchmarkCondition): BenchmarkOutputRoute | undefined {
 	const hintConsumer = condition.relayEnabled && condition.agent
 		? paradisCreateAgentTerminalHintConsumer(new ParadisAgentTerminalHintParser(Date.now), () => { })
@@ -213,10 +239,7 @@ async function measurePairedEventLoopSlice(outputRoute: ParadisTerminalOutputCon
 			baseline.push(measureSynchronousBlocking(undefined));
 		}
 	}
-	// 区切りの中の 7 回のうち一番速い回を使う。OS が CPU を他へ回した分（負荷のある CI では 1 回の
-	// 計測が数 ms 伸びる）は片方の回にだけ足されるので、最小値で落とす。経路そのものの上乗せは
-	// どの回にもかかるので最小値にも残り、区切りまるごとの固まりも残る。
-	return [Math.min(...baseline), Math.min(...candidate)];
+	return [median(baseline), median(candidate)];
 }
 
 function measureSynchronousBlocking(outputRoute: ParadisTerminalOutputConsumer | undefined): number {
