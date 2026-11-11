@@ -502,6 +502,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 				this._view = 'detail';
 				this._recording = undefined;
 				this._pending = undefined;
+				this._showMessage('', false);
 				this._render();
 				this._focusSelectedRow();
 			}
@@ -785,6 +786,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 			this._view = 'shortcuts';
 			this._recording = undefined;
 			this._pending = undefined;
+			this._showMessage('', false);
 			this._render();
 		}
 	}

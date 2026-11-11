@@ -622,16 +622,22 @@
 	padding-left: 28px;
 }
 
+/*
+ * The rows share the list's columns (subgrid), so keys and buttons line up across the commands of one extension.
+ * The key and button columns have a floor (a long key, and "add a key" with the two icon buttons) so the lists of
+ * different extensions line up too.
+ */
 .paradis-browser-extensions-area .pbe-sc-list {
-	display: flex;
-	flex-direction: column;
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(120px, auto) minmax(176px, auto);
 	border: 1px solid var(--vscode-paradis-lineSubtle);
 	border-radius: var(--paradis-radius-inner);
 }
 
 .paradis-browser-extensions-area .pbe-sc-row {
 	display: grid;
-	grid-template-columns: minmax(0, 1fr) auto auto;
+	grid-column: 1 / -1;
+	grid-template-columns: subgrid;
 	align-items: center;
 	gap: var(--vscode-spacing-size80) var(--vscode-spacing-size120);
 	min-height: 40px;
@@ -671,7 +677,6 @@
 .paradis-browser-extensions-area .pbe-sc-key {
 	display: flex;
 	justify-content: flex-end;
-	min-width: 120px;
 }
 
 .paradis-browser-extensions-area .pbe-sc-keys {
@@ -707,6 +712,7 @@
 
 .paradis-browser-extensions-area .pbe-sc-actions {
 	display: flex;
+	justify-content: flex-end;
 	align-items: center;
 	gap: 4px;
 }
