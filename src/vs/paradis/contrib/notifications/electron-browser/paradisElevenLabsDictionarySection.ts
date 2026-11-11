@@ -19,6 +19,7 @@ import { localize } from '../../../../nls.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import {
 	IParadisElevenLabsDictionaryDetail,
@@ -82,6 +83,7 @@ export class ParadisElevenLabsDictionarySection extends Disposable {
 		@IDialogService private readonly dialogService: IDialogService,
 		@ILayoutService private readonly layoutService: ILayoutService,
 		@ILogService private readonly logService: ILogService,
+		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super();
 		this._register(this.settingsService.onDidChange(scope => {
@@ -189,10 +191,11 @@ export class ParadisElevenLabsDictionarySection extends Disposable {
 		const editBtn = paradisNotifButton(actions, 'secondary', { label: STR_EDIT });
 		this._renderDisposables.add(dom.addDisposableListener(editBtn, 'click', () => this._openEditor(apiKey, dict)));
 
-		const exportBtn = paradisNotifButton(actions, 'icon', { icon: Codicon.arrowDown, title: STR_EXPORT });
+		const hover = { service: this.hoverService, store: this._renderDisposables };
+		const exportBtn = paradisNotifButton(actions, 'icon', { icon: Codicon.arrowDown, title: STR_EXPORT, hover });
 		this._renderDisposables.add(dom.addDisposableListener(exportBtn, 'click', () => this._export(apiKey, dict)));
 
-		const deleteBtn = paradisNotifButton(actions, 'icon', { icon: Codicon.trash, title: STR_DELETE, className: 'pns-delete' });
+		const deleteBtn = paradisNotifButton(actions, 'icon', { icon: Codicon.trash, title: STR_DELETE, className: 'pns-delete', hover });
 		this._renderDisposables.add(dom.addDisposableListener(deleteBtn, 'click', () => this._delete(apiKey, dict, isActive)));
 	}
 

@@ -16,6 +16,9 @@
 // - 複数行の欄はキットの欄の枠（`.paradis-field`）に textarea を入れる（ワークスペースの詳細のメモと同じ形）
 
 import * as dom from '../../../../base/browser/dom.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
+import { IManagedHover } from '../../../../base/browser/ui/hover/hover.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ParadisButtonKind, paradisButtonClasses } from '../../../browser/paradisButton.js';
@@ -28,6 +31,8 @@ export interface IParadisNotifButtonOptions {
 	readonly icon?: ThemeIcon;
 	/** 文字の無いボタンの読み上げの名前とホバー。 */
 	readonly title?: string;
+	/** 渡すと、ホバーを IHoverService で出す（渡さないときは title 属性）。ホバーは store と一緒に消える。 */
+	readonly hover?: { readonly service: IHoverService; readonly store: DisposableStore };
 	readonly className?: string;
 	/** 24px（タイルや表の行の中に置くとき）。既定は 28px。 */
 	readonly small?: boolean;
@@ -35,6 +40,11 @@ export interface IParadisNotifButtonOptions {
 
 /** キットの見た目のボタンを作る（要素は素の `<button>` のまま）。 */
 export function paradisNotifButton(parent: HTMLElement, kind: ParadisButtonKind, options: IParadisNotifButtonOptions = {}): HTMLButtonElement {
+	return paradisNotifButtonWithHover(parent, kind, options).button;
+}
+
+/** {@link paradisNotifButton} と同じで、IHoverService のホバー（`options.hover` を渡したとき）も返す（文言を後で替える場所向け）。 */
+export function paradisNotifButtonWithHover(parent: HTMLElement, kind: ParadisButtonKind, options: IParadisNotifButtonOptions = {}): { readonly button: HTMLButtonElement; readonly hover: IManagedHover | undefined } {
 	const button = dom.append(parent, $<HTMLButtonElement>('button'));
 	button.type = 'button';
 	button.classList.add(...paradisButtonClasses(kind, options.small));
@@ -47,11 +57,16 @@ export function paradisNotifButton(parent: HTMLElement, kind: ParadisButtonKind,
 	if (options.label) {
 		dom.append(button, $('span')).textContent = options.label;
 	}
+	let hover: IManagedHover | undefined;
 	if (options.title) {
-		button.title = options.title;
 		button.setAttribute('aria-label', options.title);
+		if (options.hover) {
+			hover = options.hover.store.add(options.hover.service.setupManagedHover(getDefaultHoverDelegate('element'), button, options.title));
+		} else {
+			button.title = options.title;
+		}
 	}
-	return button;
+	return { button, hover };
 }
 
 /** アイコンのボタンのアイコンを替える（再生 ⇄ 停止、表示 ⇄ 非表示など）。 */

@@ -52,7 +52,7 @@ import { ParadisCheck } from '../../../browser/paradisCheck.js';
 import { ParadisInputField } from '../../../browser/paradisInputField.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
-import { paradisNotifButton } from './paradisNotificationKitParts.js';
+import { paradisNotifButton, paradisNotifButtonWithHover } from './paradisNotificationKitParts.js';
 import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubHost } from '../../paradisHub/electron-browser/paradisHub.js';
 import { IParadisHubNavItem, paradisHubNavCaption, paradisHubNavItem, ParadisHubScrollSpy } from '../../paradisHub/electron-browser/paradisHubNav.js';
 
@@ -812,7 +812,8 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 		dom.append(listTitles, $('.sr-desc')).textContent = STR_RINGTONE_DESC;
 		const actions = dom.append(listHeader, $('div.pns-events-box'));
 
-		const importBtn = paradisNotifButton(actions, 'secondary', { icon: Codicon.add });
+		// 自分の音源の有無が分かるまでは「＋」だけ。読み上げの名前とホバーは分かった後の文言にそろえる
+		const { button: importBtn, hover: importHover } = paradisNotifButtonWithHover(actions, 'secondary', { icon: Codicon.add, title: STR_ADD_CUSTOM, hover: { service: this.hoverService, store: this._renderDisposables } });
 		this._renderDisposables.add(dom.addDisposableListener(importBtn, 'click', () => this._importCustomAudio()));
 
 		const youtubeBtn = paradisNotifButton(actions, 'secondary', { label: STR_FROM_YOUTUBE });
@@ -843,6 +844,8 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 				return;
 			}
 			importBtn.textContent = custom ? STR_REPLACE_CUSTOM : STR_ADD_CUSTOM;
+			importBtn.setAttribute('aria-label', importBtn.textContent);
+			importHover?.update(importBtn.textContent);
 			const ringtones: (IParadisRingtoneData | IParadisCustomRingtoneInfo)[] = custom ? [...PARADIS_RINGTONES, custom] : [...PARADIS_RINGTONES];
 			for (const ringtone of ringtones) {
 				this._renderRingtoneCard(grid, ringtone, ringtone.id === selectedId, volume);

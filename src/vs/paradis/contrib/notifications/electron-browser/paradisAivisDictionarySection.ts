@@ -21,6 +21,7 @@ import { IContextViewService } from '../../../../platform/contextview/browser/co
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import {
 	IParadisAivisDictionaryDetail,
@@ -63,6 +64,9 @@ const STR_EDIT = localize('paradis.notif.dict.edit', "編集");
 const STR_DELETE_CONFIRM_TITLE = (name: string) => localize('paradis.notif.dict.deleteConfirmTitle', "辞書「{0}」を削除します。よろしいですか？", name);
 // allow-any-unicode-next-line
 const STR_DELETE_CONFIRM_PRIMARY = localize('paradis.notif.dict.deleteConfirmPrimary', "削除");
+const STR_IMPORT = localize('paradis.notif.dict.import', "読み込み (JSON)");
+const STR_EXPORT = localize('paradis.notif.dict.export', "書き出し (JSON)");
+const STR_DELETE = localize('paradis.notif.dict.delete', "削除");
 
 export class ParadisAivisDictionarySection extends Disposable {
 
@@ -82,6 +86,7 @@ export class ParadisAivisDictionarySection extends Disposable {
 		@ILogService private readonly logService: ILogService,
 		@IContextViewService private readonly contextViewService: IContextViewService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super();
 
@@ -206,16 +211,17 @@ export class ParadisAivisDictionarySection extends Disposable {
 		const editBtn = paradisNotifButton(actions, 'secondary', { label: STR_EDIT });
 		this._renderDisposables.add(dom.addDisposableListener(editBtn, 'click', () => this._openEditDialog(dict.uuid, apiKey)));
 
-		const importBtn = paradisNotifButton(actions, 'icon', { icon: Codicon.arrowUp });
+		const hover = { service: this.hoverService, store: this._renderDisposables };
+		const importBtn = paradisNotifButton(actions, 'icon', { icon: Codicon.arrowUp, title: STR_IMPORT, hover });
 		this._renderDisposables.add(dom.addDisposableListener(importBtn, 'click', () => {
 			this._importTargetUuid = dict.uuid;
 			this._fileInput.click();
 		}));
 
-		const exportBtn = paradisNotifButton(actions, 'icon', { icon: Codicon.arrowDown });
+		const exportBtn = paradisNotifButton(actions, 'icon', { icon: Codicon.arrowDown, title: STR_EXPORT, hover });
 		this._renderDisposables.add(dom.addDisposableListener(exportBtn, 'click', () => this._exportDictionary(dict.uuid, dict.name, apiKey)));
 
-		const deleteBtn = paradisNotifButton(actions, 'icon', { icon: Codicon.trash, className: 'pns-delete' });
+		const deleteBtn = paradisNotifButton(actions, 'icon', { icon: Codicon.trash, title: STR_DELETE, className: 'pns-delete', hover });
 		this._renderDisposables.add(dom.addDisposableListener(deleteBtn, 'click', () => this._deleteDictionary(dict.uuid, dict.name, apiKey, isActive)));
 	}
 
