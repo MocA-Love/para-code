@@ -99,6 +99,8 @@ let spanRunner: ParadisSpanRunner | undefined;
  */
 export function configureParadisSpanRunner(value: ParadisSpanRunner | undefined): void {
 	spanRunner = value;
+	// renderer と shared process も、SDK を読み込む前に溜めた集計の記録をここで送る
+	flushPendingUsageSpans();
 }
 
 /**
@@ -120,13 +122,19 @@ export function runInParadisSpan<T>(
 let usageSpanSender: ((feature: string, operation: string, attributes: ParadisSpanAttributes) => void) | undefined;
 
 /**
- * Usage records made before main's SDK finished loading (its import is dynamic). Main decides how
- * terminals are hosted before Sentry is up, and that record would otherwise be lost. Only
- * {@link configureParadisUsageSpanSender} (main) sends them; in a process whose SDK never loads (opted
- * out, development build, the renderer and shared process, unit tests) they stay here, at most 20.
+ * Usage records made before the process's SDK finished loading (its import is dynamic). Main decides
+ * how terminals are hosted before Sentry is up, and that record would otherwise be lost. They are sent
+ * when {@link configureParadisUsageSpanSender} (main) or {@link configureParadisSpanRunner} (renderer,
+ * shared process) connects; in a process whose SDK never loads (opted out, development build, unit
+ * tests) they stay here, at most 20.
  */
 const pendingUsageSpans: { readonly feature: string; readonly operation: string; readonly attributes: ParadisSpanAttributes }[] = [];
 const MAX_PENDING_USAGE_SPANS = 20;
+
+/** Empties the records waiting for the SDK (unit tests, so one suite's records do not reach another). */
+export function resetParadisPendingUsageSpansForTests(): void {
+	pendingUsageSpans.length = 0;
+}
 
 function flushPendingUsageSpans(): void {
 	for (const pending of pendingUsageSpans.splice(0)) {

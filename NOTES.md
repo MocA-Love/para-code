@@ -2722,12 +2722,12 @@ renderer の待ちは、Long Animation Frames で「何から呼ばれた処理�
 
 試験的な設定 12 件（`paradis.agentBrowser.*` 6 件・`agentHibernation.*` 2 件・`browser.extensions.*` 2 件・`terminal.daemon.*` 2 件）の扱いを Sentry を見て決めるための計装です。どれもエラーではなく時間の無い transaction（`recordParadisUsageSpan`、`sentry/common/paradisSentryDiagnostics.ts`）で送るので、エラーの枠と「10 分 3 件」の上限を使いません。値はすべて `safe_` の span attribute で、custom measurement（10 個まで）は使いません。設定の値は `safe_set_<名前>` に `on` / `off`（分は数）で載せ、オンとオフを同じ transaction の中で比べられるようにしています。呼び出しの多い 2 つ（内蔵ブラウザの道具・拡張機能）は `sentry/common/paradisUsageTally.ts` で 30 分ごとの 1 件にまとめ、窓の途中で設定が変わったらそれまでの分を先に送ります（1 件の中でオンとオフが混ざらない）。回数は別々の数値の属性なので、Explore の spans で `sum(tags[safe_x,number])` を設定ごとに足せます。
 
-main は span runner を持たない（繋ぐと素通しだった既存の span が一斉に届く）ので、`configureParadisUsageSpanSender` で集計の送り口だけを繋いでいます。main が Sentry の読み込みより前に送った記録（飼い方の 1 件）は 20 件まで溜め、読み込みの後に送ります。renderer と shared process で SDK の前に送った記録は送られません（起動の直後の数秒だけ）。
+main は span runner を持たない（繋ぐと素通しだった既存の span が一斉に届く）ので、`configureParadisUsageSpanSender` で集計の送り口だけを繋いでいます。Sentry の読み込みより前に送った記録（main の飼い方の 1 件など）は 20 件まで溜め、main は送り口、renderer と shared process は span runner が繋がったときに送ります。
 
 | transaction | 送る場所 | 何を見るか |
 |---|---|---|
 | `para.agentBrowser.usage` | shared process、30 分ごと | 6 件の設定（`safe_set_settle`・`state`・`snapshot_diff`・`site_notes`・`site_recipes`・`steps_flow`）と、道具の呼び出しの回数。`safe_calls`・`safe_call_failures`・`safe_snap_calls`・`safe_steps_calls` は設定がオフでも数える（比べの母数） |
-| `para.agentHibernation.hibernate` / `.resume` | renderer、1 回ごと | `safe_outcome`（休止は `ok`・`no_ledger`・`ipc_failed`・shared process の断りの理由、再開は `sent` か送れなかった理由）、`safe_idle_ms`（最後に終わった・見た・触った時刻から止めるまで）、`safe_hibernated_ms`、`safe_inputs_while_hibernated`、`safe_trigger`（`visible`・`mobile`）、`safe_set_enabled`・`safe_set_idle_minutes` |
+| `para.agentHibernation.hibernate` / `.resume` | renderer、1 回ごと | `safe_outcome`（休止は `ok`・`no_ledger`・`ipc_failed`・shared process の断りの理由、再開は `sent` か送れなかった理由）、`safe_idle_ms`（最後に終わった・見た・触った時刻から止めるまで）、`safe_hibernated_ms`、`safe_inputs_while_hibernated`、`safe_trigger`（`visible`・`mobile`）、`safe_set_enabled`・`safe_set_idle_minutes`。休止と再開の 1 回ごとに 1 件なので、`count()` は休止の多い人ほど大きくなり、人ごとの比べには使えない（割合は `safe_outcome` の内訳で見る） |
 | `para.browserExtensions.usage` | main、30 分ごと | 入れている数の帯（`safe_ext_count_le_0/le_1/le_3/le_10/gt_10`）、読み込みの結末（`safe_load_ok`・`prepare_failed`・`id_mismatch`・`error`）、`safe_worker_start_failed`（`_script` は worker の評価のエラーが理由）、ポップアップ（`safe_popup_opened`・`no_window_other`・`no_window_missing`・`load_failed`。#912 の「no window」は後ろの 2 つ）、共有中のタブで出した回数（`safe_popup_on_shared`・`safe_side_panel_on_shared`）と断った回数（`safe_side_panel_refused_shared`） |
 | `para.ptyDaemon.mode` | main、起動ごとに 1 件 | 実際に選んだ飼い方 `safe_pty_mode`（`handover`・`daemon`・`in_app`）、倒した理由 `safe_pty_fallback`（`none`・`windows`・`path_too_long`）、`safe_set_daemon_enabled`・`safe_set_reattach` |
 | 既存の `para.ptyHandover.adopt` / `.reattach` | renderer | `safe_daemon` を足した（pty ホストが引き継ぎの常駐に繋がっているか） |

@@ -8,12 +8,17 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { configureParadisSpanRunner, configureParadisUsageSpanSender, ParadisSpanAttributes, recordParadisUsageSpan } from '../../common/paradisSentryDiagnostics.js';
+import { configureParadisSpanRunner, configureParadisUsageSpanSender, resetParadisPendingUsageSpansForTests, ParadisSpanAttributes, recordParadisUsageSpan } from '../../common/paradisSentryDiagnostics.js';
 import { isParadisUsageNameSendable, ParadisUsageSettingValue, ParadisUsageTally, paradisUsageBand } from '../../common/paradisUsageTally.js';
 import { ParadisFakeUsageClock } from './paradisFakeUsageClock.js';
 
 suite('Para Code usage tally (Sentry)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	setup(() => {
+		// ほかの suite が先に溜めた記録を捨てる（送り口を繋ぐテストに混ざらないように）
+		resetParadisPendingUsageSpansForTests();
+	});
 
 	function create(settings: () => Record<string, ParadisUsageSettingValue>) {
 		const sent: { readonly name: string; readonly attributes: ParadisSpanAttributes }[] = [];
@@ -68,10 +73,24 @@ suite('Para Code usage tally (Sentry)', () => {
 		const received: string[] = [];
 		// ほかの suite が繋いだ span runner を外し、SDK の無い main と同じ状態にする
 		configureParadisSpanRunner(undefined);
+		resetParadisPendingUsageSpansForTests();
 		recordParadisUsageSpan('demo', 'early', { safe_value: 1 });
 		configureParadisUsageSpanSender((feature, operation) => received.push(`${feature}.${operation}`));
 		recordParadisUsageSpan('demo', 'late', { safe_value: 2 });
 		configureParadisUsageSpanSender(undefined);
 		assert.deepStrictEqual(received.filter(name => name.startsWith('demo.')), ['demo.early', 'demo.late']);
+	});
+
+	test('renderer・shared process でも、span runner が繋がる前の記録は繋がったときに送る', () => {
+		const received: string[] = [];
+		configureParadisSpanRunner(undefined);
+		resetParadisPendingUsageSpansForTests();
+		recordParadisUsageSpan('demo', 'before-runner', { safe_value: 1 });
+		configureParadisSpanRunner((feature, operation, _attributes, callback) => {
+			received.push(`${feature}.${operation}`);
+			return callback();
+		});
+		configureParadisSpanRunner(undefined);
+		assert.deepStrictEqual(received, ['demo.before-runner']);
 	});
 });
