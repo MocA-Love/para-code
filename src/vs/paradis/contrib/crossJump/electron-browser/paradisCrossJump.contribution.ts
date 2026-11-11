@@ -31,6 +31,7 @@ import { status } from '../../../../base/browser/ui/aria/aria.js';
 import * as dom from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
+import { stripIcons } from '../../../../base/common/iconLabels.js';
 import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
 import { decodeKeybinding } from '../../../../base/common/keybindings.js';
 import { Disposable, DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
@@ -44,6 +45,8 @@ import { IModelService } from '../../../../editor/common/services/model.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
 import { ContextKeyExpr, IContextKey, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
 import { InputFocusedContext } from '../../../../platform/contextkey/common/contextkeys.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
@@ -57,10 +60,17 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { EditorResourceAccessor, EditorsOrder, IEditorIdentifier, SideBySideEditor } from '../../../../workbench/common/editor.js';
 import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/common/browserEditorInput.js';
+import { TerminalEditorInput } from '../../../../workbench/contrib/terminal/browser/terminalEditorInput.js';
+import { PARADIS_DOCX_DIFF_INPUT_TYPE_ID, PARADIS_DOCX_INPUT_TYPE_ID, PARADIS_OFFICE_BROWSER_INPUT_TYPE_ID, PARADIS_PDF_INPUT_TYPE_ID, PARADIS_SPREADSHEET_DIFF_INPUT_TYPE_ID, PARADIS_SPREADSHEET_INPUT_TYPE_ID } from '../../fileViewers/browser/paradisFileViewers.js';
+import { PARADIS_IMAGE_INPUT_TYPE_ID } from '../../fileViewers/browser/image/paradisImagePreview.js';
+import { PARADIS_ANDROID_INPUT_TYPE_ID } from '../../simulator/electron-browser/paradisAndroidEditorInput.js';
+import { PARADIS_SIMULATOR_INPUT_TYPE_ID } from '../../simulator/electron-browser/paradisSimulatorEditorInput.js';
 import { TerminalCommandId } from '../../../../workbench/contrib/terminal/common/terminal.js';
 import { IEditorService, SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
-import { IParadisAgentLiveEntry, IParadisAgentLiveWindowService, ParadisAgentLiveStatus } from '../../agentLiveWindow/common/paradisAgentLiveWindow.js';
+import { IParadisAgentInsightsService } from '../../agentInsights/common/paradisAgentInsights.js';
+import { IParadisAgentLiveEntry, IParadisAgentLiveWindowService, ParadisAgentLiveStatus, paradisAgentLiveSummary } from '../../agentLiveWindow/common/paradisAgentLiveWindow.js';
 import { IParadisAgentModelCatalogService } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import { paradisRevealNotifiedPane } from '../../notifications/electron-browser/paradisNotificationReveal.js';
 import { paradisEnsureQuickInputHint, paradisFindQuickInputWidget, paradisIsCenteredQuickInput } from '../../quickInputPosition/browser/paradisQuickInputLook.js';
@@ -68,7 +78,11 @@ import { paradisNormalizeLaunchChoice, paradisParseStoredLaunchChoices, paradisR
 import { IParadisAgentStatusStore, IParadisSpaceEntry, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisListSpaces } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { PARADIS_AGENT_LAUNCH_OPTIONS_STORAGE_KEY } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
-import { ParadisPaletteKindsBar, paradisPaletteKindLabel } from '../browser/paradisPaletteKinds.js';
+import { PARADIS_PALETTE_PREVIEW_SETTING } from '../browser/paradisPaletteConfiguration.js';
+import { IParadisPaletteKindsState, ParadisPaletteKindsBar, paradisPaletteKindLabel } from '../browser/paradisPaletteKinds.js';
+import { paradisCanPreviewEditor, ParadisPalettePreviewModel, paradisPalettePreviewState } from '../browser/paradisPalettePreview.js';
+import { paradisPalettePreviewMedia } from '../browser/paradisPalettePreviewMedia.js';
+import { IParadisPalettePreviewItem, PARADIS_COMMANDS_PICKER_CONTEXT_KEY, PARADIS_CROSS_JUMP_CONTEXT_KEY, PARADIS_PALETTE_TOGGLE_PREVIEW_COMMAND_ID } from './paradisPalettePreview.contribution.js';
 import {
 	IParadisPaletteRecent,
 	paradisCyclePaletteKind,
@@ -99,9 +113,9 @@ const SECONDARY_ACTION_COMMAND_ID = 'paradis.palette.secondaryAction';
 const CREATE_WORKTREE_COMMAND_ID = 'paradis.workspaceSwitch.createWorktree';
 
 /** 横断ジャンプのクイックピックが開いている間 true（IQuickInput.contextKey で本家が立てる）。 */
-const CROSS_JUMP_CONTEXT_KEY = 'paradisInCrossJump';
+const CROSS_JUMP_CONTEXT_KEY = PARADIS_CROSS_JUMP_CONTEXT_KEY;
 /** コマンドパレットが開いている間 true（本家の quickAccess.contribution.ts が付ける contextKey）。 */
-const COMMANDS_PICKER_CONTEXT_KEY = 'inCommandsPicker';
+const COMMANDS_PICKER_CONTEXT_KEY = PARADIS_COMMANDS_PICKER_CONTEXT_KEY;
 /**
  * 種類のタブを器に出している間 true（中央に出した横断ジャンプとコマンドパレットだけ）。Tab・Shift+Tab はこれと
  * 入力欄にフォーカスがあるときだけ取り、行のボタンなどにフォーカスがあるときは本家の Tab のままにする。
@@ -109,6 +123,23 @@ const COMMANDS_PICKER_CONTEXT_KEY = 'inCommandsPicker';
 const ParadisPaletteKindsVisibleContext = new RawContextKey<boolean>('paradisPaletteKindsVisible', false, localize('paradis.palette.kindsVisible', "中央のパレットに種類のタブを出しているかどうか"));
 /** 横断ジャンプの入力が空の間 true。Ctrl+Backspace を入力中の単語の削除とぶつけないために使う。 */
 const ParadisCrossJumpInputEmptyContext = new RawContextKey<boolean>('paradisCrossJumpInputEmpty', false, localize('paradis.crossJump.inputEmpty', "横断ジャンプの入力欄が空かどうか"));
+
+/**
+ * 中身がテキストでないビューアのタブ（Office＝Excel・Word とその比較、ターミナル、内蔵ブラウザ、シミュレータ）。
+ * プレビューの面では先頭を読まずに「プレビューできません」にする。ほかのタブは読めれば読み、バイナリは NUL の判定で弾く。
+ * 画像と PDF のタブは描く（paradisPalettePreviewMedia で種類を決める）。
+ */
+const NOT_TEXT_EDITOR_TYPE_IDS: ReadonlySet<string> = new Set([
+	PARADIS_SPREADSHEET_INPUT_TYPE_ID,
+	PARADIS_SPREADSHEET_DIFF_INPUT_TYPE_ID,
+	PARADIS_DOCX_INPUT_TYPE_ID,
+	PARADIS_DOCX_DIFF_INPUT_TYPE_ID,
+	PARADIS_OFFICE_BROWSER_INPUT_TYPE_ID,
+	TerminalEditorInput.ID,
+	BrowserEditorInput.ID,
+	PARADIS_SIMULATOR_INPUT_TYPE_ID,
+	PARADIS_ANDROID_INPUT_TYPE_ID,
+]);
 
 /**
  * 最近移った先・ピンの保存キー（fork 自前）。最近・ピンは窓の作業に紐づくので窓（ワークスペース）ごとに持つ。刈り込みの
@@ -137,7 +168,7 @@ function dotClass(status: ParadisAgentLiveStatus | undefined): string {
 	return `paradis-palette-dot paradis-palette-dot-${tone}`;
 }
 
-type ParadisCrossJumpItem = IQuickPickItem & (
+type ParadisCrossJumpItem = IQuickPickItem & IParadisPalettePreviewItem & (
 	| { readonly kind: 'agent'; readonly entry: IParadisAgentLiveEntry }
 	| { readonly kind: 'editor'; readonly identifier: IEditorIdentifier; readonly key: string | undefined }
 	| { readonly kind: 'space'; readonly stateKey: string }
@@ -202,6 +233,9 @@ class ParadisCrossJumpSession extends Disposable {
 		@IParadisAgentModelCatalogService private readonly modelCatalogService: IParadisAgentModelCatalogService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
 		@INotificationService private readonly notificationService: INotificationService,
+		@IParadisAgentInsightsService private readonly insightsService: IParadisAgentInsightsService,
+		@IFileService private readonly fileService: IFileService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) {
 		super();
 		this.kind = initialKind === 'command' ? 'all' : initialKind;
@@ -331,6 +365,12 @@ class ParadisCrossJumpSession extends Disposable {
 		this.kindsBar = this._register(new ParadisPaletteKindsBar(widget, {
 			onSelect: kind => this.selectKind(kind),
 			onHelp: () => this.switchTo('?'),
+			onTogglePreview: () => void this.commandService.executeCommand(PARADIS_PALETTE_TOGGLE_PREVIEW_COMMAND_ID),
+		}));
+		this._register(this.configurationService.onDidChangeConfiguration(event => {
+			if (event.affectsConfiguration(PARADIS_PALETTE_PREVIEW_SETTING)) {
+				this.updateKinds();
+			}
 		}));
 		this._register(paradisAddPaletteHints(widget, [
 			// allow-any-unicode-next-line
@@ -433,7 +473,7 @@ class ParadisCrossJumpSession extends Disposable {
 		const query = prefix.rest.trim();
 		const attention = this.agentItems.filter(item => item.kind === 'agent' && isAttention(item.entry.status) && paradisPaletteMatches(query, item.label, item.description)).length;
 		const selected = prefix.kind === 'agent' || prefix.kind === 'editor' || prefix.kind === 'space' ? prefix.kind : this.kind;
-		this.kindsBar.update({ selected, counts: this.counts(query), attention });
+		this.kindsBar.update({ selected, counts: this.counts(query), attention, ...paradisPalettePreviewToggle(this.layoutService, this.configurationService, this.keybindingService.lookupKeybinding(PARADIS_PALETTE_TOGGLE_PREVIEW_COMMAND_ID)?.getLabel() ?? undefined) });
 	}
 
 	// --- 行 --------------------------------------------------------------------------------------------------
@@ -446,7 +486,22 @@ class ParadisCrossJumpSession extends Disposable {
 			label: entry.title,
 			description: description ?? [entry.spaceName, STATUS_LABELS[entry.status] ?? entry.status, paradisFormatCrossJumpAgo(this.now - entry.since)].join(' · '),
 			iconClass: dotClass(entry.status),
+			paradisPreview: this.agentPreview(entry),
 			buttons: [this.button(Codicon.debugStop, localize('paradis.palette.stop', "止める（ターミナルを閉じる）"), KeyMod.CtrlCmd | KeyCode.Backspace)],
+		};
+	}
+
+	private agentPreview(entry: IParadisAgentLiveEntry): ParadisPalettePreviewModel {
+		const insight = this.insightsService.getForToken(entry.token);
+		return {
+			kind: 'agent',
+			title: entry.title,
+			statusTone: dotClass(entry.status).replace(/^.*paradis-palette-dot-/, ''),
+			status: localize('paradis.palette.preview.agentStatus', "{0} · {1}", STATUS_LABELS[entry.status] ?? entry.status, paradisFormatCrossJumpAgo(this.now - entry.since)),
+			space: entry.spaceName,
+			branch: entry.detail || undefined,
+			model: insight?.model,
+			lastMessage: paradisAgentLiveSummary(entry.status, insight)?.text,
 		};
 	}
 
@@ -476,6 +531,10 @@ class ParadisCrossJumpSession extends Disposable {
 		// 文字が欠けてアイコンが縦にずれる（paracode-183〜185 の崩れ）。
 		const icon = identifier.editor.getIcon();
 		const iconResource = EditorResourceAccessor.getOriginalUri(identifier.editor, { supportSideBySide: SideBySideEditor.PRIMARY });
+		const typeId = identifier.editor.typeId;
+		// 画像・PDF は描き、HTML は描画とソースを切り替える。画像・PDF はファイルの読み手が要る（開いている文書は使わない）
+		const media = iconResource && paradisPalettePreviewMedia(typeId, iconResource, { image: PARADIS_IMAGE_INPUT_TYPE_ID, pdf: PARADIS_PDF_INPUT_TYPE_ID });
+		const readable = !!iconResource && (this.fileService.hasProvider(iconResource) || (media !== 'image' && media !== 'pdf' && !!this.modelService.getModel(iconResource)));
 		return {
 			kind: 'editor',
 			identifier,
@@ -484,6 +543,16 @@ class ParadisCrossJumpSession extends Disposable {
 			label: identifier.editor.getName(),
 			description: description ?? identifier.editor.getDescription(),
 			iconPath: URI.isUri(icon) ? { dark: icon } : undefined,
+			paradisPreview: {
+				kind: 'editor',
+				title: identifier.editor.getName(),
+				location: identifier.editor.getDescription(),
+				// 中身がテキストでないビューアのタブだけ「プレビューできません」。差分は modified の側（PRIMARY）を読む。
+				// 読めるのは、ファイルの読み手がある（ローカル・SSH・git の旧版など）か、開いている文書（untitled）があるもの。
+				// テキストでも先頭に NUL があれば「プレビューできません」（paradisPalettePreview.ts）
+				resource: iconResource && paradisCanPreviewEditor(typeId, NOT_TEXT_EDITOR_TYPE_IDS, readable) ? iconResource : undefined,
+				media,
+			},
 			iconClasses: getIconClasses(this.modelService, this.languageService, iconResource, undefined, icon).concat(identifier.editor.getLabelExtraClasses()),
 			buttons: [
 				this.button(Codicon.splitHorizontal, localize('paradis.palette.openSide', "横に開く"), KeyMod.CtrlCmd | KeyCode.Enter),
@@ -508,6 +577,15 @@ class ParadisCrossJumpSession extends Disposable {
 			label: label ?? childLabel,
 			description: description ?? (parts.filter((part): part is string => !!part).join(' · ') || undefined),
 			iconClass: dotClass(scopeStatus),
+			paradisPreview: {
+				kind: 'space',
+				title: space.kind === 'worktree' ? space.worktree?.name ?? space.name : space.name,
+				icon: space.kind === 'worktree' ? Codicon.gitBranch : Codicon.repo,
+				repository: this.repositoryNames.get(space.repositoryId) ?? space.name,
+				branch,
+				status: [scopeStatus ? STATUS_LABELS[scopeStatus] : localize('paradis.palette.preview.noAgent', "エージェントなし"), current].filter((part): part is string => !!part).join(' · '),
+				root: space.uri,
+			},
 		};
 	}
 
@@ -594,6 +672,13 @@ class ParadisCrossJumpSession extends Disposable {
 			id: `${ID_PREFIX}action/${action.id}`,
 			label: `$(${action.icon.id}) ${action.label}`,
 			keybinding: action.commandId ? this.keybindingService.lookupKeybinding(action.commandId) : undefined,
+			paradisPreview: {
+				kind: 'other',
+				title: action.label,
+				icon: action.icon,
+				kindName: localize('paradis.palette.preview.kindAction', "操作"),
+				keybinding: action.commandId ? this.keybindingService.lookupKeybinding(action.commandId)?.getLabel() ?? undefined : undefined,
+			},
 		}));
 	}
 
@@ -607,6 +692,7 @@ class ParadisCrossJumpSession extends Disposable {
 				id: `${ID_PREFIX}suggest/create`,
 				label: `$(${Codicon.add.id}) ${localize('paradis.crossJump.create', "ワークツリー「{0}」を作る", query)}`,
 				alwaysShow: true,
+				paradisPreview: { kind: 'other', title: localize('paradis.crossJump.create', "ワークツリー「{0}」を作る", query), icon: Codicon.add, kindName: localize('paradis.palette.preview.kindCreate', "作成"), keybinding: undefined },
 			});
 		}
 		items.push(
@@ -614,6 +700,11 @@ class ParadisCrossJumpSession extends Disposable {
 			{ kind: 'switch', value: query, id: `${ID_PREFIX}suggest/file`, label: `$(${Codicon.file.id}) ${localize('paradis.palette.suggestFile', "ファイル名で探す: {0}", query)}`, alwaysShow: true },
 			{ kind: 'switch', value: `%${query}`, id: `${ID_PREFIX}suggest/text`, label: `$(${Codicon.search.id}) ${localize('paradis.palette.suggestText', "ファイルの中身を探す: %{0}", query)}`, alwaysShow: true },
 		);
+		for (const item of items) {
+			if (item.kind === 'switch') {
+				Object.assign(item, { paradisPreview: { kind: 'other', title: stripIcons(item.label).trim(), icon: Codicon.search, kindName: localize('paradis.palette.preview.kindSwitch', "探し方の切り替え"), keybinding: undefined } satisfies ParadisPalettePreviewModel });
+			}
+		}
 		return items;
 	}
 
@@ -764,6 +855,14 @@ function holdKindsVisible(key: IContextKey<boolean>): IDisposable {
 	};
 }
 
+/** 種類のタブの段の、プレビューの切り替えのボタンの状態。 */
+function paradisPalettePreviewToggle(layoutService: ILayoutService, configurationService: IConfigurationService, keybinding: string | undefined): Pick<IParadisPaletteKindsState, 'preview' | 'previewKeybinding'> {
+	return {
+		preview: paradisPalettePreviewState(layoutService.activeContainerDimension.width, configurationService.getValue<boolean>(PARADIS_PALETTE_PREVIEW_SETTING) !== false),
+		previewKeybinding: keybinding,
+	};
+}
+
 /** 器の下端のヒントに、パレットのキーを足す。dispose で外す。 */
 function paradisAddPaletteHints(widget: HTMLElement, texts: readonly string[]): IDisposable {
 	const hint = paradisEnsureQuickInputHint(widget);
@@ -872,6 +971,8 @@ class ParadisPaletteCommandsKinds extends Disposable implements IWorkbenchContri
 		@ILayoutService private readonly layoutService: ILayoutService,
 		@ICommandService private readonly commandService: ICommandService,
 		@IContextKeyService contextKeyService: IContextKeyService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IKeybindingService private readonly keybindingService: IKeybindingService,
 	) {
 		super();
 		this.kindsVisible = ParadisPaletteKindsVisibleContext.bindTo(contextKeyService);
@@ -908,8 +1009,18 @@ class ParadisPaletteCommandsKinds extends Disposable implements IWorkbenchContri
 				}
 			},
 			onHelp: () => this.quickInputService.quickAccess.show('?'),
+			onTogglePreview: () => void this.commandService.executeCommand(PARADIS_PALETTE_TOGGLE_PREVIEW_COMMAND_ID),
 		}));
-		bar.update({ selected: 'command', counts: {}, attention: 0 });
+		const update = () => {
+			const keybinding = this.keybindingService.lookupKeybinding(PARADIS_PALETTE_TOGGLE_PREVIEW_COMMAND_ID)?.getLabel() ?? undefined;
+			bar.update({ selected: 'command', counts: {}, attention: 0, ...paradisPalettePreviewToggle(this.layoutService, this.configurationService, keybinding) });
+		};
+		update();
+		store.add(this.configurationService.onDidChangeConfiguration(event => {
+			if (event.affectsConfiguration(PARADIS_PALETTE_PREVIEW_SETTING)) {
+				update();
+			}
+		}));
 		// allow-any-unicode-next-line
 		store.add(paradisAddPaletteHints(widget, [localize('paradis.palette.hintKinds', "Tab 種類")]));
 		store.add(holdKindsVisible(this.kindsVisible));

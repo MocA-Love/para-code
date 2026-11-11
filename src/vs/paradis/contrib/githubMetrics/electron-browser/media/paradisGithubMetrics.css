@@ -75,7 +75,8 @@
 	background: var(--vscode-button-hoverBackground);
 }
 
-.paradis-ghm-button .codicon.spin {
+.paradis-ghm-button .codicon.spin,
+.paradis-ghm-refresh .codicon.spin {
 	animation: paradis-ghm-spin 1s linear infinite;
 }
 
@@ -471,7 +472,7 @@
 
 .paradis-ghm-hbar-row {
 	padding: 9px 14px;
-	border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
+	border-bottom: 1px solid var(--vscode-paradis-lineSubtle);
 }
 
 .paradis-ghm-hbar-row:last-child {
@@ -487,11 +488,18 @@
 }
 
 .paradis-ghm-hbar-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 	font-weight: 500;
 	font-size: 12px;
 }
 
 .paradis-ghm-hbar-sub {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 	font-size: 10.5px;
 	color: var(--vscode-descriptionForeground);
 	margin-left: 6px;
@@ -532,19 +540,22 @@
 	height: 100%;
 }
 
-.paradis-ghm-panel {
-	border: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.35));
-	border-radius: 6px;
+/* The panels are the kit's card (paradis-card, paradisCard.css). The rows inside bring their own padding and lines,
+	so only the padded panel (the chart) keeps the card's padding. */
+.monaco-workbench .paradis-ghm-panel.paradis-card:not(.padded) {
+	padding: 0;
 	overflow: hidden;
 }
 
-.paradis-ghm-panel.padded {
-	padding: 12px 14px;
+/* The hint under the limit rows sits inside the card, so it takes the rows' side padding. */
+.paradis-ghm-panel > .paradis-ghm-hint {
+	margin: 0;
+	padding: var(--vscode-spacing-size80) 14px 11px;
 }
 
 .paradis-ghm-limit-row {
 	padding: 11px 14px;
-	border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
+	border-bottom: 1px solid var(--vscode-paradis-lineSubtle);
 }
 
 .paradis-ghm-limit-row:last-child {
@@ -630,7 +641,7 @@
 	display: flex;
 	gap: 12px;
 	padding: 9px 14px;
-	border-bottom: 1px solid var(--vscode-editorWidget-border, rgba(128, 128, 128, 0.2));
+	border-bottom: 1px solid var(--vscode-paradis-lineSubtle);
 }
 
 .paradis-ghm-error-row:last-child {

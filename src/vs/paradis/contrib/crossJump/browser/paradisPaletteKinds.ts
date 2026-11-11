@@ -45,6 +45,10 @@ export interface IParadisPaletteKindsState {
 	readonly counts: Partial<Record<ParadisPaletteKind, number>>;
 	/** 一致したエージェントのうち要対応（許可待ち・質問中）の数。1 以上ならエージェントの数を「要対応/全体」で警告の色にする。 */
 	readonly attention: number;
+	/** 右のプレビューの on/off。窓が狭くてプレビューを出せないときは undefined（ボタンを出さない）。 */
+	readonly preview?: boolean;
+	/** プレビューの切り替えのキーの表示（ボタンの説明に添える）。 */
+	readonly previewKeybinding?: string;
 }
 
 /** タブの件数の文字。要対応があるエージェントだけ「要対応/全体」。 */
@@ -61,6 +65,8 @@ export interface IParadisPaletteKindsHandlers {
 	onSelect(kind: ParadisPaletteKind): void;
 	/** ヘルプのボタンを押した。 */
 	onHelp(): void;
+	/** プレビューの切り替えのボタンを押した。 */
+	onTogglePreview?(): void;
 }
 
 interface IKindButton {
@@ -73,6 +79,8 @@ export class ParadisPaletteKindsBar extends Disposable {
 
 	readonly element: HTMLElement;
 	private readonly buttons = new Map<ParadisPaletteKind, IKindButton>();
+	private readonly previewButton: HTMLButtonElement;
+	private readonly previewIcon: HTMLElement;
 
 	constructor(widget: HTMLElement, handlers: IParadisPaletteKindsHandlers) {
 		super();
@@ -110,7 +118,15 @@ export class ParadisPaletteKindsBar extends Disposable {
 		dom.append(this.element, dom.$('span.paradis-palette-kinds-grow'));
 		dom.append(this.element, dom.$('span.paradis-palette-kinds-key')).textContent = localize('paradis.palette.kindsKey', "Tab で切り替え");
 
-		const help = dom.append(this.element, dom.$<HTMLButtonElement>('button.paradis-palette-help.paradis-focus-ring-inset'));
+		this.previewButton = dom.append(this.element, dom.$<HTMLButtonElement>('button.paradis-palette-icon-button.paradis-palette-preview-toggle.paradis-focus-ring-inset'));
+		this.previewButton.type = 'button';
+		this.previewButton.tabIndex = -1;
+		this.previewButton.hidden = true;
+		this.previewIcon = dom.append(this.previewButton, dom.$(ThemeIcon.asCSSSelector(Codicon.layoutSidebarRight)));
+		this.previewIcon.setAttribute('aria-hidden', 'true');
+		this._register(dom.addDisposableListener(this.previewButton, dom.EventType.CLICK, () => handlers.onTogglePreview?.()));
+
+		const help = dom.append(this.element, dom.$<HTMLButtonElement>('button.paradis-palette-icon-button.paradis-palette-help.paradis-focus-ring-inset'));
 		help.type = 'button';
 		help.tabIndex = -1;
 		const helpLabel = localize('paradis.palette.help', "ヘルプ（? と打っても開きます）。「a 」「t 」「s 」で始まる名前を接頭辞にせずに探すときは、先頭に空白を入れます");
@@ -134,5 +150,12 @@ export class ParadisPaletteKindsBar extends Disposable {
 			const label = paradisPaletteKindLabel(kind);
 			button.setAttribute('aria-label', text === undefined ? label : localize('paradis.palette.kindWithCount', "{0}（{1} 件）", label, state.counts[kind] ?? 0));
 		}
+		this.previewButton.hidden = state.preview === undefined;
+		this.previewButton.setAttribute('aria-pressed', String(!!state.preview));
+		this.previewIcon.className = ThemeIcon.asClassName(state.preview ? Codicon.layoutSidebarRight : Codicon.layoutSidebarRightOff);
+		const previewLabel = state.preview ? localize('paradis.palette.previewHide', "プレビューを隠す") : localize('paradis.palette.previewShow', "プレビューを出す");
+		const previewTitle = state.previewKeybinding ? localize('paradis.palette.previewWithKey', "{0} ({1})", previewLabel, state.previewKeybinding) : previewLabel;
+		this.previewButton.title = previewTitle;
+		this.previewButton.setAttribute('aria-label', previewTitle);
 	}
 }

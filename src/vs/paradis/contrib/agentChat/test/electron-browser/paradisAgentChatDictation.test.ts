@@ -18,6 +18,10 @@ import { TestInstantiationService } from '../../../../../platform/instantiation/
 import { ILocalTranscriptionService } from '../../../../../platform/localTranscription/common/localTranscription.js';
 import { ChatDictationSurface, ChatSpeechToTextState, IChatDictationTranscript, IChatSpeechToTextService } from '../../../../../workbench/contrib/chat/browser/speechToText/chatSpeechToTextService.js';
 import { INativeWorkbenchEnvironmentService } from '../../../../../workbench/services/environment/electron-browser/environmentService.js';
+// upstream の ILocalTranscriptionService の登録を、Para の実装（下の import が読み込んで登録する）より先に
+// 済ませる。workbench.desktop.main.ts と同じ順にしておかないと、このファイルが先に読まれたときに
+// dictation のテスト（Para の登録が最後であること）が読み込みの順しだいで落ちる。
+import '../../../../../workbench/services/localTranscription/electron-browser/localTranscriptionService.js';
 import { ParadisAgentChatDictation, paradisAgentChatShowsMicrophone } from '../../electron-browser/paradisAgentChatDictation.js';
 
 suite('Paradis agent chat dictation', () => {

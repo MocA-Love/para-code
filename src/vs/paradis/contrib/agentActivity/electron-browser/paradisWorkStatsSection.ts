@@ -24,6 +24,7 @@ import { localize } from '../../../../nls.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
+import { paradisButtonClasses } from '../../../browser/paradisButton.js';
 import { ParadisSegmented } from '../../../browser/paradisSegmented.js';
 import { IParadisUsageSection } from '../../usageDashboard/electron-browser/paradisUsageSection.js';
 import { IParadisWorkStatsResult, ParadisWorkStatsAgentFilter, paradisCombineWorkStats } from '../common/paradisAgentActivity.js';
@@ -84,6 +85,7 @@ export class ParadisWorkStatsSection extends Disposable implements IParadisUsage
 		dom.append(toolbar, $('.paradis-ccusage-toolbar-spacer'));
 		this.shareButton = dom.append(toolbar, $('button.paradis-work-share-button')) as HTMLButtonElement;
 		this.shareButton.type = 'button';
+		this.shareButton.classList.add(...paradisButtonClasses('secondary'));
 		dom.append(this.shareButton, $(`span${ThemeIcon.asCSSSelector(Codicon.fileMedia)}`));
 		dom.append(this.shareButton, $('span')).textContent = localize('paradis.workStats.share', "画像で共有");
 		store.add(dom.addDisposableListener(this.shareButton, 'click', () => {
@@ -145,6 +147,8 @@ export class ParadisWorkStatsSection extends Disposable implements IParadisUsage
 
 	private render(): void {
 		this.shareButton.disabled = this.data === undefined;
+		// UI キットのボタンは押せない見た目を `disabled` のクラスで描く
+		this.shareButton.classList.toggle('disabled', this.shareButton.disabled);
 		dom.clearNode(this.body);
 		this.body.classList.toggle('stale', this.loading && this.data !== undefined);
 		this.busy.setBusy(this.loading, this.rangeDays, this.data !== undefined);
@@ -284,6 +288,7 @@ export class ParadisWorkStatsSection extends Disposable implements IParadisUsage
 		dom.append(head, $('span')).textContent = localize('paradis.workStats.previewTitle', "共有画像のプレビュー");
 		const close = dom.append(head, $('button.close')) as HTMLButtonElement;
 		close.type = 'button';
+		close.classList.add(...paradisButtonClasses('icon', true));
 		close.setAttribute('aria-label', localize('paradis.workStats.previewClose', "閉じる"));
 		dom.append(close, $(`span${ThemeIcon.asCSSSelector(Codicon.close)}`));
 		store.add(dom.addDisposableListener(close, 'click', () => this.overlay.clear()));
@@ -297,12 +302,15 @@ export class ParadisWorkStatsSection extends Disposable implements IParadisUsage
 		image.alt = localize('paradis.workStats.previewAlt', "作業実績の共有画像");
 		dom.append(preview, $('.hint')).textContent = localize('paradis.workStats.previewHint', "載せるのは期間と数字だけです。リポジトリ名・ブランチ名・PR のタイトル・金額は載せません。");
 		const actions = dom.append(preview, $('.actions'));
+		// 文字は span に入れる（入りきらないときに UI キットのボタンの省略記号が効くように）
 		const post = dom.append(actions, $('button')) as HTMLButtonElement;
 		post.type = 'button';
-		post.textContent = localize('paradis.workStats.postToX', "X に投稿");
-		const copy = dom.append(actions, $('button.primary')) as HTMLButtonElement;
+		post.classList.add(...paradisButtonClasses('secondary'));
+		dom.append(post, $('span')).textContent = localize('paradis.workStats.postToX', "X に投稿");
+		const copy = dom.append(actions, $('button')) as HTMLButtonElement;
 		copy.type = 'button';
-		copy.textContent = localize('paradis.workStats.copyPng', "PNG をコピー");
+		copy.classList.add(...paradisButtonClasses('primary'));
+		dom.append(copy, $('span')).textContent = localize('paradis.workStats.copyPng', "PNG をコピー");
 		store.add(dom.addDisposableListener(copy, 'click', async () => {
 			if (await this.copyPng(blob)) {
 				this.notificationService.info(localize('paradis.workStats.copied', "共有画像をクリップボードにコピーしました。"));

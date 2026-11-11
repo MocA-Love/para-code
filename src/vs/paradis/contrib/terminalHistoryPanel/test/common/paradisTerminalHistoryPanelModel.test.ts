@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisCommandRecord } from '../../common/paradisTerminalCommandRecords.js';
-import { IParadisHistoryPanelItem, paradisFilterHistory, paradisMergeHistory, paradisMoveHistorySelection, paradisPlaceHistoryPanel, paradisShortenCwd } from '../../common/paradisTerminalHistoryPanelModel.js';
+import { IParadisHistoryPanelItem, paradisFilterHistory, paradisHistoryPanelOneLine, paradisMergeHistory, paradisMoveHistorySelection, paradisPlaceHistoryPanel, paradisShortenCwd } from '../../common/paradisTerminalHistoryPanelModel.js';
 
 function record(command: string, timestamp: number, exitCode?: number, cwd?: string): IParadisCommandRecord {
 	return { command, timestamp, exitCode, cwd, duration: undefined };
@@ -106,5 +106,13 @@ suite('ParadisTerminalHistoryPanelModel', () => {
 			paradisShortenCwd(undefined, '/Users/example'),
 			paradisShortenCwd('/tmp', undefined),
 		], ['~/projects/app', '~', '/Users/example2/app', '~\\app', undefined, '/tmp']);
+	});
+
+	test('folds a multi-line command into one line for the row', () => {
+		assert.deepStrictEqual([
+			paradisHistoryPanelOneLine('for f in *; do\n  echo $f\r\ndone'),
+			paradisHistoryPanelOneLine('git status'),
+			paradisHistoryPanelOneLine('a\rb'),
+		], ['for f in *; do \u23CE   echo $f \u23CE done', 'git status', 'a \u23CE b']);
 	});
 });

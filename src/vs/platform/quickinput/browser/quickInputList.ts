@@ -45,6 +45,7 @@ import { asCssVariable } from '../../theme/common/colorUtils.js';
 import { IQuickPickItem, IQuickPickItemButtonEvent, IQuickPickSeparator, IQuickPickSeparatorButtonEvent, QuickPickFocus, QuickPickItem } from '../common/quickInput.js';
 import { IQuickInputStyles } from './quickInput.js';
 import { quickInputButtonsToActionArrays } from './quickInputUtils.js';
+import { paradisQuickPickItemHeight } from './paradisQuickInputLayout.js'; // PARA-PATCH: the palette's row height (Q609)
 
 const $ = dom.$;
 
@@ -278,8 +279,9 @@ class QuickInputItemDelegate implements IListVirtualDelegate<IQuickPickElement> 
 		if (element instanceof QuickPickSeparatorElement) {
 			return 30;
 		}
-		// PARA-PATCH: Para Code's UI kit (Q600) uses 28px rows in the palette (the kit's modal row) instead of 22.
-		return element.saneDetail ? 44 : 28;
+		// PARA-PATCH: Para Code's UI kit (Q600) uses 28px rows in the palette (the kit's modal row) instead of 22, and the
+		// command palette folds the English name onto the same row when the list is wide enough (Q609, paradisQuickInputLayout.ts).
+		return paradisQuickPickItemHeight(element.saneDetail);
 	}
 
 	getTemplateId(element: IQuickPickElement): string {
