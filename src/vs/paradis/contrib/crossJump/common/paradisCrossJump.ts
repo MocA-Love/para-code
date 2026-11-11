@@ -154,8 +154,10 @@ export interface IParadisPaletteRecent {
 	readonly pinned?: boolean;
 }
 
-/** 覚えておく件数の上限（ピンは別に数えず、上限を超えたら古い「ピンの無いもの」から捨てる）。 */
+/** 覚えておく件数の上限（上限を超えたら古い「ピンの無いもの」から捨てる）。 */
 const PALETTE_RECENT_LIMIT = 30;
+/** ピンの上限。超えたら古いピンから捨てる（見えなくなったピンが外せないまま増え続けないように）。 */
+export const PARADIS_PALETTE_PIN_LIMIT = 10;
 /** 「最近・ピン」に出す件数（ピンがこれより多ければピンはすべて出す）。 */
 export const PARADIS_PALETTE_RECENT_SHOWN = 4;
 
@@ -179,7 +181,9 @@ export function paradisParsePaletteRecents(raw: string | undefined): IParadisPal
 }
 
 function trimPaletteRecents(list: readonly IParadisPaletteRecent[]): IParadisPaletteRecent[] {
-	const result = [...list];
+	// ピンは新しい順に上限まで残し、古いピンは記録ごと捨てる
+	const keptPins = new Set(list.filter(entry => entry.pinned).sort((a, b) => b.at - a.at).slice(0, PARADIS_PALETTE_PIN_LIMIT));
+	const result = list.filter(entry => !entry.pinned || keptPins.has(entry));
 	while (result.length > PALETTE_RECENT_LIMIT) {
 		const index = result.map(entry => !entry.pinned).lastIndexOf(true);
 		if (index < 0) {
@@ -204,6 +208,14 @@ export function paradisTogglePalettePin(list: readonly IParadisPaletteRecent[], 
 		return trimPaletteRecents([{ kind, key, at: now, pinned: true }, ...list]);
 	}
 	return list.map(entry => entry === previous ? { kind, key, at: entry.at, ...(entry.pinned ? {} : { pinned: true }) } : entry);
+}
+
+/**
+ * 二度と現れない先（終わったエージェントのペイン・消えたスペース）の記録を、ピンも含めて捨てる。
+ * `isGone` が true を返したものを捨てる。タブは別のスペースへ移ると見えなくなるだけなので、呼ぶ側で gone にしない。
+ */
+export function paradisPrunePaletteRecents(list: readonly IParadisPaletteRecent[], isGone: (entry: IParadisPaletteRecent) => boolean): IParadisPaletteRecent[] {
+	return list.filter(entry => !isGone(entry));
 }
 
 /**

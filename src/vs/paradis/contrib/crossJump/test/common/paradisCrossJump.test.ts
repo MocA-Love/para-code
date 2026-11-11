@@ -19,6 +19,8 @@ import {
 	paradisPaletteRecentsToShow,
 	paradisParsePalettePrefix,
 	paradisParsePaletteRecents,
+	paradisPrunePaletteRecents,
+	PARADIS_PALETTE_PIN_LIMIT,
 	paradisRecordPaletteRecent,
 	paradisShouldOfferCrossJumpCreate,
 	paradisSortCrossJumpAgents,
@@ -132,6 +134,26 @@ suite('paradisCrossJump', () => {
 		}, {
 			empty: ['新しいスペース', 'ターミナルを開く', 'Claude Code を起動'],
 			launch: ['Claude Code を起動', 'Codex を起動'],
+		});
+	});
+
+	test('pins are capped (oldest pin dropped) and gone targets are pruned even when pinned', () => {
+		let list: IParadisPaletteRecent[] = [];
+		for (let i = 0; i < PARADIS_PALETTE_PIN_LIMIT + 2; i++) {
+			list = paradisTogglePalettePin(list, 'editor', `e${i}`, i);
+		}
+		list = paradisTogglePalettePin(list, 'agent', 'gone', 100);
+		const pruned = paradisPrunePaletteRecents(list, entry => entry.kind === 'agent' && entry.key === 'gone');
+		assert.deepStrictEqual({
+			pins: list.filter(entry => entry.pinned).length,
+			oldestKept: list.some(entry => entry.key === 'e0' || entry.key === 'e1' || entry.key === 'e2'),
+			pruned: pruned.some(entry => entry.key === 'gone'),
+			prunedCount: pruned.length,
+		}, {
+			pins: PARADIS_PALETTE_PIN_LIMIT,
+			oldestKept: false,
+			pruned: false,
+			prunedCount: PARADIS_PALETTE_PIN_LIMIT - 1,
 		});
 	});
 });

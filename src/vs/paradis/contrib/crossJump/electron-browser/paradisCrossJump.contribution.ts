@@ -45,6 +45,7 @@ import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ContextKeyExpr, IContextKey, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
+import { InputFocusedContext } from '../../../../platform/contextkey/common/contextkeys.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 import { KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
@@ -78,6 +79,7 @@ import {
 	paradisPaletteRecentsToShow,
 	paradisParsePalettePrefix,
 	paradisParsePaletteRecents,
+	paradisPrunePaletteRecents,
 	ParadisPaletteKind,
 	paradisRecordPaletteRecent,
 	paradisSortCrossJumpAgents,
@@ -100,6 +102,11 @@ const CROSS_JUMP_CONTEXT_KEY = 'paradisInCrossJump';
 /** コマンドパレットが開いている間 true（本家の quickAccess.contribution.ts が付ける contextKey）。 */
 const COMMANDS_PICKER_CONTEXT_KEY = 'inCommandsPicker';
 /** 横断ジャンプの入力が空の間 true。Ctrl+Backspace を入力中の単語の削除とぶつけないために使う。 */
+/**
+ * 種類のタブを器に出している間 true（中央に出した横断ジャンプとコマンドパレットだけ）。Tab・Shift+Tab はこれと
+ * 入力欄にフォーカスがあるときだけ取り、行のボタンなどにフォーカスがあるときは本家の Tab のままにする。
+ */
+const ParadisPaletteKindsVisibleContext = new RawContextKey<boolean>('paradisPaletteKindsVisible', false, localize('paradis.palette.kindsVisible', "中央のパレットに種類のタブを出しているかどうか"));
 const ParadisCrossJumpInputEmptyContext = new RawContextKey<boolean>('paradisCrossJumpInputEmpty', false, localize('paradis.crossJump.inputEmpty', "横断ジャンプの入力欄が空かどうか"));
 
 /** 最近移った先・ピンの保存キー（fork 自前、プロファイルごと）。 */
@@ -153,7 +160,8 @@ class ParadisCrossJumpSession extends Disposable {
 	private readonly inputEmpty: IContextKey<boolean>;
 	private kindsBar: ParadisPaletteKindsBar | undefined;
 	private kind: ParadisPaletteKind;
-	private recents: IParadisPaletteRecent[];
+	private recents: IParadisPaletteRecent[] = [];
+	private readonly kindsVisible: IContextKey<boolean>;
 	/** 横断ジャンプからほかのクイックアクセス（コマンドパレットなど）へ切り替えて閉じたとき true。 */
 	private switching = false;
 
@@ -194,7 +202,6 @@ class ParadisCrossJumpSession extends Disposable {
 		this.kind = initialKind === 'command' ? 'all' : initialKind;
 		this.inputEmpty = ParadisCrossJumpInputEmptyContext.bindTo(contextKeyService);
 		this._register({ dispose: () => this.inputEmpty.reset() });
-		this.recents = paradisParsePaletteRecents(this.storageService.get(RECENT_STORAGE_KEY, StorageScope.PROFILE));
 
 		this.activeStateKey = this.workspaceSwitchService.activeStateKey;
 		this.spaces = paradisListSpaces(this.workspaceSwitchService.repositories, this.worktreeService);
@@ -208,6 +215,15 @@ class ParadisCrossJumpSession extends Disposable {
 		// 作成の行の行き先は今のスペースのリポジトリ（スペースの外なら先頭のリポジトリ）。
 		this.createRepositoryId = this.spaces.find(space => space.space === this.activeStateKey)?.repositoryId ?? this.workspaceSwitchService.repositories[0]?.id;
 		this.actions = this.collectActions();
+		// 終わったエージェント（ペイントークンは使い回されない）と消えたスペースの記録は、ピンでも捨てる
+		const recents = paradisParsePaletteRecents(this.storageService.get(RECENT_STORAGE_KEY, StorageScope.PROFILE));
+		const liveTokens = new Set(this.agents.map(entry => entry.token));
+		const liveSpaces = new Set(this.spaces.map(space => space.space));
+		this.recents = paradisPrunePaletteRecents(recents, entry => entry.kind === 'agent' ? !liveTokens.has(entry.key) : entry.kind === 'space' ? !liveSpaces.has(entry.key) : false);
+		if (this.recents.length !== recents.length) {
+			this.storeRecents(this.recents);
+		}
+		this.kindsVisible = ParadisPaletteKindsVisibleContext.bindTo(contextKeyService);
 
 		this.picker = this._register(this.quickInputService.createQuickPick<ParadisCrossJumpItem>({ useSeparators: true }));
 		this.picker.placeholder = localize('paradis.crossJump.placeholder', "エージェント・タブ・スペースを検索");
@@ -306,6 +322,7 @@ class ParadisCrossJumpSession extends Disposable {
 			localize('paradis.palette.hintKinds', "Tab 種類"),
 			localize('paradis.palette.hintSide', "{0} 横に開く", this.keyLabel(KeyMod.CtrlCmd | KeyCode.Enter)),
 		]));
+		this._register(holdKindsVisible(this.kindsVisible));
 		this.updateKinds();
 	}
 
@@ -711,6 +728,27 @@ class ParadisCrossJumpSession extends Disposable {
 	}
 }
 
+/**
+ * 種類のタブを出している印を立てる。横断ジャンプからコマンドパレットへ替わるときは、新しい方が印を立てた後に古い方が
+ * 片付くので、数を数えて最後の 1 つが外れたときだけ下ろす。
+ */
+let kindsVisibleHolders = 0;
+function holdKindsVisible(key: IContextKey<boolean>): IDisposable {
+	kindsVisibleHolders++;
+	key.set(true);
+	let released = false;
+	return {
+		dispose: () => {
+			if (!released) {
+				released = true;
+				if (--kindsVisibleHolders === 0) {
+					key.set(false);
+				}
+			}
+		}
+	};
+}
+
 /** 器の下端のヒントに、パレットのキーを足す。dispose で外す。 */
 function paradisAddPaletteHints(widget: HTMLElement, texts: readonly string[]): IDisposable {
 	const hint = paradisEnsureQuickInputHint(widget);
@@ -754,6 +792,8 @@ function cycleKind(accessor: ServicesAccessor, delta: 1 | -1): void {
 
 const paletteKindsWhen = ContextKeyExpr.and(
 	ContextKeyExpr.has('inQuickInput'),
+	InputFocusedContext,
+	ParadisPaletteKindsVisibleContext,
 	ContextKeyExpr.or(ContextKeyExpr.has(CROSS_JUMP_CONTEXT_KEY), ContextKeyExpr.has(COMMANDS_PICKER_CONTEXT_KEY)),
 );
 
@@ -810,13 +850,16 @@ class ParadisPaletteCommandsKinds extends Disposable implements IWorkbenchContri
 
 	private readonly mounted = this._register(new MutableDisposable<DisposableStore>());
 	private readonly inputListener = this._register(new MutableDisposable());
+	private readonly kindsVisible: IContextKey<boolean>;
 
 	constructor(
 		@IQuickInputService private readonly quickInputService: IQuickInputService,
 		@ILayoutService private readonly layoutService: ILayoutService,
 		@ICommandService private readonly commandService: ICommandService,
+		@IContextKeyService contextKeyService: IContextKeyService,
 	) {
 		super();
+		this.kindsVisible = ParadisPaletteKindsVisibleContext.bindTo(contextKeyService);
 		this._register(this.quickInputService.onShow(() => {
 			const input = this.quickInputService.currentQuickInput;
 			this.inputListener.value = input?.type === QuickInputType.QuickPick ? (input as IQuickPick<IQuickPickItem>).onDidChangeValue(() => this.update()) : undefined;
@@ -854,6 +897,7 @@ class ParadisPaletteCommandsKinds extends Disposable implements IWorkbenchContri
 		bar.update({ selected: 'command', counts: {}, attention: 0 });
 		// allow-any-unicode-next-line
 		store.add(paradisAddPaletteHints(widget, [localize('paradis.palette.hintKinds', "Tab 種類")]));
+		store.add(holdKindsVisible(this.kindsVisible));
 		this.mounted.value = store;
 	}
 }

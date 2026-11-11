@@ -113,7 +113,7 @@ export class ParadisPaletteKindsBar extends Disposable {
 		const help = dom.append(this.element, dom.$<HTMLButtonElement>('button.paradis-palette-help.paradis-focus-ring-inset'));
 		help.type = 'button';
 		help.tabIndex = -1;
-		const helpLabel = localize('paradis.palette.help', "ヘルプ（? と打っても開きます）");
+		const helpLabel = localize('paradis.palette.help', "ヘルプ（? と打っても開きます）。「a 」「t 」「s 」で始まる名前を接頭辞にせずに探すときは、先頭に空白を入れます");
 		help.title = helpLabel;
 		help.setAttribute('aria-label', helpLabel);
 		dom.append(help, dom.$(ThemeIcon.asCSSSelector(Codicon.question))).setAttribute('aria-hidden', 'true');
