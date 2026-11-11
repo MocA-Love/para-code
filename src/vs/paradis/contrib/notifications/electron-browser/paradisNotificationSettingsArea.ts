@@ -48,8 +48,12 @@ import { ParadisNotificationSoundPlayer } from './paradisNotificationSoundPlayer
 import { openParadisYouTubeImportDialog } from './paradisYouTubeImportDialog.js';
 import { openParadisMyinstantsImportDialog } from './paradisMyinstantsImportDialog.js';
 import { PARADIS_NOTIFICATION_INCLUDE_MESSAGE_SETTING } from '../../notificationInbox/common/paradisNotificationInbox.js';
+import { ParadisCheck } from '../../../browser/paradisCheck.js';
+import { ParadisInputField } from '../../../browser/paradisInputField.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
+import { paradisNotifButton, paradisNotifButtonWithHover } from './paradisNotificationKitParts.js';
+import { ParadisSectionFocusCarrier, paradisSetFocusKey } from './paradisNotificationSettingsDomUtils.js';
 import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubHost } from '../../paradisHub/electron-browser/paradisHub.js';
 import { IParadisHubNavItem, paradisHubNavCaption, paradisHubNavItem, ParadisHubScrollSpy } from '../../paradisHub/electron-browser/paradisHubNav.js';
 
@@ -285,13 +289,10 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 		this._player = this._register(this.instantiationService.createInstance(ParadisNotificationSoundPlayer));
 
 		// ---------- 見出しの行（検索ボックス + 自動保存フラッシュ） ----------
-		const searchBox = dom.append(containers.header, $('.pns-search.paradis-focus-subtle-within'));
-		searchBox.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.search)}`));
-		this._searchInput = dom.append(searchBox, $('input')) as HTMLInputElement;
-		this._searchInput.type = 'text';
-		this._searchInput.placeholder = STR_SEARCH_PLACEHOLDER;
-		this._searchInput.setAttribute('aria-label', STR_SEARCH_PLACEHOLDER);
-		this._register(dom.addDisposableListener(this._searchInput, 'input', () => this._applySearchFilter()));
+		const searchField = this._register(new ParadisInputField(containers.header, { ariaLabel: STR_SEARCH_PLACEHOLDER, placeholder: STR_SEARCH_PLACEHOLDER, icon: Codicon.search, small: true }));
+		searchField.element.classList.add('pns-search');
+		this._searchInput = searchField.inputElement;
+		this._register(searchField.onDidChange(() => this._applySearchFilter()));
 
 		this._savedFlashEl = dom.append(containers.header, $('.pns-saved-flash'));
 		this._savedFlashEl.textContent = STR_SAVED;
@@ -301,8 +302,7 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 		this._buildNav(containers.nav);
 		this._contentEl = dom.append(containers.content, $('.pns-content'));
 		const footer = dom.append(containers.content, $('.pns-footer'));
-		const resetBtn = dom.append(footer, $('button.pns-btn.pns-btn-danger.pns-reset-defaults')) as HTMLButtonElement;
-		resetBtn.textContent = STR_RESET_DEFAULTS;
+		const resetBtn = paradisNotifButton(footer, 'danger', { label: STR_RESET_DEFAULTS, className: 'pns-reset-defaults' });
 		this._register(dom.addDisposableListener(resetBtn, 'click', () => this._resetAllToDefaults()));
 
 		// 設定変更 → 自動保存フラッシュ。セクションクラスは同じイベントで自身を再描画するため、
@@ -716,12 +716,8 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 			dom.append(eventsMain, $('.sr-label')).textContent = STR_OS_EVENTS_LABEL;
 			const eventsBox = dom.append(eventsRow, $('div.pns-events-box'));
 			const eventCheckbox = (label: string, checked: boolean, onChange: (value: boolean) => void) => {
-				const wrap = dom.append(eventsBox, $('label'));
-				const checkbox = dom.append(wrap, $('input')) as HTMLInputElement;
-				checkbox.type = 'checkbox';
-				checkbox.checked = checked;
-				dom.append(wrap, $('span')).textContent = label;
-				this._renderDisposables.add(dom.addDisposableListener(checkbox, 'change', () => onChange(checkbox.checked)));
+				const check = this._renderDisposables.add(new ParadisCheck(eventsBox, { label, checked }));
+				this._renderDisposables.add(check.onDidChange(onChange));
 			};
 			eventCheckbox(STR_OS_EVENT_PERMISSION, this.settingsService.getOsNotifyOnPermission(), value => this.settingsService.setOsNotifyOnPermission(value));
 			eventCheckbox(STR_OS_EVENT_REVIEW, this.settingsService.getOsNotifyOnReview(), value => this.settingsService.setOsNotifyOnReview(value));
@@ -817,18 +813,20 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 		dom.append(listTitles, $('.sr-desc')).textContent = STR_RINGTONE_DESC;
 		const actions = dom.append(listHeader, $('div.pns-events-box'));
 
-		const importBtn = dom.append(actions, $('button.pns-btn')) as HTMLButtonElement;
-		importBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.add)}`));
+		// 自分の音源の有無が分かるまでは「＋」だけ。読み上げの名前とホバーは分かった後の文言にそろえる
+		const { button: importBtn, hover: importHover } = paradisNotifButtonWithHover(actions, 'secondary', { icon: Codicon.add, title: STR_ADD_CUSTOM, hover: { service: this.hoverService, store: this._renderDisposables } });
 		this._renderDisposables.add(dom.addDisposableListener(importBtn, 'click', () => this._importCustomAudio()));
 
-		const youtubeBtn = dom.append(actions, $('button.pns-btn')) as HTMLButtonElement;
-		youtubeBtn.textContent = STR_FROM_YOUTUBE;
+		const youtubeBtn = paradisNotifButton(actions, 'secondary', { label: STR_FROM_YOUTUBE });
+		paradisSetFocusKey(youtubeBtn, 'youtube');
+		// 取り込むと節が描き直されてこのボタンが作り直されるので、箱を閉じたら新しいボタンへ戻す
+		const soundFocus = new ParadisSectionFocusCarrier(container);
 		this._renderDisposables.add(dom.addDisposableListener(youtubeBtn, 'click', () => {
-			this.instantiationService.invokeFunction(accessor => openParadisYouTubeImportDialog(accessor, () => this._renderNotificationsSections()));
+			this.instantiationService.invokeFunction(accessor => openParadisYouTubeImportDialog(accessor, () => this._renderNotificationsSections(), () => soundFocus.find('youtube')));
 		}));
 
-		const myinstantsBtn = dom.append(actions, $('button.pns-btn')) as HTMLButtonElement;
-		myinstantsBtn.textContent = STR_FROM_MYINSTANTS;
+		const myinstantsBtn = paradisNotifButton(actions, 'secondary', { label: STR_FROM_MYINSTANTS });
+		paradisSetFocusKey(myinstantsBtn, 'myinstants');
 		this._renderDisposables.add(dom.addDisposableListener(myinstantsBtn, 'click', () => {
 			this._stopPreview();
 			// ファイルからの追加と同じく、取り込んだ音をそのまま選ぶ。
@@ -837,7 +835,7 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 				if (!this._store.isDisposed) {
 					this._renderNotificationsSections();
 				}
-			}));
+			}, () => soundFocus.find('myinstants')));
 		}));
 
 		// --- 着信音カード（2列グリッド） ---
@@ -851,6 +849,8 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 				return;
 			}
 			importBtn.textContent = custom ? STR_REPLACE_CUSTOM : STR_ADD_CUSTOM;
+			importBtn.setAttribute('aria-label', importBtn.textContent);
+			importHover?.update(importBtn.textContent);
 			const ringtones: (IParadisRingtoneData | IParadisCustomRingtoneInfo)[] = custom ? [...PARADIS_RINGTONES, custom] : [...PARADIS_RINGTONES];
 			for (const ringtone of ringtones) {
 				this._renderRingtoneCard(grid, ringtone, ringtone.id === selectedId, volume);
@@ -884,7 +884,8 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 
 		const info = dom.append(card, $('.pns-ringtone-info'));
 		const nameRow = dom.append(info, $('.pns-ringtone-name'));
-		nameRow.append(ringtone.name);
+		// 区切りの無い長い名前も行の中で折り返す（再生のボタンに重ならない）
+		dom.append(nameRow, $('span.pns-ringtone-label')).textContent = ringtone.name;
 		if (ringtone.duration) {
 			dom.append(nameRow, $('span.pns-ringtone-duration')).textContent = `${ringtone.duration}s`;
 		}
@@ -893,7 +894,7 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 		dom.append(info, $('div.pns-rt-progress')).appendChild(progressFill);
 		this._ringtoneProgressFills.set(card, progressFill);
 
-		const playBtn = dom.append(card, $('button.pns-ringtone-play')) as HTMLButtonElement;
+		const playBtn = paradisNotifButton(card, 'icon', { small: true, className: 'pns-ringtone-play' });
 		const isPlaying = this._playingRingtoneId === ringtone.id;
 		this._setPlayButtonPlaying(playBtn, isPlaying);
 

@@ -42,7 +42,9 @@ import { getCachedAivisDictionaryList, getCachedAivisModelInfo, setCachedAivisDi
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
 import { base64ToBlobUrl } from './paradisNotificationSoundPlayer.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
+import { ParadisSegmented } from '../../../browser/paradisSegmented.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
+import { paradisNotifButton, paradisNotifInput, paradisNotifTextArea } from './paradisNotificationKitParts.js';
 
 const $ = dom.$;
 
@@ -218,22 +220,18 @@ export class ParadisAivisVoiceSection extends Disposable {
 		const engineLabels = dom.append(engineRow, $('.sr-main'));
 		dom.append(engineLabels, $('.sr-label')).textContent = STR_ENGINE_LABEL;
 		dom.append(engineLabels, $('.sr-desc')).textContent = STR_ENGINE_HINT;
-		const engineGroup = dom.append(engineRow, $('.pns-engine-switch'));
-		engineGroup.setAttribute('role', 'radiogroup');
-		engineGroup.setAttribute('aria-label', STR_ENGINE_LABEL);
-		for (const { engine, label } of ENGINE_LABELS) {
-			const button = dom.append(engineGroup, $('button.pns-btn')) as HTMLButtonElement;
-			button.textContent = label;
-			button.setAttribute('role', 'radio');
-			button.setAttribute('aria-checked', String(settings.engine === engine));
-			button.classList.toggle('pns-btn-primary', settings.engine === engine);
-			this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => {
-				if (this.settingsService.getAivisSettings().engine !== engine) {
-					this.stopSamplePlayback();
-					this.settingsService.setAivisSettings({ engine });
-				}
-			}));
-		}
+		const engineSeg = this._renderDisposables.add(new ParadisSegmented<ParadisVoiceEngine>(engineRow, {
+			ariaLabel: STR_ENGINE_LABEL,
+			value: settings.engine,
+			items: ENGINE_LABELS.map(({ engine, label }) => ({ value: engine, label })),
+		}));
+		engineSeg.element.classList.add('pns-seg');
+		this._renderDisposables.add(engineSeg.onDidChange(engine => {
+			if (this.settingsService.getAivisSettings().engine !== engine) {
+				this.stopSamplePlayback();
+				this.settingsService.setAivisSettings({ engine });
+			}
+		}));
 
 		// --- 有効化トグル ---
 		const toggleRow = dom.append(this.container, $('.setting-row'));
@@ -279,12 +277,7 @@ export class ParadisAivisVoiceSection extends Disposable {
 		const modelUuidLabels = dom.append(modelUuidField, $('.sr-main'));
 		dom.append(modelUuidLabels, $('.sr-label')).textContent = STR_MODEL_UUID_LABEL;
 		const modelInfoEl = dom.append(modelUuidLabels, $('.pns-uuid-hint'));
-		const modelUuidInput = dom.append(modelUuidField, $('input')) as HTMLInputElement;
-		modelUuidInput.placeholder = 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx';
-		modelUuidInput.style.width = '290px';
-		modelUuidInput.style.fontFamily = 'var(--monaco-monospace-font)';
-		modelUuidInput.style.fontSize = '11px';
-		modelUuidInput.value = settings.modelUuid;
+		const { input: modelUuidInput } = paradisNotifInput(modelUuidField, this._renderDisposables, { ariaLabel: STR_MODEL_UUID_LABEL, placeholder: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx', value: settings.modelUuid, className: 'pns-id-input' });
 		this._renderUuidHint(modelInfoEl, settings.modelUuid.trim(), settings.apiKey);
 		this._renderDisposables.add(dom.addDisposableListener(modelUuidInput, 'input', () => {
 			this._renderUuidHint(modelInfoEl, modelUuidInput.value.trim(), settings.apiKey);
@@ -306,8 +299,7 @@ export class ParadisAivisVoiceSection extends Disposable {
 		const chipRow = dom.append(placeholderField, $('.pns-chip-row'));
 		chipRow.style.justifyContent = 'flex-end';
 		for (const key of PARADIS_AIVIS_PLACEHOLDER_KEYS) {
-			const chip = dom.append(chipRow, $('button.pns-btn')) as HTMLButtonElement;
-			chip.textContent = `{{${key}}} / ${PARADIS_AIVIS_PLACEHOLDER_LABELS[key]}`;
+			const chip = paradisNotifButton(chipRow, 'secondary', { small: true, label: `{{${key}}} / ${PARADIS_AIVIS_PLACEHOLDER_LABELS[key]}` });
 			// mousedownでフォーマット欄からフォーカスを奪うと、textareaのblurが click より先に
 			// 発火して setAivisSettings() を呼び、'aivis' スコープの再描画でこのチップ自身を含む
 			// セクション全体が作り直されてしまう。その結果 click イベントが失われたり、挿入先の
@@ -331,9 +323,9 @@ export class ParadisAivisVoiceSection extends Disposable {
 		dom.append(main, $('.sr-label')).textContent = labelText;
 		const valueHint = dom.append(main, $('.sr-desc'));
 		valueHint.textContent = format(value);
-		const slider = dom.append(field, $('input')) as HTMLInputElement;
+		const slider = dom.append(field, $('input.pns-range')) as HTMLInputElement;
 		slider.type = 'range';
-		slider.style.width = '200px';
+		slider.setAttribute('aria-label', labelText);
 		slider.min = String(min);
 		slider.max = String(max);
 		slider.step = String(step);
@@ -355,14 +347,11 @@ export class ParadisAivisVoiceSection extends Disposable {
 			dom.append(main, $('.sr-desc')).textContent = description;
 		}
 		const group = dom.append(field, $('.pns-input-group'));
-		group.style.width = '320px';
-		const input = dom.append(group, $('input')) as HTMLInputElement;
+		const { field: inputField, input } = paradisNotifInput(group, this._renderDisposables, { ariaLabel: STR_API_KEY_LABEL, placeholder, value: apiKey });
 		input.type = 'password';
 		input.autocomplete = 'off';
-		input.placeholder = placeholder;
-		input.value = apiKey;
 		// 読み込み中の空欄を blur しただけで保存済みのキーを消さないよう、読み終えるまでは触れなくする。
-		input.disabled = !this.settingsService.areApiKeysLoaded();
+		inputField.enabled = this.settingsService.areApiKeysLoaded();
 		if (this.settingsService.isApiKeyLost(keyField)) {
 			const lost = dom.append(main, $('.pns-uuid-hint.ng'));
 			lost.textContent = STR_API_KEY_LOST;
@@ -378,9 +367,7 @@ export class ParadisAivisVoiceSection extends Disposable {
 				this.settingsService.setAivisSettings({ apiKey: input.value });
 			}
 		}));
-		const toggleVisibilityBtn = dom.append(group, $('button.pns-btn.pns-btn-icon')) as HTMLButtonElement;
-		toggleVisibilityBtn.setAttribute('aria-label', STR_TOGGLE_API_KEY_VISIBILITY);
-		toggleVisibilityBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.eye)}`));
+		const toggleVisibilityBtn = paradisNotifButton(group, 'icon', { icon: Codicon.eye, title: STR_TOGGLE_API_KEY_VISIBILITY });
 		this._renderDisposables.add(dom.addDisposableListener(toggleVisibilityBtn, 'click', () => {
 			const willShow = input.type === 'password';
 			input.type = willShow ? 'text' : 'password';
@@ -457,10 +444,9 @@ export class ParadisAivisVoiceSection extends Disposable {
 			dom.append(tile, $('.pns-preset-author')).textContent = preset.authorName;
 
 			const actions = dom.append(tile, $('.pns-preset-actions'));
-			const sampleBtn = dom.append(actions, $('button.pns-btn.pns-btn-icon')) as HTMLButtonElement;
+			const sampleBtn = paradisNotifButton(actions, 'icon', { small: true, icon: Codicon.play });
 			sampleBtn.disabled = true; // サンプルURLが判明するまでは無効
 			sampleBtn.setAttribute('aria-label', STR_PLAY_SAMPLE_ARIA);
-			sampleBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.play)}`));
 
 			this._renderDisposables.add(dom.addDisposableListener(tile, 'click', () => {
 				this.settingsService.setAivisSettings({ modelUuid: preset.uuid });
@@ -677,10 +663,10 @@ export class ParadisAivisVoiceSection extends Disposable {
 		dom.append(main, $('.sr-desc')).textContent = STR_FORMAT_HINT;
 		const controlCol = dom.append(fieldEl, $('div'));
 		controlCol.className = 'pns-format-control';
-		const textarea = dom.append(controlCol, $('textarea')) as HTMLTextAreaElement;
+		const textarea = paradisNotifTextArea(controlCol, labelText);
 		textarea.rows = 2;
 		textarea.value = value;
-		const testBtn = dom.append(controlCol, $('button.pns-btn.pns-test-play')) as HTMLButtonElement;
+		const testBtn = paradisNotifButton(controlCol, 'secondary', { className: 'pns-test-play' });
 		testBtn.textContent = STR_TEST_PLAY;
 		this._renderDisposables.add(dom.addDisposableListener(testBtn, 'click', () => onTest(testBtn)));
 

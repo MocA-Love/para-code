@@ -23,6 +23,11 @@ import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { IParadisCustomRingtoneInfo, PARADIS_MAX_CUSTOM_AUDIO_SIZE_BYTES, PARADIS_NOTIFICATIONS_CHANNEL } from '../common/paradisNotifications.js';
 import { IParadisMyinstantsDownloadResult, PARADIS_MYINSTANTS_HOME_URL, ParadisMyinstantsDownloadFailure, paradisCheckMyinstantsUrl } from '../common/paradisMyinstants.js';
 import { base64ToBlobUrl } from './paradisNotificationSoundPlayer.js';
+import { paradisButtonClasses } from '../../../browser/paradisButton.js';
+import { ParadisInputField } from '../../../browser/paradisInputField.js';
+import { ParadisModalSize } from '../../../browser/paradisModal.js';
+import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
+import { paradisNotifNestedButton, paradisNotifNestedModal } from './paradisNotificationNestedModal.js';
 
 const $ = dom.$;
 
@@ -106,12 +111,12 @@ type ParadisMyinstantsLoaded = Extract<IParadisMyinstantsDownloadResult, { ok: t
  * Myinstants 取り込みダイアログを開く。`onImported` は保存に成功した後に呼ぶ（呼び出し元はカスタム音源を選び直して再描画する）。
  * `volume` は試聴の音量（0-100）。
  */
-export function openParadisMyinstantsImportDialog(accessor: ServicesAccessor, volume: number, onImported: () => void): void {
+export function openParadisMyinstantsImportDialog(accessor: ServicesAccessor, volume: number, onImported: () => void, restoreFallback?: () => HTMLElement | undefined): void {
 	const layoutService = accessor.get(ILayoutService);
 	const sharedProcessService = accessor.get(ISharedProcessService);
 	const openerService = accessor.get(IOpenerService);
 	// ダイアログは自身のcloseで自己disposeするため、呼び出し元での追跡・登録は不要。
-	const dialog = new ParadisMyinstantsImportDialog(layoutService, sharedProcessService, openerService, volume, onImported);
+	const dialog = new ParadisMyinstantsImportDialog(layoutService, sharedProcessService, openerService, volume, onImported, restoreFallback);
 	void dialog;
 }
 
@@ -143,25 +148,27 @@ class ParadisMyinstantsImportDialog extends Disposable {
 		private readonly openerService: IOpenerService,
 		private readonly volume: number,
 		private readonly onImported: () => void,
+		/** 閉じるときに、開いたボタンが描き直しで外れていたら代わりに戻す先（{@link ParadisSectionFocusCarrier.find}）。 */
+		restoreFallback?: () => HTMLElement | undefined,
 	) {
 		super();
 
-		this._backdrop = $('.paradis-notif-nested-backdrop.paradis-modal-backdrop.paradis-modal-backdrop-nested');
-		this._dialog = $('.paradis-notif-nested-dialog.pns-myinstants');
-		this._backdrop.appendChild(this._dialog);
+		// URL・試聴・表示名の小さい箱（キットのダイアログの段 S）
+		const { backdrop, modal, close, body, foot } = paradisNotifNestedModal(ParadisModalSize.Small, STR_TITLE, 'pns-myinstants');
+		this._backdrop = backdrop;
+		this._dialog = modal;
+		this._register(dom.addDisposableListener(close, 'click', () => this._closeUnlessSaving()));
 
 		this._register(dom.addDisposableListener(this._backdrop, 'mousedown', e => {
 			// 保存中は閉じない（閉じると保存の結果を受け取れず、一時ファイルの後始末と競合する）。
-			if (e.target === this._backdrop && !this._saving) {
-				this.dispose();
+			if (e.target === this._backdrop) {
+				this._closeUnlessSaving();
 			}
 		}));
 
-		dom.append(this._dialog, $('h3')).textContent = STR_TITLE;
-
-		const urlField = dom.append(this._dialog, $('.pns-field'));
+		const urlField = dom.append(body, $('.pns-field'));
 		dom.append(urlField, $('label.pns-label')).textContent = STR_URL_LABEL;
-		this._urlInput = dom.append(urlField, $('input')) as HTMLInputElement;
+		this._urlInput = this._register(new ParadisInputField(urlField, { ariaLabel: STR_URL_LABEL })).inputElement;
 		this._urlInput.type = 'url';
 		this._urlInput.placeholder = STR_URL_PLACEHOLDER;
 		this._urlInput.autofocus = true;
@@ -176,23 +183,15 @@ class ParadisMyinstantsImportDialog extends Disposable {
 		}));
 		this._urlErrorEl = dom.append(urlField, $('.pns-error.pns-mi-error'));
 
-		this._previewEl = dom.append(this._dialog, $('.pns-mi-body'));
+		this._previewEl = dom.append(body, $('.pns-mi-body'));
 
-		const footer = dom.append(this._dialog, $('.pns-nested-footer'));
-		const cancelBtn = dom.append(footer, $('button.pns-btn')) as HTMLButtonElement;
-		cancelBtn.textContent = STR_CANCEL;
-		this._register(dom.addDisposableListener(cancelBtn, 'click', () => {
-			if (!this._saving) {
-				this.dispose();
-			}
-		}));
+		const cancelBtn = paradisNotifNestedButton(foot, 'secondary', STR_CANCEL);
+		this._register(dom.addDisposableListener(cancelBtn, 'click', () => this._closeUnlessSaving()));
 
-		this._loadBtn = dom.append(footer, $('button.pns-btn')) as HTMLButtonElement;
-		this._loadBtn.textContent = STR_LOAD;
+		this._loadBtn = paradisNotifNestedButton(foot, 'secondary', STR_LOAD);
 		this._register(dom.addDisposableListener(this._loadBtn, 'click', () => this._load()));
 
-		this._saveBtn = dom.append(footer, $('button.pns-btn.pns-btn-primary')) as HTMLButtonElement;
-		this._saveBtn.textContent = STR_SAVE;
+		this._saveBtn = paradisNotifNestedButton(foot, 'primary', STR_SAVE);
 		this._saveBtn.disabled = true;
 		this._register(dom.addDisposableListener(this._saveBtn, 'click', () => this._save()));
 
@@ -217,8 +216,18 @@ class ParadisMyinstantsImportDialog extends Disposable {
 			}
 		}));
 
+		// フォーカスと Esc は fork のモーダルに共通の扱いに乗せる。Hub の中から開く入れ子の箱なので Hub は閉じない。
+		// 保存中は Esc で閉じない（閉じると保存の結果を受け取れず、一時ファイルの後始末と競合する）
+		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal: this._dialog, nested: true, onEscape: () => this._closeUnlessSaving(), close: () => this.dispose(), restoreFallback }));
 		layoutService.activeContainer.appendChild(this._backdrop);
 		this._urlInput.focus();
+	}
+
+	/** 取消・✕・幕の外・Esc で閉じる。保存中は閉じない。 */
+	private _closeUnlessSaving(): void {
+		if (!this._saving) {
+			this.dispose();
+		}
 	}
 
 	override dispose(): void {
@@ -306,7 +315,10 @@ class ParadisMyinstantsImportDialog extends Disposable {
 		dom.append(card, $('.pns-mi-badge')).textContent = 'mp3';
 		const info = dom.append(card, $('.pns-mi-info'));
 		const nameRow = dom.append(info, $('.pns-mi-name'));
-		nameRow.append(loaded.fileName.replace(/\.mp3$/i, ''));
+		// 名前だけを「…」で切り、長さの表示は残す（全文はポインタを重ねて読む）
+		const fileLabel = dom.append(nameRow, $('span.pns-mi-label'));
+		fileLabel.textContent = loaded.fileName.replace(/\.mp3$/i, '');
+		fileLabel.title = fileLabel.textContent;
 		const durationEl = dom.append(nameRow, $('span.pns-mi-duration'));
 		let host = '';
 		try {
@@ -315,7 +327,9 @@ class ParadisMyinstantsImportDialog extends Disposable {
 			// 判定済みの URL なので起こらない
 		}
 		dom.append(info, $('.pns-mi-meta')).textContent = `${formatSize(loaded.sizeBytes)} / ${host}`;
-		const playBtn = dom.append(card, $('button.pns-mi-play')) as HTMLButtonElement;
+		const playBtn = dom.append(card, $<HTMLButtonElement>('button.pns-mi-play'));
+		playBtn.type = 'button';
+		playBtn.classList.add(...paradisButtonClasses('icon', true));
 
 		const audio = new Audio();
 		audio.volume = Math.max(0, Math.min(1, this.volume / 100));
@@ -364,8 +378,7 @@ class ParadisMyinstantsImportDialog extends Disposable {
 		// --- 表示名 ---
 		const nameField = dom.append(this._previewEl, $('.pns-field'));
 		dom.append(nameField, $('label.pns-label')).textContent = STR_NAME_LABEL;
-		const nameInput = dom.append(nameField, $('input')) as HTMLInputElement;
-		nameInput.type = 'text';
+		const nameInput = store.add(new ParadisInputField(nameField, { ariaLabel: STR_NAME_LABEL })).inputElement;
 		nameInput.maxLength = 80;
 		nameInput.value = loaded.suggestedName;
 		this._nameInput = nameInput;
