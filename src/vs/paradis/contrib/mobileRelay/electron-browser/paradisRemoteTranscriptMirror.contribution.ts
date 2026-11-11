@@ -219,8 +219,9 @@ export class ParadisRemoteTranscriptMirror extends Disposable implements IWorkbe
 		}
 		this.reading.add(remotePath);
 		this.readAppended(remotePath)
-			.then(() => {
-				if (this.failing.delete(remotePath)) {
+			.then(seen => {
+				// 接続先を見られなかった（stat が通らない）だけでは、読めたことにしない
+				if (seen && this.failing.delete(remotePath)) {
 					this.service.reportRemoteTranscriptMirrorReadFailure(this.ownerId, remotePath, false).catch(() => undefined);
 				}
 			}, error => {
@@ -240,11 +241,12 @@ export class ParadisRemoteTranscriptMirror extends Disposable implements IWorkbe
 			});
 	}
 
-	private async readAppended(remotePath: string): Promise<void> {
+	/** @returns 接続先の transcript を見られたか（stat が通ったか）。見られないまま戻ったときは false。 */
+	private async readAppended(remotePath: string): Promise<boolean> {
 		const uri = this.remoteUri(remotePath);
 		const stat = await this.fileService.stat(uri).catch(() => undefined);
 		if (stat === undefined || stat.isDirectory) {
-			return;
+			return false;
 		}
 		const size = stat.size ?? 0;
 		if (this.pendingCatchUp.delete(remotePath)) {
@@ -257,7 +259,7 @@ export class ParadisRemoteTranscriptMirror extends Disposable implements IWorkbe
 			offset = await this.service.resetRemoteTranscriptMirror(this.ownerId, remotePath);
 			if (offset === UNAVAILABLE) {
 				this.stop(remotePath);
-				return;
+				return true;
 			}
 			this.offsets.set(remotePath, offset);
 			// 置き換わった後の会話は、今書かれているもの
@@ -275,16 +277,17 @@ export class ParadisRemoteTranscriptMirror extends Disposable implements IWorkbe
 			const stream = await this.fileService.readFileStream(uri, { position: offset, length });
 			const data = await streamToBuffer(stream.value);
 			if (data.byteLength === 0) {
-				return;
+				return true;
 			}
 			const next = await this.service.appendRemoteTranscriptMirror(this.ownerId, remotePath, data, catchingUp);
 			if (next === UNAVAILABLE) {
 				this.stop(remotePath);
-				return;
+				return true;
 			}
 			offset = next;
 			this.offsets.set(remotePath, offset);
 		}
+		return true;
 	}
 }
 

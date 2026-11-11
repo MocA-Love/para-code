@@ -54,6 +54,7 @@ class TranscriptFileService extends TestFileService {
 	private data = VSBuffer.alloc(0);
 	private shortReadBytes: number | undefined;
 	readError: Error | undefined;
+	statError: Error | undefined;
 	readonly rangeReads: IReadCall[] = [];
 	watchDisposals = 0;
 
@@ -66,6 +67,9 @@ class TranscriptFileService extends TestFileService {
 	}
 
 	override async stat(resource: URI): Promise<IFileStatWithPartialMetadata> {
+		if (this.statError !== undefined) {
+			throw this.statError;
+		}
 		return { ...await super.stat(resource), size: this.data.byteLength };
 	}
 
@@ -461,6 +465,27 @@ suite('ParadisRemoteTranscriptMirror contribution', () => {
 		assert.deepStrictEqual(channel.calls
 			.filter(call => call.command === 'reportRemoteTranscriptMirrorReadFailure')
 			.map(call => call.failed), [true, false]);
+	});
+
+	test('keeps the unreadable mark while the host cannot even be looked at', async () => {
+		// 読みが落ちた後に接続先の stat まで通らなくなっても、読めたことにはしない（帯が壊れたまま消えない）
+		const fileService = new TranscriptFileService();
+		const channel = new TranscriptRelayChannel();
+		fileService.setTranscript(VSBuffer.fromString('line\n'));
+		fileService.readError = new Error('connection lost');
+		createMirror(fileService, channel);
+		await waitUntil(() => channel.calls.some(call => call.command === 'reportRemoteTranscriptMirrorReadFailure'), 500);
+
+		fileService.statError = new Error('connection lost');
+		fileService.fireFileChanges(new FileChangesEvent([{
+			resource: remoteTranscriptUri(),
+			type: FileChangeType.UPDATED,
+		}], false));
+		await new Promise<void>(resolve => setTimeout(resolve, 20));
+
+		assert.deepStrictEqual(channel.calls
+			.filter(call => call.command === 'reportRemoteTranscriptMirrorReadFailure')
+			.map(call => call.failed), [true]);
 	});
 
 	test('appends immediately when an UPDATED event arrives after initial follow', async () => {
