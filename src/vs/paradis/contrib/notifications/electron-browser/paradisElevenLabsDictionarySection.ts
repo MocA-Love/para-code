@@ -350,6 +350,8 @@ export class ParadisElevenLabsDictionaryEditorDialog extends Disposable {
 		private readonly dict: IParadisElevenLabsDictionaryListItem | undefined,
 		/** 保存できたら呼ぶ。新しく作った場合はその ID を渡す。 */
 		private readonly onSaved: (createdId: string | undefined) => void,
+		/** 閉じるときに、開いたボタンが描き直しで外れていたら代わりに戻す先（{@link ParadisSectionFocusCarrier.find}）。 */
+		restoreFallback?: () => HTMLElement | undefined,
 	) {
 		super();
 
@@ -369,7 +371,7 @@ export class ParadisElevenLabsDictionaryEditorDialog extends Disposable {
 		// フォーカスと Esc は fork のモーダルに共通の扱いに乗せる。Hub の中から開く入れ子の箱なので Hub は閉じない。
 		// 別のモーダルに閉じられたとき・Esc・外側の押下では、保存前の変更を下書きとして残す（dispose）
 		dialog.tabIndex = -1;
-		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal: dialog, nested: true, onEscape: () => this.dispose(), close: () => this.dispose() }));
+		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal: dialog, nested: true, onEscape: () => this.dispose(), close: () => this.dispose(), restoreFallback }));
 		layoutService.activeContainer.appendChild(this._backdrop);
 		dialog.focus();
 

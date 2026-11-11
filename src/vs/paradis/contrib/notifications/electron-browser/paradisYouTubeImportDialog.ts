@@ -92,11 +92,11 @@ const YOUTUBE_URL_HINT = /^https?:\/\/(?:www\.|m\.|music\.)?(?:youtube\.com|yout
 
 type Step = 'url' | 'installing' | 'downloading' | 'editor';
 
-export function openParadisYouTubeImportDialog(accessor: ServicesAccessor, onImported: () => void): void {
+export function openParadisYouTubeImportDialog(accessor: ServicesAccessor, onImported: () => void, restoreFallback?: () => HTMLElement | undefined): void {
 	const layoutService = accessor.get(ILayoutService);
 	const sharedProcessService = accessor.get(ISharedProcessService);
 	// ダイアログは自身のcloseで自己disposeするため、呼び出し元での追跡・登録は不要。
-	const dialog = new ParadisYouTubeImportDialog(layoutService, sharedProcessService, onImported);
+	const dialog = new ParadisYouTubeImportDialog(layoutService, sharedProcessService, onImported, restoreFallback);
 	void dialog;
 }
 
@@ -120,6 +120,8 @@ class ParadisYouTubeImportDialog extends Disposable {
 		layoutService: ILayoutService,
 		private readonly sharedProcessService: ISharedProcessService,
 		private readonly onImported: () => void,
+		/** 閉じるときに、開いたボタンが描き直しで外れていたら代わりに戻す先（{@link ParadisSectionFocusCarrier.find}）。 */
+		restoreFallback?: () => HTMLElement | undefined,
 	) {
 		super();
 
@@ -139,7 +141,7 @@ class ParadisYouTubeImportDialog extends Disposable {
 		}));
 
 		// フォーカスと Esc は fork のモーダルに共通の扱いに乗せる。Hub の中から開く入れ子の箱なので Hub は閉じない。
-		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal: this._dialog, nested: true, onEscape: () => this.dispose(), close: () => this.dispose() }));
+		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal: this._dialog, nested: true, onEscape: () => this.dispose(), close: () => this.dispose(), restoreFallback }));
 		layoutService.activeContainer.appendChild(this._backdrop);
 		this._renderUrlStep();
 	}

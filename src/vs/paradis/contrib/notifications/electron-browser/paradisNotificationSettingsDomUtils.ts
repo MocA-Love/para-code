@@ -50,6 +50,16 @@ export class ParadisSectionFocusCarrier {
 
 	constructor(private readonly container: HTMLElement) { }
 
+	/**
+	 * 印が `key` の要素を探す。無ければ節の最初のフォーカスできる要素（見出しの行のボタン）を返す。
+	 * 入れ子の箱を閉じたとき、開いたボタンが描き直しで作り直されていたら、ここで見つけた要素へ戻す。
+	 */
+	find(key: string): HTMLElement | undefined {
+		return [...this.container.querySelectorAll<HTMLElement>('[data-paradis-focus-key]')].find(element => element.dataset.paradisFocusKey === key)
+			?? this.container.querySelector<HTMLElement>('button:not(:disabled), [tabindex="0"], input:not(:disabled)')
+			?? undefined;
+	}
+
 	/** フォーカスが節の中にあれば、その要素の印を覚える（印が無ければ節の中にあったことだけを覚える）。 */
 	capture(): void {
 		const active = dom.getActiveElement();
@@ -72,16 +82,10 @@ export class ParadisSectionFocusCarrier {
 			return;
 		}
 		const match = key ? [...this.container.querySelectorAll<HTMLElement>('[data-paradis-focus-key]')].find(element => element.dataset.paradisFocusKey === key) : undefined;
-		if (match) {
-			this.pendingKey = undefined;
-			match.focus();
-			return;
-		}
-		if (!final) {
+		if (!match && !final) {
 			return;
 		}
 		this.pendingKey = undefined;
-		const first = this.container.querySelector<HTMLElement>('button:not(:disabled), [tabindex="0"], input:not(:disabled)');
-		first?.focus();
+		(match ?? this.find(key))?.focus();
 	}
 }

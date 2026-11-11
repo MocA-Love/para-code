@@ -111,12 +111,12 @@ type ParadisMyinstantsLoaded = Extract<IParadisMyinstantsDownloadResult, { ok: t
  * Myinstants 取り込みダイアログを開く。`onImported` は保存に成功した後に呼ぶ（呼び出し元はカスタム音源を選び直して再描画する）。
  * `volume` は試聴の音量（0-100）。
  */
-export function openParadisMyinstantsImportDialog(accessor: ServicesAccessor, volume: number, onImported: () => void): void {
+export function openParadisMyinstantsImportDialog(accessor: ServicesAccessor, volume: number, onImported: () => void, restoreFallback?: () => HTMLElement | undefined): void {
 	const layoutService = accessor.get(ILayoutService);
 	const sharedProcessService = accessor.get(ISharedProcessService);
 	const openerService = accessor.get(IOpenerService);
 	// ダイアログは自身のcloseで自己disposeするため、呼び出し元での追跡・登録は不要。
-	const dialog = new ParadisMyinstantsImportDialog(layoutService, sharedProcessService, openerService, volume, onImported);
+	const dialog = new ParadisMyinstantsImportDialog(layoutService, sharedProcessService, openerService, volume, onImported, restoreFallback);
 	void dialog;
 }
 
@@ -148,6 +148,8 @@ class ParadisMyinstantsImportDialog extends Disposable {
 		private readonly openerService: IOpenerService,
 		private readonly volume: number,
 		private readonly onImported: () => void,
+		/** 閉じるときに、開いたボタンが描き直しで外れていたら代わりに戻す先（{@link ParadisSectionFocusCarrier.find}）。 */
+		restoreFallback?: () => HTMLElement | undefined,
 	) {
 		super();
 
@@ -216,7 +218,7 @@ class ParadisMyinstantsImportDialog extends Disposable {
 
 		// フォーカスと Esc は fork のモーダルに共通の扱いに乗せる。Hub の中から開く入れ子の箱なので Hub は閉じない。
 		// 保存中は Esc で閉じない（閉じると保存の結果を受け取れず、一時ファイルの後始末と競合する）
-		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal: this._dialog, nested: true, onEscape: () => this._closeUnlessSaving(), close: () => this.dispose() }));
+		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal: this._dialog, nested: true, onEscape: () => this._closeUnlessSaving(), close: () => this.dispose(), restoreFallback }));
 		layoutService.activeContainer.appendChild(this._backdrop);
 		this._urlInput.focus();
 	}

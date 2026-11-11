@@ -348,6 +348,8 @@ export class ParadisCreateDictionaryDialog extends Disposable {
 		private readonly sharedProcessService: ISharedProcessService,
 		private readonly apiKey: string,
 		private readonly onCreated: (uuid: string) => void,
+		/** 閉じるときに、開いたボタンが描き直しで外れていたら代わりに戻す先（{@link ParadisSectionFocusCarrier.find}）。 */
+		restoreFallback?: () => HTMLElement | undefined,
 	) {
 		super();
 
@@ -409,7 +411,7 @@ export class ParadisCreateDictionaryDialog extends Disposable {
 		// フォーカスと Esc は fork のモーダルに共通の扱いに乗せる。Hub の中から開く入れ子の箱なので Hub は閉じない。
 		// 別のモーダルに閉じられたとき・Esc・外側の押下では、作成前の入力を下書きとして残す（dispose）
 		dialog.tabIndex = -1;
-		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal: dialog, nested: true, onEscape: () => this.dispose(), close: () => this.dispose() }));
+		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal: dialog, nested: true, onEscape: () => this.dispose(), close: () => this.dispose(), restoreFallback }));
 		layoutService.activeContainer.appendChild(this._backdrop);
 		nameInput.focus();
 	}
@@ -516,6 +518,8 @@ export class ParadisDictionaryEditorDialog extends Disposable {
 		private readonly onSaved: () => void,
 		private readonly contextViewService: IContextViewService,
 		private readonly configurationService: IConfigurationService,
+		/** 閉じるときに、開いたボタンが描き直しで外れていたら代わりに戻す先（{@link ParadisSectionFocusCarrier.find}）。 */
+		restoreFallback?: () => HTMLElement | undefined,
 	) {
 		super();
 
@@ -538,7 +542,7 @@ export class ParadisDictionaryEditorDialog extends Disposable {
 		// フォーカスと Esc は fork のモーダルに共通の扱いに乗せる。Hub の中から開く入れ子の箱なので Hub は閉じない。
 		// 別のモーダルに閉じられたとき・Esc・外側の押下では、保存前の変更を下書きとして残す（dispose）
 		dialog.tabIndex = -1;
-		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal: dialog, nested: true, onEscape: () => this.dispose(), close: () => this.dispose() }));
+		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal: dialog, nested: true, onEscape: () => this.dispose(), close: () => this.dispose(), restoreFallback }));
 		layoutService.activeContainer.appendChild(this._backdrop);
 		dialog.focus();
 
