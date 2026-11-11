@@ -40,6 +40,7 @@ import {
 	paradisSanitizeBranchName,
 } from '../common/paradisWorktreeCreate.js';
 import { appendParadisAgentLogoSvg } from '../../limitsMonitor/electron-browser/paradisLimitsLogos.js';
+import { paradisAgentLogoForId } from '../../../common/paradisAgentLogoPaths.js';
 import { IParadisAgentModelCatalogService } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { paradisAppendAgentListLockNotice } from '../../agentModelCatalog/browser/paradisAgentListLockNotice.js';
@@ -396,9 +397,10 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 			const button = dom.append(this._agentSeg, $('button.pcw-d-agent-btn.paradis-focus-ring-inset')) as HTMLButtonElement;
 			button.type = 'button';
 			const icon = dom.append(button, $('span.pcw-d-agent-icon'));
-			if (entry.id === 'claude' || entry.id === 'codex') {
-				icon.classList.add(entry.id);
-				appendParadisAgentLogoSvg(icon, entry.id);
+			const logo = paradisAgentLogoForId(entry.id);
+			if (logo) {
+				icon.classList.add(logo);
+				appendParadisAgentLogoSvg(icon, logo);
 			} else {
 				dom.append(icon, $(entry.id === 'none' ? 'span.codicon.codicon-circle-slash' : 'span.codicon.codicon-robot'));
 			}

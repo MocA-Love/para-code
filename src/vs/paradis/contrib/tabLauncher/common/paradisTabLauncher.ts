@@ -16,6 +16,8 @@ import { IParadisAgentCommandTemplate, IParadisAgentLaunchOptions } from '../../
 /**
  * ランチャーに出さないエージェント。モバイルの「エージェントを起動」シート
  * （app/mobile/src/features/launch/launchForm.ts の HIDDEN_AGENTS）と同じ規則にして、PC とモバイルで一覧を揃える（Q570）。
+ * 例外として Antigravity CLI は PC のランチャーには出し、モバイルへは送らない（PARADIS_MOBILE_HIDDEN_AGENTS。
+ * 状態の検知と会話の記録がそろうまで、モバイルの起動フォームに出さないため）。
  */
 export const PARADIS_TAB_LAUNCHER_HIDDEN_AGENTS: ReadonlySet<string> = new Set(['gemini']);
 

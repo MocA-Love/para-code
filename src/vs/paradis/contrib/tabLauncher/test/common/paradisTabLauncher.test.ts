@@ -30,8 +30,9 @@ suite('paradisTabLauncher', () => {
 	const claude = PARADIS_DEFAULT_AGENT_COMMANDS.find(agent => agent.id === 'claude')!;
 	const codex = PARADIS_DEFAULT_AGENT_COMMANDS.find(agent => agent.id === 'codex')!;
 
-	test('lists the agents the mobile launch sheet lists (no Gemini, keeps user-defined ones)', () => {
-		assert.deepStrictEqual(paradisTabLauncherAgents([...PARADIS_DEFAULT_AGENT_COMMANDS, custom]).map(agent => agent.id), ['claude', 'codex', 'aider']);
+	test('lists the agents the mobile launch sheet lists (no Gemini, keeps user-defined ones), plus Antigravity CLI on the PC', () => {
+		const gemini: IParadisAgentCommandTemplate = { id: 'gemini', label: 'Gemini CLI', command: 'gemini -i {prompt}' };
+		assert.deepStrictEqual(paradisTabLauncherAgents([...PARADIS_DEFAULT_AGENT_COMMANDS, gemini, custom]).map(agent => agent.id), ['claude', 'codex', 'antigravity', 'aider']);
 	});
 
 	test('reads stored choices and drops malformed values', () => {
@@ -110,9 +111,10 @@ suite('paradisTabLauncher', () => {
 			effortOnly: paradisMatchLauncherAgents(agents, 'high'),
 		}, {
 			agent: [{ agentId: 'codex' }],
-			combo: [{ agentId: 'claude', modelId: 'opus', effortId: 'high' }, { agentId: 'claude', modelId: 'opusplan', effortId: 'high' }],
+			combo: [{ agentId: 'claude', modelId: 'opus', effortId: 'high' }, { agentId: 'claude', modelId: 'opusplan', effortId: 'high' }, { agentId: 'antigravity', modelId: 'claude-opus-4-6-thinking', effortId: 'high' }],
 			lunaUltra: [],
-			effortOnly: [],
+			// Antigravity CLI のモデル id に high が入っている（エフォートは id で決まるので付けない）
+			effortOnly: [{ agentId: 'antigravity', modelId: 'gemini-3.8-flash-high', effortId: undefined }],
 		});
 	});
 

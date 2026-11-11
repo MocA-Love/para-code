@@ -44,7 +44,9 @@ export interface IParadisWorktreeImage {
 /**
  * エージェントへの画像の渡し方（2026-11-12 に本物の CLI で確かめた結果）。
  * - `mention`: 指示の後ろに `@パス` を足す。Claude Code 2.1.322 は起動時の指示の `@パス` を読み、最初の要求に
- *   画像として載せる（`@` の無いパスはただの文字のまま送られ、画像にならない）。
+ *   画像として載せる（`@` の無いパスはただの文字のまま送られ、画像にならない）。Antigravity CLI 1.5.5 は `@パス` を
+ *   文字のまま送るが、モデルが read_file でそのファイル（git が無視していても）を読み、画像として受け取る
+ *   （2026-11-12 に `-p` で、無視させた赤い画像の色を答えることを確かめた）。
  * - `flag`: `--image=<パス>,<パス>` を付ける。Codex 0.167.0 はカンマ区切りの複数を受け、TUI でも exec でも
  *   最初の要求に全部載せる。指示が空でも画像だけで始まる。
  * - `unsupported`: 渡せない。Gemini CLI 0.68.0 は `@パス` も read_file も git が無視するファイルを読まない
@@ -63,7 +65,7 @@ export interface IParadisAgentImageModeSource {
 
 /**
  * エージェント定義から画像の渡し方を決める。定義に `images` があればそれを使う。無ければ、確かめた CLI
- * （id が `claude`・`codex`）だけ渡し、それ以外（Gemini CLI・設定で足したエージェント）は渡さない。
+ * （id が `claude`・`codex`・`antigravity`）だけ渡し、それ以外（Gemini CLI・設定で足したエージェント）は渡さない。
  * `@` を読まない CLI に渡すと、指示の末尾に `@.para-code/…` の文字が残るだけになるため。
  */
 export function paradisAgentImageMode(agent: IParadisAgentImageModeSource | undefined): ParadisAgentImageMode {
@@ -76,6 +78,7 @@ export function paradisAgentImageMode(agent: IParadisAgentImageModeSource | unde
 	}
 	switch (agent.id) {
 		case 'claude':
+		case 'antigravity':
 			return 'mention';
 		case 'codex':
 			return 'flag';
