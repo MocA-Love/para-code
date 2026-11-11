@@ -25,8 +25,34 @@ import { isRecord } from '../../../common/paradisGuards.js';
 const MAX_UTTERANCE_CHARS = 32_768;
 const EVENT_PREFIX = '__paradis_tts__';
 
-/** 読み上げの面の中で動く関数（executeJavaScript で文字にして渡す。本体の外を参照しない）。 */
-function speakInPage(id: string, text: string, options: Record<string, unknown>, prefix: string): void {
+/** 声の一覧が空のとき、voiceschanged を待つ長さ（Chromium は面を作った直後の getVoices() に空を返し、読み込めたら知らせる）。 */
+const VOICES_WAIT_MS = 2_000;
+
+/**
+ * 声の一覧。空なら voiceschanged を `waitMs` まで待ってから返す（来なければ空のまま）。読み上げの面の中で動く関数
+ * （executeJavaScript で文字にして渡す。本体の外を参照しない）。
+ */
+export function paradisVoicesInPage(synth: SpeechSynthesis | undefined, waitMs: number): Promise<SpeechSynthesisVoice[]> {
+	const voices = synth ? synth.getVoices() : [];
+	if (!synth || voices.length > 0) {
+		return Promise.resolve(voices);
+	}
+	return new Promise(resolve => {
+		const done = () => {
+			clearTimeout(timer);
+			synth.removeEventListener('voiceschanged', done);
+			resolve(synth.getVoices());
+		};
+		const timer = setTimeout(done, waitMs);
+		synth.addEventListener('voiceschanged', done);
+	});
+}
+
+/**
+ * 読み上げの面の中で動く関数（executeJavaScript で文字にして渡す。本体の外を参照しない）。声の名前の指定があれば、
+ * `voicesInPage`（{@link paradisVoicesInPage}）で一覧が揃うのを待ってから選ぶ。
+ */
+export function paradisSpeakInPage(id: string, text: string, options: Record<string, unknown>, prefix: string, voicesInPage: typeof paradisVoicesInPage, waitMs: number): Promise<void> | void {
 	const synth = globalThis.speechSynthesis;
 	const report = (type: string, extra: Record<string, unknown> = {}) => console.log(prefix + JSON.stringify({ id, type, ...extra }));
 	if (!synth) {
@@ -49,19 +75,24 @@ function speakInPage(id: string, text: string, options: Record<string, unknown>,
 	if (typeof options.volume === 'number') {
 		utterance.volume = options.volume;
 	}
-	if (typeof options.voiceName === 'string') {
-		const voice = synth.getVoices().find(candidate => candidate.name === options.voiceName);
-		if (voice) {
-			utterance.voice = voice;
-		}
-	}
 	utterance.onstart = () => report('start', { charIndex: 0 });
 	utterance.onend = () => report('end', { charIndex: text.length });
 	utterance.onerror = event => report(event.error === 'interrupted' || event.error === 'canceled' ? 'interrupted' : 'error', { errorMessage: event.error });
 	utterance.onboundary = event => report(event.name === 'sentence' ? 'sentence' : 'word', { charIndex: event.charIndex, length: event.charLength });
 	utterance.onpause = () => report('pause');
 	utterance.onresume = () => report('resume');
-	synth.speak(utterance);
+	const voiceName = options.voiceName;
+	if (typeof voiceName !== 'string') {
+		synth.speak(utterance);
+		return;
+	}
+	return voicesInPage(synth, waitMs).then(voices => {
+		const voice = voices.find(candidate => candidate.name === voiceName);
+		if (voice) {
+			utterance.voice = voice;
+		}
+		synth.speak(utterance);
+	});
 }
 
 interface IPending {
@@ -109,7 +140,8 @@ export class ParadisBrowserExtensionTts implements IDisposable {
 				resume: paradisDefineExtensionMethod(args => args.length === 0 ? [] as [] : undefined, () => this._run('speechSynthesis.resume()', false)),
 				isSpeaking: paradisDefineExtensionMethod(args => args.length === 0 ? [] as [] : undefined, async () => this._pending.size > 0 && await this._run('speechSynthesis.speaking', false) === true),
 				getVoices: paradisDefineExtensionMethod(args => args.length === 0 ? [] as [] : undefined, async () => {
-					const voices = await this._run(`speechSynthesis.getVoices().map(voice => ({ voiceName: voice.name, lang: voice.lang, remote: !voice.localService }))`, true);
+					// 面を作った直後は一覧が空なので、揃うのを待つ
+					const voices = await this._run(`(${paradisVoicesInPage.toString()})(globalThis.speechSynthesis, ${VOICES_WAIT_MS}).then(voices => voices.map(voice => ({ voiceName: voice.name, lang: voice.lang, remote: !voice.localService })))`, true);
 					this._scheduleIdleClose();
 					return Array.isArray(voices) ? voices.map(voice => ({ ...voice, eventTypes: ['start', 'end', 'word', 'sentence', 'interrupted', 'cancelled', 'error', 'pause', 'resume'] })) : [];
 				}),
@@ -199,7 +231,7 @@ export class ParadisBrowserExtensionTts implements IDisposable {
 
 	private async _say(id: string, entry: Pick<IPending, 'text' | 'options'>, enqueue: boolean): Promise<void> {
 		const safe = { enqueue, lang: entry.options.lang, rate: entry.options.rate, pitch: entry.options.pitch, volume: entry.options.volume, voiceName: entry.options.voiceName };
-		await this._run(`(${speakInPage.toString()})(${JSON.stringify(id)}, ${JSON.stringify(entry.text)}, ${JSON.stringify(safe)}, ${JSON.stringify(EVENT_PREFIX)})`, true);
+		await this._run(`(${paradisSpeakInPage.toString()})(${JSON.stringify(id)}, ${JSON.stringify(entry.text)}, ${JSON.stringify(safe)}, ${JSON.stringify(EVENT_PREFIX)}, ${paradisVoicesInPage.toString()}, ${VOICES_WAIT_MS})`, true);
 	}
 
 	private _serialized<T>(run: () => Promise<T>): Promise<T> {

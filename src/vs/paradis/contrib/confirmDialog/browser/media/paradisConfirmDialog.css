@@ -84,6 +84,16 @@
 	*/
 	padding: calc(var(--paradis-focus-width) + var(--paradis-focus-offset));
 	margin: calc(-1 * (var(--paradis-focus-width) + var(--paradis-focus-offset)));
+	/*
+		Long buttons that do not fit on one line (three long labels in the S box, or any row in a narrow window) wrap to
+		the next line, still at the right, instead of being cut at the left edge of the box.
+	*/
+	flex-wrap: wrap;
+}
+
+/* A label longer than the whole row ends with an ellipsis inside the box. */
+.monaco-dialog-box.paradis-confirm-dialog:not(.align-vertical) > .dialog-buttons-row > .dialog-buttons > .monaco-button.paradis-button {
+	max-width: 100%;
 }
 
 .monaco-dialog-box.paradis-confirm-dialog > .dialog-buttons-row > .dialog-buttons > .monaco-button.paradis-button {
