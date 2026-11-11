@@ -7,11 +7,12 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PARADIS_CSV_INPUT_TYPE_ID } from '../../../fileViewers/browser/csv/paradisCsvFileInput.js';
 import { PARADIS_FILE_DIFF_INPUT_TYPE_ID, PARADIS_HTML_INPUT_TYPE_ID, PARADIS_MARKDOWN_INPUT_TYPE_ID, PARADIS_PDF_INPUT_TYPE_ID, PARADIS_SPREADSHEET_INPUT_TYPE_ID } from '../../../fileViewers/browser/paradisFileViewers.js';
-import { paradisCanPreviewEditor, paradisIsPalettePreviewMarkdown, paradisLooksBinary, PARADIS_PALETTE_PREVIEW_BINARY_SNIFF_BYTES, PARADIS_PALETTE_PREVIEW_MAX_LINES, paradisPalettePreviewHead, paradisPalettePreviewState } from '../../browser/paradisPalettePreview.js';
+import { paradisCanPreviewEditor, paradisIsPalettePreviewMarkdown, paradisLoadOrUnavailable, paradisLooksBinary, PARADIS_PALETTE_PREVIEW_BINARY_SNIFF_BYTES, PARADIS_PALETTE_PREVIEW_MAX_LINES, paradisPalettePreviewHead, paradisPalettePreviewState } from '../../browser/paradisPalettePreview.js';
 
 suite('paradisPalettePreview', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -64,6 +65,20 @@ suite('paradisPalettePreview', () => {
 			['workbench.editors.files.fileEditorInput', false],
 		];
 		assert.deepStrictEqual(cases.map(([typeId, readable]) => paradisCanPreviewEditor(typeId, blocked, readable)), [true, true, true, true, true, true, true, false, false, false, false]);
+	});
+
+	test('a failed read shows "cannot preview" unless the row already changed', async () => {
+		const failing = () => Promise.reject(new Error('EACCES'));
+		let shown = 0;
+		const live = new CancellationTokenSource();
+		await paradisLoadOrUnavailable(failing, live.token, () => shown++);
+		const cancelled = new CancellationTokenSource();
+		cancelled.cancel();
+		await paradisLoadOrUnavailable(failing, cancelled.token, () => shown++);
+		await paradisLoadOrUnavailable(() => Promise.resolve(), live.token, () => shown++);
+		live.dispose();
+		cancelled.dispose();
+		assert.strictEqual(shown, 1);
 	});
 
 	test('the preview toggle shows on/off only where the window can hold the preview', () => {

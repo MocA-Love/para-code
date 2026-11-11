@@ -134,6 +134,20 @@ export function paradisCanPreviewEditor(typeId: string, blockedTypeIds: Readonly
 	return readable && !blockedTypeIds.has(typeId);
 }
 
+/**
+ * ファイルを読んで面に出す。読めなかったとき（消えたファイル・権限の無いファイル・切れた SSH など）は、取り消しでなければ
+ * 本文を空のままにせず「プレビューできません」にする（`onUnavailable`）。
+ */
+export async function paradisLoadOrUnavailable(load: () => Promise<void>, token: CancellationToken, onUnavailable: () => void): Promise<void> {
+	try {
+		await load();
+	} catch {
+		if (!token.isCancellationRequested) {
+			onUnavailable();
+		}
+	}
+}
+
 /** 面の本文に「プレビューできません」を出す。 */
 function showUnavailable(body: HTMLElement): void {
 	dom.append(body, dom.$('.paradis-palette-preview-empty')).textContent = localize('paradis.palette.preview.unavailable', "このタブはプレビューできません");
@@ -241,7 +255,7 @@ export class ParadisPalettePreviewPane extends Disposable {
 				const body = dom.append(this.element, dom.$('.paradis-palette-preview-body'));
 				if (model.resource) {
 					const resource = model.resource;
-					this.later(token => this.loadFile(resource, body, token));
+					this.later(token => paradisLoadOrUnavailable(() => this.loadFile(resource, body, token), token, () => showUnavailable(body)));
 				} else {
 					showUnavailable(body);
 				}
