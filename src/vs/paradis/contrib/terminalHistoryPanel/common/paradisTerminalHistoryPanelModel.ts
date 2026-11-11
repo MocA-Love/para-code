@@ -127,3 +127,8 @@ export function paradisShortenCwd(cwd: string | undefined, home: string | undefi
 	}
 	return cwd;
 }
+
+/** 一覧の 1 行に出すため、改行（複数行のコマンド）を ⏎ に替えて 1 行に畳む。全文はホバーで見せる。 */
+export function paradisHistoryPanelOneLine(text: string): string {
+	return text.replace(/\r\n|\r|\n/g, ' \u23CE ');
+}
