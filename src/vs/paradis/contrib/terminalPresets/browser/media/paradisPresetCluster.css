@@ -188,8 +188,17 @@
 	display: flex;
 	align-items: center;
 	gap: 4px;
+	min-width: 0;
 	font-size: 12px;
 	white-space: nowrap;
+}
+
+/* 名前も出すボタンは、長い名前で際限なく広がらないよう名前だけを「…」で切る（全文はホバーに出る） */
+.monaco-workbench .paradis-preset-cluster-item-text {
+	min-width: 0;
+	max-width: 160px;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 /* ---------- 内訳ポップアップ（フォルダ・同名まとめのクリックで開く縦メニュー） ----------
