@@ -341,6 +341,20 @@ suite('Paradis UI parts', () => {
 		]);
 	});
 
+	test('button: $(…) in the label stays text; only the icon option draws a codicon', () => {
+		const plain = store.add(new ParadisButton(workbench, { kind: 'secondary', label: 'run $(rm) now' }));
+		const withIcon = store.add(new ParadisButton(workbench, { kind: 'secondary', icon: Codicon.add, label: '$(close) add' }));
+		const removeRow = store.add(new ParadisButton(workbench, { kind: 'icon', small: true, icon: Codicon.close, title: 'Remove Row', ariaLabel: 'Remove Row' }));
+		assert.deepStrictEqual([plain, withIcon].map(button => ({
+			codicons: [...button.element.querySelectorAll('.codicon')].map(glyph => glyph.className),
+			text: button.element.textContent,
+		})).concat([{ codicons: [...removeRow.element.querySelectorAll('.codicon')].map(glyph => glyph.className), text: removeRow.element.getAttribute('aria-label') ?? '' }]), [
+			{ codicons: [], text: 'run $(rm) now' },
+			{ codicons: ['codicon codicon-add'], text: '$(close) add' },
+			{ codicons: ['codicon codicon-close'], text: 'Remove Row' },
+		]);
+	});
+
 	test('action button: an ActionBar item drawn as a 24px kit button, the count beside the label or over the icon', () => {
 		const textItem = mainWindow.document.createElement('li');
 		const iconItem = mainWindow.document.createElement('li');

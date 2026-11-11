@@ -21,7 +21,9 @@
 // Button を中に入れない（タブの止まりが 2 つになる）。その場合は paradisActionButton.ts で同じ見た目のクラスを付ける。
 
 import './media/paradisButton.css';
+import { $, reset } from '../../base/browser/dom.js';
 import { Button } from '../../base/browser/ui/button/button.js';
+import { renderIcon } from '../../base/browser/ui/iconLabel/iconLabels.js';
 import { IHoverDelegate } from '../../base/browser/ui/hover/hoverDelegate.js';
 import { Event } from '../../base/common/event.js';
 import { Disposable } from '../../base/common/lifecycle.js';
@@ -83,14 +85,28 @@ export class ParadisButton extends Disposable {
 	/**
 	 * アイコンと文字を、ボタンの中の子の span として描く。アイコンを本家の `Button.icon` に渡すと、ボタンの要素
 	 * そのものに codicon のクラスが付き、`.paradis-button` の `font-family: inherit` と読み込みの順で取り合って
-	 * アイコンが四角（豆腐）になる。`$(id)` を文字の先頭に置くと、本家の Button が `span.codicon` にしてくれる。
+	 * アイコンが四角（豆腐）になる。
+	 *
+	 * 文字は `$(…)` も含めてそのまま文字として出す（アイコンとして描くのはキットの `icon` だけ）。本家の `Button.label`
+	 * に渡すと `$(…)` をアイコンとして読み、`escapeIcons()` しても前後の空白が詰められるので、中身は自分で描く。
+	 * 文字が収まらないときは span ごと「…」で切れる（paradisButton.css）。
 	 */
 	private _renderContent(): void {
 		if (this._label === undefined && !this._icon) {
 			return;
 		}
-		const icon = this._icon ? `$(${this._icon.id})` : '';
-		this.button.label = [icon, this._label ?? ''].filter(part => part.length > 0).join(' ');
+		const element = this.button.element;
+		element.classList.add('monaco-text-button');
+		const children: HTMLElement[] = [];
+		if (this._icon) {
+			children.push(renderIcon(this._icon));
+		}
+		if (this._label) {
+			const text = $('span');
+			text.textContent = this._label;
+			children.push(text);
+		}
+		reset(element, ...children);
 	}
 
 	get element(): HTMLElement {

@@ -462,6 +462,8 @@ const STR_COL_PRIORITY = localize('paradis.notif.dict.colPriority', "優先度 (
 // allow-any-unicode-next-line
 const STR_COL_TYPE = localize('paradis.notif.dict.colType', "品詞");
 // allow-any-unicode-next-line
+const STR_REMOVE_ROW = localize('paradis.notif.dict.removeRow', "行を消す");
+// allow-any-unicode-next-line
 const STR_ADD_ROW = localize('paradis.notif.dict.addRow', "行を追加");
 // allow-any-unicode-next-line
 const STR_ACCENT_HINT = localize('paradis.notif.dict.accentHint', "アクセント核は 0 始まりの整数 (0 = 平板型)。");
@@ -737,7 +739,7 @@ export class ParadisDictionaryEditorDialog extends Disposable {
 		this._rowDisposables.add(typeSelect.onDidChange(value => { word.wordType = value as ParadisAivisWordType; }));
 
 		const removeCell = dom.append(row, $('td'));
-		const removeBtn = this._rowDisposables.add(new ParadisButton(removeCell, { kind: 'icon', small: true, icon: Codicon.close }));
+		const removeBtn = this._rowDisposables.add(new ParadisButton(removeCell, { kind: 'icon', small: true, icon: Codicon.close, title: STR_REMOVE_ROW, ariaLabel: STR_REMOVE_ROW }));
 		this._rowDisposables.add(removeBtn.onDidClick(() => {
 			this._words.splice(index, 1);
 			rerender();
