@@ -412,10 +412,13 @@
 	font-family: var(--monaco-monospace-font);
 }
 
+/* The tags shrink with an ellipsis and leave room for the URL. */
 .paradis-browser-live-tags {
 	display: flex;
 	gap: 4px;
-	flex: 0 0 auto;
+	flex: 0 1 auto;
+	min-width: 0;
+	max-width: 60%;
 }
 
 .paradis-browser-live-tag {
@@ -428,6 +431,13 @@
 	border: 1px solid var(--vscode-editorWidget-border);
 	color: var(--vscode-descriptionForeground);
 	white-space: nowrap;
+	min-width: 0;
+}
+
+.paradis-browser-live-tag > span:last-child {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 .paradis-browser-live-dot {
