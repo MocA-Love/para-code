@@ -33,7 +33,10 @@ import { PARADIS_NOTIFICATIONS_CHANNEL } from '../common/paradisNotifications.js
 import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
 import { paradisElevenLabsDictionaryCache } from './paradisElevenLabsApiCache.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
-import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
+import { ParadisModalSize } from '../../../browser/paradisModal.js';
+import { ParadisButton } from '../../../browser/paradisButton.js';
+import { ParadisInputField } from '../../../browser/paradisInputField.js';
+import { paradisNotifNestedModal } from './paradisNotificationNestedModal.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { PARADIS_MODAL_DRAFT_RESTORED, paradisModalDraftSnapshot, ParadisModalDrafts } from '../../paradisSettings/browser/paradisModalDrafts.js';
 
@@ -338,6 +341,7 @@ export class ParadisElevenLabsDictionaryEditorDialog extends Disposable {
 	/** 「キャンセル」と保存で閉じるときは、下書きを残さない。 */
 	private _discardOnClose = false;
 	private _closed = false;
+	private readonly _footEl: HTMLElement;
 
 	constructor(
 		layoutService: ILayoutService,
@@ -349,14 +353,13 @@ export class ParadisElevenLabsDictionaryEditorDialog extends Disposable {
 	) {
 		super();
 
-		this._backdrop = $('.paradis-notif-nested-backdrop.paradis-modal-backdrop.paradis-modal-backdrop-nested');
-		const dialog = $('.paradis-notif-nested-dialog.wide');
-		// 辞書の編集は段 M の箱（Q537 の 43 A）
-		dialog.classList.add(...paradisModalClasses(ParadisModalSize.Medium));
-		this._backdrop.appendChild(dialog);
-		dom.append(dialog, $('h3')).textContent = dict ? STR_EDIT_TITLE : STR_CREATE_TITLE;
-		dom.append(dialog, $('.pns-nested-desc')).textContent = STR_EDIT_DESC;
-		this._bodyEl = dom.append(dialog, $('div'));
+		// 辞書の編集は段 M の箱（Q537 の 43 A）。表は本文の中でスクロールする
+		const { backdrop, modal: dialog, close, body, foot } = paradisNotifNestedModal(ParadisModalSize.Medium, dict ? STR_EDIT_TITLE : STR_CREATE_TITLE);
+		this._backdrop = backdrop;
+		this._footEl = foot;
+		this._register(dom.addDisposableListener(close, 'click', () => this.dispose()));
+		dom.append(body, $('.pns-nested-desc')).textContent = STR_EDIT_DESC;
+		this._bodyEl = dom.append(body, $('div'));
 
 		this._register(dom.addDisposableListener(this._backdrop, 'mousedown', e => {
 			if (e.target === this._backdrop) {
@@ -372,7 +375,7 @@ export class ParadisElevenLabsDictionaryEditorDialog extends Disposable {
 
 		if (!dict) {
 			this._rows = [{ surface: '', reading: '' }];
-			this._restoreDraftAndRender(dialog);
+			this._restoreDraftAndRender();
 			return;
 		}
 		this._bodyEl.textContent = '…';
@@ -384,7 +387,7 @@ export class ParadisElevenLabsDictionaryEditorDialog extends Disposable {
 			this._description = detail.description;
 			this._existingRules = detail.rules;
 			this._rows = paradisEntriesFromElevenLabsRules(detail.rules).map(entry => ({ ...entry }));
-			this._restoreDraftAndRender(dialog);
+			this._restoreDraftAndRender();
 		}, error => {
 			if (this._store.isDisposed) {
 				return;
@@ -403,7 +406,7 @@ export class ParadisElevenLabsDictionaryEditorDialog extends Disposable {
 	}
 
 	/** 読み込んだ中身を写しに取り、下書きがあれば中身をそれに置き換えて描く。 */
-	private _restoreDraftAndRender(dialog: HTMLElement): void {
+	private _restoreDraftAndRender(): void {
 		this._loaded = paradisModalDraftSnapshot(this._state());
 		const draft = elevenLabsEditorDrafts.take(this._draftKey);
 		if (draft) {
@@ -414,26 +417,26 @@ export class ParadisElevenLabsDictionaryEditorDialog extends Disposable {
 			}
 			this._rows = [...draft.rows];
 		}
-		this._renderBody(dialog);
+		this._renderBody();
 		if (draft) {
 			this._bodyEl.prepend($('.pns-nested-desc', undefined, PARADIS_MODAL_DRAFT_RESTORED));
 		}
 	}
 
-	private _renderBody(dialog: HTMLElement): void {
+	private _renderBody(): void {
 		dom.clearNode(this._bodyEl);
 		const isNew = !this.dict;
 
 		const nameRow = dom.append(this._bodyEl, $('.pns-field'));
 		dom.append(nameRow, $('label.pns-label')).textContent = STR_NAME_LABEL;
 		if (isNew) {
-			const nameInput = dom.append(nameRow, $('input')) as HTMLInputElement;
+			const nameInput = this._register(new ParadisInputField(nameRow, { ariaLabel: STR_NAME_LABEL })).inputElement;
 			nameInput.value = this._name;
 			nameInput.maxLength = 100;
 			this._register(dom.addDisposableListener(nameInput, 'input', () => { this._name = nameInput.value; }));
 			const descRow = dom.append(this._bodyEl, $('.pns-field'));
 			dom.append(descRow, $('label.pns-label')).textContent = STR_DESCRIPTION_LABEL;
-			const descInput = dom.append(descRow, $('input')) as HTMLInputElement;
+			const descInput = this._register(new ParadisInputField(descRow, { ariaLabel: STR_DESCRIPTION_LABEL })).inputElement;
 			descInput.value = this._description;
 			descInput.maxLength = 500;
 			this._register(dom.addDisposableListener(descInput, 'input', () => { this._description = descInput.value; }));
@@ -443,7 +446,7 @@ export class ParadisElevenLabsDictionaryEditorDialog extends Disposable {
 			dom.append(nameRow, $('div')).textContent = this._name;
 		}
 
-		const table = dom.append(this._bodyEl, $('table.pns-dict-table'));
+		const table = dom.append(dom.append(this._bodyEl, $('.pns-table-scroll')), $('table.pns-dict-table'));
 		const headRow = dom.append(dom.append(table, $('thead')), $('tr'));
 		for (const label of [STR_COL_SURFACE, STR_COL_READING, '']) {
 			dom.append(headRow, $('th')).textContent = label;
@@ -465,10 +468,8 @@ export class ParadisElevenLabsDictionaryEditorDialog extends Disposable {
 		renderRows();
 
 		const addRow = dom.append(this._bodyEl, $('.pns-row'));
-		const addBtn = dom.append(addRow, $('button.pns-btn')) as HTMLButtonElement;
-		addBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.add)}`));
-		addBtn.append(STR_ADD_ROW);
-		this._register(dom.addDisposableListener(addBtn, 'click', () => {
+		const addBtn = this._register(new ParadisButton(addRow, { kind: 'secondary', icon: Codicon.add, label: STR_ADD_ROW }));
+		this._register(addBtn.onDidClick(() => {
 			this._rows.push({ surface: '', reading: '' });
 			renderRows();
 		}));
@@ -479,16 +480,16 @@ export class ParadisElevenLabsDictionaryEditorDialog extends Disposable {
 
 		const errorEl = dom.append(this._bodyEl, $('.pns-error'));
 
-		const footer = dom.append(dialog, $('.pns-nested-footer'));
-		const cancelBtn = dom.append(footer, $('button.pns-btn')) as HTMLButtonElement;
-		cancelBtn.textContent = STR_CANCEL;
-		this._register(dom.addDisposableListener(cancelBtn, 'click', () => {
+		const cancelBtn = this._register(new ParadisButton(this._footEl, { kind: 'secondary', label: STR_CANCEL }));
+		this._register(cancelBtn.onDidClick(() => {
 			this._discardOnClose = true;
 			this.dispose();
 		}));
-		const saveBtn = dom.append(footer, $('button.pns-btn.pns-btn-primary')) as HTMLButtonElement;
-		saveBtn.textContent = STR_SAVE;
-		this._register(dom.addDisposableListener(saveBtn, 'click', async () => {
+		const saveBtn = this._register(new ParadisButton(this._footEl, { kind: 'primary', label: STR_SAVE }));
+		this._register(saveBtn.onDidClick(async () => {
+			if (!saveBtn.enabled) {
+				return;
+			}
 			errorEl.textContent = '';
 			if (isNew && !this._name.trim()) {
 				errorEl.textContent = STR_ERR_NAME_EMPTY;
@@ -505,8 +506,8 @@ export class ParadisElevenLabsDictionaryEditorDialog extends Disposable {
 				errorEl.textContent = STR_ERR_NO_RULES;
 				return;
 			}
-			saveBtn.disabled = true;
-			saveBtn.textContent = STR_SAVING;
+			saveBtn.enabled = false;
+			saveBtn.label = STR_SAVING;
 			try {
 				const channel = this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL);
 				if (this.dict) {
@@ -521,8 +522,8 @@ export class ParadisElevenLabsDictionaryEditorDialog extends Disposable {
 				this.dispose();
 			} catch (error) {
 				errorEl.textContent = error instanceof Error ? error.message : String(error);
-				saveBtn.disabled = false;
-				saveBtn.textContent = STR_SAVE;
+				saveBtn.enabled = true;
+				saveBtn.label = STR_SAVE;
 			}
 		}));
 	}
@@ -530,15 +531,14 @@ export class ParadisElevenLabsDictionaryEditorDialog extends Disposable {
 	private _renderRow(tbody: HTMLElement, index: number, rerender: () => void): void {
 		const row = this._rows[index];
 		const tr = dom.append(tbody, $('tr'));
-		const surfaceInput = dom.append(dom.append(tr, $('td')), $('input')) as HTMLInputElement;
+		const surfaceInput = this._rowDisposables.add(new ParadisInputField(dom.append(tr, $('td')), { ariaLabel: STR_COL_SURFACE, small: true })).inputElement;
 		surfaceInput.value = row.surface;
 		this._rowDisposables.add(dom.addDisposableListener(surfaceInput, 'input', () => { row.surface = surfaceInput.value; }));
-		const readingInput = dom.append(dom.append(tr, $('td')), $('input')) as HTMLInputElement;
+		const readingInput = this._rowDisposables.add(new ParadisInputField(dom.append(tr, $('td')), { ariaLabel: STR_COL_READING, small: true })).inputElement;
 		readingInput.value = row.reading;
 		this._rowDisposables.add(dom.addDisposableListener(readingInput, 'input', () => { row.reading = readingInput.value; }));
-		const removeBtn = dom.append(dom.append(tr, $('td')), $('button.pns-btn.pns-btn-icon')) as HTMLButtonElement;
-		removeBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.close)}`));
-		this._rowDisposables.add(dom.addDisposableListener(removeBtn, 'click', () => {
+		const removeBtn = this._rowDisposables.add(new ParadisButton(dom.append(tr, $('td')), { kind: 'icon', small: true, icon: Codicon.close }));
+		this._rowDisposables.add(removeBtn.onDidClick(() => {
 			this._rows.splice(index, 1);
 			rerender();
 		}));

@@ -233,16 +233,11 @@
 /* allow-any-unicode-next-line */
 /* より詳細度の高いセレクタで後から上書きする。 */
 /* allow-any-unicode-next-line */
-/* ネストダイアログ(YouTube取込・辞書編集等)は `.paradis-notif-area` の子孫ではなく */
-/* allow-any-unicode-next-line */
-/* `.paradis-notif-nested-dialog` 配下に独立して存在するため、同じルールを両方に適用する。 */
+/* 入れ子の箱（辞書の編集・着信音の取り込み）の部品は paradisNotificationNestedModal.css に置く。 */
 
 .paradis-notif-area input,
 .paradis-notif-area select,
-.paradis-notif-area textarea,
-.paradis-notif-nested-dialog input,
-.paradis-notif-nested-dialog select,
-.paradis-notif-nested-dialog textarea {
+.paradis-notif-area textarea {
 	width: 100%;
 	box-sizing: border-box;
 	background: var(--vscode-input-background);
@@ -254,14 +249,12 @@
 	font-family: inherit;
 }
 
-.paradis-notif-area textarea,
-.paradis-notif-nested-dialog textarea {
+.paradis-notif-area textarea {
 	resize: vertical;
 	min-height: 44px;
 }
 
-.paradis-notif-area input[type="range"],
-.paradis-notif-nested-dialog input[type="range"] {
+.paradis-notif-area input[type="range"] {
 	width: 100%;
 	background: transparent;
 	border: none;
@@ -728,13 +721,8 @@
 }
 
 /* ---------- legacy row helpers ---------- */
-/* allow-any-unicode-next-line */
-/* 辞書編集等のネストダイアログは `.paradis-notif-area` の子孫ではないため、 */
-/* allow-any-unicode-next-line */
-/* input/select と同じく両方のスコープに同じルールを適用する。 */
 
-.paradis-notif-area .pns-row,
-.paradis-notif-nested-dialog .pns-row {
+.paradis-notif-area .pns-row {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
@@ -743,177 +731,21 @@
 }
 
 /* 使用量のAPIキー別内訳・音声エディタ等で使う補助テキスト（旧版から復元）。 */
-.paradis-notif-area .pns-row-hint,
-.paradis-notif-nested-dialog .pns-row-hint {
+.paradis-notif-area .pns-row-hint {
 	font-size: 11px;
 	color: var(--vscode-descriptionForeground);
 	margin-top: 2px;
 }
 
-.paradis-notif-area .pns-field,
-.paradis-notif-nested-dialog .pns-field {
+.paradis-notif-area .pns-field {
 	margin-bottom: 14px;
 }
 
-.paradis-notif-area label.pns-label,
-.paradis-notif-nested-dialog label.pns-label {
+.paradis-notif-area label.pns-label {
 	display: block;
 	font-size: 12px;
 	font-weight: 500;
 	margin-bottom: 5px;
-}
-
-/* ---------- nested dialog (YouTube import / dictionary editor) ---------- */
-
-/* allow-any-unicode-next-line */
-/* 注意: このbackdropは常に layoutService.activeContainer の直下（設定ダイアログのbackdropとは */
-/* allow-any-unicode-next-line */
-/* 兄弟関係）に追加される（自身のオープン元が既に閉じられていてもダイアログ自体は独立して */
-/* allow-any-unicode-next-line */
-/* 機能する必要があるため）。よって親セレクタに依存させず、単独ルールとしてz-indexで */
-.paradis-notif-nested-backdrop {
-	position: absolute;
-	inset: 0;
-	background: rgba(0, 0, 0, 0.5);
-	display: flex;
-	align-items: center;
-	justify-content: center;
-}
-
-.paradis-notif-nested-dialog {
-	width: 560px;
-	max-width: 92vw;
-	max-height: 88vh;
-	overflow-y: auto;
-	background: var(--vscode-editor-background);
-	color: var(--vscode-foreground);
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 8px;
-	box-shadow: var(--vscode-shadow-xl);
-	padding: 18px 20px;
-	font-size: 13px;
-}
-
-.paradis-notif-nested-dialog.wide {
-	width: 860px;
-}
-
-.paradis-notif-nested-dialog h3 {
-	margin: 0 0 4px 0;
-	font-size: 14px;
-	font-weight: 600;
-}
-
-.paradis-notif-nested-dialog .pns-nested-desc {
-	font-size: 11.5px;
-	color: var(--vscode-descriptionForeground);
-	margin: 0 0 14px 0;
-}
-
-.paradis-notif-nested-dialog .pns-nested-footer {
-	display: flex;
-	justify-content: flex-end;
-	gap: 8px;
-	margin-top: 16px;
-}
-
-/* allow-any-unicode-next-line */
-/* ---------- Myinstants 取り込み（paradisMyinstantsImportDialog.ts） ---------- */
-
-.paradis-notif-nested-dialog.pns-myinstants .pns-mi-error {
-	color: var(--vscode-errorForeground);
-	font-size: 11.5px;
-	margin-top: 6px;
-}
-
-.paradis-notif-nested-dialog.pns-myinstants .pns-mi-error:empty {
-	display: none;
-}
-
-.paradis-notif-nested-dialog.pns-myinstants .pns-mi-link {
-	color: var(--vscode-textLink-foreground);
-	cursor: pointer;
-}
-
-.paradis-notif-nested-dialog.pns-myinstants .pns-mi-preview {
-	display: flex;
-	align-items: center;
-	gap: 10px;
-	padding: 8px 10px;
-	margin-bottom: 14px;
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 6px;
-}
-
-.paradis-notif-nested-dialog.pns-myinstants .pns-mi-badge {
-	width: 32px;
-	height: 32px;
-	border-radius: 4px;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	flex-shrink: 0;
-	font-size: 10.5px;
-	color: var(--vscode-descriptionForeground);
-	background: var(--vscode-editorWidget-background);
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-}
-
-.paradis-notif-nested-dialog.pns-myinstants .pns-mi-info {
-	flex: 1;
-	min-width: 0;
-}
-
-.paradis-notif-nested-dialog.pns-myinstants .pns-mi-name {
-	font-size: 12.5px;
-	font-weight: 500;
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.paradis-notif-nested-dialog.pns-myinstants .pns-mi-duration,
-.paradis-notif-nested-dialog.pns-myinstants .pns-mi-meta {
-	font-size: 11px;
-	font-weight: normal;
-	color: var(--vscode-descriptionForeground);
-}
-
-.paradis-notif-nested-dialog.pns-myinstants .pns-mi-play {
-	width: 24px;
-	height: 24px;
-	border-radius: 50%;
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	cursor: pointer;
-	flex-shrink: 0;
-	color: var(--vscode-foreground);
-	background: transparent;
-}
-
-.paradis-notif-nested-dialog.pns-myinstants .pns-mi-play:hover {
-	background: var(--vscode-toolbar-hoverBackground);
-}
-
-.paradis-notif-nested-dialog.pns-myinstants .pns-mi-play.playing {
-	border-color: var(--vscode-focusBorder);
-	color: var(--vscode-textLink-foreground);
-}
-
-.paradis-notif-nested-dialog.pns-myinstants .pns-mi-notice {
-	display: flex;
-	flex-direction: column;
-	gap: 4px;
-	padding: 8px 10px;
-	font-size: 11.5px;
-	color: var(--vscode-descriptionForeground);
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 6px;
 }
 
 /* ---------- 音声報告: 読み上げエンジンの切り替え・ElevenLabs の声 ---------- */
@@ -985,10 +817,4 @@
 	font-size: 10.5px;
 	font-weight: 400;
 	color: var(--vscode-descriptionForeground);
-}
-
-/* 辞書の編集は段 M の箱（paradisModal.css。Q537 の 43 A）。高さは固定で、長い表は中でスクロールする。 */
-.monaco-workbench .paradis-notif-nested-dialog.paradis-modal-m {
-	display: block;
-	overflow-y: auto;
 }
