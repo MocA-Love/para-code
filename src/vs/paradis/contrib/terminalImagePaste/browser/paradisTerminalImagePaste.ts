@@ -23,7 +23,7 @@ import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryD
  * `.para-code/` 直下は `paradisAgentHooks.ts` の hooks スクリプトやリモートエージェントの
  * ソケットが `$HOME/.para-code/` として既に使っている名前空間なので、専用のサブディレクトリを切る。
  */
-const PASTED_IMAGE_DIR = '.para-code/pasted-images';
+export const PASTED_IMAGE_DIR = '.para-code/pasted-images';
 /** 置きっぱなしを掃除する閾値。TUI が読む前に消さない程度に長く取る。 */
 const PASTED_IMAGE_TTL_MS = 60 * 60 * 1000;
 
@@ -227,4 +227,23 @@ async function ensurePastedImagesIgnored(directory: URI, fileService: IFileServi
 		// .gitignore を用意できなくても貼り付け自体は成立しているので無視してよい
 		reportParadisDiagnosticError('owned', 'terminal-image-paste', 'gitignore-write-failed', error, undefined, 'warning');
 	}
+}
+
+/**
+ * 画像を `directory`（`.para-code/pasted-images/`）へ書き、書いたファイルの URI を返す。書けなければ undefined。
+ * 手元のフォルダ（file:）でも SSH 先（vscode-remote:）でも同じに書ける。書く前に `.gitignore` を置く。
+ *
+ * 名前は呼び出し側が決め、古い画像の掃除は走らせない。「新しいスペース」の指示に添えた画像
+ * （paradisWorktreeImageWrite.ts）が使う。その画像は掃除の対象から外れる名前で書き、スペースを消すまで残す。
+ */
+export async function paradisWritePastedImageFile(fileService: IFileService, directory: URI, fileName: string, image: VSBuffer): Promise<URI | undefined> {
+	await ensurePastedImagesIgnored(directory, fileService);
+	const file = URI.joinPath(directory, fileName);
+	try {
+		await fileService.writeFile(file, image);
+	} catch (error) {
+		reportParadisDiagnosticError('owned', 'terminal-image-paste', 'worktree-image-write-failed', error, undefined, 'warning');
+		return undefined;
+	}
+	return file;
 }

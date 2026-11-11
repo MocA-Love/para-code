@@ -99,7 +99,12 @@ suite('ParadisAgentModelCatalog', () => {
 				models: ['--model gpt-6-astra|low|6'],
 				efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].map(id => `-c model_reasoning_effort=${id}`),
 			},
-			{ id: 'gemini', models: undefined, efforts: undefined },
+			{
+				// CLI から一覧を取らないエージェントは、既定の行のまま
+				id: 'antigravity',
+				models: ['gemini-3.8-flash-high|-|0', 'gemini-3.8-flash-medium|-|0', 'gemini-3.8-flash-low|-|0', 'claude-sonnet-4-6|-|0', 'claude-opus-4-6-thinking|-|0', 'gpt-oss-120b-medium|-|0'].map(model => `--model ${model}`),
+				efforts: ['low', 'medium', 'high', 'xhigh', 'max'].map(id => `--effort ${id}`),
+			},
 		]);
 	});
 
@@ -220,8 +225,26 @@ suite('ParadisAgentModelCatalog', () => {
 				{ userDefined: false, codex: 'gpt-6-astra' },
 				{ userDefined: false, codex: 'gpt-6-astra' },
 				{ userDefined: false, codex: 'gpt-6-astra' },
+				{ userDefined: false, codex: 'gpt-6-astra' },
 			],
 			edited: { userDefined: true, codex: 'gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5' },
+		});
+	});
+
+	test('既定から外した Gemini CLI も、書き写した設定に残っていればその行のまま使い、Antigravity CLI は足さない', () => {
+		const copied = JSON.parse(JSON.stringify(PARADIS_PAST_DEFAULT_AGENT_COMMANDS[PARADIS_PAST_DEFAULT_AGENT_COMMANDS.length - 1]));
+		const configurationService = new TestConfigurationService({ 'paradis.workspaceSwitch.agents': copied });
+		const gemini = paradisResolveAgentTemplates(configurationService, []).find(agent => agent.id === 'gemini');
+		assert.deepStrictEqual({
+			ids: paradisResolveAgentTemplates(configurationService, []).map(agent => agent.id),
+			userDefined: paradisIsAgentListUserDefined(configurationService),
+			gemini: gemini && paradisResolveAgentLaunchFlags(gemini, { permissionId: 'yolo' }),
+			defaults: paradisResolveAgentTemplates(new TestConfigurationService(), []).map(agent => agent.id),
+		}, {
+			ids: ['claude', 'codex', 'gemini'],
+			userDefined: false,
+			gemini: { model: '', effort: '', permission: '--yolo' },
+			defaults: ['claude', 'codex', 'antigravity'],
 		});
 	});
 
@@ -320,6 +343,6 @@ suite('ParadisAgentModelCatalog', () => {
 	test('既定の定義を変えたら、変える前の値を過去の既定値（paradisAgentListPastDefaults.ts）の末尾に足す', () => {
 		// この指紋が変わったら、変える前の PARADIS_DEFAULT_AGENT_COMMANDS を JSON の形で
 		// PARADIS_PAST_DEFAULT_AGENT_COMMANDS へ足してから、ここの値を新しい指紋に書き換える
-		assert.strictEqual(stringHash(JSON.stringify(PARADIS_DEFAULT_AGENT_COMMANDS), 0), -724490001);
+		assert.strictEqual(stringHash(JSON.stringify(PARADIS_DEFAULT_AGENT_COMMANDS), 0), 482011405);
 	});
 });

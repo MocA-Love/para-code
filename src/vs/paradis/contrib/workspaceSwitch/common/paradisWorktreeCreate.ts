@@ -19,6 +19,7 @@ import { GeneralShellType, PosixShellType, TerminalShellType, WindowsShellType }
 import { paradisStripTerminalControlCharacters } from '../../../common/paradisTerminalControlCharacters.js';
 import { ParadisHostPath } from '../../../common/paradisHostPath.js';
 import { ParadisWorkspaceLifecycleKind } from './paradisWorkspaceLifecycle.js';
+import { paradisAgentImageMode, paradisIsSafeWorktreeImagePath } from './paradisWorktreeImageAttach.js';
 
 /** shared process 上で git worktree 操作を行う IPC チャネル名。 */
 export const PARADIS_WORKTREE_GIT_CHANNEL = 'paradisWorktreeGit';
@@ -430,6 +431,17 @@ export interface IParadisAgentCommandTemplate {
 	readonly efforts?: readonly IParadisAgentEffortOption[];
 	/** 権限モード選択肢。未定義なら権限選択UI自体を出さない。 */
 	readonly permissions?: readonly IParadisAgentPermissionOption[];
+	/**
+	 * 「新しいスペース」の指示に添えた画像の渡し方（`mention`・`flag`・`unsupported`。paradisAgentImageMode）。
+	 * 未定義なら id で決める（`claude`・`codex`・`antigravity` だけ渡す）。
+	 */
+	readonly images?: string;
+	/**
+	 * 指示の直前に付けるフラグ（例: Antigravity CLI の `-i`）。指示があるときだけ付け、選んだフラグより後ろに置く。
+	 * 指示を値として取るフラグをテンプレートに直接書くと、指示が空のとき値の無いフラグが残り、選んだフラグも
+	 * フラグと指示の間に入ってしまうため。
+	 */
+	readonly promptFlag?: string;
 }
 
 /** エージェント起動時のオプション選択（いずれも undefined = 既定 = フラグを付けない）。 */
@@ -456,6 +468,8 @@ const CLAUDE_EFFORT_IDS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 
 const CODEX_EFFORT_IDS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 /** gpt-6-luna は ultra が無い。 */
 const CODEX_MAX_EFFORT_IDS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+/** Antigravity CLI のエフォート（agy 1.5.5 の `agy --help` の `--effort` に並ぶ値）。 */
+const ANTIGRAVITY_EFFORT_IDS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 /**
  * Codex のエフォートを渡すフラグ。codex-cli 0.155.1 には `--effort` が無く（渡すと起動しない）、
@@ -534,13 +548,62 @@ export const PARADIS_DEFAULT_AGENT_COMMANDS: readonly IParadisAgentCommandTempla
 		],
 	},
 	{
-		id: 'gemini', label: 'Gemini CLI', command: 'gemini -i {prompt}',
+		// Gemini CLI の後継（2026-11-12 に既定の一覧の gemini 行を置き換えた。設定に書いた gemini 行はそのまま使える）。
+		// agy は Go の flag なので、`-i` は次の引数を `-` で始まっていても指示として取る。フラグを指示の前へ
+		// 置けるよう `-i` はテンプレートに書かず promptFlag で指示の直前に付け、指示が空なら付けない（`agy -i` だけだと起動しない）
+		id: 'antigravity', label: 'Antigravity CLI', command: 'agy {prompt}', promptFlag: '-i',
+		models: [
+			// agy 1.5.5 の `agy models` の一覧（2026-11-12）。末尾の -low・-medium・-high はエフォートの違う版を指す
+			// id なので、エフォートは選ばせない
+			{ id: 'gemini-3.8-flash-high', flag: '--model gemini-3.8-flash-high', efforts: [] },
+			{ id: 'gemini-3.8-flash-medium', flag: '--model gemini-3.8-flash-medium', efforts: [] },
+			{ id: 'gemini-3.8-flash-low', flag: '--model gemini-3.8-flash-low', efforts: [] },
+			{ id: 'claude-sonnet-4-6', flag: '--model claude-sonnet-4-6' },
+			{ id: 'claude-opus-4-6-thinking', flag: '--model claude-opus-4-6-thinking' },
+			{ id: 'gpt-oss-120b-medium', flag: '--model gpt-oss-120b-medium', efforts: [] },
+		],
+		efforts: ANTIGRAVITY_EFFORT_IDS.map(id => ({ id, flag: `--effort ${id}` })),
 		permissions: [
 			{ id: 'default', label: STR_PERMISSION_DEFAULT, flag: '' },
-			{ id: 'yolo', label: STR_PERMISSION_SKIP_ALL, flag: '--yolo', danger: true, hint: STR_PERMISSION_SKIP_ALL_HINT },
+			{
+				id: 'accept-edits', label: 'accept-edits', flag: '--mode accept-edits',
+				// allow-any-unicode-next-line
+				hint: localize('paradis.agentPermission.antigravityAcceptEditsHint', "ファイルの編集は確認せずに行い、コマンドの実行は確認します")
+			},
+			{
+				id: 'auto', label: 'auto', flag: '--mode auto',
+				// allow-any-unicode-next-line
+				hint: localize('paradis.agentPermission.antigravityAutoHint', "ファイルの編集と安全なコマンドは確認せずに行い、取り消せない操作の前だけ確認します")
+			},
+			{
+				id: 'plan', label: 'plan', flag: '--mode plan',
+				// allow-any-unicode-next-line
+				hint: localize('paradis.agentPermission.antigravityPlanHint', "計画を立てるだけで、ファイルは変えません")
+			},
 		],
 	},
 ];
+
+/**
+ * モバイルへ送るエージェント定義（作成シート・起動シートの材料）から除くもの。Antigravity CLI は、状態の検知と
+ * 会話の記録がそろうまでモバイルの起動フォームに出さない（Q616）。モバイルのアプリは知らない id でもそのまま
+ * 並べるので、配信済みの版でも出ないよう PC から送らない。
+ */
+export const PARADIS_MOBILE_HIDDEN_AGENTS: ReadonlySet<string> = new Set(['antigravity']);
+
+/**
+ * モバイルから届いた起動の要求（新しいスペース・既存のスペースへの起動）で、断るエージェントなら断る理由を返す。
+ * 起動シートに出していなくても、要求は id で直接届きうるため（古い版のアプリや作り替えた要求）。
+ */
+export function paradisMobileAgentRefusal(agentId: string | undefined): string | undefined {
+	// allow-any-unicode-next-line
+	return agentId !== undefined && PARADIS_MOBILE_HIDDEN_AGENTS.has(agentId) ? `${agentId} はモバイルからはまだ起動できません。PC から起動してください。` : undefined;
+}
+
+/** モバイルへ送るエージェント定義（{@link PARADIS_MOBILE_HIDDEN_AGENTS} を除く）。 */
+export function paradisMobileFormAgents(templates: readonly IParadisAgentCommandTemplate[]): IParadisAgentCommandTemplate[] {
+	return templates.filter(template => !PARADIS_MOBILE_HIDDEN_AGENTS.has(template.id));
+}
 
 /**
  * 選択されたモデル/エフォート/権限をテンプレート定義に照らしてフラグ文字列へ解決する。
@@ -601,7 +664,7 @@ function paradisEncodeUtf16LeBase64(value: string): string {
 	return encodeBase64(VSBuffer.wrap(bytes));
 }
 
-function paradisApplyPromptToTemplate(template: IParadisAgentCommandTemplate, promptExpression: string, options: IParadisAgentLaunchOptions | undefined): string {
+function paradisApplyPromptToTemplate(template: IParadisAgentCommandTemplate, promptExpression: string, options: IParadisAgentLaunchOptions | undefined, imageFlag?: string): string {
 	const flags = paradisResolveAgentLaunchFlags(template, options);
 	let command = template.command;
 	// プレースホルダがあるフラグはその位置へ置換し、無いフラグはプロンプトの直前
@@ -618,6 +681,10 @@ function paradisApplyPromptToTemplate(template: IParadisAgentCommandTemplate, pr
 	if (options?.extraFlags) {
 		leftoverFlags.push(options.extraFlags);
 	}
+	// 画像のフラグ（引用済み）。指示の直前に置き、後ろの指示が画像の名前として読まれないよう `=` で 1 つの引数にしてある
+	if (imageFlag) {
+		leftoverFlags.push(imageFlag);
+	}
 	if (leftoverFlags.length > 0) {
 		const combined = leftoverFlags.join(' ');
 		command = command.includes('{prompt}')
@@ -627,6 +694,10 @@ function paradisApplyPromptToTemplate(template: IParadisAgentCommandTemplate, pr
 	// 未選択プレースホルダの空置換で残る連続スペースを、プロンプト挿入前に正規化する
 	// （プロンプト本文内の空白を巻き込まないよう、必ず置換前に行う）
 	command = command.replace(/ {2,}/g, ' ').trim();
+	// 指示を値として取るフラグは、指示があるときだけ指示の直前に付ける
+	if (template.promptFlag && promptExpression.length > 0) {
+		promptExpression = `${template.promptFlag} ${promptExpression}`;
+	}
 	if (command.includes('{prompt}')) {
 		// 置換後の文字列は関数で渡す。文字列で渡すと、プロンプトの中の `$&` や `$'` が置換の特殊記号として
 		// 展開され、引用が崩れる
@@ -636,31 +707,56 @@ function paradisApplyPromptToTemplate(template: IParadisAgentCommandTemplate, pr
 }
 
 /** cmd.exeでは任意文字列の安全な引数化が困難なため、Base64化したPowerShellスクリプトへ委譲する。 */
-function paradisBuildCommandPromptAgentCommand(template: IParadisAgentCommandTemplate, prompt: string, options: IParadisAgentLaunchOptions | undefined): string {
+function paradisBuildCommandPromptAgentCommand(template: IParadisAgentCommandTemplate, prompt: string, options: IParadisAgentLaunchOptions | undefined, imagePaths: readonly string[]): string {
 	const promptBase64 = encodeBase64(VSBuffer.fromString(prompt));
-	const command = paradisApplyPromptToTemplate(template, '$paradisPrompt', options);
+	// 中で動くのは PowerShell なので、画像のフラグも PowerShell の引用にする（裸の `a,b` は配列として読まれる）
+	const command = paradisApplyPromptToTemplate(template, '$paradisPrompt', options, paradisImageFlag(imagePaths, paradisQuotePowerShellArg));
 	const script = `$paradisPrompt = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${promptBase64}')); ${command}`;
 	return `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${paradisEncodeUtf16LeBase64(script)}`;
+}
+
+/** Codex に画像を渡すフラグ（`--image=<パス>,<パス>`）をシェルに合わせて引用する。画像が無ければ undefined。 */
+function paradisImageFlag(imagePaths: readonly string[], quote: (value: string) => string): string | undefined {
+	return imagePaths.length > 0 ? quote(`--image=${imagePaths.join(',')}`) : undefined;
+}
+
+/** cmd.exe でそのまま渡す引数の引用（画像のパスは引用を崩す文字を含まないので、二重引用符で包むだけでよい）。 */
+function paradisQuoteCommandPromptArg(value: string): string {
+	return `"${value}"`;
 }
 
 /**
  * 実際のターミナルシェルに合わせ、テンプレートの {prompt} を安全な単一引数へ置換する。
  * プロンプトが空の場合は引数自体を付けない（`claude ''` のような空引数はTUIの初回入力を
  * 汚すため。{prompt} プレースホルダは空置換して連続スペースを正規化する）。
+ *
+ * `imagePaths` は作業フォルダからの相対パスで書いた、添えた画像（「新しいスペース」の指示に添えたもの）。
+ * 渡し方はエージェントごとに違う（paradisAgentImageMode）。渡せないエージェントや、引用を崩しうるパスは使わない。
  */
-export function paradisBuildAgentCommand(template: IParadisAgentCommandTemplate, rawPrompt: string, shellType: TerminalShellType, options?: IParadisAgentLaunchOptions): string {
+export function paradisBuildAgentCommand(template: IParadisAgentCommandTemplate, rawPrompt: string, shellType: TerminalShellType, options?: IParadisAgentLaunchOptions, imagePaths?: readonly string[]): string {
+	const imageMode = paradisAgentImageMode(template);
+	const images = imageMode === 'unsupported' ? [] : (imagePaths ?? []).filter(paradisIsSafeWorktreeImagePath);
+	const flagImages = imageMode === 'flag' ? images : [];
 	// プロンプトは利用者だけでなくエージェント（MCP）や定期実行の定義からも来るので、全経路でここで落とす
-	const stripped = paradisStripTerminalControlCharacters(rawPrompt);
+	let stripped = paradisStripTerminalControlCharacters(rawPrompt);
+	if (imageMode === 'mention' && images.length > 0) {
+		// 指示の後ろに空白で区切って `@パス` を並べる（Claude Code 2.1.322 で画像が届くことを確かめた形）
+		stripped = [stripped.trim(), images.map(path => `@${path}`).join(' ')].filter(part => part.length > 0).join(' ');
+	}
 	// `-` で始まる指示は、引用しても CLI がオプションとして読む（`claude '--dangerously-skip-permissions'` は
 	// 権限の確認を飛ばす起動になる）。1語だけの指示（`logout`・`update`・Codex の `e` など）はサブコマンドとして
 	// 読まれる。どちらも前に空白を1つ足し、必ず指示（位置引数）として渡す（commander も clap も、空白で始まる
 	// 引数はオプションともサブコマンドの名前とも照らさない）
 	const prompt = /^(?:-|[A-Za-z][\w-]*$)/.test(stripped) ? ` ${stripped}` : stripped;
 	if (prompt.trim().length === 0) {
-		return paradisApplyPromptToTemplate(template, '', options).replace(/ {2,}/g, ' ').trim();
+		const quoteFlag = shellType === WindowsShellType.CommandPrompt ? paradisQuoteCommandPromptArg
+			: shellType === GeneralShellType.PowerShell ? paradisQuotePowerShellArg
+				: shellType === PosixShellType.Fish ? paradisQuoteFishArg
+					: paradisQuotePosixShellArg;
+		return paradisApplyPromptToTemplate(template, '', options, paradisImageFlag(flagImages, quoteFlag)).replace(/ {2,}/g, ' ').trim();
 	}
 	if (shellType === WindowsShellType.CommandPrompt) {
-		return paradisBuildCommandPromptAgentCommand(template, prompt, options);
+		return paradisBuildCommandPromptAgentCommand(template, prompt, options, flagImages);
 	}
 	// シェルの種類が分からない（tmux や `exec fish` などのラッパー経由の起動）と POSIX 式で引用するが、
 	// fish はシングルクオートの中のバックスラッシュをエスケープとして読むので、`\` を含む指示は
@@ -668,12 +764,12 @@ export function paradisBuildAgentCommand(template: IParadisAgentCommandTemplate,
 	if (shellType === undefined && prompt.includes('\\')) {
 		throw new ParadisAgentPromptQuotingError();
 	}
-	const quoted = shellType === GeneralShellType.PowerShell
-		? paradisQuotePowerShellArg(prompt)
+	const quote = shellType === GeneralShellType.PowerShell
+		? paradisQuotePowerShellArg
 		: shellType === PosixShellType.Fish
-			? paradisQuoteFishArg(prompt)
-			: paradisQuotePosixShellArg(prompt);
-	return paradisApplyPromptToTemplate(template, quoted, options);
+			? paradisQuoteFishArg
+			: paradisQuotePosixShellArg;
+	return paradisApplyPromptToTemplate(template, quote(prompt), options, paradisImageFlag(flagImages, quote));
 }
 
 /**

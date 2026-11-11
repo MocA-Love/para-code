@@ -133,6 +133,33 @@ export function paradisInteractiveAgentCommand(commandLine: string): ParadisInte
 	return { agent: 'claude', mode: fork ? 'fork' : resume ? 'resume' : 'new' };
 }
 
+/** agy 1.5.5 の `agy --help` で値を取るオプション（値を飛ばして位置引数とフラグを探すため）。 */
+const antigravityOptionsWithValue = new Set(['--add-dir', '--agent', '--conversation', '--effort', '-i', '--prompt-interactive', '--input-format', '--json-schema', '--log-file', '--mode', '--model', '--output-format', '--print-timeout', '--project', '--settings']);
+/** 一度だけ答えて終わる指定（`--prompt` は `--print` の別名で、`--prompt-interactive` とは別物）。 */
+const antigravityNonInteractiveOptions = new Set(['-p', '--print', '--prompt', '-h', '--help', '--version']);
+/** agy 1.5.5 のサブコマンド。どれも対話の画面を開かない。 */
+const antigravityNonInteractiveCommands = new Set(['acp', 'agent', 'agents', 'changelog', 'help', 'install', 'mcp', 'mic-serve', 'models', 'plugin', 'plugins', 'remote-control', 'update']);
+
+/**
+ * Antigravity CLI（`agy`）を対話の画面で起動するコマンドか。{@link paradisInteractiveAgentCommand} の種別は
+ * モバイルのリレー・再開・入力の配送が使うので、状態の検知と会話の記録がそろうまでは広げず、別に判定する。
+ */
+export function paradisIsInteractiveAntigravityCommand(commandLine: string): boolean {
+	const words = shellWords(commandLine);
+	while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0] ?? '')) { words.shift(); }
+	const executable = (words.shift()?.split(/[\\/]/).pop() ?? '').replace(/\.exe$/i, '');
+	if (executable !== 'agy') { return false; }
+	for (let index = 0; index < words.length; index++) {
+		const argument = words[index];
+		if (argument === '--') { break; }
+		if (!argument.startsWith('-')) { return !antigravityNonInteractiveCommands.has(argument); }
+		const option = argument.split('=', 1)[0];
+		if (antigravityNonInteractiveOptions.has(option)) { return false; }
+		if (!argument.includes('=') && antigravityOptionsWithValue.has(option)) { index++; }
+	}
+	return true;
+}
+
 /** CommandDetectionとretained pane tokenの到着順に依存せず、両方が揃った時だけ解決する。 */
 export function paradisResolveRunningAgentCommand(commandLine: string | undefined, paneToken: string | undefined): ParadisRunningAgentCommand | undefined {
 	if (commandLine === undefined || paneToken === undefined) {

@@ -169,6 +169,12 @@
 	white-space: nowrap;
 }
 
+/* 添えた画像のパスまで見せる（paradisWorktreeImageComposer.ts） */
+.paradis-create-worktree-dialog .pcw-cmd-preview.pcw-cmd-preview-wrap {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
 /* --- setup スクリプトの実行トグル --- */
 
 .paradis-create-worktree-dialog .pcw-setup-row {
@@ -317,6 +323,7 @@
 }
 
 .paradis-create-worktree-dialog.pcw-d .pcw-d-field > span,
+.paradis-create-worktree-dialog.pcw-d .pcw-d-field > label,
 .paradis-create-worktree-dialog.pcw-d .pcw-d-field-label {
 	font-size: 11.5px;
 	color: var(--vscode-descriptionForeground);

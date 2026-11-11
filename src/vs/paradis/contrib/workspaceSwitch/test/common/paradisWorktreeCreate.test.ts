@@ -7,9 +7,10 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { decodeBase64 } from '../../../../../base/common/buffer.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { GeneralShellType, PosixShellType, WindowsShellType } from '../../../../../platform/terminal/common/terminal.js';
-import { paradisBuildAgentCommand, paradisBuildWorktreeNames, paradisDeduplicateBranchName, paradisParseWorktreeNaming, paradisToBranchName, paradisToWorktreeTitle, paradisDeduplicateWorktreeDirName, paradisFindWorktreeLock, paradisFormatWorktreeLockReason, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, paradisShouldCreateDefaultTerminal } from '../../common/paradisWorktreeCreate.js';
+import { PARADIS_DEFAULT_AGENT_COMMANDS, paradisBuildAgentCommand, paradisBuildWorktreeNames, paradisMobileAgentRefusal, paradisMobileFormAgents, paradisDeduplicateBranchName, paradisParseWorktreeNaming, paradisToBranchName, paradisToWorktreeTitle, paradisDeduplicateWorktreeDirName, paradisFindWorktreeLock, paradisFormatWorktreeLockReason, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, paradisShouldCreateDefaultTerminal } from '../../common/paradisWorktreeCreate.js';
 
 suite('paradisWorktreeCreate', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -242,6 +243,138 @@ suite('paradisWorktreeCreate', () => {
 		assert.match(command, /^powershell\.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand [A-Za-z0-9+/=]+$/);
 		assert.ok(!command.includes('%PATH%'));
 		assert.ok(!command.includes('& echo'));
+	});
+
+	test('passes attached images as @ mentions to Claude Code, as one --image flag to Codex, and not at all to Gemini CLI or added agents', () => {
+		const claude = { id: 'claude', label: 'Claude Code', command: 'claude {prompt}' };
+		const codex = { id: 'codex', label: 'Codex', command: 'codex {prompt}' };
+		const gemini = { id: 'gemini', label: 'Gemini CLI', command: 'gemini -i {prompt}' };
+		const custom = { id: 'my-agent', label: 'Mine', command: 'mine --run {prompt}' };
+		const customMention = { ...custom, images: 'mention' };
+		const images = ['.para-code/pasted-images/1762876411000-1.png', '.para-code/pasted-images/1762876411000-2.jpg'];
+		// allow-any-unicode-next-line
+		const prompt = 'スクショの赤い枠を直して';
+		assert.deepStrictEqual([
+			paradisBuildAgentCommand(claude, prompt, PosixShellType.Bash, { modelId: undefined }, images),
+			paradisBuildAgentCommand(codex, prompt, PosixShellType.Bash, undefined, images),
+			paradisBuildAgentCommand(gemini, prompt, PosixShellType.Bash, undefined, images),
+			paradisBuildAgentCommand(custom, prompt, PosixShellType.Bash, undefined, images),
+			paradisBuildAgentCommand(customMention, prompt, PosixShellType.Bash, undefined, images),
+		], [
+			// allow-any-unicode-next-line
+			'claude \'スクショの赤い枠を直して @.para-code/pasted-images/1762876411000-1.png @.para-code/pasted-images/1762876411000-2.jpg\'',
+			// allow-any-unicode-next-line
+			'codex \'--image=.para-code/pasted-images/1762876411000-1.png,.para-code/pasted-images/1762876411000-2.jpg\' \'スクショの赤い枠を直して\'',
+			// allow-any-unicode-next-line
+			'gemini -i \'スクショの赤い枠を直して\'',
+			// 設定で足したエージェントは、渡し方を書かなければ渡さない（@ を読まない CLI に文字が残らないように）
+			// allow-any-unicode-next-line
+			'mine --run \'スクショの赤い枠を直して\'',
+			// allow-any-unicode-next-line
+			'mine --run \'スクショの赤い枠を直して @.para-code/pasted-images/1762876411000-1.png @.para-code/pasted-images/1762876411000-2.jpg\'',
+		]);
+	});
+
+	test('starts Antigravity CLI with the chosen flags before -i, and leaves -i out without an instruction', () => {
+		const antigravity = PARADIS_DEFAULT_AGENT_COMMANDS.find(agent => agent.id === 'antigravity')!;
+		const all = { modelId: 'claude-sonnet-4-6', effortId: 'high', permissionId: 'auto' };
+		const images = ['.para-code/pasted-images/1-1.png'];
+		assert.deepStrictEqual([
+			paradisBuildAgentCommand(antigravity, 'fix the test', PosixShellType.Zsh, all),
+			paradisBuildAgentCommand(antigravity, '', PosixShellType.Zsh, all),
+			paradisBuildAgentCommand(antigravity, '', PosixShellType.Zsh),
+			// エフォートを id に含むモデルではエフォートを付けない
+			paradisBuildAgentCommand(antigravity, 'go', GeneralShellType.PowerShell, { modelId: 'gemini-3.8-flash-low', effortId: 'max', permissionId: 'plan' }),
+			paradisBuildAgentCommand(antigravity, 'look', PosixShellType.Bash, undefined, images),
+			paradisBuildAgentCommand(antigravity, '', PosixShellType.Bash, undefined, images),
+		], [
+			'agy --model claude-sonnet-4-6 --effort high --mode auto -i \'fix the test\'',
+			'agy --model claude-sonnet-4-6 --effort high --mode auto',
+			'agy',
+			'agy --model gemini-3.8-flash-low --mode plan -i \' go\'',
+			'agy -i \'look @.para-code/pasted-images/1-1.png\'',
+			'agy -i \'@.para-code/pasted-images/1-1.png\'',
+		]);
+		const encoded = /-EncodedCommand (?<script>[A-Za-z0-9+/=]+)$/.exec(paradisBuildAgentCommand(antigravity, 'go', WindowsShellType.CommandPrompt, { permissionId: 'accept-edits' }))?.groups?.script ?? '';
+		const bytes = decodeBase64(encoded).buffer;
+		let script = '';
+		for (let index = 0; index + 1 < bytes.length; index += 2) {
+			script += String.fromCharCode(bytes[index] | (bytes[index + 1] << 8));
+		}
+		assert.ok(script.endsWith('; agy --mode accept-edits -i $paradisPrompt'), script);
+	});
+
+	test('keeps Antigravity CLI out of the agents sent to the mobile app, but not the other agents', () => {
+		const gemini = { id: 'gemini', label: 'Gemini CLI', command: 'gemini -i {prompt}' };
+		assert.deepStrictEqual({
+			sent: paradisMobileFormAgents([...PARADIS_DEFAULT_AGENT_COMMANDS, gemini]).map(agent => agent.id),
+			// 起動シートに無くても id で直接届いた要求は断る
+			refused: ['antigravity', 'claude', 'codex', 'gemini', 'none', undefined].map(id => paradisMobileAgentRefusal(id) !== undefined),
+		}, {
+			sent: ['claude', 'codex', 'gemini'],
+			refused: [true, false, false, false, false, false],
+		});
+	});
+
+	test('passes images without an instruction, and keeps the image flag behind the other flags', () => {
+		const claude = { id: 'claude', label: 'Claude Code', command: 'claude {prompt}', permissions: [{ id: 'default', label: 'Default', flag: '--permission-mode manual' }] };
+		const codex = { id: 'codex', label: 'Codex', command: 'codex {prompt}', models: [{ id: 'm', flag: '--model m' }] };
+		const images = ['.para-code/pasted-images/1-1.png'];
+		assert.deepStrictEqual([
+			paradisBuildAgentCommand(claude, '', PosixShellType.Bash, { permissionId: 'default' }, images),
+			paradisBuildAgentCommand(codex, '  ', PosixShellType.Bash, { modelId: 'm' }, images),
+			paradisBuildAgentCommand(codex, '', WindowsShellType.CommandPrompt, undefined, images),
+			paradisBuildAgentCommand(codex, 'fix', PosixShellType.Bash, { modelId: 'm' }, images),
+			paradisBuildAgentCommand(codex, '', PosixShellType.Bash, { modelId: 'm' }, []),
+		], [
+			'claude --permission-mode manual \'@.para-code/pasted-images/1-1.png\'',
+			'codex --model m \'--image=.para-code/pasted-images/1-1.png\'',
+			'codex "--image=.para-code/pasted-images/1-1.png"',
+			// 1 語の指示は前に空白を足して指示として渡す（画像のフラグがあっても変わらない）
+			'codex --model m \'--image=.para-code/pasted-images/1-1.png\' \' fix\'',
+			'codex --model m',
+		]);
+	});
+
+	test('quotes the image flag for each shell, so PowerShell does not read the comma as an array', () => {
+		const codex = { id: 'codex', label: 'Codex', command: 'codex {prompt}' };
+		const claude = { id: 'claude', label: 'Claude Code', command: 'claude {prompt}' };
+		const images = ['.para-code/pasted-images/1-1.png', '.para-code/pasted-images/1-2.webp'];
+		assert.deepStrictEqual([
+			paradisBuildAgentCommand(codex, 'it\'s red', GeneralShellType.PowerShell, undefined, images),
+			paradisBuildAgentCommand(codex, 'it\'s red', PosixShellType.Fish, undefined, images),
+			paradisBuildAgentCommand(codex, 'look', undefined, undefined, images),
+			paradisBuildAgentCommand(claude, 'it\'s red', GeneralShellType.PowerShell, undefined, images),
+		], [
+			'codex \'--image=.para-code/pasted-images/1-1.png,.para-code/pasted-images/1-2.webp\' \'it\'\'s red\'',
+			'codex \'--image=.para-code/pasted-images/1-1.png,.para-code/pasted-images/1-2.webp\' \'it\\\'s red\'',
+			'codex \'--image=.para-code/pasted-images/1-1.png,.para-code/pasted-images/1-2.webp\' \' look\'',
+			'claude \'it\'\'s red @.para-code/pasted-images/1-1.png @.para-code/pasted-images/1-2.webp\'',
+		]);
+	});
+
+	test('runs the image flag inside the PowerShell script for cmd.exe, quoted for PowerShell', () => {
+		const command = paradisBuildAgentCommand({ id: 'codex', label: 'Codex', command: 'codex {prompt}' }, 'fix & echo %PATH%', WindowsShellType.CommandPrompt, undefined, ['.para-code/pasted-images/1-1.png', '.para-code/pasted-images/1-2.png']);
+		const encoded = /-EncodedCommand (?<script>[A-Za-z0-9+/=]+)$/.exec(command)?.groups?.script ?? '';
+		const bytes = decodeBase64(encoded).buffer;
+		let script = '';
+		for (let index = 0; index + 1 < bytes.length; index += 2) {
+			script += String.fromCharCode(bytes[index] | (bytes[index + 1] << 8));
+		}
+		assert.ok(script.endsWith('; codex \'--image=.para-code/pasted-images/1-1.png,.para-code/pasted-images/1-2.png\' $paradisPrompt'), script);
+	});
+
+	test('drops image paths that could break the quoting or point outside the space', () => {
+		const claude = { id: 'claude', label: 'Claude Code', command: 'claude {prompt}' };
+		const codex = { id: 'codex', label: 'Codex', command: 'codex {prompt}' };
+		const images = ['.para-code/pasted-images/1-1.png', 'a b.png', 'x\'$(id).png', '../outside.png', '-rf.png', '.para-code/pasted-images/1-2.png'];
+		assert.deepStrictEqual([
+			paradisBuildAgentCommand(claude, 'look', PosixShellType.Bash, undefined, images),
+			paradisBuildAgentCommand(codex, 'look', PosixShellType.Bash, undefined, images),
+		], [
+			'claude \'look @.para-code/pasted-images/1-1.png @.para-code/pasted-images/1-2.png\'',
+			'codex \'--image=.para-code/pasted-images/1-1.png,.para-code/pasted-images/1-2.png\' \' look\'',
+		]);
 	});
 
 	test('parses gh pr view output into a PR status', () => {

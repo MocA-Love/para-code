@@ -2883,6 +2883,8 @@ export class TerminalLabelComputer extends Disposable {
 	static readonly agentCliShellTypes: ReadonlySet<GeneralShellType> = new Set([
 		// PARA-PATCH: allow OpenCode OSC titles to override command preset names.
 		GeneralShellType.Opencode,
+		// PARA-PATCH: Antigravity CLI (detected from its `agy` process name) gets the same title handling.
+		GeneralShellType.Antigravity,
 		GeneralShellType.Claude,
 		GeneralShellType.Codex,
 		GeneralShellType.CommandCode,

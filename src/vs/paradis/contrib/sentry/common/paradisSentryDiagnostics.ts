@@ -95,9 +95,12 @@ let spanRunner: ParadisSpanRunner | undefined;
  * Connects fork-owned code to the process-specific Sentry SDK for performance spans, mirroring
  * {@link configureParadisDiagnosticReporter}. Domain modules stay free of Electron/Sentry imports
  * and keep working in unit tests, where no runner is registered and spans are a pass-through.
+ * `undefined` disconnects it (unit tests).
  */
-export function configureParadisSpanRunner(value: ParadisSpanRunner): void {
+export function configureParadisSpanRunner(value: ParadisSpanRunner | undefined): void {
 	spanRunner = value;
+	// renderer と shared process も、SDK を読み込む前に溜めた集計の記録をここで送る
+	flushPendingUsageSpans();
 }
 
 /**
@@ -114,6 +117,59 @@ export function runInParadisSpan<T>(
 	options?: IParadisSpanOptions,
 ): T {
 	return spanRunner ? spanRunner(feature, operation, attributes, callback, options) : callback();
+}
+
+let usageSpanSender: ((feature: string, operation: string, attributes: ParadisSpanAttributes) => void) | undefined;
+
+/**
+ * Usage records made before the process's SDK finished loading (its import is dynamic). Main decides
+ * how terminals are hosted before Sentry is up, and that record would otherwise be lost. They are sent
+ * when {@link configureParadisUsageSpanSender} (main) or {@link configureParadisSpanRunner} (renderer,
+ * shared process) connects; in a process whose SDK never loads (opted out, development build, unit
+ * tests) they stay here, at most 20.
+ */
+const pendingUsageSpans: { readonly feature: string; readonly operation: string; readonly attributes: ParadisSpanAttributes }[] = [];
+const MAX_PENDING_USAGE_SPANS = 20;
+
+/** Empties the records waiting for the SDK (unit tests, so one suite's records do not reach another). */
+export function resetParadisPendingUsageSpansForTests(): void {
+	pendingUsageSpans.length = 0;
+}
+
+function flushPendingUsageSpans(): void {
+	for (const pending of pendingUsageSpans.splice(0)) {
+		recordParadisUsageSpan(pending.feature, pending.operation, pending.attributes);
+	}
+}
+
+/**
+ * Connects {@link recordParadisUsageSpan} to a process whose SDK has no span runner. Electron main
+ * registers this instead of {@link configureParadisSpanRunner}, so its existing pass-through spans keep
+ * sending nothing and only the explicit usage records become transactions. `undefined` disconnects it
+ * (unit tests).
+ */
+export function configureParadisUsageSpanSender(value: ((feature: string, operation: string, attributes: ParadisSpanAttributes) => void) | undefined): void {
+	usageSpanSender = value;
+	flushPendingUsageSpans();
+}
+
+/**
+ * Sends one zero-length transaction `para.<feature>.<operation>` carrying `attributes`, for aggregated
+ * usage counts (see `paradisUsageTally.ts`). Every value is passed when the span is created, so it also
+ * works in the renderer after an `await`. Transactions do not use the error quota or its rate limit.
+ */
+export function recordParadisUsageSpan(feature: string, operation: string, attributes: ParadisSpanAttributes): void {
+	try {
+		if (usageSpanSender !== undefined) {
+			usageSpanSender(feature, operation, attributes);
+		} else if (spanRunner !== undefined) {
+			spanRunner(feature, operation, attributes, () => { }, { forceTransaction: true });
+		} else if (pendingUsageSpans.length < MAX_PENDING_USAGE_SPANS) {
+			pendingUsageSpans.push({ feature, operation, attributes });
+		}
+	} catch {
+		// Diagnostics must never change the behavior they observe.
+	}
 }
 
 /**

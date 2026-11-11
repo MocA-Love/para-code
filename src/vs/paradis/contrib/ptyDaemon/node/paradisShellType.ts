@@ -30,6 +30,7 @@ const POSIX_SHELLS = new Map<string, PosixShellType>([
 ]);
 
 const GENERAL_SHELLS = new Map<string, GeneralShellType>([
+	['agy', GeneralShellType.Antigravity],
 	['claude', GeneralShellType.Claude],
 	['codex', GeneralShellType.Codex],
 	['commandcode', GeneralShellType.CommandCode],

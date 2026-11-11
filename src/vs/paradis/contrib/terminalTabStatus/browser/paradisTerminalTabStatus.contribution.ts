@@ -34,10 +34,10 @@ import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowse
 import { paradisCollectAllTerminalInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { IParadisAgentStatusStore } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
-import { PARADIS_CLAUDE_LOGO_PATH, PARADIS_CODEX_LOGO_PATH } from '../../../common/paradisAgentLogoPaths.js';
-import { paradisInteractiveAgentCommand } from '../../mobileRelay/common/paradisAgentCliCommand.js';
+import { paradisAgentLogoGlyph } from '../../../common/paradisAgentLogoPaths.js';
+import { paradisInteractiveAgentCommand, paradisIsInteractiveAntigravityCommand } from '../../mobileRelay/common/paradisAgentCliCommand.js';
 import { IParadisTerminalTabIcon, paradisRegisterTerminalTabIconProvider } from '../../workspaceSwitch/browser/paradisTerminalTabIconRegistry.js';
-import { ParadisTerminalAttention, ParadisTerminalTabIconKind, paradisAttentionColor, paradisGuessAgentKindFromTitle, paradisNextAttentionOnBell, paradisNextAttentionOnStatus, paradisTerminalTabIconKind } from '../common/paradisTerminalTabStatus.js';
+import { ParadisTerminalAttention, ParadisTerminalTabAgent, ParadisTerminalTabIconKind, paradisAttentionColor, paradisGuessAgentKindFromTitle, paradisNextAttentionOnBell, paradisNextAttentionOnStatus, paradisTerminalTabIconKind } from '../common/paradisTerminalTabStatus.js';
 
 const DOT = '\u25CF';
 
@@ -56,6 +56,7 @@ const TAB_ICONS: Record<ParadisTerminalTabIconKind, IParadisTerminalTabIcon> = {
 	done: { icon: Codicon.circleFilled, extraClasses: ['paradis-terminal-tab-state', 'paradis-terminal-tab-done'] },
 	claude: { icon: Codicon.terminal, extraClasses: ['paradis-terminal-tab-logo', 'paradis-terminal-tab-logo-claude'] },
 	codex: { icon: Codicon.terminal, extraClasses: ['paradis-terminal-tab-logo', 'paradis-terminal-tab-logo-codex'] },
+	antigravity: { icon: Codicon.terminal, extraClasses: ['paradis-terminal-tab-logo', 'paradis-terminal-tab-logo-antigravity'] },
 };
 
 /**
@@ -66,10 +67,16 @@ const TAB_ICONS: Record<ParadisTerminalTabIconKind, IParadisTerminalTabIcon> = {
 const TAB_ICON_SELECTOR = '.monaco-workbench.file-icons-enabled .monaco-icon-label.terminal-tab';
 
 /** ロゴは色をテーマに追従させるため、SVG を mask にして地の色（currentColor）で塗る。 */
-function logoMaskRule(kind: 'claude' | 'codex', path: string): string {
-	const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 600 600'><path d='${path}'/></svg>`;
+function logoMaskRule(kind: ParadisTerminalTabAgent): string {
+	const { path, viewBox } = paradisAgentLogoGlyph(kind);
+	const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='${viewBox}'><path d='${path}'/></svg>`;
 	const url = `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
 	return `${TAB_ICON_SELECTOR}.paradis-terminal-tab-logo-${kind}[class*='codicon-']::before { -webkit-mask-image: ${url}; mask-image: ${url}; }`;
+}
+
+/** コマンドラインから、タブにロゴを出すエージェントを決める（Antigravity CLI は種別を広げずに別に見分ける）。 */
+function tabAgentOfCommand(commandLine: string): ParadisTerminalTabAgent | undefined {
+	return paradisInteractiveAgentCommand(commandLine)?.agent ?? (paradisIsInteractiveAntigravityCommand(commandLine) ? 'antigravity' : undefined);
 }
 
 /**
@@ -91,7 +98,7 @@ export class ParadisTerminalTabStatusContribution extends Disposable implements 
 	private readonly _instanceListeners = this._register(new DisposableMap<number, DisposableStore>());
 	private readonly _onDidChangeDecorations = this._register(new Emitter<URI[]>());
 	/** instanceId → 動いているエージェント（コマンドラインから分かったもの）。 */
-	private readonly _agentKinds = new Map<number, 'claude' | 'codex'>();
+	private readonly _agentKinds = new Map<number, ParadisTerminalTabAgent>();
 	/** instanceId → 直前に出したタブのアイコン。変わったときだけ描き直させる。 */
 	private readonly _tabIconKinds = new Map<number, ParadisTerminalTabIconKind>();
 	private readonly _onDidChangeTabIcon = this._register(new Emitter<number>());
@@ -117,8 +124,9 @@ export class ParadisTerminalTabStatusContribution extends Disposable implements 
 		// 中身は追加する前に入れる（補助ウィンドウへの複製は追加した時点の内容で作られる）。
 		createStyleSheet(undefined, style => {
 			style.textContent = [
-				logoMaskRule('claude', PARADIS_CLAUDE_LOGO_PATH),
-				logoMaskRule('codex', PARADIS_CODEX_LOGO_PATH),
+				logoMaskRule('claude'),
+				logoMaskRule('codex'),
+				logoMaskRule('antigravity'),
 				workingGlyphRule(),
 			].join('\n');
 		}, logoStyles);
@@ -162,7 +170,7 @@ export class ParadisTerminalTabStatusContribution extends Disposable implements 
 	 * そのターミナルで動いているエージェント。コマンドラインで分かったものを優先し、再接続した
 	 * ターミナルは実行中のコマンド、最後にエージェントだと分かっているタブのタイトルから推測する。
 	 */
-	private agentKind(instanceId: number): 'claude' | 'codex' | undefined {
+	private agentKind(instanceId: number): ParadisTerminalTabAgent | undefined {
 		const known = this._agentKinds.get(instanceId);
 		if (known !== undefined) {
 			return known;
@@ -172,7 +180,7 @@ export class ParadisTerminalTabStatusContribution extends Disposable implements 
 			return undefined;
 		}
 		const executing = instance.capabilities.get(TerminalCapability.CommandDetection)?.executingCommand;
-		const fromCommand = executing === undefined ? undefined : paradisInteractiveAgentCommand(executing)?.agent;
+		const fromCommand = executing === undefined ? undefined : tabAgentOfCommand(executing);
 		if (fromCommand !== undefined) {
 			return fromCommand;
 		}
@@ -180,7 +188,7 @@ export class ParadisTerminalTabStatusContribution extends Disposable implements 
 	}
 
 	private onCommandExecuted(instance: ITerminalInstance, commandLine: string): void {
-		const agent = paradisInteractiveAgentCommand(commandLine)?.agent;
+		const agent = tabAgentOfCommand(commandLine);
 		if (agent === undefined) {
 			return;
 		}
@@ -190,7 +198,7 @@ export class ParadisTerminalTabStatusContribution extends Disposable implements 
 
 	private onCommandFinished(instance: ITerminalInstance, commandLine: string): void {
 		// エージェントを終えてシェルへ戻ったら、ロゴをふつうのターミナルのアイコンへ戻す。
-		if (!this._agentKinds.has(instance.instanceId) || paradisInteractiveAgentCommand(commandLine) === undefined) {
+		if (!this._agentKinds.has(instance.instanceId) || tabAgentOfCommand(commandLine) === undefined) {
 			return;
 		}
 		this._agentKinds.delete(instance.instanceId);
