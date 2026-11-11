@@ -118,10 +118,13 @@ suite('paradisMobileLimitsSnapshot', () => {
 			hidden: paradisMobileLimitsSnapshot({ ...base, antigravity: { accounts: [{ ...antigravity, status: 'ok', scoped: [window] }] } }, new Map([['/home/example/.gemini', undefined]])),
 			signedOut: paradisMobileLimitsSnapshot({ ...base, antigravity: { accounts: [{ ...antigravity, status: 'relogin_required', scoped: [window], fetchedAt: 3 }] } }),
 			noAntigravity: paradisMobileLimitsSnapshot(base),
+			// PC の中だけで使うサインインの印（ファイルの時刻と大きさ）は送らない
+			signOutStampKept: paradisMobileLimitsSnapshot({ ...base, antigravitySignedOut: { stamp: '1:2|-|-' } }),
 		}, {
 			hidden: { ...base, antigravity: { accounts: [], hiddenAccounts: [{ provider: 'antigravity', id: '/home/example/.gemini', homeLabel: '~/.gemini' }] } },
 			signedOut: { ...base, antigravity: { accounts: [{ ...antigravity, status: 'relogin_required' }] } },
 			noAntigravity: base,
+			signOutStampKept: base,
 		});
 	});
 });

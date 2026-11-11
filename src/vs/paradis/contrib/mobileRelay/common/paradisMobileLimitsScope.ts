@@ -64,7 +64,7 @@ export interface IParadisMobileLimitsProviderSnapshot extends Omit<IParadisLimit
 	readonly hiddenAccounts?: readonly IParadisMobileLimitsHiddenAccount[];
 }
 
-export interface IParadisMobileLimitsSnapshot extends Omit<IParadisLimitsSnapshot, 'claude' | 'codex' | 'antigravity'> {
+export interface IParadisMobileLimitsSnapshot extends Omit<IParadisLimitsSnapshot, 'claude' | 'codex' | 'antigravity' | 'antigravitySignedOut'> {
 	readonly claude: IParadisMobileLimitsProviderSnapshot;
 	readonly codex: IParadisMobileLimitsProviderSnapshot;
 	/** Antigravity CLI の分（agy を入れていない PC では無い）。任意項目なので、知らないアプリは無視する。 */
@@ -131,7 +131,8 @@ function paradisMobileLimitsProvider(provider: IParadisLimitsProviderSnapshot, h
  * 隠したアカウント（`hidden`）は `accounts` から除き、`hiddenAccounts` へ移す。
  */
 export function paradisMobileLimitsSnapshot(snapshot: IParadisLimitsSnapshot, hidden: ParadisLimitsHiddenAccounts = new Map()): IParadisMobileLimitsSnapshot {
-	const { antigravity, ...rest } = snapshot;
+	// antigravitySignedOut（ファイルの更新時刻と大きさ）は PC の中だけで使う印なので送らない
+	const { antigravity, antigravitySignedOut: _signedOut, ...rest } = snapshot;
 	return {
 		...rest,
 		claude: paradisMobileLimitsProvider(snapshot.claude, hidden),
