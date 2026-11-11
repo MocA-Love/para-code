@@ -104,9 +104,7 @@ export class ParadisWorktreeImageComposer extends Disposable {
 		this._thumbs.setAttribute('role', 'list');
 
 		const bar = dom.append(this._frame, $('.paradis-image-composer-bar'));
-		// アイコンは `icon` ではなく文字の中の `$(attach)` で描く。`icon` はボタンの要素そのものに codicon のクラスを付け、
-		// 土台の `.paradis-button` の font-family がそれを上書きしてアイコンが四角になる（2026-11-12 に dev で確認）
-		this._clip = this._register(new ParadisButton(bar, { kind: 'icon', small: true, label: `$(${Codicon.attach.id})`, ariaLabel: STR_ATTACH, title: STR_ATTACH }));
+		this._clip = this._register(new ParadisButton(bar, { kind: 'icon', small: true, icon: Codicon.attach, ariaLabel: STR_ATTACH, title: STR_ATTACH }));
 		this._clip.element.classList.add('paradis-image-composer-clip');
 		this._hint = dom.append(bar, $('span.paradis-image-composer-hint'));
 		dom.append(bar, $('span.paradis-image-composer-grow'));

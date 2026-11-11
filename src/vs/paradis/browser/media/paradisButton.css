@@ -59,6 +59,12 @@
 	text-overflow: ellipsis;
 }
 
+/* The icon is a child span (paradisButton.ts draws `$(id)` in the label): keep it at its own size instead of letting
+	the rule above shrink it to nothing. */
+.monaco-workbench .paradis-button:not(.paradis-action-button) > .codicon {
+	flex: none;
+}
+
 /* An ActionBar item drawn as a kit button (paradisActionButton.ts): icon, label and count side by side, or the count
 	over the top right corner of an icon-only item. */
 .monaco-workbench .paradis-button.paradis-action-button {
@@ -127,9 +133,8 @@
 	background-color: color-mix(in srgb, var(--vscode-paradis-danger) 12%, transparent);
 }
 
-/* Icon: a square, 16px codicon (the upstream Button puts the codicon class on the element itself). */
+/* Icon: a square, 16px codicon (a child span, see paradisButton.ts). */
 .monaco-workbench .paradis-button.paradis-button-icon {
-	/* Beats the codicon rule (display: inline-block) that comes with the codicon class on the same element. */
 	display: inline-flex;
 	width: var(--paradis-height-md);
 	padding: 0;

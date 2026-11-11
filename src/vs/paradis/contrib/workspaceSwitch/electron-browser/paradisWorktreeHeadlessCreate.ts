@@ -912,7 +912,7 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 				}
 				// 添えた画像は、ターミナルを開く前にスペースへ書く（SSH の窓では SSH 先へ写る）。書けなければ画像なしで起動して知らせる
 				let imagePaths: readonly string[] = [];
-				if (request.images && request.images.length > 0 && paradisAgentImageMode(agent.id) !== 'unsupported') {
+				if (request.images && request.images.length > 0 && paradisAgentImageMode(agent) !== 'unsupported') {
 					const written = await paradisWriteWorktreeImages(fileService, worktreeUri, request.images);
 					if (written.kind === 'written') {
 						imagePaths = written.paths;

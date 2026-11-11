@@ -61,6 +61,8 @@ export interface IParadisButtonOptions {
 export class ParadisButton extends Disposable {
 
 	private readonly button: Button;
+	private _label: string | undefined;
+	private _icon: ThemeIcon | undefined;
 
 	constructor(parent: HTMLElement, options: IParadisButtonOptions) {
 		super();
@@ -73,12 +75,22 @@ export class ParadisButton extends Disposable {
 			hoverDelegate: options.hoverDelegate,
 		}));
 		this.button.element.classList.add(...paradisButtonClasses(options.kind, options.small));
-		if (options.label !== undefined) {
-			this.button.label = options.label;
+		this._label = options.label;
+		this._icon = options.icon;
+		this._renderContent();
+	}
+
+	/**
+	 * アイコンと文字を、ボタンの中の子の span として描く。アイコンを本家の `Button.icon` に渡すと、ボタンの要素
+	 * そのものに codicon のクラスが付き、`.paradis-button` の `font-family: inherit` と読み込みの順で取り合って
+	 * アイコンが四角（豆腐）になる。`$(id)` を文字の先頭に置くと、本家の Button が `span.codicon` にしてくれる。
+	 */
+	private _renderContent(): void {
+		if (this._label === undefined && !this._icon) {
+			return;
 		}
-		if (options.icon) {
-			this.button.icon = options.icon;
-		}
+		const icon = this._icon ? `$(${this._icon.id})` : '';
+		this.button.label = [icon, this._label ?? ''].filter(part => part.length > 0).join(' ');
 	}
 
 	get element(): HTMLElement {
@@ -90,11 +102,13 @@ export class ParadisButton extends Disposable {
 	}
 
 	set label(value: string) {
-		this.button.label = value;
+		this._label = value;
+		this._renderContent();
 	}
 
 	set icon(value: ThemeIcon) {
-		this.button.icon = value;
+		this._icon = value;
+		this._renderContent();
 	}
 
 	get enabled(): boolean {

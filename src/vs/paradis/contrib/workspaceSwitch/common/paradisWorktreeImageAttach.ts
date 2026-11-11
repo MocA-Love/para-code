@@ -52,18 +52,35 @@ export interface IParadisWorktreeImage {
  */
 export type ParadisAgentImageMode = 'mention' | 'flag' | 'unsupported';
 
-/** エージェントの id から画像の渡し方を決める。設定で足したエージェントは Claude Code と同じく指示へ足す。 */
-export function paradisAgentImageMode(agentId: string | undefined): ParadisAgentImageMode {
-	switch (agentId) {
-		case undefined:
-		case '':
-		case 'none':
-		case 'gemini':
-			return 'unsupported';
+const IMAGE_MODES: readonly ParadisAgentImageMode[] = ['mention', 'flag', 'unsupported'];
+
+/** 画像の渡し方を決めるのに要る、エージェント定義の一部。 */
+export interface IParadisAgentImageModeSource {
+	readonly id: string;
+	/** 設定 `paradis.workspaceSwitch.agents` の `images`。設定の値なので、知らない値も来うる。 */
+	readonly images?: string;
+}
+
+/**
+ * エージェント定義から画像の渡し方を決める。定義に `images` があればそれを使う。無ければ、確かめた CLI
+ * （id が `claude`・`codex`）だけ渡し、それ以外（Gemini CLI・設定で足したエージェント）は渡さない。
+ * `@` を読まない CLI に渡すと、指示の末尾に `@.para-code/…` の文字が残るだけになるため。
+ */
+export function paradisAgentImageMode(agent: IParadisAgentImageModeSource | undefined): ParadisAgentImageMode {
+	if (!agent || agent.id === 'none') {
+		return 'unsupported';
+	}
+	const configured = IMAGE_MODES.find(mode => mode === agent.images);
+	if (configured) {
+		return configured;
+	}
+	switch (agent.id) {
+		case 'claude':
+			return 'mention';
 		case 'codex':
 			return 'flag';
 		default:
-			return 'mention';
+			return 'unsupported';
 	}
 }
 

@@ -431,6 +431,11 @@ export interface IParadisAgentCommandTemplate {
 	readonly efforts?: readonly IParadisAgentEffortOption[];
 	/** 権限モード選択肢。未定義なら権限選択UI自体を出さない。 */
 	readonly permissions?: readonly IParadisAgentPermissionOption[];
+	/**
+	 * 「新しいスペース」の指示に添えた画像の渡し方（`mention`・`flag`・`unsupported`。paradisAgentImageMode）。
+	 * 未定義なら id で決める（`claude` と `codex` だけ渡す）。
+	 */
+	readonly images?: string;
 }
 
 /** エージェント起動時のオプション選択（いずれも undefined = 既定 = フラグを付けない）。 */
@@ -668,7 +673,7 @@ function paradisQuoteCommandPromptArg(value: string): string {
  * 渡し方はエージェントごとに違う（paradisAgentImageMode）。渡せないエージェントや、引用を崩しうるパスは使わない。
  */
 export function paradisBuildAgentCommand(template: IParadisAgentCommandTemplate, rawPrompt: string, shellType: TerminalShellType, options?: IParadisAgentLaunchOptions, imagePaths?: readonly string[]): string {
-	const imageMode = paradisAgentImageMode(template.id);
+	const imageMode = paradisAgentImageMode(template);
 	const images = imageMode === 'unsupported' ? [] : (imagePaths ?? []).filter(paradisIsSafeWorktreeImagePath);
 	const flagImages = imageMode === 'flag' ? images : [];
 	// プロンプトは利用者だけでなくエージェント（MCP）や定期実行の定義からも来るので、全経路でここで落とす

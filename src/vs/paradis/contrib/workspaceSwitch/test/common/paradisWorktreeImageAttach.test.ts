@@ -47,10 +47,19 @@ suite('paradisWorktreeImageAttach', () => {
 		], ['1762876411000-1.png', '1762876411000-2.jpg', '1762876411000-8.webp']);
 	});
 
-	test('passes images as @ mentions to Claude Code and added agents, by flag to Codex, and not to Gemini CLI or no agent', () => {
-		assert.deepStrictEqual(
-			['claude', 'codex', 'gemini', 'none', undefined, 'my-agent'].map(paradisAgentImageMode),
-			['mention', 'flag', 'unsupported', 'unsupported', 'unsupported', 'mention'],
-		);
+	test('passes images as @ mentions to Claude Code and by flag to Codex, and not to Gemini CLI, no agent or added agents unless they say how', () => {
+		assert.deepStrictEqual([
+			paradisAgentImageMode({ id: 'claude' }),
+			paradisAgentImageMode({ id: 'codex' }),
+			paradisAgentImageMode({ id: 'gemini' }),
+			paradisAgentImageMode({ id: 'none' }),
+			paradisAgentImageMode(undefined),
+			paradisAgentImageMode({ id: 'my-agent' }),
+			paradisAgentImageMode({ id: 'my-agent', images: 'mention' }),
+			paradisAgentImageMode({ id: 'my-agent', images: 'flag' }),
+			paradisAgentImageMode({ id: 'claude', images: 'unsupported' }),
+			paradisAgentImageMode({ id: 'my-agent', images: 'attach' }),
+			paradisAgentImageMode({ id: 'none', images: 'mention' }),
+		], ['mention', 'flag', 'unsupported', 'unsupported', 'unsupported', 'unsupported', 'mention', 'flag', 'unsupported', 'unsupported', 'unsupported']);
 	});
 });

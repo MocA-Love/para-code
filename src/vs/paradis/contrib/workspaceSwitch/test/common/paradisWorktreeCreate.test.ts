@@ -245,11 +245,12 @@ suite('paradisWorktreeCreate', () => {
 		assert.ok(!command.includes('& echo'));
 	});
 
-	test('passes attached images as @ mentions to Claude Code, as one --image flag to Codex, and not at all to Gemini CLI', () => {
+	test('passes attached images as @ mentions to Claude Code, as one --image flag to Codex, and not at all to Gemini CLI or added agents', () => {
 		const claude = { id: 'claude', label: 'Claude Code', command: 'claude {prompt}' };
 		const codex = { id: 'codex', label: 'Codex', command: 'codex {prompt}' };
 		const gemini = { id: 'gemini', label: 'Gemini CLI', command: 'gemini -i {prompt}' };
 		const custom = { id: 'my-agent', label: 'Mine', command: 'mine --run {prompt}' };
+		const customMention = { ...custom, images: 'mention' };
 		const images = ['.para-code/pasted-images/1762876411000-1.png', '.para-code/pasted-images/1762876411000-2.jpg'];
 		// allow-any-unicode-next-line
 		const prompt = 'スクショの赤い枠を直して';
@@ -258,6 +259,7 @@ suite('paradisWorktreeCreate', () => {
 			paradisBuildAgentCommand(codex, prompt, PosixShellType.Bash, undefined, images),
 			paradisBuildAgentCommand(gemini, prompt, PosixShellType.Bash, undefined, images),
 			paradisBuildAgentCommand(custom, prompt, PosixShellType.Bash, undefined, images),
+			paradisBuildAgentCommand(customMention, prompt, PosixShellType.Bash, undefined, images),
 		], [
 			// allow-any-unicode-next-line
 			'claude \'スクショの赤い枠を直して @.para-code/pasted-images/1762876411000-1.png @.para-code/pasted-images/1762876411000-2.jpg\'',
@@ -265,6 +267,9 @@ suite('paradisWorktreeCreate', () => {
 			'codex \'--image=.para-code/pasted-images/1762876411000-1.png,.para-code/pasted-images/1762876411000-2.jpg\' \'スクショの赤い枠を直して\'',
 			// allow-any-unicode-next-line
 			'gemini -i \'スクショの赤い枠を直して\'',
+			// 設定で足したエージェントは、渡し方を書かなければ渡さない（@ を読まない CLI に文字が残らないように）
+			// allow-any-unicode-next-line
+			'mine --run \'スクショの赤い枠を直して\'',
 			// allow-any-unicode-next-line
 			'mine --run \'スクショの赤い枠を直して @.para-code/pasted-images/1762876411000-1.png @.para-code/pasted-images/1762876411000-2.jpg\'',
 		]);

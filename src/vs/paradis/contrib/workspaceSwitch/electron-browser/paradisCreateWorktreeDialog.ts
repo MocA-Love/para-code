@@ -820,7 +820,7 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		// 種類の分からないシェル（undefined）ではバックスラッシュを含む指示を断る作りなので、表記に合わせて bash として組む
 		// 添えた画像は、作るときに付く名前（時刻はプレビューを作った時点のもの）で見せる
 		const now = Date.now();
-		const imagePaths = paradisAgentImageMode(agent.id) === 'unsupported' ? [] : this._imageComposer.images.map((image, index) => `${PASTED_IMAGE_DIR}/${paradisWorktreeImageFileName(now, index, image.mime)}`);
+		const imagePaths = paradisAgentImageMode(agent) === 'unsupported' ? [] : this._imageComposer.images.map((image, index) => `${PASTED_IMAGE_DIR}/${paradisWorktreeImageFileName(now, index, image.mime)}`);
 		const command = paradisBuildAgentCommand(agent, prompt, PosixShellType.Bash, this._currentLaunchOptions(), imagePaths);
 		this._cmdPreview.textContent = `$ ${command}`;
 		// 画像のパスは末尾に付くので、添えたときは折り返して全部見せる
@@ -832,14 +832,17 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		const agent = this._selectedAgent;
 		if (!agent) {
 			this._imageComposer.setBlock(ParadisWorktreeImageBlock.NoAgent, STR_IMAGES_NO_AGENT, STR_IMAGES_NO_AGENT_DETAIL);
-		} else if (paradisAgentImageMode(agent.id) === 'unsupported') {
+		} else if (paradisAgentImageMode(agent) === 'unsupported') {
 			const label = agent.label ?? agent.id;
 			this._imageComposer.setBlock(
 				ParadisWorktreeImageBlock.Unsupported,
 				// allow-any-unicode-next-line
 				localize('paradis.createWorktree.imagesUnsupported', "{0} には画像を渡せません", label),
-				// allow-any-unicode-next-line
-				localize('paradis.createWorktree.imagesUnsupportedDetail', "{0} は git が無視するファイルを読まないため、添えた画像は渡しません。エージェントを選び直せば使えます", label),
+				agent.id === 'gemini'
+					// allow-any-unicode-next-line
+					? localize('paradis.createWorktree.imagesUnsupportedDetail', "{0} は git が無視するファイルを読まないため、添えた画像は渡しません。エージェントを選び直せば使えます", label)
+					// allow-any-unicode-next-line
+					: localize('paradis.createWorktree.imagesUnsupportedCustom', "{0} への画像の渡し方が決まっていないため、添えた画像は渡しません。設定 paradis.workspaceSwitch.agents の images で渡し方を書けます", label),
 			);
 		} else {
 			this._imageComposer.setBlock(ParadisWorktreeImageBlock.None, '');
@@ -1003,7 +1006,7 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		const agentId = this._selectedAgentId;
 		const launchOptions = this._currentLaunchOptions();
 		// 実行しない・画像を渡せないエージェントでは画像を添えない（読む相手がいない）
-		const images = paradisAgentImageMode(this._selectedAgent?.id) === 'unsupported' ? [] : this._imageComposer.images;
+		const images = paradisAgentImageMode(this._selectedAgent) === 'unsupported' ? [] : this._imageComposer.images;
 
 		// 次回ダイアログを開いたときに同じ選択を既定にするため記憶する
 		this.storageService.store(STORAGE_KEY_LAST_AGENT, agentId, StorageScope.PROFILE, StorageTarget.MACHINE);
