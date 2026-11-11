@@ -114,7 +114,10 @@ export class TerminalClipboardContribution extends Disposable implements ITermin
 			const pasted = await paradisTryTerminalImagePaste(this._clipboardService, this._xterm, {
 				fileService: this._fileService,
 				remoteAuthority: attached?.remoteAuthority,
-				cwd: attached?.cwd
+				cwd: attached?.cwd,
+				// PARA-PATCH: 復元直後のエディタ領域のターミナルは cwd が空なので補い、画像を置けなければ通知する
+				getSpeculativeCwd: attached ? () => attached.getSpeculativeCwd() : undefined,
+				notificationService: this._notificationService
 			});
 			if (pasted === true) {
 				this._ctx.instance.focus();
