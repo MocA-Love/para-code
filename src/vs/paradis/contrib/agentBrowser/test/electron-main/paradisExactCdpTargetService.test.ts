@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as assert from 'assert';
+import { nativeImage } from 'electron';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { BrowserViewAutomationKeyFailureReason, IBrowserViewAutomationKeyFailureDetail } from '../../../../../platform/browserView/common/paraBrowserViewAutomationInput.js';
@@ -663,6 +664,26 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 			{ format: 'png' },
 			{ format: 'png' },
 		]);
+	});
+
+	test('a capture in document coordinates of a shrunk page is returned at the CSS size of the rect, not stretched', async () => {
+		const png = (width: number, height: number) => VSBuffer.wrap(nativeImage.createFromBitmap(Buffer.alloc(width * height * 4, 0x80), { width, height }).toPNG());
+		const sizeOf = (data: string | null) => nativeImage.createFromBuffer(Buffer.from(data ?? '', 'base64')).getSize();
+		const current = createTestView({
+			emulatedDevice: { width: 1920, height: 1080 },
+			emulatedScale: 0.43,
+			layoutMetrics: { cssVisualViewport: { pageX: 0, pageY: 300, scale: 1 } },
+		});
+		const registry = createRegistry({ 'view-1': current.view });
+		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1');
+		const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
+		const rect = { format: 'png' as const, pageRect: { x: 10, y: 20, width: 60, height: 20 } };
+		current.state.captureResult = Promise.resolve(png(60, 20));
+		const sameSize = await service.captureExactViewScreenshot(exact, rect);
+		// devicePixelRatio 2 で返った（縮め方によってはページの倍率のまま撮れる）
+		current.state.captureResult = Promise.resolve(png(120, 40));
+		const doubled = await service.captureExactViewScreenshot(exact, rect);
+		assert.deepStrictEqual({ sameSize: sizeOf(sameSize), doubled: sizeOf(doubled) }, { sameSize: { width: 60, height: 20 }, doubled: { width: 60, height: 20 } });
 	});
 
 	test('exact throttling touches only a live exact object and reports synchronous failures', async () => {

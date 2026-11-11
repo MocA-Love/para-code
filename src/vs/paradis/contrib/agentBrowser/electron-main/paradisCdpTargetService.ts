@@ -862,7 +862,9 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		let captured = false;
 		try {
 			const capture = await this.emulatedDocumentCapture(view, options);
-			const buffer = this.normalizeEmulatedScreenshot(view, await view.captureScreenshot(capture), capture);
+			// 置き換えた撮影も、返った画像を置き換えた範囲の CSS の大きさへ揃える（ページの devicePixelRatio 倍で
+			// 返る縮め方でも、画像の座標をページの座標のままにする。1 倍で返ればそのまま）
+			const buffer = this.normalizeEmulatedScreenshot(view, await view.captureScreenshot(capture), capture === options ? options : { ...options, pageRect: capture.pageRect });
 			captured = this.resolveExistingExactView(descriptor) === view;
 			return captured ? encodeBase64(buffer) : null;
 		} catch (error) {
