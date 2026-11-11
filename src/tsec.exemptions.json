@@ -36,7 +36,8 @@
 		"vs/paradis/contrib/fileViewers/electron-browser/paradisSpreadsheetDrawings.ts"
 	],
 	"ban-iframe-srcdoc-assignments": [
-		"vs/paradis/contrib/fileViewers/electron-browser/paradisOfficePrintService.ts"
+		"vs/paradis/contrib/fileViewers/electron-browser/paradisOfficePrintService.ts",
+		"vs/paradis/contrib/crossJump/browser/paradisPalettePreviewMedia.ts"
 	],
 	"ban-element-setattribute": [
 		"**/*.ts"

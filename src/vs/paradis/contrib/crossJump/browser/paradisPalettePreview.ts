@@ -13,13 +13,14 @@
 // - スペース: リポジトリ・ブランチ・状態・PR・差分（Workspaces ビューと同じ内部コマンドで取る）
 // - タブ: 場所とファイルの先頭。色付けは本家の tokenizeToString（テーマの色）、Markdown は fork の Markdown ビューアと同じ
 //   変換と消毒（renderParadisMarkdownDocumentDeferred）で描く。スクリプトは動かさず、リンクと画像は外す（面は押せない）
+//   画像・PDF は描き、HTML は描画とソースを切り替える（paradisPalettePreviewMedia.ts・paradisPalettePdfPreview.ts、案 12）
 // - コマンド: 英語の名前とキー
 // 読み込み（ファイル・差分・PR）は選んだ行が止まってから（PREVIEW_DELAY_MS）始め、行が替わったら取りやめる。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../base/common/codicons.js';
-import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ILanguageService } from '../../../../editor/common/languages/language.js';
@@ -32,6 +33,9 @@ import { paradisQuickInputPreviewTier } from '../../../../platform/quickinput/br
 import { IExtensionService } from '../../../../workbench/services/extensions/common/extensions.js';
 import { markedParadisAlertExtension } from '../../fileViewers/browser/paradisMarkdownAlerts.js';
 import { parseParadisTokenizedCode, renderParadisMarkdownDocumentDeferred } from '../../fileViewers/browser/paradisMarkdownDocumentRenderer.js';
+import { ParadisSegmented } from '../../../browser/paradisSegmented.js';
+import { renderParadisPreviewPdf } from './paradisPalettePdfPreview.js';
+import { ParadisPalettePreviewMedia, paradisReleaseOnCancel, PARADIS_PALETTE_PREVIEW_HTML_MAX_BYTES, renderParadisPreviewHtml, renderParadisPreviewImage } from './paradisPalettePreviewMedia.js';
 
 /** 面のクラス。 */
 export const PARADIS_PALETTE_PREVIEW_CLASS = 'paradis-palette-preview';
@@ -68,8 +72,10 @@ export type ParadisPalettePreviewModel =
 		readonly kind: 'editor';
 		readonly title: string;
 		readonly location: string | undefined;
-		/** 先頭を出すファイル。中身がテキストでないビューア（Office・画像・PDF・ターミナルなど）のタブは undefined。 */
+		/** 先頭を出すファイル。中身がテキストでないビューア（Office・ターミナルなど）のタブは undefined。 */
 		readonly resource: URI | undefined;
+		/** 画像・PDF は描き、HTML は描画とソースを切り替える。テキストの先頭を出すときは undefined。 */
+		readonly media?: ParadisPalettePreviewMedia;
 	}
 	| {
 		readonly kind: 'command';
@@ -148,6 +154,11 @@ export async function paradisLoadOrUnavailable(load: () => Promise<void>, token:
 	}
 }
 
+/** タブの見出しのアイコン。 */
+function editorIcon(media: ParadisPalettePreviewMedia | undefined): ThemeIcon {
+	return media === 'image' ? Codicon.fileMedia : media === 'pdf' ? Codicon.filePdf : Codicon.file;
+}
+
 /** 面の本文に「プレビューできません」を出す。 */
 function showUnavailable(body: HTMLElement): void {
 	dom.append(body, dom.$('.paradis-palette-preview-empty')).textContent = localize('paradis.palette.preview.unavailable', "このタブはプレビューできません");
@@ -217,7 +228,7 @@ export class ParadisPalettePreviewPane extends Disposable {
 		if (model.kind === 'agent') {
 			dom.append(head, dom.$(`span.paradis-palette-preview-dot.paradis-palette-dot-${model.statusTone}`));
 		} else {
-			const icon = model.kind === 'space' || model.kind === 'other' ? model.icon : model.kind === 'editor' ? Codicon.file : Codicon.chevronRight;
+			const icon = model.kind === 'space' || model.kind === 'other' ? model.icon : model.kind === 'editor' ? editorIcon(model.media) : Codicon.chevronRight;
 			dom.append(head, dom.$(ThemeIcon.asCSSSelector(icon)));
 		}
 		dom.append(head, dom.$('span.paradis-palette-preview-title')).textContent = model.title;
@@ -255,7 +266,20 @@ export class ParadisPalettePreviewPane extends Disposable {
 				const body = dom.append(this.element, dom.$('.paradis-palette-preview-body'));
 				if (model.resource) {
 					const resource = model.resource;
-					this.later(token => paradisLoadOrUnavailable(() => this.loadFile(resource, body, token), token, () => showUnavailable(body)));
+					const media = model.media;
+					const title = model.title;
+					this.later(token => paradisLoadOrUnavailable(() => {
+						switch (media) {
+							case 'image': return renderParadisPreviewImage(this.fileService, resource, title, body, token);
+							case 'pdf': return renderParadisPreviewPdf(this.fileService, resource, title, body, token);
+							case 'html': return this.loadHtml(resource, title, body, token);
+							default: return this.loadFile(resource, body, token);
+						}
+					}, token, () => {
+						// 途中まで描いたもの（PDF の帯など）は消してから出す
+						dom.clearNode(body);
+						showUnavailable(body);
+					}));
 				} else {
 					showUnavailable(body);
 				}
@@ -341,6 +365,57 @@ export class ParadisPalettePreviewPane extends Disposable {
 		if ((head.truncated || truncatedByModel) && !cancelled()) {
 			dom.append(body, dom.$('.paradis-palette-preview-more')).textContent = localize('paradis.palette.preview.more', "先頭の {0} 行だけを出しています", PARADIS_PALETTE_PREVIEW_MAX_LINES);
 		}
+	}
+
+	/** HTML は、スクリプトを止めた iframe での描画と、色付けのソースを切り替える（どちらを選んだかは覚えない。開くたびに描画）。 */
+	private async loadHtml(resource: URI, title: string, body: HTMLElement, token: CancellationToken): Promise<void> {
+		const cancelled = () => token.isCancellationRequested;
+		const model = this.modelService.getModel(resource);
+		let html: string;
+		if (model) {
+			html = model.getValue().slice(0, PARADIS_PALETTE_PREVIEW_HTML_MAX_BYTES);
+		} else {
+			const content = await this.fileService.readFile(resource, { length: PARADIS_PALETTE_PREVIEW_HTML_MAX_BYTES }, token);
+			if (cancelled()) {
+				return;
+			}
+			if (paradisLooksBinary(content.value.buffer)) {
+				showUnavailable(body);
+				return;
+			}
+			html = content.value.toString();
+		}
+		const store = new DisposableStore();
+		paradisReleaseOnCancel(token, () => store.dispose());
+		const modes = store.add(new ParadisSegmented<'render' | 'source'>(body, {
+			items: [
+				{ value: 'render', label: localize('paradis.palette.preview.htmlRender', "描画") },
+				{ value: 'source', label: localize('paradis.palette.preview.htmlSource', "ソース") },
+			],
+			value: 'render',
+			ariaLabel: localize('paradis.palette.preview.htmlModes', "HTML の見せ方"),
+		}));
+		// 面は読むだけ。押して切り替えられるが、Tab で入力欄からフォーカスを移さない（器の外へ出ると本家が閉じる）
+		for (const button of modes.element.children) {
+			if (dom.isHTMLElement(button)) {
+				button.tabIndex = -1;
+			}
+		}
+		const content = dom.append(body, dom.$('.paradis-palette-preview-html-content'));
+		const draw = async (mode: 'render' | 'source') => {
+			dom.clearNode(content);
+			if (mode === 'render') {
+				renderParadisPreviewHtml(html, title, content);
+				return;
+			}
+			const head = paradisPalettePreviewHead(html);
+			await this.renderCode(head.text, 'html', content, () => cancelled() || modes.value !== mode);
+			if (head.truncated && !cancelled() && modes.value === mode) {
+				dom.append(content, dom.$('.paradis-palette-preview-more')).textContent = localize('paradis.palette.preview.more', "先頭の {0} 行だけを出しています", PARADIS_PALETTE_PREVIEW_MAX_LINES);
+			}
+		};
+		store.add(modes.onDidChange(mode => void draw(mode).catch(() => { /* 面の描画の失敗は出さない */ })));
+		await draw('render');
 	}
 
 	private async renderCode(text: string, languageId: string | null, body: HTMLElement, cancelled: () => boolean): Promise<void> {
