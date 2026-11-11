@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisProgramStatus, paradisClaudeProcessIdentity, paradisCodexProgramStatusForeground, paradisCodexProgramStatusTransition, paradisIsSuspendedExitCode, PARADIS_PROGRAM_STATUS_MUTE_MS, PARADIS_PROGRAM_STATUS_WINDOW_MS, ParadisProgramStatusGate, ParadisProgramStatusTracker, paradisCopyProgramStatus, paradisParseProgramStatus, paradisProgramStatusApplies, paradisProgramStatusClosesOnForeground, paradisProgramStatusForeground, paradisProgramStatusToAgentStatus, paradisTrustedCommandLine } from '../../common/paradisProgramStatus.js';
+import { IParadisProgramStatus, paradisAntigravityProgramStatusTransition, paradisClaudeProcessIdentity, paradisCodexProgramStatusForeground, paradisCodexProgramStatusTransition, paradisIsSuspendedExitCode, PARADIS_PROGRAM_STATUS_MUTE_MS, PARADIS_PROGRAM_STATUS_WINDOW_MS, ParadisProgramStatusGate, ParadisProgramStatusTracker, paradisCopyProgramStatus, paradisParseProgramStatus, paradisProgramStatusApplies, paradisProgramStatusClosesOnForeground, paradisProgramStatusForeground, paradisProgramStatusToAgentStatus, paradisTrustedCommandLine } from '../../common/paradisProgramStatus.js';
 import { ParadisAgentStatus } from '../../common/paradisAgentBrowser.js';
 
 suite('Para Browser Claude Code / Codex program status (OSC 7501)', () => {
@@ -566,5 +566,103 @@ suite('Para Browser Claude Code / Codex program status (OSC 7501)', () => {
 			{ reopened: true, wasOpen: true, send: { state: 'working', app: 'codex' } },
 			{ reopened: false, wasOpen: true, send: { state: 'clear' } },
 		]);
+	});
+
+	test('reads the sequences Antigravity CLI 1.5.6 wrote in a PTY after the query was answered', () => {
+		// Measured on agy 1.5.6 (2026-11-12, msg is base64 and not read). Without an answer to the query agy writes nothing.
+		const inputs = {
+			query: '?',
+			idle: 'state=idle:app=antigravity',
+			working: 'state=working:app=antigravity',
+			permission: 'state=blocked:kind=permission:app=antigravity:msg=QXBwcm92ZSBSdW5Db21tYW5kOiBscyAtYQ==',
+			question: 'state=blocked:kind=question:app=antigravity:msg=RG8geW91IHByZWZlciByZWQgb3IgYmx1ZT8=',
+			done: 'state=done:app=antigravity:msg=UmVk',
+		};
+		assert.deepStrictEqual({
+			parsed: Object.fromEntries(Object.entries(inputs).map(([name, data]) => [name, paradisParseProgramStatus(data)])),
+			overIpc: paradisCopyProgramStatus({ state: 'blocked', kind: 'permission', app: 'antigravity' }),
+		}, {
+			parsed: {
+				query: 'query',
+				idle: { state: 'idle', app: 'antigravity' },
+				working: { state: 'working', app: 'antigravity' },
+				permission: { state: 'blocked', kind: 'permission', app: 'antigravity' },
+				question: { state: 'blocked', kind: 'question', app: 'antigravity' },
+				done: { state: 'done', app: 'antigravity' },
+			},
+			overIpc: { state: 'blocked', kind: 'permission', app: 'antigravity' },
+		});
+	});
+
+	test('the Antigravity CLI state is used next to its hooks: waits, their release, and the ends that send no Stop hook', () => {
+		const statuses: (ParadisAgentStatus | undefined)[] = [undefined, 'working', 'permission', 'question', 'review'];
+		const table: Record<string, (ParadisAgentStatus | 'idle' | undefined)[]> = {};
+		for (const [label, state, kind] of [
+			['blocked permission', 'blocked', 'permission'],
+			['blocked question', 'blocked', 'question'],
+			['working', 'working', undefined],
+			['done', 'done', undefined],
+			['idle', 'idle', undefined],
+			['clear', 'clear', undefined],
+		] as const) {
+			table[label] = statuses.map(previous => paradisAntigravityProgramStatusTransition(previous, state, kind));
+		}
+		// Columns: no state, working, permission, question, review
+		assert.deepStrictEqual(table, {
+			'blocked permission': ['permission', 'permission', undefined, 'permission', 'permission'],
+			'blocked question': ['question', 'question', 'question', undefined, 'question'],
+			// After an answer agy writes working again
+			'working': ['working', undefined, 'working', 'working', 'working'],
+			// A second done after the Stop hook changes nothing
+			'done': [undefined, 'review', 'review', 'review', undefined],
+			// Denied a permission or pressed Esc: no Stop hook comes, only idle. The idle after done (next key) keeps the review
+			'idle': [undefined, 'idle', 'idle', 'idle', undefined],
+			'clear': [undefined, 'idle', 'idle', 'idle', undefined],
+		});
+	});
+
+	test('answers the Antigravity CLI query only while agy runs in front, and keeps its states apart from Claude Code\'s', () => {
+		let now = 1_000_000;
+		const tracker = new ParadisProgramStatusTracker(new ParadisProgramStatusGate(() => now));
+		const passed: string[] = [];
+		const feed = (label: string, sequence: string, commandLine: string | undefined, processTitle: string | undefined) => {
+			const parsed = paradisParseProgramStatus(sequence);
+			if (parsed === 'query') {
+				passed.push(`${label}: ${tracker.query(commandLine, processTitle) ? 'answered' : 'not answered'}`);
+			} else if (parsed !== undefined) {
+				const receipt = tracker.receive(parsed, commandLine, processTitle);
+				passed.push(`${label}: ${receipt.send !== undefined ? JSON.stringify(receipt.send) : 'dropped'}`);
+			}
+			now += 300;
+		};
+		feed('cat of an agy query', '?', 'cat log.txt', 'cat');
+		feed('agy asks', '?', undefined, 'agy');
+		feed('agy idle', 'state=idle:app=antigravity', undefined, 'agy');
+		feed('a Claude Code state under agy', 'state=blocked:app=claude-code:kind=permission', undefined, 'agy');
+		feed('agy waits', 'state=blocked:kind=permission:app=antigravity', undefined, 'agy');
+		// Without shell integration the gate stays open while agy is in front
+		const stays = tracker.foregroundChanged('agy', false);
+		// The shell is back: the clear that ends the run is marked as agy's
+		const closed = tracker.foregroundChanged('zsh', true);
+		// Over ssh the far side may be agy or Claude Code: the first state decides
+		feed('query over ssh', '?', 'ssh dev-box', 'ssh');
+		feed('agy over ssh', 'state=working:app=antigravity', 'ssh dev-box', 'ssh');
+		feed('a Codex state over ssh', 'state=working:app=codex', 'ssh dev-box', 'ssh');
+		assert.deepStrictEqual({ passed, stays, closed, app: tracker.gate.app, foreground: paradisProgramStatusForeground(undefined, 'agy') }, {
+			passed: [
+				'cat of an agy query: not answered',
+				'agy asks: answered',
+				'agy idle: {"state":"idle","app":"antigravity"}',
+				'a Claude Code state under agy: dropped',
+				'agy waits: {"state":"blocked","kind":"permission","app":"antigravity"}',
+				'query over ssh: answered',
+				'agy over ssh: {"state":"working","app":"antigravity"}',
+				'a Codex state over ssh: dropped',
+			],
+			stays: undefined,
+			closed: 'clear',
+			app: 'antigravity',
+			foreground: 'antigravity',
+		});
 	});
 });

@@ -114,7 +114,7 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 				if (answered) {
 					// 前の受け付けの件数（閉じた後に届いた状態を含む）を先に送ってから数え直す
 					this.endRun('requery');
-					this.runStats.opened(paradisProgramStatusCliVersion(this.foregroundProcess));
+					this.runStats.opened(paradisProgramStatusCliVersion(this.foregroundProcess), this.gate.app);
 					// 端末の返事として pty へ書く（利用者の入力にはしない。DA1 の自動の返事と同じ経路）
 					xterm.raw.input(PARADIS_PROGRAM_STATUS_REPLY, false);
 				}
@@ -171,7 +171,8 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 	/** 受け付けを閉じた・保留にしたら、残った状態を消す。 */
 	private apply(effect: ParadisProgramStatusEffect, endedBy: ParadisProgramStatusRunEnd): void {
 		if (effect === 'clear') {
-			this.send({ state: 'clear', ...(this.gate.app === 'codex' ? { app: 'codex' as const } : {}) });
+			const app = this.gate.app;
+			this.send({ state: 'clear', ...(app === 'codex' || app === 'antigravity' ? { app } : {}) });
 			this.endRun(endedBy);
 		}
 	}

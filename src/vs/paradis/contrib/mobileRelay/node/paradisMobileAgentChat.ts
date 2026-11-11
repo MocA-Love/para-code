@@ -9249,6 +9249,10 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private onHookEvent(event: IParadisAgentHookEvent): void {
+		// Antigravity CLI の会話はまだ写さない（会話の記録の読み取りは別の PR）。状態の印と通知は hook の受け口が出す
+		if (event.agentKind === 'antigravity') {
+			return;
+		}
 		if (event.payload?.agent_kind === 'opencode') {
 			this.enqueueHookEvent(event, event.transcriptPath ?? '', true);
 			return;
@@ -9464,7 +9468,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		const provider = event.nestedAgent
 			?? (event.transcriptPath !== undefined && event.transcriptPath.length > 0 ? agentKindForPath(event.transcriptPath) : undefined);
 		const key = event.sessionId ?? event.transcriptPath;
-		if (provider === undefined || provider === 'opencode' || key === undefined || key.length === 0) {
+		if (provider === undefined || provider === 'opencode' || provider === 'antigravity' || key === undefined || key.length === 0) {
 			return;
 		}
 		if (this.activityTracker(event.token).applyNestedAgentHook(provider, key, event.event, event.at, str(event.payload?.prompt))) {

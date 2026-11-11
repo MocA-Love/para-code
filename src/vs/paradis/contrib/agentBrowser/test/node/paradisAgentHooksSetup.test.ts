@@ -18,7 +18,7 @@ import { IDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CODEX_HOOK_EVENTS, paradisManagedAgentHookCommand, paradisManagedHookDefinition } from '../../common/paradisAgentHooks.js';
-import { ParadisAgentHooksReconciler, paradisClaudeManagedHookEvents, paradisGetNotifyScriptContent, paradisGetNotifyScriptContentPs1, paradisMergeAgentHooksFile, paradisMergeAgentHooksJson, paradisRemoveAgentHooks, paradisRemoveAgentHooksFile, paradisRemoveAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from '../../node/paradisAgentHooksSetup.js';
+import { ParadisAgentHooksReconciler, paradisClaudeManagedHookEvents, paradisGetNotifyScriptContent, paradisGetNotifyScriptContentPs1, paradisMergeAgentHooksFile, paradisMergeAgentHooksJson, paradisMergeAntigravityHooksFile, paradisMergeAntigravityHooksJson, paradisRemoveAgentHooks, paradisRemoveAntigravityHooksJson, paradisRemoveAgentHooksFile, paradisRemoveAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from '../../node/paradisAgentHooksSetup.js';
 import { paradisWriteFileAtomicSync } from '../../../../node/paradisWriteFileAtomic.js';
 
 const execFileAsync = promisify(execFile);
@@ -380,6 +380,125 @@ suite('ParadisAgentHooksSetup', () => {
 			if (server.listening) {
 				await new Promise<void>(resolve => server.close(() => resolve()));
 			}
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('reads the Antigravity CLI camelCase event name and never writes to stdout', async function () {
+		// agy は PreToolUse の hook が `{}` を出力するとツールの実行を拒否する（2026-11-12 に実測）。notify スクリプトは
+		// Para Code の外・Para Code に届かない・届いた、どの場合も stdout に何も書いてはいけない
+		if (process.platform === 'win32') {
+			this.skip();
+		}
+		this.timeout(20_000);
+		const { createServer } = await import('http');
+		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-agent-hook-agy-'));
+		const events: (string | null)[] = [];
+		const server = createServer((request, response) => {
+			request.resume();
+			request.on('end', () => {
+				events.push(new URL(request.url ?? '', 'http://localhost').searchParams.get('event'));
+				response.writeHead(200, { 'Content-Type': 'application/json' });
+				response.end('{"ok":true}');
+			});
+		});
+		try {
+			await new Promise<void>((resolve, reject) => {
+				server.once('error', reject);
+				server.listen(0, '127.0.0.1', resolve);
+			});
+			const portFilePath = join(root, 'mcp-port.json');
+			await fs.writeFile(portFilePath, JSON.stringify({ port: (server.address() as AddressInfo).port }));
+			const scriptPath = await writeNotifyFixture(root);
+			const payloadPath = join(root, 'hook.json');
+			const run = async (env: NodeJS.ProcessEnv) => (await execFileAsync('/bin/sh', ['-c', 'cat "$PAYLOAD_FILE" | "$HOOK_SCRIPT"'], {
+				env: { PATH: process.env['PATH'], HOOK_SCRIPT: scriptPath, PAYLOAD_FILE: payloadPath, ...env },
+				timeout: 10_000,
+			})).stdout;
+			const stdouts: string[] = [];
+			// agy 1.5.6 の PreToolUse と Stop の形（値は伏せた）
+			for (const payload of [
+				'{"conversationId":"c1","cwd":"/repo","hookEventName":"PreToolUse","stepIdx":2,"toolCall":{"args":{"CommandLine":"ls -a"},"id":"call_1","name":"run_command"},"transcriptPath":"/Users/example/.gemini/antigravity-cli/brain/c1/.system_generated/logs/transcript_full.jsonl"}',
+				'{"conversationId":"c1","cwd":"/repo","error":"","fullyIdle":true,"hookEventName":"Stop","terminationReason":"NO_TOOL_CALL"}',
+			]) {
+				await fs.writeFile(payloadPath, payload);
+				stdouts.push(await run({ [PARADIS_PANE_TOKEN_ENV_VAR]: 'pane-token', [PARADIS_MCP_PORT_FILE_ENV_VAR]: portFilePath }));
+				// Para Code のターミナルの外
+				stdouts.push(await run({}));
+				// Para Code に届かない（ポートファイルが無い。控えに回る）
+				stdouts.push(await run({ [PARADIS_PANE_TOKEN_ENV_VAR]: 'pane-token', [PARADIS_MCP_PORT_FILE_ENV_VAR]: join(root, 'missing', 'mcp-port.json') }));
+			}
+
+			assert.deepStrictEqual({ events, stdouts }, { events: ['PreToolUse', 'Stop'], stdouts: ['', '', '', '', '', ''] });
+		} finally {
+			if (server.listening) {
+				await new Promise<void>(resolve => server.close(() => resolve()));
+			}
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('the PowerShell hook reads the Antigravity CLI camelCase event name and keeps its session in the spool', () => {
+		const script = paradisGetNotifyScriptContentPs1();
+		assert.match(script, /\[regex\]::Match\(\$inputJson, '"hookEventName"/);
+		assert.match(script, /@\('session_id', 'conversationId'\), @\('transcript_path', 'transcriptPath'\)/);
+	});
+
+	test('places the Antigravity CLI named hook next to the user\'s hooks and takes only it out again', () => {
+		const command = paradisManagedAgentHookCommand();
+		const handler = { type: 'command', command };
+		const ours = {
+			SessionStart: [handler],
+			PreInvocation: [handler],
+			PostInvocation: [handler],
+			PreToolUse: [{ matcher: '*', hooks: [handler] }],
+			PostToolUse: [{ matcher: '*', hooks: [handler] }],
+			Stop: [handler],
+		};
+		const user = { 'lint-checker': { PostToolUse: [{ matcher: 'run_command', hooks: [{ type: 'command', command: './lint.sh' }] }] } };
+		const merged = paradisMergeAntigravityHooksJson(JSON.stringify(user, undefined, 2), command)!;
+		const disabled = JSON.stringify({ ...user, 'para-code': { enabled: false, Stop: [{ type: 'command', command: '$HOME/.para-code/hooks/notify-v1.sh' }] } });
+		const someoneElses = JSON.stringify({ 'para-code': { Stop: [{ type: 'command', command: './mine.sh' }] } });
+		const newer = JSON.stringify({ 'para-code': { Stop: [{ type: 'command', command: `$HOME/.para-code/hooks/notify-v${PARADIS_AGENT_HOOK_SCHEMA_VERSION + 1}.sh` }] } });
+		assert.deepStrictEqual({
+			merged: JSON.parse(merged),
+			again: paradisMergeAntigravityHooksJson(merged, command) === merged,
+			fromMissing: JSON.parse(paradisMergeAntigravityHooksJson(undefined, command)!),
+			keepsDisabled: JSON.parse(paradisMergeAntigravityHooksJson(disabled, command)!)['para-code'].enabled,
+			someoneElses: paradisMergeAntigravityHooksJson(someoneElses, command) === someoneElses,
+			newer: paradisMergeAntigravityHooksJson(newer, command) === newer,
+			unparseable: paradisMergeAntigravityHooksJson('{', command),
+			removed: JSON.parse(paradisRemoveAntigravityHooksJson(merged)!),
+			removeSomeoneElses: paradisRemoveAntigravityHooksJson(someoneElses) === someoneElses,
+		}, {
+			merged: { ...user, 'para-code': ours },
+			again: true,
+			fromMissing: { 'para-code': ours },
+			keepsDisabled: false,
+			someoneElses: true,
+			newer: true,
+			unparseable: undefined,
+			removed: user,
+			removeSomeoneElses: true,
+		});
+	});
+
+	test('puts the Antigravity CLI hook only where agy has made its config folder, and removing leaves a missing file missing', async () => {
+		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-agent-hooks-agy-'));
+		try {
+			const withoutAgy = join(root, 'no-agy', '.gemini', 'config', 'hooks.json');
+			const withAgy = join(root, 'agy', '.gemini', 'config', 'hooks.json');
+			await fs.mkdir(join(root, 'agy', '.gemini', 'config'), { recursive: true });
+			await paradisMergeAntigravityHooksFile(withoutAgy, undefined);
+			await paradisMergeAntigravityHooksFile(withAgy, undefined);
+			const installed = Object.keys(JSON.parse(await fs.readFile(withAgy, 'utf8')));
+			await paradisRemoveAgentHooks(undefined, { claudeSettingsPath: join(root, 'settings.json'), codexHooksPath: join(root, 'codex-hooks.json'), antigravityHooksPath: withAgy });
+			assert.deepStrictEqual({
+				noAgyFolder: await fs.stat(join(root, 'no-agy')).then(() => true, () => false),
+				installed,
+				afterRemove: JSON.parse(await fs.readFile(withAgy, 'utf8')),
+			}, { noAgyFolder: false, installed: ['para-code'], afterRemove: {} });
+		} finally {
 			await fs.rm(root, { recursive: true, force: true });
 		}
 	});

@@ -39,6 +39,7 @@ import { promisify } from 'util';
 import { ParadisHookIdentityLoss } from '../common/paradisAgentHookDropLog.js';
 import { paradisCommandLineBypassesPermissions, paradisIsShellCommandLine } from '../../agentHibernation/common/paradisAgentHibernation.js';
 import { paradisClaudeConfigDir, paradisIsWithinCodexHome } from './paradisAgentHome.js';
+import { paradisIsAntigravityTranscriptPath } from '../common/paradisAntigravityHooks.js';
 import { IParadisClaudeJob, paradisCachedClaudeJobsReader, paradisClaudeAttachNameQuery, paradisClaudeJobOwnsSession, paradisSelectClaudeJobByName } from './paradisClaudeJobNames.js';
 
 const execAsync = promisify(exec);
@@ -65,7 +66,7 @@ function defaultClaudeJobsReader(): Promise<readonly IParadisClaudeJob[]> {
 	return cachedClaudeJobsReader(paradisClaudeConfigDir());
 }
 
-export type ParadisHookAgentKind = 'claude' | 'codex' | 'opencode';
+export type ParadisHookAgentKind = 'claude' | 'codex' | 'opencode' | 'antigravity';
 
 export type ParadisHookOrigin = 'owner' | 'nested' | 'invalid' | 'background';
 
@@ -129,6 +130,9 @@ interface IOwnerRecord {
 export function paradisHookAgentKindForTranscript(transcriptPath: string): ParadisHookAgentKind {
 	if (/[\\/]opencode(?:-[\w.-]+)?\.db(?:#ses_[A-Za-z0-9_-]+)?$/.test(transcriptPath)) {
 		return 'opencode';
+	}
+	if (paradisIsAntigravityTranscriptPath(transcriptPath)) {
+		return 'antigravity';
 	}
 	// アカウントを切り替えると ~/.codex-2 のような別ホームに書かれるので、その形も Codex とみなす。
 	if (/[\\/]\.codex(?:-[\w.]+)?[\\/]/.test(transcriptPath) || /[\\/]rollout-[^\\/]*\.jsonl$/.test(transcriptPath)) {
@@ -240,6 +244,10 @@ function agentKindOfBasename(basename: string): ParadisHookAgentKind | undefined
 	}
 	if (basename === 'codex') {
 		return 'codex';
+	}
+	// Antigravity CLI（Go の単一の実行ファイル。hook は `sh -c` を挟んで agy の直接の子になる。2026-11-12 に実測）
+	if (basename === 'agy') {
+		return 'antigravity';
 	}
 	return undefined;
 }

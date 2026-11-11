@@ -10,7 +10,7 @@ import { paradisSetOpenCodeCompatibleCommands } from '../../../../../platform/te
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisClaudeJob } from '../../node/paradisClaudeJobNames.js';
-import { IParadisHookProcessInfo, ParadisAgentHookOwnership, paradisClaudeAttachNameFromCommandLine, paradisClaudeAttachTargetFromCommandLine, paradisHookAgentKindFromCommandLine, paradisIsClaudeBackgroundHostCommand, paradisIsCodexPluginCommand } from '../../node/paradisAgentHookOwnership.js';
+import { IParadisHookProcessInfo, ParadisAgentHookOwnership, paradisClaudeAttachNameFromCommandLine, paradisClaudeAttachTargetFromCommandLine, paradisHookAgentKindForTranscript, paradisHookAgentKindFromCommandLine, paradisIsClaudeBackgroundHostCommand, paradisIsCodexPluginCommand } from '../../node/paradisAgentHookOwnership.js';
 
 suite('ParadisAgentHookOwnership', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -485,6 +485,27 @@ suite('ParadisAgentHookOwnership', () => {
 		await ownership.classify({ token: 't', hookPid: 206, transcriptPath: CLAUDE_TRANSCRIPT, at: 1 });
 		const result = await ownership.classify({ token: 't', hookPid: 241, transcriptPath: CLAUDE_TRANSCRIPT_2, at: 2 });
 		assert.deepStrictEqual(result, { origin: 'nested', agentKind: 'claude' });
+	});
+
+	test('owns the pane for Antigravity CLI, whose hooks run as `sh -c` children of agy (measured on agy 1.5.6)', async () => {
+		const agyTranscript = '/home/user/.gemini/antigravity-cli/brain/c1/.system_generated/logs/transcript_full.jsonl';
+		const tree = new Map([
+			[1, proc(1, 0, '/sbin/init')],
+			[100, proc(100, 1, '/usr/bin/zsh -i')],
+			[300, proc(300, 100, 'agy --model gemini-3.8-flash-low')],
+			[301, proc(301, 300, 'sh -c [ -x "$HOME/.para-code/hooks/notify-v5.sh" ] && "$HOME/.para-code/hooks/notify-v5.sh" || true')],
+			[302, proc(302, 301, '/bin/sh /home/user/.para-code/hooks/notify-v5.sh')],
+		].map(([pid, info]) => [pid, info] as [number, IParadisHookProcessInfo]));
+		const ownership = ownershipWith(tree);
+		assert.deepStrictEqual({
+			kind: paradisHookAgentKindFromCommandLine('/home/user/.local/bin/agy --mode auto -i hi'),
+			transcriptKind: paradisHookAgentKindForTranscript(agyTranscript),
+			result: await ownership.classify({ token: 't', hookPid: 302, transcriptPath: agyTranscript, agentKind: 'antigravity', at: 1 }),
+		}, {
+			kind: 'antigravity',
+			transcriptKind: 'antigravity',
+			result: { origin: 'owner', agentKind: 'antigravity' },
+		});
 	});
 
 	test('promotes a new owner after the previous owner process exits', async () => {
