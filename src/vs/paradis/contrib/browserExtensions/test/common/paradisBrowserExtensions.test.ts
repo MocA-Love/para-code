@@ -27,6 +27,7 @@ import {
 	paradisParseExtensionsLedger,
 	paradisReadExtensionManifest,
 	paradisSerializeExtensionsLedger,
+	paradisUsesGlobalBrowserSession,
 } from '../../common/paradisBrowserExtensions.js';
 
 const A = 'a'.repeat(32);
@@ -190,5 +191,16 @@ suite('ParadisBrowserExtensions common', () => {
 			{ error: 'name' },
 			{ error: 'notObject' },
 		]);
+	});
+
+	test('creates the Global session ahead of a tab only for people whose tabs use it', () => {
+		assert.deepStrictEqual({
+			defaultLocal: paradisUsesGlobalBrowserSession('default', false),
+			unset: paradisUsesGlobalBrowserSession(undefined, false),
+			defaultWithSshWindow: paradisUsesGlobalBrowserSession('default', true),
+			workspace: paradisUsesGlobalBrowserSession('workspace', false),
+			globalWithSshWindow: paradisUsesGlobalBrowserSession('global', true),
+			ephemeral: paradisUsesGlobalBrowserSession('ephemeral', false),
+		}, { defaultLocal: true, unset: true, defaultWithSshWindow: false, workspace: false, globalWithSshWindow: true, ephemeral: false });
 	});
 });

@@ -300,7 +300,7 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 		this._persistViewOverrides();
 		// スペースの既定からも外す。残すと、そのスペースの新しいタブが設定どおりに戻らない。
 		this._pruneSpaceDefaults({ evenIfLedgerIsEmpty: true });
-		await this._clearProfileDataInMain(profileId);
+		await this._clearProfileDataInMain(profileId, true);
 	}
 
 	async clearProfileData(profileId: string): Promise<void> {
@@ -312,9 +312,9 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 		await this._clearProfileDataInMain(profileId);
 	}
 
-	private async _clearProfileDataInMain(profileId: string): Promise<void> {
+	private async _clearProfileDataInMain(profileId: string, deleted = false): Promise<void> {
 		try {
-			await this._mainService.clearProfileData(profileId);
+			await this._mainService.clearProfileData(profileId, deleted);
 		} catch (error) {
 			// 台帳の側は既に片付いており、ユーザーから見た操作は完了している。ディスク上に
 			// パーティションが残るだけなので、ここで失敗を前面に出さずログに残す。

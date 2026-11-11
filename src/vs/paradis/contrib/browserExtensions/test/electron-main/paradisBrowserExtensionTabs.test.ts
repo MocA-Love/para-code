@@ -21,7 +21,7 @@ import { ParadisBrowserExtensionSidePanel } from '../../electron-main/paradisBro
 import { ParadisBrowserExtensionDebugger } from '../../electron-main/paradisBrowserExtensionDebugger.js';
 import type { CDPEvent, ICDPConnection } from '../../../../../platform/browserView/common/cdp/types.js';
 import { IParadisTabEnvironment, IParadisTabView, ParadisBrowserExtensionTabs, paradisCanSeeTabUrl, paradisMatchesUrlPattern } from '../../electron-main/paradisBrowserExtensionTabs.js';
-import { IParadisActionsEnvironment, ParadisBrowserExtensionActions, paradisIsPopupDevToolsShortcut, paradisShouldClosePopup } from '../../electron-main/paradisBrowserExtensionActions.js';
+import { IParadisActionsEnvironment, IParadisLoadedExtension, ParadisBrowserExtensionActions, paradisIsPopupDevToolsShortcut, paradisShouldClosePopup } from '../../electron-main/paradisBrowserExtensionActions.js';
 import { ParadisBrowserExtensionMenus } from '../../electron-main/paradisBrowserExtensionMenus.js';
 import { IParadisPermissionPrompt, ParadisBrowserExtensionPermissions, paradisOriginPatternCovers, paradisPlanPermissionRequest } from '../../electron-main/paradisBrowserExtensionPermissions.js';
 import { IParadisExtensionNotification, IParadisManagedExtension, IParadisServicesEnvironment, ParadisBrowserExtensionServices, paradisDownloadFilename, paradisDownloadHeaders, paradisExtensionDownloadsFolder, paradisNotificationIconPath } from '../../electron-main/paradisBrowserExtensionServices.js';
@@ -623,7 +623,7 @@ const unusedActionsEnvironment: IParadisActionsEnvironment = {
 	pinnedIn: () => [],
 	setPinned: async () => { },
 	nameOf: extension => extension.name,
-	windowById: () => undefined,
+	windowsForWorkbenchId: () => [],
 	createPopupWindow: () => { throw new Error('no popups in this test'); },
 	workAreaFor: rect => rect,
 };
@@ -644,7 +644,9 @@ suite('ParadisBrowserExtensionActions', () => {
 			setPinned: async (_place, id, pin) => {
 				pinned.splice(0, pinned.length, ...(pin ? [...pinned.filter(existing => existing !== id), id] : pinned.filter(existing => existing !== id)));
 			},
-			windowById: windowId => windowId === 1 ? fakeWindow(1) : undefined,
+			// 本体のウィンドウ 1 は workbench でも 1。補助ウィンドウ（BrowserWindow の id 9）は workbench では webContents の id 42 で、
+			// たまたま id 42 の本体のウィンドウもある（数え方が違うので番号が重なりうる）
+			windowsForWorkbenchId: windowId => windowId === 1 ? [fakeWindow(1)] : windowId === 42 ? [fakeWindow(42), fakeWindow(9)] : [],
 		};
 		const actions = new ParadisBrowserExtensionActions(tabsSetup.host, tabsSetup.tabs, environment, silentLog);
 		return { ...tabsSetup, actions, pinned, dispose: () => { actions.dispose(); tabsSetup.dispose(); } };
@@ -708,6 +710,24 @@ suite('ParadisBrowserExtensionActions', () => {
 				shownAfterClick: undefined,
 				wrongWindow: { ok: false, error: 'Para Code has no window to show the popup in' },
 				popupOnly: { ok: false, error: 'This extension has no popup' },
+			});
+		} finally {
+			dispose();
+		}
+	}));
+
+	test('a click in an auxiliary window finds that window by its workbench id', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const { electronSession, addTabs, actions, dispose } = setupActions({ manifest_version: 3, name: 'Sample', action: {} });
+		try {
+			// タブを補助ウィンドウ（BrowserWindow の id 9）へ移した。ボタンはそのウィンドウの workbench の id（42）で押される
+			await addTabs(fakeView('user', fakeContents(electronSession, 'https://example.com/', 'Example'), 9));
+			assert.deepStrictEqual({
+				auxiliary: await actions.activateAction('user', ID, { ...anchor, windowId: 42 }, false),
+				mainWindowAnchor: await actions.activateAction('user', ID, anchor, false),
+			}, {
+				auxiliary: { ok: true },
+				// 本体のウィンドウのボタンの位置では出さない
+				mainWindowAnchor: { ok: false, error: 'Para Code has no window to show the popup in' },
 			});
 		} finally {
 			dispose();
@@ -929,6 +949,44 @@ suite('ParadisBrowserExtensionMenus', () => {
 			});
 		} finally {
 			dispose();
+		}
+	}));
+});
+
+suite('ParadisBrowserExtensionMenus shortcuts', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('leaves a key used by an extension installed earlier unassigned, like Chrome', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const earlierId = 'b'.repeat(32);
+		// 先に入れた拡張機能が Ctrl+Shift+L を使っている（1Password の lock と Bitwarden の autofill のように）
+		const earlier: IParadisLoadedExtension = { id: earlierId, version: '1', name: 'Earlier', path: '/nonexistent-earlier', manifest: { manifest_version: 3, commands: { lock: { suggested_key: { default: 'Ctrl+Shift+L' } } } } };
+		const tabsSetup = setup({
+			manifest_version: 3, name: 'Sample', permissions: ['tabs'],
+			commands: { 'fill': { description: 'Fill', suggested_key: { default: 'Ctrl+Shift+L' } }, 'other': { description: 'Other', suggested_key: { default: 'Ctrl+Shift+U' } } },
+		});
+		const loaded = (): IParadisLoadedExtension[] => [earlier, { ...tabsSetup.extension, name: 'Sample', path: '/nonexistent' }];
+		const menus = new ParadisBrowserExtensionMenus(tabsSetup.host, tabsSetup.tabs, {
+			findView: viewId => tabsSetup.views.find(view => view.id === viewId),
+			sessionOf: contents => contents.session === tabsSetup.electronSession ? { session: tabsSetup.apiSession, extensions: loaded() } : undefined,
+			allLoaded: loaded,
+			loadedIn: session => session === tabsSetup.apiSession ? loaded() : [],
+			nameOf: extension => extension.name,
+		}, join(tmpdir(), `paradis-menus-shortcuts-${process.pid}.json`), silentLog, 'linux');
+		try {
+			await tabsSetup.addTabs(fakeView('user', fakeContents(tabsSetup.electronSession, 'https://example.com/', 'Example'), 1));
+			assert.deepStrictEqual({
+				getAll: await tabsSetup.call('commands', 'getAll', []),
+				// workbench は一覧の先にあるもの（先に入れた方）に渡す
+				listed: menus.getCommands().map(command => [command.extensionName, command.name, command.shortcut]),
+				fill: menus.runCommand('user', ID, 'fill'),
+			}, {
+				getAll: { ok: true, value: [{ name: 'fill', description: 'Fill', shortcut: '' }, { name: 'other', description: 'Other', shortcut: 'Ctrl+Shift+U' }] },
+				listed: [['Earlier', 'lock', 'Ctrl+Shift+L'], ['Sample', 'fill', 'Ctrl+Shift+L'], ['Sample', 'other', 'Ctrl+Shift+U']],
+				fill: { ok: false, error: 'This shortcut is not on for this tab' },
+			});
+		} finally {
+			menus.dispose();
+			tabsSetup.dispose();
 		}
 	}));
 });
