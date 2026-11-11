@@ -14,10 +14,10 @@ import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize } from '../../../../nls.js';
 import { BrowserViewStorageScope } from '../../../../platform/browserView/common/browserView.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { IParadisBrowserProfilesService } from '../../browserProfiles/electron-browser/paradisBrowserProfilesService.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 import {
 	IParadisBrowserExtensionsMainService,
 	IParadisShareExtensions,
@@ -122,7 +122,7 @@ export class ParadisBrowserExtensionsService implements IParadisBrowserExtension
 		@IMainProcessService mainProcessService: IMainProcessService,
 		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@IParadisBrowserProfilesService private readonly _profilesService: IParadisBrowserProfilesService,
-		@IDialogService private readonly _dialogService: IDialogService,
+		@IParadisDialogService private readonly paradisDialogService: IParadisDialogService,
 	) {
 		this._mainService = ProxyChannel.toService<IParadisBrowserExtensionsMainService>(mainProcessService.getChannel(PARADIS_BROWSER_EXTENSIONS_CHANNEL));
 	}
@@ -149,7 +149,7 @@ export class ParadisBrowserExtensionsService implements IParadisBrowserExtension
 		if (warning === undefined) {
 			return true;
 		}
-		const { confirmed } = await this._dialogService.confirm({
+		const { confirmed } = await this.paradisDialogService.confirm({
 			type: 'warning',
 			message: localize('paradis.browserExtensions.share.confirmMessage', "拡張機能が入ったタブを共有しますか？"),
 			detail: warning,

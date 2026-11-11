@@ -29,7 +29,6 @@ import { language } from '../../../../base/common/platform.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
@@ -50,6 +49,7 @@ import {
 	ParadisCodexResetOutcome
 } from '../common/paradisCodexAccounts.js';
 import { ParadisCodexAccountsClient } from './paradisCodexAccountsClient.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 const $ = dom.$;
 
@@ -75,7 +75,7 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 	constructor(
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
-		@IDialogService private readonly dialogService: IDialogService,
+		@IParadisDialogService private readonly paradisDialogService: IParadisDialogService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILogService private readonly logService: ILogService,
 	) {
@@ -329,7 +329,7 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 		// 結果の分からない前回の要求があるときは、選んだものではなくその要求を送り直す（一覧の「使う…」は出していない）。
 		const chosen = offer.pendingUnknown ? undefined : credit;
 		const name = this.context?.displayName(account) ?? account.homeLabel ?? homePath;
-		const { confirmed } = await this.dialogService.confirm({
+		const { confirmed } = await this.paradisDialogService.confirm({
 			type: Severity.Warning,
 			message: offer.pendingUnknown
 				? localize('paradis.codexAccounts.resetConfirmRetry', "前回のリセットの結果を確認しますか？")

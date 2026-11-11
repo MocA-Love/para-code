@@ -19,7 +19,6 @@ import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/c
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
@@ -37,6 +36,7 @@ import { IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/par
 import { PARADIS_TASK_BOARD_BRIDGE_CHANNEL, PARADIS_TASK_BOARD_BRIDGE_ENABLED_SETTING } from '../common/paradisTaskBoardBridge.js';
 import { IParadisTaskBoardHostService, PARADIS_TASK_BOARD_HOST_CHANNEL, ParadisTaskBoardOpenResult } from '../common/paradisTaskBoardHost.js';
 import { IParadisTaskBoardRelaySessionsService } from './paradisTaskBoardRelaySessionsService.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 registerMainProcessRemoteService(IParadisTaskBoardHostService, PARADIS_TASK_BOARD_HOST_CHANNEL);
 
@@ -109,7 +109,7 @@ class ParadisOpenTaskBoardAction extends Action2 {
 
 	async run(accessor: ServicesAccessor): Promise<void> {
 		const configurationService = accessor.get(IConfigurationService);
-		const dialogService = accessor.get(IDialogService);
+		const paradisDialogService = accessor.get(IParadisDialogService);
 		const notificationService = accessor.get(INotificationService);
 		const hostService = accessor.get(IParadisTaskBoardHostService);
 		const sharedProcessService = accessor.get(ISharedProcessService);
@@ -126,7 +126,7 @@ class ParadisOpenTaskBoardAction extends Action2 {
 			return;
 		}
 		if (configurationService.getValue<boolean>(PARADIS_TASK_BOARD_BRIDGE_ENABLED_SETTING) !== true) {
-			const { confirmed } = await dialogService.confirm({
+			const { confirmed } = await paradisDialogService.confirm({
 				// allow-any-unicode-next-line
 				message: localize('paradis.taskBoard.enableBridge', "タスクボードの接続口をオンにしますか？"),
 				detail: remoteFolder

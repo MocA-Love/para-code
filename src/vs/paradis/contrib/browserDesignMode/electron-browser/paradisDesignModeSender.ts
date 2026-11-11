@@ -35,7 +35,6 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
@@ -62,6 +61,7 @@ import {
 	paradisFormatDesignAnnotations,
 } from '../common/paradisDesignModeFormat.js';
 import { IParadisDesignModeService } from './paradisDesignModeService.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 /** 貼り付けを1つずつ区切る間隔。続けて送ると TUI が1回の貼り付けにまとめることがある。 */
 const PASTE_GAP_MS = 150;
@@ -174,7 +174,7 @@ export class ParadisDesignModeSender {
 		@ITerminalService private readonly terminalService: ITerminalService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
 		@INotificationService private readonly notificationService: INotificationService,
-		@IDialogService private readonly dialogService: IDialogService,
+		@IParadisDialogService private readonly paradisDialogService: IParadisDialogService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IParadisAgentModelCatalogService private readonly modelCatalogService: IParadisAgentModelCatalogService,
 		@IWorkspaceContextService private readonly workspaceContextService: IWorkspaceContextService,
@@ -342,7 +342,7 @@ export class ParadisDesignModeSender {
 		if (this.agentStatusStore.isAgentInstance(instance.instanceId)) {
 			return true;
 		}
-		const result = await this.dialogService.confirm({
+		const result = await this.paradisDialogService.confirm({
 			type: 'warning',
 			message: localize('paradis.designMode.send.unknownStatus', "「{0}」のエージェントの状態が分かりません", instance.title),
 			detail: localize('paradis.designMode.send.unknownStatusDetail', "質問や許可の確認が出ていると、入れた文字が選択の操作として扱われることがあります。ターミナルが入力待ちになっていることを確かめてから入れてください。"),

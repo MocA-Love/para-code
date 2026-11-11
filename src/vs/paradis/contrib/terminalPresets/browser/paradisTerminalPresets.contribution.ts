@@ -58,6 +58,7 @@ import { ParadisPresetService } from './paradisPresetService.js';
 import { openParadisPresetEditorDialog } from './paradisPresetEditorDialog.js';
 import { ParadisPresetClusterViewItem } from './paradisPresetClusterViewItem.js';
 import { ParadisAgentPromptMenuContribution } from './paradisAgentPromptMenu.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 registerSingleton(IParadisPresetService, ParadisPresetService, InstantiationType.Delayed);
 
@@ -373,7 +374,7 @@ const AUTORUN_APPROVED_STORAGE_KEY = 'paradis.terminalPresets.autoRunApproved';
  */
 export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folderUri: URI, repositoryPath: ParadisHostPath, stateKey?: string): Promise<boolean> {
 	const presetService = accessor.get(IParadisPresetService);
-	const dialogService = accessor.get(IDialogService);
+	const paradisDialogService = accessor.get(IParadisDialogService);
 	const storageService = accessor.get(IStorageService);
 	const logService = accessor.get(ILogService);
 	const notificationService = accessor.get(INotificationService);
@@ -404,7 +405,7 @@ export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folde
 				approved = [];
 			}
 			if (!approved.includes(approvalKey)) {
-				const result = await dialogService.confirm({
+				const result = await paradisDialogService.confirm({
 					// allow-any-unicode-next-line
 					message: localize('paradis.terminal.autoRunConfirm', "リポジトリのプリセット「{0}」を自動実行しますか？", preset.name),
 					detail: paradisPresetCommandSignature(preset),

@@ -20,7 +20,6 @@ import { localize, localize2 } from '../../../../nls.js';
 import { IActionViewItemService } from '../../../../platform/actions/browser/actionViewItemService.js';
 import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { SyncDescriptor } from '../../../../platform/instantiation/common/descriptors.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
@@ -51,6 +50,7 @@ import {
 } from './paradisLayoutPresetEditorInput.js';
 import { ParadisLayoutPresetService } from './paradisLayoutPresetService.js';
 import { ParadisLayoutPresetToolbarItem } from './paradisLayoutPresetPopover.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 registerSingleton(IParadisLayoutPresetService, ParadisLayoutPresetService, InstantiationType.Delayed);
 
@@ -258,7 +258,7 @@ registerAction2(class ShowLayoutPresetsAction extends Action2 {
 
 		const presets = presetService.presets;
 		if (presets.length === 0) {
-			const { confirmed } = await accessor.get(IDialogService).confirm({
+			const { confirmed } = await accessor.get(IParadisDialogService).confirm({
 				// allow-any-unicode-next-line
 				message: localize('paradis.layoutPresets.noPresets', "レイアウトプリセットがまだありません。"),
 				// allow-any-unicode-next-line

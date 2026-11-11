@@ -23,11 +23,11 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { InMemoryStorageService } from '../../../../platform/storage/common/storage.js';
 import { IColorTheme, IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { ColorThemeData } from '../../../../workbench/services/themes/common/colorThemeData.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 import {
 	IParadisColorLayers,
 	IParadisJsonObject,
@@ -147,7 +147,7 @@ export class ParadisThemeColorDraftService extends Disposable implements IParadi
 	constructor(
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IThemeService private readonly themeService: IThemeService,
-		@IDialogService private readonly dialogService: IDialogService,
+		@IParadisDialogService private readonly paradisDialogService: IParadisDialogService,
 	) {
 		super();
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
@@ -280,7 +280,8 @@ export class ParadisThemeColorDraftService extends Disposable implements IParadi
 		const confirmed = new Set<string>();
 		let plan = this.planSave(colorSnapshot, scopedSnapshot);
 		while (plan.conflicts.some(conflict => !confirmed.has(conflict))) {
-			const result = await this.dialogService.confirm({
+			const result = await this.paradisDialogService.confirm({
+				destructive: true,
 				message: localize('paradis.themeColors.conflict', "編集中に、ほかの所でもシンタックスの色の規則が変わっています。下書きで上書きしますか？"),
 				detail: localize('paradis.themeColors.conflictDetail', "対象: {0}。上書きすると、ほかの所で入った規則の変更は消えます。", plan.conflicts.join(', ')),
 				primaryButton: localize('paradis.themeColors.conflictOverwrite', "上書きして保存"),

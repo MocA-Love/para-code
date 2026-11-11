@@ -84,6 +84,7 @@ import { ParadisMobileBackgroundThrottlingKeeper, paradisCreateMobileBackgroundT
 import { IChatService } from '../../../../workbench/contrib/chat/common/chatService/chatService.js';
 // モバイルの scm / fs の新しい種類を別ファイルで受ける処理（登録表。W2-17）
 import './paradisMobileRequestHandlerRegistrations.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 const STATUSBAR_ID = 'paradis.mobile.relay';
 /** PCフォーカス状態のハートビート間隔。shared process側のTTL（WINDOW_FOCUS_TTL_MS=90秒）より十分短く保つ。 */
@@ -160,6 +161,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		@ILabelService private readonly labelService: ILabelService,
 		@IChatService chatService: IChatService,
 		@IStorageService storageService: IStorageService,
+		@IParadisDialogService private readonly paradisDialogService: IParadisDialogService,
 	) {
 		super();
 		// モバイルがオンラインの間は、隠れたウィンドウでもモバイルの要求の処理を間引かせない
@@ -989,7 +991,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		// 黙って作り直さず、退避して作り直すことに同意を取る。
 		const storeStatus = await this.service.getStatus();
 		if (storeStatus.storeProblem === 'unreadable' || storeStatus.storeProblem === 'undecryptable') {
-			const { confirmed } = await this.dialogService.confirm({
+			const { confirmed } = await this.paradisDialogService.confirm({
+				destructive: true,
 				type: 'warning',
 				message: localize('paradis.mobile.discardStore', "モバイル連携の鍵を作り直しますか？"),
 				detail: storeStatus.pairedDevices.length > 0
@@ -1014,7 +1017,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		let resetRegistration = false;
 		const status = await this.service.getStatus();
 		if (status.unauthorized === true) {
-			const { confirmed } = await this.dialogService.confirm({
+			const { confirmed } = await this.paradisDialogService.confirm({
+				destructive: true,
 				type: 'warning',
 				message: localize('paradis.mobile.resetRegistration', "このPCの登録をやり直しますか？"),
 				detail: status.pairedDevices.length > 0
@@ -1060,7 +1064,7 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 		pairingListener.value = this.service.onPairingEvent(async event => {
 			if (event.kind === 'awaiting-approval') {
 				pairingFlow.beginConfirm();
-				const { confirmed } = await this.dialogService.confirm({
+				const { confirmed } = await this.paradisDialogService.confirm({
 					type: 'info',
 					message: localize('paradis.mobile.confirmSas', "モバイルデバイス「{0}」を接続しますか？", event.proposedName),
 					detail: localize('paradis.mobile.confirmSasDetail', "モバイルアプリに表示されている確認コードが次の6桁と一致することを確認してください:\n\n    {0}\n\n一致しない場合は接続を拒否してください（第三者による中間者攻撃の可能性があります）。", event.sasCode),
@@ -1147,7 +1151,8 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 
 	/** 解除の確認と実行（一覧から選んだときと、タブの行から選んだときで共通）。 */
 	private async confirmAndRevoke(device: { readonly mobileId: string | undefined; readonly name: string; readonly label: string }): Promise<void> {
-		const { confirmed } = await this.dialogService.confirm({
+		const { confirmed } = await this.paradisDialogService.confirm({
+			destructive: true,
 			type: 'warning',
 			message: localize('paradis.mobile.revokeConfirm', "モバイルデバイス「{0}」のペアリングを解除しますか？", device.label),
 			detail: localize('paradis.mobile.revokeDetail', "解除すると、このデバイスからは接続できなくなります。もう一度使うには、ペアリングし直してください。"),

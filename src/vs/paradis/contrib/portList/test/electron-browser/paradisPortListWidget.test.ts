@@ -8,7 +8,6 @@
 import assert from 'assert';
 import { IDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
@@ -17,6 +16,7 @@ import { ParadisPortListClient } from '../../electron-browser/paradisPortListCli
 import { IParadisPortListPanelOptions, ParadisPortListPanel } from '../../electron-browser/paradisPortListPanel.js';
 import { IParadisPortListPollTimer } from '../../electron-browser/paradisPortListPolling.js';
 import { IParadisPortListWidgetDependencies, ParadisPortListWidget } from '../../electron-browser/paradisPortListWidget.js';
+import { IParadisDialogService } from '../../../confirmDialog/browser/paradisDialogService.js';
 
 class TestDocument extends EventTarget {
 
@@ -151,7 +151,7 @@ function createWidgetHarness(options: IWidgetHarnessOptions = {}): IWidgetHarnes
 	const dependencies: IParadisPortListWidgetDependencies = { document: testDocument, pollTimer: timer };
 	const dialogService = {
 		confirm: async () => ({ confirmed: options.confirmed ?? true }),
-	} as unknown as IDialogService;
+	} as unknown as IParadisDialogService;
 	const notificationService = {
 		error: (message: string) => notifications.push(message),
 	} as unknown as INotificationService;

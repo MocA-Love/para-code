@@ -22,13 +22,13 @@
 import * as dom from '../../../../base/browser/dom.js';
 import { Disposable, DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisClaudeSwitchResult, paradisKnownUnverifiedReason } from '../common/paradisClaudeAccounts.js';
 import { IParadisLimitsAccount, IParadisLimitsLegacyAccount, IParadisLimitsProviderSnapshot, paradisLimitsNeedsRelogin } from '../common/paradisLimitsMonitor.js';
 import { IParadisLimitsPanelContext, IParadisLimitsPanelContribution, ParadisLimitsPanelContributions } from './paradisLimitsPanelContributions.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 const $ = dom.$;
 
@@ -54,7 +54,7 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 
 	constructor(
 		@INotificationService private readonly notificationService: INotificationService,
-		@IDialogService private readonly dialogService: IDialogService,
+		@IParadisDialogService private readonly paradisDialogService: IParadisDialogService,
 		@IParadisAgentStatusSnapshotService private readonly agentStatusService: IParadisAgentStatusSnapshotService,
 	) {
 		super();
@@ -169,7 +169,7 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 		if (this.retiringClaudeSwap) {
 			return;
 		}
-		const { confirmed } = await this.dialogService.confirm({
+		const { confirmed } = await this.paradisDialogService.confirm({
 			message: localize('paradis.claudeAccounts.retireClaudeSwapConfirm', "claude-swap をもう使わないことにしますか？"),
 			detail: localize(
 				'paradis.claudeAccounts.retireClaudeSwapDetail',
@@ -199,7 +199,7 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 			return;
 		}
 		const email = context.displayName(account);
-		const { confirmed } = await this.dialogService.confirm({
+		const { confirmed } = await this.paradisDialogService.confirm({
 			message: localize('paradis.claudeAccounts.switchConfirm', "Claude のアカウントを {0} に切り替えますか？", email),
 			detail: context.client.connectedToRemote
 				? localize(

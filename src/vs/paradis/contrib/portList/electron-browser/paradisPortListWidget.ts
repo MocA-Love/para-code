@@ -19,7 +19,6 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { IntervalTimer } from '../../../../base/common/async.js';
 import { Disposable, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
@@ -27,6 +26,7 @@ import { IParadisPortEntry, IParadisPortListSnapshot } from '../common/paradisPo
 import { ParadisPortListClient } from './paradisPortListClient.js';
 import { IParadisPortListPanelOptions, ParadisPortListPanel } from './paradisPortListPanel.js';
 import { IParadisPortListPollTimer, ParadisPortListPolling } from './paradisPortListPolling.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 const $ = dom.$;
 
@@ -62,7 +62,7 @@ export class ParadisPortListWidget extends Disposable implements IParadisPortLis
 		container: HTMLElement,
 		dependencies: IParadisPortListWidgetDependencies = { document: dom.getDocument(container), pollTimer: new IntervalTimer() },
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
-		@IDialogService private readonly dialogService: IDialogService,
+		@IParadisDialogService private readonly paradisDialogService: IParadisDialogService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILogService private readonly logService: ILogService,
 	) {
@@ -161,7 +161,8 @@ export class ParadisPortListWidget extends Disposable implements IParadisPortLis
 		const targets = remaining > 0
 			? localize('paradis.portList.killAllTargetsMore', "{0}、他{1}件", preview, remaining)
 			: preview;
-		const { confirmed } = await this.dialogService.confirm({
+		const { confirmed } = await this.paradisDialogService.confirm({
+			destructive: true,
 			message: localize('paradis.portList.killAllConfirm', "{0}件のポートをすべて終了しますか？", entries.length),
 			detail: viaRemote
 				? localize('paradis.portList.killAllDetailRemote', "接続先マシン上の以下のプロセスをすぐに終了します。保存していない作業がある場合は失われることがあります。\n{0}", targets)

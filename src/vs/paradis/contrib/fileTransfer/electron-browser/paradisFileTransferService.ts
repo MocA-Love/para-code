@@ -69,6 +69,7 @@ import { IParadisTransferMetadata, ParadisFileServiceTransferFileSystem } from '
 import { IParadisSftpEntry, paradisDirectTargetFor, paradisIsSafeSftpEntryName, paradisIsSftpResource, paradisSftpIdleMs, paradisSftpUri, PARADIS_SFTP_CHANNEL, PARADIS_SFTP_IDLE_SETTING, PARADIS_SFTP_SCHEME } from '../common/paradisSftp.js';
 import { paradisSftpOpenError, ParadisSftpFileSystemProvider } from '../common/paradisSftpFileSystemProvider.js';
 import { ParadisTransferTempJournal } from '../browser/paradisFileTransferTempJournal.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 export interface IParadisPaneListing {
 	readonly entries: readonly IParadisPaneEntry[];
@@ -157,6 +158,7 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 		@ILogService private readonly logService: ILogService,
 		@ILifecycleService lifecycleService: ILifecycleService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IParadisDialogService private readonly paradisDialogService: IParadisDialogService,
 	) {
 		super();
 		this.remoteAuthority = environmentService.remoteAuthority || undefined;
@@ -225,7 +227,8 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 	}
 
 	private async confirmShutdown(active: number): Promise<boolean> {
-		const { confirmed } = await this.dialogService.confirm({
+		const { confirmed } = await this.paradisDialogService.confirm({
+			destructive: true,
 			type: 'warning',
 			message: localize('paradis.fileTransfer.shutdown.message', "{0} 件の転送が進行中です。閉じますか?", active),
 			detail: localize('paradis.fileTransfer.shutdown.detail', "閉じると転送は取り消されます。一時ファイルに書いている項目は、送り先の元のファイルがそのまま残ります。その場で書いている項目（所有者が違う・ハードリンクなどのファイル）は、書きかけになります。片付けきれなかった一時ファイルは、次に開いたときに片付けます。"),

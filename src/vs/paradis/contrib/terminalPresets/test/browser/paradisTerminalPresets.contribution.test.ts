@@ -10,7 +10,6 @@ import assert from 'assert';
 import { mock } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { URI } from '../../../../../base/common/uri.js';
-import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { ILogService, NullLogService } from '../../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
@@ -18,6 +17,7 @@ import { IStorageService } from '../../../../../platform/storage/common/storage.
 import { GeneralShellType, ITerminalEnvironment, PosixShellType, WindowsShellType } from '../../../../../platform/terminal/common/terminal.js';
 import { paradisHostPathFor } from '../../../../common/paradisHostPath.js';
 import { paradisRunAutoRunPresets } from '../../browser/paradisTerminalPresets.contribution.js';
+import { IParadisDialogService } from '../../../confirmDialog/browser/paradisDialogService.js';
 import {
 	IParadisPresetDefinition,
 	IParadisPresetService,
@@ -74,7 +74,7 @@ suite('paradisRunAutoRunPresets', () => {
 				}
 			}
 		}());
-		instantiationService.stub(IDialogService, new (mock<IDialogService>())());
+		instantiationService.stub(IParadisDialogService, new (mock<IParadisDialogService>())());
 		instantiationService.stub(IStorageService, new (mock<IStorageService>())());
 		instantiationService.stub(ILogService, new NullLogService());
 		return { instantiationService, runs, forceNewTerminal, stateKeys, envs };
@@ -97,7 +97,7 @@ suite('paradisRunAutoRunPresets', () => {
 				notes.push(message);
 			}
 		}());
-		instantiationService.stub(IDialogService, new (mock<IDialogService>())());
+		instantiationService.stub(IParadisDialogService, new (mock<IParadisDialogService>())());
 		instantiationService.stub(IStorageService, new (mock<IStorageService>())());
 		instantiationService.stub(ILogService, new NullLogService());
 		const ranAny = await instantiationService.invokeFunction(paradisRunAutoRunPresets, TEST_FOLDER, TEST_REPO_PATH);

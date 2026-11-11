@@ -41,6 +41,7 @@ import './paradisWorktreeGeneratedCleanup.js';
 import { paradisNotifyKeptBranch, paradisPrefersBranchDeletion, paradisRecordKeptBranch, paradisRememberBranchDeletionChoice } from './paradisWorktreeBranchCleanup.js';
 import { IParadisWorktreeCreateQueueService, ParadisWorktreeCreateQueueService } from './paradisWorktreeCreateQueue.js';
 import { IParadisHeadlessWorktreeRequest } from './paradisWorktreeHeadlessCreate.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 // バックグラウンド作成キュー（ダイアログの「作成」が投入し、進行状況を通知/ステータスバー/ビューへ流す）
 registerSingleton(IParadisWorktreeCreateQueueService, ParadisWorktreeCreateQueueService, InstantiationType.Delayed);
@@ -316,6 +317,7 @@ class ParadisRemoveWorktreeAction extends Action2 {
 
 	private async removeWorktree(accessor: ServicesAccessor, worktree: IParadisWorktree, options: { readonly requestedByAgent?: string } | undefined): Promise<void> {
 		const dialogService = accessor.get(IDialogService);
+		const paradisDialogService = accessor.get(IParadisDialogService);
 		const switchService = accessor.get(IParadisWorkspaceSwitchService);
 		const worktreeService = accessor.get(IParadisWorktreeService);
 		// worktree の削除 (git worktree remove --force 等) は書き込みなので、別ホスト/未接続の
@@ -376,7 +378,8 @@ class ParadisRemoveWorktreeAction extends Action2 {
 			// allow-any-unicode-next-line
 			? localize('paradis.workspaceSwitch.removeWorktreeBranchDetail', "\n\nマージ済みなら、ブランチ「{0}」も削除します。", branchName)
 			: '';
-		const { confirmed, checkboxChecked } = await dialogService.confirm({
+		const { confirmed, checkboxChecked } = await paradisDialogService.confirm({
+			destructive: true,
 			type: 'warning',
 			// allow-any-unicode-next-line
 			message: localize('paradis.workspaceSwitch.removeWorktreeConfirm', "ワークツリー「{0}」を削除しますか？", worktree.name),
@@ -471,7 +474,8 @@ class ParadisRemoveWorktreeAction extends Action2 {
 				},
 				confirmTeardownFailure: async error => {
 					logService.error('[ParadisRemoveWorktree] teardown failed', error instanceof ParadisTeardownFailedError ? error.reason : error);
-					const { confirmed } = await dialogService.confirm({
+					const { confirmed } = await paradisDialogService.confirm({
+						destructive: true,
 						type: 'warning',
 						// allow-any-unicode-next-line
 						message: localize('paradis.workspaceSwitch.removeWorktreeTeardownFailedConfirm', "セットアップ解除スクリプトが失敗しました。それでもワークツリーを削除しますか？"),
@@ -542,7 +546,8 @@ class ParadisRemoveWorktreeAction extends Action2 {
 							logService.warn('[ParadisRemoveWorktree] removal failed, asking to force', error);
 						}
 						const lockReason = paradisFormatWorktreeLockReason(lock.reason);
-						const { confirmed: forceConfirmed } = await dialogService.confirm({
+						const { confirmed: forceConfirmed } = await paradisDialogService.confirm({
+							destructive: true,
 							type: 'warning',
 							message: lock.locked
 								// allow-any-unicode-next-line

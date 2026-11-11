@@ -12,11 +12,11 @@ import { Event } from '../../../../../base/common/event.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { BrowserViewStorageScope } from '../../../../../platform/browserView/common/browserView.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
-import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { IMainProcessService } from '../../../../../platform/ipc/common/mainProcessService.js';
 import { IParadisBrowserProfilesService } from '../../../browserProfiles/electron-browser/paradisBrowserProfilesService.js';
 import { IParadisShareExtensions } from '../../common/paradisBrowserExtensions.js';
 import { ParadisBrowserExtensionsService, paradisEnabledWhileSharedWarning, paradisShareFallbackProfile, paradisSharedPageTitlesInPlace, paradisShareWarningFor, paradisShareWarningUnknown } from '../../electron-browser/paradisBrowserExtensionsService.js';
+import { IParadisDialogService } from '../../../confirmDialog/browser/paradisDialogService.js';
 
 const extension = (name: string, touchesPages: boolean) => ({ id: 'a'.repeat(32), name, touchesPages });
 
@@ -55,7 +55,7 @@ suite('ParadisBrowserExtensionsService share warning', () => {
 				{ getChannel: () => ({ call: async (_command: string, args: unknown[]) => { calls.push(args); return answer(); }, listen: () => Event.None }) } as unknown as IMainProcessService,
 				{ getValue: () => setting } as unknown as IConfigurationService,
 				{ getViewSession: () => ({ scope: BrowserViewStorageScope.Profile, profileId: '0123456789ab' }) } as unknown as IParadisBrowserProfilesService,
-				{ confirm: async () => ({ confirmed }) } as unknown as IDialogService,
+				{ confirm: async () => ({ confirmed }) } as unknown as IParadisDialogService,
 			);
 			return { service, calls };
 		};
@@ -93,7 +93,7 @@ suite('ParadisBrowserExtensionsService share warning', () => {
 			{ getChannel: () => ({ call: answer, listen: () => Event.None }) } as unknown as IMainProcessService,
 			{ getValue: () => setting } as unknown as IConfigurationService,
 			{ getViewSession: () => undefined } as unknown as IParadisBrowserProfilesService,
-			{} as IDialogService,
+			{} as IParadisDialogService,
 		);
 		const ask = (service: ParadisBrowserExtensionsService) => service.getShareWarning({ kind: 'view', viewId: 'view-1' });
 		assert.deepStrictEqual({

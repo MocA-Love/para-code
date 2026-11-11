@@ -13,7 +13,6 @@ import { hash } from '../../../../base/common/hash.js';
 import { joinPath } from '../../../../base/common/resources.js';
 import { localize } from '../../../../nls.js';
 import { URI } from '../../../../base/common/uri.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { FileOperationResult, IFileService, toFileOperationResult } from '../../../../platform/files/common/files.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
@@ -23,6 +22,7 @@ import { IParadisRunLifecycleScriptRequest } from '../common/paradisWorktreeCrea
 import { paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
 import { IParadisWorkspaceLifecycleConfig, paradisParseWorkspaceLifecycleConfig, ParadisWorkspaceLifecycleKind } from '../common/paradisWorkspaceLifecycle.js';
 import { PARADIS_WORKSPACE_PRESET_FILE } from '../../terminalPresets/common/paradisTerminalPresets.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 /**
  * スクリプト内容ごとの承認記録（autoRun プリセットの AUTORUN_APPROVED_STORAGE_KEY と同じ方式）。
@@ -117,7 +117,7 @@ export async function paradisRunWorkspaceLifecycleScript(accessor: ServicesAcces
 	// フォールバックしない write resolver を使う（手元へ流すと、絶対パスが一致する
 	// 無関係な手元のリポジトリでスクリプトを実行してしまう）。
 	const resolveGitHost = paradisWorktreeGitWriteHostResolver(accessor);
-	const dialogService = accessor.get(IDialogService);
+	const paradisDialogService = accessor.get(IParadisDialogService);
 	const storageService = accessor.get(IStorageService);
 	const config = await paradisReadWorkspaceLifecycleConfig(fileService, repository.uri);
 	const script = kind === 'setup' ? config.setupScript : config.teardownScript;
@@ -139,7 +139,7 @@ export async function paradisRunWorkspaceLifecycleScript(accessor: ServicesAcces
 		storageService.store(LIFECYCLE_APPROVED_STORAGE_KEY, JSON.stringify(approved), StorageScope.APPLICATION, StorageTarget.MACHINE);
 	}
 	if (!approved.includes(approvalKey)) {
-		const { confirmed } = await dialogService.confirm({
+		const { confirmed } = await paradisDialogService.confirm({
 			message: kind === 'setup'
 				// allow-any-unicode-next-line
 				? localize('paradis.workspaceLifecycle.approveSetup', "リポジトリ「{0}」の setup スクリプトを自動実行しますか？", repository.name)

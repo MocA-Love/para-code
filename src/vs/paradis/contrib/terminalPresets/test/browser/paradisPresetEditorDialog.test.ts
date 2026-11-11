@@ -23,6 +23,7 @@ import { ILayoutService } from '../../../../../platform/layout/browser/layoutSer
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
 import { openParadisPresetEditorDialog } from '../../browser/paradisPresetEditorDialog.js';
 import { IParadisPresetService, IParadisResolvedPreset } from '../../common/paradisTerminalPresets.js';
+import { IParadisDialogService } from '../../../confirmDialog/browser/paradisDialogService.js';
 
 suite('preset editor dialog: row actions', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -41,6 +42,7 @@ suite('preset editor dialog: row actions', () => {
 			[ILayoutService, { activeContainer: container }],
 			[IParadisPresetService, presetService],
 			[IDialogService, {}],
+			[IParadisDialogService, {}],
 			[IWorkspaceContextService, { getWorkspace: () => ({ folders: [] }) }],
 			[IContextMenuService, contextMenuService],
 			[IHoverService, NullHoverService],
@@ -87,7 +89,8 @@ suite('preset editor dialog: row actions', () => {
 		const services = new Map<unknown, unknown>([
 			[ILayoutService, { activeContainer: container }],
 			[IParadisPresetService, presetService],
-			[IDialogService, { confirm: async () => ({ confirmed: true }) }],
+			[IDialogService, {}],
+			[IParadisDialogService, { confirm: async () => ({ confirmed: true }) }],
 			[IWorkspaceContextService, { getWorkspace: () => ({ folders: [] }) }],
 			[IContextMenuService, {}],
 			[IHoverService, NullHoverService],

@@ -10,8 +10,8 @@
 // 形は使用量ダイアログ（左ナビ＋本文）に揃えている。
 //
 // 内蔵ブラウザの裏に隠れないよう、backdrop に共通の印 `paradis-modal-backdrop`（overlayManager.ts に登録済み）を付ける。
-// 重ね順はワークベンチのモーダル（2575）より下に置く。削除の確認に IDialogService を使うため
-// （dialogStyle が custom のときの確認ダイアログは 2575 に出る）。
+// 重ね順はワークベンチのモーダル（2575）より下に置く。削除の確認に IParadisDialogService を使うため
+// （UI キットの確認は本家のダイアログと同じ 2575 に出る）。
 
 import './media/paradisScheduledRuns.css';
 import * as dom from '../../../../base/browser/dom.js';
@@ -22,7 +22,6 @@ import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -71,6 +70,7 @@ import { paradisAppendAgentListLockNotice } from '../../agentModelCatalog/browse
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 const $ = dom.$;
 
@@ -274,7 +274,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		@IParadisWorkspaceSwitchService private readonly switchService: IParadisWorkspaceSwitchService,
 		@IParadisWorktreeService private readonly worktreeService: IParadisWorktreeService,
 		@IParadisAgentModelCatalogService private readonly modelCatalogService: IParadisAgentModelCatalogService,
-		@IDialogService private readonly dialogService: IDialogService,
+		@IParadisDialogService private readonly paradisDialogService: IParadisDialogService,
 		@ICommandService private readonly commandService: ICommandService,
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
@@ -676,7 +676,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 				: localize('paradis.scheduledRuns.agentReviewNoPrecheck', "事前確認: なし"),
 			localize('paradis.scheduledRuns.agentReviewSchedule', "スケジュール: {0}（{1}）", paradisDescribeCron(definition.schedule), definition.schedule),
 		];
-		const { confirmed } = await this.dialogService.confirm({
+		const { confirmed } = await this.paradisDialogService.confirm({
 			type: 'warning',
 			message: localize('paradis.scheduledRuns.agentReviewTitle', "エージェントが作った定期実行「{0}」を有効にしますか？", definition.name),
 			detail: lines.join('\n\n'),
@@ -686,7 +686,8 @@ export class ParadisScheduledRunsDialog extends Disposable {
 	}
 
 	private async deleteDefinition(definition: IParadisScheduledRunDefinition): Promise<void> {
-		const { confirmed } = await this.dialogService.confirm({
+		const { confirmed } = await this.paradisDialogService.confirm({
+			destructive: true,
 			type: 'warning',
 			message: localize('paradis.scheduledRuns.deleteConfirm', "定期実行「{0}」を削除しますか？", definition.name),
 			detail: localize('paradis.scheduledRuns.deleteDetail', "実行履歴も消えます。作成したスペースはそのまま残ります。動いている回は止めます。"),
