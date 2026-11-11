@@ -422,7 +422,17 @@
 	object-fit: contain;
 }
 
+.monaco-workbench img.paradis-palette-preview-media-image {
+	border-radius: 2px;
+}
+
+/* The PDF's frame is a step darker than the image's, so the white paper stands out in light themes too. */
+.monaco-workbench .paradis-palette-preview-media.paradis-palette-preview-pdf {
+	background: color-mix(in srgb, var(--vscode-paradis-fillNeutral) 45%, var(--vscode-paradis-sunken));
+}
+
 .monaco-workbench .paradis-palette-preview-pdf-page {
+	border-radius: 0;
 	box-shadow: var(--vscode-shadow-md);
 }
 

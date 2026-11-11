@@ -373,7 +373,9 @@ export class ParadisPalettePreviewPane extends Disposable {
 		const model = this.modelService.getModel(resource);
 		let html: string;
 		if (model) {
-			html = model.getValue().slice(0, PARADIS_PALETTE_PREVIEW_HTML_MAX_BYTES);
+			// 大きい文書でも全体の文字列を作らず、上限までを取る
+			const end = model.getPositionAt(PARADIS_PALETTE_PREVIEW_HTML_MAX_BYTES);
+			html = model.getValueInRange({ startLineNumber: 1, startColumn: 1, endLineNumber: end.lineNumber, endColumn: end.column });
 		} else {
 			const content = await this.fileService.readFile(resource, { length: PARADIS_PALETTE_PREVIEW_HTML_MAX_BYTES }, token);
 			if (cancelled()) {
