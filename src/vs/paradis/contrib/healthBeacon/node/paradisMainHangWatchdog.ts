@@ -133,11 +133,13 @@ const timer = setInterval(() => {
 		if (hangBeat) { hangBeat = 0; clear(); }
 		return;
 	}
-	const lastBeat = shared[0];
+	// Read Paused before LastBeat: main writes LastBeat before it clears Paused, so a cleared Paused
+	// always comes with the new heartbeat.
 	if (shared[3] === 1 || now < graceUntil) {
 		if (hangBeat) { hangBeat = 0; clear(); }
 		return;
 	}
+	const lastBeat = shared[0];
 	const blocked = now - lastBeat;
 	if (!hangBeat) {
 		if (blocked >= hangMs) {

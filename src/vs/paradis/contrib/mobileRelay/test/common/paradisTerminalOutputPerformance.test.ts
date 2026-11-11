@@ -18,12 +18,17 @@ interface BenchmarkCondition {
 }
 
 interface BenchmarkResult {
-	/** 区切りごとの「候補 ÷ 基準」の中央値。 */
+	/** 区切りごとの「候補 ÷ 基準」の中央値。毎回かかる上乗せを見る。 */
 	readonly ratio: number;
-	/** 区切りごとの「候補 − 基準」の中央値（ms）。 */
-	readonly deltaMs: number;
+	/** 区切りごとの「候補 − 基準」の p95（ms）。ときどき固まる上乗せ（裾）を見る。 */
+	readonly deltaP95Ms: number;
 	/** 参考に出す、基準の区切りの中央値（ms）。 */
 	readonly baselineMs: number;
+}
+
+interface BenchmarkVerdict {
+	readonly passed: boolean;
+	readonly rounds: readonly BenchmarkResult[];
 }
 
 interface BenchmarkOutputRoute {
@@ -37,9 +42,16 @@ const CHUNKS_PER_SLICE = 768;
 const WARMUP_SLICES = 12;
 const MEASURED_SLICES = 50;
 const REPETITIONS_PER_SLICE = 7;
-// 1 回の計測が CI の負荷の波に丸ごと当たったときだけ測り直す。本物の上乗せはどの回にも出るので、
-// 一番良い回で判定しても見逃さない。
-const MAX_ROUNDS = 3;
+// 1 条件を最大 3 回測り、過半数（2 回）の回が範囲に入れば通す。CI の負荷の波に 1 回だけ当たった
+// 外れは許し、毎回出る上乗せも裾の上乗せも 3 回のうち 2 回以上に出るので落ちる。
+const ROUNDS = 3;
+const MAJORITY = 2;
+// docs の設計（2026-07-14 の terminal recovery performance）の基準: relay 無効時に対して 10% 以内かつ 5ms 以内。
+const RELATIVE_LIMIT = 1.10;
+const ABSOLUTE_P95_LIMIT_MS = 5;
+// 判定が裾を見ていることを確かめる偽の経路: 4 区切りに 1 回だけ、区切りまるごと 20ms 遅くする。
+const SPIKE_EVERY_SLICES = 4;
+const SPIKE_MS = 20;
 let rendererWorkSink = 0;
 
 suite('ParadisTerminalOutputPerformance', () => {
@@ -57,36 +69,46 @@ suite('ParadisTerminalOutputPerformance', () => {
 		}
 
 		for (const condition of conditions) {
-			let result = await benchmarkAgainstRelayOff(condition);
-			for (let round = 1; round < MAX_ROUNDS && !withinLimits(result); round++) {
-				result = await benchmarkAgainstRelayOff(condition);
-			}
-			assert.ok(
-				result.ratio <= 1.10,
-				`${formatCondition(condition)} took ${((result.ratio - 1) * 100).toFixed(1)}% longer than the relay-off baseline (${result.baselineMs.toFixed(3)}ms per slice), more than 10%`,
-			);
-			assert.ok(
-				result.deltaMs <= 5,
-				`${formatCondition(condition)} added ${result.deltaMs.toFixed(3)}ms to the relay-off slice`,
-			);
+			const verdict = await judge(() => createOutputRoute(condition));
+			assert.ok(verdict.passed, `${formatCondition(condition)} exceeded 10% (median of the paired ratios) or 5ms (p95 of the paired differences) in more than one of ${ROUNDS} rounds: ${formatRounds(verdict.rounds)}`);
 		}
 		assert.notStrictEqual(rendererWorkSink, 0, 'the Renderer workload must remain observable to the JIT');
 	});
+
+	test('rejects an output route that blocks only some of the slices', async function () {
+		this.timeout(60_000);
+		const verdict = await judge(() => createSpikingRoute());
+		assert.ok(!verdict.passed, `a route that adds ${SPIKE_MS}ms to every ${SPIKE_EVERY_SLICES}th slice passed: ${formatRounds(verdict.rounds)}`);
+	});
 });
 
+/** 過半数の回が範囲に入るかを、決まった時点で打ち切りながら測る。 */
+async function judge(createRoute: () => BenchmarkOutputRoute | undefined): Promise<BenchmarkVerdict> {
+	const rounds: BenchmarkResult[] = [];
+	let passedRounds = 0;
+	while (rounds.length < ROUNDS && passedRounds < MAJORITY && rounds.length - passedRounds <= ROUNDS - MAJORITY) {
+		const result = await benchmarkAgainstRelayOff(createRoute);
+		rounds.push(result);
+		if (withinLimits(result)) {
+			passedRounds++;
+		}
+	}
+	return { passed: passedRounds >= MAJORITY, rounds };
+}
+
 /**
- * 基準（relay off）と候補を同じ区切りの中で交互に測り、区切りごとの比と差の中央値で比べる。
- * 2 本の列から別々に p95 を取ると、GC や CI の CPU の取り合いで片方の列にだけ入った外れ値
- * （50 件の p95 は上から 3 番目の値）で 10% を超えてしまう。同じ区切りの中の外れは両方に効くので
- * 比を取れば打ち消され、本物の上乗せはどの区切りにも出るので中央値に残る。
+ * 基準（relay off）と候補を同じ区切りの中で交互に測り、区切りごとに組にして比べる。毎回かかる
+ * 上乗せは比の中央値、ときどき固まる上乗せは差の p95 で見る。2 本の列から別々に p95 を取ると、
+ * GC や CI の CPU の取り合いで片方の列にだけ入った外れ値（50 件の p95 は上から 3 番目の値）で
+ * 落ちてしまう。同じ区切りの中の外れは両方に効くので、組にすると打ち消される。
  *
  * 実PTY/Electron/xtermをunit runnerへ持ち込むとhost負荷でflakyになるため、ここで測るのは
  * 「大量onDataと別terminal echo callbackが同じRenderer event loopを共有する」slice proxy。
  * Para側はproduction dispatch/relay queue/hint parserそのものを通す。xterm描画は全条件で同一の
  * 文字走査に置換しているため、Renderer/PTY Host固有の遅延は実アプリprofileの対象として残る。
  */
-async function benchmarkAgainstRelayOff(condition: BenchmarkCondition): Promise<BenchmarkResult> {
-	const candidate = createOutputRoute(condition);
+async function benchmarkAgainstRelayOff(createRoute: () => BenchmarkOutputRoute | undefined): Promise<BenchmarkResult> {
+	const candidate = createRoute();
 	if (candidate === undefined) {
 		// productionではconsumerがなければonData listener自体が存在しないため、候補経路は
 		// baselineと同一。別々に測ってscheduler/GC差を「機能overhead」と誤認しない。
@@ -99,7 +121,7 @@ async function benchmarkAgainstRelayOff(condition: BenchmarkCondition): Promise<
 			await yieldToEventLoop();
 			latencies.push(measureSynchronousBlocking(undefined));
 		}
-		return { ratio: 1, deltaMs: 0, baselineMs: median(latencies) };
+		return { ratio: 1, deltaP95Ms: 0, baselineMs: median(latencies) };
 	}
 	try {
 		for (let index = 0; index < WARMUP_SLICES; index++) {
@@ -115,14 +137,34 @@ async function benchmarkAgainstRelayOff(condition: BenchmarkCondition): Promise<
 			ratios.push(measured / baseline);
 			deltas.push(measured - baseline);
 		}
-		return { ratio: median(ratios), deltaMs: median(deltas), baselineMs: median(baselineLatencies) };
+		return { ratio: median(ratios), deltaP95Ms: percentile95(deltas), baselineMs: median(baselineLatencies) };
 	} finally {
 		candidate.dispose();
 	}
 }
 
 function withinLimits(result: BenchmarkResult): boolean {
-	return result.ratio <= 1.10 && result.deltaMs <= 5;
+	return result.ratio <= RELATIVE_LIMIT && result.deltaP95Ms <= ABSOLUTE_P95_LIMIT_MS;
+}
+
+/** 区切りの番号を数え、`SPIKE_EVERY_SLICES` 区切りに 1 回だけ、その区切りの候補の計測をまるごと遅くする。 */
+function createSpikingRoute(): BenchmarkOutputRoute {
+	const callsPerSlice = CHUNKS_PER_SLICE * REPETITIONS_PER_SLICE;
+	const perCallMs = SPIKE_MS / CHUNKS_PER_SLICE;
+	let calls = 0;
+	return {
+		consume: () => {
+			const slice = Math.floor(calls / callsPerSlice);
+			calls++;
+			if (slice % SPIKE_EVERY_SLICES === 0) {
+				const until = performance.now() + perCallMs;
+				while (performance.now() < until) {
+					// 区切りを遅くする
+				}
+			}
+		},
+		dispose: () => { },
+	};
 }
 
 function createOutputRoute(condition: BenchmarkCondition): BenchmarkOutputRoute | undefined {
@@ -171,7 +213,10 @@ async function measurePairedEventLoopSlice(outputRoute: ParadisTerminalOutputCon
 			baseline.push(measureSynchronousBlocking(undefined));
 		}
 	}
-	return [median(baseline), median(candidate)];
+	// 区切りの中の 7 回のうち一番速い回を使う。OS が CPU を他へ回した分（負荷のある CI では 1 回の
+	// 計測が数 ms 伸びる）は片方の回にだけ足されるので、最小値で落とす。経路そのものの上乗せは
+	// どの回にもかかるので最小値にも残り、区切りまるごとの固まりも残る。
+	return [Math.min(...baseline), Math.min(...candidate)];
 }
 
 function measureSynchronousBlocking(outputRoute: ParadisTerminalOutputConsumer | undefined): number {
@@ -224,6 +269,15 @@ function yieldToEventLoop(): Promise<void> {
 function median(values: number[]): number {
 	values.sort((a, b) => a - b);
 	return values[Math.floor(values.length / 2)];
+}
+
+function percentile95(values: readonly number[]): number {
+	const sorted = [...values].sort((a, b) => a - b);
+	return sorted[Math.ceil(sorted.length * 0.95) - 1];
+}
+
+function formatRounds(rounds: readonly BenchmarkResult[]): string {
+	return rounds.map(round => `+${((round.ratio - 1) * 100).toFixed(1)}% median, +${round.deltaP95Ms.toFixed(3)}ms p95 over ${round.baselineMs.toFixed(3)}ms`).join('; ');
 }
 
 function formatCondition(condition: BenchmarkCondition): string {
