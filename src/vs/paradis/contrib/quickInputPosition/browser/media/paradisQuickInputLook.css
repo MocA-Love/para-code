@@ -54,8 +54,10 @@
 	padding-top: var(--vscode-spacing-size40);
 }
 
-/* Matched characters: bold in the link color (upstream writes the list highlight colors with !important). */
-.monaco-workbench .quick-input-widget.paradis-quick-input-centered .quick-input-list .monaco-list .monaco-list-row .monaco-highlighted-label .highlight {
+/* Matched characters: bold in the link color (upstream writes the list highlight colors with !important). The focused
+	row keeps upstream's quickInputList.focusHighlightForeground: in themes whose selection is the link color (Light 2026)
+	the link color on the focused row made the matched characters invisible. */
+.monaco-workbench .quick-input-widget.paradis-quick-input-centered .quick-input-list .monaco-list .monaco-list-row:not(.focused) .monaco-highlighted-label .highlight {
 	color: var(--vscode-textLink-foreground) !important;
 }
 

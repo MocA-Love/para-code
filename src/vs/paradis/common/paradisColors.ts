@@ -24,7 +24,17 @@ registerColor('paradis.overlay', { op: ColorTransformType.Mix, color: 'sideBar.b
 registerColor('paradis.popup', 'menu.background', localize('paradis.color.popup', "Para Code の部品: メニュー・ポップアップ・トーストの面。"));
 registerColor('paradis.sunken', { op: ColorTransformType.Mix, color: 'editor.background', with: 'input.background', ratio: 0.3 }, localize('paradis.color.sunken', "Para Code の部品: 入力欄の中の面。"));
 registerColor('paradis.fillHover', 'list.hoverBackground', localize('paradis.color.fillHover', "Para Code の部品: ポインタを重ねた行やボタンの塗り。"));
-registerColor('paradis.fillSelected', 'menu.selectionBackground', localize('paradis.color.fillSelected', "Para Code の部品: 選んでいる行の塗り。"));
+// 選んでいる地には、どの部品も textStrong（と textMuted）の文字を重ねる。本家の menu.selectionBackground は白い
+// menu.selectionForeground と組む濃い青（Light Modern・Light+・Dark Modern）で、その上の textStrong は 1.0〜2.8:1 しか
+// なかった。本家でも普通の文字色と組む list.inactiveSelectionBackground にする。hc の 2 つはこの色を持たない（hc-light は
+// ポインタの塗りと同じ値）ので、本家の hc が選んだ印に使う contrastActiveBorder を薄くして塗る。
+// Houston・Dark 2026・Light 2026 は、テーマの水色の薄い地を paradisDefaultSettings.contribution.ts で残す。
+registerColor('paradis.fillSelected', {
+	dark: 'list.inactiveSelectionBackground',
+	light: 'list.inactiveSelectionBackground',
+	hcDark: { op: ColorTransformType.Opacity, value: 'contrastActiveBorder', opacity: 0.3 },
+	hcLight: { op: ColorTransformType.Opacity, value: 'contrastActiveBorder', opacity: 0.25 },
+}, localize('paradis.color.fillSelected', "Para Code の部品: 選んでいる行の塗り。"));
 registerColor('paradis.fillNeutral', 'button.secondaryBackground', localize('paradis.color.fillNeutral', "Para Code の部品: 副のボタンの塗り。"));
 registerColor('paradis.scrim', '#00000080', localize('paradis.color.scrim', "Para Code の部品: モーダルの下の暗い幕。"));
 // 見出しの帯。sideBarSectionHeader.background はサイドバーの地と同じ色にしているテーマが多く（Dark 2026・Light 2026・Dark Modern・

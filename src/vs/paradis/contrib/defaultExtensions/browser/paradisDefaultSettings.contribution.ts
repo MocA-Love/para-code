@@ -120,6 +120,9 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 				// Houston の副のボタンは塗り（#545864）で見分けられる。button.secondaryBorder を持たないので、既定の枠
 				// （文字色の 15%）が足されないよう、副のボタンの枠（paradisColors.ts の paradis.lineButton）は描かない
 				'paradis.lineButton': '#00000000',
+				// 選んでいる行の地（paradisColors.ts の paradis.fillSelected）は、テーマの水色の薄い地のまま
+				// （既定の list.inactiveSelectionBackground #17191e は面より暗く、選んだ印に見えにくい）
+				'paradis.fillSelected': '#09AFD933',
 				// 一覧の中の見出しの帯（paradisColors.ts の paradis.band）。Houston は見出しの面に地と違う色を持つので、その色をそのまま使う
 				'paradis.band': '#343841'
 			},
@@ -133,7 +136,10 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 				'activityBarBadge.foreground': '#000000',
 				'badge.foreground': '#000000',
 				'agentsBadge.foreground': '#000000',
-				'agentsUnreadBadge.foreground': '#000000'
+				'agentsUnreadBadge.foreground': '#000000',
+				// 選んでいる行の地（paradisColors.ts の paradis.fillSelected）は、テーマの水色の薄い地のまま
+				// （既定の list.inactiveSelectionBackground はポインタを重ねた地と同じ #2c2d2e になり、見分けられない）
+				'paradis.fillSelected': '#09AFD926'
 			},
 			'[Light 2026]': {
 				// Light 2026 のブランドアクセントは白背景とのコントラスト確保のため #0598BD（テーマ内の debugging 色と同値）
@@ -141,7 +147,10 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 				'statusBar.foreground': '#FFFFFF',
 				'statusBar.noFolderBackground': '#0598BD',
 				'statusBar.noFolderForeground': '#FFFFFF',
-				'paradis.focusSubtle': '#8a8f99'
+				'paradis.focusSubtle': '#8a8f99',
+				// 選んでいる行の地（paradisColors.ts の paradis.fillSelected）は、テーマの水色の薄い地のまま
+				// （既定の list.inactiveSelectionBackground はポインタを重ねた地とほぼ同じ灰になり、見分けられない）
+				'paradis.fillSelected': '#0598BD1A'
 			}
 		},
 		// 注: `github.copilot.chat.commitMessageGeneration.instructions` はここ（defaultレイヤー）では
