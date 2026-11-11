@@ -24,6 +24,7 @@ import {
 	paradisRecordPaletteRecent,
 	paradisShouldOfferCrossJumpCreate,
 	paradisSortCrossJumpAgents,
+	paradisSplitPaletteRecents,
 	paradisTogglePalettePin,
 } from '../../common/paradisCrossJump.js';
 
@@ -155,5 +156,16 @@ suite('paradisCrossJump', () => {
 			pruned: false,
 			prunedCount: PARADIS_PALETTE_PIN_LIMIT - 1,
 		});
+	});
+
+	test('the shared (profile) records move to the window only for the targets this window knows', () => {
+		const shared: IParadisPaletteRecent[] = [
+			{ kind: 'space', key: 'here', at: 3, pinned: true },
+			{ kind: 'space', key: 'other-window', at: 2, pinned: true },
+			{ kind: 'agent', key: 'here-agent', at: 1 },
+		];
+		const known = new Set(['here', 'here-agent']);
+		const { moved, rest } = paradisSplitPaletteRecents(shared, entry => known.has(entry.key));
+		assert.deepStrictEqual({ moved: moved.map(entry => entry.key), rest: rest.map(entry => entry.key) }, { moved: ['here', 'here-agent'], rest: ['other-window'] });
 	});
 });

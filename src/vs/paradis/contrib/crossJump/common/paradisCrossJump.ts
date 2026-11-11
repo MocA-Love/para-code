@@ -219,6 +219,14 @@ export function paradisPrunePaletteRecents(list: readonly IParadisPaletteRecent[
 }
 
 /**
+ * 古い保存先（プロファイルで全窓共有）の記録を、この窓が知っている分（`known`）と残りに分ける。知っている分を窓の
+ * 記録へ移し、残りは別の窓のために共有の保存先に残す。
+ */
+export function paradisSplitPaletteRecents(list: readonly IParadisPaletteRecent[], known: (entry: IParadisPaletteRecent) => boolean): { readonly moved: IParadisPaletteRecent[]; readonly rest: IParadisPaletteRecent[] } {
+	return { moved: list.filter(known), rest: list.filter(entry => !known(entry)) };
+}
+
+/**
  * 「最近・ピン」に出すもの。今も在る先（`exists`）だけを、ピンはすべて、残りは新しい順に足して
  * {@link PARADIS_PALETTE_RECENT_SHOWN} 件まで。並びは移った時刻の新しい順。
  */

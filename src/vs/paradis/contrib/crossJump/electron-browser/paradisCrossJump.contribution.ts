@@ -83,6 +83,7 @@ import {
 	ParadisPaletteKind,
 	paradisRecordPaletteRecent,
 	paradisSortCrossJumpAgents,
+	paradisSplitPaletteRecents,
 	paradisTogglePalettePin,
 } from '../common/paradisCrossJump.js';
 
@@ -101,15 +102,19 @@ const CREATE_WORKTREE_COMMAND_ID = 'paradis.workspaceSwitch.createWorktree';
 const CROSS_JUMP_CONTEXT_KEY = 'paradisInCrossJump';
 /** コマンドパレットが開いている間 true（本家の quickAccess.contribution.ts が付ける contextKey）。 */
 const COMMANDS_PICKER_CONTEXT_KEY = 'inCommandsPicker';
-/** 横断ジャンプの入力が空の間 true。Ctrl+Backspace を入力中の単語の削除とぶつけないために使う。 */
 /**
  * 種類のタブを器に出している間 true（中央に出した横断ジャンプとコマンドパレットだけ）。Tab・Shift+Tab はこれと
  * 入力欄にフォーカスがあるときだけ取り、行のボタンなどにフォーカスがあるときは本家の Tab のままにする。
  */
 const ParadisPaletteKindsVisibleContext = new RawContextKey<boolean>('paradisPaletteKindsVisible', false, localize('paradis.palette.kindsVisible', "中央のパレットに種類のタブを出しているかどうか"));
+/** 横断ジャンプの入力が空の間 true。Ctrl+Backspace を入力中の単語の削除とぶつけないために使う。 */
 const ParadisCrossJumpInputEmptyContext = new RawContextKey<boolean>('paradisCrossJumpInputEmpty', false, localize('paradis.crossJump.inputEmpty', "横断ジャンプの入力欄が空かどうか"));
 
-/** 最近移った先・ピンの保存キー（fork 自前、プロファイルごと）。 */
+/**
+ * 最近移った先・ピンの保存キー（fork 自前）。最近・ピンは窓の作業に紐づくので窓（ワークスペース）ごとに持つ。刈り込みの
+ * 生死の判定はこの窓のスペースとエージェントだけで行うので、窓の間で共有すると別の窓で生きている先を消してしまう。
+ * 以前はプロファイル（全窓共有）に持っていたので、その記録は初回にこの窓が知っている分だけ移す。
+ */
 const RECENT_STORAGE_KEY = 'paradis.palette.recent';
 /** 行の id の頭。CSS（paradisPalette.css）は「paradis-palette/space/」で字下げ、「paradis-palette/」で 2 次操作の見た目を決める。 */
 const ID_PREFIX = 'paradis-palette/';
@@ -215,14 +220,24 @@ class ParadisCrossJumpSession extends Disposable {
 		// 作成の行の行き先は今のスペースのリポジトリ（スペースの外なら先頭のリポジトリ）。
 		this.createRepositoryId = this.spaces.find(space => space.space === this.activeStateKey)?.repositoryId ?? this.workspaceSwitchService.repositories[0]?.id;
 		this.actions = this.collectActions();
-		// 終わったエージェント（ペイントークンは使い回されない）と消えたスペースの記録は、ピンでも捨てる
-		const recents = paradisParsePaletteRecents(this.storageService.get(RECENT_STORAGE_KEY, StorageScope.PROFILE));
 		const liveTokens = new Set(this.agents.map(entry => entry.token));
 		const liveSpaces = new Set(this.spaces.map(space => space.space));
-		this.recents = paradisPrunePaletteRecents(recents, entry => entry.kind === 'agent' ? !liveTokens.has(entry.key) : entry.kind === 'space' ? !liveSpaces.has(entry.key) : false);
-		if (this.recents.length !== recents.length) {
-			this.storeRecents(this.recents);
+		let recents = paradisParsePaletteRecents(this.storageService.get(RECENT_STORAGE_KEY, StorageScope.WORKSPACE));
+		const shared = this.storageService.get(RECENT_STORAGE_KEY, StorageScope.PROFILE);
+		if (shared !== undefined) {
+			// 共有の記録から、この窓が知っている先（スペース・エージェント・開いているタブ）だけを窓の記録へ移す
+			const openEditors = new Set(this.editorItems.map(item => item.kind === 'editor' ? item.key : undefined));
+			const { moved, rest } = paradisSplitPaletteRecents(paradisParsePaletteRecents(shared), entry => entry.kind === 'agent' ? liveTokens.has(entry.key) : entry.kind === 'space' ? liveSpaces.has(entry.key) : openEditors.has(entry.key));
+			recents = [...recents, ...moved.filter(entry => !recents.some(existing => existing.kind === entry.kind && existing.key === entry.key))];
+			if (rest.length) {
+				this.storageService.store(RECENT_STORAGE_KEY, JSON.stringify(rest), StorageScope.PROFILE, StorageTarget.MACHINE);
+			} else {
+				this.storageService.remove(RECENT_STORAGE_KEY, StorageScope.PROFILE);
+			}
 		}
+		// 終わったエージェント（ペイントークンは使い回されない）と消えたスペースの記録は、ピンでも捨てる
+		this.recents = paradisPrunePaletteRecents(recents, entry => entry.kind === 'agent' ? !liveTokens.has(entry.key) : entry.kind === 'space' ? !liveSpaces.has(entry.key) : false);
+		this.storeRecents(this.recents);
 		this.kindsVisible = ParadisPaletteKindsVisibleContext.bindTo(contextKeyService);
 
 		this.picker = this._register(this.quickInputService.createQuickPick<ParadisCrossJumpItem>({ useSeparators: true }));
@@ -665,7 +680,7 @@ class ParadisCrossJumpSession extends Disposable {
 
 	private storeRecents(recents: IParadisPaletteRecent[]): void {
 		this.recents = recents;
-		this.storageService.store(RECENT_STORAGE_KEY, JSON.stringify(recents), StorageScope.PROFILE, StorageTarget.MACHINE);
+		this.storageService.store(RECENT_STORAGE_KEY, JSON.stringify(recents), StorageScope.WORKSPACE, StorageTarget.MACHINE);
 	}
 
 	private record(item: ParadisCrossJumpItem): void {
