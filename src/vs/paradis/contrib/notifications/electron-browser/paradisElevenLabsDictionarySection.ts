@@ -14,11 +14,11 @@
 import * as dom from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
-import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import {
 	IParadisElevenLabsDictionaryDetail,
@@ -39,6 +39,7 @@ import { ParadisInputField } from '../../../browser/paradisInputField.js';
 import { paradisNotifNestedModal } from './paradisNotificationNestedModal.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { PARADIS_MODAL_DRAFT_RESTORED, paradisModalDraftSnapshot, ParadisModalDrafts } from '../../paradisSettings/browser/paradisModalDrafts.js';
+import { paradisNotifButton } from './paradisNotificationKitParts.js';
 
 const $ = dom.$;
 
@@ -84,6 +85,7 @@ export class ParadisElevenLabsDictionarySection extends Disposable {
 		@IDialogService private readonly dialogService: IDialogService,
 		@ILayoutService private readonly layoutService: ILayoutService,
 		@ILogService private readonly logService: ILogService,
+		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super();
 		this._register(this.settingsService.onDidChange(scope => {
@@ -115,10 +117,7 @@ export class ParadisElevenLabsDictionarySection extends Disposable {
 		const titles = dom.append(header, $('.sr-main'));
 		dom.append(titles, $('.pns-section-title')).textContent = STR_TITLE;
 		dom.append(titles, $('.pns-section-desc')).textContent = STR_DESC;
-		const newBtn = dom.append(header, $('button.pns-btn')) as HTMLButtonElement;
-		newBtn.style.flexShrink = '0';
-		newBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.add)}`));
-		newBtn.append(STR_NEW);
+		const newBtn = paradisNotifButton(header, 'secondary', { icon: Codicon.add, label: STR_NEW });
 		newBtn.disabled = !apiKey;
 		this._renderDisposables.add(dom.addDisposableListener(newBtn, 'click', () => this._openEditor(apiKey, undefined)));
 
@@ -168,7 +167,7 @@ export class ParadisElevenLabsDictionarySection extends Disposable {
 		card.classList.toggle('active', isActive);
 		const top = dom.append(card, $('.pns-row'));
 		top.style.marginBottom = '0';
-		const infoEl = dom.append(top, $('div'));
+		const infoEl = dom.append(top, $('.pns-dict-info'));
 		const nameRow = dom.append(infoEl, $('.pns-ringtone-name'));
 		dom.append(nameRow, $('span')).textContent = dict.name;
 		if (isActive) {
@@ -183,32 +182,22 @@ export class ParadisElevenLabsDictionarySection extends Disposable {
 		}
 		dom.append(infoEl, $('.pns-ringtone-desc')).textContent = parts.join(' · ');
 
-		const actions = dom.append(top, $('div'));
-		actions.style.display = 'flex';
-		actions.style.gap = '5px';
-		actions.style.flexShrink = '0';
+		const actions = dom.append(top, $('.pns-dict-actions'));
 
 		if (!isActive) {
-			const applyBtn = dom.append(actions, $('button.pns-btn')) as HTMLButtonElement;
-			applyBtn.textContent = STR_APPLY;
+			const applyBtn = paradisNotifButton(actions, 'secondary', { label: STR_APPLY });
 			this._renderDisposables.add(dom.addDisposableListener(applyBtn, 'click', () => {
 				this.settingsService.setAivisSettings({ elevenLabsDictionaryId: dict.id });
 			}));
 		}
-		const editBtn = dom.append(actions, $('button.pns-btn')) as HTMLButtonElement;
-		editBtn.textContent = STR_EDIT;
+		const editBtn = paradisNotifButton(actions, 'secondary', { label: STR_EDIT });
 		this._renderDisposables.add(dom.addDisposableListener(editBtn, 'click', () => this._openEditor(apiKey, dict)));
 
-		const exportBtn = dom.append(actions, $('button.pns-btn.pns-btn-icon')) as HTMLButtonElement;
-		exportBtn.title = STR_EXPORT;
-		exportBtn.setAttribute('aria-label', STR_EXPORT);
-		exportBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.arrowDown)}`));
+		const hover = { service: this.hoverService, store: this._renderDisposables };
+		const exportBtn = paradisNotifButton(actions, 'icon', { icon: Codicon.arrowDown, title: STR_EXPORT, hover });
 		this._renderDisposables.add(dom.addDisposableListener(exportBtn, 'click', () => this._export(apiKey, dict)));
 
-		const deleteBtn = dom.append(actions, $('button.pns-btn.pns-btn-icon.pns-btn-danger')) as HTMLButtonElement;
-		deleteBtn.title = STR_DELETE;
-		deleteBtn.setAttribute('aria-label', STR_DELETE);
-		deleteBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.trash)}`));
+		const deleteBtn = paradisNotifButton(actions, 'icon', { icon: Codicon.trash, title: STR_DELETE, className: 'pns-delete', hover });
 		this._renderDisposables.add(dom.addDisposableListener(deleteBtn, 'click', () => this._delete(apiKey, dict, isActive)));
 	}
 
