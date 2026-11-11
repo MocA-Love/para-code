@@ -20,6 +20,7 @@ import { IParadisVoiceCacheInfo, paradisVoiceCacheTotals } from '../common/parad
 import { ParadisAivisRenderGeneration } from './paradisAivisApiCache.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
+import { paradisNotifButton } from './paradisNotificationKitParts.js';
 
 const $ = dom.$;
 
@@ -123,8 +124,7 @@ export class ParadisVoiceCacheSection extends Disposable {
 		this._statCard(grid, STR_STORED, strEntries(info.entries.toLocaleString()), strMegabytes((info.bytes / (1024 * 1024)).toFixed(1)));
 
 		const actions = dom.append(container, $('.pns-row'));
-		const clearBtn = dom.append(actions, $('button.pns-btn.pns-btn-danger')) as HTMLButtonElement;
-		clearBtn.textContent = STR_CLEAR;
+		const clearBtn = paradisNotifButton(actions, 'danger', { label: STR_CLEAR });
 		clearBtn.disabled = info.entries === 0;
 		dom.append(actions, $('span.pns-row-hint')).textContent = STR_CLEAR_HINT;
 		this._renderDisposables.add(dom.addDisposableListener(clearBtn, 'click', () => {

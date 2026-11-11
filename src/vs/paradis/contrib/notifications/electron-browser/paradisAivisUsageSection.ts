@@ -18,6 +18,7 @@ import { IParadisNotificationsSettingsService } from '../browser/paradisNotifica
 import { ParadisAivisRenderGeneration, ParadisAivisUsageRequestCache } from './paradisAivisApiCache.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
 import { paradisFillAivisUsageDays, paradisVoiceUsageRange } from '../common/paradisVoiceUsage.js';
+import { ParadisSegmented } from '../../../browser/paradisSegmented.js';
 
 const $ = dom.$;
 
@@ -27,6 +28,8 @@ const STR_TITLE = localize('paradis.notif.usage.title', "使用量 (日別)");
 const STR_DESC = localize('paradis.notif.usage.desc', "Aivis API のリクエスト数・文字数・クレジット消費を日別に集計します。");
 // allow-any-unicode-next-line
 const STR_7DAYS = localize('paradis.notif.usage.7days', "7日");
+const STR_PERIOD_ARIA = localize('paradis.notif.usage.periodAria', "期間");
+const STR_METRIC_ARIA = localize('paradis.notif.usage.metricAria', "グラフに出す値");
 // allow-any-unicode-next-line
 const STR_30DAYS = localize('paradis.notif.usage.30days', "30日");
 // allow-any-unicode-next-line
@@ -124,17 +127,13 @@ export class ParadisAivisUsageSection extends Disposable {
 		dom.append(titles, $('.pns-section-title')).textContent = STR_TITLE;
 		dom.append(titles, $('.pns-section-desc')).textContent = STR_DESC;
 
-		const periodGroup = dom.append(header, $('div'));
-		periodGroup.style.display = 'flex';
-		periodGroup.style.gap = '4px';
-		periodGroup.style.flexShrink = '0';
-		const btn7 = dom.append(periodGroup, $('button.pns-btn')) as HTMLButtonElement;
-		btn7.textContent = STR_7DAYS;
-		const btn30 = dom.append(periodGroup, $('button.pns-btn')) as HTMLButtonElement;
-		btn30.textContent = STR_30DAYS;
-		(this._period === '7' ? btn7 : btn30).classList.add('pns-btn-primary');
-		this._renderDisposables.add(dom.addDisposableListener(btn7, 'click', () => { this._period = '7'; this._render(); }));
-		this._renderDisposables.add(dom.addDisposableListener(btn30, 'click', () => { this._period = '30'; this._render(); }));
+		const period = this._renderDisposables.add(new ParadisSegmented<Period>(header, {
+			ariaLabel: STR_PERIOD_ARIA,
+			value: this._period,
+			items: [{ value: '7', label: STR_7DAYS }, { value: '30', label: STR_30DAYS }],
+		}));
+		period.element.classList.add('pns-seg');
+		this._renderDisposables.add(period.onDidChange(value => { this._period = value; this._render(); }));
 
 		const apiKey = this.settingsService.getAivisSettings().apiKey;
 		if (!apiKey) {
@@ -182,17 +181,14 @@ export class ParadisAivisUsageSection extends Disposable {
 		// 取得済みデータのままチャートだけ描き直す（再フェッチしない）
 		const chartBox = dom.append(container, $('div'));
 		chartBox.style.marginBottom = '14px';
-		const metricGroup = dom.append(chartBox, $('div'));
-		metricGroup.style.display = 'flex';
-		metricGroup.style.justifyContent = 'flex-end';
-		metricGroup.style.gap = '4px';
-		metricGroup.style.marginBottom = '6px';
-		const metricButtons = new Map<ChartMetric, HTMLButtonElement>();
+		const metricGroup = dom.append(chartBox, $('.pns-chart-metric'));
+		const metricSeg = this._renderDisposables.add(new ParadisSegmented<ChartMetric>(metricGroup, {
+			ariaLabel: STR_METRIC_ARIA,
+			value: this._metric,
+			items: CHART_METRICS.map(metric => ({ value: metric.id, label: metric.label })),
+		}));
 		const chart = dom.append(chartBox, $('.pns-bar-chart'));
 		const renderChart = () => {
-			for (const [id, button] of metricButtons) {
-				button.classList.toggle('pns-btn-primary', id === this._metric);
-			}
 			const metric = CHART_METRICS.find(candidate => candidate.id === this._metric) ?? CHART_METRICS[0];
 			dom.clearNode(chart);
 			const maxValue = Math.max(1, ...filled.map(day => metric.value(day)));
@@ -202,18 +198,13 @@ export class ParadisAivisUsageSection extends Disposable {
 				bar.title = `${day.date}: ${metric.format(day)}`;
 			}
 		};
-		for (const metric of CHART_METRICS) {
-			const button = dom.append(metricGroup, $('button.pns-btn')) as HTMLButtonElement;
-			button.textContent = metric.label;
-			metricButtons.set(metric.id, button);
-			this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => {
-				this._metric = metric.id;
-				renderChart();
-			}));
-		}
+		this._renderDisposables.add(metricSeg.onDidChange(value => {
+			this._metric = value;
+			renderChart();
+		}));
 		renderChart();
 
-		const table = dom.append(container, $('table.pns-usage-table'));
+		const table = dom.append(dom.append(container, $('.pns-table-scroll')), $('table.pns-usage-table'));
 		const thead = dom.append(table, $('thead'));
 		const headRow = dom.append(thead, $('tr'));
 		for (const label of [STR_COL_DATE, 'Requests', 'Chars', 'Credits']) {
