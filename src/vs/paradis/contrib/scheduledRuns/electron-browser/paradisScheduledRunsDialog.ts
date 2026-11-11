@@ -70,6 +70,7 @@ import { PARADIS_MODAL_DRAFT_RESTORED, ParadisModalDrafts } from '../../paradisS
 import { paradisAppendAgentListLockNotice } from '../../agentModelCatalog/browser/paradisAgentListLockNotice.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
+import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
 
 const $ = dom.$;
 
@@ -283,7 +284,8 @@ export class ParadisScheduledRunsDialog extends Disposable {
 	) {
 		super();
 		this.backdrop = $('.paradis-scheduled-runs-backdrop.paradis-modal-backdrop');
-		this.modal = dom.append(this.backdrop, $('.paradis-scheduled-runs.paradis-focus-none'));
+		this.modal = dom.append(this.backdrop, $('.paradis-scheduled-runs'));
+		this.modal.classList.add(...paradisModalClasses(ParadisModalSize.Large));
 		this.modal.setAttribute('role', 'dialog');
 		this.modal.setAttribute('aria-modal', 'true');
 

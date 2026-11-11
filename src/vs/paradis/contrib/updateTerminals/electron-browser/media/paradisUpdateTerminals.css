@@ -18,19 +18,10 @@
 	padding-top: 72px;
 }
 
-.monaco-workbench .para-ut-modal {
-	width: 420px;
-	max-width: 92vw;
-	max-height: calc(100% - 120px);
-	overflow-y: auto;
-	background: var(--vscode-editorWidget-background);
-	color: var(--vscode-foreground);
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 8px;
-	box-shadow: var(--vscode-shadow-xl, 0 8px 24px rgba(0, 0, 0, 0.18));
+/* The box's size, surface and font come from the modal S tier (paradisModal.css, Q612). It scrolls when the window is short. */
+.monaco-workbench .para-ut-modal.paradis-modal {
 	padding: 16px 18px 14px;
-	font-size: 13px;
-	outline: none;
+	overflow-y: auto;
 }
 
 .monaco-workbench .para-ut-modal h4 {

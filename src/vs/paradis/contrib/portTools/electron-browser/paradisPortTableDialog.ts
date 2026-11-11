@@ -94,7 +94,7 @@ class ParadisPortTableDialog extends Disposable {
 		// `paradis-modal-backdrop` は、内蔵ブラウザのページがこのダイアログより前に出ないための共通の印（overlayManager.ts）
 		this._backdrop = $('.paradis-port-dialog-backdrop.paradis-modal-backdrop');
 		const dialog = dom.append(this._backdrop, $('.paradis-port-dialog'));
-		dialog.classList.add(...paradisModalClasses(ParadisModalSize.Small));
+		dialog.classList.add(...paradisModalClasses(ParadisModalSize.Medium));
 		dialog.setAttribute('role', 'dialog');
 		dialog.setAttribute('aria-modal', 'true');
 		this._register(dom.addDisposableListener(this._backdrop, 'mousedown', e => {

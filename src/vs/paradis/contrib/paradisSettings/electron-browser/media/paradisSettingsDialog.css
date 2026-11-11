@@ -40,6 +40,11 @@
 
 /* ---------- sections / rows ---------- */
 
+/* A section stops at 880 so a wide box does not move the switches far from their labels (Q612). */
+.paradis-settings-area .psd-content > .psd-section {
+	max-width: 880px;
+}
+
 .paradis-settings-area .psd-section + .psd-section {
 	margin-top: var(--vscode-spacing-size320);
 }

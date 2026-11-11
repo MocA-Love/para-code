@@ -67,4 +67,18 @@ suite('ParadisFileTransferPermissionsDialog', () => {
 			root.remove();
 		}
 	});
+
+	test('the box is the modal S tier', async () => {
+		const root = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(root);
+		try {
+			const shown = paradisShowPermissionsDialog(root, { title: 'deploy', location: 'example:/srv/deploy', initialMode: 0o644, typeChar: '-', hasDirectory: false, draftKey: 'remote\nfile-tier' });
+			const className = root.querySelector('.para-ft-modal')?.className;
+			root.querySelector<HTMLButtonElement>('.para-ft-modal-buttons button.secondary')!.click();
+			await shown;
+			assert.strictEqual(className, 'para-ft-modal paradis-modal paradis-modal-s paradis-focus-none');
+		} finally {
+			root.remove();
+		}
+	});
 });

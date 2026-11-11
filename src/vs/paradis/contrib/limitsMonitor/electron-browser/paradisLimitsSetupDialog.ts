@@ -28,6 +28,7 @@ import { IParadisLimitsAccount, IParadisLimitsSetupState, ParadisLimitsProvider 
 import { appendParadisLimitsLogo } from './paradisLimitsLogos.js';
 import { ParadisLimitsMonitorClient } from './paradisLimitsMonitorClient.js';
 import { IParadisLimitsEmailMaskService } from './paradisLimitsEmailMask.js';
+import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
 
 const $ = dom.$;
 
@@ -71,7 +72,8 @@ export class ParadisLimitsSetupDialog extends Disposable {
 		super();
 
 		this.overlay = $('.paradis-limits-setup-overlay.paradis-modal-backdrop');
-		const dialog = dom.append(this.overlay, $('.paradis-limits-setup.paradis-focus-none'));
+		const dialog = dom.append(this.overlay, $('.paradis-limits-setup'));
+		dialog.classList.add(...paradisModalClasses(ParadisModalSize.Small));
 		dialog.tabIndex = -1;
 
 		const body = dom.append(dialog, $('.pls-body'));

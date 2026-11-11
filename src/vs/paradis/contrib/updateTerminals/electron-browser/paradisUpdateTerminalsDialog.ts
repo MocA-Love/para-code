@@ -26,6 +26,7 @@ import {
 	paradisWorkingAgentKinds,
 } from '../common/paradisUpdateTerminals.js';
 import './media/paradisUpdateTerminals.css';
+import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
 
 const $ = dom.$;
 
@@ -76,6 +77,7 @@ export function paradisShowUpdateTerminalsDialog(container: HTMLElement, summary
 
 		const backdrop = $('.para-ut-backdrop.paradis-modal-backdrop');
 		const modal = dom.append(backdrop, $('.para-ut-modal'));
+		modal.classList.add(...paradisModalClasses(ParadisModalSize.Small));
 		modal.setAttribute('role', 'alertdialog');
 		modal.setAttribute('aria-modal', 'true');
 		modal.tabIndex = -1;

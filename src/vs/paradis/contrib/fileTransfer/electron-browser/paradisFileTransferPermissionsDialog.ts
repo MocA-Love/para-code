@@ -17,6 +17,7 @@ import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { PARADIS_MODAL_DRAFT_RESTORED, paradisModalDraftSnapshot, ParadisModalDrafts } from '../../paradisSettings/browser/paradisModalDrafts.js';
+import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
 import {
 	paradisFormatMode,
 	paradisFormatOctalMode,
@@ -86,6 +87,7 @@ export function paradisShowPermissionsDialog(container: HTMLElement, options: IP
 
 		const backdrop = $('.para-ft-modal-backdrop.paradis-modal-backdrop');
 		const modal = dom.append(backdrop, $('.para-ft-modal'));
+		modal.classList.add(...paradisModalClasses(ParadisModalSize.Small));
 		modal.setAttribute('role', 'dialog');
 		modal.setAttribute('aria-modal', 'true');
 		modal.tabIndex = -1;
