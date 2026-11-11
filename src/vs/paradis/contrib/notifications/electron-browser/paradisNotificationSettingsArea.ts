@@ -53,6 +53,7 @@ import { ParadisInputField } from '../../../browser/paradisInputField.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 import { paradisNotifButton, paradisNotifButtonWithHover } from './paradisNotificationKitParts.js';
+import { ParadisSectionFocusCarrier, paradisSetFocusKey } from './paradisNotificationSettingsDomUtils.js';
 import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubHost } from '../../paradisHub/electron-browser/paradisHub.js';
 import { IParadisHubNavItem, paradisHubNavCaption, paradisHubNavItem, ParadisHubScrollSpy } from '../../paradisHub/electron-browser/paradisHubNav.js';
 
@@ -817,11 +818,15 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 		this._renderDisposables.add(dom.addDisposableListener(importBtn, 'click', () => this._importCustomAudio()));
 
 		const youtubeBtn = paradisNotifButton(actions, 'secondary', { label: STR_FROM_YOUTUBE });
+		paradisSetFocusKey(youtubeBtn, 'youtube');
+		// 取り込むと節が描き直されてこのボタンが作り直されるので、箱を閉じたら新しいボタンへ戻す
+		const soundFocus = new ParadisSectionFocusCarrier(container);
 		this._renderDisposables.add(dom.addDisposableListener(youtubeBtn, 'click', () => {
-			this.instantiationService.invokeFunction(accessor => openParadisYouTubeImportDialog(accessor, () => this._renderNotificationsSections()));
+			this.instantiationService.invokeFunction(accessor => openParadisYouTubeImportDialog(accessor, () => this._renderNotificationsSections(), () => soundFocus.find('youtube')));
 		}));
 
 		const myinstantsBtn = paradisNotifButton(actions, 'secondary', { label: STR_FROM_MYINSTANTS });
+		paradisSetFocusKey(myinstantsBtn, 'myinstants');
 		this._renderDisposables.add(dom.addDisposableListener(myinstantsBtn, 'click', () => {
 			this._stopPreview();
 			// ファイルからの追加と同じく、取り込んだ音をそのまま選ぶ。
@@ -830,7 +835,7 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 				if (!this._store.isDisposed) {
 					this._renderNotificationsSections();
 				}
-			}));
+			}, () => soundFocus.find('myinstants')));
 		}));
 
 		// --- 着信音カード（2列グリッド） ---
