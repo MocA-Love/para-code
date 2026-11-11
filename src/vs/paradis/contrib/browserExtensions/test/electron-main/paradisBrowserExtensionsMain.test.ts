@@ -729,6 +729,24 @@ suite('ParadisBrowserExtensionsMain', () => {
 		});
 	});
 
+	test('unloads the extensions of a deleted profile and does not load them there again', async () => {
+		const manager = new ParadisBrowserExtensionsManager(root, () => true, silentLog);
+		const profileSession = new FakeSession(join(root, 'profile'));
+		const defaultSession = new FakeSession(join(root, 'default'));
+		await manager.attach(profileSession, owner(BrowserViewStorageScope.Profile, `profile:${PROFILE_ID}`));
+		await manager.attach(defaultSession, owner(BrowserViewStorageScope.Global));
+		await writeExtension(join(root, 'source'), { manifest_version: 3, name: 'Sample', version: '1.0' });
+		const added = await manager.addUnpacked(join(root, 'source'), `profile:${PROFILE_ID}`);
+		assert.ok(added.ok);
+		await manager.setEnabled(added.extension.id, PARADIS_DEFAULT_EXTENSION_PROFILE, true);
+		const before = profileSession.ids();
+		manager.forgetPlace(`profile:${PROFILE_ID}`);
+		// 消した後に、その場所で有効にし直されても（ほかの窓から）、消したプロファイルのセッションには入れない
+		await manager.setEnabled(added.extension.id, `profile:${PROFILE_ID}`, true);
+		assert.deepStrictEqual({ before, after: profileSession.ids(), otherPlace: defaultSession.ids() }, { before: [added.extension.id], after: [], otherPlace: [added.extension.id] });
+		manager.dispose();
+	});
+
 	test('loads an extension once when a new session and enabling it overlap', async () => {
 		const manager = new ParadisBrowserExtensionsManager(root, () => true, silentLog);
 		await writeExtension(join(root, 'source'), { manifest_version: 3, name: 'Sample', version: '1.0' });

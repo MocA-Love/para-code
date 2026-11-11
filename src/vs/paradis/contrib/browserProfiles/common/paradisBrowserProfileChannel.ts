@@ -53,8 +53,11 @@ export interface IParadisBrowserProfileStats {
 export interface IParadisBrowserProfilesMainService {
 	/** ビューIDに紐付く実際のセッションの素性（そのビューが無ければ undefined）。 */
 	resolveViewSession(viewId: string): Promise<IParadisViewSessionInfo | undefined>;
-	/** そのプロファイルの Cookie / ストレージを丸ごと消す（プロファイル削除時）。 */
-	clearProfileData(profileId: string): Promise<void>;
+	/**
+	 * そのプロファイルの Cookie / ストレージを丸ごと消す（プロファイル削除時）。`deleted` はプロファイルそのものを消したとき
+	 * （データだけ消すときは付けない）。付けると、そのプロファイルのセッションから Chrome 拡張機能も外す。
+	 */
+	clearProfileData(profileId: string, deleted?: boolean): Promise<void>;
 	/** 管理モーダルに出す統計。取得できない項目は undefined。 */
 	getProfileStats(profileId: string): Promise<IParadisBrowserProfileStats>;
 }

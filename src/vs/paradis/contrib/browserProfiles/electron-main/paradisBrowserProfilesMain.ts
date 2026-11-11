@@ -26,9 +26,10 @@ import { IApplicationStorageMainService } from '../../../../platform/storage/ele
 import { StorageScope } from '../../../../platform/storage/common/storage.js';
 import { BrowserViewStorageScope } from '../../../../platform/browserView/common/browserView.js';
 import { paradisDeserializeProfiles, PARADIS_BROWSER_PROFILES_STORAGE_KEY } from '../common/paradisBrowserProfileModel.js';
-import { PARADIS_DEFAULT_EXTENSION_PROFILE } from '../../browserExtensions/common/paradisBrowserExtensions.js';
+import { PARADIS_DEFAULT_EXTENSION_PROFILE, paradisUsesGlobalBrowserSession } from '../../browserExtensions/common/paradisBrowserExtensions.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { paradisRegisterBrowserLoginImport } from './paradisBrowserLoginImportMain.js';
-import { paradisRegisterBrowserExtensions } from '../../browserExtensions/electron-main/paradisBrowserExtensionsMain.js';
+import { paradisForgetBrowserExtensionPlace, paradisRegisterBrowserExtensions } from '../../browserExtensions/electron-main/paradisBrowserExtensionsMain.js';
 import { paradisCreateBrowserExtensionActionPopup, paradisCreateBrowserExtensionInstallPrompt, paradisCreateBrowserExtensionNotification, paradisCreateBrowserExtensionPermissionPrompt, paradisCreateBrowserExtensionPopout, paradisCreateBrowserExtensionRemovePrompt, paradisCreateBrowserExtensionUpdatePrompt, paradisCreateBrowserExtensionSavePathChooser, paradisCreateBrowserExtensionTabEnvironment, paradisWorkAreaFor } from '../../browserExtensions/electron-main/paradisBrowserExtensionTabEnvironment.js';
 import { IDialogMainService } from '../../../../platform/dialogs/electron-main/dialogMainService.js';
 import { paradisRenameDownloadInPlace } from '../../browserDownloads/electron-main/paradisBrowserDownloadsCore.js';
@@ -45,6 +46,12 @@ import {
 	paradisProfileIdFromSessionId,
 	PARADIS_BROWSER_PROFILE_SCOPE,
 } from '../common/paradisBrowserProfileId.js';
+
+/**
+ * Chrome 拡張機能のために、タブより先に作ったセッション（場所 → セッション）。タブが無くても手放さない（手放すと configure が
+ * 二度走りうる）。プロファイルを消したら外す。
+ */
+const sessionsForExtensions = new Map<string, BrowserSession>();
 
 /** app.ts から渡される channel の登録先（IPCServer をそのまま受けるための最小面）。 */
 export interface IParadisBrowserProfileChannelHost {
@@ -89,10 +96,16 @@ export class ParadisBrowserProfilesMainService implements IParadisBrowserProfile
 	 * 直接消す: そのIDは削除後に再利用されない（IDは作成のたびに新しく生成される）ので、
 	 * 残る記録は孤児になるだけで別のプロファイルへ現れることはない。
 	 */
-	async clearProfileData(profileId: string): Promise<void> {
+	async clearProfileData(profileId: string, deleted?: boolean): Promise<void> {
 		const partition = this._partition(profileId);
 		if (!partition) {
 			return;
+		}
+		// プロファイルそのものを消したときは、先にそのセッションから Chrome 拡張機能を外す（worker を止める）。残すと、
+		// 拡張機能を先に作ったセッションで、消したパーティションへ書き戻し続ける
+		if (deleted === true) {
+			paradisForgetBrowserExtensionPlace(partition.sessionId);
+			sessionsForExtensions.delete(partition.sessionId);
 		}
 
 		// **消す前に、そのプロファイルを使っているビューを全ウィンドウ分落とす。**
@@ -170,8 +183,7 @@ export function paradisRegisterBrowserProfiles(
 		const dialogMainService = accessor.get(IDialogMainService);
 		const applicationStorageMainService = accessor.get(IApplicationStorageMainService) as unknown as IApplicationStorageMainService;
 		const workspaceStorageHome = accessor.get(IEnvironmentMainService).workspaceStorageHome;
-		// 拡張機能のために、タブより先に作ったセッション（タブが無くても手放さない。手放すと configure が二度走りうる）
-		const sessionsForExtensions = new Map<string, BrowserSession>();
+		const configurationService = accessor.get(IConfigurationService);
 		/**
 		 * 拡張機能を有効にしてある場所のセッションを作る（拡張機能の main から。足した・有効にした・起動したとき）。
 		 * `getOrCreate()` は configure() を走らせるので、ここでも消したプロファイル・壊れた id では作らない。
@@ -181,7 +193,12 @@ export function paradisRegisterBrowserProfiles(
 				return;
 			}
 			if (place === PARADIS_DEFAULT_EXTENSION_PROFILE) {
-				sessionsForExtensions.set(place, BrowserSession.getOrCreateGlobal(instantiationService));
+				// 通常のタブが Workspace のセッションを使う人（SSH の窓・設定が workspace）には、使わない Global を作らない
+				// （その人の拡張機能は、タブを開いたときにそのセッションへ入る）
+				const hasRemoteWindow = windowsMainService.getWindows().some(window => !!window.remoteAuthority);
+				if (paradisUsesGlobalBrowserSession(configurationService.getValue('workbench.browser.dataStorage'), hasRemoteWindow)) {
+					sessionsForExtensions.set(place, BrowserSession.getOrCreateGlobal(instantiationService));
+				}
 				return;
 			}
 			// 場所の `profile:<id>` は BrowserSession の id と同じ形

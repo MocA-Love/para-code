@@ -1057,8 +1057,8 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 				this._loadErrors.set(extension.id, `unexpected extension id ${loaded.id}`);
 				return;
 			}
-			// 読み込みの途中でトンネルが始まった（「SSH 先のページでも使う」がオフ）・無効にされた・削除されたときは外す
-			if (!this._wantedIn(entry, extension.id)) {
+			// 読み込みの途中でトンネルが始まった（「SSH 先のページでも使う」がオフ）・無効にされた・削除された・プロファイルが消されたときは外す
+			if (!this._wantedIn(entry, extension.id) || !this._sessions.has(entry)) {
 				entry.session.extensions.removeExtension(loaded.id);
 				return;
 			}
@@ -1752,6 +1752,19 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		}
 	}
 
+	/**
+	 * 名前付きプロファイルを消した: その場所のセッションから拡張機能を外し（worker を止める）、以後は読み込まない。プロファイルの id は
+	 * 使い回さないので、この起動の間にそのセッションへ戻ることは無い。
+	 */
+	forgetPlace(place: string): void {
+		for (const entry of [...this._sessions]) {
+			if (entry.profile === place) {
+				this._unloadAll(entry);
+				this._sessions.delete(entry);
+			}
+		}
+	}
+
 	/** 起動したとき（最初のウィンドウが開いた後）: 拡張機能を有効にしてあるすべての場所のセッションを作る。 */
 	async ensureSessionsAtStartup(): Promise<void> {
 		await this._ready;
@@ -1961,6 +1974,11 @@ export function paradisAttachBrowserExtensionSession(session: ParadisExtensionSe
 	} else if (pendingSessions.length < 1_000) {
 		pendingSessions.push({ session, owner });
 	}
+}
+
+/** 名前付きプロファイルを消した（プロファイルの main から）。その場所のセッションから拡張機能を外す。 */
+export function paradisForgetBrowserExtensionPlace(place: string): void {
+	manager?.forgetPlace(place);
 }
 
 /** main の起動で拡張機能の管理を作り、channel を立てる（paradisRegisterBrowserProfiles から）。 */
