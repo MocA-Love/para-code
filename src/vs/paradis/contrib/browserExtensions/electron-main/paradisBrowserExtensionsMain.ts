@@ -76,7 +76,10 @@ import {
 	paradisLedgerWithAllowedOnRemote,
 	paradisLedgerWithDebuggerAllowed,
 	paradisIsDebuggerAllowed,
+	paradisLedgerWithShortcuts,
+	IParadisBrowserExtensionShortcut,
 } from '../common/paradisBrowserExtensions.js';
+import { IParadisShortcut, ParadisUserShortcuts, paradisResolveExtensionShortcuts, paradisWithAssignedShortcut, paradisWithoutUserShortcut } from '../common/paradisBrowserExtensionMenus.js';
 import { PARADIS_EXTENSION_ORIGINAL_MANIFEST_FILE } from '../common/paradisBrowserExtensionApiWire.js';
 import { IParadisExtensionAccess, paradisParseWebStoreInput, paradisSameExtensionAccess, paradisSummarizeExtensionAccess } from '../common/paradisBrowserExtensionWebStore.js';
 import { ParadisWebStoreBridge } from './paradisBrowserExtensionWebStoreBridge.js';
@@ -98,7 +101,7 @@ import { ParadisBrowserExtensionSyncStore, paradisRegisterStorageApis } from './
 import { paradisBrowserExtensionContentScriptSource, paradisBrowserExtensionShimSource } from '../common/paradisBrowserExtensionShimSource.js';
 import { IParadisTabEnvironment, ParadisBrowserExtensionTabs } from './paradisBrowserExtensionTabs.js';
 import { IParadisActionsEnvironment, IParadisLoadedExtension, ParadisBrowserExtensionActions } from './paradisBrowserExtensionActions.js';
-import { ParadisBrowserExtensionMenus } from './paradisBrowserExtensionMenus.js';
+import { ParadisBrowserExtensionMenus, paradisCommandPlatform } from './paradisBrowserExtensionMenus.js';
 import { IParadisPermissionPrompt, ParadisBrowserExtensionPermissions } from './paradisBrowserExtensionPermissions.js';
 import { IParadisServicesEnvironment, ParadisBrowserExtensionServices } from './paradisBrowserExtensionServices.js';
 import { ParadisNativeMessaging } from './paradisNativeMessaging.js';
@@ -668,6 +671,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 			isAgentTab: contents => tabsOptions.environment.listViews().find(view => view.webContents === contents)?.isAgentTab() === true,
 			nameOf: extension => this._ledger.extensions.find(installed => installed.id === extension.id)?.name ?? extension.name,
 			noteUserGesture: (session, extensionId) => permissions?.noteUserGesture(session, extensionId),
+			userShortcuts: () => this._ledger.shortcuts ?? {},
 		}, join(_root, 'context-menus.json'), _logService) : undefined;
 		this._sidePanel = tabs && tabsOptions && permissions ? new ParadisBrowserExtensionSidePanel(this._apiHost, tabs, {
 			findView: viewId => tabsOptions.environment.listViews().find(view => view.id === viewId),
@@ -774,6 +778,54 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 
 	async runCommand(viewId: string, extensionId: string, name: string): Promise<IParadisActionResult> {
 		return this._menus?.runCommand(viewId, extensionId, name) ?? { ok: false, error: 'Browser extensions are off' };
+	}
+
+	/**
+	 * 入れたすべての拡張機能（先に入れた順）と manifest。読み込んである拡張機能は Chromium が訳した manifest（commands の
+	 * description の __MSG_ も訳してある）を、どこにも読み込んでいないものは写しの manifest.json を使う。
+	 */
+	private async _shortcutExtensions(read: (installed: IParadisInstalledBrowserExtension) => Promise<Record<string, unknown> | undefined> = async installed => (await this._readManifest(installed.path)).manifest): Promise<{ readonly id: string; readonly manifest: Record<string, unknown> | undefined }[]> {
+		const result: { readonly id: string; readonly manifest: Record<string, unknown> | undefined }[] = [];
+		for (const installed of paradisInstallOrder(this._ledger.extensions)) {
+			const loaded = [...this._sessions].map(entry => entry.session.extensions.getExtension(installed.id)).find(extension => !!extension);
+			result.push({ id: installed.id, manifest: loaded ? loaded.manifest as Record<string, unknown> : await read(installed) });
+		}
+		return result;
+	}
+
+	/** 利用者が付け替えたショートカットを台帳に書き、workbench にキーを取り直させる。 */
+	private async _setShortcuts(shortcuts: ParadisUserShortcuts): Promise<void> {
+		this._ledger = paradisLedgerWithShortcuts(this._ledger, shortcuts);
+		await this._save();
+		this._actions?.notifyChanged();
+	}
+
+	async assignShortcut(id: string, name: string, binding: IParadisShortcut): Promise<boolean> {
+		await this._ready;
+		if (!this.active || !paradisIsExtensionId(id) || typeof name !== 'string' || !binding || typeof binding !== 'object' || typeof binding.key !== 'string'
+			|| typeof binding.control !== 'boolean' || typeof binding.meta !== 'boolean' || typeof binding.alt !== 'boolean' || typeof binding.shift !== 'boolean') {
+			return false;
+		}
+		const next = paradisWithAssignedShortcut(this._ledger.shortcuts ?? {}, await this._shortcutExtensions(), paradisCommandPlatform(process.platform), id, name, { key: binding.key, control: binding.control, meta: binding.meta, alt: binding.alt, shift: binding.shift });
+		if (!next) {
+			return false;
+		}
+		await this._setShortcuts(next);
+		return true;
+	}
+
+	async clearShortcut(id: string, name: string): Promise<void> {
+		await this._ready;
+		if (this.active && paradisIsExtensionId(id) && typeof name === 'string' && this._ledger.extensions.some(extension => extension.id === id)) {
+			await this._setShortcuts(paradisWithoutUserShortcut(this._ledger.shortcuts ?? {}, id, name, 'clear'));
+		}
+	}
+
+	async resetShortcut(id: string, name: string): Promise<void> {
+		await this._ready;
+		if (this.active && paradisIsExtensionId(id) && typeof name === 'string') {
+			await this._setShortcuts(paradisWithoutUserShortcut(this._ledger.shortcuts ?? {}, id, name, 'reset'));
+		}
 	}
 
 	/** ツールバーが変わった（renderer へ）。 */
@@ -1139,6 +1191,8 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 				debuggerRequested.add(extension.id);
 			}
 		}
+		// ショートカット（Q619）: 入れたすべての拡張機能を先に入れた順に並べて、今効いているキーを決める
+		const shortcuts = paradisResolveExtensionShortcuts(await this._shortcutExtensions(async installed => summaries.get(installed.id)?.manifest), paradisCommandPlatform(process.platform), this._ledger.shortcuts);
 		const icons = new Map<string, string>();
 		for (const extension of this._ledger.extensions) {
 			const icon = await this._actions?.manifestIconDataUrl(extension.path, summaries.get(extension.id)?.manifest);
@@ -1165,6 +1219,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 				...(userScriptsRequested.has(extension.id) ? { userScripts: { allowedIn: this._userScripts?.allowedPlaces(extension.id) ?? [] } } : {}),
 				...(debuggerRequested.has(extension.id) ? { debuggerAccess: { allowedIn: Object.entries(this._ledger.debuggerAllowed ?? {}).filter(([, ids]) => ids.includes(extension.id)).map(([profile]) => profile) } } : {}),
 				allowedOnRemote: paradisIsAllowedOnRemote(this._ledger, extension.id),
+				commands: (shortcuts.get(extension.id) ?? []).map((command): IParadisBrowserExtensionShortcut => ({ name: command.name, description: command.description, shortcut: command.shortcut, suggested: command.suggested, source: command.source, ...(command.lostTo ? { lostTo: command.lostTo } : {}) })),
 				...(this._heldUpdates.has(extension.id) ? { pendingUpdate: { version: this._heldUpdates.get(extension.id)!.version, permissions: this._heldUpdates.get(extension.id)!.added.permissions, hostPermissions: this._heldUpdates.get(extension.id)!.added.hostPermissions } } : {}),
 			})),
 		};
@@ -2088,6 +2143,9 @@ export function paradisRegisterBrowserExtensions(
 		runActionMenuItem: (token, extensionId, key) => created.runActionMenuItem(token, extensionId, key),
 		getCommands: () => created.getCommands(),
 		runCommand: (viewId, extensionId, name) => created.runCommand(viewId, extensionId, name),
+		assignShortcut: (id, name, binding) => created.assignShortcut(id, name, binding),
+		clearShortcut: (id, name) => created.clearShortcut(id, name),
+		resetShortcut: (id, name) => created.resetShortcut(id, name),
 	};
 	channelHost.registerChannel(PARADIS_BROWSER_EXTENSIONS_CHANNEL, ProxyChannel.fromService(exposed, disposables));
 	return disposables;

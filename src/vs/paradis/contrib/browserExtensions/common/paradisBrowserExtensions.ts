@@ -8,6 +8,7 @@
 
 import type { Event } from '../../../../base/common/event.js';
 import { isRecord } from '../../../common/paradisGuards.js';
+import { IParadisShortcut, ParadisShortcutSource, ParadisUserShortcuts, paradisParseUserShortcuts } from './paradisBrowserExtensionMenus.js';
 
 // 内蔵ブラウザの Chrome 拡張機能（試験的）の、設定キー・main との通り道・台帳の形と純粋な操作。
 // 設計: リポジトリ直下の browser-extensions-design.html（Q480、P3 土台）。
@@ -113,6 +114,12 @@ export interface IParadisBrowserExtensionsLedger {
 	 * 前の版）は、どれもオフとして読む。古い版が台帳を書き直すとこの印は消え、オフに戻る（安全な側）。
 	 */
 	readonly debuggerAllowed?: Readonly<Record<string, readonly string[]>>;
+	/**
+	 * 利用者が付け替えた拡張機能のショートカット（Q619。拡張機能の id → コマンドの名前 → キー、'' は外したもの）。
+	 * 無い台帳（Q619 より前の版）は、どれもおすすめのキーのままとして読む。古い版が台帳を書き直すとこの記録は消え、
+	 * おすすめのキーに戻る。
+	 */
+	readonly shortcuts?: ParadisUserShortcuts;
 }
 
 /** 削除した拡張機能の保存データを消す印。 */
@@ -191,7 +198,8 @@ export function paradisParseExtensionsLedger(raw: unknown): IParadisBrowserExten
 		? [...new Set(raw.allowedOnRemote.filter((id): id is string => paradisIsExtensionId(id) && extensions.some(extension => extension.id === id)))]
 		: [];
 	const debuggerAllowed = byProfile(raw.debuggerAllowed);
-	return { version: 1, extensions, enabled, removed: removed.slice(-PARADIS_MAX_INSTALLED_EXTENSIONS), pinned, ...(allowedOnRemote.length > 0 ? { allowedOnRemote } : {}), ...(Object.keys(debuggerAllowed).length > 0 ? { debuggerAllowed } : {}) };
+	const shortcuts = paradisParseUserShortcuts(raw.shortcuts, new Set(extensions.map(extension => extension.id)));
+	return { version: 1, extensions, enabled, removed: removed.slice(-PARADIS_MAX_INSTALLED_EXTENSIONS), pinned, ...(allowedOnRemote.length > 0 ? { allowedOnRemote } : {}), ...(Object.keys(debuggerAllowed).length > 0 ? { debuggerAllowed } : {}), ...(Object.keys(shortcuts).length > 0 ? { shortcuts } : {}) };
 }
 
 /**
@@ -264,6 +272,13 @@ export function paradisIsDebuggerAllowed(ledger: IParadisBrowserExtensionsLedger
 	return ledger.debuggerAllowed?.[profile]?.includes(id) === true;
 }
 
+/** 利用者が付け替えたショートカットを置き換える（Q619。台帳に無い拡張機能の分は捨てる）。 */
+export function paradisLedgerWithShortcuts(ledger: IParadisBrowserExtensionsLedger, shortcuts: ParadisUserShortcuts): IParadisBrowserExtensionsLedger {
+	const kept = paradisParseUserShortcuts(shortcuts, new Set(ledger.extensions.map(extension => extension.id)));
+	const { shortcuts: _previous, ...rest } = ledger;
+	return Object.keys(kept).length > 0 ? { ...rest, shortcuts: kept } : rest;
+}
+
 /** プロファイルでピン留めした拡張機能の id（ピン留めした順）。 */
 export function paradisPinnedExtensionIds(ledger: IParadisBrowserExtensionsLedger, profile: string): readonly string[] {
 	return ledger.pinned[profile] ?? [];
@@ -283,6 +298,7 @@ export function paradisLedgerWithoutExtension(ledger: IParadisBrowserExtensionsL
 	};
 	const enabled = without(ledger.enabled);
 	const allowedOnRemote = (ledger.allowedOnRemote ?? []).filter(existing => existing !== id);
+	const { [id]: _removedShortcuts, ...shortcuts } = ledger.shortcuts ?? {};
 	return {
 		version: 1,
 		extensions: ledger.extensions.filter(extension => extension.id !== id),
@@ -290,6 +306,7 @@ export function paradisLedgerWithoutExtension(ledger: IParadisBrowserExtensionsL
 		pinned: without(ledger.pinned),
 		...(allowedOnRemote.length > 0 ? { allowedOnRemote } : {}),
 		...(ledger.debuggerAllowed ? { debuggerAllowed: without(ledger.debuggerAllowed) } : {}),
+		...(Object.keys(shortcuts).length > 0 ? { shortcuts } : {}),
 		// 消し終えた保存先も数え直す（入れ直した後に溜まったデータがあるかもしれないため）
 		removed: [...ledger.removed.filter(existing => existing.id !== id), { id, cleared: [] }].slice(-PARADIS_MAX_INSTALLED_EXTENSIONS),
 	};
@@ -446,6 +463,21 @@ export interface IParadisBrowserExtensionView extends IParadisInstalledBrowserEx
 	readonly allowedOnRemote: boolean;
 	/** 新しく権限を求めるため、確かめるまで入れずに保留にしているストアの更新。 */
 	readonly pendingUpdate?: { readonly version: string; readonly permissions: readonly string[]; readonly hostPermissions: readonly string[] };
+	/** manifest の commands と、今効いているキー（Q619。入れたすべての拡張機能を先に入れた順に並べて決めたもの）。 */
+	readonly commands?: readonly IParadisBrowserExtensionShortcut[];
+}
+
+/** 管理画面に出す、拡張機能のショートカット 1 つ（Q619）。 */
+export interface IParadisBrowserExtensionShortcut {
+	readonly name: string;
+	readonly description: string;
+	/** 今効いているキー（見せ方。無ければ ''）。 */
+	readonly shortcut: string;
+	/** 拡張機能のおすすめのキー（見せ方。無ければ ''）。 */
+	readonly suggested: string;
+	readonly source: ParadisShortcutSource;
+	/** おすすめのキーをほかのコマンドが使っているとき: そのコマンド。 */
+	readonly lostTo?: { readonly extensionId: string; readonly name: string };
 }
 
 /** あるページのセッションに今入っている、利用者が入れた拡張機能。 */
@@ -598,6 +630,12 @@ export interface IParadisBrowserExtensionsMainService {
 	getCommands(): Promise<readonly IParadisBrowserExtensionCommand[]>;
 	/** 利用者がそのタブでショートカットを押した（_execute_action 以外）。 */
 	runCommand(viewId: string, extensionId: string, name: string): Promise<IParadisActionResult>;
+	/** ショートカットにキーを付ける（Q619）。ほかのコマンドが使っていたキーなら、そちらからは外す。付けられなければ false。 */
+	assignShortcut(id: string, name: string, binding: IParadisShortcut): Promise<boolean>;
+	/** ショートカットのキーを外す（Q619）。 */
+	clearShortcut(id: string, name: string): Promise<void>;
+	/** ショートカットを拡張機能のおすすめのキーに戻す（Q619。ほかのコマンドが使っていれば空のまま）。 */
+	resetShortcut(id: string, name: string): Promise<void>;
 }
 
 /** ツールバーのボタンの右クリックの、拡張機能の項目。 */

@@ -36,6 +36,7 @@ import {
 	paradisArrangeExtensionMenu,
 	paradisCreateMenuItem,
 	paradisFindMenuItemByKey,
+	paradisFormatShortcut,
 	paradisIsMenuItemId,
 	paradisMenuClickData,
 	paradisMenuItemProperties,
@@ -43,6 +44,8 @@ import {
 	paradisParseStoredMenuItems,
 	paradisAssignExtensionCommands,
 	paradisReadExtensionCommands,
+	paradisUserShortcutOf,
+	ParadisUserShortcuts,
 	paradisRemoveMenuItem,
 	paradisUpdateMenuItem,
 	paradisVisibleMenuTree,
@@ -68,6 +71,8 @@ export interface IParadisMenusEnvironment {
 	noteUserGesture?(session: ParadisApiSession, extensionId: string): void;
 	/** その WebContents がエージェントのタブか（タブでない・分からなければ false）。 */
 	isAgentTab?(contents: WebContents): boolean;
+	/** 利用者が付け替えたショートカット（Q619。台帳が持つ。無ければどれもおすすめのキー）。 */
+	userShortcuts?(): ParadisUserShortcuts;
 }
 
 /** 開いた右クリックのメニュー（押すまでの間、main に持つ）。 */
@@ -351,29 +356,40 @@ export class ParadisBrowserExtensionMenus implements IDisposable {
 	/** その場所の拡張機能（先に入れた順）の中で、`extension` に割り当たったコマンド。 */
 	private _commandsOf(loaded: readonly IParadisLoadedExtension[], extension: IParadisApiExtension): IParadisExtensionCommand[] {
 		const extensions = loaded.some(candidate => candidate.id === extension.id) ? loaded : [...loaded, extension];
-		return paradisAssignExtensionCommands(extensions, paradisCommandPlatform(this._platform)).get(extension.id) ?? [];
+		return paradisAssignExtensionCommands(extensions, paradisCommandPlatform(this._platform), this._environment.userShortcuts?.()).get(extension.id) ?? [];
 	}
 
 	/**
 	 * 拡張機能のショートカット（workbench がページから届いたキーと比べる）。割り当ての無いものは除く。
-	 * workbench がページのキーと照らす一覧（先に入れた順）。workbench はそのタブに入っている拡張機能のうち、一覧の先にあるものに
-	 * 渡すので、同じキーなら先に入れた方が取る（Chrome と同じ。場所ごとに入っているものが違っても、そのタブの中で決まる）。
+	 * workbench がページのキーと照らす一覧。workbench はそのタブに入っている拡張機能のうち、一覧の先にあるものに渡す。
+	 * 先に利用者が付けたキー（Q619）を、その後におすすめのキーを、それぞれ先に入れた順に並べるので、同じキーなら利用者が
+	 * 付けた方、次に先に入れた方が取る（Chrome と同じ。場所ごとに入っているものが違っても、そのタブの中で決まる）。
+	 * 利用者が付け替えた・外したコマンドの、おすすめのキーは並べない。
 	 */
 	getCommands(): IParadisBrowserExtensionCommand[] {
+		const platform = paradisCommandPlatform(this._platform);
+		const userShortcuts = this._environment.userShortcuts?.();
 		const seen = new Set<string>();
-		const commands: IParadisBrowserExtensionCommand[] = [];
+		const byUser: IParadisBrowserExtensionCommand[] = [];
+		const suggested: IParadisBrowserExtensionCommand[] = [];
 		for (const extension of this._environment.allLoaded()) {
 			if (seen.has(extension.id)) {
 				continue;
 			}
 			seen.add(extension.id);
-			for (const command of paradisReadExtensionCommands(extension.manifest, paradisCommandPlatform(this._platform))) {
-				if (command.binding) {
-					commands.push({ extensionId: extension.id, extensionName: this._environment.nameOf(extension), name: command.name, description: command.description, shortcut: command.shortcut, binding: command.binding });
+			const extensionName = this._environment.nameOf(extension);
+			for (const command of paradisReadExtensionCommands(extension.manifest, platform)) {
+				const user = paradisUserShortcutOf(userShortcuts, extension.id, command.name, platform);
+				if (user) {
+					if (user.binding) {
+						byUser.push({ extensionId: extension.id, extensionName, name: command.name, description: command.description, shortcut: paradisFormatShortcut(user.binding, platform), binding: user.binding });
+					}
+				} else if (command.binding) {
+					suggested.push({ extensionId: extension.id, extensionName, name: command.name, description: command.description, shortcut: command.shortcut, binding: command.binding });
 				}
 			}
 		}
-		return commands;
+		return [...byUser, ...suggested];
 	}
 
 	/**
