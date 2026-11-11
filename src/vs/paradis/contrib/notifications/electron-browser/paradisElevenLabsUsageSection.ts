@@ -27,6 +27,7 @@ import { ParadisAivisRenderGeneration } from './paradisAivisApiCache.js';
 import { paradisElevenLabsModelCache } from './paradisElevenLabsApiCache.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
 import { ParadisRequestCache } from '../common/paradisVoiceUsage.js';
+import { ParadisSegmented } from '../../../browser/paradisSegmented.js';
 
 const $ = dom.$;
 
@@ -36,6 +37,7 @@ const STR_TITLE = localize('paradis.notif.elevenlabsUsage.title', "使用量 (�
 const STR_DESC = localize('paradis.notif.elevenlabsUsage.desc', "ElevenLabs で読み上げた文字数を日別に集計し、プランの上限と残りを出します。日付は UTC で区切ります。");
 // allow-any-unicode-next-line
 const STR_7DAYS = localize('paradis.notif.elevenlabsUsage.7days', "7日");
+const STR_PERIOD_ARIA = localize('paradis.notif.elevenlabsUsage.periodAria', "期間");
 // allow-any-unicode-next-line
 const STR_30DAYS = localize('paradis.notif.elevenlabsUsage.30days', "30日");
 // allow-any-unicode-next-line
@@ -120,14 +122,13 @@ export class ParadisElevenLabsUsageSection extends Disposable {
 		const titles = dom.append(header, $('.sr-main'));
 		dom.append(titles, $('.pns-section-title')).textContent = STR_TITLE;
 		dom.append(titles, $('.pns-section-desc')).textContent = STR_DESC;
-		const periodGroup = dom.append(header, $('.pns-engine-switch'));
-		const btn7 = dom.append(periodGroup, $('button.pns-btn')) as HTMLButtonElement;
-		btn7.textContent = STR_7DAYS;
-		const btn30 = dom.append(periodGroup, $('button.pns-btn')) as HTMLButtonElement;
-		btn30.textContent = STR_30DAYS;
-		(this._period === '7' ? btn7 : btn30).classList.add('pns-btn-primary');
-		this._renderDisposables.add(dom.addDisposableListener(btn7, 'click', () => { this._period = '7'; this._render(); }));
-		this._renderDisposables.add(dom.addDisposableListener(btn30, 'click', () => { this._period = '30'; this._render(); }));
+		const period = this._renderDisposables.add(new ParadisSegmented<Period>(header, {
+			ariaLabel: STR_PERIOD_ARIA,
+			value: this._period,
+			items: [{ value: '7', label: STR_7DAYS }, { value: '30', label: STR_30DAYS }],
+		}));
+		period.element.classList.add('pns-seg');
+		this._renderDisposables.add(period.onDidChange(value => { this._period = value; this._render(); }));
 
 		const apiKey = settings.elevenLabsApiKey;
 		if (!apiKey) {
@@ -199,7 +200,7 @@ export class ParadisElevenLabsUsageSection extends Disposable {
 			bar.title = `${day.date}: ${strChars(day.characterCount.toLocaleString())}`;
 		}
 
-		const table = dom.append(container, $('table.pns-usage-table'));
+		const table = dom.append(dom.append(container, $('.pns-table-scroll')), $('table.pns-usage-table'));
 		const headRow = dom.append(dom.append(table, $('thead')), $('tr'));
 		for (const label of [STR_COL_DATE, STR_COL_CHARS]) {
 			dom.append(headRow, $('th')).textContent = label;
