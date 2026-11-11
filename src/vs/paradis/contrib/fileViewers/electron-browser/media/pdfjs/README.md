@@ -22,5 +22,7 @@ cp package/LICENSE .
 ```
 
 更新時はこの README のバージョン表記も更新すること。
+workbench の画面（中央のパレットのプレビュー、`src/vs/paradis/contrib/crossJump/browser/paradisPalettePreviewMedia.ts`・`paradisPalettePdfPreview.ts`）も同じ `pdf.min.mjs`・`pdf.worker.min.mjs` を直接 import するので、更新時はそちらの描画も確かめること。
+
 ビルド同梱は `build/next/index.ts` の `desktopResourcePatterns`（実リリース経路）と
 `build/gulpfile.vscode.ts` の `vscodeResourceIncludes` の両方に glob 登録済み。

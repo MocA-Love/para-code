@@ -81,6 +81,7 @@ import { paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-br
 import { PARADIS_PALETTE_PREVIEW_SETTING } from '../browser/paradisPaletteConfiguration.js';
 import { IParadisPaletteKindsState, ParadisPaletteKindsBar, paradisPaletteKindLabel } from '../browser/paradisPaletteKinds.js';
 import { paradisCanPreviewEditor, ParadisPalettePreviewModel, paradisPalettePreviewState } from '../browser/paradisPalettePreview.js';
+import { paradisPalettePreviewMedia } from '../browser/paradisPalettePreviewMedia.js';
 import { IParadisPalettePreviewItem, PARADIS_COMMANDS_PICKER_CONTEXT_KEY, PARADIS_CROSS_JUMP_CONTEXT_KEY, PARADIS_PALETTE_TOGGLE_PREVIEW_COMMAND_ID } from './paradisPalettePreview.contribution.js';
 import {
 	IParadisPaletteRecent,
@@ -124,8 +125,9 @@ const ParadisPaletteKindsVisibleContext = new RawContextKey<boolean>('paradisPal
 const ParadisCrossJumpInputEmptyContext = new RawContextKey<boolean>('paradisCrossJumpInputEmpty', false, localize('paradis.crossJump.inputEmpty', "横断ジャンプの入力欄が空かどうか"));
 
 /**
- * 中身がテキストでないビューアのタブ（Office＝Excel・Word とその比較、画像、PDF、ターミナル、内蔵ブラウザ、シミュレータ）。
+ * 中身がテキストでないビューアのタブ（Office＝Excel・Word とその比較、ターミナル、内蔵ブラウザ、シミュレータ）。
  * プレビューの面では先頭を読まずに「プレビューできません」にする。ほかのタブは読めれば読み、バイナリは NUL の判定で弾く。
+ * 画像と PDF のタブは描く（paradisPalettePreviewMedia で種類を決める）。
  */
 const NOT_TEXT_EDITOR_TYPE_IDS: ReadonlySet<string> = new Set([
 	PARADIS_SPREADSHEET_INPUT_TYPE_ID,
@@ -133,8 +135,6 @@ const NOT_TEXT_EDITOR_TYPE_IDS: ReadonlySet<string> = new Set([
 	PARADIS_DOCX_INPUT_TYPE_ID,
 	PARADIS_DOCX_DIFF_INPUT_TYPE_ID,
 	PARADIS_OFFICE_BROWSER_INPUT_TYPE_ID,
-	PARADIS_IMAGE_INPUT_TYPE_ID,
-	PARADIS_PDF_INPUT_TYPE_ID,
 	TerminalEditorInput.ID,
 	BrowserEditorInput.ID,
 	PARADIS_SIMULATOR_INPUT_TYPE_ID,
@@ -531,6 +531,10 @@ class ParadisCrossJumpSession extends Disposable {
 		// 文字が欠けてアイコンが縦にずれる（paracode-183〜185 の崩れ）。
 		const icon = identifier.editor.getIcon();
 		const iconResource = EditorResourceAccessor.getOriginalUri(identifier.editor, { supportSideBySide: SideBySideEditor.PRIMARY });
+		const typeId = identifier.editor.typeId;
+		// 画像・PDF は描き、HTML は描画とソースを切り替える。画像・PDF はファイルの読み手が要る（開いている文書は使わない）
+		const media = iconResource && paradisPalettePreviewMedia(typeId, iconResource, { image: PARADIS_IMAGE_INPUT_TYPE_ID, pdf: PARADIS_PDF_INPUT_TYPE_ID });
+		const readable = !!iconResource && (this.fileService.hasProvider(iconResource) || (media !== 'image' && media !== 'pdf' && !!this.modelService.getModel(iconResource)));
 		return {
 			kind: 'editor',
 			identifier,
@@ -546,7 +550,8 @@ class ParadisCrossJumpSession extends Disposable {
 				// 中身がテキストでないビューアのタブだけ「プレビューできません」。差分は modified の側（PRIMARY）を読む。
 				// 読めるのは、ファイルの読み手がある（ローカル・SSH・git の旧版など）か、開いている文書（untitled）があるもの。
 				// テキストでも先頭に NUL があれば「プレビューできません」（paradisPalettePreview.ts）
-				resource: iconResource && paradisCanPreviewEditor(identifier.editor.typeId, NOT_TEXT_EDITOR_TYPE_IDS, this.fileService.hasProvider(iconResource) || !!this.modelService.getModel(iconResource)) ? iconResource : undefined,
+				resource: iconResource && paradisCanPreviewEditor(typeId, NOT_TEXT_EDITOR_TYPE_IDS, readable) ? iconResource : undefined,
+				media,
 			},
 			iconClasses: getIconClasses(this.modelService, this.languageService, iconResource, undefined, icon).concat(identifier.editor.getLabelExtraClasses()),
 			buttons: [
