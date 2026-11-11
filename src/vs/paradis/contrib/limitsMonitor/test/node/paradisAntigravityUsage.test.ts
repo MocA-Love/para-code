@@ -88,21 +88,27 @@ suite('Paradis Antigravity usage fetcher', () => {
 		});
 	});
 
-	test('asks to sign in and waits until the sign-in changes or ten minutes pass', async () => {
+	test('asks to sign in and does not start agy again until the sign-in changes or the user refreshes', async () => {
 		const h = harness();
 		h.next = { stdout: '', stderr: PARADIS_ANTIGRAVITY_SIGNED_OUT_STDERR, exitCode: null, stopped: true };
 		const signedOut = await h.fetcher.fetch(false);
-		h.now += 6 * MINUTE;
+		// 時間がたっても取り直さない
+		h.now += 24 * 60 * MINUTE;
 		await h.fetcher.fetch(false);
 		const runsWhileWaiting = h.runs.length;
+		// 手動の更新では取り直す
+		await h.fetcher.fetch(true);
+		const runsAfterRefresh = h.runs.length;
+		h.now += 6 * MINUTE;
 		h.stamp = 'b';
 		h.next = { stdout: PARADIS_ANTIGRAVITY_USAGE_SAMPLE, stderr: '', exitCode: 0 };
 		const afterSignIn = await h.fetcher.fetch(false);
-		assert.deepStrictEqual({ signedOut, runsWhileWaiting, afterSignIn: afterSignIn?.accounts[0].status, runs: h.runs.length }, {
+		assert.deepStrictEqual({ signedOut, runsWhileWaiting, runsAfterRefresh, afterSignIn: afterSignIn?.accounts[0].status, runs: h.runs.length }, {
 			signedOut: { accounts: [{ provider: 'antigravity', id: '/home/example/.gemini', homeLabel: '~/.gemini', active: true, status: 'relogin_required', statusDetail: 'Antigravity CLI is not signed in' }] },
 			runsWhileWaiting: 1,
+			runsAfterRefresh: 2,
 			afterSignIn: 'ok',
-			runs: 2,
+			runs: 3,
 		});
 	});
 

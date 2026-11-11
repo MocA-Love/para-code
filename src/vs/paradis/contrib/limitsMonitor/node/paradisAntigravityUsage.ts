@@ -13,7 +13,9 @@
 // 起こし方は Codex の app-server（paradisLimitsMonitorChannel.ts）と同じ抑えにする:
 // - 同じ値で足りる間（最短 5 分）は起こさず、前の結果を返す
 // - 認証以外で失敗したら 10 分は起こさない
-// - サインインしていないと答えたら、10 分たつか agy のログインの置き場所が変わるまで起こさない
+// - サインインしていないと答えたら、agy のログインの置き場所が変わるまで起こさない（時間では取り直さない。
+//   Codex と違って agy は自分では直らず、サインインしていない agy はブラウザでログインのページを開こうとする
+//   ことがある（Linux では開かないことを確かめた。macOS は未確認）ので、何度も起こさない）
 // - 同時に起こすのは1本だけ（取り直しの最中に来た要求は相乗りする）
 // - 手動の更新（bypassCache）は上の待ちを無視して取り直す
 // サインインしていない agy はログインの URL を出して入力を待ち続けるので、その文が出た時点で止める。
@@ -86,7 +88,7 @@ export class ParadisAntigravityUsageFetcher {
 	/** 最後に値が取れたアカウント（失敗したときに「前の値」として出す）。 */
 	private lastGood: IParadisLimitsAccount | undefined;
 	private failureAt: number | undefined;
-	private signedOut: { readonly at: number; readonly stamp: string | undefined } | undefined;
+	private signedOut: { readonly stamp: string | undefined } | undefined;
 	private inflight: Promise<IParadisLimitsAccount> | undefined;
 
 	constructor(
@@ -126,7 +128,7 @@ export class ParadisAntigravityUsageFetcher {
 			const recent = now - this.last.ranAt < MIN_RUN_INTERVAL_MS;
 			const inFailureCooldown = this.failureAt !== undefined && now - this.failureAt < FAILURE_COOLDOWN_MS;
 			const signedOut = this.signedOut;
-			const inSignInBackoff = signedOut !== undefined && now - signedOut.at < FAILURE_COOLDOWN_MS && signedOut.stamp === await this.signInStamp(geminiDir);
+			const inSignInBackoff = signedOut !== undefined && signedOut.stamp === await this.signInStamp(geminiDir);
 			if (recent || inFailureCooldown || inSignInBackoff) {
 				return this.last.account;
 			}
@@ -163,7 +165,7 @@ export class ParadisAntigravityUsageFetcher {
 					account = { ...base, status: 'relogin_required', statusDetail: 'Antigravity CLI is not signed in' };
 					this.failureAt = undefined;
 					// agy はログインを待つ間に自分の置き場所へ書くので、止めた後の印を覚える
-					this.signedOut = { at: this.now(), stamp: await this.signInStamp(geminiDir) };
+					this.signedOut = { stamp: await this.signInStamp(geminiDir) };
 					break;
 				case 'error':
 					account = this.failed(base, parsed.detail);
