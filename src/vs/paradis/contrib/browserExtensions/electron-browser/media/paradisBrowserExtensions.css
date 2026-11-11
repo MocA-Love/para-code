@@ -548,3 +548,187 @@
 		margin-top: 12px;
 	}
 }
+
+/* ---------- Shortcuts (Q619, plan B): the list in the nav's settings and the summary in the detail ---------- */
+
+.paradis-hub .pbe-list-row .pbpm-meta.is-warning,
+.paradis-browser-extensions-area .pbe-sc-warn-text {
+	color: var(--vscode-paradis-warning);
+}
+
+.paradis-browser-extensions-area .pbe-callout.is-warning {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	border-color: color-mix(in srgb, var(--vscode-paradis-warning) 40%, transparent);
+	color: var(--vscode-paradis-text);
+}
+
+.paradis-browser-extensions-area .pbe-callout.is-warning > .codicon,
+.paradis-browser-extensions-area .pbe-sc-warn > .codicon,
+.paradis-browser-extensions-area .pbe-sc-conflict > .codicon {
+	flex: none;
+	font-size: 14px;
+	color: var(--vscode-paradis-warning);
+}
+
+.paradis-browser-extensions-area .pbe-sc-summary {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--vscode-spacing-size120);
+	color: var(--vscode-paradis-text);
+}
+
+.paradis-browser-extensions-area .pbe-sc-page {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size120);
+}
+
+.paradis-browser-extensions-area .pbe-sc-page > .pbpm-description,
+.paradis-browser-extensions-area .pbe-sc-page > .pbe-callout {
+	margin: 0;
+}
+
+.paradis-browser-extensions-area .pbe-sc-group {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size60);
+}
+
+.paradis-browser-extensions-area .pbe-sc-head {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	min-width: 0;
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-browser-extensions-area .pbe-sc-head .pbe-icon {
+	width: 20px;
+	height: 20px;
+}
+
+.paradis-browser-extensions-area .pbe-sc-head-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-browser-extensions-area .pbe-sc-none {
+	padding-left: 28px;
+}
+
+.paradis-browser-extensions-area .pbe-sc-list {
+	display: flex;
+	flex-direction: column;
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner);
+}
+
+.paradis-browser-extensions-area .pbe-sc-row {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto auto;
+	align-items: center;
+	gap: var(--vscode-spacing-size80) var(--vscode-spacing-size120);
+	min-height: 40px;
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size120);
+}
+
+.paradis-browser-extensions-area .pbe-sc-row + .pbe-sc-row {
+	border-top: 1px solid var(--vscode-paradis-lineSubtle);
+}
+
+.paradis-browser-extensions-area .pbe-sc-main {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+}
+
+.paradis-browser-extensions-area .pbe-sc-desc {
+	color: var(--vscode-paradis-text);
+	overflow-wrap: anywhere;
+}
+
+.paradis-browser-extensions-area .pbe-sc-warn {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-warning);
+}
+
+.paradis-browser-extensions-area .pbe-sc-note,
+.paradis-browser-extensions-area .pbe-sc-unset {
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textFaint);
+}
+
+.paradis-browser-extensions-area .pbe-sc-key {
+	display: flex;
+	justify-content: flex-end;
+	min-width: 120px;
+}
+
+.paradis-browser-extensions-area .pbe-sc-keys {
+	display: inline-flex;
+	gap: 2px;
+}
+
+.paradis-browser-extensions-area .pbe-sc-keys kbd {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 20px;
+	height: 22px;
+	padding: 0 5px;
+	border: 1px solid var(--vscode-paradis-line);
+	border-radius: 4px;
+	background: var(--vscode-paradis-sunken);
+	color: var(--vscode-paradis-text);
+	font: 12px/1 var(--monaco-monospace-font);
+}
+
+.paradis-browser-extensions-area .pbe-sc-recorder {
+	display: inline-flex;
+	align-items: center;
+	height: 26px;
+	padding: 0 var(--vscode-spacing-size80);
+	border: 1px dashed var(--vscode-paradis-accent);
+	border-radius: var(--paradis-radius-control);
+	color: var(--vscode-paradis-accent);
+	font-size: var(--vscode-fontSize-label1);
+	white-space: nowrap;
+}
+
+.paradis-browser-extensions-area .pbe-sc-actions {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.paradis-browser-extensions-area .pbe-sc-slot {
+	width: 24px;
+}
+
+.paradis-browser-extensions-area .pbe-sc-conflict {
+	grid-column: 1 / -1;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size100);
+	border: 1px solid color-mix(in srgb, var(--vscode-paradis-warning) 40%, transparent);
+	border-radius: var(--paradis-radius-control);
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-text);
+}
+
+.paradis-browser-extensions-area .pbe-sc-conflict > span:not(.codicon) {
+	flex: 1 1 260px;
+	min-width: 0;
+}

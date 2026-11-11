@@ -21,6 +21,7 @@ import {
 	paradisLedgerWithExtension,
 	paradisLedgerWithoutExtension,
 	paradisLedgerWithPinned,
+	paradisLedgerWithShortcuts,
 	paradisPinnedExtensionIds,
 	paradisNeedsDataClear,
 	paradisNewTabOverrideUrl,
@@ -99,6 +100,30 @@ suite('ParadisBrowserExtensions common', () => {
 			turnedOff: turnedOff.allowedOnRemote,
 			removed: removed.allowedOnRemote,
 		}, { byDefault: [false, false], allowed: [A], reparsed: [A], older: false, turnedOff: undefined, removed: undefined });
+	});
+
+	// Q619: 利用者が付け替えたショートカット。無い台帳（前の版）でもそのまま読める
+	test('keeps the shortcuts the person changed, reads older ledgers without them, and drops them with the extension', () => {
+		let ledger = paradisLedgerWithExtension(PARADIS_EMPTY_EXTENSIONS_LEDGER, extension(A), 'default');
+		ledger = paradisLedgerWithExtension(ledger, extension(B), 'default');
+		const older = paradisParseExtensionsLedger({ version: 1, extensions: [extension(A)], enabled: {}, removed: [], pinned: {} });
+		ledger = paradisLedgerWithShortcuts(ledger, { [A]: { fill: 'Ctrl+Shift+K', lock: '' }, [B]: { open: 'Alt+O' }, ['c'.repeat(32)]: { x: 'Alt+X' } });
+		// 保存して読み直しても残る。台帳に無い id・文字でない値は捨てる
+		const reparsed = paradisParseExtensionsLedger({ ...(paradisSerializeExtensionsLedger(ledger) as object), shortcuts: { [A]: { fill: 'Ctrl+Shift+K', lock: '', bad: 3 }, ['c'.repeat(32)]: { x: 'Alt+X' }, [B]: 'broken' } });
+		const removed = paradisLedgerWithoutExtension(ledger, A);
+		assert.deepStrictEqual({
+			older: older.shortcuts,
+			saved: ledger.shortcuts,
+			reparsed: reparsed.shortcuts,
+			removed: removed.shortcuts,
+			cleared: paradisLedgerWithShortcuts(ledger, {}).shortcuts,
+		}, {
+			older: undefined,
+			saved: { [A]: { fill: 'Ctrl+Shift+K', lock: '' }, [B]: { open: 'Alt+O' } },
+			reparsed: { [A]: { fill: 'Ctrl+Shift+K', lock: '' } },
+			removed: { [B]: { open: 'Alt+O' } },
+			cleared: undefined,
+		});
 	});
 
 	test('keeps "allow debugger access" per extension and place, off by default, and drops it with the extension', () => {

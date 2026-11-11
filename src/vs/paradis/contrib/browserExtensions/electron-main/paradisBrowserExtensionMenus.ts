@@ -43,6 +43,7 @@ import {
 	paradisMenuTargetFromParams,
 	paradisParseStoredMenuItems,
 	paradisAssignExtensionCommands,
+	paradisCommandPlatform,
 	paradisReadExtensionCommands,
 	paradisUserShortcutOf,
 	ParadisUserShortcuts,
@@ -96,11 +97,6 @@ type State = Record<string, Record<string, IParadisStoredMenuItem[]>>;
 function hasPermission(extension: IParadisApiExtension, permission: string): boolean {
 	const permissions = extension.manifest.permissions;
 	return Array.isArray(permissions) && permissions.includes(permission);
-}
-
-/** process.platform を manifest の suggested_key の鍵にする。 */
-export function paradisCommandPlatform(platform: NodeJS.Platform): 'mac' | 'windows' | 'linux' {
-	return platform === 'darwin' ? 'mac' : platform === 'win32' ? 'windows' : 'linux';
 }
 
 export class ParadisBrowserExtensionMenus implements IDisposable {

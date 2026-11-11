@@ -9,6 +9,7 @@
 import assert from 'assert';
 import { mainWindow } from '../../../../../base/browser/window.js';
 import { Event } from '../../../../../base/common/event.js';
+import { isMacintosh } from '../../../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IChannel } from '../../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
@@ -18,6 +19,9 @@ import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { NullHoverService } from '../../../../../platform/hover/test/browser/nullHoverService.js';
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { IMainProcessService } from '../../../../../platform/ipc/common/mainProcessService.js';
+import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
+import { ResultKind } from '../../../../../platform/keybinding/common/keybindingResolver.js';
+import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { INativeHostService } from '../../../../../platform/native/common/native.js';
 import { IParadisAgentBrowserBindingModel } from '../../../agentBrowser/electron-browser/paradisAgentBrowserBindingModel.js';
 import { IParadisBrowserProfilesService } from '../../../browserProfiles/electron-browser/paradisBrowserProfilesService.js';
@@ -32,13 +36,16 @@ function extension(id: string, name: string): IParadisBrowserExtensionView {
 suite('ParadisBrowserExtensionsArea', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function createArea(extensions: IParadisBrowserExtensionView[]) {
+	function createArea(extensions: IParadisBrowserExtensionView[], calls: unknown[][] = []) {
 		const doc = mainWindow.document;
 		const containers = { nav: doc.body.appendChild(doc.createElement('nav')), content: doc.body.appendChild(doc.createElement('div')), header: doc.createElement('div') };
 		store.add({ dispose: () => { containers.nav.remove(); containers.content.remove(); } });
 		const state = { active: true, setting: true, extensions };
 		const channel: IChannel = {
-			call: async <T>(command: string) => (command === 'getState' ? state : command === 'getWorkerLog' ? [] : undefined) as T,
+			call: async <T>(command: string, arg?: unknown) => {
+				calls.push([command, ...(Array.isArray(arg) ? arg : [])]);
+				return (command === 'getState' ? state : command === 'getWorkerLog' ? [] : command === 'assignShortcut' ? true : undefined) as T;
+			},
 			listen: <T>() => Event.None as Event<T>,
 		};
 		const instantiationService = store.add(new TestInstantiationService());
@@ -50,6 +57,13 @@ suite('ParadisBrowserExtensionsArea', () => {
 		instantiationService.stub(IParadisAgentBrowserBindingModel, { bindings: [] } as Partial<IParadisAgentBrowserBindingModel>);
 		instantiationService.stub(IContextViewService, {});
 		instantiationService.stub(IHoverService, NullHoverService);
+		// Ctrl+Shift+P だけを Para Code のキー（コマンドパレット）とみなす
+		instantiationService.stub(IKeybindingService, {
+			softDispatch: (event: { ctrlKey: boolean; shiftKey: boolean; browserEvent: KeyboardEvent }) => event.ctrlKey && event.shiftKey && event.browserEvent.code === 'KeyP'
+				? { kind: ResultKind.KbFound, commandId: 'workbench.action.showCommands', commandArgs: undefined, isBubble: false }
+				: { kind: ResultKind.NoMatchingKb },
+		} as unknown as Partial<IKeybindingService>);
+		instantiationService.stub(IEditorService, { visibleEditorPanes: [] } as Partial<IEditorService>);
 		const host: IParadisHubHost = { close: () => { }, open: () => { } };
 		store.add(instantiationService.createInstance(ParadisBrowserExtensionsArea, containers, host));
 		return containers;
@@ -72,7 +86,7 @@ suite('ParadisBrowserExtensionsArea', () => {
 		steps.push(layout());
 		assert.deepStrictEqual(steps, [
 			{ twoColumns: true, children: ['pbe-col-main', 'pbe-col-log'], log: [true] },
-			{ twoColumns: false, children: ['pbe-detail-header', 'pbe-detail-actions', 'pbe-confirm-host', 'pbe-callout is-error', 'pbe-section', 'pbe-section'], log: [] },
+			{ twoColumns: false, children: ['pbe-detail-header', 'pbe-detail-actions', 'pbe-confirm-host', 'pbe-callout is-error', 'pbe-section', 'pbe-section', 'pbe-section'], log: [] },
 		]);
 	});
 
@@ -103,5 +117,51 @@ suite('ParadisBrowserExtensionsArea', () => {
 			'Home Alpha:true:0,-1,-1',
 			'End Gamma:true:-1,-1,0',
 		]);
+	});
+
+	// Q619: 「設定」の「ショートカット」の一覧。重なりは左の行にも出し、Para Code のキーは断り、ほかの拡張機能のキーは付け替えるか確かめる
+	// キーの見せ方は OS で違う（macOS は ⌃⇧L）ので、Ctrl で書く OS で確かめる
+	(isMacintosh ? test.skip : test)('lists the shortcuts, refuses Para Code keys and asks before taking a key from another extension', async () => {
+		const doc = mainWindow.document;
+		const calls: unknown[][] = [];
+		const containers = createArea([
+			{ ...extension('a', 'Alpha'), installedAt: 1, commands: [{ name: 'fill', description: 'Fill', shortcut: 'Ctrl+Shift+L', suggested: 'Ctrl+Shift+L', source: 'suggested' }] },
+			{ ...extension('b', 'Beta'), installedAt: 2, commands: [{ name: 'autofill', description: 'Autofill', shortcut: '', suggested: 'Ctrl+Shift+L', source: 'lost', lostTo: { extensionId: 'a', name: 'fill' } }, { name: 'lock', description: 'Lock', shortcut: '', suggested: '', source: 'none' }] },
+		], calls);
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const rowStatus = [...containers.nav.querySelectorAll('.pbe-list-row .pbpm-meta')].map(meta => meta.textContent);
+		[...containers.nav.querySelectorAll<HTMLElement>('.phub-nav-item')].find(item => item.textContent === 'ショートカット')!.click();
+		const page = () => [...containers.content.querySelectorAll('.pbe-sc-row')].map(row => [row.querySelector('.pbe-sc-desc')?.textContent, row.querySelector('.pbe-sc-keys')?.getAttribute('aria-label') ?? row.querySelector('.pbe-sc-unset, .pbe-sc-recorder')?.textContent, row.querySelector('.pbe-sc-warn')?.textContent ?? '']);
+		const listed = page();
+		const message = () => containers.content.querySelector('.pbe-message')?.textContent;
+		const press = (code: string, modifiers: KeyboardEventInit) => doc.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { code, key: code.replace(/^Key/, ''), bubbles: true, cancelable: true, ...modifiers }));
+		// Beta の lock の「キーを付ける」
+		containers.content.querySelectorAll<HTMLButtonElement>('.pbe-sc-row .pbpm-btn')[2].click();
+		const recording = page()[2];
+		press('KeyL', { shiftKey: true });
+		const noModifier = message();
+		press('KeyP', { ctrlKey: true, shiftKey: true });
+		const paraCode = message();
+		press('KeyL', { ctrlKey: true, shiftKey: true });
+		const conflict = containers.content.querySelector('.pbe-sc-conflict span:not(.codicon)')?.textContent;
+		containers.content.querySelector<HTMLButtonElement>('.pbe-sc-conflict .pbpm-btn.primary')!.click();
+		await new Promise(resolve => setTimeout(resolve, 0));
+		assert.deepStrictEqual({
+			rowStatus,
+			listed,
+			recording,
+			noModifier,
+			paraCode,
+			conflict,
+			assigned: calls.filter(call => call[0] === 'assignShortcut'),
+		}, {
+			rowStatus: ['バージョン 1.0.0', 'キーの重なり 1'],
+			listed: [['Fill', 'Ctrl+Shift+L', ''], ['Autofill', '未設定', 'Ctrl+Shift+L は Alpha が使っています'], ['Lock', '未設定', '']],
+			recording: ['Lock', 'キーを押してください（Esc でやめる）', ''],
+			noModifier: 'Ctrl・Alt のどちらかと一緒に押してください（Chrome と同じく、Shift だけではショートカットになりません）。',
+			paraCode: 'Ctrl+Shift+P は Para Code の「workbench.action.showCommands」に使われています。ページの中では Para Code が先に取るので、拡張機能には付けられません。',
+			conflict: 'Ctrl+Shift+L は Alpha の「Fill」が使っています。付け替えると、Alpha のほうは外れます。',
+			assigned: [['assignShortcut', 'b', 'lock', { key: 'L', control: true, meta: false, alt: false, shift: true }]],
+		});
 	});
 });

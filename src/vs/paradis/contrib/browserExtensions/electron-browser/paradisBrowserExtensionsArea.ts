@@ -8,14 +8,17 @@
 
 // 内蔵ブラウザの Chrome 拡張機能（試験的）の管理。統合のモーダルの「ブラウザ拡張機能」の領域（Q537 の 38）。
 // 左のナビに入れた拡張機能の一覧と追加の入口、右に選んだ 1 件の詳細（有効にする場所・この場所での設定・権限・
-// 背景の処理の状態とログ・DevTools・読み込み直す・削除。Q527 の案 B の 2 列のまま）。
+// 背景の処理の状態とログ・DevTools・読み込み直す・削除。Q527 の案 B の 2 列のまま）。左のナビの「設定」の「ショートカット」は、
+// 入れた拡張機能のショートカットをまとめて付け替える一覧（Q619 の案 B。Chrome の chrome://extensions/shortcuts に当たる）。
 
 import * as dom from '../../../../base/browser/dom.js';
+import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { IntervalTimer, RunOnceScheduler } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
+import { OS, OperatingSystem } from '../../../../base/common/platform.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize } from '../../../../nls.js';
@@ -24,6 +27,12 @@ import { IContextViewService } from '../../../../platform/contextview/browser/co
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { MenuRegistry } from '../../../../platform/actions/common/actions.js';
+import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
+import { ResultKind } from '../../../../platform/keybinding/common/keybindingResolver.js';
+import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
+import { BrowserEditor } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
+import { ParadisButton } from '../../../browser/paradisButton.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 import { IParadisHubAreaContainers, IParadisHubAreaView, IParadisHubHost, ParadisHubAreaId } from '../../paradisHub/electron-browser/paradisHub.js';
@@ -46,7 +55,9 @@ import {
 	PARADIS_MAX_EXTENSION_FILES,
 	paradisNamedExtensionProfile,
 	ParadisOpenWorkerDevToolsResult,
+	IParadisBrowserExtensionShortcut,
 } from '../common/paradisBrowserExtensions.js';
+import { IParadisShortcut, PARADIS_EXECUTE_ACTION_COMMANDS, paradisCommandPlatform, paradisShortcutFromKeyEvent } from '../common/paradisBrowserExtensionMenus.js';
 import { paradisEnabledWhileSharedWarning, paradisSharedPageTitlesInPlace } from './paradisBrowserExtensionsService.js';
 
 const $ = dom.$;
@@ -127,6 +138,54 @@ function formatLogTime(at: number): string {
 	return [date.getHours(), date.getMinutes(), date.getSeconds()].map(part => String(part).padStart(2, '0')).join(':');
 }
 
+/** この OS の suggested_key の鍵（キーの見せ方を main と合わせる）。 */
+const SHORTCUT_PLATFORM = paradisCommandPlatform(OS === OperatingSystem.Macintosh ? 'darwin' : OS === OperatingSystem.Windows ? 'win32' : 'linux');
+
+/** おすすめのキーをほかのコマンドに取られて使えないショートカットの数（Q619）。 */
+export function paradisLostShortcutCount(extension: Pick<IParadisBrowserExtensionView, 'commands'>): number {
+	return extension.commands?.filter(command => command.source === 'lost').length ?? 0;
+}
+
+/** そのキーを今使っている、ほかのコマンド（Q619。無ければ undefined）。 */
+export function paradisShortcutOwner(extensions: readonly Pick<IParadisBrowserExtensionView, 'id' | 'name' | 'commands'>[], shortcut: string, extensionId: string, name: string): { readonly extension: Pick<IParadisBrowserExtensionView, 'id' | 'name'>; readonly command: IParadisBrowserExtensionShortcut } | undefined {
+	for (const extension of extensions) {
+		const command = extension.commands?.find(candidate => candidate.shortcut === shortcut && !(extension.id === extensionId && candidate.name === name));
+		if (command) {
+			return { extension, command };
+		}
+	}
+	return undefined;
+}
+
+/** キーの見せ方を、キー 1 つずつの札に分ける（macOS は「⇧⌘L」、ほかは「Ctrl+Shift+L」）。 */
+export function paradisShortcutKeyParts(shortcut: string): string[] {
+	if (shortcut.includes('+')) {
+		return shortcut.split('+');
+	}
+	const match = /^(?<modifiers>[⌃⌥⇧⌘]*)(?<key>.*)$/u.exec(shortcut);
+	return [...(match?.groups?.modifiers ?? ''), match?.groups?.key ?? ''].filter(Boolean);
+}
+
+/** ショートカットの一覧に出す、コマンドの名前。 */
+function describeCommand(command: IParadisBrowserExtensionShortcut): string {
+	if (PARADIS_EXECUTE_ACTION_COMMANDS.has(command.name)) {
+		return command.description
+			? localize('paradis.browserExtensions.shortcuts.executeActionNamed', "{0}（ツールバーのボタンを押すのと同じ）", command.description)
+			: localize('paradis.browserExtensions.shortcuts.executeAction', "ツールバーのボタンを押す");
+	}
+	return command.description || command.name;
+}
+
+/** 付けようとしたキーが、ほかのコマンドのものだった（付け替えるか確かめる）。 */
+interface IPendingShortcut {
+	readonly extensionId: string;
+	readonly name: string;
+	readonly binding: IParadisShortcut;
+	readonly shortcut: string;
+	readonly ownerName: string;
+	readonly ownerCommand: string;
+}
+
 /** 拡張機能ごとの切り替え（「SSH 先のページでも使う」など）。詳細の列の「この場所での設定」に並べる。 */
 interface IExtensionOption {
 	readonly label: string;
@@ -170,6 +229,14 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 	/** 詳細の列に出している拡張機能。 */
 	private _selectedId: string | undefined;
 	private _busy = false;
+	/** 右に出しているもの: 選んだ拡張機能の詳細か、ショートカットの一覧（Q619）。 */
+	private _view: 'detail' | 'shortcuts' = 'detail';
+	private readonly _shortcutsItem: { readonly element: HTMLElement; setActive(active: boolean): void };
+	/** キーを押すのを待っているコマンド。 */
+	private _recording: { readonly extensionId: string; readonly name: string } | undefined;
+	/** 付け替えるか確かめているキー。 */
+	private _pending: IPendingShortcut | undefined;
+	private readonly _contentElement: HTMLElement;
 
 	constructor(
 		containers: IParadisHubAreaContainers,
@@ -182,6 +249,8 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		@IParadisAgentBrowserBindingModel private readonly bindingModel: IParadisAgentBrowserBindingModel,
 		@IContextViewService contextViewService: IContextViewService,
 		@IHoverService private readonly hoverService: IHoverService,
+		@IKeybindingService private readonly keybindingService: IKeybindingService,
+		@IEditorService private readonly editorService: IEditorService,
 	) {
 		super();
 		this._mainService = ProxyChannel.toService<IParadisBrowserExtensionsMainService>(mainProcessService.getChannel(PARADIS_BROWSER_EXTENSIONS_CHANNEL));
@@ -204,10 +273,13 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 			}
 		}));
 		paradisHubNavCaption(nav, localize('paradis.browserExtensions.settingsCaption', "設定"));
+		this._shortcutsItem = paradisHubNavItem(nav, localize('paradis.browserExtensions.shortcutsLink', "ショートカット"), { icon: Codicon.keyboard });
+		this._register(dom.addDisposableListener(this._shortcutsItem.element, dom.EventType.CLICK, () => this._showShortcuts()));
 		const settingsItem = paradisHubNavItem(nav, localize('paradis.browserExtensions.settingsLink', "内蔵ブラウザ・拡張機能"), { icon: Codicon.settingsGear, external: true });
 		this._register(dom.addDisposableListener(settingsItem.element, dom.EventType.CLICK, () => this.host.open(ParadisHubAreaId.Settings, 'psd-sec-browser')));
 
 		// ---------- 右の本文: 説明・お知らせ・有効にする場所・ストアから追加・メッセージ・詳細 ----------
+		this._contentElement = containers.content;
 		containers.content.classList.add('paradis-browser-extensions-area');
 		const body = dom.append(containers.content, $('.pbe-area-body'));
 		dom.append(body, $('p.pbpm-description')).textContent = localize(
@@ -255,10 +327,22 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 	}
 
 	reveal(extensionId: string | undefined): void {
-		if (extensionId && this._state?.extensions.some(extension => extension.id === extensionId) && this._selectedId !== extensionId) {
+		if (extensionId && this._state?.extensions.some(extension => extension.id === extensionId) && (this._selectedId !== extensionId || this._view !== 'detail')) {
 			this._selectedId = extensionId;
+			this._view = 'detail';
 			this._render();
 		}
+	}
+
+	handleEscape(): boolean {
+		// キーを待っている・付け替えを確かめているときの Esc はそれをやめる（モーダルは閉じない）
+		if (this._recording || this._pending) {
+			this._recording = undefined;
+			this._pending = undefined;
+			this._render();
+			return true;
+		}
+		return false;
 	}
 
 	setVisible(visible: boolean): void {
@@ -371,6 +455,11 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		for (const extension of state.extensions) {
 			this._renderListRow(extension, state.active);
 		}
+		this._shortcutsItem.setActive(this._view === 'shortcuts');
+		if (this._view === 'shortcuts') {
+			this._renderShortcuts(state);
+			return;
+		}
 		const selected = state.extensions.find(extension => extension.id === this._selectedId);
 		if (selected) {
 			this._renderDetail(selected, state.active);
@@ -392,9 +481,10 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 	private _renderListRow(extension: IParadisBrowserExtensionView, active: boolean): void {
 		const selected = extension.id === this._selectedId;
 		const row = dom.append(this._listElement, $('.phub-nav-item.pbe-list-row.paradis-focus-subtle'));
-		row.classList.toggle('is-selected', selected);
+		// ショートカットの一覧を出している間は、どの行も選んでいる見た目にしない（Tab で止まる行は残す）
+		row.classList.toggle('is-selected', selected && this._view === 'detail');
 		row.setAttribute('role', 'option');
-		row.setAttribute('aria-selected', String(selected));
+		row.setAttribute('aria-selected', String(selected && this._view === 'detail'));
 		// Tab で止まるのは選んでいる行だけ（ほかへは上下の矢印で移る。器の paradisHubDialog.ts）
 		row.tabIndex = selected ? 0 : -1;
 		this._rowElements.set(extension.id, row);
@@ -407,8 +497,11 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		this._rowStatusElements.set(extension.id, status);
 		this._fillRowStatus(status, extension);
 		const select = () => {
-			if (this._selectedId !== extension.id) {
+			if (this._selectedId !== extension.id || this._view !== 'detail') {
 				this._selectedId = extension.id;
+				this._view = 'detail';
+				this._recording = undefined;
+				this._pending = undefined;
 				this._render();
 				this._focusSelectedRow();
 			}
@@ -438,8 +531,11 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 			}
 			event.preventDefault();
 			event.stopPropagation();
-			if (ids[next] !== this._selectedId) {
+			if (ids[next] !== this._selectedId || this._view !== 'detail') {
 				this._selectedId = ids[next];
+				this._view = 'detail';
+				this._recording = undefined;
+				this._pending = undefined;
 				this._render();
 			}
 			this._focusSelectedRow();
@@ -449,11 +545,16 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 	/** 一覧の行の状態の印。 */
 	private _fillRowStatus(status: HTMLElement, extension: IParadisBrowserExtensionView): void {
 		const failed = !!(extension.loadError || extension.workerError);
+		const lost = paradisLostShortcutCount(extension);
 		status.classList.toggle('is-error', failed);
+		status.classList.toggle('is-warning', !failed && lost > 0);
 		if (failed) {
 			status.textContent = extension.loadError
 				? localize('paradis.browserExtensions.status.loadError', "読み込めませんでした")
 				: localize('paradis.browserExtensions.status.workerError', "背景の処理を起動できませんでした");
+		} else if (lost > 0) {
+			// Q619: おすすめのキーをほかの拡張機能に取られて使えないショートカットがある
+			status.textContent = localize('paradis.browserExtensions.status.lostShortcuts', "キーの重なり {0}", lost);
 		} else if (!extension.enabledIn.includes(this._profile)) {
 			status.textContent = localize('paradis.browserExtensions.status.disabled', "この場所では無効");
 		} else if (extension.worker) {
@@ -612,6 +713,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		}
 
 		this._renderOptions(detail, extension, active);
+		this._renderShortcutSummary(detail, extension);
 		this._renderPermissions(detail, extension);
 		if (twoColumns) {
 			this._renderWorker(dom.append(this._detailElement, $('.pbe-col-log')), extension);
@@ -673,6 +775,251 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 			// 共有の確認で知らせる対象（入力欄に値を入れられる・ページの中身を読める）
 			dom.append(section, $('.pbe-row-note')).textContent = localize('paradis.browserExtensions.touchesPages', "ページの中身を読み書きできます。このタブを共有すると、拡張機能が入力した値はエージェントからも読めます");
 		}
+	}
+
+	// ---------- ショートカット（Q619 の案 B） ----------
+
+	/** ナビの「ショートカット」: 右に一覧を出す。 */
+	private _showShortcuts(): void {
+		if (this._view !== 'shortcuts') {
+			this._view = 'shortcuts';
+			this._recording = undefined;
+			this._pending = undefined;
+			this._render();
+		}
+	}
+
+	/** 詳細の列の「ショートカット」: 数と、一覧へ移るボタンだけ。 */
+	private _renderShortcutSummary(parent: HTMLElement, extension: IParadisBrowserExtensionView): void {
+		const commands = extension.commands ?? [];
+		const section = this._appendSection(parent, localize('paradis.browserExtensions.section.shortcuts', "ショートカット"));
+		const summary = dom.append(section, $('.pbe-sc-summary'));
+		if (commands.length === 0) {
+			dom.append(summary, $('span')).textContent = localize('paradis.browserExtensions.shortcuts.none', "ありません");
+			return;
+		}
+		const count = dom.append(summary, $('span'));
+		const lost = paradisLostShortcutCount(extension);
+		count.textContent = localize('paradis.browserExtensions.shortcuts.count', "{0} 個", commands.length);
+		if (lost > 0) {
+			dom.append(summary, $('span.pbe-sc-warn-text')).textContent = localize('paradis.browserExtensions.shortcuts.lostCount', "{0} 個は重なって使えません", lost);
+		}
+		const open = dom.append(summary, $<HTMLButtonElement>('button.pbpm-btn.paradis-focus-ring.secondary'));
+		open.type = 'button';
+		open.textContent = localize('paradis.browserExtensions.shortcuts.openList', "ショートカットの一覧で変える");
+		this._renderStore.add(dom.addDisposableListener(open, 'click', () => this._showShortcuts()));
+	}
+
+	/** ショートカットの一覧（入れた拡張機能を先に入れた順に並べ、コマンドとキーを出す）。 */
+	private _renderShortcuts(state: IParadisBrowserExtensionsState): void {
+		const page = dom.append(this._detailElement, $('.pbe-sc-page'));
+		dom.append(page, $('.pbe-detail-name')).textContent = localize('paradis.browserExtensions.shortcuts.title', "拡張機能のショートカット");
+		dom.append(page, $('p.pbpm-description')).textContent = localize('paradis.browserExtensions.shortcuts.description', "内蔵ブラウザのページを開いているときに効くキーです。同じキーは 1 つのコマンドだけが使えます（先に入れた拡張機能が取ります。ここで付け替えると、付け替えた方が取ります）。Para Code のショートカットと同じキーは付けられません。");
+		const extensions = [...state.extensions].sort((a, b) => a.installedAt - b.installedAt);
+		const lostAll = extensions.reduce((sum, extension) => sum + paradisLostShortcutCount(extension), 0);
+		if (lostAll > 0) {
+			const callout = dom.append(page, $('.pbe-callout.is-warning'));
+			callout.appendChild($(ThemeIcon.asCSSSelector(Codicon.warning)));
+			dom.append(callout, $('span')).textContent = localize('paradis.browserExtensions.shortcuts.lostAll', "重なって使えないショートカットが {0} 個あります。", lostAll);
+		}
+		for (const extension of extensions) {
+			const group = dom.append(page, $('.pbe-sc-group'));
+			const head = dom.append(group, $('.pbe-sc-head'));
+			this._appendIcon(head, extension, false);
+			dom.append(head, $('span.pbe-sc-head-name')).textContent = extension.name;
+			const commands = extension.commands ?? [];
+			if (commands.length === 0) {
+				dom.append(group, $('.pbpm-meta.pbe-sc-none')).textContent = localize('paradis.browserExtensions.shortcuts.noneForExtension', "ショートカットがありません");
+				continue;
+			}
+			const list = dom.append(group, $('.pbe-sc-list'));
+			for (const command of commands) {
+				this._renderShortcutRow(list, state, extension, command);
+			}
+		}
+	}
+
+	private _renderShortcutRow(list: HTMLElement, state: IParadisBrowserExtensionsState, extension: IParadisBrowserExtensionView, command: IParadisBrowserExtensionShortcut): void {
+		const row = dom.append(list, $('.pbe-sc-row'));
+		const main = dom.append(row, $('.pbe-sc-main'));
+		const label = describeCommand(command);
+		dom.append(main, $('span.pbe-sc-desc')).textContent = label;
+		if (command.source === 'lost' && command.lostTo) {
+			const owner = state.extensions.find(candidate => candidate.id === command.lostTo?.extensionId);
+			const warn = dom.append(main, $('span.pbe-sc-warn'));
+			warn.appendChild($(ThemeIcon.asCSSSelector(Codicon.warning)));
+			dom.append(warn, $('span')).textContent = localize('paradis.browserExtensions.shortcuts.lost', "{0} は {1} が使っています", command.suggested, owner?.name ?? command.lostTo.extensionId);
+		} else if (command.source === 'user') {
+			dom.append(main, $('span.pbe-sc-note')).textContent = localize('paradis.browserExtensions.shortcuts.changed', "変更済み");
+		} else if (command.source === 'removed') {
+			dom.append(main, $('span.pbe-sc-note')).textContent = localize('paradis.browserExtensions.shortcuts.removed', "外しました");
+		}
+		const keyCell = dom.append(row, $('.pbe-sc-key'));
+		const recording = this._recording?.extensionId === extension.id && this._recording.name === command.name;
+		const disabled = !state.active || this._busy;
+		if (recording) {
+			const recorder = dom.append(keyCell, $('span.pbe-sc-recorder.paradis-focus-ring'));
+			recorder.tabIndex = 0;
+			recorder.setAttribute('role', 'textbox');
+			recorder.setAttribute('aria-label', localize('paradis.browserExtensions.shortcuts.recorderLabel', "「{0}」のキー", label));
+			recorder.textContent = localize('paradis.browserExtensions.shortcuts.recorder', "キーを押してください（Esc でやめる）");
+			this._renderStore.add(dom.addDisposableListener(recorder, dom.EventType.KEY_DOWN, (event: KeyboardEvent) => this._onRecorderKey(event, extension, command)));
+			this._renderStore.add(dom.addDisposableListener(recorder, dom.EventType.BLUR, () => {
+				// ほかを押してフォーカスが外れたらやめる（描き直しで外れたときは同じものに戻っている）
+				const targetWindow = dom.getWindow(recorder);
+				targetWindow.setTimeout(() => {
+					const stillRecording = this._recording?.extensionId === extension.id && this._recording.name === command.name;
+					if (stillRecording && recorder.isConnected && targetWindow.document.activeElement !== recorder) {
+						this._recording = undefined;
+						this._render();
+					}
+				}, 0);
+			}));
+			recorder.focus();
+		} else if (command.shortcut) {
+			const keys = dom.append(keyCell, $('span.pbe-sc-keys'));
+			keys.setAttribute('aria-label', command.shortcut);
+			for (const part of paradisShortcutKeyParts(command.shortcut)) {
+				dom.append(keys, $('kbd')).textContent = part;
+			}
+		} else {
+			dom.append(keyCell, $('span.pbe-sc-unset')).textContent = localize('paradis.browserExtensions.shortcuts.unset', "未設定");
+		}
+		const actions = dom.append(row, $('.pbe-sc-actions'));
+		if (!recording) {
+			const edit = dom.append(actions, $<HTMLButtonElement>('button.pbpm-btn.paradis-focus-ring.secondary'));
+			edit.type = 'button';
+			edit.textContent = command.shortcut
+				? localize('paradis.browserExtensions.shortcuts.edit', "変更")
+				: localize('paradis.browserExtensions.shortcuts.add', "キーを付ける");
+			edit.disabled = disabled;
+			edit.setAttribute('aria-label', localize('paradis.browserExtensions.shortcuts.editLabel', "「{0}」のキーを変える", label));
+			this._renderStore.add(dom.addDisposableListener(edit, 'click', () => {
+				this._recording = { extensionId: extension.id, name: command.name };
+				this._pending = undefined;
+				this._showMessage('', false);
+				this._render();
+			}));
+		}
+		const iconButton = (icon: ThemeIcon, text: string, run: () => Promise<unknown>) => {
+			const button = this._renderStore.add(new ParadisButton(actions, { kind: 'icon', icon, small: true, ariaLabel: text, title: text, disabled }));
+			this._renderStore.add(button.onDidClick(() => void this._run(run)));
+		};
+		const slot = () => dom.append(actions, $('span.pbe-sc-slot'));
+		if (!recording && command.shortcut) {
+			iconButton(Codicon.close, localize('paradis.browserExtensions.shortcuts.clear', "キーを外す"), async () => {
+				await this._mainService.clearShortcut(extension.id, command.name);
+				this._showMessage(localize('paradis.browserExtensions.shortcuts.cleared', "「{0}」のキーを外しました。", label), false);
+			});
+		} else if (!recording) {
+			slot();
+		}
+		if (!recording && (command.source === 'user' || command.source === 'removed')) {
+			iconButton(Codicon.discard, localize('paradis.browserExtensions.shortcuts.reset', "拡張機能のおすすめのキーに戻す"), async () => {
+				await this._mainService.resetShortcut(extension.id, command.name);
+				this._showMessage(localize('paradis.browserExtensions.shortcuts.resetDone', "「{0}」を拡張機能のおすすめのキーに戻しました。", label), false);
+			});
+		} else if (!recording) {
+			slot();
+		}
+		const pending = this._pending;
+		if (pending && pending.extensionId === extension.id && pending.name === command.name) {
+			const conflict = dom.append(row, $('.pbe-sc-conflict'));
+			conflict.setAttribute('role', 'alert');
+			conflict.appendChild($(ThemeIcon.asCSSSelector(Codicon.warning)));
+			dom.append(conflict, $('span')).textContent = localize('paradis.browserExtensions.shortcuts.conflict', "{0} は {1} の「{2}」が使っています。付け替えると、{1} のほうは外れます。", pending.shortcut, pending.ownerName, pending.ownerCommand);
+			const take = dom.append(conflict, $<HTMLButtonElement>('button.pbpm-btn.paradis-focus-ring.primary'));
+			take.type = 'button';
+			take.textContent = localize('paradis.browserExtensions.shortcuts.take', "付け替える");
+			take.disabled = disabled;
+			const keep = dom.append(conflict, $<HTMLButtonElement>('button.pbpm-btn.paradis-focus-ring.secondary'));
+			keep.type = 'button';
+			keep.textContent = localize('paradis.browserExtensions.shortcuts.keep', "やめる");
+			this._renderStore.add(dom.addDisposableListener(take, 'click', () => {
+				this._pending = undefined;
+				void this._assignShortcut(pending, label);
+			}));
+			this._renderStore.add(dom.addDisposableListener(keep, 'click', () => {
+				this._pending = undefined;
+				this._render();
+			}));
+			take.focus();
+		}
+	}
+
+	/** キーを待っている欄で押されたキー。Para Code のショートカットや、修飾キーの無いキーは断る。 */
+	private _onRecorderKey(event: KeyboardEvent, extension: IParadisBrowserExtensionView, command: IParadisBrowserExtensionShortcut): void {
+		// 押したキーで Para Code のコマンド（コマンドパレット・エディタを閉じるなど）が走らないように止める
+		event.preventDefault();
+		event.stopPropagation();
+		if (event.repeat || event.isComposing) {
+			return;
+		}
+		const read = paradisShortcutFromKeyEvent(event, SHORTCUT_PLATFORM, () => this._paraCodeCommand(event));
+		if ('refusal' in read) {
+			switch (read.refusal) {
+				case 'modifierOnly':
+					return;
+				case 'unsupportedKey':
+					this._showMessage(SHORTCUT_PLATFORM === 'mac'
+						? localize('paradis.browserExtensions.shortcuts.unsupportedMac', "このキーは使えません。A〜Z・0〜9・矢印・, . などのキーを、⌘・⌃・⌥ のどれかと一緒に押してください。")
+						: localize('paradis.browserExtensions.shortcuts.unsupported', "このキーは使えません。A〜Z・0〜9・矢印・, . などのキーを、Ctrl・Alt のどちらかと一緒に押してください。"), true);
+					return;
+				case 'noModifier':
+					this._showMessage(SHORTCUT_PLATFORM === 'mac'
+						? localize('paradis.browserExtensions.shortcuts.noModifierMac', "⌘・⌃・⌥ のどれかと一緒に押してください（Chrome と同じく、⇧ だけではショートカットになりません）。")
+						: localize('paradis.browserExtensions.shortcuts.noModifier', "Ctrl・Alt のどちらかと一緒に押してください（Chrome と同じく、Shift だけではショートカットになりません）。"), true);
+					return;
+				case 'metaKey':
+					this._showMessage(localize('paradis.browserExtensions.shortcuts.metaKey', "Windows キー（Super キー）を含むキーは付けられません。Ctrl・Alt のどちらかと一緒に押してください。"), true);
+					return;
+				case 'paraCode':
+					this._showMessage(localize('paradis.browserExtensions.shortcuts.paraCode', "{0} は Para Code の「{1}」に使われています。ページの中では Para Code が先に取るので、拡張機能には付けられません。", read.shortcut, read.command), true);
+					return;
+			}
+		}
+		this._recording = undefined;
+		const owner = paradisShortcutOwner(this._state?.extensions ?? [], read.shortcut, extension.id, command.name);
+		const label = describeCommand(command);
+		if (owner) {
+			this._pending = { extensionId: extension.id, name: command.name, binding: read.binding, shortcut: read.shortcut, ownerName: owner.extension.name, ownerCommand: describeCommand(owner.command) };
+			this._showMessage('', false);
+			this._render();
+			return;
+		}
+		void this._assignShortcut({ extensionId: extension.id, name: command.name, binding: read.binding, shortcut: read.shortcut, ownerName: '', ownerCommand: '' }, label);
+	}
+
+	private async _assignShortcut(pending: IPendingShortcut, label: string): Promise<void> {
+		await this._run(async () => {
+			const assigned = await this._mainService.assignShortcut(pending.extensionId, pending.name, pending.binding);
+			const extensionName = this._state?.extensions.find(candidate => candidate.id === pending.extensionId)?.name ?? '';
+			if (!assigned) {
+				this._showMessage(localize('paradis.browserExtensions.shortcuts.assignFailed', "{0} を付けられませんでした。", pending.shortcut), true);
+			} else if (pending.ownerName) {
+				this._showMessage(localize('paradis.browserExtensions.shortcuts.assignedTaken', "{0} を {1} の「{2}」に付けました。{3} の「{4}」は外れました。", pending.shortcut, extensionName, label, pending.ownerName, pending.ownerCommand), false);
+			} else {
+				this._showMessage(localize('paradis.browserExtensions.shortcuts.assigned', "{0} を {1} の「{2}」に付けました。", pending.shortcut, extensionName, label), false);
+			}
+		});
+	}
+
+	/**
+	 * そのキーが Para Code のショートカットなら、コマンドの名前（ページのキーを走らせるときと同じく softDispatch で、開いている
+	 * 内蔵ブラウザのタブ（無ければこの領域）から引く。2 打のキーの初めも Para Code が取るので断る）。
+	 */
+	private _paraCodeCommand(event: KeyboardEvent): string | undefined {
+		const browser = this.editorService.visibleEditorPanes.map(pane => pane as unknown).find(pane => pane instanceof BrowserEditor);
+		const target = (browser instanceof BrowserEditor ? browser.getContainer() : undefined) ?? this._contentElement;
+		const result = this.keybindingService.softDispatch(new StandardKeyboardEvent(event), target);
+		if (result.kind === ResultKind.MoreChordsNeeded) {
+			return localize('paradis.browserExtensions.shortcuts.chord', "2 打のキーの初め");
+		}
+		if (result.kind !== ResultKind.KbFound || !result.commandId) {
+			return undefined;
+		}
+		const title = MenuRegistry.getCommand(result.commandId)?.title;
+		return typeof title === 'string' ? title : title?.value ?? result.commandId;
 	}
 
 	/** 「権限」（manifest の permissions と、読み書きできるサイト）。 */

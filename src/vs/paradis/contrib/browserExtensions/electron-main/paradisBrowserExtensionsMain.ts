@@ -79,7 +79,7 @@ import {
 	paradisLedgerWithShortcuts,
 	IParadisBrowserExtensionShortcut,
 } from '../common/paradisBrowserExtensions.js';
-import { IParadisShortcut, ParadisUserShortcuts, paradisResolveExtensionShortcuts, paradisWithAssignedShortcut, paradisWithoutUserShortcut } from '../common/paradisBrowserExtensionMenus.js';
+import { IParadisShortcut, ParadisUserShortcuts, paradisCommandPlatform, paradisResolveExtensionShortcuts, paradisWithAssignedShortcut, paradisWithoutUserShortcut } from '../common/paradisBrowserExtensionMenus.js';
 import { PARADIS_EXTENSION_ORIGINAL_MANIFEST_FILE } from '../common/paradisBrowserExtensionApiWire.js';
 import { IParadisExtensionAccess, paradisParseWebStoreInput, paradisSameExtensionAccess, paradisSummarizeExtensionAccess } from '../common/paradisBrowserExtensionWebStore.js';
 import { ParadisWebStoreBridge } from './paradisBrowserExtensionWebStoreBridge.js';
@@ -101,7 +101,7 @@ import { ParadisBrowserExtensionSyncStore, paradisRegisterStorageApis } from './
 import { paradisBrowserExtensionContentScriptSource, paradisBrowserExtensionShimSource } from '../common/paradisBrowserExtensionShimSource.js';
 import { IParadisTabEnvironment, ParadisBrowserExtensionTabs } from './paradisBrowserExtensionTabs.js';
 import { IParadisActionsEnvironment, IParadisLoadedExtension, ParadisBrowserExtensionActions } from './paradisBrowserExtensionActions.js';
-import { ParadisBrowserExtensionMenus, paradisCommandPlatform } from './paradisBrowserExtensionMenus.js';
+import { ParadisBrowserExtensionMenus } from './paradisBrowserExtensionMenus.js';
 import { IParadisPermissionPrompt, ParadisBrowserExtensionPermissions } from './paradisBrowserExtensionPermissions.js';
 import { IParadisServicesEnvironment, ParadisBrowserExtensionServices } from './paradisBrowserExtensionServices.js';
 import { ParadisNativeMessaging } from './paradisNativeMessaging.js';

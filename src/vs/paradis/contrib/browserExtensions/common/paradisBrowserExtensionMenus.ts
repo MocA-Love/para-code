@@ -431,6 +431,11 @@ const SHORTCUT_KEYS = /^([A-Z0-9]|Comma|Period|Home|End|PageUp|PageDown|Space|In
 
 type ParadisPlatform = 'mac' | 'windows' | 'linux' | 'chromeos';
 
+/** process.platform（'darwin' など）を manifest の suggested_key の鍵にする。 */
+export function paradisCommandPlatform(platform: string): 'mac' | 'windows' | 'linux' {
+	return platform === 'darwin' ? 'mac' : platform === 'win32' ? 'windows' : 'linux';
+}
+
 /** 「Ctrl+Shift+Y」→ 修飾キーとキー。macOS の Chrome は Ctrl を Command、MacCtrl を Control と読む。 */
 export function paradisParseShortcut(shortcut: string, platform: ParadisPlatform): IParadisShortcut | undefined {
 	const parts = shortcut.split('+').map(part => part.trim());
@@ -630,6 +635,54 @@ export function paradisWithAssignedShortcut(userShortcuts: ParadisUserShortcuts,
 /** コマンドのキーを外す（`clear`）か、拡張機能のおすすめのキーに戻す（`reset`。利用者の記録を消す）。 */
 export function paradisWithoutUserShortcut(userShortcuts: ParadisUserShortcuts, extensionId: string, name: string, mode: 'clear' | 'reset'): ParadisUserShortcuts {
 	return withUserShortcut(userShortcuts, extensionId, name, mode === 'clear' ? '' : undefined);
+}
+
+/** KeyboardEvent.code → suggested_key の書き方のキー（A〜Z と 0〜9 は押した位置で読む。Option・Shift で key が変わるため）。 */
+const SHORTCUT_KEYS_BY_CODE: Readonly<Record<string, string>> = {
+	Comma: 'Comma', Period: 'Period', Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown', Space: 'Space', Insert: 'Insert', Delete: 'Delete',
+	ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+	MediaTrackNext: 'MediaNextTrack', MediaPlayPause: 'MediaPlayPause', MediaTrackPrevious: 'MediaPrevTrack', MediaStop: 'MediaStop',
+};
+
+/** 押したキーをショートカットにできなかった理由。 */
+export type ParadisShortcutRefusal =
+	/** 修飾キーだけを押している（まだ待つ）。 */
+	| 'modifierOnly'
+	/** Chrome のショートカットに使えないキー。 */
+	| 'unsupportedKey'
+	/** ⌘・⌃・⌥（macOS 以外は Ctrl・Alt）のどれも含まない。 */
+	| 'noModifier'
+	/** macOS 以外の ⌘（Windows キー）。Chrome の書き方で書けない。 */
+	| 'metaKey'
+	/** Para Code のショートカット（ページの中では Para Code が先に取る）。 */
+	| 'paraCode';
+
+/**
+ * ショートカットを付けるときに押したキーを読む。Para Code のキーかは `paraCodeCommand` が決める（実物では
+ * workbench のキーの割り当てを、ページのキーを走らせるときと同じく softDispatch で引く）。
+ */
+export function paradisShortcutFromKeyEvent(event: { readonly code: string; readonly key: string; readonly ctrlKey: boolean; readonly metaKey: boolean; readonly altKey: boolean; readonly shiftKey: boolean }, platform: ParadisPlatform, paraCodeCommand: () => string | undefined): { readonly binding: IParadisShortcut; readonly shortcut: string } | { readonly refusal: Exclude<ParadisShortcutRefusal, 'paraCode'> } | { readonly refusal: 'paraCode'; readonly shortcut: string; readonly command: string } {
+	if (['Shift', 'Control', 'Meta', 'Alt', 'AltGraph', 'CapsLock', 'OS'].includes(event.key)) {
+		return { refusal: 'modifierOnly' };
+	}
+	const letter = /^Key(?<letter>[A-Z])$/.exec(event.code)?.groups?.letter ?? /^Digit(?<digit>[0-9])$/.exec(event.code)?.groups?.digit;
+	const key = letter ?? (Object.hasOwn(SHORTCUT_KEYS_BY_CODE, event.code) ? SHORTCUT_KEYS_BY_CODE[event.code] : undefined);
+	if (!key) {
+		return { refusal: 'unsupportedKey' };
+	}
+	if (event.metaKey && platform !== 'mac') {
+		return { refusal: 'metaKey' };
+	}
+	if (!event.ctrlKey && !event.metaKey && !event.altKey) {
+		return { refusal: 'noModifier' };
+	}
+	const binding: IParadisShortcut = { key, control: event.ctrlKey, meta: event.metaKey, alt: event.altKey, shift: event.shiftKey };
+	const shortcut = paradisFormatShortcut(binding, platform);
+	const command = paraCodeCommand();
+	if (command !== undefined) {
+		return { refusal: 'paraCode', shortcut, command };
+	}
+	return { binding, shortcut };
 }
 
 /** 保存してあった利用者のキーを読む（`ids` にある拡張機能だけ。読めない値は捨てる）。 */
