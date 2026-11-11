@@ -399,6 +399,117 @@
 	color: var(--vscode-paradis-textFaint);
 }
 
+/* Images, PDFs and drawn HTML in the preview pane (paradisPalettePreviewMedia.ts, paradisPalettePdfPreview.ts). The
+	picture shrinks to the pane; the line under it gives its size. */
+.monaco-workbench .paradis-palette-preview-media {
+	flex: 1 1 auto;
+	min-height: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: var(--vscode-spacing-size80);
+	overflow: hidden;
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner);
+	background: var(--vscode-paradis-sunken);
+}
+
+.monaco-workbench .paradis-palette-preview-media-image {
+	display: block;
+	max-width: 100%;
+	max-height: 100%;
+	min-height: 0;
+	object-fit: contain;
+}
+
+.monaco-workbench img.paradis-palette-preview-media-image {
+	border-radius: 2px;
+}
+
+/* The PDF's frame is a step darker than the image's, so the white paper stands out in light themes too. */
+.monaco-workbench .paradis-palette-preview-media.paradis-palette-preview-pdf {
+	background: color-mix(in srgb, var(--vscode-paradis-fillNeutral) 45%, var(--vscode-paradis-sunken));
+}
+
+.monaco-workbench .paradis-palette-preview-pdf-page {
+	border-radius: 0;
+	box-shadow: var(--vscode-shadow-md);
+}
+
+.monaco-workbench .paradis-palette-preview-media-meta {
+	font-variant-numeric: tabular-nums;
+}
+
+.monaco-workbench .paradis-palette-preview-media-big {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	gap: 2px var(--vscode-spacing-size80);
+	align-items: center;
+	padding: var(--vscode-spacing-size100);
+	border: 1px dashed var(--vscode-paradis-line);
+	border-radius: var(--paradis-radius-inner);
+}
+
+.monaco-workbench .paradis-palette-preview-media-big > .codicon {
+	grid-row: span 3;
+	color: var(--vscode-paradis-textMuted);
+	font-size: 24px;
+}
+
+.monaco-workbench .paradis-palette-preview-media-big-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--vscode-paradis-textStrong);
+}
+
+.monaco-workbench .paradis-palette-preview-media-big-size {
+	color: var(--vscode-paradis-textMuted);
+	font-variant-numeric: tabular-nums;
+}
+
+.monaco-workbench .paradis-palette-preview-pdf-loading {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size160) var(--vscode-spacing-size80);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner);
+	background: var(--vscode-paradis-sunken);
+}
+
+.monaco-workbench .paradis-palette-preview-body > .paradis-seg {
+	align-self: flex-start;
+}
+
+.monaco-workbench .paradis-palette-preview-html-content {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size40);
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
+/* The page is drawn on its own paper (the document's colors, light). The frame cannot be clicked: focus stays in the
+	palette's input. */
+.monaco-workbench .paradis-palette-preview-html {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow: hidden;
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner);
+}
+
+.monaco-workbench .paradis-palette-preview-html > iframe {
+	display: block;
+	width: 100%;
+	height: 100%;
+	border: 0;
+	color-scheme: light;
+	pointer-events: none;
+}
+
 /* The command palette folds the English name onto the row when the list is 560px or wider (the rows are 28px then,
 	paradisQuickInputLayout.ts): the first line's parts and the second line share one line, name, English name, keys. */
 .monaco-workbench .quick-input-widget.paradis-palette-inline-detail .quick-input-list .quick-input-list-rows {
