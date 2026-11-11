@@ -16,32 +16,10 @@
 
 /* ---------- header ---------- */
 
+/* 検索欄はキットの入力欄（paradisInputField.ts）。幅だけここで決める（設定の面の検索欄と同じ）。 */
 .paradis-hub .pns-search {
-	flex: 1;
-	max-width: 340px;
-	min-width: 140px;
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	background: var(--vscode-input-background);
-	color: var(--vscode-input-foreground);
-	border: 1px solid var(--vscode-input-border, transparent);
-	border-radius: 4px;
-	padding: 4px 8px;
-}
-
-/* 検索欄の input は設定行向けの幅広ルールを打ち消してインライン表示にする。 */
-.paradis-hub .pns-search input {
-	flex: 1;
-	min-width: 0;
-	width: auto;
-	background: transparent;
-	border: none;
-	padding: 0;
-	outline: none;
-	color: var(--vscode-input-foreground);
-	font-size: 12.5px;
-	font-family: inherit;
+	flex: 0 1 260px;
+	min-width: 120px;
 }
 
 .paradis-hub .pns-saved-flash {
@@ -97,6 +75,8 @@
 	min-width: 0;
 	min-height: 0;
 	overflow-y: auto;
+	/* 行の折り返しは窓ではなく本文の幅で決める（設定の面と同じ）。 */
+	container-type: inline-size;
 	padding: 14px 22px 30px;
 }
 
@@ -200,8 +180,87 @@
 	flex-shrink: 0;
 }
 
-.paradis-notif-area .pns-format-control textarea {
+.paradis-notif-area .pns-format-control .pns-textarea-field {
 	width: 300px;
+	max-width: 100%;
+}
+
+/* 複数行の欄: キットの欄の枠（.paradis-field）に textarea を入れる（ワークスペースの詳細のメモと同じ形）。 */
+.monaco-workbench .paradis-notif-area .paradis-field.pns-textarea-field {
+	height: auto;
+	align-items: stretch;
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size80);
+}
+
+.paradis-notif-area .pns-textarea-field > textarea {
+	flex: 1;
+	min-width: 0;
+	min-height: 44px;
+	padding: 0;
+	border: none;
+	outline: none;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-size: var(--vscode-fontSize-body1);
+	resize: vertical;
+}
+
+.paradis-notif-area .pns-textarea-field > textarea::placeholder {
+	color: var(--vscode-paradis-textFaint);
+}
+
+/* ID（Model UUID・voice_id）の欄は等幅の字で、行の右に置く。 */
+.paradis-notif-area .paradis-field.pns-id-input {
+	flex: none;
+	width: 290px;
+	max-width: 100%;
+	font-family: var(--monaco-monospace-font);
+}
+
+.paradis-notif-area .paradis-field.pns-voice-search {
+	flex: 0 1 180px;
+}
+
+.paradis-notif-area .pns-range {
+	flex: none;
+	width: 200px;
+	max-width: 100%;
+}
+
+/* 幅を決めたプルダウン（音量・おやすみモードの期間など）は、中の select を枠いっぱいに広げる。 */
+.paradis-notif-area .paradis-select > select {
+	width: 100%;
+}
+
+/* 切り替え（期間・読み上げエンジン）は行の右に寄せ、縮めない。 */
+.paradis-notif-area .paradis-seg.pns-seg {
+	flex: none;
+}
+
+.paradis-notif-area .pns-chart-metric {
+	display: flex;
+	justify-content: flex-end;
+	margin-bottom: var(--vscode-spacing-size60);
+}
+
+/* キットのボタンを素の button のまま使っているので、押せない状態は :disabled で出す（キットは .disabled を見る）。 */
+.monaco-workbench .paradis-notif-area .paradis-button:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+
+.monaco-workbench .paradis-notif-area .paradis-button.paradis-button-secondary:disabled:hover {
+	background-color: var(--vscode-paradis-fillNeutral);
+}
+
+.monaco-workbench .paradis-notif-area .paradis-button:is(.paradis-button-icon, .paradis-button-danger):disabled:hover {
+	background-color: transparent;
+}
+
+/* 辞書の削除は、ポインタを重ねたときだけ危険の色にする（並ぶほかのアイコンのボタンと同じ形のまま）。 */
+.monaco-workbench .paradis-notif-area .paradis-button.paradis-button-icon.pns-delete:not(:disabled):hover {
+	color: var(--vscode-paradis-danger);
 }
 
 /* 通知するイベント等、コントロール側の横並びコンテナ */
@@ -212,12 +271,7 @@
 	flex-shrink: 0;
 }
 
-.paradis-notif-area .pns-events-box label {
-	display: flex;
-	align-items: center;
-	gap: 5px;
-	cursor: pointer;
-	font-size: 12px;
+.paradis-notif-area .pns-events-box .paradis-check {
 	white-space: nowrap;
 }
 
@@ -237,9 +291,6 @@
 /* allow-any-unicode-next-line */
 /* `.paradis-notif-nested-dialog` 配下に独立して存在するため、同じルールを両方に適用する。 */
 
-.paradis-notif-area input,
-.paradis-notif-area select,
-.paradis-notif-area textarea,
 .paradis-notif-nested-dialog input,
 .paradis-notif-nested-dialog select,
 .paradis-notif-nested-dialog textarea {
@@ -254,13 +305,11 @@
 	font-family: inherit;
 }
 
-.paradis-notif-area textarea,
 .paradis-notif-nested-dialog textarea {
 	resize: vertical;
 	min-height: 44px;
 }
 
-.paradis-notif-area input[type="range"],
 .paradis-notif-nested-dialog input[type="range"] {
 	width: 100%;
 	background: transparent;
@@ -269,46 +318,29 @@
 	accent-color: var(--vscode-focusBorder);
 }
 
-.paradis-notif-area .pns-btn {
-	display: inline-flex;
-	align-items: center;
-	gap: 5px;
-	padding: 4px 10px;
-	border-radius: 4px;
-	border: 1px solid var(--vscode-button-border, var(--vscode-contrastBorder, transparent));
-	background: var(--vscode-button-secondaryBackground);
-	color: var(--vscode-button-secondaryForeground);
-	cursor: pointer;
-	font-size: 12px;
-	white-space: nowrap;
+/*
+	数の欄とつまみは OS の部品のまま使う（Q608 の決定 A）。数の欄の地・線・角丸・高さはキットの入力欄
+	（paradisInputField.css）と同じトークンにし、つまみと上下の矢印は強調の色だけキットの主の色にそろえる。
+*/
+.paradis-notif-area input[type="number"] {
+	box-sizing: border-box;
+	height: var(--paradis-height-md);
+	padding: 0 var(--vscode-spacing-size60) 0 var(--vscode-spacing-size80);
+	background: var(--vscode-paradis-sunken);
+	color: var(--vscode-paradis-textStrong);
+	border: 1px solid var(--vscode-paradis-line);
+	border-radius: var(--paradis-radius-control);
+	font-family: inherit;
+	font-size: var(--vscode-fontSize-body1);
+	accent-color: var(--vscode-paradis-primary);
 }
 
-.paradis-notif-area .pns-btn:hover {
-	background: var(--vscode-button-secondaryHoverBackground);
+.paradis-notif-area input[type="number"]:not(:disabled):hover {
+	border-color: var(--vscode-paradis-lineStrong);
 }
 
-.paradis-notif-area .pns-btn:disabled {
-	opacity: .5;
-	cursor: default;
-}
-
-.paradis-notif-area .pns-btn-primary {
-	background: var(--vscode-button-background);
-	color: var(--vscode-button-foreground);
-	border-color: transparent;
-}
-
-.paradis-notif-area .pns-btn-primary:hover {
-	background: var(--vscode-button-hoverBackground);
-}
-
-.paradis-notif-area .pns-btn-icon {
-	padding: 4px 6px;
-}
-
-.paradis-notif-area .pns-btn-danger:hover {
-	color: var(--vscode-errorForeground);
-	border-color: var(--vscode-errorForeground);
+.paradis-notif-area input[type="range"] {
+	accent-color: var(--vscode-paradis-primary);
 }
 
 /* allow-any-unicode-next-line */
@@ -319,10 +351,13 @@
 	gap: 6px;
 }
 
-.paradis-notif-area .pns-input-group input {
-	flex: 1;
+.paradis-notif-area .pns-input-group {
+	flex: 0 1 320px;
 	min-width: 0;
-	width: auto;
+}
+
+.paradis-notif-area .pns-input-group > .paradis-field {
+	flex: 1;
 }
 
 /* allow-any-unicode-next-line */
@@ -409,9 +444,17 @@
 	align-items: baseline;
 	gap: 6px;
 	flex-shrink: 0;
+	max-width: 100%;
+	min-width: 0;
+}
+
+.paradis-notif-area .pns-ringtone-label {
+	min-width: 0;
+	overflow-wrap: anywhere;
 }
 
 .paradis-notif-area .pns-ringtone-duration {
+	flex: none;
 	font-size: 10.5px;
 	color: var(--vscode-descriptionForeground);
 }
@@ -450,28 +493,13 @@
 }
 
 .paradis-notif-area .pns-ringtone-play {
-	width: 22px;
-	height: 22px;
-	border-radius: 50%;
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	cursor: pointer;
 	flex-shrink: 0;
-	color: var(--vscode-foreground);
-	background: transparent;
-}
-
-.paradis-notif-area .pns-ringtone-play:hover {
-	background: var(--vscode-toolbar-hoverBackground);
 }
 
 /* allow-any-unicode-next-line */
 /* Superset同様「▶ ⇔ ■(Stop)」のアイコントグルのみで再生状態を示す（塗りつぶし色は使わない）。 */
-.paradis-notif-area .pns-ringtone-play.playing {
-	border-color: var(--vscode-focusBorder);
-	color: var(--vscode-textLink-foreground);
+.monaco-workbench .paradis-notif-area .paradis-button.pns-ringtone-play.playing {
+	color: var(--vscode-paradis-primary);
 }
 
 /* ---------- preset tiles (Aivis) ---------- */
@@ -490,7 +518,7 @@
 
 .paradis-notif-area .pns-preset-grid {
 	display: grid;
-	grid-template-columns: repeat(3, 1fr);
+	grid-template-columns: repeat(3, minmax(0, 1fr));
 	gap: 8px;
 }
 
@@ -614,6 +642,30 @@
 
 .paradis-notif-area .pns-dict-card.active {
 	border-color: var(--vscode-terminal-ansiGreen, var(--vscode-focusBorder));
+}
+
+.paradis-notif-area .pns-dict-info {
+	flex: 1;
+	min-width: 0;
+}
+
+.paradis-notif-area .pns-dict-info .pns-ringtone-name > span:first-child {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-notif-area .pns-dict-info .pns-ringtone-desc {
+	white-space: normal;
+	overflow-wrap: anywhere;
+}
+
+.paradis-notif-area .pns-dict-actions {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size40);
+	flex-shrink: 0;
 }
 
 .paradis-notif-area .pns-dict-badge-active {
@@ -918,12 +970,6 @@
 
 /* ---------- 音声報告: 読み上げエンジンの切り替え・ElevenLabs の声 ---------- */
 
-.paradis-notif-area .pns-engine-switch {
-	display: flex;
-	gap: 4px;
-	flex-shrink: 0;
-}
-
 .paradis-notif-area .pns-voice-header {
 	display: flex;
 	align-items: center;
@@ -991,4 +1037,39 @@
 .monaco-workbench .paradis-notif-nested-dialog.paradis-modal-m {
 	display: block;
 	overflow-y: auto;
+}
+
+/*
+	狭い本文（狭い窓や 390px の幅）: 設定の面と同じく、文字が 1 行を使い、幅のある部品（プルダウン・入力欄・ボタンの並び）は
+	その下に置く。スイッチだけの行は横に並べたまま。
+*/
+@container (max-width: 560px) {
+	.paradis-notif-area .setting-row {
+		flex-wrap: wrap;
+		row-gap: var(--vscode-spacing-size80);
+	}
+
+	.paradis-notif-area .setting-row:not(:has(> .paradis-switch)) > .sr-main {
+		flex-basis: 100%;
+	}
+
+	.paradis-notif-area .pns-events-box,
+	.paradis-notif-area .pns-chip-row {
+		flex-wrap: wrap;
+		flex-shrink: 1;
+		min-width: 0;
+	}
+
+	.paradis-notif-area .pns-format-control,
+	.paradis-notif-area .pns-input-group {
+		flex: 1 1 100%;
+	}
+
+	.paradis-notif-area .pns-format-control .pns-textarea-field {
+		width: 100%;
+	}
+
+	.paradis-notif-area .pns-preset-grid {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
 }

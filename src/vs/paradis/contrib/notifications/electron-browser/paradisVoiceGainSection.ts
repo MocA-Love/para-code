@@ -44,6 +44,7 @@ import { paradisFormatGainDb } from './paradisElevenLabsVoiceTuningFields.js';
 import { paradisForgetVoiceGains, paradisLoadVoiceGains } from './paradisVoiceGainsCache.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import './media/paradisVoiceTuning.css';
+import { paradisNotifButton } from './paradisNotificationKitParts.js';
 
 const $ = dom.$;
 
@@ -226,7 +227,8 @@ export class ParadisVoiceGainSection extends Disposable {
 	}
 
 	private _renderTable(parent: HTMLElement, list: IParadisVoiceGainList): void {
-		const table = dom.append(parent, $('table.pns-gain-table'));
+		// 狭い本文では表だけを横にスクロールさせる（本文全体を横に広げない）
+		const table = dom.append(dom.append(parent, $('.pns-table-scroll')), $('table.pns-gain-table'));
 		const head = dom.append(dom.append(table, $('thead')), $('tr'));
 		for (const label of [STR_COL_VOICE, STR_COL_MODEL, STR_COL_GAIN, STR_COL_LEARN, STR_COL_UPDATED, '']) {
 			dom.append(head, $('th')).textContent = label;
@@ -261,8 +263,7 @@ export class ParadisVoiceGainSection extends Disposable {
 			// allow-any-unicode-next-line
 			dom.append(row, $('td')).textContent = entry.updatedAt === undefined ? '—' : fromNow(entry.updatedAt, true);
 			const actionCell = dom.append(row, $('td'));
-			const reset = dom.append(actionCell, $('button.pns-btn')) as HTMLButtonElement;
-			reset.textContent = STR_RESET;
+			const reset = paradisNotifButton(actionCell, 'secondary', { label: STR_RESET });
 			// 測った値の無い行は、やり直しても何も変わらない
 			reset.disabled = this._busy || initial || !paradisIsVoiceGainKey(entry.key);
 			this._renderDisposables.add(dom.addDisposableListener(reset, 'click', () => void this._reset(entry)));
@@ -271,11 +272,9 @@ export class ParadisVoiceGainSection extends Disposable {
 
 	private _renderToolbar(parent: HTMLElement): void {
 		const toolbar = dom.append(parent, $('.pns-gain-toolbar'));
-		const exportBtn = dom.append(toolbar, $('button.pns-btn')) as HTMLButtonElement;
-		exportBtn.textContent = STR_EXPORT;
+		const exportBtn = paradisNotifButton(toolbar, 'secondary', { label: STR_EXPORT });
 		exportBtn.disabled = this._busy;
-		const importBtn = dom.append(toolbar, $('button.pns-btn')) as HTMLButtonElement;
-		importBtn.textContent = STR_IMPORT;
+		const importBtn = paradisNotifButton(toolbar, 'secondary', { label: STR_IMPORT });
 		importBtn.disabled = this._busy;
 		dom.append(toolbar, $('span.sr-desc')).textContent = STR_IMPORT_MODE;
 		const mode = this._renderDisposables.add(new ParadisSelect(toolbar, this.contextViewService, this.configurationService,
@@ -288,8 +287,7 @@ export class ParadisVoiceGainSection extends Disposable {
 	}
 
 	private _renderReload(parent: HTMLElement): void {
-		const reload = dom.append(parent, $('button.pns-btn')) as HTMLButtonElement;
-		reload.textContent = STR_RELOAD;
+		const reload = paradisNotifButton(parent, 'secondary', { label: STR_RELOAD });
 		reload.disabled = this._busy;
 		this._renderDisposables.add(dom.addDisposableListener(reload, 'click', () => void this._load(true)));
 	}

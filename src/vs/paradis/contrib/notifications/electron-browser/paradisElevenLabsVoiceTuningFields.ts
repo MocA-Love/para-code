@@ -30,6 +30,7 @@ import {
 } from '../common/paradisVoiceTuning.js';
 import { paradisElevenLabsVoiceCache } from './paradisElevenLabsApiCache.js';
 import { paradisDidSavedVoiceSettingsFail, paradisGetCachedSavedVoiceSettings, paradisLoadVoiceGains, paradisMarkSavedVoiceSettingsFailed, paradisSetCachedSavedVoiceSettings } from './paradisVoiceGainsCache.js';
+import { paradisNotifButton } from './paradisNotificationKitParts.js';
 import './media/paradisVoiceTuning.css';
 
 const $ = dom.$;
@@ -153,11 +154,9 @@ export class ParadisElevenLabsVoiceTuningFields {
 		const savedHint = dom.append(savedMain, $('.pns-uuid-hint'));
 		dom.append(savedMain, $('.sr-desc')).textContent = own ? STR_USING_OWN : STR_USING_SAVED;
 		const actions = dom.append(savedRow, $('.pns-tune-actions'));
-		const loadBtn = dom.append(actions, $('button.pns-btn')) as HTMLButtonElement;
-		loadBtn.textContent = STR_SAVED_LOAD;
+		const loadBtn = paradisNotifButton(actions, 'secondary', { label: STR_SAVED_LOAD });
 		loadBtn.disabled = !apiKey;
-		const resetBtn = dom.append(actions, $('button.pns-btn')) as HTMLButtonElement;
-		resetBtn.textContent = STR_SAVED_RESET;
+		const resetBtn = paradisNotifButton(actions, 'secondary', { label: STR_SAVED_RESET });
 		resetBtn.disabled = !own;
 
 		const showSaved = () => {
@@ -228,7 +227,7 @@ export class ParadisElevenLabsVoiceTuningFields {
 		dom.append(main, $('.sr-desc')).textContent = desc;
 		const control = dom.append(row, $('.pns-tune-slider'));
 		const line = dom.append(control, $('.pns-tune-slider-row'));
-		const slider = dom.append(line, $('input')) as HTMLInputElement;
+		const slider = dom.append(line, $('input.pns-range')) as HTMLInputElement;
 		slider.type = 'range';
 		slider.min = '0';
 		slider.max = '1';
@@ -259,7 +258,10 @@ export class ParadisElevenLabsVoiceTuningFields {
 			}
 			dom.clearNode(value);
 			if (result.status !== 'ok') {
-				dom.append(value, $('span.pns-pill')).textContent = result.status === 'unsupported' ? STR_GAIN_UNSUPPORTED : result.message;
+				// 長いエラーは札の中で「…」にし、全文はポインタを重ねて読む
+				const pill = dom.append(value, $('span.pns-pill'));
+				pill.textContent = result.status === 'unsupported' ? STR_GAIN_UNSUPPORTED : result.message;
+				pill.title = pill.textContent;
 				return;
 			}
 			const entry = result.value.entries.find(candidate => candidate.key === key);
