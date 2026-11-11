@@ -10,7 +10,7 @@
 //
 // 手元の受け口（platform/tunnel/node/tunnelService.ts の NodeRemoteTunnel、この shared process の中にある）は TCP の
 // 接続を先に受け付け、その後で SSH 先へ転送を作る（handshake）。作れなければ手元の接続をリセットし、詰まっていると
-// 20 秒の時間切れを 1 回やり直す。手元の側からは「つながった」だけでは何も分からないので、同じプロセスで起きた
+// 20 秒の時間切れを 1 回やり直す（遅いだけなら、やり直しで繋がる）。手元の側からは「つながった」だけでは何も分からないので、同じプロセスで起きた
 // handshake の結果（paraTunnelConnect.ts の onParaTunnelHandshake）のうち、この接続のもの（手元の番号で見分ける）を見る。何も送らないので、SSH 先のサーバーに要求は届かない。
 
 import * as net from 'net';
@@ -19,10 +19,11 @@ import { IParaTunnelHandshake, onParaTunnelHandshake } from '../../../../platfor
 import { ParadisPortReforwardProbeResult } from '../common/paradisPortReforward.js';
 
 /**
- * 答えを待つ上限。SSH 先へ転送を作る 1 回の時間切れ（20 秒、platform/tunnel/common/paraTunnelConnect.ts）より
- * 少し長くし、詰まっているなら最初の時間切れ（timedOut）を受け取れるようにする。
+ * 答えを待つ上限。SSH 先へ転送を作る時間切れ（20 秒、platform/tunnel/common/paraTunnelConnect.ts）とそのやり直しの
+ * 結果（connected か failed）まで待てる長さにする。最初の時間切れ（timedOut）では決めない（遅いだけの SSH を
+ * 「繋がらない」と言わない）。この上限まで答えが無ければ timeout（分からない）。
  */
-export const PARADIS_PORT_REFORWARD_PROBE_TIMEOUT_MS = 25_000;
+export const PARADIS_PORT_REFORWARD_PROBE_TIMEOUT_MS = 45_000;
 
 /**
  * 手元の 127.0.0.1:localPort に 1 回つないで、SSH 先の remotePort まで届くか確かめる。
@@ -48,7 +49,10 @@ export function paradisProbeLocalForward(localPort: number, remotePort: number, 
 		const listener = handshakes(handshake => {
 			// 同じポートへのほかの接続（ブラウザ・別の SSH 先の窓）の結果は使わない
 			if (connected && handshake.target === target && handshake.clientPort !== undefined && handshake.clientPort === clientPort) {
-				finish(handshake.outcome === 'connected' ? 'reachable' : handshake.outcome === 'timedOut' ? 'timeout' : 'reset');
+				// 最初の時間切れの後はやり直しが続くので、その結果を待つ
+				if (handshake.outcome !== 'timedOut') {
+					finish(handshake.outcome === 'connected' ? 'reachable' : 'reset');
+				}
 			}
 		});
 		const timer = setTimeout(() => finish('timeout'), timeoutMs);

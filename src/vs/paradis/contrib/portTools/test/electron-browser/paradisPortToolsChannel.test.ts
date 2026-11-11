@@ -414,14 +414,15 @@ suite('ParadisPortToolsChannel', () => {
 	test('tests each reopened forward from this computer, and does not ask again for 5 minutes when it did not connect', async () => {
 		const window = sshWindow();
 		window.probeResults.set(21002, 'reset');
-		window.probeResults.set(33355, 'untested');
+		// やり直しの結果まで待っても答えが無い: 分からない（覚えない）
+		window.probeResults.set(33355, 'timeout');
 		let now = 1_000_000;
 		const { channel, dialogs } = setup(window, 'approve', () => now);
 		const ports = (remotePorts: number[]) => ({ op: 'reforward', items: remotePorts.map(remotePort => ({ remotePort, alignLocalPort: false })), batch: true } as const);
 		const first = summary(await channel.handle(PANE, ports([21002, 21004, 33355]))) as { results: Record<string, unknown>[] };
 		now += 2 * 60_000;
 		const again = summary(await channel.handle(PANE, ports([21002]))) as { results: { ok: boolean; error: string }[] };
-		const mixed = summary(await channel.handle(PANE, ports([21002, 21004]))) as { results: { ok: boolean }[] };
+		const mixed = summary(await channel.handle(PANE, ports([21002, 21004, 33355]))) as { results: { ok: boolean }[] };
 		now += PARADIS_REFORWARD_UNREACHABLE_MEMORY_MS;
 		const later = summary(await channel.handle(PANE, ports([21002]))) as { results: { ok: boolean }[] };
 		channel.forgetUnreachable();
@@ -441,12 +442,12 @@ suite('ParadisPortToolsChannel', () => {
 				[33355, null, 'Para Code could not test the forward fro'],
 			],
 			again: [false, 'Port 21002 was forwarded again 2 minutes ago, and a test con', true],
-			mixed: [false, true],
+			mixed: [false, true, true],
 			later: [true],
 			afterReconnect: [true],
 			// 2 回目は確認を出さない。3 回目は 21004 だけを聞く
 			dialogs: 4,
-			probes: [21002, 65459, 33355, 65459, 21002, 21002],
+			probes: [21002, 65459, 33355, 65459, 33355, 21002, 21002],
 		});
 	});
 

@@ -56,7 +56,7 @@ export interface IParadisPortReforwardProbeRequest {
  * 確かめた結果。
  * - `reachable`: SSH 先のポートまで転送を作れた
  * - `reset`: SSH 先へ転送を作れなかった（手元の受け口が接続を切った）
- * - `timeout`: SSH 先へ転送を作るのが時間切れになった、または決めた時間のうちに答えが無かった（詰まっている）
+ * - `timeout`: 決めた時間（やり直しの結果が出るまでの長さ）のうちに答えが無かった。繋がるかは分からない
  * - `refused`: 手元の受け口に繋がらなかった
  * - `untested`: 確かめられなかった（shared process にその転送が見当たらない。handshake の結果が届かない）
  */

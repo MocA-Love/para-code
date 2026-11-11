@@ -77,9 +77,13 @@
 
 .monaco-dialog-box.paradis-confirm-dialog:not(.align-vertical) > .dialog-buttons-row > .dialog-buttons {
 	gap: var(--vscode-spacing-size80);
-	margin-left: 0;
-	/* Upstream clips the row to the buttons' height, which cuts the top and bottom of the focus ring (drawn outside). */
-	overflow: visible;
+	/*
+		Upstream clips this row (overflow: hidden), which cut the focus ring drawn outside a button. The clip stays (a
+		row of long buttons in a narrow window must not spill out); the row gets room for the ring inside it instead,
+		and gives that room back with a negative margin so the buttons do not move.
+	*/
+	padding: calc(var(--paradis-focus-width) + var(--paradis-focus-offset));
+	margin: calc(-1 * (var(--paradis-focus-width) + var(--paradis-focus-offset)));
 }
 
 .monaco-dialog-box.paradis-confirm-dialog > .dialog-buttons-row > .dialog-buttons > .monaco-button.paradis-button {

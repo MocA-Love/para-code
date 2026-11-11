@@ -495,7 +495,8 @@ export class ParadisPortToolsChannel implements IServerChannel {
 		const probes = await Promise.all(reopened.map(({ remotePort, localPort }) => localPort !== undefined ? this._window.probe(localPort, remotePort) : Promise.resolve(undefined)));
 		reopened.forEach(({ remotePort }, index) => {
 			const probe = probes[index];
-			const reachable = probe === undefined || probe === 'untested' ? null : probe === 'reachable';
+			// 時間切れ（やり直しの結果まで待っても答えが無い）は、繋がらないとは言えない。分からないにして覚えない
+			const reachable = probe === 'reachable' ? true : probe === 'reset' || probe === 'refused' ? false : null;
 			if (reachable === false) {
 				this._unreachable.set(remotePort, this._now());
 			} else {
