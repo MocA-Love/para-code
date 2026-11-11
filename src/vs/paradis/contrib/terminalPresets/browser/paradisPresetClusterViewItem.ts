@@ -369,7 +369,7 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 				&& this.presetService.isFolderLabelShown(options.folderKey);
 			if (showFolderLabel) {
 				const label = dom.append(btn, $('span.paradis-preset-cluster-item-label'));
-				dom.reset(label, ...renderLabelWithIcons(`$(${iconId}) ${folderLabel}`));
+				dom.reset(label, ...renderLabelWithIcons(`$(${iconId})`), $('span.paradis-preset-cluster-item-text', undefined, ...renderLabelWithIcons(folderLabel)));
 			} else {
 				dom.append(btn, $('span.paradis-preset-cluster-item-icon')).classList.add(...ThemeIcon.asClassNameArray(ThemeIcon.fromId(iconId)));
 			}
@@ -393,7 +393,7 @@ export class ParadisPresetClusterViewItem extends BaseActionViewItem {
 
 		if (preset.pinnedLabel === true) {
 			const label = dom.append(btn, $('span.paradis-preset-cluster-item-label'));
-			dom.reset(label, ...renderLabelWithIcons(`$(${iconId}) ${preset.name}`));
+			dom.reset(label, ...renderLabelWithIcons(`$(${iconId})`), $('span.paradis-preset-cluster-item-text', undefined, ...renderLabelWithIcons(preset.name)));
 		} else {
 			dom.append(btn, $('span.paradis-preset-cluster-item-icon')).classList.add(...ThemeIcon.asClassNameArray(ThemeIcon.fromId(iconId)));
 		}

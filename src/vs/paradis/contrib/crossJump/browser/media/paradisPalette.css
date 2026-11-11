@@ -1,0 +1,157 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+	The centered palette's own parts (Q609, Q610, idea 11 of mock/ui/palette-ideas.html): the kinds tabs under the input
+	band (paradisPaletteKinds.ts), the state dots, the repository groups of the spaces and the row actions of the cross
+	jump rows (paradisCrossJump.contribution.ts). The rows are upstream's quick pick rows: the dot is the item's iconClass,
+	the kind of a row is its id (data-quick-input-id, "paradis-palette/<kind>/..."), the row actions are the item's
+	buttons. Colors are the UI kit's theme colors (--vscode-paradis-*), keyboard focus is paradisFocusRing.css.
+*/
+
+/* Kinds tabs: one line under the input band; the "Tab" hint goes away when the palette is narrower than 700px. */
+.monaco-workbench .quick-input-widget > .paradis-palette-kinds {
+	container-type: inline-size;
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	min-width: 0;
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size120);
+	border-bottom: 1px solid var(--vscode-paradis-lineSubtle);
+}
+
+.monaco-workbench .paradis-palette-kinds > .paradis-seg {
+	flex: 0 1 auto;
+	min-width: 0;
+}
+
+.monaco-workbench .paradis-palette-kinds > .paradis-seg > button {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+}
+
+.monaco-workbench .paradis-palette-kinds .paradis-palette-kind-prefix {
+	font-family: var(--monaco-monospace-font);
+	font-size: var(--vscode-fontSize-label3);
+	color: var(--vscode-paradis-textFaint);
+}
+
+.monaco-workbench .paradis-palette-kinds .paradis-palette-kind-count {
+	font-size: var(--vscode-fontSize-label2);
+	font-variant-numeric: tabular-nums;
+	color: var(--vscode-paradis-textFaint);
+}
+
+.monaco-workbench .paradis-palette-kinds .paradis-palette-kind-count.attention {
+	color: var(--vscode-paradis-warning);
+}
+
+.monaco-workbench .paradis-palette-kinds .paradis-palette-kind-count.hidden {
+	display: none;
+}
+
+.monaco-workbench .paradis-palette-kinds > .paradis-palette-kinds-grow {
+	flex: 1;
+}
+
+.monaco-workbench .paradis-palette-kinds > .paradis-palette-kinds-key {
+	flex: none;
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-paradis-textFaint);
+	white-space: nowrap;
+}
+
+@container (max-width: 699px) {
+	.monaco-workbench .paradis-palette-kinds > .paradis-palette-kinds-key {
+		display: none;
+	}
+}
+
+.monaco-workbench .paradis-palette-kinds > .paradis-palette-help {
+	flex: none;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: var(--paradis-height-sm);
+	height: var(--paradis-height-sm);
+	padding: 0;
+	border: none;
+	border-radius: var(--paradis-radius-control);
+	background: transparent;
+	color: var(--vscode-paradis-textMuted);
+	cursor: pointer;
+}
+
+.monaco-workbench .paradis-palette-kinds > .paradis-palette-help:hover {
+	background: var(--vscode-paradis-fillHover);
+	color: var(--vscode-paradis-textStrong);
+}
+
+/* State dots (the row's iconClass): attention in the warning color, running in the accent, done in the success color,
+	waiting as a ring. Rows without an agent keep the space so the names line up. */
+.monaco-workbench .quick-input-list .quick-input-list-icon.paradis-palette-dot {
+	justify-content: center;
+	width: 8px;
+	padding-right: var(--vscode-spacing-size80);
+}
+
+.monaco-workbench .quick-input-list .quick-input-list-icon.paradis-palette-dot::before {
+	content: '';
+	width: 8px;
+	height: 8px;
+	border-radius: var(--vscode-cornerRadius-circle);
+	box-sizing: border-box;
+}
+
+.monaco-workbench .quick-input-list .quick-input-list-icon.paradis-palette-dot-attention::before {
+	background: var(--vscode-paradis-warning);
+}
+
+.monaco-workbench .quick-input-list .quick-input-list-icon.paradis-palette-dot-working::before {
+	background: var(--vscode-paradis-accent);
+}
+
+.monaco-workbench .quick-input-list .quick-input-list-icon.paradis-palette-dot-review::before {
+	background: var(--vscode-paradis-success);
+}
+
+.monaco-workbench .quick-input-list .quick-input-list-icon.paradis-palette-dot-idle::before {
+	border: 1px solid var(--vscode-paradis-lineStrong);
+}
+
+/* The spaces of a repository sit under its heading, indented. */
+.monaco-workbench .quick-input-list .quick-input-list-entry[data-quick-input-id^="paradis-palette/space/"] > .quick-input-list-label {
+	padding-left: var(--vscode-spacing-size160);
+}
+
+/* Row actions (open to the side, close, stop, pin): upstream shows them on the selected and the hovered row only. On
+	those rows the group name at the right gives way to them, the name and the description keep at least half of the
+	list, and in a list narrower than 480px the actions are not shown at all (the keys still work). */
+.monaco-workbench .quick-input-widget.paradis-quick-input-centered .quick-input-list {
+	container-type: inline-size;
+}
+
+.monaco-workbench .quick-input-list .monaco-list-row.focused .quick-input-list-entry.has-actions[data-quick-input-id^="paradis-palette/"] .quick-input-list-separator,
+.monaco-workbench .quick-input-list .monaco-list-row:hover .quick-input-list-entry.has-actions[data-quick-input-id^="paradis-palette/"] .quick-input-list-separator {
+	display: none;
+}
+
+.monaco-workbench .quick-input-list .quick-input-list-entry.has-actions[data-quick-input-id^="paradis-palette/"] .quick-input-list-rows {
+	min-width: 50%;
+}
+
+@container (max-width: 479px) {
+	.monaco-workbench .quick-input-list .quick-input-list-entry[data-quick-input-id^="paradis-palette/"] .quick-input-list-entry-action-bar {
+		display: none;
+	}
+}
+
+/* Extra key hints of the palette (paradisCrossJump.contribution.ts adds them while it is open). */
+.monaco-workbench .quick-input-widget > .paradis-quick-input-hint > .paradis-palette-hint {
+	color: var(--vscode-paradis-textMuted);
+}

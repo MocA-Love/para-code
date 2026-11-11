@@ -15,6 +15,8 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { PARADIS_MAX_CLIP_DURATION_SECONDS, PARADIS_NOTIFICATIONS_CHANNEL } from '../common/paradisNotifications.js';
+import { ParadisInputField } from '../../../browser/paradisInputField.js';
+import { paradisNotifNestedButton } from './paradisNotificationNestedModal.js';
 
 const $ = dom.$;
 
@@ -119,6 +121,7 @@ export class ParadisAudioEditor extends Disposable {
 		dom.append(startField, $('label.pns-label')).textContent = STR_START_LABEL;
 		const startInput = dom.append(startField, $('input')) as HTMLInputElement;
 		startInput.type = 'number';
+		startInput.setAttribute('aria-label', STR_START_LABEL);
 		startInput.step = '0.1';
 		startInput.min = '0';
 
@@ -128,12 +131,12 @@ export class ParadisAudioEditor extends Disposable {
 		dom.append(endField, $('label.pns-label')).textContent = STR_END_LABEL;
 		const endInput = dom.append(endField, $('input')) as HTMLInputElement;
 		endInput.type = 'number';
+		endInput.setAttribute('aria-label', STR_END_LABEL);
 		endInput.step = '0.1';
 		endInput.min = '0';
 
 		const previewRow = dom.append(container, $('.pns-row'));
-		const previewBtn = dom.append(previewRow, $('button.pns-btn')) as HTMLButtonElement;
-		previewBtn.textContent = STR_PREVIEW;
+		const previewBtn = paradisNotifNestedButton(previewRow, 'secondary', STR_PREVIEW);
 		this._outputHintEl = dom.append(previewRow, $('span.pns-row-hint'));
 
 		const fadeRow = dom.append(container, $('.pns-row'));
@@ -166,7 +169,7 @@ export class ParadisAudioEditor extends Disposable {
 
 		const nameField = dom.append(container, $('.pns-field'));
 		dom.append(nameField, $('label.pns-label')).textContent = STR_DISPLAY_NAME_LABEL;
-		this._nameInput = dom.append(nameField, $('input')) as HTMLInputElement;
+		this._nameInput = this._register(new ParadisInputField(nameField, { ariaLabel: STR_DISPLAY_NAME_LABEL })).inputElement;
 		this._nameInput.maxLength = 80;
 		this._nameInput.placeholder = options.videoTitle;
 		this._nameInput.value = options.initialDisplayName;

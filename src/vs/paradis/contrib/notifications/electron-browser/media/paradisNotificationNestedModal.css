@@ -1,0 +1,295 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+	The boxes opened from inside the notifications area of the hub (dictionary create / edit, Myinstants and YouTube
+	import, the clip editor): the UI kit's dialog (paradisModal.css, sizes S and M) with its header, body and footer
+	bars (paradisNotificationNestedModal.ts). The boxes sit outside `.paradis-notif-area`, so the parts they share with
+	the area (rows, labels, hints, errors, the dictionary table, the waveform, the install log) are scoped here.
+*/
+
+.paradis-notif-nested-backdrop {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: var(--vscode-paradis-scrim);
+}
+
+/* The import boxes take the widest S (the kit lets an S box choose between 420 and 560). */
+.monaco-workbench .paradis-notif-nested-dialog.paradis-modal.paradis-modal-s:is(.pns-myinstants, .pns-youtube) {
+	width: 560px;
+}
+
+/* A box whose footer has no buttons (an error while loading, the download in progress) drops the empty bar. */
+.monaco-workbench .paradis-notif-nested-dialog .paradis-modal-foot:empty {
+	display: none;
+}
+
+.paradis-notif-nested-dialog .pns-nested-desc {
+	margin: var(--vscode-spacing-size80) 0 var(--vscode-spacing-size120);
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+}
+
+.paradis-notif-nested-dialog .pns-field {
+	margin-bottom: var(--vscode-spacing-size120);
+}
+
+.paradis-notif-nested-dialog label.pns-label {
+	display: block;
+	margin-bottom: var(--vscode-spacing-size60);
+	font-size: var(--vscode-fontSize-label1);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-text);
+}
+
+.paradis-notif-nested-dialog .pns-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--vscode-spacing-size120);
+	margin-bottom: var(--vscode-spacing-size120);
+}
+
+.paradis-notif-nested-dialog .pns-row-hint {
+	margin-top: var(--vscode-spacing-size20);
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-paradis-textMuted);
+	overflow-wrap: anywhere;
+}
+
+.paradis-notif-nested-dialog .pns-error {
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-danger);
+	overflow-wrap: anywhere;
+}
+
+.paradis-notif-nested-dialog .pns-error:empty {
+	display: none;
+}
+
+/* Buttons are plain `<button>`s with the kit's classes (they switch `disabled` and their label while loading), so the
+	disabled look comes from `:disabled` (the kit itself looks at `.disabled`). */
+.monaco-workbench .paradis-notif-nested-dialog .paradis-button:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+
+.monaco-workbench .paradis-notif-nested-dialog .paradis-button.paradis-button-secondary:disabled:hover {
+	background-color: var(--vscode-paradis-fillNeutral);
+}
+
+.monaco-workbench .paradis-notif-nested-dialog .paradis-button.paradis-button-primary:disabled:hover {
+	background-color: var(--vscode-paradis-primary);
+}
+
+.monaco-workbench .paradis-notif-nested-dialog .paradis-button.paradis-button-icon:disabled:hover {
+	background-color: transparent;
+}
+
+/*
+	Number fields and sliders stay the OS parts (Q608, decision A): the number field takes the kit field's surface, line,
+	radius and height, and both take the kit's primary color as their accent.
+*/
+.paradis-notif-nested-dialog input[type="number"] {
+	box-sizing: border-box;
+	width: 100%;
+	height: var(--paradis-height-md);
+	padding: 0 var(--vscode-spacing-size60) 0 var(--vscode-spacing-size80);
+	background: var(--vscode-paradis-sunken);
+	color: var(--vscode-paradis-textStrong);
+	border: 1px solid var(--vscode-paradis-line);
+	border-radius: var(--paradis-radius-control);
+	font-family: inherit;
+	font-size: var(--vscode-fontSize-body1);
+	accent-color: var(--vscode-paradis-primary);
+}
+
+.paradis-notif-nested-dialog input[type="number"]:not(:disabled):hover {
+	border-color: var(--vscode-paradis-lineStrong);
+}
+
+.paradis-notif-nested-dialog input[type="range"] {
+	width: 100%;
+	accent-color: var(--vscode-paradis-primary);
+}
+
+/* ---------- dictionary table ---------- */
+
+/* The table scrolls sideways on its own in a narrow box (the body does not widen). */
+.paradis-notif-nested-dialog .pns-table-scroll {
+	max-width: 100%;
+	overflow-x: auto;
+	margin-bottom: var(--vscode-spacing-size80);
+}
+
+.paradis-notif-nested-dialog .pns-dict-table {
+	width: 100%;
+	min-width: 520px;
+	border-collapse: collapse;
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.paradis-notif-nested-dialog .pns-dict-table th {
+	height: var(--paradis-height-md);
+	padding: 0 var(--vscode-spacing-size40);
+	text-align: left;
+	font-weight: var(--vscode-fontWeight-regular);
+	color: var(--vscode-paradis-textMuted);
+	border-bottom: 1px solid var(--vscode-paradis-lineSubtle);
+	white-space: nowrap;
+}
+
+.paradis-notif-nested-dialog .pns-dict-table td {
+	padding: var(--vscode-spacing-size40);
+	text-align: left;
+	border-bottom: 1px solid var(--vscode-paradis-lineSubtle);
+}
+
+.paradis-notif-nested-dialog .pns-dict-table td .paradis-field,
+.paradis-notif-nested-dialog .pns-dict-table td .paradis-select {
+	width: 100%;
+}
+
+.paradis-notif-nested-dialog .pns-dict-table input[type="number"] {
+	width: 64px;
+}
+
+/* ---------- clip editor (paradisAudioEditor.ts) ---------- */
+
+.paradis-notif-nested-dialog .pns-waveform {
+	width: 100%;
+	height: 80px;
+	border-radius: var(--paradis-radius-control);
+}
+
+.paradis-notif-nested-dialog .pns-waveform-times {
+	display: flex;
+	justify-content: space-between;
+	margin-top: var(--vscode-spacing-size20);
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-paradis-textMuted);
+	font-variant-numeric: tabular-nums;
+}
+
+/* ---------- yt-dlp install log ---------- */
+
+.paradis-notif-nested-dialog .pns-log-console {
+	max-height: 260px;
+	overflow: auto;
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size100);
+	background: var(--vscode-paradis-sunken);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-control);
+	font-family: var(--monaco-monospace-font);
+	font-size: var(--vscode-fontSize-label2);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.paradis-notif-nested-dialog .pns-log-line.warn {
+	color: var(--vscode-paradis-warning);
+}
+
+.paradis-notif-nested-dialog .pns-log-line.error {
+	color: var(--vscode-paradis-danger);
+}
+
+/* ---------- Myinstants import (paradisMyinstantsImportDialog.ts) ---------- */
+
+.paradis-notif-nested-dialog.pns-myinstants .pns-mi-error {
+	margin-top: var(--vscode-spacing-size60);
+}
+
+.paradis-notif-nested-dialog.pns-myinstants .pns-mi-link {
+	color: var(--vscode-textLink-foreground);
+	cursor: pointer;
+}
+
+/* The listening row: the name is cut with an ellipsis, the length, size and play button always stay (B14). */
+.paradis-notif-nested-dialog.pns-myinstants .pns-mi-preview {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size100);
+	margin-bottom: var(--vscode-spacing-size120);
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size100);
+	background: var(--vscode-paradis-raised);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner);
+}
+
+.paradis-notif-nested-dialog.pns-myinstants .pns-mi-badge {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	width: 32px;
+	height: 32px;
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-control);
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-paradis-textMuted);
+	background: var(--vscode-paradis-sunken);
+}
+
+.paradis-notif-nested-dialog.pns-myinstants .pns-mi-info {
+	flex: 1;
+	min-width: 0;
+}
+
+.paradis-notif-nested-dialog.pns-myinstants .pns-mi-name {
+	display: flex;
+	align-items: baseline;
+	gap: var(--vscode-spacing-size60);
+	min-width: 0;
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-notif-nested-dialog.pns-myinstants .pns-mi-label {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-notif-nested-dialog.pns-myinstants .pns-mi-duration,
+.paradis-notif-nested-dialog.pns-myinstants .pns-mi-meta {
+	font-size: var(--vscode-fontSize-label2);
+	font-weight: var(--vscode-fontWeight-regular);
+	color: var(--vscode-paradis-textMuted);
+}
+
+.paradis-notif-nested-dialog.pns-myinstants .pns-mi-duration {
+	flex: none;
+}
+
+.paradis-notif-nested-dialog.pns-myinstants .pns-mi-meta {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.paradis-notif-nested-dialog.pns-myinstants .paradis-button.pns-mi-play {
+	flex-shrink: 0;
+}
+
+.monaco-workbench .paradis-notif-nested-dialog.pns-myinstants .paradis-button.pns-mi-play.playing {
+	color: var(--vscode-paradis-primary);
+}
+
+.paradis-notif-nested-dialog.pns-myinstants .pns-mi-notice {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size40);
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size100);
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner);
+}

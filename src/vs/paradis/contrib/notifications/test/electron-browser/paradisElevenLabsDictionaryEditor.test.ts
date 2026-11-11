@@ -51,7 +51,7 @@ suite('ParadisElevenLabsDictionaryEditor', () => {
 			otherDictionary.dispose();
 			const second = await open('dict-a');
 			const afterReopen = { rows: reading(), note: hasNote() };
-			const cancel = [...root.querySelectorAll<HTMLButtonElement>('.pns-nested-footer button')].find(button => !button.classList.contains('pns-btn-primary'))!;
+			const cancel = [...root.querySelectorAll<HTMLElement>('.paradis-modal-foot .paradis-button')].find(button => !button.classList.contains('paradis-button-primary'))!;
 			cancel.click();
 			const third = await open('dict-a');
 			const afterCancel = reading();
