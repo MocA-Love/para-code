@@ -10,7 +10,6 @@ import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { Schemas } from '../../../../../base/common/network.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { FileService } from '../../../../../platform/files/common/fileService.js';
 import { InMemoryFileSystemProvider } from '../../../../../platform/files/common/inMemoryFilesystemProvider.js';
 import { ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
@@ -23,6 +22,7 @@ import { IParadisLifecycleScriptConsent, paradisIsLifecycleScriptApproved, parad
 import { IParadisWorkspaceLifecycleConfig } from '../../common/paradisWorkspaceLifecycle.js';
 import { IParadisWorkspaceRepository } from '../../common/paradisWorkspaceSwitch.js';
 import { PARADIS_WORKTREE_GIT_CHANNEL } from '../../common/paradisWorktreeCreate.js';
+import { IParadisDialogService } from '../../../confirmDialog/browser/paradisDialogService.js';
 
 suite('workspace lifecycle service', () => {
 
@@ -50,7 +50,7 @@ suite('workspace lifecycle service', () => {
 				confirmCount++;
 				return { confirmed: options?.approve ?? true };
 			}
-		} as unknown as IDialogService;
+		} as unknown as IParadisDialogService;
 		const storageService = store.add(new InMemoryStorageService());
 		// チャネル名まで見ないと、名前を間違えても緑のままになる
 		const channelFor = (sink: unknown[]) => (name: string) => {
@@ -68,7 +68,7 @@ suite('workspace lifecycle service', () => {
 				if (id === IWorkspaceTrustManagementService) { return trustService; }
 				if (id === ISharedProcessService) { return sharedProcessService; }
 				if (id === IRemoteAgentService) { return remoteAgentService; }
-				if (id === IDialogService) { return dialogService; }
+				if (id === IParadisDialogService) { return dialogService; }
 				if (id === IStorageService) { return storageService; }
 				return fileService;
 			}

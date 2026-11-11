@@ -33,6 +33,7 @@ import {
 } from '../common/paradisAgentIde.js';
 import { ParadisAgentIdeChannel } from './paradisAgentIdeChannel.js';
 import { IParadisAgentIdeSkillInspection, IParadisAgentIdeSkillInstallRequest, IParadisAgentIdeSkillInstallResult, paradisAgentIdeSkillInstallPlan } from '../common/paradisAgentIdeSkillPlan.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 const paradisConfigurationNodeBase = Object.freeze<IConfigurationNode>({
 	id: 'paradis',
@@ -123,6 +124,7 @@ class ParadisInstallAgentSkillsAction extends Action2 {
 	async run(accessor: ServicesAccessor): Promise<void> {
 		const channel = accessor.get(ISharedProcessService).getChannel(PARADIS_AGENT_IDE_SKILLS_CHANNEL);
 		const dialogService = accessor.get(IDialogService);
+		const paradisDialogService = accessor.get(IParadisDialogService);
 		const notificationService = accessor.get(INotificationService);
 		const logService = accessor.get(ILogService);
 
@@ -156,7 +158,7 @@ class ParadisInstallAgentSkillsAction extends Action2 {
 			return;
 		}
 
-		const { confirmed } = await dialogService.confirm({
+		const { confirmed } = await paradisDialogService.confirm({
 			// allow-any-unicode-next-line
 			message: localize('paradis.agentIde.skills.confirm', "Para Code のスキルファイルを設置しますか？"),
 			// allow-any-unicode-next-line

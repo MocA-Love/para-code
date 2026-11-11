@@ -12,13 +12,14 @@ import { Event } from '../../../../../base/common/event.js';
 import { IChannel } from '../../../../../base/parts/ipc/common/ipc.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
-import { IDialogService, IFileDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
+import { IFileDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { IParadisAivisSettings, IParadisNotificationsSettingsService } from '../../browser/paradisNotificationsSettings.js';
 import { IParadisVoiceGainList, ParadisVoiceGainsResult } from '../../common/paradisVoiceGains.js';
 import { paradisClearVoiceTuningCaches } from '../../electron-browser/paradisVoiceGainsCache.js';
 import { ParadisVoiceGainSection } from '../../electron-browser/paradisVoiceGainSection.js';
+import { IParadisDialogService } from '../../../confirmDialog/browser/paradisDialogService.js';
 
 async function flush(): Promise<void> {
 	for (let index = 0; index < 30; index++) {
@@ -46,7 +47,7 @@ suite('Paradis voice gain section', () => {
 			getAivisSettings: () => ({ elevenLabsApiKey: '' }) as IParadisAivisSettings,
 			getCustomAivisModelPresets: () => [],
 		} as unknown as IParadisNotificationsSettingsService;
-		const dialog = { confirm: async () => ({ confirmed: true }) } as unknown as IDialogService;
+		const dialog = { confirm: async () => ({ confirmed: true }) } as unknown as IParadisDialogService;
 		const notifications = { info: () => undefined, warn: () => undefined, error: () => undefined } as unknown as INotificationService;
 		store.add(new ParadisVoiceGainSection(container, sharedProcess, settings, dialog, {} as IFileDialogService, notifications, Object.create(null), { getValue: () => undefined } as unknown as IConfigurationService));
 		return container;

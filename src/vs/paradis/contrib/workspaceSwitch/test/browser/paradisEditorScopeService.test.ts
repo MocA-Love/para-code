@@ -15,7 +15,7 @@ import { EditorInput, IEditorCloseHandler } from '../../../../../workbench/commo
 import { Registry } from '../../../../../platform/registry/common/platform.js';
 import { SyncDescriptor } from '../../../../../platform/instantiation/common/descriptors.js';
 import { ILogService, NullLogService } from '../../../../../platform/log/common/log.js';
-import { ConfirmResult, IDialogService, IFileDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
+import { ConfirmResult, IFileDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { TestDialogService } from '../../../../../platform/dialogs/test/common/testDialogService.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
@@ -31,6 +31,7 @@ import { paradisEditorRequiresScopedLiveState, paradisOwnerReleaseRetryDelay, Pa
 import { ParadisWorkingCopyOwnerLedger } from '../../common/paradisEditorScope.js';
 import { IParadisAuxiliaryWindowScopeService } from '../../common/paradisWorkspaceSwitch.js';
 import { configureParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
+import { IParadisDialogService } from '../../../confirmDialog/browser/paradisDialogService.js';
 
 /** 子プロセスが動いているエディタのターミナルの代わり。閉じるときに確認が要るので生きたまま預けられる。 */
 class ParadisLiveTestEditorInput extends TestFileEditorInput {
@@ -618,7 +619,7 @@ suite('ParadisEditorScopeService', () => {
 		} as never);
 		instantiationService.stub(IWorkingCopyBackupRestoreRouter, testDisposables.add(new WorkingCopyBackupRestoreRouter()));
 		instantiationService.stub(ILogService, new NullLogService());
-		instantiationService.stub(IDialogService, new class extends TestDialogService {
+		instantiationService.stub(IParadisDialogService, new class extends TestDialogService {
 			override async confirm(): Promise<{ confirmed: boolean }> {
 				return { confirmed: true };
 			}
@@ -879,7 +880,7 @@ suite('ParadisEditorScopeService', () => {
 		const parts = await createEditorParts(instantiationService, testDisposables);
 		instantiationService.stub(IEditorGroupsService, parts);
 		let backupConfirmations = 0;
-		instantiationService.stub(IDialogService, new class extends TestDialogService {
+		instantiationService.stub(IParadisDialogService, new class extends TestDialogService {
 			override async confirm(): Promise<{ confirmed: boolean }> {
 				backupConfirmations++;
 				return { confirmed: false };
@@ -934,7 +935,7 @@ suite('ParadisEditorScopeService', () => {
 			hasVisibleScope: () => false,
 		} as never);
 		let backupConfirmations = 0;
-		instantiationService.stub(IDialogService, new class extends TestDialogService {
+		instantiationService.stub(IParadisDialogService, new class extends TestDialogService {
 			override async confirm(): Promise<{ confirmed: boolean }> {
 				backupConfirmations++;
 				return { confirmed: false };

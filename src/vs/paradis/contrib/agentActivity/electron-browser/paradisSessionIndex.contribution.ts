@@ -15,11 +15,11 @@
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { PARADIS_SESSION_INDEX_DELETE_COMMAND_ID, PARADIS_SESSION_INDEX_SETTING_ENABLED } from '../common/paradisSessionIndex.js';
 import { ParadisAgentActivityClient } from './paradisAgentActivityClient.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 class ParadisDeleteSessionIndexAction extends Action2 {
 	constructor() {
@@ -32,11 +32,12 @@ class ParadisDeleteSessionIndexAction extends Action2 {
 	}
 
 	async run(accessor: ServicesAccessor): Promise<void> {
-		const dialogService = accessor.get(IDialogService);
+		const paradisDialogService = accessor.get(IParadisDialogService);
 		const configurationService = accessor.get(IConfigurationService);
 		const notificationService = accessor.get(INotificationService);
 		const client = accessor.get(IInstantiationService).createInstance(ParadisAgentActivityClient);
-		const { confirmed } = await dialogService.confirm({
+		const { confirmed } = await paradisDialogService.confirm({
+			destructive: true,
 			message: localize('paradis.sessionIndex.deleteConfirm', "会話の全文索引を削除しますか？"),
 			detail: localize('paradis.sessionIndex.deleteDetail', "この PC に保存した会話の索引を削除し、全文検索をオフにします。会話のログそのものは消えません。"),
 			primaryButton: localize('paradis.sessionIndex.deleteButton', "削除"),

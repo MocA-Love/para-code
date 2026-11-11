@@ -13,7 +13,7 @@ import { isEqual, isEqualOrParent } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { ConfirmResult, IDialogService, IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { ConfirmResult, IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
 import { EditorInputCapabilities, EditorsOrder, GroupIdentifier, SaveReason } from '../../../../workbench/common/editor.js';
@@ -30,6 +30,7 @@ import { IParadisEditorScopeService, ParadisScopeRetirementPreparation, ParadisW
 import { IParadisAuxiliaryWindowScopeService, PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY } from '../common/paradisWorkspaceSwitch.js';
 import { paradisHasParkedTerminals } from './paradisTerminalEditorPark.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 interface IParadisLiveEditorPlacement {
 	readonly editor: EditorInput;
@@ -189,7 +190,7 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 		@IWorkingCopyBackupService private readonly workingCopyBackupService: IWorkingCopyBackupService,
 		@IParadisAuxiliaryWindowScopeService private readonly auxiliaryWindowScopeService: IParadisAuxiliaryWindowScopeService,
 		@IFileDialogService private readonly fileDialogService: IFileDialogService,
-		@IDialogService private readonly dialogService: IDialogService,
+		@IParadisDialogService private readonly paradisDialogService: IParadisDialogService,
 		@ILogService private readonly logService: ILogService,
 	) {
 		super();
@@ -748,7 +749,8 @@ export class ParadisEditorScopeService extends Disposable implements IParadisEdi
 			);
 			const unrestoredBackups = backups.filter(identifier => !handledWorkingCopyKeys.has(this.identifierKey(identifier)));
 			if (unrestoredBackups.length > 0) {
-				const { confirmed } = await this.dialogService.confirm({
+				const { confirmed } = await this.paradisDialogService.confirm({
+					destructive: true,
 					type: 'warning',
 					message: localize('paradis.editorScope.backupRetirementMessage', "このスペースには未保存のバックアップデータがあります。"),
 					detail: localize('paradis.editorScope.backupRetirementDetail', "このスペースを削除すると、復元されていないエディタのバックアップは完全に失われます。"),

@@ -23,7 +23,6 @@ import { Disposable, DisposableStore, IDisposable, MutableDisposable } from '../
 import { localize } from '../../../../nls.js';
 import { CommandsRegistry, ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -49,6 +48,7 @@ import { ParadisLimitsSetupDialog } from './paradisLimitsSetupDialog.js';
 import { IParadisLimitsEmailMaskService } from './paradisLimitsEmailMask.js';
 // 使用量パネルへ差し込む部品（ParadisLimitsPanelContributions へ登録する副作用 import）。
 import './paradisClaudeAccountActions.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 const $ = dom.$;
 
@@ -134,7 +134,7 @@ class ParadisLimitsMonitorWidget extends Disposable {
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IHoverService private readonly hoverService: IHoverService,
-		@IDialogService private readonly dialogService: IDialogService,
+		@IParadisDialogService private readonly paradisDialogService: IParadisDialogService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILogService private readonly logService: ILogService,
 		@IStorageService private readonly storageService: IStorageService,
@@ -330,7 +330,8 @@ class ParadisLimitsMonitorWidget extends Disposable {
 		}
 		this.removingHomes.add(account.id);
 		try {
-			const { confirmed } = await this.dialogService.confirm({
+			const { confirmed } = await this.paradisDialogService.confirm({
+				destructive: true,
 				message: localize('paradis.limitsMonitor.unregisterConfirm', "この Claude アカウントの登録を削除しますか？"),
 				detail: this.client.connectedToRemote
 					? account.active
@@ -370,7 +371,8 @@ class ParadisLimitsMonitorWidget extends Disposable {
 			const accountName = account.email !== undefined ? this.displayName(account) : localize('paradis.limitsMonitor.unknownAccount', "不明なアカウント");
 			const homeLabel = account.homeLabel ?? account.id;
 			const remote = this.client.connectedToRemote;
-			const { confirmed } = await this.dialogService.confirm({
+			const { confirmed } = await this.paradisDialogService.confirm({
+				destructive: true,
 				message: localize('paradis.limitsMonitor.removeConfirm', "このCodexアカウントを削除しますか？"),
 				detail: remote
 					? localize(

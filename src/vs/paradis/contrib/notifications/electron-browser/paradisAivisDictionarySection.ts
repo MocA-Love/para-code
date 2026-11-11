@@ -17,7 +17,6 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
@@ -41,6 +40,7 @@ import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { PARADIS_MODAL_DRAFT_RESTORED, paradisModalDraftSnapshot, ParadisModalDrafts } from '../../paradisSettings/browser/paradisModalDrafts.js';
 import { paradisNotifButton } from './paradisNotificationKitParts.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 const $ = dom.$;
 
@@ -85,7 +85,7 @@ export class ParadisAivisDictionarySection extends Disposable {
 		private readonly container: HTMLElement,
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
 		@IParadisNotificationsSettingsService private readonly settingsService: IParadisNotificationsSettingsService,
-		@IDialogService private readonly dialogService: IDialogService,
+		@IParadisDialogService private readonly paradisDialogService: IParadisDialogService,
 		@ILayoutService private readonly layoutService: ILayoutService,
 		@ILogService private readonly logService: ILogService,
 		@IContextViewService private readonly contextViewService: IContextViewService,
@@ -284,7 +284,8 @@ export class ParadisAivisDictionarySection extends Disposable {
 	}
 
 	private async _deleteDictionary(uuid: string, name: string, apiKey: string, wasActive: boolean): Promise<void> {
-		const { confirmed } = await this.dialogService.confirm({
+		const { confirmed } = await this.paradisDialogService.confirm({
+			destructive: true,
 			message: STR_DELETE_CONFIRM_TITLE(name),
 			primaryButton: STR_DELETE_CONFIRM_PRIMARY,
 		});

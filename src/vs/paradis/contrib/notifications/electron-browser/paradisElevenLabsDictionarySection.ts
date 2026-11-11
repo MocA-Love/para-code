@@ -15,7 +15,6 @@ import * as dom from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
@@ -40,6 +39,7 @@ import { paradisNotifNestedModal } from './paradisNotificationNestedModal.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { PARADIS_MODAL_DRAFT_RESTORED, paradisModalDraftSnapshot, ParadisModalDrafts } from '../../paradisSettings/browser/paradisModalDrafts.js';
 import { paradisNotifButton } from './paradisNotificationKitParts.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 const $ = dom.$;
 
@@ -84,7 +84,7 @@ export class ParadisElevenLabsDictionarySection extends Disposable {
 		private readonly container: HTMLElement,
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
 		@IParadisNotificationsSettingsService private readonly settingsService: IParadisNotificationsSettingsService,
-		@IDialogService private readonly dialogService: IDialogService,
+		@IParadisDialogService private readonly paradisDialogService: IParadisDialogService,
 		@ILayoutService private readonly layoutService: ILayoutService,
 		@ILogService private readonly logService: ILogService,
 		@IHoverService private readonly hoverService: IHoverService,
@@ -237,7 +237,8 @@ export class ParadisElevenLabsDictionarySection extends Disposable {
 	}
 
 	private async _delete(apiKey: string, dict: IParadisElevenLabsDictionaryListItem, wasActive: boolean): Promise<void> {
-		const { confirmed } = await this.dialogService.confirm({
+		const { confirmed } = await this.paradisDialogService.confirm({
+			destructive: true,
 			message: strDeleteConfirm(dict.name),
 			detail: STR_DELETE_DETAIL,
 			primaryButton: STR_DELETE,

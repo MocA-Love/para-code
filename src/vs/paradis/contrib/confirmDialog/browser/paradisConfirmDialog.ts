@@ -19,7 +19,7 @@
 
 import './media/paradisConfirmDialog.css';
 import { Dialog } from '../../../../base/browser/ui/dialog/dialog.js';
-import { IButtonStyles } from '../../../../base/browser/ui/button/button.js';
+import { IButton, IButtonStyles } from '../../../../base/browser/ui/button/button.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { localize } from '../../../../nls.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
@@ -28,6 +28,7 @@ import { asCssVariable } from '../../../../platform/theme/common/colorUtils.js';
 import { createWorkbenchDialogOptions } from '../../../../workbench/browser/parts/dialogs/dialog.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { paradisButtonClasses, ParadisButtonKind } from '../../../browser/paradisButton.js';
+import { PARADIS_CHECKBOX_STYLES } from '../../../browser/paradisCheck.js';
 
 /** 確認のダイアログの箱に付くクラス。 */
 export const PARADIS_CONFIRM_DIALOG_CLASS = 'paradis-confirm-dialog';
@@ -58,6 +59,21 @@ export interface IParadisConfirmOptions<T> {
 	readonly extraClasses?: readonly string[];
 	/** 取り消されたら閉じ、取消と同じく undefined を返す。 */
 	readonly token?: CancellationToken;
+	/** 補足の下に出すチェック（キットのチェックの見た目）。状態は {@link openParadisConfirmDialog} が返す。 */
+	readonly checkbox?: { readonly label: string; readonly checked?: boolean };
+	/**
+	 * 初めのフォーカスを取消のボタンに置く（Enter では取消になり、実行は Tab で移るかマウスで押す）。
+	 * 消すなど取り消せない操作の確認で使う。ボタンの並びと番号は変えない（macOS の Cmd+D が実行を押さないように）。
+	 */
+	readonly focusCancel?: boolean;
+}
+
+/** {@link openParadisConfirmDialog} の答え。 */
+export interface IParadisConfirmDialogResult {
+	/** 押した `buttons` の番号。取消・Esc・閉じる・token の取消では undefined。 */
+	readonly index: number | undefined;
+	/** チェックを出したときの、閉じた時点の状態（取消でも返す）。 */
+	readonly checkboxChecked: boolean | undefined;
 }
 
 /** 確認のダイアログに要るサービス。 */
@@ -81,24 +97,37 @@ const PARADIS_CONFIRM_BUTTON_STYLES: IButtonStyles = {
 };
 
 /**
- * 確認のダイアログを出し、押したボタンの `run` の結果を返す。取消・Esc・閉じるでは undefined。
+ * 確認のダイアログを出し、押したボタンの番号とチェックの状態を返す。`run` は呼ばない（呼ぶのは {@link paradisConfirm}）。
  */
-export async function paradisConfirm<T>(services: IParadisConfirmServices, options: IParadisConfirmOptions<T>): Promise<T | undefined> {
+export async function openParadisConfirmDialog<T>(services: IParadisConfirmServices, options: IParadisConfirmOptions<T>): Promise<IParadisConfirmDialogResult> {
 	const ownCancel = options.cancelIndex === undefined;
 	// allow-any-unicode-next-line
 	const labels = [...options.buttons.map(button => button.label), ...(ownCancel ? [options.cancelLabel ?? localize('paradis.confirm.cancel', "キャンセル")] : [])];
 	const cancelId = options.cancelIndex ?? labels.length - 1;
 	const kinds: ParadisButtonKind[] = [...options.buttons.map((button, index) => button.kind ?? (index === 0 ? 'primary' : 'secondary')), ...(ownCancel ? ['secondary' as const] : [])];
+	let cancelButton: IButton | undefined;
 	const dialog = new Dialog(services.layoutService.activeContainer, options.message, labels, {
 		...createWorkbenchDialogOptions({
 			detail: options.detail,
 			cancelId,
 			type: 'none',
 			extraClasses: [PARADIS_CONFIRM_DIALOG_CLASS, ...(options.extraClasses ?? [])],
-			renderBody: options.renderBody,
-			buttonOptions: kinds.map(kind => ({ styleButton: button => button.element.classList.add(...paradisButtonClasses(kind)) })),
+			// 補足も本文も無いと、本家は問いを補足の行（小さい薄い字）に入れ、見出しを作らない。問いを見出しにするため空の本文を渡す
+			renderBody: options.renderBody ?? (options.detail ? undefined : () => { }),
+			checkboxLabel: options.checkbox?.label,
+			checkboxChecked: options.checkbox?.checked,
+			buttonOptions: kinds.map((kind, index) => ({
+				styleButton: button => {
+					button.element.classList.add(...paradisButtonClasses(kind));
+					if (index === cancelId) {
+						cancelButton = button;
+					}
+				}
+			})),
 		}, services.keybindingService, services.layoutService, services.hostService),
 		buttonStyles: PARADIS_CONFIRM_BUTTON_STYLES,
+		// 本家のチェックは色を inline で書くので、色は渡さない（paradisCheck.css が描く）
+		checkboxStyles: PARADIS_CHECKBOX_STYLES,
 		dialogStyles: {
 			dialogForeground: asCssVariable('paradis.text'),
 			dialogBackground: asCssVariable('paradis.overlay'),
@@ -113,12 +142,42 @@ export async function paradisConfirm<T>(services: IParadisConfirmServices, optio
 	// 閉じると本家の Dialog は取消（cancelId）で答える
 	const cancellation = options.token?.onCancellationRequested(() => dialog.dispose());
 	try {
-		const result = await dialog.show();
-		return result.button === cancelId || options.token?.isCancellationRequested ? undefined : options.buttons[result.button]?.run();
+		// show() はボタンを作って 0 番にフォーカスを置くところまでを同期で済ませる
+		const shown = dialog.show();
+		const box = cancelButton?.element.closest<HTMLElement>('.monaco-dialog-box');
+		if (box && options.checkbox) {
+			paradisDecorateConfirmCheckbox(box);
+		}
+		if (options.focusCancel) {
+			cancelButton?.focus();
+		}
+		const result = await shown;
+		const cancelled = result.button === cancelId || !!options.token?.isCancellationRequested;
+		return { index: cancelled ? undefined : result.button, checkboxChecked: result.checkboxChecked };
 	} finally {
 		cancellation?.dispose();
 		dialog.dispose();
 	}
+}
+
+/**
+ * 本家の Dialog のチェックの行に、キットのチェック（paradisCheck.css）とフォーカスの枠のクラスを付ける。
+ * 本家の Dialog は行を外に出さないので、行だけを探す。行の中は「箱（Checkbox の domNode）、文字」の順（dialog.ts の Checkbox）。
+ */
+function paradisDecorateConfirmCheckbox(box: HTMLElement): void {
+	// eslint-disable-next-line no-restricted-syntax
+	const row = box.querySelector('.dialog-checkbox-row');
+	row?.classList.add('paradis-check');
+	row?.firstElementChild?.classList.add('paradis-focus-ring');
+	row?.lastElementChild?.classList.add('paradis-check-label');
+}
+
+/**
+ * 確認のダイアログを出し、押したボタンの `run` の結果を返す。取消・Esc・閉じるでは undefined。
+ */
+export async function paradisConfirm<T>(services: IParadisConfirmServices, options: IParadisConfirmOptions<T>): Promise<T | undefined> {
+	const { index } = await openParadisConfirmDialog(services, options);
+	return index === undefined ? undefined : options.buttons[index]?.run();
 }
 
 /** はい/いいえの確認。押したら true。 */

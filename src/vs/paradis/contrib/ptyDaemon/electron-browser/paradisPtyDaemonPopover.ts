@@ -22,7 +22,6 @@ import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.j
 import { paradisCloseWhenModalOpens } from '../../../browser/paradisAnchoredPopover.js';
 import Severity from '../../../../base/common/severity.js';
 import { localize } from '../../../../nls.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IPreferencesService } from '../../../../workbench/services/preferences/common/preferences.js';
 import {
@@ -43,6 +42,7 @@ import {
 } from '../common/paradisPtyDaemonScope.js';
 import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
 import { ConfigurationTarget } from '../../../../platform/configuration/common/configuration.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 const $ = dom.$;
 
@@ -70,7 +70,7 @@ export class ParadisPtyDaemonPopover extends Disposable {
 		private readonly anchor: HTMLElement,
 		private readonly options: IParadisPtyDaemonPopoverOptions,
 		@ILayoutService layoutService: ILayoutService,
-		@IDialogService private readonly dialogService: IDialogService,
+		@IParadisDialogService private readonly paradisDialogService: IParadisDialogService,
 		@IPreferencesService private readonly preferencesService: IPreferencesService,
 	) {
 		super();
@@ -331,7 +331,8 @@ export class ParadisPtyDaemonPopover extends Disposable {
 		// 接続先では、失うのが自分の作業だけとは限らない。同じサーバーに繋いでいる他の
 		// ウィンドウのターミナルも同じ常駐が抱えている。
 		const shared = paradisDaemonSharedHostWarning(this.options.scope);
-		const { confirmed } = await this.dialogService.confirm({
+		const { confirmed } = await this.paradisDialogService.confirm({
+			destructive: true,
 			type: Severity.Warning,
 			message,
 			detail: shared === undefined ? detail : `${detail}\n${shared}`,
@@ -369,7 +370,8 @@ export class ParadisPtyDaemonPopover extends Disposable {
 	private async confirmAndStopForeign(pid: number, buildId: string): Promise<void> {
 		const shared = paradisDaemonSharedHostWarning(this.options.scope);
 		const detail = localize('paradis.ptyDaemon.confirm.foreignDetail', "{0} が抱えているターミナルはすべて終了します。何本残っているかは、こちらからは分かりません。", paradisShortBuildId(buildId));
-		const { confirmed } = await this.dialogService.confirm({
+		const { confirmed } = await this.paradisDialogService.confirm({
+			destructive: true,
 			type: Severity.Warning,
 			message: paradisDaemonForeignStopTitle(this.options.scope),
 			detail: shared === undefined ? detail : `${detail}\n${shared}`,

@@ -15,12 +15,12 @@
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IParadisHeapSnapshotMainService, PARADIS_HEAP_SNAPSHOT_CHANNEL } from '../common/paradisHeapSnapshot.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 function formatGigabytes(bytes: number): string {
 	// main 側は大きさを読めなかったときに -1 を返す。そこを「0.00 GB」と出すと、
@@ -42,14 +42,14 @@ class ParadisWriteHeapSnapshotAction extends Action2 {
 	}
 
 	async run(accessor: ServicesAccessor): Promise<void> {
-		const dialogService = accessor.get(IDialogService);
+		const paradisDialogService = accessor.get(IParadisDialogService);
 		const mainProcessService = accessor.get(IMainProcessService);
 		const nativeHostService = accessor.get(INativeHostService);
 		const notificationService = accessor.get(INotificationService);
 
 		// 書き出しは同期でブロックする。何も知らせずに数十秒フリーズさせるのは、
 		// ユーザーから見れば「アプリが固まった」としか区別がつかない。
-		const { confirmed } = await dialogService.confirm({
+		const { confirmed } = await paradisDialogService.confirm({
 			type: Severity.Warning,
 			message: localize('paradis.writeHeapSnapshot.confirm', "ヒープスナップショットを書き出しますか?"),
 			detail: localize('paradis.writeHeapSnapshot.detail', "書き出しの間、Para Code 全体が数秒から数十秒のあいだ反応しなくなります。ファイルは数 GB になることがあります。"),

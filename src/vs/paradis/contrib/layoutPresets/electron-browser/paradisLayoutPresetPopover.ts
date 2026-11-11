@@ -25,7 +25,6 @@ import { paradisCloseWhenModalOpens } from '../../../browser/paradisAnchoredPopo
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { IContextViewService, IOpenContextView } from '../../../../platform/contextview/browser/contextView.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
@@ -40,6 +39,7 @@ import {
 import { paradisOrientationAtDepth } from '../common/paradisLayoutTreeEdit.js';
 import { paradisConfirmAndApplyLayoutPreset, paradisReportLayoutPresetFailure } from './paradisApplyLayoutPreset.js';
 import { ParadisLayoutPresetEditorInput } from './paradisLayoutPresetEditorInput.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 const $ = dom.$;
 
@@ -92,7 +92,7 @@ export function showParadisLayoutPresetPopover(accessor: ServicesAccessor, ancho
 	const presetService = accessor.get(IParadisLayoutPresetService);
 	const instantiationService = accessor.get(IInstantiationService);
 	const editorService = accessor.get(IEditorService);
-	const dialogService = accessor.get(IDialogService);
+	const paradisDialogService = accessor.get(IParadisDialogService);
 	const notificationService = accessor.get(INotificationService);
 
 	const labels = slotKindLabels();
@@ -160,7 +160,8 @@ export function showParadisLayoutPresetPopover(accessor: ServicesAccessor, ancho
 				disposables.add(dom.addDisposableListener(remove, dom.EventType.CLICK, async e => {
 					dom.EventHelper.stop(e, true);
 					contextViewService.hideContextView();
-					const { confirmed } = await dialogService.confirm({
+					const { confirmed } = await paradisDialogService.confirm({
+						destructive: true,
 						// allow-any-unicode-next-line
 						message: localize('paradis.layoutPresets.popover.deleteConfirm', "レイアウト「{0}」を削除しますか？", preset.name),
 						// allow-any-unicode-next-line

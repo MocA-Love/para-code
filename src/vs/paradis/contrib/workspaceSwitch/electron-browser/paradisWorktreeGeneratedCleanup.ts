@@ -15,7 +15,6 @@ import { basename } from '../../../../base/common/path.js';
 import { isEqualAuthority } from '../../../../base/common/resources.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IProgressService, ProgressLocation } from '../../../../platform/progress/common/progress.js';
@@ -23,6 +22,7 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisFindGeneratedOutputsRequest, IParadisGeneratedOutputCandidate, IParadisRemoveGeneratedOutputsRequest, IParadisRemoveGeneratedOutputsResult, PARADIS_GENERATED_OUTPUT_MIN_AGE_DAYS } from '../common/paradisWorktreeGeneratedCleanup.js';
 import { paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 /** 「古い依存とビルド出力を掃除...」のコマンド。引数はリポジトリの ID。 */
 export const PARADIS_CLEAN_GENERATED_OUTPUTS_COMMAND_ID = 'paradis.workspaceSwitch.cleanGeneratedOutputs';
@@ -56,7 +56,7 @@ class ParadisCleanGeneratedOutputsAction extends Action2 {
 		if (!repository) {
 			return;
 		}
-		const dialogService = accessor.get(IDialogService);
+		const paradisDialogService = accessor.get(IParadisDialogService);
 		const notificationService = accessor.get(INotificationService);
 		const progressService = accessor.get(IProgressService);
 		// 消すのは書き込みなので、別ホスト・未接続の接続先へ流さない write resolver を使う
@@ -95,7 +95,8 @@ class ParadisCleanGeneratedOutputsAction extends Action2 {
 			// allow-any-unicode-next-line
 			lines.push(localize('paradis.generatedCleanup.more', "ほか {0} 件", candidates.length - MAX_LISTED));
 		}
-		const { confirmed } = await dialogService.confirm({
+		const { confirmed } = await paradisDialogService.confirm({
+			destructive: true,
 			type: 'warning',
 			// allow-any-unicode-next-line
 			message: localize('paradis.generatedCleanup.confirm', "古い依存とビルド出力を {0} 件削除しますか？", candidates.length),

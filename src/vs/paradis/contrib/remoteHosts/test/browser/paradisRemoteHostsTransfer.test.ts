@@ -118,7 +118,8 @@ suite('paradisRemoteHostsTransfer', () => {
 		const fileDialogService = new FakeFileDialogService();
 		const notificationService = new RecordingNotificationService();
 		const services: IParadisRemoteTransferServices = {
-			dialogService,
+			// 本家の確認の差し替えは、同じ形の fork の確認（IParadisDialogService）としてそのまま使える
+			paradisDialogService: dialogService,
 			fileDialogService,
 			fileService,
 			notificationService,

@@ -11,15 +11,16 @@ import { basename, dirname, joinPath } from '../../../../base/common/resources.j
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
-import { IDialogService, IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IProgressService, ProgressLocation } from '../../../../platform/progress/common/progress.js';
 import { paradisTransferTempName } from '../../fileTransfer/common/paradisFileTransferQueueTypes.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 /** 転送処理に必要なサービスの束。ビューが注入したものをそのまま渡す。 */
 export interface IParadisRemoteTransferServices {
-	readonly dialogService: IDialogService;
+	readonly paradisDialogService: IParadisDialogService;
 	readonly fileDialogService: IFileDialogService;
 	readonly fileService: IFileService;
 	readonly notificationService: INotificationService;
@@ -44,7 +45,8 @@ async function confirmOverwrite(services: IParadisRemoteTransferServices, names:
 		? localize('paraRemoteHosts.confirmOverwrite', "{0} は転送先に既に存在します。置き換えますか?", names[0])
 		// allow-any-unicode-next-line
 		: localize('paraRemoteHosts.confirmOverwriteMany', "{0} 件の項目が転送先に既に存在します。置き換えますか?", names.length);
-	const { confirmed } = await services.dialogService.confirm({
+	const { confirmed } = await services.paradisDialogService.confirm({
+		destructive: true,
 		type: 'warning',
 		message,
 		// 「何が置き換えられるのか」が分からないと確認として機能しないため、名前も出す

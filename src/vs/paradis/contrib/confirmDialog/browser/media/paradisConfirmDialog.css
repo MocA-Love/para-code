@@ -69,6 +69,21 @@
 .monaco-dialog-box.paradis-confirm-dialog .dialog-message-row .dialog-message-container .dialog-message-detail {
 	font-size: var(--vscode-fontSize-label1);
 	color: var(--vscode-paradis-textMuted);
+	/*
+		A long detail keeps its line breaks, wraps at the left (upstream's pre-wrap) and scrolls inside itself after 12
+		lines (upstream's 20px lines), so the question and the buttons always stay in view (Q617).
+	*/
+	flex: none;
+	max-height: calc(12 * 20px);
+	overflow-y: auto;
+	text-align: start;
+	/* The native scrollbar is drawn in the OS's light colors otherwise (Linux, Windows); use the theme's slider. */
+	scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
+}
+
+/* The checkbox below the detail, drawn as the kit's check (paradisCheck.css, classes added in paradisConfirmDialog.ts). */
+.monaco-dialog-box.paradis-confirm-dialog .dialog-message-row .dialog-message-container .dialog-checkbox-row {
+	padding: var(--vscode-spacing-size120) 0 0;
 }
 
 .monaco-dialog-box.paradis-confirm-dialog > .dialog-buttons-row {

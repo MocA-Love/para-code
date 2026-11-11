@@ -11,7 +11,7 @@
 //
 // ファイルを書き換えるのは「削除」「導入」のボタンを押して確認に「はい」と答えたときだけ。
 // 内蔵ブラウザの裏に隠れないよう、backdrop に共通の印 `paradis-modal-backdrop`（overlayManager.ts に登録済み）を付ける。
-// 重ね順はワークベンチのモーダル（2575）より下に置き、確認に IDialogService を使う。
+// 重ね順はワークベンチのモーダル（2575）より下に置き、確認に IParadisDialogService（UI キットの確認。本家のダイアログと同じ 2575 の段）を使う。
 
 import './media/paradisSkills.css';
 import * as dom from '../../../../base/browser/dom.js';
@@ -23,7 +23,6 @@ import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILabelService } from '../../../../platform/label/common/label.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
@@ -50,6 +49,7 @@ import { paradisResolveSkillRoots } from './paradisSkillRoots.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 const $ = dom.$;
 
@@ -72,7 +72,7 @@ export class ParadisSkillsDialog extends Disposable {
 	constructor(
 		@ILayoutService layoutService: ILayoutService,
 		@IFileService private readonly fileService: IFileService,
-		@IDialogService private readonly dialogService: IDialogService,
+		@IParadisDialogService private readonly paradisDialogService: IParadisDialogService,
 		@IPathService private readonly pathService: IPathService,
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 		@ILabelService private readonly labelService: ILabelService,
@@ -358,7 +358,9 @@ export class ParadisSkillsDialog extends Disposable {
 		}
 		const destination = paradisSkillInstallTarget(skill, target);
 		const exists = await this.fileService.exists(destination).catch(() => false);
-		const { confirmed } = await this.dialogService.confirm({
+		const { confirmed } = await this.paradisDialogService.confirm({
+			// 置き換えるときだけ取り消せない（新しく入れるだけなら実行が既定）
+			destructive: exists,
 			type: exists ? 'warning' : 'question',
 			message: exists
 				? localize('paradis.skills.installOverwrite', "「{0}」は導入先にすでにあります。置き換えますか？", skill.name)
@@ -403,7 +405,8 @@ export class ParadisSkillsDialog extends Disposable {
 		} else if (skill.realUri) {
 			details.push(localize('paradis.skills.deleteReal', "スキルのフォルダはリンクの先にあります。消えるのは実体の {0} です。", this.displayUri(skill.realUri)));
 		}
-		const { confirmed } = await this.dialogService.confirm({
+		const { confirmed } = await this.paradisDialogService.confirm({
+			destructive: true,
 			type: 'warning',
 			message: localize('paradis.skills.deleteConfirm', "スキル「{0}」を削除しますか？", skill.name),
 			detail: details.join('\n'),

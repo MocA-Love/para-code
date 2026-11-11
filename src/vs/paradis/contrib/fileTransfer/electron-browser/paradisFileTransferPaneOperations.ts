@@ -20,7 +20,6 @@ import { dirname, joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { FileSystemProviderCapabilities, IFileService } from '../../../../platform/files/common/files.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
@@ -33,6 +32,7 @@ import { paradisClassifyTransferError, paradisIsTransferTempName } from '../comm
 import { paradisTypeCharOf } from './paradisFileTransferPaneTable.js';
 import { paradisShowPermissionsDialog } from './paradisFileTransferPermissionsDialog.js';
 import { IParadisFileTransferService } from './paradisFileTransferService.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 /** 操作が読む片側の状態と、片側にさせること。 */
 export interface IParadisPaneOperationsContext {
@@ -92,7 +92,7 @@ export class ParadisFileTransferPaneOperations {
 		@IKeybindingService private readonly keybindingService: IKeybindingService,
 		@IFileService private readonly fileService: IFileService,
 		@IEditorService private readonly editorService: IEditorService,
-		@IDialogService private readonly dialogService: IDialogService,
+		@IParadisDialogService private readonly paradisDialogService: IParadisDialogService,
 		@IQuickInputService private readonly quickInputService: IQuickInputService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILayoutService private readonly layoutService: ILayoutService,
@@ -272,7 +272,8 @@ export class ParadisFileTransferPaneOperations {
 			: (entries.length === 1
 				? localize('paradis.fileTransfer.deleteOne', "{0} を完全に削除しますか?", names[0])
 				: localize('paradis.fileTransfer.deleteMany', "{0} 項目を完全に削除しますか?", entries.length));
-		const { confirmed } = await this.dialogService.confirm({
+		const { confirmed } = await this.paradisDialogService.confirm({
+			destructive: true,
 			type: useTrash ? 'question' : 'warning',
 			message,
 			detail: names.slice(0, 10).join('\n') + (names.length > 10 ? '\n…' : '') + (useTrash ? '' : '\n\n' + localize('paradis.fileTransfer.deleteIrreversible', "{0} にはゴミ箱がありません。この操作は元に戻せません。", this.context.label())),

@@ -24,7 +24,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
-import { IDialogService, IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -46,6 +46,7 @@ import { IPathService } from '../../../../workbench/services/path/common/pathSer
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IParadisWorkspaceSwitchService, paradisWorkspaceColorHex } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 import {
 	isParadisRemoteFileEntry,
 	isParadisRemoteHost,
@@ -378,7 +379,7 @@ export class ParadisRemoteHostsView extends ViewPane {
 		@IClipboardService private readonly clipboardService: IClipboardService,
 		@ILabelService private readonly labelService: ILabelService,
 		@IEditorService private readonly editorService: IEditorService,
-		@IDialogService private readonly dialogService: IDialogService,
+		@IParadisDialogService private readonly paradisDialogService: IParadisDialogService,
 		@IFileDialogService fileDialogService: IFileDialogService,
 		@IFileService private readonly fileService: IFileService,
 		@INotificationService private readonly notificationService: INotificationService,
@@ -392,7 +393,7 @@ export class ParadisRemoteHostsView extends ViewPane {
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 
-		this.transferServices = { dialogService, fileDialogService, fileService, notificationService, progressService };
+		this.transferServices = { paradisDialogService, fileDialogService, fileService, notificationService, progressService };
 
 		// スペース台帳が変わったら一覧を追従させる (登録・削除・色変更など)
 		this._register(workspaceSwitchService.onDidChangeRepositories(() => { this.refresh(); }));
@@ -573,7 +574,7 @@ export class ParadisRemoteHostsView extends ViewPane {
 		if (this.approvedOfflineHosts.has(alias) || this.rememberedOfflineHosts().includes(alias)) {
 			return true;
 		}
-		const result = await this.dialogService.confirm({
+		const result = await this.paradisDialogService.confirm({
 			message: localize('paraRemoteHosts.offlineConfirm', "{0} のファイル一覧を取得しますか?", alias),
 			detail: localize('paraRemoteHosts.offlineConfirmDetail', "未接続のため ssh で直接読み取ります。初めてのホストなら、その鍵を known_hosts へ登録します（鍵が後から変わった場合は拒否されます）。パスフレーズや多要素認証が必要なホストは、ここでは読み取れないため「このホストに接続して開く」から繋いでください。"),
 			primaryButton: localize('paraRemoteHosts.offlineConfirmYes', "取得"),

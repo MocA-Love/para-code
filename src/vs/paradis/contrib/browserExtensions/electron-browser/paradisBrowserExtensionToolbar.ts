@@ -42,7 +42,6 @@ import { CommandsRegistry } from '../../../../platform/commands/common/commands.
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ContextKeyExpr, IContextKey, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
-import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { createDecorator, IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
@@ -69,6 +68,7 @@ import {
 	PARADIS_BROWSER_EXTENSIONS_ENABLED_SETTING,
 } from '../common/paradisBrowserExtensions.js';
 import { paradisShowBrowserExtensionsDialog } from './paradisBrowserExtensionsArea.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 const $ = dom.$;
 
@@ -406,7 +406,7 @@ function featureOf(editor: BrowserEditor | undefined): ParadisBrowserExtensionTo
 /** 拡張機能 1 つの操作のメニュー（ボタンの右クリック・一覧の行の「…」）。 */
 function extensionMenuActions(accessor: ServicesAccessor, editor: BrowserEditor, action: IParadisToolbarAction, place: string, anchor: () => HTMLElement | undefined): IAction[] {
 	const toolbarService = accessor.get(IParadisBrowserExtensionToolbarService);
-	const dialogService = accessor.get(IDialogService);
+	const paradisDialogService = accessor.get(IParadisDialogService);
 	const instantiationService = accessor.get(IInstantiationService);
 	const logService = accessor.get(ILogService);
 	const model = editor.model;
@@ -438,7 +438,8 @@ function extensionMenuActions(accessor: ServicesAccessor, editor: BrowserEditor,
 		() => toolbarService.main.setEnabled(action.extensionId, place, false).then(refresh)));
 	actions.push(new Separator());
 	actions.push(new Action('paradis.browserExtensions.item.remove', localize('paradis.browserExtensions.item.remove', "削除…"), undefined, true, async () => {
-		const { confirmed } = await dialogService.confirm({
+		const { confirmed } = await paradisDialogService.confirm({
+			destructive: true,
 			type: 'warning',
 			message: localize('paradis.browserExtensions.item.removeConfirm', "「{0}」を削除しますか？", action.name),
 			detail: localize('paradis.browserExtensions.item.removeDetail', "すべてのプロファイルから外し、拡張機能が保存したデータも消します。"),

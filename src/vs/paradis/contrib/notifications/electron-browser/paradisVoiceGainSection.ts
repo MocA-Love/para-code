@@ -19,7 +19,7 @@ import { joinPath } from '../../../../base/common/resources.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
-import { IDialogService, IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
@@ -45,6 +45,7 @@ import { paradisForgetVoiceGains, paradisLoadVoiceGains } from './paradisVoiceGa
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import './media/paradisVoiceTuning.css';
 import { paradisNotifButton } from './paradisNotificationKitParts.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 const $ = dom.$;
 
@@ -145,7 +146,7 @@ export class ParadisVoiceGainSection extends Disposable {
 		private readonly container: HTMLElement,
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
 		@IParadisNotificationsSettingsService private readonly settingsService: IParadisNotificationsSettingsService,
-		@IDialogService private readonly dialogService: IDialogService,
+		@IParadisDialogService private readonly paradisDialogService: IParadisDialogService,
 		@IFileDialogService private readonly fileDialogService: IFileDialogService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IContextViewService private readonly contextViewService: IContextViewService,
@@ -371,7 +372,7 @@ export class ParadisVoiceGainSection extends Disposable {
 	}
 
 	private async _reset(entry: IParadisVoiceGainEntry): Promise<void> {
-		const { confirmed } = await this.dialogService.confirm({
+		const { confirmed } = await this.paradisDialogService.confirm({
 			message: strResetConfirm(this._voiceName(entry), this._modelName(entry)),
 			detail: STR_RESET_DETAIL,
 			primaryButton: STR_RESET,

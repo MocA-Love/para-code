@@ -3441,6 +3441,21 @@ export default defineConfig(
 			],
 		}
 	},
+	// PARA-PATCH: Para Code's confirmations go through IParadisDialogService (the UI kit's confirmation) instead of upstream's IDialogService.confirm, which shows the native macOS sheet (Q617, .eslint-plugin-local/code-paradis-no-upstream-confirm.ts)
+	{
+		files: [
+			'src/vs/paradis/**/*.ts',
+		],
+		ignores: [
+			'src/vs/paradis/**/test/**',
+		],
+		plugins: {
+			'local': pluginLocal,
+		},
+		rules: {
+			'local/code-paradis-no-upstream-confirm': 'warn',
+		}
+	},
 	// Forbid new JavaScript files - use TypeScript instead.
 	// The allowlist of pre-existing JS/CJS/MJS files lives in
 	// `.eslint-allowed-javascript-files`, which is gated by CODEOWNERS.

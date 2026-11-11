@@ -31,7 +31,7 @@ export interface IParadisCheckOptions {
 }
 
 /** 箱は 16px。色は paradisCheck.css（inline の色を書かせない）。 */
-const PARADIS_CHECKBOX_STYLES: ICheckboxStyles = {
+export const PARADIS_CHECKBOX_STYLES: ICheckboxStyles = {
 	checkboxBackground: undefined,
 	checkboxBorder: undefined,
 	checkboxForeground: undefined,

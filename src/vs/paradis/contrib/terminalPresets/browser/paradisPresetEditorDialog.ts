@@ -20,7 +20,7 @@
 // 挟んだ位置が見た目と一致しなくなるため、手動並び替え自体を無効化する。
 //
 // 編集フォームへの遷移（選択トグル・新規作成・左ナビ・Esc・戻る）は、未保存の入力があるときに
-// 破棄確認（dialogService.confirm）を挟む。dirty 判定はフォームを開いた時点の値との比較。
+// 破棄確認（paradisDialogService.confirm）を挟む。dirty 判定はフォームを開いた時点の値との比較。
 //
 // 保存先として「ユーザー設定（settings.json）」と「このリポジトリ（.paracode.json）」を選べる。
 // ダイアログの実装様式は paradisYouTubeImportDialog.ts / paradisCreateWorktreeDialog.ts と同じ
@@ -93,6 +93,7 @@ import { paradisMenuItem, showParadisMenu } from '../../../browser/paradisMenu.j
 import { PARADIS_MODAL_COMPACT_CLASS, paradisModalClasses, ParadisModalSize, renderParadisModalHead } from '../../../browser/paradisModal.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 import {
 	IParadisPresetMovePlan,
 	isParadisPresetMoveRefusal,
@@ -558,6 +559,7 @@ export function openParadisPresetEditorDialog(accessor: ServicesAccessor): void 
 		accessor.get(IContextViewService),
 		accessor.get(IConfigurationService),
 		{ layoutService: accessor.get(ILayoutService), keybindingService: accessor.get(IKeybindingService), hostService: accessor.get(IHostService) },
+		accessor.get(IParadisDialogService),
 	);
 }
 
@@ -638,6 +640,8 @@ class ParadisPresetEditorDialog extends Disposable {
 		private readonly configurationService: IConfigurationService,
 		/** 削除の確認（UI キットの S 段のダイアログ）に要るサービス。 */
 		private readonly _confirmServices: IParadisConfirmServices,
+		/** 破棄・一括実行・同じ内容の確認（本家の confirm と同じ形の fork の確認）。 */
+		private readonly paradisDialogService: IParadisDialogService,
 	) {
 		super();
 
@@ -937,7 +941,8 @@ class ParadisPresetEditorDialog extends Disposable {
 		if (!this._editIsDirty()) {
 			return true;
 		}
-		const result = await this.dialogService.confirm({
+		const result = await this.paradisDialogService.confirm({
+			destructive: true,
 			message: STR_DISCARD_MESSAGE,
 			primaryButton: STR_DISCARD,
 		});
@@ -1814,7 +1819,7 @@ class ParadisPresetEditorDialog extends Disposable {
 					return;
 				}
 			} else if (selected.length >= BULK_RUN_CONFIRM_THRESHOLD || skippedCount > 0) {
-				const result = await this.dialogService.confirm({
+				const result = await this.paradisDialogService.confirm({
 					message: strBulkRunMessage(runnable.length),
 					detail: [
 						runnable.map(preset => preset.name).join(', '),
@@ -2780,7 +2785,8 @@ class ParadisPresetEditorDialog extends Disposable {
 			// 見分けが付かないのは名前・区別語・説明であって、コマンドは違うのが普通。
 			// 何が消えるのかを出さずに「置き換える」を押させない。
 			const replaced = conflict.indistinguishableFrom;
-			const result = await this.dialogService.confirm({
+			const result = await this.paradisDialogService.confirm({
+				destructive: true,
 				message: STR_INDISTINGUISHABLE_MESSAGE,
 				detail: [
 					replaced ? strExistingDetail(paradisPresetCommandSignature(replaced, ' && '), '') : undefined,
