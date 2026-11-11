@@ -77,6 +77,8 @@
 	max-height: calc(12 * 20px);
 	overflow-y: auto;
 	text-align: start;
+	/* The native scrollbar is drawn in the OS's light colors otherwise (Linux, Windows); use the theme's slider. */
+	scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
 }
 
 /* The checkbox below the detail, drawn as the kit's check (paradisCheck.css, classes added in paradisConfirmDialog.ts). */
