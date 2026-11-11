@@ -31,6 +31,8 @@ export interface AgentHistoryState {
 	readonly hasMore: boolean;
 	/** 読める上限に達した（これより前は PC で見る）。 */
 	readonly capped: boolean;
+	/** PC が手元に写している SSH 先の会話の先頭に着いた（これより前は PC のターミナルで見る）。 */
+	readonly copyStart?: true;
 	readonly loading: boolean;
 	/** 直前の読み込みの失敗（画面に出す文）。 */
 	readonly error?: string;
@@ -42,6 +44,8 @@ export interface AgentHistoryPage {
 	readonly cursor?: string;
 	readonly hasMore: boolean;
 	readonly capped: boolean;
+	/** PC が手元に写している SSH 先の会話の先頭に着いた。古い PC は送らない。 */
+	readonly copyStart?: true;
 	readonly error?: string;
 }
 
@@ -70,7 +74,7 @@ export function parseAgentHistoryReply(reply: Record<string, unknown>): AgentHis
 		messages.push(rest as unknown as AgentChatMessage);
 	}
 	const cursor = typeof reply['cursor'] === 'string' && reply['cursor'].length <= 100 ? reply['cursor'] : undefined;
-	return { messages, ...(cursor !== undefined ? { cursor } : {}), hasMore: reply['hasMore'] === true, capped: reply['capped'] === true };
+	return { messages, ...(cursor !== undefined ? { cursor } : {}), hasMore: reply['hasMore'] === true, capped: reply['capped'] === true, ...(reply['copyStart'] === true ? { copyStart: true } : {}) };
 }
 
 /** 次に求めるときの `beforeRev`（持っているいちばん古い発言の rev）。何も無ければ undefined（求めない）。 */
@@ -165,6 +169,7 @@ export function applyAgentHistoryPage(history: AgentHistoryState, page: AgentHis
 		...(page.cursor !== undefined ? { cursor: page.cursor } : {}),
 		hasMore: page.hasMore,
 		capped: page.capped,
+		...(page.copyStart === true ? { copyStart: true } : {}),
 		loading: false,
 	};
 }
@@ -188,7 +193,7 @@ export type AgentHistoryHeader =
 	 * スクロールしても自動では読みに行かない（スクロールのたびに要求を出し続けないため）。押せば読み直す。
 	 */
 	| { readonly kind: 'more'; readonly loading: boolean; readonly message?: string }
-	| { readonly kind: 'capped' }
+	| { readonly kind: 'capped'; readonly copyStart?: true }
 	| { readonly kind: 'error'; readonly message: string };
 
 /**
@@ -205,7 +210,7 @@ export function agentHistoryHeader(supported: boolean, truncated: boolean, histo
 		return { kind: 'error', message: history.error };
 	}
 	if (history.capped) {
-		return { kind: 'capped' };
+		return history.copyStart === true ? { kind: 'capped', copyStart: true } : { kind: 'capped' };
 	}
 	if (!history.hasMore && !history.loading) {
 		return { kind: 'none' };

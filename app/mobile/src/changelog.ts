@@ -51,7 +51,7 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			{
 				icon: 'cloud-offline-outline',
 				title: 'SSH 先の会話を PC が読み込めていないとき、トークに「この会話は最新を取得できていません」と出すようにしました',
-				body: 'SSH 先の長い会話でトークが古いまま止まることがあったのも、PC の Para Code を更新すると直ります。',
+				body: 'SSH 先の長い会話でトークが古いまま止まることがあったのも、PC の Para Code を更新すると直ります。長い会話で「さらに前の発言」を読み込めないところまで来たときは、PC のターミナルで見られることを出します。',
 			},
 		],
 	},

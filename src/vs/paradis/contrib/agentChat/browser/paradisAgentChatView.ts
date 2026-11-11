@@ -536,8 +536,11 @@ export class ParadisAgentChatView extends Disposable {
 	}
 
 	private renderItems(state: IParadisAgentChatState): void {
-		this.notice.textContent = state.truncated ? localize('paradisAgentChat.truncated', "これより前の会話は省略しています。すべて読むにはターミナルに戻ってください。") : '';
-		this.notice.style.display = state.truncated ? '' : 'none';
+		// SSH の接続先の会話は末尾の窓だけを写して読んでいる。前の会話はこの表示では読めない
+		this.notice.textContent = state.copyPartial
+			? localize('paradisAgentChat.truncatedCopy', "これより前の会話は PC のターミナルで見られます。")
+			: state.truncated ? localize('paradisAgentChat.truncated', "これより前の会話は省略しています。すべて読むにはターミナルに戻ってください。") : '';
+		this.notice.style.display = state.truncated || state.copyPartial ? '' : 'none';
 		// 読み取りが始め直された（同じタブで別の会話が始まった等）なら、前の会話の行を使い回さない
 		// （行の鍵は rev なので、epoch をまたぐと別の会話の行と取り違える）。
 		if (this.renderedEpoch !== state.epoch) {

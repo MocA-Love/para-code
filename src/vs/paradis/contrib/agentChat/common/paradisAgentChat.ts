@@ -338,6 +338,10 @@ export interface IParadisAgentChatView {
 	readonly messages: readonly IParadisAgentChatMessage[];
 	/** reset のとき、保持の上限でこれより前の会話が落ちている。 */
 	readonly truncated?: boolean;
+	/**
+	 * SSH の接続先の会話を、末尾の窓だけ手元へ写して読んでいる（これより前の会話は写していない）。差分のときも毎回載せる。
+	 */
+	readonly copyPartial?: true;
 	readonly info?: IParadisAgentSessionInfo;
 	/** 会話ログに書かれる前の、生成中・実行中の様子。 */
 	readonly live: IParadisAgentLiveState | null;

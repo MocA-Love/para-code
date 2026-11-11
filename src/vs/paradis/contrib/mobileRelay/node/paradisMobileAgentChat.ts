@@ -231,7 +231,7 @@ type AgentOutbound =
 	 * 取り寄せはできない。`cursor` があれば続きがあり、次の求めにそのまま付ける。`hasMore` が false ならこれより前は無いか、
 	 * `capped`（1 ペインで読める上限に達した）。
 	 */
-	| { t: 'history'; id: number; requestId: string; epoch: string; messages?: readonly IParadisAgentChatMessage[]; cursor?: string; hasMore?: boolean; capped?: true; error?: string }
+	| { t: 'history'; id: number; requestId: string; epoch: string; messages?: readonly IParadisAgentChatMessage[]; cursor?: string; hasMore?: boolean; capped?: true; copyStart?: true; error?: string }
 	| ParadisAgentShellOutbound
 	| { t: 'none'; id: number };
 
@@ -2330,7 +2330,8 @@ class TranscriptTailer {
 	matchesOpenCodeSession(sessionId: string | undefined): boolean { return this.openCodeSessionId === sessionId; }
 
 	get wasInitialTruncated(): boolean {
-		return this.initialTruncated;
+		// SSH の写しが接続先の末尾の窓だけなら、写しを追記で読み始めた（初回読みでは空だった）ときも前の会話を省いている
+		return this.initialTruncated || paradisRemoteTranscriptCopyState(this.transcriptPath)?.partial === true;
 	}
 
 	/**
@@ -5151,7 +5152,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		const token = this.resolveInboundToken(msg.id, msg.token);
 		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
 		const reply = (body: Omit<Extract<AgentOutbound, { t: 'history' }>, 't' | 'id' | 'requestId' | 'epoch'>) => {
-			this.sendTo(mobileId, { t: 'history', id: msg.id, requestId: msg.requestId, epoch: msg.epoch, ...body }, token ?? msg.token);
+			// SSH の写しが接続先の末尾の窓だけなら、写しの先頭より前は読めない。「これ以上無い」ではなく、
+			// 前の会話は PC のターミナルで見られると伝える（古いアプリは capped の案内を出す）
+			const atCopyStart = body.error === undefined && body.hasMore !== true && body.capped !== true
+				&& tailer !== undefined && paradisRemoteTranscriptCopyState(tailer.transcriptPath)?.partial === true;
+			this.sendTo(mobileId, { t: 'history', id: msg.id, requestId: msg.requestId, epoch: msg.epoch, ...body, ...(atCopyStart ? { capped: true, copyStart: true } : {}) }, token ?? msg.token);
 		};
 		if (token === undefined || tailer === undefined || tailer.epoch !== msg.epoch || !this.hasSubscriber(token, mobileId)) {
 			reply({ error: 'stale-session' });
@@ -8367,6 +8372,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			reset: !incremental,
 			messages,
 			...(!incremental && (tailer.wasInitialTruncated || oldestRev > 0) ? { truncated: true } : {}),
+			...(paradisRemoteTranscriptCopyState(tailer.transcriptPath)?.partial === true ? { copyPartial: true } : {}),
 			...(info !== undefined ? { info } : {}),
 			live: this.liveStates.get(token) ?? null,
 			interaction,
