@@ -23,6 +23,8 @@ import { fromNow } from '../../../../base/common/date.js';
 import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
@@ -86,6 +88,7 @@ export class ParadisGithubMetricsSection extends Disposable implements IParadisU
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IClipboardService private readonly clipboardService: IClipboardService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super();
 
@@ -341,11 +344,14 @@ export class ParadisGithubMetricsSection extends Disposable implements IParadisU
 			const head = dom.append(row, $('.paradis-ghm-hbar-head'));
 			const name = dom.append(head, $('.paradis-ghm-hbar-name.paradis-ghm-mono'));
 			name.textContent = operation.callSite;
+			let hover = operation.callSite;
 			if (operation.topWorktreePath) {
-				dom.append(name, $('.paradis-ghm-hbar-sub')).textContent = localize('paradis.githubMetrics.table.topWorktree', "最多: {0}", spaceLabel(operation.topWorktreePath));
+				const top = localize('paradis.githubMetrics.table.topWorktree', "最多: {0}", spaceLabel(operation.topWorktreePath));
+				dom.append(name, $('.paradis-ghm-hbar-sub')).textContent = top;
+				hover = `${hover}\n${top}`;
 			}
-			// 長い作業ツリーのパスは「…」で切り、全文はホバーで見せる
-			name.title = name.textContent ?? '';
+			// 長い呼び出し元・作業ツリーのパスは「…」で切り、全文はホバーで見せる
+			this.bodyDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), name, hover));
 			dom.append(head, $('.paradis-ghm-hbar-value')).textContent = counts.calls.toLocaleString();
 			const track = dom.append(row, $('.paradis-ghm-hbar-track'));
 			dom.append(track, $(`span.${operation.resource}`)).style.width = `${Math.max(2, (counts.calls / maxCalls) * 100)}%`;

@@ -219,10 +219,6 @@
 
 /* ---- history table: the kit's table (paradis-table, paradisCard.css) ---- */
 
-.paradis-rtk table {
-	/* カード幅を超えないよう固定レイアウト(セル内容は ellipsis で切る) */
-	table-layout: fixed;
-}
 
 .paradis-rtk :is(th, td) {
 	white-space: nowrap;
@@ -230,10 +226,16 @@
 	text-overflow: ellipsis;
 }
 
-/* 履歴表の固定列幅(コマンド列が残り幅を取る) */
-.paradis-rtk-history th:nth-child(1) { width: 84px; }
-.paradis-rtk-history th:nth-child(3) { width: 58px; }
-.paradis-rtk-history th:nth-child(4) { width: 68px; }
+/* The command column takes the rest of the width and is cut with an ellipsis (the full text is the hover); the other
+	columns are as wide as their content. `max-width: 0` lets the cell shrink below its text in an auto-layout table. */
+.paradis-rtk table :is(th, td) {
+	width: 1%;
+}
+
+.paradis-rtk table :is(th, td).command {
+	width: 100%;
+	max-width: 0;
+}
 
 /* ---- tooltip ---- */
 
@@ -283,6 +285,3 @@
 	font-variant-numeric: tabular-nums;
 }
 
-.paradis-rtk-commands td:first-child {
-	max-width: 260px;
-}

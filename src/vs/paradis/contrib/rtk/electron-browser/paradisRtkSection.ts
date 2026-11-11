@@ -21,6 +21,8 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ColorScheme } from '../../../../platform/theme/common/theme.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
@@ -112,6 +114,7 @@ export class ParadisRtkSection extends Disposable implements IParadisUsageSectio
 	constructor(
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IThemeService private readonly themeService: IThemeService,
+		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super();
 		this.client = instantiationService.createInstance(ParadisRtkClient);
@@ -427,7 +430,7 @@ export class ParadisRtkSection extends Disposable implements IParadisUsageSectio
 		const table = dom.append(card, $('table.paradis-rtk-history.paradis-rtk-commands'));
 		table.classList.add(PARADIS_TABLE_CLASS);
 		const head = dom.append(dom.append(table, $('thead')), $('tr'));
-		dom.append(head, $('th')).textContent = localize('paradis.rtk.periodCommands.command', "コマンド");
+		dom.append(head, $('th.command')).textContent = localize('paradis.rtk.periodCommands.command', "コマンド");
 		dom.append(head, $('th.num')).textContent = localize('paradis.rtk.periodCommands.count', "回数");
 		dom.append(head, $('th.num')).textContent = localize('paradis.rtk.periodCommands.saved', "節約");
 		dom.append(head, $('th.num')).textContent = localize('paradis.rtk.periodCommands.rate', "節約率");
@@ -435,10 +438,10 @@ export class ParadisRtkSection extends Disposable implements IParadisUsageSectio
 		const body = dom.append(table, $('tbody'));
 		for (const row of stats.commands) {
 			const tr = dom.append(body, $('tr'));
-			const command = dom.append(tr, $('td'));
+			const command = dom.append(tr, $('td.command'));
 			// 先頭の語が読めない記録（引数だけ・秘密を含む語など）は名前を出さずにまとめる
 			command.textContent = row.command || localize('paradis.rtk.periodCommands.other', "（その他）");
-			command.title = command.textContent;
+			this.setCommandHover(command, command.textContent);
 			dom.append(tr, $('td.num')).textContent = row.count.toLocaleString();
 			dom.append(tr, $('td.num')).textContent = paradisRtkFormatTokens(row.savedTokens);
 			dom.append(tr, $('td.num')).textContent = `${paradisRtkSavingsPercent(row.savedTokens, row.inputTokens).toFixed(0)}%`;
@@ -674,19 +677,24 @@ export class ParadisRtkSection extends Disposable implements IParadisUsageSectio
 		table.classList.add(PARADIS_TABLE_CLASS);
 		const headRow = dom.append(dom.append(table, $('thead')), $('tr'));
 		dom.append(headRow, $('th')).textContent = localize('paradis.rtk.history.time', "時刻");
-		dom.append(headRow, $('th')).textContent = localize('paradis.rtk.history.command', "コマンド");
+		dom.append(headRow, $('th.command')).textContent = localize('paradis.rtk.history.command', "コマンド");
 		dom.append(headRow, $('th.num')).textContent = localize('paradis.rtk.history.rate', "節約率");
 		dom.append(headRow, $('th.num')).textContent = localize('paradis.rtk.history.tokens', "トークン");
 		const tbody = dom.append(table, $('tbody'));
 		for (const entry of history) {
 			const row = dom.append(tbody, $('tr'));
 			dom.append(row, $('td')).textContent = entry.timestampLabel;
-			const commandCell = dom.append(row, $('td'));
+			const commandCell = dom.append(row, $('td.command'));
 			commandCell.textContent = entry.command;
-			commandCell.title = entry.command;
+			this.setCommandHover(commandCell, entry.command);
 			dom.append(row, $('td.num')).textContent = `${entry.savingsPct.toFixed(0)}%`;
 			dom.append(row, $('td.num')).textContent = paradisRtkFormatTokens(entry.tokens);
 		}
+	}
+
+	/** 表のコマンドの欄は残りの幅で「…」に切れるので、全文はホバーで見せる。 */
+	private setCommandHover(cell: HTMLElement, text: string): void {
+		this.bodyDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), cell, text));
 	}
 
 	// ---------- tooltip ----------

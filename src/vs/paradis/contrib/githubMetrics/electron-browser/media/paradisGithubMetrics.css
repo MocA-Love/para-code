@@ -497,6 +497,9 @@
 }
 
 .paradis-ghm-hbar-sub {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 	font-size: 10.5px;
 	color: var(--vscode-descriptionForeground);
 	margin-left: 6px;
