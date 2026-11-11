@@ -24,6 +24,7 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ILanguageService } from '../../../../editor/common/languages/language.js';
 import { tokenizeToString } from '../../../../editor/common/languages/textToHtmlTokenizer.js';
+import { IModelService } from '../../../../editor/common/services/model.js';
 import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
@@ -67,7 +68,7 @@ export type ParadisPalettePreviewModel =
 		readonly kind: 'editor';
 		readonly title: string;
 		readonly location: string | undefined;
-		/** 先頭を出すファイル。テキストのエディタで開いていないタブ（Office・画像・PDF・ターミナルなど）は undefined。 */
+		/** 先頭を出すファイル。中身がテキストでないビューア（Office・画像・PDF・ターミナルなど）のタブは undefined。 */
 		readonly resource: URI | undefined;
 	}
 	| {
@@ -125,6 +126,14 @@ export function paradisLooksBinary(bytes: Uint8Array): boolean {
 	return false;
 }
 
+/**
+ * タブの先頭を面に出せるか。中身がテキストでないビューア（`blockedTypeIds`）だけを弾き、残り（テキストのエディタ、
+ * Markdown・HTML・CSV のビューア、差分、git の旧版、untitled など）は読めれば出す（中身がバイナリなら NUL の判定で弾く）。
+ */
+export function paradisCanPreviewEditor(typeId: string, blockedTypeIds: ReadonlySet<string>, readable: boolean): boolean {
+	return readable && !blockedTypeIds.has(typeId);
+}
+
 /** 面の本文に「プレビューできません」を出す。 */
 function showUnavailable(body: HTMLElement): void {
 	dom.append(body, dom.$('.paradis-palette-preview-empty')).textContent = localize('paradis.palette.preview.unavailable', "このタブはプレビューできません");
@@ -167,6 +176,7 @@ export class ParadisPalettePreviewPane extends Disposable {
 		@ILanguageService private readonly languageService: ILanguageService,
 		@IExtensionService private readonly extensionService: IExtensionService,
 		@ICommandService private readonly commandService: ICommandService,
+		@IModelService private readonly modelService: IModelService,
 	) {
 		super();
 		this.element = dom.append(listContainer, dom.$(`.${PARADIS_PALETTE_PREVIEW_CLASS}`));
@@ -288,23 +298,33 @@ export class ParadisPalettePreviewPane extends Disposable {
 
 	private async loadFile(resource: URI, body: HTMLElement, token: CancellationToken): Promise<void> {
 		const cancelled = () => token.isCancellationRequested;
-		// 行が替わったら読み込みも止める
-		const content = await this.fileService.readFile(resource, { length: PARADIS_PALETTE_PREVIEW_MAX_BYTES }, token);
-		if (cancelled()) {
-			return;
+		// 開いている文書（untitled・保存していない変更・git の旧版など）は、その文字を使う
+		const model = this.modelService.getModel(resource);
+		let text: string;
+		if (model) {
+			const lastLine = Math.min(model.getLineCount(), PARADIS_PALETTE_PREVIEW_MAX_LINES);
+			text = model.getValueInRange({ startLineNumber: 1, startColumn: 1, endLineNumber: lastLine, endColumn: model.getLineMaxColumn(lastLine) });
+		} else {
+			// 行が替わったら読み込みも止める
+			const content = await this.fileService.readFile(resource, { length: PARADIS_PALETTE_PREVIEW_MAX_BYTES }, token);
+			if (cancelled()) {
+				return;
+			}
+			if (paradisLooksBinary(content.value.buffer)) {
+				showUnavailable(body);
+				return;
+			}
+			text = content.value.toString();
 		}
-		if (paradisLooksBinary(content.value.buffer)) {
-			showUnavailable(body);
-			return;
-		}
-		const head = paradisPalettePreviewHead(content.value.toString());
+		const truncatedByModel = !!model && model.getLineCount() > PARADIS_PALETTE_PREVIEW_MAX_LINES;
+		const head = paradisPalettePreviewHead(text);
 		const languageId = this.languageService.guessLanguageIdByFilepathOrFirstLine(resource, head.text.split('\n', 1)[0]);
 		if (paradisIsPalettePreviewMarkdown(resource, languageId)) {
 			await this.renderMarkdown(head.text, body, cancelled);
 		} else {
 			await this.renderCode(head.text, languageId, body, cancelled);
 		}
-		if (head.truncated && !cancelled()) {
+		if ((head.truncated || truncatedByModel) && !cancelled()) {
 			dom.append(body, dom.$('.paradis-palette-preview-more')).textContent = localize('paradis.palette.preview.more', "先頭の {0} 行だけを出しています", PARADIS_PALETTE_PREVIEW_MAX_LINES);
 		}
 	}

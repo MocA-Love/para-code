@@ -9,7 +9,9 @@
 import assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisIsPalettePreviewMarkdown, paradisLooksBinary, PARADIS_PALETTE_PREVIEW_BINARY_SNIFF_BYTES, PARADIS_PALETTE_PREVIEW_MAX_LINES, paradisPalettePreviewHead, paradisPalettePreviewState } from '../../browser/paradisPalettePreview.js';
+import { PARADIS_CSV_INPUT_TYPE_ID } from '../../../fileViewers/browser/csv/paradisCsvFileInput.js';
+import { PARADIS_FILE_DIFF_INPUT_TYPE_ID, PARADIS_HTML_INPUT_TYPE_ID, PARADIS_MARKDOWN_INPUT_TYPE_ID, PARADIS_PDF_INPUT_TYPE_ID, PARADIS_SPREADSHEET_INPUT_TYPE_ID } from '../../../fileViewers/browser/paradisFileViewers.js';
+import { paradisCanPreviewEditor, paradisIsPalettePreviewMarkdown, paradisLooksBinary, PARADIS_PALETTE_PREVIEW_BINARY_SNIFF_BYTES, PARADIS_PALETTE_PREVIEW_MAX_LINES, paradisPalettePreviewHead, paradisPalettePreviewState } from '../../browser/paradisPalettePreview.js';
 
 suite('paradisPalettePreview', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -44,6 +46,24 @@ suite('paradisPalettePreview', () => {
 			paradisLooksBinary(late),
 			paradisLooksBinary(new Uint8Array()),
 		], [false, true, false, false]);
+	});
+
+	test('only viewers whose content is not text are refused; the rest are read when a reader or a document exists', () => {
+		const blocked = new Set([PARADIS_SPREADSHEET_INPUT_TYPE_ID, PARADIS_PDF_INPUT_TYPE_ID, 'workbench.editors.terminal']);
+		const cases: [string, boolean][] = [
+			['workbench.editors.files.fileEditorInput', true],
+			[PARADIS_MARKDOWN_INPUT_TYPE_ID, true],
+			[PARADIS_HTML_INPUT_TYPE_ID, true],
+			[PARADIS_CSV_INPUT_TYPE_ID, true],
+			[PARADIS_FILE_DIFF_INPUT_TYPE_ID, true],
+			['workbench.editors.diffEditorInput', true],
+			['workbench.editors.untitledEditorInput', true],
+			[PARADIS_SPREADSHEET_INPUT_TYPE_ID, true],
+			[PARADIS_PDF_INPUT_TYPE_ID, true],
+			['workbench.editors.terminal', true],
+			['workbench.editors.files.fileEditorInput', false],
+		];
+		assert.deepStrictEqual(cases.map(([typeId, readable]) => paradisCanPreviewEditor(typeId, blocked, readable)), [true, true, true, true, true, true, true, false, false, false, false]);
 	});
 
 	test('the preview toggle shows on/off only where the window can hold the preview', () => {

@@ -60,7 +60,12 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { EditorResourceAccessor, EditorsOrder, IEditorIdentifier, SideBySideEditor } from '../../../../workbench/common/editor.js';
 import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
-import { FILE_EDITOR_INPUT_ID } from '../../../../workbench/contrib/files/common/files.js';
+import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/common/browserEditorInput.js';
+import { TerminalEditorInput } from '../../../../workbench/contrib/terminal/browser/terminalEditorInput.js';
+import { PARADIS_DOCX_DIFF_INPUT_TYPE_ID, PARADIS_DOCX_INPUT_TYPE_ID, PARADIS_OFFICE_BROWSER_INPUT_TYPE_ID, PARADIS_PDF_INPUT_TYPE_ID, PARADIS_SPREADSHEET_DIFF_INPUT_TYPE_ID, PARADIS_SPREADSHEET_INPUT_TYPE_ID } from '../../fileViewers/browser/paradisFileViewers.js';
+import { PARADIS_IMAGE_INPUT_TYPE_ID } from '../../fileViewers/browser/image/paradisImagePreview.js';
+import { PARADIS_ANDROID_INPUT_TYPE_ID } from '../../simulator/electron-browser/paradisAndroidEditorInput.js';
+import { PARADIS_SIMULATOR_INPUT_TYPE_ID } from '../../simulator/electron-browser/paradisSimulatorEditorInput.js';
 import { TerminalCommandId } from '../../../../workbench/contrib/terminal/common/terminal.js';
 import { IEditorService, SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
@@ -75,7 +80,7 @@ import { PARADIS_AGENT_LAUNCH_OPTIONS_STORAGE_KEY } from '../../workspaceSwitch/
 import { paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { PARADIS_PALETTE_PREVIEW_SETTING } from '../browser/paradisPaletteConfiguration.js';
 import { IParadisPaletteKindsState, ParadisPaletteKindsBar, paradisPaletteKindLabel } from '../browser/paradisPaletteKinds.js';
-import { ParadisPalettePreviewModel, paradisPalettePreviewState } from '../browser/paradisPalettePreview.js';
+import { paradisCanPreviewEditor, ParadisPalettePreviewModel, paradisPalettePreviewState } from '../browser/paradisPalettePreview.js';
 import { IParadisPalettePreviewItem, PARADIS_COMMANDS_PICKER_CONTEXT_KEY, PARADIS_CROSS_JUMP_CONTEXT_KEY, PARADIS_PALETTE_TOGGLE_PREVIEW_COMMAND_ID } from './paradisPalettePreview.contribution.js';
 import {
 	IParadisPaletteRecent,
@@ -117,6 +122,24 @@ const COMMANDS_PICKER_CONTEXT_KEY = PARADIS_COMMANDS_PICKER_CONTEXT_KEY;
 const ParadisPaletteKindsVisibleContext = new RawContextKey<boolean>('paradisPaletteKindsVisible', false, localize('paradis.palette.kindsVisible', "中央のパレットに種類のタブを出しているかどうか"));
 /** 横断ジャンプの入力が空の間 true。Ctrl+Backspace を入力中の単語の削除とぶつけないために使う。 */
 const ParadisCrossJumpInputEmptyContext = new RawContextKey<boolean>('paradisCrossJumpInputEmpty', false, localize('paradis.crossJump.inputEmpty', "横断ジャンプの入力欄が空かどうか"));
+
+/**
+ * 中身がテキストでないビューアのタブ（Office＝Excel・Word とその比較、画像、PDF、ターミナル、内蔵ブラウザ、シミュレータ）。
+ * プレビューの面では先頭を読まずに「プレビューできません」にする。ほかのタブは読めれば読み、バイナリは NUL の判定で弾く。
+ */
+const NOT_TEXT_EDITOR_TYPE_IDS: ReadonlySet<string> = new Set([
+	PARADIS_SPREADSHEET_INPUT_TYPE_ID,
+	PARADIS_SPREADSHEET_DIFF_INPUT_TYPE_ID,
+	PARADIS_DOCX_INPUT_TYPE_ID,
+	PARADIS_DOCX_DIFF_INPUT_TYPE_ID,
+	PARADIS_OFFICE_BROWSER_INPUT_TYPE_ID,
+	PARADIS_IMAGE_INPUT_TYPE_ID,
+	PARADIS_PDF_INPUT_TYPE_ID,
+	TerminalEditorInput.ID,
+	BrowserEditorInput.ID,
+	PARADIS_SIMULATOR_INPUT_TYPE_ID,
+	PARADIS_ANDROID_INPUT_TYPE_ID,
+]);
 
 /**
  * 最近移った先・ピンの保存キー（fork 自前）。最近・ピンは窓の作業に紐づくので窓（ワークスペース）ごとに持つ。刈り込みの
@@ -520,9 +543,10 @@ class ParadisCrossJumpSession extends Disposable {
 				kind: 'editor',
 				title: identifier.editor.getName(),
 				location: identifier.editor.getDescription(),
-				// テキストのエディタで開いているファイルだけ先頭を出す。Office・画像・PDF のビューア、ターミナルなどは
-				// 「プレビューできません」（テキストでも先頭に NUL があれば同じ。paradisPalettePreview.ts）
-				resource: identifier.editor.typeId === FILE_EDITOR_INPUT_ID && iconResource && this.fileService.hasProvider(iconResource) ? iconResource : undefined,
+				// 中身がテキストでないビューアのタブだけ「プレビューできません」。差分は modified の側（PRIMARY）を読む。
+				// 読めるのは、ファイルの読み手がある（ローカル・SSH・git の旧版など）か、開いている文書（untitled）があるもの。
+				// テキストでも先頭に NUL があれば「プレビューできません」（paradisPalettePreview.ts）
+				resource: iconResource && paradisCanPreviewEditor(identifier.editor.typeId, NOT_TEXT_EDITOR_TYPE_IDS, this.fileService.hasProvider(iconResource) || !!this.modelService.getModel(iconResource)) ? iconResource : undefined,
 			},
 			iconClasses: getIconClasses(this.modelService, this.languageService, iconResource, undefined, icon).concat(identifier.editor.getLabelExtraClasses()),
 			buttons: [
