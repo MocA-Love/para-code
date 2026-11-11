@@ -54,6 +54,11 @@ export interface IParadisTabEnvironment {
 	readonly onDidCreateView: Event<{ readonly view: IParadisTabView; readonly existing: boolean }>;
 	/** Para Code のウィンドウ（補助ウィンドウを含む）。 */
 	listWindows(): readonly BrowserWindow[];
+	/**
+	 * workbench のウィンドウの id（renderer の `vscodeWindowId`）に当たりうるウィンドウ。本体のウィンドウは BrowserWindow の id、
+	 * 補助ウィンドウは webContents の id で数えるので、両方の読み方の候補を返す。
+	 */
+	windowsForWorkbenchId?(windowId: number): readonly BrowserWindow[];
 	/** 最後に使った Para Code のウィンドウ。 */
 	lastActiveWindowId(): number | undefined;
 	/** そのセッションでタブを開く（`browserSessionId` は BrowserSession の id）。 */

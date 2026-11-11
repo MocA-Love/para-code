@@ -15,12 +15,13 @@ import { Emitter, Event } from '../../../../../base/common/event.js';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { BrowserViewStorageScope } from '../../../../../platform/browserView/common/browserView.js';
-import { PARADIS_DEFAULT_EXTENSION_PROFILE } from '../../common/paradisBrowserExtensions.js';
+import { IParadisInstalledBrowserExtension, PARADIS_DEFAULT_EXTENSION_PROFILE, PARADIS_EMPTY_EXTENSIONS_LEDGER, paradisLedgerWithExtension } from '../../common/paradisBrowserExtensions.js';
 import {
 	IParadisExtensionSessionOwner,
 	ParadisBrowserExtensionsManager,
 	ParadisExtensionSession,
 	paradisExtensionProfileForSession,
+	paradisInstallOrder,
 	paradisCopyExtensionFiles,
 	paradisPlanExtensionCopy,
 	paradisPredictExtensionId,
@@ -37,6 +38,10 @@ class FakeSession implements ParadisExtensionSession {
 	idOverride: string | undefined;
 	/** 立てると clearStorageData が失敗する。 */
 	failClear = false;
+	/** あると、loadExtension はこれが済むまで終わらない（読み込みの途中に別の読み込みを重ねる確認用）。 */
+	loadGate: Promise<void> | undefined;
+	/** loadExtension を呼ばれた回数。 */
+	loadCalls = 0;
 	readonly clearStorageData: ParadisExtensionSession['clearStorageData'] = async options => {
 		this.events.push(`clear:${options?.origin}`);
 		if (this.failClear) {
@@ -59,6 +64,8 @@ class FakeSession implements ParadisExtensionSession {
 		on: () => undefined,
 		removeListener: () => undefined,
 		loadExtension: async (path: string) => {
+			this.loadCalls++;
+			await this.loadGate;
 			// 本物と同じく、manifest の key があればそこから、無ければ場所から id を決める
 			const key = (JSON.parse(readFileSync(join(path, 'manifest.json'), 'utf8')) as { key?: string }).key;
 			const id = this.idOverride ?? paradisPredictExtensionId(path, key);
@@ -113,6 +120,18 @@ suite('ParadisBrowserExtensionsMain', () => {
 			paradisExtensionProfileForSession(owner(BrowserViewStorageScope.Agent, 'agent:1')),
 			paradisExtensionProfileForSession(owner(BrowserViewStorageScope.Ephemeral, 'ephemeral:1')),
 		], [PARADIS_DEFAULT_EXTENSION_PROFILE, PARADIS_DEFAULT_EXTENSION_PROFILE, `profile:${PROFILE_ID}`, undefined, undefined, undefined]);
+	});
+
+	test('keeps the install order when an extension is updated, though the ledger moves it to the end', () => {
+		const installed = (id: string, installedAt: number, version: string): IParadisInstalledBrowserExtension => ({ id, name: id, version, manifestVersion: 3, source: 'webstore', sourcePath: `/x/${id}`, path: `/x/${id}`, installedAt, touchesPages: true });
+		let ledger = paradisLedgerWithExtension(PARADIS_EMPTY_EXTENSIONS_LEDGER, installed('a'.repeat(32), 1, '1'), PARADIS_DEFAULT_EXTENSION_PROFILE);
+		ledger = paradisLedgerWithExtension(ledger, installed('b'.repeat(32), 2, '1'), PARADIS_DEFAULT_EXTENSION_PROFILE);
+		// 先に入れた a をストアの更新で入れ直す（入れた時刻は保つ）
+		ledger = paradisLedgerWithExtension(ledger, installed('a'.repeat(32), 1, '2'), undefined);
+		assert.deepStrictEqual({
+			ledger: ledger.extensions.map(extension => extension.id[0]),
+			installOrder: paradisInstallOrder(ledger.extensions).map(extension => extension.id[0]),
+		}, { ledger: ['b', 'a'], installOrder: ['a', 'b'] });
 	});
 
 	test('predicts Chromium extension ids from a key or a path', () => {
@@ -648,6 +667,101 @@ suite('ParadisBrowserExtensionsMain', () => {
 		await manager.remove(added.extension.id);
 		const reloaded = await reloading;
 		assert.deepStrictEqual({ ok: reloaded.ok, extensions: (await manager.getState()).extensions }, { ok: false, extensions: [] });
+		manager.dispose();
+	});
+
+	/** タブを開く代わりに、頼まれた場所のセッションを作って attach する（BrowserSession.configure と同じ）。 */
+	function sessionCreator() {
+		let manager: ParadisBrowserExtensionsManager | undefined;
+		const created: { readonly place: string; readonly session: FakeSession }[] = [];
+		const attached: Promise<void>[] = [];
+		const create = async (place: string) => {
+			const session = new FakeSession(join(root, `session-${place.replace(':', '-')}`));
+			created.push({ place, session });
+			attached.push(manager!.attach(session, place === PARADIS_DEFAULT_EXTENSION_PROFILE ? owner(BrowserViewStorageScope.Global) : owner(BrowserViewStorageScope.Profile, place)));
+		};
+		const settled = async () => {
+			// attach の後ろで読み込みが走るので、作った分の attach を待つ
+			for (let index = 0; index < attached.length; index++) {
+				await attached[index];
+			}
+		};
+		return { created, create, settled, use: (target: ParadisBrowserExtensionsManager) => { manager = target; return target; } };
+	}
+
+	test('creates the session of a place when an extension is added or enabled there, and at startup, without a tab', async () => {
+		const first = sessionCreator();
+		const manager = first.use(new ParadisBrowserExtensionsManager(root, () => true, silentLog, undefined, undefined, undefined, first.create));
+		await writeExtension(join(root, 'source'), { manifest_version: 3, name: 'Sample', version: '1.0' });
+		const added = await manager.addUnpacked(join(root, 'source'), PARADIS_DEFAULT_EXTENSION_PROFILE);
+		assert.ok(added.ok);
+		const id = added.extension.id;
+		await first.settled();
+		const afterAdd = first.created.map(({ place, session }) => [place, session.ids()]);
+		await manager.setEnabled(id, `profile:${PROFILE_ID}`, true);
+		await first.settled();
+		// 無効にするだけでは作らない。同じ場所の 2 つ目も作らない
+		await manager.setEnabled(id, PARADIS_DEFAULT_EXTENSION_PROFILE, false);
+		await manager.setEnabled(id, `profile:${PROFILE_ID}`, true);
+		await first.settled();
+		const afterEnable = first.created.map(({ place, session }) => [place, session.ids()]);
+		manager.dispose();
+
+		// 次の起動: 有効にしてある場所（プロファイル）だけ作る
+		const second = sessionCreator();
+		const restarted = second.use(new ParadisBrowserExtensionsManager(root, () => true, silentLog, undefined, undefined, undefined, second.create));
+		await restarted.ensureSessionsAtStartup();
+		await second.settled();
+		const atStartup = second.created.map(({ place, session }) => [place, session.ids()]);
+		restarted.dispose();
+
+		// 設定がオフの人には何もしない
+		const third = sessionCreator();
+		const off = third.use(new ParadisBrowserExtensionsManager(root, () => false, silentLog, undefined, undefined, undefined, third.create));
+		await off.ensureSessionsAtStartup();
+		off.dispose();
+
+		assert.deepStrictEqual({ afterAdd, afterEnable, atStartup, settingOff: third.created.length }, {
+			afterAdd: [[PARADIS_DEFAULT_EXTENSION_PROFILE, [id]]],
+			afterEnable: [[PARADIS_DEFAULT_EXTENSION_PROFILE, []], [`profile:${PROFILE_ID}`, [id]]],
+			atStartup: [[`profile:${PROFILE_ID}`, [id]]],
+			settingOff: 0,
+		});
+	});
+
+	test('unloads the extensions of a deleted profile and does not load them there again', async () => {
+		const manager = new ParadisBrowserExtensionsManager(root, () => true, silentLog);
+		const profileSession = new FakeSession(join(root, 'profile'));
+		const defaultSession = new FakeSession(join(root, 'default'));
+		await manager.attach(profileSession, owner(BrowserViewStorageScope.Profile, `profile:${PROFILE_ID}`));
+		await manager.attach(defaultSession, owner(BrowserViewStorageScope.Global));
+		await writeExtension(join(root, 'source'), { manifest_version: 3, name: 'Sample', version: '1.0' });
+		const added = await manager.addUnpacked(join(root, 'source'), `profile:${PROFILE_ID}`);
+		assert.ok(added.ok);
+		await manager.setEnabled(added.extension.id, PARADIS_DEFAULT_EXTENSION_PROFILE, true);
+		const before = profileSession.ids();
+		manager.forgetPlace(`profile:${PROFILE_ID}`);
+		// 消した後に、その場所で有効にし直されても（ほかの窓から）、消したプロファイルのセッションには入れない
+		await manager.setEnabled(added.extension.id, `profile:${PROFILE_ID}`, true);
+		assert.deepStrictEqual({ before, after: profileSession.ids(), otherPlace: defaultSession.ids() }, { before: [added.extension.id], after: [], otherPlace: [added.extension.id] });
+		manager.dispose();
+	});
+
+	test('loads an extension once when a new session and enabling it overlap', async () => {
+		const manager = new ParadisBrowserExtensionsManager(root, () => true, silentLog);
+		await writeExtension(join(root, 'source'), { manifest_version: 3, name: 'Sample', version: '1.0' });
+		const added = await manager.addUnpacked(join(root, 'source'), PARADIS_DEFAULT_EXTENSION_PROFILE);
+		assert.ok(added.ok);
+		const session = new FakeSession(join(root, 'late'));
+		let open!: () => void;
+		session.loadGate = new Promise<void>(resolve => open = resolve);
+		// セッションを作った直後の attach（起動の読み込み）と、有効にしたときの読み込みが重なる
+		const attaching = manager.attach(session, owner(BrowserViewStorageScope.Global));
+		const enabling = manager.setEnabled(added.extension.id, PARADIS_DEFAULT_EXTENSION_PROFILE, true);
+		await new Promise(resolve => setTimeout(resolve, 100));
+		open();
+		await Promise.all([attaching, enabling]);
+		assert.deepStrictEqual({ loadCalls: session.loadCalls, loaded: session.ids() }, { loadCalls: 1, loaded: [added.extension.id] });
 		manager.dispose();
 	});
 });

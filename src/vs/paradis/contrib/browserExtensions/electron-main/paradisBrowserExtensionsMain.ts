@@ -29,7 +29,7 @@ import { IServerChannel, ProxyChannel } from '../../../../base/parts/ipc/common/
 import { BrowserViewStorageScope } from '../../../../platform/browserView/common/browserView.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IEnvironmentMainService } from '../../../../platform/environment/electron-main/environmentMainService.js';
-import { ILifecycleMainService } from '../../../../platform/lifecycle/electron-main/lifecycleMainService.js';
+import { ILifecycleMainService, LifecycleMainPhase } from '../../../../platform/lifecycle/electron-main/lifecycleMainService.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import {
@@ -203,6 +203,11 @@ export function paradisExtensionProfileForSession(owner: IParadisExtensionSessio
 			// Agent（エージェントのタブ）と Ephemeral（使い捨て）には入れない
 			return undefined;
 	}
+}
+
+/** 入れた順（`installedAt` の古い順。同じ時刻なら台帳の順）。台帳の並びは、更新・読み直しのたびに後ろへ移る。 */
+export function paradisInstallOrder<T extends { readonly installedAt: number }>(extensions: readonly T[]): T[] {
+	return [...extensions].sort((a, b) => a.installedAt - b.installedAt);
 }
 
 /** Chromium の拡張機能の id（SHA-256 の先頭 16 バイトを 0〜f → a〜p に置き換えた 32 文字）。 */
@@ -482,6 +487,12 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		private readonly _sessionForView: (viewId: string) => ParadisExtensionSession | undefined = () => undefined,
 		tabsOptions?: IParadisBrowserExtensionTabsOptions,
 		webStoreOptions?: IParadisWebStoreOptions,
+		/**
+		 * その場所（`default`・`profile:<id>`）の内蔵ブラウザのセッションを、タブを開く前に作る。作ると BrowserSession.configure から
+		 * attach が呼ばれ、拡張機能を読み込む（runtime.onInstalled・onStartup が届く）。browserSession.ts をここから読むと読み込みが輪に
+		 * なるので、呼び出し側（プロファイルの main）から渡す。
+		 */
+		private readonly _createSession?: (place: string) => Promise<void>,
 	) {
 		this.active = _readSetting();
 		this._apiHost = new ParadisExtensionApiHost(_logService);
@@ -621,7 +632,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 			pinnedIn: place => paradisPinnedExtensionIds(this._ledger, place),
 			setPinned: (place, id, pinned) => this._setPinned(place, id, pinned),
 			nameOf: extension => this._ledger.extensions.find(installed => installed.id === extension.id)?.name ?? extension.name,
-			windowById: windowId => tabsOptions.environment.listWindows().find(window => window.id === windowId && !window.isDestroyed()),
+			windowsForWorkbenchId: windowId => tabsOptions.environment.windowsForWorkbenchId?.(windowId) ?? tabsOptions.environment.listWindows().filter(window => window.id === windowId && !window.isDestroyed()),
 			createPopupWindow: (parent, bounds, session) => {
 				if (!tabsOptions.createActionPopup) {
 					throw new Error('Popups are not available');
@@ -638,7 +649,19 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		this._menus = tabs && tabsOptions ? new ParadisBrowserExtensionMenus(this._apiHost, tabs, {
 			findView: viewId => tabsOptions.environment.listViews().find(view => view.id === viewId),
 			sessionOf: contents => this._actionSessionOf(contents.session),
-			allLoaded: () => [...this._sessions].flatMap(entry => this._actionSessionOf(entry.session)?.extensions ?? []),
+			// 先に入れた順（どのセッションのものも、1 つの拡張機能は 1 回）
+			allLoaded: () => {
+				const loaded = new Map<string, IParadisLoadedExtension>();
+				for (const entry of this._sessions) {
+					for (const extension of this._actionSessionOf(entry.session)?.extensions ?? []) {
+						if (!loaded.has(extension.id)) {
+							loaded.set(extension.id, extension);
+						}
+					}
+				}
+				return paradisInstallOrder(this._ledger.extensions).flatMap(installed => loaded.get(installed.id) ?? []);
+			},
+			loadedIn: session => this._actionSessionOf(session)?.extensions ?? [],
 			isAgentTab: contents => tabsOptions.environment.listViews().find(view => view.webContents === contents)?.isAgentTab() === true,
 			nameOf: extension => this._ledger.extensions.find(installed => installed.id === extension.id)?.name ?? extension.name,
 			noteUserGesture: (session, extensionId) => permissions?.noteUserGesture(session, extensionId),
@@ -700,7 +723,8 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 			return undefined;
 		}
 		const extensions: IParadisLoadedExtension[] = [];
-		for (const installed of this._ledger.extensions) {
+		// 先に入れた順（台帳の並びは更新で後ろへ移るので使わない。ショートカットの重なりは先に入れた方が取る。Chrome と同じ）
+		for (const installed of paradisInstallOrder(this._ledger.extensions)) {
 			const loaded = entry.session.extensions.getExtension(installed.id);
 			if (loaded) {
 				extensions.push({ id: loaded.id, version: loaded.version, manifest: loaded.manifest as Record<string, unknown>, name: loaded.name, path: loaded.path });
@@ -990,7 +1014,30 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		return (this._ledger.enabled[entry.profile] ?? []).includes(id) && this._allowedOnNetworkOf(entry, id);
 	}
 
-	private async _load(entry: ISessionEntry, extension: IParadisInstalledBrowserExtension, kind: ParadisExtensionLoadKind): Promise<void> {
+	/** セッションごとの、読み込んでいる途中の拡張機能（同じセッションへ同じ拡張機能を二重に読み込ませない）。 */
+	private readonly _loading = new WeakMap<ISessionEntry, Map<string, Promise<void>>>();
+
+	/**
+	 * 読み込む。同じセッションへ同じ拡張機能を読み込んでいる途中なら、それを待つ（セッションを作った直後の attach と、
+	 * 有効にしたときの _applyEnablement が重なっても、読み込みと runtime.onInstalled は 1 回）。
+	 */
+	private _load(entry: ISessionEntry, extension: IParadisInstalledBrowserExtension, kind: ParadisExtensionLoadKind): Promise<void> {
+		let loading = this._loading.get(entry);
+		if (!loading) {
+			loading = new Map();
+			this._loading.set(entry, loading);
+		}
+		const running = loading.get(extension.id);
+		if (running) {
+			return running;
+		}
+		const byId = loading;
+		const next = this._loadOnce(entry, extension, kind).finally(() => byId.delete(extension.id));
+		byId.set(extension.id, next);
+		return next;
+	}
+
+	private async _loadOnce(entry: ISessionEntry, extension: IParadisInstalledBrowserExtension, kind: ParadisExtensionLoadKind): Promise<void> {
 		if (!this._allowedOnNetworkOf(entry, extension.id) || entry.session.extensions.getExtension(extension.id)) {
 			return;
 		}
@@ -1010,8 +1057,8 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 				this._loadErrors.set(extension.id, `unexpected extension id ${loaded.id}`);
 				return;
 			}
-			// 読み込みの途中でトンネルが始まった（「SSH 先のページでも使う」がオフ）・無効にされた・削除されたときは外す
-			if (!this._wantedIn(entry, extension.id)) {
+			// 読み込みの途中でトンネルが始まった（「SSH 先のページでも使う」がオフ）・無効にされた・削除された・プロファイルが消されたときは外す
+			if (!this._wantedIn(entry, extension.id) || !this._sessions.has(entry)) {
 				entry.session.extensions.removeExtension(loaded.id);
 				return;
 			}
@@ -1247,6 +1294,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		// 写しを作り直したので、詰め物も書き直す
 		this._prepared.delete(extension.path);
 		await this._applyEnablement(extension.id, existing ? 'reload' : 'other');
+		this._ensureSessions([profile]);
 		return { ok: true, extension };
 	}
 
@@ -1419,6 +1467,9 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		await this._save();
 		this._prepared.delete(extension.path);
 		await this._applyEnablement(id, 'other');
+		if (profile !== undefined) {
+			this._ensureSessions([profile]);
+		}
 		return { ok: true, extension };
 	}
 
@@ -1641,6 +1692,7 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		this._ledger = paradisLedgerWithPinned(paradisLedgerWithEnabled(this._ledger, current.id, profile, true), current.id, profile, true);
 		await this._save();
 		await this._applyEnablement(current.id, 'other');
+		this._ensureSessions([profile]);
 		return { ok: true, extension: current };
 	}
 
@@ -1682,6 +1734,41 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 	private _placeOfSession(session: unknown): string | undefined {
 		const entry = [...this._sessions].find(candidate => candidate.session === session);
 		return entry && !entry.isRemote() ? entry.profile : undefined;
+	}
+
+	/**
+	 * 拡張機能を有効にしてある場所のうち、まだセッションの無いものを作る（足した・有効にした・起動したとき）。タブを開く前でも
+	 * runtime.onInstalled・onStartup が届くように。設定がオフ・有効な拡張機能の無い場所では何もしない。
+	 */
+	private _ensureSessions(places: Iterable<string>): void {
+		if (!this.active || !this._createSession) {
+			return;
+		}
+		for (const place of new Set(places)) {
+			if (!paradisIsExtensionProfileKey(place) || paradisEnabledExtensions(this._ledger, place).length === 0 || [...this._sessions].some(entry => entry.profile === place)) {
+				continue;
+			}
+			this._createSession(place).catch(error => this._logService.warn('[paradis] could not prepare the browser session for extensions', error));
+		}
+	}
+
+	/**
+	 * 名前付きプロファイルを消した: その場所のセッションから拡張機能を外し（worker を止める）、以後は読み込まない。プロファイルの id は
+	 * 使い回さないので、この起動の間にそのセッションへ戻ることは無い。
+	 */
+	forgetPlace(place: string): void {
+		for (const entry of [...this._sessions]) {
+			if (entry.profile === place) {
+				this._unloadAll(entry);
+				this._sessions.delete(entry);
+			}
+		}
+	}
+
+	/** 起動したとき（最初のウィンドウが開いた後）: 拡張機能を有効にしてあるすべての場所のセッションを作る。 */
+	async ensureSessionsAtStartup(): Promise<void> {
+		await this._ready;
+		this._ensureSessions(Object.keys(this._ledger.enabled));
 	}
 
 	/** 今の台帳のとおりに、各セッションへ読み込む・外す。 */
@@ -1828,6 +1915,9 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		this._ledger = paradisLedgerWithEnabled(this._ledger, id, profile, enabled);
 		await this._save();
 		await this._applyEnablement(id, 'other');
+		if (enabled) {
+			this._ensureSessions([profile]);
+		}
 	}
 
 	async remove(id: string): Promise<void> {
@@ -1886,6 +1976,11 @@ export function paradisAttachBrowserExtensionSession(session: ParadisExtensionSe
 	}
 }
 
+/** 名前付きプロファイルを消した（プロファイルの main から）。その場所のセッションから拡張機能を外す。 */
+export function paradisForgetBrowserExtensionPlace(place: string): void {
+	manager?.forgetPlace(place);
+}
+
 /** main の起動で拡張機能の管理を作り、channel を立てる（paradisRegisterBrowserProfiles から）。 */
 export function paradisRegisterBrowserExtensions(
 	channelHost: { registerChannel(channelName: string, channel: IServerChannel<string>): void },
@@ -1900,6 +1995,11 @@ export function paradisRegisterBrowserExtensions(
 	 * タブを前に出すことだけは、ここで workbench への知らせにする。
 	 */
 	createTabs?: () => { readonly environment: Omit<IParadisTabEnvironment, 'activateTab'> & IDisposable } & Omit<IParadisBrowserExtensionTabsOptions, 'environment'>,
+	/**
+	 * その場所（`default`・`profile:<id>`）の内蔵ブラウザのセッションを作る（拡張機能を足した・有効にした・起動したとき）。
+	 * BrowserSession は browserSession.ts にあり、ここから読むと読み込みが輪になるので、呼び出し側から渡す。
+	 */
+	createSession?: (place: string) => Promise<void>,
 ): IDisposable {
 	const disposables = new DisposableStore();
 	const onDidRequestActivateTab = disposables.add(new Emitter<IParadisActivateTabRequest>());
@@ -1933,11 +2033,16 @@ export function paradisRegisterBrowserExtensions(
 				renameDownload: tabs.renameDownload,
 			} : undefined,
 			tabs ? { askInstall: tabs.askInstall, askRemove: tabs.askRemove, askUpdate: tabs.askUpdate } : undefined,
+			createSession,
 		);
 	});
 	disposables.add(created);
+	const lifecycleMainService = instantiationService.invokeFunction(accessor => accessor.get(ILifecycleMainService));
 	// 読み上げの面は will-quit を待たずに、終わり始めたところで閉じる
-	disposables.add(instantiationService.invokeFunction(accessor => accessor.get(ILifecycleMainService)).onWillShutdown(() => created.closeForShutdown()));
+	disposables.add(lifecycleMainService.onWillShutdown(() => created.closeForShutdown()));
+	// 拡張機能を有効にしてある場所のセッションは、タブを開くのを待たずに作る（runtime.onStartup が起動ごとに届くように）。
+	// 最初のウィンドウが開くまでは待つ（ウィンドウを出すのを遅らせない）
+	void lifecycleMainService.when(LifecycleMainPhase.AfterWindowOpen).then(() => created.ensureSessionsAtStartup());
 	manager = created;
 	for (const { session, owner } of pendingSessions.splice(0)) {
 		void created.attach(session, owner);
