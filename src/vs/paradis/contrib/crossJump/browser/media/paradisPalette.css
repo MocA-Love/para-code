@@ -72,7 +72,7 @@
 	}
 }
 
-.monaco-workbench .paradis-palette-kinds > .paradis-palette-help {
+.monaco-workbench .paradis-palette-kinds > .paradis-palette-icon-button {
 	flex: none;
 	display: inline-flex;
 	align-items: center;
@@ -87,9 +87,13 @@
 	cursor: pointer;
 }
 
-.monaco-workbench .paradis-palette-kinds > .paradis-palette-help:hover {
+.monaco-workbench .paradis-palette-kinds > .paradis-palette-icon-button:hover {
 	background: var(--vscode-paradis-fillHover);
 	color: var(--vscode-paradis-textStrong);
+}
+
+.monaco-workbench .paradis-palette-kinds > .paradis-palette-icon-button[hidden] {
+	display: none;
 }
 
 /* State dots (the row's iconClass): attention in the warning color, running in the accent, done in the success color,
@@ -154,4 +158,276 @@
 /* Extra key hints of the palette (paradisCrossJump.contribution.ts adds them while it is open). */
 .monaco-workbench .quick-input-widget > .paradis-quick-input-hint > .paradis-palette-hint {
 	color: var(--vscode-paradis-textMuted);
+}
+
+/* The preview pane (paradisPalettePreview.ts) on the right of the list. The widget's width and the pane's width come
+	from the window width tiers (paradisQuickInputLayout.ts, the PARA-PATCH in quickInputController.ts); the list gives
+	the pane its width plus the 1px line. */
+.monaco-workbench .quick-input-widget.paradis-quick-input-centered .quick-input-list.paradis-palette-has-preview {
+	position: relative;
+	min-height: 240px;
+}
+
+.monaco-workbench .quick-input-list.paradis-palette-preview-300 > .monaco-list {
+	width: auto;
+	margin-right: 301px;
+}
+
+.monaco-workbench .quick-input-list.paradis-palette-preview-360 > .monaco-list {
+	width: auto;
+	margin-right: 361px;
+}
+
+.monaco-workbench .quick-input-list.paradis-palette-preview-420 > .monaco-list {
+	width: auto;
+	margin-right: 421px;
+}
+
+.monaco-workbench .quick-input-list > .paradis-palette-preview {
+	position: absolute;
+	top: 0;
+	right: 0;
+	bottom: 0;
+	box-sizing: border-box;
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size80);
+	min-width: 0;
+	padding: var(--vscode-spacing-size120);
+	overflow: hidden;
+	border-left: 1px solid var(--vscode-paradis-lineSubtle);
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-text);
+	cursor: default;
+}
+
+.monaco-workbench .quick-input-list.paradis-palette-preview-300 > .paradis-palette-preview {
+	width: 301px;
+}
+
+.monaco-workbench .quick-input-list.paradis-palette-preview-360 > .paradis-palette-preview {
+	width: 361px;
+}
+
+.monaco-workbench .quick-input-list.paradis-palette-preview-420 > .paradis-palette-preview {
+	width: 421px;
+}
+
+.monaco-workbench .paradis-palette-preview > * {
+	min-width: 0;
+	max-width: 100%;
+}
+
+.monaco-workbench .paradis-palette-preview-empty {
+	color: var(--vscode-paradis-textFaint);
+}
+
+.monaco-workbench .paradis-palette-preview-head {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	flex: none;
+}
+
+.monaco-workbench .paradis-palette-preview-head > .codicon {
+	flex: none;
+	color: var(--vscode-paradis-textMuted);
+}
+
+.monaco-workbench .paradis-palette-preview-dot {
+	flex: none;
+	width: 8px;
+	height: 8px;
+	box-sizing: border-box;
+	border-radius: var(--vscode-cornerRadius-circle);
+}
+
+.monaco-workbench .paradis-palette-preview-dot.paradis-palette-dot-attention {
+	background: var(--vscode-paradis-warning);
+}
+
+.monaco-workbench .paradis-palette-preview-dot.paradis-palette-dot-working {
+	background: var(--vscode-paradis-accent);
+}
+
+.monaco-workbench .paradis-palette-preview-dot.paradis-palette-dot-review {
+	background: var(--vscode-paradis-success);
+}
+
+.monaco-workbench .paradis-palette-preview-dot.paradis-palette-dot-idle {
+	border: 1px solid var(--vscode-paradis-lineStrong);
+}
+
+.monaco-workbench .paradis-palette-preview-title {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: var(--vscode-fontSize-body1);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.monaco-workbench .paradis-palette-preview-meta {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	gap: 2px var(--vscode-spacing-size100);
+	flex: none;
+	margin: 0;
+}
+
+.monaco-workbench .paradis-palette-preview-meta > dt {
+	color: var(--vscode-paradis-textFaint);
+}
+
+.monaco-workbench .paradis-palette-preview-meta > dd {
+	margin: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.monaco-workbench .paradis-palette-preview-add {
+	color: var(--vscode-paradis-success);
+}
+
+.monaco-workbench .paradis-palette-preview-del {
+	color: var(--vscode-paradis-danger);
+}
+
+.monaco-workbench .paradis-palette-preview-quote {
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size100);
+	overflow: hidden;
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner);
+	background: var(--vscode-paradis-sunken);
+	line-height: 1.6;
+	overflow-wrap: anywhere;
+}
+
+.monaco-workbench .paradis-palette-preview-quote.empty {
+	color: var(--vscode-paradis-textFaint);
+}
+
+.monaco-workbench .paradis-palette-preview-body {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size40);
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow: hidden;
+}
+
+.monaco-workbench .paradis-palette-preview-code {
+	flex: 0 1 auto;
+	min-height: 0;
+	margin: 0;
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size100);
+	overflow: hidden;
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner);
+	background: var(--vscode-paradis-sunken);
+	font-family: var(--monaco-monospace-font);
+	font-size: var(--vscode-fontSize-label2);
+	line-height: 1.55;
+	white-space: pre;
+}
+
+.monaco-workbench .paradis-palette-preview-markdown {
+	flex: 0 1 auto;
+	min-height: 0;
+	overflow: hidden;
+	line-height: 1.55;
+	overflow-wrap: anywhere;
+}
+
+.monaco-workbench .paradis-palette-preview-markdown :is(h1, h2, h3, h4, h5, h6) {
+	margin: var(--vscode-spacing-size80) 0 var(--vscode-spacing-size40);
+	font-size: var(--vscode-fontSize-body1);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.monaco-workbench .paradis-palette-preview-markdown h1 {
+	font-size: var(--vscode-fontSize-heading3);
+}
+
+.monaco-workbench .paradis-palette-preview-markdown :is(p, ul, ol, table, blockquote) {
+	margin: 0 0 var(--vscode-spacing-size60);
+}
+
+.monaco-workbench .paradis-palette-preview-markdown :is(ul, ol) {
+	padding-left: var(--vscode-spacing-size200);
+}
+
+.monaco-workbench .paradis-palette-preview-markdown code {
+	font-family: var(--monaco-monospace-font);
+	font-size: var(--vscode-fontSize-label2);
+}
+
+.monaco-workbench .paradis-palette-preview-markdown pre {
+	margin: 0 0 var(--vscode-spacing-size60);
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size100);
+	overflow: hidden;
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner);
+	background: var(--vscode-paradis-sunken);
+}
+
+.monaco-workbench .paradis-palette-preview-markdown table {
+	border-collapse: collapse;
+}
+
+.monaco-workbench .paradis-palette-preview-markdown :is(th, td) {
+	padding: 2px var(--vscode-spacing-size60);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+}
+
+.monaco-workbench .paradis-palette-preview-markdown a {
+	color: var(--vscode-textLink-foreground);
+}
+
+.monaco-workbench .paradis-palette-preview-markdown blockquote {
+	padding-left: var(--vscode-spacing-size100);
+	border-left: 2px solid var(--vscode-paradis-lineStrong);
+	color: var(--vscode-paradis-textMuted);
+}
+
+.monaco-workbench .paradis-palette-preview-more {
+	flex: none;
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-paradis-textFaint);
+}
+
+/* The command palette folds the English name onto the row when the list is 560px or wider (the rows are 28px then,
+	paradisQuickInputLayout.ts): the first line's parts and the second line share one line, name, English name, keys. */
+.monaco-workbench .quick-input-widget.paradis-palette-inline-detail .quick-input-list .quick-input-list-rows {
+	flex-direction: row;
+	align-items: center;
+}
+
+.monaco-workbench .quick-input-widget.paradis-palette-inline-detail .quick-input-list .quick-input-list-rows > .quick-input-list-row:first-child {
+	display: contents;
+}
+
+.monaco-workbench .quick-input-widget.paradis-palette-inline-detail .quick-input-list .quick-input-list-rows .monaco-icon-label {
+	flex: 0 1 auto;
+	min-width: 0;
+	order: 0;
+}
+
+.monaco-workbench .quick-input-widget.paradis-palette-inline-detail .quick-input-list .quick-input-list-rows > .quick-input-list-row:nth-child(2) {
+	flex: 0 1 auto;
+	min-width: 0;
+	order: 1;
+	margin-left: var(--vscode-spacing-size80);
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-paradis-textFaint);
+}
+
+.monaco-workbench .quick-input-widget.paradis-palette-inline-detail .quick-input-list .quick-input-list-rows .quick-input-list-entry-keybinding {
+	flex: none;
+	order: 2;
+	margin-left: auto;
+	padding-left: var(--vscode-spacing-size80);
 }
