@@ -11,6 +11,7 @@ import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IClipboardService } from '../../../../../platform/clipboard/common/clipboardService.js';
 import type { IFileService } from '../../../../../platform/files/common/files.js';
+import { Severity, type INotification, type INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { paradisIsLocalImagePathText, paradisTryTerminalImagePaste } from '../../browser/paradisTerminalImagePaste.js';
 
 type XtermFake = { raw: Pick<RawXtermTerminal, 'input'> };
@@ -219,20 +220,90 @@ suite('ParadisTerminalImagePaste', () => {
 		assert.deepStrictEqual(deleted, [`/home/user/.para-code/pasted-images/${staleTimestamp}.png`]);
 	});
 
-	test('falls through when connected but the terminal has no working directory', async () => {
+	test('fills an empty cwd from the speculative cwd, so a restored editor terminal still receives the image', async () => {
+		const written: string[] = [];
+		const notified: string[] = [];
+		const result = await paradisTryTerminalImagePaste(
+			{ readImage: async () => new Uint8Array([137, 80, 78, 71]) } as unknown as IClipboardService,
+			{ raw: { input: () => { } } } as unknown as { raw: RawXtermTerminal },
+			{
+				fileService: makeFileService({
+					writeFile: async (resource: URI) => {
+						written.push(resource.path);
+						return {} as never;
+					},
+				}),
+				remoteAuthority: 'ssh-remote+dev-pc',
+				cwd: '',
+				getSpeculativeCwd: async () => '/home/user/develop/workspace',
+				notificationService: { notify: (n: INotification) => { notified.push(String(n.message)); } } as unknown as INotificationService,
+			}
+		);
+
+		assert.deepStrictEqual(
+			{
+				returnedPathDirectory: isString(result) ? result.slice(0, result.lastIndexOf('/')) : result,
+				wroteImage: written.some(path => path.startsWith('/home/user/develop/workspace/.para-code/pasted-images/') && path.endsWith('.png')),
+				notified: notified.length,
+			},
+			{
+				returnedPathDirectory: '/home/user/develop/workspace/.para-code/pasted-images',
+				wroteImage: true,
+				notified: 0,
+			}
+		);
+	});
+
+	test('notifies and reports handled (no empty paste) when connected but no working directory is known', async () => {
 		const inputs: string[] = [];
+		const notified: Severity[] = [];
+		let writeCalls = 0;
 		const result = await paradisTryTerminalImagePaste(
 			{ readImage: async () => new Uint8Array([137]) } as unknown as IClipboardService,
 			{ raw: { input: (data: string) => inputs.push(data) } } as unknown as { raw: RawXtermTerminal },
 			{
-				fileService: {} as unknown as IFileService,
+				fileService: makeFileService({
+					writeFile: async () => {
+						writeCalls++;
+						return {} as never;
+					},
+				}),
 				remoteAuthority: 'ssh-remote+dev-pc',
-				cwd: undefined
+				cwd: '',
+				getSpeculativeCwd: async () => '',
+				notificationService: { notify: (n: INotification) => { notified.push(n.severity); } } as unknown as INotificationService,
 			}
 		);
 
-		// 接続先の TUI はこちらのクリップボードを読めないので、0x16 を送っても紛らわしいだけ
-		assert.deepStrictEqual({ result, sentCtrlV: inputs.length }, { result: false, sentCtrlV: 0 });
+		// true を返すので呼び出し元は空の bracketed paste を送らない。接続先の TUI はこちらの
+		// クリップボードを読めないので、0x16 も送らない
+		assert.deepStrictEqual(
+			{ result, sentCtrlV: inputs.length, writeCalls, notified },
+			{ result: true, sentCtrlV: 0, writeCalls: 0, notified: [Severity.Warning] }
+		);
+	});
+
+	test('notifies and reports handled when writing the image to the connected host fails', async () => {
+		const notified: Severity[] = [];
+		const result = await paradisTryTerminalImagePaste(
+			{ readImage: async () => new Uint8Array([137]) } as unknown as IClipboardService,
+			{ raw: { input: () => { } } } as unknown as { raw: RawXtermTerminal },
+			{
+				fileService: makeFileService({
+					writeFile: async (resource: URI) => {
+						if (resource.path.endsWith('.png')) {
+							throw new Error('permission denied');
+						}
+						return {} as never;
+					},
+				}),
+				remoteAuthority: 'ssh-remote+dev-pc',
+				cwd: '/home/user/develop/workspace',
+				notificationService: { notify: (n: INotification) => { notified.push(n.severity); } } as unknown as INotificationService,
+			}
+		);
+
+		assert.deepStrictEqual({ result, notified }, { result: true, notified: [Severity.Warning] });
 	});
 
 	test('routes a pasted local image path to the image path only in SSH terminals', () => {

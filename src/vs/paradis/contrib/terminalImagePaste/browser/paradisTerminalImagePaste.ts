@@ -12,6 +12,8 @@ import { Schemas } from '../../../../base/common/network.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { localize } from '../../../../nls.js';
+import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 /**
@@ -31,6 +33,14 @@ export interface IParadisTerminalImagePasteTarget {
 	readonly remoteAuthority: string | undefined;
 	/** ターミナルの作業ディレクトリ。画像はここへ置く。 */
 	readonly cwd: string | undefined;
+	/**
+	 * `cwd` が空のときの代わり（`ITerminalInstance.getSpeculativeCwd()`）。エディタ領域のターミナルは
+	 * 復元直後に cwd が空になり、プロンプトが出て OSC 7 が届くまで空のまま（Claude Code を動かし
+	 * 続けている間はずっと空）なので、起動時の cwd などで補う。
+	 */
+	readonly getSpeculativeCwd?: () => Promise<string>;
+	/** 接続先へ画像を置けなかったことを知らせる。 */
+	readonly notificationService?: INotificationService;
 }
 
 /**
@@ -51,7 +61,8 @@ export interface IParadisTerminalImagePasteTarget {
  * （複数行警告・末尾改行剥がし・onWillPaste/onDidPaste）には一切影響させない。
  *
  * @returns
- *   `true`   … 0x16 を送信済み。呼び出し元は何もしなくてよい
+ *   `true`   … 0x16 を送信済み、または SSH 接続中に画像を接続先へ置けず通知済み。呼び出し元は
+ *              何もしなくてよい（空の bracketed paste を送ると、TUI が「SSH では画像を貼れない」と誤解する）
  *   `string` … このテキスト（接続先に置いた画像のパス）を通常のペースト経路へ流すこと
  *   `false`  … クリップボードに画像が無い。既存のテキストペースト経路へフォールスルーする
  */
@@ -78,7 +89,13 @@ export async function paradisTryTerminalImagePaste(
 		}
 		// 書き出せなかった場合でも 0x16 の経路へは落とさない。接続先の TUI は
 		// こちらのクリップボードを読めないので、送っても何も起きずに紛らわしいだけ。
-		return false;
+		// テキストの経路へも戻さない（空の貼り付けになるか、接続先に無い手元のパスを貼るだけ）。
+		// 黙って何も起きないと分からないので、通知で知らせて貼り付けを終える。
+		target.notificationService?.notify({
+			severity: Severity.Warning,
+			message: localize('paradis.terminalImagePaste.remoteFailed', "画像を接続先に置けませんでした。画像のファイルを接続先へ送ってから、そのパスを貼り付けてください。"),
+		});
+		return true;
 	}
 
 	xterm.raw.input('\x16', true);
@@ -103,7 +120,7 @@ export function paradisIsLocalImagePathText(text: string, remoteAuthority: strin
 
 /** 画像を接続先へ書き、そのパスを返す。書けなければ undefined。 */
 async function writeImageToRemote(image: Uint8Array, target: IParadisTerminalImagePasteTarget): Promise<string | undefined> {
-	const cwd = resolveRemoteCwd(target);
+	const cwd = await resolveRemoteCwd(target);
 	if (!cwd) {
 		return undefined;
 	}
@@ -125,7 +142,8 @@ async function writeImageToRemote(image: Uint8Array, target: IParadisTerminalIma
 }
 
 /**
- * ターミナルの作業ディレクトリを SSH 接続先の URI として解決する。cwd が取れないときは諦める。
+ * ターミナルの作業ディレクトリを SSH 接続先の URI として解決する。検出した cwd が空なら
+ * `getSpeculativeCwd()` で補い、それも取れないときは Sentry に送って諦める。
  *
  * 注意: `target.cwd` は CwdDetection capability が OSC 7 / OSC 1337 のエスケープシーケンスから
  * 読み取った値で、ターミナルに出力できる側（実行中のコマンドやリモートのプロセス）なら誰でも
@@ -133,11 +151,28 @@ async function writeImageToRemote(image: Uint8Array, target: IParadisTerminalIma
  * UX 上の前提として素直に信頼しているが、任意ディレクトリへの書き込みを許すことにはなるので、
  * 機密性の高い操作をこの値に追加で乗せないこと。
  */
-function resolveRemoteCwd(target: IParadisTerminalImagePasteTarget): URI | undefined {
-	if (!target.cwd || !target.remoteAuthority) {
+async function resolveRemoteCwd(target: IParadisTerminalImagePasteTarget): Promise<URI | undefined> {
+	if (!target.remoteAuthority) {
 		return undefined;
 	}
-	return URI.from({ scheme: Schemas.vscodeRemote, authority: target.remoteAuthority, path: target.cwd });
+	let cwd = target.cwd;
+	let speculativeFailed = false;
+	if (!cwd && target.getSpeculativeCwd) {
+		try {
+			cwd = await target.getSpeculativeCwd();
+		} catch {
+			speculativeFailed = true;
+		}
+	}
+	if (!cwd) {
+		// パスは送らない。どちらの手段が空だったかだけを送る
+		reportParadisDiagnosticError('owned', 'terminal-image-paste', 'remote-cwd-missing', new Error('Terminal has no working directory'), {
+			safe_has_speculative_cwd: !!target.getSpeculativeCwd,
+			safe_speculative_cwd_failed: speculativeFailed,
+		});
+		return undefined;
+	}
+	return URI.from({ scheme: Schemas.vscodeRemote, authority: target.remoteAuthority, path: cwd });
 }
 
 async function cleanupOldImages(directory: URI, fileService: IFileService, keep: URI): Promise<void> {
