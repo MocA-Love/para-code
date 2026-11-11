@@ -50,11 +50,11 @@ const MAJORITY = 2;
 const RELATIVE_LIMIT = 1.10;
 const ABSOLUTE_P95_LIMIT_MS = 5;
 // 判定が裾を見ていることを確かめる偽の経路 2 つ: 4 区切りに 1 回だけ区切りまるごと 20ms 遅くするものと、
-// 呼び出し 1500 回に 1 回だけ 5ms 止まるもの（区切りの中の間欠の固まり）。
+// 呼び出し 1500 回に 1 回だけ 8ms 止まるもの（区切りの中の間欠の固まり。5ms の基準ちょうどにせず余裕を持たせる）。
 const SPIKE_EVERY_SLICES = 4;
 const SPIKE_MS = 20;
 const STALL_EVERY_CALLS = 1_500;
-const STALL_MS = 5;
+const STALL_MS = 8;
 let rendererWorkSink = 0;
 
 suite('ParadisTerminalOutputPerformance', () => {
