@@ -348,7 +348,6 @@ export class ParadisBrowserExtensionMenus implements IDisposable {
 
 	// --- ショートカット ---
 
-	/** 拡張機能のショートカット（workbench がページから届いたキーと比べる）。割り当ての無いものは除く。 */
 	/** その場所の拡張機能（先に入れた順）の中で、`extension` に割り当たったコマンド。 */
 	private _commandsOf(loaded: readonly IParadisLoadedExtension[], extension: IParadisApiExtension): IParadisExtensionCommand[] {
 		const extensions = loaded.some(candidate => candidate.id === extension.id) ? loaded : [...loaded, extension];
@@ -356,6 +355,7 @@ export class ParadisBrowserExtensionMenus implements IDisposable {
 	}
 
 	/**
+	 * 拡張機能のショートカット（workbench がページから届いたキーと比べる）。割り当ての無いものは除く。
 	 * workbench がページのキーと照らす一覧（先に入れた順）。workbench はそのタブに入っている拡張機能のうち、一覧の先にあるものに
 	 * 渡すので、同じキーなら先に入れた方が取る（Chrome と同じ。場所ごとに入っているものが違っても、そのタブの中で決まる）。
 	 */
