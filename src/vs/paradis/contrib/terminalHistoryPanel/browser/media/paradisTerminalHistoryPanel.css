@@ -80,8 +80,13 @@
 	color: var(--vscode-editorSuggestWidget-highlightForeground);
 }
 
+/* A narrow panel cuts the position from its end, so "N / M" stays and the order label goes first. */
 .paradis-history-panel-position {
+	flex: 0 1 auto;
+	min-width: 0;
 	margin-left: auto;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 .paradis-history-panel-rows {

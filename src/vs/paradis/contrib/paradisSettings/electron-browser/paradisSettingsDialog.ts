@@ -1838,6 +1838,16 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	{
 		sectionId: 'psd-sec-window',
 		group: GROUP_WINDOW_BEHAVIOR,
+		key: 'paradis.palette.preview',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.palettePreview', "中央のパレットの右にプレビューを出す"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.palettePreviewDesc', "「エージェント・タブ・スペースへ移動」とコマンドパレットで、窓が広いときにパレットを広げ、選んだ行の中身（エージェントの最後の発言、スペースの差分、ファイルの先頭など）を右に出します。パレットの中のボタンか Alt+P（macOS は Cmd+Option+P）でも切り替えられます。"),
+		keywords: 'palette quick open command preview cross jump',
+	},
+	{
+		sectionId: 'psd-sec-window',
+		group: GROUP_WINDOW_BEHAVIOR,
 		key: 'paradis.power.keepAwake',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.keepAwake', "PC のスリープ防止"),
