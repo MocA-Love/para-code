@@ -510,9 +510,8 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 				? this.remoteHostStatusMessage(account)
 				: paradisLimitsNeedsRelogin(account.status) && !canRelogin
 					? account.provider === 'antigravity'
-						? account.status === 'error'
-							? this.statusMessage(account)
-							: localize('paradis.limitsMonitor.antigravitySignIn', "Antigravity CLI にサインインしていません。ターミナルで agy を起動してサインインすると表示されます")
+						// サインインしていない Antigravity は列ごと出さない（node/paradisAntigravityUsage.ts）。ここに来るのは取得の失敗だけ
+						? this.statusMessage(account)
 						: localize('paradis.limitsMonitor.claudeLiveRelogin', "ターミナルで claude を起動し、/login でログインし直してください")
 					: this.statusMessage(account);
 			if (paradisLimitsNeedsRelogin(account.status) && canRelogin) {

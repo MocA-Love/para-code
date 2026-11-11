@@ -213,7 +213,7 @@ export interface IParadisLimitsSnapshot {
 	readonly claude: IParadisLimitsProviderSnapshot;
 	readonly codex: IParadisLimitsProviderSnapshot;
 	/**
-	 * Antigravity CLI（agy）の分。agy が見つからない（入れていない）ときと、このキーを知らない古い PC・接続先では
+	 * Antigravity CLI（agy）の分。agy が見つからない（入れていない）・サインインしていないときと、このキーを知らない古い PC・接続先では
 	 * 無い。そのときパネルとタイトルバーは Antigravity を出さない。任意項目なので、知らないモバイルは無視する。
 	 */
 	readonly antigravity?: IParadisLimitsProviderSnapshot;

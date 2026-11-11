@@ -88,7 +88,7 @@ suite('Paradis Antigravity usage fetcher', () => {
 		});
 	});
 
-	test('asks to sign in and does not start agy again until the sign-in changes or the user refreshes', async () => {
+	test('hides Antigravity while signed out and does not start agy again until the sign-in changes or the user refreshes', async () => {
 		const h = harness();
 		h.next = { stdout: '', stderr: PARADIS_ANTIGRAVITY_SIGNED_OUT_STDERR, exitCode: null, stopped: true };
 		const signedOut = await h.fetcher.fetch(false);
@@ -104,7 +104,7 @@ suite('Paradis Antigravity usage fetcher', () => {
 		h.next = { stdout: PARADIS_ANTIGRAVITY_USAGE_SAMPLE, stderr: '', exitCode: 0 };
 		const afterSignIn = await h.fetcher.fetch(false);
 		assert.deepStrictEqual({ signedOut, runsWhileWaiting, runsAfterRefresh, afterSignIn: afterSignIn?.accounts[0].status, runs: h.runs.length }, {
-			signedOut: { accounts: [{ provider: 'antigravity', id: '/home/example/.gemini', homeLabel: '~/.gemini', active: true, status: 'relogin_required', statusDetail: 'Antigravity CLI is not signed in' }] },
+			signedOut: undefined,
 			runsWhileWaiting: 1,
 			runsAfterRefresh: 2,
 			afterSignIn: 'ok',

@@ -105,7 +105,8 @@ export class ParadisAntigravityUsageFetcher {
 	}
 
 	/**
-	 * Antigravity の分。agy が見つからなければ undefined（パネルにもタイトルバーにも出さない）。
+	 * Antigravity の分。agy が見つからない・サインインしていないときは undefined（パネルにもタイトルバーにも出さない。
+	 * agy を入れただけで使っていない人に、直し方の列や赤い輪を出し続けないため）。
 	 * @param bypassCache 手動の更新。待ちを無視して取り直す
 	 */
 	async fetch(bypassCache: boolean): Promise<IParadisLimitsProviderSnapshot | undefined> {
@@ -115,7 +116,8 @@ export class ParadisAntigravityUsageFetcher {
 			return undefined;
 		}
 		const account = await this.fetchAccount(command, env, bypassCache);
-		return { accounts: [account] };
+		// サインインしていなければ出さない。手動の更新か、ログインの置き場所が変わったときに取り直し、サインインしていれば出す
+		return account.status === 'relogin_required' ? undefined : { accounts: [account] };
 	}
 
 	private async fetchAccount(command: string, env: NodeJS.ProcessEnv, bypassCache: boolean): Promise<IParadisLimitsAccount> {
