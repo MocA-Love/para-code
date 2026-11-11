@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, it } from 'vitest';
-import { isValidPresetDef, presetApprovalKey, presetCommandSummary, presetIonicon, presetTerminalCount, visiblePresets } from './presets.js';
+import { isValidPresetDef, presetApprovalKey, presetCommandSummary, presetConfirmLevel, presetIonicon, presetTerminalCount, presetTypedNameMatches, visiblePresets } from './presets.js';
 import type { PresetDef } from './store.js';
 
 function preset(overrides: Partial<PresetDef> = {}): PresetDef {
@@ -67,5 +67,15 @@ describe('command presets on the phone', () => {
 	it('maps PC icons onto Ionicons and falls back to the bolt', () => {
 		expect([presetIonicon('rocket'), presetIonicon('$(beaker)'), presetIonicon('no-such-icon'), presetIonicon(undefined)])
 			.toEqual(['rocket-outline', 'flask-outline', 'flash-outline', 'flash-outline']);
+	});
+
+	it('reads the confirmation level the PC sends, falling back to showing the details for an unknown one', () => {
+		expect({
+			levels: [undefined, '', 'confirm', 'details', 'type-name', 'newer-level'].map(confirm => presetConfirmLevel(preset({ confirm }))),
+			typed: [presetTypedNameMatches(' 本番 DB ', '本番 DB'), presetTypedNameMatches('本番', '本番 DB')],
+		}).toEqual({
+			levels: [undefined, undefined, 'confirm', 'details', 'type-name', 'details'],
+			typed: [true, false],
+		});
 	});
 });

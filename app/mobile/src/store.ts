@@ -331,6 +331,11 @@ export interface PresetDef {
 	qualifier?: string;
 	/** 上限で切り詰めた表示であること（実行される内容はこれより多い）。 */
 	truncated?: boolean;
+	/**
+	 * 実行の前に確認する段階（confirm / details / type-name）。付いているものは毎回この端末で確認させ、
+	 * 実行の要求に confirmed を付ける（付けないと PC が断る）。読むときは presets.ts の presetConfirmLevel を通す。
+	 */
+	confirm?: string;
 	tasks: PresetTask[];
 }
 /** scm presets 応答。truncated は件数の上限で一覧を切り詰めたこと。 */
@@ -4678,8 +4683,8 @@ export class MobileController {
 	 * layout: current でも、手元から見えていない作業中の端末へは送らない）。
 	 * タイムアウトが長めなのは、タスクの数だけターミナルの起動を待つため。
 	 */
-	presetRun(ws: string, key: string, signature: string): Promise<PresetRunResult> {
-		return this.request<PresetRunResult>('scm', { t: 'runPreset', ws, key, signature }, 60_000);
+	presetRun(ws: string, key: string, signature: string, confirmed?: boolean): Promise<PresetRunResult> {
+		return this.request<PresetRunResult>('scm', { t: 'runPreset', ws, key, signature, ...(confirmed === true ? { confirmed: true } : {}) }, 60_000);
 	}
 
 	/** スペースのメモ本文（PC版 Workspaces ビュー下部のメモ欄と同じ内容）。 */

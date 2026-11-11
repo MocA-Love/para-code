@@ -21,7 +21,8 @@
 }
 
 .monaco-workbench .paradis-mobile-pairing-dialog.paradis-modal-s {
-	width: 560px;
+	/* At least 560 for the QR code, then grows with the S tier (paradisModal.css, Q612); max-width still fits small windows. */
+	width: clamp(560px, 30vw, 680px);
 	outline: none;
 }
 

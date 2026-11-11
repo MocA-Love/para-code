@@ -29,6 +29,7 @@ import { IDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
@@ -39,6 +40,7 @@ import {
 	IParadisPresetService,
 	IParadisResolvedPreset,
 	paradisPresetAction,
+	paradisPresetConfirmLevel,
 	paradisPresetApprovalSignature,
 	paradisPresetCommandSignature,
 	paradisPresetQualifiers,
@@ -140,6 +142,20 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 					},
 					pinned: { type: 'boolean', default: true, description: localize('paradis.terminal.presets.pinned', "ターミナルタブバー右側にボタンとして表示する。") },
 					pinnedLabel: { type: 'boolean', default: false, description: localize('paradis.terminal.presets.pinnedLabel', "ピン留めボタンにアイコンに加えて名前も表示する。") },
+					confirmBeforeRun: {
+						type: 'string',
+						enum: ['confirm', 'details', 'type-name'],
+						enumDescriptions: [
+							// allow-any-unicode-next-line
+							localize('paradis.terminal.presets.confirm.simple', "「実行しますか？」とやめる・実行だけを出す"),
+							// allow-any-unicode-next-line
+							localize('paradis.terminal.presets.confirm.details', "実行するコマンドの全文・作業フォルダ・接続先・対象のリポジトリを見せて確認する"),
+							// allow-any-unicode-next-line
+							localize('paradis.terminal.presets.confirm.typeName', "内容を見せたうえで、プリセットの名前を打つまで実行できないようにする"),
+						],
+						// allow-any-unicode-next-line
+						description: localize('paradis.terminal.presets.confirmBeforeRun', "実行の前に確認する段階。未指定は確認しない。確認するプリセットは新しいスペースの直後に自動実行しない（autoRun と同時には効かない）。モバイルから実行するときは毎回端末で確認する。")
+					},
 					autoRun: { type: 'boolean', default: false, description: localize('paradis.terminal.presets.autoRun', "「新しいスペース（worktree）を作成」直後に自動実行する。実行時は環境変数 {0} に親リポジトリの絶対パスが渡される。", PARADIS_PROJECT_ROOT_ENV_VAR) },
 					appliesTo: {
 						type: 'array',
@@ -360,6 +376,7 @@ export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folde
 	const dialogService = accessor.get(IDialogService);
 	const storageService = accessor.get(IStorageService);
 	const logService = accessor.get(ILogService);
+	const notificationService = accessor.get(INotificationService);
 
 	let ranAny = false;
 	const presets = await presetService.getPresetsForFolder(folderUri);
@@ -369,6 +386,13 @@ export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folde
 		// 挿入だけ・エージェント向けは「今の入力欄」へ入れるもので、作ったばかりのスペースで
 		// 自動に走らせる意味が無い（エディタでも autoRun を選べないようにしてある）。
 		if (!preset.autoRun || preset.envInactive || paradisPresetAction(preset) !== 'run') {
+			continue;
+		}
+		// 実行の前に確認するプリセット（Q613）は自動では走らせない。スペースはエージェントやモバイルからも作られ、
+		// PC の前に確認する人がいるとは限らない。編集画面では両方を選べないが、手で書いた設定に両方が入っていたら知らせる
+		if (paradisPresetConfirmLevel(preset) !== undefined) {
+			// allow-any-unicode-next-line
+			notificationService.info(localize('paradis.terminal.autoRunSkippedConfirm', "プリセット「{0}」は実行の前に確認する設定のため、新しいスペースでは自動実行しませんでした。", preset.name));
 			continue;
 		}
 		if (preset.source === 'workspace') {

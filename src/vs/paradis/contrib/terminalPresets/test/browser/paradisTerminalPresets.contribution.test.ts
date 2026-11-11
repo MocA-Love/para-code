@@ -13,6 +13,7 @@ import { URI } from '../../../../../base/common/uri.js';
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { ILogService, NullLogService } from '../../../../../platform/log/common/log.js';
+import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { IStorageService } from '../../../../../platform/storage/common/storage.js';
 import { GeneralShellType, ITerminalEnvironment, PosixShellType, WindowsShellType } from '../../../../../platform/terminal/common/terminal.js';
 import { paradisHostPathFor } from '../../../../common/paradisHostPath.js';
@@ -78,6 +79,30 @@ suite('paradisRunAutoRunPresets', () => {
 		instantiationService.stub(ILogService, new NullLogService());
 		return { instantiationService, runs, forceNewTerminal, stateKeys, envs };
 	}
+
+	test('does not auto-run a preset that asks for confirmation before running, and says so', async () => {
+		const runs: string[] = [];
+		const notes: string[] = [];
+		const instantiationService = store.add(new TestInstantiationService());
+		instantiationService.stub(IParadisPresetService, new class extends mock<IParadisPresetService>() {
+			override async getPresetsForFolder(): Promise<readonly IParadisResolvedPreset[]> {
+				return [{ ...createPreset('guarded'), confirmBeforeRun: 'details' }, createPreset('plain')];
+			}
+			override async runPreset(preset: IParadisResolvedPreset): Promise<void> {
+				runs.push(preset.name);
+			}
+		}());
+		instantiationService.stub(INotificationService, new class extends mock<INotificationService>() {
+			override info(message: string): void {
+				notes.push(message);
+			}
+		}());
+		instantiationService.stub(IDialogService, new (mock<IDialogService>())());
+		instantiationService.stub(IStorageService, new (mock<IStorageService>())());
+		instantiationService.stub(ILogService, new NullLogService());
+		const ranAny = await instantiationService.invokeFunction(paradisRunAutoRunPresets, TEST_FOLDER, TEST_REPO_PATH);
+		assert.deepStrictEqual({ ranAny, runs, notified: notes.length === 1 && notes[0].includes('guarded') }, { ranAny: true, runs: ['plain'], notified: true });
+	});
 
 	test('preserves partial success and continues after a preset fails', async () => {
 		const { instantiationService, runs, forceNewTerminal } = createInstantiationService(new Set(['second']));

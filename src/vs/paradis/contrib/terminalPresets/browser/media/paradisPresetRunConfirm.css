@@ -1,0 +1,130 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+	The confirmation before a command preset runs (paradisPresetRunConfirm.ts, Q613): the UI kit's S box. The details
+	show the connection, the repository and, per terminal, its working folder and the full commands.
+*/
+
+.paradis-preset-confirm-backdrop {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: var(--vscode-paradis-scrim);
+}
+
+.paradis-preset-confirm .ppc-body {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size160);
+	padding-top: var(--vscode-spacing-size120);
+}
+
+.paradis-preset-confirm .ppc-entry {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size80);
+	min-width: 0;
+}
+
+.paradis-preset-confirm .ppc-entry-name {
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textStrong);
+	overflow-wrap: anywhere;
+}
+
+.paradis-preset-confirm .ppc-lead {
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+}
+
+.paradis-preset-confirm .ppc-meta {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	gap: var(--vscode-spacing-size20) var(--vscode-spacing-size100);
+	margin: 0;
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.paradis-preset-confirm .ppc-meta dt {
+	color: var(--vscode-paradis-textFaint);
+}
+
+.paradis-preset-confirm .ppc-meta dd {
+	margin: 0;
+	color: var(--vscode-paradis-text);
+	overflow-wrap: anywhere;
+}
+
+.paradis-preset-confirm .ppc-task {
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner);
+	background: var(--vscode-paradis-sunken);
+	overflow: hidden;
+}
+
+.paradis-preset-confirm .ppc-task-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	min-width: 0;
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size100);
+	border-bottom: 1px solid var(--vscode-paradis-lineSubtle);
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-preset-confirm .ppc-task-head > .codicon {
+	flex: none;
+	color: var(--vscode-paradis-textMuted);
+}
+
+.paradis-preset-confirm .ppc-task-name {
+	flex: 1;
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.paradis-preset-confirm .ppc-task-cwd {
+	flex-basis: 100%;
+	min-width: 0;
+	overflow-wrap: anywhere;
+	color: var(--vscode-paradis-textFaint);
+	font-family: var(--monaco-monospace-font);
+	font-size: var(--vscode-fontSize-label2);
+}
+
+.paradis-preset-confirm .ppc-commands {
+	max-height: 240px;
+	margin: 0;
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size100);
+	overflow: auto;
+	color: var(--vscode-paradis-text);
+	font-family: var(--monaco-monospace-font);
+	font-size: var(--vscode-fontSize-label1);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.paradis-preset-confirm .ppc-type-label {
+	margin-top: var(--vscode-spacing-size40);
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-text);
+	overflow-wrap: anywhere;
+}
+
+/* The "safety" row of the preset form (paradisPresetEditorDialog.ts): the level select and its hint under the switch.
+	Kept here so the confirmation's parts stay in one file. */
+.paradis-preset-editor-dialog .ppe-confirm-level {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: var(--vscode-spacing-size40);
+	margin-top: var(--vscode-spacing-size40);
+}

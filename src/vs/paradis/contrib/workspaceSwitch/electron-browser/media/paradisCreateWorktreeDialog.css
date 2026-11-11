@@ -17,19 +17,11 @@
 	justify-content: center;
 }
 
-.paradis-create-worktree-dialog {
-	width: 560px;
-	max-width: 92vw;
-	background: var(--vscode-editor-background);
-	color: var(--vscode-foreground);
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 8px;
-	box-shadow: var(--vscode-shadow-xl);
+/* The box's size, surface and font come from the modal S tier (paradisModal.css, Q612). It scrolls when the window is short. */
+.monaco-workbench .paradis-create-worktree-dialog.paradis-modal {
 	padding: 16px 18px;
-	display: flex;
-	flex-direction: column;
 	gap: 10px;
-	font-size: 13px;
+	overflow-y: auto;
 }
 
 .paradis-create-worktree-dialog .pcw-title {

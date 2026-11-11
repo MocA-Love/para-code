@@ -7,7 +7,7 @@
 
 /*
 	The confirmation dialog of Para Code's UI kit (stage 3, Q600, paradisConfirmDialog.ts): upstream's Dialog drawn as the
-	kit's S box. 480 wide, the floating surface (colors passed as theme variables), radius 12, the question as an 18px
+	kit's S box. As wide as the S tier (paradisModal.css, Q612), the floating surface (colors passed as theme variables), radius 12, the question as an 18px
 	heading, the detail in the muted color, the buttons at the bottom right (cancel secondary, then the action). No type
 	icon. Upstream's dialog.css rules are (0,2,0) to (0,4,0); these carry the extra class.
 */
@@ -18,7 +18,8 @@
 
 .monaco-dialog-box.paradis-confirm-dialog {
 	box-sizing: border-box;
-	width: 480px;
+	/* The S tier's width (paradisModal.css). Upstream's Dialog cannot carry the paradis-modal classes. */
+	width: clamp(440px, 26vw, 600px);
 	min-width: 0;
 	max-width: 94vw;
 	padding: 0;
@@ -50,6 +51,11 @@
 
 .monaco-dialog-box.paradis-confirm-dialog:not(.align-vertical) .dialog-message-row .dialog-message-container {
 	padding-left: 0;
+}
+
+/* The question and the detail stop at 560 so a wide box does not stretch the lines. */
+.monaco-dialog-box.paradis-confirm-dialog .dialog-message-row .dialog-message-container {
+	max-width: 560px;
 }
 
 .monaco-dialog-box.paradis-confirm-dialog .dialog-message-row .dialog-message-container .dialog-message {

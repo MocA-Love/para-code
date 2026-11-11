@@ -757,15 +757,9 @@
 	justify-content: center;
 }
 
-.paradis-limits-setup {
-	width: 440px;
-	background: var(--vscode-editorWidget-background);
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
-	border-radius: 6px;
-	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.5));
-	color: var(--vscode-foreground);
-	font-size: 12px;
-	outline: none;
+/* The box's size, surface and font come from the modal S tier (paradisModal.css, Q612). It scrolls when the window is short. */
+.monaco-workbench .paradis-limits-setup.paradis-modal {
+	overflow-y: auto;
 }
 
 .paradis-limits-setup .pls-body {

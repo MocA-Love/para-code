@@ -300,19 +300,7 @@
 	background-color: rgba(0, 0, 0, 0.5);
 }
 
-.paradis-browser-profile-modal {
-	display: flex;
-	flex-direction: column;
-	width: 520px;
-	max-width: 100%;
-	max-height: 100%;
-	background-color: var(--vscode-editorWidget-background);
-	color: var(--vscode-foreground);
-	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
-	border-radius: var(--vscode-cornerRadius-medium, 6px);
-	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
-	font-size: 13px;
-}
+/* The box's size, surface and font come from the modal S tier (paradisModal.css, Q612). */
 
 .paradis-browser-profile-modal .pbpm-header {
 	display: flex;

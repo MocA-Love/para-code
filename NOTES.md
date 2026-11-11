@@ -343,6 +343,7 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 | `app/mobile/modules/para-glass-morph/expo-module.config.json` | 新規追加（ローカルExpoモジュールの定義JSON。`apple.modules: ["ParaGlassMorphModule"]`） | ＋メニューのLiquid Glass液体モーフ（SwiftUIのglassEffectID + withAnimation spring）用ネイティブビュー。JSONのためマーカー不可。同モジュールのSwift/podspec/index.tsにはPARA-CODEヘッダーあり |
 | `cloudflare/update-server/package.json` / `package-lock.json` / `tsconfig.json` | 新規追加（fork所有、upstreamに同パスなし）。自動アップデートサーバー（Cloudflare Worker）のマニフェスト・lockファイル・tsconfig。同ディレクトリの `src/*.ts` / `wrangler.toml` にはPARA-CODEマーカー記載済み | 自動アップデート基盤（`updateUrl`が指すWorker）の付帯設定ファイル。JSONのためマーカーを埋め込めない |
 | `src/vs/paradis/contrib/browserExtensions/electron-main/media/react-devtools/**`（61ファイル） | 新規追加（vendoredサードパーティ成果物、MIT）。React Developer Tools 7.0.1 のChrome拡張をCRX3から展開してそのまま同梱。取得元・更新手順は `src/vs/paradis/contrib/browserExtensions/README.md` 参照 | 内蔵ブラウザへReact DevToolsを既定ロードする機能。ビルド済み第三者コードのためマーカーを埋め込まず、hygiene/eslint/stylelintから除外（`build/filters.ts`・`.eslint-ignore` のPARA-PATCH） |
+| `src/vs/paradis/contrib/browserExtensions/electron-main/media/react-devtools/_metadata/verified_contents.json` | 削除（2026-11-11）。CRX に入っていた Chrome ウェブストアの署名の一覧 | Electron が `loadExtension` のたびに展開済みの拡張機能の `_metadata/` を消し（`electron_extension_loader.cc` の `LoadUnpacked`）、アプリの中のファイルが消えて macOS の `codesign --verify --deep --strict` が通らなくなっていた。展開済みの読み込みでは使われない。再発は `build/lib/test/paradisBundledBrowserExtensions.test.ts` が検査する |
 | `app/mobile/package.json` / `app/mobile/tsconfig.json` / `app/pnpm-lock.yaml` | Expo SDKを52→57へ移行（react-native 0.76→0.86、react 19.0.0→19.2.3）、`@expo/vector-icons` と `react-native-get-random-values` を新規依存として追加。`tsconfig.json` には `expo install --fix` が自動付与した `"extends": "expo/tsconfig.base"` を追加。`pnpm-lock.yaml` は `app/` pnpmワークスペース全体でこれらの依存解決を更新 | SDK 52がXcode 26.6/iOS 26.5ツールチェーンと非互換で、アプリがそもそも起動しなかった（「App entry point not found」）。動作確認済みのvanilla baselineに一致するSDK 57へ切り替えて解決 |
 | `app/package.json` | 新規追加（fork所有）。`app/` pnpmワークスペース全体のprivateルートマニフェストと共通scripts | Para Codeモバイルアプリ・protocol・relayを単一ワークスペースとして管理するため |
 | `app/protocol/package.json` / `app/protocol/tsconfig.json` | 新規追加（fork所有）。モバイルリレープロトコル共有パッケージのマニフェストとTypeScript設定 | PC・relay・モバイル間で型とプロトコル定義を共有するため |
@@ -2403,6 +2404,16 @@ TM14 の保存画面と TM12 の記録は、renderer の `IFileService` では�
 - エージェントかどうかは「hook が1度でも発火したか」（`IParadisAgentStatusStore.isAgentInstance`）。エージェントを終了した後のシェルにも入るが、1行に均して Enter は送らないので実行はされない。タブのアイコン（TM18）・再開バナー（TM22）と判定が揃っていない（アーキテクチャレビュー L1、未対応）
 - モバイルの一覧と autoRun からは `run` 以外を外している（入れ先の「今のターミナル」がモバイルからは見えない）。承認の署名には `prompt` も入れてある
 - 指紋（`paradisPresetFingerprint`）には `run` 以外のときだけ種類を足す。指紋は「このマシンだけ隠したリポジトリのプリセット」の保存キーにも使っているので、従来のプリセットの指紋を変えると隠したものが出てくる
+
+### コマンドプリセットの実行前の確認（Q613、2026-11-12）
+
+プリセットに `confirmBeforeRun`（`confirm` / `details` / `type-name`）を足した。確認しないときは書かない。確認は `runPreset` の頭で掛け、呼ぶ側で済ませた経路（まとめて実行・モバイル）だけが `confirmed: true` を渡す。
+
+- **古い版の編集画面で保存し直すと、確認の設定が消える**（古い版は知らない項目を読み飛ばすだけで、保存では書き戻さない）。古い版では確認も出ない
+- 知らない値と手書きの `true` は「内容を見せて確認」として扱う（確認を外す側に倒さない）
+- 確認付きは autoRun しない（フォームでは同時に選べない。設定に両方あれば通知して飛ばす）
+- モバイルからは毎回端末で確認させ、PC は `confirmed` の無い要求を `confirm-required` で断る
+- 指紋には確認の段階を足す（双子の見分けのため）が、「このマシンだけ隠した」台帳では `ignoreConfirm` で外す（後から確認を付けても隠したままにする）
 
 ### 描画ずれの自動修復（TM12）
 

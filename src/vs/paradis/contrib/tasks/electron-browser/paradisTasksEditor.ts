@@ -825,7 +825,12 @@ export class ParadisTasksEditor extends EditorPane {
 		const title = dom.append(row, $('td.title'));
 		dom.append(title, $('.paradis-tasks-item-title')).textContent = item.title;
 		const context = dom.append(title, $('.paradis-tasks-item-context'));
-		dom.append(context, $('span.repo')).textContent = item.repository;
+		// 状態の列を出せない狭い幅では、状態を 2 段目の先頭に出す（CSS が幅で出し分ける）
+		const state = stateOf(item);
+		dom.append(context, $(`span.paradis-tasks-state.paradis-tasks-state-inline.${state.tone}`)).textContent = state.label;
+		const repository = dom.append(context, $('span.repo'));
+		repository.textContent = item.repository;
+		repository.title = item.repository;
 		if (item.author) {
 			dom.append(context, $('span')).textContent = localize('paradis.tasks.author', "作成 {0}", item.author);
 		}
@@ -859,7 +864,6 @@ export class ParadisTasksEditor extends EditorPane {
 			}
 		}
 
-		const state = stateOf(item);
 		const stateCell = dom.append(dom.append(row, $('td.state')), $(`span.paradis-tasks-state.${state.tone}`));
 		stateCell.textContent = state.label;
 

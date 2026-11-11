@@ -80,4 +80,56 @@ suite('preset editor dialog: row actions', () => {
 			container.remove();
 		}
 	});
+	test('safety: the confirm switch starts off; turning it on shows the levels at "show the details" and blocks auto-run; turning it on again starts over', async () => {
+		const presetService = { presets: [], folders: [], onDidChangePresets: Event.None, isFolderLabelShown: () => false } as unknown as IParadisPresetService;
+		const container = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(container);
+		const services = new Map<unknown, unknown>([
+			[ILayoutService, { activeContainer: container }],
+			[IParadisPresetService, presetService],
+			[IDialogService, { confirm: async () => ({ confirmed: true }) }],
+			[IWorkspaceContextService, { getWorkspace: () => ({ folders: [] }) }],
+			[IContextMenuService, {}],
+			[IHoverService, NullHoverService],
+			[IContextViewService, {}],
+			[IConfigurationService, { getValue: () => undefined }],
+		]);
+		const accessor = { get: (id: unknown) => services.get(id) } as unknown as ServicesAccessor;
+		try {
+			openParadisPresetEditorDialog(accessor);
+			[...container.querySelectorAll<HTMLElement>('button')].find(button => button.textContent?.includes('新規作成'))!.click();
+			// 「新規作成」は書きかけの確認（非同期）の後でフォームを描く
+			await new Promise(resolve => setTimeout(resolve, 0));
+			const confirmSwitch = container.querySelector<HTMLButtonElement>('.ppe-confirm-switch button')!;
+			const level = container.querySelector<HTMLElement>('.ppe-confirm-level')!;
+			const autoRun = [...container.querySelectorAll<HTMLElement>('.ppe-switch-row')].find(row => row.textContent?.includes('自動実行'))!.querySelector<HTMLButtonElement>('button')!;
+			const state = () => ({
+				on: confirmSwitch.getAttribute('aria-checked'),
+				levelShown: level.style.display !== 'none',
+				level: level.querySelector('select')?.value,
+				autoRunDisabled: autoRun.disabled,
+			});
+			const initial = state();
+			confirmSwitch.click();
+			const turnedOn = state();
+			const select = level.querySelector('select')!;
+			select.value = 'type-name';
+			select.dispatchEvent(new mainWindow.Event('change', { bubbles: true }));
+			confirmSwitch.click();
+			const turnedOff = state();
+			confirmSwitch.click();
+			const turnedOnAgain = state();
+			assert.deepStrictEqual({ initial, turnedOn, turnedOff, turnedOnAgain }, {
+				initial: { on: 'false', levelShown: false, level: 'details', autoRunDisabled: false },
+				turnedOn: { on: 'true', levelShown: true, level: 'details', autoRunDisabled: true },
+				turnedOff: { on: 'false', levelShown: false, level: 'type-name', autoRunDisabled: false },
+				turnedOnAgain: { on: 'true', levelShown: true, level: 'details', autoRunDisabled: true },
+			});
+		} finally {
+			container.querySelector<HTMLElement>('.ppe-close-btn')?.click();
+			// 書きかけを捨てる確認（非同期）の後で閉じる
+			await new Promise(resolve => setTimeout(resolve, 0));
+			container.remove();
+		}
+	});
 });
