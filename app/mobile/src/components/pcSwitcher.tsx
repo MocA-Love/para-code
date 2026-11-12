@@ -237,7 +237,7 @@ export function PcSwitcher({ visible, anchor, onClose }: {
 		const top = Math.min(anchor.y, Math.max(80, screenHeight - 320));
 		return (
 			<OverlayPortal>
-				<Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="閉じる" />
+				<Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityRole="button" accessibilityLabel="閉じる" />
 				<PopIn style={[styles.popoverPos, { top, left }]}>
 					<GlassSurface style={styles.popover}>
 						<SectionHeader title="ペアリング済みのPC" first style={styles.head} />

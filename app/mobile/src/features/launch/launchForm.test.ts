@@ -1,6 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
+import { PcReplyError, PcUnreachableError } from '../../store.js';
 import {
 	TERMINAL_KIND,
 	defaultLaunchTarget,
@@ -8,11 +9,15 @@ import {
 	encodeLaunchTarget,
 	kindAfterFormLoaded,
 	launchBlockedReason,
+	launchFormErrorText,
 	launchSpaceOptions,
 	launchableAgents,
 	parseLaunchTarget,
 	pcSupportsLaunchIntoSpace,
 } from './launchForm.js';
+
+// 無応答の判定（usageAggregate）が使用量の画面のフックを引き込むので、React Native を読まないよう差し替える。
+vi.mock('../../hooks/useAppIsActive.js', () => ({ useAppIsActive: () => true }));
 
 const spaces = [{ id: '1:w1', name: 'alpha', branch: 'main' }, { id: '1:w2', name: 'beta', parent: '1:w1' }];
 const repos = [{ id: '1:w1', name: 'alpha' }, { id: '1:r2', name: 'other' }];
@@ -79,5 +84,23 @@ describe('起動できるか', () => {
 	test('旧 PC でも、新しいスペースへの起動とターミナルは押せる', () => {
 		expect(launchBlockedReason({ ...base, supportsLaunchIntoSpace: false, target: { kind: 'new', repoId: '1:w1' } })).toBeUndefined();
 		expect(launchBlockedReason({ ...base, supportsLaunchIntoSpace: false, kind: TERMINAL_KIND })).toBeUndefined();
+	});
+});
+
+describe('launchFormErrorText', () => {
+	test('読み込みの失敗を日本語の一文にする', () => {
+		expect([
+			new PcUnreachableError('request timeout'),
+			new PcReplyError('timed out', 'no-response'),
+			new Error('workspace not found'),
+			new PcUnreachableError('PC画面の再接続が完了してから操作してください'),
+			new PcReplyError('scm unavailable', undefined),
+		].map(launchFormErrorText)).toEqual([
+			'PC から返事がありませんでした。PC の Para Code が開いているか確かめてください。',
+			'PC から返事がありませんでした。PC の Para Code が開いているか確かめてください。',
+			'PC で開いているスペースが見つかりませんでした。PC で Para Code のウィンドウを開いてください。',
+			'PC画面の再接続が完了してから操作してください',
+			'起動の候補を読み込めませんでした（scm unavailable）',
+		]);
 	});
 });

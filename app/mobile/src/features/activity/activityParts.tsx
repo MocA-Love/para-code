@@ -239,7 +239,7 @@ const styles = StyleSheet.create({
 	row: {
 		flexDirection: 'row',
 		alignItems: 'center',
-		gap: space.sm + 2,
+		gap: space.row,
 		minHeight: 52,
 		paddingRight: space.md,
 		paddingLeft: space.md,

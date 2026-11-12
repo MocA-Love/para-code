@@ -535,7 +535,7 @@ const styles = StyleSheet.create({
 	rowTop: {
 		flexDirection: 'row',
 		alignItems: 'flex-start',
-		gap: space.xs + 2,
+		gap: space.snug,
 	},
 	columns: {
 		flex: 1,
@@ -565,7 +565,7 @@ const styles = StyleSheet.create({
 	card: {
 		backgroundColor: colors.panel,
 		borderRadius: radius.group,
-		paddingHorizontal: space.sm + 2,
+		paddingHorizontal: space.row,
 		paddingVertical: space.sm,
 	},
 	cardRow: {
@@ -577,10 +577,10 @@ const styles = StyleSheet.create({
 		flexDirection: 'row',
 		alignItems: 'baseline',
 		gap: space.sm,
-		marginBottom: space.sm + 2,
+		marginBottom: space.row,
 	},
 	listGap: {
-		gap: space.xs + 2,
+		gap: space.snug,
 	},
 	detail: {
 		fontSize: type.caption,
@@ -588,7 +588,7 @@ const styles = StyleSheet.create({
 		backgroundColor: colors.raised,
 		borderRadius: radius.button,
 		paddingHorizontal: space.sm,
-		paddingVertical: space.xs + 2,
+		paddingVertical: space.snug,
 		marginTop: space.xs,
 	},
 	pill: {
@@ -596,7 +596,7 @@ const styles = StyleSheet.create({
 		alignItems: 'center',
 		gap: 3,
 		height: 26,
-		paddingHorizontal: space.sm + 2,
+		paddingHorizontal: space.row,
 		borderRadius: radius.pill,
 		backgroundColor: colors.raised,
 	},
@@ -612,7 +612,7 @@ const styles = StyleSheet.create({
 		bottom: -2,
 		flexDirection: 'row',
 		alignItems: 'center',
-		gap: space.xs + 2,
+		gap: space.snug,
 	},
 	line: {
 		flexDirection: 'row',
@@ -621,7 +621,7 @@ const styles = StyleSheet.create({
 		minHeight: 24,
 	},
 	linesTop: {
-		marginTop: space.xs + 2,
+		marginTop: space.snug,
 	},
 	lineTitle: {
 		fontSize: type.meta,
@@ -639,7 +639,7 @@ const styles = StyleSheet.create({
 		fontSize: type.caption,
 		fontWeight: '500',
 		color: colors.textMuted,
-		marginTop: space.sm + 2,
+		marginTop: space.row,
 		marginBottom: space.xs,
 	},
 	sectionFirst: {
@@ -651,7 +651,7 @@ const styles = StyleSheet.create({
 	tiles: {
 		flexDirection: 'row',
 		flexWrap: 'wrap',
-		gap: space.xs + 2,
+		gap: space.snug,
 		marginTop: space.sm,
 	},
 	tile: {
@@ -660,7 +660,7 @@ const styles = StyleSheet.create({
 		backgroundColor: colors.panel,
 		borderRadius: radius.group,
 		paddingHorizontal: space.sm,
-		paddingVertical: space.xs + 2,
+		paddingVertical: space.snug,
 		justifyContent: 'space-between',
 	},
 	tileValue: {
@@ -673,7 +673,7 @@ const styles = StyleSheet.create({
 		fontSize: type.body,
 		fontWeight: '600',
 		color: colors.text,
-		marginTop: space.xs + 2,
+		marginTop: space.snug,
 	},
 	metricBar: {
 		gap: 3,
