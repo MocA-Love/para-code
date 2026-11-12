@@ -254,7 +254,7 @@ export const ioStyles = StyleSheet.create({
 const baseStyles = StyleSheet.create({
 	io: { borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: radius.control, ...squircle, overflow: 'hidden', backgroundColor: colors.codeBg },
 	ioBar: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 8, paddingVertical: 5, backgroundColor: 'rgba(255,255,255,0.035)', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
-	ioLabel: { flex: 1, color: colors.textDim, fontSize: type.badge, fontWeight: '800', letterSpacing: 0.9, textTransform: 'uppercase' },
+	ioLabel: { flex: 1, color: colors.textDim, fontSize: type.badge, fontWeight: '600' },
 	ioAction: { minHeight: IO_ACTION_HEIGHT, justifyContent: 'center', borderWidth: StyleSheet.hairlineWidth, borderColor: colors.border, borderRadius: radius.key, ...squircle, paddingHorizontal: 7, paddingVertical: 2 },
 	ioActionText: { color: colors.textDim, fontSize: type.badge },
 	ioActionDone: { color: colors.green },

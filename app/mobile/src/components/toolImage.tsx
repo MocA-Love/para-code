@@ -232,7 +232,7 @@ export function ImageLightbox({ load, count, index, onIndexChange, title, subtit
 
 	return (
 		<OverlayPortal>
-			<View style={styles.lightbox}>
+			<View style={styles.lightbox} onAccessibilityEscape={onClose}>
 				<ScrollView
 					style={StyleSheet.absoluteFill}
 					contentContainerStyle={styles.stage}

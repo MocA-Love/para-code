@@ -8,11 +8,10 @@ import { paraAlert } from '../../paraAlert.js';
 import { useShallow } from 'zustand/react/shallow';
 import { isTerminalViewportRevoked, onTerminalViewportRevoked, pcHasCapabilityFor, reclaimTerminalViewport, sendPcRequest, useAppStore } from '../../appState.js';
 import { appendUploadedPath } from '../../components/agentComposerDraft.js';
-import { Button } from '../../components/button.js';
+import { Button } from '../../ui/index.js';
 import { haptic } from '../../haptics.js';
 import { useTerminalKeyInput } from '../../components/terminalKeyRow.js';
 import { TermView } from '../../components/termView.js';
-import { WorkspaceFileViewer } from '../../components/workspaceFileViewer.js';
 import type { LocalFileTarget } from '../../localFileTarget.js';
 import { PcCapability } from '../../pcCompat.js';
 import { encodeSessionTab } from '../../routes.js';
@@ -20,6 +19,7 @@ import { terminalLinkNeedsConfirmation, terminalUrlDestination, terminalUrlHost,
 import { terminalSubmitPlan } from '../../terminalKeys.js';
 import { terminalViewportForPrefs, type TerminalGrid, type TerminalViewport } from '../../terminalViewport.js';
 import { createTerminalViewportOwnership } from './terminalViewportOwner.js';
+import { fileViewerHref } from '../code/codeRoutes.js';
 import type { SpaceTerminal } from '../../navigationTargets.js';
 import { monoFamily } from '../../monoFont.js';
 import { colors, radius, space, type } from '../../theme.js';
@@ -165,7 +165,6 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset, s
 
 	// ターミナルに出たリンク（W2-31）。
 	const router = useRouter();
-	const [viewer, setViewer] = useState<{ ws: string; path: string; line?: number } | undefined>(undefined);
 	const openGeneration = useRef(0);
 	useEffect(() => () => { openGeneration.current++; }, []);
 	const openFile = (target: LocalFileTarget) => {
@@ -178,8 +177,9 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset, s
 		// 付けない PC はワークスペースの根から解決する）。外のファイル・無いファイルは何もしない。
 		const fromTerminal = pcHasCapabilityFor(activePcId, PcCapability.FsResolveLinkTerminal) ? { terminalKey } : {};
 		sendPcRequest<{ path?: unknown }>(activePcId, 'fs', { t: 'resolveLink', ws, path: target.path, ...fromTerminal }).then(resolved => {
-			if (openGeneration.current === generation && typeof resolved.path === 'string') {
-				setViewer({ ws, path: resolved.path, ...(target.line !== undefined ? { line: target.line } : {}) });
+			// ファイルツリーから開いたときと同じビューアの画面へ進める（iPad では詳細の列に積まれる）。
+			if (openGeneration.current === generation && typeof resolved.path === 'string' && activePcId !== undefined) {
+				router.push(fileViewerHref(activePcId, ws, resolved.path, target.line));
 			}
 		}).catch(() => { /* ワークスペースの外・存在しないパス */ });
 	};
@@ -412,9 +412,6 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset, s
 				onLiveArrow={sendArrow}
 			/>
 			<View style={[styles.bottom, { height: bottomInset }]} />
-			{viewer !== undefined ? (
-				<WorkspaceFileViewer ws={viewer.ws} path={viewer.path} focusLine={viewer.line} backLabel="ターミナル" onClose={() => setViewer(undefined)} />
-			) : null}
 		</View>
 	);
 }
