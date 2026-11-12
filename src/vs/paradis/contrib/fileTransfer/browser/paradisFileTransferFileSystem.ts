@@ -400,10 +400,10 @@ export class ParadisFileServiceTransferFileSystem implements IParadisTransferFil
 			} catch (error) {
 				// 書く側が失敗したら送り元の残りを読まない（止めた読み込みに残り全部を溜めない。接続先なら通信も止める）。
 				// 送り元は destroy せず、読み込みを取り消して流しきる（終わりの知らせが届かないと読み込み側が片付かない）。
-				// 流れてきた残りは、壊した forward が捨てる
+				// 流れてきた残りは、壊した forward が捨てる。cancelIo は呼ばない（同じ送り元を読んでいるほかの項目の要求まで
+				// 落とすため。今の 1 回の読み込みが返った時点で止まる）
 				if (!token.isCancellationRequested) {
 					readCancellation.cancel();
-					this.options.cancelIo?.(source);
 					forward.destroy();
 					sourceStream.resume();
 				}

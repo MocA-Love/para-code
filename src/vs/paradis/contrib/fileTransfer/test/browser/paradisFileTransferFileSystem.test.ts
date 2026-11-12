@@ -359,7 +359,7 @@ suite('Paradis file transfer - IFileService adapter', () => {
 		const result = await fileSystem.copyFile(resource, joinPath(REMOTE_DIR, 'big.bin'), options(true)).then(() => 'resolved', () => 'rejected');
 		await source.closed.p;
 
-		assert.deepStrictEqual({ result, cancelledIo, stoppedEarly: source.reads < 16 }, { result: 'rejected', cancelledIo: ['source'], stoppedEarly: true });
+		assert.deepStrictEqual({ result, cancelledIo, stoppedEarly: source.reads < 16 }, { result: 'rejected', cancelledIo: [], stoppedEarly: true });
 	});
 
 	test('a cancelled copy rejects and writes nothing', async () => {
