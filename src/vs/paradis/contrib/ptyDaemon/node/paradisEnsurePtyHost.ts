@@ -45,7 +45,7 @@ const CONNECT_TIMEOUT = 2_000;
  * 重い機械のコールドスタートや、更新の直後に全ウィンドウが一斉に繋ぎに来る場面でも越えないよう長めに取る
  * （越えると、常駐に残した前の端末へ繋がらない）。
  */
-const HANDSHAKE_TIMEOUT = 30_000;
+export const PARADIS_DAEMON_HANDSHAKE_TIMEOUT = 30_000;
 
 /**
  * 前の起動で名乗りに答えなかった常駐（台帳の pid と起動時刻が同じもの）に、次から待つ上限。
@@ -54,7 +54,7 @@ const HANDSHAKE_TIMEOUT = 30_000;
  * いるかもしれない）。その代わり、起動のたびに 30 秒止まらないよう、2 回目からは短く待って諦める。
  * 答えた常駐なら名乗りは数ミリ秒で済むので、ただ重かっただけの常駐もここで答えれば印は消える。
  */
-const UNRESPONSIVE_HANDSHAKE_TIMEOUT = 5_000;
+export const PARADIS_DAEMON_UNRESPONSIVE_HANDSHAKE_TIMEOUT = 5_000;
 
 /** 起こしてから待つ上限。ここを過ぎたら常駐を諦めて、今までどおりアプリの中で動かす。 */
 const STARTUP_TIMEOUT = 10_000;
@@ -70,14 +70,14 @@ export interface IParadisEnsurePtyHostOptions {
 	/** 常駐として起動するための実行ファイルと引数。呼び出し側の形（Electron / 素の node）に依存する。 */
 	readonly launch: { readonly execPath: string; readonly args: readonly string[]; readonly env: { readonly [key: string]: string } };
 	readonly logService: ILogService;
-	/** 繋いだ後の名乗りを待つ上限（ミリ秒）。テストで短くする。既定は {@link HANDSHAKE_TIMEOUT}。 */
+	/** 繋いだ後の名乗りを待つ上限（ミリ秒）。テストで短くする。既定は {@link PARADIS_DAEMON_HANDSHAKE_TIMEOUT}。 */
 	readonly handshakeTimeout?: number;
-	/** 前に答えなかった常駐の名乗りを待つ上限（ミリ秒）。テストで短くする。既定は {@link UNRESPONSIVE_HANDSHAKE_TIMEOUT}。 */
+	/** 前に答えなかった常駐の名乗りを待つ上限（ミリ秒）。テストで短くする。既定は {@link PARADIS_DAEMON_UNRESPONSIVE_HANDSHAKE_TIMEOUT}。 */
 	readonly unresponsiveHandshakeTimeout?: number;
 }
 
 /** 名乗りに答えなかった常駐の印。台帳と同じ置き場所に、ソケットごとに 1 つ置く。 */
-interface IParadisUnresponsiveDaemonMark {
+export interface IParadisUnresponsiveDaemonMark {
 	readonly pid: number;
 	readonly startedAt: number;
 }
@@ -95,7 +95,7 @@ export function paradisUnresponsiveMarkFile(paths: IParadisPtyHostPaths): string
 	return join(paths.ledgerDir, `${paths.socketPath.replace(/^.*[\\/]/, '')}.unresponsive`);
 }
 
-async function paradisReadUnresponsiveMark(file: string): Promise<IParadisUnresponsiveDaemonMark | undefined> {
+export async function paradisReadUnresponsiveMark(file: string): Promise<IParadisUnresponsiveDaemonMark | undefined> {
 	try {
 		const raw: unknown = JSON.parse(await fs.readFile(file, 'utf8'));
 		if (raw && typeof raw === 'object' && typeof (raw as IParadisUnresponsiveDaemonMark).pid === 'number' && typeof (raw as IParadisUnresponsiveDaemonMark).startedAt === 'number') {
@@ -108,7 +108,7 @@ async function paradisReadUnresponsiveMark(file: string): Promise<IParadisUnresp
 }
 
 /** 印を書く・消す。どちらも失敗しても構わない（次の起動が 30 秒待つだけ）。 */
-async function paradisWriteUnresponsiveMark(file: string, mark: IParadisUnresponsiveDaemonMark | undefined): Promise<void> {
+export async function paradisWriteUnresponsiveMark(file: string, mark: IParadisUnresponsiveDaemonMark | undefined): Promise<void> {
 	try {
 		if (mark) {
 			await fs.writeFile(file, JSON.stringify(mark), { encoding: 'utf8', mode: 0o600 });
@@ -149,8 +149,8 @@ export async function paradisEnsurePtyHost(options: IParadisEnsurePtyHostOptions
 		paradisReadDaemonRecords(paths.ledgerDir).then(records => records.find(entry => entry.socketPath === paths.socketPath)),
 		paradisReadUnresponsiveMark(markFile),
 	]);
-	const handshakeTimeout = paradisHandshakeTimeoutFor(record, mark, options.handshakeTimeout ?? HANDSHAKE_TIMEOUT, options.unresponsiveHandshakeTimeout ?? UNRESPONSIVE_HANDSHAKE_TIMEOUT);
-	const knownUnresponsive = handshakeTimeout !== (options.handshakeTimeout ?? HANDSHAKE_TIMEOUT);
+	const handshakeTimeout = paradisHandshakeTimeoutFor(record, mark, options.handshakeTimeout ?? PARADIS_DAEMON_HANDSHAKE_TIMEOUT, options.unresponsiveHandshakeTimeout ?? PARADIS_DAEMON_UNRESPONSIVE_HANDSHAKE_TIMEOUT);
+	const knownUnresponsive = handshakeTimeout !== (options.handshakeTimeout ?? PARADIS_DAEMON_HANDSHAKE_TIMEOUT);
 	const existing = await paradisConnect(paths, handshakeTimeout);
 	if (existing.ok) {
 		logService.info(`[ParadisPtyHost] joined the daemon already serving ${paths.socketPath}`);

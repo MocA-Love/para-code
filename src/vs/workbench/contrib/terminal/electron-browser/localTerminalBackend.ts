@@ -176,6 +176,10 @@ export class LocalTerminalBackend extends BaseTerminalBackend implements ITermin
 
 			// Eagerly fetch the backend's environment for memoization
 			this.getEnvironment();
+		}, error => {
+			// PARA-PATCH: the pty daemon starter answers with an error instead of a port when the daemon does not answer (paradisDaemonPtyHostStarter.ts); fail the waiting calls instead of leaving them pending forever
+			this._logService.error('Renderer->PtyHost#connect: could not get a port', error);
+			directProxyClientEventually.error(error);
 		});
 	}
 
