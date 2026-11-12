@@ -18,6 +18,7 @@ import * as dom from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { isCancellationError } from '../../../../base/common/errors.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
@@ -258,6 +259,9 @@ export class ParadisScheduledRunsDialog extends Disposable {
 	private readonly navDisposables = this._register(new DisposableStore());
 	/** 事前確認の「試す」で走らせているコマンド。画面を閉じたら止める（制限時間まで残さない）。 */
 	private readonly precheckTry = this._register(new MutableDisposable());
+	private readonly _onDidDispose = this._register(new Emitter<void>());
+	/** 閉じた（破棄した）ときに 1 回だけ鳴る。開いた側が参照を外すのに使う。 */
+	readonly onDidDispose: Event<void> = this._onDidDispose.event;
 
 	private state: IParadisScheduledRunsState | undefined;
 	private selectedId: string | undefined;
@@ -356,6 +360,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		// 編集の途中で閉じられたら（別のモーダル・閉じるボタン・外側の押下）、入力を下書きとして残す
 		this.keepEditingDraft();
 		this.backdrop.remove();
+		this._onDidDispose.fire();
 		super.dispose();
 	}
 
