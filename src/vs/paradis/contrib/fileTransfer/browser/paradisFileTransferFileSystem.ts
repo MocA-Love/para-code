@@ -18,6 +18,7 @@
 // 書く側が受け取った塊を、次の塊を受け取ったとき（＝前の塊を書き終えたとき）に数える。
 
 import { VSBuffer } from '../../../../base/common/buffer.js';
+import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { CancellationError } from '../../../../base/common/errors.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { dirname, joinPath } from '../../../../base/common/resources.js';
@@ -369,34 +370,51 @@ export class ParadisFileServiceTransferFileSystem implements IParadisTransferFil
 	/** 送り元を数えながら `destination` へ流す。書く側が詰まったら読む側を止める。 */
 	private async writeStream(source: URI, destination: URI, options: IParadisTransferCopyOptions): Promise<void> {
 		const { token } = options;
-		const content = await this.fileService.readFileStream(source, undefined, token);
-		const sourceStream = content.value;
-		const forward = newWriteableStream<VSBuffer>(chunks => VSBuffer.concat(chunks), { highWaterMark: PARADIS_COPY_HIGH_WATER_MARK });
-		listenStream(sourceStream, {
-			onData: chunk => {
-				const pending = forward.write(chunk);
-				if (pending) {
-					sourceStream.pause();
-					pending.then(() => sourceStream.resume());
-				}
-			},
-			onError: error => forward.error(error),
-			onEnd: () => forward.end(),
-		});
-		const counted = new ParadisWrittenBytesStream(forward, options.onBytes);
-		const cancelListener = token.onCancellationRequested(() => {
-			this.options.cancelIo?.(source);
-			this.options.cancelIo?.(destination);
-			sourceStream.destroy();
-			forward.error(new CancellationError());
-			forward.end();
-		});
+		// 書く側が失敗したときに送り元の読み込みも止められるよう、読み込みには自分の token を渡す
+		const readCancellation = new CancellationTokenSource(token);
 		try {
-			await this.fileService.writeFile(destination, counted);
+			const content = await this.fileService.readFileStream(source, undefined, readCancellation.token);
+			const sourceStream = content.value;
+			const forward = newWriteableStream<VSBuffer>(chunks => VSBuffer.concat(chunks), { highWaterMark: PARADIS_COPY_HIGH_WATER_MARK });
+			listenStream(sourceStream, {
+				onData: chunk => {
+					const pending = forward.write(chunk);
+					if (pending) {
+						sourceStream.pause();
+						pending.then(() => sourceStream.resume());
+					}
+				},
+				onError: error => forward.error(error),
+				onEnd: () => forward.end(),
+			});
+			const counted = new ParadisWrittenBytesStream(forward, options.onBytes);
+			const cancelListener = token.onCancellationRequested(() => {
+				this.options.cancelIo?.(source);
+				this.options.cancelIo?.(destination);
+				sourceStream.destroy();
+				forward.error(new CancellationError());
+				forward.end();
+			});
+			try {
+				await this.fileService.writeFile(destination, counted);
+			} catch (error) {
+				// 書く側が失敗したら送り元の残りを読まない（止めた読み込みに残り全部を溜めない。接続先なら通信も止める）。
+				// 送り元は destroy せず、読み込みを取り消して流しきる（終わりの知らせが届かないと読み込み側が片付かない）。
+				// 流れてきた残りは、壊した forward が捨てる
+				if (!token.isCancellationRequested) {
+					readCancellation.cancel();
+					this.options.cancelIo?.(source);
+					forward.destroy();
+					sourceStream.resume();
+				}
+				throw error;
+			} finally {
+				cancelListener.dispose();
+			}
+			counted.flush();
 		} finally {
-			cancelListener.dispose();
+			readCancellation.dispose();
 		}
-		counted.flush();
 	}
 
 	async removeForReplace(resource: URI): Promise<void> {
