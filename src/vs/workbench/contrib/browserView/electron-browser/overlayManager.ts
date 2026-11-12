@@ -33,12 +33,14 @@ const OVERLAY_DEFINITIONS: ReadonlyArray<{ className: string; type: BrowserOverl
 	{ className: 'paradis-modal-backdrop', type: BrowserOverlayType.Dialog },
 	{ className: 'paradis-overlay-popover', type: BrowserOverlayType.QuickInput }, // PARA-PATCH: shared marker class for the fork's anchored title bar / status bar panels
 	{ className: 'notifications-center', type: BrowserOverlayType.Notification },
-	// PARA-PATCH: notification toasts intentionally do NOT pause the browser view. Upstream pauses the
+	// PARA-PATCH: informational notification toasts intentionally do NOT pause the browser view. Upstream pauses the
 	// WebContentsView whenever a toast overlaps it (so the toast stays visible above the native view),
-	// but that interrupts browsing every time a toast pops up. In Para Code the toast is simply hidden
+	// but that interrupts browsing every time a toast pops up. In Para Code such a toast is simply hidden
 	// behind the browser instead; notifications remain reachable via the status bar bell. The
 	// notifications-center entry above is kept: that panel is user-invoked and interactive.
 	// { className: 'notification-toast-container', type: BrowserOverlayType.Notification },
+	// PARA-PATCH: the exception is error toasts and toasts with buttons: notificationsToasts.ts marks their container with this class, so they pause the page and stay visible.
+	{ className: 'paradis-notification-toast-urgent', type: BrowserOverlayType.Notification },
 	{ className: 'spotlight-overlay', type: BrowserOverlayType.Unknown },
 	// Context view is very generic, so treat the content as unknown
 	{ className: 'context-view', type: BrowserOverlayType.Unknown }
