@@ -628,6 +628,8 @@ export interface IParadisBrowserExtensionsMainService {
 	runActionMenuItem(token: string, extensionId: string, key: string): Promise<boolean>;
 	/** 拡張機能のショートカット（workbench がページから届いたキーと比べる）。 */
 	getCommands(): Promise<readonly IParadisBrowserExtensionCommand[]>;
+	/** 入れてある拡張機能の id（どのプロファイルで有効かは問わない）。消した拡張機能のボタンの登録を外すのに使う（Q639）。 */
+	getInstalledIds(): Promise<readonly string[]>;
 	/** 利用者がそのタブでショートカットを押した（_execute_action 以外）。 */
 	runCommand(viewId: string, extensionId: string, name: string): Promise<IParadisActionResult>;
 	/** ショートカットにキーを付ける（Q619）。ほかのコマンドが使っていたキーなら、そちらからは外す。付けられなければ false。 */
