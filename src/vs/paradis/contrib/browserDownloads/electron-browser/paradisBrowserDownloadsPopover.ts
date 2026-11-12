@@ -37,7 +37,7 @@ import { localize } from '../../../../nls.js';
 import { ByteSize } from '../../../../platform/files/common/files.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
-import { paradisWatchPopoverDismiss } from '../../../browser/paradisAnchoredPopover.js';
+import { PARADIS_POPOVER_MOTION_CLASS, paradisRemovePopoverElement, paradisWatchPopoverDismiss } from '../../../browser/paradisAnchoredPopover.js';
 import { paradisSanitizeDisplayText } from '../../agentBrowser/common/paradisAgentBrowserTabs.js';
 import { IParadisBrowserDownloadItem, paradisDownloadDayKey, paradisFormatDownloadClock, paradisFormatDownloadDay, paradisFormatDownloadStart } from '../common/paradisBrowserDownloads.js';
 import { IParadisBrowserDownloadsService } from './paradisBrowserDownloadsService.js';
@@ -101,6 +101,7 @@ export class ParadisBrowserDownloadsPopover extends Disposable {
 
 		this._container = _anchor ? layoutService.getContainer(dom.getWindow(_anchor)) : layoutService.activeContainer;
 		this._element = $('.paradis-browser-downloads-popover.paradis-focus-none.paradis-overlay-popover');
+		this._element.classList.add(PARADIS_POPOVER_MOTION_CLASS);
 		this._element.tabIndex = -1;
 		this._element.setAttribute('role', 'dialog');
 		this._element.setAttribute('aria-label', localize('paradis.browserDownloads.popover.label', "ダウンロード"));
@@ -438,7 +439,7 @@ export class ParadisBrowserDownloadsPopover extends Disposable {
 		if (this._anchor?.isConnected && dom.isAncestorOfActiveElement(this._element)) {
 			this._anchor.focus();
 		}
-		this._element.remove();
+		paradisRemovePopoverElement(this._element);
 		super.dispose();
 		this._onDidClose();
 	}

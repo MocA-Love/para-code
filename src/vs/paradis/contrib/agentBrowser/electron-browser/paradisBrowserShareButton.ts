@@ -41,7 +41,7 @@ import { localize } from '../../../../nls.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
-import { paradisWatchPopoverDismiss } from '../../../browser/paradisAnchoredPopover.js';
+import { PARADIS_POPOVER_MOTION_CLASS, paradisRemovePopoverElement, paradisWatchPopoverDismiss } from '../../../browser/paradisAnchoredPopover.js';
 import { ParadisCountBadge } from '../../../browser/paradisBadges.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { BrowserEditor } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
@@ -365,6 +365,7 @@ class ParadisBrowserSharePopover extends Disposable {
 		super();
 		this._container = layoutService.getContainer(dom.getWindow(_anchor));
 		this._element = $('.paradis-browser-share-popover.paradis-focus-none.paradis-overlay-popover');
+		this._element.classList.add(PARADIS_POPOVER_MOTION_CLASS);
 		this._element.tabIndex = -1;
 		this._element.setAttribute('role', 'dialog');
 		const title = localize('paradis.shareButton.popoverTitle', "このページを使えるペイン");
@@ -532,7 +533,7 @@ class ParadisBrowserSharePopover extends Disposable {
 		this._anchor.setAttribute('aria-expanded', 'false');
 		// フォーカスはボタンへ戻す（戻し先は ▾ が隠れていれば本体。ボタンの側が決める）
 		const hadFocus = dom.isAncestorOfActiveElement(this._element);
-		this._element.remove();
+		paradisRemovePopoverElement(this._element);
 		super.dispose();
 		this._onDidClose(hadFocus);
 	}

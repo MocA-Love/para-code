@@ -65,8 +65,8 @@ suite('ParadisBrowserExtensionsArea', () => {
 		} as unknown as Partial<IKeybindingService>);
 		instantiationService.stub(IEditorService, { visibleEditorPanes: [] } as Partial<IEditorService>);
 		const host: IParadisHubHost = { close: () => { }, open: () => { } };
-		store.add(instantiationService.createInstance(ParadisBrowserExtensionsArea, containers, host));
-		return containers;
+		const area = store.add(instantiationService.createInstance(ParadisBrowserExtensionsArea, containers, host));
+		return Object.assign(containers, { area });
 	}
 
 	// Q544: 背景の処理がある拡張機能は、設定と権限を左の列、ログを右の列に置く。無いものは 1 列のまま
@@ -136,7 +136,7 @@ suite('ParadisBrowserExtensionsArea', () => {
 		const message = () => containers.content.querySelector('.pbe-message')?.textContent;
 		const press = (code: string, modifiers: KeyboardEventInit) => doc.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { code, key: code.replace(/^Key/, ''), bubbles: true, cancelable: true, ...modifiers }));
 		// Beta の lock の「キーを付ける」
-		containers.content.querySelectorAll<HTMLButtonElement>('.pbe-sc-row .pbpm-btn')[2].click();
+		containers.content.querySelectorAll<HTMLElement>('.pbe-sc-row .paradis-button:not(.paradis-button-icon)')[2].click();
 		const recording = page()[2];
 		press('KeyL', { shiftKey: true });
 		const noModifier = message();
@@ -144,7 +144,7 @@ suite('ParadisBrowserExtensionsArea', () => {
 		const paraCode = message();
 		press('KeyL', { ctrlKey: true, shiftKey: true });
 		const conflict = containers.content.querySelector('.pbe-sc-conflict span:not(.codicon)')?.textContent;
-		containers.content.querySelector<HTMLButtonElement>('.pbe-sc-conflict .pbpm-btn.primary')!.click();
+		containers.content.querySelector<HTMLElement>('.pbe-sc-conflict .paradis-button-primary')!.click();
 		await new Promise(resolve => setTimeout(resolve, 0));
 		assert.deepStrictEqual({
 			rowStatus,
@@ -177,11 +177,29 @@ suite('ParadisBrowserExtensionsArea', () => {
 		assert.strictEqual(doc.activeElement !== null && doc.activeElement === remoteSwitch(), true);
 	});
 
+	// 削除の確認を出しているときの Esc は確認だけを閉じ（モーダルは閉じない）、「削除」へフォーカスを戻すこと
+	test('closes only the remove confirmation on Escape and gives the focus back to the remove button', async () => {
+		const doc = mainWindow.document;
+		const containers = createArea([extension('a', 'Alpha')]);
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const remove = () => [...containers.content.querySelectorAll<HTMLElement>('.pbe-detail-actions .paradis-button')].find(button => button.textContent === '削除');
+		remove()!.click();
+		const shown = containers.content.querySelector('.pbpm-confirm') !== null;
+		const handled = containers.area.handleEscape();
+		assert.deepStrictEqual({
+			shown,
+			handled,
+			confirmAfter: containers.content.querySelector('.pbpm-confirm') !== null,
+			focusedRemove: doc.activeElement !== null && doc.activeElement === remove(),
+			nextEscapeClosesModal: !containers.area.handleEscape(),
+		}, { shown: true, handled: true, confirmAfter: false, focusedRemove: true, nextEscapeClosesModal: true });
+	});
+
 	// 「オンにする」で設定を書けなかったら、その理由を出すこと（押しても何も起きないように見せない）
 	test('tells why turning the feature on failed', async () => {
 		const containers = createArea([], [], { active: false, updateValue: async () => { throw new Error('settings.json is broken'); } });
 		await new Promise(resolve => setTimeout(resolve, 0));
-		containers.content.querySelector<HTMLButtonElement>('.pbe-notice .pbpm-btn')!.click();
+		containers.content.querySelector<HTMLElement>('.pbe-notice .paradis-button')!.click();
 		await new Promise(resolve => setTimeout(resolve, 0));
 		assert.deepStrictEqual({ text: containers.content.querySelector('.pbe-message')?.textContent, error: containers.content.querySelector('.pbe-message')?.classList.contains('is-error') }, {
 			text: '設定を書き換えられませんでした（settings.json is broken）。',

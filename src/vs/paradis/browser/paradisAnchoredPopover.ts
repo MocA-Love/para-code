@@ -77,6 +77,26 @@ export function paradisWatchPopoverDismiss(targetWindow: Window, options: IParad
 	return store;
 }
 
+/** 開く・閉じる動きの印（paradisTokens.css）。小窓の要素に付ける。 */
+export const PARADIS_POPOVER_MOTION_CLASS = 'paradis-popover-motion';
+
+/**
+ * 小窓の要素を外す。動きが有効なとき（作業領域の `monaco-enable-motion`）は、閉じる動き（`--paradis-motion-exit`）を
+ * 見せてから外す。閉じた後の片付け（リスナー・フォーカスを戻す・開いている印）は呼び出し側が先に済ませる。
+ * 外れるまでの間は押せない（paradisTokens.css の `paradis-popover-leaving`）。
+ */
+export function paradisRemovePopoverElement(element: HTMLElement): void {
+	const targetWindow = dom.getWindow(element);
+	const moving = element.isConnected && element.classList.contains(PARADIS_POPOVER_MOTION_CLASS) && element.closest('.monaco-workbench.monaco-enable-motion') !== null;
+	const duration = moving ? parseFloat(targetWindow.getComputedStyle(element).getPropertyValue('--paradis-motion-exit')) : 0;
+	if (!(duration > 0)) {
+		element.remove();
+		return;
+	}
+	element.classList.add('paradis-popover-leaving');
+	targetWindow.setTimeout(() => element.remove(), duration);
+}
+
 /**
  * 小窓より下の段にある幕。fork のモーダル（{@link PARADIS_MODAL_BACKDROP_CLASS}）と、本家のモーダルのエディタ
  * （設定エディタなど、2540）。どちらも作業領域の直下に入る。
