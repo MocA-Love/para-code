@@ -249,6 +249,10 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 				if (this.designGeneration !== generation || result.kind === 'cancelled') {
 					break;
 				}
+				if (result.kind === 'blocked') {
+					this.showMessage(localize('paradis.designMode.blockedByDialog', "ページのダイアログが開いている間は要素を選べないため、選択をやめました。ダイアログを閉じてからもう一度始めてください。"), Severity.Info);
+					break;
+				}
 				await this.addElementAnnotation(model, result.element);
 			}
 		} catch (error) {

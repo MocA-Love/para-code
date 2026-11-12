@@ -25,6 +25,7 @@ interface IExtracted {
 
 interface IDesignApi {
 	extract(element: Element): IExtracted;
+	pick(nonce: string): Promise<unknown>;
 	dispose(): void;
 }
 
@@ -141,5 +142,20 @@ suite('paradisDesignModePageScript', () => {
 			keptClass: html.includes('class="card"') && html.includes('class="link"'),
 			href: html.includes('href="https://example.com/a"'),
 		}, { leakedQuery: false, leakedClass: false, keptClass: true, href: true });
+	});
+
+	// ページの modal の dialog は選択の覆いより上に出て、押すとページのボタンが押されてしまう（Q637）。
+	test('ページの modal の dialog が開いていれば、選択を始めずに blocked を返す', async () => {
+		const dialog = mainWindow.document.createElement('dialog');
+		fixture.appendChild(dialog);
+		dialog.showModal();
+		try {
+			new Function(paradisBuildInstallScript())();
+			const api = (mainWindow as unknown as IDesignGlobal).__paradisDesign;
+			assert.ok(api);
+			assert.deepStrictEqual(await api.pick('nonce-1'), { nonce: 'nonce-1', blocked: true });
+		} finally {
+			dialog.close();
+		}
 	});
 });
