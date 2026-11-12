@@ -130,7 +130,8 @@ export class ParadisTerminalHistoryPanelWidget extends Disposable {
 			tabs.setAttribute('aria-label', localize('paradis.historyPanel.scopeAria', "履歴の範囲"));
 			this._renderTab(tabs, 'space', view, localize('paradis.historyPanel.scopeSpace', "このスペース"), localize('paradis.historyPanel.scopeSpaceHover', "このスペースのターミナルで実行した履歴"));
 			this._renderTab(tabs, 'all', view, localize('paradis.historyPanel.scopeAll', "全スペース"), localize('paradis.historyPanel.scopeAllHover', "すべてのスペースと、共通の履歴"));
-			append(tabs, $('span.paradis-history-panel-key', undefined, 'Ctrl+S'));
+			// キーの札は tab ではないので読み上げから外す（同じキーは下の帯でも読める）
+			append(tabs, $('span.paradis-history-panel-key', undefined, 'Ctrl+S')).setAttribute('aria-hidden', 'true');
 		}
 		append(this._header, $('span', undefined, localize('paradis.historyPanel.prefixMatch', "前方一致:")));
 		const query = append(this._header, $('span.paradis-history-panel-query'));
