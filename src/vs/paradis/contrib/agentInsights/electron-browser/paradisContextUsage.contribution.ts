@@ -33,7 +33,7 @@ import { PARADIS_CCUSAGE_OTHER_COLOR, PARADIS_CCUSAGE_SERIES_DARK, PARADIS_CCUSA
 import { paradisRenderContextCategories, paradisRenderContextRowGroups } from '../../ccusage/electron-browser/paradisCcusageContextView.js';
 import { IParadisClaudeContextBreakdown } from '../../claudeMod/common/paradisClaudeContextBreakdown.js';
 import { ParadisClaudeContextClient } from '../../claudeMod/electron-browser/paradisClaudeContextClient.js';
-import { createParadisContextUsageBadge, IParadisContextUsageBadgeHost, IParadisContextUsageReading, paradisContextUsagePopoverSize } from '../browser/paradisContextUsageBadge.js';
+import { createParadisContextUsageBadge, IParadisContextUsageBadgeHost, IParadisContextUsageReading, PARADIS_CONTEXT_USAGE_FOCUS_KEY, paradisContextUsagePopoverSize, paradisRedrawContextUsageDetails } from '../browser/paradisContextUsageBadge.js';
 import { IParadisAgentInsightsService, IParadisAgentPaneInsight } from '../common/paradisAgentInsights.js';
 
 const $ = dom.$;
@@ -149,10 +149,12 @@ class ParadisContextUsageContribution extends Disposable implements IWorkbenchCo
 			}
 			this.fitDetails(root, element);
 			const current = contextPane(this.insightsService.getForInstance(instanceId)) ?? pane;
-			// 描き直すたびに、前の描画のリスナーを外す
-			const renderStore = new DisposableStore();
-			rendered.value = renderStore;
-			this.renderDetails(root, current, current.agent === 'claude' ? breakdown : undefined, openGroups, renderStore);
+			// 描き直すたびに、前の描画のリスナーを外す。読んでいる位置とキーボードのフォーカスは描き直しの前後で戻す
+			paradisRedrawContextUsageDetails(root, () => {
+				const renderStore = new DisposableStore();
+				rendered.value = renderStore;
+				this.renderDetails(root, current, current.agent === 'claude' ? breakdown : undefined, openGroups, renderStore);
+			});
 		};
 		const fetch = async () => {
 			if (pane.agent !== 'claude' || closed) {
@@ -224,6 +226,7 @@ class ParadisContextUsageContribution extends Disposable implements IWorkbenchCo
 			link.textContent = localize('paradis.contextUsage.openCost', "AI コストで開く");
 			link.tabIndex = 0;
 			link.setAttribute('role', 'button');
+			link.dataset[PARADIS_CONTEXT_USAGE_FOCUS_KEY] = 'openCost';
 			const openCost = (e: Event) => {
 				e.preventDefault();
 				this.hoverService.hideHover(true);

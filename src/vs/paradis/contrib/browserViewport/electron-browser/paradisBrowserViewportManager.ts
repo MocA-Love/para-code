@@ -102,7 +102,7 @@ export async function paradisShowViewportManager(accessor: ServicesAccessor): Pr
 		} else if (event.button === defaultButton) {
 			void viewportService.setGlobalDefault(size.name);
 		} else if (event.button === removeButton) {
-			viewportService.removeSize(size.name);
+			void viewportService.removeSize(size.name);
 		}
 	}));
 	store.add(picker.onDidAccept(() => {
