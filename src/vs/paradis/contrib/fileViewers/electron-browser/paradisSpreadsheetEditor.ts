@@ -567,7 +567,7 @@ export function virtualGridLayoutFrame(frame: ParadisSpreadsheetViewportFrame, h
 
 /**
  * Excel の行番号 → 仮想グリッドの上での行の上端（最後の行の次の番号には下端を入れる）。DOM の表の `tr.offsetTop` と
- * 同じく、列記号の行の高さを含む。列の座標は DOM の表と同じく、行番号の列（36px）の右から列幅を足して求まる。
+ * 同じく、列記号の行の高さを含む。列の座標は DOM の表と同じく、行番号の列（`PARADIS_ROW_NUM_COL_WIDTH`、44px）の右から列幅を足して求まる。
  */
 export function virtualGridRowTops(sheet: IParadisSheetData, viewport: ParadisSpreadsheetViewport): Map<number, number> {
 	const tops = new Map<number, number>();

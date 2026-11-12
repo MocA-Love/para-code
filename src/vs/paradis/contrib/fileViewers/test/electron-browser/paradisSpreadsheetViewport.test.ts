@@ -267,6 +267,31 @@ suite('paradisSpreadsheetGridRenderer', () => {
 		renderer.dispose();
 	});
 
+	test('marks a focused header cell itself and does not darken the headers or the corner', async () => {
+		const document = mainWindow.document.implementation.createHTMLDocument('spreadsheet header focus');
+		const container = document.createElement('div');
+		const viewport = new ParadisSpreadsheetViewport({
+			rowCount: 3,
+			columnCount: 3,
+			defaultRowHeight: 20,
+			defaultColumnWidth: 80,
+			frozenRows: 1,
+			frozenColumns: 1,
+			revision: 'revision-1',
+		});
+		const header = (row: number, column: number): ParadisSpreadsheetGridCell['header'] => row === 0 ? 'column' : column === 0 ? 'row' : undefined;
+		const renderer = new ParadisSpreadsheetGridRenderer(container, viewport, {
+			getViewport: async request => tileForRequest(request, (row, column) => ({ row, column, text: `${row}:${column}`, header: header(row, column) })),
+			copyFocusedCell: true,
+		});
+		const marked = (name: string) => Array.from(container.querySelectorAll(`.${name}`), cell => cell.textContent).sort();
+		renderer.setFocusedCell(2, 0);
+		await renderer.render({ scrollTop: 0, scrollLeft: 0, width: 300, height: 100 });
+
+		deepStrictEqual({ active: marked('paradis-spreadsheet-virtual-active'), headers: marked('paradis-spreadsheet-virtual-header-active') }, { active: ['2:0'], headers: [] });
+		renderer.dispose();
+	});
+
 	test('renders reusable four-pane gridcells with bounded live DOM', async () => {
 		const document = mainWindow.document.implementation.createHTMLDocument('spreadsheet virtual grid');
 		const container = document.createElement('div');

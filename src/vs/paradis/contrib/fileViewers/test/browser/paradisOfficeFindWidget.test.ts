@@ -346,6 +346,31 @@ suite('ParadisOfficeFindWidget', () => {
 		});
 	});
 
+	test('Shift+Enter while typing is pending searches the typed text and moves to the last match', async () => {
+		const host = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(host);
+		store.add({ dispose: () => host.remove() });
+		const queries: string[] = [];
+		const navigated: string[] = [];
+		const result = (id: string) => ({ id, locator: id, navigableAnchor: id, preview: { before: '', match: id, after: '' }, locationBadge: { kind: 'sheet' as const, label: id } });
+		store.add(new ParadisOfficeFindWidget(host, {
+			search: async query => {
+				queries.push(query.text);
+				return { results: [result(`${query.text}-1`), result(`${query.text}-2`), result(`${query.text}-3`)], total: 3, capped: false };
+			},
+			onNavigate: navigatedResult => navigated.push(navigatedResult.id),
+		}));
+		host.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }));
+		const input = host.querySelector<HTMLInputElement>('input[type="search"]')!;
+		input.value = 'need';
+		input.dispatchEvent(new Event('input', { bubbles: true }));
+		input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true }));
+		await new Promise(resolve => mainWindow.setTimeout(resolve, 0));
+		await new Promise(resolve => mainWindow.setTimeout(resolve, PARADIS_OFFICE_FIND_INPUT_DELAY));
+
+		deepStrictEqual({ queries, navigated }, { queries: ['need'], navigated: ['need-3'] });
+	});
+
 	test('shows an explicit unavailable state instead of invoking a transport fallback', () => {
 		const host = mainWindow.document.createElement('div');
 		mainWindow.document.body.appendChild(host);

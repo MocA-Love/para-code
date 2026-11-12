@@ -928,6 +928,11 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		const [rowStart, columnStart, rowEnd, columnEnd] = this.selectionRange;
 		// 1 つのセルだけのときは表と同じく塗らない（表でもクリックしただけでは選択の色が付かない）
 		const multiple = rowEnd - rowStart > 1 || columnEnd - columnStart > 1;
+		// 固定の行・列の境目をまたぐ結合のセルは 2 つの枠に描かれる。指すのは行の aria-owns に入れるのと同じ片方（若い枠）だけ
+		let active: { readonly id: string; readonly rank: number } | undefined;
+		// 見出しをクリックしてフォーカスが見出しにあるときは、そのセルに黒い枠を出し、列記号・行番号は濃くしない
+		// （行番号の列の見出しにフォーカスがあると、同じ列 0 の左上の角まで濃くなるため）
+		const focusedOnHeader = paneKinds.some(kind => !!this.cells.get(cellKey(kind, this.focused.row, this.focused.column))?.element.dataset.header);
 		for (const rendered of this.cells.values()) {
 			const cellRow = Number(rendered.element.dataset.row);
 			const cellColumn = Number(rendered.element.dataset.column);
@@ -942,24 +947,30 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 			// フォーカスは入れ物に残し（aria-activedescendant でセルを指す）、Tab の止まる所は入れ物の 1 つだけにする
 			rendered.element.tabIndex = -1;
 			// キーボードで動かしたセルの印と、その列記号・行番号を濃くする印（見た目は Excel のビューアの CSS だけが付ける）
-			rendered.element.classList.toggle('paradis-spreadsheet-virtual-active', selected && !header);
-			rendered.element.classList.toggle('paradis-spreadsheet-virtual-header-active', header === 'column' ? cellColumn === this.focused.column : header === 'row' && cellRow === this.focused.row);
-			if (selected) {
-				this.container.setAttribute('aria-activedescendant', rendered.element.id);
+			rendered.element.classList.toggle('paradis-spreadsheet-virtual-active', selected);
+			rendered.element.classList.toggle('paradis-spreadsheet-virtual-header-active', !focusedOnHeader
+				&& (header === 'column' ? cellColumn === this.focused.column : header === 'row' && cellRow === this.focused.row));
+			const rank = paneKinds.indexOf(rendered.pane);
+			if (selected && (!active || rank < active.rank)) {
+				active = { id: rendered.element.id, rank };
 			}
+		}
+		if (active) {
+			this.container.setAttribute('aria-activedescendant', active.id);
 		}
 	}
 
 	/**
 	 * 描いているセルを行ごとにまとめ、行の要素（role="row"、aria-rowindex）の aria-owns に列の順で並べる。
-	 * 行の要素は行の順に並べ、描いていない行の要素は外す。
+	 * 行の要素は行の順に並べ、描いていない行の要素は外す。2 つの枠に描かれた結合のセルは、若い枠の 1 つだけを入れる
+	 * （両方を入れると読み上げで同じセルが 2 回読まれる）。
 	 */
 	private updateRows(): void {
 		if (!this.rowsDirty) {
 			return;
 		}
 		this.rowsDirty = false;
-		const byRow = new Map<number, { readonly column: number; readonly id: string }[]>();
+		const byRow = new Map<number, Map<number, { readonly id: string; readonly rank: number }>>();
 		for (const rendered of this.cells.values()) {
 			const row = Number(rendered.element.dataset.row);
 			const column = Number(rendered.element.dataset.column);
@@ -968,10 +979,14 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 			}
 			let cells = byRow.get(row);
 			if (!cells) {
-				cells = [];
+				cells = new Map();
 				byRow.set(row, cells);
 			}
-			cells.push({ column, id: rendered.element.id });
+			const rank = paneKinds.indexOf(rendered.pane);
+			const existing = cells.get(column);
+			if (!existing || rank < existing.rank) {
+				cells.set(column, { id: rendered.element.id, rank });
+			}
 		}
 		for (const [row, element] of this.rowElements) {
 			if (!byRow.has(row)) {
@@ -991,7 +1006,7 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 				this.rowElements.set(row, element);
 				reorder = true;
 			}
-			const owns = byRow.get(row)!.sort((a, b) => a.column - b.column).map(cell => cell.id).join(' ');
+			const owns = [...byRow.get(row)!].sort(([a], [b]) => a - b).map(([, cell]) => cell.id).join(' ');
 			if (element.getAttribute('aria-owns') !== owns) {
 				element.setAttribute('aria-owns', owns);
 			}

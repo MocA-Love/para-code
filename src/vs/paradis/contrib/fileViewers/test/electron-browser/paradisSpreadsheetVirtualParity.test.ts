@@ -57,7 +57,13 @@ function loadStylesheet(relative: string): Promise<HTMLLinkElement> {
 suite('paradisSpreadsheet virtual grid parity with the table', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 	let stylesheets: HTMLLinkElement[] = [];
+	// 見出しの字とフィルタの記号の大きさは、ワークベンチが定める CSS 変数から取る。テストではワークベンチの CSS を
+	// 読まないので、本番と同じ値を置く（置かないと字の大きさが継承の値になり、見出しの行の高さが測れない）
+	const themeVariables = [['--vscode-fontSize-label1', '12px'], ['--vscode-codiconFontSize-compact', '12px']] as const;
 	suiteSetup(async () => {
+		for (const [name, value] of themeVariables) {
+			mainWindow.document.documentElement.style.setProperty(name, value);
+		}
 		stylesheets = await Promise.all([
 			loadStylesheet('../../electron-browser/media/paradisSpreadsheet.css'),
 			loadStylesheet('../../browser/spreadsheet/media/paradisSpreadsheetGrid.css'),
@@ -66,6 +72,9 @@ suite('paradisSpreadsheet virtual grid parity with the table', () => {
 	suiteTeardown(() => {
 		for (const link of stylesheets) {
 			link.remove();
+		}
+		for (const [name] of themeVariables) {
+			mainWindow.document.documentElement.style.removeProperty(name);
 		}
 	});
 
@@ -372,6 +381,27 @@ suite('paradisSpreadsheet virtual grid parity with the table', () => {
 			bodyTileTakesIt: true,
 			frame: [600, 200],
 		});
+	});
+
+	test('lists a merged cell drawn on both sides of the frozen columns once in its row', async () => {
+		const doc = mainWindow.document;
+		// C・D 列の結合を、C 列までの固定の境目にまたがせる（固定の枠と本体の枠の両方に描かれる）
+		const data: IParadisSheetData = { ...sheet(), freezePane: { rows: 1, cols: 3 } };
+		const gridHost = doc.body.appendChild(doc.createElement('div'));
+		gridHost.style.width = '600px';
+		gridHost.style.height = '200px';
+		gridHost.style.overflow = 'auto';
+		gridHost.style.position = 'relative';
+		gridHost.classList.add('paradis-spreadsheet-virtual-excel');
+		const viewport = createVirtualGridViewport(data, 17, 'merged', measureVirtualGridContentRows(gridHost, data));
+		const index = createVirtualGridIndex(data);
+		const renderer = store.add(new ParadisSpreadsheetGridRenderer(gridHost, viewport, { getViewport: async request => legacyGridTile(data, request, index), copyFocusedCell: true, measureCell: () => ({ width: 1, height: 1 }) }));
+		await renderer.render({ scrollTop: 0, scrollLeft: 0, width: 600, height: 200 });
+		const mergedCopies = [...gridHost.querySelectorAll<HTMLElement>('.paradis-spreadsheet-virtual-cell')].filter(cell => cell.textContent === '結合').map(cell => cell.id);
+		const owned = [...gridHost.querySelectorAll('[role="row"]')].flatMap(row => (row.getAttribute('aria-owns') ?? '').split(' ')).filter(id => mergedCopies.includes(id));
+		gridHost.remove();
+
+		deepStrictEqual({ drawnInTwoPanes: mergedCopies.length, owned: owned.length }, { drawnInTwoPanes: 2, owned: 1 });
 	});
 
 	test('puts shapes, page breaks and page numbers at the same row positions as the table, inside the zoomed grid', async () => {

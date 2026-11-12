@@ -120,6 +120,9 @@
 	background-color: #f3f3f3;
 	color: #666666;
 	font-size: var(--vscode-fontSize-label1);
+	/* allow-any-unicode-next-line */
+	/* 行の高さを固定する（12px の字の既定の行の高さだと、高さ 20px の空の行を表の側だけ押し広げる）。 */
+	line-height: 1;
 	font-weight: normal;
 	user-select: none;
 }

@@ -273,9 +273,8 @@ export class ParadisOfficeFindWidget extends Disposable {
 	}
 
 	async findPrevious(): Promise<void> {
-		if (await this.flushPendingSearch()) {
-			return;
-		}
+		// 待っていた検索は先頭へ移らずに走らせ、そのまま最後の一致へ移る（入力のたびに検索していたときの Shift+Enter と同じ）
+		await this.flushPendingSearch(false);
 		if (this.results.length === 0) {
 			return;
 		}
@@ -292,12 +291,15 @@ export class ParadisOfficeFindWidget extends Disposable {
 		this.navigateCurrent();
 	}
 
-	/** 打ち終わりを待っている検索があれば、待たずに今の語で検索する（先頭の一致へ移る）。走らせたら true。 */
-	private async flushPendingSearch(): Promise<boolean> {
+	/**
+	 * 打ち終わりを待っている検索があれば、待たずに今の語で検索する。走らせたら true。
+	 * `navigate` が true なら先頭の一致へ移る。
+	 */
+	private async flushPendingSearch(navigate = true): Promise<boolean> {
 		if (!this.inputSearch.isScheduled()) {
 			return false;
 		}
-		await this.beginSearch();
+		await this.beginSearch(navigate);
 		return true;
 	}
 
