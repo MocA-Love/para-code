@@ -46,6 +46,18 @@ const POPOVER_WIDTH = 380;
 /** 画面の端との余白。 */
 const EDGE_MARGIN = 8;
 
+/**
+ * 受信箱のポップアップの左端と幅（px）。幅は既定の 380px か、ウィンドウの幅から両端の余白を引いた狭いほう
+ * （ズームした小さいウィンドウや Web で、右へはみ出さないようにする）。ベルがあればベルの右端にそろえ、
+ * 無ければウィンドウの右上に寄せる。
+ */
+export function paradisInboxPopoverPlacement(viewportWidth: number, anchorRight: number | undefined): { readonly left: number; readonly width: number } {
+	const width = Math.max(0, Math.min(POPOVER_WIDTH, viewportWidth - EDGE_MARGIN * 2));
+	const maxLeft = viewportWidth - width - EDGE_MARGIN;
+	const left = anchorRight !== undefined ? Math.min(anchorRight - width, maxLeft) : maxLeft;
+	return { left: Math.max(EDGE_MARGIN, left), width };
+}
+
 export interface IParadisNotificationInboxPopoverOptions {
 	/** ベルのボタン。無ければ（ベルを隠している・コマンドから開いた）ウィンドウの右上に出す。 */
 	readonly anchor: HTMLElement | undefined;
@@ -80,7 +92,6 @@ export class ParadisNotificationInboxPopover extends Disposable {
 		super();
 
 		this.element = $('.paradis-notification-inbox-popover.paradis-overlay-popover.paradis-focus-none');
-		this.element.style.width = `${POPOVER_WIDTH}px`;
 		this.element.tabIndex = -1;
 		this.element.setAttribute('role', 'dialog');
 		this.element.setAttribute('aria-label', localize('paradis.inbox.ariaLabel', "通知の受信箱"));
@@ -156,18 +167,13 @@ export class ParadisNotificationInboxPopover extends Disposable {
 
 	private reposition(): void {
 		const targetWindow = dom.getWindow(this.element);
-		const maxLeft = targetWindow.innerWidth - POPOVER_WIDTH - EDGE_MARGIN;
 		const anchor = this.visibleAnchor();
-		if (anchor) {
-			const rect = anchor.getBoundingClientRect();
-			// ベルの右端にそろえる（タイトルバーの中央寄りにあるので、左端にそろえると右へはみ出しやすい）。
-			const left = Math.max(EDGE_MARGIN, Math.min(rect.right - POPOVER_WIDTH, maxLeft));
-			this.element.style.top = `${rect.bottom + 6}px`;
-			this.element.style.left = `${left}px`;
-		} else {
-			this.element.style.top = '40px';
-			this.element.style.left = `${Math.max(EDGE_MARGIN, maxLeft)}px`;
-		}
+		// ベルの右端にそろえる（タイトルバーの中央寄りにあるので、左端にそろえると右へはみ出しやすい）。
+		const rect = anchor?.getBoundingClientRect();
+		const placement = paradisInboxPopoverPlacement(targetWindow.innerWidth, rect?.right);
+		this.element.style.width = `${placement.width}px`;
+		this.element.style.top = rect ? `${rect.bottom + 6}px` : '40px';
+		this.element.style.left = `${placement.left}px`;
 	}
 
 	private render(): void {

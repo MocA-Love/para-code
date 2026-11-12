@@ -15,7 +15,7 @@ import { TestConfigurationService } from '../../../../../platform/configuration/
 import { IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
 import { NullHoverService } from '../../../../../platform/hover/test/browser/nullHoverService.js';
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
-import { ParadisNotificationInboxPopover } from '../../browser/paradisNotificationInboxPopover.js';
+import { ParadisNotificationInboxPopover, paradisInboxPopoverPlacement } from '../../browser/paradisNotificationInboxPopover.js';
 import { IParadisInboxEntry, IParadisInboxSnapshot, IParadisNotificationInboxService } from '../../common/paradisNotificationInbox.js';
 
 function entry(id: string, extra: Partial<IParadisInboxEntry>): IParadisInboxEntry {
@@ -24,6 +24,22 @@ function entry(id: string, extra: Partial<IParadisInboxEntry>): IParadisInboxEnt
 
 suite('Paradis notification inbox popover', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('fits the popover into narrow windows instead of running off the right edge', () => {
+		assert.deepStrictEqual([
+			// 広いウィンドウ: ベルの右端にそろえる・ベルが無ければ右上
+			paradisInboxPopoverPlacement(1200, 900),
+			paradisInboxPopoverPlacement(1200, undefined),
+			// ズームした最小幅のウィンドウ（CSS で 333px）: 両端の余白を残して縮める
+			paradisInboxPopoverPlacement(333, 300),
+			paradisInboxPopoverPlacement(333, undefined),
+		], [
+			{ left: 520, width: 380 },
+			{ left: 812, width: 380 },
+			{ left: 8, width: 317 },
+			{ left: 8, width: 317 },
+		]);
+	});
 
 	test('lists entries with their state and routes clicks to the pane or to read', () => {
 		const container = mainWindow.document.createElement('div');

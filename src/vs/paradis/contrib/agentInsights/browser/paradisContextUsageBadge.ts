@@ -12,7 +12,7 @@
 // エディタのターミナルへ重ねる登録口（paradisRegisterEditorTerminalOverlay）から作られ、対象ペインはタブの
 // 切り替えのたびに setInstance で差し替わる。値とポップオーバーは登録した contribution（ホスト）が持つ。
 
-import { $, addDisposableListener, append, EventType } from '../../../../base/browser/dom.js';
+import { $, addDisposableListener, append, EventType, getActiveElement, isAncestor, isHTMLElement } from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { Event } from '../../../../base/common/event.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
@@ -72,6 +72,49 @@ export function paradisContextUsagePopoverSize(anchor: IParadisContextUsageRect,
 	const width = Math.min(POPOVER_PREFERRED_WIDTH, anchor.right - frame.left - POPOVER_EDGE_MARGIN - POPOVER_CHROME_WIDTH);
 	const maxHeight = Math.min(POPOVER_PREFERRED_MAX_HEIGHT, frame.bottom - anchor.bottom - POPOVER_EDGE_MARGIN - POPOVER_CHROME_HEIGHT);
 	return { width: Math.max(0, Math.floor(width)), maxHeight: Math.max(POPOVER_MIN_HEIGHT, Math.floor(maxHeight)) };
+}
+
+/** 描き直しの前後で同じ要素とみなすための、フォーカスを受ける要素の印（`data-paradis-focus-key`）。 */
+export const PARADIS_CONTEXT_USAGE_FOCUS_KEY = 'paradisFocusKey';
+
+function focusKeyOf(element: Element): string | undefined {
+	if (!isHTMLElement(element)) {
+		return undefined;
+	}
+	if (element.dataset[PARADIS_CONTEXT_USAGE_FOCUS_KEY] !== undefined) {
+		return element.dataset[PARADIS_CONTEXT_USAGE_FOCUS_KEY];
+	}
+	// 一覧の見出し（details > summary）は一覧の名前（data-group）で見分ける
+	const parent = element.parentElement;
+	return element.tagName === 'SUMMARY' && parent?.tagName === 'DETAILS' && parent.dataset.group !== undefined ? `group:${parent.dataset.group}` : undefined;
+}
+
+function findByFocusKey(parent: Element, focusKey: string): HTMLElement | undefined {
+	for (const child of parent.children) {
+		if (focusKeyOf(child) === focusKey && isHTMLElement(child)) {
+			return child;
+		}
+		const found = findByFocusKey(child, focusKey);
+		if (found) {
+			return found;
+		}
+	}
+	return undefined;
+}
+
+/**
+ * 内訳のポップオーバーを中身ごと描き直す。作り直すとフォーカスしていた要素が消えて固定ホバーの外へ抜け、
+ * スクロールも先頭へ戻りうるので、前後で `root` のスクロール位置と、フォーカスしていた要素（印の付いたもの）を戻す。
+ */
+export function paradisRedrawContextUsageDetails(root: HTMLElement, redraw: () => void): void {
+	const scrollTop = root.scrollTop;
+	const active = getActiveElement();
+	const focusKey = active && active !== root && isAncestor(active, root) ? focusKeyOf(active) : undefined;
+	redraw();
+	if (focusKey !== undefined) {
+		findByFocusKey(root, focusKey)?.focus();
+	}
+	root.scrollTop = scrollTop;
 }
 
 /** 1 ペイン分の使用率。 */
