@@ -17,6 +17,7 @@ import './media/paradisScheduledRuns.css';
 import * as dom from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
+import { isCancellationError } from '../../../../base/common/errors.js';
 import { Disposable, DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
@@ -1074,6 +1075,10 @@ export class ParadisScheduledRunsDialog extends Disposable {
 				? localize('paradis.scheduledRuns.precheckWouldRun', "通りました。この回はエージェントを起動します。")
 				: localize('paradis.scheduledRuns.precheckWouldSkip', "通りませんでした。この回は見送ります。")}\n${precheckResultText(response.result)}`, !passed);
 		} catch (error) {
+			if (isCancellationError(error)) {
+				// 画面を閉じて止めた
+				return;
+			}
 			this.logService.warn('[ParadisScheduledRuns] trying the precheck failed', error);
 			show(localize('paradis.scheduledRuns.precheckTryFailed', "事前確認を試せませんでした。"), true);
 		}
