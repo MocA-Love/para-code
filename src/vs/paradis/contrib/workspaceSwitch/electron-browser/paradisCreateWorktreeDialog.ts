@@ -23,7 +23,8 @@ import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
-import { IFileService } from '../../../../platform/files/common/files.js';
+import { ByteSize, IFileService } from '../../../../platform/files/common/files.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
@@ -58,10 +59,12 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { paradisFormatCrossJumpAgo } from '../../crossJump/common/paradisCrossJump.js';
 import { IParadisBranchCandidates, IParadisExistingBranchChoice, IParadisExistingBranchState, ParadisExistingBranchPlan, ParadisExistingBranchSource, paradisPlanExistingBranch } from '../common/paradisWorktreeExistingBranch.js';
-import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
+import { PARADIS_MODAL_BACKDROP_CLASS, PARADIS_MODAL_BODY_CLASS, PARADIS_MODAL_FOOT_CLASS, paradisModalClasses, ParadisModalSize, renderParadisModalHead } from '../../../browser/paradisModal.js';
+import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
+import { PARADIS_MODAL_DRAFT_RESTORED } from '../../paradisSettings/browser/paradisModalDrafts.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { PASTED_IMAGE_DIR } from '../../terminalImagePaste/browser/paradisTerminalImagePaste.js';
-import { paradisAgentImageMode, paradisWorktreeImageFileName } from '../common/paradisWorktreeImageAttach.js';
+import { paradisAgentImageMode, PARADIS_WORKTREE_IMAGE_MAX_BYTES, PARADIS_WORKTREE_IMAGE_MAX_COUNT, paradisWorktreeImageFileName } from '../common/paradisWorktreeImageAttach.js';
 import { ParadisWorktreeImageBlock, ParadisWorktreeImageComposer } from '../browser/paradisWorktreeImageComposer.js';
 
 const $ = dom.$;
@@ -106,8 +109,6 @@ export async function paradisCompleteCreatedWorktree(actions: IParadisCreatedWor
 
 // allow-any-unicode-next-line
 const STR_TITLE = localize('paradis.createWorktree.title', "新しいスペース");
-/** タイトル右に添える小さな補足（何を作るのかの技術名）。 */
-const STR_TITLE_SUB = 'worktree';
 // allow-any-unicode-next-line
 const STR_CLOSE = localize('paradis.createWorktree.close', "閉じる");
 // allow-any-unicode-next-line
@@ -154,8 +155,10 @@ const STR_BRANCHES_LOADING = localize('paradis.createWorktree.branchesLoading', 
 const STR_CANCEL = localize('paradis.createWorktree.cancel', "キャンセル");
 // allow-any-unicode-next-line
 const STR_CREATE = localize('paradis.createWorktree.create', "作成");
-/** 作成ボタンに添えるキーボードショートカット表記。 */
-const STR_CREATE_KBD = '⌘⏎';
+// allow-any-unicode-next-line
+const STR_PROMPT_HELP = localize('paradis.createWorktree.promptHelp', "ブランチ名の自動生成にも使います。画像は {0} 枚・1 枚 {1} MB まで", PARADIS_WORKTREE_IMAGE_MAX_COUNT, PARADIS_WORKTREE_IMAGE_MAX_BYTES / ByteSize.MB);
+// allow-any-unicode-next-line
+const STR_PROMPT_HELP_EXISTING = localize('paradis.createWorktree.promptHelpExisting', "画像は {0} 枚・1 枚 {1} MB まで", PARADIS_WORKTREE_IMAGE_MAX_COUNT, PARADIS_WORKTREE_IMAGE_MAX_BYTES / ByteSize.MB);
 // allow-any-unicode-next-line
 const STR_SETUP_LABEL = localize('paradis.createWorktree.setupLabel', "setup スクリプト");
 // allow-any-unicode-next-line
@@ -204,6 +207,37 @@ const STORAGE_KEY_LAST_AGENT = 'paradis.workspaceSwitch.lastSelectedAgent';
 const STORAGE_KEY_AGENT_OPTIONS = PARADIS_AGENT_LAUNCH_OPTIONS_STORAGE_KEY;
 /** setup スクリプトをOFFにしたリポジトリ id 一覧の保存キー（StorageScope.PROFILE）。 */
 const STORAGE_KEY_SETUP_DISABLED = 'paradis.workspaceSwitch.setupDisabledRepositories';
+
+/** 下書きを持つリポジトリの数（超えたら古いものから捨てる）。画像を写さずに持つので少なくする。 */
+const DRAFT_LIMIT = 5;
+
+/**
+ * 背景・Esc・閉じる・別のモーダルで閉じた「新しいスペース」の書きかけ（リポジトリの id → 中身）。同じリポジトリで開き直すと戻す。
+ * このウィンドウを開いている間だけ持つ。画像（1 枚 10 MB まで）は JSON に写さず、添えたときの物をそのまま持つ
+ * （ParadisModalDrafts は値を JSON で写すので使わない）。「キャンセル」と「作成」で捨てる。
+ */
+const paradisCreateWorktreeDrafts = new Map<string, IParadisHeadlessWorktreeRequest>();
+
+function paradisKeepCreateWorktreeDraft(draft: IParadisHeadlessWorktreeRequest): void {
+	paradisCreateWorktreeDrafts.delete(draft.repositoryId);
+	paradisCreateWorktreeDrafts.set(draft.repositoryId, draft);
+	while (paradisCreateWorktreeDrafts.size > DRAFT_LIMIT) {
+		const oldest = paradisCreateWorktreeDrafts.keys().next().value;
+		if (oldest === undefined) {
+			break;
+		}
+		paradisCreateWorktreeDrafts.delete(oldest);
+	}
+}
+
+function paradisTakeCreateWorktreeDraft(repositoryId: string | undefined): IParadisHeadlessWorktreeRequest | undefined {
+	if (repositoryId === undefined) {
+		return undefined;
+	}
+	const draft = paradisCreateWorktreeDrafts.get(repositoryId);
+	paradisCreateWorktreeDrafts.delete(repositoryId);
+	return draft;
+}
 /** コマンドプレビューに埋め込むプロンプトの省略表示長。 */
 const PREVIEW_PROMPT_MAX_LENGTH = 40;
 
@@ -222,6 +256,7 @@ export function openParadisCreateWorktreeDialog(accessor: ServicesAccessor, pres
 		accessor.get(IParadisWorktreeCreateQueueService),
 		accessor.get(IParadisAgentModelCatalogService),
 		accessor.get(IContextViewService),
+		accessor.get(IHoverService),
 		preselectedRepositoryId,
 		prefill,
 		// fetch は refs を書き換えるので、作成と同じく別のマシンへ流さない解決関数で動かす
@@ -260,8 +295,11 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 	private _branchSelect!: ParadisSelect;
 	private _pathPreview!: HTMLElement;
 	private _errorEl!: HTMLElement;
-	private _createBtn!: HTMLButtonElement;
-	private _cancelBtn!: HTMLButtonElement;
+	private _subtitleEl!: HTMLElement;
+	private _promptHelpEl!: HTMLElement;
+	private _createBtn!: ParadisButton;
+	/** 「キャンセル」「作成」で閉じるとき true（書きかけを下書きに残さない）。 */
+	private _discardDraft = false;
 
 	private _branches: IParadisGitBranches | undefined;
 	/** エージェントセグメントのリスナー（フォーム再構築のたびに作り直すため個別管理）。 */
@@ -326,6 +364,7 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		private readonly createQueueService: IParadisWorktreeCreateQueueService,
 		private readonly modelCatalogService: IParadisAgentModelCatalogService,
 		private readonly contextViewService: IContextViewService,
+		private readonly hoverService: IHoverService,
 		preselectedRepositoryId: string | undefined,
 		prefill: IParadisHeadlessWorktreeRequest | undefined,
 		/** fetch（refs を書く）に使う解決関数。省くと読み取りと同じものを使う。 */
@@ -333,11 +372,13 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 	) {
 		super();
 
-		this._backdrop = $('.paradis-create-worktree-backdrop.paradis-modal-backdrop');
-		// 案D レイアウトは修飾子クラスで囲う。同じ CSS ファイルを共有する
-		// paradisWorkspaceLifecycleDialog は修飾子を付けないので従来の見た目のまま残る
+		this._backdrop = $(`.paradis-create-worktree-backdrop.${PARADIS_MODAL_BACKDROP_CLASS}`);
+		// UI キットの段 3 の M（スペースの詳細と同じ並び: 見出しの帯・欄・1 行の説明・下の帯）。.pcw-d の中だけに効かせる
 		this._dialog = $('.paradis-create-worktree-dialog.pcw-d');
-		this._dialog.classList.add(...paradisModalClasses(ParadisModalSize.Small));
+		this._dialog.classList.add(...paradisModalClasses(ParadisModalSize.Medium));
+		this._dialog.tabIndex = -1;
+		this._dialog.setAttribute('role', 'dialog');
+		this._dialog.setAttribute('aria-modal', 'true');
 		this._backdrop.appendChild(this._dialog);
 
 		this._register(dom.addDisposableListener(this._backdrop, 'mousedown', e => {
@@ -346,29 +387,83 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 			}
 		}));
 		this._register(dom.addDisposableListener(this._backdrop, 'keydown', e => {
-			// 日本語入力の変換中の Esc・Enter は変換の取り消し・確定なので、閉じたり作ったりしない
+			// 日本語入力の変換中の Enter は変換の確定なので、作らない
 			if (e.isComposing || e.keyCode === 229) {
 				return;
 			}
-			if (e.key === 'Escape') {
-				e.preventDefault();
-				this.dispose();
-			} else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+			if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
 				e.preventDefault();
 				this._doCreate();
 			}
 		}));
 
 		layoutService.activeContainer.appendChild(this._backdrop);
-		this._renderForm(preselectedRepositoryId ?? prefill?.repositoryId, prefill);
+		// 中の欄へフォーカスを移す前に作る（開く前の場所を覚えて、閉じたらそこへ戻す）。Esc は重なった中の一番上だけが受ける
+		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal: this._dialog, onEscape: () => this._onEscape(), close: () => this.dispose() }));
+		// 書きかけを残して閉じたリポジトリなら、その中身で開く（作成に失敗した後の再表示は、その中身を優先する）
+		const repositoryId = preselectedRepositoryId ?? prefill?.repositoryId;
+		const draft = prefill ? undefined : paradisTakeCreateWorktreeDraft(repositoryId ?? this.switchService.activeRepository?.id);
+		this._renderForm(repositoryId ?? draft?.repositoryId, prefill ?? draft, draft !== undefined);
 		// インストール済み CLI のモデル候補を取り直し、届いたら選択を保ったまま並べ直す
 		this._register(this.modelCatalogService.onDidChange(() => this._onAgentTemplatesChanged()));
 		this.modelCatalogService.refresh();
 	}
 
 	override dispose(): void {
+		if (!this._store.isDisposed) {
+			this._keepDraft();
+		}
 		this._backdrop.remove();
 		super.dispose();
+	}
+
+	/** Esc: 既存のブランチの一覧を開いていればそれだけを閉じる。 */
+	private _onEscape(): void {
+		if (this._branchCombo?.isOpen) {
+			this._branchCombo.close();
+			return;
+		}
+		this.dispose();
+	}
+
+	/** 「キャンセル」「作成」以外で閉じるとき、書きかけをリポジトリごとの下書きに残す。何も書いていなければ残さない。 */
+	private _keepDraft(): void {
+		const repositoryId = this._repoSelect?.value;
+		if (this._discardDraft || !this._imageComposer || !repositoryId) {
+			return;
+		}
+		const prompt = this._promptInput.value;
+		const images = this._imageComposer.images;
+		const name = this._nameInput.value;
+		const branch = this._branchInput.value;
+		const choice = this._mode === 'existing' ? this._choice : undefined;
+		if (!prompt.trim() && images.length === 0 && !name.trim() && !branch.trim() && !choice) {
+			return;
+		}
+		paradisKeepCreateWorktreeDraft({
+			repositoryId,
+			name,
+			branch,
+			baseRef: this._branchSelect.value || undefined,
+			prompt,
+			agentId: this._selectedAgentId,
+			...this._currentLaunchOptions(),
+			...(this._setupScript ? { runSetup: this._setupCheckbox.checked } : {}),
+			...(choice ? { existingBranch: { branch: choice.name, source: choice.source } } : {}),
+			...(images.length > 0 ? { images } : {}),
+		});
+	}
+
+	/** 「キャンセル」「作成」で閉じる。書きかけを下書きに残さず、残っていたものも捨てる。 */
+	private _close(discardDraft: boolean): void {
+		if (discardDraft) {
+			this._discardDraft = true;
+			const repositoryId = this._repoSelect?.value;
+			if (repositoryId) {
+				paradisCreateWorktreeDrafts.delete(repositoryId);
+			}
+		}
+		this.dispose();
 	}
 
 	private get _agents(): readonly IParadisAgentCommandTemplate[] {
@@ -432,26 +527,27 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		this._onAgentChanged(undefined);
 	}
 
-	private _renderForm(preselectedRepositoryId: string | undefined, prefill: IParadisHeadlessWorktreeRequest | undefined): void {
+	private _renderForm(preselectedRepositoryId: string | undefined, prefill: IParadisHeadlessWorktreeRequest | undefined, restored: boolean): void {
 		dom.clearNode(this._dialog);
+		const id = ParadisCreateWorktreeDialog._nextId++;
 
-		// allow-any-unicode-next-line
-		// 設定 / 通知設定 / 使用量ダッシュボードと同じシェル（ヘッダー帯 + 本文 + フッター帯）に揃える。
-		// 以前はタイトルが本文の padding の中に直接あり、閉じるボタンだけが absolute で浮いていた
-		const header = dom.append(this._dialog, $('.pcw-d-header'));
-		dom.append(header, $('h2.pcw-title')).textContent = STR_TITLE;
-		dom.append(header, $('span.pcw-d-sub')).textContent = STR_TITLE_SUB;
-		const closeBtn = dom.append(header, $('button.pcw-d-close')) as HTMLButtonElement;
-		closeBtn.type = 'button';
-		closeBtn.title = STR_CLOSE;
-		closeBtn.setAttribute('aria-label', STR_CLOSE);
-		dom.append(closeBtn, $('span.codicon.codicon-close'));
-		this._register(dom.addDisposableListener(closeBtn, 'click', () => this.dispose()));
+		// スペースの詳細（paradisSpaceDetailsDialog.ts）と同じ並び: 見出しの帯（閉じるはキットのアイコンのボタン）・本文・下の帯
+		const head = renderParadisModalHead(this._dialog, STR_TITLE);
+		head.title.id = `paradis-create-worktree-title-${id}`;
+		this._dialog.setAttribute('aria-labelledby', head.title.id);
+		const closeBtn = this._register(new ParadisButton(head.actions, { kind: 'icon', icon: Codicon.close, ariaLabel: STR_CLOSE, title: STR_CLOSE }));
+		this._register(closeBtn.onDidClick(() => this.dispose()));
 
-		const body = dom.append(this._dialog, $('.pcw-d-body'));
+		const body = dom.append(this._dialog, $(`.${PARADIS_MODAL_BODY_CLASS}`));
+		if (restored) {
+			dom.append(body, $('p.pcw-d-restored')).textContent = PARADIS_MODAL_DRAFT_RESTORED;
+		}
+		// どのリポジトリのどこから作るか（リポジトリとベースブランチは詳細オプションで変えられる）
+		this._subtitleEl = dom.append(body, $('p.pcw-d-subtitle'));
 
 		// 新しいブランチを切るか、既存のブランチ（ローカル・origin）をそのまま開くか
-		const modeRow = dom.append(body, $('.pcw-d-mode'));
+		const modeRow = dom.append(body, $('.pcw-d-field.pcw-d-mode'));
+		dom.append(modeRow, $('span')).textContent = STR_MODE_ARIA;
 		this._modeSeg = this._register(new ParadisSegmented<'new' | 'existing'>(modeRow, {
 			items: [{ value: 'new', label: STR_MODE_NEW }, { value: 'existing', label: STR_MODE_EXISTING }],
 			value: 'new',
@@ -460,9 +556,8 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		this._register(this._modeSeg.onDidChange(mode => this._setMode(mode, true)));
 
 		// 既存のブランチの欄。どれを開くかが一番の決めごとになるので、DOM の順でも指示より前に置く（Tab の順と見た目をそろえる）
+		// 見出しは真上の「ブランチ」と同じなので、この欄には出さない（読み上げの名前は一覧の欄が持つ）
 		this._existingField = dom.append(body, $('.pcw-d-field.pcw-d-existing.hidden'));
-		const existingLabel = dom.append(this._existingField, $('span'));
-		existingLabel.textContent = STR_EXISTING_FIELD;
 		this._branchCombo = this._register(new ParadisComboBox(this._existingField, this.contextViewService, {
 			ariaLabel: STR_EXISTING_FIELD,
 			placeholder: STR_EXISTING_PLACEHOLDER,
@@ -489,13 +584,16 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		// 箱を label で包まず、見出しの label の `for` で欄を指す（見出しを押すと欄へ移る）
 		const promptField = dom.append(body, $('.pcw-d-field'));
 		const promptLabel = dom.append(promptField, $('label')) as HTMLLabelElement;
-		promptLabel.htmlFor = `paradis-create-worktree-prompt-${ParadisCreateWorktreeDialog._nextId++}`;
+		promptLabel.htmlFor = `paradis-create-worktree-prompt-${id}`;
 		promptLabel.textContent = STR_PROMPT_FIELD;
 		this._imageComposer = this._register(new ParadisWorktreeImageComposer(promptField, {
 			inputId: promptLabel.htmlFor,
 			placeholder: STR_PROMPT_PLACEHOLDER,
 			images: prefill?.images,
+			hoverService: this.hoverService,
 		}));
+		this._promptHelpEl = dom.append(promptField, $('.pcw-d-help'));
+		this._promptHelpEl.textContent = STR_PROMPT_HELP;
 		this._promptInput = this._imageComposer.textarea;
 		this._register(this._imageComposer.onDidChange(() => {
 			this._updateCommandPreview();
@@ -518,8 +616,8 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		this._branchInput.spellcheck = false;
 
 		// エージェント選択（セグメント）＋その詳細オプション
-		const agentBlock = dom.append(body, $('.pcw-d-agent-block'));
-		dom.append(agentBlock, $('span.pcw-d-field-label')).textContent = STR_AGENT_LABEL;
+		const agentBlock = dom.append(body, $('.pcw-d-field.pcw-d-agent-block'));
+		dom.append(agentBlock, $('span')).textContent = STR_AGENT_LABEL;
 		this._agentSeg = dom.append(agentBlock, $('.pcw-d-agent-seg.paradis-seg'));
 		this._agentSeg.setAttribute('role', 'group');
 		this._agentSeg.setAttribute('aria-label', STR_AGENT_LABEL);
@@ -584,22 +682,23 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		this._setupCheckbox = this._register(new ParadisSwitch(setupLabel, { checked: true }));
 		dom.append(setupLabel, $('span')).textContent = STR_RUN_SETUP;
 		this._setupScriptEl = dom.append(this._setupRow, $('span.pcw-setup-script'));
+		// 狭い窓では省略記号で切れるので、全体はポインタを重ねたときに出す
+		this._register(this.hoverService.setupDelayedHover(this._setupScriptEl, () => ({ content: this._setupScript ?? '' })));
 
 		this._errorEl = dom.append(body, $('.pcw-error'));
+		this._errorEl.setAttribute('role', 'alert');
 
-		const footer = dom.append(this._dialog, $('.pcw-footer.pcw-d-foot'));
-		// 作成先パスのプレビューはフッター左端に置く（案D: 決め手にはならないが常に見えていてほしい情報）
+		const footer = dom.append(this._dialog, $(`.${PARADIS_MODAL_FOOT_CLASS}`));
+		// 作成先パスのプレビューは下の帯の左端に置く（決め手にはならないが常に見えていてほしい情報）
 		this._pathPreview = dom.append(footer, $('.pcw-path-preview'));
-		const buttons = dom.append(footer, $('.pcw-d-btnrow'));
-		this._cancelBtn = dom.append(buttons, $('button.pcw-btn')) as HTMLButtonElement;
-		this._cancelBtn.textContent = STR_CANCEL;
-		this._register(dom.addDisposableListener(this._cancelBtn, 'click', () => this.dispose()));
-		this._createBtn = dom.append(buttons, $('button.pcw-btn.pcw-btn-primary')) as HTMLButtonElement;
-		this._createBtn.textContent = STR_CREATE;
-		dom.append(this._createBtn, $('span.pcw-d-kbd')).textContent = STR_CREATE_KBD;
-		this._register(dom.addDisposableListener(this._createBtn, 'click', () => this._doCreate()));
+		const cancelBtn = this._register(new ParadisButton(footer, { kind: 'secondary', label: STR_CANCEL }));
+		this._register(cancelBtn.onDidClick(() => this._close(true)));
+		this._createBtn = this._register(new ParadisButton(footer, { kind: 'primary', label: STR_CREATE }));
+		this._createBtn.element.classList.add('pcw-create');
+		this._register(this._createBtn.onDidClick(() => this._doCreate()));
 
 		this._register(this._repoSelect.onDidChange(() => this._onRepositoryChanged()));
+		this._register(this._branchSelect.onDidChange(() => this._updateSubtitle()));
 		this._register(dom.addDisposableListener(this._branchInput, 'input', () => this._updatePathPreview()));
 		this._register(this._modelSelect.onDidChange(() => this._onModelChanged()));
 		this._register(this._effortSelect.onDidChange(() => this._updateCommandPreview()));
@@ -907,8 +1006,6 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		}
 		this._setupRow.classList.remove('hidden');
 		this._setupScriptEl.textContent = this._setupScript;
-		// 狭い窓では省略記号で切れるので、全体はポインタを重ねたときに出す
-		this._setupScriptEl.title = this._setupScript;
 		this._setupCheckbox.checked = prefillRunSetup ?? !this._loadSetupDisabledRepositories().includes(repository.id);
 		this._setupRow.classList.toggle('off', !this._setupCheckbox.checked);
 	}
@@ -962,7 +1059,21 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		return joinPath(dirname(repository.uri), `${basename(repository.uri)}-worktrees`, dirName);
 	}
 
+	/** 本文の先頭の 1 行（どのリポジトリのどこから作るか）。 */
+	private _updateSubtitle(): void {
+		const repository = this._selectedRepository;
+		const baseRef = this._branchSelect.value;
+		this._subtitleEl.textContent = !repository ? ''
+			// allow-any-unicode-next-line
+			: this._mode === 'existing' ? localize('paradis.createWorktree.subtitleExisting', "{0} · 既存のブランチを新しい worktree で開きます", repository.name)
+				// allow-any-unicode-next-line
+				: baseRef ? localize('paradis.createWorktree.subtitle', "{0} · {1} から新しい worktree を作ります", repository.name, baseRef)
+					// allow-any-unicode-next-line
+					: localize('paradis.createWorktree.subtitleNoBase', "{0} に新しい worktree を作ります", repository.name);
+	}
+
 	private _updatePathPreview(): void {
+		this._updateSubtitle();
 		const repository = this._selectedRepository;
 		if (!repository) {
 			this._pathPreview.textContent = '';
@@ -1045,7 +1156,7 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 			...(existingBranch ? { existingBranch } : {}),
 			...(images.length > 0 ? { images } : {}),
 		});
-		this.dispose();
+		this._close(true);
 	}
 
 	/** 作成を受け付けられるか（新しいブランチはベースブランチがあること、既存のブランチは開ける判定が出ていること）。 */
@@ -1059,7 +1170,7 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 
 	private _updateCreateEnabled(): void {
 		if (this._createBtn) {
-			this._createBtn.disabled = !this._canCreate() || this._imageComposer.busy;
+			this._createBtn.enabled = this._canCreate() && !this._imageComposer.busy;
 		}
 	}
 
@@ -1091,6 +1202,7 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		this._baseBranchRow.classList.toggle('hidden', existing);
 		this._dialog.classList.toggle('pcw-d-existing-mode', existing);
 		this._promptInput.placeholder = existing ? STR_PROMPT_PLACEHOLDER_EXISTING : STR_PROMPT_PLACEHOLDER;
+		this._promptHelpEl.textContent = existing ? STR_PROMPT_HELP_EXISTING : STR_PROMPT_HELP;
 		this._updateNamePlaceholder();
 		this._updatePathPreview();
 		if (!existing) {

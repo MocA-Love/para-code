@@ -17,19 +17,6 @@
 	justify-content: center;
 }
 
-/* The box's size, surface and font come from the modal S tier (paradisModal.css, Q612). It scrolls when the window is short. */
-.monaco-workbench .paradis-create-worktree-dialog.paradis-modal {
-	padding: 16px 18px;
-	gap: 10px;
-	overflow-y: auto;
-}
-
-.paradis-create-worktree-dialog .pcw-title {
-	margin: 0 0 2px;
-	font-size: 14px;
-	font-weight: 600;
-}
-
 .paradis-create-worktree-dialog .pcw-row {
 	display: flex;
 	align-items: center;
@@ -244,125 +231,55 @@
 	display: none;
 }
 
-.paradis-create-worktree-dialog .pcw-footer {
-	display: flex;
-	justify-content: flex-end;
-	gap: 8px;
-	margin-top: 4px;
+/* --- The new space dialog (paradisCreateWorktreeDialog.ts) ---
+ * The kit's stage 3 dialog M (paradisModal.css): the same layout as the space details (paradisSpaceDetails.css), that is
+ * the 52px header bar, a one-line subtitle, bold field labels with a one-line help under some of them, and the footer bar.
+ * Everything below is scoped to `.pcw-d`. The lifecycle and kept branches dialogs share only the backdrop above. */
+
+/* The body's sections are spaced like the space details' labels. */
+.paradis-create-worktree-dialog.pcw-d > .paradis-modal-body > * + * {
+	margin-top: var(--vscode-spacing-size160);
 }
 
-.paradis-create-worktree-dialog .pcw-btn {
-	background: var(--vscode-button-secondaryBackground);
-	color: var(--vscode-button-secondaryForeground);
-	border: none;
-	border-radius: 4px;
-	padding: 6px 14px;
-	cursor: pointer;
-	font-size: 13px;
+.paradis-create-worktree-dialog.pcw-d .pcw-d-subtitle,
+.paradis-create-worktree-dialog.pcw-d .pcw-d-restored {
+	margin-bottom: 0;
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+	overflow-wrap: anywhere;
 }
 
-.paradis-create-worktree-dialog .pcw-btn:hover:not(:disabled) {
-	background: var(--vscode-button-secondaryHoverBackground);
+.paradis-create-worktree-dialog.pcw-d .pcw-d-subtitle {
+	margin-top: var(--vscode-spacing-size80);
 }
 
-.paradis-create-worktree-dialog .pcw-btn-primary {
-	background: var(--vscode-button-background);
-	color: var(--vscode-button-foreground);
+.paradis-create-worktree-dialog.pcw-d .pcw-d-restored {
+	margin-top: var(--vscode-spacing-size80);
 }
 
-.paradis-create-worktree-dialog .pcw-btn-primary:hover:not(:disabled) {
-	background: var(--vscode-button-hoverBackground);
-}
-
-.paradis-create-worktree-dialog .pcw-btn:disabled {
-	opacity: 0.6;
-	cursor: default;
-}
-
-/* --- 案D レイアウト（新しいスペース作成ダイアログ専用） ---
- * `.pcw-d` 修飾子の中だけに効かせる。この CSS ファイルは
- * paradisWorkspaceLifecycleDialog も共有していて、そちらは修飾子を付けないため
- * 従来の見た目のまま残る。 */
-
-.paradis-create-worktree-dialog.pcw-d {
-	width: 540px;
-	border-radius: 8px;
-	padding: 0;
-	gap: 0;
-	overflow: hidden;
-	/* allow-any-unicode-next-line */
-	/* overflow:hidden にしたので、背の低い画面では本文側 (.pcw-d-body) がスクロールする必要がある。
-	max-height を置かないとダイアログが伸び続けて画面外へはみ出す。 */
-	max-height: 92vh;
-}
-
-.paradis-create-worktree-dialog.pcw-d .pcw-d-header {
-	flex: none;
-	display: flex;
-	align-items: center;
-	gap: 12px;
-	padding: 12px 18px;
-	border-bottom: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-}
-
-.paradis-create-worktree-dialog.pcw-d .pcw-d-body {
-	display: flex;
-	flex-direction: column;
-	gap: 14px;
-	padding: 16px 18px 18px;
-	/* allow-any-unicode-next-line */
-	/* overflow-y だけ指定すると overflow-x も auto 扱いになり、横スクロールバーが出得る */
-	overflow: hidden auto;
+.paradis-create-worktree-dialog.pcw-d .pcw-d-restored + .pcw-d-subtitle {
+	margin-top: var(--vscode-spacing-size40);
 }
 
 .paradis-create-worktree-dialog.pcw-d .pcw-d-field {
 	display: flex;
 	flex-direction: column;
-	gap: 5px;
+	gap: var(--vscode-spacing-size60);
 	min-width: 0;
 }
 
 .paradis-create-worktree-dialog.pcw-d .pcw-d-field > span,
-.paradis-create-worktree-dialog.pcw-d .pcw-d-field > label,
-.paradis-create-worktree-dialog.pcw-d .pcw-d-field-label {
-	font-size: 11.5px;
-	color: var(--vscode-descriptionForeground);
+.paradis-create-worktree-dialog.pcw-d .pcw-d-field > label {
+	font-size: var(--vscode-fontSize-label1);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textStrong);
 }
 
-.paradis-create-worktree-dialog.pcw-d .pcw-d-field-label {
-	display: block;
-	margin-bottom: 5px;
-}
-
-.paradis-create-worktree-dialog.pcw-d .pcw-title {
-	margin: 0;
-	font-size: 14.5px;
-	font-weight: 600;
-}
-
-.paradis-create-worktree-dialog.pcw-d .pcw-d-sub {
-	font-size: 11px;
-	font-weight: 400;
-	color: var(--vscode-descriptionForeground);
-}
-
-.paradis-create-worktree-dialog.pcw-d .pcw-d-close {
-	margin-left: auto;
-	flex: none;
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	padding: 4px;
-	border: none;
-	background: transparent;
-	color: var(--vscode-icon-foreground);
-	border-radius: 4px;
-	cursor: pointer;
-}
-
-.paradis-create-worktree-dialog.pcw-d .pcw-d-close:hover {
-	background: var(--vscode-toolbar-hoverBackground);
-	color: var(--vscode-foreground);
+/* The help under a field sits 4px below it, like the space details (the field adds its gap, so take it back). */
+.paradis-create-worktree-dialog.pcw-d .pcw-d-help {
+	margin-top: calc(var(--vscode-spacing-size40) - var(--vscode-spacing-size60));
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
 }
 
 /* 入力は他ダイアログ（設定 / 通知設定）と同じ「塗り + 枠 + 角丸 5px」に揃える */
@@ -449,7 +366,8 @@
 	border: none;
 	border-radius: 0;
 	padding: 0;
-	margin-top: 10px;
+	/* 10px below the agent buttons, counting the field's gap. */
+	margin-top: var(--vscode-spacing-size40);
 	gap: 10px;
 }
 
@@ -567,40 +485,10 @@
 	max-width: 100%;
 }
 
-/* --- フッター --- */
-
-.paradis-create-worktree-dialog.pcw-d .pcw-d-foot {
-	flex: none;
-	display: flex;
-	align-items: center;
-	justify-content: unset;
-	gap: 10px;
-	padding: 10px 18px;
-	border-top: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-}
-
 .paradis-create-worktree-dialog.pcw-d .pcw-path-preview {
 	flex: 1;
 	min-width: 0;
 	font-size: 10.5px;
-}
-
-.paradis-create-worktree-dialog.pcw-d .pcw-d-btnrow {
-	display: flex;
-	gap: 8px;
-	flex: none;
-}
-
-.paradis-create-worktree-dialog.pcw-d .pcw-btn {
-	border-radius: 5px;
-	padding: 4px 13px;
-	font-size: 12px;
-}
-
-.paradis-create-worktree-dialog.pcw-d .pcw-d-kbd {
-	margin-left: 6px;
-	font-size: 10px;
-	opacity: 0.85;
 }
 
 /* --- 既存のブランチ（q.html Q605 案 A） --- */
