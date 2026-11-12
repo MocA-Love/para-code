@@ -305,12 +305,12 @@ export function paradisSessionCatalogId(agent: ParadisResumeAgent, transcriptPat
 export class ParadisSessionResumeService {
 	private readonly catalog = new Map<string, ICatalogEntry>();
 	private readonly searchTextCache: ParadisSessionSearchTextCache;
-	/** 一覧行プレビューの tail 再読を避けるキャッシュ。キーは catalogId、不変条件(revision)は updatedAt。 */
 	/**
 	 * {@link withLinkedPreferredCodexHome} の結果（会話・更新時刻・見つかったホーム・選んでいるホームが同じ間は
 	 * 調べ直さない）。値は替える先のホーム（替えないときは null）。
 	 */
 	private readonly linkedCodexHomeCache = new Map<string, string | null>();
+	/** 一覧行プレビューの tail 再読を避けるキャッシュ。キーは catalogId、不変条件(revision)は updatedAt。 */
 	private readonly latestMessageCache = new Map<string, {
 		readonly revision: number;
 		readonly message: IParadisResumeLatestMessage | null;
