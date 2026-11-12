@@ -20,18 +20,16 @@ suite('ParadisFileTransferPermissionsDialog', () => {
 		const options = (draftKey: string, initialMode = 0o644): IParadisPermissionsDialogOptions => ({
 			title: 'deploy', location: 'example:/srv/deploy', initialMode, typeChar: 'd', hasDirectory: true, draftKey,
 		});
-		const octal = () => root.querySelector<HTMLInputElement>('.para-ft-octal-input')!.value;
+		const octal = () => root.querySelector<HTMLInputElement>('.para-ft-octal input')!.value;
 		const hasNote = () => (root.textContent ?? '').includes('保存する前に閉じた編集を戻しました');
-		const recursive = () => root.querySelector<HTMLInputElement>('.para-ft-recursive input')!;
-		const view = () => ({ octal: octal(), recursive: recursive().checked, note: hasNote() });
-		const cancel = () => root.querySelector<HTMLButtonElement>('.para-ft-modal-buttons button.secondary')!.click();
+		const recursive = () => root.querySelector<HTMLElement>('.para-ft-recursive .monaco-checkbox')!;
+		const view = () => ({ octal: octal(), recursive: recursive().getAttribute('aria-checked') === 'true', note: hasNote() });
+		const cancel = () => root.querySelector<HTMLButtonElement>('.paradis-modal-foot button.paradis-button-secondary')!.click();
 		try {
 			const first = paradisShowPermissionsDialog(root, options('remote\nfile-a'));
 			// Turn on the owner's execute bit
-			const ownerExecute = root.querySelectorAll<HTMLInputElement>('.para-ft-pgrid input')[2];
-			ownerExecute.checked = true;
-			ownerExecute.dispatchEvent(new Event('change'));
-			recursive().checked = true;
+			root.querySelectorAll<HTMLElement>('.para-ft-pgrid .monaco-checkbox')[2].click();
+			recursive().click();
 			const other = paradisOpenAnotherModal();
 			const closedByOther = await first;
 			other.dispose();
@@ -74,7 +72,7 @@ suite('ParadisFileTransferPermissionsDialog', () => {
 		try {
 			const shown = paradisShowPermissionsDialog(root, { title: 'deploy', location: 'example:/srv/deploy', initialMode: 0o644, typeChar: '-', hasDirectory: false, draftKey: 'remote\nfile-tier' });
 			const className = root.querySelector('.para-ft-modal')?.className;
-			root.querySelector<HTMLButtonElement>('.para-ft-modal-buttons button.secondary')!.click();
+			root.querySelector<HTMLButtonElement>('.paradis-modal-foot button.paradis-button-secondary')!.click();
 			await shown;
 			assert.strictEqual(className, 'para-ft-modal paradis-modal paradis-modal-s paradis-focus-none');
 		} finally {

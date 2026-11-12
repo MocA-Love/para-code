@@ -23,6 +23,9 @@ import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultS
 import { IParadisAgentChatCommand } from '../common/paradisAgentChat.js';
 import { paradisDuplicateAgentChatCommandNames, paradisFilterAgentChatCommands, paradisAgentChatSlashQuery } from '../common/paradisAgentChatComposerLogic.js';
 
+/** 候補の一覧の id の通し番号（入力欄ごとに id を分ける）。 */
+let slashMenuIdCounter = 0;
+
 /** 送信のキー。Q32: 既定は Enter で送信・Shift+Enter で改行。設定で ⌘Enter 送信に変えられる。 */
 export type ParadisAgentChatSendKey = 'enter' | 'modEnter';
 
@@ -99,6 +102,8 @@ export class ParadisAgentChatComposer extends Disposable {
 		this.element = append(parent, $('.paradis-agent-chat-composer'));
 		this.slashMenu = append(this.element, $('.paradis-agent-chat-slash-menu'));
 		this.slashMenu.setAttribute('role', 'listbox');
+		// 1 つの窓に会話の画面がいくつも開くので、候補の id は入力欄ごとに分ける
+		this.slashMenu.id = `paradis-agent-chat-slash-${++slashMenuIdCounter}`;
 		this.slashMenu.style.display = 'none';
 		this.notice = append(this.element, $('.paradis-agent-chat-composer-notice'));
 		this.notice.setAttribute('aria-live', 'polite');
@@ -107,6 +112,11 @@ export class ParadisAgentChatComposer extends Disposable {
 		this.textarea.rows = 1;
 		this.textarea.spellcheck = false;
 		this.textarea.setAttribute('aria-label', localize('paradisAgentChat.inputAria', "エージェントへのメッセージ"));
+		// フォーカスは入力欄のまま候補を ↑↓ で選ぶので、選んでいる候補を aria-activedescendant で読み上げに伝える
+		this.textarea.setAttribute('role', 'combobox');
+		this.textarea.setAttribute('aria-autocomplete', 'list');
+		this.textarea.setAttribute('aria-controls', this.slashMenu.id);
+		this.textarea.setAttribute('aria-expanded', 'false');
 		const footer = append(box, $('.paradis-agent-chat-composer-footer'));
 		this.busyNote = append(footer, $('span.paradis-agent-chat-composer-busy'));
 		const dictationSlot = append(footer, $('span.paradis-agent-chat-dictation'));
@@ -392,11 +402,15 @@ export class ParadisAgentChatComposer extends Disposable {
 		clearNode(this.slashMenu);
 		if (this.slashItems.length === 0) {
 			this.slashMenu.style.display = 'none';
+			this.clearSlashMenuAria();
 			return;
 		}
 		this.slashMenu.style.display = '';
+		this.textarea.setAttribute('aria-expanded', 'true');
+		this.textarea.setAttribute('aria-activedescendant', `${this.slashMenu.id}-${this.slashSelected}`);
 		this.slashItems.forEach((command, index) => {
 			const row = append(this.slashMenu, $('.paradis-agent-chat-slash-item'));
+			row.id = `${this.slashMenu.id}-${index}`;
 			row.setAttribute('role', 'option');
 			row.classList.toggle('selected', index === this.slashSelected);
 			row.setAttribute('aria-selected', String(index === this.slashSelected));
@@ -442,6 +456,12 @@ export class ParadisAgentChatComposer extends Disposable {
 		this.slashMenu.style.display = 'none';
 		this.slashRowListeners.clear();
 		clearNode(this.slashMenu);
+		this.clearSlashMenuAria();
+	}
+
+	private clearSlashMenuAria(): void {
+		this.textarea.setAttribute('aria-expanded', 'false');
+		this.textarea.removeAttribute('aria-activedescendant');
 	}
 }
 

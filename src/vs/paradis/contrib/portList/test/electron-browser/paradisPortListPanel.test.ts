@@ -19,6 +19,7 @@ interface IPanelFixture {
 	readonly root: HTMLElement;
 	readonly panel: ParadisPortListPanel;
 	readonly killedEntries: readonly IParadisPortEntry[];
+	readonly closes: readonly boolean[];
 	readonly anchorRectReadCount: number;
 	setViewport(viewportWidth: number, anchorRight: number): void;
 	dispose(): void;
@@ -33,6 +34,7 @@ function createPanelFixture(): IPanelFixture {
 	let anchorRight = 300;
 	let anchorRectReadCount = 0;
 	const killedEntries: IParadisPortEntry[] = [];
+	const closes: boolean[] = [];
 	anchor.getBoundingClientRect = () => {
 		anchorRectReadCount++;
 		return new DOMRect(anchorRight - 20, 10, 20, 20);
@@ -43,7 +45,7 @@ function createPanelFixture(): IPanelFixture {
 			initialSnapshot: longRiskySnapshot,
 			viaRemote: false,
 			onManualRefresh() { },
-			onClose() { },
+			onClose(restoreFocus) { closes.push(restoreFocus); },
 			onKill(entry) { killedEntries.push(entry); },
 			onKillAll() { },
 		},
@@ -55,6 +57,7 @@ function createPanelFixture(): IPanelFixture {
 		root,
 		panel,
 		killedEntries,
+		closes,
 		get anchorRectReadCount(): number { return anchorRectReadCount; },
 		setViewport(viewportWidth: number, nextAnchorRight: number): void {
 			Object.defineProperty(window, 'innerWidth', { configurable: true, value: viewportWidth });
@@ -203,6 +206,12 @@ suite('Paradis port list panel', () => {
 			killButton.focus();
 			assert.strictEqual(document.activeElement, killButton);
 			killButton.click();
+			// 押すと行の中の確認に替わる。確認も枠の中に収まり、「終了」で止まる
+			const confirmKill = fixture.root.querySelector<HTMLButtonElement>('.ppl-confirm .paradis-button-danger')!;
+			const confirmRect = fixture.root.querySelector<HTMLElement>('.ppl-confirm')!.getBoundingClientRect();
+			assert.ok(confirmRect.left >= panelRect.left && confirmRect.right <= panelRect.right);
+			assert.deepStrictEqual(fixture.killedEntries, []);
+			confirmKill.click();
 			assert.deepStrictEqual(fixture.killedEntries, [longRiskyEntry]);
 		} finally {
 			if (originalInnerWidth) {
@@ -230,6 +239,50 @@ suite('Paradis port list panel', () => {
 			const afterRowGone = document.activeElement === fixture.root.querySelector('.paradis-port-list-panel');
 
 			assert.deepStrictEqual({ keptOnRow, keptIsNewButton, afterRowGone }, { keptOnRow: 'PID 4321 を終了', keptIsNewButton: true, afterRowGone: true });
+		} finally {
+			fixture.dispose();
+		}
+	});
+
+	test('asks inside the row before killing, and Esc only cancels the question', () => {
+		const fixture = createPanelFixture();
+		try {
+			const otherEntry: IParadisPortEntry = { port: 3000, proto: 'TCP', pid: 99, processName: 'node', address: '127.0.0.1:3000', risky: false };
+			fixture.panel.updateSnapshot({ entries: [otherEntry, longRiskyEntry], collectedAt: 1 });
+			const panel = fixture.root.querySelector<HTMLElement>('.paradis-port-list-panel')!;
+			const escape = () => panel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+			fixture.root.querySelectorAll<HTMLButtonElement>('.ppl-kill-btn')[0].click();
+			const asked = fixture.root.querySelector('.ppl-confirm-text')?.textContent;
+			const focusOnCancel = document.activeElement?.textContent;
+			// 確認中に一覧が描き直されても、確認とフォーカスは残る
+			fixture.panel.updateSnapshot({ entries: [otherEntry, longRiskyEntry], collectedAt: 2 });
+			const keptAfterRefresh = { asked: fixture.root.querySelectorAll('.ppl-confirm').length, focus: document.activeElement?.textContent };
+			escape();
+			const afterEscape = { confirms: fixture.root.querySelectorAll('.ppl-confirm').length, focus: document.activeElement?.getAttribute('aria-label'), closes: [...fixture.closes] };
+			escape();
+			assert.deepStrictEqual({ asked, focusOnCancel, keptAfterRefresh, afterEscape, closes: fixture.closes, killed: fixture.killedEntries }, {
+				asked: 'PID 99 を終了しますか？',
+				focusOnCancel: 'やめる',
+				keptAfterRefresh: { asked: 1, focus: 'やめる' },
+				afterEscape: { confirms: 0, focus: 'PID 99 を終了', closes: [] },
+				closes: [true],
+				killed: [],
+			});
+		} finally {
+			fixture.dispose();
+		}
+	});
+
+	test('shows the visible count over the total while filtering', () => {
+		const fixture = createPanelFixture();
+		try {
+			const otherEntry: IParadisPortEntry = { port: 3000, proto: 'TCP', pid: 99, processName: 'node', address: '127.0.0.1:3000', risky: false };
+			fixture.panel.updateSnapshot({ entries: [otherEntry, longRiskyEntry], collectedAt: 1 });
+			const count = () => fixture.root.querySelector('.ppl-count')?.textContent;
+			const all = count();
+			fixture.root.querySelectorAll<HTMLButtonElement>('.ppl-chip')[1].click();
+			const risky = count();
+			assert.deepStrictEqual({ all, risky }, { all: '2', risky: '1 / 2' });
 		} finally {
 			fixture.dispose();
 		}
