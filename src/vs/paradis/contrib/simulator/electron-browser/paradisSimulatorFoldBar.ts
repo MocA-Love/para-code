@@ -8,19 +8,20 @@
 
 // iPhone Duo の開閉のバー（q.html Q582 の画面案 3。折りたたみの端末のときだけ出す）。
 //
-//  - 3 つの姿勢（閉じる 0°・本 130°・開く 180°。serve-sim 0.1.49 の DUO_POSES）のボタン。Option（Alt）を押している
-//    間と「角度」のボタンで、角度のスライダーに替える
+//  - 3 つの姿勢（閉じた 0°・本 130°・開いた 180°。serve-sim 0.1.49 の DUO_POSES）の切り替えの組（UI キットの
+//    ParadisSegmented。今の姿勢は aria-pressed で読み上げる）。Option（Alt）を押している間と「角度」のボタンで、
+//    角度のスライダーに替える
 //  - 開閉は Device Hub が起動していないと効かない（Mac で実測）。起動していなければその旨と「Device Hub を起動」の
 //    ボタンを出す（押したときだけ裏で起動する）
 //  - iOS 27.2 などでは、角度が変わっても外と内の画面が切り替わらず内のまま映る（Mac で実測）。そのときはその旨を出す
 // 状態の読み取りと開閉の送り先はエディタのペイン（paradisSimulatorEditor.ts）が持ち、ここは表示とボタンだけ。
 
 import * as dom from '../../../../base/browser/dom.js';
-import { Button } from '../../../../base/browser/ui/button/button.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
-import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultStyles.js';
+import { ParadisButton } from '../../../browser/paradisButton.js';
+import { ParadisSegmented } from '../../../browser/paradisSegmented.js';
 import { PARADIS_SIMULATOR_POSES, ParadisSimulatorPose } from '../common/paradisSimulator.js';
 
 const $ = dom.$;
@@ -49,9 +50,8 @@ export type ParadisSimulatorFoldRequest = { readonly kind: 'pose'; readonly pose
 export class ParadisSimulatorFoldBar extends Disposable {
 
 	readonly element: HTMLElement;
-	private readonly _poseButtons = new Map<ParadisSimulatorPose, Button>();
-	private readonly _angleButton: Button;
-	private readonly _poses: HTMLElement;
+	private readonly _poses: ParadisSegmented<ParadisSimulatorPose>;
+	private readonly _angleButton: ParadisButton;
 	private readonly _slider: HTMLInputElement;
 	private readonly _sliderLabel: HTMLElement;
 	private readonly _status: HTMLElement;
@@ -74,18 +74,18 @@ export class ParadisSimulatorFoldBar extends Disposable {
 		this.element = dom.append(container, $('.paradis-simulator-fold'));
 		const row = dom.append(this.element, $('.paradis-simulator-fold-row'));
 		dom.append(row, $('span.paradis-simulator-fold-label')).textContent = localize('paradis.simulator.fold.label', "姿勢");
-		this._poses = dom.append(row, $('.paradis-simulator-fold-poses'));
+		// 「閉じる」「開く」は動詞でペインを閉じる操作に読めるので、姿勢の名前（閉じた・本・開いた）にそろえる
 		const labels: { readonly [pose in ParadisSimulatorPose]: string } = {
-			closed: localize('paradis.simulator.fold.closed', "閉じる 0°"),
+			closed: localize('paradis.simulator.fold.closed', "閉じた 0°"),
 			book: localize('paradis.simulator.fold.book', "本 130°"),
-			open: localize('paradis.simulator.fold.open', "開く 180°"),
+			open: localize('paradis.simulator.fold.open', "開いた 180°"),
 		};
-		for (const { id } of PARADIS_SIMULATOR_POSES) {
-			const button = this._register(new Button(this._poses, { ...defaultButtonStyles, secondary: true, small: true, title: labels[id] }));
-			button.label = labels[id];
-			this._register(button.onDidClick(() => this._onDidRequestFold.fire({ kind: 'pose', pose: id })));
-			this._poseButtons.set(id, button);
-		}
+		this._poses = this._register(new ParadisSegmented<ParadisSimulatorPose>(row, {
+			items: PARADIS_SIMULATOR_POSES.map(({ id }) => ({ value: id, label: labels[id] })),
+			value: undefined,
+			ariaLabel: localize('paradis.simulator.fold.label', "姿勢"),
+		}));
+		this._register(this._poses.onDidChange(pose => this._onDidRequestFold.fire({ kind: 'pose', pose })));
 		this._slider = dom.append(row, $<HTMLInputElement>('input.paradis-simulator-fold-slider'));
 		this._slider.type = 'range';
 		this._slider.min = '0';
@@ -95,8 +95,12 @@ export class ParadisSimulatorFoldBar extends Disposable {
 		this._sliderLabel = dom.append(row, $('span.paradis-simulator-fold-angle'));
 		this._register(dom.addDisposableListener(this._slider, 'input', () => this._sliderLabel.textContent = `${this._slider.value}°`));
 		this._register(dom.addDisposableListener(this._slider, 'change', () => this._onDidRequestFold.fire({ kind: 'hinge', hinge: Number(this._slider.value) })));
-		this._angleButton = this._register(new Button(row, { ...defaultButtonStyles, secondary: true, small: true, title: localize('paradis.simulator.fold.angleTitle', "角度で開閉する（Option を押している間も出ます）") }));
-		this._angleButton.label = localize('paradis.simulator.fold.angle', "角度");
+		this._angleButton = this._register(new ParadisButton(row, {
+			kind: 'ghost',
+			small: true,
+			label: localize('paradis.simulator.fold.angle', "角度"),
+			title: localize('paradis.simulator.fold.angleTitle', "角度で開閉する（Option を押している間も出ます）"),
+		}));
 		this._register(this._angleButton.onDidClick(() => {
 			this._sliderPinned = !this._sliderPinned;
 			this._render();
@@ -107,8 +111,7 @@ export class ParadisSimulatorFoldBar extends Disposable {
 		this._deviceHub = dom.append(this.element, $('.paradis-simulator-fold-note'));
 		this._deviceHubText = dom.append(this._deviceHub, $('span'));
 		this._deviceHubText.textContent = localize('paradis.simulator.fold.deviceHub', "開閉には Xcode の Device Hub が起動している必要があります。");
-		const start = this._register(new Button(this._deviceHub, { ...defaultButtonStyles, small: true }));
-		start.label = localize('paradis.simulator.fold.startDeviceHub', "Device Hub を起動");
+		const start = this._register(new ParadisButton(this._deviceHub, { kind: 'primary', small: true, label: localize('paradis.simulator.fold.startDeviceHub', "Device Hub を起動") }));
 		this._register(start.onDidClick(() => this._onDidRequestDeviceHub.fire()));
 
 		// Option（Alt）を押している間は角度のスライダーに替える
@@ -139,17 +142,17 @@ export class ParadisSimulatorFoldBar extends Disposable {
 			return;
 		}
 		const showSlider = this._sliderPinned || this._optionHeld;
-		this._poses.style.display = showSlider ? 'none' : '';
+		this._poses.element.style.display = showSlider ? 'none' : '';
 		this._slider.style.display = showSlider ? '' : 'none';
 		this._sliderLabel.style.display = showSlider ? '' : 'none';
 		if (dom.getActiveElement() !== this._slider) {
 			this._slider.value = String(Math.round(state.hingeDegrees));
 			this._sliderLabel.textContent = `${Math.round(state.hingeDegrees)}°`;
 		}
-		for (const [pose, button] of this._poseButtons) {
-			const hinge = PARADIS_SIMULATOR_POSES.find(candidate => candidate.id === pose)!.hingeDegrees;
-			button.enabled = !state.busy;
-			button.element.classList.toggle('checked', Math.abs(state.hingeDegrees - hinge) < 1);
+		// 今の開き具合に合う姿勢を選んでいる状態にする（どれにも合わない角度ならどれも選ばない）
+		this._poses.value = PARADIS_SIMULATOR_POSES.find(pose => Math.abs(state.hingeDegrees - pose.hingeDegrees) < 1)?.id;
+		for (const { id } of PARADIS_SIMULATOR_POSES) {
+			this._poses.setItemEnabled(id, !state.busy);
 		}
 		this._slider.disabled = state.busy;
 		this._status.textContent = state.busy

@@ -1,0 +1,33 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+	The permission rows in the Computer Use status box (the kit's confirmation dialog, paradisConfirmDialog.ts):
+	one row per OS permission with its name, a status chip and, when it is missing, a button that opens System Settings.
+*/
+
+.monaco-workbench .paradis-computer-use-permissions {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size60);
+	margin-top: var(--vscode-spacing-size120);
+}
+
+.monaco-workbench .paradis-computer-use-permission {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) max-content max-content;
+	align-items: center;
+	gap: var(--vscode-spacing-size100);
+	min-height: var(--paradis-height-md);
+}
+
+.monaco-workbench .paradis-computer-use-permission-name {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--vscode-paradis-text);
+}

@@ -16,7 +16,7 @@ import { TestInstantiationService } from '../../../../../platform/instantiation/
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
 import { IParadisLimitsSnapshot } from '../../common/paradisLimitsMonitor.js';
 import { ParadisLimitsMonitorClient } from '../../electron-browser/paradisLimitsMonitorClient.js';
-import { ParadisLimitsMonitorPanel } from '../../electron-browser/paradisLimitsMonitorPanel.js';
+import { ParadisLimitsMonitorPanel, paradisLimitsUpdatedLabel } from '../../electron-browser/paradisLimitsMonitorPanel.js';
 
 // 利用リミットのパネル（Q537 の 37 A・40 A）: 上端の見出しの行に題・時刻・22px のボタン、
 // アカウントの追加はアイコンのボタン、残り時間は日本語の単位。
@@ -26,6 +26,13 @@ const HOUR = 60 * 60_000;
 suite('ParadisLimitsMonitorPanel', () => {
 
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('writes when the values were fetched as just now, minutes or hours (paradis-11-9)', () => {
+		const now = 10 * 24 * HOUR;
+		assert.deepStrictEqual([0, 59_000, 60_000, 59 * 60_000, HOUR, 3 * HOUR + 59 * 60_000, -5_000].map(age => paradisLimitsUpdatedLabel(now - age, now)), [
+			'たった今更新', 'たった今更新', '1分前に更新', '59分前に更新', '1時間前に更新', '3時間前に更新', 'たった今更新',
+		]);
+	});
 
 	test('puts the title, the time and the icon buttons in a header, and writes the time left in Japanese', () => {
 		const root = document.createElement('div');
@@ -73,6 +80,10 @@ suite('ParadisLimitsMonitorPanel', () => {
 			assert.deepStrictEqual({
 				firstChild: panel.firstElementChild?.className,
 				title: header.querySelector('.plm-title')?.textContent,
+				dialogName: document.getElementById(panel.getAttribute('aria-labelledby') ?? '')?.textContent,
+				role: panel.getAttribute('role'),
+				updated: header.querySelector('.plm-updated')?.textContent,
+				meters: [...panel.querySelectorAll('.plm-meter-track')].map(track => [track.getAttribute('role'), track.getAttribute('aria-valuenow'), document.getElementById(track.getAttribute('aria-labelledby') ?? '')?.textContent]),
 				headerButtons: [...header.querySelectorAll('button.plm-icon-btn')].map(button => button.getAttribute('aria-label')),
 				footer: !!panel.querySelector('.plm-footer'),
 				addButtons: [...panel.querySelectorAll('.plm-provider-header button.plm-add-btn')].map(button => button.getAttribute('aria-label')),
@@ -83,6 +94,10 @@ suite('ParadisLimitsMonitorPanel', () => {
 			}, {
 				firstChild: 'plm-header',
 				title: 'AI 利用リミット',
+				dialogName: 'AI 利用リミット',
+				role: 'dialog',
+				updated: 'たった今更新',
+				meters: [['meter', '42', '5時間'], ['meter', '31', '7日']],
 				headerButtons: ['更新', 'メールを番号に'],
 				footer: false,
 				addButtons: ['Claude のアカウントを追加', 'Codex のアカウントを追加'],
