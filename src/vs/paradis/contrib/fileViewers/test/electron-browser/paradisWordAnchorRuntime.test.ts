@@ -23,6 +23,7 @@ interface Anchors {
 	reveal(root: Element, message: { readonly marker?: string; readonly context: string; readonly focus: string; readonly matchCase: boolean }): boolean;
 	setMarks(root: Element, entries: unknown[], labels: { readonly title: string; readonly close: string }, mode: string): void;
 	setComments(root: Element, content: Element, entries: unknown[]): void;
+	openMark(id: number, notFound: string): boolean;
 	closePopover(): void;
 }
 
@@ -179,6 +180,47 @@ suite('ParadisWordAnchorRuntime', () => {
 				icon: true,
 				focusReturned: true,
 				closed: true,
+			});
+		} finally {
+			runtime.anchors.closePopover();
+			runtime.dispose();
+		}
+	});
+
+	test('closes the popover when the document scrolls or the wheel turns, and opens a listed mark with the focus on its close button', () => {
+		const runtime = loadRuntime();
+		try {
+			const document = runtime.document;
+			const MouseEventCtor = (document.defaultView as Window & typeof globalThis).MouseEvent;
+			const scroller = element(document, 'div', { id: 'scroller' }, element(document, 'section', {}, element(document, 'p', { 'data-paradis-p': 'b#0' }, 'Total 15')));
+			document.body.appendChild(scroller);
+			runtime.anchors.setMarks(scroller, [{ marker: 'b#0', marks: [{ id: 4, kind: 'field', start: 0, end: 5, rows: [['kind', 'field']] }] }], { title: 'Info', close: 'Close' }, 'final');
+			const paragraph = scroller.querySelector('p')!;
+			const clickMark = () => {
+				const range = document.createRange();
+				range.setStart(paragraph.firstChild!, 0);
+				range.setEnd(paragraph.firstChild!, 5);
+				const rect = range.getBoundingClientRect();
+				paragraph.dispatchEvent(new MouseEventCtor('click', { bubbles: true, clientX: rect.left + 1, clientY: rect.top + rect.height / 2 }));
+			};
+			const isOpen = () => document.querySelector('.paradis-word-popover') !== null;
+
+			clickMark();
+			const openedByClick = isOpen();
+			document.querySelector('.paradis-word-popover')!.dispatchEvent(new (document.defaultView as Window & typeof globalThis).WheelEvent('wheel', { bubbles: true }));
+			const keptByWheelInside = isOpen();
+			scroller.dispatchEvent(new (document.defaultView as Window & typeof globalThis).Event('scroll'));
+			const closedByScroll = !isOpen();
+			clickMark();
+			paragraph.dispatchEvent(new (document.defaultView as Window & typeof globalThis).WheelEvent('wheel', { bubbles: true }));
+			const closedByWheel = !isOpen();
+
+			const opened = runtime.anchors.openMark(4, 'Not found');
+			const focused = document.activeElement?.classList.contains('paradis-word-popover-close');
+			const missing = runtime.anchors.openMark(9, 'Not found');
+
+			deepStrictEqual({ openedByClick, keptByWheelInside, closedByScroll, closedByWheel, opened, focused, missing, message: document.getElementById('paradis-word-reveal-message')?.textContent }, {
+				openedByClick: true, keptByWheelInside: true, closedByScroll: true, closedByWheel: true, opened: true, focused: true, missing: false, message: 'Not found',
 			});
 		} finally {
 			runtime.anchors.closePopover();
