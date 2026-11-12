@@ -10,7 +10,9 @@
 //
 // 引き継ぎは Orca の「別の Agent に引き継ぐ」（agent-session-continuation）と同じ考え方で、元の会話は読むだけの
 // 参考として渡し、新しいエージェントには今のリポジトリを正として続けてもらう。会話の中身ではなく記録のパスを渡すのを
-// 優先する（中身には秘密が載りうるため）。パスを受け取る側で読めないときだけ、画面の末尾を上限付きで入れる。
+// 優先する（中身には秘密が載りうるため）。パスを受け取る側で読めないときだけ、画面の末尾を秘密の形を伏せたうえで上限付きで入れる。
+
+import { paradisRedactTextSecrets } from '../../../common/paradisSecretRedaction.js';
 
 /** 依頼文に入れる画面の末尾の上限（文字数）。依頼文の全体の上限（4 万字）の内に収める。 */
 export const PARADIS_HANDOFF_CAPTURE_MAX_CHARS = 20_000;
@@ -58,9 +60,12 @@ function fenceFor(value: string): string {
 	return '`'.repeat(Math.max(3, longest + 1));
 }
 
-/** 画面の末尾を上限に収める（前を落とす）。 */
+/**
+ * 画面の末尾の秘密の形を伏せ、上限に収める（前を落とす）。伏せるのは切る前にする。先に切ると PEM の鍵の
+ * BEGIN の行だけが落ちて、鍵の本文の行が伏せられずに残る。
+ */
 export function paradisBoundHandoffCapture(text: string, maxChars = PARADIS_HANDOFF_CAPTURE_MAX_CHARS): string {
-	const trimmed = text.trim();
+	const trimmed = paradisRedactTextSecrets(text).trim();
 	if (trimmed.length <= maxChars) {
 		return trimmed;
 	}
