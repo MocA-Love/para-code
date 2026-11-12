@@ -17,6 +17,7 @@ import { IContextMenuProvider } from '../../../../base/browser/contextmenu.js';
 import { Button } from '../../../../base/browser/ui/button/button.js';
 import { IAction, Separator, toAction } from '../../../../base/common/actions.js';
 import { Codicon } from '../../../../base/common/codicons.js';
+import { IntervalTimer } from '../../../../base/common/async.js';
 import { fromNow } from '../../../../base/common/date.js';
 import { Event } from '../../../../base/common/event.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
@@ -40,6 +41,16 @@ export interface IParadisResumeBannerHost {
 }
 
 const $ = dom.$;
+
+/** 帯の 2 行目の「〜分前」を描き直す間隔。帯が出ている間だけ回す。 */
+const DETAIL_REFRESH_INTERVAL = 60 * 1000;
+
+/** `text()` で 2 行目を書き、帯が出ている間は 1 分ごとに書き直す（相対時刻がずれないように）。 */
+function renderRelativeDetail(store: DisposableStore, targetWindow: Window & typeof globalThis, detail: HTMLElement, text: () => string): void {
+	detail.textContent = text();
+	const timer = store.add(new IntervalTimer());
+	timer.cancelAndSet(() => { detail.textContent = text(); }, DETAIL_REFRESH_INTERVAL, targetWindow);
+}
 
 /**
  * エディタタブのターミナル1つ分のバナー。タブを切り替えるたびに対象が差し替わる。
@@ -77,10 +88,12 @@ export function createParadisTerminalResumeBanner(container: HTMLElement, host: 
 		store.add(dom.addDisposableListener(close, dom.EventType.CLICK, () => host.dismiss(target)));
 
 		const detail = dom.append(element, $('.paradis-terminal-resume-banner-detail'));
-		const when = fromNow(offer.at, true);
-		detail.textContent = offer.title !== undefined
-			? localize('paradis.resumeBanner.detail', "{0} ・ {1}", offer.title, when)
-			: when;
+		renderRelativeDetail(store, dom.getWindow(container), detail, () => {
+			const when = fromNow(offer.at, true);
+			return offer.title !== undefined
+				? localize('paradis.resumeBanner.detail', "{0} ・ {1}", offer.title, when)
+				: when;
+		});
 		detail.title = offer.title ?? '';
 
 		const actions = dom.append(element, $('.paradis-terminal-resume-banner-actions'));
@@ -160,11 +173,13 @@ export function createParadisTerminalResumeBanner(container: HTMLElement, host: 
 		store.add(dom.addDisposableListener(close, dom.EventType.CLICK, () => host.dismiss(target)));
 
 		const agentName = offer.agent === 'claude' ? 'Claude Code' : offer.agent === 'codex' ? 'Codex' : 'OpenCode';
-		const finished = localize('paradis.resumeBanner.hibernatedFinished', "{0}に完了", fromNow(hibernation.completedAt, true));
 		const detail = dom.append(element, $('.paradis-terminal-resume-banner-detail'));
-		detail.textContent = offer.title !== undefined
-			? localize('paradis.resumeBanner.hibernatedDetailWithTitle', "{0} ・ {1} ・ {2}", agentName, offer.title, finished)
-			: localize('paradis.resumeBanner.hibernatedDetail', "{0} ・ {1}", agentName, finished);
+		renderRelativeDetail(store, dom.getWindow(container), detail, () => {
+			const finished = localize('paradis.resumeBanner.hibernatedFinished', "{0}に完了", fromNow(hibernation.completedAt, true));
+			return offer.title !== undefined
+				? localize('paradis.resumeBanner.hibernatedDetailWithTitle', "{0} ・ {1} ・ {2}", agentName, offer.title, finished)
+				: localize('paradis.resumeBanner.hibernatedDetail', "{0} ・ {1}", agentName, finished);
+		});
 		detail.title = offer.title ?? '';
 
 		const actions = dom.append(element, $('.paradis-terminal-resume-banner-actions'));

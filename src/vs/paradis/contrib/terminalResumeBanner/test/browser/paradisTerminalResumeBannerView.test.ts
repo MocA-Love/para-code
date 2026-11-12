@@ -9,7 +9,10 @@
 import assert from 'assert';
 import { IContextMenuDelegate, IContextMenuProvider } from '../../../../../base/browser/contextmenu.js';
 import { Separator } from '../../../../../base/common/actions.js';
+import { timeout } from '../../../../../base/common/async.js';
+import { fromNow } from '../../../../../base/common/date.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
+import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { createParadisTerminalResumeBanner, IParadisResumeBannerHost } from '../../browser/paradisTerminalResumeBannerView.js';
 import { ParadisResumeAgent } from '../../../sessionResume/common/paradisSessionResume.js';
@@ -136,4 +139,28 @@ suite('paradisTerminalResumeBannerView', () => {
 			onDidChange.dispose();
 		}
 	});
+
+	// 帯の 2 行目の「〜分前」は、帯が出ている間 1 分ごとに描き直す（出した時点の値のまま残さない）
+	test('redraws the relative time of the second line every minute while the banner is shown', () => runWithFakedTimers({ startTime: 1_700_000_000_000 }, async () => {
+		const at = Date.now() - 3 * 60 * 1000;
+		const host: IParadisResumeBannerHost = {
+			onDidChange: Event.None,
+			getOffer: () => ({ agent: 'claude', sessionId: 'session-1', at }),
+			resume() { }, fork() { }, copySessionId() { }, dismiss() { },
+		};
+		const container = document.createElement('div');
+		const banner = createParadisTerminalResumeBanner(container, host, new RecordingMenu());
+		const detail = () => container.querySelector('.paradis-terminal-resume-banner-detail')?.textContent;
+		try {
+			banner.setInstance(1);
+			const drawn = [detail()];
+			const expected = [fromNow(at, true)];
+			await timeout(10 * 60 * 1000 + 1000);
+			drawn.push(detail());
+			expected.push(fromNow(at, true));
+			assert.deepStrictEqual({ drawn, changed: expected[0] !== expected[1] }, { drawn: expected, changed: true });
+		} finally {
+			banner.dispose();
+		}
+	}));
 });

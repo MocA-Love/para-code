@@ -54,7 +54,7 @@ const ICONS: ReadonlyMap<string, IParadisMenuIcon> = new Map<string, IParadisMen
 	[TerminalCommandId.KillEditor, { icon: Codicon.trash, danger: true }],
 	[TerminalCommandId.KillViewOrEditor, { icon: Codicon.trash, danger: true }],
 	// editor tab
-	[CLOSE_EDITOR_COMMAND_ID, { icon: Codicon.close, danger: true }],
+	[CLOSE_EDITOR_COMMAND_ID, { icon: Codicon.close }],
 	[CLOSE_OTHER_EDITORS_IN_GROUP_COMMAND_ID, { icon: Codicon.closeAll }],
 	[CLOSE_EDITORS_TO_THE_RIGHT_COMMAND_ID, { icon: Codicon.closeAll }],
 	[CLOSE_SAVED_EDITORS_COMMAND_ID, { icon: Codicon.closeAll }],

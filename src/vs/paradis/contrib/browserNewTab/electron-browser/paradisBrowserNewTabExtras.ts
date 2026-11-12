@@ -16,6 +16,7 @@
 //  - よく開くページとブックマークのタイル
 
 import * as dom from '../../../../base/browser/dom.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { isMacintosh } from '../../../../base/common/platform.js';
@@ -24,6 +25,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
@@ -67,6 +69,7 @@ export class ParadisBrowserNewTabExtras extends Disposable {
 		@IStorageService private readonly _storageService: IStorageService,
 		@ICommandService private readonly _commandService: ICommandService,
 		@IParadisBookmarksService private readonly _bookmarksService: IParadisBookmarksService,
+		@IHoverService private readonly _hoverService: IHoverService,
 	) {
 		super();
 		this._register(this._bookmarksService.onDidChange(() => this._onDidChange()));
@@ -120,7 +123,7 @@ export class ParadisBrowserNewTabExtras extends Disposable {
 		// allow-any-unicode-next-line
 		const settings = this._button(card, localize('paradis.browserNewTab.importSettings', "ブラウザの設定"), false);
 		store.add(dom.addDisposableListener(settings, dom.EventType.CLICK, () => void this._commandService.executeCommand(PARADIS_OPEN_SETTINGS_DIALOG_COMMAND_ID, 'psd-sec-browser')));
-		const hide = dom.append(card, $('button.pbnt-icon-button')) as HTMLButtonElement;
+		const hide = dom.append(card, $('button.pbnt-icon-button.paradis-focus-ring')) as HTMLButtonElement;
 		hide.type = 'button';
 		// allow-any-unicode-next-line
 		hide.title = localize('paradis.browserNewTab.importHide', "この案内を出さない");
@@ -131,6 +134,11 @@ export class ParadisBrowserNewTabExtras extends Disposable {
 			this._importBrowsers = [];
 			this._onDidChange();
 		}));
+	}
+
+	/** 本家のホバーを付ける（テーマの色と workbench.hover.delay の遅延になる）。描き直すたびに作るので、その回の store に登録する。 */
+	setHover(element: HTMLElement, content: string, store: DisposableStore): void {
+		store.add(this._hoverService.setupManagedHover(getDefaultHoverDelegate('element'), element, content));
 	}
 
 	private _button(parent: HTMLElement, label: string, primary: boolean): HTMLButtonElement {
@@ -179,10 +187,10 @@ export class ParadisBrowserNewTabExtras extends Disposable {
 	}
 
 	renderPullRequestRow(list: HTMLElement, detail: IParadisPullRequestDetail, open: ParadisNewTabOpen, store: DisposableStore): void {
-		const row = dom.append(list, $('button.pbnt-row')) as HTMLButtonElement;
+		const row = dom.append(list, $('button.pbnt-row.paradis-focus-subtle')) as HTMLButtonElement;
 		row.type = 'button';
 		this._markFocus(row, `pr:${detail.url}`);
-		row.title = detail.url;
+		this.setHover(row, detail.url, store);
 		const icon = dom.append(row, $('span.pbnt-icon'));
 		icon.appendChild($(`span${ThemeIcon.asCSSSelector(detail.state === 'merged' ? Codicon.gitMerge : Codicon.gitPullRequest)}`));
 		const main = dom.append(row, $('span.pbnt-main'));
@@ -214,7 +222,7 @@ export class ParadisBrowserNewTabExtras extends Disposable {
 			const button = dom.append(grid, $('button.pbnt-tile.paradis-focus-ring-inset')) as HTMLButtonElement;
 			button.type = 'button';
 			this._markFocus(button, `tile:${caption}:${tile.url}`);
-			button.title = `${tile.title}\n${tile.url}`;
+			this.setHover(button, `${tile.title}\n${tile.url}`, store);
 			const icon = dom.append(button, $('span.pbnt-tile-icon'));
 			const favicon = iconOf(tile.iconKey);
 			if (favicon) {

@@ -13,6 +13,7 @@ import {
 	paradisMatchLauncherAgents,
 	paradisNormalizeLaunchChoice,
 	paradisParseStoredLaunchChoices,
+	paradisPointerHeadsToSide,
 	paradisRestoreLaunchChoice,
 	paradisStoreLaunchChoice,
 	ParadisTabLauncherDeviceCache,
@@ -161,5 +162,25 @@ suite('paradisTabLauncher', () => {
 		const load = async () => ++loads;
 		const values = [await cache.get(load, 0), await cache.get(load, 29_999), await cache.get(load, 30_000), await cache.get(load, 30_001)];
 		assert.deepStrictEqual({ values, loads }, { values: [1, 1, 2, 2], loads: 2 });
+	});
+
+	test('tells whether the pointer is heading to the submenu on its left or right', () => {
+		// 一覧の左に開いたサブメニュー（x 0〜200、y 100〜300）。ポインタは一覧の中の x 260, y 120 から動く
+		const left = { left: 0, right: 200, top: 100, bottom: 300 };
+		const right = { left: 400, right: 600, top: 100, bottom: 300 };
+		const origin = { x: 260, y: 120 };
+		assert.deepStrictEqual({
+			towardLeftSide: paradisPointerHeadsToSide(origin, { x: 230, y: 160 }, left),
+			straightDownOnLeft: paradisPointerHeadsToSide(origin, { x: 262, y: 200 }, left),
+			awayFromLeft: paradisPointerHeadsToSide(origin, { x: 300, y: 130 }, left),
+			towardRightSide: paradisPointerHeadsToSide(origin, { x: 350, y: 200 }, right),
+			awayFromRight: paradisPointerHeadsToSide(origin, { x: 240, y: 150 }, right),
+		}, {
+			towardLeftSide: true,
+			straightDownOnLeft: false,
+			awayFromLeft: false,
+			towardRightSide: true,
+			awayFromRight: false,
+		});
 	});
 });

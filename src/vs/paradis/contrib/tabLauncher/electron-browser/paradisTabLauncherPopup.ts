@@ -26,6 +26,7 @@
 import * as dom from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { IAction, Separator, SubmenuAction, toAction } from '../../../../base/common/actions.js';
+import { TimeoutTimer } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
@@ -66,6 +67,7 @@ import {
 	paradisMatchLauncherAgents,
 	paradisNormalizeLaunchChoice,
 	paradisParseStoredLaunchChoices,
+	paradisPointerHeadsToSide,
 	paradisRestoreLaunchChoice,
 	paradisStoreLaunchChoice,
 	IParadisTabLauncherDevice,
@@ -90,6 +92,16 @@ const OPEN_EDITOR_RESULT_LIMIT = 4;
  * 指示を空のまま起動したときは利用者が最初の文を打つまで待つ。
  */
 const CHAT_OPEN_TIMEOUT_MS = 10 * 60 * 1000;
+/** サブメニューを乗せて開くまでの時間（paradis-20-U1 の案 B）。 */
+const SUBMENU_OPEN_DELAY_MS = 150;
+/** ポインタが止まった・サブメニューへ向かっていないときに、開いているサブメニューを閉じる（切り替える）までの時間。 */
+const SUBMENU_SWITCH_DELAY_MS = 300;
+/** 最後に動いてからこの時間を過ぎたら、ポインタは止まったとみなす。 */
+const POINTER_STILL_MS = 120;
+/** 向かっている間に判定し直す間隔。 */
+const POINTER_RECHECK_MS = 100;
+/** 三角形の起点に使う、覚えておくポインタの位置の数（いちばん古い位置を起点にする）。 */
+const POINTER_SAMPLES = 4;
 /** Para Code の設定の「エージェント」の節。 */
 const SETTINGS_AGENT_SECTION_ID = 'psd-sec-agent';
 
@@ -112,6 +124,7 @@ const STR_FIND_FILE = localize('paradis.tabLauncher.findFile', "ファイルを�
 const STR_NO_RESULTS = localize('paradis.tabLauncher.noResults', "見つかりません");
 const STR_DEFAULT = localize('paradis.tabLauncher.default', "既定");
 const STR_MODEL_SEARCH = localize('paradis.tabLauncher.modelSearch', "モデルを探す…");
+const STR_MODELS = localize('paradis.tabLauncher.models', "モデル");
 const STR_EFFORT = localize('paradis.tabLauncher.effort', "エフォート");
 const STR_EFFORT_UNSUPPORTED = localize('paradis.tabLauncher.effortUnsupported', "このモデルは対応していません");
 const STR_PERMISSION = localize('paradis.tabLauncher.permission', "権限");
@@ -156,6 +169,8 @@ interface IParadisLauncherRowOptions {
 	readonly checked?: boolean;
 	/** マウスを乗せると横の面を開く（サブメニュー）。 */
 	readonly hoverOpens?: boolean;
+	/** 横の面の種類（読み上げの aria-haspopup）。サブメニューは menu、起動パネルは dialog。既定は menu。 */
+	readonly popup?: 'menu' | 'dialog';
 }
 
 /** 開いている横の面（サブメニューか起動パネル）。level 1 が一覧のすぐ横。 */
@@ -181,6 +196,11 @@ export class ParadisTabLauncherPopup extends Disposable {
 	private sideToLeft = true;
 	private readonly choices = new Map<string, IParadisTabLauncherChoice>();
 	private hidden = false;
+	/** サブメニューを乗せて開く・閉じる（切り替える）までの待ち。 */
+	private readonly openTimer = this._register(new TimeoutTimer());
+	private readonly closeTimer = this._register(new TimeoutTimer());
+	/** 直近のポインタの位置と時刻（サブメニューへ向かっているかの判定に使う）。 */
+	private readonly pointer: { readonly x: number; readonly y: number; readonly at: number }[] = [];
 
 	constructor(
 		private readonly host: IParadisTabLauncherHost,
@@ -294,10 +314,26 @@ export class ParadisTabLauncherPopup extends Disposable {
 
 	private registerCloseListeners(): void {
 		// Esc はキャプチャで拾う（フォーカスが xterm に残っていても先にシェルへ渡さない。プリセットのポップアップと同じ）
+		// 横の面の中にフォーカスがあれば、その面だけ閉じて持ち主の行へ戻る（起動パネルで書きかけた指示を Esc 1 回で消さない）
 		this._register(dom.addDisposableListener(this.window, 'keydown', e => {
 			if (e.key === 'Escape' && !e.isComposing) {
 				dom.EventHelper.stop(e, true);
-				this.hide(true);
+				const active = this.window.document.activeElement;
+				const index = active ? this.sides.findIndex(side => side.element.contains(active)) : -1;
+				if (index >= 0) {
+					const ownerRow = this.sides[index].ownerRow;
+					this.closeSides(index + 1);
+					ownerRow.focus();
+				} else {
+					this.hide(true);
+				}
+			}
+		}, true));
+		this._register(dom.addDisposableListener(this.list, 'focusout', e => this.onFocusOut(e)));
+		this._register(dom.addDisposableListener(this.window.document, 'mousemove', e => {
+			this.pointer.push({ x: e.clientX, y: e.clientY, at: Date.now() });
+			if (this.pointer.length > POINTER_SAMPLES) {
+				this.pointer.shift();
 			}
 		}, true));
 		this._register(dom.scheduleAtNextAnimationFrame(this.window, () => {
@@ -306,7 +342,7 @@ export class ParadisTabLauncherPopup extends Disposable {
 			}
 			this._register(dom.addDisposableListener(this.window.document, 'mousedown', e => {
 				const target = e.target as Node | null;
-				if (!target || this.host.anchor.contains(target) || this.list.contains(target) || this.sides.some(side => side.element.contains(target))) {
+				if (!target || this.contains(target)) {
 					return;
 				}
 				this.hide(false);
@@ -314,6 +350,75 @@ export class ParadisTabLauncherPopup extends Disposable {
 		}));
 		this._register(dom.addDisposableListener(this.window, 'resize', () => this.hide(false)));
 		this._register(dom.addDisposableListener(this.window, 'blur', () => this.hide(false)));
+	}
+
+	/** Tab などでフォーカスがランチャーの外へ出たら閉じて ⌄ へ戻す。描き直しで要素が消えたとき（relatedTarget が無い）は閉じない。 */
+	private onFocusOut(e: FocusEvent): void {
+		const next = e.relatedTarget;
+		if (dom.isHTMLElement(next) && !this.contains(next)) {
+			this.hide(true);
+		}
+	}
+
+	/** ⌄・一覧・横の面のどれかの中か。 */
+	private contains(node: Node): boolean {
+		return this.host.anchor.contains(node) || this.list.contains(node) || this.sides.some(side => side.element.contains(node));
+	}
+
+	/** ポインタが横の面（開いているサブメニュー）へ向かっているか。 */
+	private pointerHeadsToSide(side: IParadisLauncherSide): boolean {
+		if (this.pointer.length < 2) {
+			return false;
+		}
+		return paradisPointerHeadsToSide(this.pointer[0], this.pointer[this.pointer.length - 1], side.element.getBoundingClientRect());
+	}
+
+	/** サブメニューを開く行に乗ったとき。150ms 後に開く。別のサブメニューへ向かっている途中なら、止まるまで待つ。 */
+	private scheduleHoverOpen(rows: readonly IParadisLauncherRow[], row: IParadisLauncherRow): void {
+		const open = () => {
+			if (!this.hidden) {
+				this.closeTimer.cancel();
+				row.openSide?.();
+			}
+		};
+		const side = this.sides[this.levelOfRows(rows)];
+		if (side && side.ownerRow !== row.element && this.pointerHeadsToSide(side)) {
+			this.openTimer.cancelAndSet(() => {
+				if (!this.pointerHeadsToSide(side)) {
+					open();
+				} else {
+					this.openTimer.cancelAndSet(open, SUBMENU_SWITCH_DELAY_MS);
+				}
+			}, SUBMENU_SWITCH_DELAY_MS);
+			return;
+		}
+		this.openTimer.cancelAndSet(open, SUBMENU_OPEN_DELAY_MS);
+	}
+
+	/** サブメニューを開かない行に乗ったとき。サブメニューへ向かっている間は閉じず、止まったら 300ms で閉じる。 */
+	private scheduleHoverClose(rows: readonly IParadisLauncherRow[]): void {
+		const level = this.levelOfRows(rows);
+		const side = level >= 0 ? this.sides[level] : undefined;
+		// 起動パネルは、パネルへ動かす途中で閉じないよう残す
+		if (!side || !side.element.classList.contains('paradis-tab-launcher-submenu')) {
+			return;
+		}
+		const check = () => {
+			if (this.hidden || this.sides[level] !== side || side.element.matches(':hover')) {
+				return;
+			}
+			const last = this.pointer[this.pointer.length - 1];
+			if (this.pointerHeadsToSide(side) && last && Date.now() - last.at < POINTER_STILL_MS) {
+				this.closeTimer.cancelAndSet(check, POINTER_RECHECK_MS);
+			} else {
+				this.closeTimer.cancelAndSet(() => {
+					if (!this.hidden && this.sides[level] === side && !side.element.matches(':hover')) {
+						this.closeSides(level + 1);
+					}
+				}, SUBMENU_SWITCH_DELAY_MS);
+			}
+		};
+		check();
 	}
 
 	// ---- 左の一覧 ----------------------------------------------------------------------------
@@ -402,7 +507,7 @@ export class ParadisTabLauncherPopup extends Disposable {
 				this.choices.set(agent.id, paradisNormalizeLaunchChoice(agent, { ...this.choiceFor(agent), modelId: match.modelId, effortId: match.effortId }));
 				this.openAgentSide(row, agent);
 			};
-			this.addRow(this.rowsElement, this.rows, { agentLogo: this.logoFor(agent.id), icon: Codicon.robot, label: agent.label, description, hasSide: true }, undefined, open);
+			this.addRow(this.rowsElement, this.rows, { agentLogo: this.logoFor(agent.id), icon: Codicon.robot, label: agent.label, description, hasSide: true, popup: 'dialog' }, undefined, open);
 		}
 		const quickOpen = this.keybindingService.lookupKeybinding('workbench.action.quickOpen')?.getLabel();
 		if (this.rows.length > 0) {
@@ -415,7 +520,7 @@ export class ParadisTabLauncherPopup extends Disposable {
 	}
 
 	private addAgentRow(agent: IParadisAgentCommandTemplate): void {
-		this.addRow(this.rowsElement, this.rows, { agentLogo: this.logoFor(agent.id), icon: Codicon.robot, label: agent.label, description: this.describeChoice(agent), hasSide: true }, undefined, row => this.openAgentSide(row, agent));
+		this.addRow(this.rowsElement, this.rows, { agentLogo: this.logoFor(agent.id), icon: Codicon.robot, label: agent.label, description: this.describeChoice(agent), hasSide: true, popup: 'dialog' }, undefined, row => this.openAgentSide(row, agent));
 	}
 
 	/**
@@ -447,7 +552,7 @@ export class ParadisTabLauncherPopup extends Disposable {
 		}
 		let sideButton: HTMLElement | undefined;
 		if (options.hasSide) {
-			element.setAttribute('aria-haspopup', 'true');
+			element.setAttribute('aria-haspopup', options.popup ?? 'menu');
 			sideButton = dom.append(element, $('span.paradis-tab-launcher-chevron'));
 			sideButton.classList.add(...ThemeIcon.asClassNameArray(Codicon.chevronRight));
 		}
@@ -469,17 +574,15 @@ export class ParadisTabLauncherPopup extends Disposable {
 				row.openSide?.();
 			}
 		}));
-		// サブメニューはマウスを乗せただけでも開く（「新しいターミナル」は › の上だけ）。起動パネルは押したときだけ開く（Q570 の 4）
+		// サブメニューはマウスを乗せただけでも開く（「新しいターミナル」は › の上だけ）。起動パネルは押したときだけ開く（Q570 の 4）。
+		// 通り過ぎただけで開いたり閉じたりしないよう、どちらも少し待つ（paradis-20-U1 の案 B）
 		if (openSide && options.hoverOpens) {
-			this.renderStore.add(dom.addDisposableListener(run ? sideButton! : element, 'mouseenter', () => row.openSide?.()));
+			const target = run ? sideButton! : element;
+			this.renderStore.add(dom.addDisposableListener(target, 'mouseenter', () => this.scheduleHoverOpen(rows, row)));
+			this.renderStore.add(dom.addDisposableListener(target, 'mouseleave', () => this.openTimer.cancel()));
 		} else {
-			// 別の行へマウスが移ったら、開いていたサブメニューは閉じる（起動パネルは、パネルへ動かす途中で閉じないよう残す）
-			this.renderStore.add(dom.addDisposableListener(element, 'mouseenter', () => {
-				const level = this.levelOfRows(rows);
-				if (level >= 0 && this.sides[level]?.element.classList.contains('paradis-tab-launcher-submenu')) {
-					this.closeSides(level + 1);
-				}
-			}));
+			// 別の行へマウスが移ったら、開いていたサブメニューは閉じる
+			this.renderStore.add(dom.addDisposableListener(element, 'mouseenter', () => this.scheduleHoverClose(rows)));
 		}
 		return row;
 	}
@@ -494,6 +597,12 @@ export class ParadisTabLauncherPopup extends Disposable {
 	private onListKeyDown(e: KeyboardEvent): void {
 		const event = new StandardKeyboardEvent(e);
 		if (e.isComposing) {
+			return;
+		}
+		if (event.equals(KeyCode.Tab) || event.equals(KeyMod.Shift | KeyCode.Tab)) {
+			// 一覧の行は Tab で止まらないので、Tab はランチャーの外へ出る操作。閉じて ⌄ へ戻す
+			dom.EventHelper.stop(e, true);
+			this.hide(true);
 			return;
 		}
 		const inSearch = e.target === this.searchInput;
@@ -572,7 +681,8 @@ export class ParadisTabLauncherPopup extends Disposable {
 		}
 	}
 
-	private openSide(level: number, ownerRow: HTMLElement, className: string, build: (element: HTMLElement, store: DisposableStore) => IParadisLauncherRow[]): void {
+	/** `dialogLabel` を渡すと起動パネル（role="dialog"）、渡さなければサブメニュー（role="menu"）として開く。 */
+	private openSide(level: number, ownerRow: HTMLElement, className: string, build: (element: HTMLElement, store: DisposableStore) => IParadisLauncherRow[], dialogLabel?: string): void {
 		if (this.sides[level - 1]?.ownerRow === ownerRow) {
 			this.closeSides(level + 1);
 			return;
@@ -580,7 +690,10 @@ export class ParadisTabLauncherPopup extends Disposable {
 		this.closeSides(level);
 		const container = this.list.parentElement ?? this.window.document.body;
 		const element = dom.append(container, $(`.paradis-tab-launcher-side.paradis-overlay-popover.${className}`));
-		element.setAttribute('role', 'menu');
+		element.setAttribute('role', dialogLabel !== undefined ? 'dialog' : 'menu');
+		if (dialogLabel !== undefined) {
+			element.setAttribute('aria-label', dialogLabel);
+		}
 		const store = new DisposableStore();
 		const side: IParadisLauncherSide = { element, store, ownerRow, rows: [] };
 		this.sides.push(side);
@@ -588,6 +701,8 @@ export class ParadisTabLauncherPopup extends Disposable {
 		ownerRow.setAttribute('aria-expanded', 'true');
 		side.rows = build(element, store);
 		this.positionSide(level, element, ownerRow);
+		store.add(dom.addDisposableListener(element, 'mouseenter', () => this.closeTimer.cancel()));
+		store.add(dom.addDisposableListener(element, 'focusout', e => this.onFocusOut(e)));
 		store.add(dom.addDisposableListener(element, 'keydown', e => {
 			if (e.isComposing) {
 				return;
@@ -598,6 +713,12 @@ export class ParadisTabLauncherPopup extends Disposable {
 				ownerRow.focus();
 			};
 			if (side.rows.some(row => row.element === e.target)) {
+				if (event.equals(KeyCode.Tab) || event.equals(KeyMod.Shift | KeyCode.Tab)) {
+					// サブメニューの行も Tab で止まらない。一覧と同じく閉じて ⌄ へ戻す
+					dom.EventHelper.stop(e, true);
+					this.hide(true);
+					return;
+				}
 				this.onRowsKeyDown(e, event, side.rows, undefined, back);
 			}
 		}));
@@ -725,7 +846,7 @@ export class ParadisTabLauncherPopup extends Disposable {
 				side.firstFocus = firstFocus;
 			}
 			return [];
-		});
+		}, agent.label);
 	}
 
 	/** 起動パネルを組み立て、開いたときにフォーカスを移す入力欄を返す。 */
@@ -811,6 +932,7 @@ export class ParadisTabLauncherPopup extends Disposable {
 			}));
 			element.appendChild(modelList);
 			modelList.setAttribute('role', 'listbox');
+			modelList.setAttribute('aria-label', STR_MODELS);
 		}
 
 		const options = dom.append(element, $('.paradis-tab-launcher-options'));
@@ -821,8 +943,10 @@ export class ParadisTabLauncherPopup extends Disposable {
 		const effortValues = dom.append(effortRow, $('.paradis-tab-launcher-segments'));
 		effortValues.setAttribute('role', 'radiogroup');
 		effortValues.setAttribute('aria-label', STR_EFFORT);
+		let effortButtons: HTMLElement[] = [];
 		const renderEfforts = () => {
 			dom.clearNode(effortValues);
+			effortButtons = [];
 			const choice = this.choiceFor(agent);
 			const efforts = paradisTabLauncherEfforts(agent, choice.modelId);
 			effortRow.classList.toggle('hidden', !efforts.shown);
@@ -836,6 +960,7 @@ export class ParadisTabLauncherPopup extends Disposable {
 			const values: (string | undefined)[] = [undefined, ...efforts.ids];
 			for (const value of values) {
 				const button = dom.append(effortValues, $('button.paradis-tab-launcher-segment.paradis-focus-ring-inset')) as HTMLButtonElement;
+				effortButtons.push(button);
 				button.type = 'button';
 				button.setAttribute('role', 'radio');
 				button.textContent = value ?? (efforts.defaultEffort ? STR_DEFAULT_WITH(efforts.defaultEffort) : STR_DEFAULT);
@@ -844,7 +969,12 @@ export class ParadisTabLauncherPopup extends Disposable {
 				button.setAttribute('aria-checked', String(isSelected));
 				button.addEventListener('click', () => update({ effortId: value }));
 			}
+			this.setRadioTabStops(effortButtons);
 		};
+		this.bindRadioKeys(effortValues, store, () => effortButtons, index => {
+			const values = [undefined, ...paradisTabLauncherEfforts(agent, this.choiceFor(agent).modelId).ids];
+			update({ effortId: values[index] });
+		});
 
 		// 権限
 		const permissions = agent.permissions ?? [];
@@ -855,11 +985,15 @@ export class ParadisTabLauncherPopup extends Disposable {
 		permissionValues.setAttribute('aria-label', STR_PERMISSION);
 		const permissionHint = dom.append(options, $('.paradis-tab-launcher-hint'));
 		permissionRow.classList.toggle('hidden', permissions.length === 0);
+		this.bindRadioKeys(permissionValues, store, () => permissionButtons, index => update({ permissionId: permissions[index]?.id }));
+		let permissionButtons: HTMLElement[] = [];
 		const renderPermissions = () => {
 			dom.clearNode(permissionValues);
+			permissionButtons = [];
 			const selectedId = this.choiceFor(agent).permissionId;
 			for (const permission of permissions) {
 				const button = dom.append(permissionValues, $('button.paradis-tab-launcher-segment.paradis-focus-ring-inset')) as HTMLButtonElement;
+				permissionButtons.push(button);
 				button.type = 'button';
 				button.setAttribute('role', 'radio');
 				button.textContent = permission.label;
@@ -869,6 +1003,7 @@ export class ParadisTabLauncherPopup extends Disposable {
 				button.setAttribute('aria-checked', String(isSelected));
 				button.addEventListener('click', () => update({ permissionId: permission.id }));
 			}
+			this.setRadioTabStops(permissionButtons);
 			const selected = permissions.find(permission => permission.id === selectedId);
 			permissionHint.textContent = selected?.hint ?? '';
 			permissionHint.classList.toggle('danger', !!selected?.danger);
@@ -926,6 +1061,30 @@ export class ParadisTabLauncherPopup extends Disposable {
 		renderEfforts();
 		renderPermissions();
 		return modelSearch ?? prompt;
+	}
+
+	/** radiogroup の Tab の止まり先は選んでいるボタンだけ（無ければ先頭）にする。 */
+	private setRadioTabStops(radios: readonly HTMLElement[]): void {
+		const selected = radios.find(radio => radio.getAttribute('aria-checked') === 'true') ?? radios[0];
+		for (const radio of radios) {
+			radio.tabIndex = radio === selected ? 0 : -1;
+		}
+	}
+
+	/** radiogroup の ←→↑↓ で隣の値を選ぶ（端は反対の端へ回る）。描き直した後、選んだボタンへフォーカスを移す。 */
+	private bindRadioKeys(group: HTMLElement, store: DisposableStore, radios: () => readonly HTMLElement[], select: (index: number) => void): void {
+		store.add(dom.addDisposableListener(group, 'keydown', e => {
+			const event = new StandardKeyboardEvent(e);
+			const delta = event.equals(KeyCode.RightArrow) || event.equals(KeyCode.DownArrow) ? 1 : event.equals(KeyCode.LeftArrow) || event.equals(KeyCode.UpArrow) ? -1 : 0;
+			const current = radios();
+			const index = current.findIndex(radio => radio === e.target);
+			if (delta === 0 || index < 0) {
+				return;
+			}
+			dom.EventHelper.stop(e, true);
+			select((index + delta + current.length) % current.length);
+			radios().find(radio => radio.getAttribute('aria-checked') === 'true')?.focus();
+		}));
 	}
 
 	private async launch(agent: IParadisAgentCommandTemplate, mode: 'terminal' | 'chat', prompt: string): Promise<void> {

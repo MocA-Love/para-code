@@ -403,10 +403,10 @@ export class ParadisBrowserNewTabFeature extends BrowserEditorContribution {
 			dom.append(caption, $('span.pbnt-caption-sep')).textContent = '·';
 			dom.append(caption, $('span.pbnt-caption-detail')).textContent = this._currentLabel;
 		}
-		const refresh = dom.append(caption, $('button.pbnt-icon-button')) as HTMLButtonElement;
+		const refresh = dom.append(caption, $('button.pbnt-icon-button.paradis-focus-ring')) as HTMLButtonElement;
 		refresh.type = 'button';
 		this._markFocus(refresh, 'refresh');
-		refresh.title = STR_REFRESH;
+		this._extras.setHover(refresh, STR_REFRESH, store);
 		refresh.setAttribute('aria-label', STR_REFRESH);
 		refresh.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.refresh)}`));
 		store.add(dom.addDisposableListener(refresh, dom.EventType.CLICK, () => void this._load(true)));
@@ -431,7 +431,7 @@ export class ParadisBrowserNewTabFeature extends BrowserEditorContribution {
 
 		const others = [...groups.otherSpaces, ...groups.outside];
 		if (others.length > 0) {
-			const toggle = dom.append(section, $('button.pbnt-more')) as HTMLButtonElement;
+			const toggle = dom.append(section, $('button.pbnt-more.paradis-focus-ring')) as HTMLButtonElement;
 			toggle.type = 'button';
 			this._markFocus(toggle, 'others');
 			toggle.setAttribute('aria-expanded', String(this._othersOpen));
@@ -468,10 +468,10 @@ export class ParadisBrowserNewTabFeature extends BrowserEditorContribution {
 	}
 
 	private _renderRow(list: HTMLElement, view: IServerView, context: string, store: DisposableStore): void {
-		const row = dom.append(list, $('button.pbnt-row')) as HTMLButtonElement;
+		const row = dom.append(list, $('button.pbnt-row.paradis-focus-subtle')) as HTMLButtonElement;
 		row.type = 'button';
 		this._markFocus(row, `server:${view.server.port}`);
-		row.title = STR_ROW_HOVER;
+		this._extras.setHover(row, STR_ROW_HOVER, store);
 		const icon = dom.append(row, $('span.pbnt-icon'));
 		if (view.page?.faviconDataUrl) {
 			const image = dom.append(icon, $('img')) as HTMLImageElement;
@@ -483,7 +483,6 @@ export class ParadisBrowserNewTabFeature extends BrowserEditorContribution {
 		const main = dom.append(row, $('span.pbnt-main'));
 		dom.append(main, $('span.pbnt-title')).textContent = this._titleOf(view);
 		const detail = dom.append(main, $('span.pbnt-detail'));
-		dom.append(detail, $('span.pbnt-dot'));
 		dom.append(detail, $('span.pbnt-address')).textContent = paradisNewTabServerAddress(view.server.port);
 		if (context) {
 			dom.append(detail, $('span')).textContent = ` · ${context}`;

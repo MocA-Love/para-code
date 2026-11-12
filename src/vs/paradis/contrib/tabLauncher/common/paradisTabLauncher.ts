@@ -256,3 +256,35 @@ export class ParadisTabLauncherDeviceCache<T> {
 		return this._entry.value;
 	}
 }
+
+/** ポインタの位置（画面の座標）。 */
+export interface IParadisPointerPoint {
+	readonly x: number;
+	readonly y: number;
+}
+
+/** 横の面の外枠（画面の座標）。 */
+export interface IParadisSideRect {
+	readonly left: number;
+	readonly right: number;
+	readonly top: number;
+	readonly bottom: number;
+}
+
+/**
+ * ポインタがサブメニューへ向かっているか（paradis-20-U1 の案 B）。少し前の位置 `origin` と、サブメニューの
+ * 近い側の辺の上下の角（上下に 4px 広げる）で作る三角形の中に、今の位置 `current` があれば向かっている。
+ * 向かっている間はほかの行に入ってもサブメニューを閉じない（斜めに動かして通り過ぎる行で閉じないように）。
+ */
+export function paradisPointerHeadsToSide(origin: IParadisPointerPoint, current: IParadisPointerPoint, side: IParadisSideRect): boolean {
+	const x = side.right <= origin.x + 1 ? side.right : side.left;
+	const b = { x, y: side.top - 4 };
+	const c = { x, y: side.bottom + 4 };
+	const cross = (p: IParadisPointerPoint, q: IParadisPointerPoint, r: IParadisPointerPoint) => (p.x - r.x) * (q.y - r.y) - (q.x - r.x) * (p.y - r.y);
+	const d1 = cross(current, origin, b);
+	const d2 = cross(current, b, c);
+	const d3 = cross(current, c, origin);
+	const negative = d1 < 0 || d2 < 0 || d3 < 0;
+	const positive = d1 > 0 || d2 > 0 || d3 > 0;
+	return !(negative && positive);
+}

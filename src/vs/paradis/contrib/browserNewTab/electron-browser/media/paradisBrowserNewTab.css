@@ -100,13 +100,6 @@
 	background-color: var(--vscode-list-hoverBackground);
 }
 
-.browser-root .paradis-browser-new-tab .pbnt-row:focus-visible,
-.browser-root .paradis-browser-new-tab .pbnt-more:focus-visible,
-.browser-root .paradis-browser-new-tab .pbnt-icon-button:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
-
 .browser-root .paradis-browser-new-tab .pbnt-icon {
 	flex: none;
 	display: grid;
@@ -141,16 +134,6 @@
 .browser-root .paradis-browser-new-tab .pbnt-detail {
 	font-size: var(--vscode-fontSize-label2, 11px);
 	color: var(--vscode-descriptionForeground);
-}
-
-.browser-root .paradis-browser-new-tab .pbnt-dot {
-	display: inline-block;
-	width: 6px;
-	height: 6px;
-	margin-right: 5px;
-	border-radius: 50%;
-	background-color: var(--vscode-charts-green);
-	vertical-align: middle;
 }
 
 .browser-root .paradis-browser-new-tab .pbnt-address {
