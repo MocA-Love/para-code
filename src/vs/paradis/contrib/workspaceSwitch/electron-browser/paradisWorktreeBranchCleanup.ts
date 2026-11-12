@@ -32,6 +32,7 @@ import { INotificationService, Severity } from '../../../../platform/notificatio
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { ParadisModalSize, paradisModalClasses } from '../../../browser/paradisModal.js';
+import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisForceDeleteBranchesRequest, IParadisForceDeleteBranchesResult, IParadisGitBranches } from '../common/paradisWorktreeCreate.js';
 import { IParadisWorktreeGitHost, paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
@@ -245,20 +246,31 @@ class ParadisKeptBranchesDialog extends Disposable {
 		dialog.classList.add(...paradisModalClasses(ParadisModalSize.Small));
 		dialog.setAttribute('role', 'dialog');
 		dialog.setAttribute('aria-modal', 'true');
+		// Esc を受けるためにフォーカスできるようにする（ParadisModalFocus が中身の描き直しの後に戻す先）
+		dialog.tabIndex = -1;
 		this._register(dom.addDisposableListener(this._backdrop, 'mousedown', e => {
 			if (e.target === this._backdrop && !this._busy) {
 				this.dispose();
 			}
 		}));
-		this._register(dom.addDisposableListener(this._backdrop, 'keydown', e => {
-			// 日本語入力の変換中の Esc は変換の取り消しなので、閉じない
-			if (e.key === 'Escape' && !this._busy && !e.isComposing && e.keyCode !== 229) {
-				e.preventDefault();
-				this.dispose();
-			}
-		}));
 		this._render(dialog);
 		layoutService.activeContainer.appendChild(this._backdrop);
+		// 中へフォーカスを移す前に作る（開く前の場所を覚えて、閉じたらそこへ戻す）。Esc は重なった中の一番上だけが受ける
+		this._register(new ParadisModalFocus({
+			backdrop: this._backdrop,
+			modal: dialog,
+			onEscape: () => {
+				if (!this._busy) {
+					this.dispose();
+				}
+			},
+			// 別のモーダルが開いても、削除している間は閉じない（その上に重なる）
+			close: () => {
+				if (!this._busy) {
+					this.dispose();
+				}
+			},
+		}));
 		this._all.focus();
 	}
 
@@ -302,6 +314,7 @@ class ParadisKeptBranchesDialog extends Disposable {
 		}));
 		this._list = dom.append(box, $('.pkb-list'));
 		this._errorEl = dom.append(body, $('.pkb-error'));
+		this._errorEl.setAttribute('role', 'alert');
 
 		const footer = dom.append(dialog, $('.pkb-footer'));
 		const cancel = this._register(new Button(footer, { ...defaultButtonStyles, secondary: true }));

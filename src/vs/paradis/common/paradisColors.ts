@@ -68,3 +68,9 @@ registerColor('paradis.focusSubtle', { dark: 'descriptionForeground', light: 'de
 registerColor('paradis.danger', 'errorForeground', localize('paradis.color.danger', "Para Code の部品: 危険・失敗。"));
 registerColor('paradis.warning', 'editorWarning.foreground', localize('paradis.color.warning', "Para Code の部品: 警告・要対応。"));
 registerColor('paradis.success', 'testing.iconPassed', localize('paradis.color.success', "Para Code の部品: 成功。"));
+
+// PR の状態（スペースの一覧の PR の札）。ダークは GitHub のダークの色、ライトは GitHub のライトの色（地に 12% 混ぜた札の上でも 3:1 を保つ）
+registerColor('paradis.prOpen', { dark: '#3fb950', light: '#1a7f37', hcDark: '#3fb950', hcLight: '#1a7f37' }, localize('paradis.color.prOpen', "Para Code の部品: 開いている PR の札。"));
+registerColor('paradis.prDraft', { dark: '#8b949e', light: '#59636e', hcDark: '#8b949e', hcLight: '#59636e' }, localize('paradis.color.prDraft', "Para Code の部品: 下書きの PR の札。"));
+registerColor('paradis.prMerged', { dark: '#a371f7', light: '#8250df', hcDark: '#a371f7', hcLight: '#8250df' }, localize('paradis.color.prMerged', "Para Code の部品: マージした PR の札。"));
+registerColor('paradis.prClosed', { dark: '#f85149', light: '#cf222e', hcDark: '#f85149', hcLight: '#cf222e' }, localize('paradis.color.prClosed', "Para Code の部品: 閉じた PR の札。"));

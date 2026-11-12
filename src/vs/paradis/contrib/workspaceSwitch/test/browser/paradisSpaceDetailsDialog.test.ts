@@ -12,6 +12,7 @@ import { isMacintosh } from '../../../../../base/common/platform.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
+import { NullHoverService } from '../../../../../platform/hover/test/browser/nullHoverService.js';
 import { IOpenerService } from '../../../../../platform/opener/common/opener.js';
 import { IParadisSpaceNote, IParadisSpaceNotesService } from '../../common/paradisSpaceNotes.js';
 import { IParadisWorktree, IParadisWorktreeService } from '../../common/paradisWorkspaceSwitch.js';
@@ -50,7 +51,7 @@ suite('ParadisSpaceDetailsDialog', () => {
 			pullRequest: undefined,
 			issues: [],
 			...input,
-		}, { activeContainer: container } as unknown as ILayoutService, notesService, worktreeService, openerService));
+		}, { activeContainer: container } as unknown as ILayoutService, notesService, worktreeService, openerService, NullHoverService));
 		const modal = container.querySelector<HTMLElement>('.paradis-space-details')!;
 		const nameInput = modal.querySelector<HTMLInputElement>('.paradis-field input')!;
 		const noteInput = modal.querySelector<HTMLTextAreaElement>('textarea')!;
