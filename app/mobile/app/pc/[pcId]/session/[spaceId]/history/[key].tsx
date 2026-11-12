@@ -82,7 +82,8 @@ export default function AgentHistorySessionScreen() {
 				setPreview(parsed);
 				setError(undefined);
 			})
-			.catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '会話を読み込めませんでした'))
+			// 既定の文も理由の欄に入るので、見出し（読み込めませんでした／読み直せませんでした）と同じ意味を重ねない
+			.catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '原因が分かりませんでした'))
 			.finally(() => setReloading(false));
 	}, [ready, pcId, spaceId, key]);
 	useEffect(load, [load]);

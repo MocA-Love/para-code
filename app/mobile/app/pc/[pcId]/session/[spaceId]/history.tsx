@@ -79,6 +79,7 @@ export default function AgentHistoryScreen() {
 				setSessions(previous => offset === 0 || previous === undefined ? page.sessions : [...previous, ...page.sessions]);
 				setNextOffset(page.nextOffset);
 				setError(undefined);
+				setRetry(undefined);
 				const total = received + page.sessions.length;
 				if (fillTo !== undefined && total < fillTo && page.nextOffset !== undefined && page.sessions.length > 0) {
 					load(page.nextOffset, search, fillTo, total);
@@ -87,7 +88,7 @@ export default function AgentHistoryScreen() {
 			.catch((reason: unknown) => {
 				if (seq === requestSeq.current) {
 					setRetry({ offset, search, fillTo, received });
-					setError(reason instanceof Error ? reason.message : '一覧を読み込めませんでした');
+					setError(reason instanceof Error ? reason.message : '原因が分かりませんでした');
 				}
 			})
 			.finally(() => {
@@ -126,8 +127,14 @@ export default function AgentHistoryScreen() {
 		<View style={[styles.failure, failureAtTop ? styles.failureTop : styles.failureBottom]}>
 			<Text style={styles.failureText}>{ready ? `読み込めませんでした: ${error}` : `読み込めませんでした: ${error}。PC とつながると再試行できます`}</Text>
 			<Button label="再試行" variant="secondary" size="sm" loading={retrying} disabled={!ready || loadingMore || retrying} onPress={() => {
-				if (retry !== undefined) {
-					setRetrying(true);
+				if (retry === undefined) {
+					return;
+				}
+				setRetrying(true);
+				// 失敗の後に検索語を変えていたら、古い検索語ではなく今の検索語で先頭から読み直す（古い語で読むと、今の検索の応答を捨ててしまう）
+				if (retry.search !== query) {
+					load(0, query);
+				} else {
 					load(retry.offset, retry.search, retry.fillTo, retry.received);
 				}
 			}} />
@@ -167,7 +174,8 @@ export default function AgentHistoryScreen() {
 					<>
 						{/* 「さらに読み込む」（続きのページ）の失敗は、読み進めた一覧の下に出す */}
 						{failureAtTop ? null : failureRow}
-						{nextOffset !== undefined ? (
+						{/* 失敗の行が出ている間は、再試行と並べて「さらに読み込む」を出さない */}
+						{nextOffset !== undefined && error === undefined ? (
 							<Button label="さらに読み込む" variant="secondary" loading={loadingMore} onPress={() => load(nextOffset, query)} style={styles.more} />
 						) : null}
 					</>
