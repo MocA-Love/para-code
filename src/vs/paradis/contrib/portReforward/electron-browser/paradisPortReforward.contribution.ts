@@ -99,7 +99,14 @@ registerAction2(class extends Action2 {
 		if (!tunnel) {
 			return;
 		}
-		const failure = await paradisReforwardTunnel(services, tunnel);
+		// 閉じた後の転送し直しで投げる（SSH 先に届かないと shared process が `Could not create tunnel` を投げる）ことがあるので、
+		// 「すべて」と同じくポート番号を付けて知らせる
+		let failure: string | undefined;
+		try {
+			failure = await paradisReforwardTunnel(services, tunnel);
+		} catch (err) {
+			failure = err instanceof Error ? err.message : String(err);
+		}
 		notifyFailures(services.notificationService, failure ? [`${tunnel.remotePort}: ${failure}`] : []);
 	}
 });
