@@ -94,6 +94,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				icon: 'warning-outline',
 				title: '承認カードで、「git push origin +main」のように + を付けた push にも「強制 push」の札を出すようにしました',
 			},
+			{
+				icon: 'refresh-outline',
+				title: '過去の会話や変更のレビューで、読み直しに失敗しても読めていた中身を出したままにしました',
+				body: '過去の会話の一覧で検索や読み直しに失敗したときは一覧の上に、「さらに読み込む」に失敗したときは一覧の下に理由と再試行を出します。会話の中身の読み直しに失敗したときは入力欄の上に知らせ、そこから再試行できます。レビューのメモから起動するエージェントの候補は、PC とつながり直すと読み直します。',
+			},
 		],
 	},
 	{

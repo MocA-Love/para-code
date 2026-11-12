@@ -87,7 +87,7 @@ export default function ReviewScreen() {
 	const [confirmingClear, setConfirmingClear] = useState(false);
 	const [clearMessage, setClearMessage] = useState<string | undefined>(undefined);
 	const [agents, setAgents] = useState<readonly WorktreeAgentDef[]>([]);
-	const [agentsRequested, setAgentsRequested] = useState(false);
+	const [agentsRequest, setAgentsRequest] = useState<'idle' | 'requested' | 'failed'>('idle');
 	const terminals = useAppStore(s => s.workspace?.terminals);
 	const stageFile = useStageFile(codeSpace, showStageFailure);
 	const sendTargets = useMemo(() => reviewSendTargets(terminals ?? [], codeSpace.wsId), [terminals, codeSpace.wsId]);
@@ -278,17 +278,24 @@ export default function ReviewScreen() {
 		}, 3_000);
 	};
 
-	// 起動できるエージェントは、メモの一覧を初めて開いたときに PC から読む（開かなければ読まない）
+	// 起動できるエージェントは、メモの一覧を初めて開いたときに PC から読む（開かなければ読まない）。
+	// PC の画面とつながるまでは聞かない（繋ぎ直しの最中に開くと、要求がすぐ失敗して候補が出ないままだった）
 	useEffect(() => {
-		if (!notesOpen || agentsRequested || !notes.enabled) {
+		if (!notesOpen || agentsRequest !== 'idle' || !notes.enabled || !codeSpace.live) {
 			return;
 		}
-		setAgentsRequested(true);
+		setAgentsRequest('requested');
 		// このスペースを開いている PC の画面に聞く（SSH のスペースなら接続先のエージェントの定義になる）
 		useAppStore.getState().worktreeForm({ agentsOnly: true, ...(codeSpace.wsId !== undefined ? { ws: codeSpace.wsId } : {}) })
 			.then(result => setAgents(result.agents))
-			.catch(() => undefined);
-	}, [notesOpen, agentsRequested, notes.enabled, codeSpace.wsId]);
+			.catch(() => setAgentsRequest('failed'));
+	}, [notesOpen, agentsRequest, notes.enabled, codeSpace.live, codeSpace.wsId]);
+	// 失敗したら、メモの一覧を開き直したとき・PC の画面とつながり直したときに 1 回だけ聞き直す（開いたまま繰り返し聞かない）
+	useEffect(() => {
+		if (agentsRequest === 'failed' && (!notesOpen || !codeSpace.live)) {
+			setAgentsRequest('idle');
+		}
+	}, [agentsRequest, notesOpen, codeSpace.live]);
 
 	const notesPanel = (
 		<ReviewNotesPanel
