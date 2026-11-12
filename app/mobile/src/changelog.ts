@@ -45,8 +45,8 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		items: [
 			{
 				icon: 'git-commit-outline',
-				title: 'コミットを待っている間に PC とつながり直しても、PC でコミットできていれば「コミットしました」と出すようにしました',
-				body: 'これまでは成功していても失敗と出ていました。',
+				title: 'コミットを待っている間に接続が切れたりアプリを裏に回したりしても、PC でコミットできていれば「コミットしました」と出すようにしました',
+				body: 'つながり直した後に PC のコミットの一覧で確かめます。確かめるのは、ソース管理の画面を開いたまま、コミットを押してから約 5 分までです。',
 			},
 			{
 				icon: 'home-outline',

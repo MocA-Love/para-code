@@ -119,8 +119,9 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 		commitHandoff.reset();
 		setActionError(undefined);
 		setCommitWarning(undefined);
+		const sent = message;
 		// 結果が分からなくなったときの確かめに、コミットの前の先頭を渡す
-		const outcome = await commitState.commit(message, scope, latest?.hash);
+		const outcome = await commitState.commit(sent, scope, latest?.hash);
 		// フックの失敗・時間切れの一言があれば、コミットはできたが注意あり
 		haptic(!outcome.ok ? 'error' : outcome.warning !== undefined ? 'warning' : 'success');
 		if (!outcome.ok) {
@@ -128,7 +129,8 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 			void statusState.refresh();
 			return;
 		}
-		setMessage('');
+		// 確かめている間に書き始めた次のメッセージは消さない
+		setMessage(current => current === sent ? '' : current);
 		// フックの失敗・時間切れの一言は長いので、トーストの1行ではなくコミットバーの上に全文を出す
 		setCommitWarning(outcome.warning);
 		useParaToast.getState().show({ key: 'scm-commit', text: 'コミットしました', sub: branch, icon: 'checkmark-circle-outline', tone: 'done' }, 1_900);

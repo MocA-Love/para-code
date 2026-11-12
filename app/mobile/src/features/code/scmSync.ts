@@ -194,6 +194,56 @@ export function commitLandedAfter(commits: readonly { readonly hash: string; rea
 	return subject.length > 0 && commits.slice(0, baseline).some(commit => commit.subject.trim() === subject);
 }
 
+/** 結果が分からなくなったコミットを確かめるときに使う口（`useScmCommit` が store につなぐ。テストでは偽物を渡す）。 */
+export interface CommitConfirmDeps {
+	/** 接続と PC 画面が戻るまで待つ。`deadline`（`now()` と同じ時計）までに戻れば true。 */
+	readonly waitUntilLive: (deadline: number) => Promise<boolean>;
+	/** 最近のコミットを新しい順に読む。読めなければ例外。 */
+	readonly readLog: () => Promise<readonly { readonly hash: string; readonly subject: string }[]>;
+	readonly sleep: (ms: number) => Promise<void>;
+	readonly now: () => number;
+	/** 次のコミットが始まった・画面が閉じたなど、確かめる意味が無くなったか。 */
+	readonly cancelled: () => boolean;
+}
+
+/** 読み直しの間隔（2 回目以降。最後の値を期限まで繰り返す）。PC がまだフックを動かしている間に備えて、だんだん空ける。 */
+const COMMIT_CONFIRM_RETRY_MS: readonly number[] = [5_000, 10_000, 20_000, 30_000];
+
+/**
+ * 結果が分からないまま終わったコミットが PC でできていたかを、`deadline` まで確かめる。
+ * 接続と PC 画面が戻るのを待ってから一覧を読み直し（{@link commitLandedAfter}）、まだ無ければ間隔を空けて読み直す。
+ * 1 回目は期限を過ぎていても読む（時間切れの直後に 1 回だけ確かめるため）。2 回目以降は期限までに読める分だけ。
+ */
+export async function confirmCommitLanded(baselineHash: string | undefined, message: string, deadline: number, deps: CommitConfirmDeps): Promise<boolean> {
+	if (baselineHash === undefined) {
+		return false;
+	}
+	for (let attempt = 0; ; attempt++) {
+		if (attempt > 0) {
+			const delay = COMMIT_CONFIRM_RETRY_MS[Math.min(attempt - 1, COMMIT_CONFIRM_RETRY_MS.length - 1)] ?? 30_000;
+			if (deps.now() + delay >= deadline) {
+				return false;
+			}
+			await deps.sleep(delay);
+		}
+		if (deps.cancelled() || !await deps.waitUntilLive(deadline) || deps.cancelled()) {
+			return false;
+		}
+		let commits: readonly { readonly hash: string; readonly subject: string }[];
+		try {
+			commits = await deps.readLog();
+		} catch {
+			continue;
+		}
+		if (deps.cancelled()) {
+			return false;
+		}
+		if (commitLandedAfter(commits, baselineHash, message)) {
+			return true;
+		}
+	}
+}
+
 /** エージェントへ送った結果（`commitFix` / `prFixChecks` の応答）。 */
 export type AgentHandoffResult =
 	| { readonly delivered: true; readonly text: string }
