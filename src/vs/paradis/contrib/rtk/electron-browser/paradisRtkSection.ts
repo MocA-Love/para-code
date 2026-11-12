@@ -850,7 +850,6 @@ function shortDate(isoDate: string): string {
 	return match ? `${Number(match[1])}/${Number(match[2])}` : isoDate;
 }
 
-/** 平均実行時間の表示(ツールチップ用)。 */
 /** 合計時間（「5分 15秒」「2時間 3分」）。 */
 function formatTotalDuration(milliseconds: number): string {
 	const seconds = Math.round(milliseconds / 1000);
