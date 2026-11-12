@@ -22,6 +22,7 @@
 // すべてのウィンドウで、接続先に新しく開くターミナルから使われる。
 
 import * as dom from '../../../../base/browser/dom.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { timeout } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
@@ -29,6 +30,7 @@ import { language } from '../../../../base/common/platform.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
@@ -79,6 +81,7 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 		@IParadisDialogService private readonly paradisDialogService: IParadisDialogService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILogService private readonly logService: ILogService,
+		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super();
 		this.client = instantiationService.createInstance(ParadisCodexAccountsClient);
@@ -104,7 +107,8 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 		if (state && this.isSelected(state, account)) {
 			const badge = dom.append(container, $('span.plm-badge.active'));
 			badge.textContent = localize('paradis.codexAccounts.selectedBadge', "使用中");
-			badge.title = localize('paradis.codexAccounts.selectedHint', "新しく開くターミナルの Codex はこのアカウントを使います");
+			// 説明は本家のホバーで出す（title 属性は OS が描き、テーマの色にも本家のホバーの待ち時間にもならない）
+			return this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), badge, localize('paradis.codexAccounts.selectedHint', "新しく開くターミナルの Codex はこのアカウントを使います"));
 		}
 		return undefined;
 	}
@@ -175,9 +179,9 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 			? localize('paradis.codexAccounts.switching', "切り替え中…")
 			: localize('paradis.codexAccounts.switchAccount', "切り替える");
 		// SSH のウィンドウの選択は接続先のもので、同じ接続先を開いたウィンドウにだけ効く。
-		button.title = this.remoteAgentService.getConnection()
+		store.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), button, this.remoteAgentService.getConnection()
 			? localize('paradis.codexAccounts.useThisAccountHintRemote', "この接続先を開いているすべてのウィンドウで、接続先にこれから新しく開くターミナルの Codex がこのアカウントを使います。動いている Codex はそのままです")
-			: localize('paradis.codexAccounts.useThisAccountHint', "すべてのウィンドウで、これから新しく開くターミナルの Codex がこのアカウントを使います。動いている Codex はそのままです");
+			: localize('paradis.codexAccounts.useThisAccountHint', "すべてのウィンドウで、これから新しく開くターミナルの Codex がこのアカウントを使います。動いている Codex はそのままです")));
 		store.add(dom.addDisposableListener(button, 'click', () => void this.switchTo(home.isDefault ? undefined : home.homePath)));
 	}
 
