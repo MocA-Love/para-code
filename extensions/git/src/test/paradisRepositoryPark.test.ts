@@ -7,7 +7,7 @@
 
 import 'mocha';
 import * as assert from 'assert';
-import { IParadisParkedRepository, PARADIS_DEFAULT_PARK_LIMIT, ParadisParkedRefreshGate, ParadisParkedStatusWriteGuard, ParadisRepositoryParkingLot, paradisResolveParkLimit } from '../paradisRepositoryPark';
+import { IParadisParkedRepository, PARADIS_DEFAULT_PARK_LIMIT, ParadisParkedRefreshGate, ParadisParkedStatusWriteGuard, ParadisRepositoryParkingLot, paradisResolveParkLimit, paradisSkipFileChangeWhileParked, paradisWaitWhileParked } from '../paradisRepositoryPark';
 
 /** 呼ばれた回数だけ数える待避エントリ。 */
 function createEntry(root: string, log: string[], rootRealPath?: string): IParadisParkedRepository {
@@ -349,5 +349,44 @@ suite('ParadisParkedStatusWriteGuard', () => {
 		pending[0].resolve(['a.txt']);
 		await running;
 		assert.deepStrictEqual(repository.groups, []);
+	});
+});
+
+suite('paradis parked repository guards', () => {
+
+	test('skips a file change only while parked, and says why in the trace', () => {
+		const traces: string[] = [];
+		const logger = { trace: (message: string) => traces.push(message) };
+		assert.deepStrictEqual({ active: paradisSkipFileChangeWhileParked(true, logger), parked: paradisSkipFileChangeWhileParked(false, logger), traces }, {
+			active: false,
+			parked: true,
+			traces: ['[Repository][onFileChange] Skip running git status because the repository is parked.'],
+		});
+	});
+
+	test('waits while parked, ignores the change event fired by parking, and lets the caller re-check after unparking', async () => {
+		let active = false;
+		let listeners: (() => void)[] = [];
+		const onDidChange = (listener: () => void) => {
+			listeners.push(listener);
+			return { dispose: () => { listeners = listeners.filter(l => l !== listener); } };
+		};
+		const fire = () => [...listeners].forEach(l => l());
+
+		const whileActive = await paradisWaitWhileParked(() => true, onDidChange);
+		let settled = false;
+		const waiting = paradisWaitWhileParked(() => active, onDidChange).then(waited => { settled = true; return waited; });
+		fire(); // 待避の発火 (まだ待避中) では抜けない
+		await Promise.resolve();
+		const settledWhileParked = settled;
+		active = true;
+		fire();
+		const waited = await waiting;
+		assert.deepStrictEqual({ whileActive, settledWhileParked, waited, listenersLeft: listeners.length }, {
+			whileActive: false,
+			settledWhileParked: false,
+			waited: true,
+			listenersLeft: 0,
+		});
 	});
 });
