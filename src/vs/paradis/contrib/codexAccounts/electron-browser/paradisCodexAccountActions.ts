@@ -65,6 +65,7 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 	private readonly requestedOffers = new Set<string>();
 	private accountsState: IParadisCodexAccountsState | undefined;
 	private accountsStateRequested = false;
+	private accountsStateListening = false;
 	private readonly consuming = new Set<string>();
 	/** 期限の一覧を開いているホーム（描き直しをまたいで持つ）。 */
 	private readonly expiriesOpen = new Set<string>();
@@ -136,9 +137,14 @@ class ParadisCodexAccountActions extends Disposable implements IParadisLimitsPan
 			return;
 		}
 		this.accountsStateRequested = true;
-		this._register(this.client.onDidChangeState(state => this.setAccountsState(state)));
+		if (!this.accountsStateListening) {
+			this.accountsStateListening = true;
+			this._register(this.client.onDidChangeState(state => this.setAccountsState(state)));
+		}
 		this.client.getState().then(state => this.setAccountsState(state), error => {
 			this.logService.warn('[ParadisCodexAccounts] failed to read the Codex account selection', error);
+			// 共有プロセスの起動直後や SSH のつなぎ直しで 1 回落ちても、次にパネルを描くときに読み直す
+			this.accountsStateRequested = false;
 		});
 	}
 

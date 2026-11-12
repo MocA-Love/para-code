@@ -138,6 +138,22 @@ export class ParadisBrowserViewFreezer extends Disposable {
 		return count;
 	}
 
+	/**
+	 * 設定が変わったときに呼ぶ。オフになったら、休ませているタブをすべて起こす（表示するまで止まったままにしない）。
+	 * 隠れたままのタブは見張りを続け、もう一度オンにしたら同じ時間の後に休ませる。
+	 */
+	onDidChangeEnabled(): void {
+		if (this.isEnabled()) {
+			return;
+		}
+		for (const [view, state] of this.views) {
+			if (state.frozen) {
+				this.thaw(view, state);
+				this.schedule(view, state);
+			}
+		}
+	}
+
 	private track(view: IParadisFreezableBrowserView): void {
 		if (this.views.has(view)) {
 			return;
