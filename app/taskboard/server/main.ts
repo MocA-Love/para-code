@@ -1060,7 +1060,15 @@ async function main(restart?: IRestart): Promise<void> {
 				return;
 			}
 			if (artifact?.groups && req.method === 'GET') {
-				serveArtifact(res, decodeURIComponent(artifact.groups.task), decodeURIComponent(artifact.groups.artifact));
+				// % の崩れた URL は、見つからない成果物として扱う（URIError で 500 にしない）
+				let ids: [string, string];
+				try {
+					ids = [decodeURIComponent(artifact.groups.task), decodeURIComponent(artifact.groups.artifact)];
+				} catch {
+					res.writeHead(404).end();
+					return;
+				}
+				serveArtifact(res, ...ids);
 				return;
 			}
 			if (url.pathname === '/api/image' && req.method === 'GET') {

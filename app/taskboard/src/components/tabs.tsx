@@ -380,10 +380,12 @@ export function ProgressTab({ task, flow }: { task: ITaskBoardTask; flow: ITaskB
 				<div className="ask-q">{q.text}</div>
 				<div role="radiogroup" aria-label="回答">
 					{q.options.map((o, i) => (
-						<button key={i} role="radio" aria-checked={pick === i} className={`opt ${pick === i ? 'on' : ''}`} onClick={() => setPick(i)}>
-							<span className="dotr" /><span className="ot">{o.label}{o.detail && <small>{o.detail}</small>}</span>
-							{o.artifactId && <span className="btn xs ghost" role="link" onClick={e => { e.stopPropagation(); app.setTab('mock'); }}><Icon name="mock" size={12} />モック</span>}
-						</button>
+						<div key={i} className="opt-row">
+							<button role="radio" aria-checked={pick === i} className={`opt ${pick === i ? 'on' : ''} ${o.artifactId ? 'with-mock' : ''}`} onClick={() => setPick(i)}>
+								<span className="dotr" /><span className="ot">{o.label}{o.detail && <small>{o.detail}</small>}</span>
+							</button>
+							{o.artifactId && <button className="btn xs ghost opt-mock" onClick={() => app.setTab('mock')}><Icon name="mock" size={12} />モック</button>}
+						</div>
 					))}
 					{q.allowText && <button role="radio" aria-checked={pick === -1} className={`opt ${pick === -1 ? 'on' : ''}`} onClick={() => setPick(-1)}><span className="dotr" /><span className="ot">自分で書く<small>選ぶと下に入力欄が出ます</small></span></button>}
 				</div>
@@ -709,8 +711,13 @@ export function TerminalTab({ task }: { task: ITaskBoardTask }) {
 		if (!text) {
 			return;
 		}
+		// 続けて Enter を押しても二重に送らないよう先に消し、送れなかったときだけ戻す（その間に打った文は上書きしない）。
+		// 成功の戻り値は null（サーバーは結果の無い呼び出しに null を返す）、失敗は undefined
 		setInput('');
-		await app.call('sendInput', { taskId: task.id, text });
+		const sent = await app.call('sendInput', { taskId: task.id, text });
+		if (sent === undefined) {
+			setInput(current => current === '' ? text : current);
+		}
 	};
 	return (
 		<>

@@ -75,6 +75,31 @@ class HeldWriteProvider extends InMemoryFileSystemProvider {
 	}
 }
 
+/** 読んだ回数を数え、1 回ずつ間を空けて読む送り元（接続先からの読み込みの代わり）。読み終えて閉じたら `closed` が解ける。 */
+class SlowReadProvider extends InMemoryFileSystemProvider {
+	reads = 0;
+	closed = new DeferredPromise<void>();
+	override async close(fd: number): Promise<void> {
+		await super.close(fd);
+		this.closed.complete();
+	}
+	override async read(fd: number, pos: number, data: Uint8Array, offset: number, length: number): Promise<number> {
+		this.reads++;
+		await new Promise(resolve => setTimeout(resolve, 0));
+		return super.read(fd, pos, data, offset, length);
+	}
+}
+
+/** 書き込みが必ず失敗する接続先（容量不足・権限・切断の代わり）。 */
+class FailingWriteProvider extends InMemoryFileSystemProvider {
+	override write(): Promise<number> {
+		return Promise.reject(createFileSystemProviderError('ENOSPC', FileSystemProviderErrorCode.Unknown));
+	}
+	override writeFile(): Promise<void> {
+		return Promise.reject(createFileSystemProviderError('ENOSPC', FileSystemProviderErrorCode.Unknown));
+	}
+}
+
 /** 権限のチャネルの代わり。送り先（vscode-remote）と送り元（file）の情報を差し替えられ、chmod と rename を記録する。 */
 class FakeMetadata implements IParadisTransferMetadata {
 	/** 送り先の情報。`undefined` は「古い REH で読めない」、Error は一時的な失敗。 */
@@ -318,6 +343,23 @@ suite('Paradis file transfer - IFileService adapter', () => {
 			folderKept: await text(fileService, joinPath(REMOTE_DIR, 'logs', 'app.log')),
 			left: await names(fileService, REMOTE_DIR),
 		}, { noOverwrite: 'conflict', ontoFolder: 'conflict', original: 'original', folderKept: 'keep', left: ['a.txt', 'logs'] });
+	});
+
+	test('a failed write stops reading the rest of the source', async () => {
+		const source = new SlowReadProvider();
+		const cancelledIo: string[] = [];
+		const { fileService, fileSystem } = setup({ source, target: new FailingWriteProvider() }, resource => cancelledIo.push(resource.scheme === 'file' ? 'source' : 'target'));
+		const resource = URI.file('/work/big.bin');
+		// 読み込みは 256 KiB ずつなので、最後まで読むと 17 回（最後の 1 回は終わりを確かめる読み込み）
+		await fileService.writeFile(resource, VSBuffer.fromString('z'.repeat(4 * 1024 * 1024)));
+		await fileService.createFolder(REMOTE_DIR);
+		source.reads = 0;
+		source.closed = new DeferredPromise<void>();
+
+		const result = await fileSystem.copyFile(resource, joinPath(REMOTE_DIR, 'big.bin'), options(true)).then(() => 'resolved', () => 'rejected');
+		await source.closed.p;
+
+		assert.deepStrictEqual({ result, cancelledIo, stoppedEarly: source.reads < 16 }, { result: 'rejected', cancelledIo: [], stoppedEarly: true });
 	});
 
 	test('a cancelled copy rejects and writes nothing', async () => {

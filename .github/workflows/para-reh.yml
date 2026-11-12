@@ -57,8 +57,14 @@ jobs:
     # 接続先に要る glibc の下限がランナーの画像で決まる（ubuntu-26.04 だと pty.node が GLIBC_2.42 を要求し、
     # Ubuntu 24.04 の接続先でターミナルが読み込めない）。para-release.yml の build-linux と揃える。
     runs-on: ubuntu-24.04
+    # npm ci が第三者の postinstall を走らせるので、このジョブの token は読み取りだけにする。
+    # reh リリースへの添付は書き込み権限を持つ下の publish-reh ジョブが artifact から行う。
     permissions:
-      contents: write # gh release upload（固定タグ reh への添付）
+      contents: read
+    outputs:
+      publish: ${{ steps.plan.outputs.publish }}
+      is_beta: ${{ steps.plan.outputs.is_beta }}
+      tarball: ${{ steps.pack.outputs.tarball }}
     env:
       VSCODE_ARCH: x64
       NPM_ARCH: x64
@@ -166,16 +172,28 @@ jobs:
             ${{ steps.pack.outputs.tarball }}.sha256
           retention-days: 7
 
-      # 固定タグ `reh` のリリースへ添付する。タグは初回だけ作られ、以降は同じリリースに
-      # commit 別のファイルが積まれる。古い commit のサーバーは、その版のクライアントを
-      # 使っている人がいる限り消さないこと。
+  # 固定タグ `reh` のリリースへ添付する。タグは初回だけ作られ、以降は同じリリースに
+  # commit 別のファイルが積まれる。古い commit のサーバーは、その版のクライアントを
+  # 使っている人がいる限り消さないこと。
+  publish-reh:
+    needs: build-reh-linux-x64
+    # publish はタグ（ステーブル／ベータ）のときだけ true。ブランチからの手動起動では公開しない。
+    if: ${{ needs.build-reh-linux-x64.outputs.publish == 'true' && (github.event_name != 'workflow_dispatch' || inputs.publish) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # gh release upload（固定タグ reh への添付）
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: reh-linux-x64
+
       - name: Publish to reh release
-        # publish はタグ（ステーブル／ベータ）のときだけ true。ブランチからの手動起動では公開しない。
-        if: ${{ steps.plan.outputs.publish == 'true' && (github.event_name != 'workflow_dispatch' || inputs.publish) }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          IS_BETA: ${{ steps.plan.outputs.is_beta }}
-          TARBALL: ${{ steps.pack.outputs.tarball }}
+          # checkout しないので、gh にリポジトリを教える
+          GH_REPO: ${{ github.repository }}
+          IS_BETA: ${{ needs.build-reh-linux-x64.outputs.is_beta }}
+          TARBALL: ${{ needs.build-reh-linux-x64.outputs.tarball }}
         run: |
           set -e -o pipefail
           if ! gh release view reh >/dev/null 2>&1; then
@@ -194,6 +212,6 @@ jobs:
             fi
           fi
           gh release upload reh \
-            "${{ steps.pack.outputs.tarball }}" \
-            "${{ steps.pack.outputs.tarball }}.sha256" \
+            "$TARBALL" \
+            "$TARBALL.sha256" \
             --clobber

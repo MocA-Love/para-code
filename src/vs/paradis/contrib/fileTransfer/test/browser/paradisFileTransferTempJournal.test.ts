@@ -15,7 +15,7 @@ import { createFileSystemProviderError, FileSystemProviderErrorCode, IStat } fro
 import { FileService } from '../../../../../platform/files/common/fileService.js';
 import { InMemoryFileSystemProvider } from '../../../../../platform/files/common/inMemoryFilesystemProvider.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { InMemoryStorageService, StorageScope } from '../../../../../platform/storage/common/storage.js';
+import { InMemoryStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { ParadisTransferTempJournal } from '../../browser/paradisFileTransferTempJournal.js';
 import {
 	paradisJournalCleanable,
@@ -103,6 +103,27 @@ suite('Paradis file transfer - temporary file journal', () => {
 		});
 
 		assert.deepStrictEqual({ removed, exists: await fileService.exists(temp) }, { removed: 0, exists: true });
+	});
+
+	test('puts its own entry back on the next beat when another window overwrote the journal', async () => {
+		const fileService = store.add(new FileService(new NullLogService()));
+		store.add(fileService.registerProvider('file', store.add(new InMemoryFileSystemProvider())));
+		const storage = store.add(new InMemoryStorageService());
+		const temp = joinPath(DIR, '.paratransfer-4-1-a-b');
+		const otherTemp = joinPath(DIR, '.paratransfer-5-1-a-b').toString();
+		let clock = 1_000_000;
+		const writer = store.add(new ParadisTransferTempJournal(storage, fileService, new NullLogService(), () => clock));
+		writer.add(temp);
+
+		// 別のウィンドウが古い控えを読んで自分の項目だけを足し、こちらの項目を上書きして消した
+		storage.store(PARADIS_FILE_TRANSFER_JOURNAL_KEY, JSON.stringify([{ uri: otherTemp, at: clock }]), StorageScope.APPLICATION, StorageTarget.MACHINE);
+		clock += 1000;
+		writer.beat();
+
+		assert.deepStrictEqual(paradisParseJournal(storage.get(PARADIS_FILE_TRANSFER_JOURNAL_KEY, StorageScope.APPLICATION)), [
+			{ uri: otherTemp, at: 1_000_000 },
+			{ uri: temp.toString(), at: 1_001_000 },
+		]);
 	});
 
 	test('keeps an entry it could not check because the connection is down, and cleans it up later', async () => {
