@@ -24,6 +24,7 @@
 
 import { Sequencer } from '../../../../base/common/async.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
+import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { Event } from '../../../../base/common/event.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize } from '../../../../nls.js';
@@ -321,7 +322,12 @@ export class ParadisPortToolsChannel implements IServerChannel {
 		}
 		// 1 本ずつ順に張り、1 本の失敗で残りを止めない
 		for (const item of targets) {
-			results.set(item.remotePort, await this._forwardOne(item));
+			try {
+				results.set(item.remotePort, await this._forwardOne(item));
+			} catch (error) {
+				// SSH の接続が切れたときなどは、文字列ではなく例外で届く（shared process のトンネルが作れない）
+				results.set(item.remotePort, { remote_port: item.remotePort, ok: false, error: `Para Code could not forward port ${item.remotePort}: ${toErrorMessage(error)}` });
+			}
 		}
 		return ok({ results: items.map(item => results.get(item.remotePort)!) });
 	}
@@ -346,7 +352,11 @@ export class ParadisPortToolsChannel implements IServerChannel {
 		}
 		if (!paradisIsLoopbackLocalAddress(result.localAddress)) {
 			// 127.0.0.1 以外で受けてしまったら、すぐに閉じる（LAN から SSH 先のサーバーが見えないように）
-			await this._window.close(remote);
+			try {
+				await this._window.close(remote);
+			} catch (error) {
+				return { remote_port: remotePort, ok: false, error: `Para Code opened the forward of port ${remotePort} on ${result.localAddress}, not on 127.0.0.1, and could not stop it: ${toErrorMessage(error)}. Ask the user to stop it from the Ports panel.` };
+			}
 			return { remote_port: remotePort, ok: false, error: LOCAL_HOST_MESSAGE };
 		}
 		return {
@@ -391,19 +401,24 @@ export class ParadisPortToolsChannel implements IServerChannel {
 			return fail(refusal(outcome));
 		}
 		const stopped = new Set<number>();
+		const failedStops = new Map<number, string>();
 		for (const target of targets) {
 			// 見せた対象のうち、今も台帳にあるものだけを外す
 			if (this._find(target.remotePort) === undefined) {
 				notForwarded.push(target.remotePort);
 				continue;
 			}
-			await this._window.close({ host: target.remoteHost, port: target.remotePort });
-			stopped.add(target.remotePort);
+			try {
+				await this._window.close({ host: target.remoteHost, port: target.remotePort });
+				stopped.add(target.remotePort);
+			} catch (error) {
+				failedStops.set(target.remotePort, `Para Code could not stop the forward of port ${target.remotePort}: ${toErrorMessage(error)}`);
+			}
 		}
 		return ok({
 			results: remotePorts.map((remotePort): ParadisPortItemResult => stopped.has(remotePort)
 				? { remote_port: remotePort, ok: true, stopped: true }
-				: { remote_port: remotePort, ok: false, error: notCloseable.includes(remotePort) ? 'not_closeable: provided by the remote environment' : 'not_forwarded' }),
+				: { remote_port: remotePort, ok: false, error: failedStops.get(remotePort) ?? (notCloseable.includes(remotePort) ? 'not_closeable: provided by the remote environment' : 'not_forwarded') }),
 		});
 	}
 
