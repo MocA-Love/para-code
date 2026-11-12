@@ -6,7 +6,7 @@ import { Globe, Plus, Sparkles, SquareChevronRight } from 'lucide-react-native';
 import { useAppStore } from '../../appState.js';
 import { ProviderLogo } from '../../components/providerLogo.js';
 import { haptic } from '../../haptics.js';
-import { HIT_SIZE, colors, radius, space, type } from '../../theme.js';
+import { HIT_SIZE, colors, radius, space, status, type } from '../../theme.js';
 import { AgentStateDot, Icon, agentKindFromStatus } from '../../ui/index.js';
 import type { SessionTabItem } from './sessionTabs.js';
 import { PointerHover } from '../../ipad/pointerHover.js';
@@ -87,7 +87,8 @@ function SessionTab({ item, active, onPress, onLongPress }: {
 			style={({ pressed }) => [styles.tab, active ? styles.tabOn : undefined, pressed ? styles.pressed : undefined]}
 			accessibilityRole="tab"
 			accessibilityState={{ selected: active }}
-			accessibilityLabel={item.title}
+			// 押せるタブは中の状態の点を個別に読まないので、エージェントのタブは状態もラベルに入れる。
+			accessibilityLabel={item.kind === 'terminal' && item.agent ? `${item.title}、${status[agentKindFromStatus(item.terminal.agentStatus)].label}` : item.title}
 			accessibilityHint="長押しでタブの操作を開きます"
 		>
 			<View style={styles.label}>

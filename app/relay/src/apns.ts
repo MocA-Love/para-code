@@ -40,6 +40,12 @@ const JWT_TTL_SECONDS = 45 * 60;
 export const PUSH_EXPIRATION_SECONDS = 4 * 3600;
 
 /**
+ * APNs への 1 回の要求の時間切れ。送信中の行を他の送信から外す貸し出し（deviceDO の PUSH_SEND_LEASE_MS、60 秒）より
+ * 十分短くする。止まった要求が貸し出しを越えると alarm が同じ行を送り直し、後の行もその間待たされるため。
+ */
+const APNS_REQUEST_TIMEOUT_MS = 10_000;
+
+/**
  * トークンそのものが使えないことを示す 400 の理由。410 Unregistered と同じくトークンを捨てる。
  * 開発ビルドのトークンを本番へ送った場合もここに入るが、アプリは接続のたびに register-push で
  * 登録し直すので、正しい環境のトークンがすぐ戻る。
@@ -117,8 +123,10 @@ export async function sendApnsNotification(env: ApnsEnv, notification: ApnsNotif
 				...(notification.collapseId !== undefined ? { 'apns-collapse-id': notification.collapseId } : {}),
 			},
 			body,
+			signal: AbortSignal.timeout(APNS_REQUEST_TIMEOUT_MS),
 		});
 	} catch (err) {
+		// 時間切れもここに来る（送り直しへ回す）
 		console.warn('[apns] request failed:', err);
 		return { kind: 'retry', status: undefined, reason: 'transport' };
 	}

@@ -7,6 +7,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { pcHasCapabilityFor, sendPcRequest } from '../appState.js';
 import { PcCapability } from '../pcCompat.js';
 import { isPcUnreachableError, pcReplyErrorCode } from '../store.js';
+import { UsageRequestLimiter } from '../features/usage/usageFetchCore.js';
 import { ATTACHMENT_FAILURE_MESSAGES, base64ByteLength, classifyAttachmentFailure, finalAttachmentFailure, shouldRetryWithoutWorkspace, type AttachmentFailureKind } from './attachmentFetchPolicy.js';
 import { attachmentFileName, attachmentMediaTypeOfBase64 } from './attachmentText.js';
 
@@ -75,20 +76,11 @@ export function useAttachmentSizes(names: readonly string[]): readonly (number |
 	return useAttachmentSizeStore(useShallow(state => names.map(name => state.sizes[name])));
 }
 const inFlight = new Map<string, Promise<string>>();
-let running = 0;
-const waiting: Array<() => void> = [];
+/** PC への要求の同時数を絞る。空いた枠は待っている要求へそのまま渡す（割り込んで上限を超えないように）。 */
+const fetchSlots = new UsageRequestLimiter(MAX_CONCURRENT_FETCHES);
 
-async function withFetchSlot<T>(run: () => Promise<T>): Promise<T> {
-	if (running >= MAX_CONCURRENT_FETCHES) {
-		await new Promise<void>(resolve => waiting.push(resolve));
-	}
-	running++;
-	try {
-		return await run();
-	} finally {
-		running--;
-		waiting.shift()?.();
-	}
+function withFetchSlot<T>(run: () => Promise<T>): Promise<T> {
+	return fetchSlots.run(run);
 }
 
 async function ensureDirectory(directory: string): Promise<void> {
