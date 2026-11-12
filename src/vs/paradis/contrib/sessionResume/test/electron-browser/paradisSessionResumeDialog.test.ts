@@ -156,6 +156,8 @@ suite('ParadisSessionResumeDialog', () => {
 		const client = new TestResumeClient();
 		client.listResult = async () => [testSession('one', 'First session')];
 		const fixture = createRefreshFixture(client);
+		// Escape はウィンドウで受けるので、根を文書に入れる
+		document.body.appendChild(fixture.root);
 		try {
 			await fixture.load();
 			const search = fixture.root.querySelector<HTMLInputElement>('input[type="search"]')!;
@@ -167,6 +169,84 @@ suite('ParadisSessionResumeDialog', () => {
 
 			pressEscape(search);
 			assert.strictEqual(fixture.root.querySelector('.paradis-session-resume-backdrop'), null);
+		} finally {
+			fixture.root.remove();
+			fixture.dispose();
+		}
+	});
+
+	test('returns the focus to where it was before opening once closed', async () => {
+		const client = new TestResumeClient();
+		client.listResult = async () => [testSession('one', 'First session')];
+		const stubs = createDialogStubs(client);
+		const outside = document.createElement('button');
+		document.body.append(outside, stubs.root);
+		try {
+			outside.focus();
+			const dialog = stubs.createDialog();
+			await timeout(1);
+			await flushMicrotasks();
+			const insideWhileOpen = stubs.root.contains(document.activeElement);
+			dialog.close();
+			assert.deepStrictEqual({ insideWhileOpen, restored: document.activeElement === outside }, { insideWhileOpen: true, restored: true });
+		} finally {
+			outside.remove();
+			stubs.root.remove();
+			stubs.dispose();
+		}
+	});
+
+	test('keeps the focus on the row moved to with the arrow keys after its conversation loads', async () => {
+		const client = new TestResumeClient();
+		client.listResult = async () => [testSession('one', 'First session'), testSession('two', 'Second session')];
+		const fixture = createRefreshFixture(client);
+		document.body.appendChild(fixture.root);
+		try {
+			await fixture.load();
+			// 行を選ぶと、狭い幅（1 カラム）では一覧が隠れる（detail-open）。一覧と会話が並ぶ幅にする
+			const modal = fixture.root.querySelector<HTMLElement>('.paradis-session-resume-modal')!;
+			modal.style.maxWidth = 'none';
+			modal.style.width = '1200px';
+			// 最初の会話は読み込みで選ばれている
+			const selected = fixture.root.querySelector<HTMLButtonElement>('.paradis-session-resume-row.selected')!;
+			selected.focus();
+			const focusedFirst = document.activeElement === selected;
+			selected.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40, bubbles: true }));
+			await timeout(1);
+			await flushMicrotasks();
+			const focused = document.activeElement as HTMLElement | null;
+			assert.deepStrictEqual({ focusedFirst, catalogId: focused?.dataset.catalogId, connected: focused?.isConnected }, { focusedFirst: true, catalogId: 'catalog-two', connected: true });
+		} finally {
+			fixture.root.remove();
+			fixture.dispose();
+		}
+	});
+
+	test('keeps a group of another space open after choosing a row in it or in another group', async () => {
+		const client = new TestResumeClient();
+		const other = (id: string, title: string) => ({ ...testSession(id, title), spaceStateKey: 'other', spaceName: 'Other', currentSpace: false });
+		client.listResult = async () => [testSession('one', 'First session'), other('two', 'Second session'), other('three', 'Third session')];
+		const fixture = createRefreshFixture(client);
+		try {
+			await fixture.load();
+			const otherGroup = () => [...fixture.root.querySelectorAll<HTMLDetailsElement>('details.paradis-session-resume-group')]
+				.find(details => details.querySelector('.group-title')?.textContent === 'Other')!;
+			const row = (title: string) => [...fixture.root.querySelectorAll<HTMLButtonElement>('.paradis-session-resume-row')]
+				.find(candidate => candidate.querySelector('.row-title')?.textContent === title)!;
+			const closedAtFirst = !otherGroup().open;
+			otherGroup().open = true;
+			await timeout(1);
+			row('Second session').click();
+			await flushMicrotasks();
+			const openAfterChoosingInside = otherGroup().open;
+			row('First session').click();
+			await timeout(1);
+			await flushMicrotasks();
+			assert.deepStrictEqual({ closedAtFirst, openAfterChoosingInside, openAfterChoosingOutside: otherGroup().open }, {
+				closedAtFirst: true,
+				openAfterChoosingInside: true,
+				openAfterChoosingOutside: true,
+			});
 		} finally {
 			fixture.dispose();
 		}
