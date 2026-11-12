@@ -14,11 +14,13 @@ vi.stubGlobal('React', React);
 const harness = vi.hoisted(() => {
 	const scmDiff = vi.fn(async () => ({ diff: 'generic binary diff' }));
 	const scmXlsxDiff = vi.fn(async () => ({ html: '<html><body>spreadsheet diff</body></html>' }));
+	const push = vi.fn();
 	const state = {
 		scmDiff,
 		scmXlsxDiff,
 		fsRead: vi.fn(async () => ({ content: '', truncated: false })),
 		fsXlsx: vi.fn(async () => ({ html: '<html></html>' })),
+		activePcId: 'pc-1' as string | undefined,
 		connection: 'online',
 		pcOnline: true,
 		sessionProtocolReady: true,
@@ -28,7 +30,7 @@ const harness = vi.hoisted(() => {
 			renderers: [{ windowId: 7, rendererGeneration: 2, ready: true }],
 		},
 	};
-	return { scmDiff, scmXlsxDiff, state };
+	return { scmDiff, scmXlsxDiff, push, state };
 });
 
 vi.mock('react-native', () => ({
@@ -51,8 +53,8 @@ vi.mock('../appState.js', () => {
 	);
 	return { useAppStore };
 });
-vi.mock('./fileViewer.js', () => ({ buildMarkdownHtml: () => '<html></html>' }));
-vi.mock('./workspaceFileViewer.js', () => ({ WorkspaceFileViewer: 'WorkspaceFileViewer' }));
+vi.mock('expo-router', () => ({ useRouter: () => ({ push: harness.push }) }));
+vi.mock('../features/code/fileViewerModel.js', () => ({ buildMarkdownHtml: () => '<html></html>', DIR_VIEW: 'dir', FILE_VIEW: 'file' }));
 // 追加されたトークン（type / alpha など）まで列挙し続けなくて済むよう、本物を土台にして色などだけ差し替える。
 vi.mock('../theme.js', async (importOriginal) => ({
 	...await importOriginal<typeof import('../theme.js')>(),
@@ -65,6 +67,7 @@ vi.mock('./diffParser.js', () => ({ parseUnifiedDiff: () => [] }));
 vi.mock('../hooks/useSizeClass.js', () => ({ useIsRegularWidth: () => false }));
 
 import { DiffView } from './diffView.js';
+import { fileViewerHref } from '../features/code/codeRoutes.js';
 
 async function renderDiff(path: string): Promise<ReactTestRenderer> {
 	let renderer: ReactTestRenderer | undefined;
@@ -108,29 +111,42 @@ describe('DiffView Office routing', () => {
 	});
 });
 
-/** モックした WorkspaceFileViewer（文字列の要素型）か。 */
-function isFileViewer(node: { readonly type: unknown }): boolean {
-	return node.type === 'WorkspaceFileViewer';
-}
-
 describe('DiffView から実ファイルを開く', () => {
+	const onClose = vi.fn();
+	beforeEach(() => {
+		harness.push.mockClear();
+		onClose.mockClear();
+		harness.state.activePcId = 'pc-1';
+	});
+
 	async function render(statusLetter: string | undefined): Promise<ReactTestRenderer> {
 		let renderer: ReactTestRenderer | undefined;
 		await act(async () => {
-			renderer = create(createElement(DiffView, { ws: 'workspace-1', path: 'src/app.ts', staged: false, statusLetter, onClose: () => undefined }));
+			renderer = create(createElement(DiffView, { ws: 'workspace-1', path: 'src/app.ts', staged: false, statusLetter, onClose }));
 			await Promise.resolve();
 		});
 		return renderer!;
 	}
 
-	it('押すと差分の上にファイルビューアを重ね、戻り先を「差分」にする', async () => {
+	it('押すと差分を閉じ、ファイルツリーと同じビューアの画面へ進む', async () => {
 		const renderer = await render('M');
 		try {
-			expect(renderer.root.findAll(isFileViewer)).toHaveLength(0);
 			const open = renderer.root.findByProps({ accessibilityLabel: 'ファイルを開く' });
 			await act(async () => { open.props.onPress(); });
-			const viewer = renderer.root.find(isFileViewer);
-			expect(viewer.props).toMatchObject({ ws: 'workspace-1', path: 'src/app.ts', backLabel: '差分' });
+			expect({ closed: onClose.mock.calls.length, pushed: harness.push.mock.calls }).toEqual({
+				closed: 1,
+				pushed: [[fileViewerHref('pc-1', 'workspace-1', 'src/app.ts')]],
+			});
+		} finally {
+			await act(async () => renderer.unmount());
+		}
+	});
+
+	it('PC が分からないときは開く操作を出さない', async () => {
+		harness.state.activePcId = undefined;
+		const renderer = await render('M');
+		try {
+			expect(renderer.root.findAllByProps({ accessibilityLabel: 'ファイルを開く' })).toHaveLength(0);
 		} finally {
 			await act(async () => renderer.unmount());
 		}

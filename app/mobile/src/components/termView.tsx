@@ -37,6 +37,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, StyleSheet, View } from 'react-native';
+import { CircleAlert } from 'lucide-react-native';
 import { WebView } from 'react-native-webview';
 import xtermBundle from '../../assets/xterm/xtermBundle.json';
 import type { TermStreamEvent } from '../store.js';
@@ -45,7 +46,7 @@ import { colors } from '../theme.js';
 import { haptic } from '../haptics.js';
 import { copyTextWithToast } from './copyActions.js';
 import { findTerminalLinkAt, findTerminalLinks, terminalOsc8Link, type TerminalLinkTarget } from '../terminalLinks.js';
-import { EmptyState } from './emptyState.js';
+import { EmptyState } from '../ui/emptyState.js';
 import { createTermReadyWatchdog } from './termReadyWatchdog.js';
 import { createTermWriteCoalescer } from './termWriteCoalescer.js';
 import { appLinkMetrics } from '../linkMetricsRuntime.js';
@@ -1506,9 +1507,9 @@ export function TermView({ output, cols, rows, subscribe, onNeedResync, fontSize
 			{loadFailed ? (
 				<View style={styles.failed}>
 					<EmptyState
-						icon="alert-circle-outline"
+						icon={CircleAlert}
 						title="ターミナルを表示できませんでした"
-						message="画面の読み込みが終わりませんでした。［再試行］で読み込み直します。"
+						body="画面の読み込みが終わりませんでした。［再試行］で読み込み直します。"
 						action={{ label: '再試行', onPress: retryLoad }}
 					/>
 				</View>

@@ -91,6 +91,7 @@ export class ParadisSpaceNotesPanel extends Disposable {
 	readonly onDidChangeHeight: Event<void> = this._onDidChangeHeight.event;
 
 	private readonly root: HTMLElement;
+	/** 見出しの開閉の役の要素（aria-expanded を持つ）。 */
 	private readonly header: HTMLElement;
 	private readonly twistie: HTMLElement;
 	private readonly spaceLabel: HTMLElement;
@@ -147,16 +148,19 @@ export class ParadisSpaceNotesPanel extends Disposable {
 
 		this.root = DOM.append(container, DOM.$('.paradis-space-notes'));
 
-		const header = this.header = DOM.append(this.root, DOM.$('.paradis-space-notes-header.paradis-focus-ring-inset'));
-		header.tabIndex = 0;
-		header.setAttribute('role', 'button');
-		this.twistie = DOM.append(header, DOM.$('.codicon'));
+		const header = DOM.append(this.root, DOM.$('.paradis-space-notes-header'));
+		// 開閉の役は見出しの左側（矢印・名前・スペース・数）だけに持たせ、編集のボタンをその中に入れない
+		// （ボタンの役の中にボタンがあると、読み上げで中のボタンに届かない）
+		const toggle = this.header = DOM.append(header, DOM.$('.paradis-space-notes-toggle.paradis-focus-ring-inset'));
+		toggle.tabIndex = 0;
+		toggle.setAttribute('role', 'button');
+		this.twistie = DOM.append(toggle, DOM.$('.codicon'));
 		// allow-any-unicode-next-line
-		DOM.append(header, DOM.$('.paradis-space-notes-title')).textContent = localize('paradis.spaceNotes.title', "メモ");
-		this.spaceLabel = DOM.append(header, DOM.$('.paradis-space-notes-space'));
+		DOM.append(toggle, DOM.$('.paradis-space-notes-title')).textContent = localize('paradis.spaceNotes.title', "メモ");
+		this.spaceLabel = DOM.append(toggle, DOM.$('.paradis-space-notes-space'));
 		this.spaceDot = DOM.append(this.spaceLabel, DOM.$('.paradis-space-notes-dot'));
 		this.spaceName = DOM.append(this.spaceLabel, DOM.$('span.paradis-space-notes-space-name'));
-		this.badge = DOM.append(header, DOM.$('.paradis-space-notes-badge'));
+		this.badge = DOM.append(toggle, DOM.$('.paradis-space-notes-badge'));
 
 		const actionsContainer = DOM.append(header, DOM.$('.paradis-space-notes-actions'));
 		this.actionBar = this._register(new ActionBar(actionsContainer));
@@ -177,11 +181,11 @@ export class ParadisSpaceNotesPanel extends Disposable {
 		this.editorElement.setAttribute('aria-label', localize('paradis.spaceNotes.editorAriaLabel', "スペースのメモ"));
 
 		this.sash = this._register(new Sash(this.root, { getHorizontalSashTop: () => 0 }, { orientation: Orientation.HORIZONTAL }));
-		this.registerListeners(header);
+		this.registerListeners(header, toggle);
 		this.render();
 	}
 
-	private registerListeners(header: HTMLElement): void {
+	private registerListeners(header: HTMLElement, toggle: HTMLElement): void {
 		this._register(DOM.addDisposableListener(header, DOM.EventType.CLICK, event => {
 			// ヘッダー右のアクション (編集トグル) は開閉と別扱いにする
 			if ((event.target as HTMLElement).closest('.paradis-space-notes-actions')) {
@@ -189,7 +193,7 @@ export class ParadisSpaceNotesPanel extends Disposable {
 			}
 			this.setExpanded(!this.expanded);
 		}));
-		this._register(DOM.addDisposableListener(header, DOM.EventType.KEY_DOWN, (event: KeyboardEvent) => {
+		this._register(DOM.addDisposableListener(toggle, DOM.EventType.KEY_DOWN, (event: KeyboardEvent) => {
 			const keyboardEvent = new StandardKeyboardEvent(event);
 			if (keyboardEvent.equals(KeyCode.Enter) || keyboardEvent.equals(KeyCode.Space)) {
 				DOM.EventHelper.stop(event, true);

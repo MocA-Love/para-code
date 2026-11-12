@@ -24,7 +24,7 @@ import { colors, type } from '../theme.js';
 import { AppLockContext } from '../appLock.js';
 import { onAppReauthenticationRequest, setAppLockedNow } from '../appLockState.js';
 import { AUTH_UI_RETRY_DELAY_MS, canLockDevice, foregroundAction, isAppLocked, isAuthUiUnavailable, lockedContentProps, lockedRetryAction, type AuthGateState } from '../appLockPolicy.js';
-import { Button } from './button.js';
+import { Button } from '../ui/button.js';
 
 type GateState = AuthGateState;
 

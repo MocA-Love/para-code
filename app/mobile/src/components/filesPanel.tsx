@@ -3,15 +3,15 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Pressable, RefreshControl, ScrollView, StyleSheet, Text, View, type StyleProp, type TextStyle } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
-import { FileViewer, MEDIA_FILE_PATTERN } from './fileViewer.js';
 import { EmptyState } from './emptyState.js';
 import { FilesBreadcrumbs as Breadcrumbs } from './filesBreadcrumbs.js';
 import { LoadingState, UnavailableNote } from './listStates.js';
 import { breadcrumbItems } from '../filesBreadcrumb.js';
+import { fileViewerHref } from '../features/code/codeRoutes.js';
 import { useWorkspaceUnavailableReason } from '../hooks/useWorkspaceUnavailableReason.js';
-import { classifyMobileFileKind } from './officeCapability.js';
 import { useEffectiveWs } from './wsDrawer.js';
 import { useTabBarSpacer } from '../hooks/useTabBarSpacer.js';
 import { matchRanges, useFilesSearch } from '../filesSearch.js';
@@ -19,7 +19,7 @@ import { useFilesLive } from '../filesLive.js';
 import { monoFamily } from '../monoFont.js';
 import { HIT_SIZE, colors, radius, squircle, type } from '../theme.js';
 import { hapticImpact, hapticSelection } from '../haptics.js';
-import type { FsFindResult, FsGrepResult, FsListResult, FsReadResult, StoreState } from '../store.js';
+import type { FsFindResult, FsGrepResult, FsListResult, StoreState } from '../store.js';
 
 /**
  * rendererTarget（どのrendererへ出した要求かの照合キー）の導出。セレクタ内からは
@@ -43,9 +43,7 @@ function currentRendererTarget(wsId: string | undefined): string | undefined {
 
 /**
  * ファイルパネル（モックアップ mock-2.html 準拠、「その他」タブのセグメント）。
- * ワークスペースのファイルツリーを閲覧し、タップでのフルスクリーンビューア表示に対応（読み取り専用）。
- * ビューアはPC版と同じテーマのシンタックスハイライトで表示し、.md/.htmlは
- * レンダー/Raw を切り替えられる。
+ * ワークスペースのファイルツリーを閲覧し、ファイルをタップするとファイルツリーと同じビューアの画面へ進む（読み取り専用）。
  *
  * 検索はPC側ripgrep（VS Code本体と同じエンジン）によるワークスペース全体検索:
  *  - ファイル名: 全階層の相対パスに対する部分一致（.gitignore尊重、ランク順）
@@ -64,7 +62,8 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 	searchOpen?: boolean;
 }) {
 	const ws = useEffectiveWs();
-	const { fsList, fsRead, fsXlsx, fsPdf, fsDocx, fsMedia, fsFind, fsGrep } = useAppStore(useShallow(s => ({ fsList: s.fsList, fsRead: s.fsRead, fsXlsx: s.fsXlsx, fsPdf: s.fsPdf, fsDocx: s.fsDocx, fsMedia: s.fsMedia, fsFind: s.fsFind, fsGrep: s.fsGrep })));
+	const { fsList, fsFind, fsGrep, activePcId } = useAppStore(useShallow(s => ({ fsList: s.fsList, fsFind: s.fsFind, fsGrep: s.fsGrep, activePcId: s.activePcId })));
+	const router = useRouter();
 	// **`s.workspace` 本体を購読しない。** 必要なのは rendererTarget という文字列1つだけ。
 	// 本体を買うと10Hz再送のたびに画面全体が再描画していた。セレクタの中で文字列まで
 	// 導出すれば、中身が変わらない再送では同値判定が止まる（markdownText と同じ流儀）。
@@ -98,22 +97,6 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 	const [error, setError] = useState<string | undefined>();
 	const [loading, setLoading] = useState(false);
 	const loadGenRef = useRef(0);
-	const [viewerPath, setViewerPath] = useState<string | undefined>();
-	const [viewerResult, setViewerResult] = useState<FsReadResult | undefined>();
-	const [viewerXlsx, setViewerXlsx] = useState<{ html?: string; sheets?: string[]; sheet?: number } | undefined>();
-	const [viewerPdf, setViewerPdf] = useState<string | undefined>();
-	const [viewerDocx, setViewerDocx] = useState<string | undefined>();
-	const [viewerMedia, setViewerMedia] = useState<string | undefined>();
-	const [viewerLine, setViewerLine] = useState<number | undefined>();
-	const [viewerError, setViewerError] = useState<string | undefined>();
-	// 同じpathを閉じて開き直す場合やworkspaceを跨ぐ場合も、前のfetchが
-	// 新しいビューアを上書きしないようpathとは別に世代を持つ。
-	const viewerPathRef = useRef<string | undefined>(undefined);
-	const viewerGenRef = useRef(0);
-	const reloadViewerRef = useRef<() => void>(() => { });
-	// 同一ファイル内でシートを素早く切り替えた際、古いシート応答が新しい選択を上書きするのを防ぐ世代ガード
-	const sheetGenRef = useRef(0);
-
 	const wsId = ws?.id;
 
 	const load = useCallback(async (p: string, clearSearch = false) => {
@@ -154,21 +137,10 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 		if (previous.wsId !== wsId) {
 			loadGenRef.current++;
 			searchGenRef.current++;
-			viewerGenRef.current++;
-			sheetGenRef.current++;
 			pathRef.current = '';
 			setPath('');
 			useFilesSearch.getState().clear();
 			setListing(undefined);
-			setViewerPath(undefined);
-			viewerPathRef.current = undefined;
-			setViewerResult(undefined);
-			setViewerXlsx(undefined);
-			setViewerPdf(undefined);
-			setViewerDocx(undefined);
-			setViewerMedia(undefined);
-			setViewerLine(undefined);
-			setViewerError(undefined);
 			setFindResult(undefined);
 			setGrepResult(undefined);
 			setSearchError(undefined);
@@ -182,8 +154,6 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 		if ((!live && previous.live) || rendererChanged) {
 			loadGenRef.current++;
 			searchGenRef.current++;
-			viewerGenRef.current++;
-			sheetGenRef.current++;
 			setLoading(false);
 			setSearching(false);
 			if (!live) {
@@ -196,7 +166,6 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 			if (filter.trim().length === 0) {
 				void load(pathRef.current);
 			}
-			reloadViewerRef.current();
 		}
 	}, [wsId, live, rendererTarget, load, filter]);
 
@@ -261,94 +230,12 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 		setSearchRetry(count => count + 1);
 	};
 
-	const openViewer = async (p: string, line?: number) => {
-		if (!live) {
+	// ファイルツリーと同じビューアの画面へ進む（iPad では詳細の列に積まれる）。
+	const openViewer = (p: string, line?: number) => {
+		if (!live || wsId === undefined || activePcId === undefined) {
 			return;
 		}
-		const viewerGen = ++viewerGenRef.current;
-		const requestTarget = rendererTarget;
-		sheetGenRef.current++;
-		viewerPathRef.current = p;
-		setViewerPath(p);
-		setViewerResult(undefined);
-		setViewerXlsx(undefined);
-		setViewerPdf(undefined);
-		setViewerDocx(undefined);
-		setViewerMedia(undefined);
-		setViewerLine(line);
-		setViewerError(undefined);
-		if (!wsId) {
-			return;
-		}
-		try {
-			if (classifyMobileFileKind(p) === 'spreadsheet') {
-				// Excel は PC 側でレンダリングされた静的HTML（1シート分）を受け取る。
-				// シート一覧はビューアのネイティブタブになり、切替時に個別要求する
-				const result = await fsXlsx(wsId, p);
-				if (viewerGenRef.current === viewerGen && viewerPathRef.current === p && currentRendererTarget(wsId) === requestTarget) {
-					setViewerXlsx({ html: result.html, sheets: result.sheets, sheet: result.sheet });
-				}
-			} else if (/\.pdf$/i.test(p)) {
-				// PDF はバイナリを base64 で受け取り、キャッシュへ書き出して WKWebView でネイティブ表示する
-				const result = await fsPdf(wsId, p);
-				if (viewerGenRef.current === viewerGen && viewerPathRef.current === p && currentRendererTarget(wsId) === requestTarget) {
-					setViewerPdf(result.data);
-				}
-			} else if (classifyMobileFileKind(p) === 'docx') {
-				// Word はバイナリを base64 で受け取り、WebView 内の docx-preview（PC版と同じ
-				// vendored ライブラリ）でレンダリングする
-				const result = await fsDocx(wsId, p);
-				if (viewerGenRef.current === viewerGen && viewerPathRef.current === p && currentRendererTarget(wsId) === requestTarget) {
-					setViewerDocx(result.data);
-				}
-			} else if (MEDIA_FILE_PATTERN.test(p)) {
-				// 画像・動画・音声はバイナリを base64 で受け取る（画像は data URI、
-				// 動画/音声はキャッシュファイル経由の WKWebView ネイティブ再生で表示する）
-				const result = await fsMedia(wsId, p);
-				if (viewerGenRef.current === viewerGen && viewerPathRef.current === p && currentRendererTarget(wsId) === requestTarget) {
-					setViewerMedia(result.data);
-				}
-			} else {
-				// highlight=true でPCの現行テーマそのままのハイライトHTMLを受け取る
-				const result = await fsRead(wsId, p, true);
-				if (viewerGenRef.current === viewerGen && viewerPathRef.current === p && currentRendererTarget(wsId) === requestTarget) {
-					setViewerResult(result);
-				}
-			}
-		} catch (e) {
-			if (viewerGenRef.current === viewerGen && viewerPathRef.current === p && currentRendererTarget(wsId) === requestTarget) {
-				setViewerError(String(e instanceof Error ? e.message : e));
-			}
-		}
-	};
-	reloadViewerRef.current = () => {
-		const currentPath = viewerPathRef.current;
-		if (currentPath !== undefined) {
-			void openViewer(currentPath, viewerLine);
-		}
-	};
-
-	const selectSheet = async (index: number) => {
-		const p = viewerPath;
-		if (!live || !wsId || p === undefined) {
-			return;
-		}
-		// 表示中のHTMLは残したままシートだけ差し替える（タブ位置は即時反映）
-		setViewerXlsx(prev => prev ? { ...prev, sheet: index, html: undefined } : prev);
-		setViewerError(undefined);
-		const viewerGen = viewerGenRef.current;
-		const gen = ++sheetGenRef.current;
-		const requestTarget = rendererTarget;
-		try {
-			const result = await fsXlsx(wsId, p, index);
-			if (viewerGenRef.current === viewerGen && viewerPathRef.current === p && sheetGenRef.current === gen && currentRendererTarget(wsId) === requestTarget) {
-				setViewerXlsx({ html: result.html, sheets: result.sheets, sheet: result.sheet });
-			}
-		} catch (e) {
-			if (viewerGenRef.current === viewerGen && viewerPathRef.current === p && sheetGenRef.current === gen && currentRendererTarget(wsId) === requestTarget) {
-				setViewerError(String(e instanceof Error ? e.message : e));
-			}
-		}
+		router.push(fileViewerHref(activePcId, wsId, p, line));
 	};
 
 	// 検索欄は本文の先頭にあるので、下まで読んでから開くと欄が画面の外に居る。
@@ -401,7 +288,7 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 							{/* 行はカードに収める（SCMと同じ作法）。素の下線リストだと4タブでここだけ言語が違って見える。 */}
 							{findResult.files.length > 0 ? <View style={styles.card}>
 								{findResult.files.map((p, i) => (
-									<Pressable key={p} style={[styles.row, i === findResult.files.length - 1 && styles.rowLast]} onPress={() => { hapticSelection(); void openViewer(p); }}>
+									<Pressable key={p} style={[styles.row, i === findResult.files.length - 1 && styles.rowLast]} onPress={() => { hapticSelection(); openViewer(p); }}>
 										<Ionicons name="document-text-outline" size={16} color={colors.textDim} />
 										<View style={styles.resultCol}>
 											<Highlighted text={p.includes('/') ? p.slice(p.lastIndexOf('/') + 1) : p} query={filter} smartCase={false} lines={1} style={styles.rowName} />
@@ -417,7 +304,7 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 						<>
 							{grepResult.matches.length > 0 ? <View style={styles.card}>
 								{grepResult.matches.map((m, i) => (
-									<Pressable key={`${m.path}:${m.line}:${i}`} style={[styles.row, i === grepResult.matches.length - 1 && styles.rowLast]} onPress={() => { hapticSelection(); void openViewer(m.path, m.line); }}>
+									<Pressable key={`${m.path}:${m.line}:${i}`} style={[styles.row, i === grepResult.matches.length - 1 && styles.rowLast]} onPress={() => { hapticSelection(); openViewer(m.path, m.line); }}>
 										<View style={styles.resultCol}>
 											<Text style={styles.resultPath} numberOfLines={1}>{m.path}:{m.line}</Text>
 											<Highlighted text={m.text} query={filter} smartCase lines={2} style={styles.resultPreview} />
@@ -467,7 +354,7 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 										key={entry.name}
 										disabled={!live}
 										style={[styles.row, i === entries.length - 1 && styles.rowLast]}
-										onPress={() => { hapticSelection(); entry.dir ? void load(childPath, true) : void openViewer(childPath); }}
+										onPress={() => { hapticSelection(); entry.dir ? void load(childPath, true) : openViewer(childPath); }}
 									>
 										<Ionicons name={entry.dir ? 'folder-outline' : 'document-text-outline'} size={16} color={entry.dir ? colors.accent : colors.textDim} />
 										<Text style={styles.rowName} numberOfLines={1}>{entry.name}</Text>
@@ -482,22 +369,6 @@ export function FilesPanel({ contentInsetTop = 0, searchOpen = false }: {
 					</>
 				)}
 			</ScrollView>
-			{viewerPath !== undefined ? (
-				<FileViewer
-					path={viewerPath}
-					result={viewerResult}
-					spreadsheetHtml={viewerXlsx?.html}
-					sheets={viewerXlsx?.sheets}
-					sheetIndex={viewerXlsx?.sheet}
-					onSelectSheet={i => { void selectSheet(i); }}
-					focusLine={viewerLine}
-					pdfData={viewerPdf}
-					docxData={viewerDocx}
-					mediaData={viewerMedia}
-					error={viewerError}
-					onClose={() => { viewerGenRef.current++; sheetGenRef.current++; viewerPathRef.current = undefined; setViewerPath(undefined); setViewerResult(undefined); setViewerXlsx(undefined); setViewerPdf(undefined); setViewerDocx(undefined); setViewerMedia(undefined); setViewerLine(undefined); setViewerError(undefined); }}
-				/>
-			) : null}
 		</View>
 	);
 }
