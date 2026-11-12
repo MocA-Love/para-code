@@ -141,6 +141,46 @@ suite('ParadisCodexTerminalTitleService', () => {
 		assert.deepStrictEqual(await service.findThreadPrompt({ threadId: rolloutThreadId, cwd: '/workspace/original', invocation: 'start' }), { rolloutScanExhausted: true });
 	});
 
+	test('returns a prompt from the line that crosses the byte budget', async () => {
+		await writeRollout(rolloutThreadId, [
+			JSON.stringify({ type: 'session_meta', payload: { filler: 'x'.repeat(200) } }),
+			userPromptLine(`Fix the parser ${'y'.repeat(200)}`),
+		]);
+		const service = new ParadisCodexTerminalTitleService(new NullLogService(), codexHome, { maxBytes: 256, maxLineBytes: 1024 });
+		assert.deepStrictEqual(await service.findThreadPrompt({ threadId: rolloutThreadId, cwd: '/workspace/original', invocation: 'start' }), { prompt: `Fix the parser ${'y'.repeat(200)}` });
+	});
+
+	test('returns a prompt that precedes a line larger than the line budget', async () => {
+		await writeRollout(rolloutThreadId, [
+			userPromptLine('Fix the parser'),
+			JSON.stringify({ type: 'session_meta', payload: { filler: 'x'.repeat(4096) } }),
+		]);
+		const service = new ParadisCodexTerminalTitleService(new NullLogService(), codexHome, { maxBytes: 1024 * 1024, maxLineBytes: 1024 });
+		assert.deepStrictEqual(await service.findThreadPrompt({ threadId: rolloutThreadId, cwd: '/workspace/original', invocation: 'start' }), { prompt: 'Fix the parser' });
+	});
+
+	test('reports exhaustion for a line larger than the line budget even after CRLF lines', async () => {
+		const rolloutPath = join(codexHome, 'sessions', `rollout-${rolloutThreadId}.jsonl`);
+		await writeRollout(rolloutThreadId, []);
+		await fs.writeFile(rolloutPath, `${JSON.stringify({ type: 'session_meta', payload: {} })}\r\n${userPromptLine('x'.repeat(2048))}\r\n`);
+		const service = new ParadisCodexTerminalTitleService(new NullLogService(), codexHome, { maxBytes: 1024 * 1024, maxLineBytes: 1024 });
+		assert.deepStrictEqual(await service.findThreadPrompt({ threadId: rolloutThreadId, cwd: '/workspace/original', invocation: 'start' }), { rolloutScanExhausted: true });
+	});
+
+	test('measures the line budget in UTF-8 bytes rather than characters', async () => {
+		await writeRollout(rolloutThreadId, [userPromptLine('あ'.repeat(400))]);
+		const service = new ParadisCodexTerminalTitleService(new NullLogService(), codexHome, { maxBytes: 1024 * 1024, maxLineBytes: 1024 });
+		assert.deepStrictEqual(await service.findThreadPrompt({ threadId: rolloutThreadId, cwd: '/workspace/original', invocation: 'start' }), { rolloutScanExhausted: true });
+	});
+
+	test('leaves an unterminated last line within the line budget retryable', async () => {
+		const rolloutPath = join(codexHome, 'sessions', `rollout-${rolloutThreadId}.jsonl`);
+		await writeRollout(rolloutThreadId, []);
+		await fs.writeFile(rolloutPath, `${JSON.stringify({ type: 'session_meta', payload: {} })}\n{"type":"response_item","payload":{"type":"mess`);
+		const service = new ParadisCodexTerminalTitleService(new NullLogService(), codexHome, { maxBytes: 1024 * 1024, maxLineBytes: 1024 });
+		assert.deepStrictEqual(await service.findThreadPrompt({ threadId: rolloutThreadId, cwd: '/workspace/original', invocation: 'start' }), {});
+	});
+
 	test('skipRolloutScan leaves the rollout unread', async () => {
 		await writeRollout(rolloutThreadId, [userPromptLine('Fix the parser')]);
 		const service = new ParadisCodexTerminalTitleService(new NullLogService(), codexHome);
