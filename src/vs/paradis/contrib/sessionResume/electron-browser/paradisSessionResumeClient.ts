@@ -204,7 +204,26 @@ export class ParadisSessionResumeClient {
 				grouped.set(channel, [catalogId]);
 			}
 		}
-		const results = await Promise.all([...grouped.entries()].map(([channel, ids]) => channel.call<readonly IParadisResumeSearchResult[]>('search', [query, ids])));
-		return results.flat();
+		// list() と同じく、1 台（落ちた SSH 先など）の失敗で、答えたマシンの一致まで捨てない。全部が失敗したときだけ投げる
+		const results = await Promise.allSettled([...grouped.entries()].map(([channel, ids]) => channel.call<readonly IParadisResumeSearchResult[]>('search', [query, ids])));
+		const matches: IParadisResumeSearchResult[] = [];
+		const rejections: Error[] = [];
+		for (const result of results) {
+			if (result.status === 'fulfilled') {
+				matches.push(...result.value);
+			} else {
+				rejections.push(result.reason);
+				// 入力した検索語は送らない（ダイアログの transcript-search-failed と同じ）
+				reportParadisDiagnosticError('owned', 'session-resume', 'transcript-search-partial-failure', result.reason, {
+					safe_failed_attempts: rejections.length,
+					safe_total_attempts: results.length,
+				}, 'warning');
+				this.logService.warn('[ParadisSessionResume] a machine failed to search sessions', result.reason);
+			}
+		}
+		if (results.length > 0 && rejections.length === results.length) {
+			throw rejections[0];
+		}
+		return matches;
 	}
 }

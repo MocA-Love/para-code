@@ -39,9 +39,22 @@ export interface IParadisReopenPlan {
 /**
  * まとまりの開き直し方を決める。エディタの印だけのまとまりで、upstream の履歴が既に空
  * （閉じたファイルが削除された等）なら undefined（このまとまりは飛ばして1つ前へ）。
+ *
+ * 「隣のグループ」はグループの最後のタブを閉じた1件にしか控えられないので、同じまとまりで
+ * 同じグループから閉じた他の件にも写し、まとめて同じ作り直したグループへ戻せるようにする。
  */
 export function paradisPlanReopen(batch: readonly ParadisClosedEntry[], canReopenClosedEditor: boolean): IParadisReopenPlan | undefined {
-	const terminals = batch.flatMap(entry => entry.kind === 'terminal' ? [entry.terminal] : []);
+	const closed = batch.flatMap(entry => entry.kind === 'terminal' ? [entry.terminal] : []);
+	const neighbors = new Map<number, IParadisClosedTerminal['neighbor']>();
+	for (const terminal of closed) {
+		if (terminal.neighbor) {
+			neighbors.set(terminal.groupId, terminal.neighbor);
+		}
+	}
+	const terminals = closed.map(terminal => {
+		const neighbor = terminal.neighbor ? undefined : neighbors.get(terminal.groupId);
+		return neighbor ? { ...terminal, neighbor } : terminal;
+	});
 	const reopenEditors = terminals.length !== batch.length;
 	if (!terminals.length && !canReopenClosedEditor) {
 		return undefined;

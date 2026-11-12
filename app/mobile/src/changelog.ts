@@ -44,6 +44,14 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-11-12',
 		items: [
 			{
+				icon: 'volume-high-outline',
+				title: 'iPhone・iPad の VoiceOver で、「コピーしました」などのお知らせを読み上げるようにしました',
+			},
+			{
+				icon: 'accessibility-outline',
+				title: 'VoiceOver で、接続中・実行中などの状態の点とセッションのタブの状態を読み上げるようにしました',
+			},
+			{
 				icon: 'color-palette-outline',
 				title: '設定 → 色で変えた「選択の印」の色が、質問の選択肢・キー行の Ctrl と「Enterなし」にも当たるようにしました',
 			},
@@ -64,6 +72,18 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				icon: 'image-outline',
 				title: '写真を選んでも読み込めなかったとき、何も出ずに止まっていたのを直しました',
 				body: '「写真を開けませんでした」と出すので、選び直してください。',
+			},
+			{
+				icon: 'cloud-offline-outline',
+				title: 'ペアリングで中継サーバーにつながらなかったとき、意味の読めない文言ではなく通信状態を確かめるよう案内するようにしました',
+			},
+			{
+				icon: 'terminal-outline',
+				title: '起動のシートを開いてすぐ「ターミナル」を選ぶと、少し後で Claude に変わってしまうことがあったのを直しました',
+			},
+			{
+				icon: 'warning-outline',
+				title: '承認カードで、「git push origin +main」のように + を付けた push にも「強制 push」の札を出すようにしました',
 			},
 		],
 	},

@@ -29,6 +29,8 @@ const packageJson = JSON.parse(readFileSync(join(repositoryRoot, 'package.json')
 const release = getParadisSentryReleaseFromEnv(packageJson.version, process.env.GITHUB_SHA);
 console.log(`Sentry release: ${release}`);
 const sentryCli = join(repositoryRoot, 'node_modules', '@sentry', 'cli', 'bin', 'sentry-cli');
+// The Sentry organization and project every release command targets.
+const SENTRY_TARGET = ['--org', 'maguro-bot-corp', '--project', 'para-code-desktop'];
 
 function runSentryCli(args: string[], label: string): string | undefined {
 	const result = spawnSync(process.execPath, [sentryCli, ...args], {
@@ -61,16 +63,14 @@ runRequired([
 	'releases',
 	'new',
 	release,
-	'--org', 'maguro-bot-corp',
-	'--project', 'para-code-desktop',
+	...SENTRY_TARGET,
 ], 'releases new');
 
 runRequired([
 	'sourcemaps',
 	'upload',
 	'out-vscode-min',
-	'--org', 'maguro-bot-corp',
-	'--project', 'para-code-desktop',
+	...SENTRY_TARGET,
 	'--release', release,
 	'--dist', `${platform}-${arch}`,
 	'--url-prefix', 'app:///out',
@@ -89,8 +89,7 @@ const finalizeFailure = runSentryCli([
 	'releases',
 	'finalize',
 	release,
-	'--org', 'maguro-bot-corp',
-	'--project', 'para-code-desktop',
+	...SENTRY_TARGET,
 ], 'releases finalize');
 if (finalizeFailure !== undefined) {
 	console.warn(`::warning::${finalizeFailure}; the release stays unfinalized in Sentry`);

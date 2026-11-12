@@ -27,7 +27,7 @@ import { equals } from '../../../base/common/objects.js';
 import { URI } from '../../../base/common/uri.js';
 import { ILogService } from '../../log/common/log.js';
 import { IAgentNetworkFilterService } from '../../networkFilter/common/networkFilterService.js';
-import { paradisConsumeAgentContextMenuSuppression } from '../../../paradis/contrib/agentBrowser/electron-main/paradisAgentContextMenu.js'; // PARA-PATCH: suppress the native context menu for agent right-clicks
+import { paradisConsumeAgentContextMenuSuppression } from '../common/paradisAgentContextMenu.js'; // PARA-PATCH: suppress the native context menu for agent right-clicks
 import { paradisAppendBrowserExtensionMenuItems } from '../../../paradis/contrib/browserExtensions/electron-main/paradisBrowserExtensionMenuHook.js'; // PARA-PATCH: Chrome extension context menu items (experimental)
 import { formatBrowserViewAccessibility } from './browserViewAccessibility.js';
 import { ISandboxNetworkRestrictions } from '../../sandbox/common/sandboxSettingsResolutionHelper.js';

@@ -171,6 +171,10 @@ export function paradisShowPermissionsDialog(container: HTMLElement, options: IP
 		store.add(dom.addDisposableListener(cancel, 'click', () => finish(undefined, true)));
 		store.add(dom.addDisposableListener(change, 'click', () => finish({ mode, recursive: !!recursiveInput?.checked }, true)));
 		store.add(dom.addDisposableListener(octal, 'keydown', e => {
+			// 日本語入力の確定の Enter では変更しない（keyCode 229 は変換中の打鍵）
+			if (e.isComposing || e.keyCode === 229) {
+				return;
+			}
 			if (e.key === 'Enter' && !change.disabled) {
 				e.preventDefault();
 				finish({ mode, recursive: !!recursiveInput?.checked }, true);

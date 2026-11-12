@@ -17,6 +17,7 @@ import { ParadisPortListPanel } from '../../electron-browser/paradisPortListPane
 
 interface IPanelFixture {
 	readonly root: HTMLElement;
+	readonly panel: ParadisPortListPanel;
 	readonly killedEntries: readonly IParadisPortEntry[];
 	readonly anchorRectReadCount: number;
 	setViewport(viewportWidth: number, anchorRight: number): void;
@@ -52,6 +53,7 @@ function createPanelFixture(): IPanelFixture {
 
 	return {
 		root,
+		panel,
 		killedEntries,
 		get anchorRectReadCount(): number { return anchorRectReadCount; },
 		setViewport(viewportWidth: number, nextAnchorRight: number): void {
@@ -210,6 +212,26 @@ suite('Paradis port list panel', () => {
 			}
 			fixture.dispose();
 			stylesheet.remove();
+		}
+	});
+
+	test('keeps the focus on the kill button of the same row when the list is refreshed', () => {
+		const fixture = createPanelFixture();
+		try {
+			const otherEntry: IParadisPortEntry = { port: 3000, proto: 'TCP', pid: 99, processName: 'node', address: '127.0.0.1:3000', risky: false };
+			fixture.panel.updateSnapshot({ entries: [otherEntry, longRiskyEntry], collectedAt: 1 });
+			fixture.root.querySelectorAll<HTMLButtonElement>('.ppl-kill-btn')[1].focus();
+
+			fixture.panel.updateSnapshot({ entries: [otherEntry, longRiskyEntry], collectedAt: 2 });
+			const keptOnRow = document.activeElement?.getAttribute('aria-label');
+			const keptIsNewButton = document.activeElement === fixture.root.querySelectorAll('.ppl-kill-btn')[1];
+
+			fixture.panel.updateSnapshot({ entries: [otherEntry], collectedAt: 3 });
+			const afterRowGone = document.activeElement === fixture.root.querySelector('.paradis-port-list-panel');
+
+			assert.deepStrictEqual({ keptOnRow, keptIsNewButton, afterRowGone }, { keptOnRow: 'PID 4321 を終了', keptIsNewButton: true, afterRowGone: true });
+		} finally {
+			fixture.dispose();
 		}
 	});
 

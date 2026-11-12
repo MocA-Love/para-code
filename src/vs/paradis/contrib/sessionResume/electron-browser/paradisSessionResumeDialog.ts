@@ -40,6 +40,7 @@ import '../../../browser/media/paradisSegmented.css';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { IChatOutputRendererService } from '../../../../workbench/contrib/chat/browser/chatOutputItemRenderer.js';
 import { ParadisSessionIndexController } from '../../agentActivity/electron-browser/paradisSessionIndexController.js';
+import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisResumeAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
@@ -111,6 +112,8 @@ export class ParadisSessionResumeDialog extends Disposable {
 	/** ワークツリーを展開しているリポジトリの stateKey。updateSpaceNavOptions() は refresh() のたびに
 	 * ツリーを作り直す(DOMのクラスだけでは状態が消える)ため、開閉状態はここに持って復元する。 */
 	private readonly expandedRepositories = new Set<string>();
+	/** 利用者が開いた「他のスペース」のグループ（spaceStateKey）。render() は一覧を作り直すので、開閉はここに持って復元する。 */
+	private readonly expandedOtherSpaces = new Set<string>();
 	private readonly periodNavButtons = new Map<PeriodFilter, { button: HTMLButtonElement; count: HTMLElement }>();
 	private railSummary: HTMLElement | undefined;
 	private archivedInput: ParadisCheck | undefined;
@@ -202,28 +205,30 @@ export class ParadisSessionResumeDialog extends Disposable {
 
 		this.buildContent(this.modal);
 
-		// 背景クリックと Escape で閉じる。検索欄に入力があるときの Escape は
-		// 「検索語を消す」を優先する（通知設定ダイアログと同じ約束）。
+		// 背景クリックで閉じる
 		this._register(dom.addDisposableListener(this.backdrop, dom.EventType.MOUSE_DOWN, e => {
 			if (e.target === this.backdrop) {
 				this.close();
 			}
 		}));
-		this._register(dom.addDisposableListener(this.backdrop, dom.EventType.KEY_DOWN, e => {
-			const event = new StandardKeyboardEvent(e);
-			if (event.keyCode !== KeyCode.Escape) {
-				return;
-			}
-			event.preventDefault();
-			if (this.searchInput && this.searchInput.value.length > 0) {
-				this.searchInput.value = '';
-				this.onSearchInput();
-				return;
-			}
-			this.close();
-		}));
 
 		layoutService.activeContainer.appendChild(this.backdrop);
+		// fork のモーダルと同じフォーカスの扱い（閉じたら開く前の場所へ戻す・描き直しで外れたら戻す・別のモーダルが開いたら閉じる）。
+		// 中へフォーカスを移す前に作る（開く前の場所を覚えるため）。Escape は、検索欄に入力があるときは
+		// 「検索語を消す」を優先する（通知設定ダイアログと同じ約束）
+		this._register(new ParadisModalFocus({
+			backdrop: this.backdrop,
+			modal: this.modal,
+			onEscape: () => {
+				if (this.searchInput && this.searchInput.value.length > 0) {
+					this.searchInput.value = '';
+					this.onSearchInput();
+					return;
+				}
+				this.close();
+			},
+			close: () => this.close(),
+		}));
 		this.refreshController.setVisible(true);
 		if (!this.loading && this.sessions.length === 0) {
 			void this.refreshController.requestImmediate();
@@ -752,6 +757,10 @@ export class ParadisSessionResumeDialog extends Disposable {
 
 	private render(): void {
 		if (!this.list || !this.detail) { return; }
+		// 一覧を作り直すと、フォーカスしていた行が DOM から外れる。同じ会話の行へ戻す（↑↓ で続けて動けるように）
+		const active = this.list.ownerDocument.activeElement;
+		const focusedRow = dom.isHTMLElement(active) && this.list.contains(active) ? active.closest<HTMLElement>('.paradis-session-resume-row') : null;
+		const focusedCatalogId = focusedRow?.dataset.catalogId;
 		this.renderSequence++;
 		this.renderedSearchMatches = [];
 		this.renderDisposables.clear();
@@ -789,9 +798,27 @@ export class ParadisSessionResumeDialog extends Disposable {
 				const otherHeading = dom.append(this.list, $('.paradis-session-resume-superheading'));
 				otherHeading.textContent = localize('paradis.sessionResume.otherSpaces', "他のスペース");
 				for (const sessions of bySpace.values()) {
-					this.renderGroup(this.list, sessions[0].spaceName, sessions, this.query.length > 0);
+					const stateKey = sessions[0].spaceStateKey;
+					// 検索中と、選んでいる行を含むグループは常に開く。それ以外は利用者が開いたかどうかを保つ
+					const forced = this.query.length > 0 || sessions.some(session => session.catalogId === this.selected?.catalogId);
+					const details = this.renderGroup(this.list, sessions[0].spaceName, sessions, forced || this.expandedOtherSpaces.has(stateKey));
+					this.renderDisposables.add(dom.addDisposableListener(details, 'toggle', () => {
+						// toggle は open を代入しただけでも（あとから）飛ぶ。強制的に開いたグループは覚えない
+						if (forced) {
+							return;
+						}
+						if (details.open) {
+							this.expandedOtherSpaces.add(stateKey);
+						} else {
+							this.expandedOtherSpaces.delete(stateKey);
+						}
+					}));
 				}
 			}
+		}
+		if (focusedCatalogId !== undefined) {
+			// 裏の再読み込みで一覧が勝手にスクロールしないよう、位置は動かさない（↑↓ の移動先は moveSelection が見せる）
+			this.rowElements.find(row => row.dataset.catalogId === focusedCatalogId)?.focus({ preventScroll: true });
 		}
 		this.renderDetail();
 	}
@@ -866,7 +893,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 		this.highlightSearchMatches(parent);
 	}
 
-	private renderGroup(parent: HTMLElement, title: string, sessions: readonly IParadisResumeSession[], expanded: boolean, tooltip?: string): void {
+	private renderGroup(parent: HTMLElement, title: string, sessions: readonly IParadisResumeSession[], expanded: boolean, tooltip?: string): HTMLDetailsElement {
 		const details = dom.append(parent, $('details.paradis-session-resume-group')) as HTMLDetailsElement;
 		details.open = expanded;
 		const summary = dom.append(details, $('summary'));
@@ -956,6 +983,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 				void this.loadPreview(session);
 			}));
 		}
+		return details;
 	}
 
 	/** 一覧の隣の行を選び、作り直した一覧でその行にフォーカスを戻す。 */

@@ -105,7 +105,7 @@ export function paradisDecodeZshHistory(bytes: Uint8Array): string {
 	return new TextDecoder().decode(unmetafied.subarray(0, outputLength));
 }
 
-/** Parses zsh extended history and escaped continuations in oldest-to-newest order. */
+/** Parses zsh extended history and escaped continuations in oldest-to-newest order; a repeated command keeps its latest position. */
 export function paradisParseZshHistory(content: string): readonly string[] {
 	const isExtendedHistory = /^:\s\d+:\d+;/.test(content);
 	const lines = content.split(isExtendedHistory ? /:\s\d+:\d+;/ : /(?<!\\)\n/);
@@ -113,13 +113,15 @@ export function paradisParseZshHistory(content: string): readonly string[] {
 	for (const line of lines) {
 		const sanitized = line.replace(/\\\n/g, '\n').trim();
 		if (sanitized.length > 0) {
+			// 打ち直したコマンドは後ろ（新しい位置）へ移す。Set は add しても最初の位置のままになる
+			result.delete(sanitized);
 			result.add(sanitized);
 		}
 	}
 	return Array.from(result);
 }
 
-/** Parses bash history using upstream's quote-aware multiline behavior. */
+/** Parses bash history using upstream's quote-aware multiline behavior; a repeated command keeps its latest position. */
 export function paradisParseBashHistory(content: string): readonly string[] {
 	const lines = content.split('\n');
 	const result = new Set<string>();
@@ -136,13 +138,15 @@ export function paradisParseBashHistory(content: string): readonly string[] {
 				if (line[index] === wrapCharacter) {
 					wrapCharacter = undefined;
 				}
-			} else if (line[index].match(/['"]/)) {
+			} else if (line[index] === '\'' || line[index] === '"') {
 				wrapCharacter = line[index];
 			}
 		}
 		if (wrapCharacter === undefined) {
 			if (currentCommand.length > 0) {
-				result.add(currentCommand.trim());
+				const command = currentCommand.trim();
+				result.delete(command);
+				result.add(command);
 			}
 			currentCommand = undefined;
 		}

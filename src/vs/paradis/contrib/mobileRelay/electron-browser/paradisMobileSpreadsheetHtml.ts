@@ -88,6 +88,16 @@ async function readSpreadsheetCss(fileService: IFileService): Promise<string> {
 	}
 }
 
+/** ビューアのCSSを読めなかったときのエラー（モバイル側にそのまま出る）。 */
+function spreadsheetCssLoadError(): Error {
+	return new Error(localize('paradis.mobile.spreadsheet.cssLoadFailed', "スプレッドシート表示用CSSの読み込みに失敗しました。再度お試しください"));
+}
+
+/** 1シートでもサイズ上限を超えるときのエラー（モバイル側にそのまま出る）。 */
+function sheetTooLargeError(): Error {
+	return new Error(localize('paradis.mobile.spreadsheet.sheetTooLarge', "このシートは大きすぎるため、モバイルでは表示できません"));
+}
+
 /**
  * ビューアのCSSをテキストで取得する(モバイルHTMLへのインライン用、成功時のみキャッシュ)。
  * CSSが無いと table-layout: fixed もグリッド罫線も斜線オーバーレイも効かず、
@@ -98,13 +108,13 @@ function loadSpreadsheetCss(fileService: IFileService): Promise<string> {
 	if (!cssPromise) {
 		cssPromise = readSpreadsheetCss(fileService).then(css => {
 			if (!css) {
-				throw new Error('スプレッドシート表示用CSSの読み込みに失敗しました。再度お試しください');
+				throw spreadsheetCssLoadError();
 			}
 			return css;
 		}).catch(err => {
 			// 一過性の失敗を恒久キャッシュしない（次回の要求で再取得する）
 			cssPromise = undefined;
-			throw err instanceof Error ? err : new Error('スプレッドシート表示用CSSの読み込みに失敗しました。再度お試しください');
+			throw err instanceof Error ? err : spreadsheetCssLoadError();
 		});
 	}
 	return cssPromise;
@@ -414,7 +424,7 @@ document.querySelectorAll('.pm-tab').forEach(function (btn) {
 	if (tpls.length === 0) { return; }
 	var progress = document.createElement('div');
 	progress.id = 'pm-progress';
-	progress.textContent = '残りの行を描画中…';
+	progress.textContent = ${JSON.stringify(localize('paradis.mobile.spreadsheet.renderingRows', "残りの行を描画中…"))};
 	document.body.appendChild(progress);
 	var total = tpls.length;
 	function next() {
@@ -431,7 +441,7 @@ document.querySelectorAll('.pm-tab').forEach(function (btn) {
 		var tbody = inner ? inner.querySelector('tbody') : null;
 		if (tbody) { tbody.appendChild(tpl.content); }
 		tpl.remove();
-		progress.textContent = '残りの行を描画中… ' + Math.round(((total - tpls.length) / total) * 100) + '%';
+		progress.textContent = ${JSON.stringify(localize('paradis.mobile.spreadsheet.renderingRowsPercent', "残りの行を描画中… {0}%"))}.replace('{0}', String(Math.round(((total - tpls.length) / total) * 100)));
 		// requestAnimationFrame はWebViewが非表示だと発火せず追記が止まるため setTimeout で刻む
 		setTimeout(next, 0);
 	}
@@ -446,14 +456,14 @@ function assembleWithinBudget(css: string, sections: ISectionEntry[], notices: s
 	const kept = [...sections];
 	for (; ;) {
 		const omitted = sections.length - kept.length;
-		const allNotices = omitted > 0 ? [...notices, `サイズ上限のため後方の${omitted}シートを省略しています`] : notices;
+		const allNotices = omitted > 0 ? [...notices, localize('paradis.mobile.spreadsheet.sheetsOmitted', "サイズ上限のため後方の{0}シートを省略しています", omitted)] : notices;
 		// 省略後に残るシートが参照するクラスのCSSだけを載せる(省略してもCSSが縮まらず上限超過し続けるのを防ぐ)
 		const docHtml = assembleMobileDoc(css, kept, allNotices, deduper.cssTextForHtml(kept.map(s => s.html)));
 		if (encoder.encode(docHtml).length <= MOBILE_XLSX_HTML_MAX_BYTES) {
 			return docHtml;
 		}
 		if (kept.length <= 1) {
-			throw new Error('このExcelファイルは大きすぎるため、モバイルでは表示できません');
+			throw new Error(localize('paradis.mobile.spreadsheet.fileTooLarge', "このExcelファイルは大きすぎるため、モバイルでは表示できません"));
 		}
 		kept.pop();
 	}
@@ -523,12 +533,12 @@ async function renderSheetUncached(fileService: IFileService, sharedProcessServi
 	const workbook = await parseWithCache(fileService, sharedProcessService, resource, mtime);
 	const css = await loadSpreadsheetCss(fileService);
 	if (workbook.sheets.length === 0) {
-		throw new Error('シートが見つかりません');
+		throw new Error(localize('paradis.mobile.spreadsheet.sheetNotFound', "シートが見つかりません"));
 	}
 	const index = Math.min(Math.max(0, sheetIndex), workbook.sheets.length - 1);
 	const sheet = workbook.sheets[index];
 	if (paradisMobileSheetCertainlyTooLarge(sheet)) {
-		throw new Error('このシートは大きすぎるため、モバイルでは表示できません');
+		throw sheetTooLargeError();
 	}
 	const html = withMeasureHost((host, doc) => {
 		const deduper = new InlineStyleDeduper();
@@ -539,7 +549,7 @@ async function renderSheetUncached(fileService: IFileService, sharedProcessServi
 		}
 		const docHtml = assembleMobileDoc(css, [{ name: sheet.name, html: section.html, naturalWidth: section.naturalWidth }], notices, deduper.cssText());
 		if (encoder.encode(docHtml).length > MOBILE_XLSX_HTML_MAX_BYTES) {
-			throw new Error('このシートは大きすぎるため、モバイルでは表示できません');
+			throw sheetTooLargeError();
 		}
 		return docHtml;
 	});
@@ -636,7 +646,7 @@ export async function renderSpreadsheetDiffMobileHtml(
 	const css = await loadSpreadsheetCss(fileService);
 	const diffSheets = buildDiffSheets(original.sheets, modified.sheets);
 	if (diffSheets.length === 0) {
-		throw new Error('変更はありません');
+		throw new Error(localize('paradis.mobile.spreadsheetDiff.noChanges', "変更はありません"));
 	}
 	return withMeasureHost((host, doc) => {
 		const deduper = new InlineStyleDeduper();

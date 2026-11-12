@@ -163,10 +163,6 @@ export function encodeNotifyDismissed(id: string): Uint8Array {
 	return new TextEncoder().encode(JSON.stringify({ t: 'dismissed', id }));
 }
 
-export function encodeNotifyDismissedByToken(token: string): Uint8Array {
-	return new TextEncoder().encode(JSON.stringify({ t: 'dismissed-token', token }));
-}
-
 /**
  * notify チャネルの受信バイト列を制御メッセージとして読む。NotifyPayload（`kind`を持つ）や
  * 形式不正なバイト列に対しては undefined を返す（呼び出し側は通常のNotifyPayloadとしての

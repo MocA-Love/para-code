@@ -35,6 +35,7 @@ interface IWorkflowStep {
 interface IWorkflowJob {
 	readonly needs?: string | readonly string[];
 	readonly if?: string;
+	readonly permissions?: Record<string, string>;
 	readonly env?: Record<string, string>;
 	readonly outputs?: Record<string, string>;
 	readonly strategy?: { readonly matrix?: { readonly arch?: readonly string[] } };
@@ -115,7 +116,7 @@ const EXPRESSION_PATTERN = /\$\{\{\s*(?<expr>[\s\S]+?)\s*\}\}/g;
 
 /**
  * Evaluates the subset of GitHub Actions expressions these workflows use (`needs.*.result`,
- * `needs.*.outputs.*`, `steps.*.outputs.*`, `github.event_name`, `inputs.*`, `secrets.*` (as a
+ * `needs.*.outputs.*`, `steps.*.outputs.*`, `github.event_name`, `github.repository`, `inputs.*`, `secrets.*` (as a
  * placeholder), `cancelled()`, string
  * literals, `==`, `!=`, `&&`, `||`, `!`, parentheses). Missing outputs are '' like on GitHub.
  * Anything else throws, so a new construct in the workflow makes this test fail instead of passing.
@@ -129,6 +130,7 @@ function evaluateExpression(expression: string, context: IExpressionContext): un
 		.replace(/\bneeds\.(?<job>[\w-]+)\.outputs\.(?<key>\w+)/g, (_match, job: string, key: string) => literal(context.needs?.[job]?.outputs?.[key]))
 		.replace(/\bsteps\.(?<step>[\w-]+)\.outputs\.(?<key>\w+)/g, (_match, step: string, key: string) => literal(context.steps?.[step]?.[key]))
 		.replace(/\bgithub\.event_name\b/g, () => literal(context.eventName))
+		.replace(/\bgithub\.repository\b/g, () => literal('owner/repo'))
 		.replace(/\binputs\.(?<key>\w+)/g, (_match, key: string) => literal(context.inputs?.[key]))
 		.replace(/\bsecrets\.(?<key>\w+)/g, (_match, key: string) => literal(`@secrets.${key}@`));
 	const withoutStrings = translated.replace(/"(?:[^"\\]|\\.)*"|\btrue\b|\bfalse\b/g, '');
@@ -455,15 +457,20 @@ suite('Para Code release contract', () => {
 	});
 
 	test('publishes REH only from release tags and never overwrites an existing asset for a beta', () => {
-		const job = readRehWorkflow().jobs['build-reh-linux-x64'];
-		const publishStep = getStep(job, 'Publish to reh release');
+		const workflow = readRehWorkflow();
+		const job = workflow.jobs['build-reh-linux-x64'];
+		const publishJob = workflow.jobs['publish-reh'];
+		const publishStep = getStep(publishJob, 'Publish to reh release');
 		const tarball = 'para-code-server-linux-x64-abc.tar.gz';
 		const plan = (ref: IParadisReleaseRef) => toParadisReleaseOutputs(planParadisRelease(ref));
 		const stable = plan({ eventName: 'push', refType: 'tag', refName: 'v1.139.1-paracode-146', platforms: '' });
 		const beta = plan({ eventName: 'push', refType: 'tag', refName: 'v1.139.1-paracode-146-beta.1', platforms: '' });
 		const branch = plan({ eventName: 'workflow_dispatch', refType: 'branch', refName: 'main', platforms: '' });
-		const stepContext = (outputs: Record<string, string>, eventName: string, publishInput: boolean): IExpressionContext =>
-			({ eventName, inputs: { publish: publishInput }, steps: { plan: outputs, pack: { tarball } } });
+		// The publishing job only sees what the build job passes on through its outputs.
+		const stepContext = (outputs: Record<string, string>, eventName: string, publishInput: boolean): IExpressionContext => {
+			const buildOutputs = Object.fromEntries(Object.entries(job.outputs ?? {}).map(([key, value]) => [key, String(evaluateValue(value, { steps: { plan: outputs, pack: { tarball } } }))]));
+			return { eventName, inputs: { publish: publishInput }, needs: { 'build-reh-linux-x64': { result: 'success', outputs: buildOutputs } } };
+		};
 		const publish = (outputs: Record<string, string>, fixture: IScriptFixture) => {
 			const context = stepContext(outputs, 'push', true);
 			return runStepScripts([publishStep.run!], {
@@ -477,18 +484,21 @@ suite('Para Code release contract', () => {
 
 		assert.deepStrictEqual({
 			classifyRun: getStep(job, 'Classify the ref').run,
+			// npm ci runs third-party install scripts in the build job, so only the publishing job may write
+			permissions: { build: job.permissions, publish: publishJob.permissions, publishNeeds: publishJob.needs, publishStepIf: publishStep.if },
 			runsOn: {
-				stableTagPush: evaluateCondition(publishStep.if, stepContext(stable, 'push', true)),
-				betaTagPush: evaluateCondition(publishStep.if, stepContext(beta, 'push', true)),
-				tagDispatchPublishOff: evaluateCondition(publishStep.if, stepContext(stable, 'workflow_dispatch', false)),
-				branchDispatch: evaluateCondition(publishStep.if, stepContext(branch, 'workflow_dispatch', true)),
-				emptyPlan: evaluateCondition(publishStep.if, stepContext({}, 'push', true)),
+				stableTagPush: evaluateCondition(publishJob.if, stepContext(stable, 'push', true)),
+				betaTagPush: evaluateCondition(publishJob.if, stepContext(beta, 'push', true)),
+				tagDispatchPublishOff: evaluateCondition(publishJob.if, stepContext(stable, 'workflow_dispatch', false)),
+				branchDispatch: evaluateCondition(publishJob.if, stepContext(branch, 'workflow_dispatch', true)),
+				emptyPlan: evaluateCondition(publishJob.if, stepContext({}, 'push', true)),
 			},
 			stableExistingAsset: publish(stable, { releaseExists: true, rehAssets: [tarball] }),
 			betaExistingAsset: publish(beta, { releaseExists: true, rehAssets: [tarball] }),
 			betaNewAsset: publish(beta, { releaseExists: true, rehAssets: ['para-code-server-linux-x64-other.tar.gz'] }),
 		}, {
 			classifyRun: 'node build/lib/paradisReleaseChannel.ts',
+			permissions: { build: { contents: 'read' }, publish: { contents: 'write' }, publishNeeds: 'build-reh-linux-x64', publishStepIf: undefined },
 			runsOn: { stableTagPush: true, betaTagPush: true, tagDispatchPublishOff: false, branchDispatch: false, emptyPlan: false },
 			stableExistingAsset: ['gh release view reh', uploadCall],
 			betaExistingAsset: ['gh release view reh', listCall],

@@ -21,15 +21,18 @@ export function paradisAgentChatImagesToLinks(markdown: string): string {
 		return markdown;
 	}
 	const lines = markdown.split('\n');
+	// 開いたフェンスの文字と長さ。閉じるのは同じ文字で、開きと同じ長さ以上の行だけ（```` の中の ``` では閉じない）
 	let fence: string | undefined;
 	for (let index = 0; index < lines.length; index++) {
 		const line = lines[index];
 		const fenceMatch = /^\s*(`{3,}|~{3,})/.exec(line);
 		if (fenceMatch !== null) {
-			const marker = fenceMatch[1][0];
+			const marker = fenceMatch[1];
 			if (fence === undefined) {
 				fence = marker;
-			} else if (fence === marker) {
+				continue;
+			}
+			if (marker[0] === fence[0] && marker.length >= fence.length) {
 				fence = undefined;
 			}
 			continue;

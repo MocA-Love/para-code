@@ -106,7 +106,10 @@ export interface IParadisBrowserProfilesService {
 	 */
 	remove(profileId: string): Promise<void>;
 
-	/** 台帳には残したまま、保存されている Cookie / ストレージだけを消す（＝ログアウト）。 */
+	/**
+	 * 台帳には残したまま、保存されている Cookie / ストレージだけを消す（＝ログアウト）。
+	 * main で消せなかったときは reject する（ログイン状態が残っているので、呼び出し元が知らせる）。
+	 */
 	clearProfileData(profileId: string): Promise<void>;
 
 
@@ -316,9 +319,13 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 		try {
 			await this._mainService.clearProfileData(profileId, deleted);
 		} catch (error) {
-			// 台帳の側は既に片付いており、ユーザーから見た操作は完了している。ディスク上に
-			// パーティションが残るだけなので、ここで失敗を前面に出さずログに残す。
 			this.logService.warn('[ParadisBrowserProfiles] failed to clear the stored data of a profile', error);
+			// 削除のときは台帳の側が既に片付いており、ユーザーから見た操作は完了している。ディスク上に
+			// パーティションが残るだけなので、失敗を前面に出さない。消去だけ（＝ログアウト）のときは
+			// ログイン状態が残ったままになるので、呼び出し元へ返して知らせてもらう。
+			if (!deleted) {
+				throw error;
+			}
 		}
 	}
 
@@ -491,7 +498,7 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 		}
 		const viewId = this._reserveView({ scope: BrowserViewStorageScope.Profile, profileId });
 		try {
-			// PARA-PATCH: upstream 1.137 folded the view id into the data argument of getOrCreateLazy.
+			// Upstream 1.137 folded the view id into the data argument of getOrCreateLazy.
 			const input = this.browserViewWorkbenchService.getOrCreateLazy({ id: viewId, ...(url ? { url } : {}) });
 			const pane = await this.editorService.openEditor(input, { pinned: true }, group);
 			if (!url && options?.openUrlPicker && pane instanceof BrowserEditor) {
@@ -533,7 +540,7 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 		const url = input.model?.url ?? input.serialize().url;
 		const viewId = this._reserveView(options);
 		try {
-			// PARA-PATCH: upstream 1.137 folded the view id into the data argument of getOrCreateLazy.
+			// Upstream 1.137 folded the view id into the data argument of getOrCreateLazy.
 			const replacement = this.browserViewWorkbenchService.getOrCreateLazy({ id: viewId, ...(url ? { url } : {}) });
 			// replaceEditors は同じグループの同じ位置へ差し替える（新しいタブが末尾に増えない）。
 			await group.replaceEditors([{ editor: input, replacement, options: { pinned: true } }]);
@@ -733,7 +740,7 @@ function paradisReviveSessionOptions(value: unknown): IBrowserViewSessionOptions
 }
 
 /**
- * PARA-PATCH: read the profile id out of the discriminated `IBrowserViewSessionOptions` union
+ * Read the profile id out of the discriminated `IBrowserViewSessionOptions` union
  * (upstream 1.137). Only the Profile variant carries one; every other scope yields undefined.
  */
 function paradisProfileIdOf(options: IBrowserViewSessionOptions | undefined): string | undefined {
@@ -741,7 +748,7 @@ function paradisProfileIdOf(options: IBrowserViewSessionOptions | undefined): st
 }
 
 /**
- * PARA-PATCH: upstream 1.137 replaced the loose `IBrowserSessionOptions` record with the
+ * Upstream 1.137 replaced the loose `IBrowserSessionOptions` record with the
  * discriminated `IBrowserViewSessionOptions` union. The fork keeps working with a plain
  * "scope (+ profileId)" pair at its boundaries (the persisted override table, the profile
  * pill's switch target) and converts to the union here, in one place. Returns undefined for

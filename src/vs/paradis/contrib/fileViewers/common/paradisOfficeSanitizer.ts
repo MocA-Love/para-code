@@ -180,7 +180,10 @@ export interface ParadisOfficePackageSanitizerInput {
  */
 export const PARADIS_OFFICE_SANITIZER_XML_ELEMENTS = Object.freeze({ part: 200_000, package: 400_000 });
 
-/** Builds the isolated Word webview policy from already-resolved, exact origins only. */
+/**
+ * Builds the isolated Word webview policy from already-resolved, exact origins only.
+ * `navigate-to` is not listed: it was dropped from CSP Level 3 and Chromium ignores it (with a console warning), so it never blocked navigation.
+ */
 export function buildParadisOfficeWordCsp(nonce: string, source: ParadisOfficeWordCspSource): string {
 	if (!/^[A-Za-z\d-]{1,128}$/.test(nonce)) {
 		throw new Error('Invalid Office webview nonce');
@@ -191,7 +194,7 @@ export function buildParadisOfficeWordCsp(nonce: string, source: ParadisOfficeWo
 	}
 	const validated = [...new Set(rawSources.map(value => validateCspOrigin(value, source.kind)))];
 	const origins = validated.join(' ');
-	return `default-src 'none'; script-src 'nonce-${nonce}' ${origins}; style-src 'unsafe-inline'; img-src data: blob: ${origins}; font-src data: blob: ${origins}; connect-src ${origins} data: blob:; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'; navigate-to 'none';`;
+	return `default-src 'none'; script-src 'nonce-${nonce}' ${origins}; style-src 'unsafe-inline'; img-src data: blob: ${origins}; font-src data: blob: ${origins}; connect-src ${origins} data: blob:; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none';`;
 }
 
 /** Converts a resource URL to the one exact origin permitted by the fallback CSP. */

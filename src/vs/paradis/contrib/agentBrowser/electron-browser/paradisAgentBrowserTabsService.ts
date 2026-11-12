@@ -1163,6 +1163,8 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 				const poll = mainWindow.setInterval(() => {
 					if (shownAt === undefined && this._isDialogShown(marker)) {
 						shownAt = Date.now();
+						// 出たと分かったら見張りを止める（この後は何もしないため）
+						mainWindow.clearInterval(poll);
 						onShown();
 					}
 				}, DIALOG_SHOWN_POLL_MS);

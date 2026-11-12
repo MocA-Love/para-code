@@ -11,7 +11,7 @@
 // decodeAudioData でピーク値を計算し canvas に描画する。
 
 import * as dom from '../../../../base/browser/dom.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { PARADIS_MAX_CLIP_DURATION_SECONDS, PARADIS_NOTIFICATIONS_CHANNEL } from '../common/paradisNotifications.js';
@@ -90,6 +90,8 @@ export class ParadisAudioEditor extends Disposable {
 	private _playbackRate = 1.0;
 	private _dragging: 'start' | 'end' | undefined;
 	private _isPlaying = false;
+	/** 試聴中だけ、終わりの位置を過ぎていないかを短い間隔で見る（timeupdate は約 250ms 間隔で遅れる）。 */
+	private readonly _endWatcher = this._register(new MutableDisposable());
 	private _blobUrl: string | undefined;
 
 	constructor(
@@ -237,31 +239,54 @@ export class ParadisAudioEditor extends Disposable {
 		this._audio = new Audio();
 		this._audio.preload = 'none';
 
+		const stopPreview = () => {
+			this._audio.pause();
+			this._isPlaying = false;
+			this._endWatcher.clear();
+			previewBtn.textContent = STR_PREVIEW;
+		};
+		const stopAtEnd = () => {
+			if (this._isPlaying && this._audio.currentTime >= this._endSeconds) {
+				stopPreview();
+			}
+		};
+		let playGeneration = 0;
 		this._register(dom.addDisposableListener(previewBtn, 'click', () => {
 			if (this._isPlaying) {
-				this._audio.pause();
-				this._isPlaying = false;
-				previewBtn.textContent = STR_PREVIEW;
+				stopPreview();
 				return;
 			}
 			this._audio.playbackRate = this._playbackRate;
 			this._audio.currentTime = this._startSeconds;
-			void this._audio.play();
+			const generation = ++playGeneration;
+			// 波形の読み込み前（音がまだ無い）や再生の失敗では、ボタンを「試聴」に戻す
+			this._audio.play().catch(() => {
+				if (generation === playGeneration && this._isPlaying) {
+					stopPreview();
+				}
+			});
 			this._isPlaying = true;
 			previewBtn.textContent = STR_STOP;
+			this._endWatcher.value = dom.disposableWindowInterval(dom.getWindow(this._canvas), stopAtEnd, 30);
 		}));
-		this._register(dom.addDisposableListener(this._audio, 'timeupdate', () => {
-			if (this._isPlaying && this._audio.currentTime >= this._endSeconds) {
-				this._audio.pause();
-				this._isPlaying = false;
-				previewBtn.textContent = STR_PREVIEW;
+		this._register(dom.addDisposableListener(this._audio, 'timeupdate', stopAtEnd));
+		this._register(dom.addDisposableListener(this._audio, 'ended', () => {
+			if (this._isPlaying) {
+				stopPreview();
 			}
 		}));
 
-		this._register(dom.addDisposableListener(this._canvas, 'mousedown', e => this._onCanvasMouseDown(e)));
-		this._register(dom.addDisposableListener(this._canvas, 'mousemove', e => this._onCanvasMouseMove(e, () => { syncInputs(); refreshFadeBounds(); })));
-		this._register(dom.addDisposableListener(this._canvas, 'mouseup', () => { this._dragging = undefined; }));
-		this._register(dom.addDisposableListener(this._canvas, 'mouseleave', () => { this._dragging = undefined; }));
+		// 枠の外へ出てもドラッグが続くよう、ポインタを掴んで追う（マウス・トラックパッド・ペン共通）。
+		this._register(dom.addDisposableListener(this._canvas, 'pointerdown', e => {
+			this._onCanvasPointerDown(e);
+			if (this._dragging) {
+				this._canvas.setPointerCapture(e.pointerId);
+			}
+		}));
+		this._register(dom.addDisposableListener(this._canvas, 'pointermove', e => this._onCanvasPointerMove(e, () => { syncInputs(); refreshFadeBounds(); })));
+		this._register(dom.addDisposableListener(this._canvas, 'pointerup', () => { this._dragging = undefined; }));
+		this._register(dom.addDisposableListener(this._canvas, 'pointercancel', () => { this._dragging = undefined; }));
+		this._register(dom.addDisposableListener(this._canvas, 'lostpointercapture', () => { this._dragging = undefined; }));
 
 		syncInputs();
 		refreshFadeBounds();
@@ -327,7 +352,7 @@ export class ParadisAudioEditor extends Disposable {
 		}
 	}
 
-	private _onCanvasMouseDown(e: MouseEvent): void {
+	private _onCanvasPointerDown(e: PointerEvent): void {
 		const rect = this._canvas.getBoundingClientRect();
 		const x = e.clientX - rect.left;
 		const totalWidth = rect.width;
@@ -342,7 +367,7 @@ export class ParadisAudioEditor extends Disposable {
 		}
 	}
 
-	private _onCanvasMouseMove(e: MouseEvent, onChange: () => void): void {
+	private _onCanvasPointerMove(e: PointerEvent, onChange: () => void): void {
 		if (!this._dragging) {
 			return;
 		}

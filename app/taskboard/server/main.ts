@@ -34,7 +34,8 @@ import { excludeBoardFiles, git, GitWorkspaces, inspectClones, remoteUrl } from 
  *   pnpm dev -- --demo                                  見本の台帳で動かす（GitHub につながない）
  *   pnpm dev -- --repo … --agents para-code             本物の Claude Code / Codex を Para Code で動かす（作業場所の git 操作と自動の工程も本物）
  *
- * 守り: 127.0.0.1 だけで待ち受け、起動ごとの乱数トークンを要求する（URL の ?token= で一度渡すと Cookie に移る）。
+ * 守り: 127.0.0.1 だけで待ち受け、起動ごとの乱数トークンを要求する（URL の ?token= で一度渡すと画面が localStorage に置き、
+ * x-taskboard-token ヘッダー（WebSocket はサブプロトコル）で送る。Cookie は使わない）。
  * Host と Origin も確かめ、別のサイトや DNS の付け替えから叩かれないようにする。
  */
 
@@ -1060,7 +1061,15 @@ async function main(restart?: IRestart): Promise<void> {
 				return;
 			}
 			if (artifact?.groups && req.method === 'GET') {
-				serveArtifact(res, decodeURIComponent(artifact.groups.task), decodeURIComponent(artifact.groups.artifact));
+				// % の崩れた URL は、見つからない成果物として扱う（URIError で 500 にしない）
+				let ids: [string, string];
+				try {
+					ids = [decodeURIComponent(artifact.groups.task), decodeURIComponent(artifact.groups.artifact)];
+				} catch {
+					res.writeHead(404).end();
+					return;
+				}
+				serveArtifact(res, ...ids);
 				return;
 			}
 			if (url.pathname === '/api/image' && req.method === 'GET') {

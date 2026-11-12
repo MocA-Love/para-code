@@ -15,7 +15,7 @@ import { TestConfigurationService } from '../../../../../platform/configuration/
 import { IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
 import { NullHoverService } from '../../../../../platform/hover/test/browser/nullHoverService.js';
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
-import { ParadisNotificationInboxPopover } from '../../browser/paradisNotificationInboxPopover.js';
+import { ParadisNotificationInboxPopover, paradisInboxPopoverPlacement } from '../../browser/paradisNotificationInboxPopover.js';
 import { IParadisInboxEntry, IParadisInboxSnapshot, IParadisNotificationInboxService } from '../../common/paradisNotificationInbox.js';
 
 function entry(id: string, extra: Partial<IParadisInboxEntry>): IParadisInboxEntry {
@@ -24,6 +24,22 @@ function entry(id: string, extra: Partial<IParadisInboxEntry>): IParadisInboxEnt
 
 suite('Paradis notification inbox popover', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('fits the popover into narrow windows instead of running off the right edge', () => {
+		assert.deepStrictEqual([
+			// 広いウィンドウ: ベルの右端にそろえる・ベルが無ければ右上
+			paradisInboxPopoverPlacement(1200, 900),
+			paradisInboxPopoverPlacement(1200, undefined),
+			// ズームした最小幅のウィンドウ（CSS で 333px）: 両端の余白を残して縮める
+			paradisInboxPopoverPlacement(333, 300),
+			paradisInboxPopoverPlacement(333, undefined),
+		], [
+			{ left: 520, width: 380 },
+			{ left: 812, width: 380 },
+			{ left: 8, width: 317 },
+			{ left: 8, width: 317 },
+		]);
+	});
 
 	test('lists entries with their state and routes clicks to the pane or to read', () => {
 		const container = mainWindow.document.createElement('div');
@@ -67,15 +83,16 @@ suite('Paradis notification inbox popover', () => {
 			space: text(row, 'pnip-space'),
 			detail: text(row, 'pnip-detail'),
 			message: text(row, 'pnip-message') ?? text(row, 'pnip-note'),
+			ariaLabel: row.getAttribute('aria-label'),
 		}));
 		rows[0].click();
 		rows[1].click();
 
 		assert.deepStrictEqual({ rendered, calls }, {
 			rendered: [
-				{ classes: ['unread'], kind: '許可待ち', space: 'para-code', detail: 'claude', message: 'Bash: npm test -- auth' },
+				{ classes: ['unread'], kind: '許可待ち', space: 'para-code', detail: 'claude', message: 'Bash: npm test -- auth', ariaLabel: '未読 許可待ち para-code ／ claude Bash: npm test -- auth' },
 				// 「完了」は札にせず時刻の横に出す
-				{ classes: ['closed'], kind: undefined, space: 'para-code', detail: 'fix-login', message: 'このペインは閉じています' },
+				{ classes: ['closed'], kind: undefined, space: 'para-code', detail: 'fix-login', message: 'このペインは閉じています', ariaLabel: '既読 完了 para-code (fix-login) ' },
 			],
 			calls: ['close', 'reveal:2', 'read:1'],
 		});

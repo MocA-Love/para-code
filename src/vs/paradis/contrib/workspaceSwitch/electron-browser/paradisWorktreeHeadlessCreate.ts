@@ -895,7 +895,7 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 					// シェルへ渡る。fsPath はこのウィンドウの OS を見て区切りを付け替えるので、
 					// Windows から Linux の接続先へ繋いでいると /home/u/repo が \home\u\repo に化ける。
 					// setup スクリプト側 (paradisRunWorkspaceLifecycleScript) と同じ導出に揃える
-					return await instantiationService.invokeFunction(paradisRunAutoRunPresets, worktreeUri, gitHost.path(repository.uri), targetStateKey);
+					return await instantiationService.invokeFunction(paradisRunAutoRunPresets, worktreeUri, gitHost.path(repository.uri), targetStateKey, options.preserveFocus === true);
 				} catch (error) {
 					logService.warn('[ParadisWorktreeHeadlessCreate] auto-run presets failed', error);
 					return false;

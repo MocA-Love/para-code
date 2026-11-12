@@ -523,6 +523,29 @@ suite('ParadisCcusage warm lease lifecycle', () => {
 			delays: [10, 20, 40, 80, 80].map(minutes => minutes * 60 * 1000),
 		});
 	});
+
+	// 日付をまたいだ後に取得が失敗し続けたら、前日の金額を「今日の費用」として出し続けない。同じ日のうちの失敗では前回の値を残す。
+	test('drops the cost shown for a previous day when fetches keep failing after midnight', async () => {
+		const clock = sinon.useFakeTimers({ now: new Date(2026, 7, 16, 23, 40, 0) });
+		const harness = createHarness({ [STATUS_BAR_ENABLED_SETTING]: true });
+		disposables.add(harness.instantiationService);
+		disposables.add(toDisposable(() => harness.configuration.dispose()));
+		const status = disposables.add(createStatusContribution(harness));
+		const texts: (string | undefined)[] = [];
+		const advance = async (ms: number) => {
+			await clock.tickAsync(ms);
+			await settle();
+			texts.push(harness.statusbarService.lastEntry?.text);
+		};
+
+		await advance(15_000);
+		harness.channel.dailyFailure = new Error('ccusage timed out');
+		await advance(10 * 60 * 1000);
+		await advance(20 * 60 * 1000);
+		status.dispose();
+
+		assert.deepStrictEqual(texts, ['$(graph) $4.25', '$(graph) $4.25', '$(graph) ccusage']);
+	});
 });
 
 suite('ParadisCcusage custom range', () => {
