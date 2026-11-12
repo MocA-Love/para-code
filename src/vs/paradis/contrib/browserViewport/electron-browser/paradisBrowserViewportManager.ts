@@ -23,6 +23,7 @@ import {
 	paradisFindViewportSize,
 	paradisFormatViewportDimensions,
 	paradisParseViewportDimensions,
+	paradisResolveViewportSpec,
 	paradisSanitizeViewportName,
 } from '../common/paradisBrowserViewport.js';
 import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
@@ -106,12 +107,19 @@ function showViewportManager(quickInputService: IQuickInputService, viewportServ
 				: usedGlobally
 					? localize('paradis.browserViewport.manage.usedByGlobal', "全体の既定に使われています。")
 					: localize('paradis.browserViewport.manage.usedBySpace', "スペース{0}の既定に使われています。", spaceList);
+			// スペースの既定だけに使われているなら、消した後のそのスペースは全体の既定へ落ちる（paradisResolveViewportDefault）。全体の既定が大きさを指していればその名前を伝える
+			const globalTarget = usedGlobally ? undefined : paradisResolveViewportSpec(viewportService.getGlobalDefault(), viewportService.getSizes());
+			const fallbackLabel = globalTarget?.kind === 'size'
+				? (globalTarget.size.name || paradisFormatViewportDimensions(globalTarget.size.width, globalTarget.size.height))
+				: undefined;
 			// fork の確認はクイックピックより下の段に出るので、いったん閉じて確かめ、終わったら管理の一覧を開き直す
 			picker.hide();
 			const { confirmed } = await paradisDialogService.confirm({
 				destructive: true,
 				message: localize('paradis.browserViewport.manage.removeConfirm', "「{0}」を削除しますか?", size.name),
-				detail: localize('paradis.browserViewport.manage.removeDetail', "{0}削除すると、新しく開くタブは「エディタに合わせる」で開きます。", usedBy),
+				detail: fallbackLabel !== undefined
+					? localize('paradis.browserViewport.manage.removeDetailGlobalFallback', "{0}削除すると、そのスペースの新しいタブは全体の既定（{1}）で開きます。", usedBy, fallbackLabel)
+					: localize('paradis.browserViewport.manage.removeDetail', "{0}削除すると、新しく開くタブは「エディタに合わせる」で開きます。", usedBy),
 				primaryButton: localize('paradis.browserViewport.manage.removeConfirmButton', "削除"),
 			});
 			if (confirmed) {

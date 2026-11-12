@@ -944,7 +944,7 @@ export class ParadisAgentLiveWindowView extends Disposable {
 	// ------------------------------------------------------------------ ドラッグ以外の並べ替え
 
 	private showTileMenu(token: string, anchor: HTMLElement | StandardMouseEvent): void {
-		const canMove = (move: ParadisAgentLiveMove) => paradisMoveAgentLiveTile(this.viewState.manualOrder, this.visibleOrder, token, move) !== undefined;
+		const canMove = (move: ParadisAgentLiveMove) => this.movedOrder(token, move) !== undefined;
 		const moveIds = new Map<string, ParadisAgentLiveMove>();
 		const actions: IAction[] = [];
 		for (const move of Object.keys(MOVE_KEYS) as ParadisAgentLiveMove[]) {
@@ -968,8 +968,23 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		});
 	}
 
-	private moveTile(token: string, move: ParadisAgentLiveMove): void {
+	/**
+	 * 動かした後の手動の並び。グループ分けや先頭に固定で元の位置に戻る（画面の位置が変わらない）ときは
+	 * undefined にして、メニューでは無効にし「移動しました」と読み上げないようにする。
+	 */
+	private movedOrder(token: string, move: ParadisAgentLiveMove): string[] | undefined {
 		const order = paradisMoveAgentLiveTile(this.viewState.manualOrder, this.visibleOrder, token, move);
+		if (!order) {
+			return undefined;
+		}
+		const state: IParadisAgentLiveViewState = { ...this.viewState, manualOrder: order, sort: 'manual' };
+		const groups = paradisGroupAgentLiveEntries(paradisSortAgentLiveEntries(paradisFilterAgentLiveEntries(this.model.entries, state), state, Date.now()), state, status => STATUS_LABELS[status]);
+		const nextOrder = groups.flatMap(group => group.entries.map(entry => entry.token));
+		return nextOrder.indexOf(token) !== this.visibleOrder.indexOf(token) ? order : undefined;
+	}
+
+	private moveTile(token: string, move: ParadisAgentLiveMove): void {
+		const order = this.movedOrder(token, move);
 		if (!order) {
 			return;
 		}
