@@ -27,6 +27,7 @@ import { IInstantiationService } from '../../../../platform/instantiation/common
 import { ColorScheme } from '../../../../platform/theme/common/theme.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { paradisButtonClasses } from '../../../browser/paradisButton.js';
+import { attachParadisChartKeyboard, paradisChartAriaLabel, paradisChartPointText } from '../../../browser/paradisChartKeyboard.js';
 import { PARADIS_CARD_CLASS, PARADIS_CARD_LABEL_CLASS, PARADIS_CARD_NOTE_CLASS, PARADIS_CARD_VALUE_CLASS, PARADIS_TABLE_CLASS } from '../../../browser/paradisCard.js';
 import { renderParadisProgress } from '../../../browser/paradisProgress.js';
 import { ParadisSegmented } from '../../../browser/paradisSegmented.js';
@@ -554,10 +555,11 @@ export class ParadisRtkSection extends Disposable implements IParadisUsageSectio
 	// ---------- daily bar chart ----------
 
 	private renderSavedChart(card: HTMLElement, buckets: IBucket[], granularity: ParadisRtkGranularity): void {
-		dom.append(card, $('h3')).textContent = granularity === 'weekly'
+		const chartTitle = granularity === 'weekly'
 			? localize('paradis.rtk.chart.titleWeekly', "週別節約推移")
 			: localize('paradis.rtk.chart.title', "日別節約推移");
-		dom.append(card, $('.desc')).textContent = localize('paradis.rtk.chart.desc', "rtk が削減したトークン数。バーにカーソルを合わせると内訳が出ます。");
+		dom.append(card, $('h3')).textContent = chartTitle;
+		dom.append(card, $('.desc')).textContent = localize('paradis.rtk.chart.desc', "rtk が削減したトークン数。バーにカーソルを合わせるか、矢印キーで選ぶと内訳が出ます。");
 
 		const doc = card.ownerDocument;
 		const accent = this.accent;
@@ -589,6 +591,45 @@ export class ParadisRtkSection extends Disposable implements IParadisUsageSectio
 		const barW = Math.max(2, Math.min(24, band * 0.6));
 		const labelEvery = Math.max(1, Math.ceil(34 / band));
 		const maxIndex = buckets.reduce((best, bucket, i) => (bucket.savedTokens > buckets[best].savedTokens ? i : best), 0);
+
+		// キーボードで選んだ日の帯（棒の後ろ）
+		const selection = svgEl(doc, 'rect', { x: String(padL), y: String(padT), width: String(band), height: String(plotH), class: 'paradis-rtk-chart-selection', visibility: 'hidden' });
+		svg.appendChild(selection);
+		const tooltipRows = (bucket: IBucket): ITooltipRow[] => [
+			{ color: accent, name: localize('paradis.rtk.tooltip.saved', "節約トークン"), value: paradisRtkFormatTokens(bucket.savedTokens) },
+			{ name: localize('paradis.rtk.tooltip.input', "入力トークン"), value: paradisRtkFormatTokens(bucket.inputTokens) },
+			{ name: localize('paradis.rtk.tooltip.rate', "節約率"), value: `${paradisRtkSavingsPercent(bucket.savedTokens, bucket.inputTokens).toFixed(1)}%` },
+			{ name: localize('paradis.rtk.tooltip.commands', "コマンド数"), value: bucket.commands.toLocaleString() },
+		];
+		const keyboard = this.bodyDisposables.add(attachParadisChartKeyboard({
+			svg,
+			count: buckets.length,
+			ariaLabel: buckets.length > 0 ? paradisChartAriaLabel({
+				kind: 'bar',
+				unit: granularity === 'weekly' ? 'week' : 'day',
+				title: chartTitle,
+				first: buckets[0].tooltipLabel,
+				last: buckets[buckets.length - 1].tooltipLabel,
+				count: buckets.length,
+				total: paradisRtkFormatTokens(buckets.reduce((sum, bucket) => sum + bucket.savedTokens, 0)),
+				maxLabel: buckets[maxIndex].tooltipLabel,
+				maxValue: paradisRtkFormatTokens(buckets[maxIndex].savedTokens),
+			}) : '',
+			select: index => {
+				const bucket = buckets[index];
+				selection.setAttribute('x', String(padL + band * index));
+				selection.setAttribute('visibility', 'visible');
+				const rows = tooltipRows(bucket);
+				const svgRect = svg.getBoundingClientRect();
+				const scale = svgRect.width / width || 1;
+				this.showTooltip({ clientX: svgRect.left + (padL + band * index + band / 2) * scale, clientY: svgRect.top + y(bucket.savedTokens) * scale }, bucket.tooltipLabel, rows);
+				return paradisChartPointText(bucket.tooltipLabel, rows);
+			},
+			clear: () => {
+				selection.setAttribute('visibility', 'hidden');
+				this.hideTooltip();
+			},
+		}));
 
 		buckets.forEach((bucket, index) => {
 			const cx = padL + band * index + band / 2;
@@ -623,12 +664,10 @@ export class ParadisRtkSection extends Disposable implements IParadisUsageSectio
 			// ヒットターゲットはバー本体より広く(バンド全体)
 			const hit = svgEl(doc, 'rect', { x: String(padL + band * index), y: String(padT), width: String(band), height: String(plotH), fill: 'transparent' });
 			this.bodyDisposables.add(dom.addDisposableListener(hit, dom.EventType.POINTER_MOVE, e => {
-				this.showTooltip(e, bucket.tooltipLabel, [
-					{ color: accent, name: localize('paradis.rtk.tooltip.saved', "節約トークン"), value: paradisRtkFormatTokens(bucket.savedTokens) },
-					{ name: localize('paradis.rtk.tooltip.input', "入力トークン"), value: paradisRtkFormatTokens(bucket.inputTokens) },
-					{ name: localize('paradis.rtk.tooltip.rate', "節約率"), value: `${paradisRtkSavingsPercent(bucket.savedTokens, bucket.inputTokens).toFixed(1)}%` },
-					{ name: localize('paradis.rtk.tooltip.commands', "コマンド数"), value: bucket.commands.toLocaleString() },
-				]);
+				// マウスで重ねた日から矢印キーで動けるようにし、キーボードで選んだ帯はマウスに譲って隠す
+				keyboard.setCurrent(index);
+				selection.setAttribute('visibility', 'hidden');
+				this.showTooltip(e, bucket.tooltipLabel, tooltipRows(bucket));
 			}));
 			this.bodyDisposables.add(dom.addDisposableListener(hit, dom.EventType.POINTER_LEAVE, () => this.hideTooltip()));
 			svg.appendChild(hit);
@@ -699,7 +738,8 @@ export class ParadisRtkSection extends Disposable implements IParadisUsageSectio
 
 	// ---------- tooltip ----------
 
-	private showTooltip(e: PointerEvent, title: string, rows: ITooltipRow[]): void {
+	/** @param e 吹き出しを寄せる画面の座標（マウスの位置か、キーボードで選んだ棒の上端）。 */
+	private showTooltip(e: { readonly clientX: number; readonly clientY: number }, title: string, rows: ITooltipRow[]): void {
 		// pointermove ごとの DOM 再構築を避ける(同じ内容なら位置更新だけ)
 		const signature = `${title}|${rows.map(row => `${row.name}=${row.value}`).join('|')}`;
 		if (signature !== this.lastTooltipSignature) {
