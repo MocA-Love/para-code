@@ -156,7 +156,7 @@ suite('workspace lifecycle dialog', () => {
 			// 「写す」の .env.local を外し、「パスを追加」で config/app.json を足す。使えないパスは足さずに理由を出す
 			container.querySelectorAll<HTMLElement>('.plc-include-chip-remove')[1].click();
 			const add = (text: string) => {
-				container.querySelector<HTMLElement>('.plc-include-row .monaco-text-button')!.click();
+				container.querySelector<HTMLElement>('.plc-include-row .paradis-button')!.click();
 				const input = container.querySelector<HTMLInputElement>('.plc-include-row .plc-include-input')!;
 				input.value = text;
 				input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
@@ -206,7 +206,7 @@ suite('workspace lifecycle dialog', () => {
 			await includeRead.p;
 			await new Promise(resolve => setTimeout(resolve, 0));
 			const chips = () => [...container.querySelectorAll('.plc-include-row')][0].querySelectorAll('.plc-include-chip-label').length;
-			container.querySelector<HTMLElement>('.plc-include-row .monaco-text-button')!.click();
+			container.querySelector<HTMLElement>('.plc-include-row .paradis-button')!.click();
 			const input = container.querySelector<HTMLInputElement>('.plc-include-row .plc-include-input')!;
 			input.value = 'せってい';
 			input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true }));
