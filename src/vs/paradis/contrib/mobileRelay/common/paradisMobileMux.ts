@@ -77,7 +77,7 @@ function concat(chunks: readonly Uint8Array[], total: number): Uint8Array {
  * app/protocol/src/mux.ts の `FrameAssembler` と同じ規則。
  */
 export class ParadisMobileFrameAssembler {
-	private readonly legacy = new Map<ChannelId, Uint8Array[]>();
+	private readonly legacy = new Map<ChannelId, { readonly chunks: Uint8Array[]; bytes: number }>();
 	private readonly transfers = new Map<number, IPendingTransfer>();
 	private assemblingBytes = 0;
 
@@ -93,21 +93,21 @@ export class ParadisMobileFrameAssembler {
 		}
 		const pending = this.legacy.get(frame.ch);
 		if (frame.more === true) {
-			const chunks = pending ?? [];
-			chunks.push(frame.payload);
-			if (chunks.reduce((total, c) => total + c.length, 0) > FRAME_REASSEMBLY_LIMIT) {
+			const legacy = pending ?? { chunks: [], bytes: 0 };
+			legacy.chunks.push(frame.payload);
+			legacy.bytes += frame.payload.length;
+			if (legacy.bytes > FRAME_REASSEMBLY_LIMIT) {
 				this.legacy.delete(frame.ch);
 				return new Error(`frame reassembly limit exceeded on channel ${frame.ch}`);
 			}
-			this.legacy.set(frame.ch, chunks);
+			this.legacy.set(frame.ch, legacy);
 			return undefined;
 		}
 		if (pending === undefined) {
 			return frame;
 		}
 		this.legacy.delete(frame.ch);
-		const all = [...pending, frame.payload];
-		return { ...frame, payload: concat(all, all.reduce((sum, c) => sum + c.length, 0)) };
+		return { ...frame, payload: concat([...pending.chunks, frame.payload], pending.bytes + frame.payload.length) };
 	}
 
 	private pushFragment(frame: Frame, id: number, index: number, last: boolean): Frame | Error | undefined {

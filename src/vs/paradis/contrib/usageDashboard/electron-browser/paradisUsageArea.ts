@@ -21,6 +21,7 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ParadisSpaceUsageSection } from '../../agentActivity/electron-browser/paradisSpaceUsageSection.js';
 import { ParadisWorkStatsSection } from '../../agentActivity/electron-browser/paradisWorkStatsSection.js';
@@ -186,7 +187,8 @@ export class ParadisUsageArea extends Disposable implements IParadisHubAreaView 
 	private readonly _navItems = new Map<ParadisUsageDashboardTab, IParadisHubNavItem>();
 	private readonly _panes = new Map<ParadisUsageDashboardTab, HTMLElement>();
 	private readonly _sections = new Map<ParadisUsageDashboardTab, IParadisUsageSection>();
-	private readonly _settingRefreshers: (() => void)[] = [];
+	/** 設定の欄を設定の値へ合わせ直す処理（設定のキーごと）。 */
+	private readonly _settingRefreshers: { readonly key: string; readonly sync: () => void }[] = [];
 	private _activeTab: ParadisUsageDashboardTab = 'ccusage';
 	private _visible = false;
 
@@ -196,6 +198,7 @@ export class ParadisUsageArea extends Disposable implements IParadisHubAreaView 
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IContextViewService private readonly contextViewService: IContextViewService,
+		@IHoverService hoverService: IHoverService,
 	) {
 		super();
 
@@ -204,6 +207,9 @@ export class ParadisUsageArea extends Disposable implements IParadisHubAreaView 
 		// UI キットの段 4（Q600）: 素の小さいボタン。狭い窓では文字を隠してアイコンだけ
 		refreshBtn.classList.add(...paradisButtonClasses('ghost', true), PARADIS_MODAL_COMPACT_CLASS);
 		refreshBtn.type = 'button';
+		// 狭い窓では文字が隠れるので、読み上げの名前とホバーで「更新」を残す
+		refreshBtn.setAttribute('aria-label', STR_REFRESH);
+		this._register(hoverService.setupDelayedHover(refreshBtn, { content: STR_REFRESH }));
 		this._refreshIcon = dom.append(refreshBtn, $(`span${ThemeIcon.asCSSSelector(Codicon.refresh)}`));
 		dom.append(refreshBtn, $('span')).textContent = STR_REFRESH;
 		this._register(dom.addDisposableListener(refreshBtn, 'click', () => this._refreshActive()));
@@ -317,18 +323,22 @@ export class ParadisUsageArea extends Disposable implements IParadisHubAreaView 
 					select.setOptions(choices, String(this.configurationService.getValue(spec.key) ?? ''));
 				};
 				sync();
-				this._settingRefreshers.push(sync);
+				this._settingRefreshers.push({ key: spec.key, sync });
 				store.add(select.onDidChange(value => {
 					void this.configurationService.updateValue(spec.key, Number(value), ConfigurationTarget.USER);
 				}));
 			} else if (spec.list) {
 				const input = this._appendSettingInput(row, store, spec);
 				const sync = () => {
+					// 入力途中の文字は書き戻さない（確定の change で書く）
+					if (dom.isActiveElement(input.inputElement)) {
+						return;
+					}
 					const current = this.configurationService.getValue<unknown>(spec.key);
 					input.value = Array.isArray(current) ? current.join(', ') : '';
 				};
 				sync();
-				this._settingRefreshers.push(sync);
+				this._settingRefreshers.push({ key: spec.key, sync });
 				store.add(dom.addDisposableListener(input.inputElement, 'change', () => {
 					const items = input.value.split(',').map(item => item.trim()).filter(item => item.length > 0);
 					void this.configurationService.updateValue(spec.key, items, ConfigurationTarget.USER);
@@ -336,15 +346,20 @@ export class ParadisUsageArea extends Disposable implements IParadisHubAreaView 
 			} else if (typeof this.configurationService.getValue(spec.key) === 'boolean') {
 				const toggle = store.add(new ParadisSwitch(row, { checked: this.configurationService.getValue<boolean>(spec.key) === true, ariaLabel: spec.label }));
 				const sync = () => { toggle.checked = this.configurationService.getValue<boolean>(spec.key) === true; };
-				this._settingRefreshers.push(sync);
+				this._settingRefreshers.push({ key: spec.key, sync });
 				store.add(toggle.onDidChange(checked => {
 					void this.configurationService.updateValue(spec.key, checked, ConfigurationTarget.USER);
 				}));
 			} else {
 				const input = this._appendSettingInput(row, store, spec);
-				const sync = () => { input.value = this.configurationService.getValue<string>(spec.key) ?? ''; };
+				const sync = () => {
+					// 入力途中の文字は書き戻さない（確定の change で書く）
+					if (!dom.isActiveElement(input.inputElement)) {
+						input.value = this.configurationService.getValue<string>(spec.key) ?? '';
+					}
+				};
 				sync();
-				this._settingRefreshers.push(sync);
+				this._settingRefreshers.push({ key: spec.key, sync });
 				// 入力途中で毎回書かない（設定ファイルが1文字ごとに書き変わるのを避ける）
 				store.add(dom.addDisposableListener(input.inputElement, 'change', () => {
 					void this.configurationService.updateValue(spec.key, input.value, ConfigurationTarget.USER);
@@ -361,9 +376,10 @@ export class ParadisUsageArea extends Disposable implements IParadisHubAreaView 
 		store.add(dom.addDisposableListener(displayBtn, 'click', () => this.host.open(ParadisHubAreaId.Settings, PARADIS_SETTINGS_TITLEBAR_SECTION_ID)));
 
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
-			if (e.affectsConfiguration('paradis')) {
-				for (const refresh of this._settingRefreshers) {
-					refresh();
+			// 変わったキーの欄だけ合わせ直す（ほかの paradis.* の変更で入力欄を触らない）
+			for (const refresher of this._settingRefreshers) {
+				if (e.affectsConfiguration(refresher.key)) {
+					refresher.sync();
 				}
 			}
 		}));

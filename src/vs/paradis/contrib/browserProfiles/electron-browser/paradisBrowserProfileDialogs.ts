@@ -8,9 +8,9 @@
 
 // プロファイルの管理モーダル（モック③）と新規作成モーダル（モック④）。
 // paradisBookmarkDialogs.ts のモーダルシェルの流儀をそのまま踏襲する: workbench コンテナへ
-// 自前の backdrop + モーダルを重ね、色は `--vscode-*` トークンのみを使う。backdrop クラス
-// `paradis-browser-profile-backdrop` は overlayManager の OVERLAY_DEFINITIONS に登録済みで、
-// 表示中はネイティブの WebContentsView が自動的に pause される（登録を忘れるとページの裏に
+// 自前の backdrop + モーダルを重ね、色は `--vscode-*` トークンのみを使う。backdrop に付けた共通の印
+// `paradis-modal-backdrop` は overlayManager の OVERLAY_DEFINITIONS に登録済みで、
+// 表示中はネイティブの WebContentsView が自動的に pause される（印を外すとページの裏に
 // 隠れて何も見えない）。
 
 import * as dom from '../../../../base/browser/dom.js';
