@@ -370,9 +370,10 @@ const AUTORUN_APPROVED_STORAGE_KEY = 'paradis.terminalPresets.autoRunApproved';
  *   限らない）。指定すると生成されたターミナルをこのスコープへ明示的に紐付ける（ダイアログ発の
  *   バックグラウンド作成の場合、setup スクリプト実行中にユーザーが別スコープへ
  *   切り替えても、完成したターミナルが誤って「今アクティブな」スコープに表示されるのを防ぐ）。
+ * @param preserveFocus true なら、作るターミナルを裏のタブで開き、利用者のフォーカスを移さない（定期実行など）。
  * @returns 実際に1つ以上のプリセットを実行したか（呼び出し側がデフォルト端末の要否を判断するために使う）。
  */
-export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folderUri: URI, repositoryPath: ParadisHostPath, stateKey?: string): Promise<boolean> {
+export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folderUri: URI, repositoryPath: ParadisHostPath, stateKey?: string, preserveFocus?: boolean): Promise<boolean> {
 	const presetService = accessor.get(IParadisPresetService);
 	const paradisDialogService = accessor.get(IParadisDialogService);
 	const storageService = accessor.get(IStorageService);
@@ -433,6 +434,7 @@ export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folde
 				// setupScript か autoRun プリセットかで親リポジトリのパスを取れたり取れなかったり
 				// する食い違いをなくす）。
 				env: { [PARADIS_PROJECT_ROOT_ENV_VAR]: repositoryPath },
+				preserveFocus,
 				onDidStart: () => {
 					ranAny = true;
 				},

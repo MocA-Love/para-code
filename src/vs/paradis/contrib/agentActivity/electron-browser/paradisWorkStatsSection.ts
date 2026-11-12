@@ -26,6 +26,7 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { paradisButtonClasses } from '../../../browser/paradisButton.js';
 import { ParadisSegmented } from '../../../browser/paradisSegmented.js';
+import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { IParadisUsageSection } from '../../usageDashboard/electron-browser/paradisUsageSection.js';
 import { IParadisWorkStatsResult, ParadisWorkStatsAgentFilter, paradisCombineWorkStats } from '../common/paradisAgentActivity.js';
 import { ParadisAgentActivityClient } from './paradisAgentActivityClient.js';
@@ -283,6 +284,8 @@ export class ParadisWorkStatsSection extends Disposable implements IParadisUsage
 		store.add(toDisposable(() => overlay.remove()));
 		const preview = dom.append(overlay, $('.paradis-work-share-preview'));
 		preview.setAttribute('role', 'dialog');
+		preview.setAttribute('aria-modal', 'true');
+		preview.tabIndex = -1;
 		preview.setAttribute('aria-label', localize('paradis.workStats.previewTitle', "共有画像のプレビュー"));
 		const head = dom.append(preview, $('.head'));
 		dom.append(head, $('span')).textContent = localize('paradis.workStats.previewTitle', "共有画像のプレビュー");
@@ -324,6 +327,15 @@ export class ParadisWorkStatsSection extends Disposable implements IParadisUsage
 			if (copied) {
 				this.notificationService.info(localize('paradis.workStats.pasteHint', "共有画像をクリップボードにコピーしました。投稿画面に貼り付けてください。"));
 			}
+		}));
+		// 使用量の画面の中に重ねる入れ子の箱。Esc はプレビューだけを閉じ、閉じたら「画像で共有」へフォーカスを戻す
+		//（外枠を外した後に戻すので、overlay.remove() より後に足す）
+		store.add(new ParadisModalFocus({
+			backdrop: overlay,
+			modal: preview,
+			nested: true,
+			onEscape: () => this.overlay.clear(),
+			close: () => this.overlay.clear(),
 		}));
 		copy.focus();
 	}

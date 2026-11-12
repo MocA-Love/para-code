@@ -274,6 +274,11 @@ export interface IParadisRunPresetOptions {
 	 * 端末で確認させたモバイルからの実行だけが true を渡す。
 	 */
 	readonly confirmed?: boolean;
+	/**
+	 * true なら、作るターミナルを裏のタブで開き、利用者のフォーカスを移さない（定期実行など、利用者の操作と
+	 * 関係ない時刻に作るスペースの自動実行）。実行（`run`）のプリセットだけが見る。
+	 */
+	readonly preserveFocus?: boolean;
 }
 
 /** 保存時の指定。 */

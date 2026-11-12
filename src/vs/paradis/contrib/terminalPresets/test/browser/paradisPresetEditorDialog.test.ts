@@ -135,4 +135,44 @@ suite('preset editor dialog: row actions', () => {
 			container.remove();
 		}
 	});
+	test('the dialog is named by its title, takes the focus when it opens, and closes on Escape right away', () => {
+		const presetService = { presets: [], folders: [], onDidChangePresets: Event.None, isFolderLabelShown: () => false } as unknown as IParadisPresetService;
+		const container = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(container);
+		const outside = mainWindow.document.createElement('button');
+		mainWindow.document.body.appendChild(outside);
+		const services = new Map<unknown, unknown>([
+			[ILayoutService, { activeContainer: container }],
+			[IParadisPresetService, presetService],
+			[IDialogService, {}],
+			[IParadisDialogService, {}],
+			[IWorkspaceContextService, { getWorkspace: () => ({ folders: [] }) }],
+			[IContextMenuService, {}],
+			[IHoverService, NullHoverService],
+			[IContextViewService, {}],
+			[IConfigurationService, { getValue: () => undefined }],
+		]);
+		const accessor = { get: (id: unknown) => services.get(id) } as unknown as ServicesAccessor;
+		try {
+			outside.focus();
+			openParadisPresetEditorDialog(accessor);
+			const dialog = container.querySelector<HTMLElement>('.paradis-preset-editor-dialog')!;
+			const opened = {
+				role: dialog.getAttribute('role'),
+				modal: dialog.getAttribute('aria-modal'),
+				name: mainWindow.document.getElementById(dialog.getAttribute('aria-labelledby') ?? '')?.textContent,
+				focusInside: dialog.contains(mainWindow.document.activeElement),
+			};
+			mainWindow.document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 27, bubbles: true }));
+			assert.deepStrictEqual({ opened, closed: container.children.length === 0, focusBack: mainWindow.document.activeElement === outside }, {
+				opened: { role: 'dialog', modal: 'true', name: 'コマンドプリセット', focusInside: true },
+				closed: true,
+				focusBack: true,
+			});
+		} finally {
+			container.querySelector<HTMLElement>('.ppe-close-btn')?.click();
+			container.remove();
+			outside.remove();
+		}
+	});
 });
