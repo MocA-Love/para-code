@@ -160,6 +160,36 @@ suite('ParadisSharedTunnelsService', () => {
 		}
 	});
 
+	test('the per-authority service is let go of once kept references expire or are returned and no tunnel is left', async () => {
+		// The kept references expire: nothing forwards the port again.
+		const expiring = createService();
+		expiring.carriedReferencesTimeoutMs = 10;
+		// The kept reference is returned before anything forwards the port again (the timeout never fires here).
+		const returning = createService();
+		try {
+			const windowA = await open(expiring);
+			const windowB = await open(expiring);
+			await windowA.dispose();
+			await expiring.forceCloseTunnel('ssh-remote+box', 'localhost', 45124);
+			await new Promise<void>(resolve => setTimeout(resolve, 50));
+			const keptAfterExpiry = await expiring.forceCloseTunnel('ssh-remote+box', 'localhost', 45124);
+			await windowB.dispose();
+
+			const windowC = await open(returning);
+			const windowD = await open(returning);
+			await windowC.dispose();
+			await returning.forceCloseTunnel('ssh-remote+box', 'localhost', 45124);
+			await windowD.dispose();
+			await new Promise<void>(resolve => setTimeout(resolve, 0));
+			const keptAfterRelease = await returning.forceCloseTunnel('ssh-remote+box', 'localhost', 45124);
+
+			assert.deepStrictEqual({ keptAfterExpiry, keptAfterRelease }, { keptAfterExpiry: false, keptAfterRelease: false });
+		} finally {
+			expiring.dispose();
+			returning.dispose();
+		}
+	});
+
 	test('a forced close for an unknown remote does nothing', async () => {
 		const service = createService();
 		try {
