@@ -661,12 +661,14 @@ function isNotNil(v: unknown): boolean {
  * 日付の表示フォールバック。ホストロケール依存の toLocaleDateString ではなく
  * 決定論的な「YYYY-MM-DD(時刻があれば HH:MM:SS)」で出す。表示が環境でブレると
  * 差分ビューアで偽の値変更になってしまうため。
+ * exceljs はシリアル値を UTC の瞬間として Date にするので、UTC の getter で読む
+ * (ローカルで読むと、日本時間では日付だけのセルに 09:00:00 が付き、負の時差では前日になる)。
  */
 export function formatDateFallback(value: Date): string {
 	const pad = (n: number) => String(n).padStart(2, '0');
-	let out = `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}`;
-	if (value.getHours() || value.getMinutes() || value.getSeconds() || value.getMilliseconds()) {
-		out += ` ${pad(value.getHours())}:${pad(value.getMinutes())}:${pad(value.getSeconds())}`;
+	let out = `${value.getUTCFullYear()}-${pad(value.getUTCMonth() + 1)}-${pad(value.getUTCDate())}`;
+	if (value.getUTCHours() || value.getUTCMinutes() || value.getUTCSeconds() || value.getUTCMilliseconds()) {
+		out += ` ${pad(value.getUTCHours())}:${pad(value.getUTCMinutes())}:${pad(value.getUTCSeconds())}`;
 	}
 	return out;
 }

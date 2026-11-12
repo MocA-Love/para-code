@@ -189,7 +189,7 @@ export async function encodeParadisBase64(bytes: Uint8Array, preferNative = true
 }
 
 /** 埋め込めなかったものの理由。表示する文言を決めるためだけに使う。 */
-type ParadisMediaFailure = 'missing' | 'too-large';
+type ParadisMediaFailure = 'missing' | 'too-large' | 'insecure';
 
 export interface IParadisInlineMediaResult {
 	/** 埋め込み後の HTML（body の中身）。 */
@@ -216,11 +216,19 @@ export const PARADIS_INLINE_MEDIA_STYLES = `
 /**
  * そのままにしておく参照かどうか。
  *
- * `data:` は既に埋め込み済み、`http(s):` と `blob:` は webview がそのまま読めるので触らない
- * （Markdown ビューアの CSP は `img-src https: data:` を許可している）。
+ * `data:` は既に埋め込み済み、`https:` は webview がそのまま読めるので触らない
+ * （Markdown ビューアの CSP は `img-src https: data:` を許可している）。`blob:` はサニタイザが
+ * 落とすので届かない。
  */
 function isAlreadyLoadable(src: string): boolean {
-	return /^(data|https|http|blob):/i.test(src);
+	return /^(data|https|blob):/i.test(src);
+}
+
+/**
+ * CSP が許さず、残すと黙って壊れた画像になる参照かどうか（サニタイザは `http:` の画像を通す）。
+ */
+function isBlockedByViewer(src: string): boolean {
+	return /^http:/i.test(src);
 }
 
 /**
@@ -295,8 +303,19 @@ function createUnavailableNode(doc: Document, src: string, reason: ParadisMediaF
 	node.className = 'paradis-media-unavailable';
 	node.textContent = reason === 'too-large'
 		? localize('paradis.markdown.mediaTooLarge', "画像が大きすぎるためここには表示できません: {0}", src)
-		: localize('paradis.markdown.mediaMissing', "画像が見つかりませんでした: {0}", src);
+		: reason === 'insecure'
+			? localize('paradis.markdown.mediaInsecure', "http の画像はここには表示できません: {0}", src)
+			: localize('paradis.markdown.mediaMissing', "画像が見つかりませんでした: {0}", src);
 	return node;
+}
+
+/** 読めなかった要素を断り書きに替える。`source` は単体で意味を持たないので、取り除くだけにする。 */
+function replaceUnavailable(doc: Document, element: Element, src: string, reason: ParadisMediaFailure): void {
+	if (element.tagName === 'IMG') {
+		element.replaceWith(createUnavailableNode(doc, src, reason));
+	} else {
+		element.remove();
+	}
 }
 
 /**
@@ -329,9 +348,15 @@ export async function inlineParadisMarkdownMedia(
 	// 1枚ずつ順番に読むと、SSH 越しでは画像の枚数だけ往復が積み上がり、そのぶん最初の描画が
 	// 遅れる（ローカルでは誤差だが、遠いほど効く）。
 	const wanted: { readonly element: Element; readonly src: string; readonly target: URI }[] = [];
+	let skipped = 0;
 	for (const element of elements) {
 		const src = element.getAttribute('src');
 		if (!src || isAlreadyLoadable(src)) {
+			continue;
+		}
+		if (isBlockedByViewer(src)) {
+			skipped++;
+			replaceUnavailable(doc, element, src, 'insecure');
 			continue;
 		}
 		const target = resolveParadisMediaUri(src, documentUri, workspaceFolder);
@@ -348,7 +373,6 @@ export async function inlineParadisMarkdownMedia(
 	}
 
 	let inlined = 0;
-	let skipped = 0;
 	let totalBytes = 0;
 
 	for (const { element, src, target } of wanted) {
@@ -373,12 +397,7 @@ export async function inlineParadisMarkdownMedia(
 
 		if (resolved === 'missing' || resolved === 'too-large') {
 			skipped++;
-			// `source` は単体で意味を持たないので、断り書きに置き換えず取り除くだけにする。
-			if (element.tagName === 'IMG') {
-				element.replaceWith(createUnavailableNode(doc, src, resolved));
-			} else {
-				element.remove();
-			}
+			replaceUnavailable(doc, element, src, resolved);
 			continue;
 		}
 
