@@ -27,7 +27,7 @@
 // Windows では常駐を使っていない（`paradisPtyHostStarterFactory.ts`）ので、upstream の保存・復元が
 // そのまま働く。ここは何もしない。
 
-import { IntervalTimer, raceTimeout, timeout } from '../../../../base/common/async.js';
+import { IntervalTimer, raceTimeout, Throttler, timeout } from '../../../../base/common/async.js';
 import { Disposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { isWindows } from '../../../../base/common/platform.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
@@ -243,7 +243,7 @@ class ParadisTerminalScreenSaverContribution extends Disposable implements IWork
 
 	private _dirty = true;
 	private _lastSavedAt = 0;
-	private _saving: Promise<void> | undefined;
+	private readonly _saving = this._register(new Throttler());
 	private _closeTimer: ReturnType<typeof setTimeout> | undefined;
 	/** 抱えていない保存物を確かめ終えたワークスペースと常駐の組（保存できたら忘れる）。 */
 	private _keptScreensChecked: string | undefined;
@@ -327,9 +327,10 @@ class ParadisTerminalScreenSaverContribution extends Disposable implements IWork
 	}
 
 	private _save(): Promise<void> {
-		// 重ねて走らせない（書き込みの順が入れ替わると古い状態が勝つ）
-		this._saving ??= this._doSave().finally(() => this._saving = undefined);
-		return this._saving;
+		// 重ねて走らせない（書き込みの順が入れ替わると古い状態が勝つ）。走っている途中に頼まれたら、
+		// 終わってからもう1回だけ保存する。走っている保存は画面をもう読み終えていることがあり、
+		// それを待つだけだと、閉じる直前の出力が入らないまま最後の保存になる
+		return this._saving.queue(() => this._doSave());
 	}
 
 	private async _doSave(): Promise<void> {

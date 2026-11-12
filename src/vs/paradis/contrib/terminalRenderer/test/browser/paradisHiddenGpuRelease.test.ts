@@ -10,6 +10,7 @@ import assert from 'assert';
 import { timeout } from '../../../../../base/common/async.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { ConfigurationTarget } from '../../../../../platform/configuration/common/configuration.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { IParadisHiddenGpuReleaseHost, PARADIS_HIDDEN_GPU_RELEASE_DELAY, PARADIS_TERMINAL_RELEASE_HIDDEN_GPU_SETTING, ParadisHiddenGpuRelease } from '../../browser/paradisHiddenGpuRelease.js';
 
@@ -18,6 +19,16 @@ class TestHost implements IParadisHiddenGpuReleaseHost<string> {
 	gpu = true;
 	readonly calls: string[] = [];
 	set enabled(value: boolean) { this.configuration.setUserConfiguration(PARADIS_TERMINAL_RELEASE_HIDDEN_GPU_SETTING, value); }
+	/** 設定を変えて、変わったことを知らせる（`setUserConfiguration` は知らせないため）。 */
+	changeEnabled(value: boolean): void {
+		this.enabled = value;
+		this.configuration.onDidChangeConfigurationEmitter.fire({
+			source: ConfigurationTarget.USER,
+			affectedKeys: new Set([PARADIS_TERMINAL_RELEASE_HIDDEN_GPU_SETTING]),
+			change: { keys: [PARADIS_TERMINAL_RELEASE_HIDDEN_GPU_SETTING], overrides: [] },
+			affectsConfiguration: key => key === PARADIS_TERMINAL_RELEASE_HIDDEN_GPU_SETTING,
+		});
+	}
 	hasGpuRenderer(): boolean { return this.gpu; }
 	measureFont(): string { return this.gpu ? 'gpu-font' : 'dom-font'; }
 	release(): void {
@@ -99,5 +110,26 @@ suite('ParadisHiddenGpuRelease', () => {
 		released.setVisible(true);
 
 		assert.deepStrictEqual({ pending: pendingHost.calls, released: releasedHost.calls }, { pending: [], released: ['release', 'reacquire'] });
+	}));
+
+	test('turning the setting on releases a terminal that is already hidden, and turning it off during the grace period cancels it', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const onHost = new TestHost();
+		onHost.enabled = false;
+		const on = create(onHost);
+		on.setVisible(false);
+		await timeout(PARADIS_HIDDEN_GPU_RELEASE_DELAY * 2);
+		onHost.changeEnabled(true);
+		await timeout(PARADIS_HIDDEN_GPU_RELEASE_DELAY);
+
+		const offHost = new TestHost();
+		offHost.enabled = false;
+		const off = create(offHost);
+		off.setVisible(false);
+		offHost.changeEnabled(true);
+		await timeout(PARADIS_HIDDEN_GPU_RELEASE_DELAY / 2);
+		offHost.changeEnabled(false);
+		await timeout(PARADIS_HIDDEN_GPU_RELEASE_DELAY * 2);
+
+		assert.deepStrictEqual({ on: { calls: onHost.calls, released: on.isReleased }, off: offHost.calls }, { on: { calls: ['release'], released: true }, off: [] });
 	}));
 });
