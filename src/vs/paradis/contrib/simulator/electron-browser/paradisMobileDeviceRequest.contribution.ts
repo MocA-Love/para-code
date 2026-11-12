@@ -94,12 +94,15 @@ export class ParadisMobileDeviceRequestChannel implements IServerChannel {
 
 	private async _requestDevice(token: unknown, prompt: Record<string, unknown>, cancellation: CancellationToken): Promise<IParadisMobileDeviceRequestAnswer> {
 		// 拒否された直後は、別の端末の要求もダイアログを出さずに断る（端末を替えて続けて迫らせない）
-		const deniedAt = typeof token === 'string' ? this._lastDeviceDenial.get(token) : undefined;
-		if (deniedAt !== undefined) {
-			if (this._now() - deniedAt < PARADIS_MOBILE_ANY_DEVICE_DENIAL_MS) {
-				return { outcome: 'recentlyDenied' };
+		// 期限を過ぎた記録はペインを問わずまとめて消す（拒否したまま閉じたペインの分がウィンドウの寿命の間たまらないように）
+		const now = this._now();
+		for (const [deniedToken, deniedAt] of this._lastDeviceDenial) {
+			if (now - deniedAt >= PARADIS_MOBILE_ANY_DEVICE_DENIAL_MS) {
+				this._lastDeviceDenial.delete(deniedToken);
 			}
-			this._lastDeviceDenial.delete(token as string);
+		}
+		if (typeof token === 'string' && this._lastDeviceDenial.has(token)) {
+			return { outcome: 'recentlyDenied' };
 		}
 		// 名前・理由はエージェントが決められる文字列なので、制御文字と双方向制御を落としてから出す
 		const deviceName = deviceNameOf(prompt);
