@@ -140,6 +140,18 @@ suite('paradisMarkdownInlineResources', () => {
 			ok(result.html.includes('data:image/gif;base64,AA'), result.html);
 		});
 
+		test('replaces an http image with a note because the viewer cannot load it', async () => {
+			const disposables = store.add(new DisposableStore());
+			const { fileService } = await createFileService(disposables, []);
+
+			// ビューアの CSP は img-src https: data: なので、http: の画像は残しても壊れた画像になる。
+			const result = await inlineParadisMarkdownMedia(
+				'<p><img src="http://example.com/a.png"></p>', DOC, FOLDER, fileService, CancellationToken.None);
+
+			deepStrictEqual({ inlined: result.inlined, skipped: result.skipped, img: result.html.includes('<img'), note: result.html.includes('paradis-media-unavailable'), src: result.html.includes('http://example.com/a.png') },
+				{ inlined: 0, skipped: 1, img: false, note: true, src: true });
+		});
+
 		test('replaces a missing image with a note instead of a broken icon', async () => {
 			const disposables = store.add(new DisposableStore());
 			const { fileService } = await createFileService(disposables, []);

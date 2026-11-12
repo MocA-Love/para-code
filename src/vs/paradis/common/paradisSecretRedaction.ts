@@ -28,7 +28,7 @@ const QUOTED_OR_VALUE = `("[^"]*"|'[^']*'|${VALUE})`;
 const QUOTED_OR_STANDALONE_VALUE = `("[^"]*"|'[^']*'|(?!\\d{1,3}[^\\x00-\\x7F\\u2026])(?!(?:undefined|null|true|false|none)(?![!#-%(-:<-_a-{}~])|[{}()[\\]<>]+(?![!#-%(-:<-_a-{}~]))${VALUE})`;
 
 /** 既知の形のトークンの接頭辞（切り詰めの境目で断片だけ残ったものを伏せるのにも使う）。 */
-const KNOWN_TOKEN_PREFIXES = `(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|sk-|sk_|pk_|rk_|AKIA|ASIA|xox[abprs]-|AIza|npm_|glpat-|hf_|eyJ)`;
+const KNOWN_TOKEN_PREFIXES = `(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|sk-|sk_|pk_|rk_|AKIA|ASIA|xox[abprs]-|xoxe[.-]|xapp-|ya29\\.|whsec_|AIza|npm_|glpat-|hf_|eyJ)`;
 
 /**
  * 規則は長い文でも時間が文の長さに比例して収まるように書く。`.` や `-` を含む文字の並びを `*` で読むと、空白の無い
@@ -69,7 +69,14 @@ function buildSecretPatterns(marker: string): readonly [RegExp, string][] {
 		[/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{12,}/g, marker],
 		[/\bgithub_pat_[A-Za-z0-9_]{12,}/g, marker],
 		[/\b(?:AKIA|ASIA)[0-9A-Z]{12,}/g, marker],
+		// Slack のアプリのトークン（xapp-）と更新のトークン（xoxe.xoxp- / xoxe-）。xoxe.xoxp- は下の xoxp- より先に丸ごと伏せる
+		[/\bxapp-[A-Za-z0-9-]{8,}/g, marker],
+		[/\bxoxe(?:\.xox[abprs])?-[A-Za-z0-9-]{8,}/g, marker],
 		[/\bxox[abprs]-[A-Za-z0-9-]{8,}/g, marker],
+		// Google の OAuth のアクセストークン
+		[/\bya29\.[A-Za-z0-9_-]{20,}/g, marker],
+		// Stripe の Webhook の署名の秘密
+		[/\bwhsec_[A-Za-z0-9+/=]{16,}/g, marker],
 		[/\bAIza[0-9A-Za-z_-]{20,}/g, marker],
 		[/\bnpm_[A-Za-z0-9]{20,}/g, marker],
 		[/\bglpat-[A-Za-z0-9_-]{16,}/g, marker],

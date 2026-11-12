@@ -618,14 +618,16 @@ suite('ParadisSpreadsheetService', () => {
 	});
 
 	suite('formatDateFallback', () => {
+		// exceljs はシリアル値を UTC の瞬間として Date にするので、テストの値も UTC で作る。
+		// ローカル時刻で作ると、実行環境の時差でずれる不具合を見逃す。
 		test('renders a locale-independent date and omits zero time', () => {
-			strictEqual(formatDateFallback(new Date(2026, 1, 3)), '2026-02-03');
-			strictEqual(formatDateFallback(new Date(2026, 11, 31)), '2026-12-31');
+			strictEqual(formatDateFallback(new Date(Date.UTC(2026, 1, 3))), '2026-02-03');
+			strictEqual(formatDateFallback(new Date(Date.UTC(2026, 11, 31))), '2026-12-31');
 		});
 
 		test('appends time only when present', () => {
-			strictEqual(formatDateFallback(new Date(2026, 1, 3, 4, 5, 6)), '2026-02-03 04:05:06');
-			strictEqual(formatDateFallback(new Date(2026, 1, 3, 0, 0, 0)), '2026-02-03');
+			strictEqual(formatDateFallback(new Date(Date.UTC(2026, 1, 3, 4, 5, 6))), '2026-02-03 04:05:06');
+			strictEqual(formatDateFallback(new Date(Date.UTC(2026, 1, 3, 0, 0, 0))), '2026-02-03');
 		});
 	});
 
