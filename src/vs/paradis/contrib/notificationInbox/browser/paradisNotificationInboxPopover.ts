@@ -10,8 +10,8 @@
 //
 // 作りはサービスステータスのポップオーバー（paradisServiceStatusPopover.ts）と同じ自前の DOM
 // （position: fixed、layoutService.activeContainer 直下）。重なりは小窓の段（共通の印 `paradis-overlay-popover`、
-// vs/paradis/browser/paradisModal.ts の表）で、ワークベンチの確認ダイアログ（2575）より下。内蔵ブラウザの上に出すため、
-// クラス名 `paradis-notification-inbox-popover` も overlayManager.ts の一覧に登録してある。
+// vs/paradis/browser/paradisModal.ts の表）で、ワークベンチの確認ダイアログ（2575）より下。内蔵ブラウザの上に出るのも、
+// overlayManager.ts の一覧にあるこの共通の印による。
 
 import './media/paradisNotificationInbox.css';
 import * as dom from '../../../../base/browser/dom.js';
@@ -280,7 +280,7 @@ export class ParadisNotificationInboxPopover extends Disposable {
 		}
 
 		const state = entry.read ? localize('paradis.inbox.readState', "既読") : localize('paradis.inbox.unreadState', "未読");
-		row.setAttribute('aria-label', `${state} ${paradisInboxKindLabel(entry.kind)} ${paradisInboxEntryLocation(entry)} ${entry.message ?? ''}`);
+		row.setAttribute('aria-label', localize('paradis.inbox.rowAria', "{0} {1} {2} {3}", state, paradisInboxKindLabel(entry.kind), paradisInboxEntryLocation(entry), entry.message ?? ''));
 
 		this.renderDisposables.add(dom.addDisposableListener(row, dom.EventType.CLICK, () => this.open(entry)));
 		this.renderDisposables.add(dom.addDisposableListener(row, dom.EventType.KEY_DOWN, e => {

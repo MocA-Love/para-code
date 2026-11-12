@@ -46,15 +46,11 @@ const OVERLAY_DEFINITIONS: ReadonlyArray<{ className: string; type: BrowserOverl
 	{ className: 'paradis-session-resume-backdrop', type: BrowserOverlayType.Dialog },
 	// PARA-PATCH: the fork's Para Code settings dialog (paradisSettingsDialog.ts).
 	{ className: 'paradis-settings-dialog-backdrop', type: BrowserOverlayType.Dialog },
-	// PARA-PATCH: the fork's combined usage dashboard dialog (paradisUsageDashboardDialog.ts).
-	{ className: 'paradis-usage-dashboard-backdrop', type: BrowserOverlayType.Dialog },
 	// PARA-PATCH: shared marker class for fork DOM modals (scheduled runs, skills, and later ones), so new modals need no further edit here.
 	{ className: 'paradis-modal-backdrop', type: BrowserOverlayType.Dialog },
 	// PARA-PATCH: the fork's browser profile management / creation dialogs
 	// (vs/paradis/contrib/browserProfiles).
 	{ className: 'paradis-browser-profile-backdrop', type: BrowserOverlayType.Dialog },
-	// PARA-PATCH: the fork's notification inbox popover under the title bar bell (vs/paradis/contrib/notificationInbox).
-	{ className: 'paradis-notification-inbox-popover', type: BrowserOverlayType.QuickInput },
 	{ className: 'paradis-overlay-popover', type: BrowserOverlayType.QuickInput }, // PARA-PATCH: shared marker class for the fork's anchored title bar / status bar panels
 	{ className: 'notifications-center', type: BrowserOverlayType.Notification },
 	// PARA-PATCH: notification toasts intentionally do NOT pause the browser view. Upstream pauses the

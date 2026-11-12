@@ -720,7 +720,7 @@ app-server が毎回の取得の経路になったので、Orca にある起動�
 
 **重要**: この重なり検知は汎用的なz-index判定ではなく、**クラス名の決め打ちホワイトリスト方式**。標準の `monaco-dialog-modal-block` / `quick-input-widget`（`IDialogService`/`IQuickInputService`経由）は最初から登録済みで無条件に機能するが、fork独自の「自前DOM + backdrop方式」のダイアログは、それぞれ固有のbackdropクラス名を持ち、**そのクラス名を `OVERLAY_DEFINITIONS` に個別追加しない限りブラウザの背後に隠れる**。
 
-- 登録済み（問題なし）: `paradis-binding-dialog-backdrop`、`paradis-bookmark-dialog-backdrop`、`paradis-notification-inbox-popover`（通知の受信箱、2026-09-27）
+- 登録済み（問題なし）: `paradis-binding-dialog-backdrop`、`paradis-bookmark-dialog-backdrop`、通知の受信箱（2026-09-27 に `paradis-notification-inbox-popover` で登録。2026-11-12 に外し、共通の印 `paradis-overlay-popover` だけで止まる）
 - 2026-08-15時点で判明した未登録（＝ブラウザ表示中に開くと背後に隠れる）:
   1. `paradis-preset-editor-backdrop`（カスタムプリセットコマンドのモーダル、`src/vs/paradis/contrib/terminalPresets/browser/paradisPresetEditorDialog.ts`）
   2. `paradis-create-worktree-backdrop`（ワークスペース切替/worktree作成ダイアログ）
@@ -2474,7 +2474,7 @@ upstream 取り込みで壊れやすいのは次の4点。
 
 - **Dock の件数は upstream の `setApplicationBadge` に乗っている。** main の `DockBadgeManager`（`windowImpl.ts`）がウィンドウごとの数を足し合わせる前提で、各ウィンドウは自分のペインの分だけを出している（全体の数を出すとウィンドウの数だけ掛け算になる）。Agent Sessions ウィンドウの `SessionsApplicationBadge` の数も同じ合計に足されるので、両方を開いていると Dock の数字は「確認が必要なペイン＋Sessions の件数」になる。**Windows はアプリ全体の数ではなく、ウィンドウごとにタスクバーへそのウィンドウの分を重ねて出す**（upstream の `setOverlayIcon`）。`app.setBadgeCount` を直接呼ぶと `DockBadgeManager` と取り合うので呼ばない
 - **メニューバーのアイコンは main で作る**（`src/vs/paradis/contrib/menuBar/electron-main/paradisMenuBarMain.ts`、既定オフ。2026-10-16 に通知の受信箱から `menuBar/` へ移し、使用量も出すようにした）。`app.ts` の PARA-PATCH は import 1行と登録1行。`Tray.setImage` / `setContextMenu` は AppKit のコールバックの中で呼ぶと main が固まることがある（Orca の知見）ので必ず `setImmediate` で次の周回に回す。絵は PNG を同梱せずコードで描いている（`paradisMenuBarIcon.ts`）。メニューの行の 2 行目（`sublabel`）と行の頭の画像は macOS の版で崩れうるので、`paradis.menuBar.plainMenu` で使わない表示へ逃がせる。Linux は作らない。依頼の宛先は Agent Sessions ウィンドウ（fork の通常ウィンドウ向け機能を読み込まない）を除いて選ぶ。ウィンドウが1つも無くなったら中身を空にし、「アイコンを隠す」は main ですぐ消して、設定の書き換えは次に中身を送ってきたウィンドウに頼む
-- **受信箱のポップオーバーを内蔵ブラウザの上に出すため**、`overlayManager.ts` の `OVERLAY_DEFINITIONS` に `paradis-notification-inbox-popover` を PARA-PATCH で足した。z-index はタイトルバーのポップオーバーと同じ 2500（モーダル 2575 より下）。ベルが1つ増えたぶん、upstream がタイトルバー中央のツールバーごと隠す幅（`titlebarPart.ts` のはみ出し判定）が広がり、「エージェント一覧」「ブラウザ一覧」も早めに消える。件数が出たときに幅が変わってはみ出し判定がずれないよう、バッジの枠は常に確保している
+- **受信箱のポップオーバーを内蔵ブラウザの上に出すため**、`overlayManager.ts` の `OVERLAY_DEFINITIONS` に `paradis-notification-inbox-popover` を PARA-PATCH で足した（2026-11-12 に外した。ポップオーバーは共通の印 `paradis-overlay-popover` も付けていて、それで止まる）。z-index はタイトルバーのポップオーバーと同じ 2500（モーダル 2575 より下）。ベルが1つ増えたぶん、upstream がタイトルバー中央のツールバーごと隠す幅（`titlebarPart.ts` のはみ出し判定）が広がり、「エージェント一覧」「ブラウザ一覧」も早めに消える。件数が出たときに幅が変わってはみ出し判定がずれないよう、バッジの枠は常に確保している
 - **音声入力中に読み上げを止める仕組みは、upstream のチャットの内部モジュールに依存している。** `workbench/contrib/chat/browser/speechToText/chatSpeechToTextService.js` の `ChatSpeechToTextState`・`state`・`isPreparingModel`・`onDidChangeState`・`onDidChangePreparingModel`（と `ISpeechService` のセッション）。チャットは upstream の変更が多いので、取り込みのたびにこれらが残っているかを確かめる。`isBusy` は使わない（停止の途中も busy のまま知らせずに消えるので、音声入力中から戻れなくなった。2026-09-27 に修正）
 
 ### 内蔵の音声入力の配布（配布しないと決定、2026-09-28、Q92）
