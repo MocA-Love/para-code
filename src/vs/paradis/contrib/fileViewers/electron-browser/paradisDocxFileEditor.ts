@@ -545,7 +545,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		const rerenderScheduler = store.add(new RunOnceScheduler(() => {
 			const expectedGeneration = watchInvalidationGeneration;
 			watchInvalidationGeneration = undefined;
-			if (expectedGeneration === this._renderGeneration && isEqual(this._currentResource, resource) && (this._pane.claimed || !!this._blankFailureView.value)) {
+			if (expectedGeneration === this._renderGeneration && isEqual(this._currentResource, resource) && (this._pane.claimed || (!!this._blankFailureView.value && this._editorVisible))) {
 				if (this._pane.webview && !this._webviewSupportsRecoveryMessages) {
 					// Legacy overlays cannot acknowledge a renderer probe. Keep their existing
 					// preflight concurrency and let _renderGeneration fence stale completions.
@@ -558,7 +558,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 			}
 		}, DOCX_WATCH_RERENDER_DELAY_MS));
 		const scheduleWatchRerender = () => {
-			if (!isEqual(this._currentResource, resource) || (!this._pane.claimed && !this._blankFailureView.value)) {
+			if (!isEqual(this._currentResource, resource) || (!this._pane.claimed && !(this._blankFailureView.value && this._editorVisible))) {
 				return;
 			}
 			watchInvalidationGeneration = this._renderGeneration;
