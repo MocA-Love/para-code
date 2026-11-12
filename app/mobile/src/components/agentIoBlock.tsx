@@ -155,9 +155,13 @@ export function IOBar({ label, wrap, onToggleWrap, copyText, onCopied }: {
 	const mountedRef = useRef(true);
 	// 「コピー済」を戻すタイマー。続けて写したら前のタイマーを外して掛け直す（前のタイマーが2回目の表示を早く消さないように）。
 	const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-	useEffect(() => () => {
-		mountedRef.current = false;
-		clearTimeout(copiedTimerRef.current);
+	useEffect(() => {
+		// StrictMode の開発ビルドは effect を外してから付け直すので、付け直したときに true へ戻す。
+		mountedRef.current = true;
+		return () => {
+			mountedRef.current = false;
+			clearTimeout(copiedTimerRef.current);
+		};
 	}, []);
 	const copy = async () => {
 		let text: string;

@@ -589,7 +589,7 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 						{sheets.map((sheetName, i) => (
 							<Pressable
 								key={i}
-								style={[styles.sheetChip, i === sheetIndex && [styles.sheetChipActive, { backgroundColor: theme.accentWash }]]}
+								style={[styles.sheetChip, i === sheetIndex && [styles.sheetChipActive, { backgroundColor: theme.accentWash, borderColor: theme.accent }]]}
 								hitSlop={SHEET_CHIP_SLOP}
 								onPress={() => { haptic('tick'); onSelectSheet?.(i); }}
 								accessibilityRole="button"

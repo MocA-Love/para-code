@@ -6,7 +6,7 @@ import { paraAlert } from '../../paraAlert.js';
 import { WebView } from 'react-native-webview';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
 import { CircleAlert, FileQuestion } from 'lucide-react-native';
-import { createMobileOfficeNonce, guardMobileOfficeNavigation, MOBILE_DOCUMENT_ORIGIN_WHITELIST, MOBILE_OFFICE_ORIGIN_WHITELIST, secureMobileOfficeHtml } from '../../components/officeCapability.js';
+import { createMobileOfficeNonce, guardMobileOfficeNavigation, MOBILE_DOCUMENT_ORIGIN_WHITELIST, secureMobileOfficeHtml } from '../../components/officeCapability.js';
 import { guardWebViewNavigation } from '../../components/webViewLinkGuard.js';
 import { useWebViewRevival } from '../../components/webViewRevival.js';
 import { isFileViewerJavaScriptEnabled, isSearchableFileViewerJavaScriptEnabled } from '../../components/webViewScriptPolicy.js';
@@ -423,7 +423,8 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 				style={[styles.web, canvasColor !== undefined ? { backgroundColor: canvasColor } : null]}
 				source={{ html }}
 				onContentProcessDidTerminate={revival.onContentProcessDidTerminate}
-				originWhitelist={[...MOBILE_OFFICE_ORIGIN_WHITELIST]}
+				// http(s) を許可リストに入れ、iframe を通す判定（guardWebViewNavigation）を Safari へ渡す前に効かせる（MOBILE_DOCUMENT_ORIGIN_WHITELIST）
+				originWhitelist={[...MOBILE_DOCUMENT_ORIGIN_WHITELIST]}
 				javaScriptEnabled={allowJs}
 				onShouldStartLoadWithRequest={guardWebViewNavigation}
 				onLoadStart={trace?.loadStarted}

@@ -103,12 +103,12 @@ function AttentionBody({ agentStatus, chat, actions, onOpenAgent }: {
 					<Text style={styles.noticeTitle}>内容を読み込んでいます…</Text>
 				</View>
 			) : isGroupedQuestion && question ? (
-				<Pressable style={[styles.groupNotice, { backgroundColor: theme.accentWash }]} onPress={onOpenAgent}>
+				<Pressable style={[styles.groupNotice, { backgroundColor: theme.accentWash, borderColor: theme.accent }]} onPress={onOpenAgent}>
 					<Text style={styles.noticeTitle}>複数の質問（全{question.questionCount}問）が届いています</Text>
 					<Text style={styles.noticeBody}>エージェント画面ですべての質問に回答してから送信できます</Text>
 				</Pressable>
 			) : isPreviewQuestion ? (
-				<Pressable style={[styles.groupNotice, { backgroundColor: theme.accentWash }]} onPress={onOpenAgent}>
+				<Pressable style={[styles.groupNotice, { backgroundColor: theme.accentWash, borderColor: theme.accent }]} onPress={onOpenAgent}>
 					<Text style={styles.noticeTitle}>選択肢の下書き（プレビュー）付きの質問が届いています</Text>
 					<Text style={styles.noticeBody}>エージェント画面で下書きを見てから回答できます</Text>
 				</Pressable>

@@ -98,7 +98,7 @@ export function resolveMobileOfficeCapabilities(input: MobileOfficeCapabilityInp
 export const MOBILE_OFFICE_ORIGIN_WHITELIST = Object.freeze(['about:blank'] as const);
 
 /**
- * 文書の WebView（Office と、ターミナルのパスから開くビューア）に渡す許可リスト。
+ * 文書の WebView（Office と、ファイルツリー・ターミナルのパスから開く HTML / Markdown のビューア）に渡す許可リスト。
  *
  * react-native-webview は許可リストに合わない URL を、onShouldStartLoadWithRequest より前に OS へ
  * そのまま渡す。http(s) を入れておかないと、外へ出す前の確認（guardMobileOfficeNavigation）や

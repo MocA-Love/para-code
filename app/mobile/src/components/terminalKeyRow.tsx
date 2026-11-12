@@ -4,8 +4,9 @@ import { useEffect, useRef, useState } from 'react';
 import { Keyboard, Pressable, ScrollView, StyleSheet, Text } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { monoFamily } from '../monoFont.js';
-import { alpha, colors, HIT_SIZE, radius, squircle, tint, type, withAlpha } from '../theme.js';
+import { alpha, colors, HIT_SIZE, radius, squircle, tint, type } from '../theme.js';
 import { useThemeColors } from '../ui/themeColorsStore.js';
+import { tintOf } from '../ui/themeColors.js';
 import { KEY_TICK, haptic } from '../haptics.js';
 import {
 	ctrlLatchedTextInput,
@@ -126,7 +127,7 @@ export function TerminalKeyRow({ keyboardVisible, ctrlLatched, enterless, onKey,
 }) {
 	// 押したままの Ctrl と「Enterなし」の印は、設定 → 色の「選択の印」に合わせる（StyleSheet の固定の青を上書きする）。
 	const theme = useThemeColors();
-	const onFill = { backgroundColor: withAlpha(theme.accent, alpha.wash) ?? theme.accent, borderColor: withAlpha(theme.accent, alpha.strong) ?? theme.accent };
+	const onFill = { backgroundColor: tintOf(theme.accent, alpha.wash), borderColor: tintOf(theme.accent, alpha.strong) };
 	const onText = { color: theme.accent };
 	const repeatTimer = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 	const stopRepeat = () => {
