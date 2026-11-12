@@ -94,23 +94,27 @@
 	flex-direction: column;
 	overflow: hidden;
 	box-sizing: border-box;
-	background-color: var(--vscode-quickInput-background, var(--vscode-editorWidget-background));
-	color: var(--vscode-foreground);
-	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
-	border-radius: var(--vscode-cornerRadius-medium, 6px);
-	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
-	font-size: 13px;
+	/* The kit's stage 3 surface (paradisPopover.css): popup fill, subtle line, inner radius, large shadow. */
+	background-color: var(--vscode-paradis-popup);
+	color: var(--vscode-paradis-text);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner);
+	box-shadow: var(--vscode-shadow-lg);
+	font-size: var(--vscode-fontSize-body1);
 	outline: none;
 }
 
 .monaco-workbench .paradis-browser-share-popover .pbs-header {
 	display: flex;
 	align-items: center;
-	height: 30px;
-	padding: 0 var(--vscode-spacing-size100);
+	/* As tall as the headers with 24px icon buttons (extensions, downloads), so the three lists line up. */
+	min-height: calc(var(--paradis-height-sm) + var(--vscode-spacing-size160));
+	box-sizing: border-box;
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size120);
 	border-bottom: var(--paradis-popover-header-border);
-	font-size: var(--vscode-fontSize-label1);
+	font-size: var(--vscode-fontSize-body1);
 	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textStrong);
 	flex: none;
 }
 
@@ -141,7 +145,8 @@
 }
 
 .monaco-workbench .paradis-browser-share-popover .pbs-row:hover {
-	background-color: var(--vscode-list-hoverBackground);
+	background-color: var(--vscode-paradis-fillSelected);
+	color: var(--vscode-paradis-textStrong);
 }
 
 .monaco-workbench .paradis-browser-share-popover .pbs-icon {
@@ -176,20 +181,20 @@
 	cursor: pointer;
 }
 
-/* "Stop sharing": a 22px icon button (close), like the upstream action bar. */
+/* "Stop sharing": the stage 3 icon button (close, 24px). */
 .monaco-workbench .paradis-browser-share-popover .pbs-unshare {
 	flex: none;
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	width: 22px;
-	height: 22px;
+	width: var(--paradis-height-sm);
+	height: var(--paradis-height-sm);
 	padding: 0;
 	font-size: var(--vscode-codiconFontSize);
 	color: var(--vscode-icon-foreground);
 	background: none;
 	border: none;
-	border-radius: var(--vscode-cornerRadius-small);
+	border-radius: var(--paradis-radius-control);
 }
 
 .monaco-workbench .paradis-browser-share-popover .pbs-unshare:hover:not([disabled]) {
