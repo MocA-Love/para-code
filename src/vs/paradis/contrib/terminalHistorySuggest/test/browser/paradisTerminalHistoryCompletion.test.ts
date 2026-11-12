@@ -417,7 +417,7 @@ suite('ParadisTerminalHistoryCompletion', () => {
 		// Catches changes to upstream bash quote handling and Para zsh metafy/continuation semantics.
 		/* eslint-disable local/code-no-unexternalized-strings */
 		const bashFixtures: readonly { readonly input: string; readonly expected: readonly string[] }[] = [
-			{ input: 'echo one\n\necho two\necho one\n', expected: ['echo one', 'echo two'] },
+			{ input: 'echo one\n\necho two\necho one\n', expected: ['echo two', 'echo one'] },
 			{ input: '   \n', expected: [''] },
 			{ input: 'printf "a\nb"\necho end\n', expected: ['printf "a\nb"', 'echo end'] },
 			{ input: "printf 'a\nb'\necho end\n", expected: ["printf 'a\nb'", 'echo end'] },
@@ -433,7 +433,7 @@ suite('ParadisTerminalHistoryCompletion', () => {
 
 		const zshFixtures: readonly { readonly input: string; readonly expected: readonly string[] }[] = [
 			{ input: 'echo one\nprintf foo\\\nbar\necho two\n', expected: ['echo one', 'printf foo\nbar', 'echo two'] },
-			{ input: ': 1:0;echo one: 2:0;echo two: 3:0;echo one', expected: ['echo one', 'echo two'] },
+			{ input: ': 1:0;echo one: 2:0;echo two: 3:0;echo one', expected: ['echo two', 'echo one'] },
 		];
 		for (const fixture of zshFixtures) {
 			assert.deepStrictEqual(paradisParseZshHistory(fixture.input), fixture.expected);
@@ -727,9 +727,10 @@ suite('ParadisTerminalHistoryCompletion', () => {
 		bash.provider.dispose();
 
 		const extended = createHarness({ read: async resource => utf8File(resource, ': 1:0;echo one: 2:0;echo two: 3:0;echo one') });
+		// 最後に打ち直した echo one が先頭に来る
 		assert.deepStrictEqual(await extended.provider.provideCompletions('e', 1, CancellationToken.None), [
-			completion('echo two', '~/.zsh_history'),
 			completion('echo one', '~/.zsh_history'),
+			completion('echo two', '~/.zsh_history'),
 		]);
 		extended.provider.dispose();
 
