@@ -124,13 +124,14 @@ describe('コードと Markdown の CSP', () => {
 		}).toEqual({ cspFirst: true, nonceScript: true });
 	});
 
-	test('Markdown の本文に混ざったスクリプトには nonce を付けない', () => {
+	test('Markdown の本文に混ざったスクリプトと属性は落とし、nonce も付けない', () => {
 		const html = buildMarkdownHtml({ content: '# t\n\n<script>alert(1)</script>\n\n<img src=x onerror="alert(2)">' }, undefined, NONCE);
 		expect({
 			csp: html.startsWith(`<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="script-src 'nonce-${NONCE}';`),
-			rawScriptKeptWithoutNonce: html.includes('<script>alert(1)</script>'),
+			rawScript: html.includes('alert(1)'),
+			handler: html.includes('onerror'),
 			noncedScripts: html.split(`nonce="${NONCE}"`).length - 1,
-		}).toEqual({ csp: true, rawScriptKeptWithoutNonce: true, noncedScripts: 0 });
+		}).toEqual({ csp: true, rawScript: false, handler: false, noncedScripts: 0 });
 	});
 
 	test('nonce を渡さなければ今までどおり（CSP を付けない）', () => {

@@ -44,6 +44,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-11-12',
 		items: [
 			{
+				icon: 'shield-checkmark-outline',
+				title: 'Markdown のプレビューで、本文に書かれた埋め込みのページやフォーム、外のサイトの画像を出さないようにしました',
+				body: '開いただけで外へ読み込みが飛ばないようにするためです。外の画像は代わりの文字（画像の説明）で示します。',
+			},
+			{
 				icon: 'git-commit-outline',
 				title: 'コミットを待っている間に接続が切れたりアプリを裏に回したりしても、PC でコミットできていれば「コミットしました」と出すようにしました',
 				body: 'つながり直した後に PC のコミットの一覧で確かめます。確かめるのは、ソース管理の画面を開いたまま、コミットを押してから約 5 分までです。',

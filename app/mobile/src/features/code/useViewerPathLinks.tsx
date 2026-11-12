@@ -14,6 +14,7 @@ import { ActionSheet, useThemeColors } from '../../ui/index.js';
 import { buildViewerPathLinkMenu } from './pathMenu.js';
 import { useAbsolutePathOption } from './useAbsolutePath.js';
 import {
+	buildPathLinkBridgeScript,
 	buildPathLinkCollectScript,
 	buildPathLinkMarkScript,
 	isHomePath,
@@ -45,6 +46,11 @@ export interface ViewerPathLinksBinding {
 	onMessage(data: string): boolean;
 	/** 長押しのメニュー。画面の木に必ず置く（開くまでは何も描かない）。 */
 	readonly sheet: ReactNode;
+	/**
+	 * ページより先に読み込ませるスクリプト（`injectedJavaScriptBeforeContentLoaded`）。知らせの送り主を確かめる口を置く。
+	 * 対象外の表示では undefined。
+	 */
+	readonly beforeContentLoaded: string | undefined;
 }
 
 type Resolution = { readonly kind: 'resolved'; readonly path: string } | { readonly kind: 'failed'; readonly text: string };
@@ -64,6 +70,8 @@ function showFailure(text: string): void {
  */
 export function useViewerPathLinks(space: ViewerPathLinkSpace | undefined, webRef: { readonly current: WebView | null }): ViewerPathLinksBinding {
 	const token = useMemo(() => createMobileOfficeNonce(), []);
+	// 知らせの送り主を確かめる秘密（ページには見せない。`viewerPathLinks.ts` の冒頭）
+	const secret = useMemo(() => createMobileOfficeNonce(), []);
 	const theme = useThemeColors();
 	const fsResolveLink = useAppStore(s => s.fsResolveLink);
 	const absolutePath = useAbsolutePathOption({ pcId: space?.pcId, wsId: space?.wsId, live: space?.live ?? false });
@@ -166,14 +174,14 @@ export function useViewerPathLinks(space: ViewerPathLinkSpace | undefined, webRe
 		}
 		linksRef.current = [];
 		awaitingCandidatesRef.current = true;
-		webRef.current?.injectJavaScript(buildPathLinkCollectScript(token));
-	}, [enabled, token, webRef]);
+		webRef.current?.injectJavaScript(buildPathLinkCollectScript(token, secret));
+	}, [enabled, token, secret, webRef]);
 
 	const onMessage = useCallback((data: string): boolean => {
 		if (!enabled) {
 			return false;
 		}
-		const message = parsePathLinkMessage(data, token);
+		const message = parsePathLinkMessage(data, token, secret);
 		if (message === undefined) {
 			return false;
 		}
@@ -185,7 +193,7 @@ export function useViewerPathLinks(space: ViewerPathLinkSpace | undefined, webRe
 			const found = pathLinksOf(message.items);
 			linksRef.current = found.links;
 			if (found.marks.length > 0) {
-				webRef.current?.injectJavaScript(buildPathLinkMarkScript(token, found.marks, theme.accent));
+				webRef.current?.injectJavaScript(buildPathLinkMarkScript(token, secret, found.marks, theme.accent));
 			}
 			return true;
 		}
@@ -198,10 +206,11 @@ export function useViewerPathLinks(space: ViewerPathLinkSpace | undefined, webRe
 			}
 		}
 		return true;
-	}, [enabled, token, webRef, theme.accent, openLink, showMenu]);
+	}, [enabled, token, secret, webRef, theme.accent, openLink, showMenu]);
 
 	const sheet = menu === undefined ? null : (
 		<ActionSheet visible={menuVisible} title={menu.title} message={menu.message} actions={contextMenuSheetActions(menu)} onClose={() => setMenuVisible(false)} />
 	);
-	return { onLoadEnd, onMessage, sheet };
+	const beforeContentLoaded = useMemo(() => (enabled ? buildPathLinkBridgeScript(secret) : undefined), [enabled, secret]);
+	return { onLoadEnd, onMessage, sheet, beforeContentLoaded };
 }

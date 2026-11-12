@@ -22,6 +22,11 @@
 // 信頼していないワークスペース（制限モード）ではスクリプトを動かさない。配信サーバはワークスペースの
 // フォルダーごと載せるので、スクリプトが動くと、クローンしただけのリポジトリの HTML が `.env` などを
 // fetch して外へ送れてしまう。信頼したワークスペースでは従来どおり動かす（タスクや拡張機能と同じ線引き）。
+//
+// ワークスペースの外の HTML（~/Downloads に落としたものなど）は、文書のフォルダーを丸ごと載せるので、
+// 同じフォルダーの別のファイルを fetch で読めてしまう。ブラウザで file:// を開いたときより広いので、
+// `connect-src` を配信元だけに絞り、読んだ中身を fetch・XHR・WebSocket・sendBeacon で外へ送れないようにする
+// （{@link paradisHtmlOutsideWorkspaceCsp}）。
 
 import { Schemas } from '../../../../base/common/network.js';
 import { escape } from '../../../../base/common/strings.js';
@@ -180,32 +185,35 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 	}
 
 	/**
-	 * 相対リソースの解決先。末尾は必ず `/`。
+	 * 相対リソースの解決先（エスケープ前の URL）。末尾は必ず `/`。
 	 *
 	 * ローカルファイルはローカルサーバ、それ以外（リモート等）は webview のリソース URL。
+	 * `outsideWorkspace` は、ワークスペースの中に素直に下れず文書のフォルダーを載せたこと。
 	 */
-	private async _resolveBaseHref(resource: URI): Promise<string> {
+	private async _resolveBase(resource: URI): Promise<{ readonly url: string; readonly outsideWorkspace: boolean }> {
+		// 載せるのは、そのファイルが属するワークスペースフォルダー（無ければファイルのフォルダー）。
+		// ページの中の `../assets/style.css` のような参照はごく普通なので、フォルダー1つだけを
+		// 載せると URL のトークンより上へ出てしまい読めなくなる。
+		const documentDirectory = dirname(resource);
+		const folder = this._workspaceContextService.getWorkspaceFolder(resource)?.uri;
+		// フォルダーの中での位置が「素直に下る道」で出せないときは、そのフォルダーを
+		// 載せてはいけない。`getWorkspaceFolder` は大文字小文字を無視して照合する環境が
+		// あるのに対し `relativePath` は区別するため、**属していると判定されたのに
+		// `../` で上へ抜ける相対パスが返る**ことが起こり得る。そのまま base に足すと
+		// URL のトークンより外を指してページの読み込みが全部落ちる。
+		const candidate = folder && folder.scheme === resource.scheme ? folder : undefined;
+		const relative = candidate ? relativePath(candidate, documentDirectory) : undefined;
+		const descends = relative !== undefined && !relative.startsWith('..');
+		// ワークスペースの中に素直に下れないものは、文書のフォルダーを載せる「外の文書」として扱う。
+		const outsideWorkspace = !descends;
 		if (this._canServeFromPreviewServer(resource)) {
 			try {
-				// 載せるのは、そのファイルが属するワークスペースフォルダー（無ければファイルのフォルダー）。
-				// ページの中の `../assets/style.css` のような参照はごく普通なので、フォルダー1つだけを
-				// 載せると URL のトークンより上へ出てしまい読めなくなる。
-				const documentDirectory = dirname(resource);
-				const folder = this._workspaceContextService.getWorkspaceFolder(resource)?.uri;
-				// フォルダーの中での位置が「素直に下る道」で出せないときは、そのフォルダーを
-				// 載せてはいけない。`getWorkspaceFolder` は大文字小文字を無視して照合する環境が
-				// あるのに対し `relativePath` は区別するため、**属していると判定されたのに
-				// `../` で上へ抜ける相対パスが返る**ことが起こり得る。そのまま base に足すと
-				// URL のトークンより外を指してページの読み込みが全部落ちる。
-				const candidate = folder && folder.scheme === resource.scheme ? folder : undefined;
-				const relative = candidate ? relativePath(candidate, documentDirectory) : undefined;
-				const descends = relative !== undefined && !relative.startsWith('..');
 				const root = descends ? candidate! : documentDirectory;
 				const suffix = descends && relative ? relative.split('/') : [];
 
 				const located = await this._mountPreview(root);
 				this._linkBase = { url: paradisPreviewUrl(located.mount, located.port), root };
-				return escapeAttribute(paradisPreviewUrl(located.mount, located.port, suffix));
+				return { url: paradisPreviewUrl(located.mount, located.port, suffix), outsideWorkspace };
 			} catch (error) {
 				// shared process が落ちている、SSH のポート転送が張れない等。
 				this._previewServerUnavailable = true;
@@ -220,7 +228,7 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		const remoteInfo = resource.scheme === Schemas.vscodeRemote ? { isRemote: true, authority: resource.authority } : undefined;
 		const url = `${asWebviewUri(dirname(resource), remoteInfo).toString(true)}/`;
 		this._linkBase = { url, root: dirname(resource) };
-		return escapeAttribute(url);
+		return { url, outsideWorkspace };
 	}
 
 	/** 手元か SSH 先か、フォルダーの scheme で配信先を選ぶ。 */
@@ -246,7 +254,8 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 	}
 
 	protected override async renderDocument(text: string, resource: URI, _webview: IOverlayWebview): Promise<string> {
-		const baseHref = await this._resolveBaseHref(resource);
+		const base = await this._resolveBase(resource);
+		const baseHref = escapeAttribute(base.url);
 
 		// <base> で相対リソースの解決先を決め（ローカルサーバ、またはリモート用の webview リソース URL）、
 		// 初期ズームを CSS zoom で焼き込む。
@@ -258,7 +267,9 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		// ライブなズーム変更（ボタン操作）を postMessage で受け取り、スクロール位置を保ったまま反映する。
 		const zoomScript = paradisViewerZoomScript();
 
-		const html = paradisInjectHtmlHead(text, headInjection);
+		const injected = paradisInjectHtmlHead(text, headInjection);
+		// 外の文書の CSP は、ページのどのスクリプトよりも前に置く（{@link paradisInsertAtDocumentStart}）。
+		const html = base.outsideWorkspace ? paradisInsertAtDocumentStart(injected, paradisHtmlOutsideWorkspaceCsp(base.url)) : injected;
 
 		// 末尾に足す。`</body>` を探して差し込むと、**ページ自身のスクリプトの中にある文字列**の
 		// `</body>` に当たることがあり、注入した `</script>` がそのスクリプトを途中で終わらせて
@@ -270,6 +281,42 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		const pageScripts = this.allowScripts ? this.viewerPageScripts(resource) + paradisHtmlViewerCanvasScript() : '';
 		return `${html}${zoomScript}${pageScripts}`;
 	}
+}
+
+/** webview のリソース URL（service worker で解決する経路）。手元・SSH 先でホスト名の前半が変わる。 */
+const PARADIS_WEBVIEW_RESOURCE_HOST_SUFFIX = '.vscode-resource.vscode-cdn.net';
+
+/**
+ * ワークスペースの外の HTML に当てる CSP の meta 要素。`connect-src` を、文書を配っている所（`baseUrl` の origin）だけに絞る。
+ *
+ * 同じフォルダーの別のファイルを fetch で読むこと自体は止めない（ページの `fetch('./data.json')` を動かすため）。
+ * 止めるのは、読んだものを fetch・XHR・WebSocket・EventSource・sendBeacon で外へ送ること。画像の読み込みや
+ * フォームの送信は `connect-src` の外なので、この CSP では止まらない。
+ *
+ * webview のリソース URL のホスト名には CSP のホストに書けない `+` が入るので、その経路ではホストの前半を `*` にする
+ * （そこから読めるのも webview の localResourceRoots＝文書のフォルダーだけ）。
+ */
+export function paradisHtmlOutsideWorkspaceCsp(baseUrl: string): string {
+	const url = new URL(baseUrl);
+	const source = url.hostname.endsWith(PARADIS_WEBVIEW_RESOURCE_HOST_SUFFIX)
+		? `${url.protocol}//*${PARADIS_WEBVIEW_RESOURCE_HOST_SUFFIX}`
+		: url.origin;
+	return `<meta http-equiv="Content-Security-Policy" content="connect-src ${escapeAttribute(source)}">`;
+}
+
+/** 文書の先頭の BOM・空白・コメントと `<!DOCTYPE>`。これより前に要素を置くと quirks mode になる。 */
+const PARADIS_HTML_DOCUMENT_PROLOGUE = /^\uFEFF?(?:\s|<!--[\s\S]*?-->)*(?:<!doctype(?=[\s>])[^>]*>)?/i;
+
+/**
+ * `injection` を文書の一番前（先頭の `<!DOCTYPE>` の直後）に置く。
+ *
+ * `<head>` の開きタグを探して差し込むと、`<!-- <head> -->` のようなコメントや、`<head>` より前の `<script>` が
+ * CSP より先に読まれる。ここに置けば、パーサーは最初に head を作ってこの要素を入れるので、ページのどの
+ * スクリプトよりも前になる（後に来る著者の `<html>`・`<head>` の開きタグは仕様どおり 1 つにまとめられる）。
+ */
+export function paradisInsertAtDocumentStart(html: string, injection: string): string {
+	const prologue = PARADIS_HTML_DOCUMENT_PROLOGUE.exec(html)?.[0] ?? '';
+	return `${prologue}${injection}${html.slice(prologue.length)}`;
 }
 
 /** `<head>` の開きタグ。タグ名の直後を空白か `>` に限り、`<header>` に当たらないようにする。 */

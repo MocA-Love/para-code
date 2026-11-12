@@ -1,6 +1,5 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { marked } from 'marked';
 import { classifyMobileFileKind } from '../../components/officeCapability.js';
 import { breadcrumbItems, type BreadcrumbItem } from '../../filesBreadcrumb.js';
 import type { FsReadResult } from '../../store.js';
@@ -8,6 +7,7 @@ import { colors, radius, type } from '../../theme.js';
 import type { ThemeColors } from '../../ui/themeColors.js';
 import { viewerScriptCspMeta } from './fileFind.js';
 import { parentPath } from './fileTree.js';
+import { markdownCspMeta, renderMarkdownSafely } from './markdownSafeHtml.js';
 
 /**
  * ファイルビューア（Orca の MobileFilePreviewScreen）の判定と、WebView に流す HTML の組み立て。
@@ -284,13 +284,14 @@ export function buildCodeHtml(result: FsReadResult, focusLine?: number, accent: 
 
 /**
  * Markdown のプレビュー（モックの `.mdv`）。地と文字は PC のテーマに合わせる。
- * `nonce` を渡すと、本文に混ざった生の HTML のスクリプトを止める CSP を `<head>` の先頭に置く（`buildCodeHtml` と同じ）。
+ * 本文に混ざった生の HTML は許可リストで絞り、外の画像・フレーム・フォームを止める CSP を必ず `<head>` の先頭に置く
+ * （`markdownSafeHtml.ts`）。`nonce` を渡すと自分のスクリプトだけが動く（`buildCodeHtml` と同じ）。
  */
 export function buildMarkdownHtml(result: Pick<FsReadResult, 'content' | 'bg' | 'fg'>, accent: AccentColors = DEFAULT_ACCENT, nonce?: string): string {
 	const bg = result.bg ?? colors.codeBg;
 	const fg = result.fg ?? colors.text;
-	const rendered = marked.parse(result.content, { async: false });
-	return `<!DOCTYPE html><html><head>${nonce !== undefined ? viewerScriptCspMeta(nonce) : ''}
+	const rendered = renderMarkdownSafely(result.content);
+	return `<!DOCTYPE html><html><head>${markdownCspMeta(nonce)}
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 	body { margin: 0; padding: 16px; background: ${bg}; color: ${fg}; font-family: -apple-system, sans-serif; font-size: ${type.input}px; line-height: 24px; word-wrap: break-word; }
@@ -301,6 +302,7 @@ export function buildMarkdownHtml(result: Pick<FsReadResult, 'content' | 'bg' | 
 	ul, ol { margin: 0 0 10px; padding-left: 22px; }
 	a { color: ${accent.accent}; }
 	img { max-width: 100%; }
+	.ext-img { color: ${colors.textDim}; }
 	code { font-family: Menlo, ui-monospace, monospace; font-size: ${type.label}px; background: ${colors.raised}; border-radius: ${radius.key}px; padding: 1px 4px; }
 	pre { background: ${colors.bg}; border: 0.5px solid ${colors.border}; border-radius: ${radius.row}px; padding: 10px 12px; font-size: ${type.meta}px; line-height: 18px; overflow-x: auto; margin: 0 0 10px; }
 	pre code { background: none; padding: 0; font-size: ${type.meta}px; }

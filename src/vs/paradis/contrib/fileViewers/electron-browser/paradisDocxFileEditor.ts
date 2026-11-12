@@ -1686,6 +1686,19 @@ export class ParadisDocxFileEditor extends EditorPane {
 			// 差し込みの本体は描画完了後に入れ替える。受け取りだけ先に構えておく
 			// (送信は本文表示の直後に来るので、リスナーが後だと取りこぼす)。
 			let placeParadisWordObjects = () => { };
+			// 図形の SVG は文書由来の文字列なので、HTML として読み直さない（innerHTML は直列化と読み直しの食い違いで
+			// 中身が化けうる）。SVG として読み、根が svg で読み損ないが無いものだけを差し込む。
+			const parseParadisWordObjectSvg = text => {
+				if (typeof text !== 'string') {
+					return undefined;
+				}
+				const parsed = new DOMParser().parseFromString(text, 'image/svg+xml');
+				const root = parsed.documentElement;
+				if (!root || root.namespaceURI !== 'http://www.w3.org/2000/svg' || root.localName !== 'svg' || parsed.getElementsByTagName('parsererror').length > 0) {
+					return undefined;
+				}
+				return document.importNode(root, true);
+			};
 			// 検索結果・変更点・押した要素の情報。表示の段落に付けた目印（paradisWordAnchorRuntime.ts）で位置を探す。
 			// 描き終わる前に届いたものは覚えておき、描いた後に当てる。
 			const anchors = window.paradisWordAnchors;
@@ -1816,9 +1829,13 @@ export class ParadisDocxFileEditor extends EditorPane {
 						if (!item || slot.childElementCount > 0) {
 							continue;
 						}
+						const svg = parseParadisWordObjectSvg(item.svg);
+						if (!svg) {
+							continue;
+						}
 						slot.classList.add('paradis-word-object-slot');
 						slot.setAttribute('data-paradis-object-kind', item.kind);
-						slot.innerHTML = item.svg;
+						slot.replaceChildren(svg);
 						placed++;
 					}
 					vscode.postMessage({ type: 'paradisWordObjects', expected: PARADIS_WORD_OBJECTS.length, placed });
