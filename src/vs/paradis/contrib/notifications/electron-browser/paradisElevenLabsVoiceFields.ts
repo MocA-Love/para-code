@@ -30,7 +30,7 @@ import { IParadisAivisSettings, IParadisNotificationsSettingsService, ParadisApi
 import { paradisElevenLabsDictionaryCache, paradisElevenLabsModelCache, paradisElevenLabsVoiceCache } from './paradisElevenLabsApiCache.js';
 import { ParadisElevenLabsVoiceTuningFields } from './paradisElevenLabsVoiceTuningFields.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
-import { paradisNotifButton, paradisNotifInput } from './paradisNotificationKitParts.js';
+import { paradisNotifButton, paradisNotifChip, paradisNotifInput } from './paradisNotificationKitParts.js';
 
 const $ = dom.$;
 
@@ -196,7 +196,7 @@ export class ParadisElevenLabsVoiceFields {
 		desc.title = voice.description;
 		const tags = dom.append(tile, $('.pns-voice-tags'));
 		if (voice.japanese) {
-			dom.append(tags, $('span.pns-voice-tag')).textContent = STR_JAPANESE_TAG;
+			paradisNotifChip(tags, STR_JAPANESE_TAG);
 		}
 		const actions = dom.append(tile, $('.pns-preset-actions'));
 		const sampleBtn = paradisNotifButton(actions, 'icon', { small: true, icon: Codicon.play });

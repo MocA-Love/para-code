@@ -381,7 +381,7 @@ suite('Paradis DND actual surfaces', () => {
 				properties: {
 					name: 'おやすみモード',
 					text: '$(bell) おやすみモード',
-					ariaLabel: 'おやすみモード',
+					ariaLabel: 'おやすみモード: オフ',
 					tooltip: '通知はオンです。クリックしておやすみモードを開始します（このPCの音・デスクトップ通知・音声読み上げを一括で止めます。モバイルへのPush通知は対象外）。',
 					command: 'paradis.notifications.selectDoNotDisturb',
 				},

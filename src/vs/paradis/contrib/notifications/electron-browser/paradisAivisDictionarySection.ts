@@ -17,6 +17,8 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
+import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
@@ -39,7 +41,8 @@ import { paradisNotifNestedModal } from './paradisNotificationNestedModal.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { PARADIS_MODAL_DRAFT_RESTORED, paradisModalDraftSnapshot, ParadisModalDrafts } from '../../paradisSettings/browser/paradisModalDrafts.js';
-import { paradisNotifButton } from './paradisNotificationKitParts.js';
+import { paradisNotifButton, paradisNotifChip } from './paradisNotificationKitParts.js';
+import { paradisNotifSafeFileName, paradisNotifSaveTextFile } from './paradisNotificationSaveFile.js';
 import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 const $ = dom.$;
@@ -93,6 +96,8 @@ export class ParadisAivisDictionarySection extends Disposable {
 		@IContextViewService private readonly contextViewService: IContextViewService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IHoverService private readonly hoverService: IHoverService,
+		@IFileDialogService private readonly fileDialogService: IFileDialogService,
+		@IFileService private readonly fileService: IFileService,
 	) {
 		super();
 		this._focus = new ParadisSectionFocusCarrier(this.container);
@@ -212,7 +217,7 @@ export class ParadisAivisDictionarySection extends Disposable {
 		const nameRow = dom.append(infoEl, $('.pns-ringtone-name'));
 		dom.append(nameRow, $('span')).textContent = dict.name;
 		if (isActive) {
-			dom.append(nameRow, $('span.pns-dict-badge-active')).textContent = STR_ACTIVE_BADGE;
+			paradisNotifChip(nameRow, STR_ACTIVE_BADGE, 'success');
 		}
 		const descLine = dom.append(infoEl, $('.pns-ringtone-desc'));
 		descLine.textContent = `${dict.description || '—'} · ${dict.word_count} words · ${dict.updated_at.slice(0, 10)}`;
@@ -278,13 +283,7 @@ export class ParadisAivisDictionarySection extends Disposable {
 		this._clearActionError();
 		try {
 			const data = await this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call<Record<string, unknown>>('exportAivisDictionary', [apiKey, uuid]);
-			const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-			const url = URL.createObjectURL(blob);
-			const a = document.createElement('a');
-			a.href = url;
-			a.download = `${name || 'dictionary'}.aivisspeech.json`;
-			a.click();
-			URL.revokeObjectURL(url);
+			await paradisNotifSaveTextFile(this.fileDialogService, this.fileService, `${paradisNotifSafeFileName(name, 'dictionary')}.aivisspeech.json`, JSON.stringify(data, null, 2), [{ name: 'AivisSpeech JSON', extensions: ['json'] }]);
 		} catch (error) {
 			this.logService.warn('[ParadisNotifications] dictionary export failed', error);
 			this._showActionError(error);
