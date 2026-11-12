@@ -35,8 +35,8 @@ function FlowChart({ flow, selected, onSelect }: { flow: ITaskBoardFlow; selecte
 				return (
 					<g key={s.id} onClick={() => onSelect(s.id)} style={{ cursor: 'pointer' }}>
 						<rect x={x} y={y(i)} width={bw} height={bh} rx={9} style={{ fill: palette[s.kind].fill, stroke: selected === s.id ? 'var(--accent)' : palette[s.kind].stroke, strokeWidth: selected === s.id ? 2 : 1 }} strokeDasharray={s.kind === 'wait' ? '4 3' : undefined} />
-						<text x={x + bw / 2} y={y(i) + 25} textAnchor="middle" fontSize="12.5" style={{ fill: 'var(--text)' }}>{s.name.length > 16 ? `${s.name.slice(0, 15)}…` : s.name}</text>
-						<text x={x - 10} y={y(i) + 25} textAnchor="end" fontSize="11" style={{ fill: 'var(--faint)' }}>{KIND[s.kind].label}</text>
+						<text x={x + bw / 2} y={y(i) + 25} textAnchor="middle" style={{ fontSize: 'var(--fs-sm)', fill: 'var(--text)' }}>{s.name.length > 16 ? `${s.name.slice(0, 15)}…` : s.name}</text>
+						<text x={x - 10} y={y(i) + 25} textAnchor="end" style={{ fontSize: 'var(--fs-xs)', fill: 'var(--faint)' }}>{KIND[s.kind].label}</text>
 						{i < flow.steps.length - 1 && <line x1={x + bw / 2} y1={y(i) + bh} x2={x + bw / 2} y2={y(i + 1) - 2} style={{ stroke: 'var(--faint)' }} markerEnd="url(#arrow)" />}
 						{back >= 0 && back !== i && <path d={`M${x + bw} ${y(i) + bh / 2} C ${x + bw + off} ${y(i) + bh / 2}, ${x + bw + off} ${y(back) + bh / 2}, ${x + bw + 2} ${y(back) + bh / 2}`} fill="none" style={{ stroke: 'var(--red)' }} strokeDasharray="4 3" markerEnd="url(#arrow-back)" />}
 					</g>
@@ -331,7 +331,7 @@ export function FlowEditor() {
 						</div>
 						{draft.workspace.kind === 'clone-pool' && <>
 							<label>クローン</label>
-							<span className="muted" style={{ fontSize: 12 }}>{clones.length ? clones.map(c => c.name).join('、') : '未設定'}</span>
+							<span className="muted" style={{ fontSize: 'var(--fs-sm)' }}>{clones.length ? clones.map(c => c.name).join('、') : '未設定'}</span>
 							<span className="hint">クローンの場所は人ごとに違うので、リポジトリには書かず個人の設定（起動時の --clones）に置きます</span>
 						</>}
 						<label>返すとき</label>
@@ -349,7 +349,7 @@ export function FlowEditor() {
 						<label htmlFor="ws-max">同時に動かす</label>
 						<input id="ws-max" className="input" type="number" min={1} max={12} value={draft.workspace.maxRunning} onChange={e => setWorkspace({ maxRunning: Math.max(1, Math.min(12, Number(e.target.value) || 1)) })} style={{ width: 90 }} />
 					</div>
-					<div className="sec-title">工程<span className="faint" style={{ fontWeight: 400 }}>ドラッグか ↑↓ で並べ替え</span></div>
+					<div className="sec-title">工程<span className="faint" style={{ fontWeight: 'var(--fw-regular)' }}>ドラッグか ↑↓ で並べ替え</span></div>
 					<div className="steplist" role="listbox" aria-label="工程">
 						{draft.steps.map((s, i) => (
 							<button
@@ -432,7 +432,7 @@ export function FlowEditor() {
 								) : <input id="st-opt" className="input" value={step.projectOption ?? ''} placeholder={step.name} onChange={e => updateStep({ projectOption: e.target.value || undefined })} />}
 							</>}
 							<label>完了の判定</label>
-							<span className="muted" style={{ fontSize: 12.5 }}>{completionRule(step)}</span>
+							<span className="muted" style={{ fontSize: 'var(--fs-sm)' }}>{completionRule(step)}</span>
 							<label htmlFor="st-fail">差し戻し先</label>
 							<select id="st-fail" className="input" value={step.onFail ?? ''} onChange={e => updateStep({ onFail: e.target.value || undefined })}>
 								<option value="">なし（人に知らせる）</option>
@@ -460,7 +460,7 @@ export function FlowEditor() {
 					{!snapshot.runtime.repoPath && <p className="problems">リポジトリを指定せずに起動しているため保存できません（--repo）。</p>}
 				</section>
 				<section className="flow-chart">
-					<div className="sec-title">流れ図<span className="faint" style={{ fontWeight: 400 }}>赤い点線は差し戻し</span></div>
+					<div className="sec-title">流れ図<span className="faint" style={{ fontWeight: 'var(--fw-regular)' }}>赤い点線は差し戻し</span></div>
 					<FlowChart flow={draft} selected={step?.id ?? ''} onSelect={setSelected} />
 				</section>
 			</div>

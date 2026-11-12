@@ -206,7 +206,7 @@ const styles = StyleSheet.create({
 	},
 	badgeText: {
 		fontSize: type.meta,
-		fontWeight: '800',
+		fontWeight: '600',
 		fontFamily: monoFamily,
 	},
 	badgeTextSmall: {
@@ -232,7 +232,7 @@ const styles = StyleSheet.create({
 	},
 	headingTitle: {
 		fontSize: type.caption,
-		fontWeight: '700',
+		fontWeight: '600',
 		color: colors.textDim,
 	},
 	headingCount: {

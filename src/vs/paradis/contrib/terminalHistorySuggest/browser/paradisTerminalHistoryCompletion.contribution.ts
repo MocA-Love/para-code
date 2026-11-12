@@ -160,7 +160,7 @@ export class ParadisTerminalHistoryCompletionProvider extends Disposable impleme
 			});
 		};
 
-		const historyDetail = localize('para.terminalHistory.detail', "History");
+		const historyDetail = localize('para.terminalHistory.detail', "共通の履歴");
 		// スペースごとの履歴を使っているターミナルでは、そのスペースの履歴ファイルを最初に読む
 		// （↑ キーで出るのはこちら）。全スペース共通の VS Code 内部の履歴と、全体の履歴ファイルは
 		// 後ろに続けて補う。先に共通の履歴を並べると、別のスペースのコマンドが先頭に来る。

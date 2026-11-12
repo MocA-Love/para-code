@@ -18,6 +18,8 @@
 import './media/paradisLimitsMonitor.css';
 import * as dom from '../../../../base/browser/dom.js';
 import { IntervalTimer } from '../../../../base/common/async.js';
+import { Codicon } from '../../../../base/common/codicons.js';
+import { ThemeIcon } from '../../../../base/common/themables.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
@@ -28,11 +30,16 @@ import { IParadisLimitsAccount, IParadisLimitsSetupState, ParadisLimitsProvider 
 import { appendParadisLimitsLogo } from './paradisLimitsLogos.js';
 import { ParadisLimitsMonitorClient } from './paradisLimitsMonitorClient.js';
 import { IParadisLimitsEmailMaskService } from './paradisLimitsEmailMask.js';
-import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
+import { paradisButtonClasses } from '../../../browser/paradisButton.js';
+import { PARADIS_MODAL_BODY_CLASS, PARADIS_MODAL_FOOT_CLASS, paradisModalClasses, ParadisModalSize, renderParadisModalHead } from '../../../browser/paradisModal.js';
+import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 
 const $ = dom.$;
 
 const POLL_INTERVAL_MS = 1000;
+
+/** 見出しの id を窓の中で重ねないための番号（aria-labelledby で指す）。 */
+let titleIdCounter = 0;
 
 export interface IParadisLimitsSetupDialogOptions {
 	readonly provider: ParadisLimitsProvider;
@@ -75,34 +82,51 @@ export class ParadisLimitsSetupDialog extends Disposable {
 		const dialog = dom.append(this.overlay, $('.paradis-limits-setup'));
 		dialog.classList.add(...paradisModalClasses(ParadisModalSize.Small));
 		dialog.tabIndex = -1;
+		dialog.setAttribute('role', 'dialog');
+		dialog.setAttribute('aria-modal', 'true');
 
-		const body = dom.append(dialog, $('.pls-body'));
-		const title = dom.append(body, $('.pls-title'));
-		appendParadisLimitsLogo(title, options.provider);
-		dom.append(title, $('span')).textContent = this.titleText();
+		// 見出しの帯（キットの 52px）: 左にプロバイダのロゴと題、右に閉じるボタン。
+		const head = renderParadisModalHead(dialog, this.titleText());
+		head.title.id = `paradis-limits-setup-title-${++titleIdCounter}`;
+		dialog.setAttribute('aria-labelledby', head.title.id);
+		head.element.insertBefore(appendParadisLimitsLogo(head.element, options.provider), head.title);
+		const closeLabel = localize('paradis.limitsSetup.close', "閉じる");
+		const closeButton = dom.append(head.actions, $<HTMLButtonElement>('button'));
+		closeButton.type = 'button';
+		closeButton.classList.add(...paradisButtonClasses('icon'));
+		closeButton.title = closeLabel;
+		closeButton.setAttribute('aria-label', closeLabel);
+		dom.append(closeButton, $(ThemeIcon.asCSSSelector(Codicon.close)));
+		this._register(dom.addDisposableListener(closeButton, 'click', () => this.close(false)));
 
+		const body = dom.append(dialog, $(`.${PARADIS_MODAL_BODY_CLASS}.pls-body`));
 		dom.append(body, $('.pls-desc')).textContent = this.descriptionText();
 		this.stepsElement = dom.append(body, $('.pls-steps'));
 		this.duplicateElement = dom.append(body, $('.pls-duplicate'));
 		this.duplicateElement.style.display = 'none';
 
 		this.errorElement = dom.append(body, $('.pls-error'));
+		// 出したエラーを読み上げに知らせる（同じ文のまま描き直しても読み直さないよう、文が変わったときだけ書く）
+		this.errorElement.setAttribute('role', 'alert');
 		this.errorElement.style.display = 'none';
 
-		const footer = dom.append(dialog, $('.pls-footer'));
-		this.cancelButton = dom.append(footer, $('button.pls-btn')) as HTMLButtonElement;
+		const footer = dom.append(dialog, $(`.${PARADIS_MODAL_FOOT_CLASS}`));
+		this.cancelButton = dom.append(footer, $('button')) as HTMLButtonElement;
+		this.cancelButton.classList.add(...paradisButtonClasses('secondary'));
 		this.cancelButton.type = 'button';
 		this.cancelButton.textContent = localize('paradis.limitsSetup.cancel', "キャンセル");
 		this._register(dom.addDisposableListener(this.cancelButton, 'click', () => this.close(false)));
 
-		this.keepDuplicateButton = dom.append(footer, $('button.pls-btn')) as HTMLButtonElement;
+		this.keepDuplicateButton = dom.append(footer, $('button')) as HTMLButtonElement;
+		this.keepDuplicateButton.classList.add(...paradisButtonClasses('secondary'));
 		this.keepDuplicateButton.type = 'button';
 		this.keepDuplicateButton.textContent = localize('paradis.limitsSetup.keepDuplicate', "それでも追加");
 		this.keepDuplicateButton.style.display = 'none';
 		this._register(dom.addDisposableListener(this.keepDuplicateButton, 'click', () => void this.keepDuplicate()));
 
 		// Codex の重複確認で「新規ホームを削除」に使う。
-		this.submitButton = dom.append(footer, $('button.pls-btn.primary')) as HTMLButtonElement;
+		this.submitButton = dom.append(footer, $('button')) as HTMLButtonElement;
+		this.submitButton.classList.add(...paradisButtonClasses('primary'));
 		this.submitButton.type = 'button';
 		this.submitButton.style.display = 'none';
 		this._register(dom.addDisposableListener(this.submitButton, 'click', () => {
@@ -111,14 +135,9 @@ export class ParadisLimitsSetupDialog extends Disposable {
 			}
 		}));
 
-		this._register(dom.addDisposableListener(dialog, 'keydown', e => {
-			if (e.key === 'Escape') {
-				e.preventDefault();
-				this.close(false);
-			}
-		}));
-
 		layoutService.activeContainer.appendChild(this.overlay);
+		// Esc・Tab の折り返し・閉じた後のフォーカスの戻し（dispose で overlay を外した後に戻す）
+		this._register(new ParadisModalFocus({ backdrop: this.overlay, modal: dialog, onEscape: () => this.close(false), close: () => this.close(false) }));
 		dialog.focus();
 
 		this.renderSteps();
@@ -219,9 +238,11 @@ export class ParadisLimitsSetupDialog extends Disposable {
 
 	private setDuplicateResolving(resolving: boolean): void {
 		this.resolvingDuplicate = resolving;
-		this.cancelButton.disabled = resolving;
-		this.keepDuplicateButton.disabled = resolving;
-		this.submitButton.disabled = resolving;
+		for (const button of [this.cancelButton, this.keepDuplicateButton, this.submitButton]) {
+			button.disabled = resolving;
+			// キットのボタンは `.disabled` で押せない見た目になる（paradisButton.css）
+			button.classList.toggle('disabled', resolving);
+		}
 	}
 
 	private close(completed: boolean): void {
@@ -238,7 +259,10 @@ export class ParadisLimitsSetupDialog extends Disposable {
 	}
 
 	private showError(message: string): void {
-		this.errorElement.textContent = this.options.provider === 'claude' ? this.claudeErrorText(message) : message;
+		const text = this.options.provider === 'claude' ? this.claudeErrorText(message) : message;
+		if (this.errorElement.textContent !== text) {
+			this.errorElement.textContent = text;
+		}
 		this.errorElement.style.display = '';
 	}
 
@@ -398,7 +422,8 @@ export class ParadisLimitsSetupDialog extends Disposable {
 			if (url) {
 				const link = dom.append(detailElement, $('a')) as HTMLAnchorElement;
 				link.textContent = url;
-				link.setAttribute('role', 'link');
+				// href があると Tab で辿れる。開くのは下の click（openerService）で行う
+				link.href = url;
 				this.stepListeners.add(dom.addDisposableListener(link, 'click', e => {
 					e.preventDefault();
 					void this.openerService.open(URI.parse(url));
