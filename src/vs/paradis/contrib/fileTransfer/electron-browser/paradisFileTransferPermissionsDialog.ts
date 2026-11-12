@@ -10,14 +10,20 @@
 // 連動する。フォルダーのときだけ「中身にも適用」を選べる。
 //
 // IDialogService の標準ダイアログには任意の部品を置けないので、fork の自前モーダル（定期実行・設定と
-// 同じ ParadisModalFocus）で描く。寸法は Para Code のダイアログ（角丸 8px・ボタン 5px・本文 13px）に揃える。
+// 同じ ParadisModalFocus）で描く。箱は UI キットの S（見出しの帯・本文・下の帯、paradisPresetRunConfirm.ts と同じ並び）で、
+// チェック・8 進数の欄・ボタンもキットの部品を使う。
 
 import * as dom from '../../../../base/browser/dom.js';
+import { Codicon } from '../../../../base/common/codicons.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
+import { paradisButtonClasses } from '../../../browser/paradisButton.js';
+import { ParadisCheck } from '../../../browser/paradisCheck.js';
+import { ParadisInputField } from '../../../browser/paradisInputField.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { PARADIS_MODAL_DRAFT_RESTORED, paradisModalDraftSnapshot, ParadisModalDrafts } from '../../paradisSettings/browser/paradisModalDrafts.js';
-import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
+import { PARADIS_MODAL_BACKDROP_CLASS, PARADIS_MODAL_BODY_CLASS, PARADIS_MODAL_FOOT_CLASS, paradisModalClasses, ParadisModalSize, renderParadisModalHead } from '../../../browser/paradisModal.js';
 import {
 	paradisFormatMode,
 	paradisFormatOctalMode,
@@ -85,23 +91,33 @@ export function paradisShowPermissionsDialog(container: HTMLElement, options: IP
 			resolve(result);
 		};
 
-		const backdrop = $('.para-ft-modal-backdrop.paradis-modal-backdrop');
+		const backdrop = $(`.para-ft-modal-backdrop.${PARADIS_MODAL_BACKDROP_CLASS}`);
 		const modal = dom.append(backdrop, $('.para-ft-modal'));
 		modal.classList.add(...paradisModalClasses(ParadisModalSize.Small));
 		modal.setAttribute('role', 'dialog');
 		modal.setAttribute('aria-modal', 'true');
 		modal.tabIndex = -1;
 
-		const title = dom.append(modal, $('h4'));
-		title.id = 'para-ft-permissions-title';
-		title.textContent = localize('paradis.fileTransfer.permissions.title', "{0} の権限を変更", options.title);
-		modal.setAttribute('aria-labelledby', title.id);
-		dom.append(modal, $('.para-ft-modal-detail')).textContent = options.location;
+		const head = renderParadisModalHead(modal, localize('paradis.fileTransfer.permissions.title', "{0} の権限を変更", options.title));
+		head.title.id = 'para-ft-permissions-title';
+		modal.setAttribute('aria-labelledby', head.title.id);
+		const closeLabel = localize('paradis.fileTransfer.permissions.close', "閉じる");
+		const close = dom.append(head.actions, $<HTMLButtonElement>('button'));
+		close.type = 'button';
+		close.classList.add(...paradisButtonClasses('icon'));
+		close.title = closeLabel;
+		close.setAttribute('aria-label', closeLabel);
+		dom.append(close, $(ThemeIcon.asCSSSelector(Codicon.close)));
+		// 閉じるボタンは Esc と同じ（変えた権限は下書きに残す）
+		store.add(dom.addDisposableListener(close, 'click', () => finish(undefined, false)));
+
+		const body = dom.append(modal, $(`.${PARADIS_MODAL_BODY_CLASS}`));
+		dom.append(body, $('.para-ft-modal-detail')).textContent = options.location;
 		if (draft) {
-			dom.append(modal, $('.para-ft-modal-detail')).textContent = PARADIS_MODAL_DRAFT_RESTORED;
+			dom.append(body, $('.para-ft-modal-detail')).textContent = PARADIS_MODAL_DRAFT_RESTORED;
 		}
 
-		const grid = dom.append(modal, $('.para-ft-pgrid'));
+		const grid = dom.append(body, $('.para-ft-pgrid'));
 		grid.setAttribute('role', 'group');
 		dom.append(grid, $('span'));
 		const whats: Array<[ParadisPermissionWhat, string]> = [
@@ -117,59 +133,67 @@ export function paradisShowPermissionsDialog(container: HTMLElement, options: IP
 			['group', localize('paradis.fileTransfer.permissions.group', "グループ")],
 			['other', localize('paradis.fileTransfer.permissions.other', "その他")],
 		];
-		const checkboxes: Array<{ input: HTMLInputElement; bit: number }> = [];
+		const checkboxes: Array<{ check: ParadisCheck; bit: number }> = [];
 		for (const [who, whoLabel] of whos) {
 			dom.append(grid, $('span.para-ft-pgrid-label')).textContent = whoLabel;
 			for (const [what, whatLabel] of whats) {
 				const cell = dom.append(grid, $('span.para-ft-pgrid-cell'));
-				const input = dom.append(cell, $<HTMLInputElement>('input'));
-				input.type = 'checkbox';
-				input.setAttribute('aria-label', `${whoLabel} ${whatLabel}`);
+				// 文字は見せず（行と列の見出しが代わり）、読み上げの名前にだけ使う
+				const check = store.add(new ParadisCheck(cell, { label: `${whoLabel} ${whatLabel}`, checked: false }));
 				const bit = paradisModeBit(who, what);
-				checkboxes.push({ input, bit });
-				store.add(dom.addDisposableListener(input, 'change', () => {
-					mode = input.checked ? mode | bit : mode & ~bit;
+				checkboxes.push({ check, bit });
+				store.add(check.onDidChange(checked => {
+					mode = checked ? mode | bit : mode & ~bit;
 					render('checkbox');
 				}));
 			}
 		}
 
-		const octalRow = dom.append(modal, $('.para-ft-octal'));
+		const octalRow = dom.append(body, $('.para-ft-octal'));
 		const octalLabel = dom.append(octalRow, $<HTMLLabelElement>('label'));
-		octalLabel.textContent = localize('paradis.fileTransfer.permissions.octal', "8 進数");
-		const octal = dom.append(octalRow, $<HTMLInputElement>('input.para-ft-octal-input'));
+		const octalLabelText = localize('paradis.fileTransfer.permissions.octal', "8 進数");
+		octalLabel.textContent = octalLabelText;
+		const octalField = store.add(new ParadisInputField(octalRow, { ariaLabel: octalLabelText, small: true }));
+		const octal = octalField.inputElement;
 		octal.id = 'para-ft-permissions-octal';
 		octalLabel.htmlFor = octal.id;
-		octal.spellcheck = false;
 		octal.maxLength = 4;
+		octal.autocomplete = 'off';
 		const preview = dom.append(octalRow, $('span.para-ft-octal-preview'));
+		// 欄の値は render() が `<input>` へ直接書く（InputBox の value の代入は onDidChange を出し、チェックからの描き直しが
+		// 8 進数の欄の処理へ戻ってくるため）。打った文字は DOM の input で受ける
 		store.add(dom.addDisposableListener(octal, 'input', () => {
 			const parsed = paradisParseOctalMode(octal.value);
-			octal.classList.toggle('invalid', parsed === undefined);
+			octalField.element.classList.toggle('invalid', parsed === undefined);
 			if (parsed !== undefined) {
 				mode = parsed;
 				render('octal');
 			}
-			change.disabled = parsed === undefined;
+			setChangeEnabled(parsed !== undefined);
 		}));
 
-		let recursiveInput: HTMLInputElement | undefined;
+		let recursiveCheck: ParadisCheck | undefined;
 		if (options.hasDirectory) {
-			const recursiveRow = dom.append(modal, $('label.para-ft-recursive'));
-			recursiveInput = dom.append(recursiveRow, $<HTMLInputElement>('input'));
-			recursiveInput.type = 'checkbox';
-			dom.append(recursiveRow, $('span')).textContent = localize('paradis.fileTransfer.permissions.recursive', "中身にも適用（ファイルの実行権は元の有無を保ちます。リンクの先は変えません）");
+			recursiveCheck = store.add(new ParadisCheck(body, { label: localize('paradis.fileTransfer.permissions.recursive', "中身にも適用（ファイルの実行権は元の有無を保ちます。リンクの先は変えません）"), checked: false }));
+			recursiveCheck.element.classList.add('para-ft-recursive');
 		}
 
-		const buttons = dom.append(modal, $('.para-ft-modal-buttons'));
-		const cancel = dom.append(buttons, $<HTMLButtonElement>('button.para-ft-button.paradis-focus-ring.secondary'));
+		const foot = dom.append(modal, $(`.${PARADIS_MODAL_FOOT_CLASS}`));
+		const cancel = dom.append(foot, $<HTMLButtonElement>('button'));
 		cancel.type = 'button';
+		cancel.classList.add(...paradisButtonClasses('secondary'));
 		cancel.textContent = localize('paradis.fileTransfer.permissions.cancel', "キャンセル");
-		const change = dom.append(buttons, $<HTMLButtonElement>('button.para-ft-button.paradis-focus-ring.primary'));
+		const change = dom.append(foot, $<HTMLButtonElement>('button'));
 		change.type = 'button';
+		change.classList.add(...paradisButtonClasses('primary'));
 		change.textContent = localize('paradis.fileTransfer.permissions.apply', "変更");
+		/** キットのボタンは `.disabled` で押せない見た目になる（paradisButton.css）。 */
+		function setChangeEnabled(enabled: boolean): void {
+			change.disabled = !enabled;
+			change.classList.toggle('disabled', !enabled);
+		}
 		store.add(dom.addDisposableListener(cancel, 'click', () => finish(undefined, true)));
-		store.add(dom.addDisposableListener(change, 'click', () => finish({ mode, recursive: !!recursiveInput?.checked }, true)));
+		store.add(dom.addDisposableListener(change, 'click', () => finish({ mode, recursive: !!recursiveCheck?.checked }, true)));
 		store.add(dom.addDisposableListener(octal, 'keydown', e => {
 			// 日本語入力の確定の Enter では変更しない（keyCode 229 は変換中の打鍵）
 			if (e.isComposing || e.keyCode === 229) {
@@ -177,7 +201,7 @@ export function paradisShowPermissionsDialog(container: HTMLElement, options: IP
 			}
 			if (e.key === 'Enter' && !change.disabled) {
 				e.preventDefault();
-				finish({ mode, recursive: !!recursiveInput?.checked }, true);
+				finish({ mode, recursive: !!recursiveCheck?.checked }, true);
 			}
 		}));
 		store.add(dom.addDisposableListener(backdrop, 'mousedown', e => {
@@ -188,13 +212,13 @@ export function paradisShowPermissionsDialog(container: HTMLElement, options: IP
 
 		const before = paradisFormatMode(options.initialMode, options.typeChar);
 		function render(from: 'checkbox' | 'octal' | 'init'): void {
-			for (const { input, bit } of checkboxes) {
-				input.checked = (mode & bit) !== 0;
+			for (const { check, bit } of checkboxes) {
+				check.checked = (mode & bit) !== 0;
 			}
 			if (from !== 'octal') {
 				octal.value = paradisFormatOctalMode(mode);
-				octal.classList.remove('invalid');
-				change.disabled = false;
+				octalField.element.classList.remove('invalid');
+				setChangeEnabled(true);
 			}
 			const after = paradisFormatMode(mode, options.typeChar);
 			preview.textContent = '';
