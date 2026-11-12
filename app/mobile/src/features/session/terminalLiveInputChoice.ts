@@ -2,6 +2,7 @@
 
 import { create } from 'zustand';
 import { secureKeyStore } from '../../platform.js';
+import { errorKind } from './errorKind.js';
 
 /**
  * ターミナルのライブ入力（直接入力）をオンにしているか。**既定はオン**で、利用者が自分で切り替えた
@@ -61,7 +62,7 @@ let loadStarted = false;
 let loaded = false;
 
 function persist(choices: LiveInputChoices): void {
-	secureKeyStore.setItem(STORAGE_KEY, JSON.stringify(choices)).catch(err => console.warn('[liveInput] failed to save the choice', err));
+	secureKeyStore.setItem(STORAGE_KEY, JSON.stringify(choices)).catch(err => console.warn('[liveInput] failed to save the choice', errorKind(err)));
 }
 
 export const useTerminalLiveInputChoices = create<LiveInputChoiceStore>((set, get) => ({
@@ -93,7 +94,7 @@ export const useTerminalLiveInputChoices = create<LiveInputChoiceStore>((set, ge
 		}).catch(err => {
 			// 端末のロック中などで読めなかった。次に画面を開いたときにもう一度読む。
 			loadStarted = false;
-			console.warn('[liveInput] failed to load choices', err);
+			console.warn('[liveInput] failed to load choices', errorKind(err));
 		});
 	},
 }));

@@ -53,6 +53,8 @@ export class ParadisPortListPanel extends Disposable {
 
 	/** renderList() は毎回DOMを作り直すため、行リスナーはここへ登録し再描画のたびにclearする。 */
 	private readonly _listListeners = this._register(new DisposableStore());
+	/** 今描いている行の終了ボタン（port:pid ごと）。描き直しの前後でフォーカスを引き継ぐのに使う。 */
+	private readonly killButtons = new Map<string, HTMLButtonElement>();
 
 	private latestSnapshot: IParadisPortListSnapshot | undefined;
 	private searchQuery = '';
@@ -214,7 +216,19 @@ export class ParadisPortListPanel extends Disposable {
 	}
 
 	private renderList(): void {
+		// 行は毎回作り直すので、終了ボタンにあったフォーカスを覚えて、描き直した後に同じ行のボタンへ戻す
+		// （戻さないと body へ落ち、パネルの Esc も届かなくなる）。
+		const focused = dom.getActiveElement();
+		const focusedKey = [...this.killButtons].find(([, button]) => button === focused)?.[0];
+		this.renderListRows();
+		if (focusedKey !== undefined) {
+			(this.killButtons.get(focusedKey) ?? this.element).focus();
+		}
+	}
+
+	private renderListRows(): void {
 		this._listListeners.clear();
+		this.killButtons.clear();
 		dom.clearNode(this.listElement);
 
 		const total = this.latestSnapshot?.entries.length ?? 0;
@@ -249,6 +263,7 @@ export class ParadisPortListPanel extends Disposable {
 		dom.append(row, $('.ppl-pid')).textContent = String(entry.pid);
 		const killButton = dom.append(row, $('button.ppl-kill-btn')) as HTMLButtonElement;
 		killButton.type = 'button';
+		this.killButtons.set(`${entry.port}:${entry.pid}`, killButton);
 		const killLabel = localize('paradis.portList.killAria', "PID {0} を終了", entry.pid);
 		killButton.setAttribute('aria-label', killLabel);
 		killButton.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.close)}`));

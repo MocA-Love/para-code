@@ -6,6 +6,7 @@ import {
 	defaultLaunchTarget,
 	defaultNewSpaceRepo,
 	encodeLaunchTarget,
+	kindAfterFormLoaded,
 	launchBlockedReason,
 	launchSpaceOptions,
 	launchableAgents,
@@ -55,6 +56,16 @@ describe('起動できるか', () => {
 		expect(launchableAgents({ agents }).map(agent => agent.id)).toEqual(['claude']);
 		expect(pcSupportsLaunchIntoSpace({ agents })).toBe(true);
 		expect(pcSupportsLaunchIntoSpace({ agents: [{ id: 'claude', label: 'Claude' }] })).toBe(false);
+	});
+
+	test('材料が届いたら既定のターミナルだけをエージェントで埋め、利用者が選んだものは変えない', () => {
+		expect([
+			kindAfterFormLoaded(undefined, false, 'claude'),
+			kindAfterFormLoaded(TERMINAL_KIND, false, 'claude'),
+			kindAfterFormLoaded(TERMINAL_KIND, true, 'claude'),
+			kindAfterFormLoaded('codex', false, 'claude'),
+			kindAfterFormLoaded(TERMINAL_KIND, false, undefined),
+		]).toEqual(['claude', 'claude', TERMINAL_KIND, 'codex', TERMINAL_KIND]);
 	});
 
 	test('押せないときは理由を返す', () => {

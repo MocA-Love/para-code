@@ -54,9 +54,14 @@ export function paradisJournalRemove(entries: readonly IParadisTempJournalEntry[
 	return entries.filter(entry => entry.uri !== uri);
 }
 
-/** 自分が今書いているものの時刻を `at` にする（心拍は now、閉じるときの片付け残しは 0）。 */
+/**
+ * 自分が今書いているものの時刻を `at` にする（心拍は now、閉じるときの片付け残しは 0）。控えに無い自分の項目は
+ * 足し直す（別のウィンドウが古い控えを読んで書き直すと、こちらの項目が消えていることがあるため）。
+ */
 export function paradisJournalStamp(entries: readonly IParadisTempJournalEntry[], own: ReadonlySet<string>, at: number): IParadisTempJournalEntry[] {
-	return entries.map(entry => own.has(entry.uri) ? { uri: entry.uri, at } : entry);
+	const present = new Set(entries.map(entry => entry.uri));
+	const missing = [...own].filter(uri => !present.has(uri)).map(uri => ({ uri, at }));
+	return [...entries.map(entry => own.has(entry.uri) ? { uri: entry.uri, at } : entry), ...missing];
 }
 
 /**
