@@ -31,7 +31,7 @@ suite('ParadisSpreadsheetTableSkeleton', () => {
 		}, {
 			className: 'paradis-spreadsheet-table',
 			width: '120px',
-			columns: ['36px', '40px', ''],
+			columns: ['44px', '40px', ''],
 			heads: ['D', 'E'],
 			rows: [['20px', '3', 'a', 'b'], ['18px', '', '', 'c']],
 		});

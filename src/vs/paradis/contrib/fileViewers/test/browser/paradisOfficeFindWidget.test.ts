@@ -9,7 +9,7 @@ import { mainWindow } from '../../../../../base/browser/window.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { CancellationError } from '../../../../../base/common/errors.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { ParadisOfficeFindWidget } from '../../browser/paradisOfficeFindWidget.js';
+import { PARADIS_OFFICE_FIND_INPUT_DELAY, ParadisOfficeFindWidget } from '../../browser/paradisOfficeFindWidget.js';
 import {
 	ParadisOfficeSearchError,
 	ParadisOfficeSemanticSearch,
@@ -239,6 +239,7 @@ suite('ParadisOfficeFindWidget', () => {
 		const input = host.querySelector<HTMLInputElement>('input[type="search"]')!;
 		input.value = 'needle';
 		input.dispatchEvent(new Event('input', { bubbles: true }));
+		await new Promise(resolve => mainWindow.setTimeout(resolve, PARADIS_OFFICE_FIND_INPUT_DELAY));
 		await new Promise(resolve => mainWindow.setTimeout(resolve, 0));
 
 		strictEqual(document.activeElement, input);
@@ -307,6 +308,41 @@ suite('ParadisOfficeFindWidget', () => {
 				{ text: 'Needle', matchCase: false },
 			],
 			checked: 'false',
+		});
+	});
+
+	test('searches once after typing stops, and Enter searches the typed text without waiting', async () => {
+		const host = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(host);
+		store.add({ dispose: () => host.remove() });
+		const queries: string[] = [];
+		const navigated: string[] = [];
+		store.add(new ParadisOfficeFindWidget(host, {
+			search: async query => {
+				queries.push(query.text);
+				return { results: [{ id: query.text, locator: query.text, navigableAnchor: query.text, preview: { before: '', match: query.text, after: '' }, locationBadge: { kind: 'sheet' as const, label: query.text } }], total: 1, capped: false };
+			},
+			onNavigate: result => navigated.push(result.id),
+		}));
+		host.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }));
+		const input = host.querySelector<HTMLInputElement>('input[type="search"]')!;
+		for (const text of ['n', 'ne', 'nee']) {
+			input.value = text;
+			input.dispatchEvent(new Event('input', { bubbles: true }));
+		}
+		await new Promise(resolve => mainWindow.setTimeout(resolve, PARADIS_OFFICE_FIND_INPUT_DELAY));
+		await new Promise(resolve => mainWindow.setTimeout(resolve, 0));
+		input.value = 'need';
+		input.dispatchEvent(new Event('input', { bubbles: true }));
+		input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+		await new Promise(resolve => mainWindow.setTimeout(resolve, 0));
+		const beforeDelay = { queries: [...queries], navigated: [...navigated] };
+		await new Promise(resolve => mainWindow.setTimeout(resolve, PARADIS_OFFICE_FIND_INPUT_DELAY));
+
+		deepStrictEqual({ beforeDelay, queries, navigated }, {
+			beforeDelay: { queries: ['nee', 'need'], navigated: ['nee', 'need'] },
+			queries: ['nee', 'need'],
+			navigated: ['nee', 'need'],
 		});
 	});
 

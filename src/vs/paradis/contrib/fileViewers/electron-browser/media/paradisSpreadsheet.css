@@ -147,13 +147,15 @@
 }
 
 /* allow-any-unicode-next-line */
-/* 見出し行のフィルタ記号。絞り込み操作は持たず、フィルタの存在だけを示す。 */
+/* 見出し行のフィルタ記号（codicon の chevron-down を compact の大きさで描く）。絞り込み操作は持たず、フィルタの存在だけを示す。 */
 .paradis-spreadsheet-filter-marker {
 	float: right;
 	margin-left: 3px;
 	color: #666666;
-	font-size: 8px;
-	line-height: 1.6;
+	font-family: codicon;
+	font-size: var(--vscode-codiconFontSize-compact);
+	font-weight: normal;
+	line-height: 1;
 	pointer-events: none;
 }
 
@@ -209,7 +211,7 @@
 	border: 1px solid #d0d0d0;
 	background-color: #f3f3f3;
 	color: #666666;
-	font-size: 9px;
+	font-size: var(--vscode-fontSize-label1);
 	font-weight: normal;
 	text-align: center;
 	padding: 2px 4px;

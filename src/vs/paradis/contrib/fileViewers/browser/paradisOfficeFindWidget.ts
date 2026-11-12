@@ -6,6 +6,7 @@
 
 import * as dom from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
+import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { isCancellationError } from '../../../../base/common/errors.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
@@ -28,6 +29,8 @@ const MAXIMUM_QUERY_LENGTH = 4_096;
 const SIDE_BY_SIDE_MIN_WIDTH = 760;
 /** 小窓とパネルのあいだ（px）。 */
 const OBSTACLE_GAP = 8;
+/** 打っている間の検索をまとめる待ち時間（ms）。本家のエディタの検索（findModel.ts の装飾の更新）と同じ。 */
+export const PARADIS_OFFICE_FIND_INPUT_DELAY = 100;
 
 export type ParadisOfficeFindSearchProvider = (query: { readonly text: string; readonly matchCase: boolean }, cursor: string | undefined, token: CancellationToken) => Promise<ParadisOfficeSearchPage>;
 
@@ -56,6 +59,8 @@ export class ParadisOfficeFindWidget extends Disposable {
 	private readonly currentElement: HTMLElement;
 	private readonly statusHover: IManagedHover;
 	private readonly request = this._register(new MutableDisposable<CancellationTokenSource>());
+	/** 入力のたびの検索を、打ち終わるまで待ってから 1 回にまとめる。 */
+	private readonly inputSearch = this._register(new RunOnceScheduler(() => void this.beginSearch(), PARADIS_OFFICE_FIND_INPUT_DELAY));
 	private searchProvider: ParadisOfficeFindSearchProvider | undefined;
 	private unavailableMessage: string | undefined;
 	private readonly onNavigate: ((result: ParadisOfficeSearchResult) => void) | undefined;
@@ -128,7 +133,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 				}
 			}));
 		}
-		this._register(dom.addDisposableListener(this.input, dom.EventType.INPUT, () => void this.beginSearch()));
+		this._register(dom.addDisposableListener(this.input, dom.EventType.INPUT, () => this.inputSearch.schedule()));
 		this._register(dom.addDisposableListener(this.matchCaseButton, dom.EventType.CLICK, () => {
 			this.matchCase = !this.matchCase;
 			this.matchCaseButton.classList.toggle('checked', this.matchCase);
@@ -247,6 +252,9 @@ export class ParadisOfficeFindWidget extends Disposable {
 	}
 
 	async findNext(): Promise<void> {
+		if (await this.flushPendingSearch()) {
+			return;
+		}
 		if (this.results.length === 0) {
 			return;
 		}
@@ -265,6 +273,9 @@ export class ParadisOfficeFindWidget extends Disposable {
 	}
 
 	async findPrevious(): Promise<void> {
+		if (await this.flushPendingSearch()) {
+			return;
+		}
 		if (this.results.length === 0) {
 			return;
 		}
@@ -279,6 +290,15 @@ export class ParadisOfficeFindWidget extends Disposable {
 			this.currentIndex = this.results.length - 1;
 		}
 		this.navigateCurrent();
+	}
+
+	/** 打ち終わりを待っている検索があれば、待たずに今の語で検索する（先頭の一致へ移る）。走らせたら true。 */
+	private async flushPendingSearch(): Promise<boolean> {
+		if (!this.inputSearch.isScheduled()) {
+			return false;
+		}
+		await this.beginSearch();
+		return true;
 	}
 
 	private async beginSearch(navigate = true): Promise<void> {
@@ -423,6 +443,7 @@ export class ParadisOfficeFindWidget extends Disposable {
 	}
 
 	private cancelSearch(): void {
+		this.inputSearch.cancel();
 		this.request.value?.cancel();
 		this.request.clear();
 		this.generation++;

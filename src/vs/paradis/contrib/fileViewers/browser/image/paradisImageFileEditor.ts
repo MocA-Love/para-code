@@ -52,6 +52,7 @@ import { IEditorGroup } from '../../../../../workbench/services/editor/common/ed
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { IStatusbarEntryAccessor, IStatusbarService, StatusbarAlignment } from '../../../../../workbench/services/statusbar/browser/statusbar.js';
 import { IParadisViewerOpenTiming, startParadisViewerOpenTiming } from '../../common/paradisViewerOpenTiming.js';
+import { renderParadisViewerState } from '../paradisViewerState.js';
 import { ParadisImageInput } from './paradisImageInput.js';
 import {
 	clampParadisImageScale,
@@ -95,8 +96,6 @@ export class ParadisImageFileEditor extends EditorPane {
 	private _root: HTMLElement | undefined;
 	private _metaElement: HTMLElement | undefined;
 	private _percentButton: HTMLButtonElement | undefined;
-	private _messageElement: HTMLElement | undefined;
-	private _messageText: HTMLElement | undefined;
 	private _displayed: DisplayedImage | undefined;
 	private _scale: ParadisImageScale = 'fit';
 	private _state: ViewerState = 'empty';
@@ -113,6 +112,8 @@ export class ParadisImageFileEditor extends EditorPane {
 	private readonly _openTiming = this._register(new MutableDisposable<IParadisViewerOpenTiming>());
 	private readonly _sizeEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
 	private readonly _binarySizeEntry = this._register(new MutableDisposable<IStatusbarEntryAccessor>());
+	/** 開けないとき（失敗・大きすぎる・Git LFS）に画像の入れ物へ重ねる面。 */
+	private readonly _stateSurface = this._register(new MutableDisposable());
 
 	constructor(
 		group: IEditorGroup,
@@ -171,15 +172,6 @@ export class ParadisImageFileEditor extends EditorPane {
 		root.setAttribute('role', 'document');
 
 		dom.append(root, dom.$('.paradis-image-viewer-loading')).appendChild(renderIcon(ThemeIcon.modify(Codicon.loading, 'spin')));
-		this._messageElement = dom.append(root, dom.$('.paradis-image-viewer-message'));
-		this._messageText = dom.append(this._messageElement, dom.$('p'));
-		const openAsText = dom.append(this._messageElement, dom.$('a.open-file-link', { href: '#' }));
-		// allow-any-unicode-next-line
-		openAsText.textContent = localize('paradis.imagePreview.openAsText', "VS Code の標準テキストまたはバイナリ エディターを使用してファイルを開きますか?");
-		this._register(dom.addDisposableListener(openAsText, dom.EventType.CLICK, e => {
-			dom.EventHelper.stop(e, true);
-			void this._reopenWithDefaultEditor();
-		}));
 
 		this._register(dom.addDisposableListener(root, dom.EventType.MOUSE_DOWN, (e: MouseEvent) => {
 			if (e.button !== 0 || !this._displayed) {
@@ -572,8 +564,10 @@ export class ParadisImageFileEditor extends EditorPane {
 		root.classList.toggle('error', state === 'error' || state === 'tooLarge');
 		root.classList.toggle('git-lfs', state === 'gitLfs');
 		root.classList.toggle('zoom-in', state === 'ready');
-		if (this._messageText) {
-			this._messageText.textContent = state === 'gitLfs'
+		// 開けないときは、ほかのビューアと同じ「開けない」面（失敗は error・大きすぎるは warning・Git LFS は info）に
+		// 「テキストで開く」のボタンを出す。
+		if (state === 'error' || state === 'tooLarge' || state === 'gitLfs') {
+			const message = state === 'gitLfs'
 				// allow-any-unicode-next-line
 				? localize('paradis.imagePreview.gitLfs', "この画像は Git LFS で保存されており、プレビューできません。")
 				: state === 'tooLarge'
@@ -581,6 +575,13 @@ export class ParadisImageFileEditor extends EditorPane {
 					? localize('paradis.imagePreview.tooLarge', "画像が大きすぎるため、プレビューできません。")
 					// allow-any-unicode-next-line
 					: localize('paradis.imagePreview.loadError', "イメージの読み込み中にエラーが発生しました。");
+			this._stateSurface.value = renderParadisViewerState(root, state === 'gitLfs' ? 'info' : state === 'tooLarge' ? 'warning' : 'error', message, [{
+				// allow-any-unicode-next-line
+				label: localize('paradis.imagePreview.openAsText', "テキストで開く"),
+				run: () => void this._reopenWithDefaultEditor(),
+			}]);
+		} else {
+			this._stateSurface.clear();
 		}
 		root.setAttribute('aria-busy', String(state === 'loading'));
 		if (this.input instanceof ParadisImageInput) {

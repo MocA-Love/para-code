@@ -80,22 +80,13 @@
 	cursor: zoom-out;
 }
 
-.paradis-image-viewer.loading,
-.paradis-image-viewer.error,
-.paradis-image-viewer.git-lfs {
+.paradis-image-viewer.loading {
 	justify-content: center;
 	align-items: center;
 }
 
-.paradis-image-viewer-message,
 .paradis-image-viewer-loading {
 	display: none;
-}
-
-.paradis-image-viewer.error .paradis-image-viewer-message,
-.paradis-image-viewer.git-lfs .paradis-image-viewer-message {
-	display: block;
-	margin: 1em;
 }
 
 .paradis-image-viewer.loading .paradis-image-viewer-loading {
@@ -114,10 +105,4 @@
 	to {
 		opacity: 1;
 	}
-}
-
-.paradis-image-viewer .open-file-link {
-	cursor: pointer;
-	color: var(--vscode-textLink-foreground);
-	text-decoration: underline;
 }

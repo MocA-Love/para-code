@@ -267,7 +267,11 @@ export class ParadisCsvTableView extends Disposable {
 			for (let column = columnStart; column < columnEnd; column++) {
 				const classNames: string[] = [];
 				let text: string;
+				let header: ParadisSpreadsheetGridCell['header'];
+				let sort: ParadisSpreadsheetGridCell['sort'];
 				if (column === 0) {
+					// 行番号は行の見出し（左上の角はどちらでもない）
+					header = row === 0 ? undefined : 'row';
 					text = row === 0 ? '' : String(row);
 					classNames.push(row === 0 ? 'paradis-csv-corner' : 'paradis-csv-rownum');
 					if (row > 0 && rowSelected) {
@@ -277,9 +281,11 @@ export class ParadisCsvTableView extends Disposable {
 					text = fields[column - 1] ?? '';
 					const columnSelected = column >= rect.left && column <= rect.right;
 					if (row === 0) {
+						header = 'column';
 						classNames.push('paradis-csv-header');
 						if (this._sort?.column === column - 1) {
 							classNames.push(this._sort.direction === 'asc' ? 'paradis-csv-sorted-asc' : 'paradis-csv-sorted-desc');
+							sort = this._sort.direction === 'asc' ? 'ascending' : 'descending';
 						}
 						if (columnSelected) {
 							classNames.push('paradis-csv-header-selected');
@@ -300,7 +306,7 @@ export class ParadisCsvTableView extends Disposable {
 						}
 					}
 				}
-				cells.push({ row, column, text, classNames });
+				cells.push({ row, column, text, classNames, ...(header ? { header } : {}), ...(sort ? { sort } : {}) });
 			}
 		}
 		return { revision: request.revision, range: request.range, cells };
@@ -437,6 +443,13 @@ export class ParadisCsvTableView extends Disposable {
 		if (primary && !event.altKey && !event.shiftKey && (key === 'a' || key === 'A')) {
 			this._consume(event);
 			this._selectAll();
+			return;
+		}
+		// 列の見出しの上の Enter・Space は、見出しを押したときと同じく並べ替える（昇順 → 降順 → 元の順）。
+		const { row: activeRow, column: activeColumn } = this._selection.active;
+		if ((key === 'Enter' || key === ' ') && !primary && !event.altKey && !event.shiftKey && activeRow === 0 && activeColumn >= 1) {
+			this._consume(event);
+			this._toggleSort(activeColumn - 1);
 			return;
 		}
 		// Alt 付き（macOS の Cmd+Alt+←/→ でのエディタ切替、Windows の Alt+← の戻る）と、Ctrl/Cmd+PageUp/PageDown

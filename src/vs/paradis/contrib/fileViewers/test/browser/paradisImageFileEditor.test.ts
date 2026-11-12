@@ -155,4 +155,54 @@ suite('ParadisImageFileEditor', () => {
 			blobUrl: true,
 		});
 	});
+
+	test('shows the viewer state surface with an open as text button when the image cannot be read', async () => {
+		const parent = mainWindow.document.createElement('div');
+		parent.style.cssText = 'position: fixed; left: 0; top: 0; width: 640px; height: 320px;';
+		mainWindow.document.body.appendChild(parent);
+		store.add(toDisposable(() => parent.remove()));
+		const fileService = {
+			readFile: async (): Promise<IFileContent> => { throw new Error('unreadable'); },
+			createWatcher: () => ({ onDidChange: Event.None, dispose: () => { } }),
+		} as unknown as IFileService;
+		const statusbarService = { addEntry: () => ({ update: () => { }, dispose: () => { } }) } as unknown as IStatusbarService;
+		const replaced: string[] = [];
+		const editorService = {
+			activeEditorPane: undefined,
+			onDidActiveEditorChange: Event.None,
+			replaceEditors: async (editors: { readonly replacement: { readonly resource: URI } }[]) => { replaced.push(...editors.map(editor => editor.replacement.resource.path)); },
+		} as unknown as IEditorService;
+		const editor = store.add(new TestImageEditor(
+			new TestEditorGroupView(1),
+			NullTelemetryService,
+			new TestThemeService(),
+			store.add(new TestStorageService()),
+			fileService,
+			editorService,
+			statusbarService,
+			{} as IContextMenuService,
+			new NullLogService(),
+			{} as ICommandService,
+		));
+		editor.create(parent);
+		editor.setVisible(true);
+		editor.layout(new Dimension(640, 320));
+		const textFileService = { isDirty: () => false } as unknown as ITextFileService;
+		const workingCopyService = { onDidChangeDirty: Event.None } as unknown as IWorkingCopyService;
+		const input = store.add(new ParadisImageInput(URI.file('/w/broken.png'), textFileService, workingCopyService));
+
+		await editor.setInput(input, undefined, Object.create(null), CancellationToken.None);
+		await until(() => !!parent.querySelector('.paradis-viewer-state.error'), 'error state');
+		const surface = parent.querySelector<HTMLElement>('.paradis-viewer-state.error')!;
+		const button = surface.querySelector<HTMLElement>('.paradis-viewer-state-buttons button, .paradis-viewer-state-buttons [role="button"]')!;
+		const shown = { role: surface.getAttribute('role'), label: surface.querySelector('.paradis-viewer-state-label')?.textContent, button: button.textContent, link: parent.querySelector('.open-file-link') === null };
+		button.click();
+		await timeout(0);
+
+		deepStrictEqual({ shown, replaced }, {
+			// allow-any-unicode-next-line
+			shown: { role: 'alert', label: 'イメージの読み込み中にエラーが発生しました。', button: 'テキストで開く', link: true },
+			replaced: ['/w/broken.png'],
+		});
+	});
 });
