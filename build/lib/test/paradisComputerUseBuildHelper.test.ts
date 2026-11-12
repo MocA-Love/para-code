@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 補助アプリのビルドと埋め込みのテスト。 node --test build/paradis/computerUse/*.test.ts
+// build/paradis/computerUse の補助アプリのビルドと埋め込みのテスト。 cd build && npm run test で走る
 
 import assert from 'node:assert';
 import { execFileSync } from 'node:child_process';
@@ -14,8 +14,8 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
-import { PARADIS_COMPUTER_USE_APP_NAME, PARADIS_COMPUTER_USE_EXECUTABLE, PARADIS_COMPUTER_USE_SOURCE_ROOT, paradisComputerUseInfoPlist } from './buildHelper.ts';
-import { paradisEmbedComputerUseHelper } from './embedHelper.ts';
+import { PARADIS_COMPUTER_USE_APP_NAME, PARADIS_COMPUTER_USE_EXECUTABLE, PARADIS_COMPUTER_USE_SOURCE_ROOT, paradisComputerUseInfoPlist } from '../../paradis/computerUse/buildHelper.ts';
+import { paradisEmbedComputerUseHelper } from '../../paradis/computerUse/embedHelper.ts';
 
 const repositoryRoot = resolve(import.meta.dirname, '..', '..', '..');
 const commonTs = readFileSync(join(repositoryRoot, 'src', 'vs', 'paradis', 'contrib', 'computerUse', 'common', 'paradisComputerUse.ts'), 'utf8');
