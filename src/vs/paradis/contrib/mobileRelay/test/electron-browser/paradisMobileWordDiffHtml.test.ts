@@ -230,7 +230,40 @@ suite('ParadisMobileWordDiffHtml', () => {
 			tiles: [],
 			assets: new Map(),
 		}, 'abcdefghijklmnop');
-		assert.ok(!html.includes('No semantic changes.'));
-		assert.ok(html.includes('Comparison is incomplete.'));
+		assert.ok(!html.includes('内容の変更はありません。'));
+		assert.ok(html.includes('比較が完了していません。'));
+	});
+
+	test('shows display names, a readable state with the warnings and labelled sides instead of internal keys', () => {
+		const html = renderParadisMobileWordDiffHtml({
+			generation: 1,
+			revision,
+			outcome: 'degraded',
+			warnings: ['office.mobile.wordDiff.assetsTruncated', 'office.mobile.wordDiff.asset.tooLarge', 'office.mobile.wordDiff.assetsTruncated'],
+			changes: [
+				{ id: 'p', category: 'content', subject: { kind: 'paragraph.text', locator: 'story:body:/word/document.xml:0' }, before: scalar('30日'), after: scalar('60日'), certainty: 'exact', sourceParts: ['/word/document.xml'] },
+				{ id: 'r', category: 'revision', subject: { kind: 'revision.inserted', locator: 'story:body:/word/document.xml:0' }, before: { kind: 'none' }, after: { kind: 'record', fields: [{ name: 'text', value: scalar('送料') }, { name: 'revisionKind', value: scalar('inserted') }] }, certainty: 'exact', sourceParts: ['/word/document.xml'] },
+				{ id: 'c', category: 'annotation', subject: { kind: 'comment.text', locator: 'story:comment:/word/comments.xml:3' }, before: { kind: 'none' }, after: { kind: 'record', fields: [{ name: 'text', value: scalar('再確認') }, { name: 'author', value: scalar('A') }] }, certainty: 'exact', sourceParts: ['/word/comments.xml'] },
+			],
+			tiles: [],
+			assets: new Map(),
+		}, 'abcdefghijklmnop');
+		const body = html.slice(html.indexOf('<body>'));
+		const texts = (pattern: RegExp) => [...body.matchAll(pattern)].map(match => match.groups!.text);
+		assert.deepStrictEqual({
+			summary: texts(/<div class="pm-summary"><b>(?<text>[^<]*)<\/b>/g),
+			state: texts(/<span class="pm-sum-state warn">(?<text>[^<]*)<\/span>/g),
+			counts: texts(/<div class="pm-counts">(?<text>.*?)<\/div><\/div>/g),
+			headers: texts(/<header>(?<text>.*?)<\/header>/g).map(header => header.replace(/<[^>]+>/g, '|')),
+			sides: texts(/<div class="pm-values">(?<text>.*?)<\/div>/g).map(values => values.replace(/<span class="pm-lab">([^<]*)<\/span>/g, '[$1]').replace(/<[^>]+>/g, '|')),
+			internal: ['office.mobile', 'degraded', 'revisionKind', 'paragraph.text', 'story:', '<ul class="pm-warning">'].filter(key => body.includes(key)),
+		}, {
+			summary: ['3 件の変更'],
+			state: ['画像が多いため、一部の画像を表示していません。 一部の画像を読み込めませんでした。'],
+			counts: ['<span>内容 1</span><span>変更履歴 1</span><span>コメント 1</span>'],
+			headers: ['|内容||本文の段落|', '|変更履歴||本文の挿入|', '|コメント||コメント|'],
+			sides: ['|[変更前]30日||[変更後]60日|', '|[変更前]（無し）||[変更後]送料|', '|[変更前]（無し）||[変更後]再確認（A）|'],
+			internal: [],
+		});
 	});
 });

@@ -98,6 +98,14 @@
 	flex: none;
 }
 
+/* A remove that failed: one red line under the header until the list is read again (same as .pbs-message). */
+.monaco-workbench .paradis-page-scripts-details-message {
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size100);
+	font-size: var(--vscode-fontSize-label1);
+	line-height: 1.5;
+	color: var(--vscode-errorForeground);
+}
+
 .monaco-workbench .paradis-page-scripts-details-list {
 	padding: var(--paradis-popover-list-top) var(--vscode-spacing-size40) var(--vscode-spacing-size40);
 }
