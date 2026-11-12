@@ -52,6 +52,18 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				title: 'VoiceOver で、接続中・実行中などの状態の点とセッションのタブの状態を読み上げるようにしました',
 			},
 			{
+				icon: 'color-palette-outline',
+				title: '設定 → 色で変えた「選択の印」の色が、質問の選択肢・キー行の Ctrl と「Enterなし」にも当たるようにしました',
+			},
+			{
+				icon: 'open-outline',
+				title: 'HTML のファイルを開いたとき、中に埋め込まれた Web ページのせいで Safari が勝手に開くことがあったのを直しました',
+			},
+			{
+				icon: 'help-circle-outline',
+				title: 'Excel や Word の中のリンクから外のページへ出るとき、確認を出さずにブラウザが開いていたのを直しました',
+			},
+			{
 				icon: 'chatbubble-ellipses-outline',
 				title: '質問への回答を送っている間に回答をやめたりタブを移ったりして、そのあと送れなかったとき、打った回答が消えていたのを直しました',
 				body: '送れなかった回答は、そのセッションの入力欄の下書きに戻ります。',

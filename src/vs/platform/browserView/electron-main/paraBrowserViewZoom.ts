@@ -72,6 +72,8 @@ interface IZoomState {
 	displayScaleFactor: number | undefined;
 	/** 画面の移動を見張っているウィンドウ。 */
 	watchedWindow: Electron.BaseWindow | undefined;
+	/** {@link watchedWindow} の見張りを外す（タブが別のウィンドウへ移ったとき・タブが閉じたとき）。 */
+	unwatchWindow: (() => void) | undefined;
 	/** 分かれ道を書くログ（表示サイズを固定したときに emulator から受け取る）。 */
 	log: IParaBrowserViewZoomLog | undefined;
 	/** 最後に書いた縮め方の種類（種類が変わったときだけ書く。sash のドラッグで倍率だけ変わるときは書かない）。 */
@@ -98,7 +100,7 @@ function isolatorFor(webContents: WebContents): IParaBrowserZoomIsolator {
 function stateOf(webContents: WebContents): IZoomState {
 	let state = states.get(webContents);
 	if (!state) {
-		state = { user: 1, emulation: 1, isolated: false, isolating: undefined, generation: 0, onIsolated: undefined, displayScaleFactor: undefined, watchedWindow: undefined, log: undefined, loggedMode: undefined };
+		state = { user: 1, emulation: 1, isolated: false, isolating: undefined, generation: 0, onIsolated: undefined, displayScaleFactor: undefined, watchedWindow: undefined, unwatchWindow: undefined, log: undefined, loggedMode: undefined };
 		states.set(webContents, state);
 		const created = state;
 		// 文書が確定すると切り離しが外れる（エラーのページへの移動は did-navigate を出さず did-fail-load だけ）。ほかの受け手
@@ -317,24 +319,32 @@ function watchDisplayScaleFactor(webContents: WebContents, state: IZoomState): n
 		}
 	};
 	if (window && state.watchedWindow !== window) {
+		// 前のウィンドウの見張りはここで外す（次にそのウィンドウが動くまで残さない。destroyed のリスナーも積まない）
+		state.unwatchWindow?.();
 		const onMoved = () => {
-			if (webContents.isDestroyed() || state.watchedWindow !== window) {
-				window.removeListener('move', onMoved);
-				electron.screen.removeListener('display-metrics-changed', onMoved);
+			if (webContents.isDestroyed()) {
+				unwatch();
 				return;
 			}
 			if (paraBrowserViewScalesByZoom(webContents) && read() !== state.displayScaleFactor) {
 				state.onIsolated?.();
 			}
 		};
+		const unwatch = () => {
+			window.removeListener('move', onMoved);
+			electron.screen.removeListener('display-metrics-changed', onMoved);
+			webContents.removeListener('destroyed', unwatch);
+			if (state.unwatchWindow === unwatch) {
+				state.unwatchWindow = undefined;
+				state.watchedWindow = undefined;
+			}
+		};
 		state.watchedWindow = window;
+		state.unwatchWindow = unwatch;
 		window.on('move', onMoved);
 		// 画面の倍率そのものが替わったとき（設定の変更・外部ディスプレイのつなぎ替え）も拾う
 		electron.screen.on('display-metrics-changed', onMoved);
-		webContents.once('destroyed', () => {
-			window.removeListener('move', onMoved);
-			electron.screen.removeListener('display-metrics-changed', onMoved);
-		});
+		webContents.on('destroyed', unwatch);
 	}
 	state.displayScaleFactor = read();
 	return state.displayScaleFactor;

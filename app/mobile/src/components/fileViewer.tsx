@@ -19,6 +19,7 @@ import { Button } from './button.js';
 import { EmptyState } from './emptyState.js';
 import { ViewerHeader } from './viewerHeader.js';
 import { ModalToastHost } from '../ui/toast.js';
+import { useThemeColors } from '../ui/themeColorsStore.js';
 import { HIT_SIZE, colors, radius, squircle, type } from '../theme.js';
 import { haptic } from '../haptics.js';
 import type { FsReadResult } from '../store.js';
@@ -29,7 +30,7 @@ import { useWebViewRevival } from './webViewRevival.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useCloseOnAppLock } from '../appLock.js';
 import { lockedModalVisible } from '../appLockPolicy.js';
-import { classifyMobileFileKind, createMobileOfficeNonce, guardMobileOfficeNavigation, MOBILE_OFFICE_ORIGIN_WHITELIST, secureMobileOfficeHtml } from './officeCapability.js';
+import { classifyMobileFileKind, createMobileOfficeNonce, guardMobileOfficeNavigation, MOBILE_DOCUMENT_ORIGIN_WHITELIST, secureMobileOfficeHtml } from './officeCapability.js';
 import { MobileOfficeWebView } from '../features/code/fileViewerBody.js';
 import { viewerScriptCspMeta } from '../features/code/fileFind.js';
 import { useViewerPathLinks, type ViewerPathLinkSpace } from '../features/code/useViewerPathLinks.js';
@@ -437,6 +438,7 @@ function NativeFileView({ data, ext }: { data: string; ext: string }) {
 
 
 export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, onSelectSheet, focusLine, pdfData, docxData, mediaData, backLabel, error, pathLinks, onBack, onClose }: FileViewerProps) {
+	const theme = useThemeColors();
 	const revival = useWebViewRevival();
 	// UIKitは提示後の modalPresentationStyle 変更を無視するため、開いた瞬間の値で凍結する。
 	// ヘッダーの上余白も同じ値から決めること。片方だけ追従すると、開いたまま画面幅が
@@ -587,7 +589,7 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 						{sheets.map((sheetName, i) => (
 							<Pressable
 								key={i}
-								style={[styles.sheetChip, i === sheetIndex && styles.sheetChipActive]}
+								style={[styles.sheetChip, i === sheetIndex && [styles.sheetChipActive, { backgroundColor: theme.accentWash, borderColor: theme.accent }]]}
 								hitSlop={SHEET_CHIP_SLOP}
 								onPress={() => { haptic('tick'); onSelectSheet?.(i); }}
 								accessibilityRole="button"
@@ -626,7 +628,7 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 						style={styles.web}
 						source={{ html }}
 						onContentProcessDidTerminate={revival.onContentProcessDidTerminate}
-						originWhitelist={[...MOBILE_OFFICE_ORIGIN_WHITELIST]}
+						originWhitelist={[...MOBILE_DOCUMENT_ORIGIN_WHITELIST]}
 						javaScriptEnabled={allowJs}
 						onShouldStartLoadWithRequest={officeKind ? guardOfficeNavigation : guardWebViewNavigation}
 						{...(pathLinkView ? { onLoadEnd: links.onLoadEnd, onMessage: (event: { nativeEvent: { data: string } }) => { links.onMessage(event.nativeEvent.data); } } : {})}
