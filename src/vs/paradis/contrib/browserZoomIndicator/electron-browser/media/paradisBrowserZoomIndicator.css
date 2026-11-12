@@ -22,6 +22,8 @@
 	約 24px で、入れ物の上下の余白が 2px ずつあるので、ここを高くすると URL ボックスごと、つまり
 	ナビバー全体が数 px 伸びる。角丸も同じ理由で、外の URL ボックス (cornerRadius-medium) と同心になる
 	cornerRadius-small にしている。
+	枠と区切り線は editorWidget.border のまま。paradis.lineSubtle の既定 (widget.border) は Dark+・Light+ で
+	未定義なので、そちらにすると既定テーマで枠が消える。隣のプロファイルの札とも同じ枠にそろえている。
 	幅は詰まったら縮む。この入れ物は overflow: hidden で右端から刈られるので、縮まない
 	ブロックを置くと upstream 側のボタン (共有トグル・お気に入り) が先に消える。 */
 .monaco-workbench .paradis-browser-zoom-stepper {
@@ -30,7 +32,7 @@
 	height: 20px;
 	flex: 0 1 auto;
 	min-width: 0;
-	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border: 1px solid var(--vscode-editorWidget-border);
 	border-radius: var(--vscode-cornerRadius-small);
 	overflow: hidden;
 }
@@ -66,7 +68,7 @@
 	height: 100%;
 	flex: 0 1 auto;
 	min-width: 0;
-	font-size: var(--vscode-fontSize-label1);
+	overflow: hidden;
 }
 
 .monaco-workbench .paradis-browser-zoom-stepper > .paradis-browser-zoom-step > .codicon {
@@ -89,8 +91,8 @@
 	color: var(--vscode-paradis-text);
 	font-variant-numeric: tabular-nums;
 	white-space: nowrap;
-	border-left: 1px solid var(--vscode-paradis-lineSubtle);
-	border-right: 1px solid var(--vscode-paradis-lineSubtle);
+	border-left: 1px solid var(--vscode-editorWidget-border);
+	border-right: 1px solid var(--vscode-editorWidget-border);
 }
 
 /* 既定の倍率と同じ間は主張させない。常設なので、意味のない数字で視線を取らないため。
