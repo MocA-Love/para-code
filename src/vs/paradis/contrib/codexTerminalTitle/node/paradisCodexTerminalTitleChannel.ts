@@ -10,6 +10,8 @@ import { createReadStream } from 'fs';
 import * as fs from 'fs/promises';
 import { createRequire } from 'module';
 import { createInterface } from 'readline';
+import { Readable } from 'stream';
+import { StringDecoder } from 'string_decoder';
 import { Event } from '../../../../base/common/event.js';
 import { isAbsolute, relative, resolve } from '../../../../base/common/path.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
@@ -103,6 +105,52 @@ function extractUserText(value: unknown): string | undefined {
 	return text.slice(0, MAX_PROMPT_LENGTH);
 }
 
+/**
+ * Decodes the rollout as UTF-8 (as `createReadStream(..., { encoding: 'utf8' })` does) until a line (bytes between `\r`
+ * / `\n`, the breaks readline splits on) grows past `maxLineBytes`, then ends after its first `maxLineBytes` + 1 bytes.
+ * readline otherwise buffers a whole line before the size check sees it, so an inline image of tens of MiB on one line
+ * would be read and decoded in full. The cut line still fails the size check, as the full line would: decoding never
+ * yields fewer UTF-8 bytes than it reads (an invalid or cut sequence becomes U+FFFD, 3 bytes).
+ */
+async function* decodeUntilLineExceeds(input: AsyncIterable<Buffer>, maxLineBytes: number): AsyncGenerator<string> {
+	const decoder = new StringDecoder('utf8');
+	let lineBytes = 0;
+	for await (const chunk of input) {
+		let start = 0;
+		// Kept between lines so a chunk of many short lines is scanned once per break kind, not once per line.
+		let lineFeed = -2;
+		let carriageReturn = -2;
+		while (start < chunk.length) {
+			if (lineFeed !== -1 && lineFeed < start) {
+				lineFeed = chunk.indexOf(0x0A, start);
+			}
+			if (carriageReturn !== -1 && carriageReturn < start) {
+				carriageReturn = chunk.indexOf(0x0D, start);
+			}
+			const lineBreak = lineFeed === -1 ? carriageReturn : carriageReturn === -1 ? lineFeed : Math.min(lineFeed, carriageReturn);
+			const end = lineBreak === -1 ? chunk.length : lineBreak;
+			if (lineBytes + end - start > maxLineBytes) {
+				yield decoder.write(chunk.subarray(0, start + maxLineBytes - lineBytes + 1)) + decoder.end();
+				return;
+			}
+			if (lineBreak === -1) {
+				lineBytes += end - start;
+				break;
+			}
+			lineBytes = 0;
+			start = lineBreak + 1;
+		}
+		const text = decoder.write(chunk);
+		if (text) {
+			yield text;
+		}
+	}
+	const rest = decoder.end();
+	if (rest) {
+		yield rest;
+	}
+}
+
 async function readFirstUserPrompt(codexHome: string, rolloutPath: string, limits: IRolloutScanLimits): Promise<IParadisCodexThreadPromptResult> {
 	if (!isAbsolute(rolloutPath) || !rolloutPath.endsWith('.jsonl')) {
 		return {};
@@ -111,7 +159,8 @@ async function readFirstUserPrompt(codexHome: string, rolloutPath: string, limit
 	if (!isPathInside(realHome, realRollout)) {
 		return {};
 	}
-	const input = createReadStream(realRollout, { encoding: 'utf8' });
+	const file = createReadStream(realRollout);
+	const input = Readable.from(decodeUntilLineExceeds(file, limits.maxLineBytes));
 	const lines = createInterface({ input, crlfDelay: Infinity });
 	let bytes = 0;
 	try {
@@ -143,6 +192,7 @@ async function readFirstUserPrompt(codexHome: string, rolloutPath: string, limit
 	} finally {
 		lines.close();
 		input.destroy();
+		file.destroy();
 	}
 }
 

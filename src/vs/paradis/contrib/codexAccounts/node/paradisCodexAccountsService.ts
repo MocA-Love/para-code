@@ -566,10 +566,8 @@ export class ParadisCodexAccountsService extends Disposable {
 		if (!auth.accessToken) {
 			result = { offer: { homePath, error: 'auth', fetchedAt }, accountId: auth.accountId };
 		} else {
-			const controller = new AbortController();
-			const timer = setTimeout(() => controller.abort(), READ_TIMEOUT_MS);
 			try {
-				const response = await this.fetchImpl(RESET_CREDITS_URL, { method: 'GET', headers: codexBackendHeaders(auth.accessToken, auth.accountId), redirect: 'error', signal: controller.signal });
+				const response = await this.fetchImpl(RESET_CREDITS_URL, { method: 'GET', headers: codexBackendHeaders(auth.accessToken, auth.accountId), redirect: 'error', signal: AbortSignal.timeout(READ_TIMEOUT_MS) });
 				if (response.status === 401 || response.status === 403) {
 					// トークンの更新は使用量の取得（limitsMonitor）が codex 自身にさせる。次の読み取りで直る。
 					result = { offer: { homePath, error: 'auth', fetchedAt }, accountId: auth.accountId };
@@ -583,8 +581,6 @@ export class ParadisCodexAccountsService extends Disposable {
 			} catch (error) {
 				this.options.logService.warn(`[ParadisCodexAccounts] failed to read reset credits: ${error instanceof Error ? error.message : error}`);
 				result = { offer: { homePath, error: 'unavailable', fetchedAt }, accountId: auth.accountId };
-			} finally {
-				clearTimeout(timer);
 			}
 		}
 		// 失敗もキャッシュする（パネルを描き直すたびに読み直さない）。消費の途中に始まった・読んでいる間に消費が
@@ -758,26 +754,20 @@ export class ParadisCodexAccountsService extends Disposable {
 	 * キー名は Codex 本体の codex-rs/backend-client/src/client/rate_limit_resets.rs:16-20（コミット 3a69ec3ef8fb）と同じ。
 	 */
 	private async postConsume(accessToken: string, accountId: string | undefined, redeemRequestId: string, creditId: string | undefined): Promise<unknown> {
-		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), CONSUME_TIMEOUT_MS);
-		try {
-			const response = await this.fetchImpl(RESET_CREDITS_CONSUME_URL, {
-				method: 'POST',
-				headers: { ...codexBackendHeaders(accessToken, accountId), 'Content-Type': 'application/json' },
-				// トークンと冪等の鍵を chatgpt.com の外へ転送させない
-				redirect: 'error',
-				body: JSON.stringify(creditId !== undefined ? { redeem_request_id: redeemRequestId, credit_id: creditId } : { redeem_request_id: redeemRequestId }),
-				signal: controller.signal,
-			});
-			if (!response.ok) {
-				await response.body?.cancel().catch(() => undefined);
-				throw new ParadisCodexResetHttpError(response.status);
-			}
-			const payload = await response.json() as { code?: unknown } | null;
-			return payload?.code;
-		} finally {
-			clearTimeout(timer);
+		const response = await this.fetchImpl(RESET_CREDITS_CONSUME_URL, {
+			method: 'POST',
+			headers: { ...codexBackendHeaders(accessToken, accountId), 'Content-Type': 'application/json' },
+			// トークンと冪等の鍵を chatgpt.com の外へ転送させない
+			redirect: 'error',
+			body: JSON.stringify(creditId !== undefined ? { redeem_request_id: redeemRequestId, credit_id: creditId } : { redeem_request_id: redeemRequestId }),
+			signal: AbortSignal.timeout(CONSUME_TIMEOUT_MS),
+		});
+		if (!response.ok) {
+			await response.body?.cancel().catch(() => undefined);
+			throw new ParadisCodexResetHttpError(response.status);
 		}
+		const payload = await response.json() as { code?: unknown } | null;
+		return payload?.code;
 	}
 }
 

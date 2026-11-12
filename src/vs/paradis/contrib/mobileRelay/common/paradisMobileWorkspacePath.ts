@@ -47,7 +47,7 @@ export async function paradisResolveMobileWorkspacePath(fileService: Pick<IFileS
 		if (!identity.isEqualOrParent(realUri, realRootUri)) {
 			return undefined;
 		}
-		return identity.isEqualOrParent(realUri, realRootUri) ? realUri : undefined;
+		return realUri;
 	};
 	// Run the same verification immediately before returning to the caller. This detects
 	// replacement of the target or an ancestor during the first realpath resolution.

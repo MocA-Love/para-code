@@ -69,6 +69,13 @@ function bytesArgument(value: unknown): Uint8Array | undefined {
 	return value instanceof VSBuffer ? value.buffer : value instanceof Uint8Array ? value : undefined;
 }
 
+/** 大きすぎて解析しないブックの誤り。renderer は名前で見分けて「大きすぎる」と出す。 */
+function workbookTooLargeError(): Error {
+	const error = new Error('The workbook is too large to parse.');
+	error.name = PARADIS_SPREADSHEET_TOO_LARGE_ERROR_NAME;
+	return error;
+}
+
 export class ParadisSpreadsheetChannel implements IServerChannel<string>, IDisposable {
 
 	private servicePromise: Promise<IParadisSpreadsheetService> | undefined;
@@ -129,6 +136,10 @@ export class ParadisSpreadsheetChannel implements IServerChannel<string>, IDispo
 	private async parseWorkbook(input: unknown, imagePixelBudget: number | undefined, token: CancellationToken): Promise<IParadisWorkbookData | VSBuffer> {
 		const view = bytesArgument(input);
 		const bytes = view ? Buffer.from(view.buffer, view.byteOffset, view.byteLength) : Buffer.from(typeof input === 'string' ? input : String(input), 'base64');
+		// 診断・図の変換と同じ上限。renderer は上限までしか読まないので、超えたものは本体で解析せずに断る。
+		if (bytes.byteLength > PARADIS_SPREADSHEET_MAX_BYTES) {
+			throw workbookTooLargeError();
+		}
 		const backend = await this.getParseBackend();
 		if (backend && !isParadisSpreadsheetCompoundFile(bytes)) {
 			const result = await backend.parse(bytes, imagePixelBudget, token);
@@ -142,9 +153,7 @@ export class ParadisSpreadsheetChannel implements IServerChannel<string>, IDispo
 						throw new CancellationError();
 					}
 					if (result.reason === 'limitExceeded') {
-						const error = new Error('The workbook is too large to parse.');
-						error.name = PARADIS_SPREADSHEET_TOO_LARGE_ERROR_NAME;
-						throw error;
+						throw workbookTooLargeError();
 					}
 					if (result.reason === 'busy') {
 						const error = new Error('The workbook parser is busy.');

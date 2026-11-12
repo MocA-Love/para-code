@@ -19,6 +19,7 @@ import { disposableTimeout, RunOnceScheduler } from '../../../../base/common/asy
 import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../base/common/codicons.js';
+import { isCancellationError } from '../../../../base/common/errors.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess, Schemas } from '../../../../base/common/network.js';
 import { basename, dirname, isEqual } from '../../../../base/common/resources.js';
@@ -74,6 +75,7 @@ import { ParadisOfficeSemanticSearch } from '../common/paradisOfficeSearch.js';
 import type { IParadisWordAnalysis, IParadisWordAnalysisResult, IParadisWordRenderableObjectsResult } from '../common/word/paradisWordSemanticSummary.js';
 import type { ParadisWordStoryKind } from '../common/word/paradisWordSemantic.js';
 import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from './paradisOfficePrintService.js';
+import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { PARADIS_VIEWER_WEBVIEW_STATE_STYLE, paradisViewerWebviewFailureHtml, paradisViewerWebviewFailureScript, paradisViewerWebviewStatusHtml } from '../common/paradisViewerWebviewState.js';
 import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar, PARADIS_VIEWER_TOOLBAR_HEIGHT, setParadisViewerToolbarHeight } from '../browser/paradisViewerToolbar.js';
 import { PARADIS_OFFICE_CHANGE_PANEL_CLASS, PARADIS_OFFICE_PANEL_SURFACE_CLASS } from './paradisOfficeInspectorParts.js';
@@ -1402,8 +1404,11 @@ export class ParadisDocxFileEditor extends EditorPane {
 			}
 			webview.postMessage({ type: 'paradisWordObjects', items });
 			return true;
-		} catch {
-			// 図形が出ないだけで本文の表示には影響しないので、黙って諦める。
+		} catch (error) {
+			// 図形が出ないだけで本文の表示には影響しないので諦める。原因を追えるよう、取り消し以外は記録だけ残す。
+			if (!isCancellationError(error)) {
+				reportParadisDiagnosticError('owned', 'file-viewers', 'word-objects', error, { safe_viewer: this.getId() });
+			}
 			return isCurrent();
 		}
 	}

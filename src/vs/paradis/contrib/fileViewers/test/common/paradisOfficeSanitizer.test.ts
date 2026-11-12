@@ -22,7 +22,7 @@ suite('ParadisOfficeSanitizer', () => {
 			origins: ['http://127.0.0.1:43123'],
 		});
 
-		strictEqual(csp, 'default-src \'none\'; script-src \'nonce-nonce-value\' http://127.0.0.1:43123; style-src \'unsafe-inline\'; img-src data: blob: http://127.0.0.1:43123; font-src data: blob: http://127.0.0.1:43123; connect-src http://127.0.0.1:43123 data: blob:; object-src \'none\'; frame-src \'none\'; worker-src \'none\'; base-uri \'none\'; form-action \'none\'; navigate-to \'none\';');
+		strictEqual(csp, 'default-src \'none\'; script-src \'nonce-nonce-value\' http://127.0.0.1:43123; style-src \'unsafe-inline\'; img-src data: blob: http://127.0.0.1:43123; font-src data: blob: http://127.0.0.1:43123; connect-src http://127.0.0.1:43123 data: blob:; object-src \'none\'; frame-src \'none\'; worker-src \'none\'; base-uri \'none\'; form-action \'none\';');
 		ok(!csp.includes('https:'));
 		ok(!csp.includes('*'));
 		ok(!csp.includes('\'unsafe-eval\''));
@@ -34,7 +34,7 @@ suite('ParadisOfficeSanitizer', () => {
 			cspSources: ['https://file+.vscode-resource.vscode-cdn.net'],
 		});
 
-		strictEqual(csp, 'default-src \'none\'; script-src \'nonce-fallback-nonce\' https://file+.vscode-resource.vscode-cdn.net; style-src \'unsafe-inline\'; img-src data: blob: https://file+.vscode-resource.vscode-cdn.net; font-src data: blob: https://file+.vscode-resource.vscode-cdn.net; connect-src https://file+.vscode-resource.vscode-cdn.net data: blob:; object-src \'none\'; frame-src \'none\'; worker-src \'none\'; base-uri \'none\'; form-action \'none\'; navigate-to \'none\';');
+		strictEqual(csp, 'default-src \'none\'; script-src \'nonce-fallback-nonce\' https://file+.vscode-resource.vscode-cdn.net; style-src \'unsafe-inline\'; img-src data: blob: https://file+.vscode-resource.vscode-cdn.net; font-src data: blob: https://file+.vscode-resource.vscode-cdn.net; connect-src https://file+.vscode-resource.vscode-cdn.net data: blob:; object-src \'none\'; frame-src \'none\'; worker-src \'none\'; base-uri \'none\'; form-action \'none\';');
 		ok(!csp.includes('http://127.0.0.1'));
 		ok(!/(?:^|\s)https:(?:\s|;|$)/.test(csp));
 	});

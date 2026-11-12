@@ -223,6 +223,9 @@ export class TerminalGroupService extends Disposable implements ITerminalGroupSe
 		const paradisParkedIndex = this._paradisParkedGroups.indexOf(group);
 		if (paradisParkedIndex !== -1) {
 			this._paradisParkedGroups.splice(paradisParkedIndex, 1);
+			// groups に居ないので以降の index 調整に入ると今のアクティブなタブがずれる。保存のきっかけだけ発火する
+			this._onDidChangeInstances.fire();
+			return;
 		}
 
 		// Get the index of the group and remove it from the list
