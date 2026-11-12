@@ -153,7 +153,12 @@ export function IOBar({ label, wrap, onToggleWrap, copyText, onCopied }: {
 	const [preparing, setPreparing] = useState(false);
 	// 全文を取り寄せている間に枠が消えたら（画面を離れた・行を閉じた）、届いても写さない
 	const mountedRef = useRef(true);
-	useEffect(() => () => { mountedRef.current = false; }, []);
+	// 「コピー済」を戻すタイマー。続けて写したら前のタイマーを外して掛け直す（前のタイマーが2回目の表示を早く消さないように）。
+	const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	useEffect(() => () => {
+		mountedRef.current = false;
+		clearTimeout(copiedTimerRef.current);
+	}, []);
 	const copy = async () => {
 		let text: string;
 		if (typeof copyText === 'string') {
@@ -182,8 +187,11 @@ export function IOBar({ label, wrap, onToggleWrap, copyText, onCopied }: {
 			return;
 		}
 		haptic('success');
-		setCopied(true);
-		setTimeout(() => setCopied(false), COPY_TOAST_MS);
+		if (mountedRef.current) {
+			setCopied(true);
+			clearTimeout(copiedTimerRef.current);
+			copiedTimerRef.current = setTimeout(() => setCopied(false), COPY_TOAST_MS);
+		}
 		onCopied?.(text);
 	};
 	return (

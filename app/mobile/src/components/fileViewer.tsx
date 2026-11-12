@@ -19,6 +19,7 @@ import { Button } from './button.js';
 import { EmptyState } from './emptyState.js';
 import { ViewerHeader } from './viewerHeader.js';
 import { ModalToastHost } from '../ui/toast.js';
+import { useThemeColors } from '../ui/themeColorsStore.js';
 import { HIT_SIZE, colors, radius, squircle, type } from '../theme.js';
 import { haptic } from '../haptics.js';
 import type { FsReadResult } from '../store.js';
@@ -79,6 +80,8 @@ const MODE_OPTIONS = [
 	{ value: 'code', label: 'ソース' },
 ] as const satisfies readonly { value: ViewMode; label: string }[];
 
+/** 文書の WebView の許可リスト。http(s) は外へ出す前に onShouldStartLoadWithRequest の判定を通すために入れる。 */
+const FILE_VIEWER_ORIGIN_WHITELIST: string[] = [...MOBILE_OFFICE_ORIGIN_WHITELIST, 'http://*', 'https://*'];
 /** 画像として表示する拡張子（PC版の builtin media-preview 拡張と同じ対応範囲）。 */
 const IMAGE_FILE_PATTERN = /\.(?:jpe?g|jpe|png|bmp|gif|ico|webp|avif|svg)$/i;
 /** 動画・音声として表示する拡張子（iOSで再生できる形式中心。PC版は mp4/webm + mp3/wav/ogg/oga）。 */
@@ -437,6 +440,7 @@ function NativeFileView({ data, ext }: { data: string; ext: string }) {
 
 
 export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, onSelectSheet, focusLine, pdfData, docxData, mediaData, backLabel, error, pathLinks, onBack, onClose }: FileViewerProps) {
+	const theme = useThemeColors();
 	const revival = useWebViewRevival();
 	// UIKitは提示後の modalPresentationStyle 変更を無視するため、開いた瞬間の値で凍結する。
 	// ヘッダーの上余白も同じ値から決めること。片方だけ追従すると、開いたまま画面幅が
@@ -587,7 +591,7 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 						{sheets.map((sheetName, i) => (
 							<Pressable
 								key={i}
-								style={[styles.sheetChip, i === sheetIndex && styles.sheetChipActive]}
+								style={[styles.sheetChip, i === sheetIndex && [styles.sheetChipActive, { backgroundColor: theme.accentWash }]]}
 								hitSlop={SHEET_CHIP_SLOP}
 								onPress={() => { haptic('tick'); onSelectSheet?.(i); }}
 								accessibilityRole="button"
@@ -626,7 +630,10 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 						style={styles.web}
 						source={{ html }}
 						onContentProcessDidTerminate={revival.onContentProcessDidTerminate}
-						originWhitelist={[...MOBILE_OFFICE_ORIGIN_WHITELIST]}
+						// http(s) も許可リストに入れて、onShouldStartLoadWithRequest の判定（iframe は通す・外へは確認してから開く）を通す。
+						// react-native-webview は許可リストに合わない URL を、この判定より前に OS へそのまま渡す。
+						// 最上位を about:blank 以外にしない約束は、どちらの判定も false を返して守る。
+						originWhitelist={FILE_VIEWER_ORIGIN_WHITELIST}
 						javaScriptEnabled={allowJs}
 						onShouldStartLoadWithRequest={officeKind ? guardOfficeNavigation : guardWebViewNavigation}
 						{...(pathLinkView ? { onLoadEnd: links.onLoadEnd, onMessage: (event: { nativeEvent: { data: string } }) => { links.onMessage(event.nativeEvent.data); } } : {})}

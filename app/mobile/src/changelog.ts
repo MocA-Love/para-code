@@ -40,6 +40,20 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.22',
+		date: '2026-11-12',
+		items: [
+			{
+				icon: 'color-palette-outline',
+				title: '設定 → 色で変えた「選択の印」の色が、質問の選択肢・キー行の Ctrl と「Enterなし」・シートの切り替えにも当たるようにしました',
+			},
+			{
+				icon: 'open-outline',
+				title: 'HTML のファイルを開いたとき、中に埋め込まれた Web ページのせいで Safari が勝手に開くことがあったのを直しました',
+			},
+		],
+	},
+	{
 		version: '0.12.21',
 		date: '2026-11-12',
 		items: [
