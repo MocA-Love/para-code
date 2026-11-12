@@ -115,6 +115,8 @@ class ParadisYouTubeImportDialog extends Disposable {
 	private _urlStepGeneration = 0;
 	private _downloaded: IParadisYouTubeDownloadResult | undefined;
 	private _audioEditor: ParadisAudioEditor | undefined;
+	/** 取り込み（書き出し）の最中。この間は閉じず、書き出し元の一時ファイルも消さない。 */
+	private _importing = false;
 
 	constructor(
 		layoutService: ILayoutService,
@@ -132,27 +134,40 @@ class ParadisYouTubeImportDialog extends Disposable {
 		this._head = head;
 		this._body = body;
 		this._foot = foot;
-		this._register(dom.addDisposableListener(close, 'click', () => this.dispose()));
+		this._register(dom.addDisposableListener(close, 'click', () => this._closeUnlessImporting()));
 
 		this._register(dom.addDisposableListener(this._backdrop, 'mousedown', e => {
 			if (e.target === this._backdrop) {
-				this.dispose();
+				this._closeUnlessImporting();
 			}
 		}));
 
 		// フォーカスと Esc は fork のモーダルに共通の扱いに乗せる。Hub の中から開く入れ子の箱なので Hub は閉じない。
-		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal: this._dialog, nested: true, onEscape: () => this.dispose(), close: () => this.dispose(), restoreFallback }));
+		// 取り込み中は Esc で閉じない（閉じると書き出し元の一時ファイルを消して取り込みが失敗する。Myinstants の箱と同じ扱い）
+		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal: this._dialog, nested: true, onEscape: () => this._closeUnlessImporting(), close: () => this.dispose(), restoreFallback }));
 		layoutService.activeContainer.appendChild(this._backdrop);
 		this._renderUrlStep();
 	}
 
+	/** 取消・✕・幕の外・Esc で閉じる。取り込み中は閉じない。 */
+	private _closeUnlessImporting(): void {
+		if (!this._importing) {
+			this.dispose();
+		}
+	}
+
 	override dispose(): void {
 		this._audioEditor?.dispose();
-		if (this._downloaded) {
-			void this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call('cleanupTempAudio', [this._downloaded.tempId]).catch(() => { /* ignore */ });
+		// 取り込み中（別の箱が開いて閉じられたとき）は、書き出しが終わってから取り込みの処理が消す。
+		if (this._downloaded && !this._importing) {
+			this._cleanupTempAudio(this._downloaded.tempId);
 		}
 		this._backdrop.remove();
 		super.dispose();
+	}
+
+	private _cleanupTempAudio(tempId: string): void {
+		void this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call('cleanupTempAudio', [tempId]).catch(() => { /* ignore */ });
 	}
 
 	/** 次の段の前に、本文と下の帯を空にして箱の大きさを決める。 */
@@ -220,7 +235,8 @@ class ParadisYouTubeImportDialog extends Disposable {
 		};
 		this._stepDisposables.add(dom.addDisposableListener(loadBtn, 'click', doLoad));
 		this._stepDisposables.add(dom.addDisposableListener(urlInput, 'keydown', e => {
-			if (e.key === 'Enter') {
+			// 日本語の変換を確定する Enter では読み込まない
+			if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) {
 				doLoad();
 			}
 		}));
@@ -305,6 +321,8 @@ class ParadisYouTubeImportDialog extends Disposable {
 
 		void this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call<IParadisYouTubeDownloadResult>('downloadYouTubeAudio', [url]).then(result => {
 			if (this._store.isDisposed) {
+				// 読み込み中に閉じられた。届いた音の一時ファイルは誰も使わないので消す。
+				this._cleanupTempAudio(result.tempId);
 				return;
 			}
 			this._downloaded = result;
@@ -340,7 +358,7 @@ class ParadisYouTubeImportDialog extends Disposable {
 
 		const footer = this._foot;
 		const cancelBtn = paradisNotifNestedButton(footer, 'secondary', STR_CANCEL);
-		this._stepDisposables.add(dom.addDisposableListener(cancelBtn, 'click', () => this.dispose()));
+		this._stepDisposables.add(dom.addDisposableListener(cancelBtn, 'click', () => this._closeUnlessImporting()));
 
 		const importBtn = paradisNotifNestedButton(footer, 'primary', STR_IMPORT);
 		this._stepDisposables.add(dom.addDisposableListener(importBtn, 'click', async () => {
@@ -367,14 +385,22 @@ class ParadisYouTubeImportDialog extends Disposable {
 				sourceTitle: downloaded.info.title,
 				sourceUrl: url,
 			};
+			this._importing = true;
 			try {
 				await this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call('renderClip', [request]);
+				this._importing = false;
 				// renderClip は再編集用にソースを assets へコピー済みなので temp は不要。
 				// _downloaded は残したまま dispose() に cleanupTempAudio させ、
 				// ダウンロード元 (paradis-ytfull-*) と _tempAudio エントリを確実に解放する。
 				this.onImported();
 				this.dispose();
 			} catch (error) {
+				this._importing = false;
+				if (this._store.isDisposed) {
+					// 取り込み中に別の箱が開いて閉じられた。dispose が残した一時ファイルをここで消す。
+					this._cleanupTempAudio(downloaded.tempId);
+					return;
+				}
 				errorEl.textContent = error instanceof Error ? error.message : String(error);
 				importBtn.disabled = false;
 				importBtn.textContent = STR_IMPORT;
