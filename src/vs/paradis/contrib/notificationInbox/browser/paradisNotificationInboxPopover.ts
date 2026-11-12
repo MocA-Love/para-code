@@ -10,8 +10,8 @@
 //
 // 作りはサービスステータスのポップオーバー（paradisServiceStatusPopover.ts）と同じ自前の DOM
 // （position: fixed、layoutService.activeContainer 直下）。重なりは小窓の段（共通の印 `paradis-overlay-popover`、
-// vs/paradis/browser/paradisModal.ts の表）で、ワークベンチの確認ダイアログ（2575）より下。内蔵ブラウザの上に出すため、
-// クラス名 `paradis-notification-inbox-popover` も overlayManager.ts の一覧に登録してある。
+// vs/paradis/browser/paradisModal.ts の表）で、ワークベンチの確認ダイアログ（2575）より下。内蔵ブラウザの上に出せるのも、
+// この共通の印が overlayManager.ts の一覧に登録してあるため。
 
 import './media/paradisNotificationInbox.css';
 import * as dom from '../../../../base/browser/dom.js';
