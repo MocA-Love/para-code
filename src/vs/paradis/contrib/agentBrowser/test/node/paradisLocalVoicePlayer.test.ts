@@ -76,6 +76,21 @@ suite('ParadisLocalVoicePlayer', () => {
 		assert.deepStrictEqual({ missing, exited }, { missing: false, exited: false });
 	});
 
+	test('remembers a missing aivis-mcp for a minute', async () => {
+		let starts = 0;
+		const runner: ParadisVoiceProcessRunner = async () => {
+			starts++;
+			throw new Error('ENOENT');
+		};
+		let now = 0;
+		const player = new ParadisLocalVoicePlayer(async () => ({}), runner, () => now);
+		const results = [await player.play(mp3(1), options()), await player.play(mp3(2), options())];
+		const startsWithinMinute = starts;
+		now = 61_000;
+		results.push(await player.play(mp3(3), options()));
+		assert.deepStrictEqual({ results, startsWithinMinute, starts }, { results: [false, false, false], startsWithinMinute: 1, starts: 2 });
+	});
+
 	test('does not enqueue past the deadline, after abort, or non-MP3 bytes', async () => {
 		const calls: string[] = [];
 		const runner: ParadisVoiceProcessRunner = async args => {

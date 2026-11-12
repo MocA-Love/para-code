@@ -71,7 +71,7 @@ suite('ParadisBrowserProfilesService', () => {
 		const browserViewWorkbenchService = {
 			onDidChangeBrowserViews: Event.None,
 			getKnownBrowserViews: () => known,
-			// PARA-PATCH: upstream 1.137 folded the view id into the data argument.
+			// Upstream 1.137 folded the view id into the data argument.
 			getOrCreateLazy: (data: { readonly id: string }) => {
 				const id = data.id;
 				openedViewIds.push(id);

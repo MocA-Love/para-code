@@ -9,6 +9,7 @@
 // 定期実行の入り口: コマンド「定期実行」と歯車メニューの項目、実行を受け持つ runner。
 // `paradis.electron-browser.contribution.ts` からこのファイルを1行 import する。
 
+import { Event } from '../../../../base/common/event.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
@@ -34,7 +35,14 @@ class ParadisOpenScheduledRunsAction extends Action2 {
 
 	run(accessor: ServicesAccessor): void {
 		activeDialog?.dispose();
-		activeDialog = accessor.get(IInstantiationService).createInstance(ParadisScheduledRunsDialog);
+		const dialog = accessor.get(IInstantiationService).createInstance(ParadisScheduledRunsDialog);
+		activeDialog = dialog;
+		// 閉じたダイアログを次に開くまで握り続けない
+		Event.once(dialog.onDidDispose)(() => {
+			if (activeDialog === dialog) {
+				activeDialog = undefined;
+			}
+		});
 	}
 }
 

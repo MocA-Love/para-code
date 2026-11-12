@@ -98,6 +98,18 @@ export type ParadisTasksResponse<T> =
 
 export type ParadisTasksSearchResponse = ParadisTasksResponse<IParadisTasksSearchResult>;
 
+/**
+ * 取得口の呼び出しが例外で終わったとき（shared process が落ちた・IPC が切れた等）も応答の形に包む。
+ * 包まないと画面の「読み込み中」が戻らず、続きを読むも押せなくなる。
+ */
+export async function paradisTasksSettle<T>(request: () => Promise<ParadisTasksResponse<T>>): Promise<ParadisTasksResponse<T>> {
+	try {
+		return await request();
+	} catch (error) {
+		return { ok: false, error: { kind: 'failed', message: error instanceof Error ? error.message : String(error) } };
+	}
+}
+
 /** Issue・PR の検索の口。プロジェクトの口を足したものは common/paradisTasksProjects.ts の IParadisTasksGithubService。 */
 export interface IParadisTasksSearchService {
 	search(request: IParadisTasksSearchRequest): Promise<ParadisTasksSearchResponse>;
