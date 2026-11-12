@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import type { ITaskBoardArchivedTask, ITaskBoardFlow, ITaskBoardSnapshot, ITaskBoardStep, ITaskBoardTask, TaskBoardAgentKind } from '@engine/paradisTaskBoard.js';
 import { rpc } from '../api.js';
 import { useApp } from '../context.js';
@@ -8,30 +8,58 @@ import { ago, KIND, stepName } from '../format.js';
 import { useAsync, useStored } from '../hooks.js';
 import { Icon, type IconName } from '../icons.js';
 
-/** 共通の枠。Esc と背景のクリックで閉じ、開いたら最初の入力か主ボタンに合わせる。 */
+/** 枠の中で Tab が止まる要素。 */
+const MODAL_FOCUSABLE = 'a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * 共通の枠。Esc と背景のクリックで閉じ、開いたら最初の入力か主ボタンに合わせる。
+ * 開いている間は Tab を枠の中で回し（背後のボードへ抜けない）、閉じたら開く前の場所へフォーカスを戻す。
+ */
 export function Modal({ title, icon, children, footer, size, onClose }: { title: ReactNode; icon?: IconName; children: ReactNode; footer?: ReactNode; size?: 'lg' | 'xl'; onClose?: () => void }) {
 	const app = useApp();
 	const close = onClose ?? app.closeDialog;
 	const ref = useRef<HTMLDivElement>(null);
+	const titleId = useId();
 	// スナップショットのたびに close が作り直されても、フォーカスを奪い直さないよう ref で持つ
 	const closeRef = useRef(close);
 	closeRef.current = close;
 	useEffect(() => {
+		const opener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
 		const el = ref.current?.querySelector<HTMLElement>('[data-autofocus], textarea, input:not([type=checkbox]):not([type=radio]), .btn.primary');
 		el?.focus();
 		const onKey = (e: KeyboardEvent) => {
 			if (e.key === 'Escape') {
 				e.stopPropagation();
 				closeRef.current();
+			} else if (e.key === 'Tab' && ref.current) {
+				const items = [...ref.current.querySelectorAll<HTMLElement>(MODAL_FOCUSABLE)].filter(item => item.getClientRects().length > 0);
+				if (!items.length) {
+					e.preventDefault();
+					return;
+				}
+				const first = items[0];
+				const last = items[items.length - 1];
+				const active = document.activeElement;
+				const inside = active instanceof Node && ref.current.contains(active);
+				if (!inside || (e.shiftKey ? active === first : active === last)) {
+					e.preventDefault();
+					(e.shiftKey ? last : first).focus();
+				}
 			}
 		};
 		document.addEventListener('keydown', onKey, true);
-		return () => document.removeEventListener('keydown', onKey, true);
+		return () => {
+			document.removeEventListener('keydown', onKey, true);
+			// 開いた起点（ボタンやメニューの起点）がまだ画面にあれば、そこへ戻す
+			if (opener?.isConnected) {
+				opener.focus({ preventScroll: true });
+			}
+		};
 	}, []);
 	return (
 		<div className="modal-back" onMouseDown={e => { if (e.target === e.currentTarget) { close(); } }}>
-			<div className={`modal ${size ?? ''}`} role="dialog" aria-modal="true" aria-label={typeof title === 'string' ? title : undefined} ref={ref}>
-				<div className="modal-h">{icon && <Icon name={icon} />}{title}<button className="btn ghost icon sm" onClick={close} aria-label="閉じる"><Icon name="close" /></button></div>
+			<div className={`modal ${size ?? ''}`} role="dialog" aria-modal="true" aria-labelledby={titleId} ref={ref}>
+				<div className="modal-h">{icon && <Icon name={icon} />}<span id={titleId}>{title}</span><button className="btn ghost icon sm" onClick={close} aria-label="閉じる"><Icon name="close" /></button></div>
 				<div className="modal-b">{children}</div>
 				{footer && <div className="modal-f">{footer}</div>}
 			</div>
