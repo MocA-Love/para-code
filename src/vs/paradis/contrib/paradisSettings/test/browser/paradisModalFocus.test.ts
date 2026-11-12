@@ -62,43 +62,6 @@ suite('ParadisModalFocus', () => {
 		target.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 27, bubbles: true, ...init }));
 	}
 
-	function pressTab(shiftKey = false): KeyboardEvent {
-		const event = new KeyboardEvent('keydown', { key: 'Tab', keyCode: 9, shiftKey, bubbles: true, cancelable: true });
-		(mainWindow.document.activeElement ?? mainWindow.document.body).dispatchEvent(event);
-		return event;
-	}
-
-	test('Tab and Shift+Tab wrap at the ends of the modal instead of leaving it for the workbench behind', () => {
-		const modal = open();
-		const buttons = ['First', 'Disabled', 'Last'].map(label => {
-			const button = mainWindow.document.createElement('button');
-			button.textContent = label;
-			modal.modal.appendChild(button);
-			return button;
-		});
-		buttons[1].disabled = true;
-		const name = (element: Element | null) => element === modal.modal ? 'modal' : element?.textContent ?? 'none';
-		const fromModal = pressTab().defaultPrevented;
-		const afterTabFromModal = name(mainWindow.document.activeElement);
-		buttons[2].focus();
-		const fromLast = pressTab().defaultPrevented;
-		const afterTabFromLast = name(mainWindow.document.activeElement);
-		const fromFirst = pressTab(true).defaultPrevented;
-		const afterShiftTabFromFirst = name(mainWindow.document.activeElement);
-		buttons[0].focus();
-		const middle = pressTab().defaultPrevented;
-		assert.deepStrictEqual({ fromModal, afterTabFromModal, fromLast, afterTabFromLast, fromFirst, afterShiftTabFromFirst, middle }, {
-			fromModal: true,
-			afterTabFromModal: 'First',
-			fromLast: true,
-			afterTabFromLast: 'First',
-			fromFirst: true,
-			afterShiftTabFromFirst: 'Last',
-			middle: false,
-		});
-		modal.close();
-	});
-
 	test('returns focus to where it was before the modal opened', () => {
 		outside.focus();
 		const modal = open();
@@ -172,5 +135,40 @@ suite('ParadisModalFocus', () => {
 			nestedClosed: 1,
 		});
 		next.close();
+	});
+
+	test('Tab and Shift+Tab wrap inside the modal instead of moving to the workbench behind it', () => {
+		const modal = open();
+		const [first, disabled, last] = ['first', 'disabled', 'last'].map(label => {
+			const button = mainWindow.document.createElement('button');
+			button.textContent = label;
+			modal.modal.appendChild(button);
+			return button;
+		});
+		disabled.disabled = true;
+		const pressTab = (shiftKey: boolean) => {
+			const target = mainWindow.document.activeElement ?? mainWindow.document.body;
+			const event = new KeyboardEvent('keydown', { keyCode: 9, shiftKey, bubbles: true, cancelable: true });
+			target.dispatchEvent(event);
+			return event.defaultPrevented;
+		};
+		last.focus();
+		const fromLast = { prevented: pressTab(false), focused: mainWindow.document.activeElement };
+		first.focus();
+		const fromFirst = { prevented: pressTab(true), focused: mainWindow.document.activeElement };
+		modal.modal.focus();
+		const fromModal = { prevented: pressTab(true), focused: mainWindow.document.activeElement };
+		first.focus();
+		const forwardFromFirst = pressTab(false);
+		outside.focus();
+		const fromOutside = pressTab(false);
+		assert.deepStrictEqual({ fromLast, fromFirst, fromModal, forwardFromFirst, fromOutside }, {
+			fromLast: { prevented: true, focused: first },
+			fromFirst: { prevented: true, focused: last },
+			fromModal: { prevented: true, focused: last },
+			forwardFromFirst: false,
+			fromOutside: false,
+		});
+		modal.close();
 	});
 });

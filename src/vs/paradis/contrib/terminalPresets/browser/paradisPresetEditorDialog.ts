@@ -92,6 +92,7 @@ import { ParadisInputField } from '../../../browser/paradisInputField.js';
 import { paradisMenuItem, showParadisMenu } from '../../../browser/paradisMenu.js';
 import { PARADIS_MODAL_COMPACT_CLASS, paradisModalClasses, ParadisModalSize, renderParadisModalHead } from '../../../browser/paradisModal.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
+import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 import {
@@ -610,6 +611,8 @@ class ParadisPresetEditorDialog extends Disposable {
 	private _dragging: ParadisPresetMoveItem | undefined;
 	/** ドラッグ中に挿入線・フォルダの強調を描く一覧の要素（list 直下の重ね絵）。 */
 	private readonly _dropIndicator = this._register(new MutableDisposable<DisposableStore>());
+	/** 掴み（⋮⋮）を押した後の mouseup の購読。押すたびに前の分を置き換える（一覧を描き直すまで溜めない）。 */
+	private readonly _gripMouseUp = this._register(new MutableDisposable());
 	/**
 	 * 並び替えの後、描き直した一覧で探す動かした行（新しい位置の読み上げと、`focus` ならフォーカスの
 	 * 戻し先）。.paracode.json の手書きのプリセットは位置由来のキーで、動かすとキーが変わるので、
@@ -649,11 +652,16 @@ class ParadisPresetEditorDialog extends Disposable {
 		this._dialog = $('.paradis-preset-editor-dialog');
 		// UI キットの段 3（Q600）: 箱は M 段、見出しは 52 の帯。主のボタンは「新規作成」だけ
 		this._dialog.classList.add(...paradisModalClasses(ParadisModalSize.Medium));
+		this._dialog.setAttribute('role', 'dialog');
+		this._dialog.setAttribute('aria-modal', 'true');
+		this._dialog.tabIndex = -1;
 		this._backdrop.appendChild(this._dialog);
 
 		// --- ヘッダー（常設）: タイトル + 選択トグル + 新規作成 + 閉じる ---
 		const head = renderParadisModalHead(this._dialog, STR_TITLE);
 		head.element.classList.add('ppe-header');
+		head.title.id = 'paradis-preset-editor-title';
+		this._dialog.setAttribute('aria-labelledby', head.title.id);
 		const headerActions = head.actions;
 		this._selectToggleEl = dom.append(headerActions, $('button.ppe-btn.ppe-select-toggle')) as HTMLButtonElement;
 		this._selectToggleEl.classList.add(...paradisButtonClasses('ghost', true));
@@ -845,21 +853,6 @@ class ParadisPresetEditorDialog extends Disposable {
 				});
 			}
 		}));
-		this._register(dom.addDisposableListener(this._backdrop, 'keydown', e => {
-			// IME の変換中 Escape は「変換の取り消し」であってダイアログを閉じる操作ではない
-			if (e.key === 'Escape' && !e.isComposing && e.keyCode !== 229) {
-				e.preventDefault();
-				if (this._mode === 'edit') {
-					void this._confirmDiscardUnsaved().then(proceed => {
-						if (proceed) {
-							this._renderList();
-						}
-					});
-				} else {
-					this.dispose();
-				}
-			}
-		}));
 		this._register(this.presetService.onDidChangePresets(() => {
 			// key が残っていても中身が別物にすり替わっている可能性があるため、存在チェックだけでは
 			// 足りない（_selectedFingerprints のコメント参照）。1件でも指紋が食い違っていたら、
@@ -877,8 +870,31 @@ class ParadisPresetEditorDialog extends Disposable {
 			}
 		}));
 
-		layoutService.activeContainer.appendChild(this._backdrop);
+		const container = layoutService.activeContainer;
+		// 「設定 (Para Code)」など fork のモーダルの中から開いたときは、下のモーダルを閉じない入れ子の箱にする
+		const nested = ParadisModalFocus.isModalOpenIn(container);
+		container.appendChild(this._backdrop);
+		// 開く前のフォーカスを覚えて閉じたら戻す・Esc は開いた直後（フォーカスが外にある間）も受ける
+		//（IME の変換中の Esc は ParadisModalFocus が見送る）
+		this._register(new ParadisModalFocus({
+			backdrop: this._backdrop,
+			modal: this._dialog,
+			nested,
+			onEscape: () => {
+				if (this._mode === 'edit') {
+					void this._confirmDiscardUnsaved().then(proceed => {
+						if (proceed) {
+							this._renderList();
+						}
+					});
+				} else {
+					this.dispose();
+				}
+			},
+			close: () => this.dispose(),
+		}));
 		this._renderList();
+		this._dialog.focus();
 	}
 
 	override dispose(): void {
@@ -1495,9 +1511,9 @@ class ParadisPresetEditorDialog extends Disposable {
 			//（grip 直上の mouseup は dragend / drop 側でも解除されるので二重で問題ない）。
 			// 補助ウィンドウでは `window` は本体側を指してしまい mouseup が来ない。grip が載っている
 			// ウィンドウを取る。
-			this._viewStore.add(dom.addDisposableListener(dom.getWindow(grip), 'mouseup', () => {
+			this._gripMouseUp.value = dom.addDisposableListener(dom.getWindow(grip), 'mouseup', () => {
 				row.draggable = false;
-			}, { once: true, capture: true }));
+			}, { once: true, capture: true });
 		}));
 		this._viewStore.add(dom.addDisposableListener(row, 'dragstart', e => {
 			// 行の中のボタン等から始まったドラッグ（draggable を立てていない）は扱わない。
