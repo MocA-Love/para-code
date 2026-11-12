@@ -32,8 +32,8 @@ import type { Env, IReleaseRecord } from './types';
  * without the Access headers, which macOS's Squirrel.Mac updater does not
  * forward from the feed request to the asset download.
  *
- * Setup (not yet done — run only after explicit go-ahead, see CLAUDE.md /
- * NOTES.md release-infra section):
+ * Setup (already deployed: the RELEASES KV namespace id and the route are in
+ * wrangler.toml). To recreate it, see the NOTES.md release-infra section:
  *   wrangler kv namespace create RELEASES        # then paste the id into wrangler.toml
  *   wrangler deploy
  *   wrangler kv key put --binding RELEASES "stable:darwin-arm64" '{"commit":"...","version":"...","productVersion":"...","url":"https://.../CodeSetup.zip","sha256hash":"...","timestamp":0}'
