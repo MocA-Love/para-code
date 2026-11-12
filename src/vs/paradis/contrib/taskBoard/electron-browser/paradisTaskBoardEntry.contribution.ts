@@ -115,7 +115,8 @@ class ParadisOpenTaskBoardAction extends Action2 {
 		const sharedProcessService = accessor.get(ISharedProcessService);
 		const logService = accessor.get(ILogService);
 		const relayService = accessor.get(IParadisTaskBoardRelaySessionsService);
-		const remoteAuthority = accessor.get(IWorkbenchEnvironmentService).remoteAuthority;
+		const environmentService = accessor.get(IWorkbenchEnvironmentService);
+		const remoteAuthority = environmentService.remoteAuthority;
 		const switchService = accessor.get(IParadisWorkspaceSwitchService);
 		const contextService = accessor.get(IWorkspaceContextService);
 		const folder = remoteAuthority === undefined ? localSpaceFolder(switchService, contextService) : undefined;
@@ -163,8 +164,12 @@ class ParadisOpenTaskBoardAction extends Action2 {
 		}
 		switch (result.reason) {
 			case 'not-bundled':
-				// allow-any-unicode-next-line
-				notificationService.error(localize('paradis.taskBoard.notBundled', "この Para Code にはタスクボードが入っていません（ソースから動かしている場合は `node build/paradis/taskboard/buildTaskBoard.ts` でビルドしてください）。"));
+				// 配布版の利用者にはビルドの手順ではなく入れ直しを案内する（ワークツリーの配布版は commit が無いので isBuilt で分ける）
+				notificationService.error(environmentService.isBuilt
+					// allow-any-unicode-next-line
+					? localize('paradis.taskBoard.notBundledBuilt', "この Para Code にはタスクボードが入っていません。Para Code を入れ直してください。")
+					// allow-any-unicode-next-line
+					: localize('paradis.taskBoard.notBundled', "この Para Code にはタスクボードが入っていません（ソースから動かしている場合は `node build/paradis/taskboard/buildTaskBoard.ts` でビルドしてください）。"));
 				return;
 			case 'repo-busy':
 				// allow-any-unicode-next-line

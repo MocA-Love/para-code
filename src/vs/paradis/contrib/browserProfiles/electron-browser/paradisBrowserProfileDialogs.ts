@@ -30,6 +30,39 @@ import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisM
 
 const $ = dom.$;
 
+/** 誤りの文の要素に振る id の連番（入力欄の aria-describedby から指す）。 */
+let errorElementIdCounter = 0;
+
+/** 誤りの文の要素に id を振り、入力欄の読み上げに結び付ける。 */
+function linkErrorToInput(input: HTMLInputElement, error: HTMLElement): void {
+	error.id = `paradis-browser-profile-error-${++errorElementIdCounter}`;
+	input.setAttribute('aria-describedby', error.id);
+}
+
+/** 誤りの文を出す・消す。入力欄の aria-invalid も合わせる。 */
+function setInputError(input: HTMLInputElement, error: HTMLElement, message: string | undefined): void {
+	error.textContent = message ?? '';
+	error.style.display = message === undefined ? 'none' : '';
+	if (message === undefined) {
+		input.removeAttribute('aria-invalid');
+	} else {
+		input.setAttribute('aria-invalid', 'true');
+	}
+}
+
+/** 識別カラーの読み上げ名（色の値は保存データと照合するので、名前は別の対応表で持つ）。 */
+function colorName(color: string): string {
+	switch (color) {
+		case '#e2a33d': return localize('paradis.browserProfiles.color.orange', "オレンジ");
+		case '#3fb950': return localize('paradis.browserProfiles.color.green', "緑");
+		case '#a371f7': return localize('paradis.browserProfiles.color.purple', "紫");
+		case '#4daafc': return localize('paradis.browserProfiles.color.blue', "青");
+		case '#f47067': return localize('paradis.browserProfiles.color.red', "赤");
+		case '#8b8b8b': return localize('paradis.browserProfiles.color.gray', "灰");
+		default: return color;
+	}
+}
+
 /**
  * 共通のモーダルシェル（backdrop + タイトルバー + 本文 + フッター）。1回開くごとに1インスタンス、
  * 閉じるときに自分を破棄する。
@@ -38,8 +71,8 @@ export abstract class ParadisProfileModal extends Disposable {
 
 	private readonly _backdrop: HTMLElement;
 	private readonly _modal: HTMLElement;
-	/** 開く前にフォーカスがあった要素。閉じたらここへ戻す。 */
-	private readonly _previouslyFocused: HTMLElement | undefined;
+	/** 開く前にフォーカスがあった要素（呼び出し側が戻し先を渡したときはそれ）。閉じたらここへ戻す。 */
+	protected readonly previouslyFocused: HTMLElement | undefined;
 	/** Tab の巡回対象。DOM を検索せず、作った側が登録する（upstream の dialog.ts と同じ流儀）。 */
 	private readonly _headerFocusables: HTMLElement[] = [];
 	private readonly _footerFocusables: HTMLElement[] = [];
@@ -48,11 +81,11 @@ export abstract class ParadisProfileModal extends Disposable {
 	protected readonly body: HTMLElement;
 	protected readonly footer: HTMLElement;
 
-	constructor(dialogTitle: string, icon: ThemeIcon, layoutService: ILayoutService) {
+	constructor(dialogTitle: string, icon: ThemeIcon, layoutService: ILayoutService, restoreFocusTo?: HTMLElement) {
 		super();
 
 		const active = dom.getActiveElement();
-		this._previouslyFocused = dom.isHTMLElement(active) ? active : undefined;
+		this.previouslyFocused = restoreFocusTo ?? (dom.isHTMLElement(active) ? active : undefined);
 
 		this._backdrop = $('.paradis-browser-profile-backdrop.paradis-modal-backdrop');
 		const modal = $('.paradis-browser-profile-modal');
@@ -64,10 +97,9 @@ export abstract class ParadisProfileModal extends Disposable {
 		const title = dom.append(header, $('.pbpm-title'));
 		dom.append(title, $(ThemeIcon.asCSSSelector(icon)));
 		dom.append(title, $('h2')).textContent = dialogTitle;
-		const closeButton = dom.append(header, $('.pbpm-close'));
+		const closeButton = dom.append(header, $('button.pbpm-close.paradis-focus-ring-inset')) as HTMLButtonElement;
+		closeButton.type = 'button';
 		closeButton.appendChild($(ThemeIcon.asCSSSelector(Codicon.close)));
-		closeButton.setAttribute('role', 'button');
-		closeButton.tabIndex = 0;
 		closeButton.setAttribute('aria-label', localize('paradis.browserProfiles.dialog.close', "閉じる"));
 		this._headerFocusables.push(closeButton);
 		this._register(dom.addDisposableListener(closeButton, dom.EventType.CLICK, () => this.close()));
@@ -149,8 +181,8 @@ export abstract class ParadisProfileModal extends Disposable {
 		// キーボードだけで操作している人がワークベンチへ帰れなくなる。
 		const shouldRestoreFocus = dom.isAncestorOfActiveElement(this._backdrop);
 		this._backdrop.remove();
-		if (shouldRestoreFocus && this._previouslyFocused?.isConnected) {
-			this._previouslyFocused.focus();
+		if (shouldRestoreFocus && this.previouslyFocused?.isConnected) {
+			this.previouslyFocused.focus();
 		}
 		super.dispose();
 	}
@@ -192,7 +224,8 @@ class ParadisManageProfilesDialog extends ParadisProfileModal {
 		this._listElement = dom.append(this.body, $('.pbpm-list'));
 
 		this.appendButton(localize('paradis.browserProfiles.manage.new', "新規プロファイル"), 'secondary', () => {
-			paradisShowCreateProfileDialog(this.instantiationService);
+			// このモーダルは閉じるので、作成モーダルを閉じたらこのモーダルを開く前の場所へ戻す
+			paradisShowCreateProfileDialog(this.instantiationService, undefined, this.previouslyFocused);
 			this.close();
 		});
 		this.appendButton(localize('paradis.browserProfiles.manage.done', "閉じる"), 'primary', () => this.close());
@@ -286,12 +319,12 @@ class ParadisManageProfilesDialog extends ParadisProfileModal {
 		this.contentFocusables.push(input);
 		const error = dom.append(field, $('.pbpm-error'));
 		error.style.display = 'none';
+		linkErrorToInput(input, error);
 
 		const commit = () => {
 			const result = this.profilesService.rename(profile.id, input.value);
 			if (!result.ok) {
-				error.textContent = result.error;
-				error.style.display = '';
+				setInputError(input, error, result.error);
 				input.focus();
 				return;
 			}
@@ -435,7 +468,8 @@ class ParadisManageProfilesDialog extends ParadisProfileModal {
 			dismiss();
 			void run();
 		}));
-		confirmButton.focus();
+		// 取り消せない操作なので、Enter で誤って実行しないようキャンセル側にフォーカスを置く
+		cancelButton.focus();
 	}
 }
 
@@ -449,10 +483,11 @@ class ParadisCreateProfileDialog extends ParadisProfileModal {
 
 	constructor(
 		private readonly onCreated: ((profile: IParadisBrowserProfile) => void) | undefined,
+		restoreFocusTo: HTMLElement | undefined,
 		@IParadisBrowserProfilesService private readonly profilesService: IParadisBrowserProfilesService,
 		@ILayoutService layoutService: ILayoutService,
 	) {
-		super(localize('paradis.browserProfiles.create.title', "新しいプロファイルを作成"), Codicon.add, layoutService);
+		super(localize('paradis.browserProfiles.create.title', "新しいプロファイルを作成"), Codicon.add, layoutService, restoreFocusTo);
 
 		this._selectedColor = PARADIS_BROWSER_PROFILE_COLORS[0];
 
@@ -475,7 +510,7 @@ class ParadisCreateProfileDialog extends ParadisProfileModal {
 			const swatch = dom.append(swatchRow, $('button.pbpm-swatch.paradis-focus-ring')) as HTMLButtonElement;
 			swatch.type = 'button';
 			swatch.style.backgroundColor = color;
-			swatch.setAttribute('aria-label', color);
+			swatch.setAttribute('aria-label', colorName(color));
 			this.contentFocusables.push(swatch);
 			this._register(dom.addDisposableListener(swatch, dom.EventType.CLICK, () => {
 				this._selectedColor = color;
@@ -486,6 +521,7 @@ class ParadisCreateProfileDialog extends ParadisProfileModal {
 
 		this._errorElement = dom.append(this.body, $('.pbpm-error'));
 		this._errorElement.style.display = 'none';
+		linkErrorToInput(this._nameInput, this._errorElement);
 
 		this.appendButton(localize('paradis.browserProfiles.create.cancel', "キャンセル"), 'secondary', () => this.close());
 		this.appendButton(localize('paradis.browserProfiles.create.submit', "作成して開く"), 'primary', () => this._submit());
@@ -512,8 +548,7 @@ class ParadisCreateProfileDialog extends ParadisProfileModal {
 	private _submit(): void {
 		const result = this.profilesService.create(this._nameInput.value, this._selectedColor);
 		if (!result.ok) {
-			this._errorElement.textContent = result.error;
-			this._errorElement.style.display = '';
+			setInputError(this._nameInput, this._errorElement, result.error);
 			this._nameInput.focus();
 			return;
 		}
@@ -534,6 +569,7 @@ export function paradisShowManageProfilesDialog(instantiationService: IInstantia
 export function paradisShowCreateProfileDialog(
 	instantiationService: IInstantiationService,
 	onCreated?: (profile: IParadisBrowserProfile) => void,
+	restoreFocusTo?: HTMLElement,
 ): void {
-	instantiationService.createInstance(ParadisCreateProfileDialog, onCreated);
+	instantiationService.createInstance(ParadisCreateProfileDialog, onCreated, restoreFocusTo);
 }

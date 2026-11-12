@@ -20,10 +20,11 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { IEnvironmentMainService } from '../../../../platform/environment/electron-main/environmentMainService.js';
 import { ILifecycleMainService } from '../../../../platform/lifecycle/electron-main/lifecycleMainService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IStateService } from '../../../../platform/state/node/state.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { PARADIS_TASK_BOARD_BRIDGE_DISCOVERY_FILE } from '../common/paradisTaskBoardBridge.js';
 import type { ITaskBoardAddIssuesRequest, TaskBoardAddIssuesResult } from '../common/paradisTaskBoard.js';
-import { IParadisTaskBoardHost, IParadisTaskBoardRemoteTarget, PARADIS_TASK_BOARD_EMBEDDED_PORT, PARADIS_TASK_BOARD_HOST_CHANNEL, ParadisTaskBoardOpenResult, ParadisTaskBoardServerMessage, paradisTaskBoardIsRemoteTarget } from '../common/paradisTaskBoardHost.js';
+import { IParadisTaskBoardHost, IParadisTaskBoardRemoteTarget, PARADIS_TASK_BOARD_EMBEDDED_PORT, PARADIS_TASK_BOARD_HOST_CHANNEL, ParadisTaskBoardOpenResult, ParadisTaskBoardServerMessage, paradisTaskBoardIsRemoteTarget, paradisTaskBoardWindowBackground } from '../common/paradisTaskBoardHost.js';
 
 /** サーバーが起動の合図を返すまで待つ時間（GitHub の認証と台帳の読み込みが先に走る）。 */
 const READY_TIMEOUT_MS = 60_000;
@@ -78,6 +79,9 @@ function boardEnvironment(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 	return env;
 }
 
+/** ボードが最後に使ったテーマの地の色（次に窓を作るときの背景色）。 */
+const PARADIS_TASK_BOARD_BACKGROUND_STATE_KEY = 'paradis.taskBoard.windowBackground';
+
 class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 
 	private running: IRunningBoard | undefined;
@@ -95,6 +99,7 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 		private readonly environmentMainService: IEnvironmentMainService,
 		lifecycleMainService: ILifecycleMainService,
 		private readonly logService: ILogService,
+		private readonly stateService: IStateService,
 	) {
 		super();
 		this.shellEnv = new ParadisCachedShellEnv(logService, 'ParadisTaskBoardHost', createParadisShellEnvResolver(logService, configurationService, environmentMainService.args));
@@ -357,7 +362,8 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 			// allow-any-unicode-next-line
 			title: localize('paradis.taskBoard.windowTitle', "タスクボード"),
 			show: false,
-			backgroundColor: '#0d1117',
+			// ボードのテーマは Para Code と別の設定なので、ボードが最後に使ったテーマの地の色にする（描画が追いつかない間に違う色が見えないように）
+			backgroundColor: paradisTaskBoardWindowBackground(this.stateService.getItem<string>(PARADIS_TASK_BOARD_BACKGROUND_STATE_KEY)),
 			webPreferences: {
 				partition,
 				sandbox: true,
@@ -380,6 +386,15 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 		});
 		const contents = window.webContents;
 		this.guardContents(contents, origin, partition);
+		// ボードはテーマを替えると theme-color を地の色にする。開いている窓の背景も替え、次に作る窓のために覚える
+		contents.on('did-change-theme-color', (_event, color) => {
+			if (color === null) {
+				return;
+			}
+			const background = paradisTaskBoardWindowBackground(color);
+			window.setBackgroundColor(background);
+			this.stateService.setItem(PARADIS_TASK_BOARD_BACKGROUND_STATE_KEY, background);
+		});
 		// Para Code の画面ではないウィンドウでは、編集のメニューの一部が届かない。よく使うキーをここで渡す
 		contents.on('before-input-event', (event, input) => {
 			const mod = isMacintosh ? input.meta : input.control;
@@ -495,9 +510,9 @@ interface IParadisTaskBoardHostChannelHost {
 }
 
 /** app.ts から 1 行で登録する。 */
-export function paradisRegisterTaskBoardHost(channelHost: IParadisTaskBoardHostChannelHost, configurationService: IConfigurationService, environmentMainService: IEnvironmentMainService, lifecycleMainService: ILifecycleMainService, logService: ILogService): IDisposable {
+export function paradisRegisterTaskBoardHost(channelHost: IParadisTaskBoardHostChannelHost, configurationService: IConfigurationService, environmentMainService: IEnvironmentMainService, lifecycleMainService: ILifecycleMainService, logService: ILogService, stateService: IStateService): IDisposable {
 	const store = new DisposableStore();
-	const host = store.add(new ParadisTaskBoardHost(configurationService, environmentMainService, lifecycleMainService, logService));
+	const host = store.add(new ParadisTaskBoardHost(configurationService, environmentMainService, lifecycleMainService, logService, stateService));
 	// 画面から呼べるのはここに並べたものだけにする（ProxyChannel はクラスのほかのメソッドも呼べてしまう）
 	const surface: IParadisTaskBoardHost = {
 		open: repoPath => typeof repoPath === 'string' && repoPath.length > 0 ? host.open(repoPath) : Promise.resolve({ ok: false, reason: 'start-failed', message: 'invalid repository path' }),
