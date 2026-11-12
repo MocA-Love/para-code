@@ -40,6 +40,24 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.22',
+		date: '2026-11-12',
+		items: [
+			{
+				icon: 'cloud-offline-outline',
+				title: 'ペアリングで中継サーバーにつながらなかったとき、意味の読めない文言ではなく通信状態を確かめるよう案内するようにしました',
+			},
+			{
+				icon: 'terminal-outline',
+				title: '起動のシートを開いてすぐ「ターミナル」を選ぶと、少し後で Claude に変わってしまうことがあったのを直しました',
+			},
+			{
+				icon: 'warning-outline',
+				title: '承認カードで、「git push origin +main」のように + を付けた push にも「強制 push」の札を出すようにしました',
+			},
+		],
+	},
+	{
 		version: '0.12.21',
 		date: '2026-11-12',
 		items: [

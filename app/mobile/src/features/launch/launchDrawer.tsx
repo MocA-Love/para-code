@@ -19,6 +19,7 @@ import {
 	TERMINAL_KIND,
 	defaultLaunchTarget,
 	encodeLaunchTarget,
+	kindAfterFormLoaded,
 	launchBlockedReason,
 	launchSpaceOptions,
 	launchableAgents,
@@ -71,6 +72,8 @@ export function LaunchDrawer({ visible, preset, onClose }: {
 	const [sheet, setSheet] = useState<Sheet | undefined>(undefined);
 	const next = useRef<Sheet | 'launched' | undefined>(undefined);
 	const launchedSpace = useRef<string | undefined>(undefined);
+	/** 開いてから利用者が「起動するもの」を選んだか（材料が届いても既定で上書きしない）。 */
+	const kindChosen = useRef(false);
 	const [form, setForm] = useState<{ readonly pcId: string | undefined; readonly result: WorktreeFormResult } | undefined>(undefined);
 	const [formError, setFormError] = useState<string | undefined>(undefined);
 	const [kind, setKind] = useState<string | undefined>(undefined);
@@ -94,6 +97,7 @@ export function LaunchDrawer({ visible, preset, onClose }: {
 			setSheet('form');
 			next.current = undefined;
 			launchedSpace.current = undefined;
+			kindChosen.current = false;
 			setName('');
 			setPrompt('');
 			setAdvanced(false);
@@ -127,7 +131,7 @@ export function LaunchDrawer({ visible, preset, onClose }: {
 			const loadedAgents = launchableAgents(result);
 			const firstAgent = loadedAgents.find(agent => agent.id === 'claude') ?? loadedAgents[0];
 			// 開いたときにまだ材料が無かった分の既定を、届いた材料で埋める（利用者が選んだものは変えない）。
-			setKind(current => (current === undefined || current === TERMINAL_KIND ? firstAgent?.id ?? TERMINAL_KIND : current));
+			setKind(current => kindAfterFormLoaded(current, kindChosen.current, firstAgent?.id));
 			setPermission(current => current ?? firstAgent?.permissions?.[0]?.id);
 			setTargetValue(current => {
 				if (current !== undefined) {
@@ -356,6 +360,7 @@ export function LaunchDrawer({ visible, preset, onClose }: {
 				options={kindOptions}
 				selected={kind}
 				onSelect={value => {
+					kindChosen.current = true;
 					setKind(value);
 					setPermission(agents.find(candidate => candidate.id === value)?.permissions?.[0]?.id);
 				}}
