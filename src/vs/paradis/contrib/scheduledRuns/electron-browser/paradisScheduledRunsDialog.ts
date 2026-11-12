@@ -16,7 +16,9 @@
 import './media/paradisScheduledRuns.css';
 import * as dom from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
-import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
+import { isCancellationError } from '../../../../base/common/errors.js';
+import { Disposable, DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
@@ -254,6 +256,8 @@ export class ParadisScheduledRunsDialog extends Disposable {
 	private readonly message: HTMLElement;
 	private readonly contentDisposables = this._register(new DisposableStore());
 	private readonly navDisposables = this._register(new DisposableStore());
+	/** 事前確認の「試す」で走らせているコマンド。画面を閉じたら止める（制限時間まで残さない）。 */
+	private readonly precheckTry = this._register(new MutableDisposable());
 
 	private state: IParadisScheduledRunsState | undefined;
 	private selectedId: string | undefined;
@@ -350,11 +354,16 @@ export class ParadisScheduledRunsDialog extends Disposable {
 			return;
 		}
 		// 編集の途中で閉じられたら（別のモーダル・閉じるボタン・外側の押下）、入力を下書きとして残す
+		this.keepEditingDraft();
+		this.backdrop.remove();
+		super.dispose();
+	}
+
+	/** 編集のフォームで入力していれば、下書きとして残す（閉じる・別の定期実行へ移る・新規作成へ切り替えるとき）。 */
+	private keepEditingDraft(): void {
 		if (this.editing && this.editingDirty) {
 			formDrafts.keep(this.editingDraftKey, this.editing);
 		}
-		this.backdrop.remove();
-		super.dispose();
 	}
 
 	// ---------- 読み込み ----------
@@ -419,6 +428,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 					: paradisDescribeCron(definition.schedule);
 			this.navDisposables.add(dom.addDisposableListener(item, 'click', () => {
 				if (this.editing) {
+					this.keepEditingDraft();
 					this.editing = undefined;
 				}
 				this.selectedId = definition.id;
@@ -776,6 +786,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 	}
 
 	private startEdit(definition: IParadisScheduledRunDefinition | undefined): void {
+		this.keepEditingDraft();
 		this.editingDraftKey = paradisScheduledRunFormDraftKey(definition?.id, this.switchService.activeStateKey);
 		const draft = formDrafts.take(this.editingDraftKey);
 		this.editingDirty = this.editingRestored = draft !== undefined;
@@ -1052,7 +1063,9 @@ export class ParadisScheduledRunsDialog extends Disposable {
 				show(paradisScheduledRunReasonLabel('precheckUntrusted'), true);
 				return;
 			}
-			const response = await this.client.testPrecheck({ command: values.precheckCommand, timeoutSeconds: values.precheckTimeoutSeconds }, values.repositoryUri);
+			const cancellation = new CancellationTokenSource();
+			this.precheckTry.value = toDisposable(() => cancellation.dispose(true));
+			const response = await this.client.testPrecheck({ command: values.precheckCommand, timeoutSeconds: values.precheckTimeoutSeconds }, values.repositoryUri, cancellation.token);
 			if (response.error !== undefined || !response.result) {
 				show(response.error ?? '', true);
 				return;
@@ -1062,6 +1075,10 @@ export class ParadisScheduledRunsDialog extends Disposable {
 				? localize('paradis.scheduledRuns.precheckWouldRun', "通りました。この回はエージェントを起動します。")
 				: localize('paradis.scheduledRuns.precheckWouldSkip', "通りませんでした。この回は見送ります。")}\n${precheckResultText(response.result)}`, !passed);
 		} catch (error) {
+			if (isCancellationError(error)) {
+				// 画面を閉じて止めた
+				return;
+			}
 			this.logService.warn('[ParadisScheduledRuns] trying the precheck failed', error);
 			show(localize('paradis.scheduledRuns.precheckTryFailed', "事前確認を試せませんでした。"), true);
 		}
