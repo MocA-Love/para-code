@@ -572,7 +572,7 @@ export class ParadisTasksGithubService extends Disposable implements IParadisTas
 				const retryAt = this.rateLimitPause.noteRateLimited('', 'graphql');
 				return { ok: false, error: { kind: 'rate-limited', message, retryAt } };
 			}
-			const auth = /gh auth login|authentication|401|bad credentials/i.test(errorText);
+			const auth = /gh auth login|authentication|\bHTTP 401\b|bad credentials/i.test(errorText);
 			this.logService.trace(`[ParadisTasks] ${callSite} failed: ${message}`);
 			return { ok: false, error: { kind: auth ? 'auth' : 'failed', message } };
 		}
