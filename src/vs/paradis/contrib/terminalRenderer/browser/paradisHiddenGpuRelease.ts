@@ -61,10 +61,11 @@ export class ParadisHiddenGpuRelease<TFont> extends Disposable {
 	private readonly _releaseScheduler: RunOnceScheduler;
 	private readonly _observer = this._register(new MutableDisposable());
 	private _observedWindow: Window | undefined;
+	private readonly _configurationListener = this._register(new MutableDisposable());
 
 	constructor(
 		// 関数で受け取る(端末のフィールドの初期化の時点では、注入されたサービスをまだ読めないため)
-		private readonly _getConfigurationService: () => Pick<IConfigurationService, 'getValue'>,
+		private readonly _getConfigurationService: () => Pick<IConfigurationService, 'getValue' | 'onDidChangeConfiguration'>,
 		private readonly _host: IParadisHiddenGpuReleaseHost<TFont>,
 		delay: number = PARADIS_HIDDEN_GPU_RELEASE_DELAY,
 	) {
@@ -106,6 +107,7 @@ export class ParadisHiddenGpuRelease<TFont> extends Disposable {
 			return;
 		}
 		this._visible = visible;
+		this._listenToSetting();
 		if (visible) {
 			this._releaseScheduler.cancel();
 			if (this._released) {
@@ -118,6 +120,28 @@ export class ParadisHiddenGpuRelease<TFont> extends Disposable {
 		if (this._isEnabled() && this._host.hasGpuRenderer()) {
 			this._releaseScheduler.schedule();
 		}
+	}
+
+	/**
+	 * 設定の切り替えを見張る（最初に見え方が変わったときに 1 回だけ張る。構築の時点ではサービスを読めないため）。
+	 * オンにした時点で見えていない端末も、見えなくなった瞬間と同じく猶予の後に外す。オフにしたら待ちを取り消す。
+	 * オフにしたときに、すでに外した端末は付け直さない（意図した仕様）。見えないまま付け直しても GPU の
+	 * メモリを使うだけで、見えるようになれば `setVisible(true)` で付け直す。
+	 */
+	private _listenToSetting(): void {
+		if (this._configurationListener.value) {
+			return;
+		}
+		this._configurationListener.value = this._getConfigurationService().onDidChangeConfiguration(e => {
+			if (!e.affectsConfiguration(PARADIS_TERMINAL_RELEASE_HIDDEN_GPU_SETTING)) {
+				return;
+			}
+			if (!this._isEnabled()) {
+				this._releaseScheduler.cancel();
+			} else if (!this._visible && !this._released && this._host.hasGpuRenderer()) {
+				this._releaseScheduler.schedule();
+			}
+		});
 	}
 
 	private _releaseIfStillHidden(): void {

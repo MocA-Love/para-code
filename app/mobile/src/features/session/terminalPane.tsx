@@ -323,7 +323,16 @@ export function TerminalPane({ terminal, active, keyboardVisible, bottomInset, s
 		if (uploading) {
 			return;
 		}
-		const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], base64: true, quality: 0.8 });
+		let result: ImagePicker.ImagePickerResult;
+		try {
+			result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], base64: true, quality: 0.8 });
+		} catch (err) {
+			// 選んだ写真を読み込めなかった（端末に無い写真を取りに行けなかった等）
+			console.warn('[session] terminal image picker failed', errorKind(err));
+			haptic('error');
+			paraAlert.alert('写真を開けませんでした', 'もう一度選び直してください。');
+			return;
+		}
 		const asset = result.assets?.[0];
 		if (result.canceled || asset?.base64 === undefined || asset.base64 === null) {
 			return;

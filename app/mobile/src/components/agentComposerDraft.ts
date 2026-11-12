@@ -30,6 +30,26 @@ export function reconcileSubmittedDraftTarget(
 	return { kind: 'none' };
 }
 
+/**
+ * 断られた回答の本文の戻し先。回答の入力に残っていればその入力欄へ、回答をやめた・別のタブへ移ったなら
+ * 送信元の下書きへ戻す（回答の入力は下書きに残らないので、ここで戻さないと本文が消える）。
+ * `inputSettled` は、入力欄が今の入力（回答か通常か）に差し替わり済みかどうか。差し替え前の入力欄へ書くと、
+ * 直後の差し替えで上書きされるので、そのときは下書きへ書いて差し替えで読み込ませる。
+ */
+export function reconcileRejectedAnswerTarget(
+	activeKey: string | undefined,
+	submittedKey: string | undefined,
+	inputSettled: boolean,
+	activeInput: string,
+	storedSubmittedDraft: string,
+	submitted: string,
+): SubmittedDraftReconciliation {
+	if (activeKey === submittedKey && !inputSettled) {
+		return submittedKey !== undefined ? { kind: 'stored', key: submittedKey, value: submitted + storedSubmittedDraft } : { kind: 'none' };
+	}
+	return reconcileSubmittedDraftTarget(activeKey, submittedKey, activeInput, storedSubmittedDraft, submitted, 'rejected');
+}
+
 /** consumedは画面切替後でもTUIに未実行本文が残るため、必ず利用者へ知らせる。 */
 export function shouldShowSubmissionAlert(status: AgentMessageSendResult['status'], currentGeneration: number, submittedGeneration: number): boolean {
 	return status === 'consumed' || (status === 'rejected' && currentGeneration === submittedGeneration);

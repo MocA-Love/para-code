@@ -7,7 +7,7 @@ import { useApp } from '../context.js';
 import { dueInfo, errorText, needs, STATUS, stepName, taskActivity } from '../format.js';
 import { useNow } from '../hooks.js';
 import { Icon } from '../icons.js';
-import { AgentTag, DueChip, Elapsed, LabelChip, PrChip, Status, tone } from './atoms.js';
+import { activateOnKey, AgentTag, DueChip, Elapsed, LabelChip, PrChip, Status, tone } from './atoms.js';
 
 const GROUPS: { status: TaskBoardStatus[]; label: string }[] = [
 	{ status: ['question', 'permission'], label: '回答待ち' },
@@ -64,7 +64,7 @@ function InboxRow({ task }: { task: ITaskBoardTask }) {
 			: <a className="btn sm primary" href={url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}><Icon name="ext" />GitHub でマージ</a>;
 	}
 	return (
-		<div className="irow" role="button" tabIndex={0} onClick={() => app.openTask(task.id)} onKeyDown={e => { if (e.key === 'Enter') { app.openTask(task.id); } }}>
+		<div className="irow" role="button" tabIndex={0} onClick={() => app.openTask(task.id)} onKeyDown={activateOnKey(() => app.openTask(task.id))}>
 			<div style={{ minWidth: 0 }}>
 				<div className="card-ref">
 					<Icon name="issue" size={13} />
@@ -124,7 +124,7 @@ export function Inbox() {
 					<section>
 						<h2><span className="status" style={tone('amber')}>締切が近い未着手</span><span className="badge soft">{soon.length}</span></h2>
 						{soon.slice(0, 8).map(t => (
-							<div key={t.id} className="irow" role="button" tabIndex={0} onClick={() => app.openTask(t.id)}>
+							<div key={t.id} className="irow" role="button" tabIndex={0} onClick={() => app.openTask(t.id)} onKeyDown={activateOnKey(() => app.openTask(t.id))}>
 								<div style={{ minWidth: 0 }}>
 									<div className="card-ref"><Icon name="issue" size={13} />{t.issue ? `#${t.issue.number}` : 'タスク'}</div>
 									<div className="t">{t.title}</div>

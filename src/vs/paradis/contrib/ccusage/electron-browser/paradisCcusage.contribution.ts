@@ -45,6 +45,11 @@ export function paradisCcusageStatusPollDelay(consecutiveFailures: number): numb
 	return STATUS_POLL_INTERVAL_MS * Math.pow(2, Math.min(Math.max(consecutiveFailures, 0), STATUS_MAX_BACKOFF_STEPS));
 }
 
+/** `date` の日の 0 時（ローカル）の時刻。 */
+function startOfLocalDay(date: Date): number {
+	return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+}
+
 // ---------- command ----------
 
 registerAction2(class ShowCcusageDashboardAction extends Action2 {
@@ -139,6 +144,8 @@ export class ParadisCcusageStatusBarContribution extends Disposable implements I
 	private readonly client: ParadisCcusageClient;
 	private fetching = false;
 	private consecutiveFailures = 0;
+	/** 今出している金額を取った日の 0 時（ローカル）。金額を出していなければ undefined。 */
+	private shownCostDay: number | undefined;
 
 	constructor(
 		@IStatusbarService private readonly statusbarService: IStatusbarService,
@@ -176,6 +183,7 @@ export class ParadisCcusageStatusBarContribution extends Disposable implements I
 	}
 
 	private showEntry(todayCost: number | undefined): void {
+		this.shownCostDay = todayCost !== undefined ? startOfLocalDay(new Date()) : undefined;
 		const text = todayCost !== undefined ? `$(graph) $${todayCost.toFixed(2)}` : '$(graph) ccusage';
 		const properties: IStatusbarEntry = {
 			name: localize('paradis.ccusage.statusName', "ccusage"),
@@ -208,6 +216,10 @@ export class ParadisCcusageStatusBarContribution extends Disposable implements I
 		} catch {
 			// ccusage 未インストール・タイムアウト等。ボタン自体は開ける状態のまま維持する。
 			this.consecutiveFailures++;
+			// 日付をまたいでも失敗が続くと、前日の金額が今日の費用として出続ける。日が変わっていたら金額を外す
+			if (this.enabled && this.shownCostDay !== undefined && this.shownCostDay < startOfLocalDay(new Date())) {
+				this.showEntry(undefined);
+			}
 		} finally {
 			this.fetching = false;
 			if (this.enabled) {

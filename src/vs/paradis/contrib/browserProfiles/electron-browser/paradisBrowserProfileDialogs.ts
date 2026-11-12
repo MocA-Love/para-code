@@ -8,9 +8,9 @@
 
 // プロファイルの管理モーダル（モック③）と新規作成モーダル（モック④）。
 // paradisBookmarkDialogs.ts のモーダルシェルの流儀をそのまま踏襲する: workbench コンテナへ
-// 自前の backdrop + モーダルを重ね、色は `--vscode-*` トークンのみを使う。backdrop クラス
-// `paradis-browser-profile-backdrop` は overlayManager の OVERLAY_DEFINITIONS に登録済みで、
-// 表示中はネイティブの WebContentsView が自動的に pause される（登録を忘れるとページの裏に
+// 自前の backdrop + モーダルを重ね、色は `--vscode-*` トークンのみを使う。backdrop に付けた共通の印
+// `paradis-modal-backdrop` は overlayManager の OVERLAY_DEFINITIONS に登録済みで、
+// 表示中はネイティブの WebContentsView が自動的に pause される（印を外すとページの裏に
 // 隠れて何も見えない）。
 
 import * as dom from '../../../../base/browser/dom.js';
@@ -23,6 +23,7 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IParadisBrowserProfile, PARADIS_BROWSER_PROFILE_COLORS } from '../common/paradisBrowserProfileModel.js';
 import { IParadisBrowserProfilesService } from './paradisBrowserProfilesService.js';
 import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
@@ -173,10 +174,13 @@ class ParadisManageProfilesDialog extends ParadisProfileModal {
 	private _confirmElement: HTMLElement | undefined;
 	/** インラインでリネーム中の行。 */
 	private _editingId: string | undefined;
+	/** 削除・消去の確認を開いている間に届いた変更（確認を閉じたら描き直す）。 */
+	private _renderPending = false;
 
 	constructor(
 		@IParadisBrowserProfilesService private readonly profilesService: IParadisBrowserProfilesService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
+		@INotificationService private readonly notificationService: INotificationService,
 		@ILayoutService layoutService: ILayoutService,
 	) {
 		super(localize('paradis.browserProfiles.manage.title', "ブラウザプロファイルを管理"), Codicon.lock, layoutService);
@@ -196,9 +200,16 @@ class ParadisManageProfilesDialog extends ParadisProfileModal {
 		this._register(this.profilesService.onDidChangeProfiles(() => {
 			// 入力中に作り直すと打ちかけの名前が消える。`touch()`（＝タブを開くたび）や他ウィンドウの
 			// 変更でも発火するので、リネーム中は保留する（確定/取り消しの直後に必ず描き直される）。
-			if (this._editingId === undefined) {
-				this._render();
+			if (this._editingId !== undefined) {
+				return;
 			}
+			// 削除・消去の確認を開いている間も保留する。作り直すと確認が畳まれ、他のウィンドウや
+			// エージェントがタブを開いただけで、押そうとしていた確認が消える。閉じたときに描き直す。
+			if (this._confirmElement !== undefined) {
+				this._renderPending = true;
+				return;
+			}
+			this._render();
 		}));
 		this._render();
 	}
@@ -207,6 +218,7 @@ class ParadisManageProfilesDialog extends ParadisProfileModal {
 		// 前回の行のリスナーを捨ててから作り直す。開いている削除確認も一緒に畳む
 		// （行ごと作り直すので、確認の対象がどれだったか曖昧になるより閉じた方が安全）。
 		this._renderStore.clear();
+		this._renderPending = false;
 		this.contentFocusables.length = 0;
 		this._confirmElement?.remove();
 		this._confirmElement = undefined;
@@ -349,7 +361,21 @@ class ParadisManageProfilesDialog extends ParadisProfileModal {
 			),
 			localize('paradis.browserProfiles.manage.confirmClear', "消去する"),
 			profile,
-			() => this.profilesService.clearProfileData(profile.id),
+			async () => {
+				try {
+					await this.profilesService.clearProfileData(profile.id);
+				} catch {
+					// タブは閉じ終わっているので、消えたように見えてもログイン状態が残っている。
+					this.notificationService.notify({
+						severity: Severity.Warning,
+						message: localize(
+							'paradis.browserProfiles.manage.clearFailed',
+							"「{0}」の保存データを消去できませんでした。ログイン状態が残っている可能性があります。もう一度お試しください。",
+							profile.name,
+						),
+					});
+				}
+			},
 		);
 	}
 
@@ -390,7 +416,11 @@ class ParadisManageProfilesDialog extends ParadisProfileModal {
 			// 確認ボタンにフォーカスがあったまま消すと body へ落ちる。巡回対象からも外す
 			// （残しても isConnected で無視されるが、開くたびに配列が伸び続けるため）。
 			this.contentFocusables.splice(confirmFocusableStart, 2);
-			this.focusModal();
+			if (this._renderPending) {
+				this._render();
+			} else {
+				this.focusModal();
+			}
 		};
 		const cancelButton = dom.append(actions, $('button.pbpm-btn.paradis-focus-ring.secondary')) as HTMLButtonElement;
 		cancelButton.type = 'button';

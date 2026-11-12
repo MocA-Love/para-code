@@ -246,12 +246,14 @@ class ParadisHelperConnection {
 	}
 
 	private _onData(chunk: string): void {
+		// 前の塊までに改行が無いことは確かめてあるので、今回の塊の先頭から探す（大きい 1 行で全体を探し直さない）。
+		const searchFrom = this._buffer.length;
 		this._buffer += chunk;
 		if (this._buffer.length > MAX_RESPONSE_BYTES) {
 			this.destroy();
 			return;
 		}
-		let newline = this._buffer.indexOf('\n');
+		let newline = this._buffer.indexOf('\n', searchFrom);
 		while (newline >= 0) {
 			const line = this._buffer.slice(0, newline);
 			this._buffer = this._buffer.slice(newline + 1);
@@ -317,6 +319,7 @@ class ParadisHelperConnection {
 export interface IParadisComputerUseHelperTimeouts {
 	readonly requestTimeoutMs?: number;
 	readonly launchTimeoutMs?: number;
+	readonly handshakeTimeoutMs?: number;
 }
 
 /**
@@ -341,6 +344,7 @@ export class ParadisComputerUseHelperClient extends Disposable implements IParad
 
 	private readonly _requestTimeoutMs: number;
 	private readonly _launchTimeoutMs: number;
+	private readonly _handshakeTimeoutMs: number;
 
 	constructor(
 		private readonly _host: IParadisComputerUseHelperHost,
@@ -352,6 +356,7 @@ export class ParadisComputerUseHelperClient extends Disposable implements IParad
 		super();
 		this._requestTimeoutMs = timeouts.requestTimeoutMs ?? PARADIS_COMPUTER_USE_REQUEST_TIMEOUT_MS;
 		this._launchTimeoutMs = timeouts.launchTimeoutMs ?? PARADIS_COMPUTER_USE_LAUNCH_TIMEOUT_MS;
+		this._handshakeTimeoutMs = timeouts.handshakeTimeoutMs ?? PARADIS_COMPUTER_USE_HANDSHAKE_TIMEOUT_MS;
 	}
 
 	get availability(): ParadisComputerUseAvailability {
@@ -471,6 +476,8 @@ export class ParadisComputerUseHelperClient extends Disposable implements IParad
 		const tokenPath = join(session, 'token');
 		const token = this._host.randomToken();
 		let connection: ParadisHelperConnection | undefined;
+		// この起動の補助アプリの pid。handshake の応答で分かるまでは無い（前回の pid を狙わない）
+		let helperPid: number | undefined;
 		try {
 			await fs.writeFile(tokenPath, token, { mode: 0o600, flag: 'wx' });
 			try {
@@ -485,14 +492,13 @@ export class ParadisComputerUseHelperClient extends Disposable implements IParad
 			}
 			// 応答しない補助アプリは、切断に気づくのを待たずに終わらせる（AX の呼び出しの中で止まっていても残さない。レビュー L5）
 			connection = new ParadisHelperConnection(socket!, closedWhileBusy => this._onConnectionClosed(connection!, closedWhileBusy), () => {
-				const pid = this._status?.pid;
-				if (pid !== undefined) {
-					void this._host.terminateStaleHelper(pid);
+				if (helperPid !== undefined) {
+					void this._host.terminateStaleHelper(helperPid);
 				}
 			});
 			let hello: unknown;
 			try {
-				hello = await connection.send('handshake', { token, protocolVersion: PARADIS_COMPUTER_USE_PROTOCOL_VERSION }, Math.max(this._launchTimeoutMs, PARADIS_COMPUTER_USE_HANDSHAKE_TIMEOUT_MS));
+				hello = await connection.send('handshake', { token, protocolVersion: PARADIS_COMPUTER_USE_PROTOCOL_VERSION }, Math.max(this._launchTimeoutMs, this._handshakeTimeoutMs));
 			} catch (error) {
 				fail('launch-failed', 'handshake', `handshake failed: ${toMessage(error)}${await this._helperLogTail(runtimeDirectory)}`, error);
 			}
@@ -512,6 +518,7 @@ export class ParadisComputerUseHelperClient extends Disposable implements IParad
 			if (generation !== this._generation) {
 				throw new ParadisComputerUseHelperError('cancelled', 'Computer Use was turned off while the helper was starting.');
 			}
+			helperPid = status!.pid;
 			this._status = status;
 			this._availability = 'ok';
 			this._detail = undefined;

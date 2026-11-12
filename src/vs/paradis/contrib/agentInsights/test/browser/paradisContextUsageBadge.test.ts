@@ -7,10 +7,11 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { mainWindow } from '../../../../../base/browser/window.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { Disposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { createParadisContextUsageBadge, IParadisContextUsageReading, paradisContextUsagePopoverSize, paradisContextUsageSeverity } from '../../browser/paradisContextUsageBadge.js';
+import { createParadisContextUsageBadge, IParadisContextUsageReading, PARADIS_CONTEXT_USAGE_FOCUS_KEY, paradisContextUsagePopoverSize, paradisContextUsageSeverity, paradisRedrawContextUsageDetails } from '../../browser/paradisContextUsageBadge.js';
 
 suite('ParadisContextUsageBadge', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -33,6 +34,48 @@ suite('ParadisContextUsageBadge', () => {
 			// とても小さいとき: 幅は残りに合わせ、高さは最低限を残す
 			{ width: 72, maxHeight: 60 },
 		]);
+	});
+
+	test('redrawing the details keeps the keyboard focus on the same link or list heading and the scroll position', () => {
+		const root = mainWindow.document.createElement('div');
+		root.style.cssText = 'height:40px;overflow-y:auto';
+		mainWindow.document.body.appendChild(root);
+		const draw = () => {
+			root.replaceChildren();
+			const details = mainWindow.document.createElement('details');
+			details.dataset.group = 'tools';
+			const summary = mainWindow.document.createElement('summary');
+			summary.textContent = 'Tools';
+			details.appendChild(summary);
+			const filler = mainWindow.document.createElement('div');
+			filler.style.height = '400px';
+			const link = mainWindow.document.createElement('a');
+			link.tabIndex = 0;
+			link.textContent = 'Open';
+			link.dataset[PARADIS_CONTEXT_USAGE_FOCUS_KEY] = 'openCost';
+			root.append(details, filler, link);
+		};
+		const focused = () => {
+			const active = mainWindow.document.activeElement as HTMLElement | null;
+			return active?.dataset[PARADIS_CONTEXT_USAGE_FOCUS_KEY] ?? (active?.tagName === 'SUMMARY' ? 'summary' : active?.tagName);
+		};
+		try {
+			draw();
+			(root.querySelector('a') as HTMLElement).focus();
+			root.scrollTop = 120;
+			paradisRedrawContextUsageDetails(root, draw);
+			const afterLink = { focused: focused(), scrollTop: root.scrollTop };
+			(root.querySelector('summary') as HTMLElement).focus();
+			root.scrollTop = 30;
+			paradisRedrawContextUsageDetails(root, draw);
+			const afterSummary = { focused: focused(), scrollTop: root.scrollTop };
+			assert.deepStrictEqual({ afterLink, afterSummary }, {
+				afterLink: { focused: 'openCost', scrollTop: 120 },
+				afterSummary: { focused: 'summary', scrollTop: 30 },
+			});
+		} finally {
+			root.remove();
+		}
 	});
 
 	test('shows the percentage of the current pane only, changes color with it, hides when gone and opens the details on click', () => {

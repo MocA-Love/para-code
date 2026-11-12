@@ -60,6 +60,8 @@ export class ParadisBrowserNewTabExtras extends Disposable {
 
 	constructor(
 		private readonly _onDidChange: () => void,
+		/** 作り直した後にフォーカスを戻せるよう、押せる部品に印を付ける。 */
+		private readonly _markFocus: (element: HTMLElement, key: string) => void,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@IMainProcessService private readonly _mainProcessService: IMainProcessService,
 		@IStorageService private readonly _storageService: IStorageService,
@@ -134,6 +136,7 @@ export class ParadisBrowserNewTabExtras extends Disposable {
 	private _button(parent: HTMLElement, label: string, primary: boolean): HTMLButtonElement {
 		const button = dom.append(parent, $(`button.pbnt-button.paradis-focus-ring-inset${primary ? '' : '.secondary'}`)) as HTMLButtonElement;
 		button.type = 'button';
+		this._markFocus(button, `button:${label}`);
 		button.textContent = label;
 		return button;
 	}
@@ -178,6 +181,7 @@ export class ParadisBrowserNewTabExtras extends Disposable {
 	renderPullRequestRow(list: HTMLElement, detail: IParadisPullRequestDetail, open: ParadisNewTabOpen, store: DisposableStore): void {
 		const row = dom.append(list, $('button.pbnt-row')) as HTMLButtonElement;
 		row.type = 'button';
+		this._markFocus(row, `pr:${detail.url}`);
 		row.title = detail.url;
 		const icon = dom.append(row, $('span.pbnt-icon'));
 		icon.appendChild($(`span${ThemeIcon.asCSSSelector(detail.state === 'merged' ? Codicon.gitMerge : Codicon.gitPullRequest)}`));
@@ -209,6 +213,7 @@ export class ParadisBrowserNewTabExtras extends Disposable {
 		for (const tile of tiles) {
 			const button = dom.append(grid, $('button.pbnt-tile.paradis-focus-ring-inset')) as HTMLButtonElement;
 			button.type = 'button';
+			this._markFocus(button, `tile:${caption}:${tile.url}`);
 			button.title = `${tile.title}\n${tile.url}`;
 			const icon = dom.append(button, $('span.pbnt-tile-icon'));
 			const favicon = iconOf(tile.iconKey);

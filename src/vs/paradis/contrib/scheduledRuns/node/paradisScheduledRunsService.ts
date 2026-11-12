@@ -19,6 +19,7 @@
 // 実行し、猶予を過ぎていれば skipped として残す」考え方を参考にした（コードは移していない）。
 
 import { IntervalTimer } from '../../../../base/common/async.js';
+import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -466,8 +467,9 @@ export class ParadisScheduledRunsService extends Disposable {
 	/**
 	 * 保存する前に、事前確認を 1 回だけ試す（画面の「試す」）。記録には残さない。
 	 * 形・中身が保存の規則を満たさなければ、`error` に理由を入れて返す。
+	 * `token` が取り消されたら（画面を閉じたら）、走っているコマンドを止める。
 	 */
-	async testPrecheck(value: unknown, repositoryUri: unknown): Promise<{ readonly result?: IParadisScheduledRunPrecheckResult; readonly error?: string }> {
+	async testPrecheck(value: unknown, repositoryUri: unknown, token?: CancellationToken): Promise<{ readonly result?: IParadisScheduledRunPrecheckResult; readonly error?: string }> {
 		const precheck = paradisSanitizeScheduledRunPrecheckShape(value);
 		if (!precheck || typeof repositoryUri !== 'string' || repositoryUri.length === 0 || repositoryUri.length > 2000) {
 			return { error: localize('paradis.scheduledRuns.error.badPrecheck', "事前確認の内容を読めませんでした。") };
@@ -480,10 +482,15 @@ export class ParadisScheduledRunsService extends Disposable {
 		if (!this.precheckRunner) {
 			return { error: localize('paradis.scheduledRuns.error.precheckUnavailable', "事前確認をこの環境では実行できません。") };
 		}
+		const controller = new AbortController();
+		// 取り消し済みのトークンでもすぐに呼ばれる
+		const cancellation = token?.onCancellationRequested(() => controller.abort());
 		try {
-			return { result: await this.precheckRunner({ command: cleaned.command, cwd: URI.parse(repositoryUri).fsPath, timeoutMs: cleaned.timeoutSeconds * 1000 }) };
+			return { result: await this.precheckRunner({ command: cleaned.command, cwd: URI.parse(repositoryUri).fsPath, timeoutMs: cleaned.timeoutSeconds * 1000, signal: controller.signal }) };
 		} catch (error) {
 			return { result: { error: error instanceof Error ? error.message : String(error), durationMs: 0 } };
+		} finally {
+			cancellation?.dispose();
 		}
 	}
 
@@ -560,10 +567,9 @@ export class ParadisScheduledRunsService extends Disposable {
 			}
 			return run;
 		});
-		if (accepted.size > 0) {
-			// 生存報告だけでは画面を作り直さない（毎分の再描画を避ける）
-			this.persist();
-		}
+		// 生存報告だけでは画面を作り直さず、ファイルにも書かない（毎分の再描画と書き込みを避ける）。
+		// 保存した heartbeatAt を読むのは起動時だけで、起動時は実行中の回をすべて不明にするため、
+		// ディスクの値が古くても結果は変わらない。次に状態が変わって書くときに、最新の値も一緒に残る
 		return runIds.filter(id => !accepted.has(id));
 	}
 

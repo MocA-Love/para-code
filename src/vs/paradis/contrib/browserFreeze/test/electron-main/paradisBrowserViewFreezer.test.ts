@@ -120,6 +120,26 @@ suite('ParadisBrowserViewFreezer', () => {
 		}
 	});
 
+	test('wakes the frozen tabs when the setting is turned off, and freezes them again after it is turned back on', async () => {
+		const { commands, state, timer, freezer, setVisible } = create();
+		setVisible(false);
+		timer.fireAll();
+		await Promise.resolve();
+		state.enabled = false;
+		freezer.onDidChangeEnabled();
+		await Promise.resolve();
+		const whileOff = { commands: [...commands], frozen: freezer.frozenCount, pending: timer.pending.size };
+		state.enabled = true;
+		freezer.onDidChangeEnabled();
+		timer.fireAll();
+		await Promise.resolve();
+		assert.deepStrictEqual({ whileOff, commands, frozen: freezer.frozenCount }, {
+			whileOff: { commands: ['Page.setWebLifecycleState frozen', 'Page.setWebLifecycleState active'], frozen: 0, pending: 1 },
+			commands: ['Page.setWebLifecycleState frozen', 'Page.setWebLifecycleState active', 'Page.setWebLifecycleState frozen'],
+			frozen: 1,
+		});
+	});
+
 	test('wakes a frozen tab when an agent takes it, and forgets a closed tab', async () => {
 		const { commands, timer, freezer, view, setVisible, close } = create();
 		setVisible(false);

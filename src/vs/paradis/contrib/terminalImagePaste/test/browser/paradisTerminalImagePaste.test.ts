@@ -2,6 +2,9 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH/PARA-CODE comments)
+
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import * as assert from 'assert';
 import type { Terminal as RawXtermTerminal } from '@xterm/xterm';
@@ -251,6 +254,35 @@ suite('ParadisTerminalImagePaste', () => {
 				returnedPathDirectory: '/home/user/develop/workspace/.para-code/pasted-images',
 				wroteImage: true,
 				notified: 0,
+			}
+		);
+	});
+
+	test('writes into a Windows working directory on the connected host and pastes the path in the Windows form', async () => {
+		const written: string[] = [];
+		const result = await paradisTryTerminalImagePaste(
+			{ readImage: async () => new Uint8Array([137, 80, 78, 71]) } as unknown as IClipboardService,
+			{ raw: { input: () => { } } } as unknown as { raw: RawXtermTerminal },
+			{
+				fileService: makeFileService({
+					writeFile: async (resource: URI) => {
+						written.push(resource.path);
+						return {} as never;
+					},
+				}),
+				remoteAuthority: 'ssh-remote+dev-pc',
+				cwd: 'C:\\Users\\user\\workspace',
+			}
+		);
+
+		assert.deepStrictEqual(
+			{
+				returnedPathDirectory: isString(result) ? result.slice(0, result.lastIndexOf('\\')) : result,
+				wroteImage: written.some(path => path.startsWith('/C:/Users/user/workspace/.para-code/pasted-images/') && path.endsWith('.png')),
+			},
+			{
+				returnedPathDirectory: 'C:\\Users\\user\\workspace\\.para-code\\pasted-images',
+				wroteImage: true,
 			}
 		);
 	});

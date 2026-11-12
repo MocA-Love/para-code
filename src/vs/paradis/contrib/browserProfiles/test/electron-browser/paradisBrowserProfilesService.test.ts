@@ -40,7 +40,7 @@ const WORKTREE = paradisWorktreeStateKey(WORKTREE_URI);
 suite('ParadisBrowserProfilesService', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function createService(options?: { readonly trusted?: boolean }) {
+	function createService(options?: { readonly trusted?: boolean; readonly clearFails?: boolean }) {
 		const storage = store.add(new InMemoryStorageService());
 		const spaces = createSpaces(storage);
 		const cleared: string[] = [];
@@ -51,6 +51,9 @@ suite('ParadisBrowserProfilesService', () => {
 			getChannel: () => ({
 				call: async (command: string, arg?: unknown) => {
 					if (command === 'clearProfileData') {
+						if (options?.clearFails) {
+							throw new Error('clearData failed');
+						}
 						cleared.push(String((arg as unknown[])?.[0]));
 						return undefined;
 					}
@@ -68,7 +71,7 @@ suite('ParadisBrowserProfilesService', () => {
 		const browserViewWorkbenchService = {
 			onDidChangeBrowserViews: Event.None,
 			getKnownBrowserViews: () => known,
-			// PARA-PATCH: upstream 1.137 folded the view id into the data argument.
+			// Upstream 1.137 folded the view id into the data argument.
 			getOrCreateLazy: (data: { readonly id: string }) => {
 				const id = data.id;
 				openedViewIds.push(id);
@@ -226,6 +229,19 @@ suite('ParadisBrowserProfilesService', () => {
 			},
 			{ profiles: 0, views: {}, cleared: [created.profile.id], routed: FALLBACK },
 		);
+	});
+
+	test('a failed clear is reported to the caller, while a failed delete is not', async () => {
+		const { service } = createService({ clearFails: true });
+		const kept = service.create('KEEP', '#3fb950');
+		const removed = service.create('GONE', '#58a6ff');
+		assert.ok(kept.ok && removed.ok);
+
+		// 消去だけ（＝ログアウト）の失敗は、ログイン状態が残っていることを利用者へ知らせるために返す。
+		await assert.rejects(service.clearProfileData(kept.profile.id));
+		// 削除は台帳から消えた時点で完了しているので、main の失敗で操作を失敗にしない。
+		await service.remove(removed.profile.id);
+		assert.deepStrictEqual(service.list().map(profile => profile.name), ['KEEP']);
 	});
 
 	test('a profile written by another window is picked up instead of being overwritten', () => {

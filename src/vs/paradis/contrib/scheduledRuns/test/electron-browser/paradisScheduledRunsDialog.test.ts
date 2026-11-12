@@ -143,4 +143,49 @@ suite('ParadisScheduledRunsDialog', () => {
 			root.remove();
 		}
 	});
+
+	test('keeps the typed edit as a draft when another run in the list or New is clicked while editing', async () => {
+		const root = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(root);
+		const definition = (id: string, name: string): IParadisScheduledRunDefinition => ({
+			id, name, enabled: false, schedule: '0 9 * * 1-5',
+			target: { kind: 'repository', repositoryUri: 'file:///repo', repositoryName: 'repo' },
+			agentId: 'claude', prompt: `Saved prompt of ${name}`, dailyLimit: 3, createdAt: 0, updatedAt: 0,
+		});
+		const state: IParadisScheduledRunsState = { definitions: [definition('a', 'Morning'), definition('b', 'Evening')], runs: [], nextRuns: {} };
+		const buttonByText = (text: string) => [...root.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === text)!;
+		const selectRun = (name: string) => [...root.querySelectorAll<HTMLButtonElement>('.psr-nav-item')].find(item => item.textContent?.includes(name))!.click();
+		const prompt = () => root.querySelector<HTMLTextAreaElement>('.psr-form textarea')!;
+		const type = (value: string) => {
+			prompt().value = value;
+			prompt().dispatchEvent(new Event('input', { bubbles: true }));
+		};
+		try {
+			const dialog = await openDialog(root, state);
+			selectRun('Morning');
+			buttonByText('編集').click();
+			type('Typed before picking another run');
+			selectRun('Evening');
+			selectRun('Morning');
+			buttonByText('編集').click();
+			const afterNavClick = prompt().value;
+			type('Typed before New');
+			buttonByText('新規作成').click();
+			const newForm = prompt().value;
+			buttonByText('キャンセル').click();
+			selectRun('Morning');
+			buttonByText('編集').click();
+			const afterNew = prompt().value;
+			buttonByText('キャンセル').click();
+			dialog.dispose();
+			assert.deepStrictEqual({ afterNavClick, newForm, afterNew, leftOpen: root.children.length }, {
+				afterNavClick: 'Typed before picking another run',
+				newForm: '',
+				afterNew: 'Typed before New',
+				leftOpen: 0,
+			});
+		} finally {
+			root.remove();
+		}
+	});
 });

@@ -20,6 +20,7 @@ import * as dom from '../../../../base/browser/dom.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { localize } from '../../../../nls.js';
 import { ParadisAndroidInput, ParadisAndroidVideoWire, paradisH264CodecString } from '../common/paradisScrcpy.js';
 import { IParadisSimulatorSize, paradisSimulatorFitSize, paradisSimulatorPointFromClient } from '../common/paradisSimulatorInput.js';
 import { IParadisSimulatorClient } from './paradisSimulatorClient.js';
@@ -48,6 +49,8 @@ export class ParadisAndroidVideoView extends Disposable {
 
 	readonly element: HTMLElement;
 	private readonly _canvas: HTMLCanvasElement;
+	/** 描く先の文脈（canvas は替えないので、同じものを毎フレーム使う）。 */
+	private readonly _context: CanvasRenderingContext2D | null;
 	private readonly _subscription = this._register(new MutableDisposable());
 	private _decoder: VideoDecoder | undefined;
 	private _codec: string | undefined;
@@ -56,6 +59,8 @@ export class ParadisAndroidVideoView extends Disposable {
 	private _videoSize: IParadisSimulatorSize = { width: 0, height: 0 };
 	private _areaSize: IParadisSimulatorSize = { width: 0, height: 0 };
 	private _pointerId: number | undefined;
+	/** 押したまま離していないキー（code → key）。フォーカスが外れたときなどに離す。 */
+	private readonly _pressedKeys = new Map<string, string>();
 	private _lastEscapeAt = 0;
 	private readonly _stall: RunOnceScheduler;
 
@@ -90,6 +95,7 @@ export class ParadisAndroidVideoView extends Disposable {
 		this.element = dom.append(container, $('.paradis-simulator-screen'));
 		this.element.tabIndex = 0;
 		this._canvas = dom.append(this.element, $<HTMLCanvasElement>('canvas.paradis-simulator-frame'));
+		this._context = this._canvas.getContext('2d');
 		// Android の端末は画面が変わらないと映像を送らないことがあるので、途切れの見張りは長めにする
 		this._stall = this._register(new RunOnceScheduler(() => this._onDidStall.fire(), PARADIS_SIMULATOR_STALL_MS * 6));
 		this._registerPointer();
@@ -126,6 +132,7 @@ export class ParadisAndroidVideoView extends Disposable {
 	stop(): void {
 		this._subscription.clear();
 		this._closeDecoder();
+		this._releaseKeys();
 	}
 
 	layout(area: IParadisSimulatorSize): void {
@@ -187,8 +194,7 @@ export class ParadisAndroidVideoView extends Disposable {
 		const decoder = this._decoders.create({
 			output: frame => {
 				try {
-					const context = this._canvas.getContext('2d');
-					context?.drawImage(frame, 0, 0, this._canvas.width || frame.displayWidth, this._canvas.height || frame.displayHeight);
+					this._context?.drawImage(frame, 0, 0, this._canvas.width || frame.displayWidth, this._canvas.height || frame.displayHeight);
 					this._failures = 0;
 					// 途切れの見張りは、届いたときではなく描けたときに延ばす（届いても描けなければ途切れとみなす）
 					this._stall.schedule();
@@ -231,7 +237,7 @@ export class ParadisAndroidVideoView extends Disposable {
 			return;
 		}
 		if (!this._decoder && this._codec && !await this._isSupported(this._codec)) {
-			this._giveUp(`This window cannot decode ${this._codec} video (WebCodecs).`);
+			this._giveUp(localize('paradis.android.codecUnsupported', "このウィンドウでは {0} の映像を復号できません（WebCodecs）。", this._codec));
 			return;
 		}
 		if (this._gaveUp || !this._subscription.value) {
@@ -331,6 +337,7 @@ export class ParadisAndroidVideoView extends Disposable {
 					this._lastEscapeAt = 0;
 					event.preventDefault();
 					event.stopPropagation();
+					this._releaseKeys();
 					this._onDidRequestExit.fire();
 					return;
 				}
@@ -338,9 +345,23 @@ export class ParadisAndroidVideoView extends Disposable {
 			}
 			event.preventDefault();
 			event.stopPropagation();
+			if (down) {
+				this._pressedKeys.set(event.code, event.key);
+			} else {
+				this._pressedKeys.delete(event.code);
+			}
 			this._send({ kind: 'key', down, code: event.code, key: event.key });
 		};
 		this._register(dom.addDisposableListener(this.element, dom.EventType.KEY_DOWN, (event: KeyboardEvent) => onKey(event, true)));
 		this._register(dom.addDisposableListener(this.element, dom.EventType.KEY_UP, (event: KeyboardEvent) => onKey(event, false)));
+		// フォーカスが外れたら押したままのキーを離す（Command+Tab などで keyup が来ないため。iOS の枠と同じ）
+		this._register(dom.addDisposableListener(this.element, dom.EventType.BLUR, () => this._releaseKeys()));
+	}
+
+	private _releaseKeys(): void {
+		for (const [code, key] of this._pressedKeys) {
+			this._send({ kind: 'key', down: false, code, key });
+		}
+		this._pressedKeys.clear();
 	}
 }

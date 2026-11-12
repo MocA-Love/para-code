@@ -111,7 +111,8 @@ export class ParadisLocalVoicePlayer {
 			const { code, stdout } = await this.runProcess(['--version'], env, undefined, Math.min(VERSION_TIMEOUT_MS, Math.max(this.remaining(options), 1)));
 			supported = code === 0 && paradisAivisSupportsPlayAudio(stdout);
 		} catch {
-			return false;
+			// 起動できない（aivis-mcp が無い）ことも覚え、届くたびに起動し直さない
+			supported = false;
 		}
 		this.supportCache = { supported, until: this.now() + (supported ? SUPPORTED_CACHE_MS : UNSUPPORTED_CACHE_MS) };
 		return supported;

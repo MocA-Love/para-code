@@ -38,4 +38,27 @@ suite('ParadisBrowserViewportService', () => {
 			after: { size: undefined, agent: undefined },
 		});
 	});
+
+	test('removing a named size also clears the global and space defaults that pointed at it', async () => {
+		const storage = disposables.add(new InMemoryStorageService());
+		const service = disposables.add(new ParadisBrowserViewportService(
+			storage,
+			new TestConfigurationService(),
+			{ resolveScope: () => ({ kind: 'global' }) } as unknown as IParadisBrowserScopeService,
+			{ onDidRetireScope: Event.None, repositories: [] } as unknown as IParadisWorkspaceSwitchService,
+			{} as unknown as IParadisWorktreeService,
+		));
+		service.saveSize({ name: 'Phone', width: 390, height: 844 });
+		service.saveSize({ name: 'Tablet', width: 820, height: 1180 });
+		service.setSpaceDefault('space-a', 'Phone');
+		service.setSpaceDefault('space-b', 'Tablet');
+		await service.setGlobalDefault('Phone');
+		await service.removeSize('Phone');
+		assert.deepStrictEqual({
+			global: service.getGlobalDefault(),
+			spaceA: service.getSpaceDefault('space-a'),
+			spaceB: service.getSpaceDefault('space-b'),
+			sizes: service.getSizes().map(size => size.name).includes('Phone'),
+		}, { global: '', spaceA: undefined, spaceB: 'Tablet', sizes: false });
+	});
 });

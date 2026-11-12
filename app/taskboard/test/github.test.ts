@@ -277,6 +277,27 @@ describe('GitHubClient: 本文の画像', () => {
 			types: ['image/png', ...kept.map(() => 'image/png'), 'image/png', ...refused.map(() => undefined)],
 		});
 	});
+	test('GitHub の画像置き場は時間切れ付きで読み、上限を超えると分かっている本文は読まない', async () => {
+		const seen: { url: string; signal: boolean; read: boolean }[] = [];
+		const fetchLike: FetchLike = async (url, init) => {
+			const call = { url, signal: init.signal instanceof AbortSignal, read: false };
+			seen.push(call);
+			const length = url.includes('huge') ? String(16 * 1024 * 1024) : '3';
+			return { status: 200, headers: headers({ 'content-type': 'image/png', 'content-length': length }), text: async () => '', arrayBuffer: async () => { call.read = true; return new Uint8Array([1, 2, 3]).buffer; } };
+		};
+		const client = new GitHubClient({ token: async () => 't', fetch: fetchLike });
+		const types = [
+			(await client.fetchImage('https://user-images.githubusercontent.com/1234/small.png'))?.type,
+			(await client.fetchImage('https://user-images.githubusercontent.com/1234/huge.png'))?.type,
+		];
+		expect({ seen, types }).toEqual({
+			seen: [
+				{ url: 'https://user-images.githubusercontent.com/1234/small.png', signal: true, read: true },
+				{ url: 'https://user-images.githubusercontent.com/1234/huge.png', signal: true, read: false },
+			],
+			types: ['image/png', undefined],
+		});
+	});
 });
 
 describe('GitHubClient: PR', () => {
