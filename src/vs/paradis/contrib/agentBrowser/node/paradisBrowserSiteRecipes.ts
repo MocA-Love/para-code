@@ -132,9 +132,20 @@ function visitStrings(value: unknown, visit: (text: string) => void): void {
 }
 
 /** save_recipe の引数を確かめて、保存する形にする。 */
-/** その手順のサイトの中の URL か（オリジンそのものか、オリジンの直後が / ? # のもの。パラメータでオリジンを変えられない）。 */
+/**
+ * その手順のサイトの中の URL か（パラメータでオリジンを変えられない）。オリジンそのものか、オリジンの直後が / ? # のもの。
+ * 大文字のホストや :443 のような同じサイトの別の書き方は、パスより前（スキームとホストの欄）にパラメータが無いときだけ、
+ * 解析したオリジンで比べる（`https://{{user}}@example.com/` は差し込む値でホストが変わるので断る）。
+ */
 function isWithinOrigin(url: string, origin: string): boolean {
-	return url === origin || ['/', '?', '#'].some(separator => url.startsWith(`${origin}${separator}`));
+	if (url === origin || ['/', '?', '#'].some(separator => url.startsWith(`${origin}${separator}`))) {
+		return true;
+	}
+	const authority = /^[^:/?#\\]+:\/\/[^/?#\\]*/.exec(url)?.[0];
+	if (authority === undefined || /[{}]/.test(authority)) {
+		return false;
+	}
+	return originOf(url) === origin;
 }
 
 /**
