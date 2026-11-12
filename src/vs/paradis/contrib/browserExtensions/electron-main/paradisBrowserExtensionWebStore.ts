@@ -59,8 +59,8 @@ export interface IParadisWebStoreResponse {
 	cancel(): void;
 }
 
-/** 外への GET（テストでは偽物）。 */
-export type ParadisWebStoreFetcher = (url: string) => Promise<IParadisWebStoreResponse>;
+/** 外への GET（テストでは偽物）。`signal` が止まったら、返事を待っている途中の要求も止める。 */
+export type ParadisWebStoreFetcher = (url: string, signal?: AbortSignal) => Promise<IParadisWebStoreResponse>;
 
 function isHttpsUrlOnHosts(rawUrl: string, suffixes: readonly string[]): boolean {
 	try {
@@ -92,26 +92,34 @@ export function paradisWebStoreCrxUrl(extensionId: string, chromeVersion: string
 export async function paradisDownloadWebStoreCrx(extensionId: string, fetcher: ParadisWebStoreFetcher, options: { readonly url?: string; readonly sha256?: string; readonly size?: number; readonly publisherKeyHash?: string; readonly timeoutMs?: number } = {}): Promise<IParadisVerifiedCrx> {
 	let current: IParadisWebStoreResponse | undefined;
 	let timer: ReturnType<typeof setTimeout> | undefined;
+	const aborter = new AbortController();
 	const timeout = new Promise<never>((_resolve, reject) => {
 		timer = setTimeout(() => {
+			// 返事がまだ来ていない要求も止める（後から来た返事を上限まで読んで捨てないように）
+			aborter.abort();
 			current?.cancel();
 			reject(new Error('The Chrome Web Store download timed out'));
 		}, options.timeoutMs ?? DOWNLOAD_TIMEOUT_MS);
 	});
 	try {
-		return await Promise.race([timeout, downloadCrx(extensionId, fetcher, options, response => current = response)]);
+		return await Promise.race([timeout, downloadCrx(extensionId, fetcher, options, aborter.signal, response => current = response)]);
 	} finally {
 		clearTimeout(timer);
 	}
 }
 
-async function downloadCrx(extensionId: string, fetcher: ParadisWebStoreFetcher, options: { readonly url?: string; readonly sha256?: string; readonly size?: number; readonly publisherKeyHash?: string }, onResponse: (response: IParadisWebStoreResponse) => void): Promise<IParadisVerifiedCrx> {
+async function downloadCrx(extensionId: string, fetcher: ParadisWebStoreFetcher, options: { readonly url?: string; readonly sha256?: string; readonly size?: number; readonly publisherKeyHash?: string }, signal: AbortSignal, onResponse: (response: IParadisWebStoreResponse) => void): Promise<IParadisVerifiedCrx> {
 	let url = options.url ?? paradisWebStoreCrxUrl(extensionId);
 	if (!paradisIsAllowedCrxUrl(url)) {
 		throw new Error('The extension download address is not a Chrome Web Store address');
 	}
 	for (let redirects = 0; ; redirects++) {
-		const response = await fetcher(url);
+		const response = await fetcher(url, signal);
+		if (signal.aborted) {
+			// 時間切れの後に届いた返事は読まずに閉じる
+			response.cancel();
+			throw new Error('The Chrome Web Store download timed out');
+		}
 		onResponse(response);
 		if (REDIRECT_STATUSES.has(response.status)) {
 			response.cancel();
@@ -196,10 +204,21 @@ export function paradisCreateWebStoreUpdateRequester(): ParadisWebStoreUpdateReq
 /** Electron の main から外へ GET する（メモリだけのセッション、cookie なし、リダイレクトは返す）。 */
 export function paradisCreateWebStoreFetcher(): ParadisWebStoreFetcher {
 	let session: electron.Session | undefined;
-	return url => new Promise<IParadisWebStoreResponse>((resolvePromise, reject) => {
+	return (url, signal) => new Promise<IParadisWebStoreResponse>((resolvePromise, reject) => {
+		if (signal?.aborted) {
+			reject(new Error('The download was cancelled'));
+			return;
+		}
 		session ??= webStoreSession();
 		const request = electron.net.request({ url, method: 'GET', redirect: 'manual', session, useSessionCookies: false, credentials: 'omit' });
 		let settled = false;
+		signal?.addEventListener('abort', () => {
+			request.abort();
+			if (!settled) {
+				settled = true;
+				reject(new Error('The download was cancelled'));
+			}
+		}, { once: true });
 		const settle = (value: IParadisWebStoreResponse) => {
 			settled = true;
 			resolvePromise(value);
