@@ -195,7 +195,7 @@ class ParadisSelectKeepAwakeModeAction extends Action2 {
 	constructor() {
 		super({
 			id: PARADIS_KEEP_AWAKE_SELECT_COMMAND,
-			title: localize2('paradis.power.selectKeepAwakeMode', "Select Keep Awake Mode (Sleep Prevention)"),
+			title: localize2('paradis.power.selectKeepAwakeMode', "スリープ防止のモードを選ぶ"),
 			category: localize2('paradis.category', "Para Code"),
 			f1: true
 		});

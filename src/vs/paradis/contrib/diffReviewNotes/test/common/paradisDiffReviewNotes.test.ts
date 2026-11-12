@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisDiffReviewNote, paradisBuildDiffReviewNotesPrompt, paradisDiffReviewNoteRange, paradisDiffReviewRelativePath, paradisMarkDiffReviewNotesSent, paradisParseDiffReviewNotes, paradisSerializeDiffReviewNotes } from '../../common/paradisDiffReviewNotes.js';
+import { IParadisDiffReviewNote, paradisBuildDiffReviewNotesPrompt, paradisDiffReviewClearNeedsConfirm, paradisDiffReviewNoteRange, paradisDiffReviewRelativePath, paradisDiffReviewSendAriaLabel, paradisMarkDiffReviewNotesSent, paradisParseDiffReviewNotes, paradisSerializeDiffReviewNotes } from '../../common/paradisDiffReviewNotes.js';
 
 function note(id: string, body: string, updatedAt = 1): IParadisDiffReviewNote {
 	return { id, path: 'src/app.ts', line: 9, lineText: 'return x;', body, createdAt: 1, updatedAt };
@@ -98,5 +98,23 @@ suite('paradisDiffReviewNotes', () => {
 			paradisDiffReviewRelativePath('/Work/Repo', '/work/repo/a.ts', false),
 			paradisDiffReviewRelativePath('/Work/Repo', '/work/repo/a.ts', true),
 		], ['src/app.ts', 'src/app.ts', undefined, undefined, 'a.ts']);
+	});
+
+	// 未送信のメモまで消える「すべて消す」のときだけ確かめ、送信済みだけを消すときは確かめない（paradis-19-3）
+	test('asks before clearing only when unsent notes would be lost', () => {
+		assert.deepStrictEqual([
+			paradisDiffReviewClearNeedsConfirm('clearAll', 2),
+			paradisDiffReviewClearNeedsConfirm('clearAll', 0),
+			paradisDiffReviewClearNeedsConfirm('clearSent', 2),
+			paradisDiffReviewClearNeedsConfirm('clearSent', 0),
+		], [true, false, false, false]);
+	});
+
+	// ボタンの読み上げの名前に未送信の数を添え、0 件では添えない（元の名前のまま。paradis-19-16）
+	test('adds the unsent count to the send button name, and leaves the name alone at zero', () => {
+		assert.deepStrictEqual([
+			paradisDiffReviewSendAriaLabel('AI メモを送る', 3),
+			paradisDiffReviewSendAriaLabel('AI メモを送る', 0),
+		], ['AI メモを送る（未送信 3 件）', undefined]);
 	});
 });
