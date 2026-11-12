@@ -776,6 +776,11 @@ export class ParadisBrowserExtensionsManager implements Omit<IParadisBrowserExte
 		return this._menus?.getCommands() ?? [];
 	}
 
+	async getInstalledIds(): Promise<readonly string[]> {
+		await this._ready;
+		return this._ledger.extensions.map(extension => extension.id);
+	}
+
 	async runCommand(viewId: string, extensionId: string, name: string): Promise<IParadisActionResult> {
 		return this._menus?.runCommand(viewId, extensionId, name) ?? { ok: false, error: 'Browser extensions are off' };
 	}
@@ -2142,6 +2147,7 @@ export function paradisRegisterBrowserExtensions(
 		getActionMenu: (viewId, extensionId) => created.getActionMenu(viewId, extensionId),
 		runActionMenuItem: (token, extensionId, key) => created.runActionMenuItem(token, extensionId, key),
 		getCommands: () => created.getCommands(),
+		getInstalledIds: () => created.getInstalledIds(),
 		runCommand: (viewId, extensionId, name) => created.runCommand(viewId, extensionId, name),
 		assignShortcut: (id, name, binding) => created.assignShortcut(id, name, binding),
 		clearShortcut: (id, name) => created.clearShortcut(id, name),

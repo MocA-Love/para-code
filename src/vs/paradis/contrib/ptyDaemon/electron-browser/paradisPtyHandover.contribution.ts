@@ -56,10 +56,17 @@ const PARADIS_HANDOVER_SHUTDOWN_TIMEOUT_MS = 1_500;
 /**
  * 窓を閉じるときに取ったが送れなかった記録。次に開く窓が送る（手元の保存。窓の間で共有）。
  * 閉じる途中で Sentry へ送っても届く保証が無いので、ここで送らずに残す。
+ * 終了時は全部の窓が同時に書くので、窓の番号で分けた `<この接頭辞>.<枠>` の別のキーへ書く（Q639。1 つのキーだと
+ * 後から書いた窓が先の窓の記録を消す）。枠の数を決めておくのは、キーの一覧（storageService.keys）を使わずに
+ * 全部を読み、消すため（一覧も 1 つのキーで、同時に書くと後勝ちで消える）。接頭辞そのもののキーは前の版が書いたもので、読むだけ。
  */
 const PARADIS_HANDOVER_PENDING_KEY = 'paradis.ptyHandover.pendingReports';
-/** 残しておく記録の数の上限。窓が開かないまま閉じるのを繰り返しても膨らまない。 */
+/** 残しておく記録の数の上限（窓ごとのキーにも、次の窓が送る数にも）。窓が開かないまま閉じるのを繰り返しても膨らまない。 */
 const PARADIS_HANDOVER_PENDING_LIMIT = 5;
+/** 窓ごとのキーの枠の数。番号が枠の数だけ離れた窓どうしは同じ枠を使う（読んでから足すので消し合いはしない）。 */
+const PARADIS_HANDOVER_PENDING_SLOTS = 8;
+/** 閉じた窓が残した記録のキー（窓ごとの枠と、前の版の 1 つのキー）。 */
+const PARADIS_HANDOVER_PENDING_KEYS = [PARADIS_HANDOVER_PENDING_KEY, ...Array.from({ length: PARADIS_HANDOVER_PENDING_SLOTS }, (_, slot) => `${PARADIS_HANDOVER_PENDING_KEY}.${slot}`)];
 
 interface IParadisPendingHandoverReport {
 	readonly remote: boolean;
@@ -71,6 +78,8 @@ class ParadisPtyHandoverReporter extends Disposable implements IWorkbenchContrib
 	static readonly ID = 'paradis.ptyHandoverReporter';
 
 	private draining = false;
+	/** この窓が閉じるときに書くキー。 */
+	private readonly pendingKey = `${PARADIS_HANDOVER_PENDING_KEY}.${mainWindow.vscodeWindowId % PARADIS_HANDOVER_PENDING_SLOTS}`;
 
 	constructor(
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
@@ -151,8 +160,8 @@ class ParadisPtyHandoverReporter extends Disposable implements IWorkbenchContrib
 			if (!report || paradisIsEmptyPtyHandoverReport(report)) {
 				return;
 			}
-			const pending = [...this.readPending(), { remote: this.remote, report }].slice(-PARADIS_HANDOVER_PENDING_LIMIT);
-			this.storageService.store(PARADIS_HANDOVER_PENDING_KEY, JSON.stringify(pending), StorageScope.APPLICATION, StorageTarget.MACHINE);
+			const pending = [...this.readPending(this.pendingKey), { remote: this.remote, report }].slice(-PARADIS_HANDOVER_PENDING_LIMIT);
+			this.storageService.store(this.pendingKey, JSON.stringify(pending), StorageScope.APPLICATION, StorageTarget.MACHINE);
 		} catch (error) {
 			this.logService.trace('[paradisPtyHandover] could not keep the handover report for the next window', error);
 		} finally {
@@ -160,8 +169,8 @@ class ParadisPtyHandoverReporter extends Disposable implements IWorkbenchContrib
 		}
 	}
 
-	private readPending(): IParadisPendingHandoverReport[] {
-		const raw = this.storageService.get(PARADIS_HANDOVER_PENDING_KEY, StorageScope.APPLICATION);
+	private readPending(key: string): IParadisPendingHandoverReport[] {
+		const raw = this.storageService.get(key, StorageScope.APPLICATION);
 		if (!raw) {
 			return [];
 		}
@@ -181,12 +190,15 @@ class ParadisPtyHandoverReporter extends Disposable implements IWorkbenchContrib
 	}
 
 	private sendPending(): void {
-		const pending = this.readPending();
-		if (pending.length === 0) {
+		const keys = PARADIS_HANDOVER_PENDING_KEYS.filter(key => this.storageService.get(key, StorageScope.APPLICATION) !== undefined);
+		if (keys.length === 0) {
 			return;
 		}
+		const pending = keys.flatMap(key => this.readPending(key)).slice(-PARADIS_HANDOVER_PENDING_LIMIT);
 		// 先に消す。送る途中で落ちても、同じ記録を二度は送らない。
-		this.storageService.remove(PARADIS_HANDOVER_PENDING_KEY, StorageScope.APPLICATION);
+		for (const key of keys) {
+			this.storageService.remove(key, StorageScope.APPLICATION);
+		}
 		for (const entry of pending) {
 			try {
 				this.send(entry.report, entry.remote, true);
