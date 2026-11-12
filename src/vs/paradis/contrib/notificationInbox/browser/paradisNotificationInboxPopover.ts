@@ -18,6 +18,7 @@ import * as dom from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { IAction, Separator, toAction } from '../../../../base/common/actions.js';
+import { IntervalTimer } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { fromNow } from '../../../../base/common/date.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
@@ -45,6 +46,8 @@ const $ = dom.$;
 const POPOVER_WIDTH = 380;
 /** 画面の端との余白。 */
 const EDGE_MARGIN = 8;
+/** 開いている間に相対時刻（「3 分前」）を書き直す間隔（paradis-16-17）。 */
+const TIME_REFRESH_INTERVAL = 60_000;
 
 /**
  * 受信箱のポップアップの左端と幅（px）。幅は既定の 380px か、ウィンドウの幅から両端の余白を引いた狭いほう
@@ -75,6 +78,10 @@ export class ParadisNotificationInboxPopover extends Disposable {
 	private readonly footer: HTMLElement;
 	private readonly renderDisposables = this._register(new DisposableStore());
 	private rows: HTMLElement[] = [];
+	/** 時刻の欄と、その行の通知。開いている間だけ 60 秒ごとに書き直す。 */
+	private times: { readonly element: HTMLElement; readonly entry: IParadisInboxEntry }[] = [];
+	/** Tab で止まる行（ロービング。paradis-16-14 案 A）。無ければ先頭の行。 */
+	private currentEntryId: string | undefined;
 	/** 右クリックのメニューを開いている間は、外側のクリックで閉じない（メニューは別の DOM にある）。 */
 	private contextMenuOpen = false;
 	/** 開く前にフォーカスがあった要素。閉じたらそこへ戻す（ターミナルで打っていた続きが消えないように）。 */
@@ -97,7 +104,7 @@ export class ParadisNotificationInboxPopover extends Disposable {
 		this.element.setAttribute('aria-label', localize('paradis.inbox.ariaLabel', "通知の受信箱"));
 		this.header = dom.append(this.element, $('.pnip-header'));
 		this.list = dom.append(this.element, $('.pnip-list'));
-		this.list.setAttribute('role', 'list');
+		this.list.setAttribute('aria-label', localize('paradis.inbox.ariaLabel', "通知の受信箱"));
 		this.footer = dom.append(this.element, $('.pnip-footer'));
 
 		this.previousFocus = dom.getActiveElement();
@@ -119,6 +126,8 @@ export class ParadisNotificationInboxPopover extends Disposable {
 		this._register(dom.addDisposableListener(targetWindow, dom.EventType.RESIZE, () => this.reposition()));
 		this._register(dom.addDisposableListener(targetWindow, dom.EventType.MOUSE_DOWN, e => this.onWindowMouseDown(e), true));
 		this._register(dom.addDisposableListener(this.element, dom.EventType.KEY_DOWN, e => this.onKeyDown(new StandardKeyboardEvent(e))));
+		// 描き直すのは台帳が変わったときだけなので、時刻だけは別に進める（閉じたら dispose で止まる）
+		this._register(new IntervalTimer()).cancelAndSet(() => this.refreshTimes(), TIME_REFRESH_INTERVAL, targetWindow);
 	}
 
 	override dispose(): void {
@@ -162,7 +171,36 @@ export class ParadisNotificationInboxPopover extends Disposable {
 				? Math.min(this.rows.length - 1, current + 1)
 				: Math.max(0, current < 0 ? 0 : current - 1);
 			this.rows[next]?.focus();
+			return;
 		}
+		// 行の上だけ。下の段のチェックや見出しのボタンでは何もしない
+		if ((event.equals(KeyCode.Home) || event.equals(KeyCode.End)) && this.rows.includes(dom.getActiveElement() as HTMLElement)) {
+			event.preventDefault();
+			this.rows[event.equals(KeyCode.Home) ? 0 : this.rows.length - 1]?.focus();
+		}
+	}
+
+	/** フォーカスの来た行を、Tab で止まる行にする（他の行は tabIndex = -1）。 */
+	private setCurrentRow(row: HTMLElement): void {
+		this.currentEntryId = row.dataset.entryId;
+		for (const candidate of this.rows) {
+			const current = candidate === row;
+			candidate.tabIndex = current ? 0 : -1;
+			candidate.setAttribute('aria-selected', String(current));
+		}
+	}
+
+	private refreshTimes(): void {
+		for (const { element, entry } of this.times) {
+			element.textContent = this.timeText(entry);
+		}
+	}
+
+	private timeText(entry: IParadisInboxEntry): string {
+		const time = fromNow(entry.at, true);
+		return entry.kind === 'review'
+			? localize('paradis.inbox.reviewTime', "完了 · {0}", time)
+			: time;
 	}
 
 	private reposition(): void {
@@ -187,6 +225,7 @@ export class ParadisNotificationInboxPopover extends Disposable {
 		dom.clearNode(this.list);
 		dom.clearNode(this.footer);
 		this.rows = [];
+		this.times = [];
 
 		const snapshot = this.inboxService.snapshot;
 
@@ -201,12 +240,22 @@ export class ParadisNotificationInboxPopover extends Disposable {
 		this.renderDisposables.add(dom.addDisposableListener(readAll, dom.EventType.CLICK, () => void this.inboxService.markAllRead()));
 
 		// --- 一覧 ---
+		// 行を option にした listbox（paradis-16-14 案 A）。空のときは案内の文だけなので listbox にしない
+		if (snapshot.entries.length > 0) {
+			this.list.setAttribute('role', 'listbox');
+		} else {
+			this.list.removeAttribute('role');
+		}
 		if (snapshot.entries.length === 0) {
 			const empty = dom.append(this.list, $('.pnip-empty'));
 			empty.textContent = localize('paradis.inbox.empty', "通知はまだありません。エージェントの完了・許可待ち・質問が、全スペースの分ここにたまります。");
 		}
 		for (const entry of snapshot.entries) {
 			this.renderRow(entry);
+		}
+		const currentRow = this.rows.find(row => row.dataset.entryId === this.currentEntryId) ?? this.rows[0];
+		if (currentRow) {
+			this.setCurrentRow(currentRow);
 		}
 		this.list.scrollTop = scrollTop;
 		if (focusedEntryId !== undefined) {
@@ -241,9 +290,9 @@ export class ParadisNotificationInboxPopover extends Disposable {
 
 	private renderRow(entry: IParadisInboxEntry): void {
 		const row = dom.append(this.list, $('.pnip-row.paradis-focus-subtle'));
-		row.tabIndex = 0;
+		row.tabIndex = -1;
 		row.dataset.entryId = entry.id;
-		row.setAttribute('role', 'listitem');
+		row.setAttribute('role', 'option');
 		row.classList.toggle('unread', !entry.read);
 		row.classList.toggle('closed', !entry.live);
 		this.rows.push(row);
@@ -258,10 +307,11 @@ export class ParadisNotificationInboxPopover extends Disposable {
 		space.textContent = entry.space;
 		this.renderDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), space, paradisInboxEntryLocation(entry)));
 		dom.append(top, $('span.pnip-grow'));
-		const time = fromNow(entry.at, true);
-		dom.append(top, $('span.pnip-time')).textContent = entry.kind === 'review'
-			? localize('paradis.inbox.reviewTime', "完了 · {0}", time)
-			: time;
+		const time = dom.append(top, $('span.pnip-time'));
+		time.textContent = this.timeText(entry);
+		this.times.push({ element: time, entry });
+		// 相対時刻だけでは分からない日時をホバーで出す（paradis-16-17）
+		this.renderDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), time, new Date(entry.at).toLocaleString()));
 
 		// 2 段目: worktree とタブ（スペース名と区切りが混ざらないよう分けて出す）。
 		const detail = paradisInboxEntryDetail(entry);
@@ -282,6 +332,7 @@ export class ParadisNotificationInboxPopover extends Disposable {
 		const state = entry.read ? localize('paradis.inbox.readState', "既読") : localize('paradis.inbox.unreadState', "未読");
 		row.setAttribute('aria-label', localize('paradis.inbox.rowAria', "{0} {1} {2} {3}", state, paradisInboxKindLabel(entry.kind), paradisInboxEntryLocation(entry), entry.message ?? ''));
 
+		this.renderDisposables.add(dom.addDisposableListener(row, dom.EventType.FOCUS, () => this.setCurrentRow(row)));
 		this.renderDisposables.add(dom.addDisposableListener(row, dom.EventType.CLICK, () => this.open(entry)));
 		this.renderDisposables.add(dom.addDisposableListener(row, dom.EventType.KEY_DOWN, e => {
 			const event = new StandardKeyboardEvent(e);

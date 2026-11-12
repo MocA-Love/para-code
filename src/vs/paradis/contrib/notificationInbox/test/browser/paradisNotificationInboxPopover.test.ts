@@ -84,15 +84,20 @@ suite('Paradis notification inbox popover', () => {
 			detail: text(row, 'pnip-detail'),
 			message: text(row, 'pnip-message') ?? text(row, 'pnip-note'),
 			ariaLabel: row.getAttribute('aria-label'),
+			role: row.getAttribute('role'),
+			tabIndex: row.tabIndex,
 		}));
+		const listRole = container.getElementsByClassName('pnip-list')[0].getAttribute('role');
 		rows[0].click();
 		rows[1].click();
 
-		assert.deepStrictEqual({ rendered, calls }, {
+		assert.deepStrictEqual({ listRole, rendered, calls }, {
+			// Tab は一覧で 1 回だけ止まる（今の行だけ tabIndex = 0）
+			listRole: 'listbox',
 			rendered: [
-				{ classes: ['unread'], kind: '許可待ち', space: 'para-code', detail: 'claude', message: 'Bash: npm test -- auth', ariaLabel: '未読 許可待ち para-code ／ claude Bash: npm test -- auth' },
+				{ classes: ['unread'], kind: '許可待ち', space: 'para-code', detail: 'claude', message: 'Bash: npm test -- auth', ariaLabel: '未読 許可待ち para-code ／ claude Bash: npm test -- auth', role: 'option', tabIndex: 0 },
 				// 「完了」は札にせず時刻の横に出す
-				{ classes: ['closed'], kind: undefined, space: 'para-code', detail: 'fix-login', message: 'このペインは閉じています', ariaLabel: '既読 完了 para-code (fix-login) ' },
+				{ classes: ['closed'], kind: undefined, space: 'para-code', detail: 'fix-login', message: 'このペインは閉じています', ariaLabel: '既読 完了 para-code (fix-login) ', role: 'option', tabIndex: -1 },
 			],
 			calls: ['close', 'reveal:2', 'read:1'],
 		});
