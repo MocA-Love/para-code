@@ -127,7 +127,9 @@ export class ParadisResourceMonitorWidget extends Disposable {
 
 		this.button = dom.append(container, $('button.paradis-resource-monitor-trigger'));
 		this.button.setAttribute('type', 'button');
-		this.button.setAttribute('aria-label', localize('paradis.resourceMonitor.triggerAria', "CPU and memory usage"));
+		this.button.setAttribute('aria-label', localize('paradis.resourceMonitor.triggerAria', "CPU とメモリの使用率"));
+		this.button.setAttribute('aria-haspopup', 'dialog');
+		this.button.setAttribute('aria-expanded', 'false');
 
 		this.iconWrap = dom.append(this.button, $('.paradis-resource-monitor-trigger-icon'));
 		this.iconWrap.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.chip)}`));
@@ -273,14 +275,21 @@ export class ParadisResourceMonitorWidget extends Disposable {
 			},
 		};
 		this.button.classList.add('active');
+		this.button.setAttribute('aria-expanded', 'true');
 		this.panel.value = this.instantiationService.createInstance(ParadisResourceMonitorPanel, this.button, options);
 		this.reschedulePolling();
 		void this.poll(false);
 	}
 
 	private closePanel(): void {
+		// パネルの中にフォーカスがあったら、閉じた後はトリガーへ戻す（body へ落とさない）
+		const restoreFocus = !!this.panel.value?.hasFocus() && this.button.isConnected;
 		this.button.classList.remove('active');
+		this.button.setAttribute('aria-expanded', 'false');
 		this.panel.clear();
+		if (restoreFocus) {
+			this.button.focus();
+		}
 		this.reschedulePolling();
 	}
 
