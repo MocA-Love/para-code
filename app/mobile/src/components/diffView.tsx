@@ -6,22 +6,23 @@
  * - .md / .html: 「プレビュー / 差分」を切り替えられる（プレビューは現在の作業ツリーの内容）
  * - .xlsx / .xlsm: PC側でレンダリングされたExcel差分HTML（HEAD vs 作業ツリー、セル色分け）を
  *   表示し、「プレビュー」で現在のブックそのものも見られる。どちらもピンチ拡大縮小可
- * - 削除以外は、ヘッダーのボタンで実ファイルをファイルビューアで開ける（差分の上に重ねる）
+ * - 削除以外は、ヘッダーのボタンで実ファイルをファイルツリーと同じビューアの画面で開ける（差分を閉じて進む）
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Modal, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { useRouter } from 'expo-router';
 import { WebView } from 'react-native-webview';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
-import { buildMarkdownHtml } from './fileViewer.js';
+import { buildMarkdownHtml } from '../features/code/fileViewerModel.js';
+import { fileViewerHref } from '../features/code/codeRoutes.js';
 import { monoFamily } from '../monoFont.js';
 import { alpha, colors, tint, type } from '../theme.js';
 import { hapticImpact } from '../haptics.js';
 import { EmptyState } from './emptyState.js';
 import { ViewerHeader } from './viewerHeader.js';
-import { WorkspaceFileViewer } from './workspaceFileViewer.js';
 import { useWorkspaceUnavailableReason } from '../hooks/useWorkspaceUnavailableReason.js';
 import { isDiffViewerJavaScriptEnabled } from './webViewScriptPolicy.js';
 import { guardWebViewNavigation } from './webViewLinkGuard.js';
@@ -59,7 +60,7 @@ function currentRendererTarget(ws: string): string | undefined {
 
 type ViewMode = 'diff' | 'render';
 
-/** 表示の切り替え。語はファイルビューア（`fileViewer.tsx`）とそろえる（左は同じ「プレビュー」）。 */
+/** 表示の切り替え。語はファイルビューアとそろえる（左は同じ「プレビュー」）。 */
 const MODE_OPTIONS = [
 	{ value: 'render', label: 'プレビュー' },
 	{ value: 'diff', label: '差分' },
@@ -74,7 +75,7 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 	// 無視するため、Modalごと `key` で作り直して見た目を切り替える。同一コミットで
 	// `key` だけ差し替えると旧Modalのdismiss完了前に新Modalのpresentが走ることがあるため、
 	// `onDismiss`（iOSのみ、dismissアニメーション完了時に発火）で順序を保証する
-	// （fileViewer.tsx の FileViewer と同じ実装）。
+	// （旧ファイルビューアと同じ実装）。
 	const [expanded, setExpanded] = useState(false);
 	const [modalOpen, setModalOpen] = useState(true);
 	const pendingExpandedRef = useRef<boolean | undefined>(undefined);
@@ -104,10 +105,19 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 		}
 		onClose();
 	};
-	const { scmDiff, scmXlsxDiff, fsRead, fsXlsx, connection, pcOnline, sessionProtocolReady, workspace } = useAppStore(useShallow(s => ({
+	const { scmDiff, scmXlsxDiff, fsRead, fsXlsx, connection, pcOnline, sessionProtocolReady, workspace, activePcId } = useAppStore(useShallow(s => ({
 		scmDiff: s.scmDiff, scmXlsxDiff: s.scmXlsxDiff, fsRead: s.fsRead, fsXlsx: s.fsXlsx,
-		connection: s.connection, pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady, workspace: s.workspace,
+		connection: s.connection, pcOnline: s.pcOnline, sessionProtocolReady: s.sessionProtocolReady, workspace: s.workspace, activePcId: s.activePcId,
 	})));
+	const router = useRouter();
+	// 実ファイルはファイルツリーと同じビューアの画面で開く。差分の Modal の下に積むと見えないので、先に差分を閉じる。
+	const openFile = () => {
+		if (activePcId === undefined) {
+			return;
+		}
+		onClose();
+		router.push(fileViewerHref(activePcId, ws, path));
+	};
 	const selectedWorkspace = workspace?.workspaces.find(candidate => candidate.id === ws);
 	const selectedRenderer = selectedWorkspace !== undefined ? workspace?.renderers.find(candidate => candidate.windowId === selectedWorkspace.windowId) : undefined;
 	const rendererTarget = selectedRenderer?.ready === true && workspace !== undefined
@@ -133,11 +143,9 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 	const [renderHtml, setRenderHtml] = useState<string | undefined>();
 	// レンダー表示中の内容がPC側の読み取り上限（fsRead、現在20MB）で切り詰められているか。
 	// .html はそのままWebViewへ渡す唯一の経路なので、切り詰められると表示が途中で壊れる
-	// （fileViewer.tsx の FileViewer と同じ注意喚起をここでも出す）。
+	// （旧ファイルビューアと同じ注意喚起をここでも出す）。
 	const [renderTruncated, setRenderTruncated] = useState(false);
 	const [error, setError] = useState<string | undefined>();
-	// 差分から開いた実ファイル（既存のファイルビューアを差分の上に重ねる）。
-	const [fileOpen, setFileOpen] = useState(false);
 	const contentIdentity = `${ws}\0${path}\0${staged}`;
 	const contentIdentityRef = useRef(contentIdentity);
 
@@ -241,7 +249,7 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 					// 並びと語はファイルビューアとそろえる（左がプレビュー）。
 					segment={kind !== 'other' && kind !== 'officeUnavailable' ? { options: MODE_OPTIONS, value: mode, onChange: setMode } : undefined}
 					// 削除されたファイルは作業ツリーに無いので開けない。
-					actions={deleted ? undefined : [{ key: 'open', icon: 'document-text-outline', label: 'ファイルを開く', onPress: () => setFileOpen(true) }]}
+					actions={deleted || activePcId === undefined ? undefined : [{ key: 'open', icon: 'document-text-outline', label: 'ファイルを開く', onPress: openFile }]}
 					expandable={presentedAsSheet}
 					expanded={expanded}
 					onToggleExpanded={requestToggleExpanded}
@@ -299,10 +307,6 @@ export function DiffView({ ws, path, staged, statusLetter, onClose }: DiffViewPr
 					</ScrollView>
 				)}
 			</View>
-			{/* 差分の上に重ねて実ファイルを開く。閉じると差分へ戻るので「‹ 差分」を出す。 */}
-			{fileOpen ? (
-				<WorkspaceFileViewer ws={ws} path={path} backLabel="差分" onClose={() => setFileOpen(false)} />
-			) : null}
 		</Modal>
 	);
 }
