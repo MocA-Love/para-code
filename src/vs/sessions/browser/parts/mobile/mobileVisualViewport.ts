@@ -76,13 +76,15 @@ export interface IMobileVisualViewport {
 	 * workbench also has to re-lay-out when the iOS URL bar collapses. Expose the raw
 	 * update pass so `workbench.ts` can relayout on it (see registerLayoutListeners).
 	 *
-	 * Fired whenever the visual viewport reports a change (resize/scroll).
+	 * Fired whenever the visual viewport (or the window) changes size.
 	 *
-	 * Note this fires on **every** update pass, not only when
+	 * Note this fires on every size change, not only when
 	 * {@link keyboardHeight} changes: on iOS Safari the URL bar collapse
 	 * changes `visualViewport.height` and `window.innerHeight` in lockstep,
 	 * so the computed keyboard height stays 0 while the visible area still
-	 * moved — consumers that re-layout must see those passes too.
+	 * moved — consumers that re-layout must see those passes too. Passes
+	 * that only scroll the visual viewport (panning while zoomed in,
+	 * scrolling with the keyboard open) do not fire: layout only reads sizes.
 	 */
 	readonly onDidChangeVisualViewport: Event<void>;
 }
@@ -167,6 +169,8 @@ export class MobileVisualViewport extends Disposable implements IMobileVisualVie
 			return;
 		}
 
+		// PARA-PATCH: sizes seen by the last fired pass (see onDidChangeVisualViewport)
+		let lastSize: string | undefined;
 		const update = () => {
 			const height = Math.max(0, targetWindow.innerHeight - visualViewport.height);
 			if (this._keyboardHeight.get() !== height) {
@@ -174,9 +178,14 @@ export class MobileVisualViewport extends Disposable implements IMobileVisualVie
 			}
 			this.mainContainer.style.setProperty(KEYBOARD_HEIGHT_CSS_VAR, `${height}px`);
 			this._keyboardVisibleCtx.set(height > KEYBOARD_VISIBLE_THRESHOLD_PX);
-			// PARA-PATCH: fire even when the height did not change (see interface note about
-			// URL-bar collapse keeping the keyboard height at zero).
-			this._onDidChangeVisualViewport.fire();
+			// PARA-PATCH: fire even when the keyboard height did not change (see interface note
+			// about URL-bar collapse keeping the keyboard height at zero), but only when a size
+			// changed, so scroll-only passes do not relayout the workbench every frame.
+			const size = `${targetWindow.innerWidth}x${targetWindow.innerHeight}x${visualViewport.width}x${visualViewport.height}`;
+			if (size !== lastSize) {
+				lastSize = size;
+				this._onDidChangeVisualViewport.fire();
+			}
 		};
 
 		this._register(DOM.addDisposableListener(visualViewport, 'resize', update));
