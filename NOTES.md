@@ -730,6 +730,7 @@ app-server が毎回の取得の経路になったので、Orca にある起動�
   - 境界事例（アンカー式ポップオーバーで全画面モーダルではないため優先度低）: `.paradis-limits-panel`、`.paradis-resource-monitor-panel`
 
 **運用ルール**: 内蔵ブラウザと同時に開かれうる場面がある「自前DOM + backdrop方式」の新規ダイアログ・モーダルを追加したら、そのbackdropクラス名を必ず `overlayManager.ts` の `OVERLAY_DEFINITIONS` に追加すること（`{ className: '...', type: BrowserOverlayType.Dialog }` を1行足すだけ）。標準の `IDialogService`/`IQuickInputService` をそのまま使う場合はこの対応は不要（既存ホワイトリストでカバー済み）。2026-09-27 からは共通の印 `paradis-modal-backdrop` を登録済みなので、新しいモーダルは backdrop にこのクラスを併記するだけでよい（`overlayManager.ts` への追加は不要。定期実行・スキルのモーダルが実例）。
+- 2026-11-12: 個別に登録していたダイアログのクラス（上の一覧と設定・使用量のダイアログなど 11 件）は、どれも共通の印 `paradis-modal-backdrop` / `paradis-overlay-popover` を併記済み、または作る箇所が無くなっていたため `OVERLAY_DEFINITIONS` から外した。残る fork の個別登録は、共通の印を付けると重なりの段が変わる `paradis-markup-overlay` だけ。
 
 ### fork の自前モーダルのフォーカスと重なり順（paradisModalFocus、2026-09-27、フェーズ8）
 
