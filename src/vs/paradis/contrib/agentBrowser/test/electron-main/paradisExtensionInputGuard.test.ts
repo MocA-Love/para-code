@@ -293,7 +293,7 @@ suite('paradisExtensionInputGuard', () => {
 		electronDebugger.emit('message', {}, 'Target.attachedToTarget', { sessionId: 'S-WEB2', targetInfo: { targetId: 'WEB2', type: 'iframe', url: 'https://widget.example/' } }, 'S-PAGE');
 		electronDebugger.emit('message', {}, 'Target.attachedToTarget', { sessionId: 'S-EXT2', targetInfo: { targetId: 'EXT2', type: 'iframe', url: EXTENSION_MENU } }, 'S-WEB2');
 		// The detach is sent on the next turn (sending from inside a debugger event can crash Electron).
-		await new Promise(resolve => setTimeout(resolve, 0));
+		await new Promise(resolve => setImmediate(resolve));
 		const listenersWhileAlive = electronDebugger.listenerCount('message');
 		webContents.emit('destroyed');
 		assert.deepStrictEqual({ results, sent, detached, listenersWhileAlive, listenersAfter: electronDebugger.listenerCount('message'), disposed }, {
@@ -369,7 +369,7 @@ suite('paradisExtensionInputGuard', () => {
 		const inFlight = interceptor!('Runtime.enable', {}, frame)!.then(() => 'answered', (error: Error) => error instanceof ParadisGuardFrameUnavailableError ? 'ended' : 'error');
 		electronDebugger.emit('message', {}, 'Target.targetInfoChanged', { targetInfo: { targetId: 'FRAME', type: 'iframe', url: EXTENSION_MENU } }, '');
 		const runIfWaiting = await interceptor!('Runtime.runIfWaitingForDebugger', {}, frame);
-		await new Promise(resolve => setTimeout(resolve, 0));
+		await new Promise(resolve => setImmediate(resolve));
 		assert.deepStrictEqual({ inFlight: await inFlight, runIfWaiting, sent, deviceMetrics: interceptor!('Emulation.setDeviceMetricsOverride', {}, { sessionId: 'S-OTHER', targetId: 'OTHER' }) }, {
 			inFlight: 'ended',
 			runIfWaiting: {},

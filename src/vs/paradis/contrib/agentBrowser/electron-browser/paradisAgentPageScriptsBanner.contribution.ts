@@ -53,6 +53,9 @@ import { paradisRefreshAgentPageScriptModels } from '../browser/paradisAgentPage
 /** アドレスバーの右の印の並び順（星 60 の後、プロファイル 70 の前）。 */
 const CHIP_ORDER = 65;
 
+/** 一覧を開いた直後のフォーカスの置き場所（一覧そのもの）。 */
+const FOCUS_POPOVER = 'popover';
+
 /** 置いた時刻（時:分:秒）。 */
 function timeOf(addedAt: number): string {
 	const date = new Date(addedAt);
@@ -116,6 +119,14 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 		this.count = append(this.chip, $('span.paradis-page-scripts-chip-count'));
 		this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), this.chip, () => this.chipLabel()));
 		this._register(addDisposableListener(this.chip, EventType.CLICK, () => this.toggleDetails()));
+		// 一覧を開いたまま印にフォーカスが戻っていても、Esc で閉じる
+		this._register(addDisposableListener(this.chip, EventType.KEY_DOWN, event => {
+			if (this.details.value && new StandardKeyboardEvent(event).equals(KeyCode.Escape)) {
+				event.preventDefault();
+				event.stopPropagation();
+				this.details.clear();
+			}
+		}));
 	}
 
 	override get widgets(): readonly IBrowserEditorWidget[] {
@@ -251,8 +262,8 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 		if (!visible) {
 			this.details.clear();
 		} else if (this.details.value) {
-			// 開いている一覧も描き直す
-			this.showDetails();
+			// 開いている一覧も描き直す。一覧の中のボタンにフォーカスがあれば、描き直した同じボタンへ戻す
+			this.showDetails(this.focusedDetailsKey());
 		}
 		this.chip.style.display = visible ? '' : 'none';
 	}
@@ -261,48 +272,70 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 		if (this.details.value) {
 			this.details.clear();
 		} else {
-			this.showDetails();
+			this.showDetails(FOCUS_POPOVER);
 		}
 	}
 
-	/** 一行のアイコンのボタン（ホバーで説明）。 */
-	private iconButton(parent: HTMLElement, icon: ThemeIcon, label: string, store: DisposableStore, run: (() => void) | undefined): HTMLButtonElement {
+	/** 一覧の中でフォーカスのある場所の目印（一覧の中に無ければ undefined）。 */
+	private focusedDetailsKey(): string | undefined {
+		const active = this.chip.ownerDocument.activeElement;
+		if (!isHTMLElement(active) || !isAncestor(active, this.contextViewService.getContextViewElement())) {
+			return undefined;
+		}
+		return active.dataset.paradisFocusKey ?? FOCUS_POPOVER;
+	}
+
+	/**
+	 * 一行のアイコンのボタン（ホバーで説明）。`focusKey` は描き直しの後に同じボタンを見つけるための目印で、
+	 * 押せるボタンだけ `focusTargets` に入れる。
+	 */
+	private iconButton(parent: HTMLElement, icon: ThemeIcon, label: string, focusKey: string, focusTargets: Map<string, HTMLElement>, store: DisposableStore, run: (() => void) | undefined): HTMLButtonElement {
 		const button = append(parent, $<HTMLButtonElement>(`button.paradis-page-scripts-icon-button.paradis-focus-ring-inset${ThemeIcon.asCSSSelector(icon)}`));
 		button.type = 'button';
+		button.dataset.paradisFocusKey = focusKey;
 		button.setAttribute('aria-label', label);
 		store.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), button, label));
 		if (run) {
 			store.add(addDisposableListener(button, EventType.CLICK, run));
+			focusTargets.set(focusKey, button);
 		} else {
 			button.disabled = true;
 		}
 		return button;
 	}
 
-	/** 一覧を出す（新しい順）。ブラウザのページに重なるので context view で出す。 */
-	private showDetails(): void {
+	/**
+	 * 一覧を出す（新しい順）。ブラウザのページに重なるので context view で出す。
+	 * `focus` を渡すと、その目印のボタン（見つからなければ一覧そのもの）へフォーカスを移す。
+	 */
+	private showDetails(focus?: string): void {
 		const entries = this.entries;
 		const paneOf = this.paneNumbers();
 		this.chip.classList.add('active');
 		/** 自分で閉じている最中（`handle` の dispose の中）か。 */
 		let closing = false;
+		let shown: HTMLElement | undefined;
+		const focusTargets = new Map<string, HTMLElement>();
 		const view = this.contextViewService.showContextView({
 			getAnchor: () => this.chip,
 			anchorAlignment: AnchorAlignment.LEFT,
 			anchorPosition: AnchorPosition.BELOW,
 			render: container => {
 				const store = new DisposableStore();
-				const popover = append(container, $('.paradis-page-scripts-details'));
+				const popover = shown = append(container, $('.paradis-page-scripts-details'));
+				popover.tabIndex = -1;
 				popover.setAttribute('role', 'dialog');
 				popover.setAttribute('aria-label', localize('paradis.agentPageScripts.detailsLabel', "このタブのエージェントのスクリプト"));
 				const header = append(popover, $('.paradis-page-scripts-details-header'));
 				append(header, $('span.paradis-page-scripts-details-title')).textContent = localize('paradis.agentPageScripts.detailsHeader', "このタブのエージェントのスクリプト（{0} 本）・新しい順", entries.length);
 				const removeAll = store.add(new Button(header, { ...defaultButtonStyles, secondary: true }));
 				removeAll.element.classList.add('paradis-page-scripts-small-button');
+				removeAll.element.dataset.paradisFocusKey = 'removeAll';
+				focusTargets.set('removeAll', removeAll.element);
 				removeAll.label = localize('paradis.agentPageScripts.removeAll', "すべて外す");
 				store.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), removeAll.element, localize('paradis.agentPageScripts.removeTitle', "このタブからエージェントのスクリプトをすべて外します。読み込み済みのページは、再読み込みするまでスクリプトの効果が残ります。")));
 				store.add(removeAll.onDidClick(() => void this.removeAll(removeAll)));
-				this.iconButton(header, Codicon.close, localize('paradis.agentPageScripts.close', "閉じる"), store, () => this.details.clear());
+				this.iconButton(header, Codicon.close, localize('paradis.agentPageScripts.close', "閉じる"), 'close', focusTargets, store, () => this.details.clear());
 
 				const list = append(popover, $('.paradis-page-scripts-details-list'));
 				for (const entry of [...entries].reverse()) {
@@ -320,8 +353,8 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 						: localize('paradis.agentPageScripts.ownerAndMeta', "{0} · {1}", owner, meta);
 					this.iconButton(row, Codicon.goToFile, entry.sourceKept
 						? localize('paradis.agentPageScripts.view', "中身を見る")
-						: localize('paradis.agentPageScripts.sourceNotKept', "スクリプトが多いため、この本文は保持していません。"), store, entry.sourceKept ? () => this.openSource(entry) : undefined);
-					this.iconButton(row, Codicon.close, localize('paradis.agentPageScripts.remove', "外す"), store, () => void this.removeOne(entry.id));
+						: localize('paradis.agentPageScripts.sourceNotKept', "スクリプトが多いため、この本文は保持していません。"), `${entry.id}:view`, focusTargets, store, entry.sourceKept ? () => this.openSource(entry) : undefined);
+					this.iconButton(row, Codicon.close, localize('paradis.agentPageScripts.remove', "外す"), `${entry.id}:remove`, focusTargets, store, () => void this.removeOne(entry.id));
 				}
 				append(popover, $('.paradis-page-scripts-details-footer')).textContent = localize('paradis.agentPageScripts.detailsFooter', "外しても、読み込み済みのページは再読み込みするまで効果が残ります。");
 				store.add(addDisposableListener(popover, EventType.KEY_DOWN, event => {
@@ -354,6 +387,9 @@ export class ParadisAgentPageScriptsBanner extends BrowserEditorContribution {
 			view.close();
 		});
 		this.details.value = handle;
+		if (focus !== undefined && shown) {
+			(focusTargets.get(focus) ?? shown).focus();
+		}
 	}
 }
 

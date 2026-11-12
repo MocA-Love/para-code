@@ -264,6 +264,14 @@ export class ParadisBindingDialog extends Disposable {
 	private readonly _tabController: ParadisBindingDialogTabController;
 
 	private _filterText = '';
+	/** いまの検索欄（描き直しの前に、キャレットの位置を読むのに使う）。 */
+	private _searchInput: HTMLInputElement | undefined;
+	/** 検索欄で日本語の変換中か。変換中に検索欄を作り直すと未確定の文字が消えるので、描き直しを確定まで待つ。 */
+	private _composing = false;
+	/** 変換中に描き直しを待たせたか。 */
+	private _renderDeferred = false;
+	/** MCP タブの「手動でセットアップする」を開いているか（描き直しても開いたままにする）。 */
+	private _manualOpen = false;
 	private _bindError: string | undefined;
 	private _mcpStatus: IParadisMcpConfigStatus | undefined;
 	private readonly _setupStates = new Map<ParadisMcpCli, IParadisSetupState>();
@@ -470,6 +478,17 @@ export class ParadisBindingDialog extends Disposable {
 		if (this._store.isDisposed) {
 			return;
 		}
+		if (this._composing) {
+			this._renderDeferred = true;
+			return;
+		}
+		this._renderDeferred = false;
+		// 検索欄にフォーカスがあれば、作り直した検索欄へキャレットの位置ごと戻す
+		const previousSearch = this._searchInput;
+		const searchSelection = previousSearch?.isConnected && previousSearch.ownerDocument.activeElement === previousSearch
+			? { start: previousSearch.selectionStart, end: previousSearch.selectionEnd, direction: previousSearch.selectionDirection ?? undefined }
+			: undefined;
+		this._searchInput = undefined;
 		this._paneListResources.beginRender();
 		this._renderDisposables.clear();
 
@@ -491,6 +510,11 @@ export class ParadisBindingDialog extends Disposable {
 		}
 		this._reconcileHoverAfterRender();
 		this._renderFooter();
+		const search = this._searchInput as HTMLInputElement | undefined;
+		if (searchSelection && search) {
+			search.focus();
+			search.setSelectionRange(searchSelection.start, searchSelection.end, searchSelection.direction);
+		}
 	}
 
 	private _renderHeaderPills(): void {
@@ -683,6 +707,7 @@ export class ParadisBindingDialog extends Disposable {
 		input.type = 'text';
 		input.placeholder = STR_SEARCH_PLACEHOLDER;
 		input.value = this._filterText;
+		this._searchInput = input;
 
 		const list = dom.append(this._body, $('.pbd-pane-list'));
 		this._renderPaneList(list);
@@ -690,6 +715,14 @@ export class ParadisBindingDialog extends Disposable {
 		this._renderDisposables.add(dom.addDisposableListener(input, 'input', () => {
 			this._filterText = input.value;
 			this._renderPaneList(list);
+		}));
+		this._renderDisposables.add(dom.addDisposableListener(input, 'compositionstart', () => this._composing = true));
+		this._renderDisposables.add(dom.addDisposableListener(input, 'compositionend', () => {
+			this._composing = false;
+			this._filterText = input.value;
+			if (this._renderDeferred) {
+				this._render();
+			}
 		}));
 
 		dom.append(this._body, $('.pbd-scope-note')).textContent = STR_SCOPE_NOTE;
@@ -897,6 +930,8 @@ export class ParadisBindingDialog extends Disposable {
 
 	private _renderMcpManual(container: HTMLElement): void {
 		const details = dom.append(container, $('details.pbd-mcp-manual')) as HTMLDetailsElement;
+		details.open = this._manualOpen;
+		this._renderDisposables.add(dom.addDisposableListener(details, 'toggle', () => this._manualOpen = details.open));
 		dom.append(details, $('summary')).textContent = STR_MANUAL_SUMMARY;
 		const port = this._mcpStatus?.gatewayPort;
 		this._appendManualSnippet(details, STR_SETUP_CLAUDE_LABEL, getParadisClaudeSetupSnippet(port));

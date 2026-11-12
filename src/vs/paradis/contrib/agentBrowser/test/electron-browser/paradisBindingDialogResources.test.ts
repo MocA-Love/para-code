@@ -335,6 +335,101 @@ suite('ParadisBindingDialog focus', () => {
 	});
 });
 
+suite('ParadisBindingDialog redraws while the user works in it', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	/** Opens a dialog on one pane and returns it with the emitter that makes it draw its body again. */
+	function openDialog(root: HTMLElement, pane: IParadisPaneDescriptor) {
+		const bindingChanges = new Emitter<void>();
+		const dialog = new ParadisBindingDialog(
+			upcastPartial<IBrowserViewModel>({ id: 'page-one', title: 'Page One', url: 'https://example.test', favicon: undefined, onDidChangeTitle: VSCodeEvent.None, onDidChangeSharingState: VSCodeEvent.None }),
+			undefined,
+			upcastPartial<IParadisAgentBrowserBindingModel>({
+				onDidChange: bindingChanges.event,
+				bindings: [],
+				getPanes: () => [pane],
+				getPanesForPage: () => [pane],
+				getBindingsForPage: () => [],
+				getBindingsForToken: () => [],
+				getAgentTabsForToken: () => [],
+				getAgentTabOwnersForPage: () => [],
+				refresh: async () => { },
+				getMcpConfigStatus: () => new Promise<never>(() => { }),
+			}),
+			upcastPartial<ILayoutService>({ activeContainer: root }),
+			upcastPartial<IClipboardService>({ writeText: async () => { } }),
+			upcastPartial<IParadisMobileCanvasModel>({ onDidChange: VSCodeEvent.None, snapshot: { devices: [], attachments: [] }, loading: false, beginPolling: () => toDisposable(() => { }) }),
+			upcastPartial<IParadisTerminalScopeService>({ getStateKeyForInstance: () => undefined }),
+			upcastPartial<IParadisAgentBrowserTabsService>({ revokeApprovedProfileTab: () => { } }),
+			upcastPartial<IParadisBrowserExtensionsService>({ getShareWarning: async () => undefined }),
+		);
+		return { dialog, bindingChanges };
+	}
+
+	test('keeps the search box while a Japanese input is being converted, and keeps the caret where it was', async () => {
+		const root = document.createElement('div');
+		document.body.appendChild(root);
+		const pane: IParadisPaneDescriptor = { instanceId: 17, token: 'pane-one', title: 'Pane One', agentKind: 'codex', mcpConnected: true, binding: undefined, bindEligibility: { eligible: true } };
+		const { dialog, bindingChanges } = openDialog(root, pane);
+		await timeout(0);
+		try {
+			const search = root.querySelector<HTMLInputElement>('.pbd-list-search input')!;
+			search.focus();
+			search.dispatchEvent(new CompositionEvent('compositionstart'));
+			search.value = '\u307a';
+			search.dispatchEvent(new Event('input'));
+			// A pane title changes while the text is still being converted
+			bindingChanges.fire();
+			await timeout(0);
+			const duringConversion = root.querySelector<HTMLInputElement>('.pbd-list-search input')!;
+			search.dispatchEvent(new CompositionEvent('compositionend'));
+			const afterConversion = root.querySelector<HTMLInputElement>('.pbd-list-search input')!;
+			const valueAfterConversion = afterConversion.value;
+			afterConversion.value = 'Pane';
+			afterConversion.dispatchEvent(new Event('input'));
+			afterConversion.setSelectionRange(1, 3);
+			bindingChanges.fire();
+			await timeout(0);
+			const redrawn = root.querySelector<HTMLInputElement>('.pbd-list-search input')!;
+			assert.deepStrictEqual({
+				keptDuringConversion: duringConversion === search,
+				redrawnAfterConversion: afterConversion !== search,
+				valueAfterConversion,
+				redrawnValue: redrawn.value,
+				focused: document.activeElement === redrawn,
+				selection: [redrawn.selectionStart, redrawn.selectionEnd],
+			}, { keptDuringConversion: true, redrawnAfterConversion: true, valueAfterConversion: '\u307a', redrawnValue: 'Pane', focused: true, selection: [1, 3] });
+		} finally {
+			dialog.dispose();
+			bindingChanges.dispose();
+			root.remove();
+		}
+	});
+
+	test('keeps the manual setup section open across a redraw', async () => {
+		const root = document.createElement('div');
+		document.body.appendChild(root);
+		const pane: IParadisPaneDescriptor = { instanceId: 17, token: 'pane-one', title: 'Pane One', agentKind: 'codex', mcpConnected: false, binding: undefined, bindEligibility: { eligible: true } };
+		const { dialog, bindingChanges } = openDialog(root, pane);
+		await timeout(0);
+		try {
+			// The note under the pane list leads to the MCP tab
+			root.querySelector<HTMLButtonElement>('.pbd-mcp-note .pbd-link')!.click();
+			const manual = root.querySelector<HTMLDetailsElement>('details.pbd-mcp-manual')!;
+			manual.open = true;
+			manual.dispatchEvent(new Event('toggle'));
+			bindingChanges.fire();
+			await timeout(0);
+			const redrawn = root.querySelector<HTMLDetailsElement>('details.pbd-mcp-manual')!;
+			assert.deepStrictEqual({ replaced: redrawn !== manual, open: redrawn.open }, { replaced: true, open: true });
+		} finally {
+			dialog.dispose();
+			bindingChanges.dispose();
+			root.remove();
+		}
+	});
+});
+
 suite('ParadisBindingDialog browser extension warning', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
