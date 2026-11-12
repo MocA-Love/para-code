@@ -53,10 +53,10 @@ export const PARADIS_RENDER_REPAIR_ENABLED_SETTING = 'paradis.terminal.renderRep
 export const PARADIS_RENDER_REPAIR_RECORD_SETTING = 'paradis.terminal.renderRepair.recordScreen';
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
-	id: 'paradis',
-	order: 999,
-	title: localize('paradisConfigurationTitle', "Para Code"),
+	id: 'paradis.terminal',
+	order: 100,
 	type: 'object',
+	title: localize('paradis.terminal.title', "Para Code Terminal"),
 	properties: {
 		[PARADIS_RENDER_REPAIR_ENABLED_SETTING]: {
 			type: 'boolean',
