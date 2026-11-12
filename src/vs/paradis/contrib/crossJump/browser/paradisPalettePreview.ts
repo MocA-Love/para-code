@@ -358,7 +358,7 @@ export class ParadisPalettePreviewPane extends Disposable {
 		const head = paradisPalettePreviewHead(text);
 		const languageId = this.languageService.guessLanguageIdByFilepathOrFirstLine(resource, head.text.split('\n', 1)[0]);
 		if (paradisIsPalettePreviewMarkdown(resource, languageId)) {
-			await this.renderMarkdown(head.text, body, cancelled);
+			await this.renderMarkdown(head.text, body, token);
 		} else {
 			await this.renderCode(head.text, languageId, body, cancelled);
 		}
@@ -444,11 +444,12 @@ export class ParadisPalettePreviewPane extends Disposable {
 		}
 	}
 
-	private async renderMarkdown(text: string, body: HTMLElement, cancelled: () => boolean): Promise<void> {
-		const source = new CancellationTokenSource();
+	private async renderMarkdown(text: string, body: HTMLElement, token: CancellationToken): Promise<void> {
+		// 行が替わったら描画（コードの色付けを含む）も止める
+		const source = new CancellationTokenSource(token);
 		try {
 			const rendered = await renderParadisMarkdownDocumentDeferred(text, this.extensionService, this.languageService, { markedExtensions: [markedParadisAlertExtension()] }, source.token);
-			if (cancelled()) {
+			if (token.isCancellationRequested) {
 				return;
 			}
 			// Markdown ビューアと同じ消毒の済んだ HTML を、別の文書で解析してから移す（スクリプトは動かない）
