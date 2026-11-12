@@ -22,7 +22,7 @@
 ## 制約（Electron の拡張サポートは部分実装）
 
 - 同梱の拡張は展開済みのフォルダとして読み込む。自動更新は無い（更新は上記の手動手順）。利用者が入れる拡張機能（試験的）は Chrome ウェブストアからも入れられる（`NOTES.md` の「内蔵ブラウザの Chrome 拡張機能」）
-- browser action（ツールバーアイコン + ポップアップ UI）と Native Messaging は動作しない
+- browser action（ツールバーアイコン + ポップアップ UI、`chrome.action`・`chrome.browserAction`）と Native Messaging（`runtime.connectNative`・`runtime.sendNativeMessage`）は Electron に無いので Para Code が足している。対応している範囲と残りの制約は `NOTES.md` の「内蔵ブラウザの Chrome 拡張機能」を参照
 - devtools_page ベースの拡張（React DevTools 等）が主対象。内蔵ブラウザの「Developer Tools」で
   DevTools を開くと React / Profiler タブが現れる
 - persistent なセッション（Global / Workspace スコープ）にのみロードされる。Ephemeral セッションは

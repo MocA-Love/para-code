@@ -49,6 +49,8 @@ export class ParadisAndroidVideoView extends Disposable {
 
 	readonly element: HTMLElement;
 	private readonly _canvas: HTMLCanvasElement;
+	/** 描く先の文脈（canvas は替えないので、同じものを毎フレーム使う）。 */
+	private readonly _context: CanvasRenderingContext2D | null;
 	private readonly _subscription = this._register(new MutableDisposable());
 	private _decoder: VideoDecoder | undefined;
 	private _codec: string | undefined;
@@ -93,6 +95,7 @@ export class ParadisAndroidVideoView extends Disposable {
 		this.element = dom.append(container, $('.paradis-simulator-screen'));
 		this.element.tabIndex = 0;
 		this._canvas = dom.append(this.element, $<HTMLCanvasElement>('canvas.paradis-simulator-frame'));
+		this._context = this._canvas.getContext('2d');
 		// Android の端末は画面が変わらないと映像を送らないことがあるので、途切れの見張りは長めにする
 		this._stall = this._register(new RunOnceScheduler(() => this._onDidStall.fire(), PARADIS_SIMULATOR_STALL_MS * 6));
 		this._registerPointer();
@@ -191,8 +194,7 @@ export class ParadisAndroidVideoView extends Disposable {
 		const decoder = this._decoders.create({
 			output: frame => {
 				try {
-					const context = this._canvas.getContext('2d');
-					context?.drawImage(frame, 0, 0, this._canvas.width || frame.displayWidth, this._canvas.height || frame.displayHeight);
+					this._context?.drawImage(frame, 0, 0, this._canvas.width || frame.displayWidth, this._canvas.height || frame.displayHeight);
 					this._failures = 0;
 					// 途切れの見張りは、届いたときではなく描けたときに延ばす（届いても描けなければ途切れとみなす）
 					this._stall.schedule();
