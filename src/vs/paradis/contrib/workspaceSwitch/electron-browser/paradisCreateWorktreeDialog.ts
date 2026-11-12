@@ -346,6 +346,10 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 			}
 		}));
 		this._register(dom.addDisposableListener(this._backdrop, 'keydown', e => {
+			// 日本語入力の変換中の Esc・Enter は変換の取り消し・確定なので、閉じたり作ったりしない
+			if (e.isComposing || e.keyCode === 229) {
+				return;
+			}
 			if (e.key === 'Escape') {
 				e.preventDefault();
 				this.dispose();
