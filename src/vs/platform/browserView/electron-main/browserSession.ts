@@ -25,7 +25,7 @@ import { localize } from '../../../nls.js';
 import { IAgentNetworkFilterService } from '../../networkFilter/common/networkFilterService.js';
 // PARA-PATCH: load bundled devtools extensions (React DevTools) into browser view sessions
 import { paradisInstallBrowserExtensions } from '../../../paradis/contrib/browserExtensions/electron-main/paradisBrowserExtensions.js';
-import { paradisApplyChromeLikeUserAgent } from '../../../paradis/contrib/browserUserAgent/electron-main/paradisBrowserUserAgent.js';
+import { paradisApplyChromeLikeUserAgent } from '../../../paradis/contrib/browserUserAgent/electron-main/paradisBrowserUserAgent.js'; // PARA-PATCH: strip Electron tokens from the built-in browser UA
 // PARA-PATCH: auto-save browser downloads to a fixed folder instead of showing a native save dialog
 import { paradisConfigureBrowserDownloads } from '../../../paradis/contrib/browserDownloads/electron-main/paradisBrowserDownloads.js';
 // PARA-PATCH: named persistent browser profiles get their own persist: partition

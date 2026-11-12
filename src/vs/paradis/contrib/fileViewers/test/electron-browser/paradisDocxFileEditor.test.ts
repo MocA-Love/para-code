@@ -92,7 +92,7 @@ suite('ParadisDocxFileEditor', () => {
 		ok(!/(?:^|\s)https:(?:\s|;|$)/.test(fallback));
 		for (const csp of [mounted, fallback]) {
 			ok(csp.includes('object-src \'none\'; frame-src \'none\'; worker-src \'none\';'));
-			ok(csp.includes('navigate-to \'none\';'));
+			ok(!csp.includes('navigate-to'));
 		}
 	});
 
@@ -787,7 +787,7 @@ suite('ParadisDocxFileEditor', () => {
 		return {
 			classification: 'viewer',
 			docxUrl: '<sanitized-docx-message>',
-			csp: `default-src 'none'; script-src 'nonce-<nonce>' ${exactOrigins}; style-src 'unsafe-inline'; img-src data: blob: ${exactOrigins}; font-src data: blob: ${exactOrigins}; connect-src ${exactOrigins} data: blob:; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'; navigate-to 'none';`,
+			csp: `default-src 'none'; script-src 'nonce-<nonce>' ${exactOrigins}; style-src 'unsafe-inline'; img-src data: blob: ${exactOrigins}; font-src data: blob: ${exactOrigins}; connect-src ${exactOrigins} data: blob:; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none';`,
 			scriptUrls: [`${libraryBase}/jszip.min.js`, `${libraryBase}/docx-preview.min.js`],
 			nonceConsistency: {
 				csp: true,

@@ -11,7 +11,6 @@ import { arch, cpus, freemem, loadavg, platform, release, totalmem, type } from 
 import { promisify } from 'util';
 import { memoize } from '../../../base/common/decorators.js';
 import { Emitter, Event } from '../../../base/common/event.js';
-import { clamp } from '../../../base/common/numbers.js'; // PARA-PATCH: setWindowOpacity のクランプ用（ウィンドウ透明度設定、下記参照）
 import { Disposable, DisposableMap, DisposableStore, toDisposable } from '../../../base/common/lifecycle.js';
 import { matchesSomeScheme, Schemas } from '../../../base/common/network.js';
 import { dirname, isAbsolute, join, posix, resolve, win32 } from '../../../base/common/path.js';
@@ -448,12 +447,6 @@ export class NativeHostMainService extends Disposable implements INativeHostMain
 	async setWindowAlwaysOnTop(windowId: number | undefined, alwaysOnTop: boolean, options?: INativeHostOptions): Promise<void> {
 		const window = this.windowById(options?.targetWindowId, windowId);
 		window?.win?.setAlwaysOnTop(alwaysOnTop);
-	}
-
-	// PARA-PATCH: ウィンドウ不透明度設定の実装（Paradis独自のウィンドウ透明度設定用）。BrowserWindow.setOpacity は 0〜1 の範囲のみ有効なためクランプする
-	async setWindowOpacity(windowId: number | undefined, opacity: number, options?: INativeHostOptions): Promise<void> {
-		const window = this.windowById(options?.targetWindowId, windowId);
-		window?.win?.setOpacity(clamp(opacity, 0, 1));
 	}
 
 	async positionWindow(windowId: number | undefined, position: IRectangle, options?: INativeHostOptions): Promise<void> {

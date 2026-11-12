@@ -14,10 +14,12 @@
 // 何も出ない。
 
 import { $, append } from '../../../../base/browser/dom.js';
+import { status as ariaStatus } from '../../../../base/browser/ui/aria/aria.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
+import { localize } from '../../../../nls.js';
 import { paradisFormatPromptCacheRemaining } from '../common/paradisAgentInsights.js';
 import { paradisPromptCacheTooltip } from './paradisAgentInsightsPresentation.js';
 import { IParadisPromptCacheReading } from './paradisPromptCacheClock.js';
@@ -48,20 +50,30 @@ export interface IParadisPromptCacheBadgeController extends IDisposable {
 /**
  * `container`（エディタのターミナルの overflow guard）へバッジを1つ置く。コンテナはタブを
  * 切り替えても使い回されるので、対象ペインは {@link IParadisPromptCacheBadgeController.setInstance} で差し替える。
+ *
+ * 残り時間は毎秒書き換わるので、バッジ自体はライブ領域にしない（スクリーンリーダーが毎秒読み上げて
+ * ターミナルの読み上げを遮るため）。読み上げは、同じペインで残りわずか（warning）に変わったときだけ
+ * `announce`（既定はワークベンチの共通のライブ領域）へ 1 回流す。
  */
-export function createParadisPromptCacheBadge(container: HTMLElement): IParadisPromptCacheBadgeController {
+export function createParadisPromptCacheBadge(container: HTMLElement, announce: (message: string) => void = ariaStatus): IParadisPromptCacheBadgeController {
 	const store = new DisposableStore();
 	const element = append(container, $('.paradis-prompt-cache-badge'));
-	element.setAttribute('role', 'status');
 	append(element, $(ThemeIcon.asCSSSelector(Codicon.flame)));
 	const label = append(element, $('span.paradis-prompt-cache-badge-time'));
 	let instanceId: number | undefined;
+	/** 前回の書き換えで warning だったか。ペインを替えたら数え直す（切り替えただけで読み上げない）。 */
+	let wasWarning: boolean | undefined;
 
 	const update = () => {
 		const reading = instanceId !== undefined ? currentHost?.read(instanceId) : undefined;
 		element.classList.toggle('hidden', !reading);
 		element.classList.toggle('warning', !!reading?.warning);
 		label.textContent = reading ? paradisFormatPromptCacheRemaining(reading.remainingMs) : '';
+		const warning = !!reading?.warning;
+		if (reading && warning && wasWarning === false) {
+			announce(localize('paradis.agentInsights.promptCacheWarningAnnouncement', "プロンプトキャッシュの残りが {0} になりました", paradisFormatPromptCacheRemaining(reading.remainingMs)));
+		}
+		wasWarning = reading ? warning : undefined;
 	};
 
 	const hostListeners = store.add(new MutableDisposable<DisposableStore>());
@@ -82,6 +94,9 @@ export function createParadisPromptCacheBadge(container: HTMLElement): IParadisP
 
 	return {
 		setInstance(next) {
+			if (next !== instanceId) {
+				wasWarning = undefined;
+			}
 			instanceId = next;
 			update();
 		},

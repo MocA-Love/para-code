@@ -218,4 +218,28 @@ suite('ParadisSpreadsheetChannel', () => {
 		const result = await channel.call('window:1', 'parseWorkbook', ['UEs='], CancellationToken.None);
 		deepStrictEqual({ result, parsedInProcess }, { result: workbook, parsedInProcess: ['UEs='] });
 	});
+
+	test('turns away a workbook over the size limit before the worker or the shared process sees it', async () => {
+		const seen: string[] = [];
+		const channel = new ParadisSpreadsheetChannel(
+			async () => ({ parseWorkbook: async () => { seen.push('process'); return workbook; } }),
+			undefined,
+			undefined,
+			async () => ({
+				parse: async () => { seen.push('worker'); return { kind: 'unavailable', reason: 'failed' }; },
+				warm: async () => ({ kind: 'warm' }),
+			}),
+		);
+		const outcomes: unknown[] = [];
+		for (const size of [20 * 1024 * 1024, 20 * 1024 * 1024 + 1]) {
+			try {
+				await channel.call('window:1', 'parseWorkbook', [VSBuffer.wrap(new Uint8Array(size))], CancellationToken.None);
+				outcomes.push('parsed');
+			} catch (error) {
+				outcomes.push((error as Error).name);
+			}
+		}
+		channel.dispose();
+		deepStrictEqual({ outcomes, seen }, { outcomes: ['parsed', 'ParadisSpreadsheetTooLarge'], seen: ['worker', 'process'] });
+	});
 });

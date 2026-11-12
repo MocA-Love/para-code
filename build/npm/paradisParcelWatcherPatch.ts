@@ -132,7 +132,7 @@ export function paradisIsParcelWatcherPatched(packageRoot: string): boolean {
 		return true; // 対象外
 	}
 	if (!paradisIsSupportedParcelWatcherVersion(path.join(watcherRoot, 'package.json'))) {
-		return true; // PARA-PATCH: issue #250 の未修正版だけを対象にする
+		return true; // issue #250 の未修正版だけを対象にする
 	}
 
 	return fs.readFileSync(globPath, 'utf8').includes(PATCH_MARKER);
