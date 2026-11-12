@@ -22,6 +22,11 @@ import { localize } from '../../../../nls.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
+import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
@@ -177,6 +182,9 @@ export class ParadisLayoutPresetEditor extends EditorPane {
 		@IStorageService storageService: IStorageService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@INotificationService private readonly notificationService: INotificationService,
+		@IContextViewService private readonly contextViewService: IContextViewService,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super(PARADIS_LAYOUT_PRESET_EDITOR_ID, group, telemetryService, themeService, storageService);
 	}
@@ -340,17 +348,15 @@ export class ParadisLayoutPresetEditor extends EditorPane {
 
 		const header = dom.append(pane, $('.paradis-layout-pane-header'));
 
-		const kindSelect = dom.append(header, $('select.paradis-layout-pane-kind')) as HTMLSelectElement;
-		for (const kind of PARADIS_LAYOUT_SLOT_KINDS) {
-			const option = dom.append(kindSelect, $('option')) as HTMLOptionElement;
-			option.value = kind;
-			option.textContent = slotKindPresentation(kind).label;
-		}
-		kindSelect.value = slot.kind;
-		this.canvasDisposables.add(dom.addDisposableListener(kindSelect, dom.EventType.CHANGE, () => {
+		// 枠の種類は UI キットのプルダウン。見出しの行の密度（高さ 22・11px）は className で保つ
+		const kindSelect = this.canvasDisposables.add(new ParadisSelect(header, this.contextViewService, this.configurationService,
+			PARADIS_LAYOUT_SLOT_KINDS.map(kind => ({ value: kind, label: slotKindPresentation(kind).label })), slot.kind,
+			// allow-any-unicode-next-line
+			{ ariaLabel: localize('paradis.layoutPresets.paneKind', "枠の種類"), className: 'paradis-layout-pane-kind' }));
+		this.canvasDisposables.add(kindSelect.onDidChange(value => {
 			// 種類を変えたら中身の項目は引き継がない（URL 欄に残ったコマンドが、次に種類を
 			// 戻したときに黙って復活するのを防ぐ）。
-			this.mutate(root => paradisUpdateLayoutSlot(root, path, { kind: kindSelect.value as ParadisLayoutSlotKind }));
+			this.mutate(root => paradisUpdateLayoutSlot(root, path, { kind: value as ParadisLayoutSlotKind }));
 		}));
 
 		if (presentation.field) {
@@ -364,9 +370,12 @@ export class ParadisLayoutPresetEditor extends EditorPane {
 
 		if (slotCount > 1) {
 			const remove = dom.append(header, $('button.paradis-layout-pane-remove.paradis-focus-ring-inset')) as HTMLButtonElement;
+			remove.type = 'button';
 			dom.append(remove, $(ThemeIcon.asCSSSelector(Codicon.close)));
 			// allow-any-unicode-next-line
-			remove.title = localize('paradis.layoutPresets.removePane', "この枠を削除");
+			const removeLabel = localize('paradis.layoutPresets.removePane', "この枠を削除");
+			remove.setAttribute('aria-label', removeLabel);
+			this.canvasDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), remove, removeLabel));
 			this.canvasDisposables.add(dom.addDisposableListener(remove, dom.EventType.CLICK, () =>
 				this.mutate(root => paradisRemoveLayoutSlot(root, path))));
 		}
@@ -384,9 +393,12 @@ export class ParadisLayoutPresetEditor extends EditorPane {
 			// 生きているため、ヘッダーの種類プルダウンやコマンド入力欄を押したつもりで
 			// 枠が増えてしまう。
 			for (const direction of PARADIS_LAYOUT_SPLIT_DIRECTIONS) {
-				const zone = dom.append(body, $('.paradis-layout-split-zone')) as HTMLElement;
+				// button にして Tab・Enter・Space で押せるようにする（見せ方は CSS の :focus-within のまま）
+				const zone = dom.append(body, $('button.paradis-layout-split-zone.paradis-focus-ring-inset')) as HTMLButtonElement;
+				zone.type = 'button';
 				zone.classList.add(direction);
-				zone.title = SPLIT_DIRECTION_TOOLTIP[direction];
+				zone.setAttribute('aria-label', SPLIT_DIRECTION_TOOLTIP[direction]);
+				this.canvasDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), zone, SPLIT_DIRECTION_TOOLTIP[direction]));
 				dom.append(zone, $(ThemeIcon.asCSSSelector(Codicon.add)));
 				this.canvasDisposables.add(dom.addDisposableListener(zone, dom.EventType.CLICK, () => this.split(path, direction)));
 			}
@@ -400,8 +412,8 @@ export class ParadisLayoutPresetEditor extends EditorPane {
 		field.type = 'text';
 		field.placeholder = placeholder;
 		field.value = value;
-		field.title = label;
 		field.setAttribute('aria-label', label);
+		this.canvasDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), field, label));
 		// change（フォーカスが外れたとき）で確定する。input ごとに木を作り直すと、そのたびに
 		// キャンバス全体が描き直されて入力中のフォーカスが飛ぶ。
 		this.canvasDisposables.add(dom.addDisposableListener(field, dom.EventType.CHANGE, () => onChange(field.value)));

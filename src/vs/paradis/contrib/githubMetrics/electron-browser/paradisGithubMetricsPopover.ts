@@ -126,6 +126,12 @@ export class ParadisGithubMetricsPopover extends Disposable {
 			return;
 		}
 
+		if (this.error) {
+			// 一度読めたあとに更新が失敗したとき。前の値のまま描くので、先頭で失敗を知らせる
+			const message = dom.append(this.bodyElement, $('.paradis-ghm-popover-message'));
+			message.textContent = localize('paradis.githubMetrics.popover.refreshFailed', "更新できませんでした: {0}", this.error);
+		}
+
 		if (!snapshot.ghAvailable) {
 			const message = dom.append(this.bodyElement, $('.paradis-ghm-popover-message'));
 			message.textContent = localize('paradis.githubMetrics.popover.noGh', "GitHub CLI（gh）が見つからないため、レート制限を取得できません。");

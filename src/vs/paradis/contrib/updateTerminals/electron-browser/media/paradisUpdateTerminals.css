@@ -6,28 +6,21 @@
 /* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
 
 /* Confirmation before restarting to update while terminals are kept on remotes / the pty daemon. */
-/* Sizes follow the other fork modals (8px radius, 5px buttons, 13px body). */
+/* The box is the UI kit's S modal with its three parts (header bar, body, footer bar); buttons are ParadisButton and tags are paradis-chip. */
 
 .monaco-workbench .para-ut-backdrop {
 	position: absolute;
 	inset: 0;
-	background: rgba(0, 0, 0, 0.18);
+	background: var(--vscode-paradis-scrim);
 	display: flex;
 	align-items: flex-start;
 	justify-content: center;
 	padding-top: 72px;
 }
 
-/* The box's size, surface and font come from the modal S tier (paradisModal.css, Q612). It scrolls when the window is short. */
-.monaco-workbench .para-ut-modal.paradis-modal {
-	padding: 16px 18px 14px;
-	overflow-y: auto;
-}
-
-.monaco-workbench .para-ut-modal h4 {
-	margin: 0 0 6px;
-	font-size: 14px;
-	font-weight: 700;
+/* The box's size, surface and font come from the modal S tier (paradisModal.css, Q612). The body scrolls when the window is short. */
+.monaco-workbench .para-ut-modal .paradis-modal-body {
+	padding: var(--paradis-modal-body-top) var(--vscode-spacing-size200) var(--vscode-spacing-size160);
 }
 
 .monaco-workbench .para-ut-detail {
@@ -68,7 +61,7 @@
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	padding: 3px 10px;
+	padding: 4px 10px;
 	font-size: 12px;
 	border-top: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
 }
@@ -81,25 +74,6 @@
 	white-space: nowrap;
 }
 
-.monaco-workbench .para-ut-tag {
-	flex-shrink: 0;
-	font-size: 10px;
-	padding: 0 6px;
-	border-radius: 8px;
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	color: var(--vscode-descriptionForeground);
-}
-
-.monaco-workbench .para-ut-tag.work {
-	color: var(--vscode-editorWarning-foreground);
-	border-color: var(--vscode-editorWarning-foreground);
-}
-
-.monaco-workbench .para-ut-tag.ask {
-	color: var(--vscode-errorForeground);
-	border-color: var(--vscode-errorForeground);
-}
-
 .monaco-workbench .para-ut-warn {
 	margin-top: 4px;
 	font-size: 12px;
@@ -110,39 +84,3 @@
 	font-family: var(--monaco-monospace-font);
 	font-size: 11px;
 }
-
-.monaco-workbench .para-ut-buttons {
-	display: flex;
-	justify-content: flex-end;
-	gap: 8px;
-	margin-top: 12px;
-}
-
-.monaco-workbench .para-ut-button {
-	appearance: none;
-	border: 1px solid var(--vscode-button-border, transparent);
-	border-radius: 5px;
-	padding: 4px 12px;
-	font: inherit;
-	font-size: 12px;
-	cursor: pointer;
-}
-
-.monaco-workbench .para-ut-button.secondary {
-	background: var(--vscode-button-secondaryBackground);
-	color: var(--vscode-button-secondaryForeground);
-}
-
-.monaco-workbench .para-ut-button.secondary:hover {
-	background: var(--vscode-button-secondaryHoverBackground);
-}
-
-.monaco-workbench .para-ut-button.danger {
-	background: var(--vscode-statusBarItem-errorBackground);
-	color: var(--vscode-statusBarItem-errorForeground);
-}
-
-.monaco-workbench .para-ut-button.danger:hover {
-	filter: brightness(0.92);
-}
-
