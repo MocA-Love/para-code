@@ -134,7 +134,7 @@ export default function PcLayout() {
 				<ColumnResizeHandle
 					x={sidebarWidth}
 					label="サイドバーの幅"
-					value={{ min: SIDEBAR_MIN_WIDTH, max: SIDEBAR_MAX_WIDTH, now: sidebarWidth }}
+					value={{ min: SIDEBAR_MIN_WIDTH, max: sidebarWidthFor(SIDEBAR_MAX_WIDTH, containerWidth), now: sidebarWidth }}
 					onStart={() => { dragStart.current = sidebarWidth; }}
 					onMove={dx => setSidebarWidth(dragStart.current + dx)}
 					onEnd={commitWidths}

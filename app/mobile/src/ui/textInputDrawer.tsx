@@ -59,8 +59,9 @@ export function TextInputDrawer({
 	const trimmed = value.trim();
 	const problem = validate?.(trimmed);
 	const canSubmit = (allowEmpty || trimmed.length > 0) && problem === undefined;
-	// 入力欄の下に出している理由（空欄のうちは出さない）。
-	const shownProblem = problem !== undefined && trimmed.length > 0 ? problem : undefined;
+	// 入力欄の下に出している理由（空欄のうちと、閉じている間は出さない）。
+	// 閉じた後も入力した値は残るので、保存した直後に「同じものがある」と読み上げないよう visible も見る。
+	const shownProblem = visible && problem !== undefined && trimmed.length > 0 ? problem : undefined;
 	// 理由が出た瞬間だけ読み上げる（入力のたびに読むと読み上げが途切れず続くため）。
 	const announcedProblem = useRef<string | undefined>(undefined);
 	useEffect(() => {

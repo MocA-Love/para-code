@@ -481,11 +481,11 @@ export default function SessionScreen() {
 					<ColumnResizeHandle
 						x={bodyWidth - dockWidth}
 						label="ドックの幅"
-						value={{ min: DOCK_MIN_WIDTH, max: DOCK_MAX_WIDTH, now: dockWidth }}
+						value={{ min: DOCK_MIN_WIDTH, max: dockWidthFor(DOCK_MAX_WIDTH, bodyWidth), now: dockWidth }}
 						onStart={() => { dockDragStart.current = dockWidth; }}
 						onMove={dx => setDockWidth(dockDragStart.current - dx)}
 						onEnd={commitWidths}
-						onStep={delta => { setDockWidth(dockWidth - delta); commitWidths(); }}
+						onStep={delta => { setDockWidth(dockWidth + delta); commitWidths(); }}
 					/>
 				) : null}
 			</View>
