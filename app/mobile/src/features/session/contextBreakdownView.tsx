@@ -35,34 +35,53 @@ function categoryColor(name: string): string {
 	return CATEGORY_COLORS[name] ?? colors.textDim;
 }
 
-type LoadState =
+type LoadedReply = Extract<ContextBreakdownReply, { readonly kind: 'ok' }>;
+
+/** 取り直しの状態。最後に取れた内訳（`LoadedState`）とは別に持ち、取り直しの間も前の内訳を出す（UX 点検 U2 案 A）。 */
+type FetchState =
 	| { readonly kind: 'loading' }
-	| { readonly kind: 'failed'; readonly message: string }
-	| ContextBreakdownReply;
+	| { readonly kind: 'done' }
+	| { readonly kind: 'failed'; readonly message: string };
+
+/** 最後に取れた内訳と、それを聞いた端末。端末が替わったら前の端末の内訳は出さない。 */
+interface LoadedState {
+	readonly terminalKey: string;
+	readonly reply: LoadedReply;
+}
 
 /**
  * セッションのシートの「コンテキスト」から進む内訳（q.html Q565 案 A）。開いたとき・作業中から止まったとき
  * （`refreshKey`）に PC へ 1 回聞く。PC は同梱の Claude Mod が応答の終わりごとに取って保存した最後の 1 件を返す。
- * 取れないときは理由を灰色で書く（Codex・まだ無い・PC が分からない）。幅は与えられた分に収まる（シートの中）。
+ * 取れないときは理由を灰色で書く（Codex・まだ無い・PC が分からない）。取り直しの間は前の内訳を残して見出しの右に
+ * 「更新中」を出し、取り直しに失敗したら前の内訳を残して見出しの下に理由を 1 行足す。幅は与えられた分に収まる（シートの中）。
  */
 export function ContextBreakdownView({ terminalKey, refreshKey }: { terminalKey: string | undefined; refreshKey: string }) {
 	const requestAgentReply = useAppStore(state => state.requestAgentReply);
-	const [state, setState] = useState<LoadState>({ kind: 'loading' });
+	const [fetchState, setFetchState] = useState<FetchState>({ kind: 'loading' });
+	const [loaded, setLoaded] = useState<LoadedState | undefined>(undefined);
 	useEffect(() => {
 		if (terminalKey === undefined) {
-			setState({ kind: 'failed', message: '内訳を取得できません' });
+			setFetchState({ kind: 'failed', message: '内訳を取得できません' });
 			return undefined;
 		}
 		let cancelled = false;
+		setFetchState({ kind: 'loading' });
 		requestAgentReply(terminalKey, { t: 'context-breakdown' }, 'context-breakdown', REQUEST_TIMEOUT_MS).then(
 			reply => {
-				if (!cancelled) {
-					setState(parseContextBreakdownReply(reply));
+				if (cancelled) {
+					return;
+				}
+				const parsed = parseContextBreakdownReply(reply);
+				if (parsed.kind === 'ok') {
+					setLoaded({ terminalKey, reply: parsed });
+					setFetchState({ kind: 'done' });
+				} else {
+					setFetchState({ kind: 'failed', message: parsed.message });
 				}
 			},
 			(error: unknown) => {
 				if (!cancelled) {
-					setState({ kind: 'failed', message: error instanceof Error ? error.message : '内訳を取得できません' });
+					setFetchState({ kind: 'failed', message: error instanceof Error ? error.message : '内訳を取得できません' });
 				}
 			},
 		);
@@ -71,25 +90,34 @@ export function ContextBreakdownView({ terminalKey, refreshKey }: { terminalKey:
 		};
 	}, [terminalKey, refreshKey, requestAgentReply]);
 
-	if (state.kind === 'loading') {
+	const shown = loaded !== undefined && loaded.terminalKey === terminalKey ? loaded.reply : undefined;
+	if (shown === undefined) {
+		if (fetchState.kind === 'failed') {
+			return <Text style={[monitorStyles.caption, styles.reason]}>{fetchState.message}</Text>;
+		}
 		return (
 			<View style={styles.center}>
 				<ActivityIndicator color={colors.textDim} />
 			</View>
 		);
 	}
-	if (state.kind === 'failed' || state.kind === 'unavailable') {
-		return <Text style={[monitorStyles.caption, styles.reason]}>{state.message}</Text>;
-	}
-	const { breakdown } = state;
+	const { breakdown } = shown;
 	const { counted, deferred } = contextCategoryLines(breakdown);
 	const now = Date.now();
 	return (
 		<View>
 			<View style={styles.head}>
 				<Text style={styles.headline} numberOfLines={1}>{contextHeadline(breakdown)}</Text>
-				<Text style={styles.at} numberOfLines={1}>{`取得: ${formatRelativeTime(Math.min(breakdown.at, now), now)}`}</Text>
+				{fetchState.kind === 'loading' ? (
+					<View style={styles.refreshing} accessible accessibilityLabel="内訳を更新中">
+						<ActivityIndicator size="small" color={colors.textDim} style={styles.refreshingSpinner} />
+						<Text style={styles.at} numberOfLines={1}>更新中</Text>
+					</View>
+				) : (
+					<Text style={styles.at} numberOfLines={1}>{`取得: ${formatRelativeTime(Math.min(breakdown.at, now), now)}`}</Text>
+				)}
 			</View>
+			{fetchState.kind === 'failed' ? <Text style={styles.failedNote}>{`更新できませんでした（${fetchState.message}）`}</Text> : null}
 			<View style={styles.bar} accessible accessibilityLabel={`コンテキストの使用率 ${breakdown.percent}%`}>
 				{counted.filter(line => line.kind === 'used' || line.kind === 'buffer').map(line => (
 					<View key={line.key} style={[styles.barPart, { width: `${line.share}%`, backgroundColor: line.kind === 'buffer' ? colors.borderStrong : categoryColor(line.key) }]} />
@@ -179,6 +207,23 @@ const styles = StyleSheet.create({
 		flexShrink: 0,
 		fontSize: type.meta,
 		color: colors.textMuted,
+	},
+	refreshing: {
+		flexShrink: 0,
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: 6,
+	},
+	refreshingSpinner: {
+		width: 12,
+		height: 12,
+		transform: [{ scale: 0.6 }],
+	},
+	failedNote: {
+		marginTop: 6,
+		marginHorizontal: space.xs,
+		fontSize: type.meta,
+		color: colors.amber,
 	},
 	bar: {
 		flexDirection: 'row',

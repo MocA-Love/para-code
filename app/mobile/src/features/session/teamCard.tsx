@@ -12,6 +12,7 @@ import { useChatStyles } from '../../ui/chatTextScale.js';
 import { useThemeColors } from '../../ui/index.js';
 import type { TeamChatRow } from './chatRows.js';
 import { TeamMemberSummary, TeamPill } from './teamParts.js';
+import { WorkflowBadge } from './workflowParts.js';
 
 /**
  * トークのチームのカード（案 T1）。メンバーごとの状態と今やっていることを出し、6 人を超えたら要対応と作業中を先に 5 人、
@@ -50,9 +51,7 @@ export const TeamCardRowView = memo(function TeamCardRowView({ row, terminalKey 
 				accessibilityLabel={`エージェントチーム、${team.members.length} 人、${TEAM_TONE_LABEL[tone]}${summary.length > 0 ? `、${summary}` : ''}。チームを開く`}
 			>
 				<View style={styles.top}>
-					<View style={styles.badge}>
-						<Text style={styles.badgeText}>TM</Text>
-					</View>
+					<WorkflowBadge label="TM" />
 					<View style={styles.nameBlock}>
 						<Text style={styles.name} numberOfLines={1}>エージェントチーム</Text>
 						<Text style={styles.kind} numberOfLines={1}>{`${team.members.length} 人${summary.length > 0 ? ` · ${summary}` : ''}`}</Text>
@@ -97,20 +96,6 @@ const baseStyles = StyleSheet.create({
 		flexDirection: 'row',
 		alignItems: 'center',
 		gap: space.sm,
-	},
-	badge: {
-		width: 28,
-		height: 28,
-		borderRadius: radius.control,
-		...squircle,
-		alignItems: 'center',
-		justifyContent: 'center',
-		backgroundColor: `${colors.claude}26`,
-	},
-	badgeText: {
-		fontSize: type.caption,
-		fontWeight: '800',
-		color: colors.claude,
 	},
 	nameBlock: {
 		flex: 1,
