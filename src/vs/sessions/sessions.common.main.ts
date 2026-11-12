@@ -533,4 +533,6 @@ import './services/sessions/browser/sessionsManagementService.js';
 // allow-any-unicode-next-line
 // PARA-PATCH: Sessionsウィンドウでもwatermark(トップページ)の画像差し替え・クリックスタイルCSSを適用する
 import '../paradis/contrib/watermark/browser/paradisWatermark.contribution.js';
+// PARA-PATCH: the split editor commands need IParadisEditorSplitTerminalService, which only the normal window registers
+import './contrib/sessionEditorSplit/browser/sessionEditorSplitTerminal.contribution.js';
 //#endregion
