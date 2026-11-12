@@ -13,6 +13,7 @@ import { ActivityIndicator, Linking, Modal, Pressable, ScrollView, StyleSheet, T
 import { paraAlert } from '../paraAlert.js';
 import { Ionicons } from '@expo/vector-icons';
 import { WebView } from 'react-native-webview';
+import type { ShouldStartLoadRequest } from 'react-native-webview/lib/WebViewTypes';
 import { marked } from 'marked';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
 import { Button } from './button.js';
@@ -25,7 +26,7 @@ import { haptic } from '../haptics.js';
 import type { FsReadResult } from '../store.js';
 import docxPreviewBundle from '../../assets/docxpreview/docxPreviewBundle.json';
 import { isFileViewerJavaScriptEnabled } from './webViewScriptPolicy.js';
-import { guardWebViewNavigation } from './webViewLinkGuard.js';
+import { createSingleExternalConfirm, guardWebViewNavigation } from './webViewLinkGuard.js';
 import { useWebViewRevival } from './webViewRevival.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useCloseOnAppLock } from '../appLock.js';
@@ -487,16 +488,18 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 	const kind = classifyMobileFileKind(name) ?? (/\.pdf$/i.test(name) ? 'pdf' : IMAGE_FILE_PATTERN.test(name) ? 'image' : AV_FILE_PATTERN.test(name) ? 'av' : /\.(?:md|markdown)$/i.test(name) ? 'markdown' : /\.(?:html?|xhtml)$/i.test(name) ? 'html' : 'other');
 	const officeKind = kind === 'spreadsheet' || kind === 'docx';
 	const officeNonce = useMemo(() => officeKind ? createMobileOfficeNonce() : undefined, [officeKind, spreadsheetHtml, docxData]);
-	const guardOfficeNavigation = useMemo(() => (request: { readonly url: string; readonly isTopFrame?: boolean }) => guardMobileOfficeNavigation(request, url => {
+	const confirmExternalLink = useMemo(() => createSingleExternalConfirm((url, settled) => {
 		paraAlert.alert(
 			'外部リンクを開きますか？',
 			url,
 			[
-				{ text: 'キャンセル', style: 'cancel' },
-				{ text: '開く', onPress: () => { void Linking.openURL(url).catch(() => { }); } },
+				{ text: 'キャンセル', style: 'cancel', onPress: settled },
+				{ text: '開く', onPress: () => { settled(); void Linking.openURL(url).catch(() => { }); } },
 			],
+			{ onDismiss: settled },
 		);
 	}), []);
+	const guardOfficeNavigation = useMemo(() => (request: { readonly url: string; readonly isTopFrame?: boolean }) => guardMobileOfficeNavigation(request, confirmExternalLink), [confirmExternalLink]);
 	// 検索一致行が指定されているときはRaw(コード)表示で開く（レンダー表示では行の概念がないため）
 	const initialMode: ViewMode = kind === 'other' || focusLine !== undefined ? 'code' : 'render';
 	const [mode, setMode] = useState<ViewMode>(initialMode);
@@ -553,6 +556,9 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 	}, [result, spreadsheetHtml, docxData, mediaData, mode, kind, focusLine, name, officeNonce, markdownNonce]);
 
 	const allowJs = isFileViewerJavaScriptEnabled(kind, mode, focusLine) || (markdownNonce !== undefined && mode === 'render' && kind === 'markdown');
+	// 利用者の HTML はスクリプトが動くので、外へ出る遷移は押していなくても起こせる。開く前に確かめる
+	const scriptedHtml = kind === 'html' && mode === 'render';
+	const guardHtmlNavigation = useMemo(() => (request: ShouldStartLoadRequest) => guardWebViewNavigation(request, scriptedHtml ? confirmExternalLink : undefined), [scriptedHtml, confirmExternalLink]);
 	const hasOfficeRenderPayload = (kind === 'spreadsheet' && spreadsheetHtml !== undefined) || (kind === 'docx' && docxData !== undefined);
 	const officeViewState = useMemo(() => ({
 		mode,
@@ -630,7 +636,7 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 						onContentProcessDidTerminate={revival.onContentProcessDidTerminate}
 						originWhitelist={[...MOBILE_DOCUMENT_ORIGIN_WHITELIST]}
 						javaScriptEnabled={allowJs}
-						onShouldStartLoadWithRequest={officeKind ? guardOfficeNavigation : guardWebViewNavigation}
+						onShouldStartLoadWithRequest={officeKind ? guardOfficeNavigation : guardHtmlNavigation}
 						{...(pathLinkView ? { onLoadEnd: links.onLoadEnd, onMessage: (event: { nativeEvent: { data: string } }) => { links.onMessage(event.nativeEvent.data); } } : {})}
 					/>
 				) : (

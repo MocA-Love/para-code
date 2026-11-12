@@ -4,10 +4,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { paraAlert } from '../../paraAlert.js';
 import { WebView } from 'react-native-webview';
+import type { ShouldStartLoadRequest } from 'react-native-webview/lib/WebViewTypes';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
 import { CircleAlert, FileQuestion } from 'lucide-react-native';
 import { createMobileOfficeNonce, guardMobileOfficeNavigation, MOBILE_DOCUMENT_ORIGIN_WHITELIST, secureMobileOfficeHtml } from '../../components/officeCapability.js';
-import { guardWebViewNavigation } from '../../components/webViewLinkGuard.js';
+import { createSingleExternalConfirm, guardWebViewNavigation } from '../../components/webViewLinkGuard.js';
 import { useWebViewRevival } from '../../components/webViewRevival.js';
 import { isFileViewerJavaScriptEnabled, isSearchableFileViewerJavaScriptEnabled } from '../../components/webViewScriptPolicy.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
@@ -262,12 +263,16 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 	const binary = content?.binary;
 	const trace = content?.trace;
 	const officeNonce = useMemo(() => (officeKind ? createMobileOfficeNonce() : undefined), [officeKind, spreadsheetHtml, binary]);
-	const guardOfficeNavigation = useCallback((request: { readonly url: string; readonly isTopFrame?: boolean }) => guardMobileOfficeNavigation(request, url => {
+	const confirmExternalLink = useMemo(() => createSingleExternalConfirm((url, settled) => {
 		paraAlert.alert('外部リンクを開きますか？', url, [
-			{ text: 'キャンセル', style: 'cancel' },
-			{ text: '開く', onPress: () => { void Linking.openURL(url).catch(() => undefined); } },
-		]);
+			{ text: 'キャンセル', style: 'cancel', onPress: settled },
+			{ text: '開く', onPress: () => { settled(); void Linking.openURL(url).catch(() => undefined); } },
+		], { onDismiss: settled });
 	}), []);
+	const guardOfficeNavigation = useCallback((request: { readonly url: string; readonly isTopFrame?: boolean }) => guardMobileOfficeNavigation(request, confirmExternalLink), [confirmExternalLink]);
+	// 利用者の HTML はスクリプトが動くので、外へ出る遷移は押していなくても起こせる。開く前に確かめる
+	const scriptedHtml = kind === 'html' && mode === 'render';
+	const guardHtmlNavigation = useCallback((request: ShouldStartLoadRequest) => guardWebViewNavigation(request, scriptedHtml ? confirmExternalLink : undefined), [scriptedHtml, confirmExternalLink]);
 	// Markdown のリンクと、開いた行の地は設定 → 色の「選択の印・リンク」。
 	const theme = useThemeColors();
 	const searchable = find !== undefined;
@@ -423,10 +428,10 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 				style={[styles.web, canvasColor !== undefined ? { backgroundColor: canvasColor } : null]}
 				source={{ html }}
 				onContentProcessDidTerminate={revival.onContentProcessDidTerminate}
-				// http(s) を許可リストに入れ、iframe を通す判定（guardWebViewNavigation）を Safari へ渡す前に効かせる（MOBILE_DOCUMENT_ORIGIN_WHITELIST）
+				// http(s) を許可リストに入れ、外へ出す前の確認と iframe を通す判定（guardHtmlNavigation）を Safari へ渡す前に効かせる（MOBILE_DOCUMENT_ORIGIN_WHITELIST）
 				originWhitelist={[...MOBILE_DOCUMENT_ORIGIN_WHITELIST]}
 				javaScriptEnabled={allowJs}
-				onShouldStartLoadWithRequest={guardWebViewNavigation}
+				onShouldStartLoadWithRequest={guardHtmlNavigation}
 				onLoadStart={trace?.loadStarted}
 				onLoadEnd={onViewLoadEnd}
 				{...(htmlImages !== undefined ? { injectedJavaScriptBeforeContentLoaded: HTML_IMAGES_LOADER_SCRIPT } : {})}

@@ -52,6 +52,15 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				title: 'VoiceOver で、接続中・実行中などの状態の点とセッションのタブの状態を読み上げるようにしました',
 			},
 			{
+				icon: 'shield-checkmark-outline',
+				title: 'HTML のプレビューから外のページへ移るときは、開く前に確かめるようにしました',
+				body: 'ページの中のスクリプトが勝手にブラウザを開くことはなくなります。',
+			},
+			{
+				icon: 'git-merge-outline',
+				title: 'プルリクエストのマージ中に別のスペースへ移ったとき、前のスペースのマージの失敗が移った先に出ていたのを直しました',
+			},
+			{
 				icon: 'color-palette-outline',
 				title: '設定 → 色で変えた「選択の印」の色が、質問の選択肢・キー行の Ctrl と「Enterなし」にも当たるようにしました',
 			},
