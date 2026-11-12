@@ -8,14 +8,15 @@
 import assert from 'assert';
 import { mainWindow } from '../../../../../base/browser/window.js';
 import { timeout } from '../../../../../base/common/async.js';
+import { safeIntl } from '../../../../../base/common/date.js';
 import { Event as BaseEvent } from '../../../../../base/common/event.js';
+import { language } from '../../../../../base/common/platform.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { upcastPartial } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ICommandService } from '../../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IContextViewService } from '../../../../../platform/contextview/browser/contextView.js';
-import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
@@ -24,11 +25,12 @@ import { IParadisAgentModelCatalogService } from '../../../agentModelCatalog/com
 import { IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisScheduledRunDefinition, IParadisScheduledRunsState } from '../../common/paradisScheduledRuns.js';
 import { IParadisScheduledRunsClient } from '../../electron-browser/paradisScheduledRunsClient.js';
-import { ParadisScheduledRunsDialog } from '../../electron-browser/paradisScheduledRunsDialog.js';
+import { paradisFormatScheduledTime, ParadisScheduledRunsDialog } from '../../electron-browser/paradisScheduledRunsDialog.js';
+import { IParadisDialogService } from '../../../confirmDialog/browser/paradisDialogService.js';
 import { paradisOpenAnotherModal } from '../../../paradisSettings/test/browser/paradisModalTestUtils.js';
 
-/** 定期実行のダイアログを開く。`spaceKey` は今いるスペース（`activeStateKey`）。 */
-async function openDialog(root: HTMLElement, state: IParadisScheduledRunsState, spaceKey?: string): Promise<ParadisScheduledRunsDialog> {
+/** 定期実行のダイアログを開く。`spaceKey` は今いるスペース（`activeStateKey`）。`confirm` は「キャンセル」の確かめの答え。 */
+async function openDialog(root: HTMLElement, state: IParadisScheduledRunsState, spaceKey?: string, confirm: () => boolean = () => true): Promise<ParadisScheduledRunsDialog> {
 	const dialog = new ParadisScheduledRunsDialog(
 		upcastPartial<ILayoutService>({ activeContainer: root }),
 		upcastPartial<IParadisScheduledRunsClient>({ onDidChange: BaseEvent.None, getState: async () => state }),
@@ -40,7 +42,7 @@ async function openDialog(root: HTMLElement, state: IParadisScheduledRunsState, 
 			isFixedBySettings: () => false,
 			getAgentTemplates: () => [{ id: 'claude', label: 'Claude', command: 'claude' }],
 		}),
-		upcastPartial<IDialogService>({}),
+		upcastPartial<IParadisDialogService>({ confirm: async () => ({ confirmed: confirm() }) }),
 		upcastPartial<ICommandService>({}),
 		upcastPartial<ISharedProcessService>({}),
 		upcastPartial<IConfigurationService>({ getValue: () => undefined }),
@@ -85,9 +87,11 @@ suite('ParadisScheduledRunsDialog', () => {
 			editRun('Evening');
 			const forOtherRun = form();
 			buttonByText('キャンセル').click();
+			await timeout(0);
 			editRun('Morning');
 			const afterReopen = form();
 			buttonByText('キャンセル').click();
+			await timeout(0);
 			second.dispose();
 
 			const third = await open();
@@ -131,12 +135,14 @@ suite('ParadisScheduledRunsDialog', () => {
 			buttonByText('新規作成').click();
 			const inSpaceB = prompt().value;
 			buttonByText('キャンセル').click();
+			await timeout(0);
 			inB.dispose();
 
 			const backInA = await openDialog(root, state, 'space-a');
 			buttonByText('新規作成').click();
 			const inSpaceA = prompt().value;
 			buttonByText('キャンセル').click();
+			await timeout(0);
 			backInA.dispose();
 			assert.deepStrictEqual({ inSpaceB, inSpaceA, leftOpen: root.children.length }, { inSpaceB: '', inSpaceA: 'Typed in space A', leftOpen: 0 });
 		} finally {
@@ -173,10 +179,12 @@ suite('ParadisScheduledRunsDialog', () => {
 			buttonByText('新規作成').click();
 			const newForm = prompt().value;
 			buttonByText('キャンセル').click();
+			await timeout(0);
 			selectRun('Morning');
 			buttonByText('編集').click();
 			const afterNew = prompt().value;
 			buttonByText('キャンセル').click();
+			await timeout(0);
 			dialog.dispose();
 			assert.deepStrictEqual({ afterNavClick, newForm, afterNew, leftOpen: root.children.length }, {
 				afterNavClick: 'Typed before picking another run',
@@ -187,5 +195,68 @@ suite('ParadisScheduledRunsDialog', () => {
 		} finally {
 			root.remove();
 		}
+	});
+
+	test('Escape keeps the typed edit as a draft and marks the run in the list, Cancel asks before throwing the input away', async () => {
+		const root = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(root);
+		const definition = (id: string, name: string): IParadisScheduledRunDefinition => ({
+			id, name, enabled: false, schedule: '0 9 * * 1-5',
+			target: { kind: 'repository', repositoryUri: 'file:///repo', repositoryName: 'repo' },
+			agentId: 'claude', prompt: `Saved prompt of ${name}`, dailyLimit: 3, createdAt: 0, updatedAt: 0,
+		});
+		const state: IParadisScheduledRunsState = { definitions: [definition('c', 'Noon'), definition('d', 'Night')], runs: [], nextRuns: {} };
+		const answers: boolean[] = [];
+		const buttonByText = (text: string) => [...root.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === text)!;
+		const navItems = () => [...root.querySelectorAll<HTMLButtonElement>('.psr-nav-item')];
+		const prompt = () => root.querySelector<HTMLTextAreaElement>('.psr-form textarea');
+		const type = (value: string) => {
+			prompt()!.value = value;
+			prompt()!.dispatchEvent(new Event('input', { bubbles: true }));
+		};
+		const list = () => navItems().map(item => ({ name: item.querySelector('.psr-nav-name')?.textContent, draft: !!item.querySelector('.paradis-chip'), current: item.getAttribute('aria-current') }));
+		try {
+			const dialog = await openDialog(root, state, undefined, () => answers.shift() ?? true);
+			navItems()[0].click();
+			buttonByText('編集').click();
+			type('Typed before Escape');
+			prompt()!.dispatchEvent(new KeyboardEvent('keydown', { keyCode: 27, bubbles: true }));
+			const afterEscape = { editing: prompt() !== null, list: list() };
+			buttonByText('編集').click();
+			const restored = prompt()!.value;
+			answers.push(false);
+			buttonByText('キャンセル').click();
+			await timeout(0);
+			const afterDeclined = prompt()?.value;
+			answers.push(true);
+			buttonByText('キャンセル').click();
+			await timeout(0);
+			const afterConfirmed = { editing: prompt() !== null, list: list() };
+			dialog.dispose();
+			assert.deepStrictEqual({ afterEscape, restored, afterDeclined, afterConfirmed }, {
+				afterEscape: {
+					editing: false,
+					list: [{ name: 'Noon', draft: true, current: 'true' }, { name: 'Night', draft: false, current: null }],
+				},
+				restored: 'Typed before Escape',
+				afterDeclined: 'Typed before Escape',
+				afterConfirmed: {
+					editing: false,
+					list: [{ name: 'Noon', draft: false, current: 'true' }, { name: 'Night', draft: false, current: null }],
+				},
+			});
+		} finally {
+			root.remove();
+		}
+	});
+
+	test('writes the weekday, and the year only when it is not this year', () => {
+		const now = new Date(2026, 2, 5, 10, 30).getTime();
+		const at = (year: number, month: number, day: number) => new Date(year, month - 1, day, 9, 0).getTime();
+		const expected = (year: number | undefined, month: number, day: number) => `${safeIntl.DateTimeFormat(language, { ...(year ? { year: 'numeric' } : {}), month: 'short', day: 'numeric', weekday: 'short' }).value.format(new Date(year ?? 2026, month - 1, day))} 9:00`;
+		assert.deepStrictEqual(
+			[paradisFormatScheduledTime(at(2026, 3, 5), now), paradisFormatScheduledTime(at(2026, 2, 26), now), paradisFormatScheduledTime(at(2025, 12, 25), now)],
+			['今日 9:00', expected(undefined, 2, 26), expected(2025, 12, 25)],
+		);
 	});
 });

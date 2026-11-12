@@ -94,11 +94,12 @@
 	flex-direction: column;
 	overflow: hidden;
 	box-sizing: border-box;
-	background-color: var(--vscode-quickInput-background, var(--vscode-editorWidget-background));
-	color: var(--vscode-foreground);
-	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
-	border-radius: var(--vscode-cornerRadius-medium, 6px);
-	box-shadow: 0 8px 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
+	/* The kit's stage 3 surface (paradisPopover.css): popup fill, subtle line, inner radius, large shadow. */
+	background-color: var(--vscode-paradis-popup);
+	color: var(--vscode-paradis-text);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner);
+	box-shadow: var(--vscode-shadow-lg);
 	font-size: var(--vscode-fontSize-body1);
 	outline: none;
 }
@@ -114,20 +115,21 @@
 	display: none;
 }
 
-/* The shared popover shape: header 30px with icon buttons, two-line rows (paradisTokens.css). */
+/* The stage 3 shape shared with the extensions and share lists: a header with 24px icon buttons, two-line rows
+	(paradisTokens.css). */
 .monaco-workbench .paradis-browser-downloads-popover .pbd-header {
 	display: flex;
 	align-items: center;
-	gap: var(--vscode-spacing-size40);
-	height: 30px;
-	padding: 0 var(--vscode-spacing-size40) 0 var(--vscode-spacing-size100);
+	gap: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size80) var(--vscode-spacing-size80) var(--vscode-spacing-size120);
 	border-bottom: var(--paradis-popover-header-border);
 	flex: none;
+	color: var(--vscode-paradis-textStrong);
 }
 
 .monaco-workbench .paradis-browser-downloads-popover .pbd-title {
 	flex: 1;
-	font-size: var(--vscode-fontSize-label1);
+	font-size: var(--vscode-fontSize-body1);
 	font-weight: var(--vscode-fontWeight-semiBold);
 }
 
@@ -152,11 +154,11 @@
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	width: 22px;
-	height: 22px;
+	width: var(--paradis-height-sm);
+	height: var(--paradis-height-sm);
 	padding: 0;
 	flex: none;
-	border-radius: var(--vscode-cornerRadius-small);
+	border-radius: var(--paradis-radius-control);
 	color: var(--vscode-icon-foreground, inherit);
 }
 
@@ -205,7 +207,7 @@
 }
 
 .monaco-workbench .paradis-browser-downloads-popover .pbd-row:hover {
-	background-color: var(--vscode-list-hoverBackground);
+	background-color: var(--vscode-paradis-fillSelected);
 }
 
 .monaco-workbench .paradis-browser-downloads-popover .pbd-icon {

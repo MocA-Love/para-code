@@ -16,7 +16,7 @@ import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { IntervalTimer, RunOnceScheduler } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
-import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { OS, OperatingSystem } from '../../../../base/common/platform.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
@@ -198,6 +198,8 @@ interface IExtensionOption {
 const WORKER_LOG_POLL_MS = 1_500;
 /** 画面に残すログの行（main が覚えている数と同じ）。 */
 const MAX_SHOWN_LOG_LINES = 200;
+/** キーを待つ欄の案内の文の id（描き直すたびに新しい欄を作るので、毎回違う id にする）。 */
+let recorderHintId = 0;
 
 export class ParadisBrowserExtensionsArea extends Disposable implements IParadisHubAreaView {
 
@@ -210,7 +212,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 	private readonly _addItem: HTMLElement;
 	private readonly _storeRow: HTMLElement;
 	private readonly _storeInput: HTMLInputElement;
-	private readonly _storeButton: HTMLButtonElement;
+	private readonly _storeButton: ParadisButton;
 	/** 一覧と詳細の作り直しごとに捨てるリスナー置き場。 */
 	private readonly _renderStore = this._register(new DisposableStore());
 	private readonly _noticeStore = this._register(new DisposableStore());
@@ -238,6 +240,8 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 	private _recording: { readonly extensionId: string; readonly name: string } | undefined;
 	/** 付け替えるか確かめているキー。 */
 	private _pending: IPendingShortcut | undefined;
+	/** 削除の確認を出している拡張機能（描き直すと確認の欄は消えるので、描き直しのたびに下ろす）。 */
+	private _confirmingRemoveId: string | undefined;
 	private readonly _contentElement: HTMLElement;
 
 	constructor(
@@ -306,10 +310,8 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		this._storeInput.type = 'text';
 		this._storeInput.placeholder = localize('paradis.browserExtensions.store.placeholder', "Chrome ウェブストアのリンクか拡張機能の ID");
 		this._storeInput.setAttribute('aria-label', localize('paradis.browserExtensions.store.label', "Chrome ウェブストアから追加する拡張機能のリンクか ID"));
-		this._storeButton = dom.append(this._storeRow, $<HTMLButtonElement>('button.pbpm-btn.paradis-focus-ring.secondary'));
-		this._storeButton.type = 'button';
-		this._storeButton.textContent = localize('paradis.browserExtensions.store.add', "ストアから追加");
-		this._register(dom.addDisposableListener(this._storeButton, dom.EventType.CLICK, () => void this._addFromWebStore()));
+		this._storeButton = this._register(new ParadisButton(this._storeRow, { kind: 'secondary', label: localize('paradis.browserExtensions.store.add', "ストアから追加") }));
+		this._register(this._storeButton.onDidClick(() => void this._addFromWebStore()));
 		this._register(dom.addDisposableListener(this._storeInput, dom.EventType.KEY_DOWN, (event: KeyboardEvent) => {
 			if (event.key === 'Enter') {
 				event.preventDefault();
@@ -342,6 +344,13 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 			this._recording = undefined;
 			this._pending = undefined;
 			this._render();
+			return true;
+		}
+		// 削除の確認を出しているときの Esc は確認だけを閉じ、「削除」へフォーカスを戻す
+		const confirmingId = this._confirmingRemoveId;
+		if (confirmingId !== undefined) {
+			this._render();
+			this._controls.get(`actions:${confirmingId}:remove`)?.focus();
 			return true;
 		}
 		return false;
@@ -407,12 +416,11 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		}
 		this._noticeElement.style.display = '';
 		const text = dom.append(this._noticeElement, $('span'));
-		const button = dom.append(this._noticeElement, $<HTMLButtonElement>('button.pbpm-btn.paradis-focus-ring.primary'));
-		button.type = 'button';
+		const button = this._noticeStore.add(new ParadisButton(this._noticeElement, { kind: 'primary' }));
 		if (!state.active && !state.setting) {
 			text.textContent = localize('paradis.browserExtensions.notice.off', "試験的な機能です。今はオフになっています。オンにすると、再起動の後に使えます。");
-			button.textContent = localize('paradis.browserExtensions.notice.turnOn', "オンにする");
-			this._noticeStore.add(dom.addDisposableListener(button, 'click', async () => {
+			button.label = localize('paradis.browserExtensions.notice.turnOn', "オンにする");
+			this._noticeStore.add(button.onDidClick(async () => {
 				try {
 					await this.configurationService.updateValue(PARADIS_BROWSER_EXTENSIONS_ENABLED_SETTING, true, ConfigurationTarget.USER);
 				} catch (error) {
@@ -426,13 +434,14 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 			text.textContent = state.setting
 				? localize('paradis.browserExtensions.notice.restartOn', "設定をオンにしました。再起動すると拡張機能が使えます。")
 				: localize('paradis.browserExtensions.notice.restartOff', "設定をオフにしました。再起動すると拡張機能は読み込まれなくなります（入れたものは残ります）。");
-			button.textContent = localize('paradis.browserExtensions.notice.restart', "再起動");
-			this._noticeStore.add(dom.addDisposableListener(button, 'click', () => void this.nativeHostService.relaunch()));
+			button.label = localize('paradis.browserExtensions.notice.restart', "再起動");
+			this._noticeStore.add(button.onDidClick(() => void this.nativeHostService.relaunch()));
 		}
 	}
 
 	/** 一覧と詳細を作り直す。 */
 	private _render(): void {
+		this._confirmingRemoveId = undefined;
 		this._renderStore.clear();
 		this._logTimer.cancel();
 		this._logElement = undefined;
@@ -448,7 +457,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		this._addItem.classList.toggle('is-disabled', !state?.active || this._busy);
 		this._addItem.setAttribute('aria-disabled', String(!state?.active || this._busy));
 		this._storeInput.disabled = !state?.active || this._busy;
-		this._storeButton.disabled = !state?.active || this._busy;
+		this._storeButton.enabled = !!state?.active && !this._busy;
 		if (!state) {
 			return;
 		}
@@ -701,8 +710,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 				this._showMessage(localize('paradis.browserExtensions.updated', "「{0}」を版 {1} に更新しました。開いているページには、読み込み直すと効きます。", result.extension.name, result.extension.version), false);
 			}));
 		}
-		const removeButton = this._appendDetailButton(actions, `actions:${extension.id}:remove`, localize('paradis.browserExtensions.remove', "削除"), !active, async () => this._confirmRemove(extension, confirmHost));
-		removeButton.classList.add('is-danger');
+		this._appendDetailButton(actions, `actions:${extension.id}:remove`, localize('paradis.browserExtensions.remove', "削除"), !active, async () => this._confirmRemove(extension, confirmHost), 'danger');
 
 		if (extension.loadError) {
 			dom.append(detail, $('.pbe-callout.is-error')).textContent = localize('paradis.browserExtensions.loadError', "読み込めませんでした: {0}", extension.loadError);
@@ -817,10 +825,8 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		if (lost > 0) {
 			dom.append(summary, $('span.pbe-sc-warn-text')).textContent = localize('paradis.browserExtensions.shortcuts.lostCount', "{0} 個は重なって使えません", lost);
 		}
-		const open = dom.append(summary, $<HTMLButtonElement>('button.pbpm-btn.paradis-focus-ring.secondary'));
-		open.type = 'button';
-		open.textContent = localize('paradis.browserExtensions.shortcuts.openList', "ショートカットの一覧で変える");
-		this._renderStore.add(dom.addDisposableListener(open, 'click', () => this._showShortcuts()));
+		const open = this._renderStore.add(new ParadisButton(summary, { kind: 'secondary', label: localize('paradis.browserExtensions.shortcuts.openList', "ショートカットの一覧で変える") }));
+		this._renderStore.add(open.onDidClick(() => this._showShortcuts()));
 	}
 
 	/** ショートカットの一覧（入れた拡張機能を先に入れた順に並べ、コマンドとキーを出す）。 */
@@ -873,9 +879,12 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		if (recording) {
 			const recorder = dom.append(keyCell, $('span.pbe-sc-recorder.paradis-focus-ring'));
 			recorder.tabIndex = 0;
-			recorder.setAttribute('role', 'textbox');
 			recorder.setAttribute('aria-label', localize('paradis.browserExtensions.shortcuts.recorderLabel', "「{0}」のキー", label));
-			recorder.textContent = localize('paradis.browserExtensions.shortcuts.recorder', "キーを押してください（Esc でやめる）");
+			// 入力欄ではない（押したキーを読むだけ）ので role は付けず、案内の文を説明として結ぶ
+			const hint = dom.append(recorder, $('span'));
+			hint.id = `pbe-sc-recorder-hint-${recorderHintId++}`;
+			hint.textContent = localize('paradis.browserExtensions.shortcuts.recorder', "キーを押してください（Esc でやめる）");
+			recorder.setAttribute('aria-describedby', hint.id);
 			this._renderStore.add(dom.addDisposableListener(recorder, dom.EventType.KEY_DOWN, (event: KeyboardEvent) => this._onRecorderKey(event, extension, command)));
 			this._renderStore.add(dom.addDisposableListener(recorder, dom.EventType.BLUR, () => {
 				// ほかを押してフォーカスが外れたらやめる（描き直しで外れたときは同じものに戻っている）
@@ -900,14 +909,15 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		}
 		const actions = dom.append(row, $('.pbe-sc-actions'));
 		if (!recording) {
-			const edit = dom.append(actions, $<HTMLButtonElement>('button.pbpm-btn.paradis-focus-ring.secondary'));
-			edit.type = 'button';
-			edit.textContent = command.shortcut
-				? localize('paradis.browserExtensions.shortcuts.edit', "変更")
-				: localize('paradis.browserExtensions.shortcuts.add', "キーを付ける");
-			edit.disabled = disabled;
-			edit.setAttribute('aria-label', localize('paradis.browserExtensions.shortcuts.editLabel', "「{0}」のキーを変える", label));
-			this._renderStore.add(dom.addDisposableListener(edit, 'click', () => {
+			const edit = this._renderStore.add(new ParadisButton(actions, {
+				kind: 'secondary',
+				label: command.shortcut
+					? localize('paradis.browserExtensions.shortcuts.edit', "変更")
+					: localize('paradis.browserExtensions.shortcuts.add', "キーを付ける"),
+				ariaLabel: localize('paradis.browserExtensions.shortcuts.editLabel', "「{0}」のキーを変える", label),
+				disabled,
+			}));
+			this._renderStore.add(edit.onDidClick(() => {
 				this._recording = { extensionId: extension.id, name: command.name };
 				this._pending = undefined;
 				this._showMessage('', false);
@@ -942,18 +952,13 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 			conflict.setAttribute('role', 'alert');
 			conflict.appendChild($(ThemeIcon.asCSSSelector(Codicon.warning)));
 			dom.append(conflict, $('span')).textContent = localize('paradis.browserExtensions.shortcuts.conflict', "{0} は {1} の「{2}」が使っています。付け替えると、{1} のほうは外れます。", pending.shortcut, pending.ownerName, pending.ownerCommand);
-			const take = dom.append(conflict, $<HTMLButtonElement>('button.pbpm-btn.paradis-focus-ring.primary'));
-			take.type = 'button';
-			take.textContent = localize('paradis.browserExtensions.shortcuts.take', "付け替える");
-			take.disabled = disabled;
-			const keep = dom.append(conflict, $<HTMLButtonElement>('button.pbpm-btn.paradis-focus-ring.secondary'));
-			keep.type = 'button';
-			keep.textContent = localize('paradis.browserExtensions.shortcuts.keep', "やめる");
-			this._renderStore.add(dom.addDisposableListener(take, 'click', () => {
+			const take = this._renderStore.add(new ParadisButton(conflict, { kind: 'primary', label: localize('paradis.browserExtensions.shortcuts.take', "付け替える"), disabled }));
+			const keep = this._renderStore.add(new ParadisButton(conflict, { kind: 'secondary', label: localize('paradis.browserExtensions.shortcuts.keep', "やめる") }));
+			this._renderStore.add(take.onDidClick(() => {
 				this._pending = undefined;
 				void this._assignShortcut(pending, label);
 			}));
-			this._renderStore.add(dom.addDisposableListener(keep, 'click', () => {
+			this._renderStore.add(keep.onDidClick(() => {
 				this._pending = undefined;
 				this._render();
 			}));
@@ -1049,7 +1054,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		for (const host of hosts) {
 			const chip = dom.append(chips, $('span.pbe-chip.is-host'));
 			chip.textContent = host === '<all_urls>' || host === '*://*/*' ? localize('paradis.browserExtensions.allSites', "すべてのサイト") : host;
-			chip.title = host;
+			this._renderStore.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), chip, host));
 		}
 		for (const permission of permissions) {
 			dom.append(chips, $('span.pbe-chip')).textContent = permission;
@@ -1067,6 +1072,8 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		log.setAttribute('aria-label', localize('paradis.browserExtensions.worker.logLabel', "背景の処理のログ"));
 		log.tabIndex = 0;
 		this._logElement = log;
+		// ログの行のホバー（どこから出たか）。古い行を消すときに一緒に外す
+		const lineHovers = this._renderStore.add(new DisposableMap<HTMLElement>());
 		const id = extension.id;
 		const empty = dom.append(log, $('.pbe-log-empty'));
 		empty.textContent = localize('paradis.browserExtensions.worker.noLog', "まだ出力はありません。");
@@ -1091,24 +1098,29 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 			}
 			lastSeq = lines[lines.length - 1].seq;
 			empty.remove();
-			this._appendLog(log, lines);
+			this._appendLog(log, lines, lineHovers);
 		};
 		void load();
 		this._logTimer.cancelAndSet(() => void load(), WORKER_LOG_POLL_MS, dom.getWindow(log));
 	}
 
 	/** ログに行を足す（古い行は {@link MAX_SHOWN_LOG_LINES} を超えた分だけ消す）。 */
-	private _appendLog(log: HTMLElement, lines: readonly IParadisWorkerLogLine[]): void {
+	private _appendLog(log: HTMLElement, lines: readonly IParadisWorkerLogLine[], lineHovers: DisposableMap<HTMLElement>): void {
 		const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
 		for (const line of lines) {
 			const row = dom.append(log, $(`.pbe-log-line.is-${line.level}`));
 			row.textContent = line.session ? `[${formatLogTime(line.at)}] [${line.session}] ${line.message}` : `[${formatLogTime(line.at)}] ${line.message}`;
 			if (line.source) {
-				row.title = line.source;
+				lineHovers.set(row, this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), row, line.source));
 			}
 		}
 		while (log.childElementCount > MAX_SHOWN_LOG_LINES) {
-			log.firstElementChild?.remove();
+			const first = log.firstElementChild;
+			if (!dom.isHTMLElement(first)) {
+				break;
+			}
+			lineHovers.deleteAndDispose(first);
+			first.remove();
 		}
 		if (atBottom) {
 			log.scrollTop = log.scrollHeight;
@@ -1116,32 +1128,25 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 	}
 
 	/** `name` はフォーカスを戻すときの名前（拡張機能と節とボタンが分かるものにする。同じ文言のボタンが並んでも取り違えない）。 */
-	private _appendDetailButton(parent: HTMLElement, name: string, label: string, disabled: boolean, run: () => Promise<unknown>): HTMLButtonElement {
-		const button = dom.append(parent, $<HTMLButtonElement>('button.pbpm-btn.paradis-focus-ring.secondary'));
-		button.type = 'button';
-		button.textContent = label;
-		button.disabled = disabled || this._busy;
-		this._renderStore.add(dom.addDisposableListener(button, 'click', () => void run()));
-		this._controls.set(name, button);
-		return button;
+	private _appendDetailButton(parent: HTMLElement, name: string, label: string, disabled: boolean, run: () => Promise<unknown>, kind: 'secondary' | 'danger' = 'secondary'): void {
+		const button = this._renderStore.add(new ParadisButton(parent, { kind, label, disabled: disabled || this._busy }));
+		this._renderStore.add(button.onDidClick(() => void run()));
+		this._controls.set(name, button.element);
 	}
 
 	private _confirmRemove(extension: IParadisBrowserExtensionView, host: HTMLElement): void {
 		dom.clearNode(host);
+		this._confirmingRemoveId = extension.id;
 		const popover = dom.append(host, $('.pbpm-confirm'));
 		const title = dom.append(popover, $('.pbpm-confirm-title'));
 		dom.append(title, $(ThemeIcon.asCSSSelector(Codicon.warning)));
 		dom.append(title, $('span')).textContent = localize('paradis.browserExtensions.confirmTitle', "「{0}」を削除しますか？", extension.name);
 		dom.append(popover, $('p')).textContent = localize('paradis.browserExtensions.confirmBody', "すべての場所から外し、この拡張機能が保存したデータも消します（消しきるのは次の起動の後です。それまでは入れ直せません）。元のフォルダは消しません。");
 		const buttons = dom.append(popover, $('.pbpm-confirm-actions'));
-		const cancel = dom.append(buttons, $<HTMLButtonElement>('button.pbpm-btn.paradis-focus-ring.secondary'));
-		cancel.type = 'button';
-		cancel.textContent = localize('paradis.browserExtensions.confirmCancel', "キャンセル");
-		const confirm = dom.append(buttons, $<HTMLButtonElement>('button.pbpm-btn.paradis-focus-ring.danger'));
-		confirm.type = 'button';
-		confirm.textContent = localize('paradis.browserExtensions.confirmRemove', "削除する");
-		this._renderStore.add(dom.addDisposableListener(cancel, 'click', () => this._render()));
-		this._renderStore.add(dom.addDisposableListener(confirm, 'click', () => void this._run(() => this._mainService.remove(extension.id))));
+		const cancel = this._renderStore.add(new ParadisButton(buttons, { kind: 'secondary', label: localize('paradis.browserExtensions.confirmCancel', "キャンセル") }));
+		const confirm = this._renderStore.add(new ParadisButton(buttons, { kind: 'danger', label: localize('paradis.browserExtensions.confirmRemove', "削除する") }));
+		this._renderStore.add(cancel.onDidClick(() => this._render()));
+		this._renderStore.add(confirm.onDidClick(() => void this._run(() => this._mainService.remove(extension.id))));
 		confirm.focus();
 	}
 
@@ -1186,7 +1191,8 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 				return;
 			}
 			// 補助ウィンドウでは instanceof が効かないので、disabled は属性の値で見る
-			const focusable = (element: HTMLElement | undefined) => element?.isConnected && (element as HTMLElement & { disabled?: boolean }).disabled !== true ? element : undefined;
+			// キットのボタン（ParadisButton）は <a> なので、無効は aria-disabled で見る
+			const focusable = (element: HTMLElement | undefined) => element?.isConnected && (element as HTMLElement & { disabled?: boolean }).disabled !== true && element.getAttribute('aria-disabled') !== 'true' ? element : undefined;
 			const target = focusable(active) ?? (key !== undefined && selectedId === this._selectedId && view === this._view ? focusable(this._controls.get(key)) : undefined);
 			if (target) {
 				target.focus();
