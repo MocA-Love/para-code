@@ -29,7 +29,7 @@ describe('reconcileSubmittedDraft', () => {
 		// 回答の入力のまま断られたら、回答の入力欄へ戻す（これまでどおり）
 		expect(reconcileRejectedAnswerTarget('agent-a', 'agent-a', true, '追記', '下書き', '回答')).toEqual({ kind: 'active', value: '回答追記' });
 		// 回答をやめて通常の入力欄に戻っていたら、通常の下書きの前へ戻す
-		expect(reconcileRejectedAnswerTarget('agent-a', 'agent-a', true, '下書き', '下書き', '回答')).toEqual({ kind: 'active', value: '回答下書き' });
+		expect(reconcileRejectedAnswerTarget('agent-a', 'agent-a', true, '入力中', '下書き', '回答')).toEqual({ kind: 'active', value: '回答入力中' });
 		// 回答をやめた直後で入力欄がまだ差し替わっていなければ、送信元の下書きへ戻す（差し替えのときに読み込まれる）
 		expect(reconcileRejectedAnswerTarget('agent-a', 'agent-a', false, '', '下書き', '回答')).toEqual({ kind: 'stored', key: 'agent-a', value: '回答下書き' });
 		// 別のタブへ移っていたら、送信元の下書きへ戻す
