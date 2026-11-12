@@ -125,6 +125,8 @@ export class ParadisHiddenGpuRelease<TFont> extends Disposable {
 	/**
 	 * 設定の切り替えを見張る（最初に見え方が変わったときに 1 回だけ張る。構築の時点ではサービスを読めないため）。
 	 * オンにした時点で見えていない端末も、見えなくなった瞬間と同じく猶予の後に外す。オフにしたら待ちを取り消す。
+	 * オフにしたときに、すでに外した端末は付け直さない（意図した仕様）。見えないまま付け直しても GPU の
+	 * メモリを使うだけで、見えるようになれば `setVisible(true)` で付け直す。
 	 */
 	private _listenToSetting(): void {
 		if (this._configurationListener.value) {

@@ -329,8 +329,11 @@ class ParadisTerminalScreenSaverContribution extends Disposable implements IWork
 	private _save(): Promise<void> {
 		// 重ねて走らせない（書き込みの順が入れ替わると古い状態が勝つ）。走っている途中に頼まれたら、
 		// 終わってからもう1回だけ保存する。走っている保存は画面をもう読み終えていることがあり、
-		// それを待つだけだと、閉じる直前の出力が入らないまま最後の保存になる
-		return this._saving.queue(() => this._doSave());
+		// それを待つだけだと、閉じる直前の出力が入らないまま最後の保存になる。
+		// 積んだ分が始まる時点で閉じる処理（onWillShutdown）に入っていたら保存しない。1回目が
+		// SAVE_ON_SHUTDOWN_TIMEOUT を超えると upstream が端末を畳むので、そこから始めると端末が0本に
+		// 見えて、PC の再起動の後に戻す保存物を消してしまう
+		return this._saving.queue(() => this._lifecycleService.willShutdown ? Promise.resolve() : this._doSave());
 	}
 
 	private async _doSave(): Promise<void> {

@@ -132,4 +132,19 @@ suite('ParadisHiddenGpuRelease', () => {
 
 		assert.deepStrictEqual({ on: { calls: onHost.calls, released: on.isReleased }, off: offHost.calls }, { on: { calls: ['release'], released: true }, off: [] });
 	}));
+
+	test('turning the setting off keeps an already released hidden terminal released until it is shown', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const host = new TestHost();
+		const release = create(host);
+		release.setVisible(false);
+		await timeout(PARADIS_HIDDEN_GPU_RELEASE_DELAY);
+		host.changeEnabled(false);
+		await timeout(PARADIS_HIDDEN_GPU_RELEASE_DELAY * 2);
+		const whileHidden = { calls: [...host.calls], released: release.isReleased };
+		release.setVisible(true);
+		assert.deepStrictEqual(
+			{ whileHidden, afterShown: { calls: host.calls, released: release.isReleased } },
+			{ whileHidden: { calls: ['release'], released: true }, afterShown: { calls: ['release', 'reacquire'], released: false } },
+		);
+	}));
 });
