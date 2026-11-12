@@ -141,7 +141,7 @@ export const VoiceUsageChart = memo(function VoiceUsageChart({ bars, firstLabel,
 
 const styles = StyleSheet.create({
 	box: {
-		paddingVertical: space.sm + 2,
+		paddingVertical: space.row,
 		paddingHorizontal: space.md,
 		borderRadius: radius.card,
 		backgroundColor: colors.panel,
@@ -149,7 +149,7 @@ const styles = StyleSheet.create({
 	tip: {
 		fontSize: type.meta,
 		color: colors.textDim,
-		marginBottom: space.xs + 2,
+		marginBottom: space.snug,
 		fontVariant: ['tabular-nums'],
 	},
 	tipHint: {

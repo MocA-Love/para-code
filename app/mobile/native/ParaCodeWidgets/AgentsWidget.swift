@@ -309,6 +309,7 @@ private struct AgentsLarge: View {
 				PillLabel(title: "確認済み", systemImage: "checkmark", palette: palette)
 			}
 			.buttonStyle(.plain)
+			.accessibilityLabel("\(model.title(agent))を確認済みにする")
 		} else if !model.offline {
 			Group {
 				if agent.state == "running", let since = agent.since {

@@ -302,8 +302,8 @@ const styles = StyleSheet.create({
 	toolbar: {
 		flexDirection: 'row',
 		alignItems: 'center',
-		gap: space.xs + 2,
-		paddingVertical: space.xs + 2,
+		gap: space.snug,
+		paddingVertical: space.snug,
 		paddingHorizontal: space.md,
 		borderTopWidth: 1,
 		borderTopColor: colors.border,
@@ -315,7 +315,7 @@ const styles = StyleSheet.create({
 		alignItems: 'center',
 		gap: space.xs,
 		minHeight: CHIP_HEIGHT,
-		paddingHorizontal: space.sm + 2,
+		paddingHorizontal: space.row,
 		borderRadius: radius.group,
 		borderWidth: 1,
 		borderColor: colors.border,
@@ -337,7 +337,7 @@ const styles = StyleSheet.create({
 		alignItems: 'center',
 		gap: space.xs,
 		minHeight: CHIP_HEIGHT,
-		paddingHorizontal: space.xs + 2,
+		paddingHorizontal: space.snug,
 		flexShrink: 1,
 	},
 	modeText: {
@@ -391,7 +391,7 @@ const styles = StyleSheet.create({
 		height: SEARCH_HEIGHT,
 		borderRadius: radius.tile,
 		backgroundColor: colors.raised,
-		paddingHorizontal: space.sm + 2,
+		paddingHorizontal: space.row,
 	},
 	searchInput: {
 		flex: 1,
