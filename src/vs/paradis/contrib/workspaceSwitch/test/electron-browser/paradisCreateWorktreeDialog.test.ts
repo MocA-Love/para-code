@@ -119,10 +119,10 @@ suite('create worktree dialog: setup switch', () => {
 		);
 		try {
 			const backdrop = container.querySelector<HTMLElement>('.paradis-create-worktree-backdrop')!;
-			backdrop.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true }));
+			backdrop.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, isComposing: true, bubbles: true }));
 			backdrop.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, ctrlKey: true, isComposing: true, bubbles: true }));
 			const whileComposing = { open: container.contains(backdrop), enqueued: enqueued.length };
-			backdrop.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+			backdrop.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
 			assert.deepStrictEqual({ whileComposing, afterEscape: container.contains(backdrop) }, {
 				whileComposing: { open: true, enqueued: 0 },
 				afterEscape: false,
@@ -202,7 +202,7 @@ suite('create worktree dialog: closing and drafts', () => {
 		}
 	});
 
-	test('Escape, the backdrop and the close button keep what was written; reopening the same repository brings it back; Cancel drops it', () => {
+	test('Escape and the backdrop keep what was written; reopening the same repository brings it back; Cancel drops it', () => {
 		const container = mainWindow.document.createElement('div');
 		mainWindow.document.body.appendChild(container);
 		try {
