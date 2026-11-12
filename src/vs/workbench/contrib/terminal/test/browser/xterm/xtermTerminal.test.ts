@@ -681,7 +681,8 @@ suite('XtermTerminal', () => {
 				selectionBackground: '#000500',
 				selectionInactiveBackground: '#000600',
 				selectionForeground: undefined,
-				overviewRulerBorder: undefined,
+				// PARA-PATCH: the overview ruler border is always transparent in Para Code
+				overviewRulerBorder: '#0000',
 				scrollbarSliderActiveBackground: undefined,
 				scrollbarSliderBackground: undefined,
 				scrollbarSliderHoverBackground: undefined,
@@ -735,7 +736,8 @@ suite('XtermTerminal', () => {
 				selectionBackground: '#00050f',
 				selectionInactiveBackground: '#00060f',
 				selectionForeground: '#00070f',
-				overviewRulerBorder: undefined,
+				// PARA-PATCH: the overview ruler border is always transparent in Para Code
+				overviewRulerBorder: '#0000',
 				scrollbarSliderActiveBackground: undefined,
 				scrollbarSliderBackground: undefined,
 				scrollbarSliderHoverBackground: undefined,
