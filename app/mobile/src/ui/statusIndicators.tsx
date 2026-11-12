@@ -16,6 +16,8 @@ export function StatusDot({ kind, size = 8 }: { kind: ConnectionKind; size?: 6 |
 	return (
 		<View
 			style={[styles.dot, { width: size, height: size, backgroundColor: connectionColor(kind) }]}
+			accessible
+			accessibilityRole="image"
 			accessibilityLabel={connectionLabel(kind)}
 		/>
 	);
@@ -53,7 +55,7 @@ function StateGlyph({ kind, size }: { kind: StatusKey; size: keyof typeof GLYPH 
 	const g = GLYPH[size];
 	const color = agentDotColor(kind);
 	return (
-		<View style={[styles.box, { width: g.box, height: g.box }]} accessibilityLabel={status[kind].label}>
+		<View style={[styles.box, { width: g.box, height: g.box }]} accessible accessibilityRole="image" accessibilityLabel={status[kind].label}>
 			{spinning ? (
 				<Animated.View
 					style={[
