@@ -5,6 +5,7 @@ import { InteractionManager } from 'react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { FS_BINARY_RESPONSE_ENCODING, decodeUtf8 } from '@para/protocol';
 import { sendPcRequest, useAppStore } from '../../appState.js';
+import { base64ByteLength } from '../../attachments/attachmentFetchPolicy.js';
 import type { DiffRow } from '../../components/diffParser.js';
 import { officeRawDiff } from './officeRawDiff.js';
 import { reviewRenderSide, type ReviewContentKind, type ReviewSide, type ReviewSides, type ReviewViewMode } from './reviewViewModes.js';
@@ -53,12 +54,6 @@ export const OFFICE_RAW_MAX_BYTES = 20 * 1024 * 1024;
 
 /** PC が置き換えた（同じ端末の次の要求が来た）要求の応答。画面は何も出さずに次の応答を待つ。 */
 export const SUPERSEDED_ERROR = 'superseded';
-
-/** base64 の長さから元のバイト数を見積もる（デコードする前に大きさを確かめる）。 */
-export function base64ByteLength(base64: string): number {
-	const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0;
-	return Math.floor(base64.length * 3 / 4) - padding;
-}
 
 /** 次の描画を待つ（重い処理の前に「読み込み中」を先に出す）。 */
 function afterInteractions(): Promise<void> {
