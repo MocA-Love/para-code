@@ -47,6 +47,10 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				icon: 'volume-high-outline',
 				title: 'iPhone・iPad の VoiceOver で、「コピーしました」などのお知らせを読み上げるようにしました',
 			},
+			{
+				icon: 'accessibility-outline',
+				title: 'VoiceOver で、接続中・実行中などの状態の点とセッションのタブの状態を読み上げるようにしました',
+			},
 		],
 	},
 	{
