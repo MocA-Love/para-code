@@ -40,7 +40,7 @@ import { paradisLocateReviewNoteLine } from '../../mobileRelay/common/paradisMob
 import { paradisListSpaces } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { ParadisCountBadge } from '../../../browser/paradisBadges.js';
 import { IParadisConfirmServices, paradisConfirmYesNo } from '../../confirmDialog/browser/paradisConfirmDialog.js';
-import { IParadisDiffReviewNote, IParadisDiffReviewNoteToSend, paradisBuildDiffReviewNotesPrompt } from '../common/paradisDiffReviewNotes.js';
+import { IParadisDiffReviewNote, IParadisDiffReviewNoteToSend, paradisBuildDiffReviewNotesPrompt, paradisDiffReviewClearNeedsConfirm, paradisDiffReviewSendAriaLabel } from '../common/paradisDiffReviewNotes.js';
 import { PARADIS_DIFF_REVIEW_NOTES_CONTROLLER_ID, ParadisDiffReviewNotesController, paradisDiffReviewSelectedLines } from './paradisDiffReviewNotesController.js';
 import { IParadisDiffReviewNotesService, ParadisDiffReviewUnsentCountContext } from './paradisDiffReviewNotesService.js';
 
@@ -137,7 +137,7 @@ registerAction2(class extends Action2 {
 		}
 		if (picked.choice === 'clearSent' || picked.choice === 'clearAll') {
 			// 未送信のメモまで消えるときだけ確かめる。送信済みだけを消すのは今のまま 1 手（paradis-19-3 案 C）
-			if (picked.choice === 'clearAll' && unsent.length > 0) {
+			if (paradisDiffReviewClearNeedsConfirm(picked.choice, unsent.length)) {
 				const ok = await paradisConfirmYesNo(confirmServices, {
 					message: localize('paradis.diffReviewNotes.clearAllConfirm', "AI メモを {0} 件すべて削除しますか？", notes.length),
 					detail: localize('paradis.diffReviewNotes.clearAllDetail', "まだ送っていない {0} 件も消えます。元に戻せません。", unsent.length),
@@ -236,9 +236,9 @@ class ParadisDiffReviewNotesCountViewItem extends MenuEntryActionViewItem {
 
 	protected override updateAriaLabel(): void {
 		super.updateAriaLabel();
-		const count = this.badge ? this.notesService.unsentCountOfActiveSpace() : 0;
-		if (this.label && count > 0) {
-			this.label.setAttribute('aria-label', localize('paradis.diffReviewNotes.sendAriaLabel', "{0}（未送信 {1} 件）", this.getTooltip() ?? '', count));
+		const label = paradisDiffReviewSendAriaLabel(this.getTooltip() ?? '', this.badge ? this.notesService.unsentCountOfActiveSpace() : 0);
+		if (this.label && label !== undefined) {
+			this.label.setAttribute('aria-label', label);
 		}
 	}
 

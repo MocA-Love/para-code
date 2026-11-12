@@ -16,6 +16,9 @@
 import './media/changelogModal.css';
 import * as dom from '../../../../base/browser/dom.js';
 import * as domSanitize from '../../../../base/browser/domSanitize.js';
+import { getBaseLayerHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegate2.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
+import { renderIcon } from '../../../../base/browser/ui/iconLabel/iconLabels.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
@@ -70,6 +73,8 @@ export class ParadisChangelogView extends Disposable {
 	readonly onDidDispose = this._onDidDispose.event;
 
 	private readonly statusChip: HTMLElement;
+	/** 札に出している文字。札は長い文字を「…」で切るので、全文をホバーで出す。 */
+	private statusLabel = '';
 	private readonly navElement: HTMLElement;
 	private readonly bannerElement: HTMLElement;
 	private readonly bannerTextElement: HTMLElement;
@@ -105,6 +110,8 @@ export class ParadisChangelogView extends Disposable {
 		this.statusChip.classList.add('para-cl-status');
 		this.statusChip.style.display = 'none';
 		this.statusChip.setAttribute('aria-live', 'polite');
+		// 札は字があふれると「…」で切る。全文は置く側のホバーで出す（キットの決まり）
+		this._register(getBaseLayerHoverDelegate().setupManagedHover(getDefaultHoverDelegate('element'), this.statusChip, () => this.statusLabel));
 
 		// 左のナビ: バージョンの一覧（利用可能な更新 / インストール済み）
 		this.navElement = containers.nav;
@@ -116,7 +123,7 @@ export class ParadisChangelogView extends Disposable {
 		// 未インストール版向けバナー
 		this.bannerElement = dom.append(main, $('.para-cl-banner'));
 		this.bannerElement.style.display = 'none';
-		this.bannerElement.append($(ThemeIcon.asClassName(Codicon.info)));
+		this.bannerElement.append(renderIcon(Codicon.info));
 		this.bannerTextElement = dom.append(this.bannerElement, $('span.para-cl-banner-text'));
 		const checkUpdateButton = this._register(new ParadisButton(this.bannerElement, { kind: 'secondary', label: localize('paradis.changelog.checkUpdate', "更新を確認…") }));
 		this._register(checkUpdateButton.onDidClick(() => this.delegate.onCheckForUpdate()));
@@ -124,7 +131,7 @@ export class ParadisChangelogView extends Disposable {
 		this.contentElement = dom.append(main, $('.para-cl-content'));
 
 		const footnote = dom.append(main, $('.para-cl-footnote'));
-		footnote.append($(ThemeIcon.asClassName(Codicon.info)));
+		footnote.append(renderIcon(Codicon.info));
 		footnote.appendChild(document.createTextNode(
 			localize('paradis.changelog.fallbackNote', "取得できないときは、このアプリに同梱された履歴のみを表示します")
 		));
@@ -175,7 +182,8 @@ export class ParadisChangelogView extends Disposable {
 				? localize('paradis.changelog.fetchFailedCached', "サーバーに接続できませんでした · 前回 {0} の取得分を表示中", formatFetchedTime(state.cachedFetchedAt))
 				: localize('paradis.changelog.fetchFailed', "サーバーに接続できませんでした");
 		}
-		this.statusChip.append($(ThemeIcon.asClassName(icon)));
+		this.statusLabel = label;
+		this.statusChip.append(renderIcon(icon));
 		dom.append(this.statusChip, $('span.paradis-chip-label')).textContent = label;
 	}
 

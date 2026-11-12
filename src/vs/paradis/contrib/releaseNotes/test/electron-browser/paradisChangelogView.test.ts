@@ -74,11 +74,14 @@ suite('ParadisChangelogView', () => {
 		const fetchedAt = new Date(2026, 10, 12, 14, 5).getTime();
 		const time = new Date(fetchedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 		view.setRemoteState({ kind: 'error' });
-		const withoutCache = { shown: chip.style.display, text: chip.textContent };
+		const withoutCache = { shown: chip.style.display, text: chip.textContent, icon: chip.querySelector('.codicon')?.className };
 		view.setRemoteState({ kind: 'error', cachedFetchedAt: fetchedAt });
-		assert.deepStrictEqual({ withoutCache, withCache: chip.textContent }, {
-			withoutCache: { shown: '', text: 'サーバーに接続できませんでした' },
+		// 札・バナー・注記のアイコンは codicon のクラスを持つ要素として描く（クラスの無い要素になると何も出ない）
+		const icons = ['.para-cl-banner', '.para-cl-footnote'].map(selector => containers.content.querySelector(`${selector} .codicon`)?.className);
+		assert.deepStrictEqual({ withoutCache, withCache: chip.textContent, icons }, {
+			withoutCache: { shown: '', text: 'サーバーに接続できませんでした', icon: 'codicon codicon-debug-disconnect' },
 			withCache: `サーバーに接続できませんでした · 前回 ${time} の取得分を表示中`,
+			icons: ['codicon codicon-info', 'codicon codicon-info'],
 		});
 	});
 
