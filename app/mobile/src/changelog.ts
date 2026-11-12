@@ -44,6 +44,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-11-12',
 		items: [
 			{
+				icon: 'git-branch-outline',
+				title: 'ソース管理と差分の画面で、太すぎた字をそろえ、「AI に直してもらう」のアイコンを送る印に変えました',
+				body: '閉じる × とメモの選択の丸が押しやすくなり、VoiceOver では選択の丸がどのファイルの何行目のメモかを読み上げます。',
+			},
+			{
 				icon: 'home-outline',
 				title: 'ホームの「おかえりなさい」を外し、件数のカードを一番上に出すようにしました',
 				body: '設定の「チャット UI」の行は「会話の表示」に改め、ウィジェットの「確認済み」ボタンは VoiceOver でどのエージェントを確認済みにするかを読み上げます。',
