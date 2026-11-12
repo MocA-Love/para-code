@@ -42,6 +42,8 @@ suite('ParadisPresetService space switch', () => {
 		const closeTerminal: (() => void)[] = [];
 		/** 1 つ目の端末を作った。 */
 		const firstCreated = new DeferredPromise<void>();
+		/** 作ったターミナルの開き方（フォーカスを移さないか）と、フォーカスしたターミナル。 */
+		const focus = { opened: [] as string[], focused: [] as number[] };
 		const group = upcastPartial<IEditorGroup>({ id: 1 });
 		let instanceId = 0;
 		const service = store.add(new ParadisPresetService(
@@ -57,6 +59,8 @@ suite('ParadisPresetService space switch', () => {
 				createTerminal: async (options?: ICreateTerminalOptions) => {
 					const id = ++instanceId;
 					log.push(`terminal:${id}:${URI.isUri(options?.cwd) ? options.cwd.path : options?.cwd}`);
+					const location = options?.location as { preserveFocus?: boolean; paradisInactive?: boolean } | undefined;
+					focus.opened.push(`${id}:${location?.preserveFocus === true}:${location?.paradisInactive === true}`);
 					const ready = new DeferredPromise<void>();
 					processReady.push(ready);
 					const onDisposed = store.add(new Emitter<ITerminalInstance>());
@@ -67,7 +71,7 @@ suite('ParadisPresetService space switch', () => {
 						isDisposed: false,
 						onDisposed: onDisposed.event,
 						sendText: async (text: string) => { log.push(`send:${id}:${text}`); },
-						focus: () => { },
+						focus: () => { focus.focused.push(id); },
 					});
 					closeTerminal.push(() => {
 						(instance as { isDisposed: boolean }).isDisposed = true;
@@ -99,7 +103,7 @@ suite('ParadisPresetService space switch', () => {
 		));
 		// フォルダの監視を張らせないよう、サービスを作った後でスペース A のフォルダを開いた状態にする。
 		state.folders = [URI.file('/repos/a')];
-		return { service, state, log, processReady, closeTerminal, firstCreated };
+		return { service, state, log, processReady, closeTerminal, firstCreated, focus };
 	}
 
 	const preset: IParadisResolvedPreset = {
@@ -144,6 +148,32 @@ suite('ParadisPresetService space switch', () => {
 			'scope:2:space-c',
 			'send:2:npm run web',
 		]);
+	});
+
+	test('auto-run in a space made in the background opens the terminals as background tabs and does not take the focus', async () => {
+		const run = async (layout: 'tabs' | 'current', preserveFocus: boolean) => {
+			const { service, processReady, firstCreated, focus } = createService();
+			const running = service.runPreset({ ...preset, layout }, { forceNewTerminal: true, preserveFocus });
+			await firstCreated.p;
+			// タスクごとに次のターミナルの準備を待つので、作られた分を順に起動済みにする
+			let done = false;
+			void running.finally(() => { done = true; });
+			while (!done) {
+				processReady.forEach(ready => ready.complete());
+				await new Promise(resolve => setTimeout(resolve, 0));
+			}
+			await running;
+			return focus;
+		};
+		assert.deepStrictEqual({
+			tabsBackground: await run('tabs', true),
+			currentBackground: await run('current', true),
+			tabsForeground: await run('tabs', false),
+		}, {
+			tabsBackground: { opened: ['1:true:true', '2:true:true'], focused: [] },
+			currentBackground: { opened: ['1:true:true'], focused: [] },
+			tabsForeground: { opened: ['1:false:false', '2:false:false'], focused: [1] },
+		});
 	});
 
 	test('stops the remaining tasks when the first terminal is closed before it starts', async () => {
