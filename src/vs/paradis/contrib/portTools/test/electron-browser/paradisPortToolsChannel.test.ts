@@ -56,6 +56,10 @@ class FakeWindow implements IParadisPortToolsWindow {
 	/** 手元から確かめた結果（手元の番号ごと）。無ければ reachable。 */
 	readonly probeResults = new Map<number, ParadisPortReforwardProbeResult | undefined>();
 	readonly probes: number[] = [];
+	/** 転送が reject するポート（SSH の切断などで shared process のトンネルが作れない）。 */
+	readonly rejectingForwards = new Set<number>();
+	/** 停止が reject するポート。 */
+	readonly rejectingCloses = new Set<number>();
 
 	constructor(readonly remoteAuthority: string | undefined, tunnels: readonly Tunnel[] = []) {
 		for (const item of tunnels) {
@@ -75,11 +79,17 @@ class FakeWindow implements IParadisPortToolsWindow {
 	async forward(properties: TunnelProperties): Promise<RemoteTunnel | string | undefined> {
 		const local = properties.local ?? properties.remote.port;
 		this.calls.push(`forward ${properties.remote.host}:${properties.remote.port} -> ${local}`);
+		if (this.rejectingForwards.has(properties.remote.port)) {
+			throw new Error('Could not create tunnel');
+		}
 		this.ledger.set(properties.remote.port, tunnel(properties.remote.port, local));
 		return { tunnelRemotePort: properties.remote.port, tunnelRemoteHost: properties.remote.host, tunnelLocalPort: local, localAddress: `127.0.0.1:${local}`, privacy: 'private', dispose: async () => { } };
 	}
 	async close(remote: { host: string; port: number }): Promise<void> {
 		this.calls.push(`close ${remote.port}`);
+		if (this.rejectingCloses.has(remote.port)) {
+			throw new Error('connection lost');
+		}
 		this.ledger.delete(remote.port);
 	}
 	async reforward(item: Tunnel, localPort?: number): Promise<string | undefined> {
@@ -299,6 +309,31 @@ suite('ParadisPortToolsChannel', () => {
 				['pane のエージェントが、SSH 先のポートの転送を 2 件追加しようとしています', 'SSH 先の localhost:21040 → この PC の 127.0.0.1:21040', 'SSH 先の localhost:21041 → この PC の 127.0.0.1:31041（api）', '手元の番号が使用中なら、別の番号で転送します。転送はポートパネルからいつでも停止できます。', '[2 件を転送]'],
 				['pane のエージェントが、ポートの転送を 2 件停止しようとしています', '21040 → localhost:21040', '21041 → localhost:31041', '停止すると、その手元のアドレスを開いているブラウザのタブは繋がらなくなります。', '[2 件を停止]'],
 			],
+		});
+	});
+
+	test('keeps forwarding and stopping the rest when one port throws, and reports each port', async () => {
+		const window = sshWindow();
+		window.rejectingForwards.add(21040);
+		window.rejectingCloses.add(21002);
+		const { channel } = setup(window, 'approve');
+		const forwarded = summary(await channel.handle(PANE, { op: 'forward', items: [{ remotePort: 21040, localPort: 21040 }, { remotePort: 21041, localPort: 21041 }], batch: true }));
+		const stopped = summary(await channel.handle(PANE, { op: 'stop', remotePorts: [21002, 33355] }));
+		assert.deepStrictEqual({ forwarded, stopped, calls: window.calls, ledger: window.snapshot() }, {
+			forwarded: {
+				results: [
+					{ remote_port: 21040, ok: false, error: 'Para Code could not forward port 21040: Could not create tunnel' },
+					{ remote_port: 21041, ok: true, forwarded: true, local_address: '127.0.0.1:21041', local_port: 21041, local_port_taken: false },
+				],
+			},
+			stopped: {
+				results: [
+					{ remote_port: 21002, ok: false, error: 'Para Code could not stop the forward of port 21002: connection lost' },
+					{ remote_port: 33355, ok: true, stopped: true },
+				],
+			},
+			calls: ['forward localhost:21040 -> 21040', 'forward localhost:21041 -> 21041', 'close 21002', 'close 33355'],
+			ledger: ['21002->21002', '21004->65459', '21021->65481', '21041->21041'],
 		});
 	});
 

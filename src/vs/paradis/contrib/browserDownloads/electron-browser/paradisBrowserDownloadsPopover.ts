@@ -367,6 +367,8 @@ export class ParadisBrowserDownloadsPopover extends Disposable {
 
 		if (!this._anchor) {
 			// コマンドパレットから開いたときなど、ボタンが見えていない場合はウィンドウの右上に出す。
+			// 高さはウィンドウの下端までに収め、件数が多いときは一覧の中でスクロールさせる。
+			this._element.style.maxHeight = `${Math.max(120, containerPosition.height - EDGE_MARGIN * 5 - EDGE_MARGIN)}px`;
 			this._element.style.top = `${EDGE_MARGIN * 5}px`;
 			this._element.style.left = `${Math.max(EDGE_MARGIN, containerPosition.width - width - EDGE_MARGIN)}px`;
 			return;
