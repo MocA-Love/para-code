@@ -14,6 +14,7 @@
 
 import { createHash } from 'crypto';
 import { promises as fs } from 'fs';
+import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Event } from '../../../../base/common/event.js';
 import { join } from '../../../../base/common/path.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
@@ -50,7 +51,7 @@ export class ParadisScheduledRunsChannel implements IServerChannel<string> {
 		throw new Error(`Event not found: ${event}`);
 	}
 
-	async call<T>(ctx: string, command: string, arg?: unknown): Promise<T> {
+	async call<T>(ctx: string, command: string, arg?: unknown, cancellationToken?: CancellationToken): Promise<T> {
 		const args = Array.isArray(arg) ? arg : [];
 		const text = (index: number) => {
 			const value = args[index];
@@ -85,7 +86,7 @@ export class ParadisScheduledRunsChannel implements IServerChannel<string> {
 				}
 				return this.service.runPrecheck(ctx, text(0), args[1]) as Promise<T>;
 			}
-			case 'testPrecheck': return this.service.testPrecheck(args[0], args[1]) as Promise<T>;
+			case 'testPrecheck': return this.service.testPrecheck(args[0], args[1], cancellationToken) as Promise<T>;
 		}
 		throw new Error(`Call not found: ${command}`);
 	}

@@ -7,7 +7,7 @@ import { useApp } from '../context.js';
 import { KIND, needs, stageMismatch, STATUS, taskActivity } from '../format.js';
 import { usePhone, useStored } from '../hooks.js';
 import { Icon } from '../icons.js';
-import { AgentTag, DueChip, Elapsed, LabelChip, Menu, PrChip, Status, tone } from './atoms.js';
+import { activateOnKey, AgentTag, DueChip, Elapsed, LabelChip, Menu, PrChip, Status, tone } from './atoms.js';
 import { AdoptDialog, ArchivedTasksDialog } from './dialogs.js';
 
 interface IColumn {
@@ -55,7 +55,7 @@ export const Card = memo(function Card({ task, flow, selected }: { task: ITaskBo
 			data-task={task.id}
 			aria-label={`${task.title}、${status.label}`}
 			onClick={() => app.openTask(task.id)}
-			onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); app.openTask(task.id); } }}
+			onKeyDown={activateOnKey(() => app.openTask(task.id))}
 			onDragStart={e => { e.dataTransfer.setData('text/x-task', task.id); e.dataTransfer.effectAllowed = 'move'; e.currentTarget.classList.add('dragging'); }}
 			onDragEnd={e => e.currentTarget.classList.remove('dragging')}
 		>
