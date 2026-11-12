@@ -123,7 +123,7 @@ export const SystemUsageChart = memo(function SystemUsageChart(props: SystemUsag
 
 const styles = StyleSheet.create({
 	card: {
-		paddingVertical: space.sm + 2,
+		paddingVertical: space.row,
 		paddingHorizontal: space.md,
 		borderRadius: radius.card,
 		backgroundColor: colors.panel,

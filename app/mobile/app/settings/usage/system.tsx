@@ -709,7 +709,7 @@ const styles = StyleSheet.create({
 		opacity: 0.7,
 	},
 	spaceRow: {
-		paddingVertical: space.sm + 2,
+		paddingVertical: space.row,
 	},
 	spacePressed: {
 		opacity: 0.7,
@@ -717,7 +717,7 @@ const styles = StyleSheet.create({
 	spaceHead: {
 		flexDirection: 'row',
 		alignItems: 'center',
-		gap: space.xs + 2,
+		gap: space.snug,
 		marginBottom: space.xs,
 	},
 	chevronSpacer: {
@@ -743,7 +743,7 @@ const styles = StyleSheet.create({
 	worktrees: {
 		marginTop: space.sm,
 		marginLeft: space.md,
-		paddingLeft: space.sm + 2,
+		paddingLeft: space.row,
 		borderLeftWidth: StyleSheet.hairlineWidth,
 		borderLeftColor: colors.border,
 	},
@@ -766,14 +766,14 @@ const styles = StyleSheet.create({
 	},
 	legend: {
 		flexDirection: 'row',
-		gap: space.md + 2,
+		gap: space.rowInset,
 		marginTop: space.sm,
 		marginHorizontal: space.xs,
 	},
 	legendItem: {
 		flexDirection: 'row',
 		alignItems: 'center',
-		gap: space.xs + 2,
+		gap: space.snug,
 	},
 	legendDot: {
 		width: space.sm,

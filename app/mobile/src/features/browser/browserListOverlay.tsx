@@ -111,7 +111,7 @@ function BrowserPopover({ anchor, title, items, header, onPress, onClose }: {
 	const top = Math.max(space.sm, anchor.top + 4);
 	return (
 		<OverlayPortal>
-			<Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="閉じる" />
+			<Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityRole="button" accessibilityLabel="閉じる" />
 			<PopIn style={[styles.popover, { top, left, width: popoverWidth, maxHeight: Math.max(160, height - top - space.lg) }]}>
 				{header}
 				<Text style={styles.popoverTitle} numberOfLines={1}>{title}</Text>

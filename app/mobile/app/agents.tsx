@@ -184,7 +184,7 @@ const styles = StyleSheet.create({
 	header: {
 		flexDirection: 'row',
 		alignItems: 'center',
-		gap: space.xs + 2,
+		gap: space.snug,
 		paddingTop: space.md,
 		paddingBottom: space.xs,
 		paddingHorizontal: space.lg,

@@ -21,6 +21,7 @@ import {
 	encodeLaunchTarget,
 	kindAfterFormLoaded,
 	launchBlockedReason,
+	launchFormErrorText,
 	launchSpaceOptions,
 	launchableAgents,
 	parseLaunchTarget,
@@ -146,7 +147,7 @@ export function LaunchDrawer({ visible, preset, onClose }: {
 			});
 		}).catch((error: unknown) => {
 			if (!cancelled) {
-				setFormError(error instanceof Error ? error.message : String(error));
+				setFormError(launchFormErrorText(error));
 			}
 		});
 		return () => { cancelled = true; };
@@ -273,7 +274,13 @@ export function LaunchDrawer({ visible, preset, onClose }: {
 		<>
 			<BottomDrawer visible={sheet === 'form'} onClose={() => { next.current = undefined; setSheet(undefined); }} onAfterClose={afterClose} accessibilityLabel="エージェントを起動">
 				<DrawerTitle title="エージェントを起動" />
-				{formError !== undefined ? <Text style={styles.error}>{`起動フォームを読み込めませんでした: ${formError}`}</Text> : null}
+				{formError !== undefined ? (
+					<View style={styles.notice}>
+						<Text style={styles.noticeError}>{formError}</Text>
+						{/* 取り直しは formError を消すだけで走る（needsForm が真に戻る）。 */}
+						<Button label="再試行" variant="ghost" size="sm" onPress={() => setFormError(undefined)} disabled={!live} />
+					</View>
+				) : null}
 				{formResult === undefined && formError === undefined && live ? <ActivityIndicator style={styles.loading} color={colors.textDim} /> : null}
 				<Field label="スペース">
 					<SelectButton
@@ -479,7 +486,7 @@ const styles = StyleSheet.create({
 		borderWidth: 1,
 		borderColor: colors.border,
 		paddingHorizontal: space.md,
-		paddingVertical: space.sm + 2,
+		paddingVertical: space.row,
 		fontSize: type.input,
 	},
 	prompt: {
@@ -506,11 +513,18 @@ const styles = StyleSheet.create({
 		marginTop: space.sm,
 		paddingHorizontal: space.xs,
 	},
-	error: {
+	notice: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: space.sm,
+		marginBottom: space.md,
+	},
+	noticeError: {
+		flex: 1,
+		minWidth: 0,
+		paddingLeft: space.xs,
 		fontSize: type.meta,
 		color: colors.red,
-		marginBottom: space.md,
-		paddingHorizontal: space.xs,
 	},
 	loading: {
 		marginBottom: space.md,
