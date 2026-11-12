@@ -4,58 +4,36 @@
  *--------------------------------------------------------------------------------------------*/
 /* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
 
-.paradis-pty-daemon-popover {
-	position: absolute;
-	border-radius: 8px;
-	overflow: hidden;
-	/* Same surface as the context menu opened from the status bar (menu.background, menu.border, the menu's shadow). */
-	background-color: var(--vscode-menu-background);
-	border: 1px solid var(--vscode-menu-border);
-	box-shadow: var(--vscode-shadow-lg, 0 0 12px var(--vscode-widget-shadow));
-	color: var(--vscode-menu-foreground);
-	font-size: 12px;
-	outline: none;
-}
+/*
+	The body of the resident terminal popover. The surface, the header line and the body padding come from the UI kit's
+	popover (paradisPopover.css), the buttons from paradisButton.css; this file only lays out what is inside the body.
+*/
 
-.paradis-pty-daemon-popover .ppd-head {
+/* 1 行目: 状態の丸と合計。合計は右端で、ここが「何本抱えているか」の答え。 */
+.paradis-pty-daemon-popover .ppd-statusline {
 	display: flex;
-	align-items: baseline;
-	gap: 10px;
-	padding: 11px 14px 10px;
-}
-
-/* 合計は右端。ここが「何本抱えているか」の答えで、探さずに読めるべき値。 */
-.paradis-pty-daemon-popover .ppd-total {
-	margin-left: auto;
-	font-size: 13px;
-	font-weight: 600;
-	font-variant-numeric: tabular-nums;
-	white-space: nowrap;
+	align-items: center;
+	gap: var(--vscode-spacing-size40);
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
 }
 
 /*
- * 見出しの3つは縮ませない。日本語はどこでも改行できるので、flex の最小幅が1文字まで落ちる。
+ * 1 行目の部品は縮ませない。日本語はどこでも改行できるので、flex の最小幅が1文字まで落ちる。
  * 実際にそれで、値の側に長いものが来たときラベルが縦1列に崩れた。算術で足りているうちは
  * 気づけないので、構造で禁じておく。
  */
-.paradis-pty-daemon-popover .ppd-title,
 .paradis-pty-daemon-popover .ppd-state,
-.paradis-pty-daemon-popover .ppd-dot {
+.paradis-pty-daemon-popover .ppd-dot,
+.paradis-pty-daemon-popover .ppd-total {
 	flex: 0 0 auto;
 	white-space: nowrap;
-}
-
-.paradis-pty-daemon-popover .ppd-title {
-	font-size: 13px;
-	font-weight: 600;
 }
 
 .paradis-pty-daemon-popover .ppd-state {
 	display: flex;
 	align-items: center;
-	gap: 5px;
-	font-size: 11px;
-	color: var(--vscode-descriptionForeground);
+	gap: var(--vscode-spacing-size40);
 }
 
 .paradis-pty-daemon-popover .ppd-dot {
@@ -69,51 +47,34 @@
 	background-color: var(--vscode-errorForeground);
 }
 
-/* 見出しに1行添えるときは、見出しの下余白を詰める。あの10pxは「次の塊との間」で、
-	見出しの続きとして読ませたい1行との間ではない。 */
-.paradis-pty-daemon-popover .ppd-head:has(+ .ppd-scope) {
-	padding-bottom: 2px;
+.paradis-pty-daemon-popover .ppd-total {
+	margin-left: auto;
+	font-size: var(--vscode-fontSize-body1);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textStrong);
+	font-variant-numeric: tabular-nums;
 }
 
-/* どの機械の常駐かを、見出しのすぐ下に。数字より前に出ないよう補足の色にするが、
+/* どの機械の常駐かを、1 行目のすぐ下に。数字より前に出ないよう補足の色にするが、
 	操作の前に必ず目に入る位置に置く（下の「停止」が別の機械のターミナルを終わらせ得る）。 */
 .paradis-pty-daemon-popover .ppd-scope {
-	padding: 0 14px 10px;
+	margin-top: var(--vscode-spacing-size40);
 	line-height: 1.55;
-	font-size: 11.5px;
-	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
 }
 
 /* 並べるものが無いときの本体。脚注ではなく本文なので、色を落とさない。 */
 .paradis-pty-daemon-popover .ppd-empty {
-	padding: 12px 14px;
+	margin-top: var(--vscode-spacing-size80);
 	line-height: 1.65;
-}
-
-/* 本体の下に添える補足。前に出ない。 */
-.paradis-pty-daemon-popover .ppd-foot {
-	padding: 10px 14px;
-	line-height: 1.65;
-	color: var(--vscode-descriptionForeground);
-}
-
-.paradis-pty-daemon-popover .ppd-meta {
-	margin-top: 4px;
-	font-size: 11.5px;
-	font-variant-numeric: tabular-nums;
-	overflow-wrap: anywhere;
-}
-
-.paradis-pty-daemon-popover .ppd-sep {
-	height: 1px;
-	background-color: var(--vscode-widget-border, var(--vscode-editorWidget-border));
 }
 
 .paradis-pty-daemon-popover .ppd-rows {
-	padding: 6px;
+	margin: var(--vscode-spacing-size80) calc(-1 * var(--vscode-spacing-size80)) 0;
 	/*
 	 * 本体だけをスクロールさせる。上限が無いと、スペースが増えたぶんパネルが縦に伸び、
-	 * はみ出すのは下端＝再起動・停止・設定の並びになる（位置決めは上端で止まる）。
+	 * はみ出すのは下端＝再起動・停止・設定の並びになる。
 	 * 一覧が読めなくなるより、操作できなくなる方が困る。
 	 */
 	max-height: 240px;
@@ -123,9 +84,10 @@
 .paradis-pty-daemon-popover .ppd-row {
 	display: flex;
 	align-items: center;
-	gap: 9px;
-	padding: 6px 8px;
-	border-radius: 5px;
+	gap: var(--vscode-spacing-size80);
+	height: var(--paradis-height-md);
+	padding: 0 var(--vscode-spacing-size80);
+	border-radius: var(--paradis-radius-control);
 }
 
 .paradis-pty-daemon-popover .ppd-row .ppd-name {
@@ -136,62 +98,63 @@
 }
 
 .paradis-pty-daemon-popover .ppd-row .ppd-count {
-	color: var(--vscode-descriptionForeground);
+	color: var(--vscode-paradis-textMuted);
 	font-variant-numeric: tabular-nums;
 }
 
+/* 警告・エラーの塊。塗らずに、枠を警告（エラーは危険）の色の 40% にする（fork の注意書きと同じ形）。 */
 .paradis-pty-daemon-popover .ppd-alert {
-	margin: 10px 10px 4px;
-	padding: 10px 11px;
-	border-radius: 6px;
+	margin-top: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size120);
+	border-radius: var(--paradis-radius-control);
 	line-height: 1.6;
-	background-color: var(--vscode-inputValidation-warningBackground);
-	border: 1px solid var(--vscode-inputValidation-warningBorder);
+	font-size: var(--vscode-fontSize-label1);
+	background-color: transparent;
+	border: 1px solid color-mix(in srgb, var(--vscode-paradis-warning) 40%, transparent);
 }
 
 .paradis-pty-daemon-popover .ppd-alert.ppd-alert-error {
-	background-color: var(--vscode-inputValidation-errorBackground);
-	border-color: var(--vscode-inputValidation-errorBorder);
+	border-color: color-mix(in srgb, var(--vscode-paradis-danger) 40%, transparent);
 }
 
 .paradis-pty-daemon-popover .ppd-alert-title {
-	font-weight: 600;
+	font-weight: var(--vscode-fontWeight-semiBold);
 }
 
 .paradis-pty-daemon-popover .ppd-alert-sub {
-	margin-top: 3px;
-	font-size: 11.5px;
-	color: var(--vscode-descriptionForeground);
+	margin-top: var(--vscode-spacing-size40);
+	font-size: var(--vscode-fontSize-body2);
+	color: var(--vscode-paradis-textMuted);
+}
+
+/* 本体の下に添える補足。前に出ない。 */
+.paradis-pty-daemon-popover .ppd-foot {
+	margin-top: var(--vscode-spacing-size80);
+	padding-top: var(--vscode-spacing-size80);
+	border-top: 1px solid var(--vscode-paradis-lineSubtle);
+	font-size: var(--vscode-fontSize-label1);
+	line-height: 1.65;
+	color: var(--vscode-paradis-textMuted);
+}
+
+.paradis-pty-daemon-popover .ppd-meta {
+	margin-top: var(--vscode-spacing-size40);
+	font-size: var(--vscode-fontSize-body2);
+	font-variant-numeric: tabular-nums;
+	overflow-wrap: anywhere;
 }
 
 .paradis-pty-daemon-popover .ppd-actions {
 	display: flex;
 	align-items: center;
-	gap: 8px;
-	padding: 10px 12px 12px;
+	gap: var(--vscode-spacing-size80);
+	margin-top: var(--vscode-spacing-size120);
+}
+
+.paradis-pty-daemon-popover .ppd-alert .ppd-actions {
+	margin-top: var(--vscode-spacing-size80);
 }
 
 .paradis-pty-daemon-popover .ppd-spacer {
 	flex: 1;
 }
-
-.paradis-pty-daemon-popover .ppd-button {
-	padding: 5px 13px;
-	border-radius: 5px;
-	cursor: pointer;
-	border: 1px solid var(--vscode-button-border, var(--vscode-contrastBorder, transparent));
-	background-color: var(--vscode-button-secondaryBackground);
-	color: var(--vscode-button-secondaryForeground);
-	font-size: 12px;
-	white-space: nowrap;
-}
-
-.paradis-pty-daemon-popover .ppd-button:hover {
-	background-color: var(--vscode-button-secondaryHoverBackground);
-}
-
-.paradis-pty-daemon-popover .ppd-button.ppd-mini {
-	padding: 3px 9px;
-	font-size: 11.5px;
-}
-
