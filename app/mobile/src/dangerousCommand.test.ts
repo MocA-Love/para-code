@@ -44,6 +44,8 @@ describe('dangerousCommandLabels', () => {
 		expect(dangerousCommandLabels('git push -f origin feat')).toEqual(['強制 push']);
 		expect(dangerousCommandLabels('git push origin feat --force-with-lease')).toEqual(['強制 push']);
 		expect(dangerousCommandLabels('git push -uf origin feat')).toEqual(['強制 push']);
+		expect(dangerousCommandLabels('git push origin +main')).toEqual(['強制 push']);
+		expect(dangerousCommandLabels('git push origin +HEAD:refs/heads/feat')).toEqual(['強制 push']);
 	});
 
 	it('detects history rewrites, sudo and recursive permission changes', () => {

@@ -36,7 +36,11 @@ async function readJson<T>(file: string): Promise<T | undefined> {
 		if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
 			return undefined;
 		}
-		// 壊れたファイルは退避して空から始める（黙って上書きしない）
+		// 中身が JSON として壊れたファイルだけを退避して空から始める（黙って上書きしない）。読めなかっただけ
+		// （EACCES・EMFILE・EIO など）のときは退避せずに投げる。退避すると、次の保存で空の台帳が正になるため
+		if (!(err instanceof SyntaxError)) {
+			throw err;
+		}
 		await fs.rename(file, `${file}.broken-${Date.now()}`).catch(() => undefined);
 		return undefined;
 	}
