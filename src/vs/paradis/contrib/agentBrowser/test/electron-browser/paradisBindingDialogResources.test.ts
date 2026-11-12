@@ -406,6 +406,38 @@ suite('ParadisBindingDialog redraws while the user works in it', () => {
 		}
 	});
 
+	test('names the dialog, and moves between the nav tabs with the arrow keys keeping the focus on the opened tab across a redraw', async () => {
+		const root = document.createElement('div');
+		document.body.appendChild(root);
+		const pane: IParadisPaneDescriptor = { instanceId: 17, token: 'pane-one', title: 'Pane One', agentKind: 'codex', mcpConnected: true, binding: undefined, bindEligibility: { eligible: true } };
+		const { dialog, bindingChanges } = openDialog(root, pane);
+		await timeout(0);
+		const tabs = () => [...root.querySelectorAll<HTMLElement>('[role="tab"]')].map(tab => `${tab.textContent}:${tab.getAttribute('aria-selected')}:${tab.tabIndex}`);
+		try {
+			const modal = root.querySelector<HTMLElement>('.paradis-binding-dialog')!;
+			const titleId = modal.getAttribute('aria-labelledby')!;
+			const dialogInfo = { role: modal.getAttribute('role'), modal: modal.getAttribute('aria-modal'), title: root.querySelector(`#${titleId}`)?.textContent, row: root.querySelector('.pbd-row-title')?.textContent };
+			const before = tabs();
+			const first = root.querySelector<HTMLElement>('[role="tab"]')!;
+			first.focus();
+			first.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40, bubbles: true }));
+			bindingChanges.fire();
+			await timeout(0);
+			const focused = document.activeElement?.textContent;
+			assert.deepStrictEqual({ dialogInfo, before, after: tabs(), focused, panel: root.querySelector('.pbd-body')?.getAttribute('aria-labelledby') }, {
+				dialogInfo: { role: 'dialog', modal: 'true', title: 'ブラウザページをエージェントと共有', row: 'Pane One · ペイン 17' },
+				before: ['ターミナルペイン:true:0', 'MCP接続設定:false:-1', 'モバイル端末:false:-1'],
+				after: ['ターミナルペイン:false:-1', 'MCP接続設定:true:0', 'モバイル端末:false:-1'],
+				focused: 'MCP接続設定',
+				panel: 'paradis-binding-dialog-tab-mcp',
+			});
+		} finally {
+			dialog.dispose();
+			bindingChanges.dispose();
+			root.remove();
+		}
+	});
+
 	test('keeps the manual setup section open across a redraw', async () => {
 		const root = document.createElement('div');
 		document.body.appendChild(root);
