@@ -372,6 +372,22 @@ describe('relay pairing + routing', () => {
 		await openWs(`https://relay/device/${deviceId}/ws?role=pair&pairId=${pair.pairId}&token=${pair.pairingToken}`);
 	});
 
+	it('answers a close the pc sends with the same code, so the pc sees a clean close', async () => {
+		const { deviceId, pcToken } = await provisionDevice();
+		const pcWs = await openWs(`https://relay/device/${deviceId}/ws?role=pc&token=${pcToken}`);
+		pcWs.ws.close(1000, 'bye');
+		const event = await pcWs.closed();
+		expect({ code: event.code, wasClean: event.wasClean }).toEqual({ code: 1000, wasClean: true });
+	});
+
+	it('also finishes the close when the pc closes without a code', async () => {
+		const { deviceId, pcToken } = await provisionDevice();
+		const pcWs = await openWs(`https://relay/device/${deviceId}/ws?role=pc&token=${pcToken}`);
+		pcWs.ws.close();
+		const event = await pcWs.closed();
+		expect(event.wasClean).toBe(true);
+	});
+
 	it('rejects pc connection with a bad token', async () => {
 		const { deviceId } = await provisionDevice();
 		const res = await SELF.fetch(`https://relay/device/${deviceId}/ws?role=pc&token=nope`, {

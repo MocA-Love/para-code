@@ -1035,7 +1035,15 @@ export class DeviceDO implements DurableObject {
 		}
 	}
 
-	async webSocketClose(ws: WebSocket): Promise<void> {
+	async webSocketClose(ws: WebSocket, code?: number, reason?: string): Promise<void> {
+		// 互換日付が 2026-04-07 より前（wrangler.jsonc は 2024-11-01）だと、相手の close に自動では応じない。
+		// ここで同じ code で閉じ返さないと閉じる手順が終わらず、相手には正常な close でなく 1006 や時間切れに見える。
+		// 1005・1006 のように送り返せない code なら code 無しで閉じる。閉じ済みなら何もしない。
+		try {
+			ws.close(code, reason);
+		} catch {
+			try { ws.close(); } catch { /* 閉じ済み */ }
+		}
 		const tag = this.state.getTags(ws)[0] ?? '';
 		// finding #8: 同role/同idの残存ソケットが無いときのみoffline通知する。
 		// クローズ済みソケットは getWebSockets から除外されるため残数で判定できる。
