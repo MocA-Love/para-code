@@ -75,7 +75,7 @@ import {
 	paradisParsePdfOptions,
 } from '../common/paradisBrowserPageOps.js';
 import { IParadisPageOpsTarget, ParadisBrowserPageOpsController } from './paradisBrowserPageOpsController.js';
-import { paradisMarkAgentContextMenuInput } from './paradisAgentContextMenu.js';
+import { paradisMarkAgentContextMenuInput } from '../../../../platform/browserView/common/paradisAgentContextMenu.js';
 import { paradisDetectHumanCheck } from './paradisBrowserHumanCheck.js';
 import { ParadisHumanCheckObservation } from '../common/paradisBrowserHumanCheck.js';
 import { createHash } from 'crypto';
