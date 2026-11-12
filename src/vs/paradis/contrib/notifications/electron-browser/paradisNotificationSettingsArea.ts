@@ -968,11 +968,31 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 		this._playingStartedAt = Date.now();
 		this._setPlayButtonPlaying(playBtn, true);
 		card.classList.add('playing');
+		if (duration === undefined) {
+			// 取り込んだ音（カスタム音源）は長さを持たないので、時計では止めずに鳴り終わりを待つ。
+			// 進み具合は実際の長さが分かった時点から描き直す。
+			void this._player.play(ringtoneId, volume, {
+				onDuration: seconds => {
+					if (this._playingRingtoneId === ringtoneId) {
+						this._playingDurationSeconds = seconds;
+						this._playingStartedAt = Date.now();
+						this._startProgressBar();
+					}
+				},
+				onEnded: () => {
+					if (this._playingRingtoneId === ringtoneId) {
+						this._stopPreview();
+					}
+				},
+			});
+			this._startProgressBar();
+			return;
+		}
 		void this._player.play(ringtoneId, volume);
 		this._startProgressBar();
 
 		// 着信音の実際の長さ(+0.5秒の余裕)で自動的に再生中表示を解除する(Superset同様の挙動)。
-		const durationMs = ((duration ?? 5) + 0.5) * 1000;
+		const durationMs = (duration + 0.5) * 1000;
 		this._playingAutoStopTimer = setTimeout(() => {
 			if (this._playingRingtoneId === ringtoneId) {
 				this._stopPreview();
