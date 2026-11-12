@@ -20,7 +20,7 @@ import {
 } from '../../common/paradisAgentBrowser.js';
 import { ParadisCdpTargetService, paradisPaneStorageSessionId } from '../../electron-main/paradisCdpTargetService.js';
 import { ParadisCursorOverlayController } from '../../electron-main/paradisCursorOverlayController.js';
-import { paradisConsumeAgentContextMenuSuppression } from '../../electron-main/paradisAgentContextMenu.js';
+import { paradisConsumeAgentContextMenuSuppression } from '../../../../../platform/browserView/common/paradisAgentContextMenu.js';
 
 interface ITestViewState {
 	url?: string;
