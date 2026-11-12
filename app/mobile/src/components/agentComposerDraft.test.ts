@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, it } from 'vitest';
-import { appendUploadedPath, flattenAnswerInput, reconcileSubmittedDraft, reconcileSubmittedDraftTarget, shouldShowSubmissionAlert } from './agentComposerDraft.js';
+import { appendUploadedPath, flattenAnswerInput, reconcileRejectedAnswerTarget, reconcileSubmittedDraft, reconcileSubmittedDraftTarget, shouldShowSubmissionAlert } from './agentComposerDraft.js';
 
 describe('reconcileSubmittedDraft', () => {
 	it('keeps text typed after a successful send without resending the submitted prefix', () => {
@@ -23,6 +23,17 @@ describe('reconcileSubmittedDraft', () => {
 			kind: 'stored', key: 'agent-a', value: '一回目追記',
 		});
 		expect(reconcileSubmittedDraftTarget('agent-b', 'agent-a', '', '', '一回目', 'accepted')).toEqual({ kind: 'none' });
+	});
+
+	it('keeps a rejected answer after leaving the answer input or the tab', () => {
+		// 回答の入力のまま断られたら、回答の入力欄へ戻す（これまでどおり）
+		expect(reconcileRejectedAnswerTarget('agent-a', 'agent-a', true, '追記', '下書き', '回答')).toEqual({ kind: 'active', value: '回答追記' });
+		// 回答をやめて通常の入力欄に戻っていたら、通常の下書きの前へ戻す
+		expect(reconcileRejectedAnswerTarget('agent-a', 'agent-a', true, '下書き', '下書き', '回答')).toEqual({ kind: 'active', value: '回答下書き' });
+		// 回答をやめた直後で入力欄がまだ差し替わっていなければ、送信元の下書きへ戻す（差し替えのときに読み込まれる）
+		expect(reconcileRejectedAnswerTarget('agent-a', 'agent-a', false, '', '下書き', '回答')).toEqual({ kind: 'stored', key: 'agent-a', value: '回答下書き' });
+		// 別のタブへ移っていたら、送信元の下書きへ戻す
+		expect(reconcileRejectedAnswerTarget('agent-b', 'agent-a', true, '', '下書き', '回答')).toEqual({ kind: 'stored', key: 'agent-a', value: '回答下書き' });
 	});
 
 	it('still reports a consumed-but-unexecuted paste after navigation', () => {

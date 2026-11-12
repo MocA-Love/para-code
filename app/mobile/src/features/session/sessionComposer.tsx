@@ -7,7 +7,7 @@ import { paraAlert } from '../../paraAlert.js';
 import { ArrowUp, CircleAlert, CornerDownRight, ImagePlus, Info, Keyboard, Monitor } from 'lucide-react-native';
 import { appendQuickReply, quickReplyTapAction, quoteReplyText } from '../../agentConversationUx.js';
 import { useAppStore } from '../../appState.js';
-import { flattenAnswerInput, reconcileSubmittedDraftTarget, shouldShowSubmissionAlert } from '../../components/agentComposerDraft.js';
+import { flattenAnswerInput, reconcileRejectedAnswerTarget, reconcileSubmittedDraftTarget, shouldShowSubmissionAlert } from '../../components/agentComposerDraft.js';
 import { ComposerAttachmentChips } from '../../components/attachmentChips.js';
 import { saveAttachmentDeviceCopy } from '../../attachments/attachmentImages.js';
 import { ATTACHMENT_LIMIT, attachmentNameOf, attachmentTextBudget, composeAttachmentMessage } from '../../attachments/attachmentText.js';
@@ -357,8 +357,16 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 					if (result.status === 'rejected') {
 						restoreAttachments();
 					}
-					if (result.status === 'rejected' && answeringRef.current && draftKeyRef.current === submittedDraftKey) {
-						replaceActiveInput(text + inputRef.current);
+					if (result.status === 'rejected') {
+						// 回答をやめた・別のタブへ移った後に断られても、本文を送信元の下書きへ戻す
+						const storedDraft = submittedDraftKey !== undefined ? useAppStore.getState().agentDrafts[submittedDraftKey] ?? '' : '';
+						const inputSettled = previousAnsweringRef.current === answeringRef.current;
+						const reconciliation = reconcileRejectedAnswerTarget(draftKeyRef.current, submittedDraftKey, inputSettled, inputRef.current, storedDraft, text);
+						if (reconciliation.kind === 'active') {
+							replaceActiveInput(reconciliation.value);
+						} else if (reconciliation.kind === 'stored') {
+							useAppStore.getState().setAgentDraft(reconciliation.key, reconciliation.value);
+						}
 					}
 				})
 				.finally(() => {
@@ -599,14 +607,23 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 			paraAlert.alert('これ以上添付できません', `画像は 1 回に ${ATTACHMENT_LIMIT} 枚まで添付できます。`);
 			return;
 		}
-		const result = await ImagePicker.launchImageLibraryAsync({
-			mediaTypes: ['images'],
-			base64: true,
-			quality: 0.8,
-			allowsMultipleSelection: true,
-			selectionLimit: remaining,
-			orderedSelection: true,
-		});
+		let result: ImagePicker.ImagePickerResult;
+		try {
+			result = await ImagePicker.launchImageLibraryAsync({
+				mediaTypes: ['images'],
+				base64: true,
+				quality: 0.8,
+				allowsMultipleSelection: true,
+				selectionLimit: remaining,
+				orderedSelection: true,
+			});
+		} catch (err) {
+			// 選んだ写真を読み込めなかった（端末に無い写真を取りに行けなかった等）
+			console.warn('[session] image picker failed', errorKind(err));
+			haptic('error');
+			paraAlert.alert('写真を開けませんでした', 'もう一度選び直してください。');
+			return;
+		}
 		if (result.canceled) {
 			return;
 		}
