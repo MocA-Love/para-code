@@ -26,6 +26,7 @@ import { IInstantiationService, ServicesAccessor } from '../platform/instantiati
 import { ILifecycleMainService } from '../platform/lifecycle/electron-main/lifecycleMainService.js';
 import { ILogService } from '../platform/log/common/log.js';
 import { IProductService } from '../platform/product/common/productService.js';
+import { IStateService } from '../platform/state/node/state.js';
 import { ILocalPtyService } from '../platform/terminal/common/terminal.js';
 import { IUpdateService } from '../platform/update/common/update.js';
 import { IWindowsMainService } from '../platform/windows/electron-main/windows.js';
@@ -128,7 +129,7 @@ export function registerParadisMainProcessContributions(
 	// menu bar (tray) icon with the notification inbox and agent usage, off by default (see paradis/contrib/menuBar)
 	disposables.add(paradisRegisterMenuBar(mainProcessElectronServer, accessor.get(IWindowsMainService), configurationService, logService));
 	disposables.add(paradisRegisterKeepAwake(mainProcessElectronServer, accessor.get(IWindowsMainService))); // stop a window's sleep prevention when it reloads, crashes and reopens, or closes (see paradis/contrib/keepAwake)
-	paradisRegisterTaskBoardHost(mainProcessElectronServer, configurationService, environmentMainService, lifecycleMainService, logService); // start the bundled task board and open it in its own window (see paradis/contrib/taskBoard). Not in `disposables`: see the health beacon above
+	paradisRegisterTaskBoardHost(mainProcessElectronServer, configurationService, environmentMainService, lifecycleMainService, logService, accessor.get(IStateService)); // start the bundled task board and open it in its own window (see paradis/contrib/taskBoard). Not in `disposables`: see the health beacon above
 
 	// Renderer reload世代の唯一の権威。Main lifetimeで単調増加し、Shared再起動を跨ぐ。
 	const paradisMobileWindowLeaseChannel = disposables.add(new ParadisMobileWindowLeaseChannel(mainProcessElectronServer, accessor.get(IWindowsMainService), lifecycleMainService));

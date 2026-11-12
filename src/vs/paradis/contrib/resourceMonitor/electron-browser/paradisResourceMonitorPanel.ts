@@ -88,6 +88,8 @@ export class ParadisResourceMonitorPanel extends Disposable {
 
 	/** renderBody() は毎ポーリングで呼ばれ DOM を作り直すため、その都度生成する行リスナーはここに登録し、再描画のたびに clear() する(クラス寿命の _store に溜めない)。 */
 	private readonly _bodyListeners = this._register(new DisposableStore());
+	/** 本文の中のキーボードで止まれる行とボタン（描き直しの後にフォーカスを戻す先）。 */
+	private readonly focusTargets = new Map<string, HTMLElement>();
 
 	constructor(
 		private readonly anchor: HTMLElement,
@@ -102,15 +104,15 @@ export class ParadisResourceMonitorPanel extends Disposable {
 
 		const header = dom.append(this.element, $('.prm-header'));
 		const headerTop = dom.append(header, $('.prm-header-top'));
-		dom.append(headerTop, $('.prm-title')).textContent = localize('paradis.resourceMonitor.title', "Resources");
+		dom.append(headerTop, $('.prm-title')).textContent = localize('paradis.resourceMonitor.title', "リソース");
 
 		const actions = dom.append(headerTop, $('.prm-header-actions'));
 		this.sortSelect = dom.append(actions, $('select.prm-sort-select')) as HTMLSelectElement;
-		this.sortSelect.setAttribute('aria-label', localize('paradis.resourceMonitor.sortAria', "Sort by"));
+		this.sortSelect.setAttribute('aria-label', localize('paradis.resourceMonitor.sortAria', "並べ替え"));
 		for (const [value, label] of [
-			['memory', localize('paradis.resourceMonitor.sortMemory', "Memory")],
+			['memory', localize('paradis.resourceMonitor.sortMemory', "メモリ")],
 			['cpu', localize('paradis.resourceMonitor.sortCpu', "CPU")],
-			['name', localize('paradis.resourceMonitor.sortName', "Name")],
+			['name', localize('paradis.resourceMonitor.sortName', "名前")],
 		] as const) {
 			const option = dom.append(this.sortSelect, $('option')) as HTMLOptionElement;
 			option.value = value;
@@ -121,9 +123,9 @@ export class ParadisResourceMonitorPanel extends Disposable {
 			this.renderBody(this.latestSnapshot);
 		}));
 
-		this.refreshButton = dom.append(actions, $('.prm-icon-btn'));
-		this.refreshButton.setAttribute('role', 'button');
-		this.refreshButton.setAttribute('aria-label', localize('paradis.resourceMonitor.refreshAria', "Refresh"));
+		this.refreshButton = dom.append(actions, $('button.prm-icon-btn.paradis-focus-ring-inset'));
+		this.refreshButton.setAttribute('type', 'button');
+		this.refreshButton.setAttribute('aria-label', localize('paradis.resourceMonitor.refreshAria', "更新"));
 		this.refreshButton.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.refresh)}`));
 		this._register(dom.addDisposableListener(this.refreshButton, 'click', () => this.options.onManualRefresh()));
 
@@ -154,9 +156,9 @@ export class ParadisResourceMonitorPanel extends Disposable {
 		const localLabel = this.machineLabels.get('local') ?? '';
 		dom.append(header, $('.prm-subtitle')).textContent = localize('paradis.resourceMonitor.paraCodeOnThisMachine', "Para Code（{0} で動いているぶん）", localLabel);
 		const metrics = dom.append(header, $('.prm-metrics'));
-		this.cpuValueElement = this.createMetric(metrics, localize('paradis.resourceMonitor.metricCpu', "CPU"), localize('paradis.resourceMonitor.metricCpuTooltip', "Sum of CPU used by Para Code and monitored terminal process trees. Over 100% means multiple CPU cores are busy."));
-		this.memoryValueElement = this.createMetric(metrics, localize('paradis.resourceMonitor.metricMemory', "Memory"), localize('paradis.resourceMonitor.metricMemoryTooltip', "Resident memory used by Para Code and monitored terminal process trees."));
-		this.shareValueElement = this.createMetric(metrics, localize('paradis.resourceMonitor.metricShare', "RAM Share"), localize('paradis.resourceMonitor.metricShareTooltip', "Percent of total system RAM used by monitored Para Code resources only."));
+		this.cpuValueElement = this.createMetric(metrics, localize('paradis.resourceMonitor.metricCpu', "CPU"), localize('paradis.resourceMonitor.metricCpuTooltip', "Para Code と、見張っているターミナルのプロセスが使っている CPU の合計です。100% を超えるのは、複数のコアが動いているときです。"));
+		this.memoryValueElement = this.createMetric(metrics, localize('paradis.resourceMonitor.metricMemory', "メモリ"), localize('paradis.resourceMonitor.metricMemoryTooltip', "Para Code と、見張っているターミナルのプロセスが使っている実メモリです。"));
+		this.shareValueElement = this.createMetric(metrics, localize('paradis.resourceMonitor.metricShare', "RAM の割合"), localize('paradis.resourceMonitor.metricShareTooltip', "この PC の RAM のうち、Para Code と見張っているターミナルだけが使っている割合です。"));
 
 		const shareBar = dom.append(header, $('.prm-share-bar'));
 		this.shareBarFill = dom.append(shareBar, $('.prm-share-bar-fill'));
@@ -183,9 +185,14 @@ export class ParadisResourceMonitorPanel extends Disposable {
 		if (options.initialSnapshot) {
 			this.updateSnapshot(options.initialSnapshot);
 		} else {
-			this.renderEmpty(localize('paradis.resourceMonitor.loading', "Loading…"));
+			this.renderEmpty(localize('paradis.resourceMonitor.loading', "読み込んでいます…"));
 		}
 		this.element.focus();
+	}
+
+	/** パネルの中にフォーカスがあるか（閉じたときにトリガーへ戻すかの判定に使う）。 */
+	hasFocus(): boolean {
+		return dom.isAncestorOfActiveElement(this.element);
 	}
 
 	override dispose(): void {
@@ -295,15 +302,29 @@ export class ParadisResourceMonitorPanel extends Disposable {
 		if (!snapshot) {
 			return;
 		}
+		// 描き直すと行が作り直されるので、キーボードで止まっていた行やボタンへフォーカスを戻す
+		const activeElement = dom.getActiveElement();
+		const focusKey = [...this.focusTargets].find(([, element]) => element === activeElement)?.[0];
 		this._bodyListeners.clear();
+		this.focusTargets.clear();
 		dom.clearNode(this.bodyElement);
+		try {
+			this.renderBodyRows(snapshot);
+		} finally {
+			if (focusKey !== undefined) {
+				(this.focusTargets.get(focusKey) ?? this.element).focus();
+			}
+		}
+	}
+
+	private renderBodyRows(snapshot: IParadisResourceMonitorSnapshot): void {
 
 		const totalUsage: IParadisResourceUsage = { cpu: snapshot.totalCpu, memory: snapshot.totalMemory };
 		this.renderAppSection(snapshot, totalUsage);
 
 		if (snapshot.scopes.length === 0) {
 			// アプリの内訳は残し、端末の欄にだけ空の表示を足す
-			dom.append(this.bodyElement, $('.prm-empty')).textContent = localize('paradis.resourceMonitor.noSessions', "No active terminal sessions");
+			dom.append(this.bodyElement, $('.prm-empty')).textContent = localize('paradis.resourceMonitor.noSessions', "動いているターミナルはありません");
 			return;
 		}
 
@@ -364,7 +385,7 @@ export class ParadisResourceMonitorPanel extends Disposable {
 		if (snapshot.app.other.cpu > 0 || snapshot.app.other.memory > 0) {
 			this.appendRow(this.bodyElement, {
 				classNames: ['sub-row'],
-				name: localize('paradis.resourceMonitor.appOther', "Other"),
+				name: localize('paradis.resourceMonitor.appOther', "その他"),
 				severity: paradisGetUsageSeverity(snapshot.app.other, snapshot.app),
 				cpu: snapshot.app.other.cpu,
 				memory: snapshot.app.other.memory,
@@ -388,9 +409,25 @@ export class ParadisResourceMonitorPanel extends Disposable {
 			memory: scope.memory,
 		});
 		if (!isOther) {
+			row.tabIndex = 0;
+			row.setAttribute('role', 'button');
+			row.classList.add('paradis-focus-ring-inset');
+			this.focusTargets.set(`row:${scope.stateKey}`, row);
 			this._bodyListeners.add(dom.addDisposableListener(row, 'click', () => this.options.switchToScope(scope.stateKey)));
+			this._bodyListeners.add(dom.addDisposableListener(row, 'keydown', e => {
+				// 開閉の矢印で押した Enter・Space は矢印の click に任せる
+				if (e.target === row && (e.key === 'Enter' || e.key === ' ')) {
+					e.preventDefault();
+					this.options.switchToScope(scope.stateKey);
+				}
+			}));
 		}
 		if (iconElement) {
+			iconElement.setAttribute('aria-expanded', String(!isCollapsed));
+			iconElement.setAttribute('aria-label', isCollapsed
+				? localize('paradis.resourceMonitor.expandScope', "{0} のターミナルを表示", scope.scopeName)
+				: localize('paradis.resourceMonitor.collapseScope', "{0} のターミナルを隠す", scope.scopeName));
+			this.focusTargets.set(`chevron:${scope.stateKey}`, iconElement);
 			this._bodyListeners.add(dom.addDisposableListener(iconElement, 'click', e => {
 				e.stopPropagation();
 				if (this.collapsedScopes.has(scope.stateKey)) {
@@ -425,7 +462,10 @@ export class ParadisResourceMonitorPanel extends Disposable {
 		const label = dom.append(row, $('.prm-row-label'));
 		let iconElement: HTMLElement | undefined;
 		if (spec.icon) {
-			iconElement = dom.append(label, $(`span${ThemeIcon.asCSSSelector(spec.icon)}`));
+			// 開閉の矢印。キーボードでも押せるようボタンにする
+			iconElement = dom.append(label, $('button.prm-chevron-btn.paradis-focus-ring-inset'));
+			iconElement.setAttribute('type', 'button');
+			iconElement.appendChild($(`span${ThemeIcon.asCSSSelector(spec.icon)}`));
 		}
 		if (spec.bullet) {
 			dom.append(label, $('.prm-session-bullet'));
