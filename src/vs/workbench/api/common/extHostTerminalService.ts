@@ -80,7 +80,7 @@ export interface ITerminalInternalOptions {
 	 */
 	location?: TerminalLocation | { viewColumn: number; preserveState?: boolean } | { splitActiveTerminal: boolean };
 	// PARA-PATCH: preserve workspace ownership — internal terminal creation scope lease option
-	/** PARA-CODE: Internal renderer scope authority; not part of the extension API. */
+	/** Para Code internal: renderer scope authority; not part of the extension API. */
 	paradisTerminalCreationScopeLease?: string;
 }
 
