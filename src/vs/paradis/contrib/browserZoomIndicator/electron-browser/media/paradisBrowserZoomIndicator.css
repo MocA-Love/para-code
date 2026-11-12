@@ -18,8 +18,12 @@
 }
 
 /* URL ボックスの中 (PostUrl) に常設する倍率のステッパー。
-	高さは URL の表示行を超えないようにする —— ここを高くすると URL ボックスごと、つまり
-	ナビバー全体が数 px 伸びる。
+	高さ 20px は UI キットの段 (24・28・32) に合わせず、URL ボックスの制約として残す。URL の表示行は
+	約 24px で、入れ物の上下の余白が 2px ずつあるので、ここを高くすると URL ボックスごと、つまり
+	ナビバー全体が数 px 伸びる。角丸も同じ理由で、外の URL ボックス (cornerRadius-medium) と同心になる
+	cornerRadius-small にしている。
+	枠と区切り線は editorWidget.border のまま。paradis.lineSubtle の既定 (widget.border) は Dark+・Light+ で
+	未定義なので、そちらにすると既定テーマで枠が消える。隣のプロファイルの札とも同じ枠にそろえている。
 	幅は詰まったら縮む。この入れ物は overflow: hidden で右端から刈られるので、縮まない
 	ブロックを置くと upstream 側のボタン (共有トグル・お気に入り) が先に消える。 */
 .monaco-workbench .paradis-browser-zoom-stepper {
@@ -29,7 +33,7 @@
 	flex: 0 1 auto;
 	min-width: 0;
 	border: 1px solid var(--vscode-editorWidget-border);
-	border-radius: var(--vscode-cornerRadius-small, 5px);
+	border-radius: var(--vscode-cornerRadius-small);
 	overflow: hidden;
 }
 
@@ -42,7 +46,7 @@
 .monaco-workbench .paradis-browser-zoom-stepper > button {
 	border: 0;
 	background: transparent;
-	color: var(--vscode-descriptionForeground);
+	color: var(--vscode-paradis-textMuted);
 	font-family: inherit;
 	line-height: 1;
 	cursor: pointer;
@@ -51,16 +55,24 @@
 
 .monaco-workbench .paradis-browser-zoom-stepper > button:hover:not(.is-disabled) {
 	background-color: var(--vscode-toolbar-hoverBackground);
-	color: var(--vscode-foreground);
+	color: var(--vscode-paradis-text);
 }
 
-/* ± は詰まったときに先に諦める。数字だけでも「いま何倍か」は伝わる。 */
+/* ± は詰まったときに先に諦める。数字だけでも「いま何倍か」は伝わる。
+	記号は codicon (remove / add) なので、フォントによって − と ＋ の太さや縦の位置がずれない。 */
 .monaco-workbench .paradis-browser-zoom-stepper > .paradis-browser-zoom-step {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
 	width: 20px;
 	height: 100%;
 	flex: 0 1 auto;
 	min-width: 0;
-	font-size: 12px;
+	overflow: hidden;
+}
+
+.monaco-workbench .paradis-browser-zoom-stepper > .paradis-browser-zoom-step > .codicon {
+	font-size: var(--vscode-codiconFontSize-compact);
 }
 
 .monaco-workbench .paradis-browser-zoom-stepper > .paradis-browser-zoom-step.is-disabled {
@@ -75,8 +87,8 @@
 	height: 100%;
 	padding: 0 4px;
 	flex: 0 0 auto;
-	font-size: 11px;
-	color: var(--vscode-foreground);
+	font-size: var(--paradis-chip-font-size);
+	color: var(--vscode-paradis-text);
 	font-variant-numeric: tabular-nums;
 	white-space: nowrap;
 	border-left: 1px solid var(--vscode-editorWidget-border);
@@ -87,5 +99,5 @@
 	「既定 = 100%」ではない（設定 workbench.browser.pageZoom の既定は「ウィンドウに合わせる」）。
 	判定は TS 側の render() が IBrowserZoomService から引いている。 */
 .monaco-workbench .paradis-browser-zoom-stepper > .paradis-browser-zoom-value.is-default {
-	color: var(--vscode-descriptionForeground);
+	color: var(--vscode-paradis-textMuted);
 }
