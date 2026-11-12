@@ -119,7 +119,7 @@ export function StartDialog({ task, step, flow }: { task: ITaskBoardTask; step: 
 					<div className="seg" role="radiogroup" aria-label="エージェント">
 						{(['claude', 'codex'] as const).map(a => <button key={a} role="radio" aria-checked={agent === a} className={agent === a ? 'on' : ''} disabled={Boolean(fixed && fixed !== a)} onClick={() => setAgent(a)}>{a === 'claude' ? 'Claude Code' : 'Codex'}</button>)}
 					</div>
-					{fixed && <div className="faint" style={{ fontSize: 11.5, marginTop: 4 }}>この工程は {fixed === 'codex' ? 'Codex' : 'Claude Code'} に決まっています</div>}
+					{fixed && <div className="faint" style={{ fontSize: 'var(--fs-xs)', marginTop: 4 }}>この工程は {fixed === 'codex' ? 'Codex' : 'Claude Code'} に決まっています</div>}
 				</div>
 				<label>作業場所</label>
 				<span style={{ color: 'var(--text)' }}>{slot ?? 'なし'}{slot && <span className="faint">　{flow.workspace.kind === 'clone-pool' ? 'fetch して既定のブランチから新しいブランチを作る' : ''}</span>}</span>
@@ -196,7 +196,7 @@ export function AddTaskDialog() {
 				<label>説明</label>
 				<textarea className="input" value={body} onChange={e => setBody(e.target.value)} placeholder="Markdown で書けます（任意）" rows={4} />
 			</div>
-			<p className="faint" style={{ fontSize: 12, margin: 0 }}>Issue を作らず、ボードだけのタスクとして足します。GitHub の Issue は同期で入ります。</p>
+			<p className="faint" style={{ fontSize: 'var(--fs-sm)', margin: 0 }}>Issue を作らず、ボードだけのタスクとして足します。GitHub の Issue は同期で入ります。</p>
 		</Modal>
 	);
 }

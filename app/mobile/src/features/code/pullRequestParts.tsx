@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
-import { CircleAlert, CircleCheck, CircleDashed, CircleMinus, CircleX, ExternalLink, GitMerge, GitPullRequest, Sparkles } from 'lucide-react-native';
+import { CircleAlert, CircleCheck, CircleDashed, CircleMinus, CircleX, ExternalLink, GitMerge, GitPullRequest, Send } from 'lucide-react-native';
 import { haptic } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import { HIT_SIZE, colors, radius, space, type } from '../../theme.js';
@@ -72,7 +72,7 @@ export function PullRequestPanel({ view, loading, error, offline, canMerge, merg
 					) : null}
 					<View style={styles.buttons}>
 						{handoff.result?.delivered === true ? null : (
-							<Button label="AI に直してもらう" size="sm" icon={Sparkles} onPress={() => onFix(pr)} loading={handoff.sending} disabled={disabled} style={styles.grow} />
+							<Button label="AI に直してもらう" size="sm" icon={Send} onPress={() => onFix(pr)} loading={handoff.sending} disabled={disabled} style={styles.grow} />
 						)}
 						{handoff.result?.delivered === false && handoff.result.busy ? (
 							<Button label="新しいエージェントで" size="sm" variant="secondary" onPress={() => onFixWithNewAgent(pr)} disabled={disabled || handoff.sending} style={styles.grow} />
