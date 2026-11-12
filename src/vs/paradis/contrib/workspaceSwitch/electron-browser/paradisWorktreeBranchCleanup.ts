@@ -302,6 +302,7 @@ class ParadisKeptBranchesDialog extends Disposable {
 		}));
 		this._list = dom.append(box, $('.pkb-list'));
 		this._errorEl = dom.append(body, $('.pkb-error'));
+		this._errorEl.setAttribute('role', 'alert');
 
 		const footer = dom.append(dialog, $('.pkb-footer'));
 		const cancel = this._register(new Button(footer, { ...defaultButtonStyles, secondary: true }));

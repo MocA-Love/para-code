@@ -211,6 +211,7 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 		this._teardownInput = this._appendScriptField(body, 'paradis-lifecycle-teardown-input', STR_TEARDOWN_LABEL);
 
 		this._errorEl = dom.append(body, $('.plc-error'));
+		this._errorEl.setAttribute('role', 'alert');
 
 		const footer = dom.append(this._dialog, $('.plc-footer'));
 		this._cancelBtn = this._register(new Button(footer, { ...defaultButtonStyles, secondary: true }));
