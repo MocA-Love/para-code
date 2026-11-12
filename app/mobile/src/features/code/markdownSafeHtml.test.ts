@@ -13,6 +13,7 @@ describe('Markdown の生の HTML を絞る', () => {
 			sanitizeMarkdownRawHtml('<script>alert(1)</script><style>p{}</style><!-- c -->残る'),
 			sanitizeMarkdownRawHtml('<a href="java\tscript:alert(1)">x</a><a href="./doc.md#a">y</a>'),
 			sanitizeMarkdownRawHtml('<details open><summary>開く</summary>a &amp; b < c &nbsp;</details>'),
+			sanitizeMarkdownRawHtml('<a href="&#106;avascript:alert(1)">x</a><img src="&#104;ttps://e.example/x.png" alt="外">'),
 		]).toEqual([
 			'<p align="center"><b>太字</b></p>',
 			'後',
@@ -21,6 +22,7 @@ describe('Markdown の生の HTML を絞る', () => {
 			'残る',
 			'<a>x</a><a href="./doc.md#a">y</a>',
 			'<details open=""><summary>開く</summary>a &amp; b &lt; c &nbsp;</details>',
+			'<a>x</a><span class="ext-img">外</span>',
 		]);
 	});
 

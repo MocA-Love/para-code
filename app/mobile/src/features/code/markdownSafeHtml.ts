@@ -54,15 +54,23 @@ function compactUrl(url: string): string {
 	return url.replace(/[\u0000- \u007f]+/g, '').toLowerCase();
 }
 
+/**
+ * scheme の部分（最初の `/`・`?`・`#` より前）に文字参照が混ざっているか。`&#106;avascript:` や `&#104;ttps:` は、
+ * ここでは scheme に見えないのに、ブラウザが属性を読むときに戻してしまう。
+ */
+function hasEncodedScheme(url: string): boolean {
+	return (compactUrl(url).split(/[/?#]/, 1)[0] ?? '').includes('&');
+}
+
 /** 描かない画像の URL。scheme の付いたもの（`http(s):`・`file:` など）と `//` で始まるもの。`data:image/` は描く。 */
 function isExternalImage(url: string): boolean {
 	const compact = compactUrl(url);
-	return /^(?:[a-z][a-z\d+.-]*:|[/\\]{2})/.test(compact) && !compact.startsWith('data:image/');
+	return hasEncodedScheme(url) || /^(?:[a-z][a-z\d+.-]*:|[/\\]{2})/.test(compact) && !compact.startsWith('data:image/');
 }
 
 /** リンクとして使えない scheme。 */
 function isUnsafeHref(url: string): boolean {
-	return /^(?:javascript|vbscript|data|file):/.test(compactUrl(url));
+	return hasEncodedScheme(url) || /^(?:javascript|vbscript|data|file):/.test(compactUrl(url));
 }
 
 /** 文字の中の `<`・`>` を逃がす。`&` は文字参照（`&amp;`・`&#39;`）でないものだけ。 */

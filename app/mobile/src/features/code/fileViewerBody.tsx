@@ -419,8 +419,9 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 		);
 	} else if (html !== undefined) {
 		const canvasColor = viewerCanvasColor(kind, mode);
-		// ページより先に読み込ませるスクリプト（画像の取り寄せと、パスのリンクの知らせの口）
-		const beforeContentLoaded = [htmlImages !== undefined ? HTML_IMAGES_LOADER_SCRIPT : undefined, links.beforeContentLoaded].filter(script => script !== undefined).join('\n');
+		// ページより先に読み込ませるスクリプト（パスのリンクの知らせの口と、画像の取り寄せ）。1 つのスクリプトに
+		// つなぐので、知らせの口を先に置く（後ろのスクリプトが例外で止まっても口は置かれる）。どちらも `true;` で終わる
+		const beforeContentLoaded = [links.beforeContentLoaded, htmlImages !== undefined ? HTML_IMAGES_LOADER_SCRIPT : undefined].filter(script => script !== undefined).join('\n');
 		// 画像を取り寄せる本文・パスのリンクを出す本文は、そのスクリプトを最初から入れた WebView で開く（後から足すと次の読み込みまで効かない）
 		view = (
 			<WebView
