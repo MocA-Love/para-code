@@ -74,13 +74,18 @@ suite('ParadisTasksGithubService', () => {
 		const noGh = await service2.search({ mode: 'issue', repositories: ['a/b'], query: 'x' });
 		output = { stdout: '', stderr: '', failed: true, notFound: false, timedOut: true };
 		const timedOut = await service2.search({ mode: 'issue', repositories: ['a/b'], query: 'y' });
+		// 状態の表記の 401 だけをログインの問題とみなす（要求 ID などに混じる 401 は別の失敗）
+		output = { stdout: '', stderr: 'gh: HTTP 401', failed: true, notFound: false };
+		const http401 = await service2.search({ mode: 'issue', repositories: ['a/b'], query: 'z' });
+		output = { stdout: JSON.stringify({ data: null, errors: [{ message: 'Something went wrong while executing your query. Please include `0E1C:401A:2B3C4D:5E6F70:6545A1B2` when reporting this issue.' }] }), stderr: '', failed: true, notFound: false };
+		const requestId = await service2.search({ mode: 'issue', repositories: ['a/b'], query: 'w' });
 		const none = await service2.search({ mode: 'issue', repositories: [], query: '' });
 		assert.deepStrictEqual({
-			kinds: [limited, paused, auth, noGh, timedOut].map(result => result.ok ? 'ok' : result.error.kind),
+			kinds: [limited, paused, auth, noGh, timedOut, http401, requestId].map(result => result.ok ? 'ok' : result.error.kind),
 			calls,
 			none: none.ok ? none.result.items.length : -1,
 		}, {
-			kinds: ['rate-limited', 'rate-limited', 'auth', 'no-gh', 'timeout'],
+			kinds: ['rate-limited', 'rate-limited', 'auth', 'no-gh', 'timeout', 'auth', 'failed'],
 			calls: 1,
 			none: 0,
 		});

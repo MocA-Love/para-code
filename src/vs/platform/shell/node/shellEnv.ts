@@ -20,6 +20,9 @@ import { IConfigurationService } from '../../configuration/common/configuration.
 import { clamp } from '../../../base/common/numbers.js';
 
 let unixShellEnvPromise: Promise<typeof process.env> | undefined = undefined;
+// PARA-PATCH: time of the last failed resolution (see the PARA-PATCH in getResolvedShellEnv)
+let unixShellEnvFailedAt: number | undefined = undefined;
+const UNIX_SHELL_ENV_FAILURE_RETRY_DELAY_MS = 5 * 60 * 1000;
 
 /**
  * Resolves the shell environment by spawning a shell. This call will cache
@@ -60,6 +63,12 @@ export async function getResolvedShellEnv(configurationService: IConfigurationSe
 			logService.trace('resolveShellEnv(): running (macOS/Linux)');
 		}
 
+		// PARA-PATCH: keep a failed resolution for a while, then retry (see the catch below)
+		if (unixShellEnvFailedAt !== undefined && Date.now() - unixShellEnvFailedAt >= UNIX_SHELL_ENV_FAILURE_RETRY_DELAY_MS) {
+			unixShellEnvPromise = undefined;
+			unixShellEnvFailedAt = undefined;
+		}
+
 		// Call this only once and cache the promise for
 		// subsequent calls since this operation can be
 		// expensive (spawns a process).
@@ -94,10 +103,12 @@ export async function getResolvedShellEnv(configurationService: IConfigurationSe
 				}
 			});
 
-			// PARA-PATCH: do not cache a failed resolution forever - clear the cache on failure so
-			// the next caller retries (e.g. a timeout on a cold start would otherwise break
-			// PATH-dependent features until the process is restarted)
-			unixShellEnvPromise.catch(() => { unixShellEnvPromise = undefined; });
+			// PARA-PATCH: do not cache a failed resolution forever - remember when it failed so a
+			// caller after the retry delay retries (e.g. a timeout on a cold start would otherwise
+			// break PATH-dependent features until the process is restarted). Callers within the
+			// delay get the same rejection right away instead of spawning a shell and waiting for
+			// the timeout again (RequestService resolves the shell env for every request).
+			unixShellEnvPromise.catch(() => { unixShellEnvFailedAt = Date.now(); });
 		}
 
 		return unixShellEnvPromise;
