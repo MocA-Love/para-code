@@ -24,8 +24,12 @@ import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { ParadisModalSize, paradisModalClasses } from '../../../browser/paradisModal.js';
+import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 
 const $ = dom.$;
+
+/** 見出しの id の通し番号（同時に開いても重ならないように）。 */
+let titleSerial = 0;
 
 /** 判定の列の色の種類。 */
 export type ParadisPortDialogTone = 'warn' | 'new' | 'error' | 'dim';
@@ -55,6 +59,11 @@ export interface IParadisPortDialogOptions {
 	primaryLabel(selected: number, option: boolean): string;
 	/** 実行できるか。既定は「選んだものが 1 つ以上」（チェックの無い表では常に押せる）。 */
 	primaryEnabled?(selected: number, option: boolean): boolean;
+	/**
+	 * 「すべて選ぶ」の横の件数の文字。選べない行（`disabled`）があるときに理由を添えるのに使う。`unselectable` は
+	 * 選べない行の数。undefined を返すと既定の「N / M 件を選択」（M は選べる行の数）。
+	 */
+	selectedCountLabel?(selected: number, selectable: number, unselectable: number): string | undefined;
 	/** 取り消せない操作なら、実行のボタンを危険の色にする。 */
 	readonly danger?: boolean;
 }
@@ -114,6 +123,10 @@ class ParadisPortTableDialog extends Disposable {
 			}
 		});
 		this._render(dialog);
+		dialog.tabIndex = -1;
+		// フォーカスを箱の中で回し、閉じたら開く前の場所へ戻す（fork のモーダルに共通の扱い）。開く前のフォーカスを
+		// 覚えるので、箱を DOM に入れてフォーカスするより前に作る
+		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal: dialog, onEscape: () => this._finish(undefined), close: () => this._finish(undefined) }));
 	}
 
 	open(): void {
@@ -140,7 +153,7 @@ class ParadisPortTableDialog extends Disposable {
 		const header = dom.append(dialog, $('.ppd-header'));
 		const title = dom.append(header, $('h3.ppd-title'));
 		title.textContent = options.title;
-		title.id = 'paradis-port-dialog-title';
+		title.id = `paradis-port-dialog-title-${++titleSerial}`;
 		dialog.setAttribute('aria-labelledby', title.id);
 		const closeBar = this._register(new ActionBar(dom.append(header, $('.ppd-header-actions'))));
 		closeBar.push(toAction({ id: 'paradis.portDialog.close', label: localize('paradis.portDialog.close', "閉じる"), class: ThemeIcon.asClassName(Codicon.close), run: () => this._finish(undefined) }), { icon: true, label: false });
@@ -247,7 +260,9 @@ class ParadisPortTableDialog extends Disposable {
 			const selectable = options.rows.filter(row => !row.disabled).length;
 			this._all.checked = count > 0 && count === selectable;
 			this._all.indeterminate = count > 0 && count < selectable;
-			this._count.textContent = localize('paradis.portDialog.selectedCount', "{0} / {1} 件を選択", count, options.rows.length);
+			// 分母は選べる行の数（全部選んだときに分子とそろう）。選べない行の理由は呼び出し元が添える
+			this._count.textContent = options.selectedCountLabel?.(count, selectable, options.rows.length - selectable)
+				?? localize('paradis.portDialog.selectedCount', "{0} / {1} 件を選択", count, selectable);
 		}
 		this._primary.label = options.primaryLabel(count, option);
 		this._primary.enabled = options.primaryEnabled ? options.primaryEnabled(count, option) : (!options.checkable || count > 0);

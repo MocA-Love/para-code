@@ -18,6 +18,7 @@
 
 import './media/paradisCcusage.css';
 import * as dom from '../../../../base/browser/dom.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
@@ -32,6 +33,7 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { paradisButtonClasses } from '../../../browser/paradisButton.js';
+import { attachParadisChartKeyboard, paradisChartAriaLabel, paradisChartPointText } from '../../../browser/paradisChartKeyboard.js';
 import { PARADIS_TABLE_CLASS } from '../../../browser/paradisCard.js';
 import { renderParadisProgress } from '../../../browser/paradisProgress.js';
 import { ParadisSegmented } from '../../../browser/paradisSegmented.js';
@@ -934,18 +936,20 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 	// ---------- daily stacked bar ----------
 
 	private renderDailyChart(card: HTMLElement, buckets: IBucket[], totals: IModelTotal[], granularity: ParadisCcusageGranularity): void {
+		let chartTitle: string;
 		if (granularity === 'weekly') {
-			dom.append(card, $('h3')).textContent = this.metric === 'tokens'
+			chartTitle = this.metric === 'tokens'
 				? localize('paradis.ccusage.weekly.titleTokens', "週別トークン数")
 				: localize('paradis.ccusage.weekly.title', "週別コスト");
 		} else {
-			dom.append(card, $('h3')).textContent = this.metric === 'tokens'
+			chartTitle = this.metric === 'tokens'
 				? localize('paradis.ccusage.daily.titleTokens', "日別トークン数")
 				: localize('paradis.ccusage.daily.title', "日別コスト");
 		}
+		dom.append(card, $('h3')).textContent = chartTitle;
 		dom.append(card, $('.desc')).textContent = this.metric === 'tokens'
-			? localize('paradis.ccusage.daily.descTokens', "モデル別内訳（トークン数）。バーにカーソルを合わせると詳細を表示します。")
-			: localize('paradis.ccusage.daily.desc', "モデル別内訳（USD）。バーにカーソルを合わせると詳細を表示します。");
+			? localize('paradis.ccusage.daily.descTokens', "モデル別内訳（トークン数）。バーにカーソルを合わせるか、矢印キーで選ぶと詳細を表示します。")
+			: localize('paradis.ccusage.daily.desc', "モデル別内訳（USD）。バーにカーソルを合わせるか、矢印キーで選ぶと詳細を表示します。");
 
 		// 色と系列の両方を常にコスト降順トップ N で固定する。tokens モードで表示順だけ変える場合、
 		// コスト圏外のモデルが OTHER_COLOR を拾って「その他」系列と同色衝突するため。
@@ -1013,6 +1017,53 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		const labelEvery = Math.max(1, Math.ceil(34 / band));
 		const maxIndex = barCosts.reduce((best, d, i) => (d.total > barCosts[best].total ? i : best), 0);
 
+		// キーボードで選んだ日の帯（棒の後ろ）
+		const selection = svgEl(doc, 'rect', { x: String(padL), y: String(padT), width: String(band), height: String(plotH), class: 'paradis-ccusage-chart-selection', visibility: 'hidden' });
+		svg.appendChild(selection);
+		const tooltipRows = (bar: typeof barCosts[number]): ITooltipRow[] => {
+			const rows: ITooltipRow[] = [];
+			for (const model of seriesModels) {
+				const value = bar.perModel.get(model);
+				if (value !== undefined && value > 0) {
+					rows.push({ color: colorMap.get(model), name: prettyModelName(model), value: this.formatMetricValue(value) });
+				}
+			}
+			if (bar.other > 0) {
+				rows.push({ color: OTHER_COLOR, name: localize('paradis.ccusage.other', "その他"), value: this.formatMetricValue(bar.other) });
+			}
+			rows.push({ name: localize('paradis.ccusage.total', "合計"), value: this.formatMetricValue(bar.total), isTotal: true });
+			return rows;
+		};
+		const keyboard = this.bodyDisposables.add(attachParadisChartKeyboard({
+			svg,
+			count: barCosts.length,
+			ariaLabel: barCosts.length > 0 ? paradisChartAriaLabel({
+				kind: 'bar',
+				unit: granularity === 'weekly' ? 'week' : 'day',
+				title: chartTitle,
+				first: barCosts[0].tooltipLabel,
+				last: barCosts[barCosts.length - 1].tooltipLabel,
+				count: barCosts.length,
+				total: this.formatMetricValue(barCosts.reduce((sum, d) => sum + d.total, 0)),
+				maxLabel: barCosts[maxIndex].tooltipLabel,
+				maxValue: this.formatMetricValue(barCosts[maxIndex].total),
+			}) : '',
+			select: index => {
+				const bar = barCosts[index];
+				selection.setAttribute('x', String(padL + band * index));
+				selection.setAttribute('visibility', 'visible');
+				const rows = tooltipRows(bar);
+				const svgRect = svg.getBoundingClientRect();
+				const scale = svgRect.width / width || 1;
+				this.showTooltip({ clientX: svgRect.left + (padL + band * index + band / 2) * scale, clientY: svgRect.top + y(bar.total) * scale }, bar.tooltipLabel, rows);
+				return paradisChartPointText(bar.tooltipLabel, rows);
+			},
+			clear: () => {
+				selection.setAttribute('visibility', 'hidden');
+				this.hideTooltip();
+			},
+		}));
+
 		barCosts.forEach((bar, index) => {
 			const cx = padL + band * index + band / 2;
 			const x0 = cx - barW / 2;
@@ -1062,18 +1113,10 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			// ヒットターゲットはバー本体より広く(バンド全体)
 			const hit = svgEl(doc, 'rect', { x: String(padL + band * index), y: String(padT), width: String(band), height: String(plotH), fill: 'transparent' });
 			this.bodyDisposables.add(dom.addDisposableListener(hit, dom.EventType.POINTER_MOVE, e => {
-				const rows: ITooltipRow[] = [];
-				for (const model of seriesModels) {
-					const value = bar.perModel.get(model);
-					if (value !== undefined && value > 0) {
-						rows.push({ color: colorMap.get(model), name: prettyModelName(model), value: this.formatMetricValue(value) });
-					}
-				}
-				if (bar.other > 0) {
-					rows.push({ color: OTHER_COLOR, name: localize('paradis.ccusage.other', "その他"), value: this.formatMetricValue(bar.other) });
-				}
-				rows.push({ name: localize('paradis.ccusage.total', "合計"), value: this.formatMetricValue(bar.total), isTotal: true });
-				this.showTooltip(e, bar.tooltipLabel, rows);
+				// マウスで重ねた日から矢印キーで動けるようにし、キーボードで選んだ帯はマウスに譲って隠す
+				keyboard.setCurrent(index);
+				selection.setAttribute('visibility', 'hidden');
+				this.showTooltip(e, bar.tooltipLabel, tooltipRows(bar));
 			}));
 			this.bodyDisposables.add(dom.addDisposableListener(hit, dom.EventType.POINTER_LEAVE, () => this.hideTooltip()));
 			svg.appendChild(hit);
@@ -1083,10 +1126,11 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 	// ---------- token trend line ----------
 
 	private renderTokenTrend(card: HTMLElement, buckets: IBucket[], granularity: ParadisCcusageGranularity): void {
-		dom.append(card, $('h3')).textContent = localize('paradis.ccusage.trend.title', "トークン推移");
+		const chartTitle = localize('paradis.ccusage.trend.title', "トークン推移");
+		dom.append(card, $('h3')).textContent = chartTitle;
 		dom.append(card, $('.desc')).textContent = granularity === 'weekly'
-			? localize('paradis.ccusage.trend.descWeekly', "週別の入力+出力トークン数（キャッシュ除く）。カーソルを合わせるとキャッシュ読み取り数も表示します。")
-			: localize('paradis.ccusage.trend.desc', "日別の入力+出力トークン数（キャッシュ除く）。カーソルを合わせるとキャッシュ読み取り数も表示します。");
+			? localize('paradis.ccusage.trend.descWeekly', "週別の入力+出力トークン数（キャッシュ除く）。カーソルを合わせるか、矢印キーで選ぶとキャッシュ読み取り数も表示します。")
+			: localize('paradis.ccusage.trend.desc', "日別の入力+出力トークン数（キャッシュ除く）。カーソルを合わせるか、矢印キーで選ぶとキャッシュ読み取り数も表示します。");
 
 		const doc = card.ownerDocument;
 		const width = Math.max(320, card.clientWidth > 0 ? card.clientWidth - 34 : this.availableWidth * 0.55);
@@ -1154,6 +1198,43 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		const crosshair = svgEl(doc, 'line', { y1: String(padT), y2: String(padT + plotH), 'stroke-width': '1', visibility: 'hidden' });
 		crosshair.style.stroke = 'color-mix(in srgb, var(--vscode-foreground) 35%, transparent)';
 		svg.appendChild(crosshair);
+		const tooltipRows = (index: number): ITooltipRow[] => [
+			{ color: accent, name: localize('paradis.ccusage.trend.io', "入力+出力"), value: paradisFormatTokens(points[index].io) },
+			{ name: localize('paradis.ccusage.trend.cacheRead', "キャッシュ読み取り"), value: paradisFormatTokens(points[index].cacheRead) },
+		];
+		const showCrosshair = (index: number) => {
+			crosshair.setAttribute('x1', String(x(index)));
+			crosshair.setAttribute('x2', String(x(index)));
+			crosshair.setAttribute('visibility', 'visible');
+		};
+		const maxPoint = points.reduce((best, point, i) => (point.io > points[best].io ? i : best), 0);
+		const keyboard = this.bodyDisposables.add(attachParadisChartKeyboard({
+			svg,
+			count: points.length,
+			ariaLabel: points.length > 0 ? paradisChartAriaLabel({
+				kind: 'line',
+				unit: granularity === 'weekly' ? 'week' : 'day',
+				title: chartTitle,
+				first: points[0].tooltipLabel,
+				last: points[points.length - 1].tooltipLabel,
+				count: points.length,
+				total: paradisFormatTokens(points.reduce((sum, point) => sum + point.io, 0)),
+				maxLabel: points[maxPoint].tooltipLabel,
+				maxValue: paradisFormatTokens(points[maxPoint].io),
+			}) : '',
+			select: index => {
+				showCrosshair(index);
+				const rows = tooltipRows(index);
+				const svgRect = svg.getBoundingClientRect();
+				const scale = svgRect.width / width || 1;
+				this.showTooltip({ clientX: svgRect.left + x(index) * scale, clientY: svgRect.top + y(points[index].io) * scale }, points[index].tooltipLabel, rows);
+				return paradisChartPointText(points[index].tooltipLabel, rows);
+			},
+			clear: () => {
+				crosshair.setAttribute('visibility', 'hidden');
+				this.hideTooltip();
+			},
+		}));
 		const hover = svgEl(doc, 'rect', { x: String(padL), y: String(padT), width: String(plotW), height: String(plotH), fill: 'transparent' });
 		this.bodyDisposables.add(dom.addDisposableListener(hover, dom.EventType.POINTER_MOVE, e => {
 			if (points.length === 0) {
@@ -1162,13 +1243,9 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			const svgRect = svg.getBoundingClientRect();
 			const relX = e.clientX - svgRect.left;
 			const index = Math.max(0, Math.min(points.length - 1, Math.round((relX - padL) / Math.max(1, plotW) * (points.length - 1))));
-			crosshair.setAttribute('x1', String(x(index)));
-			crosshair.setAttribute('x2', String(x(index)));
-			crosshair.setAttribute('visibility', 'visible');
-			this.showTooltip(e, points[index].tooltipLabel, [
-				{ color: accent, name: localize('paradis.ccusage.trend.io', "入力+出力"), value: paradisFormatTokens(points[index].io) },
-				{ name: localize('paradis.ccusage.trend.cacheRead', "キャッシュ読み取り"), value: paradisFormatTokens(points[index].cacheRead) },
-			]);
+			keyboard.setCurrent(index);
+			showCrosshair(index);
+			this.showTooltip(e, points[index].tooltipLabel, tooltipRows(index));
 		}));
 		this.bodyDisposables.add(dom.addDisposableListener(hover, dom.EventType.POINTER_LEAVE, () => {
 			crosshair.setAttribute('visibility', 'hidden');
@@ -1337,12 +1414,12 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			const row = dom.append(tbody, $('tr'));
 			const projectCell = dom.append(row, $('td'));
 			projectCell.textContent = session.project;
-			projectCell.title = session.rawProject;
+			this.bodyDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), projectCell, session.rawProject));
 			const modelsCell = dom.append(row, $('td'));
 			for (const model of session.models) {
 				const dot = dom.append(modelsCell, $('span.model-dot'));
 				dot.style.background = colorMap.get(model) ?? OTHER_COLOR;
-				dot.title = prettyModelName(model);
+				this.bodyDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), dot, prettyModelName(model)));
 			}
 			dom.append(row, $('td.num')).textContent = paradisFormatTokens(session.totalTokens);
 			dom.append(row, $('td.num')).textContent = paradisFormatUsd(session.totalCost);
@@ -1355,7 +1432,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 				row.setAttribute('role', 'button');
 				row.tabIndex = 0;
 				row.setAttribute('aria-expanded', String(open));
-				row.title = localize('paradis.ccusage.sessions.openContext', "押すとコンテキストの内訳を開きます");
+				this.bodyDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), row, localize('paradis.ccusage.sessions.openContext', "押すとコンテキストの内訳を開きます")));
 				const toggle = () => this.toggleContext(sessionId);
 				this.bodyDisposables.add(dom.addDisposableListener(row, dom.EventType.CLICK, toggle));
 				this.bodyDisposables.add(dom.addDisposableListener(row, dom.EventType.KEY_DOWN, e => {
@@ -1383,7 +1460,8 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 
 	// ---------- tooltip ----------
 
-	private showTooltip(e: PointerEvent, title: string, rows: ITooltipRow[]): void {
+	/** @param e 吹き出しを寄せる画面の座標（マウスの位置か、キーボードで選んだ棒の上端）。 */
+	private showTooltip(e: { readonly clientX: number; readonly clientY: number }, title: string, rows: ITooltipRow[]): void {
 		if (!this.tooltip) {
 			return;
 		}
@@ -1637,5 +1715,7 @@ function formatClock(date: Date): string {
 function formatDuration(minutes: number): string {
 	const h = Math.floor(minutes / 60);
 	const m = Math.round(minutes % 60);
-	return h > 0 ? `${h}h ${m}m` : `${m}m`;
+	return h > 0
+		? localize('paradis.ccusage.duration.hoursMinutes', "{0}時間 {1}分", h, m)
+		: localize('paradis.ccusage.duration.minutes', "{0}分", m);
 }
