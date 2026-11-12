@@ -82,6 +82,7 @@ vi.mock('./ipad/shortcutRegistry.js', () => ({ useShortcutSlot: () => undefined 
 vi.mock('./components/glassSurface.js', () => ({ GlassSurface: () => null }));
 vi.mock('./components/headerEdgeFade.js', () => ({ HeaderEdgeFade: () => null }));
 vi.mock('./components/button.js', () => ({ Button: 'Button' }));
+vi.mock('./ui/button.js', () => ({ Button: 'Button' }));
 vi.mock('./screenCornerRadius.js', () => ({ screenCornerRadius: 0 }));
 vi.mock('./theme.js', async importOriginal => ({
 	...await importOriginal<typeof import('./theme.js')>(),

@@ -218,7 +218,7 @@ export function PermissionCard({ interactionId, onApprove, title, detail, choice
 				</View>
 			) : null}
 			{error !== undefined ? <Text style={cardStyles.error}>{error}</Text> : null}
-			{refreshing ? <Text style={cardStyles.error}>最新の内容を取得しています。届くまで回答できません</Text> : null}
+			{refreshing ? <Text style={cardStyles.hint}>最新の内容を取得しています。届くまで回答できません</Text> : null}
 			{!locked ? <Text style={cardStyles.hint}>{effectiveChoices.length > 0 ? 'PC 側で回答した場合も自動的に閉じます' : 'PC の Codex の画面で承認内容を確認してください'}</Text> : null}
 			<BottomDrawer visible={fullOpen} onClose={() => setFullOpen(false)} accessibilityLabel="確認の内容">
 				<DrawerTitle title={heading} />

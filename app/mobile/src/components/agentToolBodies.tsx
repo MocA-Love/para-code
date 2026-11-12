@@ -316,33 +316,30 @@ function FileCard({ path }: { path: string }) {
 	const styles = useChatStyles(baseStyles);
 	const box = useChatIconSize(CARD_ICON_BOX);
 	const glyph = useChatIconSize(CARD_ICON_GLYPH);
-	const { open, openingKey, viewer } = useLocalFileOpener();
+	const { open, openingKey } = useLocalFileOpener();
 	const target = { path };
 	// 長押し（iPad では右クリックも）で名前・パスのコピー（Q548 案 A。ネイティブのメニューが無いビルドでは付けない）
 	const menu = nativeContextMenuAvailable ? buildToolFileMenu({ path }, { ...contextMenuOps(), open: () => open(target) }) : undefined;
 	return (
-		<>
-			<ContextMenu menu={menu}>
-				<Pressable
-					style={({ pressed }) => [ioStyles.card, pressed ? styles.cardPressed : null]}
-					onPress={() => open(target)}
-					accessibilityRole="button"
-					accessibilityLabel={`${name}を開く`}
-				>
-					<View style={[ioStyles.cardIcon, { width: box, height: box, backgroundColor: theme.accentWash }]}>
-						<Ionicons name="document-text-outline" size={glyph} color={theme.accent} />
-					</View>
-					<View style={ioStyles.cardBody}>
-						<Text style={ioStyles.cardTitle} numberOfLines={1}>{name}</Text>
-						{dir.length > 0 ? <Text style={ioStyles.cardSub} numberOfLines={1} ellipsizeMode="head">{dir}</Text> : null}
-					</View>
-					{openingKey === localFileTargetKey(target)
-						? <ActivityIndicator size="small" color={theme.accent} />
-						: <Ionicons name="chevron-forward" size={glyph} color={colors.textDim} />}
-				</Pressable>
-			</ContextMenu>
-			{viewer}
-		</>
+		<ContextMenu menu={menu}>
+			<Pressable
+				style={({ pressed }) => [ioStyles.card, pressed ? styles.cardPressed : null]}
+				onPress={() => open(target)}
+				accessibilityRole="button"
+				accessibilityLabel={`${name}を開く`}
+			>
+				<View style={[ioStyles.cardIcon, { width: box, height: box, backgroundColor: theme.accentWash }]}>
+					<Ionicons name="document-text-outline" size={glyph} color={theme.accent} />
+				</View>
+				<View style={ioStyles.cardBody}>
+					<Text style={ioStyles.cardTitle} numberOfLines={1}>{name}</Text>
+					{dir.length > 0 ? <Text style={ioStyles.cardSub} numberOfLines={1} ellipsizeMode="head">{dir}</Text> : null}
+				</View>
+				{openingKey === localFileTargetKey(target)
+					? <ActivityIndicator size="small" color={theme.accent} />
+					: <Ionicons name="chevron-forward" size={glyph} color={colors.textDim} />}
+			</Pressable>
+		</ContextMenu>
 	);
 }
 
