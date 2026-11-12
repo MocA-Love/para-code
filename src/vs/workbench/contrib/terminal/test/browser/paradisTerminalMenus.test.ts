@@ -51,9 +51,12 @@ suite('terminalMenus', () => {
 	});
 
 	test('terminal instance context exposes create actions for empty terminal bodies', () => {
+		// The fork's own items (paradis.*, e.g. the terminal editor's "split down" at order 1.5) are registered by
+		// importing their contribution, which other suites in the same test window do. They are checked in
+		// paradisTerminalContextMenu.test.ts; this test only covers the items of setupTerminalMenus.
 		const createItems = MenuRegistry.getMenuItems(MenuId.TerminalInstanceContext)
 			.filter(isIMenuItem)
-			.filter(item => item.group === '1_create');
+			.filter(item => item.group === '1_create' && !item.command.id.startsWith('paradis.'));
 
 		deepStrictEqual(createItems.map(item => [item.command.id, item.order]), [
 			[TerminalCommandId.SplitOrCreate, 1],
