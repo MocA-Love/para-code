@@ -641,8 +641,8 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 		if (this._disableOverviewRuler) {
 			return undefined;
 		}
-		// PARA-PATCH: no persistent terminal scrollbar / overview ruler (match stable VS Code's minimal look); covers both the constructor and updateConfig call sites
-		return undefined;
+		// PARA-PATCH: keep the overview ruler marks but draw no border lines (Para Code's quiet look); covers both the constructor and updateConfig call sites
+		return { width: this.scrollbarWidth, overviewRuler: { showTopBorder: false } };
 	}
 
 	updateConfig(): void {
@@ -1183,8 +1183,8 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 			theme = this._themeService.getColorTheme();
 		}
 
-		const config = this._terminalConfigurationService.config;
-		const hideOverviewRuler = ['never', 'gutter'].includes(config.shellIntegration?.decorationsEnabled ?? '');
+		// PARA-PATCH: the overview ruler never draws a border line in Para Code (its marks stay, see _getScrollbarOptions), so the decorationsEnabled config is not read here
+		const hideOverviewRuler = true;
 
 		const foregroundColor = theme.getColor(TERMINAL_FOREGROUND_COLOR);
 		const backgroundColor = this._xtermColorProvider.getBackgroundColor(theme);
