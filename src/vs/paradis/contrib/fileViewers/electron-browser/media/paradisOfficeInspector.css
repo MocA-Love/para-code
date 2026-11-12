@@ -67,14 +67,14 @@
 }
 
 /* Counts and sub-headings inside the lists. */
-.monaco-workbench .paradis-office-panel-surface :is(.paradis-spreadsheet-change-list, .paradis-word-change-list, .paradis-spreadsheet-placeholder-list, .paradis-word-placeholder-list, .paradis-spreadsheet-comment-list, .paradis-spreadsheet-search-results, .paradis-word-search-results) {
+.monaco-workbench .paradis-office-panel-surface :is(.paradis-spreadsheet-change-list, .paradis-word-change-list, .paradis-spreadsheet-placeholder-list, .paradis-word-placeholder-list, .paradis-word-mark-list, .paradis-spreadsheet-comment-list, .paradis-spreadsheet-search-results, .paradis-word-search-results) {
 	display: flex;
 	flex-direction: column;
 	gap: var(--vscode-spacing-size20);
 	min-width: 0;
 }
 
-.monaco-workbench .paradis-office-panel-surface :is(.paradis-spreadsheet-change-list, .paradis-word-change-list, .paradis-spreadsheet-placeholder-list, .paradis-word-placeholder-list, .paradis-spreadsheet-comment-list) > span:first-child {
+.monaco-workbench .paradis-office-panel-surface :is(.paradis-spreadsheet-change-list, .paradis-word-change-list, .paradis-spreadsheet-placeholder-list, .paradis-word-placeholder-list, .paradis-word-mark-list, .paradis-spreadsheet-comment-list) > span:first-child {
 	color: var(--vscode-paradis-textMuted);
 	font-size: var(--vscode-fontSize-label1);
 }
@@ -114,6 +114,12 @@
 .monaco-workbench .paradis-office-inspector-row[aria-current="true"] {
 	color: var(--vscode-paradis-textStrong);
 	background: var(--vscode-paradis-fillSelected);
+}
+
+/* Word's "paragraph information" rows lead with the kind of the mark in the muted color. */
+.monaco-workbench .paradis-word-mark-kind {
+	margin-right: var(--vscode-spacing-size60);
+	color: var(--vscode-paradis-textMuted);
 }
 
 /* Secondary buttons that toggle a mode (Word's display modes) show "on" with the selected fill. */
