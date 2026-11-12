@@ -107,6 +107,27 @@ suite('Paradis site recipes (E3)', () => {
 		});
 	});
 
+	test('navigate_page accepts other spellings of the same site, but not a placeholder before the path', () => {
+		const navigate = (url: string, params: string[] = []) => errorOf(check({ name: 'x', params, steps: [{ tool: 'navigate_page', args: { url } }] }, META)) === undefined;
+		assert.deepStrictEqual({
+			upperCaseHost: navigate('https://Example.com/orders'),
+			defaultPort: navigate('https://example.com:443/orders'),
+			upperCaseScheme: navigate('HTTPS://example.com'),
+			otherPort: navigate('https://example.com:8443/orders'),
+			placeholderInUser: navigate('https://{{user}}@example.com/', ['user']),
+			placeholderAfterHost: navigate('https://Example.com{{path}}', ['path']),
+			placeholderInPath: navigate('https://Example.com/{{path}}', ['path']),
+		}, {
+			upperCaseHost: true,
+			defaultPort: true,
+			upperCaseScheme: true,
+			otherPort: false,
+			placeholderInUser: false,
+			placeholderAfterHost: false,
+			placeholderInPath: true,
+		});
+	});
+
 	test('run_recipe fills params as plain text, keeps $ literal, and checks stored recipes again', () => {
 		const recipe: IParadisSiteRecipe = {
 			name: 'search', params: [{ name: 'q' }], date: '2026-10-10', doneWhen: { text: 'Results for {{q}}' },
