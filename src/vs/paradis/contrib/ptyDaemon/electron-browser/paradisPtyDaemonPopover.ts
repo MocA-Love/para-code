@@ -43,6 +43,8 @@ import {
 import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
 import { ConfigurationTarget } from '../../../../platform/configuration/common/configuration.js';
 import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 
 const $ = dom.$;
 
@@ -72,6 +74,7 @@ export class ParadisPtyDaemonPopover extends Disposable {
 		@ILayoutService layoutService: ILayoutService,
 		@IParadisDialogService private readonly paradisDialogService: IParadisDialogService,
 		@IPreferencesService private readonly preferencesService: IPreferencesService,
+		@INotificationService private readonly notificationService: INotificationService,
 	) {
 		super();
 		this.status = options.status;
@@ -348,8 +351,7 @@ export class ParadisPtyDaemonPopover extends Disposable {
 		)) {
 			return;
 		}
-		await this.options.service.restart();
-		this.options.onDidAct();
+		await this.act(() => this.options.service.restart());
 	}
 
 	private async confirmAndStop(): Promise<void> {
@@ -359,8 +361,7 @@ export class ParadisPtyDaemonPopover extends Disposable {
 		)) {
 			return;
 		}
-		await this.options.service.stop();
-		this.options.onDidAct();
+		await this.act(() => this.options.service.stop());
 	}
 
 	/**
@@ -380,7 +381,22 @@ export class ParadisPtyDaemonPopover extends Disposable {
 		if (!confirmed) {
 			return;
 		}
-		await this.options.service.stopForeign(pid);
-		this.options.onDidAct();
+		await this.act(() => this.options.service.stopForeign(pid));
+	}
+
+	/**
+	 * 確認の後の操作を実行する。失敗しても黙らない。
+	 *
+	 * 確認ダイアログが開いた時点で小窓は閉じている（{@link paradisCloseWhenModalOpens}）ので、
+	 * 失敗は通知で知らせる。成否にかかわらず状態は取り直す（途中まで進んでいることがある）。
+	 */
+	private async act(run: () => Promise<void>): Promise<void> {
+		try {
+			await run();
+		} catch (error) {
+			this.notificationService.error(localize('paradis.ptyDaemon.actFailed', "常駐ターミナルを操作できませんでした: {0}", toErrorMessage(error)));
+		} finally {
+			this.options.onDidAct();
+		}
 	}
 }
