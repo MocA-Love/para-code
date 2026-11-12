@@ -33,6 +33,7 @@ import {
 	IParadisBookmarkImportStats,
 	isParadisBookmark,
 	isParadisBookmarkFolder,
+	isParadisBookmarkUrlAllowed,
 	moveParadisNodeTo,
 	moveParadisRootNode,
 	normalizeParadisBookmarkUrl,
@@ -398,7 +399,7 @@ export class ParadisBookmarksService extends Disposable implements IParadisBookm
 	}
 
 	importNodes(nodes: readonly ParadisImportedNode[]): IParadisBookmarkImportStats {
-		const stats = { bookmarksAdded: 0, foldersAdded: 0, skipped: 0 };
+		const stats = { bookmarksAdded: 0, foldersAdded: 0, skipped: 0, blockedScheme: 0 };
 		const cloned = this._cloneImported(nodes, stats);
 		if (cloned.length > 0) {
 			this._setNodes([...this._nodes, ...cloned]);
@@ -418,13 +419,18 @@ export class ParadisBookmarksService extends Disposable implements IParadisBookm
 		return [...nodes, node];
 	}
 
-	private _cloneImported(nodes: readonly ParadisImportedNode[], stats: { bookmarksAdded: number; foldersAdded: number; skipped: number }): ParadisBookmarkNode[] {
+	private _cloneImported(nodes: readonly ParadisImportedNode[], stats: { bookmarksAdded: number; foldersAdded: number; skipped: number; blockedScheme: number }): ParadisBookmarkNode[] {
 		const result: ParadisBookmarkNode[] = [];
 		for (const node of nodes) {
 			if (node.type === 'bookmark') {
 				const normalizedUrl = normalizeParadisBookmarkUrl(node.url);
 				if (!normalizedUrl || normalizedUrl === 'about:blank') {
 					stats.skipped++;
+					continue;
+				}
+				// 他人から受け取った HTML の javascript: や file: の項目は、押すと今のページの文脈で動きうるので落とす。
+				if (!isParadisBookmarkUrlAllowed(normalizedUrl)) {
+					stats.blockedScheme++;
 					continue;
 				}
 				stats.bookmarksAdded++;

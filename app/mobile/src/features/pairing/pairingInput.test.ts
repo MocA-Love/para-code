@@ -50,6 +50,10 @@ describe('pairingErrorMessage', () => {
 		expect(pairingErrorMessage(new Error('malformed pairing payload: deviceId'))).toContain('ペアリング用のコードではありません');
 	});
 
+	it('暗号化されていない中継サーバーの QR は、wss:// の指定を促す', () => {
+		expect(pairingErrorMessage(new Error('insecure pairing relay URL'))).toContain('wss://');
+	});
+
 	it('承認待ちの時間切れは、出し直しを促す', () => {
 		expect(pairingErrorMessage(new Error('pairing approval timeout'))).toContain('出し直して');
 	});
