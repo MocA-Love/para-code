@@ -30,6 +30,8 @@ import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { ParadisModalSize, paradisModalClasses } from '../../../browser/paradisModal.js';
+import { ParadisButton } from '../../../browser/paradisButton.js';
+import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { IParadisWorkspaceRepository } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisWorkspaceLifecycleConfig, PARADIS_LIFECYCLE_SCRIPT_TIMEOUT_MINUTES, paradisParseWorkspaceLifecycleConfig, paradisUpdateWorkspaceLifecycleConfig } from '../common/paradisWorkspaceLifecycle.js';
 import { PARADIS_PROJECT_ROOT_ENV_VAR, PARADIS_WORKSPACE_PRESET_FILE } from '../../terminalPresets/common/paradisTerminalPresets.js';
@@ -143,6 +145,8 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 		this._dialog.classList.add(...paradisModalClasses(ParadisModalSize.Small));
 		this._dialog.setAttribute('role', 'dialog');
 		this._dialog.setAttribute('aria-modal', 'true');
+		// Esc を受けるためにフォーカスできるようにする（ParadisModalFocus が中身の描き直しの後に戻す先）
+		this._dialog.tabIndex = -1;
 		this._backdrop.appendChild(this._dialog);
 
 		this._register(dom.addDisposableListener(this._backdrop, 'mousedown', e => {
@@ -150,17 +154,23 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 				this.dispose();
 			}
 		}));
-		this._register(dom.addDisposableListener(this._backdrop, 'keydown', e => {
-			// 日本語入力の変換中の Esc は変換の取り消しなので、閉じない
-			if (e.key === 'Escape' && !this._busy && !e.isComposing && e.keyCode !== 229) {
-				e.preventDefault();
-				this.dispose();
-			}
-		}));
 
 		layoutService.activeContainer.appendChild(this._backdrop);
+		// 中の欄へフォーカスを移す前に作る（開く前の場所を覚えて、閉じたらそこへ戻す）。Esc は重なった中の一番上だけが受ける
+		// 別のモーダルが開いても、保存している間は閉じない（その上に重なる）
+		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal: this._dialog, onEscape: () => this._onEscape(), close: () => { if (!this._busy) { this.dispose(); } } }));
 		this._renderForm();
 		void this._loadExisting();
+	}
+
+	/** Esc: パスを足している途中ならそれだけをやめる。保存している間は閉じない。 */
+	private _onEscape(): void {
+		if (this._copyList.cancelAdding() || this._linkList.cancelAdding()) {
+			return;
+		}
+		if (!this._busy) {
+			this.dispose();
+		}
 	}
 
 	/** 既に開いているダイアログへの再オープン要求時に入力へフォーカスを当てる。 */
@@ -211,6 +221,7 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 		this._teardownInput = this._appendScriptField(body, 'paradis-lifecycle-teardown-input', STR_TEARDOWN_LABEL);
 
 		this._errorEl = dom.append(body, $('.plc-error'));
+		this._errorEl.setAttribute('role', 'alert');
 
 		const footer = dom.append(this._dialog, $('.plc-footer'));
 		this._cancelBtn = this._register(new Button(footer, { ...defaultButtonStyles, secondary: true }));
@@ -320,7 +331,7 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 class ParadisIncludePathList extends Disposable {
 
 	private readonly _items: HTMLElement;
-	private readonly _addButton: Button;
+	private readonly _addButton: ParadisButton;
 	private readonly _input: HTMLInputElement;
 	private _paths: string[] = [];
 	/** 札の × の購読。描き直すたびに捨てる。 */
@@ -348,9 +359,8 @@ class ParadisIncludePathList extends Disposable {
 		this._input.placeholder = STR_INCLUDE_PLACEHOLDER;
 		this._input.setAttribute('aria-label', `${label}: ${STR_INCLUDE_PLACEHOLDER}`);
 		this._input.hidden = true;
-		this._addButton = this._register(new Button(values, { ...defaultButtonStyles, secondary: true }));
-		this._addButton.label = `+ ${STR_INCLUDE_ADD}`;
-		this._addButton.enabled = false;
+		// 札の並びの後ろに軽く置く（UI キットの ghost の小さいボタン）
+		this._addButton = this._register(new ParadisButton(values, { kind: 'ghost', small: true, icon: Codicon.add, label: STR_INCLUDE_ADD, disabled: true }));
 		this._register(this._addButton.onDidClick(() => this._startAdding()));
 		this._register(dom.addDisposableListener(this._input, 'keydown', e => {
 			// 日本語入力の変換中の Enter・Esc は変換の確定・取り消しなので、パスを足したりやめたりしない
@@ -377,6 +387,15 @@ class ParadisIncludePathList extends Disposable {
 	setPaths(paths: readonly string[]): void {
 		this._paths = [...paths];
 		this._render();
+	}
+
+	/** パスを足している途中ならやめて true を返す（ダイアログの Esc から呼ぶ）。 */
+	cancelAdding(): boolean {
+		if (this._input.hidden) {
+			return false;
+		}
+		this._stopAdding();
+		return true;
 	}
 
 	setEnabled(enabled: boolean): void {

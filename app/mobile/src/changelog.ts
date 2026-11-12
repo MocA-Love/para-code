@@ -44,6 +44,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-11-12',
 		items: [
 			{
+				icon: 'refresh-outline',
+				title: 'コンテキストの内訳を開いたまま応答が終わったとき、取り直しの間は「更新中」と出すようにしました',
+				body: '取り直しに失敗しても前の内訳は消えず、失敗の理由を 1 行添えます。',
+			},
+			{
 				icon: 'volume-high-outline',
 				title: 'iPhone・iPad の VoiceOver で、「コピーしました」などのお知らせを読み上げるようにしました',
 			},

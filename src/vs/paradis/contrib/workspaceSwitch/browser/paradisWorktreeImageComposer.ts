@@ -19,6 +19,7 @@ import { isMacintosh } from '../../../../base/common/platform.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { ByteSize } from '../../../../platform/files/common/files.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ParadisButton } from '../../../browser/paradisButton.js';
 import { IParadisWorktreeImage, PARADIS_WORKTREE_IMAGE_MAX_BYTES, PARADIS_WORKTREE_IMAGE_MAX_COUNT, paradisCheckWorktreeImages } from '../common/paradisWorktreeImageAttach.js';
 
@@ -63,6 +64,8 @@ export interface IParadisWorktreeImageComposerOptions {
 	readonly placeholder: string;
 	/** 再表示のときに戻す画像。 */
 	readonly images?: readonly IParadisWorktreeImage[];
+	/** 帯の説明・サムネイル・「外す」のホバー。 */
+	readonly hoverService: IHoverService;
 }
 
 /** 指示の欄と添えた画像をまとめた枠。 */
@@ -79,6 +82,7 @@ export class ParadisWorktreeImageComposer extends Disposable {
 	private readonly _note: HTMLElement;
 	private readonly _fileInput: HTMLInputElement;
 	private readonly _thumbListeners = this._register(new DisposableStore());
+	private readonly _hoverService: IHoverService;
 
 	private _images: IComposerImage[] = [];
 	/** 読み込み中の枚数（上限の判定に数える）。 */
@@ -94,6 +98,7 @@ export class ParadisWorktreeImageComposer extends Disposable {
 
 	constructor(parent: HTMLElement, options: IParadisWorktreeImageComposerOptions) {
 		super();
+		this._hoverService = options.hoverService;
 		this._frame = dom.append(parent, $('.paradis-image-composer.paradis-focus-subtle-within'));
 		this.textarea = dom.append(this._frame, $('textarea.pcw-prompt.paradis-image-composer-area')) as HTMLTextAreaElement;
 		this.textarea.rows = 3;
@@ -109,6 +114,8 @@ export class ParadisWorktreeImageComposer extends Disposable {
 		this._hint = dom.append(bar, $('span.paradis-image-composer-hint'));
 		dom.append(bar, $('span.paradis-image-composer-grow'));
 		this._count = dom.append(bar, $('span.paradis-image-composer-count'));
+		// 帯の文は添えられるかで変わるので、出すときに今の説明を読む
+		this._register(this._hoverService.setupDelayedHover(this._hint, () => ({ content: this._block !== ParadisWorktreeImageBlock.None ? this._blockReason : STR_LIMITS })));
 
 		const cover = dom.append(this._frame, $('.paradis-image-composer-drop'));
 		cover.setAttribute('aria-hidden', 'true');
@@ -310,7 +317,6 @@ export class ParadisWorktreeImageComposer extends Disposable {
 		this._frame.classList.toggle('off', blocked);
 		this._clip.enabled = !blocked;
 		this._hint.textContent = blocked ? this._blockReason : STR_HINT;
-		this._hint.title = blocked ? this._blockReason : STR_LIMITS;
 
 		this._thumbListeners.clear();
 		dom.clearNode(this._thumbs);
@@ -318,13 +324,13 @@ export class ParadisWorktreeImageComposer extends Disposable {
 		this._images.forEach((image, index) => {
 			const thumb = dom.append(this._thumbs, $('span.paradis-image-composer-thumb'));
 			thumb.setAttribute('role', 'listitem');
-			thumb.title = `${image.name} (${ByteSize.formatSize(image.size)})`;
+			this._thumbListeners.add(this._hoverService.setupDelayedHover(thumb, { content: `${image.name} (${ByteSize.formatSize(image.size)})` }));
 			const img = dom.append(thumb, $('img')) as HTMLImageElement;
 			img.alt = image.name;
 			img.src = image.url;
 			const remove = dom.append(thumb, $('button.paradis-image-composer-remove.paradis-focus-ring')) as HTMLButtonElement;
 			remove.type = 'button';
-			remove.title = STR_REMOVE;
+			this._thumbListeners.add(this._hoverService.setupDelayedHover(remove, { content: STR_REMOVE }));
 			// allow-any-unicode-next-line
 			remove.setAttribute('aria-label', localize('paradis.worktreeImages.removeNamed', "{0} を外す", image.name));
 			dom.append(remove, $('span' + ThemeIcon.asCSSSelector(Codicon.close)));
