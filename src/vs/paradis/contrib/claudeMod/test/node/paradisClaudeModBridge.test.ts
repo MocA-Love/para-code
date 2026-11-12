@@ -252,6 +252,20 @@ suite('ParadisClaudeModBridge', () => {
 		]);
 	});
 
+	test('a long poll whose connection closed while the caller was checked returns at once', async () => {
+		const registered = await call('question', { toolUseId: 'toolu_q', questions: QUESTIONS });
+		const closingWhileVerified = async () => {
+			signal.abort();
+			return true;
+		};
+		const timedOut = new Promise<string>(resolve => setTimeout(() => resolve('still waiting'), 100));
+		const replies = await Promise.race([Promise.all([
+			bridge.handle(TOKEN, 'wait', { sessionId: SESSION, id: registered.body.id }, signal.signal, closingWhileVerified),
+			bridge.handle(TOKEN, 'commands', { sessionId: SESSION, busy: false }, signal.signal, closingWhileVerified),
+		]).then(results => results.map(result => result.body)), timedOut]);
+		assert.deepStrictEqual(replies, [{ state: 'pending' }, { commands: [] }]);
+	});
+
 	test('sends a prompt through a waiting command poll and reports the mod acknowledgement', async () => {
 		const unavailable = await bridge.submitPrompt(TOKEN, SESSION, 'hello');
 		const poll = call('commands', { busy: false });
