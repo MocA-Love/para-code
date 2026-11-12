@@ -4,11 +4,10 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { CircleHelp } from 'lucide-react-native';
 import { formatQuestionPreview, previewNeedsFullView, PREVIEW_INLINE_MAX_LINES, QUESTION_NOTES_LIMIT, type PreviewLine } from '../../agentQuestionMod.js';
-import { BottomSheet } from '../../components/bottomSheet.js';
 import { haptic } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import { HIT_SIZE, colors, radius, space, type } from '../../theme.js';
-import { Button, Icon, useThemeColors } from '../../ui/index.js';
+import { BottomDrawer, Button, DrawerTitle, Icon, useThemeColors } from '../../ui/index.js';
 import { useChatIconSize, useChatStyles } from '../../ui/chatTextScale.js';
 import { cardStyles as baseCardStyles } from './answerCardStyles.js';
 import { usePinnedCardScroll } from './pinnedCard.js';
@@ -39,11 +38,10 @@ export function QuestionPreviewBox({ text, title }: { text: string; title: strin
 					<Text style={styles.moreLink}>{`全体を見る（${lines.length}行）`}</Text>
 				</Pressable>
 			) : null}
-			<BottomSheet visible={fullOpen} onClose={() => setFullOpen(false)} title={title} fullHeight>
-				<ScrollView contentContainerStyle={styles.sheetContent}>
-					<PreviewFrame lines={lines} />
-				</ScrollView>
-			</BottomSheet>
+			<BottomDrawer visible={fullOpen} onClose={() => setFullOpen(false)} accessibilityLabel={title}>
+				<DrawerTitle title={title} />
+				<PreviewFrame lines={lines} />
+			</BottomDrawer>
 		</View>
 	);
 }
@@ -193,9 +191,6 @@ const baseStyles = StyleSheet.create({
 		fontSize: type.meta,
 		fontWeight: '600',
 		color: colors.accent,
-	},
-	sheetContent: {
-		padding: space.lg,
 	},
 	notesLine: {
 		minHeight: HIT_SIZE,

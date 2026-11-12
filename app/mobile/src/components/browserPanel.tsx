@@ -883,7 +883,7 @@ export function BrowserPanel({ active: screenActive, preferredToken, scope, spac
 							</>
 						) : null}
 						{targets !== undefined ? (
-							<Pressable disabled={!live} style={[styles.reloadTargets, !live && styles.disabled]} onPress={() => { autoStartedRef.current = false; void loadTargets(); }}>
+							<Pressable disabled={!live} accessibilityRole="button" accessibilityState={{ disabled: !live }} style={[styles.reloadTargets, !live && styles.disabled]} onPress={() => { autoStartedRef.current = false; void loadTargets(); }}>
 								<Text style={[styles.link, { color: theme.accent }]}>一覧を更新</Text>
 							</Pressable>
 						) : null}
