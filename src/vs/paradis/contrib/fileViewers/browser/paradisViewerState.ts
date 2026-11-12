@@ -30,6 +30,11 @@ export interface IParadisViewerStateAction {
 	readonly run: () => void;
 }
 
+/** 重ねた面。dispose すると外れる。`focus` は主ボタン（無ければ何もしない）へフォーカスを移す。 */
+export interface IParadisViewerStateView extends IDisposable {
+	focus(): void;
+}
+
 /** 読み込み中のあいだ画面に出さずに読み上げる文。 */
 export const PARADIS_VIEWER_LOADING_LABEL = localize('paradis.viewer.loading', "読み込み中…");
 
@@ -54,8 +59,10 @@ function iconFor(kind: ParadisViewerStateKind): ThemeIcon {
  * エディタの地の色で覆う（Excel のシートの白い地の上に薄い文字が出ないように）。返した値を dispose すると
  * 面ごと外す。`message` は読み込み中のときは画面に出さず、読み上げだけに使う。`detail` は文の下の補足（説明の色）。
  */
-export function renderParadisViewerState(container: HTMLElement, kind: ParadisViewerStateKind, message: string, actions: readonly IParadisViewerStateAction[] = [], detail?: string): IDisposable {
+export function renderParadisViewerState(container: HTMLElement, kind: ParadisViewerStateKind, message: string, actions: readonly IParadisViewerStateAction[] = [], detail?: string): IParadisViewerStateView {
 	const store = new DisposableStore();
+	let primary: ParadisButton | undefined;
+	const view: IParadisViewerStateView = { dispose: () => store.dispose(), focus: () => primary?.focus() };
 	const element = dom.append(container, dom.$(`.paradis-viewer-state.${kind}`));
 	store.add({ dispose: () => element.remove() });
 	if (kind === 'loading') {
@@ -66,7 +73,7 @@ export function renderParadisViewerState(container: HTMLElement, kind: ParadisVi
 		const status = dom.append(element, dom.$('span.paradis-viewer-state-status'));
 		status.setAttribute('role', 'status');
 		status.textContent = message;
-		return store;
+		return view;
 	}
 	// 失敗だけを割り込みで読み上げる。変更なし・空・対応外は落ち着いた知らせにする。
 	element.setAttribute('role', kind === 'error' ? 'alert' : 'status');
@@ -81,7 +88,8 @@ export function renderParadisViewerState(container: HTMLElement, kind: ParadisVi
 		actions.forEach((action, index) => {
 			const button = store.add(new ParadisButton(buttons, { kind: index === 0 ? 'primary' : 'secondary', label: action.label }));
 			store.add(button.onDidClick(() => action.run()));
+			primary ??= button;
 		});
 	}
-	return store;
+	return view;
 }

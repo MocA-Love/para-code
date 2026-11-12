@@ -15,6 +15,7 @@
 import './media/paradisLayoutPresets.css';
 import * as dom from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { ActionViewItem, IActionViewItemOptions } from '../../../../base/browser/ui/actionbar/actionViewItems.js';
 import { AnchorAlignment, AnchorPosition } from '../../../../base/browser/ui/contextview/contextview.js';
 import { IAction } from '../../../../base/common/actions.js';
@@ -26,6 +27,7 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { IContextViewService, IOpenContextView } from '../../../../platform/contextview/browser/contextView.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import {
@@ -95,6 +97,7 @@ export function showParadisLayoutPresetPopover(accessor: ServicesAccessor, ancho
 	const editorService = accessor.get(IEditorService);
 	const paradisDialogService = accessor.get(IParadisDialogService);
 	const notificationService = accessor.get(INotificationService);
+	const hoverService = accessor.get(IHoverService);
 
 	const labels = slotKindLabels();
 
@@ -110,9 +113,13 @@ export function showParadisLayoutPresetPopover(accessor: ServicesAccessor, ancho
 			disposables.add(paradisCloseWhenModalOpens(popover, () => contextViewService.hideContextView()));
 
 			// allow-any-unicode-next-line
-			dom.append(popover, $('.paradis-layout-popover-title')).textContent = localize('paradis.layoutPresets.popover.title', "レイアウトプリセットを適用");
+			const titleText = localize('paradis.layoutPresets.popover.title', "レイアウトプリセットを適用");
+			dom.append(popover, $('.paradis-layout-popover-title')).textContent = titleText;
+			popover.setAttribute('role', 'dialog');
+			popover.setAttribute('aria-label', titleText);
 
 			const list = dom.append(popover, $('.paradis-layout-popover-list'));
+			list.setAttribute('role', 'list');
 			const presets = presetService.presets;
 			if (presets.length === 0) {
 				dom.append(list, $('.paradis-layout-popover-empty')).textContent = localize(
@@ -130,25 +137,29 @@ export function showParadisLayoutPresetPopover(accessor: ServicesAccessor, ancho
 
 			let firstItem: HTMLElement | undefined;
 			for (const preset of presets) {
-				// 行は button ではなく role="button" の div にする。button の中に button（編集・削除）を
-				// 入れるのは不正なネストで、内側を押した Enter が外側の既定動作（＝適用）まで
+				// 行は一覧の 1 項目（listitem）。適用（サムネイルと名前）・編集・削除の 3 つの button を兄弟に並べる。
+				// button の中に button を入れると不正なネストで、内側を押した Enter が外側の既定動作（＝適用）まで
 				// 引いてしまう——キーボードだけ操作が逆になる、という気づきにくい壊れ方をする。
-				const item = dom.append(list, $('.paradis-layout-popover-item.paradis-focus-ring-inset'));
-				item.setAttribute('role', 'button');
-				item.tabIndex = 0;
-				firstItem ??= item;
-				item.title = preset.description ?? preset.name;
-				item.appendChild(renderThumbnail(preset));
+				const item = dom.append(list, $('.paradis-layout-popover-item'));
+				item.setAttribute('role', 'listitem');
+				const applyButton = dom.append(item, $('button.paradis-layout-popover-apply.paradis-focus-ring-inset')) as HTMLButtonElement;
+				applyButton.type = 'button';
+				firstItem ??= applyButton;
+				disposables.add(hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), applyButton, preset.description ?? preset.name));
+				applyButton.appendChild(renderThumbnail(preset));
 
-				const main = dom.append(item, $('.paradis-layout-popover-main'));
+				const main = dom.append(applyButton, $('.paradis-layout-popover-main'));
 				dom.append(main, $('.paradis-layout-popover-name')).textContent = preset.name;
 				dom.append(main, $('.paradis-layout-popover-summary')).textContent = paradisLayoutPresetSummary(preset, labels);
 
 				const actions = dom.append(item, $('.paradis-layout-popover-actions'));
 
 				const edit = dom.append(actions, $('button.paradis-layout-popover-action.paradis-focus-ring-inset')) as HTMLButtonElement;
+				edit.type = 'button';
 				// allow-any-unicode-next-line
-				edit.title = localize('paradis.layoutPresets.popover.edit', "編集");
+				const editLabel = localize('paradis.layoutPresets.popover.edit', "編集");
+				edit.setAttribute('aria-label', editLabel);
+				disposables.add(hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), edit, editLabel));
 				dom.append(edit, $(ThemeIcon.asCSSSelector(Codicon.edit)));
 				disposables.add(dom.addDisposableListener(edit, dom.EventType.CLICK, e => {
 					dom.EventHelper.stop(e, true);
@@ -156,8 +167,11 @@ export function showParadisLayoutPresetPopover(accessor: ServicesAccessor, ancho
 				}));
 
 				const remove = dom.append(actions, $('button.paradis-layout-popover-action.paradis-focus-ring-inset')) as HTMLButtonElement;
+				remove.type = 'button';
 				// allow-any-unicode-next-line
-				remove.title = localize('paradis.layoutPresets.popover.delete', "削除");
+				const removeLabel = localize('paradis.layoutPresets.popover.delete', "削除");
+				remove.setAttribute('aria-label', removeLabel);
+				disposables.add(hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), remove, removeLabel));
 				dom.append(remove, $(ThemeIcon.asCSSSelector(Codicon.trash)));
 				disposables.add(dom.addDisposableListener(remove, dom.EventType.CLICK, async e => {
 					dom.EventHelper.stop(e, true);
@@ -182,15 +196,9 @@ export function showParadisLayoutPresetPopover(accessor: ServicesAccessor, ancho
 					void paradisReportLayoutPresetFailure(notificationService, () =>
 						instantiationService.invokeFunction(accessor2 => paradisConfirmAndApplyLayoutPreset(accessor2, preset)));
 				};
+				// 行の余白を押しても適用する（適用の button の Enter・Space も click として行まで上がる）。
+				// 編集・削除は click を止めるので、ここへは来ない。
 				disposables.add(dom.addDisposableListener(item, dom.EventType.CLICK, apply));
-				// role="button" の div は Enter / Space を自前で拾う必要がある。
-				disposables.add(dom.addDisposableListener(item, dom.EventType.KEY_DOWN, e => {
-					const event = new StandardKeyboardEvent(e);
-					if (event.equals(KeyCode.Enter) || event.equals(KeyCode.Space)) {
-						dom.EventHelper.stop(e, true);
-						apply();
-					}
-				}));
 			}
 
 			const footer = dom.append(popover, $('.paradis-layout-popover-footer'));

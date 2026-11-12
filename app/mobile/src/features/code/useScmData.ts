@@ -5,10 +5,10 @@ import { useFocusEffect } from 'expo-router';
 import { PARADIS_MOBILE_SCM_COMMIT_RECOVER_CAPABILITY, type IParadisMobileCommitFailure } from '../../../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileScmSync.js';
 import { sendPcRequest, useAppStore } from '../../appState.js';
 import { usePcCapability } from '../../hooks/usePcCapability.js';
-import type { ScmLogResult, ScmStatusResult } from '../../store.js';
+import { isPcUnreachableError, type ScmLogResult, type ScmStatusResult } from '../../store.js';
 import { codeCacheKey, useCodeCache } from './codeCache.js';
 import { errorMessage, scmErrorText, shouldAutoRetryScmStatus } from './scmModel.js';
-import { parseCommitFailure, type CommitScope } from './scmSync.js';
+import { confirmCommitLanded, parseCommitFailure, type CommitScope } from './scmSync.js';
 import { currentRendererTarget, type CodeSpace } from './useCodeSpace.js';
 
 /**
@@ -209,8 +209,10 @@ export interface CommitState {
 	/**
 	 * コミットする（`scope` が `all` なら `git add -A` のあとコミット、`staged` ならステージ済みだけ）。
 	 * 成功したら `ok: true` と、フックの失敗・時間切れの一言（あれば）。
+	 * `baselineHash` はコミットの前の先頭のコミット。待っている間に接続し直して結果が分からなくなったとき、
+	 * 一覧を読み直してこれより上に同じ件名のコミットがあれば成功とみなす（無ければ確かめず失敗のまま）。
 	 */
-	readonly commit: (message: string, scope?: CommitScope) => Promise<CommitOutcome>;
+	readonly commit: (message: string, scope?: CommitScope, baselineHash?: string) => Promise<CommitOutcome>;
 	readonly clearError: () => void;
 	/** コミットの失敗のカードを閉じる（次のコミットでも消える）。 */
 	readonly dismissFailure: () => void;
@@ -219,6 +221,40 @@ export interface CommitState {
 export type CommitOutcome = { readonly ok: false } | { readonly ok: true; readonly warning: string | undefined };
 
 const FAILED: CommitOutcome = { ok: false };
+/** 結果が分からなかったが、一覧を読み直して PC でできていたと確かめたコミット。 */
+const LANDED: CommitOutcome = { ok: true, warning: undefined };
+/** `commitSafe` を待つ長さ（PC 側はコミットだけで 120 秒、HEAD の確認・控え・ステージ・戻しを足した合計より長く）。結果の確かめもこの期限まで。 */
+const COMMIT_SAFE_TIMEOUT_MS = 310_000;
+/** 結果の確かめで一覧を 1 回読むときの待ち時間。 */
+const COMMIT_CONFIRM_LOG_TIMEOUT_MS = 10_000;
+/** 古い PC の `scmCommit` の待ち時間（store の request() の既定）。 */
+const LEGACY_COMMIT_TIMEOUT_MS = 30_000;
+
+/** そのスペースの PC 画面がつながっている状態になるまで待つ（`deadline` を過ぎたら false）。 */
+function waitForRendererTarget(wsId: string, deadline: number): Promise<boolean> {
+	return new Promise(resolve => {
+		if (currentRendererTarget(wsId) !== undefined) {
+			resolve(true);
+			return;
+		}
+		const remaining = deadline - Date.now();
+		if (remaining <= 0) {
+			resolve(false);
+			return;
+		}
+		const finish = (live: boolean) => {
+			clearTimeout(timer);
+			unsubscribe();
+			resolve(live);
+		};
+		const timer = setTimeout(() => finish(false), remaining);
+		const unsubscribe = useAppStore.subscribe(() => {
+			if (currentRendererTarget(wsId) !== undefined) {
+				finish(true);
+			}
+		});
+	});
+}
 
 interface CommitSafeReply {
 	readonly ok?: unknown;
@@ -236,15 +272,35 @@ export function useScmCommit(space: CodeSpace): CommitState {
 	const [warning, setWarning] = useState<string | undefined>(undefined);
 	const [failure, setFailure] = useState<IParadisMobileCommitFailure | undefined>(undefined);
 	const genRef = useRef(0);
+	// 押したコミットの通し番号（接続し直しでは進めない）。結果の確かめが返る前に次のコミットが始まったら、確かめた結果を捨てる
+	const attemptRef = useRef(0);
+	// 画面が閉じたら、結果の確かめをやめる
+	const mountedRef = useRef(true);
 	const { pcId, wsId, rendererTarget } = space;
 
-	const commit = useCallback(async (message: string, scope: CommitScope = 'all') => {
+	const commit = useCallback(async (message: string, scope: CommitScope = 'all', baselineHash?: string) => {
 		const text = message.trim();
 		if (wsId === undefined || rendererTarget === undefined || text.length === 0 || committing) {
 			return FAILED;
 		}
 		const gen = ++genRef.current;
+		const attempt = ++attemptRef.current;
 		const current = () => genRef.current === gen && currentRendererTarget(wsId) === rendererTarget;
+		// 結果が分からない（待っている間に接続し直した・応答が届かなかった）ときは、接続と PC 画面が戻るのを
+		// 送ってから COMMIT_SAFE_TIMEOUT_MS まで待って一覧を読み直し、PC でコミットできていたら成功として返す。
+		// PC がまだフックを動かしているかもしれないので、期限までは間隔を空けて読み直す。確かめられなければ失敗のまま
+		const sentAt = Date.now();
+		const deadline = sentAt + COMMIT_SAFE_TIMEOUT_MS;
+		// 送った要求の待ち時間（古い PC の `scmCommit` は request() の既定）。これを過ぎて失敗したなら時間切れ
+		const requestTimeoutMs = recoverable ? COMMIT_SAFE_TIMEOUT_MS : LEGACY_COMMIT_TIMEOUT_MS;
+		const confirmLanded = (until = deadline): Promise<boolean> => confirmCommitLanded(baselineHash, text, until, {
+			waitUntilLive: limit => waitForRendererTarget(wsId, limit),
+			// コミットを送ったのと同じ PC に聞く
+			readLog: async () => (await sendPcRequest<ScmLogResult>(pcId, 'scm', { t: 'log', ws: wsId, limit: 10 }, { timeoutMs: COMMIT_CONFIRM_LOG_TIMEOUT_MS })).commits,
+			sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+			now: Date.now,
+			cancelled: () => !mountedRef.current || attemptRef.current !== attempt,
+		});
 		setCommitting(true);
 		setError(undefined);
 		setOutput(undefined);
@@ -255,13 +311,14 @@ export function useScmCommit(space: CodeSpace): CommitState {
 				const result = await scmCommit(wsId, text, true);
 				if (current()) {
 					setOutput(result.output);
+					return LANDED;
 				}
-				return current() ? { ok: true, warning: undefined } : FAILED;
+				return await confirmLanded() ? LANDED : FAILED;
 			}
-			// フックが動くので長めに待つ（PC 側はコミットだけで 120 秒、HEAD の確認・控え・ステージ・戻しを足した合計より長く）
-			const reply = await sendPcRequest<CommitSafeReply>(pcId, 'scm', { t: 'commitSafe', ws: wsId, message: text, all: scope === 'all' }, { timeoutMs: 310_000 });
+			// フックが動くので長めに待つ
+			const reply = await sendPcRequest<CommitSafeReply>(pcId, 'scm', { t: 'commitSafe', ws: wsId, message: text, all: scope === 'all' }, { timeoutMs: COMMIT_SAFE_TIMEOUT_MS });
 			if (!current()) {
-				return FAILED;
+				return await confirmLanded() ? LANDED : FAILED;
 			}
 			if (reply.ok === true) {
 				const warned = typeof reply.warning === 'string' && reply.warning.length > 0 ? reply.warning : undefined;
@@ -277,6 +334,13 @@ export function useScmCommit(space: CodeSpace): CommitState {
 			}
 			return FAILED;
 		} catch (e) {
+			// PC が失敗と答えたものは確かめない。届かなかった・応答が来なかったものだけ確かめる。
+			// 時間切れ（つながったまま応答が来なかった）はコミットボタンを押せないまま待たせないよう、1 回だけ読む。
+			// 切断の直後は画面の状態がまだ online のことがあるので、current() ではなく経過時間で見分ける
+			const timedOut = Date.now() - sentAt >= requestTimeoutMs;
+			if (isPcUnreachableError(e) && await confirmLanded(timedOut ? Date.now() : deadline)) {
+				return LANDED;
+			}
 			if (current()) {
 				setError(errorMessage(e));
 			}
@@ -287,6 +351,13 @@ export function useScmCommit(space: CodeSpace): CommitState {
 			}
 		}
 	}, [scmCommit, recoverable, pcId, wsId, rendererTarget, committing]);
+
+	useEffect(() => {
+		mountedRef.current = true;
+		return () => {
+			mountedRef.current = false;
+		};
+	}, []);
 
 	useEffect(() => {
 		// 接続が切れる・ウィンドウが作り直されると応答は届かない。押せない状態のまま残さない。

@@ -148,9 +148,6 @@
 	"src/vs/paradis/contrib/mobileRelay/browser/media/paradisMobileViewportBanner.css": {
 		"z-index | .monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-mobile-viewport-banner, .monaco-workbench .terminal-wrapper > .paradis-mobile-viewport-banner | z-index: 35": 1
 	},
-	"src/vs/paradis/contrib/notifications/electron-browser/media/paradisNotificationSettings.css": {
-		"z-index | .paradis-notif-area .pns-section.disabled-veil::after | z-index: 5": 1
-	},
 	"src/vs/paradis/contrib/portList/electron-browser/media/paradisPortList.css": {
 		"z-index | .paradis-port-list-trigger | z-index: 2500": 1
 	},
