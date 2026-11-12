@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisSheetData } from '../../../fileViewers/common/paradisSpreadsheet.js';
-import { paradisMobileSheetCertainlyTooLarge } from '../../electron-browser/paradisMobileSpreadsheetHtml.js';
+import { paradisMobileSheetCertainlyTooLarge, paradisMobileStyleRule } from '../../electron-browser/paradisMobileSpreadsheetHtml.js';
 
 suite('ParadisMobileSpreadsheetHtml', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -25,5 +25,12 @@ suite('ParadisMobileSpreadsheetHtml', () => {
 			fits: paradisMobileSheetCertainlyTooLarge(sheet(2000, 300)),
 			hidden: paradisMobileSheetCertainlyTooLarge(sheet(2000, 400, true)),
 		}, { wide: true, fits: false, hidden: false });
+	});
+
+	test('keeps a font name from the file inside the shared style element', () => {
+		assert.deepStrictEqual(
+			paradisMobileStyleRule('pmx-0', 'font-family: "</style><script>alert(1)</script>", sans-serif; color: red'),
+			'.pmx-0 { font-family: "\\3C /style>\\3C script>alert(1)\\3C /script>", sans-serif !important; color: red !important; }',
+		);
 	});
 });

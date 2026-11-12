@@ -5,7 +5,7 @@
 // allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH/PARA-CODE comments)
 
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IParadisMobileWindowLease, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL, ParadisMobileRendererLeaseAuthority } from '../common/paradisMobileWindowLease.js';
 import { IWindowsMainService } from '../../../../platform/windows/electron-main/windows.js';
@@ -15,10 +15,17 @@ import { ILifecycleMainService } from '../../../../platform/lifecycle/electron-m
 export class ParadisMobileWindowLeaseChannel extends Disposable implements IServerChannel<string> {
 	private readonly authority = new ParadisMobileRendererLeaseAuthority();
 	private readonly _onDidChangeManifest = this._register(new Emitter<ReturnType<ParadisMobileRendererLeaseAuthority['manifest']>>());
+	/** 窓ごとの購読。閉じた窓の分はここから外す（チャネルの寿命まで溜めない）。 */
+	private readonly windowListeners = this._register(new DisposableMap<object, DisposableStore>());
 
 	constructor(server: IPCServer<string>, windowsMainService: IWindowsMainService, lifecycleMainService?: ILifecycleMainService) {
 		super();
 		const registerWindow = (window: ReturnType<IWindowsMainService['getWindows']>[number]) => {
+			if (this.windowListeners.has(window)) {
+				return;
+			}
+			const listeners = new DisposableStore();
+			this.windowListeners.set(window, listeners);
 			const trackIfWorkbench = () => {
 				if (window.config !== undefined && window.config.isSessionsWindow !== true && this.authority.trackWindow(window.id)) {
 					this.fireManifest();
@@ -27,9 +34,10 @@ export class ParadisMobileWindowLeaseChannel extends Disposable implements IServ
 			if (window.config !== undefined) {
 				trackIfWorkbench();
 			} else {
-				this._register(Event.once(window.onWillLoad)(trackIfWorkbench));
+				listeners.add(Event.once(window.onWillLoad)(trackIfWorkbench));
 			}
-			this._register(Event.once(Event.any(window.onDidClose, window.onDidDestroy))(() => {
+			listeners.add(Event.once(Event.any(window.onDidClose, window.onDidDestroy))(() => {
+				this.windowListeners.deleteAndDispose(window);
 				// アプリ終了中のwindow closeは「windowを本当に閉じた」ではない。ここでmanifestを
 				// 空にすると、終了間際のshared processが「complete:true・空」のstateを配信し、
 				// モバイル側のワークスペース・端末・エージェント表示が毎回全消去される。
