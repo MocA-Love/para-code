@@ -27,6 +27,12 @@ export function base64ToBlobUrl(base64: string, mimeType: string): string {
 	return URL.createObjectURL(new Blob([bytes], { type: mimeType }));
 }
 
+/** {@link ParadisNotificationSoundPlayer.play} の試聴の知らせ。 */
+export interface IParadisSoundPlaybackListener {
+	readonly onDuration?: (seconds: number) => void;
+	readonly onEnded?: () => void;
+}
+
 /**
  * 着信音の解決 + 再生。通知の実再生は shared process の AudioScheduler へ移設済みのため、
  * 現在は設定ダイアログのプレビュー再生からのみ使う。
@@ -84,19 +90,24 @@ export class ParadisNotificationSoundPlayer extends Disposable {
 		}
 	}
 
-	/** volume は 0-100。ringtoneId が解決できない場合は何もしない。 */
-	async play(ringtoneId: string, volume: number): Promise<void> {
+	/**
+	 * volume は 0-100。ringtoneId が解決できない場合は何もしない。
+	 * `listener` は長さの分からない音（カスタム音源）の試聴の表示に使う。`onDuration` は実際の長さ（秒）が
+	 * 分かったとき、`onEnded` は鳴り終えたか鳴らせなかったときに呼ぶ（stop() や次の play() で止めたときは呼ばない）。
+	 */
+	async play(ringtoneId: string, volume: number, listener?: IParadisSoundPlaybackListener): Promise<void> {
 		this.stop();
 		const generation = this._generation;
 		const resolved = await this._resolveUrl(ringtoneId);
-		if (!resolved) {
-			return;
-		}
 		if (generation !== this._generation) {
 			// await 中に別の play()/stop() に追い越された。生成したBlob URLを解放して破棄する。
-			if (resolved.revoke) {
+			if (resolved?.revoke) {
 				URL.revokeObjectURL(resolved.url);
 			}
+			return;
+		}
+		if (!resolved) {
+			listener?.onEnded?.();
 			return;
 		}
 		const audio = new Audio(resolved.url);
@@ -105,10 +116,31 @@ export class ParadisNotificationSoundPlayer extends Disposable {
 		if (resolved.revoke) {
 			this._currentBlobUrl = resolved.url;
 		}
+		if (listener) {
+			const isCurrent = () => this._currentAudio === audio;
+			audio.addEventListener('loadedmetadata', () => {
+				if (isCurrent() && Number.isFinite(audio.duration) && audio.duration > 0) {
+					listener.onDuration?.(audio.duration);
+				}
+			});
+			audio.addEventListener('ended', () => {
+				if (isCurrent()) {
+					listener.onEnded?.();
+				}
+			});
+			audio.addEventListener('error', () => {
+				if (isCurrent()) {
+					listener.onEnded?.();
+				}
+			});
+		}
 		try {
 			await audio.play();
 		} catch (error) {
 			this.logService.warn('[ParadisNotifications] failed to play sound', error);
+			if (this._currentAudio === audio) {
+				listener?.onEnded?.();
+			}
 		}
 	}
 
