@@ -119,8 +119,18 @@ class ParadisPtyHandoverReporter extends Disposable implements IWorkbenchContrib
 		}
 		this.draining = true;
 		try {
-			const report = await raceTimeout(this.take(), PARADIS_HANDOVER_TIMEOUT_MS);
-			if (report && !paradisIsEmptyPtyHandoverReport(report)) {
+			const taking = this.take();
+			let timedOut = false;
+			const report = await raceTimeout(taking, PARADIS_HANDOVER_TIMEOUT_MS, () => timedOut = true);
+			if (timedOut) {
+				// 取り出した記録は向こうから消えている。遅れて届いても捨てずに送る。
+				const remote = this.remote;
+				taking.then(late => {
+					if (late && !paradisIsEmptyPtyHandoverReport(late) && !this._store.isDisposed) {
+						this.send(late, remote);
+					}
+				}).catch(error => this.logService.trace('[paradisPtyHandover] could not take or send a late handover report', error));
+			} else if (report && !paradisIsEmptyPtyHandoverReport(report)) {
 				this.send(report, this.remote);
 			}
 		} catch (error) {

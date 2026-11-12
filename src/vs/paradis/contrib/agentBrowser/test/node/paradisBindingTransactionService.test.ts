@@ -83,6 +83,7 @@ function createFixture(): {
 	let throttlingOperation = async (_descriptor: IParadisExactBrowserViewDescriptor, _enabled: boolean): Promise<boolean> => true;
 	const service = Object.assign(Object.create(ParadisAgentBrowserService.prototype) as object, {
 		_bindings: bindings,
+		_sharpScreenshotKeys: new Map<string, number>(),
 		_agentTabGrants: new Map(),
 		_selectedTabs: new Map<string, string>(),
 		_skippedOpenedTabs: new Map(),
