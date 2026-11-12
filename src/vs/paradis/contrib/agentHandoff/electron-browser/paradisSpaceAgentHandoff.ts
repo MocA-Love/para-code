@@ -13,6 +13,7 @@
 // 送り先は今のスペースのエージェントだけ。別のスペースのエージェントへは送らない（スペースの取り違えを防ぐ）。
 
 import { Codicon } from '../../../../base/common/codicons.js';
+import { escapeIcons } from '../../../../base/common/iconLabels.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { isLinux } from '../../../../base/common/platform.js';
 import { extUri, extUriIgnorePathCase } from '../../../../base/common/resources.js';
@@ -104,7 +105,8 @@ export async function paradisHandOffToSpaceAgent(services: IParadisSpaceAgentHan
 		const status = services.agentStatusStore.getInstanceStatus(instance.instanceId);
 		items.push({
 			target: { kind: 'terminal', terminalKey },
-			label: `$(${Codicon.terminal.id}) ${instance.title}`,
+			// 題名はエージェントが OSC で決めるので、中の $(...) をアイコンとして描かせない
+			label: `$(${Codicon.terminal.id}) ${escapeIcons(instance.title)}`,
 			description: status ? STATUS_LABELS[status] ?? status : localize('paradis.agentHandoff.status.idle', "入力待ち"),
 		});
 	}
