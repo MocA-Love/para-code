@@ -8,13 +8,13 @@
 
 // モバイル端末の接続（ペアリング）の QR を出す小さいモーダル（共通の S 段）。以前はエディタのタブ（webview）に
 // 出していたが、ほかのタブの裏に回ると 5 分の期限に気付けないので、前面のモーダルにした。
-// 見出しの帯・QR と 3 つの手順・下端の帯（残り時間とリンクのコピー）を本家の部品で書く。
+// 見出しの帯（キットの帯）・QR と 3 つの手順・下端の帯（残り時間とリンクのコピー）。期限が切れたら QR を薄くして
+// コピーを止め、QR の所の「新しい QR を作る」でその場でやり直せるようにする。
 
 import './media/paradisMobilePairingDialog.css';
 import * as dom from '../../../../base/browser/dom.js';
-import { ActionBar } from '../../../../base/browser/ui/actionbar/actionbar.js';
+import { status } from '../../../../base/browser/ui/aria/aria.js';
 import { Button } from '../../../../base/browser/ui/button/button.js';
-import { toAction } from '../../../../base/common/actions.js';
 import { IntervalTimer } from '../../../../base/common/async.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { Codicon } from '../../../../base/common/codicons.js';
@@ -24,7 +24,8 @@ import { localize } from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultStyles.js';
-import { ParadisModalSize, paradisModalClasses } from '../../../browser/paradisModal.js';
+import { paradisButtonClasses } from '../../../browser/paradisButton.js';
+import { ParadisModalSize, paradisModalClasses, renderParadisModalHead } from '../../../browser/paradisModal.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 
 const $ = dom.$;
@@ -73,11 +74,19 @@ export class ParadisMobilePairingDialog extends Disposable {
 
 	private readonly backdrop: HTMLElement;
 	private readonly remaining: HTMLElement;
+	private readonly qr: HTMLImageElement;
+	private readonly expiredCover: HTMLElement;
 	private readonly copyButton: Button;
+	private readonly regenerateButton: Button;
+	private readonly timer = this._register(new IntervalTimer());
+	private expired = false;
 	private readonly copiedReset = this._register(new MutableDisposable());
 	/** 閉じた（閉じるボタン・外側の押下・Esc・別のモーダル・呼び出し側の dispose のどれでも）ときに 1 回だけ知らせる。 */
 	private readonly _onDidClose = new Emitter<void>();
 	readonly onDidClose = this._onDidClose.event;
+	/** 期限が切れた後に「新しい QR を作る」が押された。小窓は閉じない（待ち受けを取り消してから呼び出し側が閉じる）。 */
+	private readonly _onDidRequestNewCode = this._register(new Emitter<void>());
+	readonly onDidRequestNewCode = this._onDidRequestNewCode.event;
 
 	constructor(
 		qrSvg: string,
@@ -97,19 +106,37 @@ export class ParadisMobilePairingDialog extends Disposable {
 		dialog.setAttribute('aria-modal', 'true');
 		dialog.tabIndex = -1;
 
-		const header = dom.append(dialog, $('.pmp-header'));
-		const heading = dom.append(header, $('h3.pmp-title'));
-		heading.textContent = title;
-		heading.id = 'paradis-mobile-pairing-title';
-		dialog.setAttribute('aria-labelledby', heading.id);
-		const closeBar = this._register(new ActionBar(dom.append(header, $('.pmp-header-actions'))));
+		// 見出しの帯はほかの S 段のモーダルと同じキットの帯（高さ 52・下線・28 の閉じる）
+		const head = renderParadisModalHead(dialog, title);
+		head.title.id = 'paradis-mobile-pairing-title';
+		dialog.setAttribute('aria-labelledby', head.title.id);
 		// allow-any-unicode-next-line
-		closeBar.push(toAction({ id: 'paradis.mobile.pairingClose', label: localize('paradis.mobile.pairingClose', "閉じる"), class: ThemeIcon.asClassName(Codicon.close), run: () => this.dispose() }), { icon: true, label: false });
+		const closeLabel = localize('paradis.mobile.pairingClose', "閉じる");
+		// アイコンは中の span に置く（ボタンの要素に codicon を付けると、キットのボタンの font-family が字形を消す）
+		const close = dom.append(head.actions, $<HTMLButtonElement>('button'));
+		close.type = 'button';
+		close.classList.add(...paradisButtonClasses('icon'));
+		close.title = closeLabel;
+		close.setAttribute('aria-label', closeLabel);
+		dom.append(close, $(ThemeIcon.asCSSSelector(Codicon.close)));
+		this._register(dom.addDisposableListener(close, dom.EventType.CLICK, () => this.dispose()));
 
 		const body = dom.append(dialog, $('.pmp-body'));
-		const qr = dom.append(body, $('img.pmp-qr')) as HTMLImageElement;
-		qr.src = `data:image/svg+xml;base64,${btoa(qrSvg)}`;
-		qr.alt = 'QR';
+		const qrWrap = dom.append(body, $('.pmp-qr-wrap'));
+		this.qr = dom.append(qrWrap, $<HTMLImageElement>('img.pmp-qr'));
+		this.qr.src = `data:image/svg+xml;base64,${btoa(qrSvg)}`;
+		// allow-any-unicode-next-line
+		this.qr.alt = localize('paradis.mobile.pairingQrAlt', "Para Code Mobile で読み取るペアリング用の QR コード");
+		// 期限が切れたら QR の上に重ねる（切れる前は出さず、Tab の順にも入れない）
+		this.expiredCover = dom.append(qrWrap, $('.pmp-qr-expired'));
+		// allow-any-unicode-next-line
+		dom.append(this.expiredCover, $('span.pmp-qr-expired-title')).textContent = localize('paradis.mobile.pairingExpiredTitle', "期限が切れました");
+		// allow-any-unicode-next-line
+		dom.append(this.expiredCover, $('span.pmp-qr-expired-detail')).textContent = localize('paradis.mobile.pairingExpiredDetail', "この QR はもう使えません");
+		this.regenerateButton = this._register(new Button(this.expiredCover, { ...defaultButtonStyles, supportIcons: true }));
+		// allow-any-unicode-next-line
+		this.regenerateButton.label = `$(refresh) ${localize('paradis.mobile.pairingRegenerate', "新しい QR を作る")}`;
+		this._register(this.regenerateButton.onDidClick(() => this._onDidRequestNewCode.fire()));
 		const steps = dom.append(body, $('ol.pmp-steps'));
 		for (const step of [
 			// allow-any-unicode-next-line
@@ -136,9 +163,7 @@ export class ParadisMobilePairingDialog extends Disposable {
 			}
 		}));
 
-		const timer = this._register(new IntervalTimer());
-		timer.cancelAndSet(() => this.updateRemaining(), 1000, dom.getWindow(layoutService.activeContainer));
-		this.updateRemaining();
+		this.timer.cancelAndSet(() => this.updateRemaining(), 1000, dom.getWindow(layoutService.activeContainer));
 
 		layoutService.activeContainer.appendChild(this.backdrop);
 		this._register(toDisposable(() => this.backdrop.remove()));
@@ -150,7 +175,11 @@ export class ParadisMobilePairingDialog extends Disposable {
 			onEscape: () => this.dispose(),
 			close: () => this.dispose(),
 		}));
-		dialog.focus();
+		// 開いたら最初に押せる物（期限の前はリンクのコピー、切れていれば「新しい QR を作る」）へフォーカスを移す
+		this.updateRemaining();
+		if (!this.expired) {
+			this.copyButton.focus();
+		}
 	}
 
 	override dispose(): void {
@@ -163,13 +192,31 @@ export class ParadisMobilePairingDialog extends Disposable {
 	}
 
 	private updateRemaining(): void {
+		if (this.expired) {
+			return;
+		}
 		const text = paradisPairingRemainingText(this.expiresAt, Date.now());
-		this.remaining.classList.toggle('expired', text === undefined);
-		this.remaining.textContent = text !== undefined
+		if (text !== undefined) {
 			// allow-any-unicode-next-line
-			? localize('paradis.mobile.pairingRemaining', "あと {0} 有効", text)
-			// allow-any-unicode-next-line
-			: localize('paradis.mobile.pairingExpired', "期限が切れました。もう一度「モバイルデバイスを接続」を開いてください");
+			this.remaining.textContent = localize('paradis.mobile.pairingRemaining', "あと {0} 有効", text);
+			return;
+		}
+		// 期限が切れた: 数えるのを止め、切れた QR とリンクを使えなくして、その場でやり直せるボタンを出す
+		this.expired = true;
+		this.timer.cancel();
+		this.copiedReset.clear();
+		// allow-any-unicode-next-line
+		const expired = localize('paradis.mobile.pairingExpired', "期限が切れました");
+		this.remaining.classList.add('expired');
+		this.remaining.textContent = expired;
+		this.qr.classList.add('expired');
+		this.expiredCover.classList.add('shown');
+		this.setCopyLabel(false);
+		this.copyButton.enabled = false;
+		// 押せなくしたボタンにフォーカスが残ると箱の外へ落ちて Esc が効かなくなるので、やり直しのボタンへ移す
+		this.regenerateButton.focus();
+		// 残り時間の欄は毎秒変わるので読み上げない（aria-live='off'）。切れたことだけ 1 回伝える
+		status(expired);
 	}
 
 	private setCopyLabel(copied: boolean): void {
@@ -181,8 +228,11 @@ export class ParadisMobilePairingDialog extends Disposable {
 	}
 
 	private async copyLink(): Promise<void> {
+		if (this.expired) {
+			return;
+		}
 		await this.clipboardService.writeText(this.pairingUri);
-		if (this._store.isDisposed) {
+		if (this._store.isDisposed || this.expired) {
 			return;
 		}
 		this.setCopyLabel(true);
