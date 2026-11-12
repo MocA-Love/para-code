@@ -498,6 +498,11 @@
 	min-width: 0;
 }
 
+/* 欄（.pcw-d-field）は縦に並べて横へ伸ばすので、切り替えだけは中身の幅に戻す（伸ばすと地と枠だけが右へ残る） */
+.paradis-create-worktree-dialog.pcw-d .pcw-d-mode > .paradis-seg {
+	align-self: flex-start;
+}
+
 /* 既存のブランチではスペース名を 1 列にする（ブランチ名の欄は隠れる） */
 .paradis-create-worktree-dialog.pcw-d .pcw-d-two > .pcw-d-field.hidden {
 	display: none;

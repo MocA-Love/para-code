@@ -264,7 +264,12 @@ class ParadisKeptBranchesDialog extends Disposable {
 					this.dispose();
 				}
 			},
-			close: () => this.dispose(),
+			// 別のモーダルが開いても、削除している間は閉じない（その上に重なる）
+			close: () => {
+				if (!this._busy) {
+					this.dispose();
+				}
+			},
 		}));
 		this._all.focus();
 	}

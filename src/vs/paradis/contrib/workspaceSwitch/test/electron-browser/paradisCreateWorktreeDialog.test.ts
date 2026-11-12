@@ -181,6 +181,13 @@ suite('create worktree dialog: closing and drafts', () => {
 	}
 
 	const escape = (target: HTMLElement) => target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+	const cancelButton = (modal: HTMLElement) => [...modal.querySelectorAll<HTMLElement>('.paradis-modal-foot .paradis-button')].find(button => button.textContent === 'キャンセル')!;
+
+	/**
+	 * 下書きはモジュールの単位で持つので、テストの終わりに開き直して「キャンセル」で捨てる（次のテストへ残さない）。
+	 * 開いたままのダイアログは、新しく開いたダイアログが閉じる（そのとき残した下書きも開き直しで取り出して捨てる）。
+	 */
+	const discardDrafts = (container: HTMLElement) => cancelButton(open(container).modal).click();
 
 	test('a modal dialog of the M tier labelled by its title, with role=alert on the error line', () => {
 		const container = mainWindow.document.createElement('div');
@@ -198,6 +205,7 @@ suite('create worktree dialog: closing and drafts', () => {
 			}, { role: 'dialog', modal: 'true', labelledBy: true, title: '新しいスペース', tier: true, alert: 'alert' });
 			dialog.dispose();
 		} finally {
+			discardDrafts(container);
 			container.remove();
 		}
 	});
@@ -224,7 +232,7 @@ suite('create worktree dialog: closing and drafts', () => {
 
 			const third = open(container);
 			const afterBackdrop = third.modal.querySelector<HTMLTextAreaElement>('textarea')!.value;
-			[...third.modal.querySelectorAll<HTMLElement>('.paradis-modal-foot .paradis-button')].find(button => button.textContent === 'キャンセル')!.click();
+			cancelButton(third.modal).click();
 
 			const fourth = open(container);
 			const afterCancel = { prompt: fourth.modal.querySelector<HTMLTextAreaElement>('textarea')!.value, note: fourth.modal.querySelector('.pcw-d-restored') !== null };
@@ -236,6 +244,7 @@ suite('create worktree dialog: closing and drafts', () => {
 				afterCancel: { prompt: '', note: false },
 			});
 		} finally {
+			discardDrafts(container);
 			container.remove();
 		}
 	});
@@ -261,6 +270,7 @@ suite('create worktree dialog: closing and drafts', () => {
 			});
 			dialog.dispose();
 		} finally {
+			discardDrafts(container);
 			container.remove();
 		}
 	});

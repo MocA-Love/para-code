@@ -449,7 +449,8 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 			agentId: this._selectedAgentId,
 			...this._currentLaunchOptions(),
 			...(this._setupScript ? { runSetup: this._setupCheckbox.checked } : {}),
-			...(choice ? { existingBranch: { branch: choice.name, source: choice.source } } : {}),
+			// 「origin に合わせる」を選んでいたら、それも写す（再表示は sync の有無で選んだかを戻す）
+			...(choice ? { existingBranch: this._existingBranchChoice() ?? { branch: choice.name, source: choice.source } } : {}),
 			...(images.length > 0 ? { images } : {}),
 		});
 	}

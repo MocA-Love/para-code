@@ -2341,6 +2341,10 @@ export class ParadisWorkspacesView extends ViewPane {
 				if (pr) {
 					parts.push(localize('paradis.workspaceSwitch.ariaPr', "PR #{0} {1}", pr.number, prStateLabel(pr.state)));
 				}
+			} else if (entry.id === 'issues') {
+				const issues = this.agentStatusStore.getScopeIssueUrls(worktreeStateKeyFor(worktree)).length;
+				// allow-any-unicode-next-line
+				parts.push(localize('paradis.workspaceSwitch.ariaIssues', "Issue {0} 件", issues));
 			} else if (entry.id === 'diff') {
 				const diff = this._diffStats.get(worktree.uri.fsPath);
 				if (diff) {

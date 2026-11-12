@@ -157,7 +157,8 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 
 		layoutService.activeContainer.appendChild(this._backdrop);
 		// 中の欄へフォーカスを移す前に作る（開く前の場所を覚えて、閉じたらそこへ戻す）。Esc は重なった中の一番上だけが受ける
-		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal: this._dialog, onEscape: () => this._onEscape(), close: () => this.dispose() }));
+		// 別のモーダルが開いても、保存している間は閉じない（その上に重なる）
+		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal: this._dialog, onEscape: () => this._onEscape(), close: () => { if (!this._busy) { this.dispose(); } } }));
 		this._renderForm();
 		void this._loadExisting();
 	}
