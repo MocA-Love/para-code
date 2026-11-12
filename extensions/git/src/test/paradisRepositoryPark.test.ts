@@ -377,13 +377,15 @@ suite('paradis parked repository guards', () => {
 		let settled = false;
 		const waiting = paradisWaitWhileParked(() => active, onDidChange).then(waited => { settled = true; return waited; });
 		fire(); // 待避の発火 (まだ待避中) では抜けない
+		const listenersWhileParked = listeners.length;
 		await Promise.resolve();
 		const settledWhileParked = settled;
 		active = true;
 		fire();
 		const waited = await waiting;
-		assert.deepStrictEqual({ whileActive, settledWhileParked, waited, listenersLeft: listeners.length }, {
+		assert.deepStrictEqual({ whileActive, listenersWhileParked, settledWhileParked, waited, listenersLeft: listeners.length }, {
 			whileActive: false,
+			listenersWhileParked: 1,
 			settledWhileParked: false,
 			waited: true,
 			listenersLeft: 0,
