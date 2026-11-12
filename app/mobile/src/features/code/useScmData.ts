@@ -8,7 +8,7 @@ import { usePcCapability } from '../../hooks/usePcCapability.js';
 import type { ScmLogResult, ScmStatusResult } from '../../store.js';
 import { codeCacheKey, useCodeCache } from './codeCache.js';
 import { errorMessage, scmErrorText, shouldAutoRetryScmStatus } from './scmModel.js';
-import { parseCommitFailure, type CommitScope } from './scmSync.js';
+import { commitLandedAfter, parseCommitFailure, type CommitScope } from './scmSync.js';
 import { currentRendererTarget, type CodeSpace } from './useCodeSpace.js';
 
 /**
@@ -209,8 +209,10 @@ export interface CommitState {
 	/**
 	 * コミットする（`scope` が `all` なら `git add -A` のあとコミット、`staged` ならステージ済みだけ）。
 	 * 成功したら `ok: true` と、フックの失敗・時間切れの一言（あれば）。
+	 * `baselineHash` はコミットの前の先頭のコミット。待っている間に接続し直して結果が分からなくなったとき、
+	 * 一覧を読み直してこれより上に同じ件名のコミットがあれば成功とみなす（無ければ確かめず失敗のまま）。
 	 */
-	readonly commit: (message: string, scope?: CommitScope) => Promise<CommitOutcome>;
+	readonly commit: (message: string, scope?: CommitScope, baselineHash?: string) => Promise<CommitOutcome>;
 	readonly clearError: () => void;
 	/** コミットの失敗のカードを閉じる（次のコミットでも消える）。 */
 	readonly dismissFailure: () => void;
@@ -219,6 +221,8 @@ export interface CommitState {
 export type CommitOutcome = { readonly ok: false } | { readonly ok: true; readonly warning: string | undefined };
 
 const FAILED: CommitOutcome = { ok: false };
+/** 結果が分からなかったが、一覧を読み直して PC でできていたと確かめたコミット。 */
+const LANDED: CommitOutcome = { ok: true, warning: undefined };
 
 interface CommitSafeReply {
 	readonly ok?: unknown;
@@ -236,15 +240,32 @@ export function useScmCommit(space: CodeSpace): CommitState {
 	const [warning, setWarning] = useState<string | undefined>(undefined);
 	const [failure, setFailure] = useState<IParadisMobileCommitFailure | undefined>(undefined);
 	const genRef = useRef(0);
+	// 押したコミットの通し番号（接続し直しでは進めない）。結果の確かめが返る前に次のコミットが始まったら、確かめた結果を捨てる
+	const attemptRef = useRef(0);
 	const { pcId, wsId, rendererTarget } = space;
 
-	const commit = useCallback(async (message: string, scope: CommitScope = 'all') => {
+	const commit = useCallback(async (message: string, scope: CommitScope = 'all', baselineHash?: string) => {
 		const text = message.trim();
 		if (wsId === undefined || rendererTarget === undefined || text.length === 0 || committing) {
 			return FAILED;
 		}
 		const gen = ++genRef.current;
+		const attempt = ++attemptRef.current;
 		const current = () => genRef.current === gen && currentRendererTarget(wsId) === rendererTarget;
+		// 結果が分からない（待っている間に接続し直した・応答が届かなかった）ときは一覧を 1 回だけ読み直し、
+		// PC でコミットできていたら成功として返す。確かめられなければ失敗のまま
+		const confirmLanded = async (): Promise<boolean> => {
+			if (baselineHash === undefined) {
+				return false;
+			}
+			try {
+				// コミットを送ったのと同じ PC に聞く
+				const log = await sendPcRequest<ScmLogResult>(pcId, 'scm', { t: 'log', ws: wsId, limit: 10 });
+				return attemptRef.current === attempt && commitLandedAfter(log.commits, baselineHash, text);
+			} catch {
+				return false;
+			}
+		};
 		setCommitting(true);
 		setError(undefined);
 		setOutput(undefined);
@@ -255,13 +276,14 @@ export function useScmCommit(space: CodeSpace): CommitState {
 				const result = await scmCommit(wsId, text, true);
 				if (current()) {
 					setOutput(result.output);
+					return LANDED;
 				}
-				return current() ? { ok: true, warning: undefined } : FAILED;
+				return await confirmLanded() ? LANDED : FAILED;
 			}
 			// フックが動くので長めに待つ（PC 側はコミットだけで 120 秒、HEAD の確認・控え・ステージ・戻しを足した合計より長く）
 			const reply = await sendPcRequest<CommitSafeReply>(pcId, 'scm', { t: 'commitSafe', ws: wsId, message: text, all: scope === 'all' }, { timeoutMs: 310_000 });
 			if (!current()) {
-				return FAILED;
+				return await confirmLanded() ? LANDED : FAILED;
 			}
 			if (reply.ok === true) {
 				const warned = typeof reply.warning === 'string' && reply.warning.length > 0 ? reply.warning : undefined;
@@ -277,6 +299,9 @@ export function useScmCommit(space: CodeSpace): CommitState {
 			}
 			return FAILED;
 		} catch (e) {
+			if (await confirmLanded()) {
+				return LANDED;
+			}
 			if (current()) {
 				setError(errorMessage(e));
 			}

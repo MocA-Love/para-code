@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, it } from 'vitest';
-import { agentHandoffResult, branchSyncOf, commitFailureView, commitHint, commitScope, parseCommitFailure, scmPrimaryAction, scmPushConfirm, scmSyncSummary, type ScmPrimaryInput } from './scmSync.js';
+import { agentHandoffResult, branchSyncOf, commitFailureView, commitLandedAfter, commitHint, commitScope, parseCommitFailure, scmPrimaryAction, scmPushConfirm, scmSyncSummary, type ScmPrimaryInput } from './scmSync.js';
 
 describe('scmPrimaryAction', () => {
 	const clean: ScmPrimaryInput = { live: true, total: 0, message: '', committing: false, sync: { upstream: 'origin/main', ahead: 0, behind: 0 }, syncing: undefined, branch: 'main' };
@@ -98,6 +98,26 @@ describe('commit failure', () => {
 			.toBe('コミットの途中で PC のステージが変わったため、ステージは戻していません。PC で確かめてください。');
 		expect(parseCommitFailure({ id: 1 })).toBeUndefined();
 		expect(parseCommitFailure({ id: 'x', kind: 'future', summary: 's', output: '' })?.kind).toBe('other');
+	});
+
+	it('結果が分からなかったコミットは、前の先頭より上に同じ件名があるときだけできたとみなす', () => {
+		const log = [
+			{ hash: 'c3', subject: 'fix: typo in readme' },
+			{ hash: 'c2', subject: 'other work on PC' },
+			{ hash: 'c1', subject: 'fix: typo in readme' },
+		];
+		expect([
+			commitLandedAfter(log, 'c2', 'fix: typo in readme'),
+			// 本文付きのメッセージは最初の段落（件名）で比べる
+			commitLandedAfter(log, 'c2', '  fix: typo in readme\n\nlonger body\n'),
+			// 前の先頭のまま（何も増えていない）
+			commitLandedAfter(log, 'c3', 'fix: typo in readme'),
+			// 同じ件名は前の先頭より下にしかない（前のコミットと取り違えない）
+			commitLandedAfter(log, 'c2', 'other work on PC'),
+			// 前の先頭が分からない・一覧に見つからない
+			commitLandedAfter(log, undefined, 'fix: typo in readme'),
+			commitLandedAfter(log, 'gone', 'fix: typo in readme'),
+		]).toEqual([true, true, false, false, false, false]);
 	});
 
 	it('エージェントへ頼んだ結果の一言（作業中なら新しいエージェントで頼む口を出す）', () => {

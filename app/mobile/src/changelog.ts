@@ -44,6 +44,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-11-12',
 		items: [
 			{
+				icon: 'git-commit-outline',
+				title: 'コミットを待っている間に PC とつながり直しても、PC でコミットできていれば「コミットしました」と出すようにしました',
+				body: 'これまでは成功していても失敗と出ていました。',
+			},
+			{
 				icon: 'refresh-outline',
 				title: 'コンテキストの内訳を開いたまま応答が終わったとき、取り直しの間は「更新中」と出すようにしました',
 				body: '取り直しに失敗しても前の内訳は消えず、失敗の理由を 1 行添えます。',

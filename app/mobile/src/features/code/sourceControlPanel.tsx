@@ -119,7 +119,8 @@ export function SourceControlPanel({ target, dock }: { target?: CodeSpaceTarget;
 		commitHandoff.reset();
 		setActionError(undefined);
 		setCommitWarning(undefined);
-		const outcome = await commitState.commit(message, scope);
+		// 結果が分からなくなったときの確かめに、コミットの前の先頭を渡す
+		const outcome = await commitState.commit(message, scope, latest?.hash);
 		// フックの失敗・時間切れの一言があれば、コミットはできたが注意あり
 		haptic(!outcome.ok ? 'error' : outcome.warning !== undefined ? 'warning' : 'success');
 		if (!outcome.ok) {

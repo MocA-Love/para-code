@@ -171,6 +171,29 @@ export function parseCommitFailure(value: unknown): IParadisMobileCommitFailure 
 	return { id: failure.id, kind, summary: failure.summary, output: failure.output, restored: failure.restored === true, ...(failure.restoreFailed === true ? { restoreFailed: true } : {}), ...(failure.indexChanged === true ? { indexChanged: true } : {}) };
 }
 
+/** git の `%s`（件名）と同じく、メッセージの最初の段落の行を空白でつないだもの。 */
+function commitSubject(message: string): string {
+	const paragraph = message.trim().split(/\r?\n[ \t]*\r?\n/)[0] ?? '';
+	return paragraph.split(/\r?\n/).map(line => line.trim()).join(' ');
+}
+
+/**
+ * 結果が分からないまま終わったコミット（待っている間に接続し直した）が、PC で実際にできていたか。
+ * 読み直した一覧（新しい順）で、コミットの前の先頭（`baselineHash`）より上に同じ件名のコミットがあればできたとみなす。
+ * 前の先頭が分からない・一覧に見つからないときは確かめられないので false（前のコミットと同じ件名を取り違えない）。
+ */
+export function commitLandedAfter(commits: readonly { readonly hash: string; readonly subject: string }[], baselineHash: string | undefined, message: string): boolean {
+	if (baselineHash === undefined) {
+		return false;
+	}
+	const baseline = commits.findIndex(commit => commit.hash === baselineHash);
+	if (baseline <= 0) {
+		return false;
+	}
+	const subject = commitSubject(message);
+	return subject.length > 0 && commits.slice(0, baseline).some(commit => commit.subject.trim() === subject);
+}
+
 /** エージェントへ送った結果（`commitFix` / `prFixChecks` の応答）。 */
 export type AgentHandoffResult =
 	| { readonly delivered: true; readonly text: string }
