@@ -120,6 +120,24 @@ describe('buildHtmlImageDeliverScript', () => {
 		expect(received).toEqual([['7', data]]);
 	});
 
+	test('asking again replaces the image observers instead of adding more', () => {
+		const observers: { disconnected: boolean }[] = [];
+		class FakeObserver {
+			disconnected = false;
+			constructor() { observers.push(this); }
+			observe(): void { }
+			unobserve(): void { }
+			disconnect(): void { this.disconnected = true; }
+		}
+		const page: Record<string, unknown> = { ReactNativeWebView: { postMessage: () => { } }, addEventListener: () => { } };
+		const document = { readyState: 'complete', addEventListener: () => { }, querySelectorAll: () => [] };
+		new Function('window', 'document', 'IntersectionObserver', 'setTimeout', HTML_IMAGES_LOADER_SCRIPT)(page, document, FakeObserver, () => { });
+		const retry = page.__paradisRetryHtmlImages as () => void;
+		retry();
+		retry();
+		expect({ created: observers.length, live: observers.filter(observer => !observer.disconnected).length }).toEqual({ created: 6, live: 2 });
+	});
+
 	test('the retry script asks the page again for the images it has not swapped in yet', () => {
 		let retried = 0;
 		new Function('window', HTML_IMAGES_RETRY_SCRIPT)({ __paradisRetryHtmlImages: () => { retried++; } });

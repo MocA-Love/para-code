@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { paraAlert } from '../../paraAlert.js';
 import { WebView } from 'react-native-webview';
+import type { ShouldStartLoadRequest } from 'react-native-webview/lib/WebViewTypes';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
 import { CircleAlert, FileQuestion } from 'lucide-react-native';
 import { createMobileOfficeNonce, guardMobileOfficeNavigation, MOBILE_OFFICE_ORIGIN_WHITELIST, secureMobileOfficeHtml } from '../../components/officeCapability.js';
@@ -261,12 +262,16 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 	const binary = content?.binary;
 	const trace = content?.trace;
 	const officeNonce = useMemo(() => (officeKind ? createMobileOfficeNonce() : undefined), [officeKind, spreadsheetHtml, binary]);
-	const guardOfficeNavigation = useCallback((request: { readonly url: string; readonly isTopFrame?: boolean }) => guardMobileOfficeNavigation(request, url => {
+	const confirmExternalLink = useCallback((url: string) => {
 		paraAlert.alert('外部リンクを開きますか？', url, [
 			{ text: 'キャンセル', style: 'cancel' },
 			{ text: '開く', onPress: () => { void Linking.openURL(url).catch(() => undefined); } },
 		]);
-	}), []);
+	}, []);
+	const guardOfficeNavigation = useCallback((request: { readonly url: string; readonly isTopFrame?: boolean }) => guardMobileOfficeNavigation(request, confirmExternalLink), [confirmExternalLink]);
+	// 利用者の HTML はスクリプトが動くので、外へ出る遷移は押していなくても起こせる。開く前に確かめる
+	const scriptedHtml = kind === 'html' && mode === 'render';
+	const guardHtmlNavigation = useCallback((request: ShouldStartLoadRequest) => guardWebViewNavigation(request, scriptedHtml ? confirmExternalLink : undefined), [scriptedHtml, confirmExternalLink]);
 	// Markdown のリンクと、開いた行の地は設定 → 色の「選択の印・リンク」。
 	const theme = useThemeColors();
 	const searchable = find !== undefined;
@@ -424,7 +429,7 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 				onContentProcessDidTerminate={revival.onContentProcessDidTerminate}
 				originWhitelist={[...MOBILE_OFFICE_ORIGIN_WHITELIST]}
 				javaScriptEnabled={allowJs}
-				onShouldStartLoadWithRequest={guardWebViewNavigation}
+				onShouldStartLoadWithRequest={guardHtmlNavigation}
 				onLoadStart={trace?.loadStarted}
 				onLoadEnd={onViewLoadEnd}
 				{...(htmlImages !== undefined ? { injectedJavaScriptBeforeContentLoaded: HTML_IMAGES_LOADER_SCRIPT } : {})}

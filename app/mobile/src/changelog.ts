@@ -40,6 +40,21 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.22',
+		date: '2026-11-12',
+		items: [
+			{
+				icon: 'shield-checkmark-outline',
+				title: 'HTML のプレビューから外のページへ移るときは、開く前に確かめるようにしました',
+				body: 'ページの中のスクリプトが勝手にブラウザを開くことはなくなります。',
+			},
+			{
+				icon: 'git-merge-outline',
+				title: 'プルリクエストのマージ中に別のスペースへ移ったとき、前のスペースのマージの失敗が移った先に出ていたのを直しました',
+			},
+		],
+	},
+	{
 		version: '0.12.21',
 		date: '2026-11-12',
 		items: [
