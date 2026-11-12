@@ -46,6 +46,17 @@ export function launchableAgents(form: Pick<WorktreeFormResult, 'agents'> | unde
 }
 
 /**
+ * 起動フォームの材料が届いたときの「起動するもの」。開いたときに材料が無く既定で入れたターミナル
+ * だけを届いたエージェントで埋め、利用者がシートで選んだもの（材料が届く前に選んだターミナルも）は変えない。
+ */
+export function kindAfterFormLoaded(current: string | undefined, chosenByUser: boolean, firstAgentId: string | undefined): string | undefined {
+	if (chosenByUser || (current !== undefined && current !== TERMINAL_KIND)) {
+		return current;
+	}
+	return firstAgentId ?? TERMINAL_KIND;
+}
+
+/**
  * 既存のスペースへエージェントを起動できる PC か。旧 PC はエージェント定義を id/label だけで送り、
  * 既存スペースへの起動（scm launchAgent）にも応えない（旧起動画面と同じ判定）。
  */

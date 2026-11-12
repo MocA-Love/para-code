@@ -145,7 +145,9 @@ export class PairingClient {
 				}
 			};
 
-			socket.onerror = err => fail(err);
+			// RN の WebSocket は Error ではないイベントのオブジェクトを渡し、onclose より先に来る。そのまま渡すと
+			// 文言が "[object Object]" になって案内の文に当たらないので、閉じたときと同じ既知の文言にする。
+			socket.onerror = () => fail(new Error('pairing socket closed'));
 			socket.onclose = () => fail(new Error('pairing socket closed'));
 		});
 	}
