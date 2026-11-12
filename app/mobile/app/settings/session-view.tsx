@@ -17,7 +17,7 @@ const OPTIONS: readonly { readonly value: SessionView; readonly label: string; r
 ];
 
 /**
- * チャット UI（`/settings/session-view`。モックの「チャット UI」、Orca の native-chat-settings）。
+ * 会話の表示（`/settings/session-view`。モックの「チャット UI」、Orca の native-chat-settings）。
  * 「はじめて」の1ページ目で選んだセッションの開き方と、会話の文字サイズを変えられる。
  * どちらもこの端末の中だけの設定で、PC へは送らない。
  */
@@ -42,7 +42,7 @@ export default function SessionViewSettingsScreen() {
 
 	return (
 		<SettingsScreen
-			title="チャット UI"
+			title="会話の表示"
 			footer={(
 				<ChatFontSizeDrawer
 					visible={sizeOpen}

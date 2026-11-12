@@ -222,6 +222,42 @@ suite('ParadisSessionResumeDialog', () => {
 		}
 	});
 
+	// 一覧は listbox、行は option。Tab は選んでいる行にだけ止まり、行末の「…」は読み上げから外して Shift+F10 で開く
+	test('reads the list as a listbox with one tab stop on the selected row', async () => {
+		const client = new TestResumeClient();
+		client.listResult = async () => [testSession('one', 'First session'), testSession('two', 'Second session')];
+		const fixture = createRefreshFixture(client);
+		try {
+			await fixture.load();
+			const rows = () => [...fixture.root.querySelectorAll<HTMLElement>('.paradis-session-resume-row')].map(row => ({
+				title: row.querySelector('.row-title')?.textContent,
+				role: row.getAttribute('role'),
+				selected: row.getAttribute('aria-selected'),
+				tabIndex: row.tabIndex,
+				popup: row.getAttribute('aria-haspopup'),
+				moreHidden: row.querySelector('.row-more')?.getAttribute('aria-hidden'),
+			}));
+			const before = rows();
+			// 選んでいない行で Enter を押すと選ぶ（行はボタンではないので、キーの動きを自分で付けている）
+			fixture.root.querySelectorAll<HTMLElement>('.paradis-session-resume-row')[1]
+				.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+			await flushMicrotasks();
+			assert.deepStrictEqual({ listRole: fixture.root.querySelector('.paradis-session-resume-list')?.getAttribute('role'), before, after: rows().map(row => ({ title: row.title, selected: row.selected, tabIndex: row.tabIndex })) }, {
+				listRole: 'listbox',
+				before: [
+					{ title: 'First session', role: 'option', selected: 'true', tabIndex: 0, popup: 'menu', moreHidden: 'true' },
+					{ title: 'Second session', role: 'option', selected: 'false', tabIndex: -1, popup: 'menu', moreHidden: 'true' },
+				],
+				after: [
+					{ title: 'First session', selected: 'false', tabIndex: -1 },
+					{ title: 'Second session', selected: 'true', tabIndex: 0 },
+				],
+			});
+		} finally {
+			fixture.dispose();
+		}
+	});
+
 	test('keeps a group of another space open after choosing a row in it or in another group', async () => {
 		const client = new TestResumeClient();
 		const other = (id: string, title: string) => ({ ...testSession(id, title), spaceStateKey: 'other', spaceName: 'Other', currentSpace: false });

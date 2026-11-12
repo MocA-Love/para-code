@@ -2,7 +2,7 @@
 
 import { PairingEmptyState, usePairingRequired } from '../src/features/pairing/pairingEmptyState.js';
 import { useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, View } from 'react-native';
 import { useIsFocused, useRouter } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../src/appState.js';
@@ -25,7 +25,7 @@ import { useShortcutSlot } from '../src/ipad/shortcutRegistry.js';
 import { settingsRoutes } from '../src/features/settings/settingsRoutes.js';
 import { isPairingRejected, shouldShowBattery } from '../src/pcStatus.js';
 import { routes } from '../src/routes.js';
-import { colors, space, type } from '../src/theme.js';
+import { space } from '../src/theme.js';
 import { useNow } from '../src/time.js';
 import { Screen, SectionHeader, connectionKind } from '../src/ui/index.js';
 
@@ -35,7 +35,7 @@ startStatusSinceTracking();
 /**
  * ホーム（`/`。Orca の MobileHomeScreen、モックの「ホーム」）。
  *
- * 上から: 上端の帯（ロゴ・通知のベル・設定）→「おかえりなさい」→ 統計カード3枚 →「デスクトップ」の
+ * 上から: 上端の帯（ロゴ・通知のベル・設定）→ 統計カード3枚 →「デスクトップ」の
  * PC のカード → 「再開」（最後に開いたセッション）→ クイック操作 → アカウントの使用量。
  * PC が1台も無いときは「デスクトップをつなぐ」の空の状態だけを出す。
  *
@@ -88,7 +88,6 @@ export default function HomeScreen() {
 				pairingRequired ? <PairingEmptyState /> : <HomeEmptyState onPair={() => { haptic('move'); router.push(routes.pair()); }} />
 			) : (
 				<ScrollView contentContainerStyle={[styles.content, column]}>
-					<Text style={styles.hero} accessibilityRole="header">おかえりなさい</Text>
 					<StatCards
 						items={[
 							{ label: '要対応', value: String(attention), hot: attention > 0, hint: '全 PC の要対応のエージェントの一覧を開きます', onPress: () => router.push(routes.agents('waiting')) },
@@ -168,14 +167,6 @@ const styles = StyleSheet.create({
 	content: {
 		paddingHorizontal: space.lg,
 		paddingBottom: BOTTOM_GAP,
-	},
-	hero: {
-		paddingTop: space.xs,
-		paddingBottom: space.md,
-		fontSize: type.hero,
-		fontWeight: '800',
-		letterSpacing: -0.3,
-		color: colors.text,
 	},
 	gapSmall: {
 		marginTop: space.sm,
