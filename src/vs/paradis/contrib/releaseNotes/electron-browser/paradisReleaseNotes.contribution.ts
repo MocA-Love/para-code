@@ -29,7 +29,7 @@ import { IEditorService } from '../../../../workbench/services/editor/common/edi
 import { mergeChangelogs, parseParadisChangelog } from '../common/paradisChangelogModel.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ParadisChangelogLifecycle } from './paradisChangelogLifecycle.js';
-import { ParadisChangelogView, toViewReleases } from './paradisChangelogView.js';
+import { ParadisChangelogRemoteState, ParadisChangelogView, toViewReleases } from './paradisChangelogView.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import * as dom from '../../../../base/browser/dom.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -288,6 +288,8 @@ function openParadisChangelogView(
 	));
 	const modal = generation.modal;
 	const token = generation.token;
+	// 取れなかったときに、前回の取得分を出しているならその時刻を札に添える
+	const failedState: ParadisChangelogRemoteState = { kind: 'error', cachedFetchedAt: cachedFetchedAt > 0 && cachedRemoteReleases.length > 0 ? cachedFetchedAt : undefined };
 
 	// 前回取得のキャッシュがある場合は、その時刻を出しておく(直後の再取得で更新される)
 	if (cachedFetchedAt > 0 && cachedRemoteReleases.length > 0) {
@@ -306,7 +308,7 @@ function openParadisChangelogView(
 			return;
 		}
 		if (!remoteMd) {
-			modal.setRemoteState({ kind: 'error' });
+			modal.setRemoteState(failedState);
 			return;
 		}
 		storageService.store(PARADIS_CHANGELOG_REMOTE_CACHE_KEY, remoteMd, StorageScope.APPLICATION, StorageTarget.MACHINE);
@@ -323,7 +325,7 @@ function openParadisChangelogView(
 		}
 	}).catch(() => {
 		if (generation.isCurrent() && !token.isCancellationRequested) {
-			modal.setRemoteState({ kind: 'error' });
+			modal.setRemoteState(failedState);
 		}
 	}).finally(() => generation.finishFetch());
 	return modal;

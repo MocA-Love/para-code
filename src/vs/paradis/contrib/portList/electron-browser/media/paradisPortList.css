@@ -192,16 +192,8 @@
 }
 
 .paradis-port-list-panel .ppl-risk-badge {
-	font-size: 9px;
-	font-weight: 700;
-	color: var(--vscode-paradis-danger);
-	background: color-mix(in srgb, var(--vscode-paradis-danger) 15%, transparent);
-	border: 1px solid color-mix(in srgb, var(--vscode-paradis-danger) 35%, transparent);
-	border-radius: 4px;
-	padding: 0 4px;
-	line-height: 1.5;
+	/* The look is the kit's danger chip (paradis-chip paradis-chip-danger, paradisBadges.css). */
 	flex: none;
-	white-space: nowrap;
 }
 
 .paradis-port-list-panel .ppl-pid {
@@ -243,6 +235,24 @@
 .paradis-port-list-panel .ppl-kill-btn:disabled {
 	opacity: 0.4;
 	cursor: default;
+}
+
+.paradis-port-list-panel .ppl-confirm {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	/* Shrinks before it overflows the row: the question is cut with an ellipsis, the two buttons keep their size. */
+	flex: 0 1 auto;
+	min-width: 0;
+}
+
+.paradis-port-list-panel .ppl-confirm-text {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--vscode-paradis-danger);
+	font-size: 11px;
 }
 
 .paradis-port-list-panel .ppl-empty {
