@@ -57,7 +57,7 @@ import {
 	paradisScheduledRunPrecheckSupported,
 	paradisValidateScheduledRunPrecheck,
 } from '../common/paradisScheduledRuns.js';
-import { paradisSanitizeScheduledRunDraft, paradisSanitizeScheduledRunPrecheckShape, paradisSanitizeScheduledRunReport } from '../common/paradisScheduledRunsSanitize.js';
+import { paradisSanitizeScheduledRunDraft, paradisSanitizeScheduledRunPrecheckShape, paradisSanitizeScheduledRunReport, paradisSanitizeScheduledRunSpace } from '../common/paradisScheduledRunsSanitize.js';
 import { ParadisScheduledRunPrecheckRunner } from './paradisScheduledRunPrecheck.js';
 
 const STR_SAVE_FAILED = localize('paradis.scheduledRuns.error.saveFailed', "変更を保存できませんでした。ディスクの空きと権限を確かめてから、もう一度やり直してください。");
@@ -544,6 +544,24 @@ export class ParadisScheduledRunsService extends Disposable {
 			// 定義を消した後に終わった回。残す先が無いのでその場で消す
 			this.runs = this.runs.filter(candidate => candidate.id !== run.id);
 		}
+		this.commit();
+		return true;
+	}
+
+	/**
+	 * 起動の途中で止めた回に、後から作り終えたスペースを記録する（片付け候補に載せるため）。
+	 *
+	 * 止めた時点で回は終わっているので `report` は受け付けない。受け持っていたウィンドウからの、
+	 * 終わった回で、まだスペースを記録していないものだけ受け付ける。
+	 */
+	async recordSpace(ctx: string, runId: string, value: unknown): Promise<boolean> {
+		await this.ready;
+		const space = paradisSanitizeScheduledRunSpace(value);
+		const run = this.runs.find(candidate => candidate.id === runId);
+		if (!space || !run || run.claimedBy !== ctx || paradisIsActiveRunStatus(run.status) || run.space !== undefined) {
+			return false;
+		}
+		this.updateRun(run.id, { space });
 		this.commit();
 		return true;
 	}

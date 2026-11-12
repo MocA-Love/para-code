@@ -66,6 +66,8 @@ const DIFF_PREVIEW_ROWS = 14;
 const TOOL_DETAIL_PREVIEW_CHARS = 4000;
 /** 最下部にいるとみなす余白。この範囲にいれば、新しい発言で最下部へ追従する。 */
 const STICK_TO_BOTTOM_THRESHOLD = 48;
+/** 生成中の返答を描き直す最短の間隔。本文が伸びるたびに全文の Markdown を描き直さないよう間引く。 */
+const LIVE_TEXT_RENDER_INTERVAL_MS = 100;
 /** 取り寄せた画像を覚えておく上限（base64 の文字数の合計。同じ画像を描き直すたびに取りに行かない）。 */
 const IMAGE_CACHE_CHARS = 24 * 1024 * 1024;
 /** 取り寄せた全文を覚えておく上限（中継の保持と同じ件数・大きさ）。 */
@@ -160,6 +162,14 @@ export class ParadisAgentChatView extends Disposable {
 	private readonly fallbackStore = this._register(new DisposableStore());
 	private readonly asyncStore = this._register(new DisposableStore());
 	private lastLiveSignature = '';
+	/** 生成中の返答を描いている間、その返答の startedAt。同じ返答の本文が伸びただけなら描き直しを間引く。 */
+	private liveTextStartedAt: number | undefined;
+	private liveTextRenderedAt = Number.NEGATIVE_INFINITY;
+	/** 間引いた生成中の返答を、間隔が空いたところで最新の本文で描く。 */
+	private readonly liveTextScheduler = this._register(new RunOnceScheduler(() => {
+		this.liveTextRenderedAt = Number.NEGATIVE_INFINITY;
+		this.render();
+	}, LIVE_TEXT_RENDER_INTERVAL_MS));
 	private renderedEpoch: string | undefined;
 	/** 送れなかった理由を出したときの会話の状態。状態が変わったら理由を消す。 */
 	private errorStateSignature: string | undefined;
@@ -389,6 +399,7 @@ export class ParadisAgentChatView extends Disposable {
 				this.ticker.cancelAndSet(() => this.updateLiveClock(), 1000);
 			} else {
 				this.ticker.cancel();
+				this.liveTextScheduler.cancel();
 			}
 		}
 		if (visible) {
@@ -428,6 +439,8 @@ export class ParadisAgentChatView extends Disposable {
 		this.settledImages.clear();
 		this.liveMarkdown.clear();
 		this.lastLiveSignature = '';
+		this.liveTextStartedAt = undefined;
+		this.liveTextScheduler.cancel();
 		this.liveClock = undefined;
 		clearNode(this.liveElement);
 		this.fallbackStore.clear();
@@ -1463,6 +1476,20 @@ export class ParadisAgentChatView extends Disposable {
 			this.updateLiveClock();
 			return;
 		}
+		const isLiveText = live !== null && live.phase === 'message' && live.text !== undefined && live.text.length > 0;
+		if (isLiveText && live.startedAt === this.liveTextStartedAt) {
+			// 同じ返答の本文が伸びただけ。前に描いてから間隔が空くまで待ち、その時点の最新の本文で描く
+			const wait = LIVE_TEXT_RENDER_INTERVAL_MS - (Date.now() - this.liveTextRenderedAt);
+			if (wait > 0) {
+				if (!this.liveTextScheduler.isScheduled()) {
+					this.liveTextScheduler.schedule(wait);
+				}
+				return;
+			}
+		}
+		// 返答が終わった・段階が変わったときはすぐ描く（確定した返答と同じ文を生成中の吹き出しに残さない）
+		this.liveTextScheduler.cancel();
+		this.liveTextStartedAt = isLiveText ? live.startedAt : undefined;
 		this.lastLiveSignature = signature;
 		this.liveMarkdown.clear();
 		this.liveClock = undefined;
@@ -1476,6 +1503,7 @@ export class ParadisAgentChatView extends Disposable {
 			const body = append(bubble, $('.paradis-agent-chat-markdown'));
 			const rendered = this.renderMarkdown(live.text, true);
 			this.liveMarkdown.value = rendered;
+			this.liveTextRenderedAt = Date.now();
 			body.appendChild(rendered.element);
 			return;
 		}

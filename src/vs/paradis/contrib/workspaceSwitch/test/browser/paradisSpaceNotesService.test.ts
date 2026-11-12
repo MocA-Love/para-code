@@ -10,6 +10,8 @@ import { Emitter } from '../../../../../base/common/event.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
+import { INotification, INotificationHandle, Severity } from '../../../../../platform/notification/common/notification.js';
+import { TestNotificationService } from '../../../../../platform/notification/test/common/testNotificationService.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { PARADIS_SPACE_NOTES_STORAGE_KEY } from '../../common/paradisSpaceNotes.js';
 import { IParadisWorkspaceSwitchService } from '../../common/paradisWorkspaceSwitch.js';
@@ -191,6 +193,37 @@ suite('ParadisSpaceNotesService', () => {
 		assert.strictEqual(service.read('worktree:a'), '');
 		assert.deepStrictEqual(changed, [['worktree:a']]);
 	});
+
+	test('tells the user once when it gives up saving, keeps the edit, and saves it once storage works again', () => {
+		const context = createContext(store);
+		const service = store.add(context.create());
+
+		context.storage.failing = true;
+		service.write('worktree:a', '保存できないメモ');
+		// 1 回目と 3 回の試し直しが失敗したら諦める。その後に書いて失敗しても、もう一度は知らせない
+		for (let attempt = 0; attempt < 4; attempt++) {
+			context.willSaveState.fire();
+		}
+		service.write('worktree:a', 'まだ保存できないメモ');
+		context.willSaveState.fire();
+		const notifiedWhileFailing = context.notifications.length;
+
+		context.storage.failing = false;
+		service.write('worktree:b', '保存できるメモ');
+		context.willSaveState.fire();
+
+		assert.deepStrictEqual({
+			notifiedWhileFailing,
+			severity: context.notifications.map(notification => notification.severity),
+			saved: Object.keys(JSON.parse(context.storage.value!)).sort(),
+			text: service.read('worktree:a'),
+		}, {
+			notifiedWhileFailing: 1,
+			severity: [Severity.Warning],
+			saved: ['worktree:a', 'worktree:b'],
+			text: 'まだ保存できないメモ',
+		});
+	});
 });
 
 function createContext(store: Pick<DisposableStore, 'add'>, initial?: string) {
@@ -200,8 +233,10 @@ function createContext(store: Pick<DisposableStore, 'add'>, initial?: string) {
 	const retireScope = store.add(new Emitter<string>());
 	storage.onDidChangeValueEvent = storageChange.event;
 	storage.onWillSaveState = willSaveState.event;
+	const notificationService = new RecordingNotificationService();
 	return {
 		storage,
+		notifications: notificationService.notifications,
 		retireScope,
 		willSaveState,
 		fireStorageChange: () => storageChange.fire(),
@@ -209,14 +244,26 @@ function createContext(store: Pick<DisposableStore, 'add'>, initial?: string) {
 			storage as unknown as IStorageService,
 			{ warn() { } } as Partial<ILogService> as ILogService,
 			{ onDidRetireScope: retireScope.event } as Partial<IParadisWorkspaceSwitchService> as IParadisWorkspaceSwitchService,
+			notificationService,
 		),
 	};
+}
+
+class RecordingNotificationService extends TestNotificationService {
+	readonly notifications: INotification[] = [];
+
+	override notify(notification: INotification): INotificationHandle {
+		this.notifications.push(notification);
+		return super.notify(notification);
+	}
 }
 
 class TestStorageService {
 	readonly writes: Array<{ key: string; value: string; scope: StorageScope; target: StorageTarget }> = [];
 	onDidChangeValueEvent: unknown;
 	onWillSaveState: unknown;
+	/** true の間は store が例外を投げる（保存できない状態を作る）。 */
+	failing = false;
 
 	constructor(public value?: string) { }
 
@@ -227,6 +274,9 @@ class TestStorageService {
 	}
 
 	store(key: string, value: string, scope: StorageScope, target: StorageTarget): void {
+		if (this.failing) {
+			throw new Error('storage is unavailable');
+		}
 		this.writes.push({ key, value, scope, target });
 		this.value = value;
 	}
