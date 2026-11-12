@@ -180,4 +180,48 @@ suite('workspace lifecycle dialog', () => {
 			container.remove();
 		}
 	});
+
+	test('the Enter and Escape of a Japanese conversion neither add a path nor close the dialog', async () => {
+		const fileService = store.add(new FileService(new NullLogService()));
+		store.add(fileService.registerProvider('file', store.add(new InMemoryFileSystemProvider())));
+		await fileService.writeFile(URI.file('/repo/.paracode.json'), VSBuffer.fromString('{ "worktree": { "include": [".env"] } }'));
+		const includeRead = new DeferredPromise<void>();
+		const readFile = fileService.readFile.bind(fileService);
+		fileService.readFile = (async (...args: Parameters<typeof fileService.readFile>) => {
+			try {
+				return await readFile(...args);
+			} finally {
+				if (args[0].path.endsWith('.worktreeinclude')) {
+					includeRead.complete();
+				}
+			}
+		}) as typeof fileService.readFile;
+		const container = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(container);
+		const accessor = {
+			get: (id: unknown) => id === IFileService ? fileService : id === ILayoutService ? { activeContainer: container } : id === IHoverService ? NullHoverService : undefined,
+		} as unknown as ServicesAccessor;
+		try {
+			openParadisWorkspaceLifecycleDialog(accessor, { id: 'repo', name: 'repo', uri: URI.file('/repo') } satisfies IParadisWorkspaceRepository);
+			await includeRead.p;
+			await new Promise(resolve => setTimeout(resolve, 0));
+			const chips = () => [...container.querySelectorAll('.plc-include-row')][0].querySelectorAll('.plc-include-chip-label').length;
+			container.querySelector<HTMLElement>('.plc-include-row .monaco-text-button')!.click();
+			const input = container.querySelector<HTMLInputElement>('.plc-include-row .plc-include-input')!;
+			input.value = 'せってい';
+			input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true }));
+			input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true }));
+			const backdrop = container.querySelector<HTMLElement>('.paradis-create-worktree-backdrop')!;
+			backdrop.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true }));
+			assert.deepStrictEqual({ chips: chips(), inputShown: !input.hidden, value: input.value, open: container.contains(backdrop) }, {
+				chips: 1,
+				inputShown: true,
+				value: 'せってい',
+				open: true,
+			});
+			container.querySelector<HTMLElement>('.plc-footer > .monaco-text-button.secondary')!.click();
+		} finally {
+			container.remove();
+		}
+	});
 });
