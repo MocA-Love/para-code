@@ -25,6 +25,7 @@ import {
 	paradisParseViewportDimensions,
 	paradisSanitizeViewportName,
 } from '../common/paradisBrowserViewport.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 import { IParadisBrowserViewportService } from './paradisBrowserViewportService.js';
 
 interface ISizeItem extends IQuickPickItem {
@@ -32,8 +33,10 @@ interface ISizeItem extends IQuickPickItem {
 }
 
 export async function paradisShowViewportManager(accessor: ServicesAccessor): Promise<void> {
-	const quickInputService = accessor.get(IQuickInputService);
-	const viewportService = accessor.get(IParadisBrowserViewportService);
+	showViewportManager(accessor.get(IQuickInputService), accessor.get(IParadisBrowserViewportService), accessor.get(IParadisDialogService));
+}
+
+function showViewportManager(quickInputService: IQuickInputService, viewportService: IParadisBrowserViewportService, paradisDialogService: IParadisDialogService): void {
 
 	const editButton: IQuickInputButton = { iconClass: ThemeIcon.asClassName(Codicon.edit), tooltip: localize('paradis.browserViewport.manage.edit', "編集") };
 	const defaultButton: IQuickInputButton = { iconClass: ThemeIcon.asClassName(Codicon.pin), tooltip: localize('paradis.browserViewport.manage.setDefault', "全体の既定に設定") };
@@ -92,6 +95,34 @@ export async function paradisShowViewportManager(accessor: ServicesAccessor): Pr
 		}
 	};
 
+	// 既定に使われている大きさだけ、消す前に既定が外れることを知らせる（paradis-16-22 案 A）。それ以外は今までどおりすぐ消す
+	const remove = async (size: IParadisViewportSize) => {
+		const usedGlobally = paradisFindViewportSize([size], viewportService.getGlobalDefault()) !== undefined;
+		const spaces = viewportService.getSpacesDefaultingTo(size.name).map(stateKey => viewportService.getSpaceLabel(stateKey) || localize('paradis.browserViewport.manage.unnamedSpace', "名前の無いスペース"));
+		if (usedGlobally || spaces.length > 0) {
+			const spaceList = spaces.map(space => localize('paradis.browserViewport.manage.spaceQuote', "「{0}」", space)).join(localize('paradis.browserViewport.manage.spaceSeparator', "、"));
+			const usedBy = usedGlobally && spaces.length > 0
+				? localize('paradis.browserViewport.manage.usedByBoth', "全体の既定と、スペース{0}の既定に使われています。", spaceList)
+				: usedGlobally
+					? localize('paradis.browserViewport.manage.usedByGlobal', "全体の既定に使われています。")
+					: localize('paradis.browserViewport.manage.usedBySpace', "スペース{0}の既定に使われています。", spaceList);
+			// fork の確認はクイックピックより下の段に出るので、いったん閉じて確かめ、終わったら管理の一覧を開き直す
+			picker.hide();
+			const { confirmed } = await paradisDialogService.confirm({
+				destructive: true,
+				message: localize('paradis.browserViewport.manage.removeConfirm', "「{0}」を削除しますか?", size.name),
+				detail: localize('paradis.browserViewport.manage.removeDetail', "{0}削除すると、新しく開くタブは「エディタに合わせる」で開きます。", usedBy),
+				primaryButton: localize('paradis.browserViewport.manage.removeConfirmButton', "削除"),
+			});
+			if (confirmed) {
+				await viewportService.removeSize(size.name);
+			}
+			showViewportManager(quickInputService, viewportService, paradisDialogService);
+			return;
+		}
+		await viewportService.removeSize(size.name);
+	};
+
 	store.add(picker.onDidTriggerItemButton(event => {
 		const size = event.item.size;
 		if (!size) {
@@ -102,7 +133,7 @@ export async function paradisShowViewportManager(accessor: ServicesAccessor): Pr
 		} else if (event.button === defaultButton) {
 			void viewportService.setGlobalDefault(size.name);
 		} else if (event.button === removeButton) {
-			void viewportService.removeSize(size.name);
+			void remove(size);
 		}
 	}));
 	store.add(picker.onDidAccept(() => {

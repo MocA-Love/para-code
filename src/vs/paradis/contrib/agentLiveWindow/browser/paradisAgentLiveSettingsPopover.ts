@@ -59,6 +59,19 @@ export interface IParadisAgentLivePopoverHost {
 	readonly reset: () => void;
 }
 
+/** 1 つだけ選ぶ組のボタン。色は `checked` のクラスで決め、読み上げには radio と aria-checked で渡す。 */
+function setRadioChecked(button: HTMLElement, checked: boolean): void {
+	button.classList.toggle('checked', checked);
+	button.setAttribute('role', 'radio');
+	button.setAttribute('aria-checked', String(checked));
+}
+
+/** 複数選べるボタン (スペース)。読み上げには aria-pressed で渡す。 */
+function setPressed(button: HTMLElement, pressed: boolean): void {
+	button.classList.toggle('checked', pressed);
+	button.setAttribute('aria-pressed', String(pressed));
+}
+
 /**
  * 歯車の中身。並び替え・スペース・表示の設定をまとめて持つ。
  *
@@ -104,6 +117,7 @@ export class ParadisAgentLiveSettingsPopover extends Disposable {
 		// --- 並び替え --------------------------------------------------------------------
 		this.section(localize('paradis.agentLive.sortLabel', "並び替え"));
 		const sortList = append(this.element, $('.paradis-agent-live-pop-list'));
+		this.radioGroup(sortList, localize('paradis.agentLive.sortLabel', "並び替え"));
 		for (const sort of Object.keys(SORT_LABELS) as ParadisAgentLiveSort[]) {
 			const button = append(sortList, $('button.paradis-agent-live-pop-item.paradis-focus-ring-inset'));
 			append(button, $('span.paradis-agent-live-pop-check.codicon.codicon-check'));
@@ -132,6 +146,7 @@ export class ParadisAgentLiveSettingsPopover extends Disposable {
 
 		const columnsRow = this.labelledRow(localize('paradis.agentLive.columnsLabel', "列"));
 		const columnsSeg = append(columnsRow, $('.paradis-agent-live-seg'));
+		this.radioGroup(columnsSeg, localize('paradis.agentLive.columnsLabel', "列"));
 		for (let columns = PARADIS_AGENT_LIVE_MIN_COLUMNS; columns <= PARADIS_AGENT_LIVE_MAX_COLUMNS; columns++) {
 			const button = append(columnsSeg, $('button.paradis-focus-ring-inset'));
 			button.textContent = String(columns);
@@ -145,6 +160,7 @@ export class ParadisAgentLiveSettingsPopover extends Disposable {
 
 		const heightRow = this.labelledRow(localize('paradis.agentLive.rowHeightLabel', "タイルの高さ"));
 		const heightSeg = append(heightRow, $('.paradis-agent-live-seg'));
+		this.radioGroup(heightSeg, localize('paradis.agentLive.rowHeightLabel', "タイルの高さ"));
 		this.fillButtons.set(true, this.segButton(heightSeg,
 			localize('paradis.agentLive.fillRows', "画面を等分"),
 			localize('paradis.agentLive.fillRowsHint', "何件あっても1画面に収める（多いと1枚が小さくなる）"),
@@ -206,6 +222,7 @@ export class ParadisAgentLiveSettingsPopover extends Disposable {
 
 		const groupRow = this.labelledRow(localize('paradis.agentLive.groupLabel', "グループ"));
 		const groupSeg = append(groupRow, $('.paradis-agent-live-seg'));
+		this.radioGroup(groupSeg, localize('paradis.agentLive.groupLabel', "グループ"));
 		for (const group of ['none', 'space', 'status'] as const) {
 			const button = append(groupSeg, $('button.paradis-focus-ring-inset'));
 			button.textContent = GROUP_LABELS[group];
@@ -268,7 +285,7 @@ export class ParadisAgentLiveSettingsPopover extends Disposable {
 	 */
 	update(): void {
 		for (const [sort, button] of this.sortButtons) {
-			button.classList.toggle('checked', this.viewState.sort === sort);
+			setRadioChecked(button, this.viewState.sort === sort);
 		}
 		this.directionButton.textContent = this.viewState.sortDesc
 			? localize('paradis.agentLive.sortDesc', "降順（大きい方が先）")
@@ -277,10 +294,10 @@ export class ParadisAgentLiveSettingsPopover extends Disposable {
 		this.updateSpaces();
 
 		for (const [columns, button] of this.columnButtons) {
-			button.classList.toggle('checked', this.viewState.columns === columns);
+			setRadioChecked(button, this.viewState.columns === columns);
 		}
 		for (const [fill, button] of this.fillButtons) {
-			button.classList.toggle('checked', this.viewState.fillRows === fill);
+			setRadioChecked(button, this.viewState.fillRows === fill);
 		}
 		this.fitCheckbox.checked = this.viewState.fitFontToTile;
 		this.pinTopCheckbox.checked = this.viewState.pinTop;
@@ -294,7 +311,7 @@ export class ParadisAgentLiveSettingsPopover extends Disposable {
 		}
 
 		for (const [group, button] of this.groupButtons) {
-			button.classList.toggle('checked', this.viewState.group === group);
+			setRadioChecked(button, this.viewState.group === group);
 		}
 
 		this.updateHint();
@@ -335,9 +352,11 @@ export class ParadisAgentLiveSettingsPopover extends Disposable {
 		}
 		const selected = this.viewState.spaces;
 		for (const [key, button] of this.spaceButtons) {
-			button.classList.toggle('checked', selected === undefined || selected.includes(key));
+			setPressed(button, selected === undefined || selected.includes(key));
 		}
-		this.allSpacesButton?.classList.toggle('checked', selected === undefined);
+		if (this.allSpacesButton) {
+			setPressed(this.allSpacesButton, selected === undefined);
+		}
 	}
 
 	private buildSpaces(options: Map<string, string>): void {
@@ -375,6 +394,15 @@ export class ParadisAgentLiveSettingsPopover extends Disposable {
 	}
 
 	// ------------------------------------------------------------------ 部品
+
+	/**
+	 * 1 つだけ選ぶ組を radiogroup にする（見た目は `checked` のクラスのまま。paradis-16-7）。
+	 * 中のボタンは描画のたびに {@link setRadioChecked} で役割と状態を付ける。
+	 */
+	private radioGroup(element: HTMLElement, label: string): void {
+		element.setAttribute('role', 'radiogroup');
+		element.setAttribute('aria-label', label);
+	}
 
 	private section(label: string): void {
 		append(this.element, $('.paradis-agent-live-pop-head')).textContent = label;

@@ -89,6 +89,9 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 	private readonly attachCheckbox: Checkbox;
 	private readonly attachText: HTMLElement;
 	private readonly clearButton: HTMLButtonElement;
+	private readonly undoButton: HTMLButtonElement;
+	/** 「すべて消す」で消した注釈。お知らせが消えるまで「元に戻す」で戻せる。 */
+	private clearedAnnotations: { readonly pageId: string; readonly annotations: readonly IParadisDesignAnnotation[] } | undefined;
 	private readonly sendButton: HTMLButtonElement;
 	private readonly stopButton: HTMLButtonElement;
 
@@ -120,7 +123,8 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 		this.sender = instantiationService.createInstance(ParadisDesignModeSender);
 
 		this.tray = $('.paradis-design-tray');
-		this.tray.setAttribute('role', 'toolbar');
+		// 矢印キーでは動かさない（ボタンが少なくチェックも混ざる）ので、toolbar ではなく group にする（paradis-16-24）
+		this.tray.setAttribute('role', 'group');
 		this.tray.setAttribute('aria-label', localize('paradis.designMode.tray', "注釈トレイ"));
 		this.tray.style.display = 'none';
 
@@ -132,6 +136,9 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 		this.message = append(this.tray, $('span.paradis-design-tray-message'));
 		this.message.setAttribute('role', 'status');
 		this.message.setAttribute('aria-live', 'polite');
+		// 「すべて消す」の直後だけ出す（paradis-16-12 案 B）。お知らせと一緒に 12 秒で消える
+		this.undoButton = this.trayButton(localize('paradis.designMode.undoClear', "元に戻す"), false, () => this.undoClear());
+		this.undoButton.style.display = 'none';
 
 		// チェックは本家の Checkbox（Q537 の 7 章「Design Mode」、案 A）。文字を押しても切り替わる
 		this.attachLabel = append(this.tray, $<HTMLLabelElement>('label.paradis-design-tray-attach'));
@@ -389,10 +396,41 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 		}
 	}
 
+	/** すぐ消して、お知らせの間だけ「元に戻す」を出す（paradis-16-12 案 B）。 */
 	private clearAnnotations(): void {
 		const model = this.editor.model;
-		if (model) {
-			this.designModeService.clearAnnotations(model.id);
+		if (!model) {
+			return;
+		}
+		const annotations = [...this.designModeService.getAnnotations(model.id)];
+		if (annotations.length === 0) {
+			return;
+		}
+		this.designModeService.clearAnnotations(model.id);
+		this.showMessage(localize('paradis.designMode.cleared', "注釈 {0} 件を消しました。", annotations.length), Severity.Info, false, { pageId: model.id, annotations });
+		if (this.undoButton.isConnected) {
+			this.undoButton.focus();
+		}
+	}
+
+	private undoClear(): void {
+		const cleared = this.clearedAnnotations;
+		const model = this.editor.model;
+		if (!cleared || !model || model.id !== cleared.pageId) {
+			this.showMessage(undefined);
+			return;
+		}
+		// 先に戻してからお知らせを消す（逆だと 0 件の間にトレイが一度閉じ、ページの位置が 2 回動く）
+		let full = false;
+		for (const annotation of cleared.annotations) {
+			if (!this.designModeService.addAnnotation(model, annotation)) {
+				full = true;
+				break;
+			}
+		}
+		this.showMessage(full ? fullMessage() : undefined);
+		if (!this.clearButton.disabled) {
+			this.clearButton.focus();
 		}
 	}
 
@@ -430,8 +468,11 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 	/**
 	 * トレイにお知らせを出す（undefined で消す）。しばらくすると消える。エラーは既定でベルにも残す。
 	 */
-	private showMessage(text: string | undefined, severity: Severity = Severity.Info, recordErrors = true): void {
+	private showMessage(text: string | undefined, severity: Severity = Severity.Info, recordErrors = true, cleared?: { readonly pageId: string; readonly annotations: readonly IParadisDesignAnnotation[] }): void {
 		this.messageText = text;
+		// 別のお知らせに替わった・消えたら、もう戻せない
+		this.clearedAnnotations = text ? cleared : undefined;
+		this.undoButton.style.display = this.clearedAnnotations ? '' : 'none';
 		this.message.textContent = text ?? '';
 		this.message.classList.toggle('error', severity === Severity.Error);
 		this.message.classList.toggle('warning', severity === Severity.Warning);
