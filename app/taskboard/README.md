@@ -76,7 +76,7 @@ Para Code の shared process が `127.0.0.1` に接続口を立て、`<userData>
 
 ## 守り
 
-- `127.0.0.1` だけで待ち受け、起動ごとの乱数トークンを要求します（URL の `?token=` で一度渡すと HttpOnly の Cookie に移る）
+- `127.0.0.1` だけで待ち受け、起動ごとの乱数トークンを要求します（URL の `?token=` で一度渡すと画面がこのオリジンの localStorage に置き、`x-taskboard-token` ヘッダー（WebSocket はサブプロトコル）で送る。Cookie はポートを区別しないため使わない）
 - `Host` と `Origin` を確かめ、別のサイトや DNS の付け替えから叩かれないようにします
 - GitHub のトークンは `gh auth token --hostname github.com` で受け取り、メモリにだけ持ちます（5 分ごとと 401 のときに受け取り直す。ログ・エラー・画面には伏せ字で出す）
 - GitHub の呼び出しは `server/github.ts` の 1 か所から HTTP（REST・GraphQL）で行います。同じ読み取りが重なったら 1 回にまとめ、REST は ETag で変化の無い応答（304）を残量から引かせません。上限は本体の `githubRateLimitCoordinator` と同じ考え方で、secondary limit はアカウントごと、primary limit は枠ごとに、`retry-after` かリセット（手がかりが無ければ 60 秒）まで止めます。取り込みは 5 分ごと、外部待ちの工程にいる PR の見張りは 60 秒ごとです

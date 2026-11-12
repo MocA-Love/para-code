@@ -28,13 +28,43 @@ function isReversibleUtf8(value: string): boolean {
 	return decodeUtf8(encoder.encode(value)) === value;
 }
 
+/**
+ * UTF-8 として読み、UTF-8 に戻すと元のバイト列と同じになるときだけ文字列を返す。
+ *
+ * 戻したバイト列を 1 バイトずつ比べると、JIT の無い Hermes では数 MB で遅いので、ネイティブの
+ * `indexOf` だけで同じ判定をする。元に戻らないのは、先頭の BOM（`decodeUtf8` が捨てる）か、
+ * 不正なバイト列（必ず U+FFFD になる）があるときだけ。EF は継続バイトにならないので、
+ * 正しい EF BF BD はいつもそれだけで U+FFFD 1 つになる。したがって U+FFFD の数が EF BF BD の
+ * 数より多いときが、不正なバイト列があるとき。
+ */
 function decodeReversibleUtf8(value: Uint8Array): string | undefined {
+	if (value.length >= 3 && value[0] === 0xef && value[1] === 0xbb && value[2] === 0xbf) {
+		return undefined;
+	}
 	const decoded = decodeUtf8(value);
-	const encoded = encoder.encode(decoded);
-	if (encoded.length !== value.length || encoded.some((byte, index) => byte !== value[index])) {
+	if (countReplacementCharacters(decoded) !== countEncodedReplacementCharacters(value)) {
 		return undefined;
 	}
 	return decoded;
+}
+
+function countReplacementCharacters(value: string): number {
+	let count = 0;
+	for (let index = value.indexOf('\uFFFD'); index !== -1; index = value.indexOf('\uFFFD', index + 1)) {
+		count++;
+	}
+	return count;
+}
+
+/** EF BF BD（U+FFFD の UTF-8）の数。 */
+function countEncodedReplacementCharacters(value: Uint8Array): number {
+	let count = 0;
+	for (let index = value.indexOf(0xef); index !== -1; index = value.indexOf(0xef, index + 1)) {
+		if (value[index + 1] === 0xbf && value[index + 2] === 0xbd) {
+			count++;
+		}
+	}
+	return count;
 }
 
 function isPositiveSafeInteger(value: unknown): value is number {
