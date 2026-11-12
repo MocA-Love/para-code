@@ -61,7 +61,7 @@ export function AgentStatusPopover({ target, anchor, onClose, onAck }: {
 
 	return (
 		<OverlayPortal>
-			<Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="閉じる" />
+			<Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityRole="button" accessibilityLabel="閉じる" />
 			<PopIn style={[styles.pos, { top, left }]}>
 				<GlassSurface style={styles.popover}>
 					<Text style={styles.head}>このエージェントの状態</Text>

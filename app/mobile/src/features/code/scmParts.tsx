@@ -551,8 +551,8 @@ const styles = StyleSheet.create({
 		flex: 1,
 		flexDirection: 'row',
 		alignItems: 'flex-start',
-		gap: space.sm + 2,
-		paddingVertical: space.sm + 2,
+		gap: space.row,
+		paddingVertical: space.row,
 		minHeight: HIT_SIZE,
 	},
 	historySubject: {

@@ -142,7 +142,7 @@ const styles = StyleSheet.create({
 	},
 	paletteRow: {
 		flexDirection: 'row',
-		gap: space.sm + 2,
+		gap: space.row,
 	},
 	choice: {
 		flex: 1,
@@ -176,7 +176,7 @@ const styles = StyleSheet.create({
 		fontSize: type.body,
 	},
 	info: {
-		marginTop: space.sm + 2,
+		marginTop: space.row,
 		paddingHorizontal: space.xs,
 		fontSize: type.meta,
 		lineHeight: 18,

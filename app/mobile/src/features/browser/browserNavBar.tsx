@@ -208,5 +208,5 @@ const styles = StyleSheet.create({
 	placeholder: { color: colors.textMuted, fontSize: type.label },
 	progress: { position: 'absolute', left: 0, bottom: 0, height: 2 },
 	count: { minWidth: 20, height: 20, paddingHorizontal: 3, borderWidth: 1.5, borderColor: colors.text, borderRadius: 5, alignItems: 'center', justifyContent: 'center' },
-	countText: { color: colors.text, fontSize: type.caption, fontWeight: '700' },
+	countText: { color: colors.text, fontSize: type.caption, fontWeight: '700', fontVariant: ['tabular-nums'] },
 });

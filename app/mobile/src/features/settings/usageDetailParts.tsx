@@ -207,7 +207,7 @@ const styles = StyleSheet.create({
 		backgroundColor: colors.panel,
 		borderRadius: radius.card,
 		overflow: 'hidden',
-		paddingHorizontal: space.md + 2,
+		paddingHorizontal: space.rowInset,
 	},
 	separator: {
 		height: StyleSheet.hairlineWidth,
@@ -229,7 +229,7 @@ const styles = StyleSheet.create({
 		height: TRACK_HEIGHT,
 	},
 	barItem: {
-		paddingVertical: space.sm + 2,
+		paddingVertical: space.row,
 		gap: space.xs,
 	},
 	barHead: {
@@ -277,14 +277,14 @@ const styles = StyleSheet.create({
 	},
 	tiles: {
 		flexDirection: 'row',
-		gap: space.sm + 2,
+		gap: space.row,
 	},
 	tile: {
 		flex: 1,
 		minWidth: 0,
 		backgroundColor: colors.panel,
 		borderRadius: radius.card,
-		paddingHorizontal: space.md + 2,
+		paddingHorizontal: space.rowInset,
 		paddingVertical: space.md,
 		gap: space.xs,
 	},

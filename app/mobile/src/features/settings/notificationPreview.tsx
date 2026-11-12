@@ -1,7 +1,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useEffect, useRef } from 'react';
-import { AccessibilityInfo, Animated, Easing, StyleSheet, Text, View } from 'react-native';
+import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
+import { useReduceMotion } from '../../hooks/useReduceMotion.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { ParaLogo } from '../pairing/paraLogo.js';
 
@@ -30,30 +31,23 @@ const LOGO_TILE = 34;
  */
 export function NotificationPreview() {
 	const progress = useRef(SAMPLES.map(() => new Animated.Value(0))).current;
+	// 表示中に設定を変えても追いつく（オンになったら止めて置き、オフに戻したら動かし直す）。
+	const reduceMotion = useReduceMotion();
 	useEffect(() => {
-		let loop: Animated.CompositeAnimation | undefined;
-		let cancelled = false;
-		void AccessibilityInfo.isReduceMotionEnabled().then(reduced => {
-			if (cancelled) {
-				return;
-			}
-			if (reduced) {
-				progress.forEach(value => value.setValue(1));
-				return;
-			}
-			loop = Animated.loop(Animated.stagger(STAGGER_MS, progress.map(value => Animated.sequence([
-				Animated.timing(value, { toValue: 1, duration: DROP_MS, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-				Animated.delay(HOLD_MS),
-				Animated.timing(value, { toValue: 0, duration: FADE_MS, easing: Easing.in(Easing.cubic), useNativeDriver: true }),
-				Animated.delay(REST_MS),
-			]))));
-			loop.start();
-		}).catch(() => progress.forEach(value => value.setValue(1)));
-		return () => {
-			cancelled = true;
-			loop?.stop();
-		};
-	}, [progress]);
+		if (reduceMotion) {
+			progress.forEach(value => value.setValue(1));
+			return undefined;
+		}
+		progress.forEach(value => value.setValue(0));
+		const loop = Animated.loop(Animated.stagger(STAGGER_MS, progress.map(value => Animated.sequence([
+			Animated.timing(value, { toValue: 1, duration: DROP_MS, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+			Animated.delay(HOLD_MS),
+			Animated.timing(value, { toValue: 0, duration: FADE_MS, easing: Easing.in(Easing.cubic), useNativeDriver: true }),
+			Animated.delay(REST_MS),
+		]))));
+		loop.start();
+		return () => loop.stop();
+	}, [progress, reduceMotion]);
 	return (
 		<View style={styles.stack} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
 			{SAMPLES.map((sample, index) => {
@@ -91,8 +85,8 @@ const styles = StyleSheet.create({
 	banner: {
 		flexDirection: 'row',
 		alignItems: 'center',
-		gap: space.sm + 2,
-		paddingVertical: space.sm + 2,
+		gap: space.row,
+		paddingVertical: space.row,
 		paddingHorizontal: space.md,
 		borderRadius: radius.sheet,
 		// OS のバナーの灰（モックの rgba(58,58,60,.85)）に近い、トークンの中でいちばん明るい面

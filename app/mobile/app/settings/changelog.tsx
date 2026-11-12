@@ -74,7 +74,7 @@ const styles = StyleSheet.create({
 		alignItems: 'flex-start',
 		gap: space.md,
 		paddingVertical: space.md,
-		paddingHorizontal: space.md + 2,
+		paddingHorizontal: space.rowInset,
 	},
 	itemIcon: {
 		width: ITEM_ICON,
@@ -103,6 +103,6 @@ const styles = StyleSheet.create({
 		fontSize: type.meta,
 		color: colors.textMuted,
 		paddingVertical: space.md,
-		paddingHorizontal: space.md + 2,
+		paddingHorizontal: space.rowInset,
 	},
 });

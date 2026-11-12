@@ -89,7 +89,7 @@ const styles = StyleSheet.create({
 		fontWeight: '700',
 		color: colors.text,
 		textAlign: 'center',
-		marginBottom: space.sm + 2,
+		marginBottom: space.row,
 	},
 	body: {
 		fontSize: type.input,
@@ -102,9 +102,9 @@ const styles = StyleSheet.create({
 	button: {
 		flexDirection: 'row',
 		alignItems: 'center',
-		gap: space.sm + 2,
+		gap: space.row,
 		backgroundColor: colors.primary,
-		paddingVertical: space.md + 2,
+		paddingVertical: space.rowInset,
 		paddingHorizontal: space.xl + space.xs,
 		borderRadius: radius.card,
 	},
@@ -122,7 +122,7 @@ const styles = StyleSheet.create({
 	},
 	step: {
 		flexDirection: 'row',
-		gap: space.md + 2,
+		gap: space.rowInset,
 		paddingVertical: space.lg,
 	},
 	stepDivider: {

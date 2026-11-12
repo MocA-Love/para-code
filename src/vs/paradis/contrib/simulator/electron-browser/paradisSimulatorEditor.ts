@@ -18,11 +18,11 @@
 
 import './media/paradisSimulator.css';
 import * as dom from '../../../../base/browser/dom.js';
-import { Button } from '../../../../base/browser/ui/button/button.js';
 import { IntervalTimer } from '../../../../base/common/async.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { joinPath } from '../../../../base/common/resources.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
@@ -30,18 +30,18 @@ import { IFileService } from '../../../../platform/files/common/files.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
-import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPane.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { ParadisButton } from '../../../browser/paradisButton.js';
 import { IParadisSimulatorDevice } from '../common/paradisSimulator.js';
 import { paradisSimulatorDuoPanel, paradisSimulatorNextOrientation, paradisSimulatorStallReason, paradisSimulatorStallRetryDelay } from '../common/paradisSimulatorInput.js';
 import { ParadisSimulatorFoldBar, ParadisSimulatorFoldRequest } from './paradisSimulatorFoldBar.js';
 import { IParadisSimulatorClient } from './paradisSimulatorClient.js';
 import { PARADIS_SIMULATOR_EDITOR_ID, ParadisSimulatorEditorInput } from './paradisSimulatorEditorInput.js';
-import { ParadisSimulatorFrameView } from './paradisSimulatorFrameView.js';
+import { paradisLabelSimulatorScreen, ParadisSimulatorFrameView } from './paradisSimulatorFrameView.js';
 
 const $ = dom.$;
 
@@ -136,11 +136,11 @@ export class ParadisSimulatorEditor extends EditorPane {
 	private _subtitle: HTMLElement | undefined;
 	private _notice: HTMLElement | undefined;
 	private _noticeText: HTMLElement | undefined;
-	private _noticeAction: Button | undefined;
+	private _noticeAction: ParadisButton | undefined;
 	private _deviceHub: HTMLElement | undefined;
 	private _stage: HTMLElement | undefined;
 	private _bar: HTMLElement | undefined;
-	private readonly _buttons: { rotate?: Button; home?: Button; save?: Button; power?: Button } = {};
+	private readonly _buttons: { rotate?: ParadisButton; home?: ParadisButton; save?: ParadisButton; power?: ParadisButton } = {};
 
 	private readonly _session = this._register(new MutableDisposable<ParadisSimulatorEditorSession>());
 	private readonly _deviceHubTimer = this._register(new IntervalTimer());
@@ -172,10 +172,11 @@ export class ParadisSimulatorEditor extends EditorPane {
 		this._subtitle = dom.append(titles, $('span.paradis-simulator-subtitle'));
 		this._keyHint = dom.append(this._bar, $('span.paradis-simulator-key-hint'));
 		this._keyHint.textContent = localize('paradis.simulator.keyHint', "キー入力は端末へ届きます。Esc を 2 回で外へ");
+		// 映像の枠の読み上げの説明（aria-describedby）。分割で同じ端末を 2 つ開けるので id はペインごとに替える
+		this._keyHint.id = `paradis-simulator-key-hint-${generateUuid()}`;
 		const actions = dom.append(this._bar, $('.paradis-simulator-actions'));
 		const button = (label: string, run: () => Promise<void>) => {
-			const created = this._register(new Button(actions, { ...defaultButtonStyles, secondary: true, small: true, title: label }));
-			created.label = label;
+			const created = this._register(new ParadisButton(actions, { kind: 'secondary', small: true, label, title: label }));
 			this._register(created.onDidClick(() => void run().catch(error => this._notificationService.error(localize('paradis.simulator.actionFailed', "シミュレータの操作に失敗しました: {0}", errorMessage(error))))));
 			return created;
 		};
@@ -189,12 +190,15 @@ export class ParadisSimulatorEditor extends EditorPane {
 		this._register(this._foldBar.onDidRequestDeviceHub(() => void this._openDeviceHub()));
 
 		this._deviceHub = dom.append(this._root, $('.paradis-simulator-device-hub'));
+		this._deviceHub.setAttribute('role', 'status');
 		this._deviceHub.textContent = localize('paradis.simulator.deviceHub', "Device Hub がこの端末の入力を使っています。タップやキーが届かないときは Device Hub を閉じてください。");
 		this._deviceHub.style.display = 'none';
 
 		this._notice = dom.append(this._root, $('.paradis-simulator-notice'));
 		this._noticeText = dom.append(this._notice, $('span.paradis-simulator-notice-text'));
-		this._noticeAction = this._register(new Button(this._notice, { ...defaultButtonStyles }));
+		// 要素は置いたまま文だけ替えるので、読み上げが切り替わりを拾える（途切れ・失敗のときだけ alert）
+		this._noticeText.setAttribute('role', 'status');
+		this._noticeAction = this._register(new ParadisButton(this._notice, { kind: 'primary', small: true }));
 		this._register(this._noticeAction.onDidClick(() => {
 			if (this._noticeState.kind === 'stalled') {
 				this._retryAfterStall();
@@ -511,6 +515,7 @@ export class ParadisSimulatorEditor extends EditorPane {
 			}
 		})();
 		this._notice.style.display = notice.kind === 'none' ? 'none' : '';
+		this._noticeText.setAttribute('role', notice.kind === 'stalled' || notice.kind === 'error' ? 'alert' : 'status');
 		this._noticeText.textContent = text;
 		const action = notice.kind === 'shutdown' ? localize('paradis.simulator.boot', "起動") : notice.kind === 'stalled' ? localize('paradis.simulator.retry', "再試行") : undefined;
 		this._noticeAction.element.style.display = action ? '' : 'none';
@@ -523,6 +528,9 @@ export class ParadisSimulatorEditor extends EditorPane {
 			return;
 		}
 		this._title.textContent = session?.input.getName() ?? '';
+		if (session) {
+			paradisLabelSimulatorScreen(session.frameView.element, session.input.getName(), this._keyHint);
+		}
 		this._subtitle.textContent = session?.device?.runtime ?? '';
 		const booted = !!session?.booted;
 		for (const key of ['rotate', 'home', 'save'] as const) {
