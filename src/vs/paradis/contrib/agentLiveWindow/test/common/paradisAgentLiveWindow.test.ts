@@ -16,6 +16,7 @@ import {
 	paradisAgentLiveBoardColumns,
 	paradisAgentLiveSummary,
 	paradisApplyAgentLiveManualDrop,
+	paradisMoveAgentLiveTile,
 	paradisDefaultAgentLiveViewState,
 	paradisFilterAgentLiveEntries,
 	paradisFormatAgentLiveDuration,
@@ -146,6 +147,35 @@ suite('Paradis - agent live window', () => {
 				['b', 'a'],
 				['b', 'c', 'a', 'd'],
 				['b', 'a', 'c', 'd'],
+			],
+		);
+	});
+
+	test('moves a tile one step or to an end without dragging', () => {
+		const visible = ['a', 'b', 'c', 'd'];
+
+		assert.deepStrictEqual(
+			[
+				paradisMoveAgentLiveTile([], visible, 'c', 'previous'),
+				paradisMoveAgentLiveTile([], visible, 'b', 'next'),
+				paradisMoveAgentLiveTile([], visible, 'c', 'first'),
+				paradisMoveAgentLiveTile([], visible, 'b', 'last'),
+				// 端に居るときと、見えていないときは動かさない。
+				paradisMoveAgentLiveTile([], visible, 'a', 'previous'),
+				paradisMoveAgentLiveTile([], visible, 'd', 'last'),
+				paradisMoveAgentLiveTile([], visible, 'zzz', 'next'),
+				// 見えていないタイルを含む手動順でも、見えている隣と入れ替わる。
+				paradisMoveAgentLiveTile(['a', 'x', 'b', 'c'], ['a', 'b', 'c'], 'b', 'previous'),
+			],
+			[
+				['a', 'c', 'b', 'd'],
+				['a', 'c', 'b', 'd'],
+				['c', 'a', 'b', 'd'],
+				['a', 'c', 'd', 'b'],
+				undefined,
+				undefined,
+				undefined,
+				['b', 'a', 'x', 'c'],
 			],
 		);
 	});
