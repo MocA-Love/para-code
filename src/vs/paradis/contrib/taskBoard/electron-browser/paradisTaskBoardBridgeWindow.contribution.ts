@@ -419,8 +419,10 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 		}
 		watched.listener?.dispose();
 		this.watched.delete(terminal);
-		for (const [token, id] of this.idCache) {
-			if (id === terminal) {
+		// 控え（idCache）は 1000 件を超えると空になり、もう閉じたペインのトークンは戻らない。控えだけを
+		// 見るとそのペインのセッションを捨て損ねるので、セッションのキーも ID を計算し直して照合する。
+		for (const token of new Set([...this.idCache.keys(), ...this.sessions.keys()])) {
+			if ((this.idCache.get(token) ?? paradisTaskBoardTerminalId(token)) === terminal) {
 				this.sessions.deleteAndDispose(token);
 				this.input.forget(token);
 			}

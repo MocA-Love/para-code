@@ -129,6 +129,8 @@ export class DeviceDO implements DurableObject {
 	private turnIssueTimes: number[] = [];
 	/** 資格を使った時刻を最後に確かめた時刻（メモリ。`touchMobile` の間引き）。 */
 	private readonly lastTouchedAt = new Map<string, number>();
+	/** ペアリングソケットごとの、PC へ中継し終えていない pairing-msg（届いた順に中継するため）。 */
+	private readonly pairingRelays = new WeakMap<WebSocket, Promise<void>>();
 
 	constructor(private readonly state: DurableObjectState, private readonly env: unknown) {
 		this.sql = state.storage.sql;
@@ -680,6 +682,19 @@ export class DeviceDO implements DurableObject {
 		// pairing socketはバイナリを扱わない（制御JSONのみ）
 	}
 
+	/** ペアリングソケットの pairing-msg を、送信元の pairId を付けて PC へ中継する。 */
+	private async relayPairingMessage(ws: WebSocket, pairId: string, data: string): Promise<void> {
+		// そのソケットが最初に名乗った鍵の指紋を覚える（承認でPCが添える指紋と突き合わせ、資格情報を
+		// 渡すソケットを1つに決めるため）。ハイバネーションを越えて残るようソケットの添付に置く。
+		if (pairSocketKey(ws) === undefined && typeof data === 'string') {
+			const keyFingerprint = await pairingKeyFingerprint(data);
+			if (keyFingerprint !== undefined && pairSocketKey(ws) === undefined) {
+				ws.serializeAttachment({ keyFingerprint, at: Date.now() } satisfies PairSocketKey);
+			}
+		}
+		this.sendToPc({ type: 'pairing-msg', data, pairId });
+	}
+
 	private async handleControl(ws: WebSocket, tag: string, text: string): Promise<void> {
 		let msg: RelayControlMessage;
 		try {
@@ -694,16 +709,14 @@ export class DeviceDO implements DurableObject {
 			// PCが「どのペアリングのメッセージか」を検証できるようにする（C-2）。
 			const pairId = tag.slice('pair:'.length);
 			if (msg.type === 'pairing-msg') {
-				// そのソケットが最初に名乗った鍵の指紋を覚える（承認でPCが添える指紋と突き合わせ、資格情報を
-				// 渡すソケットを1つに決めるため）。ハイバネーションを越えて残るようソケットの添付に置く。
-				if (pairSocketKey(ws) === undefined && typeof msg.data === 'string') {
-					const keyFingerprint = await pairingKeyFingerprint(msg.data);
-					// 指紋を求める間に同じソケットの次の pairing-msg が先に覚えていれば、そちらが最初
-					if (keyFingerprint !== undefined && pairSocketKey(ws) === undefined) {
-						ws.serializeAttachment({ keyFingerprint, at: Date.now() } satisfies PairSocketKey);
-					}
-				}
-				this.sendToPc({ type: 'pairing-msg', data: msg.data, pairId });
+				// 指紋を求める間に同じソケットの次の pairing-msg が届いても、前のものを中継し終えてから扱う
+				// （PC へ届く順と、最初に名乗った鍵を、届いた順のままにする）
+				const data = msg.data;
+				const relay = (this.pairingRelays.get(ws) ?? Promise.resolve())
+					.catch(() => undefined) // 前の中継の失敗はそちらの呼び出しで扱い済み
+					.then(() => this.relayPairingMessage(ws, pairId, data));
+				this.pairingRelays.set(ws, relay);
+				await relay;
 			}
 			return;
 		}
