@@ -511,9 +511,11 @@ export class GitHubClient {
 			if (!target) {
 				return undefined;
 			}
-			const res = await this.fetchImpl(target, { method: 'GET', headers: { 'user-agent': 'para-code-taskboard' }, redirect: 'follow' });
+			// API と同じ時間で打ち切る（本文の読み込みも含む）。大きさが分かっていて上限を超えるものは読まない
+			const res = await this.fetchImpl(target, { method: 'GET', headers: { 'user-agent': 'para-code-taskboard' }, redirect: 'follow', signal: AbortSignal.timeout(TIMEOUT_MS) });
 			const type = (res.headers.get('content-type') ?? '').split(';')[0].trim();
-			if (res.status === 200 && type.startsWith('image/') && res.arrayBuffer) {
+			const declared = Number(res.headers.get('content-length') ?? NaN);
+			if (res.status === 200 && type.startsWith('image/') && res.arrayBuffer && !(declared > MAX_IMAGE_BYTES)) {
 				const body = Buffer.from(await res.arrayBuffer());
 				if (body.length <= MAX_IMAGE_BYTES) {
 					result = { type, body };

@@ -61,6 +61,18 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				title: '写真を選んでも読み込めなかったとき、何も出ずに止まっていたのを直しました',
 				body: '「写真を開けませんでした」と出すので、選び直してください。',
 			},
+			{
+				icon: 'cloud-offline-outline',
+				title: 'ペアリングで中継サーバーにつながらなかったとき、意味の読めない文言ではなく通信状態を確かめるよう案内するようにしました',
+			},
+			{
+				icon: 'terminal-outline',
+				title: '起動のシートを開いてすぐ「ターミナル」を選ぶと、少し後で Claude に変わってしまうことがあったのを直しました',
+			},
+			{
+				icon: 'warning-outline',
+				title: '承認カードで、「git push origin +main」のように + を付けた push にも「強制 push」の札を出すようにしました',
+			},
 		],
 	},
 	{

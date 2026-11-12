@@ -212,11 +212,17 @@ export class ParadisFileTransferPaneOperations {
 			valueSelection: [0, dot > 0 ? dot : entry.name.length],
 			validateInput: async value => this.validateName(value, entry.name),
 		});
+		// 「Enter だけ」は空白の付いた元の名前のまま比べる（先に trim すると、名前を変えずに空白だけ消してしまう）
 		if (!name || name === entry.name) {
 			return;
 		}
+		// 確かめたのは前後の空白を除いた名前なので、作る名前もそれに揃える
+		const trimmed = name.trim();
+		if (trimmed === entry.name) {
+			return;
+		}
 		try {
-			await this.fileService.move(entry.resource, joinPath(dirname(entry.resource), name), false);
+			await this.fileService.move(entry.resource, joinPath(dirname(entry.resource), trimmed), false);
 		} catch (error) {
 			this.notificationService.error(error);
 		}
@@ -237,7 +243,7 @@ export class ParadisFileTransferPaneOperations {
 			return;
 		}
 		try {
-			await this.fileService.createFolder(joinPath(location, name));
+			await this.fileService.createFolder(joinPath(location, name.trim()));
 		} catch (error) {
 			this.notificationService.error(error);
 		}
