@@ -32,6 +32,7 @@ import './media/paradisLimitsMonitor.css';
 import * as dom from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
+import { IntervalTimer } from '../../../../base/common/async.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { paradisCloseWhenModalOpens } from '../../../browser/paradisAnchoredPopover.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
@@ -67,13 +68,32 @@ const $ = dom.$;
 /** この分数より古い Claude の値には、カードに古さを書き添える。 */
 const STALE_CARD_MINUTES = 5;
 
+/** 開いている間、見出しの「N分前に更新」を書き換える間隔。値が届くのは 30 秒ごとなので、その間も進める。 */
+const UPDATED_LABEL_INTERVAL_MS = 10_000;
+
+/** 窓の中で要素の id を重ねないための番号（aria-labelledby で指す）。 */
+let elementIdCounter = 0;
+
+/** 見出しの「最後に取った時刻」の文。1 分未満は「たった今」、1 時間未満は分、それより古いものは時間で出す。 */
+export function paradisLimitsUpdatedLabel(fetchedAt: number, now: number): string {
+	const minutes = Math.floor(Math.max(0, now - fetchedAt) / 60_000);
+	if (minutes < 1) {
+		return localize('paradis.limitsMonitor.updatedJustNow', "たった今更新");
+	}
+	if (minutes < 60) {
+		return localize('paradis.limitsMonitor.updatedMinutes', "{0}分前に更新", minutes);
+	}
+	return localize('paradis.limitsMonitor.updatedHours', "{0}時間前に更新", Math.floor(minutes / 60));
+}
+
 export interface IParadisLimitsMonitorPanelOptions {
 	readonly initialSnapshot: IParadisLimitsSnapshot | undefined;
 	/** 差し込み部品（{@link ParadisLimitsPanelContributions}）へ渡すクライアント。 */
 	readonly client: ParadisLimitsMonitorClient;
 	/** 取り直す。`force` を省略すると手動更新（true）として扱う。 */
 	readonly onManualRefresh: (force?: boolean) => void;
-	readonly onClose: () => void;
+	/** @param restoreFocus パネルの中で Esc を押して閉じたとき true（フォーカスを開いたボタンへ戻す）。 */
+	readonly onClose: (restoreFocus?: boolean) => void;
 	readonly onAddAccount: (provider: ParadisLimitsProvider) => void;
 	readonly onRelogin: (account: IParadisLimitsAccount) => void;
 	readonly onRemoveAccount: (account: IParadisLimitsAccount) => void;
@@ -145,11 +165,21 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 
 		this.element = $('.paradis-limits-panel.paradis-overlay-popover.paradis-focus-none');
 		this.element.tabIndex = -1;
+		this.element.setAttribute('role', 'dialog');
 
 		// 上端の見出しの行（本家のホバーの見出しと同じ並び）: 題・最後に取った時刻・更新・メールを番号に。
 		const header = dom.append(this.element, $('.plm-header'));
-		dom.append(header, $('span.plm-title')).textContent = localize('paradis.limitsMonitor.panelTitle', "AI 利用リミット");
+		const title = dom.append(header, $('span.plm-title'));
+		title.textContent = localize('paradis.limitsMonitor.panelTitle', "AI 利用リミット");
+		title.id = `paradis-limits-panel-title-${++elementIdCounter}`;
+		this.element.setAttribute('aria-labelledby', title.id);
 		this.updatedElement = dom.append(header, $('.plm-updated'));
+		// ホバーで取った時刻そのものを出す（文は相対の表記なので）
+		this._register(this.hoverService.setupManagedHover(this.hoverDelegate, this.updatedElement, () => this.lastSnapshot
+			? localize('paradis.limitsMonitor.fetchedAt', "取得した時刻: {0}", new Date(this.lastSnapshot.fetchedAt).toLocaleString())
+			: ''));
+		// パネルは開いている間だけ生きるので、このタイマーも開いている間だけ動く
+		this._register(new IntervalTimer()).cancelAndSet(() => this.renderUpdated(), UPDATED_LABEL_INTERVAL_MS);
 		this.refreshButton = dom.append(header, $('button.plm-icon-btn.paradis-focus-ring-inset')) as HTMLButtonElement;
 		this.refreshButton.type = 'button';
 		const refreshLabel = localize('paradis.limitsMonitor.refreshAria', "更新");
@@ -174,7 +204,7 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		this._register(dom.addDisposableListener(this.element, 'keydown', e => {
 			if (e.key === 'Escape') {
 				e.preventDefault();
-				this.options.onClose();
+				this.options.onClose(true);
 			}
 		}));
 
@@ -197,8 +227,13 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 		this.reposition();
 		this.renderMaskButton();
 		this.renderBody(snapshot);
-		const secondsAgo = Math.max(0, Math.round((Date.now() - snapshot.fetchedAt) / 1000));
-		this.updatedElement.textContent = localize('paradis.limitsMonitor.updated', "{0}秒前に更新", secondsAgo);
+		this.renderUpdated();
+	}
+
+	private renderUpdated(): void {
+		if (this.lastSnapshot) {
+			this.updatedElement.textContent = paradisLimitsUpdatedLabel(this.lastSnapshot.fetchedAt, Date.now());
+		}
 	}
 
 	/** 取り直さずに、最後の値で描き直す。 */
@@ -770,18 +805,28 @@ export class ParadisLimitsMonitorPanel extends Disposable {
 	 */
 	private renderMeter(container: HTMLElement, label: string, window: IParadisLimitsWindow): void {
 		const meter = dom.append(container, $('.plm-meter'));
-		dom.append(meter, $('.plm-meter-label')).textContent = label;
+		const labelElement = dom.append(meter, $('.plm-meter-label'));
+		labelElement.textContent = label;
+		labelElement.id = `paradis-limits-meter-label-${++elementIdCounter}`;
 		const track = dom.append(meter, $('.plm-meter-track'));
+		// 読み上げでは使用率のメーターとして読む（枠の名前が名前）
+		track.setAttribute('role', 'meter');
+		track.setAttribute('aria-valuemin', '0');
+		track.setAttribute('aria-valuemax', '100');
+		track.setAttribute('aria-labelledby', labelElement.id);
 		const fill = dom.append(track, $('.plm-meter-fill'));
 		const view = paradisLimitsWindowView(window, Date.now());
 		if (view.kind === 'reset') {
 			// リセット時刻を過ぎた枠は、取り直すまで今の使用率が分からない。古い使用率は出さない。
 			fill.style.clipPath = 'inset(0 100% 0 0)';
 			dom.append(meter, $('.plm-meter-value'));
-			dom.append(meter, $('.plm-meter-reset')).textContent = localize('paradis.limitsMonitor.windowResetUnknown', "リセット済み（今の値は不明）");
+			const resetText = localize('paradis.limitsMonitor.windowResetUnknown', "リセット済み（今の値は不明）");
+			dom.append(meter, $('.plm-meter-reset')).textContent = resetText;
+			track.setAttribute('aria-valuetext', resetText);
 			return;
 		}
 		const percent = Math.min(100, Math.max(0, view.percent));
+		track.setAttribute('aria-valuenow', String(Math.round(percent)));
 		// widthではなくclip-pathで切り取る(理由はCSSの.plm-meter-fillコメント参照:
 		// グラデーションの描画自体をトラック全幅基準に保ち、塗り幅で色が変わるようにするため)。
 		fill.style.clipPath = `inset(0 ${100 - percent}% 0 0)`;
