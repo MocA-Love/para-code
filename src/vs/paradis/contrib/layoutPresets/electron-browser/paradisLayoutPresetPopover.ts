@@ -86,8 +86,9 @@ function renderThumbnail(preset: IParadisResolvedLayoutPreset): HTMLElement {
 /**
  * プリセット一覧のポップオーバーを開く。
  * @param anchor 開いたボタン。ここへのクリックは「外側」に数えない（トグルとして働かせるため）。
+ * @param onHide 閉じたときに呼ぶ。外側のクリック・Esc・適用など、どの経路で閉じても呼ばれる。
  */
-export function showParadisLayoutPresetPopover(accessor: ServicesAccessor, anchor: HTMLElement): IOpenContextView {
+export function showParadisLayoutPresetPopover(accessor: ServicesAccessor, anchor: HTMLElement, onHide?: () => void): IOpenContextView {
 	const contextViewService = accessor.get(IContextViewService);
 	const presetService = accessor.get(IParadisLayoutPresetService);
 	const instantiationService = accessor.get(IInstantiationService);
@@ -101,6 +102,7 @@ export function showParadisLayoutPresetPopover(accessor: ServicesAccessor, ancho
 		getAnchor: () => anchor,
 		anchorAlignment: AnchorAlignment.RIGHT,
 		anchorPosition: AnchorPosition.BELOW,
+		onHide,
 		render: (container: HTMLElement): IDisposable => {
 			const disposables = new DisposableStore();
 			const popover = dom.append(container, $('.paradis-layout-popover.paradis-overlay-popover'));
@@ -266,7 +268,17 @@ export class ParadisLayoutPresetToolbarItem extends ActionViewItem {
 			this.close();
 			return;
 		}
-		this.opened = this.instantiationService.invokeFunction(accessor => showParadisLayoutPresetPopover(accessor, anchor));
+		// 外側のクリック・Esc・適用などポップオーバー側で閉じたときも参照を畳む。残すと次の押下が
+		// 「閉じる」と解釈されて空振りし、2 回押さないと開かなくなる。描画の途中で閉じることもあるので
+		// （モーダルが開いている等）、閉じたかどうかを先に覚えておく。
+		let hidden = false;
+		const opened: IOpenContextView = this.instantiationService.invokeFunction(accessor => showParadisLayoutPresetPopover(accessor, anchor, () => {
+			hidden = true;
+			if (this.opened === opened) {
+				this.opened = undefined;
+			}
+		}));
+		this.opened = hidden ? undefined : opened;
 	}
 
 	private close(): void {

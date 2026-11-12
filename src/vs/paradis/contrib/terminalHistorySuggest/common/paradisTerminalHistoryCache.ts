@@ -138,7 +138,7 @@ export function paradisParseBashHistory(content: string): readonly string[] {
 				if (line[index] === wrapCharacter) {
 					wrapCharacter = undefined;
 				}
-			} else if (line[index].match(/['"]/)) {
+			} else if (line[index] === '\'' || line[index] === '"') {
 				wrapCharacter = line[index];
 			}
 		}

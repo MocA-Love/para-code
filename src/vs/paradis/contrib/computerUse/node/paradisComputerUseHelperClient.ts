@@ -246,12 +246,14 @@ class ParadisHelperConnection {
 	}
 
 	private _onData(chunk: string): void {
+		// 前の塊までに改行が無いことは確かめてあるので、今回の塊の先頭から探す（大きい 1 行で全体を探し直さない）。
+		const searchFrom = this._buffer.length;
 		this._buffer += chunk;
 		if (this._buffer.length > MAX_RESPONSE_BYTES) {
 			this.destroy();
 			return;
 		}
-		let newline = this._buffer.indexOf('\n');
+		let newline = this._buffer.indexOf('\n', searchFrom);
 		while (newline >= 0) {
 			const line = this._buffer.slice(0, newline);
 			this._buffer = this._buffer.slice(newline + 1);
