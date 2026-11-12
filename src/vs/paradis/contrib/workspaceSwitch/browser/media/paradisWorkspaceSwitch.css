@@ -438,10 +438,10 @@
 	color: var(--vscode-descriptionForeground);
 }
 
-.paradis-workspaces-list .paradis-worktree-pr.paradis-pr-open { --paradis-pr-color: #3fb950; }
-.paradis-workspaces-list .paradis-worktree-pr.paradis-pr-draft { --paradis-pr-color: #8b949e; }
-.paradis-workspaces-list .paradis-worktree-pr.paradis-pr-merged { --paradis-pr-color: #a371f7; }
-.paradis-workspaces-list .paradis-worktree-pr.paradis-pr-closed { --paradis-pr-color: #f85149; }
+.paradis-workspaces-list .paradis-worktree-pr.paradis-pr-open { --paradis-pr-color: var(--vscode-paradis-prOpen); }
+.paradis-workspaces-list .paradis-worktree-pr.paradis-pr-draft { --paradis-pr-color: var(--vscode-paradis-prDraft); }
+.paradis-workspaces-list .paradis-worktree-pr.paradis-pr-merged { --paradis-pr-color: var(--vscode-paradis-prMerged); }
+.paradis-workspaces-list .paradis-worktree-pr.paradis-pr-closed { --paradis-pr-color: var(--vscode-paradis-prClosed); }
 
 /* allow-any-unicode-next-line */
 /* そのスペースのペイン(生存中、一時的なアイドルも含む)でエージェントが対話から検出した
@@ -637,6 +637,16 @@
 	background-color: var(--vscode-list-hoverBackground);
 }
 
+/* The toggle (twistie, title, space, count) fills the header up to the actions, which stay outside it. */
+.paradis-space-notes-toggle {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	flex: 1;
+	min-width: 0;
+	height: 100%;
+}
+
 .paradis-space-notes-title {
 	font-size: 11px;
 	font-weight: 700;
@@ -689,12 +699,6 @@
 
 .paradis-space-notes-badge.hidden {
 	display: none;
-}
-
-/* allow-any-unicode-next-line */
-/* バッジが無い場合でもアクションは右端に寄せる */
-.paradis-space-notes-badge.hidden + .paradis-space-notes-actions {
-	margin-left: auto;
 }
 
 .paradis-space-notes-actions {
