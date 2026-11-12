@@ -121,6 +121,9 @@ export function paradisPresetTitleConfig(name: string | undefined): { name?: str
 }
 
 /** リロードをまたいでプリセット名を戻すための台帳（永続プロセスID → プリセット名）。 */
+/** フォーカスを移さずに作るターミナルの開き方: 裏のタブにし、タブもグループも前に出さない。 */
+const PRESERVE_FOCUS_LOCATION = { preserveFocus: true, paradisInactive: true } as const;
+
 const PRESET_TITLE_STORAGE_KEY = 'paradis.terminal.presets.restoredTitles';
 /** 台帳に残す件数の上限。消えた端末の分を確実に掃除する手がないので、古いものから捨てる。 */
 const MAX_REMEMBERED_PRESET_TITLES = 200;
@@ -1291,7 +1294,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			const busy = active !== undefined && layout === 'smart' && this._isTerminalBusy(active);
 			let instance = busy ? undefined : active;
 			if (!instance) {
-				instance = await this._createTerminalInActiveGroup(cwd, preset.name, options?.env);
+				instance = await this._createTerminalInActiveGroup(cwd, preset.name, options?.env, options?.preserveFocus);
 				options?.onDidCreateTerminal?.(instance.instanceId);
 				if (stateKey) {
 					// 生成〜表示の間にユーザーが別スコープへ切り替えても、既定の（生成時点で
@@ -1311,7 +1314,9 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 				await instance.sendText(paradisJoinPresetCommands(changeDirectory === undefined ? commands : [changeDirectory, ...commands], instance.shellType), true);
 				options?.onDidStart?.();
 			}
-			instance.focus(true);
+			if (!options?.preserveFocus) {
+				instance.focus(true);
+			}
 			return;
 		}
 
@@ -1331,7 +1336,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 				// タスクごとに複製して他のターミナルへ影響が伝播しないようにする
 				config: { ...paradisPresetTitleConfig(name), env: options?.env ? { ...options.env } : undefined },
 				cwd,
-				location: { viewColumn: editorGroupToColumn(this.editorGroupsService, group) },
+				location: { viewColumn: editorGroupToColumn(this.editorGroupsService, group), ...(options?.preserveFocus ? PRESERVE_FOCUS_LOCATION : {}) },
 			});
 			options?.onDidCreateTerminal?.(instance.instanceId);
 			this._rememberPresetTitle(instance, name);
@@ -1344,7 +1349,9 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			await this._waitForTerminalProcess(instance);
 			await instance.sendText(paradisJoinPresetCommands(task.commands, instance.shellType), true);
 		}
-		first?.focus(true);
+		if (!options?.preserveFocus) {
+			first?.focus(true);
+		}
 	}
 
 	/**
@@ -1586,13 +1593,13 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		return `cd ${await instance.preparePathForShell(path)}`;
 	}
 
-	private async _createTerminalInActiveGroup(cwd: URI | undefined, name?: string, env?: ITerminalEnvironment): Promise<ITerminalInstance> {
+	private async _createTerminalInActiveGroup(cwd: URI | undefined, name?: string, env?: ITerminalEnvironment, preserveFocus?: boolean): Promise<ITerminalInstance> {
 		const instance = await this.terminalService.createTerminal({
 			// config を渡すと terminalService 側の既定プロファイル先行解決が走らないため、
 			// 渡すものが無いときは undefined のままにする（従来の経路を維持する）
 			config: (name || env) ? { ...paradisPresetTitleConfig(name), env: env ? { ...env } : undefined } : undefined,
 			cwd,
-			location: { viewColumn: editorGroupToColumn(this.editorGroupsService, this.editorGroupsService.activeGroup) },
+			location: { viewColumn: editorGroupToColumn(this.editorGroupsService, this.editorGroupsService.activeGroup), ...(preserveFocus ? PRESERVE_FOCUS_LOCATION : {}) },
 		});
 		this._rememberPresetTitle(instance, name);
 		this._warnIfEnvDropped(instance, env);

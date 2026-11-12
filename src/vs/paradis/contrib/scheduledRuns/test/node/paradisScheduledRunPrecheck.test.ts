@@ -10,6 +10,7 @@ import assert from 'assert';
 import { createHash } from 'crypto';
 import { tmpdir } from 'os';
 import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
+import { CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { isWindows } from '../../../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -127,6 +128,25 @@ suite('ParadisScheduledRunPrecheck', () => {
 		const proceed = await pending;
 		const run = runOf(context.service, runId);
 		assert.deepStrictEqual({ proceed, aborted, status: run.status, reason: run.reason, precheck: run.precheck }, { proceed: false, aborted: true, status: 'cancelled', reason: 'windowClosed', precheck: undefined });
+	});
+
+	test('trying the precheck from the dialog stops the command when the dialog cancels it', async () => {
+		const result = new DeferredPromise<IParadisScheduledRunPrecheckResult>();
+		let aborted = false;
+		const context = setup(async request => {
+			request.signal?.addEventListener('abort', () => {
+				aborted = true;
+				result.complete({ error: 'cancelled', durationMs: 0 });
+			});
+			return result.p;
+		});
+		await context.service.whenReady();
+		const cancellation = new CancellationTokenSource();
+		const pending = context.service.testPrecheck({ command: 'gh pr list', timeoutSeconds: 60 }, 'file:///repo', cancellation.token);
+		await timeout(0);
+		cancellation.dispose(true);
+		const response = await pending;
+		assert.deepStrictEqual({ aborted, response, calls: context.calls.length }, { aborted: true, response: { result: { error: 'cancelled', durationMs: 0 } }, calls: 1 });
 	});
 
 	test('refuses a precheck for a repository on another machine and keeps the digest of definitions without a precheck', async () => {
