@@ -30,8 +30,10 @@ import { ICommandService } from '../../../../platform/commands/common/commands.j
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ContextKeyExpr, ContextKeyExpression } from '../../../../platform/contextkey/common/contextkey.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILabelService } from '../../../../platform/label/common/label.js';
+import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IListService } from '../../../../platform/list/browser/listService.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
@@ -44,12 +46,14 @@ import { ITerminalService } from '../../../../workbench/contrib/terminal/browser
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService, SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
+import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { IWorkingCopyService } from '../../../../workbench/services/workingCopy/common/workingCopyService.js';
 import { paradisHandOffToSpaceAgent, paradisSpaceAgentHandoffServices } from '../../agentHandoff/electron-browser/paradisSpaceAgentHandoff.js';
+import { paradisConfirmYesNo } from '../../confirmDialog/browser/paradisConfirmDialog.js';
 import { paradisUsesBatchDownload } from '../../fileTransfer/common/paradisExplorerDownload.js';
 import { ParadisBatchDownload } from '../../fileTransfer/electron-browser/paradisExplorerDownload.js';
 import { IParadisTerminalLinkAtMouseService, PARADIS_TERMINAL_FILE_LINK_AT_MOUSE, PARADIS_TERMINAL_FOLDER_LINK_AT_MOUSE } from '../../terminalLinkMenu/browser/paradisTerminalLinkMenu.contribution.js';
-import { paradisCommonFolder, ParadisFileMenuCommandId, paradisFilePathsPrompt, paradisResolveFileMenuTargets, paradisTerminalFolders, paradisToWindowUri } from '../common/paradisFileMenus.js';
+import { paradisCommonFolder, ParadisFileMenuCommandId, paradisFilePathsPrompt, paradisOpenInTerminalNeedsConfirm, paradisResolveFileMenuTargets, paradisTerminalFolders, paradisToWindowUri } from '../common/paradisFileMenus.js';
 
 //#region when
 
@@ -218,7 +222,16 @@ const OPERATIONS: readonly IParadisFileMenuOperation[] = [
 		async run(accessor, targets) {
 			const fileService = accessor.get(IFileService);
 			const terminalService = accessor.get(ITerminalService);
+			const confirmServices = { layoutService: accessor.get(ILayoutService), keybindingService: accessor.get(IKeybindingService), hostService: accessor.get(IHostService) };
 			const folders = paradisTerminalFolders(await statTargets(fileService, targets));
+			// 検索の結果などを多く選んだまま押すと、フォルダの数だけターミナルが開くので、開く前に確かめる
+			if (paradisOpenInTerminalNeedsConfirm(folders.length) && !await paradisConfirmYesNo(confirmServices, {
+				message: localize('paradis.files.openInTerminal.confirm', "{0} 個のターミナルを開きますか?", folders.length),
+				detail: localize('paradis.files.openInTerminal.confirmDetail', "選んだフォルダごとにエディタエリアへターミナルを開きます。"),
+				primaryButton: localize('paradis.files.openInTerminal.confirmOpen', "開く"),
+			})) {
+				return;
+			}
 			let last;
 			for (const cwd of folders) {
 				// 開き先はエディタエリア（利用者の「ターミナル」はエディタエリアのもの）。cwd を渡すのでスペースのフォルダには差し替わらない
