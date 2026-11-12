@@ -45,11 +45,15 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		items: [
 			{
 				icon: 'color-palette-outline',
-				title: '設定 → 色で変えた「選択の印」の色が、質問の選択肢・キー行の Ctrl と「Enterなし」・シートの切り替えにも当たるようにしました',
+				title: '設定 → 色で変えた「選択の印」の色が、質問の選択肢・キー行の Ctrl と「Enterなし」にも当たるようにしました',
 			},
 			{
 				icon: 'open-outline',
 				title: 'HTML のファイルを開いたとき、中に埋め込まれた Web ページのせいで Safari が勝手に開くことがあったのを直しました',
+			},
+			{
+				icon: 'help-circle-outline',
+				title: 'Excel や Word の中のリンクから外のページへ出るとき、確認を出さずにブラウザが開いていたのを直しました',
 			},
 		],
 	},

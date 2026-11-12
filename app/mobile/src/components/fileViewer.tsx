@@ -30,7 +30,7 @@ import { useWebViewRevival } from './webViewRevival.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useCloseOnAppLock } from '../appLock.js';
 import { lockedModalVisible } from '../appLockPolicy.js';
-import { classifyMobileFileKind, createMobileOfficeNonce, guardMobileOfficeNavigation, MOBILE_OFFICE_ORIGIN_WHITELIST, secureMobileOfficeHtml } from './officeCapability.js';
+import { classifyMobileFileKind, createMobileOfficeNonce, guardMobileOfficeNavigation, MOBILE_DOCUMENT_ORIGIN_WHITELIST, secureMobileOfficeHtml } from './officeCapability.js';
 import { MobileOfficeWebView } from '../features/code/fileViewerBody.js';
 import { viewerScriptCspMeta } from '../features/code/fileFind.js';
 import { useViewerPathLinks, type ViewerPathLinkSpace } from '../features/code/useViewerPathLinks.js';
@@ -80,8 +80,6 @@ const MODE_OPTIONS = [
 	{ value: 'code', label: 'ソース' },
 ] as const satisfies readonly { value: ViewMode; label: string }[];
 
-/** 文書の WebView の許可リスト。http(s) は外へ出す前に onShouldStartLoadWithRequest の判定を通すために入れる。 */
-const FILE_VIEWER_ORIGIN_WHITELIST: string[] = [...MOBILE_OFFICE_ORIGIN_WHITELIST, 'http://*', 'https://*'];
 /** 画像として表示する拡張子（PC版の builtin media-preview 拡張と同じ対応範囲）。 */
 const IMAGE_FILE_PATTERN = /\.(?:jpe?g|jpe|png|bmp|gif|ico|webp|avif|svg)$/i;
 /** 動画・音声として表示する拡張子（iOSで再生できる形式中心。PC版は mp4/webm + mp3/wav/ogg/oga）。 */
@@ -630,10 +628,7 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 						style={styles.web}
 						source={{ html }}
 						onContentProcessDidTerminate={revival.onContentProcessDidTerminate}
-						// http(s) も許可リストに入れて、onShouldStartLoadWithRequest の判定（iframe は通す・外へは確認してから開く）を通す。
-						// react-native-webview は許可リストに合わない URL を、この判定より前に OS へそのまま渡す。
-						// 最上位を about:blank 以外にしない約束は、どちらの判定も false を返して守る。
-						originWhitelist={FILE_VIEWER_ORIGIN_WHITELIST}
+						originWhitelist={[...MOBILE_DOCUMENT_ORIGIN_WHITELIST]}
 						javaScriptEnabled={allowJs}
 						onShouldStartLoadWithRequest={officeKind ? guardOfficeNavigation : guardWebViewNavigation}
 						{...(pathLinkView ? { onLoadEnd: links.onLoadEnd, onMessage: (event: { nativeEvent: { data: string } }) => { links.onMessage(event.nativeEvent.data); } } : {})}

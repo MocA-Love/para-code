@@ -6,7 +6,7 @@ import { paraAlert } from '../../paraAlert.js';
 import { WebView } from 'react-native-webview';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
 import { CircleAlert, FileQuestion } from 'lucide-react-native';
-import { createMobileOfficeNonce, guardMobileOfficeNavigation, MOBILE_OFFICE_ORIGIN_WHITELIST, secureMobileOfficeHtml } from '../../components/officeCapability.js';
+import { createMobileOfficeNonce, guardMobileOfficeNavigation, MOBILE_DOCUMENT_ORIGIN_WHITELIST, MOBILE_OFFICE_ORIGIN_WHITELIST, secureMobileOfficeHtml } from '../../components/officeCapability.js';
 import { guardWebViewNavigation } from '../../components/webViewLinkGuard.js';
 import { useWebViewRevival } from '../../components/webViewRevival.js';
 import { isFileViewerJavaScriptEnabled, isSearchableFileViewerJavaScriptEnabled } from '../../components/webViewScriptPolicy.js';
@@ -213,7 +213,8 @@ export function MobileOfficeWebView({ path, kind, html, javaScriptEnabled, viewS
 			source={{ html }}
 			// iOS が中身のプロセスを落としたら作り直す（白紙のまま残さない）
 			onContentProcessDidTerminate={() => setWebviewEpoch(value => value + 1)}
-			originWhitelist={[...MOBILE_OFFICE_ORIGIN_WHITELIST]}
+			// http(s) を許可リストに入れ、外へ出す前の確認（onShouldStartLoadWithRequest）を通す（MOBILE_DOCUMENT_ORIGIN_WHITELIST）
+			originWhitelist={[...MOBILE_DOCUMENT_ORIGIN_WHITELIST]}
 			javaScriptEnabled={javaScriptEnabled}
 			onShouldStartLoadWithRequest={onShouldStartLoadWithRequest}
 			onLoadStart={onLoadStart}
