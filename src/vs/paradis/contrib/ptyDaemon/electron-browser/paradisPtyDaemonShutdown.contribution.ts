@@ -245,7 +245,7 @@ class ParadisPtyDaemonShutdown extends Disposable implements IWorkbenchContribut
 		const { result, checkboxChecked } = await this.dialogService.prompt<boolean>({
 			type: 'question',
 			message: localize('paradis.ptyDaemon.keep.message', "この PC のターミナルを実行したまま残しますか?"),
-			detail: localize('paradis.ptyDaemon.keep.detail', "{0}本のターミナルが Para Code の外の常駐へ残り、このウィンドウを閉じても実行され続けます。次に開いたときにタブとレイアウトごと戻ってきます。24時間どのウィンドウからも開かれなければ終了します。", keepable),
+			detail: localize('paradis.ptyDaemon.keep.detail', "{0}本のターミナルが Para Code の外の常駐へ残り、このウィンドウを閉じても実行され続けます。次に開いたときにタブとレイアウトごと戻ってきます。Para Code を終了したあと、24時間どのウィンドウからも開かれなければ終了します。", keepable),
 			buttons: [
 				{ label: localize('paradis.ptyDaemon.keep.keep', "実行したまま残す(&&L)"), run: () => true },
 				{ label: localize('paradis.ptyDaemon.keep.end', "終了する(&&E)"), run: () => false },

@@ -47,6 +47,19 @@ export const PARADIS_SIMULATOR_STALL_MS = 5000;
  */
 export const PARADIS_SIMULATOR_FIRST_FRAME_TIMEOUT_MS = 45_000;
 
+/**
+ * 映像の枠（iOS の画像・Android の canvas を包む、キー入力を受ける要素）の読み上げ。キー入力を端末へそのまま送る
+ * 面なので application にし、端末の名前と、帯の「Esc を 2 回で外へ」の説明を付ける。
+ */
+export function paradisLabelSimulatorScreen(element: HTMLElement, deviceName: string, keyHint: HTMLElement | undefined): void {
+	element.setAttribute('role', 'application');
+	element.setAttribute('aria-roledescription', localize('paradis.simulator.screenRole', "端末の画面"));
+	element.setAttribute('aria-label', localize('paradis.simulator.screenLabel', "{0} の画面", deviceName));
+	if (keyHint?.id) {
+		element.setAttribute('aria-describedby', keyHint.id);
+	}
+}
+
 /** 映像が描けないときに知らせるもの。 */
 export interface IParadisSimulatorStall {
 	readonly reason?: string;

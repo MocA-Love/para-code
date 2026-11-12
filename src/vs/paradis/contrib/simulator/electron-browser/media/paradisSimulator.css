@@ -58,11 +58,6 @@
 	flex: 0 0 auto;
 }
 
-.paradis-simulator-actions .monaco-button {
-	width: auto;
-	padding: 2px 8px;
-}
-
 .paradis-simulator-notice,
 .paradis-simulator-device-hub {
 	display: flex;
@@ -76,14 +71,18 @@
 	flex: 0 0 auto;
 }
 
+/* The notice (no picture, not booted ...) is a card of the UI kit: the inner radius on the raised surface. */
+.paradis-simulator-notice {
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size120);
+	border-color: var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner);
+	background-color: var(--vscode-paradis-raised);
+	color: var(--vscode-paradis-text);
+}
+
 .paradis-simulator-device-hub {
 	border-color: var(--vscode-inputValidation-warningBorder);
 	background-color: var(--vscode-inputValidation-warningBackground);
-}
-
-.paradis-simulator-notice .monaco-button {
-	width: auto;
-	padding: 2px 10px;
 }
 
 .paradis-simulator-stage {
@@ -147,20 +146,6 @@
 	margin-inline-start: auto;
 	overflow: hidden;
 	text-overflow: ellipsis;
-}
-
-.paradis-simulator-fold-poses {
-	display: flex;
-	gap: 4px;
-}
-
-.paradis-simulator-fold .monaco-button {
-	width: auto;
-	padding: 2px 8px;
-}
-
-.paradis-simulator-fold .monaco-button.checked {
-	border-color: var(--vscode-focusBorder);
 }
 
 .paradis-simulator-fold-slider {

@@ -111,7 +111,7 @@
 /* Counts are not filled: they carry no need to act (UI kit count badge rule). */
 .paradis-session-resume .paradis-session-resume-group > summary .group-count { font-weight: var(--vscode-fontWeight-regular); font-size: var(--vscode-fontSize-label2); color: var(--vscode-paradis-textFaint); font-variant-numeric: tabular-nums; }
 /* A row: title and time, the last message, then the space and folder. The chosen row is filled, nothing more. */
-.paradis-session-resume .paradis-session-resume-row { box-sizing: border-box; width: 100%; display: block; padding: var(--vscode-spacing-size80); border: 0; border-radius: var(--paradis-radius-control); text-align: left; color: var(--vscode-paradis-text); background: transparent; font: inherit; }
+.paradis-session-resume .paradis-session-resume-row { box-sizing: border-box; width: 100%; display: block; padding: var(--vscode-spacing-size80); border: 0; border-radius: var(--paradis-radius-control); text-align: left; color: var(--vscode-paradis-text); background: transparent; font: inherit; cursor: default; user-select: none; }
 .paradis-session-resume .paradis-session-resume-row:hover { background: var(--vscode-paradis-fillHover); }
 .paradis-session-resume .paradis-session-resume-row.selected { background: var(--vscode-paradis-fillSelected); color: var(--vscode-paradis-textStrong); }
 .paradis-session-resume .row-top { display: flex; align-items: center; gap: var(--vscode-spacing-size80); }
@@ -120,25 +120,25 @@
 .paradis-session-resume .row-preview { margin: 2px 0 2px var(--vscode-spacing-size240); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--vscode-fontSize-label1); color: var(--vscode-paradis-textMuted); }
 .paradis-session-resume .row-preview .row-speaker { margin-right: 4px; color: var(--vscode-paradis-textMuted); }
 .paradis-session-resume .row-preview .row-text { color: var(--vscode-paradis-textMuted); }
-.paradis-session-resume .row-match-info { display: flex; align-items: center; gap: 8px; margin: -1px 0 7px 25px; font-size: 10px; color: var(--vscode-descriptionForeground); }
+.paradis-session-resume .row-match-info { display: flex; align-items: center; gap: var(--vscode-spacing-size80); margin: 0 0 var(--vscode-spacing-size40) var(--vscode-spacing-size240); font-size: var(--vscode-fontSize-label2); color: var(--vscode-descriptionForeground); }
 .paradis-session-resume .row-match-info .match-source { color: var(--vscode-charts-yellow); }
-.paradis-session-resume .row-match-info .match-count { padding: 1px 6px; border-radius: 9px; background: color-mix(in srgb, var(--vscode-charts-yellow) 13%, transparent); }
+.paradis-session-resume .row-match-info .match-count { padding: 0 var(--vscode-spacing-size60); border-radius: var(--vscode-cornerRadius-circle); background: color-mix(in srgb, var(--vscode-charts-yellow) 13%, transparent); }
 .paradis-session-resume .row-meta { display: flex; gap: var(--vscode-spacing-size100); margin-left: var(--vscode-spacing-size240); overflow: hidden; font-size: var(--vscode-fontSize-label2); color: var(--vscode-paradis-textFaint); }
 .paradis-session-resume .row-meta span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .paradis-session-resume .row-meta .archived { color: var(--vscode-charts-yellow); }
 /* The agent is shown by its codicon only (no colored tile). */
 .paradis-session-resume .agent-badge { flex: none; width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center; font-size: var(--vscode-codiconFontSize); color: var(--vscode-paradis-textMuted); }
 .paradis-session-resume .paradis-session-resume-detail-header { padding: var(--vscode-spacing-size200) var(--vscode-spacing-size240) var(--vscode-spacing-size160); border-bottom: 1px solid var(--vscode-paradis-lineSubtle); }
-.paradis-session-resume .detail-heading { display: flex; align-items: center; gap: 9px; }
+.paradis-session-resume .detail-heading { display: flex; align-items: center; gap: var(--vscode-spacing-size80); }
 .paradis-session-resume .detail-heading h2 { min-width: 0; margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--vscode-fontSize-heading2); font-weight: var(--vscode-fontWeight-semiBold); color: var(--vscode-paradis-textStrong); }
 .paradis-session-resume .detail-meta { display: flex; gap: var(--vscode-spacing-size80) var(--vscode-spacing-size160); flex-wrap: wrap; margin-top: var(--vscode-spacing-size100); color: var(--vscode-paradis-textMuted); font-size: var(--vscode-fontSize-label2); }
 /* A long working folder or session ID wraps inside the header instead of being cut at its right edge. */
 .paradis-session-resume .detail-meta > span { min-width: 0; overflow-wrap: anywhere; }
 .paradis-session-resume .detail-meta .monospace { font-family: var(--monaco-monospace-font); }
-.paradis-session-resume .detail-search-navigator { display: flex; align-items: center; gap: 4px; margin-top: 11px; }
-.paradis-session-resume .detail-search-navigator .match-position { margin-right: 3px; color: var(--vscode-descriptionForeground); font-size: 11px; }
-.paradis-session-resume .detail-search-navigator button { width: 24px; height: 22px; padding: 0; border: 1px solid var(--vscode-button-border, var(--vscode-panel-border)); border-radius: 4px; background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); }
-.paradis-session-resume .detail-search-navigator button:disabled { opacity: .5; }
+.paradis-session-resume .detail-search-navigator { display: flex; align-items: center; gap: 4px; margin-top: var(--vscode-spacing-size120); }
+.paradis-session-resume .detail-search-navigator .match-position { margin-right: var(--vscode-spacing-size40); color: var(--vscode-descriptionForeground); font-size: var(--vscode-fontSize-label2); }
+/* The previous / next buttons are the kit's small icon buttons (paradisButton.css). */
+.paradis-session-resume .detail-search-navigator .paradis-button.paradis-button-icon:disabled { opacity: .5; cursor: default; color: var(--vscode-paradis-textMuted); background-color: transparent; }
 .paradis-session-resume .paradis-session-resume-transcript { flex: 1; overflow: auto; padding: 18px 24px 88px; }
 .paradis-session-resume .message { max-width: 720px; margin: 0 auto 16px; }
 .paradis-session-resume .message-role { margin-bottom: var(--vscode-spacing-size40); font-size: var(--vscode-fontSize-label2); font-weight: var(--vscode-fontWeight-semiBold); color: var(--vscode-paradis-textMuted); }
@@ -170,9 +170,13 @@
 .paradis-session-resume mark.search-match { padding: 0 1px; border-radius: 2px; color: inherit; background: color-mix(in srgb, var(--vscode-charts-yellow) 38%, transparent); }
 .paradis-session-resume mark.search-match.current { outline: 1px solid var(--vscode-charts-yellow); background: color-mix(in srgb, var(--vscode-charts-yellow) 55%, transparent); }
 .paradis-session-resume .preview-note { max-width: 720px; margin: 0 auto 15px; color: var(--vscode-descriptionForeground); font-size: 11px; }
-/* The resume buttons are the kit's (secondary, danger, primary at the right end), on a bar with one line above. */
-.paradis-session-resume .paradis-session-resume-actions { position: absolute; left: 0; right: 0; bottom: 0; display: flex; justify-content: flex-end; gap: var(--vscode-spacing-size80); padding: var(--vscode-spacing-size120) var(--vscode-spacing-size200); border-top: 1px solid var(--vscode-paradis-lineSubtle); background: var(--vscode-paradis-overlay); }
+/* The resume buttons are the kit's (secondary, primary at the right end), on a bar with one line above. The resume
+	without permission checks sits apart at the left end, with the flag it adds always shown under it. */
+.paradis-session-resume .paradis-session-resume-actions { position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: flex-end; justify-content: flex-end; gap: var(--vscode-spacing-size80); padding: var(--vscode-spacing-size120) var(--vscode-spacing-size200); border-top: 1px solid var(--vscode-paradis-lineSubtle); background: var(--vscode-paradis-overlay); }
 .paradis-session-resume .paradis-session-resume-actions button:disabled { cursor: default; opacity: .55; }
+.paradis-session-resume .paradis-session-resume-dangerous { display: flex; flex-direction: column; align-items: flex-start; gap: var(--vscode-spacing-size40); min-width: 0; margin-right: auto; }
+.paradis-session-resume .paradis-session-resume-dangerous[hidden] { display: none; }
+.paradis-session-resume .paradis-session-resume-dangerous-flag { font-family: var(--monaco-monospace-font); font-size: var(--vscode-fontSize-label2); color: var(--vscode-paradis-textMuted); overflow-wrap: anywhere; }
 .paradis-session-resume .paradis-session-resume-state { min-height: 180px; height: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 24px; text-align: center; color: var(--vscode-descriptionForeground); }
 /* 広い幅では左ナビが常に見えるため、開閉トグルは不要（キットのアイコンのボタンの display より強くする） */
 .paradis-session-resume .search-head-actions .paradis-session-resume-rail-toggle.paradis-button { display: none; }

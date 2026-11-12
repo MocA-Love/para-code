@@ -15,14 +15,20 @@
 // 止める・立て直すはここから呼ぶが、押した先で必ず確認を出す。どちらも抱えているターミナルを
 // 全部失う操作で、しかも失うのは「閉じても残したかったから常駐にした作業」なので、
 // 取り消せない操作の中でも重い部類になる。
+//
+// 箱は UI キットの段 3 のポップアップ（paradisPopover.ts）で、ボタンはキットのボタン（paradisButton.ts）。
+// role・読み上げの名前・Esc・閉じたあとのフォーカスの戻しはキットが持つ。キットの見出しは文字だけなので、
+// 状態の丸と合計は本文の 1 行目に置く。
 
 import './media/paradisPtyDaemon.css';
 import * as dom from '../../../../base/browser/dom.js';
-import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
-import { paradisCloseWhenModalOpens } from '../../../browser/paradisAnchoredPopover.js';
+import { Disposable, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
+import { paradisWatchPopoverDismiss } from '../../../browser/paradisAnchoredPopover.js';
+import { ParadisButton } from '../../../browser/paradisButton.js';
+import { showParadisPopover } from '../../../browser/paradisPopover.js';
 import Severity from '../../../../base/common/severity.js';
 import { localize } from '../../../../nls.js';
-import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { IPreferencesService } from '../../../../workbench/services/preferences/common/preferences.js';
 import {
 	IParadisPtyDaemonStatus,
@@ -49,7 +55,6 @@ import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 const $ = dom.$;
 
 const POPOVER_WIDTH = 336;
-const POPOVER_MARGIN = 8;
 
 export interface IParadisPtyDaemonPopoverOptions {
 	readonly status: IParadisPtyDaemonStatus;
@@ -62,16 +67,20 @@ export interface IParadisPtyDaemonPopoverOptions {
 
 export class ParadisPtyDaemonPopover extends Disposable {
 
-	private readonly element: HTMLElement;
+	/** 本文の根。キットの本文（`.paradis-popover-body`）の中に置き、描き直すのはこの中だけ。 */
+	private readonly element = $('.paradis-pty-daemon-popover');
 	private readonly bodyListeners = this._register(new DisposableStore());
+	private readonly popover: IDisposable;
 	private status: IParadisPtyDaemonStatus;
 	/** 直前に描いた内容。同じなら描き直さない（{@link update} 参照）。 */
 	private signature: string | undefined;
+	/** 自分から閉じている最中。キットの onHide から閉じる知らせを二重に出さない。 */
+	private disposing = false;
 
 	constructor(
-		private readonly anchor: HTMLElement,
+		anchor: HTMLElement,
 		private readonly options: IParadisPtyDaemonPopoverOptions,
-		@ILayoutService layoutService: ILayoutService,
+		@IContextViewService private readonly contextViewService: IContextViewService,
 		@IParadisDialogService private readonly paradisDialogService: IParadisDialogService,
 		@IPreferencesService private readonly preferencesService: IPreferencesService,
 		@INotificationService private readonly notificationService: INotificationService,
@@ -79,30 +88,34 @@ export class ParadisPtyDaemonPopover extends Disposable {
 		super();
 		this.status = options.status;
 
-		this.element = $('.paradis-pty-daemon-popover.paradis-overlay-popover.paradis-focus-none');
-		this.element.style.width = `${POPOVER_WIDTH}px`;
-		this.element.tabIndex = -1;
-		layoutService.activeContainer.appendChild(this.element);
-		// 小窓はモーダルより上の段にあるので、モーダルが開いたら閉じる（幕の上に浮かせない）
-		this._register(paradisCloseWhenModalOpens(this.element, () => this.options.onClose()));
-		this.render();
-		this.signature = this.computeSignature();
-		this.reposition();
-		this.element.focus();
-
-		const targetWindow = dom.getWindow(this.element);
-		this._register(dom.addDisposableListener(targetWindow, 'resize', () => this.reposition()));
-		this._register(dom.addDisposableListener(targetWindow, 'mousedown', e => this.onWindowMouseDown(e), true));
-		this._register(dom.addDisposableListener(this.element, 'keydown', e => {
-			if (e.key === 'Escape') {
-				e.preventDefault();
-				this.options.onClose();
-			}
-		}));
+		this.popover = showParadisPopover(contextViewService, {
+			anchor,
+			title: localize('paradis.ptyDaemon.popover.title', "常駐ターミナル"),
+			render: (body, store) => {
+				const box = body.parentElement ?? body;
+				box.style.width = `${POPOVER_WIDTH}px`;
+				body.appendChild(this.element);
+				this.render();
+				this.signature = this.computeSignature();
+				// ContextView は作業領域の中の押下では閉じないので、外を押したら閉じる（項目の押し直しは開き直しの
+				// 操作なので内側）。確認ダイアログなどのモーダルが開いたときも閉じる（小窓の段はモーダルより上）。
+				store.add(paradisWatchPopoverDismiss(dom.getWindow(anchor), {
+					element: box,
+					anchor,
+					close: () => this.options.onClose(),
+				}));
+			},
+			onHide: () => {
+				if (!this.disposing) {
+					this.options.onClose();
+				}
+			},
+		});
 	}
 
 	override dispose(): void {
-		this.element.remove();
+		this.disposing = true;
+		this.popover.dispose();
 		super.dispose();
 	}
 
@@ -114,7 +127,8 @@ export class ParadisPtyDaemonPopover extends Disposable {
 		}
 		this.signature = signature;
 		this.render();
-		this.reposition();
+		// 高さが変わると、上へ折り返して開いた位置がずれるので置き直す
+		this.contextViewService.layout();
 	}
 
 	/**
@@ -138,32 +152,11 @@ export class ParadisPtyDaemonPopover extends Disposable {
 		]);
 	}
 
-	private onWindowMouseDown(e: MouseEvent): void {
-		const target = e.target as Node | null;
-		if (!target || dom.isAncestor(target, this.element) || dom.isAncestor(target, this.anchor)) {
-			return;
-		}
-		this.options.onClose();
-	}
-
-	/** ステータスバーの項目の真上に、画面からはみ出さない位置で置く。 */
-	private reposition(): void {
-		const anchorRect = this.anchor.getBoundingClientRect();
-		const containerRect = this.element.parentElement?.getBoundingClientRect();
-		const width = this.element.offsetWidth || POPOVER_WIDTH;
-		const height = this.element.offsetHeight;
-		const maxLeft = (containerRect?.width ?? width) - width - POPOVER_MARGIN;
-		const left = Math.max(POPOVER_MARGIN, Math.min(anchorRect.right - width, maxLeft));
-		const top = Math.max(POPOVER_MARGIN, anchorRect.top - height - 4);
-		this.element.style.left = `${Math.round(left)}px`;
-		this.element.style.top = `${Math.round(top)}px`;
-	}
-
 	/**
 	 * 抱えているものを本体に据える。
 	 *
 	 * このパネルを開く理由は「何が残っているか」で、稼働時間や pid はそのついでに見るもの。
-	 * 見出しに合計、本体にスペースごとの内訳、下に補足という並びにしてある。以前は逆で、
+	 * 1 行目に合計、本体にスペースごとの内訳、下に補足という並びにしてある。以前は逆で、
 	 * 本数が文章の中に埋もれ、pid とコミットハッシュが場所の半分を取っていた。
 	 */
 	private render(): void {
@@ -172,14 +165,13 @@ export class ParadisPtyDaemonPopover extends Disposable {
 
 		const running = this.status.running;
 
-		const head = dom.append(this.element, $('.ppd-head'));
-		dom.append(head, $('.ppd-title')).textContent = localize('paradis.ptyDaemon.popover.title', "常駐ターミナル");
-		const state = dom.append(head, $(running ? '.ppd-state' : '.ppd-state.ppd-bad'));
+		const statusLine = dom.append(this.element, $('.ppd-statusline'));
+		const state = dom.append(statusLine, $(running ? '.ppd-state' : '.ppd-state.ppd-bad'));
 		dom.append(state, $('.ppd-dot'));
 		dom.append(state, $('span')).textContent = running
 			? localize('paradis.ptyDaemon.popover.running', "稼働中")
 			: localize('paradis.ptyDaemon.popover.stopped', "停止中");
-		dom.append(head, $('.ppd-total')).textContent = this.status.terminalCount === undefined
+		dom.append(statusLine, $('.ppd-total')).textContent = this.status.terminalCount === undefined
 			? '—'
 			: localize('paradis.ptyDaemon.popover.count', "{0}本", this.status.terminalCount);
 
@@ -191,7 +183,6 @@ export class ParadisPtyDaemonPopover extends Disposable {
 		}
 
 		if (this.status.spaces.length > 0) {
-			dom.append(this.element, $('.ppd-sep'));
 			const rows = dom.append(this.element, $('.ppd-rows'));
 			for (const space of this.status.spaces) {
 				const row = dom.append(rows, $('.ppd-row'));
@@ -231,7 +222,6 @@ export class ParadisPtyDaemonPopover extends Disposable {
 		const meta = this.metaText();
 		const lead = running && this.status.spaces.length > 0 ? this.leadText() : undefined;
 		if (meta !== undefined || lead !== undefined) {
-			dom.append(this.element, $('.ppd-sep'));
 			const foot = dom.append(this.element, $('.ppd-foot'));
 			if (lead !== undefined) {
 				dom.append(foot, $('div')).textContent = lead;
@@ -300,20 +290,15 @@ export class ParadisPtyDaemonPopover extends Disposable {
 		dom.append(alert, $('.ppd-alert-sub')).textContent = sub;
 		if (buttons.length > 0) {
 			const row = dom.append(alert, $('.ppd-actions'));
-			row.style.padding = '8px 0 0';
 			for (const button of buttons) {
 				this.appendButton(row, button.label, true, button.run);
 			}
 		}
 	}
 
-	private appendButton(parent: HTMLElement, label: string, mini: boolean, run: () => unknown): void {
-		const button = dom.append(parent, $(mini ? 'button.ppd-button.ppd-mini.paradis-focus-ring-inset' : 'button.ppd-button.paradis-focus-ring-inset'));
-		button.textContent = label;
-		this.bodyListeners.add(dom.addDisposableListener(button, 'click', e => {
-			e.preventDefault();
-			void run();
-		}));
+	private appendButton(parent: HTMLElement, label: string, small: boolean, run: () => unknown): void {
+		const button = this.bodyListeners.add(new ParadisButton(parent, { kind: 'secondary', label, small }));
+		this.bodyListeners.add(button.onDidClick(() => void run()));
 	}
 
 	/**
@@ -323,6 +308,8 @@ export class ParadisPtyDaemonPopover extends Disposable {
 	 * とっては、この数字こそが確かめたいことなので、必ず出す。
 	 */
 	private async confirm(message: string, primaryButton: string): Promise<boolean> {
+		// 確認より先に小窓を閉じる（小窓の段は確認ダイアログより上）
+		this.options.onClose();
 		const count = this.status.terminalCount;
 		// 分からないときに「ありません」と言わない。聞けなかっただけで、抱えていないとは
 		// 限らない。**押した結果が取り返しのつかない操作**なので、ここで嘘をつくのが一番まずい。
@@ -369,6 +356,7 @@ export class ParadisPtyDaemonPopover extends Disposable {
 	 * 分からないことを 0 と書くのが一番危ない。
 	 */
 	private async confirmAndStopForeign(pid: number, buildId: string): Promise<void> {
+		this.options.onClose();
 		const shared = paradisDaemonSharedHostWarning(this.options.scope);
 		const detail = localize('paradis.ptyDaemon.confirm.foreignDetail', "{0} が抱えているターミナルはすべて終了します。何本残っているかは、こちらからは分かりません。", paradisShortBuildId(buildId));
 		const { confirmed } = await this.paradisDialogService.confirm({
@@ -387,7 +375,7 @@ export class ParadisPtyDaemonPopover extends Disposable {
 	/**
 	 * 確認の後の操作を実行する。失敗しても黙らない。
 	 *
-	 * 確認ダイアログが開いた時点で小窓は閉じている（{@link paradisCloseWhenModalOpens}）ので、
+	 * 確認ダイアログを開く前に小窓は閉じている（{@link confirm}）ので、
 	 * 失敗は通知で知らせる。成否にかかわらず状態は取り直す（途中まで進んでいることがある）。
 	 */
 	private async act(run: () => Promise<void>): Promise<void> {
