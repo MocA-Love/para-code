@@ -1845,7 +1845,6 @@ export function createEmptyStoreState(): StoreState {
 }
 
 const IDENTITY_KEY = 'para.identity';
-const CREDS_KEY = 'para.credentials';
 const OPERATION_RUN_KEY = 'para.operationRun';
 /**
  * stale の印を自動で落とすまでの猶予。PC側は attach を解決できないと15秒で黙って捨てるので、
@@ -1891,19 +1890,6 @@ export async function loadOrCreateIdentity(keyStore: KeyStore): Promise<{ identi
 	return { identity, created: true };
 }
 
-export async function loadCredentials(keyStore: KeyStore): Promise<PairedCredentials | undefined> {
-	const raw = await keyStore.getItem(CREDS_KEY);
-	if (!raw) {
-		return undefined;
-	}
-	const p = JSON.parse(raw) as { relayUrl: string; deviceId: string; mobileId: string; mobileToken: string; pcPublicKey: string };
-	return { relayUrl: p.relayUrl, deviceId: p.deviceId, mobileId: p.mobileId, mobileToken: p.mobileToken, pcPublicKey: fromB64(p.pcPublicKey) };
-}
-
-export async function clearCredentials(keyStore: KeyStore): Promise<void> {
-	await keyStore.deleteItem(CREDS_KEY);
-}
-
 /** アプリprocess起動ごとのterminal operation世代をSecureStore上で単調増加させる。 */
 export async function reserveOperationRun(keyStore: KeyStore): Promise<number> {
 	const raw = await keyStore.getItem(OPERATION_RUN_KEY);
@@ -1939,16 +1925,6 @@ export async function revokeSelfOnRelay(creds: PairedCredentials, fetchImpl: typ
 	} finally {
 		clearTimeout(timer);
 	}
-}
-
-export async function saveCredentials(keyStore: KeyStore, creds: PairedCredentials): Promise<void> {
-	await keyStore.setItem(CREDS_KEY, JSON.stringify({
-		relayUrl: creds.relayUrl,
-		deviceId: creds.deviceId,
-		mobileId: creds.mobileId,
-		mobileToken: creds.mobileToken,
-		pcPublicKey: toB64(creds.pcPublicKey),
-	}));
 }
 
 export function terminalOperationPairingScope(creds: PairedCredentials): string {
