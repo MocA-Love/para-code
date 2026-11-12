@@ -63,6 +63,13 @@ class TestRequest extends EventEmitter {
 	}
 }
 
+/** An MCP POST that carries the pane token in the Authorization header (the MCP ingress does not read `?pane=`). */
+function mcpRequest(token: string): TestRequest {
+	const request = new TestRequest('POST', '/');
+	request.headers.authorization = `Bearer ${token}`;
+	return request;
+}
+
 class TestResponse extends EventEmitter {
 	headersSent = false;
 	writableEnded = false;
@@ -1755,17 +1762,18 @@ suite('ParadisAgentBrowser authority integration', () => {
 		fixture.service.registerRendererConnection('window:1', connection);
 		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'owned' }]));
 		const handleRequest = Reflect.get(fixture.service, '_handleRequest').bind(fixture.service) as (request: TestRequest, response: TestResponse) => Promise<void>;
-		const cases: readonly [string, () => void][] = [
-			['/', () => undefined],
-			['/?pane=foreign', () => undefined],
-			[`/?pane=${'x'.repeat(201)}`, () => undefined],
-			['/?pane=owned', () => Reflect.get(fixture.service, '_terminalExitedTokens').add('owned')],
-			['/?pane=owned', () => { Reflect.get(fixture.service, '_terminalExitedTokens').delete('owned'); Reflect.set(fixture.service, '_authorityFaulted', true); }],
+		const cases: readonly [TestRequest, () => void][] = [
+			[new TestRequest('POST', '/'), () => undefined],
+			// A live pane's token in the URL query is not read by the MCP ingress (Q620)
+			[new TestRequest('POST', '/?pane=owned'), () => undefined],
+			[mcpRequest('foreign'), () => undefined],
+			[mcpRequest('x'.repeat(201)), () => undefined],
+			[mcpRequest('owned'), () => Reflect.get(fixture.service, '_terminalExitedTokens').add('owned')],
+			[mcpRequest('owned'), () => { Reflect.get(fixture.service, '_terminalExitedTokens').delete('owned'); Reflect.set(fixture.service, '_authorityFaulted', true); }],
 		];
 		let expectedBody: string | undefined;
-		for (const [url, prepare] of cases) {
+		for (const [request, prepare] of cases) {
 			prepare();
-			const request = new TestRequest('POST', url);
 			const response = new TestResponse();
 			await handleRequest(request, response);
 			assert.strictEqual(request.listenerCount('data'), 0);
@@ -1836,13 +1844,13 @@ suite('ParadisAgentBrowser authority integration', () => {
 		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'token' }]));
 		const handleRequest = Reflect.get(fixture.service, '_handleRequest').bind(fixture.service) as (request: TestRequest, response: TestResponse) => Promise<void>;
 		const stalled = Array.from({ length: PARADIS_MCP_MAX_INFLIGHT_REQUESTS }, () => {
-			const request = new TestRequest('POST', '/?pane=token');
+			const request = mcpRequest('token');
 			const response = new TestResponse();
 			return { request, response, pending: handleRequest(request, response) };
 		});
 		assert.ok(stalled.every(entry => entry.request.listenerCount('data') === 1));
 
-		const overflowRequest = new TestRequest('POST', '/?pane=token');
+		const overflowRequest = mcpRequest('token');
 		const overflowResponse = new TestResponse();
 		await handleRequest(overflowRequest, overflowResponse);
 		assert.strictEqual(overflowResponse.statusCode, 429);
@@ -1891,13 +1899,13 @@ suite('ParadisAgentBrowser authority integration', () => {
 		await fixture.service.syncBindingAuthority(connectionA, authorityManifest(1, true, [{ token: 'token' }]));
 		const handleRequest = Reflect.get(fixture.service, '_handleRequest').bind(fixture.service) as (request: TestRequest, response: TestResponse) => Promise<void>;
 
-		const mcpRequest = new TestRequest('POST', '/?pane=token');
+		const mcpPost = mcpRequest('token');
 		const mcpResponse = new TestResponse();
-		const mcpPending = handleRequest(mcpRequest, mcpResponse);
-		assert.strictEqual(mcpRequest.listenerCount('data'), 1);
+		const mcpPending = handleRequest(mcpPost, mcpResponse);
+		assert.strictEqual(mcpPost.listenerCount('data'), 1);
 		await fixture.service.syncBindingAuthority(connectionA, authorityManifest(2, true, []));
-		mcpRequest.emit('data', Buffer.from('{"jsonrpc":"2.0","id":1,"method":"ping"}'));
-		mcpRequest.emit('end');
+		mcpPost.emit('data', Buffer.from('{"jsonrpc":"2.0","id":1,"method":"ping"}'));
+		mcpPost.emit('end');
 		await mcpPending;
 		assert.strictEqual(mcpResponse.statusCode, 404);
 		assert.strictEqual(Reflect.get(fixture.service, '_seenTokens').has('token'), false);
@@ -1951,6 +1959,33 @@ suite('ParadisAgentBrowser authority integration', () => {
 		assert.strictEqual(response.endCalls, 1);
 	});
 
+	test('accepts an old hook that puts the pane token in the URL query and warns once without the token (Q620)', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'secret-token' }]));
+		const warnings: string[] = [];
+		Object.assign(Reflect.get(fixture.service, 'logService'), { warn: (message: string) => warnings.push(message) });
+		const send = async (request: TestRequest) => {
+			const response = new TestResponse();
+			const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
+			request.emit('data', Buffer.from('{}'));
+			request.emit('end');
+			await pending;
+			return response.statusCode;
+		};
+		const headerHook = new TestRequest('POST', '/agent-hook?event=Stop');
+		headerHook.headers.authorization = 'Bearer secret-token';
+
+		const statuses = [
+			await send(headerHook),
+			await send(new TestRequest('POST', '/agent-hook?pane=secret-token&event=Stop')),
+			await send(new TestRequest('GET', '/agent-hook?pane=secret-token&event=Stop')),
+		];
+
+		assert.deepStrictEqual({ statuses, warnings: warnings.length, leaked: warnings.some(message => message.includes('secret-token')) }, { statuses: [200, 200, 200], warnings: 1, leaked: false });
+	});
+
 	test('a throwing warn logger cannot prevent an internal JSON-RPC error from settling once', async () => {
 		const fixture = createFixture();
 		const connection = {};
@@ -1960,7 +1995,7 @@ suite('ParadisAgentBrowser authority integration', () => {
 		Object.assign(Reflect.get(fixture.service, 'logService'), {
 			warn: () => { throw new Error('private warn logger failure'); },
 		});
-		const request = new TestRequest('POST', '/?pane=token');
+		const request = mcpRequest('token');
 		const response = new TestResponse();
 		const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
 
@@ -1998,8 +2033,7 @@ suite('ParadisAgentBrowser authority integration', () => {
 		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'token' }]));
 		const handleRequest = Reflect.get(fixture.service, '_handleRequest').bind(fixture.service) as (request: TestRequest, response: TestResponse) => Promise<void>;
 
-		for (const url of ['/?pane=token', '/agent-hook?pane=token&event=Stop']) {
-			const request = new TestRequest('POST', url);
+		for (const request of [mcpRequest('token'), new TestRequest('POST', '/agent-hook?pane=token&event=Stop')]) {
 			const response = new TestResponse();
 			const pending = handleRequest(request, response);
 			request.emit('data', Buffer.alloc(4 * 1024 * 1024 + 1));
@@ -2042,7 +2076,7 @@ suite('ParadisAgentBrowser authority integration', () => {
 		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'token' }]));
 		const lease = fixture.service.captureIngressLease('token');
 		assert.ok(lease);
-		const request = new TestRequest('POST', '/?pane=token');
+		const request = mcpRequest('token');
 		const response = new TestResponse();
 		const handleRequest = Reflect.get(fixture.service, '_handleRequest').bind(fixture.service) as (request: TestRequest, response: TestResponse) => Promise<void>;
 		const pending = handleRequest(request, response);
@@ -2172,7 +2206,7 @@ suite('ParadisAgentBrowser authority integration', () => {
 			retire: () => undefined,
 			listTools: async () => { notifyStarted(); await gate; return [{ name: 'secret_tool' }]; },
 		});
-		const request = new TestRequest('POST', '/?pane=token');
+		const request = mcpRequest('token');
 		const response = new TestResponse();
 		const handleRequest = Reflect.get(fixture.service, '_handleRequest').bind(fixture.service) as (request: TestRequest, response: TestResponse) => Promise<void>;
 		const pending = handleRequest(request, response);
@@ -2201,7 +2235,7 @@ suite('ParadisAgentBrowser authority integration', () => {
 			connections: [{ ctx: 'window:1' }],
 			getChannel: () => ({ call: () => { notifyStarted(); return gate; } }),
 		});
-		const request = new TestRequest('POST', '/?pane=token');
+		const request = mcpRequest('token');
 		const response = new TestResponse();
 		const handleRequest = Reflect.get(fixture.service, '_handleRequest').bind(fixture.service) as (request: TestRequest, response: TestResponse) => Promise<void>;
 		const pending = handleRequest(request, response);
@@ -2226,7 +2260,7 @@ suite('ParadisAgentBrowser authority integration', () => {
 			connections: [{ ctx: 'window:1' }],
 			getChannel: () => ({ call: async () => ({ ok: false, error: 'renderer-private-marker' }) }),
 		});
-		const request = new TestRequest('POST', '/?pane=token');
+		const request = mcpRequest('token');
 		const response = new TestResponse();
 		const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
 
@@ -2253,7 +2287,7 @@ suite('ParadisAgentBrowser authority integration', () => {
 		const bodies: string[] = [];
 		for (const name of ['request_browser_page', 'open_browser_profile', 'delete_browser_profile']) {
 			// The test socket has no peer port, so the caller cannot be verified.
-			const request = new TestRequest('POST', '/?pane=token');
+			const request = mcpRequest('token');
 			const response = new TestResponse();
 			const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
 			request.emit('data', Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: { profile: 'PRD' } } })));
@@ -2279,7 +2313,7 @@ suite('ParadisAgentBrowser authority integration', () => {
 			['get_page_network_overrides', {}],
 		] as const) {
 			// The test socket has no peer port, so the caller cannot be verified.
-			const request = new TestRequest('POST', '/?pane=token');
+			const request = mcpRequest('token');
 			const response = new TestResponse();
 			const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
 			request.emit('data', Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } })));
@@ -2557,7 +2591,7 @@ suite('ParadisAgentBrowser authority integration', () => {
 			connections: [{ ctx: 'window:1' }],
 			getChannel: () => ({ call: async () => ({ ok: true, deferred: true, spaceName: 'Design\nSystem' }) }),
 		});
-		const request = new TestRequest('POST', '/?pane=token');
+		const request = mcpRequest('token');
 		const response = new TestResponse();
 		const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
 
@@ -2580,7 +2614,7 @@ suite('ParadisAgentBrowser authority integration', () => {
 			connections: [{ ctx: 'window:1' }],
 			getChannel: () => ({ call: async () => ({ ok: false, reason: 'switching', error: 'renderer-private-marker' }) }),
 		});
-		const request = new TestRequest('POST', '/?pane=token');
+		const request = mcpRequest('token');
 		const response = new TestResponse();
 		const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
 
@@ -2601,7 +2635,7 @@ suite('ParadisAgentBrowser authority integration', () => {
 			connections: [{ ctx: 'window:1' }],
 			getChannel: () => ({ call: async () => ({ ok: false, reason: 'unreachableSpace' }) }),
 		});
-		const request = new TestRequest('POST', '/?pane=token');
+		const request = mcpRequest('token');
 		const response = new TestResponse();
 		const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
 
@@ -2625,7 +2659,7 @@ suite('ParadisAgentBrowser authority integration', () => {
 			connections: [{ ctx: 'window:1' }],
 			getChannel: () => ({ call: () => { notifyStarted(); return new Promise(() => undefined); } }),
 		});
-		const request = new TestRequest('POST', '/?pane=token');
+		const request = mcpRequest('token');
 		const response = new TestResponse();
 		const handleRequest = Reflect.get(fixture.service, '_handleRequest').bind(fixture.service) as (request: TestRequest, response: TestResponse) => Promise<void>;
 		const pending = handleRequest(request, response);
@@ -3294,7 +3328,7 @@ suite('ParadisAgentBrowser authority integration', () => {
 			getChannel: () => ({ call: async (method: string, args: unknown) => { windowCalls.push([method, args]); return { ok: false, reason: 'outsideAllowedFolders' }; } }),
 		});
 		const call = async (token: string, name: string, args: unknown) => {
-			const request = new TestRequest('POST', `/?pane=${token}`);
+			const request = mcpRequest(token);
 			const response = new TestResponse();
 			const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
 			request.emit('data', Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } })));
@@ -3332,7 +3366,7 @@ suite('ParadisAgentBrowser authority integration', () => {
 			getChannel: () => ({ call: async (method: string, args: unknown) => { windowCalls.push([method, args]); return answer; } }),
 		});
 		const call = async (args: unknown) => {
-			const request = new TestRequest('POST', '/?pane=remote');
+			const request = mcpRequest('remote');
 			const response = new TestResponse();
 			const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
 			request.emit('data', Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'preview_file', arguments: args } })));
@@ -3433,7 +3467,7 @@ suite('ParadisAgentBrowser authority integration', () => {
 		});
 		const bodies: string[] = [];
 		for (const token of ['remote', 'local', 'local-reloading']) {
-			const request = new TestRequest('POST', `/?pane=${token}`);
+			const request = mcpRequest(token);
 			const response = new TestResponse();
 			const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
 			request.emit('data', Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'preview_file', arguments: { path: '/home/example/notes.md' } } })));

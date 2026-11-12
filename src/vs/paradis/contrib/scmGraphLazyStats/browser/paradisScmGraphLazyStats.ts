@@ -12,6 +12,7 @@
 // 数え終わるまで「変更量を数えています…」を出し、終わったらその行を数字に差し替える。
 // 呼び出し元は src/vs/workbench/contrib/scm/browser/scmHistoryViewPane.ts の renderElement (PARA-PATCH)。
 
+import './media/paradisScmGraphLazyStats.css';
 import { $, append, isHTMLElement } from '../../../../base/browser/dom.js';
 import { IHoverOptions } from '../../../../base/browser/ui/hover/hover.js';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
@@ -116,9 +117,8 @@ function createSection(stats: IParadisScmGraphStats | undefined): HTMLElement {
 	const paragraph = append(section, $('p'));
 
 	if (stats === undefined) {
-		const pending = append(paragraph, $('span'));
+		const pending = append(paragraph, $('span.paradis-scm-graph-lazy-stats-pending'));
 		pending.textContent = localize('paradis.scmGraphLazyStats.counting', "変更量を数えています…");
-		pending.style.opacity = '0.7';
 	} else {
 		append(paragraph, $('span')).textContent = localize('paradis.scmGraphLazyStats.files', "{0} 個のファイルが変更済み", stats.files);
 		if (stats.insertions) {

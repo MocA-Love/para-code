@@ -1,0 +1,13 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* ソース管理のグラフのホバーで、変更量を数え終わるまで出す「変更量を数えています…」。
+	透明度で薄めず、テーマが決めた補助の文字の色にする（透明度だと、補助の文字を本文と同じ濃さに
+	決めているテーマで地に溶けて読みにくくなるため）。 */
+.paradis-scm-graph-lazy-stats .paradis-scm-graph-lazy-stats-pending {
+	color: var(--vscode-paradis-textMuted);
+}

@@ -87,5 +87,21 @@ export function extractToken(request: Request): string | null {
 		return proto.slice(SUBPROTOCOL_AUTH_PREFIX.length);
 	}
 	// DEPRECATED（旧クライアント互換）: クエリのトークンはWorkers Logsに残る。
-	return new URL(request.url).searchParams.get('token');
+	const url = new URL(request.url);
+	const token = url.searchParams.get('token');
+	if (token !== null) {
+		// 外す時期を決めるために、使われた回数を Workers Logs でこの印から数える（Q620）。
+		// トークンと URL は書かない（警告そのものを平文の写しにしない）。DO には Worker が `https://do/?role=…` に
+		// 写した要求が届くので、経路ではなく接続の種類だけを載せる。
+		console.warn(DEPRECATED_QUERY_TOKEN_LOG, { role: deprecatedQueryTokenRole(url.searchParams.get('role')) });
+	}
+	return token;
+}
+
+/** `?token=` のクエリで認証した要求に出す警告の印。Workers Logs ではこの文字列で数える。 */
+export const DEPRECATED_QUERY_TOKEN_LOG = '[relay] deprecated query token';
+
+/** 警告に載せる `role`。知っている値だけを写し、それ以外は書かない。 */
+function deprecatedQueryTokenRole(role: string | null): string | undefined {
+	return role === 'pc' || role === 'mobile' || role === 'pair' ? role : undefined;
 }

@@ -53,6 +53,8 @@ interface IRepositoryNode {
 	readonly repository: Repository;
 	readonly base: IParaBranchDiffState['base'];
 	readonly count: number;
+	/** Files the branch changed before the list was truncated, equal to {@link count} otherwise. */
+	readonly total: number;
 }
 
 interface IFolderNode {
@@ -74,6 +76,7 @@ interface IMessageNode {
 	readonly repository: Repository;
 	readonly id: string;
 	readonly label: string;
+	readonly tooltip: string;
 }
 
 type Node = IRepositoryNode | IFolderNode | IFileNode | IMessageNode;
@@ -151,6 +154,15 @@ function statusText(status: Status): string {
 		default:
 			return '';
 	}
+}
+
+/** The base branch and the file count, as "shown / total" when only `shown` of `total` files are listed. */
+function countDescription(baseLabel: string, shown: number, total: number): string {
+	return shown < total
+		// allow-any-unicode-next-line
+		? l10n.t('{0} 以降 · {1} / {2} 件', baseLabel, shown, total)
+		// allow-any-unicode-next-line
+		: l10n.t('{0} 以降 · {1} 件', baseLabel, shown);
 }
 
 /**
@@ -420,7 +432,8 @@ class ParaBranchDiffView implements TreeDataProvider<Node>, Disposable {
 			}
 		}
 
-		const total = this.visible.reduce((sum, { entries }) => sum + entries.length, 0);
+		const shown = this.visible.reduce((sum, { entries }) => sum + entries.length, 0);
+		const total = this.visible.reduce((sum, { state }) => sum + state.total, 0);
 
 		commands.executeCommand('setContext', 'git.paraBranchDiff.hasChanges', this.visible.length > 0);
 
@@ -433,11 +446,20 @@ class ParaBranchDiffView implements TreeDataProvider<Node>, Disposable {
 		// all: it is summed into the Source Control activity badge together with the number of
 		// pending changes, which would make that badge mean nothing. The header is also the only
 		// place a count survives the view being collapsed, which is how it always first appears.
-		this.treeView.description = this.visible.length === 1
-			// allow-any-unicode-next-line
-			? l10n.t('{0} 以降 · {1} 件', this.visible[0].state.base.label, total)
-			// allow-any-unicode-next-line
-			: (this.visible.length > 1 ? l10n.t('{0} 個のリポジトリ · {1} 件', this.visible.length, total) : undefined);
+		//
+		// Once a repository was truncated the header says "shown / total", so that the cut is visible
+		// the moment the view opens instead of only at the end of five thousand rows.
+		if (this.visible.length === 1) {
+			this.treeView.description = countDescription(this.visible[0].state.base.label, shown, total);
+		} else if (this.visible.length > 1) {
+			this.treeView.description = shown < total
+				// allow-any-unicode-next-line
+				? l10n.t('{0} 個のリポジトリ · {1} / {2} 件', this.visible.length, shown, total)
+				// allow-any-unicode-next-line
+				: l10n.t('{0} 個のリポジトリ · {1} 件', this.visible.length, shown);
+		} else {
+			this.treeView.description = undefined;
+		}
 
 		this._onDidChangeTreeData.fire();
 	}
@@ -491,7 +513,8 @@ class ParaBranchDiffView implements TreeDataProvider<Node>, Disposable {
 				kind: 'repository',
 				repository,
 				base: state.base,
-				count: entries.length
+				count: entries.length,
+				total: state.total
 			} satisfies IRepositoryNode));
 		}
 
@@ -514,13 +537,17 @@ class ParaBranchDiffView implements TreeDataProvider<Node>, Disposable {
 			? sorted.map(entry => ({ kind: 'file', entry } satisfies IFileNode))
 			: this.buildTree(repository, sorted);
 
+		// First rather than last: at the end of the list the notice only shows after scrolling past
+		// every row that is shown.
 		if (state.truncated) {
-			nodes.push({
+			nodes.unshift({
 				kind: 'message',
 				repository,
 				id: `truncated:${repository.root}`,
 				// allow-any-unicode-next-line
-				label: l10n.t('変更が多すぎるため、一部のファイルのみ表示しています')
+				label: l10n.t('{0} 件は表示していません', state.total - entries.length),
+				// allow-any-unicode-next-line
+				tooltip: l10n.t('{0} からの変更が {1} 件あります。ここでは {2} 件だけを表示しています。', state.base.label, state.total, entries.length)
 			});
 		}
 
@@ -605,7 +632,9 @@ class ParaBranchDiffView implements TreeDataProvider<Node>, Disposable {
 			case 'message': {
 				const item = new TreeItem(element.label, TreeItemCollapsibleState.None);
 				item.id = element.id;
-				item.iconPath = new ThemeIcon('info');
+				item.tooltip = element.tooltip;
+				// Rows were left out, which is easy to miss in a review, hence a warning and not `info`.
+				item.iconPath = new ThemeIcon('warning', new ThemeColor('gitDecoration.modifiedResourceForeground'));
 				item.contextValue = 'paraBranchDiffMessage';
 				return item;
 			}
@@ -616,8 +645,7 @@ class ParaBranchDiffView implements TreeDataProvider<Node>, Disposable {
 		const item = new TreeItem(path.basename(node.repository.root), TreeItemCollapsibleState.Expanded);
 		item.id = `repository:${node.repository.root}`;
 		item.iconPath = new ThemeIcon('repo');
-		// allow-any-unicode-next-line
-		item.description = l10n.t('{0} 以降 · {1} 件', node.base.label, node.count);
+		item.description = countDescription(node.base.label, node.count, node.total);
 		item.tooltip = node.repository.root;
 		item.contextValue = 'paraBranchDiffRepository';
 		return item;
