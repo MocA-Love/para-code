@@ -238,7 +238,6 @@ export class ParadisTabLauncherPopup extends Disposable {
 		this.modelCatalogService.refresh();
 
 		this.renderRows();
-		this.position();
 		this.searchInput.focus();
 		this.registerCloseListeners();
 	}
@@ -330,6 +329,8 @@ export class ParadisTabLauncherPopup extends Disposable {
 		} else {
 			this.renderResults(query);
 		}
+		// 行の数が変わると高さが変わるので、画面に収まるよう位置を測り直す
+		this.position();
 	}
 
 	private renderFixedRows(): void {
@@ -904,7 +905,11 @@ export class ParadisTabLauncherPopup extends Disposable {
 				return;
 			}
 			const event = new StandardKeyboardEvent(e);
-			if (event.equals(KeyCode.Enter) && (e.target === prompt || e.target === modelSearch)) {
+			if (event.equals(KeyCode.Enter) && e.target === modelSearch && modelQuery !== '') {
+				// 絞り込み中の Enter は先頭の候補を選ぶだけ（前のモデルのまま起動しない）。候補が無ければ何もしない
+				dom.EventHelper.stop(e, true);
+				modelOptions[0]?.click();
+			} else if (event.equals(KeyCode.Enter) && (e.target === prompt || e.target === modelSearch)) {
 				dom.EventHelper.stop(e, true);
 				launch('terminal');
 			} else if (event.equals(KeyMod.CtrlCmd | KeyCode.Enter) && chatEnabled) {
