@@ -173,6 +173,13 @@ const safeMarked = new Marked({
 		html(token: Tokens.HTML | Tokens.Tag): string {
 			return sanitizeMarkdownRawHtml(token.text);
 		},
+		link(token: Tokens.Link): string | false {
+			if (isUnsafeHref(token.href)) {
+				// 生の HTML の `<a>` と同じく、使えない href だけを外して文字は残す
+				return `<a>${this.parser.parseInline(token.tokens)}</a>`;
+			}
+			return false;
+		},
 		image(token: Tokens.Image): string | false {
 			if (isExternalImage(token.href)) {
 				return externalImageText(token.text);

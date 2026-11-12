@@ -533,7 +533,7 @@ suite('ParadisHtmlFileEditor', () => {
 
 			strictEqual(editor.scriptsAllowed, true);
 			// ワークスペースの外の文書なので、先頭に connect-src の CSP が足される。著者の CSP はそのまま残る（両方が効く）。
-			deepStrictEqual(csp, [`connect-src http://127.0.0.1:${PREVIEW_MOUNT.port}`, "default-src 'none'; script-src https://trusted.example"]);
+			deepStrictEqual(csp, [`connect-src http://127.0.0.1:${PREVIEW_MOUNT.port} data: blob:`, "default-src 'none'; script-src https://trusted.example"]);
 			strictEqual(externalScript?.getAttribute('src'), 'https://trusted.example/app.js');
 		});
 
@@ -549,9 +549,9 @@ suite('ParadisHtmlFileEditor', () => {
 				await cspOf(createGenerationEditor(createSharedProcessService(), URI.file('/workspace'))),
 				await cspOf(createGenerationEditor(createSharedProcessService(() => Promise.reject(new Error('shared process is gone'))))),
 			], [
-				[`connect-src http://127.0.0.1:${PREVIEW_MOUNT.port}`],
+				[`connect-src http://127.0.0.1:${PREVIEW_MOUNT.port} data: blob:`],
 				[],
-				['connect-src https://*.vscode-resource.vscode-cdn.net'],
+				['connect-src https://*.vscode-resource.vscode-cdn.net data: blob:'],
 			]);
 		});
 
@@ -719,9 +719,9 @@ suite('paradisInsertAtDocumentStart', () => {
 			const first = document.querySelector('meta[http-equiv="Content-Security-Policy"], script');
 			return { first: first?.tagName, csp: first?.getAttribute('content'), mode: document.compatMode };
 		}), [
-			{ first: 'META', csp: 'connect-src http://127.0.0.1:56789', mode: 'CSS1Compat' },
-			{ first: 'META', csp: 'connect-src http://127.0.0.1:56789', mode: 'BackCompat' },
-			{ first: 'META', csp: 'connect-src http://127.0.0.1:56789', mode: 'CSS1Compat' },
+			{ first: 'META', csp: 'connect-src http://127.0.0.1:56789 data: blob:', mode: 'CSS1Compat' },
+			{ first: 'META', csp: 'connect-src http://127.0.0.1:56789 data: blob:', mode: 'BackCompat' },
+			{ first: 'META', csp: 'connect-src http://127.0.0.1:56789 data: blob:', mode: 'CSS1Compat' },
 		]);
 	});
 });

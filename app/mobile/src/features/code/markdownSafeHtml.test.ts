@@ -38,6 +38,18 @@ describe('Markdown の生の HTML を絞る', () => {
 		]);
 	});
 
+	test('Markdown の記法のリンクも、使えない scheme の href は外す', () => {
+		expect([
+			renderMarkdownSafely('[x](javascript:alert(1))'),
+			renderMarkdownSafely('[**y**](data:text/html,a)'),
+			renderMarkdownSafely('[z](./doc.md#a)'),
+		]).toEqual([
+			'<p><a>x</a></p>\n',
+			'<p><a><strong>y</strong></a></p>\n',
+			'<p><a href="./doc.md#a">z</a></p>\n',
+		]);
+	});
+
 	test('CSP は nonce の有無に関わらず外の画像とフレームとフォームを止める', () => {
 		const nonce = '0123456789abcdef0123456789abcdef';
 		expect([markdownContentSecurityPolicy(), markdownContentSecurityPolicy(nonce)]).toEqual([

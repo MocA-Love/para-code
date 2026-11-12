@@ -292,6 +292,7 @@ const PARADIS_WEBVIEW_RESOURCE_HOST_SUFFIX = '.vscode-resource.vscode-cdn.net';
  * 同じフォルダーの別のファイルを fetch で読むこと自体は止めない（ページの `fetch('./data.json')` を動かすため）。
  * 止めるのは、読んだものを fetch・XHR・WebSocket・EventSource・sendBeacon で外へ送ること。画像の読み込みや
  * フォームの送信は `connect-src` の外なので、この CSP では止まらない。
+ * `data:` と `blob:` も許す（埋め込みの wasm や `fetch(dataUrl)` を動かすため）。どちらも手元の URL なので外へは送れない。
  *
  * webview のリソース URL のホスト名には CSP のホストに書けない `+` が入るので、その経路ではホストの前半を `*` にする
  * （そこから読めるのも webview の localResourceRoots＝文書のフォルダーだけ）。
@@ -301,7 +302,7 @@ export function paradisHtmlOutsideWorkspaceCsp(baseUrl: string): string {
 	const source = url.hostname.endsWith(PARADIS_WEBVIEW_RESOURCE_HOST_SUFFIX)
 		? `${url.protocol}//*${PARADIS_WEBVIEW_RESOURCE_HOST_SUFFIX}`
 		: url.origin;
-	return `<meta http-equiv="Content-Security-Policy" content="connect-src ${escapeAttribute(source)}">`;
+	return `<meta http-equiv="Content-Security-Policy" content="connect-src ${escapeAttribute(source)} data: blob:">`;
 }
 
 /** 文書の先頭の BOM・空白・コメントと `<!DOCTYPE>`。これより前に要素を置くと quirks mode になる。 */
