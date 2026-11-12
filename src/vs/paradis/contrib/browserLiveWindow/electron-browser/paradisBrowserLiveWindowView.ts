@@ -21,6 +21,7 @@ import { ParadisBrowserLiveThumbnail } from './paradisBrowserLiveThumbnail.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { IParadisAgentCursorEvent, IParadisAgentCursorEvents, PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING, PARADIS_AGENT_CURSOR_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import {
 	IParadisBrowserLiveEntry,
@@ -112,7 +113,6 @@ export class ParadisBrowserLiveWindowView extends Disposable {
 	/** IntersectionObserver の対象要素からビューIDを引くための逆引き。 */
 	private readonly viewIdsByElement = new Map<Element, string>();
 
-	private readonly root: HTMLElement;
 	private readonly scroll: HTMLElement;
 	private readonly wall: HTMLElement;
 	private readonly allChip: HTMLElement;
@@ -137,7 +137,7 @@ export class ParadisBrowserLiveWindowView extends Disposable {
 	private windowVisible = true;
 
 	constructor(
-		container: HTMLElement,
+		private readonly container: HTMLElement,
 		private readonly model: ParadisBrowserLiveModel,
 		private readonly viewState: IParadisBrowserLiveViewState,
 		/**
@@ -150,12 +150,12 @@ export class ParadisBrowserLiveWindowView extends Disposable {
 		@ILogService private readonly logService: ILogService,
 		@IMainProcessService mainProcessService: IMainProcessService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IContextViewService private readonly contextViewService: IContextViewService,
 	) {
 		super();
 
 		const root = append(container, $('.paradis-browser-live-window'));
 		root.classList.toggle('paradis-browser-live-transparent', transparencyActive);
-		this.root = root;
 
 		// --- ツールバー -------------------------------------------------------------------
 		const toolbar = append(root, $('.paradis-browser-live-toolbar'));
@@ -595,7 +595,7 @@ export class ParadisBrowserLiveWindowView extends Disposable {
 		this.settingsButton.classList.add('checked');
 		this.settingsButton.setAttribute('aria-expanded', 'true');
 		this.popover.value = new ParadisBrowserLiveSettingsPopover(
-			this.root,
+			this.container,
 			this.viewState,
 			{
 				anchor: this.settingsButton,
@@ -604,6 +604,7 @@ export class ParadisBrowserLiveWindowView extends Disposable {
 				commit: () => this.commitViewState(),
 				close: (restoreFocus: boolean) => this.closeSettings(restoreFocus),
 			},
+			this.contextViewService,
 		);
 	}
 

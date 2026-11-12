@@ -9,9 +9,12 @@
 import { $, addDisposableListener, append, clearNode, EventType, getWindow, isHTMLElement } from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
-import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
+import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { paradisWatchPopoverDismiss } from '../../../browser/paradisAnchoredPopover.js';
+import { showParadisPopover } from '../../../browser/paradisPopover.js';
+import { ParadisSegmented } from '../../../browser/paradisSegmented.js';
 import {
 	IParadisBrowserLiveViewState,
 	PARADIS_BROWSER_LIVE_MAX_COLUMNS,
@@ -41,6 +44,10 @@ const CADENCE_LABELS: Record<ParadisBrowserLiveCadence, string> = {
 
 /** ポップオーバーがウィンドウ下端との間に残す余白。 */
 const BOTTOM_MARGIN = 12;
+/** 小窓の幅（UI キットのポップアップ。列の 6 つの切り替えが 1 行に収まる幅）。 */
+const POPOVER_WIDTH = 320;
+/** キットの小窓の、ボタンとの間の余白（paradisPopover.css の margin-top）。 */
+const ANCHOR_GAP = 4;
 /** これ以上狭くするくらいならはみ出させる。 */
 const MIN_HEIGHT = 120;
 
@@ -61,14 +68,23 @@ export interface IParadisBrowserLivePopoverHost {
  * ツールバーに出しっぱなしにすると、幅の狭いウィンドウでは折り返してタイルの面積を食う。
  * 列数のように「一覧から選びたい」ものはボタンを回すより並べたほうが早いので、
  * エージェント一覧と同じくポップオーバーへまとめている。
+ *
+ * 面・角丸・影・重なりの段は UI キットのポップアップ（paradisPopover.ts、context view の段）に任せる（paradis-18-15）。
+ * まとめ方・列・更新は UI キットの切り替えの組（paradisSegmented.ts、aria-pressed）にする（paradis-18-9）。
  */
 export class ParadisBrowserLiveSettingsPopover extends Disposable {
 
+	/** 小窓の本文（キットのポップアップの本文へ入れる）。 */
 	private readonly element: HTMLElement;
+	/** キットのポップアップの箱。開いている間だけある。 */
+	private box: HTMLElement | undefined;
+	private readonly popup: IDisposable;
+	/** 自分で閉じている最中か（閉じた知らせで host.close を呼び返さないため）。 */
+	private disposing = false;
 	private readonly sortButtons = new Map<ParadisBrowserLiveSort, HTMLElement>();
-	private readonly groupButtons = new Map<ParadisBrowserLiveGroup, HTMLElement>();
-	private readonly columnButtons = new Map<number, HTMLElement>();
-	private readonly cadenceButtons = new Map<ParadisBrowserLiveCadence, HTMLElement>();
+	private readonly groupSeg: ParadisSegmented<ParadisBrowserLiveGroup>;
+	private readonly columnsSeg: ParadisSegmented<string>;
+	private readonly cadenceSeg: ParadisSegmented<ParadisBrowserLiveCadence>;
 	private readonly spaceButtons = new Map<string, HTMLElement>();
 	private readonly spaceList: HTMLElement;
 	private readonly hiddenText: HTMLElement;
@@ -79,27 +95,27 @@ export class ParadisBrowserLiveSettingsPopover extends Disposable {
 	/** 前回組み立てたときの顔ぶれ。同じなら作り直さない (選択中のスクロール位置を保つ)。 */
 	private spaceKeys: string[] = [];
 
+	/**
+	 * @param container 一覧のウィンドウの作業領域（補助ウィンドウの container）。キットの小窓をここへ出す。
+	 */
 	constructor(
 		private readonly container: HTMLElement,
 		private readonly viewState: IParadisBrowserLiveViewState,
 		private readonly host: IParadisBrowserLivePopoverHost,
+		private readonly contextViewService: IContextViewService,
 	) {
 		super();
 
-		this.element = append(container, $('.paradis-browser-live-pop.paradis-focus-none'));
-		this.element.tabIndex = -1;
-		this.element.setAttribute('role', 'dialog');
-		this.element.setAttribute('aria-label', localize('paradis.browserLive.settings', "表示と並び"));
-		this._register({ dispose: () => this.element.remove() });
+		this.element = $('.paradis-browser-live-pop');
 
 		// --- 並び替え --------------------------------------------------------------------
 		this.section(localize('paradis.browserLive.sortLabel', "並び替え"));
 		const sortList = append(this.element, $('.paradis-browser-live-pop-list'));
-		sortList.setAttribute('role', 'radiogroup');
+		sortList.setAttribute('role', 'group');
 		sortList.setAttribute('aria-label', localize('paradis.browserLive.sortLabel', "並び替え"));
 		for (const sort of Object.keys(SORT_LABELS) as ParadisBrowserLiveSort[]) {
-			const button = append(sortList, $('button.paradis-browser-live-pop-item.paradis-focus-ring-inset'));
-			button.setAttribute('role', 'radio');
+			const button = append(sortList, $<HTMLButtonElement>('button.paradis-browser-live-pop-item.paradis-focus-ring-inset'));
+			button.type = 'button';
 			append(button, $('span.paradis-browser-live-pop-check.codicon.codicon-check'));
 			append(button, $('span')).textContent = SORT_LABELS[sort];
 			this._register(addDisposableListener(button, EventType.CLICK, () => {
@@ -131,77 +147,108 @@ export class ParadisBrowserLiveSettingsPopover extends Disposable {
 		// --- まとめ方 --------------------------------------------------------------------
 		this.separator();
 		const groupRow = this.labelledRow(localize('paradis.browserLive.groupLabel', "まとめ方"));
-		const groupSeg = this.segGroup(groupRow, localize('paradis.browserLive.groupLabel', "まとめ方"));
-		for (const group of Object.keys(GROUP_LABELS) as ParadisBrowserLiveGroup[]) {
-			this.groupButtons.set(group, this.segButton(groupSeg, GROUP_LABELS[group], () => {
-				this.viewState.group = group;
-				this.host.commit();
-			}));
-		}
+		this.groupSeg = this._register(new ParadisSegmented(groupRow, {
+			items: (Object.keys(GROUP_LABELS) as ParadisBrowserLiveGroup[]).map(group => ({ value: group, label: GROUP_LABELS[group] })),
+			value: this.viewState.group,
+			ariaLabel: localize('paradis.browserLive.groupLabel', "まとめ方"),
+		}));
+		this._register(this.groupSeg.onDidChange(group => {
+			this.viewState.group = group;
+			this.host.commit();
+		}));
 
 		// --- 表示 ------------------------------------------------------------------------
 		this.separator();
 		this.section(localize('paradis.browserLive.displayLabel', "表示"));
 		const columnsRow = this.labelledRow(localize('paradis.browserLive.columnsLabel', "列"));
-		const columnsSeg = this.segGroup(columnsRow, localize('paradis.browserLive.columnsLabel', "列"));
+		const columnItems: { value: string; label: string }[] = [];
 		for (let columns = PARADIS_BROWSER_LIVE_MIN_COLUMNS; columns <= PARADIS_BROWSER_LIVE_MAX_COLUMNS; columns++) {
-			this.columnButtons.set(columns, this.segButton(columnsSeg, String(columns), () => {
-				this.viewState.columns = columns;
-				this.host.commit();
-			}));
+			columnItems.push({ value: String(columns), label: String(columns) });
 		}
+		this.columnsSeg = this._register(new ParadisSegmented(columnsRow, {
+			items: columnItems,
+			value: String(this.viewState.columns),
+			ariaLabel: localize('paradis.browserLive.columnsLabel', "列"),
+		}));
+		this._register(this.columnsSeg.onDidChange(columns => {
+			this.viewState.columns = Number(columns);
+			this.host.commit();
+		}));
 
 		const cadenceRow = this.labelledRow(localize('paradis.browserLive.cadenceLabel', "更新"));
-		const cadenceSeg = this.segGroup(cadenceRow, localize('paradis.browserLive.cadenceLabel', "更新"));
-		for (const cadence of Object.keys(CADENCE_LABELS) as ParadisBrowserLiveCadence[]) {
-			this.cadenceButtons.set(cadence, this.segButton(cadenceSeg, CADENCE_LABELS[cadence], () => {
-				this.viewState.cadence = cadence;
-				this.host.commit();
-			}));
-		}
+		this.cadenceSeg = this._register(new ParadisSegmented(cadenceRow, {
+			items: (Object.keys(CADENCE_LABELS) as ParadisBrowserLiveCadence[]).map(cadence => ({ value: cadence, label: CADENCE_LABELS[cadence] })),
+			value: this.viewState.cadence,
+			ariaLabel: localize('paradis.browserLive.cadenceLabel', "更新"),
+		}));
+		this._register(this.cadenceSeg.onDidChange(cadence => {
+			this.viewState.cadence = cadence;
+			this.host.commit();
+		}));
 		this.hintRow(localize('paradis.browserLive.cadenceHint', "画面に出ていないページも追いかけます。上げるほどなめらかになりますが、そのぶん負荷も上がります"));
 
 		// --- 開閉 ------------------------------------------------------------------------
+		this.update();
 		const targetWindow = getWindow(container);
-		// 外側の押下で閉じる。押下の target は要素なので、要素かどうかは見ずに contains() だけで判定する（paradisAnchoredPopover.ts）
-		this._register(paradisWatchPopoverDismiss(targetWindow, { element: this.element, anchor: this.host.anchor, close: () => this.host.close(false), listenOnDocument: true }));
+		this.popup = showParadisPopover(this.contextViewService, {
+			anchor: this.host.anchor,
+			title: localize('paradis.browserLive.settings', "表示と並び"),
+			container,
+			render: (body, store) => {
+				const box = this.box = body.parentElement ?? body;
+				box.classList.add('paradis-browser-live-pop-box');
+				box.style.width = `${POPOVER_WIDTH}px`;
+				body.appendChild(this.element);
+				this.layout();
+				// ContextView は作業領域の中の押下では閉じないので、外側の押下で閉じる（歯車の押し直しは開き直しの操作なので内側）。
+				// 押下の target は要素なので、要素かどうかは見ずに contains() だけで判定する（paradisAnchoredPopover.ts）
+				store.add(paradisWatchPopoverDismiss(targetWindow, { element: box, anchor: this.host.anchor, close: () => this.host.close(false), listenOnDocument: true }));
+				store.add({ dispose: () => { this.box = undefined; } });
+			},
+			onHide: () => {
+				// Esc で閉じたときのフォーカスの戻し先（歯車）はキットが戻す
+				if (!this.disposing) {
+					this.host.close(false);
+				}
+			},
+		});
+		// 小窓の中の Esc はキットが受ける。フォーカスが外 (タイル等) にあるときの Esc でも閉じるが、歯車へは引き戻さない。
 		this._register(addDisposableListener(targetWindow.document, EventType.KEY_DOWN, event => {
 			if (new StandardKeyboardEvent(event).keyCode !== KeyCode.Escape) {
 				return;
 			}
-			// フォーカスが外 (タイル等) にあるときまで歯車へ引き戻さない。
-			const active = this.element.ownerDocument.activeElement;
-			this.host.close(isHTMLElement(active) && this.element.contains(active));
+			const active = targetWindow.document.activeElement;
+			this.host.close(isHTMLElement(active) && !!this.box?.contains(active));
 		}));
-
-		this.layout();
-		this.update();
-		this.element.focus();
 	}
 
-	/** 歯車の真下へ置き直す。ツールバーは折り返すので、開いたまま幅が変わっても付いていく。 */
+	override dispose(): void {
+		this.disposing = true;
+		this.popup.dispose();
+		super.dispose();
+	}
+
+	/** 歯車の下に収まる高さへ合わせる。ツールバーは折り返すので、開いたまま幅が変わっても付いていく。 */
 	layout(): void {
+		if (!this.box) {
+			return;
+		}
 		const anchorRect = this.host.anchor.getBoundingClientRect();
 		const rootRect = this.container.getBoundingClientRect();
-		const top = Math.round(anchorRect.bottom - rootRect.top + 4);
-		this.element.style.top = `${top}px`;
-		this.element.style.maxHeight = `${Math.max(MIN_HEIGHT, Math.round(rootRect.height - top - BOTTOM_MARGIN))}px`;
+		const top = Math.round(anchorRect.bottom - rootRect.top + ANCHOR_GAP);
+		this.box.style.maxHeight = `${Math.max(MIN_HEIGHT, Math.round(rootRect.height - top - BOTTOM_MARGIN))}px`;
+		this.contextViewService.layout();
 	}
 
 	/** 中身を現在のビュー状態に合わせる。開いたまま設定を変えても閉じないので、変更のたびに呼ばれる。 */
 	update(): void {
 		for (const [sort, button] of this.sortButtons) {
-			this.mark(button, this.viewState.sort === sort);
+			button.classList.toggle('checked', this.viewState.sort === sort);
+			button.setAttribute('aria-pressed', String(this.viewState.sort === sort));
 		}
-		for (const [group, button] of this.groupButtons) {
-			this.mark(button, this.viewState.group === group);
-		}
-		for (const [columns, button] of this.columnButtons) {
-			this.mark(button, this.viewState.columns === columns);
-		}
-		for (const [cadence, button] of this.cadenceButtons) {
-			this.mark(button, this.viewState.cadence === cadence);
-		}
+		this.groupSeg.value = this.viewState.group;
+		this.columnsSeg.value = String(this.viewState.columns);
+		this.cadenceSeg.value = this.viewState.cadence;
 		this.updateSpaces();
 		const hidden = this.host.hiddenCount();
 		this.hiddenText.textContent = hidden > 0
@@ -267,7 +314,7 @@ export class ParadisBrowserLiveSettingsPopover extends Disposable {
 		this.allSpacesButton = all;
 	}
 
-	/** 選択状態は見た目 (class) と読み上げ (aria-checked) の両方へ出す。 */
+	/** スペースの選択状態は見た目 (class) と読み上げ (aria-checked) の両方へ出す。 */
 	private mark(button: HTMLElement, checked: boolean): void {
 		button.classList.toggle('checked', checked);
 		button.setAttribute('aria-checked', String(checked));
@@ -289,24 +336,7 @@ export class ParadisBrowserLiveSettingsPopover extends Disposable {
 		return row;
 	}
 
-	/** セグメントの入れ物。ラジオグループとして読み上げさせる。 */
-	private segGroup(row: HTMLElement, label: string): HTMLElement {
-		const group = append(row, $('.paradis-browser-live-pop-seg'));
-		group.setAttribute('role', 'radiogroup');
-		group.setAttribute('aria-label', label);
-		return group;
-	}
-
 	private hintRow(text: string): void {
 		append(this.element, $('.paradis-browser-live-pop-note')).textContent = text;
-	}
-
-	/** セグメントの1つ。ラベルがそのまま見えているので、同じ文字列のホバーは張らない。 */
-	private segButton(parent: HTMLElement, label: string, run: () => void): HTMLElement {
-		const button = append(parent, $('button.paradis-focus-ring-inset'));
-		button.setAttribute('role', 'radio');
-		button.textContent = label;
-		this._register(addDisposableListener(button, EventType.CLICK, run));
-		return button;
 	}
 }
