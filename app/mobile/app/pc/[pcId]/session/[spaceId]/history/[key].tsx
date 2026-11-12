@@ -59,6 +59,8 @@ export default function AgentHistorySessionScreen() {
 	const [text, setText] = useState('');
 	const [sending, setSending] = useState(false);
 	const [notice, setNotice] = useState<string | undefined>(undefined);
+	// 読み直しの失敗の行の［再試行］で読んでいる間
+	const [reloading, setReloading] = useState(false);
 	const pcId = route.pcId;
 	const spaceId = route.spaceId;
 	const sourceId = route.space?.sourceId;
@@ -72,13 +74,15 @@ export default function AgentHistorySessionScreen() {
 			.then(reply => {
 				const parsed = parseAgentPastSessionPreview(reply);
 				if (parsed === undefined) {
-					setError('会話を読み込めませんでした');
+					// 理由の欄に入る文。見出し（読み込めませんでした／読み直せませんでした）と同じ意味を重ねない
+					setError('PC の応答を解釈できませんでした');
 					return;
 				}
 				setPreview(parsed);
 				setError(undefined);
 			})
-			.catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '会話を読み込めませんでした'));
+			.catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '会話を読み込めませんでした'))
+			.finally(() => setReloading(false));
 	}, [ready, pcId, spaceId, key]);
 	useEffect(load, [load]);
 
@@ -169,7 +173,15 @@ export default function AgentHistorySessionScreen() {
 					<View style={styles.fill}>{body}</View>
 					{supported ? (
 						<View style={[styles.composer, { paddingBottom: insets.bottom + space.sm }, column]}>
-							{error !== undefined && preview !== undefined ? <Text style={styles.reloadError}>最新の中身を読み直せませんでした（{error}）。表示は前に読んだときのままです</Text> : null}
+							{error !== undefined && preview !== undefined ? (
+								<View style={styles.reloadFailure}>
+									<Text style={styles.reloadError}>最新の中身を読み直せませんでした（{error}）。表示は前に読んだときのままです{ready ? '' : '。PC とつながると読み直します'}</Text>
+									<Button label="再試行" variant="secondary" size="sm" loading={reloading} disabled={!ready || reloading} onPress={() => {
+										setReloading(true);
+										load();
+									}} />
+								</View>
+							) : null}
 							{notice !== undefined ? <Text style={styles.notice}>{notice}</Text> : null}
 							{session?.terminalKey !== undefined ? (
 								<Button label="PC で開いている会話を開く" onPress={() => openTerminal(session.terminalKey!)} />
@@ -287,7 +299,13 @@ const styles = StyleSheet.create({
 		fontSize: type.caption,
 		color: colors.textMuted,
 	},
+	reloadFailure: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: space.sm,
+	},
 	reloadError: {
+		flex: 1,
 		fontSize: type.meta,
 		color: colors.red,
 	},

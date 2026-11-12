@@ -41,6 +41,8 @@ export default function AgentHistoryScreen() {
 	const [nextOffset, setNextOffset] = useState<number | undefined>(undefined);
 	const [error, setError] = useState<string | undefined>(undefined);
 	const [loadingMore, setLoadingMore] = useState(false);
+	// 失敗の行の［再試行］で読み直している間（先頭からの読み直しは loadingMore を立てないため、別に持つ）
+	const [retrying, setRetrying] = useState(false);
 	const [query, setQuery] = useState('');
 	const requestSeq = useRef(0);
 	const pcId = route.pcId;
@@ -52,8 +54,8 @@ export default function AgentHistoryScreen() {
 	const loaded = useRef<{ readonly query: string; readonly pcId: string; readonly spaceId: string; readonly at: number } | undefined>(undefined);
 	const sessionsRef = useRef(sessions);
 	sessionsRef.current = sessions;
-	// 最後に失敗した読み込みをもう一度行う（一覧がある間の「さらに読み込む」・読み直し・検索の失敗を、一覧の下から再試行する）
-	const retryRef = useRef<{ readonly offset: number; readonly search: string; readonly fillTo: number | undefined; readonly received: number } | undefined>(undefined);
+	// 最後に失敗した読み込み。先頭（offset 0: 検索・繋ぎ直しの読み直し）の失敗は一覧の上に、「さらに読み込む」の失敗は一覧の下に出して再試行する
+	const [retry, setRetry] = useState<{ readonly offset: number; readonly search: string; readonly fillTo: number | undefined; readonly received: number } | undefined>(undefined);
 
 	/** `fillTo` を渡すと、その件数に届くまで続きのページも読む（読み進めた分を取り直す）。 */
 	const load = useCallback((offset: number, search: string, fillTo?: number, received = 0) => {
@@ -83,13 +85,14 @@ export default function AgentHistoryScreen() {
 			})
 			.catch((reason: unknown) => {
 				if (seq === requestSeq.current) {
-					retryRef.current = { offset, search, fillTo, received };
+					setRetry({ offset, search, fillTo, received });
 					setError(reason instanceof Error ? reason.message : '一覧を読み込めませんでした');
 				}
 			})
 			.finally(() => {
 				if (seq === requestSeq.current) {
 					setLoadingMore(false);
+					setRetrying(false);
 				}
 			});
 	}, [ready, pcId, spaceId]);
@@ -115,6 +118,20 @@ export default function AgentHistoryScreen() {
 			? routes.session(pcId, spaceId, { tab: { kind: 'terminal', terminalKey: session.terminalKey } })
 			: routes.agentHistorySession(pcId, spaceId, session.key));
 	};
+
+	// 先頭からの読み込みの失敗は、利用者がいる一覧の上に出す（下に出すと、前の検索語の一覧に紛れて気付けない）
+	const failureAtTop = retry === undefined || retry.offset === 0;
+	const failureRow = error !== undefined ? (
+		<View style={[styles.failure, failureAtTop ? styles.failureTop : styles.failureBottom]}>
+			<Text style={styles.failureText}>{ready ? `読み込めませんでした: ${error}` : `読み込めませんでした: ${error}。PC とつながると再試行できます`}</Text>
+			<Button label="再試行" variant="secondary" size="sm" loading={retrying} disabled={!ready || loadingMore || retrying} onPress={() => {
+				if (retry !== undefined) {
+					setRetrying(true);
+					load(retry.offset, retry.search, retry.fillTo, retry.received);
+				}
+			}} />
+		</View>
+	) : null;
 
 	const body = (() => {
 		if (!supported && route.status === 'active') {
@@ -142,21 +159,13 @@ export default function AgentHistoryScreen() {
 						/>
 					</View>
 				)}
-				ListEmptyComponent={<EmptyState icon={History} title={query.length > 0 ? '見つかりませんでした' : '過去の会話はありません'} body={query.length > 0 ? '別の言葉で探してください。' : 'このスペースで Claude Code や Codex と話すと、ここに並びます。'} />}
+				ListHeaderComponent={failureAtTop ? failureRow : null}
+				// 読み込めなかったときは「見つかりませんでした」「ありません」と言わない（失敗は一覧の上に出ている）
+				ListEmptyComponent={error !== undefined ? null : <EmptyState icon={History} title={query.length > 0 ? '見つかりませんでした' : '過去の会話はありません'} body={query.length > 0 ? '別の言葉で探してください。' : 'このスペースで Claude Code や Codex と話すと、ここに並びます。'} />}
 				ListFooterComponent={
 					<>
-						{/* 一覧がある間の失敗（さらに読み込む・繋ぎ直しの読み直し・検索）は、一覧を残したままここに出す */}
-						{error !== undefined ? (
-							<View style={styles.failure}>
-								<Text style={styles.failureText}>読み込めませんでした: {error}</Text>
-								<Button label="再試行" variant="secondary" size="sm" disabled={loadingMore} onPress={() => {
-									const retry = retryRef.current;
-									if (retry !== undefined) {
-										load(retry.offset, retry.search, retry.fillTo, retry.received);
-									}
-								}} />
-							</View>
-						) : null}
+						{/* 「さらに読み込む」（続きのページ）の失敗は、読み進めた一覧の下に出す */}
+						{failureAtTop ? null : failureRow}
 						{nextOffset !== undefined ? (
 							<Button label="さらに読み込む" variant="secondary" loading={loadingMore} onPress={() => load(nextOffset, query)} style={styles.more} />
 						) : null}
@@ -217,6 +226,11 @@ const styles = StyleSheet.create({
 		flexDirection: 'row',
 		alignItems: 'center',
 		gap: space.sm,
+	},
+	failureTop: {
+		marginBottom: space.sm,
+	},
+	failureBottom: {
 		marginTop: space.lg,
 	},
 	failureText: {
