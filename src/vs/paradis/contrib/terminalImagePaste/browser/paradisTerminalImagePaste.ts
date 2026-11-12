@@ -147,7 +147,8 @@ async function writeImageToRemote(image: Uint8Array, target: IParadisTerminalIma
 	}
 	// 過去に置いたものの掃除はユーザーから見える効果が無いので、待たずに投げっぱなしにする。
 	void cleanupOldImages(directory, target.fileService, file);
-	return file.path;
+	// 接続先が Windows なら、そのシェルが読める C:\... の形で貼る
+	return WINDOWS_DRIVE_URI_PATH.test(file.path) ? file.path.slice(1).replace(/\//g, '\\') : file.path;
 }
 
 /**
@@ -182,8 +183,16 @@ async function resolveRemoteCwd(target: IParadisTerminalImagePasteTarget): Promi
 		});
 		return undefined;
 	}
-	return URI.from({ scheme: Schemas.vscodeRemote, authority: target.remoteAuthority, path: cwd });
+	// 接続先が Windows だと cwd は C:\... の形で届く。authority 付きの URI の path は / で始める必要がある
+	// （paradisResolveSharedPanelCwd と同じ直し方）
+	const path = WINDOWS_DRIVE_PATH.test(cwd) ? `/${cwd.replace(/\\/g, '/')}` : cwd;
+	return URI.from({ scheme: Schemas.vscodeRemote, authority: target.remoteAuthority, path });
 }
+
+/** Windows のドライブ文字から始まるパス（C:\... / C:/...）。 */
+const WINDOWS_DRIVE_PATH = /^[a-zA-Z]:[\\/]/;
+/** {@link WINDOWS_DRIVE_PATH} を URI の path にした形（/C:/...）。 */
+const WINDOWS_DRIVE_URI_PATH = /^\/[a-zA-Z]:\//;
 
 async function cleanupOldImages(directory: URI, fileService: IFileService, keep: URI): Promise<void> {
 	try {

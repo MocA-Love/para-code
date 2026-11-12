@@ -7,10 +7,12 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { ExtensionIdentifier } from '../../../../platform/extensions/common/extensions.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IViewDescriptorService, IViewsRegistry, ViewContainer, ViewContainerLocation, Extensions as ViewExtensions } from '../../../../workbench/common/views.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
+import { IExtensionService } from '../../../../workbench/services/extensions/common/extensions.js';
 import { IPaneCompositePartService } from '../../../../workbench/services/panecomposite/browser/panecomposite.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
@@ -27,6 +29,8 @@ interface IParadisContainerPlacement {
 	 * 非表示系はビュー ID で照合するので接頭辞は付かない。
 	 */
 	readonly containerId: string;
+	/** コンテナやビューを登録する拡張機能。入れていない人では登録されないので、未適用の報告から外す。 */
+	readonly extensionId: string;
 	readonly placement: ParadisViewPlacement;
 	/** 'hidden' 指定時に非表示にするビューID。独自コンテナは全ビュー、標準コンテナ（scm/explorer）は差し込みビューだけを列挙する。 */
 	readonly viewIds?: readonly string[];
@@ -40,19 +44,34 @@ const DEFAULT_PLACEMENTS: readonly IParadisContainerPlacement[] = [
 	// GitLens は既定で入れなくなった（2026-11-01）ので、後から自分で入れた人のビューを隠さないよう指定を外した。
 	// 既に隠したビューは台帳に残り、そのまま隠れている。
 	// GitHub PR / Actions: 右へ
-	{ containerId: 'github-pull-requests', placement: 'right' },
-	{ containerId: 'github-pull-request', placement: 'right' },
-	{ containerId: 'github-actions', placement: 'right' },
+	{ containerId: 'github-pull-requests', extensionId: 'GitHub.vscode-pull-request-github', placement: 'right' },
+	{ containerId: 'github-pull-request', extensionId: 'GitHub.vscode-pull-request-github', placement: 'right' },
+	{ containerId: 'github-actions', extensionId: 'github.vscode-github-actions', placement: 'right' },
 	// Claude Code: チャット本体は右のまま、左のフォールバック版とセッション一覧は非表示
-	{ containerId: 'claude-sidebar', placement: 'hidden', viewIds: ['claudeVSCodeSidebar'] },
-	{ containerId: 'claude-sessions-sidebar', placement: 'hidden', viewIds: ['claudeVSCodeSessionsList'] },
-	{ containerId: 'claude-sidebar-secondary', placement: 'right' },
+	{ containerId: 'claude-sidebar', extensionId: 'Anthropic.claude-code', placement: 'hidden', viewIds: ['claudeVSCodeSidebar'] },
+	{ containerId: 'claude-sessions-sidebar', extensionId: 'Anthropic.claude-code', placement: 'hidden', viewIds: ['claudeVSCodeSessionsList'] },
+	{ containerId: 'claude-sidebar-secondary', extensionId: 'Anthropic.claude-code', placement: 'right' },
 	// Codex(ChatGPT): 同上
-	{ containerId: 'codexViewContainer', placement: 'hidden', viewIds: ['chatgpt.sidebarView'] },
-	{ containerId: 'codexSecondaryViewContainer', placement: 'right' },
+	{ containerId: 'codexViewContainer', extensionId: 'openai.chatgpt', placement: 'hidden', viewIds: ['chatgpt.sidebarView'] },
+	{ containerId: 'codexSecondaryViewContainer', extensionId: 'openai.chatgpt', placement: 'right' },
 	// Houston: エクスプローラー内の挨拶ビューを非表示
-	{ containerId: 'workbench.view.explorer', placement: 'hidden', viewIds: ['houston.hello'] }
+	{ containerId: 'workbench.view.explorer', extensionId: 'astro-build.houston', placement: 'hidden', viewIds: ['houston.hello'] }
 ];
+
+/**
+ * 未適用のコンテナ・ビューのうち、持ち主の拡張機能が入っているのに登録されなかったものの数。
+ * 入れていない（または無効にした）拡張機能の分は、登録されないのが正しいので数えない。
+ */
+export function paradisCountPendingOfInstalledExtensions(pendingIds: Iterable<string>, ownerOf: ReadonlyMap<string, string>, installed: readonly ExtensionIdentifier[]): number {
+	let count = 0;
+	for (const id of pendingIds) {
+		const owner = ownerOf.get(id);
+		if (owner === undefined || installed.some(extension => ExtensionIdentifier.equals(extension, owner))) {
+			count++;
+		}
+	}
+	return count;
+}
 
 /** 拡張由来のコンテナが `IViewDescriptorService` に登録される際の ID。 */
 function registeredContainerId(placement: IParadisContainerPlacement): string {
@@ -89,12 +108,15 @@ class ParadisViewLayoutContribution extends Disposable implements IWorkbenchCont
 	private readonly pendingMoves = new Map<string, ViewContainerLocation>();
 	/** 未処理の非表示ビューID */
 	private readonly pendingHides = new Set<string>();
+	/** 登録 ID・ビュー ID -> 持ち主の拡張機能 ID */
+	private readonly owners = new Map<string, string>();
 
 	constructor(
 		@IViewDescriptorService private readonly viewDescriptorService: IViewDescriptorService,
 		@IStorageService private readonly storageService: IStorageService,
 		@IPaneCompositePartService private readonly paneCompositePartService: IPaneCompositePartService,
 		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
+		@IExtensionService private readonly extensionService: IExtensionService,
 	) {
 		super();
 
@@ -106,12 +128,16 @@ class ParadisViewLayoutContribution extends Disposable implements IWorkbenchCont
 		for (const p of DEFAULT_PLACEMENTS) {
 			if (p.placement === 'hidden') {
 				for (const viewId of p.viewIds ?? []) {
+					this.owners.set(viewId, p.extensionId);
 					if (!this.appliedViews.has(viewId)) {
 						this.pendingHides.add(viewId);
 					}
 				}
-			} else if (!this.appliedContainers.has(registeredContainerId(p))) {
-				this.pendingMoves.set(registeredContainerId(p), p.placement === 'left' ? ViewContainerLocation.Sidebar : ViewContainerLocation.AuxiliaryBar);
+			} else {
+				this.owners.set(registeredContainerId(p), p.extensionId);
+				if (!this.appliedContainers.has(registeredContainerId(p))) {
+					this.pendingMoves.set(registeredContainerId(p), p.placement === 'left' ? ViewContainerLocation.Sidebar : ViewContainerLocation.AuxiliaryBar);
+				}
 			}
 		}
 
@@ -182,10 +208,13 @@ class ParadisViewLayoutContribution extends Disposable implements IWorkbenchCont
 		}));
 
 		const timer = setTimeout(() => {
-			if (this.pendingMoves.size > 0 || this.pendingHides.size > 0) {
+			const installed = this.extensionService.extensions.map(extension => extension.identifier);
+			const pendingMoves = paradisCountPendingOfInstalledExtensions(this.pendingMoves.keys(), this.owners, installed);
+			const pendingHides = paradisCountPendingOfInstalledExtensions(this.pendingHides, this.owners, installed);
+			if (pendingMoves > 0 || pendingHides > 0) {
 				reportParadisDiagnosticError('owned', 'view-layout', 'placement-incomplete', new Error('view layout watch expired with pending placements'), {
-					safe_pending_moves: this.pendingMoves.size,
-					safe_pending_hides: this.pendingHides.size,
+					safe_pending_moves: pendingMoves,
+					safe_pending_hides: pendingHides,
 				}, 'warning');
 			}
 			watchStore.dispose();

@@ -153,8 +153,10 @@ class ParadisClosedTerminalService extends Disposable implements IParadisClosedT
 			if (plan.reopenEditors) {
 				await this._reopenClosedEditor();
 			}
+			// 消えたグループを作り直したら、同じまとまりの残りも同じグループへ戻す
+			const recreatedGroups = new Map<number, IEditorGroup>();
 			for (const terminal of plan.terminals) {
-				await this._reopenTerminal(terminal);
+				await this._reopenTerminal(terminal, recreatedGroups);
 			}
 			return;
 		}
@@ -168,8 +170,8 @@ class ParadisClosedTerminalService extends Disposable implements IParadisClosedT
 		await this._commandService.executeCommand(ReopenClosedEditorAction.ID);
 	}
 
-	private async _reopenTerminal(closed: IParadisClosedTerminal): Promise<void> {
-		const group = this._resolveGroup(closed);
+	private async _reopenTerminal(closed: IParadisClosedTerminal, recreatedGroups: Map<number, IEditorGroup>): Promise<void> {
+		const group = this._resolveGroup(closed, recreatedGroups);
 		try {
 			const instance = await this._terminalService.createTerminal({
 				location: { viewColumn: group.id },
@@ -188,14 +190,20 @@ class ParadisClosedTerminalService extends Disposable implements IParadisClosedT
 		}
 	}
 
-	private _resolveGroup(closed: IParadisClosedTerminal): IEditorGroup {
+	private _resolveGroup(closed: IParadisClosedTerminal, recreatedGroups: Map<number, IEditorGroup>): IEditorGroup {
 		const original = this._editorGroupsService.getGroup(closed.groupId);
 		if (original) {
 			return original;
 		}
+		const recreated = recreatedGroups.get(closed.groupId);
+		if (recreated && this._editorGroupsService.getGroup(recreated.id)) {
+			return recreated;
+		}
 		const neighbor = closed.neighbor && this._editorGroupsService.getGroup(closed.neighbor.groupId);
 		if (neighbor && closed.neighbor) {
-			return this._editorGroupsService.getPart(neighbor).addGroup(neighbor, closed.neighbor.direction);
+			const group = this._editorGroupsService.getPart(neighbor).addGroup(neighbor, closed.neighbor.direction);
+			recreatedGroups.set(closed.groupId, group);
+			return group;
 		}
 		return this._editorGroupsService.activeGroup;
 	}
