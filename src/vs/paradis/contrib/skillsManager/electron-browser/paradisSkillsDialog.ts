@@ -48,10 +48,16 @@ import {
 import { paradisResolveSkillRoots } from './paradisSkillRoots.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
-import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
+import { paradisModalClasses, ParadisModalSize, renderParadisModalHead } from '../../../browser/paradisModal.js';
+import { ParadisButton, ParadisButtonKind } from '../../../browser/paradisButton.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 const $ = dom.$;
+
+/** 削除できない理由の要素に振る id の連番（描き直しても同じ id が 2 つ並ばないように）。 */
+let deleteReasonSequence = 0;
 
 export class ParadisSkillsDialog extends Disposable {
 
@@ -80,6 +86,7 @@ export class ParadisSkillsDialog extends Disposable {
 		@ILogService private readonly logService: ILogService,
 		@IContextViewService private readonly contextViewService: IContextViewService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super();
 		this.backdrop = $('.paradis-skills-backdrop.paradis-modal-backdrop');
@@ -88,20 +95,18 @@ export class ParadisSkillsDialog extends Disposable {
 		this.modal.setAttribute('role', 'dialog');
 		this.modal.setAttribute('aria-modal', 'true');
 
-		const header = dom.append(this.modal, $('.psk-header'));
-		const title = dom.append(header, $('h2'));
-		title.id = 'paradis-skills-title';
-		title.textContent = localize('paradis.skills.title', "スキル");
-		this.modal.setAttribute('aria-labelledby', title.id);
-		dom.append(header, $('span.psk-header-note')).textContent = localize('paradis.skills.headerNote', "Claude Code・Codex・共通の .agents のスキル");
-		dom.append(header, $('.psk-spacer'));
-		const refresh = this.button(header, localize('paradis.skills.refresh', "読み直す"), 'secondary', Codicon.refresh);
-		this._register(dom.addDisposableListener(refresh, 'click', () => this.load()));
-		const close = dom.append(header, $('button.psk-close')) as HTMLButtonElement;
-		close.type = 'button';
-		close.setAttribute('aria-label', localize('paradis.skills.close', "閉じる"));
-		close.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.close)}`));
-		this._register(dom.addDisposableListener(close, 'click', () => this.dispose()));
+		// 見出しは UI キットの帯（高さ 52）。題の横の補足は題と閉じるの間で縮む
+		const header = renderParadisModalHead(this.modal, localize('paradis.skills.title', "スキル"));
+		header.title.id = 'paradis-skills-title';
+		this.modal.setAttribute('aria-labelledby', header.title.id);
+		const note = $('span.psk-header-note');
+		note.textContent = localize('paradis.skills.headerNote', "Claude Code・Codex・共通の .agents のスキル");
+		header.element.insertBefore(note, header.actions);
+		const refresh = this._register(this.button(header.actions, localize('paradis.skills.refresh', "読み直す"), 'secondary', Codicon.refresh));
+		this._register(refresh.onDidClick(() => this.load()));
+		const closeLabel = localize('paradis.skills.close', "閉じる");
+		const close = this._register(new ParadisButton(header.actions, { kind: 'icon', icon: Codicon.close, ariaLabel: closeLabel, title: closeLabel }));
+		this._register(close.onDidClick(() => this.dispose()));
 
 		const body = dom.append(this.modal, $('.psk-body'));
 		this.nav = dom.append(body, $('nav.psk-nav'));
@@ -204,7 +209,7 @@ export class ParadisSkillsDialog extends Disposable {
 			item.classList.toggle('empty', !listing.exists || listing.skills.length === 0);
 			dom.append(item, $('span.psk-nav-label')).textContent = paradisSkillRootLabel(listing.root);
 			dom.append(item, $('span.psk-nav-count')).textContent = listing.aliasOf !== undefined ? '=' : listing.exists ? String(listing.skills.length) : '—';
-			item.title = listing.root.uri.scheme === 'file' ? listing.root.uri.fsPath : listing.root.uri.path;
+			this.navDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), item, this.displayPath(listing.root)));
 			this.navDisposables.add(dom.addDisposableListener(item, 'click', () => {
 				this.selectedRootId = listing.root.id;
 				this.selectedSkill = undefined;
@@ -290,7 +295,7 @@ export class ParadisSkillsDialog extends Disposable {
 	}
 
 	private renderSkill(skill: IParadisSkill): void {
-		const back = this.button(this.content, localize('paradis.skills.back', "一覧へ戻る"), 'link', Codicon.arrowLeft);
+		const back = this.linkButton(this.content, localize('paradis.skills.back', "一覧へ戻る"), Codicon.arrowLeft);
 		this.contentDisposables.add(dom.addDisposableListener(back, 'click', () => {
 			this.selectedSkill = undefined;
 			this.renderContent();
@@ -317,8 +322,8 @@ export class ParadisSkillsDialog extends Disposable {
 			const select = this.contentDisposables.add(new ParadisSelect(actions, this.contextViewService, this.configurationService,
 				targets.map(root => ({ value: root.id, label: `${root.host.label} · ${paradisSkillRootLabel(root)}` })), undefined,
 				{ ariaLabel: installTo, className: 'psk-select' }));
-			const install = this.button(actions, localize('paradis.skills.install', "導入…"), 'primary', Codicon.cloudDownload);
-			this.contentDisposables.add(dom.addDisposableListener(install, 'click', () => {
+			const install = this.contentDisposables.add(this.button(actions, localize('paradis.skills.install', "導入…"), 'primary', Codicon.cloudDownload));
+			this.contentDisposables.add(install.onDidClick(() => {
 				const target = targets.find(root => root.id === select.value);
 				if (target) {
 					this.install(skill, target);
@@ -327,12 +332,20 @@ export class ParadisSkillsDialog extends Disposable {
 		}
 		dom.append(actions, $('.psk-spacer'));
 		const blocker = paradisSkillDeleteBlocker(skill);
-		const remove = this.button(actions, localize('paradis.skills.delete', "削除…"), 'danger', Codicon.trash);
+		let reasonId: string | undefined;
 		if (blocker) {
-			remove.disabled = true;
-			remove.title = blocker;
+			// 押せない理由はボタンの左に文字で出す。ボタンは Tab で届き、読み上げは理由まで読む
+			const reason = dom.append(actions, $('span.psk-reason'));
+			reasonId = `paradis-skills-delete-reason-${++deleteReasonSequence}`;
+			reason.id = reasonId;
+			dom.append(reason, $(`span${ThemeIcon.asCSSSelector(Codicon.info)}`));
+			dom.append(reason, $('span')).textContent = blocker;
 		}
-		this.contentDisposables.add(dom.addDisposableListener(remove, 'click', () => this.delete(skill)));
+		const remove = this.contentDisposables.add(this.button(actions, localize('paradis.skills.delete', "削除…"), 'danger', Codicon.trash, !!blocker));
+		if (reasonId) {
+			remove.element.setAttribute('aria-describedby', reasonId);
+		}
+		this.contentDisposables.add(remove.onDidClick(() => this.delete(skill)));
 
 		// 中身
 		const pre = dom.append(this.content, $('pre.psk-file'));
@@ -430,12 +443,16 @@ export class ParadisSkillsDialog extends Disposable {
 
 	// ---------- 部品 ----------
 
-	private button(container: HTMLElement, label: string, kind: 'primary' | 'secondary' | 'danger' | 'link', icon?: ThemeIcon): HTMLButtonElement {
-		const button = dom.append(container, $(`button.psk-button.paradis-focus-ring.${kind}`)) as HTMLButtonElement;
+	/** UI キットのボタン。`disabled` のときも Tab で届き、押しても何もしない（本家の Button が止める）。 */
+	private button(container: HTMLElement, label: string, kind: ParadisButtonKind, icon: ThemeIcon, disabled?: boolean): ParadisButton {
+		return new ParadisButton(container, { kind, label, icon, disabled });
+	}
+
+	/** 「一覧へ戻る」の文字のリンク。 */
+	private linkButton(container: HTMLElement, label: string, icon: ThemeIcon): HTMLButtonElement {
+		const button = dom.append(container, $('button.psk-button.paradis-focus-ring.link')) as HTMLButtonElement;
 		button.type = 'button';
-		if (icon) {
-			button.appendChild($(`span${ThemeIcon.asCSSSelector(icon)}`));
-		}
+		button.appendChild($(`span${ThemeIcon.asCSSSelector(icon)}`));
 		dom.append(button, $('span')).textContent = label;
 		return button;
 	}

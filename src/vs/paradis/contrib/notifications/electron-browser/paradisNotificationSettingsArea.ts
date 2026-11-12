@@ -20,6 +20,8 @@ import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hover
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
+import { hasKey } from '../../../../base/common/types.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
@@ -29,7 +31,7 @@ import { IInstantiationService } from '../../../../platform/instantiation/common
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
-import { CUSTOM_RINGTONE_ID, DEFAULT_RINGTONE_ID, IParadisCustomRingtoneInfo, IParadisRingtoneData, PARADIS_AIVIS_DEFAULT_FORMAT, PARADIS_AIVIS_DEFAULT_FORMAT_PERMISSION, PARADIS_NOTIFICATIONS_CHANNEL, PARADIS_RINGTONES, getRingtoneById } from '../common/paradisNotifications.js';
+import { CUSTOM_RINGTONE_ID, DEFAULT_RINGTONE_ID, IParadisCustomRingtoneInfo, IParadisRingtoneData, ParadisCustomRingtoneSource, PARADIS_AIVIS_DEFAULT_FORMAT, PARADIS_AIVIS_DEFAULT_FORMAT_PERMISSION, PARADIS_NOTIFICATIONS_CHANNEL, PARADIS_RINGTONES, getRingtoneById } from '../common/paradisNotifications.js';
 import { PARADIS_ELEVENLABS_DEFAULT_MODEL_ID, PARADIS_ELEVENLABS_SPEED_DEFAULT } from '../common/paradisElevenLabs.js';
 import { IParadisDoNotDisturbRefreshState, paradisCreateDoNotDisturbRefreshController, ParadisDoNotDisturbRefreshController } from '../common/paradisDoNotDisturb.js';
 import { clearAivisApiCaches } from './paradisAivisApiCache.js';
@@ -151,6 +153,14 @@ const STR_STOP_PREVIEW_ARIA = localize('paradis.notif.stopPreviewAria', "試聴�
 // allow-any-unicode-next-line
 const STR_CUSTOM_RINGTONE_NAV_NAME = localize('paradis.notif.customRingtoneNavName', "カスタム");
 // allow-any-unicode-next-line
+const STR_CUSTOM_FROM_FILE = localize('paradis.notif.customFromFile', "ファイルから追加");
+// allow-any-unicode-next-line
+const STR_CUSTOM_FROM_YOUTUBE = localize('paradis.notif.customFromYouTube', "YouTube から取り込み");
+// allow-any-unicode-next-line
+const STR_CUSTOM_FROM_MYINSTANTS = localize('paradis.notif.customFromMyinstants', "Myinstants から取り込み");
+// allow-any-unicode-next-line
+const STR_DND_VEIL = localize('paradis.notif.dndVeil', "おやすみモード中 — 通知はすべて止まっています");
+// allow-any-unicode-next-line
 const STR_SEARCH_NO_RESULTS = localize('paradis.notif.searchNoResults', "一致する設定はありません。");
 
 // おやすみモード中に封印（半透明オーバーレイ）されるセクション。
@@ -237,6 +247,8 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 	private _desktopSectionEl!: HTMLElement;
 	private _soundSectionEl!: HTMLElement;
 	private _aivisSectionEl!: HTMLElement;
+	/** おやすみモードで封印する節の本文と覆い。本文は描き直しで作り直さないので、付けた inert が描き直しの後も残る。 */
+	private readonly _sealedSections = new Map<string, { readonly body: HTMLElement; readonly veil: HTMLElement }>();
 	private _aivisSection: ParadisAivisVoiceSection | undefined;
 	/** 音声報告の節の末尾の、設定から移した行の入れ物。 */
 	private _voiceMovedRowsEl!: HTMLElement;
@@ -263,6 +275,8 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 	private _playingDurationSeconds = 5;
 	private _playingStartedAt: number | undefined;
 	private _playingAutoStopTimer: ReturnType<typeof setTimeout> | undefined;
+	/** 矢印キーで選んだ着信音。選ぶと節が描き直されるので、描き直した一覧でこの行へフォーカスを戻す。 */
+	private _pendingRingtoneFocusId: string | undefined;
 	/** 進捗バーの更新タイマー。dom.disposableWindowInterval が後始末を持つ。 */
 	private readonly _playingProgressTimer = this._register(new MutableDisposable());
 
@@ -441,6 +455,23 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 		return section;
 	}
 
+	/**
+	 * おやすみモードで封印する節。中身は返した本文の要素に置く。覆いは本文の外（節の直下）に置き、本文だけを inert にする
+	 * （覆いの文言は読み上げられ、本文の欄には Tab でもポインタでも届かない）。
+	 */
+	private _createSealableSection(id: string, keywords: string): HTMLElement {
+		const section = this._createSection(id, keywords);
+		const body = dom.append(section, $('.pns-section-body'));
+		const veil = dom.append(section, $('.pns-veil'));
+		// 知らせ（live region）は最初の節の覆いだけにする。3 節すべてに付けると、おやすみモードに入るたびに同じ文言が 3 回読まれる。
+		// 残りの覆いの文言は、仮想カーソルで節を読んだときに読めるよう、隠さずに置く。中身が変わったときに読まれるよう、空のうちから置いておく
+		if (this._sealedSections.size === 0) {
+			veil.setAttribute('role', 'status');
+		}
+		this._sealedSections.set(id, { body, veil });
+		return body;
+	}
+
 	private _render(): void {
 		const dndSection = this._createSection(
 			'pns-sec-dnd',
@@ -449,19 +480,19 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 		);
 		this._register(this.instantiationService.createInstance(ParadisDoNotDisturbSection, dndSection));
 
-		this._desktopSectionEl = this._createSection(
+		this._desktopSectionEl = this._createSealableSection(
 			'pns-sec-desktop',
 			// allow-any-unicode-next-line
 			'デスクトップ通知 os notification 通知するイベント 対応待ち 作業完了 フォーカス',
 		);
 
-		this._soundSectionEl = this._createSection(
+		this._soundSectionEl = this._createSealableSection(
 			'pns-sec-sound',
 			// allow-any-unicode-next-line
 			'通知サウンド 着信音 ringtone 音量 volume カスタム youtube',
 		);
 
-		this._aivisSectionEl = this._createSection(
+		this._aivisSectionEl = this._createSealableSection(
 			'pns-sec-aivis',
 			// allow-any-unicode-next-line
 			'aivis elevenlabs 音声 読み上げ エンジン voice api key model uuid voice_id モデル 辞書 テスト再生 プリセット 声 調整 安定度 stability similarity',
@@ -518,7 +549,12 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 	private _refreshDndSurfaces(): IParadisDoNotDisturbRefreshState {
 		const state = this.settingsService.getDoNotDisturb();
 		for (const id of DND_SEAL_SECTION_IDS) {
-			this._sectionEls.find(section => section.id === id)?.el.classList.toggle('disabled-veil', state.enabled);
+			const sealed = this._sealedSections.get(id);
+			if (sealed) {
+				sealed.body.inert = state.enabled;
+				sealed.veil.classList.toggle('visible', state.enabled);
+				sealed.veil.textContent = state.enabled ? STR_DND_VEIL : '';
+			}
 		}
 		if (state.enabled) {
 			// 封印中のセクションはオーバーレイに覆われて操作できない。試聴を鳴らしたまま封印すると
@@ -840,6 +876,10 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 
 		// --- 着信音カード（2列グリッド） ---
 		const grid = dom.append(container, $('.pns-ringtone-grid'));
+		grid.setAttribute('role', 'radiogroup');
+		grid.setAttribute('aria-label', STR_RINGTONE_TITLE);
+		const cards: { readonly id: string; readonly card: HTMLElement }[] = [];
+		this._renderDisposables.add(dom.addDisposableListener(grid, dom.EventType.KEY_DOWN, e => this._onRingtoneKeyDown(e, cards)));
 
 		void this._fetchCustomRingtone().then(custom => {
 			// 後続の再描画に追い抜かれていたら、この結果は既に画面から外れたグリッド宛て。
@@ -853,8 +893,16 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 			importHover?.update(importBtn.textContent);
 			const ringtones: (IParadisRingtoneData | IParadisCustomRingtoneInfo)[] = custom ? [...PARADIS_RINGTONES, custom] : [...PARADIS_RINGTONES];
 			for (const ringtone of ringtones) {
-				this._renderRingtoneCard(grid, ringtone, ringtone.id === selectedId, volume);
+				cards.push({ id: ringtone.id, card: this._renderRingtoneCard(grid, ringtone, ringtone.id === selectedId, volume) });
 			}
+			// 一覧に入る Tab は選んでいる行の 1 つだけ（選んでいる行が無ければ先頭）。行の間は矢印で移る
+			const tabStop = cards.find(entry => entry.id === selectedId) ?? cards[0];
+			if (tabStop) {
+				tabStop.card.tabIndex = 0;
+			}
+			const pendingFocus = this._pendingRingtoneFocusId;
+			this._pendingRingtoneFocusId = undefined;
+			cards.find(entry => entry.id === pendingFocus)?.card.focus({ preventScroll: true });
 			// 着信音リストが揃って本文高さが確定した後にスクロール位置を復元する。
 			onListPopulated();
 		});
@@ -869,18 +917,74 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 		}
 	}
 
-	private _renderRingtoneCard(grid: HTMLElement, ringtone: IParadisRingtoneData | IParadisCustomRingtoneInfo, selected: boolean, volume: number): void {
-		const card = dom.append(grid, $('.pns-ringtone-card'));
+	/** 着信音の一覧の矢印キー（上下・左右で前後の行を選ぶ、Home・End で端）と、Space・Enter での選択。 */
+	private _onRingtoneKeyDown(e: KeyboardEvent, cards: readonly { readonly id: string; readonly card: HTMLElement }[]): void {
+		// 行の中の試聴のボタンで押したキーは、行の選択に使わない
+		const index = cards.findIndex(entry => entry.card === e.target);
+		if (index < 0) {
+			return;
+		}
+		let next: number;
+		switch (e.key) {
+			case 'ArrowDown':
+			case 'ArrowRight':
+				next = (index + 1) % cards.length;
+				break;
+			case 'ArrowUp':
+			case 'ArrowLeft':
+				next = (index - 1 + cards.length) % cards.length;
+				break;
+			case 'Home':
+				next = 0;
+				break;
+			case 'End':
+				next = cards.length - 1;
+				break;
+			case ' ':
+			case 'Enter':
+				next = index;
+				break;
+			default:
+				return;
+		}
+		e.preventDefault();
+		e.stopPropagation();
+		const id = cards[next].id;
+		if (id === this.settingsService.getSelectedRingtoneId()) {
+			cards[next].card.focus();
+			return;
+		}
+		this._pendingRingtoneFocusId = id;
+		this.settingsService.setSelectedRingtoneId(id);
+	}
+
+	private _ringtoneDescription(ringtone: IParadisRingtoneData | IParadisCustomRingtoneInfo): string {
+		if (!hasKey(ringtone, { source: true })) {
+			return ringtone.description;
+		}
+		const labels: Record<ParadisCustomRingtoneSource, string> = {
+			file: STR_CUSTOM_FROM_FILE,
+			youtube: STR_CUSTOM_FROM_YOUTUBE,
+			myinstants: STR_CUSTOM_FROM_MYINSTANTS,
+		};
+		return labels[ringtone.source] ?? STR_CUSTOM_FROM_FILE;
+	}
+
+	private _renderRingtoneCard(grid: HTMLElement, ringtone: IParadisRingtoneData | IParadisCustomRingtoneInfo, selected: boolean, volume: number): HTMLElement {
+		const card = dom.append(grid, $('.pns-ringtone-card.paradis-focus-ring-inset'));
 		if (selected) {
 			card.classList.add('selected');
 		}
+		// キーボードで選べる単一選択の行。Tab が止まる行は一覧を描き終えた後に 1 つだけ決める
+		card.setAttribute('role', 'radio');
+		card.setAttribute('aria-checked', String(selected));
+		card.setAttribute('aria-label', ringtone.name);
+		card.tabIndex = -1;
 
 		const check = dom.append(card, $('.pns-ringtone-check'));
 		if (selected) {
 			check.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.check)}`));
 		}
-
-		dom.append(card, $('.pns-ringtone-emoji')).textContent = ringtone.emoji;
 
 		const info = dom.append(card, $('.pns-ringtone-info'));
 		const nameRow = dom.append(info, $('.pns-ringtone-name'));
@@ -889,7 +993,10 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 		if (ringtone.duration) {
 			dom.append(nameRow, $('span.pns-ringtone-duration')).textContent = `${ringtone.duration}s`;
 		}
-		dom.append(info, $('.pns-ringtone-desc')).textContent = ringtone.description;
+		const desc = dom.append(info, $('.pns-ringtone-desc'));
+		desc.textContent = this._ringtoneDescription(ringtone);
+		desc.id = `pns-ringtone-desc-${generateUuid()}`;
+		card.setAttribute('aria-describedby', desc.id);
 		const progressFill = $('i.pns-rt-progress-fill');
 		dom.append(info, $('div.pns-rt-progress')).appendChild(progressFill);
 		this._ringtoneProgressFills.set(card, progressFill);
@@ -918,6 +1025,7 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 			card.classList.add('playing');
 			this._startProgressBar();
 		}
+		return card;
 	}
 
 	private _setPlayButtonPlaying(playBtn: HTMLButtonElement, playing: boolean): void {

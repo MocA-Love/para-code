@@ -11,6 +11,7 @@ import { mainWindow } from '../../../../../base/browser/window.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ParadisPaletteKind } from '../../common/paradisCrossJump.js';
 import { ParadisPaletteKindsBar } from '../../browser/paradisPaletteKinds.js';
+import { NullHoverService } from '../../../../../platform/hover/test/browser/nullHoverService.js';
 
 suite('paradisPaletteKinds', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -30,7 +31,7 @@ suite('paradisPaletteKinds', () => {
 		const host = widget();
 		const selected: ParadisPaletteKind[] = [];
 		let help = 0;
-		const bar = store.add(new ParadisPaletteKindsBar(host, { onSelect: kind => selected.push(kind), onHelp: () => help++ }));
+		const bar = store.add(new ParadisPaletteKindsBar(host, { onSelect: kind => selected.push(kind), onHelp: () => help++ }, NullHoverService));
 		bar.update({ selected: 'agent', counts: { all: 26, agent: 5, editor: 6, space: 15 }, attention: 1 });
 		const buttons = [...bar.element.querySelectorAll<HTMLButtonElement>('.paradis-seg > button')];
 		buttons[4].click();

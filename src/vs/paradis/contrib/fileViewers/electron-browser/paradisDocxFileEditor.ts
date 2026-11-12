@@ -66,7 +66,7 @@ import type { ParadisOfficeDiagnosticEngine } from '../common/paradisOfficeDiagn
 import { PARADIS_DOCX_MEDIA_ROOT, sanitizeParadisDocxBytesForRenderer } from './word/paradisDocxSanitize.js';
 import { escape } from '../../../../base/common/strings.js';
 import { localize } from '../../../../nls.js';
-import { PARADIS_WORD_CHANGE_CATEGORIES, ParadisWordChangeInspector, paradisWordStoryLabel, paradisWordExclusionItems, restoreParadisWordViewState, wordChangeText, type ParadisWordNavigationTarget, type ParadisWordViewState } from './word/paradisWordChangeInspector.js';
+import { PARADIS_WORD_CHANGE_CATEGORIES, ParadisWordChangeInspector, paradisWordMarkItem, paradisWordStoryLabel, paradisWordExclusionItems, resolveParadisWordNavigation, restoreParadisWordViewState, wordChangeText, type ParadisWordMarkItem, type ParadisWordNavigationTarget, type ParadisWordViewState } from './word/paradisWordChangeInspector.js';
 import { EMPTY_PARADIS_WORD_PACKAGE_EXCLUSIONS, paradisWordPackageExclusions, renderWordSemanticRibbon, summarizeParadisWordBlockedParts, wordSemanticFailureMessage, type ParadisWordPackageExclusions, type ParadisWordSemanticRibbonState } from './word/paradisWordDiagnostics.js';
 import { analyzeParadisWordDocument, extractParadisWordRenderableObjectsInWorker } from './word/paradisWordSemanticClient.js';
 import { PARADIS_WORD_ANCHOR_RUNTIME, PARADIS_WORD_ANCHOR_STYLE } from './word/paradisWordAnchorRuntime.js';
@@ -79,6 +79,7 @@ import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryD
 import { PARADIS_VIEWER_WEBVIEW_STATE_STYLE, paradisViewerWebviewFailureHtml, paradisViewerWebviewFailureScript, paradisViewerWebviewStatusHtml } from '../common/paradisViewerWebviewState.js';
 import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarPercent, appendParadisViewerToolbarSeparator, createParadisViewerToolbar, PARADIS_VIEWER_TOOLBAR_HEIGHT, setParadisViewerToolbarHeight } from '../browser/paradisViewerToolbar.js';
 import { PARADIS_OFFICE_CHANGE_PANEL_CLASS, PARADIS_OFFICE_PANEL_SURFACE_CLASS } from './paradisOfficeInspectorParts.js';
+import { PARADIS_VIEWER_OPEN_IN_APP_LABEL, PARADIS_VIEWER_RETRY_LABEL, renderParadisViewerState, type IParadisViewerStateView } from '../browser/paradisViewerState.js';
 
 const DOCX_HEADER_BYTES = 4;
 const DOCX_WATCH_RERENDER_DELAY_MS = 50;
@@ -365,6 +366,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 	private _renderedParagraphs: Record<string, string[]> | undefined;
 	/** 解析結果の段落の位置 → 表示の段落の目印。 */
 	private _markerByLocator: Map<string, string> | undefined;
+	/** 変更点パネルの「段落の情報」の行（webview へ送った印と同じ番号）。パネルを作り直すときにも渡す。 */
+	private _markItems: readonly ParadisWordMarkItem[] = [];
 	private _runtimeConfiguration: ParadisOfficeRuntimeConfiguration | undefined;
 	private _wordViewState: ParadisWordViewState = Object.freeze({ zoom: 1, displayMode: 'final', activeStory: 'all', categories: PARADIS_WORD_CHANGE_CATEGORIES });
 	private _recoveryState: IParadisOfficeRecoveryState = createParadisOfficeRecoveryState();
@@ -381,6 +384,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 	 */
 	private readonly _probe = this._register(new ParadisOfficeViewerProbe('word-view', generation => this._onRenderTimeout(generation)));
 	private _recreatingForRecovery = false;
+	/** 「表示結果が空」の画面。出ている間は webview を隠し（release し）、ペイン側の状態表示を重ねる。 */
+	private readonly _blankFailureView = this._register(new MutableDisposable<IParadisViewerStateView>());
 
 	constructor(
 		group: IEditorGroup,
@@ -521,6 +526,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 			this._resetSemanticAnalysis();
 		}
 		this._currentResource = resource;
+		// 前の文書の「表示結果が空」の画面は持ち越さない（webview を戻して、この文書を描く）。
+		this._blankFailureView.clear();
 		this._recoveryState = beginParadisOfficeRecovery(this._recoveryState, {
 			source: { mode: 'document', source: createParadisWordSourceDescriptor(resource) },
 			viewState: {
@@ -538,7 +545,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		const rerenderScheduler = store.add(new RunOnceScheduler(() => {
 			const expectedGeneration = watchInvalidationGeneration;
 			watchInvalidationGeneration = undefined;
-			if (expectedGeneration === this._renderGeneration && isEqual(this._currentResource, resource) && this._pane.claimed) {
+			if (expectedGeneration === this._renderGeneration && isEqual(this._currentResource, resource) && (this._pane.claimed || (!!this._blankFailureView.value && this._editorVisible))) {
 				if (this._pane.webview && !this._webviewSupportsRecoveryMessages) {
 					// Legacy overlays cannot acknowledge a renderer probe. Keep their existing
 					// preflight concurrency and let _renderGeneration fence stale completions.
@@ -551,7 +558,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 			}
 		}, DOCX_WATCH_RERENDER_DELAY_MS));
 		const scheduleWatchRerender = () => {
-			if (!isEqual(this._currentResource, resource) || !this._pane.claimed) {
+			if (!isEqual(this._currentResource, resource) || (!this._pane.claimed && !(this._blankFailureView.value && this._editorVisible))) {
 				return;
 			}
 			watchInvalidationGeneration = this._renderGeneration;
@@ -759,19 +766,60 @@ export class ParadisDocxFileEditor extends EditorPane {
 		if (candidate.type !== 'paradisOfficeRecoveryAction' || typeof candidate.action !== 'string' || !this._currentResource) {
 			return;
 		}
-		if (candidate.action === 'retry') {
+		if (candidate.action === 'retry' || candidate.action === 'openExternally') {
+			this._runRecoveryAction(candidate.action, this._currentResource);
+		}
+	}
+
+	/** 「表示結果が空」の画面のボタン（再試行・既定のアプリで開く）の処理。 */
+	private _runRecoveryAction(action: 'retry' | 'openExternally', resource: URI): void {
+		if (action === 'retry') {
 			// 再試行は新しい1回。前回送った記録を畳んでおかないと、また失敗しても無言になる。
 			this._probe.beginRetry();
 			const transition = reduceParadisOfficeRecovery(this._recoveryState, { type: 'retry' });
 			this._recoveryState = transition.state;
-			this._applyRecoveryEffects(transition.effects, this._currentResource);
-		} else if (candidate.action === 'openExternally') {
-			void this._nativeHostService.openExternal(this._currentResource.toString(true));
+			this._applyRecoveryEffects(transition.effects, resource);
+		} else {
+			void this._nativeHostService.openExternal(resource.toString(true));
 		}
+	}
+
+	/**
+	 * 「表示結果が空」の画面を webview の代わりに出す。webview は隠し（release し）、他のビューアと同じ部品と文言で
+	 * 状態を重ねる。
+	 */
+	private _showBlankFailure(resource: URI): void {
+		const container = this._webviewContainer;
+		if (!container) {
+			return;
+		}
+		this._blankFailureView.value = renderParadisViewerState(container, 'empty',
+			localize('paradis.word.blank', "Word 文書の表示結果が空でした。"),
+			[
+				{ label: PARADIS_VIEWER_RETRY_LABEL, run: () => this._runRecoveryAction('retry', resource) },
+				{ label: PARADIS_VIEWER_OPEN_IN_APP_LABEL, run: () => this._runRecoveryAction('openExternally', resource) },
+			],
+			localize('paradis.word.blankDetail', "ファイルは読めましたが、描ける内容がありませんでした。"));
+		this._updateWebviewPlacement();
+	}
+
+	/** 「表示結果が空」の画面を外し、webview を置き直す（描き直しは呼び出し側の効果が行う）。 */
+	private _hideBlankFailure(): void {
+		if (!this._blankFailureView.value) {
+			return;
+		}
+		this._blankFailureView.clear();
+		this._recreatingForRecovery = true;
+		this._updateWebviewPlacement();
+		this._recreatingForRecovery = false;
 	}
 
 	private _applyRecoveryEffects(effects: readonly ParadisOfficeRecoveryEffect[], resource: URI): void {
 		for (const effect of effects) {
+			if (effect.type !== 'showError') {
+				// 描き直す前に webview を戻す（隠したままだと claim が無く、描き直しが走らない）。
+				this._hideBlankFailure();
+			}
 			switch (effect.type) {
 				case 'load':
 					this._renderResource(resource, effect.generation);
@@ -801,9 +849,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 					// 原因は既に記録済み（白紙も時間切れも観測した場所で1件ずつ積んである）。
 					this._probe.reportFailure();
 					this._pane.shown = undefined;
-					if (this._pane.webview) {
-						this._pane.setDocumentHtml(this._pane.webview, resource, applyParadisOfficeWebviewAccessibility(this._buildBlankFileHtml()));
-					}
+					this._showBlankFailure(resource);
 					break;
 			}
 		}
@@ -823,6 +869,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		}
 		this._renderedParagraphs = undefined;
 		this._markerByLocator = undefined;
+		this._setMarkItems([]);
 		// 載せ直した表示は、描き終わりを確かめるまで使い回さない。
 		this._pane.shown = undefined;
 		const webview = this._pane.webview;
@@ -864,6 +911,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._packageExclusions = EMPTY_PARADIS_WORD_PACKAGE_EXCLUSIONS;
 		this._renderedParagraphs = undefined;
 		this._markerByLocator = undefined;
+		this._setMarkItems([]);
 		const generation = ++this._renderGeneration;
 		const inputEpoch = this._inputEpoch;
 		this._assetSanitization.value?.cancel();
@@ -1143,6 +1191,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 				getPrintModel: callbacks.print,
 			} : { printUnavailable: localize('paradis.word.printDisabled', "印刷プレビューは設定で無効になっています。") }),
 			onNavigate: target => this._navigateInspectorTarget(target),
+			onOpenMark: id => this._openMark(id),
 			onDidChangeViewState: state => {
 				const changed = state.zoom !== this._wordViewState.zoom || state.displayMode !== this._wordViewState.displayMode;
 				this._wordViewState = state;
@@ -1162,6 +1211,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 			inspector.setComparison([], INCOMPLETE_WORD_MANIFEST, 'degraded');
 		}
 		inspector.setPlaceholders(this._assetPlaceholders);
+		inspector.setMarks(this._markItems);
 		inspector.setAnalysis({
 			...(analysis ? { counts: analysis.counts } : {}),
 			...paradisWordExclusionItems(this._packageExclusions),
@@ -1201,6 +1251,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._semanticResult = undefined;
 		this._semanticSearch = undefined;
 		this._markerByLocator = undefined;
+		this._setMarkItems([]);
 		this._semanticRetry.clear();
 		this._semanticRetries = 0;
 		this._semanticBusyBytes = undefined;
@@ -1310,6 +1361,16 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._postReveal({ type: 'paradisWordReveal', context: context || focus, focus: focus || context, matchCase: true }, target.anchor);
 	}
 
+	/** 「段落の情報」の行から、本文の印を示してその情報の吹き出しを開く。吹き出しへフォーカスを移すため、先に webview へ移す。 */
+	private _openMark(id: number): void {
+		const webview = this._pane.webview;
+		if (!webview) {
+			return;
+		}
+		webview.focus();
+		void webview.postMessage({ type: 'paradisWordOpenMark', id, notFound: localize('paradis.word.revealNotFound', "表示の中で見つかりません。") });
+	}
+
 	private _postReveal(request: ParadisWordRevealRequest, paragraphLocator: string | undefined): void {
 		const marker = paragraphLocator ? this._markerByLocator?.get(paragraphLocator) : undefined;
 		const notFound = localize('paradis.word.revealNotFound', "表示の中で見つかりません。");
@@ -1325,20 +1386,30 @@ export class ParadisDocxFileEditor extends EditorPane {
 		const rendered = this._renderedParagraphs;
 		if (!analysis || !rendered || !this._pane.webview) {
 			this._markerByLocator = undefined;
+			this._setMarkItems([]);
 			return;
 		}
 		const markers = alignParadisWordParagraphs(analysis.outline, rendered);
 		this._markerByLocator = markers;
-		const marks: { readonly marker: string; readonly marks: IParadisWordParagraphOutline['marks'] }[] = [];
+		const marks: { readonly marker: string; readonly marks: readonly (IParadisWordParagraphOutline['marks'][number] & { readonly id: number })[] }[] = [];
+		const markItems: ParadisWordMarkItem[] = [];
 		const comments: { readonly marker: string; readonly author: string; readonly date: string; readonly text: string }[] = [];
 		const seenComments = new Set<string>();
 		for (const story of analysis.outline.stories) {
-			for (const paragraph of story.paragraphs) {
+			const storyKind = resolveParadisWordNavigation(story.locator)?.storyKind;
+			story.paragraphs.forEach((paragraph, paragraphIndex) => {
 				const marker = markers.get(paragraph.locator);
 				if (!marker || paragraph.marks.length === 0) {
-					continue;
+					return;
 				}
-				marks.push({ marker, marks: paragraph.marks });
+				// 印に番号を振り、変更点パネルの行から webview の同じ印を開けるようにする。
+				marks.push({
+					marker, marks: paragraph.marks.map(mark => {
+						const id = markItems.length;
+						markItems.push(paradisWordMarkItem(id, mark, storyKind, paragraphIndex + 1));
+						return { ...mark, id };
+					}),
+				});
 				for (const mark of paragraph.marks) {
 					const value = (name: string) => mark.rows.find(row => row[0] === name)?.[1] ?? '';
 					if (mark.kind === 'comment' && !seenComments.has(value('commentId'))) {
@@ -1346,8 +1417,9 @@ export class ParadisDocxFileEditor extends EditorPane {
 						comments.push({ marker, author: value('author'), date: value('date'), text: value('text') });
 					}
 				}
-			}
+			});
 		}
+		this._setMarkItems(markItems);
 		void this._pane.webview.postMessage({
 			type: 'paradisWordAnnotations',
 			marks,
@@ -1362,22 +1434,13 @@ export class ParadisDocxFileEditor extends EditorPane {
 
 
 
-	private _buildRejectedFileHtml(): string {
-		return paradisViewerWebviewFailureHtml(localize('paradis.word.failed', "Word 文書を表示できませんでした: {0}", localize('paradis.viewer.emptyOrBroken', "ファイルが空または破損しています")));
+	private _setMarkItems(items: readonly ParadisWordMarkItem[]): void {
+		this._markItems = items;
+		this._changeInspector.value?.setMarks(items);
 	}
 
-	private _buildBlankFileHtml(): string {
-		const nonce = generateUuid();
-		return `<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}';"></head><body>
-			<p>Word 文書の表示結果が空でした。</p>
-			<button id="retry" type="button">再試行</button>
-			<button id="open" type="button">既定のアプリで開く</button>
-			<script nonce="${nonce}">
-				const vscode = acquireVsCodeApi();
-				document.getElementById('retry').addEventListener('click', () => vscode.postMessage({ type: 'paradisOfficeRecoveryAction', action: 'retry' }));
-				document.getElementById('open').addEventListener('click', () => vscode.postMessage({ type: 'paradisOfficeRecoveryAction', action: 'openExternally' }));
-			</script>
-		</body></html>`;
+	private _buildRejectedFileHtml(): string {
+		return paradisViewerWebviewFailureHtml(localize('paradis.word.failed', "Word 文書を表示できませんでした: {0}", localize('paradis.viewer.emptyOrBroken', "ファイルが空または破損しています")));
 	}
 
 	/**
@@ -1653,6 +1716,12 @@ export class ParadisDocxFileEditor extends EditorPane {
 					applyParadisWordAnnotations(message);
 					return;
 				}
+				if (message && message.type === 'paradisWordOpenMark' && typeof message.id === 'number') {
+					if (paradisDocumentRendered && anchors) {
+						anchors.openMark(message.id, message.notFound);
+					}
+					return;
+				}
 				if (!message || message.type !== 'paradisWordObjects' || !Array.isArray(message.items)) {
 					return;
 				}
@@ -1830,7 +1899,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 
 	private _updateWebviewPlacement(): void {
 		const resource = this._currentResource;
-		const justClaimed = this._pane.place(this._editorVisible && !!resource, this.window, this._webviewContainer!,
+		const justClaimed = this._pane.place(this._editorVisible && !!resource && !this._blankFailureView.value, this.window, this._webviewContainer!,
 			() => ({ disableServiceWorker: this._canServe(resource!), localResourceRoots: this._localResourceRoots(resource!) }),
 			() => this._updateWebviewPlacement());
 		if (justClaimed && resource && !this._recreatingForRecovery) {
@@ -1851,6 +1920,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._runtimeConfiguration = undefined;
 		this._renderSnapshot = undefined;
 		this._recoveryState = createParadisOfficeRecoveryState();
+		this._blankFailureView.clear();
 		// 描き終わったか分からない表示は、戻ったときに描き直す（白紙や図形の抜けを残さない）。
 		this._pane.forgetUnconfirmedShown();
 		this._pane.release();
@@ -1893,6 +1963,10 @@ export class ParadisDocxFileEditor extends EditorPane {
 
 	override focus(): void {
 		super.focus();
+		if (this._blankFailureView.value) {
+			this._blankFailureView.value.focus();
+			return;
+		}
 		this._pane.webview?.focus();
 	}
 

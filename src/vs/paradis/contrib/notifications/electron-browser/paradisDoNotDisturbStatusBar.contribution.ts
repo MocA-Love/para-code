@@ -48,9 +48,13 @@ export class ParadisDoNotDisturbStatusBarContribution extends Disposable impleme
 
 		let label: string;
 		let tooltip: string;
+		// 読み上げの名前。オフのときは表示の文字（「おやすみモード」）に状態の語が無いので、オフと分かる名前を別に持つ
+		let ariaLabel: string | undefined;
 		if (!state.enabled) {
 			// allow-any-unicode-next-line
 			label = localize('paradis.dnd.status.off', "おやすみモード");
+			// allow-any-unicode-next-line
+			ariaLabel = localize('paradis.dnd.status.offAria', "おやすみモード: オフ");
 			// allow-any-unicode-next-line
 			tooltip = localize('paradis.dnd.status.tooltipOff', "通知はオンです。クリックしておやすみモードを開始します（このPCの音・デスクトップ通知・音声読み上げを一括で止めます。モバイルへのPush通知は対象外）。");
 		} else if (remaining) {
@@ -69,7 +73,7 @@ export class ParadisDoNotDisturbStatusBarContribution extends Disposable impleme
 			// allow-any-unicode-next-line
 			name: localize('paradis.dnd.status.name', "おやすみモード"),
 			text: `$(${state.enabled ? 'bell-slash' : 'bell'}) ${label}`,
-			ariaLabel: label,
+			ariaLabel: ariaLabel ?? label,
 			tooltip,
 			command: PARADIS_DO_NOT_DISTURB_SELECT_COMMAND,
 		};

@@ -44,7 +44,7 @@ import { paradisFormatGainDb } from './paradisElevenLabsVoiceTuningFields.js';
 import { paradisForgetVoiceGains, paradisLoadVoiceGains } from './paradisVoiceGainsCache.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import './media/paradisVoiceTuning.css';
-import { paradisNotifButton } from './paradisNotificationKitParts.js';
+import { paradisNotifButton, paradisNotifChip } from './paradisNotificationKitParts.js';
 import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 const $ = dom.$;
@@ -248,9 +248,7 @@ export class ParadisVoiceGainSection extends Disposable {
 			const initial = paradisIsInitialVoiceGain(entry);
 			if (initial) {
 				// 一度も測っていない行（aivis-mcp が最初から持つ値だけ）は、進みではなく「初期値」と出す
-				const pill = dom.append(learnCell, $('span.pns-pill'));
-				pill.textContent = STR_INITIAL;
-				pill.title = STR_INITIAL_TITLE;
+				paradisNotifChip(learnCell, STR_INITIAL, 'neutral', 'pns-pill').title = STR_INITIAL_TITLE;
 			} else {
 				const progress = paradisVoiceGainProgress(entry, list.learnWindow);
 				const meter = dom.append(learnCell, $('span.pns-gain-meter'));
@@ -258,7 +256,7 @@ export class ParadisVoiceGainSection extends Disposable {
 				dom.append(learnCell, $('span')).textContent = `${progress.done}/${list.learnWindow}`;
 				if (progress.learning) {
 					learnCell.append(' ');
-					dom.append(learnCell, $('span.pns-pill.warn')).textContent = STR_LEARNING;
+					paradisNotifChip(learnCell, STR_LEARNING, 'warning', 'pns-pill');
 				}
 			}
 			// allow-any-unicode-next-line

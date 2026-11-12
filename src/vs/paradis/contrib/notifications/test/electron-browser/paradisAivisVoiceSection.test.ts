@@ -186,6 +186,28 @@ suite('Paradis voice section API key fields', () => {
 		}, { aivisWhileLoading: true, aivisAfterLoad: false, elevenLabsWhileLoading: true, elevenLabsAfterLoad: false, patches: [[], []] });
 	});
 
+	test('takes the fields out of Tab order while voice notifications are off', async () => {
+		const settings = store.add(new TestSettingsService());
+		const container = createSection(settings);
+		await flush();
+		const fieldsState = () => {
+			const fields = container.getElementsByClassName('pns-fields');
+			return Array.from(fields).map(element => ({ inert: (element as HTMLElement).inert, disabled: element.classList.contains('disabled') }));
+		};
+		const enabled = fieldsState();
+		settings.setAivisSettings({ enabled: false });
+		await flush();
+		const disabled = fieldsState();
+		settings.setAivisSettings({ enabled: true });
+		await flush();
+
+		assert.deepStrictEqual({ enabled, disabled, reenabled: fieldsState() }, {
+			enabled: [{ inert: false, disabled: false }],
+			disabled: [{ inert: true, disabled: true }],
+			reenabled: [{ inert: false, disabled: false }],
+		});
+	});
+
 	test('shows the tuning of the chosen ElevenLabs voice and saves it per voice', async () => {
 		const channel: IChannel = {
 			call<T>(command: string): Promise<T> {

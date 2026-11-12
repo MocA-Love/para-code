@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, it } from 'vitest';
-import { agentHandoffResult, branchSyncOf, commitFailureView, commitHint, commitScope, parseCommitFailure, scmPrimaryAction, scmPushConfirm, scmSyncSummary, type ScmPrimaryInput } from './scmSync.js';
+import { agentHandoffResult, branchSyncOf, commitFailureView, commitLandedAfter, commitHint, confirmCommitLanded, commitScope, parseCommitFailure, scmPrimaryAction, scmPushConfirm, scmSyncSummary, type ScmPrimaryInput } from './scmSync.js';
 
 describe('scmPrimaryAction', () => {
 	const clean: ScmPrimaryInput = { live: true, total: 0, message: '', committing: false, sync: { upstream: 'origin/main', ahead: 0, behind: 0 }, syncing: undefined, branch: 'main' };
@@ -98,6 +98,77 @@ describe('commit failure', () => {
 			.toBe('コミットの途中で PC のステージが変わったため、ステージは戻していません。PC で確かめてください。');
 		expect(parseCommitFailure({ id: 1 })).toBeUndefined();
 		expect(parseCommitFailure({ id: 'x', kind: 'future', summary: 's', output: '' })?.kind).toBe('other');
+	});
+
+	it('結果が分からなかったコミットは、前の先頭より上に同じ件名があるときだけできたとみなす', () => {
+		const log = [
+			{ hash: 'c3', subject: 'fix: typo in readme' },
+			{ hash: 'c2', subject: 'other work on PC' },
+			{ hash: 'c1', subject: 'fix: typo in readme' },
+		];
+		expect([
+			commitLandedAfter(log, 'c2', 'fix: typo in readme'),
+			// 本文付きのメッセージは最初の段落（件名）で比べる
+			commitLandedAfter(log, 'c2', '  fix: typo in readme\n\nlonger body\n'),
+			// 前の先頭のまま（何も増えていない）
+			commitLandedAfter(log, 'c3', 'fix: typo in readme'),
+			// 同じ件名は前の先頭より下にしかない（前のコミットと取り違えない）
+			commitLandedAfter(log, 'c2', 'other work on PC'),
+			// 前の先頭が分からない・一覧に見つからない
+			commitLandedAfter(log, undefined, 'fix: typo in readme'),
+			commitLandedAfter(log, 'gone', 'fix: typo in readme'),
+		]).toEqual([true, true, false, false, false, false]);
+	});
+
+	it('結果が分からないコミットは、つながり直すまで待ち、期限まで間隔を空けて読み直す', async () => {
+		const before = [{ hash: 'c1', subject: 'base' }];
+		const landed = [{ hash: 'c2', subject: 'fix: typo' }, ...before];
+		// 時計と一覧を進める偽物。`live` は呼ばれるたびの接続の状態、`logs` は読むたびの一覧（null は読めない）
+		const run = async (live: readonly boolean[], logs: readonly (readonly { hash: string; subject: string }[] | null)[], deadline: number, cancelAt?: number) => {
+			let now = 0;
+			let reads = 0;
+			const events: string[] = [];
+			const result = await confirmCommitLanded('c1', 'fix: typo', deadline, {
+				waitUntilLive: async () => {
+					const ok = live[Math.min(events.filter(event => event.startsWith('wait')).length, live.length - 1)] ?? false;
+					events.push(`wait@${now}:${ok}`);
+					return ok;
+				},
+				readLog: async () => {
+					const log = logs[Math.min(reads++, logs.length - 1)] ?? null;
+					events.push(`read@${now}`);
+					if (log === null) {
+						throw new Error('unreachable');
+					}
+					return log;
+				},
+				sleep: async ms => { now += ms; },
+				now: () => now,
+				cancelled: () => cancelAt !== undefined && reads >= cancelAt,
+			});
+			return { result, events };
+		};
+		expect([
+			// つながり直した後、PC がまだコミット中で 2 回目に見つかる
+			await run([true], [before, landed], 300_000),
+			// 読めなかった 1 回目の後に読み直す
+			await run([true], [null, landed], 300_000),
+			// 期限までにつながり直さない
+			await run([false], [landed], 300_000),
+			// 期限を過ぎていても 1 回は読み、次は読まない
+			await run([true], [before, landed], 0),
+			// 次のコミットが始まったら、読めた結果を捨てる
+			await run([true], [landed], 300_000, 1),
+		]).toEqual([
+			{ result: true, events: ['wait@0:true', 'read@0', 'wait@5000:true', 'read@5000'] },
+			{ result: true, events: ['wait@0:true', 'read@0', 'wait@5000:true', 'read@5000'] },
+			{ result: false, events: ['wait@0:false'] },
+			{ result: false, events: ['wait@0:true', 'read@0'] },
+			{ result: false, events: ['wait@0:true', 'read@0'] },
+		]);
+		// 見つからなければ間隔を空けて期限まで読み直す（5・10・20・30 秒、以降 30 秒ごと）
+		const never = await run([true], [before], 100_000);
+		expect([never.result, never.events.filter(event => event.startsWith('read'))]).toEqual([false, ['read@0', 'read@5000', 'read@15000', 'read@35000', 'read@65000', 'read@95000']]);
 	});
 
 	it('エージェントへ頼んだ結果の一言（作業中なら新しいエージェントで頼む口を出す）', () => {
