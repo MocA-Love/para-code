@@ -17,6 +17,9 @@
 
 import './media/paradisSettingsDialog.css';
 import * as dom from '../../../../base/browser/dom.js';
+import { status } from '../../../../base/browser/ui/aria/aria.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
+import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { isMacintosh } from '../../../../base/common/platform.js';
@@ -27,6 +30,7 @@ import { ConfigurationTarget, IConfigurationService } from '../../../../platform
 import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { paradisCanUseWindowTransparency } from '../../../../platform/window/common/paradisWindowTransparency.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
@@ -76,6 +80,8 @@ const STR_SEARCH_PLACEHOLDER = localize('paradis.settings.searchPlaceholder', "�
 const STR_AUTOSAVE = localize('paradis.settings.autosave', "変更は即保存されます");
 // allow-any-unicode-next-line
 const STR_SEARCH_EMPTY = localize('paradis.settings.searchEmpty', "一致する設定はありません");
+/** 検索の件数を読み上げるまでの待ち。打つたびに読まれないようにする。 */
+const SEARCH_STATUS_DELAY_MS = 500;
 // allow-any-unicode-next-line
 const STR_NAV_CAPTION_AGENTS = localize('paradis.settings.navCaptionAgents', "エージェント");
 // allow-any-unicode-next-line
@@ -1963,6 +1969,9 @@ export class ParadisSettingsArea extends Disposable implements IParadisHubAreaVi
 	private readonly _navCaptions = new Map<string, HTMLElement>();
 	private readonly _rows: { spec: IParadisSettingRowSpec; el: HTMLElement; searchText: string; groupHead?: HTMLElement }[] = [];
 	private readonly _searchEmptyEl: HTMLElement;
+	/** 検索の件数の読み上げ。打ち終えてから 1 回だけ読む。 */
+	private readonly _searchStatus = this._register(new RunOnceScheduler(() => this._announceSearchHits(), SEARCH_STATUS_DELAY_MS));
+	private _searchHits = 0;
 	/** 設定キーごとのコントロール更新関数 (外部変更を画面へ反映するため)。 */
 	private readonly _refreshers: (() => void)[] = [];
 	/** 最後に開いた節。領域を開き直したときはここへ戻る。 */
@@ -1978,6 +1987,7 @@ export class ParadisSettingsArea extends Disposable implements IParadisHubAreaVi
 		@INativeHostService private readonly nativeHostService: INativeHostService,
 		@INativeWorkbenchEnvironmentService private readonly environmentService: INativeWorkbenchEnvironmentService,
 		@IContextViewService private readonly contextViewService: IContextViewService,
+		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super();
 		this._register(paradisMarkSettingsDialogOpen());
@@ -1996,6 +2006,7 @@ export class ParadisSettingsArea extends Disposable implements IParadisHubAreaVi
 		this._buildOtherAreaLinks(containers.nav);
 		this._searchEmptyEl = dom.append(this._contentEl, $('.psd-search-empty'));
 		this._searchEmptyEl.textContent = STR_SEARCH_EMPTY;
+		this._searchEmptyEl.setAttribute('role', 'status');
 		this._searchEmptyEl.classList.add('hidden');
 		// 本文のスクロールに合わせて左のナビの選択を切り替える
 		this._scrollSpy = this._register(new ParadisHubScrollSpy({
@@ -2121,7 +2132,8 @@ export class ParadisSettingsArea extends Disposable implements IParadisHubAreaVi
 
 			const section = dom.append(this._contentEl, $('section.psd-section'));
 			section.id = spec.id;
-			dom.append(section, $('.psd-section-head')).textContent = spec.heading;
+			// ダイアログの題（paradisHubDialog.ts の h2）の下の段。読み上げで節ごとに飛べるようにする
+			dom.append(section, $('h3.psd-section-head')).textContent = spec.heading;
 			if (spec.description) {
 				dom.append(section, $('.psd-section-desc')).textContent = spec.description;
 			}
@@ -2134,7 +2146,7 @@ export class ParadisSettingsArea extends Disposable implements IParadisHubAreaVi
 					group = row.group;
 					groupHead = undefined;
 					if (group) {
-						groupHead = dom.append(section, $('.psd-group-head'));
+						groupHead = dom.append(section, $('h4.psd-group-head'));
 						groupHead.textContent = group;
 					}
 				}
@@ -2157,7 +2169,7 @@ export class ParadisSettingsArea extends Disposable implements IParadisHubAreaVi
 		// 下の searchText には key を残してあるので、キーを知っている人はそれで引ける。
 		// settings.json を直接編集したいときのために、ホバーでは読めるようにしておく。
 		if (spec.key) {
-			row.title = spec.key;
+			this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), row, spec.key));
 		}
 		if (spec.description) {
 			dom.append(main, $('.psd-row-desc')).textContent = spec.description;
@@ -2451,5 +2463,16 @@ export class ParadisSettingsArea extends Disposable implements IParadisHubAreaVi
 		}
 
 		this._searchEmptyEl.classList.toggle('hidden', totalHits > 0);
+		// 0 件は上の文言（role="status"）が読まれるので、件数は 1 件以上のときだけ読む
+		this._searchHits = totalHits;
+		if (query.length > 0 && totalHits > 0) {
+			this._searchStatus.schedule();
+		} else {
+			this._searchStatus.cancel();
+		}
+	}
+
+	private _announceSearchHits(): void {
+		status(localize('paradis.settings.searchHits', "{0} 件の設定が見つかりました", this._searchHits));
 	}
 }
