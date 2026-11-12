@@ -2225,6 +2225,7 @@ function createScreenshotServiceFixture(call: (command: string) => Promise<strin
 	bindings.set('token', original);
 	const service = Object.assign(Object.create(ParadisAgentBrowserService.prototype) as object, {
 		_bindings: bindings,
+		_sharpScreenshotKeys: new Map<string, number>(),
 		captureIngressLease: (token: string) => token === ingressLease.token ? ingressLease : undefined,
 		isIngressLeaseCurrent: (lease: unknown) => lease === ingressLease,
 		mainProcessService: {
