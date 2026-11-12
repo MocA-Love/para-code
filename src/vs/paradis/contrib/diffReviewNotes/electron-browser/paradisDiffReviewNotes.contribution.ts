@@ -10,7 +10,6 @@
 // upstream の sessions/contrib/agentFeedback は Agent Sessions ウィンドウ専用で送り先が Copilot のチャットなので使わない。
 // 既定のキーは付けない（Orca の Mod+Shift+A は Linux・Windows でブロックコメントと重なる）。
 
-import { $, append } from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { joinPath } from '../../../../base/common/resources.js';
@@ -29,14 +28,18 @@ import { ContextKeyExpr, IContextKeyService } from '../../../../platform/context
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
+import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { TextCompareEditorActiveContext } from '../../../../workbench/common/contextkeys.js';
+import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { paradisHandOffToSpaceAgent, paradisSpaceAgentHandoffServices } from '../../agentHandoff/electron-browser/paradisSpaceAgentHandoff.js';
 import { paradisLocateReviewNoteLine } from '../../mobileRelay/common/paradisMobileDiffReview.js';
 import { paradisListSpaces } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { ParadisCountBadge } from '../../../browser/paradisBadges.js';
+import { IParadisConfirmServices, paradisConfirmYesNo } from '../../confirmDialog/browser/paradisConfirmDialog.js';
 import { IParadisDiffReviewNote, IParadisDiffReviewNoteToSend, paradisBuildDiffReviewNotesPrompt } from '../common/paradisDiffReviewNotes.js';
 import { PARADIS_DIFF_REVIEW_NOTES_CONTROLLER_ID, ParadisDiffReviewNotesController, paradisDiffReviewSelectedLines } from './paradisDiffReviewNotesController.js';
 import { IParadisDiffReviewNotesService, ParadisDiffReviewUnsentCountContext } from './paradisDiffReviewNotesService.js';
@@ -97,6 +100,7 @@ registerAction2(class extends Action2 {
 		const textModelService = accessor.get(ITextModelService);
 		const clipboardService = accessor.get(IClipboardService);
 		const editor = focusedEditor(accessor.get(ICodeEditorService));
+		const confirmServices: IParadisConfirmServices = { layoutService: accessor.get(ILayoutService), keybindingService: accessor.get(IKeybindingService), hostService: accessor.get(IHostService) };
 
 		const stateKey = services.switchService.activeStateKey;
 		const space = stateKey === undefined ? undefined : paradisListSpaces(services.switchService.repositories, services.worktreeService).find(entry => entry.space === stateKey);
@@ -132,6 +136,18 @@ registerAction2(class extends Action2 {
 			return;
 		}
 		if (picked.choice === 'clearSent' || picked.choice === 'clearAll') {
+			// 未送信のメモまで消えるときだけ確かめる。送信済みだけを消すのは今のまま 1 手（paradis-19-3 案 C）
+			if (picked.choice === 'clearAll' && unsent.length > 0) {
+				const ok = await paradisConfirmYesNo(confirmServices, {
+					message: localize('paradis.diffReviewNotes.clearAllConfirm', "AI メモを {0} 件すべて削除しますか？", notes.length),
+					detail: localize('paradis.diffReviewNotes.clearAllDetail', "まだ送っていない {0} 件も消えます。元に戻せません。", unsent.length),
+					primaryButton: localize('paradis.diffReviewNotes.clearAllButton', "すべて削除"),
+					danger: true,
+				});
+				if (!ok) {
+					return;
+				}
+			}
 			notesService.remove(stateKey, new Set(notes.filter(note => picked.choice === 'clearAll' || note.sentAt !== undefined).map(note => note.id)));
 			return;
 		}
@@ -192,7 +208,7 @@ async function readLines(textModelService: ITextModelService, resource: ReturnTy
  */
 class ParadisDiffReviewNotesCountViewItem extends MenuEntryActionViewItem {
 
-	private badge: HTMLElement | undefined;
+	private badge: ParadisCountBadge | undefined;
 
 	constructor(
 		action: MenuItemAction,
@@ -213,18 +229,25 @@ class ParadisDiffReviewNotesCountViewItem extends MenuEntryActionViewItem {
 	override render(container: HTMLElement): void {
 		super.render(container);
 		container.classList.add('paradis-diff-review-send-item');
-		this.badge = append(container, $('span.paradis-diff-review-send-count'));
-		this.badge.setAttribute('aria-hidden', 'true');
+		// キットの塗らない数（paradis-19-16 案 B）。札は読み上げから隠し、件数はボタンの名前に入れる
+		this.badge = new ParadisCountBadge(container, 'inline');
 		this.updateBadge();
+	}
+
+	protected override updateAriaLabel(): void {
+		super.updateAriaLabel();
+		const count = this.badge ? this.notesService.unsentCountOfActiveSpace() : 0;
+		if (this.label && count > 0) {
+			this.label.setAttribute('aria-label', localize('paradis.diffReviewNotes.sendAriaLabel', "{0}（未送信 {1} 件）", this.getTooltip() ?? '', count));
+		}
 	}
 
 	private updateBadge(): void {
 		if (!this.badge) {
 			return;
 		}
-		const count = this.notesService.unsentCountOfActiveSpace();
-		this.badge.textContent = count > 0 ? String(count) : '';
-		this.badge.classList.toggle('hidden', count === 0);
+		this.badge.update(this.notesService.unsentCountOfActiveSpace(), 'plain');
+		this.updateAriaLabel();
 	}
 }
 

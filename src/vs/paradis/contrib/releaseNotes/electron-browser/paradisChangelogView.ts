@@ -24,6 +24,7 @@ import { localize } from '../../../../nls.js';
 import { formatInlineMarkdown, IParadisChangelogRelease, IParadisChangelogSection } from '../common/paradisChangelogModel.js';
 import { IParadisHubAreaContainers } from '../../paradisHub/electron-browser/paradisHub.js';
 import { ParadisButton } from '../../../browser/paradisButton.js';
+import { createParadisChip } from '../../../browser/paradisBadges.js';
 import { IParadisHubNavItem, paradisHubNavCaption, paradisHubNavItem } from '../../paradisHub/electron-browser/paradisHubNav.js';
 
 const $ = dom.$;
@@ -40,7 +41,8 @@ export interface IParadisChangelogViewRelease {
 export type ParadisChangelogRemoteState =
 	| { readonly kind: 'fetching' }
 	| { readonly kind: 'ok'; readonly fetchedAt: number }
-	| { readonly kind: 'error' };
+	/** 取れなかった。`cachedFetchedAt` は前回の取得分を出しているときのその時刻。 */
+	| { readonly kind: 'error'; readonly cachedFetchedAt?: number };
 
 export interface IParadisChangelogModalDelegate {
 	/** 起点となる「ここまで既読」バージョン。これより新しい項目に未読ドットが出る。 */
@@ -98,8 +100,9 @@ export class ParadisChangelogView extends Disposable {
 		this.data = data;
 		this.lastReadVersion = delegate.initialLastReadVersion;
 
-		// 見出しの行: サーバーへの問い合わせの状態
-		this.statusChip = dom.append(containers.header, $('span.para-cl-status'));
+		// 見出しの行: サーバーへの問い合わせの状態（キットの札。paradis-19-10 案 B）
+		this.statusChip = createParadisChip(containers.header, '');
+		this.statusChip.classList.add('para-cl-status');
 		this.statusChip.style.display = 'none';
 		this.statusChip.setAttribute('aria-live', 'polite');
 
@@ -155,24 +158,25 @@ export class ParadisChangelogView extends Disposable {
 	}
 
 	setRemoteState(state: ParadisChangelogRemoteState): void {
-		if (state.kind === 'error') {
-			this.statusChip.style.display = 'none';
-			return;
-		}
 		this.statusChip.style.display = '';
 		dom.clearNode(this.statusChip);
+		let icon: ThemeIcon;
+		let label: string;
 		if (state.kind === 'fetching') {
-			this.statusChip.append($(ThemeIcon.asClassName(Codicon.sync)));
-			this.statusChip.appendChild(document.createTextNode(
-				localize('paradis.changelog.fetching', "サーバーを確認中…")
-			));
+			icon = Codicon.sync;
+			label = localize('paradis.changelog.fetching', "サーバーを確認中…");
+		} else if (state.kind === 'ok') {
+			icon = Codicon.cloudDownload;
+			label = localize('paradis.changelog.fetchedAt', "サーバーから取得済み · {0}", formatFetchedTime(state.fetchedAt));
 		} else {
-			this.statusChip.append($(ThemeIcon.asClassName(Codicon.cloudDownload)));
-			this.statusChip.appendChild(document.createTextNode(
-				localize('paradis.changelog.fetchedAt', "サーバーから取得済み · {0}",
-					new Date(state.fetchedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }))
-			));
+			// 取れなかったことを札に残す。前回の取得分を出しているときはその時刻も添える（paradis-19-13 案 A）
+			icon = Codicon.debugDisconnect;
+			label = state.cachedFetchedAt !== undefined
+				? localize('paradis.changelog.fetchFailedCached', "サーバーに接続できませんでした · 前回 {0} の取得分を表示中", formatFetchedTime(state.cachedFetchedAt))
+				: localize('paradis.changelog.fetchFailed', "サーバーに接続できませんでした");
 		}
+		this.statusChip.append($(ThemeIcon.asClassName(icon)));
+		dom.append(this.statusChip, $('span.paradis-chip-label')).textContent = label;
 	}
 
 	/** 選んでいるバージョン（`reveal` に渡せる形）と本文のスクロール位置。統合のモーダルを開き直したときに戻すため。 */
@@ -208,8 +212,9 @@ export class ParadisChangelogView extends Disposable {
 
 	private updateUnreadDots(): void {
 		for (const [version, entry] of this.navItems) {
-			if (!(version > this.lastReadVersion)) {
-				entry.dot?.remove();
+			if (!(version > this.lastReadVersion) && entry.dot) {
+				entry.dot.remove();
+				entry.item.element.removeAttribute('aria-label');
 			}
 		}
 	}
@@ -244,7 +249,12 @@ export class ParadisChangelogView extends Disposable {
 			let dot: HTMLElement | undefined;
 			if (release.version > this.lastReadVersion && !release.installed) {
 				dot = $('span.para-cl-dot');
+				dot.setAttribute('aria-hidden', 'true');
 				item.element.insertBefore(dot, item.chip);
+				// 点は空なので名前に入らない。未読であることを読み上げの名前に入れる（paradis-19-12）
+				item.element.setAttribute('aria-label', release.date
+					? localize('paradis.changelog.unreadItemWithDate', "{0}、未読、{1}", release.label, release.date)
+					: localize('paradis.changelog.unreadItem', "{0}、未読", release.label));
 			}
 			this.navItems.set(release.version, { item, dot });
 
@@ -299,6 +309,11 @@ export class ParadisChangelogView extends Disposable {
 			}
 		}
 	}
+}
+
+/** 取得した時刻（時と分）。 */
+function formatFetchedTime(time: number): string {
+	return new Date(time).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
 
 export function toViewReleases(releases: readonly IParadisChangelogRelease[], installedVersion: number): IParadisChangelogViewRelease[] {
