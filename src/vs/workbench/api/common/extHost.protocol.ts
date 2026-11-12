@@ -687,7 +687,7 @@ export interface TerminalLaunchConfig {
 	shellIntegrationNonce?: string;
 	titleTemplate?: string;
 	// PARA-PATCH: preserve workspace ownership — carry the internal terminal creation scope lease across the ext host protocol
-	/** PARA-CODE: Internal renderer scope authority; not part of the extension API. */
+	/** Para Code internal: renderer scope authority; not part of the extension API. */
 	paradisTerminalCreationScopeLease?: string;
 }
 
