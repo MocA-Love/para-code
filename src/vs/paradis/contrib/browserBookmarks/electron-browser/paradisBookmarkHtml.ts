@@ -91,6 +91,17 @@ function parseElementFragment<T extends Element>(parser: DOMParser, html: string
 	return element as T;
 }
 
+/** 取り込む ICON の data URI の長さの上限（文字数）。ふつうの favicon は数 KB に収まる。 */
+const PARADIS_IMPORTED_FAVICON_MAX_CHARS = 32 * 1024;
+
+/**
+ * 取り込む ICON 属性のうち、画像の data URI で上限以内のものだけを返す。巨大な画像入りの
+ * ファイルを取り込んでも、起動時の読み込みや保存が重くならないようにする。
+ */
+function paradisImportableFavicon(icon: string | null): string | undefined {
+	return icon && icon.length <= PARADIS_IMPORTED_FAVICON_MAX_CHARS && icon.toLowerCase().startsWith('data:image/') ? icon : undefined;
+}
+
 function parseBookmarkAnchor(anchor: HTMLAnchorElement): ParadisImportedNode | null {
 	const href = normalizeParadisBookmarkUrl(anchor.getAttribute('href') ?? '');
 	if (!href || href === 'about:blank') {
@@ -101,7 +112,7 @@ function parseBookmarkAnchor(anchor: HTMLAnchorElement): ParadisImportedNode | n
 		type: 'bookmark',
 		url: href,
 		title: anchor.textContent?.trim() || href,
-		faviconDataUri: icon && icon.startsWith('data:') ? icon : undefined,
+		faviconDataUri: paradisImportableFavicon(icon),
 		createdAt: parseTimestamp(anchor.getAttribute('add_date')),
 	};
 }
