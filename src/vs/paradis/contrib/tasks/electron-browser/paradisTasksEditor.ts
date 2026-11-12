@@ -50,6 +50,7 @@ import {
 	PARADIS_TASKS_MAX_REPOSITORIES,
 	PARADIS_TASKS_PRESETS,
 	paradisTasksHasQualifier,
+	paradisTasksSettle,
 	paradisTasksToggleQualifier,
 	ParadisTasksMode,
 } from '../common/paradisTasks.js';
@@ -414,7 +415,7 @@ export class ParadisTasksEditor extends EditorPane {
 		const generation = more ? this.generation : ++this.generation;
 		this.loading = true;
 		this.render();
-		const response = await this.github.search({ mode, repositories, query: this.query, after: more ? this.endCursor : undefined, force });
+		const response = await paradisTasksSettle(() => this.github.search({ mode, repositories, query: this.query, after: more ? this.endCursor : undefined, force }));
 		if (generation !== this.generation) {
 			return;
 		}
@@ -657,7 +658,7 @@ export class ParadisTasksEditor extends EditorPane {
 		const generation = ++this.projectsGeneration;
 		this.projectsLoading = true;
 		this.render();
-		const response = await this.github.listProjects({ repositories, force });
+		const response = await paradisTasksSettle(() => this.github.listProjects({ repositories, force }));
 		if (generation !== this.projectsGeneration) {
 			return;
 		}
@@ -688,10 +689,10 @@ export class ParadisTasksEditor extends EditorPane {
 		const generation = more ? this.generation : ++this.generation;
 		this.loading = true;
 		this.render();
-		const response = await this.github.projectItems({
+		const response = await paradisTasksSettle(() => this.github.projectItems({
 			owner: project.owner, number: project.number, view: view.number, viewFilter: view.filter, query: this.query,
 			after: more ? this.projectResult?.endCursor : undefined, force,
-		});
+		}));
 		if (generation !== this.generation) {
 			return;
 		}

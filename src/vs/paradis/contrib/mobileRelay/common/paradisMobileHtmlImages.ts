@@ -206,8 +206,8 @@ function rewriteImageTag(tag: string, images: string[]): string | undefined {
 	return `<img ${PARADIS_MOBILE_HTML_IMAGE_ATTRIBUTE}="${id}"${tag.slice(4, start)} src="${placeholder}"${tag.slice(start + source[0].length)}`;
 }
 
-/** 見出しを読むために戻す、base64 の先頭の長さ（4 の倍数）。まず短く読み、JPEG の SOF が届かなければ 64 KiB 分まで読む。 */
-const HEADER_BASE64_CHARS = [4 * 1024 / 3 * 4, 64 * 1024 / 3 * 4];
+/** 見出しを読むために戻す、base64 の先頭の長さ（4 の倍数への切り下げは読むときに行う）。まず短く読み、JPEG の SOF が届かなければ 64 KiB 分まで読む。 */
+const HEADER_BASE64_CHARS = [Math.floor(4 * 1024 * 4 / 3), Math.floor(64 * 1024 * 4 / 3)];
 
 /** 画像の見出しから縦横を読む（PNG・GIF・JPEG・WebP）。全体は戻さない。読めなければ `undefined`。 */
 export function paradisReadDataImageSize(base64: string): { readonly width: number; readonly height: number } | undefined {

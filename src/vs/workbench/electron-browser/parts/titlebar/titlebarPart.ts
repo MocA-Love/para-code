@@ -13,7 +13,7 @@ import { createParadisResourceMonitorWidget } from '../../../../paradis/contrib/
 import { createParadisLimitsMonitorWidget } from '../../../../paradis/contrib/limitsMonitor/electron-browser/paradisLimitsMonitorWidget.js';
 // PARA-PATCH: Claude/Codex/GitHub service status chips next to the limits monitor
 import { createParadisServiceStatusWidget } from '../../../../paradis/contrib/serviceStatus/electron-browser/paradisServiceStatusWidget.js';
-// PARA-PATCH: local/remote listening-port list (title bar right side, ahead of window controls)
+// PARA-PATCH: local/remote listening-port list (title bar left side, grouped with the other status widgets)
 import { createParadisPortListWidget } from '../../../../paradis/contrib/portList/electron-browser/paradisPortListWidget.js';
 // PARA-PATCH: keep the fork's title bar widgets from overlapping the command center (width steps, menu bar visibility)
 import { createParadisTitlebarFit } from '../../../../paradis/contrib/titlebarFit/browser/paradisTitlebarFit.js';
@@ -74,7 +74,7 @@ export class NativeTitlebarPart extends BrowserTitlebarPart {
 	private readonly paradisLimitsMonitorWidget = this._register(new MutableDisposable<IDisposable>());
 	// PARA-PATCH: Claude/Codex/GitHub service status chips next to the limits monitor
 	private readonly paradisServiceStatusWidget = this._register(new MutableDisposable<IDisposable>());
-	// PARA-PATCH: local/remote listening-port list (title bar right side)
+	// PARA-PATCH: local/remote listening-port list (title bar left side)
 	private readonly paradisPortListWidget = this._register(new MutableDisposable<IDisposable>());
 	// PARA-PATCH: keep the fork's title bar widgets from overlapping the command center
 	private readonly paradisTitlebarFit = this._register(new MutableDisposable<IDisposable>());

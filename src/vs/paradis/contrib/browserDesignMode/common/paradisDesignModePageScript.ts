@@ -379,6 +379,17 @@ const INSTALL_SCRIPT = `(function () {
 					node.removeAttribute(attrs[k].name);
 				} else if (containsSecret(attrs[k].value)) {
 					node.setAttribute(attrs[k].name, '[redacted]');
+				} else if (name === 'href' || name === 'src' || name === 'action') {
+					// 属性の一覧（safeAttributes）と同じく、クエリ・フラグメント・ユーザー名を落とす
+					node.setAttribute(attrs[k].name, sanitizeUrl(attrs[k].value));
+				} else if (name === 'class') {
+					// class も画面に出ない文字なので、セレクタと同じく識別子らしい名前だけ残す
+					var classes = stableClasses(node, 40);
+					if (classes.length) {
+						node.setAttribute(attrs[k].name, classes.join(' '));
+					} else {
+						node.removeAttribute(attrs[k].name);
+					}
 				}
 			}
 		}

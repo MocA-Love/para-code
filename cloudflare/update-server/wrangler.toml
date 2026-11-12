@@ -2,7 +2,7 @@
 name = "para-code-update-server"
 main = "src/index.ts"
 compatibility_date = "2026-07-01"
-# PARA-PATCH: account_id intentionally omitted; resolved from the
+# account_id intentionally omitted; resolved from the
 # CLOUDFLARE_ACCOUNT_ID environment variable (or a single-account token via
 # `wrangler login`) before running `wrangler deploy`.
 
