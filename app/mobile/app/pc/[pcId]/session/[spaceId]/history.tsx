@@ -8,6 +8,7 @@ import { AGENT_RESUME_CAPABILITY, parseAgentPastSessionPage, type AgentPastSessi
 import { sendPcRequest } from '../../../../../src/appState.js';
 import { useAgentSendLive } from '../../../../../src/agentSendQueue.js';
 import { CenterSpinner, useReadableColumn } from '../../../../../src/features/code/codeParts.js';
+import { providerLabel } from '../../../../../src/features/activity/activityParts.js';
 import { QueuedSendsBanner } from '../../../../../src/features/session/queuedSends.js';
 import { haptic } from '../../../../../src/haptics.js';
 import { usePcCapability } from '../../../../../src/hooks/usePcCapability.js';
@@ -134,7 +135,7 @@ export default function AgentHistoryScreen() {
 					<View style={styles.row}>
 						<ListRow
 							label={item.title}
-							hint={[item.agent === 'opencode' ? 'OpenCode' : item.agent === 'codex' ? 'Codex' : 'Claude Code', formatRelativeTime(item.updatedAt, now), item.terminalKey !== undefined ? 'PC で開いています' : undefined, item.preview].filter(part => part !== undefined).join(' · ')}
+							hint={[providerLabel(item.agent), formatRelativeTime(item.updatedAt, now), item.terminalKey !== undefined ? 'PC で開いています' : undefined, item.preview].filter(part => part !== undefined).join(' · ')}
 							onPress={() => open(item)}
 						/>
 					</View>
