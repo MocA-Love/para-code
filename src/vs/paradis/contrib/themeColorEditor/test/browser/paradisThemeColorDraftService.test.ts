@@ -214,6 +214,26 @@ suite('ParadisThemeColorDraftService', () => {
 		service.discard();
 	});
 
+	test('a second save while one is running waits for it instead of writing again', async () => {
+		const { configuration, service } = create();
+		const gate = new DeferredPromise<void>();
+		configuration.userWriteGate = gate.p;
+		service.setColor('Houston', 'statusBar.background', '#FF0000');
+		const first = service.save();
+		const second = service.save();
+		gate.complete();
+		const saved = await Promise.all([first, second]);
+		assert.deepStrictEqual({
+			saved,
+			userWrites: configuration.writes.filter(write => write.target === ConfigurationTarget.USER).map(write => write.key),
+			dirty: service.dirtyCount,
+		}, {
+			saved: [true, true],
+			userWrites: [COLORS],
+			dirty: 0,
+		});
+	});
+
 	test('changes made elsewhere while the confirm dialog is open survive the save', async () => {
 		const disposables = store.add(new DisposableStore());
 		const configuration = new LayeredConfigurationService();
