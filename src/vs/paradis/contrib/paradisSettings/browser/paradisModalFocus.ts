@@ -14,6 +14,7 @@
 //   ただし別の場所（確認ダイアログなど）にフォーカスがあるときは横取りしない
 // - 同じウィンドウで別のモーダルを開いたら、前のものは閉じる（後から開いたものを前に出す）。
 //   重なりの段はどのモーダルも同じ（vs/paradis/browser/paradisModal.ts の表）で、後から入れた幕が上に出る
+// - Tab・Shift+Tab はモーダルの末尾と先頭で折り返す（折り返さないと背面のエディタやターミナルへ抜け、見えない所に打てる）
 
 import * as dom from '../../../../base/browser/dom.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
@@ -52,6 +53,35 @@ function identityOf(element: HTMLElement): string {
 		element.getAttribute('aria-label') ?? '',
 		(element.textContent ?? '').trim().slice(0, 80),
 	].join('|');
+}
+
+/** `element` が Tab で巡る先か（無効・非表示・tabIndex が負のものは除く）。 */
+function isTabbable(element: HTMLElement): boolean {
+	if (element.tabIndex < 0) {
+		return false;
+	}
+	const native = /^(BUTTON|INPUT|SELECT|TEXTAREA|IFRAME)$/.test(element.tagName) || (element.tagName === 'A' && element.hasAttribute('href'));
+	if (!native && !element.hasAttribute('tabindex') && !element.isContentEditable) {
+		return false;
+	}
+	if ((element as HTMLButtonElement).disabled || (dom.isHTMLInputElement(element) && element.type === 'hidden')) {
+		return false;
+	}
+	return element.getClientRects().length > 0;
+}
+
+/** `root` の中で、Tab で巡る要素を文書の順に集める（inert の中は飛ばす）。 */
+function collectTabbables(root: HTMLElement, result: HTMLElement[] = []): HTMLElement[] {
+	for (const child of root.children) {
+		if (!dom.isHTMLElement(child) || child.inert) {
+			continue;
+		}
+		if (isTabbable(child)) {
+			result.push(child);
+		}
+		collectTabbables(child, result);
+	}
+	return result;
 }
 
 /** `root` の中で、フォーカスを受けられる要素のうち `predicate` に合う最初のものを探す。 */
@@ -120,6 +150,14 @@ export class ParadisModalFocus extends Disposable {
 			event.stopPropagation();
 			options.onEscape();
 		}, true));
+		// Tab は泡立ちで受ける（中のエディタなどが Tab を自分で使ったとき＝preventDefault 済みには手を出さない）
+		this._register(dom.addDisposableListener(this.targetWindow, 'keydown', e => {
+			const event = new StandardKeyboardEvent(e);
+			if (e.defaultPrevented || e.isComposing || event.keyCode !== KeyCode.Tab || event.ctrlKey || event.altKey || event.metaKey || !this.isTopmost() || !this.ownsFocus()) {
+				return;
+			}
+			this.wrapTab(event.shiftKey, e);
+		}));
 		// 描き直しでフォーカスしていた要素が消えたら、同じもの（無ければモーダル）へ戻す
 		const observer = new MutationObserver(() => this.recoverFocus());
 		observer.observe(options.modal, { childList: true, subtree: true });
@@ -139,6 +177,32 @@ export class ParadisModalFocus extends Disposable {
 	private ownsFocus(): boolean {
 		const active = this.targetWindow.document.activeElement;
 		return !active || active === this.targetWindow.document.body || this.options.backdrop.contains(active);
+	}
+
+	/** 先頭より前へ Shift+Tab、末尾より後へ Tab で出ようとしたら反対の端へ移す。それ以外はブラウザの順送りに任せる。 */
+	private wrapTab(backwards: boolean, e: KeyboardEvent): void {
+		const tabbables = collectTabbables(this.options.backdrop);
+		const doc = this.targetWindow.document;
+		const active = doc.activeElement;
+		let target: HTMLElement | undefined;
+		if (tabbables.length === 0) {
+			target = this.options.modal;
+		} else if (!active || active === doc.body) {
+			target = backwards ? tabbables[tabbables.length - 1] : tabbables[0];
+		} else {
+			// 今の場所より後（Shift+Tab なら前）に巡る先が無ければ、ブラウザはモーダルの外へ出す
+			const bit = backwards ? Node.DOCUMENT_POSITION_PRECEDING : Node.DOCUMENT_POSITION_FOLLOWING;
+			const hasNext = tabbables.some(candidate => candidate !== active && (active.compareDocumentPosition(candidate) & bit) !== 0);
+			if (!hasNext) {
+				target = backwards ? tabbables[tabbables.length - 1] : tabbables[0];
+			}
+		}
+		if (!target) {
+			return;
+		}
+		e.preventDefault();
+		e.stopPropagation();
+		target.focus();
 	}
 
 	/** フォーカスが BODY に落ちていたら戻す。描き直しの直後に呼ばれる。 */

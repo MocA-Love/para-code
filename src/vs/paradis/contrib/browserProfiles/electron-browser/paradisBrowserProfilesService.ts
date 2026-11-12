@@ -106,7 +106,10 @@ export interface IParadisBrowserProfilesService {
 	 */
 	remove(profileId: string): Promise<void>;
 
-	/** 台帳には残したまま、保存されている Cookie / ストレージだけを消す（＝ログアウト）。 */
+	/**
+	 * 台帳には残したまま、保存されている Cookie / ストレージだけを消す（＝ログアウト）。
+	 * main で消せなかったときは reject する（ログイン状態が残っているので、呼び出し元が知らせる）。
+	 */
 	clearProfileData(profileId: string): Promise<void>;
 
 
@@ -316,9 +319,13 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 		try {
 			await this._mainService.clearProfileData(profileId, deleted);
 		} catch (error) {
-			// 台帳の側は既に片付いており、ユーザーから見た操作は完了している。ディスク上に
-			// パーティションが残るだけなので、ここで失敗を前面に出さずログに残す。
 			this.logService.warn('[ParadisBrowserProfiles] failed to clear the stored data of a profile', error);
+			// 削除のときは台帳の側が既に片付いており、ユーザーから見た操作は完了している。ディスク上に
+			// パーティションが残るだけなので、失敗を前面に出さない。消去だけ（＝ログアウト）のときは
+			// ログイン状態が残ったままになるので、呼び出し元へ返して知らせてもらう。
+			if (!deleted) {
+				throw error;
+			}
 		}
 	}
 

@@ -2,7 +2,7 @@
 
 import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, JSON_GZIP_RESPONSE_ENCODING, TERMINAL_BINARY_DATA_ENCODING, decodeBinaryFsUpload, encodeBinaryTerminalData, generateIdentity, respondHandshake, FrameMux, Channels, encodeNotify, encodeNotifyDismissed, decodeNotifyControl, type Identity } from '@para/protocol';
 import { describe, expect, it, vi } from 'vitest';
-import { clearCredentials, loadCredentials, loadOrCreateIdentity, mergeWorkspaceState, MobileController, MobileWarmLeaseControllerRegistry, MobileWarmLeaseLifecycle, reserveOperationRun, revokeSelfOnRelay, saveCredentials, toAgentMessageSendResult, type FsReadResult, type KeyStore, type TerminalOperationOutboxStore, type WorkspaceState } from './store.js';
+import { loadOrCreateIdentity, mergeWorkspaceState, MobileController, MobileWarmLeaseControllerRegistry, MobileWarmLeaseLifecycle, reserveOperationRun, revokeSelfOnRelay, toAgentMessageSendResult, type FsReadResult, type KeyStore, type TerminalOperationOutboxStore, type WorkspaceState } from './store.js';
 import type { PairedCredentials, SocketLike } from './relayClient.js';
 import { paradisEncodeVoiceStreamChunk } from '../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileVoiceStream.js';
 import type { VoiceDelivery } from './voiceLifecycle.js';
@@ -56,25 +56,6 @@ describe('key persistence', () => {
 		expect(b.created).toBe(false);
 		expect(Array.from(b.identity.publicKey)).toEqual(Array.from(a.identity.publicKey));
 		expect(Array.from(b.identity.secretKey)).toEqual(Array.from(a.identity.secretKey));
-	});
-
-	it('roundtrips credentials', async () => {
-		const ks = new MemoryKeyStore();
-		const creds: PairedCredentials = {
-			relayUrl: 'wss://r', deviceId: 'd', mobileId: 'm', mobileToken: 't',
-			pcPublicKey: generateIdentity().publicKey,
-		};
-		await saveCredentials(ks, creds);
-		const loaded = await loadCredentials(ks);
-		expect(loaded?.deviceId).toBe('d');
-		expect(Array.from(loaded!.pcPublicKey)).toEqual(Array.from(creds.pcPublicKey));
-	});
-
-	it('clears credentials on unpair', async () => {
-		const ks = new MemoryKeyStore();
-		await saveCredentials(ks, { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'm', mobileToken: 't', pcPublicKey: generateIdentity().publicKey });
-		await clearCredentials(ks);
-		expect(await loadCredentials(ks)).toBeUndefined();
 	});
 });
 

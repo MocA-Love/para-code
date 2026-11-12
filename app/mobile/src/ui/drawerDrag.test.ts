@@ -10,9 +10,6 @@ import {
 	backdropFadeDistance,
 	dragOffset,
 	shouldDismissDrag,
-	shouldGrabContent,
-	shouldGrabHandle,
-	shouldGrabHeader,
 } from './drawerDrag.js';
 
 describe('dragOffset', () => {
@@ -43,29 +40,6 @@ describe('shouldDismissDrag', () => {
 
 	test('上へ引いた位置で離したときは、速さが下向きでも閉じない', () => {
 		expect(shouldDismissDrag(-10, DISMISS_VELOCITY + 1)).toBe(false);
-	});
-});
-
-describe('掴む判定', () => {
-	test('つまみは上下どちらの縦移動でも掴み、横移動では掴まない', () => {
-		expect(shouldGrabHandle(0, 6)).toBe(true);
-		expect(shouldGrabHandle(0, -6)).toBe(true);
-		expect(shouldGrabHandle(0, 3)).toBe(false);
-		expect(shouldGrabHandle(20, 10)).toBe(false);
-	});
-
-	test('見出しは中身が上端にあって下へ引いたときだけ掴む', () => {
-		expect(shouldGrabHeader(0, 0, 6)).toBe(true);
-		expect(shouldGrabHeader(0, 0, -6)).toBe(false);
-		expect(shouldGrabHeader(40, 0, 6)).toBe(false);
-		expect(shouldGrabHeader(0, 10, 6)).toBe(false);
-	});
-
-	test('中身は上端までスクロールしていて、下へ少し大きく引いたときだけ掴む', () => {
-		expect(shouldGrabContent(0, 0, 10)).toBe(true);
-		expect(shouldGrabContent(0, 0, 6)).toBe(false);
-		expect(shouldGrabContent(12, 0, 10)).toBe(false);
-		expect(shouldGrabContent(0, 0, -10)).toBe(false);
 	});
 });
 

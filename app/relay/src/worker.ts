@@ -40,6 +40,9 @@ interface Env {
 	MOBILE_CREDENTIAL_TTL_DAYS?: string;
 }
 
+/** WebSocket の経路で DO へ写すクエリ。`token` は旧クライアントのクエリ方式（finding #7）。 */
+const WS_FORWARDED_PARAMS = ['role', 'mobileId', 'pairId', 'token'] as const;
+
 function doStubFor(env: Env, deviceId: string | null): DurableObjectStub | null {
 	if (deviceId === null || deviceId.length === 0) {
 		return null;
@@ -109,7 +112,15 @@ export default {
 			return stub.fetch(new Request('https://do/?action=turn-credentials', request));
 		}
 		if (parts[2] === 'ws') {
-			const forward = new Request(`https://do/?${url.searchParams.toString()}`, request);
+			// DO の接続で読む項目だけを写す。action などを渡すと POST だけの経路を通らずに DO の処理へ届く
+			const params = new URLSearchParams();
+			for (const name of WS_FORWARDED_PARAMS) {
+				const value = url.searchParams.get(name);
+				if (value !== null) {
+					params.set(name, value);
+				}
+			}
+			const forward = new Request(`https://do/?${params.toString()}`, request);
 			return stub.fetch(forward);
 		}
 		return new Response('not found', { status: 404 });
