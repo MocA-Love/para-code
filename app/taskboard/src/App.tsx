@@ -226,17 +226,54 @@ function NavBar({ attention }: { attention: number }) {
 	);
 }
 
-function Toasts({ toasts, dismiss }: { toasts: (IToast & { id: number })[]; dismiss: (id: number) => void }) {
+/** 赤（失敗・質問・許可）は自動で消さない。ほかはこの時間で消す。 */
+const TOAST_MS = 4500;
+
+/**
+ * トーストの 1 件。消えるまでの残り時間を持ち、`paused` の間は数えない。
+ * タスクにつながるものは本体を button にして、Tab で届き Enter で開けるようにする。
+ */
+function ToastItem({ toast: t, paused, dismiss }: { toast: IToast & { id: number }; paused: boolean; dismiss: (id: number) => void }) {
 	const app = useApp();
+	const keep = t.tone === 'red';
+	const left = useRef(TOAST_MS);
+	useEffect(() => {
+		if (keep || paused) {
+			return;
+		}
+		const start = Date.now();
+		const timer = setTimeout(() => dismiss(t.id), left.current);
+		return () => {
+			clearTimeout(timer);
+			left.current = Math.max(0, left.current - (Date.now() - start));
+		};
+	}, [keep, paused, dismiss, t.id]);
+	const text = <><b>{t.title}</b>{t.body && <span className="body">{t.body}</span>}{keep && <span className="keep">閉じるまで残ります</span>}</>;
+	const taskId = t.taskId;
 	return (
-		<div className="toasts" aria-live="polite">
-			{toasts.map(t => (
-				<div key={t.id} className={`toast ${t.taskId ? 'click' : ''}`} role="status" onClick={() => { if (t.taskId) { app.openTask(t.taskId); dismiss(t.id); } }}>
-					<span className="dot" style={tone(t.tone)} />
-					<div style={{ minWidth: 0 }}><b>{t.title}</b>{t.body && <span className="body">{t.body}</span>}</div>
-					<button className="btn ghost icon sm" onClick={e => { e.stopPropagation(); dismiss(t.id); }} aria-label="閉じる"><Icon name="close" size={13} /></button>
-				</div>
-			))}
+		<div className="toast" role="status">
+			<span className="dot" style={tone(t.tone)} />
+			{taskId ? <button type="button" className="toast-main" onClick={() => { app.openTask(taskId); dismiss(t.id); }}>{text}</button> : <div style={{ minWidth: 0 }}>{text}</div>}
+			<button type="button" className="btn ghost icon sm" onClick={() => dismiss(t.id)} aria-label="閉じる"><Icon name="close" size={13} /></button>
+		</div>
+	);
+}
+
+/** トーストの並び。マウスかフォーカスが中にある間は、全部のタイマーを止める。 */
+function Toasts({ toasts, dismiss }: { toasts: (IToast & { id: number })[]; dismiss: (id: number) => void }) {
+	const ref = useRef<HTMLDivElement>(null);
+	const [hover, setHover] = useState(false);
+	const [focusIn, setFocusIn] = useState(false);
+	// 触っていたトーストが消えると mouseleave / focusout が来ないことがあるので、並びが変わるたびに確かめ直す
+	useEffect(() => {
+		setHover(Boolean(ref.current?.matches(':hover')));
+		setFocusIn(Boolean(ref.current?.contains(document.activeElement)));
+	}, [toasts]);
+	return (
+		<div className="toasts" aria-live="polite" ref={ref}
+			onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+			onFocus={() => setFocusIn(true)} onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) { setFocusIn(false); } }}>
+			{toasts.map(t => <ToastItem key={t.id} toast={t} paused={hover || focusIn} dismiss={dismiss} />)}
 		</div>
 	);
 }
@@ -258,8 +295,7 @@ function Shell({ snapshot, theme, setTheme }: { snapshot: ITaskBoardSnapshot; th
 	const toast = useCallback((t: IToast) => {
 		const id = ++seq.current;
 		setToasts(list => [...list.slice(-3), { ...t, id }]);
-		setTimeout(() => dismiss(id), t.tone === 'red' ? 8000 : 4500);
-	}, [dismiss]);
+	}, []);
 
 	// 開いているタスクの活動とターミナルの出力だけを受け取る（一覧のスナップショットには入っていない）
 	useEffect(() => focusTask(route.taskId), [route.taskId]);

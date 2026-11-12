@@ -251,7 +251,7 @@ function ManualCard({ session }: { session: ITaskBoardManualSession }) {
 					<button className="btn xs" onClick={() => void app.call('answerManual', { sessionId: session.id, allow: false })}>拒否</button>
 				</>}
 				<span className="grow" />
-				<span className="faint" style={{ fontSize: 11.5 }}><Elapsed since={session.since} /></span>
+				<span className="faint" style={{ fontSize: 'var(--fs-xs)' }}><Elapsed since={session.since} /></span>
 				<button className="btn xs ghost" onClick={() => app.showDialog(<AdoptDialog sessionId={session.id} name={session.name} />)}>タスクに取り込む</button>
 			</div>
 		</div>

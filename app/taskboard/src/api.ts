@@ -59,7 +59,13 @@ export async function rpc<M extends TaskBoardRpcMethod>(method: M, params: ITask
 	if (res.status === 401) {
 		throw new RpcError('network', 'unauthorized');
 	}
-	const body = await res.json() as { ok: true; result: ITaskBoardRpc[M]['result'] } | { ok: false; error: { code: TaskBoardErrorCode; message: string } };
+	let body: { ok: true; result: ITaskBoardRpc[M]['result'] } | { ok: false; error: { code: TaskBoardErrorCode; message: string } };
+	try {
+		body = await res.json();
+	} catch {
+		// 中継が HTML を返した・大きすぎて切られたなど、JSON でない応答は HTTP の状態だけを伝える
+		throw new RpcError('network', `HTTP ${res.status}`);
+	}
 	if (!body.ok) {
 		throw new RpcError(body.error.code, body.error.message);
 	}
