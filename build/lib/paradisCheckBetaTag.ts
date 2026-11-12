@@ -19,7 +19,8 @@
  *      must contain build/lib/paradisReleaseChannel.ts (`git grep` / `git cat-file` on the commit),
  *   4. the commit's own contract tests (paradisReleaseChannel.test.ts, paradisReleaseContract.test.ts)
  *      must pass, run from a temporary sparse worktree of that commit.
- * It only reads the repository and creates/removes a temporary worktree; it never pushes or tags.
+ * It only reads the repository (and asks origin whether the tag is already there) and creates/removes a
+ * temporary worktree; it never pushes or tags.
  */
 
 import { execFileSync } from 'child_process';
@@ -68,6 +69,14 @@ function checkTag(tag: string): void {
 	if (git(['rev-parse', '-q', '--verify', `refs/tags/${tag}`], { allowFailure: true })) {
 		fail(`tag '${tag}' already exists locally. Delete it first if you mean to re-tag.`);
 	}
+	// A tag pushed from another machine is not in refs/tags until it is fetched.
+	const remote = git(['ls-remote', '--tags', 'origin', `refs/tags/${tag}`], { allowFailure: true });
+	if (remote === undefined) {
+		fail(`could not ask origin whether tag '${tag}' already exists.`);
+	}
+	if (remote) {
+		fail(`tag '${tag}' already exists on origin. Pick the next beta number.`);
+	}
 	console.log(`OK: '${tag}' is a new beta tag.`);
 }
 
@@ -97,6 +106,7 @@ function runContractTests(commit: string): void {
 	const worktree = fs.mkdtempSync(path.join(os.tmpdir(), 'para-beta-check-'));
 	fs.rmdirSync(worktree);
 	git(['worktree', 'add', '--detach', '--no-checkout', worktree, commit]);
+	let passed = false;
 	try {
 		git(['sparse-checkout', 'set', '--no-cone', ...SPARSE_PATHS], { cwd: worktree });
 		git(['checkout', '--detach', commit], { cwd: worktree });
@@ -110,13 +120,17 @@ function runContractTests(commit: string): void {
 		console.log(`Running the contract tests of ${commit} ...`);
 		try {
 			execFileSync(process.execPath, ['--test', ...CONTRACT_TESTS], { cwd: path.join(worktree, 'build'), stdio: 'inherit' });
+			passed = true;
 		} catch {
-			fail('the contract tests of this commit failed (see the output above).');
+			// fail() exits the process, which would skip the finally below and leave the worktree behind
 		}
-		console.log('OK: the commit\'s release contract tests pass.');
 	} finally {
 		git(['worktree', 'remove', '--force', worktree], { allowFailure: true });
 	}
+	if (!passed) {
+		fail('the contract tests of this commit failed (see the output above).');
+	}
+	console.log('OK: the commit\'s release contract tests pass.');
 }
 
 if (import.meta.main) {
