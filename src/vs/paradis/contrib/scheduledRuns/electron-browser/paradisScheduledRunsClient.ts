@@ -8,6 +8,7 @@
 
 // 定期実行の shared process チャネルを画面から使うための薄い窓口。
 
+import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Event } from '../../../../base/common/event.js';
 import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
@@ -48,8 +49,8 @@ export interface IParadisScheduledRunsClient {
 	heartbeat(runIds: readonly string[]): Promise<string[]>;
 	/** 受け持った実行の事前確認を走らせる。false ならエージェントを起動しない（記録は shared process が書いた）。 */
 	runPrecheck(runId: string, trusted: boolean): Promise<boolean>;
-	/** 保存する前に事前確認を 1 回だけ試す（記録には残さない）。 */
-	testPrecheck(precheck: IParadisScheduledRunPrecheck, repositoryUri: string): Promise<{ readonly result?: IParadisScheduledRunPrecheckResult; readonly error?: string }>;
+	/** 保存する前に事前確認を 1 回だけ試す（記録には残さない）。`token` を取り消すとコマンドを止める。 */
+	testPrecheck(precheck: IParadisScheduledRunPrecheck, repositoryUri: string, token?: CancellationToken): Promise<{ readonly result?: IParadisScheduledRunPrecheckResult; readonly error?: string }>;
 }
 
 class ParadisScheduledRunsClient implements IParadisScheduledRunsClient {
@@ -80,7 +81,7 @@ class ParadisScheduledRunsClient implements IParadisScheduledRunsClient {
 	report(report: IParadisScheduledRunReport): Promise<boolean> { return this.channel.call('report', [report]); }
 	heartbeat(runIds: readonly string[]): Promise<string[]> { return this.channel.call('heartbeat', [runIds]); }
 	runPrecheck(runId: string, trusted: boolean): Promise<boolean> { return this.channel.call('runPrecheck', [runId, trusted]); }
-	testPrecheck(precheck: IParadisScheduledRunPrecheck, repositoryUri: string): Promise<{ readonly result?: IParadisScheduledRunPrecheckResult; readonly error?: string }> { return this.channel.call('testPrecheck', [precheck, repositoryUri]); }
+	testPrecheck(precheck: IParadisScheduledRunPrecheck, repositoryUri: string, token?: CancellationToken): Promise<{ readonly result?: IParadisScheduledRunPrecheckResult; readonly error?: string }> { return this.channel.call('testPrecheck', [precheck, repositoryUri], token); }
 }
 
 registerSingleton(IParadisScheduledRunsClient, ParadisScheduledRunsClient, InstantiationType.Delayed);

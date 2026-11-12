@@ -1,3 +1,5 @@
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
 import { describe, expect, it } from 'vitest';
 import type { WorkspaceState } from './store.js';
 import { NOTIFICATION_PENDING_WAIT_MS, notificationDestination, notificationNavigationDecision, pendingNotificationWait, readNotificationDeepLink } from './notificationNavigation.js';

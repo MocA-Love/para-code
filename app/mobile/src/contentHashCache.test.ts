@@ -1,3 +1,5 @@
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
 import { describe, expect, it } from 'vitest';
 import { CONTENT_HASH_ENCODING, ContentHashResponseCache } from './contentHashCache.js';
 

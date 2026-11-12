@@ -136,4 +136,39 @@ suite('ParadisModalFocus', () => {
 		});
 		next.close();
 	});
+
+	test('Tab and Shift+Tab wrap inside the modal instead of moving to the workbench behind it', () => {
+		const modal = open();
+		const [first, disabled, last] = ['first', 'disabled', 'last'].map(label => {
+			const button = mainWindow.document.createElement('button');
+			button.textContent = label;
+			modal.modal.appendChild(button);
+			return button;
+		});
+		disabled.disabled = true;
+		const pressTab = (shiftKey: boolean) => {
+			const target = mainWindow.document.activeElement ?? mainWindow.document.body;
+			const event = new KeyboardEvent('keydown', { keyCode: 9, shiftKey, bubbles: true, cancelable: true });
+			target.dispatchEvent(event);
+			return event.defaultPrevented;
+		};
+		last.focus();
+		const fromLast = { prevented: pressTab(false), focused: mainWindow.document.activeElement };
+		first.focus();
+		const fromFirst = { prevented: pressTab(true), focused: mainWindow.document.activeElement };
+		modal.modal.focus();
+		const fromModal = { prevented: pressTab(true), focused: mainWindow.document.activeElement };
+		first.focus();
+		const forwardFromFirst = pressTab(false);
+		outside.focus();
+		const fromOutside = pressTab(false);
+		assert.deepStrictEqual({ fromLast, fromFirst, fromModal, forwardFromFirst, fromOutside }, {
+			fromLast: { prevented: true, focused: first },
+			fromFirst: { prevented: true, focused: last },
+			fromModal: { prevented: true, focused: last },
+			forwardFromFirst: false,
+			fromOutside: false,
+		});
+		modal.close();
+	});
 });
