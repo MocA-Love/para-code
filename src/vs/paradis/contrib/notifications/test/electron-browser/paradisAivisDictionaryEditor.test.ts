@@ -14,7 +14,14 @@ import { IConfigurationService } from '../../../../../platform/configuration/com
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
 import { IParadisAivisDictionaryDetail } from '../../common/paradisNotifications.js';
-import { ParadisCreateDictionaryDialog, ParadisDictionaryEditorDialog } from '../../electron-browser/paradisAivisDictionarySection.js';
+import { ParadisAivisDictionarySection, ParadisCreateDictionaryDialog, ParadisDictionaryEditorDialog } from '../../electron-browser/paradisAivisDictionarySection.js';
+import { invalidateAivisDictionaryListCache, setCachedAivisDictionaryList } from '../../electron-browser/paradisAivisApiCache.js';
+import { IParadisNotificationsSettingsService } from '../../browser/paradisNotificationsSettings.js';
+import { IParadisDialogService } from '../../../confirmDialog/browser/paradisDialogService.js';
+import { NullHoverService } from '../../../../../platform/hover/test/browser/nullHoverService.js';
+import { NullLogService } from '../../../../../platform/log/common/log.js';
+import { IContextViewService } from '../../../../../platform/contextview/browser/contextView.js';
+import { Event as BaseEvent } from '../../../../../base/common/event.js';
 import { paradisOpenAnotherModal } from '../../../paradisSettings/test/browser/paradisModalTestUtils.js';
 
 suite('ParadisAivisDictionaryEditor', () => {
@@ -95,6 +102,40 @@ suite('ParadisAivisDictionaryEditor', () => {
 				leftOpen: 0,
 			});
 		} finally {
+			root.remove();
+		}
+	});
+
+	test('shows why deleting or exporting a dictionary failed', async () => {
+		const root = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(root);
+		const apiKey = 'dictionary-section-test-key';
+		setCachedAivisDictionaryList(apiKey, [{ uuid: 'd1', name: 'Words', description: '', word_count: 1, created_at: '', updated_at: '2026-01-01' }]);
+		const sharedProcessService = upcastPartial<ISharedProcessService>({
+			getChannel: () => ({ call: async (command: string) => { throw new Error(`${command} failed: 401`); }, listen: () => { throw new Error('not used'); } }) as never,
+		});
+		const settingsService = upcastPartial<IParadisNotificationsSettingsService>({
+			onDidChange: BaseEvent.None,
+			getAivisSettings: () => ({ engine: 'aivis', apiKey, userDictionaryUuid: '' }) as ReturnType<IParadisNotificationsSettingsService['getAivisSettings']>,
+		});
+		const dialogService = upcastPartial<IParadisDialogService>({ confirm: async () => ({ confirmed: true }) });
+		const section = new ParadisAivisDictionarySection(root, sharedProcessService, settingsService, dialogService, upcastPartial<ILayoutService>({ activeContainer: root }), new NullLogService(), upcastPartial<IContextViewService>({}), { getValue: () => undefined } as unknown as IConfigurationService, NullHoverService);
+		const errorText = () => root.querySelector('.pns-error')?.textContent ?? '';
+		const buttons = () => [...root.querySelectorAll<HTMLButtonElement>('.pns-dict-actions button')];
+		try {
+			buttons().find(button => button.classList.contains('pns-delete'))!.click();
+			await timeout(0);
+			const afterDelete = errorText();
+			buttons()[buttons().length - 2].click();
+			await timeout(0);
+			const afterExport = errorText();
+			assert.deepStrictEqual({ afterDelete, afterExport }, {
+				afterDelete: 'deleteAivisDictionary failed: 401',
+				afterExport: 'exportAivisDictionary failed: 401',
+			});
+		} finally {
+			section.dispose();
+			invalidateAivisDictionaryListCache(apiKey);
 			root.remove();
 		}
 	});
