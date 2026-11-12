@@ -37,3 +37,20 @@ export function guardWebViewNavigation(request: ShouldStartLoadRequest, confirmE
 	}
 	return true;
 }
+
+/**
+ * 外へ出る前の確認を、1 度に 1 つだけ出す関数にする。スクリプトが `location` を繰り返し書き換えても
+ * 確認が積み重ならないよう、出ている間（`settled` が呼ばれるまで）の要求は捨てる。
+ */
+export function createSingleExternalConfirm(show: (url: string, settled: () => void) => void): (url: string) => void {
+	let showing = false;
+	return url => {
+		if (showing) {
+			return;
+		}
+		showing = true;
+		show(url, () => {
+			showing = false;
+		});
+	};
+}

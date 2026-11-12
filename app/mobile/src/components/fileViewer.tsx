@@ -25,12 +25,12 @@ import { haptic } from '../haptics.js';
 import type { FsReadResult } from '../store.js';
 import docxPreviewBundle from '../../assets/docxpreview/docxPreviewBundle.json';
 import { isFileViewerJavaScriptEnabled } from './webViewScriptPolicy.js';
-import { guardWebViewNavigation } from './webViewLinkGuard.js';
+import { createSingleExternalConfirm, guardWebViewNavigation } from './webViewLinkGuard.js';
 import { useWebViewRevival } from './webViewRevival.js';
 import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useCloseOnAppLock } from '../appLock.js';
 import { lockedModalVisible } from '../appLockPolicy.js';
-import { classifyMobileFileKind, createMobileOfficeNonce, guardMobileOfficeNavigation, MOBILE_OFFICE_ORIGIN_WHITELIST, secureMobileOfficeHtml } from './officeCapability.js';
+import { classifyMobileFileKind, createMobileOfficeNonce, guardMobileOfficeNavigation, MOBILE_DOCUMENT_ORIGIN_WHITELIST, secureMobileOfficeHtml } from './officeCapability.js';
 import { MobileOfficeWebView } from '../features/code/fileViewerBody.js';
 import { viewerScriptCspMeta } from '../features/code/fileFind.js';
 import { useViewerPathLinks, type ViewerPathLinkSpace } from '../features/code/useViewerPathLinks.js';
@@ -486,16 +486,17 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 	const kind = classifyMobileFileKind(name) ?? (/\.pdf$/i.test(name) ? 'pdf' : IMAGE_FILE_PATTERN.test(name) ? 'image' : AV_FILE_PATTERN.test(name) ? 'av' : /\.(?:md|markdown)$/i.test(name) ? 'markdown' : /\.(?:html?|xhtml)$/i.test(name) ? 'html' : 'other');
 	const officeKind = kind === 'spreadsheet' || kind === 'docx';
 	const officeNonce = useMemo(() => officeKind ? createMobileOfficeNonce() : undefined, [officeKind, spreadsheetHtml, docxData]);
-	const confirmExternalLink = useMemo(() => (url: string) => {
+	const confirmExternalLink = useMemo(() => createSingleExternalConfirm((url, settled) => {
 		paraAlert.alert(
 			'外部リンクを開きますか？',
 			url,
 			[
-				{ text: 'キャンセル', style: 'cancel' },
-				{ text: '開く', onPress: () => { void Linking.openURL(url).catch(() => { }); } },
+				{ text: 'キャンセル', style: 'cancel', onPress: settled },
+				{ text: '開く', onPress: () => { settled(); void Linking.openURL(url).catch(() => { }); } },
 			],
+			{ onDismiss: settled },
 		);
-	}, []);
+	}), []);
 	const guardOfficeNavigation = useMemo(() => (request: { readonly url: string; readonly isTopFrame?: boolean }) => guardMobileOfficeNavigation(request, confirmExternalLink), [confirmExternalLink]);
 	// 検索一致行が指定されているときはRaw(コード)表示で開く（レンダー表示では行の概念がないため）
 	const initialMode: ViewMode = kind === 'other' || focusLine !== undefined ? 'code' : 'render';
@@ -631,7 +632,7 @@ export function FileViewer({ path, result, spreadsheetHtml, sheets, sheetIndex, 
 						style={styles.web}
 						source={{ html }}
 						onContentProcessDidTerminate={revival.onContentProcessDidTerminate}
-						originWhitelist={[...MOBILE_OFFICE_ORIGIN_WHITELIST]}
+						originWhitelist={[...MOBILE_DOCUMENT_ORIGIN_WHITELIST]}
 						javaScriptEnabled={allowJs}
 						onShouldStartLoadWithRequest={officeKind ? guardOfficeNavigation : guardHtmlNavigation}
 						{...(pathLinkView ? { onLoadEnd: links.onLoadEnd, onMessage: (event: { nativeEvent: { data: string } }) => { links.onMessage(event.nativeEvent.data); } } : {})}

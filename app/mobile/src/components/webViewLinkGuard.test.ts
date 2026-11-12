@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 const openURL = vi.hoisted(() => vi.fn(() => Promise.resolve()));
 vi.mock('react-native', () => ({ Linking: { openURL } }));
 
-import { guardWebViewNavigation } from './webViewLinkGuard.js';
+import { createSingleExternalConfirm, guardWebViewNavigation } from './webViewLinkGuard.js';
 
 function request(url: string, isTopFrame?: boolean): ShouldStartLoadRequest {
 	return { url, isTopFrame } as ShouldStartLoadRequest;
@@ -42,5 +42,21 @@ describe('guardWebViewNavigation', () => {
 		expect(guardWebViewNavigation(request('javascript:alert(1)'), confirm)).toBe(false);
 		expect(guardWebViewNavigation(request('about:blank#top'), confirm)).toBe(true);
 		expect({ confirmed: confirm.mock.calls, opened: openURL.mock.calls.length }).toEqual({ confirmed: [['https://example.com/script'], ['http://example.com/android']], opened: 0 });
+	});
+});
+
+describe('createSingleExternalConfirm', () => {
+	test('shows one confirmation at a time and accepts the next after it settles', () => {
+		const shown: string[] = [];
+		let settle = () => { };
+		const confirm = createSingleExternalConfirm((url, settled) => {
+			shown.push(url);
+			settle = settled;
+		});
+		confirm('https://example.com/1');
+		confirm('https://example.com/2');
+		settle();
+		confirm('https://example.com/3');
+		expect(shown).toEqual(['https://example.com/1', 'https://example.com/3']);
 	});
 });
