@@ -110,11 +110,12 @@ suite('Paradis UI overlays (dialog, menu, pop-up)', () => {
 				rendered = d.render(container);
 				return { close: () => { } };
 			},
+			// 本家の ContextView と同じ順: onHide を呼んでから箱を隠し、描いたものを捨てる
 			hideContextView: () => {
+				delegate?.onHide?.();
+				container.replaceChildren();
 				rendered?.dispose();
 				rendered = null;
-				container.replaceChildren();
-				delegate?.onHide?.();
 			},
 		} as unknown as IContextViewService;
 		const anchor = mainWindow.document.createElement('button');

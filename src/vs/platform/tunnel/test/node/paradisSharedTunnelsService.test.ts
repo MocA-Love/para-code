@@ -47,6 +47,16 @@ suite('ParadisSharedTunnelsService', () => {
 	}
 
 	/**
+	 * Waits until the kept references of a force-closed tunnel have expired, with a wide margin over
+	 * {@link ParadisSharedTunnelsService.carriedReferencesTimeoutMs} so a slow CI machine does not fire
+	 * this wait first. Once the expiry timer has run, letting go of the per-authority service only
+	 * awaits settled promises, so it is done before this longer timer fires.
+	 */
+	function waitPastCarriedReferencesTimeout(service: ParadisSharedTunnelsService): Promise<void> {
+		return new Promise<void>(resolve => setTimeout(resolve, Math.max(service.carriedReferencesTimeoutMs * 20, 200)));
+	}
+
+	/**
 	 * Whether the tunnel's local port is taken, judged by trying to listen on it ourselves.
 	 * (Connecting is not a reliable probe here: the tunnel accepts and then resets at once,
 	 * because nothing in these tests can reach a remote.)
@@ -123,7 +133,7 @@ suite('ParadisSharedTunnelsService', () => {
 			await service.forceCloseTunnel('ssh-remote+box', 'localhost', 45124);
 
 			// The reforward's forward failed (or its window closed): nothing takes window B's reference.
-			await new Promise<void>(resolve => setTimeout(resolve, 50));
+			await waitPastCarriedReferencesTimeout(service);
 
 			const later = await open(service);
 			await later.dispose();
@@ -157,6 +167,36 @@ suite('ParadisSharedTunnelsService', () => {
 			);
 		} finally {
 			service.dispose();
+		}
+	});
+
+	test('the per-authority service is let go of once kept references expire or are returned and no tunnel is left', async () => {
+		// The kept references expire: nothing forwards the port again.
+		const expiring = createService();
+		expiring.carriedReferencesTimeoutMs = 10;
+		// The kept reference is returned before anything forwards the port again (the timeout never fires here).
+		const returning = createService();
+		try {
+			const windowA = await open(expiring);
+			const windowB = await open(expiring);
+			await windowA.dispose();
+			await expiring.forceCloseTunnel('ssh-remote+box', 'localhost', 45124);
+			await waitPastCarriedReferencesTimeout(expiring);
+			const keptAfterExpiry = await expiring.forceCloseTunnel('ssh-remote+box', 'localhost', 45124);
+			await windowB.dispose();
+
+			const windowC = await open(returning);
+			const windowD = await open(returning);
+			await windowC.dispose();
+			await returning.forceCloseTunnel('ssh-remote+box', 'localhost', 45124);
+			await windowD.dispose();
+			await new Promise<void>(resolve => setTimeout(resolve, 0));
+			const keptAfterRelease = await returning.forceCloseTunnel('ssh-remote+box', 'localhost', 45124);
+
+			assert.deepStrictEqual({ keptAfterExpiry, keptAfterRelease }, { keptAfterExpiry: false, keptAfterRelease: false });
+		} finally {
+			expiring.dispose();
+			returning.dispose();
 		}
 	});
 

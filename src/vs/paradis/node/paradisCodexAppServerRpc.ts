@@ -21,6 +21,7 @@
 
 import * as cp from 'child_process';
 import { homedir } from 'os';
+import { StringDecoder } from 'string_decoder';
 import { timeout } from '../../base/common/async.js';
 import { Disposable } from '../../base/common/lifecycle.js';
 import { join, resolve } from '../../base/common/path.js';
@@ -181,6 +182,8 @@ class ParadisCodexAppServerRpcSession extends Disposable implements IParadisCode
 	/** 終了した・起動できなかった・破棄した理由。以後の要求はすぐこれで断る。 */
 	private closedError: Error | undefined;
 	private buffer = '';
+	/** パイプの塊の境目が多バイト文字の途中に来ても化けないよう、残りを次の塊とつないで読む。 */
+	private readonly stdoutDecoder = new StringDecoder('utf8');
 	private nextId = 1;
 	private readonly pending = new Map<number, { readonly method: string; resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 
@@ -224,7 +227,7 @@ class ParadisCodexAppServerRpcSession extends Disposable implements IParadisCode
 	}
 
 	private onStdout(chunk: Buffer): void {
-		this.buffer += chunk.toString('utf8');
+		this.buffer += this.stdoutDecoder.write(chunk);
 		let newlineIndex: number;
 		while ((newlineIndex = this.buffer.indexOf('\n')) >= 0) {
 			const line = this.buffer.slice(0, newlineIndex).trim();
