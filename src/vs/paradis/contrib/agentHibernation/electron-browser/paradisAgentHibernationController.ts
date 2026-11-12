@@ -138,6 +138,8 @@ export class ParadisAgentHibernationController extends Disposable {
 		const activity: IInstanceActivity = { pendingDraft: false };
 		this.activity.set(instance.instanceId, activity);
 		const store = this.instanceListeners;
+		// トークンは作られたときに決まる。閉じたときには先にトークンの台帳から消えているので、ここで控える
+		const token = this.paneTokenService.getTokenForInstance(instance.instanceId);
 		const listeners = instance.onDidInputData(data => {
 			if (paradisIsUserTypedInput(data)) {
 				activity.lastInputAt = Date.now();
@@ -156,6 +158,12 @@ export class ParadisAgentHibernationController extends Disposable {
 			this.hibernatedAt.delete(instance.instanceId);
 			this.inputsWhileHibernated.delete(instance.instanceId);
 			paradisForgetRemoteTerminalViewing(instance.instanceId);
+			// 同じ PTY が新しいタブへ移っていれば（detach / reattach）トークンはまだ生きているので残す
+			const owner = token !== undefined ? this.paneTokenService.getInstanceForToken(token) : undefined;
+			if (token !== undefined && (owner === undefined || owner === instance.instanceId)) {
+				this.completedAt.delete(token);
+				this.retryAfter.delete(token);
+			}
 			store.deleteAndDispose(instance.instanceId);
 		});
 		store.set(instance.instanceId, { dispose: () => { listeners.dispose(); disposed.dispose(); } });

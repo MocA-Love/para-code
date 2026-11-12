@@ -614,6 +614,10 @@ kbd { font: 11px var(--mono); color: var(--faint); border: 1px solid var(--line-
 .opt .ot { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .opt small { display: block; color: var(--muted); }
 .opt kbd { margin-top: 2px; }
+/* 「モック」は選択肢のボタンの中に入れず（入れ子だとキーで押せない）、兄弟のボタンとして選択肢の枠の右上に重ねる */
+.opt-row { position: relative; }
+.opt.with-mock { padding-right: 88px; }
+.opt-row .opt-mock { position: absolute; top: 15px; right: 12px; }
 .ask-foot { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
 .livebox { border: 1px solid color-mix(in srgb, var(--blue) 35%, transparent); background: var(--blue-weak); border-radius: var(--r-lg); padding: 12px 14px; margin-bottom: 16px; }
 .livebox.gray { border-color: var(--line-strong); background: var(--surface); }

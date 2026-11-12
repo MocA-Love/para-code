@@ -2,6 +2,7 @@
 
 import { create } from 'zustand';
 import { secureKeyStore } from '../../platform.js';
+import { errorKind } from './errorKind.js';
 import {
 	normalizeSessionViewOverrides,
 	withSessionViewOverride,
@@ -42,7 +43,7 @@ let retryTimer: ReturnType<typeof setTimeout> | undefined;
 
 function save(overrides: SessionViewOverrides): void {
 	secureKeyStore.setItem(STORAGE_KEY, JSON.stringify(overrides)).catch((err: unknown) => {
-		console.warn('[sessionView] failed to save', err);
+		console.warn('[sessionView] failed to save', errorKind(err));
 	});
 }
 
@@ -88,7 +89,7 @@ export function ensureSessionViewOverridesLoaded(): void {
 			}
 		}, (err: unknown) => {
 			// 読めなかった: 画面は既定のまま進める（loaded）が、保存はしない。次の変更か、少し待ってから読み直す。
-			console.warn('[sessionView] failed to load', err);
+			console.warn('[sessionView] failed to load', errorKind(err));
 			loadStarted = false;
 			useSessionViewOverrides.setState({ loaded: true });
 			if (retryTimer === undefined) {
