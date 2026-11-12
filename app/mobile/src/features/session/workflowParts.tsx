@@ -111,12 +111,12 @@ export function WorkflowChips({ chips }: { chips: readonly WorkflowChip[] }) {
 	);
 }
 
-/** 「WF」の札（カードと画面の見出しの左）。 */
-export function WorkflowBadge() {
+/** カードの見出しの左の札。既定は Workflow の「WF」で、チームのカードは「TM」を渡す（札の見た目を 1 か所にまとめる）。 */
+export function WorkflowBadge({ label = 'WF' }: { label?: string }) {
 	const styles = useChatStyles(baseStyles);
 	return (
 		<View style={styles.badge}>
-			<Text style={styles.badgeText}>WF</Text>
+			<Text style={styles.badgeText}>{label}</Text>
 		</View>
 	);
 }
@@ -196,7 +196,7 @@ const baseStyles = StyleSheet.create({
 	},
 	badgeText: {
 		fontSize: type.caption,
-		fontWeight: '800',
+		fontWeight: '600',
 		color: colors.claude,
 	},
 });

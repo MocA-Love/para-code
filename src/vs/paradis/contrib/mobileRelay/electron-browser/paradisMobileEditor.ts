@@ -15,8 +15,9 @@ import './media/paradisMobileEditor.css';
 import * as dom from '../../../../base/browser/dom.js';
 import { Separator, toAction } from '../../../../base/common/actions.js';
 import { Codicon } from '../../../../base/common/codicons.js';
-import { fromNow } from '../../../../base/common/date.js';
+import { fromNow, safeIntl } from '../../../../base/common/date.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import { language } from '../../../../base/common/platform.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize } from '../../../../nls.js';
@@ -58,6 +59,10 @@ import {
 } from './paradisMobileEditorInput.js';
 
 const $ = dom.$;
+
+// ペアした日と最終接続の日時は表示言語の書式で作る（引数なしの toLocale* は OS の地域の書式になり、文言の言語とずれる）
+const pairedDateFormat = safeIntl.DateTimeFormat(language, { dateStyle: 'medium' });
+const lastSeenFormat = safeIntl.DateTimeFormat(language, { dateStyle: 'medium', timeStyle: 'short' });
 
 /** 「設定 (Para Code)」のモバイルの節を開く（paradisSettingsDialog.contribution.ts）。 */
 const OPEN_PARADIS_SETTINGS_COMMAND_ID = 'paradis.openSettingsDialog';
@@ -418,7 +423,7 @@ export class ParadisMobileEditor extends EditorPane {
 			meta.push(localize('paradis.mobileTab.deviceName', "端末の名前: {0}", device.deviceName));
 		}
 		meta.push(device.pairedAt !== undefined
-			? localize('paradis.mobileTab.pairedAt', "ペアした日 {0}", new Date(device.pairedAt).toLocaleDateString())
+			? localize('paradis.mobileTab.pairedAt', "ペアした日 {0}", pairedDateFormat.value.format(device.pairedAt))
 			: localize('paradis.mobileTab.pairedAtUnknown', "ペアした日 不明"));
 		dom.append(text, $('.paradis-mobile-device-meta')).textContent = meta.join(' · ');
 
@@ -431,7 +436,7 @@ export class ParadisMobileEditor extends EditorPane {
 			last.textContent = localize('paradis.mobileTab.lastSeenNow', "今");
 		} else if (device.lastSeenAt !== undefined) {
 			last.textContent = fromNow(device.lastSeenAt, true);
-			this.deviceDisposables.add(this.hoverService.setupDelayedHover(last, { content: new Date(device.lastSeenAt).toLocaleString() }));
+			this.deviceDisposables.add(this.hoverService.setupDelayedHover(last, { content: lastSeenFormat.value.format(device.lastSeenAt) }));
 		} else {
 			last.textContent = localize('paradis.mobileTab.lastSeenUnknown', "不明");
 		}
@@ -442,6 +447,8 @@ export class ParadisMobileEditor extends EditorPane {
 			for (const item of notifyItems(device.notify)) {
 				const icon = dom.append(icons, $(`span${ThemeIcon.asCSSSelector(item.icon)}${item.on ? '.on' : ''}`));
 				const description = localize('paradis.mobileTab.notifyItem', "{0}: {1}", item.label, onOff(item.on));
+				// 読み上げにオン・オフを伝えるには、名前を持てる役割が要る（role の無い span の aria-label は読まれない）
+				icon.setAttribute('role', 'img');
 				icon.setAttribute('aria-label', description);
 				this.deviceDisposables.add(this.hoverService.setupDelayedHover(icon, { content: description }));
 			}
