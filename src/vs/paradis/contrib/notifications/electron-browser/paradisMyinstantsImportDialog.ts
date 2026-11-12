@@ -196,7 +196,8 @@ class ParadisMyinstantsImportDialog extends Disposable {
 		this._register(dom.addDisposableListener(this._saveBtn, 'click', () => this._save()));
 
 		this._register(dom.addDisposableListener(this._urlInput, 'keydown', e => {
-			if (e.key === 'Enter') {
+			// 日本語の変換を確定する Enter では読み込まない
+			if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) {
 				this._load();
 			}
 		}));
@@ -383,7 +384,8 @@ class ParadisMyinstantsImportDialog extends Disposable {
 		nameInput.value = loaded.suggestedName;
 		this._nameInput = nameInput;
 		store.add(dom.addDisposableListener(nameInput, 'keydown', e => {
-			if (e.key === 'Enter') {
+			// 日本語の変換を確定する Enter では保存しない（確定前の名前で保存して閉じてしまう）
+			if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) {
 				this._save();
 			}
 		}));

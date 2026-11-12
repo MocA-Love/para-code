@@ -1,7 +1,7 @@
 {
 	// PARA-CODE: fork-owned file (Para Code) — Para Code Mobile relay worker
 	"name": "para-mobile-relay",
-	// PARA-PATCH: account_id intentionally omitted; resolved from the
+	// account_id intentionally omitted; resolved from the
 	// CLOUDFLARE_ACCOUNT_ID environment variable (or a single-account token via
 	// `wrangler login`) before running `wrangler deploy`.
 	"main": "src/worker.ts",
@@ -24,7 +24,7 @@
 	"observability": {
 		"enabled": true
 	},
-	// PARA-CODE: finding #9 — 無認証 /device/new/provision のIPベースレート制限。
+	// finding #9 — 無認証 /device/new/provision のIPベースレート制限。
 	// simple.limit 回/period 秒。ペアリング前のprovisionは1台につき1回なので通常運用に余裕。
 	"unsafe": {
 		"bindings": [
