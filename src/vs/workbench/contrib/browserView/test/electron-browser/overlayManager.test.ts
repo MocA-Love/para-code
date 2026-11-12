@@ -149,4 +149,23 @@ suite('BrowserOverlayManager', () => {
 
 		assert.deepStrictEqual(overlays.map(o => o.type), [BrowserOverlayType.Dialog]);
 	});
+
+	// PARA-PATCH: Para Code hides informational toasts behind the page, but error toasts and toasts with buttons carry a marker class and pause the browser view (Q629).
+	test('detects only toasts marked urgent as notifications', () => {
+		const browserContainer = addElement('browser-container', {
+			position: 'absolute', left: '0px', top: '0px', width: '300px', height: '300px'
+		});
+		addElement('notification-toast-container', {
+			position: 'fixed', left: '0px', top: '0px', width: '100px', height: '100px', zIndex: '2000'
+		});
+		const before = manager.getOverlappingOverlays(browserContainer).map(o => o.type);
+
+		const urgentToast = addElement('notification-toast-container', {
+			position: 'fixed', left: '150px', top: '150px', width: '100px', height: '100px', zIndex: '2000'
+		});
+		urgentToast.classList.add('paradis-notification-toast-urgent');
+		const after = manager.getOverlappingOverlays(browserContainer).map(o => o.type);
+
+		assert.deepStrictEqual({ before, after }, { before: [], after: [BrowserOverlayType.Notification] });
+	});
 });

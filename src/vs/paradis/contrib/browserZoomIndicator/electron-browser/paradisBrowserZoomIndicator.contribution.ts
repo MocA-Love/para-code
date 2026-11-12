@@ -26,8 +26,10 @@
 import './media/paradisBrowserZoomIndicator.css';
 import { $, addDisposableListener, append, EventType } from '../../../../base/browser/dom.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
+import { Codicon } from '../../../../base/common/codicons.js';
 import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { IManagedHover } from '../../../../base/browser/ui/hover/hover.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
@@ -84,7 +86,7 @@ export class ParadisBrowserZoomIndicator extends BrowserEditorContribution {
 		this.zoomOutButton = this.createButton(
 			localize('paradis.browserZoom.out', "縮小"),
 			localize('paradis.browserZoom.outAtEnd', "縮小（これ以上小さくできません）"),
-			'−',
+			Codicon.remove,
 			support => support.zoomOut(),
 		);
 		this.valueButton = append(this.element, $<HTMLButtonElement>('button.paradis-browser-zoom-value.paradis-focus-ring-inset'));
@@ -95,7 +97,7 @@ export class ParadisBrowserZoomIndicator extends BrowserEditorContribution {
 		this.zoomInButton = this.createButton(
 			localize('paradis.browserZoom.in', "拡大"),
 			localize('paradis.browserZoom.inAtEnd', "拡大（これ以上大きくできません）"),
-			'＋',
+			Codicon.add,
 			support => support.zoomIn(),
 		);
 
@@ -137,9 +139,9 @@ export class ParadisBrowserZoomIndicator extends BrowserEditorContribution {
 		}
 	}
 
-	private createButton(label: string, atEndLabel: string, glyph: string, action: (support: BrowserEditorZoomSupport) => Promise<void>): IStepButton {
+	private createButton(label: string, atEndLabel: string, icon: ThemeIcon, action: (support: BrowserEditorZoomSupport) => Promise<void>): IStepButton {
 		const element = append(this.element, $<HTMLButtonElement>('button.paradis-browser-zoom-step.paradis-focus-ring-inset'));
-		element.textContent = glyph;
+		append(element, $(ThemeIcon.asCSSSelector(icon)));
 		const hover = this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), element, label));
 		this._register(addDisposableListener(element, EventType.CLICK, () => {
 			if (element.getAttribute('aria-disabled') !== 'true') {
