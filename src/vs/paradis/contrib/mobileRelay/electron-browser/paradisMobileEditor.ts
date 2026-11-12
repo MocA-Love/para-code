@@ -120,8 +120,6 @@ export class ParadisMobileEditor extends EditorPane {
 
 	private readonly service: IParadisMobileRelayService;
 	private status: IParadisMobileStatus | undefined;
-	/** 状態をまだ一度も読めず、最後の読み込みも失敗した（札を「読み込み中…」のままにしない）。 */
-	private statusUnreadable = false;
 	/** 状態の通知を受けた回数（読み直しの応答が、後から届いた通知を古い値で上書きしないため）。 */
 	private statusEvents = 0;
 	private linkMetricsEnabled = false;
@@ -236,20 +234,10 @@ export class ParadisMobileEditor extends EditorPane {
 
 	private async reload(): Promise<void> {
 		const before = this.statusEvents;
-		let status: IParadisMobileStatus;
-		let linkMetricsEnabled: boolean;
-		try {
-			[status, linkMetricsEnabled] = await Promise.all([
-				this.service.getStatus(),
-				this.service.getLinkMetricsEnabled().catch(() => this.linkMetricsEnabled),
-			]);
-		} catch {
-			// 前に読めた状態があればそのまま見せる。一度も読めていなければ札を「読めません」にする（更新のボタンで読み直す）
-			this.statusUnreadable = true;
-			this.update();
-			return;
-		}
-		this.statusUnreadable = false;
+		const [status, linkMetricsEnabled] = await Promise.all([
+			this.service.getStatus(),
+			this.service.getLinkMetricsEnabled().catch(() => this.linkMetricsEnabled),
+		]);
 		if (before === this.statusEvents) {
 			this.status = status;
 		}
@@ -263,20 +251,10 @@ export class ParadisMobileEditor extends EditorPane {
 
 	private async setEnabled(enabled: boolean): Promise<void> {
 		try {
+			// 書けなかったとき（settings.json の書式の誤りなど）は、設定の側が理由を通知したうえで、例外を投げずに戻る
 			await this.configurationService.updateValue(PARADIS_MOBILE_ENABLED_KEY, enabled);
-		} catch (error) {
-			this.notificationService.error(localize('paradis.mobileTab.enabledWriteFailed', "接続の許可を切り替えられませんでした: {0}", String(error)));
-			// スイッチを今の設定の位置へ戻す
-			this.update();
-		}
-	}
-
-	private async setLinkMetricsEnabled(enabled: boolean): Promise<void> {
-		try {
-			await this.commandService.executeCommand(enabled ? START_LINK_METRICS_COMMAND_ID : STOP_LINK_METRICS_COMMAND_ID);
-		} catch (error) {
-			this.notificationService.error(localize('paradis.mobileTab.metricsToggleFailed', "接続の計測を切り替えられませんでした: {0}", String(error)));
-			// 計測の状態は変わっていないので、スイッチを元の位置へ戻す
+		} finally {
+			// 書けても書けなくても、スイッチを今の設定の位置に合わせる（書けなかったときに押した位置のまま残さない）
 			this.update();
 		}
 	}
@@ -298,11 +276,7 @@ export class ParadisMobileEditor extends EditorPane {
 
 		const status = this.status;
 		if (!status) {
-			if (this.statusUnreadable) {
-				this.renderChip(Codicon.error, localize('paradis.mobileTab.chip.statusUnreadable', "状態を読み込めません"), 'err');
-			} else {
-				this.renderChip(Codicon.loading, localize('paradis.mobileTab.chip.loading', "読み込み中…"), 'off');
-			}
+			this.renderChip(Codicon.loading, localize('paradis.mobileTab.chip.loading', "読み込み中…"), 'off');
 			dom.setVisibility(false, this.pairButton, this.stopButton, this.devicesHeading, this.devicesHost);
 			return;
 		}
@@ -546,7 +520,7 @@ export class ParadisMobileEditor extends EditorPane {
 
 		const metricsRow = this.settingRow(box, 'paradis-mobile-setting-metrics', localize('paradis.mobileTab.setting.metrics', "接続の計測"), localize('paradis.mobileTab.setting.metricsDesc', "接続が遅い・切れるときの調査用です。計測を始めてから書き出します。"));
 		this.metricsSwitch = this._register(new ParadisSwitch(metricsRow.value, { checked: this.linkMetricsEnabled, ariaLabelledBy: metricsRow.titleId }));
-		this._register(this.metricsSwitch.onDidChange(checked => void this.setLinkMetricsEnabled(checked)));
+		this._register(this.metricsSwitch.onDidChange(checked => void this.commandService.executeCommand(checked ? START_LINK_METRICS_COMMAND_ID : STOP_LINK_METRICS_COMMAND_ID)));
 		this.button(metricsRow.value, localize('paradis.mobileTab.setting.metricsExport', "書き出す"), () => void this.commandService.executeCommand(EXPORT_LINK_METRICS_COMMAND_ID), 'paradis-mobile-pill', Codicon.graph);
 	}
 
