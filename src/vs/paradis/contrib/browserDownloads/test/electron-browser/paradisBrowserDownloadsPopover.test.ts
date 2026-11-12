@@ -27,7 +27,7 @@ suite('ParadisBrowserDownloadsPopover', () => {
 	interface IShownGroup { readonly kind: 'group'; readonly group: string | null; readonly role: string | null }
 	interface IShownRow { readonly kind: 'row'; readonly role: string | null; readonly name: string | null; readonly status: string | null; readonly describedBy: string | null | undefined; readonly tooltip: IManagedHoverContentOrFactory }
 
-	function openPopover(items: readonly IParadisBrowserDownloadItem[], run: (shown: (IShownGroup | IShownRow)[], list: Element) => void): void {
+	function openPopover(items: readonly IParadisBrowserDownloadItem[], run: (shown: (IShownGroup | IShownRow)[], list: Element) => void, containerHeight?: number): void {
 		const onDidChange = ds.add(new Emitter<void>());
 		const downloads: Partial<IParadisBrowserDownloadsService> = {
 			onDidChange: onDidChange.event,
@@ -43,6 +43,9 @@ suite('ParadisBrowserDownloadsPopover', () => {
 			},
 		};
 		const container = mainWindow.document.body.appendChild(mainWindow.document.createElement('div'));
+		if (containerHeight !== undefined) {
+			container.style.height = `${containerHeight}px`;
+		}
 		const instantiationService = ds.add(new TestInstantiationService());
 		instantiationService.stub(IParadisBrowserDownloadsService, downloads);
 		instantiationService.stub(IHoverService, hoverService);
@@ -110,6 +113,13 @@ suite('ParadisBrowserDownloadsPopover', () => {
 				{ kind: 'row', role: 'listitem', name: 'old.pdf', status: '10:00 · 取り消しました', describedBy: lastYear, tooltip: `${started(old)}\n/dl/old.pdf` },
 			],
 		}));
+	});
+
+	test('fits in the window when opened without the toolbar button', () => {
+		// Opened from the command palette, the list sits near the top right and scrolls inside instead of running off the window.
+		openPopover([item('done', 'completed', at(0, 9, 5))], (_shown, list) => {
+			assert.strictEqual((list.parentElement as HTMLElement).style.maxHeight, '252px');
+		}, 300);
 	});
 
 	test('puts a heading wherever the day changes, even when the clock went back and a day repeats', () => {
