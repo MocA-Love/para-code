@@ -9,6 +9,7 @@ import { QuestionCard } from './questionCard.js';
 import { ApprovalCard } from './approvalCard.js';
 import { HIT_SIZE, alpha, colors, radius, squircle, tint, type, status } from '../theme.js';
 import { agentStatusLabel } from '../agentStatus.js';
+import { useThemeColors } from '../ui/themeColorsStore.js';
 
 /** チャット履歴から最新の未回答質問(question)を探す（agent.tsxの回答済み判定と同じロジック）。 */
 function findPendingQuestion(chat: AgentChatState | undefined): AgentChatMessage | undefined {
@@ -71,6 +72,7 @@ function AttentionBody({ agentStatus, chat, actions, onOpenAgent }: {
 	actions: AgentActions;
 	onOpenAgent: () => void;
 }) {
+	const theme = useThemeColors();
 	// カード種別の正本は chat.interaction（PC側の currentInteraction）。agentStatus は
 	// hook 由来の派生値で、解除され損ねた承認要求が1つ残っているだけで質問中でも
 	// permission に化ける。interaction がまだ届いていない場合（attach直後・購読失敗）
@@ -101,12 +103,12 @@ function AttentionBody({ agentStatus, chat, actions, onOpenAgent }: {
 					<Text style={styles.noticeTitle}>内容を読み込んでいます…</Text>
 				</View>
 			) : isGroupedQuestion && question ? (
-				<Pressable style={styles.groupNotice} onPress={onOpenAgent}>
+				<Pressable style={[styles.groupNotice, { backgroundColor: theme.accentWash, borderColor: theme.accent }]} onPress={onOpenAgent}>
 					<Text style={styles.noticeTitle}>複数の質問（全{question.questionCount}問）が届いています</Text>
 					<Text style={styles.noticeBody}>エージェント画面ですべての質問に回答してから送信できます</Text>
 				</Pressable>
 			) : isPreviewQuestion ? (
-				<Pressable style={styles.groupNotice} onPress={onOpenAgent}>
+				<Pressable style={[styles.groupNotice, { backgroundColor: theme.accentWash, borderColor: theme.accent }]} onPress={onOpenAgent}>
 					<Text style={styles.noticeTitle}>選択肢の下書き（プレビュー）付きの質問が届いています</Text>
 					<Text style={styles.noticeBody}>エージェント画面で下書きを見てから回答できます</Text>
 				</Pressable>
@@ -188,6 +190,7 @@ export function AttentionStack({ items, openKey, onToggle, onLongPress, hiddenCo
 	/** 下の余白の調整（見出しで区切る一覧では次の見出しが余白を持つので詰める）。 */
 	style?: StyleProp<ViewStyle>;
 }) {
+	const theme = useThemeColors();
 	if (items.length === 0) {
 		return null;
 	}
@@ -207,7 +210,7 @@ export function AttentionStack({ items, openKey, onToggle, onLongPress, hiddenCo
 							accessibilityState={{ expanded: open }}
 							accessibilityLabel={`${item.title} の${waitingLabel(item.agentStatus)}`}
 						>
-							{item.pinned ? <Ionicons name="bookmark" size={11} color={colors.accent} style={styles.pin} /> : null}
+							{item.pinned ? <Ionicons name="bookmark" size={11} color={theme.accent} style={styles.pin} /> : null}
 							<View style={styles.orb} />
 							<View style={styles.headBody}>
 								<Text style={styles.title} numberOfLines={1}>{item.title}</Text>

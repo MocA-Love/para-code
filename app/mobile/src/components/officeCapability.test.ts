@@ -5,6 +5,7 @@ import * as officeCapability from './officeCapability.js';
 import {
 	MOBILE_OFFICE_ALL_FEATURES,
 	MOBILE_OFFICE_FEATURE_EXCEL_VIEW,
+	MOBILE_DOCUMENT_ORIGIN_WHITELIST,
 	MOBILE_OFFICE_ORIGIN_WHITELIST,
 	guardMobileOfficeNavigation,
 	mobileOfficeContentSecurityPolicy,
@@ -90,6 +91,8 @@ describe('mobile Office WebView policy', () => {
 			"default-src 'none'; script-src 'nonce-abcdefghijklmnop'; style-src 'unsafe-inline'; img-src data: blob:; font-src data: blob:; connect-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none';"
 		);
 		expect(MOBILE_OFFICE_ORIGIN_WHITELIST).toEqual(['about:blank']);
+		// http(s) を許可リストから外すと、react-native-webview が確認より前に OS へ渡してしまう
+		expect(MOBILE_DOCUMENT_ORIGIN_WHITELIST).toEqual(['about:blank', 'http://*', 'https://*']);
 		expect(mobileOfficeContentSecurityPolicy(nonce)).not.toContain('*');
 	});
 

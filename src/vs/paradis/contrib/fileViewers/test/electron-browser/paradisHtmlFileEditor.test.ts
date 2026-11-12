@@ -33,7 +33,7 @@ import { IEditorService } from '../../../../../workbench/services/editor/common/
 import { IEditorPane } from '../../../../../workbench/common/editor.js';
 import { TestStorageService, TestWorkspaceTrustManagementService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import { ILifecycleService, LifecyclePhase } from '../../../../../workbench/services/lifecycle/common/lifecycle.js';
-import { ParadisHtmlFileEditor } from '../../electron-browser/paradisHtmlFileEditor.js';
+import { ParadisHtmlFileEditor, paradisInjectHtmlHead } from '../../electron-browser/paradisHtmlFileEditor.js';
 import { ParadisHtmlFileInput } from '../../electron-browser/paradisHtmlFileInput.js';
 import { notifyParadisWebviewSignal, ParadisWebviewSignalCode } from '../../../sentry/common/paradisWebviewSignals.js';
 
@@ -680,5 +680,22 @@ suite('ParadisHtmlFileEditor', () => {
 			// 次に描くときは service worker のある webview へ作り直させる。
 			strictEqual(editor.serviceWorkerDisabledFor(resource), false);
 		});
+	});
+});
+
+suite('paradisInjectHtmlHead', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('puts the injection into a new <head> after <html> when the page omits <head> but has <header>', () => {
+		deepStrictEqual([
+			paradisInjectHtmlHead('<html lang="ja"><link rel="stylesheet" href="style.css"><body><header class="top">x</header></body></html>', '<base href="b/">'),
+			paradisInjectHtmlHead('<header>x</header>', '<base href="b/">'),
+			paradisInjectHtmlHead('<html><head data-x="1"><title>t</title></head><body><header>x</header></body></html>', '<base href="b/">'),
+		], [
+			'<html lang="ja"><head><base href="b/"></head><link rel="stylesheet" href="style.css"><body><header class="top">x</header></body></html>',
+			'<head><base href="b/"></head><header>x</header>',
+			'<html><head data-x="1"><base href="b/"><title>t</title></head><body><header>x</header></body></html>',
+		]);
 	});
 });
