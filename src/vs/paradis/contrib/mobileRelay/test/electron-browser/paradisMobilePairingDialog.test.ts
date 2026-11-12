@@ -36,7 +36,10 @@ suite('ParadisMobilePairingDialog', () => {
 		const text = (selector: string) => [...container.querySelectorAll<HTMLElement>(selector)].map(element => element.textContent);
 		const before = {
 			classes: [...container.querySelector('.paradis-mobile-pairing-dialog')!.classList],
-			title: text('.pmp-title'),
+			title: text('.paradis-modal-head .paradis-modal-title'),
+			qrAlt: container.querySelector<HTMLImageElement>('.pmp-qr')?.alt,
+			focusedCopy: mainWindow.document.activeElement === container.querySelector('.pmp-footer .monaco-button'),
+			cover: !!container.querySelector('.pmp-qr-expired.shown'),
 			steps: text('.pmp-steps > li'),
 			remainingStartsWith: text('.pmp-remaining')[0]?.startsWith('あと '),
 			copy: text('.pmp-footer .monaco-button'),
@@ -50,12 +53,48 @@ suite('ParadisMobilePairingDialog', () => {
 			before: {
 				classes: ['paradis-mobile-pairing-dialog', 'paradis-modal', 'paradis-modal-s', 'paradis-focus-none'],
 				title: ['モバイルデバイスを接続'],
+				qrAlt: 'Para Code Mobile で読み取るペアリング用の QR コード',
+				focusedCopy: true,
+				cover: false,
 				steps: ['Para Code Mobile で「QR を読み取る」を開く', 'この QR を読み取る', '両方に出る 6 桁のコードが同じか確かめて承認する'],
 				remainingStartsWith: true,
 				copy: ['リンクをコピー'],
 			},
 			copied: ['paracode-mobile://pair?x=1'],
 			after: null,
+		});
+	});
+
+	test('after expiry dims the QR, stops the copy, focuses and offers a new code once', () => {
+		const container = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(container);
+		const copied: string[] = [];
+		const layoutService = { activeContainer: container } as Pick<ILayoutService, 'activeContainer'> as ILayoutService;
+		const clipboardService = { writeText: async (text: string) => { copied.push(text); } } as Pick<IClipboardService, 'writeText'> as IClipboardService;
+		const dialog = new ParadisMobilePairingDialog('<svg xmlns="http://www.w3.org/2000/svg"/>', 'paracode-mobile://pair?x=1', Date.now() - 1, layoutService, clipboardService);
+		let requests = 0;
+		const listener = dialog.onDidRequestNewCode(() => requests++);
+		const copy = container.querySelector<HTMLElement>('.pmp-footer .monaco-button')!;
+		const regenerate = container.querySelector<HTMLElement>('.pmp-qr-expired .monaco-button')!;
+		copy.click();
+		const state = {
+			remaining: container.querySelector('.pmp-remaining')?.textContent,
+			qrDimmed: !!container.querySelector('.pmp-qr.expired'),
+			cover: !!container.querySelector('.pmp-qr-expired.shown'),
+			copyDisabled: copy.classList.contains('disabled'),
+			regenerate: regenerate.textContent,
+			focusedRegenerate: mainWindow.document.activeElement === regenerate,
+		};
+		regenerate.click();
+		const stillOpen = !!container.querySelector('.paradis-mobile-pairing-backdrop');
+		listener.dispose();
+		dialog.dispose();
+		container.remove();
+		assert.deepStrictEqual({ state, copied, requests, stillOpen }, {
+			state: { remaining: '期限が切れました', qrDimmed: true, cover: true, copyDisabled: true, regenerate: '新しい QR を作る', focusedRegenerate: true },
+			copied: [],
+			requests: 1,
+			stillOpen: true,
 		});
 	});
 
