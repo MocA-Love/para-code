@@ -28,6 +28,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { isMacintosh } from '../../../../base/common/platform.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -106,6 +107,7 @@ export class ParadisSpaceDetailsDialog extends Disposable {
 		@IParadisSpaceNotesService private readonly notesService: IParadisSpaceNotesService,
 		@IParadisWorktreeService private readonly worktreeService: IParadisWorktreeService,
 		@IOpenerService private readonly openerService: IOpenerService,
+		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super();
 		activeDialog?.dispose();
@@ -128,8 +130,8 @@ export class ParadisSpaceDetailsDialog extends Disposable {
 		const close = dom.append(head.actions, $('button.psdd-close')) as HTMLButtonElement;
 		close.classList.add(...paradisButtonClasses('icon'));
 		close.type = 'button';
-		close.title = STR_CLOSE;
 		close.setAttribute('aria-label', STR_CLOSE);
+		this._register(this.hoverService.setupDelayedHover(close, { content: STR_CLOSE }));
 		dom.append(close, $(ThemeIcon.asCSSSelector(Codicon.close)));
 		this._register(dom.addDisposableListener(close, dom.EventType.CLICK, () => this.dispose()));
 
@@ -220,7 +222,7 @@ export class ParadisSpaceDetailsDialog extends Disposable {
 	private renderLinked(parent: HTMLElement, icon: ThemeIcon, url: string, number: string | undefined, title: string, state: string | undefined): void {
 		const row = dom.append(parent, $('button.psdd-linked-row.paradis-focus-subtle')) as HTMLButtonElement;
 		row.type = 'button';
-		row.title = url;
+		this._register(this.hoverService.setupDelayedHover(row, { content: url }));
 		dom.append(row, $(ThemeIcon.asCSSSelector(icon)));
 		if (number) {
 			dom.append(row, $('span.psdd-linked-number')).textContent = number;
