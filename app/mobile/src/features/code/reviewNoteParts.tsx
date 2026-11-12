@@ -6,6 +6,7 @@ import { Check, MessageSquare, Send, Sparkles, Trash2, X } from 'lucide-react-na
 import { haptic } from '../../haptics.js';
 import { monoFamily } from '../../monoFont.js';
 import type { WorktreeAgentDef } from '../../store.js';
+import { hitSlopToMinimum } from '../../components/hitSlop.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { BottomDrawer, Button, DrawerTitle, HeaderButton, Icon, iconSize, useThemeColors } from '../../ui/index.js';
 import { InlineError } from './codeParts.js';
@@ -16,6 +17,9 @@ import { splitPath } from './scmModel.js';
  * 差分の行へのメモの部品（Orca W2-28 の MobileDiffReviewLine のメモ・Comment の入力・Send のシート）。
  * メモは PC に保存し、iPhone と iPad で同じものを見る。送ったメモは「送信済み」として残す（Q120 A）。
  */
+
+/** メモの一覧の選択チェックの直径（見た目と当たり判定の広げの両方で使う）。 */
+const CHECK_SIZE = 22;
 
 /** 差分の行のすぐ下に出すメモ。押すと書き直せる。 */
 export function NoteBubble({ note, stale = false, onPress }: { note: ReviewNote; stale?: boolean; onPress: (note: ReviewNote) => void }) {
@@ -209,11 +213,11 @@ export function ReviewNotesPanel({ notes, selected, currentLines, onToggle, onOp
 										<View style={styles.row}>
 											<Pressable
 												onPress={() => { haptic('tick'); onToggle(note.id); }}
-												hitSlop={8}
+												hitSlop={hitSlopToMinimum(CHECK_SIZE, CHECK_SIZE)}
 												style={[styles.check, on ? styles.checkOn : undefined]}
 												accessibilityRole="checkbox"
 												accessibilityState={{ checked: on }}
-												accessibilityLabel="送るメモに選ぶ"
+												accessibilityLabel={`${note.path} ${note.line} 行目のメモを送るものに選ぶ`}
 											>
 												{on ? <Icon icon={Check} size={iconSize.sm} color={colors.bg} strokeWidth={2.6} /> : null}
 											</Pressable>
@@ -353,7 +357,7 @@ const styles = StyleSheet.create({
 	listTitle: {
 		flex: 1,
 		fontSize: type.heading,
-		fontWeight: '700',
+		fontWeight: '600',
 		color: colors.text,
 	},
 	listCount: {
@@ -399,9 +403,9 @@ const styles = StyleSheet.create({
 		marginTop: 2,
 	},
 	check: {
-		width: 22,
-		height: 22,
-		borderRadius: 11,
+		width: CHECK_SIZE,
+		height: CHECK_SIZE,
+		borderRadius: CHECK_SIZE / 2,
 		borderWidth: 1.5,
 		borderColor: colors.textMuted,
 		alignItems: 'center',

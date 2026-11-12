@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View, type LayoutChangeEvent, type StyleProp, type ViewStyle } from 'react-native';
-import { ChevronDown, ChevronRight, CircleAlert, ExternalLink, FileText, Folder, GitBranch, GitCommitHorizontal, GitPullRequest, Minus, Plus, Sparkles, X } from 'lucide-react-native';
+import { ChevronDown, ChevronRight, CircleAlert, ExternalLink, FileText, Folder, GitBranch, GitCommitHorizontal, GitPullRequest, Minus, Plus, Send, X } from 'lucide-react-native';
 import type { ParadisMobileSyncOperation } from '../../../../../src/vs/paradis/contrib/mobileRelay/common/paradisMobileScmSync.js';
 import { ContextMenu, useContextMenuSheet, type ContextMenuSpec } from '../../components/contextMenu.js';
 import { contextMenuOps } from '../../components/copyActions.js';
@@ -164,7 +164,7 @@ export function CommitWarning({ text, onDismiss }: { text: string; onDismiss: ()
 		<View style={[styles.failure, styles.warningRow]} accessibilityRole="alert">
 			<Icon icon={CircleAlert} size={iconSize.md} color={colors.amber} />
 			<Text style={styles.warningText}>{text}</Text>
-			<Pressable onPress={onDismiss} hitSlop={hitSlopToMinimum(24)} accessibilityRole="button" accessibilityLabel="閉じる">
+			<Pressable onPress={onDismiss} hitSlop={hitSlopToMinimum(iconSize.sm, iconSize.sm)} accessibilityRole="button" accessibilityLabel="閉じる">
 				<Icon icon={X} size={iconSize.sm} color={colors.textMuted} />
 			</Pressable>
 		</View>
@@ -189,7 +189,7 @@ export function CommitFailureCard({ view, handoff, onFix, onFixWithNewAgent, onD
 			<View style={styles.failureHead}>
 				<Icon icon={CircleAlert} size={iconSize.md} color={colors.red} />
 				<Text style={styles.failureTitle}>{view.title}</Text>
-				<Pressable onPress={onDismiss} hitSlop={hitSlopToMinimum(24)} accessibilityRole="button" accessibilityLabel="閉じる">
+				<Pressable onPress={onDismiss} hitSlop={hitSlopToMinimum(iconSize.sm, iconSize.sm)} accessibilityRole="button" accessibilityLabel="閉じる">
 					<Icon icon={X} size={iconSize.sm} color={colors.textMuted} />
 				</Pressable>
 			</View>
@@ -210,7 +210,7 @@ export function CommitFailureCard({ view, handoff, onFix, onFixWithNewAgent, onD
 			{view.fixable && onFix !== undefined ? (
 				<View style={styles.failureButtons}>
 					{handoff.result?.delivered === true ? null : (
-						<Button label="AI に直してもらう" size="sm" icon={Sparkles} onPress={onFix} loading={handoff.sending} style={styles.failureButton} />
+						<Button label="AI に直してもらう" size="sm" icon={Send} onPress={onFix} loading={handoff.sending} style={styles.failureButton} />
 					)}
 					{handoff.result?.delivered === false && handoff.result.busy ? (
 						<Button label="新しいエージェントで" size="sm" variant="secondary" onPress={onFixWithNewAgent} disabled={handoff.sending} style={styles.failureButton} />
@@ -453,7 +453,7 @@ const styles = StyleSheet.create({
 		textAlign: 'center',
 		fontFamily: monoFamily,
 		fontSize: type.meta,
-		fontWeight: '700',
+		fontWeight: '600',
 	},
 	fileCol: {
 		flex: 1,
@@ -527,7 +527,7 @@ const styles = StyleSheet.create({
 	},
 	primaryText: {
 		fontSize: type.body,
-		fontWeight: '700',
+		fontWeight: '600',
 		color: colors.onPrimary,
 	},
 	commitHint: {
@@ -593,7 +593,7 @@ const styles = StyleSheet.create({
 		width: SYMBOL_WIDTH - space.xs,
 		fontFamily: monoFamily,
 		fontSize: type.meta,
-		fontWeight: '700',
+		fontWeight: '600',
 	},
 	commitFilePath: {
 		flex: 1,
