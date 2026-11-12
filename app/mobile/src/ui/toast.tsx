@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useEffect, useRef, useState } from 'react';
-import { Animated, Easing, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { AccessibilityInfo, Animated, Easing, Platform, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { useAppLocked } from '../appLock.js';
@@ -66,6 +66,21 @@ function usePcSwitchToast(): void {
 	}, [notice, pcs, show, switchPc, dismissNotice]);
 }
 
+/**
+ * お知らせを VoiceOver で読み上げる。`accessibilityLiveRegion` は Android でしか効かないので、iOS ではここで知らせる。
+ * 表示の層は Modal の中にも置くので、二重に読まないようルートの {@link ToastHost} だけが呼ぶ。ロック中は描かないので読まない。
+ */
+function useToastAnnouncement(): void {
+	const current = useParaToast(s => s.current);
+	const locked = useAppLocked();
+	useEffect(() => {
+		if (Platform.OS !== 'ios' || current === undefined || locked) {
+			return;
+		}
+		AccessibilityInfo.announceForAccessibility(current.sub !== undefined && current.sub.length > 0 ? `${current.text}、${current.sub}` : current.text);
+	}, [current, locked]);
+}
+
 /** 出入りの時間（ms。モックの `tin` は 0.2 秒）。 */
 const IN_MS = 200;
 const OUT_MS = 160;
@@ -73,6 +88,7 @@ const OUT_MS = 160;
 /** お知らせを出す唯一の場所。ルートレイアウト（`app/_layout.tsx`）に1つだけ置く。 */
 export function ToastHost() {
 	usePcSwitchToast();
+	useToastAnnouncement();
 	return <ToastLayer followAnchor />;
 }
 

@@ -40,6 +40,16 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.22',
+		date: '2026-11-12',
+		items: [
+			{
+				icon: 'volume-high-outline',
+				title: 'iPhone・iPad の VoiceOver で、「コピーしました」などのお知らせを読み上げるようにしました',
+			},
+		],
+	},
+	{
 		version: '0.12.21',
 		date: '2026-11-12',
 		items: [
