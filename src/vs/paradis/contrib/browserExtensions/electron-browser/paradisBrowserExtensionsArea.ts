@@ -673,7 +673,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		const actions = dom.append(detail, $('.pbe-detail-actions'));
 		const confirmHost = dom.append(detail, $('.pbe-confirm-host'));
 		if (extension.worker) {
-			this._appendDetailButton(actions, localize('paradis.browserExtensions.devtools', "DevTools で調べる"), !active, async () => {
+			this._appendDetailButton(actions, `actions:${extension.id}:devtools`, localize('paradis.browserExtensions.devtools', "DevTools で調べる"), !active, async () => {
 				const message = paradisDescribeOpenWorkerDevTools(await this._mainService.openWorkerDevTools(extension.id));
 				if (message !== undefined) {
 					this._showMessage(message, true);
@@ -682,7 +682,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		}
 		// ストアから入れたものは読み込み直すフォルダが無い（更新はストアから）
 		if (extension.source === 'unpacked') {
-			this._appendDetailButton(actions, localize('paradis.browserExtensions.reload', "フォルダから読み込み直す"), !active, () => this._run(async () => {
+			this._appendDetailButton(actions, `actions:${extension.id}:reload`, localize('paradis.browserExtensions.reload', "フォルダから読み込み直す"), !active, () => this._run(async () => {
 				const result = await this._mainService.reloadUnpacked(extension.id);
 				if (!result.ok) {
 					this._showMessage(paradisDescribeAddExtensionFailure(result), true);
@@ -692,7 +692,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 			}));
 		}
 		if (extension.source === 'webstore' && extension.pendingUpdate) {
-			this._appendDetailButton(actions, localize('paradis.browserExtensions.approveUpdate', "確かめて更新"), !active, () => this._run(async () => {
+			this._appendDetailButton(actions, `actions:${extension.id}:approveUpdate`, localize('paradis.browserExtensions.approveUpdate', "確かめて更新"), !active, () => this._run(async () => {
 				const result = await this._mainService.approveWebStoreUpdate(extension.id);
 				if (!result.ok) {
 					this._showMessage(paradisDescribeAddExtensionFailure(result), result.reason !== 'cancelled');
@@ -701,7 +701,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 				this._showMessage(localize('paradis.browserExtensions.updated', "「{0}」を版 {1} に更新しました。開いているページには、読み込み直すと効きます。", result.extension.name, result.extension.version), false);
 			}));
 		}
-		const removeButton = this._appendDetailButton(actions, localize('paradis.browserExtensions.remove', "削除"), !active, async () => this._confirmRemove(extension, confirmHost));
+		const removeButton = this._appendDetailButton(actions, `actions:${extension.id}:remove`, localize('paradis.browserExtensions.remove', "削除"), !active, async () => this._confirmRemove(extension, confirmHost));
 		removeButton.classList.add('is-danger');
 
 		if (extension.loadError) {
@@ -1115,13 +1115,14 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		}
 	}
 
-	private _appendDetailButton(parent: HTMLElement, label: string, disabled: boolean, run: () => Promise<unknown>): HTMLButtonElement {
+	/** `name` はフォーカスを戻すときの名前（拡張機能と節とボタンが分かるものにする。同じ文言のボタンが並んでも取り違えない）。 */
+	private _appendDetailButton(parent: HTMLElement, name: string, label: string, disabled: boolean, run: () => Promise<unknown>): HTMLButtonElement {
 		const button = dom.append(parent, $<HTMLButtonElement>('button.pbpm-btn.paradis-focus-ring.secondary'));
 		button.type = 'button';
 		button.textContent = label;
 		button.disabled = disabled || this._busy;
 		this._renderStore.add(dom.addDisposableListener(button, 'click', () => void run()));
-		this._controls.set(`button:${label}`, button);
+		this._controls.set(name, button);
 		return button;
 	}
 
