@@ -169,7 +169,7 @@ export default function AgentHistoryScreen() {
 				)}
 				ListHeaderComponent={failureAtTop ? failureRow : null}
 				// 読み込めなかったときは「見つかりませんでした」「ありません」と言わない（失敗は一覧の上に出ている）
-				ListEmptyComponent={error !== undefined ? null : <EmptyState icon={History} title={query.length > 0 ? '見つかりませんでした' : '過去の会話はありません'} body={query.length > 0 ? '別の言葉で探してください。' : 'このスペースで Claude Code や Codex と話すと、ここに並びます。'} />}
+				ListEmptyComponent={error !== undefined ? null : <EmptyState icon={History} title={query.length > 0 ? '見つかりませんでした' : '過去の会話はありません'} body={query.length > 0 ? '別の言葉で探してください。' : 'このスペースでエージェントと話すと、ここに並びます。'} />}
 				ListFooterComponent={
 					<>
 						{/* 「さらに読み込む」（続きのページ）の失敗は、読み進めた一覧の下に出す */}

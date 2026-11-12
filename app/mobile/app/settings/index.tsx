@@ -21,7 +21,7 @@ import { settingsRoutes } from '../../src/features/settings/settingsRoutes.js';
  * 設定（`/settings`。Orca の settings のリスト、モックの「設定」）。
  * 1つの束に各ページへの行を並べ、行の右に今の状態を出して開かなくても分かるようにする。
  *
- * 並びはモックに合わせる（ターミナル → チャット UI → 通知と音声 → …）。チャット UI の下に、モックに無い
+ * 並びはモックに合わせる（ターミナル → 会話の表示 → 通知と音声 → …）。会話の表示の下に、モックに無い
  * クイック返信（会話画面の入力欄の上のチップ）と色（主ボタン・自分の発言・リンクの色）と、ホーム画面・ロック画面の
  * ウィジェットの見た目を足している。モックの「音声」「通知」は
  * Para Code では1ページ（通知と音声）にまとまっている。Para Code に無いもの（プライバシーポリシー・
@@ -57,7 +57,7 @@ export default function SettingsScreenRoute() {
 		<SettingsScreen title="設定">
 			<ListGroup>
 				<ListRow icon={Terminal} label="ターミナル" value={`${fontSize}pt`} trailing="chevron" onPress={() => open(routes.settings('terminal'))} />
-				<ListRow icon={MessageSquare} label="チャット UI" value={sessionView === 'chat' ? 'チャット UI' : 'ターミナル'} trailing="chevron" onPress={() => open(settingsRoutes.sessionView())} />
+				<ListRow icon={MessageSquare} label="会話の表示" value={sessionView === 'chat' ? 'チャット' : 'ターミナル'} trailing="chevron" onPress={() => open(settingsRoutes.sessionView())} />
 				<ListRow
 					icon={MessageSquareReply}
 					label="クイック返信"
