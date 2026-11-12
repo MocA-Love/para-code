@@ -210,3 +210,31 @@ export function contextRowLabel(row: ContextRow, section: 'memory' | 'mcp' | 'ag
 export function shownRows(list: readonly ContextRow[]): { readonly shown: readonly ContextRow[]; readonly rest: number } {
 	return { shown: list.slice(0, CONTEXT_SHOWN_ROWS), rest: Math.max(0, list.length - CONTEXT_SHOWN_ROWS) };
 }
+
+/** 内訳の画面の取り直しの状態。どの端末について聞いたかを持ち、端末を替えた直後に前の端末の結果を出さない。 */
+export type ContextFetchState =
+	| { readonly kind: 'loading'; readonly terminalKey: string | undefined }
+	| { readonly kind: 'done'; readonly terminalKey: string | undefined }
+	| { readonly kind: 'failed'; readonly terminalKey: string | undefined; readonly message: string };
+
+/** 最後に取れた内訳と、それを聞いた端末。 */
+export interface ContextLoadedState {
+	readonly terminalKey: string;
+	readonly reply: Extract<ContextBreakdownReply, { readonly kind: 'ok' }>;
+}
+
+/** 内訳の画面に出すもの。前の内訳があれば取り直し中・取り直しの失敗の間も残す（UX 点検 U2 案 A）。 */
+export type ContextBreakdownDisplay =
+	| { readonly kind: 'spinner' }
+	| { readonly kind: 'reason'; readonly message: string }
+	| { readonly kind: 'shown'; readonly reply: Extract<ContextBreakdownReply, { readonly kind: 'ok' }>; readonly refreshing: boolean; readonly failedMessage: string | undefined };
+
+/** 今の端末・取り直しの状態・最後に取れた内訳から、画面に出すものを決める。別の端末の状態と内訳は無いものとして扱う。 */
+export function contextBreakdownDisplay(terminalKey: string | undefined, fetchState: ContextFetchState, loaded: ContextLoadedState | undefined): ContextBreakdownDisplay {
+	const current: ContextFetchState = fetchState.terminalKey === terminalKey ? fetchState : { kind: 'loading', terminalKey };
+	const reply = loaded !== undefined && loaded.terminalKey === terminalKey ? loaded.reply : undefined;
+	if (reply === undefined) {
+		return current.kind === 'failed' ? { kind: 'reason', message: current.message } : { kind: 'spinner' };
+	}
+	return { kind: 'shown', reply, refreshing: current.kind === 'loading', failedMessage: current.kind === 'failed' ? current.message : undefined };
+}

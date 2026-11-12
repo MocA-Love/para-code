@@ -3,13 +3,15 @@
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import {
+	contextBreakdownDisplay,
 	contextCategoryLines,
 	contextHeadline,
 	contextRowLabel,
 	formatShare,
 	parseContextBreakdownReply,
 	shownRows,
-	type ContextBreakdownReply,
+	type ContextFetchState,
+	type ContextLoadedState,
 	type ContextRow,
 } from '../../agentContextBreakdown.js';
 import { formatTokens } from '../../agentSessionStatus.js';
@@ -35,20 +37,6 @@ function categoryColor(name: string): string {
 	return CATEGORY_COLORS[name] ?? colors.textDim;
 }
 
-type LoadedReply = Extract<ContextBreakdownReply, { readonly kind: 'ok' }>;
-
-/** 取り直しの状態。最後に取れた内訳（`LoadedState`）とは別に持ち、取り直しの間も前の内訳を出す（UX 点検 U2 案 A）。 */
-type FetchState =
-	| { readonly kind: 'loading' }
-	| { readonly kind: 'done' }
-	| { readonly kind: 'failed'; readonly message: string };
-
-/** 最後に取れた内訳と、それを聞いた端末。端末が替わったら前の端末の内訳は出さない。 */
-interface LoadedState {
-	readonly terminalKey: string;
-	readonly reply: LoadedReply;
-}
-
 /**
  * セッションのシートの「コンテキスト」から進む内訳（q.html Q565 案 A）。開いたとき・作業中から止まったとき
  * （`refreshKey`）に PC へ 1 回聞く。PC は同梱の Claude Mod が応答の終わりごとに取って保存した最後の 1 件を返す。
@@ -57,15 +45,15 @@ interface LoadedState {
  */
 export function ContextBreakdownView({ terminalKey, refreshKey }: { terminalKey: string | undefined; refreshKey: string }) {
 	const requestAgentReply = useAppStore(state => state.requestAgentReply);
-	const [fetchState, setFetchState] = useState<FetchState>({ kind: 'loading' });
-	const [loaded, setLoaded] = useState<LoadedState | undefined>(undefined);
+	const [fetchState, setFetchState] = useState<ContextFetchState>({ kind: 'loading', terminalKey });
+	const [loaded, setLoaded] = useState<ContextLoadedState | undefined>(undefined);
 	useEffect(() => {
 		if (terminalKey === undefined) {
-			setFetchState({ kind: 'failed', message: '内訳を取得できません' });
+			setFetchState({ kind: 'failed', terminalKey, message: '内訳を取得できません' });
 			return undefined;
 		}
 		let cancelled = false;
-		setFetchState({ kind: 'loading' });
+		setFetchState({ kind: 'loading', terminalKey });
 		requestAgentReply(terminalKey, { t: 'context-breakdown' }, 'context-breakdown', REQUEST_TIMEOUT_MS).then(
 			reply => {
 				if (cancelled) {
@@ -74,14 +62,14 @@ export function ContextBreakdownView({ terminalKey, refreshKey }: { terminalKey:
 				const parsed = parseContextBreakdownReply(reply);
 				if (parsed.kind === 'ok') {
 					setLoaded({ terminalKey, reply: parsed });
-					setFetchState({ kind: 'done' });
+					setFetchState({ kind: 'done', terminalKey });
 				} else {
-					setFetchState({ kind: 'failed', message: parsed.message });
+					setFetchState({ kind: 'failed', terminalKey, message: parsed.message });
 				}
 			},
 			(error: unknown) => {
 				if (!cancelled) {
-					setFetchState({ kind: 'failed', message: error instanceof Error ? error.message : '内訳を取得できません' });
+					setFetchState({ kind: 'failed', terminalKey, message: error instanceof Error ? error.message : '内訳を取得できません' });
 				}
 			},
 		);
@@ -90,25 +78,25 @@ export function ContextBreakdownView({ terminalKey, refreshKey }: { terminalKey:
 		};
 	}, [terminalKey, refreshKey, requestAgentReply]);
 
-	const shown = loaded !== undefined && loaded.terminalKey === terminalKey ? loaded.reply : undefined;
-	if (shown === undefined) {
-		if (fetchState.kind === 'failed') {
-			return <Text style={[monitorStyles.caption, styles.reason]}>{fetchState.message}</Text>;
-		}
+	const display = contextBreakdownDisplay(terminalKey, fetchState, loaded);
+	if (display.kind === 'reason') {
+		return <Text style={[monitorStyles.caption, styles.reason]}>{display.message}</Text>;
+	}
+	if (display.kind === 'spinner') {
 		return (
 			<View style={styles.center}>
 				<ActivityIndicator color={colors.textDim} />
 			</View>
 		);
 	}
-	const { breakdown } = shown;
+	const { breakdown } = display.reply;
 	const { counted, deferred } = contextCategoryLines(breakdown);
 	const now = Date.now();
 	return (
 		<View>
 			<View style={styles.head}>
 				<Text style={styles.headline} numberOfLines={1}>{contextHeadline(breakdown)}</Text>
-				{fetchState.kind === 'loading' ? (
+				{display.refreshing ? (
 					<View style={styles.refreshing} accessible accessibilityLabel="内訳を更新中">
 						<ActivityIndicator size="small" color={colors.textDim} style={styles.refreshingSpinner} />
 						<Text style={styles.at} numberOfLines={1}>更新中</Text>
@@ -117,7 +105,7 @@ export function ContextBreakdownView({ terminalKey, refreshKey }: { terminalKey:
 					<Text style={styles.at} numberOfLines={1}>{`取得: ${formatRelativeTime(Math.min(breakdown.at, now), now)}`}</Text>
 				)}
 			</View>
-			{fetchState.kind === 'failed' ? <Text style={styles.failedNote}>{`更新できませんでした（${fetchState.message}）`}</Text> : null}
+			{display.failedMessage !== undefined ? <Text style={styles.failedNote} numberOfLines={1} accessibilityLabel={`更新できませんでした（${display.failedMessage}）`}>{`更新できませんでした（${display.failedMessage}）`}</Text> : null}
 			<View style={styles.bar} accessible accessibilityLabel={`コンテキストの使用率 ${breakdown.percent}%`}>
 				{counted.filter(line => line.kind === 'used' || line.kind === 'buffer').map(line => (
 					<View key={line.key} style={[styles.barPart, { width: `${line.share}%`, backgroundColor: line.kind === 'buffer' ? colors.borderStrong : categoryColor(line.key) }]} />
@@ -211,10 +199,13 @@ const styles = StyleSheet.create({
 	refreshing: {
 		flexShrink: 0,
 		flexDirection: 'row',
-		alignItems: 'center',
+		// 見出しの行は baseline でそろえる。ここも baseline にして「更新中」の字を基準にし、スピナーだけ縦の中央に置く
+		// （最初の子のスピナーが基準になると、はみ出した native の部品の下端に合わせて字が浮く）。
+		alignItems: 'baseline',
 		gap: 6,
 	},
 	refreshingSpinner: {
+		alignSelf: 'center',
 		width: 12,
 		height: 12,
 		transform: [{ scale: 0.6 }],
