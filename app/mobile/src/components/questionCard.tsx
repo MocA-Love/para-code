@@ -14,6 +14,7 @@ import { setMobileSpanAttributes, startMobileSpan } from '../sentry.js';
 import { Button } from './button.js';
 import { AnswerSubmissionStatus } from './answerSubmissionStatus.js';
 import { isSubmissionLocked } from './answerSubmission.js';
+import { useThemeColors } from '../ui/themeColorsStore.js';
 
 const REFRESHING_MESSAGE = '最新の内容を取得しています。届くまで回答できません';
 /** 会話に残っている未回答の質問（PCがもう待っていないもの）に添える一文。 */
@@ -41,6 +42,12 @@ export interface QuestionFreeTextRequest {
 	readonly maxLength?: number;
 }
 
+/** 選択中の枠と地を、設定 → 色の「選択の印」に合わせる（StyleSheet の固定の青を上書きする）。 */
+function useSelectedAccent() {
+	const theme = useThemeColors();
+	return { borderColor: theme.accent, backgroundColor: theme.accentWash };
+}
+
 /**
  * 質問カード（Claude Code の AskUserQuestion 等）。
  *  - 単一選択: 選択肢を選んでから「回答する」で回答（押しただけでは送らない。誤タップで取り消せないため）
@@ -66,6 +73,7 @@ export const QuestionCard = memo(function QuestionCard({ message, answered, refr
 	/** 会話の履歴として出すだけ（回答の操作を出さない）。 */
 	readOnly?: boolean;
 }) {
+	const selectedAccent = useSelectedAccent();
 	const [selected, setSelected] = useState<number | undefined>(undefined);
 	const [toggled, setToggled] = useState<Set<number>>(new Set());
 	const [freeText, setFreeText] = useState('');
@@ -170,7 +178,7 @@ export const QuestionCard = memo(function QuestionCard({ message, answered, refr
 				return (
 					<Pressable
 						key={i}
-						style={[styles.questionOption, isSelected && styles.questionOptionSelected, disabled && styles.questionOptionDisabled]}
+						style={[styles.questionOption, isSelected && [styles.questionOptionSelected, selectedAccent], disabled && styles.questionOptionDisabled]}
 						disabled={disabled}
 						accessibilityRole="button"
 						accessibilityState={{ selected: isSelected, disabled }}
@@ -183,7 +191,7 @@ export const QuestionCard = memo(function QuestionCard({ message, answered, refr
 			})}
 			{composerFreeText && interactive ? (
 				<Pressable
-					style={[styles.questionOption, otherSelected && styles.questionOptionSelected, disabled && styles.questionOptionDisabled]}
+					style={[styles.questionOption, otherSelected && [styles.questionOptionSelected, selectedAccent], disabled && styles.questionOptionDisabled]}
 					disabled={disabled}
 					accessibilityRole="button"
 					accessibilityState={{ selected: otherSelected, disabled }}
@@ -260,6 +268,7 @@ export const QuestionGroupCard = memo(function QuestionGroupCard({ messages, ans
 	/** 会話の履歴として出すだけ（回答の操作を出さない）。 */
 	readOnly?: boolean;
 }) {
+	const selectedAccent = useSelectedAccent();
 	const [step, setStep] = useState(0);
 	const [answers, setAnswers] = useState<(QuestionGroupAnswer | undefined)[]>(() => messages.map(() => undefined));
 	const [freeTexts, setFreeTexts] = useState<string[]>(() => messages.map(() => ''));
@@ -367,7 +376,7 @@ export const QuestionGroupCard = memo(function QuestionGroupCard({ messages, ans
 				{messages.map((m, i) => (
 					<Pressable
 						key={i}
-						style={[styles.stepTab, i === step && styles.stepTabActive, answers[i] !== undefined && styles.stepTabAnswered]}
+						style={[styles.stepTab, i === step && [styles.stepTabActive, selectedAccent], answers[i] !== undefined && styles.stepTabAnswered]}
 						accessibilityRole="tab"
 						accessibilityState={{ selected: i === step, disabled }}
 						disabled={disabled}
@@ -386,7 +395,7 @@ export const QuestionGroupCard = memo(function QuestionGroupCard({ messages, ans
 				return (
 					<Pressable
 						key={i}
-						style={[styles.questionOption, selected && styles.questionOptionSelected, disabled && styles.questionOptionDisabled]}
+						style={[styles.questionOption, selected && [styles.questionOptionSelected, selectedAccent], disabled && styles.questionOptionDisabled]}
 						disabled={disabled}
 						accessibilityRole="button"
 						accessibilityState={{ selected, disabled }}
@@ -415,7 +424,7 @@ export const QuestionGroupCard = memo(function QuestionGroupCard({ messages, ans
 			})}
 			{composerFreeText && interactive ? (
 				<Pressable
-					style={[styles.questionOption, (otherSelected || currentAnswer?.kind === 'text') && styles.questionOptionSelected, disabled && styles.questionOptionDisabled]}
+					style={[styles.questionOption, (otherSelected || currentAnswer?.kind === 'text') && [styles.questionOptionSelected, selectedAccent], disabled && styles.questionOptionDisabled]}
 					disabled={disabled}
 					accessibilityRole="button"
 					accessibilityState={{ selected: otherSelected || currentAnswer?.kind === 'text', disabled }}
