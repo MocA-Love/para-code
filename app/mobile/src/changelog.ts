@@ -51,6 +51,16 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				icon: 'accessibility-outline',
 				title: 'VoiceOver で、接続中・実行中などの状態の点とセッションのタブの状態を読み上げるようにしました',
 			},
+			{
+				icon: 'chatbubble-ellipses-outline',
+				title: '質問への回答を送っている間に回答をやめたりタブを移ったりして、そのあと送れなかったとき、打った回答が消えていたのを直しました',
+				body: '送れなかった回答は、そのセッションの入力欄の下書きに戻ります。',
+			},
+			{
+				icon: 'image-outline',
+				title: '写真を選んでも読み込めなかったとき、何も出ずに止まっていたのを直しました',
+				body: '「写真を開けませんでした」と出すので、選び直してください。',
+			},
 		],
 	},
 	{
