@@ -73,9 +73,11 @@ export class ParadisPortListWidget extends Disposable implements IParadisPortLis
 
 		this.client = this.instantiationService.createInstance(ParadisPortListClient);
 
-		this.element = dom.append(container, $('button.paradis-port-list-trigger'));
+		this.element = dom.append(container, $('button.paradis-port-list-trigger.paradis-focus-ring'));
 		this.element.setAttribute('type', 'button');
 		this.element.setAttribute('aria-label', localize('paradis.portList.triggerAria', "リッスン中のポート"));
+		this.element.setAttribute('aria-haspopup', 'dialog');
+		this.element.setAttribute('aria-expanded', 'false');
 		this.element.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.plug)}`));
 
 		this._register(dom.addDisposableListener(this.element, 'click', () => this.togglePanel()));
@@ -88,7 +90,7 @@ export class ParadisPortListWidget extends Disposable implements IParadisPortLis
 
 	private togglePanel(): void {
 		if (this.panel.value) {
-			this.closePanel();
+			this.closePanel(false);
 			return;
 		}
 		// パネルを開いた時点の接続状態を確定させ、確認ダイアログ・タイトル表示・kill(fail-closed
@@ -99,20 +101,26 @@ export class ParadisPortListWidget extends Disposable implements IParadisPortLis
 			initialSnapshot: this.latestSnapshot,
 			viaRemote,
 			onManualRefresh: () => this.poll(true),
-			onClose: () => this.closePanel(),
+			onClose: restoreFocus => this.closePanel(restoreFocus),
 			onKill: entry => void this.killEntry(entry, viaRemote),
 			onKillAll: entries => void this.killAll(entries, viaRemote),
 		};
 		this.element.classList.add('active');
+		this.element.setAttribute('aria-expanded', 'true');
 		this.panel.value = this.instantiationService.createInstance(ParadisPortListPanel, this.element, options);
 		this.polling.setPanelOpen(true);
 		void this.poll(true);
 	}
 
-	private closePanel(): void {
+	/** `restoreFocus` は Esc と閉じるボタンのときだけ true（外側のクリックで閉じたときは、押した先のフォーカスを奪わない）。 */
+	private closePanel(restoreFocus: boolean): void {
 		this.element.classList.remove('active');
+		this.element.setAttribute('aria-expanded', 'false');
 		this.polling.setPanelOpen(false);
 		this.panel.clear();
+		if (restoreFocus) {
+			this.element.focus();
+		}
 	}
 
 	private async poll(force: boolean): Promise<void> {

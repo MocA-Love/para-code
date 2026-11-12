@@ -66,4 +66,35 @@ suite('ParadisChangelogView', () => {
 		view.reveal('paracode-178');
 		assert.deepStrictEqual({ initial, chosen: view.viewState }, { initial: '180', chosen: { version: '178', scrollTop: 0 } });
 	});
+
+	// 取れなかったときは札を残し、前回の取得分を出しているならその時刻を添える（paradis-19-13）
+	test('keeps the status chip when the fetch fails, with the time of the cached copy', () => {
+		const { view, containers } = create([]);
+		const chip = containers.header.querySelector('.para-cl-status') as HTMLElement;
+		const fetchedAt = new Date(2026, 10, 12, 14, 5).getTime();
+		const time = new Date(fetchedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+		view.setRemoteState({ kind: 'error' });
+		const withoutCache = { shown: chip.style.display, text: chip.textContent, icon: chip.querySelector('.codicon')?.className };
+		view.setRemoteState({ kind: 'error', cachedFetchedAt: fetchedAt });
+		// 札・バナー・注記のアイコンは codicon のクラスを持つ要素として描く（クラスの無い要素になると何も出ない）
+		const icons = ['.para-cl-banner', '.para-cl-footnote'].map(selector => containers.content.querySelector(`${selector} .codicon`)?.className);
+		assert.deepStrictEqual({ withoutCache, withCache: chip.textContent, icons }, {
+			withoutCache: { shown: '', text: 'サーバーに接続できませんでした', icon: 'codicon codicon-debug-disconnect' },
+			withCache: `サーバーに接続できませんでした · 前回 ${time} の取得分を表示中`,
+			icons: ['codicon codicon-info', 'codicon codicon-info'],
+		});
+	});
+
+	// 未読の点は空なので、未読であることを項目の読み上げの名前に入れ、読んだら外す（paradis-19-12）
+	test('names an unread version for screen readers and drops the name once read', () => {
+		const { view, containers } = create([]);
+		const item = containers.nav.querySelector('.phub-nav-item') as HTMLElement;
+		const before = { label: item.getAttribute('aria-label'), dotHidden: item.querySelector('.para-cl-dot')?.getAttribute('aria-hidden') };
+		view.reveal('178');
+		view.reveal('180');
+		assert.deepStrictEqual({ before, after: item.getAttribute('aria-label') }, {
+			before: { label: 'paracode-180、未読、2026-11-03', dotHidden: 'true' },
+			after: null,
+		});
+	});
 });
