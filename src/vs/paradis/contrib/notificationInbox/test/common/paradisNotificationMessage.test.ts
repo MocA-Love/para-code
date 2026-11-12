@@ -42,6 +42,8 @@ suite('Paradis notification message', () => {
 			'-----BEGIN RSA PRIVATE KEY----- MIIEowIBAAKCAQEA',
 			'git clone https://user:pa55word@example.com/repo.git',
 			`git push ${join('ghp', '_abcdef')}\u2026`,
+			`echo ${join('ya29', '.', 'a0AbCdEfGhIjKlMnOpQrStUvWx')} ${join('xapp', '-1-', 'A0123456-0123456789')} ${join('xoxe', '.xoxp-', '1-abcdefghij')} ${join('xoxe', '-1-', 'abcdefghij')} ${join('whsec', '_', 'abcdefghijklmnop1234')}`,
+			`curl ${join('ya29', '.', 'a0Ab')}\u2026`,
 		];
 		assert.deepStrictEqual(cases.map(paradisRedactSecrets), [
 			'curl -H "Authorization: *** ***" https://api.github.com',
@@ -60,6 +62,8 @@ suite('Paradis notification message', () => {
 			'-----BEGIN RSA PRIVATE KEY----- ***',
 			'git clone https://***@example.com/repo.git',
 			'git push ***\u2026',
+			'echo *** *** *** *** ***',
+			'curl ***\u2026',
 		]);
 	});
 

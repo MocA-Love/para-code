@@ -38,11 +38,13 @@ export interface IParadisPopoverOptions {
 /** キットのポップアップを開く。返り値を捨てると閉じる。 */
 export function showParadisPopover(contextViewService: IContextViewService, options: IParadisPopoverOptions): IDisposable {
 	let open = true;
+	/** 描いた箱（onHide でフォーカスが中にあるかを見る）。 */
+	let renderedBox: HTMLElement | undefined;
 	contextViewService.showContextView({
 		getAnchor: () => options.anchor,
 		render: container => {
 			const store = new DisposableStore();
-			const box = append(container, $('.paradis-popover.paradis-focus-none'));
+			const box = renderedBox = append(container, $('.paradis-popover.paradis-focus-none'));
 			box.setAttribute('role', 'dialog');
 			box.tabIndex = -1;
 			if (options.title) {
@@ -66,8 +68,10 @@ export function showParadisPopover(contextViewService: IContextViewService, opti
 		},
 		onHide: () => {
 			open = false;
+			// ContextView は onHide を箱を隠す前に呼ぶので、Esc や項目の選択で閉じたときはまだ箱の中にフォーカスがある。
+			// 箱の中か body にあるときだけ戻す（外を押して閉じたときは、押した先のフォーカスを奪わない）。
 			const active = getActiveElement();
-			if (!active || !isHTMLElement(active) || active === active.ownerDocument.body) {
+			if (!active || !isHTMLElement(active) || active === active.ownerDocument.body || renderedBox?.contains(active)) {
 				options.anchor.focus();
 			}
 			options.onHide?.();

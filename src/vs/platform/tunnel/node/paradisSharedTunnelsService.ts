@@ -6,6 +6,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { disposableTimeout } from '../../../base/common/async.js';
+import { Emitter } from '../../../base/common/event.js';
 import { Disposable, DisposableMap, DisposableStore } from '../../../base/common/lifecycle.js';
 import { IConfigurationService } from '../../configuration/common/configuration.js';
 import { ILogService } from '../../log/common/log.js';
@@ -58,6 +59,12 @@ export class ParadisNodeTunnelService extends TunnelService {
 	private readonly _carriedTimeouts = this._register(new DisposableMap<string>());
 	/** Lease generation of a closed tunnel → generation of the tunnel that took its references over. */
 	private readonly _successors = new WeakMap<object, object>();
+	private readonly _onDidDropCarriedReferences = this._register(new Emitter<void>());
+	/**
+	 * Fires when kept references were let go of (released or expired) and none are kept any more, so
+	 * the owner can dispose a service that no longer has tunnels.
+	 */
+	readonly onDidDropCarriedReferences = this._onDidDropCarriedReferences.event;
 
 	constructor(
 		private readonly _carriedTimeoutMs: number,
@@ -114,7 +121,7 @@ export class ParadisNodeTunnelService extends TunnelService {
 		} else {
 			this._carried.set(key, { count, generations: new Set([generation]) });
 		}
-		this._carriedTimeouts.set(key, disposableTimeout(() => this._drop(key), this._carriedTimeoutMs));
+		this._carriedTimeouts.set(key, disposableTimeout(() => this._dropAndNotify(key), this._carriedTimeoutMs));
 	}
 
 	/**
@@ -129,13 +136,21 @@ export class ParadisNodeTunnelService extends TunnelService {
 		}
 		carried.count -= count;
 		if (carried.count <= 0) {
-			this._drop(key);
+			this._dropAndNotify(key);
 		}
 	}
 
 	private _drop(key: string): void {
 		this._carried.delete(key);
 		this._carriedTimeouts.deleteAndDispose(key);
+	}
+
+	/** {@link _drop} for references nobody takes over: tells the owner once nothing is kept any more. */
+	private _dropAndNotify(key: string): void {
+		this._drop(key);
+		if (this._carried.size === 0) {
+			this._onDidDropCarriedReferences.fire();
+		}
 	}
 
 	protected override retainOrCreateTunnel(addressOrTunnelProvider: IAddressProvider | ITunnelProvider, remoteHost: string, remotePort: number, localHost: string, localPort: number | undefined, elevateIfNeeded: boolean, privacy?: string, protocol?: string): Promise<RemoteTunnel | string | undefined> | undefined {
@@ -234,17 +249,22 @@ export class ParadisSharedTunnelsService extends Disposable implements ISharedTu
 			const tunnelService = store.add(new ParadisNodeTunnelService(this.carriedReferencesTimeoutMs, this.remoteSocketFactoryService, this.logService, this.signService, this.productService, this.configurationService));
 			this._tunnelServices.set(authority, tunnelService);
 			this._tunnelServiceStores.set(authority, store);
-			store.add(tunnelService.onTunnelClosed(async () => {
-				// Only forget the service this listener belongs to, so a later service for the same
-				// authority is never disposed by an older one's last close. A service whose closed
-				// tunnel left references for the next one is kept, so that tunnel can take them over.
-				if ((await tunnelService.tunnels).length === 0 && !tunnelService.hasCarriedReferences && this._tunnelServices.get(authority) === tunnelService) {
-					this._tunnelServices.delete(authority);
-					this._tunnelServiceStores.deleteAndDispose(authority);
-				}
-			}));
+			store.add(tunnelService.onTunnelClosed(() => this._disposeIfUnused(authority, tunnelService)));
+			// A service kept only for references of a force-closed tunnel is not needed once they are
+			// released or expire without a next tunnel taking them over.
+			store.add(tunnelService.onDidDropCarriedReferences(() => this._disposeIfUnused(authority, tunnelService)));
 		}
 		return this._tunnelServices.get(authority)!.openTunnel(addressProvider, remoteHost, remotePort, localHost, localPort, elevateIfNeeded, privacy, protocol);
+	}
+
+	private async _disposeIfUnused(authority: string, tunnelService: ParadisNodeTunnelService): Promise<void> {
+		// Only forget the service this listener belongs to, so a later service for the same
+		// authority is never disposed by an older one's last close. A service whose closed
+		// tunnel left references for the next one is kept, so that tunnel can take them over.
+		if ((await tunnelService.tunnels).length === 0 && !tunnelService.hasCarriedReferences && this._tunnelServices.get(authority) === tunnelService) {
+			this._tunnelServices.delete(authority);
+			this._tunnelServiceStores.deleteAndDispose(authority);
+		}
 	}
 
 	/**

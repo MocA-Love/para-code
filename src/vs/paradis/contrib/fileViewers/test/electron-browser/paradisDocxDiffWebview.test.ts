@@ -93,6 +93,10 @@ interface IHarness {
 	lines(side: 'original' | 'modified'): string[];
 	/** 溜まっているタイマーを実行する。 */
 	runTimers(): void;
+	/** 描画の手順を1回進める（その時点で溜まっている requestAnimationFrame を実行する）。 */
+	runFrame(): void;
+	/** ペインの scroll イベントを配る。 */
+	scroll(side: 'original' | 'modified'): void;
 	/** パースを失敗させる。 */
 	failParse(error: Error): void;
 	/** vendored ライブラリが読み込めていない状態にする。 */
@@ -110,6 +114,8 @@ function harness(original: IParadisDocxAstDocument, modified: IParadisDocxAstDoc
 	const renderOptions: Record<string, unknown>[] = [];
 	const rendered = new Map<string, IParadisDocxAstDocument>();
 	const timers: (() => void)[] = [];
+	const frames: (() => void)[] = [];
+	const scrollHandlers = new Map<string, () => void>();
 	const assetPlaceholderCounts: number[] = [];
 	let handler: ((message: ParadisDocxHostMessage) => void) | undefined;
 	let parseError: Error | undefined;
@@ -146,12 +152,13 @@ function harness(original: IParadisDocxAstDocument, modified: IParadisDocxAstDoc
 		panes,
 		post: message => posted.push(message),
 		onMessage: next => { handler = next; },
-		onScroll: () => { },
+		onScroll: (side, next) => { scrollHandlers.set(side, next); },
 		setStatus: () => { },
 		setShowFormatChanges: () => { },
 		setAssetPlaceholders: placeholders => assetPlaceholderCounts.push(placeholders.length),
 		setTimeout: callback => { timers.push(callback); return timers.length; },
 		clearTimeout: () => { },
+		requestAnimationFrame: callback => { frames.push(callback); },
 	};
 
 	const ctx = buildParadisDocxDiffContext('loading');
@@ -169,6 +176,12 @@ function harness(original: IParadisDocxAstDocument, modified: IParadisDocxAstDoc
 			const body = rendered.get(side)?.documentPart?.body;
 			return (body?.children ?? []).map(child => renderToText(child, attrs));
 		},
+		runFrame: () => {
+			for (const callback of frames.splice(0, frames.length)) {
+				callback();
+			}
+		},
+		scroll: side => scrollHandlers.get(side)?.(),
 		runTimers: () => {
 			for (const callback of timers.splice(0, timers.length)) {
 				callback();
@@ -214,6 +227,41 @@ suite('Paradis Word diff webview', () => {
 		const test = harness(document([simple('本文')]), document([simple('本文')]));
 		test.send({ type: 'load', generation: 1, original: bytes(1), modified: bytes(2), assetPlaceholders: [{ nodeId: 'asset-1', feature: 'embeddedObject', reason: 'unsafe', title: 'Office asset unavailable', fingerprint: 'a'.repeat(64) }] });
 		deepStrictEqual(test.assetPlaceholderCounts, [1]);
+	});
+
+	test('片側へ移った直後の跳ね返りの scroll では反対側を動かさず、描画を2回待った後は同期する', () => {
+		const test = harness(document([]), document([]));
+		const { original, modified } = test.host.panes;
+		test.send({ type: 'revealAnchor', side: 'original', marker: 'm', focus: '' });
+		original.scroller.scrollTop = 400;
+		// 0ms のタイマーは跳ね返りの scroll より先に走る。
+		test.runTimers();
+		test.scroll('original');
+		test.runFrame();
+		test.scroll('original');
+		const held = modified.scroller.scrollTop;
+		test.runFrame();
+		test.scroll('original');
+		deepStrictEqual([held, modified.scroller.scrollTop], [0, 400]);
+	});
+
+	test('手で続けてスクロールした分は毎回反対側へ写し、写した側からの跳ね返りは写し返さない', () => {
+		const test = harness(document([]), document([]));
+		const { original, modified } = test.host.panes;
+		original.scroller.scrollTop = 100;
+		test.scroll('original');
+		// 写した側の跳ね返り。元の側を動かしてはいけない。
+		modified.scroller.scrollTop = 120;
+		test.scroll('modified');
+		const afterBounce = original.scroller.scrollTop;
+		test.runFrame();
+		original.scroller.scrollTop = 200;
+		test.scroll('original');
+		const second = modified.scroller.scrollTop;
+		test.runFrame();
+		original.scroller.scrollTop = 300;
+		test.scroll('original');
+		deepStrictEqual([afterBounce, second, modified.scroller.scrollTop], [100, 200, 300]);
 	});
 
 	test('本文の段落を順に並べた概要を返す', async () => {
@@ -495,6 +543,7 @@ suite('Paradis Word diff webview', () => {
 
 	test('埋め込んだ inline script が構文として読める（本体・AST の部分・ブートストラップを引数でつなぐ）', () => {
 		const html = buildParadisDocxDiffHtml({ original: '前', modified: '後', loading: '読み込み中' });
+		ok(!html.includes('Office assets unavailable'));
 		const inline = [...html.matchAll(/<script nonce="[^"]+">([\s\S]*?)<\/script>/g)].map(match => match[1]);
 		const boot = inline.filter(source => source.includes('paradisDocxDiffAstHelpers') || source.includes('astHelpers'));
 		// 実行はせず、関数として組み立てられる（構文が壊れていない）ことだけを見る。

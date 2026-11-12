@@ -258,14 +258,7 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		// ライブなズーム変更（ボタン操作）を postMessage で受け取り、スクロール位置を保ったまま反映する。
 		const zoomScript = paradisViewerZoomScript();
 
-		let html = text;
-		if (/<head[^>]*>/i.test(html)) {
-			html = html.replace(/<head[^>]*>/i, match => `${match}${headInjection}`);
-		} else if (/<html[^>]*>/i.test(html)) {
-			html = html.replace(/<html[^>]*>/i, match => `${match}<head>${headInjection}</head>`);
-		} else {
-			html = `<head>${headInjection}</head>${html}`;
-		}
+		const html = paradisInjectHtmlHead(text, headInjection);
 
 		// 末尾に足す。`</body>` を探して差し込むと、**ページ自身のスクリプトの中にある文字列**の
 		// `</body>` に当たることがあり、注入した `</script>` がそのスクリプトを途中で終わらせて
@@ -277,4 +270,22 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		const pageScripts = this.allowScripts ? this.viewerPageScripts(resource) + paradisHtmlViewerCanvasScript() : '';
 		return `${html}${zoomScript}${pageScripts}`;
 	}
+}
+
+/** `<head>` の開きタグ。タグ名の直後を空白か `>` に限り、`<header>` に当たらないようにする。 */
+const PARADIS_HTML_HEAD_OPEN_TAG = /<head(?=[\s>])[^>]*>/i;
+const PARADIS_HTML_HTML_OPEN_TAG = /<html(?=[\s>])[^>]*>/i;
+
+/**
+ * 著者の HTML の `<head>` の先頭に `headInjection` を差し込む。`<head>` が無ければ `<html>` の直後に、
+ * どちらも無ければ先頭に `<head>` を作って入れる（HTML5 では `<head>` の省略が正当）。
+ */
+export function paradisInjectHtmlHead(html: string, headInjection: string): string {
+	if (PARADIS_HTML_HEAD_OPEN_TAG.test(html)) {
+		return html.replace(PARADIS_HTML_HEAD_OPEN_TAG, match => `${match}${headInjection}`);
+	}
+	if (PARADIS_HTML_HTML_OPEN_TAG.test(html)) {
+		return html.replace(PARADIS_HTML_HTML_OPEN_TAG, match => `${match}<head>${headInjection}</head>`);
+	}
+	return `<head>${headInjection}</head>${html}`;
 }

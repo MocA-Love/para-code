@@ -161,6 +161,27 @@ rl.on('line', line => {
 		assert.deepStrictEqual({ waitedForTheLeakedHolder: Date.now() - started >= 1_000 }, { waitedForTheLeakedHolder: false });
 	});
 
+	// パイプの塊の境目が日本語の 1 文字の途中に来ても、前後の断片を U+FFFD に化けさせずにつなぐ。
+	test('keeps a multi-byte character that is split between two chunks of the output', async () => {
+		const command = fakeCodex(`
+const rl = require('readline').createInterface({ input: process.stdin });
+rl.on('line', line => {
+	const message = JSON.parse(line);
+	if (message.id === undefined) { return; }
+	const bytes = Buffer.from(JSON.stringify({ id: message.id, result: { title: '\\u65e5\\u672c\\u8a9e' } }) + '\\n', 'utf8');
+	const split = bytes.indexOf(0xe6) + 1;
+	process.stdout.write(bytes.subarray(0, split));
+	setTimeout(() => process.stdout.write(bytes.subarray(split)), 50);
+});
+`);
+		const rpc = await paradisStartCodexAppServerRpc(command, { ...process.env, CODEX_HOME: join(root, 'home') }, new NullLogService());
+		try {
+			assert.deepStrictEqual(await rpc.request('echo', {}, 5_000), { title: '\u65e5\u672c\u8a9e' });
+		} finally {
+			rpc.dispose();
+		}
+	});
+
 	test('reports the exit code of an app-server that dies during initialize', async () => {
 		const command = fakeCodex(`process.exit(2);`);
 		const failure = await paradisStartCodexAppServerRpc(command, process.env, new NullLogService()).then(() => undefined, error => error) as Error & { exitCode?: number };
