@@ -1,3 +1,5 @@
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
 import { describe, expect, it } from 'vitest';
 import { agentBuiltinCommandBadge, agentComposerIntercept, agentPanelLabel } from './agentBuiltinCommands.js';
 import type { AgentSlashCommand } from './agentSlashCommands.js';
