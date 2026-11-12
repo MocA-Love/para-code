@@ -77,6 +77,8 @@ export class ParadisAivisDictionarySection extends Disposable {
 	private readonly _focus: ParadisSectionFocusCarrier;
 	private readonly _fileInput: HTMLInputElement;
 	private _importTargetUuid: string | undefined;
+	/** 取り込み・書き出し・削除の失敗を出す欄（描き直すたびに作り直す）。 */
+	private _actionErrorEl: HTMLElement | undefined;
 	// 新規作成/編集ダイアログは同時に1つしか開かない前提。開くたびに差し替えて、
 	// 閉じた（自己dispose済みの）ダイアログ参照をセクション本体の store に溜めない。
 	private readonly _nestedDialog = this._register(new MutableDisposable<Disposable>());
@@ -154,6 +156,8 @@ export class ParadisAivisDictionarySection extends Disposable {
 			return false;
 		}
 
+		// 取り込み・書き出し・削除の失敗はここに出す。
+		this._actionErrorEl = dom.append(this.container, $('.pns-error'));
 		const listEl = dom.append(this.container, $('div'));
 
 		// フォーマット文字列の編集やスライダー操作などリストと無関係な 'aivis' スコープの変更でも
@@ -253,6 +257,7 @@ export class ParadisAivisDictionarySection extends Disposable {
 			return;
 		}
 		const settings = this.settingsService.getAivisSettings();
+		this._clearActionError();
 		try {
 			const text = await file.text();
 			const data = JSON.parse(text);
@@ -265,10 +270,12 @@ export class ParadisAivisDictionarySection extends Disposable {
 			this._render();
 		} catch (error) {
 			this.logService.warn('[ParadisNotifications] dictionary import failed', error);
+			this._showActionError(error);
 		}
 	}
 
 	private async _exportDictionary(uuid: string, name: string, apiKey: string): Promise<void> {
+		this._clearActionError();
 		try {
 			const data = await this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call<Record<string, unknown>>('exportAivisDictionary', [apiKey, uuid]);
 			const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
@@ -280,6 +287,7 @@ export class ParadisAivisDictionarySection extends Disposable {
 			URL.revokeObjectURL(url);
 		} catch (error) {
 			this.logService.warn('[ParadisNotifications] dictionary export failed', error);
+			this._showActionError(error);
 		}
 	}
 
@@ -292,6 +300,7 @@ export class ParadisAivisDictionarySection extends Disposable {
 		if (!confirmed) {
 			return;
 		}
+		this._clearActionError();
 		try {
 			await this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call('deleteAivisDictionary', [apiKey, uuid]);
 			invalidateAivisDictionaryListCache(apiKey);
@@ -301,6 +310,19 @@ export class ParadisAivisDictionarySection extends Disposable {
 			this._render();
 		} catch (error) {
 			this.logService.warn('[ParadisNotifications] dictionary delete failed', error);
+			this._showActionError(error);
+		}
+	}
+
+	private _clearActionError(): void {
+		if (this._actionErrorEl) {
+			this._actionErrorEl.textContent = '';
+		}
+	}
+
+	private _showActionError(error: unknown): void {
+		if (this._actionErrorEl?.isConnected) {
+			this._actionErrorEl.textContent = error instanceof Error ? error.message : String(error);
 		}
 	}
 
