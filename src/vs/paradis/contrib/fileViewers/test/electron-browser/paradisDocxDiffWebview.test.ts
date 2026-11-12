@@ -245,6 +245,25 @@ suite('Paradis Word diff webview', () => {
 		deepStrictEqual([held, modified.scroller.scrollTop], [0, 400]);
 	});
 
+	test('手で続けてスクロールした分は毎回反対側へ写し、写した側からの跳ね返りは写し返さない', () => {
+		const test = harness(document([]), document([]));
+		const { original, modified } = test.host.panes;
+		original.scroller.scrollTop = 100;
+		test.scroll('original');
+		// 写した側の跳ね返り。元の側を動かしてはいけない。
+		modified.scroller.scrollTop = 120;
+		test.scroll('modified');
+		const afterBounce = original.scroller.scrollTop;
+		test.runFrame();
+		original.scroller.scrollTop = 200;
+		test.scroll('original');
+		const second = modified.scroller.scrollTop;
+		test.runFrame();
+		original.scroller.scrollTop = 300;
+		test.scroll('original');
+		deepStrictEqual([afterBounce, second, modified.scroller.scrollTop], [100, 200, 300]);
+	});
+
 	test('本文の段落を順に並べた概要を返す', async () => {
 		const test = harness(
 			document([simple('見出し'), simple('本文です')]),

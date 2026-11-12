@@ -187,8 +187,9 @@ export function paradisDocxDiffWebviewMain(ctx: IParadisDocxDiffWebviewContext, 
 	const state: {
 		documents: Partial<Record<Side, IParadisDocxDiffLoadedDocument>>;
 		scale: number;
-		syncing: boolean;
-		syncHold: number;
+		/** 側ごとの札。立っている側から来た scroll は反対側へ写さない。 */
+		syncing: Record<Side, boolean>;
+		syncHold: Record<Side, number>;
 		activeChangeId: number;
 		activeReportHandle: number;
 		/** 最後に受け取った load の世代。古い読み込みの結果を捨てるために持つ。 */
@@ -197,7 +198,7 @@ export function paradisDocxDiffWebviewMain(ctx: IParadisDocxDiffWebviewContext, 
 		annotated: boolean;
 		revisionMode: 'final' | 'original' | 'markup';
 		blankRetryUsed: boolean;
-	} = { documents: {}, scale: 1, syncing: false, syncHold: 0, activeChangeId: -1, activeReportHandle: 0, loadGeneration: -1, annotated: false, revisionMode: 'final', blankRetryUsed: false };
+	} = { documents: {}, scale: 1, syncing: { original: false, modified: false }, syncHold: { original: 0, modified: 0 }, activeChangeId: -1, activeReportHandle: 0, loadGeneration: -1, annotated: false, revisionMode: 'final', blankRetryUsed: false };
 
 	const PARSE_OPTIONS: Record<string, unknown> = { trimXmlDeclaration: true };
 
@@ -295,22 +296,28 @@ export function paradisDocxDiffWebviewMain(ctx: IParadisDocxDiffWebviewContext, 
 	 * 走るので、跳ね返りを受ける前に札が下りる。描画の手順を2回待ってから下ろす（1回目は
 	 * scroll イベントを配った後、2回目は scroll の処理中に書き換えた分の跳ね返りの後）。
 	 * 後から立てた札を先の予約が下ろさないよう、最後に立てた札の予約だけが下ろす。
+	 *
+	 * 札は側ごとに持つ。手でのスクロールを写すときは書き込んだ側（`to`）にだけ立てる。
+	 * 左右共通の札にすると、2回待つ間に続けて入った元の側の手でのスクロールまで捨ててしまい、
+	 * 最後の移動が反対側へ写らずに左右がずれたまま止まる。
 	 */
-	function holdSync(): void {
-		state.syncing = true;
-		const hold = ++state.syncHold;
-		host.requestAnimationFrame(() => host.requestAnimationFrame(() => {
-			if (state.syncHold === hold) {
-				state.syncing = false;
-			}
-		}));
+	function holdSync(sides: readonly Side[] = SIDES): void {
+		for (const side of sides) {
+			state.syncing[side] = true;
+			const hold = ++state.syncHold[side];
+			host.requestAnimationFrame(() => host.requestAnimationFrame(() => {
+				if (state.syncHold[side] === hold) {
+					state.syncing[side] = false;
+				}
+			}));
+		}
 	}
 
 	function syncScroll(from: Side, to: Side): void {
-		if (state.syncing) {
+		if (state.syncing[from]) {
 			return;
 		}
-		holdSync();
+		holdSync([to]);
 		const source = host.panes[from].scroller;
 		const target = host.panes[to].scroller;
 		const sourceRange = source.scrollHeight - source.clientHeight;
