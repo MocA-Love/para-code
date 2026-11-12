@@ -41,6 +41,8 @@ const MAX_LABELS = 256;
 interface IOwnerSeen {
 	readonly ownerKey: string;
 	readonly cli: ParadisCursorCli | undefined;
+	/** 色の枠（0 は CLI の色、1 以降は {@link MORE_COLORS}）。来たときに決め、休んで外れるまで変えない。 */
+	readonly slot: number;
 	at: number;
 }
 
@@ -120,15 +122,20 @@ export class ParadisCursorOwners {
 		const live = seen.filter(owner => owner.ownerKey === ownerKey || at - owner.at < OWNER_IDLE_MS);
 		let self = live.find(owner => owner.ownerKey === ownerKey);
 		if (!self) {
-			self = { ownerKey, cli, at };
+			// 先に来た持ち主が休んで外れても、残りの持ち主の色が途中で変わらないよう、空いた枠のうち一番前を使う
+			let slot = 0;
+			while (live.some(owner => owner.slot === slot)) {
+				slot++;
+			}
+			self = { ownerKey, cli, slot, at };
 			live.push(self);
 		}
 		self.at = at;
 		this.pages.set(pageKey, live);
 		const index = live.indexOf(self);
-		const color = index === 0
+		const color = self.slot === 0
 			? (cli ? CLI_COLOR[cli] : UNKNOWN_COLOR)
-			: MORE_COLORS[(index - 1) % MORE_COLORS.length];
+			: MORE_COLORS[(self.slot - 1) % MORE_COLORS.length];
 		const name = this.nameAt(live, index);
 		return { id: paradisCursorOwnerId(ownerKey), name, mark: cli ? CLI_MARK[cli] : '', color };
 	}

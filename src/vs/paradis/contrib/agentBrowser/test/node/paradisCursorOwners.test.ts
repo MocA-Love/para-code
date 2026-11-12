@@ -35,6 +35,19 @@ suite('Paradis cursor owners', () => {
 		);
 	});
 
+	test('an owner keeps its color when an earlier owner of the page goes idle, and a new owner takes the freed color', () => {
+		let clock = 0;
+		const owners = new ParadisCursorOwners(() => clock);
+		owners.resolve('pane-a', 'page', 'claude');
+		const before = owners.resolve('pane-b', 'page', 'claude').color;
+		clock += 9 * 60_000;
+		owners.resolve('pane-b', 'page', 'claude');
+		clock += 2 * 60_000;
+		const after = owners.resolve('pane-b', 'page', 'claude').color;
+		const newcomer = owners.resolve('pane-c', 'page', 'codex').color;
+		assert.deepStrictEqual({ before, after, newcomer }, { before: '#8250df', after: '#8250df', newcomer: '#10a37f' });
+	});
+
 	test('names change at most three times a minute, and a refused name falls back to the default', () => {
 		let clock = 0;
 		const owners = new ParadisCursorOwners(() => clock);

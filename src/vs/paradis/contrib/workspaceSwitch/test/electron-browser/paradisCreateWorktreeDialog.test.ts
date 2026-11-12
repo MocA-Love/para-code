@@ -86,4 +86,45 @@ suite('create worktree dialog: setup switch', () => {
 			container.remove();
 		}
 	});
+
+	test('an Escape that cancels a Japanese conversion does not close the dialog', () => {
+		const fileService = store.add(new FileService(new NullLogService()));
+		store.add(fileService.registerProvider('file', store.add(new InMemoryFileSystemProvider())));
+		const repository = { id: 'repo', name: 'repo', uri: URI.file('/repo') } satisfies IParadisWorkspaceRepository;
+		const channel = { call: async () => ({ branches: ['main'], head: 'main' }), listen: () => Event.None } as unknown as IChannel;
+		const gitHost: IParadisWorktreeGitHost = { channel, path: resource => resource.path as unknown as ReturnType<IParadisWorktreeGitHost['path']> };
+		const enqueued: IParadisHeadlessWorktreeRequest[] = [];
+		const container = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(container);
+		const storage = store.add(new InMemoryStorageService());
+		const dialog = new ParadisCreateWorktreeDialog(
+			{ activeContainer: container } as unknown as ILayoutService,
+			() => gitHost,
+			{ repositories: [repository], activeRepository: repository } as unknown as IParadisWorkspaceSwitchService,
+			{ getDetectedWorktrees: () => [] } as unknown as IParadisWorktreeService,
+			new TestConfigurationService(),
+			fileService,
+			new NullLogService(),
+			storage,
+			{ enqueue: (request: IParadisHeadlessWorktreeRequest) => { enqueued.push(request); } } as unknown as IParadisWorktreeCreateQueueService,
+			{ onDidChange: Event.None, refresh: () => { }, getAgentTemplates: () => [], isFixedBySettings: () => false } as unknown as IParadisAgentModelCatalogService,
+			Object.create(null),
+			'repo',
+			undefined,
+		);
+		try {
+			const backdrop = container.querySelector<HTMLElement>('.paradis-create-worktree-backdrop')!;
+			backdrop.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true }));
+			backdrop.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, ctrlKey: true, isComposing: true, bubbles: true }));
+			const whileComposing = { open: container.contains(backdrop), enqueued: enqueued.length };
+			backdrop.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+			assert.deepStrictEqual({ whileComposing, afterEscape: container.contains(backdrop) }, {
+				whileComposing: { open: true, enqueued: 0 },
+				afterEscape: false,
+			});
+		} finally {
+			dialog.dispose();
+			container.remove();
+		}
+	});
 });
