@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, test } from 'vitest';
-import { decodeNotify, decodeNotifyControl, encodeNotify, encodeNotifyDismiss, encodeNotifyDismissed, encodeNotifyDismissedByToken, type NotifyPayload } from '../src/notify.js';
+import { decodeNotify, decodeNotifyControl, encodeNotify, encodeNotifyDismiss, encodeNotifyDismissed, type NotifyPayload } from '../src/notify.js';
 
 describe('notify codec', () => {
 	test('roundtrips a full payload', () => {
@@ -64,8 +64,9 @@ describe('notify control messages (dismiss sync)', () => {
 		expect(decodeNotifyControl(encodeNotifyDismissed('n1'))).toEqual({ t: 'dismissed', id: 'n1' });
 	});
 
-	test('roundtrips a dismissed-token message', () => {
-		expect(decodeNotifyControl(encodeNotifyDismissedByToken('tok-1'))).toEqual({ t: 'dismissed-token', token: 'tok-1' });
+	test('decodes a dismissed-token message', () => {
+		// PC が送る形（PC 側の自前の実装と同じ JSON）
+		expect(decodeNotifyControl(new TextEncoder().encode(JSON.stringify({ t: 'dismissed-token', token: 'tok-1' })))).toEqual({ t: 'dismissed-token', token: 'tok-1' });
 	});
 
 	test('does not mistake a NotifyPayload for a control message', () => {
