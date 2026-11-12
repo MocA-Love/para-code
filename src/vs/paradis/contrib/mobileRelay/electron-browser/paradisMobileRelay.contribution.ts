@@ -1060,6 +1060,16 @@ class ParadisMobileRelayContribution extends Disposable implements IWorkbenchCon
 					void this.service.cancelPairing(session.pairId);
 				}
 			});
+			// 期限が切れた小窓の「新しい QR を作る」: 切れた待ち受けを取り消してから閉じ、接続をやり直す
+			const requested = pairingPanel.onDidRequestNewCode(async () => {
+				requested.dispose();
+				if (pairingFlow.shouldCancelOnClose()) {
+					pairingListener.clear();
+					await this.service.cancelPairing(session.pairId).catch(err => this.logService.warn('[paradisMobileRelay] failed to cancel the expired pairing', err));
+				}
+				pairingPanel.dispose();
+				await this.runPairing();
+			});
 		}
 		pairingListener.value = this.service.onPairingEvent(async event => {
 			if (event.kind === 'awaiting-approval') {
