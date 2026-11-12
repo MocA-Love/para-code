@@ -145,8 +145,27 @@ export const type = {
 	display: 44,
 } as const;
 
-/** 余白の段。新しく書く部品はこの値を使う。 */
-export const space = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24 } as const;
+/**
+ * 余白の段。新しく書く部品はこの値を使う。
+ *
+ * 4 の段（xs・sm・md・lg・xl）の間に、Orca と同じ行の寸法を名前付きで持つ（`space.sm + 2` のような足し算をしない）。
+ *  - `snug`（6）: アイコンとラベルの間・見出しの下の操作の上など、小さな間
+ *  - `row`（10）: 行の中の要素の間・縦に並べた中身の間・入力欄の上下
+ *  - `rowInset`（14）: 一覧の行の左右。区切り線と束の中の補足の頭もこれにそろえる
+ */
+export const space = { xs: 4, snug: 6, sm: 8, row: 10, md: 12, rowInset: 14, lg: 16, xl: 24 } as const;
+
+/**
+ * 押している間の地（通常の地 → 押した地）。押した手応えは不透明度ではなく、地を一段上げて出す。
+ *  - 地の無い部品（一覧の行・枠だけのボタン）と `panel` の面（カード）は `raised` を敷く
+ *  - `raised` の面（secondary のボタン）は一段上の `surface3`
+ *  - 塗りの色（主ボタン・削除）は段を持たないので、`src/ui/themeColors.ts` の `pressedColorOf` で作る
+ */
+export const pressedSurface = {
+	none: colors.raised,
+	panel: colors.raised,
+	raised: colors.surface3,
+} as const;
 
 /** 指で押す要素の当たり判定の最小値（Apple HIG）。見た目が小さい場合は hitSlop で補う。 */
 export const HIT_SIZE = 44;

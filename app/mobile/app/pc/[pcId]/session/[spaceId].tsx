@@ -28,7 +28,7 @@ import { usePcCapability } from '../../../../src/hooks/usePcCapability.js';
 import { useIsRegularWidth } from '../../../../src/hooks/useSizeClass.js';
 import { ColumnResizeHandle } from '../../../../src/ipad/columnResizeHandle.js';
 import { useDetailColumnKey, useDetailColumnOpen } from '../../../../src/ipad/detailColumn.js';
-import { canDockPanel, dockWidthFor } from '../../../../src/ipad/ipadLayout.js';
+import { DOCK_MAX_WIDTH, DOCK_MIN_WIDTH, canDockPanel, dockWidthFor } from '../../../../src/ipad/ipadLayout.js';
 import { useIpadLayout } from '../../../../src/ipad/ipadLayoutStore.js';
 import { SessionDock } from '../../../../src/ipad/sessionDock.js';
 import { useShortcutSlot } from '../../../../src/ipad/shortcutRegistry.js';
@@ -481,6 +481,7 @@ export default function SessionScreen() {
 					<ColumnResizeHandle
 						x={bodyWidth - dockWidth}
 						label="ドックの幅"
+						value={{ min: DOCK_MIN_WIDTH, max: DOCK_MAX_WIDTH, now: dockWidth }}
 						onStart={() => { dockDragStart.current = dockWidth; }}
 						onMove={dx => setDockWidth(dockDragStart.current - dx)}
 						onEnd={commitWidths}

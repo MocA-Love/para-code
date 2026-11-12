@@ -2,8 +2,9 @@
 
 import { ActivityIndicator, Pressable, StyleSheet, Text, type StyleProp, type ViewStyle } from 'react-native';
 import { hitSlopToMinimum } from '../components/hitSlop.js';
-import { HIT_SIZE, colors, radius, space, type } from '../theme.js';
+import { HIT_SIZE, colors, pressedSurface, radius, space, type } from '../theme.js';
 import { Icon, iconSize, type LucideIcon } from './icon.js';
+import { pressedColorOf } from './themeColors.js';
 import { useThemeColors } from './themeColorsStore.js';
 
 /**
@@ -28,6 +29,17 @@ const SURFACE: Record<ButtonVariant, ViewStyle> = {
 	outline: { borderWidth: 1, borderColor: colors.border },
 	ghost: {},
 	danger: { backgroundColor: colors.red },
+};
+
+/**
+ * 押している間の地（`theme.ts` の `pressedSurface` の対応どおり、地を一段上げる）。
+ * 主ボタンは利用者が色を変えられるので、描くときに `useThemeColors().primaryPressed`（`pressedColorOf` の色）を使う。
+ */
+const PRESSED: Record<Exclude<ButtonVariant, 'primary'>, ViewStyle> = {
+	secondary: { backgroundColor: pressedSurface.raised },
+	outline: { backgroundColor: pressedSurface.none },
+	ghost: { backgroundColor: pressedSurface.none },
+	danger: { backgroundColor: pressedColorOf(colors.red) },
 };
 
 const FOREGROUND: Record<ButtonVariant, string> = {
@@ -74,7 +86,7 @@ export function Button({ label, onPress, variant = 'primary', size = 'md', icon,
 				{ minHeight: height, paddingHorizontal: size === 'md' ? space.lg : space.md },
 				SURFACE[variant],
 				variant === 'primary' ? { backgroundColor: theme.primary } : undefined,
-				pressed ? styles.pressed : undefined,
+				pressed ? (variant === 'primary' ? { backgroundColor: theme.primaryPressed } : PRESSED[variant]) : undefined,
 				disabled ? styles.disabled : undefined,
 				style,
 			]}
@@ -89,7 +101,6 @@ export function Button({ label, onPress, variant = 'primary', size = 'md', icon,
 						style={[
 							styles.label,
 							{ color: fg, fontSize: size === 'md' ? type.input : type.body },
-							variant === 'primary' || variant === 'danger' ? styles.labelStrong : undefined,
 							variant === 'ghost' ? styles.labelGhost : undefined,
 						]}
 						numberOfLines={1}
@@ -107,20 +118,14 @@ const styles = StyleSheet.create({
 		flexDirection: 'row',
 		alignItems: 'center',
 		justifyContent: 'center',
-		gap: space.xs + 2,
+		gap: space.snug,
 		borderRadius: radius.button,
-	},
-	pressed: {
-		opacity: 0.7,
 	},
 	disabled: {
 		opacity: 0.45,
 	},
 	label: {
 		fontWeight: '600',
-	},
-	labelStrong: {
-		fontWeight: '700',
 	},
 	labelGhost: {
 		fontWeight: '400',

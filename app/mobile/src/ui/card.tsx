@@ -2,7 +2,7 @@
 
 import type { ReactNode } from 'react';
 import { Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from 'react-native';
-import { colors, radius } from '../theme.js';
+import { colors, pressedSurface, radius } from '../theme.js';
 
 /**
  * カード（モックの `.card`）。地は `colors.panel`、細い枠、角丸 14。
@@ -45,6 +45,6 @@ const styles = StyleSheet.create({
 		overflow: 'hidden',
 	},
 	pressed: {
-		backgroundColor: colors.raised,
+		backgroundColor: pressedSurface.panel,
 	},
 });

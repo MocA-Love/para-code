@@ -44,6 +44,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-11-12',
 		items: [
 			{
+				icon: 'hand-left-outline',
+				title: 'ボタンを押したときの手応えを、行やカードと同じく地の色が変わる形にそろえました',
+				body: 'VoiceOver では一覧の行の右の値と列の幅を読み上げ、入力シートで保存できない理由が出たときに知らせます。「視差効果を減らす」がオンのときは実行中の輪を回しません。',
+			},
+			{
 				icon: 'volume-high-outline',
 				title: 'iPhone・iPad の VoiceOver で、「コピーしました」などのお知らせを読み上げるようにしました',
 			},

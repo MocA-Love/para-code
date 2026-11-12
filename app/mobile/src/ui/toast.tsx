@@ -8,6 +8,7 @@ import { useAppLocked } from '../appLock.js';
 import { useParaToast, type ParaToast } from '../paraToast.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { haptic } from '../haptics.js';
+import { hitSlopToMinimum } from '../components/hitSlop.js';
 import { colors, radius, space, type } from '../theme.js';
 import { useThemeColors } from './themeColorsStore.js';
 import { toastPlacement, useToastAnchor } from './toastAnchor.js';
@@ -33,7 +34,7 @@ export function Toast({ toast, onAction }: { toast: ParaToast; onAction?: () => 
 				{toast.sub !== undefined && toast.sub.length > 0 ? <Text style={styles.sub} numberOfLines={1}>{toast.sub}</Text> : null}
 			</View>
 			{toast.action !== undefined ? (
-				<Pressable onPress={onAction} hitSlop={space.md} accessibilityRole="button" accessibilityLabel={toast.action.label}>
+				<Pressable onPress={onAction} hitSlop={ACTION_HIT_SLOP} accessibilityRole="button" accessibilityLabel={toast.action.label}>
 					<Text style={[styles.action, { color: theme.accent }]}>{toast.action.label}</Text>
 				</Pressable>
 			) : null}
@@ -152,6 +153,9 @@ function ToastLayer({ followAnchor }: { followAnchor: boolean }) {
 	);
 }
 
+/** 「戻る」の当たり判定。13pt の文字の行（約 16pt）を上下に広げて 44pt にし、左右は 12pt 足す。 */
+const ACTION_HIT_SLOP = { ...hitSlopToMinimum(16), left: space.md, right: space.md };
+
 /** 札の最大幅（pt）。iPhone SE の 320pt でも左右に余白が残る。 */
 const TOAST_MAX_WIDTH = 300;
 
@@ -175,8 +179,9 @@ const styles = StyleSheet.create({
 		paddingHorizontal: space.lg,
 		shadowColor: colors.shadow,
 		shadowOffset: { width: 0, height: 4 },
-		shadowOpacity: 0.35,
-		shadowRadius: 14,
+		// 浮いている面の影はシート（bottomDrawer.tsx）と同じ濃さと半径にする。
+		shadowOpacity: 0.2,
+		shadowRadius: 10,
 		elevation: 6,
 	},
 	textCol: {

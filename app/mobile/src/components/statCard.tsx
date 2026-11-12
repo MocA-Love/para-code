@@ -26,7 +26,7 @@ export function StatCard({ label, value, sub, valueColor, style }: {
 
 const styles = StyleSheet.create({
 	card: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.card, ...squircle, borderWidth: 1, borderColor: colors.border, padding: 14 },
-	label: { color: colors.textDim, fontSize: type.caption, fontWeight: '600', letterSpacing: 0.4 },
+	label: { color: colors.textDim, fontSize: type.caption, fontWeight: '600' },
 	value: { color: colors.text, fontSize: type.large, fontWeight: '800', marginTop: 4, fontVariant: ['tabular-nums'] },
 	sub: { color: colors.textDim, fontSize: type.caption, marginTop: 2 },
 });
