@@ -173,6 +173,8 @@ class ParadisLimitsMonitorWidget extends Disposable {
 		this.button = dom.append(container, $('button.paradis-limits-trigger'));
 		this.button.setAttribute('type', 'button');
 		this.button.setAttribute('aria-label', localize('paradis.limitsMonitor.triggerAria', "AI利用リミット"));
+		this.button.setAttribute('aria-haspopup', 'dialog');
+		this.button.setAttribute('aria-expanded', 'false');
 
 		this._register(dom.addDisposableListener(this.button, 'click', () => this.togglePanel()));
 
@@ -277,7 +279,7 @@ class ParadisLimitsMonitorWidget extends Disposable {
 			initialSnapshot: this.latestSnapshot,
 			client: this.client,
 			onManualRefresh: force => void this.poll(force ?? true),
-			onClose: () => this.closePanel(),
+			onClose: restoreFocus => this.closePanel(restoreFocus),
 			onAddAccount: provider => this.openSetupDialog(provider, undefined),
 			onRelogin: account => this.openSetupDialog(account.provider, account),
 			onRemoveAccount: account => void this.removeAccount(account),
@@ -291,6 +293,7 @@ class ParadisLimitsMonitorWidget extends Disposable {
 			cancelRetry: () => this.pendingRetry.clear(),
 		};
 		this.button.classList.add('active');
+		this.button.setAttribute('aria-expanded', 'true');
 		this.panel.value = this.instantiationService.createInstance(ParadisLimitsMonitorPanel, this.button, options);
 		this.reschedulePolling();
 		void this.poll(false);
@@ -301,16 +304,22 @@ class ParadisLimitsMonitorWidget extends Disposable {
 		return this.emailMaskService.displayName(account);
 	}
 
-	private closePanel(): void {
+	/** @param restoreFocus パネルの中から Esc で閉じたとき。フォーカスをタイトルバーのボタンへ戻す。 */
+	private closePanel(restoreFocus?: boolean): void {
 		this.button.classList.remove('active');
+		this.button.setAttribute('aria-expanded', 'false');
 		this.panel.clear();
 		this.reschedulePolling();
+		if (restoreFocus && this.button.isConnected && this.button.style.display !== 'none') {
+			this.button.focus();
+		}
 	}
 
 	private openSetupDialog(provider: ParadisLimitsProvider, reloginAccount: IParadisLimitsAccount | undefined): void {
 		// 別の操作をしたので、予約していた切り替えのやり直しはやめる。
 		this.pendingRetry.clear();
-		this.closePanel();
+		// パネルの「＋」などは閉じると消えるので、ダイアログを閉じた後はタイトルバーのボタンへフォーカスを戻す
+		this.closePanel(true);
 		this.setupDialog.value = this.instantiationService.createInstance(ParadisLimitsSetupDialog, this.client, {
 			provider,
 			reloginAccount,
