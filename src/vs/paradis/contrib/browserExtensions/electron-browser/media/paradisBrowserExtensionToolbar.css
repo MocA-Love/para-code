@@ -162,8 +162,14 @@
 	font: normal normal normal 16px/1 codicon;
 }
 
-.monaco-workbench .paradis-browser-extensions-popover button[disabled] {
+.monaco-workbench .paradis-browser-extensions-popover button[disabled],
+.monaco-workbench .paradis-browser-extensions-popover button[aria-disabled="true"] {
 	cursor: default;
+}
+
+/* A pin being switched keeps its focus (aria-disabled, not disabled) but looks inactive. */
+.monaco-workbench .paradis-browser-extensions-popover button[aria-disabled="true"] {
+	color: var(--vscode-disabledForeground);
 }
 
 .monaco-workbench .paradis-browser-extensions-popover .pbx-open {
@@ -214,7 +220,7 @@
 	color: var(--vscode-icon-foreground);
 }
 
-.monaco-workbench .paradis-browser-extensions-popover .pbx-icon-button:hover:not([disabled]) {
+.monaco-workbench .paradis-browser-extensions-popover .pbx-icon-button:hover:not([disabled]):not([aria-disabled="true"]) {
 	background-color: var(--vscode-toolbar-hoverBackground);
 }
 

@@ -48,6 +48,8 @@ export function usePullRequest(space: CodeSpace, active: boolean): PullRequestCo
 	const [mergeError, setMergeError] = useState<string | undefined>(undefined);
 	const [queued, setQueued] = useState<PrQueued | undefined>(undefined);
 	const genRef = useRef(0);
+	/** スペースの世代。wsId が変わったときだけ進める（PR の取り直しで進む genRef とは別。マージ中に移ったのを見分ける）。 */
+	const spaceGenRef = useRef(0);
 	const { pcId, wsId, rendererTarget } = space;
 
 	const refresh = useCallback(async () => {
@@ -79,8 +81,10 @@ export function usePullRequest(space: CodeSpace, active: boolean): PullRequestCo
 	// スペースが変わったら前のスペースの PR を出さない
 	useEffect(() => {
 		genRef.current++;
+		spaceGenRef.current++;
 		setView(undefined);
 		setError(undefined);
+		setMerging(false);
 		setMergeError(undefined);
 		setQueued(undefined);
 		setLoading(false);
@@ -100,12 +104,17 @@ export function usePullRequest(space: CodeSpace, active: boolean): PullRequestCo
 		}
 		setMerging(true);
 		setMergeError(undefined);
+		// 前のスペースのマージの結果・失敗を、移った先のスペースに書き込まない
+		const spaceGen = spaceGenRef.current;
+		const sameSpace = () => spaceGenRef.current === spaceGen;
 		// 結果の触覚は、まだ同じスペースを見ているときだけ返す（別のスペースへ移った後に鳴らさない。useScmSync と同じ）
 		const sameTarget = () => rendererTarget !== undefined && currentRendererTarget(wsId) === rendererTarget;
 		try {
 			const reply = await sendPcRequest<{ readonly queued?: unknown }>(pcId, 'scm', { t: 'prMerge', ws: wsId, number: pr.number, headSha: pr.headSha }, { timeoutMs: 130_000 });
 			const outcome = parsePrMergeReply(reply);
-			setQueued(outcome === 'queued' ? { number: pr.number, headSha: pr.headSha, at: Date.now() } : undefined);
+			if (sameSpace()) {
+				setQueued(outcome === 'queued' ? { number: pr.number, headSha: pr.headSha, at: Date.now() } : undefined);
+			}
 			if (sameTarget()) {
 				haptic('success');
 			}
@@ -114,11 +123,15 @@ export function usePullRequest(space: CodeSpace, active: boolean): PullRequestCo
 			if (sameTarget()) {
 				haptic('error');
 			}
-			setMergeError(errorMessage(e));
+			if (sameSpace()) {
+				setMergeError(errorMessage(e));
+			}
 			return undefined;
 		} finally {
-			setMerging(false);
-			void refresh();
+			if (sameSpace()) {
+				setMerging(false);
+				void refresh();
+			}
 		}
 	}, [canMerge, pcId, wsId, rendererTarget, merging, refresh]);
 

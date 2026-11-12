@@ -187,8 +187,14 @@ suite('ParadisBrowserExtensionWebStore', () => {
 			failed: await download({ 'clients2.google.com': { status: 500 } }),
 			// 本文が届かないまま止まった通信は打ち切る（読むのをやめて閉じる）
 			stalled: await paradisDownloadWebStoreCrx(ID, async () => ({ status: 200, read: () => new Promise<Buffer>(() => { }), cancel: () => visited.push('cancelled') }), { timeoutMs: 20 }).then(() => 'ok', (error: Error) => error.message),
+			// 返事が来る前に時間切れになったら、要求を止め、後から届いた返事は読まずに閉じる
+			unanswered: await paradisDownloadWebStoreCrx(ID, (_url, signal) => new Promise<IParadisWebStoreResponse>(resolveResponse => signal?.addEventListener('abort', () => {
+				visited.push('aborted');
+				resolveResponse({ status: 200, read: async () => { visited.push('late read'); return crx; }, cancel: () => visited.push('late cancelled') });
+			})), { timeoutMs: 20 }).then(() => 'ok', (error: Error) => error.message),
 		};
-		assert.deepStrictEqual({ result, cancelledStalled: visited.includes('cancelled'), url: new URL(paradisWebStoreCrxUrl(ID, '140.0.0.0')).searchParams.get('x') }, {
+		await new Promise(resolve => setTimeout(resolve, 0));
+		assert.deepStrictEqual({ result, cancelledStalled: visited.includes('cancelled'), unanswered: visited.filter(entry => entry.startsWith('late') || entry === 'aborted'), url: new URL(paradisWebStoreCrxUrl(ID, '140.0.0.0')).searchParams.get('x') }, {
 			result: {
 				followed: ID,
 				awayFromGoogle: 'The extension download was redirected away from Google',
@@ -197,8 +203,10 @@ suite('ParadisBrowserExtensionWebStore', () => {
 				startOutside: 'The extension download address is not a Chrome Web Store address',
 				failed: 'The Chrome Web Store download failed (500)',
 				stalled: 'The Chrome Web Store download timed out',
+				unanswered: 'The Chrome Web Store download timed out',
 			},
 			cancelledStalled: true,
+			unanswered: ['aborted', 'late cancelled'],
 			url: `id=${ID}&installsource=ondemand&uc=`,
 		});
 	});

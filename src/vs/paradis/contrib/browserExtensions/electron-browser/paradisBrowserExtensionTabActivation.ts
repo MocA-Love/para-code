@@ -14,6 +14,7 @@ import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IWorkbenchContribution } from '../../../../workbench/common/contributions.js';
+import { BrowserEditorInput } from '../../../../workbench/contrib/browserView/common/browserEditorInput.js';
 import { IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
@@ -38,7 +39,12 @@ export class ParadisBrowserExtensionTabActivationContribution extends Disposable
 				return;
 			}
 			const group = editorGroupsService.groups.find(candidate => candidate.contains(input));
-			editorService.openEditor(input, { preserveFocus: false }, group).catch(error => logService.warn('[paradis] could not bring a browser tab forward for an extension', error));
+			// フォーカスがそのグループのページの中にあるとき（ページで押した拡張機能のショートカットでタブを切り替えたときなど）は、
+			// Chrome と同じく前に出したページへフォーカスを移す。ターミナルやエディタなどほかの場所にあるときは、
+			// タブだけ前に出してフォーカスは動かさない（打っている途中の文字がページに入らないように）
+			const activeEditor = group?.activeEditor;
+			const focusInBrowser = group === editorGroupsService.activeGroup && activeEditor instanceof BrowserEditorInput && activeEditor.model?.focused === true;
+			editorService.openEditor(input, { preserveFocus: !focusInBrowser }, group).catch(error => logService.warn('[paradis] could not bring a browser tab forward for an extension', error));
 		}));
 	}
 }

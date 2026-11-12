@@ -40,6 +40,7 @@ export const HTML_IMAGES_LOADER_SCRIPT = `(function () {
 	var sent = {};
 	var clicked = {};
 	var waiting = new WeakMap();
+	var observers = [];
 	function request(id, priority) {
 		if (id === null || (sent[id] !== undefined && sent[id] <= RANK[priority])) { return; }
 		sent[id] = RANK[priority];
@@ -87,8 +88,12 @@ export const HTML_IMAGES_LOADER_SCRIPT = `(function () {
 			});
 		}, { rootMargin: rootMargin });
 		document.querySelectorAll('img[' + ATTRIBUTE + ']').forEach(function (img) { observer.observe(img); });
+		observers.push(observer);
 	}
 	function start() {
+		// 頼み直し（接続し直したとき）で作り足さない。前の見張りを外してから作り直す
+		observers.forEach(function (observer) { observer.disconnect(); });
+		observers = [];
 		watch('visible', '0px');
 		watch('near', '200% 0px');
 	}

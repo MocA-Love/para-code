@@ -670,6 +670,8 @@ class ParadisBrowserExtensionsPopover extends Disposable {
 	private readonly _container: HTMLElement;
 	private readonly _manageButton: HTMLButtonElement;
 	private _focusable: HTMLElement[] = [];
+	/** ピン留めを切り替えている途中の拡張機能（二度押しを止める）。 */
+	private readonly _pinning = new Set<string>();
 	private readonly _rowStore = this._register(new MutableDisposable());
 	private _disposed = false;
 
@@ -768,13 +770,22 @@ class ParadisBrowserExtensionsPopover extends Disposable {
 				: localize('paradis.browserExtensions.popover.pin', "{0} をツールバーに固定", action.name);
 			pin.setAttribute('aria-label', pinLabel);
 			pin.setAttribute('aria-pressed', String(action.pinned));
+			if (this._pinning.has(action.extensionId)) {
+				pin.setAttribute('aria-disabled', 'true');
+			}
 			store.add(this._hoverService.setupManagedHover(getDefaultHoverDelegate('element'), pin, pinLabel));
 			store.add(dom.addDisposableListener(pin, dom.EventType.CLICK, () => {
 				const model = this._editor.model;
-				if (model) {
-					pin.disabled = true;
+				if (model && !this._pinning.has(action.extensionId)) {
+					// disabled にすると押したピンからフォーカスが外れ、一覧の Esc・矢印・Tab が効かなくなるので、aria-disabled で二度押しだけを止める
+					this._pinning.add(action.extensionId);
+					pin.setAttribute('aria-disabled', 'true');
 					void this._instantiationService.invokeFunction(accessor => accessor.get(IParadisBrowserExtensionToolbarService).main.setPinned(model.id, action.extensionId, !action.pinned))
-						.finally(() => featureOf(this._editor)?.refresh());
+						.finally(() => {
+							this._pinning.delete(action.extensionId);
+							pin.removeAttribute('aria-disabled');
+							featureOf(this._editor)?.refresh();
+						});
 				}
 			}));
 			const more = dom.append(row, $<HTMLButtonElement>('button.pbx-icon-button'));
@@ -805,11 +816,22 @@ class ParadisBrowserExtensionsPopover extends Disposable {
 		const width = Math.min(POPOVER_WIDTH, Math.max(200, containerPosition.width - EDGE_MARGIN * 2));
 		this._element.style.width = `${width}px`;
 		const anchorPosition = dom.getDomNodePagePosition(this.anchor);
-		const anchorBottom = anchorPosition.top - containerPosition.top + anchorPosition.height;
-		this._element.style.maxHeight = `${Math.max(120, containerPosition.height - anchorBottom - ANCHOR_GAP - EDGE_MARGIN)}px`;
+		const anchorTop = anchorPosition.top - containerPosition.top;
+		const anchorBottom = anchorTop + anchorPosition.height;
+		const spaceBelow = containerPosition.height - anchorBottom - ANCHOR_GAP - EDGE_MARGIN;
+		const spaceAbove = anchorTop - ANCHOR_GAP - EDGE_MARGIN;
+		// 下に収まらず、上のほうが広いとき（窓の下の方にあるツールバー）は上へ開く
+		this._element.style.maxHeight = '';
+		const naturalHeight = this._element.offsetHeight;
+		if (naturalHeight > spaceBelow && spaceAbove > spaceBelow) {
+			this._element.style.maxHeight = `${spaceAbove}px`;
+			this._element.style.top = `${Math.round(anchorTop - ANCHOR_GAP - Math.min(naturalHeight, spaceAbove))}px`;
+		} else {
+			this._element.style.maxHeight = `${Math.max(120, spaceBelow)}px`;
+			this._element.style.top = `${Math.round(anchorBottom + ANCHOR_GAP)}px`;
+		}
 		const anchorRight = anchorPosition.left - containerPosition.left + anchorPosition.width;
 		const left = Math.min(Math.max(EDGE_MARGIN, anchorRight - width), Math.max(EDGE_MARGIN, containerPosition.width - width - EDGE_MARGIN));
-		this._element.style.top = `${Math.round(anchorBottom + ANCHOR_GAP)}px`;
 		this._element.style.left = `${Math.round(left)}px`;
 	}
 

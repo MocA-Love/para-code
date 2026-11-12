@@ -176,13 +176,22 @@ class InlineStyleDeduper {
 			if (usedClasses && !usedClasses.has(cls)) {
 				continue;
 			}
-			// 注: split(';') は「値にセミコロンを含む宣言(url(data:...;base64,...) 等)が無い」前提。
-			// 現状のセルstyleは色・幅・罫線・配置のみでこの前提を満たす。
-			const decls = style.split(';').map(d => d.trim()).filter(d => d.length > 0).map(d => `${d} !important`).join('; ');
-			rules.push(`.${cls} { ${decls}; }`);
+			rules.push(paradisMobileStyleRule(cls, style));
 		}
 		return rules.join('\n');
 	}
+}
+
+/**
+ * インラインstyle 1つ分を `<style>` 要素へ入れるクラスのルールにする。
+ * 値には xlsx 由来の文字(図形のフォント名など)が入り、`<` が残ると `</style>` で要素を閉じて
+ * 後ろをHTMLとして読ませられるため、`<` は CSS のエスケープ(`\3C `)に置き換える。
+ */
+export function paradisMobileStyleRule(cls: string, style: string): string {
+	// 注: split(';') は「値にセミコロンを含む宣言(url(data:...;base64,...) 等)が無い」前提。
+	// 現状のセルstyleは色・幅・罫線・配置のみでこの前提を満たす。
+	const decls = style.split(';').map(d => d.trim()).filter(d => d.length > 0).map(d => `${d.replace(/</g, '\\3C ')} !important`).join('; ');
+	return `.${cls} { ${decls}; }`;
 }
 
 function escapeHtml(text: string): string {

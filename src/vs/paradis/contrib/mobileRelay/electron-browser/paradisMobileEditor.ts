@@ -250,7 +250,13 @@ export class ParadisMobileEditor extends EditorPane {
 	}
 
 	private async setEnabled(enabled: boolean): Promise<void> {
-		await this.configurationService.updateValue(PARADIS_MOBILE_ENABLED_KEY, enabled);
+		try {
+			// 書けなかったとき（settings.json の書式の誤りなど）は、設定の側が理由を通知したうえで、例外を投げずに戻る
+			await this.configurationService.updateValue(PARADIS_MOBILE_ENABLED_KEY, enabled);
+		} finally {
+			// 書けても書けなくても、スイッチを今の設定の位置に合わせる（書けなかったときに押した位置のまま残さない）
+			this.update();
+		}
 	}
 
 	private pair(): void {

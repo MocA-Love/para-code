@@ -36,11 +36,11 @@ function extension(id: string, name: string): IParadisBrowserExtensionView {
 suite('ParadisBrowserExtensionsArea', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function createArea(extensions: IParadisBrowserExtensionView[], calls: unknown[][] = []) {
+	function createArea(extensions: IParadisBrowserExtensionView[], calls: unknown[][] = [], options: { readonly active?: boolean; readonly updateValue?: () => Promise<void> } = {}) {
 		const doc = mainWindow.document;
 		const containers = { nav: doc.body.appendChild(doc.createElement('nav')), content: doc.body.appendChild(doc.createElement('div')), header: doc.createElement('div') };
 		store.add({ dispose: () => { containers.nav.remove(); containers.content.remove(); } });
-		const state = { active: true, setting: true, extensions };
+		const state = { active: options.active ?? true, setting: options.active ?? true, extensions };
 		const channel: IChannel = {
 			call: async <T>(command: string, arg?: unknown) => {
 				calls.push([command, ...(Array.isArray(arg) ? arg : [])]);
@@ -52,7 +52,7 @@ suite('ParadisBrowserExtensionsArea', () => {
 		instantiationService.stub(IMainProcessService, { getChannel: () => channel } as Partial<IMainProcessService>);
 		instantiationService.stub(IParadisBrowserProfilesService, { list: () => [], onDidChangeProfiles: Event.None } as Partial<IParadisBrowserProfilesService>);
 		instantiationService.stub(IFileDialogService, {});
-		instantiationService.stub(IConfigurationService, { getValue: () => undefined } as Partial<IConfigurationService>);
+		instantiationService.stub(IConfigurationService, { getValue: () => undefined, updateValue: options.updateValue ?? (async () => { }) } as Partial<IConfigurationService>);
 		instantiationService.stub(INativeHostService, {});
 		instantiationService.stub(IParadisAgentBrowserBindingModel, { bindings: [] } as Partial<IParadisAgentBrowserBindingModel>);
 		instantiationService.stub(IContextViewService, {});
@@ -162,6 +162,30 @@ suite('ParadisBrowserExtensionsArea', () => {
 			paraCode: 'Ctrl+Shift+P は Para Code の「workbench.action.showCommands」に使われています。ページの中では Para Code が先に取るので、拡張機能には付けられません。',
 			conflict: 'Ctrl+Shift+L は Alpha の「Fill」が使っています。付け替えると、Alpha のほうは外れます。',
 			assigned: [['assignShortcut', 'b', 'lock', { key: 'L', control: true, meta: false, alt: false, shift: true }]],
+		});
+	});
+
+	// スイッチやボタンを押すと画面を作り直すので、終わった後に押した操作へフォーカスを戻すこと（キーボードで位置を見失わない）
+	test('keeps the keyboard focus on the switch that was toggled', async () => {
+		const doc = mainWindow.document;
+		const containers = createArea([extension('a', 'Alpha')]);
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const remoteSwitch = () => [...containers.content.querySelectorAll<HTMLElement>('label.pbe-row-option')].find(label => label.textContent === 'SSH 先のページでも使う')?.querySelector<HTMLButtonElement>('.paradis-switch');
+		remoteSwitch()!.focus();
+		remoteSwitch()!.click();
+		await new Promise(resolve => setTimeout(resolve, 0));
+		assert.strictEqual(doc.activeElement !== null && doc.activeElement === remoteSwitch(), true);
+	});
+
+	// 「オンにする」で設定を書けなかったら、その理由を出すこと（押しても何も起きないように見せない）
+	test('tells why turning the feature on failed', async () => {
+		const containers = createArea([], [], { active: false, updateValue: async () => { throw new Error('settings.json is broken'); } });
+		await new Promise(resolve => setTimeout(resolve, 0));
+		containers.content.querySelector<HTMLButtonElement>('.pbe-notice .pbpm-btn')!.click();
+		await new Promise(resolve => setTimeout(resolve, 0));
+		assert.deepStrictEqual({ text: containers.content.querySelector('.pbe-message')?.textContent, error: containers.content.querySelector('.pbe-message')?.classList.contains('is-error') }, {
+			text: '設定を書き換えられませんでした（settings.json is broken）。',
+			error: true,
 		});
 	});
 });
