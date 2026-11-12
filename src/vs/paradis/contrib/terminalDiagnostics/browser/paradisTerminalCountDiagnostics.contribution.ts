@@ -10,6 +10,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 
 /** Only recent creations/disposals within this window count towards the rate. */
@@ -39,10 +40,17 @@ class ParadisTerminalCountDiagnosticsContribution extends Disposable implements 
 
 	constructor(
 		@ITerminalService private readonly _terminalService: ITerminalService,
+		@ILifecycleService private readonly _lifecycleService: ILifecycleService,
 	) {
 		super();
 		this._register(this._terminalService.onDidCreateInstance(instance => this._onCreate(instance)));
-		this._register(this._terminalService.onDidDisposeInstance(() => this._onEvent('rapid-shrink')));
+		this._register(this._terminalService.onDidDisposeInstance(() => {
+			// Closing or reloading the window disposes every terminal at once; that is not the
+			// disposal burst this diagnoses.
+			if (!this._lifecycleService.willShutdown) {
+				this._onEvent('rapid-shrink');
+			}
+		}));
 	}
 
 	private _onCreate(instance: ITerminalInstance): void {

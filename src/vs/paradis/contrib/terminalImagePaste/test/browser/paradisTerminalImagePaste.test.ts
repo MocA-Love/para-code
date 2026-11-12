@@ -255,6 +255,35 @@ suite('ParadisTerminalImagePaste', () => {
 		);
 	});
 
+	test('writes into a Windows working directory on the connected host and pastes the path in the Windows form', async () => {
+		const written: string[] = [];
+		const result = await paradisTryTerminalImagePaste(
+			{ readImage: async () => new Uint8Array([137, 80, 78, 71]) } as unknown as IClipboardService,
+			{ raw: { input: () => { } } } as unknown as { raw: RawXtermTerminal },
+			{
+				fileService: makeFileService({
+					writeFile: async (resource: URI) => {
+						written.push(resource.path);
+						return {} as never;
+					},
+				}),
+				remoteAuthority: 'ssh-remote+dev-pc',
+				cwd: 'C:\\Users\\user\\workspace',
+			}
+		);
+
+		assert.deepStrictEqual(
+			{
+				returnedPathDirectory: isString(result) ? result.slice(0, result.lastIndexOf('\\')) : result,
+				wroteImage: written.some(path => path.startsWith('/C:/Users/user/workspace/.para-code/pasted-images/') && path.endsWith('.png')),
+			},
+			{
+				returnedPathDirectory: 'C:\\Users\\user\\workspace\\.para-code\\pasted-images',
+				wroteImage: true,
+			}
+		);
+	});
+
 	test('notifies and reports handled (no empty paste) when connected but no working directory is known', async () => {
 		const inputs: string[] = [];
 		const notified: Severity[] = [];

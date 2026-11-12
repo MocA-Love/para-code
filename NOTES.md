@@ -866,7 +866,7 @@ Orca の B7 に当たる8個のツールを para-browser MCP に足した。ツ�
 
 ### エージェントの右クリックでは Para Code のメニューを出さない
 
-- `paradisCdpTargetService.ts` が、メニューを開きうる入力（右ボタンの押下・離し、Control を押した左ボタンの押下・離し（macOS の右クリック）、ContextMenu キー（仮想キー 93）、Shift+F10）を送るたびに、その入力の印（座標、またはキーであること）を webContents に付ける（`paradisAgentContextMenu.ts`）
+- `paradisCdpTargetService.ts` が、メニューを開きうる入力（右ボタンの押下・離し、Control を押した左ボタンの押下・離し（macOS の右クリック）、ContextMenu キー（仮想キー 93）、Shift+F10）を送るたびに、その入力の印（座標、またはキーであること）を webContents に付ける（`src/vs/platform/browserView/common/paradisAgentContextMenu.ts`。upstream の platform から呼ぶため、vs/paradis への逆方向 import を作らないよう platform 側に置く）
 - upstream の `browserViewMainService.ts` の `showContextMenu` の PARA-PATCH 1 行が、`context-menu` の引数（座標と `menuSourceType`）を印と突き合わせ、一致した1つだけを消費してメニューを出さない。座標はページの CSS ピクセルと、拡大率を掛けたものの両方で比べる（誤差 3）。印は 1 秒で捨てる
 - 時間の窓で一律に止めないので、エージェントの右クリックの直後でも、利用者の別の場所での右クリックでは Para Code のメニューが出る（R5）。ページの `contextmenu` イベントは届くので、ページ自前の右クリックメニューは動く
 - 限界（N2）: エージェントの右クリックから 1 秒以内に、利用者が同じ点（3 px 以内）を右クリックすると、そのメニューは出ない。押下と離しの両方に印を付けるので、macOS では押下の印がエージェントのメニューで消え、離しの印が残って利用者のメニューに当たる（実機で確認）。同じ点を 1 秒以内に押すことはまれなので直していない。直すなら、メニューを開く側の型（macOS と Linux は押下、Windows は離し）にだけ印を付ける
@@ -903,7 +903,6 @@ q.html Q69 のとおり、エージェントは Cookie を読み書きできな�
 | upstream のファイル | 行 | 内容 |
 |---|---|---|
 | `src/vs/platform/browserView/electron-main/browserViewMainService.ts` | import 1行 + 1行 | `showContextMenu` の先頭で `paradisConsumeAgentContextMenuSuppression(view.webContents, params)` を見て、エージェントの入力で開いたメニューだけを出さない |
-| `eslint.config.js` | 1行 | `src/vs/platform/*/~` から `vs/paradis/contrib/agentBrowser/electron-main/paradisAgentContextMenu.js` の1ファイルへの逆方向 import を許す |
 
 ## 内蔵ブラウザの Design Mode とスクリーンショットへの書き込み（browserDesignMode、2026-09-27、フェーズ7 担当B）
 
