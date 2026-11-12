@@ -341,7 +341,7 @@ export function MarkdownText({ text, selectable = true }: {
 	/** 既定は true（今の長押しのコピー）。長押しのメニューで包むときだけ false を渡す。 */
 	selectable?: boolean;
 }) {
-	const { open, openingKey, viewer } = useLocalFileOpener();
+	const { open, openingKey } = useLocalFileOpener();
 	const styles = useChatStyles(baseStyles);
 	// 本文が変わらない再レンダー（リンクを押したときのローカルstate更新など）で
 	// パースし直さない。`parseBlocks` は `text` だけの純粋関数。
@@ -363,7 +363,6 @@ export function MarkdownText({ text, selectable = true }: {
 					<BlockList blocks={blocks} onOpenLocal={open} openingKey={openingKey} />
 				</LinkMenuContext.Provider>
 			</SelectableContext.Provider>
-			{viewer}
 			{menuSheet.sheet}
 		</View>
 	);

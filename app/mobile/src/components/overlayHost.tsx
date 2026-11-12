@@ -41,8 +41,9 @@ export function OverlayHost() {
 	if (entries.size === 0) {
 		return null;
 	}
+	// 載っているのは全画面の画像・メニュー・ポップオーバーなので、読み上げを下の画面へ漏らさない。
 	return (
-		<View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+		<View style={StyleSheet.absoluteFill} pointerEvents="box-none" accessibilityViewIsModal>
 			{[...entries.entries()].map(([key, node]) => <Fragment key={key}>{node}</Fragment>)}
 		</View>
 	);

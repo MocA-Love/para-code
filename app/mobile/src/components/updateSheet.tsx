@@ -14,7 +14,7 @@ import { useIsRegularWidth } from '../hooks/useSizeClass.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { alpha, colors, radius, squircle, tint, type } from '../theme.js';
 import { Badge } from './badge.js';
-import { Button } from './button.js';
+import { Button } from '../ui/button.js';
 import { haptic } from '../haptics.js';
 
 /** iPadの広い幅でお知らせシートを中央寄せするときの最大幅（pt）。 */
@@ -181,7 +181,7 @@ const styles = StyleSheet.create({
 	handle: { width: 36, height: 5, borderRadius: 2.5, backgroundColor: colors.borderStrong, alignSelf: 'center', marginTop: 10, marginBottom: 4 },
 	head: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 4 },
 	badge: { marginBottom: 10 },
-	title: { color: colors.text, fontSize: type.large, fontWeight: '800', lineHeight: 26 },
+	title: { color: colors.text, fontSize: type.large, fontWeight: '700', lineHeight: 26 },
 	subtitle: { color: colors.textDim, fontSize: type.meta, marginTop: 5 },
 	body: { flexGrow: 0 },
 	bodyContent: { paddingHorizontal: 20, paddingTop: 14, paddingBottom: 4, gap: 14 },
@@ -191,7 +191,7 @@ const styles = StyleSheet.create({
 	item: { flexDirection: 'row', gap: 12, alignItems: 'flex-start' },
 	itemIcon: { width: 32, height: 32, borderRadius: radius.control, ...squircle, borderWidth: StyleSheet.hairlineWidth, alignItems: 'center', justifyContent: 'center' },
 	itemBody: { flex: 1, minWidth: 0 },
-	itemTitle: { color: colors.text, fontSize: type.body, fontWeight: '700' },
+	itemTitle: { color: colors.text, fontSize: type.body, fontWeight: '600' },
 	itemText: { color: colors.textDim, fontSize: type.meta, lineHeight: 19, marginTop: 3 },
 	foot: { paddingHorizontal: 20, paddingTop: 12, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
 });
