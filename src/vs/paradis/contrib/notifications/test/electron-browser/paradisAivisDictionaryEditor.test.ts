@@ -23,6 +23,10 @@ import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IContextViewService } from '../../../../../platform/contextview/browser/contextView.js';
 import { Event as BaseEvent } from '../../../../../base/common/event.js';
 import { paradisOpenAnotherModal } from '../../../paradisSettings/test/browser/paradisModalTestUtils.js';
+import { IFileDialogService, ISaveDialogOptions } from '../../../../../platform/dialogs/common/dialogs.js';
+import { IFileService } from '../../../../../platform/files/common/files.js';
+import { URI } from '../../../../../base/common/uri.js';
+import { VSBuffer } from '../../../../../base/common/buffer.js';
 
 suite('ParadisAivisDictionaryEditor', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -119,7 +123,7 @@ suite('ParadisAivisDictionaryEditor', () => {
 			getAivisSettings: () => ({ engine: 'aivis', apiKey, userDictionaryUuid: '' }) as ReturnType<IParadisNotificationsSettingsService['getAivisSettings']>,
 		});
 		const dialogService = upcastPartial<IParadisDialogService>({ confirm: async () => ({ confirmed: true }) });
-		const section = new ParadisAivisDictionarySection(root, sharedProcessService, settingsService, dialogService, upcastPartial<ILayoutService>({ activeContainer: root }), new NullLogService(), upcastPartial<IContextViewService>({}), { getValue: () => undefined } as unknown as IConfigurationService, NullHoverService);
+		const section = new ParadisAivisDictionarySection(root, sharedProcessService, settingsService, dialogService, upcastPartial<ILayoutService>({ activeContainer: root }), new NullLogService(), upcastPartial<IContextViewService>({}), { getValue: () => undefined } as unknown as IConfigurationService, NullHoverService, upcastPartial<IFileDialogService>({}), upcastPartial<IFileService>({}));
 		const errorText = () => root.querySelector('.pns-error')?.textContent ?? '';
 		const buttons = () => [...root.querySelectorAll<HTMLButtonElement>('.pns-dict-actions button')];
 		try {
@@ -132,6 +136,57 @@ suite('ParadisAivisDictionaryEditor', () => {
 			assert.deepStrictEqual({ afterDelete, afterExport }, {
 				afterDelete: 'deleteAivisDictionary failed: 401',
 				afterExport: 'exportAivisDictionary failed: 401',
+			});
+		} finally {
+			section.dispose();
+			invalidateAivisDictionaryListCache(apiKey);
+			root.remove();
+		}
+	});
+
+	test('exports a dictionary to the file picked in the save dialog, on the local disk, and writes nothing when cancelled', async () => {
+		const root = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(root);
+		const apiKey = 'dictionary-export-test-key';
+		setCachedAivisDictionaryList(apiKey, [{ uuid: 'd1', name: 'My/Words', description: '', word_count: 1, created_at: '', updated_at: '2026-01-01' }]);
+		const sharedProcessService = upcastPartial<ISharedProcessService>({
+			getChannel: () => ({ call: async () => ({ d1: { surface: 'Para' } }), listen: () => { throw new Error('not used'); } }) as never,
+		});
+		const settingsService = upcastPartial<IParadisNotificationsSettingsService>({
+			onDidChange: BaseEvent.None,
+			getAivisSettings: () => ({ engine: 'aivis', apiKey, userDictionaryUuid: '' }) as ReturnType<IParadisNotificationsSettingsService['getAivisSettings']>,
+		});
+		const asked: { defaultUri: string | undefined; availableFileSystems: readonly string[] | undefined }[] = [];
+		const answers: (URI | undefined)[] = [URI.file('/picked/words.json'), undefined];
+		const fileDialogService = upcastPartial<IFileDialogService>({
+			defaultFilePath: async () => URI.file('/home'),
+			showSaveDialog: async (options: ISaveDialogOptions) => {
+				asked.push({ defaultUri: options.defaultUri?.path, availableFileSystems: options.availableFileSystems });
+				return answers.shift();
+			},
+		});
+		const written: { path: string; text: string }[] = [];
+		const fileService = upcastPartial<IFileService>({
+			writeFile: async (resource: URI, content: VSBuffer) => {
+				written.push({ path: resource.path, text: content.toString() });
+				return undefined as never;
+			},
+		});
+		const dialogService = upcastPartial<IParadisDialogService>({});
+		const section = new ParadisAivisDictionarySection(root, sharedProcessService, settingsService, dialogService, upcastPartial<ILayoutService>({ activeContainer: root }), new NullLogService(), upcastPartial<IContextViewService>({}), { getValue: () => undefined } as unknown as IConfigurationService, NullHoverService, fileDialogService, fileService);
+		const buttons = () => [...root.querySelectorAll<HTMLButtonElement>('.pns-dict-actions button')];
+		try {
+			buttons()[buttons().length - 2].click();
+			await timeout(0);
+			buttons()[buttons().length - 2].click();
+			await timeout(0);
+			assert.deepStrictEqual({ asked, written, error: root.querySelector('.pns-error')?.textContent ?? '' }, {
+				asked: [
+					{ defaultUri: '/home/My_Words.aivisspeech.json', availableFileSystems: ['file'] },
+					{ defaultUri: '/home/My_Words.aivisspeech.json', availableFileSystems: ['file'] },
+				],
+				written: [{ path: '/picked/words.json', text: JSON.stringify({ d1: { surface: 'Para' } }, null, 2) }],
+				error: '',
 			});
 		} finally {
 			section.dispose();

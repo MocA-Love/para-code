@@ -21,6 +21,7 @@ import { ParadisAivisRenderGeneration } from './paradisAivisApiCache.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 import { paradisNotifButton } from './paradisNotificationKitParts.js';
+import { PARADIS_CARD_CLASS, PARADIS_CARD_LABEL_CLASS, PARADIS_CARD_NOTE_CLASS, PARADIS_CARD_VALUE_CLASS } from '../../../browser/paradisCard.js';
 
 const $ = dom.$;
 
@@ -135,9 +136,9 @@ export class ParadisVoiceCacheSection extends Disposable {
 	}
 
 	private _statCard(container: HTMLElement, label: string, value: string, sub: string): void {
-		const card = dom.append(container, $('.pns-stat-card'));
-		dom.append(card, $('.pns-stat-label')).textContent = label;
-		dom.append(card, $('.pns-stat-value')).textContent = value;
-		dom.append(card, $('.pns-stat-sub')).textContent = sub;
+		const card = dom.append(container, $(`.pns-stat-card.${PARADIS_CARD_CLASS}`));
+		dom.append(card, $(`.${PARADIS_CARD_LABEL_CLASS}`)).textContent = label;
+		dom.append(card, $(`.${PARADIS_CARD_VALUE_CLASS}`)).textContent = value;
+		dom.append(card, $(`.${PARADIS_CARD_NOTE_CLASS}`)).textContent = sub;
 	}
 }

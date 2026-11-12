@@ -24,7 +24,7 @@
 
 .paradis-hub .pns-saved-flash {
 	margin-left: auto;
-	font-size: 11px;
+	font-size: var(--vscode-fontSize-label2);
 	color: var(--vscode-terminal-ansiGreen, var(--vscode-charts-green));
 	opacity: 0;
 	transition: opacity .3s;
@@ -50,7 +50,7 @@
 
 /* ナビ右端の状態バッジ（オン/オフ・選択中の着信音名） */
 .paradis-hub .pns-nav-status {
-	font-size: 10.5px;
+	font-size: var(--vscode-fontSize-label2);
 	flex-shrink: 0;
 	max-width: 84px;
 	overflow: hidden;
@@ -88,13 +88,13 @@
 }
 
 .paradis-notif-area .pns-section-title {
-	font-size: 14px;
+	font-size: var(--vscode-fontSize-heading2);
 	font-weight: 600;
 	margin: 0 0 3px 0;
 }
 
 .paradis-notif-area .pns-section-desc {
-	font-size: 12px;
+	font-size: var(--vscode-fontSize-label1);
 	color: var(--vscode-descriptionForeground);
 	margin: 0 0 8px 0;
 	line-height: 1.5;
@@ -116,12 +116,12 @@
 }
 
 .paradis-notif-area .sr-label {
-	font-size: 13px;
+	font-size: var(--vscode-fontSize-body1);
 	font-weight: 600;
 }
 
 .paradis-notif-area .sr-desc {
-	font-size: 11.5px;
+	font-size: var(--vscode-fontSize-label1);
 	color: var(--vscode-descriptionForeground);
 	margin-top: 2px;
 	line-height: 1.55;
@@ -132,21 +132,35 @@
 	display: none !important;
 }
 
-/* おやすみモード中の封印オーバーレイ（デスクトップ通知/通知サウンド/Aivis） */
-.paradis-notif-area .pns-section.disabled-veil::after {
-	/* allow-any-unicode-next-line */
-	content: 'おやすみモード中 — 通知はすべて止まっています';
+/*
+	おやすみモード中の封印オーバーレイ（デスクトップ通知/通知サウンド/Aivis）。覆いは節の直下の要素で、文言は読み上げの
+	知らせ（role="status"）。封印していない間は文字が空で、見えない大きさのまま置いておく（知らせを読ませるため）。
+*/
+.paradis-notif-area .pns-veil {
 	position: absolute;
+	width: 1px;
+	height: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
+
+.paradis-notif-area .pns-veil.visible {
 	inset: -6px;
-	border-radius: 9px;
+	width: auto;
+	height: auto;
+	overflow: visible;
+	clip-path: none;
+	white-space: normal;
+	border-radius: var(--paradis-radius-inner);
 	background: color-mix(in srgb, var(--vscode-paradis-canvas) 80%, transparent);
 	color: var(--vscode-editorWarning-foreground);
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	font-size: 12.5px;
-	font-weight: 600;
-	z-index: 5;
+	font-size: var(--vscode-fontSize-label1);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	z-index: 3;
 }
 
 /* Aivis 無効時のフィールド群（非表示ではなく無効化） */
@@ -157,7 +171,7 @@
 
 /* Model UUID の検証結果 hint（ok=緑 / ng=赤） */
 .paradis-notif-area .pns-uuid-hint {
-	font-size: 11.5px;
+	font-size: var(--vscode-fontSize-label1);
 	color: var(--vscode-descriptionForeground);
 	margin-top: 2px;
 	line-height: 1.55;
@@ -368,18 +382,10 @@
 	justify-content: center;
 	visibility: hidden;
 	color: var(--vscode-textLink-foreground);
-	font-size: 14px;
 }
 
 .paradis-notif-area .pns-ringtone-card.selected .pns-ringtone-check {
 	visibility: visible;
-}
-
-.paradis-notif-area .pns-ringtone-emoji {
-	font-size: 14px;
-	width: 18px;
-	text-align: center;
-	flex-shrink: 0;
 }
 
 /* allow-any-unicode-next-line */
@@ -401,7 +407,7 @@
 }
 
 .paradis-notif-area .pns-ringtone-name {
-	font-size: 12.5px;
+	font-size: var(--vscode-fontSize-body1);
 	font-weight: 500;
 	display: flex;
 	align-items: baseline;
@@ -418,14 +424,14 @@
 
 .paradis-notif-area .pns-ringtone-duration {
 	flex: none;
-	font-size: 10.5px;
+	font-size: var(--vscode-fontSize-label2);
 	color: var(--vscode-descriptionForeground);
 }
 
 .paradis-notif-area .pns-ringtone-desc {
 	flex: 1;
 	min-width: 0;
-	font-size: 11px;
+	font-size: var(--vscode-fontSize-label2);
 	color: var(--vscode-descriptionForeground);
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -487,7 +493,7 @@
 
 .paradis-notif-area .pns-preset-tile {
 	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 6px;
+	border-radius: var(--paradis-radius-control);
 	padding: 8px;
 	cursor: pointer;
 	display: flex;
@@ -507,12 +513,12 @@
 .paradis-notif-area .pns-preset-icon {
 	width: 28px;
 	height: 28px;
-	border-radius: 6px;
+	border-radius: var(--paradis-radius-control);
 	background: var(--vscode-input-background);
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	font-size: 15px;
+	font-size: var(--vscode-codiconFontSize);
 	overflow: hidden;
 	flex-shrink: 0;
 }
@@ -524,7 +530,7 @@
 }
 
 .paradis-notif-area .pns-preset-name {
-	font-size: 12px;
+	font-size: var(--vscode-fontSize-label1);
 	font-weight: 500;
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -532,7 +538,7 @@
 }
 
 .paradis-notif-area .pns-preset-author {
-	font-size: 10.5px;
+	font-size: var(--vscode-fontSize-label2);
 	color: var(--vscode-descriptionForeground);
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -558,7 +564,7 @@
 .paradis-notif-area .pns-waveform {
 	width: 100%;
 	height: 80px;
-	border-radius: 6px;
+	border-radius: var(--paradis-radius-control);
 	background: var(--vscode-input-background);
 	cursor: col-resize;
 	display: block;
@@ -567,7 +573,7 @@
 .paradis-notif-area .pns-waveform-times {
 	display: flex;
 	justify-content: space-between;
-	font-size: 10.5px;
+	font-size: var(--vscode-fontSize-label2);
 	color: var(--vscode-descriptionForeground);
 	margin-top: 3px;
 }
@@ -579,10 +585,10 @@
 	overflow-y: auto;
 	background: color-mix(in srgb, var(--vscode-editorWidget-background) 60%, black 8%);
 	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 6px;
+	border-radius: var(--paradis-radius-control);
 	padding: 8px 10px;
 	font-family: var(--monaco-monospace-font);
-	font-size: 11px;
+	font-size: var(--vscode-fontSize-label2);
 	line-height: 1.5;
 }
 
@@ -598,7 +604,7 @@
 
 .paradis-notif-area .pns-dict-card {
 	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 6px;
+	border-radius: var(--paradis-radius-inner);
 	padding: 10px 12px;
 	margin-bottom: 8px;
 }
@@ -631,19 +637,10 @@
 	flex-shrink: 0;
 }
 
-.paradis-notif-area .pns-dict-badge-active {
-	font-size: 9.5px;
-	font-weight: 600;
-	padding: 1px 6px;
-	border-radius: 3px;
-	border: 1px solid var(--vscode-terminal-ansiGreen, var(--vscode-focusBorder));
-	color: var(--vscode-terminal-ansiGreen, var(--vscode-focusBorder));
-}
-
 .paradis-notif-area .pns-dict-table {
 	width: 100%;
 	border-collapse: collapse;
-	font-size: 11.5px;
+	font-size: var(--vscode-fontSize-label1);
 }
 
 .paradis-notif-area .pns-dict-table th,
@@ -661,52 +658,27 @@
 	margin-bottom: 14px;
 }
 
-.paradis-notif-area .pns-stat-card {
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 6px;
-	padding: 10px 12px;
-}
-
-.paradis-notif-area .pns-stat-label {
-	font-size: 10px;
-	text-transform: uppercase;
-	letter-spacing: .04em;
-	color: var(--vscode-descriptionForeground);
-}
-
-.paradis-notif-area .pns-stat-value {
-	font-size: 19px;
-	font-weight: 600;
-	margin-top: 2px;
-}
-
-.paradis-notif-area .pns-stat-sub {
-	font-size: 10.5px;
-	color: var(--vscode-descriptionForeground);
-	margin-top: 2px;
-}
-
 .paradis-notif-area .pns-bar-chart {
 	display: flex;
 	align-items: flex-end;
 	gap: 2px;
 	height: 130px;
 	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 6px;
+	border-radius: var(--paradis-radius-control);
 	padding: 8px;
 }
 
 .paradis-notif-area .pns-bar {
 	flex: 1;
 	background: var(--vscode-charts-green, var(--vscode-button-background));
-	border-radius: 2px 2px 0 0;
+	border-radius: var(--vscode-cornerRadius-xSmall) var(--vscode-cornerRadius-xSmall) 0 0;
 	min-height: 2px;
 }
 
 .paradis-notif-area .pns-usage-table {
 	width: 100%;
 	border-collapse: collapse;
-	font-size: 11px;
+	font-size: var(--vscode-fontSize-label2);
 }
 
 .paradis-notif-area .pns-usage-table th {
@@ -729,17 +701,17 @@
 
 .paradis-notif-area .pns-error {
 	color: var(--vscode-errorForeground);
-	font-size: 11.5px;
+	font-size: var(--vscode-fontSize-label1);
 	margin-top: 6px;
 }
 
 .paradis-notif-area .pns-empty {
 	text-align: center;
 	color: var(--vscode-descriptionForeground);
-	font-size: 12px;
+	font-size: var(--vscode-fontSize-label1);
 	padding: 20px;
 	border: 1px dashed var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 6px;
+	border-radius: var(--paradis-radius-control);
 }
 
 /* ---------- legacy row helpers ---------- */
@@ -754,7 +726,7 @@
 
 /* 使用量のAPIキー別内訳・音声エディタ等で使う補助テキスト（旧版から復元）。 */
 .paradis-notif-area .pns-row-hint {
-	font-size: 11px;
+	font-size: var(--vscode-fontSize-label2);
 	color: var(--vscode-descriptionForeground);
 	margin-top: 2px;
 }
@@ -765,7 +737,7 @@
 
 .paradis-notif-area label.pns-label {
 	display: block;
-	font-size: 12px;
+	font-size: var(--vscode-fontSize-label1);
 	font-weight: 500;
 	margin-bottom: 5px;
 }
@@ -791,16 +763,7 @@
 .paradis-notif-area .pns-voice-tags {
 	display: flex;
 	gap: 4px;
-	min-height: 16px;
-}
-
-.paradis-notif-area .pns-voice-tag {
-	font-size: 10px;
-	line-height: 14px;
-	padding: 0 6px;
-	border-radius: 8px;
-	border: 1px solid var(--vscode-focusBorder);
-	color: var(--vscode-textLink-foreground);
+	min-height: 20px;
 }
 
 .paradis-notif-area .pns-quota-bar {
@@ -820,7 +783,7 @@
 /* ---------- 「設定 (Para Code)」から移した行（Q537 の 35 A） ---------- */
 
 .paradis-notif-area .pns-group-title {
-	font-size: 11px;
+	font-size: var(--vscode-fontSize-label2);
 	font-weight: 600;
 	text-transform: uppercase;
 	letter-spacing: 0.04em;
@@ -830,7 +793,7 @@
 
 .paradis-notif-area .pns-moved-badge {
 	margin-left: 8px;
-	font-size: 10.5px;
+	font-size: var(--vscode-fontSize-label2);
 	font-weight: 400;
 	color: var(--vscode-descriptionForeground);
 }

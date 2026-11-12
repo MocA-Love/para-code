@@ -21,8 +21,10 @@ import { IManagedHover } from '../../../../base/browser/ui/hover/hover.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
 import { ParadisButtonKind, paradisButtonClasses } from '../../../browser/paradisButton.js';
 import { ParadisInputField } from '../../../browser/paradisInputField.js';
+import { createParadisChip, ParadisChipTone } from '../../../browser/paradisBadges.js';
 
 const $ = dom.$;
 
@@ -102,4 +104,40 @@ export function paradisNotifTextArea(parent: HTMLElement, ariaLabel: string, cla
 	textarea.spellcheck = false;
 	textarea.setAttribute('aria-label', ariaLabel);
 	return textarea;
+}
+
+/**
+ * 誤りの文字を出す要素。出た文字は読み上げられる（`role="alert"` は空のうちから付けておく。後から付けると読まれないことがある）。
+ * `input` を渡すと、欄の `aria-describedby` でこの要素と結ぶ（欄にフォーカスがあるときも誤りが読まれる）。
+ */
+export function paradisNotifErrorElement(parent: HTMLElement, className: string, input?: HTMLInputElement): HTMLElement {
+	const element = dom.append(parent, $(className));
+	element.setAttribute('role', 'alert');
+	if (input) {
+		element.id = `pns-error-${generateUuid()}`;
+		input.setAttribute('aria-describedby', element.id);
+	}
+	return element;
+}
+
+/** 欄の誤りを出す（空の文字で消す）。誤りが出ている間だけ欄に `aria-invalid="true"` を付ける。 */
+export function paradisNotifSetFieldError(input: HTMLInputElement, errorElement: HTMLElement, message: string): void {
+	errorElement.textContent = message;
+	if (message) {
+		input.setAttribute('aria-invalid', 'true');
+	} else {
+		input.removeAttribute('aria-invalid');
+	}
+}
+
+/**
+ * キットのチップ（11px・丸・淡い枠）。`className` は節ごとの置き方（並べ方・省略）と、テストや検索が見る印。
+ * 長い文字は中の文字が「…」で切れるので、全文のホバーは返した要素に付ける。
+ */
+export function paradisNotifChip(parent: HTMLElement, label: string, tone: ParadisChipTone = 'neutral', className?: string): HTMLElement {
+	const chip = createParadisChip(parent, label, tone);
+	if (className) {
+		chip.classList.add(className);
+	}
+	return chip;
 }
