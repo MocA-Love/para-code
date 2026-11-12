@@ -95,6 +95,10 @@ export class ParadisBrowserNewTabFeature extends BrowserEditorContribution {
 	private readonly _pages = new Map<number, IParadisPortPageInfo>();
 	private _othersOpen = false;
 	private _loading = false;
+	/** 読み込み中に「一覧を取り直す」が押された。終わったらもう一度 force で取る。 */
+	private _forceAfterLoad = false;
+	/** 今の描画で印を付けた部品（印 → 部品）。描き直した後にフォーカスを戻す先を引く。 */
+	private readonly _focusTargets = new Map<string, HTMLElement>();
 	private _visible = false;
 	private _generation = 0;
 
@@ -120,7 +124,7 @@ export class ParadisBrowserNewTabFeature extends BrowserEditorContribution {
 	) {
 		super(editor);
 		this._client = instantiationService.createInstance(ParadisPortListClient);
-		this._extras = this._register(instantiationService.createInstance(ParadisBrowserNewTabExtras, () => this._renderPage()));
+		this._extras = this._register(instantiationService.createInstance(ParadisBrowserNewTabExtras, () => this._renderPage(), (element, key) => this._markFocus(element, key)));
 		this._container = $('.paradis-browser-new-tab');
 		this._container.style.display = 'none';
 		this._widget = { location: BrowserWidgetLocation.ContentArea, element: this._container, order: WIDGET_ORDER };
@@ -205,6 +209,9 @@ export class ParadisBrowserNewTabFeature extends BrowserEditorContribution {
 
 	private async _load(force: boolean): Promise<void> {
 		if (this._loading) {
+			if (force) {
+				this._forceAfterLoad = true;
+			}
 			return;
 		}
 		this._loading = true;
@@ -253,6 +260,10 @@ export class ParadisBrowserNewTabFeature extends BrowserEditorContribution {
 			}
 		} finally {
 			this._loading = false;
+		}
+		if (this._forceAfterLoad && !this._store.isDisposed) {
+			this._forceAfterLoad = false;
+			void this._load(true);
 		}
 	}
 
@@ -361,10 +372,26 @@ export class ParadisBrowserNewTabFeature extends BrowserEditorContribution {
 		if (!this._visible || !groups) {
 			return;
 		}
+		// 作り直すとフォーカスのあった行が消えるので、印（data-pbnt-focus）を覚えて描いた後に戻す
+		const focused = dom.getActiveElement();
+		const focusKey = dom.isHTMLElement(focused) && this._container.contains(focused) ? focused.dataset.pbntFocus : undefined;
 		const store = new DisposableStore();
 		this._render.value = store;
 		dom.clearNode(this._container);
 		this._container.style.display = '';
+		this._focusTargets.clear();
+		this._fillPage(groups, store);
+		if (focusKey !== undefined) {
+			this._focusTargets.get(focusKey)?.focus();
+		}
+	}
+
+	private _markFocus(element: HTMLElement, key: string): void {
+		element.dataset.pbntFocus = key;
+		this._focusTargets.set(key, element);
+	}
+
+	private _fillPage(groups: IParadisNewTabServerGroups, store: DisposableStore): void {
 
 		const column = dom.append(this._container, $('.pbnt-column'));
 		const open = (url: string, inNewTab: boolean) => this._openUrl(url, inNewTab);
@@ -378,6 +405,7 @@ export class ParadisBrowserNewTabFeature extends BrowserEditorContribution {
 		}
 		const refresh = dom.append(caption, $('button.pbnt-icon-button')) as HTMLButtonElement;
 		refresh.type = 'button';
+		this._markFocus(refresh, 'refresh');
 		refresh.title = STR_REFRESH;
 		refresh.setAttribute('aria-label', STR_REFRESH);
 		refresh.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.refresh)}`));
@@ -405,6 +433,7 @@ export class ParadisBrowserNewTabFeature extends BrowserEditorContribution {
 		if (others.length > 0) {
 			const toggle = dom.append(section, $('button.pbnt-more')) as HTMLButtonElement;
 			toggle.type = 'button';
+			this._markFocus(toggle, 'others');
 			toggle.setAttribute('aria-expanded', String(this._othersOpen));
 			toggle.appendChild($(`span${ThemeIcon.asCSSSelector(this._othersOpen ? Codicon.chevronDown : Codicon.chevronRight)}`));
 			dom.append(toggle, $('span')).textContent = groups.otherSpaces.length > 0
@@ -441,6 +470,7 @@ export class ParadisBrowserNewTabFeature extends BrowserEditorContribution {
 	private _renderRow(list: HTMLElement, view: IServerView, context: string, store: DisposableStore): void {
 		const row = dom.append(list, $('button.pbnt-row')) as HTMLButtonElement;
 		row.type = 'button';
+		this._markFocus(row, `server:${view.server.port}`);
 		row.title = STR_ROW_HOVER;
 		const icon = dom.append(row, $('span.pbnt-icon'));
 		if (view.page?.faviconDataUrl) {

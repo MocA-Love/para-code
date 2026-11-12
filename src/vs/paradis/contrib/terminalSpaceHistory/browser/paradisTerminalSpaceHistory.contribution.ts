@@ -23,7 +23,7 @@ import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
-import { IFileService } from '../../../../platform/files/common/files.js';
+import { FileOperationResult, IFileService, toFileOperationResult } from '../../../../platform/files/common/files.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
@@ -358,7 +358,13 @@ class ParadisTerminalSpaceHistoryContribution extends Disposable implements IWor
 				decisions.set(historyId, 'known');
 				continue;
 			}
-			const lastWrittenAt = await this.lastWrittenAt(historyId);
+			let lastWrittenAt: number | undefined;
+			try {
+				lastWrittenAt = await this.lastWrittenAt(historyId);
+			} catch {
+				// 置き場が今は読めない（SSH 先がまだつながっていない等）。古さが分からないので今回は判断しない
+				continue;
+			}
 			decisions.set(historyId, paradisShouldDeleteOrphanHistory(entry.missedStartups + 1, lastWrittenAt, now) ? 'delete' : 'missed');
 		}
 		if (this._store.isDisposed) {
@@ -391,7 +397,7 @@ class ParadisTerminalSpaceHistoryContribution extends Disposable implements IWor
 		}
 	}
 
-	/** 履歴フォルダ（とその中のファイル）が最後に書かれた時刻。見つからなければ undefined。 */
+	/** 履歴フォルダ（とその中のファイル）が最後に書かれた時刻。見つからなければ undefined。見つからない以外の理由で読めなければ投げる。 */
 	private async lastWrittenAt(historyId: string): Promise<number | undefined> {
 		const base = this.historyBaseUri();
 		if (base === undefined) {
@@ -400,8 +406,11 @@ class ParadisTerminalSpaceHistoryContribution extends Disposable implements IWor
 		try {
 			const stat = await this.fileService.resolve(joinPath(base, historyId), { resolveMetadata: true });
 			return Math.max(stat.mtime, ...(stat.children ?? []).map(child => child.mtime));
-		} catch {
-			return undefined;
+		} catch (error) {
+			if (error instanceof Error && toFileOperationResult(error) === FileOperationResult.FILE_NOT_FOUND) {
+				return undefined;
+			}
+			throw error;
 		}
 	}
 
