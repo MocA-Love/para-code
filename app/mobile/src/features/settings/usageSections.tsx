@@ -367,7 +367,7 @@ const styles = StyleSheet.create({
 		flexDirection: 'row',
 		alignItems: 'center',
 		paddingVertical: space.md,
-		paddingHorizontal: space.md + 2,
+		paddingHorizontal: space.rowInset,
 	},
 	main: {
 		flex: 1,
@@ -420,7 +420,7 @@ const styles = StyleSheet.create({
 	resetLine: {
 		flexDirection: 'row',
 		alignItems: 'center',
-		gap: space.xs + 2,
+		gap: space.snug,
 		minHeight: 22,
 	},
 	resetText: {
@@ -441,7 +441,7 @@ const styles = StyleSheet.create({
 	},
 	resetList: {
 		gap: 2,
-		paddingLeft: iconSize.xs + space.xs + 2,
+		paddingLeft: iconSize.xs + space.snug,
 	},
 	resetRow: {
 		flexDirection: 'row',

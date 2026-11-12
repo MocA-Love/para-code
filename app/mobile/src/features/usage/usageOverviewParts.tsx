@@ -299,7 +299,7 @@ const styles = StyleSheet.create({
 		color: colors.textDim,
 		backgroundColor: colors.raised,
 		borderRadius: radius.key,
-		paddingHorizontal: space.xs + 2,
+		paddingHorizontal: space.snug,
 		paddingVertical: 2,
 		overflow: 'hidden',
 		maxWidth: 200,
@@ -317,7 +317,7 @@ const styles = StyleSheet.create({
 		flexDirection: 'row',
 		alignItems: 'center',
 		paddingVertical: space.md,
-		paddingHorizontal: space.md + 2,
+		paddingHorizontal: space.rowInset,
 		gap: space.sm,
 	},
 	pressed: {

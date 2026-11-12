@@ -1,6 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import type { WorktreeAgentDef, WorktreeFormResult } from '../../store.js';
+import { isPcUnreachableError, type WorktreeAgentDef, type WorktreeFormResult } from '../../store.js';
+import { isNoResponseError } from '../usage/usageAggregate.js';
 
 /**
  * 「エージェントを起動」シートの選択肢と、押せるかどうかの判定（純関数）。
@@ -162,4 +163,23 @@ export function launchBlockedReason(input: LaunchReadinessInput): string | undef
 		return 'この PC の Para Code は既存のスペースへの起動に対応していません。新しいスペースを選ぶか、PC を更新してください。';
 	}
 	return undefined;
+}
+
+/**
+ * 起動フォームの材料（エージェントの定義・リポジトリ）を取れなかったときにシートへ出す一文。
+ * 英語の内部の文はそのまま出さず、返事が無い・スペースが無いは言い換える。日本語の「つながっていない」はそのまま、
+ * PC が返した文は括弧に入れる。
+ */
+export function launchFormErrorText(error: unknown): string {
+	if (isNoResponseError(error)) {
+		return 'PC から返事がありませんでした。PC の Para Code が開いているか確かめてください。';
+	}
+	const message = error instanceof Error ? error.message : String(error);
+	if (message === 'workspace not found') {
+		return 'PC で開いているスペースが見つかりませんでした。PC で Para Code のウィンドウを開いてください。';
+	}
+	if (isPcUnreachableError(error)) {
+		return message;
+	}
+	return `起動の候補を読み込めませんでした（${message}）`;
 }
