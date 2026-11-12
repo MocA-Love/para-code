@@ -498,7 +498,7 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 		}
 		const viewId = this._reserveView({ scope: BrowserViewStorageScope.Profile, profileId });
 		try {
-			// PARA-PATCH: upstream 1.137 folded the view id into the data argument of getOrCreateLazy.
+			// Upstream 1.137 folded the view id into the data argument of getOrCreateLazy.
 			const input = this.browserViewWorkbenchService.getOrCreateLazy({ id: viewId, ...(url ? { url } : {}) });
 			const pane = await this.editorService.openEditor(input, { pinned: true }, group);
 			if (!url && options?.openUrlPicker && pane instanceof BrowserEditor) {
@@ -540,7 +540,7 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 		const url = input.model?.url ?? input.serialize().url;
 		const viewId = this._reserveView(options);
 		try {
-			// PARA-PATCH: upstream 1.137 folded the view id into the data argument of getOrCreateLazy.
+			// Upstream 1.137 folded the view id into the data argument of getOrCreateLazy.
 			const replacement = this.browserViewWorkbenchService.getOrCreateLazy({ id: viewId, ...(url ? { url } : {}) });
 			// replaceEditors は同じグループの同じ位置へ差し替える（新しいタブが末尾に増えない）。
 			await group.replaceEditors([{ editor: input, replacement, options: { pinned: true } }]);
@@ -740,7 +740,7 @@ function paradisReviveSessionOptions(value: unknown): IBrowserViewSessionOptions
 }
 
 /**
- * PARA-PATCH: read the profile id out of the discriminated `IBrowserViewSessionOptions` union
+ * Read the profile id out of the discriminated `IBrowserViewSessionOptions` union
  * (upstream 1.137). Only the Profile variant carries one; every other scope yields undefined.
  */
 function paradisProfileIdOf(options: IBrowserViewSessionOptions | undefined): string | undefined {
@@ -748,7 +748,7 @@ function paradisProfileIdOf(options: IBrowserViewSessionOptions | undefined): st
 }
 
 /**
- * PARA-PATCH: upstream 1.137 replaced the loose `IBrowserSessionOptions` record with the
+ * Upstream 1.137 replaced the loose `IBrowserSessionOptions` record with the
  * discriminated `IBrowserViewSessionOptions` union. The fork keeps working with a plain
  * "scope (+ profileId)" pair at its boundaries (the persisted override table, the profile
  * pill's switch target) and converts to the union here, in one place. Returns undefined for

@@ -567,10 +567,9 @@ export class ParadisScheduledRunsService extends Disposable {
 			}
 			return run;
 		});
-		if (accepted.size > 0) {
-			// 生存報告だけでは画面を作り直さない（毎分の再描画を避ける）
-			this.persist();
-		}
+		// 生存報告だけでは画面を作り直さず、ファイルにも書かない（毎分の再描画と書き込みを避ける）。
+		// 保存した heartbeatAt を読むのは起動時だけで、起動時は実行中の回をすべて不明にするため、
+		// ディスクの値が古くても結果は変わらない。次に状態が変わって書くときに、最新の値も一緒に残る
 		return runIds.filter(id => !accepted.has(id));
 	}
 
