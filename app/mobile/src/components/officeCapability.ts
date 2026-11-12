@@ -97,6 +97,16 @@ export function resolveMobileOfficeCapabilities(input: MobileOfficeCapabilityInp
 /** Only the document installed by `source={{ html }}` may become the top-level Office WebView page. */
 export const MOBILE_OFFICE_ORIGIN_WHITELIST = Object.freeze(['about:blank'] as const);
 
+/**
+ * 文書の WebView（Office と、ファイルツリー・ターミナルのパスから開く HTML / Markdown のビューア）に渡す許可リスト。
+ *
+ * react-native-webview は許可リストに合わない URL を、onShouldStartLoadWithRequest より前に OS へ
+ * そのまま渡す。http(s) を入れておかないと、外へ出す前の確認（guardMobileOfficeNavigation）や
+ * iframe を通す判定（guardWebViewNavigation）が働かない。最上位を about:blank 以外にしない約束は、
+ * どちらの判定も false を返して守る。
+ */
+export const MOBILE_DOCUMENT_ORIGIN_WHITELIST = Object.freeze([...MOBILE_OFFICE_ORIGIN_WHITELIST, 'http://*', 'https://*'] as const);
+
 function assertNonce(nonce: string): void {
 	if (!/^[A-Za-z\d_-]{16,128}$/.test(nonce)) {
 		throw new TypeError('Invalid mobile Office CSP nonce');

@@ -5,6 +5,8 @@ import { Keyboard, Pressable, ScrollView, StyleSheet, Text } from 'react-native'
 import { Ionicons } from '@expo/vector-icons';
 import { monoFamily } from '../monoFont.js';
 import { alpha, colors, HIT_SIZE, radius, squircle, tint, type } from '../theme.js';
+import { useThemeColors } from '../ui/themeColorsStore.js';
+import { tintOf } from '../ui/themeColors.js';
 import { KEY_TICK, haptic } from '../haptics.js';
 import {
 	ctrlLatchedTextInput,
@@ -123,6 +125,10 @@ export function TerminalKeyRow({ keyboardVisible, ctrlLatched, enterless, onKey,
 	onKey: (id: TerminalKeyId, repeat: boolean) => void;
 	onToggleEnterless: () => void;
 }) {
+	// 押したままの Ctrl と「Enterなし」の印は、設定 → 色の「選択の印」に合わせる（StyleSheet の固定の青を上書きする）。
+	const theme = useThemeColors();
+	const onFill = { backgroundColor: tintOf(theme.accent, alpha.wash), borderColor: tintOf(theme.accent, alpha.strong) };
+	const onText = { color: theme.accent };
 	const repeatTimer = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 	const stopRepeat = () => {
 		if (repeatTimer.current !== undefined) {
@@ -154,7 +160,7 @@ export function TerminalKeyRow({ keyboardVisible, ctrlLatched, enterless, onKey,
 		return (
 			<Pressable
 				key={def.id}
-				style={({ pressed }) => [styles.key, pressed && styles.keyPressed, latched && styles.keyLatched]}
+				style={({ pressed }) => [styles.key, pressed && styles.keyPressed, latched && [styles.keyLatched, onFill]]}
 				hitSlop={KEY_SLOP}
 				// **リピートするキーも、送るのは指を離したとき（onPress）か長押しの成立時。**
 				// 押した瞬間（onPressIn）に送ると、キー行を横にスクロールしようと触れただけで
@@ -169,7 +175,7 @@ export function TerminalKeyRow({ keyboardVisible, ctrlLatched, enterless, onKey,
 				accessibilityLabel={def.accessibilityLabel}
 				accessibilityState={def.id === 'ctrl' ? { checked: latched } : undefined}
 			>
-				<Text style={[styles.keyText, def.danger && styles.keyDanger, latched && styles.keyTextLatched]}>{def.label}</Text>
+				<Text style={[styles.keyText, def.danger && styles.keyDanger, latched && [styles.keyTextLatched, onText]]}>{def.label}</Text>
 			</Pressable>
 		);
 	};
@@ -197,7 +203,7 @@ export function TerminalKeyRow({ keyboardVisible, ctrlLatched, enterless, onKey,
 				{TERMINAL_ACCESSORY_KEYS.map(renderKey)}
 			</ScrollView>
 			<Pressable
-				style={({ pressed }) => [styles.toggle, enterless && styles.toggleOn, pressed && styles.keyPressed]}
+				style={({ pressed }) => [styles.toggle, enterless && [styles.toggleOn, onFill], pressed && styles.keyPressed]}
 				hitSlop={KEY_SLOP}
 				onPress={() => { haptic('tick'); onToggleEnterless(); }}
 				accessibilityRole="switch"
@@ -205,8 +211,8 @@ export function TerminalKeyRow({ keyboardVisible, ctrlLatched, enterless, onKey,
 				accessibilityHint="オンにすると、送信しても Enter を押さずに入力だけします"
 				accessibilityState={{ checked: enterless }}
 			>
-				<Ionicons name={enterless ? 'checkbox' : 'square-outline'} size={14} color={enterless ? colors.accent : colors.textDim} />
-				<Text style={[styles.toggleText, enterless && styles.toggleTextOn]}>Enterなし</Text>
+				<Ionicons name={enterless ? 'checkbox' : 'square-outline'} size={14} color={enterless ? theme.accent : colors.textDim} />
+				<Text style={[styles.toggleText, enterless && [styles.toggleTextOn, onText]]}>Enterなし</Text>
 			</Pressable>
 		</>
 	);
