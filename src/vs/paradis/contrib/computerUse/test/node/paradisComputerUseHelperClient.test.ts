@@ -26,6 +26,8 @@ interface IFakeHelperOptions {
 	neverListen?: boolean;
 	/** `open` が失敗する。 */
 	launchFails?: boolean;
+	/** その回（1 から数える）の起動では handshake に答えない。 */
+	hangHandshake?(launch: number): boolean;
 	reply?(method: string, params: Record<string, unknown>): FakeReply;
 }
 
@@ -114,6 +116,9 @@ class FakeHelper {
 		this.requests.push(request.method);
 		if (request.method === 'handshake') {
 			this.handshakeTokens.push(String(request.params.token));
+			if (this._options.hangHandshake?.(this.launches)) {
+				return;
+			}
 			if (request.params.token !== token) {
 				socket.destroy();
 				return;
@@ -172,12 +177,12 @@ suite('ParadisComputerUseHelperClient', () => {
 		await fs.rm(root, { recursive: true, force: true });
 	});
 
-	function createClient(options: IFakeHelperOptions = {}, overrides: Partial<IParadisComputerUseHelperHost> = {}) {
+	function createClient(options: IFakeHelperOptions = {}, overrides: Partial<IParadisComputerUseHelperHost> = {}, handshakeTimeoutMs?: number) {
 		const fake = new FakeHelper(options);
 		fakes.push(fake);
 		// 送った値は段階とキーだけ見る（ミリ秒は毎回変わる）
 		const reports: string[] = [];
-		const client = disposables.add(new ParadisComputerUseHelperClient(fake.host(root, overrides), undefined, { requestTimeoutMs: 300, launchTimeoutMs: 500 }, (stage, _error, extra) => reports.push(`${stage}: ${Object.keys(extra).sort().join(',')}`)));
+		const client = disposables.add(new ParadisComputerUseHelperClient(fake.host(root, overrides), undefined, { requestTimeoutMs: 300, launchTimeoutMs: 500, handshakeTimeoutMs }, (stage, _error, extra) => reports.push(`${stage}: ${Object.keys(extra).sort().join(',')}`)));
 		return { fake, client, reports };
 	}
 
@@ -304,6 +309,15 @@ suite('ParadisComputerUseHelperClient', () => {
 		assert.deepStrictEqual({ afterFirst, afterSecond: client.availability, launches: fake.launches, reports }, { afterFirst: 'ok', afterSecond: 'launch-failed', launches: 2, reports: ['crashed-repeatedly: safe_crashes,safe_helper_version'] });
 		// 設定を入れ直す（check）と、もう一度試す
 		assert.strictEqual(await client.check(), 'ok');
+	});
+
+	test('a restarted helper that does not answer the handshake does not signal the previous helper pid', async () => {
+		const { fake, client } = createClient({ hangHandshake: launch => launch === 2, reply: () => ({ ok: true, result: { ok: true } }) }, {}, 500);
+		await client.check();
+		fake.crash();
+		await new Promise(resolve => setTimeout(resolve, 20));
+		await assert.rejects(client.request('permissions'), (error: ParadisComputerUseHelperError) => error.code === 'unavailable');
+		assert.deepStrictEqual({ launches: fake.launches, staleTerminated: fake.staleTerminated, availability: client.availability }, { launches: 2, staleTerminated: [], availability: 'launch-failed' });
 	});
 
 	test('an idle helper that exits is started again on the next request without counting as a crash', async () => {
