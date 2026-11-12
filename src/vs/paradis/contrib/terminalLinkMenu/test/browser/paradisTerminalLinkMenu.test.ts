@@ -13,6 +13,7 @@ import { isIMenuItem, MenuId, MenuRegistry } from '../../../../../platform/actio
 import { IContext } from '../../../../../platform/contextkey/common/contextkey.js';
 import { paradisFileLinkFromTerminalLink, paradisHttpUrlFromTerminalLinkText, ParadisTerminalLinkCommandId, paradisTrackTerminalLinkAtMouse } from '../../browser/paradisTerminalLinkMenu.contribution.js';
 import { mainWindow } from '../../../../../base/browser/window.js';
+import { importAMDNodeModule } from '../../../../../amdX.js';
 
 function context(values: Record<string, unknown>): IContext {
 	return { getValue: <T>(key: string) => values[key] as T };
@@ -127,5 +128,26 @@ suite('ParadisTerminalLinkMenu', () => {
 			shiftRightClickOnPadding: undefined,
 			keyboardMenu: undefined,
 		});
+	});
+
+	// 右クリックのリンクは xterm の非公開の `_core.linkifier.currentLink` を読む。xterm の更新で名前や形が
+	// 変わると、オプショナルチェーンで undefined になって項目が黙って出なくなるので、同梱の xterm で形を確かめる。
+	test('the bundled xterm still exposes the linkifier currentLink the menu reads', async () => {
+		const TerminalCtor = (await importAMDNodeModule<typeof import('@xterm/xterm')>('@xterm/xterm', 'lib/xterm.js')).Terminal;
+		const xterm = store.add(new TerminalCtor({ cols: 80, rows: 10 }));
+		const container = mainWindow.document.body.appendChild(mainWindow.document.createElement('div'));
+		try {
+			xterm.open(container);
+			const linkifier = (xterm as unknown as { readonly _core?: { readonly linkifier?: object } })._core?.linkifier;
+			assert.deepStrictEqual({
+				linkifier: typeof linkifier,
+				hasCurrentLink: linkifier !== undefined && Reflect.has(linkifier, 'currentLink'),
+			}, {
+				linkifier: 'object',
+				hasCurrentLink: true,
+			});
+		} finally {
+			container.remove();
+		}
 	});
 });
