@@ -8,9 +8,9 @@
 
 // ブックマーク編集／フォルダ作成・編集のフォーム型DOMモーダル（Superset の
 // EditBookmarkDialog / BookmarkFolderDialog 相当）。paradisBindingDialog.ts と同じく
-// workbenchコンテナへ自前 backdrop+モーダルを重ねる方式。backdrop クラスは
-// overlayManager の OVERLAY_DEFINITIONS に登録済みで、ネイティブ WebContentsView は
-// ダイアログ表示中自動的に pause される。色は --vscode-* テーマトークンのみ使用。
+// workbenchコンテナへ自前 backdrop+モーダルを重ねる方式。backdrop には共通の印
+// `paradis-modal-backdrop`（overlayManager の OVERLAY_DEFINITIONS に登録済み）を付けてあり、
+// ネイティブ WebContentsView はダイアログ表示中自動的に pause される。色は --vscode-* テーマトークンのみ使用。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
