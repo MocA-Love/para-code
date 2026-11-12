@@ -977,7 +977,7 @@ export class WorkspaceService extends Disposable implements IWorkbenchConfigurat
 		return this.paradisFoldersChangedSequencer.queue(() => this.paradisDoOnFoldersChanged());
 	}
 
-	private async paradisDoOnFoldersChanged(): Promise<IConfigurationChange> { // PARA-PATCH: renamed from onFoldersChanged, body unchanged
+	private async paradisDoOnFoldersChanged(): Promise<IConfigurationChange> { // PARA-PATCH: renamed from onFoldersChanged; see the PARA-PATCH lines inside
 		const changes: IConfigurationChange[] = [];
 
 		// Remove the configurations of deleted folders

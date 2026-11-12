@@ -6,8 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// Design Mode の main プロセス側の窓口（app.ts に登録を2行足す方式。CDP で仕掛けを入れる案より
-// 配線が少なく保守しやすいため）。
+// Design Mode の main プロセス側の窓口（paradis.mainProcess.contribution.ts の paradisRegisterDesignMode
+// の 1 行で登録する。CDP で仕掛けを入れる案より配線が少なく保守しやすいため）。
 //
 // renderer からは内蔵ブラウザのページ（WebContentsView）に直接触れないので、ページへ仕掛けを
 // 入れる処理と、画像をディスクへ書く処理をここに置く。できることは固定の仕掛けを流すことと

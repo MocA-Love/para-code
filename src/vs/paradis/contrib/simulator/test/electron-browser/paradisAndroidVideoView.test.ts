@@ -13,7 +13,7 @@ import assert from 'assert';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { ParadisAndroidVideoWire } from '../../common/paradisScrcpy.js';
+import { ParadisAndroidInput, ParadisAndroidVideoWire } from '../../common/paradisScrcpy.js';
 import { IParadisVideoDecoders, ParadisAndroidVideoView } from '../../electron-browser/paradisAndroidVideoView.js';
 import { IParadisSimulatorClient } from '../../electron-browser/paradisSimulatorClient.js';
 
@@ -52,7 +52,8 @@ suite('Paradis simulator: Android video view', () => {
 			return { dispose: () => { listeners--; subscription.dispose(); } };
 		};
 		const resets: string[] = [];
-		const client = { onAndroidVideo: () => event, androidResetVideo: async () => { resets.push('reset'); }, androidInput: async () => { } } as unknown as IParadisSimulatorClient;
+		const inputs: ParadisAndroidInput[] = [];
+		const client = { onAndroidVideo: () => event, androidResetVideo: async () => { resets.push('reset'); }, androidInput: async (_serial: string, input: ParadisAndroidInput) => { inputs.push(input); } } as unknown as IParadisSimulatorClient;
 		const log: string[] = [];
 		const decoders: FakeDecoder[] = [];
 		const factory: IParadisVideoDecoders = {
@@ -66,7 +67,7 @@ suite('Paradis simulator: Android video view', () => {
 		const view = store.add(new ParadisAndroidVideoView(document.createElement('div'), SERIAL, client, factory));
 		const send = (message: { readonly kind: ParadisAndroidVideoWire['kind'];[field: string]: unknown }) => video.fire({ serial: SERIAL, ...message } as unknown as ParadisAndroidVideoWire);
 		const settle = () => new Promise(resolve => setTimeout(resolve, 0));
-		return { view, send, settle, log, decoders, resets, listeners: () => listeners };
+		return { view, send, settle, log, decoders, resets, inputs, listeners: () => listeners };
 	}
 
 	test('waits for a key frame, puts the config in front of it, and releases everything when closed', async () => {
@@ -107,6 +108,32 @@ suite('Paradis simulator: Android video view', () => {
 		await settle();
 		view.stop();
 		assert.deepStrictEqual({ decoded: decoders[0].chunks.map(chunk => chunk.type), resets }, { decoded: ['key'], resets: ['reset'] });
+	});
+
+	// keyup が来ないまま外へ出た（Command+Tab・Esc 2 回・タブを隠した）ときに、押したままのキーを端末で離す
+	test('releases the keys still held when the focus leaves, the view stops, or Escape is pressed twice', () => {
+		const { view, inputs } = setup();
+		const key = (type: 'keydown' | 'keyup', code: string, keyValue: string) => view.element.dispatchEvent(new KeyboardEvent(type, { code, key: keyValue, bubbles: true }));
+		const keys = () => inputs.flatMap(input => input.kind === 'key' ? [`${input.down ? 'down' : 'up'} ${input.code}`] : []);
+		key('keydown', 'Enter', 'Enter');
+		key('keydown', 'KeyA', 'a');
+		key('keyup', 'KeyA', 'a');
+		view.element.dispatchEvent(new FocusEvent('blur'));
+		const afterBlur = keys();
+		inputs.length = 0;
+		key('keydown', 'ArrowLeft', 'ArrowLeft');
+		view.stop();
+		const afterStop = keys();
+		inputs.length = 0;
+		key('keydown', 'ArrowUp', 'ArrowUp');
+		key('keydown', 'Escape', 'Escape');
+		key('keyup', 'Escape', 'Escape');
+		key('keydown', 'Escape', 'Escape');
+		assert.deepStrictEqual({ afterBlur, afterStop, afterDoubleEscape: keys() }, {
+			afterBlur: ['down Enter', 'down KeyA', 'up KeyA', 'up Enter'],
+			afterStop: ['down ArrowLeft', 'up ArrowLeft'],
+			afterDoubleEscape: ['down ArrowUp', 'down Escape', 'up Escape', 'up ArrowUp'],
+		});
 	});
 
 	// 復号できない codec なら、繰り返し key frame を求めずに 1 回だけ知らせて止める

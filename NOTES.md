@@ -234,7 +234,7 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 
 ### 1.139.1マージで実際に踏んだ問題（2026-09-27追記）
 
-- **旧ビルド基盤の削除**: upstream #336126 で `build/buildfile.ts`・`build/lib/optimize.ts`・gulp の `bundle-vscode` が消え、esbuild の `build/next/*` に一本化された。fork の追加エントリ（`paradisPtyDaemonBridgeMain`・`paradisPtyHostDaemonEntry`（desktop/server）・`paradisBrowserMcpShim`）と `inlineParadisSentryPlugin` は `build/next/index.ts` に残し、同梱リソース（changelog など）は新規の `build/next/paradisResources.ts` に分けて `resources.ts` から1箇所の PARA-PATCH で読む（minify しない）。`build/gulpfile.vscode.ts` の `vscodeResources` への追記は効かなくなった
+- **旧ビルド基盤の削除**: upstream #336126 で `build/buildfile.ts`・`build/lib/optimize.ts`・gulp の `bundle-vscode` が消え、esbuild の `build/next/*` に一本化された。fork の追加エントリ（`paradisPtyDaemonBridgeMain`・`paradisPtyHostDaemonEntry`（desktop/server）・`paradisBrowserMcpShim`）は `build/next/index.ts` に残し（`inlineParadisSentryPlugin` と docx-preview 0.3.7 の再現ビルドの本体は fork 所有の `build/next/paradisSentryPlugin.ts`・`paradisDocxPreview037.ts` に置き、`index.ts` は import と呼び出しだけ）、同梱リソース（changelog など）は新規の `build/next/paradisResources.ts` に分けて `resources.ts` から1箇所の PARA-PATCH で読む（minify しない）。`build/gulpfile.vscode.ts` の `vscodeResources` への追記は効かなくなった
 - **`npm install` が Sentry を黙って上げる**: lock 再生成で `@sentry/electron` などが上がり、`allowScripts` の検査が落ちた。`@sentry/electron 7.17.0`・`@sentry/node-native 10.70.0`・`@sentry/cli 3.6.2` に固定し直した。lock を作り直したら必ず Sentry の版を確認する
 - **Sentry の release は CI で作る（2026-09-28）**: desktop プロジェクトは「テレメトリーからの release 自動作成」が無効（`enableAutoReleaseCreation: false`）で、この設定だと、まだ無い release を持つイベントからは `release` と `dist` が消える。1.139.1 のイベント（beta.3 と開発版）に release が無かったのはこのため。SDK は送っている（開発版を手元の受け口へ向けて確認）。`sentry-cli` 3 の `sourcemaps upload --release` は Debug ID の artifact bundle に印を付けるだけで release を作らないので、`build/sentry/upload-desktop-sourcemaps.ts` が先に `releases new` を呼ぶ。開発版の `para-code@<version>`（commit なし）は誰も作らないので、開発版のイベントには release が付かない
 - **Sentry の release 名に paracode の番号を入れる（2026-09-30、Q156）**: 以前の `para-code@1.139.1+<commit>` は同じ upstream 版の中で commit しか違わず、Sentry は build（`+` の後ろ）を文字列で比べるので、新旧の並びが commit のハッシュ順になり、解決済みの issue の再発を検知できなかった。今は `v1.139.1-paracode-148` から `para-code@1.139.1.148+<commit>`、ベータ `v1.139.1-paracode-148-beta.2` から `para-code@1.139.1.148-beta.2+<commit>` を作る。タグでないビルド（ブランチの workflow_dispatch・手元のビルド）は従来どおり `para-code@<version>+<commit>`。
@@ -720,7 +720,7 @@ app-server が毎回の取得の経路になったので、Orca にある起動�
 
 **重要**: この重なり検知は汎用的なz-index判定ではなく、**クラス名の決め打ちホワイトリスト方式**。標準の `monaco-dialog-modal-block` / `quick-input-widget`（`IDialogService`/`IQuickInputService`経由）は最初から登録済みで無条件に機能するが、fork独自の「自前DOM + backdrop方式」のダイアログは、それぞれ固有のbackdropクラス名を持ち、**そのクラス名を `OVERLAY_DEFINITIONS` に個別追加しない限りブラウザの背後に隠れる**。
 
-- 登録済み（問題なし）: `paradis-binding-dialog-backdrop`、`paradis-bookmark-dialog-backdrop`、`paradis-notification-inbox-popover`（通知の受信箱、2026-09-27）
+- 登録済み（問題なし）: `paradis-binding-dialog-backdrop`、`paradis-bookmark-dialog-backdrop`、通知の受信箱（2026-09-27 に `paradis-notification-inbox-popover` で登録。2026-11-12 に外し、共通の印 `paradis-overlay-popover` だけで止まる）
 - 2026-08-15時点で判明した未登録（＝ブラウザ表示中に開くと背後に隠れる）:
   1. `paradis-preset-editor-backdrop`（カスタムプリセットコマンドのモーダル、`src/vs/paradis/contrib/terminalPresets/browser/paradisPresetEditorDialog.ts`）
   2. `paradis-create-worktree-backdrop`（ワークスペース切替/worktree作成ダイアログ）
@@ -730,6 +730,7 @@ app-server が毎回の取得の経路になったので、Orca にある起動�
   - 境界事例（アンカー式ポップオーバーで全画面モーダルではないため優先度低）: `.paradis-limits-panel`、`.paradis-resource-monitor-panel`
 
 **運用ルール**: 内蔵ブラウザと同時に開かれうる場面がある「自前DOM + backdrop方式」の新規ダイアログ・モーダルを追加したら、そのbackdropクラス名を必ず `overlayManager.ts` の `OVERLAY_DEFINITIONS` に追加すること（`{ className: '...', type: BrowserOverlayType.Dialog }` を1行足すだけ）。標準の `IDialogService`/`IQuickInputService` をそのまま使う場合はこの対応は不要（既存ホワイトリストでカバー済み）。2026-09-27 からは共通の印 `paradis-modal-backdrop` を登録済みなので、新しいモーダルは backdrop にこのクラスを併記するだけでよい（`overlayManager.ts` への追加は不要。定期実行・スキルのモーダルが実例）。
+- 2026-11-12: 個別に登録していたダイアログのクラス（上の一覧と設定・使用量のダイアログなど 11 件）は、どれも共通の印 `paradis-modal-backdrop` / `paradis-overlay-popover` を併記済み、または作る箇所が無くなっていたため `OVERLAY_DEFINITIONS` から外した。残る fork の個別登録は、共通の印を付けると重なりの段が変わる `paradis-markup-overlay` だけ。
 
 ### fork の自前モーダルのフォーカスと重なり順（paradisModalFocus、2026-09-27、フェーズ8）
 
@@ -866,7 +867,7 @@ Orca の B7 に当たる8個のツールを para-browser MCP に足した。ツ�
 
 ### エージェントの右クリックでは Para Code のメニューを出さない
 
-- `paradisCdpTargetService.ts` が、メニューを開きうる入力（右ボタンの押下・離し、Control を押した左ボタンの押下・離し（macOS の右クリック）、ContextMenu キー（仮想キー 93）、Shift+F10）を送るたびに、その入力の印（座標、またはキーであること）を webContents に付ける（`paradisAgentContextMenu.ts`）
+- `paradisCdpTargetService.ts` が、メニューを開きうる入力（右ボタンの押下・離し、Control を押した左ボタンの押下・離し（macOS の右クリック）、ContextMenu キー（仮想キー 93）、Shift+F10）を送るたびに、その入力の印（座標、またはキーであること）を webContents に付ける（`src/vs/platform/browserView/common/paradisAgentContextMenu.ts`。upstream の platform から呼ぶため、vs/paradis への逆方向 import を作らないよう platform 側に置く）
 - upstream の `browserViewMainService.ts` の `showContextMenu` の PARA-PATCH 1 行が、`context-menu` の引数（座標と `menuSourceType`）を印と突き合わせ、一致した1つだけを消費してメニューを出さない。座標はページの CSS ピクセルと、拡大率を掛けたものの両方で比べる（誤差 3）。印は 1 秒で捨てる
 - 時間の窓で一律に止めないので、エージェントの右クリックの直後でも、利用者の別の場所での右クリックでは Para Code のメニューが出る（R5）。ページの `contextmenu` イベントは届くので、ページ自前の右クリックメニューは動く
 - 限界（N2）: エージェントの右クリックから 1 秒以内に、利用者が同じ点（3 px 以内）を右クリックすると、そのメニューは出ない。押下と離しの両方に印を付けるので、macOS では押下の印がエージェントのメニューで消え、離しの印が残って利用者のメニューに当たる（実機で確認）。同じ点を 1 秒以内に押すことはまれなので直していない。直すなら、メニューを開く側の型（macOS と Linux は押下、Windows は離し）にだけ印を付ける
@@ -903,7 +904,6 @@ q.html Q69 のとおり、エージェントは Cookie を読み書きできな�
 | upstream のファイル | 行 | 内容 |
 |---|---|---|
 | `src/vs/platform/browserView/electron-main/browserViewMainService.ts` | import 1行 + 1行 | `showContextMenu` の先頭で `paradisConsumeAgentContextMenuSuppression(view.webContents, params)` を見て、エージェントの入力で開いたメニューだけを出さない |
-| `eslint.config.js` | 1行 | `src/vs/platform/*/~` から `vs/paradis/contrib/agentBrowser/electron-main/paradisAgentContextMenu.js` の1ファイルへの逆方向 import を許す |
 
 ## 内蔵ブラウザの Design Mode とスクリーンショットへの書き込み（browserDesignMode、2026-09-27、フェーズ7 担当B）
 
@@ -1040,7 +1040,7 @@ upstream 取り込み時に確認すること:
 
 同梱: 手元の `npm run gulp vscode-darwin-<arch>-min` は `build/gulpfile.vscode.ts` の PARA-PATCH から `paradisComputerUseHelperPackageTask` を呼び、補助アプリを作って `Contents/Helpers/` に入れる（失敗は警告だけ。`PARADIS_COMPUTER_USE_HELPER=0` で飛ばせる）。CI（`CI` がある）では gulp は何もせず、`para-release.yml` の 3 段（Build / Pre-notarize / Embed）に任せる。ステーブルでは 3 段とも `continue-on-error` で、失敗したら補助アプリを外して出荷する。ベータ（Q102）では失敗でビルドを止め、署名と公証の後に zip の中の補助アプリを確かめる（下の「ベータ版の配布経路」）。Embed は Pre-notarize が Apple に受け入れられたとき書く目印（`.build/paradis/computerUse/prenotarized`）があるときだけ入れる。`workflow_dispatch` の `computer_use_helper` を false にすると、ステーブルでは 3 段とも飛ばす（ベータでは効かない）。`build/darwin/sign.ts` の PARA-PATCH は補助アプリに空の entitlements を渡す 3 行だけ。本体の公証が補助アプリのせいで拒否された場合に補助アプリを外して出し直す段は無い（Pre-notarize で先に潰す前提）。
 
-手元で試すとき: `node build/paradis/computerUse/buildHelper.ts --out <どこか> --allow-any-peer-for-testing` で接続相手の確認を外したビルドを作れる（node から直接つなぐため）。既定の出力先には書けず、`Info.plist` に `ParadisTestingBuild` が付いて `embedHelper.ts` が埋め込みを断る。ad-hoc の補助アプリはビルドのたびに TCC から別物と見なされる。ビルドのテストは `node --test build/paradis/computerUse/*.test.ts`（`build/package.json` の `test` の対象には入れていない）。
+手元で試すとき: `node build/paradis/computerUse/buildHelper.ts --out <どこか> --allow-any-peer-for-testing` で接続相手の確認を外したビルドを作れる（node から直接つなぐため）。既定の出力先には書けず、`Info.plist` に `ParadisTestingBuild` が付いて `embedHelper.ts` が埋め込みを断る。ad-hoc の補助アプリはビルドのたびに TCC から別物と見なされる。ビルドのテストは `build/lib/test/paradisComputerUseBuildHelper.test.ts`（`build/package.json` の `test` の対象。`npm run test-build-scripts` で走る。埋め込みのテストは macOS 以外では skip）。
 
 設定 `paradis.computerUse.enabled` のオン・オフは守りの境界ではない。ペインのエージェントは同じユーザーなので `settings.json` を書き換えてオンにできる（`APPLICATION` と `restricted` はワークスペースの設定を防ぐだけ）。境界はアプリごとの承認ダイアログで、オフからオンに変わったときは各ウィンドウに 1 回通知を出す（レビュー L14）。パッケージ版は開発用の `<appRoot>/.build/paradis/computerUse/` を探さない（レビュー L4）。認証の画面の日本語のラベル（パスワード・暗証番号・認証コード・確認コード・セキュリティコード・ワンタイム）も値を伏せる（レビュー L9）。システム設定は `com.apple.systempreferences` の前方一致（レビュー L10）。承認ダイアログのコマンドの警告は、ターミナルを内蔵したエディタ（VS Code・Cursor・Zed・Xcode・JetBrains）とショートカット・Raycast・Alfred にも出す（レビュー L11、各 id は【要確認】）。CI の Pre-notarize は `timeout-minutes: 25` と `notarytool --timeout 20m`、埋め込みの前に `lipo -verify_arch arm64 x86_64`（レビュー L12・L13）。
 
@@ -2475,7 +2475,7 @@ upstream 取り込みで壊れやすいのは次の4点。
 
 - **Dock の件数は upstream の `setApplicationBadge` に乗っている。** main の `DockBadgeManager`（`windowImpl.ts`）がウィンドウごとの数を足し合わせる前提で、各ウィンドウは自分のペインの分だけを出している（全体の数を出すとウィンドウの数だけ掛け算になる）。Agent Sessions ウィンドウの `SessionsApplicationBadge` の数も同じ合計に足されるので、両方を開いていると Dock の数字は「確認が必要なペイン＋Sessions の件数」になる。**Windows はアプリ全体の数ではなく、ウィンドウごとにタスクバーへそのウィンドウの分を重ねて出す**（upstream の `setOverlayIcon`）。`app.setBadgeCount` を直接呼ぶと `DockBadgeManager` と取り合うので呼ばない
 - **メニューバーのアイコンは main で作る**（`src/vs/paradis/contrib/menuBar/electron-main/paradisMenuBarMain.ts`、既定オフ。2026-10-16 に通知の受信箱から `menuBar/` へ移し、使用量も出すようにした）。`app.ts` の PARA-PATCH は import 1行と登録1行。`Tray.setImage` / `setContextMenu` は AppKit のコールバックの中で呼ぶと main が固まることがある（Orca の知見）ので必ず `setImmediate` で次の周回に回す。絵は PNG を同梱せずコードで描いている（`paradisMenuBarIcon.ts`）。メニューの行の 2 行目（`sublabel`）と行の頭の画像は macOS の版で崩れうるので、`paradis.menuBar.plainMenu` で使わない表示へ逃がせる。Linux は作らない。依頼の宛先は Agent Sessions ウィンドウ（fork の通常ウィンドウ向け機能を読み込まない）を除いて選ぶ。ウィンドウが1つも無くなったら中身を空にし、「アイコンを隠す」は main ですぐ消して、設定の書き換えは次に中身を送ってきたウィンドウに頼む
-- **受信箱のポップオーバーを内蔵ブラウザの上に出すため**、`overlayManager.ts` の `OVERLAY_DEFINITIONS` に `paradis-notification-inbox-popover` を PARA-PATCH で足した。z-index はタイトルバーのポップオーバーと同じ 2500（モーダル 2575 より下）。ベルが1つ増えたぶん、upstream がタイトルバー中央のツールバーごと隠す幅（`titlebarPart.ts` のはみ出し判定）が広がり、「エージェント一覧」「ブラウザ一覧」も早めに消える。件数が出たときに幅が変わってはみ出し判定がずれないよう、バッジの枠は常に確保している
+- **受信箱のポップオーバーを内蔵ブラウザの上に出すため**、`overlayManager.ts` の `OVERLAY_DEFINITIONS` に `paradis-notification-inbox-popover` を PARA-PATCH で足した（2026-11-12 に外した。ポップオーバーは共通の印 `paradis-overlay-popover` も付けていて、それで止まる）。z-index はタイトルバーのポップオーバーと同じ 2500（モーダル 2575 より下）。ベルが1つ増えたぶん、upstream がタイトルバー中央のツールバーごと隠す幅（`titlebarPart.ts` のはみ出し判定）が広がり、「エージェント一覧」「ブラウザ一覧」も早めに消える。件数が出たときに幅が変わってはみ出し判定がずれないよう、バッジの枠は常に確保している
 - **音声入力中に読み上げを止める仕組みは、upstream のチャットの内部モジュールに依存している。** `workbench/contrib/chat/browser/speechToText/chatSpeechToTextService.js` の `ChatSpeechToTextState`・`state`・`isPreparingModel`・`onDidChangeState`・`onDidChangePreparingModel`（と `ISpeechService` のセッション）。チャットは upstream の変更が多いので、取り込みのたびにこれらが残っているかを確かめる。`isBusy` は使わない（停止の途中も busy のまま知らせずに消えるので、音声入力中から戻れなくなった。2026-09-27 に修正）
 
 ### 内蔵の音声入力の配布（配布しないと決定、2026-09-28、Q92）

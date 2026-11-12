@@ -2,12 +2,14 @@
  *  Copyright (c) Microsoft Corporation. All rights reserved.
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-PATCH/PARA-CODE comments)
+
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../../platform/configuration/common/configurationRegistry.js';
 import { Registry } from '../../../../../platform/registry/common/platform.js';
-import { WorkbenchPhase } from '../../../../../workbench/common/contributions.js';
 import { configureParadisDiagnosticReporter, type ParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
 
 type ParadisTerminalWordSeparatorsModule = typeof import('../../browser/paradisTerminalWordSeparators.contribution.js');
@@ -47,51 +49,6 @@ suite('Paradis terminal word separator diagnostics', () => {
 		}
 
 		assert.strictEqual(reports.length, 1);
-	});
-
-	test('self-registers the diagnostic contribution exactly once during module initialization', () => {
-		const registrations: Array<{
-			readonly id: string;
-			readonly ctor: typeof contributionModule.ParadisTerminalWordSeparatorsDiagnosticsContribution;
-			readonly phase: WorkbenchPhase;
-		}> = [];
-		let initializationError: Error | undefined;
-
-		try {
-			contributionModule.initializeParadisTerminalWordSeparatorsDiagnosticsContribution(
-				(id, ctor, phase) => registrations.push({ id, ctor, phase }),
-			);
-		} catch (error) {
-			if (error instanceof Error) {
-				initializationError = error;
-			}
-		}
-
-		assert.deepStrictEqual({
-			registrations,
-			initializationErrorName: initializationError?.name,
-		}, {
-			registrations: [],
-			initializationErrorName: 'Error',
-		});
-	});
-
-	test('registers the diagnostic contribution after the workbench is restored', () => {
-		const registrations: Array<{
-			readonly id: string;
-			readonly ctor: typeof contributionModule.ParadisTerminalWordSeparatorsDiagnosticsContribution;
-			readonly phase: WorkbenchPhase;
-		}> = [];
-
-		contributionModule.registerParadisTerminalWordSeparatorsDiagnosticsContribution(
-			(id, ctor, phase) => registrations.push({ id, ctor, phase }),
-		);
-
-		assert.deepStrictEqual(registrations, [{
-			id: 'workbench.contrib.paradisTerminalWordSeparatorsDiagnostics',
-			ctor: contributionModule.ParadisTerminalWordSeparatorsDiagnosticsContribution,
-			phase: WorkbenchPhase.AfterRestored,
-		}]);
 	});
 
 	test('reports a fixed error only when the captured upstream default is missing', () => {

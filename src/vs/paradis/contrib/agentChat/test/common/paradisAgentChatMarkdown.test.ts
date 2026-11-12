@@ -33,4 +33,23 @@ suite('paradisAgentChatMarkdown', () => {
 			'```',
 		]);
 	});
+
+	test('a shorter fence inside a longer one does not close the code block', () => {
+		const input = [
+			'````md',
+			'```',
+			'![code](https://example.com/in-code.png)',
+			'```',
+			'````',
+			'![after](https://example.com/after.png)',
+		].join('\n');
+		assert.deepStrictEqual(paradisAgentChatImagesToLinks(input).split('\n'), [
+			'````md',
+			'```',
+			'![code](https://example.com/in-code.png)',
+			'```',
+			'````',
+			'[画像: after](https://example.com/after.png)',
+		]);
+	});
 });

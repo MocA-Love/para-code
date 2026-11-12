@@ -563,14 +563,26 @@ export class ParadisAivisVoiceSection extends Disposable {
 		this._sampleBlobUrl = blobUrl;
 		this._playingSampleButton = btn;
 		this._setSampleButtonPlaying(btn, true);
-		audio.addEventListener('ended', () => this.stopSamplePlayback());
+		// 止めた後の要素から届く事件で、次に鳴らしたサンプルを止めない
+		const isCurrent = () => this._sampleAudio === audio;
+		audio.addEventListener('ended', () => {
+			if (isCurrent()) {
+				this.stopSamplePlayback();
+			}
+		});
 		audio.addEventListener('error', () => {
+			if (!isCurrent()) {
+				return;
+			}
 			this.logService.warn('[ParadisNotifications] Aivis sample playback error', audio.error);
 			this.stopSamplePlayback();
 		});
 		try {
 			await audio.play();
 		} catch (error) {
+			if (!isCurrent()) {
+				return;
+			}
 			this.logService.warn('[ParadisNotifications] failed to play Aivis sample', error);
 			this.stopSamplePlayback();
 		}
@@ -583,7 +595,9 @@ export class ParadisAivisVoiceSection extends Disposable {
 	stopSamplePlayback(): void {
 		if (this._sampleAudio) {
 			this._sampleAudio.pause();
-			this._sampleAudio.src = '';
+			// `src = ''` だと止めた要素が後から error を出すので、src を外して読み込み直す
+			this._sampleAudio.removeAttribute('src');
+			this._sampleAudio.load();
 			this._sampleAudio = undefined;
 		}
 		if (this._sampleBlobUrl) {

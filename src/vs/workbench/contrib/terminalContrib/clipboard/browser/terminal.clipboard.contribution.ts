@@ -110,7 +110,8 @@ export class TerminalClipboardContribution extends Disposable implements ITermin
 		// その場合はローカル扱い（0x16 の経路）になる
 		const instance = this._ctx.instance;
 		const attached = hasKey(instance, { remoteAuthority: true }) ? instance : undefined;
-		if ((!text || paradisIsLocalImagePathText(text, attached?.remoteAuthority)) && this._xterm) {
+		// PARA-PATCH: スペース切り替え中は画像の経路にも入らない（0x16 は _paste() のゲートを通らないため）
+		if ((!text || paradisIsLocalImagePathText(text, attached?.remoteAuthority)) && this._xterm && !paradisIsTerminalInputBlocked()) {
 			const pasted = await paradisTryTerminalImagePaste(this._clipboardService, this._xterm, {
 				fileService: this._fileService,
 				remoteAuthority: attached?.remoteAuthority,

@@ -9,8 +9,8 @@
 #      RELEASES KV namespace consumed by cloudflare/update-server, which is
 #      what src/vs/platform/update/electron-main/*.ts polls.
 #
-# Required secrets (none of these exist yet — see NOTES.md release-infra
-# section for the Cloudflare-side setup checklist):
+# Required secrets (configured in the repository; NOTES.md release-infra
+# section has the Cloudflare-side setup checklist):
 #   APPLE_CERTIFICATE_P12_BASE64, APPLE_CERTIFICATE_PASSWORD,
 #     APPLE_CODESIGN_IDENTITY, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD,
 #     APPLE_TEAM_ID                        — macOS signing + notarization
@@ -782,8 +782,13 @@ jobs:
         with:
           node-version-file: .nvmrc
 
+      # The wrangler version locked by cloudflare/update-server/package-lock.json, not the newest 4.x:
+      # the next step runs it with the Cloudflare and R2 secrets.
       - name: Install wrangler
-        run: npm install -g wrangler@4
+        run: |
+          set -e
+          npm ci --prefix cloudflare/update-server
+          echo "$GITHUB_WORKSPACE/cloudflare/update-server/node_modules/.bin" >> "$GITHUB_PATH"
 
       - name: Resolve version/commit
         id: meta

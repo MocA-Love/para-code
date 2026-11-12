@@ -198,6 +198,20 @@ describe('relay APNs push', () => {
 		expect(body.aps['mutable-content']).toBe(1);
 	});
 
+	it('gives the APNs request a deadline so a stalled request does not outlive the send lease', async () => {
+		const { deviceId, pcWs, mobileId, mobileToken } = await pairMobile();
+		const mobileWs = await connectMobile(deviceId, mobileId, mobileToken, pcWs);
+		mobileWs.send(encodeRelayControl({ type: 'register-push', token: VALID_APNS_TOKEN }));
+		await new Promise(r => setTimeout(r, 50));
+
+		const fetchMock = stubFetch(200);
+		pcWs.send(encodeRelayControl({ type: 'push-notify', mobileId, payload: 'AAAA' }));
+		await waitFor(() => fetchMock.mock.calls.length >= 1);
+
+		const init = fetchMock.mock.calls[0][1] as RequestInit;
+		expect(init.signal).toBeInstanceOf(AbortSignal);
+	});
+
 	it('sends once to the registered token when the mobile is online', async () => {
 		const { deviceId, pcWs, mobileId, mobileToken } = await pairMobile();
 		const mobileWs = await connectMobile(deviceId, mobileId, mobileToken, pcWs);

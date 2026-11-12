@@ -119,6 +119,26 @@ describe('relay pairing + routing', () => {
 			.toEqual({ ok: 200, body: { ok: true }, missing: 401, wrong: 401 });
 	});
 
+	// ws の経路は POST だけの action へ通さない（DO へ写すのは接続に使う項目だけ）
+	it('does not dispatch an action passed on the websocket route', async () => {
+		const { deviceId, pcToken } = await provisionDevice();
+		const res = await SELF.fetch(`https://relay/device/${deviceId}/ws?action=pc-check`, { headers: { authorization: `Bearer ${pcToken}` } });
+		expect(res.status).toBe(426);
+	});
+
+	it('relays the pairing messages of one socket to the pc in the order they arrived', async () => {
+		const { deviceId, pcToken } = await provisionDevice();
+		const pcWs = await openWs(`https://relay/device/${deviceId}/ws?role=pc&token=${pcToken}`);
+		const pair = await (await SELF.fetch(`https://relay/device/${deviceId}/pair/begin`, { method: 'POST', headers: { authorization: `Bearer ${pcToken}` } })).json<{ pairId: string; pairingToken: string }>();
+		const pairWs = await openWs(`https://relay/device/${deviceId}/ws?role=pair&pairId=${pair.pairId}&token=${pair.pairingToken}`);
+		// 最初のものは鍵の指紋を求めるので、後のもの（鍵を読めない）より中継の準備に時間がかかる
+		const first = toBase64Url(new TextEncoder().encode(JSON.stringify({ pub: toBase64Url(generateIdentity().publicKey), name: 'phone' })));
+		pairWs.send(encodeRelayControl({ type: 'pairing-msg', data: first }));
+		pairWs.send(encodeRelayControl({ type: 'pairing-msg', data: 'aGVsbG8' }));
+		const received = [decodeRelayControl(await pcWs.next() as string), decodeRelayControl(await pcWs.next() as string)];
+		expect(received.map(msg => msg.type === 'pairing-msg' ? msg.data : msg.type)).toEqual([first, 'aGVsbG8']);
+	});
+
 	it('routes pairing approval to mint mobile credentials', async () => {
 		const { deviceId, pcToken } = await provisionDevice();
 		const pcWs = await openWs(`https://relay/device/${deviceId}/ws?role=pc&token=${pcToken}`);
@@ -370,6 +390,22 @@ describe('relay pairing + routing', () => {
 		expect(rejected.status).toBe(401);
 
 		await openWs(`https://relay/device/${deviceId}/ws?role=pair&pairId=${pair.pairId}&token=${pair.pairingToken}`);
+	});
+
+	it('answers a close the pc sends with the same code, so the pc sees a clean close', async () => {
+		const { deviceId, pcToken } = await provisionDevice();
+		const pcWs = await openWs(`https://relay/device/${deviceId}/ws?role=pc&token=${pcToken}`);
+		pcWs.ws.close(1000, 'bye');
+		const event = await pcWs.closed();
+		expect({ code: event.code, wasClean: event.wasClean }).toEqual({ code: 1000, wasClean: true });
+	});
+
+	it('also finishes the close when the pc closes without a code', async () => {
+		const { deviceId, pcToken } = await provisionDevice();
+		const pcWs = await openWs(`https://relay/device/${deviceId}/ws?role=pc&token=${pcToken}`);
+		pcWs.ws.close();
+		const event = await pcWs.closed();
+		expect(event.wasClean).toBe(true);
 	});
 
 	it('rejects pc connection with a bad token', async () => {

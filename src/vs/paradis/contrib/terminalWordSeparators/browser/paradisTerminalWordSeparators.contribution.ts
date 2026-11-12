@@ -71,32 +71,4 @@ export class ParadisTerminalWordSeparatorsDiagnosticsContribution implements IWo
 	}
 }
 
-type ParadisTerminalWordSeparatorsDiagnosticsRegistrar = (
-	id: string,
-	ctor: typeof ParadisTerminalWordSeparatorsDiagnosticsContribution,
-	phase: WorkbenchPhase,
-) => void;
-
-export function registerParadisTerminalWordSeparatorsDiagnosticsContribution(
-	register: ParadisTerminalWordSeparatorsDiagnosticsRegistrar = registerWorkbenchContribution2,
-): void {
-	register(
-		ParadisTerminalWordSeparatorsDiagnosticsContribution.ID,
-		ParadisTerminalWordSeparatorsDiagnosticsContribution,
-		WorkbenchPhase.AfterRestored,
-	);
-}
-
-let paradisTerminalWordSeparatorsDiagnosticsContributionInitialized = false;
-
-export function initializeParadisTerminalWordSeparatorsDiagnosticsContribution(
-	register: ParadisTerminalWordSeparatorsDiagnosticsRegistrar = registerWorkbenchContribution2,
-): void {
-	if (paradisTerminalWordSeparatorsDiagnosticsContributionInitialized) {
-		throw new Error('Paradis terminal word separators diagnostics contribution is already initialized');
-	}
-	registerParadisTerminalWordSeparatorsDiagnosticsContribution(register);
-	paradisTerminalWordSeparatorsDiagnosticsContributionInitialized = true;
-}
-
-initializeParadisTerminalWordSeparatorsDiagnosticsContribution();
+registerWorkbenchContribution2(ParadisTerminalWordSeparatorsDiagnosticsContribution.ID, ParadisTerminalWordSeparatorsDiagnosticsContribution, WorkbenchPhase.AfterRestored);

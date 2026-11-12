@@ -144,8 +144,8 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 		return true;
 	}, [terminalKey, rendererTarget, send, cancelSequences]);
 
-	// TUIの入力欄へテキストを入れ、少し置いてからCRで確定する（貼り付け直後の
-	// 確定はTUI側の取りこぼしがあるため。承認番号注入と同じ250ms方式）。
+	// テキストの送信はPC側の sendAgentMessage（action/sendMessage）に任せる。
+	// どう入力欄へ入れて確定するかはPC側が決め、ここではキー列も待ち時間も持たない。
 	const sendText = useCallback((text: string, sendId: string = newAgentSendId()) => {
 		if (terminalKey === undefined) {
 			return Promise.resolve({ status: 'rejected' as const, message: '送信先のエージェントが見つかりません' });

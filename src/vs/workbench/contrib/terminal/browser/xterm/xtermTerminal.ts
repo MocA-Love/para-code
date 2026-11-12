@@ -159,13 +159,10 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 	private _searchAddon?: SearchAddonType;
 	private _unicode11Addon?: Unicode11AddonType;
 	private _webglAddon?: WebglAddonType;
-	private _webglAddonCustomGlyphs?: boolean = false;
+	private readonly _webglContextLossListener = this._register(new MutableDisposable());
+	private _webglAddonCustomGlyphs?: boolean;
 	// PARA-PATCH: remembers whether this terminal lost its GPU context, so it can take one back
 	private readonly _paradisWebglRecovery = new ParadisWebglRecovery();
-	// PARA-PATCH: the webgl renderer is now re-acquired every time a focused terminal takes a
-	// context back, so hold this listener in one slot instead of letting a new one pile up on the
-	// terminal's own store on each acquisition
-	private readonly _paradisWebglContextLoss = this._register(new MutableDisposable());
 	// PARA-PATCH: release the GPU renderer of an off-screen terminal and take it back when shown (opt-in, see vs/paradis)
 	private readonly _paradisHiddenGpu = this._register(new ParadisHiddenGpuRelease(() => this._configurationService, {
 		hasGpuRenderer: () => !!this._webglAddon,
@@ -1018,10 +1015,7 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 			// being unable to render (see vs/paradis/contrib/terminalRenderer).
 			paradisWebglSupport.noteSucceeded();
 			this._paradisWebglRecovery.noteEnabled();
-			// PARA-PATCH: upstream adds this listener to the terminal's own store, which only ever
-			// held one because the renderer was acquired once. It is now re-acquired every time a
-			// focused terminal takes a context back, so keep it in a single slot instead.
-			this._paradisWebglContextLoss.value = this._webglAddon.onContextLoss(() => {
+			this._webglContextLossListener.value = this._webglAddon.onContextLoss(() => {
 				this._logService.info(`Webgl lost context, disposing of webgl renderer`);
 				this._disposeOfWebglRenderer();
 				// PARA-PATCH: losing a context is usually recoverable — the browser takes the oldest
@@ -1140,7 +1134,7 @@ export class XtermTerminal extends Disposable implements IXtermTerminal, IDetach
 		this._webglAddonLoadId++;
 		this._webglAddonLoading = false;
 		this._webglAddonCustomGlyphs = undefined;
-		this._paradisWebglContextLoss.clear(); // PARA-PATCH: fork owns the context-loss listener slot (single MutableDisposable)
+		this._webglContextLossListener.clear();
 		if (!this._webglAddon) {
 			return;
 		}

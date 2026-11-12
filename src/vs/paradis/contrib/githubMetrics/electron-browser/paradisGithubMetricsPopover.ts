@@ -114,10 +114,7 @@ export class ParadisGithubMetricsPopover extends Disposable {
 
 	private render(): void {
 		const snapshot = this.snapshot;
-		// レート枠は shared process 側で短時間キャッシュされるので、取得時刻はその実測値を出す
-		this.updatedElement.textContent = snapshot
-			? localize('paradis.githubMetrics.popover.updated', "更新: {0}", fromNow(snapshot.rateLimitFetchedAt ?? snapshot.generatedAt, true))
-			: '';
+		this.renderUpdated();
 
 		dom.clearNode(this.bodyElement);
 		this.countdowns.length = 0;
@@ -238,7 +235,17 @@ export class ParadisGithubMetricsPopover extends Disposable {
 		element.textContent = remaining > 0 ? format(remaining) : expired;
 	}
 
+	private renderUpdated(): void {
+		const snapshot = this.snapshot;
+		// レート枠は shared process 側で短時間キャッシュされるので、取得時刻はその実測値を出す
+		this.updatedElement.textContent = snapshot
+			? localize('paradis.githubMetrics.popover.updated', "更新: {0}", fromNow(snapshot.rateLimitFetchedAt ?? snapshot.generatedAt, true))
+			: '';
+	}
+
 	private tickCountdowns(): void {
+		// 取得からの経過も進める（開きっぱなしだと「たった今」のまま残るため）
+		this.renderUpdated();
 		const now = Date.now();
 		for (const countdown of this.countdowns) {
 			const remaining = countdown.deadline - now;

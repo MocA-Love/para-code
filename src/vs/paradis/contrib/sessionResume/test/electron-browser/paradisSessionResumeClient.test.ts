@@ -242,6 +242,26 @@ suite('ParadisSessionResumeClient', () => {
 		await assert.rejects(client.list({ spaces: [localSpace('a'), remoteSpace('b', 'ssh-remote+host')] }));
 	});
 
+	test('keeps the search results of the machine that answered when the other machine fails, and throws only when every machine fails', async () => {
+		const local = new RecordingChannel();
+		const remote = new RecordingChannel();
+		const connection = { remoteAuthority: 'ssh-remote+host', getChannel: () => remote } as unknown as IRemoteAgentConnection;
+		const client = createClient(local, connection);
+		local.result = [session('local-one')];
+		remote.result = [session('remote-one')];
+		await client.list({ spaces: [localSpace('a'), remoteSpace('b', 'ssh-remote+host')] });
+
+		const match = { catalogId: 'catalog-local-one', matchCount: 1, snippet: 'term', source: 'conversation' };
+		local.result = [match];
+		remote.queueDeferredCall().error(new Error('remote unreachable'));
+		const partial = await client.search('term', ['catalog-local-one', 'catalog-remote-one']);
+
+		local.queueDeferredCall().error(new Error('local unreachable'));
+		remote.queueDeferredCall().error(new Error('remote unreachable'));
+		await assert.rejects(client.search('term', ['catalog-local-one', 'catalog-remote-one']));
+		assert.deepStrictEqual(partial, [match]);
+	});
+
 	test('merges local and remote results in updatedAt-descending order', async () => {
 		const local = new RecordingChannel();
 		const remote = new RecordingChannel();

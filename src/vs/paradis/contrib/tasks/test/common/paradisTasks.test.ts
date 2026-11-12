@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisTasksApplyInsteadOf, paradisTasksBuildSearchQuery, paradisTasksGithubRepositoryFromRemote, paradisTasksHasQualifier, paradisTasksToggleQualifier, paradisTasksTokenize } from '../../common/paradisTasks.js';
+import { paradisTasksApplyInsteadOf, paradisTasksBuildSearchQuery, paradisTasksGithubRepositoryFromRemote, paradisTasksHasQualifier, paradisTasksSettle, paradisTasksToggleQualifier, paradisTasksTokenize } from '../../common/paradisTasks.js';
 
 suite('ParadisTasks', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -83,6 +83,13 @@ suite('ParadisTasks', () => {
 			add: 'is:issue is:closed',
 			remove: 'is:issue is:open',
 			has: true,
+		});
+	});
+
+	test('turns a rejected request into a failed response', async () => {
+		assert.deepStrictEqual(await paradisTasksSettle(() => Promise.reject(new Error('channel closed'))), {
+			ok: false,
+			error: { kind: 'failed', message: 'channel closed' },
 		});
 	});
 });

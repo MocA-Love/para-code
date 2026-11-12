@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
@@ -21,6 +21,22 @@ describe('Store', () => {
 		store.scheduleSave(() => state(2));
 		await store.flush();
 		expect(JSON.parse(readFileSync(path.join(dir, 'state.json'), 'utf8')).marker).toBe(1);
+	});
+	test('a ledger that is not valid JSON is moved aside, but one that cannot be read is left in place and the error is raised', async () => {
+		const broken = mkdtempSync(path.join(os.tmpdir(), 'tb-store-'));
+		const unreadable = mkdtempSync(path.join(os.tmpdir(), 'tb-store-'));
+		dirs.push(broken, unreadable);
+		writeFileSync(path.join(broken, 'state.json'), '{"version":');
+		// 読めない台帳（ディレクトリにして EISDIR を起こす。権限で作ると root では読めてしまう）
+		mkdirSync(path.join(unreadable, 'state.json'));
+		const fromBroken = await new Store(broken).loadState();
+		const fromUnreadable = await new Store(unreadable).loadState().then(() => 'loaded', (err: NodeJS.ErrnoException) => err.code);
+		expect({
+			fromBroken,
+			brokenFiles: readdirSync(broken).map(name => name.replace(/\d+$/, '')),
+			fromUnreadable,
+			unreadableFiles: readdirSync(unreadable),
+		}).toEqual({ fromBroken: undefined, brokenFiles: ['state.json.broken-'], fromUnreadable: 'EISDIR', unreadableFiles: ['state.json'] });
 	});
 	test('only one board opens a ledger: a live owner refuses, a dead owner is taken over, and closing lets go', async () => {
 		const dir = mkdtempSync(path.join(os.tmpdir(), 'tb-store-'));
