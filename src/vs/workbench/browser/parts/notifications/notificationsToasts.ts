@@ -266,6 +266,10 @@ export class NotificationsToasts extends Themable implements INotificationsToast
 
 		// Container
 		const notificationToastContainer = $('.notification-toast-container');
+		// PARA-PATCH: mark error toasts and toasts with buttons (except running progress, whose Cancel button would pause the page for the whole operation) so the browser view pauses for them (overlayManager.ts). Registered before the redraw listener below so a change is picked up when the toast redraws.
+		const paradisUpdateUrgentToast = () => notificationToastContainer.classList.toggle('paradis-notification-toast-urgent', item.severity === Severity.Error || (!item.hasActiveProgress && !!item.actions?.primary?.length));
+		paradisUpdateUrgentToast();
+		itemDisposables.add(item.onDidChangeContent(() => paradisUpdateUrgentToast())); // PARA-PATCH: see above
 
 		const firstToast = notificationsToastsContainer.firstChild;
 		if (firstToast) {

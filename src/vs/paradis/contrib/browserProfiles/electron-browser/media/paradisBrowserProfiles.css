@@ -26,7 +26,7 @@
 	height: 20px;
 	padding: 0 5px 0 6px;
 	border: 1px solid var(--vscode-editorWidget-border);
-	border-radius: var(--vscode-cornerRadius-small, 5px);
+	border-radius: var(--vscode-cornerRadius-small);
 	background-color: transparent;
 	color: var(--vscode-foreground);
 	font-family: inherit;
