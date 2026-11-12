@@ -40,6 +40,22 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.22',
+		date: '2026-11-12',
+		items: [
+			{
+				icon: 'chatbubble-ellipses-outline',
+				title: '質問への回答を送っている間に回答をやめたりタブを移ったりして、そのあと送れなかったとき、打った回答が消えていたのを直しました',
+				body: '送れなかった回答は、そのセッションの入力欄の下書きに戻ります。',
+			},
+			{
+				icon: 'image-outline',
+				title: '写真を選んでも読み込めなかったとき、何も出ずに止まっていたのを直しました',
+				body: '「写真を開けませんでした」と出すので、選び直してください。',
+			},
+		],
+	},
+	{
 		version: '0.12.21',
 		date: '2026-11-12',
 		items: [
