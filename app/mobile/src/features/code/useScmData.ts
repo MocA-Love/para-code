@@ -227,6 +227,8 @@ const LANDED: CommitOutcome = { ok: true, warning: undefined };
 const COMMIT_SAFE_TIMEOUT_MS = 310_000;
 /** 結果の確かめで一覧を 1 回読むときの待ち時間。 */
 const COMMIT_CONFIRM_LOG_TIMEOUT_MS = 10_000;
+/** 古い PC の `scmCommit` の待ち時間（store の request() の既定）。 */
+const LEGACY_COMMIT_TIMEOUT_MS = 30_000;
 
 /** そのスペースの PC 画面がつながっている状態になるまで待つ（`deadline` を過ぎたら false）。 */
 function waitForRendererTarget(wsId: string, deadline: number): Promise<boolean> {
@@ -287,7 +289,10 @@ export function useScmCommit(space: CodeSpace): CommitState {
 		// 結果が分からない（待っている間に接続し直した・応答が届かなかった）ときは、接続と PC 画面が戻るのを
 		// 送ってから COMMIT_SAFE_TIMEOUT_MS まで待って一覧を読み直し、PC でコミットできていたら成功として返す。
 		// PC がまだフックを動かしているかもしれないので、期限までは間隔を空けて読み直す。確かめられなければ失敗のまま
-		const deadline = Date.now() + COMMIT_SAFE_TIMEOUT_MS;
+		const sentAt = Date.now();
+		const deadline = sentAt + COMMIT_SAFE_TIMEOUT_MS;
+		// 送った要求の待ち時間（古い PC の `scmCommit` は request() の既定）。これを過ぎて失敗したなら時間切れ
+		const requestTimeoutMs = recoverable ? COMMIT_SAFE_TIMEOUT_MS : LEGACY_COMMIT_TIMEOUT_MS;
 		const confirmLanded = (until = deadline): Promise<boolean> => confirmCommitLanded(baselineHash, text, until, {
 			waitUntilLive: limit => waitForRendererTarget(wsId, limit),
 			// コミットを送ったのと同じ PC に聞く
@@ -330,8 +335,10 @@ export function useScmCommit(space: CodeSpace): CommitState {
 			return FAILED;
 		} catch (e) {
 			// PC が失敗と答えたものは確かめない。届かなかった・応答が来なかったものだけ確かめる。
-			// つながったままの時間切れはコミットボタンを押せないまま待たせないよう、1 回だけ読む
-			if (isPcUnreachableError(e) && await confirmLanded(current() ? Date.now() : deadline)) {
+			// 時間切れ（つながったまま応答が来なかった）はコミットボタンを押せないまま待たせないよう、1 回だけ読む。
+			// 切断の直後は画面の状態がまだ online のことがあるので、current() ではなく経過時間で見分ける
+			const timedOut = Date.now() - sentAt >= requestTimeoutMs;
+			if (isPcUnreachableError(e) && await confirmLanded(timedOut ? Date.now() : deadline)) {
 				return LANDED;
 			}
 			if (current()) {
