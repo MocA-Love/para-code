@@ -1598,7 +1598,9 @@ export class ParadisWorkspacesView extends ViewPane {
 							return creatingElementLabel(element);
 						}
 						const summary = isWorktree(element) && !element.missing ? agentStatusSummaryTooltip(getBreakdown(worktreeStateKeyFor(element))) : '';
-						return summary ? localize('paradis.workspaceSwitch.worktreeAriaLabel', "{0}、{1}", element.name, summary) : element.name;
+						const label = summary ? localize('paradis.workspaceSwitch.worktreeAriaLabel', "{0}、{1}", element.name, summary) : element.name;
+						// 2 段目とメタ段に見えているもの（ブランチ・PR・差分・メモ）も、見えている順に後ろへ足す
+						return isWorktree(element) ? this.worktreeMetaAriaParts(element).reduce((head, part) => localize('paradis.workspaceSwitch.worktreeAriaLabel', "{0}、{1}", head, part), label) : label;
 					},
 					getWidgetAriaLabel: () => localize('paradisWorkspaces', "スペース"),
 					// 控えの行は閉じた行の兄弟なのでツリーの深さが見た目より浅い。見た目の段にそろえる（ほかはツリーの深さのまま）
@@ -2317,6 +2319,44 @@ export class ParadisWorkspacesView extends ViewPane {
 		for (const worktree of worktrees) {
 			this._metaPresence.set(worktreeStateKeyFor(worktree), this.computeMetaPresence(worktree));
 		}
+	}
+
+	/** 行に見えているブランチとメタ段の項目を、読み上げ用の短い句にする（並びは設定 rowMeta の順）。 */
+	private worktreeMetaAriaParts(worktree: IParadisWorktree): string[] {
+		if (worktree.missing) {
+			return [];
+		}
+		const parts: string[] = [];
+		if (worktree.branch) {
+			// allow-any-unicode-next-line
+			parts.push(localize('paradis.workspaceSwitch.ariaBranch', "ブランチ {0}", worktree.branch));
+		}
+		const presence = this.worktreeMetaPresence(worktree);
+		for (const entry of this.rowMeta) {
+			if (!paradisWorktreeMetaShown(this.rowMeta, presence, entry.id)) {
+				continue;
+			}
+			if (entry.id === 'pr') {
+				const pr = this._prStatuses.get(worktree.uri.fsPath);
+				if (pr) {
+					parts.push(localize('paradis.workspaceSwitch.ariaPr', "PR #{0} {1}", pr.number, prStateLabel(pr.state)));
+				}
+			} else if (entry.id === 'issues') {
+				const issues = this.agentStatusStore.getScopeIssueUrls(worktreeStateKeyFor(worktree)).length;
+				// allow-any-unicode-next-line
+				parts.push(localize('paradis.workspaceSwitch.ariaIssues', "Issue {0} 件", issues));
+			} else if (entry.id === 'diff') {
+				const diff = this._diffStats.get(worktree.uri.fsPath);
+				if (diff) {
+					parts.push(localize('paradis.workspaceSwitch.ariaDiff', "+{0} -{1}", diff.insertions, diff.deletions));
+				}
+			} else if (entry.id === 'notes') {
+				const open = this.spaceNotesService.summary(worktreeStateKeyFor(worktree)).open;
+				// allow-any-unicode-next-line
+				parts.push(localize('paradis.workspaceSwitch.ariaNotes', "メモ {0} 件未完了", open));
+			}
+		}
+		return parts;
 	}
 
 	/** 作った Map を引く。まだ無い行 (作成中など) は「メタ無し」= 2段扱い。 */

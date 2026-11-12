@@ -192,12 +192,8 @@
 	outline: none;
 }
 
-.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-values > .monaco-text-button {
-	width: auto;
-}
-
 .monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-input[hidden],
 .monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-note[hidden],
-.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-values > .monaco-text-button[hidden] {
+.monaco-workbench .paradis-workspace-lifecycle-dialog .plc-include-values > .paradis-button[hidden] {
 	display: none;
 }

@@ -215,10 +215,6 @@
 		"hex-color | .monaco-workbench.paradis-transparent .part.statusbar | background-color: color-mix(in srgb, var(--paradis-statusbar-bg, var(--vscode-statusBar-background, var(--vscode-editor-background))) 44%, #727290) !important": 1
 	},
 	"src/vs/paradis/contrib/workspaceSwitch/browser/media/paradisWorkspaceSwitch.css": {
-		"hex-color | .paradis-workspaces-list .paradis-worktree-pr.paradis-pr-open | --paradis-pr-color: #3fb950": 1,
-		"hex-color | .paradis-workspaces-list .paradis-worktree-pr.paradis-pr-draft | --paradis-pr-color: #8b949e": 1,
-		"hex-color | .paradis-workspaces-list .paradis-worktree-pr.paradis-pr-merged | --paradis-pr-color: #a371f7": 1,
-		"hex-color | .paradis-workspaces-list .paradis-worktree-pr.paradis-pr-closed | --paradis-pr-color: #f85149": 1,
 		"focus | .paradis-space-notes-add:hover, .paradis-space-notes-add:focus-within | ": 1,
 		"hex-color | .monaco-menu .paradis-color-red::before | background-color: #ef4444": 1,
 		"hex-color | .monaco-menu .paradis-color-orange::before | background-color: #f97316": 1,
