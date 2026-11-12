@@ -59,7 +59,7 @@ export function Composer({ task, target, me, meAvatar, onPosted, repoUrl }: { ta
 					<button role="tab" aria-selected={tab === 'write'} className={tab === 'write' ? 'on' : ''} onClick={() => setTab('write')}>書く</button>
 					<button role="tab" aria-selected={tab === 'preview'} className={tab === 'preview' ? 'on' : ''} onClick={() => void showPreview()}>プレビュー</button>
 					<span className="grow" />
-					{simulated ? <span className="chip sim">見本（GitHub に送らない）</span> : <span className="faint" style={{ fontSize: 11.5 }}>GitHub に投稿します</span>}
+					{simulated ? <span className="chip sim">見本（GitHub に送らない）</span> : <span className="faint" style={{ fontSize: 'var(--fs-xs)' }}>GitHub に投稿します</span>}
 				</div>
 				{tab === 'write' ? (
 					<textarea

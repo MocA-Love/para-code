@@ -58,6 +58,20 @@ export function paradisShareCardStats(data: IParadisShareCardData): readonly { r
 	];
 }
 
+/**
+ * `texts` のどれもが `maxWidth` に収まる字の大きさ（`size` から 2px ずつ下げ、`min` で止める）。並んだ 4 つの数字・
+ * 見出しを同じ大きさで描くため、一番長いものに合わせる。`min` でも収まらないときは描く側の maxWidth で縮める。
+ */
+export function paradisShareCardFitSize(context: CanvasRenderingContext2D, texts: readonly string[], weight: number, size: number, min: number, maxWidth: number): number {
+	for (; size > min; size -= 2) {
+		context.font = `${weight} ${size}px ${FONT_FAMILY}`;
+		if (texts.every(text => context.measureText(text).width <= maxWidth)) {
+			break;
+		}
+	}
+	return Math.max(size, min);
+}
+
 /** カードを描いた canvas を返す。 */
 export function paradisDrawShareCard(document: Document, data: IParadisShareCardData): HTMLCanvasElement {
 	const canvas = document.createElement('canvas');
@@ -85,18 +99,21 @@ export function paradisDrawShareCard(document: Document, data: IParadisShareCard
 	context.fillText(data.periodLabel, canvas.width - padding, padding + 34);
 	context.textAlign = 'left';
 
-	// 4つの数字
+	// 4つの数字。長い数字が横に押しつぶされないよう、4 つとも一番長いものが収まる大きさで描く（見出しも同じ）
 	const stats = paradisShareCardStats(data);
 	const columnWidth = (canvas.width - padding * 2) / stats.length;
+	const maxWidth = columnWidth - 24;
+	const valueSize = paradisShareCardFitSize(context, stats.map(stat => stat.value), 600, 64, 40, maxWidth);
+	const labelSize = paradisShareCardFitSize(context, stats.map(stat => stat.label), 400, 24, 18, maxWidth);
 	const valueY = 240;
 	stats.forEach((stat, index) => {
 		const x = padding + columnWidth * index;
 		context.fillStyle = COLORS.text;
-		context.font = `600 64px ${FONT_FAMILY}`;
-		context.fillText(stat.value, x, valueY, columnWidth - 24);
+		context.font = `600 ${valueSize}px ${FONT_FAMILY}`;
+		context.fillText(stat.value, x, valueY, maxWidth);
 		context.fillStyle = COLORS.muted;
-		context.font = `400 24px ${FONT_FAMILY}`;
-		context.fillText(stat.label, x, valueY + 40, columnWidth - 24);
+		context.font = `400 ${labelSize}px ${FONT_FAMILY}`;
+		context.fillText(stat.label, x, valueY + 40, maxWidth);
 	});
 
 	// 日別のターン数
