@@ -8,6 +8,20 @@ import { useDismiss, useNow } from '../hooks.js';
 import { Icon, type IconName } from '../icons.js';
 import { PARADIS_CLAUDE_LOGO_PATH, PARADIS_CODEX_LOGO_PATH } from '@paradis-logos';
 
+/**
+ * role=button の枠を Enter / Space で押したときに run する keydown の受け手。
+ * 枠の中のボタンやメニュー（ポータル越しに泡立つものも含む）で押したキーは、その要素の動きを取り消さないよう扱わない。
+ */
+export function activateOnKey(run: () => void): (e: React.KeyboardEvent<HTMLElement>) => void {
+	return e => {
+		if (e.target !== e.currentTarget || (e.key !== 'Enter' && e.key !== ' ')) {
+			return;
+		}
+		e.preventDefault();
+		run();
+	};
+}
+
 export function tone(t: Tone): CSSProperties {
 	return { ['--tone' as string]: TONE_VAR[t] };
 }
