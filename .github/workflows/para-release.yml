@@ -782,8 +782,13 @@ jobs:
         with:
           node-version-file: .nvmrc
 
+      # The wrangler version locked by cloudflare/update-server/package-lock.json, not the newest 4.x:
+      # the next step runs it with the Cloudflare and R2 secrets.
       - name: Install wrangler
-        run: npm install -g wrangler@4
+        run: |
+          set -e
+          npm ci --prefix cloudflare/update-server
+          echo "$GITHUB_WORKSPACE/cloudflare/update-server/node_modules/.bin" >> "$GITHUB_PATH"
 
       - name: Resolve version/commit
         id: meta

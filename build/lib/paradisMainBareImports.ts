@@ -53,8 +53,15 @@ export async function listParadisBareImports(repoRoot: string, entry: string): P
 		],
 		tsconfigRaw: JSON.stringify({ compilerOptions: { experimentalDecorators: true, useDefineForClassFields: false } }),
 	});
-	const code = result.outputFiles[0].text;
-	const specifiers = [...code.matchAll(/^import\s[^;]*?from\s*"(?<specifier>[^".][^"]*)"/gm), ...code.matchAll(/^import\s*"(?<specifier>[^".][^"]*)"/gm)]
+	return paradisStaticBareSpecifiers(result.outputFiles[0].text);
+}
+
+/**
+ * The bare specifiers of the top-level static imports and re-exports in bundled code. esbuild keeps an
+ * entry point's `export * from "pkg"` as is, and Node resolves it while linking like an import.
+ */
+export function paradisStaticBareSpecifiers(code: string): string[] {
+	const specifiers = [...code.matchAll(/^(?:import|export)\s[^;]*?from\s*"(?<specifier>[^".][^"]*)"/gm), ...code.matchAll(/^import\s*"(?<specifier>[^".][^"]*)"/gm)]
 		.map(match => match.groups?.specifier ?? '');
 	return [...new Set(specifiers)].sort();
 }

@@ -34,8 +34,8 @@ const RULES: readonly { readonly label: DangerousCommandLabel; readonly pattern:
 	{ label: '削除を含む', pattern: new RegExp(`${START}rm(?=\\s)${SAME_COMMAND}\\s(?:-[a-zA-Z]*[rR][a-zA-Z]*|--recursive)(?=\\s|$)`, 'm') },
 	// git clean -f / -fd / -xdf / --force（追跡していないファイルを消す）。
 	{ label: '削除を含む', pattern: new RegExp(`${START}git(?=\\s)${SAME_COMMAND}\\bclean\\b${SAME_COMMAND}\\s(?:-[a-zA-Z]*f[a-zA-Z]*|--force)(?=\\s|$)`, 'm') },
-	// git push --force / --force-with-lease / -f（-uf のようにまとめた指定も含む）。
-	{ label: '強制 push', pattern: new RegExp(`${START}git(?=\\s)${SAME_COMMAND}\\bpush\\b${SAME_COMMAND}\\s(?:--force(?:-with-lease)?(?:=\\S*)?|-[a-zA-Z]*f[a-zA-Z]*)(?=\\s|$)`, 'm') },
+	// git push --force / --force-with-lease / -f（-uf のようにまとめた指定も含む）/ 先頭に + を付けた refspec（origin +main）。
+	{ label: '強制 push', pattern: new RegExp(`${START}git(?=\\s)${SAME_COMMAND}\\bpush\\b${SAME_COMMAND}\\s(?:--force(?:-with-lease)?(?:=\\S*)?|-[a-zA-Z]*f[a-zA-Z]*|\\+\\S+)(?=\\s|$)`, 'm') },
 	{ label: '履歴を書き換える', pattern: new RegExp(`${START}git(?=\\s)${SAME_COMMAND}\\breset\\b${SAME_COMMAND}\\s--hard(?=\\s|$)`, 'm') },
 	{ label: '管理者権限', pattern: new RegExp(`${START}sudo(?=\\s|$)`, 'm') },
 	{ label: '権限を一括変更', pattern: new RegExp(`${START}(?:chmod|chown)(?=\\s)${SAME_COMMAND}\\s(?:-[a-zA-Z]*R[a-zA-Z]*|--recursive)(?=\\s|$)`, 'm') },
