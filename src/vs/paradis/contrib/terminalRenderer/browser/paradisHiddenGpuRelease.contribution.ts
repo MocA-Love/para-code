@@ -15,10 +15,10 @@ import { Registry } from '../../../../platform/registry/common/platform.js';
 import { PARADIS_HIDDEN_GPU_RELEASE_DELAY, PARADIS_TERMINAL_RELEASE_HIDDEN_GPU_SETTING } from './paradisHiddenGpuRelease.js';
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
-	id: 'paradis',
-	order: 999,
-	title: localize('paradisConfigurationTitle', "Para Code"),
+	id: 'paradis.terminal',
+	order: 100,
 	type: 'object',
+	title: localize('paradis.terminal.title', "Para Code Terminal"),
 	properties: {
 		[PARADIS_TERMINAL_RELEASE_HIDDEN_GPU_SETTING]: {
 			type: 'boolean',
