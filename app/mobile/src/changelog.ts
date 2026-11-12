@@ -44,6 +44,14 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-11-12',
 		items: [
 			{
+				icon: 'volume-high-outline',
+				title: 'iPhone・iPad の VoiceOver で、「コピーしました」などのお知らせを読み上げるようにしました',
+			},
+			{
+				icon: 'accessibility-outline',
+				title: 'VoiceOver で、接続中・実行中などの状態の点とセッションのタブの状態を読み上げるようにしました',
+			},
+			{
 				icon: 'chatbubble-ellipses-outline',
 				title: '質問への回答を送っている間に回答をやめたりタブを移ったりして、そのあと送れなかったとき、打った回答が消えていたのを直しました',
 				body: '送れなかった回答は、そのセッションの入力欄の下書きに戻ります。',
