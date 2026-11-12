@@ -2,7 +2,7 @@
 
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { contextCategoryLines, contextHeadline, contextRowLabel, parseContextBreakdownReply, shownRows } from './agentContextBreakdown.js';
+import { contextBreakdownDisplay, contextCategoryLines, contextHeadline, contextRowLabel, parseContextBreakdownReply, shownRows } from './agentContextBreakdown.js';
 
 const golden = JSON.parse(readFileSync(new URL('../../protocol/test/golden/agent.json', import.meta.url), 'utf8')) as { toMobile: Record<string, unknown>[] };
 
@@ -66,5 +66,33 @@ describe('agentContextBreakdown', () => {
 		}
 		const { shown, rest } = shownRows(reply.breakdown.skills);
 		expect({ shown: shown.map(row => row.name), rest }).toEqual({ shown: ['skill-7', 'skill-6', 'skill-5', 'skill-4', 'skill-3'], rest: 3 });
+	});
+
+	it('取り直しの間と失敗のあとも前の内訳を残し、端末を替えた直後は前の端末の内訳も失敗も出さない', () => {
+		const reply = parseContextBreakdownReply({ breakdown: { sessionId: 's', at: 1, totalTokens: 10, window: 100, percent: 10, categories: [] } });
+		if (reply.kind !== 'ok') {
+			throw new Error('expected a breakdown');
+		}
+		const loaded = { terminalKey: 'a', reply };
+		const summary = (display: ReturnType<typeof contextBreakdownDisplay>) => display.kind === 'shown' ? { kind: display.kind, refreshing: display.refreshing, failedMessage: display.failedMessage } : display;
+		expect([
+			contextBreakdownDisplay('a', { kind: 'loading', terminalKey: 'a' }, undefined),
+			contextBreakdownDisplay('a', { kind: 'failed', terminalKey: 'a', message: '理由' }, undefined),
+			contextBreakdownDisplay('a', { kind: 'done', terminalKey: 'a' }, loaded),
+			contextBreakdownDisplay('a', { kind: 'loading', terminalKey: 'a' }, loaded),
+			contextBreakdownDisplay('a', { kind: 'failed', terminalKey: 'a', message: '応答なし' }, loaded),
+			contextBreakdownDisplay('b', { kind: 'failed', terminalKey: 'a', message: '応答なし' }, loaded),
+			contextBreakdownDisplay('b', { kind: 'done', terminalKey: 'a' }, loaded),
+			contextBreakdownDisplay(undefined, { kind: 'failed', terminalKey: undefined, message: '内訳を取得できません' }, loaded),
+		].map(summary)).toEqual([
+			{ kind: 'spinner' },
+			{ kind: 'reason', message: '理由' },
+			{ kind: 'shown', refreshing: false, failedMessage: undefined },
+			{ kind: 'shown', refreshing: true, failedMessage: undefined },
+			{ kind: 'shown', refreshing: false, failedMessage: '応答なし' },
+			{ kind: 'spinner' },
+			{ kind: 'spinner' },
+			{ kind: 'reason', message: '内訳を取得できません' },
+		]);
 	});
 });
