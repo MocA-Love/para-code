@@ -8,11 +8,13 @@
 
 // コマンドパレットなどの quick input を、画面の上から 25% (upstream の「中央」) に一度だけ移し (paradisQuickInputPosition.ts)、
 // 開いているあいだ作業領域を暗くする (paradisQuickInputScrim.ts)。Q593。
+// 上に残った位置を中央に戻すコマンドは paradisQuickInputRecenter.ts (Q641)。
 // タイトルバーのコマンドセンターを既定で消すのは paradisDefaultSettings.contribution.ts。
 
 import { registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ParadisQuickInputLook } from './paradisQuickInputLook.js';
 import { ParadisQuickInputPosition } from './paradisQuickInputPosition.js';
+import './paradisQuickInputRecenter.js';
 import { ParadisQuickInputScrim } from './paradisQuickInputScrim.js';
 
 registerWorkbenchContribution2(ParadisQuickInputPosition.ID, ParadisQuickInputPosition, WorkbenchPhase.AfterRestored);
