@@ -38,7 +38,8 @@ export class ParadisBrowserExtensionTabActivationContribution extends Disposable
 				return;
 			}
 			const group = editorGroupsService.groups.find(candidate => candidate.contains(input));
-			editorService.openEditor(input, { preserveFocus: false }, group).catch(error => logService.warn('[paradis] could not bring a browser tab forward for an extension', error));
+			// タブは前に出すが、フォーカスは動かさない（背景の処理の求めで、ターミナルやエディタに打っている文字がページに入らないように）
+			editorService.openEditor(input, { preserveFocus: true }, group).catch(error => logService.warn('[paradis] could not bring a browser tab forward for an extension', error));
 		}));
 	}
 }

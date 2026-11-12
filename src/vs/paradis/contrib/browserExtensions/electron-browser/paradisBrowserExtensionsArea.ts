@@ -219,6 +219,8 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 	private _logElement: HTMLElement | undefined;
 	/** 一覧の行（拡張機能の id → 行）。選び直した行へフォーカスを戻すのに使う。 */
 	private readonly _rowElements = new Map<string, HTMLElement>();
+	/** 詳細の列の操作（作り直した後に、押した操作へフォーカスを戻すための名前）。 */
+	private readonly _controls = new Map<string, HTMLElement>();
 	/** 一覧の行の状態の印（拡張機能の id → 要素）。背景の処理が変わったときは、ここだけを書き換える。 */
 	private readonly _rowStatusElements = new Map<string, HTMLElement>();
 	/** 詳細の列の、背景の処理を起動できなかった理由と、背景の処理の状態（書き換えるだけの要素）。 */
@@ -411,7 +413,13 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 			text.textContent = localize('paradis.browserExtensions.notice.off', "試験的な機能です。今はオフになっています。オンにすると、再起動の後に使えます。");
 			button.textContent = localize('paradis.browserExtensions.notice.turnOn', "オンにする");
 			this._noticeStore.add(dom.addDisposableListener(button, 'click', async () => {
-				await this.configurationService.updateValue(PARADIS_BROWSER_EXTENSIONS_ENABLED_SETTING, true, ConfigurationTarget.USER);
+				try {
+					await this.configurationService.updateValue(PARADIS_BROWSER_EXTENSIONS_ENABLED_SETTING, true, ConfigurationTarget.USER);
+				} catch (error) {
+					// settings.json が壊れているときなど。押しても何も起きないように見せない
+					this._showMessage(localize('paradis.browserExtensions.error.turnOn', "設定を書き換えられませんでした（{0}）。", error instanceof Error ? error.message : String(error)), true);
+					return;
+				}
 				await this._refresh();
 			}));
 		} else {
@@ -429,6 +437,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		this._logTimer.cancel();
 		this._logElement = undefined;
 		this._rowElements.clear();
+		this._controls.clear();
 		this._rowStatusElements.clear();
 		this._workerErrorElement = undefined;
 		this._workerStatusElement = undefined;
@@ -734,6 +743,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		const enabledSwitch = this._renderStore.add(new ParadisSwitch(enabled, { checked: extension.enabledIn.includes(this._profile), disabled: !active || this._busy }));
 		dom.append(enabled, $('span')).textContent = localize('paradis.browserExtensions.enabledHere', "この場所で有効にする");
 		this._renderStore.add(enabledSwitch.onDidChange(checked => this._setEnabled(extension, checked)));
+		this._controls.set('enabledHere', enabledSwitch.element);
 
 		const options: IExtensionOption[] = [];
 		if (extension.userScripts) {
@@ -770,6 +780,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 			const optionSwitch = this._renderStore.add(new ParadisSwitch(label, { checked: option.checked, disabled: !active || this._busy }));
 			dom.append(label, $('span')).textContent = option.label;
 			this._renderStore.add(optionSwitch.onDidChange(checked => void this._run(() => option.run(checked))));
+			this._controls.set(`option:${option.label}`, optionSwitch.element);
 			dom.append(section, $('.pbe-option-note')).textContent = option.note;
 		}
 		if (extension.touchesPages) {
@@ -906,6 +917,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		const iconButton = (icon: ThemeIcon, text: string, run: () => Promise<unknown>) => {
 			const button = this._renderStore.add(new ParadisButton(actions, { kind: 'icon', icon, small: true, ariaLabel: text, title: text, disabled }));
 			this._renderStore.add(button.onDidClick(() => void this._run(run)));
+			this._controls.set(`shortcut:${extension.id}:${command.name}:${text}`, button.element);
 		};
 		const slot = () => dom.append(actions, $('span.pbe-sc-slot'));
 		if (!recording && command.shortcut) {
@@ -1109,6 +1121,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		button.textContent = label;
 		button.disabled = disabled || this._busy;
 		this._renderStore.add(dom.addDisposableListener(button, 'click', () => void run()));
+		this._controls.set(`button:${label}`, button);
 		return button;
 	}
 
@@ -1136,6 +1149,7 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		if (this._busy) {
 			return;
 		}
+		const restoreFocus = this._captureFocus();
 		this._busy = true;
 		this._render();
 		try {
@@ -1147,7 +1161,38 @@ export class ParadisBrowserExtensionsArea extends Disposable implements IParadis
 		}
 		if (!this._store.isDisposed) {
 			await this._refresh();
+			restoreFocus();
 		}
+	}
+
+	/**
+	 * 今フォーカスしている操作を覚え、戻す関数を返す。操作の間は画面を作り直して押したスイッチやボタンが消えるので、
+	 * 終わった後に作り直した同じ操作へ戻す（選んでいる拡張機能が変わった・その操作が無くなったときは一覧の行へ）。
+	 * その間に利用者がほかへフォーカスを移していたら動かさない。
+	 */
+	private _captureFocus(): () => void {
+		const doc = this._contentElement.ownerDocument;
+		const active = doc.activeElement;
+		if (!dom.isHTMLElement(active) || !(this._listElement.contains(active) || this._contentElement.contains(active))) {
+			return () => { };
+		}
+		const key = [...this._controls].find(([, element]) => element === active)?.[0];
+		const selectedId = this._selectedId;
+		const view = this._view;
+		return () => {
+			const current = doc.activeElement;
+			if (current && current !== doc.body && current.isConnected) {
+				return;
+			}
+			// 補助ウィンドウでは instanceof が効かないので、disabled は属性の値で見る
+			const focusable = (element: HTMLElement | undefined) => element?.isConnected && (element as HTMLElement & { disabled?: boolean }).disabled !== true ? element : undefined;
+			const target = focusable(active) ?? (key !== undefined && selectedId === this._selectedId && view === this._view ? focusable(this._controls.get(key)) : undefined);
+			if (target) {
+				target.focus();
+			} else {
+				this._focusSelectedRow();
+			}
+		};
 	}
 
 	private async _addFromWebStore(): Promise<void> {
