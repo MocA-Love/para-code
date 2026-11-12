@@ -20,7 +20,7 @@
 // ページ（ネイティブのビュー）を止めない設定なので、トーストはページの裏に隠れて見えない。
 // エラーはトレイに出したうえで、後から見返せるようベル（通知センター）にも残す。
 
-import { $, addDisposableListener, append, clearNode, EventType } from '../../../../base/browser/dom.js';
+import { $, addDisposableListener, append, clearNode, EventType, isActiveElement } from '../../../../base/browser/dom.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { Checkbox } from '../../../../base/browser/ui/toggle/toggle.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
@@ -80,7 +80,7 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 	private readonly message: HTMLElement;
 	private readonly htmlLabel: HTMLLabelElement;
 	private readonly htmlCheckbox: Checkbox;
-	private readonly messageClear = this._register(new RunOnceScheduler(() => this.showMessage(undefined), MESSAGE_DURATION_MS));
+	private readonly messageClear = this._register(new RunOnceScheduler(() => this.expireMessage(), MESSAGE_DURATION_MS));
 	private messageText: string | undefined;
 	/** 送信中の取り消し（エディタのページが替わる・閉じるとき）。 */
 	private readonly sendCancellation = this._register(new MutableDisposable<CancellationTokenSource>());
@@ -89,6 +89,11 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 	private readonly attachCheckbox: Checkbox;
 	private readonly attachText: HTMLElement;
 	private readonly clearButton: HTMLButtonElement;
+	private readonly undoButton: HTMLButtonElement;
+	/** 「すべて消す」で消した注釈。お知らせが消えるまで「元に戻す」で戻せる。 */
+	private clearedAnnotations: { readonly pageId: string; readonly annotations: readonly IParadisDesignAnnotation[] } | undefined;
+	/** 「元に戻す」で注釈を戻している間（その追加では戻せる状態を捨てない）。 */
+	private restoringCleared = false;
 	private readonly sendButton: HTMLButtonElement;
 	private readonly stopButton: HTMLButtonElement;
 
@@ -120,7 +125,8 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 		this.sender = instantiationService.createInstance(ParadisDesignModeSender);
 
 		this.tray = $('.paradis-design-tray');
-		this.tray.setAttribute('role', 'toolbar');
+		// 矢印キーでは動かさない（ボタンが少なくチェックも混ざる）ので、toolbar ではなく group にする（paradis-16-24）
+		this.tray.setAttribute('role', 'group');
 		this.tray.setAttribute('aria-label', localize('paradis.designMode.tray', "注釈トレイ"));
 		this.tray.style.display = 'none';
 
@@ -132,6 +138,9 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 		this.message = append(this.tray, $('span.paradis-design-tray-message'));
 		this.message.setAttribute('role', 'status');
 		this.message.setAttribute('aria-live', 'polite');
+		// 「すべて消す」の直後だけ出す（paradis-16-12 案 B）。お知らせと一緒に 12 秒で消える
+		this.undoButton = this.trayButton(localize('paradis.designMode.undoClear', "元に戻す"), false, () => this.undoClear());
+		this.undoButton.style.display = 'none';
 
 		// チェックは本家の Checkbox（Q537 の 7 章「Design Mode」、案 A）。文字を押しても切り替わる
 		this.attachLabel = append(this.tray, $<HTMLLabelElement>('label.paradis-design-tray-attach'));
@@ -178,6 +187,10 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 	protected override onModelAttached(model: IBrowserViewModel, store: DisposableStore): void {
 		store.add(this.designModeService.onDidChangeAnnotations(pageId => {
 			if (pageId === model.id) {
+				// 消した後に新しい注釈が付いたら、戻すと番号が元の順とずれるので、もう戻せなくする
+				if (this.clearedAnnotations && !this.restoringCleared && this.designModeService.getAnnotations(model.id).length > 0) {
+					this.dropUndo();
+				}
 				this.renderTray();
 				void this.syncPins(model);
 			}
@@ -393,11 +406,65 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 		}
 	}
 
+	/** すぐ消して、お知らせの間だけ「元に戻す」を出す（paradis-16-12 案 B）。 */
 	private clearAnnotations(): void {
 		const model = this.editor.model;
-		if (model) {
-			this.designModeService.clearAnnotations(model.id);
+		if (!model) {
+			return;
 		}
+		const annotations = [...this.designModeService.getAnnotations(model.id)];
+		if (annotations.length === 0) {
+			return;
+		}
+		// 先にお知らせを出してから消す（逆だと 0 件・お知らせ無しの間にトレイが一度閉じ、ページの位置が 2 回動く）
+		this.showMessage(localize('paradis.designMode.cleared', "注釈 {0} 件を消しました。", annotations.length), Severity.Info, false, { pageId: model.id, annotations });
+		this.designModeService.clearAnnotations(model.id);
+		if (this.undoButton.isConnected) {
+			this.undoButton.focus();
+		}
+	}
+
+	private undoClear(): void {
+		const cleared = this.clearedAnnotations;
+		const model = this.editor.model;
+		if (!cleared || !model || model.id !== cleared.pageId) {
+			this.showMessage(undefined);
+			return;
+		}
+		// 先に戻してからお知らせを消す（逆だと 0 件の間にトレイが一度閉じ、ページの位置が 2 回動く）
+		let full = false;
+		this.restoringCleared = true;
+		try {
+			for (const annotation of cleared.annotations) {
+				if (!this.designModeService.addAnnotation(model, annotation)) {
+					full = true;
+					break;
+				}
+			}
+		} finally {
+			this.restoringCleared = false;
+		}
+		this.showMessage(full ? fullMessage() : undefined);
+		if (!this.clearButton.disabled) {
+			this.clearButton.focus();
+		}
+	}
+
+	/** 「元に戻す」を引っ込める。お知らせの文は残す。 */
+	private dropUndo(): void {
+		if (isActiveElement(this.undoButton)) {
+			this.editor.focus();
+		}
+		this.clearedAnnotations = undefined;
+		this.undoButton.style.display = 'none';
+	}
+
+	/** お知らせの時間切れ。「元に戻す」にフォーカスがあったら、消える前にエディタへ戻す（body へ落とさない）。 */
+	private expireMessage(): void {
+		if (isActiveElement(this.undoButton)) {
+			this.editor.focus();
+		}
+		this.showMessage(undefined);
 	}
 
 	/** 注釈の一覧から、消すものを選ばせる。 */
@@ -434,8 +501,11 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 	/**
 	 * トレイにお知らせを出す（undefined で消す）。しばらくすると消える。エラーは既定でベルにも残す。
 	 */
-	private showMessage(text: string | undefined, severity: Severity = Severity.Info, recordErrors = true): void {
+	private showMessage(text: string | undefined, severity: Severity = Severity.Info, recordErrors = true, cleared?: { readonly pageId: string; readonly annotations: readonly IParadisDesignAnnotation[] }): void {
 		this.messageText = text;
+		// 別のお知らせに替わった・消えたら、もう戻せない
+		this.clearedAnnotations = text ? cleared : undefined;
+		this.undoButton.style.display = this.clearedAnnotations ? '' : 'none';
 		this.message.textContent = text ?? '';
 		this.message.classList.toggle('error', severity === Severity.Error);
 		this.message.classList.toggle('warning', severity === Severity.Warning);

@@ -231,6 +231,13 @@
 	color: inherit;
 }
 
+/* 自由入力の区画（listbox の外。保存した大きさの一覧と操作の行の間に置く）。 */
+.paradis-browser-viewport-dropdown .pbv-section {
+	flex-shrink: 0;
+	padding: 4px 0;
+	border-top: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+}
+
 /* 自由入力の行（幅 × 高さ 適用）。 */
 .paradis-browser-viewport-dropdown .pbv-custom {
 	gap: 6px;
