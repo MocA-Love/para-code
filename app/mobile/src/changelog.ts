@@ -40,6 +40,17 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.22',
+		date: '2026-11-12',
+		items: [
+			{
+				icon: 'refresh-outline',
+				title: '過去の会話や変更のレビューで、読み直しに失敗しても読めていた中身を出したままにしました',
+				body: '過去の会話の一覧で「さらに読み込む」などに失敗したときは一覧の下に理由と再試行を出し、会話の中身の読み直しに失敗したときは入力欄の上に知らせます。レビューのメモから起動するエージェントの候補は、PC とつながり直すと読み直します。',
+			},
+		],
+	},
+	{
 		version: '0.12.21',
 		date: '2026-11-12',
 		items: [

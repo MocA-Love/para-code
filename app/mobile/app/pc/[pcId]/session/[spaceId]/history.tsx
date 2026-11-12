@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FlatList, StyleSheet, TextInput, View } from 'react-native';
+import { FlatList, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { CircleAlert, History } from 'lucide-react-native';
 import { AGENT_RESUME_CAPABILITY, parseAgentPastSessionPage, type AgentPastSession } from '../../../../../src/agentSessions.js';
@@ -52,6 +52,8 @@ export default function AgentHistoryScreen() {
 	const loaded = useRef<{ readonly query: string; readonly pcId: string; readonly spaceId: string; readonly at: number } | undefined>(undefined);
 	const sessionsRef = useRef(sessions);
 	sessionsRef.current = sessions;
+	// 最後に失敗した読み込みをもう一度行う（一覧がある間の「さらに読み込む」・読み直し・検索の失敗を、一覧の下から再試行する）
+	const retryRef = useRef<{ readonly offset: number; readonly search: string; readonly fillTo: number | undefined; readonly received: number } | undefined>(undefined);
 
 	/** `fillTo` を渡すと、その件数に届くまで続きのページも読む（読み進めた分を取り直す）。 */
 	const load = useCallback((offset: number, search: string, fillTo?: number, received = 0) => {
@@ -81,6 +83,7 @@ export default function AgentHistoryScreen() {
 			})
 			.catch((reason: unknown) => {
 				if (seq === requestSeq.current) {
+					retryRef.current = { offset, search, fillTo, received };
 					setError(reason instanceof Error ? reason.message : '一覧を読み込めませんでした');
 				}
 			})
@@ -140,9 +143,25 @@ export default function AgentHistoryScreen() {
 					</View>
 				)}
 				ListEmptyComponent={<EmptyState icon={History} title={query.length > 0 ? '見つかりませんでした' : '過去の会話はありません'} body={query.length > 0 ? '別の言葉で探してください。' : 'このスペースで Claude Code や Codex と話すと、ここに並びます。'} />}
-				ListFooterComponent={nextOffset !== undefined ? (
-					<Button label="さらに読み込む" variant="secondary" loading={loadingMore} onPress={() => load(nextOffset, query)} style={styles.more} />
-				) : null}
+				ListFooterComponent={
+					<>
+						{/* 一覧がある間の失敗（さらに読み込む・繋ぎ直しの読み直し・検索）は、一覧を残したままここに出す */}
+						{error !== undefined ? (
+							<View style={styles.failure}>
+								<Text style={styles.failureText}>読み込めませんでした: {error}</Text>
+								<Button label="再試行" variant="secondary" size="sm" disabled={loadingMore} onPress={() => {
+									const retry = retryRef.current;
+									if (retry !== undefined) {
+										load(retry.offset, retry.search, retry.fillTo, retry.received);
+									}
+								}} />
+							</View>
+						) : null}
+						{nextOffset !== undefined ? (
+							<Button label="さらに読み込む" variant="secondary" loading={loadingMore} onPress={() => load(nextOffset, query)} style={styles.more} />
+						) : null}
+					</>
+				}
 			/>
 		);
 	})();
@@ -193,6 +212,17 @@ const styles = StyleSheet.create({
 	},
 	more: {
 		marginTop: space.lg,
+	},
+	failure: {
+		flexDirection: 'row',
+		alignItems: 'center',
+		gap: space.sm,
+		marginTop: space.lg,
+	},
+	failureText: {
+		flex: 1,
+		fontSize: type.meta,
+		color: colors.red,
 	},
 	searchWrap: {
 		paddingHorizontal: space.lg,

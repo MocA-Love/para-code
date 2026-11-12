@@ -146,7 +146,8 @@ export default function AgentHistorySessionScreen() {
 		if (!live && preview === undefined) {
 			return <EmptyState icon={CircleAlert} title="PC に接続していません" body="つながると会話の中身を読めます。続きの依頼は、下から送っておくと預かります。" />;
 		}
-		if (error !== undefined) {
+		// 読めた会話があるときは、繋ぎ直しの読み直しに失敗しても会話を出したまま（失敗は入力欄の上に出す）
+		if (error !== undefined && preview === undefined) {
 			return <EmptyState icon={CircleAlert} title="会話を読み込めませんでした" body={error} action={{ label: '再読み込み', onPress: load }} />;
 		}
 		if (preview === undefined) {
@@ -168,6 +169,7 @@ export default function AgentHistorySessionScreen() {
 					<View style={styles.fill}>{body}</View>
 					{supported ? (
 						<View style={[styles.composer, { paddingBottom: insets.bottom + space.sm }, column]}>
+							{error !== undefined && preview !== undefined ? <Text style={styles.reloadError}>最新の中身を読み直せませんでした（{error}）。表示は前に読んだときのままです</Text> : null}
 							{notice !== undefined ? <Text style={styles.notice}>{notice}</Text> : null}
 							{session?.terminalKey !== undefined ? (
 								<Button label="PC で開いている会話を開く" onPress={() => openTerminal(session.terminalKey!)} />
@@ -284,5 +286,9 @@ const styles = StyleSheet.create({
 	hint: {
 		fontSize: type.caption,
 		color: colors.textMuted,
+	},
+	reloadError: {
+		fontSize: type.meta,
+		color: colors.red,
 	},
 });
