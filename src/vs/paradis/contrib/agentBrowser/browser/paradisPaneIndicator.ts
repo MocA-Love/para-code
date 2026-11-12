@@ -13,7 +13,9 @@
 // electron-browser 側の contribution が `setParadisPaneIndicatorHost` でモジュールレジストリへ
 // 登録する（デスクトップ以外ではホスト未登録のままインジケータは非表示になる）。
 
-import { addDisposableListener } from '../../../../base/browser/dom.js';
+import { $, addDisposableListener } from '../../../../base/browser/dom.js';
+import { getBaseLayerHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegate2.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { DisposableStore, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 
@@ -92,8 +94,10 @@ export function setParadisHoveredPaneInstanceId(instanceId: number | undefined):
  */
 export function createParadisPaneIndicator(instanceId: number): { readonly element: HTMLElement } & IDisposable {
 	const disposables = new DisposableStore();
-	const element = document.createElement('div');
-	element.className = 'paradis-pane-indicator';
+	// キーボードでも押せるようにボタンにする。共有中かどうかは点の色だけでなく読み上げの名前でも伝える
+	const element = $<HTMLButtonElement>('button.paradis-pane-indicator.paradis-focus-ring-inset');
+	element.type = 'button';
+	let tooltip = '';
 
 	const update = () => {
 		if (!currentHost) {
@@ -103,8 +107,12 @@ export function createParadisPaneIndicator(instanceId: number): { readonly eleme
 		element.style.display = '';
 		const state = currentHost.getPaneIndicatorState(instanceId);
 		element.classList.toggle('bound', state === 'bound');
-		element.title = currentHost.getPaneIndicatorTooltip(instanceId);
+		tooltip = currentHost.getPaneIndicatorTooltip(instanceId);
+		element.setAttribute('aria-label', tooltip);
 	};
+	// 説明は Para Code のホバーで出す。このモジュールは DI を持たない（グリッドセルから直接呼ばれる）ので、
+	// workbench が IHoverService で差し替えている base の口を使う
+	disposables.add(getBaseLayerHoverDelegate().setupManagedHover(getDefaultHoverDelegate('element'), element, () => tooltip));
 
 	// ホスト購読は付け替え式で持つ。onDidChangeHost は繰り返し発火しうるため、旧ホストの
 	// 購読を MutableDisposable で解除してから新ホストへ張り直す (長寿命 store への無条件 add で
@@ -118,6 +126,8 @@ export function createParadisPaneIndicator(instanceId: number): { readonly eleme
 		bindHost();
 	}));
 	bindHost();
+	// マウスで押してもターミナルからフォーカスを奪わない（奪うと、ダイアログを閉じた後にフォーカスがこの印へ戻る）
+	disposables.add(addDisposableListener(element, 'mousedown', e => e.preventDefault()));
 	disposables.add(addDisposableListener(element, 'click', e => {
 		e.stopPropagation();
 		currentHost?.openBindingDialog(instanceId);

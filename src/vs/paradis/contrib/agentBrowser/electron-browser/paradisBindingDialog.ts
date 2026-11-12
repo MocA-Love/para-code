@@ -15,9 +15,12 @@
 
 import './media/paradisBindingDialog.css';
 import * as dom from '../../../../base/browser/dom.js';
+import { status as ariaStatus } from '../../../../base/browser/ui/aria/aria.js';
 import { Button } from '../../../../base/browser/ui/button/button.js';
 import { disposableTimeout } from '../../../../base/common/async.js';
+import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { Codicon } from '../../../../base/common/codicons.js';
+import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { BugIndicatingError } from '../../../../base/common/errors.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
@@ -41,7 +44,9 @@ import { ParadisBindingDialogPaneListResources, ParadisBindingDialogTab, Paradis
 import { paradisGetBindingErrorMessage, paradisGetPaneBindingAction, paradisRunDialogBind } from './paradisDialogPageResolver.js';
 import { getParadisClaudeSetupSnippet, getParadisCodexSetupSnippet } from './paradisMcpSnippets.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
-import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
+import { paradisModalClasses, ParadisModalSize, renderParadisModalHead } from '../../../browser/paradisModal.js';
+import { paradisButtonClasses } from '../../../browser/paradisButton.js';
+import { paradisCountLabel } from '../../../browser/paradisBadges.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 
 const $ = dom.$;
@@ -53,6 +58,10 @@ const STR_DIALOG_TITLE = localize('paradis.bindingDialog.title', "ブラウザ�
 const STR_DIALOG_TITLE_DEVICES = localize('paradis.bindingDialog.titleDevices', "モバイル端末をエージェントと共有");
 // allow-any-unicode-next-line
 const STR_CLOSE_ARIA = localize('paradis.bindingDialog.closeAria', "閉じる");
+// allow-any-unicode-next-line
+const STR_COPY_ARIA = localize('paradis.bindingDialog.copyAria', "コマンドをコピー");
+// allow-any-unicode-next-line
+const STR_COPIED = localize('paradis.bindingDialog.copied', "コピーしました");
 // allow-any-unicode-next-line
 const STR_TAB_PANES = localize('paradis.bindingDialog.tabPanes', "ターミナルペイン");
 // allow-any-unicode-next-line
@@ -112,6 +121,8 @@ const STR_META_SCOPE_MISMATCH = localize('paradis.bindingDialog.metaScopeMismatc
 const strMinutesAgo = (minutes: number) => localize('paradis.bindingDialog.minutesAgo', "{0}分前", minutes);
 // allow-any-unicode-next-line
 const strHoursAgo = (hours: number) => localize('paradis.bindingDialog.hoursAgo', "{0}時間前", hours);
+// allow-any-unicode-next-line
+const strDaysAgo = (days: number) => localize('paradis.bindingDialog.daysAgo', "{0}日前", days);
 // allow-any-unicode-next-line
 const STR_JUST_NOW = localize('paradis.bindingDialog.justNow', "たった今");
 
@@ -225,6 +236,14 @@ const strNavBadgeShared = (n: number) => localize('paradis.bindingDialog.navBadg
 // allow-any-unicode-next-line
 const strNavBadgeFix = (n: number) => localize('paradis.bindingDialog.navBadgeFix', "要修正 {0}", n);
 
+/** 本文（タブで切り替わる所）の id。 */
+const PANEL_ID = 'paradis-binding-dialog-panel';
+
+/** 連携設定のタブの id。 */
+function navTabId(tab: ParadisBindingDialogTab): string {
+	return `paradis-binding-dialog-tab-${tab}`;
+}
+
 /** CLIごとの「自動セットアップ / 修正」実行状態。 */
 interface IParadisSetupState {
 	readonly busy: boolean;
@@ -262,6 +281,8 @@ export class ParadisBindingDialog extends Disposable {
 	private readonly _renderDisposables = this._register(new DisposableStore());
 	private readonly _paneListResources = this._register(new ParadisBindingDialogPaneListResources());
 	private readonly _tabController: ParadisBindingDialogTabController;
+	/** いま描いている連携設定のタブ（並び順のまま）。 */
+	private readonly _navTabs = new Map<ParadisBindingDialogTab, HTMLElement>();
 
 	private _filterText = '';
 	/** いまの検索欄（描き直しの前に、キャレットの位置を読むのに使う）。 */
@@ -332,15 +353,20 @@ export class ParadisBindingDialog extends Disposable {
 		modal.classList.add(...paradisModalClasses(ParadisModalSize.Medium));
 		this._backdrop.appendChild(modal);
 
-		// --- header（タイトル + サマリpill + 閉じる） ---
-		const header = dom.append(modal, $('.pbd-header'));
-		const titles = dom.append(header, $('.pbd-titles'));
-		dom.append(titles, $('h2')).textContent = this.pageModel ? STR_DIALOG_TITLE : STR_DIALOG_TITLE_DEVICES;
-		this._headerPills = dom.append(header, $('.pbd-header-pills'));
-		const closeBtn = dom.append(header, $('.pbd-close'));
-		closeBtn.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.close)}`));
-		closeBtn.setAttribute('role', 'button');
+		modal.setAttribute('role', 'dialog');
+		modal.setAttribute('aria-modal', 'true');
+
+		// --- header（fork のモーダル共通の帯: タイトル、右に要約の印と閉じる） ---
+		const head = renderParadisModalHead(modal, this.pageModel ? STR_DIALOG_TITLE : STR_DIALOG_TITLE_DEVICES);
+		head.title.id = 'paradis-binding-dialog-title';
+		modal.setAttribute('aria-labelledby', head.title.id);
+		this._headerPills = dom.append(head.actions, $('.pbd-header-pills'));
+		// アイコンは中の span に置く（ボタンの要素に codicon を付けると、キットのボタンの font-family が字形を消す）
+		const closeBtn = dom.append(head.actions, $<HTMLButtonElement>('button.pbd-close'));
+		closeBtn.classList.add(...paradisButtonClasses('icon'));
+		closeBtn.type = 'button';
 		closeBtn.setAttribute('aria-label', STR_CLOSE_ARIA);
+		dom.append(closeBtn, $(ThemeIcon.asCSSSelector(Codicon.close)));
 		this._register(dom.addDisposableListener(closeBtn, 'click', () => this.close()));
 
 		// --- ページの行（「ターミナルペイン」の本文の先頭に置く） ---
@@ -350,6 +376,7 @@ export class ParadisBindingDialog extends Disposable {
 		const navwrap = dom.append(modal, $('.pbd-navwrap'));
 		this._nav = dom.append(navwrap, $('.pbd-nav'));
 		this._body = dom.append(navwrap, $('.pbd-body'));
+		this._body.id = PANEL_ID;
 
 		// --- footer ---
 		this._footer = dom.append(modal, $('.pbd-footer'));
@@ -489,6 +516,9 @@ export class ParadisBindingDialog extends Disposable {
 			? { start: previousSearch.selectionStart, end: previousSearch.selectionEnd, direction: previousSearch.selectionDirection ?? undefined }
 			: undefined;
 		this._searchInput = undefined;
+		// 連携設定のタブにフォーカスがあれば、作り直した同じタブへ戻す（描き直しでフォーカスが箱へ落ちないように）
+		const activeElement = this._nav.ownerDocument.activeElement;
+		const focusedTab = dom.isHTMLElement(activeElement) && this._nav.contains(activeElement) ? activeElement.dataset.paradisTab : undefined;
 		this._paneListResources.beginRender();
 		this._renderDisposables.clear();
 
@@ -515,6 +545,9 @@ export class ParadisBindingDialog extends Disposable {
 			search.focus();
 			search.setSelectionRange(searchSelection.start, searchSelection.end, searchSelection.direction);
 		}
+		if (focusedTab !== undefined) {
+			this._navTabs.get(focusedTab as ParadisBindingDialogTab)?.focus();
+		}
 	}
 
 	private _renderHeaderPills(): void {
@@ -536,6 +569,7 @@ export class ParadisBindingDialog extends Disposable {
 
 	private _renderNav(): void {
 		dom.clearNode(this._nav);
+		this._navTabs.clear();
 
 		// --- ページ ---
 		const pages = this._sharedPages();
@@ -553,9 +587,10 @@ export class ParadisBindingDialog extends Disposable {
 				const label = dom.append(item, $('span.pbd-nav-label'));
 				label.textContent = page.title || page.url;
 				label.title = page.title ? page.url : '';
-				if (page.paneCount > 0) {
-					const count = dom.append(item, $('span.pbd-nav-count.green'));
-					count.textContent = String(page.paneCount);
+				const pageCount = paradisCountLabel(page.paneCount, 'inline');
+				if (pageCount !== undefined) {
+					const count = dom.append(item, $('span.pbd-nav-count.paradis-count'));
+					count.textContent = pageCount;
 					count.title = strNavBadgeShared(page.paneCount);
 				}
 				if (isCurrent) {
@@ -566,38 +601,60 @@ export class ParadisBindingDialog extends Disposable {
 			}
 		}
 
-		// --- 連携設定 ---
-		dom.append(this._nav, $('.pbd-nav-cap')).textContent = STR_NAV_CAP_LINKS;
+		// --- 連携設定（本文を切り替えるタブ。上下の矢印・Home・End で移って開き、Enter・Space でも開く） ---
+		// 上の「ページ」の項目は同じ「ターミナルペイン」の本文を指すので、タブには含めない（同じ本文のタブを 2 つにしない）
+		const capId = 'paradis-binding-dialog-nav-links';
+		const cap = dom.append(this._nav, $('.pbd-nav-cap'));
+		cap.id = capId;
+		cap.textContent = STR_NAV_CAP_LINKS;
+		const tablist = dom.append(this._nav, $('.pbd-nav-tabs'));
+		tablist.setAttribute('role', 'tablist');
+		tablist.setAttribute('aria-orientation', 'vertical');
+		tablist.setAttribute('aria-labelledby', capId);
 		// ページ無しで開いた場合、「ターミナルペイン」ビューは意味を持たないので出さない。
 		if (this.pageModel) {
-			this._createNavItem(STR_TAB_PANES, 'panes', this._sharedPaneCount() > 0
-				? { text: String(this._sharedPaneCount()), className: 'green', title: strNavBadgeShared(this._sharedPaneCount()) }
+			const sharedCount = this._sharedPaneCount();
+			this._createNavItem(tablist, STR_TAB_PANES, 'panes', sharedCount > 0
+				? { text: paradisCountLabel(sharedCount, 'inline') ?? '', className: 'paradis-count', title: strNavBadgeShared(sharedCount) }
 				: undefined);
 		}
 		const fixCount = this._mcpAttentionCount();
 		if (fixCount !== undefined && fixCount > 0) {
-			this._createNavItem(STR_TAB_MCP, 'mcp', undefined, { text: strNavBadgeFix(fixCount), className: 'amber', title: STR_TAB_MCP_WARN_ARIA });
+			this._createNavItem(tablist, STR_TAB_MCP, 'mcp', undefined, { text: strNavBadgeFix(fixCount), className: 'amber', title: STR_TAB_MCP_WARN_ARIA });
 		} else {
-			this._createNavItem(STR_TAB_MCP, 'mcp');
+			this._createNavItem(tablist, STR_TAB_MCP, 'mcp');
 		}
 		const snapshot = this.mobileCanvasModel.snapshot;
 		const attachedCount = snapshot.attachments.length;
-		this._createNavItem(STR_TAB_DEVICES, 'devices', {
+		this._createNavItem(tablist, STR_TAB_DEVICES, 'devices', {
 			// 0 件のときは数を出さない（ほかのナビの数と同じ扱い）
-			text: this.mobileCanvasModel.loading ? '…' : attachedCount > 0 ? String(attachedCount) : '',
-			className: 'gray',
+			text: this.mobileCanvasModel.loading ? '…' : paradisCountLabel(attachedCount, 'inline') ?? '',
+			className: 'paradis-count',
 			title: undefined,
 		});
+		this._renderDisposables.add(dom.addDisposableListener(tablist, dom.EventType.KEY_DOWN, e => this._onNavTabsKeyDown(e)));
+		this._body.setAttribute('role', 'tabpanel');
+		this._body.setAttribute('aria-labelledby', navTabId(this._activeTab));
 	}
 
 	private _createNavItem(
+		tablist: HTMLElement,
 		label: string,
 		tab: ParadisBindingDialogTab,
 		badge?: { readonly text: string; readonly className: string; readonly title?: string },
 		warnBadge?: { readonly text: string; readonly className: string; readonly title?: string },
 	): void {
-		const item = dom.append(this._nav, $('.pbd-nav-item.paradis-focus-ring-inset'));
-		item.classList.toggle('active', tab === this._activeTab);
+		const item = dom.append(tablist, $('.pbd-nav-item.paradis-focus-ring-inset'));
+		const selected = tab === this._activeTab;
+		item.classList.toggle('active', selected);
+		item.id = navTabId(tab);
+		item.dataset.paradisTab = tab;
+		this._navTabs.set(tab, item);
+		item.setAttribute('role', 'tab');
+		item.setAttribute('aria-selected', String(selected));
+		item.setAttribute('aria-controls', PANEL_ID);
+		// タブの列で Tab が止まるのは選んでいる 1 つだけ（ほかへは矢印で移る）
+		item.tabIndex = selected ? 0 : -1;
 		dom.append(item, $('span.pbd-nav-label')).textContent = label;
 		const badgeInfo = warnBadge ?? badge;
 		if (badgeInfo && badgeInfo.text.length > 0) {
@@ -610,6 +667,32 @@ export class ParadisBindingDialog extends Disposable {
 		this._renderDisposables.add(dom.addDisposableListener(item, 'click', () => {
 			this._tabController.setActiveTab(tab);
 		}));
+	}
+
+	/** 連携設定のタブの上下の矢印・Home・End（移った先を開いてフォーカスも移す）と Enter・Space（開く）。 */
+	private _onNavTabsKeyDown(e: KeyboardEvent): void {
+		const event = new StandardKeyboardEvent(e);
+		const tabs = [...this._navTabs.keys()];
+		const current = tabs.findIndex(tab => this._navTabs.get(tab) === e.target);
+		if (current < 0) {
+			return;
+		}
+		let next: number;
+		switch (event.keyCode) {
+			case KeyCode.UpArrow: next = (current - 1 + tabs.length) % tabs.length; break;
+			case KeyCode.DownArrow: next = (current + 1) % tabs.length; break;
+			case KeyCode.Home: next = 0; break;
+			case KeyCode.End: next = tabs.length - 1; break;
+			case KeyCode.Enter:
+			case KeyCode.Space: next = current; break;
+			default: return;
+		}
+		event.preventDefault();
+		event.stopPropagation();
+		const tab = tabs[next];
+		// 開くと一覧ごと描き直すので、描き直した同じタブへフォーカスを移す
+		this._tabController.setActiveTab(tab);
+		this._navTabs.get(tab)?.focus();
 	}
 
 	/**
@@ -628,7 +711,9 @@ export class ParadisBindingDialog extends Disposable {
 	}
 
 	private _paneDisplayName(pane: IParadisPaneDescriptor): string {
-		return `${pane.title} — pane #${pane.instanceId}`;
+		// ページのスクリプトの一覧の持ち主（paradisAgentPageScriptsBanner.contribution.ts）と同じ書き方
+		// allow-any-unicode-next-line
+		return localize('paradis.bindingDialog.paneDisplayName', "{0} · ペイン {1}", pane.title, pane.instanceId);
 	}
 
 	private _paneMcpConnected(pane: IParadisPaneDescriptor): boolean {
@@ -1026,10 +1111,15 @@ export class ParadisBindingDialog extends Disposable {
 	}
 
 	private _appendCopyButton(container: HTMLElement, text: string, className: string): void {
-		const button = dom.append(container, $(`.${className}`));
+		// UI キットの 24 のアイコンのボタン。アイコンは中の span に置く（ボタンの要素に codicon を付けると字形が消える）
+		const button = dom.append(container, $<HTMLButtonElement>(`button.${className}`));
+		button.classList.add(...paradisButtonClasses('icon', true));
+		button.type = 'button';
+		button.setAttribute('aria-label', STR_COPY_ARIA);
 		const icon = button.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.copy)}`));
 		this._renderDisposables.add(dom.addDisposableListener(button, 'click', () => {
 			void this.clipboardService.writeText(text);
+			ariaStatus(STR_COPIED);
 			button.classList.add('copied');
 			icon.className = ThemeIcon.asClassName(Codicon.check);
 			this._renderDisposables.add(disposableTimeout(() => {
@@ -1224,6 +1314,10 @@ export class ParadisBindingDialog extends Disposable {
 
 // --- helpers -------------------------------------------------------------
 
+/**
+ * 共有した時刻の「N分前」「N時間前」「N日前」（共有は再起動をまたいで残るので、24 時間からは日で出す）。
+ * base/common/date.ts の fromNow は訳を言語パックに頼り、日本語が原文のこの文に英語が混ざりうるので使わない。
+ */
 function formatRelativeTime(epochMs: number): string {
 	const deltaMinutes = Math.floor((Date.now() - epochMs) / 60000);
 	if (deltaMinutes < 1) {
@@ -1232,5 +1326,8 @@ function formatRelativeTime(epochMs: number): string {
 	if (deltaMinutes < 60) {
 		return strMinutesAgo(deltaMinutes);
 	}
-	return strHoursAgo(Math.floor(deltaMinutes / 60));
+	if (deltaMinutes < 24 * 60) {
+		return strHoursAgo(Math.floor(deltaMinutes / 60));
+	}
+	return strDaysAgo(Math.floor(deltaMinutes / (24 * 60)));
 }
