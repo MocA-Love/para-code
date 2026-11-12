@@ -61,8 +61,14 @@ export interface ViewerPathLink {
 	readonly target: LocalFileTarget;
 }
 
-/** 知らせを送る口（{@link buildPathLinkBridgeScript} が `window` に置く）。 */
-const BRIDGE_NAME = '__paradisPathLinkPost';
+/**
+ * 知らせを送る口の名前（{@link buildPathLinkBridgeScript} が `window` に置く）。`channel` はページが前もって知らない値で、
+ * 口が置けなかったとき（ページが先に走った等）に、ページが同じ名前の関数を先に置いて `secret` を受け取ることを防ぐ。
+ * 置いた後は名前がページから読めるので、`secret` を名前に混ぜない。
+ */
+function bridgeNameOf(channel: string): string {
+	return `__paradisPathLinkPost_${channel}`;
+}
 
 /** WebView から届いたメッセージ。 */
 export type PathLinkMessage =
@@ -83,17 +89,18 @@ function scriptJson(value: unknown): string {
  * `window.webkit` を引き直すので、ページに差し替えられると送った中身を読まれる。iOS ではその先の
  * `window.webkit.messageHandlers.ReactNativeWebView` を直接つかむ。
  */
-export function buildPathLinkBridgeScript(secret: string): string {
+export function buildPathLinkBridgeScript(secret: string, channel: string): string {
 	const prefix = `{"secret":${JSON.stringify(secret)},"body":`;
 	return `(function () {
 	var secret = ${scriptJson(secret)};
 	var prefix = ${scriptJson(prefix)};
+	var name = ${scriptJson(bridgeNameOf(channel))};
 	var apply = Reflect.apply;
 	var handlers = window.webkit && window.webkit.messageHandlers;
 	var target = (handlers && handlers.ReactNativeWebView) || window.ReactNativeWebView;
 	var send = target && target.postMessage;
-	if (typeof send !== 'function' || Object.prototype.hasOwnProperty.call(window, ${scriptJson(BRIDGE_NAME)})) { return; }
-	Object.defineProperty(window, ${scriptJson(BRIDGE_NAME)}, {
+	if (typeof send !== 'function' || Object.prototype.hasOwnProperty.call(window, name)) { return; }
+	Object.defineProperty(window, name, {
 		value: Object.freeze(function (key, json) {
 			if (key !== secret || typeof json !== 'string') { return; }
 			apply(send, target, [prefix + json + '}']);
@@ -109,10 +116,10 @@ true;`;
 /**
  * 候補を集めて送るスクリプト。読み込み終わりのたびに流してよい（同じページで 2 回目は何もしない）。
  * 地の文は `/` を含む文字のノードだけ。`pre`・`script`・`style`・リンク・`code`・入力欄の中は見ない。
- * `secret` は {@link buildPathLinkBridgeScript} に渡したものと同じ。
+ * `secret`・`channel` は {@link buildPathLinkBridgeScript} に渡したものと同じ。口が無ければ何も送らない。
  */
-export function buildPathLinkCollectScript(token: string, secret: string): string {
-	const config = { token, secret, type: MESSAGE_TYPE, limits: PATH_LINK_LIMITS, bridge: BRIDGE_NAME };
+export function buildPathLinkCollectScript(token: string, secret: string, channel: string): string {
+	const config = { token, secret, type: MESSAGE_TYPE, limits: PATH_LINK_LIMITS, bridge: bridgeNameOf(channel) };
 	return `(function () {
 	var cfg = ${scriptJson(config)};
 	if (!document.body || (window.__paradisPathLinks && window.__paradisPathLinks.token === cfg.token)) { return; }
@@ -161,8 +168,8 @@ true;`;
  * 印を付け、押す・長押しを送らせるスクリプト。`color` は地の文と `code` の印の色（リンクは元の色のまま）。
  * スタイルは要素の `style` へ直接書く（ページの CSP が `<style>` を止めても効くように）。
  */
-export function buildPathLinkMarkScript(token: string, secret: string, marks: readonly PathLinkMark[], color: string): string {
-	const config = { token, secret, type: MESSAGE_TYPE, marks, color, bridge: BRIDGE_NAME };
+export function buildPathLinkMarkScript(token: string, secret: string, channel: string, marks: readonly PathLinkMark[], color: string): string {
+	const config = { token, secret, type: MESSAGE_TYPE, marks, color, bridge: bridgeNameOf(channel) };
 	return `(function () {
 	var cfg = ${scriptJson(config)};
 	var state = window.__paradisPathLinks;

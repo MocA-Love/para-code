@@ -129,22 +129,44 @@ describe('pathLinkFailureOf', () => {
 
 describe('path link scripts', () => {
 	it('embed the token and marks without closing a script tag', () => {
-		const collect = buildPathLinkCollectScript('t</script>', 's');
-		const mark = buildPathLinkMarkScript('t', 's', [{ i: 0, id: 0 }], '#58a6ff');
+		const collect = buildPathLinkCollectScript('t</script>', 's', 'c');
+		const mark = buildPathLinkMarkScript('t', 's', 'c', [{ i: 0, id: 0 }], '#58a6ff');
 		expect([collect.includes('</script>'), collect.includes('\\u003c/script>'), mark.includes('"marks":[{"i":0,"id":0}]')]).toEqual([false, true, true]);
 	});
 
 	it('send through a mouth the page cannot replace, and only for the caller that knows the secret', () => {
 		const sent: string[] = [];
 		const window: Record<string, unknown> = { ReactNativeWebView: { postMessage: (data: string) => sent.push(data) } };
-		new Function('window', buildPathLinkBridgeScript('s3cret'))(window);
-		const post = window.__paradisPathLinkPost as (key: string, json: string) => void;
+		new Function('window', buildPathLinkBridgeScript('s3cret', 'ch4nnel'))(window);
+		const post = window.__paradisPathLinkPost_ch4nnel as (key: string, json: string) => void;
 		// ページは口を差し替えられず、secret を知らなければ送れない
-		const replace = () => { window.__paradisPathLinkPost = () => sent.push('replaced'); };
+		const replace = () => { window.__paradisPathLinkPost_ch4nnel = () => sent.push('replaced'); };
 		(window.ReactNativeWebView as { postMessage: unknown }).postMessage = (data: string) => sent.push(`sniffed:${data}`);
 		post('guess', '{"op":"tap","id":1}');
 		post('s3cret', '{"op":"tap","id":1}');
 		expect(replace).toThrow(TypeError);
-		expect([window.__paradisPathLinkPost === post, sent]).toEqual([true, ['{"secret":"s3cret","body":{"op":"tap","id":1}}']]);
+		expect([window.__paradisPathLinkPost_ch4nnel === post, sent]).toEqual([true, ['{"secret":"s3cret","body":{"op":"tap","id":1}}']]);
+	});
+
+	it('hand the secret only to the mouth the bridge put, not to one the page put first', () => {
+		const tap = (withBridge: boolean) => {
+			const sent: unknown[] = [];
+			const listeners: Record<string, (event: unknown) => void> = {};
+			// 送る口が置けず（ページが先に走った等）、ページが口に見える関数を置いた
+			const window: Record<string, unknown> = {
+				ReactNativeWebView: { postMessage: (data: string) => sent.push(data) },
+				__paradisPathLinkPost: (...args: unknown[]) => sent.push(['page', ...args]),
+				__paradisPathLinks: { token: 't', nodes: [] },
+			};
+			if (withBridge) {
+				new Function('window', buildPathLinkBridgeScript('s3cret', 'ch4nnel'))(window);
+			}
+			const document = { addEventListener: (type: string, listener: (event: unknown) => void) => { listeners[type] = listener; } };
+			new Function('window', 'document', buildPathLinkMarkScript('t', 's3cret', 'ch4nnel', [], '#58a6ff'))(window, document);
+			const hit = { getAttribute: () => '0' };
+			listeners.click?.({ target: { nodeType: 1, closest: () => hit }, preventDefault: () => { }, stopPropagation: () => { } });
+			return sent;
+		};
+		expect([tap(false), tap(true)]).toEqual([[], ['{"secret":"s3cret","body":{"type":"paradisPathLinks","token":"t","op":"tap","id":0}}']]);
 	});
 });

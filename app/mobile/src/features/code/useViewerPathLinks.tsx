@@ -72,6 +72,8 @@ export function useViewerPathLinks(space: ViewerPathLinkSpace | undefined, webRe
 	const token = useMemo(() => createMobileOfficeNonce(), []);
 	// 知らせの送り主を確かめる秘密（ページには見せない。`viewerPathLinks.ts` の冒頭）
 	const secret = useMemo(() => createMobileOfficeNonce(), []);
+	// 送る口の名前に付ける値（ページが同じ名前の口を先に置けないように。`viewerPathLinks.ts` の bridgeNameOf）
+	const channel = useMemo(() => createMobileOfficeNonce(), []);
 	const theme = useThemeColors();
 	const fsResolveLink = useAppStore(s => s.fsResolveLink);
 	const absolutePath = useAbsolutePathOption({ pcId: space?.pcId, wsId: space?.wsId, live: space?.live ?? false });
@@ -174,8 +176,8 @@ export function useViewerPathLinks(space: ViewerPathLinkSpace | undefined, webRe
 		}
 		linksRef.current = [];
 		awaitingCandidatesRef.current = true;
-		webRef.current?.injectJavaScript(buildPathLinkCollectScript(token, secret));
-	}, [enabled, token, secret, webRef]);
+		webRef.current?.injectJavaScript(buildPathLinkCollectScript(token, secret, channel));
+	}, [enabled, token, secret, channel, webRef]);
 
 	const onMessage = useCallback((data: string): boolean => {
 		if (!enabled) {
@@ -193,7 +195,7 @@ export function useViewerPathLinks(space: ViewerPathLinkSpace | undefined, webRe
 			const found = pathLinksOf(message.items);
 			linksRef.current = found.links;
 			if (found.marks.length > 0) {
-				webRef.current?.injectJavaScript(buildPathLinkMarkScript(token, secret, found.marks, theme.accent));
+				webRef.current?.injectJavaScript(buildPathLinkMarkScript(token, secret, channel, found.marks, theme.accent));
 			}
 			return true;
 		}
@@ -206,11 +208,11 @@ export function useViewerPathLinks(space: ViewerPathLinkSpace | undefined, webRe
 			}
 		}
 		return true;
-	}, [enabled, token, secret, webRef, theme.accent, openLink, showMenu]);
+	}, [enabled, token, secret, channel, webRef, theme.accent, openLink, showMenu]);
 
 	const sheet = menu === undefined ? null : (
 		<ActionSheet visible={menuVisible} title={menu.title} message={menu.message} actions={contextMenuSheetActions(menu)} onClose={() => setMenuVisible(false)} />
 	);
-	const beforeContentLoaded = useMemo(() => (enabled ? buildPathLinkBridgeScript(secret) : undefined), [enabled, secret]);
+	const beforeContentLoaded = useMemo(() => (enabled ? buildPathLinkBridgeScript(secret, channel) : undefined), [enabled, secret, channel]);
 	return { onLoadEnd, onMessage, sheet, beforeContentLoaded };
 }
