@@ -462,9 +462,12 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 	private _createSealableSection(id: string, keywords: string): HTMLElement {
 		const section = this._createSection(id, keywords);
 		const body = dom.append(section, $('.pns-section-body'));
-		// 読み上げの知らせは、中身が変わったときに読まれるよう、空のうちから置いておく
 		const veil = dom.append(section, $('.pns-veil'));
-		veil.setAttribute('role', 'status');
+		// 知らせ（live region）は最初の節の覆いだけにする。3 節すべてに付けると、おやすみモードに入るたびに同じ文言が 3 回読まれる。
+		// 残りの覆いの文言は、仮想カーソルで節を読んだときに読めるよう、隠さずに置く。中身が変わったときに読まれるよう、空のうちから置いておく
+		if (this._sealedSections.size === 0) {
+			veil.setAttribute('role', 'status');
+		}
 		this._sealedSections.set(id, { body, veil });
 		return body;
 	}

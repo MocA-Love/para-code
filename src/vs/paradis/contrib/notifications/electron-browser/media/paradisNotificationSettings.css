@@ -658,6 +658,12 @@
 	margin-bottom: 14px;
 }
 
+/* 統計の箱の補足は、狭い箱でも「…」で切らずに折り返す（箱にはホバーが無く、切れた残りを読めないため） */
+.paradis-notif-area .pns-stat-card .paradis-card-note {
+	white-space: normal;
+	overflow-wrap: anywhere;
+}
+
 .paradis-notif-area .pns-bar-chart {
 	display: flex;
 	align-items: flex-end;
