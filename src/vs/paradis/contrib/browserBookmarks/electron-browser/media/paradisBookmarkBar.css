@@ -40,6 +40,10 @@
 	border-radius: var(--vscode-cornerRadius-small, 4px);
 	cursor: pointer;
 	flex-shrink: 0;
+	margin: 0;
+	border: none;
+	background: transparent;
+	font: inherit;
 	color: var(--vscode-foreground);
 }
 
@@ -90,6 +94,42 @@
 	text-overflow: ellipsis;
 }
 
+/* The » button at the end of the bar opens the bookmarks that do not fit (Chrome's overflow menu). */
+.browser-root .paradis-bookmark-more {
+	flex: none;
+	width: 22px;
+	height: 22px;
+	margin: 0 -2px 0 auto;
+	padding: 0;
+	border: none;
+	background: transparent;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: var(--vscode-cornerRadius-small);
+	color: var(--vscode-icon-foreground);
+	cursor: pointer;
+}
+
+.browser-root .paradis-bookmark-more:hover,
+.browser-root .paradis-bookmark-more.open {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.browser-root .paradis-bookmark-more svg {
+	width: 16px;
+	height: 16px;
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 1.3;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+
+.browser-root .paradis-bookmark-bar .paradis-bookmark-overflowed {
+	display: none;
+}
+
 /* Star indicator in the URL bar (PostUrl slot), mirrors the upstream favorites indicator. */
 
 .browser-root .paradis-bookmark-indicator-container .paradis-bookmark-indicator .codicon {
@@ -98,11 +138,11 @@
 
 /* ---------- bookmark / folder dialogs (DOM modal) ---------- */
 
-/* Backdrop follows the upstream modal editor part (modalEditorPart.css); the box is the shared S tier (paradisModal.ts). */
+/* Backdrop is the fork's scrim colour (paradis.scrim, the same 50% black as the upstream modal editor part); the box is the shared S tier (paradisModal.ts). */
 .paradis-bookmark-dialog-backdrop {
 	position: absolute;
 	inset: 0;
-	background: rgba(0, 0, 0, 0.5);
+	background: var(--vscode-paradis-scrim);
 	display: flex;
 	align-items: center;
 	justify-content: center;
@@ -140,6 +180,10 @@
 	color: var(--vscode-icon-foreground);
 	cursor: pointer;
 	flex-shrink: 0;
+	padding: 0;
+	border: none;
+	background: none;
+	font: inherit;
 }
 
 .paradis-bookmark-dialog .pbm-close:hover {

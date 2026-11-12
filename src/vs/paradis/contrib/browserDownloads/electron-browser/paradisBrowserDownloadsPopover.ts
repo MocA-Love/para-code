@@ -251,9 +251,12 @@ export class ParadisBrowserDownloadsPopover extends Disposable {
 		if (!heading) {
 			heading = $('.pbd-group');
 			heading.id = `paradis-browser-downloads-day-${++groupHeadingIds}`;
-			// リストの中の区切り。項目ではないので listitem にせず、文字だけを読ませる。
-			heading.setAttribute('role', 'presentation');
-			heading.textContent = paradisFormatDownloadDay(time, this._openedAt);
+			// list の子は listitem だけにする決まりなので、日付の区切りも listitem にし、中に見出しを置く。
+			heading.setAttribute('role', 'listitem');
+			const text = dom.append(heading, $('span'));
+			text.setAttribute('role', 'heading');
+			text.setAttribute('aria-level', '3');
+			text.textContent = paradisFormatDownloadDay(time, this._openedAt);
 			this._groups.set(groupKey, heading);
 		}
 		return heading;
