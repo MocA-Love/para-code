@@ -23,7 +23,7 @@ suite('Paradis simulator: fold bar', () => {
 		store.add(bar.onDidRequestFold(request => requests.push(request)));
 		store.add(bar.onDidRequestDeviceHub(() => deviceHub++));
 		const notes = () => [...bar.element.querySelectorAll<HTMLElement>('.paradis-simulator-fold-note')].filter(note => note.style.display !== 'none').map(note => note.textContent ?? '');
-		const buttons = () => [...bar.element.querySelectorAll<HTMLElement>('.monaco-button')];
+		const buttons = () => [...bar.element.querySelectorAll<HTMLElement>('.paradis-seg > button, .monaco-button')];
 		return { bar, requests, notes, buttons, deviceHubClicks: () => deviceHub };
 	}
 
@@ -39,6 +39,19 @@ suite('Paradis simulator: fold bar', () => {
 		buttons()[0].click();
 		buttons()[1].click();
 		assert.deepStrictEqual({ requests, shown: bar.element.style.display }, { requests: [{ kind: 'pose', pose: 'closed' }, { kind: 'pose', pose: 'book' }], shown: '' });
+	});
+
+	// 今の姿勢は塗りだけでなく aria-pressed で読み上げる。開閉している間は押せない
+	test('marks the current pose as pressed', () => {
+		const { bar, buttons } = setup();
+		const poses = () => buttons().slice(0, 3).map(button => ({ label: button.textContent, pressed: button.getAttribute('aria-pressed'), disabled: (button as HTMLButtonElement).disabled }));
+		bar.update({ hingeDegrees: 130, activeDisplay: 'inner', deviceHubRunning: true, busy: false });
+		const book = poses();
+		bar.update({ hingeDegrees: 95, activeDisplay: 'inner', deviceHubRunning: true, busy: true });
+		assert.deepStrictEqual({ book, between: poses() }, {
+			book: [{ label: '閉じた 0°', pressed: 'false', disabled: false }, { label: '本 130°', pressed: 'true', disabled: false }, { label: '開いた 180°', pressed: 'false', disabled: false }],
+			between: [{ label: '閉じた 0°', pressed: 'false', disabled: true }, { label: '本 130°', pressed: 'false', disabled: true }, { label: '開いた 180°', pressed: 'false', disabled: true }],
+		});
 	});
 
 	// 開閉は Device Hub が起動していないと効かない（Mac で実測）。起動の案内とボタンを出す

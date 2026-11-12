@@ -12,24 +12,25 @@
 
 import './media/paradisSimulator.css';
 import * as dom from '../../../../base/browser/dom.js';
-import { Button } from '../../../../base/browser/ui/button/button.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
-import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPane.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
+import { ParadisButton } from '../../../browser/paradisButton.js';
 import { paradisSimulatorStallRetryDelay } from '../common/paradisSimulatorInput.js';
 import { PARADIS_ANDROID_EDITOR_ID, ParadisAndroidEditorInput } from './paradisAndroidEditorInput.js';
 import { ParadisAndroidVideoView } from './paradisAndroidVideoView.js';
 import { IParadisSimulatorClient } from './paradisSimulatorClient.js';
+import { paradisLabelSimulatorScreen } from './paradisSimulatorFrameView.js';
 
 const $ = dom.$;
 
@@ -52,9 +53,10 @@ export class ParadisAndroidEditor extends EditorPane {
 	private _subtitle: HTMLElement | undefined;
 	private _notice: HTMLElement | undefined;
 	private _noticeText: HTMLElement | undefined;
-	private _retry: Button | undefined;
+	private _retry: ParadisButton | undefined;
 	private _stage: HTMLElement | undefined;
-	private _back: Button | undefined;
+	private _back: ParadisButton | undefined;
+	private _keyHint: HTMLElement | undefined;
 	private readonly _session = this._register(new MutableDisposable<ParadisAndroidEditorSession>());
 	private _lastDimension: dom.Dimension | undefined;
 
@@ -75,11 +77,13 @@ export class ParadisAndroidEditor extends EditorPane {
 		const titles = dom.append(bar, $('.paradis-simulator-titles'));
 		this._title = dom.append(titles, $('span.paradis-simulator-title'));
 		this._subtitle = dom.append(titles, $('span.paradis-simulator-subtitle'));
-		dom.append(bar, $('span.paradis-simulator-key-hint')).textContent = localize('paradis.android.keyHint', "キー入力は端末へ届きます。Esc を 2 回で外へ");
+		this._keyHint = dom.append(bar, $('span.paradis-simulator-key-hint'));
+		this._keyHint.textContent = localize('paradis.android.keyHint', "キー入力は端末へ届きます。Esc を 2 回で外へ");
+		// 映像の枠の読み上げの説明（aria-describedby）。id はペインごとに替える
+		this._keyHint.id = `paradis-android-key-hint-${generateUuid()}`;
 		const actions = dom.append(bar, $('.paradis-simulator-actions'));
 		const button = (label: string, deviceButton: string) => {
-			const created = this._register(new Button(actions, { ...defaultButtonStyles, secondary: true, small: true, title: label }));
-			created.label = label;
+			const created = this._register(new ParadisButton(actions, { kind: 'secondary', small: true, label, title: label }));
 			this._register(created.onDidClick(() => {
 				const session = this._session.value;
 				if (session) {
@@ -94,8 +98,9 @@ export class ParadisAndroidEditor extends EditorPane {
 
 		this._notice = dom.append(this._root, $('.paradis-simulator-notice'));
 		this._noticeText = dom.append(this._notice, $('span.paradis-simulator-notice-text'));
-		this._retry = this._register(new Button(this._notice, { ...defaultButtonStyles }));
-		this._retry.label = localize('paradis.android.retry', "再試行");
+		// 要素は置いたまま文だけ替えるので、読み上げが切り替わりを拾える（つながらず「再試行」を出すときだけ alert）
+		this._noticeText.setAttribute('role', 'status');
+		this._retry = this._register(new ParadisButton(this._notice, { kind: 'primary', small: true, label: localize('paradis.android.retry', "再試行") }));
 		this._register(this._retry.onDidClick(() => {
 			const session = this._session.value;
 			if (session) {
@@ -205,6 +210,7 @@ export class ParadisAndroidEditor extends EditorPane {
 			return;
 		}
 		this._notice.style.display = text ? '' : 'none';
+		this._noticeText.setAttribute('role', retry ? 'alert' : 'status');
 		this._noticeText.textContent = text ?? '';
 		this._retry.element.style.display = retry ? '' : 'none';
 		this._relayout();
@@ -213,6 +219,10 @@ export class ParadisAndroidEditor extends EditorPane {
 	private _renderHeader(): void {
 		if (this._title) {
 			this._title.textContent = this._session.value?.input.getName() ?? '';
+		}
+		const session = this._session.value;
+		if (session) {
+			paradisLabelSimulatorScreen(session.view.element, session.input.getName(), this._keyHint);
 		}
 	}
 
