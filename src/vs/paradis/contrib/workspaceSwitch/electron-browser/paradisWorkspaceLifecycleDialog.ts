@@ -151,7 +151,8 @@ class ParadisWorkspaceLifecycleDialog extends Disposable {
 			}
 		}));
 		this._register(dom.addDisposableListener(this._backdrop, 'keydown', e => {
-			if (e.key === 'Escape' && !this._busy) {
+			// 日本語入力の変換中の Esc は変換の取り消しなので、閉じない
+			if (e.key === 'Escape' && !this._busy && !e.isComposing && e.keyCode !== 229) {
 				e.preventDefault();
 				this.dispose();
 			}
@@ -352,6 +353,10 @@ class ParadisIncludePathList extends Disposable {
 		this._addButton.enabled = false;
 		this._register(this._addButton.onDidClick(() => this._startAdding()));
 		this._register(dom.addDisposableListener(this._input, 'keydown', e => {
+			// 日本語入力の変換中の Enter・Esc は変換の確定・取り消しなので、パスを足したりやめたりしない
+			if (e.isComposing || e.keyCode === 229) {
+				return;
+			}
 			if (e.key === 'Enter') {
 				e.preventDefault();
 				this._commit();
