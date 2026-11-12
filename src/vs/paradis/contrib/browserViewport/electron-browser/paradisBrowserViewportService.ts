@@ -91,7 +91,8 @@ export interface IParadisBrowserViewportService {
 	saveSize(size: IParadisViewportSize): boolean;
 	/** `oldName` の大きさを `size` に置き換える（名前を変えたら、それを指す既定も付け替える）。 */
 	replaceSize(oldName: string, size: IParadisViewportSize): Promise<void>;
-	removeSize(name: string): void;
+	/** 消した大きさを指す全体・スペースの既定も外す。 */
+	removeSize(name: string): Promise<void>;
 
 	getGlobalDefault(): string;
 	setGlobalDefault(spec: string): Promise<void>;
@@ -233,11 +234,26 @@ export class ParadisBrowserViewportService extends Disposable implements IParadi
 		}
 	}
 
-	removeSize(name: string): void {
+	async removeSize(name: string): Promise<void> {
 		const existing = paradisFindViewportSize(this._sizes, name);
-		if (existing) {
-			this._sizes = this._sizes.filter(candidate => candidate !== existing);
-			this._persistSizes();
+		if (!existing) {
+			return;
+		}
+		this._sizes = this._sizes.filter(candidate => candidate !== existing);
+		this._persistSizes();
+		// 消した大きさを指す既定も外す（名前で保存しているので、残すと解決できずに黙って「エディタに合わせる」になる）
+		let spaceDefaultsChanged = false;
+		for (const [stateKey, spec] of this._spaceDefaults) {
+			if (paradisFindViewportSize([existing], spec)) {
+				this._spaceDefaults.delete(stateKey);
+				spaceDefaultsChanged = true;
+			}
+		}
+		if (spaceDefaultsChanged) {
+			this._persistSpaceDefaults();
+		}
+		if (paradisFindViewportSize([existing], this.getGlobalDefault())) {
+			await this.setGlobalDefault('');
 		}
 	}
 

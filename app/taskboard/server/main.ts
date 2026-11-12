@@ -34,7 +34,8 @@ import { excludeBoardFiles, git, GitWorkspaces, inspectClones, remoteUrl } from 
  *   pnpm dev -- --demo                                  見本の台帳で動かす（GitHub につながない）
  *   pnpm dev -- --repo … --agents para-code             本物の Claude Code / Codex を Para Code で動かす（作業場所の git 操作と自動の工程も本物）
  *
- * 守り: 127.0.0.1 だけで待ち受け、起動ごとの乱数トークンを要求する（URL の ?token= で一度渡すと Cookie に移る）。
+ * 守り: 127.0.0.1 だけで待ち受け、起動ごとの乱数トークンを要求する（URL の ?token= で一度渡すと画面が localStorage に置き、
+ * x-taskboard-token ヘッダー（WebSocket はサブプロトコル）で送る。Cookie は使わない）。
  * Host と Origin も確かめ、別のサイトや DNS の付け替えから叩かれないようにする。
  */
 

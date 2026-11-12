@@ -8,11 +8,11 @@
 /* Command Presets manager dialog (see paradisPresetEditorDialog.ts). */
 /* Settings Editor 風 2 ペイン構成: ヘッダー / 左ナビ（検索・フォルダツリー・出所）/ 右コンテンツ。 */
 
-/* The backdrop keeps the upstream modal editor part's dimming (modalEditorPart.css). */
+/* The backdrop uses the kit's scrim color (paradis.scrim, the same dimming as the upstream modal editor part). */
 .paradis-preset-editor-backdrop {
 	position: absolute;
 	inset: 0;
-	background: rgba(0, 0, 0, 0.5);
+	background: var(--vscode-paradis-scrim);
 	display: flex;
 	align-items: center;
 	justify-content: center;

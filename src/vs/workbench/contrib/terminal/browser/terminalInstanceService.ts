@@ -20,7 +20,7 @@ import { promiseWithResolvers } from '../../../../base/common/async.js';
 import { hasKey } from '../../../../base/common/types.js';
 // PARA-PATCH: ペイントークンenv注入（ブラウザページ⇔ターミナル上のエージェントCLI紐付け）。ロジック本体は paradisPaneTokenService.ts 側
 import { paradisPrepareTerminalPaneEnv } from '../../../../paradis/contrib/agentBrowser/browser/paradisPaneTokenService.js';
-import { paradisPrepareTerminalIdentity } from '../../../../paradis/contrib/mobileRelay/browser/paradisTerminalIdentityService.js';
+import { paradisPrepareTerminalIdentity } from '../../../../paradis/contrib/mobileRelay/browser/paradisTerminalIdentityService.js'; // PARA-PATCH: 再起動をまたぐモバイル用terminalKeyを予約
 import { paradisPrepareTerminalLaunch } from '../../../../paradis/contrib/workspaceSwitch/common/paradisTerminalLaunchPreparers.js'; // PARA-PATCH: fork launch preparers (shared panel cwd, per-space shell history)
 
 export class TerminalInstanceService extends Disposable implements ITerminalInstanceService {

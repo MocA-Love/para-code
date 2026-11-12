@@ -121,7 +121,7 @@ export class ParadisDiffReviewNotesController extends Disposable implements IEdi
 		}
 		const start = startLine !== undefined && startLine >= 1 && startLine < line ? startLine : undefined;
 		if (this.notesService.getNotes(target.stateKey).length >= PARADIS_DIFF_REVIEW_MAX_NOTES) {
-			this.notificationService.notify({ severity: Severity.Warning, message: localize('paradis.diffReviewNotes.full', "メモが {0} 件に達しました。送るか消してから書いてください。", PARADIS_DIFF_REVIEW_MAX_NOTES) });
+			this.notifyFull();
 			return;
 		}
 		this.clearHover();
@@ -132,12 +132,21 @@ export class ParadisDiffReviewNotesController extends Disposable implements IEdi
 			this.editor.focus();
 		});
 		widget.onDidSubmit(body => {
-			this.notesService.add(target.stateKey, { path: target.path, line, startLine: start, side: target.side === 'original' ? 'original' : undefined, lineText: model.getLineContent(line), body });
+			const added = this.notesService.add(target.stateKey, { path: target.path, line, startLine: start, side: target.side === 'original' ? 'original' : undefined, lineText: model.getLineContent(line), body });
+			if (!added) {
+				// 欄を開いた後に別の差分エディタでメモが足されて上限に届いた。書いた文を消さないよう欄は残す
+				this.notifyFull();
+				return;
+			}
 			this.draft.clear();
 			this.editor.focus();
 		});
 		widget.show({ lineNumber: line, column: 1 }, 4);
 		widget.focusInput();
+	}
+
+	private notifyFull(): void {
+		this.notificationService.notify({ severity: Severity.Warning, message: localize('paradis.diffReviewNotes.full', "メモが {0} 件に達しました。送るか消してから書いてください。", PARADIS_DIFF_REVIEW_MAX_NOTES) });
 	}
 
 	private onMouseMove(e: IEditorMouseEvent): void {

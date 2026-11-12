@@ -141,6 +141,8 @@ export class ParadisThemeColorDraftService extends Disposable implements IParadi
 	private snapshot: { readonly theme: IColorTheme; readonly data: ColorThemeData | undefined } | undefined;
 	/** 保存の前に、間引き中の値を下書きへ入れてもらう相手（カラーピッカー）。 */
 	private readonly flushParticipants = new Set<() => void>();
+	/** 走っている保存。走っている間に呼ばれた save() はこれを返す。 */
+	private saving: Promise<boolean> | undefined;
 	/** 自分のメモリ層への書き込み中（そのときのテーマの作り直しでは、テーマの複製を捨てない）。 */
 	private writingPreview = false;
 
@@ -267,6 +269,17 @@ export class ParadisThemeColorDraftService extends Disposable implements IParadi
 	}
 
 	async save(): Promise<boolean> {
+		// 保存中にもう一度押された（ボタン・Ctrl+S・終了時の確認）ら、走っている保存を待つ。
+		// 並べて走らせると同じ下書きを二度書き、先の書き込みを「ほかの所での変更」と取り違えて確認が出る。
+		if (!this.saving) {
+			this.saving = this.doSave().finally(() => {
+				this.saving = undefined;
+			});
+		}
+		return this.saving;
+	}
+
+	private async doSave(): Promise<boolean> {
 		// ピッカーが間引いて持っている最後の値を、下書きへ入れてから保存する。
 		for (const flush of [...this.flushParticipants]) {
 			flush();

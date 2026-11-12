@@ -128,4 +128,21 @@ suite('ParadisClosedTerminalHistory', () => {
 			editorOnlyButUpstreamEmpty: undefined,
 		});
 	});
+
+	test('shares the recreated group\'s neighbor with every terminal closed from that group together', () => {
+		const neighbor = { groupId: 2, direction: GroupDirection.RIGHT };
+		// 「すべて閉じる」でグループ1の3本を閉じた。グループが消えると分かるのは最後の1本だけ
+		const batch: ParadisClosedEntry[] = [
+			{ kind: 'terminal', terminal: { cwd: '/a', groupId: 1, index: 0 }, batch: 1 },
+			{ kind: 'terminal', terminal: { cwd: '/other', groupId: 3, index: 0 }, batch: 1 },
+			{ kind: 'terminal', terminal: { cwd: '/b', groupId: 1, index: 0 }, batch: 1 },
+			{ kind: 'terminal', terminal: { cwd: '/c', groupId: 1, index: 0, neighbor }, batch: 1 },
+		];
+		assert.deepStrictEqual(paradisPlanReopen(batch, false)?.terminals, [
+			{ cwd: '/a', groupId: 1, index: 0, neighbor },
+			{ cwd: '/other', groupId: 3, index: 0 },
+			{ cwd: '/b', groupId: 1, index: 0, neighbor },
+			{ cwd: '/c', groupId: 1, index: 0, neighbor },
+		]);
+	});
 });

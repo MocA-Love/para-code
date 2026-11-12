@@ -99,7 +99,6 @@ function createFixture(): {
 		_backgroundThrottlingCoordinator: coordinator,
 		_pendingBindPreparations: 0,
 		_ingressLeaseStates: new WeakMap<object, object>(),
-		_sharpScreenshotKeys: new Map<string, number>(),
 		_terminalExitedTokens: new Set<string>(),
 		_hibernatingTokens: new Map<string, number>(),
 		_paneShells: new Map(),

@@ -65,6 +65,13 @@ suite('Paradis agent session handoff', () => {
 		});
 	});
 
+	test('masks secrets in the screen capture before cutting it, so a key whose BEGIN line falls off is still masked', () => {
+		const keyBody = 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASC';
+		const screen = `-----BEGIN PRIVATE KEY-----\n${keyBody}\n-----END PRIVATE KEY-----\n$ export PASSWORD=hunter2\ndone`;
+		const capture = paradisBoundHandoffCapture(screen, 100);
+		assert.deepStrictEqual({ keyLeft: capture.includes(keyBody), passwordLeft: capture.includes('hunter2'), kept: capture.endsWith('done') }, { keyLeft: false, passwordLeft: false, kept: true });
+	});
+
 	test('reads the agent kind of configured launch commands and builds the fork commands', () => {
 		assert.deepStrictEqual({
 			kinds: ['claude --model opus', 'FOO=1 codex', '/usr/local/bin/codex.exe -c x', 'opencode', 'aider'].map(paradisAgentKindOfCommand),

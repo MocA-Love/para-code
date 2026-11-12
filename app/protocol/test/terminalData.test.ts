@@ -64,12 +64,36 @@ describe('binary terminal data', () => {
 		const invalidMetadata = binaryTerminalDataForTest({ ...metadata, epoch: '7' }, 'hello');
 		expect(decodeBinaryTerminalData(invalidMetadata)).toBeUndefined();
 	});
+
+	test('accepts the data bytes exactly when they decode and re-encode to the same bytes', () => {
+		const fixed = [
+			[], [0x41], [0xef, 0xbb, 0xbf, 0x41], [0x41, 0xef, 0xbb, 0xbf], [0xef, 0xbf, 0xbd], [0xe0, 0xef, 0xbf, 0xbd],
+			[0xef, 0xef, 0xbf, 0xbd], [0xef, 0xbf], [0xe3, 0x81, 0x82], [0xe3, 0x81], [0xed, 0xa0, 0x80], [0xc0, 0x80],
+			[0xf0, 0x9f, 0x99, 0x82], [0xf4, 0x90, 0x80, 0x80], [0x80], [0xef, 0xbf, 0xbd, 0xbd],
+		];
+		// 再現できるよう固定の種で作る。不正なバイト列と U+FFFD（EF BF BD）・BOM が混ざりやすい値に寄せる
+		let seed = 0x2545f491;
+		const nextByte = () => {
+			seed ^= seed << 13;
+			seed ^= seed >>> 17;
+			seed ^= seed << 5;
+			const pick = (seed >>> 0) % 16;
+			return [0xef, 0xbf, 0xbd, 0xbb, 0x80, 0xe0, 0xed, 0xa0, 0xf0, 0x9f, 0xc0, 0xe3, 0x81, 0x41, 0x0a, (seed >>> 8) & 0xff][pick]!;
+		};
+		const random = Array.from({ length: 20000 }, (_, index) => Array.from({ length: index % 12 }, nextByte));
+		const accepted = (bytes: number[]) => decodeBinaryTerminalData(binaryTerminalDataBytesForTest(metadata, new Uint8Array(bytes)))?.data;
+		const expected = (bytes: number[]) => {
+			const decoded = new TextDecoder().decode(new Uint8Array(bytes));
+			const encoded = new TextEncoder().encode(decoded);
+			return encoded.length === bytes.length && encoded.every((byte, index) => byte === bytes[index]) ? decoded : undefined;
+		};
+		const mismatches = [...fixed, ...random].filter(bytes => accepted(bytes) !== expected(bytes));
+		expect(mismatches).toEqual([]);
+	});
 });
 
-function binaryTerminalDataForTest(metadataValue: object, data: string): Uint8Array {
-	const encoder = new TextEncoder();
-	const metadataBytes = encoder.encode(JSON.stringify(metadataValue));
-	const dataBytes = encoder.encode(data);
+function binaryTerminalDataBytesForTest(metadataValue: object, dataBytes: Uint8Array): Uint8Array {
+	const metadataBytes = new TextEncoder().encode(JSON.stringify(metadataValue));
 	const payload = new Uint8Array(12 + metadataBytes.length + dataBytes.length);
 	payload.set([0x50, 0x54, 0x44, 0x01, 0, 0], 0);
 	const view = new DataView(payload.buffer);
@@ -78,4 +102,8 @@ function binaryTerminalDataForTest(metadataValue: object, data: string): Uint8Ar
 	payload.set(metadataBytes, 12);
 	payload.set(dataBytes, 12 + metadataBytes.length);
 	return payload;
+}
+
+function binaryTerminalDataForTest(metadataValue: object, data: string): Uint8Array {
+	return binaryTerminalDataBytesForTest(metadataValue, new TextEncoder().encode(data));
 }

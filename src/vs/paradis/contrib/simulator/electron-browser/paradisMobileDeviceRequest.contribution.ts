@@ -229,8 +229,8 @@ class ParadisMobileDeviceRequestContribution extends Disposable implements IWork
 		@ICommandService commandService: ICommandService,
 	) {
 		super();
-		// 承認した端末がシミュレータ（新しい仕組み）なら、その画面を開く（simulator/electron-browser/paradisSimulator.contribution.ts。
-		// 設定がオフ・Android なら何もしない）
+		// 承認した端末の画面を開く（simulator/electron-browser/paradisSimulator.contribution.ts）。iOS のシミュレータは
+		// 開いて起動し、動いている Android の端末は開き、起動していない Android の AVD は起動だけする
 		const openSimulator = (paneToken: string, deviceId: string) => void commandService.executeCommand(PARADIS_SIMULATOR_OPEN_FOR_PANE_COMMAND_ID, paneToken, deviceId).catch(() => undefined);
 		sharedProcessService.registerChannel(PARADIS_MOBILE_DEVICE_REQUEST_CHANNEL, new ParadisMobileDeviceRequestChannel(approvals, paneTokens, terminalScopes, Date.now, PARADIS_AGENT_APPROVAL_DEADLINE_MS, openSimulator));
 	}

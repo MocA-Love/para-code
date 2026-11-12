@@ -790,6 +790,10 @@ export class ParadisClaudeModBridge {
 			this.pending.delete(item.id);
 			return { status: 200, body: { ...item.outcome } };
 		}
+		if (signal.aborted) {
+			// 送り主の確かめを待つ間に相手が切れた。'abort' はもう来ないので、待つと枠を 25 秒握る
+			return { status: 200, body: { state: 'pending' } };
+		}
 		const release = this.reserveLongPoll(token);
 		if (release === undefined) {
 			return { status: 429, body: { error: 'too many waits' } };
@@ -888,6 +892,10 @@ export class ParadisClaudeModBridge {
 	}
 
 	private async waitForCommands(token: string, state: ISessionState, signal: AbortSignal): Promise<IParadisClaudeModReply> {
+		if (signal.aborted) {
+			// 送り主の確かめを待つ間に相手が切れた。切れた接続へは何も渡さない
+			return { status: 200, body: { commands: [] } };
+		}
 		const release = this.reserveLongPoll(token);
 		if (release === undefined) {
 			return { status: 429, body: { error: 'too many waits' } };
