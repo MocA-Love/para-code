@@ -11,6 +11,7 @@ import { scaleChatStyles } from '../../../../../../src/chatTextScale.js';
 import { MarkdownText } from '../../../../../../src/components/markdownText.js';
 import { ChatTextScaleProvider, useChatTextScaleFor } from '../../../../../../src/ui/chatTextScale.js';
 import { useParaToast } from '../../../../../../src/paraToast.js';
+import { providerLabel } from '../../../../../../src/features/activity/activityParts.js';
 import { CenterSpinner, useReadableColumn } from '../../../../../../src/features/code/codeParts.js';
 import { MessageContextMenu, chatTextSelectable } from '../../../../../../src/features/session/messageContextMenu.js';
 import { QueuedSendsBanner } from '../../../../../../src/features/session/queuedSends.js';
@@ -160,7 +161,7 @@ export default function AgentHistorySessionScreen() {
 			<Screen>
 				<ScreenHeader
 					title={session?.title ?? '過去の会話'}
-					subtitle={[session !== undefined ? (session.agent === 'opencode' ? 'OpenCode' : session.agent === 'codex' ? 'Codex' : 'Claude Code') : undefined, route.space?.name].filter(part => part !== undefined).join(' · ')}
+					subtitle={[session !== undefined ? providerLabel(session.agent) : undefined, route.space?.name].filter(part => part !== undefined).join(' · ')}
 					backLabel="過去の会話へ戻る"
 				/>
 				<QueuedSendsBanner pcId={pcId} ws={sourceId} />
@@ -217,7 +218,7 @@ const HistoryMessages = memo(function HistoryMessages({ preview, chatFontSize, c
 			{preview.truncated ? <Text style={textStyles.truncated}>古い発言は省略しています</Text> : null}
 			{preview.messages.map((message, index) => (
 				<View key={index} style={[textStyles.message, message.role === 'user' ? styles.user : undefined]}>
-					<Text style={textStyles.role}>{message.role === 'user' ? 'あなた' : session.agent === 'opencode' ? 'OpenCode' : session.agent === 'codex' ? 'Codex' : 'Claude Code'}{message.ts !== undefined ? ` · ${formatRelativeTime(message.ts, now)}` : ''}</Text>
+					<Text style={textStyles.role}>{message.role === 'user' ? 'あなた' : providerLabel(session.agent)}{message.ts !== undefined ? ` · ${formatRelativeTime(message.ts, now)}` : ''}</Text>
 					{/* 長押しで会話と同じ発言のメニュー（コピー・範囲を選んでコピー・共有）。ここには入力欄への引用は無い */}
 					<MessageContextMenu text={message.text} markdown={message.role === 'assistant'} plain="body" speaker={message.role === 'user' ? '自分の発言' : 'エージェントの発言'}>
 						{message.role === 'assistant' ? <MarkdownText text={message.text} selectable={chatTextSelectable} /> : <Text style={textStyles.text} selectable={chatTextSelectable}>{message.text}</Text>}
