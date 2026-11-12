@@ -280,7 +280,7 @@ export class ParadisNotificationInboxPopover extends Disposable {
 		}
 
 		const state = entry.read ? localize('paradis.inbox.readState', "既読") : localize('paradis.inbox.unreadState', "未読");
-		row.setAttribute('aria-label', `${state} ${paradisInboxKindLabel(entry.kind)} ${paradisInboxEntryLocation(entry)} ${entry.message ?? ''}`);
+		row.setAttribute('aria-label', localize('paradis.inbox.rowAria', "{0} {1} {2} {3}", state, paradisInboxKindLabel(entry.kind), paradisInboxEntryLocation(entry), entry.message ?? ''));
 
 		this.renderDisposables.add(dom.addDisposableListener(row, dom.EventType.CLICK, () => this.open(entry)));
 		this.renderDisposables.add(dom.addDisposableListener(row, dom.EventType.KEY_DOWN, e => {

@@ -83,15 +83,16 @@ suite('Paradis notification inbox popover', () => {
 			space: text(row, 'pnip-space'),
 			detail: text(row, 'pnip-detail'),
 			message: text(row, 'pnip-message') ?? text(row, 'pnip-note'),
+			ariaLabel: row.getAttribute('aria-label'),
 		}));
 		rows[0].click();
 		rows[1].click();
 
 		assert.deepStrictEqual({ rendered, calls }, {
 			rendered: [
-				{ classes: ['unread'], kind: '許可待ち', space: 'para-code', detail: 'claude', message: 'Bash: npm test -- auth' },
+				{ classes: ['unread'], kind: '許可待ち', space: 'para-code', detail: 'claude', message: 'Bash: npm test -- auth', ariaLabel: '未読 許可待ち para-code ／ claude Bash: npm test -- auth' },
 				// 「完了」は札にせず時刻の横に出す
-				{ classes: ['closed'], kind: undefined, space: 'para-code', detail: 'fix-login', message: 'このペインは閉じています' },
+				{ classes: ['closed'], kind: undefined, space: 'para-code', detail: 'fix-login', message: 'このペインは閉じています', ariaLabel: '既読 完了 para-code (fix-login) ' },
 			],
 			calls: ['close', 'reveal:2', 'read:1'],
 		});

@@ -163,11 +163,6 @@
 	line-height: 16px;
 }
 
-.monaco-workbench .paradis-notification-inbox-popover .pnip-kind.review {
-	background-color: color-mix(in srgb, var(--vscode-charts-green) 20%, transparent);
-	color: var(--vscode-charts-green);
-}
-
 .monaco-workbench .paradis-notification-inbox-popover .pnip-kind.permission {
 	background-color: color-mix(in srgb, var(--vscode-charts-yellow) 20%, transparent);
 	color: var(--vscode-charts-yellow);
