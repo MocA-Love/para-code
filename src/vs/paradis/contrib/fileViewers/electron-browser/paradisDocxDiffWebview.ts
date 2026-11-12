@@ -33,6 +33,7 @@ import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { FileAccess } from '../../../../base/common/network.js';
 import { escape } from '../../../../base/common/strings.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
+import { localize } from '../../../../nls.js';
 import { asWebviewUri } from '../../../../workbench/contrib/webview/common/webview.js';
 import { paradisPreviewOrigins } from './paradisViewerAssets.js';
 import { PARADIS_WORD_ANCHOR_RUNTIME, PARADIS_WORD_ANCHOR_STYLE } from './word/paradisWordAnchorRuntime.js';
@@ -144,6 +145,8 @@ export interface IParadisDocxDiffWebviewHost {
 	revealParagraph?(side: ParadisDocxSide, marker: string, focus: string): boolean;
 	setTimeout(handler: () => void, delay: number): number;
 	clearTimeout(handle: number): void;
+	/** 次の描画の手順で呼ぶ（scroll イベントを配った後に走る）。 */
+	requestAnimationFrame(handler: () => void): void;
 }
 
 /** webview の中で実行される本体に渡す定数一式。 */
@@ -160,6 +163,8 @@ export interface IParadisDocxDiffWebviewContext {
 	readonly objectChar: string;
 	readonly maxBlocks: number;
 	readonly labelLoading: string;
+	/** 表示できない部品の件数の文言。`{0}` を件数に置き換えて使う。 */
+	readonly labelAssetsUnavailable: string;
 	/** ライブラリ欠落を知らせるコード。文言は renderer 側で付ける（webview では nls を使えない）。 */
 	readonly errorLibraryMissing: string;
 }
@@ -183,6 +188,7 @@ export function paradisDocxDiffWebviewMain(ctx: IParadisDocxDiffWebviewContext, 
 		documents: Partial<Record<Side, IParadisDocxDiffLoadedDocument>>;
 		scale: number;
 		syncing: boolean;
+		syncHold: number;
 		activeChangeId: number;
 		activeReportHandle: number;
 		/** 最後に受け取った load の世代。古い読み込みの結果を捨てるために持つ。 */
@@ -191,7 +197,7 @@ export function paradisDocxDiffWebviewMain(ctx: IParadisDocxDiffWebviewContext, 
 		annotated: boolean;
 		revisionMode: 'final' | 'original' | 'markup';
 		blankRetryUsed: boolean;
-	} = { documents: {}, scale: 1, syncing: false, activeChangeId: -1, activeReportHandle: 0, loadGeneration: -1, annotated: false, revisionMode: 'final', blankRetryUsed: false };
+	} = { documents: {}, scale: 1, syncing: false, syncHold: 0, activeChangeId: -1, activeReportHandle: 0, loadGeneration: -1, annotated: false, revisionMode: 'final', blankRetryUsed: false };
 
 	const PARSE_OPTIONS: Record<string, unknown> = { trimXmlDeclaration: true };
 
@@ -285,10 +291,19 @@ export function paradisDocxDiffWebviewMain(ctx: IParadisDocxDiffWebviewContext, 
 	 * その場で false に戻すと札が立っていない状態でイベントを受け、
 	 * 片側を合わせた直後にもう片側が比例スクロールで上書きしてしまう
 	 * （Prev/Next の位置合わせが毎回潰れる）。
+	 * 0ms のタイマーでも足りない。scroll イベントは次の描画の手順で配られ、タイマーはそれより先に
+	 * 走るので、跳ね返りを受ける前に札が下りる。描画の手順を2回待ってから下ろす（1回目は
+	 * scroll イベントを配った後、2回目は scroll の処理中に書き換えた分の跳ね返りの後）。
+	 * 後から立てた札を先の予約が下ろさないよう、最後に立てた札の予約だけが下ろす。
 	 */
 	function holdSync(): void {
 		state.syncing = true;
-		host.setTimeout(() => { state.syncing = false; }, 0);
+		const hold = ++state.syncHold;
+		host.requestAnimationFrame(() => host.requestAnimationFrame(() => {
+			if (state.syncHold === hold) {
+				state.syncing = false;
+			}
+		}));
 	}
 
 	function syncScroll(from: Side, to: Side): void {
@@ -592,11 +607,12 @@ export function paradisDocxDiffWebviewBoot(ctx: IParadisDocxDiffWebviewContext, 
 		isPaneBlank: side => !byId('doc-' + side).querySelector('.docx-l-wrapper > section, .docx-r-wrapper > section'),
 		setAssetPlaceholders: placeholders => {
 			const container = byId('asset-placeholders');
-			container.textContent = placeholders.length ? `Office assets unavailable: ${placeholders.length}` : '';
+			container.textContent = placeholders.length ? ctx.labelAssetsUnavailable.replace('{0}', String(placeholders.length)) : '';
 			container.style.display = placeholders.length ? '' : 'none';
 		},
 		setTimeout: (handler: () => void, delay: number) => window.setTimeout(handler, delay),
 		clearTimeout: (handle: number) => window.clearTimeout(handle),
+		requestAnimationFrame: (handler: () => void) => { window.requestAnimationFrame(handler); },
 		stampParagraphs: document => anchors?.stamp(document),
 		collectParagraphs: side => anchors?.collect(byId('doc-' + side)),
 		revealParagraph: (side, marker, focus) => !!anchors?.reveal(byId('doc-' + side), { marker, context: '', focus, matchCase: true }),
@@ -621,6 +637,7 @@ export function buildParadisDocxDiffContext(labelLoading: string): IParadisDocxD
 		objectChar: PARADIS_DOCX_OBJECT_CHAR,
 		maxBlocks: PARADIS_DOCX_MAX_BLOCKS,
 		labelLoading,
+		labelAssetsUnavailable: localize('paradis.docxDiff.assetsUnavailable', "表示できない部品: {0} 件"),
 		errorLibraryMissing: PARADIS_DOCX_ERROR_LIBRARY_MISSING,
 	};
 }
