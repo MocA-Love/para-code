@@ -16,6 +16,7 @@
 //    置き、Enter では通さない。実行のボタンの色は変えない。
 //  - `destructive: true`（消す・破棄・上書きなど取り消せない操作）では、実行のボタンを危険の色にし、初めのフォーカスを
 //    「キャンセル」に置く。Enter では実行しない（実行は Tab で移るかマウスで押す）。
+//  - `primaryButton` は必須（本家の既定の「はい」を出さない）。
 //  - 種類（`type`）の印は出さない（キットの S 段は問いの太字で示す）。
 //  - Markdown の補足は平文にして出す（fork の確認は補足を文字列で渡している）。
 // 呼び出し側がこのファイルを import すると下の registerSingleton も読まれるので、どのウィンドウの入口からでも解決できる。
@@ -27,12 +28,16 @@ import { createDecorator } from '../../../../platform/instantiation/common/insta
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { FocusMode } from '../../../../platform/native/common/native.js';
-import { localize } from '../../../../nls.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { openParadisConfirmDialog } from './paradisConfirmDialog.js';
 
 /** fork の確認。本家の {@link IConfirmation} に、取り消せない操作の印を足したもの。 */
 export interface IParadisConfirmation extends IConfirmation {
+	/**
+	 * 実行のボタンの文言（「削除」「接続を承認」など、押すと何が起きるかが分かる動作の名前）。本家と違って必須にしている。
+	 * 省くと本家の既定の「はい」になり、取り消せない確認でも何をするボタンか読めなくなるため。
+	 */
+	readonly primaryButton: string;
 	/** 取り消せない操作（削除・破棄・強制・上書き・作り直し・解除）。既定のボタンを「キャンセル」にし、実行を危険の色にする。 */
 	readonly destructive?: boolean;
 	/**
@@ -68,9 +73,7 @@ export class ParadisDialogService implements IParadisDialogService {
 			message: confirmation.message,
 			detail: detail || undefined,
 			buttons: [{
-				// 本家の既定（dialogs.ts の getConfirmationButtons の「はい」）に合わせる
-				// allow-any-unicode-next-line
-				label: confirmation.primaryButton ?? localize('paradis.dialogService.yes', "はい"),
+				label: confirmation.primaryButton,
 				kind: confirmation.destructive ? 'danger' : 'primary',
 				run: () => true,
 			}],

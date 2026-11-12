@@ -7,13 +7,15 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // エージェントのカーソルの持ち主（ペイン × タブ）ごとの名前と色を決める台帳（shared process）。
-// q.html Q272〜Q274 A、agent-cursor-after-mock.html の「名前の規則」。
+// q.html Q272〜Q274 A・Q636 A、agent-cursor-after-mock.html の「名前の規則」。
 //
 // - 名前は LLM が `set_cursor_label`（または `open_browser_tab`・`select_browser_tab` の `label`）で
-//   決めたもの。決めていなければ CLI の名前（Claude・Codex）。同じページに同じ CLI の持ち主が 2 つ以上
-//   いれば、後から来た方に番号を足す（Claude 2）。サブエージェントの種類は推測になるので使わない
+//   決めたもの。決めていなければ CLI の名前（Claude・Codex）。サブエージェントの種類は推測になるので使わない
 // - 色は同じページの持ち主ごとに必ず変える。1 つ目は CLI の色、2 つ目以降は紫・桃・青の順
-// - 同じページで名前まで同じなら、後から来た方に「 2」を足す
+// - 番号はページに来たときに、同じ名前の持ち主の中で空いている一番小さいものを取る（1 は番号を出さない、
+//   2 から「Claude 2」）。番号は持ち主に固定し、先の持ち主が休んで外れても、名前を変えても保つ。
+//   外れた持ち主の番号は空けておき、後から来た持ち主が使い回す。ただし名前を変えた結果、ほかの持ち主と
+//   表示まで同じになったときだけ、名前を変えた方が新しい名前の中で空いている番号を取り直す
 // - 保存はしない。名前は持ち主（ペイン × ビュー）の鍵で覚え、上限（{@link MAX_LABELS}）を越えたら古いものから捨てる。
 //   共有をやめたタブの名前は、その鍵で入力が来なくなるので使われなくなる
 
@@ -43,6 +45,10 @@ interface IOwnerSeen {
 	readonly cli: ParadisCursorCli | undefined;
 	/** 色の枠（0 は CLI の色、1 以降は {@link MORE_COLORS}）。来たときに決め、休んで外れるまで変えない。 */
 	readonly slot: number;
+	/** 名前の番号（1 は番号を出さない）。来たときに決め、休んで外れるまで変えない（Q636 A）。 */
+	number: number;
+	/** {@link number} を決めたときの名前。名前を変えた持ち主を見分ける（表示が重なったときに譲る側）。 */
+	numberedAs: string;
 	at: number;
 }
 
@@ -127,25 +133,50 @@ export class ParadisCursorOwners {
 			while (live.some(owner => owner.slot === slot)) {
 				slot++;
 			}
-			self = { ownerKey, cli, slot, at };
+			const name = this.baseName(ownerKey, cli);
+			self = { ownerKey, cli, slot, number: this.freeNumber(live, name, undefined), numberedAs: name, at };
 			live.push(self);
 		}
 		self.at = at;
 		this.pages.set(pageKey, live);
-		const index = live.indexOf(self);
+		this.settleRename(live, self);
 		const color = self.slot === 0
 			? (cli ? CLI_COLOR[cli] : UNKNOWN_COLOR)
 			: MORE_COLORS[(self.slot - 1) % MORE_COLORS.length];
-		const name = this.nameAt(live, index);
+		const base = this.baseName(ownerKey, self.cli);
+		const name = self.number > 1 ? `${base} ${self.number}` : base;
 		return { id: paradisCursorOwnerId(ownerKey), name, mark: cli ? CLI_MARK[cli] : '', color };
 	}
 
-	/** 並びの `index` 番目の持ち主の名前（前の持ち主と同じ名前なら番号を足す）。 */
-	private nameAt(live: readonly IOwnerSeen[], index: number): string {
-		const base = (owner: IOwnerSeen) => this.labels.get(owner.ownerKey)?.label || (owner.cli ? CLI_NAME[owner.cli] : defaultName());
-		const name = base(live[index]);
-		const before = live.slice(0, index).filter(owner => base(owner) === name).length;
-		return before > 0 ? `${name} ${before + 1}` : name;
+	/** 持ち主の番号を除いた名前（決めた名前、無ければ CLI の名前）。 */
+	private baseName(ownerKey: string, cli: ParadisCursorCli | undefined): string {
+		return this.labels.get(ownerKey)?.label || (cli ? CLI_NAME[cli] : defaultName());
+	}
+
+	/** `name` の持ち主（`except` を除く）が使っていない一番小さい番号。 */
+	private freeNumber(live: readonly IOwnerSeen[], name: string, except: IOwnerSeen | undefined): number {
+		let number = 1;
+		while (live.some(owner => owner !== except && owner.number === number && this.baseName(owner.ownerKey, owner.cli) === name)) {
+			number++;
+		}
+		return number;
+	}
+
+	/**
+	 * `self` の表示（名前と番号）がほかの持ち主と同じなら、名前を変えた方に番号を取り直させる。
+	 * 名前を変えただけで重ならなければ番号は保つ。
+	 */
+	private settleRename(live: readonly IOwnerSeen[], self: IOwnerSeen): void {
+		const name = this.baseName(self.ownerKey, self.cli);
+		const other = live.find(owner => owner !== self && owner.number === self.number && this.baseName(owner.ownerKey, owner.cli) === name);
+		if (other) {
+			const otherRenamed = other.numberedAs !== name && self.numberedAs === name;
+			const loser = otherRenamed ? other : self;
+			loser.number = this.freeNumber(live, name, loser);
+			loser.numberedAs = name;
+		} else {
+			self.numberedAs = name;
+		}
 	}
 }
 
