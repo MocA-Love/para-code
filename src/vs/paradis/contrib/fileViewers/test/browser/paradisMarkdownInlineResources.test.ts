@@ -15,7 +15,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { FileService } from '../../../../../platform/files/common/fileService.js';
 import { InMemoryFileSystemProvider } from '../../../../../platform/files/common/inMemoryFilesystemProvider.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { encodeParadisBase64, inlineParadisMarkdownMedia, ParadisInlineMediaCache, resolveParadisMediaUri } from '../../browser/paradisMarkdownInlineResources.js';
+import { encodeParadisBase64, inlineParadisMarkdownMedia, ParadisInlineMediaBudget, ParadisInlineMediaCache, resolveParadisMediaUri } from '../../browser/paradisMarkdownInlineResources.js';
 
 suite('paradisMarkdownInlineResources', () => {
 
@@ -291,6 +291,24 @@ suite('paradisMarkdownInlineResources', () => {
 			cache.set(c, 1, 1, 'cccc');
 			cache.set(c, 1, 1, 'x'.repeat(11));
 			deepStrictEqual([cache.get(a, 1, 1), cache.get(a, 2, 1), cache.get(b, 1, 1), cache.get(c, 1, 1), cache.size], [undefined, undefined, 'bbbb', undefined, 4]);
+		});
+
+		test('shares one limit across the viewers and drops the least recently used image of any viewer', () => {
+			// グループを分けて画像の多い文書を並べても、覚える量がビューアの数だけ増えない。
+			const a = URI.file('/a.png');
+			const b = URI.file('/b.png');
+			const c = URI.file('/c.png');
+			const budget = new ParadisInlineMediaBudget(10);
+			const first = new ParadisInlineMediaCache(budget);
+			const second = new ParadisInlineMediaCache(budget);
+			first.set(a, 1, 1, 'aaaa');
+			first.set(b, 1, 1, 'bbbb');
+			second.get(a, 1, 1);
+			first.get(a, 1, 1);
+			second.set(c, 1, 1, 'cccc');
+			const afterOverflow = [first.get(a, 1, 1), first.get(b, 1, 1), second.get(c, 1, 1), budget.size];
+			first.clear();
+			deepStrictEqual([afterOverflow, [budget.size, second.size]], [['aaaa', undefined, 'cccc', 8], [4, 4]]);
 		});
 	});
 

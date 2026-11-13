@@ -479,7 +479,9 @@ export class ParadisBookmarksService extends Disposable implements IParadisBookm
 	}
 
 	private _persistFaviconsRaw(): void {
-		this._storageService.store(FAVICONS_STORAGE_KEY, JSON.stringify(this._favicons.serialize()), StorageScope.APPLICATION, StorageTarget.USER);
+		// favicon は画像そのもので大きくなりうるので、設定の同期には載せない（ブックマークは同期する）。
+		// 別のマシンでは、そのページを開いたときに取り直す。
+		this._storageService.store(FAVICONS_STORAGE_KEY, JSON.stringify(this._favicons.serialize()), StorageScope.APPLICATION, StorageTarget.MACHINE);
 	}
 
 	private _loadNodes(): void {

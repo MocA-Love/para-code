@@ -354,6 +354,21 @@ registerAction2(class extends Action2 {
 const AUTORUN_APPROVED_STORAGE_KEY = 'paradis.terminalPresets.autoRunApproved';
 
 /**
+ * 承認の一覧へ `approvalKey`（`<repositoryPath>:<name>:<内容のハッシュ>`）を足し、同じリポジトリと名前の
+ * 古いキーを外した一覧を返す。.paracode.json を書き換えるたびにキーが増え続けないようにするため。
+ * 前の内容へ戻したときは、もう一度承認を求めることになる。
+ *
+ * パスや名前に `:` が入りうるので、前置きが一致し、残りがハッシュ（符号付きの整数）だけのものに限って外す
+ * （名前 `a` の承認を整理するとき、名前 `a:b` のキーを巻き込まない）。
+ */
+export function paradisReplaceAutoRunApproval(approved: readonly string[], repositoryPath: string, presetName: string, approvalKey: string): string[] {
+	const prefix = `${repositoryPath}:${presetName}:`;
+	const kept = approved.filter(key => !(key.startsWith(prefix) && /^-?\d+$/.test(key.slice(prefix.length))));
+	kept.push(approvalKey);
+	return kept;
+}
+
+/**
  * 指定フォルダで有効な autoRun プリセットを実行する。
  * paradisRunWorktreeCreateFlow（ダイアログ発のバックグラウンド作成とモバイル発のヘッドレス作成の
  * 共通本体）から、worktree 作成完了後に呼ばれる。
@@ -418,7 +433,7 @@ export async function paradisRunAutoRunPresets(accessor: ServicesAccessor, folde
 				if (!result.confirmed) {
 					continue;
 				}
-				approved.push(approvalKey);
+				approved = paradisReplaceAutoRunApproval(approved, repositoryPath, preset.name, approvalKey);
 				storageService.store(AUTORUN_APPROVED_STORAGE_KEY, JSON.stringify(approved), StorageScope.APPLICATION, StorageTarget.MACHINE);
 			}
 		}

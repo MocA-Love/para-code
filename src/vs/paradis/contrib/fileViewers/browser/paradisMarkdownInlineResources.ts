@@ -60,9 +60,81 @@ export const PARADIS_INLINE_MEDIA_LIMITS: IParadisInlineMediaLimits = {
 
 /**
  * 覚えておく data: URI の合計の上限（文字数）。1 文書の予算 32 MiB を base64 にすると約 42.7M 文字
- * なので、それが丸ごと入る大きさにしてある。
+ * なので、それが丸ごと入る大きさにしてある。**全部のビューアを合わせた上限**で、エディタのグループを
+ * 分けて画像の多い文書を並べても、ビューアの数だけ増えない（{@link ParadisInlineMediaBudget}）。
  */
 export const PARADIS_INLINE_MEDIA_CACHE_MAX_CHARS = 48 * 1024 * 1024;
+
+/** 予算の中の 1 件。どのキャッシュのどのキーか。 */
+interface IParadisInlineMediaBudgetEntry {
+	readonly cache: ParadisInlineMediaCache;
+	readonly key: string;
+	readonly chars: number;
+}
+
+/**
+ * 複数の {@link ParadisInlineMediaCache} で分け合う、覚えておく文字数の合計の上限。
+ *
+ * キャッシュそのものは共有しない。共有すると、あるビューアの描き直し（`retain`）や `clear` が、
+ * 別のビューアの画像まで外してしまう。分け合うのは文字数の合計と古い順だけで、あふれたら
+ * どのビューアの分かに関わらず、いちばん長く使われていないものから外す。
+ */
+export class ParadisInlineMediaBudget {
+
+	/** 予算の中の項目。Map の並びを使った古い順。 */
+	private readonly _entries = new Map<string, IParadisInlineMediaBudgetEntry>();
+	private _chars = 0;
+
+	constructor(readonly maxChars = PARADIS_INLINE_MEDIA_CACHE_MAX_CHARS) { }
+
+	/** 全部のキャッシュを合わせた文字数（テスト用）。 */
+	get size(): number {
+		return this._chars;
+	}
+
+	/** 足してから、上限を超えた分を古い順に持ち主から外させる。 */
+	add(cache: ParadisInlineMediaCache, cacheId: number, key: string, chars: number): void {
+		const id = paradisInlineMediaBudgetId(cacheId, key);
+		this._entries.set(id, { cache, key, chars });
+		this._chars += chars;
+		while (this._chars > this.maxChars) {
+			const oldest = this._entries.values().next();
+			if (oldest.done) {
+				break;
+			}
+			// 持ち主が自分の表から外し、その中で remove を呼んで予算からも引く。
+			oldest.value.cache.evict(oldest.value.key);
+		}
+	}
+
+	/** 使ったものを末尾へ送る。 */
+	touch(cacheId: number, key: string): void {
+		const id = paradisInlineMediaBudgetId(cacheId, key);
+		const entry = this._entries.get(id);
+		if (entry) {
+			this._entries.delete(id);
+			this._entries.set(id, entry);
+		}
+	}
+
+	remove(cacheId: number, key: string): void {
+		const id = paradisInlineMediaBudgetId(cacheId, key);
+		const entry = this._entries.get(id);
+		if (entry) {
+			this._entries.delete(id);
+			this._chars -= entry.chars;
+		}
+	}
+}
+
+function paradisInlineMediaBudgetId(cacheId: number, key: string): string {
+	return `${cacheId}\n${key}`;
+}
+
+/** ビューアが既定で分け合う予算。ワークベンチの renderer に 1 つ。 */
+const paradisSharedInlineMediaBudget = new ParadisInlineMediaBudget();
+
+let paradisNextInlineMediaCacheId = 0;
 
 /**
  * 作った data: URI を、ファイルの更新時刻と大きさごとに覚えておく。
@@ -70,6 +142,8 @@ export const PARADIS_INLINE_MEDIA_CACHE_MAX_CHARS = 48 * 1024 * 1024;
  * Markdown のビューアは、ファイルを保存するたびに文書を描き直す。覚えておかないと、そのたびに
  * 全部の画像を読み直して base64 にし直すことになる（8 MB の画像なら毎回）。ビューア 1 つにつき
  * 1 つ持ち、ビューアと一緒に捨てる。描き直すたびに、その描画で使わなかった画像は外す（{@link retain}）。
+ * 文字数の上限は全部のビューアで分け合う（{@link ParadisInlineMediaBudget}）。予算が参照を握るので、
+ * 捨てるときは必ず {@link clear} を呼ぶこと。
  *
  * **仕組みの限界**: 版の見分けは更新時刻と大きさだけなので、どちらも同じまま中身だけが変わった画像
  * （同じミリ秒の中で同じ大きさに書き換えたもの、更新時刻を戻すツールで書いたもの）は、前の画像が
@@ -78,15 +152,22 @@ export const PARADIS_INLINE_MEDIA_CACHE_MAX_CHARS = 48 * 1024 * 1024;
  */
 export class ParadisInlineMediaCache {
 
-	/** キー（URI・更新時刻・大きさ）→ data: URI。Map の並びを使った古い順。 */
+	/** キー（URI・更新時刻・大きさ）→ data: URI。 */
 	private readonly _entries = new Map<string, string>();
 	/** URI → いま覚えているキー。同じファイルの古い版を残さないため。 */
 	private readonly _keyByResource = new Map<string, string>();
 	private _chars = 0;
+	private readonly _id = paradisNextInlineMediaCacheId++;
+	private readonly _budget: ParadisInlineMediaBudget;
 
-	constructor(private readonly _maxChars = PARADIS_INLINE_MEDIA_CACHE_MAX_CHARS) { }
+	/**
+	 * @param budget 分け合う予算。数を渡すと、このキャッシュだけの予算をその文字数で作る（テスト用）。
+	 */
+	constructor(budget: ParadisInlineMediaBudget | number = paradisSharedInlineMediaBudget) {
+		this._budget = typeof budget === 'number' ? new ParadisInlineMediaBudget(budget) : budget;
+	}
 
-	/** 覚えている文字数の合計（テスト用）。 */
+	/** このキャッシュが覚えている文字数の合計（テスト用）。 */
 	get size(): number {
 		return this._chars;
 	}
@@ -96,8 +177,7 @@ export class ParadisInlineMediaCache {
 		const value = this._entries.get(key);
 		if (value !== undefined) {
 			// 使ったものを末尾へ送り、古い順に外せるようにする。
-			this._entries.delete(key);
-			this._entries.set(key, value);
+			this._budget.touch(this._id, key);
 		}
 		return value;
 	}
@@ -106,29 +186,16 @@ export class ParadisInlineMediaCache {
 		const resourceKey = resource.toString();
 		const previous = this._keyByResource.get(resourceKey);
 		if (previous !== undefined) {
-			this._remove(previous);
-			this._keyByResource.delete(resourceKey);
+			this.evict(previous);
 		}
-		if (value.length > this._maxChars) {
+		if (value.length > this._budget.maxChars) {
 			return;
 		}
 		const key = paradisInlineMediaCacheKey(resource, mtime, size);
 		this._entries.set(key, value);
 		this._keyByResource.set(resourceKey, key);
 		this._chars += value.length;
-		while (this._chars > this._maxChars) {
-			const oldest = this._entries.keys().next();
-			if (oldest.done) {
-				break;
-			}
-			this._remove(oldest.value);
-			for (const [resourceOfOldest, keyOfOldest] of this._keyByResource) {
-				if (keyOfOldest === oldest.value) {
-					this._keyByResource.delete(resourceOfOldest);
-					break;
-				}
-			}
-		}
+		this._budget.add(this, this._id, key, value.length);
 	}
 
 	/** `resources` に無いファイルの分を外す。描き直しで使わなくなった画像を抱えたままにしない。 */
@@ -139,23 +206,34 @@ export class ParadisInlineMediaCache {
 		}
 		for (const [resourceKey, key] of [...this._keyByResource]) {
 			if (!wanted.has(resourceKey)) {
-				this._remove(key);
-				this._keyByResource.delete(resourceKey);
+				this.evict(key);
 			}
 		}
 	}
 
 	clear(): void {
+		for (const key of this._entries.keys()) {
+			this._budget.remove(this._id, key);
+		}
 		this._entries.clear();
 		this._keyByResource.clear();
 		this._chars = 0;
 	}
 
-	private _remove(key: string): void {
+	/** 1 件外す。予算があふれたときにも予算の側から呼ばれる。 */
+	evict(key: string): void {
 		const value = this._entries.get(key);
-		if (value !== undefined) {
-			this._entries.delete(key);
-			this._chars -= value.length;
+		if (value === undefined) {
+			return;
+		}
+		this._entries.delete(key);
+		this._chars -= value.length;
+		this._budget.remove(this._id, key);
+		for (const [resourceKey, keyOfResource] of this._keyByResource) {
+			if (keyOfResource === key) {
+				this._keyByResource.delete(resourceKey);
+				break;
+			}
 		}
 	}
 }
