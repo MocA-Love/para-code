@@ -2,7 +2,7 @@
 
 import { describe, expect, test } from 'vitest';
 import { generateIdentity, randomToken } from '../src/crypto.js';
-import { decodePairingUri, deriveSasCode, encodePairingUri } from '../src/pairing.js';
+import { decodePairingUri, deriveSasCode, encodePairingUri, INSECURE_RELAY_URL_ERROR } from '../src/pairing.js';
 
 describe('pairing payload', () => {
 	test('QR URI roundtrip', () => {
@@ -42,6 +42,46 @@ describe('pairing payload', () => {
 		expect(decodePairingUri(encodePairingUri(base)).pcName).toBeUndefined();
 		// 長すぎる名前はQRを膨らませないよう切り詰める。
 		expect(decodePairingUri(encodePairingUri({ ...base, pcName: 'x'.repeat(200) })).pcName?.length).toBe(64);
+	});
+
+	test('accepts only wss:// relays unless the caller allows insecure ones', () => {
+		const pc = generateIdentity();
+		const withRelay = (relayUrl: string) => encodePairingUri({
+			version: 1,
+			relayUrl,
+			deviceId: 'dev_abc123',
+			pairId: 'pair_xyz',
+			pairingToken: randomToken(16),
+			pcPublicKey: pc.publicKey,
+		});
+		const outcome = (relayUrl: string, allowInsecureRelay?: boolean) => {
+			try {
+				return decodePairingUri(withRelay(relayUrl), allowInsecureRelay === undefined ? undefined : { allowInsecureRelay }).relayUrl;
+			} catch (error) {
+				return (error as Error).message;
+			}
+		};
+		expect([
+			outcome('wss://relay.paradis.ltd'),
+			outcome('WSS://relay.paradis.ltd/path'),
+			outcome('ws://192.168.0.10:8787'),
+			outcome('ws://127.0.0.1:8787', true),
+			outcome('wss://relay.paradis.ltd', true),
+			outcome('https://relay.paradis.ltd'),
+			outcome('https://relay.paradis.ltd', true),
+			outcome('wss://'),
+			outcome('wss://user@relay.paradis.ltd'),
+		]).toEqual([
+			'wss://relay.paradis.ltd',
+			'WSS://relay.paradis.ltd/path',
+			INSECURE_RELAY_URL_ERROR,
+			'ws://127.0.0.1:8787',
+			'wss://relay.paradis.ltd',
+			'malformed pairing payload: relayUrl',
+			'malformed pairing payload: relayUrl',
+			'malformed pairing payload: relayUrl',
+			'malformed pairing payload: relayUrl',
+		]);
 	});
 
 	test('rejects non-pairing URIs', () => {

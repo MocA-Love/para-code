@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { PAIRING_URI_SCHEME } from '@para/protocol';
+import { INSECURE_RELAY_URL_ERROR, PAIRING_URI_SCHEME } from '@para/protocol';
 
 /**
  * ペアリング画面（`/pair`）が受け取る文字列の整え方と、失敗の伝え方。
@@ -58,6 +58,9 @@ export function isPairingCancelled(error: unknown): boolean {
  */
 export function pairingErrorMessage(error: unknown): string {
 	const raw = error instanceof Error ? error.message : String(error);
+	if (raw === INSECURE_RELAY_URL_ERROR) {
+		return '暗号化されていない中継サーバー（ws://）は使えません。PC の設定で wss:// の中継サーバーを指定して、QR コードを出し直してください。';
+	}
 	if (raw === 'not a Para Code pairing URI' || raw.startsWith('malformed pairing payload') || raw === 'unsupported pairing payload') {
 		return 'Para Code のペアリング用のコードではありません。PC に表示された QR コードかリンクを使ってください。';
 	}
