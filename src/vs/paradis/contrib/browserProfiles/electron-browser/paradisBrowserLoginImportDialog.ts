@@ -48,10 +48,6 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 	// ドメインの行だけは検索の入力ごとに作り直すので、行のリスナーは別の store に分けて毎回捨てる。
 	private readonly _rowStore = this._register(new DisposableStore());
 	private readonly _destStore = this._register(new DisposableStore());
-	// フォーカス巡回対象も領域ごとに持ち、再描画のたびに入れ替える（際限なく増やさない）。
-	private _sourceFocusables: HTMLElement[] = [];
-	private _domainFocusables: HTMLElement[] = [];
-	private _destFocusables: HTMLElement[] = [];
 
 	private _browsers: readonly IParadisImportBrowser[] = [];
 	private _selectedBrowserId: string | undefined;
@@ -126,21 +122,14 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 		void this._loadDomains();
 	}
 
-	/** 3領域のフォーカス対象を1本にまとめ直す（基底クラスの巡回はこの配列を見る）。 */
-	private _rebuildFocusables(): void {
-		this.contentFocusables.splice(0, this.contentFocusables.length, ...this._sourceFocusables, ...this._domainFocusables, ...this._destFocusables);
-	}
-
 	private _renderSource(): void {
 		this._sourceStore.clear();
-		this._sourceFocusables = [];
 		dom.clearNode(this._sourceRow);
 		if (this._browsers.length === 0) {
 			dom.append(this._sourceRow, $('.pbpm-hint')).textContent = localize(
 				'paradis.loginImport.noBrowsers',
 				"取り込めるブラウザが見つかりませんでした。macOS の Chrome / Edge / Brave / Arc などが対象です。",
 			);
-			this._rebuildFocusables();
 			return;
 		}
 
@@ -148,7 +137,6 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 		const browserSelect = this._sourceStore.add(new ParadisSelect(this._sourceRow, this._contextViewService, this._configurationService,
 			this._browsers.map(browser => ({ value: browser.id, label: browser.label })), this._selectedBrowserId,
 			{ ariaLabel: localize('paradis.loginImport.sourceBrowser', "取り込み元のブラウザ"), className: 'pbpm-select' }));
-		this._sourceFocusables.push(browserSelect.focusableElement);
 		this._sourceStore.add(browserSelect.onDidChange(value => {
 			this._selectedBrowserId = value;
 			this._selectedSourceDir = this._currentBrowser()?.profiles[0]?.directory;
@@ -162,14 +150,12 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 			const profileSelect = this._sourceStore.add(new ParadisSelect(this._sourceRow, this._contextViewService, this._configurationService,
 				profiles.map(profile => ({ value: profile.directory, label: profile.label })), this._selectedSourceDir,
 				{ ariaLabel: localize('paradis.loginImport.sourceProfile', "取り込み元のプロファイル"), className: 'pbpm-select' }));
-			this._sourceFocusables.push(profileSelect.focusableElement);
 			this._sourceStore.add(profileSelect.onDidChange(value => {
 				this._selectedSourceDir = value;
 				this._selectedDomains.clear();
 				void this._loadDomains();
 			}));
 		}
-		this._rebuildFocusables();
 	}
 
 	private async _loadDomains(): Promise<void> {
@@ -199,19 +185,16 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 
 	private _renderDomains(): void {
 		this._renderStore.clear();
-		this._domainFocusables = [];
 		dom.clearNode(this._domainSection);
 
 		const browser = this._currentBrowser();
 		const unsupported = browser?.unsupportedReason ?? this._domainListing?.unsupportedReason;
 		if (unsupported) {
 			dom.append(this._domainSection, $('.pbpm-import-unsupported')).textContent = unsupported;
-			this._rebuildFocusables();
 			return;
 		}
 		const listing = this._domainListing;
 		if (!listing) {
-			this._rebuildFocusables();
 			return;
 		}
 
@@ -258,20 +241,17 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 		dom.clearNode(listElement);
 		// 一覧全体を Tab の停止点1つにする（ロービング tabindex）。ドメインが数千あっても Tab 1回で抜けられ、
 		// 一覧の中は ↑↓ で移り、Space で切り替える。停止点は選べるチェックボックスのうち1つだけ tabIndex=0。
-		this._domainFocusables = [this._searchInput];
 		const query = this._search.trim().toLowerCase();
 		const domains = (this._domainListing?.domains ?? []).filter(group => query.length === 0 || group.domain.includes(query));
 		if (domains.length === 0) {
 			dom.append(listElement, $('.pbpm-hint')).textContent = query.length > 0
 				? localize('paradis.loginImport.noMatch', "一致するドメインがありません。")
 				: localize('paradis.loginImport.noDomains', "取り込めるドメインがありません。");
-			this._rebuildFocusables();
 			return;
 		}
-		const searchInput = this._searchInput;
 		const checkboxes: HTMLInputElement[] = [];
 		let active: HTMLInputElement | undefined;
-		// 停止点を1つに保つ。基底クラスの Tab 巡回（contentFocusables）にも、今の停止点だけを入れる。
+		// 停止点を1つに保つ（Tab の巡回は tabIndex を見て DOM から集めるので、ほかの行は tabIndex=-1 のまま飛ばされる）。
 		const setActive = (next: HTMLInputElement) => {
 			if (active === next) {
 				return;
@@ -281,8 +261,6 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 			}
 			active = next;
 			next.tabIndex = 0;
-			this._domainFocusables = [searchInput, next];
-			this._rebuildFocusables();
 		};
 		for (const group of domains) {
 			const row = dom.append(listElement, $('label.pbpm-import-row')) as HTMLLabelElement;
@@ -331,8 +309,6 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 		const initial = checkboxes.find(checkbox => checkbox.checked) ?? checkboxes[0];
 		if (initial) {
 			setActive(initial);
-		} else {
-			this._rebuildFocusables();
 		}
 	}
 
@@ -350,7 +326,6 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 
 	private _renderDestination(): void {
 		this._destStore.clear();
-		this._destFocusables = [];
 		dom.clearNode(this._destinationRow);
 		// 取り込み先は「利用者の名前付きプロファイル」だけ。エージェントが作ったものは既定で除外する。
 		const profiles = this.profilesService.list().filter(profile => !profile.createdByAgent);
@@ -361,7 +336,6 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 				"取り込み先の名前付きプロファイルがありません。先にプロファイルを作成してください。",
 			);
 			this._destinationProfileId = undefined;
-			this._rebuildFocusables();
 			return;
 		}
 		if (this._destinationProfileId === undefined || !profiles.some(profile => profile.id === this._destinationProfileId)) {
@@ -370,12 +344,10 @@ class ParadisLoginImportDialog extends ParadisProfileModal {
 		const select = this._destStore.add(new ParadisSelect(this._destinationRow, this._contextViewService, this._configurationService,
 			profiles.map(profile => ({ value: profile.id, label: profile.name })), this._destinationProfileId,
 			{ ariaLabel: localize('paradis.loginImport.destination', "取り込み先のプロファイル"), className: 'pbpm-select' }));
-		this._destFocusables.push(select.focusableElement);
 		this._destStore.add(select.onDidChange(value => {
 			this._destinationProfileId = value;
 			this._updateImportButton();
 		}));
-		this._rebuildFocusables();
 	}
 
 	private _updateImportButton(): void {
