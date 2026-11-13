@@ -899,6 +899,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	private _portFileReconciler: ParadisMcpPortFileReconciler | undefined;
 	private readonly _serverStartPromise: Promise<void>;
 	private _serverDisposed = false;
+	/** URL の `?pane=` でトークンを受けた古い hook への移行の警告を、このプロセスで出したか（1 回だけ出す。Q620）。 */
+	private _legacyPaneQueryWarned = false;
 	private readonly _activeRequestControllers = new Set<AbortController>();
 	private readonly _activeIngressRequestsByToken = new Map<string, number>();
 	private _activeIngressRequestCount = 0;
@@ -4053,7 +4055,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			return this._cdpGateway.handleRequest(req, res);
 		}
 
-		// エージェントCLIのhook通知 (/agent-hook?pane=<token>&event=<eventType>)。
+		// エージェントCLIのhook通知 (/agent-hook?event=<eventType>。トークンは Authorization ヘッダー、旧スクリプトは ?pane=)。
 		// Claude Code / Codex の hooks に登録した notify.sh から叩かれる (Superset の
 		// GET /hook/complete 方式の移植。ペイントークンで認証)。
 		// v2スクリプトは hook stdin JSON をそのまま POST body に載せる (session_id /
@@ -4551,7 +4553,7 @@ export class ParadisAgentBrowserService extends Disposable {
 
 	/** Route session-bound OpenCode RPC through the same pane and process ownership checks as hooks. */
 	private async _handleOpenCodeBridge(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-		const token = this._extractToken(req);
+		const token = this._extractToken(req, true);
 		const lease = token === undefined ? undefined : this.captureIngressLease(token);
 		const registration = token === undefined ? undefined : paradisOpenCodeBridge.getRegistration(token);
 		const url = new URL(req.url ?? '/', 'http://127.0.0.1');
@@ -4602,7 +4604,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	private async _handleAgentHook(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-		const requestedToken = this._extractToken(req);
+		const requestedToken = this._extractToken(req, true);
 		const ingressLease = requestedToken === undefined ? undefined : this.captureIngressLease(requestedToken);
 		if (ingressLease === undefined) {
 			// まだ同期していないだけかもしれないペインには 503 で答え、notify スクリプトに控えさせる。
@@ -8195,18 +8197,34 @@ export class ParadisAgentBrowserService extends Disposable {
 		return { content: [{ type: 'text', text }], isError: true };
 	}
 
-	private _extractToken(req: http.IncomingMessage): string | undefined {
+	/**
+	 * ペインのトークンを `Authorization: Bearer` から読む。URL の `?pane=` は、ヘッダーへ移る前の hook スクリプト
+	 * （`/agent-hook`）と OpenCode のブリッジにだけ `allowLegacyQuery` で残す。URL のトークンはプロセスの一覧やログに
+	 * 平文で出るため、MCP など他の口では受けない（Q620）。CDP ゲートウェイは自前で `?pane=` を読む。
+	 */
+	private _extractToken(req: http.IncomingMessage, allowLegacyQuery = false): string | undefined {
 		const auth = req.headers.authorization;
 		if (typeof auth === 'string' && auth.startsWith('Bearer ') && auth.length > 7) {
 			return auth.slice(7).trim() || undefined;
 		}
+		if (!allowLegacyQuery) {
+			return undefined;
+		}
+		let pane: string | null;
 		try {
-			const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-			const pane = url.searchParams.get('pane');
-			return pane || undefined;
+			pane = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('pane');
 		} catch {
 			return undefined;
 		}
+		if (!pane) {
+			return undefined;
+		}
+		if (!this._legacyPaneQueryWarned) {
+			this._legacyPaneQueryWarned = true;
+			// トークンも URL も書かない（警告そのものが平文の写しにならないように）
+			this._runNonThrowingDiagnostic(() => this.logService.warn('[ParadisAgentBrowser] a hook or bridge request sent the pane token in the URL query (?pane=). This is deprecated because the URL shows up in process lists and logs. Current Para Code hook scripts send it in an Authorization header; update older or hand-written hook settings to send "Authorization: Bearer $PARA_CODE_TERMINAL_PANE_ID".'));
+		}
+		return pane;
 	}
 
 	private _trackActiveRequest(req: http.IncomingMessage, res: http.ServerResponse): { readonly controller: AbortController; dispose(): void } {

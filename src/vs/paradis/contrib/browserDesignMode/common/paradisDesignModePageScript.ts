@@ -484,6 +484,26 @@ const INSTALL_SCRIPT = `(function () {
 
 	// ---- 要素の選択 ----
 	var pick = null;
+	// ページが top layer（showModal() の dialog・popover）に出したものは、どんな z-index の覆いより
+	// 上に描かれ、modal の dialog の外は inert になる。その上で押されたクリックは覆いへ届かず、
+	// ページのボタンを実際に押してしまうので、window の capture で先に止めて選択を打ち切る
+	// （ページが先に window の capture へ登録した処理までは止められない）
+	var TOP_LAYER_EVENTS = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'auxclick', 'dblclick', 'contextmenu'];
+	function modalDialogOpen() {
+		try { return !!document.querySelector('dialog:modal'); } catch (e) { return false; }
+	}
+	function isInTopLayer(event) {
+		var path = event.composedPath();
+		for (var i = 0; i < path.length && i < 64; i++) {
+			var node = path[i];
+			if (node && node.nodeType === 1) {
+				try {
+					if (node.matches(':modal') || node.matches(':popover-open')) { return true; }
+				} catch (e) { }
+			}
+		}
+		return false;
+	}
 	function finishPick(result) {
 		var current = pick;
 		if (!current) { return; }
@@ -491,6 +511,7 @@ const INSTALL_SCRIPT = `(function () {
 		off(g, 'keydown', current.onKeyDown, true);
 		off(g, 'scroll', current.onViewportChange, { capture: true });
 		off(g, 'resize', current.onViewportChange);
+		for (var i = 0; i < TOP_LAYER_EVENTS.length; i++) { off(g, TOP_LAYER_EVENTS[i], current.onTopLayerPointer, true); }
 		try { current.host.remove(); } catch (e) { }
 		result.nonce = current.nonce;
 		current.resolve(result);
@@ -498,6 +519,11 @@ const INSTALL_SCRIPT = `(function () {
 	function startPick(nonce) {
 		if (pick) { finishPick({ cancelled: true }); }
 		return new NativePromise(function (resolve) {
+			if (modalDialogOpen()) {
+				// 開いている間は覆いの上を押せないので、始めずに知らせる
+				resolve({ nonce: String(nonce || ''), blocked: true });
+				return;
+			}
 			var host = style(document.createElement('div'), 'position:fixed;inset:0;width:100vw;height:100vh;z-index:2147483647;pointer-events:auto;cursor:crosshair;background:transparent;margin:0;padding:0;border:0;');
 			var shadow = host.attachShadow({ mode: 'closed' });
 			var box = style(document.createElement('div'), 'position:fixed;display:none;pointer-events:none;border:2px solid ' + ACCENT + ';border-radius:3px;background:rgba(0,95,184,0.08);box-shadow:0 0 0 1px rgba(255,255,255,0.8);');
@@ -586,7 +612,17 @@ const INSTALL_SCRIPT = `(function () {
 				}
 			};
 			on(g, 'keydown', onKeyDown, true);
-			pick = { host: host, resolve: resolve, onKeyDown: onKeyDown, onViewportChange: onViewportChange, nonce: String(nonce || '') };
+			var onTopLayerPointer = function (event) {
+				if (!event.isTrusted || event.target === host || !isInTopLayer(event)) { return; }
+				event.preventDefault();
+				event.stopImmediatePropagation();
+				// 押下から click までの一連を止めきってから打ち切る（途中で外すと残りがページへ届く）
+				if (event.type === 'click' || event.type === 'auxclick' || event.type === 'contextmenu') {
+					finishPick({ blocked: true });
+				}
+			};
+			for (var t = 0; t < TOP_LAYER_EVENTS.length; t++) { on(g, TOP_LAYER_EVENTS[t], onTopLayerPointer, true); }
+			pick = { host: host, resolve: resolve, onKeyDown: onKeyDown, onViewportChange: onViewportChange, onTopLayerPointer: onTopLayerPointer, nonce: String(nonce || '') };
 			document.documentElement.appendChild(host);
 		});
 	}
