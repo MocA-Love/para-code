@@ -214,6 +214,13 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 				}, { switchToCreated: false, preserveFocus: true });
 				space = { stateKey: paradisWorktreeStateKey(result.worktree.uri), name: result.name, branch: result.branch, uri: result.worktree.uri.toString() };
 				launched = result.agent;
+				if (run.finished) {
+					// 作っている間に止めた。止めた回の報告にはスペースが無いので、作り終えたスペースを後から
+					// 記録して片付け候補に載せる（利用者が気付かないまま残さない）
+					this.recordSpace(run.runId, space);
+					this.killTerminal(launched ? this.findInstance(launched.instanceId) : undefined);
+					return;
+				}
 				if (!launched) {
 					this.finish(run, { runId: run.runId, status: 'failed', reason: 'launchFailed', detail: result.warning, space });
 					return;
@@ -336,6 +343,10 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 	private cleanup(run: IActiveRun): void {
 		run.store.dispose();
 		this.active.delete(run.runId);
+	}
+
+	private recordSpace(runId: string, space: IParadisScheduledRunSpace): void {
+		this.client.recordSpace(runId, space).catch(error => this.logService.warn('[ParadisScheduledRuns] recording the space failed', error));
 	}
 
 	private report(report: IParadisScheduledRunReport): void {
