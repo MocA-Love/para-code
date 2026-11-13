@@ -29,7 +29,7 @@ suite('Paradis cursor owners', () => {
 				second: { id: paradisCursorOwnerId('pane-b'), name: 'Claude 2', mark: 'C', color: '#8250df' },
 				third: { id: paradisCursorOwnerId('pane-c'), name: 'Codex', mark: 'X', color: '#bf3989' },
 				labelled: { ok: true, label: '在庫確認', truncated: false },
-				renamed: '在庫確認',
+				renamed: '在庫確認 2',
 				otherPage: ['在庫確認', '#d97757'],
 			},
 		);
@@ -46,6 +46,30 @@ suite('Paradis cursor owners', () => {
 		const after = owners.resolve('pane-b', 'page', 'claude').color;
 		const newcomer = owners.resolve('pane-c', 'page', 'codex').color;
 		assert.deepStrictEqual({ before, after, newcomer }, { before: '#8250df', after: '#8250df', newcomer: '#10a37f' });
+	});
+
+	test('an owner keeps its number when an earlier owner of the page goes idle, and a newcomer reuses the freed number', () => {
+		let clock = 0;
+		const owners = new ParadisCursorOwners(() => clock);
+		owners.resolve('pane-a', 'page', 'claude');
+		const before = owners.resolve('pane-b', 'page', 'claude').name;
+		clock += 9 * 60_000;
+		owners.resolve('pane-b', 'page', 'claude');
+		clock += 2 * 60_000;
+		const after = owners.resolve('pane-b', 'page', 'claude').name;
+		const newcomer = owners.resolve('pane-c', 'page', 'claude').name;
+		assert.deepStrictEqual({ before, after, newcomer }, { before: 'Claude 2', after: 'Claude 2', newcomer: 'Claude' });
+	});
+
+	test('an owner that renames itself into a name already shown takes the next free number, and the other owner keeps its name', () => {
+		const clock = 0;
+		const owners = new ParadisCursorOwners(() => clock);
+		owners.resolve('pane-a', 'page', 'claude');
+		owners.resolve('pane-b', 'page', 'codex');
+		owners.setLabel('pane-b', 'Claude');
+		const untouched = owners.resolve('pane-a', 'page', 'claude').name;
+		const renamed = owners.resolve('pane-b', 'page', 'codex').name;
+		assert.deepStrictEqual({ untouched, renamed }, { untouched: 'Claude', renamed: 'Claude 2' });
 	});
 
 	test('names change at most three times a minute, and a refused name falls back to the default', () => {

@@ -13,6 +13,7 @@
 - `src/vs/sessions/` はMicrosoft自身が用意した「エージェント的ワークフロー専用のworkbenchレイヤー」（`vs/workbench`の隣に位置し、workbenchをimportできるが逆はできない）。私たちの機能もこのレイヤーの思想に沿って追加する
 - 新規ファイル・クラス名には接頭辞（`session`または`para`）を付け、upstreamの将来ファイルとパスが衝突しないようにする（例: `sessionBrowserView.ts`）
 - `src/vs/platform/` の既存コード（electron-main 等）から呼ぶ fork のヘルパーは、`vs/paradis` への逆方向 import を増やさないよう `src/vs/platform/<area>/common/paradis*.ts` の新規ファイルに置き、`PARA-CODE:` の印を付ける（例: `src/vs/platform/update/common/paradisUpdatePlatform.ts`、`paradisUpdateChannel.ts`）
+- 同じ理由で、`src/vs/workbench/services/editor/common/` に置いた fork 所有の 4 本（`paradisAuxiliaryWindowRestore.ts`・`paradisEditorRetirementFence.ts`・`paradisEditorSplitTerminalService.ts`・`paradisTabContextKeys.ts`）も許容する例外とする（2026-11-13、q.html Q626）。本家の `src/vs/workbench/browser/parts/editor/` のファイル（`auxiliaryEditorPart.ts`・`editorActions.ts`・`editorGroupView.ts`・`editorCommands.ts`・`editorTabsControl.ts`）が PARA-PATCH から import していて、`vs/paradis` へ移すと `eslint.config.js` の `src/vs/workbench/~` に逆方向 import の許可が増えるため。どれも `PARA-CODE:` の印を付ける。新しい fork のファイルをこの形で本家のディレクトリに足すのは、本家のファイルから import する必要があり、`vs/paradis` への逆方向 import を増やしたくないときだけにする
 
 ## contributionの登録方法
 
