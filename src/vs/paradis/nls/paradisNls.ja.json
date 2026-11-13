@@ -1,0 +1,7 @@
+{
+	"contents": {
+		"vs/paradis/contrib/heapSnapshot/electron-browser/paradisHeapSnapshot.contribution": {
+			"paradis.writeHeapSnapshot": "メイン プロセスのヒープ スナップショットを書き出す"
+		}
+	}
+}
