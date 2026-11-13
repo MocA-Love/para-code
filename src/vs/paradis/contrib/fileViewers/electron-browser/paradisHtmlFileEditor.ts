@@ -27,7 +27,14 @@
 // 同じフォルダーの別のファイルを fetch で読めてしまう。ブラウザで file:// を開いたときより広いので、
 // `connect-src` を配信元だけに絞り、読んだ中身を fetch・XHR・WebSocket・sendBeacon で外へ送れないようにする
 // （{@link paradisHtmlOutsideWorkspaceCsp}）。
+//
+// ビューアの webview の origin はスロットごとに使い回す（paradisWebviewOriginPool）ので、ある文書のスクリプトが
+// localStorage・IndexedDB に書いた値を、後で同じスロットで開いた別の文書が読める。スクリプトを動かすときは、
+// 文書が替わったことをページの先頭で見て保存領域を消す（{@link paradisHtmlStorageResetScript}）。
+// `session.clearStorageData({ origin })` は Electron 43.8.3 で `vscode-webview://` の iframe に効かなかった
+// （成功を返すのに消えない）ので使わない。
 
+import { StringSHA1 } from '../../../../base/common/hash.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { escape } from '../../../../base/common/strings.js';
 import { dirname, relativePath } from '../../../../base/common/resources.js';
@@ -269,8 +276,10 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		const zoomScript = paradisViewerZoomScript();
 
 		const injected = paradisInjectHtmlHead(text, headInjection);
-		// 外の文書の CSP は、ページのどのスクリプトよりも前に置く（{@link paradisInsertAtDocumentStart}）。
-		const html = base.outsideWorkspace ? paradisInsertAtDocumentStart(injected, paradisHtmlOutsideWorkspaceCsp(base.url)) : injected;
+		// 外の文書の CSP と、保存領域を消すスクリプトは、ページのどのスクリプトよりも前に置く（{@link paradisInsertAtDocumentStart}）。
+		const documentStart = (base.outsideWorkspace ? paradisHtmlOutsideWorkspaceCsp(base.url) : '')
+			+ (this.allowScripts ? paradisHtmlStorageResetScript(paradisHtmlDocumentStorageKey(resource)) : '');
+		const html = documentStart ? paradisInsertAtDocumentStart(injected, documentStart) : injected;
 
 		// 末尾に足す。`</body>` を探して差し込むと、**ページ自身のスクリプトの中にある文字列**の
 		// `</body>` に当たることがあり、注入した `</script>` がそのスクリプトを途中で終わらせて
@@ -304,6 +313,32 @@ export function paradisHtmlOutsideWorkspaceCsp(baseUrl: string): string {
 		? `${url.protocol}//*${PARADIS_WEBVIEW_RESOURCE_HOST_SUFFIX}`
 		: url.origin;
 	return `<meta http-equiv="Content-Security-Policy" content="connect-src ${escapeAttribute(source)} data: blob:">`;
+}
+
+/**
+ * 保存領域の持ち主を表す値。文書の URI の SHA-1 にする（ページから読める所に置くので、パスそのものは書かない）。
+ */
+export function paradisHtmlDocumentStorageKey(resource: URI): string {
+	const sha = new StringSHA1();
+	sha.update(resource.toString());
+	return sha.digest();
+}
+
+/** 保存領域を最後に使った文書の印を置く localStorage のキー。 */
+const PARADIS_HTML_STORAGE_OWNER_KEY = '__paradisViewerDocument';
+
+/**
+ * 前に同じ origin を使った文書と `documentKey` が違えば、localStorage・sessionStorage・IndexedDB・Cache Storage を
+ * 消すスクリプト。ページのどのスクリプトよりも前に置く。
+ *
+ * 印は localStorage に置くので、起動し直しても同じ文書なら消さない（ページが自分で `localStorage.clear()` した後は、
+ * 次に開いたとき印が無いので消す）。印が読めない（localStorage が使えない）ときは何もしない。
+ * IndexedDB と Cache Storage の削除は非同期なので、ページがすぐに開くと削除より先に前の文書の値を読めることがある。
+ */
+export function paradisHtmlStorageResetScript(documentKey: string): string {
+	const owner = JSON.stringify(PARADIS_HTML_STORAGE_OWNER_KEY);
+	const key = JSON.stringify(documentKey).replace(/</g, '\\u003c');
+	return `<script>(function(){try{var w=window,s=w.localStorage;if(s.getItem(${owner})===${key}){return;}s.clear();try{w.sessionStorage.clear();}catch(e){}s.setItem(${owner},${key});var i=w.indexedDB;if(i&&i.databases){i.databases().then(function(l){l.forEach(function(d){if(d.name){i.deleteDatabase(d.name);}});},function(){});}var c=w.caches;if(c&&c.keys){c.keys().then(function(l){l.forEach(function(n){c.delete(n);});},function(){});}}catch(e){}})();</script>`;
 }
 
 /** 文書の先頭の BOM・空白・コメントと `<!DOCTYPE>`。これより前に要素を置くと quirks mode になる。 */
