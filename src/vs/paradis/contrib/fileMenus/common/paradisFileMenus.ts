@@ -148,6 +148,14 @@ export function paradisTerminalFolders(targets: readonly { readonly resource: UR
 	return distinctUris(targets.map(target => target.isDirectory ? target.resource : dirname(target.resource)));
 }
 
+/** 「ターミナルで開く」で、確かめずに一度に開くターミナルの数の上限。 */
+export const PARADIS_OPEN_IN_TERMINAL_CONFIRM_ABOVE = 5;
+
+/** 「ターミナルで開く」で、開く前に利用者へ確かめるか（上限を超える数のフォルダを選んだとき）。 */
+export function paradisOpenInTerminalNeedsConfirm(folderCount: number): boolean {
+	return folderCount > PARADIS_OPEN_IN_TERMINAL_CONFIRM_ABOVE;
+}
+
 /** エージェントへ送る文: パスを 1 行に 1 つ。 */
 export function paradisFilePathsPrompt(paths: readonly string[]): string {
 	return paths.join('\n');
