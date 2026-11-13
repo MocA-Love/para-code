@@ -33,7 +33,7 @@ import { IEditorService } from '../../../../../workbench/services/editor/common/
 import { IEditorPane } from '../../../../../workbench/common/editor.js';
 import { TestStorageService, TestWorkspaceTrustManagementService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import { ILifecycleService, LifecyclePhase } from '../../../../../workbench/services/lifecycle/common/lifecycle.js';
-import { ParadisHtmlFileEditor, paradisHtmlOutsideWorkspaceCsp, paradisInjectHtmlHead, paradisInsertAtDocumentStart } from '../../electron-browser/paradisHtmlFileEditor.js';
+import { ParadisHtmlFileEditor, paradisHtmlDocumentStorageKey, paradisHtmlOutsideWorkspaceCsp, paradisHtmlStorageResetScript, paradisInjectHtmlHead, paradisInsertAtDocumentStart } from '../../electron-browser/paradisHtmlFileEditor.js';
 import { ParadisHtmlFileInput } from '../../electron-browser/paradisHtmlFileInput.js';
 import { notifyParadisWebviewSignal, ParadisWebviewSignalCode } from '../../../sentry/common/paradisWebviewSignals.js';
 
@@ -555,6 +555,18 @@ suite('ParadisHtmlFileEditor', () => {
 			]);
 		});
 
+		test('puts the storage reset before the page scripts only when the page scripts run', async () => {
+			const resource = URI.file('/workspace/site/index.html');
+			const source = '<!DOCTYPE html><script>localStorage.getItem("x")</script><html><head><script>1</script></head></html>';
+			const document = new DOMParser().parseFromString(await createGenerationEditor().render(source, resource), 'text/html');
+			const untrusted = await renderThroughSetInput(false);
+
+			deepStrictEqual({
+				firstScript: document.querySelector('script')?.textContent?.includes(paradisHtmlDocumentStorageKey(resource)),
+				untrusted: untrusted.html?.includes('__paradisViewerDocument'),
+			}, { firstScript: true, untrusted: false });
+		});
+
 		test('resolves relative document assets through the local preview server', async () => {
 			// ワークスペースフォルダーごと載せるので、`../` の参照も URL のトークンの内側に収まる。
 			let mounted: string | undefined;
@@ -723,6 +735,46 @@ suite('paradisInsertAtDocumentStart', () => {
 			{ first: 'META', csp: 'connect-src http://127.0.0.1:56789 data: blob:', mode: 'BackCompat' },
 			{ first: 'META', csp: 'connect-src http://127.0.0.1:56789 data: blob:', mode: 'CSS1Compat' },
 		]);
+	});
+});
+
+suite('paradisHtmlStorageResetScript', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	/** 保存領域の偽物の上でスクリプトを動かし、残った値と消した IndexedDB・Cache Storage を返す。 */
+	async function runReset(documentKey: string, local: Map<string, string>, session: Map<string, string>): Promise<{ local: [string, string][]; session: number; databases: string[]; caches: string[] }> {
+		const storage = (values: Map<string, string>) => ({
+			getItem: (key: string) => values.get(key) ?? null,
+			setItem: (key: string, value: string) => { values.set(key, value); },
+			clear: () => values.clear(),
+		});
+		const databases: string[] = [];
+		const caches: string[] = [];
+		const fakeWindow = {
+			localStorage: storage(local),
+			sessionStorage: storage(session),
+			indexedDB: { databases: async () => [{ name: 'app' }, { name: 'cache' }], deleteDatabase: (name: string) => { databases.push(name); } },
+			caches: { keys: async () => ['v1'], delete: async (name: string) => { caches.push(name); return true; } },
+		};
+		const body = /^<script>([\s\S]*)<\/script>$/.exec(paradisHtmlStorageResetScript(documentKey))![1];
+		new Function('window', body)(fakeWindow);
+		await timeout(0);
+		return { local: [...local], session: session.size, databases, caches };
+	}
+
+	test('clears every storage when another document used the origin, and keeps it for the same document', async () => {
+		const local = new Map([['__paradisViewerDocument', 'a'], ['secret', '1']]);
+		const session = new Map([['s', '1']]);
+		const other = await runReset('b', local, session);
+		local.set('mine', '2');
+		session.set('s', '2');
+		const same = await runReset('b', local, session);
+
+		deepStrictEqual({ other, same }, {
+			other: { local: [['__paradisViewerDocument', 'b']], session: 0, databases: ['app', 'cache'], caches: ['v1'] },
+			same: { local: [['__paradisViewerDocument', 'b'], ['mine', '2']], session: 1, databases: [], caches: [] },
+		});
 	});
 });
 
