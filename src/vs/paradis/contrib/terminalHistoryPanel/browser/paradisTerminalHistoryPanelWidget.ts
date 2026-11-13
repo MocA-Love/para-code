@@ -10,6 +10,7 @@
 // 最新をプロンプトに接する側に置く。キーの処理と中身の決定は contribution 側で行い、ここは描くだけ。
 
 import { $, addDisposableListener, append, clearNode, EventType } from '../../../../base/browser/dom.js';
+import { status } from '../../../../base/browser/ui/aria/aria.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { renderIcon } from '../../../../base/browser/ui/iconLabel/iconLabels.js';
 import { Codicon } from '../../../../base/common/codicons.js';
@@ -50,6 +51,8 @@ export class ParadisTerminalHistoryPanelWidget extends Disposable {
 	private readonly _rows: HTMLElement;
 	private readonly _footer: HTMLElement;
 	private readonly _renderDisposables = this._register(new DisposableStore());
+	/** 最後に読み上げた選び（同じ選びのまま描き直しても、もう一度は読まない）。 */
+	private _announced: string | undefined;
 
 	private readonly _onDidSelectItem = this._register(new Emitter<number>());
 	/** 行をクリックした（新しい順の位置）。 */
@@ -67,10 +70,11 @@ export class ParadisTerminalHistoryPanelWidget extends Disposable {
 	) {
 		super();
 		this.element = append(container, $('.paradis-history-panel'));
-		this.element.setAttribute('role', 'listbox');
-		this.element.setAttribute('aria-label', localize('paradis.historyPanel.aria', "コマンドの履歴"));
 		this._header = append(this.element, $('.paradis-history-panel-header'));
+		// listbox は行の器だけ（見出しのタブとキーの帯は一覧の項目ではない）
 		this._rows = append(this.element, $('.paradis-history-panel-rows'));
+		this._rows.setAttribute('role', 'listbox');
+		this._rows.setAttribute('aria-label', localize('paradis.historyPanel.aria', "コマンドの履歴"));
 		this._footer = append(this.element, $('.paradis-history-panel-footer'));
 		// 一覧を押してもターミナルからフォーカスを奪わない（キーは引き続きターミナルで受ける）。
 		this._register(addDisposableListener(this.element, EventType.MOUSE_DOWN, e => e.preventDefault()));
@@ -96,6 +100,23 @@ export class ParadisTerminalHistoryPanelWidget extends Disposable {
 		this._renderHeader(view);
 		this._renderRows(view);
 		this._renderFooter(view);
+		this._announceSelection(view);
+	}
+
+	/**
+	 * フォーカスはターミナルの入力に残るので、選びが変わったら行の文字を読み上げる
+	 * （入力の textarea に aria-activedescendant を付けるには本家の xterm 側を触ることになるため、通知で済ませる）。
+	 */
+	private _announceSelection(view: IParadisHistoryPanelView): void {
+		const item = view.items[view.selectedIndex];
+		const key = item === undefined ? undefined : `${view.selectedIndex}\n${item.command}`;
+		if (key === this._announced) {
+			return;
+		}
+		this._announced = key;
+		if (item !== undefined) {
+			status(localize('paradis.historyPanel.announce', "{0}（{1} / {2}）", paradisHistoryPanelOneLine(item.command), view.selectedIndex + 1, view.items.length));
+		}
 	}
 
 	private _renderHeader(view: IParadisHistoryPanelView): void {
@@ -105,9 +126,12 @@ export class ParadisTerminalHistoryPanelWidget extends Disposable {
 		append(title, $('span', undefined, localize('paradis.historyPanel.title', "履歴")));
 		if (view.scope !== undefined) {
 			const tabs = append(this._header, $('span.paradis-history-panel-tabs'));
+			tabs.setAttribute('role', 'tablist');
+			tabs.setAttribute('aria-label', localize('paradis.historyPanel.scopeAria', "履歴の範囲"));
 			this._renderTab(tabs, 'space', view, localize('paradis.historyPanel.scopeSpace', "このスペース"), localize('paradis.historyPanel.scopeSpaceHover', "このスペースのターミナルで実行した履歴"));
 			this._renderTab(tabs, 'all', view, localize('paradis.historyPanel.scopeAll', "全スペース"), localize('paradis.historyPanel.scopeAllHover', "すべてのスペースと、共通の履歴"));
-			append(tabs, $('span.paradis-history-panel-key', undefined, 'Ctrl+S'));
+			// キーの札は tab ではないので読み上げから外す（同じキーは下の帯でも読める）
+			append(tabs, $('span.paradis-history-panel-key', undefined, 'Ctrl+S')).setAttribute('aria-hidden', 'true');
 		}
 		append(this._header, $('span', undefined, localize('paradis.historyPanel.prefixMatch', "前方一致:")));
 		const query = append(this._header, $('span.paradis-history-panel-query'));

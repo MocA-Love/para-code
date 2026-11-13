@@ -36,6 +36,8 @@ export interface IParadisTasksProjectViewHost {
 	openItem(item: IParadisTasksProjectItem): void;
 	/** 項目の「…」のメニュー。 */
 	showItemMenu(item: IParadisTasksProjectItem, anchor: HTMLElement): void;
+	/** ワークベンチのホバーを付ける（`element.title` の代わり。描き直しで外す）。 */
+	setHover(element: HTMLElement, content: string): void;
 }
 
 /** GitHub の選択肢の色の名前を、テーマの色に寄せる。 */
@@ -59,13 +61,13 @@ function itemReference(item: IParadisTasksProjectItem): string {
 	return item.repository ? `${item.repository.split('/')[1]}#${item.number}` : `#${item.number}`;
 }
 
-function appendUsers(parent: HTMLElement, users: readonly IParadisTasksUser[]): void {
+function appendUsers(parent: HTMLElement, users: readonly IParadisTasksUser[], host: IParadisTasksProjectViewHost): void {
 	if (users.length === 0) {
 		dom.append(parent, $('span.paradis-tasks-faint')).textContent = '-';
 	}
 	for (const user of users) {
 		const avatar = dom.append(parent, $('span.paradis-tasks-avatar'));
-		avatar.title = user.login;
+		host.setHover(avatar, user.login);
 		if (user.avatarUrl?.startsWith('https://')) {
 			const image = dom.append(avatar, $<HTMLImageElement>('img'));
 			image.src = user.avatarUrl;
@@ -85,10 +87,10 @@ function appendLabels(parent: HTMLElement, labels: readonly IParadisTasksLabel[]
 }
 
 /** 1 つの欄の値を描く。中身（Issue・PR）から取る欄（担当者・ラベル・リポジトリ）はここで埋める。 */
-function appendFieldValue(parent: HTMLElement, item: IParadisTasksProjectItem, field: IParadisTasksProjectField): void {
+function appendFieldValue(parent: HTMLElement, item: IParadisTasksProjectItem, field: IParadisTasksProjectField, host: IParadisTasksProjectViewHost): void {
 	switch (field.dataType) {
 		case 'ASSIGNEES':
-			appendUsers(parent, item.assignees);
+			appendUsers(parent, item.assignees, host);
 			return;
 		case 'LABELS':
 			appendLabels(parent, item.labels);
@@ -142,7 +144,7 @@ function menuButton(store: DisposableStore, parent: HTMLElement, item: IParadisT
 	const button = dom.append(parent, $<HTMLButtonElement>('button.paradis-tasks-icon-button'));
 	button.type = 'button';
 	const label = localize('paradis.tasks.rowActions', "操作");
-	button.title = label;
+	host.setHover(button, label);
 	button.setAttribute('aria-label', label);
 	dom.append(button, $('span.codicon.codicon-ellipsis'));
 	store.add(dom.addDisposableListener(button, 'click', () => host.showItemMenu(item, button)));
@@ -165,9 +167,12 @@ export function paradisTasksRenderProjectTable(container: HTMLElement, result: I
 		appendTitle(dom.append(row, $('td.title')), item);
 		for (const field of fields) {
 			const cell = dom.append(row, $('td.field'));
-			appendFieldValue(cell, item, field);
+			appendFieldValue(cell, item, field, host);
 			// 1 行で省略記号にするので、切れた値はポインタを重ねて読めるようにする（担当者は顔の絵ごとに名前が出る）
-			cell.title = field.dataType === 'ASSIGNEES' ? '' : field.dataType === 'LABELS' ? item.labels.map(label => label.name).join(', ') : cell.textContent ?? '';
+			const cellHover = field.dataType === 'ASSIGNEES' ? '' : field.dataType === 'LABELS' ? item.labels.map(label => label.name).join(', ') : cell.textContent ?? '';
+			if (cellHover) {
+				host.setHover(cell, cellHover);
+			}
 		}
 		const updated = dom.append(row, $('td.updated'));
 		const time = item.updatedAt ? Date.parse(item.updatedAt) : NaN;
@@ -200,20 +205,20 @@ export function paradisTasksRenderProjectBoard(container: HTMLElement, result: I
 			const top = dom.append(card, $('.paradis-tasks-card-top'));
 			const reference = dom.append(top, $('span.paradis-tasks-card-ref'));
 			reference.textContent = itemReference(item);
-			reference.title = reference.textContent;
+			host.setHover(reference, reference.textContent);
 			menuButton(store, top, item, host);
 			dom.append(card, $('.paradis-tasks-card-title')).textContent = item.title;
 			const meta = dom.append(card, $('.paradis-tasks-item-context'));
 			appendLabels(meta, item.labels);
 			for (const other of cardFields) {
 				const value = dom.append(meta, $('span.paradis-tasks-card-field'));
-				appendFieldValue(value, item, other);
+				appendFieldValue(value, item, other, host);
 				if (!value.textContent && !value.firstChild) {
 					value.remove();
 				}
 			}
 			if (item.assignees.length > 0) {
-				appendUsers(dom.append(card, $('.paradis-tasks-card-assignees')), item.assignees);
+				appendUsers(dom.append(card, $('.paradis-tasks-card-assignees')), item.assignees, host);
 			}
 			bindOpen(store, card, item, host);
 		}
@@ -275,8 +280,9 @@ export function paradisTasksRenderProjectRoadmap(container: HTMLElement, result:
 		const status = field ? row.item.values[field.name] : undefined;
 		bar.style.backgroundColor = optionColor(status?.color);
 		const period = row.startDate === row.endDate ? shortDate(row.startDate) : `${shortDate(row.startDate)} – ${shortDate(row.endDate)}`;
-		bar.title = status ? `${period} · ${status.text}` : period;
-		line.title = `${row.item.title}\n${bar.title}`;
+		const barHover = status ? `${period} · ${status.text}` : period;
+		host.setHover(bar, barHover);
+		host.setHover(line, `${row.item.title}\n${barHover}`);
 		bindOpen(store, line, row.item, host);
 	}
 	// 今日の線は表全体に 1 本だけ（名前の列は 240px の固定幅。CSS の grid-template-columns と揃える）

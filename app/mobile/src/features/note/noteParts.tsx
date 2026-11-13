@@ -277,7 +277,7 @@ const styles = StyleSheet.create({
 	tool: {
 		flexDirection: 'row',
 		alignItems: 'center',
-		gap: space.xs + 2,
+		gap: space.snug,
 		height: TOOL_HEIGHT,
 		paddingHorizontal: space.md,
 		borderRadius: radius.button,

@@ -7,8 +7,9 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // Word の webview（単独表示と差分）に埋め込むスクリプト。docx-preview の解析結果（AST）の段落に目印を付けて
-// 描かせ、描いた後に段落ごとの文字を報告し、ホストから届いた位置へ移る・要素に点線を付ける・押された要素の
-// 情報を吹き出しに出す・コメントを余白に出す。
+// 描かせ、描いた後に段落ごとの文字を報告し、ホストから届いた位置へ移る・要素に点線を付ける・押された要素
+// （またはホストの一覧で選ばれた要素）の情報を吹き出しに出す・コメントを余白に出す。吹き出しは本文を
+// スクロールしたら閉じる（本家のホバーと同じ）。
 //
 // docx-preview は AST の `cssStyle` のうち `$` で始まる鍵を属性として書き出すので、ライブラリを書き換えずに
 // 目印を付けられる。ここは webview の中でそのまま実行する文字列にしておく（ビルドの変換が補助関数を差し込むと
@@ -337,7 +338,7 @@ export const PARADIS_WORD_ANCHOR_RUNTIME = `(function () {
 				}
 				if (!range) { continue; }
 				ranges.push(range);
-				marks.push({ range: range, element: element, rows: mark.rows, size: element ? 0 : mark.end - mark.start });
+				marks.push({ id: mark.id, range: range, element: element, rows: mark.rows, size: element ? 0 : mark.end - mark.start });
 			}
 		}
 		if (window.CSS && CSS.highlights && typeof Highlight === 'function') {
@@ -372,6 +373,34 @@ export const PARADIS_WORD_ANCHOR_RUNTIME = `(function () {
 		if (popover && popover.contains(event.target)) { return; }
 		var mark = hit(event.target, event.clientX, event.clientY);
 		if (mark) { openPopover(mark.rows, event.clientX, event.clientY); } else { closePopover(); }
+	}
+
+	// 自分で本文を動かした（openMark の scrollIntoView）直後の scroll では閉じない。scroll の知らせは次の描画で
+	// 届くので、2 回先の描画まで聞き流す。
+	var ignoreScrollClose = false;
+	function onScrollOrWheel(event) {
+		if (!popover || ignoreScrollClose) { return; }
+		if (event.target && event.target.nodeType && popover.contains(event.target)) { return; }
+		closePopover(false);
+	}
+
+	// ホストの一覧（変更点パネルの「段落の情報」）で選ばれた印を本文で示し、その印の情報を吹き出しに出す。
+	// 吹き出しの閉じるボタンにフォーカスが移る。印が表示に無ければ、そう伝えて false を返す。
+	function openMark(id, notFound) {
+		var mark;
+		for (var i = 0; i < marks.length; i++) {
+			if (marks[i].id === id) { mark = marks[i]; break; }
+		}
+		if (!mark) { showMessage(notFound); return false; }
+		show(mark.range, mark.element);
+		var rect = (mark.element || mark.range).getBoundingClientRect();
+		ignoreScrollClose = true;
+		window.requestAnimationFrame(function () {
+			window.requestAnimationFrame(function () { ignoreScrollClose = false; });
+		});
+		// 吹き出しは押した位置の右下に出す作りなので、印の左下を押した位置として渡す。
+		openPopover(mark.rows, rect.left, rect.bottom - 8);
+		return true;
 	}
 
 	// コメントを、付いた段落の横（ページの右の余白の外）に出す。重ならないよう下へずらす。
@@ -452,7 +481,10 @@ export const PARADIS_WORD_ANCHOR_RUNTIME = `(function () {
 
 	document.addEventListener('click', onClick);
 	document.addEventListener('keydown', function (event) { if (event.key === 'Escape') { closePopover(true); } });
-	window.paradisWordAnchors = { stamp: stamp, collect: collect, reveal: reveal, setMarks: setMarks, setComments: setComments, closePopover: function () { closePopover(false); } };
+	// scroll は泡立たないので、捕捉の段階で本文（差分では左右の入れ物）のどれが動いても拾う。
+	document.addEventListener('scroll', onScrollOrWheel, true);
+	document.addEventListener('wheel', onScrollOrWheel, { capture: true, passive: true });
+	window.paradisWordAnchors = { stamp: stamp, collect: collect, reveal: reveal, setMarks: setMarks, setComments: setComments, openMark: openMark, closePopover: function () { closePopover(false); } };
 })();`;
 
 /** 吹き出し・点線・コメントの見た目（webview の <style> に足す）。 */

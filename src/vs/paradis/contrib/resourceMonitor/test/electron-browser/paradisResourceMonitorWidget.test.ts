@@ -147,6 +147,10 @@ class TestPanel implements IDisposable {
 		this.fetching.push(fetching);
 	}
 
+	hasFocus(): boolean {
+		return false;
+	}
+
 	updateSnapshot(snapshot: IParadisResourceMonitorSnapshot): void {
 		this.snapshots.push(snapshot);
 	}

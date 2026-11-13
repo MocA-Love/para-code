@@ -190,7 +190,7 @@ function DimScrim({ onPress }: { onPress: () => void }) {
 	return (
 		<Animated.View style={[StyleSheet.absoluteFill, animatedStyle]}>
 			<BlurView intensity={18} tint="dark" style={StyleSheet.absoluteFill} pointerEvents="none" />
-			<Pressable style={[StyleSheet.absoluteFill, styles.scrimDim]} onPress={onPress} accessibilityLabel="閉じる" />
+			<Pressable style={[StyleSheet.absoluteFill, styles.scrimDim]} onPress={onPress} accessibilityRole="button" accessibilityLabel="閉じる" />
 		</Animated.View>
 	);
 }

@@ -365,7 +365,7 @@ const styles = StyleSheet.create({
 	},
 	chipText: {
 		fontSize: type.meta,
-		fontWeight: '700',
+		fontWeight: '600',
 		color: colors.textDim,
 	},
 	chipTextOn: {
@@ -384,7 +384,7 @@ const styles = StyleSheet.create({
 	},
 	stageText: {
 		fontSize: type.meta,
-		fontWeight: '700',
+		fontWeight: '600',
 		color: colors.text,
 	},
 	fileSummary: {
@@ -403,7 +403,7 @@ const styles = StyleSheet.create({
 	},
 	fileSummaryPath: {
 		fontSize: type.body,
-		fontWeight: '700',
+		fontWeight: '600',
 		color: colors.text,
 	},
 	fileSummarySub: {
@@ -413,12 +413,12 @@ const styles = StyleSheet.create({
 	},
 	reviewedMark: {
 		fontSize: type.meta,
-		fontWeight: '700',
+		fontWeight: '600',
 		color: colors.green,
 	},
 	changedMark: {
 		fontSize: type.meta,
-		fontWeight: '700',
+		fontWeight: '600',
 		color: colors.yellow,
 	},
 	lines: {
@@ -514,7 +514,7 @@ const styles = StyleSheet.create({
 		flexDirection: 'row',
 		alignItems: 'center',
 		justifyContent: 'center',
-		gap: space.xs + 2,
+		gap: space.snug,
 		borderRadius: radius.button,
 		backgroundColor: colors.primary,
 	},
@@ -526,7 +526,7 @@ const styles = StyleSheet.create({
 	},
 	markText: {
 		fontSize: type.body,
-		fontWeight: '700',
+		fontWeight: '600',
 		color: colors.onPrimary,
 	},
 	markTextDone: {
@@ -542,7 +542,7 @@ const styles = StyleSheet.create({
 	listTitle: {
 		flex: 1,
 		fontSize: type.heading,
-		fontWeight: '700',
+		fontWeight: '600',
 		color: colors.text,
 	},
 	listCount: {
@@ -569,8 +569,8 @@ const styles = StyleSheet.create({
 		minHeight: 48,
 		flexDirection: 'row',
 		alignItems: 'center',
-		gap: space.sm + 2,
-		paddingVertical: space.sm + 2,
+		gap: space.row,
+		paddingVertical: space.row,
 		paddingHorizontal: space.md,
 	},
 	listRowOn: {

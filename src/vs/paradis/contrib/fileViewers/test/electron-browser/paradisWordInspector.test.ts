@@ -31,6 +31,7 @@ import {
 	restoreParadisWordViewState,
 	searchParadisWordStories,
 	paradisWordExclusionItems,
+	paradisWordMarkItem,
 	wordChangeLabel,
 } from '../../electron-browser/word/paradisWordChangeInspector.js';
 import {
@@ -290,6 +291,37 @@ suite('ParadisWordInspector', () => {
 			{ kind: 'change', locator: 'story:textbox:/word/document.xml:0/node:drawing-7', anchor: 'drawing-7', changeId: 'drawing' },
 			{ kind: 'placeholder', locator: 'drawing-7' },
 		]);
+	});
+
+	test('lists the paragraph marks as rows that open the mark with its id', () => {
+		const document = mainWindow.document.implementation.createHTMLDocument('word marks');
+		const host = document.createElement('div');
+		const opened: number[] = [];
+		const inspector = disposables.add(new ParadisWordChangeInspector(host, { onOpenMark: id => opened.push(id) }));
+		const items = [
+			paradisWordMarkItem(0, { kind: 'field', start: 0, end: 3, rows: [['kind', 'field'], ['fieldKind', 'MERGEFIELD'], ['instruction', 'MERGEFIELD 金額']] }, 'body', 2),
+			paradisWordMarkItem(1, { kind: 'revision', start: 0, end: 1, rows: [['kind', 'revision'], ['revisionKind', 'inserted'], ['author', '<b>Reviewer</b>']] }, 'body', 7),
+			paradisWordMarkItem(2, { kind: 'noteReference', start: 0, end: 0, ordinal: 0, rows: [['kind', 'noteReference'], ['noteKind', 'footnote'], ['noteId', '1']] }, 'header', 1),
+		];
+		inspector.setMarks(items);
+		const rows = [...host.querySelectorAll<HTMLButtonElement>('.paradis-word-mark-list [data-mark-id]')];
+		rows[1].click();
+
+		deepStrictEqual({
+			heading: host.querySelector('.paradis-word-mark-list > span')?.textContent,
+			rows: rows.map(row => [row.querySelector('.paradis-word-mark-kind')?.textContent, row.textContent]),
+			unsafe: host.querySelector('.paradis-word-mark-list b'),
+			opened,
+		}, {
+			heading: '段落の情報（3）',
+			rows: [
+				['フィールド', 'フィールドMERGEFIELD 金額 ・ 2 段落目'],
+				['変更履歴', '変更履歴挿入（<b>Reviewer</b>） ・ 7 段落目'],
+				['脚注', '脚注脚注 1 ・ ヘッダー・1 段落目'],
+			],
+			unsafe: null,
+			opened: [1],
+		});
 	});
 
 	test('searches a non-body Story and navigates its semantic anchor', async () => {

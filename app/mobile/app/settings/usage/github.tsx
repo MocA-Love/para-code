@@ -233,7 +233,7 @@ const styles = StyleSheet.create({
 	stats: {
 		flexDirection: 'row',
 		flexWrap: 'wrap',
-		gap: space.xs + 2,
+		gap: space.snug,
 		marginTop: 2,
 	},
 	stat: {
@@ -242,7 +242,7 @@ const styles = StyleSheet.create({
 		color: colors.textDim,
 		backgroundColor: colors.raised,
 		borderRadius: radius.key,
-		paddingHorizontal: space.xs + 2,
+		paddingHorizontal: space.snug,
 		paddingVertical: 2,
 		overflow: 'hidden',
 	},

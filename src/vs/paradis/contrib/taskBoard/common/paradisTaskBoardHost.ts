@@ -63,6 +63,18 @@ export interface IParadisTaskBoardRemoteTarget {
 	readonly root: string;
 }
 
+/** ボードの地の色（app/taskboard/src/styles.css の `--bg`）。ボードは `<meta name="theme-color">` で今の色を知らせる。 */
+const PARADIS_TASK_BOARD_BACKGROUNDS: readonly string[] = ['#0a0c10', '#f3f5f8'];
+
+/**
+ * ボードの窓の背景色。ボードが知らせた色（または覚えていた色）がボードの地の色ならそれを、
+ * そうでなければボードの既定（ダーク）の地の色を返す。ページの値をそのまま窓に使わない。
+ */
+export function paradisTaskBoardWindowBackground(value: unknown): string {
+	const color = typeof value === 'string' ? value.toLowerCase() : undefined;
+	return color !== undefined && PARADIS_TASK_BOARD_BACKGROUNDS.includes(color) ? color : PARADIS_TASK_BOARD_BACKGROUNDS[0];
+}
+
 export function paradisTaskBoardIsRemoteTarget(value: unknown): value is IParadisTaskBoardRemoteTarget {
 	if (!value || typeof value !== 'object') {
 		return false;

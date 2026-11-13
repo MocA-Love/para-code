@@ -272,7 +272,7 @@ const styles = StyleSheet.create({
 	},
 	stats: {
 		flexDirection: 'row',
-		gap: space.sm + 2,
+		gap: space.row,
 	},
 	stat: {
 		flex: 1,
@@ -290,6 +290,7 @@ const styles = StyleSheet.create({
 		fontSize: type.title,
 		fontWeight: '700',
 		letterSpacing: -0.3,
+		fontVariant: ['tabular-nums'],
 		color: colors.text,
 	},
 	statLabel: {
@@ -320,7 +321,7 @@ const styles = StyleSheet.create({
 		backgroundColor: colors.raised,
 		alignItems: 'center',
 		justifyContent: 'center',
-		marginRight: space.md + 2,
+		marginRight: space.rowInset,
 	},
 	resume: {
 		flexDirection: 'row',
@@ -340,7 +341,7 @@ const styles = StyleSheet.create({
 	resumeSub: {
 		flexDirection: 'row',
 		alignItems: 'center',
-		gap: space.xs + 2,
+		gap: space.snug,
 		marginTop: 3,
 	},
 	repoDot: {
@@ -361,9 +362,9 @@ const styles = StyleSheet.create({
 		flex: 1,
 		flexDirection: 'row',
 		alignItems: 'center',
-		gap: space.sm + 2,
+		gap: space.row,
 		minHeight: 48,
-		paddingVertical: space.sm + 2,
+		paddingVertical: space.row,
 		paddingHorizontal: space.md,
 		borderWidth: 1,
 		borderColor: colors.border,
@@ -389,13 +390,13 @@ const styles = StyleSheet.create({
 	},
 	usage: {
 		gap: space.sm,
-		paddingVertical: space.sm + 2,
+		paddingVertical: space.row,
 		paddingHorizontal: space.md,
 	},
 	usageRow: {
 		flexDirection: 'row',
 		alignItems: 'center',
-		gap: space.sm + 2,
+		gap: space.row,
 	},
 	usageIcon: {
 		width: USAGE_ICON,
@@ -439,7 +440,7 @@ const styles = StyleSheet.create({
 		fontSize: type.large,
 		fontWeight: '700',
 		color: colors.text,
-		marginBottom: space.sm + 2,
+		marginBottom: space.row,
 	},
 	emptyBody: {
 		fontSize: type.input,
@@ -451,9 +452,9 @@ const styles = StyleSheet.create({
 	pairButton: {
 		flexDirection: 'row',
 		alignItems: 'center',
-		gap: space.sm + 2,
+		gap: space.row,
 		backgroundColor: colors.primary,
-		paddingVertical: space.md + 2,
+		paddingVertical: space.rowInset,
 		paddingHorizontal: space.xl + space.xs,
 		borderRadius: radius.card,
 	},
@@ -471,7 +472,7 @@ const styles = StyleSheet.create({
 	},
 	step: {
 		flexDirection: 'row',
-		gap: space.md + 2,
+		gap: space.rowInset,
 		paddingVertical: space.lg,
 	},
 	stepBorder: {

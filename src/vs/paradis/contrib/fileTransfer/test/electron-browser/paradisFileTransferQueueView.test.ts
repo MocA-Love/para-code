@@ -15,7 +15,7 @@ import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { InMemoryStorageService } from '../../../../../platform/storage/common/storage.js';
 import { IParadisTransferChild, IParadisTransferCopyOptions, IParadisTransferFileSystem, IParadisTransferItem, IParadisTransferStat, ParadisTransferQueue } from '../../common/paradisFileTransferQueue.js';
-import { paradisQueueDoneText, ParadisFileTransferQueueView } from '../../electron-browser/paradisFileTransferQueueView.js';
+import { paradisQueueAnnouncement, paradisQueueDoneText, ParadisFileTransferQueueView } from '../../electron-browser/paradisFileTransferQueueView.js';
 
 /** 送り先は常に空で、コピーは `hold` が解けるまで 1 塊目で止まる読み書き。 */
 class HeldFileSystem implements IParadisTransferFileSystem {
@@ -99,5 +99,14 @@ suite('Paradis file transfer - queue view', () => {
 			paradisQueueDoneText({ ...base, state: 'error', skipped: 0, writesInPlace: true, error: { kind: 'disconnected', message: '接続が切れました' } }),
 			paradisQueueDoneText({ ...base, state: 'done', skipped: 0, truncatedFolders: 1 }),
 		], ['3 ファイル · 2 件を飛ばしました', '3 ファイル', '接続が切れました · 送り先を直接書き換えます（途中で失敗すると元に戻りません）', '3 ファイル · 項目が多すぎるフォルダー 1 件は一部しか送れていません']);
+	});
+
+	test('announces only when the counts change, not on every progress update', () => {
+		const base = { writesInPlace: false, name: 'a.bin', isDirectory: false, source: URI.file('/a'), target: URI.file('/b'), targetLabel: 'dev', direction: 'toRemote' as const, totalBytes: 10, doneBytes: 4, totalFiles: undefined, doneFiles: 0, skipped: 0, bytesPerSecond: undefined, remainingSeconds: undefined, error: undefined };
+		const running: IParadisTransferItem[] = [{ ...base, id: 1, state: 'running' }, { ...base, id: 2, state: 'waiting' }];
+		const first = paradisQueueAnnouncement(running, undefined);
+		const progressed = paradisQueueAnnouncement([{ ...running[0], doneBytes: 8 }, running[1]], first.key);
+		const finished = paradisQueueAnnouncement([{ ...running[0], state: 'done' }, { ...running[1], state: 'error' }], progressed.key);
+		assert.deepStrictEqual([first.text, progressed.text, finished.text], [undefined, undefined, '転送: 0 件進行中、1 件完了、1 件失敗']);
 	});
 });

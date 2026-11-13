@@ -23,7 +23,7 @@ import { Promises } from '../../../../base/node/pfs.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { AivisError } from './paradisAudioScheduler.js';
 import { paradisCollectBody } from './paradisStreamingBody.js';
-import { CUSTOM_RINGTONE_ID, IParadisCustomRingtoneInfo, IParadisInstallLogLine, IParadisInstallLogResult, IParadisRenderClipRequest, IParadisRingtoneEditState, IParadisYouTubeDownloadResult, PARADIS_MAX_CLIP_DURATION_SECONDS, PARADIS_MAX_CUSTOM_AUDIO_SIZE_BYTES, PARADIS_MAX_FETCHED_AUDIO_SIZE_BYTES } from '../common/paradisNotifications.js';
+import { CUSTOM_RINGTONE_ID, IParadisCustomRingtoneInfo, IParadisInstallLogLine, IParadisInstallLogResult, IParadisRenderClipRequest, IParadisRingtoneEditState, IParadisYouTubeDownloadResult, ParadisCustomRingtoneSource, PARADIS_MAX_CLIP_DURATION_SECONDS, PARADIS_MAX_CUSTOM_AUDIO_SIZE_BYTES, PARADIS_MAX_FETCHED_AUDIO_SIZE_BYTES } from '../common/paradisNotifications.js';
 import { IParadisYtDlpCheckResult, IParadisYtDlpStatus, paradisAssessYtDlpVersion, paradisClassifyYtDlpError, paradisDetectYtDlpInstallMethod, paradisExtractYtDlpWarnings, paradisParseYtDlpVersion, paradisYtDlpUpdatePlan, ParadisYtDlpFailure } from '../common/paradisYtDlp.js';
 import { IParadisMyinstantsDownloadResult, paradisCheckMyinstantsUrl, paradisIsMp3ContentType, paradisLooksLikeMp3, paradisMyinstantsDisplayName } from '../common/paradisMyinstants.js';
 
@@ -67,6 +67,17 @@ interface IParadisCustomRingtoneMetadata {
 	readonly thumbnailUrl?: string;
 	readonly editState?: IParadisRingtoneEditState;
 	readonly sourceUrl?: string;
+}
+
+/**
+ * 取り込み元を見分ける。YouTube の切り出しは編集状態を持つ（出典の URL の無い古い JSON もここで拾う）。編集状態を先に
+ * 見るのは、Myinstants の後に YouTube で切り出したとき、前の出典の URL が残っていても YouTube と読むため。
+ */
+function paradisCustomRingtoneSource(metadata: IParadisCustomRingtoneMetadata): ParadisCustomRingtoneSource {
+	if (metadata.editState) {
+		return 'youtube';
+	}
+	return metadata.sourceUrl ? 'myinstants' : 'file';
 }
 
 /** インストールログの購読用バッファ（yt-dlp/ffmpeg の `brew install` 進捗、UIはポーリングで取得）。 */
@@ -251,9 +262,7 @@ export class ParadisRingtoneIngestService extends Disposable {
 		return {
 			id: CUSTOM_RINGTONE_ID,
 			name: metadata.name?.trim() || 'Custom Audio',
-			description: 'Imported from your local machine',
-			// allow-any-unicode-next-line
-			emoji: '🔊',
+			source: paradisCustomRingtoneSource(metadata),
 			...(metadata.thumbnailUrl ? { thumbnailUrl: metadata.thumbnailUrl } : {}),
 		};
 	}
@@ -300,8 +309,7 @@ export class ParadisRingtoneIngestService extends Disposable {
 		await this._removeSourceFiles();
 		await this._updateMetadata(() => ({ name: displayName, importedAt: Date.now() }));
 
-		// allow-any-unicode-next-line
-		return { id: CUSTOM_RINGTONE_ID, name: displayName, description: 'Imported from your local machine', emoji: '🔊' };
+		return { id: CUSTOM_RINGTONE_ID, name: displayName, source: 'file' };
 	}
 
 	async deleteCustomAudio(): Promise<void> {

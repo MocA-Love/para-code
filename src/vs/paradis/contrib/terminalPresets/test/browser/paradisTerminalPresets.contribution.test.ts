@@ -16,7 +16,7 @@ import { INotificationService } from '../../../../../platform/notification/commo
 import { IStorageService } from '../../../../../platform/storage/common/storage.js';
 import { GeneralShellType, ITerminalEnvironment, PosixShellType, WindowsShellType } from '../../../../../platform/terminal/common/terminal.js';
 import { paradisHostPathFor } from '../../../../common/paradisHostPath.js';
-import { paradisRunAutoRunPresets } from '../../browser/paradisTerminalPresets.contribution.js';
+import { paradisReplaceAutoRunApproval, paradisRunAutoRunPresets } from '../../browser/paradisTerminalPresets.contribution.js';
 import { IParadisDialogService } from '../../../confirmDialog/browser/paradisDialogService.js';
 import {
 	IParadisPresetDefinition,
@@ -149,6 +149,12 @@ suite('paradisRunAutoRunPresets', () => {
 		await instantiationService.invokeFunction(paradisRunAutoRunPresets, TEST_FOLDER, TEST_REPO_PATH);
 
 		assert.deepStrictEqual(envs, Array(3).fill({ [PARADIS_PROJECT_ROOT_ENV_VAR]: '/repo' }));
+	});
+
+	test('replaces the older approval of the same repository and preset instead of piling up keys', () => {
+		// .paracode.json を書き換えるたびにキーが増え続けない。別のリポジトリ・別の名前（`:` を含むものも）は残す。
+		const approved = ['/repo:setup:123', '/repo:setup:-45', '/repo:setup:b:67', '/other:setup:123', '/repo:build:89'];
+		assert.deepStrictEqual(paradisReplaceAutoRunApproval(approved, '/repo', 'setup', '/repo:setup:999'), ['/repo:setup:b:67', '/other:setup:123', '/repo:build:89', '/repo:setup:999']);
 	});
 });
 

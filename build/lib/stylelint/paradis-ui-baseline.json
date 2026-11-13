@@ -34,11 +34,9 @@
 	},
 	"src/vs/paradis/contrib/browserLiveWindow/electron-browser/media/paradisBrowserLiveWindow.css": {
 		"focus | .paradis-browser-live-tile:hover .paradis-browser-live-tile-actions, .paradis-browser-live-tile:focus-within .paradis-browser-live-tile-actions | ": 1,
-		"hex-color | .paradis-browser-live-paused | color: #ffffff": 1,
 		"z-index | .paradis-browser-live-cursor | z-index: 6": 1,
 		"hex-color | .paradis-browser-live-cursor-arrow | background-color: #ffffff": 1,
-		"z-index | .paradis-browser-live-shot-mark | z-index: 7": 1,
-		"z-index | .paradis-browser-live-pop | z-index: 50": 1
+		"z-index | .paradis-browser-live-shot-mark | z-index: 7": 1
 	},
 	"src/vs/paradis/contrib/browserNewTab/electron-browser/media/paradisBrowserNewTab.css": {
 		"focus | .browser-root .paradis-browser-new-tab .pbnt-row:hover, .browser-root .paradis-browser-new-tab .pbnt-row:focus-visible | ": 1,
@@ -149,9 +147,6 @@
 	},
 	"src/vs/paradis/contrib/mobileRelay/browser/media/paradisMobileViewportBanner.css": {
 		"z-index | .monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-mobile-viewport-banner, .monaco-workbench .terminal-wrapper > .paradis-mobile-viewport-banner | z-index: 35": 1
-	},
-	"src/vs/paradis/contrib/notifications/electron-browser/media/paradisNotificationSettings.css": {
-		"z-index | .paradis-notif-area .pns-section.disabled-veil::after | z-index: 5": 1
 	},
 	"src/vs/paradis/contrib/portList/electron-browser/media/paradisPortList.css": {
 		"z-index | .paradis-port-list-trigger | z-index: 2500": 1

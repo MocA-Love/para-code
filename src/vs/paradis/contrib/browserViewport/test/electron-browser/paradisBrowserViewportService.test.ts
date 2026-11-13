@@ -53,12 +53,16 @@ suite('ParadisBrowserViewportService', () => {
 		service.setSpaceDefault('space-a', 'Phone');
 		service.setSpaceDefault('space-b', 'Tablet');
 		await service.setGlobalDefault('Phone');
+		// 消す前の確認に使う「この大きさを既定にしているスペース」（名前の大文字小文字は問わない）
+		const defaultingBefore = service.getSpacesDefaultingTo('phone');
 		await service.removeSize('Phone');
 		assert.deepStrictEqual({
+			defaultingBefore,
+			defaultingAfter: service.getSpacesDefaultingTo('Phone'),
 			global: service.getGlobalDefault(),
 			spaceA: service.getSpaceDefault('space-a'),
 			spaceB: service.getSpaceDefault('space-b'),
 			sizes: service.getSizes().map(size => size.name).includes('Phone'),
-		}, { global: '', spaceA: undefined, spaceB: 'Tablet', sizes: false });
+		}, { defaultingBefore: ['space-a'], defaultingAfter: [], global: '', spaceA: undefined, spaceB: 'Tablet', sizes: false });
 	});
 });

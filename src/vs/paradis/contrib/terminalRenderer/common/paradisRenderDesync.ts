@@ -24,6 +24,11 @@ const INK_BACKGROUND_DISTANCE = 36;
 const MISSING_SET_MIN_OVERLAP = 0.5;
 /** 同じターミナルで修復してから次に検査するまでの最短間隔（ミリ秒）。 */
 export const PARADIS_RENDER_REPAIR_COOLDOWN = 60_000;
+/**
+ * 同じターミナルで、修復していなくても検査（画面全体の読み戻し）を始めてから次に始めるまでの
+ * 最短間隔（ミリ秒）。フォーカスのたびに大きな画面を読み戻すと、メインスレッドが重くなる。
+ */
+export const PARADIS_RENDER_INSPECT_MIN_INTERVAL = 30_000;
 /** 記録を残す上限（古いものから消す）。画面の画像には秘密情報が写りうるので少なく保つ。 */
 export const PARADIS_RENDER_EVIDENCE_MAX_RECORDS = 4;
 /** 記録を残す日数。これより古いものは次に記録するときに消す。 */
@@ -157,18 +162,28 @@ export function paradisMissingSetsOverlap(a: ReadonlySet<number>, b: ReadonlySet
 /**
  * 1本のターミナルの検査・修復の可否。
  *
+ * - 検査を始めてから {@link PARADIS_RENDER_INSPECT_MIN_INTERVAL} の間は、修復していなくても検査しない
  * - 修復してから {@link PARADIS_RENDER_REPAIR_COOLDOWN} の間は検査しない
  * - 修復しても同じ判定が出続けたら、それは描画ずれではなく判定の方が外れている（背景と同じ色で
  *   書かれた文字など）ので、そのターミナルでは以後検査しない。誤検知のたびに描き直すのを防ぐ
  */
 export class ParadisRenderDesyncGate {
+	private lastInspectAt: number | undefined;
 	private lastRepairAt: number | undefined;
 	private disabled = false;
 
 	constructor(private readonly now: () => number = Date.now) { }
 
 	canInspect(): boolean {
-		return !this.disabled && (this.lastRepairAt === undefined || this.now() - this.lastRepairAt >= PARADIS_RENDER_REPAIR_COOLDOWN);
+		const now = this.now();
+		return !this.disabled
+			&& (this.lastInspectAt === undefined || now - this.lastInspectAt >= PARADIS_RENDER_INSPECT_MIN_INTERVAL)
+			&& (this.lastRepairAt === undefined || now - this.lastRepairAt >= PARADIS_RENDER_REPAIR_COOLDOWN);
+	}
+
+	/** 画面を読み戻す直前に呼ぶ。ここから {@link PARADIS_RENDER_INSPECT_MIN_INTERVAL} の間は検査しない。 */
+	noteInspected(): void {
+		this.lastInspectAt = this.now();
 	}
 
 	noteRepaired(): void {

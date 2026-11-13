@@ -135,4 +135,26 @@ suite('ParadisScreenColorPicker', () => {
 		});
 		store.dispose();
 	});
+
+	test('場所を決めるとパネルにフォーカスを置いて選んでいる候補を aria-activedescendant で指し、終わると元の場所へ戻す', () => {
+		const opener = mainWindow.document.createElement('button');
+		container.appendChild(opener);
+		opener.focus();
+		const store = disposables.add(new DisposableStore());
+		createPicker(store);
+		click(target);
+		const panel = container.querySelector<HTMLElement>('.paradis-tce-screen-panel')!;
+		const activeRow = mainWindow.document.getElementById(panel.getAttribute('aria-activedescendant') ?? '');
+		const shown = {
+			panelFocused: mainWindow.document.activeElement === panel,
+			activeRow: activeRow?.querySelector('.paradis-tce-screen-id')?.textContent,
+			selected: activeRow?.getAttribute('aria-selected'),
+		};
+		store.dispose();
+
+		assert.deepStrictEqual({ shown, restored: mainWindow.document.activeElement === opener }, {
+			shown: { panelFocused: true, activeRow: 'editor.background', selected: 'true' },
+			restored: true,
+		});
+	});
 });

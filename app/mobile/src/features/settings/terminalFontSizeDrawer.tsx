@@ -66,7 +66,7 @@ const styles = StyleSheet.create({
 	preview: {
 		marginHorizontal: space.xs,
 		marginBottom: space.sm,
-		paddingVertical: space.sm + 2,
+		paddingVertical: space.row,
 		paddingHorizontal: space.md,
 		backgroundColor: colors.terminalBg,
 		borderRadius: radius.row,

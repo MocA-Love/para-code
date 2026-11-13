@@ -13,11 +13,11 @@
 	align-items: center;
 	gap: 10px;
 	margin: 0 0 12px;
-	padding: 9px 12px;
+	padding: var(--vscode-spacing-size80) 12px;
 	border: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-widget-border));
 	border-radius: var(--vscode-cornerRadius-small, 4px);
 	background-color: var(--vscode-inputValidation-warningBackground, var(--vscode-editorWidget-background));
-	font-size: 12px;
+	font-size: var(--vscode-fontSize-label1);
 	line-height: 1.5;
 }
 
@@ -30,7 +30,7 @@
 	align-items: center;
 	gap: 8px;
 	margin: 0 0 10px;
-	font-size: 12px;
+	font-size: var(--vscode-fontSize-label1);
 }
 
 /* The kit's drop-down (paradisSelect.css) draws its own frame, padding and chevron; only its place in the row is set here. */
@@ -75,7 +75,7 @@
 }
 
 .paradis-browser-extensions-area .pbe-detail-name {
-	font-size: 14px;
+	font-size: var(--vscode-fontSize-heading3);
 	font-weight: 600;
 	overflow-wrap: anywhere;
 }
@@ -95,10 +95,6 @@
 	margin-bottom: 8px;
 }
 
-.paradis-browser-extensions-area .pbe-detail-actions .pbpm-btn.is-danger {
-	color: var(--vscode-errorForeground);
-}
-
 .paradis-browser-extensions-area .pbe-confirm-host .pbpm-confirm {
 	margin: 0 0 8px;
 }
@@ -108,7 +104,7 @@
 	padding: 6px 10px;
 	border: 1px solid var(--vscode-inputValidation-errorBorder, var(--vscode-widget-border));
 	border-radius: var(--vscode-cornerRadius-small, 4px);
-	font-size: 12px;
+	font-size: var(--vscode-fontSize-label1);
 	line-height: 1.5;
 	overflow-wrap: anywhere;
 }
@@ -124,14 +120,14 @@
 .paradis-browser-extensions-area .pbe-section-title {
 	margin-bottom: 4px;
 	color: var(--vscode-descriptionForeground);
-	font-size: 11px;
+	font-size: var(--vscode-fontSize-label2);
 	font-weight: 600;
 }
 
 .paradis-browser-extensions-area .pbe-option-note {
 	margin: 2px 0 0 20px;
 	color: var(--vscode-descriptionForeground);
-	font-size: 11px;
+	font-size: var(--vscode-fontSize-label2);
 	line-height: 1.5;
 }
 
@@ -145,7 +141,7 @@
 	padding: 0 6px;
 	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
 	border-radius: var(--vscode-cornerRadius-small, 4px);
-	font-size: 11px;
+	font-size: var(--vscode-fontSize-label2);
 	line-height: 18px;
 	max-width: 100%;
 	overflow: hidden;
@@ -166,7 +162,7 @@
 	border-radius: var(--vscode-cornerRadius-small, 4px);
 	background-color: var(--vscode-textCodeBlock-background, var(--vscode-editor-background));
 	font-family: var(--monaco-monospace-font);
-	font-size: 11px;
+	font-size: var(--vscode-fontSize-label2);
 	line-height: 1.5;
 	user-select: text;
 }
@@ -192,14 +188,14 @@
 .paradis-browser-extensions-area .pbe-row-error {
 	margin-top: 2px;
 	color: var(--vscode-errorForeground);
-	font-size: 11px;
+	font-size: var(--vscode-fontSize-label2);
 }
 
 .paradis-browser-extensions-area .pbe-message {
 	margin-top: 8px;
 	min-height: 1em;
 	color: var(--vscode-descriptionForeground);
-	font-size: 12px;
+	font-size: var(--vscode-fontSize-label1);
 }
 
 .paradis-browser-extensions-area .pbe-message.is-error {
@@ -214,7 +210,7 @@
 .paradis-browser-extensions-area .pbe-row-note {
 	margin-top: 2px;
 	color: var(--vscode-editorWarning-foreground);
-	font-size: 11px;
+	font-size: var(--vscode-fontSize-label2);
 }
 
 .paradis-browser-extensions-area .pbe-row-option {
@@ -222,7 +218,7 @@
 	align-items: center;
 	gap: 8px;
 	margin-top: 4px;
-	font-size: 12px;
+	font-size: var(--vscode-fontSize-label1);
 	cursor: pointer;
 }
 
@@ -243,51 +239,16 @@
 /* ---------- shared pieces of the former profile modal shell, used in this area ---------- */
 
 .paradis-browser-extensions-area .pbpm-description {
-	margin: 0 0 14px;
+	margin: 0 0 var(--vscode-spacing-size160);
 	color: var(--vscode-descriptionForeground);
-	font-size: 12px;
+	font-size: var(--vscode-fontSize-label1);
 	line-height: 1.6;
 }
 
-.paradis-browser-extensions-area .pbpm-btn {
-	padding: 5px 13px;
-	border: 1px solid var(--vscode-button-border, transparent);
-	border-radius: var(--vscode-cornerRadius-small, 4px);
-	background-color: var(--vscode-button-secondaryBackground);
-	color: var(--vscode-button-secondaryForeground);
-	font-family: inherit;
-	font-size: 12.5px;
-	cursor: pointer;
-}
-
-.paradis-browser-extensions-area .pbpm-btn.primary {
-	background-color: var(--vscode-button-background);
-	color: var(--vscode-button-foreground);
-}
-
-.paradis-browser-extensions-area .pbpm-btn.danger {
-	background-color: var(--vscode-inputValidation-errorBackground, var(--vscode-button-background));
-	color: var(--vscode-button-foreground);
-	border-color: var(--vscode-inputValidation-errorBorder, transparent);
-}
-
-.paradis-browser-extensions-area .pbpm-btn:not(:disabled):hover {
-	background-color: var(--vscode-button-secondaryHoverBackground);
-}
-
-.paradis-browser-extensions-area .pbpm-btn.primary:not(:disabled):hover {
-	background-color: var(--vscode-button-hoverBackground);
-}
-
-.paradis-browser-extensions-area .pbpm-btn:disabled {
-	opacity: 0.5;
-	cursor: default;
-}
-
 .paradis-browser-extensions-area .pbpm-empty {
-	padding: 14px;
+	padding: var(--vscode-spacing-size160);
 	color: var(--vscode-descriptionForeground);
-	font-size: 12px;
+	font-size: var(--vscode-fontSize-label1);
 }
 
 .paradis-browser-extensions-area .pbpm-info {
@@ -296,7 +257,7 @@
 }
 
 .paradis-browser-extensions-area .pbpm-name {
-	font-size: 12.5px;
+	font-size: var(--vscode-fontSize-body1);
 	font-weight: 600;
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -306,7 +267,7 @@
 .paradis-browser-extensions-area .pbpm-meta {
 	margin-top: 2px;
 	color: var(--vscode-descriptionForeground);
-	font-size: 11px;
+	font-size: var(--vscode-fontSize-label2);
 }
 
 .paradis-browser-extensions-area .pbpm-confirm {
@@ -323,13 +284,13 @@
 	align-items: center;
 	gap: 6px;
 	margin-bottom: 4px;
-	font-size: 12.5px;
+	font-size: var(--vscode-fontSize-body1);
 	font-weight: 600;
 }
 
 .paradis-browser-extensions-area .pbpm-confirm p {
 	margin: 0 0 10px;
-	font-size: 11.5px;
+	font-size: var(--vscode-fontSize-label1);
 	line-height: 1.6;
 }
 
@@ -347,7 +308,7 @@
 	background-color: var(--vscode-input-background);
 	color: var(--vscode-input-foreground);
 	font-family: inherit;
-	font-size: 12.5px;
+	font-size: var(--vscode-fontSize-body1);
 }
 
 /* ---------- the left nav of the unified modal: installed extensions ---------- */
@@ -427,7 +388,7 @@
 
 .paradis-hub .pbe-list-empty {
 	padding: 4px 10px 6px;
-	font-size: 11.5px;
+	font-size: var(--vscode-fontSize-label1);
 	color: var(--vscode-descriptionForeground);
 }
 
@@ -442,11 +403,11 @@
 	flex: 1;
 	min-height: 0;
 	overflow-y: auto;
-	padding: 14px 24px 24px;
+	padding: var(--vscode-spacing-size160) 24px 24px;
 }
 
 .paradis-browser-extensions-area .pbe-detail {
-	margin-top: 14px;
+	margin-top: var(--vscode-spacing-size160);
 }
 
 /* ---------- Q544: keep the body within 880px and give the log the rest of the height ---------- */

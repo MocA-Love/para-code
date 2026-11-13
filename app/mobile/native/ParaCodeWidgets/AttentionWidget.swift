@@ -218,6 +218,7 @@ struct AgentActionButton: View {
 				PillLabel(title: "確認済み", systemImage: "checkmark", palette: palette)
 			}
 			.buttonStyle(.plain)
+			.accessibilityLabel("\(model.title(agent))を確認済みにする")
 		}
 	}
 }
@@ -233,6 +234,7 @@ struct ReviewAllButton: View {
 				PillLabel(title: "すべて確認済み", systemImage: "checkmark", palette: palette)
 			}
 			.buttonStyle(.plain)
+			.accessibilityLabel("すべて確認済みにする")
 		}
 	}
 }

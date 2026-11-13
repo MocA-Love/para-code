@@ -13,7 +13,7 @@
 }
 
 .paradis-notif-area .pns-tune-title {
-	font-size: 13px;
+	font-size: var(--vscode-fontSize-body1);
 	font-weight: 600;
 	margin: 16px 0 2px 0;
 }
@@ -38,7 +38,7 @@
 .paradis-notif-area .pns-tune-value {
 	width: 34px;
 	text-align: right;
-	font-size: 12px;
+	font-size: var(--vscode-fontSize-label1);
 	font-weight: 600;
 	font-variant-numeric: tabular-nums;
 }
@@ -48,7 +48,7 @@
 	justify-content: space-between;
 	width: 200px;
 	margin-right: 42px;
-	font-size: 10.5px;
+	font-size: var(--vscode-fontSize-label2);
 	color: var(--vscode-descriptionForeground);
 }
 
@@ -60,27 +60,8 @@
 }
 
 .paradis-notif-area .pns-pill {
-	display: inline-block;
-	font-size: 10.5px;
-	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 10px;
-	padding: 0 7px;
-	color: var(--vscode-descriptionForeground);
-	white-space: nowrap;
-	max-width: 100%;
-	box-sizing: border-box;
-	overflow: hidden;
-	text-overflow: ellipsis;
-}
-
-.paradis-notif-area .pns-pill.ok {
-	border-color: var(--vscode-terminal-ansiGreen, var(--vscode-charts-green));
-	color: var(--vscode-terminal-ansiGreen, var(--vscode-charts-green));
-}
-
-.paradis-notif-area .pns-pill.warn {
-	border-color: var(--vscode-editorWarning-foreground);
-	color: var(--vscode-editorWarning-foreground);
+	/* 見た目はキットのチップ（paradis-chip）。ここは並べ方だけ */
+	flex: 0 1 auto;
 }
 
 .paradis-notif-area .pns-table-scroll {
@@ -91,7 +72,7 @@
 .paradis-notif-area .pns-gain-table {
 	width: 100%;
 	border-collapse: collapse;
-	font-size: 12px;
+	font-size: var(--vscode-fontSize-label1);
 }
 
 .paradis-notif-area .pns-gain-table th,
@@ -148,10 +129,10 @@
 }
 
 .paradis-notif-area .pns-gain-note {
-	font-size: 11.5px;
+	font-size: var(--vscode-fontSize-label1);
 	color: var(--vscode-descriptionForeground);
 	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 6px;
+	border-radius: var(--paradis-radius-control);
 	padding: 8px 12px;
 	margin-top: 10px;
 	line-height: 1.55;

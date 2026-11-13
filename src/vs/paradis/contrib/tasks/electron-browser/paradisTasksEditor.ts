@@ -18,6 +18,9 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { fromNow } from '../../../../base/common/date.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import { IManagedHover } from '../../../../base/browser/ui/hover/hover.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { URI } from '../../../../base/common/uri.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize } from '../../../../nls.js';
@@ -181,6 +184,8 @@ export class ParadisTasksEditor extends EditorPane {
 	/** 描き直すたびに作り直す部品（プリセットのボタン・表の行）の listener。 */
 	private readonly presetDisposables = this._register(new DisposableStore());
 	private readonly rowDisposables = this._register(new DisposableStore());
+	/** 文字を書き換えるボタン（リポジトリ・プロジェクトの選択）のホバー。作り直さずに中身だけ替える。 */
+	private readonly hovers = new WeakMap<HTMLElement, IManagedHover>();
 
 	constructor(
 		group: IEditorGroup,
@@ -200,6 +205,7 @@ export class ParadisTasksEditor extends EditorPane {
 		@IParadisTaskBoardHostService private readonly taskBoardHost: IParadisTaskBoardHostService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IInstantiationService instantiationService: IInstantiationService,
+		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super(PARADIS_TASKS_EDITOR_ID, group, telemetryService, themeService, tasksStorage);
 		this.github = ProxyChannel.toService<IParadisTasksGithubService>(sharedProcessService.getChannel(PARADIS_TASKS_GITHUB_CHANNEL));
@@ -246,7 +252,7 @@ export class ParadisTasksEditor extends EditorPane {
 		const sourceRow = dom.append(this.root, $('.paradis-tasks-row'));
 		const githubIcon = dom.append(sourceRow, $('span.paradis-tasks-source-icon'));
 		githubIcon.append(...this.icon(Codicon.github));
-		githubIcon.title = 'GitHub';
+		this.setHover(githubIcon, 'GitHub');
 		this.sourceChip = dom.append(sourceRow, $('span.paradis-tasks-chip'));
 		dom.append(sourceRow, $('span.paradis-tasks-grow'));
 		// タスクボード（工程のフローでエージェントを回す窓）へは、この画面から行く
@@ -448,6 +454,7 @@ export class ParadisTasksEditor extends EditorPane {
 
 		for (const [mode, button] of this.modeButtons) {
 			button.classList.toggle('on', mode === this.mode);
+			button.setAttribute('aria-pressed', String(mode === this.mode));
 		}
 		const active = this.activeRepositories;
 		this.setButtonLabel(this.repoButton, active.length === 0
@@ -463,6 +470,7 @@ export class ParadisTasksEditor extends EditorPane {
 			for (const preset of PARADIS_TASKS_PRESETS[mode]) {
 				const button = this.button(this.presetBar, presetLabel(mode, preset.id), () => this.setQuery(preset.query), 'paradis-tasks-pill', undefined, this.presetDisposables);
 				button.classList.toggle('on', preset.query === this.query);
+				button.setAttribute('aria-pressed', String(preset.query === this.query));
 			}
 		}
 		this.presetBar.style.display = project ? 'none' : '';
@@ -526,7 +534,11 @@ export class ParadisTasksEditor extends EditorPane {
 			return;
 		}
 		if (this.mode === 'project' && this.projectResult) {
-			const host = { openItem: (item: IParadisTasksProjectItem) => this.openProjectItem(item), showItemMenu: (item: IParadisTasksProjectItem, anchor: HTMLElement) => this.showProjectItemMenu(item, anchor) };
+			const host = {
+				openItem: (item: IParadisTasksProjectItem) => this.openProjectItem(item),
+				showItemMenu: (item: IParadisTasksProjectItem, anchor: HTMLElement) => this.showProjectItemMenu(item, anchor),
+				setHover: (element: HTMLElement, content: string) => this.setHover(element, content, this.rowDisposables),
+			};
 			if (this.projectResult.view.layout === 'BOARD_LAYOUT') {
 				paradisTasksRenderProjectBoard(this.projectHost, this.projectResult, this.rowDisposables, host);
 			} else {
@@ -831,7 +843,7 @@ export class ParadisTasksEditor extends EditorPane {
 		dom.append(context, $(`span.paradis-tasks-state.paradis-tasks-state-inline.${state.tone}`)).textContent = state.label;
 		const repository = dom.append(context, $('span.repo'));
 		repository.textContent = item.repository;
-		repository.title = item.repository;
+		this.setHover(repository, item.repository, this.rowDisposables);
 		if (item.author) {
 			dom.append(context, $('span')).textContent = localize('paradis.tasks.author', "作成 {0}", item.author);
 		}
@@ -855,7 +867,7 @@ export class ParadisTasksEditor extends EditorPane {
 		}
 		for (const user of item.assignees) {
 			const avatar = dom.append(assignees, $('span.paradis-tasks-avatar'));
-			avatar.title = user.login;
+			this.setHover(avatar, user.login, this.rowDisposables);
 			if (user.avatarUrl?.startsWith('https://')) {
 				const image = dom.append(avatar, $<HTMLImageElement>('img'));
 				image.src = user.avatarUrl;
@@ -871,7 +883,9 @@ export class ParadisTasksEditor extends EditorPane {
 		const updated = dom.append(row, $('td.updated'));
 		const time = Date.parse(item.updatedAt);
 		updated.textContent = isNaN(time) ? '' : fromNow(time, true);
-		updated.title = isNaN(time) ? '' : new Date(time).toLocaleString();
+		if (!isNaN(time)) {
+			this.setHover(updated, new Date(time).toLocaleString(), this.rowDisposables);
+		}
 
 		const actions = dom.append(row, $('td.actions'));
 		if (item.kind === 'issue' && item.state === 'OPEN') {
@@ -982,7 +996,26 @@ export class ParadisTasksEditor extends EditorPane {
 		if (trailing) {
 			button.append(...this.icon(trailing));
 		}
-		button.title = label;
+		this.setHover(button, label);
+	}
+
+	/**
+	 * ワークベンチのホバーを付ける（`element.title` の代わり）。同じ要素へ 2 回目からは中身だけ替える。
+	 * `store` を省くと画面と同じ寿命にする（作り直さない要素だけ）。
+	 */
+	private setHover(element: HTMLElement, content: string, store?: DisposableStore): void {
+		const existing = this.hovers.get(element);
+		if (existing) {
+			existing.update(content);
+			return;
+		}
+		const hover = this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), element, content);
+		this.hovers.set(element, hover);
+		if (store) {
+			store.add(hover);
+		} else {
+			this._register(hover);
+		}
 	}
 
 	private button(parent: HTMLElement, label: string, run: (event: MouseEvent) => void, className: string, leading?: ThemeIcon, store?: DisposableStore): HTMLButtonElement {
@@ -1004,7 +1037,7 @@ export class ParadisTasksEditor extends EditorPane {
 	private iconButton(parent: HTMLElement, icon: ThemeIcon, label: string, run: (event: MouseEvent) => void, extraClass = '', store?: DisposableStore): HTMLButtonElement {
 		const button = dom.append(parent, $<HTMLButtonElement>(`button.paradis-tasks-icon-button${extraClass ? `.${extraClass}` : ''}`));
 		button.type = 'button';
-		button.title = label;
+		this.setHover(button, label, store);
 		button.setAttribute('aria-label', label);
 		button.append(...this.icon(icon));
 		const listener = dom.addDisposableListener(button, 'click', event => run(event));

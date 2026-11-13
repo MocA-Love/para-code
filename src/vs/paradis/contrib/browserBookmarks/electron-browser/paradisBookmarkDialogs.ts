@@ -26,6 +26,7 @@ import { ILayoutService } from '../../../../platform/layout/browser/layoutServic
 import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
+import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import {
 	IParadisFolderOption,
 	PARADIS_FOLDER_COLOR_PRESETS,
@@ -35,6 +36,9 @@ import {
 } from '../common/paradisBookmarkModel.js';
 
 const $ = dom.$;
+
+/** 見出しの id の通し番号（同時に開いても重ならないように）。 */
+let dialogTitleSerial = 0;
 
 /** Values captured by the edit-bookmark dialog. */
 export interface IParadisBookmarkDialogResult {
@@ -88,11 +92,17 @@ abstract class ParadisBookmarkModal extends Disposable {
 		modal.classList.add(...paradisModalClasses(ParadisModalSize.Small));
 		this._backdrop.appendChild(modal);
 
+		modal.setAttribute('role', 'dialog');
+		modal.setAttribute('aria-modal', 'true');
+
 		const header = dom.append(modal, $('.pbm-header'));
-		dom.append(header, $('h2')).textContent = dialogTitle;
-		const closeButton = dom.append(header, $('.pbm-close'));
+		const title = dom.append(header, $('h2'));
+		title.textContent = dialogTitle;
+		title.id = `paradis-bookmark-dialog-title-${++dialogTitleSerial}`;
+		modal.setAttribute('aria-labelledby', title.id);
+		const closeButton = dom.append(header, $<HTMLButtonElement>('button.pbm-close.paradis-focus-ring'));
+		closeButton.type = 'button';
 		closeButton.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.close)}`));
-		closeButton.setAttribute('role', 'button');
 		closeButton.setAttribute('aria-label', localize('paradis.bookmarks.dialog.close', "閉じる"));
 		this._register(dom.addDisposableListener(closeButton, 'click', () => this.close()));
 
@@ -124,6 +134,9 @@ abstract class ParadisBookmarkModal extends Disposable {
 			}
 		}));
 
+		// フォーカスを箱の中で回し、閉じたら開く前の場所へ戻す（fork のモーダルに共通の扱い）。開く前のフォーカスを
+		// 覚えるので、箱を DOM に入れてフォーカスするより前に作る
+		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal, onEscape: () => this.close(), close: () => this.close() }));
 		layoutService.activeContainer.appendChild(this._backdrop);
 	}
 

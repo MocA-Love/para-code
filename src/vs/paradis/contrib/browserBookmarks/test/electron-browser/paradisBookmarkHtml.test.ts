@@ -120,4 +120,17 @@ suite('Paradis bookmark HTML', () => {
 			},
 		]);
 	});
+
+	test('imports only image data favicons within the size limit', () => {
+		const large = `data:image/png;base64,${'A'.repeat(32 * 1024)}`;
+		const html = [
+			'<DL><p>',
+			'<DT><A HREF="https://small.example/" ADD_DATE="1" ICON="data:image/png;base64,AAAA">Small</A>',
+			`<DT><A HREF="https://large.example/" ADD_DATE="2" ICON="${large}">Large</A>`,
+			'<DT><A HREF="https://text.example/" ADD_DATE="3" ICON="data:text/html,hello">Text</A>',
+			'</DL><p>',
+		].join('\n');
+
+		assert.deepStrictEqual(importParadisBookmarksFromHtml(html).map(node => node.type === 'bookmark' ? node.faviconDataUri : node.type), ['data:image/png;base64,AAAA', undefined, undefined]);
+	});
 });

@@ -17,6 +17,8 @@ import { Action, IAction, Separator } from '../../../../base/common/actions.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { FuzzyScore } from '../../../../base/common/filters.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import { IManagedHover } from '../../../../base/browser/ui/hover/hover.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { basename } from '../../../../base/common/resources.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
@@ -216,12 +218,17 @@ abstract class RowRenderer<T extends TransferableElement> implements ITreeRender
 /** ホスト見出し行。ラベル + 接続中表示のみで、アクションは持たない。 */
 interface IHostRowTemplateData extends IRowTemplateData {
 	readonly connectedDot: HTMLElement;
+	/** アイコンと行のホバー。テンプレートごとに 1 回だけ作り、行を描くたびに中身を替える。 */
+	readonly iconHover: IManagedHover;
+	readonly rowHover: IManagedHover;
 }
 
 class HostRenderer implements ITreeRenderer<ParadisRemoteHost, FuzzyScore, IHostRowTemplateData> {
 
 	static readonly TEMPLATE_ID = 'para-rh-host';
 	readonly templateId = HostRenderer.TEMPLATE_ID;
+
+	constructor(private readonly hoverService: IHoverService) { }
 
 	renderTemplate(container: HTMLElement): IHostRowTemplateData {
 		const row = DOM.append(container, DOM.$('.para-rh-row'));
@@ -232,7 +239,10 @@ class HostRenderer implements ITreeRenderer<ParadisRemoteHost, FuzzyScore, IHost
 		const meta = DOM.append(row, DOM.$('.para-rh-meta'));
 		const actionsContainer = DOM.append(row, DOM.$('.para-rh-actions'));
 		const actionBar = new ActionBar(actionsContainer);
-		return { row, icon, connectedDot, name, meta, actionsContainer, actionBar, disposables: new DisposableStore() };
+		const disposables = new DisposableStore();
+		const iconHover = disposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), icon, ''));
+		const rowHover = disposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), row, ''));
+		return { row, icon, connectedDot, name, meta, actionsContainer, actionBar, disposables, iconHover, rowHover };
 	}
 
 	renderElement(node: ITreeNode<ParadisRemoteHost, FuzzyScore>, _index: number, templateData: IHostRowTemplateData): void {
@@ -240,7 +250,7 @@ class HostRenderer implements ITreeRenderer<ParadisRemoteHost, FuzzyScore, IHost
 		const element = node.element;
 		const isLocal = element.hostKey === '';
 		templateData.icon.className = `para-rh-icon ${isLocal ? 'host-local' : 'host-ssh'} ${ThemeIcon.asClassName(isLocal ? Codicon.vm : Codicon.server)}`;
-		templateData.icon.title = isLocal ? localize('paraRemoteHosts.localMachine', "このマシン") : element.label;
+		void templateData.iconHover.update(isLocal ? localize('paraRemoteHosts.localMachine', "このマシン") : element.label);
 		// 緑ドットは「いつもと違う方」= SSH 先が繋がっているときだけ (手元は大半がこちらなので)
 		templateData.connectedDot.classList.toggle('hidden', isLocal || !element.connected);
 		templateData.name.textContent = element.label;
@@ -249,9 +259,9 @@ class HostRenderer implements ITreeRenderer<ParadisRemoteHost, FuzzyScore, IHost
 		templateData.meta.textContent = element.offline
 			? localize('paraRemoteHosts.offlineBadge', "未接続")
 			: '';
-		templateData.row.title = element.offline
+		void templateData.rowHover.update(element.offline
 			? localize('paraRemoteHosts.offlineHostTooltip', "展開すると ssh でファイル一覧を取得します (閲覧のみ)")
-			: '';
+			: '');
 		// 色帯はスペース行専用。行は使い回されるので、他のテンプレートでは必ず透明へ戻す
 		templateData.row.closest<HTMLElement>('.monaco-tl-row')?.style.setProperty('--para-rh-color', 'transparent');
 	}
@@ -416,7 +426,7 @@ export class ParadisRemoteHostsView extends ViewPane {
 			treeContainer,
 			new TreeDelegate(),
 			[
-				new HostRenderer(),
+				new HostRenderer(this.hoverService),
 				new SpaceRenderer(element => this.inlineActionsFor(element)),
 				new FileRenderer(element => this.inlineActionsFor(element)),
 			],

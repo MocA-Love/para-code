@@ -70,7 +70,8 @@ export class ParadisColorPickerWidget extends Disposable {
 		this.registerDrag(this.hue, (_x, y) => this.update(new HSVA(y * 360, this.hsva.s, this.hsva.v, this.hsva.a)));
 		this.registerDrag(this.alpha, (_x, y) => this.update(new HSVA(this.hsva.h, this.hsva.s, this.hsva.v, 1 - y)));
 		this.registerKeys(this.saturation, (dx, dy) => this.update(new HSVA(this.hsva.h, this.hsva.s + dx * 0.01, this.hsva.v - dy * 0.01, this.hsva.a)));
-		this.registerKeys(this.hue, (_dx, dy) => this.update(new HSVA(this.hsva.h + dy, this.hsva.s, this.hsva.v, this.hsva.a)));
+		// 色相も不透明度と同じく、上・右で増やし下・左で減らす。Home・End で最小・最大
+		this.registerKeys(this.hue, (dx, dy) => this.update(new HSVA(this.hsva.h + dx - dy, this.hsva.s, this.hsva.v, this.hsva.a)), toEnd => this.update(new HSVA(toEnd ? 360 : 0, this.hsva.s, this.hsva.v, this.hsva.a)));
 		this.registerKeys(this.alpha, (_dx, dy) => this.update(new HSVA(this.hsva.h, this.hsva.s, this.hsva.v, this.hsva.a - dy * 0.01)));
 
 		this._register(dom.addDisposableListener(this.hexInput, dom.EventType.INPUT, () => {
@@ -146,7 +147,7 @@ export class ParadisColorPickerWidget extends Disposable {
 		this.alphaFill.style.background = `linear-gradient(to bottom, ${Color.Format.CSS.formatHex(opaque)}, transparent)`;
 		this.alphaHandle.style.top = `${(1 - a) * 100}%`;
 		this.saturation.setAttribute('aria-valuenow', String(Math.round(s * 100)));
-		this.saturation.setAttribute('aria-valuetext', this.hex);
+		this.saturation.setAttribute('aria-valuetext', localize('paradis.themeColors.picker.svValue', "彩度 {0}%、明るさ {1}%、{2}", Math.round(s * 100), Math.round(v * 100), this.hex));
 		this.hue.setAttribute('aria-valuenow', String(h));
 		this.alpha.setAttribute('aria-valuenow', String(Math.round(a * 100)));
 		if (!options?.keepHexInput) {
@@ -183,8 +184,15 @@ export class ParadisColorPickerWidget extends Disposable {
 		this._register(dom.addDisposableListener(target, 'lostpointercapture', () => this.flush()));
 	}
 
-	private registerKeys(target: HTMLElement, onStep: (dx: number, dy: number) => void): void {
+	/** 矢印キーで 1 つ（Shift で 10）ずつ動かす。`onEdge` を渡すと Home・End で端へ（`true` が End）。 */
+	private registerKeys(target: HTMLElement, onStep: (dx: number, dy: number) => void, onEdge?: (toEnd: boolean) => void): void {
 		this._register(dom.addDisposableListener(target, dom.EventType.KEY_DOWN, (e: KeyboardEvent) => {
+			if (onEdge && (e.key === 'Home' || e.key === 'End')) {
+				e.preventDefault();
+				e.stopPropagation();
+				onEdge(e.key === 'End');
+				return;
+			}
 			const step = e.shiftKey ? 10 : 1;
 			const delta: Record<string, [number, number]> = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] };
 			const d = delta[e.key];

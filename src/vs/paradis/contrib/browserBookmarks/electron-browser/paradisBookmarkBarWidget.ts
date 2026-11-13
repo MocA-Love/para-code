@@ -9,13 +9,17 @@
 // ブックマークバーのDOM本体。ルート項目の描画（favicon+タイトル／9種アイコン+カラーのフォルダ）、
 // クリックでのナビゲーション、フォルダのネストメニュー（IContextMenuService+SubmenuAction）、
 // 右クリックメニュー、HTML5 DnDによるルート並べ替え、編集ダイアログ起動を担当する。
+// バーは role="toolbar"（矢印キーで項目を移り、Tab の止まりは 1 つ）。入りきらない項目は末尾の「»」の
+// メニューへ逃がす（Chrome と同じ）。
 // メニュー類は overlayManager が監視済みの context-view で出るため、ネイティブ
 // WebContentsView との重なりは自動処理される。
 
 import * as dom from '../../../../base/browser/dom.js';
+import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { Action, IAction, Separator, SubmenuAction } from '../../../../base/common/actions.js';
 import { Codicon } from '../../../../base/common/codicons.js';
+import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
@@ -29,6 +33,7 @@ import {
 	IParadisBookmark,
 	IParadisBookmarkFolder,
 	isParadisBookmark,
+	isParadisBookmarkUrlAllowed,
 	normalizeParadisBookmarkUrl,
 	ParadisBookmarkNode,
 	paradisFolderIcon,
@@ -42,6 +47,17 @@ import {
 } from './paradisBookmarksService.js';
 
 const $ = dom.$;
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/** 「»」の項目のフォーカスの目印（ブックマークの id と重ならない値）。 */
+const MORE_FOCUS_KEY = ':more';
+
+/** 描いた項目 1 つ。はみ出したものは「»」のメニューに入る。 */
+interface IRenderedBarItem {
+	readonly element: HTMLButtonElement;
+	readonly node: ParadisBookmarkNode;
+}
 
 /** Callbacks the bar needs from its owning editor feature. */
 export interface IParadisBookmarkBarHost {
@@ -70,6 +86,13 @@ export class ParadisBookmarkBarWidget extends Disposable {
 	private readonly _renderDisposables = this._register(new DisposableStore());
 	private readonly _openDialog = this._register(new MutableDisposable<IDisposable>());
 
+	private readonly _more: HTMLButtonElement;
+	private readonly _resizeObserver = this._register(new MutableDisposable<IDisposable>());
+	private _observedWindow: Window | undefined;
+	private _items: IRenderedBarItem[] = [];
+	/** Tab で入ったときにフォーカスする項目（ブックマーク・フォルダの id か「»」）。 */
+	private _focusKey: string | undefined;
+
 	private _activeUrl = '';
 	private _draggingId: string | undefined;
 	private _dropTargetElement: HTMLElement | undefined;
@@ -85,6 +108,10 @@ export class ParadisBookmarkBarWidget extends Disposable {
 		super();
 
 		this.element = $('.paradis-bookmark-bar');
+		this.element.setAttribute('role', 'toolbar');
+		this.element.setAttribute('aria-label', localize('paradis.bookmarks.barAriaLabel', "ブックマークバー"));
+		this._more = this._createMoreButton();
+		this._register(dom.addDisposableListener(this.element, 'keydown', e => this._onKeyDown(e)));
 		this._register(dom.addDisposableListener(this.element, 'contextmenu', e => {
 			// 項目上の右クリックは項目側のメニューに任せる（バー地肌と空ヒントのみ反応）。
 			if (e.target === this.element || (dom.isHTMLElement(e.target) && e.target.classList.contains('paradis-bookmark-bar-hint'))) {
@@ -104,6 +131,9 @@ export class ParadisBookmarkBarWidget extends Disposable {
 		if (normalized !== this._activeUrl) {
 			this._activeUrl = normalized;
 			this._render();
+		} else {
+			// 別のウィンドウへ移ったときに、大きさの見張りをそのウィンドウで付け直す
+			this._observeSize();
 		}
 	}
 
@@ -132,8 +162,9 @@ export class ParadisBookmarkBarWidget extends Disposable {
 			initial: { title: bookmark.title, url: bookmark.url, folderId },
 			folderOptions: getParadisFolderOptions(this.bookmarksService.nodes, untitledFolderLabel()),
 			onSubmit: result => {
-				if (!normalizeParadisBookmarkUrl(result.url)) {
-					return localize('paradis.bookmarks.invalidUrl', "有効なURLを入力してください。");
+				// 取り込みと同じ判定（http・https・about: だけ）。javascript: や file: はバーから開くと危ないので断る。
+				if (!isParadisBookmarkUrlAllowed(normalizeParadisBookmarkUrl(result.url))) {
+					return localize('paradis.bookmarks.invalidUrlScheme', "http:// か https:// で始まる URL を入力してください。");
 				}
 				const updated = this.bookmarksService.updateBookmark(bookmark.id, {
 					url: result.url,
@@ -148,13 +179,18 @@ export class ParadisBookmarkBarWidget extends Disposable {
 	// --- rendering --------------------------------------------------------
 
 	private _render(): void {
+		// 描き直し（ページの移動のたびに起きる）でキーボードのフォーカスが BODY に落ちないよう、同じ項目へ戻す
+		const hadFocus = dom.isAncestorOfActiveElement(this.element);
 		this._renderDisposables.clear();
 		dom.clearNode(this.element);
+		this._items = [];
 
 		const nodes = this.bookmarksService.nodes;
 		if (nodes.length === 0) {
 			const hint = dom.append(this.element, $('.paradis-bookmark-bar-hint'));
 			hint.textContent = localize('paradis.bookmarks.emptyHint', "アドレスバーの星マークをクリックしてブックマークを追加できます。");
+			this._focusKey = undefined;
+			this._observeSize();
 			return;
 		}
 
@@ -162,11 +198,26 @@ export class ParadisBookmarkBarWidget extends Disposable {
 			const item = isParadisBookmark(node) ? this._renderBookmarkItem(node) : this._renderFolderItem(node);
 			this._installDnd(item, node);
 			this.element.appendChild(item);
+			this._items.push({ element: item, node });
+			this._renderDisposables.add(dom.addDisposableListener(item, 'focus', () => this._setFocusKey(node.id)));
+		}
+		this.element.appendChild(this._more);
+		this._layoutOverflow();
+		this._observeSize();
+		if (hadFocus) {
+			this._focusTarget(this._focusKey)?.focus();
 		}
 	}
 
-	private _renderBookmarkItem(bookmark: IParadisBookmark): HTMLElement {
-		const item = $('.paradis-bookmark-item');
+	private _createItemButton(className: string): HTMLButtonElement {
+		const item = $<HTMLButtonElement>(`button.${className}.paradis-focus-ring-inset`);
+		item.type = 'button';
+		item.tabIndex = -1;
+		return item;
+	}
+
+	private _renderBookmarkItem(bookmark: IParadisBookmark): HTMLButtonElement {
+		const item = this._createItemButton('paradis-bookmark-item');
 		item.classList.toggle('active', !!this._activeUrl && normalizeParadisBookmarkUrl(bookmark.url) === this._activeUrl);
 
 		const iconContainer = dom.append(item, $('.paradis-bookmark-item-icon'));
@@ -195,8 +246,9 @@ export class ParadisBookmarkBarWidget extends Disposable {
 		return item;
 	}
 
-	private _renderFolderItem(folder: IParadisBookmarkFolder): HTMLElement {
-		const item = $('.paradis-bookmark-item.folder');
+	private _renderFolderItem(folder: IParadisBookmarkFolder): HTMLButtonElement {
+		const item = this._createItemButton('paradis-bookmark-item.folder');
+		item.setAttribute('aria-haspopup', 'menu');
 
 		const iconContainer = dom.append(item, $('.paradis-bookmark-item-icon'));
 		const icon = iconContainer.appendChild($(`span${ThemeIcon.asCSSSelector(paradisFolderIcon(folder.icon))}`));
@@ -207,11 +259,14 @@ export class ParadisBookmarkBarWidget extends Disposable {
 		dom.append(item, $('span.paradis-bookmark-item-label')).textContent = folderDisplayTitle(folder);
 		this._renderDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), item, folderDisplayTitle(folder)));
 
-		this._renderDisposables.add(dom.addDisposableListener(item, 'click', () => {
-			this.contextMenuService.showContextMenu({
-				getAnchor: () => item,
-				getActions: () => this._folderMenuActions(folder),
-			});
+		this._renderDisposables.add(dom.addDisposableListener(item, 'click', () => this._showFolderMenu(item, folder)));
+		this._renderDisposables.add(dom.addDisposableListener(item, 'keydown', e => {
+			// Enter・Space は button の click で開く。下矢印でも開く（メニューのボタンの決まり）
+			if (new StandardKeyboardEvent(e).keyCode === KeyCode.DownArrow) {
+				e.preventDefault();
+				e.stopPropagation();
+				this._showFolderMenu(item, folder);
+			}
 		}));
 		this._renderDisposables.add(dom.addDisposableListener(item, 'contextmenu', e => {
 			e.preventDefault();
@@ -221,7 +276,152 @@ export class ParadisBookmarkBarWidget extends Disposable {
 		return item;
 	}
 
+	// --- overflow (») and keyboard navigation --------------------------------
+
+	private _createMoreButton(): HTMLButtonElement {
+		const more = this._createItemButton('paradis-bookmark-more');
+		more.classList.add('paradis-bookmark-overflowed');
+		more.setAttribute('aria-haspopup', 'menu');
+		more.setAttribute('aria-label', localize('paradis.bookmarks.more', "その他のブックマーク"));
+		const svg = more.ownerDocument.createElementNS(SVG_NS, 'svg');
+		svg.setAttribute('viewBox', '0 0 16 16');
+		svg.setAttribute('aria-hidden', 'true');
+		const path = more.ownerDocument.createElementNS(SVG_NS, 'path');
+		path.setAttribute('d', 'M4 4l4 4-4 4M8.5 4l4 4-4 4');
+		svg.appendChild(path);
+		more.appendChild(svg);
+		this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), more, localize('paradis.bookmarks.more', "その他のブックマーク")));
+		this._register(dom.addDisposableListener(more, 'click', () => this._showMoreMenu()));
+		this._register(dom.addDisposableListener(more, 'focus', () => this._setFocusKey(MORE_FOCUS_KEY)));
+		this._register(dom.addDisposableListener(more, 'keydown', e => {
+			if (new StandardKeyboardEvent(e).keyCode === KeyCode.DownArrow) {
+				e.preventDefault();
+				e.stopPropagation();
+				this._showMoreMenu();
+			}
+		}));
+		return more;
+	}
+
+	private _showMoreMenu(): void {
+		const hidden = this._items.filter(item => item.element.classList.contains('paradis-bookmark-overflowed'));
+		if (hidden.length === 0) {
+			return;
+		}
+		this._more.classList.add('open');
+		this.contextMenuService.showContextMenu({
+			getAnchor: () => this._more,
+			getActions: () => hidden.map(item => this._nodeMenuAction(item.node)),
+			onHide: () => this._more.classList.remove('open'),
+		});
+	}
+
+	/** 大きさの見張りを、バーが今いるウィンドウで付ける（補助ウィンドウへ移ったら付け直す）。 */
+	private _observeSize(): void {
+		const targetWindow = dom.getWindow(this.element);
+		if (this._observedWindow === targetWindow && this._resizeObserver.value) {
+			return;
+		}
+		this._observedWindow = targetWindow;
+		const observer = new dom.DisposableResizeObserver('paradisBookmarkBar', () => this._layoutOverflow(), targetWindow);
+		const store = new DisposableStore();
+		store.add(observer);
+		store.add(observer.observe(this.element));
+		this._resizeObserver.value = store;
+	}
+
+	/** 入りきらない項目を隠して「»」のメニューへ回す。 */
+	private _layoutOverflow(): void {
+		for (const item of this._items) {
+			item.element.classList.remove('paradis-bookmark-overflowed');
+		}
+		this._more.classList.add('paradis-bookmark-overflowed');
+		const width = this.element.clientWidth;
+		// 隠したバー（設定で非表示・まだ DOM に無い）は幅 0。そのときは測らない（全部が » に入らないように）
+		if (width === 0 || this._items.length === 0) {
+			this._updateRoving();
+			return;
+		}
+		this.element.scrollLeft = 0;
+		if (this.element.scrollWidth > width) {
+			this._more.classList.remove('paradis-bookmark-overflowed');
+			const style = dom.getWindow(this.element).getComputedStyle(this.element);
+			const gap = parseFloat(style.columnGap) || 0;
+			const limit = this.element.getBoundingClientRect().left + width - (parseFloat(style.paddingRight) || 0) - this._more.offsetWidth - gap;
+			let overflowing = false;
+			for (const item of this._items) {
+				overflowing = overflowing || item.element.getBoundingClientRect().right > limit;
+				item.element.classList.toggle('paradis-bookmark-overflowed', overflowing);
+			}
+		}
+		this._updateRoving();
+	}
+
+	/** Tab で巡る先（表示している項目と「»」）。 */
+	private _rovingTargets(): HTMLButtonElement[] {
+		const targets = this._items.map(item => item.element).filter(element => !element.classList.contains('paradis-bookmark-overflowed'));
+		if (!this._more.classList.contains('paradis-bookmark-overflowed')) {
+			targets.push(this._more);
+		}
+		return targets;
+	}
+
+	private _focusTarget(key: string | undefined): HTMLButtonElement | undefined {
+		const targets = this._rovingTargets();
+		if (key === MORE_FOCUS_KEY) {
+			return targets.includes(this._more) ? this._more : targets[targets.length - 1];
+		}
+		const item = this._items.find(candidate => candidate.node.id === key);
+		if (item && targets.includes(item.element)) {
+			return item.element;
+		}
+		// 消えた・» に入った項目なら「»」（無ければ先頭）
+		return key !== undefined && targets.includes(this._more) ? this._more : targets[0];
+	}
+
+	private _setFocusKey(key: string): void {
+		this._focusKey = key;
+		this._updateRoving();
+	}
+
+	/** Tab の止まりを 1 つにする（roving tabindex）。 */
+	private _updateRoving(): void {
+		const current = this._focusTarget(this._focusKey);
+		for (const element of [...this._items.map(item => item.element), this._more]) {
+			element.tabIndex = element === current ? 0 : -1;
+		}
+	}
+
+	private _onKeyDown(e: KeyboardEvent): void {
+		const event = new StandardKeyboardEvent(e);
+		const targets = this._rovingTargets();
+		const index = targets.findIndex(target => dom.isActiveElement(target));
+		if (index < 0 || targets.length === 0) {
+			return;
+		}
+		let next: number | undefined;
+		switch (event.keyCode) {
+			case KeyCode.RightArrow: next = (index + 1) % targets.length; break;
+			case KeyCode.LeftArrow: next = (index - 1 + targets.length) % targets.length; break;
+			case KeyCode.Home: next = 0; break;
+			case KeyCode.End: next = targets.length - 1; break;
+		}
+		if (next === undefined) {
+			return;
+		}
+		event.preventDefault();
+		event.stopPropagation();
+		targets[next].focus();
+	}
+
 	// --- folder dropdown (nested submenus) ---------------------------------
+
+	private _showFolderMenu(item: HTMLElement, folder: IParadisBookmarkFolder): void {
+		this.contextMenuService.showContextMenu({
+			getAnchor: () => item,
+			getActions: () => this._folderMenuActions(folder),
+		});
+	}
 
 	private _folderMenuActions(folder: IParadisBookmarkFolder): IAction[] {
 		if (folder.children.length === 0) {

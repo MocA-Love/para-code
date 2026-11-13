@@ -46,4 +46,40 @@ suite('ParadisGithubMetricsPopover', () => {
 		await clock.tickAsync(3 * 60 * 1000);
 		assert.notStrictEqual(updated(), before);
 	});
+
+	test('shows the refresh failure above the values kept from the last fetch', async () => {
+		const fetchedAt = Date.now();
+		const snapshot: IParadisGithubMetricsSnapshot = {
+			generatedAt: fetchedAt,
+			sessionStartedAt: fetchedAt,
+			ghAvailable: false,
+			rateLimitError: undefined,
+			rateLimitFetchedAt: fetchedAt,
+			rateLimits: [],
+			consumption: [],
+			operations: [],
+			spaces: [],
+			totals: { sessionCalls: 0, sessionFailures: 0, rolling5mCalls: 0, rolling5mFailures: 0, rolling5mRateLimited: 0 },
+			lastErrors: [],
+		};
+		let fail = false;
+		const popover = store.add(new ParadisGithubMetricsPopover({
+			fetch: async () => {
+				if (fail) {
+					throw new Error('Canceled');
+				}
+				return snapshot;
+			},
+			openDashboard: () => { },
+		}));
+		await clock.tickAsync(0);
+		fail = true;
+		popover.element.querySelector<HTMLButtonElement>('.paradis-ghm-popover-footer button')?.click();
+		await clock.tickAsync(0);
+		const messages = [...popover.element.querySelectorAll('.paradis-ghm-popover-message')].map(element => element.textContent);
+		assert.deepStrictEqual(messages, [
+			'更新できませんでした: Canceled',
+			'GitHub CLI（gh）が見つからないため、レート制限を取得できません。',
+		]);
+	});
 });

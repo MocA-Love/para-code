@@ -261,6 +261,29 @@ suite('ParadisScheduledRunsService', () => {
 		assert.strictEqual(requests.length, 1);
 	});
 
+	test('records the space a stopped run finished creating, only from the window that ran it', async () => {
+		const { state, service, requests } = setup();
+		await service.whenReady();
+		await createEnabled(service);
+		state.now = at(2026, 9, 25, 9, 0);
+		service.tick();
+		const runId = requests[0].run.id;
+		await service.claim('window:1', runId);
+		const space = { stateKey: 'worktree:file:///repo-wt', name: 'スペース', branch: 'scheduled-a', uri: 'file:///repo-wt' };
+		// 動いている回は report で記録する（ここでは受け付けない）
+		const whileActive = await service.recordSpace('window:1', runId, space);
+		await service.report('window:1', { runId, status: 'cancelled', reason: 'userStopped' });
+		const results = [
+			whileActive,
+			await service.recordSpace('window:2', runId, space),
+			await service.recordSpace('window:1', runId, { stateKey: 1 }),
+			await service.recordSpace('window:1', runId, space),
+			await service.recordSpace('window:1', runId, { ...space, name: '二度目' }),
+		];
+		const run = service.getState().runs.find(candidate => candidate.id === runId)!;
+		assert.deepStrictEqual({ results, status: run.status, space: run.space }, { results: [false, false, false, true, false], status: 'cancelled', space });
+	});
+
 	test('drops the record of a run that finishes after its schedule was deleted', async () => {
 		const { state, service, requests } = setup();
 		await service.whenReady();

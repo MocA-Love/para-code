@@ -78,6 +78,8 @@ interface IDropdownRow {
 
 export class ParadisBrowserViewportDropdown extends Disposable {
 
+	private static _nextHeadingId = 0;
+
 	private readonly _element: HTMLElement;
 	private readonly _listElement: HTMLElement;
 	private readonly _rows = new ParadisPopoverRows<IDropdownRow>();
@@ -96,7 +98,13 @@ export class ParadisBrowserViewportDropdown extends Disposable {
 		this._container = layoutService.getContainer(dom.getWindow(options.anchor));
 		this._element = $('.paradis-browser-viewport-dropdown.paradis-focus-none.paradis-overlay-popover');
 		this._element.tabIndex = -1;
-		this._listElement = dom.append(this._element, $('.pbv-list'));
+		// listbox の中は option だけにする（見出しや入力欄が混ざると、読み上げの件数と位置がずれる。paradis-16-5）。
+		// 見出し「保存した大きさ」は外側の区画（スクロールする箱）に置き、role="group" でつなぐ
+		const savedGroup = dom.append(this._element, $('.pbv-list'));
+		savedGroup.setAttribute('role', 'group');
+		const savedHeading = this._appendSeparator(savedGroup, localize('paradis.browserViewport.dropdown.saved', "保存した大きさ"));
+		savedGroup.setAttribute('aria-labelledby', savedHeading.id);
+		this._listElement = dom.append(savedGroup, $('.pbv-options'));
 		this._listElement.setAttribute('role', 'listbox');
 		this._listElement.setAttribute('aria-label', localize('paradis.browserViewport.dropdown.label', "ページの大きさ"));
 
@@ -115,7 +123,6 @@ export class ParadisBrowserViewportDropdown extends Disposable {
 	// #region 描画
 
 	private _renderSizes(): void {
-		this._appendSeparator(localize('paradis.browserViewport.dropdown.saved', "保存した大きさ"));
 		const current = this.options.current;
 		for (const size of this.options.sizes) {
 			const selected = !current.fit && current.name === size.name;
@@ -145,13 +152,21 @@ export class ParadisBrowserViewportDropdown extends Disposable {
 	}
 
 	private _renderCustom(): void {
-		this._appendSeparator(localize('paradis.browserViewport.dropdown.custom', "自由に入力"));
-		const element = dom.append(this._listElement, $('.pbv-row.paradis-focus-none.pbv-custom'));
-		element.setAttribute('role', 'presentation');
+		// 自由入力は listbox の外の区画に置く（paradis-16-5 案 A）。キーボードの移動は今までどおり行の一つとして回る
+		const section = dom.append(this._element, $('.pbv-section'));
+		section.setAttribute('role', 'group');
+		const heading = this._appendSeparator(section, localize('paradis.browserViewport.dropdown.custom', "自由に入力"));
+		section.setAttribute('aria-labelledby', heading.id);
+		const element = dom.append(section, $('.pbv-row.paradis-focus-none.pbv-custom'));
+		// 入力できる範囲は読み上げにも渡す（paradis-16-21）。画面には出さない
+		const range = dom.append(section, $('span'));
+		range.id = `${heading.id}-range`;
+		range.hidden = true;
+		range.textContent = localize('paradis.browserViewport.dropdown.range', "{0}〜{1} の数", PARADIS_VIEWPORT_MIN_DIMENSION, PARADIS_VIEWPORT_MAX_DIMENSION);
 		const current = this.options.current;
-		const width = this._appendNumberInput(element, localize('paradis.browserViewport.dropdown.width', "幅"), current.width);
+		const width = this._appendNumberInput(element, localize('paradis.browserViewport.dropdown.width', "幅"), current.width, range.id);
 		dom.append(element, $('span.pbv-times')).textContent = '×';
-		const height = this._appendNumberInput(element, localize('paradis.browserViewport.dropdown.height', "高さ"), current.height);
+		const height = this._appendNumberInput(element, localize('paradis.browserViewport.dropdown.height', "高さ"), current.height, range.id);
 		const apply = dom.append(element, $('button.pbv-apply')) as HTMLButtonElement;
 		apply.textContent = localize('paradis.browserViewport.dropdown.apply', "適用");
 		apply.tabIndex = -1;
@@ -166,7 +181,7 @@ export class ParadisBrowserViewportDropdown extends Disposable {
 		}
 	}
 
-	private _appendNumberInput(parent: HTMLElement, label: string, value: number | undefined): HTMLInputElement {
+	private _appendNumberInput(parent: HTMLElement, label: string, value: number | undefined, describedBy: string): HTMLInputElement {
 		const input = dom.append(parent, $('input.pbv-number')) as HTMLInputElement;
 		input.type = 'number';
 		input.inputMode = 'numeric';
@@ -174,6 +189,7 @@ export class ParadisBrowserViewportDropdown extends Disposable {
 		input.max = String(PARADIS_VIEWPORT_MAX_DIMENSION);
 		input.tabIndex = -1;
 		input.setAttribute('aria-label', label);
+		input.setAttribute('aria-describedby', describedBy);
 		input.placeholder = label;
 		if (value) {
 			input.value = String(value);
@@ -185,8 +201,14 @@ export class ParadisBrowserViewportDropdown extends Disposable {
 		const width = Math.round(Number(this._widthInput?.value));
 		const height = Math.round(Number(this._heightInput?.value));
 		const valid = (value: number) => Number.isFinite(value) && value >= PARADIS_VIEWPORT_MIN_DIMENSION && value <= PARADIS_VIEWPORT_MAX_DIMENSION;
-		this._widthInput?.classList.toggle('is-invalid', !valid(width));
-		this._heightInput?.classList.toggle('is-invalid', !valid(height));
+		for (const [input, value] of [[this._widthInput, width], [this._heightInput, height]] as const) {
+			input?.classList.toggle('is-invalid', !valid(value));
+			if (valid(value)) {
+				input?.removeAttribute('aria-invalid');
+			} else {
+				input?.setAttribute('aria-invalid', 'true');
+			}
+		}
 		if (valid(width) && valid(height)) {
 			this.options.onApplyDimensions(width, height);
 		}
@@ -214,10 +236,11 @@ export class ParadisBrowserViewportDropdown extends Disposable {
 		this._appendActionRow(footer, Codicon.listUnordered, localize('paradis.browserViewport.dropdown.manage', "大きさの管理…"), () => this.options.onManage());
 	}
 
-	private _appendSeparator(text: string): void {
-		const separator = dom.append(this._listElement, $('.pbv-separator'));
-		separator.setAttribute('role', 'presentation');
+	private _appendSeparator(parent: HTMLElement, text: string): HTMLElement {
+		const separator = dom.append(parent, $('.pbv-separator'));
+		separator.id = `paradis-browser-viewport-heading-${ParadisBrowserViewportDropdown._nextHeadingId++}`;
 		separator.textContent = text;
+		return separator;
 	}
 
 	private _appendOptionRow(descriptor: {

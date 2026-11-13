@@ -102,14 +102,14 @@ suite('ParadisBrowserDownloadsPopover', () => {
 		], (shown, list) => assert.deepStrictEqual({ listRole: list.getAttribute('role'), shown }, {
 			listRole: 'list',
 			shown: [
-				{ kind: 'group', group: today, role: 'presentation' },
+				{ kind: 'group', group: today, role: 'listitem' },
 				{ kind: 'row', role: 'listitem', name: 'running.pdf', status: `${paradisFormatDownloadClock(at(0, 14, 32))} · ${ByteSize.formatSize(1000)} / ${ByteSize.formatSize(4000)}`, describedBy: today, tooltip: `${started(at(0, 14, 32))}\n/dl/running.pdf` },
 				{ kind: 'row', role: 'listitem', name: 'done.pdf', status: `09:05 · 完了 · ${size}`, describedBy: today, tooltip: `${started(at(0, 9, 5))}\n/dl/done.pdf` },
-				{ kind: 'group', group: '昨日', role: 'presentation' },
+				{ kind: 'group', group: '昨日', role: 'listitem' },
 				{ kind: 'row', role: 'listitem', name: 'agent.pdf', status: `23:59 · 完了 · ${size}`, describedBy: '昨日', tooltip: `${started(at(-1, 23, 59))}\nエージェントのタブから（「開く」は出ません）\nhttps://example.com/agent.pdf` },
-				{ kind: 'group', group: threeDaysAgo, role: 'presentation' },
+				{ kind: 'group', group: threeDaysAgo, role: 'listitem' },
 				{ kind: 'row', role: 'listitem', name: 'failed.pdf', status: '08:00 · 失敗しました', describedBy: threeDaysAgo, tooltip: `${started(at(-3, 8, 0))}\n/dl/failed.pdf` },
-				{ kind: 'group', group: lastYear, role: 'presentation' },
+				{ kind: 'group', group: lastYear, role: 'listitem' },
 				{ kind: 'row', role: 'listitem', name: 'old.pdf', status: '10:00 · 取り消しました', describedBy: lastYear, tooltip: `${started(old)}\n/dl/old.pdf` },
 			],
 		}));

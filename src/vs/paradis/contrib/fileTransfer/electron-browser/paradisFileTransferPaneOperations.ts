@@ -273,11 +273,11 @@ export class ParadisFileTransferPaneOperations {
 		const names = entries.map(entry => entry.name);
 		const message = useTrash
 			? (entries.length === 1
-				? localize('paradis.fileTransfer.trashOne', "{0} をゴミ箱へ移動しますか?", names[0])
-				: localize('paradis.fileTransfer.trashMany', "{0} 項目をゴミ箱へ移動しますか?", entries.length))
+				? localize('paradis.fileTransfer.trashOne', "{0} をゴミ箱へ移動しますか？", names[0])
+				: localize('paradis.fileTransfer.trashMany', "{0} 項目をゴミ箱へ移動しますか？", entries.length))
 			: (entries.length === 1
-				? localize('paradis.fileTransfer.deleteOne', "{0} を完全に削除しますか?", names[0])
-				: localize('paradis.fileTransfer.deleteMany', "{0} 項目を完全に削除しますか?", entries.length));
+				? localize('paradis.fileTransfer.deleteOne', "{0} を完全に削除しますか？", names[0])
+				: localize('paradis.fileTransfer.deleteMany', "{0} 項目を完全に削除しますか？", entries.length));
 		const { confirmed } = await this.paradisDialogService.confirm({
 			destructive: true,
 			type: useTrash ? 'question' : 'warning',

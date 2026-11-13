@@ -26,25 +26,7 @@
 	outline: none;
 }
 
-.monaco-workbench .paradis-mobile-pairing-dialog .pmp-header {
-	display: flex;
-	align-items: center;
-	gap: var(--vscode-spacing-size80);
-	height: 35px;
-	padding: 0 var(--vscode-spacing-size80) 0 var(--vscode-spacing-size160);
-	flex: none;
-}
-
-.monaco-workbench .paradis-mobile-pairing-dialog .pmp-title {
-	flex: 1;
-	min-width: 0;
-	margin: 0;
-	font-size: var(--vscode-fontSize-heading3);
-	font-weight: var(--vscode-fontWeight-semiBold);
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
+/* 見出しの帯は共通の .paradis-modal-head（paradisModal.css、高さ 52・下線・28 の閉じる） */
 
 .monaco-workbench .paradis-mobile-pairing-dialog .pmp-body {
 	display: flex;
@@ -53,13 +35,62 @@
 	padding: var(--paradis-modal-body-top) var(--vscode-spacing-size240) var(--vscode-spacing-size160);
 }
 
+.monaco-workbench .paradis-mobile-pairing-dialog .pmp-qr-wrap {
+	position: relative;
+	flex: none;
+	width: 240px;
+	height: 240px;
+}
+
 /* QR は白い余白込みの SVG。読み取りやすさのため拡大縮小でぼかさない */
 .monaco-workbench .paradis-mobile-pairing-dialog .pmp-qr {
-	flex: none;
+	display: block;
 	width: 240px;
 	height: 240px;
 	border-radius: var(--vscode-cornerRadius-large);
 	image-rendering: pixelated;
+}
+
+/* 期限が切れた QR は薄くして、読み取れる見た目にしない */
+.monaco-workbench .paradis-mobile-pairing-dialog .pmp-qr.expired {
+	opacity: 0.18;
+	filter: grayscale(1);
+}
+
+/* 期限が切れたら QR の上に重ねる「期限が切れました」と「新しい QR を作る」 */
+.monaco-workbench .paradis-mobile-pairing-dialog .pmp-qr-expired {
+	position: absolute;
+	inset: 0;
+	display: none;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: var(--vscode-spacing-size120);
+	padding: var(--vscode-spacing-size160);
+	box-sizing: border-box;
+	text-align: center;
+	border-radius: var(--vscode-cornerRadius-large);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	background: var(--vscode-paradis-overlay);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.monaco-workbench .paradis-mobile-pairing-dialog .pmp-qr-expired.shown {
+	display: flex;
+}
+
+.monaco-workbench .paradis-mobile-pairing-dialog .pmp-qr-expired-title {
+	font-weight: var(--vscode-fontWeight-semiBold);
+}
+
+.monaco-workbench .paradis-mobile-pairing-dialog .pmp-qr-expired-detail {
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+}
+
+.monaco-workbench .paradis-mobile-pairing-dialog .pmp-qr-expired > .monaco-text-button {
+	flex: none;
+	width: auto;
 }
 
 .monaco-workbench .paradis-mobile-pairing-dialog .pmp-steps {

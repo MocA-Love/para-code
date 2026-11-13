@@ -15,6 +15,8 @@ import * as dom from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
+import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
+import { IFileService } from '../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
@@ -38,7 +40,8 @@ import { ParadisInputField } from '../../../browser/paradisInputField.js';
 import { paradisNotifNestedModal } from './paradisNotificationNestedModal.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { PARADIS_MODAL_DRAFT_RESTORED, paradisModalDraftSnapshot, ParadisModalDrafts } from '../../paradisSettings/browser/paradisModalDrafts.js';
-import { paradisNotifButton } from './paradisNotificationKitParts.js';
+import { paradisNotifButton, paradisNotifChip } from './paradisNotificationKitParts.js';
+import { paradisNotifSafeFileName, paradisNotifSaveTextFile } from './paradisNotificationSaveFile.js';
 import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 const $ = dom.$;
@@ -88,6 +91,8 @@ export class ParadisElevenLabsDictionarySection extends Disposable {
 		@ILayoutService private readonly layoutService: ILayoutService,
 		@ILogService private readonly logService: ILogService,
 		@IHoverService private readonly hoverService: IHoverService,
+		@IFileDialogService private readonly fileDialogService: IFileDialogService,
+		@IFileService private readonly fileService: IFileService,
 	) {
 		super();
 		this._focus = new ParadisSectionFocusCarrier(this.container);
@@ -183,7 +188,7 @@ export class ParadisElevenLabsDictionarySection extends Disposable {
 		const nameRow = dom.append(infoEl, $('.pns-ringtone-name'));
 		dom.append(nameRow, $('span')).textContent = dict.name;
 		if (isActive) {
-			dom.append(nameRow, $('span.pns-dict-badge-active')).textContent = STR_ACTIVE_BADGE;
+			paradisNotifChip(nameRow, STR_ACTIVE_BADGE, 'success');
 		}
 		const parts = [dict.description || '—'];
 		if (dict.ruleCount !== null) {
@@ -223,13 +228,7 @@ export class ParadisElevenLabsDictionarySection extends Disposable {
 		}
 		try {
 			const xml = await this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call<string>('downloadElevenLabsDictionary', [apiKey, dict.id]);
-			const blob = new Blob([xml], { type: 'application/pls+xml' });
-			const url = URL.createObjectURL(blob);
-			const a = document.createElement('a');
-			a.href = url;
-			a.download = `${dict.name || 'dictionary'}.pls`;
-			a.click();
-			URL.revokeObjectURL(url);
+			await paradisNotifSaveTextFile(this.fileDialogService, this.fileService, `${paradisNotifSafeFileName(dict.name, 'dictionary')}.pls`, xml, [{ name: 'PLS', extensions: ['pls'] }]);
 		} catch (error) {
 			this.logService.warn('[ParadisNotifications] ElevenLabs dictionary export failed', error);
 			this._showActionError(error);

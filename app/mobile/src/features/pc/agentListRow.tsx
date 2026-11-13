@@ -167,7 +167,7 @@ const styles = StyleSheet.create({
 	row: {
 		flexDirection: 'row',
 		alignItems: 'flex-start',
-		paddingVertical: space.sm + 2,
+		paddingVertical: space.row,
 		paddingHorizontal: space.lg,
 		// 最後に開いた行の左の線ぶんを常に空けておく（行ごとに文字の位置がずれないように）。
 		borderLeftWidth: 2,

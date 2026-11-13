@@ -15,8 +15,9 @@ import * as dom from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
-import { IDisposable } from '../../../../base/common/lifecycle.js';
+import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { PARADIS_TABS_CLASS, paradisTabClasses, scrollParadisTabsWithWheel } from '../../../browser/paradisTabs.js';
+import { setParadisOfficeRowHover } from './paradisOfficeInspectorParts.js';
 
 /**
  * タブを並べる入れ物（`.paradis-spreadsheet-tabs`）をキットのタブの列にする。シートが多くて列があふれたときに、
@@ -35,8 +36,11 @@ export interface IParadisSpreadsheetSheetTabOptions {
 	readonly protectedSheet?: boolean;
 }
 
-/** シートのタブを 1 つ足す（キットのタブ）。選んだ状態は `aria-selected` で、wireParadisOfficeTabList が付ける。 */
-export function appendParadisSpreadsheetSheetTab(container: HTMLElement, options: IParadisSpreadsheetSheetTabOptions): HTMLButtonElement {
+/**
+ * シートのタブを 1 つ足す（キットのタブ）。選んだ状態は `aria-selected` で、wireParadisOfficeTabList が付ける。
+ * 保護されたシートでは、タブ全体に本家のホバーで「このシートは保護されています」を出す（`store` はタブを描き直すときに捨てる物）。
+ */
+export function appendParadisSpreadsheetSheetTab(container: HTMLElement, options: IParadisSpreadsheetSheetTabOptions, store: DisposableStore): HTMLButtonElement {
 	const tab = dom.append(container, dom.$('button.paradis-spreadsheet-tab')) as HTMLButtonElement;
 	tab.type = 'button';
 	tab.classList.add(...paradisTabClasses());
@@ -48,8 +52,8 @@ export function appendParadisSpreadsheetSheetTab(container: HTMLElement, options
 	}
 	if (options.protectedSheet) {
 		const lock = dom.append(tab, dom.$(`span.paradis-spreadsheet-tab-lock${ThemeIcon.asCSSSelector(Codicon.lock)}`));
-		lock.title = localize('paradis.spreadsheet.protected', "このシートは保護されています");
 		lock.setAttribute('aria-hidden', 'true');
+		setParadisOfficeRowHover(tab, localize('paradis.spreadsheet.protected', "このシートは保護されています"), store);
 	}
 	dom.append(tab, dom.$('span')).textContent = options.label;
 	return tab;

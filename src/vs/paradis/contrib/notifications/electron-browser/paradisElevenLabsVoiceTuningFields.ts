@@ -30,7 +30,7 @@ import {
 } from '../common/paradisVoiceTuning.js';
 import { paradisElevenLabsVoiceCache } from './paradisElevenLabsApiCache.js';
 import { paradisDidSavedVoiceSettingsFail, paradisGetCachedSavedVoiceSettings, paradisLoadVoiceGains, paradisMarkSavedVoiceSettingsFailed, paradisSetCachedSavedVoiceSettings } from './paradisVoiceGainsCache.js';
-import { paradisNotifButton } from './paradisNotificationKitParts.js';
+import { paradisNotifButton, paradisNotifChip } from './paradisNotificationKitParts.js';
 import './media/paradisVoiceTuning.css';
 
 const $ = dom.$;
@@ -251,7 +251,7 @@ export class ParadisElevenLabsVoiceTuningFields {
 		dom.append(main, $('.sr-label')).textContent = STR_GAIN_LABEL;
 		dom.append(main, $('.sr-desc')).textContent = STR_GAIN_DESC;
 		const value = dom.append(row, $('span.pns-tune-actions'));
-		dom.append(value, $('span.pns-pill')).textContent = STR_GAIN_LOADING;
+		paradisNotifChip(value, STR_GAIN_LOADING, 'neutral', 'pns-pill');
 		void paradisLoadVoiceGains(this.sharedProcessService).then(result => {
 			if (this.isDisposed() || !value.isConnected) {
 				return;
@@ -259,24 +259,23 @@ export class ParadisElevenLabsVoiceTuningFields {
 			dom.clearNode(value);
 			if (result.status !== 'ok') {
 				// 長いエラーは札の中で「…」にし、全文はポインタを重ねて読む
-				const pill = dom.append(value, $('span.pns-pill'));
-				pill.textContent = result.status === 'unsupported' ? STR_GAIN_UNSUPPORTED : result.message;
-				pill.title = pill.textContent;
+				const message = result.status === 'unsupported' ? STR_GAIN_UNSUPPORTED : result.message;
+				paradisNotifChip(value, message, 'neutral', 'pns-pill').title = message;
 				return;
 			}
 			const entry = result.value.entries.find(candidate => candidate.key === key);
 			if (!entry || entry.gainDb === undefined) {
-				dom.append(value, $('span.pns-pill')).textContent = STR_GAIN_UNMEASURED;
+				paradisNotifChip(value, STR_GAIN_UNMEASURED, 'neutral', 'pns-pill');
 				return;
 			}
 			if (paradisIsInitialVoiceGain(entry)) {
-				dom.append(value, $('span.pns-pill')).textContent = paradisFormatGainDb(entry.gainDb);
-				dom.append(value, $('span.pns-pill')).textContent = STR_GAIN_INITIAL;
+				paradisNotifChip(value, paradisFormatGainDb(entry.gainDb), 'neutral', 'pns-pill');
+				paradisNotifChip(value, STR_GAIN_INITIAL, 'neutral', 'pns-pill');
 				return;
 			}
 			const progress = paradisVoiceGainProgress(entry, result.value.learnWindow);
-			dom.append(value, $(`span.pns-pill.${progress.learning ? 'warn' : 'ok'}`)).textContent = paradisFormatGainDb(entry.gainDb);
-			dom.append(value, $('span.pns-pill')).textContent = strGainLearned(progress.done, result.value.learnWindow);
+			paradisNotifChip(value, paradisFormatGainDb(entry.gainDb), progress.learning ? 'warning' : 'success', 'pns-pill');
+			paradisNotifChip(value, strGainLearned(progress.done, result.value.learnWindow), 'neutral', 'pns-pill');
 		});
 	}
 }
