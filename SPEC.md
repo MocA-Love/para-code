@@ -64,7 +64,7 @@ AIエージェント（Claude Code CLI / Codex CLI 等）と密結合した開�
 ### 機能2: ターミナル2Dグリッド分割
 - 実体: `SessionTerminalGridGroup`（`ITerminalGroup` を実装、base `Grid` で真の2Dレイアウト）。upstream の単一軸 `TerminalGroup` を
   `terminalGroupService.ts` の DI ファクトリ1点差し替えで置換。
-- 使い方: コマンドパレット `Split Terminal Up/Down/Left/Right`、キーバインド `Ctrl+K` → `Alt+↑/↓/←/→`、
+- 使い方: コマンドパレット `Split Terminal Up/Down/Left/Right`、キーバインド `Ctrl+K` → `Alt+↑/↓/←/→`（macOS は既定のキーバインド無し。ターミナルの `Cmd+K`（クリア）が先に取るため）、
   ターミナルタブのドラッグ&ドロップ（4方向、capture フェーズでupstreamのDnDを横取り）。
 - 既知の制約:
   - `resizePanes`（1D比率の永続復元）と `moveInstance`（フラット配列 index）は2Dに完全対応せず、レイアウト復元は1列に劣化しうる（機能上は許容）。
