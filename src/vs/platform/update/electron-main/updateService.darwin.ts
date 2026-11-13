@@ -19,7 +19,7 @@ import { ITelemetryService } from '../../telemetry/common/telemetry.js';
 // PARA-PATCH: begin keep the desktop update feed platform aligned with Para Code release CI.
 import { getParadisDesktopUpdatePlatform } from '../common/paradisUpdatePlatform.js';
 // PARA-PATCH: end
-import { AvailableForDownload, IUpdate, State, StateType, UpdateType } from '../common/update.js';
+import { AvailableForDownload, IQuitAndInstallOptions, IUpdate, State, StateType, UpdateType } from '../common/update.js';
 import { IMeteredConnectionService } from '../../meteredConnection/common/meteredConnection.js';
 import { AbstractUpdateService, createUpdateURL, getUpdateAccessHeaders, getUpdateRequestHeaders, redactUpdateHeadersForLog, IUpdateURLOptions, UpdateErrorClassification } from './abstractUpdateService.js'; // PARA-PATCH: +getUpdateAccessHeaders/redactUpdateHeadersForLog (Cloudflare Access service token headers, see CLAUDE.md)
 
@@ -210,8 +210,12 @@ export class DarwinUpdateService extends AbstractUpdateService implements IRelau
 		electron.autoUpdater.checkForUpdates();
 	}
 
-	protected override doQuitAndInstall(): void {
-		this.logService.trace('update#quitAndInstall(): running raw#quitAndInstall()');
+	protected override doQuitAndInstall(options?: IQuitAndInstallOptions): void {
+		// TODO(deepak1556): in Squirrel.Mac, (1) pass `options?.relaunchInBackground` so ShipIt
+		// launches with `NSWorkspaceLaunchWithoutActivation`, and (2) extend ShipIt's `Updating`
+		// IOPMAssertion transaction to cover the helper spawn so the sleep assertion is tied to
+		// the exact install+relaunch lifetime without external timers.
+		this.logService.trace('update#quitAndInstall(): running raw#quitAndInstall()', { unattended: options?.unattended, relaunchInBackground: options?.relaunchInBackground });
 		electron.autoUpdater.quitAndInstall();
 	}
 }

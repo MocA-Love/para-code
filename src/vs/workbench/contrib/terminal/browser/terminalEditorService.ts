@@ -11,7 +11,7 @@ import { IContextKey, IContextKeyService } from '../../../../platform/contextkey
 import { EditorActivation } from '../../../../platform/editor/common/editor.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IShellLaunchConfig, TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
-import { EditorCloseContext, IEditorPane } from '../../../common/editor.js'; // PARA-PATCH: EditorCloseContext for MOVE-aware close handling
+import { EditorCloseContext, IEditorPane } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
 import { IDeserializedTerminalEditorInput, ITerminalEditorService, ITerminalInstance, ITerminalInstanceService, TerminalEditorLocation } from './terminal.js';
 import { TerminalEditorInput } from './terminalEditorInput.js';
@@ -99,36 +99,32 @@ export class TerminalEditorService extends Disposable implements ITerminalEditor
 			}
 		}));
 
-		// Remove the terminal from the managed instances when the editor closes. This fires when
-		// dragging and dropping to another editor or closing the editor via cmd/ctrl+w.
+		// Remove the terminal from the managed instances when the editor closes (e.g. cmd/ctrl+w).
+		// Moving the editor to another group, or its whole group to another window, opens it there
+		// before it closes in the source group, and the terminal stays open, so ignore that.
 		this._register(this._editorService.onDidCloseEditor(e => {
 			const instance = e.editor instanceof TerminalEditorInput ? e.editor.terminalInstance : undefined;
+			const stillOpen = this._editorGroupsService.groups.some(group => group.contains(e.editor, { strictEquals: true }));
+			// PARA-PATCH: checked before upstream's MOVE return below: the space switch detaches retained
+			// inputs with EditorCloseContext.MOVE (editorGroupView.detachEditor), so they would never get here.
+			// PARA-PATCH: the Paradis space switch retains editor inputs with live state
+			// (terminals with running child processes) and detaches them from their group
+			// without disposing. Removing the instance here would drop a live terminal from
+			// all enumeration (incl. the mobile relay) until the space is revisited. Keep it
+			// registered; only clear the active instance since its editor is now hidden. If
+			// the retained input is later disposed without reopening (e.g. scope retirement),
+			// remove the instance at that point so no disposed instance lingers in the list.
+			if (instance && this._editorGroupsService.isEditorInputRetained?.(e.editor) && !stillOpen) {
+				if (instance === this.activeInstance) {
+					this.setActiveInstance(undefined);
+				}
+				this._retainedInstanceListeners.set(instance.resource.path, Event.once(instance.onDisposed)(() => this._removeInstance(instance)));
+				return;
+			}
+			if (e.context === EditorCloseContext.MOVE || stillOpen) {
+				return;
+			}
 			if (instance) {
-				// PARA-PATCH: an editor moved between groups (drag to another window, aux window
-				// merge-back via mergeAllGroups, ...) is closed in the source group with the MOVE
-				// context after it was already opened in the target group. Removing the instance
-				// here would drop a still-open terminal from `instances` — the re-registration in
-				// onDidVisibleEditorsChange only covers visible (active) editors, so a non-active
-				// moved terminal would silently vanish from all enumeration (e.g. mobile relay)
-				// and leave activeInstance bookkeeping broken. Keep the instance when the same
-				// input is still open in any group.
-				if (e.context === EditorCloseContext.MOVE && this._editorGroupsService.groups.some(g => g.contains(e.editor))) {
-					return;
-				}
-				// PARA-PATCH: the Paradis space switch retains editor inputs with live state
-				// (terminals with running child processes) and detaches them from their group
-				// without disposing. Removing the instance here would drop a live terminal from
-				// all enumeration (incl. the mobile relay) until the space is revisited. Keep it
-				// registered; only clear the active instance since its editor is now hidden. If
-				// the retained input is later disposed without reopening (e.g. scope retirement),
-				// remove the instance at that point so no disposed instance lingers in the list.
-				if (this._editorGroupsService.isEditorInputRetained?.(e.editor)) {
-					if (instance === this.activeInstance) {
-						this.setActiveInstance(undefined);
-					}
-					this._retainedInstanceListeners.set(instance.resource.path, Event.once(instance.onDisposed)(() => this._removeInstance(instance)));
-					return;
-				}
 				const instanceIndex = this.instances.findIndex(e => e === instance);
 				if (instanceIndex !== -1) {
 					const wasActiveInstance = this.instances[instanceIndex] === this.activeInstance;

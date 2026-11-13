@@ -493,24 +493,27 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		const webContents = target.webContents;
 		const onNavigate = () => this.cursorOverlay.onNavigated(target);
 		const onDomReady = () => this.cursorOverlay.onDomReady(target);
-		const focusListener = target.onDidChangeFocus(({ focused }) => {
+		// ページ自身のフォーカスを見る。1.146 から onDidChangeFocus はホストのウィンドウの前面化でも
+		// focused: true を出すので、別のアプリから戻っただけでカーソルが消えてしまう。
+		const onFocus = () => {
 			// エージェントの入力の直後のフォーカスは利用者のものではない（ページがエージェントの入力に
 			// 応えてフォーカスを動かした）。そのときはカーソルを残す。
 			const agentInputAt = this.lastAgentInputAt.get(target);
-			if (focused && (agentInputAt === undefined || Date.now() - agentInputAt > AGENT_INPUT_FOCUS_ECHO_MS)) {
+			if (agentInputAt === undefined || Date.now() - agentInputAt > AGENT_INPUT_FOCUS_ECHO_MS) {
 				this.removeCursorOverlay(viewId, target);
 			}
-		});
+		};
 		try {
+			webContents.on('focus', onFocus);
 			webContents.on('did-navigate', onNavigate);
 			webContents.on('dom-ready', onDomReady);
 		} catch {
 			// 見張れなくても、次の move が少し長く待つだけ。
 		}
 		const closeListener = target.onDidClose(() => {
-			focusListener.dispose();
 			closeListener.dispose();
 			try {
+				webContents.off('focus', onFocus);
 				webContents.off('did-navigate', onNavigate);
 				webContents.off('dom-ready', onDomReady);
 			} catch {

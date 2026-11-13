@@ -30,7 +30,7 @@ import { ILifecycleMainService } from '../../../../platform/lifecycle/electron-m
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { FocusMode } from '../../../../platform/native/common/native.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
-import { IParadisUpdateQuitGate, paradisSetUpdateQuitGate } from '../../../../platform/update/common/paradisUpdateQuitGate.js';
+import { IParadisUpdateQuitGate, IParadisUpdateQuitGateOptions, paradisSetUpdateQuitGate } from '../../../../platform/update/common/paradisUpdateQuitGate.js';
 import { IUpdateService, StateType } from '../../../../platform/update/common/update.js';
 import { ICodeWindow } from '../../../../platform/window/electron-main/window.js';
 import { IWindowsMainService } from '../../../../platform/windows/electron-main/windows.js';
@@ -126,7 +126,8 @@ class ParadisUpdateTerminalsMain extends Disposable implements IParadisUpdateQui
 		}));
 	}
 
-	async confirmBeforeQuitAndInstall(): Promise<boolean> {
+	async confirmBeforeQuitAndInstall(options?: IParadisUpdateQuitGateOptions): Promise<boolean> {
+		const unattended = options?.unattended === true;
 		const windows = this.windowsMainService.getWindows().filter(window => window.isReady && this.isConnected(window.id));
 		// ウィンドウへの問い合わせと常駐への問い合わせは並べて待つ。
 		const [answers, localDaemon] = await Promise.all([
@@ -143,6 +144,11 @@ class ParadisUpdateTerminalsMain extends Disposable implements IParadisUpdateQui
 			this.getLocalDaemon(),
 		]);
 		const timedOut = answers.filter(entry => entry.timedOut);
+		// 無人の再起動（画面ロック中）では、答えの無いウィンドウがあれば知らせずに見送る（前に出さない）。
+		if (unattended && timedOut.length > 0) {
+			this.logService.info(`[paradisUpdateTerminals] ${timedOut.length} window(s) did not answer; not restarting unattended`);
+			return false;
+		}
 		if (!paradisMayUpdateWithoutAnswers(timedOut.map(entry => ({ isRemote: entry.window.remoteAuthority !== undefined })))) {
 			this.logService.warn(`[paradisUpdateTerminals] ${timedOut.length} window(s) did not say in time which terminals the update would end; updating later`);
 			void this.tellUnansweredWindows(timedOut.map(entry => entry.window).filter(window => window.remoteAuthority !== undefined));
@@ -152,6 +158,11 @@ class ParadisUpdateTerminalsMain extends Disposable implements IParadisUpdateQui
 		const summary = paradisMergeUpdateReports(answered.map(entry => entry.report).filter((report): report is IParadisUpdateWindowReport => report !== undefined), localDaemon);
 		if (!paradisShouldConfirmUpdate(summary)) {
 			return true;
+		}
+		// 終わってしまう端末がある。無人の再起動では確認を出さず（ロック中にウィンドウを前に出さない）、再起動しない。
+		if (unattended) {
+			this.logService.info('[paradisUpdateTerminals] terminals would end; not restarting unattended');
+			return false;
 		}
 
 		const answer = await this.ask(summary, answered.map(entry => entry.window.id));

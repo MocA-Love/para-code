@@ -710,7 +710,7 @@ export class PtyService extends Disposable implements IPtyService {
 	}
 
 	/**
-	 * PARA-CODE: Record a layout here without handing it to the daemon.
+	 * PARA-PATCH: Record a layout here without handing it to the daemon.
 	 *
 	 * Taking terminals back uses this. The daemon already holds the layout it gave us, and what we
 	 * pass back is that layout with every terminal we could not take back dropped from it
@@ -898,9 +898,9 @@ class PersistentTerminalProcess extends Disposable {
 	private _fixedDimensions: IFixedTerminalDimensions | undefined;
 
 	get pid(): number { return this._pid; }
-	/** PARA-CODE: Whether this was taken back from a daemon rather than started here. */
+	/** PARA-PATCH: Whether this was taken back from a daemon rather than started here. */
 	get paradisAdopted(): boolean { return this._paradisAdopted; }
-	/** PARA-CODE: Whether the process lives in a daemon that outlives this pty host. */
+	/** PARA-PATCH: Whether the process lives in a daemon that outlives this pty host. */
 	get paradisHeldByDaemon(): boolean { return this._terminalProcess.paradisHeldByDaemon === true; }
 	get shellLaunchConfig(): IShellLaunchConfig { return this._terminalProcess.shellLaunchConfig; }
 	get hasWrittenData(): boolean { return this._interactionState.value !== InteractionState.None; }
@@ -1031,7 +1031,7 @@ class PersistentTerminalProcess extends Disposable {
 		}
 	}
 
-	/** PARA-CODE: Start an empty screen, for coming back to a terminal let go of in the daemon. */
+	/** PARA-PATCH: Start an empty screen, for coming back to a terminal let go of in the daemon. */
 	private _paradisReplaceScreen(cols: number, rows: number): IParadisPtyScreenSink {
 		const serializer = new XtermSerializer(cols, rows, this._paradisScrollback, this.unicodeVersion, undefined, this.processLaunchOptions.options.shellIntegration.nonce, undefined, this._logService);
 		this._serializer = serializer;

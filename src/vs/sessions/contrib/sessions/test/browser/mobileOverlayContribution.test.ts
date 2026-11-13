@@ -35,8 +35,8 @@ import { ILanguageService } from '../../../../../editor/common/languages/languag
 import { MOBILE_OPEN_CHANGES_VIEW_COMMAND_ID } from '../../../../browser/parts/mobile/contributions/mobileChangesView.js';
 import { MOBILE_OPEN_DIFF_VIEW_COMMAND_ID } from '../../../../browser/parts/mobile/contributions/mobileDiffView.js';
 import '../../browser/mobile/mobileOverlayContribution.js';
-import { ISessionsService } from '../../../../services/sessions/browser/sessionsService.js';
-import { IActiveSession } from '../../../../services/sessions/common/sessionsManagement.js';
+// PARA-PATCH: 1.146 replaced ISessionsService.activeSession with the focused session host
+import { IFocusedSessionHostService } from '../../../../../workbench/services/sessions/browser/sessionHost.js';
 
 suite('Mobile changes overlay contribution', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -163,19 +163,23 @@ function createAccessor(container: HTMLElement, resource: URI, changes: readonly
 		},
 	} as unknown as ICommandService;
 	// PARA-PATCH: upstream 1.141 reads the changes from the active chat (session.activeChat.get().changes)
-	const session = { resource, changes: constObservable(changes), activeChat: constObservable({ changes: constObservable(changes) }) } as unknown as IActiveSession;
+	const session = { resource, changes: constObservable(changes), activeChat: constObservable({ changes: constObservable(changes) }) };
 	const services = new Map<unknown, unknown>([
 		[ILayoutService, { mainContainer: container }],
 		[ITextFileService, { read: () => Promise.resolve({ value: '' }) } as unknown as ITextFileService],
 		[IFileService, {} as IFileService],
 		[ILanguageService, { guessLanguageIdByFilepathOrFirstLine: () => 'plaintext' } as unknown as ILanguageService],
 		[INotificationService, { info: () => assert.fail('changes should be available') } as unknown as INotificationService],
-		[ISessionsService, { activeSession: constObservable(session) } as unknown as ISessionsService],
+		[IFocusedSessionHostService, focusedHostOf(session, changes)],
 		[IInstantiationService, instantiationService],
 		[ICommandService, commandService],
 	]);
 	const accessor = { get: id => services.get(id) } as ServicesAccessor;
 	return accessor;
+}
+
+function focusedHostOf(session: { readonly resource: URI }, changes: readonly unknown[]): IFocusedSessionHostService {
+	return { focusedHost: constObservable({ session: constObservable(session), chat: constObservable({ changes: constObservable(changes) }) }) } as unknown as IFocusedSessionHostService;
 }
 
 function createChange(index: number): unknown {
@@ -204,7 +208,7 @@ function createRealAccessor(store: DisposableStore, container: HTMLElement, reso
 	instantiationService.set(IMenuService, menuService);
 	instantiationService.set(INotificationService, { info: () => assert.fail('changes should be available') } as unknown as INotificationService);
 	// PARA-PATCH: upstream 1.141 reads the changes from the active chat (session.activeChat.get().changes)
-	instantiationService.set(ISessionsService, { activeSession: constObservable({ resource, changes: constObservable(changes), activeChat: constObservable({ changes: constObservable(changes) }) } as unknown as IActiveSession) } as unknown as ISessionsService);
+	instantiationService.set(IFocusedSessionHostService, focusedHostOf({ resource }, changes));
 	instantiationService.set(ITelemetryService, new NullTelemetryServiceShape());
 	instantiationService.set(ITextFileService, { read: () => Promise.resolve({ value: '' }) } as unknown as ITextFileService);
 	return { contextMenuService, instantiationService, menuService };

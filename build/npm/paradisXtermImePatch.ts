@@ -175,9 +175,15 @@ export async function paradisApplyXtermImePatch(root: string, log: (message: str
 			throw new Error('the rebuilt bundle unexpectedly requires @xterm/xterm');
 		}
 
+		// pnpm の `nodeLinker: hoisted` は store のファイルをハードリンクすることがあり、その場で上書きすると
+		// store の中身まで書き換わる。消してから書いてリンクを切る
+		for (const file of ['xterm.js', 'xterm.mjs']) {
+			fs.rmSync(path.join(pkgDir, 'lib', file), { force: true });
+		}
 		fs.writeFileSync(path.join(pkgDir, 'lib', 'xterm.js'), `${MARKER}\n${wrapUmd(cjsText)}`);
 		fs.writeFileSync(path.join(pkgDir, 'lib', 'xterm.mjs'), `${MARKER}\n${esm.outputFiles[0].text}`);
 		// src/ も当てた後のものにしておく（lib/ と食い違うと、調べるときに読み違える）
+		fs.rmSync(path.join(pkgDir, 'src'), { recursive: true, force: true });
 		fs.cpSync(path.join(workDir, 'src'), path.join(pkgDir, 'src'), { recursive: true });
 		log(`Patched @xterm/xterm ${version} IME handling (rebuilt lib/xterm.js and lib/xterm.mjs)`);
 	} catch (error) {

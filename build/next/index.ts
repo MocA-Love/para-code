@@ -313,6 +313,10 @@ function readISODate(outDir: string): string {
 	}
 }
 
+// Workspace members inside src (such as src/vs/sessions/test/e2e) install their
+// own node_modules there; those dependencies are not part of the compiled output.
+const SRC_NODE_MODULES = '**/node_modules/**';
+
 /**
  * Copy ALL non-TypeScript files from src/ to the output directory.
  * This matches the old gulp build behavior where `gulp.src('src/**')` streams
@@ -326,6 +330,7 @@ async function copyAllNonTsFiles(outDir: string, excludeTests: boolean): Promise
 	const ignorePatterns = [
 		// Exclude .ts files but keep .d.ts files (they're needed at runtime for type references)
 		'**/*.ts',
+		SRC_NODE_MODULES,
 	];
 	if (excludeTests) {
 		ignorePatterns.push('**/test/**');
@@ -340,7 +345,7 @@ async function copyAllNonTsFiles(outDir: string, excludeTests: boolean): Promise
 	// Re-include .d.ts files that were excluded by the *.ts ignore
 	const dtsFiles = await globAsync('**/*.d.ts', {
 		cwd: path.join(REPO_ROOT, SRC_DIR),
-		ignore: excludeTests ? ['**/test/**'] : [],
+		ignore: excludeTests ? [SRC_NODE_MODULES, '**/test/**'] : [SRC_NODE_MODULES],
 	});
 
 	const allFiles = [...new Set([...files, ...dtsFiles])];
@@ -475,7 +480,7 @@ function fileContentMapperPlugin(outDir: string, target: BuildTarget): esbuild.P
 
 async function transpile(outDir: string, excludeTests: boolean): Promise<void> {
 	// Find all .ts files
-	const ignorePatterns = ['**/*.d.ts'];
+	const ignorePatterns = ['**/*.d.ts', SRC_NODE_MODULES];
 	if (excludeTests) {
 		ignorePatterns.push('**/test/**');
 	}

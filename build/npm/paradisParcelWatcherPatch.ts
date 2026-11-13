@@ -9,6 +9,7 @@
 import * as fs from 'fs';
 import path from 'path';
 import * as child_process from 'child_process';
+import { getPnpmCommand } from '../lib/pnpm.ts';
 
 /**
  * `@parcel/watcher` の `Glob::isIgnored` が長い相対パスでプロセスごとクラッシュする問題
@@ -26,18 +27,21 @@ import * as child_process from 'child_process';
  * 「親ディレクトリの相対パスが閾値以下では除外パターンに一致せず、閾値超えの深さで初めて一致する」
  * ケースに限られる (`**\/node_modules/**` のような一般的なパターンでは浅い階層で先に枝刈りされる)。
  *
- * `.npmrc` が `build_from_source="true"` を指定しており、さらに postinstall が prebuilt を削除するため、
- * 実際に読み込まれるのは常にソースからビルドした `build/Release/watcher.node`。よってソースへの
- * パッチが確実に効く。
+ * `pnpm-workspace.yaml` の `ignoredOptionalDependencies` が prebuilt の `@parcel/watcher-*` を入れず、
+ * `allowBuilds` で許可された install script がソースからビルドするため、実際に読み込まれるのは常に
+ * ソースからビルドした `build/Release/watcher.node`。よってソースへのパッチが確実に効く。
+ *
+ * pnpm の `nodeLinker: hoisted` は store のファイルを node_modules へハードリンクすることがある。
+ * そのまま上書きすると store の中身まで書き換わるので、書き込みはリンクを切ってから行う
+ * ({@link writeUnlinked})。
  *
  * パッチ適用は冪等。再ビルドに失敗した場合はソースを元に戻し、次回の postinstall で再試行させる
  * (パッチ済みマーカーだけ残って古いバイナリが使われ続ける状態を避ける)。
  *
  * @param packageRoot `package.json` のあるディレクトリ (root または remote) の絶対パス
- * @param env 再ビルドに使う環境変数。**呼び出し側が `npm install` に渡したものと同じ物を渡すこと**。
- *            npm は環境変数をプロジェクトの `.npmrc` より優先するため、これを省いて `process.env` を
- *            継承すると、remote (`runtime=node`) の再ビルドが root から継承した `runtime=electron` /
- *            `target` / `disturl` で走り、ABI の違う `watcher.node` ができてしまう
+ * @param env 再ビルドに使う環境変数。**呼び出し側が `pnpm install` に渡したものと同じ物を渡すこと**
+ *            (`undefined` なら `process.env` を継承する)。ネイティブビルドの `npm_config_*` は
+ *            その install root の `.pnpmfile.mjs` が `pnpm rebuild` にも渡す
  * @param log 進捗の出力先
  */
 export function paradisPatchAndRebuildParcelWatcher(packageRoot: string, env: NodeJS.ProcessEnv | undefined, log: (message: string) => void): void {
@@ -48,11 +52,12 @@ export function paradisPatchAndRebuildParcelWatcher(packageRoot: string, env: No
 		}
 		patch = paradisPatchParcelWatcher(packageRoot);
 	} catch (error) {
-		// upstream の実装が変わっている。黙って素通りするとクラッシュだけが再発するので、明示的に失敗させる
+		// upstream の実装が変わっている。黙って素通りするとクラッシュだけが再発するので、明示的に失敗させる。
+		// process.exit ではなく throw する: postinstall はネイティブの install root を並べて入れ、全部が
+		// 終わってから失敗を報告する（途中で終わると、ほかの root の install が半端なまま止まる）
 		const reason = error instanceof Error ? error.message : String(error);
 		log(`ERR Could not patch ${reason}. See https://github.com/parcel-bundler/watcher/issues/250`);
-		process.exit(1);
-		return;
+		throw new Error(`Could not patch @parcel/watcher in ${packageRoot}: ${reason}`);
 	}
 
 	if (!patch) {
@@ -61,12 +66,12 @@ export function paradisPatchAndRebuildParcelWatcher(packageRoot: string, env: No
 
 	log('Patching @parcel/watcher for parcel-bundler/watcher#250 and rebuilding...');
 
-	const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-	const result = child_process.spawnSync(npm, ['rebuild', '@parcel/watcher'], {
+	const pnpm = getPnpmCommand();
+	const result = child_process.spawnSync(pnpm.command, [...pnpm.args, 'rebuild', '@parcel/watcher'], {
 		cwd: packageRoot,
 		env,
 		stdio: 'inherit',
-		shell: true,
+		shell: pnpm.shell,
 	});
 
 	if (result.error || result.status !== 0) {
@@ -74,7 +79,7 @@ export function paradisPatchAndRebuildParcelWatcher(packageRoot: string, env: No
 		// 失敗は環境要因 (toolchain や C++ 標準の食い違い) で起きることがあり、revert 済みで
 		// node_modules は元の動く状態に戻っているため、開発環境まで巻き添えにする理由が無い。
 		// パッチが当たらないので #250 のクラッシュは残る。目立つよう警告だけ出す。
-		fs.writeFileSync(patch.globPath, patch.original, 'utf8');
+		writeUnlinked(patch.globPath, patch.original);
 		log(`ERR Failed to rebuild @parcel/watcher after patching; reverted ${patch.globPath}. The watcher remains vulnerable to parcel-bundler/watcher#250.`);
 	}
 }
@@ -103,8 +108,17 @@ export function paradisPatchParcelWatcher(packageRoot: string): ParcelWatcherPat
 		throw new Error(`${globPath}: expected code not found`);
 	}
 
-	fs.writeFileSync(globPath, patched, 'utf8');
+	writeUnlinked(globPath, patched);
 	return { globPath, original };
+}
+
+/**
+ * ファイルを消してから書く。pnpm が store からハードリンクしたファイルをその場で上書きすると、
+ * store と、同じ store を使うほかの node_modules の中身まで書き換わるため。
+ */
+function writeUnlinked(file: string, contents: string): void {
+	fs.rmSync(file, { force: true });
+	fs.writeFileSync(file, contents, 'utf8');
 }
 
 interface ParcelWatcherPatch {
@@ -114,11 +128,6 @@ interface ParcelWatcherPatch {
 
 /**
  * そのパッケージの `@parcel/watcher` に既にガードが当たっているか。
- *
- * postinstall は「依存が最新なら丸ごと skip」する高速経路を持つが、その判定材料は
- * `package.json` / `package-lock.json` / `.npmrc` / `.nvmrc` のハッシュだけで、ビルドスクリプトの
- * 変更は入らない。依存が最新の状態でこのパッチを取り込んだ環境へガードを届けるため、
- * 高速経路に入ってよいかの判断にこれを併用する。
  *
  * 「ソースからビルドされた成果物が実際にある」ことも対象条件に含める。`@parcel/watcher` が
  * 依存に載っていても、その環境ではビルドされていないことがある (例: remote は macOS では
@@ -144,8 +153,7 @@ export function paradisIsParcelWatcherPatched(packageRoot: string): boolean {
 /**
  * ビルド済みの `@parcel/watcher` が、ガードを確かめた版 ({@link SUPPORTED_PARCEL_WATCHER_VERSION}) と違うことを知らせる。
  *
- * {@link paradisIsParcelWatcherPatched} は postinstall の高速経路の判定にも使うため、版が違えば今までどおり
- * 「対象外」と答える。ここではその代わりに、黙ってガードが外れないよう CI では例外で止め、手元では警告を出す
+ * {@link paradisIsParcelWatcherPatched} は版が違えば「対象外」と答える。ここではその代わりに、黙ってガードが外れないよう CI では例外で止め、手元では警告を出す
  * (xterm の IME パッチと同じ扱い)。版が上がったら issue #250 が直ったかを確かめ、このファイルを更新する。
  *
  * @returns パッチを当ててよい (版が一致する、または対象外) なら true、版が違って手元で警告しただけなら false

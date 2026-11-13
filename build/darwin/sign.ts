@@ -7,16 +7,11 @@ import fs from 'fs';
 import path from 'path';
 import { sign, type SignOptions } from '@electron/osx-sign';
 import { spawn } from '@malept/cross-spawn-promise';
+import { getElectronVersion } from '../lib/electronVersion.ts';
 
 const root = path.dirname(path.dirname(import.meta.dirname));
 const baseDir = path.dirname(import.meta.dirname);
 const product = JSON.parse(fs.readFileSync(path.join(root, 'product.json'), 'utf8'));
-
-function getElectronVersion(): string {
-	const npmrc = fs.readFileSync(path.join(root, '.npmrc'), 'utf8');
-	const target = /^target="(.*)"$/m.exec(npmrc)![1];
-	return target;
-}
 
 function getEntitlementsForFile(filePath: string): string {
 	// PARA-PATCH: the two vendored serve-sim helpers that run inside the iOS simulator keep DYLD_* through the hardened runtime (simctl spawn sets DYLD_ROOT_PATH; without it they abort).
@@ -122,7 +117,7 @@ async function main(buildDir?: string): Promise<void> {
 		preAutoEntitlements: false,
 		preEmbedProvisioningProfile: false,
 		keychain: getKeychainPath(tempDir),
-		version: getElectronVersion(),
+		version: getElectronVersion(root).electronVersion,
 		identity,
 	};
 

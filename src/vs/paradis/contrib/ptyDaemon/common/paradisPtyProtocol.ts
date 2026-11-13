@@ -202,16 +202,6 @@ export const PARADIS_PTY_HOST_CHANNEL = 'paradisPtyHost';
  */
 export const PARADIS_PTY_HOST_CLIENT = 'paradis-pty-host';
 
-/**
- * この pty ホストの名札を作る。
- *
- * 接続の名乗りと `attach` の `viewer` に同じものを使う。**プロセスごとに違う値**でなければ、
- * 2つのサーバーが同じ常駐に繋いだときに見分けが付かない。
- */
-export function paradisPtyHostClientId(): string {
-	return `${PARADIS_PTY_HOST_CLIENT}:${process.pid}:${Math.floor(Math.random() * 0xffffffff).toString(16)}`;
-}
-
 /** その名乗りが pty ホストのものか。接続が消えたときの判断に使う。 */
 export function paradisIsPtyHostClient(ctx: string): boolean {
 	return ctx.startsWith(`${PARADIS_PTY_HOST_CLIENT}:`);

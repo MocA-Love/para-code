@@ -82,14 +82,18 @@ export class ParadisBrowserFocusDiagnosticsMain {
 			}
 		};
 		webContents.on('input-event', onInput);
-		const focusListener = target.onDidChangeFocus(({ focused }) => {
-			this.recorder.focusChanged(target, focused, paradisBrowserViewDiagnosticHost(target));
-		});
+		// ページ自身のフォーカスを見る。1.146 から onDidChangeFocus はホストのウィンドウの前面化・背面化でも
+		// 出るので、利用者が自分でウィンドウを行き来しただけで「引き戻し」と数えてしまう。
+		const onFocus = () => this.recorder.focusChanged(target, true, paradisBrowserViewDiagnosticHost(target));
+		const onBlur = () => this.recorder.focusChanged(target, false, paradisBrowserViewDiagnosticHost(target));
+		webContents.on('focus', onFocus);
+		webContents.on('blur', onBlur);
 		const closeListener = target.onDidClose(() => {
-			focusListener.dispose();
 			closeListener.dispose();
 			try {
 				webContents.off('input-event', onInput);
+				webContents.off('focus', onFocus);
+				webContents.off('blur', onBlur);
 			} catch {
 				// 既に破棄済み。
 			}
