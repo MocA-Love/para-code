@@ -14,6 +14,8 @@
 // チェック・8 進数の欄・ボタンもキットの部品を使う。
 
 import * as dom from '../../../../base/browser/dom.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
+import { getBaseLayerHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegate2.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
@@ -107,8 +109,8 @@ export function paradisShowPermissionsDialog(container: HTMLElement, options: IP
 		const close = dom.append(head.actions, $<HTMLButtonElement>('button'));
 		close.type = 'button';
 		close.classList.add(...paradisButtonClasses('icon'));
-		close.title = closeLabel;
 		close.setAttribute('aria-label', closeLabel);
+		store.add(getBaseLayerHoverDelegate().setupManagedHover(getDefaultHoverDelegate('mouse'), close, closeLabel));
 		dom.append(close, $(ThemeIcon.asCSSSelector(Codicon.close)));
 		// 閉じるボタンは Esc と同じ（変えた権限は下書きに残す）
 		store.add(dom.addDisposableListener(close, 'click', () => finish(undefined, false)));

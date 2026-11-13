@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisComputerUseBlockReason, paradisComputerUseConfirmForeground, paradisComputerUseEnabled, paradisComputerUseRunsCommands, paradisParseComputerUseApprovalOutcome, paradisParseComputerUseStatus } from '../../common/paradisComputerUse.js';
+import { paradisComputerUseBlockReason, paradisComputerUseConfirmForeground, paradisComputerUseEnabled, paradisComputerUseNoticeWindowId, paradisComputerUseRunsCommands, paradisParseComputerUseApprovalOutcome, paradisParseComputerUseStatus } from '../../common/paradisComputerUse.js';
 import { createParadisComputerUseCallDiagnostics, PARADIS_COMPUTER_USE_FAILURES, paradisComputerUseCallAttributes, paradisComputerUseFailureCode } from '../../common/paradisComputerUseDiagnostics.js';
 import { ParadisComputerUseGrantLedger } from '../../node/paradisComputerUseGrantLedger.js';
 import { PARADIS_COMPUTER_USE_TOOLS } from '../../node/paradisComputerUseToolProvider.js';
@@ -63,6 +63,20 @@ suite('ParadisComputerUse common', () => {
 			status: { enabled: true, availability: 'ok', helperVersion: '0.1.0', permissions: { accessibility: true, screenRecording: false } },
 			badStatus: undefined,
 			outcomes: ['read', undefined, undefined],
+		});
+	});
+
+	test('shows the enabled notice in one normal window, falling back to the lowest id when the last focused window is not a normal one', () => {
+		assert.deepStrictEqual({
+			lastFocusedNormal: paradisComputerUseNoticeWindowId(3, [5, 3, 7]),
+			lastFocusedAgents: paradisComputerUseNoticeWindowId(2, [5, 3, 7]),
+			unknown: paradisComputerUseNoticeWindowId(undefined, [5, 3, 7]),
+			noNormalWindow: paradisComputerUseNoticeWindowId(2, []),
+		}, {
+			lastFocusedNormal: 3,
+			lastFocusedAgents: 3,
+			unknown: 3,
+			noNormalWindow: undefined,
 		});
 	});
 

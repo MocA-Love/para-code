@@ -18,6 +18,8 @@ import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { basename } from '../../../../base/common/resources.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
+import { getBaseLayerHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegate2.js';
 import { renderIcon } from '../../../../base/browser/ui/iconLabel/iconLabels.js';
 import { escapeRegExpCharacters } from '../../../../base/common/strings.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
@@ -1093,8 +1095,8 @@ export class ParadisSessionResumeDialog extends Disposable {
 				const button = dom.append(navigator, $('button')) as HTMLButtonElement;
 				button.type = 'button';
 				button.classList.add(...paradisButtonClasses('icon', true));
-				button.title = label;
 				button.setAttribute('aria-label', label);
+				this.renderDisposables.add(getBaseLayerHoverDelegate().setupManagedHover(getDefaultHoverDelegate('mouse'), button, label));
 				button.appendChild(renderIcon(icon));
 				return button;
 			};
