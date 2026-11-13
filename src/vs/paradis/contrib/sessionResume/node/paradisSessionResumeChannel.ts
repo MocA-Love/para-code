@@ -23,6 +23,7 @@ import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisLocalAgentPath, paradisResolveAgentHomes } from '../../agentBrowser/node/paradisAgentHome.js';
 import { paradisIsCodexInjectedText } from '../../agentChat/common/paradisCodexInjectedContext.js';
+import { paradisClaudeTranscriptModel } from '../../agentChat/common/paradisAgentSessionStatus.js';
 import { paradisClaudeProjectSlug } from '../../../common/paradisClaudeProjectSlug.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisOpenCodeCliRegistry, paradisVerifyOpenCodeCliOnThisHost } from '../../agentBrowser/node/paradisOpenCodeCliRegistry.js';
@@ -283,6 +284,48 @@ export function paradisClaudeTranscriptTitle(lines: Iterable<string>): string | 
 	return customTitle ?? aiTitle;
 }
 
+/**
+ * Claude の記録の行から、最後に使ったモデルを選ぶ（後ろの行から見て、最初に見つかった assistant 行の `message.model`）。
+ * 空と `<synthetic>` は除き、サブエージェントの行（`isSidechain`）は見ない。テストから直接確かめられるよう export している。
+ */
+export function paradisClaudeTranscriptLastModel(lines: readonly string[]): string | undefined {
+	for (let index = lines.length - 1; index >= 0; index--) {
+		const line = lines[index];
+		if (!line.includes('"assistant"')) {
+			continue;
+		}
+		let item: Record<string, unknown> | undefined;
+		try { item = record(JSON.parse(line)); } catch { continue; }
+		if (item?.type !== 'assistant' || item.isSidechain === true) {
+			continue;
+		}
+		const model = paradisClaudeTranscriptModel(string(record(item.message)?.model));
+		if (model !== undefined) {
+			return model;
+		}
+	}
+	return undefined;
+}
+
+/** Codex の rollout の行から、最後の `turn_context` の model と effort を選ぶ（読んだ範囲の中で）。 */
+function codexRolloutModel(lines: readonly string[]): { readonly model?: string; readonly effort?: string } {
+	for (let index = lines.length - 1; index >= 0; index--) {
+		const line = lines[index];
+		if (!line.includes('"turn_context"')) {
+			continue;
+		}
+		let item: Record<string, unknown> | undefined;
+		try { item = record(JSON.parse(line)); } catch { continue; }
+		const context = item?.type === 'turn_context' ? record(item.payload) : undefined;
+		const model = string(context?.model);
+		if (model !== undefined) {
+			const effort = string(context?.effort);
+			return { model, ...(effort !== undefined ? { effort } : {}) };
+		}
+	}
+	return {};
+}
+
 function normalizePath(value: string): string {
 	const normalized = resolve(value).replace(/\\/g, '/').replace(/\/$/, '');
 	return isWindows ? normalized.toLowerCase() : normalized;
@@ -449,6 +492,7 @@ export class ParadisSessionResumeService {
 						id: saved.id, agent: 'opencode', cli: saved.cli, ...(database.label !== undefined ? { cliLabel: database.label } : {}), title: saved.title || latest?.text.slice(0, 120) || 'OpenCode',
 						preview: latest?.text.slice(0, 260) || '', cwd: saved.cwd, spaceStateKey: space.stateKey, spaceName: space.name,
 						currentSpace: space.current, createdAt: saved.createdAt, updatedAt: saved.updatedAt, archived: saved.archived, empty: messages.length === 0,
+						...(saved.model !== undefined ? { model: saved.model } : {}), ...(saved.effort !== undefined ? { effort: saved.effort } : {}),
 					}, dbPath, dirname(dbPath), sessions);
 					// 読んだ最後の発言を覚える（最後の発言を出すときに、会話ごとに DB を開き直して同じ 2 件を読み直さない）
 					if (catalogId !== undefined) {
@@ -908,7 +952,9 @@ export class ParadisSessionResumeService {
 				try {
 					const data = await readFileHeadAndTail(candidate.transcriptPath, claudeHome, candidate.identity, SUMMARY_HEAD_BYTES, SUMMARY_TAIL_BYTES, this.beforeSummaryRead);
 					const headLines = data.head.split('\n');
-					const title = paradisClaudeTranscriptTitle(data.tail.length > 0 ? [...headLines, ...data.tail.split('\n')] : headLines);
+					const lines = data.tail.length > 0 ? [...headLines, ...data.tail.split('\n')] : headLines;
+					const title = paradisClaudeTranscriptTitle(lines);
+					const model = paradisClaudeTranscriptLastModel(lines);
 					let firstPrompt: string | undefined;
 					let createdAt: number | undefined;
 					for (const line of headLines) {
@@ -923,6 +969,7 @@ export class ParadisSessionResumeService {
 						id: candidate.id, agent: 'claude', title: clipped(display, 160), preview: clipped(firstPrompt ?? display, 260),
 						cwd: space.cwd, spaceStateKey: space.stateKey, spaceName: space.name, currentSpace: space.current,
 						createdAt, updatedAt: candidate.updatedAt, archived: false, empty: firstPrompt === undefined,
+						...(model !== undefined ? { model } : {}),
 					}, candidate.transcriptPath, claudeHome, target);
 				} catch (error) {
 					this.logService.debug('[ParadisSessionResume] unable to read Claude session', error);
@@ -983,6 +1030,8 @@ export class ParadisSessionResumeService {
 				columns.has('archived') ? 'archived' : '0 AS archived',
 				columns.has('git_branch') ? 'git_branch' : 'NULL AS git_branch',
 				columns.has('source') ? 'source' : `'' AS source`,
+				columns.has('model') ? 'model' : 'NULL AS model',
+				columns.has('reasoning_effort') ? 'reasoning_effort' : 'NULL AS reasoning_effort',
 			].join(', ');
 			const archivedClause = !includeArchived && columns.has('archived') ? 'WHERE archived = 0' : '';
 			// 新しい順に 1 ページずつ読み、表示する上限に届いたら止める（全行を一度に JS へ読まない）。
@@ -1016,12 +1065,15 @@ export class ParadisSessionResumeService {
 						const userText = (value: unknown) => { const text = string(value); return text !== undefined && !paradisIsCodexInjectedText(text) ? text : undefined; };
 						const title = string(row?.name) ?? userText(row?.title) ?? userText(row?.first_user_message) ?? userText(row?.preview) ?? id;
 						const preview = userText(row?.preview) ?? userText(row?.first_user_message) ?? title;
+						const model = string(row?.model);
+						const effort = model !== undefined ? string(row?.reasoning_effort) : undefined;
 						this.addSession({
 							id, agent: 'codex', title: clipped(title, 160), preview: clipped(preview, 260), cwd: space.cwd,
 							spaceStateKey: space.stateKey, spaceName: space.name, currentSpace: space.current,
 							createdAt: number(row?.created_at_value), updatedAt: number(row?.updated_at_value) || Date.now(),
 							archived: number(row?.archived) === 1, empty: !string(row?.name) && !string(row?.title) && !string(row?.first_user_message) && !string(row?.preview), gitBranch: string(row?.git_branch),
 							...(resumeCodexHome !== undefined ? { codexHome: resumeCodexHome } : {}),
+							...(model !== undefined ? { model } : {}), ...(effort !== undefined ? { effort } : {}),
 						}, transcriptPath, codexHome, target);
 						accepted++;
 						if (accepted >= MAX_SESSIONS) {
@@ -1112,6 +1164,7 @@ export class ParadisSessionResumeService {
 						spaceStateKey: space.stateKey, spaceName: space.name, currentSpace: space.current,
 						createdAt: firstPrompt?.timestamp, updatedAt: candidate.updatedAt, archived: false, empty: firstPrompt === undefined,
 						...(resumeCodexHome !== undefined ? { codexHome: resumeCodexHome } : {}),
+						...codexRolloutModel(lines),
 					}, candidate.path, codexHome, target);
 				} catch (error) {
 					this.logService.debug('[ParadisSessionResume] unable to read Codex rollout', error);

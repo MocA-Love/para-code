@@ -45,7 +45,7 @@ import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFoc
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisResumeAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
-import { IParadisResumeMessage, IParadisResumeSearchResult, IParadisResumeSession, ParadisResumeAgent, paradisResumeAgentLabel } from '../common/paradisSessionResume.js';
+import { IParadisResumeMessage, IParadisResumeSearchResult, IParadisResumeSession, ParadisResumeAgent, paradisResumeAgentLabel, paradisResumeModelLabel } from '../common/paradisSessionResume.js';
 import {
 	IParadisResumeListOptions,
 	PARADIS_RESUME_LIST_OPTIONS_STORAGE_KEY,
@@ -993,6 +993,11 @@ export class ParadisSessionResumeDialog extends Disposable {
 			const meta = dom.append(row, $('.row-meta'));
 			dom.append(meta, $('span')).textContent = session.spaceName;
 			dom.append(meta, $('span')).textContent = basename(URI.file(session.cwd));
+			// 最後に使ったモデル（取れない会話は何も出さない。詳細の欄だけ「モデル不明」と書く）
+			const modelLabel = paradisResumeModelLabel(session);
+			if (modelLabel !== undefined) {
+				dom.append(meta, $('span.model')).textContent = modelLabel;
+			}
 			if (session.archived) {
 				dom.append(meta, $('span.archived')).textContent = localize('paradis.sessionResume.archivedBadge', "アーカイブ済み");
 			}
@@ -1073,6 +1078,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 		dom.append(meta, $('span')).textContent = session.cliLabel !== undefined ? `${paradisResumeAgentLabel(session.agent)} (${session.cliLabel})` : paradisResumeAgentLabel(session.agent);
 		dom.append(meta, $('span')).textContent = session.spaceName;
 		dom.append(meta, $('span')).textContent = session.cwd;
+		dom.append(meta, $('span.model')).textContent = paradisResumeModelLabel(session) ?? localize('paradis.sessionResume.modelUnknown', "モデル不明");
 		dom.append(meta, $('span.monospace')).textContent = session.id;
 		let searchMatchLabel: HTMLElement | undefined;
 		let previousSearchMatch: HTMLButtonElement | undefined;
