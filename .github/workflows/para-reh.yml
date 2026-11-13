@@ -215,3 +215,19 @@ jobs:
             "$TARBALL" \
             "$TARBALL.sha256" \
             --clobber
+
+      # reh にはリリースのたびに 2 ファイルずつ積まれ、消す段は無い。推測: リリース 1 件の添付は 1000 件まで
+      # （未確認）で、超えると上の upload が失敗し、その版の SSH 接続がサーバーを取れなくなる。手前の 800 件で
+      # 警告だけ出す。何を消すか（使われている版は残す）は、警告が出てから決める。
+      - name: Warn when the reh release holds many assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          WARN_AT: 800
+        run: |
+          set -e -o pipefail
+          count="$(gh release view reh --json assets --jq '.assets | length')"
+          echo "The reh release holds $count assets."
+          if [ "$count" -ge "$WARN_AT" ]; then
+            echo "::warning::The reh release holds $count assets (warning at $WARN_AT; the limit is presumably 1000). Delete files of old commits that no client uses any more."
+          fi

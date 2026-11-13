@@ -43,6 +43,9 @@ import * as child_process from 'child_process';
 export function paradisPatchAndRebuildParcelWatcher(packageRoot: string, env: NodeJS.ProcessEnv | undefined, log: (message: string) => void): void {
 	let patch: ParcelWatcherPatch | undefined;
 	try {
+		if (!paradisCheckParcelWatcherVersion(packageRoot, log)) {
+			return; // 版が違う。手元では警告だけ出して素の watcher のまま続ける
+		}
 		patch = paradisPatchParcelWatcher(packageRoot);
 	} catch (error) {
 		// upstream の実装が変わっている。黙って素通りするとクラッシュだけが再発するので、明示的に失敗させる
@@ -138,13 +141,45 @@ export function paradisIsParcelWatcherPatched(packageRoot: string): boolean {
 	return fs.readFileSync(globPath, 'utf8').includes(PATCH_MARKER);
 }
 
-function paradisIsSupportedParcelWatcherVersion(packageJsonPath: string): boolean {
+/**
+ * ビルド済みの `@parcel/watcher` が、ガードを確かめた版 ({@link SUPPORTED_PARCEL_WATCHER_VERSION}) と違うことを知らせる。
+ *
+ * {@link paradisIsParcelWatcherPatched} は postinstall の高速経路の判定にも使うため、版が違えば今までどおり
+ * 「対象外」と答える。ここではその代わりに、黙ってガードが外れないよう CI では例外で止め、手元では警告を出す
+ * (xterm の IME パッチと同じ扱い)。版が上がったら issue #250 が直ったかを確かめ、このファイルを更新する。
+ *
+ * @returns パッチを当ててよい (版が一致する、または対象外) なら true、版が違って手元で警告しただけなら false
+ * @throws CI (`process.env.CI`) で版が違うとき
+ */
+export function paradisCheckParcelWatcherVersion(packageRoot: string, log: (message: string) => void): boolean {
+	const watcherRoot = path.join(packageRoot, 'node_modules', '@parcel', 'watcher');
+	if (!fs.existsSync(path.join(watcherRoot, 'src', 'Glob.cc')) || !fs.existsSync(path.join(watcherRoot, 'build', 'Release', 'watcher.node'))) {
+		return true; // ビルドされていない場所は読み込まれないので対象外
+	}
+	const packageJsonPath = path.join(watcherRoot, 'package.json');
+	if (paradisIsSupportedParcelWatcherVersion(packageJsonPath)) {
+		return true;
+	}
+
+	const message = `@parcel/watcher is ${paradisReadParcelWatcherVersion(packageJsonPath) ?? 'of an unknown version'}, but the long-path guard was checked against ${SUPPORTED_PARCEL_WATCHER_VERSION}; skipped. Check whether https://github.com/parcel-bundler/watcher/issues/250 is fixed and update build/npm/paradisParcelWatcherPatch.ts`;
+	if (process.env['CI']) {
+		throw new Error(message);
+	}
+	log(`WARNING: ${message}`);
+	return false;
+}
+
+function paradisReadParcelWatcherVersion(packageJsonPath: string): string | undefined {
 	try {
 		const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')) as { version?: string };
-		return packageJson.version === SUPPORTED_PARCEL_WATCHER_VERSION;
+		return packageJson.version;
 	} catch {
-		return false;
+		return undefined;
 	}
+}
+
+function paradisIsSupportedParcelWatcherVersion(packageJsonPath: string): boolean {
+	return paradisReadParcelWatcherVersion(packageJsonPath) === SUPPORTED_PARCEL_WATCHER_VERSION;
 }
 
 /**

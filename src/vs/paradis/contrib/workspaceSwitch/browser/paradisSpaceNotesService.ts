@@ -9,7 +9,9 @@
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
+import { localize } from '../../../../nls.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import {
 	IParadisSpaceNote,
@@ -52,6 +54,8 @@ export class ParadisSpaceNotesService extends Disposable implements IParadisSpac
 	/** まだ保存できていない編集のスペース。他ウィンドウの更新を取り込むときに、この分だけ守る。 */
 	private readonly dirtyKeys = new Set<string>();
 	private saveFailures = 0;
+	/** 保存を諦めたことを知らせた。次に保存できるまで、もう一度は知らせない（書くたびに通知を積まない）。 */
+	private notifiedSaveFailure = false;
 	/** 自分が書いた値。storage 変更通知が自分の書き込みだったときに再読込を省くために持つ。 */
 	private lastWritten: string | undefined;
 
@@ -59,6 +63,7 @@ export class ParadisSpaceNotesService extends Disposable implements IParadisSpac
 		@IStorageService private readonly storageService: IStorageService,
 		@ILogService private readonly logService: ILogService,
 		@IParadisWorkspaceSwitchService workspaceSwitchService: IParadisWorkspaceSwitchService,
+		@INotificationService private readonly notificationService: INotificationService,
 	) {
 		super();
 
@@ -256,13 +261,33 @@ export class ParadisSpaceNotesService extends Disposable implements IParadisSpac
 			this.dirty = false;
 			this.dirtyKeys.clear();
 			this.saveFailures = 0;
+			this.notifiedSaveFailure = false;
 		} catch {
 			this.warn('Failed to persist space notes');
 			if (this.saveFailures++ < MAX_SAVE_RETRIES) {
 				this.scheduler.schedule(RETRY_DELAY_MS);
 			} else {
+				// 試し直しはやめるが、編集はメモリに残す（dirtyKeys も残し、他ウィンドウの更新で上書きしない）。
+				// 次に書いたときの保存が通れば一緒に残る
 				this.dirty = false;
+				this.notifySaveFailure();
 			}
+		}
+	}
+
+	private notifySaveFailure(): void {
+		if (this.notifiedSaveFailure) {
+			return;
+		}
+		this.notifiedSaveFailure = true;
+		try {
+			this.notificationService.notify({
+				severity: Severity.Warning,
+				// allow-any-unicode-next-line
+				message: localize('paradis.spaceNotes.saveFailed', "スペースのメモを保存できませんでした。このままウィンドウを閉じると、最近の編集が失われることがあります。"),
+			});
+		} catch {
+			// 通知できなくても編集は止めない
 		}
 	}
 
