@@ -1356,6 +1356,10 @@ git push origin v1.128.0-paracode-3
 - 進捗確認: `gh run list --workflow=para-release.yml`、失敗調査: `gh run view <id> --log-failed`
 - 単一プラットフォームだけ再検証したい場合: `gh workflow run para-release.yml -f platforms=win32`（`darwin`/`linux`も可、カンマ区切り。publishはスキップされる）
 - 2026-09-28 から、publish するのはタグからの実行だけ。ブランチ上の `workflow_dispatch` は `platforms` が空でもビルドだけで止まる（以前はブランチからでも `stable:*` を書き換えられた）。復旧で同じタグを回し直すときは `gh workflow run para-release.yml --ref <タグ>` を使う
+- 2026-11-13（q.html Q635）から、フィードの KV の値に `"paracode":<N>`（ベータは `"paracodeBeta":<M>` も）を入れ、publish は書く前にそのチャネルの全キーを読んで比べる。どれか 1 つでもこのタグより新しい版を持っていれば、KV も `changelog:*` も GitHub Release も書かずに失敗する（R2 のオブジェクトは commit ごとのパスに残るだけ）。同じ版（同じタグの回し直し）、番号の欄が無い古い値、まだ無いキーは通す。並びは N、次に M（数として）で、M の無いステーブルは同じ N のどのベータよりも上
+  - 古いタグの再実行は巻き戻しに使わない。巻き戻すときは、戻したい commit に新しい N のタグを打つ（例: paracode-150 を取り下げて 149 の中身に戻すなら、149 の commit に `paracode-151` を打つ。更新履歴の節もその N で書く）
+  - 守られるのはこの変更を含む commit に打ったタグだけ。再実行はタグの commit の `para-release.yml` で走るので、それより前のタグを回し直すと比べずに上書きする
+  - ワークフローに `concurrency` は付けていない（待っていた実行が 3 本目で取り消され、リリースが知らせなく落ちるのを避けるため）。2 本のタグを続けて push したときに重なりうるのは、比べてから書き終わるまでの数秒だけ
 - ステーブル（`v{upstream}-paracode-{N}`）とベータ（`...-beta.{M}`）以外の形式のタグは、ビルド前に失敗する。ベータの出し方は下記「ベータ版の配布経路」
 - リリース後の動作確認（フィードが新commitを配信しているか）:
   ```bash
@@ -1460,7 +1464,7 @@ win/mac/linuxへの配布と自動アップデートの実装。設計の経緯�
 | GitHub Release | 従来どおり（Latest になる） | `--prerelease --latest=false`。既にあれば `gh release edit` で付け直す |
 | REH（`reh` Release） | 従来どおり `--clobber` で積む | 同じ `reh` に commit 名で積む。同名のファイルが既にあれば上書きしない（一覧を取れなければ止まる） |
 
-ステーブルの出力で変わったのは 1 点だけで、`gh release create` に `--notes-start-tag <前のステーブルのタグ>` が付く。GitHub は `--generate-notes` の起点の選び方を文書にしておらず、main の外にあるベータのタグが起点になると、本文から PR が抜けるおそれがあるため。前のタグは `gh release list`（プレリリースと下書きを除く）の中から `paracode-N` が今より小さい最大のものを `build/lib/paradisReleaseChannel.ts previous-stable` で選ぶ。無ければ付けない。R2 のキー、KV のキーと値、アップロードするファイルは変わらない。
+ステーブルの出力で変わったのは 1 点だけで、`gh release create` に `--notes-start-tag <前のステーブルのタグ>` が付く。GitHub は `--generate-notes` の起点の選び方を文書にしておらず、main の外にあるベータのタグが起点になると、本文から PR が抜けるおそれがあるため。前のタグは `gh release list`（プレリリースと下書きを除く）の中から `paracode-N` が今より小さい最大のものを `build/lib/paradisReleaseChannel.ts previous-stable` で選ぶ。無ければ付けない。R2 のキー、KV のキーと値、アップロードするファイルは変わらない（2026-11-13 に KV の値へ `paracode` の番号を足した。上の「ルール・注意」を参照）。
 
 これらは `build/lib/test/paradisReleaseContract.test.ts` が固定している（`cd build && npm test`）。publish ジョブの 2 段と `para-reh.yml` の公開の段を bash でスタブ実行して、R2・KV・`gh` の呼び出しを 1 行ずつ比べる（Release が既にある場合の `gh release edit` の経路を含む）。あわせて、本物の分類の出力を YAML の `outputs:`・`if:`・`env:` の式に通し、各ジョブが動くか・刻まれるチャネル・`CHANNEL` を確かめる（ブランチからの実行、ビルドの失敗、出力が空のときに公開されないことを含む）。分類の出力が空なら `classify` ジョブ自体が失敗する。
 

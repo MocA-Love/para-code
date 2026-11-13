@@ -24,6 +24,11 @@
  * - `node build/lib/paradisReleaseChannel.ts previous-stable <tag>` reads release tag names (one per
  *   line) from stdin and prints the stable tag that precedes <tag>, or nothing. The stable GitHub
  *   Release passes it to `--notes-start-tag` so its notes never start from a beta tag.
+ * - `node build/lib/paradisReleaseChannel.ts feed-fields <tag>` prints the `"paracode":<N>` (and, for a
+ *   beta, `"paracodeBeta":<M>`) JSON members the publish job adds to every feed KV record.
+ * - `node build/lib/paradisReleaseChannel.ts check-feed <tag> <kv key>` reads the current feed KV record
+ *   from stdin (empty when the key does not exist yet) and exits 1 when it holds a newer release than
+ *   <tag>, so re-running an old tag cannot roll every client back (q.html Q635).
  */
 
 import * as fs from 'fs';
@@ -160,6 +165,91 @@ export function findPreviousParadisStableTag(currentTag: string, tags: readonly 
 	return previous?.tag;
 }
 
+/** The release numbers of a stable or beta tag; `beta` is undefined for a stable tag. */
+export interface IParadisReleaseNumbers {
+	readonly paracode: number;
+	readonly beta?: number;
+}
+
+/** `undefined` unless `tag` is a stable or beta release tag. */
+export function getParadisReleaseNumbers(tag: string): IParadisReleaseNumbers | undefined {
+	if (classifyParadisReleaseTag(tag) === 'other') {
+		return undefined;
+	}
+	const numbers = PARADIS_RELEASE_TAG_NUMBERS_PATTERN.exec(tag)?.groups;
+	if (!numbers) {
+		return undefined;
+	}
+	return numbers.beta === undefined ? { paracode: Number(numbers.number) } : { paracode: Number(numbers.number), beta: Number(numbers.beta) };
+}
+
+/**
+ * The JSON members (without braces) the publish job appends to a feed KV record of `tag`, e.g.
+ * `"paracode":146` or `"paracode":146,"paracodeBeta":1`. `undefined` for a non-release tag.
+ */
+export function formatParadisFeedReleaseFields(tag: string): string | undefined {
+	const numbers = getParadisReleaseNumbers(tag);
+	if (!numbers) {
+		return undefined;
+	}
+	return numbers.beta === undefined ? `"paracode":${numbers.paracode}` : `"paracode":${numbers.paracode},"paracodeBeta":${numbers.beta}`;
+}
+
+/**
+ * Orders releases by `paracode-<N>`, then by `beta.<M>` numerically; a stable release is above
+ * every beta of the same N (the same order as {@link getParadisSentryRelease}, except that betas
+ * compare as numbers).
+ */
+function compareParadisReleaseNumbers(a: IParadisReleaseNumbers, b: IParadisReleaseNumbers): number {
+	if (a.paracode !== b.paracode) {
+		return a.paracode - b.paracode;
+	}
+	return (a.beta ?? Number.POSITIVE_INFINITY) - (b.beta ?? Number.POSITIVE_INFINITY);
+}
+
+export interface IParadisFeedCheck {
+	readonly publish: boolean;
+	readonly message: string;
+}
+
+/**
+ * Whether the publish job may overwrite the feed KV record `kvKey` (whose current value is
+ * `currentRecord`, empty when the key does not exist) with the release of `tag`.
+ * - No record yet, or a record written before the release numbers were stored → publish.
+ * - The same release (re-running the same tag to recover a failed publish) → publish.
+ * - A newer release → stop. The update server offers every client any commit that differs from
+ *   its own, so overwriting it would "update" everyone back to the older release.
+ * A record that is not JSON stops the run, so an unexpected wrangler output is never overwritten blindly.
+ */
+export function checkParadisFeedRecord(tag: string, kvKey: string, currentRecord: string): IParadisFeedCheck {
+	const release = getParadisReleaseNumbers(tag);
+	if (!release) {
+		return { publish: false, message: `'${tag}' is not a release tag; the feed is not written.` };
+	}
+	if (currentRecord.trim() === '') {
+		return { publish: true, message: `${kvKey}: no record yet.` };
+	}
+	let record: unknown;
+	try {
+		record = JSON.parse(currentRecord);
+	} catch {
+		return { publish: false, message: `${kvKey}: the current record is not JSON; the feed is not written.` };
+	}
+	const stored = record && typeof record === 'object' ? record as { readonly paracode?: unknown; readonly paracodeBeta?: unknown } : {};
+	if (typeof stored.paracode !== 'number') {
+		return { publish: true, message: `${kvKey}: the current record has no release number (written before they were stored).` };
+	}
+	const current: IParadisReleaseNumbers = typeof stored.paracodeBeta === 'number' ? { paracode: stored.paracode, beta: stored.paracodeBeta } : { paracode: stored.paracode };
+	const describe = (numbers: IParadisReleaseNumbers) => numbers.beta === undefined ? `paracode-${numbers.paracode}` : `paracode-${numbers.paracode}-beta.${numbers.beta}`;
+	if (compareParadisReleaseNumbers(current, release) > 0) {
+		return {
+			publish: false,
+			message: `${kvKey} already serves ${describe(current)}, newer than ${tag}; nothing is published so clients are not rolled back. To roll back, tag the older commit with a new paracode number (NOTES.md).`,
+		};
+	}
+	return { publish: true, message: `${kvKey}: ${describe(current)} -> ${describe(release)}.` };
+}
+
 /**
  * The `classify` step outputs (`steps.plan.outputs.*`) the workflows read. Exported for the
  * workflow contract test, which feeds them through the real `if:` and `env:` expressions.
@@ -180,7 +270,21 @@ function toGitHubOutput(plan: IParadisReleasePlan): string {
 	return Object.entries(toParadisReleaseOutputs(plan)).map(([key, value]) => `${key}=${value}`).join('\n') + '\n';
 }
 
-if (import.meta.main && process.argv[2] === 'previous-stable') {
+if (import.meta.main && process.argv[2] === 'feed-fields') {
+	const fields = formatParadisFeedReleaseFields(process.argv[3] ?? '');
+	if (!fields) {
+		console.error(`::error::'${process.argv[3] ?? ''}' is not a release tag.`);
+		process.exit(1);
+	}
+	process.stdout.write(fields);
+} else if (import.meta.main && process.argv[2] === 'check-feed') {
+	const check = checkParadisFeedRecord(process.argv[3] ?? '', process.argv[4] ?? '', fs.readFileSync(0, 'utf8'));
+	if (!check.publish) {
+		console.error(`::error::${check.message}`);
+		process.exit(1);
+	}
+	console.log(check.message);
+} else if (import.meta.main && process.argv[2] === 'previous-stable') {
 	const previous = findPreviousParadisStableTag(process.argv[3] ?? '', fs.readFileSync(0, 'utf8').split('\n'));
 	if (previous) {
 		process.stdout.write(`${previous}\n`);

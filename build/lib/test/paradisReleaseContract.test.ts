@@ -90,7 +90,8 @@ function getPublishedArtifacts(workflow: IReleaseWorkflow): readonly { readonly 
 	const publishScript = workflow.jobs.publish.steps.find(step => step.name === 'Publish artifacts to R2 + update feed KV')?.run;
 	assert.ok(publishScript);
 	// The KV key prefix is the channel (`$CHANNEL:<platform>`), so the call sites only carry the platform.
-	return [...publishScript.matchAll(/^\s*publish\s+"(?<platform>[^"]+)"\s+"(?<directory>[^"]+)"\s+"(?<file>[^"]+)"\s+"(?<artifact>[^"]+)"/gm)].map(match => ({
+	// `each_feed` passes each row to upload, check_feed and publish as `"$1" <row>`.
+	return [...publishScript.matchAll(/^\s*"\$1"\s+"(?<platform>[^"]+)"\s+"(?<directory>[^"]+)"\s+"(?<file>[^"]+)"\s+"(?<artifact>[^"]+)"/gm)].map(match => ({
 		platform: match.groups!.platform,
 		directory: match.groups!.directory,
 		file: match.groups!.file,
@@ -166,6 +167,12 @@ interface IScriptFixture {
 	readonly releaseList?: readonly string[];
 	/** Stdout of `gh release view reh --json assets ...`; `undefined` makes that call fail. */
 	readonly rehAssets?: readonly string[];
+	/** Current values of feed KV keys for `wrangler kv key get`; a key that is not listed fails with a 404 like remote wrangler. */
+	readonly kvRecords?: Record<string, string>;
+	/** `wrangler kv key get` fails with something other than a 404. */
+	readonly kvGetFails?: boolean;
+	/** A failing script ends the run with a `failed` line instead of throwing, so the calls before it can be compared. */
+	readonly recordFailure?: boolean;
 }
 
 /**
@@ -177,7 +184,15 @@ interface IScriptFixture {
 function runStepScripts(scripts: readonly string[], fixture: IScriptFixture): readonly string[] {
 	const stubs = [
 		'aws() { echo "aws $*" >> "$CALL_LOG"; }',
-		'wrangler() { echo "wrangler $*" >> "$CALL_LOG"; }',
+		'wrangler() {',
+		'  echo "wrangler $*" >> "$CALL_LOG"',
+		'  if [ "$1 $2 $3" = "kv key get" ]; then',
+		'    if [ "$KV_GET_FAIL" = 1 ]; then echo "Failed to fetch https://api.cloudflare.com/kv - 500: Internal Server Error" >&2; return 1; fi',
+		'    local key="${@: -1}"',
+		'    if [ -f "$KV_DIR/$key" ]; then cat "$KV_DIR/$key"; return 0; fi',
+		'    echo "Failed to fetch https://api.cloudflare.com/kv - 404: Not Found" >&2; return 1',
+		'  fi',
+		'}',
 		'sha256sum() { :; }',
 		'gh() {',
 		'  echo "gh $*" >> "$CALL_LOG"',
@@ -205,6 +220,11 @@ function runStepScripts(scripts: readonly string[], fixture: IScriptFixture): re
 		fs.mkdirSync(path.join(cwd, 'build/lib'), { recursive: true });
 		fs.copyFileSync(path.join(repositoryRoot, 'build/lib/paradisReleaseChannel.ts'), path.join(cwd, 'build/lib/paradisReleaseChannel.ts'));
 		fs.writeFileSync(callLog, '');
+		const kvDir = path.join(cwd, 'kv');
+		fs.mkdirSync(kvDir);
+		for (const [key, value] of Object.entries(fixture.kvRecords ?? {})) {
+			fs.writeFileSync(path.join(kvDir, key), value);
+		}
 		const env = {
 			PATH: process.env['PATH'],
 			CALL_LOG: callLog,
@@ -214,13 +234,26 @@ function runStepScripts(scripts: readonly string[], fixture: IScriptFixture): re
 			GH_RELEASE_LIST: (fixture.releaseList ?? []).map(tag => `${tag}\n`).join(''),
 			GH_ASSETS: (fixture.rehAssets ?? []).map(name => `${name}\n`).join(''),
 			GH_ASSETS_FAIL: fixture.rehAssets ? '0' : '1',
+			KV_DIR: kvDir,
+			KV_GET_FAIL: fixture.kvGetFails ? '1' : '0',
+			RUNNER_TEMP: cwd,
 			...fixture.env,
 		};
+		let failed = false;
 		for (const script of scripts) {
 			const rendered = script.replace(EXPRESSION_PATTERN, (_match, expr: string) => fixture.substitute?.(expr) ?? `@${expr}@`);
-			execFileSync('bash', ['-c', `${stubs}\n${rendered}`], { cwd, encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] });
+			try {
+				execFileSync('bash', ['-c', `${stubs}\n${rendered}`], { cwd, encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'pipe'] });
+			} catch (error) {
+				if (!fixture.recordFailure) {
+					throw error;
+				}
+				failed = true;
+				break;
+			}
 		}
-		return fs.readFileSync(callLog, 'utf8').split('\n').filter(line => line.length > 0);
+		const calls = fs.readFileSync(callLog, 'utf8').split('\n').filter(line => line.length > 0);
+		return failed ? [...calls, 'failed'] : calls;
 	} finally {
 		fs.rmSync(cwd, { recursive: true, force: true });
 	}
@@ -316,16 +349,35 @@ suite('Para Code release contract', () => {
 
 	// The stable expectation spells out the exact R2 keys, KV keys/values and Release calls. They are
 	// what the workflow produced before channels existed (hard-coded `stable/...`, `stable:*`,
-	// `changelog:stable`, `gh release create --generate-notes`) with one deliberate change: the stable
+	// `changelog:stable`, `gh release create --generate-notes`) with two deliberate changes: the stable
 	// Release now passes `--notes-start-tag <previous stable tag>` (found through `gh release list`), so
-	// its generated notes never start from a beta tag. Any other drift on the stable path fails here.
+	// its generated notes never start from a beta tag; and every object is uploaded first, then every
+	// feed record is read (`kv key get`) and compared, then written with its `"paracode":<N>` (q.html
+	// Q635). Any other drift on the stable path fails here.
 	test('publishes stable as before and keeps beta under beta/ and beta:* only', () => {
 		const workflow = readReleaseWorkflow();
 		const r2 = (channel: string, platdir: string, file: string, artifact: string) =>
 			`aws s3 cp artifacts/${artifact}/${file} s3://@secrets.CF_R2_BUCKET@/${channel}/${platdir}/@steps.meta.outputs.commit@/${file} --endpoint-url https://account.r2.cloudflarestorage.com --no-progress`;
+		const releaseFields = (channel: string) => channel === 'beta' ? '"paracode":146,"paracodeBeta":1' : '"paracode":146';
+		const kvGet = (channel: string, platform: string) => `wrangler kv key get --namespace-id @secrets.CF_KV_NAMESPACE_ID@ --remote ${channel}:${platform}`;
 		const kv = (channel: string, platform: string, platdir: string, file: string) =>
-			`wrangler kv key put --namespace-id @secrets.CF_KV_NAMESPACE_ID@ --remote ${channel}:${platform} {"commit":"@steps.meta.outputs.commit@","version":"@steps.meta.outputs.version@","productVersion":"@steps.meta.outputs.version@","url":"@secrets.CF_R2_PUBLIC_BASE_URL@/${channel}/${platdir}/@steps.meta.outputs.commit@/${file}","sha256hash":"hash-${file}","timestamp":@steps.meta.outputs.timestamp@}`;
-		const feed = (channel: string, platform: string, platdir: string, file: string, artifact: string) => [r2(channel, platdir, file, artifact), kv(channel, platform, platdir, file)];
+			`wrangler kv key put --namespace-id @secrets.CF_KV_NAMESPACE_ID@ --remote ${channel}:${platform} {"commit":"@steps.meta.outputs.commit@","version":"@steps.meta.outputs.version@","productVersion":"@steps.meta.outputs.version@","url":"@secrets.CF_R2_PUBLIC_BASE_URL@/${channel}/${platdir}/@steps.meta.outputs.commit@/${file}","sha256hash":"hash-${file}","timestamp":@steps.meta.outputs.timestamp@,${releaseFields(channel)}}`;
+		type FeedRow = readonly [platform: string, platdir: string, file: string, artifact: string];
+		const feeds = (channel: string, rows: readonly FeedRow[]) => [
+			...rows.map(([, platdir, file, artifact]) => r2(channel, platdir, file, artifact)),
+			...rows.map(([platform]) => kvGet(channel, platform)),
+			...rows.map(([platform, platdir, file]) => kv(channel, platform, platdir, file)),
+		];
+		const darwinRows: readonly FeedRow[] = [
+			['darwin', 'darwin-x64', 'darwin-x64.zip', 'darwin-x64'],
+			['darwin-arm64', 'darwin-arm64', 'darwin-arm64.zip', 'darwin-arm64'],
+		];
+		const stableRows: readonly FeedRow[] = [
+			...darwinRows,
+			['win32-x64-user', 'win32-x64-user', 'win32-x64-user-setup.exe', 'win32-x64'],
+			['win32-arm64-user', 'win32-arm64-user', 'win32-arm64-user-setup.exe', 'win32-arm64'],
+			['linux-x64', 'linux-x64', 'linux-x64.deb', 'linux-x64'],
+		];
 		const changelog = (channel: string) => `wrangler kv key put --namespace-id @secrets.CF_KV_NAMESPACE_ID@ --remote --path src/vs/paradis/contrib/releaseNotes/electron-browser/media/paradisChangelog.md changelog:${channel}`;
 		const setup = 'aws configure set default.s3.multipart_threshold 1GB';
 		const upload = (tag: string, files: readonly string[]) => `gh release upload ${tag} --repo owner/repo --clobber ${files.map(file => `release-assets/ParaCode-${tag}-${file}`).join(' ')}`;
@@ -335,19 +387,14 @@ suite('Para Code release contract', () => {
 		const stableTag = 'v1.139.1-paracode-146';
 		const stableFeed = [
 			setup,
-			...feed('stable', 'darwin', 'darwin-x64', 'darwin-x64.zip', 'darwin-x64'),
-			...feed('stable', 'darwin-arm64', 'darwin-arm64', 'darwin-arm64.zip', 'darwin-arm64'),
-			...feed('stable', 'win32-x64-user', 'win32-x64-user', 'win32-x64-user-setup.exe', 'win32-x64'),
-			...feed('stable', 'win32-arm64-user', 'win32-arm64-user', 'win32-arm64-user-setup.exe', 'win32-arm64'),
-			...feed('stable', 'linux-x64', 'linux-x64', 'linux-x64.deb', 'linux-x64'),
+			...feeds('stable', stableRows),
 			changelog('stable'),
 		];
 		const stableAssets = ['SHA256SUMS.txt', 'darwin-arm64.zip', 'darwin-x64.zip', 'linux-x64.deb', 'win32-arm64-setup.exe', 'win32-x64-setup.exe'];
 		const betaTag = 'v1.139.1-paracode-146-beta.1';
 		const betaFeed = [
 			setup,
-			...feed('beta', 'darwin', 'darwin-x64', 'darwin-x64.zip', 'darwin-x64'),
-			...feed('beta', 'darwin-arm64', 'darwin-arm64', 'darwin-arm64.zip', 'darwin-arm64'),
+			...feeds('beta', darwinRows),
 			changelog('beta'),
 		];
 		const betaAssets = ['SHA256SUMS.txt', 'darwin-arm64.zip', 'darwin-x64.zip'];
@@ -387,6 +434,42 @@ suite('Para Code release contract', () => {
 		});
 
 		assert.throws(() => simulatePublishSteps(workflow, '', stableTag));
+
+		// The feed check (q.html Q635): a record holding a newer release stops the run before any KV
+		// write, the changelog and the GitHub Release; the same, an older, an unnumbered or a missing
+		// record lets it through. The other tests above cover the missing (404) record.
+		const record = (fields: string) => JSON.stringify({ commit: 'old', version: '1.139.1' }).replace(/\}$/, fields ? `,${fields}}` : '}');
+		const stableKeys = (value: string) => Object.fromEntries(stableRows.map(([platform]) => [`stable:${platform}`, value]));
+		const betaKeys = (value: string) => Object.fromEntries(darwinRows.map(([platform]) => [`beta:${platform}`, value]));
+		const writesKv = (calls: readonly string[]) => calls.filter(line => line.startsWith('wrangler kv key put') && !line.includes(' --path ')).length;
+		const stopped = [setup, ...stableRows.map(([, platdir, file, artifact]) => r2('stable', platdir, file, artifact)), kvGet('stable', 'darwin'), 'failed'];
+		const stableRun = (kvRecords: Record<string, string>, kvGetFails = false) => simulatePublishSteps(workflow, 'stable', stableTag, { releaseList, kvRecords, kvGetFails, recordFailure: true });
+		const betaRun = (kvRecords: Record<string, string>) => simulatePublishSteps(workflow, 'beta', betaTag, { releaseList, kvRecords, recordFailure: true });
+		assert.deepStrictEqual({
+			older: writesKv(stableRun(stableKeys(record('"paracode":145')))),
+			same: writesKv(stableRun(stableKeys(record('"paracode":146')))),
+			unnumbered: writesKv(stableRun(stableKeys(record('')))),
+			newer: stableRun(stableKeys(record('"paracode":147'))),
+			newerOnLastKeyOnly: stableRun({ 'stable:linux-x64': record('"paracode":147') }).filter(line => line.startsWith('wrangler kv key put') || line === 'failed'),
+			notJson: stableRun(stableKeys('<html>')).at(-1),
+			readFailed: stableRun({}, true),
+			betaAfterOlderBeta: writesKv(betaRun(betaKeys(record('"paracode":146,"paracodeBeta":0')))),
+			betaAfterNewerBeta: betaRun(betaKeys(record('"paracode":146,"paracodeBeta":2'))).at(-1),
+			betaAfterGraduatedStable: betaRun(betaKeys(record('"paracode":146'))).at(-1),
+			betaAfterOlderStable: writesKv(betaRun(betaKeys(record('"paracode":145')))),
+		}, {
+			older: 5,
+			same: 5,
+			unnumbered: 5,
+			newer: stopped,
+			newerOnLastKeyOnly: ['failed'],
+			notJson: 'failed',
+			readFailed: stopped,
+			betaAfterOlderBeta: 2,
+			betaAfterNewerBeta: 'failed',
+			betaAfterGraduatedStable: 'failed',
+			betaAfterOlderStable: 2,
+		});
 	});
 
 	// Feeds the real classifier's outputs through the workflow's own `outputs:`, `if:` and `env:`
