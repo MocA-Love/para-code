@@ -405,7 +405,6 @@ export class ParadisAgentChatComposer extends Disposable {
 		}
 		this.slashMenu.style.display = '';
 		this.textarea.setAttribute('aria-controls', this.slashMenu.id);
-		this.textarea.setAttribute('aria-expanded', 'true');
 		this.textarea.setAttribute('aria-activedescendant', `${this.slashMenu.id}-${this.slashSelected}`);
 		this.slashItems.forEach((command, index) => {
 			const row = append(this.slashMenu, $('.paradis-agent-chat-slash-item'));
@@ -460,7 +459,6 @@ export class ParadisAgentChatComposer extends Disposable {
 
 	private clearSlashMenuAria(): void {
 		this.textarea.removeAttribute('aria-controls');
-		this.textarea.removeAttribute('aria-expanded');
 		this.textarea.removeAttribute('aria-activedescendant');
 	}
 }
