@@ -10,7 +10,7 @@ import { localize, localize2 } from '../../../../nls.js';
 import { IMenu, MenuId, MenuRegistry } from '../../../../platform/actions/common/actions.js';
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
 import { IExtensionTerminalProfile, ITerminalProfile, TerminalLocation, TerminalSettingId } from '../../../../platform/terminal/common/terminal.js';
-import { ResourceContextKey } from '../../../common/contextkeys.js';
+import { LayoutModeContext, ResourceContextKey } from '../../../common/contextkeys.js';
 import { TaskExecutionSupportedContext } from '../../tasks/common/taskService.js';
 import { ICreateTerminalOptions, ITerminalLocationOptions, ITerminalService } from './terminal.js';
 import { TerminalCommandId, TERMINAL_VIEW_ID } from '../common/terminal.js';
@@ -49,6 +49,12 @@ const TerminalDictationAvailable = ContextKeyExpr.or(
 	HasSpeechProvider,
 	ContextKeyExpr.and(ChatContextKeys.enabled, ChatContextKeys.speechToTextConfigured)
 );
+
+/**
+ * Where the context menu of a terminal editor's tab offers to move it into the panel: not in a window with layout modes,
+ * which keeps its terminals in a part of its own, while the panel is the main window's.
+ */
+export const MoveTerminalEditorToPanelWhen = ContextKeyExpr.and(ResourceContextKey.Scheme.isEqualTo(Schemas.vscodeTerminal), LayoutModeContext.negate());
 
 /** Register terminal menus into a store owned by the workbench contribution or test suite. */
 // PARA-PATCH: Register terminal menu entries in a disposable store so fork-added menus can be tested and cleaned up.
@@ -752,7 +758,7 @@ export function setupTerminalMenus(disposables: Pick<DisposableStore, 'add'>): v
 			id: TerminalCommandId.MoveToTerminalPanel,
 			title: terminalStrings.moveToTerminalPanel
 		},
-		when: ResourceContextKey.Scheme.isEqualTo(Schemas.vscodeTerminal),
+		when: MoveTerminalEditorToPanelWhen,
 		group: '2_files'
 	}));
 

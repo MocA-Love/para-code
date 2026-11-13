@@ -39,6 +39,10 @@ jobs:
         with:
           node-version-file: .nvmrc
 
+      # 1.146 moved the repository to pnpm (packageManager in package.json)
+      - name: Setup pnpm
+        uses: ./.github/actions/setup-pnpm
+
       - name: Restore node_modules cache
         id: cache-node-modules
         uses: ./.github/actions/restore-node-modules
@@ -50,17 +54,23 @@ jobs:
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
         run: sudo apt update -y && sudo apt install -y build-essential pkg-config libx11-dev libx11-xcb-dev libxkbfile-dev libnotify-bin libkrb5-dev
 
+      # pnpm runs the root preinstall after installing the dependencies, so download the
+      # Electron headers that native modules build against first (same as upstream pr.yml)
+      - name: Install Electron headers
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: pnpm run preinstall
+
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
         run: |
           set -e
           for i in {1..5}; do # try 5 times
-            npm ci && break
+            pnpm install --frozen-lockfile && break
             if [ $i -eq 5 ]; then
-              echo "Npm install failed too many times" >&2
+              echo "pnpm install failed too many times" >&2
               exit 1
             fi
-            echo "Npm install failed $i, trying again..."
+            echo "pnpm install failed $i, trying again..."
           done
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: 1
@@ -78,19 +88,19 @@ jobs:
         run: node build/npm/electronTypes.ts
 
       - name: Type check /build/ scripts
-        run: npm run typecheck
+        run: pnpm run typecheck
         working-directory: build
 
       - name: Check Markdown editor manifests
         run: |
-          npm run markdown-editor-package-json-check
-          npm --prefix extensions/markdown-language-features run test-markdown-editor-package-json
+          pnpm run markdown-editor-package-json-check
+          pnpm -C extensions/markdown-language-features run test-markdown-editor-package-json
 
       # The runner was shut down (exit 143) about 40 s into tsgo-typecheck on every run, before it could report
       # anything: running core-ci in parallel with hygiene, eslint and the other checks ran the runner out of memory
       #, most likely. Compile and type check first on their own, then run the remaining checks in parallel.
       - name: Compile & type check
-        run: npm run core-ci
+        run: pnpm run core-ci
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -103,7 +113,7 @@ jobs:
         run: |
           log="$RUNNER_TEMP/hygiene.log"
           set +e
-          npm run hygiene 2>&1 | tee "$log"
+          pnpm run hygiene 2>&1 | tee "$log"
           status=${PIPESTATUS[0]}
           set -e
           if [ "$status" -eq 0 ]; then
@@ -122,7 +132,7 @@ jobs:
       # --continue-on-error lets every check finish and report; the step still fails if any of them failed.
       - name: Other checks
         if: success() || failure()
-        run: npm exec -- npm-run-all2 -l --continue-on-error valid-layers-check define-class-fields-check vscode-dts-compile-check tsec-compile-check test-build-scripts
+        run: pnpm exec npm-run-all2 -l --continue-on-error valid-layers-check define-class-fields-check vscode-dts-compile-check tsec-compile-check test-build-scripts
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -130,7 +140,7 @@ jobs:
       # checks above, so it gets its own step.
       - name: ESLint
         if: success() || failure()
-        run: npm run eslint
+        run: pnpm run eslint
 
       - name: Check cyclic dependencies
         run: node build/lib/checkCyclicDependencies.ts out-build
@@ -148,6 +158,10 @@ jobs:
         with:
           node-version-file: .nvmrc
 
+      # 1.146 moved the repository to pnpm (packageManager in package.json)
+      - name: Setup pnpm
+        uses: ./.github/actions/setup-pnpm
+
       - name: Restore node_modules cache
         id: cache-node-modules
         uses: ./.github/actions/restore-node-modules
@@ -155,15 +169,21 @@ jobs:
           key-prefix: node_modules-para-ci
           key-args: "compile $(node -p process.arch)"
 
-      # npm ci builds native modules (kerberos needs gssapi.h from libkrb5-dev) whenever the
-      # node_modules cache misses, e.g. after package-lock.json changes. Same tools as above.
+      # pnpm install builds native modules (kerberos needs gssapi.h from libkrb5-dev) whenever the
+      # node_modules cache misses, e.g. after pnpm-lock.yaml changes. Same tools as above.
       - name: Install build tools
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
         run: sudo apt update -y && sudo apt install -y build-essential pkg-config libx11-dev libx11-xcb-dev libxkbfile-dev libnotify-bin libkrb5-dev
 
+      # pnpm runs the root preinstall after installing the dependencies, so download the
+      # Electron headers that native modules build against first (same as upstream pr.yml)
+      - name: Install Electron headers
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: pnpm run preinstall
+
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
-        run: npm ci
+        run: pnpm install --frozen-lockfile
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: 1
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
@@ -173,14 +193,14 @@ jobs:
       # test file was found and the job stayed green while running 0 tests. Same transpile
       # step as upstream pr-linux-test.yml (esbuild, no type check: Typecheck & Hygiene covers it).
       - name: Transpile client
-        run: npm run gulp transpile-client-esbuild
+        run: pnpm run gulp transpile-client-esbuild
 
       # Fail when mocha did not report any passing test (e.g. out/ missing or a loader error
       # that stops mocha before it starts), instead of exiting 0 with nothing run.
       - name: Run unit tests (node.js)
         run: |
           set -o pipefail
-          npm run test-node 2>&1 | tee "$RUNNER_TEMP/test-node.log"
+          pnpm run test-node 2>&1 | tee "$RUNNER_TEMP/test-node.log"
           grep -Eq '(^|[^0-9])[1-9][0-9]* passing' "$RUNNER_TEMP/test-node.log" || { echo "No passing tests reported by test-node" >&2; exit 1; }
 
   # The fork's renderer (Electron) unit tests: unit-tests above runs only the node.js tests, so regressions in the
@@ -206,6 +226,10 @@ jobs:
         with:
           node-version-file: .nvmrc
 
+      # 1.146 moved the repository to pnpm (packageManager in package.json)
+      - name: Setup pnpm
+        uses: ./.github/actions/setup-pnpm
+
       - name: Restore node_modules cache
         id: cache-node-modules
         uses: ./.github/actions/restore-node-modules
@@ -217,9 +241,15 @@ jobs:
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
         run: sudo apt update -y && sudo apt install -y build-essential pkg-config libx11-dev libx11-xcb-dev libxkbfile-dev libnotify-bin libkrb5-dev
 
+      # pnpm runs the root preinstall after installing the dependencies, so download the
+      # Electron headers that native modules build against first (same as upstream pr.yml)
+      - name: Install Electron headers
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: pnpm run preinstall
+
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
-        run: npm ci
+        run: pnpm install --frozen-lockfile
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: 1
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
@@ -231,7 +261,7 @@ jobs:
         run: sudo apt update -y && sudo apt install -y xvfb libgtk-3-0 libgbm1
 
       - name: Transpile client
-        run: npm run gulp transpile-client-esbuild
+        run: pnpm run gulp transpile-client-esbuild
 
       - name: Setup Electron
         uses: ./.github/actions/setup-electron
@@ -327,6 +357,10 @@ jobs:
         with:
           node-version-file: .nvmrc
 
+      # 1.146 moved the repository to pnpm (packageManager in package.json)
+      - name: Setup pnpm
+        uses: ./.github/actions/setup-pnpm
+
       - name: Restore node_modules cache
         id: cache-node-modules
         uses: ./.github/actions/restore-node-modules
@@ -338,9 +372,15 @@ jobs:
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
         run: sudo apt update -y && sudo apt install -y build-essential pkg-config libx11-dev libx11-xcb-dev libxkbfile-dev libnotify-bin libkrb5-dev
 
+      # pnpm runs the root preinstall after installing the dependencies, so download the
+      # Electron headers that native modules build against first (same as upstream pr.yml)
+      - name: Install Electron headers
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: pnpm run preinstall
+
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
-        run: npm ci
+        run: pnpm install --frozen-lockfile
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: 1
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
@@ -396,6 +436,9 @@ jobs:
         uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 10
+          # The root package.json pins pnpm 12 (packageManager) since 1.146; app/ keeps pnpm 10 and
+          # its own lock, and action-setup refuses a version input that disagrees with the root packageManager
+          package_json_file: app/package.json
 
       - name: Install Update Worker dependencies
         working-directory: cloudflare/update-server
@@ -430,6 +473,10 @@ jobs:
         with:
           node-version-file: extensions/copilot/.nvmrc
 
+      # 1.146 moved the repository to pnpm (packageManager in package.json)
+      - name: Setup pnpm
+        uses: ./.github/actions/setup-pnpm
+
       - name: Restore node_modules cache
         id: cache-node-modules
         uses: ./.github/actions/restore-node-modules
@@ -439,21 +486,21 @@ jobs:
 
       - name: Install root dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
-        run: npm ci --ignore-scripts --no-workspaces
+        run: pnpm install --frozen-lockfile --ignore-scripts --filter .
 
       - name: Install copilot dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
         working-directory: extensions/copilot
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: TypeScript type checking
         working-directory: extensions/copilot
-        run: npm run typecheck
+        run: pnpm run typecheck
 
       - name: Lint
         working-directory: extensions/copilot
-        run: npm run lint
+        run: pnpm run lint
 
       - name: Run vitest unit tests
         working-directory: extensions/copilot
-        run: npm run test:unit
+        run: pnpm run test:unit

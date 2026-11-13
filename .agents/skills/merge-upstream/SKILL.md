@@ -113,7 +113,7 @@ git diff --name-only --diff-filter=U               # コンフリクト一覧
 | 集約 import ファイル（`workbench.common.main.ts` 等） | 自分の1行を残すだけの機械的解消 |
 | upstream がメソッドを新設して呼び出し側が増えた | **fork のパッチを新メソッド側へ移す**（例: スクロールバー無効化を `_getScrollbarOptions()` の return に移し、両呼び出し点をカバー） |
 | upstream が定数/設定を削除 | fork がその定数を使っていないか全ツリー grep で裏取りしてから削除に追従 |
-| `package-lock.json` | 手作業でマージしない。upstream 版を `git checkout $TAG -- package-lock.json` してから `npm install` で再生成し、fork 固有依存が復元されたか確認 |
+| `pnpm-lock.yaml`（1.146 から。それ以前は `package-lock.json`） | 手作業でマージしない。upstream 版を採ってから `pnpm install` で再生成し、fork 固有依存（`pnpm-workspace.yaml` の `overrides`・`allowBuilds`）が反映されたか確認 |
 | `build/lib/stylelint/vscode-known-variables.json` | upstream 配列を丸ごと採用し、paradis 変数だけ再挿入 |
 | テーマ JSON | upstream がアクセント色を使い続けるキーはブランド色維持、無彩色に変えたキーは upstream 追従（判断が割れるのでユーザーに確認する） |
 
@@ -124,20 +124,20 @@ git diff --name-only --diff-filter=U               # コンフリクト一覧
 ## フェーズ4: 機械検証
 
 ```bash
-npm install                    # ← 必須。Electron/依存が変わっている
-npm run typecheck-client
-npm run valid-layers-check
+pnpm install                   # ← 必須。Electron/依存が変わっている（1.146 から pnpm。版は package.json の packageManager）
+pnpm run typecheck-client
+pnpm run valid-layers-check
 ```
 
-**Node バージョン**: upstream が `.nvmrc` を上げていると `build/npm/preinstall.ts` が `npm install` を弾く。fork 所有の `mise.toml` を同じ値に上げて `mise install` する（mise.toml のコミットは hygiene の既知衝突で `--no-verify` が必要）。
+**Node バージョン**: upstream が `.nvmrc` を上げていると `build/npm/preinstall.ts` が install を弾く。fork 所有の `mise.toml` を同じ値に上げて `mise install` する（mise.toml のコミットは hygiene の既知衝突で `--no-verify` が必要）。
 
 **xterm を上げる取り込みでは2点を必ず確かめる**（どちらも黙って効かなくなる。NOTES.md の「プリセットの種類・描画修復・常駐画面の保存・IME パッチ」節）:
-- IME パッチ: `npm install` のログに `Patched @xterm/xterm ... IME handling` が出るか。版が変わると警告だけで素の xterm になる（CI では失敗する）。新しい版の `node_modules/@xterm/xterm` で `git apply --check build/npm/paradisXtermIme/xterm-ime.patch` が通れば `build/npm/paradisXtermImePatch.ts` の `PARADIS_XTERM_IME_TARGET_VERSION` を書き換え、通らなければ Orca の新しいパッチから作り直す
+- IME パッチ: `pnpm install` のログに `Patched @xterm/xterm ... IME handling` が出るか。版が変わると警告だけで素の xterm になる（CI では失敗する）。新しい版の `node_modules/@xterm/xterm` で `git apply --check build/npm/paradisXtermIme/xterm-ime.patch` が通れば `build/npm/paradisXtermImePatch.ts` の `PARADIS_XTERM_IME_TARGET_VERSION` を書き換え、通らなければ Orca の新しいパッチから作り直す
 - 描画ずれの修復が読む非公開プロパティ: `grep -c "_renderService\|_isPaused\|_charAtlas\|_themeService" node_modules/@xterm/xterm/lib/xterm.js node_modules/@xterm/addon-webgl/lib/addon-webgl.js` が 0 にならないか
 
 **`build/win32/inno_updater.exe`**: fork は Windows でバージョン付きの配置（`win32VersionedUpdate`）を使わないので、旧来の `_` を移す経路を持つ updater（いまは 0.23.0）を残す。衝突したら fork の側を取り、`node --test build/lib/test/paradisInnoUpdater.test.ts` が通ることを確かめる（NOTES.md の「コメントを書けないファイルへの変更一覧」）。
 
-**`build/node_modules`**: root の `npm install` が exit 0 でも build/ のサブインストールがスキップされることがある。起動時に `gulp-merge-json` の `ERR_MODULE_NOT_FOUND` が出たら `cd build && npm ci`。
+**`build/node_modules`**: root の install が exit 0 でも build/ のサブインストールがスキップされることがある。起動時に `gulp-merge-json` の `ERR_MODULE_NOT_FOUND` が出たら `cd build && pnpm install --frozen-lockfile`。
 
 ---
 
@@ -163,7 +163,7 @@ npm run valid-layers-check
 
 ## フェーズ6: 実機確認
 
-`launch` スキルで起動する（`TMPDIR=/tmp` 必須。パス長103文字制限）。worktree から起動する場合は本物の `npm ci` + `npm run compile` が要る（transpile だけではアイコン・組み込み拡張が壊れる）。
+`launch` スキルで起動する（`TMPDIR=/tmp` 必須。パス長103文字制限）。worktree から起動する場合は本物の `pnpm install --frozen-lockfile` + `pnpm run compile` が要る（transpile だけではアイコン・組み込み拡張が壊れる）。
 
 確認項目（fork 機能の全系統を一巡）: 起動 / Agent Sessions ウィンドウ / 自動アップデートチェック / 独自ファイルビューア（md 差分含む） / ターミナル（グリッド分割・スクロールバー・履歴サジェスト） / Para Browser / モバイルリレー / ウィンドウ透過 / テーマの見た目。
 
@@ -207,5 +207,5 @@ git checkout main && git merge --ff-only merge/upstream-<version>
 - `git log upstream/main` の全走査は10分でタイムアウトする。必ず日付や件数で絞る
 - squash コミット時、rerere が解消を記録するので次回以降の同種コンフリクトは自動適用される
 - `--user-data-dir` のパス長103文字制限（`TMPDIR=/tmp`）
-- `npm run typecheck-client | tail` はパイプで exit code が隠れる。`> log; echo $?` で確認する
+- `pnpm run typecheck-client | tail` はパイプで exit code が隠れる。`> log; echo $?` で確認する
 - 監査で `PARA-CODE:` マーカーが upstream 由来ファイルに紛れ込んでいるのを見つけることがある（本来は fork 新規ファイル専用）。実害は小さいが記録しておく

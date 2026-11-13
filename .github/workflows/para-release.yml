@@ -141,16 +141,27 @@ jobs:
         with:
           node-version-file: .nvmrc
 
+      # 1.146 moved the repository to pnpm (packageManager in package.json)
+      - name: Setup pnpm
+        uses: ./.github/actions/setup-pnpm
+
+      # pnpm runs the root preinstall after installing the dependencies, so download the
+      # Electron headers that native modules build against first (same as upstream pr.yml)
+      - name: Install Electron headers
+        run: pnpm run preinstall
+        env:
+          npm_config_arch: ${{ env.NPM_ARCH }}
+
       - name: Install dependencies
         run: |
           set -e
           for i in {1..5}; do
-            npm ci && break
+            pnpm install --frozen-lockfile && break
             if [ $i -eq 5 ]; then
-              echo "Npm install failed too many times" >&2
+              echo "pnpm install failed too many times" >&2
               exit 1
             fi
-            echo "Npm install failed $i, trying again..."
+            echo "pnpm install failed $i, trying again..."
           done
         env:
           npm_config_arch: ${{ env.NPM_ARCH }}
@@ -181,17 +192,13 @@ jobs:
 
       # The task board (app/taskboard) ships as resources/paradis/taskboard; gulp picks it up from
       # .build/paradis/taskboard (build/paradis/taskboard/buildTaskBoard.ts). It has its own pnpm lockfile.
-      - name: Setup pnpm (task board)
-        # Pinned: this job holds release secrets (update access, Apple signing)
-        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-        with:
-          version: 10.11.0
-
+      # The task board builds with the pnpm 12 of "Setup pnpm" above (it reads app/taskboard's
+      # lockfile unchanged); a second pnpm/action-setup with a version would disagree with packageManager.
       - name: Build the task board
         run: node build/paradis/taskboard/buildTaskBoard.ts
 
       - name: Package (vscode-darwin-${{ matrix.arch }}-min)
-        run: npm run gulp "vscode-darwin-${{ matrix.arch }}-min"
+        run: pnpm run gulp "vscode-darwin-${{ matrix.arch }}-min"
 
       - name: Verify the task board is in the package
         shell: bash
@@ -564,8 +571,19 @@ jobs:
         with:
           node-version-file: .nvmrc
 
+      # 1.146 moved the repository to pnpm (packageManager in package.json)
+      - name: Setup pnpm
+        uses: ./.github/actions/setup-pnpm
+
+      # pnpm runs the root preinstall after installing the dependencies, so download the
+      # Electron headers that native modules build against first (same as upstream pr.yml)
+      - name: Install Electron headers
+        run: pnpm run preinstall
+        env:
+          npm_config_arch: ${{ env.NPM_ARCH }}
+
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
         env:
           npm_config_arch: ${{ env.NPM_ARCH }}
           ELECTRON_SKIP_BINARY_DOWNLOAD: 1
@@ -579,17 +597,13 @@ jobs:
 
       # The task board (app/taskboard) ships as resources/paradis/taskboard; gulp picks it up from
       # .build/paradis/taskboard (build/paradis/taskboard/buildTaskBoard.ts). It has its own pnpm lockfile.
-      - name: Setup pnpm (task board)
-        # Pinned: this job holds release secrets (update access, Apple signing)
-        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-        with:
-          version: 10.11.0
-
+      # The task board builds with the pnpm 12 of "Setup pnpm" above (it reads app/taskboard's
+      # lockfile unchanged); a second pnpm/action-setup with a version would disagree with packageManager.
       - name: Build the task board
         run: node build/paradis/taskboard/buildTaskBoard.ts
 
       - name: Package (vscode-win32-${{ matrix.arch }}-min)
-        run: npm run gulp "vscode-win32-${{ matrix.arch }}-min"
+        run: pnpm run gulp "vscode-win32-${{ matrix.arch }}-min"
 
       - name: Verify the task board is in the package
         shell: bash
@@ -607,8 +621,8 @@ jobs:
 
       - name: Build Inno Setup updater helper + user installer
         run: |
-          npm run gulp "vscode-win32-${{ matrix.arch }}-inno-updater"
-          npm run gulp "vscode-win32-${{ matrix.arch }}-user-setup"
+          pnpm run gulp "vscode-win32-${{ matrix.arch }}-inno-updater"
+          pnpm run gulp "vscode-win32-${{ matrix.arch }}-user-setup"
 
       # NOTE: unsigned on purpose for the first release phase (see NOTES.md).
       # SmartScreen will warn on first run and some AV heuristics may flag the
@@ -658,6 +672,10 @@ jobs:
         with:
           node-version-file: .nvmrc
 
+      # 1.146 moved the repository to pnpm (packageManager in package.json)
+      - name: Setup pnpm
+        uses: ./.github/actions/setup-pnpm
+
       - name: Setup system dependencies
         run: |
           set -e
@@ -675,8 +693,13 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
+      # pnpm runs the root preinstall after installing the dependencies, so download the
+      # Electron headers that native modules build against first (same as upstream pr.yml)
+      - name: Install Electron headers
+        run: pnpm run preinstall
+
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: 1
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
@@ -695,17 +718,13 @@ jobs:
 
       # The task board (app/taskboard) ships as resources/paradis/taskboard; gulp picks it up from
       # .build/paradis/taskboard (build/paradis/taskboard/buildTaskBoard.ts). It has its own pnpm lockfile.
-      - name: Setup pnpm (task board)
-        # Pinned: this job holds release secrets (update access, Apple signing)
-        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-        with:
-          version: 10.11.0
-
+      # The task board builds with the pnpm 12 of "Setup pnpm" above (it reads app/taskboard's
+      # lockfile unchanged); a second pnpm/action-setup with a version would disagree with packageManager.
       - name: Build the task board
         run: node build/paradis/taskboard/buildTaskBoard.ts
 
       - name: Package (vscode-linux-x64-min)
-        run: npm run gulp "vscode-linux-x64-min"
+        run: pnpm run gulp "vscode-linux-x64-min"
 
       - name: Verify the task board is in the package
         shell: bash
@@ -733,8 +752,8 @@ jobs:
 
       - name: Build .deb
         run: |
-          npm run gulp "vscode-linux-x64-prepare-deb"
-          npm run gulp "vscode-linux-x64-build-deb"
+          pnpm run gulp "vscode-linux-x64-prepare-deb"
+          pnpm run gulp "vscode-linux-x64-build-deb"
 
       - name: Compute sha256
         run: |

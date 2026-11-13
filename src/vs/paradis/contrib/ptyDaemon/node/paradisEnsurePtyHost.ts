@@ -32,7 +32,7 @@ import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryD
 import { IParadisPtyHostPaths } from '../common/paradisPtyHostPaths.js';
 import { paradisAuthenticateDaemon } from './paradisPtyDaemonAuth.js';
 import { paradisReadDaemonRecords } from './paradisPtyDaemonLedger.js';
-import { IParadisPtyHost, PARADIS_PTY_HOST_CHANNEL, paradisPtyHostClientId, PARADIS_PTY_PROTOCOL_VERSION } from '../common/paradisPtyProtocol.js';
+import { IParadisPtyHost, PARADIS_PTY_HOST_CHANNEL, PARADIS_PTY_HOST_CLIENT, PARADIS_PTY_PROTOCOL_VERSION } from '../common/paradisPtyProtocol.js';
 
 /** 1回の接続試行を待つ上限。 */
 const CONNECT_TIMEOUT = 2_000;
@@ -444,4 +444,14 @@ export async function paradisSpawnDaemon(options: IParadisEnsurePtyHostOptions):
 		await Promises.close(stdio);
 	}
 	return { state: () => state };
+}
+
+/**
+ * この pty ホストの名札を作る。
+ *
+ * 接続の名乗りと `attach` の `viewer` に同じものを使う。**プロセスごとに違う値**でなければ、
+ * 2つのサーバーが同じ常駐に繋いだときに見分けが付かない。
+ */
+function paradisPtyHostClientId(): string {
+	return `${PARADIS_PTY_HOST_CLIENT}:${process.pid}:${Math.floor(Math.random() * 0xffffffff).toString(16)}`;
 }

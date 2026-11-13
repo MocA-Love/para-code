@@ -46,6 +46,7 @@ suite('Paradis Agent Host terminal creation scope', () => {
 			terminalProfileService,
 			{} as ConstructorParameters<typeof AgentHostTerminalService>[3],
 			{} as ConstructorParameters<typeof AgentHostTerminalService>[4],
+			{ connections: [] } as unknown as ConstructorParameters<typeof AgentHostTerminalService>[5],
 		);
 		const connection = { clientId: 'client' } as IAgentConnection;
 		const entryRegistration = service.registerEntry({ name: 'host', address: 'host', getConnection: () => connection });

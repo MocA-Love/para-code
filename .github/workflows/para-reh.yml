@@ -57,7 +57,7 @@ jobs:
     # 接続先に要る glibc の下限がランナーの画像で決まる（ubuntu-26.04 だと pty.node が GLIBC_2.42 を要求し、
     # Ubuntu 24.04 の接続先でターミナルが読み込めない）。para-release.yml の build-linux と揃える。
     runs-on: ubuntu-24.04
-    # npm ci が第三者の postinstall を走らせるので、このジョブの token は読み取りだけにする。
+    # pnpm install が第三者の install script を走らせるので、このジョブの token は読み取りだけにする。
     # reh リリースへの添付は書き込み権限を持つ下の publish-reh ジョブが artifact から行う。
     permissions:
       contents: read
@@ -81,6 +81,10 @@ jobs:
         with:
           node-version-file: .nvmrc
 
+      # 1.146 moved the repository to pnpm (packageManager in package.json)
+      - name: Setup pnpm
+        uses: ./.github/actions/setup-pnpm
+
       # ステーブル／ベータ以外のタグはここで失敗させ、ビルドも公開もしない。
       - name: Classify the ref
         id: plan
@@ -103,8 +107,13 @@ jobs:
           ./build/azure-pipelines/linux/apt-retry.sh sudo apt-get update
           ./build/azure-pipelines/linux/apt-retry.sh sudo apt-get install -y pkg-config libkrb5-dev libxkbfile-dev libssl-dev
 
+      # pnpm runs the root preinstall after installing the dependencies, so download the
+      # Electron headers that native modules build against first (same as upstream pr.yml)
+      - name: Install Electron headers
+        run: pnpm run preinstall
+
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: 1
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
@@ -127,17 +136,17 @@ jobs:
       # いずれも Remote-SSH とは無関係な、旧経路にだけ存在する問題。
       # そのため一括タスクの中身を esbuild 版に置き換えて手で並べている。
       # upstream が gulpfile.reh.ts を esbuild へ移行したら、この段は
-      # `npm run gulp vscode-reh-linux-x64-min` 一行に戻せる。
+      # `pnpm run gulp vscode-reh-linux-x64-min` 一行に戻せる。
       - name: Build server (esbuild path)
         run: |
           set -e
-          npm run gulp copy-codicons
+          pnpm run gulp copy-codicons
           rm -rf .build/extensions
-          npm run gulp compile-non-native-extensions-build
-          npm run gulp compile-copilot-extension-build
-          npm run gulp compile-extension-media-build
+          pnpm run gulp compile-non-native-extensions-build
+          pnpm run gulp compile-copilot-extension-build
+          pnpm run gulp compile-extension-media-build
           node build/next/index.ts bundle --out out-vscode-reh-min --target server --minify --mangle-privates --nls
-          npm run gulp vscode-reh-linux-x64-min-ci
+          pnpm run gulp vscode-reh-linux-x64-min-ci
 
       # open-remote-ssh の server-setup.sh は tarball を `tar -xf --strip-components 1` で
       # 展開し、`$SERVER_DATA_DIR/bin/$COMMIT/bin/$serverApplicationName` が存在することを

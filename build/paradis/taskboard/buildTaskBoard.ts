@@ -37,7 +37,9 @@ export async function paradisBuildTaskBoard(out: string): Promise<void> {
 		// app/taskboard は app/pnpm-workspace.yaml に入っておらず、自分の lockfile を持つ。pnpm は親の
 		// ワークスペースを見つけるとそちらを入れてしまい（app/taskboard/.npmrc の ignore-workspace は、
 		// ワークスペースを探す前には読まれない）、ここの node_modules ができない。
-		pnpm(['install', '--frozen-lockfile', '--ignore-workspace']);
+		// pnpm 12（1.146 から root の packageManager）は承認されていない install script があると失敗する。
+		// --ignore-workspace では root の allowBuilds も効かないので、esbuild だけここで承認する。
+		pnpm(['install', '--frozen-lockfile', '--ignore-workspace', '--allow-build=esbuild']);
 	}
 	pnpm(['run', 'build']);
 	rmSync(out, { recursive: true, force: true });

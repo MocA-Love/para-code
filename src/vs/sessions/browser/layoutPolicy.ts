@@ -56,7 +56,7 @@ const isMobilePlatform = isMobile || isIOS;
  * comment above. The bound is gone: on a mobile OS the only question is
  * phone vs tablet.
  */
-function classifyViewport(width: number): ViewportClass {
+export function classifyViewport(width: number): ViewportClass {
 	if (!isMobilePlatform) {
 		return 'desktop';
 	}
@@ -110,12 +110,17 @@ export class SessionsLayoutPolicy extends Disposable {
 		return this._viewportClass.read(reader) === 'phone';
 	});
 
-	constructor() {
+	/** An entry point may fix the viewport class instead of deriving it from the container width. */
+	constructor(private readonly fixedViewportClass?: ViewportClass) {
 		super();
 
 		this.isIOS = isIOS;
 		this.isAndroid = isAndroid;
 		this.isTouchDevice = Gesture.isTouchDevice();
+
+		if (fixedViewportClass) {
+			this._viewportClass.set(fixedViewportClass, undefined);
+		}
 	}
 
 	/**
@@ -126,7 +131,7 @@ export class SessionsLayoutPolicy extends Disposable {
 	 * @param height Container height in pixels (reserved for future use).
 	 */
 	update(width: number, _height: number): void {
-		const next = classifyViewport(width);
+		const next = this.fixedViewportClass ?? classifyViewport(width);
 		if (this._viewportClass.get() !== next) {
 			this._viewportClass.set(next, undefined);
 		}

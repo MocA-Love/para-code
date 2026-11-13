@@ -476,6 +476,10 @@ export default defineConfig(
 			'src/vs/platform/agentHost/**/*.ts',
 			'src/vs/workbench/contrib/chat/browser/agentSessions/**/*.ts',
 			'src/vs/workbench/services/agentHost/**/*.ts',
+			'src/vs/workbench/contrib/sessions/**/*.ts',
+			'src/vs/workbench/contrib/sessionChanges/**/*.ts',
+			'src/vs/workbench/services/sessions/**/*.ts',
+			'src/vs/workbench/browser/parts/sessions/**/*.ts',
 			'src/vs/sessions/**/*.ts',
 		],
 		ignores: [
@@ -1965,6 +1969,30 @@ export default defineConfig(
 					]
 				},
 				{
+					// Component fixtures render Agents window UI for screenshots. They are test-only and are
+					// the one place under vs/workbench that may import vs/sessions. Must precede
+					// 'src/vs/workbench/~', which also matches them; the first matching target wins.
+					'target': 'src/vs/workbench/test/browser/componentFixtures/**',
+					'layer': 'browser',
+					'test': true,
+					'restrictions': [
+						'vs/base/~',
+						'vs/base/parts/*/~',
+						'vs/platform/*/~',
+						'vs/editor/~',
+						'vs/editor/contrib/*/~',
+						'vs/workbench/~',
+						'vs/workbench/services/*/~',
+						'vs/workbench/contrib/*/~',
+						'vs/workbench/contrib/sessions/providers/*/~',
+						'vs/sessions/~',
+						'vs/sessions/contrib/*/~',
+						'vs/sessions/contrib/providers/*/~',
+						'vs/sessions/services/*/~',
+						'assert',
+					]
+				},
+				{
 					'target': 'src/vs/workbench/~',
 					'restrictions': [
 						'vs/base/~',
@@ -2052,6 +2080,47 @@ export default defineConfig(
 					]
 				},
 				{
+					// Session providers: may import shared sessions code and sibling providers, never vs/sessions.
+					// Other code, including vs/workbench/contrib/sessions/~, cannot import them: the import pattern
+					// 'vs/workbench/contrib/*/~' expands to layer folders and does not match 'contrib/sessions/providers/*/'.
+					'target': 'src/vs/workbench/contrib/sessions/providers/*/~',
+					'restrictions': [
+						'vs/base/~',
+						'vs/base/parts/*/~',
+						'vs/platform/*/~',
+						'vs/editor/~',
+						'vs/editor/contrib/*/~',
+						'vs/workbench/~',
+						'vs/workbench/services/*/~',
+						'vs/workbench/contrib/*/~',
+						'vs/workbench/contrib/sessions/providers/*/~',
+						'@microsoft/dev-tunnels-connections', // type-only browser bundle conformance check
+						'@microsoft/dev-tunnels-management', // type-only browser bundle conformance check
+						// PARA-PATCH: the agentHost provider (moved here from vs/sessions in 1.146) strips harness tags from session titles
+						// (paradisHumanizeAgentSessionTitle; common layer only, hence '**' rather than '~')
+						'vs/paradis/contrib/agentSessionTitle/common/**',
+					]
+				},
+				{
+					// Shared sessions model, services and UI: the Agents window (vs/sessions) builds on them, never the reverse.
+					'target': 'src/vs/workbench/contrib/sessions/~',
+					'restrictions': [
+						'vs/base/~',
+						'vs/base/parts/*/~',
+						'vs/platform/*/~',
+						'vs/editor/~',
+						'vs/editor/contrib/*/~',
+						'vs/workbench/~',
+						'vs/workbench/services/*/~',
+						'vs/workbench/contrib/*/~',
+						// PARA-PATCH: the session pills, input banners and archive nudge (moved here from vs/sessions in 1.146) stop their
+						// GitHub polling while the window is in the background (githubPolling)
+						'vs/paradis/contrib/githubPolling/~',
+						'vs/workbench/contrib/terminal/terminalContribChatExports*',
+						'vs/workbench/contrib/terminal/terminalContribExports*',
+					]
+				},
+				{
 					'target': 'src/vs/workbench/contrib/*/~',
 					'restrictions': [
 						'vs/base/~',
@@ -2062,7 +2131,6 @@ export default defineConfig(
 						'vs/workbench/~',
 						'vs/workbench/services/*/~',
 						'vs/workbench/contrib/*/~',
-						'vs/sessions/~',
 						// PARA-PATCH: terminalGroupService.ts が 2D グリッドターミナルグループ
 						// (SessionTerminalGridGroup) に差し替えるための唯一の逆方向 import
 						'vs/sessions/contrib/terminalGrid/~',
@@ -2512,6 +2580,7 @@ export default defineConfig(
 						'vs/editor/~',
 						'vs/editor/contrib/*/~',
 						'vs/editor/editor.all.js',
+						'vs/workbench/contrib/sessions/providers/*/~',
 						'vs/sessions/~',
 						'vs/sessions/services/*/~',
 						'vs/sessions/contrib/*/~',
@@ -2535,6 +2604,7 @@ export default defineConfig(
 						'vs/editor/~',
 						'vs/editor/contrib/*/~',
 						'vs/editor/editor.all.js',
+						'vs/workbench/contrib/sessions/providers/*/~',
 						'vs/sessions/~',
 						'vs/sessions/services/*/~',
 						'vs/sessions/contrib/*/~',
@@ -2579,6 +2649,7 @@ export default defineConfig(
 						'vs/editor/~',
 						'vs/editor/contrib/*/~',
 						'vs/editor/editor.all.js',
+						'vs/workbench/contrib/sessions/providers/*/~',
 						'vs/sessions/~',
 						'vs/sessions/services/*/~',
 						'vs/sessions/contrib/*/~',
@@ -2597,6 +2668,7 @@ export default defineConfig(
 						'vs/base/~',
 						'vs/base/parts/*/~',
 						'vs/platform/*/~',
+						'vs/workbench/contrib/sessions/providers/*/~',
 						'vs/sessions/~',
 						'vs/sessions/contrib/*/~',
 						'vs/sessions/contrib/providers/*/~',
@@ -2652,6 +2724,7 @@ export default defineConfig(
 						'vs/workbench/~',
 						'vs/workbench/browser/**',
 						'vs/workbench/services/*/~',
+						'vs/workbench/contrib/sessions/~', // shared sessions model, services and UI
 						'vs/sessions/~',
 						'vs/sessions/services/*/~'
 					]
@@ -2668,6 +2741,7 @@ export default defineConfig(
 						'vs/workbench/browser/**',
 						'vs/workbench/services/*/~',
 						'vs/workbench/contrib/*/~',
+						'vs/workbench/contrib/sessions/providers/*/~',
 						'vs/sessions/~',
 						'vs/sessions/contrib/*/~',
 						'vs/sessions/contrib/providers/*/~',
@@ -2703,6 +2777,8 @@ export default defineConfig(
 						// PARA-PATCH: sessions/contrib/github が GitHub API 利用状況ダッシュボードへ呼び出しを転送するための共通型/関数import（common層のみ。
 						// 末尾は既にcommonという末端レイヤー名なので'~'にせず'**'で完結させる。'~'にするとlayer別に更にネストして展開されてしまう）
 						'vs/paradis/contrib/githubMetrics/common/**',
+						// PARA-PATCH: sessions/contrib/github and inboxOne stop their GitHub polling while the window is in the background (githubPolling)
+						'vs/paradis/contrib/githubPolling/~',
 					]
 				},
 				{
@@ -2847,10 +2923,15 @@ export default defineConfig(
 		// rest of the Agents window (sessions workbench) must stay provider-agnostic.
 		// See src/vs/sessions/SESSIONS.md.
 		files: [
-			'src/vs/sessions/**/*.ts'
+			'src/vs/sessions/**/*.ts',
+			'src/vs/workbench/contrib/sessions/**/*.ts',
+			'src/vs/workbench/contrib/sessionChanges/**/*.ts',
+			'src/vs/workbench/services/sessions/**/*.ts',
+			'src/vs/workbench/browser/parts/sessions/**/*.ts'
 		],
 		ignores: [
-			'src/vs/sessions/contrib/providers/copilotChatSessions/**/*.ts'
+			'src/vs/sessions/contrib/providers/copilotChatSessions/**/*.ts',
+			'src/vs/workbench/contrib/sessions/providers/copilotChatSessions/**/*.ts'
 		],
 		languageOptions: {
 			parser: tseslint.parser,
@@ -2867,6 +2948,35 @@ export default defineConfig(
 						{
 							'group': ['**/agentSessions/agentSessionsService', '**/agentSessions/agentSessionsService.js'],
 							'message': 'IAgentSessionsService is provider-internal to Copilot. Only contrib/providers/copilotChatSessions may import it; the rest of the Agents window must stay provider-agnostic. See src/vs/sessions/SESSIONS.md.'
+						}
+					]
+				}
+			]
+		}
+	},
+	{
+		// Sessions depends on chat, never the reverse: contrib/chat must not import contrib/sessions.
+		files: [
+			'src/vs/workbench/contrib/chat/**/*.ts'
+		],
+		ignores: [
+			// Existing violations; remove entries as they are fixed (https://github.com/microsoft/vscode/issues/346756)
+			'src/vs/workbench/contrib/chat/browser/agentSessions/agentHost/agentHostCustomizationService.ts',
+			'src/vs/workbench/contrib/chat/browser/chatTipCatalog.ts',
+			'src/vs/workbench/contrib/chat/test/browser/chatTipService.test.ts',
+			'src/vs/workbench/contrib/chat/test/browser/widget/chatContentParts/chatToolAuthenticationSubPart.test.ts'
+		],
+		languageOptions: {
+			parser: tseslint.parser,
+		},
+		rules: {
+			'local/code-no-restricted-path-imports': [
+				'error',
+				{
+					'paths': [
+						{
+							'pattern': 'src/vs/workbench/contrib/sessions/**',
+							'message': 'contrib/chat must not import from contrib/sessions: Sessions depends on chat, never the reverse. See https://github.com/microsoft/vscode/issues/346756'
 						}
 					]
 				}

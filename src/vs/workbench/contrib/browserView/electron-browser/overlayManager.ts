@@ -42,6 +42,7 @@ const OVERLAY_DEFINITIONS: ReadonlyArray<{ className: string; type: BrowserOverl
 	// PARA-PATCH: the exception is error toasts and toasts with buttons: notificationsToasts.ts marks their container with this class, so they pause the page and stay visible.
 	{ className: 'paradis-notification-toast-urgent', type: BrowserOverlayType.Notification },
 	{ className: 'spotlight-overlay', type: BrowserOverlayType.Unknown },
+	{ className: 'part-grid-motion', type: BrowserOverlayType.Unknown },
 	// Context view is very generic, so treat the content as unknown
 	{ className: 'context-view', type: BrowserOverlayType.Unknown }
 ];

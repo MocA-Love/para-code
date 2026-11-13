@@ -21,7 +21,7 @@ import { IRequestService } from '../../request/common/request.js';
 import { StorageScope, StorageTarget } from '../../storage/common/storage.js';
 import { IApplicationStorageMainService } from '../../storage/electron-main/storageMainService.js';
 import { ITelemetryService } from '../../telemetry/common/telemetry.js';
-import { AvailableForDownload, DisablementReason, IUpdate, IUpdateService, State, StateType, UpdateType } from '../common/update.js';
+import { AvailableForDownload, DisablementReason, IQuitAndInstallOptions, IUpdate, IUpdateService, State, StateType, UpdateType } from '../common/update.js';
 // PARA-PATCH: beta builds follow the channel stamped into product.json instead of quality (see CLAUDE.md).
 import { resolveParadisUpdateChannel } from '../common/paradisUpdateChannel.js';
 // PARA-PATCH: confirm ending terminals kept on remotes / the pty daemon before restarting to update (see paradis/contrib/updateTerminals).
@@ -576,7 +576,7 @@ export abstract class AbstractUpdateService extends Disposable implements IUpdat
 		// noop
 	}
 
-	async quitAndInstall(): Promise<void> {
+	async quitAndInstall(options?: IQuitAndInstallOptions): Promise<void> {
 		this.logService.trace('update#quitAndInstall, state = ', this.state.type);
 
 		if (this.state.type !== StateType.Ready) {
@@ -585,7 +585,7 @@ export abstract class AbstractUpdateService extends Disposable implements IUpdat
 
 		if (this.supportsUpdateOverwrite && !this._hasCheckedForOverwriteOnQuit) {
 			this._hasCheckedForOverwriteOnQuit = true;
-			const didOverwrite = await this.checkForOverwriteUpdates(true);
+			const didOverwrite = await this.checkForOverwriteUpdates(!options?.unattended);
 
 			if (didOverwrite) {
 				this.logService.info('update#quitAndInstall(): overwrite update detected, postponing quitAndInstall');
@@ -593,7 +593,12 @@ export abstract class AbstractUpdateService extends Disposable implements IUpdat
 			}
 		}
 
-		if (!await paradisPassUpdateQuitGate() || (this.state as State).type !== StateType.Ready) { return; } // PARA-PATCH: ask before ending kept terminals; "later" leaves the update Ready (see paradis/contrib/updateTerminals).
+		if (!await paradisPassUpdateQuitGate({ unattended: options?.unattended }) || (this.state as State).type !== StateType.Ready) { return; } // PARA-PATCH: ask before ending kept terminals (an unattended restart does not ask and stays Ready instead); "later" leaves the update Ready (see paradis/contrib/updateTerminals).
+
+		if (options?.token?.isCancellationRequested) {
+			this.logService.info('update#quitAndInstall(): cancelled before shutting down');
+			return;
+		}
 
 		// Remember the Ready state so we can restore it if the quit is vetoed
 		const readyState = this.state;
@@ -610,7 +615,7 @@ export abstract class AbstractUpdateService extends Disposable implements IUpdat
 			}
 
 			this.logService.trace('update#quitAndInstall(): running raw#quitAndInstall()');
-			this.doQuitAndInstall();
+			this.doQuitAndInstall(options);
 		});
 
 		return Promise.resolve(undefined);
@@ -749,7 +754,7 @@ export abstract class AbstractUpdateService extends Disposable implements IUpdat
 		return UpdateType.Archive;
 	}
 
-	protected doQuitAndInstall(): void {
+	protected doQuitAndInstall(options?: IQuitAndInstallOptions): void {
 		// noop
 	}
 

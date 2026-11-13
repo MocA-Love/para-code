@@ -825,5 +825,5 @@ export interface IParadisSpreadsheetService {
 	/** `imagePixelBudget` はブックで描く画像の画素の合計の上限（既定は 1 億。比較では左右で半分ずつ）。 */
 	parseWorkbook(base64Content: string, imagePixelBudget?: number): Promise<IParadisWorkbookData>;
 	/** {@link parseWorkbook} と同じ。base64 にせずバイト列で受け取る。 */
-	parseWorkbookBytes?(source: Buffer, imagePixelBudget?: number): Promise<IParadisWorkbookData>;
+	parseWorkbookBytes?(source: Uint8Array, imagePixelBudget?: number): Promise<IParadisWorkbookData>;
 }

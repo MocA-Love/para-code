@@ -239,7 +239,7 @@
     ]
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
+    "vscode:prepublish": "pnpm run compile",
     "compile": "gulp compile-extension:github",
     "watch": "gulp watch-extension:github"
   },
@@ -251,7 +251,10 @@
     "@vscode/extension-telemetry": "^1.0.0"
   },
   "devDependencies": {
-    "@types/node": "24.x"
+    "@types/mocha": "^10.0.10",
+    "@types/node": "24.x",
+    "mocha": "^10.8.2",
+    "tslib": "^2.6.3"
   },
   "repository": {
     "type": "git",

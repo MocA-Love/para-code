@@ -27,6 +27,7 @@ import minimist from 'minimist';
 import { compileNonNativeExtensionsBuildTask, compileNativeExtensionsBuildTask, compileAllExtensionsBuildTask, compileExtensionMediaBuildTask, cleanExtensionsBuildTask, compileCopilotExtensionBuildTask } from './gulpfile.extensions.ts';
 import { checkApiProposalNamesTask, copyCodiconsTask } from './lib/compilation.ts';
 import { ensureCopilotPlatformPackage, getCopilotExcludeFilter, getCopilotRuntimePrebuildFiles, getCopilotRuntimeVersion, getCopilotTgrepExcludeFilter, getRipgrepExcludeFilter, prepareBuiltInCopilotRipgrepShim, renderCopilotShimLauncher } from './lib/copilot.ts';
+import { getLockedVersion } from './lib/pnpmLock.ts';
 import { ensureOSProxyResolverPlatformPackage, getOSProxyResolverExcludeFilter, getOSProxyResolverPlatformFiles } from './lib/osProxyResolver.ts';
 import { readAgentSdkResults } from './agent-sdk/common.ts';
 import { readDictationRuntimeResults } from './dictation-runtime/common.ts';
@@ -64,18 +65,15 @@ function runDocxPreview037Build(check: boolean): Promise<void> {
 task.task(task.define('docx-preview-037', () => runDocxPreview037Build(false)));
 task.task(task.define('docx-preview-037-check', () => runDocxPreview037Build(true)));
 
-const packageLock = JSON.parse(fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8')) as {
-	readonly packages?: Readonly<Record<string, { readonly version?: string }>>;
-};
 const copilotRuntimeVersion = getCopilotRuntimeVersion(path.join(root, 'node_modules'));
 if (packageJson.copilotRuntimeVersion !== copilotRuntimeVersion) {
 	throw new Error(`package.json declares Copilot runtime ${packageJson.copilotRuntimeVersion}, but @github/copilot-sdk bundles ${copilotRuntimeVersion}.`);
 }
 
 function getLockedPackageVersion(packageName: string): string {
-	const version = packageLock.packages?.[`node_modules/${packageName}`]?.version;
+	const version = getLockedVersion('', packageName, root);
 	if (!version) {
-		throw new Error(`Package ${packageName} is missing a version in package-lock.json.`);
+		throw new Error(`Package ${packageName} is missing a version in pnpm-lock.yaml.`);
 	}
 
 	return version;

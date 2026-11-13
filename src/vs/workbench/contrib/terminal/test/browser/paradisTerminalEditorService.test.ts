@@ -197,7 +197,9 @@ suite('Paradis TerminalEditorService move bookkeeping', () => {
 		assert.deepStrictEqual(service.instances.map(i => i.instanceId), [1]);
 	});
 
-	test('still removes the instance on a MOVE close when the editor is open nowhere', () => {
+	// Since 1.146 upstream keeps the instance on every MOVE close: a moved editor opens in its target (another group or
+	// window) before it closes in the source, and the group lookup may not see the target yet.
+	test('keeps the instance on a MOVE close even when no group reports the editor yet', () => {
 		const { service, onDidCloseEditor, groups } = createMoveService();
 		const instance = createListenerInstance(2);
 		const input = createInput(instance);
@@ -206,15 +208,28 @@ suite('Paradis TerminalEditorService move bookkeeping', () => {
 
 		onDidCloseEditor.fire({ editor: input, context: EditorCloseContext.MOVE, groupId: 0, index: 0, sticky: false });
 
-		assert.deepStrictEqual(service.instances, []);
+		assert.deepStrictEqual(service.instances.map(i => i.instanceId), [2]);
 	});
 
-	test('removes the instance on a regular close even when the editor would match a group', () => {
+	// Since 1.146 upstream also keeps the instance on a regular close while the same input is still open in a group.
+	test('keeps the instance on a regular close while the same input is still open in a group', () => {
 		const { service, onDidCloseEditor, groups } = createMoveService();
 		const instance = createListenerInstance(3);
 		const input = createInput(instance);
 		service.instances.push(instance);
 		groups.push({ contains: candidate => candidate === input } as Partial<IEditorGroup> as IEditorGroup);
+
+		onDidCloseEditor.fire({ editor: input, context: EditorCloseContext.UNKNOWN, groupId: 0, index: 0, sticky: false });
+
+		assert.deepStrictEqual(service.instances.map(i => i.instanceId), [3]);
+	});
+
+	test('removes the instance on a regular close when no group has the editor', () => {
+		const { service, onDidCloseEditor, groups } = createMoveService();
+		const instance = createListenerInstance(4);
+		const input = createInput(instance);
+		service.instances.push(instance);
+		groups.push({ contains: () => false } as Partial<IEditorGroup> as IEditorGroup);
 
 		onDidCloseEditor.fire({ editor: input, context: EditorCloseContext.UNKNOWN, groupId: 0, index: 0, sticky: false });
 

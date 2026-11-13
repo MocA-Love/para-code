@@ -6,6 +6,7 @@
 import './media/browser.css';
 import { $, addDisposableListener, EventType, registerExternalFocusChecker } from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
+import { registerOverlayAnchor } from '../../../../base/browser/overlayLayoutElement.js';
 import type { CodeWindow } from '../../../../base/browser/window.js';
 import { encodeBase64, VSBuffer } from '../../../../base/common/buffer.js';
 import { Disposable, DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
@@ -31,6 +32,7 @@ export class WebContentsViewHost extends Disposable {
 	private _model: IBrowserViewModel | undefined;
 	private _editorVisible = false;
 	private _overlayObscured = false;
+	private _hiddenAsAnchor = false;
 
 	private readonly _placeholderScreenshot = $('.browser-placeholder-screenshot');
 	private readonly _overlayPauseElement = $('.browser-overlay-paused');
@@ -73,6 +75,13 @@ export class WebContentsViewHost extends Disposable {
 
 	onContainerCreated(container: HTMLElement): void {
 		this._container = container;
+		// What moves the container by transforms, such as a card dragged in a window, hides the page meanwhile: it does not move with it
+		this._register(registerOverlayAnchor(container, {
+			setHidden: hidden => {
+				this._hiddenAsAnchor = hidden;
+				this._refresh(false, true);
+			}
+		}));
 		// PARA-PATCH: the document regaining focus re-delivers `focus` to the container; ignore it when the user pressed outside the container (Para Code)
 		this._register(addDisposableListener(container, EventType.FOCUS, () => {
 			if (this._paradisFocusGuard.noteContainerFocusEvent(this.targetWindow.document.hasFocus())) {
@@ -162,9 +171,11 @@ export class WebContentsViewHost extends Disposable {
 		this._setBackgroundImage(model.screenshot);
 		this._modelStore.add(model.onDidChangeVisibility(() => void this._captureScreenshot()));
 		this._modelStore.add(model.onDidKeyCommand(event => void this._handleKeyEvent(event)));
-		// PARA-PATCH: the page taking focus (the user clicked it) is a deliberate focus (Para Code)
+		// PARA-PATCH: the page taking focus (the user clicked it) is a deliberate focus (Para Code). Since 1.146
+		// the model also reports focused when its window comes back to the front; while the workbench document has
+		// focus (the user pressed outside the page), that is not the page being clicked.
 		this._modelStore.add(model.onDidChangeFocus(({ focused }) => {
-			if (focused) {
+			if (focused && !this.targetWindow.document.hasFocus()) {
 				this._paradisFocusGuard.noteDeliberateFocus();
 			}
 		}));
@@ -201,6 +212,7 @@ export class WebContentsViewHost extends Disposable {
 	private _shouldShowPage(): boolean {
 		return this._editorVisible
 			&& !this._overlayObscured
+			&& !this._hiddenAsAnchor
 			&& !!this._model?.url
 			&& !this._model.error;
 	}

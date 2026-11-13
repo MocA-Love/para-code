@@ -19,9 +19,18 @@
 
 import { IDisposable, toDisposable } from '../../../base/common/lifecycle.js';
 
+/** 関門に渡す、更新の始まり方。 */
+export interface IParadisUpdateQuitGateOptions {
+	/**
+	 * 利用者が押したのではない再起動（1.146 の `update.restartWhenIdle`。画面ロック中に走る）。確認は出さず、
+	 * 確認が要る端末（終わってしまう端末）が1つでもあれば再起動しない。
+	 */
+	readonly unattended?: boolean;
+}
+
 /** 関門の中身。`false` を返すと更新を取りやめる（状態は Ready のまま）。 */
 export interface IParadisUpdateQuitGate {
-	confirmBeforeQuitAndInstall(): Promise<boolean>;
+	confirmBeforeQuitAndInstall(options?: IParadisUpdateQuitGateOptions): Promise<boolean>;
 }
 
 let registered: IParadisUpdateQuitGate | undefined;
@@ -42,7 +51,7 @@ export function paradisSetUpdateQuitGate(gate: IParadisUpdateQuitGate): IDisposa
  *
  * 確認を出している間にもう一度押されたら、同じ答えを待つ（確認を2つ重ねない）。
  */
-export function paradisPassUpdateQuitGate(): Promise<boolean> {
+export function paradisPassUpdateQuitGate(options?: IParadisUpdateQuitGateOptions): Promise<boolean> {
 	const gate = registered;
 	if (!gate) {
 		return Promise.resolve(true);
@@ -51,7 +60,8 @@ export function paradisPassUpdateQuitGate(): Promise<boolean> {
 		// 2回目の呼び出しは、1回目が通ったときに二重に終了を始めないよう、通さない。
 		return pending.then(() => false);
 	}
-	const current = gate.confirmBeforeQuitAndInstall().then(passed => passed, () => true);
+	// 無人の再起動は、関門が失敗したら取りやめる（確かめられないまま端末を終わらせない）。
+	const current = gate.confirmBeforeQuitAndInstall(options).then(passed => passed, () => !options?.unattended);
 	pending = current;
 	return current.finally(() => {
 		if (pending === current) {
