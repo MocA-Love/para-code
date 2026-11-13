@@ -7,14 +7,23 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { promises as fs } from 'fs';
+import { tmpdir } from 'os';
+import { Event } from '../../../../../base/common/event.js';
+import { join } from '../../../../../base/common/path.js';
+import { connect, serve } from '../../../../../base/parts/ipc/node/ipc.net.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { PARADIS_PTY_DAEMON_AUTH_CHANNEL } from '../../common/paradisPtyDaemonControl.js';
 import {
 	ParadisPtyDaemonAuth,
+	paradisAuthenticateDaemonWithin,
+	paradisCheckDaemonAt,
 	paradisCreateDaemonToken,
 	paradisCreateNonce,
 	paradisProofMatches,
 	paradisProveDaemonToken,
 } from '../../node/paradisPtyDaemonAuth.js';
+import { paradisDaemonRecordFile, paradisWriteDaemonRecord } from '../../node/paradisPtyDaemonLedger.js';
 
 suite('ParadisPtyDaemonAuth', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -84,5 +93,58 @@ suite('ParadisPtyDaemonAuth', () => {
 			},
 			{ short: false, notAString: false, missing: false, same: true },
 		);
+	});
+});
+
+// 受理した接続ぶんの `Protocol` は `IPCServer` が畳まないので、リーク検査は外してある
+// (`paradisEnsurePtyHost.test.ts` と同じ理由)。
+// eslint-disable-next-line local/code-ensure-no-disposables-leak-in-test
+suite('ParadisPtyDaemonAuth with a deadline', () => {
+	test('接続を受けるだけで名乗りに答えない常駐は、期限で諦めて断られたのとは分けて返す', async function () {
+		this.timeout(10_000);
+		const dir = await fs.mkdtemp(join(tmpdir(), 'paradis-pty-auth-'));
+		const socketPath = join(dir, 'pty.sock');
+		const token = paradisCreateDaemonToken();
+		const auth = new ParadisPtyDaemonAuth(token);
+		// `stuck` のあいだは固まった常駐の代わり。接続は受けるが、名乗り（合言葉）に答えない。
+		let stuck = true;
+		const server = await serve(socketPath);
+		server.registerChannel(PARADIS_PTY_DAEMON_AUTH_CHANNEL, {
+			call: <T>(_ctx: string, _command: string, arg?: unknown): Promise<T> => {
+				const [nonce, proof] = arg as [string, string];
+				return (stuck ? new Promise(() => { }) : auth.authenticate(nonce, proof)) as Promise<T>;
+			},
+			listen: () => Event.None,
+		});
+		const client = await connect(socketPath, 'test');
+		try {
+			await paradisWriteDaemonRecord(paradisDaemonRecordFile(dir, 'test'), { pid: process.pid, socketPath, buildId: 'test', buildKey: 'test', startedAt: 1, token });
+			const startedAt = Date.now();
+			const stuckWithin = await paradisAuthenticateDaemonWithin(client, token, 100);
+			const stuckAt = await paradisCheckDaemonAt(socketPath, dir, 100);
+			const gaveUpQuickly = Date.now() - startedAt < 2_000;
+			stuck = false;
+			assert.deepStrictEqual({
+				stuckWithin,
+				stuckAt,
+				gaveUpQuickly,
+				answeredWithin: await paradisAuthenticateDaemonWithin(client, token, 2_000),
+				answeredAt: await paradisCheckDaemonAt(socketPath, dir, 2_000),
+				impostorAt: await paradisCheckDaemonAt(socketPath, join(dir, 'no-ledger'), 2_000),
+				nobodyListening: await paradisCheckDaemonAt(join(dir, 'missing.sock'), dir, 2_000),
+			}, {
+				stuckWithin: 'timeout',
+				stuckAt: 'timeout',
+				gaveUpQuickly: true,
+				answeredWithin: 'genuine',
+				answeredAt: 'genuine',
+				impostorAt: 'refused',
+				nobodyListening: 'refused',
+			});
+		} finally {
+			client.dispose();
+			server.dispose();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
 	});
 });

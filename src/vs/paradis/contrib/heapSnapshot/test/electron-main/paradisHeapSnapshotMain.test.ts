@@ -21,6 +21,8 @@ function createDependencies(overrides: Partial<HeapSnapshotDependencies> = {}): 
 		writeHeapSnapshot: () => { },
 		stat: () => ({ size: 789 }),
 		unlink: () => { },
+		chmod: () => { },
+		readdir: async () => [],
 		...overrides,
 	};
 }
@@ -104,6 +106,35 @@ suite('ParadisHeapSnapshotMain', () => {
 		const result = await service.writeSnapshot();
 
 		assert.strictEqual(result.bytes, -1);
+	});
+
+	test('makes the snapshot readable only by the owner and keeps only the two previous snapshots', async () => {
+		const modes: number[] = [];
+		const removed: string[] = [];
+		let written = '';
+		const service = new ParadisHeapSnapshotMainService(createDependencies({
+			writeHeapSnapshot: path => written = path,
+			chmod: (_path, mode) => modes.push(mode),
+			readdir: async () => [
+				'para-code-main-2026-01-03T00-00-00-000Z-up1m.heapsnapshot',
+				'other-app.heapsnapshot',
+				'para-code-main-2026-01-01T00-00-00-000Z-up1m.heapsnapshot',
+				'para-code-main-2026-01-02T00-00-00-000Z-up1m.heapsnapshot',
+				'para-code-main-2026-01-04T00-00-00-000Z-up1m.heapsnapshot',
+				written.slice('/temporary/'.length),
+			],
+			unlink: path => removed.push(path),
+		}));
+
+		await service.writeSnapshot();
+
+		assert.deepStrictEqual({ modes, removed }, {
+			modes: [0o600],
+			removed: [
+				'/temporary/para-code-main-2026-01-01T00-00-00-000Z-up1m.heapsnapshot',
+				'/temporary/para-code-main-2026-01-02T00-00-00-000Z-up1m.heapsnapshot',
+			],
+		});
 	});
 
 	test('registers the existing heap snapshot channel', () => {

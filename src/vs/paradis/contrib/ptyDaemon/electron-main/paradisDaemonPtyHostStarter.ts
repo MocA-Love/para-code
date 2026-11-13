@@ -20,10 +20,16 @@
 // 繋ぎ方は、常駐が既に居ればそれへ繋ぐだけ。居なければ起こしてから繋ぐ。**起こす前に必ず一度
 // 繋ぎに行く**のは、同じ常駐へ2つ目を起こさないため (2つ立つと、ウィンドウごとに見える
 // ターミナルが変わり、しかもどちらも正常に見える)。
+//
+// 接続は受けるが名乗りに答えない常駐 (固まった・SIGSTOP された) に当たったら、薄い常駐の側
+// (`paradisEnsurePtyHost.ts`) と同じく、待つのをやめてアプリの中の pty ホストで動かす。常駐は
+// 殺さない (応答しない理由は分からず、利用者の端末を抱えているかもしれない)。
 
 import { spawn } from 'child_process';
+import { EventEmitter } from 'events';
 import { promises as fs } from 'fs';
 import { createConnection } from 'net';
+import { disposableTimeout } from '../../../../base/common/async.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
 import { FileAccess, Schemas } from '../../../../base/common/network.js';
@@ -44,10 +50,12 @@ import { UtilityProcess } from '../../../../platform/utilityProcess/electron-mai
 import { IpcMainEvent } from 'electron';
 import { paradisCrashRoleNodeArgs } from '../../sentry/common/paradisCrashRole.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { IParadisBridgeCheckRequest, ParadisDaemonCheck, paradisIsBridgeCheckVerdict } from '../common/paradisPtyDaemonBridgeProtocol.js';
 import { IParadisPtyDaemonPaths } from '../common/paradisPtyDaemonPaths.js';
 import { paradisPtyDaemonEnv, PARADIS_PTY_DAEMON_LEDGER, PARADIS_PTY_DAEMON_SOCKET } from '../common/paradisPtyDaemonEnv.js';
 import { PARADIS_DAEMON_TERMINAL_GRACE_TIME } from '../common/paradisPtyDaemonPolicy.js';
-import { paradisAuthenticateDaemon } from '../node/paradisPtyDaemonAuth.js';
+import { PARADIS_DAEMON_HANDSHAKE_TIMEOUT, PARADIS_DAEMON_UNRESPONSIVE_HANDSHAKE_TIMEOUT, paradisHandshakeTimeoutFor, paradisReadUnresponsiveMark, paradisUnresponsiveMarkFile, paradisWriteUnresponsiveMark } from '../node/paradisEnsurePtyHost.js';
+import { paradisAuthenticateDaemonWithin } from '../node/paradisPtyDaemonAuth.js';
 import { paradisReadDaemonRecords } from '../node/paradisPtyDaemonLedger.js';
 
 /** 起こしてから繋がるまで待つ上限。ここを超えたら常駐は諦める。 */
@@ -67,6 +75,36 @@ const BRIDGE_ENTRY_POINT = 'vs/paradis/contrib/ptyDaemon/node/paradisPtyDaemonBr
  * 入れ替わる途中に当たっただけ、という可能性を残すため。
  */
 const AUTH_FAILURE_COOLDOWN = 30_000;
+
+/** 窓の口の確認を橋に頼んだあと、名乗りの上限に足して待つ余裕。橋の起動や行き来のぶん。 */
+const BRIDGE_VERDICT_MARGIN = 5_000;
+
+/** 窓が pty ホストへの口を求める IPC。アプリの中の pty ホストへ回すときも同じ名前で渡す。 */
+const WINDOW_CONNECTION_CHANNEL = 'vscode:createPtyHostMessageChannel';
+const WINDOW_CONNECTION_RESULT_CHANNEL = 'vscode:createPtyHostMessageChannelResult';
+
+/** 窓からの要求を受ける IPC の形。`ElectronPtyHostStarter` が受け取るものと同じ。 */
+export type ParadisPtyHostIpc = Pick<typeof validatedIpcMain, 'on' | 'removeListener'>;
+
+export interface IParadisDaemonPtyHostStarterOptions {
+	/**
+	 * 常駐が名乗りに答えなかったときに使う、アプリの中の pty ホストを作る。渡された `ipc` だけを
+	 * 購読させること (本物の `validatedIpcMain` を購読させると、窓の要求1件に常駐の側とこちらの
+	 * 2つが答える)。無ければ、答えない常駐は名乗りを断られたのと同じ扱いになる。
+	 */
+	readonly createInApp?: (ipc: ParadisPtyHostIpc) => IPtyHostStarter;
+	/** 名乗りを待つ上限 (ミリ秒)。テストで短くする。既定は薄い常駐の側と同じ。 */
+	readonly handshakeTimeout?: number;
+	/** 前に答えなかった常駐の名乗りを待つ上限 (ミリ秒)。テストで短くする。既定は薄い常駐の側と同じ。 */
+	readonly unresponsiveHandshakeTimeout?: number;
+}
+
+/** start() が繋いだ先。`undefined` は繋げなかった。 */
+type ParadisPtyHostRoute = 'daemon' | 'in-app' | undefined;
+
+type ParadisDaemonConnectResult =
+	| { readonly kind: 'daemon'; readonly client: SocketClient<string> }
+	| { readonly kind: 'in-app'; readonly connection: IPtyHostConnection };
 
 function paradisTryConnect(socketPath: string): Promise<NodeSocket | undefined> {
 	return new Promise<NodeSocket | undefined>(resolve => {
@@ -110,8 +148,25 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 	 */
 	private daemonReady: Promise<void> | undefined;
 
-	/** 最後に名乗り合いを断られた時刻。空回りを止めるためだけに持つ。 */
+	/** 最後に名乗り合いを断られた (または期限までに答えなかった) 時刻。空回りを止めるためだけに持つ。 */
 	private lastAuthFailureAt = 0;
+
+	/**
+	 * 常駐が名乗りに答えなかったあとに使う、アプリの中の pty ホスト。一度できたら、この起動の間は
+	 * 常駐へ繋ぎ直さない (`PtyHostService` の立て直しでも、同じ固まった常駐へ戻らない)。
+	 */
+	private inApp: IPtyHostStarter | undefined;
+
+	/** {@link inApp} だけが購読する IPC。窓の要求は、アプリの中へ回すと決めたときだけここへ流す。 */
+	private readonly inAppIpc = new EventEmitter();
+
+	/** 今の start() が繋いだ先。窓へ口を渡すのは、これが決まってから。 */
+	private route: Promise<ParadisPtyHostRoute> | undefined;
+
+	/** 最後の名乗りで使った上限。橋に窓の口を確かめてもらうときも同じだけ待つ。 */
+	private handshakeTimeoutInUse: number;
+
+	private bridgeRequestId = 0;
 
 	constructor(
 		private readonly reconnectConstants: IReconnectConstants,
@@ -120,18 +175,25 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 		@IEnvironmentMainService private readonly environmentMainService: IEnvironmentMainService,
 		@ILifecycleMainService private readonly lifecycleMainService: ILifecycleMainService,
 		@ILogService private readonly logService: ILogService,
-		private readonly _ipcMain: Pick<typeof validatedIpcMain, 'on' | 'removeListener'> = validatedIpcMain,
+		private readonly _ipcMain: ParadisPtyHostIpc = validatedIpcMain,
+		private readonly options: IParadisDaemonPtyHostStarterOptions = {},
 	) {
 		super();
+		this.handshakeTimeoutInUse = this.options.handshakeTimeout ?? PARADIS_DAEMON_HANDSHAKE_TIMEOUT;
 
 		this._register(this.lifecycleMainService.onWillShutdown(() => this._onWillShutdown.fire()));
-		this._ipcMain.on('vscode:createPtyHostMessageChannel', this.onCreatePtyHostMessageChannel);
+		this._ipcMain.on(WINDOW_CONNECTION_CHANNEL, this.onCreatePtyHostMessageChannel);
 		this._register(toDisposable(() => {
-			this._ipcMain.removeListener('vscode:createPtyHostMessageChannel', this.onCreatePtyHostMessageChannel);
+			this._ipcMain.removeListener(WINDOW_CONNECTION_CHANNEL, this.onCreatePtyHostMessageChannel);
 		}));
 	}
 
 	start(): IPtyHostConnection {
+		if (this.inApp) {
+			// 一度名乗りに答えなかった常駐へは戻らない。立て直しもアプリの中で起こし直す。
+			this.route = Promise.resolve('in-app');
+			return this.inApp.start();
+		}
 		// 繋ぎ直し (常駐が落ちた後の立て直し) では、前回の「もう起きている」を持ち越さない。
 		this.daemonReady = undefined;
 		const store = new DisposableStore();
@@ -139,7 +201,16 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 
 		// 繋がるまでの間に来た呼び出しは、繋がってから流れる。`PtyHostService` は start() が
 		// 同期で返ることを前提にしているので、待たせるならこの形しかない。
-		const connecting = this.connect().then(client => {
+		const connected = this.connect();
+		this.route = connected.then(result => result.kind, () => undefined);
+		const connecting = connected.then((result): IChannelClient => {
+			if (result.kind === 'in-app') {
+				// 常駐が答えなかったので、アプリの中の pty ホストを使う。落ちたら同じく立て直す。
+				store.add(result.connection.store);
+				store.add(result.connection.onDidProcessExit(e => onDidProcessExit.fire(e)));
+				return result.connection.client;
+			}
+			const client = result.client;
 			store.add(client);
 			// 常駐が落ちた・繋がりが切れた。`PtyHostService` はこれを見て起こし直すので、次に
 			// ターミナルを開いたときに常駐が立て直る。
@@ -159,39 +230,78 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 		return { client, store, onDidProcessExit: onDidProcessExit.event };
 	}
 
-	/** 既に居ればそれへ、居なければ起こしてから繋ぐ。 */
-	private async connect(): Promise<SocketClient<string>> {
+	/** 既に居ればそれへ、居なければ起こしてから繋ぐ。名乗りに答えなければアプリの中へ回す。 */
+	private async connect(): Promise<ParadisDaemonConnectResult> {
 		await this.ensureDaemonReady();
 		const socket = await paradisTryConnect(this.paths.socketPath);
 		if (!socket) {
 			throw new Error(`the pty daemon stopped answering on ${this.paths.socketPath}`);
 		}
 		const client = SocketClient.fromSocket(socket, 'main');
-		if (!await this.isGenuine(client)) {
-			client.dispose();
-			this.lastAuthFailureAt = Date.now();
-			// **繋がったことを身元だと思わない。** ソケットの名前は他のユーザーにも計算でき、
-			// 先に作った側が持ち主になる。偽物へ繋ぐと、ターミナルの環境変数一式と全打鍵が
-			// そのまま渡る。確かめられない相手は使わない。
-			throw new Error(`whatever is listening on ${this.paths.socketPath} is not this build's pty daemon`);
+		const check = await this.checkGenuine(client);
+		if (check === 'genuine') {
+			return { kind: 'daemon', client };
 		}
-		return client;
+		// 期限切れでも閉じる。待っている名乗りはこれで失敗し、遅れて届いた答えは使わない。
+		client.dispose();
+		// 期限切れも冷却に入れる。すぐ繋ぎ直しても、同じ固まった常駐に当たるだけ。
+		this.lastAuthFailureAt = Date.now();
+		if (check === 'timeout') {
+			const inApp = this.switchToInApp();
+			if (inApp) {
+				return { kind: 'in-app', connection: inApp.start() };
+			}
+			throw new Error(`the pty daemon on ${this.paths.socketPath} accepted the connection but did not answer`);
+		}
+		// **繋がったことを身元だと思わない。** ソケットの名前は他のユーザーにも計算でき、
+		// 先に作った側が持ち主になる。偽物へ繋ぐと、ターミナルの環境変数一式と全打鍵が
+		// そのまま渡る。確かめられない相手は使わない。
+		throw new Error(`whatever is listening on ${this.paths.socketPath} is not this build's pty daemon`);
 	}
 
 	/**
 	 * 繋いだ相手が本物か。台帳に置いた身元を、流さずに示し合って確かめる。
 	 *
-	 * 台帳が読めない・自分のビルドの記録が無いときは確かめようがないので false。ここを
+	 * 台帳が読めない・自分のビルドの記録が無いときは確かめようがないので `refused`。ここを
 	 * 「読めないから通す」にすると、確かめる仕組み自体が無いのと同じになる。
+	 *
+	 * 名乗りには期限を付ける (薄い常駐の側と同じ上限と印)。前の起動で答えなかった常駐 (台帳の pid と
+	 * 起動時刻が印と同じもの) には短く待ち、答えたら印を消す。
 	 */
-	private async isGenuine(client: SocketClient<string>): Promise<boolean> {
+	private async checkGenuine(client: SocketClient<string>): Promise<ParadisDaemonCheck> {
 		const records = await paradisReadDaemonRecords(this.paths.ledgerDir);
 		const own = records.find(record => record.buildKey === this.paths.buildKey);
 		if (!own) {
 			this.logService.warn(`[ParadisPtyDaemon] no ledger entry for this build; cannot tell who is on ${this.paths.socketPath}`);
-			return false;
+			return 'refused';
 		}
-		return paradisAuthenticateDaemon(client, own.token);
+		const markFile = paradisUnresponsiveMarkFile(this.paths);
+		const mark = await paradisReadUnresponsiveMark(markFile);
+		const normal = this.options.handshakeTimeout ?? PARADIS_DAEMON_HANDSHAKE_TIMEOUT;
+		const handshakeTimeout = paradisHandshakeTimeoutFor(own, mark, normal, this.options.unresponsiveHandshakeTimeout ?? PARADIS_DAEMON_UNRESPONSIVE_HANDSHAKE_TIMEOUT);
+		const knownUnresponsive = handshakeTimeout !== normal;
+		this.handshakeTimeoutInUse = handshakeTimeout;
+		const check = await paradisAuthenticateDaemonWithin(client, own.token, handshakeTimeout);
+		if (check === 'genuine' && mark) {
+			// 答えた (固まっていたのが戻った、またはただ重かった)。次からはいつもどおり待つ
+			await paradisWriteUnresponsiveMark(markFile, undefined);
+		}
+		if (check === 'timeout') {
+			if (!knownUnresponsive) {
+				await paradisWriteUnresponsiveMark(markFile, { pid: own.pid, startedAt: own.startedAt });
+			}
+			this.logService.error(`[ParadisPtyDaemon] the daemon at ${this.paths.socketPath} accepted the connection but did not answer in ${handshakeTimeout}ms${knownUnresponsive ? ' (it did not answer on an earlier start either)' : ''}; terminals will run in this process`);
+			reportParadisDiagnosticError('owned', 'pty-daemon', knownUnresponsive ? 'not-up:handshake-timeout:again' : 'not-up:handshake-timeout', new Error('the daemon did not answer the handshake'), undefined, 'warning');
+		}
+		return check;
+	}
+
+	/** アプリの中の pty ホストへ切り替える。作れなければ undefined。 */
+	private switchToInApp(): IPtyHostStarter | undefined {
+		if (!this.inApp && this.options.createInApp && !this._store.isDisposed) {
+			this.inApp = this._register(this.options.createInApp(this.inAppIpc as unknown as ParadisPtyHostIpc));
+		}
+		return this.inApp;
 	}
 
 	/**
@@ -344,29 +454,75 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 	}
 
 	/**
-	 * 橋のポートを渡す。**常駐が応答するようになってから**渡す。
+	 * 橋のポートを渡す。**main が繋ぎ終え、橋も相手を確かめてから**渡す。
 	 *
-	 * 先に渡すと、橋は繋ぎ先が無いのでポートを閉じるが、renderer は受け取った時点で直結の
-	 * proxy を完成させてしまい、以後ターミナルの操作が返らなくなる。届かなかったときは渡さない
-	 * (渡さなければ renderer は `_localPtyService` 側で動き続ける)。
+	 * 先に渡すと、橋は確かめられなければポートを閉じるが、renderer は受け取った時点で直結の
+	 * proxy を完成させてしまい、以後ターミナルの操作が返らなくなる。届かなかったときは、ポートの
+	 * 代わりに失敗を返す (`acquirePort` が受ける形。黙っていると renderer の要求が返らない)。
+	 * main がアプリの中の pty ホストへ回したときは、窓の要求もそちらへ回す。
 	 */
 	private async postBridgePort(e: IpcMainEvent, nonce: string): Promise<void> {
-		try {
-			await this.ensureDaemonReady();
-		} catch (error) {
-			this.logService.error('[ParadisPtyDaemon] not handing a port to the window; the daemon never answered', error);
-			reportParadisDiagnosticError('owned', 'pty-daemon', 'not-ready', error);
-			return;
-		}
+		const route = this.route
+			? await this.route
+			: await this.ensureDaemonReady().then((): ParadisPtyHostRoute => 'daemon', error => {
+				this.logService.error('[ParadisPtyDaemon] the daemon never answered', error);
+				return undefined;
+			});
 		if (this._store.isDisposed || e.sender.isDestroyed()) {
 			return;
 		}
-		const port = this.ensureBridge().connect();
-		if (e.sender.isDestroyed()) {
+		if (route === 'in-app') {
+			this.inAppIpc.emit(WINDOW_CONNECTION_CHANNEL, e, nonce);
+			return;
+		}
+		if (route === undefined) {
+			this.logService.error('[ParadisPtyDaemon] not handing a port to the window; the daemon never answered');
+			reportParadisDiagnosticError('owned', 'pty-daemon', 'not-ready', new Error('the daemon never answered'));
+			this.refuseWindow(e, nonce, 'the pty daemon did not answer');
+			return;
+		}
+		const bridge = this.ensureBridge();
+		const request: IParadisBridgeCheckRequest = { id: ++this.bridgeRequestId, handshakeTimeout: this.handshakeTimeoutInUse };
+		const verdict = this.waitForBridgeVerdict(bridge, request.id, request.handshakeTimeout + BRIDGE_VERDICT_MARGIN);
+		const port = bridge.connect(request);
+		const check = await verdict;
+		if (check !== 'genuine') {
+			port.close();
+			this.logService.error(`[ParadisPtyDaemon] not handing a port to the window; the bridge could not confirm the daemon (${check})`);
+			reportParadisDiagnosticError('owned', 'pty-daemon', `bridge-check:${check}`, new Error('the bridge could not confirm the daemon'), undefined, 'warning');
+			this.refuseWindow(e, nonce, 'the pty daemon did not answer the bridge');
+			return;
+		}
+		if (this._store.isDisposed || e.sender.isDestroyed()) {
 			port.close();
 			return;
 		}
-		e.sender.postMessage('vscode:createPtyHostMessageChannelResult', nonce, [port]);
+		e.sender.postMessage(WINDOW_CONNECTION_RESULT_CHANNEL, nonce, [port]);
+	}
+
+	/** 橋の確認の結果を待つ。橋が先に終わった・答えが来ないときも決まった時間で返る。 */
+	private waitForBridgeVerdict(bridge: UtilityProcess, id: number, timeoutMs: number): Promise<ParadisDaemonCheck> {
+		return new Promise<ParadisDaemonCheck>(resolve => {
+			const store = new DisposableStore();
+			const done = (check: ParadisDaemonCheck) => {
+				store.dispose();
+				resolve(check);
+			};
+			store.add(bridge.onMessage(message => {
+				if (paradisIsBridgeCheckVerdict(message) && message.id === id) {
+					done(message.check);
+				}
+			}));
+			store.add(bridge.onExit(() => done('refused')));
+			store.add(disposableTimeout(() => done('timeout'), timeoutMs));
+		});
+	}
+
+	/** 窓の要求に、ポートの代わりに失敗を返す。renderer の `acquirePort` はこれで例外になる。 */
+	private refuseWindow(e: IpcMainEvent, nonce: string, error: string): void {
+		if (!e.sender.isDestroyed()) {
+			e.sender.send(WINDOW_CONNECTION_RESULT_CHANNEL, { nonce, error, fatal: false });
+		}
 	}
 
 	private ensureBridge(): UtilityProcess {

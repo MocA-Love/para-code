@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // ブラウザページ⇔ターミナルペイン紐付けUIのエントリポイント集約。
-//  - コマンドパレット: Share / Unshare / Copy MCP Setup / Open Agent Browser Binding
+//  - コマンドパレット: Share / Unshare / Copy MCP Setup / Manage Browser Page Sharing
 //  - ブラウザエディタのツールバーボタン（MenuId.BrowserActionsToolbar、upstreamファイル変更なし）
 //  - ステータスバー項目（バインドが1件以上あるときのみ表示）
 //  - ターミナルグリッドセルのペインインジケータへの状態供給（paradisPaneIndicator.ts のホスト登録）
@@ -199,7 +199,7 @@ class ParadisOpenBindingDialogAction extends Action2 {
 	constructor() {
 		super({
 			id: ParadisOpenBindingDialogAction.ID,
-			title: localize2('paradis.openBindingDialog', "Open Agent Browser Binding"),
+			title: localize2('paradis.openBindingDialog', "Manage Browser Page Sharing"),
 			category: CATEGORY,
 			f1: true,
 		});
@@ -318,8 +318,8 @@ class ParadisUnshareBrowserPageAction extends Action2 {
 		const removed = await bindingModel.unbindPage(model);
 
 		notificationService.info(removed > 0
-			? localize('paradis.unshare.done', "Removed {0} terminal pane binding(s) and stopped sharing the page with the agent.", removed)
-			: localize('paradis.unshare.noBindings', "The page had no terminal pane bindings. Stopped sharing it with the agent."));
+			? localize('paradis.unshare.done', "Stopped sharing the page with {0} terminal pane(s).", removed)
+			: localize('paradis.unshare.noBindings', "The page was not shared with any terminal pane. Stopped sharing it with the agent."));
 	}
 }
 
@@ -402,7 +402,7 @@ class ParadisToolbarShareAction extends Action2 {
 	constructor() {
 		super({
 			id: ParadisToolbarShareAction.ID,
-			title: localize2('paradis.toolbarShare', "Share with Agent (Agent Browser Binding)"),
+			title: localize2('paradis.toolbarShare', "Share with Agent"),
 			icon: Codicon.plug,
 			menu: {
 				id: MenuId.BrowserActionsToolbar,
@@ -425,7 +425,7 @@ class ParadisToolbarSharedAction extends Action2 {
 	constructor() {
 		super({
 			id: ParadisToolbarSharedAction.ID,
-			title: localize2('paradis.toolbarShared', "Shared with Agent (Agent Browser Binding)"),
+			title: localize2('paradis.toolbarShared', "Shared with Agent"),
 			icon: Codicon.plug,
 			toggled: PARADIS_ACTIVE_PAGE_SHARED,
 			menu: {
@@ -580,13 +580,13 @@ class ParadisAgentBrowserStatusContribution extends Disposable implements IWorkb
 			this._statusbarEntry.clear();
 			return;
 		}
-		const text = `$(plug) ${localize('paradis.statusbar.text', "Agent Browser: {0} active", count)}`;
+		const text = `$(plug) ${localize('paradis.statusbar.text', "Shared with Agents: {0}", count)}`;
 		const entry = {
-			name: localize('paradis.statusbar.name', "Agent Browser Binding"),
+			name: localize('paradis.statusbar.name', "Browser Page Sharing"),
 			text,
 			ariaLabel: text,
 			// allow-any-unicode-next-line
-			tooltip: localize('paradis.statusbar.tooltip', "ブラウザページ⇔ターミナルペインのバインディング（クリックで管理）"),
+			tooltip: localize('paradis.statusbar.tooltip', "ブラウザページをターミナルペインのエージェントと共有中（クリックで管理）"),
 			command: ParadisOpenBindingDialogAction.ID,
 		};
 		if (this._statusbarEntry.value) {

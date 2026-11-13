@@ -107,6 +107,16 @@ export function normalizeParadisBookmarkUrl(url: string): string {
 	}
 }
 
+/**
+ * ブックマークとして保存してよい URL か（http・https・about: だけ）。
+ * `javascript:` や `file:` などはバーから開くと今のページや手元のファイルに届きうるので断る。
+ * 取り込みと編集ダイアログの両方がこの判定を使う。
+ */
+export function isParadisBookmarkUrlAllowed(url: string): boolean {
+	const scheme = /^(?<scheme>[a-z][a-z0-9+.-]*):/i.exec(url.trim())?.groups?.scheme.toLowerCase();
+	return scheme === 'http' || scheme === 'https' || scheme === 'about';
+}
+
 export function findParadisNodeById(nodes: readonly ParadisBookmarkNode[], nodeId: string): ParadisBookmarkNode | undefined {
 	for (const node of nodes) {
 		if (node.id === nodeId) {
@@ -421,6 +431,8 @@ export interface IParadisBookmarkImportStats {
 	readonly bookmarksAdded: number;
 	readonly foldersAdded: number;
 	readonly skipped: number;
+	/** http・https・about: 以外の URL だったので取り込まなかった件数（`skipped` には含めない）。 */
+	readonly blockedScheme: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

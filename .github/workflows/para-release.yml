@@ -800,6 +800,8 @@ jobs:
       # Upload each artifact to R2 under an unguessable, commit-scoped path
       # and stamp its KV record. Object upload happens before the KV write so
       # the feed never advertises a URL that isn't live yet (see NOTES.md).
+      # The KV records are not written when any of them already holds a newer
+      # paracode release than this tag (q.html Q635).
       #
       # Uploads go through R2's S3-compatible API: `wrangler r2 object put` caps
       # uploads at 300 MiB and every artifact exceeds that (seen in run
@@ -828,25 +830,62 @@ jobs:
           aws configure set default.s3.multipart_threshold 1GB
           EP="https://$CLOUDFLARE_ACCOUNT_ID.r2.cloudflarestorage.com"
 
+          TAG="${GITHUB_REF#refs/tags/}"
+          # `"paracode":<N>` (plus `"paracodeBeta":<M>` for a beta) in every feed record, so the next
+          # run can tell whether the feed already serves a newer release (q.html Q635).
+          RELEASE_FIELDS="$(node build/lib/paradisReleaseChannel.ts feed-fields "$TAG")"
+
           # For stable, kv_key is `stable:<platform>` and KEY is `stable/<platdir>/<commit>/<file>`,
           # the same strings this step used to hard-code. For beta both move under `beta`.
+          upload() {
+            local platdir="$2" file="$3" artdir="$4"
+            local KEY="$CHANNEL/$platdir/${{ steps.meta.outputs.commit }}/$file"
+            aws s3 cp "artifacts/$artdir/$file" "s3://${{ secrets.CF_R2_BUCKET }}/$KEY" --endpoint-url "$EP" --no-progress
+          }
+
+          # Stops the step when the record already holds a newer release than this tag (re-running an
+          # old tag would otherwise "update" every client back to it). The same release passes, so a
+          # failed publish can still be recovered by re-running the same tag. A missing key passes:
+          # remote `wrangler kv key get` fails with "- 404:" for it.
+          check_feed() {
+            local kv_key="$CHANNEL:$1" current
+            if ! current="$(wrangler kv key get --namespace-id "${{ secrets.CF_KV_NAMESPACE_ID }}" --remote "$kv_key" 2> "$RUNNER_TEMP/kv-get.log")"; then
+              if ! grep -q -- ' - 404:' "$RUNNER_TEMP/kv-get.log"; then
+                cat "$RUNNER_TEMP/kv-get.log" >&2
+                echo "::error::Could not read $kv_key; the feed is not written."
+                exit 1
+              fi
+              current=''
+            fi
+            printf '%s' "$current" | node build/lib/paradisReleaseChannel.ts check-feed "$TAG" "$kv_key"
+          }
+
           publish() {
             local kv_key="$CHANNEL:$1" platdir="$2" file="$3" artdir="$4"
             local KEY="$CHANNEL/$platdir/${{ steps.meta.outputs.commit }}/$file"
-            aws s3 cp "artifacts/$artdir/$file" "s3://${{ secrets.CF_R2_BUCKET }}/$KEY" --endpoint-url "$EP" --no-progress
             local HASH=$(tr -d '[:space:]' < "artifacts/$artdir/$file.sha256")
             wrangler kv key put --namespace-id "${{ secrets.CF_KV_NAMESPACE_ID }}" --remote \
-              "$kv_key" "{\"commit\":\"${{ steps.meta.outputs.commit }}\",\"version\":\"${{ steps.meta.outputs.version }}\",\"productVersion\":\"${{ steps.meta.outputs.version }}\",\"url\":\"${{ secrets.CF_R2_PUBLIC_BASE_URL }}/$KEY\",\"sha256hash\":\"$HASH\",\"timestamp\":${{ steps.meta.outputs.timestamp }}}"
+              "$kv_key" "{\"commit\":\"${{ steps.meta.outputs.commit }}\",\"version\":\"${{ steps.meta.outputs.version }}\",\"productVersion\":\"${{ steps.meta.outputs.version }}\",\"url\":\"${{ secrets.CF_R2_PUBLIC_BASE_URL }}/$KEY\",\"sha256hash\":\"$HASH\",\"timestamp\":${{ steps.meta.outputs.timestamp }},$RELEASE_FIELDS}"
           }
 
-          publish "darwin"           "darwin-x64"       "darwin-x64.zip"             "darwin-x64"
-          publish "darwin-arm64"     "darwin-arm64"     "darwin-arm64.zip"           "darwin-arm64"
-          # Beta is macOS-only (win32/linux were not built), so only stable publishes these.
-          if [ "$CHANNEL" = "stable" ]; then
-            publish "win32-x64-user"   "win32-x64-user"   "win32-x64-user-setup.exe"   "win32-x64"
-            publish "win32-arm64-user" "win32-arm64-user" "win32-arm64-user-setup.exe" "win32-arm64"
-            publish "linux-x64"        "linux-x64"        "linux-x64.deb"              "linux-x64"
-          fi
+          each_feed() {
+            "$1" "darwin"           "darwin-x64"       "darwin-x64.zip"             "darwin-x64"
+            "$1" "darwin-arm64"     "darwin-arm64"     "darwin-arm64.zip"           "darwin-arm64"
+            # Beta is macOS-only (win32/linux were not built), so only stable publishes these.
+            if [ "$CHANNEL" = "stable" ]; then
+              "$1" "win32-x64-user"   "win32-x64-user"   "win32-x64-user-setup.exe"   "win32-x64"
+              "$1" "win32-arm64-user" "win32-arm64-user" "win32-arm64-user-setup.exe" "win32-arm64"
+              "$1" "linux-x64"        "linux-x64"        "linux-x64.deb"              "linux-x64"
+            fi
+          }
+
+          # Every object goes up first, then every record is checked, then every record is written:
+          # a stopped run writes no record and no changelog (its objects stay under their own commit
+          # path), and two tags racing each other only overlap in the few seconds between the check
+          # and the writes. The workflow has no `concurrency` on purpose (q.html Q635).
+          each_feed upload
+          each_feed check_feed
+          each_feed publish
 
           # Publish the app changelog for the in-app modal
           # (src/vs/paradis/contrib/releaseNotes/). Clients fetch it via

@@ -26,7 +26,7 @@ import { IPtyHostStarter } from '../../../../platform/terminal/node/ptyHost.js';
 import { PARADIS_PTY_HOST_STATE_DIR, paradisPtyHostPaths } from '../common/paradisPtyHostPaths.js';
 import { paradisDeletePtyDaemonEnv } from '../common/paradisPtyEnvHygiene.js';
 import { PARADIS_PTY_PROTOCOL_VERSION } from '../common/paradisPtyProtocol.js';
-import { ParadisDaemonPtyHostStarter } from './paradisDaemonPtyHostStarter.js';
+import { ParadisDaemonPtyHostStarter, ParadisPtyHostIpc } from './paradisDaemonPtyHostStarter.js';
 import { ParadisScopedEnvPtyHostStarter } from './paradisScopedEnvPtyHostStarter.js';
 import { IParadisPtyDaemonPaths, ParadisDaemonPlatform, paradisPtyDaemonPaths } from '../common/paradisPtyDaemonPaths.js';
 import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
@@ -122,7 +122,7 @@ export function paradisCreatePtyHostStarter(
 		logService.info(`[ParadisPtyHost] ignoring inherited pty daemon variables: ${inherited.join(', ')}`);
 	}
 
-	const inApp = () => new ElectronPtyHostStarter(reconnectConstants, configurationService, environmentMainService, lifecycleMainService, logService, ipc);
+	const inApp = (via: ParadisPtyHostIpc = ipc) => new ElectronPtyHostStarter(reconnectConstants, configurationService, environmentMainService, lifecycleMainService, logService, via);
 	// 選んだ飼い方を Sentry へ 1 件送る（paradisPtyModeDiagnostics.ts）
 	const settings = {
 		daemonEnabled: configurationService.getValue(PARADIS_PTY_DAEMON_ENABLED) === true,
@@ -210,5 +210,7 @@ export function paradisCreatePtyHostStarter(
 		lifecycleMainService,
 		logService,
 		ipc,
+		// 常駐が名乗りに答えないときは、待つのをやめてアプリの中で動かす（薄い常駐の側と同じ）。
+		{ createInApp: inApp },
 	));
 }

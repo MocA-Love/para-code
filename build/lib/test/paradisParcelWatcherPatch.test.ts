@@ -10,7 +10,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { suite, test } from 'node:test';
-import { paradisPatchParcelWatcher } from '../../npm/paradisParcelWatcherPatch.ts';
+import { paradisCheckParcelWatcherVersion, paradisPatchParcelWatcher } from '../../npm/paradisParcelWatcherPatch.ts';
 
 const globSource = [
 	'bool Glob::isIgnored(std::string relative_path) {',
@@ -71,6 +71,41 @@ suite('paradis Parcel watcher patch', () => {
 			assert.strictEqual(fs.readFileSync(fixture.globPath, 'utf8'), globSource);
 		} finally {
 			fixture.dispose();
+		}
+	});
+
+	test('fails on CI and warns elsewhere when a built watcher is at an unsupported version', () => {
+		const unsupported = createFixture(globSource, true, '2.5.7');
+		const supported = createFixture(globSource, true);
+		const unbuilt = createFixture(globSource, false, '2.5.7');
+		const savedCI = process.env['CI'];
+		try {
+			const results: unknown[] = [];
+			const log = (message: string) => results.push(message);
+
+			process.env['CI'] = 'true';
+			assert.throws(() => paradisCheckParcelWatcherVersion(unsupported.packageRoot, log), /@parcel\/watcher is 2\.5\.7/);
+			results.push(paradisCheckParcelWatcherVersion(supported.packageRoot, log));
+			results.push(paradisCheckParcelWatcherVersion(unbuilt.packageRoot, log));
+
+			delete process.env['CI'];
+			results.push(paradisCheckParcelWatcherVersion(unsupported.packageRoot, log));
+
+			assert.deepStrictEqual(results, [
+				true,
+				true,
+				'WARNING: @parcel/watcher is 2.5.7, but the long-path guard was checked against 2.5.6; skipped. Check whether https://github.com/parcel-bundler/watcher/issues/250 is fixed and update build/npm/paradisParcelWatcherPatch.ts',
+				false,
+			]);
+		} finally {
+			if (savedCI === undefined) {
+				delete process.env['CI'];
+			} else {
+				process.env['CI'] = savedCI;
+			}
+			unsupported.dispose();
+			supported.dispose();
+			unbuilt.dispose();
 		}
 	});
 

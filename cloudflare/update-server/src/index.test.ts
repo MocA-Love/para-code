@@ -5,9 +5,18 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { describe, expect, it, vi } from 'vitest';
-import worker from './index';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { createTestSigningKey, keySetOf, signTestToken, TEST_AUDIENCE, TEST_NOW_MS, TEST_TEAM_DOMAIN, type ITestSigningKey } from './accessJwtTestUtils';
+import defaultWorker, { createUpdateWorker } from './index';
 import type { Env, IReleaseRecord } from './types';
+
+let teamKey: ITestSigningKey;
+
+beforeAll(async () => {
+	teamKey = await createTestSigningKey('team-key');
+});
+
+const worker = createUpdateWorker({ loadAccessCerts: async () => keySetOf(teamKey), now: () => TEST_NOW_MS });
 
 const publishedRelease: IReleaseRecord = {
 	commit: '0123456789abcdef',
@@ -23,15 +32,17 @@ interface TestEnv {
 		get(key: string, type?: 'json'): Promise<IReleaseRecord | string | null>;
 	};
 	readonly CF_ACCESS_AUD?: string;
+	readonly CF_ACCESS_TEAM_DOMAIN?: string;
 }
 
-function createEnv(record: IReleaseRecord | null, changelogMd: string | null = null, cfAccessAudience?: string) {
+function createEnv(record: IReleaseRecord | null, changelogMd: string | null = null, cfAccessAudience?: string, cfAccessTeamDomain: string | null = TEST_TEAM_DOMAIN) {
 	const get = vi.fn(async (key: string, type?: 'json') =>
 		type === 'json' ? record : changelogMd
 	);
 	const env: TestEnv = {
 		RELEASES: { get },
-		...(cfAccessAudience ? { CF_ACCESS_AUD: cfAccessAudience } : {})
+		...(cfAccessAudience ? { CF_ACCESS_AUD: cfAccessAudience } : {}),
+		...(cfAccessAudience && cfAccessTeamDomain ? { CF_ACCESS_TEAM_DOMAIN: cfAccessTeamDomain } : {})
 	};
 
 	return { env, get };
@@ -55,7 +66,7 @@ describe('update feed', () => {
 	});
 
 	it('returns 401 when Cloudflare Access is configured and the assertion is missing', async () => {
-		const { env, get } = createEnv(publishedRelease, null, 'para-code-update-feed');
+		const { env, get } = createEnv(publishedRelease, null, TEST_AUDIENCE);
 
 		const response = await fetchUpdate('/api/update/darwin-arm64/stable/old-commit', env);
 
@@ -64,17 +75,40 @@ describe('update feed', () => {
 		expect(get).not.toHaveBeenCalled();
 	});
 
-	it('returns 200 when the Cloudflare Access assertion is present', async () => {
-		const { env } = createEnv(publishedRelease, null, 'para-code-update-feed');
+	it('returns 200 when the Cloudflare Access assertion is signed by the team for this audience', async () => {
+		const { env } = createEnv(publishedRelease, null, TEST_AUDIENCE);
 
 		const response = await fetchUpdate(
 			'/api/update/darwin-arm64/stable/old-commit',
 			env,
-			{ 'Cf-Access-Jwt-Assertion': 'signed-service-token' }
+			{ 'Cf-Access-Jwt-Assertion': await signTestToken(teamKey) }
 		);
 
 		expect(response.status).toBe(200);
 		expect(await response.json()).toMatchObject({ version: '1.104.2' });
+	});
+
+	it('returns 401 when the Cloudflare Access assertion is present but does not verify', async () => {
+		const { env, get } = createEnv(publishedRelease, null, TEST_AUDIENCE);
+
+		const statuses = [
+			(await fetchUpdate('/api/update/darwin-arm64/stable/old-commit', env, { 'Cf-Access-Jwt-Assertion': 'signed-service-token' })).status,
+			(await fetchUpdate('/api/update/darwin-arm64/stable/old-commit', env, { 'Cf-Access-Jwt-Assertion': await signTestToken(teamKey, { aud: ['another-app'] }) })).status
+		];
+
+		expect({ statuses, kvReads: get.mock.calls.length }).toEqual({ statuses: [401, 401], kvReads: 0 });
+	});
+
+	it('returns 401 for every update request when the audience is set without a team domain', async () => {
+		const { env, get } = createEnv(publishedRelease, null, TEST_AUDIENCE, null);
+
+		const response = await fetchUpdate(
+			'/api/update/darwin-arm64/stable/old-commit',
+			env,
+			{ 'Cf-Access-Jwt-Assertion': await signTestToken(teamKey) }
+		);
+
+		expect({ status: response.status, kvReads: get.mock.calls.length }).toEqual({ status: 401, kvReads: 0 });
 	});
 
 	it('returns 204 when no release is published for the platform and quality', async () => {
@@ -185,14 +219,14 @@ describe('changelog feed', () => {
 		expect(await response.text()).toBe('');
 	});
 
-	it('returns 401 when Cloudflare Access is configured and the assertion is missing', async () => {
-		const { env, get } = createEnv(publishedRelease, changelogMd, 'para-code-update-feed');
+	// The Access Application covers /api/update only; the changelog is public.
+	it('stays readable without an assertion when Cloudflare Access is configured', async () => {
+		const { env } = createEnv(publishedRelease, changelogMd, TEST_AUDIENCE);
 
 		const response = await fetchChangelog('/api/changelog/stable', env);
 
-		expect(response.status).toBe(401);
-		expect(await response.text()).toBe('Unauthorized');
-		expect(get).not.toHaveBeenCalled();
+		expect(response.status).toBe(200);
+		expect(await response.text()).toBe(changelogMd);
 	});
 
 	it('serves different qualities under separate KV keys', async () => {
@@ -219,7 +253,7 @@ describe('CORS', () => {
 		);
 
 		expect(response.status).toBe(204);
-		expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+		expect(response.headers.get('Access-Control-Allow-Origin')).toBe('vscode-file://vscode-app');
 		expect(response.headers.get('Access-Control-Allow-Headers')).toContain('Cf-Access-Client-Id');
 	});
 
@@ -232,7 +266,7 @@ describe('CORS', () => {
 		);
 
 		expect(response.status).toBe(204);
-		expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+		expect(response.headers.get('Access-Control-Allow-Origin')).toBe('vscode-file://vscode-app');
 	});
 
 	it('stamps the actual changelog response with Access-Control-Allow-Origin too', async () => {
@@ -243,19 +277,49 @@ describe('CORS', () => {
 			env as Env
 		);
 
-		expect(response.headers.get('Access-Control-Allow-Origin')).toBe('*');
+		expect(response.headers.get('Access-Control-Allow-Origin')).toBe('vscode-file://vscode-app');
 	});
 
 	it('stamps error responses (404/401) as well, since those are still read by the browser', async () => {
-		const { env } = createEnv(publishedRelease, '# changelog\n', 'para-code-update-feed');
+		const { env } = createEnv(publishedRelease, '# changelog\n', TEST_AUDIENCE);
 
 		const notFound = await worker.fetch(new Request('https://updates.para-code.dev/health'), env as Env);
-		expect(notFound.headers.get('Access-Control-Allow-Origin')).toBe('*');
+		expect(notFound.headers.get('Access-Control-Allow-Origin')).toBe('vscode-file://vscode-app');
 
 		const unauthorized = await worker.fetch(
-			new Request('https://updates.para-code.dev/api/changelog/stable'),
+			new Request('https://updates.para-code.dev/api/update/darwin-arm64/stable/old-commit'),
 			env as Env
 		);
-		expect(unauthorized.headers.get('Access-Control-Allow-Origin')).toBe('*');
+		expect(unauthorized.status).toBe(401);
+		expect(unauthorized.headers.get('Access-Control-Allow-Origin')).toBe('vscode-file://vscode-app');
+	});
+});
+
+describe('response headers', () => {
+	it('sends nosniff on every kind of response', async () => {
+		const { env } = createEnv(publishedRelease, '# changelog\n', TEST_AUDIENCE);
+		const requests = [
+			new Request('https://updates.para-code.dev/api/changelog/stable', { method: 'OPTIONS' }),
+			new Request('https://updates.para-code.dev/api/changelog/stable'),
+			new Request('https://updates.para-code.dev/api/update/darwin-arm64/stable/old-commit', { headers: { 'Cf-Access-Jwt-Assertion': await signTestToken(teamKey) } }),
+			new Request('https://updates.para-code.dev/api/update/darwin-arm64/stable/old-commit'),
+			new Request('https://updates.para-code.dev/health')
+		];
+
+		const results = [];
+		for (const request of requests) {
+			const response = await worker.fetch(request, env as Env);
+			results.push([response.status, response.headers.get('X-Content-Type-Options')]);
+		}
+
+		expect(results).toEqual([[204, 'nosniff'], [200, 'nosniff'], [200, 'nosniff'], [401, 'nosniff'], [404, 'nosniff']]);
+	});
+
+	it('exports a ready-made worker as the module default', async () => {
+		const { env } = createEnv(null);
+
+		const response = await defaultWorker.fetch(new Request('https://updates.para-code.dev/api/update/linux-x64/stable/current-commit'), env as Env);
+
+		expect(response.status).toBe(204);
 	});
 });

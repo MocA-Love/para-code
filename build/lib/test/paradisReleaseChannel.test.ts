@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { suite, test } from 'node:test';
-import { classifyParadisReleaseTag, findPreviousParadisStableTag, getParadisSentryRelease, getParadisSentryReleaseFromEnv, planParadisRelease } from '../paradisReleaseChannel.ts';
+import { checkParadisFeedRecord, classifyParadisReleaseTag, findPreviousParadisStableTag, formatParadisFeedReleaseFields, getParadisSentryRelease, getParadisSentryReleaseFromEnv, planParadisRelease } from '../paradisReleaseChannel.ts';
 
 suite('Para Code release channel', () => {
 	test('classifies release tags into stable, beta and other', () => {
@@ -95,6 +95,50 @@ suite('Para Code release channel', () => {
 			first: undefined,
 			beta: undefined,
 			noReleases: undefined,
+		});
+	});
+
+	test('stores the release numbers in the feed and refuses to overwrite a newer release', () => {
+		const record = (fields: object) => JSON.stringify({ commit: 'abc', version: '1.139.1', ...fields });
+		const check = (tag: string, current: string) => checkParadisFeedRecord(tag, 'stable:darwin', current).publish;
+		assert.deepStrictEqual({
+			stableFields: formatParadisFeedReleaseFields('v1.139.1-paracode-146'),
+			betaFields: formatParadisFeedReleaseFields('v1.139.1-paracode-0146-beta.02'),
+			otherFields: formatParadisFeedReleaseFields('v1.139.1-paracode-146-rc1'),
+			noRecord: check('v1.139.1-paracode-146', ''),
+			unnumbered: check('v1.139.1-paracode-146', record({})),
+			older: check('v1.139.1-paracode-146', record({ paracode: 145 })),
+			same: check('v1.139.1-paracode-146', record({ paracode: 146 })),
+			newer: check('v1.139.1-paracode-146', record({ paracode: 147 })),
+			numericNotLexical: check('v1.139.1-paracode-10', record({ paracode: 9 })),
+			stableAfterItsBeta: check('v1.139.1-paracode-146', record({ paracode: 146, paracodeBeta: 3 })),
+			betaAfterSameStable: check('v1.139.1-paracode-146-beta.1', record({ paracode: 146 })),
+			betaAfterOlderStable: check('v1.139.1-paracode-147-beta.1', record({ paracode: 146 })),
+			sameBeta: check('v1.139.1-paracode-146-beta.2', record({ paracode: 146, paracodeBeta: 2 })),
+			olderBeta: check('v1.139.1-paracode-146-beta.10', record({ paracode: 146, paracodeBeta: 2 })),
+			newerBeta: check('v1.139.1-paracode-146-beta.1', record({ paracode: 146, paracodeBeta: 2 })),
+			notJson: check('v1.139.1-paracode-146', 'Value not found'),
+			otherTag: check('v1.139.1-paracode-146-rc1', ''),
+			message: checkParadisFeedRecord('v1.139.1-paracode-146', 'stable:darwin', record({ paracode: 147 })).message,
+		}, {
+			stableFields: '"paracode":146',
+			betaFields: '"paracode":146,"paracodeBeta":2',
+			otherFields: undefined,
+			noRecord: true,
+			unnumbered: true,
+			older: true,
+			same: true,
+			newer: false,
+			numericNotLexical: true,
+			stableAfterItsBeta: true,
+			betaAfterSameStable: false,
+			betaAfterOlderStable: true,
+			sameBeta: true,
+			olderBeta: true,
+			newerBeta: false,
+			notJson: false,
+			otherTag: false,
+			message: 'stable:darwin already serves paracode-147, newer than v1.139.1-paracode-146; nothing is published so clients are not rolled back. To roll back, tag the older commit with a new paracode number (NOTES.md).',
 		});
 	});
 

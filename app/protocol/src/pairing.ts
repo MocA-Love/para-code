@@ -53,7 +53,22 @@ export function encodePairingUri(payload: PairingPayload): string {
 	return `${PAIRING_URI_SCHEME}?d=${toBase64Url(new TextEncoder().encode(json))}`;
 }
 
-export function decodePairingUri(uri: string): PairingPayload {
+/** `decodePairingUri` の読み方の指定。 */
+export interface DecodePairingUriOptions {
+	/**
+	 * 暗号化されていない `ws://` のリレーも受け付けるか（既定は受け付けない）。
+	 * 手元でリレーを動かす開発ビルドだけが true にする。
+	 */
+	readonly allowInsecureRelay?: boolean;
+}
+
+/** QR の relayUrl を `ws://` だったために断ったときの失敗の文言。 */
+export const INSECURE_RELAY_URL_ERROR = 'insecure pairing relay URL';
+
+const SECURE_RELAY_URL = /^wss:\/\/[^\s/?#@]+(?:[/?#]\S*)?$/i;
+const ANY_RELAY_URL = /^wss?:\/\/[^\s/?#@]+(?:[/?#]\S*)?$/i;
+
+export function decodePairingUri(uri: string, options?: DecodePairingUriOptions): PairingPayload {
 	const prefix = `${PAIRING_URI_SCHEME}?d=`;
 	if (!uri.startsWith(prefix)) {
 		throw new Error('not a Para Code pairing URI');
@@ -79,6 +94,11 @@ export function decodePairingUri(uri: string): PairingPayload {
 	// 使われる。パスや保存名を壊せる文字は最初から受け付けない。
 	if (!/^[A-Za-z0-9._-]{1,128}$/.test(deviceId)) {
 		throw new Error('malformed pairing payload: deviceId');
+	}
+	// relayUrl へは以後の接続のたびに mobileToken を送る。平文の ws:// だと中身は E2E で守られても
+	// 資格が経路上で読めるので、wss:// だけを受け付ける（手元のリレーを使う開発ビルドだけ ws:// も可）。
+	if (!(options?.allowInsecureRelay ? ANY_RELAY_URL : SECURE_RELAY_URL).test(relayUrl)) {
+		throw new Error(ANY_RELAY_URL.test(relayUrl) ? INSECURE_RELAY_URL_ERROR : 'malformed pairing payload: relayUrl');
 	}
 	const pcPublicKey = fromBase64Url(key);
 	if (pcPublicKey.length !== 32) {

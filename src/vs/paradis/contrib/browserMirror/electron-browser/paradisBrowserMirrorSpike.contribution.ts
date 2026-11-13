@@ -19,18 +19,20 @@
 // addTrack してモバイルへ送る（案3）。
 //
 // 検証手順（.claude/skills/launch の launch.sh + CDP）:
-//   1. PARADIS_MIRROR_CAPTURE_VIEW=1 を付けて dev ビルドを起動
+//   1. PARADIS_MIRROR_CAPTURE_VIEW=1 を付けて dev ビルドを起動（製品ビルドではコマンドを登録しない）
 //   2. 内蔵ブラウザ（para-browser）を1つ開く
 //   3. コマンドパレットから "Paradis: Browser Mirror Capture Spike" を実行
 //   4. DevTools コンソール / ログで `[paradisBrowserMirrorSpike]` の出力を確認
 
 import { localize2 } from '../../../../nls.js';
 import { addDisposableListener, getActiveWindow } from '../../../../base/browser/dom.js';
-import { DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, toDisposable } from '../../../../base/common/lifecycle.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
+import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 
 class ParadisBrowserMirrorCaptureSpikeAction extends Action2 {
 
@@ -91,7 +93,7 @@ class ParadisBrowserMirrorCaptureSpikeAction extends Action2 {
 		logService.info(`[paradisBrowserMirrorSpike] track acquired ${JSON.stringify(info)}`);
 
 		// video 要素に流して実解像度を確認（トラックの settings が空でも videoWidth で取れる）。
-		const video = document.createElement('video');
+		const video = targetWindow.document.createElement('video');
 		video.autoplay = true;
 		video.muted = true;
 		video.srcObject = stream;
@@ -117,4 +119,20 @@ class ParadisBrowserMirrorCaptureSpikeAction extends Action2 {
 	}
 }
 
-registerAction2(ParadisBrowserMirrorCaptureSpikeAction);
+/**
+ * スパイクのコマンドを開発ビルド（ソースからの起動）でだけ登録する。製品ビルドでは executeCommand からも
+ * 呼べないようにして、誤って呼ばれたときに macOS の画面収録の許可ダイアログが出る経路を断つ。
+ */
+class ParadisBrowserMirrorCaptureSpikeContribution extends Disposable implements IWorkbenchContribution {
+
+	static readonly ID = 'paradis.browserMirror.captureSpikeRegistration';
+
+	constructor(@IEnvironmentService environmentService: IEnvironmentService) {
+		super();
+		if (!environmentService.isBuilt) {
+			this._register(registerAction2(ParadisBrowserMirrorCaptureSpikeAction));
+		}
+	}
+}
+
+registerWorkbenchContribution2(ParadisBrowserMirrorCaptureSpikeContribution.ID, ParadisBrowserMirrorCaptureSpikeContribution, WorkbenchPhase.AfterRestored);
