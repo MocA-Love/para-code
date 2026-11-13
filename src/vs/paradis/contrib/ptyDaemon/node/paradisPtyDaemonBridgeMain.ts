@@ -27,44 +27,19 @@
 
 import { createConnection } from 'net';
 import { VSBuffer } from '../../../../base/common/buffer.js';
-import { Client as SocketClient, Protocol as SocketProtocol } from '../../../../base/parts/ipc/common/ipc.net.js';
+import { Protocol as SocketProtocol } from '../../../../base/parts/ipc/common/ipc.net.js';
 import { NodeSocket } from '../../../../base/parts/ipc/node/ipc.net.js';
 import { MessageEvent, MessagePortMain, isUtilityProcess } from '../../../../base/parts/sandbox/node/electronTypes.js';
+import { IParadisBridgeCheckVerdict, ParadisDaemonCheck, paradisIsBridgeCheckRequest } from '../common/paradisPtyDaemonBridgeProtocol.js';
 import { PARADIS_PTY_DAEMON_LEDGER, PARADIS_PTY_DAEMON_SOCKET } from '../common/paradisPtyDaemonEnv.js';
-import { paradisAuthenticateDaemon } from './paradisPtyDaemonAuth.js';
-import { paradisReadDaemonRecords } from './paradisPtyDaemonLedger.js';
+import { paradisCheckDaemonAt } from './paradisPtyDaemonAuth.js';
 import { dirname } from '../../../../base/common/path.js';
 
 /**
- * 繋ぎ先が本物かを、流し始める前に確かめる。
- *
- * 確認は使い捨ての接続で行う。この橋が流すのは中身を解釈しないバイト列なので、同じ接続の上で
- * 先に名乗り合うことができない（名乗り合いはチャネルの上の呼び出しで、それを読んだ時点で
- * 素通しではなくなる）。確認が通れば、同じ名前で待ち受けているのは同じ相手なので、続けて
- * 開く接続もその相手に届く。
+ * 名乗りを待つ上限の既定。main が要求に載せてこなかったとき（古い形の要求）だけ使う。
+ * 薄い常駐の側（`paradisEnsurePtyHost.ts`）の通常の上限と同じ。
  */
-async function paradisDaemonIsGenuine(socketPath: string, ledgerFile: string): Promise<boolean> {
-	const records = await paradisReadDaemonRecords(dirname(ledgerFile));
-	const socket = await new Promise<NodeSocket | undefined>(resolve => {
-		const raw = createConnection({ path: socketPath });
-		raw.once('connect', () => resolve(new NodeSocket(raw, 'paradis-pty-daemon-bridge-auth')));
-		raw.once('error', () => { raw.destroy(); resolve(undefined); });
-	});
-	if (!socket) {
-		return false;
-	}
-	const client = SocketClient.fromSocket(socket, 'paradis-bridge');
-	try {
-		for (const record of records) {
-			if (record.socketPath === socketPath && await paradisAuthenticateDaemon(client, record.token)) {
-				return true;
-			}
-		}
-		return false;
-	} finally {
-		client.dispose();
-	}
-}
+const DEFAULT_HANDSHAKE_TIMEOUT = 30_000;
 
 /**
  * ポート1本と、それに対応するソケット1本を繋ぐ。
@@ -119,20 +94,34 @@ function paradisStartBridge(): void {
 	if (!ledgerFile) {
 		throw new Error(`${PARADIS_PTY_DAEMON_LEDGER} is required to tell who is on the socket`);
 	}
-	process.parentPort.on('message', (e: MessageEvent) => {
+	const parentPort = process.parentPort;
+	parentPort.on('message', (e: MessageEvent) => {
 		const port = e.ports.at(0);
 		if (!port) {
 			return;
 		}
-		// 確かめてから流す。確かめられない相手にはポートを閉じる。**その窓のターミナルは
-		// 動かなくなるが、偽物へ全打鍵を渡すよりはるかにましである。**
-		paradisDaemonIsGenuine(socketPath, ledgerFile).then(genuine => {
-			if (genuine) {
+		const request = paradisIsBridgeCheckRequest(e.data) ? e.data : undefined;
+		// 結果は main へ返す。main はこれを見てから窓へポートを渡す（通らなければ窓に失敗を返す）。
+		const answer = (check: ParadisDaemonCheck) => {
+			if (request) {
+				const verdict: IParadisBridgeCheckVerdict = { type: 'paradisBridgeCheckVerdict', id: request.id, check };
+				parentPort.postMessage(verdict);
+			}
+		};
+		// 確かめてから流す。確かめられない相手と、期限までに答えない相手にはポートを閉じる。
+		// **その窓のターミナルは動かなくなるが、偽物へ全打鍵を渡すよりはるかにましである。**
+		// 確認の側は、接続から名乗りまでの全体に期限がある（固まった常駐でポートが残り続けない）。
+		paradisCheckDaemonAt(socketPath, dirname(ledgerFile), request?.handshakeTimeout ?? DEFAULT_HANDSHAKE_TIMEOUT).then(check => {
+			if (check === 'genuine') {
 				paradisPipePortToDaemon(port, socketPath);
 			} else {
 				port.close();
 			}
-		}, () => port.close());
+			answer(check);
+		}, () => {
+			port.close();
+			answer('refused');
+		});
 	});
 }
 
