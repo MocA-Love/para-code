@@ -163,7 +163,7 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 	/** 今の start() が繋いだ先。窓へ口を渡すのは、これが決まってから。 */
 	private route: Promise<ParadisPtyHostRoute> | undefined;
 
-	/** 最後の名乗りで使った上限。橋に窓の口を確かめてもらうときも同じだけ待つ。 */
+	/** 橋に窓の口を確かめてもらうときに待つ上限。最後の名乗りで使った上限で、本物と分かったら通常の上限に戻す。 */
 	private handshakeTimeoutInUse: number;
 
 	private bridgeRequestId = 0;
