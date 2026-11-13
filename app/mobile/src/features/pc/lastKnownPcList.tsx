@@ -124,7 +124,7 @@ const styles = StyleSheet.create({
 		flexDirection: 'row',
 		alignItems: 'center',
 		gap: space.sm,
-		paddingVertical: space.sm + 2,
+		paddingVertical: space.row,
 		borderBottomWidth: StyleSheet.hairlineWidth,
 		borderBottomColor: colors.border,
 		// 押せない目安の一覧なので、生きた一覧より一段薄く出す。

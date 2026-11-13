@@ -260,7 +260,7 @@
 
 .monaco-workbench .paradis-spreadsheet-tabs > .paradis-tab > .paradis-spreadsheet-tab-lock {
 	font-size: var(--vscode-codiconFontSize-compact);
-	color: var(--vscode-paradis-textFaint);
+	color: var(--vscode-paradis-textMuted);
 }
 
 /* Diff */
@@ -708,12 +708,4 @@
 	stroke: #3b82f6;
 	stroke-width: 3;
 	stroke-dasharray: none;
-}
-
-/* Protected-sheet lock icon in the tab. */
-.paradis-spreadsheet-tab-lock {
-	margin-right: 4px;
-	font-size: 10px;
-	opacity: 0.8;
-	vertical-align: middle;
 }

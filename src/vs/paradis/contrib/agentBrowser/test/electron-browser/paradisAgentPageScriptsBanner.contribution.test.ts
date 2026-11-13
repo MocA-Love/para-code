@@ -22,7 +22,7 @@ import { BrowserEditor } from '../../../../../workbench/contrib/browserView/elec
 import { IEditorService } from '../../../../../workbench/services/editor/common/editorService.js';
 import { IParadisPaneTokenService } from '../../browser/paradisPaneTokenService.js';
 import { IParadisAgentPageScriptEntry, IParadisAgentPageScriptsChange } from '../../common/paradisAgentBrowser.js';
-import { ParadisAgentPageScriptsBanner } from '../../electron-browser/paradisAgentPageScriptsBanner.contribution.js';
+import { ParadisAgentPageScriptsBanner, paradisPageScriptTimeOf } from '../../electron-browser/paradisAgentPageScriptsBanner.contribution.js';
 
 /** Shows one context view at a time inside `element`, closing the previous one first like the real service does. */
 class TestContextViewService {
@@ -115,5 +115,63 @@ suite('ParadisAgentPageScriptsBanner', () => {
 		} finally {
 			root.remove();
 		}
+	});
+
+	test('names each row button after its script, and shows a failed remove under the header until the list is read again', async () => {
+		const root = document.createElement('div');
+		document.body.appendChild(root);
+		const scriptChanges = store.add(new Emitter<IParadisAgentPageScriptsChange>());
+		const modelChanges = store.add(new Emitter<{ model: IBrowserViewModel | undefined; isNew: boolean }>());
+		const model = upcastPartial<IBrowserViewModel>({ id: 'view-one' });
+		const channel = upcastPartial<IChannel>({
+			call: async <T>(command: string) => {
+				if (command === 'removeInitScript') {
+					throw new Error('Channel has been closed');
+				}
+				return (command === 'listInitScripts' ? [entry('s1')] : 0) as T;
+			},
+			listen: <T>(event: string) => (event === 'onDidChangeInitScripts' ? scriptChanges.event : Event.None) as Event<T>,
+		});
+		const contextViewService = new TestContextViewService();
+		root.appendChild(contextViewService.element);
+		const banner = store.add(new ParadisAgentPageScriptsBanner(
+			upcastPartial<BrowserEditor>({ onDidChangeModel: modelChanges.event, model }),
+			upcastPartial<IMainProcessService>({ getChannel: () => channel }),
+			new NullLogService(),
+			upcastPartial<IContextViewService>(contextViewService),
+			upcastPartial<IEditorService>({}),
+			upcastPartial<IParadisPaneTokenService>({ listPaneTokens: () => [] }),
+			NullHoverService,
+			upcastPartial<INotificationService>({}),
+		));
+		const chip = banner.widgets[0].element;
+		root.appendChild(chip);
+		const message = () => root.querySelector('.paradis-page-scripts-details-message');
+		try {
+			modelChanges.fire({ model, isNew: true });
+			await timeout(0);
+			chip.click();
+			const labels = [...root.querySelectorAll('.paradis-page-scripts-details-row button')].map(button => button.getAttribute('aria-label'));
+			root.querySelector<HTMLElement>('[data-paradis-focus-key="s1:remove"]')!.click();
+			await timeout(0);
+			const failed = { text: message()?.textContent, role: message()?.getAttribute('role') };
+			scriptChanges.fire({ viewId: 'view-one', count: 1 });
+			await timeout(0);
+			assert.deepStrictEqual({ labels, failed, afterRefresh: message() }, {
+				labels: ['script s1 の中身を見る', 'script s1 を外す'],
+				failed: { text: 'スクリプトを外せませんでした: Channel has been closed', role: 'status' },
+				afterRefresh: null,
+			});
+		} finally {
+			root.remove();
+		}
+	});
+
+	test('adds the month and day to the time of a script added before today', () => {
+		const now = new Date(2026, 10, 12, 14, 40, 0).getTime();
+		assert.deepStrictEqual([
+			paradisPageScriptTimeOf(new Date(2026, 10, 12, 14, 32, 5).getTime(), now),
+			paradisPageScriptTimeOf(new Date(2026, 10, 11, 23, 58, 4).getTime(), now),
+		], ['14:32:05', '11/11 23:58:04']);
 	});
 });

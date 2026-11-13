@@ -230,7 +230,7 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 		const { confirmed } = await this.paradisDialogService.confirm({
 			destructive: true,
 			type: 'warning',
-			message: localize('paradis.fileTransfer.shutdown.message', "{0} 件の転送が進行中です。閉じますか?", active),
+			message: localize('paradis.fileTransfer.shutdown.message', "{0} 件の転送が進行中です。閉じますか？", active),
 			detail: localize('paradis.fileTransfer.shutdown.detail', "閉じると転送は取り消されます。一時ファイルに書いている項目は、送り先の元のファイルがそのまま残ります。その場で書いている項目（所有者が違う・ハードリンクなどのファイル）は、書きかけになります。片付けきれなかった一時ファイルは、次に開いたときに片付けます。"),
 			primaryButton: localize('paradis.fileTransfer.shutdown.close', "取り消して閉じる"),
 		});
@@ -586,7 +586,7 @@ export class ParadisFileTransferService extends Disposable implements IParadisFi
 		const { result, checkboxChecked } = await this.dialogService.prompt<ParadisConflictAction | 'cancel'>({
 			type: Severity.Warning,
 			message: conflict.kindMismatch
-				? localize('paradis.fileTransfer.conflict.kindMessage', "{0} に同じ名前の{1}があります。{1}ごと置き換えますか?（{2} 件中 {3} 件目）", this.sideLabel(targetSide, conflict.target), replacedKind, conflict.total, conflict.index)
+				? localize('paradis.fileTransfer.conflict.kindMessage', "{0} に同じ名前の{1}があります。{1}ごと置き換えますか？（{2} 件中 {3} 件目）", this.sideLabel(targetSide, conflict.target), replacedKind, conflict.total, conflict.index)
 				: localize('paradis.fileTransfer.conflict.message', "{0} に同じ名前の項目があります（{1} 件中 {2} 件目）", this.sideLabel(targetSide, conflict.target), conflict.total, conflict.index),
 			detail,
 			buttons: [

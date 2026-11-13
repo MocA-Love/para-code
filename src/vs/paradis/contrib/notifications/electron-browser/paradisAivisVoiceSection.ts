@@ -102,8 +102,6 @@ const STR_MODEL_INFO_LOADING = localize('paradis.notif.aivis.modelInfoLoading', 
 const STR_MODEL_INFO_INVALID = localize('paradis.notif.aivis.modelInfoInvalid', "UUID 形式 (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx) で入力してください。");
 
 // allow-any-unicode-next-line
-const STR_PRESET_ICON_PLACEHOLDER = '🎙️';
-// allow-any-unicode-next-line
 const STR_PLAY_SAMPLE_ARIA = localize('paradis.notif.aivis.playSampleAria', "サンプル音声を再生");
 // allow-any-unicode-next-line
 const STR_STOP_SAMPLE_ARIA = localize('paradis.notif.aivis.stopSampleAria', "サンプル音声を停止");
@@ -130,6 +128,12 @@ const SAMPLE_PLACEHOLDER_VALUES: IParadisAivisPlaceholders = Object.freeze({
 	// allow-any-unicode-next-line
 	tab: 'ターミナル',
 });
+
+/** アイコンの無いモデル（読み込み中を含む）のタイルに置く印。 */
+function paradisSetPresetIconPlaceholder(iconWrap: HTMLElement): void {
+	dom.clearNode(iconWrap);
+	dom.append(iconWrap, $(ThemeIcon.asCSSSelector(Codicon.mic))).setAttribute('aria-hidden', 'true');
+}
 
 export class ParadisAivisVoiceSection extends Disposable {
 
@@ -246,6 +250,8 @@ export class ParadisAivisVoiceSection extends Disposable {
 		// --- フィールド群（無効のときは非表示ではなく opacity+pointer-events で無効化） ---
 		const fields = dom.append(this.container, $('.pns-fields'));
 		fields.classList.toggle('disabled', !settings.enabled);
+		// 薄くした欄には Tab でも届かない（読み上げからも外す）
+		fields.inert = !settings.enabled;
 		if (!settings.enabled) {
 			// 無効化したフィールド群は pointer-events: none で操作できなくなる。サンプル再生中に
 			// オフにすると停止ボタンを押せないまま音だけが鳴り続けるため、ここで止める。
@@ -439,7 +445,7 @@ export class ParadisAivisVoiceSection extends Disposable {
 				tile.classList.add('selected');
 			}
 			const iconWrap = dom.append(tile, $('.pns-preset-icon'));
-			iconWrap.textContent = STR_PRESET_ICON_PLACEHOLDER;
+			paradisSetPresetIconPlaceholder(iconWrap);
 			dom.append(tile, $('.pns-preset-name')).textContent = preset.name;
 			dom.append(tile, $('.pns-preset-author')).textContent = preset.authorName;
 
@@ -492,7 +498,7 @@ export class ParadisAivisVoiceSection extends Disposable {
 			img.src = model.iconUrl;
 			img.alt = '';
 		} else {
-			iconWrap.textContent = STR_PRESET_ICON_PLACEHOLDER;
+			paradisSetPresetIconPlaceholder(iconWrap);
 		}
 
 		sampleBtn.disabled = !model?.sampleUrl;

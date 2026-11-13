@@ -249,7 +249,7 @@ export function PrTab({ task }: { task: ITaskBoardTask }) {
 				<button className="btn xs ghost" onClick={detail.reload} title="読み直す"><Icon name="sync" size={12} /></button>
 				{d.url && <a className="btn xs ghost" href={d.url} target="_blank" rel="noreferrer"><Icon name="ext" size={12} />GitHub</a>}
 			</div>
-			<div className="pr-head" style={{ marginTop: 8, fontSize: 12.5 }}>
+			<div className="pr-head" style={{ marginTop: 8, fontSize: 'var(--fs-sm)' }}>
 				<span className="branch">{d.base}</span>←<span className="branch">{d.head}</span>
 				<span>{d.commits.length} コミット</span><span className="add">+{d.additions}</span><span className="del">−{d.deletions}</span>
 				<span className="faint">{d.author}　{ago(d.createdAt, now)}</span>
@@ -729,7 +729,7 @@ export function TerminalTab({ task }: { task: ITaskBoardTask }) {
 					{live ? <span className="status live" style={tone('blue')}>つながっています</span> : <span className="status" style={tone('gray')}>止まっています</span>}
 					{task.contextPct !== undefined && <span className="ctxbar">コンテキスト<span className="bar2"><i style={{ width: `${task.contextPct}%` }} /></span>{task.contextPct}%</span>}
 				</div>
-				<div className="term" ref={ref} onScroll={e => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40; }} role="log" aria-live="polite">
+				<div className="term" ref={ref} onScroll={e => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40; }} role="log" aria-live="off">
 					{lines.length ? lines : <span className="f">まだ出力はありません</span>}
 				</div>
 				<div className="term-in">

@@ -33,6 +33,11 @@ export interface IParadisPopoverOptions {
 	/** 本文を描く。`store` は閉じたときに捨てる。開いたときにフォーカスする要素を返す（返さないと箱そのもの）。 */
 	readonly render: (body: HTMLElement, store: DisposableStore) => HTMLElement | void;
 	readonly onHide?: () => void;
+	/**
+	 * 出す先のウィンドウの作業領域（layoutService.getContainer）。省くとフォーカスのあるウィンドウ（activeContainer）。
+	 * 補助ウィンドウ（ブラウザ一覧など）のボタンから開く小窓は、そのウィンドウの作業領域を渡す。
+	 */
+	readonly container?: HTMLElement;
 }
 
 /** キットのポップアップを開く。返り値を捨てると閉じる。 */
@@ -76,7 +81,7 @@ export function showParadisPopover(contextViewService: IContextViewService, opti
 			}
 			options.onHide?.();
 		},
-	});
+	}, options.container);
 	return toDisposable(() => {
 		if (open) {
 			contextViewService.hideContextView();

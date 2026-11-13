@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { join } from '../../../../base/common/path.js';
+import { basename, dirname, join } from '../../../../base/common/path.js';
 import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IParadisHeapSnapshotMainService, IParadisHeapSnapshotResult, PARADIS_HEAP_SNAPSHOT_CHANNEL } from '../common/paradisHeapSnapshot.js';
@@ -27,7 +27,15 @@ export interface IParadisHeapSnapshotDependencies {
 	readonly writeHeapSnapshot: (path: string) => void;
 	readonly stat: (path: string) => { readonly size: number };
 	readonly unlink: (path: string) => void;
+	readonly chmod: (path: string, mode: number) => void;
+	readonly readdir: (directory: string) => Promise<readonly string[]>;
 }
+
+/** 書き出した後に、前のスナップショットを何件残すか（今回の分は別に残る）。 */
+const PARADIS_HEAP_SNAPSHOT_KEEP_PREVIOUS = 2;
+
+/** 片付けの対象にする名前。置き場は一時フォルダや userData なので、これ以外のファイルには触れない。 */
+const PARADIS_HEAP_SNAPSHOT_NAME = /^para-code-main-.+\.heapsnapshot$/;
 
 /** ファイル名には、再起動を跨いだ比較を避けるため稼働時間を含める。 */
 function snapshotFileName(uptimeMs: number): string {
@@ -66,6 +74,14 @@ export class ParadisHeapSnapshotMainService implements IParadisHeapSnapshotMainS
 				throw error;
 			}
 			const durationMs = Date.now() - writeStartedAt;
+			// ヒープにはトークンや API キーが文字列で残っているので、本人だけが読めるようにする。
+			// v8.writeHeapSnapshot は権限を指定できないため、書いた後に掛ける。
+			try {
+				this.dependencies.chmod(path, 0o600);
+			} catch {
+				// 掛けられなくても書き出しは成功として返す。
+			}
+			await this.removeOlderSnapshots(path);
 
 			let bytes = -1;
 			try {
@@ -77,6 +93,27 @@ export class ParadisHeapSnapshotMainService implements IParadisHeapSnapshotMainS
 			return { path, bytes, durationMs, oldSpaceUsed, uptimeMs };
 		} finally {
 			this.inFlight = false;
+		}
+	}
+
+	/** 数 GB になるファイルが取るたびに溜まらないよう、今回の分と前の数件だけを残す。 */
+	private async removeOlderSnapshots(path: string): Promise<void> {
+		const directory = dirname(path);
+		let names: readonly string[];
+		try {
+			names = await this.dependencies.readdir(directory);
+		} catch {
+			return;
+		}
+		const current = basename(path);
+		// 名前は時刻（ISO の順に並ぶ形）から始まるので、名前の順が古い順になる。
+		const previous = names.filter(name => name !== current && PARADIS_HEAP_SNAPSHOT_NAME.test(name)).sort();
+		for (const name of previous.slice(0, Math.max(0, previous.length - PARADIS_HEAP_SNAPSHOT_KEEP_PREVIOUS))) {
+			try {
+				this.dependencies.unlink(join(directory, name));
+			} catch {
+				// 消せなかったものは次の機会に回す。
+			}
 		}
 	}
 }

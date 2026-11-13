@@ -13,6 +13,7 @@
 // （作り直すと、押そうとした「取り消し」「再試行」のボタンが押す前に消えてしまう）。
 
 import * as dom from '../../../../base/browser/dom.js';
+import { status } from '../../../../base/browser/ui/aria/aria.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable, DisposableMap, DisposableStore } from '../../../../base/common/lifecycle.js';
@@ -82,6 +83,37 @@ export function paradisQueueDoneText(item: IParadisTransferItem): string {
 	}
 }
 
+/**
+ * 読み上げで知らせる文。進行中・完了・失敗の件数が前に知らせたときから変わったときだけ文を返す（進み具合の割合や残り時間の
+ * 変化では返さない。見える要約は約 100ms ごとに書き換わるので、そのまま読ませると転送中ずっと読み上げが続く）。
+ */
+export function paradisQueueAnnouncement(items: readonly IParadisTransferItem[], previousKey: string | undefined): { readonly key: string; readonly text: string | undefined } {
+	let active = 0;
+	let done = 0;
+	let failed = 0;
+	for (const item of items) {
+		if (item.state === 'waiting' || item.state === 'running') {
+			active++;
+		} else if (item.state === 'done') {
+			done++;
+		} else if (item.state === 'error') {
+			failed++;
+		}
+	}
+	const key = `${active}|${done}|${failed}`;
+	if (previousKey === undefined || key === previousKey) {
+		return { key, text: undefined };
+	}
+	const parts = [localize('paradis.fileTransfer.queue.announceActive', "{0} 件進行中", active)];
+	if (done > 0) {
+		parts.push(localize('paradis.fileTransfer.queue.announceDone', "{0} 件完了", done));
+	}
+	if (failed > 0) {
+		parts.push(localize('paradis.fileTransfer.queue.announceFailed', "{0} 件失敗", failed));
+	}
+	return { key, text: localize('paradis.fileTransfer.queue.announce', "転送: {0}", parts.join('、')) };
+}
+
 interface IQueueRowCallbacks {
 	cancel(item: IParadisTransferItem): void;
 	retry(item: IParadisTransferItem): void;
@@ -145,11 +177,17 @@ class ParadisQueueRow extends Disposable {
 		this.name.appendChild(this.where);
 		this.name.title = `${item.source.path} ${arrow} ${item.targetLabel}:${item.target.path}`;
 
-		const percent = item.state === 'done' || item.state === 'error' ? 100
-			: item.totalBytes ? Math.floor(item.doneBytes / item.totalBytes * 100)
-				: item.totalFiles ? Math.floor(item.doneFiles / item.totalFiles * 100) : 0;
+		// 失敗した行は止まった所までの赤い棒にする（満ちた棒だと完了と長さで見分けられない）
+		const percent = item.state === 'done' ? 100
+			: item.totalBytes ? Math.min(100, Math.floor(item.doneBytes / item.totalBytes * 100))
+				: item.totalFiles ? Math.min(100, Math.floor(item.doneFiles / item.totalFiles * 100)) : 0;
 		this.fill.style.width = `${percent}%`;
 		this.bar.setAttribute('aria-valuenow', String(percent));
+		if (item.state === 'error') {
+			this.bar.setAttribute('aria-valuetext', localize('paradis.fileTransfer.queue.failedPercent', "失敗（{0}%）", percent));
+		} else {
+			this.bar.removeAttribute('aria-valuetext');
+		}
 
 		this.done.textContent = paradisQueueDoneText(item);
 		this.done.title = item.state === 'error' ? this.done.textContent : '';
@@ -208,6 +246,8 @@ export class ParadisFileTransferQueueView extends Disposable {
 	private lastHeight = -1;
 	private renderScheduled = false;
 	private lastActive = 0;
+	/** 前に読み上げで知らせた件数（{@link paradisQueueAnnouncement}）。最初の描画では知らせない。 */
+	private announcedKey: string | undefined;
 
 	constructor(
 		private readonly queue: ParadisTransferQueue,
@@ -223,8 +263,8 @@ export class ParadisFileTransferQueueView extends Disposable {
 		const header = dom.append(this.element, $('.para-ft-qh'));
 		dom.append(header, $(`span${ThemeIcon.asCSSSelector(Codicon.arrowSwap)}`));
 		dom.append(header, $('span.para-ft-qh-title')).textContent = localize('paradis.fileTransfer.queue.title', "転送");
+		// 見える要約は進み具合のたびに書き換わるので aria-live を付けない。件数が変わったときだけ render() で知らせる
 		this.summary = dom.append(header, $('span.para-ft-qh-summary'));
-		this.summary.setAttribute('aria-live', 'polite');
 		const tools = dom.append(header, $('.para-ft-qh-tools'));
 		this.toolButton(tools, Codicon.debugStop, localize('paradis.fileTransfer.queue.cancelAll', "すべて取り消す"), () => this.queue.cancelAll());
 		this.toolButton(tools, Codicon.clearAll, localize('paradis.fileTransfer.queue.clear', "完了したものを消す"), () => this.queue.clearFinished());
@@ -308,6 +348,11 @@ export class ParadisFileTransferQueueView extends Disposable {
 		this.element.classList.toggle('collapsed', !showRows);
 		this.renderToggle();
 		this.summary.textContent = this.summaryText(items, showRows);
+		const announcement = paradisQueueAnnouncement(items, this.announcedKey);
+		this.announcedKey = announcement.key;
+		if (announcement.text) {
+			status(announcement.text);
+		}
 		if (showRows) {
 			this.renderRows(items);
 		}

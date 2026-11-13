@@ -678,17 +678,17 @@ suite('ParadisTerminalHistoryCompletion', () => {
 			read: async resource => utf8File(resource, 'echo f01\necho f02\necho f03\necho f04\necho f05\necho f06\necho f07\necho f08\necho f09\necho f10\necho f11\necho f12\necho shared\n'),
 		});
 		assert.deepStrictEqual(await harness.provider.provideCompletions('e', 1, CancellationToken.None), [
-			completion('echo shared', 'History'),
-			completion('echo p10', 'History'),
-			completion('echo p09', 'History'),
-			completion('echo p08', 'History'),
-			completion('echo p07', 'History'),
-			completion('echo p06', 'History'),
-			completion('echo p05', 'History'),
-			completion('echo p04', 'History'),
-			completion('echo p03', 'History'),
-			completion('echo p02', 'History'),
-			completion('echo p01', 'History'),
+			completion('echo shared', '共通の履歴'),
+			completion('echo p10', '共通の履歴'),
+			completion('echo p09', '共通の履歴'),
+			completion('echo p08', '共通の履歴'),
+			completion('echo p07', '共通の履歴'),
+			completion('echo p06', '共通の履歴'),
+			completion('echo p05', '共通の履歴'),
+			completion('echo p04', '共通の履歴'),
+			completion('echo p03', '共通の履歴'),
+			completion('echo p02', '共通の履歴'),
+			completion('echo p01', '共通の履歴'),
 			completion('echo f12', '~/.zsh_history'),
 			completion('echo f11', '~/.zsh_history'),
 			completion('echo f10', '~/.zsh_history'),
@@ -771,7 +771,7 @@ suite('ParadisTerminalHistoryCompletion', () => {
 		];
 		for (const variant of variants) {
 			const harness = createHarness({ ...variant.options, persistedCommands: ['echo persisted'] });
-			const expected = [completion('echo persisted', 'History')];
+			const expected = [completion('echo persisted', '共通の履歴')];
 			assert.deepStrictEqual(await harness.provider.provideCompletions('e', 1, CancellationToken.None), expected, variant.name);
 			assert.deepStrictEqual({
 				read: harness.counters.read,

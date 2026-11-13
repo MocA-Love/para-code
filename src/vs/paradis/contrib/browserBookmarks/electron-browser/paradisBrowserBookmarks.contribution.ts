@@ -157,11 +157,17 @@ class ParadisImportBookmarksAction extends Action2 {
 		const content = await fileService.readFile(uris[0]);
 		const nodes = importParadisBookmarksFromHtml(content.value.toString());
 		const stats = bookmarksService.importNodes(nodes);
-		notificationService.info(localize(
-			'paradis.bookmarks.importResult',
-			"ブックマーク{0}件、フォルダ{1}件をインポートしました（{2}件スキップ）。",
-			stats.bookmarksAdded, stats.foldersAdded, stats.skipped
-		));
+		notificationService.info(stats.blockedScheme > 0
+			? localize(
+				'paradis.bookmarks.importResultWithBlocked',
+				"ブックマーク{0}件、フォルダ{1}件をインポートしました（{2}件スキップ）。http・https 以外の URL（javascript: や file: など）{3}件は、安全のため取り込みませんでした。",
+				stats.bookmarksAdded, stats.foldersAdded, stats.skipped, stats.blockedScheme
+			)
+			: localize(
+				'paradis.bookmarks.importResult',
+				"ブックマーク{0}件、フォルダ{1}件をインポートしました（{2}件スキップ）。",
+				stats.bookmarksAdded, stats.foldersAdded, stats.skipped
+			));
 	}
 }
 

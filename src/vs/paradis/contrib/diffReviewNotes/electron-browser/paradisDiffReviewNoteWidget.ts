@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // 差分エディタの行の下に出すメモの欄（G-01）。書きかけ（入力欄・キャンセル・メモを追加）と、書いたメモ
-// （本文・送信済みの印・消す）の 2 つの形を 1 つの ZoneWidget で出す。Orca の DiffCommentDraftCard と DiffCommentCard に当たる。
+// （本文・送信済みの印・削除）の 2 つの形を 1 つの ZoneWidget で出す。Orca の DiffCommentDraftCard と DiffCommentCard に当たる。
 
 import { $, addDisposableListener, append, EventType } from '../../../../base/browser/dom.js';
 import { Emitter } from '../../../../base/common/event.js';
@@ -16,6 +16,7 @@ import { EditorOption } from '../../../../editor/common/config/editorOptions.js'
 import { Range } from '../../../../editor/common/core/range.js';
 import { ZoneWidget } from '../../../../editor/contrib/zoneWidget/browser/zoneWidget.js';
 import { localize } from '../../../../nls.js';
+import { ParadisButton } from '../../../browser/paradisButton.js';
 import { IParadisDiffReviewNote, PARADIS_DIFF_REVIEW_NOTE_BODY_MAX } from '../common/paradisDiffReviewNotes.js';
 
 /** 欄の場所。`startLine` は範囲の最初の行、`side` は差分のどちら側か（770-RES）。 */
@@ -50,7 +51,7 @@ export class ParadisDiffReviewNoteWidget extends ZoneWidget {
 	/** 書きかけで「キャンセル」（Esc）。 */
 	readonly onDidCancel = this._onDidCancel.event;
 	private readonly _onDidDelete = this._disposables.add(new Emitter<void>());
-	/** 書いたメモの「消す」。 */
+	/** 書いたメモの「削除」。 */
 	readonly onDidDelete = this._onDidDelete.event;
 
 	private textarea: HTMLTextAreaElement | undefined;
@@ -72,9 +73,9 @@ export class ParadisDiffReviewNoteWidget extends ZoneWidget {
 			if (note.sentAt !== undefined) {
 				append(head, $('span.paradis-diff-review-note-sent')).textContent = localize('paradis.diffReviewNotes.sent', "送信済み");
 			}
-			const remove = append(head, $('button.paradis-diff-review-note-button.secondary')) as HTMLButtonElement;
-			remove.textContent = localize('paradis.diffReviewNotes.delete', "消す");
-			this._disposables.add(addDisposableListener(remove, EventType.CLICK, () => this._onDidDelete.fire()));
+			// 戻せない操作なのでキットの危険の種類（paradis-19-14 案 B）
+			const remove = this._disposables.add(new ParadisButton(head, { kind: 'danger', small: true, label: localize('paradis.diffReviewNotes.delete', "削除") }));
+			this._disposables.add(remove.onDidClick(() => this._onDidDelete.fire()));
 			append(card, $('.paradis-diff-review-note-body')).textContent = note.body;
 			return;
 		}
@@ -86,12 +87,10 @@ export class ParadisDiffReviewNoteWidget extends ZoneWidget {
 		textarea.setAttribute('aria-label', localize('paradis.diffReviewNotes.inputLabel', "{0}へのメモ", placeLabel(this.mode)));
 		this.textarea = textarea;
 		const actions = append(card, $('.paradis-diff-review-note-actions'));
-		const cancel = append(actions, $('button.paradis-diff-review-note-button.secondary')) as HTMLButtonElement;
-		cancel.textContent = localize('paradis.diffReviewNotes.cancel', "キャンセル");
-		const add = append(actions, $('button.paradis-diff-review-note-button')) as HTMLButtonElement;
-		add.textContent = localize('paradis.diffReviewNotes.add', "メモを追加");
-		this._disposables.add(addDisposableListener(cancel, EventType.CLICK, () => this._onDidCancel.fire()));
-		this._disposables.add(addDisposableListener(add, EventType.CLICK, () => this.submit()));
+		const cancel = this._disposables.add(new ParadisButton(actions, { kind: 'secondary', small: true, label: localize('paradis.diffReviewNotes.cancel', "キャンセル") }));
+		const add = this._disposables.add(new ParadisButton(actions, { kind: 'primary', small: true, label: localize('paradis.diffReviewNotes.add', "メモを追加") }));
+		this._disposables.add(cancel.onDidClick(() => this._onDidCancel.fire()));
+		this._disposables.add(add.onDidClick(() => this.submit()));
 		this._disposables.add(addDisposableListener(textarea, EventType.KEY_DOWN, (event: KeyboardEvent) => {
 			// 日本語の変換を確定する Enter（変換中・keyCode 229）では追加しない
 			if (event.isComposing || event.keyCode === 229) {

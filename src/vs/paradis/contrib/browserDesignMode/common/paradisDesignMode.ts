@@ -104,7 +104,9 @@ export interface IParadisPickedElement {
 
 export type ParadisDesignPickResult =
 	| { readonly kind: 'picked'; readonly element: IParadisPickedElement }
-	| { readonly kind: 'cancelled' };
+	| { readonly kind: 'cancelled' }
+	/** ページが modal の dialog などを前面に出していて、選択の覆いの上を押せない。 */
+	| { readonly kind: 'blocked' };
 
 /** ページ上に出す番号札。 */
 export interface IParadisDesignPin {
@@ -117,7 +119,8 @@ export interface IParadisDesignPin {
 export interface IParadisDesignModeMainService {
 	/**
 	 * ページに要素選択の仕掛けを入れ直し（番号札も `pins` で置き直す）、ユーザーがクリック
-	 * するまで待つ。Esc・{@link cancelPick}・ページ遷移で `cancelled` を返す。
+	 * するまで待つ。Esc・{@link cancelPick}・ページ遷移で `cancelled` を返す。ページの modal の
+	 * dialog が開いている（または top layer の上を押された）ときは `blocked` を返す。
 	 */
 	pickElement(viewId: string, pins: readonly IParadisDesignPin[]): Promise<ParadisDesignPickResult>;
 	cancelPick(viewId: string): Promise<void>;

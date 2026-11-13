@@ -2415,7 +2415,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		this._tabsEl.style.display = '';
 		const accessibleTabs: ParadisOfficeTabEntry[] = [];
 		this._sheets.forEach((sheet, idx) => {
-			const tab = appendParadisSpreadsheetSheetTab(this._tabsEl!, { label: sheet.name, tabColor: sheet.tabColor, protectedSheet: sheet.protectedSheet });
+			const tab = appendParadisSpreadsheetSheetTab(this._tabsEl!, { label: sheet.name, tabColor: sheet.tabColor, protectedSheet: sheet.protectedSheet }, tabsStore);
 			accessibleTabs.push({
 				element: tab,
 				label: sheet.protectedSheet

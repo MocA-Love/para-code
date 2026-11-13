@@ -84,7 +84,7 @@ suite('ParadisBrowserShareActionViewItem', () => {
 		const list = part('.paradis-browser-share-list-button');
 		return {
 			checked: part('.paradis-browser-share-item').classList.contains('checked'),
-			badge: part('.paradis-browser-share-badge').textContent,
+			badge: part('.paradis-browser-share-main .paradis-count').textContent,
 			mainLabel: main.getAttribute('aria-label'),
 			listHidden: list.hidden,
 			listLabel: list.getAttribute('aria-label'),

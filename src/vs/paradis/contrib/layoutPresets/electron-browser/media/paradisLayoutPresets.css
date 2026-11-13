@@ -155,16 +155,12 @@
 	border-bottom: 1px solid var(--vscode-editorWidget-border);
 }
 
-.paradis-layout-pane-kind {
-	flex: 0 0 auto;
+/* The kind drop-down is the kit's (paradisSelect.css); this keeps the header row's density (22px, 11px). The colors,
+	line and radius come from the kit. Two classes so it beats the kit's `.paradis-select > select`. */
+.paradis-layout-pane-header .paradis-layout-pane-kind {
 	max-width: 110px;
 	height: 22px;
-	padding: 0 4px;
-	border: 1px solid var(--vscode-input-border, transparent);
-	border-radius: 4px;
-	background-color: var(--vscode-input-background);
-	color: var(--vscode-input-foreground);
-	font-family: inherit;
+	padding: 0 22px 0 6px;
 	font-size: 11px;
 }
 
@@ -245,6 +241,7 @@
 	align-items: center;
 	justify-content: center;
 	z-index: 2;
+	padding: 0;
 	border: 0;
 	background-color: transparent;
 	color: var(--vscode-focusBorder);
@@ -351,6 +348,23 @@
 
 .paradis-layout-popover-item:hover {
 	background-color: var(--vscode-list-hoverBackground);
+}
+
+/* The part of a row that applies the preset (the thumbnail and the name). Same reset as the row. */
+.paradis-layout-popover-apply {
+	display: flex;
+	flex: 1 1 auto;
+	align-items: center;
+	gap: 10px;
+	min-width: 0;
+	padding: 0;
+	border: 0;
+	border-radius: 4px;
+	background: transparent;
+	color: inherit;
+	font-family: inherit;
+	text-align: left;
+	cursor: pointer;
 }
 
 /* 形のサムネイル。枠の割合をそのまま縮めて描くので、名前を読まなくても形が分かる。 */

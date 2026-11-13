@@ -54,6 +54,7 @@ import { IKeybindingService } from '../../../../platform/keybinding/common/keybi
 import { KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IQuickInputButton, IQuickInputService, IQuickPick, IQuickPickItem, IQuickPickSeparator, QuickInputType } from '../../../../platform/quickinput/common/quickInput.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
@@ -236,6 +237,7 @@ class ParadisCrossJumpSession extends Disposable {
 		@IParadisAgentInsightsService private readonly insightsService: IParadisAgentInsightsService,
 		@IFileService private readonly fileService: IFileService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super();
 		this.kind = initialKind === 'command' ? 'all' : initialKind;
@@ -366,7 +368,7 @@ class ParadisCrossJumpSession extends Disposable {
 			onSelect: kind => this.selectKind(kind),
 			onHelp: () => this.switchTo('?'),
 			onTogglePreview: () => void this.commandService.executeCommand(PARADIS_PALETTE_TOGGLE_PREVIEW_COMMAND_ID),
-		}));
+		}, this.hoverService));
 		this._register(this.configurationService.onDidChangeConfiguration(event => {
 			if (event.affectsConfiguration(PARADIS_PALETTE_PREVIEW_SETTING)) {
 				this.updateKinds();
@@ -973,6 +975,7 @@ class ParadisPaletteCommandsKinds extends Disposable implements IWorkbenchContri
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IKeybindingService private readonly keybindingService: IKeybindingService,
+		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super();
 		this.kindsVisible = ParadisPaletteKindsVisibleContext.bindTo(contextKeyService);
@@ -1010,7 +1013,7 @@ class ParadisPaletteCommandsKinds extends Disposable implements IWorkbenchContri
 			},
 			onHelp: () => this.quickInputService.quickAccess.show('?'),
 			onTogglePreview: () => void this.commandService.executeCommand(PARADIS_PALETTE_TOGGLE_PREVIEW_COMMAND_ID),
-		}));
+		}, this.hoverService));
 		const update = () => {
 			const keybinding = this.keybindingService.lookupKeybinding(PARADIS_PALETTE_TOGGLE_PREVIEW_COMMAND_ID)?.getLabel() ?? undefined;
 			bar.update({ selected: 'command', counts: {}, attention: 0, ...paradisPalettePreviewToggle(this.layoutService, this.configurationService, keybinding) });

@@ -13,6 +13,7 @@
 /** shared process 側の通知バックエンド (node/paradisNotificationsChannel.ts) のIPCチャネル名。 */
 export const PARADIS_NOTIFICATIONS_CHANNEL = 'paradisNotifications';
 
+import { localize } from '../../../../nls.js';
 import type { IParadisPlayElevenLabsRequest } from './paradisElevenLabs.js';
 import type { ParadisYtDlpPrecursor } from './paradisYtDlp.js';
 
@@ -20,10 +21,11 @@ import type { ParadisYtDlpPrecursor } from './paradisYtDlp.js';
 
 export interface IParadisRingtoneData {
 	readonly id: string;
+	/** 曲名。元の音源（Superset の同名の音）と照らし合わせられるよう訳さない。 */
 	readonly name: string;
+	/** 画面に出す説明（localize 済み）。 */
 	readonly description: string;
 	readonly filename: string;
-	readonly emoji: string;
 	/** 秒。カスタム音源は undefined（都度メタデータから取得）。 */
 	readonly duration?: number;
 }
@@ -31,28 +33,30 @@ export interface IParadisRingtoneData {
 export const CUSTOM_RINGTONE_ID = 'custom';
 export const DEFAULT_RINGTONE_ID = 'arcade';
 
-/** ビルトイン着信音。Superset (apps/desktop の shared/ringtones.ts) と同一データ。 */
+/** ビルトイン着信音。Superset (apps/desktop の shared/ringtones.ts) と同じ音・名前で、説明だけ日本語にしている。 */
 export const PARADIS_RINGTONES: readonly IParadisRingtoneData[] = Object.freeze([
-	{ id: 'shamisen', name: 'Shamisen', description: 'Japanese string instrument', filename: 'shamisen.mp3', emoji: '🪕', duration: 1 },
 	// allow-any-unicode-next-line
-	{ id: 'arcade', name: 'Arcade', description: 'Retro game sounds', filename: 'arcade.mp3', emoji: '🕹️', duration: 3 },
+	{ id: 'shamisen', name: 'Shamisen', description: localize('paradis.ringtone.shamisen', "三味線の音"), filename: 'shamisen.mp3', duration: 1 },
 	// allow-any-unicode-next-line
-	{ id: 'ping', name: 'Ping', description: 'Quick alert tone', filename: 'ping.mp3', emoji: '📍', duration: 1 },
+	{ id: 'arcade', name: 'Arcade', description: localize('paradis.ringtone.arcade', "レトロなゲームの効果音"), filename: 'arcade.mp3', duration: 3 },
 	// allow-any-unicode-next-line
-	{ id: 'quick', name: 'Quick Ping', description: 'Short & sweet', filename: 'supersetquick.mp3', emoji: '⚡', duration: 3 },
+	{ id: 'ping', name: 'Ping', description: localize('paradis.ringtone.ping', "短い通知音"), filename: 'ping.mp3', duration: 1 },
 	// allow-any-unicode-next-line
-	{ id: 'doowap', name: 'Doo-Wap', description: 'Retro vibes', filename: 'supersetdoowap.mp3', emoji: '🎷', duration: 10 },
+	{ id: 'quick', name: 'Quick Ping', description: localize('paradis.ringtone.quick', "短く軽い音"), filename: 'supersetquick.mp3', duration: 3 },
 	// allow-any-unicode-next-line
-	{ id: 'woman', name: 'Agent is Done', description: 'Your agent is done!', filename: 'agentisdonewoman.mp3', emoji: '👩‍💻', duration: 8 },
+	{ id: 'doowap', name: 'Doo-Wap', description: localize('paradis.ringtone.doowap', "レトロな雰囲気の曲"), filename: 'supersetdoowap.mp3', duration: 10 },
 	// allow-any-unicode-next-line
-	{ id: 'african', name: 'Code Complete', description: 'World music energy', filename: 'codecompleteafrican.mp3', emoji: '🌍', duration: 9 },
+	{ id: 'woman', name: 'Agent is Done', description: localize('paradis.ringtone.woman', "「エージェントが終わりました」の声"), filename: 'agentisdonewoman.mp3', duration: 8 },
 	// allow-any-unicode-next-line
-	{ id: 'afrobeat', name: 'Afrobeat Code Complete', description: 'Groovy celebration', filename: 'codecompleteafrobeat.mp3', emoji: '🥁', duration: 9 },
+	{ id: 'african', name: 'Code Complete', description: localize('paradis.ringtone.african', "ワールドミュージック風の曲"), filename: 'codecompleteafrican.mp3', duration: 9 },
 	// allow-any-unicode-next-line
-	{ id: 'edm', name: 'Long EDM', description: 'Bass goes brrrr', filename: 'codecompleteedm.mp3', emoji: '🎧', duration: 56 },
+	{ id: 'afrobeat', name: 'Afrobeat Code Complete', description: localize('paradis.ringtone.afrobeat', "アフロビートのお祝いの曲"), filename: 'codecompleteafrobeat.mp3', duration: 9 },
 	// allow-any-unicode-next-line
-	{ id: 'comeback', name: 'Come Back!', description: 'Code needs you', filename: 'comebacktothecode.mp3', emoji: '📢', duration: 7 },
-	{ id: 'shabala', name: 'Shabalaba', description: 'Ding dong vibes', filename: 'shabalabadingdong.mp3', emoji: '🎉', duration: 7 },
+	{ id: 'edm', name: 'Long EDM', description: localize('paradis.ringtone.edm', "重低音の長い EDM"), filename: 'codecompleteedm.mp3', duration: 56 },
+	// allow-any-unicode-next-line
+	{ id: 'comeback', name: 'Come Back!', description: localize('paradis.ringtone.comeback', "作業へ呼び戻す声"), filename: 'comebacktothecode.mp3', duration: 7 },
+	// allow-any-unicode-next-line
+	{ id: 'shabala', name: 'Shabalaba', description: localize('paradis.ringtone.shabala', "ディンドンと鳴る曲"), filename: 'shabalabadingdong.mp3', duration: 7 },
 ]);
 
 export function getRingtoneById(id: string): IParadisRingtoneData | undefined {
@@ -68,11 +72,17 @@ export function getRingtoneFilename(id: string): string {
 }
 
 /** shared process (~/.para-code/assets/ringtones/) に保存されたカスタム音源のメタ情報。 */
+/**
+ * カスタム音源の取り込み元。保存済みのメタ情報から見分ける（YouTube は切り出しの編集状態を、Myinstants は出典の
+ * URL を持つ。どちらも無ければファイルから追加した音）。
+ */
+export type ParadisCustomRingtoneSource = 'file' | 'youtube' | 'myinstants';
+
 export interface IParadisCustomRingtoneInfo {
 	readonly id: typeof CUSTOM_RINGTONE_ID;
 	readonly name: string;
-	readonly description: string;
-	readonly emoji: string;
+	/** 説明の文言は画面の側が取り込み元から選ぶ（shared process では訳さない）。 */
+	readonly source: ParadisCustomRingtoneSource;
 	readonly thumbnailUrl?: string;
 	readonly duration?: number;
 }

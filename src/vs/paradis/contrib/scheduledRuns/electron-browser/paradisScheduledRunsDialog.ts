@@ -16,10 +16,12 @@
 import './media/paradisScheduledRuns.css';
 import * as dom from '../../../../base/browser/dom.js';
 import { Codicon } from '../../../../base/common/codicons.js';
+import { safeIntl } from '../../../../base/common/date.js';
 import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { isCancellationError } from '../../../../base/common/errors.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { language } from '../../../../base/common/platform.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
@@ -72,6 +74,8 @@ import { PARADIS_MODAL_DRAFT_RESTORED, ParadisModalDrafts } from '../../paradisS
 import { paradisAppendAgentListLockNotice } from '../../agentModelCatalog/browser/paradisAgentListLockNotice.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
+import { paradisButtonClasses, ParadisButtonKind } from '../../../browser/paradisButton.js';
+import { createParadisChip } from '../../../browser/paradisBadges.js';
 import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
 import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
@@ -116,7 +120,14 @@ function formatClock(date: Date): string {
 	return `${date.getHours()}:${String(date.getMinutes()).padStart(2, '0')}`;
 }
 
-/** 近い日付は「今日」「明日」「昨日」で書く。 */
+/** 今年の日付（2月26日(木)）と、年の違う日付（2025年12月25日(木)）の書き方。言語の設定に従う。 */
+const sameYearDateFormat = safeIntl.DateTimeFormat(language, { month: 'short', day: 'numeric', weekday: 'short' });
+const otherYearDateFormat = safeIntl.DateTimeFormat(language, { year: 'numeric', month: 'short', day: 'numeric', weekday: 'short' });
+
+/**
+ * 近い日付は「今日」「明日」「昨日」で書く。それ以外は曜日を付け、年が今年と違うときだけ年を付ける
+ * （履歴は 30 行・片付け候補の行は 1 行ずつなので、並びから年を推し量れないことがある）。
+ */
 export function paradisFormatScheduledTime(time: number, now: number = Date.now()): string {
 	const date = new Date(time);
 	const startOfDay = (value: Date) => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
@@ -126,7 +137,10 @@ export function paradisFormatScheduledTime(time: number, now: number = Date.now(
 		case 0: return localize('paradis.scheduledRuns.time.today', "今日 {0}", clock);
 		case 1: return localize('paradis.scheduledRuns.time.tomorrow', "明日 {0}", clock);
 		case -1: return localize('paradis.scheduledRuns.time.yesterday', "昨日 {0}", clock);
-		default: return `${date.getMonth() + 1}/${date.getDate()} ${clock}`;
+		default: {
+			const format = date.getFullYear() === new Date(now).getFullYear() ? sameYearDateFormat : otherYearDateFormat;
+			return `${format.value.format(date)} ${clock}`;
+		}
 	}
 }
 
@@ -214,10 +228,10 @@ export function paradisFormScheduleToCron(values: Pick<IFormValues, 'scheduleKin
 }
 
 /**
- * 保存せずに閉じた編集のフォーム（`edit:<定期実行の id>` または新規の `new:<スペース>` → 値）。別のモーダルを開いたときや
- * 閉じるボタン・外側の押下で閉じたときに打ちかけの入力を覚えておき、次に同じ定期実行の編集（新規なら新規作成）を
- * 始めたときに戻す。「キャンセル」（Esc を含む）と保存で捨てる。新規の下書きはスペースごとに分ける（分けないと、
- * あるスペースのリポジトリを選んだ下書きが、別のスペースの新規作成に戻る）。
+ * 保存せずに閉じた編集のフォーム（`edit:<定期実行の id>` または新規の `new:<スペース>` → 値）。別のモーダルを開いたとき、
+ * 閉じるボタン・外側の押下・Esc・左の一覧・「新規作成」で離れたときに打ちかけの入力を覚えておき、次に同じ定期実行の
+ * 編集（新規なら新規作成）を始めたときに戻す。捨てるのは「キャンセル」（入力があれば確かめてから）と保存だけ。新規の
+ * 下書きはスペースごとに分ける（分けないと、あるスペースのリポジトリを選んだ下書きが、別のスペースの新規作成に戻る）。
  */
 const formDrafts = new ParadisModalDrafts<IFormValues>();
 const NEW_FORM_DRAFT_KEY = 'new';
@@ -246,6 +260,12 @@ function draftFromForm(values: IFormValues): IParadisScheduledRunDraft {
 		dailyLimit: values.dailyLimit,
 		...(values.precheckCommand.trim() ? { precheck: { command: values.precheckCommand, timeoutSeconds: values.precheckTimeoutSeconds } } : {}),
 	};
+}
+
+/** ボタンを押せなくする。UI キットのボタンは押せない見た目を `disabled` のクラスで描くので、両方を合わせる。 */
+function setButtonDisabled(button: HTMLButtonElement, disabled: boolean): void {
+	button.disabled = disabled;
+	button.classList.toggle('disabled', disabled);
 }
 
 export class ParadisScheduledRunsDialog extends Disposable {
@@ -342,7 +362,10 @@ export class ParadisScheduledRunsDialog extends Disposable {
 			modal: this.modal,
 			onEscape: () => {
 				if (this.editing) {
-					this.cancelEdit();
+					// 閉じるボタンと同じく、入力は下書きに残す（捨てるのは「キャンセル」だけ）
+					this.leaveEdit();
+					this.renderNav();
+					this.renderContent();
 				} else {
 					this.dispose();
 				}
@@ -365,9 +388,22 @@ export class ParadisScheduledRunsDialog extends Disposable {
 	}
 
 	/** 編集のフォームで入力していれば、下書きとして残す（閉じる・別の定期実行へ移る・新規作成へ切り替えるとき）。 */
-	private keepEditingDraft(): void {
+	private keepEditingDraft(): boolean {
 		if (this.editing && this.editingDirty) {
 			formDrafts.keep(this.editingDraftKey, this.editing);
+			return true;
+		}
+		return false;
+	}
+
+	/** 編集をやめて一覧へ戻る（Esc・左の一覧）。入力していれば下書きに残し、そのことを知らせる。描き直しは呼ぶ側がする。 */
+	private leaveEdit(): void {
+		const kept = this.keepEditingDraft();
+		this.editing = undefined;
+		if (kept) {
+			this.showMessage(localize('paradis.scheduledRuns.draftKept', "編集中の内容を下書きに残しました。もう一度「編集」を押すと戻ります。"), 'info');
+		} else {
+			this.clearMessage();
 		}
 	}
 
@@ -408,6 +444,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		this.navDisposables.clear();
 		dom.clearNode(this.navList);
 		const definitions = this.state?.definitions ?? [];
+		const drafts = new Set(formDrafts.keys());
 		if (definitions.length === 0) {
 			dom.append(this.navList, $('.psr-nav-empty')).textContent = localize('paradis.scheduledRuns.navEmpty', "まだありません。「新規作成」から作ります。");
 			return;
@@ -415,12 +452,21 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		for (const definition of definitions) {
 			const item = dom.append(this.navList, $('button.psr-nav-item.paradis-focus-ring-inset')) as HTMLButtonElement;
 			item.type = 'button';
-			item.classList.toggle('active', this.editing ? this.editing.id === definition.id : definition.id === this.selectedId);
+			const active = this.editing ? this.editing.id === definition.id : definition.id === this.selectedId;
+			item.classList.toggle('active', active);
+			if (active) {
+				// 選んでいる項目を読み上げにも伝える（項目は描くたびに作り直すので、他の項目には付いていない）
+				item.setAttribute('aria-current', 'true');
+			}
 			const latest = this.runsOf(definition.id)[0];
 			const dot = dom.append(item, $('span.psr-dot'));
 			dot.classList.add(definition.enabled ? (latest ? `tone-${statusTone(latest)}` : 'tone-idle') : 'tone-off');
 			const main = dom.append(item, $('span.psr-nav-main'));
-			dom.append(main, $('span.psr-nav-name')).textContent = definition.name;
+			const title = dom.append(main, $('span.psr-nav-title'));
+			dom.append(title, $('span.psr-nav-name')).textContent = definition.name;
+			if (drafts.has(paradisScheduledRunFormDraftKey(definition.id, undefined))) {
+				createParadisChip(title, localize('paradis.scheduledRuns.draftChip', "下書き"), 'warning');
+			}
 			if (definition.createdByAgent) {
 				dom.append(main, $('span.psr-chip')).textContent = localize('paradis.scheduledRuns.createdByAgent', "エージェントが作成");
 			}
@@ -433,11 +479,11 @@ export class ParadisScheduledRunsDialog extends Disposable {
 					: paradisDescribeCron(definition.schedule);
 			this.navDisposables.add(dom.addDisposableListener(item, 'click', () => {
 				if (this.editing) {
-					this.keepEditingDraft();
-					this.editing = undefined;
+					this.leaveEdit();
+				} else {
+					this.clearMessage();
 				}
 				this.selectedId = definition.id;
-				this.clearMessage();
 				this.renderNav();
 				this.renderContent();
 			}));
@@ -499,7 +545,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		this.contentDisposables.add(dom.addDisposableListener(runNow, 'click', () => this.runNow(definition)));
 		const edit = this.button(head, localize('paradis.scheduledRuns.edit', "編集"), 'secondary', Codicon.edit);
 		this.contentDisposables.add(dom.addDisposableListener(edit, 'click', () => this.startEdit(definition)));
-		const remove = this.button(head, localize('paradis.scheduledRuns.delete', "削除"), 'secondary', Codicon.trash);
+		const remove = this.button(head, localize('paradis.scheduledRuns.delete', "削除"), 'danger', Codicon.trash);
 		this.contentDisposables.add(dom.addDisposableListener(remove, 'click', () => this.deleteDefinition(definition)));
 
 		if (!definition.enabled && definition.disabledReason) {
@@ -617,9 +663,9 @@ export class ParadisScheduledRunsDialog extends Disposable {
 			dom.append(row, $('td.psr-num')).textContent = usage?.cost !== undefined ? `$${usage.cost.toFixed(2)}` : '—';
 			const actions = dom.append(row, $('td.psr-actions'));
 			if (paradisIsActiveRunStatus(run.status)) {
-				const stop = this.button(actions, localize('paradis.scheduledRuns.stop', "停止"), 'secondary', Codicon.debugStop);
+				const stop = this.button(actions, localize('paradis.scheduledRuns.stop', "停止"), 'secondary', Codicon.debugStop, true);
 				this.contentDisposables.add(dom.addDisposableListener(stop, 'click', async () => {
-					stop.disabled = true;
+					setButtonDisabled(stop, true);
 					const result = await this.client.stop(run.id);
 					if (!result.ok) {
 						this.showMessage(result.error ?? '', 'error');
@@ -627,7 +673,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 				}));
 			}
 			if (run.space && this.findWorktree(run.space.stateKey)) {
-				const open = this.button(actions, localize('paradis.scheduledRuns.openSpace', "スペースを開く"), 'secondary', Codicon.goToFile);
+				const open = this.button(actions, localize('paradis.scheduledRuns.openSpace', "スペースを開く"), 'secondary', Codicon.goToFile, true);
 				this.contentDisposables.add(dom.addDisposableListener(open, 'click', () => this.openSpace(run)));
 			}
 		}
@@ -653,11 +699,11 @@ export class ParadisScheduledRunsDialog extends Disposable {
 			const main = dom.append(row, $('.psr-cleanup-main'));
 			dom.append(main, $('.psr-cleanup-name')).textContent = space.name;
 			dom.append(main, $('.psr-muted')).textContent = `${space.branch} · ${paradisFormatScheduledTime(run.createdAt)}`;
-			const open = this.button(row, localize('paradis.scheduledRuns.openSpace', "スペースを開く"), 'secondary');
+			const open = this.button(row, localize('paradis.scheduledRuns.openSpace', "スペースを開く"), 'secondary', undefined, true);
 			this.contentDisposables.add(dom.addDisposableListener(open, 'click', () => this.openSpace(run)));
-			const remove = this.button(row, localize('paradis.scheduledRuns.removeSpace', "削除…"), 'secondary');
+			const remove = this.button(row, localize('paradis.scheduledRuns.removeSpace', "削除…"), 'secondary', undefined, true);
 			this.contentDisposables.add(dom.addDisposableListener(remove, 'click', () => this.removeSpace(run)));
-			const forget = this.button(row, localize('paradis.scheduledRuns.forgetSpace', "一覧から外す"), 'secondary');
+			const forget = this.button(row, localize('paradis.scheduledRuns.forgetSpace', "一覧から外す"), 'secondary', undefined, true);
 			this.contentDisposables.add(dom.addDisposableListener(forget, 'click', () => this.client.forgetSpace(run.id)));
 		}
 	}
@@ -808,6 +854,22 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		this.clearMessage();
 		this.renderNav();
 		this.renderContent();
+	}
+
+	/** 「キャンセル」: 入力していれば確かめてから、入力と下書きを捨てて一覧へ戻る。 */
+	private async confirmCancelEdit(values: IFormValues): Promise<void> {
+		if (this.editingDirty) {
+			const { confirmed } = await this.paradisDialogService.confirm({
+				destructive: true,
+				message: localize('paradis.scheduledRuns.discardConfirm', "未保存の変更を破棄しますか？"),
+				primaryButton: localize('paradis.scheduledRuns.discardButton', "破棄"),
+			});
+			// 確かめている間に閉じた・別の編集へ移ったときは何もしない
+			if (!confirmed || this._store.isDisposed || this.editing !== values) {
+				return;
+			}
+		}
+		this.cancelEdit();
 	}
 
 	private cancelEdit(): void {
@@ -987,8 +1049,8 @@ export class ParadisScheduledRunsDialog extends Disposable {
 				schedulePreview.textContent = '';
 			}
 			error.textContent = problem ?? '';
-			save.disabled = problem !== undefined;
-			precheckTry.disabled = values.precheckCommand.trim().length === 0;
+			setButtonDisabled(save, problem !== undefined);
+			setButtonDisabled(precheckTry, values.precheckCommand.trim().length === 0);
 		};
 
 		this.contentDisposables.add(kind.onDidChange(() => { values.scheduleKind = kind.value as ScheduleKind; update(); }));
@@ -1020,17 +1082,17 @@ export class ParadisScheduledRunsDialog extends Disposable {
 			update();
 		}));
 		this.contentDisposables.add(dom.addDisposableListener(limit, 'input', () => { values.dailyLimit = Number(limit.value); update(); }));
-		this.contentDisposables.add(dom.addDisposableListener(cancel, 'click', e => { e.preventDefault(); this.cancelEdit(); }));
+		this.contentDisposables.add(dom.addDisposableListener(cancel, 'click', e => { e.preventDefault(); this.confirmCancelEdit(values); }));
 		this.contentDisposables.add(dom.addDisposableListener(form, 'submit', async e => {
 			e.preventDefault();
-			save.disabled = true;
+			setButtonDisabled(save, true);
 			const result = await this.client.save(draftFromForm(values));
 			if (this._store.isDisposed) {
 				return;
 			}
 			if (!result.ok) {
 				error.textContent = result.error ?? '';
-				save.disabled = false;
+				setButtonDisabled(save, false);
 				return;
 			}
 			formDrafts.discard(this.editingDraftKey);
@@ -1049,7 +1111,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 
 	/** 事前確認を 1 回だけ試し、終了コードと出力をフォームの下に出す（保存はしない）。 */
 	private async tryPrecheck(values: IFormValues, button: HTMLButtonElement, output: HTMLElement): Promise<void> {
-		button.disabled = true;
+		setButtonDisabled(button, true);
 		output.style.display = '';
 		output.classList.remove('psr-danger-text');
 		output.textContent = localize('paradis.scheduledRuns.precheckRunning', "事前確認を実行しています…");
@@ -1057,7 +1119,7 @@ export class ParadisScheduledRunsDialog extends Disposable {
 			if (this._store.isDisposed) {
 				return;
 			}
-			button.disabled = false;
+			setButtonDisabled(button, false);
 			output.textContent = text;
 			output.classList.toggle('psr-danger-text', failed);
 		};
@@ -1113,8 +1175,10 @@ export class ParadisScheduledRunsDialog extends Disposable {
 		select.setOptions(options.map(([id, label]) => ({ value: id, label })), value);
 	}
 
-	private button(container: HTMLElement, label: string, kind: 'primary' | 'secondary', icon?: ThemeIcon): HTMLButtonElement {
-		const button = dom.append(container, $(`button.psr-button.paradis-focus-ring.${kind}`)) as HTMLButtonElement;
+	/** UI キットのボタン。見出し・本文の頭・フッターは標準（28px）、表と片付け候補の行の中は `small`（24px）。 */
+	private button(container: HTMLElement, label: string, kind: Extract<ParadisButtonKind, 'primary' | 'secondary' | 'danger'>, icon?: ThemeIcon, small?: boolean): HTMLButtonElement {
+		const button = dom.append(container, $('button')) as HTMLButtonElement;
+		button.classList.add(...paradisButtonClasses(kind, small));
 		button.type = 'button';
 		if (icon) {
 			button.appendChild($(`span${ThemeIcon.asCSSSelector(icon)}`));

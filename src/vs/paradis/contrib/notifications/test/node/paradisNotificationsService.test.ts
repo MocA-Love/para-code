@@ -294,7 +294,7 @@ suite('ParadisNotificationsService boundaries', () => {
 					audio: readFileSync(join(assetsDir, 'notification-custom.mp3')).equals(Buffer.from(MP3_BYTES)),
 					tempGone: await service.ringtones.readTempAudioFile(downloaded.tempId),
 				}, {
-					info: { id: 'custom', name: 'Fahhh', description: 'Imported from your local machine', emoji: '\u{1F50A}' },
+					info: { id: 'custom', name: 'Fahhh', source: 'myinstants' },
 					afterImport: { name: 'Fahhh', sourceUrl: MP3_URL, hasEditState: false, hasThumbnail: false },
 					afterRename: { name: 'Renamed', sourceUrl: MP3_URL },
 					editState: null,
@@ -340,10 +340,25 @@ suite('ParadisNotificationsService boundaries', () => {
 				const info = await service.ringtones.getCustomRingtoneInfo();
 				await service.ringtones.renameCustomAudio('Legacy 2');
 				assert.deepStrictEqual({ info, editState: await service.ringtones.getCustomEditState(), metadata: readMetadata() }, {
-					info: { id: 'custom', name: 'Legacy', description: 'Imported from your local machine', emoji: '\u{1F50A}' },
+					info: { id: 'custom', name: 'Legacy', source: 'file' },
 					editState: null,
 					metadata: { name: 'Legacy 2', importedAt: 1 },
 				});
+			});
+
+			test('tells where the custom audio came from by its saved metadata', async () => {
+				writeFileSync(join(assetsDir, 'notification-custom.mp3'), 'clip');
+				const service = createServiceWithAssets();
+				const sourceOf = async (metadata: object) => {
+					writeFileSync(join(assetsDir, 'notification-custom.json'), JSON.stringify({ name: 'Clip', importedAt: 1, ...metadata }));
+					return (await service.ringtones.getCustomRingtoneInfo())?.source;
+				};
+				assert.deepStrictEqual({
+					file: await sourceOf({}),
+					myinstants: await sourceOf({ sourceUrl: MP3_URL }),
+					youtube: await sourceOf({ editState: { startSeconds: 0, endSeconds: 3, sourceUrl: 'https://www.youtube.com/watch?v=jNQXAC9IVRw' } }),
+					youtubeWithoutUrl: await sourceOf({ editState: { startSeconds: 0, endSeconds: 3 } }),
+				}, { file: 'file', myinstants: 'myinstants', youtube: 'youtube', youtubeWithoutUrl: 'youtube' });
 			});
 		});
 	});

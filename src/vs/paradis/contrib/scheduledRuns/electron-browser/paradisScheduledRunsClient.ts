@@ -20,6 +20,7 @@ import {
 	IParadisScheduledRunPrecheckResult,
 	IParadisScheduledRunReport,
 	IParadisScheduledRunRequest,
+	IParadisScheduledRunSpace,
 	IParadisScheduledRunsResult,
 	IParadisScheduledRunsState,
 	PARADIS_SCHEDULED_RUNS_CHANNEL,
@@ -45,6 +46,8 @@ export interface IParadisScheduledRunsClient {
 	getPendingRequests(): Promise<IParadisScheduledRunRequest[]>;
 	claim(runId: string): Promise<IParadisScheduledRunRequest | undefined>;
 	report(report: IParadisScheduledRunReport): Promise<boolean>;
+	/** 起動の途中で止めた回に、後から作り終えたスペースを記録する（片付け候補に載せるため）。 */
+	recordSpace(runId: string, space: IParadisScheduledRunSpace): Promise<boolean>;
 	/** 受け付けられなかった実行の id を返す（もう終わった・不明にされたもの）。 */
 	heartbeat(runIds: readonly string[]): Promise<string[]>;
 	/** 受け持った実行の事前確認を走らせる。false ならエージェントを起動しない（記録は shared process が書いた）。 */
@@ -79,6 +82,7 @@ class ParadisScheduledRunsClient implements IParadisScheduledRunsClient {
 	getPendingRequests(): Promise<IParadisScheduledRunRequest[]> { return this.channel.call('getPendingRequests'); }
 	claim(runId: string): Promise<IParadisScheduledRunRequest | undefined> { return this.channel.call('claim', [runId]); }
 	report(report: IParadisScheduledRunReport): Promise<boolean> { return this.channel.call('report', [report]); }
+	recordSpace(runId: string, space: IParadisScheduledRunSpace): Promise<boolean> { return this.channel.call('recordSpace', [runId, space]); }
 	heartbeat(runIds: readonly string[]): Promise<string[]> { return this.channel.call('heartbeat', [runIds]); }
 	runPrecheck(runId: string, trusted: boolean): Promise<boolean> { return this.channel.call('runPrecheck', [runId, trusted]); }
 	testPrecheck(precheck: IParadisScheduledRunPrecheck, repositoryUri: string, token?: CancellationToken): Promise<{ readonly result?: IParadisScheduledRunPrecheckResult; readonly error?: string }> { return this.channel.call('testPrecheck', [precheck, repositoryUri], token); }

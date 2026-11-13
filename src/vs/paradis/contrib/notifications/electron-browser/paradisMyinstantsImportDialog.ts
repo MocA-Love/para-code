@@ -28,6 +28,7 @@ import { ParadisInputField } from '../../../browser/paradisInputField.js';
 import { ParadisModalSize } from '../../../browser/paradisModal.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { paradisNotifNestedButton, paradisNotifNestedModal } from './paradisNotificationNestedModal.js';
+import { paradisNotifErrorElement, paradisNotifSetFieldError } from './paradisNotificationKitParts.js';
 
 const $ = dom.$;
 
@@ -181,7 +182,7 @@ class ParadisMyinstantsImportDialog extends Disposable {
 			e.preventDefault();
 			void this.openerService.open(URI.parse(PARADIS_MYINSTANTS_HOME_URL), { openExternal: true });
 		}));
-		this._urlErrorEl = dom.append(urlField, $('.pns-error.pns-mi-error'));
+		this._urlErrorEl = paradisNotifErrorElement(urlField, '.pns-error.pns-mi-error', this._urlInput);
 
 		this._previewEl = dom.append(body, $('.pns-mi-body'));
 
@@ -203,7 +204,7 @@ class ParadisMyinstantsImportDialog extends Disposable {
 		}));
 		// 読み込んだ後に URL を書き換えたら、試聴中の音と保存の対象は捨てる（貼った URL と保存する音を食い違わせない）。
 		this._register(dom.addDisposableListener(this._urlInput, 'input', () => {
-			this._urlErrorEl.textContent = '';
+			paradisNotifSetFieldError(this._urlInput, this._urlErrorEl, '');
 			const value = this._urlInput.value.trim();
 			if (this._loaded && value !== this._loadedInput) {
 				this._discardLoaded();
@@ -263,11 +264,11 @@ class ParadisMyinstantsImportDialog extends Disposable {
 		}
 		const check = paradisCheckMyinstantsUrl(this._urlInput.value);
 		if (check.kind !== 'mp3') {
-			this._urlErrorEl.textContent = check.kind === 'empty' ? STR_ERR_EMPTY : check.kind === 'page' ? STR_ERR_PAGE : STR_ERR_INVALID;
+			paradisNotifSetFieldError(this._urlInput, this._urlErrorEl, check.kind === 'empty' ? STR_ERR_EMPTY : check.kind === 'page' ? STR_ERR_PAGE : STR_ERR_INVALID);
 			return;
 		}
 		this._discardLoaded();
-		this._urlErrorEl.textContent = '';
+		paradisNotifSetFieldError(this._urlInput, this._urlErrorEl, '');
 		const generation = ++this._loadGeneration;
 		const input = this._urlInput.value.trim();
 		this._pendingInput = input;
@@ -282,7 +283,7 @@ class ParadisMyinstantsImportDialog extends Disposable {
 				return;
 			}
 			if (!result.ok) {
-				this._urlErrorEl.textContent = failureMessage(result.reason, result.status);
+				paradisNotifSetFieldError(this._urlInput, this._urlErrorEl, failureMessage(result.reason, result.status));
 				return;
 			}
 			this._loaded = result;
@@ -296,7 +297,7 @@ class ParadisMyinstantsImportDialog extends Disposable {
 			if (this._store.isDisposed || generation !== this._loadGeneration) {
 				return;
 			}
-			this._urlErrorEl.textContent = error instanceof Error ? error.message : String(error);
+			paradisNotifSetFieldError(this._urlInput, this._urlErrorEl, error instanceof Error ? error.message : String(error));
 		}).finally(() => {
 			if (!this._store.isDisposed && generation === this._loadGeneration) {
 				this._pendingInput = undefined;
@@ -395,7 +396,7 @@ class ParadisMyinstantsImportDialog extends Disposable {
 		dom.append(notice, $('div')).textContent = STR_COPYRIGHT;
 		dom.append(notice, $('div')).textContent = custom ? strOverwriteNamed(custom.name) : STR_OVERWRITE;
 
-		this._saveErrorEl = dom.append(this._previewEl, $('.pns-error.pns-mi-error'));
+		this._saveErrorEl = paradisNotifErrorElement(this._previewEl, '.pns-error.pns-mi-error');
 		this._saveBtn.disabled = false;
 	}
 

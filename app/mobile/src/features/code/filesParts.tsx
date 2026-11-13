@@ -186,7 +186,7 @@ export function FilesSearchScope({ dir, onClear }: { dir: string; onClear: () =>
 			<Text style={styles.scopeText} numberOfLines={1} ellipsizeMode="head">{`${dir}/ の中を検索`}</Text>
 			<Pressable
 				onPress={() => { haptic('tick'); onClear(); }}
-				hitSlop={hitSlopToMinimum(iconSize.sm)}
+				hitSlop={hitSlopToMinimum(iconSize.sm, iconSize.sm)}
 				accessibilityRole="button"
 				accessibilityLabel="フォルダの絞り込みを外す"
 			>
@@ -337,7 +337,7 @@ const styles = StyleSheet.create({
 	},
 	hit: {
 		color: colors.accent,
-		fontWeight: '700',
+		fontWeight: '600',
 	},
 	statusRow: {
 		minHeight: 36,
@@ -399,7 +399,7 @@ const styles = StyleSheet.create({
 		flexDirection: 'row',
 		alignItems: 'center',
 		gap: space.sm,
-		paddingHorizontal: space.sm + 2,
+		paddingHorizontal: space.row,
 		borderRadius: radius.tile,
 		backgroundColor: colors.raised,
 	},
@@ -419,7 +419,7 @@ const styles = StyleSheet.create({
 	},
 	mode: {
 		justifyContent: 'center',
-		paddingHorizontal: space.sm + 2,
+		paddingHorizontal: space.row,
 		borderRadius: radius.button,
 	},
 	modeOn: {

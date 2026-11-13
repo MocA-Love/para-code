@@ -41,7 +41,8 @@ import { localize } from '../../../../nls.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
-import { paradisWatchPopoverDismiss } from '../../../browser/paradisAnchoredPopover.js';
+import { PARADIS_POPOVER_MOTION_CLASS, paradisRemovePopoverElement, paradisWatchPopoverDismiss } from '../../../browser/paradisAnchoredPopover.js';
+import { ParadisCountBadge } from '../../../browser/paradisBadges.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { BrowserEditor } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
 import { IParadisAgentBrowserBindingModel, IParadisPaneDescriptor, ParadisPageShareKind, ParadisPaneAgentKind } from './paradisAgentBrowserBindingModel.js';
@@ -117,7 +118,7 @@ export class ParadisBrowserShareActionViewItem extends BaseActionViewItem {
 	private _listButton: HTMLElement | undefined;
 	private _mainHover: IManagedHover | undefined;
 	private _listHover: IManagedHover | undefined;
-	private _badge: HTMLElement | undefined;
+	private _badge: ParadisCountBadge | undefined;
 	private readonly _editorListener = this._register(new MutableDisposable());
 	private readonly _modelListener = this._register(new MutableDisposable());
 	private _popover: ParadisBrowserSharePopover | undefined;
@@ -146,8 +147,8 @@ export class ParadisBrowserShareActionViewItem extends BaseActionViewItem {
 		main.role = 'button';
 		main.setAttribute('aria-haspopup', 'dialog');
 		dom.append(main, $(`span.action-label.paradis-browser-share-glyph${ThemeIcon.asCSSSelector(Codicon.plug)}`));
-		this._badge = dom.append(main, $('span.paradis-browser-share-badge'));
-		this._badge.setAttribute('aria-hidden', 'true');
+		// アイコンだけのボタンの右上の数（UI キットの角の数。平常の数なので灰の地。件数は本体の読み上げの名前に入れる）
+		this._badge = new ParadisCountBadge(main, 'overlay');
 
 		// ▾（一覧を開く）。共有があるときだけ出す。本体から右の矢印で移る
 		const listButton = this._listButton = dom.append(this.element, $(`span.paradis-browser-share-list-button.paradis-focus-ring-inset${ThemeIcon.asCSSSelector(Codicon.chevronDown)}`));
@@ -318,9 +319,7 @@ export class ParadisBrowserShareActionViewItem extends BaseActionViewItem {
 		}
 		const count = paradisShareButtonCount(this._entries());
 		element.classList.toggle('checked', count > 0);
-		if (this._badge) {
-			this._badge.textContent = count > 0 ? String(count) : '';
-		}
+		this._badge?.update(count, 'plain');
 		const label = paradisShareButtonLabel(count);
 		main.setAttribute('aria-label', label);
 		this._mainHover?.update(label);
@@ -366,6 +365,7 @@ class ParadisBrowserSharePopover extends Disposable {
 		super();
 		this._container = layoutService.getContainer(dom.getWindow(_anchor));
 		this._element = $('.paradis-browser-share-popover.paradis-focus-none.paradis-overlay-popover');
+		this._element.classList.add(PARADIS_POPOVER_MOTION_CLASS);
 		this._element.tabIndex = -1;
 		this._element.setAttribute('role', 'dialog');
 		const title = localize('paradis.shareButton.popoverTitle', "このページを使えるペイン");
@@ -533,7 +533,7 @@ class ParadisBrowserSharePopover extends Disposable {
 		this._anchor.setAttribute('aria-expanded', 'false');
 		// フォーカスはボタンへ戻す（戻し先は ▾ が隠れていれば本体。ボタンの側が決める）
 		const hadFocus = dom.isAncestorOfActiveElement(this._element);
-		this._element.remove();
+		paradisRemovePopoverElement(this._element);
 		super.dispose();
 		this._onDidClose(hadFocus);
 	}

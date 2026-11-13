@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { app } from 'electron';
-import { statSync, unlinkSync } from 'fs';
+import { chmodSync, promises as fsPromises, statSync, unlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { getHeapSpaceStatistics, writeHeapSnapshot } from 'v8';
 import { isLinux } from '../../../../base/common/platform.js';
@@ -23,6 +23,8 @@ const defaultDependencies: IParadisHeapSnapshotDependencies = {
 	writeHeapSnapshot,
 	stat: statSync,
 	unlink: unlinkSync,
+	chmod: chmodSync,
+	readdir: directory => fsPromises.readdir(directory),
 };
 
 /** app.ts の PARA-PATCH 点から既存 heap snapshot channel を登録する。 */

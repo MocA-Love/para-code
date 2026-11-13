@@ -38,7 +38,7 @@ import { getSafeNotificationMessage } from './notification';
 import { GitQuickDiffProvider, StagedResourceQuickDiffProvider } from './quickDiffProvider';
 import { resolveWorktreeIncludePaths, sanitizeWorktreeIncludePatterns } from './worktreeInclude';
 import { createWorktreeSymlink, filterWorktreeSymlinkFolders, getWorktreeSymlinkFolderCandidates, type WorktreeSymlinkStatus } from './worktreeSymlink';
-import { ParadisParkedRefreshGate, ParadisParkedStatusWriteGuard } from './paradisRepositoryPark'; // PARA-PATCH: see paradisUpdateModelStateUnlessParked() and _updateModelState()
+import { ParadisParkedRefreshGate, ParadisParkedStatusWriteGuard, paradisSkipFileChangeWhileParked, paradisWaitWhileParked } from './paradisRepositoryPark'; // PARA-PATCH: see paradisUpdateModelStateUnlessParked(), _updateModelState(), onFileChange() and whenIdleAndFocused()
 
 const timeout = (millis: number) => new Promise(c => setTimeout(c, millis));
 
@@ -3448,12 +3448,7 @@ export class Repository implements Disposable {
 	}
 
 	private onFileChange(_uri: Uri): void {
-		// PARA-PATCH: a parked repository has no watchers, so this should not fire at all. Guard
-		// anyway so an in-flight event delivered during parking cannot start a `git status`.
-		if (!this._scopeActive) {
-			this.logger.trace('[Repository][onFileChange] Skip running git status because the repository is parked.');
-			return;
-		}
+		if (paradisSkipFileChangeWhileParked(this._scopeActive, this.logger)) { return; } // PARA-PATCH: see paradisSkipFileChangeWhileParked()
 
 		const config = workspace.getConfiguration('git');
 		const autorefresh = config.get<boolean>('autorefresh');
@@ -3495,17 +3490,7 @@ export class Repository implements Disposable {
 				continue;
 			}
 
-			// PARA-PATCH: hold back background work (auto fetch, idle `git status`) while the
-			// repository is parked, so a space the user is not looking at costs nothing.
-			//
-			// If the repository is evicted from the parking lot while parked this wait never
-			// resolves, which is fine rather than a leak: Emitter.dispose() drops listeners
-			// without notifying, so the waiter becomes unreachable along with the repository.
-			// See paradisRepositoryPark.ts.
-			if (!this._scopeActive) {
-				await eventToPromise(filterEvent(this._onDidChangeScopeActive.event, () => this._scopeActive));
-				continue;
-			}
+			if (await paradisWaitWhileParked(() => this._scopeActive, this._onDidChangeScopeActive.event)) { continue; } // PARA-PATCH: see paradisWaitWhileParked()
 
 			if (!window.state.focused) {
 				const onDidFocusWindow = filterEvent(window.onDidChangeWindowState, e => e.focused);

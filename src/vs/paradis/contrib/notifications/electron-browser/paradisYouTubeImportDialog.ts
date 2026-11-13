@@ -28,6 +28,7 @@ import { ParadisInputField } from '../../../browser/paradisInputField.js';
 import { IParadisModalHead, ParadisModalSize } from '../../../browser/paradisModal.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { paradisNotifNestedButton, paradisNotifNestedModal } from './paradisNotificationNestedModal.js';
+import { paradisNotifErrorElement, paradisNotifSetFieldError } from './paradisNotificationKitParts.js';
 
 const $ = dom.$;
 
@@ -212,9 +213,10 @@ class ParadisYouTubeImportDialog extends Disposable {
 		urlInput.placeholder = STR_URL_PLACEHOLDER;
 		urlInput.autofocus = true;
 
-		const urlErrorEl = dom.append(urlField, $('.pns-error'));
+		const urlErrorEl = paradisNotifErrorElement(urlField, '.pns-error', urlInput);
+		this._stepDisposables.add(dom.addDisposableListener(urlInput, 'input', () => paradisNotifSetFieldError(urlInput, urlErrorEl, '')));
 
-		const errorEl = dom.append(this._body, $('.pns-error'));
+		const errorEl = paradisNotifErrorElement(this._body, '.pns-error');
 		if (initialError) {
 			errorEl.textContent = initialError;
 		}
@@ -228,7 +230,7 @@ class ParadisYouTubeImportDialog extends Disposable {
 		const doLoad = () => {
 			const url = urlInput.value.trim();
 			if (!YOUTUBE_URL_HINT.test(url)) {
-				urlErrorEl.textContent = STR_URL_INVALID;
+				paradisNotifSetFieldError(urlInput, urlErrorEl, STR_URL_INVALID);
 				return;
 			}
 			this._renderDownloadingStep(url);
@@ -354,7 +356,7 @@ class ParadisYouTubeImportDialog extends Disposable {
 			dom.append(this._body, $('.pns-row-hint')).textContent = PRECURSOR_MESSAGES[precursor];
 		}
 
-		const errorEl = dom.append(this._body, $('.pns-error'));
+		const errorEl = paradisNotifErrorElement(this._body, '.pns-error');
 
 		const footer = this._foot;
 		const cancelBtn = paradisNotifNestedButton(footer, 'secondary', STR_CANCEL);

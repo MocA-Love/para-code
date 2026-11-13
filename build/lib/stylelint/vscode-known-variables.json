@@ -650,6 +650,8 @@
 		"--vscode-paradis-focus",
 		"--vscode-paradis-focusSubtle",
 		"--vscode-paradis-guide",
+		"--vscode-paradis-imageBadge",
+		"--vscode-paradis-imageBadgeForeground",
 		"--vscode-paradis-line",
 		"--vscode-paradis-lineButton",
 		"--vscode-paradis-lineStrong",

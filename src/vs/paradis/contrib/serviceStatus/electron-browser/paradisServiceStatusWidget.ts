@@ -98,6 +98,8 @@ class ParadisServiceStatusWidget extends Disposable {
 		for (const provider of PARADIS_SERVICE_STATUS_PROVIDERS) {
 			const button = dom.append(container, $('button.paradis-service-status-trigger'));
 			button.setAttribute('type', 'button');
+			button.setAttribute('aria-haspopup', 'dialog');
+			button.setAttribute('aria-expanded', 'false');
 			button.dataset.provider = provider;
 			appendParadisServiceStatusLogo(button, provider);
 			this.dots.set(provider, dom.append(button, $('span.paradis-service-status-dot.unknown')));
@@ -173,6 +175,7 @@ class ParadisServiceStatusWidget extends Disposable {
 		}
 		this.activeProvider = provider;
 		button.classList.add('active');
+		button.setAttribute('aria-expanded', 'true');
 		this.popover.value = this.instantiationService.createInstance(ParadisServiceStatusPopover, button, {
 			snapshot: this.latestSnapshot,
 			onClose: restoreFocus => this.closePopover(restoreFocus),
@@ -186,6 +189,7 @@ class ParadisServiceStatusWidget extends Disposable {
 		const button = this.activeProvider ? this.buttons.get(this.activeProvider) : undefined;
 		this.activeProvider = undefined;
 		button?.classList.remove('active');
+		button?.setAttribute('aria-expanded', 'false');
 		this.popover.clear();
 		this.reschedulePolling();
 		if (restoreFocus) {

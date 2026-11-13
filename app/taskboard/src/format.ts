@@ -104,7 +104,11 @@ export function errorText(error: string): string {
 
 export function rpcErrorText(code: TaskBoardErrorCode | 'network', message: string): string {
 	switch (code) {
-		case 'network': return message === 'unauthorized' ? 'サーバーのトークンが変わりました。ターミナルの URL を開き直してください' : 'サーバーにつながりません';
+		case 'network':
+			if (message === 'unauthorized') {
+				return 'サーバーのトークンが変わりました。ターミナルの URL を開き直してください';
+			}
+			return message.startsWith('HTTP ') ? `サーバーが応答しませんでした（${message}）` : 'サーバーにつながりません';
 		case 'step-in-use': return 'その工程にタスクがあるため、工程を消せません。先にタスクを移してください';
 		case 'not-found': return '対象が見つかりません（ほかの操作で変わった可能性があります）';
 		case 'invalid-state': return `今の状態ではできません（${message}）`;

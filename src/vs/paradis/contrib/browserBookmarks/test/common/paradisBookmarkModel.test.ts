@@ -16,6 +16,7 @@ import {
 	insertParadisNodeIntoFolder,
 	IParadisBookmark,
 	IParadisBookmarkFolder,
+	isParadisBookmarkUrlAllowed,
 	moveParadisNodeTo,
 	moveParadisRootNode,
 	normalizeParadisBookmarkUrl,
@@ -62,6 +63,22 @@ suite('Paradis bookmark model', () => {
 		for (const [input, expected] of cases) {
 			assert.strictEqual(normalizeParadisBookmarkUrl(input), expected);
 		}
+	});
+
+	test('allows only http, https, and about: URLs as bookmarks', () => {
+		const urls = ['https://example.com', 'HTTP://example.com/a', 'about:version', 'javascript:alert(1)', ' JavaScript:alert(1)', 'file:///etc/passwd', 'data:text/html,x', 'vbscript:x', 'example.com', ''];
+		assert.deepStrictEqual(urls.map(url => [url, isParadisBookmarkUrlAllowed(url)]), [
+			['https://example.com', true],
+			['HTTP://example.com/a', true],
+			['about:version', true],
+			['javascript:alert(1)', false],
+			[' JavaScript:alert(1)', false],
+			['file:///etc/passwd', false],
+			['data:text/html,x', false],
+			['vbscript:x', false],
+			['example.com', false],
+			['', false],
+		]);
 	});
 
 	test('finds deeply nested nodes, normalized duplicate URLs, and parent folders', () => {

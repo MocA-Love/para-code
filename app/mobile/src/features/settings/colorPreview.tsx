@@ -82,7 +82,7 @@ const styles = StyleSheet.create({
 	buttons: {
 		flexDirection: 'row',
 		gap: space.sm,
-		marginTop: space.sm + 2,
+		marginTop: space.row,
 	},
 	button: {
 		flex: 1,
@@ -113,7 +113,7 @@ const styles = StyleSheet.create({
 		flexDirection: 'row',
 		alignItems: 'center',
 		gap: space.sm,
-		marginTop: space.sm + 2,
+		marginTop: space.row,
 		padding: space.sm,
 		backgroundColor: colors.bg,
 		borderWidth: 1,
@@ -126,7 +126,7 @@ const styles = StyleSheet.create({
 		backgroundColor: colors.raised,
 		borderRadius: radius.input,
 		paddingVertical: space.sm,
-		paddingHorizontal: space.sm + 2,
+		paddingHorizontal: space.row,
 	},
 	placeholder: {
 		fontSize: type.label,

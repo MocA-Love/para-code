@@ -452,6 +452,33 @@ export function paradisApplyAgentLiveManualDrop(
 	return base;
 }
 
+/** ドラッグを使わずにタイルを動かす向き (メニューと Alt+矢印。paradis-16-8)。 */
+export type ParadisAgentLiveMove = 'previous' | 'next' | 'first' | 'last';
+
+/**
+ * 見えている並び (`visibleOrder`) の中で `token` を 1 つ前・後ろ・先頭・末尾へ動かした手動順を返す。
+ * ドラッグと同じく {@link paradisApplyAgentLiveManualDrop} で組み立てるので、見えている並びを土台に手動へ移る。
+ * もう端に居て動けないとき・見えていないときは undefined。
+ */
+export function paradisMoveAgentLiveTile(
+	currentOrder: readonly string[],
+	visibleOrder: readonly string[],
+	token: string,
+	move: ParadisAgentLiveMove,
+): string[] | undefined {
+	const index = visibleOrder.indexOf(token);
+	if (index < 0) {
+		return undefined;
+	}
+	const last = visibleOrder.length - 1;
+	const backward = move === 'previous' || move === 'first';
+	if (backward ? index === 0 : index === last) {
+		return undefined;
+	}
+	const targetIndex = move === 'previous' ? index - 1 : move === 'next' ? index + 1 : move === 'first' ? 0 : last;
+	return paradisApplyAgentLiveManualDrop(currentOrder, visibleOrder, token, visibleOrder[targetIndex], !backward);
+}
+
 /** 経過時間の表示 (「42秒」「3分07秒」「2時間14分」)。 */
 export function paradisFormatAgentLiveDuration(milliseconds: number): string {
 	const total = Math.max(0, Math.floor(milliseconds / 1000));

@@ -12,13 +12,18 @@ import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { observableValue } from '../../../../../base/common/observable.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
+import { IQuickAccessController } from '../../../../../platform/quickinput/common/quickAccess.js';
 import { IQuickInput, IQuickInputService, QuickInputAlignment } from '../../../../../platform/quickinput/common/quickInput.js';
 import { InMemoryStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { PARADIS_QUICK_INPUT_CENTERED_STORAGE_KEY, ParadisQuickInputPosition } from '../../browser/paradisQuickInputPosition.js';
+import { recenterQuickInput } from '../../browser/paradisQuickInputRecenter.js';
 import { ParadisQuickInputScrim } from '../../browser/paradisQuickInputScrim.js';
 import { mainWindow } from '../../../../../base/browser/window.js';
 
-/** upstream の QuickInputService のうち、位置の移し替えと幕が使う所だけ。setAlignment は anchored のとき何もしない (upstream と同じ)。 */
+/**
+ * upstream の QuickInputService のうち、位置の移し替えと幕が使う所だけ。setAlignment は anchored のときと、
+ * 一度も開いていない (upstream のドラッグの仕組みが無い) とき何もしない (upstream と同じ)。
+ */
 class TestQuickInputService {
 	private readonly showEmitter = new Emitter<void>();
 	readonly onShow = this.showEmitter.event;
@@ -28,15 +33,24 @@ class TestQuickInputService {
 	readonly alignment = observableValue<QuickInputAlignment>('alignment', 'top');
 	currentQuickInput: Partial<IQuickInput> | undefined;
 	readonly calls: string[] = [];
+	opened = true;
+	readonly quickAccess: IQuickAccessController = {
+		show: (prefix?: string) => {
+			this.calls.push(`open ${prefix}`);
+			this.show({});
+		},
+		pick: async () => undefined,
+	};
 
 	setAlignment(alignment: 'top' | 'center'): void {
 		this.calls.push(alignment);
-		if (this.currentQuickInput?.anchor === undefined) {
+		if (this.opened && this.currentQuickInput?.anchor === undefined) {
 			this.alignment.set(alignment, undefined);
 		}
 	}
 
 	show(input: Partial<IQuickInput>, alignment?: QuickInputAlignment): void {
+		this.opened = true;
 		this.currentQuickInput = input;
 		if (alignment) {
 			this.alignment.set(alignment, undefined);
@@ -111,6 +125,43 @@ suite('ParadisQuickInputPosition', () => {
 			anchoredOnly: { calls: [], alignment: 'custom', marked: false },
 			auxiliaryWindow: { calls: [], alignment: 'top', marked: false },
 			alreadyMoved: { calls: [], alignment: 'top', marked: true },
+		});
+	});
+});
+
+suite('recenterQuickInput', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	function run(prepare: (quickInput: TestQuickInputService) => void) {
+		const quickInput = new TestQuickInputService();
+		try {
+			prepare(quickInput);
+			quickInput.calls.length = 0;
+			recenterQuickInput(quickInput as Partial<IQuickInputService> as IQuickInputService);
+			return { calls: quickInput.calls, alignment: quickInput.alignment.get() };
+		} finally {
+			quickInput.dispose();
+		}
+	}
+
+	test('moves a quick input left near the top back to the center, and opens the command palette first when the position cannot be moved yet', () => {
+		assert.deepStrictEqual({
+			// 前にドラッグした位置 (custom) のまま閉じている。コマンドパレットから実行したときもこれ
+			customWhileClosed: run(quickInput => {
+				quickInput.show({}, 'custom');
+				quickInput.currentQuickInput = undefined;
+			}),
+			// 一度も開いていない: パレットを開いてから中央に置く
+			neverOpened: run(quickInput => {
+				quickInput.opened = false;
+			}),
+			// 部品の横に出すものが開いている: パレットに替えてから中央に置く
+			anchoredShown: run(quickInput => quickInput.show({ anchor: { x: 1, y: 1 } }, 'custom')),
+		}, {
+			customWhileClosed: { calls: ['center'], alignment: 'center' },
+			neverOpened: { calls: ['center', 'open >', 'center'], alignment: 'center' },
+			anchoredShown: { calls: ['center', 'open >', 'center'], alignment: 'center' },
 		});
 	});
 });

@@ -68,6 +68,14 @@ suite('ParadisPaneIndicator hover highlight', () => {
 		indicator.dispose();
 	});
 
+	test('印はボタンで、説明を読み上げの名前に持つ', () => {
+		setParadisPaneIndicatorHost(new TestHost());
+		const { indicator } = mountIndicator(7);
+		const element = indicator.element;
+		assert.deepStrictEqual({ tag: element.tagName, type: element.getAttribute('type'), label: element.getAttribute('aria-label'), title: element.title }, { tag: 'BUTTON', type: 'button', label: 'test', title: '' });
+		indicator.dispose();
+	});
+
 	test('dispose するとセルからハイライトが外れる', async () => {
 		setParadisPaneIndicatorHost(new TestHost());
 		setParadisHoveredPaneInstanceId(7);

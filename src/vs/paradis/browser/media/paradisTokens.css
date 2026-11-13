@@ -87,6 +87,36 @@
 	z-index: var(--paradis-z-popover);
 }
 
+/* Same for the enter and exit motion of an anchored popover drawn as the stage 3 surface (the browser toolbar's
+	extensions, share and downloads lists): the marker class `paradis-popover-motion`. On close,
+	paradisRemovePopoverElement (paradisAnchoredPopover.ts) adds `paradis-popover-leaving` and removes the element after
+	the exit time; without motion it removes the element at once. */
+.monaco-workbench.monaco-enable-motion .paradis-popover-motion {
+	animation: paradis-popover-enter var(--paradis-motion-enter) var(--paradis-ease-enter);
+}
+
+.monaco-workbench.monaco-enable-motion .paradis-popover-motion.paradis-popover-leaving {
+	animation: paradis-popover-exit var(--paradis-motion-exit) var(--paradis-ease-exit) forwards;
+}
+
+.monaco-workbench .paradis-popover-leaving {
+	pointer-events: none;
+}
+
+@keyframes paradis-popover-enter {
+	from {
+		opacity: 0;
+		transform: translateY(-4px) scale(0.98);
+	}
+}
+
+@keyframes paradis-popover-exit {
+	to {
+		opacity: 0;
+		transform: translateY(-2px);
+	}
+}
+
 /* workbench.reduceMotion (or the OS setting with "auto"): surfaces appear and leave without movement. */
 .monaco-workbench.monaco-reduce-motion {
 	--paradis-motion-enter: 0ms;

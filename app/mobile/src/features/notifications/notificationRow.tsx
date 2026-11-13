@@ -52,9 +52,9 @@ const styles = StyleSheet.create({
 	row: {
 		flexDirection: 'row',
 		alignItems: 'flex-start',
-		gap: space.sm + 2,
+		gap: space.row,
 		paddingVertical: space.md,
-		paddingHorizontal: space.md + 2,
+		paddingHorizontal: space.rowInset,
 	},
 	pressed: {
 		backgroundColor: colors.raised,

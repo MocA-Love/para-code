@@ -18,12 +18,14 @@
 
 import * as dom from '../../../../base/browser/dom.js';
 import { getZoomFactor } from '../../../../base/browser/browser.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { BrowserEditor, BrowserEditorContribution, IContainerLayoutOverride } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { BrowserOverlayManager } from '../../../../workbench/contrib/browserView/electron-browser/overlayManager.js';
 import { IParadisSidePanelView } from '../common/paradisBrowserExtensions.js';
@@ -57,6 +59,7 @@ export class ParadisBrowserExtensionSidePanelFeature extends BrowserEditorContri
 		editor: BrowserEditor,
 		@IParadisBrowserExtensionToolbarService private readonly _toolbarService: IParadisBrowserExtensionToolbarService,
 		@IInstantiationService instantiationService: IInstantiationService,
+		@IHoverService hoverService: IHoverService,
 	) {
 		super(editor);
 		this._refusalNotice = this._register(instantiationService.createInstance(ParadisSidePanelRefusalNotice));
@@ -65,8 +68,9 @@ export class ParadisBrowserExtensionSidePanelFeature extends BrowserEditorContri
 		dom.append(header, this._title);
 		const close = dom.append(header, $<HTMLButtonElement>('button.paradis-side-panel-close'));
 		close.type = 'button';
-		close.title = localize('paradis.browserExtensions.sidePanel.close', "サイドパネルを閉じる");
-		close.setAttribute('aria-label', close.title);
+		const closeLabel = localize('paradis.browserExtensions.sidePanel.close', "サイドパネルを閉じる");
+		close.setAttribute('aria-label', closeLabel);
+		this._register(hoverService.setupManagedHover(getDefaultHoverDelegate('element'), close, closeLabel));
 		close.appendChild($(ThemeIcon.asCSSSelector(Codicon.close)));
 		this._register(dom.addDisposableListener(close, 'click', () => {
 			const model = this.editor.model;

@@ -174,6 +174,11 @@
 	font-variant-numeric: tabular-nums;
 }
 
+/* The day picked with the arrow keys (paradisChartKeyboard.ts), behind the bars. */
+.paradis-rtk-chart-selection {
+	fill: var(--vscode-paradis-fillHover);
+}
+
 /* ---- horizontal bar list (commands) ---- */
 
 .paradis-rtk-hbar-row {

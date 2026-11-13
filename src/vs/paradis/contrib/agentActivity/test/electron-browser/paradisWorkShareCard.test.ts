@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { mainWindow } from '../../../../../base/browser/window.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_SHARE_CARD_HEIGHT, PARADIS_SHARE_CARD_WIDTH, paradisDrawShareCard, paradisShareCardPng, paradisShareCardStats } from '../../electron-browser/paradisWorkShareCard.js';
+import { PARADIS_SHARE_CARD_HEIGHT, PARADIS_SHARE_CARD_WIDTH, paradisDrawShareCard, paradisShareCardFitSize, paradisShareCardPng, paradisShareCardStats } from '../../electron-browser/paradisWorkShareCard.js';
 
 suite('ParadisWorkShareCard', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -27,5 +27,15 @@ suite('ParadisWorkShareCard', () => {
 		assert.deepStrictEqual({ width: canvas.width, height: canvas.height, pixel, type: png.type }, {
 			width: PARADIS_SHARE_CARD_WIDTH, height: PARADIS_SHARE_CARD_HEIGHT, pixel: [255, 255, 255, 255], type: 'image/png',
 		});
+	});
+
+	test('draws the four numbers at one size that fits the longest of them, instead of squeezing a long one', () => {
+		const huge = { ...data, sessions: 12406, turns: 1284519, activeMs: (2148 * 60 + 5) * 60_000, prs: 1187 };
+		const context = mainWindow.document.createElement('canvas').getContext('2d')!;
+		const maxWidth = (PARADIS_SHARE_CARD_WIDTH - 64 * 2) / 4 - 24;
+		const values = paradisShareCardStats(huge).map(stat => stat.value);
+		const size = paradisShareCardFitSize(context, values, 600, 64, 40, maxWidth);
+		const widths = values.map(value => context.measureText(value).width);
+		assert.deepStrictEqual({ smaller: size < 64, atLeastMin: size >= 40, fits: widths.every(width => width <= maxWidth) }, { smaller: true, atLeastMin: true, fits: true });
 	});
 });

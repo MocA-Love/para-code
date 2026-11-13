@@ -10,6 +10,7 @@
 // 純関数にしたもの。上限と行の追いかけはスマホの差分のメモ（W2-28）と同じ値・同じ関数を使う。
 // 保存はスマホのものとは別のキー（別の部品の保存キーを触らない）。
 
+import { localize } from '../../../../nls.js';
 import { paradisRedactTextSecrets } from '../../../common/paradisSecretRedaction.js';
 import { PARADIS_MOBILE_REVIEW_MAX_NOTES, PARADIS_MOBILE_REVIEW_NOTE_BODY_MAX, PARADIS_MOBILE_REVIEW_NOTE_LINE_TEXT_MAX } from '../../mobileRelay/common/paradisMobileReviewStore.js';
 
@@ -156,4 +157,20 @@ export function paradisDiffReviewRelativePath(rootPath: string, filePath: string
 	const root = rootPath.endsWith('/') ? rootPath : `${rootPath}/`;
 	const same = ignoreCase ? filePath.toLowerCase().startsWith(root.toLowerCase()) : filePath.startsWith(root);
 	return same && filePath.length > root.length ? filePath.slice(root.length) : undefined;
+}
+
+/**
+ * メモを消す前に確かめるか。未送信のメモまで消える「すべて消す」のときだけ確かめ、送信済みだけを消すときは
+ * 確かめずに 1 手で消す（paradis-19-3 案 C）。
+ */
+export function paradisDiffReviewClearNeedsConfirm(choice: 'clearSent' | 'clearAll', unsentCount: number): boolean {
+	return choice === 'clearAll' && unsentCount > 0;
+}
+
+/**
+ * 「AI メモを送る」ボタンの読み上げの名前に未送信の数を添えたもの。0 件のときは undefined を返し、呼ぶ側は
+ * 元の名前のままにする（paradis-19-16）。
+ */
+export function paradisDiffReviewSendAriaLabel(name: string, unsentCount: number): string | undefined {
+	return unsentCount > 0 ? localize('paradis.diffReviewNotes.sendAriaLabel', "{0}（未送信 {1} 件）", name, unsentCount) : undefined;
 }

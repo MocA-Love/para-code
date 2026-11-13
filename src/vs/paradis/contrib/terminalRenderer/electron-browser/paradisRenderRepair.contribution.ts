@@ -53,10 +53,10 @@ export const PARADIS_RENDER_REPAIR_ENABLED_SETTING = 'paradis.terminal.renderRep
 export const PARADIS_RENDER_REPAIR_RECORD_SETTING = 'paradis.terminal.renderRepair.recordScreen';
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
-	id: 'paradis',
-	order: 999,
-	title: localize('paradisConfigurationTitle', "Para Code"),
+	id: 'paradis.terminal',
+	order: 100,
 	type: 'object',
+	title: localize('paradis.terminal.title', "Para Code Terminal"),
 	properties: {
 		[PARADIS_RENDER_REPAIR_ENABLED_SETTING]: {
 			type: 'boolean',
@@ -190,8 +190,12 @@ function takeSnapshot(raw: RawXtermTerminal, withImage: boolean): IParadisRender
 	}
 }
 
-/** このウィンドウで「測れなかった」回数（trace ログ用）。 */
-let paradisUnmeasurableCount = 0;
+/**
+ * このウィンドウで画面を読めなかった（全部が欠けて見えた）か。読めない環境では何度読み戻しても
+ * 同じ結果になり、重い読み戻しを繰り返すだけなので、一度でも当たったらこのウィンドウの全ターミナルで
+ * 以後の検査を止める（補助ウィンドウのターミナルも同じ renderer の中なので含まれる）。
+ */
+let paradisWindowUnmeasurable = false;
 
 class ParadisRenderRepairContribution extends Disposable implements ITerminalContribution {
 
@@ -242,7 +246,7 @@ class ParadisRenderRepairContribution extends Disposable implements ITerminalCon
 	}
 
 	private _schedule(trigger: string): void {
-		if (this._inspecting || !this._xterm || !this._gate.canInspect()
+		if (this._inspecting || paradisWindowUnmeasurable || !this._xterm || !this._gate.canInspect()
 			|| !this._configurationService.getValue<boolean>(PARADIS_RENDER_REPAIR_ENABLED_SETTING)) {
 			return;
 		}
@@ -261,12 +265,13 @@ class ParadisRenderRepairContribution extends Disposable implements ITerminalCon
 			return;
 		}
 		const record = this._configurationService.getValue<boolean>(PARADIS_RENDER_REPAIR_RECORD_SETTING) === true;
+		this._gate.noteInspected();
 		const first = takeSnapshot(xterm.raw, false);
 		if (first && paradisIsUnmeasurableDivergence(first.divergence)) {
-			// WebGL の描画バッファを読めていない（全部が欠けて見える）。判定はしないが、読み取りが
-			// 効いているかを実機で確かめられるよう回数を残す
-			paradisUnmeasurableCount++;
-			this._logService.trace(`[ParadisRenderRepair] could not measure terminal ${this._ctx.instance.instanceId} (${first.divergence.missing}/${first.divergence.textCells} cells look empty, ${paradisUnmeasurableCount} times in this window)`);
+			// WebGL の描画バッファを読めていない（全部が欠けて見える）。判定はせず、このウィンドウでは
+			// 以後の検査を止める。読み取りが効いているかを実機で確かめられるようログに残す
+			paradisWindowUnmeasurable = true;
+			this._logService.trace(`[ParadisRenderRepair] could not measure terminal ${this._ctx.instance.instanceId} (${first.divergence.missing}/${first.divergence.textCells} cells look empty); stopping inspections in this window`);
 			return;
 		}
 		if (!first || !paradisIsSuspectDivergence(first.divergence)) {

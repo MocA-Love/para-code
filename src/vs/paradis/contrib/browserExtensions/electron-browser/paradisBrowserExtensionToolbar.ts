@@ -46,7 +46,7 @@ import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { createDecorator, IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
-import { paradisWatchPopoverDismiss } from '../../../browser/paradisAnchoredPopover.js';
+import { PARADIS_POPOVER_MOTION_CLASS, paradisRemovePopoverElement, paradisWatchPopoverDismiss } from '../../../browser/paradisAnchoredPopover.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { BrowserEditor, BrowserEditorContribution } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
@@ -136,7 +136,10 @@ export class ParadisBrowserExtensionToolbarService extends Disposable implements
 	}
 
 	private _commands: readonly IParadisBrowserExtensionCommand[] = [];
-	private readonly _shortcutsScheduler = this._register(new RunOnceScheduler(() => void this._refreshShortcuts(), 200));
+	private readonly _shortcutsScheduler = this._register(new RunOnceScheduler(() => {
+		void this._refreshShortcuts();
+		void this._pruneRemovedButtons();
+	}, 200));
 
 	get commands(): readonly IParadisBrowserExtensionCommand[] {
 		return this._commands;
@@ -148,6 +151,29 @@ export class ParadisBrowserExtensionToolbarService extends Disposable implements
 			this._commands = await this.main.getCommands();
 		} catch {
 			// main が落ちている: 前のまま
+		}
+	}
+
+	/**
+	 * 消した拡張機能のボタンの登録を外す（Q639）。ボタンはウィンドウに 1 組でタブごとのツールバーより広いので、
+	 * main の入っている拡張機能の一覧に無い id だけを外す。問い合わせの間に足したボタンは、古い一覧で外さない。
+	 */
+	private async _pruneRemovedButtons(): Promise<void> {
+		const before = [...this._buttons.keys()];
+		if (before.length === 0) {
+			return;
+		}
+		let installed: ReadonlySet<string>;
+		try {
+			installed = new Set(await this.main.getInstalledIds());
+		} catch {
+			// main が落ちている: 前のまま
+			return;
+		}
+		for (const extensionId of before) {
+			if (!installed.has(extensionId)) {
+				this._buttons.deleteAndDispose(extensionId);
+			}
 		}
 	}
 
@@ -669,6 +695,12 @@ class ParadisBrowserExtensionsPopover extends Disposable {
 	private readonly _list: HTMLElement;
 	private readonly _container: HTMLElement;
 	private readonly _manageButton: HTMLButtonElement;
+	private readonly _closeButton: HTMLButtonElement;
+	/**
+	 * 基準が自前のパズルのボタンか。畳まれて本家の「…」やツールバーの下に出したときは、その要素の
+	 * aria-expanded（本家が持つ状態）に触らない。
+	 */
+	private readonly _ownsAnchor: boolean;
 	private _focusable: HTMLElement[] = [];
 	/** ピン留めを切り替えている途中の拡張機能（二度押しを止める）。 */
 	private readonly _pinning = new Set<string>();
@@ -686,17 +718,23 @@ class ParadisBrowserExtensionsPopover extends Disposable {
 		super();
 		this._container = layoutService.getContainer(dom.getWindow(anchor));
 		this._element = $('.paradis-browser-extensions-popover.paradis-focus-none.paradis-overlay-popover');
+		this._element.classList.add(PARADIS_POPOVER_MOTION_CLASS);
 		this._element.tabIndex = -1;
 		this._element.setAttribute('role', 'dialog');
 		const title = localize('paradis.browserExtensions.popover.title', "拡張機能");
 		this._element.setAttribute('aria-label', title);
-		// 見出し 30px と、管理を開く歯車（Q537 の 7 章「拡張機能」、案 A）
+		// 見出しと、管理を開く歯車（Q537 の 7 章「拡張機能」、案 A）、閉じるボタン（Esc を知らなくても閉じられるように）
 		const header = dom.append(this._element, $('.pbx-header'));
 		dom.append(header, $('span.pbx-title')).textContent = title;
 		this._manageButton = dom.append(header, $<HTMLButtonElement>(`button.pbx-icon-button${ThemeIcon.asCSSSelector(Codicon.settingsGear)}`));
 		const manageLabel = localize('paradis.browserExtensions.popover.manage', "拡張機能を管理…");
 		this._manageButton.setAttribute('aria-label', manageLabel);
 		this._register(this._hoverService.setupManagedHover(getDefaultHoverDelegate('element'), this._manageButton, manageLabel));
+		this._closeButton = dom.append(header, $<HTMLButtonElement>(`button.pbx-icon-button${ThemeIcon.asCSSSelector(Codicon.close)}`));
+		const closeLabel = localize('paradis.browserExtensions.popover.close', "閉じる");
+		this._closeButton.setAttribute('aria-label', closeLabel);
+		this._register(this._hoverService.setupManagedHover(getDefaultHoverDelegate('element'), this._closeButton, closeLabel));
+		this._register(dom.addDisposableListener(this._closeButton, dom.EventType.CLICK, () => this.close()));
 		this._list = dom.append(this._element, $('.pbx-list'));
 		this._list.setAttribute('role', 'list');
 		this._register(dom.addDisposableListener(this._manageButton, dom.EventType.CLICK, () => {
@@ -711,7 +749,10 @@ class ParadisBrowserExtensionsPopover extends Disposable {
 		this._register(_editor.onDidChangeModel(() => this.close()));
 		this._render();
 		this._container.appendChild(this._element);
-		anchor.setAttribute('aria-expanded', 'true');
+		this._ownsAnchor = anchor.classList.contains('paradis-browser-extensions-menu-item');
+		if (this._ownsAnchor) {
+			anchor.setAttribute('aria-expanded', 'true');
+		}
 		this._layout();
 		this._registerListeners();
 		(this._focusable[0] ?? this._manageButton).focus();
@@ -853,7 +894,7 @@ class ParadisBrowserExtensionsPopover extends Disposable {
 	}
 
 	private _moveFocus(backwards: boolean): void {
-		const focusable = [...this._focusable, this._manageButton];
+		const focusable = [...this._focusable, this._manageButton, this._closeButton];
 		const index = focusable.findIndex(element => dom.isActiveElement(element));
 		const next = backwards
 			? (index <= 0 ? focusable.length - 1 : index - 1)
@@ -870,9 +911,11 @@ class ParadisBrowserExtensionsPopover extends Disposable {
 			return;
 		}
 		this._disposed = true;
-		this.anchor.setAttribute('aria-expanded', 'false');
+		if (this._ownsAnchor) {
+			this.anchor.setAttribute('aria-expanded', 'false');
+		}
 		const hadFocus = dom.isAncestorOfActiveElement(this._element);
-		this._element.remove();
+		paradisRemovePopoverElement(this._element);
 		super.dispose();
 		this._onDidClose();
 		if (hadFocus && isShown(this.anchor)) {

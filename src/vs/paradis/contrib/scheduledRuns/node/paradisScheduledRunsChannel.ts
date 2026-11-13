@@ -75,6 +75,7 @@ export class ParadisScheduledRunsChannel implements IServerChannel<string> {
 			case 'forgetSpace': return this.service.forgetSpace(text(0)) as Promise<T>;
 			case 'claim': return this.service.claim(ctx, text(0)) as Promise<T>;
 			case 'report': return this.service.report(ctx, args[0]) as Promise<T>;
+			case 'recordSpace': return this.service.recordSpace(ctx, text(0), args[1]) as Promise<T>;
 			case 'heartbeat': {
 				const ids = Array.isArray(args[0]) ? args[0].filter((id): id is string => typeof id === 'string').slice(0, 100) : [];
 				return this.service.heartbeat(ctx, ids) as Promise<T>;

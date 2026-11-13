@@ -14,6 +14,7 @@
 
 import './media/paradisServiceStatus.css';
 import * as dom from '../../../../base/browser/dom.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { paradisCloseWhenModalOpens } from '../../../browser/paradisAnchoredPopover.js';
@@ -22,6 +23,7 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import {
@@ -46,14 +48,6 @@ export interface IParadisServiceStatusPopoverOptions {
 	readonly onRefresh: () => void;
 }
 
-/** Enter/Space をクリック相当として扱う(行のボタン・下段のリンクで共有)。 */
-function onActivateKey(e: KeyboardEvent, run: () => void): void {
-	if (e.key === 'Enter' || e.key === ' ') {
-		e.preventDefault();
-		run();
-	}
-}
-
 export class ParadisServiceStatusPopover extends Disposable {
 
 	private readonly element: HTMLElement;
@@ -69,6 +63,7 @@ export class ParadisServiceStatusPopover extends Disposable {
 		@ILayoutService layoutService: ILayoutService,
 		@IOpenerService private readonly openerService: IOpenerService,
 		@ICommandService private readonly commandService: ICommandService,
+		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super();
 
@@ -76,6 +71,8 @@ export class ParadisServiceStatusPopover extends Disposable {
 		this.element = $('.paradis-service-status-popover.paradis-overlay-popover.paradis-focus-none');
 		this.element.style.width = `${POPOVER_WIDTH}px`;
 		this.element.tabIndex = -1;
+		this.element.setAttribute('role', 'dialog');
+		this.element.setAttribute('aria-label', localize('paradis.serviceStatus.popoverTitle', "サービスの稼働状況"));
 		this.bodyElement = dom.append(this.element, $('.pssp-body'));
 
 		layoutService.activeContainer.appendChild(this.element);
@@ -171,31 +168,26 @@ export class ParadisServiceStatusPopover extends Disposable {
 		if (detail) {
 			const desc = dom.append(row, $('span.pssp-desc'));
 			desc.textContent = detail;
-			desc.title = detail;
+			this._bodyListeners.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), desc, detail));
 		} else {
 			dom.append(row, $('span.pssp-spacer'));
 		}
-		const open = dom.append(row, $(`span.pssp-icon-button${ThemeIcon.asCSSSelector(Codicon.globe)}`));
-		open.setAttribute('role', 'button');
-		open.tabIndex = 0;
+		const open = dom.append(row, $<HTMLButtonElement>(`button.pssp-icon-button.paradis-focus-ring${ThemeIcon.asCSSSelector(Codicon.globe)}`));
+		open.type = 'button';
 		open.dataset.focusKey = `open-${provider}`;
 		this.focusTargets.set(open.dataset.focusKey, open);
 		const label = localize('paradis.serviceStatus.openStatusPage', "{0} を開く", source.statusPageUrl.replace(/^https:\/\//, ''));
 		open.setAttribute('aria-label', label);
-		open.title = label;
-		const openStatusPage = () => { void this.openerService.open(URI.parse(source.statusPageUrl)); };
-		this._bodyListeners.add(dom.addDisposableListener(open, 'click', e => { e.preventDefault(); openStatusPage(); }));
-		this._bodyListeners.add(dom.addDisposableListener(open, 'keydown', e => onActivateKey(e, openStatusPage)));
+		this._bodyListeners.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), open, label));
+		this._bodyListeners.add(dom.addDisposableListener(open, 'click', e => { e.preventDefault(); void this.openerService.open(URI.parse(source.statusPageUrl)); }));
 	}
 
 	private appendLink(parent: HTMLElement, focusKey: string, text: string, run: () => void): void {
-		const link = dom.append(parent, $('a.pssp-link'));
-		link.setAttribute('role', 'button');
-		link.tabIndex = 0;
+		const link = dom.append(parent, $<HTMLButtonElement>('button.pssp-link.paradis-focus-ring'));
+		link.type = 'button';
 		link.dataset.focusKey = focusKey;
 		this.focusTargets.set(focusKey, link);
 		link.textContent = text;
 		this._bodyListeners.add(dom.addDisposableListener(link, 'click', e => { e.preventDefault(); run(); }));
-		this._bodyListeners.add(dom.addDisposableListener(link, 'keydown', e => onActivateKey(e, run)));
 	}
 }

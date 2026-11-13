@@ -1915,7 +1915,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 				label += ' (-)';
 			}
 			// 通常ビューアと同じくシートの色の点・保護の鍵を出す。
-			const tab = appendParadisSpreadsheetSheetTab(this._tabsEl!, { label, tabColor: sheet.tabColor, protectedSheet: sheet.protectedSheet });
+			const tab = appendParadisSpreadsheetSheetTab(this._tabsEl!, { label, tabColor: sheet.tabColor, protectedSheet: sheet.protectedSheet }, tabsStore);
 			const statusLabel = sheet.sheetStatus === 'added'
 				? localize('paradis.spreadsheet.addedSheet', "追加")
 				: sheet.sheetStatus === 'removed'
