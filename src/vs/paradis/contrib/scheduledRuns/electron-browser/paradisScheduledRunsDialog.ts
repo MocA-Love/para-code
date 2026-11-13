@@ -398,10 +398,13 @@ export class ParadisScheduledRunsDialog extends Disposable {
 
 	/** 編集をやめて一覧へ戻る（Esc・左の一覧）。入力していれば下書きに残し、そのことを知らせる。描き直しは呼ぶ側がする。 */
 	private leaveEdit(): void {
+		const isNew = !this.editing?.id;
 		const kept = this.keepEditingDraft();
 		this.editing = undefined;
 		if (kept) {
-			this.showMessage(localize('paradis.scheduledRuns.draftKept', "編集中の内容を下書きに残しました。もう一度「編集」を押すと戻ります。"), 'info');
+			this.showMessage(isNew
+				? localize('paradis.scheduledRuns.newDraftKept', "入力中の内容を下書きに残しました。もう一度「新規作成」を押すと戻ります。")
+				: localize('paradis.scheduledRuns.draftKept', "編集中の内容を下書きに残しました。もう一度「編集」を押すと戻ります。"), 'info');
 		} else {
 			this.clearMessage();
 		}
