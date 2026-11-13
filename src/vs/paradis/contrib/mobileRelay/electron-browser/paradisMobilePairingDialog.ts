@@ -25,7 +25,7 @@ import { IClipboardService } from '../../../../platform/clipboard/common/clipboa
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { paradisButtonClasses } from '../../../browser/paradisButton.js';
-import { ParadisModalSize, paradisModalClasses, renderParadisModalHead } from '../../../browser/paradisModal.js';
+import { PARADIS_MODAL_FOOT_CLASS, ParadisModalSize, paradisModalClasses, renderParadisModalHead } from '../../../browser/paradisModal.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 
 const $ = dom.$;
@@ -149,7 +149,7 @@ export class ParadisMobilePairingDialog extends Disposable {
 			dom.append(steps, $('li')).textContent = step;
 		}
 
-		const footer = dom.append(dialog, $('.pmp-footer'));
+		const footer = dom.append(dialog, $(`.pmp-footer.${PARADIS_MODAL_FOOT_CLASS}`));
 		this.remaining = dom.append(footer, $('span.pmp-remaining'));
 		this.remaining.setAttribute('aria-live', 'off');
 		dom.append(footer, $('span.pmp-spacer'));

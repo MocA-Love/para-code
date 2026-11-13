@@ -107,6 +107,7 @@ suite('Paradis file transfer - queue view', () => {
 		const first = paradisQueueAnnouncement(running, undefined);
 		const progressed = paradisQueueAnnouncement([{ ...running[0], doneBytes: 8 }, running[1]], first.key);
 		const finished = paradisQueueAnnouncement([{ ...running[0], state: 'done' }, { ...running[1], state: 'error' }], progressed.key);
-		assert.deepStrictEqual([first.text, progressed.text, finished.text], [undefined, undefined, '転送: 0 件進行中、1 件完了、1 件失敗']);
+		const cleared = paradisQueueAnnouncement([], finished.key);
+		assert.deepStrictEqual([first.text, progressed.text, finished.text, cleared.text], [undefined, undefined, '転送: 0 件進行中、1 件完了、1 件失敗', undefined]);
 	});
 });
