@@ -878,7 +878,7 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 		const grid = dom.append(container, $('.pns-ringtone-grid'));
 		grid.setAttribute('role', 'radiogroup');
 		grid.setAttribute('aria-label', STR_RINGTONE_TITLE);
-		const cards: { readonly id: string; readonly card: HTMLElement }[] = [];
+		const cards: { readonly id: string; readonly radio: HTMLElement }[] = [];
 		this._renderDisposables.add(dom.addDisposableListener(grid, dom.EventType.KEY_DOWN, e => this._onRingtoneKeyDown(e, cards)));
 
 		void this._fetchCustomRingtone().then(custom => {
@@ -893,16 +893,16 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 			importHover?.update(importBtn.textContent);
 			const ringtones: (IParadisRingtoneData | IParadisCustomRingtoneInfo)[] = custom ? [...PARADIS_RINGTONES, custom] : [...PARADIS_RINGTONES];
 			for (const ringtone of ringtones) {
-				cards.push({ id: ringtone.id, card: this._renderRingtoneCard(grid, ringtone, ringtone.id === selectedId, volume) });
+				cards.push({ id: ringtone.id, radio: this._renderRingtoneCard(grid, ringtone, ringtone.id === selectedId, volume) });
 			}
 			// 一覧に入る Tab は選んでいる行の 1 つだけ（選んでいる行が無ければ先頭）。行の間は矢印で移る
 			const tabStop = cards.find(entry => entry.id === selectedId) ?? cards[0];
 			if (tabStop) {
-				tabStop.card.tabIndex = 0;
+				tabStop.radio.tabIndex = 0;
 			}
 			const pendingFocus = this._pendingRingtoneFocusId;
 			this._pendingRingtoneFocusId = undefined;
-			cards.find(entry => entry.id === pendingFocus)?.card.focus({ preventScroll: true });
+			cards.find(entry => entry.id === pendingFocus)?.radio.focus({ preventScroll: true });
 			// 着信音リストが揃って本文高さが確定した後にスクロール位置を復元する。
 			onListPopulated();
 		});
@@ -918,9 +918,9 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 	}
 
 	/** 着信音の一覧の矢印キー（上下・左右で前後の行を選ぶ、Home・End で端）と、Space・Enter での選択。 */
-	private _onRingtoneKeyDown(e: KeyboardEvent, cards: readonly { readonly id: string; readonly card: HTMLElement }[]): void {
+	private _onRingtoneKeyDown(e: KeyboardEvent, cards: readonly { readonly id: string; readonly radio: HTMLElement }[]): void {
 		// 行の中の試聴のボタンで押したキーは、行の選択に使わない
-		const index = cards.findIndex(entry => entry.card === e.target);
+		const index = cards.findIndex(entry => entry.radio === e.target);
 		if (index < 0) {
 			return;
 		}
@@ -951,7 +951,7 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 		e.stopPropagation();
 		const id = cards[next].id;
 		if (id === this.settingsService.getSelectedRingtoneId()) {
-			cards[next].card.focus();
+			cards[next].radio.focus();
 			return;
 		}
 		this._pendingRingtoneFocusId = id;
@@ -970,23 +970,26 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 		return labels[ringtone.source] ?? STR_CUSTOM_FROM_FILE;
 	}
 
+	/** 着信音の行を描き、キーボードで選ぶ radio の要素を返す。 */
 	private _renderRingtoneCard(grid: HTMLElement, ringtone: IParadisRingtoneData | IParadisCustomRingtoneInfo, selected: boolean, volume: number): HTMLElement {
-		const card = dom.append(grid, $('.pns-ringtone-card.paradis-focus-ring-inset'));
+		const card = dom.append(grid, $('.pns-ringtone-card'));
 		if (selected) {
 			card.classList.add('selected');
 		}
-		// キーボードで選べる単一選択の行。Tab が止まる行は一覧を描き終えた後に 1 つだけ決める
-		card.setAttribute('role', 'radio');
-		card.setAttribute('aria-checked', String(selected));
-		card.setAttribute('aria-label', ringtone.name);
-		card.tabIndex = -1;
+		// キーボードで選べる単一選択の行。Tab が止まる行は一覧を描き終えた後に 1 つだけ決める。
+		// radio は名前と説明の部分だけにし、試聴のボタンはその外（兄弟）に置く（操作できる要素を入れ子にしない）
+		const radio = dom.append(card, $('.pns-ringtone-choice.paradis-focus-ring-inset'));
+		radio.setAttribute('role', 'radio');
+		radio.setAttribute('aria-checked', String(selected));
+		radio.setAttribute('aria-label', ringtone.name);
+		radio.tabIndex = -1;
 
-		const check = dom.append(card, $('.pns-ringtone-check'));
+		const check = dom.append(radio, $('.pns-ringtone-check'));
 		if (selected) {
 			check.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.check)}`));
 		}
 
-		const info = dom.append(card, $('.pns-ringtone-info'));
+		const info = dom.append(radio, $('.pns-ringtone-info'));
 		const nameRow = dom.append(info, $('.pns-ringtone-name'));
 		// 区切りの無い長い名前も行の中で折り返す（再生のボタンに重ならない）
 		dom.append(nameRow, $('span.pns-ringtone-label')).textContent = ringtone.name;
@@ -996,7 +999,7 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 		const desc = dom.append(info, $('.pns-ringtone-desc'));
 		desc.textContent = this._ringtoneDescription(ringtone);
 		desc.id = `pns-ringtone-desc-${generateUuid()}`;
-		card.setAttribute('aria-describedby', desc.id);
+		radio.setAttribute('aria-describedby', desc.id);
 		const progressFill = $('i.pns-rt-progress-fill');
 		dom.append(info, $('div.pns-rt-progress')).appendChild(progressFill);
 		this._ringtoneProgressFills.set(card, progressFill);
@@ -1025,7 +1028,7 @@ export class ParadisNotificationSettingsArea extends Disposable implements IPara
 			card.classList.add('playing');
 			this._startProgressBar();
 		}
-		return card;
+		return radio;
 	}
 
 	private _setPlayButtonPlaying(playBtn: HTMLButtonElement, playing: boolean): void {

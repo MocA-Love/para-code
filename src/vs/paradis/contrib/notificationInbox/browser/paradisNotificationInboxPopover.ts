@@ -104,7 +104,8 @@ export class ParadisNotificationInboxPopover extends Disposable {
 		this.element.setAttribute('aria-label', localize('paradis.inbox.ariaLabel', "通知の受信箱"));
 		this.header = dom.append(this.element, $('.pnip-header'));
 		this.list = dom.append(this.element, $('.pnip-list'));
-		this.list.setAttribute('aria-label', localize('paradis.inbox.ariaLabel', "通知の受信箱"));
+		// ダイアログと同じ名前だと、一覧に入るたびに同じ名前が二度読まれる
+		this.list.setAttribute('aria-label', localize('paradis.inbox.listAriaLabel', "通知の一覧"));
 		this.footer = dom.append(this.element, $('.pnip-footer'));
 
 		this.previousFocus = dom.getActiveElement();
@@ -325,12 +326,14 @@ export class ParadisNotificationInboxPopover extends Disposable {
 			message.textContent = entry.message;
 			this.renderDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), message, entry.message));
 		}
-		if (!entry.live) {
-			dom.append(row, $('.pnip-note')).textContent = localize('paradis.inbox.closedPane', "このペインは閉じています");
+		const closedNote = entry.live ? undefined : localize('paradis.inbox.closedPane', "このペインは閉じています");
+		if (closedNote) {
+			dom.append(row, $('.pnip-note')).textContent = closedNote;
 		}
 
 		const state = entry.read ? localize('paradis.inbox.readState', "既読") : localize('paradis.inbox.unreadState', "未読");
-		row.setAttribute('aria-label', localize('paradis.inbox.rowAria', "{0} {1} {2} {3}", state, paradisInboxKindLabel(entry.kind), paradisInboxEntryLocation(entry), entry.message ?? ''));
+		// 閉じたペインは押しても移動せず既読になるだけなので、そのことも名前に入れる。空の部分は入れない（末尾に空白を残さない）
+		row.setAttribute('aria-label', [state, paradisInboxKindLabel(entry.kind), paradisInboxEntryLocation(entry), entry.message, closedNote].filter(part => !!part).join(' '));
 
 		this.renderDisposables.add(dom.addDisposableListener(row, dom.EventType.FOCUS, () => this.setCurrentRow(row)));
 		this.renderDisposables.add(dom.addDisposableListener(row, dom.EventType.CLICK, () => this.open(entry)));

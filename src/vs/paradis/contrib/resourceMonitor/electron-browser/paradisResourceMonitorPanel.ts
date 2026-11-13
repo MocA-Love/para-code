@@ -400,7 +400,7 @@ export class ParadisResourceMonitorPanel extends Disposable {
 		const isCollapsed = this.collapsedScopes.has(scope.stateKey);
 		const hasSessions = scope.sessions.length > 0;
 
-		const { row, iconElement } = this.appendRow(this.bodyElement, {
+		const { row, nameElement, iconElement } = this.appendRow(this.bodyElement, {
 			classNames: ['scope-row', ...(isOther ? [] : ['clickable'])],
 			icon: hasSessions ? (isCollapsed ? Codicon.chevronRight : Codicon.chevronDown) : undefined,
 			name: scope.scopeName,
@@ -409,14 +409,15 @@ export class ParadisResourceMonitorPanel extends Disposable {
 			memory: scope.memory,
 		});
 		if (!isOther) {
-			row.tabIndex = 0;
-			row.setAttribute('role', 'button');
-			row.classList.add('paradis-focus-ring-inset');
-			this.focusTargets.set(`row:${scope.stateKey}`, row);
+			// キーボードで押すボタンは名前の部分だけにする（行ごとボタンにすると開閉の矢印のボタンが入れ子になる）。
+			// マウスは行のどこを押しても切り替える
+			nameElement.tabIndex = 0;
+			nameElement.setAttribute('role', 'button');
+			nameElement.classList.add('paradis-focus-ring-inset');
+			this.focusTargets.set(`row:${scope.stateKey}`, nameElement);
 			this._bodyListeners.add(dom.addDisposableListener(row, 'click', () => this.options.switchToScope(scope.stateKey)));
-			this._bodyListeners.add(dom.addDisposableListener(row, 'keydown', e => {
-				// 開閉の矢印で押した Enter・Space は矢印の click に任せる
-				if (e.target === row && (e.key === 'Enter' || e.key === ' ')) {
+			this._bodyListeners.add(dom.addDisposableListener(nameElement, 'keydown', e => {
+				if (e.key === 'Enter' || e.key === ' ') {
 					e.preventDefault();
 					this.options.switchToScope(scope.stateKey);
 				}
@@ -457,7 +458,7 @@ export class ParadisResourceMonitorPanel extends Disposable {
 		});
 	}
 
-	private appendRow(container: HTMLElement, spec: { classNames: string[]; icon?: ThemeIcon; bullet?: boolean; name: string; severity: ParadisUsageSeverity; cpu: number; memory: number }): { row: HTMLElement; iconElement: HTMLElement | undefined } {
+	private appendRow(container: HTMLElement, spec: { classNames: string[]; icon?: ThemeIcon; bullet?: boolean; name: string; severity: ParadisUsageSeverity; cpu: number; memory: number }): { row: HTMLElement; nameElement: HTMLElement; iconElement: HTMLElement | undefined } {
 		const row = dom.append(container, $(`.prm-row.${spec.classNames.join('.')}`));
 		const label = dom.append(row, $('.prm-row-label'));
 		let iconElement: HTMLElement | undefined;
@@ -470,7 +471,8 @@ export class ParadisResourceMonitorPanel extends Disposable {
 		if (spec.bullet) {
 			dom.append(label, $('.prm-session-bullet'));
 		}
-		dom.append(label, $('.prm-row-name')).textContent = spec.name;
+		const nameElement = dom.append(label, $('.prm-row-name'));
+		nameElement.textContent = spec.name;
 		if (spec.severity !== 'normal') {
 			label.appendChild($(`.prm-severity-dot.${spec.severity}`));
 		}
@@ -479,6 +481,6 @@ export class ParadisResourceMonitorPanel extends Disposable {
 		dom.append(values, $('.prm-row-cpu')).textContent = paradisFormatCpu(spec.cpu);
 		dom.append(values, $('.prm-row-mem')).textContent = paradisFormatMemory(spec.memory);
 
-		return { row, iconElement };
+		return { row, nameElement, iconElement };
 	}
 }

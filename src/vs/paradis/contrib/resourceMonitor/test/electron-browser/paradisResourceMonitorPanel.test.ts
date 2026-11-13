@@ -58,7 +58,7 @@ suite('ParadisResourceMonitorPanel', () => {
 		try {
 			const session = { name: 'zsh', pid: 7, cpu: 1, memory: 10 };
 			panel.updateSnapshot({ ...snapshot(), scopes: [{ stateKey: 'space-a', scopeName: 'web-app', cpu: 1, memory: 10, sessions: [session] }] });
-			const row = container.querySelector<HTMLElement>('.scope-row')!;
+			const row = container.querySelector<HTMLElement>('.scope-row .prm-row-name')!;
 			row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
 			const chevron = container.querySelector<HTMLButtonElement>('.prm-chevron-btn')!;
 			const before = { tabIndex: row.tabIndex, role: row.getAttribute('role'), expanded: chevron.getAttribute('aria-expanded'), sessions: container.querySelectorAll('.session-row').length };
