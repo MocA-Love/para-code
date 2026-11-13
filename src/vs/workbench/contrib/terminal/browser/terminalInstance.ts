@@ -51,6 +51,8 @@ import { deserializeEnvironmentVariableCollections } from '../../../../platform/
 import { GeneralShellType, IProcessDataEvent, IProcessPropertyMap, IReconnectionProperties, IShellLaunchConfig, ITerminalDimensionsOverride, ITerminalLaunchError, ITerminalLogService, PosixShellType, ProcessPropertyType, remoteResolverTerminal, ShellIntegrationStatus, TerminalExitReason, TerminalIcon, TerminalLocation, TerminalSettingId, TerminalShellType, TitleEventSource, WindowsShellType, type ShellIntegrationInjectionFailureReason } from '../../../../platform/terminal/common/terminal.js';
 // PARA-PATCH: OpenCode-compatible CLI title matching (fork-owned helper).
 import { paradisOpenCodeTitlePattern } from '../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
+// PARA-PATCH: Codex title matching (only the `codex | <title>` shape Para Code asks Codex to set).
+import { paradisCodexTitlePattern } from '../../../../platform/terminal/common/paradisCodexTitle.js';
 import { formatMessageForTerminal } from '../../../../platform/terminal/common/terminalStrings.js';
 import { editorBackground } from '../../../../platform/theme/common/colorRegistry.js';
 import { getIconRegistry } from '../../../../platform/theme/common/iconRegistry.js';
@@ -143,9 +145,9 @@ const agentCliTitlePatterns: ReadonlyMap<GeneralShellType, { test(title: string)
 	// PARA-PATCH: detect OpenCode from its OSC title (`opencode | <title>`, or a learned compatible command).
 	[GeneralShellType.Opencode, paradisOpenCodeTitlePattern],
 	[GeneralShellType.Claude, /claude\s*code/i],
-	// PARA-PATCH: Detect Codex when Para Code supplies an OSC title for the terminal.
+	// PARA-PATCH: Detect Codex when Para Code supplies an OSC title for the terminal (`codex | <title>`).
 	// Upstream keeps this commented out because codex does not report an osc title on its own.
-	[GeneralShellType.Codex, /\bcodex\b/i],
+	[GeneralShellType.Codex, paradisCodexTitlePattern],
 	[GeneralShellType.CommandCode, /command\s*code/i],
 	[GeneralShellType.Copilot, /\bcopilot\b/i],
 	[GeneralShellType.Gemini, /\bgemini\b/i],

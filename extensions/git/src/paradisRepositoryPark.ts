@@ -323,3 +323,46 @@ export class ParadisParkedStatusWriteGuard {
 		return active && ticket === this._epoch;
 	}
 }
+
+/**
+ * 待避中のリポジトリでファイルの変更から `git status` を始めない判定 (`Repository.onFileChange` から呼ぶ)。
+ *
+ * 待避中は監視を止めているので本来は呼ばれないが、待避の途中に届いた変更が `git status` を
+ * 始めないよう、念のため塞ぐ。本家の `onFileChange` には呼び出し 1 行だけを置く。
+ * @returns 待避中なので飛ばすなら true。
+ */
+export function paradisSkipFileChangeWhileParked(active: boolean, logger: IParadisParkLogger): boolean {
+	if (active) {
+		return false;
+	}
+	logger.trace('[Repository][onFileChange] Skip running git status because the repository is parked.');
+	return true;
+}
+
+/** `vscode.Event<void>` のうち `paradisWaitWhileParked()` が使う面だけ。 */
+export type ParadisScopeChangeEvent = (listener: () => void) => { dispose(): void };
+
+/**
+ * 待避中はバックグラウンドの処理 (自動 fetch、待機後の `git status`) を止めておく待ち
+ * (`Repository.whenIdleAndFocused` のループから呼ぶ)。見ていないスペースのリポジトリに git を使わせない。
+ *
+ * `onDidChange` は待避のときにも発火するので、復帰した (`isActive()` が true になった) 発火だけで
+ * 抜ける。待避中にリポジトリが待避所から追い出されると、この待ちは解けない。リポジトリを破棄すると
+ * `EventEmitter.dispose()` が通知せずにリスナーを捨てるので、待ちはリポジトリと一緒に辿れなくなる
+ * だけで漏れにはならない。
+ * @returns 待ったなら true。呼び出し側はループの先頭から判定し直す (`continue`)。
+ */
+export async function paradisWaitWhileParked(isActive: () => boolean, onDidChange: ParadisScopeChangeEvent): Promise<boolean> {
+	if (isActive()) {
+		return false;
+	}
+	await new Promise<void>(resolve => {
+		const listener = onDidChange(() => {
+			if (isActive()) {
+				listener.dispose();
+				resolve();
+			}
+		});
+	});
+	return true;
+}

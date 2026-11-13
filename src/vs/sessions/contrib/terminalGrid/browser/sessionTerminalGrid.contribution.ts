@@ -95,6 +95,9 @@ class SessionTerminalSplitGridUpAction extends AbstractSessionTerminalSplitGridA
 			precondition: IsSessionTerminalGridActiveContext,
 			keybinding: {
 				primary: KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyMod.Alt | KeyCode.UpArrow),
+				// No default keybinding on macOS: core "Clear" owns Cmd+K in the terminal at a higher
+				// weight, so the chord can never start there (Q633). Use the Command Palette instead.
+				mac: { primary: 0 },
 				when: ContextKeyExpr.and(TerminalContextKeys.focus, IsSessionTerminalGridActiveContext),
 				weight: KeybindingWeight.WorkbenchContrib
 			}
@@ -113,6 +116,7 @@ class SessionTerminalSplitGridDownAction extends AbstractSessionTerminalSplitGri
 			precondition: IsSessionTerminalGridActiveContext,
 			keybinding: {
 				primary: KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyMod.Alt | KeyCode.DownArrow),
+				mac: { primary: 0 },
 				when: ContextKeyExpr.and(TerminalContextKeys.focus, IsSessionTerminalGridActiveContext),
 				weight: KeybindingWeight.WorkbenchContrib
 			}
@@ -131,6 +135,7 @@ class SessionTerminalSplitGridLeftAction extends AbstractSessionTerminalSplitGri
 			precondition: IsSessionTerminalGridActiveContext,
 			keybinding: {
 				primary: KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyMod.Alt | KeyCode.LeftArrow),
+				mac: { primary: 0 },
 				when: ContextKeyExpr.and(TerminalContextKeys.focus, IsSessionTerminalGridActiveContext),
 				weight: KeybindingWeight.WorkbenchContrib
 			}
@@ -149,6 +154,7 @@ class SessionTerminalSplitGridRightAction extends AbstractSessionTerminalSplitGr
 			precondition: IsSessionTerminalGridActiveContext,
 			keybinding: {
 				primary: KeyChord(KeyMod.CtrlCmd | KeyCode.KeyK, KeyMod.Alt | KeyCode.RightArrow),
+				mac: { primary: 0 },
 				when: ContextKeyExpr.and(TerminalContextKeys.focus, IsSessionTerminalGridActiveContext),
 				weight: KeybindingWeight.WorkbenchContrib
 			}
