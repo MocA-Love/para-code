@@ -8,8 +8,7 @@ import { useAppLocked } from '../appLock.js';
 import { useParaToast, type ParaToast } from '../paraToast.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { haptic } from '../haptics.js';
-import { hitSlopToMinimum } from '../components/hitSlop.js';
-import { colors, radius, space, type } from '../theme.js';
+import { colors, HIT_SIZE, radius, space, type } from '../theme.js';
 import { useThemeColors } from './themeColorsStore.js';
 import { toastPlacement, useToastAnchor } from './toastAnchor.js';
 
@@ -34,7 +33,7 @@ export function Toast({ toast, onAction }: { toast: ParaToast; onAction?: () => 
 				{toast.sub !== undefined && toast.sub.length > 0 ? <Text style={styles.sub} numberOfLines={1}>{toast.sub}</Text> : null}
 			</View>
 			{toast.action !== undefined ? (
-				<Pressable onPress={onAction} hitSlop={ACTION_HIT_SLOP} accessibilityRole="button" accessibilityLabel={toast.action.label}>
+				<Pressable onPress={onAction} style={styles.actionHit} accessibilityRole="button" accessibilityLabel={toast.action.label}>
 					<Text style={[styles.action, { color: theme.accent }]}>{toast.action.label}</Text>
 				</Pressable>
 			) : null}
@@ -153,8 +152,6 @@ function ToastLayer({ followAnchor }: { followAnchor: boolean }) {
 	);
 }
 
-/** 「戻る」の当たり判定。13pt の文字の行（約 16pt）を上下に広げて 44pt にし、左右は 12pt 足す。 */
-const ACTION_HIT_SLOP = { ...hitSlopToMinimum(16), left: space.md, right: space.md };
 
 /** 札の最大幅（pt）。iPhone SE の 320pt でも左右に余白が残る。 */
 const TOAST_MAX_WIDTH = 300;
@@ -195,6 +192,20 @@ const styles = StyleSheet.create({
 		fontSize: type.meta,
 		color: colors.textMuted,
 		marginTop: 2,
+	},
+	/**
+	 * 「戻る」の当たり判定。hitSlop では足りない（Fabric の iOS は親の札の枠の外の点を子へ渡さない）ので、押せる要素自体を
+	 * 縦 44pt にする。札の上下の余白（space.sm）を負の余白で打ち消し、押せる範囲は札の高さいっぱい（札は 44pt になる）、
+	 * 右は札の端まで広げる。
+	 */
+	actionHit: {
+		minHeight: HIT_SIZE,
+		justifyContent: 'center',
+		marginVertical: -space.sm,
+		marginRight: -space.lg,
+		paddingRight: space.lg,
+		paddingLeft: space.md,
+		marginLeft: -space.md,
 	},
 	action: {
 		fontSize: type.label,
