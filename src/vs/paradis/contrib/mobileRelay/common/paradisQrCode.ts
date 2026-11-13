@@ -6,6 +6,27 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+// Portions adapted from Project Nayuki QR Code generator (MIT): https://github.com/nayuki/QR-Code-generator
+//
+// Copyright (c) Project Nayuki. (MIT License)
+// https://www.nayuki.io/page/qr-code-generator-library
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy of
+// this software and associated documentation files (the "Software"), to deal in
+// the Software without restriction, including without limitation the rights to
+// use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software is furnished to do so,
+// subject to the following conditions:
+// - The above copyright notice and this permission notice shall be included in
+//   all copies or substantial portions of the Software.
+// - The Software is provided "as is", without warranty of any kind, express or
+//   implied, including but not limited to the warranties of merchantability,
+//   fitness for a particular purpose and noninfringement. In no event shall the
+//   authors or copyright holders be liable for any claim, damages or other
+//   liability, whether in an action of contract, tort or otherwise, arising from,
+//   out of or in connection with the Software or the use or other dealings in the
+//   Software.
+
 // 依存ゼロの QR コード生成器（byte モード / 誤り訂正レベル M / バージョン自動選択）。
 // アルゴリズムは Project Nayuki の QR Code generator (MIT) を参考にした標準実装の移植。
 // ペアリング URI (paracode-mobile://pair?...) を PC 画面に QR 表示するために使う。

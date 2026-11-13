@@ -82,6 +82,15 @@ suite('ParadisDesignModeMainService', () => {
 		]), [{ kind: 'cancelled' }, { kind: 'cancelled' }, { kind: 'cancelled' }, { kind: 'cancelled' }, { kind: 'cancelled' }]);
 	});
 
+	test('ページの modal の dialog で選べなかったときは、nonce が合うときだけ blocked を返す', async () => {
+		const blocked = store.add(new ParadisDesignModeMainService(() => fakeTarget(async (_worldId, code) => ({ nonce: nonceOf(code), blocked: true })), directory));
+		const forged = store.add(new ParadisDesignModeMainService(() => fakeTarget(async () => ({ nonce: 'guess', blocked: true })), directory));
+		assert.deepStrictEqual(await Promise.all([
+			blocked.pickElement('w', 'v', []),
+			forged.pickElement('w', 'v', []),
+		]), [{ kind: 'blocked' }, { kind: 'cancelled' }]);
+	});
+
 	test('再読み込みしたウィンドウは、自分が始めた選択だけを取り消す', async () => {
 		const cancels: string[] = [];
 		const resolvers = new Map<string, (value: unknown) => void>();

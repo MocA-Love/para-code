@@ -33,6 +33,7 @@ import {
 	IParadisBookmark,
 	IParadisBookmarkFolder,
 	isParadisBookmark,
+	isParadisBookmarkUrlAllowed,
 	normalizeParadisBookmarkUrl,
 	ParadisBookmarkNode,
 	paradisFolderIcon,
@@ -161,8 +162,9 @@ export class ParadisBookmarkBarWidget extends Disposable {
 			initial: { title: bookmark.title, url: bookmark.url, folderId },
 			folderOptions: getParadisFolderOptions(this.bookmarksService.nodes, untitledFolderLabel()),
 			onSubmit: result => {
-				if (!normalizeParadisBookmarkUrl(result.url)) {
-					return localize('paradis.bookmarks.invalidUrl', "有効なURLを入力してください。");
+				// 取り込みと同じ判定（http・https・about: だけ）。javascript: や file: はバーから開くと危ないので断る。
+				if (!isParadisBookmarkUrlAllowed(normalizeParadisBookmarkUrl(result.url))) {
+					return localize('paradis.bookmarks.invalidUrlScheme', "http:// か https:// で始まる URL を入力してください。");
 				}
 				const updated = this.bookmarksService.updateBookmark(bookmark.id, {
 					url: result.url,

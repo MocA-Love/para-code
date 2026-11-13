@@ -2,7 +2,7 @@
 
 export { generateIdentity, createInitiator, respondHandshake, randomToken, SecureChannel, deriveNotifyKey, sealNotify, openNotify, nobleAesGcm, setAesGcmBackend, getAesGcmBackend } from './crypto.js';
 export type { AesGcmBackend, Identity, InitiatorHandshake, ResponderHandshake } from './crypto.js';
-export { encodePairingUri, decodePairingUri, deriveSasCode, PAIRING_URI_SCHEME } from './pairing.js';
+export { encodePairingUri, decodePairingUri, deriveSasCode, INSECURE_RELAY_URL_ERROR, PAIRING_URI_SCHEME } from './pairing.js';
 export type { PairingPayload } from './pairing.js';
 export { Channels, encodeFrame, decodeFrame } from './frames.js';
 export type { ChannelId, Frame } from './frames.js';
