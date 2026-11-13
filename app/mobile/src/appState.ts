@@ -1788,7 +1788,8 @@ export const useAppStore = create<AppState>(set => ({
 		if (!identity) {
 			throw new Error('not initialized');
 		}
-		const payload: PairingPayload = decodePairingUri(uri);
+		// 平文の ws:// のリレーは手元でリレーを動かす開発ビルドだけ受け付ける。
+		const payload: PairingPayload = decodePairingUri(uri, { allowInsecureRelay: __DEV__ });
 		// 直前のペアリングが残っていれば畳んでから開始する。
 		pairing?.cancel();
 		const client = new PairingClient(identity, deviceName, rnSocketFactory);

@@ -10,6 +10,7 @@ import assert from 'assert';
 import { mainWindow } from '../../../../../base/browser/window.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
+import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
@@ -239,6 +240,34 @@ suite('ParadisAgentChatView', () => {
 			approvals: [{ id: 'toolu_9', choice: 'yes' }],
 		});
 	});
+
+	test('redraws a growing reply at most every 100ms with its latest text, and drops it at once when the reply ends', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const live = (text: string) => ({ phase: 'message' as const, source: 'hook' as const, startedAt: 5, updatedAt: 5, text });
+		const base = { token: 'pane', agent: 'claude' as const, epoch: 'e', reset: true, busy: true, interaction: null, messages: [] };
+		// 開くときに 2 回読む（setTarget と createView）ので、最初の状態は 2 つ並べる
+		const { session, container, disposables } = await createView([
+			{ ...base, rev: 1, live: live('一') },
+			{ ...base, rev: 1, live: live('一') },
+			{ ...base, rev: 1, live: live('一二') },
+			{ ...base, rev: 1, live: live('一二三') },
+			{ ...base, rev: 2, busy: false, live: null },
+		]);
+		const shown = () => container.querySelector('.paradis-agent-chat-live')?.textContent ?? null;
+		const seen = [shown()];
+		for (let index = 0; index < 2; index++) {
+			await session.refresh();
+			await new Promise(resolve => setTimeout(resolve, 0));
+			seen.push(shown());
+		}
+		await new Promise(resolve => setTimeout(resolve, 100));
+		seen.push(shown());
+		await session.refresh();
+		await new Promise(resolve => setTimeout(resolve, 0));
+		seen.push(shown());
+		// 毎秒の時計を止める（止めないと仮想の時計が待ちを流し終えない）
+		disposables.dispose();
+		assert.deepStrictEqual(seen, ['一', '一', '一', '一二三', null]);
+	}));
 
 	test('folds consecutive tool calls into a closed group, keeps a running tool visible, and remembers the open group across panes', async () => {
 		const tool = (rev: number, id: string, command: string) => ({ rev, role: 'assistant' as const, kind: 'tool_use' as const, tool: 'Bash', toolUseId: id, text: JSON.stringify({ command }) });

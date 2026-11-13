@@ -115,6 +115,11 @@ function sanitizeSpace(value: unknown): IParadisScheduledRunSpace | undefined | 
 	return { stateKey, name, branch, uri };
 }
 
+/** ウィンドウから届いた、止めた後に作り終えたスペース。 */
+export function paradisSanitizeScheduledRunSpace(value: unknown): IParadisScheduledRunSpace | undefined {
+	return sanitizeSpace(value) || undefined;
+}
+
 /** ウィンドウから届いた状態の報告。 */
 export function paradisSanitizeScheduledRunReport(value: unknown): IParadisScheduledRunReport | undefined {
 	if (!isRecord(value)) {

@@ -43,6 +43,32 @@ suite('Paradis bookmarks service storage recovery', () => {
 		assert.deepStrictEqual(JSON.parse(storage.get(BOOKMARKS_STORAGE_KEY, StorageScope.APPLICATION)!), JSON.parse(JSON.stringify([inserted])));
 	});
 
+	test('imports only http, https, and about: bookmarks and counts the dropped schemes', () => {
+		const { service } = createService('[]');
+		const imported = (url: string, title: string) => ({ type: 'bookmark' as const, url, title, createdAt: 1 });
+
+		const stats = service.importNodes([
+			imported('https://example.com/', 'Safe'),
+			imported('javascript:alert(1)', 'Script'),
+			{
+				type: 'folder', title: 'Folder', createdAt: 1, children: [
+					imported('http://example.org/a', 'Http'),
+					imported('file:///etc/passwd', 'File'),
+					imported('data:text/html,x', 'Data'),
+					imported('about:version', 'About'),
+				],
+			},
+		]);
+
+		assert.deepStrictEqual({
+			stats,
+			tree: service.nodes.map(node => node.type === 'folder' ? { title: node.title, children: node.children.map(child => child.type === 'bookmark' ? child.url : child.title) } : node.url),
+		}, {
+			stats: { bookmarksAdded: 3, foldersAdded: 1, skipped: 0, blockedScheme: 3 },
+			tree: ['https://example.com', { title: 'Folder', children: ['http://example.org/a', 'about:version'] }],
+		});
+	});
+
 	test('reports corrupt storage with a fixed error without exposing bookmark content', () => {
 		const storedBookmarks = '{"title":"private-title","url":"file:///Users/alice/secret.ts",}';
 		const reports: Array<{

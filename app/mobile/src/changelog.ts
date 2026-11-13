@@ -44,6 +44,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-11-12',
 		items: [
 			{
+				icon: 'shield-checkmark-outline',
+				title: '暗号化されていない中継サーバー（ws://）を指す QR コードではペアリングしないようにしました',
+				body: '中継サーバーをご自分で立てている場合は、PC の設定で wss:// の URL を指定してから QR コードを出し直してください。',
+			},
+			{
 				icon: 'git-commit-outline',
 				title: 'コミットを待っている間に接続が切れたりアプリを裏に回したりしても、PC でコミットできていれば「コミットしました」と出すようにしました',
 				body: 'つながり直した後に PC のコミットの一覧で確かめます。確かめるのは、ソース管理の画面を開いたまま、コミットを押してから約 5 分までです。',
