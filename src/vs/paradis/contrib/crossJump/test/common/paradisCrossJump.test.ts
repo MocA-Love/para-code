@@ -23,6 +23,7 @@ import {
 	PARADIS_PALETTE_PIN_LIMIT,
 	paradisRecordPaletteRecent,
 	paradisShouldOfferCrossJumpCreate,
+	paradisShouldReturnToCrossJump,
 	paradisSortCrossJumpAgents,
 	paradisSplitPaletteRecents,
 	paradisTogglePalettePin,
@@ -167,5 +168,31 @@ suite('paradisCrossJump', () => {
 		const known = new Set(['here', 'here-agent']);
 		const { moved, rest } = paradisSplitPaletteRecents(shared, entry => known.has(entry.key));
 		assert.deepStrictEqual({ moved: moved.map(entry => entry.key), rest: rest.map(entry => entry.key) }, { moved: ['here', 'here-agent'], rest: ['other-window'] });
+	});
+	test('deleting the prefix of a quick access picker returns to the cross jump, other replacements do not', () => {
+		const files = 'inFilesPicker';
+		const prefixed = new Set(['inCommandsPicker', 'inQuickOpenHelp']);
+		const check = (previous: { contextKey: string | undefined; value: string } | undefined, next: { contextKey: string | undefined; value: string }) => paradisShouldReturnToCrossJump(previous, next, files, prefixed);
+		assert.deepStrictEqual({
+			commandsToFiles: check({ contextKey: 'inCommandsPicker', value: 'term' }, { contextKey: files, value: 'term' }),
+			commandsToFilesEmpty: check({ contextKey: 'inCommandsPicker', value: '' }, { contextKey: files, value: '' }),
+			helpToFiles: check({ contextKey: 'inQuickOpenHelp', value: '' }, { contextKey: files, value: '' }),
+			crossJumpToFiles: check({ contextKey: 'paradisInCrossJump', value: 'term' }, { contextKey: files, value: 'term' }),
+			noPrevious: check(undefined, { contextKey: files, value: '' }),
+			plainPicker: check({ contextKey: undefined, value: '' }, { contextKey: files, value: '' }),
+			filesToFiles: check({ contextKey: files, value: '' }, { contextKey: files, value: '' }),
+			nextNotFiles: check({ contextKey: 'inCommandsPicker', value: '?' }, { contextKey: 'inQuickOpenHelp', value: '?' }),
+			valueDiffers: check({ contextKey: 'inCommandsPicker', value: '>term' }, { contextKey: files, value: 'other' }),
+		}, {
+			commandsToFiles: true,
+			commandsToFilesEmpty: true,
+			helpToFiles: true,
+			crossJumpToFiles: false,
+			noPrevious: false,
+			plainPicker: false,
+			filesToFiles: false,
+			nextNotFiles: false,
+			valueDiffers: false,
+		});
 	});
 });
