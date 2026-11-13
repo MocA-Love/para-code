@@ -26,7 +26,7 @@ export interface IAgentHostTerminalCreateOptions {
 	/** Terminal location (panel, editor, split, etc.). */
 	readonly location?: ITerminalLocationOptions;
 	// PARA-PATCH: preserve workspace ownership — accept a creation scope lease on agent host terminal options
-	/** PARA-CODE: Internal scope authority propagated through a contributed profile provider. */
+	/** PARA-PATCH: Internal scope authority propagated through a contributed profile provider. */
 	readonly paradisTerminalCreationScopeLease?: string;
 }
 

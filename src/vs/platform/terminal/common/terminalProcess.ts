@@ -62,14 +62,14 @@ export interface IProcessDetails {
 	hasChildProcesses: boolean;
 	shellIntegrationNonce: string;
 	// PARA-PATCH: mobile relay recovery — carry the exact pane token across PTY revive and detach
-	/** PARA-CODE: Carries the exact pane token across PTY revive and detach. */
+	/** PARA-PATCH: Carries the exact pane token across PTY revive and detach. */
 	paradisPaneToken?: string;
 	// PARA-PATCH: space ownership — `listProcesses` already reports this for orphans (ptyService.ts)
-	/** PARA-CODE: The process ID used by the previous PTY host before full application revival. */
+	/** PARA-PATCH: The process ID used by the previous PTY host before full application revival. */
 	paradisRevivedFromPersistentProcessId?: number;
 	// PARA-PATCH: space ownership — an adopted terminal's id says nothing about earlier sessions
 	/**
-	 * PARA-CODE: Whether this terminal was taken back from a daemon that kept it running across an
+	 * PARA-PATCH: Whether this terminal was taken back from a daemon that kept it running across an
 	 * update, rather than started here.
 	 *
 	 * It matters to anything keyed by persistent process id. Adoption hands out a new id and, unlike
@@ -81,7 +81,7 @@ export interface IProcessDetails {
 	paradisAdopted?: boolean;
 	// PARA-PATCH: the process lives in the pty daemon, so it does not need this pty host (or server) to stay up
 	/**
-	 * PARA-CODE: Whether the process lives in a daemon that outlives the pty host holding it. If the
+	 * PARA-PATCH: Whether the process lives in a daemon that outlives the pty host holding it. If the
 	 * pty host goes away, the process keeps running and the next pty host takes it back, so nothing
 	 * has to be kept alive on its behalf (see paradisServerTerminalLifetime.ts).
 	 */

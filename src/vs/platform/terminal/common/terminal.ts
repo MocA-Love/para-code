@@ -26,7 +26,7 @@ import type { IParadisReattachTally } from './paradisReattachTally.js';
 
 // PARA-PATCH: shared "do not attach" id, see paradisTerminalEditorRevive.ts and PtyService#getRevivedPtyNewId
 /**
- * PARA-CODE: A persistent process id that is guaranteed not to exist.
+ * PARA-PATCH: A persistent process id that is guaranteed not to exist.
  *
  * Attaching to it fails, which upstream answers by dropping `attachPersistentProcess` and launching a
  * fresh shell (`terminalProcessManager.ts`). That is the safe answer whenever a terminal's identity
@@ -39,7 +39,7 @@ export const PARADIS_UNRESOLVABLE_PTY_ID = -1;
 const PARADIS_MAX_TERMINAL_NONCE_LENGTH = 200;
 
 /**
- * PARA-CODE: The shell integration nonce of a terminal, or `undefined` when it proves nothing.
+ * PARA-PATCH: The shell integration nonce of a terminal, or `undefined` when it proves nothing.
  *
  * The nonce is generated per terminal and carried across revives and reattaches, so it identifies a
  * terminal independently of its persistent process id (which only means something within the session
@@ -249,12 +249,12 @@ export interface IPtyHostAttachTarget {
 	hasChildProcesses: boolean;
 	shellIntegrationNonce: string;
 	// PARA-PATCH: mobile relay recovery — expose the revived/detached PTY pane token on attach targets
-	/** PARA-CODE: The actual pane token retained by the revived or detached PTY. */
+	/** PARA-PATCH: The actual pane token retained by the revived or detached PTY. */
 	paradisPaneToken?: string;
-	/** PARA-CODE: The process ID used by the previous PTY host before full application revival. */
+	/** PARA-PATCH: The process ID used by the previous PTY host before full application revival. */
 	paradisRevivedFromPersistentProcessId?: number;
 	/**
-	 * PARA-CODE: Whether this terminal was taken back from a daemon that kept it running across an
+	 * PARA-PATCH: Whether this terminal was taken back from a daemon that kept it running across an
 	 * update, rather than started here.
 	 *
 	 * It matters to anything keyed by persistent process id. Adoption hands out a new id and, unlike
@@ -392,7 +392,7 @@ export interface IPtyService {
 	 * Persistent process IDs restart with the pty host, so a saved ID can later belong to another process.
 	 */
 	attachToProcess(id: number, pid?: number): Promise<void>;
-	/** PARA-CODE: atomically resolves, claims and attaches an orphan PTY by nonce. */
+	/** PARA-PATCH: atomically resolves, claims and attaches an orphan PTY by nonce. */
 	paradisClaimAndAttachToProcess(workspaceId: string, id: number, paradisExpectedNonce: string): Promise<number>;
 	// PARA-PATCH: tell the pty host that the app is quitting, so closing terminals leaves their background processes alone (paradisTerminalCloseCleanupQuit.ts)
 	paradisSetAppQuitting(quitting: boolean): Promise<void>;
@@ -660,13 +660,13 @@ export interface IShellLaunchConfig {
 		isFeatureTerminal?: boolean;
 		shellIntegrationNonce: string;
 		// PARA-PATCH: mobile relay recovery — carry the pane token through persistent process reattach
-		/** PARA-CODE: The actual pane token retained by the revived or detached PTY. */
+		/** PARA-PATCH: The actual pane token retained by the revived or detached PTY. */
 		paradisPaneToken?: string;
-		/** PARA-CODE: The process ID used by the previous PTY host before full application revival. */
+		/** PARA-PATCH: The process ID used by the previous PTY host before full application revival. */
 		paradisRevivedFromPersistentProcessId?: number;
-		/** PARA-CODE: See {@link IProcessDetails.paradisAdopted}. */
+		/** PARA-PATCH: See {@link IProcessDetails.paradisAdopted}. */
 		paradisAdopted?: boolean;
-		/** PARA-CODE: The id was resolved in the current pty host and cannot address an older ledger. */
+		/** PARA-PATCH: The id was resolved in the current pty host and cannot address an older ledger. */
 		paradisResolvedToCurrentPtyId?: boolean;
 		tabActions?: ITerminalTabAction[];
 	};
@@ -794,7 +794,7 @@ export interface ICreateContributedTerminalProfileOptions {
 	cwd?: string | URI;
 	titleTemplate?: string;
 	// PARA-PATCH: preserve workspace ownership — thread the terminal creation scope lease through contributed profiles
-	/** PARA-CODE: Internal scope authority propagated through a contributed profile provider. */
+	/** PARA-PATCH: Internal scope authority propagated through a contributed profile provider. */
 	paradisTerminalCreationScopeLease?: string;
 }
 
