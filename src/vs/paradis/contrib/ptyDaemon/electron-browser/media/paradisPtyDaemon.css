@@ -40,11 +40,11 @@
 	width: 7px;
 	height: 7px;
 	border-radius: 50%;
-	background-color: var(--vscode-charts-green);
+	background-color: var(--vscode-paradis-success);
 }
 
 .paradis-pty-daemon-popover .ppd-state.ppd-bad .ppd-dot {
-	background-color: var(--vscode-errorForeground);
+	background-color: var(--vscode-paradis-danger);
 }
 
 .paradis-pty-daemon-popover .ppd-total {
