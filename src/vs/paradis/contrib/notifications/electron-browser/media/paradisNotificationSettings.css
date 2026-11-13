@@ -84,6 +84,8 @@
 
 .paradis-notif-area .pns-section {
 	position: relative;
+	/* おやすみモードの覆い（.pns-veil）の重なりを節の中だけで決める */
+	isolation: isolate;
 	margin-bottom: 26px;
 }
 
@@ -160,7 +162,7 @@
 	justify-content: center;
 	font-size: var(--vscode-fontSize-label1);
 	font-weight: var(--vscode-fontWeight-semiBold);
-	z-index: 3;
+	z-index: 1;
 }
 
 /* Aivis 無効時のフィールド群（非表示ではなく無効化） */
@@ -371,6 +373,16 @@
 
 .paradis-notif-area .pns-ringtone-card.selected {
 	background: var(--vscode-list-inactiveSelectionBackground, color-mix(in srgb, var(--vscode-focusBorder) 12%, transparent));
+}
+
+/* 行の中の radio（チェック・名前・説明）。試聴のボタンはこの外に並ぶ */
+.paradis-notif-area .pns-ringtone-choice {
+	flex: 1;
+	min-width: 0;
+	align-self: stretch;
+	display: flex;
+	align-items: center;
+	gap: 8px;
 }
 
 /* 選んでいる行の左端にチェックを出す（ほかの行は同じ幅を空けて揃える）。 */

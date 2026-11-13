@@ -97,7 +97,7 @@ suite('Paradis notification inbox popover', () => {
 			rendered: [
 				{ classes: ['unread'], kind: '許可待ち', space: 'para-code', detail: 'claude', message: 'Bash: npm test -- auth', ariaLabel: '未読 許可待ち para-code ／ claude Bash: npm test -- auth', role: 'option', tabIndex: 0 },
 				// 「完了」は札にせず時刻の横に出す
-				{ classes: ['closed'], kind: undefined, space: 'para-code', detail: 'fix-login', message: 'このペインは閉じています', ariaLabel: '既読 完了 para-code (fix-login) ', role: 'option', tabIndex: -1 },
+				{ classes: ['closed'], kind: undefined, space: 'para-code', detail: 'fix-login', message: 'このペインは閉じています', ariaLabel: '既読 完了 para-code (fix-login) このペインは閉じています', role: 'option', tabIndex: -1 },
 			],
 			calls: ['close', 'reveal:2', 'read:1'],
 		});
