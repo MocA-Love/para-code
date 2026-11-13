@@ -55,7 +55,9 @@ import { KeybindingWeight } from '../../../../platform/keybinding/common/keybind
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
-import { IQuickInputButton, IQuickInputService, IQuickPick, IQuickPickItem, IQuickPickSeparator, QuickInputType } from '../../../../platform/quickinput/common/quickInput.js';
+import { IQuickInput, IQuickInputButton, IQuickInputService, IQuickPick, IQuickPickItem, IQuickPickSeparator, QuickInputType } from '../../../../platform/quickinput/common/quickInput.js';
+import { Extensions as QuickAccessExtensions, IQuickAccessRegistry } from '../../../../platform/quickinput/common/quickAccess.js';
+import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
@@ -97,6 +99,7 @@ import {
 	paradisPrunePaletteRecents,
 	ParadisPaletteKind,
 	paradisRecordPaletteRecent,
+	paradisShouldReturnToCrossJump,
 	paradisSortCrossJumpAgents,
 	paradisSplitPaletteRecents,
 	paradisTogglePalettePin,
@@ -215,6 +218,7 @@ class ParadisCrossJumpSession extends Disposable {
 
 	constructor(
 		initialKind: ParadisPaletteKind,
+		private readonly initialValue: string | undefined,
 		@IQuickInputService private readonly quickInputService: IQuickInputService,
 		@IEditorService private readonly editorService: IEditorService,
 		@ICommandService private readonly commandService: ICommandService,
@@ -284,6 +288,10 @@ class ParadisCrossJumpSession extends Disposable {
 		this.picker.sortByLabel = false;
 		// 接頭辞（`a ` など）は絞り込みの文字に含めない
 		this.picker.filterValue = value => paradisParsePalettePrefix(value).rest;
+		// コマンドパレットなどで接頭辞を消して戻ってきたときは、入力の残りを引き継ぐ
+		if (this.initialValue) {
+			this.picker.value = this.initialValue;
+		}
 	}
 
 	/** 開いて、選ばれた行へ移るまで待つ。 */
@@ -886,10 +894,11 @@ class ParadisCrossJumpAction extends Action2 {
 		});
 	}
 
-	async run(accessor: ServicesAccessor, options?: { readonly kind?: ParadisPaletteKind }): Promise<void> {
+	async run(accessor: ServicesAccessor, options?: { readonly kind?: ParadisPaletteKind; readonly value?: string }): Promise<void> {
 		const instantiationService = accessor.get(IInstantiationService);
 		const kind = options?.kind && ['all', 'agent', 'editor', 'space'].includes(options.kind) ? options.kind : 'all';
-		await instantiationService.createInstance(ParadisCrossJumpSession, kind).run();
+		const value = typeof options?.value === 'string' ? options.value : undefined;
+		await instantiationService.createInstance(ParadisCrossJumpSession, kind, value).run();
 	}
 }
 
@@ -959,6 +968,8 @@ registerAction2(class extends Action2 {
 /**
  * コマンドパレット（`>`）にも同じ種類のタブを出す（「コマンド」を選んだ状態）。ほかのタブを押すか Tab で横断ジャンプへ
  * 戻る。Ctrl+P から `>` を打ったときは picker がそのままで contextKey だけが替わるので、入力が変わるたびに見直す。
+ * コマンドパレットなど接頭辞のある本家の quick access で接頭辞を全部消すと、本家は既定の provider（ファイルに移動）へ
+ * 置き換えるので、そのときは横断ジャンプへ移して入力の残りを引き継ぐ（{@link paradisShouldReturnToCrossJump}）。
  */
 class ParadisPaletteCommandsKinds extends Disposable implements IWorkbenchContribution {
 
@@ -967,12 +978,14 @@ class ParadisPaletteCommandsKinds extends Disposable implements IWorkbenchContri
 	private readonly mounted = this._register(new MutableDisposable<DisposableStore>());
 	private readonly inputListener = this._register(new MutableDisposable());
 	private readonly kindsVisible: IContextKey<boolean>;
+	/** 今出ている入力。閉じたら外す（置き換えでは本家の onHide が来ないので、onShow で前の入力が分かる）。 */
+	private shown: IQuickInput | undefined;
 
 	constructor(
 		@IQuickInputService private readonly quickInputService: IQuickInputService,
 		@ILayoutService private readonly layoutService: ILayoutService,
 		@ICommandService private readonly commandService: ICommandService,
-		@IContextKeyService contextKeyService: IContextKeyService,
+		@IContextKeyService private readonly contextKeyService: IContextKeyService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IKeybindingService private readonly keybindingService: IKeybindingService,
 		@IHoverService private readonly hoverService: IHoverService,
@@ -981,13 +994,42 @@ class ParadisPaletteCommandsKinds extends Disposable implements IWorkbenchContri
 		this.kindsVisible = ParadisPaletteKindsVisibleContext.bindTo(contextKeyService);
 		this._register(this.quickInputService.onShow(() => {
 			const input = this.quickInputService.currentQuickInput;
+			const previous = this.shown;
+			this.shown = input;
+			if (input && previous && previous !== input && this.returnsToCrossJump(previous, input)) {
+				this.inputListener.clear();
+				this.mounted.clear();
+				void this.commandService.executeCommand(PARADIS_CROSS_JUMP_COMMAND_ID, { value: (input as IQuickPick<IQuickPickItem>).value });
+				return;
+			}
 			this.inputListener.value = input?.type === QuickInputType.QuickPick ? (input as IQuickPick<IQuickPickItem>).onDidChangeValue(() => this.update()) : undefined;
 			this.update();
 		}));
 		this._register(this.quickInputService.onHide(() => {
+			this.shown = undefined;
 			this.inputListener.clear();
 			this.mounted.clear();
 		}));
+	}
+
+	/** 本家が接頭辞のある quick access を、接頭辞を消したので既定の provider へ置き換えたか。 */
+	private returnsToCrossJump(previous: IQuickInput, next: IQuickInput): boolean {
+		if (previous.type !== QuickInputType.QuickPick || next.type !== QuickInputType.QuickPick) {
+			return false;
+		}
+		const registry = Registry.as<IQuickAccessRegistry>(QuickAccessExtensions.Quickaccess);
+		const defaultContextKey = registry.getQuickAccessProvider('', this.contextKeyService)?.contextKey;
+		if (!defaultContextKey) {
+			return false;
+		}
+		const prefixed = new Set<string>();
+		for (const descriptor of registry.getQuickAccessProviders(this.contextKeyService)) {
+			if (descriptor.prefix && descriptor.contextKey) {
+				prefixed.add(descriptor.contextKey);
+			}
+		}
+		const state = (input: IQuickInput) => ({ contextKey: input.contextKey, value: (input as IQuickPick<IQuickPickItem>).value });
+		return paradisShouldReturnToCrossJump(state(previous), state(next), defaultContextKey, prefixed);
 	}
 
 	private update(): void {

@@ -248,3 +248,25 @@ export function paradisPaletteActionsToShow<T extends { readonly label: string }
 	}
 	return actions.filter(action => paradisPaletteMatches(query, action.label, undefined)).slice(0, PALETTE_ACTIONS_MATCHED);
 }
+
+/** 本家の quick access の入力の 1 つ（クイックピック）の、横断ジャンプへ戻すかの判定に使う形。 */
+export interface IParadisPaletteQuickInputState {
+	readonly contextKey: string | undefined;
+	readonly value: string;
+}
+
+/**
+ * 本家の quick access で接頭辞を全部消して既定の provider（ファイルに移動）へ落ちたとき、横断ジャンプへ戻すか。
+ * 本家は入力の変化で provider が替わると、同じ値のまま既定の provider のクイックピックへ作り直す（閉じずに置き換える）。
+ * その置き換えを、直前の入力が接頭辞のある provider（コマンドパレット `>`・ヘルプ `?`・行へ移動 `:` など、
+ * `prefixedContextKeys`）で、新しい入力が既定の provider（`defaultContextKey`）で、値が同じことで見分ける。
+ * 横断ジャンプの「ファイル名で探す」から移ったとき（直前が横断ジャンプ）と、ほかのクイックピックからは戻さない。
+ */
+export function paradisShouldReturnToCrossJump(previous: IParadisPaletteQuickInputState | undefined, next: IParadisPaletteQuickInputState, defaultContextKey: string, prefixedContextKeys: ReadonlySet<string>): boolean {
+	return !!previous
+		&& previous.contextKey !== undefined
+		&& previous.contextKey !== defaultContextKey
+		&& prefixedContextKeys.has(previous.contextKey)
+		&& next.contextKey === defaultContextKey
+		&& previous.value === next.value;
+}
