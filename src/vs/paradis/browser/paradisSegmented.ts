@@ -53,7 +53,7 @@ export class ParadisSegmented<T extends string> extends Disposable {
 			button.textContent = item.label;
 			this.buttons.set(item.value, button);
 			this._register(addDisposableListener(button, EventType.CLICK, () => {
-				if (button.disabled) {
+				if (button.getAttribute('aria-disabled') === 'true') {
 					return;
 				}
 				const changed = this._value !== item.value;
@@ -77,11 +77,15 @@ export class ParadisSegmented<T extends string> extends Disposable {
 		}
 	}
 
-	/** 1 つの選択肢を押せる・押せない状態にする。押せない理由は `title` に出す。 */
+	/**
+	 * 1 つの選択肢を押せる・押せない状態にする。押せない理由は `title` に出す。
+	 * native の `disabled` にすると、押した直後に押せなくなったボタンからフォーカスが body へ落ちるので、
+	 * 本家の Button と同じく `aria-disabled` で止め、フォーカスは残す。
+	 */
 	setItemEnabled(value: T, enabled: boolean, title?: string): void {
 		const button = this.buttons.get(value);
 		if (button) {
-			button.disabled = !enabled;
+			button.setAttribute('aria-disabled', String(!enabled));
 			button.title = title ?? '';
 		}
 	}

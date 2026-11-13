@@ -112,11 +112,9 @@ export class ParadisAgentChatComposer extends Disposable {
 		this.textarea.rows = 1;
 		this.textarea.spellcheck = false;
 		this.textarea.setAttribute('aria-label', localize('paradisAgentChat.inputAria', "エージェントへのメッセージ"));
-		// フォーカスは入力欄のまま候補を ↑↓ で選ぶので、選んでいる候補を aria-activedescendant で読み上げに伝える
-		this.textarea.setAttribute('role', 'combobox');
+		// フォーカスは入力欄のまま候補を ↑↓ で選ぶので、選んでいる候補を aria-activedescendant で読み上げに伝える。
+		// 複数行の入力欄として読ませるため role は textbox のままにし、候補の関係は候補を出している間だけ付ける
 		this.textarea.setAttribute('aria-autocomplete', 'list');
-		this.textarea.setAttribute('aria-controls', this.slashMenu.id);
-		this.textarea.setAttribute('aria-expanded', 'false');
 		const footer = append(box, $('.paradis-agent-chat-composer-footer'));
 		this.busyNote = append(footer, $('span.paradis-agent-chat-composer-busy'));
 		const dictationSlot = append(footer, $('span.paradis-agent-chat-dictation'));
@@ -406,7 +404,7 @@ export class ParadisAgentChatComposer extends Disposable {
 			return;
 		}
 		this.slashMenu.style.display = '';
-		this.textarea.setAttribute('aria-expanded', 'true');
+		this.textarea.setAttribute('aria-controls', this.slashMenu.id);
 		this.textarea.setAttribute('aria-activedescendant', `${this.slashMenu.id}-${this.slashSelected}`);
 		this.slashItems.forEach((command, index) => {
 			const row = append(this.slashMenu, $('.paradis-agent-chat-slash-item'));
@@ -460,7 +458,7 @@ export class ParadisAgentChatComposer extends Disposable {
 	}
 
 	private clearSlashMenuAria(): void {
-		this.textarea.setAttribute('aria-expanded', 'false');
+		this.textarea.removeAttribute('aria-controls');
 		this.textarea.removeAttribute('aria-activedescendant');
 	}
 }
