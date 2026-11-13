@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useState } from 'react';
-import { StyleSheet, Text, TextInput, View, type KeyboardTypeOptions } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { AccessibilityInfo, StyleSheet, Text, TextInput, View, type KeyboardTypeOptions } from 'react-native';
 import { colors, radius, space, type } from '../theme.js';
 import { BottomDrawer } from './bottomDrawer.js';
 import { Button } from './button.js';
@@ -59,6 +59,17 @@ export function TextInputDrawer({
 	const trimmed = value.trim();
 	const problem = validate?.(trimmed);
 	const canSubmit = (allowEmpty || trimmed.length > 0) && problem === undefined;
+	// 入力欄の下に出している理由（空欄のうちと、閉じている間は出さない）。
+	// 閉じた後も入力した値は残るので、保存した直後に「同じものがある」と読み上げないよう visible も見る。
+	const shownProblem = visible && problem !== undefined && trimmed.length > 0 ? problem : undefined;
+	// 理由が出た瞬間だけ読み上げる（入力のたびに読むと読み上げが途切れず続くため）。
+	const announcedProblem = useRef<string | undefined>(undefined);
+	useEffect(() => {
+		if (shownProblem !== undefined && announcedProblem.current === undefined) {
+			AccessibilityInfo.announceForAccessibility(shownProblem);
+		}
+		announcedProblem.current = shownProblem;
+	}, [shownProblem]);
 	const submit = () => {
 		if (!canSubmit) {
 			return;
@@ -88,8 +99,9 @@ export function TextInputDrawer({
 				returnKeyType="done"
 				onSubmitEditing={submit}
 				accessibilityLabel={title}
+				accessibilityHint={shownProblem}
 			/>
-			{problem !== undefined && trimmed.length > 0 ? <Text style={styles.problem}>{problem}</Text> : null}
+			{shownProblem !== undefined ? <Text style={styles.problem}>{shownProblem}</Text> : null}
 			<View style={styles.buttons}>
 				<Button label={cancelLabel} variant="secondary" onPress={onClose} style={styles.button} />
 				<Button label={submitLabel} onPress={submit} disabled={!canSubmit} style={styles.button} />
@@ -113,7 +125,7 @@ const styles = StyleSheet.create({
 		borderWidth: 1,
 		borderColor: colors.border,
 		paddingHorizontal: space.md,
-		paddingVertical: space.sm + 2,
+		paddingVertical: space.row,
 		fontSize: type.input,
 	},
 	problem: {

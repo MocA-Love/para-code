@@ -129,7 +129,7 @@ const styles = StyleSheet.create({
 		fontSize: type.meta,
 		lineHeight: 17,
 		color: colors.textMuted,
-		paddingHorizontal: space.md + 2,
+		paddingHorizontal: space.rowInset,
 		paddingTop: space.sm,
 		paddingBottom: space.md,
 	},

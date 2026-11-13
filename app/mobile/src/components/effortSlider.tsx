@@ -1,10 +1,11 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AccessibilityInfo, Animated, LayoutChangeEvent, PanResponder, StyleSheet, Text, View } from 'react-native';
+import { Animated, LayoutChangeEvent, PanResponder, StyleSheet, Text, View } from 'react-native';
 import { colors, radius, squircle, type } from '../theme.js';
 import { monoFamily } from '../monoFont.js';
 import { haptic } from '../haptics.js';
+import { useReduceMotion } from '../hooks/useReduceMotion.js';
 import { effortSliderGestureBehavior, isMaximumEffort } from './effortSliderBehavior.js';
 
 /**
@@ -21,7 +22,7 @@ export function EffortSlider({ efforts, value, disabled, accentColor, onChange }
 	const selectedIndex = Math.max(0, efforts.indexOf(value ?? ''));
 	const [previewIndex, setPreviewIndex] = useState(selectedIndex);
 	const [trackWidth, setTrackWidth] = useState(0);
-	const [reduceMotion, setReduceMotion] = useState(false);
+	const reduceMotion = useReduceMotion();
 	const thumbScale = useRef(new Animated.Value(1)).current;
 	const burstProgress = useRef(new Animated.Value(0)).current;
 	const particleValues = useRef(Array.from({ length: 10 }, () => new Animated.Value(0))).current;
@@ -40,20 +41,6 @@ export function EffortSlider({ efforts, value, disabled, accentColor, onChange }
 	const progress = efforts.length <= 1 ? 0 : previewIndex / (efforts.length - 1);
 	const activeEffort = efforts[previewIndex] ?? efforts[0] ?? '';
 	const isMaximum = isMaximumEffort(activeEffort);
-
-	useEffect(() => {
-		let mounted = true;
-		void AccessibilityInfo.isReduceMotionEnabled().then(enabled => {
-			if (mounted) {
-				setReduceMotion(enabled);
-			}
-		});
-		const subscription = AccessibilityInfo.addEventListener('reduceMotionChanged', setReduceMotion);
-		return () => {
-			mounted = false;
-			subscription.remove();
-		};
-	}, []);
 
 	useEffect(() => {
 		if (!dragging.current) {

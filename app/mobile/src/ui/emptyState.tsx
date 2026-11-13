@@ -37,11 +37,11 @@ const styles = StyleSheet.create({
 		alignItems: 'center',
 		justifyContent: 'center',
 		padding: space.xl,
-		gap: space.sm + 2,
+		gap: space.row,
 	},
 	title: {
 		fontSize: type.heading,
-		fontWeight: '700',
+		fontWeight: '600',
 		color: colors.text,
 		textAlign: 'center',
 	},
@@ -52,6 +52,6 @@ const styles = StyleSheet.create({
 		textAlign: 'center',
 	},
 	action: {
-		marginTop: space.xs + 2,
+		marginTop: space.snug,
 	},
 });

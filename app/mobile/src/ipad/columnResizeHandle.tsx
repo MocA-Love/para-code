@@ -16,10 +16,12 @@ const ACCESSIBILITY_STEP = 20;
  * 親の中で `x`（境界線の位置）を中心に縦いっぱいの帯を重ねる。動かしている間は `onMove` に開始時からの
  * 横の移動量を渡し、動かしてから離したら `onEnd`（ここで保存する）。境界線は動かしている間だけ見えるように明るくする。
  */
-export function ColumnResizeHandle({ x, label, onStart, onMove, onEnd, onStep }: {
+export function ColumnResizeHandle({ x, label, value, onStart, onMove, onEnd, onStep }: {
 	x: number;
 	/** 読み上げの名前（「サイドバーの幅」など）。 */
 	label: string;
+	/** 読み上げる今の幅と、動かせる範囲（pt）。 */
+	value?: { readonly min: number; readonly max: number; readonly now: number };
 	onStart: () => void;
 	onMove: (dx: number) => void;
 	onEnd: () => void;
@@ -60,6 +62,7 @@ export function ColumnResizeHandle({ x, label, onStart, onMove, onEnd, onStep }:
 					accessible
 					accessibilityRole="adjustable"
 					accessibilityLabel={label}
+					accessibilityValue={value !== undefined ? { min: value.min, max: value.max, now: Math.round(value.now), text: `${Math.round(value.now)}pt` } : undefined}
 					accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
 					onAccessibilityAction={event => onStep(event.nativeEvent.actionName === 'increment' ? ACCESSIBILITY_STEP : -ACCESSIBILITY_STEP)}
 				>

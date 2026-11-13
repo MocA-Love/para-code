@@ -33,7 +33,7 @@ const styles = StyleSheet.create({
 	row: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: space.sm, paddingHorizontal: space.xs },
 	first: { marginTop: space.sm },
 	rest: { marginTop: 18 },
-	title: { color: colors.textDim, fontSize: type.caption, fontWeight: '600', letterSpacing: 0.5, flexShrink: 1 },
+	title: { color: colors.textDim, fontSize: type.caption, fontWeight: '600', flexShrink: 1 },
 	count: { color: colors.textDim, fontSize: type.caption },
 	spacer: { flex: 1 },
 });

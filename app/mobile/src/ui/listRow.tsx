@@ -3,13 +3,13 @@
 import { Children, Fragment, isValidElement, type ReactNode } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 import { Check, ChevronRight } from 'lucide-react-native';
-import { HIT_SIZE, colors, radius, space, type } from '../theme.js';
+import { HIT_SIZE, colors, pressedSurface, radius, space, type } from '../theme.js';
 import { Icon, type LucideIcon } from './icon.js';
 import { useThemeColors } from './themeColorsStore.js';
 
 /**
  * 行を束ねる面（設定の inset grouped・シートの選択肢の束。モックの `.sec` / `.agroup`）。
- * 地は `colors.panel`、角丸 12。子の行の間に細い区切り線（左右 12 の余白）を自動で入れる。
+ * 地は `colors.panel`、角丸 12。子の行の間に細い区切り線（左右 14 の余白。行の頭にそろえる）を自動で入れる。
  *
  * ```tsx
  * <ListGroup>
@@ -63,7 +63,7 @@ export interface ListRowProps {
 
 /**
  * 一覧の1行（モックの `.srow` / `.arow`）。アイコン16＋ラベル14（＋補足12）＋右端。
- * 高さは 44pt 以上。押している間は `colors.raised` を敷く。
+ * 高さは 44pt 以上。押している間は `colors.raised` を敷く。`value` は読み上げでも名前と分けて値として読む。
  */
 export function ListRow({
 	label, hint, warning, icon, iconColor, leading, value, trailing = 'none', destructive = false,
@@ -87,6 +87,7 @@ export function ListRow({
 			accessibilityRole={interactive ? 'button' : undefined}
 			accessibilityLabel={accessibilityLabel ?? [label, hint, warning].filter(part => part !== undefined).join('、')}
 			accessibilityState={{ disabled: disabled || loading, selected }}
+			accessibilityValue={value !== undefined ? { text: value } : undefined}
 		>
 			{lead !== null ? <View style={styles.lead}>{lead}</View> : null}
 			<View style={styles.textCol}>
@@ -112,18 +113,18 @@ const styles = StyleSheet.create({
 	separator: {
 		height: StyleSheet.hairlineWidth,
 		backgroundColor: colors.border,
-		marginHorizontal: space.md,
+		marginHorizontal: space.rowInset,
 	},
 	row: {
 		flexDirection: 'row',
 		alignItems: 'center',
-		gap: space.sm + 2,
+		gap: space.row,
 		paddingVertical: space.md,
-		paddingHorizontal: space.md + 2,
+		paddingHorizontal: space.rowInset,
 		minHeight: HIT_SIZE,
 	},
 	rowPressed: {
-		backgroundColor: colors.raised,
+		backgroundColor: pressedSurface.none,
 	},
 	rowDisabled: {
 		opacity: 0.45,

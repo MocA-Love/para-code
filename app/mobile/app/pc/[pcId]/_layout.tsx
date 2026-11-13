@@ -13,7 +13,7 @@ import { haptic } from '../../../src/haptics.js';
 import { useIsRegularWidth } from '../../../src/hooks/useSizeClass.js';
 import { ColumnResizeHandle } from '../../../src/ipad/columnResizeHandle.js';
 import { DetailColumnKeyContext, useDetailColumn, useDetailColumnOpen } from '../../../src/ipad/detailColumn.js';
-import { sidebarWidthFor } from '../../../src/ipad/ipadLayout.js';
+import { SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, sidebarWidthFor } from '../../../src/ipad/ipadLayout.js';
 import { useIpadLayout } from '../../../src/ipad/ipadLayoutStore.js';
 import { useShortcutSlot } from '../../../src/ipad/shortcutRegistry.js';
 import { WindowLeadingEdge } from '../../../src/ipad/windowControls.js';
@@ -134,6 +134,7 @@ export default function PcLayout() {
 				<ColumnResizeHandle
 					x={sidebarWidth}
 					label="サイドバーの幅"
+					value={{ min: SIDEBAR_MIN_WIDTH, max: sidebarWidthFor(SIDEBAR_MAX_WIDTH, containerWidth), now: sidebarWidth }}
 					onStart={() => { dragStart.current = sidebarWidth; }}
 					onMove={dx => setSidebarWidth(dragStart.current + dx)}
 					onEnd={commitWidths}

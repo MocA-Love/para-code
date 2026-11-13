@@ -44,6 +44,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		date: '2026-11-12',
 		items: [
 			{
+				icon: 'hand-left-outline',
+				title: 'ボタンを押したときの手応えを、行やカードと同じく地の色が変わる形にそろえました',
+				body: 'VoiceOver では一覧の行の右の値と列の幅を読み上げ、入力シートで保存できない理由が出たときに知らせます。「視差効果を減らす」がオンのときは実行中の輪を回しません。',
+			},
+			{
 				icon: 'shield-checkmark-outline',
 				title: '暗号化されていない中継サーバー（ws://）を指す QR コードではペアリングしないようにしました',
 				body: '中継サーバーをご自分で立てている場合は、PC の設定で wss:// の URL を指定してから QR コードを出し直してください。',

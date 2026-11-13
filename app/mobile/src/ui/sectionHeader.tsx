@@ -6,8 +6,8 @@ import { colors, space, type } from '../theme.js';
 import { Icon, iconSize, type LucideIcon } from './icon.js';
 
 /**
- * 見出し（モックの `.sh` / `.secthdr` / `.gh`）。11pt・太さ 600・字間 0.6 の弱い灰。
- * Orca は英字を大文字にするが、日本語が主なので大文字化はしない。
+ * 見出し（モックの `.sh` / `.secthdr` / `.gh`）。11pt・太さ 600 の弱い灰。
+ * Orca は英字を大文字にして字間 0.6 を付けるが、日本語が主なので大文字化も字間もしない（字間を付けると日本語が間延びする）。
  *
  * 上下の余白は置き場所で違う（ホームは 16/24、設定は 24）ので `style` で渡す。
  *
@@ -48,7 +48,6 @@ const styles = StyleSheet.create({
 	title: {
 		fontSize: type.caption,
 		fontWeight: '600',
-		letterSpacing: 0.6,
 		color: colors.textMuted,
 		flexShrink: 1,
 	},

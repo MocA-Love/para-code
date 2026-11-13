@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import { Animated, Easing, StyleSheet, View } from 'react-native';
+import { useReduceMotion } from '../hooks/useReduceMotion.js';
 import { radius, space, status, type StatusKey } from '../theme.js';
 import { agentDotColor, connectionColor, connectionLabel, isSpinningKind, type ConnectionKind } from './statusColors.js';
 
@@ -26,18 +27,19 @@ export function StatusDot({ kind, size = 8 }: { kind: ConnectionKind; size?: 6 |
 /** 1周の時間（ms。Orca と同じ）。 */
 const SPIN_MS = 1000;
 
-/** 実行中の間だけ回し続ける値。 */
+/** 実行中の間だけ回し続ける値。「視差効果を減らす」が有効なら回さず、輪を止めて描く。 */
 function useSpin(spinning: boolean): Animated.AnimatedInterpolation<string> {
 	const value = useRef(new Animated.Value(0)).current;
+	const reduceMotion = useReduceMotion();
 	useEffect(() => {
-		if (!spinning) {
+		if (!spinning || reduceMotion) {
 			value.setValue(0);
 			return undefined;
 		}
 		const loop = Animated.loop(Animated.timing(value, { toValue: 1, duration: SPIN_MS, easing: Easing.linear, useNativeDriver: true }));
 		loop.start();
 		return () => loop.stop();
-	}, [spinning, value]);
+	}, [spinning, reduceMotion, value]);
 	return value.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '360deg'] });
 }
 

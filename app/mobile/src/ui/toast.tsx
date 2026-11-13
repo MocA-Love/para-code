@@ -8,7 +8,7 @@ import { useAppLocked } from '../appLock.js';
 import { useParaToast, type ParaToast } from '../paraToast.js';
 import { useStableInsets } from '../hooks/useStableInsets.js';
 import { haptic } from '../haptics.js';
-import { colors, radius, space, type } from '../theme.js';
+import { colors, HIT_SIZE, radius, space, type } from '../theme.js';
 import { useThemeColors } from './themeColorsStore.js';
 import { toastPlacement, useToastAnchor } from './toastAnchor.js';
 
@@ -33,7 +33,7 @@ export function Toast({ toast, onAction }: { toast: ParaToast; onAction?: () => 
 				{toast.sub !== undefined && toast.sub.length > 0 ? <Text style={styles.sub} numberOfLines={1}>{toast.sub}</Text> : null}
 			</View>
 			{toast.action !== undefined ? (
-				<Pressable onPress={onAction} hitSlop={space.md} accessibilityRole="button" accessibilityLabel={toast.action.label}>
+				<Pressable onPress={onAction} style={styles.actionHit} accessibilityRole="button" accessibilityLabel={toast.action.label}>
 					<Text style={[styles.action, { color: theme.accent }]}>{toast.action.label}</Text>
 				</Pressable>
 			) : null}
@@ -152,6 +152,7 @@ function ToastLayer({ followAnchor }: { followAnchor: boolean }) {
 	);
 }
 
+
 /** 札の最大幅（pt）。iPhone SE の 320pt でも左右に余白が残る。 */
 const TOAST_MAX_WIDTH = 300;
 
@@ -175,8 +176,9 @@ const styles = StyleSheet.create({
 		paddingHorizontal: space.lg,
 		shadowColor: colors.shadow,
 		shadowOffset: { width: 0, height: 4 },
-		shadowOpacity: 0.35,
-		shadowRadius: 14,
+		// 浮いている面の影はシート（bottomDrawer.tsx）と同じ濃さと半径にする。
+		shadowOpacity: 0.2,
+		shadowRadius: 10,
 		elevation: 6,
 	},
 	textCol: {
@@ -190,6 +192,20 @@ const styles = StyleSheet.create({
 		fontSize: type.meta,
 		color: colors.textMuted,
 		marginTop: 2,
+	},
+	/**
+	 * 「戻る」の当たり判定。hitSlop では足りない（Fabric の iOS は親の札の枠の外の点を子へ渡さない）ので、押せる要素自体を
+	 * 縦 44pt にする。札の上下の余白（space.sm）を負の余白で打ち消し、押せる範囲は札の高さいっぱい（札は 44pt になる）、
+	 * 右は札の端まで広げる。
+	 */
+	actionHit: {
+		minHeight: HIT_SIZE,
+		justifyContent: 'center',
+		marginVertical: -space.sm,
+		marginRight: -space.lg,
+		paddingRight: space.lg,
+		paddingLeft: space.md,
+		marginLeft: -space.md,
 	},
 	action: {
 		fontSize: type.label,
