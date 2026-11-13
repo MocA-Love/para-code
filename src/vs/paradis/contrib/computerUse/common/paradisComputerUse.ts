@@ -30,6 +30,18 @@ export function paradisComputerUseEnabled(value: unknown): boolean {
 }
 
 /**
+ * 設定がオンになった知らせを出す通常ウィンドウの id を決める。どのウィンドウも同じ一覧から同じ答えを出すので、
+ * 知らせは 1 つだけ出る。最後にフォーカスのあったウィンドウが通常ウィンドウならそこ、Agents ウィンドウなど
+ * 知らせを出せないウィンドウ（または不明）なら、通常ウィンドウのうち id が最小のものにする。
+ */
+export function paradisComputerUseNoticeWindowId(activeWindowId: number | undefined, normalWindowIds: readonly number[]): number | undefined {
+	if (activeWindowId !== undefined && normalWindowIds.includes(activeWindowId)) {
+		return activeWindowId;
+	}
+	return normalWindowIds.length > 0 ? Math.min(...normalWindowIds) : undefined;
+}
+
+/**
  * 前面に出して実カーソルとキーボードを使う送り方（3 段目）の前に、利用者の承認を取るか（既定オン。オフにすると
  * 承認済みのアプリにはそのまま送る）。アクセシビリティ・背面で送れる操作（1・2 段目）には効かない。
  */

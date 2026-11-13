@@ -17,7 +17,8 @@
 // 設定がオフからオンに変わったら 1 回知らせる（レビュー L14）。ペインのエージェントは同じユーザーなので
 // settings.json を書き換えてオンにできる。オン・オフは守りの境界ではなく、境界はアプリごとの承認だが、
 // 知らないうちにオンになっていたら利用者が気づけるようにする。設定はアプリ全体のものなので、どのウィンドウも
-// 同じ変更を受ける。知らせるのは最後にフォーカスのあったウィンドウ 1 つだけにする。
+// 同じ変更を受ける。知らせるのは通常ウィンドウ 1 つだけにする。最後にフォーカスのあったのが通常ウィンドウならそこ、
+// Agents ウィンドウ（この contribution を読み込まない）なら通常ウィンドウのうち id が最小のものに出す。
 
 import './media/paradisComputerUseStatus.css';
 import { $, addDisposableListener, append, EventType } from '../../../../base/browser/dom.js';
@@ -25,17 +26,22 @@ import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js
 import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { toAction } from '../../../../base/common/actions.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { isEqual } from '../../../../base/common/resources.js';
+import { URI } from '../../../../base/common/uri.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
+import { IOpenedMainWindow } from '../../../../platform/window/common/window.js';
+import { isWorkspaceIdentifier } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { createParadisChip } from '../../../browser/paradisBadges.js';
@@ -49,6 +55,7 @@ import {
 	PARADIS_COMPUTER_USE_STATUS_CHANNEL,
 	ParadisComputerUseAvailability,
 	paradisComputerUseEnabled,
+	paradisComputerUseNoticeWindowId,
 	paradisParseComputerUseStatus,
 } from '../common/paradisComputerUse.js';
 
@@ -192,7 +199,8 @@ class ParadisComputerUseEnabledNotice extends Disposable implements IWorkbenchCo
 	constructor(
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@INotificationService private readonly notificationService: INotificationService,
-		@IHostService private readonly hostService: IHostService,
+		@INativeHostService private readonly nativeHostService: INativeHostService,
+		@IEnvironmentService private readonly environmentService: IEnvironmentService,
 		@ICommandService private readonly commandService: ICommandService,
 		@ILogService private readonly logService: ILogService,
 	) {
@@ -210,9 +218,27 @@ class ParadisComputerUseEnabledNotice extends Disposable implements IWorkbenchCo
 		}));
 	}
 
-	/** 最後にフォーカスのあったウィンドウでだけ知らせる（どのウィンドウも前面に無くても 1 つは知らせる）。 */
+	/**
+	 * 通常ウィンドウ 1 つでだけ知らせる。最後にフォーカスのあったウィンドウが Agents ウィンドウでも、
+	 * 通常ウィンドウのどれか 1 つには出す（{@link paradisComputerUseNoticeWindowId}）。
+	 */
 	private async notifyIfLastFocused(): Promise<void> {
-		if (!await this.hostService.hadLastFocus()) {
+		let activeWindowId: number | undefined;
+		let windows: IOpenedMainWindow[];
+		try {
+			[activeWindowId, windows] = await Promise.all([
+				this.nativeHostService.getActiveWindowId(),
+				this.nativeHostService.getWindows({ includeAuxiliaryWindows: false }),
+			]);
+		} catch (error) {
+			this.logService.warn('[ParadisComputerUse] could not list windows for the enabled notice', error);
+			return;
+		}
+		const agentSessionsWorkspace = this.environmentService.agentSessionsWorkspace;
+		const normalWindowIds = windows
+			.filter(window => !(isWorkspaceIdentifier(window.workspace) && isEqual(URI.revive(window.workspace.configPath), agentSessionsWorkspace)))
+			.map(window => window.id);
+		if (paradisComputerUseNoticeWindowId(activeWindowId, normalWindowIds) !== this.nativeHostService.windowId) {
 			return;
 		}
 		// ボタンがあると通知は開いた状態で出るので、本文が全部読める
