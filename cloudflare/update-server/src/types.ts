@@ -20,5 +20,8 @@ export interface IReleaseRecord {
 
 export interface Env {
 	readonly RELEASES: KVNamespace;
+	/** AUD tag of the Access Application in front of `/api/update`. */
 	readonly CF_ACCESS_AUD?: string;
+	/** Team domain that issues the Access JWTs, e.g. `https://<team>.cloudflareaccess.com`. */
+	readonly CF_ACCESS_TEAM_DOMAIN?: string;
 }
