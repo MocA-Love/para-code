@@ -11,7 +11,8 @@
 // 自前の backdrop + モーダルを重ね、色は `--vscode-*` トークンのみを使う。backdrop に付けた共通の印
 // `paradis-modal-backdrop` は overlayManager の OVERLAY_DEFINITIONS に登録済みで、
 // 表示中はネイティブの WebContentsView が自動的に pause される（印を外すとページの裏に
-// 隠れて何も見えない）。
+// 隠れて何も見えない）。フォーカスの閉じ込め・Esc・背後の inert・閉じた後のフォーカスの戻しは、ほかの fork のモーダルと
+// 同じ ParadisModalFocus が持つ（Tab で巡る先は DOM から集めるので、作った側は要素を登録しない）。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
@@ -27,6 +28,7 @@ import { INotificationService, Severity } from '../../../../platform/notificatio
 import { IParadisBrowserProfile, PARADIS_BROWSER_PROFILE_COLORS } from '../common/paradisBrowserProfileModel.js';
 import { IParadisBrowserProfilesService } from './paradisBrowserProfilesService.js';
 import { paradisModalClasses, ParadisModalSize } from '../../../browser/paradisModal.js';
+import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 
 const $ = dom.$;
 
@@ -71,13 +73,8 @@ export abstract class ParadisProfileModal extends Disposable {
 
 	private readonly _backdrop: HTMLElement;
 	private readonly _modal: HTMLElement;
-	/** 開く前にフォーカスがあった要素（呼び出し側が戻し先を渡したときはそれ）。閉じたらここへ戻す。 */
+	/** 開く前にフォーカスがあった要素（呼び出し側が戻し先を渡したときはそれ）。閉じたとき、開く前の要素が消えていたらここへ戻す。 */
 	protected readonly previouslyFocused: HTMLElement | undefined;
-	/** Tab の巡回対象。DOM を検索せず、作った側が登録する（upstream の dialog.ts と同じ流儀）。 */
-	private readonly _headerFocusables: HTMLElement[] = [];
-	private readonly _footerFocusables: HTMLElement[] = [];
-	/** 本文側の巡回対象。作り直す画面は再描画のたびに入れ替える。 */
-	protected readonly contentFocusables: HTMLElement[] = [];
 	protected readonly body: HTMLElement;
 	protected readonly footer: HTMLElement;
 
@@ -101,7 +98,6 @@ export abstract class ParadisProfileModal extends Disposable {
 		closeButton.type = 'button';
 		closeButton.appendChild($(ThemeIcon.asCSSSelector(Codicon.close)));
 		closeButton.setAttribute('aria-label', localize('paradis.browserProfiles.dialog.close', "閉じる"));
-		this._headerFocusables.push(closeButton);
 		this._register(dom.addDisposableListener(closeButton, dom.EventType.CLICK, () => this.close()));
 
 		this.body = dom.append(modal, $('.pbpm-body'));
@@ -116,21 +112,20 @@ export abstract class ParadisProfileModal extends Disposable {
 				this.close();
 			}
 		}));
-		this._register(dom.addDisposableListener(this._backdrop, dom.EventType.KEY_DOWN, event => {
-			const keyboardEvent = new StandardKeyboardEvent(event);
-			if (keyboardEvent.keyCode === KeyCode.Escape) {
-				keyboardEvent.preventDefault();
-				this.close();
-				return;
-			}
-			// フォーカストラップ。`aria-modal` は支援技術への宣言でしかなく、Tab は普通に外へ抜ける。
-			// 抜けた先で Esc を押しても backdrop の keydown には届かず、閉じられなくなる。
-			if (keyboardEvent.keyCode === KeyCode.Tab) {
-				this._trapTab(keyboardEvent);
-			}
-		}));
 
 		layoutService.activeContainer.appendChild(this._backdrop);
+		this._register(new ParadisModalFocus({
+			backdrop: this._backdrop,
+			modal,
+			onEscape: () => this.onEscape(),
+			close: () => this.close(),
+			restoreFallback: () => this.previouslyFocused?.isConnected ? this.previouslyFocused : undefined,
+		}));
+	}
+
+	/** Esc が押されたとき（日本語入力の変換中は呼ばれない）。既定はモーダルを閉じる。 */
+	protected onEscape(): void {
+		this.close();
 	}
 
 	/**
@@ -146,28 +141,10 @@ export abstract class ParadisProfileModal extends Disposable {
 		}
 	}
 
-	/** モーダル内の focusable を DOM 順に巡回させ、両端で折り返す。 */
-	private _trapTab(keyboardEvent: StandardKeyboardEvent): void {
-		const focusable = [...this._headerFocusables, ...this.contentFocusables, ...this._footerFocusables]
-			// 作り直しで外れた要素（前回の描画分・畳んだ確認ポップオーバー）は飛ばす。
-			.filter(element => element.isConnected && !element.hasAttribute('disabled'));
-		if (focusable.length === 0) {
-			return;
-		}
-		const active = dom.getActiveElement();
-		const currentIndex = focusable.findIndex(element => element === active);
-		const nextIndex = keyboardEvent.shiftKey
-			? (currentIndex <= 0 ? focusable.length - 1 : currentIndex - 1)
-			: (currentIndex === -1 || currentIndex === focusable.length - 1 ? 0 : currentIndex + 1);
-		keyboardEvent.preventDefault();
-		focusable[nextIndex].focus();
-	}
-
 	protected appendButton(label: string, kind: 'primary' | 'secondary' | 'danger', run: () => void): HTMLButtonElement {
 		const button = dom.append(this.footer, $(`button.pbpm-btn.paradis-focus-ring.${kind}`)) as HTMLButtonElement;
 		button.type = 'button';
 		button.textContent = label;
-		this._footerFocusables.push(button);
 		this._register(dom.addDisposableListener(button, dom.EventType.CLICK, () => run()));
 		return button;
 	}
@@ -177,13 +154,8 @@ export abstract class ParadisProfileModal extends Disposable {
 	}
 
 	override dispose(): void {
-		// 閉じたら開く前の場所へフォーカスを戻す。戻さないとフォーカスが body へ落ち、
-		// キーボードだけで操作している人がワークベンチへ帰れなくなる。
-		const shouldRestoreFocus = dom.isAncestorOfActiveElement(this._backdrop);
+		// 外枠を外してから ParadisModalFocus を捨て、開く前の場所へフォーカスを戻させる
 		this._backdrop.remove();
-		if (shouldRestoreFocus && this.previouslyFocused?.isConnected) {
-			this.previouslyFocused.focus();
-		}
 		super.dispose();
 	}
 }
@@ -247,12 +219,21 @@ class ParadisManageProfilesDialog extends ParadisProfileModal {
 		this._render();
 	}
 
+	/** 名前の変更中の Esc は、モーダルごと閉じずに名前の変更だけを取り消す。 */
+	protected override onEscape(): void {
+		if (this._editingId !== undefined) {
+			this._editingId = undefined;
+			this._render();
+			return;
+		}
+		super.onEscape();
+	}
+
 	private _render(): void {
 		// 前回の行のリスナーを捨ててから作り直す。開いている削除確認も一緒に畳む
 		// （行ごと作り直すので、確認の対象がどれだったか曖昧になるより閉じた方が安全）。
 		this._renderStore.clear();
 		this._renderPending = false;
-		this.contentFocusables.length = 0;
 		this._confirmElement?.remove();
 		this._confirmElement = undefined;
 		dom.clearNode(this._listElement);
@@ -316,7 +297,6 @@ class ParadisManageProfilesDialog extends ParadisProfileModal {
 		input.type = 'text';
 		input.value = profile.name;
 		input.setAttribute('aria-label', localize('paradis.browserProfiles.manage.renameAria', "プロファイル名"));
-		this.contentFocusables.push(input);
 		const error = dom.append(field, $('.pbpm-error'));
 		error.style.display = 'none';
 		linkErrorToInput(input, error);
@@ -341,11 +321,6 @@ class ParadisManageProfilesDialog extends ParadisProfileModal {
 			if (keyboardEvent.keyCode === KeyCode.Enter) {
 				keyboardEvent.preventDefault();
 				commit();
-			} else if (keyboardEvent.keyCode === KeyCode.Escape) {
-				// モーダルごと閉じずに、リネームだけを取り消す。
-				keyboardEvent.preventDefault();
-				keyboardEvent.stopPropagation();
-				cancel();
 			}
 		}));
 
@@ -363,7 +338,6 @@ class ParadisManageProfilesDialog extends ParadisProfileModal {
 		button.title = label;
 		button.setAttribute('aria-label', label);
 		button.appendChild($(ThemeIcon.asCSSSelector(icon)));
-		this.contentFocusables.push(button);
 		this._renderStore.add(dom.addDisposableListener(button, dom.EventType.CLICK, () => run()));
 	}
 
@@ -442,13 +416,10 @@ class ParadisManageProfilesDialog extends ParadisProfileModal {
 		});
 
 		const actions = dom.append(popover, $('.pbpm-confirm-actions'));
-		const confirmFocusableStart = this.contentFocusables.length;
 		const dismiss = () => {
 			popover.remove();
 			this._confirmElement = undefined;
-			// 確認ボタンにフォーカスがあったまま消すと body へ落ちる。巡回対象からも外す
-			// （残しても isConnected で無視されるが、開くたびに配列が伸び続けるため）。
-			this.contentFocusables.splice(confirmFocusableStart, 2);
+			// 確認ボタンにフォーカスがあったまま消すと body へ落ちる。
 			if (this._renderPending) {
 				this._render();
 			} else {
@@ -458,12 +429,10 @@ class ParadisManageProfilesDialog extends ParadisProfileModal {
 		const cancelButton = dom.append(actions, $('button.pbpm-btn.paradis-focus-ring.secondary')) as HTMLButtonElement;
 		cancelButton.type = 'button';
 		cancelButton.textContent = localize('paradis.browserProfiles.manage.confirmCancel', "キャンセル");
-		this.contentFocusables.push(cancelButton);
 		this._renderStore.add(dom.addDisposableListener(cancelButton, dom.EventType.CLICK, dismiss));
 		const confirmButton = dom.append(actions, $('button.pbpm-btn.paradis-focus-ring.danger')) as HTMLButtonElement;
 		confirmButton.type = 'button';
 		confirmButton.textContent = confirmLabel;
-		this.contentFocusables.push(confirmButton);
 		this._renderStore.add(dom.addDisposableListener(confirmButton, dom.EventType.CLICK, () => {
 			dismiss();
 			void run();
@@ -496,7 +465,6 @@ class ParadisCreateProfileDialog extends ParadisProfileModal {
 		this._nameInput.type = 'text';
 		this._nameInput.placeholder = localize('paradis.browserProfiles.create.namePlaceholder', "例: PRD, 検証用アカウントA");
 		this._nameInput.setAttribute('aria-label', localize('paradis.browserProfiles.create.name', "プロファイル名"));
-		this.contentFocusables.push(this._nameInput);
 
 		const hint = dom.append(this.body, $('.pbpm-hint'));
 		hint.textContent = localize(
@@ -511,7 +479,6 @@ class ParadisCreateProfileDialog extends ParadisProfileModal {
 			swatch.type = 'button';
 			swatch.style.backgroundColor = color;
 			swatch.setAttribute('aria-label', colorName(color));
-			this.contentFocusables.push(swatch);
 			this._register(dom.addDisposableListener(swatch, dom.EventType.CLICK, () => {
 				this._selectedColor = color;
 				this._refreshSwatches();
