@@ -99,6 +99,38 @@ suite('ParadisOpenCodeHistory', () => {
 		assert.deepStrictEqual((await listOpenCodeSessions(dbPath, ['C:\\work\\app'])).map(session => session.id), ['ses_windows']);
 	});
 
+	test('reads the model and its variant of each session, and leaves them out when the column or value is missing', async () => {
+		const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
+		const database = new DatabaseSync(dbPath);
+		try {
+			database.exec('CREATE TABLE session_v2 (id TEXT, title TEXT, directory TEXT, parent_id TEXT, time_created INTEGER, time_updated INTEGER, time_archived INTEGER, model TEXT)');
+			const insert = database.prepare('INSERT INTO session_v2 VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+			insert.run('ses_variant', 'Variant', '/project', null, 1, 40, null, JSON.stringify({ id: 'ox-alpha-free', providerID: 'opencode-go', variant: 'max' }));
+			insert.run('ses_plain', 'Plain', '/project', null, 1, 30, null, JSON.stringify({ id: 'claude-fable-5-1', providerID: 'anthropic' }));
+			insert.run('ses_null', 'Null', '/project', null, 1, 20, null, null);
+			insert.run('ses_broken', 'Broken', '/project', null, 1, 10, null, '{not json');
+		} finally { database.close(); }
+		const legacyPath = join(root, 'opencode.db');
+		const legacy = new DatabaseSync(legacyPath);
+		try {
+			legacy.exec('CREATE TABLE session (id TEXT, title TEXT, directory TEXT, parent_id TEXT, time_created INTEGER, time_updated INTEGER)');
+			legacy.prepare('INSERT INTO session VALUES (?, ?, ?, ?, ?, ?)').run('ses_old', 'Old', '/project', null, 1, 10);
+		} finally { legacy.close(); }
+		const models = (sessions: readonly { readonly id: string; readonly model?: string; readonly effort?: string }[]) => sessions.map(session => ({ id: session.id, model: session.model, effort: session.effort }));
+		assert.deepStrictEqual({
+			withColumn: models(await listOpenCodeSessions(dbPath, ['/project'])),
+			withoutColumn: models(await listOpenCodeSessions(legacyPath, ['/project'])),
+		}, {
+			withColumn: [
+				{ id: 'ses_variant', model: 'ox-alpha-free', effort: 'max' },
+				{ id: 'ses_plain', model: 'claude-fable-5-1', effort: undefined },
+				{ id: 'ses_null', model: undefined, effort: undefined },
+				{ id: 'ses_broken', model: undefined, effort: undefined },
+			],
+			withoutColumn: [{ id: 'ses_old', model: undefined, effort: undefined }],
+		});
+	});
+
 	test('redacts credential tool inputs before forwarding history to another surface', async () => {
 		populate();
 		const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
