@@ -101,7 +101,8 @@ export function paradisQueueAnnouncement(items: readonly IParadisTransferItem[],
 		}
 	}
 	const key = `${active}|${done}|${failed}`;
-	if (previousKey === undefined || key === previousKey) {
+	// 完了したものを消して何も残らなくなったときは知らせない（「0 件進行中」は転送が起きていないのに進行中と読ませる）
+	if (previousKey === undefined || key === previousKey || (active === 0 && done === 0 && failed === 0)) {
 		return { key, text: undefined };
 	}
 	const parts = [localize('paradis.fileTransfer.queue.announceActive', "{0} 件進行中", active)];

@@ -100,6 +100,8 @@ export function paradisShowPermissionsDialog(container: HTMLElement, options: IP
 
 		const head = renderParadisModalHead(modal, localize('paradis.fileTransfer.permissions.title', "{0} の権限を変更", options.title));
 		head.title.id = 'para-ft-permissions-title';
+		// 帯の見出しは 1 行で … に切れるので、長いファイル名でもホバーで全体を読めるようにする
+		head.title.title = head.title.textContent ?? '';
 		modal.setAttribute('aria-labelledby', head.title.id);
 		const closeLabel = localize('paradis.fileTransfer.permissions.close', "閉じる");
 		const close = dom.append(head.actions, $<HTMLButtonElement>('button'));
