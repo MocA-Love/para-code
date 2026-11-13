@@ -70,14 +70,16 @@ export function createParadisTerminalResumeBanner(container: HTMLElement, host: 
 		const target = instanceId;
 		const store = new DisposableStore();
 		const element = $('.paradis-terminal-resume-banner');
-		element.setAttribute('role', 'status');
 		const header = dom.append(element, $('.paradis-terminal-resume-banner-header'));
 		if (offer.hibernated !== undefined) {
 			// 休止（G-03）で止めた会話。帯は「再開」だけにする（タブを開けば自動で再開するので、ここに来るのは送れなかったとき）
 			renderHibernated(store, element, header, offer, offer.hibernated, target);
 			return;
 		}
-		dom.append(header, $('span.paradis-terminal-resume-banner-heading')).textContent = offer.agent === 'claude'
+		// 読み上げの live region は見出しだけにする（帯全体にすると、1 分ごとに 2 行目の「〜分前」を書き直すたびに帯ごと読み上げる）
+		const heading = dom.append(header, $('span.paradis-terminal-resume-banner-heading'));
+		heading.setAttribute('role', 'status');
+		heading.textContent = offer.agent === 'claude'
 			? localize('paradis.resumeBanner.headingClaude', "前回の Claude Code のセッションがあります")
 			: offer.agent === 'codex' ? localize('paradis.resumeBanner.headingCodex', "前回の Codex のセッションがあります")
 				: localize('paradis.resumeBanner.headingOpenCode', "前回の OpenCode のセッションがあります");
@@ -165,7 +167,10 @@ export function createParadisTerminalResumeBanner(container: HTMLElement, host: 
 	};
 
 	const renderHibernated = (store: DisposableStore, element: HTMLElement, header: HTMLElement, offer: IParadisResumeLedgerEntry, hibernation: IParadisResumeHibernation, target: number): void => {
-		dom.append(header, $('span.paradis-terminal-resume-banner-heading')).textContent = localize('paradis.resumeBanner.hibernatedHeading', "休止中: 押すと再開します");
+		// live region は見出しだけ（2 行目の「〜に完了」は 1 分ごとに書き直すので、そこは読み上げない）
+		const heading = dom.append(header, $('span.paradis-terminal-resume-banner-heading'));
+		heading.setAttribute('role', 'status');
+		heading.textContent = localize('paradis.resumeBanner.hibernatedHeading', "休止中: 押すと再開します");
 		const close = dom.append(header, $(`button.paradis-terminal-resume-banner-close.paradis-focus-ring-inset${ThemeIcon.asCSSSelector(Codicon.close)}`)) as HTMLButtonElement;
 		close.type = 'button';
 		close.setAttribute('aria-label', localize('paradis.resumeBanner.hibernatedDismiss', "閉じる（このタブでは再開しません）"));

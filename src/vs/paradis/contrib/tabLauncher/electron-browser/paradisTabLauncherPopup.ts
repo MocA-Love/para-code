@@ -129,6 +129,12 @@ const STR_EFFORT = localize('paradis.tabLauncher.effort', "エフォート");
 const STR_EFFORT_UNSUPPORTED = localize('paradis.tabLauncher.effortUnsupported', "このモデルは対応していません");
 const STR_PERMISSION = localize('paradis.tabLauncher.permission', "権限");
 const STR_PROMPT = localize('paradis.tabLauncher.prompt', "最初の指示（任意）");
+
+/**
+ * 起動パネルの「最初の指示」の書きかけ（agent の id ごと）。ランチャーは閉じるたびに捨てるので、ここに残し、
+ * Esc やほかの行へ移って閉じた後に同じ agent のパネルを開き直したら戻す。起動したら消す。ウィンドウを閉じるまで覚える。
+ */
+const promptDrafts = new Map<string, string>();
 const STR_WHERE = localize('paradis.tabLauncher.where', "エディタ領域の新しいタブで起動");
 const STR_LAUNCH_TERMINAL = localize('paradis.tabLauncher.launchTerminal', "ターミナルで起動");
 const STR_LAUNCH_CHAT = localize('paradis.tabLauncher.launchChat', "チャットで起動");
@@ -1043,11 +1049,22 @@ export class ParadisTabLauncherPopup extends Disposable {
 		prompt.placeholder = STR_PROMPT;
 		prompt.setAttribute('aria-label', STR_PROMPT);
 		prompt.rows = 3;
+		prompt.value = promptDrafts.get(agent.id) ?? '';
+		store.add(dom.addDisposableListener(prompt, 'input', () => {
+			if (prompt.value.trim() === '') {
+				promptDrafts.delete(agent.id);
+			} else {
+				promptDrafts.set(agent.id, prompt.value);
+			}
+		}));
 
 		// ボタン
 		const footer = dom.append(element, $('.paradis-tab-launcher-footer'));
 		const chatEnabled = paradisTabLauncherOffersChat(agent.id, this.configurationService.getValue<boolean>(PARADIS_AGENT_CHAT_ENABLED_SETTING) !== false);
-		const launch = (mode: 'terminal' | 'chat') => this.launch(agent, mode, prompt.value.trim());
+		const launch = (mode: 'terminal' | 'chat') => {
+			promptDrafts.delete(agent.id);
+			return this.launch(agent, mode, prompt.value.trim());
+		};
 		if (chatEnabled) {
 			const chat = dom.append(footer, $('button.paradis-tab-launcher-button.paradis-focus-ring.secondary')) as HTMLButtonElement;
 			chat.type = 'button';

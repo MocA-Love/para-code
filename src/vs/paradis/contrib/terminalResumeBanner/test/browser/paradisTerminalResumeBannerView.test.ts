@@ -158,7 +158,9 @@ suite('paradisTerminalResumeBannerView', () => {
 			await timeout(10 * 60 * 1000 + 1000);
 			drawn.push(detail());
 			expected.push(fromNow(at, true));
-			assert.deepStrictEqual({ drawn, changed: expected[0] !== expected[1] }, { drawn: expected, changed: true });
+			// 書き直す 2 行目は live region の外（見出しだけが role="status"）
+			const live = Array.from(container.querySelectorAll('[role="status"], [aria-live]'), element => element.className);
+			assert.deepStrictEqual({ drawn, changed: expected[0] !== expected[1], live }, { drawn: expected, changed: true, live: ['paradis-terminal-resume-banner-heading'] });
 		} finally {
 			banner.dispose();
 		}
