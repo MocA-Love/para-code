@@ -282,6 +282,11 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 		const knownUnresponsive = handshakeTimeout !== normal;
 		this.handshakeTimeoutInUse = handshakeTimeout;
 		const check = await paradisAuthenticateDaemonWithin(client, own.token, handshakeTimeout);
+		if (check === 'genuine') {
+			// 答えたら、橋に窓の口を確かめてもらうときもいつもどおり待つ。短い上限のままだと、
+			// 重い常駐で窓ごとの確認だけが期限切れになり、その窓のターミナルが断られる。
+			this.handshakeTimeoutInUse = normal;
+		}
 		if (check === 'genuine' && mark) {
 			// 答えた (固まっていたのが戻った、またはただ重かった)。次からはいつもどおり待つ
 			await paradisWriteUnresponsiveMark(markFile, undefined);

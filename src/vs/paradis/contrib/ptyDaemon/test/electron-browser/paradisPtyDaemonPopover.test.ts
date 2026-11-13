@@ -109,6 +109,19 @@ suite('ParadisPtyDaemonPopover', () => {
 		});
 	});
 
+	test('redrawing for a new uptime keeps the keyboard focus on the same button', () => {
+		const popover = open(p => p.dispose());
+		const buttonLabeled = (label: string) => [...container.querySelectorAll<HTMLElement>('.paradis-button')].find(button => button.textContent === label)!;
+		buttonLabeled('停止').focus();
+		// 稼働時間の文字列だけが変わる（描き直しが起きる）
+		popover.update({ ...STATUS, startedAt: STATUS.startedAt! - 2 * 60 * 60 * 1000 });
+		const focused = mainWindow.document.activeElement as HTMLElement | null;
+		assert.deepStrictEqual({ focusedLabel: focused?.textContent, connected: focused?.isConnected }, {
+			focusedLabel: '停止',
+			connected: true,
+		});
+	});
+
 	test('Escape closes it once and gives the focus back to the status bar item', () => {
 		let closed = 0;
 		open(popover => {

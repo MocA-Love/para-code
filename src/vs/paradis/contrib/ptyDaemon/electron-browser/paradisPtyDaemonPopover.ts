@@ -70,6 +70,8 @@ export class ParadisPtyDaemonPopover extends Disposable {
 	/** 本文の根。キットの本文（`.paradis-popover-body`）の中に置き、描き直すのはこの中だけ。 */
 	private readonly element = $('.paradis-pty-daemon-popover');
 	private readonly bodyListeners = this._register(new DisposableStore());
+	/** 本文の中のボタンを並んだ順に。描き直しのたびに作り直す（{@link update} でフォーカスを戻すのに使う）。 */
+	private buttons: HTMLElement[] = [];
 	private readonly popover: IDisposable;
 	private status: IParadisPtyDaemonStatus;
 	/** 直前に描いた内容。同じなら描き直さない（{@link update} 参照）。 */
@@ -126,9 +128,30 @@ export class ParadisPtyDaemonPopover extends Disposable {
 			return;
 		}
 		this.signature = signature;
+		// 稼働時間は 1 分ごとに変わるので、描き直しは開いている間にも起きる。キーボードで居たボタンを
+		// 覚えておき、描き直した後に同じ位置のボタンへ戻す（戻さないとフォーカスが `<body>` へ落ちて Esc も効かない）。
+		// 並びが変わって同じ位置に別のボタンが来たときは戻さない（押すつもりの無いボタンに居させない）。
+		const focused = this.focusedButton();
 		this.render();
+		if (focused) {
+			const button = this.buttons[focused.index];
+			if (button?.textContent === focused.label) {
+				button.focus();
+			}
+		}
 		// 高さが変わると、上へ折り返して開いた位置がずれるので置き直す
 		this.contextViewService.layout();
+	}
+
+	/** フォーカスのあるボタンが本文の中で何番目か、とその文字。本文の外・ボタン以外なら undefined。 */
+	private focusedButton(): { readonly index: number; readonly label: string | null } | undefined {
+		const active = dom.getActiveElement();
+		if (!active || !this.element.contains(active)) {
+			return undefined;
+		}
+		const buttons = this.buttons;
+		const index = buttons.findIndex(button => button === active || button.contains(active));
+		return index === -1 ? undefined : { index, label: buttons[index].textContent };
 	}
 
 	/**
@@ -161,6 +184,7 @@ export class ParadisPtyDaemonPopover extends Disposable {
 	 */
 	private render(): void {
 		this.bodyListeners.clear();
+		this.buttons = [];
 		dom.clearNode(this.element);
 
 		const running = this.status.running;
@@ -299,6 +323,7 @@ export class ParadisPtyDaemonPopover extends Disposable {
 	private appendButton(parent: HTMLElement, label: string, small: boolean, run: () => unknown): void {
 		const button = this.bodyListeners.add(new ParadisButton(parent, { kind: 'secondary', label, small }));
 		this.bodyListeners.add(button.onDidClick(() => void run()));
+		this.buttons.push(button.element);
 	}
 
 	/**
