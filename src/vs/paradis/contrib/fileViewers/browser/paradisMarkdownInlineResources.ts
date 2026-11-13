@@ -143,7 +143,7 @@ let paradisNextInlineMediaCacheId = 0;
  * 全部の画像を読み直して base64 にし直すことになる（8 MB の画像なら毎回）。ビューア 1 つにつき
  * 1 つ持ち、ビューアと一緒に捨てる。描き直すたびに、その描画で使わなかった画像は外す（{@link retain}）。
  * 文字数の上限は全部のビューアで分け合う（{@link ParadisInlineMediaBudget}）。予算が参照を握るので、
- * 捨てるときは必ず {@link clear} を呼ぶこと。
+ * 捨てるときは必ず {@link dispose} を呼ぶこと。
  *
  * **仕組みの限界**: 版の見分けは更新時刻と大きさだけなので、どちらも同じまま中身だけが変わった画像
  * （同じミリ秒の中で同じ大きさに書き換えたもの、更新時刻を戻すツールで書いたもの）は、前の画像が
@@ -159,6 +159,8 @@ export class ParadisInlineMediaCache {
 	private _chars = 0;
 	private readonly _id = paradisNextInlineMediaCacheId++;
 	private readonly _budget: ParadisInlineMediaBudget;
+	/** {@link dispose} の後か。読み込み中だった画像が後から {@link set} されても、共有の予算に残さない。 */
+	private _disposed = false;
 
 	/**
 	 * @param budget 分け合う予算。数を渡すと、このキャッシュだけの予算をその文字数で作る（テスト用）。
@@ -183,6 +185,9 @@ export class ParadisInlineMediaCache {
 	}
 
 	set(resource: URI, mtime: number, size: number, value: string): void {
+		if (this._disposed) {
+			return;
+		}
 		const resourceKey = resource.toString();
 		const previous = this._keyByResource.get(resourceKey);
 		if (previous !== undefined) {
@@ -218,6 +223,12 @@ export class ParadisInlineMediaCache {
 		this._entries.clear();
 		this._keyByResource.clear();
 		this._chars = 0;
+	}
+
+	/** 捨てる。覚えている分を予算から引き、この後の {@link set} は何もしない。 */
+	dispose(): void {
+		this._disposed = true;
+		this.clear();
 	}
 
 	/** 1 件外す。予算があふれたときにも予算の側から呼ばれる。 */

@@ -204,6 +204,8 @@ export class ParadisCsvTableView extends Disposable {
 			fontsReady: dom.getWindow(this._host).document.fonts.ready,
 		});
 		applyParadisOfficeGridMetadata(this._host, localize('paradis.csv.gridLabel', "CSV の表"), document.recordCount, document.columnCount + 1);
+		// 読み上げ（aria-activedescendant）が選んでいるセルを指すように、描き手のフォーカスを選択に合わせる
+		renderer.setFocusedCell(this._selection.active.row, this._selection.active.column);
 		this._renderer.value = renderer;
 		renderer.render({
 			scrollTop: previousFrame?.scrollTop ?? 0,
@@ -389,6 +391,7 @@ export class ParadisCsvTableView extends Disposable {
 
 	private _setSelection(selection: CsvSelection, reveal: boolean): void {
 		this._selection = this._clampSelection(selection);
+		this._renderer.value?.setFocusedCell(this._selection.active.row, this._selection.active.column);
 		if (reveal) {
 			this._reveal(this._selection.active);
 		} else {

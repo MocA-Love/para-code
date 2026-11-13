@@ -805,11 +805,13 @@ export class ParadisWordChangeInspector extends Disposable {
 			const pageCount = Math.ceil(this.markItems.length / INSPECTOR_PAGE_SIZE);
 			this.markPage = Math.min(this.markPage, pageCount - 1);
 			for (const item of this.markItems.slice(this.markPage * INSPECTOR_PAGE_SIZE, (this.markPage + 1) * INSPECTOR_PAGE_SIZE)) {
-				const text = item.summary ? `${item.summary} ・ ${item.location}` : item.location;
-				const button = appendButton(markList, '', 'row');
+				const text = item.summary ? localize('paradis.word.markSummaryLocation', "{0} ・ {1}", item.summary, item.location) : item.location;
+				const row = dom.append(markList, dom.$('.paradis-word-mark-item'));
+				row.setAttribute('role', 'listitem');
+				const button = appendButton(row, '', 'row');
 				dom.append(button, dom.$('span.paradis-word-mark-kind')).textContent = item.kind;
 				button.append(text);
-				setParadisOfficeRowHover(button, `${item.kind} ${text}`, this.renderDisposables);
+				setParadisOfficeRowHover(button, localize('paradis.word.markRowHover', "{0} {1}", item.kind, text), this.renderDisposables);
 				button.dataset.markId = String(item.id);
 				button.setAttribute('aria-label', localize('paradis.word.openMark', "{0} {1} の情報を開く", item.kind, text));
 				this.renderDisposables.add(dom.addDisposableListener(button, dom.EventType.CLICK, () => onOpenMark(item.id)));

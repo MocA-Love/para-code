@@ -310,6 +310,16 @@ suite('paradisMarkdownInlineResources', () => {
 			first.clear();
 			deepStrictEqual([afterOverflow, [budget.size, second.size]], [['aaaa', undefined, 'cccc', 8], [4, 4]]);
 		});
+
+		test('does not keep an image that finishes loading after the viewer is disposed', () => {
+			// 閉じたビューアの読み込み中だった画像が、共有の予算に残って解放されないままにならない。
+			const budget = new ParadisInlineMediaBudget(10);
+			const cache = new ParadisInlineMediaCache(budget);
+			cache.set(URI.file('/a.png'), 1, 1, 'aaaa');
+			cache.dispose();
+			cache.set(URI.file('/b.png'), 1, 1, 'bbbb');
+			deepStrictEqual([budget.size, cache.size, cache.get(URI.file('/b.png'), 1, 1)], [0, 0, undefined]);
+		});
 	});
 
 	suite('encodeParadisBase64', () => {
