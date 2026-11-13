@@ -40,7 +40,6 @@
 	},
 	"src/vs/paradis/contrib/browserNewTab/electron-browser/media/paradisBrowserNewTab.css": {
 		"focus | .browser-root .paradis-browser-new-tab .pbnt-row:hover, .browser-root .paradis-browser-new-tab .pbnt-row:focus-visible | ": 1,
-		"focus | .browser-root .paradis-browser-new-tab .pbnt-row:focus-visible, .browser-root .paradis-browser-new-tab .pbnt-more:focus-visible, .browser-root .paradis-browser-new-tab .pbnt-icon-button:focus-visible | ": 1,
 		"focus | .browser-root .paradis-browser-new-tab .pbnt-row:hover .pbnt-go, .browser-root .paradis-browser-new-tab .pbnt-row:focus-visible .pbnt-go | ": 1
 	},
 	"src/vs/paradis/contrib/browserViewport/electron-browser/media/paradisBrowserViewport.css": {
