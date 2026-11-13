@@ -1654,6 +1654,12 @@ export function parseCodexLine(obj: Record<string, unknown>, signals: IParseSign
 	const tsParsed = tsRaw !== undefined ? Date.parse(tsRaw) : NaN;
 	const ts = Number.isFinite(tsParsed) ? tsParsed : undefined;
 	const ptype = str(payload.type);
+	// Codex 0.170 から、ゴールの目的文などの追加の文脈を、呼び出しの無いツールの結果（`namespace: 'agent'`、
+	// call_id 無し、行の metadata.additional_context_tool_output）として書く。利用者の操作でもツールの実行でもない
+	// ので出さない（ゴールは thread_goal_updated から出している）。call_id のある結果と古い Codex の行には当たらない。
+	if (ptype === 'function_call_output' && (rec(obj.metadata)?.additional_context_tool_output === true || (str(payload.namespace) === 'agent' && !str(payload.call_id)))) {
+		return [];
+	}
 	// Codex のツール呼び出し/結果は call_id で対応付く (Claude の tool_use_id 相当)。
 	// toolUseId に載せてモバイル側で呼び出し⇔結果の突き合わせに使えるようにする
 	// (質問の回答済み判定は kind==='question' 限定なので Codex の ID が混ざっても影響しない)。

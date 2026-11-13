@@ -999,6 +999,31 @@ suite('ParadisMobileAgentChat', () => {
 		}
 	});
 
+	test('keeps the main conversation\'s open tool calls across a subagent\'s post-compaction SessionStart', async () => {
+		const token = 'pane-subagent-compact';
+		const transcriptPath = join(paradisClaudeConfigDir(), 'projects', 'para-code-tests', 'subagent-compact.jsonl');
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as { openToolUses: Map<string, Map<string, unknown>> };
+		const base = { token, sessionId: 'session-subagent-compact', transcriptPath, cwd: '/workspace' };
+		const openIds = () => [...access.openToolUses.get(token)?.keys() ?? []];
+		try {
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			fireParadisAgentHookEvent({ ...base, event: 'UserPromptSubmit', payload: { prompt: '手伝って' }, at: Date.now() });
+			fireParadisAgentHookEvent({ ...base, event: 'PreToolUse', toolName: 'Bash', toolInput: { command: 'echo main' }, toolUseId: 'toolu_main', at: Date.now() });
+			// Claude Code 2.1.323 から、子の圧縮の後の SessionStart に agent_id が付く
+			fireParadisAgentHookEvent({ ...base, event: 'SessionStart', payload: { source: 'compact', agent_id: 'a05cdbe863549a180', agent_type: 'Explore' }, at: Date.now() });
+			fireParadisAgentHookEvent({ ...base, event: 'PreToolUse', toolName: 'Bash', toolInput: { command: 'echo next' }, toolUseId: 'toolu_next', at: Date.now() });
+			await waitFor(() => openIds().includes('toolu_next'), 'the later tool call was not tracked');
+			const afterSubagent = openIds();
+			fireParadisAgentHookEvent({ ...base, event: 'SessionStart', payload: { source: 'compact' }, at: Date.now() });
+			await waitFor(() => openIds().length === 0, 'the main conversation\'s SessionStart did not clear the open tool calls');
+			assert.deepStrictEqual({ afterSubagent }, { afterSubagent: ['toolu_main', 'toolu_next'] });
+		} finally {
+			chat.dispose();
+		}
+	});
+
 	test('keeps the Codex thread ID discovered from rollout session metadata', () => {
 		assert.deepStrictEqual(paradisParseCodexSessionMeta(JSON.stringify({
 			type: 'session_meta',
