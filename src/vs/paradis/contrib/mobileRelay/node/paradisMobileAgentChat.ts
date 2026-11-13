@@ -122,6 +122,14 @@ export function paradisIsTurnEndHookEvent(eventName: string): boolean {
 }
 
 /**
+ * 本会話の SessionStart か。Claude Code 2.1.323 から、子エージェントが圧縮した後の SessionStart にも
+ * agent_id が付く。子の SessionStart で本会話の動いているツール・承認の待ち・待っている表示を片付けない。
+ */
+function isMainSessionStart(event: IParadisAgentHookEvent): boolean {
+	return event.event === 'SessionStart' && !str(event.payload?.agent_id);
+}
+
+/**
  * 終了済みのターンを live 状態として蘇生させる遅着 hook かどうか。
  *
  * hook は curl の別プロセスから並行 POST されるため、Stop と前後して MessageDisplay や
@@ -7477,7 +7485,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	 */
 	private linkSubagentStartFromHooks(event: IParadisAgentHookEvent, freshSubagent: string | undefined, tracker: ParadisAgentActivityTracker): boolean {
 		const token = event.token;
-		if (event.event === 'UserPromptSubmit' || paradisIsTurnEndHookEvent(event.event) || event.event === 'SessionStart') {
+		if (event.event === 'UserPromptSubmit' || paradisIsTurnEndHookEvent(event.event) || isMainSessionStart(event)) {
 			this.pendingSubagentCalls.delete(token);
 			return false;
 		}
@@ -8177,8 +8185,10 @@ export class ParadisMobileAgentChat extends Disposable {
 			case 'ElicitationResult':
 				next = current?.kind === 'permission' ? undefined : current;
 				break;
-			case 'UserPromptSubmit':
 			case 'SessionStart':
+				next = isMainSessionStart(event) ? undefined : current;
+				break;
+			case 'UserPromptSubmit':
 			case 'SessionEnd':
 				next = undefined;
 				break;
@@ -8437,7 +8447,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	 */
 	private trackToolUse(event: IParadisAgentHookEvent): { readonly toolUseId?: string; readonly waitKey?: string; readonly sameContentLimit?: number } {
 		const token = event.token;
-		if (paradisIsTurnEndHookEvent(event.event) || event.event === 'SessionStart') {
+		if (paradisIsTurnEndHookEvent(event.event) || isMainSessionStart(event)) {
 			this.openToolUses.delete(token);
 			this.syntheticApprovalWaits.delete(token);
 			return {};
