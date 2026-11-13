@@ -37,7 +37,7 @@ import { ACCOUNTS_ACTIVITY_ID, GLOBAL_ACTIVITY_ID } from '../../../common/activi
 import { AccountsActivityActionViewItem, isAccountsActionVisible, SimpleAccountActivityActionViewItem, SimpleGlobalActivityActionViewItem } from '../globalCompositeBar.js';
 import { HoverPosition } from '../../../../base/browser/ui/hover/hoverWidget.js';
 import { IEditorGroupsContainer, IEditorGroupsService } from '../../../services/editor/common/editorGroupsService.js';
-import { ActionRunner, IAction, Separator } from '../../../../base/common/actions.js';
+import { ActionRunner, IAction, Separator, SubmenuAction } from '../../../../base/common/actions.js'; // PARA-PATCH: SubmenuAction for the compact auxiliary window "..."
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 import { ActionsOrientation, IActionViewItem, prepareActions } from '../../../../base/browser/ui/actionbar/actionbar.js';
 import { EDITOR_CORE_NAVIGATION_COMMANDS } from '../editor/editorCommands.js';
@@ -724,6 +724,7 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 
 		const updateToolBarActions = () => {
 			const actions: IToolbarActions = { primary: [], secondary: [] };
+			let paradisCompactEditorActions: IAction[] = []; // PARA-PATCH: editor actions folded into "..." in compact auxiliary windows
 
 			// --- Leading Global Actions (rendered before layout controls; opt-in via TitleBarLeadingActionsGroup).
 			// Use a scratch bucket so non-leading actions don't leak into the shared `secondary` (overflow) list here;
@@ -752,6 +753,9 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 					actions.primary.push(new Separator());
 
 					this.editorActionsChangeDisposable.add(editorActions.onDidChange(() => updateToolBarActions()));
+					// PARA-PATCH: keep the editor actions for the compact auxiliary "..." (see below). The pinned
+					// preset cluster is a placeholder that only works as a custom tool bar item, so it is left out.
+					paradisCompactEditorActions = Separator.join(editorActions.actions.primary, editorActions.actions.secondary).filter(action => action.id !== 'paradis.terminal.presetCluster');
 				}
 			}
 
@@ -784,10 +788,15 @@ export class BrowserTitlebarPart extends Part implements ITitlebarPart {
 			}
 
 			// PARA-PATCH: auxiliary windows show only the title and the window controls (compact /
-			// always on top, contributed to the layout menu), not the editor or global title bar actions
+			// always on top, contributed to the layout menu), not the editor or global title bar actions.
+			// In compact mode the tab bar is hidden, so the editor actions (new terminal, browser,
+			// presets, ...) are folded into a single "..." in front of the window controls.
 			if (this.isAuxiliary) {
 				actions.primary.length = 0;
 				actions.secondary.length = 0;
+				if (this.isCompact && paradisCompactEditorActions.length > 0) {
+					actions.primary.push(new SubmenuAction('paradis.compactWindowEditorActions', localize('paradisCompactWindowEditorActions', "More Actions..."), paradisCompactEditorActions, 'codicon codicon-toolbar-more'), new Separator());
+				}
 				if (this.layoutToolbarMenu) {
 					fillInActionBarActions(this.layoutToolbarMenu.getActions(), actions, group => group === 'navigation');
 				}

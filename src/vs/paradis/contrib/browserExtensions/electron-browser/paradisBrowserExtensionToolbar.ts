@@ -136,7 +136,10 @@ export class ParadisBrowserExtensionToolbarService extends Disposable implements
 	}
 
 	private _commands: readonly IParadisBrowserExtensionCommand[] = [];
-	private readonly _shortcutsScheduler = this._register(new RunOnceScheduler(() => void this._refreshShortcuts(), 200));
+	private readonly _shortcutsScheduler = this._register(new RunOnceScheduler(() => {
+		void this._refreshShortcuts();
+		void this._pruneRemovedButtons();
+	}, 200));
 
 	get commands(): readonly IParadisBrowserExtensionCommand[] {
 		return this._commands;
@@ -148,6 +151,29 @@ export class ParadisBrowserExtensionToolbarService extends Disposable implements
 			this._commands = await this.main.getCommands();
 		} catch {
 			// main が落ちている: 前のまま
+		}
+	}
+
+	/**
+	 * 消した拡張機能のボタンの登録を外す（Q639）。ボタンはウィンドウに 1 組でタブごとのツールバーより広いので、
+	 * main の入っている拡張機能の一覧に無い id だけを外す。問い合わせの間に足したボタンは、古い一覧で外さない。
+	 */
+	private async _pruneRemovedButtons(): Promise<void> {
+		const before = [...this._buttons.keys()];
+		if (before.length === 0) {
+			return;
+		}
+		let installed: ReadonlySet<string>;
+		try {
+			installed = new Set(await this.main.getInstalledIds());
+		} catch {
+			// main が落ちている: 前のまま
+			return;
+		}
+		for (const extensionId of before) {
+			if (!installed.has(extensionId)) {
+				this._buttons.deleteAndDispose(extensionId);
+			}
 		}
 	}
 
