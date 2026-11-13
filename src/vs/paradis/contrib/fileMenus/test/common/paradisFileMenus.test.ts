@@ -10,7 +10,7 @@ import assert from 'assert';
 import { ResourceTree } from '../../../../../base/common/resourceTree.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisCommonFolder, paradisFilePathsPrompt, paradisResolveFileMenuTargets, paradisTerminalFolders, paradisToWindowUri } from '../../common/paradisFileMenus.js';
+import { paradisCommonFolder, paradisFilePathsPrompt, paradisOpenInTerminalNeedsConfirm, paradisResolveFileMenuTargets, paradisTerminalFolders, paradisToWindowUri } from '../../common/paradisFileMenus.js';
 
 const ROOT = URI.from({ scheme: 'vscode-remote', authority: 'ssh-remote+dev-server', path: '/home/example/app' });
 const file = (path: string) => ROOT.with({ path: `${ROOT.path}/${path}` });
@@ -117,6 +117,10 @@ suite('Paradis file menus', () => {
 			{ resource: file('src'), isDirectory: true },
 			{ resource: file('test'), isDirectory: true },
 		])), [file('src').toString(), file('test').toString()]);
+	});
+
+	test('asks before opening more than five terminals at once', () => {
+		assert.deepStrictEqual([1, 5, 6, 50].map(paradisOpenInTerminalNeedsConfirm), [false, false, true, true]);
 	});
 
 	test('checks the space with the folder that holds every file, and sends one path per line', () => {
