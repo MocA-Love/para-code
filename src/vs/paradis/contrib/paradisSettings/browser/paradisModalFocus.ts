@@ -50,11 +50,20 @@ export interface IParadisModalFocusOptions {
 const openModals: ParadisModalFocus[] = [];
 
 /**
- * モーダルの背後として inert にする要素。モーダルを入れた入れ物の直下の、本家の作業領域だけを選ぶ（主ウィンドウの部品の格子、
+ * モーダルの背後として inert にする要素のクラス。モーダルを入れた入れ物の直下の、本家の作業領域だけを選ぶ（主ウィンドウの部品の格子、
  * 別ウィンドウの各部品、本家のモーダルのエディタ）。quick input・コンテキストビュー・通知・確認・ホバーは自分で inert を切り替える
  * ものもあり、モーダルの中から開いて使うので選ばない。
  */
 const BACKGROUND_CLASSES = ['monaco-grid-view', 'part', 'monaco-modal-editor-block'];
+
+/**
+ * `element`（入れ物の直下の要素）が背後の作業領域か。webview のエディタ（Markdown などのビューア・拡張機能の画面）は、
+ * 中身を作り直さないよう本家の overlayWebview.ts が入れ物の直下に置く包み（クラス無し）の中に `webview-overlay-content` を持つ。
+ */
+function isBackground(element: HTMLElement): boolean {
+	return BACKGROUND_CLASSES.some(className => element.classList.contains(className))
+		|| element.firstElementChild?.classList.contains('webview-overlay-content') === true;
+}
 
 /** inert にした背後の要素ごとの、持っているモーダルの数（入れ子の箱が重なっても、最後の 1 つが閉じるまで外さない）。 */
 const backgroundHolders = new Map<HTMLElement, number>();
@@ -236,7 +245,7 @@ export class ParadisModalFocus extends Disposable {
 		}
 		const held: HTMLElement[] = [];
 		for (const element of container.children) {
-			if (!dom.isHTMLElement(element) || !BACKGROUND_CLASSES.some(className => element.classList.contains(className))) {
+			if (!dom.isHTMLElement(element) || !isBackground(element)) {
 				continue;
 			}
 			const count = backgroundHolders.get(element);

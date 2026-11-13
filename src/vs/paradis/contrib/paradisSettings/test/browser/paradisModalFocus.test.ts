@@ -179,19 +179,21 @@ suite('ParadisModalFocus', () => {
 		const editor = grid.appendChild(mainWindow.document.createElement('input'));
 		const quickInput = workbench.appendChild(mainWindow.document.createElement('div'));
 		quickInput.className = 'quick-input-widget';
+		const webview = workbench.appendChild(mainWindow.document.createElement('div'));
+		webview.appendChild(mainWindow.document.createElement('div')).className = 'webview-overlay-content';
 		mainWindow.document.body.appendChild(workbench);
 		try {
 			editor.focus();
 			const hub = open(false, workbench);
-			const whileOpen = { grid: grid.inert, quickInput: quickInput.inert };
+			const whileOpen = { grid: grid.inert, webview: webview.inert, quickInput: quickInput.inert };
 			const nested = open(true, workbench);
 			nested.close();
 			const afterNested = grid.inert;
 			hub.close();
-			assert.deepStrictEqual({ whileOpen, afterNested, afterClose: grid.inert, focusReturned: mainWindow.document.activeElement === editor }, {
-				whileOpen: { grid: true, quickInput: false },
+			assert.deepStrictEqual({ whileOpen, afterNested, afterClose: [grid.inert, webview.inert], focusReturned: mainWindow.document.activeElement === editor }, {
+				whileOpen: { grid: true, webview: true, quickInput: false },
 				afterNested: true,
-				afterClose: false,
+				afterClose: [false, false],
 				focusReturned: true,
 			});
 		} finally {
