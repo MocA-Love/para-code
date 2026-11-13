@@ -627,7 +627,8 @@ kbd { font: var(--fs-xs) var(--mono); color: var(--faint); border: 1px solid var
 /* 「モック」は選択肢のボタンの中に入れず（入れ子だとキーで押せない）、兄弟のボタンとして選択肢の枠の右上に重ねる */
 .opt-row { position: relative; }
 .opt.with-mock { padding-right: 88px; }
-.opt-row .opt-mock { position: absolute; top: 15px; right: 12px; }
+/* .opt の margin-top は .opt-row の外へ相殺されるので、.opt-row の上端は枠の上端になる。padding の 9px だけずらす */
+.opt-row .opt-mock { position: absolute; top: 9px; right: 12px; }
 .ask-foot { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
 .livebox { border: 1px solid color-mix(in srgb, var(--blue) 35%, transparent); background: var(--blue-weak); border-radius: var(--r-lg); padding: 12px 14px; margin-bottom: 16px; }
 .livebox.gray { border-color: var(--line-strong); background: var(--surface); }
@@ -929,6 +930,8 @@ kbd { font: var(--fs-xs) var(--mono); color: var(--faint); border: 1px solid var
 	.modal-back { align-items: flex-end; padding: 0; }
 	.modal, .modal.lg, .modal.xl { width: 100%; max-height: 88vh; border-radius: 16px 16px 0 0; padding-bottom: var(--safe-b); }
 	.toasts { left: 12px; right: 12px; align-items: stretch; }
+	/* 下から出るシートの本文を覆わないよう、ダイアログが開いている間は通知を上に出す */
+	:root:has(.modal-back) .toasts { top: calc(12px + env(safe-area-inset-top, 0px)); bottom: auto; }
 	.toast { width: auto; }
 	.mock-thumbs .thumb { flex-basis: 150px; }
 	.device iframe { height: 300px; }
