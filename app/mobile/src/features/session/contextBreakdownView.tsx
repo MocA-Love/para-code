@@ -16,6 +16,7 @@ import {
 } from '../../agentContextBreakdown.js';
 import { formatTokens } from '../../agentSessionStatus.js';
 import { useAppStore } from '../../appState.js';
+import { pcRequestErrorText } from '../../pcRequestErrorText.js';
 import { formatRelativeTime } from '../../time.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { monitorStyles } from './monitorDrawer.js';
@@ -41,7 +42,7 @@ function categoryColor(name: string): string {
  * セッションのシートの「コンテキスト」から進む内訳（q.html Q565 案 A）。開いたとき・作業中から止まったとき
  * （`refreshKey`）に PC へ 1 回聞く。PC は同梱の Claude Mod が応答の終わりごとに取って保存した最後の 1 件を返す。
  * 取れないときは理由を灰色で書く（Codex・まだ無い・PC が分からない）。取り直しの間は前の内訳を残して見出しの右に
- * 「更新中」を出し、取り直しに失敗したら前の内訳を残して見出しの下に理由を 1 行足す。幅は与えられた分に収まる（シートの中）。
+ * 「更新中」を出し、取り直しに失敗したら前の内訳を残して見出しの下に理由を足す（2 行まで）。幅は与えられた分に収まる（シートの中）。
  */
 export function ContextBreakdownView({ terminalKey, refreshKey }: { terminalKey: string | undefined; refreshKey: string }) {
 	const requestAgentReply = useAppStore(state => state.requestAgentReply);
@@ -69,7 +70,7 @@ export function ContextBreakdownView({ terminalKey, refreshKey }: { terminalKey:
 			},
 			(error: unknown) => {
 				if (!cancelled) {
-					setFetchState({ kind: 'failed', terminalKey, message: error instanceof Error ? error.message : '内訳を取得できません' });
+					setFetchState({ kind: 'failed', terminalKey, message: pcRequestErrorText(error, '内訳を取得できません') });
 				}
 			},
 		);
@@ -105,7 +106,7 @@ export function ContextBreakdownView({ terminalKey, refreshKey }: { terminalKey:
 					<Text style={styles.at} numberOfLines={1}>{`取得: ${formatRelativeTime(Math.min(breakdown.at, now), now)}`}</Text>
 				)}
 			</View>
-			{display.failedMessage !== undefined ? <Text style={styles.failedNote} numberOfLines={1} accessibilityLabel={`更新できませんでした（${display.failedMessage}）`}>{`更新できませんでした（${display.failedMessage}）`}</Text> : null}
+			{display.failedMessage !== undefined ? <Text style={styles.failedNote} numberOfLines={2} accessibilityLabel={`更新できませんでした（${display.failedMessage}）`}>{`更新できませんでした（${display.failedMessage}）`}</Text> : null}
 			<View style={styles.bar} accessible accessibilityLabel={`コンテキストの使用率 ${breakdown.percent}%`}>
 				{counted.filter(line => line.kind === 'used' || line.kind === 'buffer').map(line => (
 					<View key={line.key} style={[styles.barPart, { width: `${line.share}%`, backgroundColor: line.kind === 'buffer' ? colors.borderStrong : categoryColor(line.key) }]} />
@@ -202,7 +203,7 @@ const styles = StyleSheet.create({
 		// 見出しの行は baseline でそろえる。ここも baseline にして「更新中」の字を基準にし、スピナーだけ縦の中央に置く
 		// （最初の子のスピナーが基準になると、はみ出した native の部品の下端に合わせて字が浮く）。
 		alignItems: 'baseline',
-		gap: 6,
+		gap: space.snug,
 	},
 	refreshingSpinner: {
 		alignSelf: 'center',
@@ -211,7 +212,7 @@ const styles = StyleSheet.create({
 		transform: [{ scale: 0.6 }],
 	},
 	failedNote: {
-		marginTop: 6,
+		marginTop: space.snug,
 		marginHorizontal: space.xs,
 		fontSize: type.meta,
 		color: colors.amber,

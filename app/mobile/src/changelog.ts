@@ -76,7 +76,12 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			{
 				icon: 'refresh-outline',
 				title: 'コンテキストの内訳を開いたまま応答が終わったとき、取り直しの間は「更新中」と出すようにしました',
-				body: '取り直しに失敗しても前の内訳は消えず、失敗の理由を 1 行添えます。',
+				body: '取り直しに失敗しても前の内訳は消えず、失敗の理由を添えます。',
+			},
+			{
+				icon: 'alert-circle-outline',
+				title: '過去の会話とコンテキストの内訳で、読み込みに失敗したときの理由を英語のまま出さないようにしました',
+				body: 'PC から返事が無いときや、PC で開いているスペースが見つからないときは、何を確かめればよいかを日本語で出します。',
 			},
 			{
 				icon: 'volume-high-outline',
