@@ -17,6 +17,7 @@ import {
 	IParadisBookmark,
 	IParadisBookmarkFolder,
 	isParadisBookmarkUrlAllowed,
+	isParadisBookmarkUrlOpenable,
 	moveParadisNodeTo,
 	moveParadisRootNode,
 	normalizeParadisBookmarkUrl,
@@ -78,6 +79,21 @@ suite('Paradis bookmark model', () => {
 			['vbscript:x', false],
 			['example.com', false],
 			['', false],
+		]);
+	});
+
+	test('refuses to open saved script URLs but keeps other saved pages openable', () => {
+		const urls = ['https://example.com', 'file:///tmp/a.html', 'about:version', 'example.com', 'javascript:alert(1)', ' JavaScript:alert(1)', 'java\tscript:alert(1)', '\u0001javascript:alert(1)', 'VBScript:x'];
+		assert.deepStrictEqual(urls.map(url => [url, isParadisBookmarkUrlOpenable(url)]), [
+			['https://example.com', true],
+			['file:///tmp/a.html', true],
+			['about:version', true],
+			['example.com', true],
+			['javascript:alert(1)', false],
+			[' JavaScript:alert(1)', false],
+			['java\tscript:alert(1)', false],
+			['\u0001javascript:alert(1)', false],
+			['VBScript:x', false],
 		]);
 	});
 

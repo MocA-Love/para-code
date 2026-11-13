@@ -505,6 +505,10 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 		this.messageText = text;
 		// 別のお知らせに替わった・消えたら、もう戻せない
 		this.clearedAnnotations = text ? cleared : undefined;
+		if (!this.clearedAnnotations && isActiveElement(this.undoButton)) {
+			// 隠す「元に戻す」にフォーカスがあったら、隠す前にエディタへ戻す（body へ落とさない）
+			this.editor.focus();
+		}
 		this.undoButton.style.display = this.clearedAnnotations ? '' : 'none';
 		this.message.textContent = text ?? '';
 		this.message.classList.toggle('error', severity === Severity.Error);
