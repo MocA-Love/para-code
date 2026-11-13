@@ -12,6 +12,8 @@
 export const paradisDesktopResourcePatterns: readonly string[] = [
 	// Built-in notification ringtones played by the notification settings dialog / trigger
 	'vs/paradis/contrib/notifications/browser/media/sounds/*.mp3',
+	// Fork translations added on top of the language pack by src/vs/paradis/node/paradisNls.ts
+	'vs/paradis/nls/*.json',
 	// Fork changelog shown by the paradis.showChangelog command
 	'vs/paradis/contrib/releaseNotes/electron-browser/media/*.md',
 	// Vendored React DevTools extension loaded into built-in browser sessions

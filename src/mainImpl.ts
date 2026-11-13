@@ -15,7 +15,8 @@ import { product } from './bootstrap-meta.js';
 import { parse } from './vs/base/common/jsonc.js';
 import { getUserDataPath } from './vs/platform/environment/node/userDataPath.js';
 import * as perf from './vs/base/common/performance.js';
-import { resolveNLSConfiguration } from './vs/base/node/nls.js';
+// PARA-PATCH: resolve NLS through the fork wrapper, which adds the Para Code translations on top of the language pack (src/vs/paradis/node/paradisNls.ts).
+import { resolveNLSConfiguration } from './vs/paradis/node/paradisNls.js';
 import { getUNCHost, addUNCHostToAllowlist } from './vs/base/node/unc.js';
 import { INLSConfiguration } from './vs/nls.js';
 import { NativeParsedArgs } from './vs/platform/environment/common/argv.js';
