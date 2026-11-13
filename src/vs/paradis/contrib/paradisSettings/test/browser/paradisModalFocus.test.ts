@@ -35,12 +35,12 @@ suite('ParadisModalFocus', () => {
 		outside.remove();
 	});
 
-	function open(nested?: boolean): ITestModal {
+	function open(nested?: boolean, parent: HTMLElement = mainWindow.document.body): ITestModal {
 		const backdrop = mainWindow.document.createElement('div');
 		const modal = mainWindow.document.createElement('div');
 		modal.tabIndex = -1;
 		backdrop.appendChild(modal);
-		mainWindow.document.body.appendChild(backdrop);
+		parent.appendChild(backdrop);
 		const result = { backdrop, modal, escapes: 0, closes: 0 } as unknown as { -readonly [K in keyof ITestModal]: ITestModal[K] };
 		result.close = () => {
 			result.closes++;
@@ -170,5 +170,32 @@ suite('ParadisModalFocus', () => {
 			fromOutside: false,
 		});
 		modal.close();
+	});
+
+	test('makes the workbench behind inert while open (also under a nested box), but not the floating layers, and releases it before returning focus', () => {
+		const workbench = mainWindow.document.createElement('div');
+		const grid = workbench.appendChild(mainWindow.document.createElement('div'));
+		grid.className = 'monaco-grid-view';
+		const editor = grid.appendChild(mainWindow.document.createElement('input'));
+		const quickInput = workbench.appendChild(mainWindow.document.createElement('div'));
+		quickInput.className = 'quick-input-widget';
+		mainWindow.document.body.appendChild(workbench);
+		try {
+			editor.focus();
+			const hub = open(false, workbench);
+			const whileOpen = { grid: grid.inert, quickInput: quickInput.inert };
+			const nested = open(true, workbench);
+			nested.close();
+			const afterNested = grid.inert;
+			hub.close();
+			assert.deepStrictEqual({ whileOpen, afterNested, afterClose: grid.inert, focusReturned: mainWindow.document.activeElement === editor }, {
+				whileOpen: { grid: true, quickInput: false },
+				afterNested: true,
+				afterClose: false,
+				focusReturned: true,
+			});
+		} finally {
+			workbench.remove();
+		}
 	});
 });

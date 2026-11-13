@@ -14,7 +14,11 @@
 //   ただし別の場所（確認ダイアログなど）にフォーカスがあるときは横取りしない
 // - 同じウィンドウで別のモーダルを開いたら、前のものは閉じる（後から開いたものを前に出す）。
 //   重なりの段はどのモーダルも同じ（vs/paradis/browser/paradisModal.ts の表）で、後から入れた幕が上に出る
-// - Tab・Shift+Tab はモーダルの末尾と先頭で折り返す（折り返さないと背面のエディタやターミナルへ抜け、見えない所に打てる）
+// - Tab・Shift+Tab はモーダルの末尾と先頭で折り返す（折り返さないと背面のエディタやターミナルへ抜け、見えない所に打てる）。
+//   巡る先は開くたびに DOM から集める（作った側が要素を登録しない。登録漏れで抜けないように）
+// - 開いている間は背後のワークベンチ（モーダルを入れた入れ物の直下の作業領域）を inert にする（Q644）。クリック・Tab・読み上げが
+//   背後へ出ない。本家の浮く部品（quick input・メニュー・確認・通知・ホバー）は同じ入れ物の直下にあってもモーダルの中から
+//   使うので inert にしない。native の dialog（showModal）にしないのは、top layer に入って本家の浮く部品がモーダルの下に隠れるため
 
 import * as dom from '../../../../base/browser/dom.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
@@ -44,6 +48,16 @@ export interface IParadisModalFocusOptions {
 
 /** 開いているモーダル（開いた順）。 */
 const openModals: ParadisModalFocus[] = [];
+
+/**
+ * モーダルの背後として inert にする要素。モーダルを入れた入れ物の直下の、本家の作業領域だけを選ぶ（主ウィンドウの部品の格子、
+ * 別ウィンドウの各部品、本家のモーダルのエディタ）。quick input・コンテキストビュー・通知・確認・ホバーは自分で inert を切り替える
+ * ものもあり、モーダルの中から開いて使うので選ばない。
+ */
+const BACKGROUND_CLASSES = ['monaco-grid-view', 'part', 'monaco-modal-editor-block'];
+
+/** inert にした背後の要素ごとの、持っているモーダルの数（入れ子の箱が重なっても、最後の 1 つが閉じるまで外さない）。 */
+const backgroundHolders = new Map<HTMLElement, number>();
 
 /** フォーカスしていた要素を、描き直しの後に同じものとして見つけるための目印。 */
 function identityOf(element: HTMLElement): string {
@@ -113,6 +127,8 @@ export class ParadisModalFocus extends Disposable {
 	private readonly previousFocus: HTMLElement | undefined;
 	private lastFocusedIdentity: string | undefined;
 	private closed = false;
+	/** このモーダルが inert にした背後の要素（未だ付けていなければ undefined）。 */
+	private heldBackground: HTMLElement[] | undefined;
 
 	constructor(private readonly options: IParadisModalFocusOptions) {
 		super();
@@ -131,6 +147,13 @@ export class ParadisModalFocus extends Disposable {
 				openModals.splice(index, 1);
 			}
 		}));
+		// 背後の inert は、開く前のフォーカスを覚えた後に付ける（先に付けるとフォーカスが BODY に落ちる）。
+		// 外枠をこの後で入れ物へ入れる呼び出し側もあるので、まだ入っていなければ同じ処理の終わりに付ける
+		if (options.backdrop.isConnected) {
+			this.holdBackground();
+		} else {
+			queueMicrotask(() => this.holdBackground());
+		}
 
 		this._register(dom.addDisposableListener(options.modal, 'focusin', e => {
 			if (dom.isHTMLElement(e.target) && e.target !== options.modal) {
@@ -205,6 +228,44 @@ export class ParadisModalFocus extends Disposable {
 		target.focus();
 	}
 
+	/** 外枠を入れた入れ物の直下の作業領域を inert にする。元から inert だった要素（別の持ち主）には触らない。 */
+	private holdBackground(): void {
+		const container = this.options.backdrop.parentElement;
+		if (this.closed || this.heldBackground || !container) {
+			return;
+		}
+		const held: HTMLElement[] = [];
+		for (const element of container.children) {
+			if (!dom.isHTMLElement(element) || !BACKGROUND_CLASSES.some(className => element.classList.contains(className))) {
+				continue;
+			}
+			const count = backgroundHolders.get(element);
+			if (count === undefined) {
+				if (element.inert) {
+					continue;
+				}
+				element.inert = true;
+			}
+			backgroundHolders.set(element, (count ?? 0) + 1);
+			held.push(element);
+		}
+		this.heldBackground = held;
+	}
+
+	/** {@link holdBackground} で付けた inert を外す（ほかのモーダルがまだ持っている要素は残す）。 */
+	private releaseBackground(): void {
+		for (const element of this.heldBackground ?? []) {
+			const count = backgroundHolders.get(element) ?? 1;
+			if (count <= 1) {
+				backgroundHolders.delete(element);
+				element.inert = false;
+			} else {
+				backgroundHolders.set(element, count - 1);
+			}
+		}
+		this.heldBackground = [];
+	}
+
 	/** フォーカスが BODY に落ちていたら戻す。描き直しの直後に呼ばれる。 */
 	recoverFocus(): void {
 		if (this.closed || !this.isTopmost()) {
@@ -234,6 +295,8 @@ export class ParadisModalFocus extends Disposable {
 			return;
 		}
 		this.closed = true;
+		// 戻す先が背後の作業領域にあるので、先に inert を外す（外さないと focus() が効かず BODY に落ちる）
+		this.releaseBackground();
 		// モーダルの中から開いたエディタなど、閉じる前にフォーカスが外の場所へ移っていたら、そちらを残す
 		const active = this.targetWindow.document.activeElement;
 		if (dom.isHTMLElement(active) && active.isConnected && active !== this.targetWindow.document.body && !this.options.backdrop.contains(active)) {
