@@ -162,9 +162,12 @@ export class ParadisBookmarkBarWidget extends Disposable {
 			initial: { title: bookmark.title, url: bookmark.url, folderId },
 			folderOptions: getParadisFolderOptions(this.bookmarksService.nodes, untitledFolderLabel()),
 			onSubmit: result => {
-				// 取り込みと同じ判定（http・https・about: だけ）。javascript: や file: はバーから開くと危ないので断る。
-				if (!isParadisBookmarkUrlAllowed(normalizeParadisBookmarkUrl(result.url))) {
-					return localize('paradis.bookmarks.invalidUrlScheme', "http:// か https:// で始まる URL を入力してください。");
+				// URL を書き換えたときだけ、取り込みと同じ判定（http・https・about: だけ）にかける。javascript: や file: は
+				// バーから開くと危ないので断る。URL をそのままにして名前やフォルダだけを変えるときは、星で足した file: の
+				// ページなども今までどおり保存できるようにする
+				const normalizedUrl = normalizeParadisBookmarkUrl(result.url);
+				if (normalizedUrl !== normalizeParadisBookmarkUrl(bookmark.url) && !isParadisBookmarkUrlAllowed(normalizedUrl)) {
+					return localize('paradis.bookmarks.invalidUrlScheme', "http:// か https:// で始まる URL（または about: のページ）を入力してください。");
 				}
 				const updated = this.bookmarksService.updateBookmark(bookmark.id, {
 					url: result.url,

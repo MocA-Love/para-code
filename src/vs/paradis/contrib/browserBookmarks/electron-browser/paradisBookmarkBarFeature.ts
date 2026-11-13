@@ -28,6 +28,7 @@ import { IContextKey, IContextKeyService, RawContextKey } from '../../../../plat
 import { WorkbenchHoverDelegate } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { QuickInputButtonLocation } from '../../../../platform/quickinput/common/quickInput.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import {
@@ -40,7 +41,7 @@ import {
 	IBrowserUrlSuggestion,
 	IBrowserUrlSuggestionProvider,
 } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
-import { flattenParadisBookmarks } from '../common/paradisBookmarkModel.js';
+import { flattenParadisBookmarks, isParadisBookmarkUrlOpenable } from '../common/paradisBookmarkModel.js';
 import { ParadisBookmarkBarWidget } from './paradisBookmarkBarWidget.js';
 import {
 	IParadisBookmarksService,
@@ -124,13 +125,14 @@ export class ParadisBookmarkBarFeature extends BrowserEditorContribution {
 		@IInstantiationService instantiationService: IInstantiationService,
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@IKeybindingService keybindingService: IKeybindingService,
+		@INotificationService private readonly _notificationService: INotificationService,
 	) {
 		super(editor);
 
 		this._isBookmarkedContext = CONTEXT_PARADIS_URL_IS_BOOKMARKED.bindTo(contextKeyService);
 
 		this._bar = this._register(instantiationService.createInstance(ParadisBookmarkBarWidget, {
-			openUrl: (url: string) => { void this.editor.model?.loadURL(url); },
+			openUrl: (url: string) => this._openBookmarkUrl(url),
 			getCurrentPage: () => {
 				const model = this.editor.model;
 				return model && model.url ? { url: model.url, title: model.title, faviconDataUri: model.favicon } : undefined;
@@ -161,7 +163,8 @@ export class ParadisBookmarkBarFeature extends BrowserEditorContribution {
 				const current = input.url;
 				const suggestions: IBrowserUrlSuggestion[] = [];
 				for (const bookmark of flattenParadisBookmarks(this._bookmarksService.nodes)) {
-					if (bookmark.url === current) {
+					// 開けない項目（javascript: など）は候補に出さない。出すとバーの判定を通らずに開けてしまう
+					if (bookmark.url === current || !isParadisBookmarkUrlOpenable(bookmark.url)) {
 						continue;
 					}
 					if (filter && !bookmark.title.toLowerCase().includes(filter) && !bookmark.url.toLowerCase().includes(filter)) {
@@ -243,6 +246,18 @@ export class ParadisBookmarkBarFeature extends BrowserEditorContribution {
 			return;
 		}
 		this._bookmarksService.toggleBookmark({ url: model.url, title: model.title, faviconDataUri: model.favicon });
+	}
+
+	/**
+	 * バーのブックマークを開く。前の版で取り込んだ項目や同期で届いた項目は入口の判定を通っていないので、
+	 * `javascript:` などは開かずに知らせる（開くと今のページの中で動く）。
+	 */
+	private _openBookmarkUrl(url: string): void {
+		if (!isParadisBookmarkUrlOpenable(url)) {
+			this._notificationService.warn(localize('paradis.bookmarks.blockedOpen', "このブックマークは安全のため開きません。ページの中でスクリプトを動かす URL（javascript: など）です。不要なら右クリックから削除してください。"));
+			return;
+		}
+		void this.editor.model?.loadURL(url);
 	}
 
 	private _applyBarVisibility(relayout: boolean): void {
