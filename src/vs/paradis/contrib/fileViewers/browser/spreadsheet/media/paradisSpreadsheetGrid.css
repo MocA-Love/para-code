@@ -73,10 +73,15 @@
 	color: #000000;
 }
 
-.paradis-spreadsheet-virtual-cell:focus-visible {
-	z-index: 6;
-	outline: 2px solid var(--vscode-focusBorder, #0078d4);
-	outline-offset: -2px;
+/* allow-any-unicode-next-line */
+/* 読み上げ用の行（role="row"）の入れ物。行は aria-owns でセルを束ねるだけで、箱は作らない。 */
+.paradis-spreadsheet-virtual-rows {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 0;
+	height: 0;
+	overflow: hidden;
 }
 
 /* allow-any-unicode-next-line */
@@ -114,7 +119,10 @@
 	border-bottom: 1px solid #d0d0d0;
 	background-color: #f3f3f3;
 	color: #666666;
-	font-size: 9px;
+	font-size: var(--vscode-fontSize-label1);
+	/* allow-any-unicode-next-line */
+	/* 行の高さを固定する（12px の字の既定の行の高さだと、高さ 20px の空の行を表の側だけ押し広げる）。 */
+	line-height: 1;
 	font-weight: normal;
 	user-select: none;
 }
@@ -140,15 +148,17 @@
 }
 
 /* allow-any-unicode-next-line */
-/* オートフィルタの見出しの記号（DOM の表の .paradis-spreadsheet-filter-marker と同じ見た目）。 */
+/* オートフィルタの見出しの記号（DOM の表の .paradis-spreadsheet-filter-marker と同じ見た目）。codicon の chevron-down を compact の大きさで描く。 */
 .paradis-spreadsheet-virtual-filter::after {
-	content: '\25BC';
+	content: '\eab4' / '';
 	position: absolute;
 	right: 3px;
-	bottom: 1px;
+	bottom: 3px;
 	color: #666666;
-	font-size: 8px;
-	line-height: 1.6;
+	font-family: codicon;
+	font-size: var(--vscode-codiconFontSize-compact);
+	font-weight: normal;
+	line-height: 1;
 	pointer-events: none;
 }
 
@@ -169,4 +179,24 @@
 
 .paradis-spreadsheet-virtual-excel .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-selected {
 	box-shadow: inset 0 0 0 9999px color-mix(in srgb, Highlight 40%, transparent);
+}
+
+/* allow-any-unicode-next-line */
+/* Excel のビューアの選んだセル（矢印キー・クリックで動かすセル）。シートはテーマに関係なく白地なので、色はシートの文字と */
+/* allow-any-unicode-next-line */
+/* 同じ黒に固定する（白地で 21:1）。その列記号・行番号も同じ色に濃くする。グリッドの外にフォーカスがあるときは点線。 */
+/* allow-any-unicode-next-line */
+/* テーマの色にすると暗いテーマで白地の上の印が薄くなるため、ほかの白地の色と同じく直書きにしてベースラインに載せている。 */
+.paradis-spreadsheet-virtual-excel .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-active {
+	z-index: 2;
+	outline: 2px dotted #000000;
+	outline-offset: -2px;
+}
+
+.paradis-spreadsheet-virtual-excel.paradis-spreadsheet-virtual-focused .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-active {
+	outline-style: solid;
+}
+
+.paradis-spreadsheet-virtual-excel .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-header-active {
+	color: #000000;
 }

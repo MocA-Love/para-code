@@ -401,13 +401,16 @@ function assembleMobileDoc(css: string, sections: readonly ISectionEntry[], noti
 		? `<div class="pm-tabs">${sections.map((s, i) => `<button class="pm-tab${i === 0 ? ' active' : ''}" data-i="${i}">${escapeHtml(s.name)}</button>`).join('')}</div>`
 		: '';
 	const noticeHtml = notices.map(n => `<div class="pm-note">${escapeHtml(n)}</div>`).join('');
-	const body = sections.map((s, i) => `<div class="pm-sheet${i === 0 ? ' active' : ''}" data-i="${i}">${s.html}</div>`).join('');
+	// フィルタの記号は PC では codicon の文字（U+EAB4）だが、モバイルの文書には codicon のフォントが無い（豆腐になる）ので、
+	// 文字の ▼ に置き換え、下の CSS で以前の大きさに戻す
+	const body = sections.map((s, i) => `<div class="pm-sheet${i === 0 ? ' active' : ''}" data-i="${i}">${s.html.replace(/\ueab4/g, '\u25BC')}</div>`).join('');
 	return `<!DOCTYPE html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=${viewportWidth}">
 <style>${resolveCssVariables(css)}${css}
 /* iOS WebViewのフォント自動拡大を無効化(広いビューポートで文字が勝手に拡大され、PC実測済みの列幅・縮小率と食い違う) */
 html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body { margin: 0; background: #ffffff; }
+.paradis-spreadsheet-filter-marker { font-family: inherit; font-size: 8px; line-height: 1.6; }
 .pm-tabs { position: sticky; top: 0; display: flex; overflow-x: auto; background: #f3f3f3; border-bottom: 1px solid #d0d0d0; z-index: 20; }
 .pm-tab { border: none; background: transparent; padding: 10px 16px; font-size: 15px; color: #666666; white-space: nowrap; }
 .pm-tab.active { color: #000000; font-weight: 600; box-shadow: inset 0 -2px 0 #0a84ff; }

@@ -74,14 +74,13 @@
 		"hex-color | .paradis-spreadsheet-virtual-cell | border-right: 1px solid #d4d4d4": 1,
 		"hex-color | .paradis-spreadsheet-virtual-cell | border-bottom: 1px solid #d4d4d4": 1,
 		"hex-color | .paradis-spreadsheet-virtual-cell | color: #000000": 1,
-		"focus | .paradis-spreadsheet-virtual-cell:focus-visible | ": 1,
-		"z-index | .paradis-spreadsheet-virtual-cell:focus-visible | z-index: 6": 1,
-		"hex-color | .paradis-spreadsheet-virtual-cell:focus-visible | outline: 2px solid var(--vscode-focusBorder, #0078d4)": 1,
 		"hex-color | .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-colhead, .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-rowhead, .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-corner | border-right: 1px solid #d0d0d0": 1,
 		"hex-color | .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-colhead, .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-rowhead, .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-corner | border-bottom: 1px solid #d0d0d0": 1,
 		"hex-color | .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-colhead, .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-rowhead, .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-corner | background-color: #f3f3f3": 1,
 		"hex-color | .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-colhead, .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-rowhead, .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-corner | color: #666666": 1,
-		"hex-color | .paradis-spreadsheet-virtual-filter::after | color: #666666": 1
+		"hex-color | .paradis-spreadsheet-virtual-filter::after | color: #666666": 1,
+		"hex-color | .paradis-spreadsheet-virtual-excel .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-active | outline: 2px dotted #000000": 1,
+		"hex-color | .paradis-spreadsheet-virtual-excel .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-header-active | color: #000000": 1
 	},
 	"src/vs/paradis/contrib/fileViewers/electron-browser/media/paradisSpreadsheet.css": {
 		"hex-color | .paradis-spreadsheet-body | background-color: #ffffff": 1,

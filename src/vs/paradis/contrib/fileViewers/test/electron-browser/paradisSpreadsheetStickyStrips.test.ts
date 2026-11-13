@@ -85,12 +85,12 @@ suite('paradisSpreadsheetStickyStrips', () => {
 			'write:append:rows:11',
 		]);
 		deepStrictEqual(Array.from(columnInner.children, cell => ({ text: cell.textContent, left: (cell as HTMLElement).style.left, width: (cell as HTMLElement).style.width, height: (cell as HTMLElement).style.height })), [
-			{ text: 'A', left: '60px', width: '80px', height: '30px' },
-			{ text: 'B', left: '140px', width: '120px', height: '30px' },
+			{ text: 'A', left: '52px', width: '80px', height: '30px' },
+			{ text: 'B', left: '132px', width: '120px', height: '30px' },
 		]);
 		deepStrictEqual(Array.from(rowInner.children, cell => ({ text: cell.textContent, top: (cell as HTMLElement).style.top, width: (cell as HTMLElement).style.width, height: (cell as HTMLElement).style.height })), [
-			{ text: '1', top: '20px', width: '36px', height: '20px' },
-			{ text: '2', top: '40px', width: '36px', height: '25px' },
+			{ text: '1', top: '20px', width: '44px', height: '20px' },
+			{ text: '2', top: '40px', width: '44px', height: '25px' },
 		]);
 		deepStrictEqual(result, { headHeight: 30, hasRows: true });
 	});

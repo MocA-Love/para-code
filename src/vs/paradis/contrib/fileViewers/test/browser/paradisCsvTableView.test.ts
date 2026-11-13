@@ -12,6 +12,7 @@ import { isMacintosh } from '../../../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ParadisCsvIndexer, type ParadisCsvDocument } from '../../common/csv/paradisCsv.js';
 import { ParadisCsvTableView } from '../../browser/csv/paradisCsvTableView.js';
+import { PARADIS_OFFICE_FIND_INPUT_DELAY } from '../../browser/paradisOfficeFindWidget.js';
 
 function csv(text: string): ParadisCsvDocument {
 	const indexer = new ParadisCsvIndexer(text, ',');
@@ -114,6 +115,28 @@ suite('ParadisCsvTableView', () => {
 		]);
 	});
 
+	test('marks the header row and row numbers as headers and sorts with Enter and Space on a header', async () => {
+		const { view, grid } = createHarness(store);
+		view.setDocument(csv('name,amount\ncarol,30\nalice,5\n'), false);
+		view.layout();
+		await settle();
+		const roles = [cell(grid, 0, 0), cell(grid, 0, 1), cell(grid, 1, 0), cell(grid, 1, 1)].map(element => element?.getAttribute('role'));
+
+		key(grid, 'ArrowUp');
+		key(grid, 'Enter');
+		await settle();
+		const ascending = { sort: cell(grid, 0, 1)?.getAttribute('aria-sort'), first: cell(grid, 1, 1)?.textContent };
+		key(grid, ' ');
+		await settle();
+		const descending = { sort: cell(grid, 0, 1)?.getAttribute('aria-sort'), first: cell(grid, 1, 1)?.textContent };
+
+		deepStrictEqual({ roles, ascending, descending }, {
+			roles: ['gridcell', 'columnheader', 'rowheader', 'gridcell'],
+			ascending: { sort: 'ascending', first: 'alice' },
+			descending: { sort: 'descending', first: 'carol' },
+		});
+	});
+
 	test('sorts by clicking a header and copies the selected range as TSV', async () => {
 		const { view, grid, clipboard } = createHarness(store);
 		view.setDocument(csv('name,amount\ncarol,30\nalice,"1,000"\nbob,5\n'), false);
@@ -152,6 +175,7 @@ suite('ParadisCsvTableView', () => {
 		const input = view.element.querySelector<HTMLInputElement>('.paradis-office-find-widget input')!;
 		input.value = 'kansai';
 		input.dispatchEvent(new Event('input', { bubbles: true }));
+		await timeout(PARADIS_OFFICE_FIND_INPUT_DELAY);
 		await settle();
 
 		deepStrictEqual([describeCell(grid, 2, 2), describeCell(grid, 3, 2), describeCell(grid, 1, 2)], [
@@ -206,6 +230,7 @@ suite('ParadisCsvTableView', () => {
 		const input = view.element.querySelector<HTMLInputElement>('.paradis-office-find-widget input')!;
 		input.value = 'hit';
 		input.dispatchEvent(new Event('input', { bubbles: true }));
+		await timeout(PARADIS_OFFICE_FIND_INPUT_DELAY);
 		await settle();
 		mouseDown(cell(grid, 0, 1)!);
 		await settle();
@@ -223,6 +248,7 @@ suite('ParadisCsvTableView', () => {
 		const input = view.element.querySelector<HTMLInputElement>('.paradis-office-find-widget input')!;
 		input.value = 'hit';
 		input.dispatchEvent(new Event('input', { bubbles: true }));
+		await timeout(PARADIS_OFFICE_FIND_INPUT_DELAY);
 		await settle();
 		// The user moves on to another cell, then the file changes on disk and reloads.
 		mouseDown(cell(grid, 3, 1)!);

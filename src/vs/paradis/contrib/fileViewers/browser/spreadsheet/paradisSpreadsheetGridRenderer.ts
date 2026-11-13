@@ -25,6 +25,8 @@ const safeStyleProperties = new Set([
 ]);
 const paneKinds: readonly ParadisSpreadsheetPaneKind[] = ['corner', 'top', 'left', 'body'];
 const MAXIMUM_CELL_POOL_SIZE = 10_000;
+/** グリッドごとのセルの id の接頭辞（同じ文書に 2 つのグリッドがある差分の画面で id がぶつからないように）。 */
+let nextGridId = 0;
 
 export interface ParadisSpreadsheetGridDiagonal {
 	readonly up: boolean;
@@ -52,6 +54,8 @@ export interface ParadisSpreadsheetGridCell {
 	readonly media?: ParadisSpreadsheetGridMedia;
 	/** 行番号・列記号の見出しのセル。コピーの対象にせず、aria では見出しとして読ませる。 */
 	readonly header?: 'row' | 'column';
+	/** 列の見出しで並べ替えている向き（aria-sort）。 */
+	readonly sort?: 'ascending' | 'descending';
 	/** 空いた隣のセルへ文字をはみ出させる（DOM の表の `applyOverflow` と同じ決まり）。幅は倍率を掛ける前の寸法。 */
 	readonly overflow?: ParadisSpreadsheetGridOverflow;
 }
@@ -137,6 +141,15 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 	private readonly document: Document;
 	private readonly sizer: HTMLElement;
 	private readonly panes = new Map<ParadisSpreadsheetPaneKind, HTMLElement>();
+	/**
+	 * 読み上げ用の行（role="row"）の入れ物。1 つの行のセルは枠（行番号の列・固定の行と列・本体）に分かれて置かれるので、
+	 * 行の要素は箱を作らない入れ物にまとめて置き、aria-owns でその行のセルを束ねる（セルの位置は変えない）。
+	 */
+	private readonly rowsElement: HTMLElement;
+	private readonly rowElements = new Map<number, HTMLElement>();
+	/** 描いているセルの組が変わったか（変わらない描き直し・キー操作では行を組み直さない）。 */
+	private rowsDirty = false;
+	private readonly idPrefix = `paradis-spreadsheet-grid${nextGridId++}`;
 	private readonly cells = new Map<string, RenderedCell>();
 	private readonly cellPool: HTMLElement[] = [];
 	private readonly mediaSchedules = new Map<string, IDisposable>();
@@ -147,6 +160,8 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 	private readonly pointerListener: (event: MouseEvent) => void;
 	private readonly pointerMoveListener: (event: MouseEvent) => void;
 	private readonly pointerUpListener: () => void;
+	private readonly focusInListener: () => void;
+	private readonly focusOutListener: (event: FocusEvent) => void;
 	/** 範囲の選択の起点（フォーカスのセルとの間が選んだ範囲）と、ドラッグ中か。 */
 	private selectionAnchor = { row: 0, column: 0 };
 	/**
@@ -193,6 +208,9 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 			this.sizer.style.zoom = String(this.zoom);
 		}
 		container.appendChild(this.sizer);
+		this.rowsElement = this.document.createElement('div');
+		this.rowsElement.className = 'paradis-spreadsheet-virtual-rows';
+		container.appendChild(this.rowsElement);
 		for (const kind of paneKinds) {
 			const pane = this.document.createElement('div');
 			pane.className = `paradis-spreadsheet-virtual-pane paradis-spreadsheet-virtual-pane-${kind}`;
@@ -210,6 +228,17 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		this.pointerListener = event => this.onPointerDown(event);
 		this.pointerMoveListener = event => this.onPointerMove(event);
 		this.pointerUpListener = () => this.endDrag();
+		// フォーカスがグリッドの外にあるときは、選んだセルの印を点線にする（:focus の規則は書かず、クラスで示す）
+		this.focusInListener = () => container.classList.add('paradis-spreadsheet-virtual-focused');
+		this.focusOutListener = event => {
+			if (!container.contains(event.relatedTarget as Node | null)) {
+				container.classList.remove('paradis-spreadsheet-virtual-focused');
+			}
+		};
+		container.addEventListener('focusin', this.focusInListener);
+		container.addEventListener('focusout', this.focusOutListener);
+		// 倍率やシートを替えて作り直したときは、フォーカスがすでに入れ物にある
+		container.classList.toggle('paradis-spreadsheet-virtual-focused', container.contains(this.document.activeElement));
 		container.addEventListener('scroll', this.scrollListener, { passive: true });
 		container.addEventListener('keydown', this.keyListener);
 		if (options.copyFocusedCell) {
@@ -315,6 +344,8 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		this.disposed = true;
 		this.container.removeEventListener('scroll', this.scrollListener);
 		this.container.removeEventListener('keydown', this.keyListener);
+		this.container.removeEventListener('focusin', this.focusInListener);
+		this.container.removeEventListener('focusout', this.focusOutListener);
 		this.container.removeEventListener('copy', this.copyListener);
 		this.container.removeEventListener('mousedown', this.pointerListener);
 		this.document.removeEventListener('mousemove', this.pointerMoveListener);
@@ -330,6 +361,7 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		}
 		this.mediaSchedules.clear();
 		this.cells.clear();
+		this.rowElements.clear();
 		this.cellPool.length = 0;
 		this.container.replaceChildren();
 		super.dispose();
@@ -391,6 +423,7 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		}
 		this.pruneCells(activeCells);
 		this.applyOverflow();
+		this.updateRows();
 		this.updateFocusedCell();
 		return plan;
 	}
@@ -408,9 +441,11 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 			rendered = { element, pane: paneKind, extent: cellExtent(cell) };
 			this.cells.set(key, rendered);
 			pane.appendChild(element);
+			this.rowsDirty = true;
 		} else if (rendered.pane !== paneKind) {
 			rendered.pane = paneKind;
 			pane.appendChild(rendered.element);
+			this.rowsDirty = true;
 		}
 		rendered.extent = cellExtent(cell);
 		rendered.cell = cell;
@@ -444,11 +479,18 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		}
 		element.dataset.row = String(cell.row);
 		element.dataset.column = String(cell.column);
+		// 枠をまたぐ結合のセルは 2 つの枠に描くので、id には枠も入れる
+		element.id = `${this.idPrefix}-${paneKind}-${cell.row}-${cell.column}`;
 		element.setAttribute('role', cell.header === 'column' ? 'columnheader' : cell.header === 'row' ? 'rowheader' : 'gridcell');
 		if (cell.header) {
 			element.dataset.header = cell.header;
 		} else {
 			delete element.dataset.header;
+		}
+		if (cell.header === 'column' && (cell.sort === 'ascending' || cell.sort === 'descending')) {
+			element.setAttribute('aria-sort', cell.sort);
+		} else {
+			element.removeAttribute('aria-sort');
 		}
 		element.textContent = boundedText(cell.text);
 		if (typeof cell.text === 'string' && cell.text.length > MAXIMUM_CELL_TEXT) {
@@ -612,6 +654,7 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 			rendered.element.remove();
 			rendered.element.removeAttribute('id');
 			this.cells.delete(key);
+			this.rowsDirty = true;
 			this.fullTexts.delete(key);
 			if (this.cellPool.length < MAXIMUM_CELL_POOL_SIZE) {
 				this.cellPool.push(rendered.element);
@@ -885,20 +928,107 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 		const [rowStart, columnStart, rowEnd, columnEnd] = this.selectionRange;
 		// 1 つのセルだけのときは表と同じく塗らない（表でもクリックしただけでは選択の色が付かない）
 		const multiple = rowEnd - rowStart > 1 || columnEnd - columnStart > 1;
+		// 固定の行・列の境目をまたぐ結合のセルは 2 つの枠に描かれる。指すのは行の aria-owns に入れるのと同じ片方（若い枠）だけ
+		let active: { readonly id: string; readonly rank: number } | undefined;
+		// 見出しをクリックしてフォーカスが見出しにあるときは、そのセルに黒い枠を出し、列記号・行番号は濃くしない
+		// （行番号の列の見出しにフォーカスがあると、同じ列 0 の左上の角まで濃くなるため）
+		const focusedOnHeader = paneKinds.some(kind => !!this.cells.get(cellKey(kind, this.focused.row, this.focused.column))?.element.dataset.header);
 		for (const rendered of this.cells.values()) {
 			const cellRow = Number(rendered.element.dataset.row);
 			const cellColumn = Number(rendered.element.dataset.column);
-			const inRange = multiple && !rendered.element.dataset.header
+			const header = rendered.element.dataset.header;
+			const inRange = multiple && !header
 				&& cellRow >= rowStart && cellRow < rowEnd && cellColumn >= columnStart && cellColumn < columnEnd;
 			rendered.element.classList.toggle('paradis-spreadsheet-virtual-selected', inRange);
-			if (this.options.copyFocusedCell && !rendered.element.dataset.header) {
+			if (this.options.copyFocusedCell && !header) {
 				rendered.element.setAttribute('aria-selected', String(inRange || (cellRow === this.focused.row && cellColumn === this.focused.column)));
 			}
 			const selected = cellRow === this.focused.row && cellColumn === this.focused.column;
-			rendered.element.tabIndex = selected ? 0 : -1;
-			if (selected) {
-				this.container.setAttribute('aria-activedescendant', ensureCellId(rendered.element, this.focused.row, this.focused.column));
+			// フォーカスは入れ物に残し（aria-activedescendant でセルを指す）、Tab の止まる所は入れ物の 1 つだけにする。
+			// セルには tabindex を付けない（-1 でもクリックでセルへフォーカスが移る。付けなければクリックで入れ物に入り、
+			// 文字の選択も妨げない）
+			rendered.element.removeAttribute('tabindex');
+			// キーボードで動かしたセルの印と、その列記号・行番号を濃くする印（見た目は Excel のビューアの CSS だけが付ける）
+			rendered.element.classList.toggle('paradis-spreadsheet-virtual-active', selected);
+			rendered.element.classList.toggle('paradis-spreadsheet-virtual-header-active', !focusedOnHeader
+				&& (header === 'column' ? cellColumn === this.focused.column : header === 'row' && cellRow === this.focused.row));
+			const rank = paneKinds.indexOf(rendered.pane);
+			if (selected && (!active || rank < active.rank)) {
+				active = { id: rendered.element.id, rank };
 			}
+		}
+		if (active) {
+			this.container.setAttribute('aria-activedescendant', active.id);
+		}
+	}
+
+	/**
+	 * 描いているセルを行ごとにまとめ、行の要素（role="row"、aria-rowindex）の aria-owns に列の順で並べる。
+	 * 行の要素は行の順に並べ、描いていない行の要素は外す。2 つの枠に描かれた結合のセルは、若い枠の 1 つだけを入れる
+	 * （両方を入れると読み上げで同じセルが 2 回読まれる）。
+	 */
+	private updateRows(): void {
+		if (!this.rowsDirty) {
+			return;
+		}
+		this.rowsDirty = false;
+		const byRow = new Map<number, Map<number, { readonly id: string; readonly rank: number }>>();
+		for (const rendered of this.cells.values()) {
+			const row = Number(rendered.element.dataset.row);
+			const column = Number(rendered.element.dataset.column);
+			if (!Number.isSafeInteger(row) || !Number.isSafeInteger(column) || !rendered.element.id) {
+				continue;
+			}
+			let cells = byRow.get(row);
+			if (!cells) {
+				cells = new Map();
+				byRow.set(row, cells);
+			}
+			const rank = paneKinds.indexOf(rendered.pane);
+			const existing = cells.get(column);
+			if (!existing || rank < existing.rank) {
+				cells.set(column, { id: rendered.element.id, rank });
+			}
+		}
+		for (const [row, element] of this.rowElements) {
+			if (!byRow.has(row)) {
+				element.remove();
+				this.rowElements.delete(row);
+			}
+		}
+		// 行に入れなかった写し（結合のセルの若くない枠の方）は、行の外のセルとして読まれないよう読み上げから外す
+		const owned = new Set<string>();
+		for (const cells of byRow.values()) {
+			for (const cell of cells.values()) {
+				owned.add(cell.id);
+			}
+		}
+		for (const rendered of this.cells.values()) {
+			if (rendered.element.id && !owned.has(rendered.element.id)) {
+				rendered.element.setAttribute('aria-hidden', 'true');
+			} else {
+				rendered.element.removeAttribute('aria-hidden');
+			}
+		}
+		const rows = [...byRow.keys()].sort((a, b) => a - b);
+		let reorder = false;
+		for (const row of rows) {
+			let element = this.rowElements.get(row);
+			if (!element) {
+				element = this.document.createElement('div');
+				element.className = 'paradis-spreadsheet-virtual-row';
+				element.setAttribute('role', 'row');
+				element.setAttribute('aria-rowindex', String(row + 1));
+				this.rowElements.set(row, element);
+				reorder = true;
+			}
+			const owns = [...byRow.get(row)!].sort(([a], [b]) => a - b).map(([, cell]) => cell.id).join(' ');
+			if (element.getAttribute('aria-owns') !== owns) {
+				element.setAttribute('aria-owns', owns);
+			}
+		}
+		if (reorder) {
+			this.rowsElement.replaceChildren(...rows.map(row => this.rowElements.get(row)!));
 		}
 	}
 }
@@ -1004,11 +1134,4 @@ function sameBox(previous: CellBox | undefined, next: CellBox): boolean {
 function isNavigationKey(key: string): key is ParadisSpreadsheetNavigationKey {
 	return key === 'ArrowUp' || key === 'ArrowDown' || key === 'ArrowLeft' || key === 'ArrowRight'
 		|| key === 'Home' || key === 'End' || key === 'PageUp' || key === 'PageDown';
-}
-
-function ensureCellId(element: HTMLElement, row: number, column: number): string {
-	if (!element.id) {
-		element.id = `paradis-spreadsheet-cell-${row}-${column}`;
-	}
-	return element.id;
 }

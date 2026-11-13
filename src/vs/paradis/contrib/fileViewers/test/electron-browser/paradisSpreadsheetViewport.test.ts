@@ -226,6 +226,72 @@ suite('paradisSpreadsheetGridRenderer', () => {
 		renderer.dispose();
 	});
 
+	test('groups the cells of each row across panes, keeps one tab stop and marks the focused cell and its headers', async () => {
+		const document = mainWindow.document.implementation.createHTMLDocument('spreadsheet rows');
+		const container = document.createElement('div');
+		const viewport = new ParadisSpreadsheetViewport({
+			rowCount: 3,
+			columnCount: 3,
+			defaultRowHeight: 20,
+			defaultColumnWidth: 80,
+			frozenRows: 1,
+			frozenColumns: 1,
+			revision: 'revision-1',
+		});
+		const header = (row: number, column: number): ParadisSpreadsheetGridCell['header'] => row === 0 ? 'column' : column === 0 ? 'row' : undefined;
+		const renderer = new ParadisSpreadsheetGridRenderer(container, viewport, {
+			getViewport: async request => tileForRequest(request, (row, column) => ({ row, column, text: `${row}:${column}`, header: header(row, column), sort: row === 0 && column === 2 ? 'descending' : undefined })),
+			copyFocusedCell: true,
+		});
+		renderer.setFocusedCell(1, 2);
+		await renderer.render({ scrollTop: 0, scrollLeft: 0, width: 300, height: 100 });
+
+		const owned = (id: string) => container.querySelector(`[id="${id}"]`)?.textContent;
+		const rows = Array.from(container.querySelectorAll('[role="row"]'), row => `${row.getAttribute('aria-rowindex')}|${(row.getAttribute('aria-owns') ?? '').split(' ').map(owned).join(',')}`);
+		const marked = (name: string) => Array.from(container.querySelectorAll(`.${name}`), cell => cell.textContent).sort();
+		deepStrictEqual({
+			rows,
+			tabStops: Array.from(container.querySelectorAll<HTMLElement>('.paradis-spreadsheet-virtual-cell'), cell => cell.getAttribute('tabindex')).filter(index => index !== null),
+			active: marked('paradis-spreadsheet-virtual-active'),
+			headers: marked('paradis-spreadsheet-virtual-header-active'),
+			activeDescendant: owned(container.getAttribute('aria-activedescendant')!),
+			sort: Array.from(container.querySelectorAll('[aria-sort]'), cell => `${cell.textContent}|${cell.getAttribute('aria-sort')}`),
+		}, {
+			rows: ['1|0:0,0:1,0:2', '2|1:0,1:1,1:2', '3|2:0,2:1,2:2'],
+			tabStops: [],
+			active: ['1:2'],
+			headers: ['0:2', '1:0'],
+			activeDescendant: '1:2',
+			sort: ['0:2|descending'],
+		});
+		renderer.dispose();
+	});
+
+	test('marks a focused header cell itself and does not darken the headers or the corner', async () => {
+		const document = mainWindow.document.implementation.createHTMLDocument('spreadsheet header focus');
+		const container = document.createElement('div');
+		const viewport = new ParadisSpreadsheetViewport({
+			rowCount: 3,
+			columnCount: 3,
+			defaultRowHeight: 20,
+			defaultColumnWidth: 80,
+			frozenRows: 1,
+			frozenColumns: 1,
+			revision: 'revision-1',
+		});
+		const header = (row: number, column: number): ParadisSpreadsheetGridCell['header'] => row === 0 ? 'column' : column === 0 ? 'row' : undefined;
+		const renderer = new ParadisSpreadsheetGridRenderer(container, viewport, {
+			getViewport: async request => tileForRequest(request, (row, column) => ({ row, column, text: `${row}:${column}`, header: header(row, column) })),
+			copyFocusedCell: true,
+		});
+		const marked = (name: string) => Array.from(container.querySelectorAll(`.${name}`), cell => cell.textContent).sort();
+		renderer.setFocusedCell(2, 0);
+		await renderer.render({ scrollTop: 0, scrollLeft: 0, width: 300, height: 100 });
+
+		deepStrictEqual({ active: marked('paradis-spreadsheet-virtual-active'), headers: marked('paradis-spreadsheet-virtual-header-active') }, { active: ['2:0'], headers: [] });
+		renderer.dispose();
+	});
+
 	test('renders reusable four-pane gridcells with bounded live DOM', async () => {
 		const document = mainWindow.document.implementation.createHTMLDocument('spreadsheet virtual grid');
 		const container = document.createElement('div');

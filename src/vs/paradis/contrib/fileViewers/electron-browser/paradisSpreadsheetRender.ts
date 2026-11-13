@@ -18,7 +18,8 @@ import { appendShapeSvg, applyShapeFrame, type ParadisShapeBox, type ParadisShap
 const $ = dom.$;
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
-export const PARADIS_ROW_NUM_COL_WIDTH = 36;
+/** 行番号の列の幅。見出しの字（12px）で 5 桁の行番号まで収まる幅。 */
+export const PARADIS_ROW_NUM_COL_WIDTH = 44;
 
 /** EMU(1px = 9525 EMU @96DPI)→ px。 */
 function emuToPx(emu: number): number {
@@ -812,7 +813,8 @@ export function commentMarkerClass(kind: IParadisCellComment['kind']): string {
 
 function appendFilterMarker(td: HTMLElement): void {
 	const marker = dom.append(td, $('span.paradis-spreadsheet-filter-marker'));
-	marker.textContent = '\u25BC';
+	// codicon の chevron-down（CSS で font-family: codicon にしている）
+	marker.textContent = '\ueab4';
 	marker.setAttribute('aria-hidden', 'true');
 }
 

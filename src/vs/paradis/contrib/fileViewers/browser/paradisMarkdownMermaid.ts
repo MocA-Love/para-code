@@ -75,7 +75,11 @@ export const PARADIS_MERMAID_ZOOM_STYLES = `
 .paradis-mermaid-expand:hover { background: var(--vscode-toolbar-hoverBackground); }
 .paradis-mermaid-expand:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
 .paradis-mermaid-expand svg, .paradis-mermaid-zoom-tool svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-.paradis-mermaid-zoom { position: fixed; inset: 0; z-index: 1000; background: var(--vscode-widget-shadow, rgba(0, 0, 0, 0.45)); }
+.paradis-mermaid-zoom {
+	position: fixed; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; padding: 0;
+	border: none; overflow: hidden; background: transparent; color: inherit;
+}
+.paradis-mermaid-zoom::backdrop { background: var(--vscode-widget-shadow, rgba(0, 0, 0, 0.45)); }
 .paradis-mermaid-zoom-panel {
 	position: absolute; left: 5vw; top: 5vh; width: 90vw; height: 90vh; overflow: hidden; outline: none;
 	border-radius: 6px; border: 1px solid var(--vscode-editorWidget-border, transparent);
@@ -87,10 +91,11 @@ export const PARADIS_MERMAID_ZOOM_STYLES = `
 .paradis-mermaid-zoom-content svg { display: block; max-width: none; }
 .paradis-mermaid-zoom-tools {
 	position: absolute; top: 8px; right: 8px; display: inline-flex; align-items: center; gap: 2px; padding: 2px;
-	border-radius: 6px; border: 1px solid var(--vscode-editorWidget-border, transparent); background: var(--vscode-editor-background);
+	border-radius: 8px; border: 1px solid var(--vscode-editorWidget-border, transparent); background: var(--vscode-editor-background);
 }
 .paradis-mermaid-zoom-tool {
-	white-space: nowrap; padding: 2px 7px; font: inherit; font-size: 11.5px; border-radius: 4px; border: none;
+	display: inline-flex; align-items: center; justify-content: center; box-sizing: border-box; height: 24px;
+	white-space: nowrap; padding: 0 8px; font: inherit; font-size: 12px; border-radius: 6px; border: none;
 	background: none; color: var(--vscode-foreground); cursor: pointer;
 }
 .paradis-mermaid-zoom-tool:hover:not(:disabled) { background: var(--vscode-toolbar-hoverBackground); }
@@ -102,7 +107,8 @@ export const PARADIS_MERMAID_ZOOM_STYLES = `
 
 /**
  * 図ごとの拡大の窓（Orca の `PanZoomImageDialog` と同じ操作: 縮小・拡大・画面に合わせる・PNG でコピー・閉じる、
- * ドラッグで移動、ホイールで拡大縮小）。窓はこのページの中に作り、Esc で閉じる。Tab のフォーカスは窓のボタンの間で回す。
+ * ドラッグで移動、ホイールで拡大縮小）。窓はこのページの中に `<dialog>` で作って `showModal()` で開く（本文は inert になり、
+ * Esc はブラウザが閉じる。閉じたら押したボタンへフォーカスを戻す）。
  *
  * ページの `html` には文書ごとの倍率（CSS zoom）が掛かっているので、窓にはその逆数を掛けて等倍で出す。
  * 写しの図は id を消さない（mermaid の図の中の `<style>` と矢印の印は、その id を起点に書かれている）。
@@ -119,10 +125,10 @@ function icon(paths){var s=document.createElementNS(NS,'svg');s.setAttribute('vi
 function pageZoom(){var z=parseFloat(getComputedStyle(document.documentElement).zoom);return z>0?z:1;}
 function sizeOf(svg){var vb=svg.viewBox&&svg.viewBox.baseVal;if(vb&&vb.width>0&&vb.height>0){return{w:vb.width,h:vb.height};}var r=svg.getBoundingClientRect();var z=pageZoom();return{w:Math.max(1,r.width/z),h:Math.max(1,r.height/z)};}
 var open=null;
-function close(){if(!open){return;}var o=open;open=null;document.removeEventListener('keydown',o.onKey,true);o.root.remove();if(o.opener&&o.opener.isConnected){o.opener.focus({preventScroll:true});}}
+function close(){if(!open){return;}var o=open;open=null;document.removeEventListener('keydown',o.onKey,true);if(o.root.open){o.root.close();}o.root.remove();if(o.opener&&o.opener.isConnected){o.opener.focus({preventScroll:true});}}
 function show(svg,opener){close();var size=sizeOf(svg);
-var root=document.createElement('div');root.className='paradis-mermaid-zoom';root.style.zoom=String(1/pageZoom());
-var panel=document.createElement('div');panel.className='paradis-mermaid-zoom-panel';panel.tabIndex=-1;panel.setAttribute('role','dialog');panel.setAttribute('aria-modal','true');panel.setAttribute('aria-label',L.dialog);
+var root=document.createElement('dialog');root.className='paradis-mermaid-zoom';root.setAttribute('aria-label',L.dialog);root.style.zoom=String(1/pageZoom());
+var panel=document.createElement('div');panel.className='paradis-mermaid-zoom-panel';panel.tabIndex=-1;
 var stage=document.createElement('div');stage.className='paradis-mermaid-zoom-stage';
 var content=document.createElement('div');content.className='paradis-mermaid-zoom-content';
 var clone=svg.cloneNode(true);clone.setAttribute('width',String(size.w));clone.setAttribute('height',String(size.h));clone.style.maxWidth='none';
@@ -139,16 +145,16 @@ function zoomCenter(f){var r=stage.getBoundingClientRect();zoomAt(f,r.width/2,r.
 outB=tool(L.zoomOut,function(){zoomCenter(1/STEP);});inB=tool(L.zoomIn,function(){zoomCenter(STEP);});fitB=tool(L.fit,fit);
 var copyB=tool(L.copy,function(){copyPng(clone,size,status,copyB);});tools.appendChild(status);tool(L.close,close);
 panel.appendChild(tools);root.appendChild(panel);
-root.addEventListener('mousedown',function(e){if(e.target===root){close();}});
+root.addEventListener('mousedown',function(e){if(e.target===root){close();}});root.addEventListener('close',function(){if(open&&open.root===root){close();}});
 stage.addEventListener('wheel',function(e){e.preventDefault();var r=stage.getBoundingClientRect();zoomAt(Math.exp(-e.deltaY*0.0015),e.clientX-r.left,e.clientY-r.top);},{passive:false});
 var drag=null;
 stage.addEventListener('pointerdown',function(e){if(e.button!==0){return;}drag={id:e.pointerId,px:e.clientX,py:e.clientY,x:x,y:y};stage.setPointerCapture(e.pointerId);stage.classList.add('dragging');e.preventDefault();});
 stage.addEventListener('pointermove',function(e){if(!drag||drag.id!==e.pointerId){return;}x=drag.x+e.clientX-drag.px;y=drag.y+e.clientY-drag.py;fitted=false;apply();});
 function endDrag(e){if(drag&&drag.id===e.pointerId){drag=null;stage.classList.remove('dragging');}}
 stage.addEventListener('pointerup',endDrag);stage.addEventListener('pointercancel',endDrag);
-var onKey=function(e){if(e.key==='Tab'){var f=[].slice.call(tools.querySelectorAll('button:not(:disabled)'));if(f.length===0){e.preventDefault();return;}var i=f.indexOf(document.activeElement);e.preventDefault();var n=i<0?(e.shiftKey?f.length-1:0):(i+(e.shiftKey?f.length-1:1))%f.length;f[n].focus();}else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();close();}else if((e.key==='+'||e.key==='=')&&!e.metaKey&&!e.ctrlKey){e.preventDefault();zoomCenter(STEP);}else if(e.key==='-'&&!e.metaKey&&!e.ctrlKey){e.preventDefault();zoomCenter(1/STEP);}else if(e.key==='0'&&!e.metaKey&&!e.ctrlKey){e.preventDefault();fit();}};
+var onKey=function(e){if(e.key==='Escape'){e.stopPropagation();}else if((e.key==='+'||e.key==='=')&&!e.metaKey&&!e.ctrlKey){e.preventDefault();zoomCenter(STEP);}else if(e.key==='-'&&!e.metaKey&&!e.ctrlKey){e.preventDefault();zoomCenter(1/STEP);}else if(e.key==='0'&&!e.metaKey&&!e.ctrlKey){e.preventDefault();fit();}};
 document.addEventListener('keydown',onKey,true);
-document.body.appendChild(root);open={root:root,opener:opener,onKey:onKey,refit:function(){root.style.zoom=String(1/pageZoom());if(fitted){fit();}}};
+document.body.appendChild(root);root.showModal();open={root:root,opener:opener,onKey:onKey,refit:function(){root.style.zoom=String(1/pageZoom());if(fitted){fit();}}};
 apply();fit();panel.focus({preventScroll:true});}
 function copyPng(svg,size,status,button){button.disabled=true;var say=function(t){status.textContent=t;setTimeout(function(){if(status.textContent===t){status.textContent='';}},2000);button.disabled=false;};
 try{var copy=svg.cloneNode(true);copy.setAttribute('xmlns',NS);var live=svg.querySelectorAll('foreignObject *'),out=copy.querySelectorAll('foreignObject *');for(var k=0;k<live.length&&k<out.length;k++){var cs=getComputedStyle(live[k]);['font-family','font-size','font-weight','font-style','line-height','margin','color','white-space'].forEach(function(n){out[k].style.setProperty(n,cs.getPropertyValue(n));});}var markup=new XMLSerializer().serializeToString(copy);
