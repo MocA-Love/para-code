@@ -185,9 +185,11 @@
 /* Excel のビューアの選んだセル（矢印キー・クリックで動かすセル）。シートはテーマに関係なく白地なので、色はシートの文字と */
 /* allow-any-unicode-next-line */
 /* 同じ黒に固定する（白地で 21:1）。その列記号・行番号も同じ色に濃くする。グリッドの外にフォーカスがあるときは点線。 */
+/* allow-any-unicode-next-line */
+/* テーマの色にすると暗いテーマで白地の上の印が薄くなるため、ほかの白地の色と同じく直書きにしてベースラインに載せている。 */
 .paradis-spreadsheet-virtual-excel .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-active {
 	z-index: 2;
-	outline: 2px dotted black;
+	outline: 2px dotted #000000;
 	outline-offset: -2px;
 }
 
@@ -196,5 +198,5 @@
 }
 
 .paradis-spreadsheet-virtual-excel .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-header-active {
-	color: black;
+	color: #000000;
 }

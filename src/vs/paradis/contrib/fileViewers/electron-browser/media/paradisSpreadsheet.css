@@ -153,7 +153,7 @@
 	margin-left: 3px;
 	color: #666666;
 	font-family: codicon;
-	font-size: var(--vscode-codiconFontSize-compact);
+	font-size: var(--vscode-codiconFontSize-compact, 12px);
 	font-weight: normal;
 	line-height: 1;
 	pointer-events: none;
@@ -211,7 +211,9 @@
 	border: 1px solid #d0d0d0;
 	background-color: #f3f3f3;
 	color: #666666;
-	font-size: var(--vscode-fontSize-label1);
+	/* allow-any-unicode-next-line */
+	/* 既定値は、変数の無いモバイルへ写す文書と、その寸法を測るワークベンチの外の入れ物のため。 */
+	font-size: var(--vscode-fontSize-label1, 12px);
 	/* allow-any-unicode-next-line */
 	/* 行の高さを固定する（12px の字の既定の行の高さだと、高さ 20px の空の行を表の側だけ押し広げる）。 */
 	line-height: 1;

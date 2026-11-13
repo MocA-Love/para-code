@@ -944,8 +944,10 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 				rendered.element.setAttribute('aria-selected', String(inRange || (cellRow === this.focused.row && cellColumn === this.focused.column)));
 			}
 			const selected = cellRow === this.focused.row && cellColumn === this.focused.column;
-			// フォーカスは入れ物に残し（aria-activedescendant でセルを指す）、Tab の止まる所は入れ物の 1 つだけにする
-			rendered.element.tabIndex = -1;
+			// フォーカスは入れ物に残し（aria-activedescendant でセルを指す）、Tab の止まる所は入れ物の 1 つだけにする。
+			// セルには tabindex を付けない（-1 でもクリックでセルへフォーカスが移る。付けなければクリックで入れ物に入り、
+			// 文字の選択も妨げない）
+			rendered.element.removeAttribute('tabindex');
 			// キーボードで動かしたセルの印と、その列記号・行番号を濃くする印（見た目は Excel のビューアの CSS だけが付ける）
 			rendered.element.classList.toggle('paradis-spreadsheet-virtual-active', selected);
 			rendered.element.classList.toggle('paradis-spreadsheet-virtual-header-active', !focusedOnHeader
@@ -992,6 +994,20 @@ export class ParadisSpreadsheetGridRenderer extends Disposable {
 			if (!byRow.has(row)) {
 				element.remove();
 				this.rowElements.delete(row);
+			}
+		}
+		// 行に入れなかった写し（結合のセルの若くない枠の方）は、行の外のセルとして読まれないよう読み上げから外す
+		const owned = new Set<string>();
+		for (const cells of byRow.values()) {
+			for (const cell of cells.values()) {
+				owned.add(cell.id);
+			}
+		}
+		for (const rendered of this.cells.values()) {
+			if (rendered.element.id && !owned.has(rendered.element.id)) {
+				rendered.element.setAttribute('aria-hidden', 'true');
+			} else {
+				rendered.element.removeAttribute('aria-hidden');
 			}
 		}
 		const rows = [...byRow.keys()].sort((a, b) => a - b);

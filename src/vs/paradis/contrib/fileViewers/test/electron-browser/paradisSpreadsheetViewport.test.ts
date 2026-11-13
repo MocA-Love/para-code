@@ -251,7 +251,7 @@ suite('paradisSpreadsheetGridRenderer', () => {
 		const marked = (name: string) => Array.from(container.querySelectorAll(`.${name}`), cell => cell.textContent).sort();
 		deepStrictEqual({
 			rows,
-			tabStops: Array.from(container.querySelectorAll<HTMLElement>('.paradis-spreadsheet-virtual-cell'), cell => cell.tabIndex).filter(index => index >= 0),
+			tabStops: Array.from(container.querySelectorAll<HTMLElement>('.paradis-spreadsheet-virtual-cell'), cell => cell.getAttribute('tabindex')).filter(index => index !== null),
 			active: marked('paradis-spreadsheet-virtual-active'),
 			headers: marked('paradis-spreadsheet-virtual-header-active'),
 			activeDescendant: owned(container.getAttribute('aria-activedescendant')!),

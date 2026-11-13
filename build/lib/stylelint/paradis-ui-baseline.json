@@ -80,7 +80,9 @@
 		"hex-color | .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-colhead, .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-rowhead, .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-corner | border-bottom: 1px solid #d0d0d0": 1,
 		"hex-color | .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-colhead, .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-rowhead, .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-corner | background-color: #f3f3f3": 1,
 		"hex-color | .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-colhead, .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-rowhead, .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-corner | color: #666666": 1,
-		"hex-color | .paradis-spreadsheet-virtual-filter::after | color: #666666": 1
+		"hex-color | .paradis-spreadsheet-virtual-filter::after | color: #666666": 1,
+		"hex-color | .paradis-spreadsheet-virtual-excel .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-active | outline: 2px dotted #000000": 1,
+		"hex-color | .paradis-spreadsheet-virtual-excel .paradis-spreadsheet-virtual-cell.paradis-spreadsheet-virtual-header-active | color: #000000": 1
 	},
 	"src/vs/paradis/contrib/fileViewers/electron-browser/media/paradisSpreadsheet.css": {
 		"hex-color | .paradis-spreadsheet-body | background-color: #ffffff": 1,
