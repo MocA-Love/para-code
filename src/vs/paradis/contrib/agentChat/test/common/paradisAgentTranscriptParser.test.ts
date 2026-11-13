@@ -360,6 +360,18 @@ suite('paradisAgentTranscriptParser', () => {
 		});
 	});
 
+	test('hides the additional context that Codex 0.170 writes as a tool result without a call', () => {
+		// Codex 0.170 の codex-rs（context-fragments / history）から組み立てた形（実物の記録ではない）
+		const goal = JSON.stringify({ timestamp: '2026-11-13T01:00:00.000Z', type: 'response_item', payload: { type: 'function_call_output', name: 'goal_objective', namespace: 'agent', output: 'ゴールの目的文' }, metadata: { additional_context_tool_output: true } });
+		const noMetadata = JSON.stringify({ timestamp: '2026-11-13T01:00:01.000Z', type: 'response_item', payload: { type: 'function_call_output', call_id: null, name: 'browser_context', namespace: 'agent', output: 'ブラウザの情報' } });
+		const withCall = JSON.stringify({ timestamp: '2026-11-13T01:00:02.000Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'call_agent', namespace: 'agent', output: '結果' } });
+		const parsed = paradisParseCodexRolloutForTest([goal, noMetadata, withCall, CODEX_FIXTURE_EXEC.mcpOutput]);
+		assert.deepStrictEqual(parsed.messages.map(message => ({ text: message.text, toolUseId: message.toolUseId })), [
+			{ text: '結果', toolUseId: 'call_agent' },
+			{ text: '{"title":"Issue 1"}\n{"title":"Issue 2"}', toolUseId: 'call_mcp' },
+		]);
+	});
+
 	test('joins the parts of a Codex array result with a newline unless the previous part ends with one, and keeps an image-only result', () => {
 		const parsed = paradisParseCodexRolloutForTest([CODEX_FIXTURE_EXEC.mcpOutput, CODEX_FIXTURE_EXEC.imageOnly]);
 		assert.deepStrictEqual(parsed.messages.map(message => ({ text: message.text, toolUseId: message.toolUseId, images: message.imageData?.length })), [

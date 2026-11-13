@@ -220,6 +220,14 @@ function codexCollaboration(item: Readonly<Record<string, unknown>>): ICodexColl
 	return { tool, prompt: text(item.prompt), itemStatus: text(item.status), agentStatuses };
 }
 
+/**
+ * 子エージェントの中で起きた hook か。Claude Code 2.1.323 から子の圧縮（PreCompact・PostCompact）にも agent_id が付く。
+ * 子の圧縮は本会話の圧縮として数えない（数えるとモバイルからパネルを閉じる操作を断り続ける）。
+ */
+function fromSubagent(payload: Readonly<Record<string, unknown>>): boolean {
+	return text(payload.agent_id) !== undefined;
+}
+
 function codexTaskId(agentId: string): string {
 	return `codex:${agentId.slice(0, 493)}`;
 }
@@ -342,11 +350,11 @@ export class ParadisAgentActivityTracker {
 					this.agents.set(id, { id, label: name, role: 'teammate', provider: 'claude', status: 'idle', startedAt: previous?.startedAt ?? at, updatedAt: at });
 				}
 			}
-		} else if (event === 'PreCompact') {
+		} else if (event === 'PreCompact' && !fromSubagent(payload)) {
 			const id = `compact:${at}`;
 			this.activeCompactionId = id;
 			this.compactions.set(id, { id, ...(text(payload.trigger) ? { trigger: text(payload.trigger) } : {}), status: 'running', startedAt: at, updatedAt: at });
-		} else if (event === 'PostCompact') {
+		} else if (event === 'PostCompact' && !fromSubagent(payload)) {
 			const id = this.activeCompactionId ?? `compact:${at}`;
 			const previous = this.compactions.get(id);
 			this.compactions.set(id, { id, ...(text(payload.trigger) ?? previous?.trigger ? { trigger: text(payload.trigger) ?? previous?.trigger } : {}), status: 'completed', startedAt: previous?.startedAt ?? at, updatedAt: at });

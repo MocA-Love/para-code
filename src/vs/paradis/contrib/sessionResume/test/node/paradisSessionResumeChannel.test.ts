@@ -150,6 +150,55 @@ suite('ParadisSessionResume', () => {
 		});
 	});
 
+	test('takes the last model of a Claude session from the lines it already reads, also when the model is only in the tail', async () => {
+		const assistant = (model: string, extra: Record<string, unknown> = {}) => JSON.stringify({ type: 'assistant', message: { model, content: [{ type: 'text', text: 'Reply' }] }, ...extra });
+		const padding = claudeMessage('user', 'x'.repeat(700 * 1024));
+		await Promise.all([
+			writeLines(join(claudeProject, 'switched-short.jsonl'), [claudeMessage('user', 'Prompt'), assistant('claude-opus-5-5[1m]'), assistant('claude-fable-5-1'), assistant('<synthetic>')]),
+			writeLines(join(claudeProject, 'switched-long.jsonl'), [claudeMessage('user', 'Prompt'), assistant('claude-opus-5-5'), padding, assistant('claude-fable-5-1'), assistant('claude-haiku-5-5', { isSidechain: true })]),
+			writeLines(join(claudeProject, 'no-reply.jsonl'), [claudeMessage('user', 'Prompt'), assistant('<synthetic>')]),
+		]);
+		const sessions = await listSessions(createService());
+		const byId = new Map(sessions.map(session => [session.id, { model: session.model, effort: session.effort }]));
+		assert.deepStrictEqual(Object.fromEntries(['switched-short', 'switched-long', 'no-reply'].map(id => [id, byId.get(id)])), {
+			'switched-short': { model: 'claude-fable-5-1', effort: undefined },
+			'switched-long': { model: 'claude-fable-5-1', effort: undefined },
+			'no-reply': { model: undefined, effort: undefined },
+		});
+	});
+
+	test('takes the model and effort of a Codex session from the state DB, or from the rollout turn_context without one', async () => {
+		const indexedPath = join(codexSessions, 'rollout-indexed-model.jsonl');
+		const rolloutPath = join(codexSessions, 'rollout-rollout-model.jsonl');
+		const turnContext = (model: string, effort: string) => JSON.stringify({ type: 'turn_context', payload: { model, effort } });
+		await Promise.all([
+			writeLines(indexedPath, [codexMessage('user', 'Indexed prompt')]),
+			writeLines(rolloutPath, [
+				JSON.stringify({ type: 'session_meta', payload: { id: 'rollout-model', cwd: workspace } }),
+				turnContext('gpt-6-astra', 'medium'),
+				codexMessage('user', 'Rollout prompt'),
+				turnContext('gpt-6.1-sol', 'high'),
+			]),
+		]);
+		const rolloutModel = (await listSessions(createService())).map(session => ({ id: session.id, model: session.model, effort: session.effort }));
+		createCodexDatabase(`
+			CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, rollout_path TEXT NOT NULL, title TEXT NOT NULL, updated_at_ms INTEGER NOT NULL, model TEXT, reasoning_effort TEXT)
+		`, database => {
+			const insert = database.prepare('INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?)');
+			insert.run('indexed-model', workspace, indexedPath, 'With model', 2_000, 'gpt-6.1-sol', 'xhigh');
+			insert.run('indexed-no-model', workspace, indexedPath.replace('indexed-model', 'indexed-no-model'), 'Without model', 1_000, null, 'high');
+		});
+		await writeLines(indexedPath.replace('indexed-model', 'indexed-no-model'), [codexMessage('user', 'No model prompt')]);
+		const indexedModel = (await listSessions(createService())).map(session => ({ id: session.id, model: session.model, effort: session.effort }));
+		assert.deepStrictEqual({ rolloutModel, indexedModel }, {
+			rolloutModel: [{ id: 'rollout-model', model: 'gpt-6.1-sol', effort: 'high' }],
+			indexedModel: [
+				{ id: 'indexed-model', model: 'gpt-6.1-sol', effort: 'xhigh' },
+				{ id: 'indexed-no-model', model: undefined, effort: undefined },
+			],
+		});
+	});
+
 	test('lists Claude and Codex transcripts with workspace metadata, agent, mtime, and opaque catalog ids', async () => {
 		const claudePath = join(claudeProject, 'claude-session.jsonl');
 		const codexPath = join(codexSessions, 'rollout-codex-session.jsonl');

@@ -200,6 +200,20 @@ suite('ParadisAgentActivity', () => {
 		assert.strictEqual(tracker.snapshot()?.compactions[0].status, 'completed');
 	});
 
+	test('does not count a subagent compaction as the main conversation compaction', () => {
+		const tracker = new ParadisAgentActivityTracker();
+		tracker.applyClaude('PreCompact', { trigger: 'auto' }, 100);
+		// Claude Code 2.1.323 から、子の圧縮の hook に agent_id が付く
+		tracker.applyClaude('PreCompact', { trigger: 'auto', agent_id: 'a1', agent_type: 'Explore' }, 110);
+		tracker.applyClaude('PostCompact', { trigger: 'auto', agent_id: 'a1', agent_type: 'Explore' }, 120);
+		const running = tracker.snapshot()?.compactions;
+		tracker.applyClaude('PostCompact', { trigger: 'auto' }, 130);
+		assert.deepStrictEqual({ running, after: tracker.snapshot()?.compactions }, {
+			running: [{ id: 'compact:100', trigger: 'auto', status: 'running', startedAt: 100, updatedAt: 100 }],
+			after: [{ id: 'compact:100', trigger: 'auto', status: 'completed', startedAt: 100, updatedAt: 130 }],
+		});
+	});
+
 	test('projects a nested child agent as a subagent and completes it on Stop', () => {
 		const tracker = new ParadisAgentActivityTracker();
 		assert.strictEqual(tracker.applyNestedAgentHook('codex', 'thread-1', 'SessionStart', 100), true);

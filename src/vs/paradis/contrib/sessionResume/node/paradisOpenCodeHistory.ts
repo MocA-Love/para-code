@@ -33,6 +33,10 @@ export interface IParadisOpenCodeSession {
 	readonly updatedAt: number;
 	readonly archived: boolean;
 	readonly cli: ParadisOpenCodeCli;
+	/** The model of the session (`id` of the `model` column), when the database records one. */
+	readonly model?: string;
+	/** The model variant (`low`, `max`, ...) of the session, when recorded. */
+	readonly effort?: string;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -133,12 +137,20 @@ export function listOpenCodeSessionsIn(database: DatabaseSync, directories: read
 	if (table === undefined) { return []; }
 	const columns = new Set(database.prepare(`PRAGMA table_info(${table})`).all().map(row => text(row.name)));
 	const archived = columns.has('time_archived') ? 'time_archived' : 'NULL';
+	const model = columns.has('model') ? 'model' : 'NULL';
 	const forms = directoryForms(directories);
-	const rows = database.prepare(`SELECT id, title, directory, time_created, time_updated, ${archived} AS archived FROM ${table} WHERE parent_id IS NULL AND directory IN (${forms.map(() => '?').join(',')}) ${includeArchived || !columns.has('time_archived') ? '' : 'AND time_archived IS NULL'} ORDER BY time_updated DESC LIMIT ?`).all(...forms, Math.max(1, Math.min(600, limit)));
+	const rows = database.prepare(`SELECT id, title, directory, time_created, time_updated, ${archived} AS archived, ${model} AS model FROM ${table} WHERE parent_id IS NULL AND directory IN (${forms.map(() => '?').join(',')}) ${includeArchived || !columns.has('time_archived') ? '' : 'AND time_archived IS NULL'} ORDER BY time_updated DESC LIMIT ?`).all(...forms, Math.max(1, Math.min(600, limit)));
 	return rows.flatMap(row => {
 		const id = text(row.id);
 		if (!/^ses_[A-Za-z0-9_-]+$/.test(id)) { return []; }
-		return [{ id, title: text(row.title), cwd: text(row.directory), createdAt: timestamp(row.time_created) ?? 0, updatedAt: timestamp(row.time_updated) ?? 0, archived: row.archived !== null, cli } satisfies IParadisOpenCodeSession];
+		// `model` is JSON such as `{"id":"<model>","providerID":"<provider>","variant":"max"}` (NULL when not recorded)
+		const saved = decode(row.model);
+		const modelId = text(saved.id).trim();
+		const variant = modelId.length > 0 ? text(saved.variant).trim() : '';
+		return [{
+			id, title: text(row.title), cwd: text(row.directory), createdAt: timestamp(row.time_created) ?? 0, updatedAt: timestamp(row.time_updated) ?? 0, archived: row.archived !== null, cli,
+			...(modelId.length > 0 ? { model: modelId } : {}), ...(variant.length > 0 ? { effort: variant } : {}),
+		} satisfies IParadisOpenCodeSession];
 	});
 }
 

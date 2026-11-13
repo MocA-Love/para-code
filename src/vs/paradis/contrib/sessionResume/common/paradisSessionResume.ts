@@ -8,6 +8,7 @@
 
 import { PARADIS_OPENCODE_COMMAND, paradisIsOpenCodeResumeCli } from '../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
 import { ParadisHostPath } from '../../../common/paradisHostPath.js';
+import { paradisClaudeModelDisplayName } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import { PARADIS_CLAUDE_DEFAULT_PERMISSION_FLAG, PARADIS_CODEX_FULL_AUTO_FLAGS } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 
 export const PARADIS_SESSION_RESUME_CHANNEL = 'paradisSessionResume';
@@ -98,6 +99,25 @@ export interface IParadisResumeSession {
 	 * `linkCodexSession` で会話をそのホームへリンクする。
 	 */
 	readonly otherCodexAccount?: boolean;
+	/**
+	 * その会話で最後に使ったモデルの id（Claude: 記録の最後の assistant 行の `message.model`、Codex: state DB の
+	 * `model`（DB を読めないときは rollout の先頭の `turn_context`）、OpenCode: `session.model` の `id`）。取れなければ付かない。
+	 */
+	readonly model?: string;
+	/** その会話の reasoning effort（Codex と OpenCode だけ。Claude の記録には残らない）。 */
+	readonly effort?: string;
+}
+
+/**
+ * 一覧の行と詳細の欄に出すモデルの文字（`Fable 5.1 · high`）。Claude のモデル名だけ表示名に直し、ほかは id のまま。
+ * モデルが取れていなければ undefined。
+ */
+export function paradisResumeModelLabel(session: Pick<IParadisResumeSession, 'model' | 'effort'>): string | undefined {
+	if (session.model === undefined) {
+		return undefined;
+	}
+	const name = paradisClaudeModelDisplayName(session.model) ?? session.model;
+	return session.effort !== undefined ? `${name} · ${session.effort}` : name;
 }
 
 /** 「…」メニューのコピー・開く操作に使う詳細。 */

@@ -60,6 +60,25 @@ suite('ParadisSessionResumeDialog', () => {
 		} finally { fixture.dispose(); }
 	});
 
+	test('shows the last model of each session in its row and in the details, and says it is unknown only in the details', async () => {
+		const client = new TestResumeClient();
+		client.listResult = async () => [
+			{ ...testSession('no-model', 'Without model'), updatedAt: 3 },
+			{ ...testSession('claude-model', 'Claude model'), model: 'claude-fable-5-1', updatedAt: 2 },
+			{ ...testSession('codex-model', 'Codex model', 'codex'), model: 'gpt-6.1-sol', effort: 'high', updatedAt: 1 },
+		];
+		const fixture = createRefreshFixture(client);
+		try {
+			await fixture.load();
+			const rowModels = [...fixture.root.querySelectorAll('.row-meta')].map(meta => meta.querySelector('.model')?.textContent);
+			const detailModel = fixture.root.querySelector('.detail-meta .model')?.textContent;
+			assert.deepStrictEqual({ rowModels, detailModel }, {
+				rowModels: [undefined, 'Fable 5.1', 'gpt-6.1-sol · high'],
+				detailModel: 'モデル不明',
+			});
+		} finally { fixture.dispose(); }
+	});
+
 	test('starts the initial load while being constructed', async () => {
 		const list = new DeferredPromise<readonly IParadisResumeSession[]>();
 		const client = new TestResumeClient();
