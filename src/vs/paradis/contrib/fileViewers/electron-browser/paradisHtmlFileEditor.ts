@@ -62,7 +62,7 @@ import { ParadisRenderedFileEditor } from '../browser/paradisRenderedFileEditor.
 import { createParadisViewerReloadButton, ParadisViewerZoomControls, paradisViewerZoomMessage, paradisViewerZoomScript } from '../browser/paradisViewerZoom.js';
 import { PARADIS_HTML_EDITOR_ID } from '../browser/paradisFileViewers.js';
 import { IParadisPreviewLocation, ParadisRemotePreviewMounter, paradisMountLocalPreview } from './paradisHtmlPreviewClient.js';
-import { paradisPreviewLinkTarget, paradisPreviewUrl } from '../common/paradisHtmlPreview.js';
+import { IParadisPreviewMountOptions, paradisPreviewLinkTarget, paradisPreviewUrl } from '../common/paradisHtmlPreview.js';
 import { paradisHtmlViewerCanvasScript, paradisHtmlViewerHeadStyle } from '../common/paradisHtmlViewerDefaultStyles.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
@@ -211,7 +211,8 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 				const root = descends ? candidate! : documentDirectory;
 				const suffix = descends && relative ? relative.split('/') : [];
 
-				const located = await this._mountPreview(root);
+				// 外の文書は、ページが iframe で開く子のフレームにも同じ `connect-src` を付けるよう、配信サーバーに頼む
+				const located = await this._mountPreview(root, outsideWorkspace ? { connectSelfOnly: true } : undefined);
 				this._linkBase = { url: paradisPreviewUrl(located.mount, located.port), root };
 				return { url: paradisPreviewUrl(located.mount, located.port, suffix), outsideWorkspace };
 			} catch (error) {
@@ -232,11 +233,11 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 	}
 
 	/** 手元か SSH 先か、フォルダーの scheme で配信先を選ぶ。 */
-	private _mountPreview(root: URI): Promise<IParadisPreviewLocation> {
+	private _mountPreview(root: URI, options?: IParadisPreviewMountOptions): Promise<IParadisPreviewLocation> {
 		if (root.scheme === Schemas.vscodeRemote) {
-			return this._remoteMounter.mount(root);
+			return this._remoteMounter.mount(root, options);
 		}
-		return paradisMountLocalPreview(this._sharedProcessService, root);
+		return paradisMountLocalPreview(this._sharedProcessService, root, options);
 	}
 
 	protected applyZoom(level: number): void {

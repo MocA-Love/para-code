@@ -13,7 +13,7 @@ import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { isLinux, isWindows } from '../../../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ParadisHtmlPreviewServer, parseParadisByteRange, parseParadisPreviewPath } from '../../node/paradisHtmlPreviewServer.js';
-import { isParadisPreviewLoopbackHost } from '../../common/paradisHtmlPreview.js';
+import { isParadisPreviewLoopbackHost, PARADIS_PREVIEW_CONNECT_SELF_ONLY_CSP } from '../../common/paradisHtmlPreview.js';
 
 suite('ParadisHtmlPreviewServer', () => {
 
@@ -153,6 +153,26 @@ suite('ParadisHtmlPreviewServer', () => {
 			const script = await fetch(`${base}assets/app.js`);
 			strictEqual(script.status, 200);
 			strictEqual(script.headers.get('content-type'), 'text/javascript; charset=utf-8');
+		});
+
+		// ワークスペースの外の HTML のフォルダーは、ページが iframe で開く子のフレームにも connect-src を付ける
+		test('adds the connect-src header only to a folder mounted for an outside document', async () => {
+			const disposables = store.add(new DisposableStore());
+			const { base, root, server } = await mount(disposables);
+			const outsideRoot = await createRoot();
+			disposables.add({ dispose: () => { void fs.rm(outsideRoot, { recursive: true, force: true }); } });
+			const outside = await server.mount(outsideRoot, { connectSelfOnly: true });
+			const csp = async (url: string) => (await fetch(url)).headers.get('content-security-policy');
+			deepStrictEqual({
+				inside: await csp(`${base}index.html`),
+				outside: await csp(`http://127.0.0.1:${outside.port}/${outside.token}/index.html`),
+				// 同じフォルダーを後から印なしで載せ直しても外さない
+				remounted: await (async () => {
+					const again = await server.mount(outsideRoot);
+					return csp(`http://127.0.0.1:${again.port}/${again.token}/assets/app.js`);
+				})(),
+				insideStill: (await server.mount(root), await csp(`${base}index.html`)),
+			}, { inside: null, outside: PARADIS_PREVIEW_CONNECT_SELF_ONLY_CSP, remounted: PARADIS_PREVIEW_CONNECT_SELF_ONLY_CSP, insideStill: null });
 		});
 
 		test('serves index.html for the folder itself', async () => {

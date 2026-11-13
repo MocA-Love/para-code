@@ -50,7 +50,17 @@ export interface IParadisPreviewMountOptions {
 	 * 使う。外すとそのペインの次の文書が白紙になり、開き直しても直らない。
 	 */
 	readonly pinned?: boolean;
+	/**
+	 * 応答に {@link PARADIS_PREVIEW_CONNECT_SELF_ONLY_CSP} の CSP ヘッダーを付ける（ワークスペースの外の HTML）。
+	 * ページが同じフォルダーの HTML を iframe で開いたとき、その子のフレームにも同じ `connect-src` の制限をかけるため
+	 * （ビューアが文書に足す CSP の meta 要素は、配信サーバーから読む子のフレームには付かない）。
+	 * 一度付けたフォルダーは、外すまで付けたままにする。
+	 */
+	readonly connectSelfOnly?: boolean;
 }
+
+/** {@link IParadisPreviewMountOptions.connectSelfOnly} の CSP。読んだ中身を fetch・XHR・WebSocket などで配信元の外へ送らせない。 */
+export const PARADIS_PREVIEW_CONNECT_SELF_ONLY_CSP = 'connect-src \'self\' data: blob:';
 
 export interface IParadisHtmlPreviewService {
 	/**

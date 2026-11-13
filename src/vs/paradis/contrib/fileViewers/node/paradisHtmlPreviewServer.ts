@@ -42,7 +42,7 @@ import { pipeline } from 'stream';
 import { randomBytes } from 'crypto';
 import { basename, dirname, extname, join, sep } from '../../../../base/common/path.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { IParadisHtmlPreviewService, IParadisPreviewMount, IParadisPreviewMountOptions, isParadisPreviewLoopbackHost } from '../common/paradisHtmlPreview.js';
+import { IParadisHtmlPreviewService, IParadisPreviewMount, IParadisPreviewMountOptions, isParadisPreviewLoopbackHost, PARADIS_PREVIEW_CONNECT_SELF_ONLY_CSP } from '../common/paradisHtmlPreview.js';
 
 /** 同時に載せておくフォルダーの上限。超えたら古いものから外す。 */
 const PARADIS_HTML_PREVIEW_MAX_MOUNTS = 64;
@@ -192,6 +192,8 @@ export class ParadisHtmlPreviewServer extends Disposable implements IParadisHtml
 	 * 覚え続けるので、外すとそのペインの次の文書が白紙になる。数はビューアの種類ぶんしか増えない。
 	 */
 	private readonly _pinnedRoots = new Set<string>();
+	/** 応答に `connect-src` の CSP ヘッダーを付ける実パス（ワークスペースの外の HTML のフォルダー）。 */
+	private readonly _connectSelfOnlyRoots = new Set<string>();
 
 	/**
 	 * フォルダーを載せる。**ファイルのパスを渡すと、そのファイルだけ**を載せる。
@@ -220,6 +222,9 @@ export class ParadisHtmlPreviewServer extends Disposable implements IParadisHtml
 		if (options?.pinned) {
 			this._pinnedRoots.add(key);
 		}
+		if (options?.connectSelfOnly) {
+			this._connectSelfOnlyRoots.add(key);
+		}
 		this._evictOldMounts();
 
 		// ファイル単位のときは、サーバが返す名前（シンボリックリンクならリンク先の名前）を知らせる。
@@ -233,6 +238,7 @@ export class ParadisHtmlPreviewServer extends Disposable implements IParadisHtml
 		this._tokenByRoot.clear();
 		this._rootByToken.clear();
 		this._pinnedRoots.clear();
+		this._connectSelfOnlyRoots.clear();
 		super.dispose();
 	}
 
@@ -254,6 +260,7 @@ export class ParadisHtmlPreviewServer extends Disposable implements IParadisHtml
 			}
 			this._tokenByRoot.delete(key);
 			this._rootByToken.delete(token);
+			this._connectSelfOnlyRoots.delete(key);
 			excess--;
 		}
 	}
@@ -371,6 +378,8 @@ export class ParadisHtmlPreviewServer extends Disposable implements IParadisHtml
 			'Referrer-Policy': 'no-referrer',
 			'Cache-Control': pinned ? PARADIS_PREVIEW_PINNED_CACHE_CONTROL : 'no-store',
 			'X-Content-Type-Options': 'nosniff',
+			// ワークスペースの外の HTML のフォルダーは、ページが iframe で開いた子のフレームにも文書と同じ制限をかける
+			...(this._connectSelfOnlyRoots.has(mounted.key) ? { 'Content-Security-Policy': PARADIS_PREVIEW_CONNECT_SELF_ONLY_CSP } : {}),
 		};
 		if (pinned && firstHeader(request.headers['if-none-match']) === etag) {
 			response.writeHead(304, commonHeaders);
