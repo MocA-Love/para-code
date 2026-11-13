@@ -311,7 +311,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration)
 			},
 			[VerifyExtensionSignatureConfigKey]: {
 				type: 'boolean',
-				description: localize('extensions.verifySignature', "When enabled, extensions are verified to be signed before getting installed."),
+				description: localize('extensions.verifySignature.paradis', "When enabled, extensions are verified to be signed before getting installed. Off by default in this build: it does not include the signature verification component, so with this turned on, signed extensions fail to install. Extensions installed from Open VSX are therefore protected only by the HTTPS download."), // PARA-PATCH: explain why signature verification is off by default (no @vscode/vsce-sign in OSS/fork builds)
 				default: false, // PARA-PATCH: keep the surfaced default in sync with the node-layer default (no @vscode/vsce-sign in OSS/fork builds)
 				scope: ConfigurationScope.APPLICATION,
 				included: isNative

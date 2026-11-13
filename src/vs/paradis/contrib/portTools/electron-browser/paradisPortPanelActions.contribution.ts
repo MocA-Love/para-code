@@ -210,6 +210,9 @@ registerAction2(class extends Action2 {
 			rows,
 			checkable: true,
 			primaryLabel: count => localize('paradis.portPanel.align.run', "{0} 件を張り直す", count),
+			selectedCountLabel: (selected, selectable, unselectable) => unselectable > 0
+				? localize('paradis.portPanel.align.selectedCount', "{0} / {1} 件を選択・使用中の {2} 件は選べません", selected, selectable, unselectable)
+				: undefined,
 		});
 		if (!answer) {
 			return;

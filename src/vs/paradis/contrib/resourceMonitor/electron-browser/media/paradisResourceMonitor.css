@@ -100,7 +100,7 @@
 	background: var(--vscode-editorWidget-background);
 	color: var(--vscode-foreground);
 	border: 1px solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	border-radius: 8px;
+	border-radius: var(--paradis-radius-inner);
 	box-shadow: 0 10px 32px var(--vscode-widget-shadow);
 	font-size: 12px;
 	overflow: hidden;
@@ -133,7 +133,7 @@
 	height: 22px;
 	padding: 0 4px;
 	border: none;
-	border-radius: 4px;
+	border-radius: var(--paradis-radius-control);
 	background: transparent;
 	color: var(--vscode-foreground);
 	font-size: 11px;
@@ -150,8 +150,9 @@
 	justify-content: center;
 	width: 22px;
 	height: 22px;
+	padding: 0;
 	border: none;
-	border-radius: 4px;
+	border-radius: var(--paradis-radius-control);
 	background: transparent;
 	color: var(--vscode-foreground);
 	cursor: pointer;
@@ -329,6 +330,19 @@
 .paradis-resource-monitor-panel .prm-row-label > .codicon {
 	flex-shrink: 0;
 	opacity: 0.7;
+}
+
+/* The open/close chevron of a space row is a button (keyboard), drawn like the bare icon it replaced. */
+.paradis-resource-monitor-panel .prm-chevron-btn {
+	display: inline-flex;
+	align-items: center;
+	flex-shrink: 0;
+	padding: 0;
+	border: none;
+	background: transparent;
+	color: inherit;
+	opacity: 0.7;
+	cursor: pointer;
 }
 
 .paradis-resource-monitor-panel .prm-row-name {

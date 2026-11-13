@@ -13,8 +13,8 @@ export const PARADIS_CODEX_TERMINAL_TITLE_ENABLED_SETTING = 'paradis.codex.termi
  * 実際に届く OSC タイトルは `codex | <スレッドのタイトル>`（タイトル未確定の間はスレッド ID）になる。
  *
  * **`app-name` を外してはいけない**。Para Code が「このターミナルで動いているのは Codex だ」と判別する
- * 唯一の手掛かりが、この OSC タイトルに `codex` が含まれることだから（terminalInstance.ts の
- * `agentCliTitlePatterns` にある fork の PARA-PATCH）。外すと shell type が Codex にならず、
+ * 唯一の手掛かりが、この OSC タイトルが `codex` か `codex | …` の形であることだから（terminalInstance.ts の
+ * `agentCliTitlePatterns` にある fork の PARA-PATCH、判定は `paradisIsCodexTerminalTitle`）。外すと shell type が Codex にならず、
  * タブ名をエージェントのタイトルにする仕組みごと止まる。
  *
  * なお `thread-title` は実測（codex-cli 0.146.0）ではスレッド ID しか出さず、人間が読めるタイトルには

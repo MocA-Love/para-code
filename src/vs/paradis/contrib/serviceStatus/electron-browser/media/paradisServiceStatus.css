@@ -178,6 +178,9 @@
 	flex: none;
 	width: 22px;
 	height: 22px;
+	padding: 0;
+	border: 0;
+	background: transparent;
 	border-radius: var(--vscode-cornerRadius-small);
 	color: var(--vscode-icon-foreground);
 	cursor: pointer;
@@ -198,6 +201,10 @@
 }
 
 .paradis-service-status-popover .pssp-link {
+	padding: 0;
+	border: 0;
+	background: transparent;
+	font: inherit;
 	color: var(--vscode-textLink-foreground);
 	text-decoration: none;
 	cursor: pointer;

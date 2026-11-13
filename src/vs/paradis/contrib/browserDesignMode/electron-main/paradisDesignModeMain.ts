@@ -102,9 +102,12 @@ export class ParadisDesignModeMainService extends Disposable {
 		if (!raw || typeof raw !== 'object') {
 			return { kind: 'cancelled' };
 		}
-		const result = raw as { readonly nonce?: unknown; readonly element?: unknown };
+		const result = raw as { readonly nonce?: unknown; readonly element?: unknown; readonly blocked?: unknown };
 		if (result.nonce !== nonce) {
 			return { kind: 'cancelled' };
+		}
+		if (result.blocked === true) {
+			return { kind: 'blocked' };
 		}
 		const element = paradisClampPickedElement(result.element);
 		return element ? { kind: 'picked', element } : { kind: 'cancelled' };

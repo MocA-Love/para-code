@@ -33,6 +33,8 @@ export interface IParaBranchDiffState {
 	readonly changes: readonly Change[];
 	/** Set when the branch diverged by more than {@link RESOURCE_LIMIT} files. */
 	readonly truncated: boolean;
+	/** How many files the branch changed before {@link changes} was cut down to {@link RESOURCE_LIMIT}. */
+	readonly total: number;
 }
 
 /** Providers keyed by repository, so that the view and the commands can reach one. */
@@ -201,7 +203,8 @@ export class ParaBranchDiffProvider {
 			this.setState({
 				base: { commit: state.baseCommit, label: state.baseLabel },
 				changes: filtered.slice(0, RESOURCE_LIMIT),
-				truncated: filtered.length > RESOURCE_LIMIT
+				truncated: filtered.length > RESOURCE_LIMIT,
+				total: filtered.length
 			});
 		} catch (err) {
 			this.logger.warn(`[ParaBranchDiffProvider][doRefresh] Failed to compute branch diff for ${this.repository.root}: ${err}`);

@@ -68,6 +68,7 @@ suite('ParadisServiceStatusPopover', () => {
 			upcastPartial<ILayoutService>({ activeContainer: root }),
 			upcastPartial<IOpenerService>({ open: async () => true }),
 			upcastPartial<ICommandService>({ executeCommand: async () => undefined }),
+			NullHoverService,
 		));
 	}
 
@@ -93,7 +94,7 @@ suite('ParadisServiceStatusPopover', () => {
 		const popover = open(snapshot('minor'));
 		const refresh = root.querySelector<HTMLElement>('[data-focus-key="refresh"]')!;
 		refresh.focus();
-		refresh.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+		refresh.click();
 		popover.updateSnapshot(snapshot('ok'));
 		const focused = document.activeElement as HTMLElement | null;
 		focused?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -173,6 +174,7 @@ suite('ParadisServiceStatusWidget', () => {
 			const openedAtOpenAI = openai.classList.contains('active');
 			github.click();
 			const movedToGitHub = !openai.classList.contains('active') && github.classList.contains('active') && container.querySelectorAll('.paradis-service-status-popover').length === 1;
+			const expandedWhileOpen = buttons.map(button => button.getAttribute('aria-expanded'));
 			(document.activeElement as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 
 			assert.deepStrictEqual({
@@ -183,6 +185,9 @@ suite('ParadisServiceStatusWidget', () => {
 				closed: !container.querySelector('.paradis-service-status-popover') && !github.classList.contains('active'),
 				focusBack: document.activeElement === github,
 				claudeLabel: claude.getAttribute('aria-label'),
+				expandedWhileOpen,
+				expandedAfterClose: buttons.map(button => button.getAttribute('aria-expanded')),
+				popup: github.getAttribute('aria-haspopup'),
 			}, {
 				chips: ['claude | true | ok', 'codex | true | minor', 'github | true | ok'],
 				label: 'OpenAI のステータス: 軽微な障害',
@@ -191,6 +196,9 @@ suite('ParadisServiceStatusWidget', () => {
 				closed: true,
 				focusBack: true,
 				claudeLabel: 'Claude のステータス: 正常',
+				expandedWhileOpen: ['false', 'false', 'true'],
+				expandedAfterClose: ['false', 'false', 'false'],
+				popup: 'dialog',
 			});
 		} finally {
 			container.remove();

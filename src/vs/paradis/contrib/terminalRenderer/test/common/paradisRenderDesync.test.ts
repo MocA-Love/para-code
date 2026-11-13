@@ -18,6 +18,7 @@ import {
 	ParadisRenderDesyncGate,
 	paradisRenderRecordName,
 	paradisRenderRecordsToPrune,
+	PARADIS_RENDER_INSPECT_MIN_INTERVAL,
 	PARADIS_RENDER_REPAIR_COOLDOWN,
 } from '../../common/paradisRenderDesync.js';
 
@@ -105,6 +106,18 @@ suite('ParadisRenderDesync', () => {
 		clock += PARADIS_RENDER_REPAIR_COOLDOWN;
 		seen.push(gate.canInspect());
 		assert.deepStrictEqual(seen, [true, false, true, false]);
+	});
+
+	test('waits between inspections even without a repair', () => {
+		let clock = 0;
+		const gate = new ParadisRenderDesyncGate(() => clock);
+		gate.noteInspected();
+		const seen: boolean[] = [gate.canInspect()];
+		clock += PARADIS_RENDER_INSPECT_MIN_INTERVAL - 1;
+		seen.push(gate.canInspect());
+		clock += 1;
+		seen.push(gate.canInspect());
+		assert.deepStrictEqual(seen, [false, false, true]);
 	});
 
 	test('keeps the newest records only', () => {

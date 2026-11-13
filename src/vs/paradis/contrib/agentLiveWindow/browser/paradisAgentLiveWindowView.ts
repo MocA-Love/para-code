@@ -7,15 +7,23 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { $, addDisposableListener, append, clearNode, EventType, getWindow, isHTMLElement } from '../../../../base/browser/dom.js';
+import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
+import { StandardMouseEvent } from '../../../../base/browser/mouseEvent.js';
 import { IManagedHover } from '../../../../base/browser/ui/hover/hover.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { IntervalTimer } from '../../../../base/common/async.js';
+import { IAction, Separator, toAction } from '../../../../base/common/actions.js';
 import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { Emitter } from '../../../../base/common/event.js';
+import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
+import { decodeKeybinding } from '../../../../base/common/keybindings.js';
 import { Disposable, DisposableMap, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { OS } from '../../../../base/common/platform.js';
 import { localize } from '../../../../nls.js';
+import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 import { ITerminalInstance } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { getParadisPaneIndicatorHost, onDidChangeParadisPaneIndicatorHost } from '../../agentBrowser/browser/paradisPaneIndicator.js';
 import { ParadisAgentLiveMirror } from './paradisAgentLiveMirror.js';
@@ -30,6 +38,7 @@ import {
 	PARADIS_AGENT_LIVE_LAYOUTS,
 	PARADIS_AGENT_LIVE_STATUS_ORDER,
 	ParadisAgentLiveLayout,
+	ParadisAgentLiveMove,
 	ParadisAgentLiveStatus,
 	paradisAgentLiveSpaceLabel,
 	paradisApplyAgentLiveManualDrop,
@@ -38,6 +47,7 @@ import {
 	paradisGroupAgentLiveEntries,
 	paradisHasAgentLiveFilter,
 	paradisIsAttentionStatus,
+	paradisMoveAgentLiveTile,
 	paradisSortAgentLiveEntries,
 } from '../common/paradisAgentLiveWindow.js';
 
@@ -87,6 +97,21 @@ function entryClockText(entry: IParadisAgentLiveEntry, now: number): string {
 			? localize('paradis.agentLive.completed', "{0}前に完了", elapsed)
 			: elapsed;
 }
+
+/** ドラッグの代わりにタイルを動かすキー (Alt+矢印。メニューにも同じキーを書く)。paradis-16-8 */
+const MOVE_KEYS: Record<ParadisAgentLiveMove, number> = {
+	previous: KeyMod.Alt | KeyCode.LeftArrow,
+	next: KeyMod.Alt | KeyCode.RightArrow,
+	first: KeyMod.Alt | KeyCode.Home,
+	last: KeyMod.Alt | KeyCode.End,
+};
+
+const MOVE_LABELS: Record<ParadisAgentLiveMove, string> = {
+	previous: localize('paradis.agentLive.movePrevious', "前へ移動"),
+	next: localize('paradis.agentLive.moveNext', "後ろへ移動"),
+	first: localize('paradis.agentLive.moveFirst', "先頭へ移動"),
+	last: localize('paradis.agentLive.moveLast', "末尾へ移動"),
+};
 
 /** 経過時間表示の更新間隔。秒単位の表示なので1秒で足りる。 */
 const CLOCK_INTERVAL = 1000;
@@ -178,6 +203,8 @@ export class ParadisAgentLiveWindowView extends Disposable {
 	private readonly dragGhostElement: HTMLElement;
 	/** dragover で判定した現在の挿入先 (どのタイルの前/後か) */
 	private dropTarget: { readonly token: string; readonly after: boolean } | undefined;
+	/** タイルを動かした後の位置を読み上げる領域 (画面には出さない)。補助ウィンドウの中に置く */
+	private readonly announcer: HTMLElement;
 	private readonly filterBar: HTMLElement;
 	private readonly filterBarText: HTMLElement;
 	private readonly countText: HTMLElement;
@@ -212,12 +239,20 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		transparencyActive: boolean,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IHoverService private readonly hoverService: IHoverService,
+		@IContextMenuService private readonly contextMenuService: IContextMenuService,
+		@IKeybindingService private readonly keybindingService: IKeybindingService,
 	) {
 		super();
 
 		const root = append(container, $('.paradis-agent-live-window'));
 		root.classList.toggle('paradis-agent-live-transparent', transparencyActive);
 		this.root = root;
+		// 本家の aria.ts の読み上げ領域はメインウィンドウにしか無いので、この窓の中に同じ形で置く
+		const announcerContainer = append(root, $('.monaco-aria-container'));
+		this.announcer = append(announcerContainer, $('div'));
+		this.announcer.setAttribute('role', 'status');
+		this.announcer.setAttribute('aria-live', 'polite');
+		this.announcer.setAttribute('aria-atomic', 'true');
 
 		const dragGhost = $('.paradis-agent-live-drag-ghost');
 		// 画面外に置く。setDragImage は呼び出し時点のスナップショットを使うため、要素が
@@ -510,13 +545,38 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		const hideButton = this.createMiniButton(actions, 'eye-closed', localize('paradis.agentLive.hide', "このウィンドウから隠す"), disposables);
 		disposables.add(addDisposableListener(hideButton, EventType.CLICK, event => {
 			event.stopPropagation();
-			if (!this.viewState.hidden.includes(entry.token)) {
-				this.viewState.hidden.push(entry.token);
-			}
-			this.commit();
+			this.hideTile(entry.token);
 		}));
 
 		const termContainer = append(root, $('.paradis-agent-live-term'));
+
+		// ドラッグ以外の並べ替えの道 (paradis-16-8 案 B)。見出しの右クリック、タイルにフォーカスがあるときの
+		// Shift+F10・メニューキーでメニューを開き、Alt+矢印で同じ移動をする。端末の中のキーと右クリックは端末へ渡す
+		disposables.add(addDisposableListener(head, EventType.CONTEXT_MENU, event => {
+			event.preventDefault();
+			event.stopPropagation();
+			this.showTileMenu(entry.token, new StandardMouseEvent(getWindow(head), event));
+		}));
+		disposables.add(addDisposableListener(root, EventType.KEY_DOWN, event => {
+			if (event.target !== root) {
+				return;
+			}
+			const keyboardEvent = new StandardKeyboardEvent(event);
+			if (keyboardEvent.equals(KeyMod.Shift | KeyCode.F10) || keyboardEvent.keyCode === KeyCode.ContextMenu) {
+				keyboardEvent.preventDefault();
+				keyboardEvent.stopPropagation();
+				this.showTileMenu(entry.token, root);
+				return;
+			}
+			for (const move of Object.keys(MOVE_KEYS) as ParadisAgentLiveMove[]) {
+				if (keyboardEvent.equals(MOVE_KEYS[move])) {
+					keyboardEvent.preventDefault();
+					keyboardEvent.stopPropagation();
+					this.moveTile(entry.token, move);
+					return;
+				}
+			}
+		}));
 
 		// ホイールの主従。既定では壁 (ウィンドウ全体) を送り、端末そのものをクリックして
 		// 掴んでいるタイルの中だけ端末のスクロールにする。
@@ -881,6 +941,72 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		this.commit();
 	}
 
+	// ------------------------------------------------------------------ ドラッグ以外の並べ替え
+
+	private showTileMenu(token: string, anchor: HTMLElement | StandardMouseEvent): void {
+		const canMove = (move: ParadisAgentLiveMove) => this.movedOrder(token, move) !== undefined;
+		const moveIds = new Map<string, ParadisAgentLiveMove>();
+		const actions: IAction[] = [];
+		for (const move of Object.keys(MOVE_KEYS) as ParadisAgentLiveMove[]) {
+			const id = `paradis.agentLive.move.${move}`;
+			moveIds.set(id, move);
+			actions.push(toAction({ id, label: MOVE_LABELS[move], enabled: canMove(move), run: () => this.moveTile(token, move) }));
+		}
+		actions.push(
+			new Separator(),
+			toAction({ id: 'paradis.agentLive.menu.pin', label: localize('paradis.agentLive.pin', "先頭に固定"), checked: this.viewState.pinned.includes(token), run: () => this.togglePinned(token) }),
+			toAction({ id: 'paradis.agentLive.menu.hide', label: localize('paradis.agentLive.hide', "このウィンドウから隠す"), run: () => this.hideTile(token) }),
+		);
+		this.contextMenuService.showContextMenu({
+			getAnchor: () => anchor,
+			getActions: () => actions,
+			getKeyBinding: action => {
+				const move = moveIds.get(action.id);
+				const keybinding = move ? decodeKeybinding(MOVE_KEYS[move], OS) : null;
+				return keybinding ? this.keybindingService.resolveKeybinding(keybinding)[0] : undefined;
+			},
+		});
+	}
+
+	/**
+	 * 動かした後の手動の並び。グループ分けや先頭に固定で元の位置に戻る（画面の位置が変わらない）ときは
+	 * undefined にして、メニューでは無効にし「移動しました」と読み上げないようにする。
+	 */
+	private movedOrder(token: string, move: ParadisAgentLiveMove): string[] | undefined {
+		const order = paradisMoveAgentLiveTile(this.viewState.manualOrder, this.visibleOrder, token, move);
+		if (!order) {
+			return undefined;
+		}
+		const state: IParadisAgentLiveViewState = { ...this.viewState, manualOrder: order, sort: 'manual' };
+		const groups = paradisGroupAgentLiveEntries(paradisSortAgentLiveEntries(paradisFilterAgentLiveEntries(this.model.entries, state), state, Date.now()), state, status => STATUS_LABELS[status]);
+		const nextOrder = groups.flatMap(group => group.entries.map(entry => entry.token));
+		return nextOrder.indexOf(token) !== this.visibleOrder.indexOf(token) ? order : undefined;
+	}
+
+	private moveTile(token: string, move: ParadisAgentLiveMove): void {
+		const order = this.movedOrder(token, move);
+		if (!order) {
+			return;
+		}
+		this.viewState.manualOrder = order;
+		// ドラッグと同じく、見えている並びを保ったまま手動へ移す
+		this.viewState.sort = 'manual';
+		this.commit();
+		const tile = this.tiles.get(token);
+		if (!tile) {
+			return;
+		}
+		// 動いたタイルからフォーカスが外れないようにする (並べ替えで DOM の位置が変わるため)
+		if (tile.root.isConnected) {
+			tile.root.focus({ preventScroll: true });
+			tile.root.scrollIntoView({ block: 'nearest' });
+		}
+		const position = this.visibleOrder.indexOf(token) + 1;
+		// 同じ文を続けて入れても読まれるよう、いったん空にしてから入れる
+		this.announcer.textContent = '';
+		this.announcer.textContent = localize('paradis.agentLive.moved', "{0} を {1} 番目へ移動しました", tileTitleText(tile.entry), position);
+	}
+
 	private hideInsertLine(): void {
 		this.insertLine.style.display = 'none';
 		this.dropTarget = undefined;
@@ -936,6 +1062,13 @@ export class ParadisAgentLiveWindowView extends Disposable {
 		this.viewState.attentionOnly = !this.viewState.attentionOnly;
 		if (this.viewState.attentionOnly) {
 			this.viewState.statuses = [];
+		}
+		this.commit();
+	}
+
+	private hideTile(token: string): void {
+		if (!this.viewState.hidden.includes(token)) {
+			this.viewState.hidden.push(token);
 		}
 		this.commit();
 	}

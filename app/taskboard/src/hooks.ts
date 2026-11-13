@@ -108,6 +108,9 @@ export function useAsync<T>(load: (force: boolean) => Promise<T>, deps: readonly
 
 export type ThemeMode = 'system' | 'dark' | 'light';
 
+/** テーマごとの地の色（styles.css の `--bg`）。Para Code はこれを theme-color から読み、ボードの窓の背景色にする。 */
+export const THEME_BACKGROUND = { dark: '#0a0c10', light: '#f3f5f8' } as const;
+
 export function useTheme(): [ThemeMode, (mode: ThemeMode) => void] {
 	const [mode, setMode] = useStored<ThemeMode>('theme', 'dark');
 	const systemDark = useMedia('(prefers-color-scheme: dark)');
@@ -115,6 +118,7 @@ export function useTheme(): [ThemeMode, (mode: ThemeMode) => void] {
 		const resolved = mode === 'system' ? (systemDark ? 'dark' : 'light') : mode;
 		document.documentElement.dataset.theme = resolved;
 		document.querySelector('meta[name="color-scheme"]')?.setAttribute('content', resolved);
+		document.querySelector('meta[name="theme-color"]')?.setAttribute('content', THEME_BACKGROUND[resolved]);
 	}, [mode, systemDark]);
 	return [mode, setMode];
 }

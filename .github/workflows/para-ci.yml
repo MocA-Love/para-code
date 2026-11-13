@@ -188,15 +188,15 @@ jobs:
   # fork's renderer and electron-main tests elsewhere, named paradis* or para<Capital>* (para[A-Z] keeps upstream
   # files such as parameterHintsModel and parallelTasksTour out). test/node is left out because test-node already runs it and the renderer cannot create Workers or use
   # SharedArrayBuffer (16 tests always fail there); electron-main is included because test-node skips it.
-  # The job does not block CI yet (continue-on-error) because of known failures, such as the Office performance
-  # fixture hash that is re-measured only on the reference Mac. The failed test names go to the job summary.
+  # The job blocks CI: any failing test fails the step, except the titles listed in KNOWN_FAILURES below (none as of
+  # 2026-11-13; main and PR runs reported 0 failing). Add a title there only for a failure that is known and tracked,
+  # instead of letting the whole job pass. The failed test names go to the job summary.
   # out/ is transpiled here again instead of shared with unit-tests: the transpile takes about 20 s, less than
   # uploading and downloading out/ as an artifact, and the job runs in parallel instead of after unit-tests.
   browser-unit-tests:
     name: Unit Tests (Electron, fork suites)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -242,10 +242,12 @@ jobs:
 
       # ELECTRON_DISABLE_SANDBOX: chrome-sandbox is not a root-owned SUID binary here, and Electron stops at startup
       # without it. --workers does not apply together with --runGlob, so the tests run in one window.
-      # The step fails when the tests fail or when no passing test was reported (0 tests must not turn green).
+      # The step fails when no passing test was reported (0 tests must not turn green), and when the tests fail,
+      # unless every failed test is listed in KNOWN_FAILURES (one full title per line, as in the job summary).
       - name: Run unit tests (Electron, fork suites)
         run: |
           log="$RUNNER_TEMP/test-electron.log"
+          failed="$RUNNER_TEMP/test-electron.failed.txt"
           set +e
           xvfb-run -a ./scripts/test.sh --runGlob '{vs/paradis/**/test/{common,browser,electron-browser,electron-main}/**/*.test.js,**/test/{browser,electron-browser,electron-main}/**/{paradis,para[A-Z]}*.test.js}' 2>&1 | tee "$log"
           status=${PIPESTATUS[0]}
@@ -256,6 +258,15 @@ jobs:
           passing=$(count passing)
           pending=$(count pending)
           failing=$(count failing)
+          : > "$failed"
+          if [ "$failing" -gt 0 ]; then
+            awk '
+              /^ *[0-9]+ failing/ { inFailures = 1; next }
+              !inFailures { next }
+              /^  [0-9]+\) / { collecting = 1; title = $0; sub(/^ +[0-9]+\) /, "", title); if (title ~ /:$/) { print substr(title, 1, length(title) - 1); collecting = 0 }; next }
+              collecting { line = $0; sub(/^ +/, "", line); title = title " > " line; if (line ~ /:$/) { print substr(title, 1, length(title) - 1); collecting = 0 } }
+            ' "$clean" > "$failed"
+          fi
           {
             echo "### Unit Tests (Electron, fork suites)"
             echo
@@ -266,22 +277,107 @@ jobs:
               echo
               echo "Failed tests:"
               echo
-              awk '
-                /^ *[0-9]+ failing/ { inFailures = 1; next }
-                !inFailures { next }
-                /^  [0-9]+\) / { collecting = 1; title = $0; sub(/^ +/, "", title); if (title ~ /:$/) { print "- " substr(title, 1, length(title) - 1); collecting = 0 }; next }
-                collecting { line = $0; sub(/^ +/, "", line); title = title " > " line; if (line ~ /:$/) { print "- " substr(title, 1, length(title) - 1); collecting = 0 } }
-              ' "$clean"
+              sed 's/^/- /' "$failed"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$passing" -eq 0 ]; then
             echo "::error::No passing tests reported by the Electron unit tests"
             exit 1
           fi
+          if [ "$status" -eq 0 ]; then
+            exit 0
+          fi
+          # Pass only when mocha reported failures, each of them could be read, and every one is a known failure.
+          # Any other non-zero exit (a crash, a loader error, an unknown failure) fails the step.
+          if [ "$failing" -gt 0 ] && [ "$(grep -c . "$failed")" -eq "$failing" ]; then
+            unknown=$(printf '%s\n' "$KNOWN_FAILURES" | grep -vxF -e '' | grep -vxFf - "$failed" || true)
+            if [ -n "$KNOWN_FAILURES" ] && [ -z "$unknown" ]; then
+              echo "::warning::Only the known failures listed in KNOWN_FAILURES failed ($failing), so the step counts as passed."
+              exit 0
+            fi
+          fi
           exit "$status"
         env:
           ELECTRON_DISABLE_SANDBOX: 1
           VSCODE_SKIP_PRELAUNCH: 1
+          # Full titles of known, tracked failures (one per line, "suite > test" as in the job summary). Keep it empty
+          # unless a failure is known; an unlisted failure always fails the step.
+          KNOWN_FAILURES: ''
+
+  # Tests of the fork's code in built-in extensions and in the Claude Code mods, which none of the jobs above run.
+  # - Extensions: only the fork's paradis*.test.js files of git and typescript-language-features, in plain node
+  #   with mocha. They test pure logic, but paradisRepositoryPark.ts loads git's util.ts, which reads
+  #   vscode.env.remoteName when it loads, so a minimal `vscode` stub is put on NODE_PATH. *Integration.test.js
+  #   files need a real extension host (scripts/test-integration.sh) and are left out.
+  # - Mods: `claude plugin test` (the files import 'claude-code/testing', which only that command provides), on
+  #   copies because the command writes types and a tsconfig into the folder it tests. The para-code mod is tested
+  #   without its draft/ folder: draft/ is a separate mod (para-code-draft) and fails against the parent's hooks.
+  #   Claude Code is pinned so a new release does not turn unrelated PRs red; raise CLAUDE_CODE_VERSION after
+  #   checking the mods with the new version (NOTES.md, "Claude Code の mod").
+  fork-extension-tests:
+    name: Unit Tests (fork extensions & Claude Code mods)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: ./.github/actions/restore-node-modules
+        with:
+          key-prefix: node_modules-para-ci
+          key-args: "compile $(node -p process.arch)"
+
+      - name: Install build tools
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: sudo apt update -y && sudo apt install -y build-essential pkg-config libx11-dev libx11-xcb-dev libxkbfile-dev libnotify-bin libkrb5-dev
+
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compile git and TypeScript extensions
+        run: |
+          node_modules/.bin/tsc -p extensions/git
+          node_modules/.bin/tsc -p extensions/typescript-language-features
+
+      # mocha fails when no file matches, so a renamed or moved test does not turn green with 0 tests.
+      - name: Run fork extension unit tests (node.js)
+        run: |
+          stub="$RUNNER_TEMP/vscode-stub/node_modules"
+          mkdir -p "$stub/vscode"
+          echo 'module.exports = { env: {} };' > "$stub/vscode/index.js"
+          NODE_PATH="$stub" node node_modules/mocha/bin/mocha --ui tdd --ignore '**/*Integration.test.js' \
+            'extensions/git/out/test/**/paradis*.test.js' \
+            'extensions/typescript-language-features/out/test/**/paradis*.test.js'
+
+      - name: Run Claude Code mod tests
+        env:
+          CLAUDE_CODE_VERSION: 2.1.323
+          DISABLE_AUTOUPDATER: 1
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: 1
+        run: |
+          mods="$RUNNER_TEMP/claude-mods"
+          mkdir -p "$mods/para-code"
+          cp -R resources/paradis/claude-mod/. "$mods/para-code/"
+          rm -rf "$mods/para-code/draft"
+          cp -R resources/paradis/claude-mod/draft "$mods/para-code-draft"
+          # Installed outside the checkout so the repository's .npmrc (runtime=electron and so on) does not apply.
+          (cd "$RUNNER_TEMP" && npm install --prefix "$RUNNER_TEMP/claude-code" --no-audit --no-fund "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION")
+          claude="$RUNNER_TEMP/claude-code/node_modules/.bin/claude"
+          "$claude" --version
+          "$claude" plugin test "$mods/para-code"
+          "$claude" plugin test "$mods/para-code-draft"
 
   fork-workspace-tests:
     name: Para Code Fork Workspace (typecheck & test)
@@ -297,7 +393,7 @@ jobs:
           node-version-file: .nvmrc
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 10
 

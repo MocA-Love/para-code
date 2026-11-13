@@ -17,14 +17,14 @@ import { ParadisResourceMonitorPanel } from '../../electron-browser/paradisResou
 suite('ParadisResourceMonitorPanel', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function createPanel(): { panel: ParadisResourceMonitorPanel; container: HTMLElement } {
+	function createPanel(switchToScope: (stateKey: string) => void = () => { }): { panel: ParadisResourceMonitorPanel; container: HTMLElement } {
 		const container = mainWindow.document.createElement('div');
 		const anchor = mainWindow.document.createElement('div');
 		const panel = store.add(new ParadisResourceMonitorPanel(anchor, {
 			initialSnapshot: undefined,
 			onManualRefresh: () => { },
 			onClose: () => { },
-			switchToScope: () => { },
+			switchToScope,
 			machines: [{ id: 'local', label: 'This Computer' }],
 			selectedMachineId: 'local',
 			initialSystemUsage: undefined,
@@ -49,5 +49,37 @@ suite('ParadisResourceMonitorPanel', () => {
 			empty: container.querySelectorAll('.prm-empty').length,
 			sameRow: firstAppRow !== null && container.querySelector('.app-row') === firstAppRow,
 		}, { appRows: 1, empty: 1, sameRow: true });
+	});
+
+	test('lets the keyboard switch to a space and open or close its terminals, keeping focus across redraws', () => {
+		const switched: string[] = [];
+		const { panel, container } = createPanel(stateKey => switched.push(stateKey));
+		mainWindow.document.body.appendChild(container);
+		try {
+			const session = { name: 'zsh', pid: 7, cpu: 1, memory: 10 };
+			panel.updateSnapshot({ ...snapshot(), scopes: [{ stateKey: 'space-a', scopeName: 'web-app', cpu: 1, memory: 10, sessions: [session] }] });
+			const row = container.querySelector<HTMLElement>('.scope-row')!;
+			row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+			const chevron = container.querySelector<HTMLButtonElement>('.prm-chevron-btn')!;
+			const before = { tabIndex: row.tabIndex, role: row.getAttribute('role'), expanded: chevron.getAttribute('aria-expanded'), sessions: container.querySelectorAll('.session-row').length };
+			chevron.focus();
+			chevron.click();
+			const after = container.querySelector<HTMLButtonElement>('.prm-chevron-btn')!;
+			assert.deepStrictEqual({
+				before,
+				switched,
+				expanded: after.getAttribute('aria-expanded'),
+				sessions: container.querySelectorAll('.session-row').length,
+				focused: mainWindow.document.activeElement === after,
+			}, {
+				before: { tabIndex: 0, role: 'button', expanded: 'true', sessions: 1 },
+				switched: ['space-a'],
+				expanded: 'false',
+				sessions: 0,
+				focused: true,
+			});
+		} finally {
+			container.remove();
+		}
 	});
 });

@@ -9,8 +9,14 @@
 // 常駐と、繋ぎに来た側が名乗り合うところ。
 
 import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
+import { createConnection, Socket } from 'net';
+import { raceTimeout } from '../../../../base/common/async.js';
 import { IChannelClient, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
+import { Client as SocketClient } from '../../../../base/parts/ipc/common/ipc.net.js';
+import { NodeSocket } from '../../../../base/parts/ipc/node/ipc.net.js';
 import { IParadisPtyDaemonAuth, PARADIS_PTY_DAEMON_AUTH_CHANNEL } from '../common/paradisPtyDaemonControl.js';
+import { ParadisDaemonCheck } from '../common/paradisPtyDaemonBridgeProtocol.js';
+import { paradisReadDaemonRecords } from './paradisPtyDaemonLedger.js';
 
 /** 身元の長さ。総当たりを問題にしない量があればよい。 */
 const TOKEN_BYTES = 32;
@@ -82,5 +88,66 @@ export async function paradisAuthenticateDaemon(client: IChannelClient, token: s
 	} catch {
 		// 答えられない・チャネルが無い・こちらの証明を拒まれた。どれも「本物ではない」で足りる。
 		return false;
+	}
+}
+
+/**
+ * {@link paradisAuthenticateDaemon} に期限を付けたもの。
+ *
+ * 接続は受けるが答えない常駐（イベントループが詰まった、SIGSTOP された等）を待ち続けると、
+ * 繋ぎに来た側がそこで止まる。期限切れの `timeout` は「本物ではない」とは分けて返す（呼び出し側は
+ * 待ち方を変える）。期限切れでも元の問い合わせは止まらないので、呼び出し側が接続を閉じること。
+ */
+export async function paradisAuthenticateDaemonWithin(client: IChannelClient, token: string, timeoutMs: number): Promise<ParadisDaemonCheck> {
+	const genuine = await raceTimeout(paradisAuthenticateDaemon(client, token), timeoutMs);
+	return genuine === undefined ? 'timeout' : genuine ? 'genuine' : 'refused';
+}
+
+/**
+ * `socketPath` で待ち受けている相手が、台帳（`ledgerDir`）にある常駐の本物かを確かめる。
+ *
+ * 使い捨ての接続で確かめ、終わったら閉じる。接続から名乗りまでの全体に期限を付け、期限切れでは
+ * 開いたものを全部閉じて `timeout` を返す。
+ */
+export async function paradisCheckDaemonAt(socketPath: string, ledgerDir: string, timeoutMs: number): Promise<ParadisDaemonCheck> {
+	let raw: Socket | undefined;
+	let client: SocketClient<string> | undefined;
+	// 期限を過ぎてから開いたものは、下の finally が閉じ終えた後なので自分で閉じる。
+	let abandoned = false;
+	const check = async (): Promise<ParadisDaemonCheck> => {
+		const records = await paradisReadDaemonRecords(ledgerDir);
+		if (abandoned) {
+			return 'timeout';
+		}
+		const socket = await new Promise<NodeSocket | undefined>(resolve => {
+			const opened = createConnection({ path: socketPath });
+			raw = opened;
+			opened.once('connect', () => resolve(new NodeSocket(opened, 'paradis-pty-daemon-auth')));
+			opened.once('error', () => { opened.destroy(); resolve(undefined); });
+		});
+		if (!socket) {
+			return 'refused';
+		}
+		if (abandoned) {
+			socket.dispose();
+			return 'timeout';
+		}
+		const opened = SocketClient.fromSocket(socket, 'paradis-bridge');
+		client = opened;
+		for (const record of records) {
+			if (record.socketPath === socketPath && await paradisAuthenticateDaemon(opened, record.token)) {
+				return 'genuine';
+			}
+		}
+		return 'refused';
+	};
+	try {
+		return await raceTimeout(check(), timeoutMs) ?? 'timeout';
+	} finally {
+		// 期限切れのときは名乗りの途中で閉じることになる。待っている問い合わせは失敗し、上の
+		// `paradisAuthenticateDaemon` の catch で false になる（結果はもう誰も読まない）。
+		abandoned = true;
+		client?.dispose();
+		raw?.destroy();
 	}
 }

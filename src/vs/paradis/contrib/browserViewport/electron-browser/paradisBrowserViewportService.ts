@@ -102,6 +102,8 @@ export interface IParadisBrowserViewportService {
 	getSpaceLabel(stateKey: string): string;
 	getSpaceDefault(stateKey: string): string | undefined;
 	setSpaceDefault(stateKey: string, spec: string | undefined): void;
+	/** その名前の大きさを既定にしているスペースの状態キー（消す前に知らせるため）。 */
+	getSpacesDefaultingTo(name: string): readonly string[];
 
 	/** そのタブに当てる既定と、どこで決めたものか。 */
 	resolveDefaultForView(viewId: string): { readonly spec: string; readonly source: ParadisViewportDefaultSource };
@@ -290,6 +292,14 @@ export class ParadisBrowserViewportService extends Disposable implements IParadi
 
 	getSpaceDefault(stateKey: string): string | undefined {
 		return this._spaceDefaults.get(stateKey);
+	}
+
+	getSpacesDefaultingTo(name: string): readonly string[] {
+		const size = paradisFindViewportSize(this._sizes, name);
+		if (!size) {
+			return [];
+		}
+		return [...this._spaceDefaults].filter(([, spec]) => paradisFindViewportSize([size], spec) !== undefined).map(([stateKey]) => stateKey);
 	}
 
 	setSpaceDefault(stateKey: string, spec: string | undefined): void {

@@ -11,7 +11,7 @@
 // タイマーを持たないのは意図的。表示に関係しない計測をウィンドウごとに常時回すと、
 // 「メモリ調査のための仕組みが常駐コストを増やす」という本末転倒になる。
 
-import { mainWindow } from '../../../../base/browser/window.js';
+import { getWindows } from '../../../../base/browser/dom.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { process } from '../../../../base/parts/sandbox/electron-browser/globals.js';
@@ -41,14 +41,20 @@ interface IParadisPerformanceWithMemory {
 /**
  * 生きているDOM要素数。レンダラー肥大の粗い指標。
  *
+ * このワークベンチのメインウィンドウと補助ウィンドウ（別ウィンドウへ出したエディタ）を合計する。
+ * 補助ウィンドウは同じレンダラーに居るので、ここで数えないと肥大が低く出る。
+ *
  * セレクタを使わないのは、この用途では「何が居るか」ではなく「いくつ居るか」しか要らないため
  * （codebase のガイドラインもセレクタ依存を避ける方針）。1時間に1回・数千要素の走査なので軽い。
  */
 function countParadisDomElements(): number {
-	const walker = mainWindow.document.createTreeWalker(mainWindow.document.documentElement, NodeFilter.SHOW_ELEMENT);
-	let count = 1;
-	while (walker.nextNode()) {
+	let count = 0;
+	for (const { window } of getWindows()) {
+		const walker = window.document.createTreeWalker(window.document.documentElement, NodeFilter.SHOW_ELEMENT);
 		count++;
+		while (walker.nextNode()) {
+			count++;
+		}
 	}
 	return count;
 }

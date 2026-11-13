@@ -53,6 +53,9 @@ interface IRow {
 	readonly result: ParadisScreenPickResult;
 }
 
+/** 候補の行の id の通し番号（読み上げの aria-activedescendant が指す先）。 */
+let pickerSerial = 0;
+
 const MAX_DEPTH = 6;
 const MAX_CANDIDATES = 8;
 const MAX_COLOR_MATCHES = 3;
@@ -139,6 +142,9 @@ export class ParadisScreenColorPicker extends Disposable {
 	private selected = 0;
 	private readonly pendingFrame = this._register(new MutableDisposable());
 	private lastPointer = { x: 0, y: 0 };
+	private readonly rowIdPrefix = `paradis-tce-screen-row-${++pickerSerial}`;
+	/** 場所を決めたときにパネルへフォーカスを移す前の場所（終わったら戻す）。 */
+	private previousFocus: HTMLElement | undefined;
 
 	constructor(
 		private readonly targetWindow: Window,
@@ -164,9 +170,19 @@ export class ParadisScreenColorPicker extends Disposable {
 
 		this.banner = dom.append(container, $('.paradis-tce-screen-banner', { role: 'status' }, localize('paradis.themeColors.screen.banner', "画面の色を変えたい場所でクリックか Enter で確定、Esc でやめる")));
 		this.highlight = dom.append(container, $('.paradis-tce-screen-highlight'));
-		this.panel = dom.append(container, $('.paradis-tce-screen-panel', { role: 'listbox' }));
+		// 場所を決めたらパネルにフォーカスを置き、選んでいる行を aria-activedescendant で読ませる。矢印キーは文書全体で
+		// 受けるので、パネルはキーを受けるだけで枠を出さない（調べている場所の上に重なるため）
+		this.panel = dom.append(container, $('.paradis-tce-screen-panel.paradis-focus-none', { role: 'listbox', tabindex: '-1' }));
 		this.panel.style.display = 'none';
 		this._register({ dispose: () => { this.banner.remove(); this.highlight.remove(); this.panel.remove(); } });
+		this._register({
+			dispose: () => {
+				const active = this.targetDocument.activeElement;
+				if (this.previousFocus?.isConnected && (!active || active === this.targetDocument.body)) {
+					this.previousFocus.focus();
+				}
+			}
+		});
 
 		// 補助ウィンドウ（エディタの別ウィンドウ）で選んでいる途中にそのウィンドウが閉じたら終える。
 		this._register(dom.addDisposableListener(targetWindow, 'unload', () => this.end()));
@@ -248,6 +264,13 @@ export class ParadisScreenColorPicker extends Disposable {
 		this.inspect(element);
 		this.pinned = true;
 		this.renderPanel();
+		const active = this.targetDocument.activeElement;
+		if (active !== this.panel) {
+			if (this.previousFocus === undefined && dom.isHTMLElement(active) && active !== this.targetDocument.body && !this.panel.contains(active)) {
+				this.previousFocus = active;
+			}
+			this.panel.focus({ preventScroll: true });
+		}
 	}
 
 	private end(): void {
@@ -389,7 +412,7 @@ export class ParadisScreenColorPicker extends Disposable {
 			dom.append(this.panel, $('.paradis-tce-screen-empty', undefined, localize('paradis.themeColors.screen.empty', "この場所に効いているテーマの色は見つかりませんでした。親の要素か、一覧から選んでください")));
 		}
 		this.rows.forEach((row, index) => {
-			const element = dom.append(this.panel, $('.paradis-tce-screen-row', { role: 'option', 'aria-selected': String(this.pinned && index === this.selected) }));
+			const element = dom.append(this.panel, $('.paradis-tce-screen-row', { id: `${this.rowIdPrefix}-${index}`, role: 'option', 'aria-selected': String(this.pinned && index === this.selected) }));
 			element.classList.toggle('selected', this.pinned && index === this.selected);
 			const sw = dom.append(element, $('span.paradis-tce-swatch'));
 			if (row.swatch) {
@@ -405,6 +428,11 @@ export class ParadisScreenColorPicker extends Disposable {
 				this.pick(row.result);
 			}));
 		});
+		if (this.pinned && this.rows.length) {
+			this.panel.setAttribute('aria-activedescendant', `${this.rowIdPrefix}-${this.selected}`);
+		} else {
+			this.panel.removeAttribute('aria-activedescendant');
+		}
 		if (this.pinned) {
 			const actions = dom.append(this.panel, $('.paradis-tce-screen-actions'));
 			const parent = this.current?.parentElement;

@@ -363,8 +363,8 @@
 	align-items: center;
 	justify-content: center;
 	border-radius: 50%;
-	background-color: rgba(0, 0, 0, 0.45);
-	color: #ffffff;
+	background-color: var(--vscode-paradis-imageBadge);
+	color: var(--vscode-paradis-imageBadgeForeground);
 	opacity: 0.72;
 	pointer-events: auto;
 }
@@ -582,25 +582,22 @@
 
 /* ---------------------------------------------------------------- 歯車ポップオーバー */
 
-.paradis-browser-live-pop {
-	position: absolute;
-	top: 40px;
-	right: 10px;
-	z-index: 50;
-	width: 300px;
+/* 面・角丸・影・重なりの段は UI キットのポップアップ (paradisPopover.css) のもの。ここは本文の並びと、
+	低いウィンドウで歯車の下に収まるよう本文だけをスクロールさせる指定 (max-height は TS が付ける)。 */
+.monaco-workbench .paradis-popover.paradis-browser-live-pop-box {
+	display: flex;
+	flex-direction: column;
+}
+
+.monaco-workbench .paradis-browser-live-pop-box > .paradis-popover-body {
+	min-height: 0;
 	overflow-y: auto;
-	padding: 8px 12px 12px;
-	font-size: 11.5px;
-	background-color: var(--vscode-editorWidget-background);
-	border: 1px solid var(--vscode-editorWidget-border);
-	border-radius: 12px;
-	box-shadow: 0 14px 34px rgba(0, 0, 0, 0.34);
 }
 
 .paradis-browser-live-pop-head {
 	font-size: 11px;
 	font-weight: 600;
-	color: var(--vscode-descriptionForeground);
+	color: var(--vscode-paradis-textMuted);
 	margin: 8px 0 4px;
 }
 
@@ -611,7 +608,7 @@
 .paradis-browser-live-pop-sep {
 	height: 1px;
 	margin: 9px 0 2px;
-	background-color: var(--vscode-editorWidget-border);
+	background-color: var(--vscode-paradis-lineSubtle);
 }
 
 .paradis-browser-live-pop-list {
@@ -633,20 +630,20 @@
 	border: 0;
 	border-radius: 5px;
 	background: transparent;
-	color: var(--vscode-foreground);
+	color: var(--vscode-paradis-text);
 	font-family: inherit;
-	font-size: 11.5px;
+	font-size: var(--vscode-fontSize-label1);
 	text-align: left;
 	cursor: pointer;
 }
 
 .paradis-browser-live-pop-item:hover {
-	background-color: var(--vscode-list-hoverBackground);
+	background-color: var(--vscode-paradis-fillHover);
 }
 
 .paradis-browser-live-pop-check {
 	width: 12px;
-	color: var(--vscode-focusBorder);
+	color: var(--vscode-paradis-focus);
 	visibility: hidden;
 }
 
@@ -666,44 +663,21 @@
 }
 
 .paradis-browser-live-pop-key {
-	color: var(--vscode-descriptionForeground);
+	color: var(--vscode-paradis-textMuted);
+	font-size: var(--vscode-fontSize-label1);
 	flex: 0 0 auto;
+}
+
+/* 切り替えの組 (paradisSegmented.css) は行の右端へ寄せる。 */
+.paradis-browser-live-pop-row > .paradis-seg {
+	margin-left: auto;
 }
 
 .paradis-browser-live-pop-note {
-	font-size: 10.5px;
-	line-height: 1.55;
-	color: var(--vscode-descriptionForeground);
-	margin: 2px 0 4px;
-}
-
-.paradis-browser-live-pop-seg {
-	display: flex;
-	margin-left: auto;
-	flex: 0 0 auto;
-	border: 1px solid var(--vscode-editorWidget-border);
-	border-radius: 6px;
-	overflow: hidden;
-}
-
-.paradis-browser-live-pop-seg button {
-	border: 0;
-	background: transparent;
-	color: var(--vscode-descriptionForeground);
-	font-family: inherit;
 	font-size: 11px;
-	padding: 3px 9px;
-	white-space: nowrap;
-	cursor: pointer;
-}
-
-.paradis-browser-live-pop-seg button + button {
-	border-left: 1px solid var(--vscode-editorWidget-border);
-}
-
-.paradis-browser-live-pop-seg button.checked {
-	background-color: var(--vscode-toolbar-activeBackground, rgba(255, 255, 255, 0.1));
-	color: var(--vscode-foreground);
+	line-height: 1.55;
+	color: var(--vscode-paradis-textFaint);
+	margin: 2px 0 4px;
 }
 
 /* ---------------------------------------------------------------- ウィンドウ透過 */
