@@ -100,7 +100,7 @@ export class ParadisRemotePreviewMounter extends Disposable {
 	}
 
 	/** 載せられなければ投げる。呼び出し側は従来の service worker 経路へ戻すこと。 */
-	async mount(directory: URI): Promise<IParadisPreviewLocation> {
+	async mount(directory: URI, options?: IParadisPreviewMountOptions): Promise<IParadisPreviewLocation> {
 		const connection = this._remoteAgentService.getConnection();
 		if (!connection) {
 			throw new Error('No remote connection for the preview server');
@@ -108,7 +108,7 @@ export class ParadisRemotePreviewMounter extends Disposable {
 		// リモート側では `path` がそのマシンのファイルパスになる。`fsPath` はこちらの OS の流儀で
 		// 変換してしまうので使わない（Windows から Linux へ繋いだときに壊れる）。
 		const mount = await withDeadline(connection.getChannel(PARADIS_HTML_PREVIEW_CHANNEL)
-			.call<IParadisPreviewMount>('mount', [directory.path]), PARADIS_PREVIEW_MOUNT_DEADLINE_MS, 'mount the folder');
+			.call<IParadisPreviewMount>('mount', options ? [directory.path, options] : [directory.path]), PARADIS_PREVIEW_MOUNT_DEADLINE_MS, 'mount the folder');
 
 		let tunnelPromise = this._tunnels.get(mount.port);
 		if (!tunnelPromise) {

@@ -33,7 +33,7 @@ import { IEditorService } from '../../../../../workbench/services/editor/common/
 import { IEditorPane } from '../../../../../workbench/common/editor.js';
 import { TestStorageService, TestWorkspaceTrustManagementService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import { ILifecycleService, LifecyclePhase } from '../../../../../workbench/services/lifecycle/common/lifecycle.js';
-import { ParadisHtmlFileEditor, paradisInjectHtmlHead } from '../../electron-browser/paradisHtmlFileEditor.js';
+import { ParadisHtmlFileEditor, paradisHtmlOutsideWorkspaceCsp, paradisInjectHtmlHead, paradisInsertAtDocumentStart } from '../../electron-browser/paradisHtmlFileEditor.js';
 import { ParadisHtmlFileInput } from '../../electron-browser/paradisHtmlFileInput.js';
 import { notifyParadisWebviewSignal, ParadisWebviewSignalCode } from '../../../sentry/common/paradisWebviewSignals.js';
 
@@ -528,12 +528,31 @@ suite('ParadisHtmlFileEditor', () => {
 </html>`;
 
 			const document = new DOMParser().parseFromString(await editor.render(source, URI.file('/workspace/site/index.html')), 'text/html');
-			const csp = document.querySelector('meta[http-equiv="Content-Security-Policy"]');
+			const csp = [...document.querySelectorAll('meta[http-equiv="Content-Security-Policy"]')].map(meta => meta.getAttribute('content'));
 			const externalScript = document.querySelector('script[src]');
 
 			strictEqual(editor.scriptsAllowed, true);
-			strictEqual(csp?.getAttribute('content'), "default-src 'none'; script-src https://trusted.example");
+			// ワークスペースの外の文書なので、先頭に connect-src の CSP が足される。著者の CSP はそのまま残る（両方が効く）。
+			deepStrictEqual(csp, [`connect-src http://127.0.0.1:${PREVIEW_MOUNT.port} data: blob:`, "default-src 'none'; script-src https://trusted.example"]);
 			strictEqual(externalScript?.getAttribute('src'), 'https://trusted.example/app.js');
+		});
+
+		test('limits connect-src to the preview server only for a document outside the workspace', async () => {
+			const source = '<!DOCTYPE html><html><head><title>t</title></head><body><script>fetch("./other.pdf")</script></body></html>';
+			const cspOf = async (editor: TestParadisHtmlFileEditor) => {
+				const document = new DOMParser().parseFromString(await editor.render(source, URI.file('/workspace/site/index.html')), 'text/html');
+				return [...document.querySelectorAll('meta[http-equiv="Content-Security-Policy"]')].map(meta => meta.getAttribute('content'));
+			};
+
+			deepStrictEqual([
+				await cspOf(createGenerationEditor()),
+				await cspOf(createGenerationEditor(createSharedProcessService(), URI.file('/workspace'))),
+				await cspOf(createGenerationEditor(createSharedProcessService(() => Promise.reject(new Error('shared process is gone'))))),
+			], [
+				[`connect-src http://127.0.0.1:${PREVIEW_MOUNT.port} data: blob:`],
+				[],
+				['connect-src https://*.vscode-resource.vscode-cdn.net data: blob:'],
+			]);
 		});
 
 		test('resolves relative document assets through the local preview server', async () => {
@@ -680,6 +699,30 @@ suite('ParadisHtmlFileEditor', () => {
 			// 次に描くときは service worker のある webview へ作り直させる。
 			strictEqual(editor.serviceWorkerDisabledFor(resource), false);
 		});
+	});
+});
+
+suite('paradisInsertAtDocumentStart', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('puts the CSP before any script, even when a comment or a script comes before the real <head>', () => {
+		const csp = paradisHtmlOutsideWorkspaceCsp('http://127.0.0.1:56789/0123456789abcdef0123456789abcdef/');
+		const pages = [
+			'<!DOCTYPE html><!-- <head> --><html><head><script>fetch("x")</script></head></html>',
+			'<script>fetch("x")</script><html><head></head></html>',
+			'<!-- note --><!doctype html><html><head></head><body><script>1</script></body></html>',
+		];
+		deepStrictEqual(pages.map(page => {
+			const html = paradisInsertAtDocumentStart(paradisInjectHtmlHead(page, '<base href="b/">'), csp);
+			const document = new DOMParser().parseFromString(html, 'text/html');
+			const first = document.querySelector('meta[http-equiv="Content-Security-Policy"], script');
+			return { first: first?.tagName, csp: first?.getAttribute('content'), mode: document.compatMode };
+		}), [
+			{ first: 'META', csp: 'connect-src http://127.0.0.1:56789 data: blob:', mode: 'CSS1Compat' },
+			{ first: 'META', csp: 'connect-src http://127.0.0.1:56789 data: blob:', mode: 'BackCompat' },
+			{ first: 'META', csp: 'connect-src http://127.0.0.1:56789 data: blob:', mode: 'CSS1Compat' },
+		]);
 	});
 });
 

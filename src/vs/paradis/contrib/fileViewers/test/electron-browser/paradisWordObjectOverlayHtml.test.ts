@@ -74,6 +74,18 @@ suite('ParadisWordObjectOverlayHtml', () => {
 		ok(items[0].svg.includes('売上'));
 	});
 
+	test('produces SVG that the webview can read back as image/svg+xml (it does not go through innerHTML)', () => {
+		const { items } = overlayFor(chartDrawing + textboxDrawing);
+
+		deepStrictEqual(items.map(item => {
+			const parsed = new DOMParser().parseFromString(item.svg, 'image/svg+xml');
+			return [parsed.documentElement.namespaceURI, parsed.documentElement.localName, parsed.getElementsByTagName('parsererror').length];
+		}), [
+			['http://www.w3.org/2000/svg', 'svg', 0],
+			['http://www.w3.org/2000/svg', 'svg', 0],
+		]);
+	});
+
 	test('renders textbox text through the same path', () => {
 		const { items } = overlayFor(textboxDrawing);
 

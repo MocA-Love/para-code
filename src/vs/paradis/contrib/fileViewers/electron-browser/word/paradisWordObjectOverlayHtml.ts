@@ -25,7 +25,7 @@ export interface IParadisWordOverlayItem {
 	readonly kind: string;
 	/** wp:docPr@id。docx-preview が枠へ出す目印と突き合わせる。 */
 	readonly drawingId: string;
-	/** そのまま innerHTML に入れられる SVG。 */
+	/** 直列化した SVG（webview は image/svg+xml として読み直す）。 */
 	readonly svg: string;
 }
 

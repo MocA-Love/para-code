@@ -419,10 +419,13 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 		);
 	} else if (html !== undefined) {
 		const canvasColor = viewerCanvasColor(kind, mode);
-		// 画像を取り寄せる本文は、取り寄せのスクリプトを最初から入れた WebView で開く（後から足すと次の読み込みまで効かない）
+		// ページより先に読み込ませるスクリプト（パスのリンクの知らせの口と、画像の取り寄せ）。1 つのスクリプトに
+		// つなぐので、知らせの口を先に置く（後ろのスクリプトが例外で止まっても口は置かれる）。どちらも `true;` で終わる
+		const beforeContentLoaded = [links.beforeContentLoaded, htmlImages !== undefined ? HTML_IMAGES_LOADER_SCRIPT : undefined].filter(script => script !== undefined).join('\n');
+		// 画像を取り寄せる本文・パスのリンクを出す本文は、そのスクリプトを最初から入れた WebView で開く（後から足すと次の読み込みまで効かない）
 		view = (
 			<WebView
-				key={`${htmlImages !== undefined ? 'html-images' : 'page'}:${revival.generation}`}
+				key={`${htmlImages !== undefined ? 'html-images' : 'page'}${links.beforeContentLoaded !== undefined ? ':links' : ''}:${revival.generation}`}
 				ref={setWebRef}
 				// 色を指定していない HTML はブラウザと同じ白い地に描く（viewerCanvasColor）
 				style={[styles.web, canvasColor !== undefined ? { backgroundColor: canvasColor } : null]}
@@ -434,7 +437,7 @@ export function FileViewerBody({ path, kind, mode, content, focusLine, onSelectS
 				onShouldStartLoadWithRequest={guardHtmlNavigation}
 				onLoadStart={trace?.loadStarted}
 				onLoadEnd={onViewLoadEnd}
-				{...(htmlImages !== undefined ? { injectedJavaScriptBeforeContentLoaded: HTML_IMAGES_LOADER_SCRIPT } : {})}
+				{...(beforeContentLoaded.length > 0 ? { injectedJavaScriptBeforeContentLoaded: beforeContentLoaded } : {})}
 				{...(find !== undefined || htmlImages !== undefined || (pathLinkView && pathLinks !== undefined) ? { onMessage: (event: { nativeEvent: { data: string } }) => onViewMessage(event.nativeEvent.data) } : {})}
 			/>
 		);

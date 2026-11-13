@@ -13,8 +13,12 @@ import { findTerminalLinks } from '../../terminalLinks.js';
  *  2. パスかどうかはアプリが決める（{@link pathLinksOf}。ターミナルのタップと同じ規則 `findTerminalLinks`）
  *  3. 当たったものだけに {@link buildPathLinkMarkScript} が印を付け、押す・長押しを送り返させる
  *
- * HTML のプレビューではページ自身のスクリプトも動き、`token` も読める（誤認を防ぐ印で、秘密ではない）。ページが偽の
- * 「押した」を送っても、届いた番号は 2 で決めた候補の中だけに限り、開けるのはスペースの中のファイルだけ（PC が確かめる）。
+ * HTML のプレビューではページ自身のスクリプトも動き、`token` も読める（誤認を防ぐ印で、秘密ではない）。ページが
+ * `window.ReactNativeWebView.postMessage` で偽の「押した」を送れないよう、知らせには `secret` を付けて送り、合わないものは
+ * 捨てる。`secret` はページに見せない: ページより先に読み込む {@link buildPathLinkBridgeScript} が送る口をつかんで
+ * 書き換えられない関数として置き、注入したスクリプトはそこへ `secret` を直接渡す（`window` にも DOM にも置かない）。
+ * それでも、ページが注入したスクリプトの使う DOM の関数を差し替えれば、本物の候補を押したことにはできる。届いた番号は
+ * 2 で決めた候補の中だけに限り、開けるのはスペースの中のファイルだけ（PC が確かめる）。
  */
 
 /** postMessage の `type`。 */
@@ -57,6 +61,15 @@ export interface ViewerPathLink {
 	readonly target: LocalFileTarget;
 }
 
+/**
+ * 知らせを送る口の名前（{@link buildPathLinkBridgeScript} が `window` に置く）。`channel` はページが前もって知らない値で、
+ * 口が置けなかったとき（ページが先に走った等）に、ページが同じ名前の関数を先に置いて `secret` を受け取ることを防ぐ。
+ * 置いた後は名前がページから読めるので、`secret` を名前に混ぜない。
+ */
+function bridgeNameOf(channel: string): string {
+	return `__paradisPathLinkPost_${channel}`;
+}
+
 /** WebView から届いたメッセージ。 */
 export type PathLinkMessage =
 	| { readonly op: 'candidates'; readonly items: readonly PathLinkCandidate[] }
@@ -69,11 +82,44 @@ function scriptJson(value: unknown): string {
 }
 
 /**
+ * ページのスクリプトより先に読み込ませる、知らせを送る口（`injectedJavaScriptBeforeContentLoaded`）。
+ *
+ * ネイティブへ送る関数をページが触る前につかみ、`secret` を渡されたときだけ `secret` を付けて送る関数を、書き換えも
+ * 付け替えもできない形で `window` に置く。`window.ReactNativeWebView.postMessage` は呼ぶたびに `String` や
+ * `window.webkit` を引き直すので、ページに差し替えられると送った中身を読まれる。iOS ではその先の
+ * `window.webkit.messageHandlers.ReactNativeWebView` を直接つかむ。
+ */
+export function buildPathLinkBridgeScript(secret: string, channel: string): string {
+	const prefix = `{"secret":${JSON.stringify(secret)},"body":`;
+	return `(function () {
+	var secret = ${scriptJson(secret)};
+	var prefix = ${scriptJson(prefix)};
+	var name = ${scriptJson(bridgeNameOf(channel))};
+	var apply = Reflect.apply;
+	var handlers = window.webkit && window.webkit.messageHandlers;
+	var target = (handlers && handlers.ReactNativeWebView) || window.ReactNativeWebView;
+	var send = target && target.postMessage;
+	if (typeof send !== 'function' || Object.prototype.hasOwnProperty.call(window, name)) { return; }
+	Object.defineProperty(window, name, {
+		value: Object.freeze(function (key, json) {
+			if (key !== secret || typeof json !== 'string') { return; }
+			apply(send, target, [prefix + json + '}']);
+		}),
+		writable: false,
+		configurable: false,
+		enumerable: false
+	});
+})();
+true;`;
+}
+
+/**
  * 候補を集めて送るスクリプト。読み込み終わりのたびに流してよい（同じページで 2 回目は何もしない）。
  * 地の文は `/` を含む文字のノードだけ。`pre`・`script`・`style`・リンク・`code`・入力欄の中は見ない。
+ * `secret`・`channel` は {@link buildPathLinkBridgeScript} に渡したものと同じ。口が無ければ何も送らない。
  */
-export function buildPathLinkCollectScript(token: string): string {
-	const config = { token, type: MESSAGE_TYPE, limits: PATH_LINK_LIMITS };
+export function buildPathLinkCollectScript(token: string, secret: string, channel: string): string {
+	const config = { token, secret, type: MESSAGE_TYPE, limits: PATH_LINK_LIMITS, bridge: bridgeNameOf(channel) };
 	return `(function () {
 	var cfg = ${scriptJson(config)};
 	if (!document.body || (window.__paradisPathLinks && window.__paradisPathLinks.token === cfg.token)) { return; }
@@ -111,7 +157,8 @@ export function buildPathLinkCollectScript(token: string): string {
 		if (!add('text', node, node.nodeValue)) { break; }
 	}
 	try {
-		window.ReactNativeWebView.postMessage(JSON.stringify({ type: cfg.type, token: cfg.token, op: 'candidates', items: items }));
+		var post = window[cfg.bridge];
+		if (typeof post === 'function') { post(cfg.secret, JSON.stringify({ type: cfg.type, token: cfg.token, op: 'candidates', items: items })); }
 	} catch (e) { }
 })();
 true;`;
@@ -121,8 +168,8 @@ true;`;
  * 印を付け、押す・長押しを送らせるスクリプト。`color` は地の文と `code` の印の色（リンクは元の色のまま）。
  * スタイルは要素の `style` へ直接書く（ページの CSP が `<style>` を止めても効くように）。
  */
-export function buildPathLinkMarkScript(token: string, marks: readonly PathLinkMark[], color: string): string {
-	const config = { token, type: MESSAGE_TYPE, marks, color };
+export function buildPathLinkMarkScript(token: string, secret: string, channel: string, marks: readonly PathLinkMark[], color: string): string {
+	const config = { token, secret, type: MESSAGE_TYPE, marks, color, bridge: bridgeNameOf(channel) };
 	return `(function () {
 	var cfg = ${scriptJson(config)};
 	var state = window.__paradisPathLinks;
@@ -158,9 +205,10 @@ export function buildPathLinkMarkScript(token: string, marks: readonly PathLinkM
 		tail.parentNode.insertBefore(span, tail);
 		span.appendChild(tail);
 	}
+	var bridge = window[cfg.bridge];
 	function post(op, id) {
 		try {
-			window.ReactNativeWebView.postMessage(JSON.stringify({ type: cfg.type, token: cfg.token, op: op, id: id }));
+			if (typeof bridge === 'function') { bridge(cfg.secret, JSON.stringify({ type: cfg.type, token: cfg.token, op: op, id: id })); }
 		} catch (e) { }
 	}
 	function idOf(target) {
@@ -200,18 +248,22 @@ export function buildPathLinkMarkScript(token: string, marks: readonly PathLinkM
 true;`;
 }
 
-/** WebView から届いた文字を読む。形・`type`・`token` が合わなければ undefined。 */
-export function parsePathLinkMessage(data: string, token: string): PathLinkMessage | undefined {
-	let message: unknown;
+/** WebView から届いた文字を読む。`secret`（送る口が付けたもの）・形・`type`・`token` が合わなければ undefined。 */
+export function parsePathLinkMessage(data: string, token: string, secret: string): PathLinkMessage | undefined {
+	let envelope: unknown;
 	try {
-		message = JSON.parse(data);
+		envelope = JSON.parse(data);
 	} catch {
 		return undefined;
 	}
-	if (message === null || typeof message !== 'object' || Array.isArray(message)) {
+	if (!isPlainRecord(envelope) || envelope.secret !== secret) {
 		return undefined;
 	}
-	const candidate = message as Record<string, unknown>;
+	const message = envelope.body;
+	if (!isPlainRecord(message)) {
+		return undefined;
+	}
+	const candidate = message;
 	if (candidate.type !== MESSAGE_TYPE || candidate.token !== token) {
 		return undefined;
 	}
@@ -233,6 +285,10 @@ export function parsePathLinkMessage(data: string, token: string): PathLinkMessa
 		}
 	}
 	return { op: 'candidates', items };
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+	return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 /** 書いてあるパスの本体（行番号を除く）。 */

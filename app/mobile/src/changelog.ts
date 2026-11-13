@@ -50,6 +50,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			},
 			{
 				icon: 'shield-checkmark-outline',
+				title: 'Markdown のプレビューで、本文に書かれた埋め込みのページやフォーム、外のサイトの画像を出さないようにしました',
+				body: '開いただけで外へ読み込みが飛ばないようにするためです。外の画像は代わりの文字（画像の説明）で示します。',
+			},
+			{
+				icon: 'shield-checkmark-outline',
 				title: '暗号化されていない中継サーバー（ws://）を指す QR コードではペアリングしないようにしました',
 				body: '中継サーバーをご自分で立てている場合は、PC の設定で wss:// の URL を指定してから QR コードを出し直してください。',
 			},

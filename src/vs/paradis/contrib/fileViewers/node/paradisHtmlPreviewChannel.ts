@@ -12,7 +12,7 @@
 import { Event } from '../../../../base/common/event.js';
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
-import { PARADIS_HTML_PREVIEW_CHANNEL, type IParadisHtmlPreviewService } from '../common/paradisHtmlPreview.js';
+import { PARADIS_HTML_PREVIEW_CHANNEL, type IParadisHtmlPreviewService, type IParadisPreviewMountOptions } from '../common/paradisHtmlPreview.js';
 import { ParadisHtmlPreviewServer } from './paradisHtmlPreviewServer.js';
 
 export class ParadisHtmlPreviewChannel<TContext = string> implements IServerChannel<TContext> {
@@ -31,7 +31,7 @@ export class ParadisHtmlPreviewChannel<TContext = string> implements IServerChan
 	async call<T>(_ctx: TContext, command: string, arg?: unknown): Promise<T> {
 		const args = Array.isArray(arg) ? arg : [];
 		switch (command) {
-			case 'mount': return await this.getService().mount(String(args[0]), args[1] && typeof args[1] === 'object' && (args[1] as { pinned?: unknown }).pinned === true ? { pinned: true } : undefined) as T;
+			case 'mount': return await this.getService().mount(String(args[0]), parseMountOptions(args[1])) as T;
 			default:
 				throw new Error(`Method not found: ${command}`);
 		}
@@ -64,4 +64,17 @@ export function registerParadisHtmlPreview<TContext>(server: IPCServer<TContext>
  */
 export function registerParadisHtmlPreviewForServer<TContext>(server: IPCServer<TContext>): IDisposable {
 	return registerParadisHtmlPreview(server);
+}
+
+/** 届いた mount の options から、知っている真偽値だけを取り出す（無ければ undefined）。 */
+function parseMountOptions(value: unknown): IParadisPreviewMountOptions | undefined {
+	if (!value || typeof value !== 'object') {
+		return undefined;
+	}
+	const { pinned, connectSelfOnly } = value as { pinned?: unknown; connectSelfOnly?: unknown };
+	const options: IParadisPreviewMountOptions = {
+		...(pinned === true ? { pinned: true } : {}),
+		...(connectSelfOnly === true ? { connectSelfOnly: true } : {}),
+	};
+	return Object.keys(options).length > 0 ? options : undefined;
 }

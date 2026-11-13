@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, it } from 'vitest';
-import { PATH_LINK_LIMITS, buildPathLinkCollectScript, buildPathLinkMarkScript, isOutsideSpaceRoot, isProsePath, parsePathLinkMessage, pathLinkFailureOf, pathLinkResolveOrder, pathLinksOf, spaceRootOf, type PathLinkCandidate } from './viewerPathLinks.js';
+import { PATH_LINK_LIMITS, buildPathLinkBridgeScript, buildPathLinkCollectScript, buildPathLinkMarkScript, isOutsideSpaceRoot, isProsePath, parsePathLinkMessage, pathLinkFailureOf, pathLinkResolveOrder, pathLinksOf, spaceRootOf, type PathLinkCandidate } from './viewerPathLinks.js';
 
 describe('pathLinksOf', () => {
 	it('marks local links, whole-path code and strict prose paths only', () => {
@@ -75,21 +75,28 @@ describe('pathLinkResolveOrder', () => {
 
 describe('parsePathLinkMessage', () => {
 	const token = 'token-0123456789abcdef';
-	it('accepts only messages with the right type and token', () => {
-		const message = (body: object) => JSON.stringify({ type: 'paradisPathLinks', token, ...body });
+	const secret = 'secret-0123456789abcdef';
+	it('accepts only messages with the right secret, type and token', () => {
+		const wrap = (body: object, key = secret) => JSON.stringify({ secret: key, body });
+		const message = (body: object) => wrap({ type: 'paradisPathLinks', token, ...body });
 		expect([
-			parsePathLinkMessage(message({ op: 'tap', id: 2 }), token),
-			parsePathLinkMessage(message({ op: 'hold', id: 0 }), token),
-			parsePathLinkMessage(message({ op: 'candidates', items: [{ i: 0, k: 'a', t: 'a.md' }, { i: 'x', k: 'a', t: 'b' }, { i: 1, k: 'img', t: 'c' }] }), token),
-			parsePathLinkMessage(message({ op: 'tap', id: -1 }), token),
-			parsePathLinkMessage(message({ op: 'tap', id: PATH_LINK_LIMITS.marks }), token),
-			parsePathLinkMessage(JSON.stringify({ type: 'paradisPathLinks', token: 'other', op: 'tap', id: 1 }), token),
-			parsePathLinkMessage(JSON.stringify({ type: 'paradisFind', token, op: 'tap', id: 1 }), token),
-			parsePathLinkMessage('not json', token),
+			parsePathLinkMessage(message({ op: 'tap', id: 2 }), token, secret),
+			parsePathLinkMessage(message({ op: 'hold', id: 0 }), token, secret),
+			parsePathLinkMessage(message({ op: 'candidates', items: [{ i: 0, k: 'a', t: 'a.md' }, { i: 'x', k: 'a', t: 'b' }, { i: 1, k: 'img', t: 'c' }] }), token, secret),
+			parsePathLinkMessage(message({ op: 'tap', id: -1 }), token, secret),
+			parsePathLinkMessage(message({ op: 'tap', id: PATH_LINK_LIMITS.marks }), token, secret),
+			parsePathLinkMessage(wrap({ type: 'paradisPathLinks', token: 'other', op: 'tap', id: 1 }), token, secret),
+			parsePathLinkMessage(wrap({ type: 'paradisFind', token, op: 'tap', id: 1 }), token, secret),
+			parsePathLinkMessage('not json', token, secret),
+			// ページが token を読んで直接送った「押した」（secret を知らない）
+			parsePathLinkMessage(JSON.stringify({ type: 'paradisPathLinks', token, op: 'tap', id: 1 }), token, secret),
+			parsePathLinkMessage(wrap({ type: 'paradisPathLinks', token, op: 'tap', id: 1 }, 'guessed'), token, secret),
 		]).toEqual([
 			{ op: 'tap', id: 2 },
 			{ op: 'hold', id: 0 },
 			{ op: 'candidates', items: [{ i: 0, k: 'a', t: 'a.md' }] },
+			undefined,
+			undefined,
 			undefined,
 			undefined,
 			undefined,
@@ -122,8 +129,44 @@ describe('pathLinkFailureOf', () => {
 
 describe('path link scripts', () => {
 	it('embed the token and marks without closing a script tag', () => {
-		const collect = buildPathLinkCollectScript('t</script>');
-		const mark = buildPathLinkMarkScript('t', [{ i: 0, id: 0 }], '#58a6ff');
+		const collect = buildPathLinkCollectScript('t</script>', 's', 'c');
+		const mark = buildPathLinkMarkScript('t', 's', 'c', [{ i: 0, id: 0 }], '#58a6ff');
 		expect([collect.includes('</script>'), collect.includes('\\u003c/script>'), mark.includes('"marks":[{"i":0,"id":0}]')]).toEqual([false, true, true]);
+	});
+
+	it('send through a mouth the page cannot replace, and only for the caller that knows the secret', () => {
+		const sent: string[] = [];
+		const window: Record<string, unknown> = { ReactNativeWebView: { postMessage: (data: string) => sent.push(data) } };
+		new Function('window', buildPathLinkBridgeScript('s3cret', 'ch4nnel'))(window);
+		const post = window.__paradisPathLinkPost_ch4nnel as (key: string, json: string) => void;
+		// ページは口を差し替えられず、secret を知らなければ送れない
+		const replace = () => { window.__paradisPathLinkPost_ch4nnel = () => sent.push('replaced'); };
+		(window.ReactNativeWebView as { postMessage: unknown }).postMessage = (data: string) => sent.push(`sniffed:${data}`);
+		post('guess', '{"op":"tap","id":1}');
+		post('s3cret', '{"op":"tap","id":1}');
+		expect(replace).toThrow(TypeError);
+		expect([window.__paradisPathLinkPost_ch4nnel === post, sent]).toEqual([true, ['{"secret":"s3cret","body":{"op":"tap","id":1}}']]);
+	});
+
+	it('hand the secret only to the mouth the bridge put, not to one the page put first', () => {
+		const tap = (withBridge: boolean) => {
+			const sent: unknown[] = [];
+			const listeners: Record<string, (event: unknown) => void> = {};
+			// 送る口が置けず（ページが先に走った等）、ページが口に見える関数を置いた
+			const window: Record<string, unknown> = {
+				ReactNativeWebView: { postMessage: (data: string) => sent.push(data) },
+				__paradisPathLinkPost: (...args: unknown[]) => sent.push(['page', ...args]),
+				__paradisPathLinks: { token: 't', nodes: [] },
+			};
+			if (withBridge) {
+				new Function('window', buildPathLinkBridgeScript('s3cret', 'ch4nnel'))(window);
+			}
+			const document = { addEventListener: (type: string, listener: (event: unknown) => void) => { listeners[type] = listener; } };
+			new Function('window', 'document', buildPathLinkMarkScript('t', 's3cret', 'ch4nnel', [], '#58a6ff'))(window, document);
+			const hit = { getAttribute: () => '0' };
+			listeners.click?.({ target: { nodeType: 1, closest: () => hit }, preventDefault: () => { }, stopPropagation: () => { } });
+			return sent;
+		};
+		expect([tap(false), tap(true)]).toEqual([[], ['{"secret":"s3cret","body":{"type":"paradisPathLinks","token":"t","op":"tap","id":0}}']]);
 	});
 });
