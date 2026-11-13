@@ -17,6 +17,7 @@ import { MessageContextMenu, chatTextSelectable } from '../../../../../../src/fe
 import { QueuedSendsBanner } from '../../../../../../src/features/session/queuedSends.js';
 import { haptic } from '../../../../../../src/haptics.js';
 import { paraAlert } from '../../../../../../src/paraAlert.js';
+import { pcRequestErrorText } from '../../../../../../src/pcRequestErrorText.js';
 import { usePcCapability } from '../../../../../../src/hooks/usePcCapability.js';
 import { useRouteSpace } from '../../../../../../src/hooks/useRouteTargets.js';
 import { useStableInsets } from '../../../../../../src/hooks/useStableInsets.js';
@@ -83,7 +84,7 @@ export default function AgentHistorySessionScreen() {
 				setError(undefined);
 			})
 			// 既定の文も理由の欄に入るので、見出し（読み込めませんでした／読み直せませんでした）と同じ意味を重ねない
-			.catch((reason: unknown) => setError(reason instanceof Error ? reason.message : '原因が分かりませんでした'))
+			.catch((reason: unknown) => setError(pcRequestErrorText(reason, '原因が分かりませんでした')))
 			.finally(() => setReloading(false));
 	}, [ready, pcId, spaceId, key]);
 	useEffect(load, [load]);

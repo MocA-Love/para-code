@@ -1,6 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { isPcUnreachableError, type WorktreeAgentDef, type WorktreeFormResult } from '../../store.js';
+import { pcRequestErrorText } from '../../pcRequestErrorText.js';
 import { isNoResponseError } from '../usage/usageAggregate.js';
 
 /**
@@ -171,12 +172,9 @@ export function launchBlockedReason(input: LaunchReadinessInput): string | undef
  * PC が返した文は括弧に入れる。
  */
 export function launchFormErrorText(error: unknown): string {
-	if (isNoResponseError(error)) {
-		return 'PC から返事がありませんでした。PC の Para Code が開いているか確かめてください。';
-	}
 	const message = error instanceof Error ? error.message : String(error);
-	if (message === 'workspace not found') {
-		return 'PC で開いているスペースが見つかりませんでした。PC で Para Code のウィンドウを開いてください。';
+	if (isNoResponseError(error) || message === 'workspace not found') {
+		return `${pcRequestErrorText(error, message)}。`;
 	}
 	if (isPcUnreachableError(error)) {
 		return message;
