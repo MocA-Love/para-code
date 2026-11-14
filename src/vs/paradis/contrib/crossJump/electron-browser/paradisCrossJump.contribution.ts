@@ -55,7 +55,9 @@ import { KeybindingWeight } from '../../../../platform/keybinding/common/keybind
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
-import { IQuickInputButton, IQuickInputService, IQuickPick, IQuickPickItem, IQuickPickSeparator, QuickInputType } from '../../../../platform/quickinput/common/quickInput.js';
+import { IQuickInput, IQuickInputButton, IQuickInputService, IQuickPick, IQuickPickItem, IQuickPickSeparator, QuickInputType } from '../../../../platform/quickinput/common/quickInput.js';
+import { Extensions as QuickAccessExtensions, IQuickAccessRegistry } from '../../../../platform/quickinput/common/quickAccess.js';
+import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
@@ -97,6 +99,7 @@ import {
 	paradisPrunePaletteRecents,
 	ParadisPaletteKind,
 	paradisRecordPaletteRecent,
+	ParadisPaletteReturnTracker,
 	paradisSortCrossJumpAgents,
 	paradisSplitPaletteRecents,
 	paradisTogglePalettePin,
@@ -109,6 +112,8 @@ const NEXT_KIND_COMMAND_ID = 'paradis.palette.nextKind';
 const PREVIOUS_KIND_COMMAND_ID = 'paradis.palette.previousKind';
 /** 選んでいる行の 2 次操作（閉じる・止める）。入力が空のときの Ctrl+Backspace。 */
 const SECONDARY_ACTION_COMMAND_ID = 'paradis.palette.secondaryAction';
+/** 本家のコマンドパレットを開くコマンド（Cmd+Shift+P）。 */
+const SHOW_COMMANDS_COMMAND_ID = 'workbench.action.showCommands';
 
 /** ワークツリースペースの作成（ダイアログ）。登録元の contribution を import すると登録の副作用が走るので ID だけ持つ。 */
 const CREATE_WORKTREE_COMMAND_ID = 'paradis.workspaceSwitch.createWorktree';
@@ -215,6 +220,7 @@ class ParadisCrossJumpSession extends Disposable {
 
 	constructor(
 		initialKind: ParadisPaletteKind,
+		private readonly initialValue: string | undefined,
 		@IQuickInputService private readonly quickInputService: IQuickInputService,
 		@IEditorService private readonly editorService: IEditorService,
 		@ICommandService private readonly commandService: ICommandService,
@@ -284,6 +290,10 @@ class ParadisCrossJumpSession extends Disposable {
 		this.picker.sortByLabel = false;
 		// 接頭辞（`a ` など）は絞り込みの文字に含めない
 		this.picker.filterValue = value => paradisParsePalettePrefix(value).rest;
+		// コマンドパレットなどで接頭辞を消して戻ってきたときは、入力の残りを引き継ぐ
+		if (this.initialValue) {
+			this.picker.value = this.initialValue;
+		}
 	}
 
 	/** 開いて、選ばれた行へ移るまで待つ。 */
@@ -889,7 +899,7 @@ class ParadisCrossJumpAction extends Action2 {
 	async run(accessor: ServicesAccessor, options?: { readonly kind?: ParadisPaletteKind }): Promise<void> {
 		const instantiationService = accessor.get(IInstantiationService);
 		const kind = options?.kind && ['all', 'agent', 'editor', 'space'].includes(options.kind) ? options.kind : 'all';
-		await instantiationService.createInstance(ParadisCrossJumpSession, kind).run();
+		await instantiationService.createInstance(ParadisCrossJumpSession, kind, undefined).run();
 	}
 }
 
@@ -959,6 +969,8 @@ registerAction2(class extends Action2 {
 /**
  * コマンドパレット（`>`）にも同じ種類のタブを出す（「コマンド」を選んだ状態）。ほかのタブを押すか Tab で横断ジャンプへ
  * 戻る。Ctrl+P から `>` を打ったときは picker がそのままで contextKey だけが替わるので、入力が変わるたびに見直す。
+ * Cmd+Shift+P で開いたコマンドパレットで `>` を消すと、本家は既定の provider（ファイルに移動）へ置き換えるので、
+ * そのときは横断ジャンプへ移して入力の残りを引き継ぐ（{@link ParadisPaletteReturnTracker}）。
  */
 class ParadisPaletteCommandsKinds extends Disposable implements IWorkbenchContribution {
 
@@ -967,6 +979,8 @@ class ParadisPaletteCommandsKinds extends Disposable implements IWorkbenchContri
 	private readonly mounted = this._register(new MutableDisposable<DisposableStore>());
 	private readonly inputListener = this._register(new MutableDisposable());
 	private readonly kindsVisible: IContextKey<boolean>;
+	/** Cmd+Shift+P で開いたコマンドパレットで `>` を消したら横断ジャンプへ戻す（Q649）。 */
+	private readonly returnTracker: ParadisPaletteReturnTracker<IQuickPick<IQuickPickItem>>;
 
 	constructor(
 		@IQuickInputService private readonly quickInputService: IQuickInputService,
@@ -976,15 +990,45 @@ class ParadisPaletteCommandsKinds extends Disposable implements IWorkbenchContri
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IKeybindingService private readonly keybindingService: IKeybindingService,
 		@IHoverService private readonly hoverService: IHoverService,
+		@IInstantiationService instantiationService: IInstantiationService,
 	) {
 		super();
 		this.kindsVisible = ParadisPaletteKindsVisibleContext.bindTo(contextKeyService);
+		const quickPick = (input: IQuickInput | undefined) => input?.type === QuickInputType.QuickPick ? input as IQuickPick<IQuickPickItem> : undefined;
+		let disposed = false;
+		this._register({ dispose: () => disposed = true });
+		this.returnTracker = new ParadisPaletteReturnTracker<IQuickPick<IQuickPickItem>>({
+			commandsContextKey: COMMANDS_PICKER_CONTEXT_KEY,
+			defaultContextKey: () => Registry.as<IQuickAccessRegistry>(QuickAccessExtensions.Quickaccess).getQuickAccessProvider('', contextKeyService)?.contextKey,
+			isCentered: input => paradisIsCenteredQuickInput(input),
+			current: () => quickPick(this.quickInputService.currentQuickInput),
+			// 本家の置き換え（onShow の発火中）が終わってから、次の入力より先に開く
+			schedule: callback => queueMicrotask(() => {
+				if (!disposed) {
+					callback();
+				}
+			}),
+			// コマンドの実行（初回は拡張の起動を待つ）を経由せず、その場で開く
+			open: value => void instantiationService.createInstance(ParadisCrossJumpSession, 'all', value).run(),
+		});
+		this._register(this.commandService.onWillExecuteCommand(event => {
+			if (event.commandId === SHOW_COMMANDS_COMMAND_ID) {
+				this.returnTracker.willOpenCommands();
+			}
+		}));
+		this._register(this.commandService.onDidExecuteCommand(event => {
+			if (event.commandId === SHOW_COMMANDS_COMMAND_ID) {
+				this.returnTracker.didOpenCommands();
+			}
+		}));
 		this._register(this.quickInputService.onShow(() => {
 			const input = this.quickInputService.currentQuickInput;
-			this.inputListener.value = input?.type === QuickInputType.QuickPick ? (input as IQuickPick<IQuickPickItem>).onDidChangeValue(() => this.update()) : undefined;
+			this.returnTracker.show(quickPick(input));
+			this.inputListener.value = quickPick(input)?.onDidChangeValue(() => this.update());
 			this.update();
 		}));
 		this._register(this.quickInputService.onHide(() => {
+			this.returnTracker.hide();
 			this.inputListener.clear();
 			this.mounted.clear();
 		}));
