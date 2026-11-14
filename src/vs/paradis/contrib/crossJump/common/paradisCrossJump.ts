@@ -298,12 +298,15 @@ export class ParadisPaletteReturnTracker<T extends IParadisPaletteInput> {
 	show(input: T | undefined): void {
 		const previous = this.shown;
 		this.shown = input;
+		// 実行の印は次の表示で必ず下ろす（コマンドが例外で終わると didOpenCommands が来ない）
+		const opening = this.openingCommands;
+		this.openingCommands = false;
 		const { commandsContextKey } = this.options;
 		if (!input) {
 			this.fromCommands = false;
 			return;
 		}
-		if (this.openingCommands && input.contextKey === commandsContextKey) {
+		if (opening && input.contextKey === commandsContextKey) {
 			this.fromCommands = true;
 			return;
 		}
@@ -332,5 +335,6 @@ export class ParadisPaletteReturnTracker<T extends IParadisPaletteInput> {
 	hide(): void {
 		this.shown = undefined;
 		this.fromCommands = false;
+		this.openingCommands = false;
 	}
 }
