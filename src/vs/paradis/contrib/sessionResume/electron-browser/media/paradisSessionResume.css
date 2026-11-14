@@ -92,7 +92,13 @@
 	flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: var(--vscode-spacing-size80); padding: 0 var(--vscode-spacing-size120) var(--vscode-spacing-size80);
 }
 .paradis-session-resume .paradis-session-resume-filters .agent-chips { display: flex; flex-wrap: wrap; gap: var(--vscode-spacing-size40); }
-.paradis-session-resume .paradis-session-resume-filters .paradis-chip { gap: var(--vscode-spacing-size40); }
+/* The agent chips stay on one line and scroll sideways when the column is too narrow for them (Q651 2-A). The padding
+	and the negative margin of the same size keep room for the focus ring, which the scroll box would otherwise cut. */
+.paradis-session-resume .paradis-session-resume-filters .agent-chips {
+	flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; max-width: 100%;
+	padding: calc(var(--paradis-focus-width) + var(--paradis-focus-offset)); margin: calc((var(--paradis-focus-width) + var(--paradis-focus-offset)) * -1);
+}
+.paradis-session-resume .paradis-session-resume-filters .paradis-chip { flex: none; gap: var(--vscode-spacing-size40); }
 .paradis-session-resume .paradis-session-resume-filters .chip-count { color: var(--vscode-paradis-textFaint); font-variant-numeric: tabular-nums; }
 .paradis-session-resume .paradis-session-resume-keyhint { flex: none; padding: var(--vscode-spacing-size60) var(--vscode-spacing-size120); border-top: 1px solid var(--vscode-paradis-lineSubtle); font-size: var(--vscode-fontSize-label2); color: var(--vscode-paradis-textFaint); }
 /* 中央ヘッダー右端: ナビ開閉トグルと更新。狭い幅で左ナビが折りたたまれても操作できるようにする。 */
@@ -102,7 +108,9 @@
 .paradis-session-resume .paradis-session-resume-content {
 	display: grid; grid-template-columns: 216px minmax(300px, 36%) minmax(420px, 1fr); min-height: 0; flex: 1;
 }
-.paradis-session-resume .paradis-session-resume-list { overflow: auto; }
+/* The list fills the rest of the column, so the key hint stays at the bottom and the loading or empty state sits in
+	the middle of the list however few rows there are (Q651 1-A). */
+.paradis-session-resume .paradis-session-resume-list { overflow: auto; flex: 1; min-height: 0; }
 .paradis-session-resume .paradis-session-resume-detail { position: relative; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
 .paradis-session-resume .paradis-session-resume-superheading { padding: var(--vscode-spacing-size160) var(--vscode-spacing-size160) var(--vscode-spacing-size60); font-size: var(--vscode-fontSize-label2); color: var(--vscode-paradis-textFaint); }
 .paradis-session-resume .paradis-session-resume-group { padding: 0 var(--vscode-spacing-size80); }
@@ -171,16 +179,16 @@
 .paradis-session-resume mark.search-match.current { outline: 1px solid var(--vscode-charts-yellow); background: color-mix(in srgb, var(--vscode-charts-yellow) 55%, transparent); }
 .paradis-session-resume .preview-note { max-width: 720px; margin: 0 auto 15px; color: var(--vscode-descriptionForeground); font-size: 11px; }
 /* The resume buttons are the kit's (secondary, primary at the right end), on a bar with one line above. The resume
-	without permission checks sits apart at the left end, with the flag it adds always shown under it. When the column
+	without permission checks sits apart at the left end; the flag it adds is told by its tooltip only, so the three
+	buttons share one top edge and height (Q651 3-C). When the column
 	is too narrow for everything on one line, that group takes a line of its own above the other buttons (wrap) instead
 	of shrinking under them. The bar sits under the transcript (not over it), so the transcript ends where the bar
 	begins however many lines the bar takes. */
-.paradis-session-resume .paradis-session-resume-actions { flex: none; display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: flex-end; gap: var(--vscode-spacing-size80); padding: var(--vscode-spacing-size120) var(--vscode-spacing-size200); border-top: 1px solid var(--vscode-paradis-lineSubtle); background: var(--vscode-paradis-overlay); }
+.paradis-session-resume .paradis-session-resume-actions { flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--vscode-spacing-size80); padding: var(--vscode-spacing-size120) var(--vscode-spacing-size200); border-top: 1px solid var(--vscode-paradis-lineSubtle); background: var(--vscode-paradis-overlay); }
 .paradis-session-resume .paradis-session-resume-actions button:disabled { cursor: default; opacity: .55; }
 .paradis-session-resume .paradis-session-resume-dangerous { display: flex; flex-direction: column; align-items: flex-start; gap: var(--vscode-spacing-size40); min-width: 0; margin-right: auto; }
 .paradis-session-resume .paradis-session-resume-dangerous[hidden] { display: none; }
-.paradis-session-resume .paradis-session-resume-dangerous-flag { font-family: var(--monaco-monospace-font); font-size: var(--vscode-fontSize-label2); color: var(--vscode-paradis-textMuted); overflow-wrap: anywhere; }
-.paradis-session-resume .paradis-session-resume-state { min-height: 180px; height: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 24px; text-align: center; color: var(--vscode-descriptionForeground); }
+.paradis-session-resume .paradis-session-resume-state { box-sizing: border-box; min-height: 180px; height: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 24px; text-align: center; color: var(--vscode-descriptionForeground); }
 /* 広い幅では左ナビが常に見えるため、開閉トグルは不要（キットのアイコンのボタンの display より強くする） */
 .paradis-session-resume .search-head-actions .paradis-session-resume-rail-toggle.paradis-button { display: none; }
 /* 広い幅では一覧へ戻るボタンは不要（一覧が常に見えている）。 */

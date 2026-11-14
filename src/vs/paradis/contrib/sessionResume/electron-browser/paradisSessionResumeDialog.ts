@@ -372,7 +372,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 		agentChips.setAttribute('role', 'group');
 		agentChips.setAttribute('aria-label', localize('paradis.sessionResume.agentLabel', "エージェント"));
 		for (const [value, label] of [
-			['all', localize('paradis.sessionResume.allAgents', "すべてのエージェント")],
+			['all', localize('paradis.sessionResume.allAgents', "すべて")],
 			['claude', 'Claude Code'],
 			['codex', 'Codex'],
 			['opencode', 'OpenCode'],
@@ -1163,7 +1163,8 @@ export class ParadisSessionResumeDialog extends Disposable {
 		const dangerousFlag = session.agent === 'claude'
 			? '--dangerously-skip-permissions'
 			: '--dangerously-bypass-approvals-and-sandbox';
-		// 権限確認なしの再開は左端へ離し（押し間違えないように）、付くフラグをボタンの下に常に出す
+		// 権限確認なしの再開は左端へ離す（押し間違えないように）。付くフラグはツールチップと読み上げの説明だけで伝え、
+		// 3 つのボタンの上端と高さを揃える（Q651 3-C）
 		const dangerousGroup = dom.append(actions, $('.paradis-session-resume-dangerous'));
 		dangerousGroup.hidden = session.agent === 'opencode';
 		const dangerous = dom.append(dangerousGroup, $('button.danger')) as HTMLButtonElement;
@@ -1173,15 +1174,13 @@ export class ParadisSessionResumeDialog extends Disposable {
 		dangerous.textContent = session.currentSpace
 			? localize('paradis.sessionResume.resumeDangerously', "権限確認なしで再開")
 			: localize('paradis.sessionResume.switchAndResumeDangerously', "権限確認なしで移動・再開");
-		dangerous.title = localize(
+		const dangerousDescription = localize(
 			'paradis.sessionResume.resumeDangerouslyTitle',
 			"{0}を付け、承認とサンドボックスを省略して再開します",
 			dangerousFlag,
 		);
-		const dangerousFlagNote = dom.append(dangerousGroup, $('span.paradis-session-resume-dangerous-flag'));
-		dangerousFlagNote.id = `paradis-session-resume-dangerous-flag-${this.renderSequence}`;
-		dangerousFlagNote.textContent = localize('paradis.sessionResume.resumeDangerouslyFlag', "{0} を付けます（承認とサンドボックスなし）", dangerousFlag);
-		dangerous.setAttribute('aria-describedby', dangerousFlagNote.id);
+		dangerous.setAttribute('aria-description', dangerousDescription);
+		this.renderDisposables.add(getBaseLayerHoverDelegate().setupManagedHover(getDefaultHoverDelegate('mouse'), dangerous, dangerousDescription));
 		this.renderDisposables.add(dom.addDisposableListener(dangerous, dom.EventType.CLICK, () => this.resume(session, paradisSessionResumeEditorActionOptions('dangerous'))));
 
 		if (!session.currentSpace) {
