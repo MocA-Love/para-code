@@ -60,6 +60,25 @@ suite('ParadisSessionResumeDialog', () => {
 		} finally { fixture.dispose(); }
 	});
 
+	test('tells the flag of the permission bypass only through its tooltip and its accessible description', async () => {
+		const client = new TestResumeClient();
+		client.listResult = async () => [testSession('claude-one', 'Claude session'), testSession('codex-one', 'Codex session', 'codex')];
+		const fixture = createRefreshFixture(client);
+		try {
+			await fixture.load();
+			const read = async (agent: 'claude' | 'codex') => {
+				fixture.root.querySelector<HTMLButtonElement>(`button[data-agent-filter="${agent}"]`)!.click();
+				await flushMicrotasks();
+				const button = fixture.root.querySelector<HTMLButtonElement>('button.danger')!;
+				return { title: button.title, describedBy: button.getAttribute('aria-describedby'), description: button.getAttribute('aria-description'), flagNotes: fixture.root.querySelectorAll('.paradis-session-resume-dangerous-flag').length };
+			};
+			assert.deepStrictEqual({ claude: await read('claude'), codex: await read('codex') }, {
+				claude: { title: '', describedBy: null, description: '--dangerously-skip-permissionsを付け、承認とサンドボックスを省略して再開します', flagNotes: 0 },
+				codex: { title: '', describedBy: null, description: '--dangerously-bypass-approvals-and-sandboxを付け、承認とサンドボックスを省略して再開します', flagNotes: 0 },
+			});
+		} finally { fixture.dispose(); }
+	});
+
 	test('shows the last model of each session in its row and in the details, and says it is unknown only in the details', async () => {
 		const client = new TestResumeClient();
 		client.listResult = async () => [
