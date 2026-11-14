@@ -10,7 +10,9 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisAgentLiveEntry, ParadisAgentLiveStatus } from '../../../agentLiveWindow/common/paradisAgentLiveWindow.js';
 import {
+	IParadisPaletteInput,
 	IParadisPaletteRecent,
+	ParadisPaletteReturnTracker,
 	paradisCyclePaletteKind,
 	paradisFormatCrossJumpAgo,
 	paradisGroupPaletteSpaces,
@@ -167,5 +169,119 @@ suite('paradisCrossJump', () => {
 		const known = new Set(['here', 'here-agent']);
 		const { moved, rest } = paradisSplitPaletteRecents(shared, entry => known.has(entry.key));
 		assert.deepStrictEqual({ moved: moved.map(entry => entry.key), rest: rest.map(entry => entry.key) }, { moved: ['here', 'here-agent'], rest: ['other-window'] });
+	});
+	suite('returning to the cross jump from the command palette', () => {
+		const files = 'inFilesPicker';
+		const commands = 'inCommandsPicker';
+
+		interface IInput extends IParadisPaletteInput {
+			contextKey: string | undefined;
+			value: string;
+			centered: boolean;
+		}
+
+		function setup() {
+			let current: IInput | undefined;
+			const scheduled: (() => void)[] = [];
+			const opened: string[] = [];
+			const tracker = new ParadisPaletteReturnTracker<IInput>({
+				commandsContextKey: commands,
+				defaultContextKey: () => files,
+				isCentered: input => input.centered,
+				current: () => current,
+				schedule: callback => scheduled.push(callback),
+				open: value => opened.push(value),
+			});
+			const show = (contextKey: string | undefined, value: string, centered = true) => {
+				current = { contextKey, value, centered };
+				tracker.show(current);
+				return current;
+			};
+			const showCommands = (value = '>') => {
+				tracker.willOpenCommands();
+				const input = show(commands, value);
+				tracker.didOpenCommands();
+				return input;
+			};
+			const hide = () => {
+				current = undefined;
+				tracker.hide();
+			};
+			/** 本家の流れ: 今のクイックピックの接頭辞を消すと、同じ値のまま既定の provider（ファイルに移動）へ置き換わる。 */
+			const deletePrefix = (rest: string) => {
+				current!.value = rest;
+				return show(files, rest);
+			};
+			const flush = () => scheduled.splice(0).forEach(callback => callback());
+			return { tracker, show, showCommands, hide, deletePrefix, flush, opened };
+		}
+
+		test('deleting ">" in the palette opened by Cmd+Shift+P returns with the remaining input', () => {
+			const { showCommands, deletePrefix, flush, opened } = setup();
+			showCommands('>term');
+			const fileInput = deletePrefix('term');
+			fileInput.value = 'termi';
+			flush();
+			assert.deepStrictEqual(opened, ['termi']);
+		});
+
+		test('a chain started by Cmd+P stays on Go to File', () => {
+			const { show, deletePrefix, hide, flush, opened } = setup();
+			show(files, '');
+			show(commands, '>term');
+			deletePrefix('term');
+			hide();
+			// 横断ジャンプから `>` へ移った連鎖も、出どころは Cmd+Shift+P ではない
+			show('paradisInCrossJump', '');
+			show(commands, '>');
+			deletePrefix('');
+			flush();
+			assert.deepStrictEqual(opened, []);
+		});
+
+		test('other prefixes, anchored pickers, and Cmd+P after Cmd+Shift+P do not return', () => {
+			const { show, showCommands, hide, deletePrefix, flush, opened } = setup();
+			// 出す処理は本家の置き換えの後に走るので、閉じる前に流してから次へ進む
+			showCommands('>');
+			show('inGotoLine', ':12');
+			deletePrefix('12');
+			flush();
+			hide();
+			showCommands('>');
+			deletePrefix('');
+			flush();
+			show(commands, '>x');
+			deletePrefix('x');
+			flush();
+			hide();
+			const anchored = showCommands('>');
+			anchored.centered = false;
+			deletePrefix('');
+			flush();
+			assert.deepStrictEqual(opened, ['']);
+		});
+
+		test('nothing opens once the Go to File picker was closed or replaced', () => {
+			const { show, showCommands, hide, deletePrefix, flush, opened } = setup();
+			showCommands('>');
+			deletePrefix('');
+			hide();
+			flush();
+			showCommands('>a');
+			deletePrefix('a');
+			show(undefined, '');
+			flush();
+			assert.deepStrictEqual(opened, []);
+		});
+
+		test('a Show All Commands run that never showed the palette does not mark the next palette', () => {
+			const { tracker, show, hide, deletePrefix, flush, opened } = setup();
+			tracker.willOpenCommands();
+			hide();
+			show(commands, '>');
+			deletePrefix('');
+			flush();
+			assert.deepStrictEqual(opened, []);
+		});
 	});
 });
