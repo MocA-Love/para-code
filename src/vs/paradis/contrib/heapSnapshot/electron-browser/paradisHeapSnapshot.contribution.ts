@@ -67,7 +67,7 @@ class ParadisWriteHeapSnapshotAction extends Action2 {
 			notificationService.notify({
 				severity: Severity.Info,
 				message: localize('paradis.writeHeapSnapshot.done',
-					"ヒープスナップショットを書き出しました ({0}、{1} 秒、稼働 {2} 分)。{3} トークンなどの秘密の値を含むので、共有するときは注意してください。前に書き出したものは、新しい 2 件だけを残して片付けます。",
+					"ヒープスナップショットを書き出しました ({0}、{1} 秒、稼働 {2} 分)。保存先: {3}。トークンなどの秘密の値を含むので、共有するときは注意してください。前に書き出したものは、新しい 2 件だけを残して片付けます。",
 					formatGigabytes(result.bytes),
 					Math.round(result.durationMs / 1000),
 					Math.round(result.uptimeMs / 60_000),

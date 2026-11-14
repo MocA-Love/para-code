@@ -1419,6 +1419,8 @@ win/mac/linuxへの配布と自動アップデートの実装。設計の経緯�
 - 動作確認済み: 認証ヘッダー無し→403、正しい`CF-Access-Client-Id`/`CF-Access-Client-Secret`付き→204
 - **副産物（意図せず発生、結果的に必要な修正）**: カスタムドメインroute追加時に`workers_dev`を明示していなかったため、`para-code-update-server.cloudflare8234.workers.dev`側が自動的に無効化された（Cloudflareエラー1042）。**これは望ましい**——もし無効化されていなければ、Access保護はカスタムドメイン経由のみに効き、旧workers.dev URLからAccessを完全に迂回できてしまうところだった
 - Access設定用に発行した一時APIトークン（`para-code-for-setting-temp`）は、今後Applicationやポリシーを変更しない限り不要。ユーザー側でCloudflareダッシュボードから削除するかの判断待ち（エージェント側からは削除しない）
+- 更新サーバーの Worker を手でデプロイする前に、`wrangler secret list` で `CF_ACCESS_AUD` の有無を確かめる。入れるなら `CF_ACCESS_TEAM_DOMAIN` と必ず組で入れる（`CF_ACCESS_AUD` だけだと `/api/update` が全件 401 になる。設定の片割れでフィードを黙って開けないための、意図した fail-closed）。配布（リリース）の手順では Worker をデプロイしない
+- デプロイした後は `curl` で、service token（`CF-Access-Client-Id` / `CF-Access-Client-Secret`）付きの `/api/update/...` が 204 か 200、ヘッダー無しが 403 になることを確かめる
 
 **残件**:
 - `downloadUrl`のドメイン不一致（`updates.paradis.ltd` vs 実際に使っている`paracode-updates.paradis.ltd`）の解消。まだ実在するページが無いため後回し中

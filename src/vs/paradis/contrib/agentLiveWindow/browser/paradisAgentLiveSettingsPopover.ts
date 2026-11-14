@@ -66,6 +66,15 @@ function setRadioChecked(button: HTMLElement, checked: boolean): void {
 	button.setAttribute('aria-checked', String(checked));
 }
 
+/** Tab の止まる先を、組のうち選んでいる 1 つだけにする（roving tabindex）。選んでいるものが無ければ先頭。 */
+function setRadioTabStops(buttons: Iterable<HTMLElement>): void {
+	const all = [...buttons];
+	const selected = all.find(button => button.getAttribute('aria-checked') === 'true') ?? all[0];
+	for (const button of all) {
+		button.tabIndex = button === selected ? 0 : -1;
+	}
+}
+
 /** 複数選べるボタン (スペース)。読み上げには aria-pressed で渡す。 */
 function setPressed(button: HTMLElement, pressed: boolean): void {
 	button.classList.toggle('checked', pressed);
@@ -287,6 +296,7 @@ export class ParadisAgentLiveSettingsPopover extends Disposable {
 		for (const [sort, button] of this.sortButtons) {
 			setRadioChecked(button, this.viewState.sort === sort);
 		}
+		setRadioTabStops(this.sortButtons.values());
 		this.directionButton.textContent = this.viewState.sortDesc
 			? localize('paradis.agentLive.sortDesc', "降順（大きい方が先）")
 			: localize('paradis.agentLive.sortAsc', "昇順（小さい方が先）");
@@ -296,9 +306,11 @@ export class ParadisAgentLiveSettingsPopover extends Disposable {
 		for (const [columns, button] of this.columnButtons) {
 			setRadioChecked(button, this.viewState.columns === columns);
 		}
+		setRadioTabStops(this.columnButtons.values());
 		for (const [fill, button] of this.fillButtons) {
 			setRadioChecked(button, this.viewState.fillRows === fill);
 		}
+		setRadioTabStops(this.fillButtons.values());
 		this.fitCheckbox.checked = this.viewState.fitFontToTile;
 		this.pinTopCheckbox.checked = this.viewState.pinTop;
 
@@ -313,6 +325,7 @@ export class ParadisAgentLiveSettingsPopover extends Disposable {
 		for (const [group, button] of this.groupButtons) {
 			setRadioChecked(button, this.viewState.group === group);
 		}
+		setRadioTabStops(this.groupButtons.values());
 
 		this.updateHint();
 	}
@@ -397,11 +410,36 @@ export class ParadisAgentLiveSettingsPopover extends Disposable {
 
 	/**
 	 * 1 つだけ選ぶ組を radiogroup にする（見た目は `checked` のクラスのまま。paradis-16-7）。
-	 * 中のボタンは描画のたびに {@link setRadioChecked} で役割と状態を付ける。
+	 * 中のボタンは描画のたびに {@link setRadioChecked} で役割と状態を付け、{@link setRadioTabStops} で Tab の止まる先を
+	 * 選んでいる 1 つにする。←→↑↓ で隣（端は反対の端へ回る）、Home・End で端を選び、そのボタンへフォーカスを移す。
 	 */
 	private radioGroup(element: HTMLElement, label: string): void {
 		element.setAttribute('role', 'radiogroup');
 		element.setAttribute('aria-label', label);
+		this._register(addDisposableListener(element, EventType.KEY_DOWN, event => {
+			const buttons = [...element.children].filter((child): child is HTMLElement => child.getAttribute('role') === 'radio');
+			const index = buttons.findIndex(button => button === event.target);
+			if (index < 0) {
+				return;
+			}
+			const keyboardEvent = new StandardKeyboardEvent(event);
+			let next: number;
+			if (keyboardEvent.equals(KeyCode.RightArrow) || keyboardEvent.equals(KeyCode.DownArrow)) {
+				next = (index + 1) % buttons.length;
+			} else if (keyboardEvent.equals(KeyCode.LeftArrow) || keyboardEvent.equals(KeyCode.UpArrow)) {
+				next = (index - 1 + buttons.length) % buttons.length;
+			} else if (keyboardEvent.equals(KeyCode.Home)) {
+				next = 0;
+			} else if (keyboardEvent.equals(KeyCode.End)) {
+				next = buttons.length - 1;
+			} else {
+				return;
+			}
+			keyboardEvent.preventDefault();
+			keyboardEvent.stopPropagation();
+			buttons[next].click();
+			buttons[next].focus();
+		}));
 	}
 
 	private section(label: string): void {

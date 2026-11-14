@@ -199,7 +199,7 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 	}
 
 	override dispose(): void {
-		this._mediaCache.clear();
+		this._mediaCache.dispose();
 		super.dispose();
 	}
 

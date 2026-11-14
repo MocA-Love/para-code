@@ -300,9 +300,9 @@
 .monaco-workbench .paradis-skills .psk-reason {
 	display: inline-flex;
 	align-items: center;
-	gap: 6px;
+	gap: var(--vscode-spacing-size60);
 	min-width: 0;
-	font-size: 12px;
+	font-size: var(--vscode-fontSize-label1);
 	color: var(--vscode-descriptionForeground);
 }
 

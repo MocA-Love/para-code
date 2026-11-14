@@ -13,6 +13,12 @@
 
 /* 見出しの行の取得状態は、キットの札（paradisBadges.css の paradis-chip）が描く */
 
+/* 札・バナー・注記のアイコンは字の段に合わせて compact の段にする（codicon.css の属性セレクタと同じ強さで打ち返す） */
+.paradis-hub .para-cl-status .codicon[class*='codicon-'],
+.paradis-changelog-area :is(.para-cl-footnote, .para-cl-banner) > .codicon[class*='codicon-'] {
+	font-size: var(--vscode-codiconFontSize-compact);
+}
+
 .paradis-hub .para-cl-tag {
 	display: inline-flex;
 	align-items: center;
@@ -32,7 +38,7 @@
 }
 
 .paradis-hub .para-cl-tag.codicon::before {
-	font-size: 11px;
+	font-size: var(--vscode-fontSize-label2);
 }
 
 .paradis-hub .para-cl-tag-available {
@@ -73,7 +79,7 @@
 	border-radius: var(--paradis-radius-inner);
 	background: var(--vscode-inputValidation-infoBackground);
 	border: 1px solid var(--vscode-inputValidation-infoBorder);
-	font-size: 12px;
+	font-size: var(--vscode-fontSize-label1);
 	flex-shrink: 0;
 }
 
@@ -109,7 +115,7 @@
 .paradis-changelog-area .para-cl-card {
 	margin-top: 14px;
 	border: 1px solid var(--vscode-widget-border, var(--vscode-contrastBorder, transparent));
-	border-radius: 8px;
+	border-radius: var(--paradis-radius-inner);
 	padding: 14px 16px 16px;
 	background: var(--vscode-editorWidget-background);
 }
@@ -134,14 +140,14 @@
 
 .paradis-changelog-area .para-cl-count {
 	margin-left: auto;
-	font-size: 11px;
-	font-weight: 400;
+	font-size: var(--vscode-fontSize-label2);
+	font-weight: var(--vscode-fontWeight-regular);
 	color: var(--vscode-descriptionForeground);
 }
 
 .paradis-changelog-area .para-cl-empty {
 	color: var(--vscode-descriptionForeground);
-	font-size: 12.5px;
+	font-size: var(--vscode-fontSize-label1);
 	padding: 20px 0;
 	text-align: center;
 }
@@ -152,7 +158,7 @@
 	display: inline-flex;
 	align-items: center;
 	gap: 6px;
-	font-size: 11px;
+	font-size: var(--vscode-fontSize-label2);
 	color: var(--vscode-descriptionForeground);
 	min-width: 0;
 }
@@ -168,7 +174,7 @@
 .paradis-changelog-area .para-cl-items li {
 	position: relative;
 	padding-left: 16px;
-	font-size: 13px;
+	font-size: var(--vscode-fontSize-body1);
 	line-height: 1.65;
 	color: var(--vscode-foreground);
 }

@@ -127,7 +127,7 @@ suite('Paradis UI data parts (tabs, segmented, card, table, progress)', () => {
 			label: seg.element.getAttribute('aria-label'),
 			height: seg.element.getBoundingClientRect().height,
 			initial, afterClick, cleared, changes,
-			disabled: [buttons[1].disabled, buttons[1].title],
+			disabled: [buttons[1].getAttribute('aria-disabled'), buttons[1].title],
 		}, {
 			role: 'group',
 			label: '期間',
@@ -136,7 +136,7 @@ suite('Paradis UI data parts (tabs, segmented, card, table, progress)', () => {
 			afterClick: ['true', 'false', 'false'],
 			cleared: ['false', 'false', 'false'],
 			changes: ['today'],
-			disabled: [true, '短すぎます'],
+			disabled: ['true', '短すぎます'],
 		});
 	});
 

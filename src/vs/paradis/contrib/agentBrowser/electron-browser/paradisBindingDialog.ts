@@ -397,9 +397,10 @@ export class ParadisBindingDialog extends Disposable {
 		}
 
 		// フォーカス・Esc・重なり順は fork のモーダルに共通の扱いに乗せる（描き直しで検索欄からフォーカスが外れても戻す。
-		// Esc は描き直しで BODY に落ちたフォーカスからも受ける）。開く前のフォーカスを覚えるので、modal.focus() より前に作る
-		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal, onEscape: () => this.close(), close: () => this.close() }));
+		// Esc は描き直しで BODY に落ちたフォーカスからも受ける）。どのウィンドウのキーを受けるかは箱の入ったウィンドウで
+		// 決まるので DOM に入れた後に、開く前のフォーカスを覚えるので modal.focus() より前に作る
 		layoutService.activeContainer.appendChild(this._backdrop);
+		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal, onEscape: () => this.close(), close: () => this.close() }));
 		// ページ無しで開いた場合（モバイル端末アタッチ目的）は端末ビュー、
 		// ページ起点のダイアログはターミナルペインビューを初期表示にする。
 		this._tabController.initialize(this.pageModel !== undefined);

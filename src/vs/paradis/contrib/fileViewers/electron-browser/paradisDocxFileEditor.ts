@@ -484,6 +484,8 @@ export class ParadisDocxFileEditor extends EditorPane {
 		this._webviewContainer.setAttribute('aria-label', localize('paradis.word.documentContent', "Word 文書の内容"));
 		this._webviewContainer.style.position = 'absolute';
 		this._webviewContainer.style.inset = `${PARADIS_WORD_TOOLBAR_MIN_OFFSET}px 0 0 0`;
+		// 中に重ねる状態の面（「表示結果が空」など）の z-index を入れ物の中に閉じ込め、先に置いた変更点パネルを隠さない。
+		this._webviewContainer.style.isolation = 'isolate';
 	}
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {

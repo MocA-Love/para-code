@@ -163,7 +163,7 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 	/** 今の start() が繋いだ先。窓へ口を渡すのは、これが決まってから。 */
 	private route: Promise<ParadisPtyHostRoute> | undefined;
 
-	/** 最後の名乗りで使った上限。橋に窓の口を確かめてもらうときも同じだけ待つ。 */
+	/** 橋に窓の口を確かめてもらうときに待つ上限。最後の名乗りで使った上限で、本物と分かったら通常の上限に戻す。 */
 	private handshakeTimeoutInUse: number;
 
 	private bridgeRequestId = 0;
@@ -282,6 +282,11 @@ export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostS
 		const knownUnresponsive = handshakeTimeout !== normal;
 		this.handshakeTimeoutInUse = handshakeTimeout;
 		const check = await paradisAuthenticateDaemonWithin(client, own.token, handshakeTimeout);
+		if (check === 'genuine') {
+			// 答えたら、橋に窓の口を確かめてもらうときもいつもどおり待つ。短い上限のままだと、
+			// 重い常駐で窓ごとの確認だけが期限切れになり、その窓のターミナルが断られる。
+			this.handshakeTimeoutInUse = normal;
+		}
 		if (check === 'genuine' && mark) {
 			// 答えた (固まっていたのが戻った、またはただ重かった)。次からはいつもどおり待つ
 			await paradisWriteUnresponsiveMark(markFile, undefined);

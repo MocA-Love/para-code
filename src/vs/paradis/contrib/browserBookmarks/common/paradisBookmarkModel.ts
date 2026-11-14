@@ -117,6 +117,27 @@ export function isParadisBookmarkUrlAllowed(url: string): boolean {
 	return scheme === 'http' || scheme === 'https' || scheme === 'about';
 }
 
+/**
+ * 保存済みのブックマークをバーや候補から開いてよいか。`javascript:`・`vbscript:` は今のページの中で動くので断る。
+ * 前の版で取り込んだ項目や同期で届いた項目は入口の判定（{@link isParadisBookmarkUrlAllowed}）を通っていないため、
+ * 開く直前にこれで確かめる。`file:` などは内蔵ブラウザがもともと開けるページなので、ここでは止めない。
+ */
+export function isParadisBookmarkUrlOpenable(url: string): boolean {
+	let scheme: string | undefined;
+	try {
+		// URL の読み取りと同じく、途中のタブ・改行や先頭の制御文字を無視して判定する（`java\tscript:` なども同じ扱い）
+		scheme = new URL(url).protocol.slice(0, -1).toLowerCase();
+	} catch {
+		const compact = url.replace(/[\t\n\r]/g, '');
+		let start = 0;
+		while (start < compact.length && compact.charCodeAt(start) <= 0x20) {
+			start++;
+		}
+		scheme = /^(?<scheme>[a-z][a-z0-9+.-]*):/i.exec(compact.slice(start))?.groups?.scheme.toLowerCase();
+	}
+	return scheme !== 'javascript' && scheme !== 'vbscript';
+}
+
 export function findParadisNodeById(nodes: readonly ParadisBookmarkNode[], nodeId: string): ParadisBookmarkNode | undefined {
 	for (const node of nodes) {
 		if (node.id === nodeId) {

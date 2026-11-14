@@ -13,7 +13,7 @@
 .paradis-session-resume-backdrop {
 	position: absolute; inset: 0;
 	display: flex; align-items: center; justify-content: center;
-	background: rgba(0, 0, 0, 0.5);
+	background: var(--vscode-paradis-scrim);
 }
 .paradis-session-resume-modal {
 	/* UI kit stage 4 (Q600): the box is the L tier (paradisModal.css: size, surface, radius 12, shadow); the columns
@@ -139,7 +139,7 @@
 .paradis-session-resume .detail-search-navigator .match-position { margin-right: var(--vscode-spacing-size40); color: var(--vscode-descriptionForeground); font-size: var(--vscode-fontSize-label2); }
 /* The previous / next buttons are the kit's small icon buttons (paradisButton.css). */
 .paradis-session-resume .detail-search-navigator .paradis-button.paradis-button-icon:disabled { opacity: .5; cursor: default; color: var(--vscode-paradis-textMuted); background-color: transparent; }
-.paradis-session-resume .paradis-session-resume-transcript { flex: 1; overflow: auto; padding: 18px 24px 88px; }
+.paradis-session-resume .paradis-session-resume-transcript { flex: 1; overflow: auto; padding: 18px 24px; }
 .paradis-session-resume .message { max-width: 720px; margin: 0 auto 16px; }
 .paradis-session-resume .message-role { margin-bottom: var(--vscode-spacing-size40); font-size: var(--vscode-fontSize-label2); font-weight: var(--vscode-fontWeight-semiBold); color: var(--vscode-paradis-textMuted); }
 /* Each message is an inner surface (card); the user's own messages take 10% of the accent so they stand apart. */
@@ -171,8 +171,11 @@
 .paradis-session-resume mark.search-match.current { outline: 1px solid var(--vscode-charts-yellow); background: color-mix(in srgb, var(--vscode-charts-yellow) 55%, transparent); }
 .paradis-session-resume .preview-note { max-width: 720px; margin: 0 auto 15px; color: var(--vscode-descriptionForeground); font-size: 11px; }
 /* The resume buttons are the kit's (secondary, primary at the right end), on a bar with one line above. The resume
-	without permission checks sits apart at the left end, with the flag it adds always shown under it. */
-.paradis-session-resume .paradis-session-resume-actions { position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: flex-end; justify-content: flex-end; gap: var(--vscode-spacing-size80); padding: var(--vscode-spacing-size120) var(--vscode-spacing-size200); border-top: 1px solid var(--vscode-paradis-lineSubtle); background: var(--vscode-paradis-overlay); }
+	without permission checks sits apart at the left end, with the flag it adds always shown under it. When the column
+	is too narrow for everything on one line, that group takes a line of its own above the other buttons (wrap) instead
+	of shrinking under them. The bar sits under the transcript (not over it), so the transcript ends where the bar
+	begins however many lines the bar takes. */
+.paradis-session-resume .paradis-session-resume-actions { flex: none; display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: flex-end; gap: var(--vscode-spacing-size80); padding: var(--vscode-spacing-size120) var(--vscode-spacing-size200); border-top: 1px solid var(--vscode-paradis-lineSubtle); background: var(--vscode-paradis-overlay); }
 .paradis-session-resume .paradis-session-resume-actions button:disabled { cursor: default; opacity: .55; }
 .paradis-session-resume .paradis-session-resume-dangerous { display: flex; flex-direction: column; align-items: flex-start; gap: var(--vscode-spacing-size40); min-width: 0; margin-right: auto; }
 .paradis-session-resume .paradis-session-resume-dangerous[hidden] { display: none; }

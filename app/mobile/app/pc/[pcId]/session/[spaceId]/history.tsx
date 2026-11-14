@@ -11,6 +11,7 @@ import { CenterSpinner, useReadableColumn } from '../../../../../src/features/co
 import { providerLabel } from '../../../../../src/features/activity/activityParts.js';
 import { QueuedSendsBanner } from '../../../../../src/features/session/queuedSends.js';
 import { haptic } from '../../../../../src/haptics.js';
+import { pcRequestErrorText } from '../../../../../src/pcRequestErrorText.js';
 import { usePcCapability } from '../../../../../src/hooks/usePcCapability.js';
 import { useRouteSpace } from '../../../../../src/hooks/useRouteTargets.js';
 import { useStableInsets } from '../../../../../src/hooks/useStableInsets.js';
@@ -88,7 +89,7 @@ export default function AgentHistoryScreen() {
 			.catch((reason: unknown) => {
 				if (seq === requestSeq.current) {
 					setRetry({ offset, search, fillTo, received });
-					setError(reason instanceof Error ? reason.message : '原因が分かりませんでした');
+					setError(pcRequestErrorText(reason, '原因が分かりませんでした'));
 				}
 			})
 			.finally(() => {

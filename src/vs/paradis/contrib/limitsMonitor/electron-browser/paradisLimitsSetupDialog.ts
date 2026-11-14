@@ -21,8 +21,10 @@ import { IntervalTimer } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { ParadisClaudeSetupErrorCode } from '../common/paradisClaudeAccounts.js';
@@ -75,6 +77,7 @@ export class ParadisLimitsSetupDialog extends Disposable {
 		@ILayoutService layoutService: ILayoutService,
 		@IOpenerService private readonly openerService: IOpenerService,
 		@IParadisLimitsEmailMaskService private readonly emailMaskService: IParadisLimitsEmailMaskService,
+		@IHoverService hoverService: IHoverService,
 	) {
 		super();
 
@@ -94,7 +97,7 @@ export class ParadisLimitsSetupDialog extends Disposable {
 		const closeButton = dom.append(head.actions, $<HTMLButtonElement>('button'));
 		closeButton.type = 'button';
 		closeButton.classList.add(...paradisButtonClasses('icon'));
-		closeButton.title = closeLabel;
+		this._register(hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), closeButton, closeLabel));
 		closeButton.setAttribute('aria-label', closeLabel);
 		dom.append(closeButton, $(ThemeIcon.asCSSSelector(Codicon.close)));
 		this._register(dom.addDisposableListener(closeButton, 'click', () => this.close(false)));
@@ -136,8 +139,18 @@ export class ParadisLimitsSetupDialog extends Disposable {
 		}));
 
 		layoutService.activeContainer.appendChild(this.overlay);
-		// Esc・Tab の折り返し・閉じた後のフォーカスの戻し（dispose で overlay を外した後に戻す）
-		this._register(new ParadisModalFocus({ backdrop: this.overlay, modal: dialog, onEscape: () => this.close(false), close: () => this.close(false) }));
+		// Esc・Tab の折り返し・閉じた後のフォーカスの戻し（dispose で overlay を外した後に戻す）。
+		// 別の fork のモーダルが開いても、ログインの途中（ブラウザでの認証待ちなど）は閉じない。閉じると進行中のログインを取り消してしまう
+		this._register(new ParadisModalFocus({
+			backdrop: this.overlay,
+			modal: dialog,
+			onEscape: () => this.close(false),
+			close: () => {
+				if (this.latestState.phase === 'error') {
+					this.close(false);
+				}
+			},
+		}));
 		dialog.focus();
 
 		this.renderSteps();

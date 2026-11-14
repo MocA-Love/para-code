@@ -38,7 +38,7 @@
 	cursor: pointer;
 }
 
-.monaco-workbench .paradis-seg > button:not(:disabled):hover {
+.monaco-workbench .paradis-seg > button:not([aria-disabled="true"]):hover {
 	color: var(--vscode-paradis-textStrong);
 	background: var(--vscode-paradis-fillHover);
 }
@@ -51,7 +51,7 @@
 	box-shadow: var(--vscode-shadow-sm);
 }
 
-.monaco-workbench .paradis-seg > button:disabled {
+.monaco-workbench .paradis-seg > button[aria-disabled="true"] {
 	opacity: 0.45;
 	cursor: default;
 }

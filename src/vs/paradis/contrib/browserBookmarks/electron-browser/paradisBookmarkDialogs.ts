@@ -134,10 +134,11 @@ abstract class ParadisBookmarkModal extends Disposable {
 			}
 		}));
 
-		// フォーカスを箱の中で回し、閉じたら開く前の場所へ戻す（fork のモーダルに共通の扱い）。開く前のフォーカスを
-		// 覚えるので、箱を DOM に入れてフォーカスするより前に作る
-		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal, onEscape: () => this.close(), close: () => this.close() }));
 		layoutService.activeContainer.appendChild(this._backdrop);
+		// フォーカスを箱の中で回し、閉じたら開く前の場所へ戻す（fork のモーダルに共通の扱い）。どのウィンドウのキーを
+		// 受けるかは箱の入ったウィンドウで決まるので、DOM に入れた後に作る（補助ウィンドウで開いたとき主ウィンドウ側で
+		// 受けないように）。開く前のフォーカスも覚えるので、箱にフォーカスするより前に作る
+		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal, onEscape: () => this.close(), close: () => this.close() }));
 	}
 
 	protected abstract submit(): void;

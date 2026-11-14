@@ -137,6 +137,26 @@ suite('ParadisCsvTableView', () => {
 		});
 	});
 
+	test('points aria-activedescendant at the selected cell as the arrow keys move it', async () => {
+		// 読み上げが、矢印キーで移ったセルと見出しを読む（描き手の既定の左上の角を指したままにならない）。
+		const { view, grid } = createHarness(store);
+		view.setDocument(csv('name,amount\ncarol,30\nalice,5\n'), false);
+		view.layout();
+		await settle();
+		const active = () => {
+			const element = grid.ownerDocument.getElementById(grid.getAttribute('aria-activedescendant') ?? '');
+			return element ? `${element.dataset.row}:${element.dataset.column}` : undefined;
+		};
+		const initial = active();
+		key(grid, 'ArrowDown');
+		await settle();
+		const down = active();
+		key(grid, 'ArrowUp');
+		key(grid, 'ArrowUp');
+		await settle();
+		deepStrictEqual({ initial, down, header: active() }, { initial: '1:1', down: '2:1', header: '0:1' });
+	});
+
 	test('sorts by clicking a header and copies the selected range as TSV', async () => {
 		const { view, grid, clipboard } = createHarness(store);
 		view.setDocument(csv('name,amount\ncarol,30\nalice,"1,000"\nbob,5\n'), false);

@@ -2008,6 +2008,10 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		if (previous?.revision === revision && previous.selection) {
 			// 選んでいた範囲とフォーカスしていたセルも保つ
 			renderer.setSelection(previous.selection.anchor, previous.selection.focused);
+		} else {
+			// 初めは A1 を選ぶ（描き手の既定の (0,0) は左上の角の見出しで、そこに選んだセルの枠が出てしまう）
+			const firstCell = { row: VIRTUAL_GRID_HEADER_ROWS, column: VIRTUAL_GRID_HEADER_COLUMNS };
+			renderer.setSelection(firstCell, firstCell);
 		}
 		this._virtualRenderer.value = renderer;
 		this._renderVirtualOverlays(sheet, viewport, renderer, host.ownerDocument);

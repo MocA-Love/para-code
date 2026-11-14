@@ -17,7 +17,7 @@
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	background: rgba(0, 0, 0, 0.5);
+	background: var(--vscode-paradis-scrim);
 }
 
 .monaco-workbench .paradis-mobile-pairing-dialog.paradis-modal-s {
@@ -32,7 +32,7 @@
 	display: flex;
 	align-items: flex-start;
 	gap: var(--vscode-spacing-size160);
-	padding: var(--paradis-modal-body-top) var(--vscode-spacing-size240) var(--vscode-spacing-size160);
+	padding: var(--paradis-modal-body-top) var(--vscode-spacing-size200) var(--vscode-spacing-size160);
 }
 
 .monaco-workbench .paradis-mobile-pairing-dialog .pmp-qr-wrap {
@@ -104,14 +104,7 @@
 	margin-top: var(--vscode-spacing-size80);
 }
 
-.monaco-workbench .paradis-mobile-pairing-dialog .pmp-footer {
-	display: flex;
-	align-items: center;
-	gap: var(--vscode-spacing-size80);
-	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size160);
-	border-top: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border));
-	flex: none;
-}
+/* 下の帯は共通の .paradis-modal-foot（paradisModal.css、左右 20・淡い上線）。見出し・本文と左端を揃える */
 
 .monaco-workbench .paradis-mobile-pairing-dialog .pmp-remaining {
 	color: var(--vscode-descriptionForeground);

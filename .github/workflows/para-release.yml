@@ -197,7 +197,12 @@ jobs:
       - name: Build the task board
         run: node build/paradis/taskboard/buildTaskBoard.ts
 
+      # The esbuild bundle runs in a child node (build/lib/esbuild.ts) that does not inherit gulp's
+      # --max-old-space-size; on the 7 GB macos-15 runner it hit the default ~2 GB heap after the
+      # 1.146 merge. NODE_OPTIONS is inherited by that child.
       - name: Package (vscode-darwin-${{ matrix.arch }}-min)
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
         run: pnpm run gulp "vscode-darwin-${{ matrix.arch }}-min"
 
       - name: Verify the task board is in the package
