@@ -249,24 +249,88 @@ export function paradisPaletteActionsToShow<T extends { readonly label: string }
 	return actions.filter(action => paradisPaletteMatches(query, action.label, undefined)).slice(0, PALETTE_ACTIONS_MATCHED);
 }
 
-/** 本家の quick access の入力の 1 つ（クイックピック）の、横断ジャンプへ戻すかの判定に使う形。 */
-export interface IParadisPaletteQuickInputState {
+/** 中央のパレットの戻り先の判定に使う、出ているクイックピックの形。 */
+export interface IParadisPaletteInput {
 	readonly contextKey: string | undefined;
 	readonly value: string;
 }
 
+export interface IParadisPaletteReturnOptions<T extends IParadisPaletteInput> {
+	/** コマンドパレット（`>`）の contextKey。 */
+	readonly commandsContextKey: string;
+	/** 本家の既定の provider（接頭辞なし＝ファイルに移動）の contextKey。 */
+	readonly defaultContextKey: () => string | undefined;
+	/** 中央に出ているか（アンカー付きの quick access からは戻さない）。 */
+	readonly isCentered: (input: T) => boolean;
+	/** 今出ているクイックピック。 */
+	readonly current: () => T | undefined;
+	/** 今の処理（本家の置き換えの途中）が終わってから呼ぶ。 */
+	readonly schedule: (callback: () => void) => void;
+	/** 横断ジャンプを開く。 */
+	readonly open: (value: string) => void;
+}
+
 /**
- * 本家の quick access で接頭辞を全部消して既定の provider（ファイルに移動）へ落ちたとき、横断ジャンプへ戻すか。
- * 本家は入力の変化で provider が替わると、同じ値のまま既定の provider のクイックピックへ作り直す（閉じずに置き換える）。
- * その置き換えを、直前の入力が接頭辞のある provider（コマンドパレット `>`・ヘルプ `?`・行へ移動 `:` など、
- * `prefixedContextKeys`）で、新しい入力が既定の provider（`defaultContextKey`）で、値が同じことで見分ける。
- * 横断ジャンプの「ファイル名で探す」から移ったとき（直前が横断ジャンプ）と、ほかのクイックピックからは戻さない。
+ * Cmd+Shift+P（`workbench.action.showCommands`）で開いたコマンドパレットで `>` を消したときだけ、横断ジャンプへ戻す（Q649）。
+ * 本家は入力の変化で provider が替わると、閉じずに（onHide なしで）既定の provider のクイックピックへ置き換えるので、
+ * 置き換えの連鎖の出どころを覚えておく。Cmd+P（ファイルに移動）から接頭辞を打って消したとき、`:`・`@` など `>` 以外の
+ * 接頭辞から消したとき、横断ジャンプから `>` へ移ったときは戻さない。開くのは置き換えの後で、その時もまだ置き換え後の
+ * クイックピックが出ているときだけ（Esc で閉じた・Enter でファイルを開いた後には開かない）。値はその時点のものを渡す。
  */
-export function paradisShouldReturnToCrossJump(previous: IParadisPaletteQuickInputState | undefined, next: IParadisPaletteQuickInputState, defaultContextKey: string, prefixedContextKeys: ReadonlySet<string>): boolean {
-	return !!previous
-		&& previous.contextKey !== undefined
-		&& previous.contextKey !== defaultContextKey
-		&& prefixedContextKeys.has(previous.contextKey)
-		&& next.contextKey === defaultContextKey
-		&& previous.value === next.value;
+export class ParadisPaletteReturnTracker<T extends IParadisPaletteInput> {
+
+	private shown: T | undefined;
+	private fromCommands = false;
+	private openingCommands = false;
+
+	constructor(private readonly options: IParadisPaletteReturnOptions<T>) { }
+
+	/** `workbench.action.showCommands` の実行の前後（本家はこの間に同期でコマンドパレットを出す）。 */
+	willOpenCommands(): void {
+		this.openingCommands = true;
+	}
+
+	didOpenCommands(): void {
+		this.openingCommands = false;
+	}
+
+	/** quick input が出た（置き換えを含む）。クイックピックでない入力は undefined。 */
+	show(input: T | undefined): void {
+		const previous = this.shown;
+		this.shown = input;
+		const { commandsContextKey } = this.options;
+		if (!input) {
+			this.fromCommands = false;
+			return;
+		}
+		if (this.openingCommands && input.contextKey === commandsContextKey) {
+			this.fromCommands = true;
+			return;
+		}
+		const defaultContextKey = this.options.defaultContextKey();
+		const returns = this.fromCommands
+			&& !!previous
+			&& previous.contextKey === commandsContextKey
+			&& defaultContextKey !== undefined
+			&& input.contextKey === defaultContextKey
+			&& previous.value === input.value
+			&& this.options.isCentered(previous);
+		// 新しく開いたもの・既定の provider からの置き換え・既定の provider への置き換えで、連鎖の出どころは消える
+		if (!previous || previous.contextKey === defaultContextKey || input.contextKey === defaultContextKey) {
+			this.fromCommands = false;
+		}
+		if (returns) {
+			this.options.schedule(() => {
+				if (this.shown === input && this.options.current() === input) {
+					this.options.open(input.value);
+				}
+			});
+		}
+	}
+
+	/** quick input が閉じた。 */
+	hide(): void {
+		this.shown = undefined;
+		this.fromCommands = false;
+	}
 }

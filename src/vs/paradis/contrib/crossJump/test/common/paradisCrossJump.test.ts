@@ -10,7 +10,9 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisAgentLiveEntry, ParadisAgentLiveStatus } from '../../../agentLiveWindow/common/paradisAgentLiveWindow.js';
 import {
+	IParadisPaletteInput,
 	IParadisPaletteRecent,
+	ParadisPaletteReturnTracker,
 	paradisCyclePaletteKind,
 	paradisFormatCrossJumpAgo,
 	paradisGroupPaletteSpaces,
@@ -23,7 +25,6 @@ import {
 	PARADIS_PALETTE_PIN_LIMIT,
 	paradisRecordPaletteRecent,
 	paradisShouldOfferCrossJumpCreate,
-	paradisShouldReturnToCrossJump,
 	paradisSortCrossJumpAgents,
 	paradisSplitPaletteRecents,
 	paradisTogglePalettePin,
@@ -169,30 +170,96 @@ suite('paradisCrossJump', () => {
 		const { moved, rest } = paradisSplitPaletteRecents(shared, entry => known.has(entry.key));
 		assert.deepStrictEqual({ moved: moved.map(entry => entry.key), rest: rest.map(entry => entry.key) }, { moved: ['here', 'here-agent'], rest: ['other-window'] });
 	});
-	test('deleting the prefix of a quick access picker returns to the cross jump, other replacements do not', () => {
+	suite('returning to the cross jump from the command palette', () => {
 		const files = 'inFilesPicker';
-		const prefixed = new Set(['inCommandsPicker', 'inQuickOpenHelp']);
-		const check = (previous: { contextKey: string | undefined; value: string } | undefined, next: { contextKey: string | undefined; value: string }) => paradisShouldReturnToCrossJump(previous, next, files, prefixed);
-		assert.deepStrictEqual({
-			commandsToFiles: check({ contextKey: 'inCommandsPicker', value: 'term' }, { contextKey: files, value: 'term' }),
-			commandsToFilesEmpty: check({ contextKey: 'inCommandsPicker', value: '' }, { contextKey: files, value: '' }),
-			helpToFiles: check({ contextKey: 'inQuickOpenHelp', value: '' }, { contextKey: files, value: '' }),
-			crossJumpToFiles: check({ contextKey: 'paradisInCrossJump', value: 'term' }, { contextKey: files, value: 'term' }),
-			noPrevious: check(undefined, { contextKey: files, value: '' }),
-			plainPicker: check({ contextKey: undefined, value: '' }, { contextKey: files, value: '' }),
-			filesToFiles: check({ contextKey: files, value: '' }, { contextKey: files, value: '' }),
-			nextNotFiles: check({ contextKey: 'inCommandsPicker', value: '?' }, { contextKey: 'inQuickOpenHelp', value: '?' }),
-			valueDiffers: check({ contextKey: 'inCommandsPicker', value: '>term' }, { contextKey: files, value: 'other' }),
-		}, {
-			commandsToFiles: true,
-			commandsToFilesEmpty: true,
-			helpToFiles: true,
-			crossJumpToFiles: false,
-			noPrevious: false,
-			plainPicker: false,
-			filesToFiles: false,
-			nextNotFiles: false,
-			valueDiffers: false,
+		const commands = 'inCommandsPicker';
+
+		interface IInput extends IParadisPaletteInput {
+			contextKey: string | undefined;
+			value: string;
+			centered: boolean;
+		}
+
+		function setup() {
+			let current: IInput | undefined;
+			const scheduled: (() => void)[] = [];
+			const opened: string[] = [];
+			const tracker = new ParadisPaletteReturnTracker<IInput>({
+				commandsContextKey: commands,
+				defaultContextKey: () => files,
+				isCentered: input => input.centered,
+				current: () => current,
+				schedule: callback => scheduled.push(callback),
+				open: value => opened.push(value),
+			});
+			const show = (contextKey: string | undefined, value: string, centered = true) => {
+				current = { contextKey, value, centered };
+				tracker.show(current);
+				return current;
+			};
+			const showCommands = (value = '>') => {
+				tracker.willOpenCommands();
+				const input = show(commands, value);
+				tracker.didOpenCommands();
+				return input;
+			};
+			const hide = () => {
+				current = undefined;
+				tracker.hide();
+			};
+			const flush = () => scheduled.splice(0).forEach(callback => callback());
+			return { show, showCommands, hide, flush, opened };
+		}
+
+		test('deleting ">" in the palette opened by Cmd+Shift+P returns with the remaining input', () => {
+			const { show, showCommands, flush, opened } = setup();
+			const palette = showCommands();
+			palette.value = 'term';
+			const fileInput = show(files, 'term');
+			fileInput.value = 'termi';
+			flush();
+			assert.deepStrictEqual(opened, ['termi']);
+		});
+
+		test('a chain started by Cmd+P stays on Go to File', () => {
+			const { show, flush, opened } = setup();
+			for (const prefixed of [commands, 'inQuickOpenHelp', undefined]) {
+				show(files, '');
+				show(prefixed, '>');
+				show(files, '');
+			}
+			flush();
+			assert.deepStrictEqual(opened, []);
+		});
+
+		test('other prefixes, anchored pickers, and Cmd+P after Cmd+Shift+P do not return', () => {
+			const { show, showCommands, hide, flush, opened } = setup();
+			showCommands();
+			show('inGotoLine', 'x');
+			show(files, 'x');
+			hide();
+			showCommands();
+			show(files, '');
+			show(commands, '>');
+			show(files, '');
+			hide();
+			const anchored = showCommands();
+			anchored.centered = false;
+			show(files, '');
+			flush();
+			assert.deepStrictEqual(opened, []);
+		});
+
+		test('nothing opens once the Go to File picker was closed or replaced', () => {
+			const { show, showCommands, hide, flush, opened } = setup();
+			showCommands();
+			show(files, '');
+			hide();
+			showCommands();
+			show(files, 'a');
+			show(undefined, '');
+			flush();
+			assert.deepStrictEqual(opened, []);
 		});
 	});
 });
