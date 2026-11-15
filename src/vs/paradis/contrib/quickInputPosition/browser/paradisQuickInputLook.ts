@@ -7,7 +7,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // 中央のパレットの見た目（UI キットの段 5、Q600。モック mock/ui/kit/palette.html）。見た目は media/paradisQuickInputLook.css、
-// 行の高さ 28 は quickInputList.ts の PARA-PATCH 1 点。ここは下端のキーのヒントの 1 行だけを足す。
+// 行の高さ 28 は quickInputList.ts の PARA-PATCH 1 点。ここは下端のキーのヒントの 1 行だけを足す。ヒントがある入力では、
+// 一覧の無い入力の説明文から本家の Enter・Escape の注記を外す（platform の paradisQuickInputPrompt.ts、Q653）。
 //
 // 包んでいる本家のファイル: src/vs/platform/quickinput/browser/quickInputController.ts（quick input の器。DOM・キー・
 // 読み上げは変えない）。ヒントは器の末尾に足す飾りで、読み上げからは隠す（キーの説明は本家の aria のまま）。
@@ -20,6 +21,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { IQuickInput, IQuickInputService, QuickInputType } from '../../../../platform/quickinput/common/quickInput.js';
+import { paradisSetQuickInputKeyHintsPresent } from '../../../../platform/quickinput/browser/paradisQuickInputPrompt.js';
 
 /** 下端のヒントの要素のクラス。 */
 export const PARADIS_QUICK_INPUT_HINT_CLASS = 'paradis-quick-input-hint';
@@ -93,6 +95,8 @@ export class ParadisQuickInputLook extends Disposable {
 		@ILayoutService layoutService: ILayoutService,
 	) {
 		super();
+		// ヒントの帯に Enter・Esc があるので、中央の一覧の無い入力の説明文から本家の Enter・Escape の注記を外させる（Q653）
+		this._register(paradisSetQuickInputKeyHintsPresent());
 		this._register(quickInputService.onShow(() => {
 			const widget = paradisFindQuickInputWidget(layoutService.activeContainer);
 			if (widget) {

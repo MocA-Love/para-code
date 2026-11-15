@@ -27,6 +27,7 @@ import './media/quickInput.css';
 import { localize } from '../../../nls.js';
 import { IInputBox, IKeyMods, IQuickInput, IQuickInputButton, IQuickInputHideEvent, IQuickNavigateConfiguration, IQuickPick, IQuickPickDidAcceptEvent, IQuickPickItem, IQuickPickItemButtonEvent, IQuickPickSeparator, IQuickPickSeparatorButtonEvent, IQuickPickWillAcceptEvent, IQuickWidget, ItemActivation, NO_KEY_MODS, QuickInputButtonLocation, QuickInputHideReason, QuickInputType, QuickPickFocus } from '../common/quickInput.js';
 import { QuickInputBox } from './quickInputBox.js';
+import { paradisQuickInputNoValidationMessage } from './paradisQuickInputPrompt.js'; // PARA-PATCH: drop the Enter/Escape note under the centered palette's input (Q653)
 import { quickInputButtonToAction, quickInputButtonsToActionArrays, renderQuickInputDescription } from './quickInputUtils.js';
 import { IConfigurationService } from '../../configuration/common/configuration.js';
 import { IHoverService, WorkbenchHoverDelegate } from '../../hover/browser/hover.js';
@@ -449,7 +450,8 @@ export abstract class QuickInput extends Disposable implements IQuickInput {
 		this.ui.setEnabled(this.enabled);
 		this.ui.setContextKey(this.contextKey);
 
-		const validationMessage = this.validationMessage || this.noValidationMessage;
+		// PARA-PATCH: the centered palette shows Enter/Esc in its key hints, so its input box shows only the prompt (Q653).
+		const validationMessage = this.validationMessage || paradisQuickInputNoValidationMessage(this, this.noValidationMessage);
 		if (this._lastValidationMessage !== validationMessage) {
 			this._lastValidationMessage = validationMessage;
 			dom.reset(this.ui.message);
