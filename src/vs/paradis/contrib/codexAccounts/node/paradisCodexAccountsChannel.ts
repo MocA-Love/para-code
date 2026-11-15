@@ -11,7 +11,7 @@
 // `paradis.sharedProcess.contribution.ts` がこのファイルを副作用 import する。
 //
 // SSH の接続先（REH）へは paradisCodexAccounts.server.ts が同じチャネルを登録する。そちらは接続先の
-// Codex ホームについて、台帳と選択を接続先のユーザーデータに持つ（この PC のものとは別）。
+// Codex ホームについて、選択を接続先のユーザーデータに持つ（この PC のものとは別）。
 
 import { Event } from '../../../../base/common/event.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
@@ -23,7 +23,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
 import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
-import { IParadisCodexAccountsClientPreferences, IParadisCodexResetConsumeRequest, PARADIS_CODEX_ACCOUNTS_CHANNEL, PARADIS_CODEX_SHARE_CONVERSATIONS_SETTING, paradisCodexAccountsClientPreferences } from '../common/paradisCodexAccounts.js';
+import { IParadisCodexAccountsClientPreferences, PARADIS_CODEX_ACCOUNTS_CHANNEL, PARADIS_CODEX_SHARE_CONVERSATIONS_SETTING, paradisCodexAccountsClientPreferences } from '../common/paradisCodexAccounts.js';
 import { IParadisHookProcessInspector, ParadisDefaultHookProcessInspector } from '../../agentBrowser/node/paradisAgentHookOwnership.js';
 import { PARADIS_CODEX_PANE_SHELLS_MAX, paradisCodexPaneProcesses } from './paradisCodexPaneProcesses.js';
 import { paradisEnableCodexAccountHomes, paradisNotifyCodexHomesChanged, paradisSetConfiguredCodexHomes } from '../../agentBrowser/node/paradisAgentHome.js';
@@ -64,7 +64,6 @@ export class ParadisCodexAccountsChannel<TContext = string> implements IServerCh
 		const args = Array.isArray(arg) ? arg : [];
 		switch (command) {
 			case 'readResetCredits': return this.service.readResetCredits(typeof args[0] === 'string' ? args[0] : '', args[1] === true) as Promise<T>;
-			case 'consumeResetCredit': return this.service.consumeResetCredit(args[0] as IParadisCodexResetConsumeRequest) as Promise<T>;
 			case 'getState':
 				this.notePreferences(args[0]);
 				return this.service.getState() as Promise<T>;

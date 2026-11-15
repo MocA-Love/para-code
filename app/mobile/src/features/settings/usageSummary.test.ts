@@ -4,13 +4,17 @@ import { describe, expect, it, vi } from 'vitest';
 
 // usageFormat → time.ts がフックのために react-native を読む（vitest は Flow 構文を読めない）。純関数だけを使うので差し替える。
 vi.mock('../../hooks/useAppIsActive.js', () => ({ useAppIsActive: () => true }));
-import type { RateLimitAccount, UsageDashboardResult } from '../../store.js';
+import type { ClaudeResetGrant, ClaudeResetKind, RateLimitAccount, UsageDashboardResult } from '../../store.js';
 import {
 	accountHint,
 	accountName,
 	accountNumbers,
 	accountStatusMessage,
 	accountWindows,
+	claudeResetGrantRows,
+	claudeResetGrantsFacts,
+	claudeResetGrantsSummary,
+	formatMonthDayTime,
 	formatUsd,
 	hasPreviousValue,
 	previousValueNote,
@@ -339,6 +343,74 @@ describe('控えている間の前の値', () => {
 			ok: false,
 			rateLimited: false,
 			rateLimitedWindows: [],
+		});
+	});
+});
+
+describe('期限の日付の年', () => {
+	it('今年でない期限だけ年を出す（12 月と 1 月をまたいでも）', () => {
+		const now = new Date(2026, 10, 15, 12, 0).getTime();
+		const lateNow = new Date(2026, 11, 31, 23, 30).getTime();
+		expect([
+			formatMonthDayTime(new Date(2026, 11, 10, 7, 0).getTime(), now),
+			formatMonthDayTime(new Date(2027, 2, 9, 16, 59).getTime(), now),
+			formatMonthDayTime(new Date(2026, 11, 31, 23, 0).getTime(), lateNow),
+			formatMonthDayTime(new Date(2027, 0, 1, 1, 0).getTime(), lateNow),
+		]).toEqual(['12/10 07:00', '2027/3/9 16:59', '12/31 23:00', '2027/1/1 01:00']);
+	});
+});
+
+describe('Claude のリミットリセット', () => {
+	const now = new Date(2026, 10, 15, 12, 0).getTime();
+	const DAY = 86_400_000;
+
+	// PC の paradisClaudeResetGrants.test.ts と同じ表（変えるときは両方を直す）。期限は今から何日後か（null は期限なし）。
+	const FACTS_TABLE: readonly { name: string; grants: readonly (readonly [ClaudeResetKind, number, number | null])[]; expected: { kinds: string; listable: boolean; nextDayOffset?: number; soon: boolean; rows: string } }[] = [
+		{ name: '2 種類・先頭は 26 日後', grants: [['fable', 2, 114], ['full', 1, 26]], expected: { kinds: 'fable:2 full:1', listable: true, nextDayOffset: 26, soon: false, rows: 'full:1 fable:2' } },
+		{ name: '1 束・2 日後', grants: [['fable', 1, 2]], expected: { kinds: 'fable:1', listable: false, nextDayOffset: 2, soon: true, rows: 'fable:1' } },
+		{ name: '同じ種類で期限が 2 つ', grants: [['fable', 3, 114], ['fable', 1, 7]], expected: { kinds: 'fable:4', listable: true, nextDayOffset: 7, soon: true, rows: 'fable:1 fable:3' } },
+		{ name: '8 日後は近くない', grants: [['weekly', 1, 8], ['fiveHour', 1, null]], expected: { kinds: 'fiveHour:1 weekly:1', listable: true, nextDayOffset: 8, soon: false, rows: 'weekly:1 fiveHour:1' } },
+		{ name: '期限の分からない 1 束', grants: [['full', 1, null]], expected: { kinds: 'full:1', listable: false, soon: false, rows: 'full:1' } },
+		{ name: '期限切れだけ', grants: [['full', 1, -1]], expected: { kinds: '', listable: false, soon: false, rows: '' } },
+	];
+
+	it('1 行と一覧の決まりは PC と同じ表で確かめる', () => {
+		const actual = FACTS_TABLE.map(row => {
+			const grants: ClaudeResetGrant[] = row.grants.map(([kind, left, days]) => ({ kind, left, ...(days !== null ? { endsAt: now + days * DAY } : {}) }));
+			const facts = claudeResetGrantsFacts(grants, now);
+			return {
+				name: row.name,
+				kinds: facts.kinds.map(entry => `${entry.kind}:${entry.count}`).join(' '),
+				listable: facts.listable,
+				...(facts.nextDayOffset !== undefined ? { nextDayOffset: facts.nextDayOffset } : {}),
+				soon: facts.soon,
+				rows: facts.rows.map(grant => `${grant.kind}:${grant.left}`).join(' '),
+			};
+		});
+		expect(actual).toEqual(FACTS_TABLE.map(row => ({ name: row.name, ...row.expected })));
+	});
+
+	it('種類つきの 1 行と一覧を作り、知らない種類と券の無いアカウントは出さない', () => {
+		const at = (month: number, day: number, hour: number, minute = 0, year = 2026) => new Date(year, month - 1, day, hour, minute).getTime();
+		const two: ClaudeResetGrant[] = [{ kind: 'fable', left: 2, endsAt: at(3, 9, 16, 59, 2027) }, { kind: 'full', left: 1, endsAt: at(12, 11, 7) }];
+		const soonTwo: ClaudeResetGrant[] = [{ kind: 'fiveHour', left: 1, endsAt: at(11, 15, 21) }, { kind: 'fable', left: 3, endsAt: at(3, 9, 16, 59, 2027) }];
+		expect({
+			two: claudeResetGrantsSummary(two, now),
+			one: claudeResetGrantsSummary([{ kind: 'fable', left: 1, endsAt: at(11, 17, 16, 59) }], now),
+			soonTwo: claudeResetGrantsSummary(soonTwo, now),
+			rows: claudeResetGrantRows(two, now),
+			unknownKind: claudeResetGrantsSummary([{ kind: 'monthly' as ClaudeResetKind, left: 1 }], now),
+			none: claudeResetGrantsSummary([], now),
+		}).toEqual({
+			two: { text: 'リミットリセット Fable ×2・全部 ×1', listable: true, soon: false },
+			one: { text: 'リミットリセット Fable ×1 · 11/17 16:59 に期限', listable: false, soon: true },
+			soonTwo: { text: 'リミットリセット 5時間 ×1・Fable ×3 · 次は今日 21:00 に期限', listable: true, soon: true },
+			rows: [
+				{ kind: '全部リセット ×1', label: '12/11 07:00 まで', relative: '26日後', soon: false },
+				{ kind: 'Fable リセット ×2', label: '2027/3/9 16:59 まで', relative: '114日後', soon: false },
+			],
+			unknownKind: undefined,
+			none: undefined,
 		});
 	});
 });

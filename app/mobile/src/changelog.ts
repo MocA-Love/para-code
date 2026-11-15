@@ -40,6 +40,17 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.23',
+		date: '2026-11-15',
+		items: [
+			{
+				icon: 'refresh-outline',
+				title: '使用量の画面に、Claude のリミットリセットの残りと期限を出すようにしました',
+				body: '「リミットリセット Fable ×2・全部 ×1」のように種類ごとに出し、押すと期限を開きます（iPad の 2 列では最初から開きます）。期限が 7 日以内なら黄色にします。来年の期限は年も添えます。使うのは claude.ai の設定の「使用量」からです。',
+			},
+		],
+	},
+	{
 		version: '0.12.22',
 		date: '2026-11-13',
 		items: [

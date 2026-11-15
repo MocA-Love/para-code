@@ -234,6 +234,16 @@ describe('aggregateAccounts', () => {
 		expect(aggregateAccounts(none, 'codex', NOW)[0]!.account.resetCredits).toBeUndefined();
 	});
 
+	it('Claude のリミットリセットも、添えている PC の新しい値から採る', () => {
+		const grants = [{ kind: 'fable' as const, left: 2, endsAt: NOW + HOUR }];
+		const result = entries([pc('a'), pc('b')], {
+			'pc:a': { limits: { value: limits([account({ email: 'u@x', fiveHour: { usedPercent: 40 } })]), at: NOW, receivedAt: NOW } },
+			'pc:b': { limits: { value: limits([account({ email: 'u@x', fiveHour: { usedPercent: 30 }, claudeResetGrants: grants })]), at: NOW - HOUR, receivedAt: NOW } },
+		});
+		const [item] = aggregateAccounts(result, 'claude', NOW);
+		expect([item!.account.fiveHour?.usedPercent, item!.account.claudeResetGrants]).toEqual([40, grants]);
+	});
+
 	it('PC が前回の値を返した（stale）ものは古い値として扱う', () => {
 		const result = entries([pc('a')], { 'pc:a': { limits: { value: limits([account({ email: 'u@x' })], [], { stale: true }), at: NOW, receivedAt: NOW } } });
 		expect(aggregateAccounts(result, 'claude', NOW)[0]!.old).toBe(true);

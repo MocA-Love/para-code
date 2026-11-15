@@ -62,6 +62,13 @@ suite('paradisMobileLimitsAccount', () => {
 			nothing: { ...base, status: 'relogin_required' },
 		});
 	});
+
+	// Claude のリミットリセットは任意項目のまま届ける（古いアプリは知らない項目を読まない）。
+	test('passes the Claude limit resets through as an optional field', () => {
+		const claudeResetGrants = [{ kind: 'fable' as const, left: 2, endsAt: 5_000 }];
+		const account = { provider: 'claude' as const, id: 'para-claude:1', status: 'ok' as const, claudeResetGrants };
+		assert.deepStrictEqual(paradisMobileLimitsAccount(account), account);
+	});
 });
 
 suite('paradisMobileLimitsSnapshot', () => {

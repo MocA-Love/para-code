@@ -659,10 +659,6 @@
 	font-weight: 600;
 }
 
-.paradis-limits-panel .plm-reset-expiry-use {
-	margin-left: auto;
-}
-
 /* claude-swap の案内（1文に縮め、注意書きと一覧は「詳しく」で開く）。 */
 .paradis-limits-panel .plm-legacy-notice summary {
 	list-style: none;

@@ -311,11 +311,13 @@ export function aggregateHiddenAccounts(entries: readonly UsageEntry[], provider
  *
  * Codex の枠のリセット（`resetCredits`）は、採った値の PC が添えていない（古い PC・読めなかった）ことがある。
  * そのまま採るとリセットの行が消えるので、リセットだけはリセットを添えている PC の中の新しい値から採る。
+ * Claude のリミットリセット（`claudeResetGrants`）も同じ扱いにする。
  */
 export function aggregateAccounts(entries: readonly UsageEntry[], provider: 'claude' | 'codex', now: number): AggregatedAccount[] {
 	const order: string[] = [];
 	const best = new Map<string, AccountCandidate>();
 	const bestReset = new Map<string, AccountCandidate>();
+	const bestGrants = new Map<string, AccountCandidate>();
 	const seen = new Map<string, SeenOn[]>();
 	const hidden = new Set(aggregateHiddenAccounts(entries, provider).map(item => item.key));
 	for (const entry of entries) {
@@ -346,6 +348,10 @@ export function aggregateAccounts(entries: readonly UsageEntry[], provider: 'cla
 				const currentReset = bestReset.get(key);
 				bestReset.set(key, currentReset === undefined ? candidate : betterResetCandidate(currentReset, candidate));
 			}
+			if (account.claudeResetGrants !== undefined) {
+				const currentGrants = bestGrants.get(key);
+				bestGrants.set(key, currentGrants === undefined ? candidate : betterResetCandidate(currentGrants, candidate));
+			}
 			const chips = seen.get(key)!;
 			if (!chips.some(chip => chip.key === entry.key)) {
 				chips.push({ key: entry.key, label: entry.label, old });
@@ -355,9 +361,13 @@ export function aggregateAccounts(entries: readonly UsageEntry[], provider: 'cla
 	return order.map(key => {
 		const chosen = best.get(key)!;
 		const resetSource = bestReset.get(key);
-		const account = resetSource !== undefined && resetSource.account.resetCredits !== chosen.account.resetCredits
+		const grantsSource = bestGrants.get(key);
+		let account = resetSource !== undefined && resetSource.account.resetCredits !== chosen.account.resetCredits
 			? { ...chosen.account, resetCredits: resetSource.account.resetCredits }
 			: chosen.account;
+		if (grantsSource !== undefined && grantsSource.account.claudeResetGrants !== account.claudeResetGrants) {
+			account = { ...account, claudeResetGrants: grantsSource.account.claudeResetGrants };
+		}
 		return { key, provider, account, at: chosen.at, old: chosen.old, remoteHost: chosen.remoteHost, seenOn: seen.get(key) ?? [] };
 	});
 }

@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisCodexAccountsState, paradisCalendarDayOffset, paradisCodexChosenCreditStillAvailable, paradisCodexLaunchHomeFor, paradisCodexResetCreditRows, paradisCodexResetSummary, paradisLooksLikeRunningCodex, paradisSelectedCodexHome } from '../../common/paradisCodexAccounts.js';
+import { IParadisCodexAccountsState, paradisCodexLaunchHomeFor, paradisCodexResetCreditRows, paradisCodexResetSummary, paradisLooksLikeRunningCodex, paradisSelectedCodexHome } from '../../common/paradisCodexAccounts.js';
 
 suite('Paradis Codex accounts (common)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -51,20 +51,10 @@ suite('Paradis Codex accounts (common)', () => {
 		}, {
 			none: [],
 			noDetails: [{ kind: 'unknown', count: 3 }],
-			sortedWithNoExpiryLast: [{ kind: 'dated', expiresAt: 10, id: 'a' }, { kind: 'dated', expiresAt: 30, id: 'b' }, { kind: 'noExpiry', id: 'c' }],
+			sortedWithNoExpiryLast: [{ kind: 'dated', expiresAt: 10 }, { kind: 'dated', expiresAt: 30 }, { kind: 'noExpiry' }],
 			fewerDetails: [{ kind: 'dated', expiresAt: 20 }, { kind: 'unknown', count: 3 }],
-			moreDetails: [{ kind: 'dated', expiresAt: 10, id: 'early' }],
+			moreDetails: [{ kind: 'dated', expiresAt: 10 }],
 		});
-	});
-
-	test('counts calendar days in local time', () => {
-		const now = new Date(2026, 9, 4, 23, 30).getTime();
-		assert.deepStrictEqual([
-			paradisCalendarDayOffset(new Date(2026, 9, 4, 0, 5).getTime(), now),
-			paradisCalendarDayOffset(new Date(2026, 9, 5, 0, 5).getTime(), now),
-			paradisCalendarDayOffset(new Date(2026, 10, 1, 18, 30).getTime(), now),
-			paradisCalendarDayOffset(new Date(2026, 9, 3, 23, 0).getTime(), now),
-		], [0, 1, 28, -1]);
 	});
 
 	// アプリの usageSummary.test.ts と PC の paradisCodexAccounts.test.ts で同じ表（変えるときは両方を直す）。
@@ -106,16 +96,5 @@ suite('Paradis Codex accounts (common)', () => {
 			}, tableNow),
 		}));
 		assert.deepStrictEqual(actual, tableExpected);
-	});
-
-	test('tells when the chosen credit is still available after consuming', () => {
-		const credits = { availableCount: 2, credits: [{ id: 'a', status: 'available' as const }, { id: 'b', status: 'redeemed' as const }] };
-		assert.deepStrictEqual([
-			paradisCodexChosenCreditStillAvailable(credits, 'a'),
-			paradisCodexChosenCreditStillAvailable(credits, 'b'),
-			paradisCodexChosenCreditStillAvailable(credits, undefined),
-			paradisCodexChosenCreditStillAvailable({ availableCount: 2 }, 'a'),
-			paradisCodexChosenCreditStillAvailable(undefined, 'a'),
-		], [true, false, false, false, false]);
 	});
 });

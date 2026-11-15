@@ -179,6 +179,29 @@ export interface IParadisLimitsAccount {
 	readonly fiveHour?: IParadisLimitsWindow;
 	readonly sevenDay?: IParadisLimitsWindow;
 	readonly scoped?: readonly IParadisLimitsWindow[];
+	/**
+	 * Claude: リミットリセット（使うと使用枠をすぐ戻せる券）の種類ごとの束。取れなかった・券の仕組みの対象外の
+	 * アカウントでは項目ごと無い。任意項目なので、古いアプリは読まない（モバイルにはこのまま届く）。
+	 */
+	readonly claudeResetGrants?: readonly IParadisClaudeResetGrant[];
+}
+
+/**
+ * Claude のリミットリセットの種類（Claude Code の `/limit-reset` と同じ分け方）。
+ * - fiveHour: 5 時間の枠だけ戻す
+ * - weekly: 週の枠を戻す
+ * - fable: 週の枠のうち Fable で使った分（と 5 時間の枠）を戻す
+ * - full: 全部戻す
+ */
+export type ParadisClaudeResetKind = 'fiveHour' | 'weekly' | 'fable' | 'full';
+
+/** Claude のリミットリセットの束 1 つ（同じ種類・同じ期限の券をまとめたもの）。 */
+export interface IParadisClaudeResetGrant {
+	readonly kind: ParadisClaudeResetKind;
+	/** 残りの回数（1 以上）。 */
+	readonly left: number;
+	/** 期限（epoch ms）。分からなければ無い。 */
+	readonly endsAt?: number;
 }
 
 /** Claude: claude-swap に登録されていたが、Para Code にはまだ登録していないアカウント（表示のみ）。 */

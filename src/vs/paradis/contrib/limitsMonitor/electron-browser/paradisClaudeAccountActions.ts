@@ -15,6 +15,8 @@
 //    Sentry へも固定の語だけで送る。取得回数の上限なら待ち時間を知らせ、過ぎたら自動で1回やり直す
 //    （利用者が別の操作をしたら取り消す）。切り替えた後は、前のアカウントのまま動いている Claude Code の
 //    数をエージェントの検出（hook）から数えて知らせる
+//  - リミットリセット（カード下端の左）: 種類ごとの残りの 1 行と、押すと開く期限の一覧（paradisClaudeResetGrantsView.ts）。
+//    見せるだけ
 //  - 節の末尾: claude-swap に登録されていて Para Code にはまだ無いアカウントの一覧と、登録し直しの
 //    案内（claude-swap のデータは読むだけ）。1文に縮め、注意書きと一覧は「詳しく」を開いたときだけ出す。
 //    claude-swap の一覧がある間は「claude-swap はもう使わない」も出す（押すと案内ごと消える）
@@ -28,6 +30,7 @@ import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryD
 import { IParadisClaudeSwitchResult, paradisKnownUnverifiedReason } from '../common/paradisClaudeAccounts.js';
 import { IParadisLimitsAccount, IParadisLimitsLegacyAccount, IParadisLimitsProviderSnapshot, paradisLimitsNeedsRelogin } from '../common/paradisLimitsMonitor.js';
 import { IParadisLimitsPanelContext, IParadisLimitsPanelContribution, ParadisLimitsPanelContributions } from './paradisLimitsPanelContributions.js';
+import { paradisRenderClaudeResetGrants } from './paradisClaudeResetGrantsView.js';
 import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 const $ = dom.$;
@@ -51,6 +54,8 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 	private retiringClaudeSwap = false;
 	/** claude-swap の案内の「詳しく」を開いているか（描き直しをまたいで持つ）。 */
 	private legacyDetailsOpen = false;
+	/** リミットリセットの一覧を開いているアカウント（描き直しをまたいで持つ）。 */
+	private readonly resetGrantsOpen = new Set<string>();
 
 	constructor(
 		@INotificationService private readonly notificationService: INotificationService,
@@ -62,6 +67,8 @@ class ParadisClaudeAccountActions extends Disposable implements IParadisLimitsPa
 
 	renderAccountActions(container: HTMLElement, account: IParadisLimitsAccount, context: IParadisLimitsPanelContext): IDisposable | undefined {
 		const store = new DisposableStore();
+		// 1 行は左に寄せる（ボタンより先に足す）。
+		paradisRenderClaudeResetGrants(container, store, account, context, this.resetGrantsOpen);
 		if (account.registrable) {
 			const button = dom.append(container, $('button.plm-card-action-btn')) as HTMLButtonElement;
 			button.type = 'button';

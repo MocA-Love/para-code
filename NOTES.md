@@ -718,7 +718,7 @@ app-server が毎回の取得の経路になったので、Orca にある起動�
 - `wham/usage` とリセットクレジットの読み取り・消費の `fetch` は `redirect: 'error'` にし、トークンを `chatgpt.com` の外へ転送させません
 - 見送り: Orca の「state DB の作り直し中は起動しない」（`isCodexStateDbBackfillPending`）は移していません。作り直しを見分ける手段がまだ Para Code に無く、今回の指示の範囲（プラグイン・ロック・間隔・止め方）の外のため
 
-**リセットクレジット**の残数と期限は、使用量と同じく各ホームの `auth.json` のアクセストークンで ChatGPT のバックエンド `GET /backend-api/wham/rate-limit-reset-credits` を読む（Orca と同じ。パネルを開くたびに app-server を起こさないため。応答の形は Orca のソースから写したもので、実アカウントでは未確認【要確認】）。使うのは、Orca（`main/rate-limits/codex-reset-credit-client.ts`）と同じくバックエンドへの直接の `POST /backend-api/wham/rate-limit-reset-credits/consume`（本文 `{ "redeem_request_id": <冪等の鍵> }`、応答の `code` は `reset` / `nothing_to_reset` / `no_credit` / `already_redeemed`）。以前は app-server の `account/rateLimitResetCredit/consume` を使っていた（2026-09-28 に Orca へ揃えた）。二重消費は shared process の台帳（`userData/paradis/codexAccounts/codex-reset-credit-ledger.json`）で防ぐ。
+**リセットクレジット**の残数と期限は、使用量と同じく各ホームの `auth.json` のアクセストークンで ChatGPT のバックエンド `GET /backend-api/wham/rate-limit-reset-credits` を読む（Orca と同じ。パネルを開くたびに app-server を起こさないため。応答の形は Orca のソースから写したもので、実アカウントでは未確認【要確認】）。2026-11-15 から Para Code は見せるだけで、使う操作（以前の `POST /backend-api/wham/rate-limit-reset-credits/consume` と台帳 `codex-reset-credit-ledger.json`）は外した。押しても使い切った枠が無いと `nothing_to_reset` で使われず、利用者には動かないように見えていたため（2026-11-15 の決定）。台帳のファイルは消さずに残るが、もう読まない。
 
 - 消費は shared process の中で1本ずつ直列に流し、確認ダイアログで見せた提示（残数・明細・取得時刻）と違えば断る
 - 範囲は ChatGPT の account_id で決める（分からないときだけホーム）。同じアカウントで2つのホームにログインしていても、片方の「結果不明」はもう片方にも効く。消費の直前に auth.json を読み直し、確認したときと account_id が違えば断る
