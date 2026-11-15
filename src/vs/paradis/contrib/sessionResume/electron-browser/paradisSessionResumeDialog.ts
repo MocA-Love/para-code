@@ -8,6 +8,7 @@
 
 import './media/paradisSessionResume.css';
 import * as dom from '../../../../base/browser/dom.js';
+import { status } from '../../../../base/browser/ui/aria/aria.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
@@ -94,6 +95,8 @@ export class ParadisSessionResumeDialog extends Disposable {
 	private list: HTMLElement | undefined;
 	/** 一覧の行（描いた順）。↑↓ で隣の行へ移るときに使う。 */
 	private readonly rowElements: HTMLElement[] = [];
+	/** グループの見出し（summary）と行を一覧の並びのまま持つ（↑↓ の移動先）。 */
+	private readonly listItems: HTMLElement[] = [];
 	private detail: HTMLElement | undefined;
 	private searchInput: HTMLInputElement | undefined;
 	/** 左フィルタナビの項目(ボタン化した旧 select)。render() から updateRailSelection() 経由で aria-pressed と件数を同期する(初回ローディング中のプレースホルダ表示時は未同期)。 */
@@ -769,6 +772,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 		this.renderedSearchMatches = [];
 		this.renderDisposables.clear();
 		this.rowElements.length = 0;
+		this.listItems.length = 0;
 		dom.clearNode(this.list);
 		dom.clearNode(this.detail);
 		if (this.loading && this.sessions.length === 0) {
@@ -801,11 +805,14 @@ export class ParadisSessionResumeDialog extends Disposable {
 				}
 				const otherHeading = dom.append(this.list, $('.paradis-session-resume-superheading'));
 				otherHeading.textContent = localize('paradis.sessionResume.otherSpaces', "他のスペース");
+				// listbox の子に見出しは置けないので読み上げから外し、各グループの名前に「他のスペース」を含める
+				otherHeading.setAttribute('aria-hidden', 'true');
 				for (const sessions of bySpace.values()) {
 					const stateKey = sessions[0].spaceStateKey;
 					// 検索中と、選んでいる行を含むグループは常に開く。それ以外は利用者が開いたかどうかを保つ
 					const forced = this.query.length > 0 || sessions.some(session => session.catalogId === this.selected?.catalogId);
-					const details = this.renderGroup(this.list, sessions[0].spaceName, sessions, forced || this.expandedOtherSpaces.has(stateKey));
+					const groupLabel = localize('paradis.sessionResume.otherSpaceGroup', "他のスペース: {0}", sessions[0].spaceName);
+					const details = this.renderGroup(this.list, sessions[0].spaceName, sessions, forced || this.expandedOtherSpaces.has(stateKey), undefined, groupLabel);
 					this.renderDisposables.add(dom.addDisposableListener(details, 'toggle', () => {
 						// toggle は open を代入しただけでも（あとから）飛ぶ。強制的に開いたグループは覚えない
 						if (forced) {
@@ -904,10 +911,35 @@ export class ParadisSessionResumeDialog extends Disposable {
 		this.highlightSearchMatches(parent);
 	}
 
-	private renderGroup(parent: HTMLElement, title: string, sessions: readonly IParadisResumeSession[], expanded: boolean, tooltip?: string): HTMLDetailsElement {
+	private renderGroup(parent: HTMLElement, title: string, sessions: readonly IParadisResumeSession[], expanded: boolean, tooltip?: string, ariaLabel = title): HTMLDetailsElement {
 		const details = dom.append(parent, $('details.paradis-session-resume-group')) as HTMLDetailsElement;
 		details.open = expanded;
-		const summary = dom.append(details, $('summary'));
+		// 開閉は Tab で止めず（Tab は選んでいる行の 1 か所だけ。updateRowTabStops）、↑↓ で行と同じ並びに入れて ←/→ で開け閉めする
+		const summary = dom.append(details, $('summary.paradis-focus-subtle'));
+		summary.tabIndex = -1;
+		this.listItems.push(summary);
+		summary.setAttribute('aria-label', localize('paradis.sessionResume.groupSummaryLabel', "{0}（{1} 件）", ariaLabel, sessions.length));
+		this.renderDisposables.add(dom.addDisposableListener(summary, dom.EventType.KEY_DOWN, event => {
+			const keyboardEvent = new StandardKeyboardEvent(event);
+			if (keyboardEvent.keyCode === KeyCode.UpArrow || keyboardEvent.keyCode === KeyCode.DownArrow) {
+				keyboardEvent.preventDefault();
+				this.moveSelection(summary, keyboardEvent.keyCode === KeyCode.UpArrow ? -1 : 1);
+			} else if (keyboardEvent.keyCode === KeyCode.RightArrow) {
+				keyboardEvent.preventDefault();
+				if (!details.open) {
+					this.setGroupOpen(details, ariaLabel, true);
+				} else {
+					// 開いているグループでは先頭の行へ進む（ツリーと同じ）
+					const first = this.rowElements.find(row => details.contains(row));
+					if (first) {
+						this.selectRow(first);
+					}
+				}
+			} else if (keyboardEvent.keyCode === KeyCode.LeftArrow && details.open) {
+				keyboardEvent.preventDefault();
+				this.setGroupOpen(details, ariaLabel, false);
+			}
+		}));
 		const titleEl = dom.append(summary, $('span.group-title'));
 		titleEl.textContent = title;
 		if (tooltip) {
@@ -918,7 +950,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 		this.renderDisposables.add(dom.addDisposableListener(details, 'toggle', () => this.updateRowTabStops()));
 		const rows = dom.append(details, $('.group-rows'));
 		rows.setAttribute('role', 'group');
-		rows.setAttribute('aria-label', title);
+		rows.setAttribute('aria-label', ariaLabel);
 		for (const session of sessions) {
 			// 一覧は listbox、行は option（Tab は選んでいる行の 1 か所だけに止まる。updateRowTabStops）
 			const row = dom.append(rows, $('.paradis-session-resume-row.paradis-focus-subtle'));
@@ -926,6 +958,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 			row.tabIndex = -1;
 			row.dataset.catalogId = session.catalogId;
 			this.rowElements.push(row);
+			this.listItems.push(row);
 			row.classList.toggle('selected', session.catalogId === this.selected?.catalogId);
 			row.setAttribute('aria-selected', String(session.catalogId === this.selected?.catalogId));
 			row.setAttribute('aria-haspopup', 'menu');
@@ -961,6 +994,11 @@ export class ParadisSessionResumeDialog extends Disposable {
 					// UI キットの段 4（Q600）: ↑↓ で一覧の選択と右の会話を替える
 					keyboardEvent.preventDefault();
 					this.moveSelection(row, keyboardEvent.keyCode === KeyCode.UpArrow ? -1 : 1);
+				} else if (keyboardEvent.keyCode === KeyCode.LeftArrow) {
+					// ← で行のグループを閉じ、フォーカスはグループの見出し（summary）へ移す（閉じた中の行は見えなくなる）
+					keyboardEvent.preventDefault();
+					this.setGroupOpen(details, ariaLabel, false);
+					summary.focus();
 				} else if (keyboardEvent.keyCode === KeyCode.Enter && session.catalogId === this.selected?.catalogId) {
 					// 選んでいる行で Enter を押すと、主のボタン（再開）と同じ動き。選んでいない行では今までどおり選ぶ
 					keyboardEvent.preventDefault();
@@ -1017,18 +1055,34 @@ export class ParadisSessionResumeDialog extends Disposable {
 		return details;
 	}
 
-	/** 一覧の隣の行を選び、作り直した一覧でその行にフォーカスを戻す。 */
+	/** グループを開け閉めし、読み上げに知らせる（summary の開閉と同じ。toggle で Tab の止まる行も選び直る）。 */
+	private setGroupOpen(details: HTMLDetailsElement, label: string, open: boolean): void {
+		details.open = open;
+		status(open
+			? localize('paradis.sessionResume.groupExpanded', "{0} を開きました", label)
+			: localize('paradis.sessionResume.groupCollapsed', "{0} を閉じました", label));
+	}
+
+	/**
+	 * ↑↓ の隣へ進む。並びはグループの見出し（summary）と見えている行で、行なら選び（作り直した一覧でその行にフォーカスを戻す）、
+	 * 見出しならフォーカスだけ移す。
+	 */
 	private moveSelection(from: HTMLElement, delta: -1 | 1): void {
 		if (!this.list) {
 			return;
 		}
 		// 閉じたグループの中の行（見えていない行）は飛ばす
-		const rows = this.visibleRows();
-		const next = rows[rows.indexOf(from) + delta];
+		const visible = new Set(this.visibleRows());
+		const items = this.listItems.filter(item => item.tagName === 'SUMMARY' || visible.has(item));
+		const next = items[items.indexOf(from) + delta];
 		if (!next) {
 			return;
 		}
-		this.selectRow(next);
+		if (next.tagName === 'SUMMARY') {
+			next.focus();
+		} else {
+			this.selectRow(next);
+		}
 	}
 
 	/** 行を選び（クリックと同じ）、作り直した一覧でその行にフォーカスを戻す。 */
@@ -1045,13 +1099,14 @@ export class ParadisSessionResumeDialog extends Disposable {
 
 	/**
 	 * ローヴィングの tabindex: 選んでいる行だけを Tab の止まる場所にする。選んでいる行が見えていない（無い・閉じた
-	 * グループの中）ときは、見えている先頭の行にする（Tab で一覧に入れなくならないように）。
+	 * グループの中）ときは、見えている先頭の行にする（Tab で一覧に入れなくならないように）。グループが全部閉じていて
+	 * 見えている行が無いときは、先頭のグループの見出しにする。
 	 */
 	private updateRowTabStops(): void {
 		const rows = this.visibleRows();
-		const stop = rows.find(row => row.dataset.catalogId === this.selected?.catalogId) ?? rows[0];
-		for (const row of this.rowElements) {
-			row.tabIndex = row === stop ? 0 : -1;
+		const stop = rows.find(row => row.dataset.catalogId === this.selected?.catalogId) ?? rows[0] ?? this.listItems[0];
+		for (const item of this.listItems) {
+			item.tabIndex = item === stop ? 0 : -1;
 		}
 	}
 
