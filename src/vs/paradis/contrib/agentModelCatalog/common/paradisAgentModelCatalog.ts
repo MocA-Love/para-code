@@ -651,10 +651,20 @@ export function paradisUpgradeLegacyCodexFlags(template: IParadisAgentCommandTem
 }
 
 /**
+ * 既定の一覧から外し、後継のエージェントの行に置き換えた id と、その後継の id。
+ * 過去の既定の行を書き写しただけの行は、後継の今の既定の行に差し替える（書き換えた行はそのまま使う）。
+ */
+const PARADIS_SUCCEEDED_DEFAULT_AGENTS: ReadonlyMap<string, string> = new Map([
+	// 2026-11-12 に Gemini CLI を既定の一覧から外し、Antigravity CLI に置き換えた
+	['gemini', 'antigravity'],
+]);
+
+/**
  * 新しいスペースで選べるエージェント定義。ダイアログとモバイルからの作成で同じ規則を使う。
  * - 設定に一覧が無ければ、既定の定義に CLI から取れたモデル候補を当てはめたもの
  * - 一覧があれば、その並びのまま行ごとに決める。既定の行を書き写しただけの行（今か過去の既定と同じ）は、
- *   CLI の候補を当てはめた今の既定の行に差し替える。利用者が足した行・書き換えた行はそのまま使う
+ *   CLI の候補を当てはめた今の既定の行に差し替える。既定から外した行を書き写しただけの行は、後継の今の
+ *   既定の行に差し替える（後継の行が一覧に既にあれば外す）。利用者が足した行・書き換えた行はそのまま使う
  *   （Codex の古いフラグだけ読み替える）。消した行は足さない
  */
 export function paradisResolveAgentTemplates(configurationService: IConfigurationService, catalogs: readonly IParadisAgentModelCatalog[]): readonly IParadisAgentCommandTemplate[] {
@@ -663,7 +673,17 @@ export function paradisResolveAgentTemplates(configurationService: IConfiguratio
 	if (configured === undefined) {
 		return defaults;
 	}
-	return configured.map(row => (paradisIsKnownDefaultAgentRow(row) ? defaults.find(candidate => candidate.id === row.id) : undefined) ?? paradisUpgradeLegacyCodexFlags(row));
+	const configuredIds = new Set(configured.map(row => row.id));
+	return configured.flatMap(row => {
+		if (!paradisIsKnownDefaultAgentRow(row)) {
+			return [paradisUpgradeLegacyCodexFlags(row)];
+		}
+		const successor = PARADIS_SUCCEEDED_DEFAULT_AGENTS.get(row.id);
+		if (successor !== undefined && defaults.some(candidate => candidate.id === successor)) {
+			return configuredIds.has(successor) ? [] : defaults.filter(candidate => candidate.id === successor);
+		}
+		return [defaults.find(candidate => candidate.id === row.id) ?? paradisUpgradeLegacyCodexFlags(row)];
+	});
 }
 
 /**

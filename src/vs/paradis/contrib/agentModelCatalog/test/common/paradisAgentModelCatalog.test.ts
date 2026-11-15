@@ -231,19 +231,27 @@ suite('ParadisAgentModelCatalog', () => {
 		});
 	});
 
-	test('既定から外した Gemini CLI も、書き写した設定に残っていればその行のまま使い、Antigravity CLI は足さない', () => {
+	test('既定から外した Gemini CLI の行を書き写しただけなら Antigravity CLI の行に差し替え、書き換えた Gemini CLI の行は残す', () => {
 		const copied = JSON.parse(JSON.stringify(PARADIS_PAST_DEFAULT_AGENT_COMMANDS[PARADIS_PAST_DEFAULT_AGENT_COMMANDS.length - 1]));
-		const configurationService = new TestConfigurationService({ 'paradis.workspaceSwitch.agents': copied });
-		const gemini = paradisResolveAgentTemplates(configurationService, []).find(agent => agent.id === 'gemini');
+		const edited = JSON.parse(JSON.stringify(copied));
+		edited[2].label = 'My Gemini';
+		const withAntigravity = [...JSON.parse(JSON.stringify(copied)), { id: 'antigravity', label: 'My agy', command: 'agy {prompt}' }];
+		const describe = (value: unknown) => {
+			const configurationService = new TestConfigurationService({ 'paradis.workspaceSwitch.agents': value });
+			return {
+				agents: paradisResolveAgentTemplates(configurationService, []).map(agent => `${agent.id}:${agent.label}`),
+				userDefined: paradisIsAgentListUserDefined(configurationService),
+			};
+		};
 		assert.deepStrictEqual({
-			ids: paradisResolveAgentTemplates(configurationService, []).map(agent => agent.id),
-			userDefined: paradisIsAgentListUserDefined(configurationService),
-			gemini: gemini && paradisResolveAgentLaunchFlags(gemini, { permissionId: 'yolo' }),
+			copied: describe(copied),
+			edited: describe(edited),
+			withAntigravity: describe(withAntigravity),
 			defaults: paradisResolveAgentTemplates(new TestConfigurationService(), []).map(agent => agent.id),
 		}, {
-			ids: ['claude', 'codex', 'gemini'],
-			userDefined: false,
-			gemini: { model: '', effort: '', permission: '--yolo' },
+			copied: { agents: ['claude:Claude Code', 'codex:Codex', 'antigravity:Antigravity CLI'], userDefined: false },
+			edited: { agents: ['claude:Claude Code', 'codex:Codex', 'gemini:My Gemini'], userDefined: true },
+			withAntigravity: { agents: ['claude:Claude Code', 'codex:Codex', 'antigravity:My agy'], userDefined: true },
 			defaults: ['claude', 'codex', 'antigravity'],
 		});
 	});
