@@ -101,3 +101,57 @@
 .monaco-workbench .quick-input-widget.paradis-quick-input-no-list > .paradis-quick-input-hint > .paradis-quick-input-hint-move {
 	display: none;
 }
+
+/*
+	An input without a list (Q653, mock/ui/rename-input-spacing-2026-11-15.html plan A): the 44px band holds only the
+	input, the description goes in its own row under the band with its text at the input's text, and the band's line is
+	the only line above the key hints (upstream keeps the description inside the header, so the band grew around it and
+	its line sat 2px above the hints' line). Upstream writes the error box inline (QuickInput.showMessageDecoration), so its
+	bottom margin needs !important.
+*/
+.monaco-workbench .quick-input-widget.paradis-quick-input-centered.paradis-quick-input-no-list:not(.hidden-input) .quick-input-header {
+	padding: 0;
+	border-bottom: none;
+}
+
+.monaco-workbench .quick-input-widget.paradis-quick-input-centered.paradis-quick-input-no-list .quick-input-filter {
+	align-items: center;
+	min-height: 44px;
+	padding: 0 var(--vscode-spacing-size120);
+	border-bottom: 1px solid var(--vscode-paradis-lineSubtle);
+	box-sizing: border-box;
+}
+
+.monaco-workbench .quick-input-widget.paradis-quick-input-centered.paradis-quick-input-no-list .quick-input-message {
+	margin: 0;
+	padding: var(--vscode-spacing-size100) var(--vscode-spacing-size120) var(--vscode-spacing-size120);
+	color: var(--vscode-paradis-textMuted);
+}
+
+.monaco-workbench .quick-input-widget.paradis-quick-input-centered.paradis-quick-input-no-list .quick-input-and-message:has(.monaco-inputbox.error, .monaco-inputbox.warning, .monaco-inputbox.info) > .quick-input-message {
+	margin: var(--vscode-spacing-size80);
+	margin-bottom: var(--vscode-spacing-size80) !important;
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size80);
+	border-radius: var(--paradis-radius-control);
+}
+
+.monaco-workbench .quick-input-widget.paradis-quick-input-centered.paradis-quick-input-no-list .quick-input-message:empty {
+	display: none;
+}
+
+.monaco-workbench .quick-input-widget.paradis-quick-input-centered.paradis-quick-input-no-list .quick-input-and-message:has(> .quick-input-message:empty) > .quick-input-filter {
+	border-bottom: none;
+}
+
+/* The hints: the kit's 32px row (the hint text inherits an 18px line, so the row sets the height instead of 8px padding). */
+.monaco-workbench .quick-input-widget.paradis-quick-input-centered.paradis-quick-input-no-list > .paradis-quick-input-hint {
+	align-items: center;
+	box-sizing: border-box;
+	min-height: var(--paradis-height-lg);
+	padding: 0 var(--vscode-spacing-size120);
+}
+
+.monaco-workbench .quick-input-widget.paradis-quick-input-centered.paradis-quick-input-no-list .quick-input-titlebar {
+	padding: var(--vscode-spacing-size40) 0;
+	border-bottom: 1px solid var(--vscode-paradis-lineSubtle);
+}

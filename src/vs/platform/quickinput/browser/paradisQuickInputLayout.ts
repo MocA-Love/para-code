@@ -98,8 +98,8 @@ export function paradisCurrentQuickInputLayout(): IParadisQuickInputLayout {
 	return current;
 }
 
-/** 器を中央に出す入力か（部品の横に出すもの・他所を押しても閉じない手順の入力は広げない）。 */
-function isCentered(input: IQuickInput | null | undefined): input is IQuickInput {
+/** 器を中央に出す入力か（部品の横に出すもの・他所を押しても閉じない手順の入力は広げない）。paradisQuickInputPrompt.ts も使う。 */
+export function paradisIsCenteredQuickInputPlacement(input: IQuickInput | null | undefined): input is IQuickInput {
 	return !!input && input.anchor === undefined && !input.ignoreFocusOut;
 }
 
@@ -108,7 +108,7 @@ function isCentered(input: IQuickInput | null | undefined): input is IQuickInput
  * 変わったら onDidChangeParadisQuickInputLayout を出す。
  */
 export function paradisQuickInputWidth(windowWidth: number, upstreamWidth: number, input: IQuickInput | null | undefined): number {
-	const options = isCentered(input) && input.contextKey !== undefined ? registered.get(input.contextKey) : undefined;
+	const options = paradisIsCenteredQuickInputPlacement(input) && input.contextKey !== undefined ? registered.get(input.contextKey) : undefined;
 	const next = paradisComputeQuickInputLayout(windowWidth, upstreamWidth, options, previewEnabled);
 	const changed = next.width !== current.width || next.previewWidth !== current.previewWidth || next.inlineDetail !== current.inlineDetail;
 	current = next;
