@@ -42,9 +42,10 @@ import { IParadisDevtoolsRoot, paradisDevtoolsExplainRootsDenial, paradisDevtool
 import { ParadisDevtoolsTemporaryDirectory } from './paradisDevtoolsTemporaryDirectory.js';
 import { ParadisSnapshotBaselines, ParadisSnapshotDiffMode } from './paradisBrowserSnapshotDiff.js';
 import { ParadisSnapshotDiffOutcome } from '../common/paradisAgentBrowserUsage.js';
-import { IParadisDevtoolsRecycleLimits, PARADIS_DEVTOOLS_HEALTH_INTERVAL_MS, PARADIS_DEVTOOLS_RECYCLE_LIMITS, PARADIS_DEVTOOLS_RECYCLE_QUIET_MS, ParadisDevtoolsReplacedReason, paradisAppendStderrTail, paradisDevtoolsReadsRecords, paradisDevtoolsRecordsResetNote, paradisDevtoolsRecycleReason, paradisDevtoolsStaleUidMessage, paradisNewUidTag, PARADIS_UID_TAG_HISTORY, paradisParseV8FatalStderr, paradisReadProcessRssMib, paradisTagChildUids, paradisTagSnapshotFileText, paradisUntagUids } from './paradisDevtoolsChildHealth.js';
+import { IParadisDevtoolsRecycleLimits, PARADIS_DEVTOOLS_HEALTH_INTERVAL_MS, PARADIS_DEVTOOLS_RECYCLE_LIMITS, PARADIS_DEVTOOLS_RECYCLE_QUIET_MS, ParadisDevtoolsReplacedReason, paradisAppendStderrTail, paradisDevtoolsReadsRecords, paradisDevtoolsRecordsResetNote, paradisDevtoolsRecycleIsUrgent, paradisDevtoolsRecycleReason, paradisDevtoolsStaleUidMessage, paradisNewUidTag, PARADIS_UID_TAG_HISTORY, paradisParseV8FatalStderr, paradisReadProcessRssMib, paradisTagChildUids, paradisTagSnapshotFileText, paradisUntagUids } from './paradisDevtoolsChildHealth.js';
 import { ParadisSnapshotCache, paradisAdjustCachedSnapshotResult, paradisAttachSnapshotRootRect, paradisSnapshotCacheUsable, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotMeasuresRoot, paradisTakeSnapshotRootRect, paradisEvaluateObserves, paradisEvaluateHasDeadline, paradisDevtoolsTimeoutTools, paradisDevtoolsToolIsRetrySafe } from './paradisDevtoolsToolAdjustments.js';
 import { IParadisDevtoolsCallOrigin, paradisDevtoolsCallOriginExtra } from './paradisDevtoolsCallOrigin.js';
+import { paradisIsTransientEvaluateFailure } from './paradisBrowserQuery.js';
 
 /** vendored chrome-devtools-mcp のstdioエントリ（同梱物。更新手順は同フォルダのREADME.md）。 */
 const DEVTOOLS_MCP_ENTRY = 'vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js';
@@ -462,6 +463,11 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 				this._inFlight.set(token, remaining);
 			} else {
 				this._inFlight.delete(token);
+				// メモリが溜まりすぎていたら、合間を待たずにここで作り直す（_recycleIfDue が急ぐときだけ通す）
+				const entry = this._children.get(token);
+				if (entry !== undefined) {
+					this._recycleIfDue(token, entry);
+				}
 			}
 		}
 	}
@@ -709,11 +715,13 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			return;
 		}
 		const now = this._now();
-		if (now - entry.lastActivityAt < (this.options.recycleQuietMs ?? PARADIS_DEVTOOLS_RECYCLE_QUIET_MS)) {
+		const limits = this.options.recycleLimits ?? PARADIS_DEVTOOLS_RECYCLE_LIMITS;
+		const urgent = paradisDevtoolsRecycleIsUrgent(entry.rssMib, limits);
+		if (!urgent && now - entry.lastActivityAt < (this.options.recycleQuietMs ?? PARADIS_DEVTOOLS_RECYCLE_QUIET_MS)) {
 			return;
 		}
 		const ageMs = now - entry.bornAt;
-		const reason = paradisDevtoolsRecycleReason({ rssMib: entry.rssMib, ageMs, calls: entry.calls }, this.options.recycleLimits ?? PARADIS_DEVTOOLS_RECYCLE_LIMITS);
+		const reason = paradisDevtoolsRecycleReason({ rssMib: entry.rssMib, ageMs, calls: entry.calls }, limits);
 		if (reason === undefined) {
 			return;
 		}
@@ -721,6 +729,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		reportParadisDiagnosticError('owned', 'agent-browser', 'devtools-child-recycled', new Error('chrome-devtools-mcp recycled while idle'), {
 			duration_ms: ageMs,
 			safe_recycle_reason: reason,
+			safe_recycle_urgent: urgent,
 			safe_calls: entry.calls,
 			...(entry.rssMib !== undefined ? { safe_rss_mib: entry.rssMib } : {}),
 		}, 'info');
@@ -795,6 +804,12 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		}
 		const content = Array.isArray(result.content) ? result.content : [];
 		const first = content.find((part): part is { type: 'text'; text: string } => this._isRecord(part) && part.type === 'text' && typeof part.text === 'string');
+		// wait_until checks the page again after a failure that only means the page was navigating (retryable): the
+		// agent never sees a single one of those, so they are neither an issue nor a tool failure of the session.
+		// Reporting each check filled Sentry with 30 events of `protocol-error` from wait_until's Runtime.evaluate.
+		if (origin?.agentTool === 'wait_until' && paradisIsTransientEvaluateFailure(result)) {
+			return;
+		}
 		// The kind is part of the operation so each bucket gets its own issue and rate-limit
 		// window; otherwise an agent's ordinary mis-clicks would crowd out a real transport fault.
 		const kind = first ? classifyToolErrorText(first.text) : 'other';

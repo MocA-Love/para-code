@@ -1134,9 +1134,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._mcpSetupController = createParadisMcpSetupController(
 			() => cachedShellEnv.getEnv(),
 			paradisCodexHome(),
-			(message, error) => {
-				reportParadisDiagnosticError('owned', 'agent-browser', 'configure-mcp', error ?? new Error(message), { phase: 'setup' });
-				this._runNonThrowingDiagnostic(() => this.logService.warn(`[ParadisAgentBrowser] ${message}`, error));
+			(message, error, safeExtra) => {
+				reportParadisDiagnosticError('owned', 'agent-browser', 'configure-mcp', error ?? new Error(message), { phase: 'setup', ...safeExtra });
+				this._runNonThrowingDiagnostic(() => this.logService.warn(`[ParadisAgentBrowser] ${message}`, error, safeExtra));
 			},
 			// アカウントを切り替えた先の Codex（~/.codex-2 等）にも同じ設定を入れる。
 			() => paradisCodexConfigHomes(),

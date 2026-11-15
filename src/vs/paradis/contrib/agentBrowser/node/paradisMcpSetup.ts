@@ -27,6 +27,8 @@ const MAX_CODEX_CONFIG_BYTES = 1024 * 1024;
 const MAX_CLAUDE_CONFIG_BYTES = 32 * 1024 * 1024;
 const CODEX_CONFIG_OPEN_FLAGS = fsConstants.O_RDONLY | fsConstants.O_NONBLOCK | fsConstants.O_NOFOLLOW;
 const CODEX_SETUP_ERROR = 'Automatic setup could not update the Codex configuration safely.';
+/** 読んでから書くまでに config.toml が変わったとき、読み直して試す回数（最初の 1 回を含む）。 */
+const CODEX_CONFIG_CHANGED_ATTEMPTS = 2;
 const CLAUDE_SETUP_ERROR = 'Automatic setup could not register the MCP server.';
 
 export type IParadisMcpSetupCommandResult =
@@ -110,6 +112,28 @@ interface IRunCommandOptions {
 
 function errorCode(error: unknown): unknown {
 	return typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined;
+}
+
+/**
+ * Codex の設定を読み書きできなかった理由の種類。Sentry へは理由の種類だけを送る（パスや中身は送らない）。
+ * 下の {@link ParadisCodexConfigError} が持つ種類のほかに、Node の errno から作る `read-<code>`・`write-<code>` がある。
+ */
+type ParadisCodexConfigFailureKind = 'symlink' | 'not-regular-file' | 'too-large' | 'invalid-read' | 'not-utf8' | 'changed' | 'ambiguous';
+
+/** 理由の種類を持たせた、設定の読み書きの失敗。 */
+class ParadisCodexConfigError extends Error {
+	constructor(readonly kind: ParadisCodexConfigFailureKind, message: string) {
+		super(message);
+	}
+}
+
+/** 失敗の理由の種類（Sentry の `safe_failure_kind` に載せる）。errno は形を確かめたものだけを使う。 */
+function codexConfigFailureKind(stage: 'read' | 'write', error: unknown): string {
+	if (error instanceof ParadisCodexConfigError) {
+		return error.kind;
+	}
+	const code = errorCode(error);
+	return `${stage}-${typeof code === 'string' && /^E[A-Z0-9]{1,30}$/.test(code) ? code : 'other'}`;
 }
 
 /** shellを介さず、出力と時間を上限化してプロセスツリーを実行する。 */
@@ -298,7 +322,8 @@ export interface IParadisMcpSetupControllerOptions {
 	 * ポートで試したかを残すファイル。試したものは次の起動から試さない。省略時は毎回試す（テスト用）。
 	 */
 	readonly upgradeMarkerPath?: string;
-	readonly log: (message: string, error?: unknown) => void;
+	/** `safeExtra` は Sentry へ送ってよい値だけ（理由の種類など。パスや設定の中身は入れない）。 */
+	readonly log: (message: string, error?: unknown, safeExtra?: Readonly<Record<string, string | number>>) => void;
 	readonly configReadFileSystem?: IConfigReadFileSystem;
 }
 
@@ -340,10 +365,10 @@ type IConfigFileStat = Stats;
 
 function assertBoundedRegularConfig(stat: IConfigFileStat, maxBytes: number): void {
 	if (stat.isSymbolicLink() || !stat.isFile()) {
-		throw new Error('Configuration is not a regular file');
+		throw new ParadisCodexConfigError(stat.isSymbolicLink() ? 'symlink' : 'not-regular-file', 'Configuration is not a regular file');
 	}
 	if (!Number.isSafeInteger(stat.size) || stat.size < 0 || stat.size > maxBytes) {
-		throw new Error('Configuration exceeds the safe read limit');
+		throw new ParadisCodexConfigError('too-large', 'Configuration exceeds the safe read limit');
 	}
 }
 
@@ -380,7 +405,7 @@ async function readConfigSnapshot(
 		const openedStat = await opened.stat();
 		assertBoundedRegularConfig(openedStat, maxBytes);
 		if (!sameConfigFileMetadata(statBefore, openedStat)) {
-			throw new Error('Codex configuration changed before being read');
+			throw new ParadisCodexConfigError('changed', 'Codex configuration changed before being read');
 		}
 		const boundedBuffer = Buffer.allocUnsafe(openedStat.size + 1);
 		let totalBytesRead = 0;
@@ -388,7 +413,7 @@ async function readConfigSnapshot(
 			const remaining = boundedBuffer.length - totalBytesRead;
 			const result = await fileSystem.read(opened, boundedBuffer, totalBytesRead, remaining, totalBytesRead);
 			if (!Number.isSafeInteger(result.bytesRead) || result.bytesRead < 0 || result.bytesRead > remaining) {
-				throw new Error('Codex configuration read returned an invalid byte count');
+				throw new ParadisCodexConfigError('invalid-read', 'Codex configuration read returned an invalid byte count');
 			}
 			if (result.bytesRead === 0) {
 				break;
@@ -402,7 +427,7 @@ async function readConfigSnapshot(
 		if (totalBytesRead !== openedStat.size
 			|| !sameConfigFileMetadata(openedStat, openedStatAfter)
 			|| !sameConfigFileMetadata(openedStatAfter, stat)) {
-			throw new Error('Codex configuration changed while being read');
+			throw new ParadisCodexConfigError('changed', 'Codex configuration changed while being read');
 		}
 		bytes = Buffer.from(boundedBuffer.subarray(0, totalBytesRead));
 	} finally {
@@ -410,7 +435,7 @@ async function readConfigSnapshot(
 	}
 	const text = bytes.toString('utf8');
 	if (!Buffer.from(text, 'utf8').equals(bytes)) {
-		throw new Error('Codex configuration is not valid UTF-8');
+		throw new ParadisCodexConfigError('not-utf8', 'Codex configuration is not valid UTF-8');
 	}
 	return {
 		exists: true,
@@ -458,7 +483,7 @@ async function writeConfigAtomic(
 		beforeReplace: async () => {
 			const current = await readConfigSnapshot(path, fileSystem);
 			if (!sameSnapshot(original, current)) {
-				throw new Error('Codex configuration changed during setup');
+				throw new ParadisCodexConfigError('changed', 'Codex configuration changed during setup');
 			}
 		},
 	});
@@ -468,6 +493,8 @@ export class ParadisMcpSetupController {
 	private readonly flights = new Map<ParadisMcpCli, Promise<IParadisMcpSetupResult>>();
 	/** {@link flights} のうち、起動時の入れ直し（{@link upgradeToolTimeouts}）のもの。 */
 	private readonly upgradeFlights = new WeakSet<Promise<IParadisMcpSetupResult>>();
+	/** 知らせ済みの、切り替え先のホームの失敗（設定ファイルと理由の種類の組）。 */
+	private readonly reportedAdditionalHomeFailures = new Set<string>();
 
 	constructor(private readonly options: IParadisMcpSetupControllerOptions) { }
 
@@ -708,10 +735,8 @@ export class ParadisMcpSetupController {
 			if (codexHome === this.options.codexHome) {
 				continue;
 			}
-			const result = await this.setupCodexAt(codexHome, gatewayPort);
-			if (result.servers.some(server => server.outcome === 'error')) {
-				this.options.log('Codex MCP configuration update failed for an additional Codex home');
-			}
+			// 失敗は setupCodexAt が理由の種類を付けて 1 回だけ知らせる
+			await this.setupCodexAt(codexHome, gatewayPort, 'additional');
 		}
 	}
 
@@ -881,29 +906,54 @@ export class ParadisMcpSetupController {
 	 * 指した節が残っていても、中身を読んで直すより丸ごと入れ替える方が確実。
 	 */
 	private setupCodex(gatewayPort: number | undefined): Promise<IParadisMcpSetupResult> {
-		return this.setupCodexAt(this.options.codexHome, gatewayPort);
+		return this.setupCodexAt(this.options.codexHome, gatewayPort, 'primary');
 	}
 
-	private async setupCodexAt(codexHome: string, gatewayPort: number | undefined): Promise<IParadisMcpSetupResult> {
+	/**
+	 * `home` が `additional` のときは、アカウントの追加・ログインのたびに裏で呼ばれる（利用者の操作ではない）。
+	 * そこで同じホームの同じ理由の失敗を何度も知らせないよう、このプロセスでは 1 回だけ知らせる。
+	 */
+	private async setupCodexAt(codexHome: string, gatewayPort: number | undefined, home: 'primary' | 'additional'): Promise<IParadisMcpSetupResult> {
 		const configPath = join(codexHome, 'config.toml');
 		if (gatewayPort === undefined) {
 			return { cli: 'codex', cliAvailable: true, target: configPath, servers: [{ server: 'para-browser', outcome: 'error', detail: CODEX_SETUP_ERROR }] };
 		}
-		try {
-			const original = await readConfigSnapshot(configPath, this.options.configReadFileSystem);
-			// 節ごと差し替えるので 'present' でも進む。曖昧な構文のときだけ手を出さない。
-			if (inspectParadisMcpTomlSection(original.text) === 'ambiguous') {
-				throw new Error('Ambiguous Codex MCP configuration');
+		for (let attempt = 1; ; attempt++) {
+			let stage: 'read' | 'write' = 'read';
+			try {
+				const original = await readConfigSnapshot(configPath, this.options.configReadFileSystem);
+				// 節ごと差し替えるので 'present' でも進む。曖昧な構文のときだけ手を出さない。
+				if (inspectParadisMcpTomlSection(original.text) === 'ambiguous') {
+					throw new ParadisCodexConfigError('ambiguous', 'Ambiguous Codex MCP configuration');
+				}
+				const content = paradisUpsertCodexMcpToml(original.text, gatewayPort);
+				if (content === original.text) {
+					return { cli: 'codex', cliAvailable: true, target: configPath, servers: [{ server: 'para-browser', outcome: 'already' }] };
+				}
+				stage = 'write';
+				await writeConfigAtomic(configPath, original, content, this.options.configReadFileSystem);
+				return { cli: 'codex', cliAvailable: true, target: configPath, servers: [{ server: 'para-browser', outcome: 'success' }] };
+			} catch (error) {
+				const kind = codexConfigFailureKind(stage, error);
+				// 読んでから書くまでの間に変わったときは、読み直してもう 1 回だけ試す。ホームが増えた知らせでは hook の
+				// 信頼の記録（Codex 自身が config.toml を書く）も同時に走る（推測: 切り替え先のホームで失敗していた理由の 1 つ）
+				if (kind === 'changed' && attempt < CODEX_CONFIG_CHANGED_ATTEMPTS) {
+					continue;
+				}
+				// 切り替え先のホームの config.toml がリンクのときは、利用者が設定を共有している。リンクの先へは
+				// 書かない（既定のホームの側でセットアップする）。失敗ではないので知らせない
+				if (home === 'additional' && kind === 'symlink') {
+					return { cli: 'codex', cliAvailable: true, target: configPath, servers: [{ server: 'para-browser', outcome: 'already' }] };
+				}
+				const reportKey = `${configPath}|${kind}`;
+				if (home === 'primary' || !this.reportedAdditionalHomeFailures.has(reportKey)) {
+					if (home === 'additional') {
+						this.reportedAdditionalHomeFailures.add(reportKey);
+					}
+					this.options.log(home === 'primary' ? 'Codex MCP configuration update failed' : 'Codex MCP configuration update failed for an additional Codex home', undefined, { safe_failure_kind: kind, safe_home_kind: home, attempt });
+				}
+				return { cli: 'codex', cliAvailable: true, target: configPath, servers: [{ server: 'para-browser', outcome: 'error', detail: CODEX_SETUP_ERROR }] };
 			}
-			const content = paradisUpsertCodexMcpToml(original.text, gatewayPort);
-			if (content === original.text) {
-				return { cli: 'codex', cliAvailable: true, target: configPath, servers: [{ server: 'para-browser', outcome: 'already' }] };
-			}
-			await writeConfigAtomic(configPath, original, content, this.options.configReadFileSystem);
-			return { cli: 'codex', cliAvailable: true, target: configPath, servers: [{ server: 'para-browser', outcome: 'success' }] };
-		} catch {
-			this.options.log('Codex MCP configuration update failed');
-			return { cli: 'codex', cliAvailable: true, target: configPath, servers: [{ server: 'para-browser', outcome: 'error', detail: CODEX_SETUP_ERROR }] };
 		}
 	}
 }
@@ -911,7 +961,7 @@ export class ParadisMcpSetupController {
 export function createParadisMcpSetupController(
 	resolveShellEnv: () => Promise<NodeJS.ProcessEnv>,
 	codexHome: string,
-	log: (message: string, error?: unknown) => void,
+	log: IParadisMcpSetupControllerOptions['log'],
 	additionalCodexHomes?: () => readonly string[],
 	upgradeMarkerPath?: string,
 ): ParadisMcpSetupController {

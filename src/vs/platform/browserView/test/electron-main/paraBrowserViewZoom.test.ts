@@ -17,7 +17,14 @@ class FakeTab extends EventEmitter {
 	isolated = false;
 	readonly session = {};
 	readonly id = 7;
+	crashed = false;
+	readonly mainFrame = { detached: false };
 	isDestroyed(): boolean { return false; }
+	isCrashed(): boolean { return this.crashed; }
+	crash(): void {
+		this.crashed = true;
+		this.emit('render-process-gone', {}, { reason: 'crashed' });
+	}
 	setZoomFactor(factor: number): void { this.zoomCalls.push({ factor, isolated: this.isolated }); }
 	navigate(): void {
 		this.isolated = false;
@@ -80,6 +87,18 @@ suite('paraBrowserViewZoom', () => {
 			scalesByZoom: true,
 			zoom: { factor: 0.5, isolated: true },
 		});
+	});
+
+	test('does not ask for the emulation again when the renderer went away while the tab was being isolated', async () => {
+		const tab = new FakeTab();
+		let release!: () => void;
+		hold = new Promise<void>(resolve => release = resolve);
+		let ready = 0;
+		request(tab, 0.5, () => ready++);
+		tab.crash();
+		release();
+		await flush();
+		assert.deepStrictEqual({ ready, scalesByZoom: paraBrowserViewScalesByZoom(tab as unknown as WebContents) }, { ready: 0, scalesByZoom: false });
 	});
 
 	test('a size that fits needs no shrinking, and going back to the editor size or switching sizes does not stack factors', async () => {

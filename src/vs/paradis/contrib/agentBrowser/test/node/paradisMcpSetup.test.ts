@@ -816,38 +816,46 @@ suite('Para Browser MCP setup', () => {
 		}
 	});
 
-	test('Codex setup fails closed when a config changes during its bounded read', async () => {
-		const directory = await fs.mkdtemp(join(tmpdir(), 'paradis-mcp-read-race-'));
-		try {
-			const configPath = join(directory, 'config.toml');
-			const original = Buffer.from('model = "private-model"\n', 'utf8');
-			await fs.writeFile(configPath, original);
-			let mutated = false;
-			const controller = new ParadisMcpSetupController({
-				platform: 'darwin',
-				resolveShellEnv: async () => ({}),
-				findExecutable: async () => undefined,
-				runCommand: async () => ({ kind: 'failure', output: '' }),
-				codexHome: directory,
-				log: () => undefined,
-				configReadFileSystem: {
-					lstat: (path: string) => fs.lstat(path),
-					open: (path: string, flags: number) => fs.open(path, flags),
-					read: async (handle: FileHandle, buffer: Buffer, offset: number, length: number, position: number) => {
-						const result = await handle.read(buffer, offset, length, position);
-						if (!mutated) {
-							mutated = true;
-							await fs.appendFile(configPath, '#');
-						}
-						return result;
+	// 読んでいる間に変わったら、途中の中身では書かない。読み直して 1 回だけやり直し、それでも変わり続けるなら諦める
+	test('Codex setup never writes a config that changed during its bounded read, and reads it again once', async () => {
+		const run = async (mutations: number) => {
+			const directory = await fs.mkdtemp(join(tmpdir(), 'paradis-mcp-read-race-'));
+			try {
+				const configPath = join(directory, 'config.toml');
+				const original = Buffer.from('model = "private-model"\n', 'utf8');
+				await fs.writeFile(configPath, original);
+				let mutated = 0;
+				const controller = new ParadisMcpSetupController({
+					platform: 'darwin',
+					resolveShellEnv: async () => ({}),
+					findExecutable: async () => undefined,
+					runCommand: async () => ({ kind: 'failure', output: '' }),
+					codexHome: directory,
+					log: () => undefined,
+					configReadFileSystem: {
+						lstat: (path: string) => fs.lstat(path),
+						open: (path: string, flags: number) => fs.open(path, flags),
+						read: async (handle: FileHandle, buffer: Buffer, offset: number, length: number, position: number) => {
+							const result = await handle.read(buffer, offset, length, position);
+							if (mutated < mutations && result.bytesRead > 0) {
+								mutated++;
+								await fs.appendFile(configPath, '#');
+							}
+							return result;
+						},
 					},
-				},
-			});
-			assert.strictEqual((await controller.setup('codex', PORT)).servers[0].outcome, 'error');
-			assert.deepStrictEqual(await fs.readFile(configPath), Buffer.concat([original, Buffer.from('#')]));
-		} finally {
-			await fs.rm(directory, { recursive: true, force: true });
-		}
+				});
+				const outcome = (await controller.setup('codex', PORT)).servers[0].outcome;
+				const text = await fs.readFile(configPath, 'utf8');
+				return { outcome, keptChange: text.startsWith(`${original.toString('utf8')}#`), configured: text.includes('[mcp_servers.para-browser]') };
+			} finally {
+				await fs.rm(directory, { recursive: true, force: true });
+			}
+		};
+		assert.deepStrictEqual({ once: await run(1), always: await run(Number.MAX_SAFE_INTEGER) }, {
+			once: { outcome: 'success', keptChange: true, configured: true },
+			always: { outcome: 'error', keptChange: true, configured: false },
+		});
 	});
 
 	test('Codex setup opens nonblocking and rejects a special file swapped in after lstat', async () => {
@@ -889,18 +897,18 @@ suite('Para Browser MCP setup', () => {
 		try {
 			const configPath = join(directory, 'config.toml');
 			await fs.mkdir(configPath);
-			const logs: { readonly message: string; readonly error?: unknown }[] = [];
+			const logs: { readonly message: string; readonly error?: unknown; readonly safeExtra?: unknown }[] = [];
 			const controller = new ParadisMcpSetupController({
 				platform: 'darwin',
 				resolveShellEnv: async () => ({}),
 				findExecutable: async () => undefined,
 				runCommand: async () => ({ kind: 'failure', output: '' }),
 				codexHome: directory,
-				log: (message, error) => logs.push({ message, error }),
+				log: (message, error, safeExtra) => logs.push({ message, error, safeExtra }),
 			});
 			assert.strictEqual((await controller.setup('codex', PORT)).servers[0].outcome, 'error');
 			assert.strictEqual((await fs.lstat(configPath)).isDirectory(), true);
-			assert.deepStrictEqual(logs, [{ message: 'Codex MCP configuration update failed', error: undefined }]);
+			assert.deepStrictEqual(logs, [{ message: 'Codex MCP configuration update failed', error: undefined, safeExtra: { safe_failure_kind: 'not-regular-file', safe_home_kind: 'primary', attempt: 1 } }]);
 		} finally {
 			await fs.rm(directory, { recursive: true, force: true });
 		}
@@ -930,6 +938,43 @@ suite('Para Browser MCP setup', () => {
 			await fs.writeFile(join(primary, 'config.toml'), `[mcp_servers.para-browser]\nurl = "http://127.0.0.1:${PORT}/"\n`);
 			await controller.propagateToCodexHomes(PORT);
 			assert.deepStrictEqual({ beforeSetup, afterSetup: await readSecond() }, { beforeSetup: false, afterSetup: true });
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	// 切り替え先のホームの config.toml がリンク（設定を共有している）なら、リンクの先へ書かず、失敗とも知らせない。
+	// ほかの理由の失敗は、同じホームの同じ理由を 1 回だけ、理由の種類を付けて知らせる。
+	test('skips a linked config in an account home and reports other account home failures once with their kind', async () => {
+		const directory = await fs.mkdtemp(join(tmpdir(), 'paradis-mcp-homes-'));
+		try {
+			const primary = join(directory, '.codex');
+			const linked = join(directory, '.codex-2');
+			const broken = join(directory, '.codex-3');
+			await fs.mkdir(primary);
+			await fs.mkdir(linked);
+			await fs.mkdir(join(broken, 'config.toml'), { recursive: true });
+			const primaryConfig = `[mcp_servers.para-browser]\nurl = "http://127.0.0.1:${PORT}/"\n`;
+			await fs.writeFile(join(primary, 'config.toml'), primaryConfig);
+			const shared = join(directory, 'shared.toml');
+			await fs.writeFile(shared, 'model = "x"\n');
+			await fs.symlink(shared, join(linked, 'config.toml'));
+			const logs: { readonly message: string; readonly safeExtra?: unknown }[] = [];
+			const controller = new ParadisMcpSetupController({
+				platform: 'darwin',
+				resolveShellEnv: async () => ({ PATH: '/safe' }),
+				findExecutable: async () => undefined,
+				runCommand: async (): Promise<IParadisMcpSetupCommandResult> => ({ kind: 'exit', code: 0, output: '' }),
+				codexHome: primary,
+				additionalCodexHomes: () => [primary, linked, broken],
+				log: (message, _error, safeExtra) => logs.push({ message, safeExtra }),
+			});
+			await controller.propagateToCodexHomes(PORT);
+			await controller.propagateToCodexHomes(PORT);
+			assert.deepStrictEqual({ logs, shared: await fs.readFile(shared, 'utf8') }, {
+				logs: [{ message: 'Codex MCP configuration update failed for an additional Codex home', safeExtra: { safe_failure_kind: 'not-regular-file', safe_home_kind: 'additional', attempt: 1 } }],
+				shared: 'model = "x"\n',
+			});
 		} finally {
 			await fs.rm(directory, { recursive: true, force: true });
 		}
