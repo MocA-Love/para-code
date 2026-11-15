@@ -14,7 +14,7 @@ import * as os from 'os';
 import * as path from '../../../../../base/common/path.js';
 import { IParadisClaudeUsageWindows } from '../../common/paradisClaudeUsage.js';
 import { IParadisKeychain, ParadisKeychainError } from '../../node/paradisClaudeKeychain.js';
-import { IParadisClaudeOAuthClient, ParadisClaudeProfileResult, ParadisClaudeRefreshResult, ParadisClaudeUsageFetchResult } from '../../node/paradisClaudeOAuthClient.js';
+import { IParadisClaudeOAuthClient, ParadisClaudeProfileResult, ParadisClaudeRefreshResult, ParadisClaudeResetGrantsFetchResult, ParadisClaudeUsageFetchResult } from '../../node/paradisClaudeOAuthClient.js';
 
 export class ParadisMemoryKeychain implements IParadisKeychain {
 
@@ -65,6 +65,9 @@ export class ParadisFakeClaudeOAuth implements IParadisClaudeOAuthClient {
 	readonly usageCalls: string[] = [];
 	readonly refreshCalls: string[] = [];
 	readonly profileCalls: string[] = [];
+	readonly resetGrantsCalls: string[] = [];
+	/** アクセストークン → リミットリセットの読み取りの結果。無いものは 404（取れない）を返す。 */
+	readonly resetGrantsByToken = new Map<string, ParadisClaudeResetGrantsFetchResult>();
 	/** アクセストークン → 持ち主。無いものは「確かめられない」を返す。 */
 	readonly profileByToken = new Map<string, ParadisClaudeProfileResult>();
 	/** 取得を待たせる（テストで取得の途中に割り込むため）。 */
@@ -88,6 +91,11 @@ export class ParadisFakeClaudeOAuth implements IParadisClaudeOAuthClient {
 			await this.usageGate;
 		}
 		return this.usageByToken.get(accessToken) ?? { kind: 'http', status: 401 };
+	}
+
+	async fetchResetGrants(accessToken: string): Promise<ParadisClaudeResetGrantsFetchResult> {
+		this.resetGrantsCalls.push(accessToken);
+		return this.resetGrantsByToken.get(accessToken) ?? { kind: 'http', status: 404 };
 	}
 
 	async refresh(credentialsJson: string): Promise<ParadisClaudeRefreshResult> {

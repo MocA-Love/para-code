@@ -111,6 +111,33 @@ suite('ParadisClaudeAccountService usage', () => {
 		assert.deepStrictEqual(harness.oauth.refreshCalls, []);
 	});
 
+	// リミットリセットは使用量が取れた後に同じトークンで読み、30 分は読み直さない（使用量の取得の間隔より少ない）。
+	test('attaches the limit resets read after a successful usage fetch, at most every 30 minutes', async () => {
+		const harness = await createHarness();
+		await paradisWriteClaudeGlobalConfig(harness.home, { oauthAccount: paradisTestOauthAccount('u-alice', 'alice@example.com'), projects: {} });
+		harness.keychain.set(PARADIS_CLAUDE_CODE_KEYCHAIN_SERVICE, USER, paradisTestCredentials('live-access', 'live-refresh', harness.now + 24 * HOUR));
+		harness.oauth.usageByToken.set('live-access', { kind: 'ok', usage: paradisTestUsage(42) });
+		const endsAt = harness.now + 30 * 24 * HOUR;
+		harness.oauth.resetGrantsByToken.set('live-access', { kind: 'ok', grants: [{ kind: 'full', left: 1, endsAt }] });
+
+		await poll(harness);
+		await harness.service.whenResetGrantsRead();
+		harness.now += 10 * 60_000;
+		await poll(harness, true);
+		await harness.service.whenResetGrantsRead();
+		const accounts = (await harness.service.getState(undefined)).claude.accounts;
+
+		assert.deepStrictEqual({
+			grants: accounts.map(account => account.claudeResetGrants),
+			usageCalls: harness.oauth.usageCalls.length,
+			grantsCalls: harness.oauth.resetGrantsCalls,
+		}, {
+			grants: [[{ kind: 'full', left: 1, endsAt }]],
+			usageCalls: 2,
+			grantsCalls: ['live-access'],
+		});
+	});
+
 	test('reads ~/.claude/.credentials.json outside macOS', async () => {
 		const harness = await createHarness({ platform: 'linux' });
 		await paradisWriteClaudeGlobalConfig(harness.home, { oauthAccount: paradisTestOauthAccount('u-alice', 'alice@example.com') });

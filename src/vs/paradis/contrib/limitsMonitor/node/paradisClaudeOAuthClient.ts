@@ -30,6 +30,8 @@ import {
 	paradisParseClaudeUsage,
 	paradisParseRetryAfterS
 } from '../common/paradisClaudeUsage.js';
+import { PARADIS_CLAUDE_RESET_GRANTS_URL, paradisParseClaudeResetGrants } from '../common/paradisClaudeResetGrants.js';
+import { IParadisClaudeResetGrant } from '../common/paradisLimitsMonitor.js';
 
 const USAGE_TIMEOUT_MS = 10_000;
 const REFRESH_TIMEOUT_MS = 10_000;
@@ -42,6 +44,15 @@ const USER_AGENT = 'ParaCode-LimitsMonitor/1.0';
 
 export type ParadisClaudeUsageFetchResult =
 	| { readonly kind: 'ok'; readonly usage: IParadisClaudeUsageWindows }
+	| { readonly kind: 'http'; readonly status: number; readonly retryAfterS?: number }
+	| { readonly kind: 'network' };
+
+/**
+ * リミットリセットの読み取りの結果。`grants` が undefined なら、応答に `cedar_ember` のブロックが無かった
+ * （形が違った）。応答本文はここで捨て、外へは出さない。
+ */
+export type ParadisClaudeResetGrantsFetchResult =
+	| { readonly kind: 'ok'; readonly grants: readonly IParadisClaudeResetGrant[] | undefined }
 	| { readonly kind: 'http'; readonly status: number; readonly retryAfterS?: number }
 	| { readonly kind: 'network' };
 
@@ -64,6 +75,8 @@ export type ParadisClaudeProfileResult =
 
 export interface IParadisClaudeOAuthClient {
 	fetchUsage(accessToken: string): Promise<ParadisClaudeUsageFetchResult>;
+	/** リミットリセットの束（{@link PARADIS_CLAUDE_RESET_GRANTS_URL}）。使用量の取得とは別の GET。 */
+	fetchResetGrants(accessToken: string): Promise<ParadisClaudeResetGrantsFetchResult>;
 	/** アクセストークンの持ち主。別のアカウントのトークンを取り込まないための確認に使う。 */
 	fetchProfile(accessToken: string): Promise<ParadisClaudeProfileResult>;
 	refresh(credentialsJson: string): Promise<ParadisClaudeRefreshResult>;
@@ -102,6 +115,38 @@ export class ParadisClaudeOAuthClient implements IParadisClaudeOAuthClient {
 		}
 		try {
 			return { kind: 'ok', usage: paradisParseClaudeUsage(await response.json()) };
+		} catch {
+			return { kind: 'network' };
+		}
+	}
+
+	async fetchResetGrants(accessToken: string): Promise<ParadisClaudeResetGrantsFetchResult> {
+		let response: Response;
+		try {
+			response = await this.fetchImpl(PARADIS_CLAUDE_RESET_GRANTS_URL, {
+				method: 'GET',
+				headers: {
+					'Authorization': `Bearer ${accessToken}`,
+					'anthropic-beta': PARADIS_CLAUDE_OAUTH_BETA,
+					'Accept': 'application/json',
+					'User-Agent': USER_AGENT,
+				},
+				redirect: 'error',
+				signal: AbortSignal.timeout(USAGE_TIMEOUT_MS),
+			});
+		} catch {
+			return { kind: 'network' };
+		}
+		if (!response.ok) {
+			await response.body?.cancel().catch(() => undefined);
+			return {
+				kind: 'http',
+				status: response.status,
+				retryAfterS: response.status === 429 ? paradisParseRetryAfterS(response.headers.get('retry-after'), this.now()) : undefined,
+			};
+		}
+		try {
+			return { kind: 'ok', grants: paradisParseClaudeResetGrants(await response.json(), this.now()) };
 		} catch {
 			return { kind: 'network' };
 		}

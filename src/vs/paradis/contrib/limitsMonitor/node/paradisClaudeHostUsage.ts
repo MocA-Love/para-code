@@ -50,6 +50,7 @@ import {
 import { IParadisLimitsAccount, ParadisLimitsAccountStatus, ParadisLimitsUnavailableReason } from '../common/paradisLimitsMonitor.js';
 import { ParadisClaudeLiveAuth } from './paradisClaudeLiveAuth.js';
 import { IParadisClaudeOAuthClient, ParadisClaudeUsageFetchResult } from './paradisClaudeOAuthClient.js';
+import { ParadisClaudeResetGrantsTracker } from './paradisClaudeResetGrantsTracker.js';
 
 /** アクセストークンが切れていたとき、接続先の Claude Code が更新するのを待つ間隔（手元の使用中と同じ）。 */
 const WAIT_FOR_REFRESH_S = 300;
@@ -137,6 +138,8 @@ export class ParadisClaudeHostUsage {
 	private readonly random: () => number;
 	private readonly state: IParadisClaudeHostUsageState = { status: 'unavailable', unavailableReason: 'not_fetched', nextPollAt: 0, failures: 0, fetchTimes: [] };
 	private identity: IParadisClaudeIdentity | undefined;
+	/** リミットリセットの束（鍵は身元。身元が変わったら前の束は捨てる）。 */
+	private readonly resetGrants: ParadisClaudeResetGrantsTracker;
 	/** 同時に来た問い合わせ（複数のウィンドウ）は1本にまとめる。 */
 	private inflight: Promise<IParadisClaudeAccountsState> | undefined;
 
@@ -148,9 +151,15 @@ export class ParadisClaudeHostUsage {
 		this.logService = options.logService;
 		this.now = options.now ?? Date.now;
 		this.random = options.random ?? Math.random;
+		this.resetGrants = new ParadisClaudeResetGrantsTracker(this.oauth, this.logService, '[ParadisClaudeHostUsage]', this.now);
 		// キーチェーンは渡さない（SSH 越しには読めない）。使うのは読み取りのメソッドだけ。身元（`.claude.json`）は
 		// 更新時刻と大きさが変わらなければ読み直さない（数 MB になることがある）。
 		this.liveAuth = new ParadisClaudeLiveAuth({ homedir: options.homedir, configDir: this.configDir, platform: options.platform, keychain: undefined, userName: undefined, now: this.now });
+	}
+
+	/** 走っているリミットリセットの読み取りが終わるのを待つ（テスト用）。 */
+	whenResetGrantsRead(): Promise<void> {
+		return this.resetGrants.whenSettled();
 	}
 
 	async getState(request: IParadisClaudeStateRequest | undefined): Promise<IParadisClaudeAccountsState> {
@@ -212,6 +221,7 @@ export class ParadisClaudeHostUsage {
 		}
 		if (identityKey !== undefined) {
 			state.identityKey = identityKey;
+			this.resetGrants.retain(new Set([identityKey]));
 		}
 		this.identity = login.identity;
 
@@ -305,6 +315,9 @@ export class ParadisClaudeHostUsage {
 				state.backoffUntil = undefined;
 				state.intervalS = plan.intervalS;
 				state.nextPollAt = plan.nextPollAt;
+				// 同じトークンで、間隔が来ていればリミットリセットも読む（使用量の取得は待たせない。失敗しても使用量の状態は
+				// 変えない）。結果は次の問い合わせで返す。鍵は buildState と同じ（覚えている身元）。
+				void this.resetGrants.refreshIfDue(resetGrantsKey(state.identityKey), accessToken);
 				return;
 			}
 			case 'http':
@@ -372,7 +385,7 @@ export class ParadisClaudeHostUsage {
 
 	private buildState(): IParadisClaudeAccountsState {
 		const state = this.state;
-		const account: IParadisLimitsAccount = {
+		let account: IParadisLimitsAccount = {
 			provider: 'claude',
 			id: PARADIS_CLAUDE_HOST_ACCOUNT_ID,
 			email: this.identity?.email,
@@ -386,6 +399,16 @@ export class ParadisClaudeHostUsage {
 			scoped: state.windows?.scoped,
 			fetchedAt: state.fetchedAt,
 		};
+		// 読めて券が無いときも空の配列で送る（モバイルが使い切った PC と古い PC を見分けるため）。
+		const grants = this.resetGrants.get(resetGrantsKey(state.identityKey));
+		if (grants !== undefined) {
+			account = { ...account, claudeResetGrants: grants };
+		}
 		return { claude: { accounts: [account] }, oldestFetchedAt: state.fetchedAt, switching: false };
 	}
+}
+
+/** リミットリセットの束の鍵（身元が分からない間は 1 つの鍵にまとめる）。 */
+function resetGrantsKey(identityKey: string | undefined): string {
+	return identityKey ?? 'host';
 }
