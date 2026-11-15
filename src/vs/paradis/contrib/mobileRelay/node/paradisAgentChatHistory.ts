@@ -20,6 +20,7 @@
 
 import type * as fs from 'fs/promises';
 import type { IParadisAgentChatMessage, ParadisAgentKind } from '../../agentChat/common/paradisAgentChat.js';
+import { IParadisAntigravityParseState, newParadisAntigravityParseState, parseAntigravityLine } from '../../agentChat/common/paradisAntigravityTranscript.js';
 import { IRawMessage, newParseSignals, parseClaudeLine, parseClaudeProgress, parseCodexLine, rec } from '../../agentChat/common/paradisAgentTranscriptParser.js';
 
 /** 1 回の読み取りで後ろから読むバイト数の上限。 */
@@ -63,7 +64,7 @@ export function paradisHistoryCursorHasMore(cursor: IParadisHistoryCursor): bool
 }
 
 /** 1 行を発言にする（tailer と同じ解釈。進み具合の行は飛ばす）。 */
-function parseLine(agent: ParadisAgentKind, text: string, signals: ReturnType<typeof newParseSignals>): IRawMessage[] {
+function parseLine(agent: ParadisAgentKind, text: string, signals: ReturnType<typeof newParseSignals>, antigravityState: IParadisAntigravityParseState = newParadisAntigravityParseState()): IRawMessage[] {
 	const trimmed = text.trim();
 	if (trimmed.length === 0) {
 		return [];
@@ -82,6 +83,10 @@ function parseLine(agent: ParadisAgentKind, text: string, signals: ReturnType<ty
 			return [];
 		}
 		return parseClaudeLine(obj, signals);
+	}
+	if (agent === 'antigravity') {
+		// 呼び出しと結果の結び付けは読み取りの塊の中だけで持つ（塊の境目の結果は呼び出しに結ばれないまま出る）
+		return parseAntigravityLine(obj, signals, antigravityState);
 	}
 	return parseCodexLine(obj, signals);
 }
@@ -197,10 +202,11 @@ export async function paradisReadTranscriptHistory(
 	const flush = () => {
 		// batch は新しい順。前から（古い順に）解釈して、続く行と組になる行の関係を保つ。
 		const signals = newParseSignals();
+		const antigravityState = newParadisAntigravityParseState();
 		const parsed: { readonly raw: IRawMessage; readonly offset: number; readonly indexInLine: number }[] = [];
 		for (let index = batch.length - 1; index >= 0; index--) {
 			const line = batch[index]!;
-			parseLine(agent, line.text, signals).forEach((raw, indexInLine) => parsed.push({ raw, offset: line.offset, indexInLine }));
+			parseLine(agent, line.text, signals, antigravityState).forEach((raw, indexInLine) => parsed.push({ raw, offset: line.offset, indexInLine }));
 		}
 		for (let index = parsed.length - 1; index >= 0; index--) {
 			collected.push(parsed[index]!);

@@ -6,7 +6,7 @@ import { paraAlert } from '../paraAlert.js';
 import { Ionicons } from '@expo/vector-icons';
 import { BottomSheet } from './bottomSheet.js';
 import { EffortSlider } from './effortSlider.js';
-import { claudeModelDisplayName, matchAgentModel } from '../agentModels.js';
+import { agentHasNoModelCatalog, claudeModelDisplayName, matchAgentModel } from '../agentModels.js';
 import { useClaudeModelOptions } from '../hooks/useClaudeModelOptions.js';
 import { HIT_SIZE, alpha, colors, radius, squircle, tint, type } from '../theme.js';
 import { hitSlopToMinimum } from './hitSlop.js';
@@ -67,7 +67,7 @@ export function ModelPill({ agent, model, effort, modelControl, onClaudeSetting,
 			aliases: option.id === option.model ? [] : [option.id],
 			efforts: option.efforts.map(item => item.value),
 		}))
-		: agent === 'opencode' ? [] : claudeCatalog.options;
+		: agentHasNoModelCatalog(agent) ? [] : claudeCatalog.options;
 	const currentModel = agent === 'codex'
 		? options.find(option => option.id === model || option.aliases.includes(model ?? ''))
 		: matchAgentModel(agent, model, options);

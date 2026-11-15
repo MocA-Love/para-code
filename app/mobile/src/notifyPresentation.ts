@@ -41,8 +41,8 @@ export function notifySubtitle(subtitle: string | undefined, pcName: string | un
 }
 
 /** エージェントの呼び名（PC の `paradisAgentLabel` と同じ）。 */
-function agentLabel(agent: 'claude' | 'codex' | undefined): string | undefined {
-	return agent === 'codex' ? 'Codex' : agent === 'claude' ? 'Claude' : undefined;
+function agentLabel(agent: string | undefined): string | undefined {
+	return agent === 'antigravity' ? 'Antigravity' : agent === 'codex' ? 'Codex' : agent === 'claude' ? 'Claude' : undefined;
 }
 
 /**

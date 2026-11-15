@@ -22,8 +22,8 @@ import { IParadisAgentCommandTemplate, IParadisAgentLaunchOptions } from '../../
 export const PARADIS_TAB_LAUNCHER_HIDDEN_AGENTS: ReadonlySet<string> = new Set(['gemini']);
 
 /**
- * 「チャットで起動」を出さないエージェント。Antigravity CLI は会話の記録を読む処理（Antigravity 対応の P2・P4）が
- * まだ無く、チャット表示を開けないため。P2・P4 が入ったらここから外す。
+ * 「チャットで起動」を出さないエージェント。Antigravity CLI の会話はチャット表示で読めるようになったが、チャット欄からの
+ * 送信はまだ断る（送信の経路は次の段取り）。チャットで起動すると最初の発言を打てないので、送信が入るまで出さない。
  */
 const PARADIS_TAB_LAUNCHER_NO_CHAT_AGENTS: ReadonlySet<string> = new Set(['antigravity']);
 

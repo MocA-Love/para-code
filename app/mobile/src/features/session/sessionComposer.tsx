@@ -5,6 +5,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { paraAlert } from '../../paraAlert.js';
 import { ArrowUp, CircleAlert, CornerDownRight, ImagePlus, Info, Keyboard, Monitor } from 'lucide-react-native';
+import { agentHasNoModelCatalog } from '../../agentModels.js';
 import { appendQuickReply, quickReplyTapAction, quoteReplyText } from '../../agentConversationUx.js';
 import { useAppStore } from '../../appState.js';
 import { flattenAnswerInput, reconcileRejectedAnswerTarget, reconcileSubmittedDraftTarget, shouldShowSubmissionAlert } from '../../components/agentComposerDraft.js';
@@ -776,7 +777,7 @@ export const SessionComposer = memo(forwardRef<SessionComposerHandle, SessionCom
 						effort={effort}
 						modelControl={modelControl}
 						ws={ws}
-						readOnly={modelLocked === true || agent === 'opencode'}
+						readOnly={modelLocked === true || agentHasNoModelCatalog(agent)}
 						onClaudeSetting={updateClaudeSetting}
 						onRequestCodexCatalog={() => { if (terminalKey !== undefined) { requestAgentModelCatalog(terminalKey); } }}
 						onUpdateCodexSettings={(nextModel, nextEffort) => { if (terminalKey !== undefined) { updateAgentSettings(terminalKey, nextModel, nextEffort); } }}

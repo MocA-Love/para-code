@@ -40,6 +40,17 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.24',
+		date: '2026-11-16',
+		items: [
+			{
+				icon: 'chatbubbles-outline',
+				title: 'Antigravity CLI のペインでも、会話と質問をアプリで見られるようにしました',
+				body: '一覧と会話のタブには Antigravity のロゴが出ます。チャット欄からの送信と、質問・確認への回答はまだできないので、ターミナル表示で入力してください。',
+			},
+		],
+	},
+	{
 		version: '0.12.23',
 		date: '2026-11-15',
 		items: [

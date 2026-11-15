@@ -40,6 +40,11 @@ export function agentModelOptions(agent: string | undefined, claudeCatalog?: rea
 	return [];
 }
 
+/** モバイルから選べるモデルの一覧を持たないエージェント（OpenCode・Antigravity CLI。モデルは PC のターミナルで変える）。 */
+export function agentHasNoModelCatalog(agent: string | undefined): boolean {
+	return agent === 'opencode' || agent === 'antigravity';
+}
+
 /** 照合用にモデルIDから末尾の `[1m]` と日付を外す（`claude-haiku-4-5-20251001` → `claude-haiku-4-5`）。 */
 function normalizeModelId(model: string): string {
 	return model.trim().toLowerCase().replace(/\[[a-z0-9]+\]$/, '').replace(/-\d{8}$/, '');

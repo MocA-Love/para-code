@@ -5,7 +5,7 @@ import { AccessibilityInfo, ActivityIndicator, Pressable, StyleSheet, Text, View
 import { paraAlert } from '../../paraAlert.js';
 import { Check, ChevronDown, ChevronLeft, Settings, X } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
-import { claudeModelDisplayName, matchAgentModel } from '../../agentModels.js';
+import { agentHasNoModelCatalog, claudeModelDisplayName, matchAgentModel } from '../../agentModels.js';
 import { useAppStore } from '../../appState.js';
 import { isMaximumEffort } from '../../components/effortSliderBehavior.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
@@ -132,7 +132,7 @@ export const ModelPill = forwardRef<ModelPillHandle, {
 			efforts: option.efforts.map(item => item.value),
 			isDefault: option.isDefault,
 		}))
-		: agent === 'opencode' ? [] : claudeCatalog.options;
+		: agentHasNoModelCatalog(agent) ? [] : claudeCatalog.options;
 	const currentModel = agent === 'codex'
 		? options.find(option => option.id === model || option.aliases.includes(model ?? ''))
 		: matchAgentModel(agent, model, options);
@@ -255,7 +255,7 @@ export const ModelPill = forwardRef<ModelPillHandle, {
 				onPress={openDrawer}
 				disabled={readOnly || modelControl?.status === 'updating' || submitting}
 				accessibilityRole={readOnly ? 'text' : 'button'}
-				accessibilityLabel={agent === 'opencode' ? 'OpenCode のモデルは PC で変更します' : readOnly ? `モデルと effort は ${label}。PC のターミナルの /model で変更します` : `モデルと effort を変更。いまは ${label}`}
+				accessibilityLabel={agent === 'opencode' ? 'OpenCode のモデルは PC で変更します' : agent === 'antigravity' ? `モデルは ${label}。Antigravity CLI のモデルは PC で変更します` : readOnly ? `モデルと effort は ${label}。PC のターミナルの /model で変更します` : `モデルと effort を変更。いまは ${label}`}
 			>
 				<Text style={styles.pillText} numberOfLines={1}>{label}</Text>
 				{readOnly ? null : <Icon icon={ChevronDown} size={iconSize.xs} color={colors.textDim} />}

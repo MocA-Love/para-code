@@ -16,8 +16,9 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, onParadisAgentTurnEnded } from '../../../agentBrowser/node/paradisAgentHookBus.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../../agentBrowser/node/paradisAgentHome.js';
-import { ParadisMobileAgentChat, paradisAgentChatImageLimitsForTest, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisCodexForkCandidateAllowed, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisIsLateHookAfterTurnEnd, paradisParseCodexTranscriptLineForTest, paradisParseCodexTranscriptLinesForTest, paradisPickCurrentInteraction, paradisReadCodexForkHistory, paradisResolveHookSessionTranscript, paradisSelectUnambiguousSessionCandidate, paradisSharedImageCacheForTest, paradisTakeLiveQuestionSyntheticId, paradisToolImageMeta, paradisQuestionReadyMarker } from '../../node/paradisMobileAgentChat.js';
+import { ParadisMobileAgentChat, paradisAgentChatImageLimitsForTest, paradisIsAllowedTranscriptPathForTest, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisCodexForkCandidateAllowed, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisIsLateHookAfterTurnEnd, paradisParseCodexTranscriptLineForTest, paradisParseCodexTranscriptLinesForTest, paradisPickCurrentInteraction, paradisReadCodexForkHistory, paradisResolveHookSessionTranscript, paradisSelectUnambiguousSessionCandidate, paradisSharedImageCacheForTest, paradisTakeLiveQuestionSyntheticId, paradisToolImageMeta, paradisQuestionReadyMarker } from '../../node/paradisMobileAgentChat.js';
 import { ParadisRemoteTranscriptMirrorStore } from '../../node/paradisRemoteTranscriptMirror.js';
+import { paradisAntigravityBrainRoot } from '../../../sessionResume/node/paradisAntigravityHistory.js';
 
 const nodeRequire = createRequire(import.meta.url);
 
@@ -114,6 +115,27 @@ function createEmptyCodexStateDatabase(codexHome: string): void {
 		`);
 	} finally {
 		database.close();
+	}
+}
+
+/** 偽の HOME（空のフォルダ）の中で動かす。Antigravity CLI の置き場所（~/.gemini）は HOME から決まるので、本物の記録や一覧に触らない。 */
+async function withFakeHome(run: (home: string) => Promise<void>): Promise<void> {
+	const home = await realpath(await mkdtemp(join(tmpdir(), 'paradis-antigravity-home-')));
+	// Windows の os.homedir() は USERPROFILE を見るので、両方を差し替える
+	const previous = { HOME: process.env['HOME'], USERPROFILE: process.env['USERPROFILE'] };
+	process.env['HOME'] = home;
+	process.env['USERPROFILE'] = home;
+	try {
+		await run(home);
+	} finally {
+		for (const [name, value] of Object.entries(previous)) {
+			if (value === undefined) {
+				delete process.env[name];
+			} else {
+				process.env[name] = value;
+			}
+		}
+		await rm(home, { recursive: true, force: true });
 	}
 }
 
@@ -345,6 +367,178 @@ suite('ParadisMobileAgentChat', () => {
 			chat.dispose();
 		}
 	});
+
+	test('follows an Antigravity CLI conversation from its hooks, and refuses sends from the chat until the send path exists', () => withFakeHome(async home => {
+		const token = 'pane-antigravity';
+		// 偽の会話の id（手元の agy の会話とは重ならない）。記録のファイルは作らない（tailer は出現を待つ）
+		const conversationId = '00000000-0000-4000-8000-00000000a6e1';
+		const transcriptPath = join(paradisAntigravityBrainRoot(home), conversationId, '.system_generated', 'logs', 'transcript_full.jsonl');
+		const sent: Record<string, unknown>[] = [];
+		const actions: Record<string, unknown>[] = [];
+		const chat = new ParadisMobileAgentChat(
+			(_mobileId, payload) => sent.push(JSON.parse(new TextDecoder().decode(payload))),
+			(_mobileId, _windowId, _windowSession, _generation, payload) => actions.push(JSON.parse(new TextDecoder().decode(payload))),
+			() => { }, new NullLogService(),
+		);
+		const access = chat as unknown as { tailers: Map<string, { readonly epoch: string; readonly agent: string }> };
+		const inbound = (message: Record<string, unknown>) => chat.handleInbound('mobile-1', new TextEncoder().encode(JSON.stringify(message)));
+		try {
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			fireParadisAgentHookEvent({ token, event: 'SessionStart', sessionId: conversationId, transcriptPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now() });
+			await waitFor(() => access.tailers.has(token), 'the Antigravity CLI conversation was not followed');
+			inbound({ t: 'attach', id: 1, token });
+			await waitFor(() => sent.some(message => message.t === 'snapshot'), 'the attach did not answer with a snapshot');
+			const snapshot = sent.find(message => message.t === 'snapshot')!;
+			const epoch = access.tailers.get(token)!.epoch;
+			sent.length = 0;
+			inbound({ t: 'action/sendMessage', id: 1, token, epoch, requestId: 'send-1', text: '続きをお願い' });
+			inbound({ t: 'action/answerApproval', id: 1, token, epoch, requestId: 'approve-1', interactionId: 'agy-1', choice: 'yes' });
+			await waitFor(() => sent.length >= 2, 'the actions were not answered');
+			assert.deepStrictEqual({
+				agent: snapshot.agent,
+				capabilities: snapshot.capabilities,
+				info: snapshot.info,
+				sessionStatus: snapshot.sessionStatus,
+				dispatched: actions.filter(action => action.t === 'action/sendMessage' || action.t === 'action/answerApproval').length,
+				reply: sent.map(message => ({ requestId: message.requestId, status: message.status, code: message.code })),
+			}, {
+				agent: 'antigravity',
+				capabilities: undefined,
+				info: { modelControl: 'none' },
+				sessionStatus: undefined,
+				dispatched: 0,
+				reply: [
+					{ requestId: 'send-1', status: 'rejected', code: 'agent-unsupported' },
+					{ requestId: 'approve-1', status: 'rejected', code: 'agent-unsupported' },
+				],
+			});
+		} finally {
+			chat.dispose();
+		}
+	}));
+
+	test('shows an Antigravity CLI conversation read from its record, and its question from the hook before the record has it', () => withFakeHome(async home => {
+		// 偽の HOME に自作の偽の会話を置く（本物の ~/.gemini には触らない）
+		const token = 'pane-antigravity-record';
+		const conversationId = '00000000-0000-4000-8000-00000000a6e3';
+		const logs = join(paradisAntigravityBrainRoot(home), conversationId, '.system_generated', 'logs');
+		const transcriptPath = join(logs, 'transcript_full.jsonl');
+		const sent: Record<string, unknown>[] = [];
+		const chat = new ParadisMobileAgentChat((_mobileId, payload) => sent.push(JSON.parse(new TextDecoder().decode(payload))), () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as { tailers: Map<string, { readonly epoch: string; readonly messages: readonly { readonly kind: string; readonly text: string; readonly toolUseId?: string }[]; readonly pendingQuestions: ReadonlySet<string> }> };
+		try {
+			await mkdir(logs, { recursive: true });
+			await writeFile(transcriptPath, [
+				{ step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', status: 'DONE', created_at: '2026-11-16T01:00:00Z', content: '<USER_REQUEST>\n一覧を見て\n</USER_REQUEST>' },
+				{ step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-11-16T01:00:01Z', model: 'gemini-3.8-flash-high', tool_calls: [{ name: 'run_command', args: { CommandLine: 'ls' } }] },
+				{ step_index: 2, source: 'MODEL', type: 'GENERIC', status: 'DONE', created_at: '2026-11-16T01:00:02Z', content: 'README.md' },
+				{ step_index: 3, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-11-16T01:00:03Z', model: 'gemini-3.8-flash-high', content: 'README.md があります' },
+			].map(line => JSON.stringify(line)).join('\n') + '\n');
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			fireParadisAgentHookEvent({ token, event: 'SessionStart', sessionId: conversationId, transcriptPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now() });
+			await waitFor(() => (access.tailers.get(token)?.messages.length ?? 0) >= 4, 'the Antigravity CLI record was not read');
+			fireParadisAgentHookEvent({
+				token, event: 'PreToolUse', sessionId: conversationId, transcriptPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now(),
+				toolName: 'ask_question', toolInput: { questions: [{ question: 'どちらにしますか', options: ['A', 'B'], is_multi_select: false }] },
+			});
+			await waitFor(() => (access.tailers.get(token)?.pendingQuestions.size ?? 0) > 0, 'the question from the hook was not shown');
+			chat.handleInbound('mobile-1', new TextEncoder().encode(JSON.stringify({ t: 'attach', id: 1, token })));
+			await waitFor(() => sent.some(message => message.t === 'snapshot'), 'the attach did not answer with a snapshot');
+			const snapshot = sent.filter(message => message.t === 'snapshot').at(-1)!;
+			const interaction = snapshot.interaction as { kind: string; questions?: readonly { readonly text: string; readonly options?: readonly { readonly label: string }[] }[] };
+			assert.deepStrictEqual({
+				agent: snapshot.agent,
+				info: snapshot.info,
+				messages: (snapshot.messages as { kind: string; text: string; toolUseId?: string }[]).filter(message => message.kind !== 'question').map(message => ({ kind: message.kind, text: message.text, toolUseId: message.toolUseId })),
+				question: (snapshot.messages as { kind: string; text: string; options?: { label: string }[] }[]).filter(message => message.kind === 'question').map(message => ({ text: message.text, options: message.options?.map(option => option.label) })),
+				interaction: interaction.kind,
+			}, {
+				agent: 'antigravity',
+				info: { model: 'gemini-3.8-flash-high', modelControl: 'none' },
+				messages: [
+					{ kind: 'text', text: '一覧を見て', toolUseId: undefined },
+					{ kind: 'tool_use', text: '{"CommandLine":"ls"}', toolUseId: 'agy-1-0' },
+					{ kind: 'tool_result', text: 'README.md', toolUseId: 'agy-1-0' },
+					{ kind: 'text', text: 'README.md があります', toolUseId: undefined },
+				],
+				question: [{ text: 'どちらにしますか', options: ['A', 'B'] }],
+				interaction: 'question',
+			});
+		} finally {
+			chat.dispose();
+		}
+	}));
+
+	test('keeps one Antigravity CLI question card when the record has the question before the hook, and clears it when the result is written', () => withFakeHome(async home => {
+		const token = 'pane-antigravity-record-first';
+		const conversationId = '00000000-0000-4000-8000-00000000a6e4';
+		const logs = join(paradisAntigravityBrainRoot(home), conversationId, '.system_generated', 'logs');
+		const transcriptPath = join(logs, 'transcript_full.jsonl');
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as { tailers: Map<string, { readonly messages: readonly { readonly kind: string; readonly toolUseId?: string }[]; readonly pendingQuestions: ReadonlySet<string> }>; hookProcessing: Map<string, unknown> };
+		const question = { question: 'どちらにしますか', options: ['A', 'B'], is_multi_select: false };
+		try {
+			await mkdir(logs, { recursive: true });
+			await writeFile(transcriptPath, JSON.stringify({ step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', status: 'DONE', created_at: '2026-11-16T01:00:00Z', content: '<USER_REQUEST>\n選んで\n</USER_REQUEST>' }) + '\n');
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			fireParadisAgentHookEvent({ token, event: 'SessionStart', sessionId: conversationId, transcriptPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now() });
+			await waitFor(() => (access.tailers.get(token)?.messages.length ?? 0) >= 1, 'the Antigravity CLI record was not read');
+			// 質問の行が記録に書かれ、hook より先に読まれる
+			await appendFile(transcriptPath, JSON.stringify({ step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-11-16T01:00:01Z', model: 'gemini-3.8-flash-high', tool_calls: [{ name: 'ask_question', args: { questions: [question] } }] }) + '\n');
+			await waitFor(() => (access.tailers.get(token)?.pendingQuestions.size ?? 0) > 0, 'the question in the record was not waiting for an answer');
+			// 記録を読んだ後に hook が届く（hook の配送が遅れた）
+			fireParadisAgentHookEvent({ token, event: 'PreToolUse', sessionId: conversationId, transcriptPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now(), toolName: 'ask_question', toolInput: { questions: [question] } });
+			await waitFor(() => !access.hookProcessing.has(token), 'the question hook was not handled');
+			// 結果が記録に書かれる。hook の質問が別のカードとして足されていれば、その回答待ちは結果では解けずに残る
+			await appendFile(transcriptPath, JSON.stringify({ step_index: 2, source: 'MODEL', type: 'GENERIC', status: 'DONE', created_at: '2026-11-16T01:00:02Z', content: 'User answered: A' }) + '\n');
+			await waitFor(() => access.tailers.get(token)!.pendingQuestions.size === 0, 'the answer in the record did not clear the question');
+			assert.deepStrictEqual(access.tailers.get(token)!.messages.filter(message => message.kind === 'question').map(message => message.toolUseId), ['agy-1-0']);
+		} finally {
+			chat.dispose();
+		}
+	}));
+
+	test('drops the hooks of an Antigravity CLI child conversation, without changing the pane conversation or its question state', () => withFakeHome(async home => {
+		const token = 'pane-antigravity-parent';
+		const brain = paradisAntigravityBrainRoot(home);
+		const parentId = '00000000-0000-4000-8000-00000000a6e5';
+		const childId = '00000000-0000-4000-8000-00000000a6e6';
+		const parentPath = join(brain, parentId, '.system_generated', 'logs', 'transcript_full.jsonl');
+		const childPath = join(brain, childId, '.system_generated', 'logs', 'transcript_full.jsonl');
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as { paneSessions: Map<string, { readonly transcriptPath: string }>; desktopInteractions: Map<string, unknown>; desktopExitedTokens: Set<string>; hookProcessing: Map<string, unknown> };
+		try {
+			await mkdir(join(brain, childId, '.system_generated', 'logs'), { recursive: true });
+			// 子の会話は親から渡された指示（SYSTEM_MESSAGE）で始まる。一覧の DB は作らない（記録の先頭で決める経路）
+			await writeFile(childPath, JSON.stringify({ step_index: 0, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', created_at: '2026-11-16T01:00:00Z', content: '<SYSTEM_MESSAGE>調べて</SYSTEM_MESSAGE>' }) + '\n');
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			fireParadisAgentHookEvent({ token, event: 'SessionStart', sessionId: parentId, transcriptPath: parentPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now() });
+			await waitFor(() => access.paneSessions.get(token)?.transcriptPath === parentPath, 'the parent conversation was not followed');
+			fireParadisAgentHookEvent({ token, event: 'SessionStart', sessionId: childId, transcriptPath: childPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now() });
+			fireParadisAgentHookEvent({ token, event: 'PreToolUse', sessionId: childId, transcriptPath: childPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now(), toolName: 'ask_question', toolInput: { questions: [{ question: '子の質問', options: ['A'] }] } });
+			fireParadisAgentHookEvent({ token, event: 'SessionEnd', sessionId: childId, transcriptPath: childPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now() });
+			await waitFor(() => !access.hookProcessing.has(token), 'the child hooks were not handled');
+			assert.deepStrictEqual({
+				transcriptPath: access.paneSessions.get(token)?.transcriptPath,
+				interaction: access.desktopInteractions.has(token),
+				exited: access.desktopExitedTokens.has(token),
+			}, { transcriptPath: parentPath, interaction: false, exited: false });
+		} finally {
+			chat.dispose();
+		}
+	}));
+
+	test('allows only the Antigravity CLI conversation records, not the other files of its folder', () => withFakeHome(async home => {
+		const brain = paradisAntigravityBrainRoot(home);
+		assert.deepStrictEqual({
+			transcript: await paradisIsAllowedTranscriptPathForTest(join(brain, '00000000-0000-4000-8000-00000000a6e2', '.system_generated', 'logs', 'transcript_full.jsonl')),
+			history: await paradisIsAllowedTranscriptPathForTest(join(brain, '..', 'history.jsonl')),
+		}, { transcript: true, history: false });
+	}));
 
 	test('uses the production five-minute directory walk budget', () => {
 		const clock = sinon.useFakeTimers({ now: 1_000 });

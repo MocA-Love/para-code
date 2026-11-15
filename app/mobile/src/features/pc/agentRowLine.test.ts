@@ -72,6 +72,9 @@ describe('ロゴと経過時間', () => {
 		expect(agentLogoKind({ agent: true, title: 'OpenCode' }, undefined)).toBe('opencode');
 		expect(agentLogoKind({ agent: true, title: 'claude code in opencode folder' }, undefined)).toBe('claude');
 		expect(agentLogoKind({ agent: true, title: 'my agent' }, undefined)).toBe('agent');
+		expect(agentLogoKind({ agent: true, title: 'shell' }, 'antigravity')).toBe('antigravity');
+		expect(agentLogoKind({ agent: true, title: 'agy' }, undefined)).toBe('antigravity');
+		expect(agentLogoKind({ agent: true, title: 'stagy notes' }, undefined)).toBe('agent');
 		expect(agentLogoKind({ agent: false, title: 'claude' }, undefined)).toBe('terminal');
 	});
 
