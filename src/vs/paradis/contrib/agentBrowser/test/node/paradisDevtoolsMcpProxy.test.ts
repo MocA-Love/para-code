@@ -521,6 +521,22 @@ suite('ParadisDevtoolsMcpProxy', () => {
 		]);
 	});
 
+	// wait_until は遷移中の失敗（retryable）を自分で確かめ直すので、1 回ずつは報告しない。ほかの道具からの同じ失敗は報告する
+	test('does not report a retryable failure of a check inside wait_until, but still reports it from another tool', async () => {
+		const failed = { content: [{ type: 'text', text: 'PARA_BROWSER_RETRYABLE: Protocol error (Runtime.evaluate): the page was navigating.' }], isError: true };
+		const fixture = createFakeDevtoolsChildren({ toolsListResult: { tools: [{ name: 'evaluate_script', inputSchema: { type: 'object', properties: { function: { type: 'string' } } } }] }, toolCallResults: [failed, failed] });
+		const failures: string[] = [];
+		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { temporaryDirectory: TEST_TEMPORARY_DIRECTORY, spawnChild: fixture.spawn, onToolFailure: (_token, failure) => failures.push(failure.tool) }));
+		const { reports } = await withRecordedReports(async () => [
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, undefined, { agentTool: 'wait_until' }),
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, undefined, { agentTool: 'get_text' }),
+		]);
+		assert.deepStrictEqual({ reports: reports.map(report => ({ agentTool: report.extra?.safe_agent_tool, reason: report.extra?.safe_gate_reason })), failures }, {
+			reports: [{ agentTool: 'get_text', reason: 'retryable-other' }],
+			failures: ['evaluate_script'],
+		});
+	});
+
 	test('counts a page that did not answer as unresponsive, apart from a dialog that is open', async () => {
 		const texts = [
 			'PARA_BROWSER_DIALOG_OPEN: the page did not answer (a JavaScript dialog may have opened).',
@@ -1474,7 +1490,7 @@ suite('ParadisDevtoolsMcpProxy', () => {
 				newChildCalls: ['list_console_messages', 'list_console_messages'],
 				consoleAfter: ['ok', 'note'],
 				consoleAgain: ['ok'],
-				recycled: [{ duration_ms: 'number', safe_recycle_reason: 'memory', safe_calls: 2, safe_rss_mib: 2048 }],
+				recycled: [{ duration_ms: 'number', safe_recycle_reason: 'memory', safe_recycle_urgent: true, safe_calls: 2, safe_rss_mib: 2048 }],
 			});
 		});
 
@@ -1610,6 +1626,25 @@ suite('ParadisDevtoolsMcpProxy', () => {
 				results: [['ok'], ['ok']],
 				sent: [{}, { uid: '1_2', value: 'ver1.2_3' }, { text: 'test.10_2' }],
 			});
+		});
+
+		// 使い続けられて合間が来ない子が、ヒープの上限で落ちる前に作り直す（Sentry MV・M3）
+		test('recycles a child over the urgent memory limit as soon as no call is waiting, without a quiet moment', async () => {
+			const fixture = createFakeDevtoolsChildren({ toolsListResult: tools });
+			let checks = 0;
+			const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), {
+				temporaryDirectory: TEST_TEMPORARY_DIRECTORY,
+				spawnChild: fixture.spawn,
+				healthIntervalMs: 5,
+				recycleQuietMs: 60 * 60_000,
+				recycleLimits: { rssMib: 1000, ageMs: 60 * 60_000, calls: 1000, urgentRssMib: 3000 },
+				readRssMib: async () => { checks++; return checks === 1 ? 2000 : 3500; },
+			}));
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'take_snapshot', {});
+			await waitUntil(() => checks >= 2);
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'take_snapshot', {});
+			await waitUntil(() => fixture.children[0].killCount === 1);
+			assert.strictEqual(fixture.children[0].killCount, 1);
 		});
 
 		test('never recycles while a call is waiting for the child', async () => {

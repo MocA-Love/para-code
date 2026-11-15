@@ -26,12 +26,19 @@ export interface IParadisDevtoolsRecycleLimits {
 	readonly ageMs: number;
 	/** 受けたツール呼び出しの回数。 */
 	readonly calls: number;
+	/**
+	 * 子プロセスの RSS（MiB）がここまで来たら、しばらく呼ばれていない合間を待たず、応答待ちの呼び出しが無くなった
+	 * ところで作り直す。使い続けられて合間が来ないまま、ヒープの上限で落ちていた（Sentry MV: 3445 MiB で落ちた・
+	 * M3: 合間を待つ間に 2126 MiB まで増えた）。省略時は急がない。
+	 */
+	readonly urgentRssMib?: number;
 }
 
 export const PARADIS_DEVTOOLS_RECYCLE_LIMITS: IParadisDevtoolsRecycleLimits = {
 	rssMib: 1536,
 	ageMs: 2 * 60 * 60_000,
 	calls: 5000,
+	urgentRssMib: 2048,
 };
 
 /** 作り直してよい合間（最後の呼び出しが終わってからの時間）。 */
@@ -62,6 +69,11 @@ export function paradisDevtoolsRecycleReason(stats: IParadisDevtoolsChildStats, 
 		return 'calls';
 	}
 	return undefined;
+}
+
+/** 合間を待たずに作り直すほどメモリが溜まっているか（{@link IParadisDevtoolsRecycleLimits.urgentRssMib}）。 */
+export function paradisDevtoolsRecycleIsUrgent(rssMib: number | undefined, limits: IParadisDevtoolsRecycleLimits = PARADIS_DEVTOOLS_RECYCLE_LIMITS): boolean {
+	return rssMib !== undefined && limits.urgentRssMib !== undefined && rssMib >= limits.urgentRssMib;
 }
 
 /** V8 が落ちるときに標準エラーへ書いた行から抜いた値（数値と固定の語だけ）。 */

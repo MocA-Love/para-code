@@ -97,6 +97,30 @@ function isolatorFor(webContents: WebContents): IParaBrowserZoomIsolator {
 	return isolatorOverride ?? ParaBrowserZoomHelper.forSession(webContents.session);
 }
 
+/**
+ * 描画のプロセスが生きていて、メインの文書があるか。`enableDeviceEmulation` は描画のプロセスが落ちた・入れ替え中の
+ * タブに呼ぶと main ごと落ちうる（Sentry NK: `WebContents::EnableDeviceEmulation` の EXC_BAD_ACCESS。推測: 遅れて来た
+ * `onReady` が、描画のプロセスの居ないタブへ当て直した）。確かめられないときは当てない側に倒す。
+ */
+function rendererAlive(webContents: WebContents): boolean {
+	try {
+		if (webContents.isDestroyed() || webContents.isCrashed()) {
+			return false;
+		}
+		const mainFrame = webContents.mainFrame;
+		return mainFrame !== undefined && mainFrame !== null && !mainFrame.detached;
+	} catch {
+		return false;
+	}
+}
+
+/** 切り離しが済んだ・画面の倍率が替わったので当て直してもらう。描画のプロセスが居なければ呼ばない。 */
+function notifyReady(webContents: WebContents, state: IZoomState): void {
+	if (rendererAlive(webContents)) {
+		state.onIsolated?.();
+	}
+}
+
 function stateOf(webContents: WebContents): IZoomState {
 	let state = states.get(webContents);
 	if (!state) {
@@ -117,6 +141,12 @@ function stateOf(webContents: WebContents): IZoomState {
 			}
 		});
 		webContents.prependListener('did-navigate', committed);
+		// 描画のプロセスが落ちたら、切り離しも途中の試みも無くなっている。遅れて来る当て直し（onReady）も捨てる
+		// （次に表示サイズを当てるときに、emulator が新しい onReady を渡し直す）
+		webContents.prependListener('render-process-gone', () => {
+			committed();
+			created.onIsolated = undefined;
+		});
 		webContents.prependListener('did-fail-load', (_event: unknown, _code: number, _description: string, _url: string, isMainFrame: boolean) => {
 			if (isMainFrame) {
 				committed();
@@ -193,7 +223,7 @@ function isolate(webContents: WebContents, state: IZoomState): Promise<ParaIsola
 			state.isolated = isolated;
 			logIsolation(webContents, state, isolated ? true : typeof outcome === 'string' ? outcome : 'the zoom helper did not settle');
 			if (isolated) {
-				state.onIsolated?.();
+				notifyReady(webContents, state);
 			}
 			return isolated ? 'isolated' : 'failed';
 		});
@@ -327,7 +357,7 @@ function watchDisplayScaleFactor(webContents: WebContents, state: IZoomState): n
 				return;
 			}
 			if (paraBrowserViewScalesByZoom(webContents) && read() !== state.displayScaleFactor) {
-				state.onIsolated?.();
+				notifyReady(webContents, state);
 			}
 		};
 		const unwatch = () => {
