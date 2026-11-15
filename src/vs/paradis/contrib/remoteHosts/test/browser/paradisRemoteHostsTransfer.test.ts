@@ -57,6 +57,17 @@ class FakeProgressService implements IProgressService {
 	}
 }
 
+/** upstream の通知の進行表示と同じく、渡された promise から派生させたものを捨てる IProgressService。拒否が渡ると数える。 */
+class LeakyProgressService implements IProgressService {
+	declare readonly _serviceBrand: undefined;
+	readonly rejections: unknown[] = [];
+	withProgress<R>(_options: unknown, task: (progress: IProgress<IProgressStep>) => Promise<R>): Promise<R> {
+		const promise = task(Progress.None as IProgress<IProgressStep>);
+		promise.catch(error => this.rejections.push(error));
+		return promise;
+	}
+}
+
 /** error/notify の呼び出しを記録する TestNotificationService。 */
 class RecordingNotificationService extends TestNotificationService {
 	readonly errors: (string | Error)[] = [];
@@ -210,6 +221,17 @@ suite('paradisRemoteHostsTransfer', () => {
 				saysWhere: temps.length === 1 && !!error?.message.includes(temps[0].name),
 				kept: temps.length === 1 ? (await fileService.readFile(temps[0].resource)).value.toString() : undefined,
 			}, { saysWhere: true, kept: 'new' });
+		});
+
+		test('hands the progress a promise that never rejects when the transfer fails, and still throws to the caller', async () => {
+			const disposables = store.add(new DisposableStore());
+			const { services, fileDialogService } = await setup(disposables);
+			const progressService = new LeakyProgressService();
+			fileDialogService.saveResult = uri('/home/user/missing.txt');
+
+			const error = await paradisSaveToMachine({ ...services, progressService }, { uri: uri('/remote/missing.txt'), name: 'missing.txt', isDirectory: false }, uri('/home/user')).then(() => undefined, (failure: Error) => failure);
+
+			deepStrictEqual({ thrown: error instanceof Error, rejections: progressService.rejections }, { thrown: true, rejections: [] });
 		});
 
 		test('replaces an existing file once the user confirms', async () => {
