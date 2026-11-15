@@ -118,6 +118,23 @@ function createEmptyCodexStateDatabase(codexHome: string): void {
 	}
 }
 
+/** 偽の HOME（空のフォルダ）の中で動かす。Antigravity CLI の置き場所（~/.gemini）は HOME から決まるので、本物の記録や一覧に触らない。 */
+async function withFakeHome(run: (home: string) => Promise<void>): Promise<void> {
+	const home = await realpath(await mkdtemp(join(tmpdir(), 'paradis-antigravity-home-')));
+	const previousHome = process.env['HOME'];
+	process.env['HOME'] = home;
+	try {
+		await run(home);
+	} finally {
+		if (previousHome === undefined) {
+			delete process.env['HOME'];
+		} else {
+			process.env['HOME'] = previousHome;
+		}
+		await rm(home, { recursive: true, force: true });
+	}
+}
+
 async function waitFor(predicate: () => boolean, message: string, ms = 2_000): Promise<void> {
 	const deadline = Date.now() + ms;
 	while (!predicate()) {
@@ -347,11 +364,11 @@ suite('ParadisMobileAgentChat', () => {
 		}
 	});
 
-	test('follows an Antigravity CLI conversation from its hooks, and refuses sends from the chat until the send path exists', async () => {
+	test('follows an Antigravity CLI conversation from its hooks, and refuses sends from the chat until the send path exists', () => withFakeHome(async home => {
 		const token = 'pane-antigravity';
 		// 偽の会話の id（手元の agy の会話とは重ならない）。記録のファイルは作らない（tailer は出現を待つ）
 		const conversationId = '00000000-0000-4000-8000-00000000a6e1';
-		const transcriptPath = join(paradisAntigravityBrainRoot(), conversationId, '.system_generated', 'logs', 'transcript_full.jsonl');
+		const transcriptPath = join(paradisAntigravityBrainRoot(home), conversationId, '.system_generated', 'logs', 'transcript_full.jsonl');
 		const sent: Record<string, unknown>[] = [];
 		const actions: Record<string, unknown>[] = [];
 		const chat = new ParadisMobileAgentChat(
@@ -395,13 +412,10 @@ suite('ParadisMobileAgentChat', () => {
 		} finally {
 			chat.dispose();
 		}
-	});
+	}));
 
-	test('shows an Antigravity CLI conversation read from its record, and its question from the hook before the record has it', async () => {
+	test('shows an Antigravity CLI conversation read from its record, and its question from the hook before the record has it', () => withFakeHome(async home => {
 		// 偽の HOME に自作の偽の会話を置く（本物の ~/.gemini には触らない）
-		const home = await realpath(await mkdtemp(join(tmpdir(), 'paradis-antigravity-home-')));
-		const previousHome = process.env['HOME'];
-		process.env['HOME'] = home;
 		const token = 'pane-antigravity-record';
 		const conversationId = '00000000-0000-4000-8000-00000000a6e3';
 		const logs = join(paradisAntigravityBrainRoot(home), conversationId, '.system_generated', 'logs');
@@ -450,22 +464,16 @@ suite('ParadisMobileAgentChat', () => {
 			});
 		} finally {
 			chat.dispose();
-			if (previousHome === undefined) {
-				delete process.env['HOME'];
-			} else {
-				process.env['HOME'] = previousHome;
-			}
-			await rm(home, { recursive: true, force: true });
 		}
-	});
+	}));
 
-	test('allows only the Antigravity CLI conversation records, not the other files of its folder', async () => {
-		const brain = paradisAntigravityBrainRoot();
+	test('allows only the Antigravity CLI conversation records, not the other files of its folder', () => withFakeHome(async home => {
+		const brain = paradisAntigravityBrainRoot(home);
 		assert.deepStrictEqual({
 			transcript: await paradisIsAllowedTranscriptPathForTest(join(brain, '00000000-0000-4000-8000-00000000a6e2', '.system_generated', 'logs', 'transcript_full.jsonl')),
 			history: await paradisIsAllowedTranscriptPathForTest(join(brain, '..', 'history.jsonl')),
 		}, { transcript: true, history: false });
-	});
+	}));
 
 	test('uses the production five-minute directory walk budget', () => {
 		const clock = sinon.useFakeTimers({ now: 1_000 });
