@@ -15,7 +15,10 @@
 //       "remaining_fraction": 0.91, "reset_time": "2026-11-18T16:44:24Z" }] }, ... ] } } }
 // `response` のタブ区切りの文は人が読む用なので使わない。0 や空の値は項目ごと省かれる（実測で
 // `description` が無い bucket があった）ので、`remaining_fraction` が無くリセットの時刻だけある枠は
-// 使い切った（残り 0）とみなす。
+// 使い切った（残り 0）とみなす。agy 1.5.9（2026-11-16）でも同じ形で、残りがわずかな枠も
+// `remaining_fraction: 0.0022…` のように欄は出ていた（`response` の文は丸めて「0%」と出す）。
+// 残りが 0 でない枠は使用率を 99 までに留める。表示は整数に丸めるので、99.8 が「100%」と出て、
+// まだ使えるのに使い切ったように見えていたため。100% は残りが本当に 0 の枠だけ。
 
 import { localize } from '../../../../nls.js';
 import { IParadisLimitsWindow } from './paradisLimitsMonitor.js';
@@ -45,6 +48,9 @@ export type ParadisAntigravityUsageResult =
 	/** サインインしていない（agy がログインの URL を出して待った）。 */
 	| { readonly kind: 'signed_out' }
 	| { readonly kind: 'error'; readonly detail: string };
+
+/** 残りが 0 でない枠の使用率の上限（表示は整数に丸めるので、これを超えると「100%」と出る）。 */
+const MAX_PERCENT_WHILE_REMAINING = 99;
 
 /** agy がログインを求めたときに stderr へ出す文。これが出たら、待たずに止める。 */
 const SIGN_IN_PROMPT = /Authentication required/i;
@@ -82,7 +88,9 @@ function parseWindow(bucket: IAntigravityUsageBucket, group: IAntigravityUsageGr
 	} else {
 		return undefined;
 	}
-	const usedPercent = Math.round((1 - remaining) * 1000) / 10;
+	const rounded = Math.round((1 - remaining) * 1000) / 10;
+	// 残りが少しでもあれば「100%」と出さない（上の説明）
+	const usedPercent = remaining > 0 ? Math.min(MAX_PERCENT_WHILE_REMAINING, rounded) : 100;
 	return {
 		usedPercent,
 		label: bucketLabel(bucket, group),
