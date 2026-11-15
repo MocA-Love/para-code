@@ -477,7 +477,7 @@ suite('ParadisMobileAgentChat', () => {
 		const logs = join(paradisAntigravityBrainRoot(home), conversationId, '.system_generated', 'logs');
 		const transcriptPath = join(logs, 'transcript_full.jsonl');
 		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
-		const access = chat as unknown as { tailers: Map<string, { readonly messages: readonly { readonly kind: string; readonly toolUseId?: string }[]; readonly pendingQuestions: ReadonlySet<string> }>; desktopInteractions: Map<string, unknown> };
+		const access = chat as unknown as { tailers: Map<string, { readonly messages: readonly { readonly kind: string; readonly toolUseId?: string }[]; readonly pendingQuestions: ReadonlySet<string> }>; hookProcessing: Map<string, unknown> };
 		const question = { question: 'どちらにしますか', options: ['A', 'B'], is_multi_select: false };
 		try {
 			await mkdir(logs, { recursive: true });
@@ -491,7 +491,7 @@ suite('ParadisMobileAgentChat', () => {
 			await waitFor(() => (access.tailers.get(token)?.pendingQuestions.size ?? 0) > 0, 'the question in the record was not waiting for an answer');
 			// 記録を読んだ後に hook が届く（hook の配送が遅れた）
 			fireParadisAgentHookEvent({ token, event: 'PreToolUse', sessionId: conversationId, transcriptPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now(), toolName: 'ask_question', toolInput: { questions: [question] } });
-			await waitFor(() => access.desktopInteractions.has(token), 'the question hook was not handled');
+			await waitFor(() => !access.hookProcessing.has(token), 'the question hook was not handled');
 			// 結果が記録に書かれる。hook の質問が別のカードとして足されていれば、その回答待ちは結果では解けずに残る
 			await appendFile(transcriptPath, JSON.stringify({ step_index: 2, source: 'MODEL', type: 'GENERIC', status: 'DONE', created_at: '2026-11-16T01:00:02Z', content: 'User answered: A' }) + '\n');
 			await waitFor(() => access.tailers.get(token)!.pendingQuestions.size === 0, 'the answer in the record did not clear the question');
@@ -509,7 +509,7 @@ suite('ParadisMobileAgentChat', () => {
 		const parentPath = join(brain, parentId, '.system_generated', 'logs', 'transcript_full.jsonl');
 		const childPath = join(brain, childId, '.system_generated', 'logs', 'transcript_full.jsonl');
 		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
-		const access = chat as unknown as { paneSessions: Map<string, { readonly transcriptPath: string }>; desktopInteractions: Map<string, unknown>; desktopExitedTokens: Set<string> };
+		const access = chat as unknown as { paneSessions: Map<string, { readonly transcriptPath: string }>; desktopInteractions: Map<string, unknown>; desktopExitedTokens: Set<string>; hookProcessing: Map<string, unknown> };
 		try {
 			await mkdir(join(brain, childId, '.system_generated', 'logs'), { recursive: true });
 			// 子の会話は親から渡された指示（SYSTEM_MESSAGE）で始まる。一覧の DB は作らない（記録の先頭で決める経路）
@@ -521,14 +521,12 @@ suite('ParadisMobileAgentChat', () => {
 			fireParadisAgentHookEvent({ token, event: 'SessionStart', sessionId: childId, transcriptPath: childPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now() });
 			fireParadisAgentHookEvent({ token, event: 'PreToolUse', sessionId: childId, transcriptPath: childPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now(), toolName: 'ask_question', toolInput: { questions: [{ question: '子の質問', options: ['A'] }] } });
 			fireParadisAgentHookEvent({ token, event: 'SessionEnd', sessionId: childId, transcriptPath: childPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now() });
-			// 親の hook がその後に処理されたことを、親の質問の反映で確かめる（hook は受け取った順に処理する）
-			fireParadisAgentHookEvent({ token, event: 'PreToolUse', sessionId: parentId, transcriptPath: parentPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now(), toolName: 'ask_question', toolInput: { questions: [{ question: '親の質問', options: ['A'] }] } });
-			await waitFor(() => access.desktopInteractions.has(token), 'the parent question did not reach the pane state');
+			await waitFor(() => !access.hookProcessing.has(token), 'the child hooks were not handled');
 			assert.deepStrictEqual({
 				transcriptPath: access.paneSessions.get(token)?.transcriptPath,
-				interaction: (access.desktopInteractions.get(token) as { readonly text?: string } | undefined)?.text,
+				interaction: access.desktopInteractions.has(token),
 				exited: access.desktopExitedTokens.has(token),
-			}, { transcriptPath: parentPath, interaction: '親の質問', exited: false });
+			}, { transcriptPath: parentPath, interaction: false, exited: false });
 		} finally {
 			chat.dispose();
 		}
