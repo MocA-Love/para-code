@@ -121,15 +121,19 @@ function createEmptyCodexStateDatabase(codexHome: string): void {
 /** 偽の HOME（空のフォルダ）の中で動かす。Antigravity CLI の置き場所（~/.gemini）は HOME から決まるので、本物の記録や一覧に触らない。 */
 async function withFakeHome(run: (home: string) => Promise<void>): Promise<void> {
 	const home = await realpath(await mkdtemp(join(tmpdir(), 'paradis-antigravity-home-')));
-	const previousHome = process.env['HOME'];
+	// Windows の os.homedir() は USERPROFILE を見るので、両方を差し替える
+	const previous = { HOME: process.env['HOME'], USERPROFILE: process.env['USERPROFILE'] };
 	process.env['HOME'] = home;
+	process.env['USERPROFILE'] = home;
 	try {
 		await run(home);
 	} finally {
-		if (previousHome === undefined) {
-			delete process.env['HOME'];
-		} else {
-			process.env['HOME'] = previousHome;
+		for (const [name, value] of Object.entries(previous)) {
+			if (value === undefined) {
+				delete process.env[name];
+			} else {
+				process.env[name] = value;
+			}
 		}
 		await rm(home, { recursive: true, force: true });
 	}
@@ -462,6 +466,69 @@ suite('ParadisMobileAgentChat', () => {
 				question: [{ text: 'どちらにしますか', options: ['A', 'B'] }],
 				interaction: 'question',
 			});
+		} finally {
+			chat.dispose();
+		}
+	}));
+
+	test('keeps one Antigravity CLI question card when the record has the question before the hook, and clears it when the result is written', () => withFakeHome(async home => {
+		const token = 'pane-antigravity-record-first';
+		const conversationId = '00000000-0000-4000-8000-00000000a6e4';
+		const logs = join(paradisAntigravityBrainRoot(home), conversationId, '.system_generated', 'logs');
+		const transcriptPath = join(logs, 'transcript_full.jsonl');
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as { tailers: Map<string, { readonly messages: readonly { readonly kind: string; readonly toolUseId?: string }[]; readonly pendingQuestions: ReadonlySet<string> }>; desktopInteractions: Map<string, unknown> };
+		const question = { question: 'どちらにしますか', options: ['A', 'B'], is_multi_select: false };
+		try {
+			await mkdir(logs, { recursive: true });
+			await writeFile(transcriptPath, JSON.stringify({ step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', status: 'DONE', created_at: '2026-11-16T01:00:00Z', content: '<USER_REQUEST>\n選んで\n</USER_REQUEST>' }) + '\n');
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			fireParadisAgentHookEvent({ token, event: 'SessionStart', sessionId: conversationId, transcriptPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now() });
+			await waitFor(() => (access.tailers.get(token)?.messages.length ?? 0) >= 1, 'the Antigravity CLI record was not read');
+			// 質問の行が記録に書かれ、hook より先に読まれる
+			await appendFile(transcriptPath, JSON.stringify({ step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-11-16T01:00:01Z', model: 'gemini-3.8-flash-high', tool_calls: [{ name: 'ask_question', args: { questions: [question] } }] }) + '\n');
+			await waitFor(() => (access.tailers.get(token)?.pendingQuestions.size ?? 0) > 0, 'the question in the record was not waiting for an answer');
+			// 記録を読んだ後に hook が届く（hook の配送が遅れた）
+			fireParadisAgentHookEvent({ token, event: 'PreToolUse', sessionId: conversationId, transcriptPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now(), toolName: 'ask_question', toolInput: { questions: [question] } });
+			await waitFor(() => access.desktopInteractions.has(token), 'the question hook was not handled');
+			// 結果が記録に書かれる。hook の質問が別のカードとして足されていれば、その回答待ちは結果では解けずに残る
+			await appendFile(transcriptPath, JSON.stringify({ step_index: 2, source: 'MODEL', type: 'GENERIC', status: 'DONE', created_at: '2026-11-16T01:00:02Z', content: 'User answered: A' }) + '\n');
+			await waitFor(() => access.tailers.get(token)!.pendingQuestions.size === 0, 'the answer in the record did not clear the question');
+			assert.deepStrictEqual(access.tailers.get(token)!.messages.filter(message => message.kind === 'question').map(message => message.toolUseId), ['agy-1-0']);
+		} finally {
+			chat.dispose();
+		}
+	}));
+
+	test('drops the hooks of an Antigravity CLI child conversation, without changing the pane conversation or its question state', () => withFakeHome(async home => {
+		const token = 'pane-antigravity-parent';
+		const brain = paradisAntigravityBrainRoot(home);
+		const parentId = '00000000-0000-4000-8000-00000000a6e5';
+		const childId = '00000000-0000-4000-8000-00000000a6e6';
+		const parentPath = join(brain, parentId, '.system_generated', 'logs', 'transcript_full.jsonl');
+		const childPath = join(brain, childId, '.system_generated', 'logs', 'transcript_full.jsonl');
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as { paneSessions: Map<string, { readonly transcriptPath: string }>; desktopInteractions: Map<string, unknown>; desktopExitedTokens: Set<string> };
+		try {
+			await mkdir(join(brain, childId, '.system_generated', 'logs'), { recursive: true });
+			// 子の会話は親から渡された指示（SYSTEM_MESSAGE）で始まる。一覧の DB は作らない（記録の先頭で決める経路）
+			await writeFile(childPath, JSON.stringify({ step_index: 0, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', created_at: '2026-11-16T01:00:00Z', content: '<SYSTEM_MESSAGE>調べて</SYSTEM_MESSAGE>' }) + '\n');
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			fireParadisAgentHookEvent({ token, event: 'SessionStart', sessionId: parentId, transcriptPath: parentPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now() });
+			await waitFor(() => access.paneSessions.get(token)?.transcriptPath === parentPath, 'the parent conversation was not followed');
+			fireParadisAgentHookEvent({ token, event: 'SessionStart', sessionId: childId, transcriptPath: childPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now() });
+			fireParadisAgentHookEvent({ token, event: 'PreToolUse', sessionId: childId, transcriptPath: childPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now(), toolName: 'ask_question', toolInput: { questions: [{ question: '子の質問', options: ['A'] }] } });
+			fireParadisAgentHookEvent({ token, event: 'SessionEnd', sessionId: childId, transcriptPath: childPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now() });
+			// 親の hook がその後に処理されたことを、親の質問の反映で確かめる（hook は受け取った順に処理する）
+			fireParadisAgentHookEvent({ token, event: 'PreToolUse', sessionId: parentId, transcriptPath: parentPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now(), toolName: 'ask_question', toolInput: { questions: [{ question: '親の質問', options: ['A'] }] } });
+			await waitFor(() => access.desktopInteractions.has(token), 'the parent question did not reach the pane state');
+			assert.deepStrictEqual({
+				transcriptPath: access.paneSessions.get(token)?.transcriptPath,
+				interaction: (access.desktopInteractions.get(token) as { readonly text?: string } | undefined)?.text,
+				exited: access.desktopExitedTokens.has(token),
+			}, { transcriptPath: parentPath, interaction: '親の質問', exited: false });
 		} finally {
 			chat.dispose();
 		}

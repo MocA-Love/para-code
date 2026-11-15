@@ -255,7 +255,7 @@ export const ModelPill = forwardRef<ModelPillHandle, {
 				onPress={openDrawer}
 				disabled={readOnly || modelControl?.status === 'updating' || submitting}
 				accessibilityRole={readOnly ? 'text' : 'button'}
-				accessibilityLabel={agent === 'opencode' ? 'OpenCode のモデルは PC で変更します' : readOnly ? `モデルと effort は ${label}。PC のターミナルの /model で変更します` : `モデルと effort を変更。いまは ${label}`}
+				accessibilityLabel={agent === 'opencode' ? 'OpenCode のモデルは PC で変更します' : agent === 'antigravity' ? `モデルは ${label}。Antigravity CLI のモデルは PC で変更します` : readOnly ? `モデルと effort は ${label}。PC のターミナルの /model で変更します` : `モデルと effort を変更。いまは ${label}`}
 			>
 				<Text style={styles.pillText} numberOfLines={1}>{label}</Text>
 				{readOnly ? null : <Icon icon={ChevronDown} size={iconSize.xs} color={colors.textDim} />}

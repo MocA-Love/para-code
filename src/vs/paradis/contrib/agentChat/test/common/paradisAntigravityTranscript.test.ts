@@ -41,7 +41,7 @@ suite('paradisAntigravityTranscript', () => {
 		const state = newParadisAntigravityParseState();
 		const messages: IRawMessage[] = FAKE_TRANSCRIPT.flatMap(line => parseAntigravityLine(line, signals, state));
 		const at = (second: number) => Date.parse(`2026-11-16T01:00:0${second}Z`);
-		assert.deepStrictEqual({ messages, model: signals.model, userText: signals.userText }, {
+		assert.deepStrictEqual({ messages, model: signals.model, userText: signals.userText, asked: signals.askedQuestionIds, answered: signals.answeredIds }, {
 			messages: [
 				{ role: 'user', kind: 'text', text: 'README を読んで', ts: at(0) },
 				{ role: 'assistant', kind: 'thinking', text: 'まず一覧を見る', ts: at(1) },
@@ -56,6 +56,9 @@ suite('paradisAntigravityTranscript', () => {
 			],
 			model: 'gemini-3.8-pro-low',
 			userText: true,
+			// Claude Code の AskUserQuestion と同じく、質問は回答待ちの印、結果は回答済みの印を出す
+			asked: ['agy-4-0'],
+			answered: ['agy-1-0', 'agy-1-1', 'agy-4-0'],
 		});
 	});
 

@@ -18,11 +18,9 @@
 //   - SYSTEM / SYSTEM_MESSAGE・CHECKPOINT: 子の会話の指示・圧縮の区切り（出さない）
 // `transcript.jsonl`（`_full` の無い方）は引数が二重に文字列化されているので読まない。
 
+import { PARADIS_ANTIGRAVITY_QUESTION_TOOL } from '../../agentBrowser/common/paradisAntigravityHooks.js';
 import { paradisRedactToolInputSecrets } from '../../agentBrowser/common/paradisBrowserPageOps.js';
 import { IParseSignals, IRawMessage, num, parseAskUserQuestions, rec, str, TEXT_LIMIT, TOOL_TEXT_LIMIT, truncateText, withTruncation } from './paradisAgentTranscriptParser.js';
-
-/** agy の質問のツール（Claude Code の AskUserQuestion に当たる）。 */
-const ANTIGRAVITY_QUESTION_TOOL = 'ask_question';
 
 /** 覚えておく結果待ちの呼び出しの上限（壊れた記録で伸び続けないように）。 */
 const PENDING_CALL_LIMIT = 64;
@@ -133,9 +131,15 @@ export function parseAntigravityLine(obj: Record<string, unknown>, signals: IPar
 			if (toolUseId !== undefined) {
 				pending.push(toolUseId);
 			}
-			const questionInput = tool === ANTIGRAVITY_QUESTION_TOOL ? paradisAntigravityQuestionInput(call?.args) : undefined;
+			const questionInput = tool === PARADIS_ANTIGRAVITY_QUESTION_TOOL ? paradisAntigravityQuestionInput(call?.args) : undefined;
 			if (questionInput !== undefined) {
-				out.push(...parseAskUserQuestions(questionInput, toolUseId, ts));
+				// Claude Code の AskUserQuestion と同じく、回答待ちの印を付ける（hook より先に記録を読んだとき、
+				// hook の質問をこの質問と同じものと見分けて 2 枚にしないため。読み直し・再起動の後も回答待ちを保つため）
+				const questions = parseAskUserQuestions(questionInput, toolUseId, ts);
+				if (questions.length > 0 && toolUseId !== undefined) {
+					signals.askedQuestionIds.push(toolUseId);
+				}
+				out.push(...questions);
 				return;
 			}
 			out.push({ role: 'assistant', kind: 'tool_use', tool, ...withTruncation(toolInputText(tool, call?.args), TOOL_TEXT_LIMIT), ts, ...(toolUseId !== undefined ? { toolUseId } : {}) });
@@ -145,6 +149,10 @@ export function parseAntigravityLine(obj: Record<string, unknown>, signals: IPar
 	}
 	if (type === 'GENERIC') {
 		const toolUseId = state.pendingCalls.shift();
+		// 質問の回答も結果として届く（本文が空でも回答は成立する）。Claude Code の tool_result と同じ印
+		if (toolUseId !== undefined) {
+			signals.answeredIds.push(toolUseId);
+		}
 		const error = str(obj.error);
 		const content = str(obj.content) ?? '';
 		const text = content.trim().length > 0 ? content : error ?? '';

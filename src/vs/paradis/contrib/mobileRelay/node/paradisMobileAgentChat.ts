@@ -9038,7 +9038,8 @@ export class ParadisMobileAgentChat extends Disposable {
 					updatedAt: explicitTerminal ? Math.max(spawn.updatedAt, owner.updatedAt) : owner.updatedAt,
 				});
 			}
-		} else if (session.sessionId !== undefined) {
+		} else if (session.sessionId !== undefined && session.agent !== 'antigravity') {
+			// Antigravity CLI の子の会話は Codex の記録に無いので探さない。
 			// homes が引けないのは接続先のペイン。SubAgent の記録は向こうのディスクにあるので、
 			// 手元の ~/.codex を探しに行かせない（同じ綴りの別マシンの記録を並べてしまう）
 			const homes = this.agentHomesForToken(token);
@@ -9344,7 +9345,12 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (this.logService.getLevel() === LogLevel.Trace) {
 			this.logService.trace('[paradisAgentChat] hook received', event.event, Object.keys(event.payload ?? {}).sort().slice(0, 60).join(','));
 		}
-		this.recordDesktopInteraction(event);
+		// Antigravity CLI の hook は、子の会話（invoke_subagent）のものかを確かめた後で、ペインの対話の状態に反映する
+		// （子の会話の ask_question・SessionEnd でペインの状態を書き換えないため。onHookEventChecked で反映する）
+		const deferDesktopState = event.agentKind === 'antigravity' && event.transcriptPath !== undefined && agentKindForPath(event.transcriptPath) === 'antigravity';
+		if (!deferDesktopState) {
+			this.recordDesktopInteraction(event);
+		}
 		// Codex の承認は、カードと通知を少し待たせる（自動の審査が先に決めることが多い）。通知は renderer の状態の変化から
 		// すぐ届くので、hook の処理を待たずにここで待たせ始める（paradisCodexApprovalHold.ts）
 		if (event.event === 'PermissionRequest' && event.toolName !== 'AskUserQuestion' && this.codexApprovalHoldMs > 0
@@ -9357,16 +9363,8 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		// デスクトップのチャット表示が「エージェントはもう終わった」と判断するための印（終わったペインへ
 		// 文を送ると、シェルでコマンドとして実行されるため）。SessionEnd の後に別の hook が来たら消す。
-		if (event.event === 'SessionEnd') {
-			this.desktopExitedTokens.add(event.token);
-			this.sessionEndedAt.set(event.token, event.at);
-			this.tailers.get(event.token)?.endMonitorsForSessionEnd(event.at);
-			// 動いていた Workflow を「中断（推定）」にして届ける（送るときに判定する。Monitor が無いと delta が出ないため）
-			this.pushWorkflowsIfChanged(event.token);
-			this.pushTeamsIfChanged(event.token);
-		} else if (this.desktopExitedTokens.delete(event.token)) {
-			this.sessionEndedAt.delete(event.token);
-			this.scheduleDesktopChatCheck();
+		if (!deferDesktopState) {
+			this.applyHookExitState(event);
 		}
 		// hook はペインの環境変数を継承したプロセスからしか届かない。届いた時点で
 		// 「今このペインでエージェントが動いている」証拠になる（transcript の有無は問わない）。
@@ -9393,7 +9391,22 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (transcriptPath !== event.transcriptPath) {
 			this.followRemoteSubagentTranscript(event);
 		}
-		this.enqueueHookEvent(event, transcriptPath, false);
+		this.enqueueHookEvent(event, transcriptPath, false, deferDesktopState);
+	}
+
+	/** hook の種類からペインのエージェントが終わったか・また動き出したかを覚える（{@link onHookEvent} の続き）。 */
+	private applyHookExitState(event: IParadisAgentHookEvent): void {
+		if (event.event === 'SessionEnd') {
+			this.desktopExitedTokens.add(event.token);
+			this.sessionEndedAt.set(event.token, event.at);
+			this.tailers.get(event.token)?.endMonitorsForSessionEnd(event.at);
+			// 動いていた Workflow を「中断（推定）」にして届ける（送るときに判定する。Monitor が無いと delta が出ないため）
+			this.pushWorkflowsIfChanged(event.token);
+			this.pushTeamsIfChanged(event.token);
+		} else if (this.desktopExitedTokens.delete(event.token)) {
+			this.sessionEndedAt.delete(event.token);
+			this.scheduleDesktopChatCheck();
+		}
 	}
 
 	/**
@@ -9513,10 +9526,10 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * 捨てると、AskUserQuestionやStopのような一度しか来ない状態遷移まで失われるため、受信順を
 	 * 保ったまま全イベントを処理する。
 	 */
-	private enqueueHookEvent(event: IParadisAgentHookEvent, transcriptPath: string, pathAlreadyChecked: boolean): void {
+	private enqueueHookEvent(event: IParadisAgentHookEvent, transcriptPath: string, pathAlreadyChecked: boolean, deferredDesktopState = false): void {
 		const previous = this.hookProcessing.get(event.token) ?? Promise.resolve();
 		const current = previous
-			.then(() => event.payload?.agent_kind === 'opencode' ? this.onOpenCodeHook(event) : this.onHookEventChecked(event, transcriptPath, pathAlreadyChecked))
+			.then(() => event.payload?.agent_kind === 'opencode' ? this.onOpenCodeHook(event) : this.onHookEventChecked(event, transcriptPath, pathAlreadyChecked, deferredDesktopState))
 			.catch(err => this.logService.warn('[paradisAgentChat] hook event handling failed', err));
 		this.hookProcessing.set(event.token, current);
 		void current.then(() => {
@@ -9935,13 +9948,21 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 	}
 
-	/** Antigravity CLI の会話が子の会話か（会話の id → 子か）。一度分かった会話は変わらないので覚える。 */
+	/** {@link onHookEvent} で子の会話かを確かめるまで待たせた、ペインの対話の状態への反映。 */
+	private applyDeferredHookDesktopState(event: IParadisAgentHookEvent): void {
+		this.recordDesktopInteraction(event);
+		this.applyHookExitState(event);
+	}
+
+	/** Antigravity CLI の会話が子の会話か（会話の id → 子か）。一覧の DB で分かった会話だけを覚える（親子の列は変わらない）。 */
 	private readonly antigravityChildConversations = new Map<string, boolean>();
 
 	/**
 	 * Antigravity CLI の hook が子の会話（invoke_subagent が起こした会話）のものか。会話の一覧（conversation_summaries.db）の
 	 * 親子の列で決め、一覧にまだ行が無ければ記録の先頭の行（子は親から渡された指示の SYSTEM_MESSAGE で始まる）で決める。
-	 * どちらでも決まらないときは、ペインが既に別の会話を写していれば今の会話を保つ（次の hook で確かめ直す）。
+	 * 記録の先頭で決めた結果は覚えない（上位の会話が SYSTEM_MESSAGE で始まる場合に、後から DB の行で正せるように）。
+	 * どちらでも決まらないときは、ペインが既に別の agy の会話を写していれば今の会話を保つ（子の会話の最初の hook で
+	 * ペインを取り替えないため。同じペインで新しい上位の会話を始めたときは、記録か DB の行ができた次の hook で替わる）。
 	 */
 	private async isAntigravityChildHook(token: string, transcriptPath: string): Promise<boolean> {
 		const conversationId = paradisAntigravityConversationIdFromTranscriptPath(transcriptPath);
@@ -9952,28 +9973,34 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (cached !== undefined) {
 			return cached;
 		}
-		let child: boolean | undefined;
+		let listed: boolean | undefined;
 		try {
 			const lineage = paradisReadAntigravityConversationLineage([conversationId]).get(conversationId);
-			child = lineage !== undefined ? paradisIsAntigravityChildConversation(lineage) : undefined;
+			listed = lineage !== undefined ? paradisIsAntigravityChildConversation(lineage) : undefined;
 		} catch (err) {
 			this.logService.trace('[paradisAgentChat] could not read the Antigravity CLI conversation list', String(err));
 		}
-		child ??= await paradisAntigravityTranscriptStartsAsChild(transcriptPath);
-		if (child === undefined) {
-			const current = this.paneSessions.get(token);
-			return current?.agent === 'antigravity' && current.transcriptPath !== transcriptPath;
+		if (listed !== undefined) {
+			this.antigravityChildConversations.set(conversationId, listed);
+			if (this.antigravityChildConversations.size > 512) {
+				this.antigravityChildConversations.delete(this.antigravityChildConversations.keys().next().value!);
+			}
+			return listed;
 		}
-		this.antigravityChildConversations.set(conversationId, child);
-		if (this.antigravityChildConversations.size > 512) {
-			this.antigravityChildConversations.delete(this.antigravityChildConversations.keys().next().value!);
+		const startsAsChild = await paradisAntigravityTranscriptStartsAsChild(transcriptPath);
+		if (startsAsChild !== undefined) {
+			return startsAsChild;
 		}
-		return child;
+		const current = this.paneSessions.get(token);
+		return current?.agent === 'antigravity' && current.transcriptPath !== transcriptPath;
 	}
 
-	private async onHookEventChecked(event: IParadisAgentHookEvent, transcriptPath: string, pathAlreadyChecked: boolean): Promise<void> {
+	private async onHookEventChecked(event: IParadisAgentHookEvent, transcriptPath: string, pathAlreadyChecked: boolean, deferredDesktopState = false): Promise<void> {
 		if (!pathAlreadyChecked && !(await isAllowedTranscriptPath(transcriptPath))) {
 			this.logService.warn(`[paradisAgentChat] rejected transcript path outside allowed roots: ${transcriptPath}`);
+			if (deferredDesktopState) {
+				this.applyDeferredHookDesktopState(event);
+			}
 			return;
 		}
 		// Antigravity CLI の子の会話（invoke_subagent）の hook は、親と同じプロセスから届くので所有者の判定では
@@ -9981,6 +10008,9 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (agentKindForPath(transcriptPath) === 'antigravity' && await this.isAntigravityChildHook(event.token, transcriptPath)) {
 			this.logService.trace(`[paradisAgentChat] dropped a hook from an Antigravity CLI child conversation: ${event.event}`);
 			return;
+		}
+		if (deferredDesktopState) {
+			this.applyDeferredHookDesktopState(event);
 		}
 		const isTurnEnd = paradisIsTurnEndHookEvent(event.event);
 		if (!this.isLiveToken(event.token)) {
