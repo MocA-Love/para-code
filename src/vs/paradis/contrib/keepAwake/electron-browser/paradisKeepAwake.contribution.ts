@@ -9,6 +9,7 @@
 import { localize, localize2 } from '../../../../nls.js';
 import Severity from '../../../../base/common/severity.js';
 import { IntervalTimer } from '../../../../base/common/async.js';
+import { isCancellationError } from '../../../../base/common/errors.js';
 import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
@@ -79,6 +80,12 @@ export class ParadisKeepAwakeContribution extends Disposable implements IWorkben
 			},
 			onDidChangeMode: () => this.updateStatusbar(),
 			report: (operation, error) => {
+				// 終了の間際にウィンドウとの IPC が閉じると、解除の呼び出しは Canceled で返る。blocker は main が
+				// ウィンドウと一緒に片付けるので、失敗として知らせない
+				if (isCancellationError(error)) {
+					this.logService.trace('[paradisKeepAwake] ' + operation + ' canceled');
+					return;
+				}
 				reportParadisDiagnosticError('owned', 'keep-awake', operation, error, undefined, 'warning');
 				this.logService.error('[paradisKeepAwake] ' + operation, error);
 			},

@@ -754,6 +754,10 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 			// 誤読しか生まない（成功時にウォッチドッグは止まるが起点は残るため）。
 			duration_ms: reason === 'content-timeout' && this._renderStartedAt !== 0 ? Date.now() - this._renderStartedAt : undefined,
 			safe_last_signal: this._lastContentSignal,
+			// 待った長さ（HTML の大きさで伸びる）と service worker の有無。同じファイルで繰り返すのが、
+			// 大きな文書で待ちが足りないのか、service worker の制御待ちで止まるのかを分けるため。
+			safe_timeout_ms: reason === 'content-timeout' ? this._watchdogTimeoutMs : undefined,
+			safe_service_worker: this._pane.webview ? (this._pane.serviceWorkerDisabled ? 'off' : 'on') : undefined,
 		});
 
 		// 壊れた webview は作り直す。Raw へ倒す場合も、掴めなくなったコンテンツプロセスを

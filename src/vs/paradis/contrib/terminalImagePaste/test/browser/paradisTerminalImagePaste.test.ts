@@ -8,12 +8,13 @@
 
 import * as assert from 'assert';
 import type { Terminal as RawXtermTerminal } from '@xterm/xterm';
+import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { isString } from '../../../../../base/common/types.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IClipboardService } from '../../../../../platform/clipboard/common/clipboardService.js';
-import type { IFileService } from '../../../../../platform/files/common/files.js';
+import { FileOperationError, FileOperationResult, type IFileService } from '../../../../../platform/files/common/files.js';
 import { Severity, type INotification, type INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { configureParadisDiagnosticReporter } from '../../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisIsLocalImagePathText, paradisTryTerminalImagePaste } from '../../browser/paradisTerminalImagePaste.js';
@@ -222,6 +223,43 @@ suite('ParadisTerminalImagePaste', () => {
 		);
 
 		assert.deepStrictEqual(deleted, [`/home/user/.para-code/pasted-images/${staleTimestamp}.png`]);
+	});
+
+	test('does not report a stale image another window already removed, and keeps removing the rest', async () => {
+		const now = Date.now();
+		const gone = now - 3 * 60 * 60 * 1000;
+		const stale = now - 2 * 60 * 60 * 1000;
+		const deleted: string[] = [];
+		const reports: string[] = [];
+		const done = new DeferredPromise<void>();
+		configureParadisDiagnosticReporter((_scope, _feature, operation) => reports.push(operation));
+		try {
+			await paradisTryTerminalImagePaste(
+				{ readImage: async () => new Uint8Array([137, 80, 78, 71]) } as unknown as IClipboardService,
+				{ raw: { input: () => { } } } as unknown as { raw: RawXtermTerminal },
+				{
+					fileService: makeFileService({
+						resolve: async () => ({
+							children: [gone, stale].map(timestamp => ({ name: `${timestamp}.png`, isDirectory: false, resource: URI.parse(`vscode-remote://ssh-remote+dev-pc/home/user/.para-code/pasted-images/${timestamp}.png`) })),
+						} as never),
+						del: async (resource: URI) => {
+							if (resource.path.endsWith(`${gone}.png`)) {
+								throw new FileOperationError('gone', FileOperationResult.FILE_NOT_FOUND);
+							}
+							deleted.push(resource.path);
+							done.complete();
+						},
+					}),
+					remoteAuthority: 'ssh-remote+dev-pc',
+					cwd: '/home/user'
+				}
+			);
+			await done.p;
+			await timeout(0);
+			assert.deepStrictEqual({ deleted, reports }, { deleted: [`/home/user/.para-code/pasted-images/${stale}.png`], reports: [] });
+		} finally {
+			configureParadisDiagnosticReporter(() => { });
+		}
 	});
 
 	test('fills an empty cwd from the speculative cwd, so a restored editor terminal still receives the image', async () => {

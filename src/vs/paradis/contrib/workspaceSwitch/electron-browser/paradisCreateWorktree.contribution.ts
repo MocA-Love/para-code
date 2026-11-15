@@ -30,6 +30,7 @@ import { IWorkspaceContextService, WorkbenchState } from '../../../../platform/w
 import { IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, PARADIS_GET_DIFF_STATS_COMMAND_ID, PARADIS_REMOVE_WORKTREE_COMMAND_ID, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisDiffStat, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisRemoveWorktreeResult, IParadisWorktreeLockInfo, IParadisWorktreeLockQuery, paradisFormatWorktreeLockReason, PARADIS_DEFAULT_AGENT_COMMANDS } from '../common/paradisWorktreeCreate.js';
 import { IParadisIssueStatus, IParadisIssueStatusesResult } from '../../../common/paradisIssueDetection.js';
+import { paradisWithSettledProgress } from '../../../common/paradisSettledProgress.js';
 import { paradisGithubStatusMaxAge } from '../common/paradisGithubLookupCache.js';
 import { ParadisScopeRetirementPreparation } from '../common/paradisEditorScope.js';
 import { paradisRemoveWorktreePrepareMessage, ParadisWorktreeRemovalGuard } from '../common/paradisWorktreeRemoval.js';
@@ -528,7 +529,8 @@ class ParadisRemoveWorktreeAction extends Action2 {
 					};
 
 					// 削除は大きな作業ツリーで数分かかるので、実行中であることを見せる
-					const withRemovalProgress = <T>(task: () => Promise<T>) => progressService.withProgress<T>({
+					// 削除の失敗（変更が残っている等）は下の catch で受けるが、進行表示に拒否を渡すと未処理の例外になる
+					const withRemovalProgress = <T>(task: () => Promise<T>) => paradisWithSettledProgress<T>(progressService, {
 						location: ProgressLocation.Notification,
 						// allow-any-unicode-next-line
 						title: localize('paradis.workspaceSwitch.removeWorktreeProgress', "ワークツリー「{0}」を削除しています…", worktree.name),
