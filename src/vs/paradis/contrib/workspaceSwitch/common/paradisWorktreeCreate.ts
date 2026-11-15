@@ -548,7 +548,7 @@ export const PARADIS_DEFAULT_AGENT_COMMANDS: readonly IParadisAgentCommandTempla
 		],
 	},
 	{
-		// Gemini CLI の後継（2026-11-12 に既定の一覧の gemini 行を置き換えた。設定に書いた gemini 行はそのまま使える）。
+		// Gemini CLI の後継（2026-11-12 に既定の一覧の gemini 行を置き換えた。設定に書き写しただけの gemini 行もこの行に差し替え、書き換えた gemini 行はそのまま使える）。
 		// agy は Go の flag なので、`-i` は次の引数を `-` で始まっていても指示として取る。フラグを指示の前へ
 		// 置けるよう `-i` はテンプレートに書かず promptFlag で指示の直前に付け、指示が空なら付けない（`agy -i` だけだと起動しない）
 		id: 'antigravity', label: 'Antigravity CLI', command: 'agy {prompt}', promptFlag: '-i',
