@@ -18,6 +18,7 @@ import { Action2, registerAction2 } from '../../../../platform/actions/common/ac
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IProgressService, ProgressLocation } from '../../../../platform/progress/common/progress.js';
+import { paradisWithSettledProgress } from '../../../common/paradisSettledProgress.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
 import { IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
 import { IParadisFindGeneratedOutputsRequest, IParadisGeneratedOutputCandidate, IParadisRemoveGeneratedOutputsRequest, IParadisRemoveGeneratedOutputsResult, PARADIS_GENERATED_OUTPUT_MIN_AGE_DAYS } from '../common/paradisWorktreeGeneratedCleanup.js';
@@ -74,7 +75,7 @@ class ParadisCleanGeneratedOutputsAction extends Action2 {
 
 		let candidates: IParadisGeneratedOutputCandidate[];
 		try {
-			candidates = await progressService.withProgress({
+			candidates = await paradisWithSettledProgress(progressService, {
 				location: ProgressLocation.Notification,
 				// allow-any-unicode-next-line
 				title: localize('paradis.generatedCleanup.finding', "「{0}」のワークツリーから、古い依存とビルド出力を探しています…", repository.name),
@@ -111,7 +112,7 @@ class ParadisCleanGeneratedOutputsAction extends Action2 {
 
 		const removeRequest: IParadisRemoveGeneratedOutputsRequest = { ...findRequest, candidates };
 		try {
-			const result = await progressService.withProgress({
+			const result = await paradisWithSettledProgress(progressService, {
 				location: ProgressLocation.Notification,
 				// allow-any-unicode-next-line
 				title: localize('paradis.generatedCleanup.removing', "古い依存とビルド出力を削除しています…"),

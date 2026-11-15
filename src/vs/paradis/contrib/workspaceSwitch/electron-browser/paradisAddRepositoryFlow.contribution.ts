@@ -37,6 +37,7 @@ import { IPathService } from '../../../../workbench/services/path/common/pathSer
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { paradisLocalRepositoryPickContext, paradisPickAndAddLocalRepositories } from '../browser/paradisPickLocalRepositories.js';
 import { paradisHostPathFor } from '../../../common/paradisHostPath.js';
+import { paradisWithSettledProgress } from '../../../common/paradisSettledProgress.js';
 import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, PARADIS_ADD_REPOSITORY_FLOW_COMMAND_ID, PARADIS_CLONE_PARENT_DIR_SETTING, paradisParseGitUrl, paradisRedactCloneLogText } from '../common/paradisRepositoryClone.js';
 import { IParadisWorkspaceSwitchService } from '../common/paradisWorkspaceSwitch.js';
 import { PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
@@ -365,7 +366,7 @@ class ParadisAddRepositoryFlowAction extends Action2 {
 			? remoteConnection.getChannel(PARADIS_WORKTREE_GIT_CHANNEL)
 			: sharedProcessService.getChannel(PARADIS_WORKTREE_GIT_CHANNEL);
 		try {
-			await progressService.withProgress({
+			await paradisWithSettledProgress(progressService, {
 				location: ProgressLocation.Notification,
 				// allow-any-unicode-next-line
 				title: localize('paradis.repositoryClone.progressTitle', "{0} をクローンしています", url),

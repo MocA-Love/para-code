@@ -12,7 +12,7 @@ import { Schemas } from '../../../../base/common/network.js';
 import { isString } from '../../../../base/common/types.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
-import { IFileService } from '../../../../platform/files/common/files.js';
+import { FileOperationError, FileOperationResult, FileSystemProviderErrorCode, IFileService, toFileSystemProviderErrorCode } from '../../../../platform/files/common/files.js';
 import { localize } from '../../../../nls.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
@@ -194,6 +194,12 @@ const WINDOWS_DRIVE_PATH = /^[a-zA-Z]:[\\/]/;
 /** {@link WINDOWS_DRIVE_PATH} を URI の path にした形（/C:/...）。 */
 const WINDOWS_DRIVE_URI_PATH = /^\/[a-zA-Z]:\//;
 
+/** 対象がもう無い失敗か（削除の前の確かめで分かったときと、ファイルシステムが返したときの両方）。 */
+function isFileNotFoundError(error: unknown): boolean {
+	return (error instanceof FileOperationError && error.fileOperationResult === FileOperationResult.FILE_NOT_FOUND)
+		|| (error instanceof Error && (toFileSystemProviderErrorCode(error) === FileSystemProviderErrorCode.FileNotFound || (error as { code?: unknown }).code === 'ENOENT'));
+}
+
 async function cleanupOldImages(directory: URI, fileService: IFileService, keep: URI): Promise<void> {
 	try {
 		const entries = await fileService.resolve(directory);
@@ -207,10 +213,20 @@ async function cleanupOldImages(directory: URI, fileService: IFileService, keep:
 				continue;
 			}
 			if (now - Number(base) > PASTED_IMAGE_TTL_MS) {
-				await fileService.del(child.resource);
+				try {
+					await fileService.del(child.resource);
+				} catch (error) {
+					// 別のウィンドウ（同じフォルダーに貼った別の端末）が先に消していた。消したいものは無いので失敗ではない
+					if (!isFileNotFoundError(error)) {
+						throw error;
+					}
+				}
 			}
 		}
 	} catch (error) {
+		if (isFileNotFoundError(error)) {
+			return;
+		}
 		// 掃除できなくても実害はない
 		reportParadisDiagnosticError('owned', 'terminal-image-paste', 'cleanup-failed', error, undefined, 'warning');
 	}

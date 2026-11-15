@@ -6,7 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap } from '../../../../base/common/lifecycle.js';
+import { Event } from '../../../../base/common/event.js';
 import { TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
@@ -29,7 +30,7 @@ const REPORT_COOLDOWN_MS = 60 * 1000;
  * crosses a threshold, so the next occurrence carries an actual Sentry event instead of only a
  * local log line.
  */
-class ParadisTerminalCountDiagnosticsContribution extends Disposable implements IWorkbenchContribution {
+export class ParadisTerminalCountDiagnosticsContribution extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'workbench.contrib.paradisTerminalCountDiagnostics';
 
@@ -37,27 +38,45 @@ class ParadisTerminalCountDiagnosticsContribution extends Disposable implements 
 	private readonly _createdEditorAt: number[] = [];
 	private readonly _disposedAt: number[] = [];
 	private _lastReportedAt = 0;
+	/** Per-instance disposal listeners, keyed by instance id (see the constructor for why not the service event). */
+	private readonly _disposalListeners = this._register(new DisposableMap<number>());
 
 	constructor(
 		@ITerminalService private readonly _terminalService: ITerminalService,
 		@ILifecycleService private readonly _lifecycleService: ILifecycleService,
 	) {
 		super();
+		// Disposals are counted from each instance's own `onDisposed`, not from
+		// `ITerminalService.onDidDisposeInstance`: closing a terminal editor tab removes the instance from
+		// the editor service (and drops its forwarding listener) before the instance is disposed, so the
+		// service event never fires for editor terminals. Counting from the service made 15 editor
+		// terminals opened and closed in a few minutes look like 15 created and 0 disposed.
+		for (const instance of this._terminalService.instances) {
+			this._watchDisposal(instance);
+		}
 		this._register(this._terminalService.onDidCreateInstance(instance => this._onCreate(instance)));
-		this._register(this._terminalService.onDidDisposeInstance(() => {
+	}
+
+	private _onCreate(instance: ITerminalInstance): void {
+		this._watchDisposal(instance);
+		if (instance.target === TerminalLocation.Editor) {
+			this._createdEditorAt.push(Date.now());
+		}
+		this._onEvent('rapid-growth');
+	}
+
+	private _watchDisposal(instance: ITerminalInstance): void {
+		if (this._disposalListeners.has(instance.instanceId)) {
+			return;
+		}
+		this._disposalListeners.set(instance.instanceId, Event.once(instance.onDisposed)(() => {
+			this._disposalListeners.deleteAndDispose(instance.instanceId);
 			// Closing or reloading the window disposes every terminal at once; that is not the
 			// disposal burst this diagnoses.
 			if (!this._lifecycleService.willShutdown) {
 				this._onEvent('rapid-shrink');
 			}
 		}));
-	}
-
-	private _onCreate(instance: ITerminalInstance): void {
-		if (instance.target === TerminalLocation.Editor) {
-			this._createdEditorAt.push(Date.now());
-		}
-		this._onEvent('rapid-growth');
 	}
 
 	private _onEvent(operation: 'rapid-growth' | 'rapid-shrink'): void {
@@ -67,8 +86,10 @@ class ParadisTerminalCountDiagnosticsContribution extends Disposable implements 
 		this._prune(this._createdEditorAt, now);
 		this._prune(this._disposedAt, now);
 
-		const bucket = operation === 'rapid-growth' ? this._createdAt : this._disposedAt;
-		if (bucket.length < RATE_THRESHOLD || now - this._lastReportedAt < REPORT_COOLDOWN_MS) {
+		// Both are the net change: terminals opened and closed again within the window (an agent
+		// launcher, a task run) are neither piling up nor dropping.
+		const count = operation === 'rapid-growth' ? this._createdAt.length - this._disposedAt.length : this._disposedAt.length - this._createdAt.length;
+		if (count < RATE_THRESHOLD || now - this._lastReportedAt < REPORT_COOLDOWN_MS) {
 			return;
 		}
 		this._lastReportedAt = now;
