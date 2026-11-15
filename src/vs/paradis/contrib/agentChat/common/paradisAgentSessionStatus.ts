@@ -308,7 +308,7 @@ export interface IParadisAgentContextStatus {
 
 /** snapshot / delta の任意項目 `sessionStatus` の中身。 */
 export interface IParadisAgentSessionStatus {
-	readonly agent: 'claude' | 'codex' | 'opencode';
+	readonly agent: 'claude' | 'codex' | 'opencode' | 'antigravity';
 	/** リクエストがまだ 1 回も無ければ省く。 */
 	readonly cache?: IParadisAgentCacheStatus;
 	readonly context?: IParadisAgentContextStatus;
@@ -340,7 +340,7 @@ export class ParadisAgentSessionStatusTracker {
 	private measure: IParadisAgentContextMeasure | undefined;
 	private readonly restartMarks: number[] = [];
 
-	constructor(readonly agent: 'claude' | 'codex' | 'opencode') {
+	constructor(readonly agent: 'claude' | 'codex' | 'opencode' | 'antigravity') {
 		this.ledger = new ParadisPromptCacheLedger(agent === 'codex');
 	}
 
@@ -383,6 +383,10 @@ export class ParadisAgentSessionStatusTracker {
 		const notice = paradisReadCompactionNotice(line);
 		if (notice !== undefined) {
 			this.ledger.expectDrop(notice);
+			return false;
+		}
+		// Antigravity CLI の記録にはキャッシュの数が無い（入出力のトークン数だけ）。数えない
+		if (this.agent === 'antigravity') {
 			return false;
 		}
 		return this.agent === 'claude' ? this.observeClaude(line) : this.observeCodex(line);

@@ -14,7 +14,7 @@ import type { AgentChatMessage, AgentChatState } from '../../store.js';
  */
 
 /** 行の頭に出すロゴの種類。 */
-export type AgentLogoKind = 'claude' | 'codex' | 'opencode' | 'agent' | 'terminal';
+export type AgentLogoKind = 'claude' | 'codex' | 'opencode' | 'antigravity' | 'agent' | 'terminal';
 
 /**
  * ロゴを決める。会話の写しがあればそのエージェント名、無ければターミナルの名前から推し量る
@@ -34,6 +34,10 @@ export function agentLogoKind(terminal: { readonly agent?: boolean; readonly tit
 	// OpenCode のタブ名は `OpenCode` か `OC | <題名>`
 	if (source.includes('opencode') || /^oc\s*\|/.test(source)) {
 		return 'opencode';
+	}
+	// Antigravity CLI は会話の写しの種別 `antigravity`。タブ名はプロセス名の `agy` のまま
+	if (source.includes('antigravity') || /(?:^|[^a-z0-9])agy(?:$|[^a-z0-9])/.test(source)) {
+		return 'antigravity';
 	}
 	return 'agent';
 }

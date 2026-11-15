@@ -81,6 +81,9 @@ import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.j
 import type { IParadisNotifyPaneContent } from './paradisNotifyContentSource.js';
 import { IParadisAgentPaneInsight, IParadisAgentPaneInteraction, IParadisAgentPromptCache, PARADIS_PROMPT_CACHE_TTL_5M, paradisOneLine, paradisReadClaudePromptCacheUsage, paradisReadClaudeRequestStart, paradisSelectInsightSubagents, paradisSummarizePermissionInput, paradisSummarizeQuestionInput } from '../../agentInsights/common/paradisAgentInsights.js';
 import { IParadisAgentApprovalChoice, IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentChatView, IParadisAgentInteraction, IParadisAgentLiveState, IParadisAgentPanel, IParadisAgentSessionInfo, PARADIS_ADVISOR_TOOL, ParadisAgentKind, ParadisOpenCodeDesktopActionResult, paradisAgentQuestionHasPreview, paradisIsCodexDaemonApprovalInteraction, paradisPickCurrentInteraction } from '../../agentChat/common/paradisAgentChat.js';
+import { newParadisAntigravityParseState, paradisAntigravityQuestionInput, parseAntigravityLine } from '../../agentChat/common/paradisAntigravityTranscript.js';
+import { paradisIsAntigravityTranscriptPath, PARADIS_ANTIGRAVITY_QUESTION_TOOL } from '../../agentBrowser/common/paradisAntigravityHooks.js';
+import { paradisAntigravityBrainRoot, paradisAntigravityConversationIdFromTranscriptPath, paradisAntigravityTranscriptStartsAsChild, paradisIsAntigravityChildConversation, paradisReadAntigravityConversationLineage } from '../../sessionResume/node/paradisAntigravityHistory.js';
 import { IParadisAgentMonitor, ParadisAgentMonitorWatch, paradisMonitorsForStoppedPane } from '../../agentChat/common/paradisAgentMonitors.js';
 import { IParadisAgentShell, IParadisShellSignal, paradisShellCallSignal, paradisShellsAccess, paradisShellsForStoppedPane, paradisShellStartedSignal } from '../../agentChat/common/paradisAgentShells.js';
 import { IParadisAgentWorkflow, ParadisAgentWorkflowTracker, paradisWorkflowsForStoppedPane } from '../../agentChat/common/paradisAgentWorkflows.js';
@@ -624,6 +627,10 @@ function paradisLocalAgentPathOrUndefined(homes: IParadisAgentHomes, recordedPat
 }
 
 function agentKindForPath(transcriptPath: string): ParadisAgentKind {
+	// Antigravity CLI は ~/.gemini/antigravity-cli/brain/<id>/… に書く（Claude・Codex の判定より先に見る）
+	if (paradisIsAntigravityTranscriptPath(transcriptPath)) {
+		return 'antigravity';
+	}
 	// OpenCode は会話を SQLite に持つ（agentBrowser の paradisHookAgentKindForTranscript と同じ規約）
 	if (/[\\/]opencode(?:-[\w.-]+)?\.db(?:#ses_[A-Za-z0-9_-]+)?$/.test(transcriptPath)) {
 		return 'opencode';
@@ -635,6 +642,38 @@ function agentKindForPath(transcriptPath: string): ParadisAgentKind {
 		return 'codex';
 	}
 	return paradisIsWithinCodexHome(transcriptPath) ? 'codex' : 'claude';
+}
+
+/**
+ * チャットの写しに添える、モバイルから操作できるかの印。Antigravity CLI は送信・承認・回答の経路がまだ無いので
+ * 付けない（アプリは「エージェントセッションを準備中です」で断る。古いアプリも同じ）。
+ */
+function paradisAgentChatCapabilitiesField(agent: ParadisAgentKind): { readonly capabilities?: { readonly agentActions: true; readonly claudeSettings?: true } } {
+	if (!paradisAgentChatAcceptsActions(agent)) {
+		return {};
+	}
+	return { capabilities: { agentActions: true, ...(agent === 'claude' ? { claudeSettings: true } : {}) } };
+}
+
+/** モバイル・デスクトップのチャット欄からの送信・承認・回答を受けられるエージェントか。 */
+function paradisAgentChatAcceptsActions(agent: ParadisAgentKind | undefined): boolean {
+	return agent !== 'antigravity';
+}
+
+/**
+ * Antigravity CLI の hook を、チャットの写しが読む形にする。質問のツール（ask_question）は、Claude Code の
+ * AskUserQuestion の名前と入力の形（options を `{ label }` に、is_multi_select を multiSelect に）へ直す。
+ * 形が読めない質問はそのまま返す（質問のカードは出ないが、記録の行は後で届く）。
+ */
+function paradisAntigravityChatHookEvent(event: IParadisAgentHookEvent): IParadisAgentHookEvent {
+	if (event.toolName !== PARADIS_ANTIGRAVITY_QUESTION_TOOL) {
+		return event;
+	}
+	const toolInput = paradisAntigravityQuestionInput(event.toolInput);
+	if (toolInput === undefined) {
+		return event;
+	}
+	return { ...event, toolName: 'AskUserQuestion', toolInput, ...(event.payload !== undefined ? { payload: { ...event.payload, tool_name: 'AskUserQuestion', tool_input: toolInput } } : {}) };
 }
 
 /**
@@ -691,7 +730,8 @@ async function isAllowedTranscriptPath(transcriptPath: string): Promise<boolean>
 	// パスが root の字面と合わず、正しい transcript を「root の外」として拒んでいた（フェーズ6の実機確認）。
 	// root の外へ抜ける symlink は、実体（realpath）が どちらの綴りの root にも入らないので引き続き拒む。
 	// Codex はアカウントごとに別ホーム（~/.codex-2 等）へ書くので、全ホームを許可 root にする。
-	const roots = await paradisRootSpellings([paradisClaudeConfigDir(), ...paradisCodexHomes(), ...paradisRemoteTranscriptMirrorRoots()]);
+	// Antigravity CLI は会話の記録の置き場（~/.gemini/antigravity-cli/brain）だけを許す（同じフォルダの認証のファイルは読ませない）。
+	const roots = await paradisRootSpellings([paradisClaudeConfigDir(), ...paradisCodexHomes(), paradisAntigravityBrainRoot(), ...paradisRemoteTranscriptMirrorRoots()]);
 	const within = (candidate: string) => roots.some(root => candidate === root || candidate.startsWith(root + sep));
 	if (!within(resolved)) {
 		return false;
@@ -2155,6 +2195,8 @@ class TranscriptTailer {
 	private remainder = '';
 	/** 作業中に送った発言の控え。読み取りの塊をまたいで重複（Esc 後の書き直し）を見分けるため持ち続ける。 */
 	private claudeQueuedPrompts = newClaudeQueuedPromptState();
+	/** Antigravity CLI の結果待ちの呼び出し（記録に id が無いので、読み取りの塊をまたいで順に結び付ける）。 */
+	private antigravityParseState = newParadisAntigravityParseState();
 	// transcript を offset 連続で読み進める間、UTF-8マルチバイト文字が読み境界で分断されても
 	// 化けないよう stream モードでデコードする（境界の継続バイトはデコーダ内部で持ち越される）。
 	// epoch reset（offset 0 へ巻き戻し）時は新しいインスタンスに差し替えて内部状態を捨てる。
@@ -2608,6 +2650,7 @@ class TranscriptTailer {
 				this.offset = 0;
 				this.remainder = '';
 				this.claudeQueuedPrompts = newClaudeQueuedPromptState();
+				this.antigravityParseState = newParadisAntigravityParseState();
 				this.lineBase = 0;
 				this.positionByRev.clear();
 				this.evictedPositions.clear();
@@ -2860,7 +2903,9 @@ class TranscriptTailer {
 		const added: (IParadisAgentChatMessage & { fullText?: string; imageData?: readonly IFlattenedImage[] })[] = [];
 		for (const { obj, lineStart, modUuid } of entries) {
 			const modRevs: { rev: number; keep: number }[] | undefined = modUuid !== undefined ? [] : undefined;
-			const raw = this.agent === 'claude' ? parseClaudeLine(obj, signals) : parseCodexLine(obj, signals);
+			const raw = this.agent === 'claude' ? parseClaudeLine(obj, signals)
+				: this.agent === 'antigravity' ? parseAntigravityLine(obj, signals, this.antigravityParseState)
+					: parseCodexLine(obj, signals);
 			for (const [rawIndex, message] of raw.entries()) {
 				const position: IParadisHistoryCursor | undefined = lineStart !== undefined ? { offset: lineStart, keep: rawIndex } : undefined;
 				// ライブ質問の決着処理: hookで注入済みの質問が決着後に transcript へ本物として
@@ -5004,6 +5049,26 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 	}
 
+	/**
+	 * チャット欄からの操作を受けられないエージェント（Antigravity CLI）への送信・回答・承認を断る。断ったら true。
+	 * モバイルには操作できる印（capabilities.agentActions）を送っていないので、ここへ来るのは印を見ない相手だけ。
+	 */
+	private rejectUnsupportedAgentAction(mobileId: string, msg: AgentInbound): boolean {
+		if (msg.t !== 'action/sendMessage' && msg.t !== 'action/answerQuestion' && msg.t !== 'action/clarifyQuestion' && msg.t !== 'action/answerApproval' && msg.t !== 'action/claudeSetting' && msg.t !== 'approval-options') {
+			return false;
+		}
+		const token = this.resolveInboundToken(msg.id, msg.token);
+		if (token === undefined || paradisAgentChatAcceptsActions(this.paneSessions.get(token)?.agent)) {
+			return false;
+		}
+		if (msg.t === 'approval-options') {
+			this.sendTo(mobileId, { t: 'approval-options', id: msg.id, requestId: msg.requestId, interactionId: msg.interactionId, error: 'stale-interaction' }, token);
+		} else {
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'agent-unsupported', message: 'このエージェントにはまだチャット欄から送れません。ターミナル表示で入力してください' }, token);
+		}
+		return true;
+	}
+
 	/** agentチャネルのモバイル→PCメッセージを処理する。 */
 	handleInbound(mobileId: string, payload: Uint8Array): void {
 		let msg: AgentInbound;
@@ -5014,6 +5079,9 @@ export class ParadisMobileAgentChat extends Disposable {
 			}
 			msg = parsed;
 		} catch {
+			return;
+		}
+		if (this.rejectUnsupportedAgentAction(mobileId, msg)) {
 			return;
 		}
 		switch (msg.t) {
@@ -6732,6 +6800,10 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * - それ以外: ファイルから組み立てる
 	 */
 	private agentCommandCatalog(token: string, session: IPaneSessionInfo, cwd: string): Promise<readonly IParadisAgentCommandOption[]> {
+		if (session.agent === 'antigravity') {
+			// Antigravity CLI のスラッシュコマンドの一覧はまだ持たない（Claude Code の組み込みを出さない）
+			return Promise.resolve([]);
+		}
 		if (session.agent === 'opencode') {
 			// 一覧は frontend から届く。橋渡しで確かめた項目だけを、知っている形に詰め直す
 			return paradisOpenCodeBridge.listCommands(token, session.sessionId ?? '').then(commands => commands.map(command => ({
@@ -6911,14 +6983,14 @@ export class ParadisMobileAgentChat extends Disposable {
 			if (msg.epoch === tailer.epoch && typeof afterRev === 'number' && afterRev >= oldestRev - 1) {
 				// モバイルが同一epochの途中まで持っている → 差分のみ (リレー瞬断からの再接続)
 				const messages = tailer.messages.filter(m => m.rev > afterRev);
-				this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live, liveRevision, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) }, ...this.monitorsField(token, tailer, true), ...this.sessionStatusField(token, tailer, true), ...this.asyncQuestionsField(token, tailer, true), ...this.panelField(token), ...pcDraft }, token, owner);
+				this.sendTo(mobileId, { t: 'delta', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live, liveRevision, activity, interaction, ...paradisAgentChatCapabilitiesField(tailer.agent), ...this.monitorsField(token, tailer, true), ...this.sessionStatusField(token, tailer, true), ...this.asyncQuestionsField(token, tailer, true), ...this.panelField(token), ...pcDraft }, token, owner);
 			} else {
 				const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 				this.sendTo(mobileId, {
 					t: 'snapshot', id: msg.id, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages,
 					...(tailer.wasInitialTruncated || tailer.messages.length > messages.length ? { truncated: true } : {}),
 					...(info !== undefined ? { info } : {}),
-					live, liveRevision, activity, interaction, capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) },
+					live, liveRevision, activity, interaction, ...paradisAgentChatCapabilitiesField(tailer.agent),
 					...this.monitorsField(token, tailer, true),
 					...this.sessionStatusField(token, tailer, true),
 					...this.asyncQuestionsField(token, tailer, true),
@@ -9259,9 +9331,10 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private onHookEvent(event: IParadisAgentHookEvent): void {
-		// Antigravity CLI の会話はまだ写さない（会話の記録の読み取りは別の PR）。状態の印と通知は hook の受け口が出す
+		// Antigravity CLI の質問のツール（ask_question）は、Claude Code の AskUserQuestion の名前と入力の形に直してから
+		// 同じ経路に載せる（質問のカード・回答待ちの印・通知は AskUserQuestion の形だけを読む）
 		if (event.agentKind === 'antigravity') {
-			return;
+			event = paradisAntigravityChatHookEvent(event);
 		}
 		if (event.payload?.agent_kind === 'opencode') {
 			this.enqueueHookEvent(event, event.transcriptPath ?? '', true);
@@ -9862,9 +9935,51 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 	}
 
+	/** Antigravity CLI の会話が子の会話か（会話の id → 子か）。一度分かった会話は変わらないので覚える。 */
+	private readonly antigravityChildConversations = new Map<string, boolean>();
+
+	/**
+	 * Antigravity CLI の hook が子の会話（invoke_subagent が起こした会話）のものか。会話の一覧（conversation_summaries.db）の
+	 * 親子の列で決め、一覧にまだ行が無ければ記録の先頭の行（子は親から渡された指示の SYSTEM_MESSAGE で始まる）で決める。
+	 * どちらでも決まらないときは、ペインが既に別の会話を写していれば今の会話を保つ（次の hook で確かめ直す）。
+	 */
+	private async isAntigravityChildHook(token: string, transcriptPath: string): Promise<boolean> {
+		const conversationId = paradisAntigravityConversationIdFromTranscriptPath(transcriptPath);
+		if (conversationId === undefined) {
+			return false;
+		}
+		const cached = this.antigravityChildConversations.get(conversationId);
+		if (cached !== undefined) {
+			return cached;
+		}
+		let child: boolean | undefined;
+		try {
+			const lineage = paradisReadAntigravityConversationLineage([conversationId]).get(conversationId);
+			child = lineage !== undefined ? paradisIsAntigravityChildConversation(lineage) : undefined;
+		} catch (err) {
+			this.logService.trace('[paradisAgentChat] could not read the Antigravity CLI conversation list', String(err));
+		}
+		child ??= await paradisAntigravityTranscriptStartsAsChild(transcriptPath);
+		if (child === undefined) {
+			const current = this.paneSessions.get(token);
+			return current?.agent === 'antigravity' && current.transcriptPath !== transcriptPath;
+		}
+		this.antigravityChildConversations.set(conversationId, child);
+		if (this.antigravityChildConversations.size > 512) {
+			this.antigravityChildConversations.delete(this.antigravityChildConversations.keys().next().value!);
+		}
+		return child;
+	}
+
 	private async onHookEventChecked(event: IParadisAgentHookEvent, transcriptPath: string, pathAlreadyChecked: boolean): Promise<void> {
 		if (!pathAlreadyChecked && !(await isAllowedTranscriptPath(transcriptPath))) {
 			this.logService.warn(`[paradisAgentChat] rejected transcript path outside allowed roots: ${transcriptPath}`);
+			return;
+		}
+		// Antigravity CLI の子の会話（invoke_subagent）の hook は、親と同じプロセスから届くので所有者の判定では
+		// 見分けられない。ペインの会話を子の会話へ取り替えないよう、一覧と記録の先頭で子かどうかを確かめて捨てる
+		if (agentKindForPath(transcriptPath) === 'antigravity' && await this.isAntigravityChildHook(event.token, transcriptPath)) {
+			this.logService.trace(`[paradisAgentChat] dropped a hook from an Antigravity CLI child conversation: ${event.event}`);
 			return;
 		}
 		const isTurnEnd = paradisIsTurnEndHookEvent(event.event);
@@ -10206,10 +10321,12 @@ export class ParadisMobileAgentChat extends Disposable {
 		// ターミナルが閉じた後にスマホから再開するための指紋（W2-29）。セッション ID そのものは送らない。
 		const paneSession = this.paneSessions.get(token);
 		const sessionId = paneSession?.resumable === false ? undefined : paneSession?.sessionId;
-		const resumeKey = sessionId !== undefined && PARADIS_RESUME_SESSION_ID_PATTERN.test(sessionId) ? paradisAgentSessionKey(tailer.agent, sessionId) : undefined;
+		// Antigravity CLI の再開（agy --conversation）はまだ無いので、再開の宛先を渡さない
+		const resumeKey = sessionId !== undefined && tailer.agent !== 'antigravity' && PARADIS_RESUME_SESSION_ID_PATTERN.test(sessionId) ? paradisAgentSessionKey(tailer.agent, sessionId) : undefined;
 		// 走っている Codex へ設定を渡す口が無いので、Codex のモデルはモバイルから変えられない。モデルが
 		// まだ分からないうちから伝えて、選択の画面を開かせない
-		const modelControl = tailer.agent === 'codex' ? 'none' : undefined;
+		// Antigravity CLI もモデルを渡す口が無い（PC のターミナルで変える）
+		const modelControl = tailer.agent === 'codex' || tailer.agent === 'antigravity' ? 'none' : undefined;
 		// SSH の写しを続けられていない。写しの会話には、空の info も送る（止まった印が消えたことを、info を
 		// 丸ごと置き換えるモバイルへ伝えるため）
 		const remoteCopy = paradisIsRemoteAgentTranscriptMirrorPath(tailer.transcriptPath);
@@ -10297,7 +10414,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (terminalId !== undefined) {
 					const messages = tailer.messages.slice(-SNAPSHOT_SEND_LIMIT);
 					const info = this.infoOf(token, tailer);
-					this.sendToSubscribers(token, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live: this.liveStates.get(token) ?? null, liveRevision: this.liveRevisions.get(token) ?? 0, activity: this.activityTrackers.get(token)?.snapshot() ?? null, interaction: tailer.currentInteraction(), capabilities: { agentActions: true, ...(tailer.agent === 'claude' ? { claudeSettings: true } : {}) }, ...this.monitorsField(token, tailer, true), ...this.sessionStatusField(token, tailer, true), ...this.asyncQuestionsField(token, tailer, true), ...this.panelField(token) });
+					this.sendToSubscribers(token, { t: 'snapshot', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages, ...(info !== undefined ? { info } : {}), live: this.liveStates.get(token) ?? null, liveRevision: this.liveRevisions.get(token) ?? 0, activity: this.activityTrackers.get(token)?.snapshot() ?? null, interaction: tailer.currentInteraction(), ...paradisAgentChatCapabilitiesField(tailer.agent), ...this.monitorsField(token, tailer, true), ...this.sessionStatusField(token, tailer, true), ...this.asyncQuestionsField(token, tailer, true), ...this.panelField(token) });
 				}
 				// 読み直したカードを mod の待ちと突き合わせ直す（変われば delta で answerVia を送り直す）
 				this.refreshModQuestions(token);
@@ -10799,6 +10916,10 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * 変わったときだけ載せる。時刻は PC の時計（SSH の写しは接続先の時計）で、送信時刻 `sessionStatusAt` を添える。
 	 */
 	private sessionStatusField(token: string, tailer: TranscriptTailer, full: boolean): { sessionStatus?: IParadisAgentSessionStatus; sessionStatusAt?: number } {
+		// Antigravity CLI の記録からはキャッシュ・コンテキストの数を出せない（アプリも知らない種別の状態は捨てる）
+		if (tailer.agent === 'antigravity') {
+			return {};
+		}
 		const status = tailer.sessionStatus.snapshot({
 			...(tailer.agent === 'claude' && tailer.promptCache !== undefined ? { promptCache: tailer.promptCache } : {}),
 			partial: tailer.wasInitialTruncated,

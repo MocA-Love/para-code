@@ -7,11 +7,11 @@ import { Icon } from '../../ui/index.js';
 import type { AgentLogoKind } from './agentRowLine.js';
 
 /**
- * 行の頭のエージェントのロゴ（モックの `AG()`）。Claude / Codex は既存のロゴ（セッションのタブと同じ
+ * 行の頭のエージェントのロゴ（モックの `AG()`）。Claude / Codex / Antigravity CLI は既存のロゴ（セッションのタブと同じ
  * `ProviderLogo`）、それ以外のエージェントは星、ターミナルは端末のアイコン。
  */
 export function AgentLogo({ kind, size }: { kind: AgentLogoKind; size: number }) {
-	if (kind === 'claude' || kind === 'codex' || kind === 'opencode') {
+	if (kind === 'claude' || kind === 'codex' || kind === 'opencode' || kind === 'antigravity') {
 		return <ProviderLogo provider={kind} size={size} />;
 	}
 	return <Icon icon={kind === 'terminal' ? SquareTerminal : Sparkles} size={size} color={colors.textDim} />;

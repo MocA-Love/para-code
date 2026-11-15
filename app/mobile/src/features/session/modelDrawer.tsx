@@ -5,7 +5,7 @@ import { AccessibilityInfo, ActivityIndicator, Pressable, StyleSheet, Text, View
 import { paraAlert } from '../../paraAlert.js';
 import { Check, ChevronDown, ChevronLeft, Settings, X } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
-import { claudeModelDisplayName, matchAgentModel } from '../../agentModels.js';
+import { agentHasNoModelCatalog, claudeModelDisplayName, matchAgentModel } from '../../agentModels.js';
 import { useAppStore } from '../../appState.js';
 import { isMaximumEffort } from '../../components/effortSliderBehavior.js';
 import { hitSlopToMinimum } from '../../components/hitSlop.js';
@@ -132,7 +132,7 @@ export const ModelPill = forwardRef<ModelPillHandle, {
 			efforts: option.efforts.map(item => item.value),
 			isDefault: option.isDefault,
 		}))
-		: agent === 'opencode' ? [] : claudeCatalog.options;
+		: agentHasNoModelCatalog(agent) ? [] : claudeCatalog.options;
 	const currentModel = agent === 'codex'
 		? options.find(option => option.id === model || option.aliases.includes(model ?? ''))
 		: matchAgentModel(agent, model, options);

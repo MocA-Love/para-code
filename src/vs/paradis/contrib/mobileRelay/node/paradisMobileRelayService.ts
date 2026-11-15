@@ -1855,7 +1855,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	/** transcript に現れた質問を Notify として全モバイルへ届ける（オフラインへはAPNsプッシュ）。 */
-	private notifyAgentQuestion(info: { terminalId: number; agent: 'claude' | 'codex' | 'opencode'; text: string; ws?: string; agentToken: string; owner: IParadisMobilePaneOwner; interactionId?: string }): void {
+	private notifyAgentQuestion(info: { terminalId: number; agent: 'claude' | 'codex' | 'opencode' | 'antigravity'; text: string; ws?: string; agentToken: string; owner: IParadisMobilePaneOwner; interactionId?: string }): void {
 		// 本文には質問文の原文を入れ、`category: 'question'` を付けて出口へ渡す。種類の言葉・Markdown の除去・
 		// 伏せ字・長さの調整は出口（composeNotifyVariants）がまとめて行う（プッシュの 3800B に収まるまで削るのも出口）。
 		const body = info.text.slice(0, PARADIS_NOTIFY_DETAIL_MAX_CHARS);

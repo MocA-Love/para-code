@@ -91,6 +91,10 @@ export class ParadisAgentChatInput {
 		if (state.agent === 'opencode') {
 			return localize('paradisAgentChat.errorOpenCodeNotReady', "OpenCode の会話が変わったか、回答を待っています");
 		}
+		// Antigravity CLI の入力欄・確認の画面のキーはまだ確かめていないので、チャット欄からは打鍵しない
+		if (state.agent === 'antigravity') {
+			return localize('paradisAgentChat.errorAntigravityNotReady', "Antigravity CLI にはまだチャット欄から送れません。ターミナルで入力してください");
+		}
 		// 終わったエージェントへ送ると、文がシェルでコマンドとして実行される。
 		const foreground = terminal.foreground();
 		if (state.agentExited || foreground === 'shell') {
@@ -199,6 +203,9 @@ export class ParadisAgentChatInput {
 			return localize('paradisAgentChat.errorQuestionChanged', "質問の選択肢が変わりました。もう一度選んでください");
 		}
 		const state = this.dependencies.session(token).state;
+		if (state?.agent === 'antigravity') {
+			return localize('paradisAgentChat.errorAntigravityAnswerNotReady', "Antigravity CLI の質問・確認にはまだチャット欄から答えられません。ターミナルで答えてください");
+		}
 		if (state?.agent === 'opencode') {
 			if (!state.sessionId || this.dependencies.terminal(instanceId, token) !== terminal) {
 				return localize('paradisAgentChat.errorQuestionGone', "この質問はもう回答を待っていません");
@@ -270,6 +277,7 @@ export class ParadisAgentChatInput {
 		const state = this.dependencies.session(token).state;
 		const agent = state?.agent ?? 'claude';
 		if (agent === 'opencode') { return localize('paradisAgentChat.errorTerminalChanged', "送り先のターミナルが変わりました"); }
+		if (agent === 'antigravity') { return localize('paradisAgentChat.errorAntigravityAnswerNotReady', "Antigravity CLI の質問・確認にはまだチャット欄から答えられません。ターミナルで答えてください"); }
 		const interaction = state?.interaction;
 		// 許可の確認の画面が出ていて、しかもそれがこのカードの承認だと確かめてから打鍵する（出ていなければ
 		// `1`+Enter が入力欄へ流れ、エージェントへの発言として送られる。別の承認なら、見ていないものを確定する）。

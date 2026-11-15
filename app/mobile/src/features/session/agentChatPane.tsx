@@ -432,7 +432,7 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 					<EmptyState
 						icon={RotateCw}
 						title="エージェントのセッションが見つかりません"
-						body={'このターミナルで claude / codex を起動する（または一度発言する）と表示されます。OpenCode は、Para Code との連携に対応した版で起動したときだけ表示されます。\n画面はターミナル表示で確認できます。'}
+						body={'このターミナルで claude / codex を起動する（または一度発言する）と表示されます。Antigravity CLI（agy）は、最初に発言したときから表示されます。OpenCode は、Para Code との連携に対応した版で起動したときだけ表示されます。\n画面はターミナル表示で確認できます。'}
 						action={{ label: '再試行', onPress: () => { haptic('commit'); refreshAgent(terminalKey); } }}
 					/>
 				) : (

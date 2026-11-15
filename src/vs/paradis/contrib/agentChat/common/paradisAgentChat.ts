@@ -32,7 +32,7 @@ export interface IParadisAgentApprovalChoice {
 }
 
 /** エージェントCLIの種別 (transcriptパスから判定)。 */
-export type ParadisAgentKind = 'claude' | 'codex' | 'opencode';
+export type ParadisAgentKind = 'claude' | 'codex' | 'opencode' | 'antigravity';
 
 /** kind==='question' の選択肢1件。 */
 export interface IParadisAgentQuestionOption {
