@@ -326,6 +326,52 @@ suite('ParadisSessionResumeDialog', () => {
 		}
 	});
 
+	// グループの開閉は Tab で止めず、↑↓ で見出しへ進み ←/→ で開け閉めする（閉じた他のスペースにもキーボードだけで入れる）
+	test('opens and closes a group with the arrow keys without a tab stop on its header', async () => {
+		const client = new TestResumeClient();
+		const other = (id: string, title: string) => ({ ...testSession(id, title), spaceStateKey: 'other', spaceName: 'Other', currentSpace: false });
+		client.listResult = async () => [testSession('one', 'First session'), other('two', 'Second session')];
+		const fixture = createRefreshFixture(client);
+		document.body.appendChild(fixture.root);
+		try {
+			await fixture.load();
+			const modal = fixture.root.querySelector<HTMLElement>('.paradis-session-resume-modal')!;
+			modal.style.maxWidth = 'none';
+			modal.style.width = '1200px';
+			// 行を選ぶと一覧が作り直されるので、グループは毎回探し直す
+			const otherOpen = () => [...fixture.root.querySelectorAll<HTMLDetailsElement>('details.paradis-session-resume-group')]
+				.find(details => details.querySelector('.group-title')?.textContent === 'Other')!.open;
+			const press = (key: 'ArrowDown' | 'ArrowLeft' | 'ArrowRight', keyCode: number) => (document.activeElement as HTMLElement)
+				.dispatchEvent(new KeyboardEvent('keydown', { key, code: key, keyCode, bubbles: true }));
+			const focused = () => {
+				const active = document.activeElement as HTMLElement | null;
+				return active?.tagName === 'SUMMARY' ? `summary:${active.querySelector('.group-title')?.textContent}` : active?.querySelector('.row-title')?.textContent;
+			};
+			const summaryTabIndexes = [...fixture.root.querySelectorAll<HTMLElement>('details.paradis-session-resume-group > summary')].map(summary => summary.tabIndex);
+			fixture.root.querySelector<HTMLElement>('.paradis-session-resume-row.selected')!.focus();
+			press('ArrowDown', 40);
+			const afterDown = { focused: focused(), open: otherOpen() };
+			press('ArrowRight', 39);
+			const afterOpen = { focused: focused(), open: otherOpen() };
+			press('ArrowRight', 39);
+			await timeout(1);
+			await flushMicrotasks();
+			const afterEnter = { focused: focused(), selected: fixture.root.querySelector('.paradis-session-resume-row.selected .row-title')?.textContent };
+			press('ArrowLeft', 37);
+			assert.deepStrictEqual({ summaryTabIndexes, headingHidden: fixture.root.querySelector('.paradis-session-resume-superheading')?.getAttribute('aria-hidden'), afterDown, afterOpen, afterEnter, afterClose: { focused: focused(), open: otherOpen() } }, {
+				summaryTabIndexes: [-1, -1],
+				headingHidden: 'true',
+				afterDown: { focused: 'summary:Other', open: false },
+				afterOpen: { focused: 'summary:Other', open: true },
+				afterEnter: { focused: 'Second session', selected: 'Second session' },
+				afterClose: { focused: 'summary:Other', open: false },
+			});
+		} finally {
+			fixture.root.remove();
+			fixture.dispose();
+		}
+	});
+
 	test('shows the detail back button only in the one-column container', async () => {
 		const client = new TestResumeClient();
 		client.listResult = async () => [testSession('one', 'First session')];

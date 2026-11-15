@@ -1967,7 +1967,7 @@ macOS/Linuxの「ペインごとのCodex app-server」（`resources/paradis/bin/
 アーカイブ前に上げる箇所（この5つが揃っていないと、拡張と本体の版が食い違って App Store Connect に弾かれる）:
 
 1. `app/mobile/app.json` の `expo.version`
-2. `app/mobile/src/changelog.ts` の `MOBILE_CHANGELOG` 先頭に同じ版の節を作る（`src/changelog.test.ts` が1と2の一致を検査する）
+2. `app/mobile/src/changelog.ts` の `MOBILE_CHANGELOG` 先頭に同じ版の節を作る（`src/changelog.test.ts` が1と2の一致を検査する）。節の `date` は版を上げた日ではなく配布した日にする（版を上げてから配るまでに日が変わったら、配る日に直す。2026-11-15 決定）
 3. `app/mobile/ios/ParaCodeMobile.xcodeproj/project.pbxproj` の `MARKETING_VERSION`（8箇所）と `CURRENT_PROJECT_VERSION`（8箇所）。本体・NotifyExtension・ParaCodeWidgets・ParaCodeNotifyContent（2026-10-04 追加）の Debug / Release
 4. `app/mobile/ios/ParaCodeMobile/Info.plist` の `CFBundleShortVersionString` と `CFBundleVersion`（**値がハードコードされている**）
 5. `app/mobile/ios/NotifyExtension/Info.plist` の同2つ（同じくハードコード）

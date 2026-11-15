@@ -34,6 +34,7 @@ import {
 	IParadisBookmarkFolder,
 	isParadisBookmark,
 	isParadisBookmarkUrlAllowed,
+	isParadisBookmarkUrlOpenable,
 	normalizeParadisBookmarkUrl,
 	ParadisBookmarkNode,
 	paradisFolderIcon,
@@ -47,8 +48,6 @@ import {
 } from './paradisBookmarksService.js';
 
 const $ = dom.$;
-
-const SVG_NS = 'http://www.w3.org/2000/svg';
 
 /** 「»」の項目のフォーカスの目印（ブックマークの id と重ならない値）。 */
 const MORE_FOCUS_KEY = ':more';
@@ -224,8 +223,13 @@ export class ParadisBookmarkBarWidget extends Disposable {
 		item.classList.toggle('active', !!this._activeUrl && normalizeParadisBookmarkUrl(bookmark.url) === this._activeUrl);
 
 		const iconContainer = dom.append(item, $('.paradis-bookmark-item-icon'));
-		const favicon = this.bookmarksService.getFavicon(bookmark.faviconHash);
-		if (favicon) {
+		// 開けない項目（javascript: など）は消さずに印を付ける。押すと開かずに理由を知らせる（host.openUrl の先）
+		const openable = isParadisBookmarkUrlOpenable(bookmark.url);
+		const favicon = openable ? this.bookmarksService.getFavicon(bookmark.faviconHash) : undefined;
+		if (!openable) {
+			item.classList.add('blocked');
+			iconContainer.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.warning)}`));
+		} else if (favicon) {
 			const img = dom.append(iconContainer, $('img')) as HTMLImageElement;
 			img.src = favicon;
 			img.alt = '';
@@ -238,7 +242,11 @@ export class ParadisBookmarkBarWidget extends Disposable {
 		}
 
 		dom.append(item, $('span.paradis-bookmark-item-label')).textContent = bookmark.title || bookmark.url;
-		this._renderDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), item, bookmark.url));
+		const hover = openable ? bookmark.url : localize('paradis.bookmarks.blockedLabel', "{0}（安全のため開きません）", bookmark.url);
+		if (!openable) {
+			item.setAttribute('aria-label', localize('paradis.bookmarks.blockedLabel', "{0}（安全のため開きません）", bookmark.title || bookmark.url));
+		}
+		this._renderDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), item, hover));
 
 		this._renderDisposables.add(dom.addDisposableListener(item, 'click', () => this.host.openUrl(bookmark.url)));
 		this._renderDisposables.add(dom.addDisposableListener(item, 'contextmenu', e => {
@@ -286,13 +294,7 @@ export class ParadisBookmarkBarWidget extends Disposable {
 		more.classList.add('paradis-bookmark-overflowed');
 		more.setAttribute('aria-haspopup', 'menu');
 		more.setAttribute('aria-label', localize('paradis.bookmarks.more', "その他のブックマーク"));
-		const svg = more.ownerDocument.createElementNS(SVG_NS, 'svg');
-		svg.setAttribute('viewBox', '0 0 16 16');
-		svg.setAttribute('aria-hidden', 'true');
-		const path = more.ownerDocument.createElementNS(SVG_NS, 'path');
-		path.setAttribute('d', 'M4 4l4 4-4 4M8.5 4l4 4-4 4');
-		svg.appendChild(path);
-		more.appendChild(svg);
+		more.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.chevronRight)}`)).setAttribute('aria-hidden', 'true');
 		this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), more, localize('paradis.bookmarks.more', "その他のブックマーク")));
 		this._register(dom.addDisposableListener(more, 'click', () => this._showMoreMenu()));
 		this._register(dom.addDisposableListener(more, 'focus', () => this._setFocusKey(MORE_FOCUS_KEY)));
@@ -435,7 +437,9 @@ export class ParadisBookmarkBarWidget extends Disposable {
 
 	private _nodeMenuAction(node: ParadisBookmarkNode): IAction {
 		if (isParadisBookmark(node)) {
-			return new Action(`paradis.bookmarks.open.${node.id}`, node.title || node.url, undefined, true, () => this.host.openUrl(node.url));
+			// 開けない項目はメニューでも印を付ける（OS のメニューはアイコンを描かないので文言で）。押せば開かずに理由を知らせる
+			const label = isParadisBookmarkUrlOpenable(node.url) ? node.title || node.url : localize('paradis.bookmarks.blockedLabel', "{0}（安全のため開きません）", node.title || node.url);
+			return new Action(`paradis.bookmarks.open.${node.id}`, label, undefined, true, () => this.host.openUrl(node.url));
 		}
 		return new SubmenuAction(`paradis.bookmarks.folder.${node.id}`, folderDisplayTitle(node), this._folderMenuActions(node));
 	}

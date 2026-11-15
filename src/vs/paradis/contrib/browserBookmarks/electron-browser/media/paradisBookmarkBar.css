@@ -87,6 +87,11 @@
 	color: inherit;
 }
 
+/* 開けない URL（javascript: など）の項目の印 */
+.browser-root .paradis-bookmark-item.blocked .paradis-bookmark-item-icon .codicon {
+	color: var(--vscode-editorWarning-foreground);
+}
+
 .browser-root .paradis-bookmark-item-label {
 	font-size: 12px;
 	white-space: nowrap;
@@ -114,16 +119,6 @@
 .browser-root .paradis-bookmark-more:hover,
 .browser-root .paradis-bookmark-more.open {
 	background-color: var(--vscode-toolbar-hoverBackground);
-}
-
-.browser-root .paradis-bookmark-more svg {
-	width: 16px;
-	height: 16px;
-	fill: none;
-	stroke: currentColor;
-	stroke-width: 1.3;
-	stroke-linecap: round;
-	stroke-linejoin: round;
 }
 
 .browser-root .paradis-bookmark-bar .paradis-bookmark-overflowed {
