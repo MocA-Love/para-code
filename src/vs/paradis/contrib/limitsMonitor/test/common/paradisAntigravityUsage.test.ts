@@ -38,6 +38,34 @@ export const PARADIS_ANTIGRAVITY_USAGE_SAMPLE = JSON.stringify({
 	},
 });
 
+/** agy 1.5.9 の同じ出力で、Gemini の枠がほぼ使い切りのとき（2026-11-16 に実測した形。値はそのまま、個人の値は出ない）。 */
+const PARADIS_ANTIGRAVITY_USAGE_NEARLY_USED_UP = JSON.stringify({
+	conversation_id: '',
+	status: 'SUCCESS',
+	response: 'Gemini Models\tWeekly Limit Remaining\t0%\t2026-11-21T22:12:46Z\nClaude and GPT models\tWeekly Limit Remaining\t100%\t2026-11-22T22:07:51Z\n',
+	duration_seconds: 0,
+	num_turns: 0,
+	usage: { input_tokens: 0, output_tokens: 0, thinking_tokens: 0, cache_read_tokens: 0, total_tokens: 0 },
+	command: {
+		name: 'usage',
+		data: {
+			description: 'Within each group, models share a weekly limit. Quota is consumed proportionally to the cost of the tokens. Thus, limits will last longer with shorter tasks or using more cost-effective models. Your weekly limit is tied directly to your individual tier.',
+			groups: [
+				{
+					name: 'Gemini Models',
+					description: 'Models within this group: Gemini 3.8 Flash',
+					buckets: [{ id: 'gemini-weekly', name: 'Weekly Limit Remaining', description: 'You have used some of your weekly limit, it will fully refresh in 6 days.', window: 'weekly', remaining_fraction: 0.002284799935296178, reset_time: '2026-11-21T22:12:46Z' }],
+				},
+				{
+					name: 'Claude and GPT models',
+					description: 'Models within this group: Claude Sonnet 4.6, Claude Opus 4.6, GPT-OSS 120B',
+					buckets: [{ id: '3p-weekly', name: 'Weekly Limit Remaining', window: 'weekly', remaining_fraction: 1, reset_time: '2026-11-22T22:07:51Z' }],
+				},
+			],
+		},
+	},
+});
+
 /** サインインしていない HOME で動かしたときの出力（ログインの URL は省いた）。 */
 export const PARADIS_ANTIGRAVITY_SIGNED_OUT_STDOUT = JSON.stringify({ conversation_id: '', status: 'ERROR', response: '', error: 'authentication failed or timed out', duration_seconds: 0, num_turns: 0, finished_reason: 'error' });
 export const PARADIS_ANTIGRAVITY_SIGNED_OUT_STDERR = 'Authentication required. Please visit the URL to log in:\n  https://accounts.google.com/o/oauth2/auth?...\n\nWaiting for authentication (timeout 60s)...\n';
@@ -55,13 +83,23 @@ suite('Paradis Antigravity usage parsing', () => {
 		});
 	});
 
+	test('does not show a nearly used up window as 100% while some of it remains', () => {
+		assert.deepStrictEqual(paradisParseAntigravityUsage(PARADIS_ANTIGRAVITY_USAGE_NEARLY_USED_UP, ''), {
+			kind: 'ok',
+			windows: [
+				{ usedPercent: 99, label: 'Gemini', resetsAt: Date.parse('2026-11-21T22:12:46Z') },
+				{ usedPercent: 0, label: 'Claude・GPT', resetsAt: Date.parse('2026-11-22T22:07:51Z') },
+			],
+		});
+	});
+
 	test('treats a bucket without remaining_fraction as used up, drops disabled ones and names unknown ones by their group', () => {
 		const output = JSON.stringify({
 			status: 'SUCCESS',
 			command: {
 				name: 'usage', data: {
 					groups: [
-						// 0 は項目ごと省かれる
+						// 0 は項目ごと省かれる（作った例。実測で 0 の枠はまだ見ていない）
 						{ name: 'Gemini Models', buckets: [{ id: 'gemini-weekly', window: 'weekly', reset_time: '2026-11-18T16:44:24Z' }] },
 						{ name: 'Claude and GPT models', buckets: [{ id: '3p-weekly', window: 'weekly', remaining_fraction: 0.5, reset_time: '2026-11-18T20:55:15Z', disabled: true }] },
 						{ name: 'Future Models', buckets: [{ id: 'future-daily', window: 'daily', remaining_fraction: 0.25 }, { id: 'no-values' }] },
