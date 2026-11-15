@@ -698,6 +698,19 @@ export interface RateLimitResetCredits {
 	 */
 	credits?: { expiresAt?: number }[];
 }
+/** Claude のリミットリセットの種類。PC側 ParadisClaudeResetKind と同形（知らない値は表示で捨てる）。 */
+export type ClaudeResetKind = 'fiveHour' | 'weekly' | 'fable' | 'full';
+/**
+ * Claude のリミットリセットの束（同じ種類・同じ期限の券）。PC側 IParadisClaudeResetGrant と同形。
+ * PC が使用量の取得に合わせて 30 分に 1 回まで読む。
+ */
+export interface ClaudeResetGrant {
+	kind: ClaudeResetKind;
+	/** 残りの回数。 */
+	left: number;
+	/** 期限（epoch ms）。分からなければ無い。 */
+	endsAt?: number;
+}
 /** 'unavailable' の内訳。PC側 ParadisLimitsUnavailableReason と同形。 */
 export type RateLimitUnavailableReason = 'not_fetched' | 'api_key' | 'keychain_unavailable' | 'rate_limited' | 'host_not_logged_in' | 'host_fetch_failed';
 /** Rate Limitの1アカウント。PC側 IParadisLimitsAccount と同形。 */
@@ -723,6 +736,8 @@ export interface RateLimitAccount {
 	scoped?: RateLimitWindow[];
 	/** Codex の枠のリセットの残り（旧PCでは未配信）。 */
 	resetCredits?: RateLimitResetCredits;
+	/** Claude のリミットリセットの束（旧PCでは未配信。PC が読めないときは無く、読めて券が無ければ空の配列。空はそのPCの最新として採る）。 */
+	claudeResetGrants?: ClaudeResetGrant[];
 	/**
 	 * Claude: PC がログインの更新を控えている間（'unavailable' の 'not_fetched'）に残している前の値（旧PCでは未配信）。
 	 * 取れていないアカウントの `fiveHour` などは今までどおり空で届く（古いアプリが今の値と取り違えないように）。

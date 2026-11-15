@@ -715,17 +715,13 @@ app-server が毎回の取得の経路になったので、Orca にある起動�
 - 認証切れの判定は Orca の `shared/codex-auth-errors.ts` の一覧（`access token could not be refreshed`、`refresh token was already used`、`not logged in`、`please sign in again` など）に、以前から拾っていた語を足したものです（`paradisIsCodexAuthError`）。`forbidden` は拾いません（Cloudflare の 403 のように再ログインでは直らない失敗も含むため。HTTP の 403 は状態で判断する）
 - RPC で取れたときに足す `wham/usage` は、RPC の後に auth.json を読み直したトークンで読みます（codex が RPC の中でトークンを更新していることがあるため）
 - codex CLI が無い（`binary-missing`）失敗は Sentry へ報告しません（入れていない人は毎回同じ理由で失敗し、パネルは `wham/usage` で出せるため）
-- `wham/usage` とリセットクレジットの読み取り・消費の `fetch` は `redirect: 'error'` にし、トークンを `chatgpt.com` の外へ転送させません
+- `wham/usage` とリセットクレジットの読み取りの `fetch` は `redirect: 'error'` にし、トークンを `chatgpt.com` の外へ転送させません
 - 見送り: Orca の「state DB の作り直し中は起動しない」（`isCodexStateDbBackfillPending`）は移していません。作り直しを見分ける手段がまだ Para Code に無く、今回の指示の範囲（プラグイン・ロック・間隔・止め方）の外のため
 
-**リセットクレジット**の残数と期限は、使用量と同じく各ホームの `auth.json` のアクセストークンで ChatGPT のバックエンド `GET /backend-api/wham/rate-limit-reset-credits` を読む（Orca と同じ。パネルを開くたびに app-server を起こさないため。応答の形は Orca のソースから写したもので、実アカウントでは未確認【要確認】）。使うのは、Orca（`main/rate-limits/codex-reset-credit-client.ts`）と同じくバックエンドへの直接の `POST /backend-api/wham/rate-limit-reset-credits/consume`（本文 `{ "redeem_request_id": <冪等の鍵> }`、応答の `code` は `reset` / `nothing_to_reset` / `no_credit` / `already_redeemed`）。以前は app-server の `account/rateLimitResetCredit/consume` を使っていた（2026-09-28 に Orca へ揃えた）。二重消費は shared process の台帳（`userData/paradis/codexAccounts/codex-reset-credit-ledger.json`）で防ぐ。
+**リセットクレジット**の残数と期限は、使用量と同じく各ホームの `auth.json` のアクセストークンで ChatGPT のバックエンド `GET /backend-api/wham/rate-limit-reset-credits` を読む（Orca と同じ。パネルを開くたびに app-server を起こさないため。応答の形は Orca のソースから写したもので、実アカウントでは未確認【要確認】）。2026-11-15 から Para Code は見せるだけで、使う操作（以前の `POST /backend-api/wham/rate-limit-reset-credits/consume` と台帳 `codex-reset-credit-ledger.json`）は外した。押しても使い切った枠が無いと `nothing_to_reset` で使われず、利用者には動かないように見えていたため（2026-11-15 の決定）。台帳のファイルは消さずに残るが、もう読まない。
 
-- 消費は shared process の中で1本ずつ直列に流し、確認ダイアログで見せた提示（残数・明細・取得時刻）と違えば断る
-- 範囲は ChatGPT の account_id で決める（分からないときだけホーム）。同じアカウントで2つのホームにログインしていても、片方の「結果不明」はもう片方にも効く。消費の直前に auth.json を読み直し、確認したときと account_id が違えば断る
-- 送る直前に「送信済み・結果不明」を書き、結果を受けてから「確定」を書く。auth.json にアクセストークンが無いとき（送っていない）は何も残さない。HTTP のエラーの扱いは `paradisCodexResetHttpFailureOutcome` の1か所で決める。初めて出した `redeem_request_id` が 401・403 で断られたら記録を外し（認証の段階で断られ、使われていない）、ほかの 4xx（408・409・429 を除く）なら「失敗」として確定する（同じ提示への2回目は断る。読み直した新しい提示なら押せる）。429・409・408・5xx・通信の失敗・時間切れ（30 秒、Orca と同じ）・読めない応答は結果不明のまま残し、次の操作は同じ `redeem_request_id` の再送になる（バックエンドで1回にまとめられる）。**再送はどの応答でも結果不明のまま残す**。再送への応答から分かるのは再送そのものの扱いだけで、最初の要求（結果不明になったもの）が使われたかは分からないため。記録を外すと次の操作が新しい鍵になり、最初の要求が使われていた場合に2枚目が減る。429 はゲートウェイで断ったとは限らないので、初めての鍵でも残す（同じアカウントなら、ログインし直した後も同じ鍵の再送で抜けられる）
-- 要求の見出しは Orca（`main/rate-limits/codex-backend-auth.ts` の `getCodexBackendAuthHeaders`）と同じ（`User-Agent: codex-cli`、`OpenAI-Beta: codex-1`、`originator: Codex Desktop`、`ChatGPT-Account-Id`）。リセットクレジットの読み取りも同じ見出しで送る
+- 要求の見出しは Orca（`main/rate-limits/codex-backend-auth.ts` の `getCodexBackendAuthHeaders`）と同じ（`User-Agent: codex-cli`、`OpenAI-Beta: codex-1`、`originator: Codex Desktop`、`ChatGPT-Account-Id`）。リセットクレジットの読み取りも同じ見出しで送る（`redirect: 'error'`）
 - 別件【要確認】: `find-generic-password -w` は、値に印字できないバイトがあると16進で出力するはずで、`read` はそれを文字列のまま返す（以前からの扱い）。認証情報の JSON は通常 ASCII だけなので、今のところ影響は見えていない
-- 台帳が壊れていたら消費しない。**実アカウントでの消費は試していない**
 
 モバイルへ送る使用量には、Codex の選択中アカウントに既存の任意項目 `active`（モバイルは「使用中」と出す）を、読み取り済みのリセットの残りに新しい任意項目 `resetCredits` を足した。Codex 側で既存の項目の形は変えていない（Claude 側の変化は上の Claude の節を参照）。
 

@@ -75,6 +75,7 @@ import {
 } from '../common/paradisClaudeUsage.js';
 import {
 	IParadisLimitsAccount,
+	IParadisClaudeResetGrant,
 	IParadisLimitsLegacyAccount,
 	IParadisLimitsSetupHandle,
 	IParadisLimitsSetupState,
@@ -90,6 +91,7 @@ import { paradisAcquireClaudeDirectoryLock, ParadisClaudeConfigUnreadableError, 
 import { paradisConnectionClientId, paradisIsConnectionClientAllowed } from '../../../common/paradisConnectionClient.js';
 import { IParadisClaudeLoginRunner, paradisOauthAccountFromClaudeStatus } from './paradisClaudeLogin.js';
 import { IParadisClaudeOAuthClient } from './paradisClaudeOAuthClient.js';
+import { ParadisClaudeResetGrantsTracker } from './paradisClaudeResetGrantsTracker.js';
 
 /** 登録したアカウントの、レンダラーへ見せる ID の接頭辞。 */
 export const PARADIS_CLAUDE_MANAGED_ID_PREFIX = 'para-claude:';
@@ -233,6 +235,14 @@ interface IParadisClaudeTarget {
 	readonly active: boolean;
 }
 
+/**
+ * アカウントに添えるリミットリセットの項目。読めていなければ項目ごと付けず、読めて券が無ければ空の配列を付ける
+ * （モバイルが複数の PC を束ねるとき、使い切った PC の空を古い PC の券より優先できるように）。
+ */
+function claudeResetGrantsField(grants: readonly IParadisClaudeResetGrant[] | undefined): { readonly claudeResetGrants?: readonly IParadisClaudeResetGrant[] } {
+	return grants !== undefined ? { claudeResetGrants: grants } : {};
+}
+
 function recordIdentity(record: IParadisClaudeAccountRecord): IParadisClaudeIdentity {
 	return { accountUuid: record.accountUuid, email: record.email, organizationUuid: record.organizationUuid, organizationName: record.organizationName };
 }
@@ -263,6 +273,8 @@ export class ParadisClaudeAccountService extends Disposable {
 	/** 一覧を読めなかった（壊れている・一時的な読み取りの失敗）。この間は一覧を書き換えない。 */
 	private recordsUnreadable = false;
 	private readonly usage = new Map<string, IParadisClaudeUsageState>();
+	/** リミットリセットの束（使用量の状態とは別に持つ。使用中と控えが入れ替わっても引き継ぐ）。 */
+	private readonly resetGrants: ParadisClaudeResetGrantsTracker;
 	/**
 	 * 最後に保存・読み出しした認証情報（登録 ID → `claudeAiOauth` だけの JSON）。Claude Code が
 	 * 書き戻したトークンを取り込むかどうかの比較のために、毎回キーチェーンを読みに行かずに済ませる。
@@ -303,6 +315,7 @@ export class ParadisClaudeAccountService extends Disposable {
 		this.now = options.now ?? Date.now;
 		this.random = options.random ?? Math.random;
 		this.crossProcessLockPath = options.crossProcessLockPath;
+		this.resetGrants = new ParadisClaudeResetGrantsTracker(this.oauth, this.logService, '[ParadisClaudeAccounts]', this.now);
 		// 前回の終了で消し損ねたアカウント追加の一時ディレクトリを、起動のたびに（パネルを開かなくても）消す。
 		if (this.loginRunner) {
 			void this.cleanStaleLogins();
@@ -611,6 +624,7 @@ export class ParadisClaudeAccountService extends Disposable {
 				sevenDay: current?.windows?.sevenDay,
 				scoped: current?.windows?.scoped,
 				fetchedAt: current?.fetchedAt,
+				...claudeResetGrantsField(this.resetGrants.get(target.key)),
 			};
 		});
 		return { claude: { accounts, legacyAccounts: legacyAccounts.length > 0 ? legacyAccounts : undefined, ...(claudeSwapPresent ? { claudeSwapPresent } : {}) }, oldestFetchedAt, switching: this.switching };
@@ -654,6 +668,7 @@ export class ParadisClaudeAccountService extends Disposable {
 				this.usage.delete(key);
 			}
 		}
+		this.resetGrants.retain(keys);
 		let changed = false;
 		for (const target of targets) {
 			if (this._store.isDisposed || this.switching || context.epoch !== this.switchEpoch) {
@@ -841,6 +856,7 @@ export class ParadisClaudeAccountService extends Disposable {
 
 		this.noteFetch(state);
 		let result = await this.oauth.fetchUsage(accessToken);
+		let usedToken = accessToken;
 		if (result.kind === 'http' && result.status === 401 && !target.active && target.record && credentials !== undefined) {
 			sharedLineage = await this.sharesLineageWithCswap(target.record, credentials, context.legacy);
 		}
@@ -859,6 +875,7 @@ export class ParadisClaudeAccountService extends Disposable {
 			if (retryToken) {
 				this.noteFetch(state);
 				result = await this.oauth.fetchUsage(retryToken);
+				usedToken = retryToken;
 			}
 		}
 
@@ -893,6 +910,13 @@ export class ParadisClaudeAccountService extends Disposable {
 				state.backoffUntil = undefined;
 				state.intervalS = plan.intervalS;
 				state.nextPollAt = plan.nextPollAt;
+				// 同じトークンで、間隔が来ていればリミットリセットも読む（使用量の取得は待たせない。失敗しても使用量の状態は
+				// 変えない）。束が変わったら知らせて描き直してもらう。
+				void this.resetGrants.refreshIfDue(target.key, usedToken).then(changed => {
+					if (changed && !this._store.isDisposed) {
+						this.fireChange();
+					}
+				});
 				return;
 			}
 			case 'http':
@@ -1081,9 +1105,15 @@ export class ParadisClaudeAccountService extends Disposable {
 		}
 	}
 
+	/** 走っているリミットリセットの読み取りが終わるのを待つ（テスト用）。 */
+	whenResetGrantsRead(): Promise<void> {
+		return this.resetGrants.whenSettled();
+	}
+
 	/** 一覧を書き換えた後に、そのアカウントの状態を捨てて次の機会に取り直す。 */
 	protected resetUsage(key: string): void {
 		this.usage.delete(key);
+		this.resetGrants.delete(key);
 	}
 
 	/** 切り替えなどで使用中が入れ替わった後、全アカウントをすぐ取り直す（180 秒以内のものは除く）。 */

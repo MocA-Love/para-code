@@ -5,10 +5,10 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Check, ChevronDown, ChevronRight, ChevronUp, RotateCcw } from 'lucide-react-native';
 import { ProviderLogo } from '../../components/providerLogo.js';
 import { haptic } from '../../haptics.js';
-import type { RateLimitAccount, RateLimitProviderSnapshot, RateLimitResetCredits } from '../../store.js';
+import type { ClaudeResetGrant, RateLimitAccount, RateLimitProviderSnapshot, RateLimitResetCredits } from '../../store.js';
 import { alpha, colors, radius, space, type } from '../../theme.js';
 import { Icon, Meter, MeterRow, iconSize, useThemeColors, type LucideIcon } from '../../ui/index.js';
-import { accountHint, accountName, accountWindows, type AccountNumbers, hasPreviousValue, previousWindows, providerEmptyMessage, resetCreditRows, resetCreditsSummary, resetInLabel, WINDOW_RESET_UNKNOWN_LABEL } from './usageSummary.js';
+import { accountHint, accountName, accountWindows, type AccountNumbers, claudeResetGrantRows, claudeResetGrantsSummary, hasPreviousValue, previousWindows, providerEmptyMessage, resetCreditRows, resetCreditsSummary, resetInLabel, WINDOW_RESET_UNKNOWN_LABEL } from './usageSummary.js';
 import { isWindowExpired, windowPercent } from '../usage/usageAggregate.js';
 
 /**
@@ -280,6 +280,9 @@ export function AccountRow({ account, now, remoteHost, extra, dimmed = false, ex
 				{account.status === 'ok' && account.resetCredits !== undefined ? (
 					<ResetCreditsLine resetCredits={account.resetCredits} now={now} defaultOpen={expandResets} />
 				) : null}
+				{account.status === 'ok' && account.claudeResetGrants !== undefined ? (
+					<ClaudeResetGrantsLine grants={account.claudeResetGrants} now={now} defaultOpen={expandResets} />
+				) : null}
 			</View>
 			{extra}
 		</UsageRow>
@@ -288,17 +291,43 @@ export function AccountRow({ account, now, remoteHost, extra, dimmed = false, ex
 
 /**
  * Codex の枠のリセット（「リセット 残り 4 回 · 次は今日 11:12 に期限」）。残りが2回以上で期限が分かるときは、
- * 押すと1件ごとの期限の一覧を開く。モバイルは表示だけで、リセットを使うのは PC から。
+ * 押すと1件ごとの期限の一覧を開く。モバイルは表示だけ。
+ */
+function ResetCreditsLine({ resetCredits, now, defaultOpen }: { resetCredits: RateLimitResetCredits; now: number; defaultOpen: boolean }) {
+	const summary = resetCreditsSummary(resetCredits, now);
+	return <ResetLine summary={summary} rows={summary.listable ? resetCreditRows(resetCredits, now) : []} defaultOpen={defaultOpen} />;
+}
+
+/**
+ * Claude のリミットリセット（「リミットリセット Fable ×2・全部 ×1」）。束が2つ以上なら押すと種類・残り・期限の
+ * 一覧を開く。券が無い・知らない種類だけのときは何も出さない。モバイルは表示だけで、使うのは claude.ai から。
+ */
+function ClaudeResetGrantsLine({ grants, now, defaultOpen }: { grants: readonly ClaudeResetGrant[]; now: number; defaultOpen: boolean }) {
+	const summary = claudeResetGrantsSummary(grants, now);
+	if (summary === undefined) {
+		return null;
+	}
+	return <ResetLine summary={summary} rows={summary.listable ? claudeResetGrantRows(grants, now) : []} defaultOpen={defaultOpen} />;
+}
+
+/** リセットの一覧の 1 行（Claude の行は先頭に種類を書く）。 */
+interface ResetLineRow {
+	readonly kind?: string;
+	readonly label: string;
+	readonly relative?: string;
+	readonly soon: boolean;
+}
+
+/**
+ * リセットの 1 行と、押すと開く一覧（Codex の枠のリセットと Claude のリミットリセットで共通）。
  *
  * 一覧は開閉で出し入れせず、閉じている間は表示を消すだけにする（幅で既定の開閉が変わっても木の形を変えない）。
  */
-function ResetCreditsLine({ resetCredits, now, defaultOpen }: { resetCredits: RateLimitResetCredits; now: number; defaultOpen: boolean }) {
+function ResetLine({ summary, rows, defaultOpen }: { summary: { text: string; listable: boolean; soon: boolean }; rows: readonly ResetLineRow[]; defaultOpen: boolean }) {
 	const theme = useThemeColors();
 	// 利用者が開け閉めするまでは、幅で決まる既定に従う
 	const [chosen, setChosen] = useState<boolean | undefined>(undefined);
-	const summary = resetCreditsSummary(resetCredits, now);
 	const open = summary.listable && (chosen ?? defaultOpen);
-	const rows = summary.listable ? resetCreditRows(resetCredits, now) : [];
 	return (
 		<View style={styles.reset}>
 			<Pressable
@@ -322,6 +351,7 @@ function ResetCreditsLine({ resetCredits, now, defaultOpen }: { resetCredits: Ra
 			<View style={open ? styles.resetList : styles.hidden}>
 				{rows.map((row, index) => (
 					<View key={index} style={styles.resetRow}>
+						{row.kind !== undefined ? <Text style={styles.resetRowLabel}>{row.kind}</Text> : null}
 						<Text style={styles.resetRowLabel}>{row.label}</Text>
 						{row.relative !== undefined ? <Text style={[styles.resetRowRelative, row.soon ? { color: colors.amber, fontWeight: '600' } : undefined]}>{row.relative}</Text> : null}
 					</View>

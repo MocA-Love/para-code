@@ -20,8 +20,6 @@ import {
 	IParadisCodexAccountsClientPreferences,
 	IParadisCodexAccountsState,
 	IParadisCodexPaneProcess,
-	IParadisCodexResetConsumeRequest,
-	IParadisCodexResetConsumeResult,
 	IParadisCodexResetCreditOffer,
 	IParadisCodexResetCredits,
 	PARADIS_CODEX_ACCOUNTS_CHANNEL,
@@ -51,10 +49,6 @@ export class ParadisCodexAccountsClient {
 
 	readResetCredits(homePath: string, bypassCache = false): Promise<IParadisCodexResetCreditOffer> {
 		return this.channel.call<IParadisCodexResetCreditOffer>('readResetCredits', [homePath, bypassCache]);
-	}
-
-	consumeResetCredit(request: IParadisCodexResetConsumeRequest): Promise<IParadisCodexResetConsumeResult> {
-		return this.channel.call<IParadisCodexResetConsumeResult>('consumeResetCredit', [request]);
 	}
 
 	/** 読み取り済みのリセットクレジット（ホームの絶対パス → 残り）。読みに行かない。 */

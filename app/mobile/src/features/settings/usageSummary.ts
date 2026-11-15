@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { dayCost, localDateKey } from '../../usageFormat.js';
-import type { RateLimitAccount, RateLimitProviderSnapshot, RateLimitResetCredits, RateLimitWindow, UsageAgent, UsageDashboardResult } from '../../store.js';
+import type { ClaudeResetGrant, ClaudeResetKind, RateLimitAccount, RateLimitProviderSnapshot, RateLimitResetCredits, RateLimitWindow, UsageAgent, UsageDashboardResult } from '../../store.js';
 
 /**
  * 使用量（`/settings/usage`、Orca の accounts）の表示の算出。画面から切り離した純関数で、
@@ -270,10 +270,14 @@ export function resetInLabel(resetsAt: number | undefined, now: number): string 
 	return `${span}後にリセット`;
 }
 
-/** 「10/4 11:12」（端末の時刻。年はまたいでも省く。期限は数十日先までなので紛れない）。 */
-export function formatMonthDayTime(at: number): string {
+/**
+ * 「10/4 11:12」（端末の時刻）。`now` と年が違うときだけ「2027/3/9 16:59」のように年を添える
+ * （Claude のリミットリセットは翌年まで持つことがある）。
+ */
+export function formatMonthDayTime(at: number, now: number): string {
 	const date = new Date(at);
-	return `${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+	const year = date.getFullYear() !== new Date(now).getFullYear() ? `${date.getFullYear()}/` : '';
+	return `${year}${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 }
 
 /** `target` が `now` から見て暦の上で何日後か（端末の時刻。今日は 0、明日は 1、過ぎた日は負）。 */
@@ -288,7 +292,7 @@ export function calendarDayOffset(target: number, now: number): number {
 /** 期限の「今日 11:12」「明日 08:00」「10/9 08:00」（今日・明日だけ言葉にする）。 */
 function expiryWhen(at: number, now: number): string {
 	const days = calendarDayOffset(at, now);
-	const time = formatMonthDayTime(at);
+	const time = formatMonthDayTime(at, now);
 	if (days === 0) {
 		return `今日 ${time.split(' ')[1]}`;
 	}
@@ -331,7 +335,7 @@ export function resetCreditRows(resetCredits: RateLimitResetCredits, now: number
 		.map((at): ResetCreditRow => {
 			const days = calendarDayOffset(at, now);
 			return {
-				label: `${formatMonthDayTime(at)} まで`,
+				label: `${formatMonthDayTime(at, now)} まで`,
 				relative: days < 0 ? '期限切れ' : days === 0 ? '今日' : days === 1 ? '明日' : `${days}日後`,
 				soon: days <= 1,
 			};
@@ -390,6 +394,103 @@ export function resetCreditsSummary(resetCredits: RateLimitResetCredits, now: nu
 	}
 	const when = expiryWhen(facts.nextExpiresAt, now);
 	return { text: count === 1 ? `リセット 残り 1 回 · ${when} に期限` : `リセット 残り ${count} 回 · 次は${when} に期限`, listable, soon };
+}
+
+/** Claude のリミットリセットの期限が近いとみなす日数（PC の PARADIS_CLAUDE_RESET_SOON_DAYS と同じ）。 */
+export const CLAUDE_RESET_SOON_DAYS = 7;
+
+/** 1 行に並べる種類の順と名前（PC の paradisClaudeResetGrantsView.ts と同じ）。 */
+const CLAUDE_RESET_KINDS: readonly { kind: ClaudeResetKind; short: string; row: string }[] = [
+	{ kind: 'fiveHour', short: '5時間', row: '5時間リセット' },
+	{ kind: 'weekly', short: '週', row: '週リセット' },
+	{ kind: 'fable', short: 'Fable', row: 'Fable リセット' },
+	{ kind: 'full', short: '全部', row: '全部リセット' },
+];
+
+/**
+ * Claude のリミットリセットの 1 行と一覧の決まり（PC の paradisClaudeResetGrants.ts の `paradisClaudeResetGrantsFacts` と同じ。
+ * 両方のテストが同じ表で確かめる）。知らない種類・残りが 1 未満・期限の過ぎた束は捨てる。
+ * - kinds: 種類ごとの合計（5時間・週・Fable・全部の順）
+ * - rows: 一覧の行（期限の早い順、期限の分からないものは最後）
+ * - listable: 一覧を開けるか（行が 2 つ以上）
+ * - nextEndsAt / nextDayOffset: いちばん早い期限と、それが暦の上で何日後か
+ * - soon: いちばん早い期限が {@link CLAUDE_RESET_SOON_DAYS} 日以内
+ */
+export interface ClaudeResetGrantsFacts {
+	readonly kinds: readonly { readonly kind: ClaudeResetKind; readonly count: number }[];
+	readonly rows: readonly ClaudeResetGrant[];
+	readonly listable: boolean;
+	readonly nextEndsAt?: number;
+	readonly nextDayOffset?: number;
+	readonly soon: boolean;
+}
+
+export function claudeResetGrantsFacts(grants: readonly ClaudeResetGrant[], now: number): ClaudeResetGrantsFacts {
+	const rows = grants
+		.filter(grant => CLAUDE_RESET_KINDS.some(entry => entry.kind === grant.kind)
+			&& Number.isInteger(grant.left) && grant.left > 0
+			&& (grant.endsAt === undefined || (Number.isFinite(grant.endsAt) && grant.endsAt > now)))
+		.sort((a, b) => (a.endsAt ?? Number.POSITIVE_INFINITY) - (b.endsAt ?? Number.POSITIVE_INFINITY));
+	const kinds = CLAUDE_RESET_KINDS
+		.map(entry => ({ kind: entry.kind, count: rows.filter(row => row.kind === entry.kind).reduce((sum, row) => sum + row.left, 0) }))
+		.filter(entry => entry.count > 0);
+	const nextEndsAt = rows.find(row => row.endsAt !== undefined)?.endsAt;
+	const nextDayOffset = nextEndsAt !== undefined ? calendarDayOffset(nextEndsAt, now) : undefined;
+	return {
+		kinds,
+		rows,
+		listable: rows.length >= 2,
+		...(nextEndsAt !== undefined ? { nextEndsAt, nextDayOffset } : {}),
+		soon: nextDayOffset !== undefined && nextDayOffset <= CLAUDE_RESET_SOON_DAYS,
+	};
+}
+
+/**
+ * Claude のリミットリセットの 1 行（PC の 1 行から「:」を除いたもの）と、一覧を開けるか。束が無ければ undefined（何も出さない）。
+ * 「リミットリセット Fable ×1 · 11/17 16:59 に期限」「リミットリセット Fable ×2・全部 ×1」「リミットリセット 5時間 ×1・Fable ×3 · 次は今日 21:00 に期限」。
+ */
+export function claudeResetGrantsSummary(grants: readonly ClaudeResetGrant[], now: number): { text: string; listable: boolean; soon: boolean } | undefined {
+	const facts = claudeResetGrantsFacts(grants, now);
+	if (facts.rows.length === 0) {
+		return undefined;
+	}
+	const kinds = facts.kinds.map(entry => `${CLAUDE_RESET_KINDS.find(item => item.kind === entry.kind)!.short} ×${entry.count}`).join('・');
+	const { listable, soon } = facts;
+	if (facts.nextEndsAt !== undefined && !listable) {
+		return { text: `リミットリセット ${kinds} · ${expiryWhen(facts.nextEndsAt, now)} に期限`, listable, soon };
+	}
+	if (facts.nextEndsAt !== undefined && soon) {
+		return { text: `リミットリセット ${kinds} · 次は${expiryWhen(facts.nextEndsAt, now)} に期限`, listable, soon };
+	}
+	return { text: `リミットリセット ${kinds}`, listable, soon };
+}
+
+/** Claude のリミットリセットの一覧の 1 行。 */
+export interface ClaudeResetGrantRow {
+	/** 「Fable リセット ×2」 */
+	readonly kind: string;
+	/** 「2027/3/9 16:59 まで」「期限は不明」 */
+	readonly label: string;
+	/** 「今日」「明日」「7日後」（期限のある行だけ）。 */
+	readonly relative?: string;
+	/** 期限が {@link CLAUDE_RESET_SOON_DAYS} 日以内。目立たせる。 */
+	readonly soon: boolean;
+}
+
+export function claudeResetGrantRows(grants: readonly ClaudeResetGrant[], now: number): ClaudeResetGrantRow[] {
+	return claudeResetGrantsFacts(grants, now).rows.map(row => {
+		const kind = `${CLAUDE_RESET_KINDS.find(item => item.kind === row.kind)!.row} ×${row.left}`;
+		if (row.endsAt === undefined) {
+			return { kind, label: '期限は不明', soon: false };
+		}
+		const days = calendarDayOffset(row.endsAt, now);
+		return {
+			kind,
+			label: `${formatMonthDayTime(row.endsAt, now)} まで`,
+			relative: days === 0 ? '今日' : days === 1 ? '明日' : `${days}日後`,
+			soon: days <= CLAUDE_RESET_SOON_DAYS,
+		};
+	});
 }
 
 /**

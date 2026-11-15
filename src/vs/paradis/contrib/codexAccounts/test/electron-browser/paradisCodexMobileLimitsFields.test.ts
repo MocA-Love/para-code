@@ -50,7 +50,7 @@ suite('Paradis Codex mobile limits fields', () => {
 					homePath,
 					fetchedAt: 1,
 					credits: homePath === '/u/.codex-2'
-						? { availableCount: 3, nextExpiresAt: 5_000, credits: [{ status: 'available', expiresAt: 9_000, id: 'b' }, { status: 'redeemed', expiresAt: 1_000 }, { status: 'available', id: 'c' }, { status: 'available', expiresAt: 5_000, id: 'a' }] }
+						? { availableCount: 3, nextExpiresAt: 5_000, credits: [{ status: 'available', expiresAt: 9_000 }, { status: 'redeemed', expiresAt: 1_000 }, { status: 'available' }, { status: 'available', expiresAt: 5_000 }] }
 						: { availableCount: 0, credits: [] },
 				});
 			},
