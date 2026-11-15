@@ -7,6 +7,7 @@ Para Code が本家 VS Code に加えた変更の一覧です。新しいバー�
 ## 未リリース
 
 - 設定 `paradis.workspaceSwitch.agents` に既定の一覧を書き写していると、新しいスペースのエージェントに「Gemini CLI」が残り「Antigravity CLI」が出なかったのを直しました。書き写しただけの Gemini CLI の行は Antigravity CLI に替わります（自分で書き換えた Gemini CLI の行はそのまま残ります）
+- AIリミットの Antigravity で、週の枠が少しでも残っているのに「100%」と出て使い切ったように見えていたのを直しました。残りがあるうちは 99% までの表示になります
 
 ## paracode-188（2026-11-15）
 
