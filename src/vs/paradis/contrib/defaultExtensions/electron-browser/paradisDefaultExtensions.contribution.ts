@@ -18,6 +18,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IProgressService, ProgressLocation } from '../../../../platform/progress/common/progress.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { paradisWithSettledProgress } from '../../../common/paradisSettledProgress.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { INativeWorkbenchEnvironmentService } from '../../../../workbench/services/environment/electron-browser/environmentService.js';
@@ -154,7 +155,7 @@ class ParadisDefaultExtensionsContribution extends Disposable implements IWorkbe
 		};
 
 		if (hasWork) {
-			await this.progressService.withProgress({
+			await paradisWithSettledProgress(this.progressService, {
 				location: ProgressLocation.Notification,
 				// allow-any-unicode-next-line
 				title: localize('paradis.defaultExtensions.installing', "Para Code の推奨拡張機能をインストールしています…"),

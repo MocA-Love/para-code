@@ -30,6 +30,7 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../platfo
 import { DOWNLOAD_COMMAND_ID } from '../../../../workbench/contrib/files/browser/fileActions.js';
 import { FileDownload } from '../../../../workbench/contrib/files/browser/fileImportExport.js';
 import { IExplorerService } from '../../../../workbench/contrib/files/browser/files.js';
+import { paradisWithSettledProgress } from '../../../common/paradisSettledProgress.js';
 import { IParadisExplorerDownloadItem, paradisPlanBatchDownload, paradisSummarizeBatchDownload, paradisUsesBatchDownload } from '../common/paradisExplorerDownload.js';
 import { PARADIS_FILE_TRANSFER_OPEN_COMMAND_ID } from '../common/paradisFileTransfer.js';
 import { IParadisFileTransferService } from './paradisFileTransferService.js';
@@ -89,7 +90,7 @@ export class ParadisBatchDownload {
 	private track(ids: readonly number[]) {
 		const queue = this.fileTransferService.queue;
 		const summarize = () => paradisSummarizeBatchDownload(ids, queue.items);
-		return this.progressService.withProgress({
+		return paradisWithSettledProgress(this.progressService, {
 			location: ProgressLocation.Notification,
 			title: localize('paradis.explorerDownload.progressTitle', "ダウンロード中"),
 			cancellable: true,

@@ -15,6 +15,7 @@ import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IProgressService, ProgressLocation } from '../../../../platform/progress/common/progress.js';
+import { paradisWithSettledProgress } from '../../../common/paradisSettledProgress.js';
 import { paradisTransferTempName } from '../../fileTransfer/common/paradisFileTransferQueueTypes.js';
 import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
@@ -88,7 +89,8 @@ async function copyWithProgress(
 	target: URI,
 	overwrite: boolean,
 ): Promise<void> {
-	await services.progressService.withProgress(
+	await paradisWithSettledProgress(
+		services.progressService,
 		{
 			location: ProgressLocation.Window,
 			title: localize('paraRemoteHosts.transferring', "{0} を転送しています…", source.name),
@@ -209,7 +211,8 @@ export async function paradisCopyToDirectory(
 	const failedNames: string[] = [];
 	let firstError: Error | string | undefined;
 	try {
-		await services.progressService.withProgress(
+		await paradisWithSettledProgress(
+			services.progressService,
 			{
 				location: ProgressLocation.Window,
 				title: sources.length === 1
