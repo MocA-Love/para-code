@@ -242,6 +242,12 @@ describe('aggregateAccounts', () => {
 		});
 		const [item] = aggregateAccounts(result, 'claude', NOW);
 		expect([item!.account.fiveHour?.usedPercent, item!.account.claudeResetGrants]).toEqual([40, grants]);
+		// 新しい PC が読めて空（使い切った）なら、古い PC の券は出さない
+		const usedUp = entries([pc('a'), pc('b')], {
+			'pc:a': { limits: { value: limits([account({ email: 'u@x', claudeResetGrants: [] })]), at: NOW, receivedAt: NOW } },
+			'pc:b': { limits: { value: limits([account({ email: 'u@x', claudeResetGrants: grants })]), at: NOW - HOUR, receivedAt: NOW } },
+		});
+		expect(aggregateAccounts(usedUp, 'claude', NOW)[0]!.account.claudeResetGrants).toEqual([]);
 	});
 
 	it('PC が前回の値を返した（stale）ものは古い値として扱う', () => {

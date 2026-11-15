@@ -736,7 +736,7 @@ export interface RateLimitAccount {
 	scoped?: RateLimitWindow[];
 	/** Codex の枠のリセットの残り（旧PCでは未配信）。 */
 	resetCredits?: RateLimitResetCredits;
-	/** Claude のリミットリセットの束（旧PCでは未配信。券の無い・読めないアカウントでも無い）。 */
+	/** Claude のリミットリセットの束（旧PCでは未配信。PC が読めないときは無く、読めて券が無ければ空の配列。空はそのPCの最新として採る）。 */
 	claudeResetGrants?: ClaudeResetGrant[];
 	/**
 	 * Claude: PC がログインの更新を控えている間（'unavailable' の 'not_fetched'）に残している前の値（旧PCでは未配信）。

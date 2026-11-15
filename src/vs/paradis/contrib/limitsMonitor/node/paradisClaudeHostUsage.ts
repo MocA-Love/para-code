@@ -157,6 +157,11 @@ export class ParadisClaudeHostUsage {
 		this.liveAuth = new ParadisClaudeLiveAuth({ homedir: options.homedir, configDir: this.configDir, platform: options.platform, keychain: undefined, userName: undefined, now: this.now });
 	}
 
+	/** 走っているリミットリセットの読み取りが終わるのを待つ（テスト用）。 */
+	whenResetGrantsRead(): Promise<void> {
+		return this.resetGrants.whenSettled();
+	}
+
 	async getState(request: IParadisClaudeStateRequest | undefined): Promise<IParadisClaudeAccountsState> {
 		const source = hostStateSource;
 		if (source) {
@@ -310,8 +315,9 @@ export class ParadisClaudeHostUsage {
 				state.backoffUntil = undefined;
 				state.intervalS = plan.intervalS;
 				state.nextPollAt = plan.nextPollAt;
-				// 同じトークンで、間隔が来ていればリミットリセットも読む（失敗しても使用量の状態は変えない）。
-				await this.resetGrants.refreshIfDue(resetGrantsKey(identityKey), accessToken);
+				// 同じトークンで、間隔が来ていればリミットリセットも読む（使用量の取得は待たせない。失敗しても使用量の状態は
+				// 変えない）。結果は次の問い合わせで返す。鍵は buildState と同じ（覚えている身元）。
+				void this.resetGrants.refreshIfDue(resetGrantsKey(state.identityKey), accessToken);
 				return;
 			}
 			case 'http':
@@ -393,8 +399,9 @@ export class ParadisClaudeHostUsage {
 			scoped: state.windows?.scoped,
 			fetchedAt: state.fetchedAt,
 		};
+		// 読めて券が無いときも空の配列で送る（モバイルが使い切った PC と古い PC を見分けるため）。
 		const grants = this.resetGrants.get(resetGrantsKey(state.identityKey));
-		if (grants !== undefined && grants.length > 0) {
+		if (grants !== undefined) {
 			account = { ...account, claudeResetGrants: grants };
 		}
 		return { claude: { accounts: [account] }, oldestFetchedAt: state.fetchedAt, switching: false };

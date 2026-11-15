@@ -115,5 +115,5 @@ export function paradisRenderClaudeResetGrants(container: HTMLElement, store: Di
 		dom.append(item, $('span.plm-reset-expiry-when')).textContent = paradisLimitsRelativeDayLabel(days);
 		item.classList.toggle('soon', days <= PARADIS_CLAUDE_RESET_SOON_DAYS);
 	}
-	dom.append(list, $('li.plm-reset-expiry.plm-card-action-note')).textContent = localize('paradis.claudeResetGrants.howToUse', "使うときは claude.ai の設定の「使用量」から");
+	dom.append(list, $('li.plm-card-action-note')).textContent = localize('paradis.claudeResetGrants.howToUse', "使うときは claude.ai の設定の「使用量」から");
 }

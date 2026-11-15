@@ -121,8 +121,10 @@ suite('ParadisClaudeAccountService usage', () => {
 		harness.oauth.resetGrantsByToken.set('live-access', { kind: 'ok', grants: [{ kind: 'full', left: 1, endsAt }] });
 
 		await poll(harness);
+		await harness.service.whenResetGrantsRead();
 		harness.now += 10 * 60_000;
 		await poll(harness, true);
+		await harness.service.whenResetGrantsRead();
 		const accounts = (await harness.service.getState(undefined)).claude.accounts;
 
 		assert.deepStrictEqual({

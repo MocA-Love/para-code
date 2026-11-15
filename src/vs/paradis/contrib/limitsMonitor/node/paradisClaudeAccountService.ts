@@ -235,9 +235,12 @@ interface IParadisClaudeTarget {
 	readonly active: boolean;
 }
 
-/** アカウントに添えるリミットリセットの項目（束が無ければ項目ごと付けない）。 */
+/**
+ * アカウントに添えるリミットリセットの項目。読めていなければ項目ごと付けず、読めて券が無ければ空の配列を付ける
+ * （モバイルが複数の PC を束ねるとき、使い切った PC の空を古い PC の券より優先できるように）。
+ */
 function claudeResetGrantsField(grants: readonly IParadisClaudeResetGrant[] | undefined): { readonly claudeResetGrants?: readonly IParadisClaudeResetGrant[] } {
-	return grants !== undefined && grants.length > 0 ? { claudeResetGrants: grants } : {};
+	return grants !== undefined ? { claudeResetGrants: grants } : {};
 }
 
 function recordIdentity(record: IParadisClaudeAccountRecord): IParadisClaudeIdentity {
@@ -907,8 +910,13 @@ export class ParadisClaudeAccountService extends Disposable {
 				state.backoffUntil = undefined;
 				state.intervalS = plan.intervalS;
 				state.nextPollAt = plan.nextPollAt;
-				// 同じトークンで、間隔が来ていればリミットリセットも読む（失敗しても使用量の状態は変えない）。
-				await this.resetGrants.refreshIfDue(target.key, usedToken);
+				// 同じトークンで、間隔が来ていればリミットリセットも読む（使用量の取得は待たせない。失敗しても使用量の状態は
+				// 変えない）。束が変わったら知らせて描き直してもらう。
+				void this.resetGrants.refreshIfDue(target.key, usedToken).then(changed => {
+					if (changed && !this._store.isDisposed) {
+						this.fireChange();
+					}
+				});
 				return;
 			}
 			case 'http':
@@ -1095,6 +1103,11 @@ export class ParadisClaudeAccountService extends Disposable {
 			case 'transient':
 				return undefined;
 		}
+	}
+
+	/** 走っているリミットリセットの読み取りが終わるのを待つ（テスト用）。 */
+	whenResetGrantsRead(): Promise<void> {
+		return this.resetGrants.whenSettled();
 	}
 
 	/** 一覧を書き換えた後に、そのアカウントの状態を捨てて次の機会に取り直す。 */

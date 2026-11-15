@@ -11,8 +11,6 @@
 // - リセットクレジット: Codex の使用枠を即時に戻せる権利。残数と期限は ChatGPT のバックエンドの
 //   `wham/rate-limit-reset-credits`（app-server の `account/rateLimits/read` の `rateLimitResetCredits`
 //   と同じ内容）。Para Code は残りと期限を見せるだけで、使う操作は持たない（Codex 本体・ChatGPT から使う）。
-//   読み取りの応答の各クレジットの `id` の根拠は openai/codex のコミット 3a69ec3ef8fb（2026-10-03）の
-//   codex-rs/backend-client/src/types.rs:33-35（`RateLimitResetCreditDetails` の `id`）。
 // - 切替: 新しく開くターミナルへ渡す `CODEX_HOME` の選択。全ウィンドウ共通で、正は shared process が
 //   持つ（ウィンドウごとの保存にすると食い違うため）。SSH の接続先を開いたウィンドウでは、接続先（REH）が
 //   同じものを接続先のホームについて持ち、同じ接続先の全ウィンドウで共通になる。
@@ -53,8 +51,6 @@ export function paradisCodexAccountsClientPreferences(value: unknown): IParadisC
 export type ParadisCodexResetCreditStatus = 'available' | 'redeeming' | 'redeemed' | 'unknown';
 
 export interface IParadisCodexResetCredit {
-	/** バックエンドが付けるクレジットの ID（中身は解釈しない。表示には使わない）。 */
-	readonly id?: string;
 	readonly status: ParadisCodexResetCreditStatus;
 	/** 期限(epoch ms)。期限の無いクレジットは undefined。 */
 	readonly expiresAt?: number;
@@ -84,14 +80,6 @@ export interface IParadisCodexResetCreditOffer {
 	readonly credits?: IParadisCodexResetCredits;
 	readonly error?: ParadisCodexResetCreditsReadError;
 	readonly fetchedAt: number;
-}
-
-/** クレジットの ID の長さの上限（これを超える値は捨てる）。 */
-export const PARADIS_CODEX_RESET_CREDIT_ID_MAX_LENGTH = 200;
-
-/** クレジットの ID として受け付ける値か。空・長すぎる・文字列でないものは undefined。 */
-export function paradisCodexResetCreditId(value: unknown): string | undefined {
-	return typeof value === 'string' && value.trim().length > 0 && value.length <= PARADIS_CODEX_RESET_CREDIT_ID_MAX_LENGTH ? value : undefined;
 }
 
 function toEpochMs(value: unknown): number | undefined {
@@ -134,10 +122,8 @@ export function paradisMapCodexResetCredits(raw: unknown): IParadisCodexResetCre
 			if (!entry || typeof entry !== 'object') {
 				continue;
 			}
-			const credit = entry as { id?: unknown; status?: unknown; expiresAt?: unknown; grantedAt?: unknown };
-			const id = paradisCodexResetCreditId(credit.id);
+			const credit = entry as { status?: unknown; expiresAt?: unknown; grantedAt?: unknown };
 			credits.push({
-				...(id !== undefined ? { id } : {}),
 				status: toStatus(credit.status),
 				expiresAt: toEpochMs(credit.expiresAt),
 				grantedAt: toEpochMs(credit.grantedAt),
@@ -166,8 +152,8 @@ export function paradisMapCodexBackendResetCredits(raw: unknown): IParadisCodexR
 	const response = raw as { available_count?: unknown; credits?: unknown };
 	const credits = Array.isArray(response.credits)
 		? response.credits.map(entry => {
-			const credit = (entry && typeof entry === 'object' ? entry : {}) as { id?: unknown; status?: unknown; expires_at?: unknown; granted_at?: unknown };
-			return { id: credit.id, status: typeof credit.status === 'string' ? credit.status.toLowerCase() : undefined, expiresAt: credit.expires_at, grantedAt: credit.granted_at };
+			const credit = (entry && typeof entry === 'object' ? entry : {}) as { status?: unknown; expires_at?: unknown; granted_at?: unknown };
+			return { status: typeof credit.status === 'string' ? credit.status.toLowerCase() : undefined, expiresAt: credit.expires_at, grantedAt: credit.granted_at };
 		})
 		: undefined;
 	const availableCount = typeof response.available_count === 'number'

@@ -152,8 +152,8 @@ suite('ParadisClaudeHostUsage (REH, read-only)', () => {
 	});
 
 
-	// リミットリセットは使用量が取れたときだけ、同じトークンで別の GET を出す。30 分より短い間隔では読み直さず、
-	// 取れない（404）ときは使用量の表示をそのままにして項目を付けない。
+	// リミットリセットは使用量が取れたときだけ、同じトークンで別の GET を出す（使用量の応答は待たせない）。30 分より
+	// 短い間隔では読み直さず、取れない（404）ときは前の束を残す。読めて券が無ければ空の配列を送る。
 	test('reads limit resets after a successful usage fetch at most every 30 minutes and attaches them to the card', async () => {
 		const harness = await createHarness();
 		await paradisWriteClaudeGlobalConfig(harness.home, { oauthAccount: paradisTestOauthAccount('u-host', 'host@example.com') });
@@ -161,30 +161,42 @@ suite('ParadisClaudeHostUsage (REH, read-only)', () => {
 		const endsAt = harness.now + 10 * 24 * HOUR;
 		harness.grantsResponse = { status: 200, body: { five_hour: {}, cedar_ember: { eligible: true, grants: [{ id: 'g1', resets_left: 2, ends_at: new Date(endsAt).toISOString(), type: 'weekly', gives_back_weekly: true, clears: ['five_hour', 'seven_day_opus'] }] } } };
 
-		const first = await harness.reader.getState(undefined);
+		const firstResponse = await harness.reader.getState(undefined);
+		await harness.reader.whenResetGrantsRead();
+		const first = await harness.reader.getState({ passive: true });
 		harness.now += 10 * MINUTE;
 		await harness.reader.getState({ refresh: true });
 		harness.now += 25 * MINUTE;
 		harness.grantsResponse = { status: 404 };
-		const third = await harness.reader.getState({ refresh: true });
+		await harness.reader.getState({ refresh: true });
+		await harness.reader.whenResetGrantsRead();
+		const third = await harness.reader.getState({ passive: true });
+		harness.now += 31 * MINUTE;
+		harness.grantsResponse = { status: 200, body: { cedar_ember: { eligible: true, grants: [] } } };
+		await harness.reader.getState({ refresh: true });
+		await harness.reader.whenResetGrantsRead();
+		const usedUp = await harness.reader.getState({ passive: true });
 
 		assert.deepStrictEqual({
+			firstResponse: firstResponse.claude.accounts[0]?.claudeResetGrants,
 			first: first.claude.accounts[0]?.claudeResetGrants,
 			third: third.claude.accounts[0]?.claudeResetGrants,
 			thirdStatus: third.claude.accounts[0]?.status,
+			usedUp: usedUp.claude.accounts[0]?.claudeResetGrants,
 			usageCalls: harness.calls.length,
-			grantsCalls: harness.grantsCalls,
+			grantsCalls: harness.grantsCalls.length,
 		}, {
+			// 使用量の応答は券の読み取りを待たない
+			firstResponse: undefined,
 			first: [{ kind: 'fable', left: 2, endsAt }],
 			// 読み直しが 404 でも、前に読めた束は残す
 			third: [{ kind: 'fable', left: 2, endsAt }],
 			thirdStatus: 'ok',
-			usageCalls: 3,
-			grantsCalls: [
-				{ url: PARADIS_CLAUDE_RESET_GRANTS_URL, method: 'GET', authorization: 'Bearer host-access' },
-				{ url: PARADIS_CLAUDE_RESET_GRANTS_URL, method: 'GET', authorization: 'Bearer host-access' },
-			],
+			usedUp: [],
+			usageCalls: 4,
+			grantsCalls: 3,
 		});
+		assert.deepStrictEqual(harness.grantsCalls[0], { url: PARADIS_CLAUDE_RESET_GRANTS_URL, method: 'GET', authorization: 'Bearer host-access' });
 	});
 	test('expired token: waits for Claude Code on the host to refresh, never refreshes or writes, then picks up the new token', async () => {
 		const harness = await createHarness();

@@ -41,13 +41,13 @@ suite('Paradis Codex accounts (common)', () => {
 
 	// 明細は上限付きで返ることがあり、残り回数と件数が合わないことがある。
 	test('lists reset credits by expiry and fills in what the details do not cover', () => {
-		const expires = (expiresAt: number | undefined, id?: string) => ({ status: 'available' as const, expiresAt, ...(id !== undefined ? { id } : {}) });
+		const expires = (expiresAt: number | undefined) => ({ status: 'available' as const, expiresAt });
 		assert.deepStrictEqual({
 			none: paradisCodexResetCreditRows({ availableCount: 0, credits: [] }),
 			noDetails: paradisCodexResetCreditRows({ availableCount: 3 }),
-			sortedWithNoExpiryLast: paradisCodexResetCreditRows({ availableCount: 3, credits: [expires(undefined, 'c'), expires(30, 'b'), expires(10, 'a')] }),
+			sortedWithNoExpiryLast: paradisCodexResetCreditRows({ availableCount: 3, credits: [expires(undefined), expires(30), expires(10)] }),
 			fewerDetails: paradisCodexResetCreditRows({ availableCount: 4, credits: [expires(20), { status: 'redeemed', expiresAt: 5 }] }),
-			moreDetails: paradisCodexResetCreditRows({ availableCount: 1, credits: [expires(20, 'late'), expires(10, 'early')] }),
+			moreDetails: paradisCodexResetCreditRows({ availableCount: 1, credits: [expires(20), expires(10)] }),
 		}, {
 			none: [],
 			noDetails: [{ kind: 'unknown', count: 3 }],
