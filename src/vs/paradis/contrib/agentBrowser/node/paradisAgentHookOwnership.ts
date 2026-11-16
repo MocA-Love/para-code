@@ -1016,6 +1016,23 @@ export class ParadisAgentHookOwnership {
 		};
 	}
 
+	/**
+	 * ペインの所有者が手元で pid の分かる、生きている `agentKind` のエージェントなら、その起動の行。分からなければ undefined。
+	 * Antigravity CLI の許可の待ち（paradisAntigravityApproval.ts）が、起動の引数で agy が聞かない呼び出しを見分けるのに使う。
+	 */
+	async ownerCommandLine(token: string, agentKind: ParadisHookAgentKind): Promise<string | undefined> {
+		const owner = this.owners.get(token);
+		if (owner === undefined || owner.pid === undefined || owner.agentKind !== agentKind || owner.attachedHost !== undefined) {
+			return undefined;
+		}
+		const snapshot = await this.inspector.snapshot({ pids: [owner.pid] }).catch(() => undefined);
+		const current = this.owners.get(token);
+		if (snapshot === undefined || current?.pid !== owner.pid || !this.isOwnerAlive(current, snapshot)) {
+			return undefined;
+		}
+		return snapshot.get(owner.pid)?.command;
+	}
+
 	/** 休止のために止めたプロセスのうち、まだ同じプロセスとして生きているもの。表が取れなければ undefined。 */
 	async aliveHibernationTargets(targets: readonly IProcessIdentity[]): Promise<readonly IProcessIdentity[] | undefined> {
 		if (targets.length === 0) {

@@ -36,6 +36,30 @@ export const PARADIS_ANTIGRAVITY_APPROVAL_SCRIPT_RELATIVE_PATH = `.para-code/hoo
  */
 export const PARADIS_ANTIGRAVITY_APPROVAL_TOOLS: readonly string[] = ['run_command', 'edit_file', 'write_file', 'call_mcp_tool'];
 
+/** agy が起動の引数のモードで聞かずに通す、ファイルの書き換えのツール（accept-edits・auto のモード）。 */
+const EDIT_TOOLS: readonly string[] = ['edit_file', 'write_file'];
+
+/**
+ * ペインの agy の起動の行（プロセスの引数）から、この呼び出しを agy が聞かずに通すと分かるか（分かれば待たない）。
+ * 待つと外したとき（agy が聞かないのに待つ）は最大 {@link PARADIS_ANTIGRAVITY_APPROVAL_HOLD_MS} 止まり、待たないと外したとき
+ * （agy が聞く）は TUI の許可の画面が今までどおり出るだけなので、分かる範囲で待たない側へ倒す。
+ *
+ * | 起動の引数 | 待たないツール |
+ * |---|---|
+ * | `--dangerously-skip-permissions` | 全部 |
+ * | `--mode accept-edits`・`--mode auto` | `edit_file`・`write_file`（agy の説明: 書き換えは聞かない。コマンドは聞く・auto は戻せない操作だけ聞く） |
+ *
+ * 会話の途中のモードの切り替え（shift+tab）・`/config` に保存したモード・`--settings`・`permissions.allow` は読まない
+ * （起動の行に出ない）。agy は Go の flag なので `-` 1 つの書き方と `=` の書き方も読む。
+ */
+export function paradisAntigravityApprovalSkippedByLaunch(commandLine: string, toolName: string | undefined): boolean {
+	if (/(?:^|\s)--?dangerously-skip-permissions(?:=(?:true|t|1))?(?:\s|$)/i.test(commandLine)) {
+		return true;
+	}
+	const mode = /(?:^|\s)--?mode(?:\s+|=)(?<mode>\S+)/.exec(commandLine)?.groups?.mode;
+	return (mode === 'accept-edits' || mode === 'auto') && toolName !== undefined && EDIT_TOOLS.includes(toolName);
+}
+
 /** shared process の受け口の接頭辞（`register` と `wait`）。 */
 export const PARADIS_ANTIGRAVITY_APPROVAL_HTTP_PREFIX = '/antigravity-approval/v1/';
 
@@ -95,7 +119,14 @@ function stringOf(value: unknown): string | undefined {
 }
 
 /**
+ * 許可のカード（paradisBuildAgentApprovalRequest）が読む引数の名前。agy の引数のうちこの名前のものはカードへ渡さない
+ * （モデルが `{CommandLine: 'rm -rf x', command: 'ls'}` のように足した名前で、agy が実行するものと違う中身をカードに出させない）。
+ */
+const CARD_INPUT_KEYS: readonly string[] = ['command', 'description', 'file_path', 'notebook_path', 'edits', 'old_string', 'new_string', 'replace_all', 'content', 'url', 'prompt'];
+
+/**
  * agy の許可を求めるツールの名前と引数を、許可のカード（paradisBuildAgentApprovalRequest）が読む形にする。
+ * カードの中身は、agy が実際に使う引数（`CommandLine` など）からだけ作る。
  *
  * | agy | カード |
  * |---|---|
@@ -104,33 +135,37 @@ function stringOf(value: unknown): string | undefined {
  * | `write_file` の `Path`・`Content` | パスと中身 |
  * | `call_mcp_tool` の `ServerName`・`ToolName`・`Arguments` | `mcp__<server>__<tool>` と引数 |
  *
- * 知らない形はそのまま返す。
+ * 許可を待つツールで形が違うものは、カードが読む名前を外して返す。ほかのツールはそのまま返す。
  */
 export function paradisAntigravityApprovalCardInput(toolName: string | undefined, toolInput: unknown): { readonly toolName: string | undefined; readonly toolInput: unknown } {
 	if (!isRecord(toolInput)) {
 		return { toolName, toolInput };
 	}
 	const input = toolInput;
-	const rest = (...keys: string[]) => Object.fromEntries(Object.entries(input).filter(([key]) => !keys.includes(key)));
+	// カードが読む名前と、写し元の名前を外した残り（明示した値はこの後ろに置き、残りから上書きされないようにする）
+	const rest = (...keys: string[]) => Object.fromEntries(Object.entries(input).filter(([key]) => !keys.includes(key) && !CARD_INPUT_KEYS.includes(key)));
 	if (toolName === 'run_command' && stringOf(input.CommandLine) !== undefined) {
 		const description = stringOf(input.toolSummary);
-		return { toolName, toolInput: { command: input.CommandLine, ...(description !== undefined ? { description } : {}), ...rest('CommandLine', 'toolSummary') } };
+		return { toolName, toolInput: { ...rest('CommandLine', 'toolSummary'), command: input.CommandLine, ...(description !== undefined ? { description } : {}) } };
 	}
 	if (toolName === 'edit_file' && stringOf(input.Path) !== undefined) {
 		return {
 			toolName, toolInput: {
-				file_path: input.Path, old_string: typeof input.Target === 'string' ? input.Target : '', new_string: typeof input.Replacement === 'string' ? input.Replacement : '',
 				...rest('Path', 'Target', 'Replacement'),
+				file_path: input.Path, old_string: typeof input.Target === 'string' ? input.Target : '', new_string: typeof input.Replacement === 'string' ? input.Replacement : '',
 			},
 		};
 	}
 	if (toolName === 'write_file' && stringOf(input.Path) !== undefined && typeof input.Content === 'string') {
-		return { toolName, toolInput: { file_path: input.Path, content: input.Content, ...rest('Path', 'Content') } };
+		return { toolName, toolInput: { ...rest('Path', 'Content'), file_path: input.Path, content: input.Content } };
 	}
 	const server = stringOf(input.ServerName);
 	const tool = stringOf(input.ToolName);
 	if (toolName === 'call_mcp_tool' && server !== undefined && tool !== undefined) {
 		return { toolName: `mcp__${server}__${tool}`, toolInput: isRecord(input.Arguments) ? input.Arguments : {} };
+	}
+	if (toolName !== undefined && PARADIS_ANTIGRAVITY_APPROVAL_TOOLS.includes(toolName)) {
+		return { toolName, toolInput: rest() };
 	}
 	return { toolName, toolInput };
 }

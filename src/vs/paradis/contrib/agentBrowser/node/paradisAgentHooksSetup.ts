@@ -735,8 +735,10 @@ export function paradisMergeAntigravityHooksJson(existingRaw: string | undefined
 }
 
 /**
- * Antigravity CLI の hooks.json から名前付きの hook `para-code` を外した JSON 文字列を返す（当fork管理のhookを
- * 含むときだけ）。外すものが無ければ受け取ったものをそのまま返す。パース不能なら undefined。
+ * Antigravity CLI の hooks.json から、Para Code の hook を外した JSON 文字列を返す。通知の名前付きの hook `para-code` は、
+ * 当fork管理のhookを含むときに丸ごと外す。許可の名前付きの hook `para-code-approval` は、Para Code の許可のスクリプトを
+ * 呼ぶ handler だけを外し、利用者が同じ名前に書いた handler は残す（handler が残らないときだけ名前ごと外す）。
+ * 外すものが無ければ受け取ったものをそのまま返す。パース不能なら undefined。
  */
 export function paradisRemoveAntigravityHooksJson(existingRaw: string): string | undefined {
 	let parsed: unknown;
@@ -749,7 +751,7 @@ export function paradisRemoveAntigravityHooksJson(existingRaw: string): string |
 		return undefined;
 	}
 	const notify = highestManagedSchemaInAntigravityHook(parsed[PARADIS_ANTIGRAVITY_HOOK_NAME]) !== undefined;
-	const approval = highestAntigravityApprovalScriptVersion(parsed[PARADIS_ANTIGRAVITY_APPROVAL_HOOK_NAME]) !== undefined;
+	const approval = antigravityApprovalHandlerVersions(parsed[PARADIS_ANTIGRAVITY_APPROVAL_HOOK_NAME]).some(version => version !== undefined);
 	if (!notify && !approval) {
 		return existingRaw;
 	}
@@ -757,35 +759,76 @@ export function paradisRemoveAntigravityHooksJson(existingRaw: string): string |
 		delete parsed[PARADIS_ANTIGRAVITY_HOOK_NAME];
 	}
 	if (approval) {
-		delete parsed[PARADIS_ANTIGRAVITY_APPROVAL_HOOK_NAME];
+		const remaining = withoutAntigravityApprovalHandlers(parsed[PARADIS_ANTIGRAVITY_APPROVAL_HOOK_NAME]);
+		if (remaining === undefined) {
+			delete parsed[PARADIS_ANTIGRAVITY_APPROVAL_HOOK_NAME];
+		} else {
+			parsed[PARADIS_ANTIGRAVITY_APPROVAL_HOOK_NAME] = remaining;
+		}
 	}
 	return JSON.stringify(parsed, undefined, 2);
 }
 
-/** Antigravity CLI の許可の名前付きの hook の中で、Para Code の許可のスクリプトの最も新しい版（無ければ undefined）。 */
-function highestAntigravityApprovalScriptVersion(namedHook: unknown): number | undefined {
+/**
+ * Antigravity CLI の許可の名前付きの hook の handler ごとの、Para Code の許可のスクリプトの版（Para Code の handler でなければ
+ * undefined）。グループ（`{ matcher, hooks: [...] }`）の中の handler と、グループを挟まずに置いた handler の両方を数える。
+ */
+function antigravityApprovalHandlerVersions(namedHook: unknown): (number | undefined)[] {
+	const versions: (number | undefined)[] = [];
 	if (!isPlainObject(namedHook)) {
-		return undefined;
+		return versions;
 	}
-	let highest: number | undefined;
 	for (const groups of Object.values(namedHook)) {
 		for (const group of Array.isArray(groups) ? groups : []) {
 			for (const handler of isPlainObject(group) && Array.isArray(group.hooks) ? group.hooks : [group]) {
-				const version = isPlainObject(handler) ? paradisAntigravityApprovalScriptVersion(handler.command) : undefined;
-				if (version !== undefined && (highest === undefined || version > highest)) {
-					highest = version;
-				}
+				versions.push(isPlainObject(handler) ? paradisAntigravityApprovalScriptVersion(handler.command) : undefined);
 			}
 		}
 	}
-	return highest;
+	return versions;
+}
+
+/**
+ * Antigravity CLI の許可の名前付きの hook から、Para Code の許可のスクリプトを呼ぶ handler を外したもの。空になったグループと
+ * イベントは落とす。handler が 1 つも残らなければ undefined（`enabled` などイベント以外の値は数えない）。
+ */
+function withoutAntigravityApprovalHandlers(namedHook: unknown): Record<string, unknown> | undefined {
+	if (!isPlainObject(namedHook)) {
+		return undefined;
+	}
+	const isManaged = (handler: unknown) => isPlainObject(handler) && paradisAntigravityApprovalScriptVersion(handler.command) !== undefined;
+	const result: Record<string, unknown> = {};
+	let handlers = 0;
+	for (const [key, groups] of Object.entries(namedHook)) {
+		if (!Array.isArray(groups)) {
+			result[key] = groups;
+			continue;
+		}
+		const kept: unknown[] = [];
+		for (const group of groups) {
+			if (isPlainObject(group) && Array.isArray(group.hooks)) {
+				const hooks = group.hooks.filter(handler => !isManaged(handler));
+				if (hooks.length > 0) {
+					kept.push({ ...group, hooks });
+					handlers += hooks.length;
+				}
+			} else if (!isManaged(group)) {
+				kept.push(group);
+				handlers++;
+			}
+		}
+		if (kept.length > 0) {
+			result[key] = kept;
+		}
+	}
+	return handlers > 0 ? result : undefined;
 }
 
 /**
  * Antigravity CLI の hooks.json に、許可を待つ名前付きの hook（`para-code-approval`）を冪等に置いた JSON 文字列を返す
- * （paradisAntigravityApproval.ts）。置き換えるのは、まだ無いときか、Para Code の許可のスクリプトの今の版以下だけから成る
- * ときだけ。利用者が同じ名前で書いた hook と新しい版の Para Code が置いた hook には触らない。利用者が付けた
- * `"enabled": false` は残す。パース不能・ルートがオブジェクトでなければ undefined。
+ * （paradisAntigravityApproval.ts）。置き換えるのは、まだ無いときか、すべての handler が Para Code の許可のスクリプトの
+ * 今の版以下を呼ぶものだけから成るときだけ。利用者が同じ名前に書いた handler が 1 つでもあるときと、新しい版の Para Code が
+ * 置いた hook には触らない。利用者が付けた `"enabled": false` は残す。パース不能・ルートがオブジェクトでなければ undefined。
  */
 export function paradisMergeAntigravityApprovalHookJson(existingRaw: string): string | undefined {
 	let parsed: unknown;
@@ -799,8 +842,8 @@ export function paradisMergeAntigravityApprovalHookJson(existingRaw: string): st
 	}
 	const current = parsed[PARADIS_ANTIGRAVITY_APPROVAL_HOOK_NAME];
 	if (current !== undefined) {
-		const version = highestAntigravityApprovalScriptVersion(current);
-		if (version === undefined || version > PARADIS_ANTIGRAVITY_APPROVAL_SCRIPT_VERSION) {
+		const versions = antigravityApprovalHandlerVersions(current);
+		if (versions.length === 0 || versions.some(version => version === undefined || version > PARADIS_ANTIGRAVITY_APPROVAL_SCRIPT_VERSION)) {
 			return existingRaw;
 		}
 	}

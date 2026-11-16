@@ -42,7 +42,7 @@ import { IParadisAgentPageRequestResult, IParadisCloseAgentTabResult, IParadisLi
 import { IParadisExactViewEmulationResult, IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisAgentTabGrant, IParadisGrantAgentTabRequest, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisAgentHookEntersWait, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent, paradisPaneFingerprint, paradisParseCdpInputDispatchResult, paradisExactViewKey, paradisParseExactBrowserViewDescriptor, PARADIS_BROWSER_REPORT_STATE_SETTING, PARADIS_BROWSER_RUN_STEPS_FLOW_SETTING, PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING, PARADIS_BROWSER_SITE_NOTES_SETTING, PARADIS_BROWSER_SNAPSHOT_DIFF_SETTING, PARADIS_BROWSER_SITE_RECIPES_SETTING } from '../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_CODEX_HOOK_EVENTS, paradisAgentHookRemoteHostId, paradisAgentHooksEnabled, paradisIsAgentHookRemoteHostId } from '../common/paradisAgentHooks.js';
 import { PARADIS_ANTIGRAVITY_QUESTION_TOOL, paradisAntigravityHookEvent, paradisIsAntigravityHookPayload, paradisWithAntigravityHookAliases } from '../common/paradisAntigravityHooks.js';
-import { PARADIS_ANTIGRAVITY_APPROVAL_HTTP_PREFIX, PARADIS_ANTIGRAVITY_APPROVAL_WAIT_PREFIX } from '../common/paradisAntigravityApproval.js';
+import { PARADIS_ANTIGRAVITY_APPROVAL_HTTP_PREFIX, PARADIS_ANTIGRAVITY_APPROVAL_WAIT_PREFIX, paradisAntigravityApprovalSkippedByLaunch } from '../common/paradisAntigravityApproval.js';
 import { paradisAntigravityApprovalHold } from './paradisAntigravityApprovalHold.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
 import { paradisBindingMatchesGeneration } from '../common/paradisBrowserBindingLifecycle.js';
@@ -4627,8 +4627,14 @@ export class ParadisAgentBrowserService extends Disposable {
 				reply('none');
 				return;
 			}
-			const caller = await this._classifyCaller(token, req.socket as Socket, controller.signal);
-			if (caller === 'unverified' || controller.signal.aborted || !this.isIngressLeaseCurrent(ingressLease)) {
+			// 起動の引数（`--dangerously-skip-permissions`・`--mode`）で agy が聞かないと分かる呼び出しは待たない
+			// （所有者の起動の行が分からなければ今までどおり待つ）
+			const [caller, commandLine] = await Promise.all([
+				this._classifyCaller(token, req.socket as Socket, controller.signal),
+				this._hookOwnership.ownerCommandLine(token, 'antigravity'),
+			]);
+			if (caller === 'unverified' || controller.signal.aborted || !this.isIngressLeaseCurrent(ingressLease)
+				|| (commandLine !== undefined && paradisAntigravityApprovalSkippedByLaunch(commandLine, request.toolName))) {
 				reply('none');
 				return;
 			}

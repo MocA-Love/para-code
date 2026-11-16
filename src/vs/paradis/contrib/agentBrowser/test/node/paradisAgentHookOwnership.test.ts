@@ -508,6 +508,26 @@ suite('ParadisAgentHookOwnership', () => {
 		});
 	});
 
+	test('reads the launch command line of a live Antigravity CLI owner only', async () => {
+		const agyTranscript = '/home/user/.gemini/antigravity-cli/brain/c1/.system_generated/logs/transcript_full.jsonl';
+		const tree = new Map([
+			[1, proc(1, 0, '/sbin/init')],
+			[100, proc(100, 1, '/usr/bin/zsh -i')],
+			[300, proc(300, 100, 'agy --dangerously-skip-permissions')],
+			[301, proc(301, 300, 'sh -c notify')],
+			[302, proc(302, 301, '/bin/sh /home/user/.para-code/hooks/notify-v5.sh')],
+		].map(([pid, info]) => [pid, info] as [number, IParadisHookProcessInfo]));
+		const ownership = ownershipWith(tree);
+		const before = await ownership.ownerCommandLine('t', 'antigravity');
+		await ownership.classify({ token: 't', hookPid: 302, transcriptPath: agyTranscript, agentKind: 'antigravity', at: 1 });
+		const owned = await ownership.ownerCommandLine('t', 'antigravity');
+		const otherKind = await ownership.ownerCommandLine('t', 'claude');
+		tree.delete(300);
+		assert.deepStrictEqual({ before, owned, otherKind, exited: await ownership.ownerCommandLine('t', 'antigravity') }, {
+			before: undefined, owned: 'agy --dangerously-skip-permissions', otherKind: undefined, exited: undefined,
+		});
+	});
+
 	test('promotes a new owner after the previous owner process exits', async () => {
 		const tree = standardTree();
 		const ownership = ownershipWith(tree);

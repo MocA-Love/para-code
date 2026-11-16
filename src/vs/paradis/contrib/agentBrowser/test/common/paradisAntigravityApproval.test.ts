@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_ANTIGRAVITY_APPROVAL_HOLD_MS, PARADIS_ANTIGRAVITY_APPROVAL_HOOK_TIMEOUT_SECONDS, PARADIS_ANTIGRAVITY_APPROVAL_WAIT_CURL_SECONDS, paradisAntigravityApprovalCardInput, paradisAntigravityApprovalHookCommand, paradisAntigravityApprovalHookDefinition, paradisAntigravityApprovalScriptVersion } from '../../common/paradisAntigravityApproval.js';
+import { PARADIS_ANTIGRAVITY_APPROVAL_HOLD_MS, PARADIS_ANTIGRAVITY_APPROVAL_HOOK_TIMEOUT_SECONDS, PARADIS_ANTIGRAVITY_APPROVAL_WAIT_CURL_SECONDS, paradisAntigravityApprovalCardInput, paradisAntigravityApprovalHookCommand, paradisAntigravityApprovalHookDefinition, paradisAntigravityApprovalScriptVersion, paradisAntigravityApprovalSkippedByLaunch } from '../../common/paradisAntigravityApproval.js';
 import { paradisBuildAgentApprovalRequest } from '../../../mobileRelay/common/paradisAgentApprovalRequest.js';
 
 suite('Para Browser Antigravity CLI approval hook', () => {
@@ -36,6 +36,30 @@ suite('Para Browser Antigravity CLI approval hook', () => {
 		});
 	});
 
+	test('does not wait on calls the launch arguments tell agy to run without asking', () => {
+		const tools = ['run_command', 'edit_file', 'write_file', 'call_mcp_tool'];
+		const skipped = (commandLine: string) => tools.filter(tool => paradisAntigravityApprovalSkippedByLaunch(commandLine, tool));
+		assert.deepStrictEqual([
+			'agy',
+			'/home/user/.local/bin/agy --dangerously-skip-permissions',
+			'agy -dangerously-skip-permissions=true',
+			'agy --dangerously-skip-permissions=false',
+			'agy --mode accept-edits',
+			'agy --mode=auto -i hi',
+			'agy --mode plan',
+			'agy --model gemini-3.8-flash-low',
+		].map(skipped), [
+			[],
+			tools,
+			tools,
+			[],
+			['edit_file', 'write_file'],
+			['edit_file', 'write_file'],
+			[],
+			[],
+		]);
+	});
+
 	test('shows agy tool calls on the card under the names it reads', () => {
 		// agy の hook の toolCall の形（キーの名前だけ実物に合わせた偽の値）
 		const card = (toolName: string, args: unknown) => {
@@ -54,6 +78,27 @@ suite('Para Browser Antigravity CLI approval hook', () => {
 			{ tool: 'write_file', kind: 'write', path: '/repo/b.txt', content: 'one\ntwo\n', contentLines: 2 },
 			{ tool: 'mcp__acme__run_query', kind: 'mcp', mcpServer: 'acme', mcpTool: 'run_query', args: [{ key: 'sql', value: 'select 1' }] },
 			{ toolName: 'read_file', toolInput: 'not an object' },
+		]);
+	});
+
+	test('builds the card from the arguments agy runs, ignoring extra keys the model adds under the card names', () => {
+		const card = (toolName: string, args: unknown) => {
+			const mapped = paradisAntigravityApprovalCardInput(toolName, args);
+			return paradisBuildAgentApprovalRequest(mapped.toolName, mapped.toolInput);
+		};
+		assert.deepStrictEqual([
+			card('run_command', { CommandLine: 'rm -rf x', command: 'ls', description: '一覧を見るだけ' }),
+			card('run_command', { CommandLine: 'rm -rf x', toolSummary: '消す', description: '一覧を見るだけ' }),
+			card('edit_file', { Path: '/repo/a.ts', Target: 'old', Replacement: 'new', command: 'ls', file_path: '/repo/other.ts', old_string: 'x', new_string: 'y', replace_all: true }),
+			card('write_file', { Path: '/repo/b.txt', Content: 'real', file_path: '/repo/other.txt', content: 'fake', command: 'ls' }),
+			// 必須の引数が欠けた形でも、カードが読む名前の値は出さない
+			card('run_command', { command: 'ls', description: '一覧を見るだけ' }),
+		], [
+			{ tool: 'run_command', kind: 'bash', command: 'rm -rf x' },
+			{ tool: 'run_command', kind: 'bash', command: 'rm -rf x', description: '消す' },
+			{ tool: 'edit_file', kind: 'edit', path: '/repo/a.ts', oldText: 'old', newText: 'new' },
+			{ tool: 'write_file', kind: 'write', path: '/repo/b.txt', content: 'real', contentLines: 1 },
+			{ tool: 'run_command', kind: 'other' },
 		]);
 	});
 });

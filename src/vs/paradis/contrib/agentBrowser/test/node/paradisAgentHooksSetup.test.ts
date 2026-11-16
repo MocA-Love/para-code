@@ -534,6 +534,10 @@ suite('ParadisAgentHooksSetup', () => {
 		const someoneElses = JSON.stringify({ 'para-code-approval': { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: './mine.sh' }] }] } });
 		const newer = JSON.stringify({ 'para-code-approval': { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: '$HOME/.para-code/hooks/antigravity-approval-v99.sh' }] }] } });
 		const both = paradisMergeAntigravityApprovalHookJson(paradisMergeAntigravityHooksJson(JSON.stringify(user))!)!;
+		// 利用者が同じ名前に自分の handler を足したもの: 置き換えず、外すときは Para Code の handler だけを外す
+		const ours = { type: 'command', command: '$HOME/.para-code/hooks/antigravity-approval-v1.sh' };
+		const mine = { type: 'command', command: './lint.sh' };
+		const mixed = JSON.stringify({ 'para-code-approval': { enabled: true, PreToolUse: [{ matcher: 'run_command', hooks: [ours, mine] }, { matcher: 'edit_file', hooks: [ours] }] } });
 		assert.deepStrictEqual({
 			merged: JSON.parse(merged),
 			again: paradisMergeAntigravityApprovalHookJson(merged) === merged,
@@ -544,6 +548,8 @@ suite('ParadisAgentHooksSetup', () => {
 			bothNames: Object.keys(JSON.parse(both)),
 			removedBoth: JSON.parse(paradisRemoveAntigravityHooksJson(both)!),
 			removeSomeoneElses: paradisRemoveAntigravityHooksJson(someoneElses) === someoneElses,
+			mergeMixed: paradisMergeAntigravityApprovalHookJson(mixed) === mixed,
+			removedMixed: JSON.parse(paradisRemoveAntigravityHooksJson(mixed)!),
 		}, {
 			merged: { ...user, 'para-code-approval': approval },
 			again: true,
@@ -554,6 +560,8 @@ suite('ParadisAgentHooksSetup', () => {
 			bothNames: ['lint-checker', 'para-code', 'para-code-approval'],
 			removedBoth: user,
 			removeSomeoneElses: true,
+			mergeMixed: true,
+			removedMixed: { 'para-code-approval': { enabled: true, PreToolUse: [{ matcher: 'run_command', hooks: [mine] }] } },
 		});
 	});
 
