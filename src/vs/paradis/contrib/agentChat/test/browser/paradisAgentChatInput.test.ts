@@ -136,6 +136,22 @@ suite('ParadisAgentChatInput', () => {
 		});
 	});
 
+	test('answers an Antigravity CLI approval through the waiting approval hook, never with keys', async () => {
+		const fixture = setup({ agent: 'antigravity', sessionId: '00000000-0000-4000-8000-00000000a6e6', interaction: { kind: 'approval', id: 'call_1', detail: 'npm test' } });
+		fixture.terminal.screen = PERMISSION_SCREEN;
+		const allowed = await fixture.input.answerApproval(1, 't', 'call_1', 'yes');
+		const option = await fixture.input.answerApproval(1, 't', 'call_1', 'opt:1', 'Yes');
+		fixture.source.answerAgentChatApproval = async () => false;
+		const gone = await fixture.input.answerApproval(1, 't', 'call_1', 'no');
+		assert.deepStrictEqual({ allowed, optionRefused: option !== undefined, goneRefused: gone !== undefined, claims: fixture.claims, keys: fixture.terminal.sent }, {
+			allowed: undefined,
+			optionRefused: true,
+			goneRefused: true,
+			claims: ['codex:call_1:yes'],
+			keys: [],
+		});
+	});
+
 	test('sends OpenCode messages and exact pending answers through the API without any PTY fallback', async () => {
 		const question = { rev: 0, role: 'assistant' as const, kind: 'question' as const, text: 'Choose a plan', toolUseId: 'opencode:req_question', questionGroup: 'opencode:req_question', options: [{ label: 'First' }] };
 		const fixture = setup({ agent: 'opencode', sessionId: 'ses_saved' });

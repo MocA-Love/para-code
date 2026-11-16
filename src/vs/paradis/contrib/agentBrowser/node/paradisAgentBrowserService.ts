@@ -42,6 +42,8 @@ import { IParadisAgentPageRequestResult, IParadisCloseAgentTabResult, IParadisLi
 import { IParadisExactViewEmulationResult, IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisAgentTabGrant, IParadisGrantAgentTabRequest, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisAgentHookEntersWait, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent, paradisPaneFingerprint, paradisParseCdpInputDispatchResult, paradisExactViewKey, paradisParseExactBrowserViewDescriptor, PARADIS_BROWSER_REPORT_STATE_SETTING, PARADIS_BROWSER_RUN_STEPS_FLOW_SETTING, PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING, PARADIS_BROWSER_SITE_NOTES_SETTING, PARADIS_BROWSER_SNAPSHOT_DIFF_SETTING, PARADIS_BROWSER_SITE_RECIPES_SETTING } from '../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_CODEX_HOOK_EVENTS, paradisAgentHookRemoteHostId, paradisAgentHooksEnabled, paradisIsAgentHookRemoteHostId } from '../common/paradisAgentHooks.js';
 import { PARADIS_ANTIGRAVITY_QUESTION_TOOL, paradisAntigravityHookEvent, paradisIsAntigravityHookPayload, paradisWithAntigravityHookAliases } from '../common/paradisAntigravityHooks.js';
+import { PARADIS_ANTIGRAVITY_APPROVAL_HTTP_PREFIX, PARADIS_ANTIGRAVITY_APPROVAL_WAIT_PREFIX, paradisAntigravityApprovalSkippedByLaunch } from '../common/paradisAntigravityApproval.js';
+import { paradisAntigravityApprovalHold } from './paradisAntigravityApprovalHold.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
 import { paradisBindingMatchesGeneration } from '../common/paradisBrowserBindingLifecycle.js';
 import { IParadisAnnouncedReview, paradisIsHarnessNotificationPrompt, paradisIsRepeatedReview, paradisShouldSweepStaleWorkingStatus } from '../common/paradisAgentStatusStale.js';
@@ -4094,6 +4096,10 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (req.method === 'POST' && (req.url ?? '').startsWith(PARADIS_CLAUDE_MOD_HTTP_PREFIX)) {
 			return this._handleClaudeMod(req, res);
 		}
+		// Antigravity CLI の許可を待つスクリプト（paradisAntigravityApproval.ts）。hook と同じくペイントークンで認証する。
+		if (req.method === 'POST' && (req.url ?? '').startsWith(PARADIS_ANTIGRAVITY_APPROVAL_HTTP_PREFIX)) {
+			return this._handleAntigravityApproval(req, res);
+		}
 		if (req.method === 'POST' && req.url === '/paradis-mcp/mobile-voice-ticket') {
 			return this._handleMobileVoiceTicket(req, res);
 		}
@@ -4558,6 +4564,85 @@ export class ParadisAgentBrowserService extends Disposable {
 				}
 				res.end(JSON.stringify({ error: 'Internal error' }));
 			}
+		} finally {
+			activeRequest.dispose();
+			ingressReservation.dispose();
+		}
+	}
+
+	/**
+	 * Antigravity CLI の許可のスクリプトからの要求（`register` と `wait`。paradisAntigravityApproval.ts）。
+	 * 返事は `wait:<id>`・`allow`・`deny`・`none` の文字だけで、スクリプトはそれ以外を「決めない」と読む。
+	 * 待つのは手元のペインの、送り主をペインのプロセスと確かめられた PreToolUse だけ（偽の答えで許可させない）。
+	 */
+	private async _handleAntigravityApproval(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+		const requestedToken = this._extractToken(req);
+		const ingressLease = requestedToken === undefined ? undefined : this.captureIngressLease(requestedToken);
+		if (ingressLease === undefined) {
+			this._sendIngressRejected(res);
+			return;
+		}
+		const reply = (text: string) => {
+			if (!res.writableEnded) {
+				res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Length': Buffer.byteLength(text), 'Cache-Control': 'no-store' });
+				res.end(text);
+			}
+		};
+		const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+		const operation = url.pathname.slice(PARADIS_ANTIGRAVITY_APPROVAL_HTTP_PREFIX.length);
+		if (operation !== 'register' && operation !== 'wait') {
+			this._sendIngressRejected(res);
+			return;
+		}
+		const token = ingressLease.token;
+		const ingressReservation = this._reserveIngressRequest(token, 'mod');
+		if (ingressReservation === undefined) {
+			this._sendIngressCapacityRejected(res);
+			return;
+		}
+		const activeRequest = this._trackActiveRequest(req, res);
+		try {
+			const { controller } = activeRequest;
+			if (operation === 'wait') {
+				req.resume();
+				const decision = await paradisAntigravityApprovalHold.wait(token, url.searchParams.get('id') ?? '', controller.signal);
+				reply(decision !== undefined && this.isIngressLeaseCurrent(ingressLease) ? decision : 'none');
+				return;
+			}
+			let payload: Readonly<Record<string, unknown>> | undefined;
+			try {
+				payload = paradisSanitizeAgentHookPayload(paradisWithAntigravityHookAliases(JSON.parse(await this._readBody(req, controller.signal))));
+			} catch {
+				reply('none');
+				return;
+			}
+			const field = (name: string) => typeof payload?.[name] === 'string' ? payload[name] as string : undefined;
+			if (!paradisIsAntigravityHookPayload(payload) || payload?.hookEventName !== 'PreToolUse' || this._paneShells.get(token)?.remoteAuthority !== undefined) {
+				reply('none');
+				return;
+			}
+			// 送り主の確かめ（プロセス表）は、待つと決まりそうなときだけ（モバイルが見ていない人の PreToolUse ごとに走らせない）
+			const request = { sessionId: field('session_id'), toolUseId: field('tool_use_id'), toolName: field('tool_name') };
+			if (!paradisAntigravityApprovalHold.canHold(token, request)) {
+				reply('none');
+				return;
+			}
+			// 起動の引数（`--dangerously-skip-permissions`・`--mode`）で agy が聞かないと分かる呼び出しは待たない
+			// （所有者の起動の行が分からなければ今までどおり待つ）
+			const [caller, commandLine] = await Promise.all([
+				this._classifyCaller(token, req.socket as Socket, controller.signal),
+				this._hookOwnership.ownerCommandLine(token, 'antigravity'),
+			]);
+			if (caller === 'unverified' || controller.signal.aborted || !this.isIngressLeaseCurrent(ingressLease)
+				|| (commandLine !== undefined && paradisAntigravityApprovalSkippedByLaunch(commandLine, request.toolName))) {
+				reply('none');
+				return;
+			}
+			const id = paradisAntigravityApprovalHold.register(token, request);
+			reply(id !== undefined ? `${PARADIS_ANTIGRAVITY_APPROVAL_WAIT_PREFIX}${id}` : 'none');
+		} catch (error) {
+			this._runNonThrowingDiagnostic(() => this.logService.warn('[ParadisAgentBrowser] Antigravity CLI approval request failed', error));
+			reply('none');
 		} finally {
 			activeRequest.dispose();
 			ingressReservation.dispose();

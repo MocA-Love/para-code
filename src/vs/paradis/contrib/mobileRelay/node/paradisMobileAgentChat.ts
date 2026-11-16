@@ -82,7 +82,9 @@ import type { IParadisNotifyPaneContent } from './paradisNotifyContentSource.js'
 import { IParadisAgentPaneInsight, IParadisAgentPaneInteraction, IParadisAgentPromptCache, PARADIS_PROMPT_CACHE_TTL_5M, paradisOneLine, paradisReadClaudePromptCacheUsage, paradisReadClaudeRequestStart, paradisSelectInsightSubagents, paradisSummarizePermissionInput, paradisSummarizeQuestionInput } from '../../agentInsights/common/paradisAgentInsights.js';
 import { IParadisAgentApprovalChoice, IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentChatView, IParadisAgentInteraction, IParadisAgentLiveState, IParadisAgentPanel, IParadisAgentSessionInfo, PARADIS_ADVISOR_TOOL, ParadisAgentKind, ParadisOpenCodeDesktopActionResult, paradisAgentQuestionHasPreview, paradisIsCodexDaemonApprovalInteraction, paradisPickCurrentInteraction } from '../../agentChat/common/paradisAgentChat.js';
 import { newParadisAntigravityParseState, paradisAntigravityQuestionInput, parseAntigravityLine } from '../../agentChat/common/paradisAntigravityTranscript.js';
-import { PARADIS_ANTIGRAVITY_ANSWER_ON_PC_MESSAGE, PARADIS_ANTIGRAVITY_SEND_BLOCK_MESSAGES, paradisAgentChatActionSupport } from '../../agentChat/common/paradisAgentChatActionSupport.js';
+import { PARADIS_ANTIGRAVITY_ANSWER_ON_PC_MESSAGE, PARADIS_ANTIGRAVITY_APPROVAL_ON_PC_MESSAGE, PARADIS_ANTIGRAVITY_SEND_BLOCK_MESSAGES, paradisAgentChatActionSupport } from '../../agentChat/common/paradisAgentChatActionSupport.js';
+import { paradisAntigravityApprovalCardInput } from '../../agentBrowser/common/paradisAntigravityApproval.js';
+import { paradisAntigravityApprovalHold } from '../../agentBrowser/node/paradisAntigravityApprovalHold.js';
 import { paradisIsAntigravityTranscriptPath, PARADIS_ANTIGRAVITY_QUESTION_TOOL } from '../../agentBrowser/common/paradisAntigravityHooks.js';
 import { paradisAntigravityBrainRoot, paradisAntigravityConversationIdFromTranscriptPath, paradisAntigravityTranscriptStartsAsChild, paradisIsAntigravityChildConversation, paradisReadAntigravityConversationLineage } from '../../sessionResume/node/paradisAntigravityHistory.js';
 import { IParadisAgentMonitor, ParadisAgentMonitorWatch, paradisMonitorsForStoppedPane } from '../../agentChat/common/paradisAgentMonitors.js';
@@ -5059,14 +5061,15 @@ export class ParadisMobileAgentChat extends Disposable {
 		const supported = msg.t === 'action/sendMessage' ? support.sendMessage
 			: msg.t === 'action/answerQuestion' || msg.t === 'action/clarifyQuestion' ? support.answerQuestion
 				: msg.t === 'action/claudeSetting' ? support.settings
-					: support.answerApproval;
+					// Antigravity CLI の許可は、許可の hook が答えを待っている間だけ受ける（handleApprovalAction）
+					: support.answerApproval || (msg.t === 'action/answerApproval' && paradisAntigravityApprovalHold.isWaiting(token, msg.interactionId));
 		if (supported) {
 			return false;
 		}
 		if (msg.t === 'approval-options') {
 			this.sendTo(mobileId, { t: 'approval-options', id: msg.id, requestId: msg.requestId, interactionId: msg.interactionId, error: 'stale-interaction' }, token);
 		} else {
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'agent-unsupported', message: msg.t === 'action/sendMessage' || msg.t === 'action/claudeSetting' ? 'このエージェントにはまだチャット欄から送れません。ターミナル表示で入力してください' : PARADIS_ANTIGRAVITY_ANSWER_ON_PC_MESSAGE }, token);
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'agent-unsupported', message: msg.t === 'action/sendMessage' || msg.t === 'action/claudeSetting' ? 'このエージェントにはまだチャット欄から送れません。ターミナル表示で入力してください' : msg.t === 'action/answerApproval' ? PARADIS_ANTIGRAVITY_APPROVAL_ON_PC_MESSAGE : PARADIS_ANTIGRAVITY_ANSWER_ON_PC_MESSAGE }, token);
 		}
 		return true;
 	}
@@ -6460,6 +6463,16 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		if (paradisIsCodexDaemonApprovalInteraction(msg.interactionId)) {
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-interaction', message: 'この承認要求はすでに完了しています' }, token ?? msg.token);
+			return;
+		}
+		// Antigravity CLI の許可は、許可の hook が待っている答えとして値で返す（キーは打たない）。指示を添えた拒否は受けない
+		if (token !== undefined && session?.agent === 'antigravity') {
+			const tailer = this.tailers.get(token);
+			const answered = msg.message === undefined && tailer !== undefined && tailer.epoch === msg.epoch && this.hasSubscriber(token, mobileId)
+				&& this.tryAnswerAntigravityApproval(token, msg.interactionId, msg.choice);
+			this.sendTo(mobileId, answered
+				? { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'accepted' }
+				: { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-interaction', message: PARADIS_ANTIGRAVITY_APPROVAL_ON_PC_MESSAGE }, token);
 			return;
 		}
 		// 端末の確認の画面でしか許可できない承認は、モバイルからの許可を断る（古いアプリの古いカード・画面の選択肢・通知から。
@@ -7924,6 +7937,39 @@ export class ParadisMobileAgentChat extends Disposable {
 			return false;
 		}
 		return card.answerOn === 'pc' || this.matchModPermission(card, this.claudeModBridge.permissionTraits(token, session.sessionId), cards)?.personOnly === true;
+	}
+
+	/**
+	 * Antigravity CLI の許可の hook（paradisAntigravityApprovalHold.ts）が待っている承認に、カードの答えを返す。
+	 * `yes` は許可、`no` は拒否。そのカードを待っていなければ false（何もしない）。
+	 */
+	private tryAnswerAntigravityApproval(token: string, interactionId: string, choice: string): boolean {
+		const tailer = this.tailers.get(token);
+		if (this.paneSessions.get(token)?.agent !== 'antigravity' || tailer === undefined || (choice !== 'yes' && choice !== 'no')
+			|| !tailer.approvalInteractions().some(card => card.id === interactionId) || !paradisAntigravityApprovalHold.isWaiting(token, interactionId)) {
+			return false;
+		}
+		// 答えた印を先に付ける（ペインの許可待ちは、カードの答えた印で解ける。agy は許可したツールが終わるまで hook を出さない）
+		tailer.markApprovalAnswered(interactionId);
+		return paradisAntigravityApprovalHold.answer(token, interactionId, choice === 'yes' ? 'allow' : 'deny');
+	}
+
+	/** デスクトップのチャット表示から、Antigravity CLI の許可の hook が待っている承認に答える。 */
+	answerDesktopAntigravityApproval(token: string, interactionId: string, choice: string): boolean {
+		return this.tryAnswerAntigravityApproval(token, interactionId, choice);
+	}
+
+	/**
+	 * Antigravity CLI の許可の hook に答えを待たせてよいか（paradisAntigravityApprovalHold.ts の gate）。待つ間は agy の TUI に
+	 * 許可の画面が出ないので、カードを出せて、それをモバイルが見ているときだけ待つ: ペインの本会話（子の会話ではない）で、
+	 * モバイルがそのペインを開いていて（開いた時のペインの持ち主が今の持ち主と同じ）、質問の回答待ちではない。`isWatching` を渡すと、そのペインを開いているモバイルのうち
+	 * それが true のもの（前面にあるアプリ）だけを数える。
+	 */
+	canHoldAntigravityApproval(token: string, sessionId: string, isWatching?: (mobileId: string) => boolean): boolean {
+		const session = this.paneSessions.get(token);
+		return session?.agent === 'antigravity' && session.sessionId === sessionId
+			&& [...(this.subscribers.get(token)?.keys() ?? [])].some(mobileId => this.hasSubscriber(token, mobileId) && (isWatching === undefined || isWatching(mobileId)))
+			&& !getParadisAgentPaneActivity(token).pendingQuestion && (this.tailers.get(token)?.pendingQuestions.size ?? 0) === 0;
 	}
 
 	/** デスクトップのチャット表示の「以後は確認しない」（キーでは答えられないので mod へ渡す）。 */
@@ -10322,7 +10368,9 @@ export class ParadisMobileAgentChat extends Disposable {
 			&& (event.toolName !== undefined || event.toolInput !== undefined)
 			&& (this.eagerTailing || this.subscribers.has(event.token) || this.isDesktopChatWatched(event.token))) {
 			const mobileWants = this.eagerTailing || this.subscribers.has(event.token);
-			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectApprovalRequest(event.toolName, event.toolInput, approvalTarget.toolUseId, !mobileWants, approvalTarget.waitKey, approvalTarget.sameContentLimit,
+			// Antigravity CLI の引数（`CommandLine` など）は、カードが読む名前に写す
+			const card = info.agent === 'antigravity' ? paradisAntigravityApprovalCardInput(event.toolName, event.toolInput) : { toolName: event.toolName, toolInput: event.toolInput };
+			this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).injectApprovalRequest(card.toolName, card.toolInput, approvalTarget.toolUseId, !mobileWants, approvalTarget.waitKey, approvalTarget.sameContentLimit,
 				paradisApprovalSuggestionLabels(event.payload?.permission_suggestions), {
 				agent: this.approvalAgent(event.token, str(event.payload?.agent_id), str(event.payload?.agent_type)),
 				suggestionScope: paradisApprovalSuggestionScope(event.payload?.permission_suggestions),

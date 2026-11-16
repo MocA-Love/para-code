@@ -18,7 +18,8 @@ import { IDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CODEX_HOOK_EVENTS, paradisManagedAgentHookCommand, paradisManagedHookDefinition } from '../../common/paradisAgentHooks.js';
-import { ParadisAgentHooksReconciler, paradisClaudeManagedHookEvents, paradisGetNotifyScriptContent, paradisGetNotifyScriptContentPs1, paradisMergeAgentHooksFile, paradisMergeAgentHooksJson, paradisMergeAntigravityHooksFile, paradisMergeAntigravityHooksJson, paradisRemoveAgentHooks, paradisRemoveAntigravityHooksJson, paradisRemoveAgentHooksFile, paradisRemoveAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from '../../node/paradisAgentHooksSetup.js';
+import { paradisAntigravityApprovalHookDefinition } from '../../common/paradisAntigravityApproval.js';
+import { ParadisAgentHooksReconciler, paradisClaudeManagedHookEvents, paradisGetAntigravityApprovalScriptContent, paradisGetNotifyScriptContent, paradisGetNotifyScriptContentPs1, paradisMergeAgentHooksFile, paradisMergeAgentHooksJson, paradisMergeAntigravityApprovalHookJson, paradisMergeAntigravityHooksFile, paradisMergeAntigravityHooksJson, paradisRemoveAgentHooks, paradisRemoveAntigravityHooksJson, paradisRemoveAgentHooksFile, paradisRemoveAgentHooksJson, paradisSupportsClaudeActivityHooks, paradisSupportsClaudeMessageDisplay } from '../../node/paradisAgentHooksSetup.js';
 import { paradisWriteFileAtomicSync } from '../../../../node/paradisWriteFileAtomic.js';
 
 const execFileAsync = promisify(execFile);
@@ -444,6 +445,126 @@ suite('ParadisAgentHooksSetup', () => {
 		assert.match(script, /@\('session_id', 'conversationId'\), @\('transcript_path', 'transcriptPath'\)/);
 	});
 
+	test('the Antigravity CLI approval script prints only an allow or a deny decision, and nothing on every other path', async function () {
+		// agy は PreToolUse の hook が `{}` を出力するとツールの実行を拒否する（2026-11-12 に実測）。許可のスクリプトが書いてよいのは
+		// 受け口が答えを返したときの 2 通りだけで、それ以外（Para Code の外・届かない・待たない・知らない返事）は何も書かない
+		if (process.platform === 'win32') {
+			this.skip();
+		}
+		this.timeout(30_000);
+		const { createServer } = await import('http');
+		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-agy-approval-'));
+		const id = 'a'.repeat(32);
+		let scenario: { register: string; wait: string; hookFails?: boolean } = { register: 'none', wait: 'none' };
+		const requests: string[] = [];
+		const server = createServer((request, response) => {
+			const chunks: Buffer[] = [];
+			request.on('data', chunk => chunks.push(chunk));
+			request.on('end', () => {
+				const url = new URL(request.url ?? '', 'http://localhost');
+				const body = Buffer.concat(chunks).toString('utf8');
+				const auth = request.headers.authorization === 'Bearer pane-token' ? '' : ' (no token)';
+				const name = url.pathname === '/agent-hook' ? `hook:${url.searchParams.get('event')}` : url.pathname.slice('/antigravity-approval/v1/'.length) + (url.searchParams.has('id') ? `:${url.searchParams.get('id')}` : '');
+				requests.push(`${name}${body.includes('"call_1"') ? ' +body' : ''}${auth}`);
+				if (scenario.hookFails && name === 'hook:PermissionRequest') {
+					response.writeHead(503);
+					response.end();
+					return;
+				}
+				response.writeHead(200, { 'Content-Type': 'text/plain' });
+				response.end(url.pathname.endsWith('/register') ? scenario.register : url.pathname.endsWith('/wait') ? scenario.wait : '{"ok":true}');
+			});
+		});
+		try {
+			await new Promise<void>((resolve, reject) => {
+				server.once('error', reject);
+				server.listen(0, '127.0.0.1', resolve);
+			});
+			const portFilePath = join(root, 'mcp-port.json');
+			await fs.writeFile(portFilePath, JSON.stringify({ port: (server.address() as AddressInfo).port }));
+			const scriptPath = join(root, 'approval.sh');
+			await fs.writeFile(scriptPath, paradisGetAntigravityApprovalScriptContent(), { mode: 0o755 });
+			const payloadPath = join(root, 'hook.json');
+			// agy 1.5.6 の PreToolUse の形（値は伏せた）
+			await fs.writeFile(payloadPath, '{"conversationId":"c1","cwd":"/repo","hookEventName":"PreToolUse","stepIdx":2,"toolCall":{"args":{"CommandLine":"ls -a"},"id":"call_1","name":"run_command"}}');
+			const inPane = { [PARADIS_PANE_TOKEN_ENV_VAR]: 'pane-token', [PARADIS_MCP_PORT_FILE_ENV_VAR]: portFilePath };
+			const run = async (next: typeof scenario, env: NodeJS.ProcessEnv = inPane) => {
+				scenario = next;
+				requests.length = 0;
+				const stdout = (await execFileAsync('/bin/sh', ['-c', 'cat "$PAYLOAD_FILE" | "$HOOK_SCRIPT"'], {
+					env: { PATH: process.env['PATH'], HOOK_SCRIPT: scriptPath, PAYLOAD_FILE: payloadPath, ...env },
+					timeout: 10_000,
+				})).stdout;
+				return { stdout, requests: [...requests] };
+			};
+			assert.deepStrictEqual({
+				allow: await run({ register: `wait:${id}`, wait: 'allow' }),
+				deny: await run({ register: `wait:${id}`, wait: 'deny' }),
+				notHeld: await run({ register: 'none', wait: 'allow' }),
+				badId: await run({ register: 'wait:../x', wait: 'allow' }),
+				unknownAnswer: await run({ register: `wait:${id}`, wait: '{}' }),
+				noAnswer: await run({ register: `wait:${id}`, wait: 'none' }),
+				noCard: await run({ register: `wait:${id}`, wait: 'allow', hookFails: true }),
+				outsidePane: await run({ register: `wait:${id}`, wait: 'allow' }, {}),
+				noPortFile: await run({ register: `wait:${id}`, wait: 'allow' }, { ...inPane, [PARADIS_MCP_PORT_FILE_ENV_VAR]: join(root, 'missing.json') }),
+			}, {
+				allow: { stdout: '{"decision":"allow"}\n', requests: ['register +body', 'hook:PermissionRequest +body', `wait:${id}`] },
+				deny: { stdout: '{"decision":"deny","reason":"The user declined this tool call from Para Code."}\n', requests: ['register +body', 'hook:PermissionRequest +body', `wait:${id}`, 'hook:PermissionDenied +body'] },
+				notHeld: { stdout: '', requests: ['register +body'] },
+				badId: { stdout: '', requests: ['register +body'] },
+				unknownAnswer: { stdout: '', requests: ['register +body', 'hook:PermissionRequest +body', `wait:${id}`] },
+				noAnswer: { stdout: '', requests: ['register +body', 'hook:PermissionRequest +body', `wait:${id}`] },
+				noCard: { stdout: '', requests: ['register +body', 'hook:PermissionRequest +body'] },
+				outsidePane: { stdout: '', requests: [] },
+				noPortFile: { stdout: '', requests: [] },
+			});
+		} finally {
+			if (server.listening) {
+				await new Promise<void>(resolve => server.close(() => resolve()));
+			}
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
+	test('places the Antigravity CLI approval hook beside the notification hook, keeps the user\'s own, and takes it out with the rest', () => {
+		const approval = paradisAntigravityApprovalHookDefinition();
+		const user = { 'lint-checker': { PostToolUse: [{ matcher: 'run_command', hooks: [{ type: 'command', command: './lint.sh' }] }] } };
+		const merged = paradisMergeAntigravityApprovalHookJson(JSON.stringify(user, undefined, 2))!;
+		const disabled = JSON.stringify({ 'para-code-approval': { enabled: false, PreToolUse: [{ matcher: 'run_command', hooks: [{ type: 'command', command: '$HOME/.para-code/hooks/antigravity-approval-v1.sh' }] }] } });
+		const someoneElses = JSON.stringify({ 'para-code-approval': { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: './mine.sh' }] }] } });
+		const newer = JSON.stringify({ 'para-code-approval': { PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: '$HOME/.para-code/hooks/antigravity-approval-v99.sh' }] }] } });
+		const both = paradisMergeAntigravityApprovalHookJson(paradisMergeAntigravityHooksJson(JSON.stringify(user))!)!;
+		// 利用者が同じ名前に自分の handler を足したもの: 置き換えず、外すときは Para Code の handler だけを外す
+		const ours = { type: 'command', command: '$HOME/.para-code/hooks/antigravity-approval-v1.sh' };
+		const mine = { type: 'command', command: './lint.sh' };
+		const mixed = JSON.stringify({ 'para-code-approval': { enabled: true, PreToolUse: [{ matcher: 'run_command', hooks: [ours, mine] }, { matcher: 'edit_file', hooks: [ours] }] } });
+		assert.deepStrictEqual({
+			merged: JSON.parse(merged),
+			again: paradisMergeAntigravityApprovalHookJson(merged) === merged,
+			keepsDisabled: JSON.parse(paradisMergeAntigravityApprovalHookJson(disabled)!)['para-code-approval'],
+			someoneElses: paradisMergeAntigravityApprovalHookJson(someoneElses) === someoneElses,
+			newer: paradisMergeAntigravityApprovalHookJson(newer) === newer,
+			unparseable: paradisMergeAntigravityApprovalHookJson('{'),
+			bothNames: Object.keys(JSON.parse(both)),
+			removedBoth: JSON.parse(paradisRemoveAntigravityHooksJson(both)!),
+			removeSomeoneElses: paradisRemoveAntigravityHooksJson(someoneElses) === someoneElses,
+			mergeMixed: paradisMergeAntigravityApprovalHookJson(mixed) === mixed,
+			removedMixed: JSON.parse(paradisRemoveAntigravityHooksJson(mixed)!),
+		}, {
+			merged: { ...user, 'para-code-approval': approval },
+			again: true,
+			keepsDisabled: { enabled: false, ...approval },
+			someoneElses: true,
+			newer: true,
+			unparseable: undefined,
+			bothNames: ['lint-checker', 'para-code', 'para-code-approval'],
+			removedBoth: user,
+			removeSomeoneElses: true,
+			mergeMixed: true,
+			removedMixed: { 'para-code-approval': { enabled: true, PreToolUse: [{ matcher: 'run_command', hooks: [mine] }] } },
+		});
+	});
+
 	test('places the Antigravity CLI named hook next to the user\'s hooks and takes only it out again', () => {
 		const command = paradisManagedAgentHookCommand();
 		const handler = { type: 'command', command };
@@ -497,7 +618,7 @@ suite('ParadisAgentHooksSetup', () => {
 				noAgyFolder: await fs.stat(join(root, 'no-agy')).then(() => true, () => false),
 				installed,
 				afterRemove: JSON.parse(await fs.readFile(withAgy, 'utf8')),
-			}, { noAgyFolder: false, installed: ['para-code'], afterRemove: {} });
+			}, { noAgyFolder: false, installed: process.platform === 'win32' ? ['para-code'] : ['para-code', 'para-code-approval'], afterRemove: {} });
 		} finally {
 			await fs.rm(root, { recursive: true, force: true });
 		}

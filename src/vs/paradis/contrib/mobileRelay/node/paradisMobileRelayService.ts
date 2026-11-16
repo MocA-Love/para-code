@@ -128,6 +128,7 @@ import { paradisCreateVoiceDelivery } from './paradisVoiceClipDelivery.js';
 import { ParadisMobileVoiceEvent } from '../common/paradisMobileVoiceStream.js';
 import { paradisGetMachineIdHash } from '../../../node/paradisMachineId.js';
 import { paradisClaudeModBridge } from '../../claudeMod/node/paradisClaudeModBridge.js';
+import { paradisAntigravityApprovalHold } from '../../agentBrowser/node/paradisAntigravityApprovalHold.js';
 
 /** 重なった Codex の承認の通知を待ち直す回数の上限（超えたら出す）。 */
 const HELD_APPROVAL_NOTIFY_MAX_ROUNDS = 5;
@@ -1134,6 +1135,12 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		// 承認は、アプリが今リレーに繋がっているときだけ待つ。
 		paradisClaudeModBridge.setPresence(() => !this.enabled || this.state.mobiles.length === 0 ? 'off'
 			: [...this.sessions.values()].some(session => session.hasCurrentProtocol) ? 'connected' : 'enabled');
+		// Antigravity CLI の許可の待ち（paradisAntigravityApprovalHold.ts）も、アプリが今リレーに繋がっていて前面にあり、
+		// そのペインを見ているときだけ待つ（待つ間は agy の TUI に許可の画面が出ないため）。裏に回ったアプリは、チャットの
+		// 画面を開いたままでも購読を外さず、音声通知のためにセッションを保つこともあるので、見ている数に入れない。
+		const watchingInForeground = (session: MobileSession | undefined) => session?.hasCurrentProtocol === true && !session.backgrounded;
+		paradisAntigravityApprovalHold.setPresence(() => this.enabled && this.state.mobiles.length > 0 && [...this.sessions.values()].some(watchingInForeground));
+		paradisAntigravityApprovalHold.setGate((token, sessionId) => this.agentChat.canHoldAntigravityApproval(token, sessionId, mobileId => watchingInForeground(this.sessions.get(mobileId))));
 		this._register(this.agentChat.onDidChangeConfirmedAgentPanes(({ tokens, tokensOutsideHookReach }) => {
 			this.confirmedAgentPanes = { revision: this.confirmedAgentPanes.revision + 1, tokens, tokensOutsideHookReach };
 			this._onDidChangeConfirmedAgentPanes.fire(this.confirmedAgentPanes);
@@ -1643,10 +1650,15 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	async answerAgentChatApproval(token: string, interactionId: string, choiceId: string): Promise<boolean> {
 		// 選択肢付きの承認は Codex のペイン専用 app-server から来ていた（それはやめた）。いま答えられるのは、
-		// Claude Code の mod（Claude Mods）が待っている承認の「以後は確認しない」だけ（キーでは渡せない）
-		return paradisIsAgentChatToken(token) && typeof interactionId === 'string' && choiceId === 'always'
-			? this.agentChat.answerDesktopApprovalViaMod(token, interactionId, choiceId)
-			: false;
+		// Claude Code の mod（Claude Mods）が待っている承認の「以後は確認しない」と、Antigravity CLI の許可の hook が
+		// 待っている承認（許可・拒否）だけ（どちらもキーでは渡せない）
+		if (!paradisIsAgentChatToken(token) || typeof interactionId !== 'string') {
+			return false;
+		}
+		if (choiceId === 'always') {
+			return this.agentChat.answerDesktopApprovalViaMod(token, interactionId, choiceId);
+		}
+		return (choiceId === 'yes' || choiceId === 'no') && this.agentChat.answerDesktopAntigravityApproval(token, interactionId, choiceId);
 	}
 
 	async claimAgentAction(mobileId: string, requestId: string, token: string, epoch: string, lease: IParadisMobileWindowLease): Promise<'claimed' | 'stale' | 'expired'> {
