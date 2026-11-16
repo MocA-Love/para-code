@@ -60,6 +60,8 @@ import { paradisParseCodexAsyncReply } from '../../mobileRelay/common/paradisCod
 import { ParadisAgentChatDictation } from './paradisAgentChatDictation.js';
 import type { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentStatusStore } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { paradisAntigravityPaneStatus } from '../common/paradisAgentChatActionSupport.js';
+import { paradisLatestProgramStatus } from '../../agentBrowser/browser/paradisLatestProgramStatus.js';
 import '../browser/media/paradisAgentChat.css';
 
 export const PARADIS_AGENT_CHAT_TOGGLE_COMMAND = 'paradis.agentChat.toggle';
@@ -557,7 +559,7 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 		}
 		let terminal = this.chatTerminals.get(instance);
 		if (terminal === undefined) {
-			terminal = paradisChatTerminalFor(instance, () => this.agentStatusStore.getInstanceStatus(instance.instanceId));
+			terminal = paradisChatTerminalFor(instance, () => paradisAntigravityPaneStatus(this.agentStatusStore.getInstanceStatus(instance.instanceId), paradisLatestProgramStatus(instance.instanceId)));
 			this.chatTerminals.set(instance, terminal);
 		}
 		return terminal;

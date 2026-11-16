@@ -93,7 +93,8 @@ import { paradisRedactMobileReplyError } from '../common/paradisMobileOutputReda
 import { PARADIS_MOBILE_FILE_READ_DEADLINE_MS, PARADIS_MOBILE_HOST_NO_RESPONSE_CODE, PARADIS_MOBILE_READ_DEADLINE_MS, PARADIS_MOBILE_STATUS_OPTIONAL_GRACE_MS, PARADIS_MOBILE_USAGE_DEADLINE_MS, paradisIsMobileHostNoResponse, paradisMobileHostErrorReply, paradisMobileUsageErrorReply, paradisSettleWithin, paradisWithCancellableHostDeadline, paradisWithHostDeadline } from '../common/paradisMobileHostDeadline.js';
 import { IParadisAgentQuestionKeyCheck, paradisCodexMobileApprovalKeys, paradisConfirmQuestionChecks, paradisReadQuestionKeyChecks } from '../common/paradisAgentQuestionKeys.js';
 import { IParadisAgentApprovalOption, PARADIS_APPROVAL_OPTIONS_WAIT_MS, paradisApprovalOptionsForMobile, paradisCodexApprovalFormShown, paradisMobileApprovalOptionKey, paradisParseApprovalOptions, paradisParsePermissionWarning, paradisReadExpectedApprovalOption } from '../common/paradisAgentApprovalOptions.js';
-import { PARADIS_ANTIGRAVITY_ANSWER_ON_PC_MESSAGE, PARADIS_ANTIGRAVITY_SEND_BLOCK_MESSAGES, paradisAntigravitySendBlock } from '../../agentChat/common/paradisAgentChatActionSupport.js';
+import { PARADIS_ANTIGRAVITY_ANSWER_ON_PC_MESSAGE, PARADIS_ANTIGRAVITY_SEND_BLOCK_MESSAGES, paradisAntigravityPaneStatus, paradisAntigravitySendBlock } from '../../agentChat/common/paradisAgentChatActionSupport.js';
+import { paradisLatestProgramStatus } from '../../agentBrowser/browser/paradisLatestProgramStatus.js';
 import { paradisTerminalRunsAntigravity } from '../../agentIde/browser/paradisAgentIdeTerminalInput.js';
 import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisClaudeResumeScreenPrompt, paradisPromptRegionShows, paradisScreenShowsPermissionPrompt, PARADIS_CLAUDE_RESUME_SCREEN_PROMPT_NAMES, type ParadisClaudeResumeScreenPrompt, paradisSendAgentInteractionKeys, paradisVisibleTerminalLogicalText, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
 import { paradisCreateMobileUploadTarget, paradisResolveMobileWorkspacePath } from '../common/paradisMobileWorkspacePath.js';
@@ -1732,7 +1733,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				const antigravity = msg.agent === 'antigravity';
 				const antigravityBlock = () => antigravity ? paradisAntigravitySendBlock({
 					agyInForeground: paradisTerminalRunsAntigravity(instance),
-					status: this.agentStatusStore.getInstanceStatus(instance.instanceId),
+					status: paradisAntigravityPaneStatus(this.agentStatusStore.getInstanceStatus(instance.instanceId), paradisLatestProgramStatus(instance.instanceId)),
 					pendingInteraction: false,
 					multiline: msg.text.includes('\n'),
 					bracketedPaste: instance.xterm?.raw.modes.bracketedPasteMode === true,

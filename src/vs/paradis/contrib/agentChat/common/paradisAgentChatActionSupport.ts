@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import type { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import type { IParadisProgramStatus } from '../../agentBrowser/common/paradisProgramStatus.js';
 import type { ParadisAgentKind } from './paradisAgentChat.js';
 
 /**
@@ -93,6 +94,21 @@ export function paradisAntigravitySendBlock(state: IParadisAntigravitySendState)
 		return 'multiline';
 	}
 	return undefined;
+}
+
+/**
+ * 文を打つ直前に見る Antigravity CLI のペインの状態。状態の帳簿（`stored`。shared process から 2 秒ごとに取り直す）は、
+ * 許可の画面が出た直後はまだ古いので、この端末が最後に受け付けた OSC 7501 の状態（`latest`）が許可待ち・質問中・
+ * 作業中ならそちらを使う。それ以外（入力待ち・完了・知らせが無い）は帳簿のまま。
+ */
+export function paradisAntigravityPaneStatus(stored: ParadisAgentStatus | undefined, latest: IParadisProgramStatus | undefined): ParadisAgentStatus | undefined {
+	if (latest?.app !== 'antigravity') {
+		return stored;
+	}
+	if (latest.state === 'blocked') {
+		return latest.kind === 'question' ? 'question' : 'permission';
+	}
+	return latest.state === 'working' ? 'working' : stored;
 }
 
 /** {@link paradisAntigravitySendBlock} の理由ごとの断りの文（モバイル向け。PC は nls の文を使う）。 */

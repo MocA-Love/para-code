@@ -27,6 +27,7 @@ import { ProcessPropertyType } from '../../../../platform/terminal/common/termin
 import { ITerminalContribution, IXtermTerminal } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { ITerminalContributionContext, registerTerminalContribution } from '../../../../workbench/contrib/terminal/browser/terminalExtensions.js';
 import { ParadisSpanAttributes } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { paradisForgetLatestProgramStatus, paradisNoteLatestProgramStatus } from '../browser/paradisLatestProgramStatus.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
 import { IParadisProgramStatus, PARADIS_PROGRAM_STATUS_OSC, PARADIS_PROGRAM_STATUS_REPLY, ParadisProgramStatusEffect, ParadisProgramStatusTracker, paradisParseProgramStatus, paradisProgramStatusDropReason, paradisProgramStatusForeground, paradisProgramStatusProcessKind, paradisTrustedCommandLine } from '../common/paradisProgramStatus.js';
@@ -97,6 +98,7 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 
 	override dispose(): void {
 		this.endRun('disposed');
+		paradisForgetLatestProgramStatus(this.instance.instanceId);
 		super.dispose();
 	}
 
@@ -227,6 +229,8 @@ class ParadisProgramStatusContribution extends Disposable implements ITerminalCo
 	}
 
 	private send(status: IParadisProgramStatus): void {
+		// 状態の帳簿は取り直しまで古いので、文を打つ直前の確かめ用に最後の状態をすぐ覚える
+		paradisNoteLatestProgramStatus(this.instance.instanceId, status);
 		const token = this.paneTokenService.getTokenForInstance(this.instance.instanceId);
 		if (token === undefined) {
 			if (status.state !== 'clear') {

@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisAntigravitySendState, paradisAgentChatActionSupport, paradisAntigravitySendBlock } from '../../common/paradisAgentChatActionSupport.js';
+import { IParadisAntigravitySendState, paradisAgentChatActionSupport, paradisAntigravityPaneStatus, paradisAntigravitySendBlock } from '../../common/paradisAgentChatActionSupport.js';
 
 suite('paradisAgentChatActionSupport', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -24,6 +24,28 @@ suite('paradisAgentChatActionSupport', () => {
 			codex: { sendMessage: true, answerQuestion: true, answerApproval: true, settings: true },
 			antigravity: { sendMessage: true, answerQuestion: false, answerApproval: false, settings: false },
 			unknown: { sendMessage: true, answerQuestion: true, answerApproval: true, settings: true },
+		});
+	});
+
+	test('uses the last OSC status of the terminal while the status ledger has not caught up', () => {
+		assert.deepStrictEqual({
+			permissionBeforeLedger: paradisAntigravityPaneStatus(undefined, { state: 'blocked', kind: 'permission', app: 'antigravity' }),
+			questionBeforeLedger: paradisAntigravityPaneStatus('working', { state: 'blocked', kind: 'question', app: 'antigravity' }),
+			blockedWithoutKind: paradisAntigravityPaneStatus(undefined, { state: 'blocked', app: 'antigravity' }),
+			workingBeforeLedger: paradisAntigravityPaneStatus('review', { state: 'working', app: 'antigravity' }),
+			idleKeepsLedger: paradisAntigravityPaneStatus('working', { state: 'idle', app: 'antigravity' }),
+			doneKeepsLedger: paradisAntigravityPaneStatus('review', { state: 'done', app: 'antigravity' }),
+			otherAgent: paradisAntigravityPaneStatus(undefined, { state: 'blocked', kind: 'permission', app: 'codex' }),
+			nothing: paradisAntigravityPaneStatus(undefined, undefined),
+		}, {
+			permissionBeforeLedger: 'permission',
+			questionBeforeLedger: 'question',
+			blockedWithoutKind: 'permission',
+			workingBeforeLedger: 'working',
+			idleKeepsLedger: 'working',
+			doneKeepsLedger: 'review',
+			otherAgent: undefined,
+			nothing: undefined,
 		});
 	});
 
