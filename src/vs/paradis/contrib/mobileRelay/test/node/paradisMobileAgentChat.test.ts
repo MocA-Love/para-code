@@ -520,17 +520,23 @@ suite('ParadisMobileAgentChat', () => {
 			const before = access.tailers.get(token)!.approvalInteractions().map(card => ({ id: card.id, choices: card.choices?.length, expired: card.expired }));
 			controller.abort();
 			await waitFor(() => access.tailers.get(token)!.approvalInteractions().some(card => card.expired === true), 'the approval card did not time out');
+			// アプリへ送った最後の interaction（delta・snapshot）にも載る
+			const lastSentInteraction = () => [...sent].reverse().find(message => message.interaction !== undefined && message.interaction !== null)?.interaction as { readonly id: string; readonly choices?: readonly unknown[]; readonly expired?: true } | undefined;
+			await waitFor(() => lastSentInteraction()?.expired === true, 'the timed-out card was not sent to the app');
+			const wire = lastSentInteraction()!;
 			sent.length = 0;
 			inbound({ t: 'action/answerApproval', id: 1, token, epoch: access.tailers.get(token)!.epoch, requestId: 'approve-1', interactionId: 'call_1', choice: 'yes' });
 			await waitFor(() => sent.some(message => message.t === 'action-result'), 'the answer was not replied');
 			assert.deepStrictEqual({
 				before,
+				wire: { id: wire.id, choices: wire.choices, expired: wire.expired },
 				decision: await decision,
 				// カードは残し（端末で答えるまでペインは許可待ち）、選択肢を外す
 				after: access.tailers.get(token)!.approvalInteractions().map(card => ({ id: card.id, choices: card.choices, expired: card.expired })),
 				replies: sent.filter(message => message.t === 'action-result').map(message => ({ requestId: message.requestId, status: message.status })),
 			}, {
 				before: [{ id: 'call_1', choices: 2, expired: undefined }],
+				wire: { id: 'call_1', choices: [], expired: true },
 				decision: undefined,
 				after: [{ id: 'call_1', choices: [], expired: true }],
 				replies: [{ requestId: 'approve-1', status: 'rejected' }],
