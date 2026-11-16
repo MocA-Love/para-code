@@ -14,6 +14,8 @@
 //   conversation_id・parent_conversation_id・nesting_depth ほか）。agy が書くので、読み取り専用で開き、何も書かない。
 //   親子の判定（{@link paradisReadAntigravityConversationLineage}）は本文の列を読まない。セッション履歴の一覧
 //   （{@link paradisListAntigravityConversations}）だけが、行の見出しに title・preview を読む（raw_summary は読まない）。
+// - アーカイブの印: 同じ DB の全文検索の索引 `conversations_fts` の、会話ごとの見出しの行（`chunk_index = -1`）の
+//   `archived`。agy 自身の一覧もこの行で判定する。索引の本文の列（user_body・agent_body ほか）は読まない。
 // - `conversations/<id>.db` は書き込み中の WAL を持つので開かない。
 
 import { promises as fs } from 'fs';
@@ -22,7 +24,7 @@ import { homedir } from 'os';
 import { isAbsolute, join } from '../../../../base/common/path.js';
 import { URI } from '../../../../base/common/uri.js';
 // eslint-disable-next-line local/code-import-patterns
-import type { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync, SQLOutputValue } from 'node:sqlite';
 
 const nodeRequire = createRequire(import.meta.url);
 
@@ -140,6 +142,8 @@ export interface IParadisAntigravityConversationSummary {
 	readonly updatedAt: number | undefined;
 	/** 会話を始めたフォルダ（`workspace_uris` の `file://` を、このマシンのパスに直したもの）。 */
 	readonly workspaces: readonly string[];
+	/** agy でアーカイブした会話か（全文検索の索引が無い・読めない古い agy では false）。 */
+	readonly archived: boolean;
 }
 
 /** 一覧の時刻の列（`2026-11-11 16:44:35.408190414+00:00`）を epoch ms にする。 */
@@ -177,14 +181,30 @@ function workspacePaths(value: unknown): string[] {
 	});
 }
 
+/** アーカイブした会話の id（全文検索の索引の、会話ごとの見出しの行のうち `archived = 1` のもの）。 */
+const ARCHIVED_CONVERSATION_IDS = 'SELECT conversation_id FROM conversations_fts WHERE chunk_index = -1 AND archived = 1';
+
+function listConversationRows(database: DatabaseSync, limit: number, includeArchived: boolean, readArchived: boolean): Record<string, SQLOutputValue>[] {
+	const archived = readArchived ? `conversation_id IN (${ARCHIVED_CONVERSATION_IDS})` : '0';
+	const hideArchived = readArchived && !includeArchived ? ` AND NOT (${archived})` : '';
+	return database.prepare(`SELECT conversation_id, title, preview, last_modified_time, workspace_uris, (${archived}) AS archived FROM conversation_summaries WHERE parent_conversation_id = '' AND nesting_depth = 0${hideArchived} ORDER BY last_modified_time DESC LIMIT ?`).all(Math.max(1, limit));
+}
+
 /**
  * セッション履歴に出す会話の一覧（新しい順に `limit` 件まで）。子の会話（invoke_subagent が起こしたもの）は除く。
+ * アーカイブした会話は、`includeArchived` のときだけ入れる（Codex・OpenCode と同じ）。アーカイブの印の索引が無い・
+ * 読めない（古い agy、fts5 の無い SQLite）ときは、印を読まずに全件をアーカイブしていないものとして返す。
  * 一覧を開けない・表の形が違うときは throw する（呼び出し側は Antigravity CLI の分だけ出さない）。
  */
-export function paradisListAntigravityConversations(databasePath: string, limit: number): readonly IParadisAntigravityConversationSummary[] {
+export function paradisListAntigravityConversations(databasePath: string, limit: number, includeArchived = false): readonly IParadisAntigravityConversationSummary[] {
 	const database = openSummariesDatabase(databasePath);
 	try {
-		const rows = database.prepare('SELECT conversation_id, title, preview, last_modified_time, workspace_uris FROM conversation_summaries WHERE parent_conversation_id = \'\' AND nesting_depth = 0 ORDER BY last_modified_time DESC LIMIT ?').all(Math.max(1, limit));
+		let rows: Record<string, SQLOutputValue>[];
+		try {
+			rows = listConversationRows(database, limit, includeArchived, true);
+		} catch {
+			rows = listConversationRows(database, limit, includeArchived, false);
+		}
 		return rows.flatMap(row => {
 			const id = row.conversation_id;
 			if (typeof id !== 'string' || !CONVERSATION_ID_PATTERN.test(id)) {
@@ -196,6 +216,7 @@ export function paradisListAntigravityConversations(databasePath: string, limit:
 				preview: typeof row.preview === 'string' ? row.preview.trim() : '',
 				updatedAt: summaryTime(row.last_modified_time),
 				workspaces: workspacePaths(row.workspace_uris),
+				archived: row.archived === 1 || row.archived === 1n,
 			}];
 		});
 	} finally {

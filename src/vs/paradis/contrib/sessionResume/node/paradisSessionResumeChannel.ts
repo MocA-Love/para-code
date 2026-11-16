@@ -524,7 +524,7 @@ export class ParadisSessionResumeService {
 				});
 			} catch { /* A missing or unsupported database must not hide the other agents' history. */ }
 		}
-		await this.collectAntigravity(request.spaces, sessions);
+		await this.collectAntigravity(request.spaces, sessions, request.includeArchived);
 		const homesSeen = new Set<string>();
 		/** 新しく開くターミナルが使うホーム（選んでいるアカウントのもの。選んでいなければ既定のホーム）。 */
 		const preferredCodexHomes = new Set<string>();
@@ -1004,13 +1004,14 @@ export class ParadisSessionResumeService {
 	}
 
 	/**
-	 * Antigravity CLI の会話。一覧は agy の `conversation_summaries.db`（子の会話を除く）、会話を始めたフォルダは
+	 * Antigravity CLI の会話。一覧は agy の `conversation_summaries.db`（子の会話を除き、アーカイブした会話は
+	 * `includeArchived` のときだけ）、会話を始めたフォルダは
 	 * `workspace_uris`、中身は `brain/<id>/.system_generated/logs/transcript_full.jsonl`。記録の無い会話（起動した
 	 * だけのもの）は出さない。検索は agy の全文検索の索引（fts5、`unicode61` の区切り）を使わず、ほかのエージェントと
 	 * 同じく記録の本文で探す（その区切りは日本語の語の途中に一致しないため、同じ語で探しても結果がそろわない）。
 	 * SSH の接続先では、REH の側の同じサービスが接続先のホームを読む。
 	 */
-	private async collectAntigravity(spaces: readonly IParadisResumeSpace<string>[], target: IParadisResumeSession[]): Promise<void> {
+	private async collectAntigravity(spaces: readonly IParadisResumeSpace<string>[], target: IParadisResumeSession[], includeArchived: boolean): Promise<void> {
 		if (spaces.length === 0) {
 			return;
 		}
@@ -1018,7 +1019,7 @@ export class ParadisSessionResumeService {
 		const brainRoot = paradisAntigravityBrainRoot(this.antigravityHome);
 		let conversations: readonly IParadisAntigravityConversationSummary[];
 		try {
-			conversations = paradisListAntigravityConversations(paradisAntigravitySummariesDatabasePath(this.antigravityHome), MAX_SESSIONS);
+			conversations = paradisListAntigravityConversations(paradisAntigravitySummariesDatabasePath(this.antigravityHome), MAX_SESSIONS, includeArchived);
 			const [realHome, realBrain] = await Promise.all([fs.realpath(cliHome), fs.realpath(brainRoot)]);
 			if (!pathInside(realHome, realBrain)) {
 				return;
@@ -1051,7 +1052,7 @@ export class ParadisSessionResumeService {
 					this.addSession({
 						id: conversation.id, agent: 'antigravity', title: clipped(display, 160), preview: clipped(firstPrompt?.text || conversation.preview || display, 260),
 						cwd: space.cwd, spaceStateKey: space.stateKey, spaceName: space.name, currentSpace: space.current,
-						createdAt: firstPrompt?.timestamp, updatedAt: conversation.updatedAt ?? stat.mtimeMs, archived: false, empty: firstPrompt === undefined,
+						createdAt: firstPrompt?.timestamp, updatedAt: conversation.updatedAt ?? stat.mtimeMs, archived: conversation.archived, empty: firstPrompt === undefined,
 						...(model !== undefined ? paradisAntigravityModelParts(model) : {}),
 					}, transcriptPath, brainRoot, target);
 				} catch (error) {

@@ -191,6 +191,49 @@ suite('ParadisSessionResume', () => {
 		});
 	});
 
+	test('hides archived Antigravity CLI conversations unless archived ones are included, and keeps child conversations out either way', async () => {
+		// agy 1.5.9 の conversations_fts の列（会話ごとの見出しの行は chunk_index = -1。中身は自作の偽物）
+		const cliHome = join(root, 'agy-home', '.gemini', 'antigravity-cli');
+		const brain = join(cliHome, 'brain');
+		const active = '11111111-1111-4111-8111-111111111111';
+		const archived = '22222222-2222-4222-8222-222222222222';
+		const archivedChild = '33333333-3333-4333-8333-333333333333';
+		const archivedBodyOnly = '44444444-4444-4444-8444-444444444444';
+		const step = (type: string, content: string) => JSON.stringify({ step_index: 0, source: type === 'USER_INPUT' ? 'USER_EXPLICIT' : 'SYSTEM', type, status: 'DONE', created_at: '2026-11-16T01:00:00Z', content });
+		for (const id of [active, archived, archivedChild, archivedBodyOnly]) {
+			await fs.mkdir(join(brain, id, '.system_generated', 'logs'), { recursive: true });
+			await writeLines(join(brain, id, '.system_generated', 'logs', 'transcript_full.jsonl'), [id === archivedChild ? step('SYSTEM_MESSAGE', 'fake child instruction') : step('USER_INPUT', `<USER_REQUEST>fake request ${id.slice(0, 1)}</USER_REQUEST>`)]);
+		}
+		const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
+		const database = new DatabaseSync(join(cliHome, 'conversation_summaries.db'));
+		try {
+			database.exec('CREATE TABLE `conversation_summaries` (`conversation_id` text, `title` text NOT NULL DEFAULT "", `preview` text NOT NULL DEFAULT "", `last_modified_time` datetime NOT NULL, `workspace_uris` text NOT NULL, `parent_conversation_id` text NOT NULL DEFAULT "", `nesting_depth` integer NOT NULL DEFAULT 0, PRIMARY KEY (`conversation_id`))');
+			database.exec('CREATE VIRTUAL TABLE conversations_fts USING fts5(conversation_id UNINDEXED, chunk_index UNINDEXED, last_modified_time UNINDEXED, archived UNINDEXED, title, user_body, agent_body)');
+			const summary = database.prepare('INSERT INTO conversation_summaries (conversation_id, title, last_modified_time, workspace_uris, parent_conversation_id, nesting_depth) VALUES (?, ?, ?, ?, ?, ?)');
+			const inWorkspace = JSON.stringify([URI.file(workspace).toString()]);
+			summary.run(active, 'Active fake', '2026-11-16 01:00:04.000000000+00:00', inWorkspace, '', 0);
+			summary.run(archived, 'Archived fake', '2026-11-16 01:00:05.000000000+00:00', inWorkspace, '', 0);
+			summary.run(archivedChild, 'Archived child fake', '2026-11-16 01:00:06.000000000+00:00', inWorkspace, archived, 1);
+			summary.run(archivedBodyOnly, 'Body chunk fake', '2026-11-16 01:00:03.000000000+00:00', inWorkspace, '', 0);
+			const chunk = database.prepare('INSERT INTO conversations_fts (conversation_id, chunk_index, last_modified_time, archived, title, user_body, agent_body) VALUES (?, ?, ?, ?, ?, ?, ?)');
+			chunk.run(active, -1, '', 0, 'Active fake', '', '');
+			chunk.run(active, 0, '', 0, '', 'fake', 'fake');
+			chunk.run(archived, -1, '', 1, 'Archived fake', '', '');
+			chunk.run(archived, 0, '', 1, '', 'fake', 'fake');
+			chunk.run(archivedChild, -1, '', 1, 'Archived child fake', '', '');
+			// 見出しの行ではアーカイブしていない会話（本文の区切りの印は見ない。agy の一覧と同じ）
+			chunk.run(archivedBodyOnly, -1, '', 0, 'Body chunk fake', '', '');
+			chunk.run(archivedBodyOnly, 0, '', 1, '', 'fake', 'fake');
+		} finally {
+			database.close();
+		}
+		const listed = async (includeArchived: boolean) => (await listSessions(createService(), includeArchived)).filter(session => session.agent === 'antigravity').map(session => [session.id, session.archived]);
+		assert.deepStrictEqual({ hidden: await listed(false), included: await listed(true) }, {
+			hidden: [[active, false], [archivedBodyOnly, false]],
+			included: [[archived, true], [active, false], [archivedBodyOnly, false]],
+		});
+	});
+
 	test('splits the effort off Antigravity CLI model ids and resumes with --conversation only', () => {
 		assert.deepStrictEqual({
 			flash: paradisAntigravityModelParts('gemini-3.8-flash-high'),
