@@ -13,12 +13,19 @@ import { FileOperationError, FileOperationResult, IFileService } from '../../../
 import { ParadisRemoteMcpSetupController } from '../../electron-browser/paradisRemoteMcpSetup.js';
 
 const HOME = URI.file('/home/example');
+const REMOTE_BRIDGE = { node: '/home/example/.para-code-server/bin/abc/node', shimPath: '/home/example/.para-code-server/bin/abc/out/vs/paradis/contrib/agentBrowser/node/paradisBrowserMcpShim.js' };
 
 /** インメモリの偽ファイルシステム。SSH接続先の `IFileService` を模す。 */
-function fakeFileService(initial: Record<string, string> = {}) {
+function fakeFileService(initial: Record<string, string> = {}, directories: readonly URI[] = []) {
 	const files = new Map<string, string>(Object.entries(initial));
 	const written: Array<{ readonly uri: string; readonly content: string }> = [];
 	const service = {
+		stat: async (uri: URI) => {
+			if (directories.some(directory => directory.toString() === uri.toString())) {
+				return { isDirectory: true };
+			}
+			throw new FileOperationError('ENOENT', FileOperationResult.FILE_NOT_FOUND);
+		},
 		readFile: async (uri: URI) => {
 			const content = files.get(uri.toString());
 			if (content === undefined) {
@@ -51,13 +58,53 @@ suite('ParadisRemoteMcpSetupController', () => {
 		});
 	});
 
-	test('refuses Antigravity CLI on the host without writing the Codex configuration', async () => {
-		const { service, written } = fakeFileService();
-		const controller = new ParadisRemoteMcpSetupController(service, async () => HOME, async () => 51234);
+	test('registers para-browser for Antigravity CLI on the host as the server bridge, keeping its other servers', async () => {
+		const configDir = URI.joinPath(HOME, '.gemini', 'config');
+		const configFile = URI.joinPath(configDir, 'mcp_config.json');
+		const { service, written } = fakeFileService({
+			[configFile.toString()]: JSON.stringify({ mcpServers: { other: { command: 'other' }, 'para-browser': { serverUrl: 'http://127.0.0.1:1/mcp', disabled: true } } }),
+		}, [configDir]);
+		const controller = new ParadisRemoteMcpSetupController(service, async () => HOME, async () => undefined, async () => REMOTE_BRIDGE);
 
+		const before = await controller.status();
 		const result = await controller.fix('antigravity');
+		const after = await controller.status();
 
-		assert.deepStrictEqual({ cli: result.cli, cliAvailable: result.cliAvailable, outcome: result.servers.map(server => server.outcome), written }, { cli: 'antigravity', cliAvailable: false, outcome: ['error'], written: [] });
+		assert.deepStrictEqual({
+			before: before.antigravity,
+			outcome: result.servers.map(server => server.outcome),
+			written: written.map(entry => ({ uri: entry.uri, content: JSON.parse(entry.content) })),
+			after: after.antigravity,
+		}, {
+			before: { cli: 'antigravity', state: 'needsFix' },
+			outcome: ['success'],
+			written: [{
+				uri: configFile.toString(),
+				content: { mcpServers: { other: { command: 'other' }, 'para-browser': { command: REMOTE_BRIDGE.node, args: [REMOTE_BRIDGE.shimPath, '--para-ssh-tunnel'] } } },
+			}],
+			after: { cli: 'antigravity', state: 'configured', configPath: configFile.path },
+		});
+	});
+
+	test('leaves Antigravity CLI on the host out when the host does not use agy or its server has no bridge', async () => {
+		const configDir = URI.joinPath(HOME, '.gemini', 'config');
+		const withoutAgy = new ParadisRemoteMcpSetupController(fakeFileService().service, async () => HOME, async () => 51234, async () => REMOTE_BRIDGE);
+		const oldServer = fakeFileService({}, [configDir]);
+		const withoutBridge = new ParadisRemoteMcpSetupController(oldServer.service, async () => HOME, async () => 51234, async () => undefined);
+
+		const fix = await withoutBridge.fix('antigravity');
+
+		assert.deepStrictEqual({
+			withoutAgy: (await withoutAgy.status()).antigravity,
+			withoutBridge: (await withoutBridge.status()).antigravity,
+			fix: { cliAvailable: fix.cliAvailable, outcome: fix.servers.map(server => server.outcome) },
+			written: oldServer.written,
+		}, {
+			withoutAgy: undefined,
+			withoutBridge: undefined,
+			fix: { cliAvailable: true, outcome: ['error'] },
+			written: [],
+		});
 	});
 
 	test('detects a stale port and needsFix without touching files, using the remote home path', async () => {

@@ -952,7 +952,7 @@ export class ParadisBindingDialog extends Disposable {
 		this._renderMcpManual(wrap);
 	}
 
-	/** 出すカード。Antigravity CLI は、状態が届いたとき（agy を使っている手元の PC）だけ出す。 */
+	/** 出すカード。Antigravity CLI は、状態が届いたとき（agy を使っている手元の PC・SSH の接続先）だけ出す。 */
 	private _mcpCards(): readonly ParadisMcpCli[] {
 		return this._mcpStatus?.antigravity !== undefined ? ['claude', 'codex', 'antigravity'] : ['claude', 'codex'];
 	}

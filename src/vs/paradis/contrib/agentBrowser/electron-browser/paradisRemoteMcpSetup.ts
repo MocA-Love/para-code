@@ -23,8 +23,8 @@ import { joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { FileOperationResult, IFileService, toFileOperationResult } from '../../../../platform/files/common/files.js';
 import { IParadisMcpCliConfigStatus, IParadisMcpConfigStatus, IParadisMcpSetupResult, ParadisMcpCli } from '../common/paradisAgentBrowser.js';
-import { computeParadisCodexTableRewrite, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml } from '../common/paradisMcpConfigStatus.js';
-import { paradisCodexMcpTableBody, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
+import { computeParadisCodexTableRewrite, inspectParadisAntigravityMcpJson, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml } from '../common/paradisMcpConfigStatus.js';
+import { IParadisRemoteMcpStdioBridgeLocation, paradisAntigravityRemoteMcpServerEntry, paradisCodexMcpTableBody, paradisUpsertAntigravityMcpJson, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
 import { paradisMergeRemoteClaudeMcpJson } from './paradisRemoteAgentHooks.contribution.js';
 import { paradisWriteRollingBackupUri } from '../../../common/paradisRollingFileBackupUri.js';
 
@@ -32,12 +32,14 @@ import { paradisWriteRollingBackupUri } from '../../../common/paradisRollingFile
 // ローカル版と同じ上限に揃える（読むのは判定のためだけで、際限なくSSH越しに転送しない）。
 const MAX_CLAUDE_CONFIG_BYTES = 32 * 1024 * 1024;
 const MAX_CODEX_CONFIG_BYTES = 1024 * 1024;
+const MAX_ANTIGRAVITY_CONFIG_BYTES = 1024 * 1024;
 
 const CODEX_SETUP_ERROR = 'Could not update the Codex configuration on the host.';
 const CLAUDE_SETUP_ERROR = 'Could not update the Claude Code configuration on the host.';
 const TUNNEL_UNAVAILABLE_ERROR = 'Could not reach the host: the SSH return tunnel is not available yet.';
 const HOST_HOME_UNAVAILABLE_ERROR = 'Could not reach the host: the host home directory is not resolved yet.';
-const ANTIGRAVITY_HOST_UNSUPPORTED_ERROR = 'Para Code cannot set up para-browser for Antigravity CLI on an SSH host yet.';
+const ANTIGRAVITY_SETUP_ERROR = 'Could not update the Antigravity CLI configuration on the host.';
+const ANTIGRAVITY_BRIDGE_UNAVAILABLE_ERROR = 'The Para Code server on the host does not include the para-browser bridge for Antigravity CLI. Update Para Code and reconnect.';
 
 /** 書き込み時に一時ファイル経由でリネームさせる。SSH越しの切断で全文書きかけのまま壊さないため。 */
 const ATOMIC_WRITE_OPTIONS = { atomic: { postfix: '.para-tmp' } } as const;
@@ -56,6 +58,11 @@ export class ParadisRemoteMcpSetupController {
 		private readonly remoteHome: () => Promise<URI | undefined>,
 		/** 接続先で戻りトンネルが実際に受け取った番号。張れていなければ undefined。 */
 		private readonly remotePort: () => Promise<number | undefined>,
+		/**
+		 * 接続先の Antigravity CLI に書く橋渡し（REH の node と、REH に同梱したシム。paradisRemoteMcpBridge.ts）。
+		 * 渡さない・決まらない（古い REH）ときは、接続先の Antigravity CLI を扱わない。
+		 */
+		private readonly remoteBridge?: () => Promise<IParadisRemoteMcpStdioBridgeLocation | undefined>,
 	) { }
 
 	async status(): Promise<IParadisMcpConfigStatus> {
@@ -69,22 +76,22 @@ export class ParadisRemoteMcpSetupController {
 				...(port !== undefined ? { gatewayPort: port } : {}),
 			};
 		}
-		const [claude, codex] = await Promise.all([
+		const [claude, codex, antigravity] = await Promise.all([
 			this.statusClaude(home, port),
 			this.statusCodex(home, port),
+			this.statusAntigravity(home),
 		]);
-		return { claude, codex, ...(port !== undefined ? { gatewayPort: port } : {}) };
+		return { claude, codex, ...(antigravity !== undefined ? { antigravity } : {}), ...(port !== undefined ? { gatewayPort: port } : {}) };
 	}
 
 	async fix(cli: ParadisMcpCli): Promise<IParadisMcpSetupResult> {
-		// 接続先の Antigravity CLI には橋渡し（stdio のシムと、それを動かす node）がまだ無い。状態にも載せないので
-		// ボタンは出ないが、古い画面などから呼ばれても Codex の設定を書かない
-		if (cli === 'antigravity') {
-			return { cli, cliAvailable: false, servers: [{ server: 'para-browser', outcome: 'error', detail: ANTIGRAVITY_HOST_UNSUPPORTED_ERROR }] };
-		}
 		const [home, port] = await Promise.all([this.remoteHome(), this.remotePort()]);
 		if (home === undefined) {
 			return { cli, cliAvailable: true, servers: [{ server: 'para-browser', outcome: 'error', detail: HOST_HOME_UNAVAILABLE_ERROR }] };
+		}
+		// Antigravity CLI の橋渡しは番号を書かない（シムが接続先のポートファイルを読む）ので、戻りトンネルを待たない
+		if (cli === 'antigravity') {
+			return this.fixAntigravity(home);
 		}
 		if (port === undefined) {
 			return { cli, cliAvailable: true, servers: [{ server: 'para-browser', outcome: 'error', detail: TUNNEL_UNAVAILABLE_ERROR }] };
@@ -124,6 +131,79 @@ export class ParadisRemoteMcpSetupController {
 			...(inspection.detectedPort !== undefined ? { detectedPort: inspection.detectedPort } : {}),
 			...(inspection.state === 'configured' ? { configPath: file.path } : {}),
 		};
+	}
+
+	/** 接続先の Antigravity CLI の全体の設定のフォルダ（`~/.gemini/config`）。 */
+	private antigravityConfigDir(home: URI): URI {
+		return joinPath(home, '.gemini', 'config');
+	}
+
+	private async antigravityEntry(): Promise<ReturnType<typeof paradisAntigravityRemoteMcpServerEntry> | undefined> {
+		const bridge = await this.remoteBridge?.().catch(() => undefined);
+		return bridge === undefined ? undefined : paradisAntigravityRemoteMcpServerEntry(bridge);
+	}
+
+	/**
+	 * 接続先の Antigravity CLI の状態。agy が設定のフォルダを作っていない（接続先で agy を使っていない）とき、
+	 * 橋渡しが決まらない（古い REH）ときは undefined にしてカードを出さない（手元と同じ規則）。
+	 */
+	private async statusAntigravity(home: URI): Promise<IParadisMcpCliConfigStatus | undefined> {
+		const entry = await this.antigravityEntry();
+		if (entry === undefined) {
+			return undefined;
+		}
+		const configDir = this.antigravityConfigDir(home);
+		if (!await this.isDirectory(configDir)) {
+			return undefined;
+		}
+		const file = joinPath(configDir, 'mcp_config.json');
+		const text = await this.readFileIfExists(file, MAX_ANTIGRAVITY_CONFIG_BYTES);
+		if (text === undefined) {
+			return { cli: 'antigravity', state: 'unconfigured' };
+		}
+		if (text === null) {
+			return { cli: 'antigravity', state: 'unconfigured', failed: true };
+		}
+		const inspection = inspectParadisAntigravityMcpJson(text, entry);
+		return {
+			cli: 'antigravity',
+			state: inspection.state,
+			...(inspection.manualOnly ? { manualOnly: true } : {}),
+			...(inspection.state === 'configured' ? { configPath: file.path } : {}),
+		};
+	}
+
+	/** ボタンで入れるので、agy の `/mcp` で止めた `disabled` は外す（手元の「修正」と同じ）。 */
+	private async fixAntigravity(home: URI): Promise<IParadisMcpSetupResult> {
+		const configDir = this.antigravityConfigDir(home);
+		const file = joinPath(configDir, 'mcp_config.json');
+		const entry = await this.antigravityEntry();
+		if (entry === undefined) {
+			return { cli: 'antigravity', cliAvailable: true, target: file.path, servers: [{ server: 'para-browser', outcome: 'error', detail: ANTIGRAVITY_BRIDGE_UNAVAILABLE_ERROR }] };
+		}
+		if (!await this.isDirectory(configDir)) {
+			return { cli: 'antigravity', cliAvailable: false, target: file.path, servers: [] };
+		}
+		try {
+			const current = await this.readFileIfExists(file, MAX_ANTIGRAVITY_CONFIG_BYTES);
+			if (current === null) {
+				return { cli: 'antigravity', cliAvailable: true, target: file.path, servers: [{ server: 'para-browser', outcome: 'error', detail: ANTIGRAVITY_SETUP_ERROR }] };
+			}
+			const updated = paradisUpsertAntigravityMcpJson(current, entry, false);
+			if (updated === undefined) {
+				return { cli: 'antigravity', cliAvailable: true, target: file.path, servers: [{ server: 'para-browser', outcome: 'error', detail: ANTIGRAVITY_SETUP_ERROR }] };
+			}
+			if (updated === current) {
+				return { cli: 'antigravity', cliAvailable: true, target: file.path, servers: [{ server: 'para-browser', outcome: 'already' }] };
+			}
+			if (current !== undefined) {
+				await paradisWriteRollingBackupUri(this.fileService, file);
+			}
+			await this.fileService.writeFile(file, VSBuffer.fromString(updated), ATOMIC_WRITE_OPTIONS);
+			return { cli: 'antigravity', cliAvailable: true, target: file.path, servers: [{ server: 'para-browser', outcome: 'success' }] };
+		} catch {
+			return { cli: 'antigravity', cliAvailable: true, target: file.path, servers: [{ server: 'para-browser', outcome: 'error', detail: ANTIGRAVITY_SETUP_ERROR }] };
+		}
 	}
 
 	private async fixClaude(home: URI, port: number): Promise<IParadisMcpSetupResult> {
@@ -191,6 +271,14 @@ export class ParadisRemoteMcpSetupController {
 			return { cli: 'codex', cliAvailable: true, target: file.path, servers: [{ server: 'para-browser', outcome: 'success' }] };
 		} catch {
 			return { cli: 'codex', cliAvailable: true, target: file.path, servers: [{ server: 'para-browser', outcome: 'error', detail: CODEX_SETUP_ERROR }] };
+		}
+	}
+
+	private async isDirectory(resource: URI): Promise<boolean> {
+		try {
+			return (await this.fileService.stat(resource)).isDirectory;
+		} catch {
+			return false;
 		}
 	}
 
