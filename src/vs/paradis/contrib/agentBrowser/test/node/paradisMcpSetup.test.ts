@@ -998,8 +998,8 @@ suite('Para Browser MCP setup', () => {
 			const beforeAgy = { status: (await controller.status(PORT)).antigravity, setup: await controller.setup('antigravity', PORT) };
 			await fs.mkdir(configDir, { recursive: true });
 			const configPath = join(configDir, 'mcp_config.json');
-			// 手で書いた HTTP の形（agy はヘッダーの変数を展開しないので動かない）と、ほかのサーバー
-			await fs.writeFile(configPath, JSON.stringify({ mcpServers: { other: { command: 'x' }, 'para-browser': { serverUrl: `http://127.0.0.1:${PORT}/`, headers: { Authorization: 'Bearer ${PARA_CODE_TERMINAL_PANE_ID}' }, disabled: true } } }));
+			// 手で書いた HTTP の形（agy はヘッダーの変数を展開しないので動かない）と、ほかのサーバー。利用者が足したキー（disabledTools・timeout）は残す
+			await fs.writeFile(configPath, JSON.stringify({ mcpServers: { other: { command: 'x' }, 'para-browser': { serverUrl: `http://127.0.0.1:${PORT}/`, headers: { Authorization: 'Bearer ${PARA_CODE_TERMINAL_PANE_ID}' }, disabled: true, disabledTools: ['evaluate_script'], timeout: 30000 } } }));
 			const handWritten = (await controller.status(PORT)).antigravity;
 			const fixed = await controller.fix('antigravity', PORT);
 			const written = JSON.parse(await fs.readFile(configPath, 'utf8'));
@@ -1009,7 +1009,7 @@ suite('Para Browser MCP setup', () => {
 				beforeAgy: { status: undefined, setup: { cli: 'antigravity', cliAvailable: false, target: configPath, servers: [] } },
 				handWritten: { cli: 'antigravity', state: 'needsFix' },
 				fixed: [{ server: 'para-browser', outcome: 'success' }],
-				written: { mcpServers: { other: { command: 'x' }, 'para-browser': { command: '/usr/bin/env', args: ['ELECTRON_RUN_AS_NODE=1', bridge.executable, bridge.shimPath] } } },
+				written: { mcpServers: { other: { command: 'x' }, 'para-browser': { disabledTools: ['evaluate_script'], timeout: 30000, command: '/usr/bin/env', args: ['ELECTRON_RUN_AS_NODE=1', bridge.executable, bridge.shimPath] } } },
 				afterFix: { cli: 'antigravity', state: 'configured', configPath },
 				again: [{ server: 'para-browser', outcome: 'already' }],
 			});
@@ -1035,7 +1035,7 @@ suite('Para Browser MCP setup', () => {
 				pathExists: async path => { checked.push(path); return true; },
 				log: () => undefined,
 			});
-			const other = JSON.stringify({ mcpServers: { 'para-browser': { command: '/usr/bin/env', args: ['ELECTRON_RUN_AS_NODE=1', '/work/tree/.build/electron/para-code', '/work/tree/out/paradisBrowserMcpShim.js'] } } });
+			const other = JSON.stringify({ mcpServers: { 'para-browser': { command: '/usr/bin/env', args: ['ELECTRON_RUN_AS_NODE=1', '/work/tree/.build/electron/para-code', '/work/tree/out/paradisBrowserMcpShim.js'], disabledTools: ['evaluate_script'] } } });
 			await fs.writeFile(configPath, other);
 			await controller.upgradeToolTimeouts(undefined);
 			assert.deepStrictEqual({ content: await fs.readFile(configPath, 'utf8'), checked, status: (await controller.status(undefined)).antigravity }, {
@@ -1068,11 +1068,11 @@ suite('Para Browser MCP setup', () => {
 			await fs.writeFile(configPath, handWritten);
 			await controller.upgradeToolTimeouts(undefined);
 			const untouched = await fs.readFile(configPath, 'utf8');
-			await fs.writeFile(configPath, JSON.stringify({ mcpServers: { 'para-browser': { command: 'C:\\old\\Para Code.exe', args: ['C:\\old\\paradisBrowserMcpShim.js'], env: { ELECTRON_RUN_AS_NODE: '1' }, disabled: true } } }));
+			await fs.writeFile(configPath, JSON.stringify({ mcpServers: { 'para-browser': { command: 'C:\\old\\Para Code.exe', args: ['C:\\old\\paradisBrowserMcpShim.js'], env: { ELECTRON_RUN_AS_NODE: '1' }, disabled: true, timeout: 30000 } } }));
 			await controller.upgradeToolTimeouts(undefined);
 			assert.deepStrictEqual({ untouched, moved: JSON.parse(await fs.readFile(configPath, 'utf8')), status: (await controller.status(undefined)).antigravity }, {
 				untouched: handWritten,
-				moved: { mcpServers: { 'para-browser': { command: 'C:\\new\\Para Code.exe', args: ['C:\\new\\paradisBrowserMcpShim.js'], env: { ELECTRON_RUN_AS_NODE: '1' }, disabled: true } } },
+				moved: { mcpServers: { 'para-browser': { command: 'C:\\new\\Para Code.exe', args: ['C:\\new\\paradisBrowserMcpShim.js'], env: { ELECTRON_RUN_AS_NODE: '1' }, disabled: true, timeout: 30000 } } },
 				// 止めてあるものは「未設定」（ボタンで入れ直すと止めた印を外す）
 				status: { cli: 'antigravity', state: 'unconfigured' },
 			});

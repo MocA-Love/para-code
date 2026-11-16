@@ -166,7 +166,7 @@ const STR_SETUP_CODEX_LABEL = localize('paradis.bindingDialog.setupCodexLabel', 
 // allow-any-unicode-next-line
 const STR_SETUP_ANTIGRAVITY_UNAVAILABLE = localize('paradis.bindingDialog.setupAntigravityUnavailable', "Antigravity CLI の設定のフォルダ（~/.gemini/config）が見つかりませんでした。agy を一度起動してから、もう一度押してください。");
 // allow-any-unicode-next-line
-const STR_MCP_DETAIL_NEEDS_FIX_ANTIGRAVITY = localize('paradis.bindingDialog.mcpDetailNeedsFixAntigravity', "para-browser が Antigravity CLI では動かない形で登録されています（ヘッダーでつなぐ形は、ターミナルごとの識別子が届きません）。ワンクリックで、Para Code を経由してつなぐ形へ書き換えます。");
+const STR_MCP_DETAIL_NEEDS_FIX_ANTIGRAVITY = localize('paradis.bindingDialog.mcpDetailNeedsFixAntigravity', "para-browser が、Antigravity CLI では動かない形か、別の場所の Para Code を指す形で登録されています。ワンクリックで、この Para Code を経由してつなぐ形へ書き換えます。");
 // allow-any-unicode-next-line
 const strMcpDetailConfiguredAntigravity = (path: string) => localize('paradis.bindingDialog.mcpDetailConfiguredAntigravity', "{0} に para-browser を検出しました。", path);
 // allow-any-unicode-next-line

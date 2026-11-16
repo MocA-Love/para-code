@@ -247,10 +247,14 @@ export function paradisAntigravityMcpServerEntry(bridge: IParadisMcpStdioBridgeL
 	return { command: '/usr/bin/env', args: ['ELECTRON_RUN_AS_NODE=1', bridge.executable, bridge.shimPath] };
 }
 
+/** para-browser の節から外す HTTP の形のキー（stdio の橋渡しと一緒に残ると、どちらで動くかが agy しだいになる）。 */
+const ANTIGRAVITY_HTTP_ENTRY_KEYS = ['serverUrl', 'url', 'httpUrl', 'headers', 'type'];
+
 /**
  * Antigravity CLI の `mcp_config.json`（`~/.gemini/config/mcp_config.json`）へ、para-browser を stdio の橋渡しとして
- * 入れた中身を返す。ほかのサーバーとほかのキーは残す。para-browser の節は丸ごと置き換える（手で書いた HTTP の形は
- * agy ではトークンが届かず動かない）。
+ * 入れた中身を返す。ほかのサーバーとほかのキーは残す。para-browser の節は `command`・`args`・`env` を書き換え、
+ * HTTP の形のキーだけを外す（手で書いた HTTP の形は agy ではトークンが届かず動かない）。利用者や agy が足した
+ * ほかのキー（`disabledTools`・`timeout` など）は残す。
  *
  * @param keepDisabled 利用者が付けた `disabled` を残すか。ボタンで入れるときは外す（使いたくて押した）。
  *   起動時に場所だけ直すときは残す（agy の `/mcp` で止めたものを勝手に戻さない）。
@@ -273,10 +277,14 @@ export function paradisUpsertAntigravityMcpJson(existingRaw: string | undefined,
 	}
 	const servers: Record<string, unknown> = { ...(existingServers as Record<string, unknown> | undefined) };
 	const previous = servers[PARADIS_MCP_SERVER_NAME];
-	const disabled = keepDisabled && previous !== null && typeof previous === 'object' && !Array.isArray(previous)
-		? (previous as Record<string, unknown>).disabled
-		: undefined;
-	servers[PARADIS_MCP_SERVER_NAME] = { ...entry, ...(typeof disabled === 'boolean' ? { disabled } : {}) };
+	const kept: Record<string, unknown> = previous !== null && typeof previous === 'object' && !Array.isArray(previous) ? { ...(previous as Record<string, unknown>) } : {};
+	for (const key of [...ANTIGRAVITY_HTTP_ENTRY_KEYS, 'command', 'args', 'env']) {
+		delete kept[key];
+	}
+	if (!keepDisabled || typeof kept.disabled !== 'boolean') {
+		delete kept.disabled;
+	}
+	servers[PARADIS_MCP_SERVER_NAME] = { ...kept, ...entry };
 	const next = JSON.stringify({ ...config, mcpServers: servers }, undefined, 2) + '\n';
 	return existingRaw !== undefined && JSON.stringify(previous) === JSON.stringify(servers[PARADIS_MCP_SERVER_NAME]) ? existingRaw : next;
 }

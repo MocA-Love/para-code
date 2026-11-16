@@ -417,11 +417,18 @@ function sameJsonValue(left: unknown, right: unknown): boolean {
 	return left === right;
 }
 
-/** エントリから利用者が付ける `disabled` を除いたもの（中身の比較に使う）。 */
-function withoutDisabled(entry: Record<string, unknown>): Record<string, unknown> {
-	const copy = { ...entry };
-	delete copy.disabled;
-	return copy;
+/**
+ * エントリのうち橋渡しの起動に関わるキー（`command`・`args`・`env`）だけを取り出したもの（中身の比較に使う）。
+ * 利用者や agy が足すほかのキー（`disabled`・`disabledTools`・`timeout` など）は比べない。
+ */
+function antigravityBridgeKeys(entry: Record<string, unknown>): Record<string, unknown> {
+	const picked: Record<string, unknown> = {};
+	for (const key of ['command', 'args', 'env']) {
+		if (entry[key] !== undefined) {
+			picked[key] = entry[key];
+		}
+	}
+	return picked;
 }
 
 /**
@@ -451,7 +458,7 @@ export function inspectParadisAntigravityMcpJson(text: string, expected: IParadi
 	if (!isRecord(entry)) {
 		return { state: 'needsFix' };
 	}
-	if (!sameJsonValue(withoutDisabled(entry), expected)) {
+	if (!sameJsonValue(antigravityBridgeKeys(entry), expected)) {
 		return { state: 'needsFix' };
 	}
 	return { state: entry.disabled === true ? 'unconfigured' : 'configured' };
@@ -470,7 +477,7 @@ export function paradisAntigravityMcpEntryToRelocate(text: string, expected: IPa
 		return undefined;
 	}
 	const entry = isRecord(parsed) && isRecord(parsed.mcpServers) ? parsed.mcpServers[PARADIS_MCP_SERVER_NAME] : undefined;
-	if (!isRecord(entry) || !claudeEntryReferencesShim(entry) || sameJsonValue(withoutDisabled(entry), expected)) {
+	if (!isRecord(entry) || !claudeEntryReferencesShim(entry) || sameJsonValue(antigravityBridgeKeys(entry), expected)) {
 		return undefined;
 	}
 	const values = [entry.command, ...(Array.isArray(entry.args) ? entry.args : [])];

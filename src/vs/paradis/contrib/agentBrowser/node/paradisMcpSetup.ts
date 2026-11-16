@@ -705,7 +705,12 @@ export class ParadisMcpSetupController {
 	 */
 	async upgradeToolTimeouts(gatewayPort: number | undefined): Promise<void> {
 		// Antigravity CLI の橋渡しはポートを書かないので、ポートに関係なく場所だけ直す
-		await this.relocateAntigravityBridge();
+		// （ここで投げても Claude・Codex の入れ直しは続ける）
+		try {
+			await this.relocateAntigravityBridge();
+		} catch {
+			this.options.log('Antigravity CLI MCP bridge relocation failed');
+		}
 		if (gatewayPort === undefined) {
 			return;
 		}

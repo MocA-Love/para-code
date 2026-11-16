@@ -4907,6 +4907,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				} else {
 					if (eventType === 'SessionEnd') {
 						this._paneSessions.delete(token);
+						this._paneCursorAgents.delete(token);
 					}
 					this._runNonThrowingDiagnostic(() => this.logService.info(`[ParadisAgentHibernation] dropped ${eventType} from the stopped agent of pane ${this._tokenFingerprint(token)}`));
 					res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -5358,6 +5359,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		// 止めた会話はもうペインで動いていない（再開の手がかりはウィンドウの台帳に残してある）
 		if (this._paneSessions.get(token)?.sessionId === sessionId) {
 			this._paneSessions.delete(token);
+			this._paneCursorAgents.delete(token);
 		}
 		return { ok: true, bypass: resolved.bypass, killed };
 	}
