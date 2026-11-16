@@ -293,7 +293,9 @@ export function paradisGetNotifyScriptContent(fixedPortFilePath?: string, remote
  * どれも何も書かずに終わる（agy は自分の許可の判定へ進む。`{}` を書くとツールが拒否される）。
  * 1. `register` で待ってよいかを聞く（`wait:<id>` 以外の返事なら終わる）
  * 2. 同じ本文を `/agent-hook?event=PermissionRequest` へ流す（ペインの状態・カード・通知は Claude Code の許可と同じ経路）。
- *    流せなければカードが出ないので、`wait` へ進まずに終わる（`wait` の来ない待ちは帳簿が猶予の後に捨てる）
+ *    流せなければカードが出ないので、`wait` へ進まずに終わる（`wait` の来ない待ちは帳簿が猶予の後に捨てる）。
+ *    受け口は送り主を確かめてから返すので、上限は 10 秒にする（帳簿の `wait` を待つ猶予 15 秒より短く、
+ *    3 + 10 + `wait` の 130 + 拒否の 3 で hooks.json の `timeout` 150 秒にも収まる）
  * 3. `wait` の長いポーリングで答えを待つ（受け口の返事は `allow` / `deny` / `none`）
  * 4. 拒否したら `/agent-hook?event=PermissionDenied` を流してカードを閉じる
  */
@@ -362,7 +364,9 @@ export function paradisGetAntigravityApprovalScriptContent(): string {
 		'esac',
 		'# pid ($$ = this script) lets Para Code tell the pane agent from agents nested inside it.',
 		'# No card without the PermissionRequest: do not wait (Para Code drops the hold), leave it to the TUI.',
-		'post_body 3 "$BASE/agent-hook?event=PermissionRequest&pid=$$" >/dev/null || exit 0',
+		'# Para Code checks the caller before it answers, so allow more than 3 seconds (all the posts and the',
+		'# wait still end before the hook timeout).',
+		'post_body 10 "$BASE/agent-hook?event=PermissionRequest&pid=$$" >/dev/null || exit 0',
 		`DECISION=$(hook_auth | curl -s -m ${PARADIS_ANTIGRAVITY_APPROVAL_WAIT_CURL_SECONDS} --config - -X POST "$BASE${PARADIS_ANTIGRAVITY_APPROVAL_HTTP_PREFIX}wait?id=$ID" 2>/dev/null) || DECISION=`,
 		'case "$DECISION" in',
 		'  allow)',
