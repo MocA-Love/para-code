@@ -11,6 +11,7 @@ import { Event } from '../../../../../base/common/event.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
+import type { ParadisAgentStatus } from '../../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentChatSource, IParadisAgentChatView } from '../../common/paradisAgentChat.js';
 import { IParadisAgentChatTerminal, ParadisAgentChatInput, paradisCodexApprovalFormOptions, paradisIsShellProcessName } from '../../browser/paradisAgentChatInput.js';
 import { paradisScreenShowsAgentPrompt, paradisScreenShowsPermissionPrompt } from '../../browser/paradisAgentTuiInput.js';
@@ -31,6 +32,8 @@ class FakeTerminal implements IParadisAgentChatTerminal {
 	readScreen(): string { return this.screen; }
 	foreground() { return this.front; }
 	bracketedPasteMode(): boolean { return this.paste; }
+	status: ParadisAgentStatus | undefined;
+	agentStatus(): ParadisAgentStatus | undefined { return this.status; }
 }
 
 const PERMISSION_SCREEN = [
@@ -108,6 +111,30 @@ suite('ParadisAgentChatInput', () => {
 		const input = new ParadisAgentChatInput({ source, terminal: () => terminal, session: () => session }, 0, 300);
 		return { input, terminal, source, claims, setView: (next: Partial<IParadisAgentChatView>) => { current = { ...current, ...next }; } };
 	}
+
+	test('pastes a message into Antigravity CLI only while it waits for input, and leaves its questions to the terminal', async () => {
+		const question = { rev: 0, role: 'assistant' as const, kind: 'question' as const, text: 'どちらにしますか', toolUseId: 'agy-1-0', questionGroup: 'agy-1-0', options: [{ label: 'A' }, { label: 'B' }] };
+		const fixture = setup({ agent: 'antigravity', sessionId: '00000000-0000-4000-8000-00000000a6e5' });
+		const blocked: Record<string, boolean> = {};
+		for (const status of ['permission', 'question', 'working'] as const) {
+			fixture.terminal.status = status;
+			blocked[status] = await fixture.input.sendMessage(1, 't', '続けて') !== undefined;
+		}
+		fixture.terminal.status = undefined;
+		fixture.terminal.front = 'unknown';
+		const unknownForeground = await fixture.input.sendMessage(1, 't', '続けて') !== undefined;
+		fixture.terminal.front = 'agent';
+		const sent = await fixture.input.sendMessage(1, 't', '続けて');
+		fixture.setView({ messages: [question], interaction: { kind: 'question', id: 'agy-1-0' }, pendingQuestions: [question] });
+		const answer = await fixture.input.answerQuestions(1, 't', 'agy-1-0', [{ kind: 'option', index: 0 }]);
+		assert.deepStrictEqual({ blocked, unknownForeground, sent, answerRefused: answer !== undefined, keys: fixture.terminal.sent }, {
+			blocked: { permission: true, question: true, working: true },
+			unknownForeground: true,
+			sent: undefined,
+			answerRefused: true,
+			keys: ['paste:"続けて"', '"\\r"'],
+		});
+	});
 
 	test('sends OpenCode messages and exact pending answers through the API without any PTY fallback', async () => {
 		const question = { rev: 0, role: 'assistant' as const, kind: 'question' as const, text: 'Choose a plan', toolUseId: 'opencode:req_question', questionGroup: 'opencode:req_question', options: [{ label: 'First' }] };

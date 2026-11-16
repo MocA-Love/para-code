@@ -58,6 +58,10 @@ import { IParadisAgentChatCommand, IParadisAgentChatImageData, IParadisAgentChat
 import { paradisPushAgentChatHistory } from '../common/paradisAgentChatComposerLogic.js';
 import { paradisParseCodexAsyncReply } from '../../mobileRelay/common/paradisCodexAsyncQuestions.js';
 import { ParadisAgentChatDictation } from './paradisAgentChatDictation.js';
+import type { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import { IParadisAgentStatusStore } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { paradisAntigravityPaneStatus } from '../common/paradisAgentChatActionSupport.js';
+import { paradisLatestProgramStatus } from '../../agentBrowser/browser/paradisLatestProgramStatus.js';
 import '../browser/media/paradisAgentChat.css';
 
 export const PARADIS_AGENT_CHAT_TOGGLE_COMMAND = 'paradis.agentChat.toggle';
@@ -172,6 +176,7 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 		@ILogService private readonly logService: ILogService,
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@IEditorService private readonly editorService: IEditorService,
+		@IParadisAgentStatusStore private readonly agentStatusStore: IParadisAgentStatusStore,
 	) {
 		super();
 		this.source = ProxyChannel.toService<IParadisAgentChatSource>(sharedProcessService.getChannel(PARADIS_MOBILE_RELAY_CHANNEL));
@@ -554,7 +559,7 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 		}
 		let terminal = this.chatTerminals.get(instance);
 		if (terminal === undefined) {
-			terminal = paradisChatTerminalFor(instance);
+			terminal = paradisChatTerminalFor(instance, () => paradisAntigravityPaneStatus(this.agentStatusStore.getInstanceStatus(instance.instanceId), paradisLatestProgramStatus(instance.instanceId)));
 			this.chatTerminals.set(instance, terminal);
 		}
 		return terminal;
@@ -581,8 +586,9 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 }
 
 /** ITerminalInstance を、チャットの入力が使う形へ写す。 */
-function paradisChatTerminalFor(instance: ITerminalInstance): IParadisAgentChatTerminal {
+function paradisChatTerminalFor(instance: ITerminalInstance, agentStatus: () => ParadisAgentStatus | undefined): IParadisAgentChatTerminal {
 	return {
+		agentStatus,
 		sendText: (text, shouldExecute, bracketedPasteMode) => instance.sendText(text, shouldExecute, bracketedPasteMode),
 		readScreen: () => paradisVisibleTerminalText(instance),
 		foreground: () => {

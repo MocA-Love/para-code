@@ -82,6 +82,7 @@ import type { IParadisNotifyPaneContent } from './paradisNotifyContentSource.js'
 import { IParadisAgentPaneInsight, IParadisAgentPaneInteraction, IParadisAgentPromptCache, PARADIS_PROMPT_CACHE_TTL_5M, paradisOneLine, paradisReadClaudePromptCacheUsage, paradisReadClaudeRequestStart, paradisSelectInsightSubagents, paradisSummarizePermissionInput, paradisSummarizeQuestionInput } from '../../agentInsights/common/paradisAgentInsights.js';
 import { IParadisAgentApprovalChoice, IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentChatView, IParadisAgentInteraction, IParadisAgentLiveState, IParadisAgentPanel, IParadisAgentSessionInfo, PARADIS_ADVISOR_TOOL, ParadisAgentKind, ParadisOpenCodeDesktopActionResult, paradisAgentQuestionHasPreview, paradisIsCodexDaemonApprovalInteraction, paradisPickCurrentInteraction } from '../../agentChat/common/paradisAgentChat.js';
 import { newParadisAntigravityParseState, paradisAntigravityQuestionInput, parseAntigravityLine } from '../../agentChat/common/paradisAntigravityTranscript.js';
+import { PARADIS_ANTIGRAVITY_ANSWER_ON_PC_MESSAGE, PARADIS_ANTIGRAVITY_SEND_BLOCK_MESSAGES, paradisAgentChatActionSupport } from '../../agentChat/common/paradisAgentChatActionSupport.js';
 import { paradisIsAntigravityTranscriptPath, PARADIS_ANTIGRAVITY_QUESTION_TOOL } from '../../agentBrowser/common/paradisAntigravityHooks.js';
 import { paradisAntigravityBrainRoot, paradisAntigravityConversationIdFromTranscriptPath, paradisAntigravityTranscriptStartsAsChild, paradisIsAntigravityChildConversation, paradisReadAntigravityConversationLineage } from '../../sessionResume/node/paradisAntigravityHistory.js';
 import { IParadisAgentMonitor, ParadisAgentMonitorWatch, paradisMonitorsForStoppedPane } from '../../agentChat/common/paradisAgentMonitors.js';
@@ -645,19 +646,12 @@ function agentKindForPath(transcriptPath: string): ParadisAgentKind {
 }
 
 /**
- * チャットの写しに添える、モバイルから操作できるかの印。Antigravity CLI は送信・承認・回答の経路がまだ無いので
- * 付けない（アプリは「エージェントセッションを準備中です」で断る。古いアプリも同じ）。
+ * チャットの写しに添える、モバイルから操作できるかの印。どのエージェントにも付ける（付けないと、アプリは回答のキーを
+ * 自分で PTY へ打つ古い経路に落ちる）。回答を送れないエージェント（Antigravity CLI）への回答は PC が断る
+ * （{@link paradisAgentChatActionSupport}）。
  */
 function paradisAgentChatCapabilitiesField(agent: ParadisAgentKind): { readonly capabilities?: { readonly agentActions: true; readonly claudeSettings?: true } } {
-	if (!paradisAgentChatAcceptsActions(agent)) {
-		return {};
-	}
 	return { capabilities: { agentActions: true, ...(agent === 'claude' ? { claudeSettings: true } : {}) } };
-}
-
-/** モバイル・デスクトップのチャット欄からの送信・承認・回答を受けられるエージェントか。 */
-function paradisAgentChatAcceptsActions(agent: ParadisAgentKind | undefined): boolean {
-	return agent !== 'antigravity';
 }
 
 /**
@@ -5050,21 +5044,29 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	/**
-	 * チャット欄からの操作を受けられないエージェント（Antigravity CLI）への送信・回答・承認を断る。断ったら true。
-	 * モバイルには操作できる印（capabilities.agentActions）を送っていないので、ここへ来るのは印を見ない相手だけ。
+	 * チャット欄から渡せない操作（{@link paradisAgentChatActionSupport}。Antigravity CLI の回答・承認・設定）を断る。断ったら true。
+	 * キーの働きを確かめていない画面へは打たず、PC の端末で答えてもらう。
 	 */
 	private rejectUnsupportedAgentAction(mobileId: string, msg: AgentInbound): boolean {
 		if (msg.t !== 'action/sendMessage' && msg.t !== 'action/answerQuestion' && msg.t !== 'action/clarifyQuestion' && msg.t !== 'action/answerApproval' && msg.t !== 'action/claudeSetting' && msg.t !== 'approval-options') {
 			return false;
 		}
 		const token = this.resolveInboundToken(msg.id, msg.token);
-		if (token === undefined || paradisAgentChatAcceptsActions(this.paneSessions.get(token)?.agent)) {
+		if (token === undefined) {
+			return false;
+		}
+		const support = paradisAgentChatActionSupport(this.paneSessions.get(token)?.agent);
+		const supported = msg.t === 'action/sendMessage' ? support.sendMessage
+			: msg.t === 'action/answerQuestion' || msg.t === 'action/clarifyQuestion' ? support.answerQuestion
+				: msg.t === 'action/claudeSetting' ? support.settings
+					: support.answerApproval;
+		if (supported) {
 			return false;
 		}
 		if (msg.t === 'approval-options') {
 			this.sendTo(mobileId, { t: 'approval-options', id: msg.id, requestId: msg.requestId, interactionId: msg.interactionId, error: 'stale-interaction' }, token);
 		} else {
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'agent-unsupported', message: 'このエージェントにはまだチャット欄から送れません。ターミナル表示で入力してください' }, token);
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'agent-unsupported', message: msg.t === 'action/sendMessage' || msg.t === 'action/claudeSetting' ? 'このエージェントにはまだチャット欄から送れません。ターミナル表示で入力してください' : PARADIS_ANTIGRAVITY_ANSWER_ON_PC_MESSAGE }, token);
 		}
 		return true;
 	}
@@ -5536,6 +5538,12 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		if (session.agent === 'opencode') {
 			this.dispatchOpenCodeAction(mobileId, msg, token, () => paradisOpenCodeBridge.sendMessage(token, session.sessionId ?? '', msg.text));
+			return;
+		}
+		// Antigravity CLI が質問の回答を待っている間は打たない（貼った文の Enter が選択肢を確定しうる）。許可待ち・作業中・
+		// 前面に agy がいるかは、ペインの状態と画面を持つ所有ウィンドウが確かめる（paradisAntigravitySendBlock）
+		if (session.agent === 'antigravity' && tailer.currentInteraction() !== null) {
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'agent-busy', message: PARADIS_ANTIGRAVITY_SEND_BLOCK_MESSAGES.question }, token);
 			return;
 		}
 		// `/model <別名>`（古いアプリは打った文のまま送ってくる）は、確認の画面を出さない `/config model=<別名>` にして送る。

@@ -22,8 +22,9 @@ import { IParadisAgentCommandTemplate, IParadisAgentLaunchOptions } from '../../
 export const PARADIS_TAB_LAUNCHER_HIDDEN_AGENTS: ReadonlySet<string> = new Set(['gemini']);
 
 /**
- * 「チャットで起動」を出さないエージェント。Antigravity CLI の会話はチャット表示で読めるようになったが、チャット欄からの
- * 送信はまだ断る（送信の経路は次の段取り）。チャットで起動すると最初の発言を打てないので、送信が入るまで出さない。
+ * 「チャットで起動」を出さないエージェント。Antigravity CLI はチャット欄から発言を送れるが、送り先の会話は最初の hook
+ * （SessionStart）で決まる。推測: agy の SessionStart は最初の指示で届くので、チャットで起動すると最初の発言を打つ相手が
+ * まだ無い【要確認】。実機で起動直後に会話が写るのを確かめるまで出さない。
  */
 const PARADIS_TAB_LAUNCHER_NO_CHAT_AGENTS: ReadonlySet<string> = new Set(['antigravity']);
 

@@ -56,6 +56,8 @@ const NO_TARGET_RESULT: AgentMessageSendResult = { status: 'rejected', message: 
 // 再取得の要求中。表示は残っているがPC側の現状と一致している保証がないので、
 // 特に回答APIを持たない古いPCへ生のキーを注入してしまわないよう、ここで止める。
 const REFRESHING_RESULT: AgentMessageSendResult = { status: 'rejected', message: '最新の内容を取得しています。少し待ってからもう一度お試しください。' };
+/** Antigravity CLI の質問・確認は、回答のキーを確かめていないので PC の端末で答えてもらう（PC の断りと同じ文）。 */
+const ANSWER_ON_PC_RESULT: AgentMessageSendResult = { status: 'rejected', message: 'Antigravity CLI の質問・確認には、まだアプリから答えられません。PC の端末で答えてください' };
 
 /** PTY注入（agentActions 非対応セッション向けのレガシー経路）の成否を同じ結果型へ揃える。 */
 function fromInjection(ok: boolean): AgentMessageSendResult {
@@ -172,13 +174,17 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 			if (supportsAgentActions) {
 				return answerAgentQuestion(terminalKey, interactionId, answers);
 			}
+			// Antigravity CLI の画面のキーは Claude Code と違う（どれが何を選ぶかは PC も確かめていない）。直接は打たない
+			if (agent === 'antigravity') {
+				return Promise.resolve(ANSWER_ON_PC_RESULT);
+			}
 			const keyAnswers = answers.filter(isKeyAnswer);
 			if (keyAnswers.length !== answers.length) {
 				return Promise.resolve({ status: 'rejected', message: 'この PC ではメモを付けて回答できません' });
 			}
 			return sendSequence(agentQuestionKeySequence(questions, keyAnswers)).then(fromInjection);
 		},
-		[terminalKey, interaction, stale, supportsAgentActions, answerAgentQuestion, sendSequence],
+		[terminalKey, agent, interaction, stale, supportsAgentActions, answerAgentQuestion, sendSequence],
 	);
 
 	const clarifyQuestion = useCallback((interactionId: string, response: string | undefined, answers: readonly (QuestionGroupAnswer | null)[]): Promise<AgentMessageSendResult> => {
@@ -232,6 +238,9 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 		}
 		if (supportsAgentActions) {
 			return answerAgentApproval(terminalKey, interactionId, choice, option);
+		}
+		if (agent === 'antigravity') {
+			return Promise.resolve(ANSWER_ON_PC_RESULT);
 		}
 		const keys = agentApprovalKeySequence(agent, choice);
 		if (keys === undefined) {
