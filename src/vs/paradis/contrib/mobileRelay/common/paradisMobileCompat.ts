@@ -152,6 +152,7 @@ export const ParadisMobileCapability = {
 	/**
 	 * 承認の interaction の任意項目 `request`（操作の中身。`paradisAgentApprovalRequest.ts`）・`suggestionScope`・`answerVia`・
 	 * `answerOn: 'pc'`（PC の端末の確認の画面でしか許可できない。`choices` は拒否だけ）・`readOnly`（読むだけの呼び出し）、
+	 * `expired`（答えを待つのが終わった。`choices` は空で、端末で答える。Antigravity CLI の許可の hook の待ち）、
 	 * `approval-options` の応答の任意項目 `warning`（選択肢の上の警告の行）、`action/answerApproval` の `message`
 	 * （拒否に添える指示。`answerVia: 'mod'` のときだけ）。
 	 */

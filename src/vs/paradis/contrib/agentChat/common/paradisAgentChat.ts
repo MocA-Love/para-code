@@ -273,6 +273,12 @@ export type IParadisAgentInteraction =
 		readonly answerOn?: 'pc';
 		/** 読むだけの呼び出し（Claude Code 2.1.304 の `tool.check` の `isReadOnly`）。カードに印を出すだけ。 */
 		readonly readOnly?: true;
+		/**
+		 * 答えを待つのが終わった（Antigravity CLI の許可の hook が上限を過ぎた・答えずに端末の確認の画面に任せた）。`choices` は空で、
+		 * アプリと PC のチャット欄は「時間切れ（端末で答えてください）」と出して押せなくする。古いアプリは知らない項目として捨て、
+		 * 選択肢の無いカードを出す。
+		 */
+		readonly expired?: true;
 	};
 
 export function paradisIsCodexDaemonApprovalInteraction(interactionId: string): boolean {

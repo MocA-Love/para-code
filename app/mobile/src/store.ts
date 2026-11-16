@@ -1660,6 +1660,8 @@ export interface AgentInteraction {
 	answerOn?: 'pc';
 	/** kind==='approval': 読むだけの呼び出し（古い PC は付けない）。 */
 	readOnly?: true;
+	/** kind==='approval': 答えを待つのが終わった（Antigravity CLI の許可の待ちの上限を過ぎた。`choices` は空で、端末で答える。古い PC は付けない）。 */
+	expired?: true;
 }
 
 export interface AgentApprovalChoice {
@@ -1728,6 +1730,7 @@ function parseAgentInteraction(value: unknown): AgentInteraction | undefined {
 		...(raw['answerVia'] === 'mod' ? { answerVia: 'mod' as const } : {}),
 		...(raw['answerOn'] === 'pc' ? { answerOn: 'pc' as const } : {}),
 		...(raw['readOnly'] === true ? { readOnly: true as const } : {}),
+		...(raw['expired'] === true ? { expired: true as const } : {}),
 	};
 }
 

@@ -3150,7 +3150,7 @@ class TranscriptTailer {
 			let changed = false;
 			for (let index = 0; index < this.approvalQueue.length; index++) {
 				const entry = this.approvalQueue[index];
-				if (entry.answered || paradisIsCodexDaemonApprovalInteraction(entry.interaction.id)) {
+				if (entry.answered || entry.interaction.expired === true || paradisIsCodexDaemonApprovalInteraction(entry.interaction.id)) {
 					continue;
 				}
 				const resolved = resolve(entry.interaction);
@@ -3488,6 +3488,24 @@ class TranscriptTailer {
 	 */
 	markApprovalAnswered(interactionId: string): void {
 		this.markApprovalsAnswered(entry => entry.interaction.id === interactionId);
+	}
+
+	/**
+	 * 答えを待つのが終わった承認（Antigravity CLI の許可の hook が上限を過ぎた・答えずに端末に任せた）を「時間切れ」にする。
+	 * 選択肢を外して `expired` を付け、カードは出したままにする（端末の確認の画面で答えるまで、ペインは許可待ちのまま）。
+	 */
+	markApprovalExpired(interactionId: string): void {
+		this.enqueue(async () => {
+			const index = this.approvalQueue.findIndex(entry => !entry.answered && entry.interaction.id === interactionId && entry.interaction.expired !== true);
+			if (index < 0) {
+				return;
+			}
+			const entry = this.approvalQueue[index];
+			const { answerVia: _answerVia, ...rest } = entry.interaction;
+			this.approvalQueue[index] = { ...entry, interaction: { ...rest, choices: [], expired: true } };
+			this.delegate.onDelta([]);
+			this.delegate.onActivity();
+		});
 	}
 
 	/**
@@ -7952,6 +7970,13 @@ export class ParadisMobileAgentChat extends Disposable {
 		// 答えた印を先に付ける（ペインの許可待ちは、カードの答えた印で解ける。agy は許可したツールが終わるまで hook を出さない）
 		tailer.markApprovalAnswered(interactionId);
 		return paradisAntigravityApprovalHold.answer(token, interactionId, choice === 'yes' ? 'allow' : 'deny');
+	}
+
+	/** Antigravity CLI の許可の hook が答えずに待ちを終えた（paradisAntigravityApprovalHold.ts）。カードを「時間切れ」にする。 */
+	expireAntigravityApproval(token: string, toolUseId: string): void {
+		if (this.paneSessions.get(token)?.agent === 'antigravity') {
+			this.tailers.get(token)?.markApprovalExpired(toolUseId);
+		}
 	}
 
 	/** デスクトップのチャット表示から、Antigravity CLI の許可の hook が待っている承認に答える。 */

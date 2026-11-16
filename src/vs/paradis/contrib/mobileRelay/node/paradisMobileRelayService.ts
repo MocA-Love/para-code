@@ -1141,6 +1141,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		const watchingInForeground = (session: MobileSession | undefined) => session?.hasCurrentProtocol === true && !session.backgrounded;
 		paradisAntigravityApprovalHold.setPresence(() => this.enabled && this.state.mobiles.length > 0 && [...this.sessions.values()].some(watchingInForeground));
 		paradisAntigravityApprovalHold.setGate((token, sessionId) => this.agentChat.canHoldAntigravityApproval(token, sessionId, mobileId => watchingInForeground(this.sessions.get(mobileId))));
+		// 答えずに待ちを終えた（上限・モバイルが見なくなった）カードは「時間切れ」にする（押しても断られるだけなので、押せなくする）
+		paradisAntigravityApprovalHold.setOnUnanswered((token, toolUseId) => this.agentChat.expireAntigravityApproval(token, toolUseId));
 		this._register(this.agentChat.onDidChangeConfirmedAgentPanes(({ tokens, tokensOutsideHookReach }) => {
 			this.confirmedAgentPanes = { revision: this.confirmedAgentPanes.revision + 1, tokens, tokensOutsideHookReach };
 			this._onDidChangeConfirmedAgentPanes.fire(this.confirmedAgentPanes);

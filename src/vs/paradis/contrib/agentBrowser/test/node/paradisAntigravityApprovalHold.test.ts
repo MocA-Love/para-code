@@ -8,7 +8,6 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_ANTIGRAVITY_APPROVAL_HOLD_MS } from '../../common/paradisAntigravityApproval.js';
 import { ParadisAntigravityApprovalHold } from '../../node/paradisAntigravityApprovalHold.js';
 
 suite('Para Browser Antigravity CLI approval hold', () => {
@@ -18,10 +17,13 @@ suite('Para Browser Antigravity CLI approval hold', () => {
 		let now = 1_000;
 		let seq = 0;
 		const hold = new ParadisAntigravityApprovalHold({ now: () => now, newId: () => (++seq).toString(16).padStart(32, '0'), manualSweep: true });
-		const state = { present: options.present ?? true, gate: options.gate ?? true };
+		const state = { present: options.present ?? true, gate: options.gate ?? true, waitMs: 120_000 };
+		const unanswered: string[] = [];
 		hold.setPresence(() => state.present);
 		hold.setGate(() => state.gate);
-		return { hold, state, advance: (ms: number) => { now += ms; hold.sweep(); } };
+		hold.setWaitLimit(() => state.waitMs);
+		hold.setOnUnanswered((token, toolUseId) => unanswered.push(`${token}:${toolUseId}`));
+		return { hold, state, unanswered, advance: (ms: number) => { now += ms; hold.sweep(); } };
 	}
 	const request = (toolUseId: string, toolName = 'run_command') => ({ sessionId: 'c1', toolUseId, toolName });
 
@@ -81,7 +83,7 @@ suite('Para Browser Antigravity CLI approval hold', () => {
 	test('gives up without an answer at the limit, when the mobile app leaves or stops watching the pane, when no wait comes, or when the script hangs up', async () => {
 		const limit = setup();
 		const atLimit = limit.hold.wait('pane', limit.hold.register('pane', request('call_1'))!);
-		limit.advance(PARADIS_ANTIGRAVITY_APPROVAL_HOLD_MS);
+		limit.advance(120_000);
 
 		const leaving = setup();
 		const left = leaving.hold.wait('pane', leaving.hold.register('pane', request('call_1'))!);
@@ -118,6 +120,8 @@ suite('Para Browser Antigravity CLI approval hold', () => {
 			unwatched: [backAgain, await unwatchedWait],
 			orphan: [await orphan.hold.wait('pane', orphanId), orphan.hold.answer('pane', 'call_1', 'allow')],
 			hungUp: [await hungUp, hangUp.hold.answer('pane', 'call_1', 'allow')],
+			// どれもカードを「時間切れ」にする知らせが 1 回ずつ
+			unanswered: [limit, leaving, unwatched, orphan, hangUp].map(({ unanswered }) => unanswered),
 		}, {
 			atLimit: undefined,
 			stillWaiting: true,
@@ -125,9 +129,32 @@ suite('Para Browser Antigravity CLI approval hold', () => {
 			unwatched: [true, undefined],
 			orphan: [undefined, false],
 			hungUp: [undefined, false],
+			unanswered: [['pane:call_1'], ['pane:call_1'], ['pane:call_1'], ['pane:call_1'], ['pane:call_1']],
 		});
 		for (const { hold } of [limit, leaving, unwatched, orphan, hangUp]) {
 			hold.dispose();
 		}
+	});
+
+	test('follows the wait setting and the hook timeout the script reports, and does not hold when the setting is 0', async () => {
+		const { hold, state, unanswered, advance } = setup();
+		const shortHook = hold.wait('pane', hold.register('pane', { ...request('call_1'), hookTimeoutSeconds: 90 })!);
+		advance(59_000);
+		const beforeLimit = hold.isWaiting('pane', 'call_1');
+		advance(1_000);
+		state.waitMs = 0;
+		const off = [hold.canHold('pane', request('call_2')), hold.register('pane', request('call_2'))];
+		state.waitMs = 120_000;
+		const answered = hold.wait('pane', hold.register('pane', request('call_3'))!);
+		hold.answer('pane', 'call_3', 'deny');
+		assert.deepStrictEqual({ beforeLimit, shortHook: await shortHook, off, answered: await answered, unanswered }, {
+			beforeLimit: true,
+			shortHook: undefined,
+			off: [false, undefined],
+			answered: 'deny',
+			// 答えた待ちでは知らせない
+			unanswered: ['pane:call_1'],
+		});
+		hold.dispose();
 	});
 });

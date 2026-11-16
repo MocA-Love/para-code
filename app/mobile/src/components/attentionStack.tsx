@@ -124,7 +124,13 @@ function AttentionBody({ agentStatus, chat, actions, onOpenAgent }: {
 				/>
 			) : approval ? (
 				<>
-					{approval.answerOn === 'pc' ? (
+					{approval.expired === true ? (
+						// 答えを待つのが終わった（PC は選択肢を空にする）。端末で答えてもらう
+						<View style={styles.notice}>
+							<Text style={styles.noticeTitle}>時間切れ（端末で答えてください）</Text>
+							<Text style={styles.noticeBody}>答えを待てる時間を過ぎました。PC のターミナルの確認の画面で答えてください</Text>
+						</View>
+					) : approval.answerOn === 'pc' ? (
 						// PC の端末の確認の画面でしか許可できない（PC は拒否だけを選択肢に載せる）
 						<View style={styles.notice}>
 							<Text style={styles.noticeTitle}>PC で答えてください</Text>
@@ -142,6 +148,7 @@ function AttentionBody({ agentStatus, chat, actions, onOpenAgent }: {
 						title={approval.title}
 						detail={approval.detail ?? findLatestApprovalRequest(chat)}
 						choices={approval.choices}
+						expired={approval.expired === true}
 						refreshing={refreshing}
 					/>
 				</>

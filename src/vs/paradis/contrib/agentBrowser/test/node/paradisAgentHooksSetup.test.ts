@@ -464,7 +464,7 @@ suite('ParadisAgentHooksSetup', () => {
 				const url = new URL(request.url ?? '', 'http://localhost');
 				const body = Buffer.concat(chunks).toString('utf8');
 				const auth = request.headers.authorization === 'Bearer pane-token' ? '' : ' (no token)';
-				const name = url.pathname === '/agent-hook' ? `hook:${url.searchParams.get('event')}` : url.pathname.slice('/antigravity-approval/v1/'.length) + (url.searchParams.has('id') ? `:${url.searchParams.get('id')}` : '');
+				const name = url.pathname === '/agent-hook' ? `hook:${url.searchParams.get('event')}` : url.pathname.slice('/antigravity-approval/v1/'.length) + (url.searchParams.has('id') ? `:${url.searchParams.get('id')}` : '') + (url.searchParams.has('limit') ? `:${url.searchParams.get('limit')}` : '');
 				requests.push(`${name}${body.includes('"call_1"') ? ' +body' : ''}${auth}`);
 				if (scenario.hookFails && name === 'hook:PermissionRequest') {
 					response.writeHead(503);
@@ -488,11 +488,12 @@ suite('ParadisAgentHooksSetup', () => {
 			// agy 1.5.6 の PreToolUse の形（値は伏せた）
 			await fs.writeFile(payloadPath, '{"conversationId":"c1","cwd":"/repo","hookEventName":"PreToolUse","stepIdx":2,"toolCall":{"args":{"CommandLine":"ls -a"},"id":"call_1","name":"run_command"}}');
 			const inPane = { [PARADIS_PANE_TOKEN_ENV_VAR]: 'pane-token', [PARADIS_MCP_PORT_FILE_ENV_VAR]: portFilePath };
-			const run = async (next: typeof scenario, env: NodeJS.ProcessEnv = inPane) => {
+			// 引数は hooks.json の handler の `timeout`（秒）
+			const run = async (next: typeof scenario, env: NodeJS.ProcessEnv = inPane, hookTimeout = '150') => {
 				scenario = next;
 				requests.length = 0;
-				const stdout = (await execFileAsync('/bin/sh', ['-c', 'cat "$PAYLOAD_FILE" | "$HOOK_SCRIPT"'], {
-					env: { PATH: process.env['PATH'], HOOK_SCRIPT: scriptPath, PAYLOAD_FILE: payloadPath, ...env },
+				const stdout = (await execFileAsync('/bin/sh', ['-c', 'cat "$PAYLOAD_FILE" | "$HOOK_SCRIPT" $HOOK_TIMEOUT'], {
+					env: { PATH: process.env['PATH'], HOOK_SCRIPT: scriptPath, PAYLOAD_FILE: payloadPath, HOOK_TIMEOUT: hookTimeout, ...env },
 					timeout: 10_000,
 				})).stdout;
 				return { stdout, requests: [...requests] };
@@ -507,16 +508,25 @@ suite('ParadisAgentHooksSetup', () => {
 				noCard: await run({ register: `wait:${id}`, wait: 'allow', hookFails: true }),
 				outsidePane: await run({ register: `wait:${id}`, wait: 'allow' }, {}),
 				noPortFile: await run({ register: `wait:${id}`, wait: 'allow' }, { ...inPane, [PARADIS_MCP_PORT_FILE_ENV_VAR]: join(root, 'missing.json') }),
+				// 待つ上限の設定が 0（timeout 30 秒）でも聞き、待たないのは Para Code が決める。timeout の無い・短すぎる・形の違う呼び出しは聞かない
+				noWaitSetting: await run({ register: 'none', wait: 'allow' }, inPane, '30'),
+				noTimeout: await run({ register: `wait:${id}`, wait: 'allow' }, inPane, ''),
+				tooShort: await run({ register: `wait:${id}`, wait: 'allow' }, inPane, '20'),
+				notANumber: await run({ register: `wait:${id}`, wait: 'allow' }, inPane, '1e3'),
 			}, {
-				allow: { stdout: '{"decision":"allow"}\n', requests: ['register +body', 'hook:PermissionRequest +body', `wait:${id}`] },
-				deny: { stdout: '{"decision":"deny","reason":"The user declined this tool call from Para Code."}\n', requests: ['register +body', 'hook:PermissionRequest +body', `wait:${id}`, 'hook:PermissionDenied +body'] },
-				notHeld: { stdout: '', requests: ['register +body'] },
-				badId: { stdout: '', requests: ['register +body'] },
-				unknownAnswer: { stdout: '', requests: ['register +body', 'hook:PermissionRequest +body', `wait:${id}`] },
-				noAnswer: { stdout: '', requests: ['register +body', 'hook:PermissionRequest +body', `wait:${id}`] },
-				noCard: { stdout: '', requests: ['register +body', 'hook:PermissionRequest +body'] },
+				allow: { stdout: '{"decision":"allow"}\n', requests: ['register:150 +body', 'hook:PermissionRequest +body', `wait:${id}`] },
+				deny: { stdout: '{"decision":"deny","reason":"The user declined this tool call from Para Code."}\n', requests: ['register:150 +body', 'hook:PermissionRequest +body', `wait:${id}`, 'hook:PermissionDenied +body'] },
+				notHeld: { stdout: '', requests: ['register:150 +body'] },
+				badId: { stdout: '', requests: ['register:150 +body'] },
+				unknownAnswer: { stdout: '', requests: ['register:150 +body', 'hook:PermissionRequest +body', `wait:${id}`] },
+				noAnswer: { stdout: '', requests: ['register:150 +body', 'hook:PermissionRequest +body', `wait:${id}`] },
+				noCard: { stdout: '', requests: ['register:150 +body', 'hook:PermissionRequest +body'] },
 				outsidePane: { stdout: '', requests: [] },
 				noPortFile: { stdout: '', requests: [] },
+				noWaitSetting: { stdout: '', requests: ['register:30 +body'] },
+				noTimeout: { stdout: '', requests: [] },
+				tooShort: { stdout: '', requests: [] },
+				notANumber: { stdout: '', requests: [] },
 			});
 		} finally {
 			if (server.listening) {
@@ -527,7 +537,7 @@ suite('ParadisAgentHooksSetup', () => {
 	});
 
 	test('places the Antigravity CLI approval hook beside the notification hook, keeps the user\'s own, and takes it out with the rest', () => {
-		const approval = paradisAntigravityApprovalHookDefinition();
+		const approval = paradisAntigravityApprovalHookDefinition(120_000);
 		const user = { 'lint-checker': { PostToolUse: [{ matcher: 'run_command', hooks: [{ type: 'command', command: './lint.sh' }] }] } };
 		const merged = paradisMergeAntigravityApprovalHookJson(JSON.stringify(user, undefined, 2))!;
 		const disabled = JSON.stringify({ 'para-code-approval': { enabled: false, PreToolUse: [{ matcher: 'run_command', hooks: [{ type: 'command', command: '$HOME/.para-code/hooks/antigravity-approval-v1.sh' }] }] } });
@@ -541,6 +551,9 @@ suite('ParadisAgentHooksSetup', () => {
 		assert.deepStrictEqual({
 			merged: JSON.parse(merged),
 			again: paradisMergeAntigravityApprovalHookJson(merged) === merged,
+			// 待つ上限を変えたら timeout と引数を置き直す（版 1 のスクリプトを呼ぶものも今の版へ）
+			longerWait: JSON.parse(paradisMergeAntigravityApprovalHookJson(merged, 600_000)!)['para-code-approval'],
+			fromVersion1: JSON.parse(paradisMergeAntigravityApprovalHookJson(JSON.stringify({ 'para-code-approval': { PreToolUse: [{ matcher: 'run_command', hooks: [ours] }] } }))!)['para-code-approval'],
 			keepsDisabled: JSON.parse(paradisMergeAntigravityApprovalHookJson(disabled)!)['para-code-approval'],
 			someoneElses: paradisMergeAntigravityApprovalHookJson(someoneElses) === someoneElses,
 			newer: paradisMergeAntigravityApprovalHookJson(newer) === newer,
@@ -553,6 +566,8 @@ suite('ParadisAgentHooksSetup', () => {
 		}, {
 			merged: { ...user, 'para-code-approval': approval },
 			again: true,
+			longerWait: paradisAntigravityApprovalHookDefinition(600_000),
+			fromVersion1: approval,
 			keepsDisabled: { enabled: false, ...approval },
 			someoneElses: true,
 			newer: true,

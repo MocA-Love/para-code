@@ -1331,6 +1331,14 @@ export class ParadisAgentChatView extends Disposable {
 		const approvalState = this.approvalStates.get(interaction.id);
 		const footer = append(card, $('.paradis-agent-chat-card-footer'));
 		const choices = interaction.choices ?? [];
+		if (interaction.expired === true) {
+			// 答えを待つのが終わった（Antigravity CLI の許可の hook の上限を過ぎた）。ここからは答えられないので、ターミナルへ案内する
+			const back = paradisAgentChatButton(footer, 'primary', store);
+			back.label = localize('paradisAgentChat.answerInTerminal', "ターミナルで答える");
+			store.add(back.onDidClick(() => this._onDidRequestTerminal.fire()));
+			append(footer, $('span.paradis-agent-chat-card-note')).textContent = localize('paradisAgentChat.approvalExpired', "時間切れ（端末で答えてください）");
+			return card;
+		}
 		if (choices.length === 0) {
 			// 中身を同期できなかった Codex の承認。ここからは答えられないので、ターミナルへ案内する。
 			const back = paradisAgentChatButton(footer, 'primary', store);

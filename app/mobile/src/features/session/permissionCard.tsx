@@ -50,7 +50,7 @@ const DENY_WITH_MESSAGE_ID = 'deny-with-message';
  * ボタンは許可を左（縦に積むときは上）に置き、「以後は確認しない」は足されるルールを添えた 2 番手、拒否は「拒否」1 つ。
  * iPad の広い幅（カードの実際の幅で決める）では、コマンドを左、説明・札・警告を右に並べる（ツリーの形は変えない）。
  */
-export function PermissionCard({ interactionId, onApprove, title, detail, choices, screenLabels, request, warning, suggestions, suggestionScope, onDenyWithMessage, onRequestDenyMessage, denyMessageActive, answerOnPc, readOnly, refreshing }: {
+export function PermissionCard({ interactionId, onApprove, title, detail, choices, screenLabels, request, warning, suggestions, suggestionScope, onDenyWithMessage, onRequestDenyMessage, denyMessageActive, answerOnPc, readOnly, expired, refreshing }: {
 	interactionId: string;
 	onApprove: (interactionId: string, choice: string) => Promise<AgentMessageSendResult>;
 	title?: string;
@@ -75,6 +75,8 @@ export function PermissionCard({ interactionId, onApprove, title, detail, choice
 	answerOnPc?: boolean;
 	/** 読むだけの呼び出し（PC の `readOnly`）。印を出すだけ。 */
 	readOnly?: boolean;
+	/** 答えを待つのが終わった（PC の `expired`。選択肢は空）。「時間切れ」と出し、端末で答えてもらう。 */
+	expired?: boolean;
 	refreshing: boolean;
 }) {
 	const submission = useAnswerSubmission(interactionId);
@@ -176,6 +178,12 @@ export function PermissionCard({ interactionId, onApprove, title, detail, choice
 					<ApprovalBody request={request} detail={detail} overflow={overflow} onOverflow={markOverflow} onOpenFull={openFull} linkHitSlop={linkHitSlop} accent={theme.accent} />
 				</View>
 			</View>
+			{expired === true && !locked ? (
+				<View style={styles.alert}>
+					<Text style={styles.alertTitle}>時間切れ（端末で答えてください）</Text>
+					<Text style={styles.alertText}>答えを待てる時間を過ぎました。PC のターミナルの確認の画面で答えてください</Text>
+				</View>
+			) : null}
 			{answerOnPc === true && !locked ? (
 				<View style={styles.alert}>
 					<Text style={styles.alertTitle}>PC で答えてください</Text>
@@ -219,7 +227,7 @@ export function PermissionCard({ interactionId, onApprove, title, detail, choice
 			) : null}
 			{error !== undefined ? <Text style={cardStyles.error}>{error}</Text> : null}
 			{refreshing ? <Text style={cardStyles.hint}>最新の内容を取得しています。届くまで回答できません</Text> : null}
-			{!locked ? <Text style={cardStyles.hint}>{effectiveChoices.length > 0 ? 'PC 側で回答した場合も自動的に閉じます' : 'PC の Codex の画面で承認内容を確認してください'}</Text> : null}
+			{!locked && expired !== true ? <Text style={cardStyles.hint}>{effectiveChoices.length > 0 ? 'PC 側で回答した場合も自動的に閉じます' : 'PC の Codex の画面で承認内容を確認してください'}</Text> : null}
 			<BottomDrawer visible={fullOpen} onClose={() => setFullOpen(false)} accessibilityLabel="確認の内容">
 				<DrawerTitle title={heading} />
 				<ApprovalFull request={request} detail={detail} />

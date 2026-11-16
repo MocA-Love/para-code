@@ -27,12 +27,14 @@ import { APPROVAL_DETAIL_LINES, approvalButtonLayout, isLongApprovalDetail, orde
  * - 送ったあとは「送信済み・PC の応答を待っています」。送信中のまま時間切れになったときだけ再送の導線を出す
  *   （PC が受け付けたあとに時間切れになったら、再送せず PC の画面での確認を促す）
  */
-export function ApprovalCard({ interactionId, onApprove, title, detail, choices, refreshing }: {
+export function ApprovalCard({ interactionId, onApprove, title, detail, choices, expired, refreshing }: {
 	interactionId: string;
 	onApprove: (interactionId: string, choice: string) => Promise<AgentMessageSendResult>;
 	title?: string;
 	detail?: string;
 	choices?: readonly AgentApprovalChoice[];
+	/** 答えを待つのが終わった（PC の `expired`。選択肢は空）。時間切れの知らせは呼ぶ側が出すので、案内の行を出さない。 */
+	expired?: boolean;
 	/** 再取得の応答待ち。カードは出したまま操作だけ止める（差し替えるとローカルの失敗表示が消える）。 */
 	refreshing?: boolean;
 }) {
@@ -95,7 +97,7 @@ export function ApprovalCard({ interactionId, onApprove, title, detail, choices,
 			) : null}
 			{error !== undefined ? <Text style={styles.approvalError}>{error}</Text> : null}
 			{refreshing === true ? <Text style={styles.approvalError}>最新の内容を取得しています。届くまで回答できません</Text> : null}
-			{!locked ? <Text style={styles.approvalHint}>{effectiveChoices.length > 0 ? 'PC側で回答した場合も自動的に閉じます' : 'PCのCodex画面で承認内容を確認してください'}</Text> : null}
+			{!locked && expired !== true ? <Text style={styles.approvalHint}>{effectiveChoices.length > 0 ? 'PC側で回答した場合も自動的に閉じます' : 'PCのCodex画面で承認内容を確認してください'}</Text> : null}
 			{longDetail ? <ApprovalDetailSheet visible={detailOpen} title={title} detail={detail ?? ''} onClose={() => setDetailOpen(false)} /> : null}
 		</View>
 	);

@@ -42,7 +42,7 @@ import { IParadisAgentPageRequestResult, IParadisCloseAgentTabResult, IParadisLi
 import { IParadisExactViewEmulationResult, IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisAgentTabGrant, IParadisGrantAgentTabRequest, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisAgentHookEntersWait, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent, paradisPaneFingerprint, paradisParseCdpInputDispatchResult, paradisExactViewKey, paradisParseExactBrowserViewDescriptor, PARADIS_BROWSER_REPORT_STATE_SETTING, PARADIS_BROWSER_RUN_STEPS_FLOW_SETTING, PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING, PARADIS_BROWSER_SITE_NOTES_SETTING, PARADIS_BROWSER_SNAPSHOT_DIFF_SETTING, PARADIS_BROWSER_SITE_RECIPES_SETTING } from '../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_CODEX_HOOK_EVENTS, paradisAgentHookRemoteHostId, paradisAgentHooksEnabled, paradisIsAgentHookRemoteHostId } from '../common/paradisAgentHooks.js';
 import { PARADIS_ANTIGRAVITY_QUESTION_TOOL, paradisAntigravityHookEvent, paradisIsAntigravityHookPayload, paradisWithAntigravityHookAliases } from '../common/paradisAntigravityHooks.js';
-import { PARADIS_ANTIGRAVITY_APPROVAL_HTTP_PREFIX, PARADIS_ANTIGRAVITY_APPROVAL_WAIT_PREFIX, paradisAntigravityApprovalSkippedByLaunch } from '../common/paradisAntigravityApproval.js';
+import { PARADIS_ANTIGRAVITY_APPROVAL_HTTP_PREFIX, PARADIS_ANTIGRAVITY_APPROVAL_WAIT_PREFIX, PARADIS_ANTIGRAVITY_APPROVAL_WAIT_SETTING, paradisAntigravityApprovalSkippedByLaunch, paradisAntigravityApprovalWaitMs } from '../common/paradisAntigravityApproval.js';
 import { paradisAntigravityApprovalHold } from './paradisAntigravityApprovalHold.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
 import { paradisBindingMatchesGeneration } from '../common/paradisBrowserBindingLifecycle.js';
@@ -1169,7 +1169,12 @@ export class ParadisAgentBrowserService extends Disposable {
 			onDidChangeEnabled: configurationService
 				? Event.map(Event.filter(configurationService.onDidChangeConfiguration, e => e.affectsConfiguration(PARADIS_AGENT_HOOKS_ENABLED_SETTING)), () => undefined)
 				: Event.None,
-			createInstaller: () => new ParadisAgentHooksReconciler(logService, {}, () => cachedShellEnv.getEnv()),
+			createInstaller: () => new ParadisAgentHooksReconciler(logService, {
+				antigravityApprovalWaitMs: () => paradisAntigravityApprovalWaitMs(configurationService?.getValue(PARADIS_ANTIGRAVITY_APPROVAL_WAIT_SETTING)),
+				onDidChangeAntigravityApprovalWait: configurationService
+					? Event.map(Event.filter(configurationService.onDidChangeConfiguration, e => e.affectsConfiguration(PARADIS_ANTIGRAVITY_APPROVAL_WAIT_SETTING)), () => undefined)
+					: Event.None,
+			}, () => cachedShellEnv.getEnv()),
 			removeHooks: () => paradisRemoveAgentHooks(logService),
 			logService,
 			onInstallError: error => {
@@ -1179,6 +1184,8 @@ export class ParadisAgentBrowserService extends Disposable {
 		}));
 		// Claude Code の mod（Claude Mods）がモバイルの承認を待つ上限（paradisClaudeModBridge.ts）。
 		paradisClaudeModBridge.setApprovalWait(() => paradisClaudeModApprovalWaitMs(configurationService?.getValue(PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING)));
+		// Antigravity CLI の許可を待つ上限（paradisAntigravityApprovalHold.ts。hooks.json の `timeout` も同じ設定から決まる）
+		paradisAntigravityApprovalHold.setWaitLimit(() => paradisAntigravityApprovalWaitMs(configurationService?.getValue(PARADIS_ANTIGRAVITY_APPROVAL_WAIT_SETTING)));
 		// コンテキストの内訳をペイン単位で返す口（paradisClaudeContext.sharedProcess.ts）が、呼んだウィンドウのペインかを確かめる
 		paradisClaudeModBridge.setPaneTokenOwner((connection, token) => this._isEligibleToken(connection, token));
 		this._register(toDisposable(() => paradisClaudeModBridge.setPaneTokenOwner(() => false)));
@@ -4622,7 +4629,9 @@ export class ParadisAgentBrowserService extends Disposable {
 				return;
 			}
 			// 送り主の確かめ（プロセス表）は、待つと決まりそうなときだけ（モバイルが見ていない人の PreToolUse ごとに走らせない）
-			const request = { sessionId: field('session_id'), toolUseId: field('tool_use_id'), toolName: field('tool_name') };
+			// `limit` はスクリプトが知らせた hooks.json の `timeout`（秒）。これより長く待たない（版 1 のスクリプトは送らない）
+			const limit = /^[0-9]{1,6}$/.test(url.searchParams.get('limit') ?? '') ? Number(url.searchParams.get('limit')) : undefined;
+			const request = { sessionId: field('session_id'), toolUseId: field('tool_use_id'), toolName: field('tool_name'), ...(limit !== undefined ? { hookTimeoutSeconds: limit } : {}) };
 			if (!paradisAntigravityApprovalHold.canHold(token, request)) {
 				reply('none');
 				return;
