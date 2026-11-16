@@ -37,6 +37,7 @@ const CODEX_SETUP_ERROR = 'Could not update the Codex configuration on the host.
 const CLAUDE_SETUP_ERROR = 'Could not update the Claude Code configuration on the host.';
 const TUNNEL_UNAVAILABLE_ERROR = 'Could not reach the host: the SSH return tunnel is not available yet.';
 const HOST_HOME_UNAVAILABLE_ERROR = 'Could not reach the host: the host home directory is not resolved yet.';
+const ANTIGRAVITY_HOST_UNSUPPORTED_ERROR = 'Para Code cannot set up para-browser for Antigravity CLI on an SSH host yet.';
 
 /** 書き込み時に一時ファイル経由でリネームさせる。SSH越しの切断で全文書きかけのまま壊さないため。 */
 const ATOMIC_WRITE_OPTIONS = { atomic: { postfix: '.para-tmp' } } as const;
@@ -76,6 +77,11 @@ export class ParadisRemoteMcpSetupController {
 	}
 
 	async fix(cli: ParadisMcpCli): Promise<IParadisMcpSetupResult> {
+		// 接続先の Antigravity CLI には橋渡し（stdio のシムと、それを動かす node）がまだ無い。状態にも載せないので
+		// ボタンは出ないが、古い画面などから呼ばれても Codex の設定を書かない
+		if (cli === 'antigravity') {
+			return { cli, cliAvailable: false, servers: [{ server: 'para-browser', outcome: 'error', detail: ANTIGRAVITY_HOST_UNSUPPORTED_ERROR }] };
+		}
 		const [home, port] = await Promise.all([this.remoteHome(), this.remotePort()]);
 		if (home === undefined) {
 			return { cli, cliAvailable: true, servers: [{ server: 'para-browser', outcome: 'error', detail: HOST_HOME_UNAVAILABLE_ERROR }] };
@@ -83,7 +89,10 @@ export class ParadisRemoteMcpSetupController {
 		if (port === undefined) {
 			return { cli, cliAvailable: true, servers: [{ server: 'para-browser', outcome: 'error', detail: TUNNEL_UNAVAILABLE_ERROR }] };
 		}
-		return cli === 'claude' ? this.fixClaude(home, port) : this.fixCodex(home, port);
+		switch (cli) {
+			case 'claude': return this.fixClaude(home, port);
+			case 'codex': return this.fixCodex(home, port);
+		}
 	}
 
 	private async statusClaude(home: URI, port: number | undefined): Promise<IParadisMcpCliConfigStatus> {

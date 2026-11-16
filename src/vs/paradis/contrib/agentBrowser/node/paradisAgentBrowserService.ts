@@ -58,7 +58,7 @@ import { IParadisAgentHookDropRecord, ParadisAgentHookDropCounter, ParadisHookIn
 import { IParadisReplayedAgentPrompt, IParadisSpooledAgentHook, PARADIS_AGENT_HOOK_ID_PARAM, PARADIS_AGENT_HOOK_ID_PATTERN, PARADIS_AGENT_HOOK_REPLAY_PROMPT_WINDOW_MS, PARADIS_AGENT_HOOK_SPOOL_ALIVE_FILE, PARADIS_AGENT_HOOK_SPOOL_ALIVE_INTERVAL_MS, PARADIS_AGENT_HOOK_SPOOL_DIR_NAME, PARADIS_AGENT_HOOK_SYNC_GRACE_MS, paradisPlanAgentHookReplay } from '../common/paradisAgentHookSpool.js';
 import { paradisPruneAgentHookSpool, paradisStampAgentHookSpoolAlive, paradisTakeAgentHookSpool } from './paradisAgentHookSpoolStore.js';
 import { onDidChangeParadisCodexHomes, paradisClaudeConfigDir, paradisCodexConfigHomes, paradisCodexHome } from './paradisAgentHome.js';
-import { ParadisAgentHooksReconciler, paradisClaudeManagedHookEvents, paradisProbeClaudeVersionOutput, paradisGetNotifyScriptContent, paradisMergeAgentHooksJson, paradisRemoveAgentHooks, paradisRemoveAgentHooksJson } from './paradisAgentHooksSetup.js';
+import { ParadisAgentHooksReconciler, paradisClaudeManagedHookEvents, paradisProbeClaudeVersionOutput, paradisGetNotifyScriptContent, paradisMergeAgentHooksJson, paradisMergeAntigravityHooksJson, paradisRemoveAgentHooks, paradisRemoveAgentHooksJson, paradisRemoveAntigravityHooksJson } from './paradisAgentHooksSetup.js';
 import { ParadisAgentHooksAutoInstall } from './paradisAgentHooksAutoInstall.js';
 import { paradisClaudeModBridge } from '../../claudeMod/node/paradisClaudeModBridge.js';
 import { PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING, PARADIS_CLAUDE_MOD_HTTP_PREFIX, paradisClaudeModApprovalWaitMs } from '../../claudeMod/common/paradisClaudeMod.js';
@@ -822,6 +822,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * {@link getPaneTranscriptPath} で 1 件ずつ引く。手元のパスをほかへ広げないよう、状態スナップショットには載せない。
 	 */
 	private readonly _paneSessions = new Map<string, Omit<IParadisAgentPaneSession, 'token'> & { readonly transcriptPath?: string }>();
+	/**
+	 * ペインで動いているエージェントの種類（カーソルの名札に使う）。{@link _paneSessions} は再開の手がかりなので、再開の
+	 * 定義が無いエージェント（Antigravity CLI）を載せない。名札はそれとは別に、hook が報告した種類を覚えておく。
+	 */
+	private readonly _paneCursorAgents = new Map<string, ParadisHookAgentKind>();
 	/**
 	 * 休止（G-03）で止めているペイン → 印の期限。止めた所有者は終わり際に SessionEnd を送り、それは完了（review）に
 	 * 読み替わって緑の点・通知・読み上げを出してしまう。期限までは、このペインの終わりの hook を状態にも hook の
@@ -2252,6 +2257,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	private _recordPaneSession(token: string, eventType: string, sessionId: string | undefined, transcriptPath: string | undefined, cwd: string | undefined, remote: boolean, agentKind?: ParadisHookAgentKind, cli?: string | null): void {
 		if (eventType === 'SessionEnd' || eventType === 'TerminalExit') {
 			this._paneSessions.delete(token);
+			this._paneCursorAgents.delete(token);
 			return;
 		}
 		if (sessionId === undefined || sessionId.length === 0 || sessionId.length > 500) {
@@ -2264,6 +2270,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (agent === undefined) {
 			return;
 		}
+		this._paneCursorAgents.set(token, agent);
 		// Antigravity CLI の会話はまだ控えない（再開の定義が無い）。前の会話（同じペインで前に動かした Claude Code など）を
 		// 再開の候補に残さないよう、控えを消す
 		if (agent === 'antigravity') {
@@ -2351,6 +2358,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		paradisClaudeModBridge.forgetToken(token);
 		paradisOpenCodeBridge.unregister(token);
 		this._paneSessions.delete(token);
+		this._paneCursorAgents.delete(token);
 		this._codexFrontSessions.forget(token);
 		this._activityApprovalTokens.delete(token);
 		this._elicitationWaits.delete(token);
@@ -3667,7 +3675,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			getCursorIdentity: (paneToken: string): IParadisMcpCursorIdentity => {
 				const labelKey = this._paneCursorLabelKeys.get(paneToken);
 				const label = labelKey !== undefined ? this._cursorOwners.labelOf(labelKey) : undefined;
-				const cli = this._paneSessions.get(paneToken)?.agent;
+				const cli = this._paneCursorAgent(paneToken);
 				return { ...(cli ? { cli } : {}), ...(label ? { label } : {}) };
 			},
 		};
@@ -3890,6 +3898,10 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (cli === 'codex') {
 			return paradisMergeAgentHooksJson(existingRaw, PARADIS_CODEX_HOOK_EVENTS);
 		}
+		// Antigravity CLI の hooks.json（`~/.gemini/config/hooks.json`）。手元と同じ名前付きの hook を置く
+		if (cli === 'antigravity') {
+			return paradisMergeAntigravityHooksJson(existingRaw);
+		}
 		if (cli !== 'claude') {
 			return undefined;
 		}
@@ -3901,15 +3913,16 @@ export class ParadisAgentBrowserService extends Disposable {
 
 	/**
 	 * 接続先の settings.json / hooks.json から、Para Code が置いた hook だけを外した中身を返す
+	 * （`cli` が `antigravity` なら Antigravity CLI の hooks.json の形で外す）
 	 * （hook の自動設置をオフにしたとき用）。判断を手元と同じ規則に揃えるため、ここに置く。
 	 *
 	 * @returns 書き戻すべき中身。ファイルが無い・壊れている場合は undefined（呼び出し側は触らない）
 	 */
-	async buildRemoteAgentHooksRemovalJson(existingRaw: string | undefined): Promise<string | undefined> {
+	async buildRemoteAgentHooksRemovalJson(existingRaw: string | undefined, cli?: 'antigravity'): Promise<string | undefined> {
 		if (existingRaw === undefined || existingRaw.trim().length === 0) {
 			return undefined;
 		}
-		return paradisRemoveAgentHooksJson(existingRaw);
+		return cli === 'antigravity' ? paradisRemoveAntigravityHooksJson(existingRaw) : paradisRemoveAgentHooksJson(existingRaw);
 	}
 
 	private async _startServer(): Promise<void> {
@@ -4894,6 +4907,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				} else {
 					if (eventType === 'SessionEnd') {
 						this._paneSessions.delete(token);
+						this._paneCursorAgents.delete(token);
 					}
 					this._runNonThrowingDiagnostic(() => this.logService.info(`[ParadisAgentHibernation] dropped ${eventType} from the stopped agent of pane ${this._tokenFingerprint(token)}`));
 					res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -5345,6 +5359,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		// 止めた会話はもうペインで動いていない（再開の手がかりはウィンドウの台帳に残してある）
 		if (this._paneSessions.get(token)?.sessionId === sessionId) {
 			this._paneSessions.delete(token);
+			this._paneCursorAgents.delete(token);
 		}
 		return { ok: true, bypass: resolved.bypass, killed };
 	}
@@ -5590,7 +5605,12 @@ export class ParadisAgentBrowserService extends Disposable {
 	/** この入力の持ち主の名前と色。CLI の種類は hook が報告した会話から取る（分からなければ印なし）。 */
 	private _cursorOwnerFor(key: string, binding: IBindingEntry): IParadisCursorOwner {
 		const token = paradisPaneTokenOfScopeKey(key);
-		return this._cursorOwners.resolve(this._cursorOwnerKey(token, binding), JSON.stringify(binding.exactView), this._paneSessions.get(token)?.agent);
+		return this._cursorOwners.resolve(this._cursorOwnerKey(token, binding), JSON.stringify(binding.exactView), this._paneCursorAgent(token));
+	}
+
+	/** カーソルの名札に出すエージェントの種類（hook が報告したもの。分からなければ undefined）。 */
+	private _paneCursorAgent(token: string): ParadisHookAgentKind | undefined {
+		return this._paneSessions.get(token)?.agent ?? this._paneCursorAgents.get(token);
 	}
 
 	/** `set_cursor_label` と、`open_browser_tab`・`select_browser_tab` の `label`。戻り値は道具の結果の文。 */
@@ -8521,6 +8541,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._remotePaneWindows.clear();
 		this._paneStatuses.clear();
 		this._paneSessions.clear();
+		this._paneCursorAgents.clear();
 		this._codexFrontSessions.clear();
 		this._activityApprovalTokens.clear();
 		this._elicitationWaits.clear();

@@ -357,8 +357,8 @@ suite('ParadisRemoteAgentHookFiles', () => {
 				state.duringBuild();
 				return HOOKED;
 			},
-			buildRemovalJson: async current => {
-				state.calls.push('remove');
+			buildRemovalJson: async (current, cli) => {
+				state.calls.push(cli === 'antigravity' ? 'remove:antigravity' : 'remove');
 				return current === HOOKED ? JSON.stringify({ hooks: {} }) : current;
 			},
 			listCodexAccountHomes: async () => state.accountHomes,
@@ -428,6 +428,26 @@ suite('ParadisRemoteAgentHookFiles', () => {
 		assert.deepStrictEqual({ installed, removedFromAccount: await read(accountHooks) }, {
 			installed: { codex: HOOKED, account: HOOKED, calls: ['build:claude', 'build:codex', 'build:codex'] },
 			removedFromAccount: JSON.stringify({ hooks: {} }),
+		});
+	});
+
+	test('Antigravity CLI の hooks.json には、agy が ~/.gemini/config を作っている接続先にだけ置き、オフにしたら形を伝えて外す', async () => {
+		const disposables = store.add(new DisposableStore());
+		const withoutAgy = setup(disposables, true);
+		await withoutAgy.files.runExclusive(() => withoutAgy.files.sync(home));
+		const agyHooks = joinPath(home, '.gemini', 'config', 'hooks.json');
+		const notUsed = { hooks: await withoutAgy.read(agyHooks), calls: [...withoutAgy.state.calls] };
+
+		const withAgy = setup(disposables, true);
+		await withAgy.fileService.createFolder(joinPath(home, '.gemini', 'config'));
+		await withAgy.files.runExclusive(() => withAgy.files.sync(home));
+		const installed = { hooks: await withAgy.read(agyHooks), calls: [...withAgy.state.calls] };
+		await withAgy.files.setEnabled(false);
+
+		assert.deepStrictEqual({ notUsed, installed, removalCalls: withAgy.state.calls.slice(installed.calls.length) }, {
+			notUsed: { hooks: undefined, calls: ['build:claude', 'build:codex'] },
+			installed: { hooks: HOOKED, calls: ['build:claude', 'build:codex', 'build:antigravity'] },
+			removalCalls: ['remove', 'remove', 'remove:antigravity'],
 		});
 	});
 

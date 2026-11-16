@@ -9,14 +9,15 @@
 import { spawn } from 'child_process';
 import { constants as fsConstants, promises as fs, type Stats } from 'fs';
 import { homedir } from 'os';
-import { extname, isAbsolute, join } from '../../../../base/common/path.js';
+import { dirname, extname, isAbsolute, join } from '../../../../base/common/path.js';
+import { FileAccess } from '../../../../base/common/network.js';
 import { findExecutable, killTree } from '../../../../base/node/processes.js';
 import { paradisWrapWindowsScriptShim } from '../../../common/paradisWindowsScriptShim.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 import { paradisWriteRollingBackup } from '../../../node/paradisRollingFileBackup.js';
 import { IParadisMcpCliConfigStatus, IParadisMcpConfigStatus, IParadisMcpSetupResult, PARADIS_PANE_TOKEN_ENV_VAR, ParadisMcpCli } from '../common/paradisAgentBrowser.js';
-import { inspectParadisMcpTomlSection, paradisClaudeMcpServerEntry, paradisCodexMcpTableBody, paradisMcpServerUrl, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
-import { computeParadisCodexTableRewrite, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml, paradisAddCodexMissingTableLines, paradisClaudeMcpEntryNeedsToolTimeout, paradisReadClaudeMcpEntry } from './paradisMcpConfigStatus.js';
+import { IParadisAntigravityMcpServerEntry, IParadisMcpStdioBridgeLocation, inspectParadisMcpTomlSection, paradisAntigravityMcpServerEntry, paradisClaudeMcpServerEntry, paradisCodexMcpTableBody, paradisMcpServerUrl, paradisUpsertAntigravityMcpJson, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
+import { computeParadisCodexTableRewrite, inspectParadisAntigravityMcpJson, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml, paradisAddCodexMissingTableLines, paradisAntigravityMcpEntryToRelocate, paradisClaudeMcpEntryNeedsToolTimeout, paradisReadClaudeMcpEntry } from './paradisMcpConfigStatus.js';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_OUTPUT_LIMIT_BYTES = 64 * 1024;
@@ -30,6 +31,7 @@ const CODEX_SETUP_ERROR = 'Automatic setup could not update the Codex configurat
 /** 読んでから書くまでに config.toml が変わったとき、読み直して試す回数（最初の 1 回を含む）。 */
 const CODEX_CONFIG_CHANGED_ATTEMPTS = 2;
 const CLAUDE_SETUP_ERROR = 'Automatic setup could not register the MCP server.';
+const ANTIGRAVITY_SETUP_ERROR = 'Automatic setup could not update the Antigravity CLI configuration safely.';
 
 export type IParadisMcpSetupCommandResult =
 	| { readonly kind: 'exit'; readonly code: number; readonly output: string }
@@ -325,6 +327,17 @@ export interface IParadisMcpSetupControllerOptions {
 	/** `safeExtra` は Sentry へ送ってよい値だけ（理由の種類など。パスや設定の中身は入れない）。 */
 	readonly log: (message: string, error?: unknown, safeExtra?: Readonly<Record<string, string | number>>) => void;
 	readonly configReadFileSystem?: IConfigReadFileSystem;
+	/**
+	 * Antigravity CLI へ渡す stdio の橋渡し（Para Code 本体とシムの場所）。無ければ Antigravity CLI は扱わない
+	 * （状態にも載せない）。
+	 */
+	readonly resolveMcpBridge?: () => IParadisMcpStdioBridgeLocation | undefined;
+	/** Antigravity CLI の全体の設定のフォルダ。省略時は `~/.gemini/config`。 */
+	readonly antigravityConfigDir?: string;
+	/** フォルダがあるか（Antigravity CLI の設定のフォルダを見る）。省略時は `fs.stat`。 */
+	readonly isDirectory?: (path: string) => Promise<boolean>;
+	/** パスが残っているか（前に書いた橋渡しの場所を見る）。省略時は `fs.stat`。 */
+	readonly pathExists?: (path: string) => Promise<boolean>;
 }
 
 interface IConfigReadFileSystem {
@@ -508,7 +521,14 @@ export class ParadisMcpSetupController {
 		if (existing !== undefined) {
 			return existing;
 		}
-		const flight = (cli === 'claude' ? this.setupClaude(gatewayPort, { allowLegacyAdd: true }) : this.withCodexPropagation(this.setupCodex(gatewayPort), gatewayPort)).finally(() => {
+		const run = (): Promise<IParadisMcpSetupResult> => {
+			switch (cli) {
+				case 'claude': return this.setupClaude(gatewayPort, { allowLegacyAdd: true });
+				case 'codex': return this.withCodexPropagation(this.setupCodex(gatewayPort), gatewayPort);
+				case 'antigravity': return this.setupAntigravity('button');
+			}
+		};
+		const flight = run().finally(() => {
 			if (this.flights.get(cli) === flight) {
 				this.flights.delete(cli);
 			}
@@ -517,13 +537,59 @@ export class ParadisMcpSetupController {
 		return flight;
 	}
 
-	/** 「MCP接続設定」タブ表示用の、Claude Code / Codex 双方のMCP設定ステータスを判定する。 */
+	/** 「MCP接続設定」タブ表示用の、Claude Code / Codex /（使っていれば）Antigravity CLI のMCP設定ステータスを判定する。 */
 	async status(gatewayPort: number | undefined): Promise<IParadisMcpConfigStatus> {
-		const [claude, codex] = await Promise.all([
+		const [claude, codex, antigravity] = await Promise.all([
 			this.statusClaude(gatewayPort),
 			this.statusCodex(gatewayPort),
+			this.statusAntigravity(),
 		]);
-		return { claude, codex, ...(gatewayPort !== undefined ? { gatewayPort } : {}) };
+		return { claude, codex, ...(antigravity !== undefined ? { antigravity } : {}), ...(gatewayPort !== undefined ? { gatewayPort } : {}) };
+	}
+
+	/** Antigravity CLI の全体の設定のフォルダ（`~/.gemini/config`）。 */
+	private antigravityConfigDir(): string {
+		return this.options.antigravityConfigDir ?? join(homedir(), '.gemini', 'config');
+	}
+
+	private async isDirectory(path: string): Promise<boolean> {
+		if (this.options.isDirectory !== undefined) {
+			return this.options.isDirectory(path);
+		}
+		try {
+			return (await fs.stat(path)).isDirectory();
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * Antigravity CLI の状態。agy が設定のフォルダを作っていない（agy を使っていない）ときは undefined にして
+	 * カードを出さない（使っていない人に「未設定」の印を増やさない。hook を置く規則と同じ）。
+	 */
+	private async statusAntigravity(): Promise<IParadisMcpCliConfigStatus | undefined> {
+		const bridge = this.options.resolveMcpBridge?.();
+		const configDir = this.antigravityConfigDir();
+		if (bridge === undefined || !await this.isDirectory(configDir)) {
+			return undefined;
+		}
+		const configPath = join(configDir, 'mcp_config.json');
+		try {
+			const snapshot = await readConfigSnapshot(configPath, this.options.configReadFileSystem);
+			if (!snapshot.exists) {
+				return { cli: 'antigravity', state: 'unconfigured' };
+			}
+			const inspection = inspectParadisAntigravityMcpJson(snapshot.text, paradisAntigravityMcpServerEntry(bridge, this.options.platform));
+			return {
+				cli: 'antigravity',
+				state: inspection.state,
+				...(inspection.state === 'configured' ? { configPath } : {}),
+				...(inspection.manualOnly ? { manualOnly: true } : {}),
+			};
+		} catch {
+			this.options.log('Antigravity CLI MCP status read failed');
+			return { cli: 'antigravity', state: 'unconfigured', failed: true };
+		}
 	}
 
 	private async statusClaude(gatewayPort: number | undefined): Promise<IParadisMcpCliConfigStatus> {
@@ -582,10 +648,12 @@ export class ParadisMcpSetupController {
 	 * HTTP方式の節へ書き換え、未設定なら para-browser テーブルを追記する。
 	 */
 	fix(cli: ParadisMcpCli, gatewayPort: number | undefined): Promise<IParadisMcpSetupResult> {
-		if (cli === 'claude') {
-			return this.setup('claude', gatewayPort);
+		switch (cli) {
+			case 'claude': return this.setup('claude', gatewayPort);
+			// 直すのは para-browser の節を橋渡しへ置き換えることなので、セットアップと同じ
+			case 'antigravity': return this.setup('antigravity', gatewayPort);
+			case 'codex': return this.withCodexPropagation(this.fixCodex(gatewayPort), gatewayPort);
 		}
-		return this.withCodexPropagation(this.fixCodex(gatewayPort), gatewayPort);
 	}
 
 	/**
@@ -636,6 +704,13 @@ export class ParadisMcpSetupController {
 	 * ポートの組は、成否にかかわらず 1 回しか試さない（印は {@link IParadisMcpSetupControllerOptions.upgradeMarkerPath}）。
 	 */
 	async upgradeToolTimeouts(gatewayPort: number | undefined): Promise<void> {
+		// Antigravity CLI の橋渡しはポートを書かないので、ポートに関係なく場所だけ直す
+		// （ここで投げても Claude・Codex の入れ直しは続ける）
+		try {
+			await this.relocateAntigravityBridge();
+		} catch {
+			this.options.log('Antigravity CLI MCP bridge relocation failed');
+		}
 		if (gatewayPort === undefined) {
 			return;
 		}
@@ -769,6 +844,87 @@ export class ParadisMcpSetupController {
 		} catch {
 			this.options.log('Codex MCP configuration fix failed');
 			return { cli: 'codex', cliAvailable: true, target: configPath, servers: [{ server: 'para-browser', outcome: 'error', detail: CODEX_SETUP_ERROR }] };
+		}
+	}
+
+	/**
+	 * Para Code が前に Antigravity CLI へ書いた橋渡しが、もう無い場所（入れ直した・移した Para Code）を指していれば
+	 * 今の場所へ書き直す（起動時に 1 回）。利用者が `disabled` で止めたものは止めたまま。手で書いた para-browser には触らない。
+	 */
+	private async relocateAntigravityBridge(): Promise<void> {
+		if (this.flights.has('antigravity')) {
+			return;
+		}
+		const flight = this.setupAntigravity('relocate').finally(() => {
+			if (this.flights.get('antigravity') === flight) {
+				this.flights.delete('antigravity');
+			}
+		});
+		this.flights.set('antigravity', flight);
+		this.upgradeFlights.add(flight);
+		await flight;
+	}
+
+	/**
+	 * 前に書いた橋渡しの指す実行ファイルかシムが、もう無いか。両方残っている別の場所（ワークツリーの開発版と配布版を
+	 * 交互に起動したときなど）は書き直さない（起動のたびに書き換えが往復する。状態は「要修正」になり、ボタンで直せる）。
+	 */
+	private async antigravityBridgeIsGone(text: string, entry: IParadisAntigravityMcpServerEntry): Promise<boolean> {
+		const paths = paradisAntigravityMcpEntryToRelocate(text, entry);
+		if (paths === undefined) {
+			return false;
+		}
+		const exists = this.options.pathExists ?? (async (path: string) => fs.stat(path).then(() => true, () => false));
+		for (const path of paths) {
+			if (!await exists(path)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Antigravity CLI の `~/.gemini/config/mcp_config.json` へ para-browser を stdio の橋渡しとして書く。
+	 *
+	 * `agy mcp add` は使わず、Codex と同じくファイルを直接書く（読んでから書くまでに変わっていないか確かめ、
+	 * 書く前の中身を隣へ控える）。agy が設定のフォルダを作っていなければ書かない。
+	 *
+	 * @param mode `button` は利用者が押したとき（para-browser の節を丸ごと置き換え、`disabled` を外す）。
+	 *   `relocate` は起動時（Para Code が書いた橋渡しの指す場所が無くなったときだけ、`disabled` を残して直す）。
+	 */
+	private async setupAntigravity(mode: 'button' | 'relocate'): Promise<IParadisMcpSetupResult> {
+		const configDir = this.antigravityConfigDir();
+		const configPath = join(configDir, 'mcp_config.json');
+		const bridge = this.options.resolveMcpBridge?.();
+		if (bridge === undefined || !await this.isDirectory(dirname(configPath))) {
+			return { cli: 'antigravity', cliAvailable: false, target: configPath, servers: [] };
+		}
+		const entry = paradisAntigravityMcpServerEntry(bridge, this.options.platform);
+		for (let attempt = 1; ; attempt++) {
+			let stage: 'read' | 'write' = 'read';
+			try {
+				const original = await readConfigSnapshot(configPath, this.options.configReadFileSystem);
+				if (mode === 'relocate' && !(original.exists && await this.antigravityBridgeIsGone(original.text, entry))) {
+					return { cli: 'antigravity', cliAvailable: true, target: configPath, servers: [{ server: 'para-browser', outcome: 'already' }] };
+				}
+				const content = paradisUpsertAntigravityMcpJson(original.exists ? original.text : undefined, entry, mode === 'relocate');
+				if (content === undefined) {
+					throw new ParadisCodexConfigError('ambiguous', 'Unreadable Antigravity CLI MCP configuration');
+				}
+				if (original.exists && content === original.text) {
+					return { cli: 'antigravity', cliAvailable: true, target: configPath, servers: [{ server: 'para-browser', outcome: 'already' }] };
+				}
+				stage = 'write';
+				await writeConfigAtomic(configPath, original, content, this.options.configReadFileSystem);
+				return { cli: 'antigravity', cliAvailable: true, target: configPath, servers: [{ server: 'para-browser', outcome: 'success' }] };
+			} catch (error) {
+				const kind = codexConfigFailureKind(stage, error);
+				if (kind === 'changed' && attempt < CODEX_CONFIG_CHANGED_ATTEMPTS) {
+					continue;
+				}
+				this.options.log(mode === 'button' ? 'Antigravity CLI MCP configuration update failed' : 'Antigravity CLI MCP bridge relocation failed', undefined, { safe_failure_kind: kind, attempt });
+				return { cli: 'antigravity', cliAvailable: true, target: configPath, servers: [{ server: 'para-browser', outcome: 'error', detail: ANTIGRAVITY_SETUP_ERROR }] };
+			}
 		}
 	}
 
@@ -958,6 +1114,21 @@ export class ParadisMcpSetupController {
 	}
 }
 
+/**
+ * Antigravity CLI へ書く橋渡しの場所。Para Code 本体を node として動かすので、Electron の中（shared process）でだけ返す。
+ * 本体を `ELECTRON_RUN_AS_NODE` で動かすのは、内蔵の chrome-devtools-mcp の起動（paradisDevtoolsMcpProxy.ts）と同じ。
+ * シムはパッケージ版でも同じ場所に出す（build/next/index.ts の PARA-PATCH）。
+ */
+function paradisLocalMcpBridgeLocation(): IParadisMcpStdioBridgeLocation | undefined {
+	if (!process.versions.electron) {
+		return undefined;
+	}
+	return {
+		executable: process.execPath,
+		shimPath: FileAccess.asFileUri('vs/paradis/contrib/agentBrowser/node/paradisBrowserMcpShim.js').fsPath,
+	};
+}
+
 export function createParadisMcpSetupController(
 	resolveShellEnv: () => Promise<NodeJS.ProcessEnv>,
 	codexHome: string,
@@ -974,6 +1145,7 @@ export function createParadisMcpSetupController(
 		additionalCodexHomes,
 		// claudeConfigJsonPath は渡さない: シェルの環境の CLAUDE_CONFIG_DIR に従って決める（claude 自身が書く先と同じ）。
 		upgradeMarkerPath,
+		resolveMcpBridge: paradisLocalMcpBridgeLocation,
 		log,
 	});
 }

@@ -51,6 +51,15 @@ suite('ParadisRemoteMcpSetupController', () => {
 		});
 	});
 
+	test('refuses Antigravity CLI on the host without writing the Codex configuration', async () => {
+		const { service, written } = fakeFileService();
+		const controller = new ParadisRemoteMcpSetupController(service, async () => HOME, async () => 51234);
+
+		const result = await controller.fix('antigravity');
+
+		assert.deepStrictEqual({ cli: result.cli, cliAvailable: result.cliAvailable, outcome: result.servers.map(server => server.outcome), written }, { cli: 'antigravity', cliAvailable: false, outcome: ['error'], written: [] });
+	});
+
 	test('detects a stale port and needsFix without touching files, using the remote home path', async () => {
 		const { service, written } = fakeFileService({
 			[URI.joinPath(HOME, '.claude.json').toString()]: JSON.stringify({

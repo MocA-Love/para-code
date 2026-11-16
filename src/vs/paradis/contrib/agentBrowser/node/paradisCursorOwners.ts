@@ -10,7 +10,7 @@
 // q.html Q272〜Q274 A・Q636 A、agent-cursor-after-mock.html の「名前の規則」。
 //
 // - 名前は LLM が `set_cursor_label`（または `open_browser_tab`・`select_browser_tab` の `label`）で
-//   決めたもの。決めていなければ CLI の名前（Claude・Codex）。サブエージェントの種類は推測になるので使わない
+//   決めたもの。決めていなければ CLI の名前（Claude・Codex・OpenCode・Antigravity）。サブエージェントの種類は推測になるので使わない
 // - 色は同じページの持ち主ごとに必ず変える。1 つ目は CLI の色、2 つ目以降は紫・桃・青の順
 // - 番号はページに来たときに、同じ名前の持ち主の中で空いている一番小さいものを取る（1 は番号を出さない、
 //   2 から「Claude 2」）。番号は持ち主に固定し、先の持ち主が休んで外れても、名前を変えても保つ。
@@ -25,11 +25,11 @@ import { IParadisCursorOwner } from '../common/paradisCursorOverlay.js';
 import { PARADIS_CURSOR_LABEL_RATE_LIMIT, PARADIS_CURSOR_LABEL_RATE_WINDOW_MS, ParadisCursorLabelResult, paradisNormalizeCursorLabel } from '../common/paradisCursorLabel.js';
 
 /** ペインで動いている CLI。分からなければ undefined（名前は「エージェント」相当の既定）。 */
-export type ParadisCursorCli = 'claude' | 'codex' | 'opencode';
+export type ParadisCursorCli = 'claude' | 'codex' | 'opencode' | 'antigravity';
 
-const CLI_NAME: Readonly<Record<ParadisCursorCli, string>> = { claude: 'Claude', codex: 'Codex', opencode: 'OpenCode' };
-const CLI_MARK: Readonly<Record<ParadisCursorCli, string>> = { claude: 'C', codex: 'X', opencode: 'O' };
-const CLI_COLOR: Readonly<Record<ParadisCursorCli, string>> = { claude: '#d97757', codex: '#10a37f', opencode: '#5b8cff' };
+const CLI_NAME: Readonly<Record<ParadisCursorCli, string>> = { claude: 'Claude', codex: 'Codex', opencode: 'OpenCode', antigravity: 'Antigravity' };
+const CLI_MARK: Readonly<Record<ParadisCursorCli, string>> = { claude: 'C', codex: 'X', opencode: 'O', antigravity: 'A' };
+const CLI_COLOR: Readonly<Record<ParadisCursorCli, string>> = { claude: '#d97757', codex: '#10a37f', opencode: '#5b8cff', antigravity: '#4285f4' };
 /** CLI の分からない持ち主の 1 つ目の色（ワークベンチのアクセント）。 */
 const UNKNOWN_COLOR = '#5b8cff';
 /** 2 つ目以降の持ち主の色（紫・桃・青）。 */

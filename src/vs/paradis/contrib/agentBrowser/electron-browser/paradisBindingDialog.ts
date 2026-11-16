@@ -164,6 +164,14 @@ const STR_SETUP_CLAUDE_LABEL = localize('paradis.bindingDialog.setupClaudeLabel'
 // allow-any-unicode-next-line
 const STR_SETUP_CODEX_LABEL = localize('paradis.bindingDialog.setupCodexLabel', "~/.codex/config.toml に追記");
 // allow-any-unicode-next-line
+const STR_SETUP_ANTIGRAVITY_UNAVAILABLE = localize('paradis.bindingDialog.setupAntigravityUnavailable', "Antigravity CLI の設定のフォルダ（~/.gemini/config）が見つかりませんでした。agy を一度起動してから、もう一度押してください。");
+// allow-any-unicode-next-line
+const STR_MCP_DETAIL_NEEDS_FIX_ANTIGRAVITY = localize('paradis.bindingDialog.mcpDetailNeedsFixAntigravity', "para-browser が、Antigravity CLI では動かない形か、別の場所の Para Code を指す形で登録されています。ワンクリックで、この Para Code を経由してつなぐ形へ書き換えます。");
+// allow-any-unicode-next-line
+const strMcpDetailConfiguredAntigravity = (path: string) => localize('paradis.bindingDialog.mcpDetailConfiguredAntigravity', "{0} に para-browser を検出しました。", path);
+// allow-any-unicode-next-line
+const strMcpDetailManualOnlyAntigravity = (path: string) => localize('paradis.bindingDialog.mcpDetailManualOnlyAntigravity', "{0} を JSON として読めないため、自動セットアップは行えません。ファイルの書き方を直してから、このダイアログを開き直してください。", path);
+// allow-any-unicode-next-line
 const STR_SETUP_CLAUDE_UNAVAILABLE = localize('paradis.bindingDialog.setupClaudeUnavailable', "claude CLI が PATH 上に見つかりませんでした。下のコマンドをターミナルにコピーして手動で登録してください。");
 // allow-any-unicode-next-line
 const strSetupChannelError = (detail: string) => localize('paradis.bindingDialog.setupChannelError', "実行に失敗しました: {0}", detail);
@@ -177,9 +185,9 @@ const strSetupServerAlready = (server: string) => localize('paradis.bindingDialo
 const strSetupServerError = (server: string, detail: string) => localize('paradis.bindingDialog.setupServerError', "{0} の登録に失敗しました: {1}", server, detail);
 
 /** エージェントCLIのユーザー向け表示名（製品名のため非localize）。 */
-const CLI_DISPLAY_NAME: Readonly<Record<ParadisMcpCli, string>> = { claude: 'Claude Code', codex: 'Codex' };
+const CLI_DISPLAY_NAME: Readonly<Record<ParadisMcpCli, string>> = { claude: 'Claude Code', codex: 'Codex', antigravity: 'Antigravity CLI' };
 /** 設定ファイルの表示用フレンドリーパス（未設定時は絶対パスが取れないため既定パスを出す）。 */
-const CLI_CONFIG_PATH: Readonly<Record<ParadisMcpCli, string>> = { claude: '~/.claude.json', codex: '~/.codex/config.toml' };
+const CLI_CONFIG_PATH: Readonly<Record<ParadisMcpCli, string>> = { claude: '~/.claude.json', codex: '~/.codex/config.toml', antigravity: '~/.gemini/config/mcp_config.json' };
 
 // allow-any-unicode-next-line
 const STR_TAB_DEVICES = localize('paradis.bindingDialog.tabDevices', "モバイル端末");
@@ -473,8 +481,9 @@ export class ParadisBindingDialog extends Disposable {
 			return undefined;
 		}
 		let count = 0;
-		for (const cli of ['claude', 'codex'] as const) {
-			if (status[cli].failed || status[cli].state !== 'configured') {
+		for (const cli of this._mcpCards()) {
+			const cliStatus = status[cli];
+			if (cliStatus === undefined || cliStatus.failed || cliStatus.state !== 'configured') {
 				count++;
 			}
 		}
@@ -937,9 +946,15 @@ export class ParadisBindingDialog extends Disposable {
 
 	private _renderMcpTab(): void {
 		const wrap = dom.append(this._body, $('.pbd-mcp'));
-		this._renderMcpCard(wrap, 'claude');
-		this._renderMcpCard(wrap, 'codex');
+		for (const cli of this._mcpCards()) {
+			this._renderMcpCard(wrap, cli);
+		}
 		this._renderMcpManual(wrap);
+	}
+
+	/** 出すカード。Antigravity CLI は、状態が届いたとき（agy を使っている手元の PC）だけ出す。 */
+	private _mcpCards(): readonly ParadisMcpCli[] {
+		return this._mcpStatus?.antigravity !== undefined ? ['claude', 'codex', 'antigravity'] : ['claude', 'codex'];
 	}
 
 	private _renderMcpCard(container: HTMLElement, cli: ParadisMcpCli): void {
@@ -989,10 +1004,10 @@ export class ParadisBindingDialog extends Disposable {
 
 	private _mcpDetailText(cli: ParadisMcpCli, status: IParadisMcpCliConfigStatus | undefined, state: string | undefined): string {
 		switch (state) {
-			case 'configured': return strMcpDetailConfigured(status?.configPath ?? CLI_CONFIG_PATH[cli]);
-			case 'needsFix': return strMcpDetailNeedsFix(status?.detectedPort ?? 0);
+			case 'configured': return (cli === 'antigravity' ? strMcpDetailConfiguredAntigravity : strMcpDetailConfigured)(status?.configPath ?? CLI_CONFIG_PATH[cli]);
+			case 'needsFix': return cli === 'antigravity' ? STR_MCP_DETAIL_NEEDS_FIX_ANTIGRAVITY : strMcpDetailNeedsFix(status?.detectedPort ?? 0);
 			case 'unconfigured': return status?.manualOnly
-				? strMcpDetailManualOnly(CLI_CONFIG_PATH[cli])
+				? (cli === 'antigravity' ? strMcpDetailManualOnlyAntigravity : strMcpDetailManualOnly)(CLI_CONFIG_PATH[cli])
 				: strMcpDetailUnconfigured(CLI_CONFIG_PATH[cli]);
 			case 'failed': return STR_MCP_DETAIL_FAILED;
 			default: return STR_MCP_DETAIL_LOADING;
@@ -1041,8 +1056,8 @@ export class ParadisBindingDialog extends Disposable {
 		if (!result) {
 			return;
 		}
-		if (result.cli === 'claude' && !result.cliAvailable) {
-			this._appendSetupResultRow(container, 'error', STR_SETUP_CLAUDE_UNAVAILABLE);
+		if (!result.cliAvailable && (result.cli === 'claude' || result.cli === 'antigravity')) {
+			this._appendSetupResultRow(container, 'error', result.cli === 'claude' ? STR_SETUP_CLAUDE_UNAVAILABLE : STR_SETUP_ANTIGRAVITY_UNAVAILABLE);
 			return;
 		}
 		if (result.target) {
