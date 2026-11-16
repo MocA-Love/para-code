@@ -53,6 +53,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				title: '過去の会話の一覧に、Antigravity CLI の会話も出るようにしました',
 				body: '開くと中身を読め、PC で同じ会話を再開できます。続きの依頼はまだアプリから渡せないので、再開したあとターミナル表示で入力してください。',
 			},
+			{
+				icon: 'rocket-outline',
+				title: 'アプリから Antigravity CLI を起動でき、使用量の画面に Antigravity のリミットも出るようにしました',
+				body: '「エージェントを起動」と新しいスペースの作成で選べます。使用量は Antigravity CLI を入れてサインインしている PC の分だけ出ます（iPad の広い幅では Claude の下に並びます）。',
+			},
 		],
 	},
 	{

@@ -42,9 +42,13 @@ export function buildLaunchCommandPreview(agent: WorktreeAgentDef, prompt: strin
 	}
 	command = command.replace(/ {2,}/g, ' ').trim();
 	const trimmedPrompt = prompt.trim().replace(/\s+/g, ' ');
-	const promptExpression = trimmedPrompt.length === 0
+	let promptExpression = trimmedPrompt.length === 0
 		? ''
 		: quotePosixArg(trimmedPrompt.length > 40 ? `${trimmedPrompt.slice(0, 40)}…` : trimmedPrompt);
+	// 指示を値として取るフラグ（Antigravity CLI の `-i`）は、指示があるときだけ指示の直前に付ける（PC と同じ順）
+	if (agent.promptFlag !== undefined && agent.promptFlag.length > 0 && promptExpression.length > 0) {
+		promptExpression = `${agent.promptFlag} ${promptExpression}`;
+	}
 	command = command.includes('{prompt}')
 		? command.replace('{prompt}', promptExpression)
 		: (promptExpression.length > 0 ? `${command} ${promptExpression}` : command);

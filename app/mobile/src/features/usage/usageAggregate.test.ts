@@ -14,11 +14,14 @@ import {
 	buildUsageEntries,
 	entryKindLabel,
 	entryTitle,
+	hasProviderLimits,
 	homeAccounts,
 	isNoResponseError,
 	isOldValue,
 	todayCostTotal,
 	isWindowExpired,
+	latestProviderSnapshot,
+	providerSnapshotOf,
 	scopeCountLabel,
 	USAGE_MACHINE_ID_CAPABILITY,
 	widgetAccount,
@@ -156,6 +159,45 @@ describe('accountMergeKey', () => {
 			'codex|source:pc:a|local-id',
 			'codex|source:pc:a|/home/x/.codex',
 		]);
+	});
+
+	it('Antigravity はメールが付いていても束ねず、Claude の同じメールのアカウントと混ぜない', () => {
+		expect([
+			accountMergeKey(account({ provider: 'antigravity', id: '/home/x/.gemini' }), 'pc:a'),
+			accountMergeKey(account({ provider: 'antigravity', id: '/home/x/.gemini', email: 'user@example.com' }), 'pc:b'),
+		]).toEqual([
+			'antigravity|source:pc:a|/home/x/.gemini',
+			'antigravity|source:pc:b|/home/x/.gemini',
+		]);
+	});
+});
+
+describe('Antigravity の上限', () => {
+	const agy = (usedPercent: number): RateLimitAccount => account({ provider: 'antigravity', id: '/home/x/.gemini', homeLabel: '~/.gemini', active: true, scoped: [{ usedPercent, label: 'Gemini Models' }] });
+
+	it('送ってきた PC の分だけを出どころごとに並べ、送らない PC（agy を入れていない・旧PC）や形の違う値は飛ばす', () => {
+		const result = entries([pc('a'), pc('b'), pc('c')], {
+			'pc:a': { limits: { value: limits([], [], { antigravity: { accounts: [agy(20)] } }), at: NOW, receivedAt: NOW } },
+			'pc:b': { limits: { value: limits([]), at: NOW, receivedAt: NOW } },
+			'pc:c': { limits: { value: { ...limits([], [], { antigravity: { accounts: [agy(70)], hiddenAccounts: [] } }) }, at: NOW, receivedAt: NOW } },
+		});
+		const broken = entries([pc('d')], { 'pc:d': { limits: { value: { ...limits([]), antigravity: { accounts: 'x' } } as unknown as RateLimitsResult, at: NOW, receivedAt: NOW } } });
+		expect({
+			accounts: aggregateAccounts(result, 'antigravity', NOW).map(item => ({ key: item.key, used: item.account.scoped?.[0]?.usedPercent, chips: item.seenOn.map(chip => chip.key) })),
+			hidden: aggregateHiddenAccounts(result, 'antigravity'),
+			shown: [hasProviderLimits(result, 'antigravity'), hasProviderLimits(entries([pc('b')], { 'pc:b': { limits: { value: limits([]), at: NOW, receivedAt: NOW } } }), 'antigravity'), hasProviderLimits(broken, 'antigravity')],
+			broken: [aggregateAccounts(broken, 'antigravity', NOW), providerSnapshotOf(broken[0]!.values.limits!.value, 'antigravity')],
+			latest: latestProviderSnapshot(entries([pc('b')], { 'pc:b': { limits: { value: limits([]), at: NOW, receivedAt: NOW } } }), 'antigravity'),
+		}).toEqual({
+			accounts: [
+				{ key: 'antigravity|source:pc:a|/home/x/.gemini', used: 20, chips: ['pc:a'] },
+				{ key: 'antigravity|source:pc:c|/home/x/.gemini', used: 70, chips: ['pc:c'] },
+			],
+			hidden: [],
+			shown: [true, false, false],
+			broken: [[], undefined],
+			latest: undefined,
+		});
 	});
 });
 
@@ -489,6 +531,12 @@ describe('usageCache', () => {
 		const record = { kind: 'pc' as const, pcId: 'a', pcName: 'A', values: { limits: { value, at: NOW, receivedAt: NOW } } };
 		const opened = openUsageRecord(KEY, sealUsageRecord(KEY, 'pc:a', record, NOW), 'a', NOW);
 		expect(opened?.record.values.limits?.value.claude.hiddenAccounts).toEqual([{ provider: 'claude', id: 'para-claude:h', email: 'h@x' }]);
+	});
+
+	it('Antigravity の分も控えに残し、無い控え（前の版で保存したもの）もそのまま読める', () => {
+		const value = limits([], [], { antigravity: { accounts: [account({ provider: 'antigravity', id: 'g', scoped: [{ usedPercent: 3, label: 'Gemini Models' }] })] } });
+		const seal = (limitsValue: RateLimitsResult) => openUsageRecord(KEY, sealUsageRecord(KEY, 'pc:a', { kind: 'pc' as const, pcId: 'a', pcName: 'A', values: { limits: { value: limitsValue, at: NOW, receivedAt: NOW } } }, NOW), 'a', NOW)?.record.values.limits?.value;
+		expect([seal(value)?.antigravity?.accounts[0]?.scoped, seal(limits([]))?.antigravity]).toEqual([[{ usedPercent: 3, label: 'Gemini Models' }], undefined]);
 	});
 
 	it('7日を過ぎた値を落とし、値が残らなければ出どころごと落とす', () => {

@@ -45,6 +45,19 @@ describe('buildLaunchCommandPreview', () => {
 			.toBe("gemini 'hello'");
 	});
 
+	test('指示を値として取るフラグ（Antigravity CLI の -i）は、指示があるときだけ選んだフラグの後・指示の直前に付ける', () => {
+		const antigravity: WorktreeAgentDef = { id: 'antigravity', label: 'Antigravity CLI', command: 'agy {prompt}', promptFlag: '-i' };
+		expect([
+			buildLaunchCommandPreview(antigravity, '', { model: '', effort: '', permission: '' }),
+			buildLaunchCommandPreview(antigravity, 'go', { model: '', effort: '', permission: '--mode accept-edits' }),
+			buildLaunchCommandPreview(antigravity, '-v を直して', { model: '--model gemini-3.8-flash-high', effort: '', permission: '' }),
+		]).toEqual([
+			'agy',
+			"agy --mode accept-edits -i 'go'",
+			"agy --model gemini-3.8-flash-high -i '-v を直して'",
+		]);
+	});
+
 	test('長いプロンプトは省略記号付きで切り詰める', () => {
 		const longPrompt = 'a'.repeat(60);
 		expect(buildLaunchCommandPreview(claude, longPrompt, { model: '', effort: '', permission: '' }))
