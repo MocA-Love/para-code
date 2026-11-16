@@ -180,6 +180,7 @@ suite('ParadisOpenCodeHistory', () => {
 			database.prepare('UPDATE session_v2 SET time_updated = ? WHERE id = ?').run(99, 'ses_two');
 		} finally { database.close(); }
 		const service = new ParadisSessionResumeService({
+			antigravityHome: join(root, 'agy-home'),
 			resolveAgentHomes: cwd => ({ claude: join(root, 'claude'), codex: join(root, 'codex'), matchCwd: cwd }),
 			openCodeDatabases: async () => [{ path: dbPath, cli: '/opt/example/bin/example-cli' }, { path: copyPath, cli: 'opencode' }],
 		}, new NullLogService());
@@ -191,6 +192,7 @@ suite('ParadisOpenCodeHistory', () => {
 		populate();
 		let received: unknown;
 		const service = new ParadisSessionResumeService({
+			antigravityHome: join(root, 'agy-home'),
 			resolveAgentHomes: cwd => ({ claude: join(root, 'claude'), codex: join(root, 'codex'), matchCwd: cwd }),
 			openCodeDatabases: async requested => { received = requested; return requested.map(database => ({ path: database.path, cli: database.cli, ...(database.label !== undefined ? { label: database.label } : {}) })); },
 		}, new NullLogService());
@@ -212,6 +214,7 @@ suite('ParadisOpenCodeHistory', () => {
 	test('desktop catalog keeps sessions in one database distinct and supports preview/search/resume details', async () => {
 		populate();
 		const service = new ParadisSessionResumeService({
+			antigravityHome: join(root, 'agy-home'),
 			resolveAgentHomes: cwd => ({ claude: join(root, 'claude'), codex: join(root, 'codex'), matchCwd: cwd }),
 			openCodeDatabases: async () => [{ path: dbPath, cli: '/opt/example/bin/example-cli' }],
 		}, new NullLogService());

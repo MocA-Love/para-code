@@ -12,13 +12,15 @@
 //   （1 行 1 ステップ。解釈は agentChat/common/paradisAntigravityTranscript.ts）
 // - 会話の一覧: `~/.gemini/antigravity-cli/conversation_summaries.db`（SQLite。表 conversation_summaries の
 //   conversation_id・parent_conversation_id・nesting_depth ほか）。agy が書くので、読み取り専用で開き、何も書かない。
-//   本文の列（title・preview・raw_summary）はここでは読まない。
+//   親子の判定（{@link paradisReadAntigravityConversationLineage}）は本文の列を読まない。セッション履歴の一覧
+//   （{@link paradisListAntigravityConversations}）だけが、行の見出しに title・preview を読む（raw_summary は読まない）。
 // - `conversations/<id>.db` は書き込み中の WAL を持つので開かない。
 
 import { promises as fs } from 'fs';
 import { createRequire } from 'module';
 import { homedir } from 'os';
 import { isAbsolute, join } from '../../../../base/common/path.js';
+import { URI } from '../../../../base/common/uri.js';
 // eslint-disable-next-line local/code-import-patterns
 import type { DatabaseSync } from 'node:sqlite';
 
@@ -125,4 +127,83 @@ export async function paradisAntigravityTranscriptStartsAsChild(transcriptPath: 
 	} finally {
 		await handle?.close().catch(() => undefined);
 	}
+}
+
+/** セッション履歴の一覧に出す会話 1 件（一覧の SQLite の 1 行のうち、使う列だけ）。 */
+export interface IParadisAntigravityConversationSummary {
+	readonly id: string;
+	/** agy が付けた題（まだ付いていなければ空）。 */
+	readonly title: string;
+	/** 最初の依頼の頭（agy が切り詰めたもの。無ければ空）。 */
+	readonly preview: string;
+	/** 最後に動いた時刻 (epoch ms)。読めなければ undefined。 */
+	readonly updatedAt: number | undefined;
+	/** 会話を始めたフォルダ（`workspace_uris` の `file://` を、このマシンのパスに直したもの）。 */
+	readonly workspaces: readonly string[];
+}
+
+/** 一覧の時刻の列（`2026-11-11 16:44:35.408190414+00:00`）を epoch ms にする。 */
+function summaryTime(value: unknown): number | undefined {
+	if (typeof value !== 'string' || value.length === 0) {
+		return undefined;
+	}
+	const parsed = Date.parse(value.replace(' ', 'T'));
+	return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/** `workspace_uris`（`file://` の URI の JSON の配列）を、このマシンのパスにする。`file` 以外と読めない値は捨てる。 */
+function workspacePaths(value: unknown): string[] {
+	if (typeof value !== 'string') {
+		return [];
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(value);
+	} catch {
+		return [];
+	}
+	if (!Array.isArray(parsed)) {
+		return [];
+	}
+	return parsed.flatMap(item => {
+		if (typeof item !== 'string' || !item.startsWith('file:')) {
+			return [];
+		}
+		try {
+			return [URI.parse(item).fsPath];
+		} catch {
+			return [];
+		}
+	});
+}
+
+/**
+ * セッション履歴に出す会話の一覧（新しい順に `limit` 件まで）。子の会話（invoke_subagent が起こしたもの）は除く。
+ * 一覧を開けない・表の形が違うときは throw する（呼び出し側は Antigravity CLI の分だけ出さない）。
+ */
+export function paradisListAntigravityConversations(databasePath: string, limit: number): readonly IParadisAntigravityConversationSummary[] {
+	const database = openSummariesDatabase(databasePath);
+	try {
+		const rows = database.prepare('SELECT conversation_id, title, preview, last_modified_time, workspace_uris FROM conversation_summaries WHERE parent_conversation_id = \'\' AND nesting_depth = 0 ORDER BY last_modified_time DESC LIMIT ?').all(Math.max(1, limit));
+		return rows.flatMap(row => {
+			const id = row.conversation_id;
+			if (typeof id !== 'string' || !CONVERSATION_ID_PATTERN.test(id)) {
+				return [];
+			}
+			return [{
+				id,
+				title: typeof row.title === 'string' ? row.title.trim() : '',
+				preview: typeof row.preview === 'string' ? row.preview.trim() : '',
+				updatedAt: summaryTime(row.last_modified_time),
+				workspaces: workspacePaths(row.workspace_uris),
+			}];
+		});
+	} finally {
+		database.close();
+	}
+}
+
+/** 会話の記録（`brain/<id>/.system_generated/logs/transcript_full.jsonl`）のパス。 */
+export function paradisAntigravityTranscriptPath(brainRoot: string, conversationId: string): string {
+	return join(brainRoot, conversationId, '.system_generated', 'logs', 'transcript_full.jsonl');
 }

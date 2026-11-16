@@ -6,12 +6,13 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// Claude Code の transcript と Codex の rollout を1行ずつ読むための共通部品。
+// Claude Code の transcript・Codex の rollout・Antigravity CLI の transcript_full.jsonl を1行ずつ読むための共通部品。
 //
 // セッション履歴（shared process）と、使用量・作業実績・全文索引を作る worker の両方が同じ規則で
 // 会話を拾えるよう、もとはセッション履歴のチャネルにあった関数をここへ移した。Node の API に
 // 依存しないので common に置く。
 
+import { paradisAntigravityUserRequestText } from '../../agentChat/common/paradisAntigravityTranscript.js';
 import { paradisCodexUserAuthoredContent } from '../../agentChat/common/paradisCodexInjectedContext.js';
 import { ParadisResumeAgent } from './paradisSessionResume.js';
 
@@ -151,6 +152,17 @@ export function paradisTranscriptMessageFromItem(item: Record<string, unknown> |
 		}
 		return { role: type, text: paradisTranscriptClipped(text, maxChars), timestamp: paradisTranscriptTimestamp(item.timestamp) };
 	}
+	if (agent === 'antigravity') {
+		// 利用者の発言（USER_INPUT、`<USER_REQUEST>` の中だけ）とモデルの応答の本文（PLANNER_RESPONSE の content）。
+		// 思考・ツールの呼び出しと結果（GENERIC）・子の会話の指示などの SYSTEM の行は発言ではない
+		const type = item.type;
+		const raw = typeof item.content === 'string' ? item.content : '';
+		const text = type === 'USER_INPUT' ? paradisAntigravityUserRequestText(raw) : type === 'PLANNER_RESPONSE' ? raw : '';
+		if (!text.trim()) {
+			return undefined;
+		}
+		return { role: type === 'USER_INPUT' ? 'user' : 'assistant', text: paradisTranscriptClipped(text, maxChars), timestamp: paradisTranscriptTimestamp(item.created_at) };
+	}
 	if (item.type !== 'response_item') {
 		return undefined;
 	}
@@ -204,6 +216,12 @@ export function paradisTranscriptToolOutputFromItem(item: Record<string, unknown
 					parts.push(text);
 				}
 			}
+		}
+	} else if (agent === 'antigravity') {
+		// ツールの結果は GENERIC の行の content
+		const text = item.type === 'GENERIC' && typeof item.content === 'string' ? item.content : '';
+		if (text.trim()) {
+			parts.push(text);
 		}
 	} else {
 		const payload = paradisTranscriptRecord(item.payload);

@@ -30,6 +30,7 @@ import { paradisOpenCodeCliRegistry, paradisVerifyOpenCodeCliOnThisHost } from '
 import { paradisIsOpenCodeResumeCli, paradisNormalizeOpenCodeCliLabel } from '../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
 import { IParadisOpenCodeDatabase, IParadisOpenCodeSession, listOpenCodeSessions, paradisOpenCodeDatabasePaths, paradisWithOpenCodeDatabase, readOpenCodeMessages, readOpenCodeMessagesIn } from './paradisOpenCodeHistory.js';
 import { ParadisSessionSearchTextCache } from './paradisSessionSearchTextCache.js';
+import { IParadisAntigravityConversationSummary, paradisAntigravityBrainRoot, paradisAntigravityCliHome, paradisAntigravitySummariesDatabasePath, paradisAntigravityTranscriptPath, paradisListAntigravityConversations } from './paradisAntigravityHistory.js';
 import {
 	paradisIsCodexRootSource as isCodexRootSource,
 	paradisParseCodexSessionMeta,
@@ -52,6 +53,7 @@ import {
 	PARADIS_RESUME_SESSION_ID_PATTERN,
 	PARADIS_SESSION_RESUME_CHANNEL,
 	ParadisResumeAgent,
+	paradisAntigravityModelParts,
 } from '../common/paradisSessionResume.js';
 
 const nodeRequire = createRequire(import.meta.url);
@@ -307,6 +309,23 @@ export function paradisClaudeTranscriptLastModel(lines: readonly string[]): stri
 	return undefined;
 }
 
+/** Antigravity CLI の記録の行から、最後の応答（PLANNER_RESPONSE）の `model` を選ぶ（読んだ範囲の中で）。 */
+function antigravityTranscriptLastModel(lines: readonly string[]): string | undefined {
+	for (let index = lines.length - 1; index >= 0; index--) {
+		const line = lines[index];
+		if (!line.includes('"PLANNER_RESPONSE"')) {
+			continue;
+		}
+		let item: Record<string, unknown> | undefined;
+		try { item = record(JSON.parse(line)); } catch { continue; }
+		const model = item?.type === 'PLANNER_RESPONSE' ? string(item.model) : undefined;
+		if (model !== undefined) {
+			return model;
+		}
+	}
+	return undefined;
+}
+
 /** Codex の rollout の行から、最後の `turn_context` の model と effort を選ぶ（読んだ範囲の中で）。 */
 function codexRolloutModel(lines: readonly string[]): { readonly model?: string; readonly effort?: string } {
 	for (let index = lines.length - 1; index >= 0; index--) {
@@ -368,6 +387,7 @@ export class ParadisSessionResumeService {
 	private readonly readBoundedFile: typeof readBoundedFile;
 	private readonly beforeSummaryRead: ((filePath: string) => Promise<void>) | undefined;
 	private readonly beforeTranscriptRead: ((filePath: string) => Promise<void>) | undefined;
+	private readonly antigravityHome: string;
 
 	constructor(
 		dependencies: {
@@ -377,6 +397,8 @@ export class ParadisSessionResumeService {
 			readonly beforeSummaryRead?: (filePath: string) => Promise<void>;
 			readonly beforeTranscriptRead?: (filePath: string) => Promise<void>;
 			readonly searchCacheMaxBytes?: number;
+			/** Antigravity CLI の記録を探すホーム（既定はこのマシンのホーム。テストは仮のフォルダを渡す）。 */
+			readonly antigravityHome?: string;
 		} | undefined,
 		@ILogService private readonly logService: ILogService,
 	) {
@@ -386,6 +408,7 @@ export class ParadisSessionResumeService {
 		this.readBoundedFile = dependencies?.readBoundedFile ?? readBoundedFile;
 		this.beforeSummaryRead = dependencies?.beforeSummaryRead;
 		this.beforeTranscriptRead = dependencies?.beforeTranscriptRead;
+		this.antigravityHome = dependencies?.antigravityHome ?? homedir();
 		this.searchTextCache = new ParadisSessionSearchTextCache(dependencies?.searchCacheMaxBytes ?? DEFAULT_SEARCH_TEXT_CACHE_BYTES);
 	}
 
@@ -501,6 +524,7 @@ export class ParadisSessionResumeService {
 				});
 			} catch { /* A missing or unsupported database must not hide the other agents' history. */ }
 		}
+		await this.collectAntigravity(request.spaces, sessions);
 		const homesSeen = new Set<string>();
 		/** 新しく開くターミナルが使うホーム（選んでいるアカウントのもの。選んでいなければ既定のホーム）。 */
 		const preferredCodexHomes = new Set<string>();
@@ -973,6 +997,65 @@ export class ParadisSessionResumeService {
 					}, candidate.transcriptPath, claudeHome, target);
 				} catch (error) {
 					this.logService.debug('[ParadisSessionResume] unable to read Claude session', error);
+				}
+			}
+		};
+		await Promise.all(Array.from({ length: Math.min(4, candidates.length) }, () => worker()));
+	}
+
+	/**
+	 * Antigravity CLI の会話。一覧は agy の `conversation_summaries.db`（子の会話を除く）、会話を始めたフォルダは
+	 * `workspace_uris`、中身は `brain/<id>/.system_generated/logs/transcript_full.jsonl`。記録の無い会話（起動した
+	 * だけのもの）は出さない。検索は agy の全文検索の索引（fts5、`unicode61` の区切り）を使わず、ほかのエージェントと
+	 * 同じく記録の本文で探す（その区切りは日本語の語の途中に一致しないため、同じ語で探しても結果がそろわない）。
+	 * SSH の接続先では、REH の側の同じサービスが接続先のホームを読む。
+	 */
+	private async collectAntigravity(spaces: readonly IParadisResumeSpace<string>[], target: IParadisResumeSession[]): Promise<void> {
+		if (spaces.length === 0) {
+			return;
+		}
+		const cliHome = paradisAntigravityCliHome(this.antigravityHome);
+		const brainRoot = paradisAntigravityBrainRoot(this.antigravityHome);
+		let conversations: readonly IParadisAntigravityConversationSummary[];
+		try {
+			conversations = paradisListAntigravityConversations(paradisAntigravitySummariesDatabasePath(this.antigravityHome), MAX_SESSIONS);
+			const [realHome, realBrain] = await Promise.all([fs.realpath(cliHome), fs.realpath(brainRoot)]);
+			if (!pathInside(realHome, realBrain)) {
+				return;
+			}
+		} catch (error) {
+			// agy を使っていない（一覧が無い）のが普通なので、報告せずに Antigravity CLI の分だけ出さない
+			this.logService.debug('[ParadisSessionResume] unable to read the Antigravity CLI conversation list', error);
+			return;
+		}
+		const spaceAliases = await this.createSpaceAliases(spaces);
+		const candidates = conversations.flatMap(conversation => {
+			const space = conversation.workspaces.map(workspace => this.matchSpace(spaceAliases, workspace)).find(match => match !== undefined);
+			return space !== undefined ? [{ conversation, space }] : [];
+		});
+		let cursor = 0;
+		const worker = async (): Promise<void> => {
+			while (cursor < candidates.length) {
+				const { conversation, space } = candidates[cursor++];
+				const transcriptPath = paradisAntigravityTranscriptPath(brainRoot, conversation.id);
+				try {
+					const stat = await fs.lstat(transcriptPath).catch(() => undefined);
+					if (!stat?.isFile()) {
+						continue;
+					}
+					const data = await readFileHeadAndTail(transcriptPath, brainRoot, { dev: stat.dev, ino: stat.ino }, SUMMARY_HEAD_BYTES, SUMMARY_TAIL_BYTES, this.beforeSummaryRead);
+					const headLines = data.head.split('\n');
+					const firstPrompt = headLines.map(line => parseLine(line, 'antigravity')).find(message => message?.role === 'user');
+					const display = conversation.title || conversation.preview || firstPrompt?.text || conversation.id;
+					const model = antigravityTranscriptLastModel(data.tail.length > 0 ? [...headLines, ...data.tail.split('\n')] : headLines);
+					this.addSession({
+						id: conversation.id, agent: 'antigravity', title: clipped(display, 160), preview: clipped(firstPrompt?.text || conversation.preview || display, 260),
+						cwd: space.cwd, spaceStateKey: space.stateKey, spaceName: space.name, currentSpace: space.current,
+						createdAt: firstPrompt?.timestamp, updatedAt: conversation.updatedAt ?? stat.mtimeMs, archived: false, empty: firstPrompt === undefined,
+						...(model !== undefined ? paradisAntigravityModelParts(model) : {}),
+					}, transcriptPath, brainRoot, target);
+				} catch (error) {
+					this.logService.debug('[ParadisSessionResume] unable to read Antigravity CLI conversation', error);
 				}
 			}
 		};

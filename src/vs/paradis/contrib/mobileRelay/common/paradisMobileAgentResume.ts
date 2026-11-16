@@ -7,8 +7,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { StringSHA1 } from '../../../../base/common/hash.js';
-import { PARADIS_RESUME_SESSION_ID_PATTERN, type IParadisResumeSession } from '../../sessionResume/common/paradisSessionResume.js';
-import { paradisInteractiveAgentCommand } from './paradisAgentCliCommand.js';
+import { PARADIS_RESUME_SESSION_ID_PATTERN, type IParadisResumeSession, type ParadisResumeAgent } from '../../sessionResume/common/paradisSessionResume.js';
+import { paradisAntigravityResumedConversationId, paradisInteractiveAgentCommand } from './paradisAgentCliCommand.js';
 
 /**
  * 終わった会話をスマホから開き直して続きを頼む（Orca W2-29）の、PC とアプリで共有する取り決め。
@@ -25,7 +25,7 @@ export const PARADIS_AGENT_RESUME_CAPABILITY = 'agent.resume.v1';
 export const PARADIS_AGENT_SESSION_KEY_PATTERN = /^[0-9a-f]{40}$/;
 
 /** エージェントの種類とセッション ID から、会話の指紋を作る。 */
-export function paradisAgentSessionKey(agent: 'claude' | 'codex' | 'opencode', sessionId: string): string {
+export function paradisAgentSessionKey(agent: ParadisResumeAgent, sessionId: string): string {
 	const sha = new StringSHA1();
 	sha.update(`para.agent-session\n${agent}\n${sessionId}`);
 	return sha.digest();
@@ -56,7 +56,8 @@ export interface IParadisResumeLedgerEntry {
 /** スマホへ返す過去の会話 1 件。 */
 export interface IParadisMobileAgentSession {
 	readonly key: string;
-	readonly agent: 'claude' | 'codex' | 'opencode';
+	/** 古いアプリは `antigravity` の行を読まずに捨てる（一覧の件数 `total` には入ったまま）。 */
+	readonly agent: ParadisResumeAgent;
 	readonly title: string;
 	readonly preview?: string;
 	readonly previewRole?: 'user' | 'assistant';
@@ -134,10 +135,15 @@ export function paradisRecordResumeRequest(ledger: readonly IParadisResumeLedger
 }
 
 /**
- * ターミナルで実行中のコマンドが、既存の会話を続ける `claude --resume <id>` / `codex resume <id>` なら、その会話を返す
- * （「PC で今開いている会話」を hook が届く前でも見分けるため。レビュー M6）。複製して始める（fork）ものは別の会話なので返さない。
+ * ターミナルで実行中のコマンドが、既存の会話を続ける `claude --resume <id>` / `codex resume <id>` / `agy --conversation <id>`
+ * なら、その会話を返す（「PC で今開いている会話」を hook が届く前でも見分けるため。レビュー M6）。複製して始める（fork）ものは
+ * 別の会話なので返さない。
  */
-export function paradisResumedSessionOfCommand(commandLine: string): { readonly agent: 'claude' | 'codex' | 'opencode'; readonly sessionId: string } | undefined {
+export function paradisResumedSessionOfCommand(commandLine: string): { readonly agent: ParadisResumeAgent; readonly sessionId: string } | undefined {
+	const antigravity = paradisAntigravityResumedConversationId(commandLine);
+	if (antigravity !== undefined) {
+		return PARADIS_RESUME_SESSION_ID_PATTERN.test(antigravity) ? { agent: 'antigravity', sessionId: antigravity } : undefined;
+	}
 	const command = paradisInteractiveAgentCommand(commandLine);
 	if (command === undefined || command.mode !== 'resume') {
 		return undefined;

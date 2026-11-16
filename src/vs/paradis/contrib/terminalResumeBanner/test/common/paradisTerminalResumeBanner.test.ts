@@ -32,7 +32,7 @@ suite('paradisTerminalResumeBanner', () => {
 	});
 
 	test('the banner buttons and menu start the matching command for each agent', () => {
-		const commands = (agent: 'claude' | 'codex' | 'opencode', sessionId: string) => {
+		const commands = (agent: 'claude' | 'codex' | 'opencode' | 'antigravity', sessionId: string) => {
 			const layout = paradisResumeBannerLayout(agent);
 			const commandOf = (choice: ParadisResumeBannerChoice) => {
 				const command = paradisResumeBannerChoiceCommand(choice);
@@ -47,6 +47,7 @@ suite('paradisTerminalResumeBanner', () => {
 			claude: commands('claude', 'a1b2c3d4-0000-4000-8000-000000000001'),
 			codex: commands('codex', '0199aaaa-0000-7000-8000-000000000002'),
 			opencode: commands('opencode', 'ses_saved'),
+			antigravity: commands('antigravity', '11111111-1111-4111-8111-111111111111'),
 		}, {
 			claude: {
 				buttons: [
@@ -75,6 +76,11 @@ suite('paradisTerminalResumeBanner', () => {
 			opencode: {
 				buttons: [['resume', 'opencode --session ses_saved']],
 				menu: [['fork', 'opencode --session ses_saved --fork'], 'separator', ['copyId', 'copy']],
+			},
+			// agy には分岐も権限の確認を省く再開も無い
+			antigravity: {
+				buttons: [['resume', 'agy --conversation 11111111-1111-4111-8111-111111111111']],
+				menu: [['copyId', 'copy']],
 			},
 		});
 	});

@@ -12,9 +12,10 @@ import { createRequire } from 'module';
 import { tmpdir } from 'os';
 import { DeferredPromise } from '../../../../../base/common/async.js';
 import { join } from '../../../../../base/common/path.js';
+import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { IParadisResumeListRequest, IParadisResumeSpace } from '../../common/paradisSessionResume.js';
+import { IParadisResumeListRequest, IParadisResumeSpace, paradisAgentResumeCommandLine, paradisAntigravityModelParts, paradisResumeModelLabel } from '../../common/paradisSessionResume.js';
 import { ParadisSessionResumeService } from '../../node/paradisSessionResumeChannel.js';
 
 const nodeRequire = createRequire(import.meta.url);
@@ -57,6 +58,7 @@ suite('ParadisSessionResume', () => {
 		searchCacheMaxBytes?: number,
 	): ParadisSessionResumeService {
 		const dependencies: IParadisSessionResumeServiceDependencies = {
+			antigravityHome: join(root, 'agy-home'),
 			openCodeDatabases: async () => [],
 			resolveAgentHomes: cwd => ({ claude: claudeHome, codex: codexHome, matchCwd: cwd }),
 			readBoundedFile,
@@ -125,6 +127,87 @@ suite('ParadisSessionResume', () => {
 			empty: { withPrompt: false, emptySession: true },
 			details: { transcriptPath: withPrompt, firstPromptLength: longPrompt.length },
 			unknown: 'Session is no longer available.',
+		});
+	});
+
+	test('lists top-level Antigravity CLI conversations of the space from its conversation list, with the model split from its effort', async () => {
+		// agy 1.5.9 の conversation_summaries の列のうち使うものと、transcript_full.jsonl の行の種類（中身は自作の偽物）
+		const cliHome = join(root, 'agy-home', '.gemini', 'antigravity-cli');
+		const brain = join(cliHome, 'brain');
+		const top = '11111111-1111-4111-8111-111111111111';
+		const child = '22222222-2222-4222-8222-222222222222';
+		const elsewhere = '33333333-3333-4333-8333-333333333333';
+		const noTranscript = '44444444-4444-4444-8444-444444444444';
+		const untitled = '55555555-5555-4555-8555-555555555555';
+		const transcriptOf = (id: string) => join(brain, id, '.system_generated', 'logs', 'transcript_full.jsonl');
+		const step = (index: number, source: string, type: string, extra: Record<string, unknown>) => JSON.stringify({ step_index: index, source, type, status: 'DONE', created_at: `2026-11-16T01:00:0${index}Z`, ...extra });
+		await fs.mkdir(cliHome, { recursive: true });
+		for (const id of [top, child, elsewhere, untitled]) {
+			await fs.mkdir(join(brain, id, '.system_generated', 'logs'), { recursive: true });
+		}
+		await writeLines(transcriptOf(top), [
+			step(0, 'USER_EXPLICIT', 'USER_INPUT', { content: '<USER_REQUEST>\nFix the fake parser\n</USER_REQUEST>\n<ADDITIONAL_METADATA>fake</ADDITIONAL_METADATA>' }),
+			step(1, 'MODEL', 'PLANNER_RESPONSE', { model: 'gemini-4-hydrogen-medium', thinking: 'fake thinking', tool_calls: [{ name: 'view_file', args: { path: 'a' } }] }),
+			step(2, 'MODEL', 'GENERIC', { content: 'fake tool output' }),
+			step(3, 'MODEL', 'PLANNER_RESPONSE', { model: 'gemini-3.8-flash-high', content: 'Fixed the fake parser' }),
+			step(4, 'SYSTEM', 'ERROR_MESSAGE', { error: 'fake error' }),
+		]);
+		await writeLines(transcriptOf(child), [step(0, 'SYSTEM', 'SYSTEM_MESSAGE', { content: 'fake child instruction' })]);
+		await writeLines(transcriptOf(elsewhere), [step(0, 'USER_EXPLICIT', 'USER_INPUT', { content: '<USER_REQUEST>other folder</USER_REQUEST>' })]);
+		await writeLines(transcriptOf(untitled), [step(0, 'USER_EXPLICIT', 'USER_INPUT', { content: '<USER_REQUEST>Untitled fake request</USER_REQUEST>' })]);
+		const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
+		const database = new DatabaseSync(join(cliHome, 'conversation_summaries.db'));
+		try {
+			database.exec('CREATE TABLE `conversation_summaries` (`conversation_id` text, `title` text NOT NULL DEFAULT "", `preview` text NOT NULL DEFAULT "", `step_count` integer NOT NULL DEFAULT 0, `last_modified_time` datetime NOT NULL, `workspace_uris` text NOT NULL, `parent_conversation_id` text NOT NULL DEFAULT "", `nesting_depth` integer NOT NULL DEFAULT 0, `raw_summary` blob, PRIMARY KEY (`conversation_id`))');
+			const insert = database.prepare('INSERT INTO conversation_summaries (conversation_id, title, preview, last_modified_time, workspace_uris, parent_conversation_id, nesting_depth) VALUES (?, ?, ?, ?, ?, ?, ?)');
+			const inWorkspace = JSON.stringify([URI.file(join(workspace, 'packages', 'app')).toString()]);
+			insert.run(top, 'Fake parser fix', 'Fix the fake', '2026-11-16 01:00:04.123456789+00:00', inWorkspace, '', 0);
+			insert.run(child, '', '', '2026-11-16 01:00:05.000000000+00:00', inWorkspace, top, 1);
+			insert.run(elsewhere, 'Elsewhere', '', '2026-11-16 01:00:06.000000000+00:00', JSON.stringify([URI.file(join(root, 'other')).toString()]), '', 0);
+			insert.run(noTranscript, 'No record', '', '2026-11-16 01:00:07.000000000+00:00', inWorkspace, '', 0);
+			insert.run(untitled, '', '', '2026-11-16 00:59:00.000000000+00:00', inWorkspace, '', 0);
+		} finally {
+			database.close();
+		}
+		const service = createService();
+		const sessions = (await listSessions(service)).filter(session => session.agent === 'antigravity');
+		const session = sessions.find(candidate => candidate.id === top)!;
+		const preview = await service.preview(session.catalogId);
+		const details = await service.details(session.catalogId);
+		const search = await service.search('client', 'tool output', [session.catalogId]);
+		const found = await service.search('client', 'fixed the fake', [session.catalogId]);
+		assert.deepStrictEqual({
+			listed: sessions.map(candidate => [candidate.id, candidate.title, candidate.preview, candidate.empty]),
+			row: { updatedAt: session.updatedAt, createdAt: session.createdAt, model: session.model, effort: session.effort, label: paradisResumeModelLabel(session), latestMessage: session.latestMessage, spaceStateKey: session.spaceStateKey },
+			preview: preview.messages.map(message => [message.role, message.text]),
+			firstPrompt: details.firstPrompt,
+			search: { toolOutput: search.length, conversation: found.map(match => match.source) },
+		}, {
+			listed: [[top, 'Fake parser fix', 'Fix the fake parser', false], [untitled, 'Untitled fake request', 'Untitled fake request', false]],
+			row: { updatedAt: Date.parse('2026-11-16T01:00:04.123Z'), createdAt: Date.parse('2026-11-16T01:00:00Z'), model: 'gemini-3.8-flash', effort: 'high', label: 'gemini-3.8-flash · high', latestMessage: { role: 'assistant', text: 'Fixed the fake parser' }, spaceStateKey: 'workspace-state' },
+			preview: [['user', 'Fix the fake parser'], ['assistant', 'Fixed the fake parser']],
+			firstPrompt: 'Fix the fake parser',
+			search: { toolOutput: 0, conversation: ['conversation'] },
+		});
+	});
+
+	test('splits the effort off Antigravity CLI model ids and resumes with --conversation only', () => {
+		assert.deepStrictEqual({
+			flash: paradisAntigravityModelParts('gemini-3.8-flash-high'),
+			oss: paradisAntigravityModelParts('gpt-oss-120b-medium'),
+			thinking: paradisAntigravityModelParts('claude-opus-4-6-thinking'),
+			resume: paradisAgentResumeCommandLine('antigravity', '11111111-1111-4111-8111-111111111111', 'resume'),
+			fork: paradisAgentResumeCommandLine('antigravity', '11111111-1111-4111-8111-111111111111', 'fork'),
+			bypass: paradisAgentResumeCommandLine('antigravity', '11111111-1111-4111-8111-111111111111', 'resume', { dangerouslyBypassPermissions: true }),
+			option: paradisAgentResumeCommandLine('antigravity', '--help', 'resume'),
+		}, {
+			flash: { model: 'gemini-3.8-flash', effort: 'high' },
+			oss: { model: 'gpt-oss-120b', effort: 'medium' },
+			thinking: { model: 'claude-opus-4-6-thinking' },
+			resume: 'agy --conversation 11111111-1111-4111-8111-111111111111',
+			fork: undefined,
+			bypass: undefined,
+			option: undefined,
 		});
 	});
 
@@ -617,6 +700,7 @@ suite('ParadisSessionResume', () => {
 		let resolveHomesCount = 0;
 		let summaryReadCount = 0;
 		const service = new ParadisSessionResumeService({
+			antigravityHome: join(root, 'agy-home'),
 			openCodeDatabases: async () => [],
 			resolveAgentHomes: cwd => {
 				resolveHomesCount++;
@@ -1287,6 +1371,7 @@ suite('ParadisSessionResume', () => {
 		]);
 		await fs.link(codexPath, join(secondSessions, 'rollout-codex-session.jsonl'));
 		const service = new ParadisSessionResumeService({
+			antigravityHome: join(root, 'agy-home'),
 			openCodeDatabases: async () => [],
 			resolveAgentHomes: cwd => ({ claude: claudeHome, codex: codexHome, codexHomes: [codexHome, secondHome], matchCwd: cwd }),
 		}, new NullLogService());
@@ -1308,6 +1393,7 @@ suite('ParadisSessionResume', () => {
 		const linkedPath = join(secondSessions, 'rollout-codex-session.jsonl');
 		await fs.link(codexPath, linkedPath);
 		const service = new ParadisSessionResumeService({
+			antigravityHome: join(root, 'agy-home'),
 			openCodeDatabases: async () => [],
 			resolveAgentHomes: cwd => ({ claude: claudeHome, codex: codexHome, codexHomes: [codexHome, secondHome], matchCwd: cwd }),
 		}, new NullLogService());
@@ -1344,6 +1430,7 @@ suite('ParadisSessionResume', () => {
 			database.close();
 		}
 		const service = new ParadisSessionResumeService({
+			antigravityHome: join(root, 'agy-home'),
 			openCodeDatabases: async () => [],
 			resolveAgentHomes: cwd => ({ claude: claudeHome, codex: codexHome, codexHomes: [codexHome, secondHome], matchCwd: cwd }),
 		}, new NullLogService());
@@ -1362,6 +1449,7 @@ suite('ParadisSessionResume', () => {
 			codexMessage('user', 'Codex fixture prompt'),
 		]);
 		const service = new ParadisSessionResumeService({
+			antigravityHome: join(root, 'agy-home'),
 			openCodeDatabases: async () => [],
 			resolveAgentHomes: cwd => ({ claude: claudeHome, codex: codexHome, codexHomes: [codexHome, secondHome], matchCwd: cwd }),
 		}, new NullLogService());
@@ -1398,6 +1486,7 @@ suite('ParadisSessionResume', () => {
 		]);
 		await writeLines(join(secondSessions, 'rollout-codex-session.jsonl'), [JSON.stringify({ type: 'session_meta', payload: { id: 'another', cwd: '/elsewhere' } })]);
 		const service = new ParadisSessionResumeService({
+			antigravityHome: join(root, 'agy-home'),
 			openCodeDatabases: async () => [],
 			resolveAgentHomes: cwd => ({ claude: claudeHome, codex: codexHome, codexHomes: [codexHome, secondHome], matchCwd: cwd }),
 		}, new NullLogService());
@@ -1416,6 +1505,7 @@ suite('ParadisSessionResume', () => {
 			codexMessage('user', 'Codex fixture prompt'),
 		]);
 		const service = new ParadisSessionResumeService({
+			antigravityHome: join(root, 'agy-home'),
 			openCodeDatabases: async () => [],
 			resolveAgentHomes: cwd => ({ claude: claudeHome, codex: codexHome, codexHomes: [codexHome, secondHome], matchCwd: cwd }),
 		}, new NullLogService());
