@@ -25,6 +25,7 @@ import {
 	PARADIS_MCP_MAX_STDOUT_QUEUE_BYTES,
 	PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION,
 	PARADIS_MCP_OVERALL_TIMEOUT_MS,
+	PARADIS_MCP_SHIM_SSH_TUNNEL_ARG,
 	ParadisMcpInflightTracker,
 	ParadisMcpPortFileReconciler,
 	ParadisMcpStdioLineBuffer,
@@ -34,6 +35,7 @@ import {
 	isParadisMcpProcessAlive,
 	paradisMcpShouldPauseStdin,
 	parseParadisMcpPortFile,
+	parseParadisMcpTunnelPortFile,
 	postParadisMcpRequest,
 	postParadisMcpRequestOnVerifiedSocket,
 	probeParadisMcpInstance,
@@ -41,6 +43,7 @@ import {
 	shouldEmitParadisMcpHttpResponse,
 	writeParadisMcpPortFileAtomic,
 } from '../../node/paradisBrowserMcpShimCore.js';
+import { PARADIS_MCP_SHIM_SSH_TUNNEL_ARG as PARADIS_MCP_SHIM_SSH_TUNNEL_ARG_IN_CONFIG } from '../../common/paradisMcpSetupEncoding.js';
 
 const OLD_OWNER: IParadisMcpPortFileRecord = {
 	protocolVersion: PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION,
@@ -302,6 +305,33 @@ suite('ParadisBrowserMcpShimCore', () => {
 		assert.throws(() => parseParadisMcpPortFile('{"port":47286,"pid":123}'), /Invalid MCP port file/);
 		assert.throws(() => parseParadisMcpPortFile(JSON.stringify({ ...OLD_OWNER, extra: true })), /Invalid MCP port file/);
 		assert.throws(() => parseParadisMcpPortFile(' '.repeat(PARADIS_MCP_MAX_PORT_FILE_BYTES + 1)), /port file.*bytes|too large/i);
+	});
+
+	test('reads the SSH host port file as the return tunnel port alone, and only in that exact form', () => {
+		const tunnel = { protocolVersion: PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION, port: 41003 };
+		const rejected: string[] = [];
+		for (const raw of [
+			'not json',
+			'[]',
+			'{}',
+			JSON.stringify(OLD_OWNER),
+			JSON.stringify({ ...tunnel, pid: 1 }),
+			JSON.stringify({ ...tunnel, protocolVersion: 2 }),
+			JSON.stringify({ ...tunnel, port: 0 }),
+			JSON.stringify({ ...tunnel, port: 65_536 }),
+			' '.repeat(PARADIS_MCP_MAX_PORT_FILE_BYTES + 1),
+		]) {
+			assert.throws(() => parseParadisMcpTunnelPortFile(raw), /Invalid MCP tunnel port file/);
+			rejected.push(raw.slice(0, 16));
+		}
+		assert.deepStrictEqual({
+			tunnel: parseParadisMcpTunnelPortFile(JSON.stringify(tunnel)),
+			// 手元の厳密な形は、接続先の形を受けない（古い番号に居座った別のプロセスへトークンを渡さない）
+			localRejectsTunnel: (() => { try { parseParadisMcpPortFile(JSON.stringify(tunnel)); return false; } catch { return true; } })(),
+			// 接続先の設定に書く引数と、シムが見る引数は同じ
+			argument: PARADIS_MCP_SHIM_SSH_TUNNEL_ARG === PARADIS_MCP_SHIM_SSH_TUNNEL_ARG_IN_CONFIG,
+			rejected: rejected.length,
+		}, { tunnel, localRejectsTunnel: true, argument: true, rejected: 9 });
 	});
 
 	test('bounds stdio lines before newline and rejects an incomplete EOF frame', () => {
@@ -952,6 +982,62 @@ suite('ParadisBrowserMcpShimCore', () => {
 			if (child !== undefined && child.exitCode === null && child.signalCode === null) {
 				child.kill();
 			}
+			await new Promise<void>(resolve => server.close(() => resolve()));
+			await fs.rm(temporaryDirectory, { recursive: true, force: true });
+		}
+	});
+
+	test('standalone shim on an SSH host sends to the return tunnel port without the pid and identity checks only with the host argument', async function () {
+		this.timeout(20_000);
+		const { createServer } = await import('http');
+		const requests: { readonly method: string | undefined; readonly url: string | undefined; readonly authorization: string | undefined }[] = [];
+		const responseBody = JSON.stringify({ jsonrpc: '2.0', id: 1, result: { tools: [{ name: 'from-tunnel' }] } });
+		const server = createServer((request, response) => {
+			request.resume();
+			requests.push({ method: request.method, url: request.url, authorization: request.headers.authorization });
+			response.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(responseBody) });
+			response.end(responseBody);
+		});
+		const temporaryDirectory = await fs.mkdtemp(join(tmpdir(), 'paradis-mcp-shim-'));
+		const run = async (args: readonly string[], portFile: string) => {
+			const child = spawn(process.execPath, ['out/vs/paradis/contrib/agentBrowser/node/paradisBrowserMcpShim.js', ...args], {
+				cwd: process.cwd(),
+				env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', PARA_CODE_MCP_PORT_FILE: portFile, PARA_CODE_TERMINAL_PANE_ID: 'host-pane-token' },
+			});
+			const stdout: Buffer[] = [];
+			child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
+			child.stderr.resume();
+			const timeout = setTimeout(() => child.kill(), 15_000);
+			const closed = new Promise<number | null>(resolve => child.once('close', code => resolve(code)));
+			child.stdin.end(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' })}\n`);
+			const code = await closed;
+			clearTimeout(timeout);
+			const parsed = JSON.parse(Buffer.concat(stdout).toString('utf8').trim()) as { result?: { tools?: { name?: unknown }[] } };
+			return { code, firstTool: parsed.result?.tools?.[0]?.name };
+		};
+		try {
+			await new Promise<void>((resolve, reject) => {
+				server.once('error', reject);
+				server.listen(0, '127.0.0.1', () => resolve());
+			});
+			const address = server.address();
+			assert.ok(address && typeof address !== 'string');
+			const portFile = join(temporaryDirectory, 'host-port.json');
+			await fs.writeFile(portFile, JSON.stringify({ protocolVersion: PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION, port: address.port }));
+
+			const withoutArgument = await run([], portFile);
+			const requestsWithoutArgument = requests.length;
+			const withArgument = await run([PARADIS_MCP_SHIM_SSH_TUNNEL_ARG], portFile);
+
+			assert.deepStrictEqual({ withoutArgument, requestsWithoutArgument, withArgument, requests }, {
+				// 引数が無ければ手元の厳密な形として読み、読めないので Para Code の外の答え（同梱のツール一覧）を返す
+				withoutArgument: { code: 0, firstTool: withoutArgument.firstTool },
+				requestsWithoutArgument: 0,
+				withArgument: { code: 0, firstTool: 'from-tunnel' },
+				requests: [{ method: 'POST', url: '/mcp', authorization: 'Bearer host-pane-token' }],
+			});
+			assert.notStrictEqual(withoutArgument.firstTool, 'from-tunnel');
+		} finally {
 			await new Promise<void>(resolve => server.close(() => resolve()));
 			await fs.rm(temporaryDirectory, { recursive: true, force: true });
 		}

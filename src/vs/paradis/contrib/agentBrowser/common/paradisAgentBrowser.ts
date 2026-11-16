@@ -1191,7 +1191,7 @@ export interface IParadisMcpConfigStatus {
 	readonly codex: IParadisMcpCliConfigStatus;
 	/**
 	 * Antigravity CLI。agy が全体の設定のフォルダ（`~/.gemini/config`）を作っていない（agy を使っていない）とき、
-	 * 接続先の判定（SSH 先にはまだ入れられない）、古い shared process では載らない。載らないときはカードを出さない。
+	 * 接続先の REH に橋渡しのシムが無い（古い REH）とき、古い shared process では載らない。載らないときはカードを出さない。
 	 */
 	readonly antigravity?: IParadisMcpCliConfigStatus;
 	/** 判定基準に使った現在のゲートウェイポート（表示・デバッグ用、任意）。 */

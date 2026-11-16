@@ -11,6 +11,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { IFileService } from '../../../../../platform/files/common/files.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { IAgentNetworkFilterService } from '../../../../../platform/networkFilter/common/networkFilterService.js';
+import { IRemoteAgentService } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../../workbench/contrib/browserView/common/browserView.js';
 import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IWorkbenchEnvironmentService } from '../../../../../workbench/services/environment/common/environmentService.js';
@@ -264,7 +265,7 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		const bindingModel = fixtureStore.add(new ParadisAgentBrowserBindingModel(modelOptions,
 			sharedProcessService, terminalService, terminalGroupService, paneTokenService,
 			browserViewWorkbenchService, terminalScopeService, browserScopeService, authoritySyncService,
-			environmentService, pathService, fileService, agentNetworkFilterService));
+			environmentService, pathService, fileService, agentNetworkFilterService, { getEnvironment: async () => null } as unknown as IRemoteAgentService));
 		let changeCount = 0;
 		fixtureStore.add(bindingModel.onDidChange(() => changeCount++));
 

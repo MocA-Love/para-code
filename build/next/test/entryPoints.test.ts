@@ -63,9 +63,9 @@ const PARADIS_ENTRY_POINTS: readonly { readonly entry: string; readonly lists: r
 		lists: ['desktopEntryPoints', 'serverEntryPoints'],
 	},
 	{
-		// エージェント CLI が `node out/.../paradisBrowserMcpShim.js` で直接起動する MCP シム
+		// エージェント CLI が `node out/.../paradisBrowserMcpShim.js` で直接起動する MCP シム（SSH の接続先の Antigravity CLI はサーバーの node で起動する）
 		entry: 'vs/paradis/contrib/agentBrowser/node/paradisBrowserMcpShim',
-		lists: ['desktopEntryPoints'],
+		lists: ['desktopEntryPoints', 'serverEntryPoints'],
 	},
 	{
 		// shared process が worker_threads で起動する、会話ログを読む worker（パスを指定して起動するので import されない）
