@@ -368,7 +368,7 @@ suite('ParadisMobileAgentChat', () => {
 		}
 	});
 
-	test('follows an Antigravity CLI conversation from its hooks, and refuses sends from the chat until the send path exists', () => withFakeHome(async home => {
+	test('follows an Antigravity CLI conversation from its hooks, passes sends to the owner window, and refuses answers', () => withFakeHome(async home => {
 		const token = 'pane-antigravity';
 		// 偽の会話の id（手元の agy の会話とは重ならない）。記録のファイルは作らない（tailer は出現を待つ）
 		const conversationId = '00000000-0000-4000-8000-00000000a6e1';
@@ -394,23 +394,24 @@ suite('ParadisMobileAgentChat', () => {
 			sent.length = 0;
 			inbound({ t: 'action/sendMessage', id: 1, token, epoch, requestId: 'send-1', text: '続きをお願い' });
 			inbound({ t: 'action/answerApproval', id: 1, token, epoch, requestId: 'approve-1', interactionId: 'agy-1', choice: 'yes' });
-			await waitFor(() => sent.length >= 2, 'the actions were not answered');
+			inbound({ t: 'action/claudeSetting', id: 1, token, epoch, requestId: 'setting-1', setting: 'model', value: 'opus' });
+			await waitFor(() => sent.length >= 2 && actions.length >= 1, 'the actions were not answered');
 			assert.deepStrictEqual({
 				agent: snapshot.agent,
 				capabilities: snapshot.capabilities,
 				info: snapshot.info,
 				sessionStatus: snapshot.sessionStatus,
-				dispatched: actions.filter(action => action.t === 'action/sendMessage' || action.t === 'action/answerApproval').length,
+				dispatched: actions.map(action => ({ t: action.t, requestId: action.requestId, agent: action.agent, text: action.text })),
 				reply: sent.map(message => ({ requestId: message.requestId, status: message.status, code: message.code })),
 			}, {
 				agent: 'antigravity',
-				capabilities: undefined,
+				capabilities: { agentActions: true },
 				info: { modelControl: 'none' },
 				sessionStatus: undefined,
-				dispatched: 0,
+				dispatched: [{ t: 'action/sendMessage', requestId: 'send-1', agent: 'antigravity', text: '続きをお願い' }],
 				reply: [
-					{ requestId: 'send-1', status: 'rejected', code: 'agent-unsupported' },
 					{ requestId: 'approve-1', status: 'rejected', code: 'agent-unsupported' },
+					{ requestId: 'setting-1', status: 'rejected', code: 'agent-unsupported' },
 				],
 			});
 		} finally {
@@ -447,7 +448,16 @@ suite('ParadisMobileAgentChat', () => {
 			chat.handleInbound('mobile-1', new TextEncoder().encode(JSON.stringify({ t: 'attach', id: 1, token })));
 			await waitFor(() => sent.some(message => message.t === 'snapshot'), 'the attach did not answer with a snapshot');
 			const snapshot = sent.filter(message => message.t === 'snapshot').at(-1)!;
-			const interaction = snapshot.interaction as { kind: string; questions?: readonly { readonly text: string; readonly options?: readonly { readonly label: string }[] }[] };
+			const interaction = snapshot.interaction as { kind: string; id: string; questions?: readonly { readonly text: string; readonly options?: readonly { readonly label: string }[] }[] };
+			// 質問の回答を待っている間は、発言も回答も PC の端末へ打たない
+			const epoch = (access.tailers.get(token) as unknown as { readonly epoch: string }).epoch;
+			chat.handleInbound('mobile-1', new TextEncoder().encode(JSON.stringify({ t: 'action/sendMessage', id: 1, token, epoch, requestId: 'send-1', text: 'A で' })));
+			chat.handleInbound('mobile-1', new TextEncoder().encode(JSON.stringify({ t: 'action/answerQuestion', id: 1, token, epoch, requestId: 'answer-1', interactionId: interaction.id, answers: [{ kind: 'option', index: 0 }] })));
+			await waitFor(() => sent.filter(message => message.t === 'action-result').length >= 2, 'the actions were not answered');
+			assert.deepStrictEqual(sent.filter(message => message.t === 'action-result').map(message => ({ requestId: message.requestId, status: message.status, code: message.code })), [
+				{ requestId: 'send-1', status: 'rejected', code: 'agent-busy' },
+				{ requestId: 'answer-1', status: 'rejected', code: 'agent-unsupported' },
+			]);
 			assert.deepStrictEqual({
 				agent: snapshot.agent,
 				info: snapshot.info,

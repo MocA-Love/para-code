@@ -419,7 +419,8 @@ async function resumeFromMobile(
 		terminalKey = tools.identityService.getTerminalKey(launched.instanceId);
 		writeLedgerEntry(tools.storageService, { id: requestId, at: Date.now(), status: 'started', ...(terminalKey !== undefined ? { terminalKey } : {}) });
 		if (session.agent === 'antigravity') {
-			// Antigravity CLI の入力欄へ依頼を渡す経路はまだ無い。会話を開いたことだけ知らせ、依頼はスマホの入力欄に残させる
+			// Antigravity CLI が入力を待つ画面（waitForAgentReady が見る起動直後の画面）をまだ測っていないので、再開した直後に
+			// 依頼を自動では渡さない。会話を開いたことだけ知らせ、依頼はスマホの入力欄に残させる
 			notifyResumed(tools, space, session, instance);
 			writeLedgerEntry(tools.storageService, { id: requestId, at: Date.now(), status: 'resumed', ...(terminalKey !== undefined ? { terminalKey } : {}), delivered: false });
 			reply({ status: 'resumed', ...(terminalKey !== undefined ? { terminalKey } : {}), delivered: false, message: 'Antigravity CLI の会話は PC で再開しましたが、依頼はまだアプリから渡せません。ターミナル表示で入力してください' });

@@ -15,7 +15,7 @@
 
 import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
 import type { ITerminalInstance } from '../../../../workbench/contrib/terminal/browser/terminal.js';
-import { paradisInteractiveAgentCommand } from '../../mobileRelay/common/paradisAgentCliCommand.js';
+import { paradisInteractiveAgentCommand, paradisIsInteractiveAntigravityCommand } from '../../mobileRelay/common/paradisAgentCliCommand.js';
 
 type TerminalLike = Pick<ITerminalInstance, 'capabilities' | 'xterm'>;
 
@@ -28,6 +28,15 @@ type TerminalLike = Pick<ITerminalInstance, 'capabilities' | 'xterm'>;
 export function paradisTerminalRunsAgent(instance: TerminalLike): boolean {
 	const executing = instance.capabilities.get(TerminalCapability.CommandDetection)?.executingCommand;
 	return executing !== undefined && paradisInteractiveAgentCommand(executing) !== undefined;
+}
+
+/**
+ * 前面で Antigravity CLI（`agy`）が対話の画面を開いているか（{@link paradisTerminalRunsAgent} と同じく、シェル統合が
+ * 無ければ false）。agy は {@link paradisTerminalRunsAgent} の種別に入れていないので、別に見る。
+ */
+export function paradisTerminalRunsAntigravity(instance: TerminalLike): boolean {
+	const executing = instance.capabilities.get(TerminalCapability.CommandDetection)?.executingCommand;
+	return executing !== undefined && paradisIsInteractiveAntigravityCommand(executing);
 }
 
 /** 複数行をそのまま貼り付けてよいか（行ごとに実行される心配が無いか）。 */

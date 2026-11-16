@@ -45,8 +45,8 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		items: [
 			{
 				icon: 'chatbubbles-outline',
-				title: 'Antigravity CLI のペインでも、会話と質問をアプリで見られるようにしました',
-				body: '一覧と会話のタブには Antigravity のロゴが出ます。チャット欄からの送信と、質問・確認への回答はまだできないので、ターミナル表示で入力してください。',
+				title: 'Antigravity CLI のペインでも、会話と質問をアプリで見て、チャット欄から送れるようにしました',
+				body: '一覧と会話のタブには Antigravity のロゴが出ます。送れるのは Antigravity CLI が入力を待っているときだけです。質問・確認への回答はまだできないので、PC の端末で答えてください。',
 			},
 			{
 				icon: 'time-outline',

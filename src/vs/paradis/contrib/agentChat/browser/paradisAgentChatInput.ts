@@ -20,6 +20,8 @@ import { paradisBuildPresetInsertText } from '../../terminalPresets/common/parad
 import { IParadisAgentChatSource, IParadisAgentInteraction, paradisAgentQuestionHasPreview, paradisIsCodexDaemonApprovalInteraction } from '../common/paradisAgentChat.js';
 import { paradisQuestionReadyMarker } from '../common/paradisAgentQuestionMarker.js';
 import { paradisPendingCodexQuestion } from '../common/paradisAgentChatTimeline.js';
+import type { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import { ParadisAntigravitySendBlock, paradisAntigravitySendBlock } from '../common/paradisAgentChatActionSupport.js';
 import { ParadisAgentChatSession } from './paradisAgentChatSession.js';
 import { paradisPermissionPromptParts, paradisPromptRegionShows, paradisScreenShowsAgentPrompt, paradisScreenShowsMarker, paradisScreenShowsPermissionPrompt, paradisScreenShowsQuestionPrompt, paradisSendAgentInteractionKeys } from './paradisAgentTuiInput.js';
 
@@ -35,6 +37,19 @@ export interface IParadisAgentChatTerminal {
 	foreground(): 'agent' | 'shell' | 'unknown';
 	/** TUI が貼り付けモード（bracketed paste）を有効にしている。 */
 	bracketedPasteMode(): boolean;
+	/** ペインの状態（hook と OSC 7501 から決めたもの）。無ければ見ない。Antigravity CLI の許可待ちはこれでしか分からない。 */
+	agentStatus?(): ParadisAgentStatus | undefined;
+}
+
+/** {@link paradisAntigravitySendBlock} の理由を、チャット欄に出す文にする。 */
+function paradisAntigravitySendBlockReason(block: ParadisAntigravitySendBlock): string {
+	switch (block) {
+		case 'not-running': return localize('paradisAgentChat.errorAntigravityNotRunning', "ターミナルで Antigravity CLI が動いていることを確かめられませんでした。ターミナルで確かめてください");
+		case 'working': return localize('paradisAgentChat.errorAntigravityWorking', "Antigravity CLI が作業中です。終わってから送ってください");
+		case 'permission': return localize('paradisAgentChat.errorAntigravityPermission', "Antigravity CLI が許可の確認を待っています。ターミナルで答えてから送ってください");
+		case 'question': return localize('paradisAgentChat.errorAntigravityQuestion', "Antigravity CLI が質問の回答を待っています。ターミナルで答えてから送ってください");
+		case 'multiline': return localize('paradisAgentChat.errorAntigravityMultiline', "いまは複数行の文を送れません。1行にして送ってください");
+	}
 }
 
 export interface IParadisAgentChatInputDependencies {
@@ -91,9 +106,18 @@ export class ParadisAgentChatInput {
 		if (state.agent === 'opencode') {
 			return localize('paradisAgentChat.errorOpenCodeNotReady', "OpenCode の会話が変わったか、回答を待っています");
 		}
-		// Antigravity CLI の入力欄・確認の画面のキーはまだ確かめていないので、チャット欄からは打鍵しない
+		// Antigravity CLI のキーの働きは実機で測っていないので、入力欄で待っていると確かめられるときだけ打つ
 		if (state.agent === 'antigravity') {
-			return localize('paradisAgentChat.errorAntigravityNotReady', "Antigravity CLI にはまだチャット欄から送れません。ターミナルで入力してください");
+			const block = paradisAntigravitySendBlock({
+				agyInForeground: !state.agentExited && terminal.foreground() === 'agent',
+				status: terminal.agentStatus?.(),
+				pendingInteraction: state.interaction !== null,
+				multiline: text.includes('\n'),
+				bracketedPaste: terminal.bracketedPasteMode(),
+			});
+			if (block !== undefined) {
+				return paradisAntigravitySendBlockReason(block);
+			}
 		}
 		// 終わったエージェントへ送ると、文がシェルでコマンドとして実行される。
 		const foreground = terminal.foreground();
