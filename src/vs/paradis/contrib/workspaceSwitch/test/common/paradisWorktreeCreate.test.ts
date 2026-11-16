@@ -304,15 +304,18 @@ suite('paradisWorktreeCreate', () => {
 		assert.ok(script.endsWith('; agy --mode accept-edits -i $paradisPrompt'), script);
 	});
 
-	test('keeps Antigravity CLI out of the agents sent to the mobile app, but not the other agents', () => {
+	test('sends every agent including Antigravity CLI to the mobile app, with its prompt flag, and refuses none of them', () => {
 		const gemini = { id: 'gemini', label: 'Gemini CLI', command: 'gemini -i {prompt}' };
+		const sent = paradisMobileFormAgents([...PARADIS_DEFAULT_AGENT_COMMANDS, gemini]);
 		assert.deepStrictEqual({
-			sent: paradisMobileFormAgents([...PARADIS_DEFAULT_AGENT_COMMANDS, gemini]).map(agent => agent.id),
-			// 起動シートに無くても id で直接届いた要求は断る
+			sent: sent.map(agent => agent.id),
+			// アプリが起動のコマンドの見本を PC と同じに組めるよう、指示の直前に付けるフラグも送る
+			antigravityPromptFlag: sent.find(agent => agent.id === 'antigravity')?.promptFlag,
 			refused: ['antigravity', 'claude', 'codex', 'gemini', 'none', undefined].map(id => paradisMobileAgentRefusal(id) !== undefined),
 		}, {
-			sent: ['claude', 'codex', 'gemini'],
-			refused: [true, false, false, false, false, false],
+			sent: ['claude', 'codex', 'antigravity', 'gemini'],
+			antigravityPromptFlag: '-i',
+			refused: [false, false, false, false, false, false],
 		});
 	});
 

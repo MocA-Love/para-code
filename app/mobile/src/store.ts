@@ -442,6 +442,8 @@ export interface WorktreeAgentDef {
 	id: string;
 	label: string;
 	command?: string;
+	/** 指示があるときだけ指示の直前に付けるフラグ（Antigravity CLI の `-i`。旧PCでは未配信）。PC側 IParadisAgentCommandTemplate.promptFlag と同じ。 */
+	promptFlag?: string;
 	models?: WorktreeAgentModel[];
 	efforts?: { id: string; flag: string }[];
 	permissions?: WorktreeAgentPermission[];
@@ -713,9 +715,11 @@ export interface ClaudeResetGrant {
 }
 /** 'unavailable' の内訳。PC側 ParadisLimitsUnavailableReason と同形。 */
 export type RateLimitUnavailableReason = 'not_fetched' | 'api_key' | 'keychain_unavailable' | 'rate_limited' | 'host_not_logged_in' | 'host_fetch_failed';
+/** 上限を出すサービス。PC側 ParadisLimitsProvider と同形（Antigravity CLI は `antigravity` を送る PC だけ）。 */
+export type RateLimitProvider = 'claude' | 'codex' | 'antigravity';
 /** Rate Limitの1アカウント。PC側 IParadisLimitsAccount と同形。 */
 export interface RateLimitAccount {
-	provider: 'claude' | 'codex';
+	provider: RateLimitProvider;
 	id: string;
 	email?: string;
 	active?: boolean;
@@ -770,6 +774,11 @@ export interface RateLimitProviderSnapshot {
 export interface RateLimitsResult {
 	claude: RateLimitProviderSnapshot;
 	codex: RateLimitProviderSnapshot;
+	/**
+	 * Antigravity CLI（agy）の分。枠は `scoped`（モデルのグループごと）だけで、5時間・7日の枠は無い。
+	 * agy を入れていない・サインインしていない PC と旧PCでは未配信（その PC では出さない）。
+	 */
+	antigravity?: RateLimitProviderSnapshot;
 	fetchedAt: number;
 	/** PC 側の取得が間に合わず、前回の値を返した（旧PCでは未配信）。 */
 	stale?: boolean;

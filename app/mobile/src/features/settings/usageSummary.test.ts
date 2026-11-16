@@ -113,10 +113,11 @@ describe('accountName / accountWindows', () => {
 			account({ id: 'x2', provider: 'codex', email: 'User4@example.com' }),
 			account({ id: 'x3', provider: 'codex', email: 'user4@example.com' }),
 			account({ id: 'c3', homeLabel: '~/.claude-2' }),
+			account({ id: '/home/x/.gemini', provider: 'antigravity', homeLabel: '~/.gemini' }),
 		];
 		const numbers = accountNumbers(accounts);
 		expect([...accounts, account({ id: 'c9', email: 'other@example.com' })].map(item => accountName(item, numbers))).toEqual([
-			'Claude 1', 'Claude 2', 'Codex 1', 'Codex 2', 'Codex 2', 'Claude 3', 'Claude',
+			'Claude 1', 'Claude 2', 'Codex 1', 'Codex 2', 'Codex 2', 'Claude 3', 'Antigravity 1', 'Claude',
 		]);
 	});
 

@@ -10,6 +10,7 @@ import {
 	type GithubUsageResult,
 	type RateLimitAccount,
 	type RateLimitHiddenAccount,
+	type RateLimitProvider,
 	type RateLimitProviderSnapshot,
 	type RateLimitsResult,
 	type RateLimitWindow,
@@ -193,13 +194,28 @@ export function staleOf(value: Timed<object> | undefined): boolean {
 	return value !== undefined && (value.value as { stale?: unknown }).stale === true;
 }
 
-// --- Claude / Codex の上限 ------------------------------------------------------------
+// --- Claude / Codex / Antigravity の上限 ----------------------------------------------
+
+/**
+ * 応答の中の provider の分。Antigravity は送らない PC（agy を入れていない・旧PC）があり、保存しておいた値にも無いので、
+ * 無い・形が違うときは undefined にする（Claude / Codex は今までどおり必ずある）。
+ */
+export function providerSnapshotOf(limits: RateLimitsResult, provider: RateLimitProvider): RateLimitProviderSnapshot | undefined {
+	const snapshot = limits[provider] as RateLimitProviderSnapshot | undefined;
+	return snapshot !== undefined && snapshot !== null && Array.isArray(snapshot.accounts) ? snapshot : undefined;
+}
+
+/** どれかの出どころが provider の分を送っているか（Antigravity の節を出すか。agy を入れた PC が1台も無ければ出さない）。 */
+export function hasProviderLimits(entries: readonly UsageEntry[], provider: RateLimitProvider): boolean {
+	return entries.some(entry => entry.values.limits !== undefined && providerSnapshotOf(entry.values.limits.value, provider) !== undefined);
+}
 
 /**
  * PC をまたいで同じアカウントかを決める鍵。束ねられないアカウントは出どころごとの鍵になる。
  *  - Claude: メール（＋組織名があれば組織名）
  *  - Codex: `accountId`（PC が sha256 にして送る）があればそれ。無ければ束ねない（同じメールで別のワークスペースを
  *    持つ人を1つに潰さないため）
+ *  - Antigravity: 束ねない（PC はメールも ID も送らない。ホームの `~/.gemini` は PC ごとに別のログイン）
  */
 export function accountMergeKey(account: Pick<RateLimitAccount, 'provider' | 'id' | 'email' | 'organizationName' | 'accountId'>, entryKey: string): string {
 	const email = account.email?.trim().toLowerCase();
@@ -207,7 +223,7 @@ export function accountMergeKey(account: Pick<RateLimitAccount, 'provider' | 'id
 		if (account.accountId !== undefined && account.accountId.length > 0) {
 			return `codex|id:${account.accountId}`;
 		}
-	} else if (email !== undefined && email.length > 0) {
+	} else if (account.provider === 'claude' && email !== undefined && email.length > 0) {
 		const organization = account.organizationName?.trim();
 		return `claude|email:${email}|org:${organization ?? ''}`;
 	}
@@ -225,7 +241,7 @@ export interface SeenOn {
 /** 束ねた1アカウント。 */
 export interface AggregatedAccount {
 	readonly key: string;
-	readonly provider: 'claude' | 'codex';
+	readonly provider: RateLimitProvider;
 	/**
 	 * 採った値（値の取れているもの → 新しいもの → 取得時刻の新しいもの、の順で選ぶ）。Codex の枠のリセット
 	 * （`resetCredits`）だけは、リセットを添えている PC の中から別に選んで差し込む（{@link aggregateAccounts}）。
@@ -291,10 +307,11 @@ export interface AggregatedHiddenAccount {
  * PC の使用量のパネルで隠したアカウントを、PC をまたいで束ねる（鍵は {@link accountMergeKey}）。並びは見つかった順。
  * 古い PC は隠したアカウントを送らない（`hiddenAccounts` が無い）ので、そこからは何も数えない。
  */
-export function aggregateHiddenAccounts(entries: readonly UsageEntry[], provider: 'claude' | 'codex'): AggregatedHiddenAccount[] {
+export function aggregateHiddenAccounts(entries: readonly UsageEntry[], provider: RateLimitProvider): AggregatedHiddenAccount[] {
 	const hidden = new Map<string, AggregatedHiddenAccount>();
 	for (const entry of entries) {
-		for (const account of entry.values.limits?.value[provider].hiddenAccounts ?? []) {
+		const limits = entry.values.limits;
+		for (const account of (limits !== undefined ? providerSnapshotOf(limits.value, provider)?.hiddenAccounts : undefined) ?? []) {
 			const key = accountMergeKey(account, entry.key);
 			if (!hidden.has(key)) {
 				hidden.set(key, { key, account });
@@ -313,7 +330,7 @@ export function aggregateHiddenAccounts(entries: readonly UsageEntry[], provider
  * そのまま採るとリセットの行が消えるので、リセットだけはリセットを添えている PC の中の新しい値から採る。
  * Claude のリミットリセット（`claudeResetGrants`）も同じ扱いにする。
  */
-export function aggregateAccounts(entries: readonly UsageEntry[], provider: 'claude' | 'codex', now: number): AggregatedAccount[] {
+export function aggregateAccounts(entries: readonly UsageEntry[], provider: RateLimitProvider, now: number): AggregatedAccount[] {
 	const order: string[] = [];
 	const best = new Map<string, AccountCandidate>();
 	const bestReset = new Map<string, AccountCandidate>();
@@ -325,7 +342,10 @@ export function aggregateAccounts(entries: readonly UsageEntry[], provider: 'cla
 		if (limits === undefined) {
 			continue;
 		}
-		const snapshot = limits.value[provider];
+		const snapshot = providerSnapshotOf(limits.value, provider);
+		if (snapshot === undefined) {
+			continue;
+		}
 		const old = isOldValue(entry, limits, now);
 		for (const account of snapshot.accounts) {
 			if (account.status === 'unavailable' && account.unavailableReason === 'host_not_logged_in') {
@@ -435,7 +455,7 @@ export function hasAnyLimits(entries: readonly UsageEntry[]): boolean {
 }
 
 /** アカウントが1つも無いときの説明に使う、最も新しい provider のスナップショット。 */
-export function latestProviderSnapshot(entries: readonly UsageEntry[], provider: 'claude' | 'codex'): RateLimitProviderSnapshot | undefined {
+export function latestProviderSnapshot(entries: readonly UsageEntry[], provider: RateLimitProvider): RateLimitProviderSnapshot | undefined {
 	let latest: Timed<RateLimitsResult> | undefined;
 	for (const entry of entries) {
 		const limits = entry.values.limits;
@@ -443,7 +463,7 @@ export function latestProviderSnapshot(entries: readonly UsageEntry[], provider:
 			latest = limits;
 		}
 	}
-	return latest?.value[provider];
+	return latest !== undefined ? providerSnapshotOf(latest.value, provider) : undefined;
 }
 
 // --- コスト（ccusage） ------------------------------------------------------------------

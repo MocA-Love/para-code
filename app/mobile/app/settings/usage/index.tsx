@@ -24,8 +24,10 @@ import {
 	aggregateHiddenAccounts,
 	entryTitle,
 	hasAnyLimits,
+	hasProviderLimits,
 	isOldValue,
 	latestProviderSnapshot,
+	providerSnapshotOf,
 	scopeCountLabel,
 	summarizeCost,
 	summarizeGithub,
@@ -92,11 +94,17 @@ interface ProviderColumnLayout {
 }
 
 /**
- * Claude と Codex の2つの束。iPad の広い幅で本文に収まるときは左右に並べ、リセットの期限の一覧を最初から開く。
+ * Claude と Codex の2つの束（と、Antigravity CLI を使う PC があれば Antigravity の束）。iPad の広い幅で本文に
+ * 収まるときは左右に並べ、リセットの期限の一覧を最初から開く。Antigravity は折り返して左の列の2段目に置く。
  * 並べ方はスタイルだけで変え、木の形は変えない（幅は本文の実際の幅を測る。ウィンドウ幅ではない）。
  * 列の幅は `usageProviderColumnWidthFor` で決め、列の幅にメーター2つが収まらなければ1つずつ積む（`usageMetersPerRowFor`）。
  */
-function ProviderColumns({ claude, codex }: { claude: (layout: ProviderColumnLayout) => ReactNode; codex: (layout: ProviderColumnLayout) => ReactNode }) {
+function ProviderColumns({ claude, codex, antigravity }: {
+	claude: (layout: ProviderColumnLayout) => ReactNode;
+	codex: (layout: ProviderColumnLayout) => ReactNode;
+	/** Antigravity の束。出さないときは null を返す（列の箱は残し、木の形を変えない）。 */
+	antigravity: (layout: ProviderColumnLayout) => ReactNode;
+}) {
 	const regular = useIsRegularWidth();
 	const [width, setWidth] = useState(0);
 	const columnWidth = usageProviderColumnWidthFor(regular, width);
@@ -112,6 +120,7 @@ function ProviderColumns({ claude, codex }: { claude: (layout: ProviderColumnLay
 		<View style={twoColumns ? styles.providerRow : undefined} onLayout={onLayout}>
 			<View style={columnStyle}>{claude(layout)}</View>
 			<View style={columnStyle}>{codex(layout)}</View>
+			<View style={columnStyle}>{antigravity(layout)}</View>
 		</View>
 	);
 }
@@ -156,8 +165,12 @@ function UsageAllView() {
 
 	const claude = aggregateAccounts(entries, 'claude', now);
 	const codex = aggregateAccounts(entries, 'codex', now);
+	const antigravity = aggregateAccounts(entries, 'antigravity', now);
 	const hiddenClaude = aggregateHiddenAccounts(entries, 'claude');
 	const hiddenCodex = aggregateHiddenAccounts(entries, 'codex');
+	const hiddenAntigravity = aggregateHiddenAccounts(entries, 'antigravity');
+	// Antigravity は、agy の分を送ってきた PC が1台でもあるときだけ出す（入れていない人に空の束を出さない）
+	const showAntigravity = hasProviderLimits(entries, 'antigravity');
 	const anyLimits = hasAnyLimits(entries);
 	const cost = summarizeCost(entries, now);
 	const github = summarizeGithub(entries, now);
@@ -172,7 +185,7 @@ function UsageAllView() {
 	const costValues = Object.fromEntries(cost.rows.map(row => [row.key, { value: row.today !== undefined ? formatUsd(row.today) : undefined, at: row.at }]));
 	const emailMasked = useUsageEmailMask(s => s.masked);
 	// 隠したアカウントの番号は、見えているアカウントの後ろに振る（見えているアカウントの番号はホームと同じ）
-	const numbers = emailMasked ? accountNumbers([...claude, ...codex, ...hiddenClaude, ...hiddenCodex].map(item => item.account)) : undefined;
+	const numbers = emailMasked ? accountNumbers([...claude, ...codex, ...antigravity, ...hiddenClaude, ...hiddenCodex, ...hiddenAntigravity].map(item => item.account)) : undefined;
 	const nothing = !anyOnline && entries.every(entry => entry.values.limits === undefined && entry.values.cost === undefined && entry.values.github === undefined && entry.values.voice === undefined);
 
 	return (
@@ -193,6 +206,9 @@ function UsageAllView() {
 					<ProviderColumns
 						claude={layout => <AggregatedProviderSection provider="claude" title="Claude" accounts={claude} hidden={hiddenClaude} emptySnapshot={latestProviderSnapshot(entries, 'claude')} anyLimits={anyLimits} loading={limitsLoading} now={now} showChips numbers={numbers} {...layout} />}
 						codex={layout => <AggregatedProviderSection provider="codex" title="Codex" accounts={codex} hidden={hiddenCodex} emptySnapshot={latestProviderSnapshot(entries, 'codex')} anyLimits={anyLimits} loading={limitsLoading} now={now} showChips numbers={numbers} {...layout} />}
+						antigravity={layout => (showAntigravity
+							? <AggregatedProviderSection provider="antigravity" title="Antigravity" accounts={antigravity} hidden={hiddenAntigravity} emptySnapshot={latestProviderSnapshot(entries, 'antigravity')} anyLimits={anyLimits} loading={limitsLoading} now={now} showChips numbers={numbers} {...layout} />
+							: null)}
 					/>
 
 					<AggregatedFetchNotes items={fetchNoteItems(overview, 'cost')} now={now} />
@@ -302,6 +318,8 @@ function UsageSourceView() {
 	const openDetail = useOpenDetail(sourceParam);
 
 	const limits = values?.limits;
+	// この出どころが Antigravity CLI の分を送っているときだけ、その束を出す
+	const antigravitySnapshot = limits !== undefined ? providerSnapshotOf(limits.value, 'antigravity') : undefined;
 	const cost = values?.cost;
 	const github = isPc ? values?.github : undefined;
 	// 取りに行けない出どころ（オフラインの PC・応答しない接続先）の値は薄く残す。
@@ -326,12 +344,14 @@ function UsageSourceView() {
 	const emailMasked = useUsageEmailMask(s => s.masked);
 	const numbers = emailMasked
 		? accountNumbers([
-			...[...aggregateAccounts(overview.entries, 'claude', now), ...aggregateAccounts(overview.entries, 'codex', now)].map(item => item.account),
+			...[...aggregateAccounts(overview.entries, 'claude', now), ...aggregateAccounts(overview.entries, 'codex', now), ...aggregateAccounts(overview.entries, 'antigravity', now)].map(item => item.account),
 			...(limits?.value.claude?.accounts ?? []),
 			...(limits?.value.codex?.accounts ?? []),
-			...[...aggregateHiddenAccounts(overview.entries, 'claude'), ...aggregateHiddenAccounts(overview.entries, 'codex')].map(item => item.account),
+			...(antigravitySnapshot?.accounts ?? []),
+			...[...aggregateHiddenAccounts(overview.entries, 'claude'), ...aggregateHiddenAccounts(overview.entries, 'codex'), ...aggregateHiddenAccounts(overview.entries, 'antigravity')].map(item => item.account),
 			...(limits?.value.claude?.hiddenAccounts ?? []),
 			...(limits?.value.codex?.hiddenAccounts ?? []),
+			...(antigravitySnapshot?.hiddenAccounts ?? []),
 		])
 		: undefined;
 	const staleNote = (value: { value: { stale?: boolean }; at: number } | undefined) => (value?.value.stale === true ? value.at : undefined);
@@ -356,6 +376,9 @@ function UsageSourceView() {
 					<ProviderColumns
 						claude={layout => <ProviderUsageSection provider="claude" title="Claude" snapshot={limits?.value.claude} now={now} loading={loadingLimits} dimmed={dimmed || (entry !== undefined && isOldValue(entry, limits, now))} numbers={numbers} {...layout} />}
 						codex={layout => <ProviderUsageSection provider="codex" title="Codex" snapshot={limits?.value.codex} now={now} loading={loadingLimits} dimmed={dimmed || (entry !== undefined && isOldValue(entry, limits, now))} numbers={numbers} {...layout} />}
+						antigravity={layout => (antigravitySnapshot !== undefined
+							? <ProviderUsageSection provider="antigravity" title="Antigravity" snapshot={antigravitySnapshot} now={now} loading={loadingLimits} dimmed={dimmed || (entry !== undefined && isOldValue(entry, limits, now))} numbers={numbers} {...layout} />
+							: null)}
 					/>
 
 					<UsageFetchNote error={overview.errorOf(key, 'cost')} hasPrevious={cost !== undefined} staleAt={staleNote(cost)} now={now} />
@@ -445,8 +468,10 @@ const styles = StyleSheet.create({
 	},
 	providerRow: {
 		flexDirection: 'row',
+		flexWrap: 'wrap',
 		alignItems: 'flex-start',
-		gap: USAGE_PROVIDER_COLUMN_GAP,
+		// 段の間は束の下の余白（UsageSection の marginBottom）に任せ、列の間だけ空ける
+		columnGap: USAGE_PROVIDER_COLUMN_GAP,
 	},
 	foot: {
 		flexDirection: 'row',

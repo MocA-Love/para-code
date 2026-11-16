@@ -23,7 +23,7 @@ import {
 	type UsageEntry,
 	type UsageKind,
 } from './usageAggregate.js';
-import type { RateLimitProviderSnapshot } from '../../store.js';
+import type { RateLimitProvider, RateLimitProviderSnapshot } from '../../store.js';
 import type { PcResourceSummary } from '../../appState.js';
 import type { UsageOverview } from './usageStore.js';
 
@@ -82,7 +82,7 @@ export function SeenOnChips({ chips }: { chips: readonly SeenOn[] }) {
  * `showChips` は PC が2台以上のときだけ（1台なら PC の名前は要らない）。
  */
 export function AggregatedProviderSection({ provider, title, accounts, hidden = [], emptySnapshot, anyLimits, loading, now, showChips, expandResets = false, metersPerRow = 2, numbers }: {
-	provider: 'claude' | 'codex';
+	provider: RateLimitProvider;
 	title: string;
 	accounts: readonly AggregatedAccount[];
 	/** どれかの PC で隠したアカウント（`accounts` には入らない。「非表示中のアカウント」に畳んで出す）。 */

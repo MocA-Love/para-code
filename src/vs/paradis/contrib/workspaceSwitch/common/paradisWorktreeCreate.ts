@@ -585,11 +585,11 @@ export const PARADIS_DEFAULT_AGENT_COMMANDS: readonly IParadisAgentCommandTempla
 ];
 
 /**
- * モバイルへ送るエージェント定義（作成シート・起動シートの材料）から除くもの。Antigravity CLI は、状態の検知と
- * 会話の記録がそろうまでモバイルの起動フォームに出さない（Q616）。モバイルのアプリは知らない id でもそのまま
- * 並べるので、配信済みの版でも出ないよう PC から送らない。
+ * モバイルへ送るエージェント定義（作成シート・起動シートの材料）から除くもの。モバイルのアプリは知らない id でも
+ * そのまま並べるので、出したくないものは PC から送らない。いまは除くものは無い（Antigravity CLI は状態の検知・会話の
+ * 記録・送信がそろったので、2026-11-16 からモバイルでも起動できる。Q616）。
  */
-export const PARADIS_MOBILE_HIDDEN_AGENTS: ReadonlySet<string> = new Set(['antigravity']);
+export const PARADIS_MOBILE_HIDDEN_AGENTS: ReadonlySet<string> = new Set();
 
 /**
  * モバイルから届いた起動の要求（新しいスペース・既存のスペースへの起動）で、断るエージェントなら断る理由を返す。

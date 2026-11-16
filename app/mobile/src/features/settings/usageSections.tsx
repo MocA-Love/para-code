@@ -5,7 +5,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Check, ChevronDown, ChevronRight, ChevronUp, RotateCcw } from 'lucide-react-native';
 import { ProviderLogo } from '../../components/providerLogo.js';
 import { haptic } from '../../haptics.js';
-import type { ClaudeResetGrant, RateLimitAccount, RateLimitProviderSnapshot, RateLimitResetCredits } from '../../store.js';
+import type { ClaudeResetGrant, RateLimitAccount, RateLimitProvider, RateLimitProviderSnapshot, RateLimitResetCredits } from '../../store.js';
 import { alpha, colors, radius, space, type } from '../../theme.js';
 import { Icon, Meter, MeterRow, iconSize, useThemeColors, type LucideIcon } from '../../ui/index.js';
 import { accountHint, accountName, accountWindows, type AccountNumbers, claudeResetGrantRows, claudeResetGrantsSummary, hasPreviousValue, previousWindows, providerEmptyMessage, resetCreditRows, resetCreditsSummary, resetInLabel, WINDOW_RESET_UNKNOWN_LABEL } from './usageSummary.js';
@@ -86,7 +86,7 @@ export function UsageSeparator() {
  * （接続先の名前は上の接続先の選択にも出るので、見出しには重ねない）。
  */
 export function ProviderUsageSection({ provider, title, snapshot, now, loading, dimmed, expandResets = false, metersPerRow = 2, numbers }: {
-	provider: 'claude' | 'codex';
+	provider: RateLimitProvider;
 	title: string;
 	snapshot: RateLimitProviderSnapshot | undefined;
 	now: number;

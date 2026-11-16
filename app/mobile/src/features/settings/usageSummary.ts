@@ -31,7 +31,7 @@ function accountNumberKey(account: AccountNameFields): string {
  */
 export function accountNumbers(accounts: readonly AccountNameFields[]): AccountNumbers {
 	const numbers = new Map<string, number>();
-	const counts = { claude: 0, codex: 0 };
+	const counts = { claude: 0, codex: 0, antigravity: 0 };
 	for (const account of accounts) {
 		const key = accountNumberKey(account);
 		if (!numbers.has(key)) {
@@ -42,12 +42,12 @@ export function accountNumbers(accounts: readonly AccountNameFields[]): AccountN
 }
 
 /**
- * アカウントの見出し（メール → ホームの呼び名 → ID の順）。`numbers` を渡すと「Claude 1」「Codex 2」のように番号で出す
+ * アカウントの見出し（メール → ホームの呼び名 → ID の順）。`numbers` を渡すと「Claude 1」「Codex 2」「Antigravity 1」のように番号で出す
  * （番号の無いアカウントもメールは出さず provider の名前だけにする）。
  */
 export function accountName(account: AccountNameFields, numbers?: AccountNumbers): string {
 	if (numbers !== undefined) {
-		const provider = account.provider === 'claude' ? 'Claude' : 'Codex';
+		const provider = account.provider === 'claude' ? 'Claude' : account.provider === 'antigravity' ? 'Antigravity' : 'Codex';
 		const number = numbers.get(accountNumberKey(account));
 		return number !== undefined ? `${provider} ${number}` : provider;
 	}
