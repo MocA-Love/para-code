@@ -35,6 +35,11 @@ suite('Paradis cursor owners', () => {
 		);
 	});
 
+	test('an Antigravity CLI owner is named after the CLI with its own mark and color', () => {
+		const owners = new ParadisCursorOwners(() => 0);
+		assert.deepStrictEqual(owners.resolve('pane-a', 'page', 'antigravity'), { id: paradisCursorOwnerId('pane-a'), name: 'Antigravity', mark: 'A', color: '#4285f4' });
+	});
+
 	test('an owner keeps its color when an earlier owner of the page goes idle, and a new owner takes the freed color', () => {
 		let clock = 0;
 		const owners = new ParadisCursorOwners(() => clock);

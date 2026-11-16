@@ -233,9 +233,10 @@ export class ParadisAgentBrowserChannel implements IServerChannel<string> {
 				return this.service.buildRemoteAgentHooksJson(String(args[0]), String(args[1]), existingRaw) as Promise<T>;
 			}
 			case 'buildRemoteAgentHooksRemovalJson': {
-				const args = requireArgs(arg, 1);
+				// 2 つ目は設定ファイルの種類（Antigravity CLI の hooks.json は形が違う）。無ければ Claude・Codex の形
+				const args = Array.isArray(arg) && arg.length === 2 ? requireArgs(arg, 2) : requireArgs(arg, 1);
 				const existingRaw = typeof args[0] === 'string' ? args[0] : undefined;
-				return this.service.buildRemoteAgentHooksRemovalJson(existingRaw) as Promise<T>;
+				return this.service.buildRemoteAgentHooksRemovalJson(existingRaw, args[1] === 'antigravity' ? 'antigravity' : undefined) as Promise<T>;
 			}
 			case 'setupMcp': {
 				const args = requireArgs(arg, 1);
@@ -382,7 +383,7 @@ function requireMcpSetupRequest(value: unknown): IParadisMcpSetupRequest {
 			throw protocolError();
 		}
 		const cli = descriptor.value;
-		if (cli !== 'claude' && cli !== 'codex') {
+		if (cli !== 'claude' && cli !== 'codex' && cli !== 'antigravity') {
 			throw protocolError();
 		}
 		return Object.freeze({ cli });

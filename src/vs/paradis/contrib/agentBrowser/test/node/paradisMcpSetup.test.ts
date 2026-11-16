@@ -979,4 +979,75 @@ suite('Para Browser MCP setup', () => {
 			await fs.rm(directory, { recursive: true, force: true });
 		}
 	});
+
+	test('Antigravity CLI: writes the stdio bridge into mcp_config.json only where agy made its config folder, and replaces a header entry', async () => {
+		const directory = await fs.mkdtemp(join(tmpdir(), 'paradis-mcp-setup-'));
+		try {
+			const configDir = join(directory, '.gemini', 'config');
+			const bridge = { executable: '/Applications/Para Code.app/Contents/MacOS/Para Code', shimPath: '/app/out/vs/paradis/contrib/agentBrowser/node/paradisBrowserMcpShim.js' };
+			const controller = new ParadisMcpSetupController({
+				platform: 'darwin',
+				resolveShellEnv: async () => ({}),
+				findExecutable: async () => undefined,
+				runCommand: async () => ({ kind: 'failure', output: '' }),
+				codexHome: join(directory, '.codex'),
+				resolveMcpBridge: () => bridge,
+				antigravityConfigDir: configDir,
+				log: () => undefined,
+			});
+			const beforeAgy = { status: (await controller.status(PORT)).antigravity, setup: await controller.setup('antigravity', PORT) };
+			await fs.mkdir(configDir, { recursive: true });
+			const configPath = join(configDir, 'mcp_config.json');
+			// 手で書いた HTTP の形（agy はヘッダーの変数を展開しないので動かない）と、ほかのサーバー
+			await fs.writeFile(configPath, JSON.stringify({ mcpServers: { other: { command: 'x' }, 'para-browser': { serverUrl: `http://127.0.0.1:${PORT}/`, headers: { Authorization: 'Bearer ${PARA_CODE_TERMINAL_PANE_ID}' }, disabled: true } } }));
+			const handWritten = (await controller.status(PORT)).antigravity;
+			const fixed = await controller.fix('antigravity', PORT);
+			const written = JSON.parse(await fs.readFile(configPath, 'utf8'));
+			const afterFix = (await controller.status(PORT)).antigravity;
+			const again = await controller.setup('antigravity', PORT);
+			assert.deepStrictEqual({ beforeAgy, handWritten, fixed: fixed.servers, written, afterFix, again: again.servers }, {
+				beforeAgy: { status: undefined, setup: { cli: 'antigravity', cliAvailable: false, target: configPath, servers: [] } },
+				handWritten: { cli: 'antigravity', state: 'needsFix' },
+				fixed: [{ server: 'para-browser', outcome: 'success' }],
+				written: { mcpServers: { other: { command: 'x' }, 'para-browser': { command: '/usr/bin/env', args: ['ELECTRON_RUN_AS_NODE=1', bridge.executable, bridge.shimPath] } } },
+				afterFix: { cli: 'antigravity', state: 'configured', configPath },
+				again: [{ server: 'para-browser', outcome: 'already' }],
+			});
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	test('Antigravity CLI: the startup pass moves our bridge to the current Para Code, keeps disabled, and leaves other entries alone', async () => {
+		const directory = await fs.mkdtemp(join(tmpdir(), 'paradis-mcp-setup-'));
+		try {
+			const configDir = join(directory, 'config');
+			await fs.mkdir(configDir);
+			const configPath = join(configDir, 'mcp_config.json');
+			const controller = new ParadisMcpSetupController({
+				platform: 'win32',
+				resolveShellEnv: async () => ({}),
+				findExecutable: async () => undefined,
+				runCommand: async () => ({ kind: 'failure', output: '' }),
+				codexHome: join(directory, '.codex'),
+				resolveMcpBridge: () => ({ executable: 'C:\\new\\Para Code.exe', shimPath: 'C:\\new\\paradisBrowserMcpShim.js' }),
+				antigravityConfigDir: configDir,
+				log: () => undefined,
+			});
+			const handWritten = JSON.stringify({ mcpServers: { 'para-browser': { serverUrl: 'http://127.0.0.1:1/' } } });
+			await fs.writeFile(configPath, handWritten);
+			await controller.upgradeToolTimeouts(undefined);
+			const untouched = await fs.readFile(configPath, 'utf8');
+			await fs.writeFile(configPath, JSON.stringify({ mcpServers: { 'para-browser': { command: 'C:\\old\\Para Code.exe', args: ['C:\\old\\paradisBrowserMcpShim.js'], env: { ELECTRON_RUN_AS_NODE: '1' }, disabled: true } } }));
+			await controller.upgradeToolTimeouts(undefined);
+			assert.deepStrictEqual({ untouched, moved: JSON.parse(await fs.readFile(configPath, 'utf8')), status: (await controller.status(undefined)).antigravity }, {
+				untouched: handWritten,
+				moved: { mcpServers: { 'para-browser': { command: 'C:\\new\\Para Code.exe', args: ['C:\\new\\paradisBrowserMcpShim.js'], env: { ELECTRON_RUN_AS_NODE: '1' }, disabled: true } } },
+				// 止めてあるものは「未設定」（ボタンで入れ直すと止めた印を外す）
+				status: { cli: 'antigravity', state: 'unconfigured' },
+			});
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
 });

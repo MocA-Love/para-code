@@ -14,7 +14,7 @@
 // TOMLは全実装せず、既存の注入耐性スキャナ（paradisMcpSetupEncoding）を再利用して安全側に倒す。
 
 import { PARADIS_PANE_TOKEN_ENV_VAR, ParadisMcpConfigState } from './paradisAgentBrowser.js';
-import { MultilineDelimiter, PARADIS_CODEX_MCP_MANAGED_LINES, PARADIS_MCP_SERVER_NAME, findTomlAssignment, parseTomlKeyPath, scanTomlLine } from './paradisMcpSetupEncoding.js';
+import { IParadisAntigravityMcpServerEntry, MultilineDelimiter, PARADIS_CODEX_MCP_MANAGED_LINES, PARADIS_MCP_SERVER_NAME, findTomlAssignment, parseTomlKeyPath, scanTomlLine } from './paradisMcpSetupEncoding.js';
 import { isRecord } from '../../../common/paradisGuards.js';
 
 /** stdioシムのファイル名断片。設定値がこれを含めば para-browser（旧shim方式）とみなす。 */
@@ -396,4 +396,81 @@ export function paradisAddCodexMissingTableLines(text: string, gatewayPort: numb
 	const lines = text.split(/\r?\n/);
 	lines.splice(target.table.endLine + 1, 0, ...target.missing.map(line => `${line.key} = ${line.value}`));
 	return { text: lines.join(eol), keys: target.missing.map(line => line.key) };
+}
+
+/** Antigravity CLI の mcp_config.json の判定結果。 */
+export interface IParadisAntigravityMcpConfigInspection {
+	readonly state: ParadisMcpConfigState;
+	/** 読めない・形が想定外で、自動セットアップでは書けない（手で直してもらう）。 */
+	readonly manualOnly?: true;
+}
+
+/** 2 つの JSON の値が同じか（キーの順は見ない）。 */
+function sameJsonValue(left: unknown, right: unknown): boolean {
+	if (Array.isArray(left) || Array.isArray(right)) {
+		return Array.isArray(left) && Array.isArray(right) && left.length === right.length && left.every((value, index) => sameJsonValue(value, right[index]));
+	}
+	if (isRecord(left) && isRecord(right)) {
+		const leftKeys = Object.keys(left);
+		return leftKeys.length === Object.keys(right).length && leftKeys.every(key => Object.hasOwn(right, key) && sameJsonValue(left[key], right[key]));
+	}
+	return left === right;
+}
+
+/** エントリから利用者が付ける `disabled` を除いたもの（中身の比較に使う）。 */
+function withoutDisabled(entry: Record<string, unknown>): Record<string, unknown> {
+	const copy = { ...entry };
+	delete copy.disabled;
+	return copy;
+}
+
+/**
+ * Antigravity CLI の `~/.gemini/config/mcp_config.json` の para-browser を判定する。
+ *
+ * - configured: Para Code の stdio の橋渡しが、今の Para Code の場所を指している（`disabled: true` のものは除く）
+ * - needsFix: para-browser はあるが動かない形。手で書いた HTTP の形（agy は `headers` の `${VAR}` を展開しないので
+ *   トークンが届かない）、前の場所の Para Code を指す橋渡し（アプリを移した・入れ直した）、そのほかの中身
+ * - unconfigured: para-browser が無い、または agy の `/mcp` で止めてある
+ *
+ * @param expected 今の Para Code での中身（{@link paradisAntigravityMcpServerEntry}）。
+ */
+export function inspectParadisAntigravityMcpJson(text: string, expected: IParadisAntigravityMcpServerEntry): IParadisAntigravityMcpConfigInspection {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text.trim().length === 0 ? '{}' : text);
+	} catch {
+		return { state: 'unconfigured', manualOnly: true };
+	}
+	if (!isRecord(parsed) || (parsed.mcpServers !== undefined && !isRecord(parsed.mcpServers))) {
+		return { state: 'unconfigured', manualOnly: true };
+	}
+	const entry = isRecord(parsed.mcpServers) ? parsed.mcpServers[PARADIS_MCP_SERVER_NAME] : undefined;
+	if (entry === undefined) {
+		return { state: 'unconfigured' };
+	}
+	if (!isRecord(entry)) {
+		return { state: 'needsFix' };
+	}
+	if (!sameJsonValue(withoutDisabled(entry), expected)) {
+		return { state: 'needsFix' };
+	}
+	return { state: entry.disabled === true ? 'unconfigured' : 'configured' };
+}
+
+/**
+ * 起動時に場所だけ直してよい para-browser か（Para Code が前に書いた橋渡しで、今の場所と違う）。
+ * 利用者が手で書いた HTTP の形などは直さない（ボタンを押したときだけ置き換える）。
+ */
+export function paradisAntigravityMcpEntryNeedsRelocation(text: string, expected: IParadisAntigravityMcpServerEntry): boolean {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		return false;
+	}
+	const entry = isRecord(parsed) && isRecord(parsed.mcpServers) ? parsed.mcpServers[PARADIS_MCP_SERVER_NAME] : undefined;
+	if (!isRecord(entry) || !claudeEntryReferencesShim(entry)) {
+		return false;
+	}
+	return !sameJsonValue(withoutDisabled(entry), expected);
 }

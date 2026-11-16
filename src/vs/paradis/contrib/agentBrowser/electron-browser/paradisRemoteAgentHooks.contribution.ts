@@ -172,6 +172,9 @@ export class ParadisRemoteAgentHooksController extends Disposable {
 	}
 }
 
+/** 接続先へ hook を置くエージェント CLI。 */
+export type ParadisRemoteHookCli = 'claude' | 'codex' | 'antigravity';
+
 /** {@link ParadisRemoteAgentHookFiles} が接続先とやり取りするための口。 */
 export interface IParadisRemoteAgentHookFilesHost {
 	readonly fileService: Pick<IFileService, 'exists' | 'readFile' | 'writeFile' | 'copy' | 'realpath' | 'stat'>;
@@ -181,9 +184,9 @@ export interface IParadisRemoteAgentHookFilesHost {
 	/** 接続先のホーム。まだ接続先を指していなければ undefined。 */
 	resolveHome(): Promise<URI | undefined>;
 	/** hook を差し込んだ中身を返す（判断は shared process 側）。 */
-	buildHooksJson(cli: 'claude' | 'codex', current: string | undefined): Promise<string | undefined>;
+	buildHooksJson(cli: ParadisRemoteHookCli, current: string | undefined): Promise<string | undefined>;
 	/** Para Code が置いた hook だけを外した中身を返す（判断は shared process 側）。 */
-	buildRemovalJson(current: string): Promise<string | undefined>;
+	buildRemovalJson(current: string, cli: ParadisRemoteHookCli): Promise<string | undefined>;
 	/**
 	 * 接続先の Codex のアカウント用ホーム（~/.codex-2 等。既定の ~/.codex は含めない）。アカウントを
 	 * 切り替えた Codex はこちらの hooks.json を読むので、同じ hook を置く。分からなければ空。
@@ -291,10 +294,14 @@ export class ParadisRemoteAgentHookFiles {
 	async sync(home: URI): Promise<boolean> {
 		const change = this.pending;
 		const accountHomes = await this.host.listCodexAccountHomes?.().catch(() => []) ?? [];
-		const files: readonly [URI, 'claude' | 'codex'][] = [
+		// Antigravity CLI は、agy が全体の設定のフォルダを作っている接続先だけ（手元と同じ規則。agy を使わない人のホームに作らない）
+		const antigravityConfigDir = joinPath(home, '.gemini', 'config');
+		const usesAntigravity = await this.host.fileService.stat(antigravityConfigDir).then(stat => stat.isDirectory, () => false);
+		const files: readonly [URI, ParadisRemoteHookCli][] = [
 			[joinPath(home, '.claude', 'settings.json'), 'claude'],
 			[joinPath(home, '.codex', 'hooks.json'), 'codex'],
 			...accountHomes.map((codexHome): [URI, 'codex'] => [joinPath(codexHome, 'hooks.json'), 'codex']),
+			...(usesAntigravity ? [[joinPath(antigravityConfigDir, 'hooks.json'), 'antigravity'] as [URI, 'antigravity']] : []),
 		];
 		let applied = true;
 		for (const [file, cli] of files) {
@@ -309,7 +316,7 @@ export class ParadisRemoteAgentHookFiles {
 					() => this.enabled,
 				) && applied;
 			} else if (this.pending === 'remove') {
-				applied = await this.mergeJson(file, async current => current === undefined ? undefined : this.host.buildRemovalJson(current)) && applied;
+				applied = await this.mergeJson(file, async current => current === undefined ? undefined : this.host.buildRemovalJson(current, cli)) && applied;
 			}
 		}
 		if (applied && this.pending === change) {
@@ -390,7 +397,8 @@ export class ParadisRemoteAgentHookFiles {
  *  - notify スクリプト（手元と同じもの。shared process から本文をもらう）
  *  - ポートファイル（スクリプトが通知先の番号を読むところ。接続先の sshd が割り当てた
  *    動的な番号で、手元のゲートウェイの番号とは一致しない）
- *  - Claude / Codex の設定への hook 定義（既にあるものは触らない）
+ *  - Claude / Codex / Antigravity CLI の設定への hook 定義（既にあるものは触らない。Antigravity CLI は
+ *    agy が `~/.gemini/config` を作っている接続先だけ）
  *
  * 通知は接続先の 127.0.0.1 へ飛ぶ。それが手元まで戻ってくる経路（戻りトンネル）を実際に
  * 張るのは shared process 側（paradisRemoteAgentTunnel.ts）で、ここは `ensureRemoteAgentTunnel`
@@ -442,7 +450,8 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 			remoteAuthority: this.environmentService.remoteAuthority,
 			resolveHome: () => this.remoteUserHome(),
 			buildHooksJson: (cli, current) => channel.call<string | undefined>('buildRemoteAgentHooksJson', [this.environmentService.remoteAuthority, cli, current]),
-			buildRemovalJson: current => channel.call<string | undefined>('buildRemoteAgentHooksRemovalJson', [current]),
+			// Claude・Codex は前からの 1 つの引数のまま（形の違う Antigravity CLI の hooks.json だけ種類を渡す）
+			buildRemovalJson: (current, cli) => channel.call<string | undefined>('buildRemoteAgentHooksRemovalJson', cli === 'antigravity' ? [current, cli] : [current]),
 			listCodexAccountHomes: () => this.codexAccountHomes(),
 		}, paradisAgentHooksEnabled(this.configurationService.getValue(PARADIS_AGENT_HOOKS_ENABLED_SETTING)));
 

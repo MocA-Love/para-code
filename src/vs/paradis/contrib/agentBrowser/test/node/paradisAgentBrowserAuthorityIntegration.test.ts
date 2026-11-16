@@ -171,6 +171,7 @@ function createFixture(): {
 		_userTurnStarts: new Map<string, number>(),
 		_announcedReviews: new Map<string, { turn: number; certain: boolean }>(),
 		_paneSessions: new Map(),
+		_paneCursorAgents: new Map(),
 		_codexFrontSessions: new ParadisCodexFrontSessions(),
 		_activityApprovalTokens: new Set<string>(),
 		_elicitationWaits: new Map(),

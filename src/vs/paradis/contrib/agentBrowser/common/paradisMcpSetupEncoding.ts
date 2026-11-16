@@ -214,6 +214,73 @@ export function paradisUpsertClaudeMcpJson(existingRaw: string | undefined, port
 	return JSON.stringify({ ...config, mcpServers: servers }, undefined, 2) + '\n';
 }
 
+/** Antigravity CLI の para-browser の起動に使う、Para Code の中のもの（shared process が決める）。 */
+export interface IParadisMcpStdioBridgeLocation {
+	/** Para Code 本体の実行ファイル（`ELECTRON_RUN_AS_NODE=1` で node として動かす）。 */
+	readonly executable: string;
+	/** stdio を Para Code の HTTP の MCP サーバーへ橋渡しするシム（`paradisBrowserMcpShim.js`）。 */
+	readonly shimPath: string;
+}
+
+/** Antigravity CLI の `mcpServers['para-browser']`（stdio のサーバー）。 */
+export interface IParadisAntigravityMcpServerEntry {
+	readonly command: string;
+	readonly args: readonly string[];
+	readonly env?: { readonly ELECTRON_RUN_AS_NODE: '1' };
+}
+
+/**
+ * Antigravity CLI の `mcpServers['para-browser']` の中身。
+ *
+ * agy は設定の `${VAR}` を展開しない（`headers` も `args` も文字のまま。2026-11 に実測）ので、Claude Code のように
+ * ペインのトークンを HTTP のヘッダーへ書けない。代わりに stdio のシムを起動させ、シムがペインの環境変数
+ * （`PARA_CODE_TERMINAL_PANE_ID`・`PARA_CODE_MCP_PORT_FILE`）を読んで HTTP の MCP サーバーへ橋渡しする（stdio の
+ * サーバーはペインの環境変数を継ぐことを実測）。利用者の PC に node がある保証は無いので、Para Code 本体を node として動かす。
+ *
+ * POSIX では `env` キーを使わず `/usr/bin/env` で 1 つだけ足す。`env` キーが親の環境を置き換える作りだと、ペインの
+ * 環境変数が消えてシムが「ペインの外」と答えるため（agy の作りは未測定）。Windows には `/usr/bin/env` が無いので `env` キーで渡す。
+ */
+export function paradisAntigravityMcpServerEntry(bridge: IParadisMcpStdioBridgeLocation, platform: string): IParadisAntigravityMcpServerEntry {
+	if (platform === 'win32') {
+		return { command: bridge.executable, args: [bridge.shimPath], env: { ELECTRON_RUN_AS_NODE: '1' } };
+	}
+	return { command: '/usr/bin/env', args: ['ELECTRON_RUN_AS_NODE=1', bridge.executable, bridge.shimPath] };
+}
+
+/**
+ * Antigravity CLI の `mcp_config.json`（`~/.gemini/config/mcp_config.json`）へ、para-browser を stdio の橋渡しとして
+ * 入れた中身を返す。ほかのサーバーとほかのキーは残す。para-browser の節は丸ごと置き換える（手で書いた HTTP の形は
+ * agy ではトークンが届かず動かない）。
+ *
+ * @param keepDisabled 利用者が付けた `disabled` を残すか。ボタンで入れるときは外す（使いたくて押した）。
+ *   起動時に場所だけ直すときは残す（agy の `/mcp` で止めたものを勝手に戻さない）。
+ * @returns 書き戻す中身。読めない・最上位がオブジェクトでない・`mcpServers` がオブジェクトでないときは undefined（書かない）。
+ */
+export function paradisUpsertAntigravityMcpJson(existingRaw: string | undefined, entry: IParadisAntigravityMcpServerEntry, keepDisabled: boolean): string | undefined {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(existingRaw === undefined || existingRaw.trim().length === 0 ? '{}' : existingRaw);
+	} catch {
+		return undefined;
+	}
+	if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+		return undefined;
+	}
+	const config = parsed as Record<string, unknown>;
+	const existingServers = config.mcpServers;
+	if (existingServers !== undefined && (existingServers === null || typeof existingServers !== 'object' || Array.isArray(existingServers))) {
+		return undefined;
+	}
+	const servers: Record<string, unknown> = { ...(existingServers as Record<string, unknown> | undefined) };
+	const previous = servers[PARADIS_MCP_SERVER_NAME];
+	const disabled = keepDisabled && previous !== null && typeof previous === 'object' && !Array.isArray(previous)
+		? (previous as Record<string, unknown>).disabled
+		: undefined;
+	servers[PARADIS_MCP_SERVER_NAME] = { ...entry, ...(typeof disabled === 'boolean' ? { disabled } : {}) };
+	const next = JSON.stringify({ ...config, mcpServers: servers }, undefined, 2) + '\n';
+	return existingRaw !== undefined && JSON.stringify(previous) === JSON.stringify(servers[PARADIS_MCP_SERVER_NAME]) ? existingRaw : next;
+}
+
 /**
  * 接続先の Codex へ para-browser を HTTP の MCP サーバーとして登録した config.toml を返す。
  *

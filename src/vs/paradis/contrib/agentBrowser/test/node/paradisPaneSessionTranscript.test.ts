@@ -18,6 +18,7 @@ suite('Paradis pane session transcript', () => {
 		// _recordPaneSession は _paneSessions だけを、getPaneTranscriptPath はそれと呼んだ窓のペインだけを読む
 		const host = {
 			_paneSessions: new Map<string, object>(),
+			_paneCursorAgents: new Map(),
 			_currentEligibleTokens: () => new Set(['pane', 'open']),
 		};
 		const record = Reflect.get(ParadisAgentBrowserService.prototype, '_recordPaneSession') as (this: typeof host, ...args: unknown[]) => void;
