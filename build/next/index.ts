@@ -181,6 +181,8 @@ const serverEntryPoints = [
 	// PARA-PATCH: the remote server also hosts the Office v1 channel and its worker thread
 	'vs/paradis/node/paradisWorkerBootstrap',
 	'vs/paradis/contrib/fileViewers/node/office/paradisOfficeWorkerMain',
+	// PARA-PATCH: the agent-browser MCP stdio shim, which Antigravity CLI on an SSH host runs with the server's node
+	'vs/paradis/contrib/agentBrowser/node/paradisBrowserMcpShim',
 	'vs/platform/agentHost/node/agentHostMain',
 	'vs/platform/agentHost/node/diffWorkerMain',
 ];

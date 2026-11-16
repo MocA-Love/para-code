@@ -26,6 +26,7 @@ import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../.
 import { IBrowserViewModel, IBrowserViewWorkbenchService } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
+import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import { paradisCollectLivePaneInstances } from '../browser/paradisLivePaneInstances.js';
 import { IParadisAbortBindResult, IParadisCommitBindResult, IParadisAgentTabGrant, IParadisGatewayEndpoint, IParadisGrantAgentTabRequest, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPrepareBindRequest, IParadisPrepareBindResult, ParadisMcpCli, IParadisPaneBinding, PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
@@ -33,6 +34,7 @@ import { ParadisRemovedBrowserBindingReconciler, ParadisSerializedReconciler } f
 import { IParadisBindEligibility, IParadisBrowserScopeService, IParadisTerminalScopeService, ParadisStableBindingScope, paradisBindingScopesEqual, paradisEvaluateBindingScopeEligibility, paradisRequireBindingScopeEligibility } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisAgentBrowserAuthoritySyncService } from './paradisAgentBrowserAuthoritySyncService.js';
 import { ParadisRemoteMcpSetupController } from './paradisRemoteMcpSetup.js';
+import { paradisResolveRemoteMcpBridge } from './paradisRemoteMcpBridge.js';
 import { ParadisOpenedTabGrantResult } from '../common/paradisAgentBrowserTabs.js';
 import { paradisRemoteUserHome } from '../common/paradisRemoteUserHome.js';
 
@@ -408,6 +410,7 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 		@IPathService private readonly pathService: IPathService,
 		@IFileService private readonly fileService: IFileService,
 		@IAgentNetworkFilterService private readonly agentNetworkFilterService: IAgentNetworkFilterService,
+		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 	) {
 		super();
 		this._replacementScopeWaitTimeoutMs = options?.replacementScopeWaitTimeoutMs ?? REPLACEMENT_SCOPE_WAIT_TIMEOUT;
@@ -1360,6 +1363,8 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 				// 渡すと、接続先向けの番号で手元の設定を書き換えてしまう
 				async () => paradisRemoteUserHome(this.environmentService.remoteAuthority, await this.pathService.userHome()),
 				() => this.getGatewayEndpoint().then(endpoint => endpoint.port, () => undefined),
+				// 接続先の Antigravity CLI には、REH の node と REH に同梱したシムを書く
+				() => paradisResolveRemoteMcpBridge(() => this.remoteAgentService.getEnvironment(), this.fileService),
 			);
 		}
 		return this._remoteMcpSetupController;

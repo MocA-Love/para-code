@@ -247,6 +247,31 @@ export function paradisAntigravityMcpServerEntry(bridge: IParadisMcpStdioBridgeL
 	return { command: '/usr/bin/env', args: ['ELECTRON_RUN_AS_NODE=1', bridge.executable, bridge.shimPath] };
 }
 
+/**
+ * シムを接続先の形で動かす引数（`node/paradisBrowserMcpShimCore.ts` の `PARADIS_MCP_SHIM_SSH_TUNNEL_ARG` と同じ値。
+ * シムは vs/* を読めないので両方に置き、テストで一致を見張る）。
+ */
+export const PARADIS_MCP_SHIM_SSH_TUNNEL_ARG = '--para-ssh-tunnel';
+
+/** SSH の接続先での橋渡しの場所（接続先の REH が持つもの）。 */
+export interface IParadisRemoteMcpStdioBridgeLocation {
+	/** 接続先の REH の node（REH の `execPath`）。 */
+	readonly node: string;
+	/** 接続先の REH に同梱したシム（`paradisBrowserMcpShim.js`）。 */
+	readonly shimPath: string;
+}
+
+/**
+ * SSH の接続先の Antigravity CLI の `mcpServers['para-browser']`。
+ *
+ * 接続先には Para Code 本体が無いので、REH の node（本物の node なので `ELECTRON_RUN_AS_NODE` は要らない）で REH に同梱したシムを
+ * 動かす。`env` キーは書かない（ペインの環境変数をそのまま継がせる）。シムには接続先の印を渡し、ポートファイルを戻りトンネルの
+ * 番号だけの形として読ませる。
+ */
+export function paradisAntigravityRemoteMcpServerEntry(bridge: IParadisRemoteMcpStdioBridgeLocation): IParadisAntigravityMcpServerEntry {
+	return { command: bridge.node, args: [bridge.shimPath, PARADIS_MCP_SHIM_SSH_TUNNEL_ARG] };
+}
+
 /** para-browser の節から外す HTTP の形のキー（stdio の橋渡しと一緒に残ると、どちらで動くかが agy しだいになる）。 */
 const ANTIGRAVITY_HTTP_ENTRY_KEYS = ['serverUrl', 'url', 'httpUrl', 'headers', 'type'];
 

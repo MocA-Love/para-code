@@ -27,7 +27,8 @@ import { IWorkbenchEnvironmentService } from '../../../../workbench/services/env
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, paradisAgentHooksEnabled } from '../common/paradisAgentHooks.js';
-import { paradisUpsertClaudeMcpJson, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
+import { paradisAntigravityRemoteMcpServerEntry, paradisUpsertAntigravityMcpJson, paradisUpsertClaudeMcpJson, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
+import { paradisResolveRemoteMcpBridge } from './paradisRemoteMcpBridge.js';
 import { PARADIS_REMOTE_AGENT_TUNNEL_SETTING } from './paradisRemoteAgentTunnel.contribution.js';
 import { paradisRemoteUserHome } from '../common/paradisRemoteUserHome.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
@@ -613,6 +614,7 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 			}
 			await this.mergeClaudeMcp(home, remotePort);
 			await this.mergeCodexMcp(home, remotePort);
+			await this.mergeAntigravityMcp(home);
 			this.installedPort = remotePort;
 			if (hooked) {
 				this.codexAccountHomesKey = this.listedCodexAccountHomesKey;
@@ -798,6 +800,28 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 		for (const codexHome of codexHomes) {
 			await this.hookFiles.mergeJson(joinPath(codexHome, 'config.toml'), current => paradisUpsertCodexMcpToml(current ?? '', port));
 		}
+	}
+
+	/**
+	 * 接続先の Antigravity CLI へ para-browser MCP を登録する（agy が `~/.gemini/config` を作っている接続先だけ。hook と同じ規則）。
+	 *
+	 * agy は `${VAR}` を展開しないので、Claude・Codex のような HTTP ではなく、REH に同梱したシムを REH の node で動かす
+	 * stdio の橋渡しにする（paradisRemoteMcpBridge.ts）。番号は書かない（シムが接続先のポートファイルを読む）ので、変わるのは
+	 * REH の場所だけ。Claude・Codex と同じく繋ぐたびに書き直し、REH の更新に追いつく。agy の `/mcp` で止めた `disabled` は残す。
+	 * REH にシムが無い（古い REH）・接続先の環境が取れないときは書かない。
+	 */
+	private async mergeAntigravityMcp(home: URI): Promise<void> {
+		const configDir = joinPath(home, '.gemini', 'config');
+		if (!await this.fileService.stat(configDir).then(stat => stat.isDirectory, () => false)) {
+			return;
+		}
+		const bridge = await paradisResolveRemoteMcpBridge(() => this.remoteAgentService.getEnvironment(), this.fileService);
+		if (bridge === undefined) {
+			this.logService.trace('[paradis] the host server does not ship the para-browser shim; not registering it for Antigravity CLI');
+			return;
+		}
+		const entry = paradisAntigravityRemoteMcpServerEntry(bridge);
+		await this.hookFiles.mergeJson(joinPath(configDir, 'mcp_config.json'), current => paradisUpsertAntigravityMcpJson(current, entry, true));
 	}
 }
 

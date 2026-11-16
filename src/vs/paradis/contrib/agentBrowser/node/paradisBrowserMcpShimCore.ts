@@ -853,6 +853,58 @@ export function resolveLiveParadisMcpPortFile(
 	throw new Error('Para Code MCP shared process is not running');
 }
 
+/**
+ * シムの引数。SSH の接続先の Antigravity CLI の `mcp_config.json` にだけ書く（手元の設定には書かない）。
+ * これが付いたシムは、ポートファイルを接続先の形（{@link IParadisMcpTunnelPortFileRecord}）として読む。
+ */
+export const PARADIS_MCP_SHIM_SSH_TUNNEL_ARG = '--para-ssh-tunnel';
+
+/**
+ * SSH の接続先のポートファイル（`~/.para-code/paradis-browser-mcp.json` と `ports/<印>.json`）。
+ *
+ * 接続先では、戻りトンネルが接続先で受け取った番号だけを接続元のウィンドウが書く（paradisRemoteAgentHooks.contribution.ts）。
+ * 手元の shared process の pid・instanceId は接続先からは確かめようがないので載っていない。接続先の Claude Code・Codex も
+ * 設定に焼いた番号へそのまま Bearer を送り（pid も身元も見ない）、notify スクリプトもこのファイルの `port` しか読まない。
+ * シムもそれにそろえる。
+ */
+export interface IParadisMcpTunnelPortFileRecord {
+	readonly protocolVersion: typeof PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION;
+	readonly port: number;
+}
+
+/** 接続先のポートファイルを読む。`protocolVersion` と `port` のちょうど 2 つのキーだけを受ける（手元の形は受けない）。 */
+export function parseParadisMcpTunnelPortFile(raw: string): IParadisMcpTunnelPortFileRecord {
+	if (typeof raw !== 'string' || Buffer.byteLength(raw) > PARADIS_MCP_MAX_PORT_FILE_BYTES) {
+		throw new Error(`Invalid MCP tunnel port file: exceeded ${PARADIS_MCP_MAX_PORT_FILE_BYTES} bytes`);
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		throw new Error('Invalid MCP tunnel port file: expected JSON object');
+	}
+	if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+		throw new Error('Invalid MCP tunnel port file: expected JSON object');
+	}
+	const keys = Object.keys(parsed);
+	if (keys.length !== 2 || !keys.includes('protocolVersion') || !keys.includes('port')) {
+		throw new Error('Invalid MCP tunnel port file: expected exact record fields');
+	}
+	const { protocolVersion, port } = parsed as { protocolVersion?: unknown; port?: unknown };
+	if (protocolVersion !== PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION) {
+		throw new Error(`Invalid MCP tunnel port file: protocolVersion must be ${PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION}`);
+	}
+	if (!Number.isSafeInteger(port) || (port as number) <= 0 || (port as number) > 65_535) {
+		throw new Error('Invalid MCP tunnel port file: port must be an integer between 1 and 65535');
+	}
+	return { protocolVersion: PARADIS_MCP_PORT_FILE_PROTOCOL_VERSION, port: port as number };
+}
+
+/** 接続先のポートファイルを読み直す（リクエストごと。戻りトンネルの番号の張り直しに追従する）。 */
+export function resolveParadisMcpTunnelPortFile(path: string, readFile: (path: string) => string = readParadisMcpPortFileBoundedSync): IParadisMcpTunnelPortFileRecord {
+	return parseParadisMcpTunnelPortFile(readFile(path));
+}
+
 /** Publish a complete record without exposing partially written JSON to concurrent shim readers. */
 export async function writeParadisMcpPortFileAtomic(
 	path: string,

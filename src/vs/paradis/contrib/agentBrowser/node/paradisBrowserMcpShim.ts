@@ -20,13 +20,16 @@
 // 正常に起動し、initialize / tools/list には応答する（＝CLIのMCP接続自体は成功させる）。
 // 実際のツール呼び出し時のみ、LLMが読んで状況を理解できる明確なエラーメッセージを返す。
 
-import { IParadisMcpPortFileRecord, IParadisMcpStdioWritable, PARADIS_MCP_LOCAL_TOOLS, PARADIS_MCP_MAX_INFLIGHT_REQUESTS, ParadisMcpInflightTracker, ParadisMcpStdioLineBuffer, ParadisMcpStdioWriter, paradisMcpShouldPauseStdin, postParadisMcpRequest, resolveLiveParadisMcpPortFile, shouldEmitParadisMcpHttpResponse } from './paradisBrowserMcpShimCore.js';
+import { IParadisMcpPortFileRecord, IParadisMcpStdioWritable, PARADIS_MCP_LOCAL_TOOLS, PARADIS_MCP_MAX_INFLIGHT_REQUESTS, PARADIS_MCP_SHIM_SSH_TUNNEL_ARG, ParadisMcpInflightTracker, ParadisMcpStdioLineBuffer, ParadisMcpStdioWriter, paradisMcpShouldPauseStdin, postParadisMcpRequest, postParadisMcpRequestOnVerifiedSocket, resolveLiveParadisMcpPortFile, resolveParadisMcpTunnelPortFile, shouldEmitParadisMcpHttpResponse } from './paradisBrowserMcpShimCore.js';
 
 const PORT_FILE_ENV = 'PARA_CODE_MCP_PORT_FILE';
 const TOKEN_ENV = 'PARA_CODE_TERMINAL_PANE_ID';
 
 const portFilePath = process.env[PORT_FILE_ENV];
 const paneToken = process.env[TOKEN_ENV];
+// SSH の接続先で REH の node から起動されたシム（接続先の Antigravity CLI の設定にだけこの引数を書く）。
+// ポートファイルは戻りトンネルの番号だけを持つ接続先の形で、pid と身元の確かめはしない（接続先の Claude Code・Codex と同じ）
+const sshTunnel = process.argv.includes(PARADIS_MCP_SHIM_SSH_TUNNEL_ARG);
 
 // 起動時にenvが欠けていても process.exit(1) しない（＝MCPサーバーとしては起動する）。
 // ここで落とすと CLI 側の MCP 接続自体が失敗し、ツール一覧すら得られなくなるため。
@@ -67,30 +70,36 @@ interface IJsonRpcMessage {
 	params?: unknown;
 }
 
+/** 転送先。手元では shared process の身元つきの記録、接続先では戻りトンネルの番号だけ。 */
+type ShimTarget =
+	| { readonly kind: 'local'; readonly port: number; readonly record: IParadisMcpPortFileRecord }
+	| { readonly kind: 'tunnel'; readonly port: number };
+
 /**
  * このstdioシム自身（Para Codeの shared process へたどり着く前の、trasnport層）の診断情報。
  * shared process側の `get_session_health` が返すセッション/ブラウザ側の情報を補う、二段構えの片側。
  * shared processへ到達できないときは、こちらだけでも「どこで詰まっているか」を切り分けられる。
  */
-function localShimTransportReport(reachable: boolean, record: IParadisMcpPortFileRecord | undefined, unreachableReason?: string): Record<string, unknown> {
+function localShimTransportReport(reachable: boolean, target: ShimTarget | undefined, unreachableReason?: string): Record<string, unknown> {
 	return {
 		paneTokenEnvPresent: Boolean(paneToken),
 		portFileEnvConfigured: Boolean(portFilePath),
 		portFileReadable: reachable,
-		resolvedServerPort: record?.port,
+		resolvedServerPort: target?.port,
+		...(sshTunnel ? { sshTunnel: true } : {}),
 		...(unreachableReason !== undefined ? { unreachableReason } : {}),
 	};
 }
 
 /** shared processから返った `get_session_health` の応答へ、シム自身の診断を追記する。 */
-function withLocalShimTransportReport(parsedBody: unknown, record: IParadisMcpPortFileRecord | undefined): unknown {
+function withLocalShimTransportReport(parsedBody: unknown, target: ShimTarget | undefined): unknown {
 	const message = parsedBody as { result?: { content?: unknown } };
 	const content = message.result?.content;
 	if (!Array.isArray(content)) {
 		// エラー応答等、contentを持たない形はそのまま透過する（誤って形を壊さないため）。
 		return parsedBody;
 	}
-	const shimText = `Local stdio shim (this MCP client's transport layer, before reaching Para Code):\n${JSON.stringify(localShimTransportReport(true, record), null, 2)}`;
+	const shimText = `Local stdio shim (this MCP client's transport layer, before reaching Para Code):\n${JSON.stringify(localShimTransportReport(true, target), null, 2)}`;
 	return {
 		...(parsedBody as object),
 		result: { ...(message.result as object), content: [...content, { type: 'text', text: shimText }] },
@@ -164,11 +173,16 @@ async function forwardLine(line: string): Promise<void> {
 	// Para Code に接続できない場合はローカルで応答して MCP 接続自体は成立させる。
 	// initialize / tools/list は正常応答し、ツール呼び出しだけ guidance を返す。
 	let unavailable = getUnavailableMessage();
-	let record: IParadisMcpPortFileRecord | undefined;
+	let target: ShimTarget | undefined;
 	if (unavailable === undefined) {
 		try {
 			// Resolve for every forwarded line. A stale shared-process PID triggers exactly one re-read.
-			record = resolveLiveParadisMcpPortFile(portFilePath!);
+			if (sshTunnel) {
+				target = { kind: 'tunnel', port: resolveParadisMcpTunnelPortFile(portFilePath!).port };
+			} else {
+				const record = resolveLiveParadisMcpPortFile(portFilePath!);
+				target = { kind: 'local', port: record.port, record };
+			}
 		} catch {
 			unavailable = NO_SERVER_MESSAGE;
 		}
@@ -207,11 +221,15 @@ async function forwardLine(line: string): Promise<void> {
 	let status: number;
 	let body: string;
 	try {
-		({ status, body } = await postParadisMcpRequest({ record: record!, body: line, token: paneToken! }));
+		const resolved = target!;
+		({ status, body } = resolved.kind === 'local'
+			? await postParadisMcpRequest({ record: resolved.record, body: line, token: paneToken! })
+			// 接続先: 戻りトンネルの番号へそのまま送る（接続先の Claude Code・Codex の HTTP の設定と同じ）
+			: await postParadisMcpRequestOnVerifiedSocket({ port: resolved.port, body: line, token: paneToken! }));
 	} catch (error) {
-		const detail = `Failed to reach Para Code MCP server on 127.0.0.1:${record!.port}: ${error instanceof Error ? error.message : String(error)}`;
+		const detail = `Failed to reach Para Code MCP server on 127.0.0.1:${target!.port}: ${error instanceof Error ? error.message : String(error)}`;
 		if (toolName === SESSION_HEALTH_TOOL_NAME) {
-			await writeResult(id, { content: [{ type: 'text', text: JSON.stringify({ shimTransport: localShimTransportReport(false, record, detail) }, null, 2) }] });
+			await writeResult(id, { content: [{ type: 'text', text: JSON.stringify({ shimTransport: localShimTransportReport(false, target, detail) }, null, 2) }] });
 			return;
 		}
 		await respondToUnreachableServer(id, isRequest, method, detail);
@@ -233,7 +251,7 @@ async function forwardLine(line: string): Promise<void> {
 		await respondToUnreachableServer(id, isRequest, method, detail);
 		return;
 	}
-	await writeResponse(toolName === SESSION_HEALTH_TOOL_NAME ? withLocalShimTransportReport(parsedBody, record) : parsedBody);
+	await writeResponse(toolName === SESSION_HEALTH_TOOL_NAME ? withLocalShimTransportReport(parsedBody, target) : parsedBody);
 }
 
 /**
