@@ -151,7 +151,8 @@ export function paradisBuildAgentApprovalRequest(toolName: string | undefined, t
 		};
 	}
 	const path = text(input.file_path, PATH_LIMIT) ?? text(input.notebook_path, PATH_LIMIT);
-	if (path !== undefined && (tool === 'Edit' || tool === 'MultiEdit')) {
+	// Antigravity CLI の edit_file・write_file は、引数を同じ名前に写してから渡す（paradisAntigravityApprovalCardInput）
+	if (path !== undefined && (tool === 'Edit' || tool === 'MultiEdit' || tool === 'edit_file')) {
 		const edits = Array.isArray(input.edits) ? input.edits.map(record).filter((entry): entry is Record<string, unknown> => entry !== undefined) : [];
 		const first = tool === 'MultiEdit' ? edits[0] ?? {} : input;
 		const oldString = typeof first.old_string === 'string' ? first.old_string : '';
@@ -162,7 +163,7 @@ export function paradisBuildAgentApprovalRequest(toolName: string | undefined, t
 			...(first.replace_all === true ? { replaceAll: true } : {}), ...(truncated ? { truncated: true } : {}), ...agentField,
 		};
 	}
-	if (path !== undefined && tool === 'Write' && typeof input.content === 'string') {
+	if (path !== undefined && (tool === 'Write' || tool === 'write_file') && typeof input.content === 'string') {
 		const content = input.content;
 		return {
 			tool, kind: 'write', path, content: content.slice(0, TEXT_HEAD_LIMIT), contentLines: lineCount(content),

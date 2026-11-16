@@ -13,6 +13,7 @@
 // 2. ~/.claude/settings.json へhook定義を冪等マージ (既存のユーザーhookは保持)。
 // 3. ~/.codex/hooks.json へhook定義を冪等マージ (同上)。
 // 4. ~/.gemini/config/hooks.json（Antigravity CLI）へ、名前付きの hook `para-code` を冪等に置く (他の名前の hook は保持)。
+//    POSIX では、許可を待つ名前付きの hook `para-code-approval` とそのスクリプト（paradisAntigravityApproval.ts）も置く。
 // 既存ファイルのJSONパースに失敗した場合は何も書かない (ユーザーファイルを壊すくらいなら諦める)。
 
 import { execFile } from 'child_process';
@@ -30,6 +31,7 @@ import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../co
 import { PARADIS_REMOTE_HOOK_PORTS_DIR_NAME } from '../common/paradisRemoteHookSource.js';
 import { IParadisManagedHookEvent, PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_ELICITATION_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CLAUDE_MODEL_SWITCH_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, PARADIS_LEGACY_NOTIFY_HOOK_RELATIVE_PATHS, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1, paradisIsAgentHookRemoteHostId, paradisManagedAgentHookCommand, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../common/paradisAgentHooks.js';
 import { PARADIS_ANTIGRAVITY_CONFIG_RELATIVE_DIR, PARADIS_ANTIGRAVITY_HOOK_NAME, paradisAntigravityHookDefinition } from '../common/paradisAntigravityHooks.js';
+import { PARADIS_ANTIGRAVITY_APPROVAL_DENY_REASON, PARADIS_ANTIGRAVITY_APPROVAL_HOOK_NAME, PARADIS_ANTIGRAVITY_APPROVAL_HTTP_PREFIX, PARADIS_ANTIGRAVITY_APPROVAL_SCRIPT_RELATIVE_PATH, PARADIS_ANTIGRAVITY_APPROVAL_SCRIPT_VERSION, PARADIS_ANTIGRAVITY_APPROVAL_WAIT_CURL_SECONDS, PARADIS_ANTIGRAVITY_APPROVAL_WAIT_PREFIX, paradisAntigravityApprovalHookDefinition, paradisAntigravityApprovalScriptVersion } from '../common/paradisAntigravityApproval.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { PARADIS_AGENT_HOOK_ID_PARAM, PARADIS_AGENT_HOOK_SPOOL_DIR_NAME, PARADIS_AGENT_HOOK_SPOOL_MAX_FILE_BYTES, PARADIS_AGENT_HOOK_SPOOL_MAX_FILES, PARADIS_AGENT_HOOK_SPOOL_SKIPPED_EVENTS } from '../common/paradisAgentHookSpool.js';
 import { onDidChangeParadisCodexHomes, paradisClaudeConfigDir, paradisCodexConfigHomes, paradisCodexHomeCandidates } from './paradisAgentHome.js';
@@ -37,6 +39,35 @@ import { onDidChangeParadisCodexHomes, paradisClaudeConfigDir, paradisCodexConfi
 /** 接続先の共有ポートファイルの隣にある、PC ごとのポートファイルの置き場。 */
 function paradisRemoteHookPortsDirectory(sharedPortFilePath: string): string {
 	return `${sharedPortFilePath.slice(0, sharedPortFilePath.lastIndexOf('/'))}/${PARADIS_REMOTE_HOOK_PORTS_DIR_NAME}`;
+}
+
+/**
+ * hook のスクリプトでポートファイルからポートを読む行（シェルの組み込みだけで読む）。`portFileRef` はシェルの式。
+ * 読めた値は `$PORT` に入る（読めなければ空）。
+ */
+function paradisPortReadLines(portFileRef: string): string[] {
+	return [
+		'# Read the port with shell builtins (no sed/head per hook): the last "port": <digits> on the',
+		'# first line that has one, as `sed -nE \'s/.*"port"[[:space:]]*:[[:space:]]*([0-9]+).*/\\1/p\' | head -n 1` did.',
+		'PORT=',
+		'while [ -z "$PORT" ] && { IFS= read -r PORT_LINE || [ -n "$PORT_LINE" ]; }; do',
+		'  case "$PORT_LINE" in',
+		'    *\'"port"\'*)',
+		'      V=${PORT_LINE##*\'"port"\'}',
+		'      V=${V#"${V%%[![:space:]]*}"}',
+		'      case "$V" in',
+		'        :*)',
+		'          V=${V#:}',
+		'          V=${V#"${V%%[![:space:]]*}"}',
+		'          PORT=${V%%[!0-9]*}',
+		'          ;;',
+		'      esac',
+		'      ;;',
+		'  esac',
+		'  PORT_LINE=',
+		'# 2>/dev/null comes first so a missing port file stays silent (redirections apply left to right).',
+		`done 2>/dev/null <${portFileRef}`,
+	];
 }
 
 /**
@@ -143,26 +174,7 @@ export function paradisGetNotifyScriptContent(fixedPortFilePath?: string, remote
 		'  exit 0',
 		'fi',
 		'',
-		'# Read the port with shell builtins (no sed/head per hook): the last "port": <digits> on the',
-		'# first line that has one, as `sed -nE \'s/.*"port"[[:space:]]*:[[:space:]]*([0-9]+).*/\\1/p\' | head -n 1` did.',
-		'PORT=',
-		'while [ -z "$PORT" ] && { IFS= read -r PORT_LINE || [ -n "$PORT_LINE" ]; }; do',
-		'  case "$PORT_LINE" in',
-		'    *\'"port"\'*)',
-		'      V=${PORT_LINE##*\'"port"\'}',
-		'      V=${V#"${V%%[![:space:]]*}"}',
-		'      case "$V" in',
-		'        :*)',
-		'          V=${V#:}',
-		'          V=${V#"${V%%[![:space:]]*}"}',
-		'          PORT=${V%%[!0-9]*}',
-		'          ;;',
-		'      esac',
-		'      ;;',
-		'  esac',
-		'  PORT_LINE=',
-		'# 2>/dev/null comes first so a missing port file stays silent (redirections apply left to right).',
-		`done 2>/dev/null <${portFileRef}`,
+		...paradisPortReadLines(portFileRef),
 		...(spool ? [] : [
 			'if [ -z "$PORT" ]; then',
 			'  drain_stdin "${1:-}"',
@@ -269,6 +281,96 @@ export function paradisGetNotifyScriptContent(fixedPortFilePath?: string, remote
 			'  ""|000|503) spool_hook ;;',
 			'esac',
 		] : []),
+		'exit 0',
+		'',
+	].join('\n');
+}
+
+/**
+ * Antigravity CLI の許可のスクリプト（`antigravity-approval-vN.sh`。全行 ASCII、POSIX の sh）の内容を生成する。
+ * agy の PreToolUse（許可を求めうるツールだけ）で走り、stdout に書くのは `{"decision":"allow"}` と
+ * `{"decision":"deny",...}` の 2 通りだけ。Para Code の外・Para Code に届かない・待たない・答えが来ない・知らない返事は、
+ * どれも何も書かずに終わる（agy は自分の許可の判定へ進む。`{}` を書くとツールが拒否される）。
+ * 1. `register` で待ってよいかを聞く（`wait:<id>` 以外の返事なら終わる）
+ * 2. 同じ本文を `/agent-hook?event=PermissionRequest` へ流す（ペインの状態・カード・通知は Claude Code の許可と同じ経路）
+ * 3. `wait` の長いポーリングで答えを待つ（受け口の返事は `allow` / `deny` / `none`）
+ * 4. 拒否したら `/agent-hook?event=PermissionDenied` を流してカードを閉じる
+ */
+export function paradisGetAntigravityApprovalScriptContent(): string {
+	const portFile = `"$${PARADIS_MCP_PORT_FILE_ENV_VAR}"`;
+	const denyOutput = JSON.stringify({ decision: 'deny', reason: PARADIS_ANTIGRAVITY_APPROVAL_DENY_REASON });
+	return [
+		'#!/bin/sh',
+		`# Para Code Antigravity CLI approval hook v${PARADIS_ANTIGRAVITY_APPROVAL_SCRIPT_VERSION}`,
+		'# Auto-generated by Para Code (paradisAgentHooksSetup.ts); regenerated on startup.',
+		'# Runs on the Antigravity CLI PreToolUse of tools that may ask for permission. While the',
+		'# Para Code mobile app is watching this pane, Para Code holds the tool call until the',
+		'# person answers on the phone or the PC card, and this script prints the decision.',
+		'# Every other path prints nothing, so Antigravity CLI keeps its own permission prompt',
+		'# (printing {} would deny the tool call).',
+		'',
+		`if [ -z "\${${PARADIS_PANE_TOKEN_ENV_VAR}:-}" ] || [ -z "\${${PARADIS_MCP_PORT_FILE_ENV_VAR}:-}" ] || [ ! -f ${portFile} ]; then`,
+		'  cat >/dev/null 2>&1 || true',
+		'  exit 0',
+		'fi',
+		'',
+		...paradisPortReadLines(portFile),
+		'if [ -z "$PORT" ]; then',
+		'  cat >/dev/null 2>&1 || true',
+		'  exit 0',
+		'fi',
+		'',
+		'umask 077',
+		'INPUT_FILE=$(mktemp "${TMPDIR:-/tmp}/para-code-approval.XXXXXX" 2>/dev/null) || {',
+		'  cat >/dev/null 2>&1 || true',
+		'  exit 0',
+		'}',
+		'trap \'rm -f "$INPUT_FILE"\' 0',
+		'trap \'exit 0\' 1 2 15',
+		`if ! head -c ${PARADIS_AGENT_HOOK_MAX_BODY_BYTES + 1} >"$INPUT_FILE" 2>/dev/null; then`,
+		'  cat >/dev/null 2>&1 || true',
+		'  exit 0',
+		'fi',
+		'first_word() { FIRST_WORD=${1:-}; }',
+		'first_word $({ wc -c <"$INPUT_FILE"; } 2>/dev/null)',
+		'case "$FIRST_WORD" in',
+		'  ""|*[!0-9]*) cat >/dev/null 2>&1; exit 0 ;;',
+		'esac',
+		'# Too large to hold: drain the rest and leave the decision to Antigravity CLI.',
+		`if [ "$FIRST_WORD" -gt ${PARADIS_AGENT_HOOK_MAX_BODY_BYTES} ]; then`,
+		'  cat >/dev/null 2>&1 || true',
+		'  exit 0',
+		'fi',
+		'',
+		'BASE="http://127.0.0.1:$PORT"',
+		'# The pane token goes in an Authorization header read from stdin (curl --config -),',
+		'# never on the command line where other processes could read it with ps.',
+		'hook_auth() {',
+		`  printf 'header = "Authorization: Bearer %s"\\n' "$${PARADIS_PANE_TOKEN_ENV_VAR}"`,
+		'}',
+		'post_body() {',
+		'  hook_auth | curl -s -m "$1" --config - -X POST -H "Content-Type: application/json" --data-binary @"$INPUT_FILE" "$2" 2>/dev/null',
+		'}',
+		`REPLY=$(post_body 3 "$BASE${PARADIS_ANTIGRAVITY_APPROVAL_HTTP_PREFIX}register") || REPLY=`,
+		'case "$REPLY" in',
+		`  ${PARADIS_ANTIGRAVITY_APPROVAL_WAIT_PREFIX}*) ID=\${REPLY#${PARADIS_ANTIGRAVITY_APPROVAL_WAIT_PREFIX}} ;;`,
+		'  *) exit 0 ;;',
+		'esac',
+		'case "$ID" in',
+		'  ""|*[!0-9a-f]*) exit 0 ;;',
+		'esac',
+		'# pid ($$ = this script) lets Para Code tell the pane agent from agents nested inside it.',
+		'post_body 3 "$BASE/agent-hook?event=PermissionRequest&pid=$$" >/dev/null || true',
+		`DECISION=$(hook_auth | curl -s -m ${PARADIS_ANTIGRAVITY_APPROVAL_WAIT_CURL_SECONDS} --config - -X POST "$BASE${PARADIS_ANTIGRAVITY_APPROVAL_HTTP_PREFIX}wait?id=$ID" 2>/dev/null) || DECISION=`,
+		'case "$DECISION" in',
+		'  allow)',
+		`    printf '%s\\n' '${JSON.stringify({ decision: 'allow' })}'`,
+		'    ;;',
+		'  deny)',
+		'    post_body 3 "$BASE/agent-hook?event=PermissionDenied&pid=$$" >/dev/null || true',
+		`    printf '%s\\n' '${denyOutput}'`,
+		'    ;;',
+		'esac',
 		'exit 0',
 		'',
 	].join('\n');
@@ -640,10 +742,68 @@ export function paradisRemoveAntigravityHooksJson(existingRaw: string): string |
 	if (!isPlainObject(parsed)) {
 		return undefined;
 	}
-	if (highestManagedSchemaInAntigravityHook(parsed[PARADIS_ANTIGRAVITY_HOOK_NAME]) === undefined) {
+	const notify = highestManagedSchemaInAntigravityHook(parsed[PARADIS_ANTIGRAVITY_HOOK_NAME]) !== undefined;
+	const approval = highestAntigravityApprovalScriptVersion(parsed[PARADIS_ANTIGRAVITY_APPROVAL_HOOK_NAME]) !== undefined;
+	if (!notify && !approval) {
 		return existingRaw;
 	}
-	delete parsed[PARADIS_ANTIGRAVITY_HOOK_NAME];
+	if (notify) {
+		delete parsed[PARADIS_ANTIGRAVITY_HOOK_NAME];
+	}
+	if (approval) {
+		delete parsed[PARADIS_ANTIGRAVITY_APPROVAL_HOOK_NAME];
+	}
+	return JSON.stringify(parsed, undefined, 2);
+}
+
+/** Antigravity CLI の許可の名前付きの hook の中で、Para Code の許可のスクリプトの最も新しい版（無ければ undefined）。 */
+function highestAntigravityApprovalScriptVersion(namedHook: unknown): number | undefined {
+	if (!isPlainObject(namedHook)) {
+		return undefined;
+	}
+	let highest: number | undefined;
+	for (const groups of Object.values(namedHook)) {
+		for (const group of Array.isArray(groups) ? groups : []) {
+			for (const handler of isPlainObject(group) && Array.isArray(group.hooks) ? group.hooks : [group]) {
+				const version = isPlainObject(handler) ? paradisAntigravityApprovalScriptVersion(handler.command) : undefined;
+				if (version !== undefined && (highest === undefined || version > highest)) {
+					highest = version;
+				}
+			}
+		}
+	}
+	return highest;
+}
+
+/**
+ * Antigravity CLI の hooks.json に、許可を待つ名前付きの hook（`para-code-approval`）を冪等に置いた JSON 文字列を返す
+ * （paradisAntigravityApproval.ts）。置き換えるのは、まだ無いときか、Para Code の許可のスクリプトの今の版以下だけから成る
+ * ときだけ。利用者が同じ名前で書いた hook と新しい版の Para Code が置いた hook には触らない。利用者が付けた
+ * `"enabled": false` は残す。パース不能・ルートがオブジェクトでなければ undefined。
+ */
+export function paradisMergeAntigravityApprovalHookJson(existingRaw: string): string | undefined {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(existingRaw);
+	} catch {
+		return undefined;
+	}
+	if (!isPlainObject(parsed)) {
+		return undefined;
+	}
+	const current = parsed[PARADIS_ANTIGRAVITY_APPROVAL_HOOK_NAME];
+	if (current !== undefined) {
+		const version = highestAntigravityApprovalScriptVersion(current);
+		if (version === undefined || version > PARADIS_ANTIGRAVITY_APPROVAL_SCRIPT_VERSION) {
+			return existingRaw;
+		}
+	}
+	const enabled = isPlainObject(current) && typeof current.enabled === 'boolean' ? current.enabled : undefined;
+	const next = { ...(enabled !== undefined ? { enabled } : {}), ...paradisAntigravityApprovalHookDefinition() };
+	if (JSON.stringify(current) === JSON.stringify(next)) {
+		return existingRaw;
+	}
+	parsed[PARADIS_ANTIGRAVITY_APPROVAL_HOOK_NAME] = next;
 	return JSON.stringify(parsed, undefined, 2);
 }
 
@@ -663,7 +823,9 @@ export async function paradisMergeAntigravityHooksFile(filePath: string, logServ
 	}
 	await updateAgentHooksFile(filePath, 'merge', existingRaw => {
 		const merged = paradisMergeAntigravityHooksJson(existingRaw, hookCommand);
-		return merged === undefined ? { kind: 'unparseable' } : { kind: 'content', content: merged };
+		// 許可を待つ hook は手元の POSIX だけ（スクリプトは sh。Windows の hookCommand は PowerShell）
+		const withApproval = merged !== undefined && hookCommand === undefined && process.platform !== 'win32' ? paradisMergeAntigravityApprovalHookJson(merged) : merged;
+		return withApproval === undefined ? { kind: 'unparseable' } : { kind: 'content', content: withApproval };
 	}, logService, io);
 }
 
@@ -678,12 +840,20 @@ export async function paradisRemoveAntigravityHooksFile(filePath: string, logSer
 	}, logService, io);
 }
 
-/** notify.sh (POSIX) / notify.ps1 (Windows) を冪等生成する (内容一致なら実行権の確認のみ)。 */
+/** notify.sh (POSIX) / notify.ps1 (Windows) と、Antigravity CLI の許可のスクリプト (POSIX) を冪等生成する。 */
 async function installNotifyScript(logService: ILogService): Promise<void> {
+	const isWindows = process.platform === 'win32';
+	await installHookScript(logService, join(homedir(), isWindows ? PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1 : PARADIS_NOTIFY_HOOK_RELATIVE_PATH),
+		isWindows ? paradisGetNotifyScriptContentPs1() : paradisGetNotifyScriptContent(), 'notify');
+	// Antigravity CLI の許可を待つスクリプト（POSIX の sh だけ。Windows はまだ置かない）
+	if (!isWindows) {
+		await installHookScript(logService, join(homedir(), PARADIS_ANTIGRAVITY_APPROVAL_SCRIPT_RELATIVE_PATH), paradisGetAntigravityApprovalScriptContent(), 'Antigravity CLI approval');
+	}
+}
+
+/** hook のスクリプトを冪等に置く (内容一致なら実行権の確認のみ)。失敗しても例外は投げない。 */
+async function installHookScript(logService: ILogService, scriptPath: string, content: string, label: string): Promise<void> {
 	try {
-		const isWindows = process.platform === 'win32';
-		const scriptPath = join(homedir(), isWindows ? PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1 : PARADIS_NOTIFY_HOOK_RELATIVE_PATH);
-		const content = isWindows ? paradisGetNotifyScriptContentPs1() : paradisGetNotifyScriptContent();
 		let existing: string | undefined;
 		try {
 			existing = await fs.readFile(scriptPath, 'utf8');
@@ -702,9 +872,9 @@ async function installNotifyScript(logService: ILogService): Promise<void> {
 		await fs.writeFile(scriptPath, content, { mode: 0o755 });
 		// writeFile の mode は新規作成時のみ有効なため、既存ファイル上書き時に備えて明示 chmod する
 		await fs.chmod(scriptPath, 0o755);
-		logService.info(`[ParadisAgentHooks] Installed notify hook script: ${scriptPath}`);
+		logService.info(`[ParadisAgentHooks] Installed ${label} hook script: ${scriptPath}`);
 	} catch (error) {
-		logService.warn('[ParadisAgentHooks] Failed to install notify hook script', error);
+		logService.warn(`[ParadisAgentHooks] Failed to install ${label} hook script`, error);
 	}
 }
 

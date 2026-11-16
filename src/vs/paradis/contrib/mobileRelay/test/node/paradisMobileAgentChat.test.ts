@@ -19,6 +19,7 @@ import { paradisClaudeConfigDir, paradisCodexHome } from '../../../agentBrowser/
 import { ParadisMobileAgentChat, paradisAgentChatImageLimitsForTest, paradisIsAllowedTranscriptPathForTest, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisCodexForkCandidateAllowed, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisIsLateHookAfterTurnEnd, paradisParseCodexTranscriptLineForTest, paradisParseCodexTranscriptLinesForTest, paradisPickCurrentInteraction, paradisReadCodexForkHistory, paradisResolveHookSessionTranscript, paradisSelectUnambiguousSessionCandidate, paradisSharedImageCacheForTest, paradisTakeLiveQuestionSyntheticId, paradisToolImageMeta, paradisQuestionReadyMarker } from '../../node/paradisMobileAgentChat.js';
 import { ParadisRemoteTranscriptMirrorStore } from '../../node/paradisRemoteTranscriptMirror.js';
 import { paradisAntigravityBrainRoot } from '../../../sessionResume/node/paradisAntigravityHistory.js';
+import { paradisAntigravityApprovalHold } from '../../../agentBrowser/node/paradisAntigravityApprovalHold.js';
 
 const nodeRequire = createRequire(import.meta.url);
 
@@ -415,6 +416,69 @@ suite('ParadisMobileAgentChat', () => {
 				],
 			});
 		} finally {
+			chat.dispose();
+		}
+	}));
+
+	test('returns an Antigravity CLI approval from the mobile card to the waiting approval hook, only while the mobile app watches the pane', () => withFakeHome(async home => {
+		const token = 'pane-antigravity-approval';
+		// 偽の会話の id（手元の agy の会話とは重ならない）。記録のファイルは作らない
+		const conversationId = '00000000-0000-4000-8000-00000000a6e2';
+		const transcriptPath = join(paradisAntigravityBrainRoot(home), conversationId, '.system_generated', 'logs', 'transcript_full.jsonl');
+		const sent: Record<string, unknown>[] = [];
+		const chat = new ParadisMobileAgentChat(
+			(_mobileId, payload) => sent.push(JSON.parse(new TextDecoder().decode(payload))),
+			() => { }, () => { }, new NullLogService(),
+		);
+		const access = chat as unknown as { tailers: Map<string, { readonly epoch: string; approvalInteractions(): readonly { readonly id: string; readonly request?: unknown }[] }> };
+		const inbound = (message: Record<string, unknown>) => chat.handleInbound('mobile-1', new TextEncoder().encode(JSON.stringify(message)));
+		const register = (sessionId: string, toolUseId: string) => paradisAntigravityApprovalHold.register(token, { sessionId, toolUseId, toolName: 'run_command' });
+		paradisAntigravityApprovalHold.setPresence(() => true);
+		paradisAntigravityApprovalHold.setGate((candidate, sessionId) => chat.canHoldAntigravityApproval(candidate, sessionId));
+		try {
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			fireParadisAgentHookEvent({ token, event: 'SessionStart', sessionId: conversationId, transcriptPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now() });
+			await waitFor(() => access.tailers.has(token), 'the Antigravity CLI conversation was not followed');
+			// モバイルがペインを開くまでは待たない（agy の TUI の許可の画面に任せる）
+			const beforeAttach = register(conversationId, 'call_0');
+			inbound({ t: 'attach', id: 1, token });
+			await waitFor(() => sent.some(message => message.t === 'snapshot'), 'the attach did not answer with a snapshot');
+			const otherConversation = register('00000000-0000-4000-8000-00000000a6e3', 'call_9');
+			const decision = paradisAntigravityApprovalHold.wait(token, register(conversationId, 'call_1')!);
+			// 許可のスクリプトが流す許可の hook（agy の PreToolUse の本文のまま）
+			fireParadisAgentHookEvent({
+				token, event: 'PermissionRequest', sessionId: conversationId, transcriptPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now(),
+				toolName: 'run_command', toolInput: { CommandLine: 'npm test', toolSummary: 'テストを走らせる' }, toolUseId: 'call_1',
+			});
+			await waitFor(() => access.tailers.get(token)!.approvalInteractions().some(card => card.id === 'call_1'), 'the approval card was not shown');
+			const card = access.tailers.get(token)!.approvalInteractions().find(candidate => candidate.id === 'call_1')!;
+			const epoch = access.tailers.get(token)!.epoch;
+			sent.length = 0;
+			inbound({ t: 'action/answerApproval', id: 1, token, epoch, requestId: 'approve-1', interactionId: 'call_1', choice: 'yes' });
+			inbound({ t: 'action/answerApproval', id: 1, token, epoch, requestId: 'approve-2', interactionId: 'call_1', choice: 'yes' });
+			await waitFor(() => sent.filter(message => message.t === 'action-result').length >= 2, 'the answers were not replied');
+			assert.deepStrictEqual({
+				beforeAttach,
+				otherConversation,
+				request: card.request,
+				decision: await decision,
+				replies: sent.filter(message => message.t === 'action-result').map(message => ({ requestId: message.requestId, status: message.status, code: message.code })),
+				cardsLeft: access.tailers.get(token)!.approvalInteractions().map(candidate => candidate.id),
+			}, {
+				beforeAttach: undefined,
+				otherConversation: undefined,
+				request: { tool: 'run_command', kind: 'bash', command: 'npm test', description: 'テストを走らせる' },
+				decision: 'allow',
+				replies: [
+					{ requestId: 'approve-1', status: 'accepted', code: undefined },
+					{ requestId: 'approve-2', status: 'rejected', code: 'agent-unsupported' },
+				],
+				cardsLeft: [],
+			});
+		} finally {
+			paradisAntigravityApprovalHold.setPresence(() => false);
+			paradisAntigravityApprovalHold.setGate(() => false);
 			chat.dispose();
 		}
 	}));

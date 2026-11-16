@@ -50,6 +50,12 @@ export function paradisAgentChatActionSupport(agent: ParadisAgentKind | undefine
 /** 回答を送れないエージェントの質問・確認に答えようとしたときの断りの文（モバイル向け。PC は nls の文を使う）。 */
 export const PARADIS_ANTIGRAVITY_ANSWER_ON_PC_MESSAGE = 'Antigravity CLI の質問・確認には、まだアプリから答えられません。PC の端末で答えてください';
 
+/**
+ * Antigravity CLI の許可の確認は、許可の hook が答えを待っているとき（paradisAntigravityApprovalHold.ts）だけアプリと PC の
+ * カードから答えられる（表の `answerApproval` は false のまま。待っていないときの断りの文）。
+ */
+export const PARADIS_ANTIGRAVITY_APPROVAL_ON_PC_MESSAGE = 'この確認にはアプリから答えられません。PC の端末で答えてください';
+
 /** Antigravity CLI へ発言を送れない理由。 */
 export type ParadisAntigravitySendBlock = 'not-running' | 'working' | 'permission' | 'question' | 'multiline';
 
