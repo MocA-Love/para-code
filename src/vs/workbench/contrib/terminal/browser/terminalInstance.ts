@@ -104,6 +104,8 @@ import { hasKey, isNumber, isString } from '../../../../base/common/types.js';
 import { paradisIsTerminalInputBlocked } from '../../../../paradis/contrib/workspaceSwitch/browser/paradisTerminalInputGate.js';
 // PARA-PATCH: drop xterm.js mouse reports with NaN coordinates before they reach the pty
 import { paradisSanitizeTerminalInput } from '../../../../paradis/contrib/terminalMouseReport/common/paradisTerminalMouseReport.js';
+// PARA-PATCH: collapse a burst of synchronous resizes (an editor grid split relayouts the neighbor A→B→A) into the last one
+import { ParadisTerminalResizeDebouncer } from '../../../../paradis/contrib/terminalRenderer/browser/paradisTerminalResizeDebouncer.js';
 
 const enum Constants {
 	/**
@@ -870,7 +872,7 @@ export class TerminalInstance extends Disposable implements ITerminalInstance {
 			disableShellIntegrationReporting,
 		}, this.onDidExecuteText);
 		this.xterm = xterm;
-		this._resizeDebouncer = this._register(new TerminalResizeDebouncer(
+		this._resizeDebouncer = this._register(new ParadisTerminalResizeDebouncer( // PARA-PATCH: see ParadisTerminalResizeDebouncer
 			() => this._isVisible,
 			() => xterm,
 			async (cols, rows) => {
