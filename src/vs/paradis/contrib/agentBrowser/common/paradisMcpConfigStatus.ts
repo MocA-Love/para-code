@@ -458,19 +458,22 @@ export function inspectParadisAntigravityMcpJson(text: string, expected: IParadi
 }
 
 /**
- * 起動時に場所だけ直してよい para-browser か（Para Code が前に書いた橋渡しで、今の場所と違う）。
- * 利用者が手で書いた HTTP の形などは直さない（ボタンを押したときだけ置き換える）。
+ * 起動時に場所だけ直す候補の para-browser（Para Code が前に書いた橋渡しで、今の場所と違う）が指しているパス
+ * （実行ファイルとシム）。候補でなければ undefined。利用者が手で書いた HTTP の形などは候補にしない（ボタンを
+ * 押したときだけ置き換える）。直すかどうかは、呼び出し側がこのパスが残っているかで決める。
  */
-export function paradisAntigravityMcpEntryNeedsRelocation(text: string, expected: IParadisAntigravityMcpServerEntry): boolean {
+export function paradisAntigravityMcpEntryToRelocate(text: string, expected: IParadisAntigravityMcpServerEntry): readonly string[] | undefined {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(text);
 	} catch {
-		return false;
+		return undefined;
 	}
 	const entry = isRecord(parsed) && isRecord(parsed.mcpServers) ? parsed.mcpServers[PARADIS_MCP_SERVER_NAME] : undefined;
-	if (!isRecord(entry) || !claudeEntryReferencesShim(entry)) {
-		return false;
+	if (!isRecord(entry) || !claudeEntryReferencesShim(entry) || sameJsonValue(withoutDisabled(entry), expected)) {
+		return undefined;
 	}
-	return !sameJsonValue(withoutDisabled(entry), expected);
+	const values = [entry.command, ...(Array.isArray(entry.args) ? entry.args : [])];
+	// `/usr/bin/env` と `ELECTRON_RUN_AS_NODE=1` は場所ではないので見ない
+	return values.filter((value): value is string => typeof value === 'string' && value !== '/usr/bin/env' && !/^[A-Z_]+=/.test(value) && (value.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value)));
 }

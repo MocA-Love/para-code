@@ -16,8 +16,8 @@ import { paradisWrapWindowsScriptShim } from '../../../common/paradisWindowsScri
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 import { paradisWriteRollingBackup } from '../../../node/paradisRollingFileBackup.js';
 import { IParadisMcpCliConfigStatus, IParadisMcpConfigStatus, IParadisMcpSetupResult, PARADIS_PANE_TOKEN_ENV_VAR, ParadisMcpCli } from '../common/paradisAgentBrowser.js';
-import { IParadisMcpStdioBridgeLocation, inspectParadisMcpTomlSection, paradisAntigravityMcpServerEntry, paradisClaudeMcpServerEntry, paradisCodexMcpTableBody, paradisMcpServerUrl, paradisUpsertAntigravityMcpJson, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
-import { computeParadisCodexTableRewrite, inspectParadisAntigravityMcpJson, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml, paradisAddCodexMissingTableLines, paradisAntigravityMcpEntryNeedsRelocation, paradisClaudeMcpEntryNeedsToolTimeout, paradisReadClaudeMcpEntry } from './paradisMcpConfigStatus.js';
+import { IParadisAntigravityMcpServerEntry, IParadisMcpStdioBridgeLocation, inspectParadisMcpTomlSection, paradisAntigravityMcpServerEntry, paradisClaudeMcpServerEntry, paradisCodexMcpTableBody, paradisMcpServerUrl, paradisUpsertAntigravityMcpJson, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
+import { computeParadisCodexTableRewrite, inspectParadisAntigravityMcpJson, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml, paradisAddCodexMissingTableLines, paradisAntigravityMcpEntryToRelocate, paradisClaudeMcpEntryNeedsToolTimeout, paradisReadClaudeMcpEntry } from './paradisMcpConfigStatus.js';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_OUTPUT_LIMIT_BYTES = 64 * 1024;
@@ -336,6 +336,8 @@ export interface IParadisMcpSetupControllerOptions {
 	readonly antigravityConfigDir?: string;
 	/** フォルダがあるか（Antigravity CLI の設定のフォルダを見る）。省略時は `fs.stat`。 */
 	readonly isDirectory?: (path: string) => Promise<boolean>;
+	/** パスが残っているか（前に書いた橋渡しの場所を見る）。省略時は `fs.stat`。 */
+	readonly pathExists?: (path: string) => Promise<boolean>;
 }
 
 interface IConfigReadFileSystem {
@@ -841,8 +843,8 @@ export class ParadisMcpSetupController {
 	}
 
 	/**
-	 * Para Code が前に Antigravity CLI へ書いた橋渡しが、今の Para Code と違う場所（入れ直した・移した）を指していれば
-	 * 書き直す（起動時に 1 回）。利用者が `disabled` で止めたものは止めたまま。手で書いた para-browser には触らない。
+	 * Para Code が前に Antigravity CLI へ書いた橋渡しが、もう無い場所（入れ直した・移した Para Code）を指していれば
+	 * 今の場所へ書き直す（起動時に 1 回）。利用者が `disabled` で止めたものは止めたまま。手で書いた para-browser には触らない。
 	 */
 	private async relocateAntigravityBridge(): Promise<void> {
 		if (this.flights.has('antigravity')) {
@@ -859,13 +861,31 @@ export class ParadisMcpSetupController {
 	}
 
 	/**
+	 * 前に書いた橋渡しの指す実行ファイルかシムが、もう無いか。両方残っている別の場所（ワークツリーの開発版と配布版を
+	 * 交互に起動したときなど）は書き直さない（起動のたびに書き換えが往復する。状態は「要修正」になり、ボタンで直せる）。
+	 */
+	private async antigravityBridgeIsGone(text: string, entry: IParadisAntigravityMcpServerEntry): Promise<boolean> {
+		const paths = paradisAntigravityMcpEntryToRelocate(text, entry);
+		if (paths === undefined) {
+			return false;
+		}
+		const exists = this.options.pathExists ?? (async (path: string) => fs.stat(path).then(() => true, () => false));
+		for (const path of paths) {
+			if (!await exists(path)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
 	 * Antigravity CLI の `~/.gemini/config/mcp_config.json` へ para-browser を stdio の橋渡しとして書く。
 	 *
 	 * `agy mcp add` は使わず、Codex と同じくファイルを直接書く（読んでから書くまでに変わっていないか確かめ、
 	 * 書く前の中身を隣へ控える）。agy が設定のフォルダを作っていなければ書かない。
 	 *
 	 * @param mode `button` は利用者が押したとき（para-browser の節を丸ごと置き換え、`disabled` を外す）。
-	 *   `relocate` は起動時（Para Code が書いた橋渡しの場所が変わったときだけ、`disabled` を残して直す）。
+	 *   `relocate` は起動時（Para Code が書いた橋渡しの指す場所が無くなったときだけ、`disabled` を残して直す）。
 	 */
 	private async setupAntigravity(mode: 'button' | 'relocate'): Promise<IParadisMcpSetupResult> {
 		const configDir = this.antigravityConfigDir();
@@ -879,7 +899,7 @@ export class ParadisMcpSetupController {
 			let stage: 'read' | 'write' = 'read';
 			try {
 				const original = await readConfigSnapshot(configPath, this.options.configReadFileSystem);
-				if (mode === 'relocate' && !(original.exists && paradisAntigravityMcpEntryNeedsRelocation(original.text, entry))) {
+				if (mode === 'relocate' && !(original.exists && await this.antigravityBridgeIsGone(original.text, entry))) {
 					return { cli: 'antigravity', cliAvailable: true, target: configPath, servers: [{ server: 'para-browser', outcome: 'already' }] };
 				}
 				const content = paradisUpsertAntigravityMcpJson(original.exists ? original.text : undefined, entry, mode === 'relocate');

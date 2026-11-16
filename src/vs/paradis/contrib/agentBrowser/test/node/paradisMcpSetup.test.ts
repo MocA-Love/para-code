@@ -1018,7 +1018,37 @@ suite('Para Browser MCP setup', () => {
 		}
 	});
 
-	test('Antigravity CLI: the startup pass moves our bridge to the current Para Code, keeps disabled, and leaves other entries alone', async () => {
+	test('Antigravity CLI: the startup pass leaves a bridge to another Para Code that still exists, and shows it as needing a fix', async () => {
+		const directory = await fs.mkdtemp(join(tmpdir(), 'paradis-mcp-setup-'));
+		try {
+			const configPath = join(directory, 'mcp_config.json');
+			const checked: string[] = [];
+			const controller = new ParadisMcpSetupController({
+				platform: 'linux',
+				resolveShellEnv: async () => ({}),
+				findExecutable: async () => undefined,
+				runCommand: async () => ({ kind: 'failure', output: '' }),
+				codexHome: join(directory, '.codex'),
+				resolveMcpBridge: () => ({ executable: '/opt/para-code/para-code', shimPath: '/opt/para-code/out/paradisBrowserMcpShim.js' }),
+				antigravityConfigDir: directory,
+				// 開発版のワークツリーの橋渡し（まだ残っている）
+				pathExists: async path => { checked.push(path); return true; },
+				log: () => undefined,
+			});
+			const other = JSON.stringify({ mcpServers: { 'para-browser': { command: '/usr/bin/env', args: ['ELECTRON_RUN_AS_NODE=1', '/work/tree/.build/electron/para-code', '/work/tree/out/paradisBrowserMcpShim.js'] } } });
+			await fs.writeFile(configPath, other);
+			await controller.upgradeToolTimeouts(undefined);
+			assert.deepStrictEqual({ content: await fs.readFile(configPath, 'utf8'), checked, status: (await controller.status(undefined)).antigravity }, {
+				content: other,
+				checked: ['/work/tree/.build/electron/para-code', '/work/tree/out/paradisBrowserMcpShim.js'],
+				status: { cli: 'antigravity', state: 'needsFix' },
+			});
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	test('Antigravity CLI: the startup pass moves our bridge off a Para Code that is gone, keeps disabled, and leaves other entries alone', async () => {
 		const directory = await fs.mkdtemp(join(tmpdir(), 'paradis-mcp-setup-'));
 		try {
 			const configDir = join(directory, 'config');
