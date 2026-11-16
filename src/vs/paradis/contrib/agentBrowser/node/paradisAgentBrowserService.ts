@@ -4621,12 +4621,18 @@ export class ParadisAgentBrowserService extends Disposable {
 				reply('none');
 				return;
 			}
+			// 送り主の確かめ（プロセス表）は、待つと決まりそうなときだけ（モバイルが見ていない人の PreToolUse ごとに走らせない）
+			const request = { sessionId: field('session_id'), toolUseId: field('tool_use_id'), toolName: field('tool_name') };
+			if (!paradisAntigravityApprovalHold.canHold(token, request)) {
+				reply('none');
+				return;
+			}
 			const caller = await this._classifyCaller(token, req.socket as Socket, controller.signal);
 			if (caller === 'unverified' || controller.signal.aborted || !this.isIngressLeaseCurrent(ingressLease)) {
 				reply('none');
 				return;
 			}
-			const id = paradisAntigravityApprovalHold.register(token, { sessionId: field('session_id'), toolUseId: field('tool_use_id'), toolName: field('tool_name') });
+			const id = paradisAntigravityApprovalHold.register(token, request);
 			reply(id !== undefined ? `${PARADIS_ANTIGRAVITY_APPROVAL_WAIT_PREFIX}${id}` : 'none');
 		} catch (error) {
 			this._runNonThrowingDiagnostic(() => this.logService.warn('[ParadisAgentBrowser] Antigravity CLI approval request failed', error));

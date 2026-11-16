@@ -48,6 +48,13 @@ interface IHoldEntry {
 	presenceLostAt?: number;
 }
 
+/** 待ちを頼む PreToolUse（hook の別名のキーから読んだもの）。 */
+export interface IParadisAntigravityApprovalHoldRequest {
+	readonly sessionId: string | undefined;
+	readonly toolUseId: string | undefined;
+	readonly toolName: string | undefined;
+}
+
 /** 待ってよいかの判定（ParadisMobileAgentChat が持つ。ペインの本会話か・モバイルが見ているか・質問中ではないか）。 */
 export type ParadisAntigravityApprovalGate = (token: string, sessionId: string) => boolean;
 
@@ -83,26 +90,34 @@ export class ParadisAntigravityApprovalHold {
 	}
 
 	/**
-	 * 待ちを登録する。待つなら待ちの ID、待たないなら undefined（スクリプトは何も書かずに終わり、agy の判定に任せる）。
-	 * 同じ呼び出し（`toolUseId`）の待ちが既にあれば、新しく待たない。
+	 * 待ってよいか（副作用なし）。受け口は、これが true のときだけ送り主を確かめてから {@link register} を呼ぶ
+	 * （モバイルが見ていない人の PreToolUse ごとにプロセスの確かめを走らせない）。
 	 */
-	register(token: string, request: { readonly sessionId: string | undefined; readonly toolUseId: string | undefined; readonly toolName: string | undefined }): string | undefined {
+	canHold(token: string, request: IParadisAntigravityApprovalHoldRequest): boolean {
 		const { sessionId, toolUseId, toolName } = request;
 		if (sessionId === undefined || toolUseId === undefined || toolName === undefined
 			|| !FIELD_PATTERN.test(sessionId) || !FIELD_PATTERN.test(toolUseId) || !PARADIS_ANTIGRAVITY_APPROVAL_TOOLS.includes(toolName)) {
-			return undefined;
+			return false;
 		}
 		const open = [...this.entries.values()].filter(entry => entry.outcome === undefined);
 		if (open.length >= MAX_PENDING || open.filter(entry => entry.token === token).length >= MAX_PENDING_PER_TOKEN
 			|| open.some(entry => entry.token === token && entry.toolUseId === toolUseId)) {
-			return undefined;
+			return false;
 		}
-		if (!this.presence() || !this.gate(token, sessionId)) {
+		return this.presence() && this.gate(token, sessionId);
+	}
+
+	/**
+	 * 待ちを登録する。待つなら待ちの ID、待たないなら undefined（スクリプトは何も書かずに終わり、agy の判定に任せる）。
+	 * 同じ呼び出し（`toolUseId`）の待ちが既にあれば、新しく待たない。
+	 */
+	register(token: string, request: IParadisAntigravityApprovalHoldRequest): string | undefined {
+		if (!this.canHold(token, request) || request.sessionId === undefined || request.toolUseId === undefined) {
 			return undefined;
 		}
 		const id = this.newId();
 		const now = this.now();
-		this.entries.set(id, { id, token, sessionId, toolUseId, registeredAt: now, expiresAt: now + PARADIS_ANTIGRAVITY_APPROVAL_HOLD_MS });
+		this.entries.set(id, { id, token, sessionId: request.sessionId, toolUseId: request.toolUseId, registeredAt: now, expiresAt: now + PARADIS_ANTIGRAVITY_APPROVAL_HOLD_MS });
 		this.ensureSweep();
 		return id;
 	}

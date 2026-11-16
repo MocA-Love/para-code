@@ -23,6 +23,7 @@ import { ParadisRemoteFileTransfer } from '../../node/paradisRemoteFileTransfer.
 import { IParadisAgentHookEvent, onParadisAgentHookEvent } from '../../node/paradisAgentHookBus.js';
 import { IParadisMcpToolCallContext } from '../../common/paradisMcpToolProvider.js';
 import { paradisOpenCodeBridge } from '../../node/paradisOpenCodeBridge.js';
+import { paradisAntigravityApprovalHold } from '../../node/paradisAntigravityApprovalHold.js';
 import { paradisOpenCodeCliRegistry } from '../../node/paradisOpenCodeCliRegistry.js';
 import { ParadisAgentHookOwnership } from '../../node/paradisAgentHookOwnership.js';
 import { ParadisCodexFrontSessions } from '../../common/paradisCodexFrontSession.js';
@@ -54,6 +55,8 @@ class TestRequest extends EventEmitter {
 	constructor(readonly method: string, readonly url: string, readonly body = '{}') {
 		super();
 	}
+
+	resume(): this { return this; }
 
 	async *[Symbol.asyncIterator](): AsyncIterableIterator<Buffer> { yield Buffer.from(this.body); }
 
@@ -901,6 +904,47 @@ suite('ParadisAgentBrowser authority integration', () => {
 			{ token: 'codex-a', agent: 'codex', sessionId: 'session-codex', at: 'number' },
 			{ token: 'remote-a', agent: 'claude', sessionId: 'session-remote', remote: true, at: 'number' },
 		]);
+	});
+
+	test('holds an Antigravity CLI tool call only for a verified process of a local pane, and returns the card answer to its wait', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'agy-local', shellPid: 100 }, { token: 'agy-remote', shellPid: 101, remoteAuthority: 'ssh-remote+dev' }]));
+		let verdict = 'unverified';
+		Reflect.set(fixture.service, '_classifyCaller', async () => verdict);
+		paradisAntigravityApprovalHold.setPresence(() => true);
+		paradisAntigravityApprovalHold.setGate(() => true);
+		const send = async (token: string, path: string, body = '') => {
+			const request = new TestRequest('POST', `/antigravity-approval/v1/${path}`, body);
+			request.headers.authorization = `Bearer ${token}`;
+			const response = new TestResponse();
+			const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
+			request.emit('data', Buffer.from(request.body));
+			request.emit('end');
+			await pending;
+			return response.body;
+		};
+		// agy の PreToolUse の形（キーの名前だけ実物に合わせた偽の値）
+		const preToolUse = (id: string) => JSON.stringify({ conversationId: 'c1', hookEventName: 'PreToolUse', toolCall: { id, name: 'run_command', args: { CommandLine: 'ls' } } });
+		try {
+			const unverified = await send('agy-local', 'register', preToolUse('call_1'));
+			verdict = 'pane';
+			const remote = await send('agy-remote', 'register', preToolUse('call_2'));
+			const notPreToolUse = await send('agy-local', 'register', JSON.stringify({ conversationId: 'c1', hookEventName: 'Stop' }));
+			const held = await send('agy-local', 'register', preToolUse('call_3'));
+			const id = held.slice('wait:'.length);
+			const answered = paradisAntigravityApprovalHold.answer('agy-local', 'call_3', 'deny');
+			const otherPaneWait = await send('agy-remote', `wait?id=${id}`);
+			const wait = await send('agy-local', `wait?id=${id}`);
+			assert.deepStrictEqual({ unverified, remote, notPreToolUse, held: /^wait:[0-9a-f]{32}$/.test(held), answered, otherPaneWait, wait }, {
+				unverified: 'none', remote: 'none', notPreToolUse: 'none', held: true, answered: true, otherPaneWait: 'none', wait: 'deny',
+			});
+		} finally {
+			paradisAntigravityApprovalHold.setPresence(() => false);
+			paradisAntigravityApprovalHold.setGate(() => false);
+			fixture.service.dispose();
+		}
 	});
 
 	// Codex 0.167.0 の command center では、1 つの TUI の中で会話を切り替えられ、裏の会話の hook も同じペインのトークンで

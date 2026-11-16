@@ -7946,12 +7946,12 @@ export class ParadisMobileAgentChat extends Disposable {
 	private tryAnswerAntigravityApproval(token: string, interactionId: string, choice: string): boolean {
 		const tailer = this.tailers.get(token);
 		if (this.paneSessions.get(token)?.agent !== 'antigravity' || tailer === undefined || (choice !== 'yes' && choice !== 'no')
-			|| !tailer.approvalInteractions().some(card => card.id === interactionId)
-			|| !paradisAntigravityApprovalHold.answer(token, interactionId, choice === 'yes' ? 'allow' : 'deny')) {
+			|| !tailer.approvalInteractions().some(card => card.id === interactionId) || !paradisAntigravityApprovalHold.isWaiting(token, interactionId)) {
 			return false;
 		}
+		// 答えた印を先に付ける（ペインの許可待ちは、カードの答えた印で解ける。agy は許可したツールが終わるまで hook を出さない）
 		tailer.markApprovalAnswered(interactionId);
-		return true;
+		return paradisAntigravityApprovalHold.answer(token, interactionId, choice === 'yes' ? 'allow' : 'deny');
 	}
 
 	/** デスクトップのチャット表示から、Antigravity CLI の許可の hook が待っている承認に答える。 */

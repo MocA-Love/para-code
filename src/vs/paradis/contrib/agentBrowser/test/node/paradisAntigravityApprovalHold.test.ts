@@ -37,6 +37,7 @@ suite('Para Browser Antigravity CLI approval hold', () => {
 			badId: watched.hold.register('pane', { sessionId: 'c1', toolUseId: 'call 3', toolName: 'run_command' }),
 			noSession: watched.hold.register('pane', { sessionId: undefined, toolUseId: 'call_4', toolName: 'run_command' }),
 			away: away.hold.register('pane', request('call_1')),
+			canHold: [watched.hold.canHold('pane', request('call_5')), away.hold.canHold('pane', request('call_1')), notGated.hold.canHold('pane', request('call_1'))],
 			notGated: notGated.hold.register('pane', request('call_1')),
 			waiting: [watched.hold.isWaiting('pane', 'call_1'), watched.hold.isWaiting('other', 'call_1')],
 		}, {
@@ -46,6 +47,7 @@ suite('Para Browser Antigravity CLI approval hold', () => {
 			badId: undefined,
 			noSession: undefined,
 			away: undefined,
+			canHold: [true, false, false],
 			notGated: undefined,
 			waiting: [true, false],
 		});
