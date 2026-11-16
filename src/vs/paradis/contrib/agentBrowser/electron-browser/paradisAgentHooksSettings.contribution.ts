@@ -25,6 +25,7 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { PARADIS_AGENT_HOOKS_ENABLED_SETTING, paradisAgentHooksEnabled } from '../common/paradisAgentHooks.js';
 import { PARADIS_REMOTE_VOICE_LOCAL_PLAYBACK_SETTING } from '../common/paradisRemoteVoice.js';
+import { PARADIS_ANTIGRAVITY_APPROVAL_WAIT_DEFAULT_MINUTES, PARADIS_ANTIGRAVITY_APPROVAL_WAIT_MAX_MINUTES, PARADIS_ANTIGRAVITY_APPROVAL_WAIT_SETTING } from '../common/paradisAntigravityApproval.js';
 import { paradisIsSettingsDialogOpen } from '../../paradisSettings/common/paradisSettingsDialogState.js';
 
 // 他の Para Code 設定と同じ id/title にして、設定 UI では1つの「Para Code」セクションにまとめる。
@@ -45,6 +46,16 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			scope: ConfigurationScope.APPLICATION,
 			// allow-any-unicode-next-line
 			markdownDescription: localize('paradis.agentHooks.enabled', "Claude Code・Codex・Antigravity CLI へ、Para Code がエージェントの状態を受け取るための hook を自動で設置します（`~/.claude/settings.json`・`~/.codex/hooks.json`・`~/.gemini/config/hooks.json`。Antigravity CLI は一度起動して `~/.gemini/config` ができてから。SSH で接続中は Claude Code と Codex の分を接続先にも）。\n\nオフにすると、その時点で Para Code が設置した hook だけを取り外し、オフの間は設置し直しません。あなた自身が書いた hook は触りません。起動した時点でオフの場合は、取り外しもしません（同じ PC の別の Para Code が使っている hook を壊さないため）。\n\nオフの間は、エージェントの状態表示（実行中・許可待ち・完了）、完了や許可待ちの通知、モバイルへの通知とチャットの表示、音声での読み上げが弱くなるか、働かなくなります。"),
+		},
+		[PARADIS_ANTIGRAVITY_APPROVAL_WAIT_SETTING]: {
+			type: 'number',
+			default: PARADIS_ANTIGRAVITY_APPROVAL_WAIT_DEFAULT_MINUTES,
+			minimum: 0,
+			maximum: PARADIS_ANTIGRAVITY_APPROVAL_WAIT_MAX_MINUTES,
+			// 待つのは手元の PC（shared process）で、hooks.json も PC 全体で1つ
+			scope: ConfigurationScope.APPLICATION,
+			// allow-any-unicode-next-line
+			markdownDescription: localize('paradis.agentHooks.antigravity.approvalWaitMinutes', "Antigravity CLI の許可の確認を、モバイルがそのペインを開いている間だけモバイルと PC のチャット欄から答えられるようにする上限の時間（分）です。待っている間は PC のターミナルに確認が出ません。上限を過ぎると、確認はターミナルに出て、カードは「時間切れ」になります。0 にすると待たず、いつもターミナルで答えます。macOS と Linux の手元のターミナルが対象です。"),
 		},
 		[PARADIS_REMOTE_VOICE_LOCAL_PLAYBACK_SETTING]: {
 			type: 'boolean',

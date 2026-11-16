@@ -214,6 +214,19 @@
 				"answerOn": "pc",
 				"readOnly": true
 			}
+		},
+		"expiredDelta": {
+			"$comment": "答えを待つのが終わった承認（Antigravity CLI の許可の hook が上限を過ぎた・答えずに端末の確認の画面に任せた）。expired のとき choices は空で、アプリは「時間切れ（端末で答えてください）」と出して押せなくする。古いアプリは expired を捨て、選択肢の無いカードを出す。",
+			"t": "delta", "id": 7, "token": "agent-token-1", "agent": "antigravity", "epoch": "golden-agent-epoch", "rev": 9,
+			"messages": [
+				{ "rev": 9, "role": "assistant", "kind": "tool_use", "tool": "approval_request", "text": "run_command: npm test", "toolUseId": "call_1", "ts": 1760000006000 }
+			],
+			"interaction": {
+				"kind": "approval", "id": "call_1", "title": "操作の許可", "detail": "run_command: npm test",
+				"choices": [],
+				"request": { "tool": "run_command", "kind": "bash", "command": "npm test" },
+				"expired": true
+			}
 		}
 	}
 }

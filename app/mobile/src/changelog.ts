@@ -40,6 +40,17 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.25',
+		date: '2026-11-16',
+		items: [
+			{
+				icon: 'time-outline',
+				title: 'Antigravity CLI の許可の確認を待てる時間を過ぎたら、カードを「時間切れ」にして押せないようにしました',
+				body: '時間を過ぎた確認は PC のターミナルに出ます。押しても断られるだけだったカードが、端末で答えるよう案内するようになりました。',
+			},
+		],
+	},
+	{
 		version: '0.12.24',
 		date: '2026-11-16',
 		items: [

@@ -25,7 +25,7 @@
 export const PARADIS_ANTIGRAVITY_APPROVAL_HOOK_NAME = 'para-code-approval';
 
 /** 許可のスクリプトの版（ファイル名に入る。中身の形を変えたら上げる）。 */
-export const PARADIS_ANTIGRAVITY_APPROVAL_SCRIPT_VERSION = 1;
+export const PARADIS_ANTIGRAVITY_APPROVAL_SCRIPT_VERSION = 2;
 
 /** 許可のスクリプトの置き場所（ホーム相対）。 */
 export const PARADIS_ANTIGRAVITY_APPROVAL_SCRIPT_RELATIVE_PATH = `.para-code/hooks/antigravity-approval-v${PARADIS_ANTIGRAVITY_APPROVAL_SCRIPT_VERSION}.sh`;
@@ -41,7 +41,7 @@ const EDIT_TOOLS: readonly string[] = ['edit_file', 'write_file'];
 
 /**
  * ペインの agy の起動の行（プロセスの引数）から、この呼び出しを agy が聞かずに通すと分かるか（分かれば待たない）。
- * 待つと外したとき（agy が聞かないのに待つ）は最大 {@link PARADIS_ANTIGRAVITY_APPROVAL_HOLD_MS} 止まり、待たないと外したとき
+ * 待つと外したとき（agy が聞かないのに待つ）は最大で待つ上限（{@link PARADIS_ANTIGRAVITY_APPROVAL_WAIT_SETTING}）まで止まり、待たないと外したとき
  * （agy が聞く）は TUI の許可の画面が今までどおり出るだけなので、分かる範囲で待たない側へ倒す。
  *
  * | 起動の引数 | 待たないツール |
@@ -63,19 +63,51 @@ export function paradisAntigravityApprovalSkippedByLaunch(commandLine: string, t
 /** shared process の受け口の接頭辞（`register` と `wait`）。 */
 export const PARADIS_ANTIGRAVITY_APPROVAL_HTTP_PREFIX = '/antigravity-approval/v1/';
 
+/** 答えを待つ上限の設定（分）。Claude Code の mod の承認の待ち（`paradis.agentHooks.claudeMod.approvalWaitMinutes`）とそろえる。 */
+export const PARADIS_ANTIGRAVITY_APPROVAL_WAIT_SETTING = 'paradis.agentHooks.antigravity.approvalWaitMinutes';
 /**
- * 答えを待つ上限。待っている間は agy の TUI に許可の画面が出ないので、長く止めない。
- * 時間の上限は 3 段で、内側ほど先に切れる: この上限 < スクリプトの curl の `-m`（{@link PARADIS_ANTIGRAVITY_APPROVAL_WAIT_CURL_SECONDS}）
- * < hooks.json の handler の `timeout`（{@link PARADIS_ANTIGRAVITY_APPROVAL_HOOK_TIMEOUT_SECONDS}）。agy が hook を打ち切ったときの
- * 扱いは測っていないので、必ずスクリプトの方が先に、何も書かずに終わる。
+ * 既定は 2 分。待っている間は agy の TUI に許可の画面が出ない（Claude Code と違い、PC でも答えられない）ので、
+ * Claude Code の既定（10 分）より短くする。
  */
-export const PARADIS_ANTIGRAVITY_APPROVAL_HOLD_MS = 120_000;
+export const PARADIS_ANTIGRAVITY_APPROVAL_WAIT_DEFAULT_MINUTES = 2;
+export const PARADIS_ANTIGRAVITY_APPROVAL_WAIT_MAX_MINUTES = 60;
 
-/** スクリプトが答えを待つ curl の上限（秒）。 */
-export const PARADIS_ANTIGRAVITY_APPROVAL_WAIT_CURL_SECONDS = 130;
+/** 設定値から、答えを待つ上限（ミリ秒）を読む。0 なら待たない（承認は agy の TUI で答える）。 */
+export function paradisAntigravityApprovalWaitMs(value: unknown): number {
+	const minutes = typeof value === 'number' && Number.isFinite(value) ? value : PARADIS_ANTIGRAVITY_APPROVAL_WAIT_DEFAULT_MINUTES;
+	return Math.round(Math.min(PARADIS_ANTIGRAVITY_APPROVAL_WAIT_MAX_MINUTES, Math.max(0, minutes)) * 60_000);
+}
 
-/** hooks.json の handler の `timeout`（秒。agy の既定は 30 秒なので明示する）。 */
-export const PARADIS_ANTIGRAVITY_APPROVAL_HOOK_TIMEOUT_SECONDS = 150;
+/**
+ * 時間の上限は 3 段で、内側ほど先に切れる: 待つ上限 < スクリプトの curl の `-m`（上限 + この秒）
+ * < hooks.json の handler の `timeout`（curl + {@link HOOK_TIMEOUT_MARGIN_SECONDS}）。agy が hook を打ち切ったときの扱いは
+ * 測っていないので、必ずスクリプトの方が先に、何も書かずに終わる。
+ */
+const WAIT_CURL_MARGIN_SECONDS = 10;
+/** curl の前後の POST（登録 3 秒・許可の知らせ 10 秒・拒否の知らせ 3 秒）が収まる余裕。 */
+const HOOK_TIMEOUT_MARGIN_SECONDS = 20;
+
+/** hooks.json の handler の `timeout`（秒。agy の既定は 30 秒なので明示する）。待つ上限から決める。 */
+export function paradisAntigravityApprovalHookTimeoutSeconds(waitMs: number): number {
+	return Math.ceil(Math.max(0, waitMs) / 1000) + WAIT_CURL_MARGIN_SECONDS + HOOK_TIMEOUT_MARGIN_SECONDS;
+}
+
+/**
+ * スクリプトの curl の `-m`（秒）。スクリプトは hooks.json の `timeout` を引数で受け取り、そこからこの差を引く
+ * （agy が読んだ hooks.json の `timeout` とスクリプトの上限が、設定を変えた直後でもずれない）。
+ */
+export const PARADIS_ANTIGRAVITY_APPROVAL_CURL_BELOW_HOOK_TIMEOUT_SECONDS = HOOK_TIMEOUT_MARGIN_SECONDS;
+
+/**
+ * スクリプトが知らせた hooks.json の `timeout`（秒）で待ってよい上限（ミリ秒）。設定の上限と小さい方を使う
+ * （設定を延ばした直後で、agy がまだ前の短い `timeout` で hook を走らせていても、先に打ち切られない）。
+ * 引数の無い古いスクリプト（版 1）は `timeout` 150 秒・待ち 2 分で置いていた。
+ */
+export function paradisAntigravityApprovalHoldMs(settingWaitMs: number, hookTimeoutSeconds: number | undefined): number {
+	const timeout = hookTimeoutSeconds ?? 150;
+	const allowed = Math.max(0, timeout - WAIT_CURL_MARGIN_SECONDS - HOOK_TIMEOUT_MARGIN_SECONDS) * 1000;
+	return Math.max(0, Math.min(settingWaitMs, allowed));
+}
 
 /** 拒否したときに agy へ添える理由（agy はこれを利用者とモデルに見せる）。 */
 export const PARADIS_ANTIGRAVITY_APPROVAL_DENY_REASON = 'The user declined this tool call from Para Code.';
@@ -83,20 +115,25 @@ export const PARADIS_ANTIGRAVITY_APPROVAL_DENY_REASON = 'The user declined this 
 /** 受け口が返す、待ちの登録の答え。 */
 export const PARADIS_ANTIGRAVITY_APPROVAL_WAIT_PREFIX = 'wait:';
 
-/** hooks.json に書く、許可のスクリプトを呼ぶコマンド（$HOME 参照。スクリプトが無ければ何もせず正常に終わる）。 */
-export function paradisAntigravityApprovalHookCommand(): string {
-	return `[ -x "$HOME/${PARADIS_ANTIGRAVITY_APPROVAL_SCRIPT_RELATIVE_PATH}" ] && "$HOME/${PARADIS_ANTIGRAVITY_APPROVAL_SCRIPT_RELATIVE_PATH}" || true`;
+/**
+ * hooks.json に書く、許可のスクリプトを呼ぶコマンド（$HOME 参照。スクリプトが無ければ何もせず正常に終わる）。
+ * 引数は同じ handler の `timeout`（秒）。スクリプトはこれから curl の上限を決め、Para Code へも知らせる。
+ */
+export function paradisAntigravityApprovalHookCommand(hookTimeoutSeconds: number): string {
+	return `[ -x "$HOME/${PARADIS_ANTIGRAVITY_APPROVAL_SCRIPT_RELATIVE_PATH}" ] && "$HOME/${PARADIS_ANTIGRAVITY_APPROVAL_SCRIPT_RELATIVE_PATH}" ${hookTimeoutSeconds} || true`;
 }
 
 /**
- * hooks.json の許可の名前付きの hook の中身。matcher の正規表現の方言（`|` の書き方）は確かめていないので、
- * ツールごとに名前そのままの matcher の組を並べる。
+ * hooks.json の許可の名前付きの hook の中身（`waitMs` は待つ上限）。matcher の正規表現の方言（`|` の書き方）は
+ * 確かめていないので、ツールごとに名前そのままの matcher の組を並べる。
  */
-export function paradisAntigravityApprovalHookDefinition(command: string = paradisAntigravityApprovalHookCommand()): Record<string, unknown> {
+export function paradisAntigravityApprovalHookDefinition(waitMs: number): Record<string, unknown> {
+	const timeout = paradisAntigravityApprovalHookTimeoutSeconds(waitMs);
+	const command = paradisAntigravityApprovalHookCommand(timeout);
 	return {
 		PreToolUse: PARADIS_ANTIGRAVITY_APPROVAL_TOOLS.map(tool => ({
 			matcher: tool,
-			hooks: [{ type: 'command', command, timeout: PARADIS_ANTIGRAVITY_APPROVAL_HOOK_TIMEOUT_SECONDS }],
+			hooks: [{ type: 'command', command, timeout }],
 		})),
 	};
 }

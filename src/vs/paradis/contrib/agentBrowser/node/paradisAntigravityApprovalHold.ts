@@ -18,11 +18,13 @@
 //  - モバイルのアプリが今リレーに繋がっている（{@link ParadisAntigravityApprovalHold.setPresence}）
 //  - そのペインの本会話で、モバイルがそのペインを見ていて、質問の回答待ちではない（{@link ParadisAntigravityApprovalHold.setGate}）
 //  - 許可を求めうるツール（PARADIS_ANTIGRAVITY_APPROVAL_TOOLS）
-// 待つ間に、上限（PARADIS_ANTIGRAVITY_APPROVAL_HOLD_MS）・スクリプトの切断、または上の 2 つの条件が外れて 30 秒たったとき
-// （モバイルの切断・アプリが裏に回った・そのペインから離れた）に、答えずに終える。
+//  - 待つ上限の設定（PARADIS_ANTIGRAVITY_APPROVAL_WAIT_SETTING）が 0 ではない
+// 待つ間に、上限（設定と、スクリプトが知らせた hooks.json の `timeout` の小さい方）・スクリプトの切断、または上の 2 つの条件が外れて 30 秒たったとき
+// （モバイルの切断・アプリが裏に回った・そのペインから離れた）に、答えずに終える。答えずに終えたら
+// {@link ParadisAntigravityApprovalHold.setOnUnanswered} の知らせで、カードを「時間切れ」にする（もう答えられない）。
 
 import { randomBytes } from 'crypto';
-import { PARADIS_ANTIGRAVITY_APPROVAL_HOLD_MS, PARADIS_ANTIGRAVITY_APPROVAL_TOOLS } from '../common/paradisAntigravityApproval.js';
+import { PARADIS_ANTIGRAVITY_APPROVAL_TOOLS, paradisAntigravityApprovalHoldMs, paradisAntigravityApprovalWaitMs } from '../common/paradisAntigravityApproval.js';
 
 /** カードの答え。 */
 export type ParadisAntigravityApprovalDecision = 'allow' | 'deny';
@@ -54,7 +56,12 @@ export interface IParadisAntigravityApprovalHoldRequest {
 	readonly sessionId: string | undefined;
 	readonly toolUseId: string | undefined;
 	readonly toolName: string | undefined;
+	/** スクリプトが知らせた hooks.json の `timeout`（秒）。古いスクリプトは送らない。 */
+	readonly hookTimeoutSeconds?: number;
 }
+
+/** 答えずに終えた待ち（そのペインのその呼び出し）。カードを「時間切れ」にするのに使う。 */
+export type ParadisAntigravityApprovalUnansweredListener = (token: string, toolUseId: string) => void;
 
 /** 待ってよいかの判定（ParadisMobileAgentChat が持つ。ペインの本会話か・モバイルが見ているか・質問中ではないか）。 */
 export type ParadisAntigravityApprovalGate = (token: string, sessionId: string) => boolean;
@@ -70,6 +77,8 @@ export class ParadisAntigravityApprovalHold {
 	private readonly entries = new Map<string, IHoldEntry>();
 	private presence: () => boolean = () => false;
 	private gate: ParadisAntigravityApprovalGate = () => false;
+	private waitMs: () => number = () => paradisAntigravityApprovalWaitMs(undefined);
+	private onUnanswered: ParadisAntigravityApprovalUnansweredListener = () => { };
 	private sweepTimer: ReturnType<typeof setInterval> | undefined;
 	private readonly now: () => number;
 	private readonly newId: () => string;
@@ -90,6 +99,16 @@ export class ParadisAntigravityApprovalHold {
 		this.gate = gate;
 	}
 
+	/** 待つ上限の設定（ミリ秒）。0 なら待たない。 */
+	setWaitLimit(waitMs: () => number): void {
+		this.waitMs = waitMs;
+	}
+
+	/** 答えずに終えた待ちの知らせ（上限・モバイルが見なくなった・スクリプトの切断・`wait` が来ない）。許可・拒否では呼ばない。 */
+	setOnUnanswered(listener: ParadisAntigravityApprovalUnansweredListener): void {
+		this.onUnanswered = listener;
+	}
+
 	/**
 	 * 待ってよいか（副作用なし）。受け口は、これが true のときだけ送り主を確かめてから {@link register} を呼ぶ
 	 * （モバイルが見ていない人の PreToolUse ごとにプロセスの確かめを走らせない）。
@@ -105,7 +124,11 @@ export class ParadisAntigravityApprovalHold {
 			|| open.some(entry => entry.token === token && entry.toolUseId === toolUseId)) {
 			return false;
 		}
-		return this.presence() && this.gate(token, sessionId);
+		return this.holdMs(request) > 0 && this.presence() && this.gate(token, sessionId);
+	}
+
+	private holdMs(request: IParadisAntigravityApprovalHoldRequest): number {
+		return paradisAntigravityApprovalHoldMs(this.waitMs(), request.hookTimeoutSeconds);
 	}
 
 	/**
@@ -118,7 +141,7 @@ export class ParadisAntigravityApprovalHold {
 		}
 		const id = this.newId();
 		const now = this.now();
-		this.entries.set(id, { id, token, sessionId: request.sessionId, toolUseId: request.toolUseId, registeredAt: now, expiresAt: now + PARADIS_ANTIGRAVITY_APPROVAL_HOLD_MS });
+		this.entries.set(id, { id, token, sessionId: request.sessionId, toolUseId: request.toolUseId, registeredAt: now, expiresAt: now + this.holdMs(request) });
 		this.ensureSweep();
 		return id;
 	}
@@ -172,7 +195,7 @@ export class ParadisAntigravityApprovalHold {
 		for (const entry of [...this.entries.values()]) {
 			if (entry.outcome !== undefined) {
 				// 答えたのに `wait` が来ない（スクリプトが先に終わった）
-				if (now - entry.registeredAt > PARADIS_ANTIGRAVITY_APPROVAL_HOLD_MS + ATTACH_GRACE_MS) {
+				if (now > entry.expiresAt + ATTACH_GRACE_MS) {
 					this.entries.delete(entry.id);
 				}
 				continue;
@@ -215,6 +238,13 @@ export class ParadisAntigravityApprovalHold {
 		if (waiter !== undefined) {
 			this.entries.delete(entry.id);
 			waiter(outcome === 'none' ? undefined : outcome);
+		}
+		if (outcome === 'none') {
+			try {
+				this.onUnanswered(entry.token, entry.toolUseId);
+			} catch {
+				// 知らせる側の失敗で待ちの後始末を止めない
+			}
 		}
 	}
 

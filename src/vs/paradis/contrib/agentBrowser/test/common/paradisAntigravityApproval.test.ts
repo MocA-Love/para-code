@@ -8,19 +8,27 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_ANTIGRAVITY_APPROVAL_HOLD_MS, PARADIS_ANTIGRAVITY_APPROVAL_HOOK_TIMEOUT_SECONDS, PARADIS_ANTIGRAVITY_APPROVAL_WAIT_CURL_SECONDS, paradisAntigravityApprovalCardInput, paradisAntigravityApprovalHookCommand, paradisAntigravityApprovalHookDefinition, paradisAntigravityApprovalScriptVersion, paradisAntigravityApprovalSkippedByLaunch } from '../../common/paradisAntigravityApproval.js';
+import { PARADIS_ANTIGRAVITY_APPROVAL_CURL_BELOW_HOOK_TIMEOUT_SECONDS, paradisAntigravityApprovalCardInput, paradisAntigravityApprovalHoldMs, paradisAntigravityApprovalHookCommand, paradisAntigravityApprovalHookDefinition, paradisAntigravityApprovalHookTimeoutSeconds, paradisAntigravityApprovalScriptVersion, paradisAntigravityApprovalSkippedByLaunch, paradisAntigravityApprovalWaitMs } from '../../common/paradisAntigravityApproval.js';
 import { paradisBuildAgentApprovalRequest } from '../../../mobileRelay/common/paradisAgentApprovalRequest.js';
 
 suite('Para Browser Antigravity CLI approval hook', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	test('waits only on the tools that may ask, with the script ending before agy gives up on the hook', () => {
-		const command = paradisAntigravityApprovalHookCommand();
-		const handler = { type: 'command', command, timeout: PARADIS_ANTIGRAVITY_APPROVAL_HOOK_TIMEOUT_SECONDS };
+		const command = paradisAntigravityApprovalHookCommand(150);
+		const handler = { type: 'command', command, timeout: 150 };
+		// 待つ上限（分）ごとの、hooks.json の timeout・スクリプトの curl・Para Code が待つ上限（秒）
+		const budget = (minutes: number) => {
+			const waitMs = paradisAntigravityApprovalWaitMs(minutes);
+			const timeout = paradisAntigravityApprovalHookTimeoutSeconds(waitMs);
+			const curl = timeout - PARADIS_ANTIGRAVITY_APPROVAL_CURL_BELOW_HOOK_TIMEOUT_SECONDS;
+			const hold = paradisAntigravityApprovalHoldMs(waitMs, timeout) / 1000;
+			// 待つ上限 < curl、登録 3 + 許可の知らせ 10 + curl + 拒否の知らせ 3 < timeout
+			return { timeout, curl, hold, ordered: (hold === 0 || hold < curl) && 3 + 10 + curl + 3 < timeout };
+		};
 		assert.deepStrictEqual({
-			definition: paradisAntigravityApprovalHookDefinition(),
-			// 待つ上限 < スクリプトの curl < agy の handler の timeout
-			ordered: PARADIS_ANTIGRAVITY_APPROVAL_HOLD_MS / 1000 < PARADIS_ANTIGRAVITY_APPROVAL_WAIT_CURL_SECONDS && PARADIS_ANTIGRAVITY_APPROVAL_WAIT_CURL_SECONDS + 10 < PARADIS_ANTIGRAVITY_APPROVAL_HOOK_TIMEOUT_SECONDS,
+			definition: paradisAntigravityApprovalHookDefinition(120_000),
+			budgets: [0, 2, 10, 60].map(budget),
 			versions: [command, '"/Users/example/.para-code/hooks/antigravity-approval-v3.sh"', '$HOME/.para-code/hooks/notify-v5.sh', './mine.sh', undefined].map(paradisAntigravityApprovalScriptVersion),
 		}, {
 			definition: {
@@ -31,8 +39,24 @@ suite('Para Browser Antigravity CLI approval hook', () => {
 					{ matcher: 'call_mcp_tool', hooks: [handler] },
 				],
 			},
-			ordered: true,
-			versions: [1, 3, undefined, undefined, undefined],
+			budgets: [
+				{ timeout: 30, curl: 10, hold: 0, ordered: true },
+				{ timeout: 150, curl: 130, hold: 120, ordered: true },
+				{ timeout: 630, curl: 610, hold: 600, ordered: true },
+				{ timeout: 3630, curl: 3610, hold: 3600, ordered: true },
+			],
+			versions: [2, 3, undefined, undefined, undefined],
+		});
+	});
+
+	test('reads the wait in minutes (0..60, 2 by default) and never holds past the hook timeout agy was started with', () => {
+		assert.deepStrictEqual({
+			waits: [undefined, 'x', 0, 2.5, 600, -3].map(paradisAntigravityApprovalWaitMs),
+			// 設定 10 分・hooks.json がまだ 2 分のときの timeout（150 秒）・古いスクリプト（timeout を送らない）・短すぎる timeout
+			holds: [paradisAntigravityApprovalHoldMs(600_000, 150), paradisAntigravityApprovalHoldMs(600_000, undefined), paradisAntigravityApprovalHoldMs(60_000, 630), paradisAntigravityApprovalHoldMs(600_000, 25)],
+		}, {
+			waits: [120_000, 120_000, 0, 150_000, 3_600_000, 0],
+			holds: [120_000, 120_000, 60_000, 0],
 		});
 	});
 

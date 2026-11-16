@@ -932,13 +932,15 @@ suite('ParadisAgentBrowser authority integration', () => {
 			verdict = 'pane';
 			const remote = await send('agy-remote', 'register', preToolUse('call_2'));
 			const notPreToolUse = await send('agy-local', 'register', JSON.stringify({ conversationId: 'c1', hookEventName: 'Stop' }));
-			const held = await send('agy-local', 'register', preToolUse('call_3'));
+			// hooks.json の timeout が 30 秒（待つ上限の設定が 0）のスクリプトは待たせない
+			const noWait = await send('agy-local', 'register?limit=30', preToolUse('call_4'));
+			const held = await send('agy-local', 'register?limit=150', preToolUse('call_3'));
 			const id = held.slice('wait:'.length);
 			const answered = paradisAntigravityApprovalHold.answer('agy-local', 'call_3', 'deny');
 			const otherPaneWait = await send('agy-remote', `wait?id=${id}`);
 			const wait = await send('agy-local', `wait?id=${id}`);
-			assert.deepStrictEqual({ unverified, remote, notPreToolUse, held: /^wait:[0-9a-f]{32}$/.test(held), answered, otherPaneWait, wait }, {
-				unverified: 'none', remote: 'none', notPreToolUse: 'none', held: true, answered: true, otherPaneWait: 'none', wait: 'deny',
+			assert.deepStrictEqual({ unverified, remote, notPreToolUse, noWait, held: /^wait:[0-9a-f]{32}$/.test(held), answered, otherPaneWait, wait }, {
+				unverified: 'none', remote: 'none', notPreToolUse: 'none', noWait: 'none', held: true, answered: true, otherPaneWait: 'none', wait: 'deny',
 			});
 		} finally {
 			paradisAntigravityApprovalHold.setPresence(() => false);

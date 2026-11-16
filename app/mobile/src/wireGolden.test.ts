@@ -116,7 +116,7 @@ async function connect() {
 const stateGolden = readGolden<{ current: Golden; preW217: Golden }>('state.json');
 const stateRequestGolden = readGolden<{ current: Golden; preW217: Golden }>('state-request.json');
 const termGolden = readGolden<{ toPc: Golden[]; toMobile: Golden[] }>('term.json');
-const agentGolden = readGolden<{ toPc: Golden[]; toMobile: Golden[]; approval: { delta: Golden; onPcDelta: Golden } }>('agent.json');
+const agentGolden = readGolden<{ toPc: Golden[]; toMobile: Golden[]; approval: { delta: Golden; onPcDelta: Golden; expiredDelta: Golden } }>('agent.json');
 const agentApprovalGolden = agentGolden.approval;
 const browserGolden = readGolden<{ toPc: Golden[]; toMobile: Golden[]; bookmarks: { toPc: Golden; toMobile: Golden; push: Golden } }>('browser.json');
 
@@ -690,6 +690,21 @@ describe('wire golden (app side)', () => {
 			await flush();
 		}
 		expect(latest()?.agentChats.get('terminal-key-1')?.interaction).toEqual(onPcDelta['interaction']);
+		controller.disconnect();
+	});
+
+	it('agent: 待つのが終わった承認（expired）を、空の選択肢のままゴールデンどおりに読む', async () => {
+		const { controller, pcMux, latest } = await connect();
+		pcMux.send(Channels.State, encode(stateGolden.current));
+		await flush();
+		controller.attachAgent('terminal-key-1');
+		await flush();
+		const { $comment: _comment, ...expiredDelta } = agentApprovalGolden.expiredDelta;
+		for (const message of [...agentGolden.toMobile.filter(candidate => candidate.t === 'snapshot' || candidate.t === 'delta'), expiredDelta]) {
+			pcMux.send(Channels.Agent, encode(message));
+			await flush();
+		}
+		expect(latest()?.agentChats.get('terminal-key-1')?.interaction).toEqual(expiredDelta['interaction']);
 		controller.disconnect();
 	});
 

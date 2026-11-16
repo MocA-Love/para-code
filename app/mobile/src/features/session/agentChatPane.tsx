@@ -307,7 +307,7 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 	const hasQuestionChat = usePcCapability(AGENT_QUESTION_CHAT_CAPABILITY);
 	// 指示を添えた拒否は、PC の mod が待っている承認だけ（agent.approval.detail.v1）
 	const hasApprovalDetail = usePcCapability(PcCapability.AgentApprovalDetail);
-	const canDenyWithMessage = hasApprovalDetail && approval?.answerVia === 'mod';
+	const canDenyWithMessage = hasApprovalDetail && approval?.answerVia === 'mod' && approval.expired !== true;
 	const questionFeatures = useMemo(() => askQuestionFeatures(chat?.interaction, hasQuestionNotes, hasQuestionChat), [chat?.interaction, hasQuestionNotes, hasQuestionChat]);
 	const pinnedHasPreview = pinned !== undefined && (pinned.type === 'question' ? [pinned.m] : pinned.msgs).some(questionHasPreview);
 	// キーボードが出ているとき（質問へのメモの入力など）はカードの上限を下げ、入力欄をカードの中で見える位置へ送る
@@ -351,8 +351,9 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 			title={approval.title}
 			detail={approval.detail ?? findLatestApprovalRequest(chat)}
 			// PC でしか許可できない承認は、画面の番号付きの選択肢（許可を含む）を使わず PC が載せた拒否だけにする
-			choices={approval.answerOn === 'pc' ? approval.choices : approvalOptions?.choices ?? approval.choices}
-			{...(approvalOptions !== undefined && approval.answerOn !== 'pc' ? { screenLabels: approvalOptions.labels } : {})}
+			// 時間切れの承認も、画面の選択肢を使わず PC が載せた空の選択肢のまま（押せなくする）
+			choices={approval.answerOn === 'pc' || approval.expired === true ? approval.choices : approvalOptions?.choices ?? approval.choices}
+			{...(approvalOptions !== undefined && approval.answerOn !== 'pc' && approval.expired !== true ? { screenLabels: approvalOptions.labels } : {})}
 			{...(approval.request !== undefined ? { request: approval.request } : {})}
 			{...(approvalOptions?.warning !== undefined ? { warning: approvalOptions.warning } : {})}
 			{...(approval.suggestions !== undefined ? { suggestions: approval.suggestions } : {})}
@@ -361,6 +362,7 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 			denyMessageActive={activeAnswerRequest?.mode === 'deny'}
 			answerOnPc={approval.answerOn === 'pc'}
 			readOnly={approval.readOnly === true}
+			expired={approval.expired === true}
 			refreshing={refreshing}
 		/>
 	) : approvalUnavailable ? (

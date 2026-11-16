@@ -241,6 +241,19 @@ suite('ParadisAgentChatView', () => {
 		});
 	});
 
+	test('draws a timed-out Antigravity CLI approval card without its choices, pointing to the terminal', async () => {
+		const { container } = await createView([{
+			token: 'pane', agent: 'antigravity', epoch: 'e', rev: 2, reset: true, busy: true, live: null,
+			messages: [{ rev: 0, role: 'assistant', kind: 'tool_use', tool: 'approval_request', toolUseId: 'call_1', text: 'run_command: npm test' }],
+			interaction: { kind: 'approval', id: 'call_1', detail: 'run_command: npm test', choices: [], expired: true },
+		}]);
+		const text = (selector: string) => [...container.querySelectorAll<HTMLElement>(selector)].map(element => element.textContent);
+		assert.deepStrictEqual({ buttons: text('.paradis-agent-chat-card.approval .monaco-button'), note: text('.paradis-agent-chat-card.approval .paradis-agent-chat-card-note') }, {
+			buttons: ['ターミナルで答える'],
+			note: ['時間切れ（端末で答えてください）'],
+		});
+	});
+
 	test('redraws a growing reply at most every 100ms with its latest text, and drops it at once when the reply ends', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
 		const live = (text: string) => ({ phase: 'message' as const, source: 'hook' as const, startedAt: 5, updatedAt: 5, text });
 		const base = { token: 'pane', agent: 'claude' as const, epoch: 'e', reset: true, busy: true, interaction: null, messages: [] };

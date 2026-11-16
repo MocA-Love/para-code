@@ -487,6 +487,68 @@ suite('ParadisMobileAgentChat', () => {
 		}
 	}));
 
+	test('turns an Antigravity CLI approval card into a timed-out card that cannot be pressed when the hold ends without an answer', () => withFakeHome(async home => {
+		const token = 'pane-antigravity-approval-expired';
+		// 偽の会話の id（手元の agy の会話とは重ならない）。記録のファイルは作らない
+		const conversationId = '00000000-0000-4000-8000-00000000a6e4';
+		const transcriptPath = join(paradisAntigravityBrainRoot(home), conversationId, '.system_generated', 'logs', 'transcript_full.jsonl');
+		const sent: Record<string, unknown>[] = [];
+		const chat = new ParadisMobileAgentChat(
+			(_mobileId, payload) => sent.push(JSON.parse(new TextDecoder().decode(payload))),
+			() => { }, () => { }, new NullLogService(),
+		);
+		const access = chat as unknown as { tailers: Map<string, { readonly epoch: string; approvalInteractions(): readonly { readonly id: string; readonly choices?: readonly unknown[]; readonly expired?: true }[] }> };
+		const inbound = (message: Record<string, unknown>) => chat.handleInbound('mobile-1', new TextEncoder().encode(JSON.stringify(message)));
+		paradisAntigravityApprovalHold.setPresence(() => true);
+		paradisAntigravityApprovalHold.setGate((candidate, sessionId) => chat.canHoldAntigravityApproval(candidate, sessionId));
+		paradisAntigravityApprovalHold.setOnUnanswered((candidate, toolUseId) => chat.expireAntigravityApproval(candidate, toolUseId));
+		try {
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			fireParadisAgentHookEvent({ token, event: 'SessionStart', sessionId: conversationId, transcriptPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now() });
+			await waitFor(() => access.tailers.has(token), 'the Antigravity CLI conversation was not followed');
+			inbound({ t: 'attach', id: 1, token });
+			await waitFor(() => sent.some(message => message.t === 'snapshot'), 'the attach did not answer with a snapshot');
+			// スクリプトが打ち切った（上限を過ぎた）ことにする
+			const controller = new AbortController();
+			const decision = paradisAntigravityApprovalHold.wait(token, paradisAntigravityApprovalHold.register(token, { sessionId: conversationId, toolUseId: 'call_1', toolName: 'run_command' })!, controller.signal);
+			fireParadisAgentHookEvent({
+				token, event: 'PermissionRequest', sessionId: conversationId, transcriptPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now(),
+				toolName: 'run_command', toolInput: { CommandLine: 'npm test' }, toolUseId: 'call_1',
+			});
+			await waitFor(() => access.tailers.get(token)!.approvalInteractions().some(card => card.id === 'call_1'), 'the approval card was not shown');
+			const before = access.tailers.get(token)!.approvalInteractions().map(card => ({ id: card.id, choices: card.choices?.length, expired: card.expired }));
+			controller.abort();
+			await waitFor(() => access.tailers.get(token)!.approvalInteractions().some(card => card.expired === true), 'the approval card did not time out');
+			// アプリへ送った最後の interaction（delta・snapshot）にも載る
+			const lastSentInteraction = () => [...sent].reverse().find(message => message.interaction !== undefined && message.interaction !== null)?.interaction as { readonly id: string; readonly choices?: readonly unknown[]; readonly expired?: true } | undefined;
+			await waitFor(() => lastSentInteraction()?.expired === true, 'the timed-out card was not sent to the app');
+			const wire = lastSentInteraction()!;
+			sent.length = 0;
+			inbound({ t: 'action/answerApproval', id: 1, token, epoch: access.tailers.get(token)!.epoch, requestId: 'approve-1', interactionId: 'call_1', choice: 'yes' });
+			await waitFor(() => sent.some(message => message.t === 'action-result'), 'the answer was not replied');
+			assert.deepStrictEqual({
+				before,
+				wire: { id: wire.id, choices: wire.choices, expired: wire.expired },
+				decision: await decision,
+				// カードは残し（端末で答えるまでペインは許可待ち）、選択肢を外す
+				after: access.tailers.get(token)!.approvalInteractions().map(card => ({ id: card.id, choices: card.choices, expired: card.expired })),
+				replies: sent.filter(message => message.t === 'action-result').map(message => ({ requestId: message.requestId, status: message.status })),
+			}, {
+				before: [{ id: 'call_1', choices: 2, expired: undefined }],
+				wire: { id: 'call_1', choices: [], expired: true },
+				decision: undefined,
+				after: [{ id: 'call_1', choices: [], expired: true }],
+				replies: [{ requestId: 'approve-1', status: 'rejected' }],
+			});
+		} finally {
+			paradisAntigravityApprovalHold.setPresence(() => false);
+			paradisAntigravityApprovalHold.setGate(() => false);
+			paradisAntigravityApprovalHold.setOnUnanswered(() => { });
+			chat.dispose();
+		}
+	}));
+
 	test('shows an Antigravity CLI conversation read from its record, and its question from the hook before the record has it', () => withFakeHome(async home => {
 		// 偽の HOME に自作の偽の会話を置く（本物の ~/.gemini には触らない）
 		const token = 'pane-antigravity-record';

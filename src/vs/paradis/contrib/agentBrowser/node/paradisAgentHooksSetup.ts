@@ -31,7 +31,7 @@ import { PARADIS_MCP_PORT_FILE_ENV_VAR, PARADIS_PANE_TOKEN_ENV_VAR } from '../co
 import { PARADIS_REMOTE_HOOK_PORTS_DIR_NAME } from '../common/paradisRemoteHookSource.js';
 import { IParadisManagedHookEvent, PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOK_SCHEMA_VERSION, PARADIS_CLAUDE_ACTIVITY_HOOK_EVENTS, PARADIS_CLAUDE_ELICITATION_HOOK_EVENTS, PARADIS_CLAUDE_HOOK_EVENTS, PARADIS_CLAUDE_MESSAGE_DISPLAY_HOOK_EVENT, PARADIS_CLAUDE_MODEL_SWITCH_HOOK_EVENT, PARADIS_CODEX_HOOK_EVENTS, PARADIS_LEGACY_NOTIFY_HOOK_RELATIVE_PATHS, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, PARADIS_NOTIFY_HOOK_RELATIVE_PATH_PS1, paradisIsAgentHookRemoteHostId, paradisManagedAgentHookCommand, paradisManagedAgentHookCommandWindows, paradisManagedHookDefinition } from '../common/paradisAgentHooks.js';
 import { PARADIS_ANTIGRAVITY_CONFIG_RELATIVE_DIR, PARADIS_ANTIGRAVITY_HOOK_NAME, paradisAntigravityHookDefinition } from '../common/paradisAntigravityHooks.js';
-import { PARADIS_ANTIGRAVITY_APPROVAL_DENY_REASON, PARADIS_ANTIGRAVITY_APPROVAL_HOOK_NAME, PARADIS_ANTIGRAVITY_APPROVAL_HTTP_PREFIX, PARADIS_ANTIGRAVITY_APPROVAL_SCRIPT_RELATIVE_PATH, PARADIS_ANTIGRAVITY_APPROVAL_SCRIPT_VERSION, PARADIS_ANTIGRAVITY_APPROVAL_WAIT_CURL_SECONDS, PARADIS_ANTIGRAVITY_APPROVAL_WAIT_PREFIX, paradisAntigravityApprovalHookDefinition, paradisAntigravityApprovalScriptVersion } from '../common/paradisAntigravityApproval.js';
+import { PARADIS_ANTIGRAVITY_APPROVAL_DENY_REASON, PARADIS_ANTIGRAVITY_APPROVAL_HOOK_NAME, PARADIS_ANTIGRAVITY_APPROVAL_HTTP_PREFIX, PARADIS_ANTIGRAVITY_APPROVAL_SCRIPT_RELATIVE_PATH, PARADIS_ANTIGRAVITY_APPROVAL_SCRIPT_VERSION, PARADIS_ANTIGRAVITY_APPROVAL_CURL_BELOW_HOOK_TIMEOUT_SECONDS, PARADIS_ANTIGRAVITY_APPROVAL_WAIT_PREFIX, paradisAntigravityApprovalHookDefinition, paradisAntigravityApprovalScriptVersion, paradisAntigravityApprovalWaitMs } from '../common/paradisAntigravityApproval.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { PARADIS_AGENT_HOOK_ID_PARAM, PARADIS_AGENT_HOOK_SPOOL_DIR_NAME, PARADIS_AGENT_HOOK_SPOOL_MAX_FILE_BYTES, PARADIS_AGENT_HOOK_SPOOL_MAX_FILES, PARADIS_AGENT_HOOK_SPOOL_SKIPPED_EVENTS } from '../common/paradisAgentHookSpool.js';
 import { onDidChangeParadisCodexHomes, paradisClaudeConfigDir, paradisCodexConfigHomes, paradisCodexHomeCandidates } from './paradisAgentHome.js';
@@ -291,12 +291,13 @@ export function paradisGetNotifyScriptContent(fixedPortFilePath?: string, remote
  * agy の PreToolUse（許可を求めうるツールだけ）で走り、stdout に書くのは `{"decision":"allow"}` と
  * `{"decision":"deny",...}` の 2 通りだけ。Para Code の外・Para Code に届かない・待たない・答えが来ない・知らない返事は、
  * どれも何も書かずに終わる（agy は自分の許可の判定へ進む。`{}` を書くとツールが拒否される）。
- * 1. `register` で待ってよいかを聞く（`wait:<id>` 以外の返事なら終わる）
+ * 引数は hooks.json の同じ handler の `timeout`（秒。待つ上限の設定から決まる。paradisAntigravityApproval.ts）。
+ * 1. `register` で待ってよいかを聞く（`limit` に `timeout` を添える。`wait:<id>` 以外の返事なら終わる）
  * 2. 同じ本文を `/agent-hook?event=PermissionRequest` へ流す（ペインの状態・カード・通知は Claude Code の許可と同じ経路）。
  *    流せなければカードが出ないので、`wait` へ進まずに終わる（`wait` の来ない待ちは帳簿が猶予の後に捨てる）。
  *    受け口は送り主を確かめてから返すので、上限は 10 秒にする（帳簿の `wait` を待つ猶予 15 秒より短く、
- *    3 + 10 + `wait` の 130 + 拒否の 3 で hooks.json の `timeout` 150 秒にも収まる）
- * 3. `wait` の長いポーリングで答えを待つ（受け口の返事は `allow` / `deny` / `none`）
+ *    3 + 10 + `wait`（`timeout` - 20）+ 拒否の 3 で hooks.json の `timeout` にも収まる）
+ * 3. `wait` の長いポーリングで答えを待つ（受け口の返事は `allow` / `deny` / `none`。受け口は `timeout` - 30 秒より長く待たない）
  * 4. 拒否したら `/agent-hook?event=PermissionDenied` を流してカードを閉じる
  */
 export function paradisGetAntigravityApprovalScriptContent(): string {
@@ -354,7 +355,16 @@ export function paradisGetAntigravityApprovalScriptContent(): string {
 		'post_body() {',
 		'  hook_auth | curl -sf -m "$1" --config - -X POST -H "Content-Type: application/json" --data-binary @"$INPUT_FILE" "$2" 2>/dev/null',
 		'}',
-		`REPLY=$(post_body 3 "$BASE${PARADIS_ANTIGRAVITY_APPROVAL_HTTP_PREFIX}register") || REPLY=`,
+		'# $1 is the hook timeout from hooks.json (seconds). Para Code never holds longer than it allows.',
+		'LIMIT=${1:-}',
+		'case "$LIMIT" in',
+		'  ""|*[!0-9]*) exit 0 ;;',
+		'esac',
+		`if [ "$LIMIT" -le ${PARADIS_ANTIGRAVITY_APPROVAL_CURL_BELOW_HOOK_TIMEOUT_SECONDS} ] || [ "$LIMIT" -gt 100000 ]; then`,
+		'  exit 0',
+		'fi',
+		`WAIT_SECONDS=$((LIMIT - ${PARADIS_ANTIGRAVITY_APPROVAL_CURL_BELOW_HOOK_TIMEOUT_SECONDS}))`,
+		`REPLY=$(post_body 3 "$BASE${PARADIS_ANTIGRAVITY_APPROVAL_HTTP_PREFIX}register?limit=$LIMIT") || REPLY=`,
 		'case "$REPLY" in',
 		`  ${PARADIS_ANTIGRAVITY_APPROVAL_WAIT_PREFIX}*) ID=\${REPLY#${PARADIS_ANTIGRAVITY_APPROVAL_WAIT_PREFIX}} ;;`,
 		'  *) exit 0 ;;',
@@ -367,7 +377,7 @@ export function paradisGetAntigravityApprovalScriptContent(): string {
 		'# Para Code checks the caller before it answers, so allow more than 3 seconds (all the posts and the',
 		'# wait still end before the hook timeout).',
 		'post_body 10 "$BASE/agent-hook?event=PermissionRequest&pid=$$" >/dev/null || exit 0',
-		`DECISION=$(hook_auth | curl -s -m ${PARADIS_ANTIGRAVITY_APPROVAL_WAIT_CURL_SECONDS} --config - -X POST "$BASE${PARADIS_ANTIGRAVITY_APPROVAL_HTTP_PREFIX}wait?id=$ID" 2>/dev/null) || DECISION=`,
+		`DECISION=$(hook_auth | curl -s -m "$WAIT_SECONDS" --config - -X POST "$BASE${PARADIS_ANTIGRAVITY_APPROVAL_HTTP_PREFIX}wait?id=$ID" 2>/dev/null) || DECISION=`,
 		'case "$DECISION" in',
 		'  allow)',
 		`    printf '%s\\n' '${JSON.stringify({ decision: 'allow' })}'`,
@@ -829,8 +839,9 @@ function withoutAntigravityApprovalHandlers(namedHook: unknown): Record<string, 
  * （paradisAntigravityApproval.ts）。置き換えるのは、まだ無いときか、すべての handler が Para Code の許可のスクリプトの
  * 今の版以下を呼ぶものだけから成るときだけ。利用者が同じ名前に書いた handler が 1 つでもあるときと、新しい版の Para Code が
  * 置いた hook には触らない。利用者が付けた `"enabled": false` は残す。パース不能・ルートがオブジェクトでなければ undefined。
+ * `waitMs` は待つ上限（hooks.json の `timeout` がこれで決まる。設定を変えたら置き直す）。
  */
-export function paradisMergeAntigravityApprovalHookJson(existingRaw: string): string | undefined {
+export function paradisMergeAntigravityApprovalHookJson(existingRaw: string, waitMs: number = paradisAntigravityApprovalWaitMs(undefined)): string | undefined {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(existingRaw);
@@ -848,7 +859,7 @@ export function paradisMergeAntigravityApprovalHookJson(existingRaw: string): st
 		}
 	}
 	const enabled = isPlainObject(current) && typeof current.enabled === 'boolean' ? current.enabled : undefined;
-	const next = { ...(enabled !== undefined ? { enabled } : {}), ...paradisAntigravityApprovalHookDefinition() };
+	const next = { ...(enabled !== undefined ? { enabled } : {}), ...paradisAntigravityApprovalHookDefinition(waitMs) };
 	if (JSON.stringify(current) === JSON.stringify(next)) {
 		return existingRaw;
 	}
@@ -866,14 +877,14 @@ export function paradisAntigravityHooksPath(): string {
  * （`~/.gemini/config`。agy が初めて起動したときに作る）を作っているときだけ（agy を使わない人のホームに作らない）。
  * 失敗しても例外は投げない。
  */
-export async function paradisMergeAntigravityHooksFile(filePath: string, logService: ILogService | undefined, hookCommand?: string, io: IParadisAgentHooksFileIO = defaultAgentHooksFileIO): Promise<void> {
+export async function paradisMergeAntigravityHooksFile(filePath: string, logService: ILogService | undefined, hookCommand?: string, io: IParadisAgentHooksFileIO = defaultAgentHooksFileIO, approvalWaitMs: number = paradisAntigravityApprovalWaitMs(undefined)): Promise<void> {
 	if (!await (io.isDirectory ?? isExistingDirectory)(dirname(filePath))) {
 		return;
 	}
 	await updateAgentHooksFile(filePath, 'merge', existingRaw => {
 		const merged = paradisMergeAntigravityHooksJson(existingRaw, hookCommand);
 		// 許可を待つ hook は手元の POSIX だけ（スクリプトは sh。Windows の hookCommand は PowerShell）
-		const withApproval = merged !== undefined && hookCommand === undefined && process.platform !== 'win32' ? paradisMergeAntigravityApprovalHookJson(merged) : merged;
+		const withApproval = merged !== undefined && hookCommand === undefined && process.platform !== 'win32' ? paradisMergeAntigravityApprovalHookJson(merged, approvalWaitMs) : merged;
 		return withApproval === undefined ? { kind: 'unparseable' } : { kind: 'content', content: withApproval };
 	}, logService, io);
 }
@@ -1314,6 +1325,10 @@ export interface IParadisAgentHooksReconcilerOptions {
 	readonly reconcileFiles?: () => Promise<void>;
 	/** Codex のホームが増えた・ログインした。既定は `codexHooksPath` を固定していなければ実物の通知。 */
 	readonly onDidChangeCodexHomes?: Event<void>;
+	/** Antigravity CLI の許可を待つ上限（ミリ秒。hooks.json の `timeout` を決める）。省略すると既定の上限。 */
+	readonly antigravityApprovalWaitMs?: () => number;
+	/** 上の上限の設定が変わった（hooks.json の `timeout` を置き直す）。 */
+	readonly onDidChangeAntigravityApprovalWait?: Event<void>;
 }
 
 /**
@@ -1388,6 +1403,12 @@ export class ParadisAgentHooksReconciler extends Disposable {
 		this._register(onDidChangeCodexHomes(() => {
 			if (!this.disposed) {
 				this.watchHookDirectories(true);
+				this.onDirectoryChange(null);
+			}
+		}));
+		// 許可を待つ上限を変えたら、定期監査を待たずに hooks.json の `timeout` を置き直す
+		this._register((this.options.onDidChangeAntigravityApprovalWait ?? Event.None)(() => {
+			if (!this.disposed) {
 				this.onDirectoryChange(null);
 			}
 		}));
@@ -1504,7 +1525,7 @@ export class ParadisAgentHooksReconciler extends Disposable {
 		if (this.antigravityHooksPath === undefined) {
 			return;
 		}
-		await paradisMergeAntigravityHooksFile(this.antigravityHooksPath, this.logService, hookCommand);
+		await paradisMergeAntigravityHooksFile(this.antigravityHooksPath, this.logService, hookCommand, undefined, this.options.antigravityApprovalWaitMs?.() ?? paradisAntigravityApprovalWaitMs(undefined));
 		// agy を後から入れた（設定のフォルダができた）ら、定期監査を待たずに直せるよう見張りに足す
 		if (!this.antigravityConfigDirSeen && this.started && !this.disposed && await isExistingDirectory(dirname(this.antigravityHooksPath))) {
 			this.antigravityConfigDirSeen = true;
@@ -1527,7 +1548,7 @@ export class ParadisAgentHooksReconciler extends Disposable {
  * (Claude Code のhookは Git Bash または PowerShell、Codex のhookは cmd /C で実行される。
  * 3シェルすべてで同じ意味になる形式は「powershell.exe を絶対パス引数で起動」のみ)。
  */
-export async function paradisSetupAgentHooks(logService: ILogService, shellEnvResolver: () => Promise<NodeJS.ProcessEnv> = () => Promise.resolve({ ...process.env })): Promise<void> {
+export async function paradisSetupAgentHooks(logService: ILogService, shellEnvResolver: () => Promise<NodeJS.ProcessEnv> = () => Promise.resolve({ ...process.env }), antigravityApprovalWaitMs: number = paradisAntigravityApprovalWaitMs(undefined)): Promise<void> {
 	await installNotifyScript(logService);
 	// Windows のhookコマンドは各シェルの変数展開仕様の違いを避けるため絶対パス埋め込み。
 	// POSIX は従来どおり $HOME 参照の固定文字列 (undefined → paradisManagedHookDefinition の既定)。
@@ -1548,5 +1569,5 @@ export async function paradisSetupAgentHooks(logService: ILogService, shellEnvRe
 	for (const codexHooksPath of paradisCodexHooksPaths()) {
 		await paradisMergeAgentHooksFile(codexHooksPath, PARADIS_CODEX_HOOK_EVENTS, logService, hookCommand);
 	}
-	await paradisMergeAntigravityHooksFile(paradisAntigravityHooksPath(), logService, hookCommand);
+	await paradisMergeAntigravityHooksFile(paradisAntigravityHooksPath(), logService, hookCommand, undefined, antigravityApprovalWaitMs);
 }

@@ -48,6 +48,7 @@ import { paradisHubNavCaption, paradisHubNavItem, ParadisHubScrollSpy } from '..
 import { PARADIS_AGENT_IDE_INSTALL_SKILLS_COMMAND_ID } from '../../agentIde/common/paradisAgentIde.js';
 import { PARADIS_SHOW_CODEX_HOOK_STATUS_COMMAND_ID } from '../../agentHookTrust/common/paradisCodexHookTrust.js';
 import { PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING, PARADIS_CLAUDE_MOD_ENABLED_SETTING } from '../../claudeMod/common/paradisClaudeMod.js';
+import { PARADIS_ANTIGRAVITY_APPROVAL_WAIT_SETTING } from '../../agentBrowser/common/paradisAntigravityApproval.js';
 import { PARADIS_COMPUTER_USE_BLOCK_SYSTEM_SURFACES, PARADIS_COMPUTER_USE_CONFIRM_FOREGROUND_SETTING, PARADIS_COMPUTER_USE_ENABLED_SETTING, PARADIS_COMPUTER_USE_SHOW_CURSOR_SETTING, PARADIS_COMPUTER_USE_SHOW_STATUS_COMMAND_ID } from '../../computerUse/common/paradisComputerUse.js';
 import { PARADIS_PRESET_FOLDERS_SETTING } from '../../terminalPresets/common/paradisTerminalPresets.js';
 import { PARADIS_BROWSER_HOME_PAGE_SETTING, PARADIS_BROWSER_IMPORT_LOGINS_COMMAND_ID, PARADIS_BROWSER_SITE_PERMISSIONS_COMMAND_ID } from '../../browserSettings/common/paradisBrowserSettings.js';
@@ -669,6 +670,34 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 			{ value: 30, label: localize('paradis.settings.claudeModApprovalWait30', "30分") },
 			// allow-any-unicode-next-line
 			{ value: 60, label: localize('paradis.settings.claudeModApprovalWait60', "60分") },
+		],
+	},
+	{
+		sectionId: 'psd-sec-agent',
+		group: GROUP_AGENT_HOOKS,
+		key: PARADIS_ANTIGRAVITY_APPROVAL_WAIT_SETTING,
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.antigravityApprovalWait', "Antigravity CLI の許可の確認にモバイルから答えられる時間"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.antigravityApprovalWaitDesc', "モバイルがそのペインを開いている間、この時間まではモバイルと PC のチャット欄から答えられます。待っている間は PC のターミナルに確認が出ず、過ぎるとターミナルで答えます。"),
+		keywords: 'antigravity agy gemini mobile approval permission wait minutes timeout',
+		choices: [
+			// allow-any-unicode-next-line
+			{ value: 0, label: localize('paradis.settings.antigravityApprovalWait0', "使わない（ターミナルで答える）") },
+			// allow-any-unicode-next-line
+			{ value: 1, label: localize('paradis.settings.antigravityApprovalWait1', "1分") },
+			// allow-any-unicode-next-line
+			{ value: 2, label: localize('paradis.settings.antigravityApprovalWait2', "2分（既定）") },
+			// allow-any-unicode-next-line
+			{ value: 3, label: localize('paradis.settings.antigravityApprovalWait3', "3分") },
+			// allow-any-unicode-next-line
+			{ value: 5, label: localize('paradis.settings.antigravityApprovalWait5', "5分") },
+			// allow-any-unicode-next-line
+			{ value: 10, label: localize('paradis.settings.antigravityApprovalWait10', "10分") },
+			// allow-any-unicode-next-line
+			{ value: 30, label: localize('paradis.settings.antigravityApprovalWait30', "30分") },
+			// allow-any-unicode-next-line
+			{ value: 60, label: localize('paradis.settings.antigravityApprovalWait60', "60分") },
 		],
 	},
 	{
