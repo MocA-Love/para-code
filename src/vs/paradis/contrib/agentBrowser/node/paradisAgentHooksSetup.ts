@@ -292,7 +292,8 @@ export function paradisGetNotifyScriptContent(fixedPortFilePath?: string, remote
  * `{"decision":"deny",...}` の 2 通りだけ。Para Code の外・Para Code に届かない・待たない・答えが来ない・知らない返事は、
  * どれも何も書かずに終わる（agy は自分の許可の判定へ進む。`{}` を書くとツールが拒否される）。
  * 1. `register` で待ってよいかを聞く（`wait:<id>` 以外の返事なら終わる）
- * 2. 同じ本文を `/agent-hook?event=PermissionRequest` へ流す（ペインの状態・カード・通知は Claude Code の許可と同じ経路）
+ * 2. 同じ本文を `/agent-hook?event=PermissionRequest` へ流す（ペインの状態・カード・通知は Claude Code の許可と同じ経路）。
+ *    流せなければカードが出ないので、`wait` へ進まずに終わる（`wait` の来ない待ちは帳簿が猶予の後に捨てる）
  * 3. `wait` の長いポーリングで答えを待つ（受け口の返事は `allow` / `deny` / `none`）
  * 4. 拒否したら `/agent-hook?event=PermissionDenied` を流してカードを閉じる
  */
@@ -349,7 +350,7 @@ export function paradisGetAntigravityApprovalScriptContent(): string {
 		`  printf 'header = "Authorization: Bearer %s"\\n' "$${PARADIS_PANE_TOKEN_ENV_VAR}"`,
 		'}',
 		'post_body() {',
-		'  hook_auth | curl -s -m "$1" --config - -X POST -H "Content-Type: application/json" --data-binary @"$INPUT_FILE" "$2" 2>/dev/null',
+		'  hook_auth | curl -sf -m "$1" --config - -X POST -H "Content-Type: application/json" --data-binary @"$INPUT_FILE" "$2" 2>/dev/null',
 		'}',
 		`REPLY=$(post_body 3 "$BASE${PARADIS_ANTIGRAVITY_APPROVAL_HTTP_PREFIX}register") || REPLY=`,
 		'case "$REPLY" in',
@@ -360,7 +361,8 @@ export function paradisGetAntigravityApprovalScriptContent(): string {
 		'  ""|*[!0-9a-f]*) exit 0 ;;',
 		'esac',
 		'# pid ($$ = this script) lets Para Code tell the pane agent from agents nested inside it.',
-		'post_body 3 "$BASE/agent-hook?event=PermissionRequest&pid=$$" >/dev/null || true',
+		'# No card without the PermissionRequest: do not wait (Para Code drops the hold), leave it to the TUI.',
+		'post_body 3 "$BASE/agent-hook?event=PermissionRequest&pid=$$" >/dev/null || exit 0',
 		`DECISION=$(hook_auth | curl -s -m ${PARADIS_ANTIGRAVITY_APPROVAL_WAIT_CURL_SECONDS} --config - -X POST "$BASE${PARADIS_ANTIGRAVITY_APPROVAL_HTTP_PREFIX}wait?id=$ID" 2>/dev/null) || DECISION=`,
 		'case "$DECISION" in',
 		'  allow)',

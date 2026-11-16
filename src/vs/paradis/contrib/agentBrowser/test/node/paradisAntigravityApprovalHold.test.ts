@@ -78,7 +78,7 @@ suite('Para Browser Antigravity CLI approval hold', () => {
 		hold.dispose();
 	});
 
-	test('gives up without an answer at the limit, when the mobile app leaves, when no wait comes, or when the script hangs up', async () => {
+	test('gives up without an answer at the limit, when the mobile app leaves or stops watching the pane, when no wait comes, or when the script hangs up', async () => {
 		const limit = setup();
 		const atLimit = limit.hold.wait('pane', limit.hold.register('pane', request('call_1'))!);
 		limit.advance(PARADIS_ANTIGRAVITY_APPROVAL_HOLD_MS);
@@ -89,6 +89,18 @@ suite('Para Browser Antigravity CLI approval hold', () => {
 		leaving.advance(10_000);
 		const stillWaiting = leaving.hold.isWaiting('pane', 'call_1');
 		leaving.advance(30_000);
+
+		// 裏に回った・ペインから離れた（gate が外れた）。一時的なら待ち続ける
+		const unwatched = setup();
+		const unwatchedWait = unwatched.hold.wait('pane', unwatched.hold.register('pane', request('call_1'))!);
+		unwatched.state.gate = false;
+		unwatched.advance(10_000);
+		unwatched.state.gate = true;
+		unwatched.advance(25_000);
+		const backAgain = unwatched.hold.isWaiting('pane', 'call_1');
+		unwatched.state.gate = false;
+		unwatched.advance(5_000);
+		unwatched.advance(30_000);
 
 		const orphan = setup();
 		const orphanId = orphan.hold.register('pane', request('call_1'))!;
@@ -103,16 +115,18 @@ suite('Para Browser Antigravity CLI approval hold', () => {
 			atLimit: await atLimit,
 			stillWaiting,
 			left: await left,
+			unwatched: [backAgain, await unwatchedWait],
 			orphan: [await orphan.hold.wait('pane', orphanId), orphan.hold.answer('pane', 'call_1', 'allow')],
 			hungUp: [await hungUp, hangUp.hold.answer('pane', 'call_1', 'allow')],
 		}, {
 			atLimit: undefined,
 			stillWaiting: true,
 			left: undefined,
+			unwatched: [true, undefined],
 			orphan: [undefined, false],
 			hungUp: [undefined, false],
 		});
-		for (const { hold } of [limit, leaving, orphan, hangUp]) {
+		for (const { hold } of [limit, leaving, unwatched, orphan, hangUp]) {
 			hold.dispose();
 		}
 	});

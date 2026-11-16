@@ -1135,10 +1135,12 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		// 承認は、アプリが今リレーに繋がっているときだけ待つ。
 		paradisClaudeModBridge.setPresence(() => !this.enabled || this.state.mobiles.length === 0 ? 'off'
 			: [...this.sessions.values()].some(session => session.hasCurrentProtocol) ? 'connected' : 'enabled');
-		// Antigravity CLI の許可の待ち（paradisAntigravityApprovalHold.ts）も、アプリが今リレーに繋がっていて、そのペインを
-		// 見ているときだけ待つ（待つ間は agy の TUI に許可の画面が出ないため）。
-		paradisAntigravityApprovalHold.setPresence(() => this.enabled && this.state.mobiles.length > 0 && [...this.sessions.values()].some(session => session.hasCurrentProtocol));
-		paradisAntigravityApprovalHold.setGate((token, sessionId) => this.agentChat.canHoldAntigravityApproval(token, sessionId));
+		// Antigravity CLI の許可の待ち（paradisAntigravityApprovalHold.ts）も、アプリが今リレーに繋がっていて前面にあり、
+		// そのペインを見ているときだけ待つ（待つ間は agy の TUI に許可の画面が出ないため）。裏に回ったアプリは、チャットの
+		// 画面を開いたままでも購読を外さず、音声通知のためにセッションを保つこともあるので、見ている数に入れない。
+		const watchingInForeground = (session: MobileSession | undefined) => session?.hasCurrentProtocol === true && !session.backgrounded;
+		paradisAntigravityApprovalHold.setPresence(() => this.enabled && this.state.mobiles.length > 0 && [...this.sessions.values()].some(watchingInForeground));
+		paradisAntigravityApprovalHold.setGate((token, sessionId) => this.agentChat.canHoldAntigravityApproval(token, sessionId, mobileId => watchingInForeground(this.sessions.get(mobileId))));
 		this._register(this.agentChat.onDidChangeConfirmedAgentPanes(({ tokens, tokensOutsideHookReach }) => {
 			this.confirmedAgentPanes = { revision: this.confirmedAgentPanes.revision + 1, tokens, tokensOutsideHookReach };
 			this._onDidChangeConfirmedAgentPanes.fire(this.confirmedAgentPanes);

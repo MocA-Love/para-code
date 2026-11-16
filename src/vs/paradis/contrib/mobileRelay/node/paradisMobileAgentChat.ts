@@ -7962,11 +7962,13 @@ export class ParadisMobileAgentChat extends Disposable {
 	/**
 	 * Antigravity CLI の許可の hook に答えを待たせてよいか（paradisAntigravityApprovalHold.ts の gate）。待つ間は agy の TUI に
 	 * 許可の画面が出ないので、カードを出せて、それをモバイルが見ているときだけ待つ: ペインの本会話（子の会話ではない）で、
-	 * モバイルがそのペインを開いていて、質問の回答待ちではない。
+	 * モバイルがそのペインを開いていて、質問の回答待ちではない。`isWatching` を渡すと、そのペインを開いているモバイルのうち
+	 * それが true のもの（前面にあるアプリ）だけを数える。
 	 */
-	canHoldAntigravityApproval(token: string, sessionId: string): boolean {
+	canHoldAntigravityApproval(token: string, sessionId: string, isWatching?: (mobileId: string) => boolean): boolean {
 		const session = this.paneSessions.get(token);
-		return session?.agent === 'antigravity' && session.sessionId === sessionId && this.subscribers.has(token)
+		return session?.agent === 'antigravity' && session.sessionId === sessionId
+			&& [...(this.subscribers.get(token)?.keys() ?? [])].some(mobileId => isWatching === undefined || isWatching(mobileId))
 			&& !getParadisAgentPaneActivity(token).pendingQuestion && (this.tailers.get(token)?.pendingQuestions.size ?? 0) === 0;
 	}
 

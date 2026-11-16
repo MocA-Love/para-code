@@ -453,6 +453,8 @@ suite('ParadisMobileAgentChat', () => {
 			});
 			await waitFor(() => access.tailers.get(token)!.approvalInteractions().some(card => card.id === 'call_1'), 'the approval card was not shown');
 			const card = access.tailers.get(token)!.approvalInteractions().find(candidate => candidate.id === 'call_1')!;
+			// カードが出ても待ってよいまま（帳簿の掃除が待ちを打ち切らない）。開いているアプリが裏に回っていれば待たない
+			const gateWithCard = [chat.canHoldAntigravityApproval(token, conversationId, () => true), chat.canHoldAntigravityApproval(token, conversationId, mobileId => mobileId !== 'mobile-1')];
 			const epoch = access.tailers.get(token)!.epoch;
 			sent.length = 0;
 			inbound({ t: 'action/answerApproval', id: 1, token, epoch, requestId: 'approve-1', interactionId: 'call_1', choice: 'yes' });
@@ -462,6 +464,7 @@ suite('ParadisMobileAgentChat', () => {
 				beforeAttach,
 				otherConversation,
 				request: card.request,
+				gateWithCard,
 				decision: await decision,
 				replies: sent.filter(message => message.t === 'action-result').map(message => ({ requestId: message.requestId, status: message.status, code: message.code })),
 				cardsLeft: access.tailers.get(token)!.approvalInteractions().map(candidate => candidate.id),
@@ -469,6 +472,7 @@ suite('ParadisMobileAgentChat', () => {
 				beforeAttach: undefined,
 				otherConversation: undefined,
 				request: { tool: 'run_command', kind: 'bash', command: 'npm test', description: 'テストを走らせる' },
+				gateWithCard: [true, false],
 				decision: 'allow',
 				replies: [
 					{ requestId: 'approve-1', status: 'accepted', code: undefined },

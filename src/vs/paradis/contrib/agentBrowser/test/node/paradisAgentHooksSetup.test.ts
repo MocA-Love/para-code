@@ -455,7 +455,7 @@ suite('ParadisAgentHooksSetup', () => {
 		const { createServer } = await import('http');
 		const root = await fs.mkdtemp(join(tmpdir(), 'paradis-agy-approval-'));
 		const id = 'a'.repeat(32);
-		let scenario = { register: 'none', wait: 'none' };
+		let scenario: { register: string; wait: string; hookFails?: boolean } = { register: 'none', wait: 'none' };
 		const requests: string[] = [];
 		const server = createServer((request, response) => {
 			const chunks: Buffer[] = [];
@@ -466,6 +466,11 @@ suite('ParadisAgentHooksSetup', () => {
 				const auth = request.headers.authorization === 'Bearer pane-token' ? '' : ' (no token)';
 				const name = url.pathname === '/agent-hook' ? `hook:${url.searchParams.get('event')}` : url.pathname.slice('/antigravity-approval/v1/'.length) + (url.searchParams.has('id') ? `:${url.searchParams.get('id')}` : '');
 				requests.push(`${name}${body.includes('"call_1"') ? ' +body' : ''}${auth}`);
+				if (scenario.hookFails && name === 'hook:PermissionRequest') {
+					response.writeHead(503);
+					response.end();
+					return;
+				}
 				response.writeHead(200, { 'Content-Type': 'text/plain' });
 				response.end(url.pathname.endsWith('/register') ? scenario.register : url.pathname.endsWith('/wait') ? scenario.wait : '{"ok":true}');
 			});
@@ -499,6 +504,7 @@ suite('ParadisAgentHooksSetup', () => {
 				badId: await run({ register: 'wait:../x', wait: 'allow' }),
 				unknownAnswer: await run({ register: `wait:${id}`, wait: '{}' }),
 				noAnswer: await run({ register: `wait:${id}`, wait: 'none' }),
+				noCard: await run({ register: `wait:${id}`, wait: 'allow', hookFails: true }),
 				outsidePane: await run({ register: `wait:${id}`, wait: 'allow' }, {}),
 				noPortFile: await run({ register: `wait:${id}`, wait: 'allow' }, { ...inPane, [PARADIS_MCP_PORT_FILE_ENV_VAR]: join(root, 'missing.json') }),
 			}, {
@@ -508,6 +514,7 @@ suite('ParadisAgentHooksSetup', () => {
 				badId: { stdout: '', requests: ['register +body'] },
 				unknownAnswer: { stdout: '', requests: ['register +body', 'hook:PermissionRequest +body', `wait:${id}`] },
 				noAnswer: { stdout: '', requests: ['register +body', 'hook:PermissionRequest +body', `wait:${id}`] },
+				noCard: { stdout: '', requests: ['register +body', 'hook:PermissionRequest +body'] },
 				outsidePane: { stdout: '', requests: [] },
 				noPortFile: { stdout: '', requests: [] },
 			});

@@ -18,7 +18,8 @@
 //  - モバイルのアプリが今リレーに繋がっている（{@link ParadisAntigravityApprovalHold.setPresence}）
 //  - そのペインの本会話で、モバイルがそのペインを見ていて、質問の回答待ちではない（{@link ParadisAntigravityApprovalHold.setGate}）
 //  - 許可を求めうるツール（PARADIS_ANTIGRAVITY_APPROVAL_TOOLS）
-// 待つ間に、上限（PARADIS_ANTIGRAVITY_APPROVAL_HOLD_MS）・モバイルの切断（30 秒の猶予）・スクリプトの切断で、答えずに終える。
+// 待つ間に、上限（PARADIS_ANTIGRAVITY_APPROVAL_HOLD_MS）・スクリプトの切断、または上の 2 つの条件が外れて 30 秒たったとき
+// （モバイルの切断・アプリが裏に回った・そのペインから離れた）に、答えずに終える。
 
 import { randomBytes } from 'crypto';
 import { PARADIS_ANTIGRAVITY_APPROVAL_HOLD_MS, PARADIS_ANTIGRAVITY_APPROVAL_TOOLS } from '../common/paradisAntigravityApproval.js';
@@ -28,8 +29,8 @@ export type ParadisAntigravityApprovalDecision = 'allow' | 'deny';
 
 /** 待ちを登録してから、`wait` が来るまでの猶予（スクリプトは登録の直後に許可の hook を流してから来る）。 */
 const ATTACH_GRACE_MS = 15_000;
-/** モバイルの接続が切れてから、待ちを打ち切るまでの猶予（一時的な切断は待つ）。 */
-const PRESENCE_GRACE_MS = 30_000;
+/** モバイルが見なくなってから（切断・裏に回った・ペインから離れた）、待ちを打ち切るまでの猶予（一時的なものは待つ）。 */
+const WATCH_GRACE_MS = 30_000;
 const SWEEP_MS = 5_000;
 const MAX_PENDING_PER_TOKEN = 8;
 const MAX_PENDING = 64;
@@ -45,7 +46,7 @@ interface IHoldEntry {
 	readonly expiresAt: number;
 	outcome?: ParadisAntigravityApprovalDecision | 'none';
 	waiter?: (outcome: ParadisAntigravityApprovalDecision | undefined) => void;
-	presenceLostAt?: number;
+	unwatchedAt?: number;
 }
 
 /** 待ちを頼む PreToolUse（hook の別名のキーから読んだもの）。 */
@@ -80,7 +81,7 @@ export class ParadisAntigravityApprovalHold {
 		this.manualSweep = options.manualSweep === true;
 	}
 
-	/** モバイルのアプリが今リレーに繋がっているか。 */
+	/** モバイルのアプリが今リレーに繋がっていて、前面にあるか。 */
 	setPresence(presence: () => boolean): void {
 		this.presence = presence;
 	}
@@ -164,7 +165,7 @@ export class ParadisAntigravityApprovalHold {
 		return this.findOpen(token, toolUseId) !== undefined;
 	}
 
-	/** 上限・切断・`wait` の来ない待ちを終える（時計から呼ぶ。テストからも呼ぶ）。 */
+	/** 上限・モバイルが見なくなった待ち・`wait` の来ない待ちを終える（時計から呼ぶ。テストからも呼ぶ）。 */
 	sweep(): void {
 		const now = this.now();
 		const present = this.presence();
@@ -176,13 +177,13 @@ export class ParadisAntigravityApprovalHold {
 				}
 				continue;
 			}
-			if (!present) {
-				entry.presenceLostAt ??= now;
+			if (!present || !this.gate(entry.token, entry.sessionId)) {
+				entry.unwatchedAt ??= now;
 			} else {
-				entry.presenceLostAt = undefined;
+				entry.unwatchedAt = undefined;
 			}
 			if (now >= entry.expiresAt || (entry.waiter === undefined && now - entry.registeredAt > ATTACH_GRACE_MS)
-				|| (entry.presenceLostAt !== undefined && now - entry.presenceLostAt >= PRESENCE_GRACE_MS)) {
+				|| (entry.unwatchedAt !== undefined && now - entry.unwatchedAt >= WATCH_GRACE_MS)) {
 				this.finish(entry, 'none');
 			}
 		}
