@@ -13,12 +13,38 @@ import { PARADIS_CLAUDE_DEFAULT_PERMISSION_FLAG, PARADIS_CODEX_FULL_AUTO_FLAGS }
 
 export const PARADIS_SESSION_RESUME_CHANNEL = 'paradisSessionResume';
 
-export type ParadisResumeAgent = 'claude' | 'codex' | 'opencode';
+export type ParadisResumeAgent = 'claude' | 'codex' | 'opencode' | 'antigravity';
 /** What resumes an OpenCode session: `opencode`, or the absolute path of a remembered bridge-capable OpenCode-compatible CLI. */
 export type ParadisResumeCli = string;
 
 export function paradisResumeAgentLabel(agent: ParadisResumeAgent): string {
-	return agent === 'claude' ? 'Claude Code' : agent === 'codex' ? 'Codex' : 'OpenCode';
+	return agent === 'claude' ? 'Claude Code' : agent === 'codex' ? 'Codex' : agent === 'antigravity' ? 'Antigravity CLI' : 'OpenCode';
+}
+
+/**
+ * 権限の確認を省いて再開できるエージェントか（Claude Code と Codex だけ）。OpenCode の CLI にはその指定が無く、
+ * Antigravity CLI は新しいスペースでも選ばせていない（権限は既定・accept-edits・auto・plan の 4 つ）ので出さない。
+ */
+export function paradisResumeCanBypassPermissions(agent: ParadisResumeAgent): agent is 'claude' | 'codex' {
+	return agent === 'claude' || agent === 'codex';
+}
+
+/** CLI の分岐（会話ごと複製して始める）があるエージェントか。Antigravity CLI の `agy --help` には分岐の指定が無い。 */
+export function paradisResumeCanFork(agent: ParadisResumeAgent): boolean {
+	return agent !== 'antigravity';
+}
+
+/** Antigravity CLI のモデルの id の末尾に付くエフォート（`gemini-3.8-flash-high` の `high`）。 */
+const ANTIGRAVITY_MODEL_EFFORT_PATTERN = /^(?<name>.+?)-(?<effort>low|medium|high|xhigh|max)$/;
+
+/**
+ * Antigravity CLI のモデルの id を、名前とエフォートに分ける。agy はエフォートの違う版を別の id で持つ
+ * （`gemini-3.8-flash-high`）ので、一覧の 3 段目に「名前 · effort」と出せるよう末尾を外す。末尾が
+ * エフォートでない id（`claude-opus-4-6-thinking`）はそのまま。
+ */
+export function paradisAntigravityModelParts(modelId: string): { readonly model: string; readonly effort?: string } {
+	const match = ANTIGRAVITY_MODEL_EFFORT_PATTERN.exec(modelId)?.groups;
+	return match !== undefined ? { model: match.name, effort: match.effort } : { model: modelId };
 }
 
 /**
@@ -101,10 +127,13 @@ export interface IParadisResumeSession {
 	readonly otherCodexAccount?: boolean;
 	/**
 	 * その会話で最後に使ったモデルの id（Claude: 記録の最後の assistant 行の `message.model`、Codex: state DB の
-	 * `model`（DB を読めないときは rollout の先頭の `turn_context`）、OpenCode: `session.model` の `id`）。取れなければ付かない。
+	 * `model`（DB を読めないときは rollout の先頭の `turn_context`）、OpenCode: `session.model` の `id`、Antigravity CLI:
+	 * 記録の最後の応答の `model` からエフォートの末尾を外したもの）。取れなければ付かない。
 	 */
 	readonly model?: string;
-	/** その会話の reasoning effort（Codex と OpenCode だけ。Claude の記録には残らない）。 */
+	/**
+	 * その会話の reasoning effort（Codex・OpenCode と、Antigravity CLI のモデルの id の末尾。Claude の記録には残らない）。
+	 */
 	readonly effort?: string;
 }
 
@@ -165,6 +194,12 @@ export const PARADIS_RESUME_SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,
 export function paradisAgentResumeCommandLine(agent: ParadisResumeAgent, sessionId: string, mode: 'resume' | 'fork', options?: { readonly dangerouslyBypassPermissions?: boolean; readonly cli?: ParadisResumeCli }): string | undefined {
 	if (!PARADIS_RESUME_SESSION_ID_PATTERN.test(sessionId)) {
 		return undefined;
+	}
+	if (agent === 'antigravity') {
+		// `agy --conversation <id>`（agy 1.5.9 の `--help`「Resume a previous conversation by ID」）。分岐の指定は無く、
+		// 権限の確認を省く再開も出さない（{@link paradisResumeCanBypassPermissions}）
+		if (mode === 'fork' || options?.dangerouslyBypassPermissions === true) { return undefined; }
+		return `agy --conversation ${sessionId}`;
 	}
 	if (agent === 'opencode') {
 		// Neither OpenCode CLI exposes the other agents' bypass flags.

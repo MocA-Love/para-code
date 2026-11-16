@@ -48,7 +48,7 @@ import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFoc
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisResumeAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
-import { IParadisResumeMessage, IParadisResumeSearchResult, IParadisResumeSession, ParadisResumeAgent, paradisResumeAgentLabel, paradisResumeModelLabel } from '../common/paradisSessionResume.js';
+import { IParadisResumeMessage, IParadisResumeSearchResult, IParadisResumeSession, ParadisResumeAgent, paradisResumeAgentLabel, paradisResumeCanBypassPermissions, paradisResumeModelLabel } from '../common/paradisSessionResume.js';
 import {
 	IParadisResumeListOptions,
 	PARADIS_RESUME_LIST_OPTIONS_STORAGE_KEY,
@@ -61,6 +61,7 @@ import {
 	paradisResumeSortLabel,
 	paradisSortResumeSessions,
 } from '../common/paradisSessionResumeListOptions.js';
+import { appendParadisAgentLogoSvg } from '../../limitsMonitor/electron-browser/paradisLimitsLogos.js';
 import { IParadisResumeSpaceWithUri, ParadisSessionResumeClient } from './paradisSessionResumeClient.js';
 import { IParadisSessionResumeEditorOptions, paradisSessionResumeEditorActionOptions, paradisResumeSessionFromEditor } from './paradisSessionResumeOrchestration.js';
 import { ParadisSessionResumeRefreshController } from './paradisSessionResumeRefreshController.js';
@@ -379,6 +380,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 			['claude', 'Claude Code'],
 			['codex', 'Codex'],
 			['opencode', 'OpenCode'],
+			['antigravity', 'Antigravity CLI'],
 		] as const) {
 			const button = dom.append(agentChips, $('button.paradis-chip.paradis-focus-ring')) as HTMLButtonElement;
 			button.type = 'button';
@@ -849,8 +851,13 @@ export class ParadisSessionResumeDialog extends Disposable {
 	}
 
 	private renderAgentIcon(parent: HTMLElement, agent: ParadisResumeAgent): HTMLElement {
-		const icon = agent === 'claude' ? Codicon.claude : agent === 'codex' ? Codicon.openai : Codicon.terminal;
-		const badge = dom.append(parent, $(`span.agent-badge.${agent}${ThemeIcon.asCSSSelector(icon)}`));
+		// Antigravity CLI は codicon に無いので、ほかの画面と同じロゴの SVG を描く
+		const badge = agent === 'antigravity'
+			? dom.append(parent, $(`span.agent-badge.${agent}`))
+			: dom.append(parent, $(`span.agent-badge.${agent}${ThemeIcon.asCSSSelector(agent === 'claude' ? Codicon.claude : agent === 'codex' ? Codicon.openai : Codicon.terminal)}`));
+		if (agent === 'antigravity') {
+			appendParadisAgentLogoSvg(badge, agent);
+		}
 		const label = paradisResumeAgentLabel(agent);
 		badge.title = label;
 		badge.setAttribute('role', 'img');
@@ -1215,16 +1222,17 @@ export class ParadisSessionResumeDialog extends Disposable {
 		const primaryLabel = session.currentSpace
 			? localize('paradis.sessionResume.resumeTerminal', "ターミナルで再開")
 			: localize('paradis.sessionResume.switchAndResume', "{0}へ移動して再開", session.spaceName);
+		const canBypass = paradisResumeCanBypassPermissions(session.agent);
 		const dangerousFlag = session.agent === 'claude'
 			? '--dangerously-skip-permissions'
 			: '--dangerously-bypass-approvals-and-sandbox';
 		// 権限確認なしの再開は左端へ離す（押し間違えないように）。付くフラグはツールチップと読み上げの説明だけで伝え、
 		// 3 つのボタンの上端と高さを揃える（Q651 3-C）
 		const dangerousGroup = dom.append(actions, $('.paradis-session-resume-dangerous'));
-		dangerousGroup.hidden = session.agent === 'opencode';
+		dangerousGroup.hidden = !canBypass;
 		const dangerous = dom.append(dangerousGroup, $('button.danger')) as HTMLButtonElement;
 		dangerous.classList.add(...paradisButtonClasses('danger'));
-		dangerous.hidden = session.agent === 'opencode';
+		dangerous.hidden = !canBypass;
 		dangerous.disabled = this.resumingCatalogIds.has(session.catalogId);
 		dangerous.textContent = session.currentSpace
 			? localize('paradis.sessionResume.resumeDangerously', "権限確認なしで再開")

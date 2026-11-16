@@ -160,6 +160,17 @@ export function paradisIsInteractiveAntigravityCommand(commandLine: string): boo
 	return true;
 }
 
+/**
+ * `agy --conversation <id>`（既存の会話を続ける Antigravity CLI の対話の起動）なら、その会話の id。それ以外は undefined。
+ */
+export function paradisAntigravityResumedConversationId(commandLine: string): string | undefined {
+	if (!paradisIsInteractiveAntigravityCommand(commandLine)) { return undefined; }
+	const words = shellWords(commandLine);
+	while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0] ?? '')) { words.shift(); }
+	const id = optionValue(words.slice(1), new Set(['--conversation']));
+	return id !== undefined && id.length > 0 ? id : undefined;
+}
+
 /** CommandDetectionとretained pane tokenの到着順に依存せず、両方が揃った時だけ解決する。 */
 export function paradisResolveRunningAgentCommand(commandLine: string | undefined, paneToken: string | undefined): ParadisRunningAgentCommand | undefined {
 	if (commandLine === undefined || paneToken === undefined) {

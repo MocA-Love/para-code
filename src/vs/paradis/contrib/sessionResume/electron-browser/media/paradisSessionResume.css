@@ -136,6 +136,8 @@
 .paradis-session-resume .row-meta .archived { color: var(--vscode-charts-yellow); }
 /* The agent is shown by its codicon only (no colored tile). */
 .paradis-session-resume .agent-badge { flex: none; width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center; font-size: var(--vscode-codiconFontSize); color: var(--vscode-paradis-textMuted); }
+/* Antigravity CLI has no codicon; its logo is an inline SVG drawn at the codicon's size. */
+.paradis-session-resume .agent-badge > svg { width: 14px; height: 14px; }
 .paradis-session-resume .paradis-session-resume-detail-header { padding: var(--vscode-spacing-size200) var(--vscode-spacing-size240) var(--vscode-spacing-size160); border-bottom: 1px solid var(--vscode-paradis-lineSubtle); }
 .paradis-session-resume .detail-heading { display: flex; align-items: center; gap: var(--vscode-spacing-size80); }
 .paradis-session-resume .detail-heading h2 { min-width: 0; margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--vscode-fontSize-heading2); font-weight: var(--vscode-fontWeight-semiBold); color: var(--vscode-paradis-textStrong); }

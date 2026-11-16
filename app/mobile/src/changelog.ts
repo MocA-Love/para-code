@@ -48,6 +48,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				title: 'Antigravity CLI のペインでも、会話と質問をアプリで見られるようにしました',
 				body: '一覧と会話のタブには Antigravity のロゴが出ます。チャット欄からの送信と、質問・確認への回答はまだできないので、ターミナル表示で入力してください。',
 			},
+			{
+				icon: 'time-outline',
+				title: '過去の会話の一覧に、Antigravity CLI の会話も出るようにしました',
+				body: '開くと中身を読め、PC で同じ会話を再開できます。続きの依頼はまだアプリから渡せないので、再開したあとターミナル表示で入力してください。',
+			},
 		],
 	},
 	{

@@ -17,7 +17,7 @@ import { DeferredPromise, raceTimeout, timeout } from '../../../../base/common/a
 import { Event } from '../../../../base/common/event.js';
 import { StringSHA1 } from '../../../../base/common/hash.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
-import { PARADIS_RESUME_SESSION_ID_PATTERN, ParadisResumeAgent, ParadisResumeCli, paradisAgentResumeCommandLine } from '../../sessionResume/common/paradisSessionResume.js';
+import { PARADIS_RESUME_SESSION_ID_PATTERN, ParadisResumeAgent, ParadisResumeCli, paradisAgentResumeCommandLine, paradisResumeCanFork } from '../../sessionResume/common/paradisSessionResume.js';
 import { paradisCodexThreadIdFromTerminalTitle } from '../../codexTerminalTitle/common/paradisCodexTerminalTitle.js';
 
 const LEDGER_KEY_PATTERN = /^[0-9a-f]{40}$/;
@@ -159,13 +159,14 @@ export interface IParadisResumeBannerLayout {
 
 /**
  * 帯には「再開」と「確認なしで再開」を並べ、複製（分岐）と ID のコピーは「…」のメニューに置く。
- * OpenCode の CLI には確認を省くフラグが無いので、確認なしの 2 つを出さない。
+ * OpenCode の CLI には確認を省くフラグが無いので、確認なしの 2 つを出さない。Antigravity CLI は分岐も無いので、複製も出さない。
  */
 export function paradisResumeBannerLayout(agent: ParadisResumeAgent): IParadisResumeBannerLayout {
 	const canBypass = paradisResumeBypassFlag(agent) !== undefined;
+	const fork: readonly ParadisResumeBannerChoice[] = !paradisResumeCanFork(agent) ? [] : canBypass ? ['fork', 'forkBypass'] : ['fork'];
 	return {
 		buttons: canBypass ? ['resume', 'resumeBypass'] : ['resume'],
-		menu: canBypass ? ['fork', 'forkBypass', 'separator', 'copyId'] : ['fork', 'separator', 'copyId'],
+		menu: fork.length > 0 ? [...fork, 'separator', 'copyId'] : ['copyId'],
 	};
 }
 
@@ -180,12 +181,13 @@ export function paradisResumeBannerChoiceCommand(choice: ParadisResumeBannerChoi
 	}
 }
 
-/** 権限の確認を省くフラグ（文言とツールチップに出す）。OpenCode には無い。 */
+/** 権限の確認を省くフラグ（文言とツールチップに出す）。OpenCode と Antigravity CLI には出さない。 */
 export function paradisResumeBypassFlag(agent: ParadisResumeAgent): string | undefined {
 	switch (agent) {
 		case 'claude': return '--dangerously-skip-permissions';
 		case 'codex': return '--dangerously-bypass-approvals-and-sandbox';
-		case 'opencode': return undefined;
+		case 'opencode':
+		case 'antigravity': return undefined;
 	}
 }
 

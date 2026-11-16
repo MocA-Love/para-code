@@ -81,6 +81,10 @@ suite('paradisMobileAgentResume (W2-29)', () => {
 			picker: paradisResumedSessionOfCommand('claude --resume --model opus'),
 			fresh: paradisResumedSessionOfCommand('claude'),
 			other: paradisResumedSessionOfCommand('npm test'),
+			antigravity: paradisResumedSessionOfCommand(paradisAgentResumeCommandLine('antigravity', '11111111-1111-4111-8111-111111111111', 'resume') ?? ''),
+			antigravityEquals: paradisResumedSessionOfCommand(`agy --model gemini-3.8-flash-high --conversation='11111111-1111-4111-8111-111111111111'`),
+			antigravityNew: paradisResumedSessionOfCommand('agy -i "hello"'),
+			antigravityPrint: paradisResumedSessionOfCommand('agy -p hi --conversation 11111111-1111-4111-8111-111111111111'),
 		}, {
 			claude: { agent: 'claude', sessionId: '0f7c1d2e-session' },
 			claudeShort: { agent: 'claude', sessionId: '0f7c1d2e-session' },
@@ -92,6 +96,10 @@ suite('paradisMobileAgentResume (W2-29)', () => {
 			picker: undefined,
 			fresh: undefined,
 			other: undefined,
+			antigravity: { agent: 'antigravity', sessionId: '11111111-1111-4111-8111-111111111111' },
+			antigravityEquals: { agent: 'antigravity', sessionId: '11111111-1111-4111-8111-111111111111' },
+			antigravityNew: undefined,
+			antigravityPrint: undefined,
 		});
 	});
 
