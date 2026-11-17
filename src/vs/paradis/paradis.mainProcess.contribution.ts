@@ -50,6 +50,7 @@ import { paradisRegisterDesignMode } from './contrib/browserDesignMode/electron-
 import { paradisRegisterBrowserLoadStall } from './contrib/browserLoadStall/electron-main/paradisBrowserLoadStallMain.js';
 import { ParadisBrowserViewFreezer } from './contrib/browserFreeze/electron-main/paradisBrowserViewFreezer.js';
 import { PARADIS_BROWSER_FREEZE_HIDDEN_TABS_SETTING } from './contrib/browserFreeze/common/paradisBrowserFreeze.js';
+import { paradisRegisterWindowHangReporter } from './contrib/sentry/electron-main/paradisWindowHangReporter.js';
 
 /** `app.ts` の `CodeApplication` が持っている main プロセスのサービス。 */
 export interface IParadisMainProcessServices {
@@ -114,6 +115,9 @@ export function registerParadisMainProcessContributions(
 	// this application disposes itself inside its own onWillShutdown listener, which would unsubscribe
 	// them before the event reaches them. They live until the process exits.
 	paradisRegisterHealthBeacon(mainProcessElectronServer, accessor.get(IWindowsMainService), accessor.get(IBrowserViewMainService), lifecycleMainService, logService);
+
+	// send the stacks upstream samples from a window that stopped responding to Sentry; upstream only logs them in main (see paradis/contrib/sentry)
+	disposables.add(paradisRegisterWindowHangReporter(accessor.get(IWindowsMainService)));
 
 	// on-demand main process heap snapshot (see paradis/contrib/heapSnapshot)
 	disposables.add(paradisRegisterHeapSnapshot(mainProcessElectronServer));
