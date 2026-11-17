@@ -176,7 +176,6 @@ function createFixture(): {
 		_announcedReviews: new Map<string, { turn: number; certain: boolean }>(),
 		_paneSessions: new Map(),
 		_paneCursorAgents: new Map(),
-		_antigravityPaneSessions: new Map(),
 		_codexFrontSessions: new ParadisCodexFrontSessions(),
 		_activityApprovalTokens: new Set<string>(),
 		_elicitationWaits: new Map(),
@@ -1677,10 +1676,8 @@ suite('ParadisAgentBrowser authority integration', () => {
 		await step('Stop with USER_CANCELED', async () => { await hook('PreInvocation', { invocationNum: 0 }); await hook('Stop', { terminationReason: 'USER_CANCELED' }); });
 		assert.deepStrictEqual({
 			steps,
-			// 再開の案内・休止・引き継ぎの控えには載せず、開いている会話の判定のために ID だけ覚える
+			// 再開の定義がまだ無いので、ペインの会話としては控えない
 			paneSessions: Reflect.get(fixture.service, '_paneSessions').has('agy'),
-			antigravityPaneSessions: (await fixture.service.listAgentStatusSnapshot(connection)).antigravityPaneSessions,
-			afterSessionEnd: await hook('SessionEnd').then(async () => (await fixture.service.listAgentStatusSnapshot(connection)).antigravityPaneSessions),
 		}, {
 			steps: [
 				'osc idle at start: idle',
@@ -1704,8 +1701,6 @@ suite('ParadisAgentBrowser authority integration', () => {
 				'Stop with USER_CANCELED: idle',
 			],
 			paneSessions: false,
-			antigravityPaneSessions: [{ token: 'agy', sessionId: 'c1' }],
-			afterSessionEnd: undefined,
 		});
 	});
 

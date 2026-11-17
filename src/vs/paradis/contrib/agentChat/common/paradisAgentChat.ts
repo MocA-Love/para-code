@@ -423,6 +423,11 @@ export interface IParadisAgentChatSource {
 	 */
 	getOpenCodeReadiness?(token: string, resumeKey: string): Promise<'ready' | 'pending' | 'unregistered'>;
 	/**
+	 * Antigravity CLI の会話を写しているペインと、その会話の ID（子の会話は含まない）。「その会話が今ターミナルで開いているか」の
+	 * 判定に使う。agy は終わりを hook で知らせないので、終わった後のペインも含む。
+	 */
+	listAntigravityPaneSessions?(): Promise<readonly { readonly token: string; readonly sessionId: string }[]>;
+	/**
 	 * Codex の app-server 経由の承認（id が `codex:` で始まるもの）に答える。キーを打つ承認は
 	 * 画面側が TUI へ打鍵するので、ここは通らない。答えられたら true。
 	 */

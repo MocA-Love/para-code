@@ -835,8 +835,6 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * 定義が無いエージェント（Antigravity CLI）を載せない。名札はそれとは別に、hook が報告した種類を覚えておく。
 	 */
 	private readonly _paneCursorAgents = new Map<string, ParadisHookAgentKind>();
-	/** Antigravity CLI が動いているペイン → 会話の ID。その会話が今ターミナルで開いているかの判定に使う（{@link _paneSessions} には載せない）。 */
-	private readonly _antigravityPaneSessions = new Map<string, string>();
 	/**
 	 * 休止（G-03）で止めているペイン → 印の期限。止めた所有者は終わり際に SessionEnd を送り、それは完了（review）に
 	 * 読み替わって緑の点・通知・読み上げを出してしまう。期限までは、このペインの終わりの hook を状態にも hook の
@@ -2279,7 +2277,6 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (eventType === 'SessionEnd' || eventType === 'TerminalExit') {
 			this._paneSessions.delete(token);
 			this._paneCursorAgents.delete(token);
-			this._antigravityPaneSessions.delete(token);
 			return;
 		}
 		if (sessionId === undefined || sessionId.length === 0 || sessionId.length > 500) {
@@ -2293,14 +2290,12 @@ export class ParadisAgentBrowserService extends Disposable {
 			return;
 		}
 		this._paneCursorAgents.set(token, agent);
-		// Antigravity CLI の会話は、再開の案内・休止・引き継ぎの控え（`_paneSessions`）には載せない。前の会話（同じペインで
-		// 前に動かした Claude Code など）を再開の候補に残さないよう、控えを消す。開いている会話の判定のために ID だけ覚える
+		// Antigravity CLI の会話はまだ控えない（再開の定義が無い）。前の会話（同じペインで前に動かした Claude Code など）を
+		// 再開の候補に残さないよう、控えを消す
 		if (agent === 'antigravity') {
 			this._paneSessions.delete(token);
-			this._antigravityPaneSessions.set(token, sessionId);
 			return;
 		}
-		this._antigravityPaneSessions.delete(token);
 		// 同じ会話の間は最初に報告された作業ディレクトリを使い続ける。後の hook の cwd は、ツールが
 		// `cd` した先になることがあり、分岐（`claude --resume <id> --fork-session`）がそこでは会話を
 		// 見つけられない（Claude Code は会話をプロジェクトのフォルダごとに持つ）。
@@ -2383,7 +2378,6 @@ export class ParadisAgentBrowserService extends Disposable {
 		paradisOpenCodeBridge.unregister(token);
 		this._paneSessions.delete(token);
 		this._paneCursorAgents.delete(token);
-		this._antigravityPaneSessions.delete(token);
 		this._codexFrontSessions.forget(token);
 		this._activityApprovalTokens.delete(token);
 		this._elicitationWaits.delete(token);
@@ -5367,9 +5361,6 @@ export class ParadisAgentBrowserService extends Disposable {
 		const paneSessions = [...this._paneSessions]
 			.filter(([token]) => eligibleTokens.has(token))
 			.map(([token, { transcriptPath: _transcriptPath, ...session }]) => Object.freeze({ token, ...session }));
-		const antigravityPaneSessions = [...this._antigravityPaneSessions]
-			.filter(([token]) => eligibleTokens.has(token))
-			.map(([token, sessionId]) => Object.freeze({ token, sessionId }));
 		const openCodeCommands = paradisOpenCodeCliRegistry.allCommands();
 		// 次の状態が付いたペインは、もう「止まって待っている」ではない
 		for (const token of [...this._awaitingUserTokens]) {
@@ -5391,7 +5382,6 @@ export class ParadisAgentBrowserService extends Disposable {
 			paneStatuses: Object.freeze(paneStatuses),
 			agentHookTokens: Object.freeze(agentHookTokens),
 			...(paneSessions.length > 0 ? { paneSessions: Object.freeze(paneSessions) } : {}),
-			...(antigravityPaneSessions.length > 0 ? { antigravityPaneSessions: Object.freeze(antigravityPaneSessions) } : {}),
 			...(openCodeCommands.length > 0 ? { openCodeCommands: Object.freeze([...openCodeCommands]) } : {}),
 			...(awaitingUserTokens.length > 0 ? { awaitingUserTokens: Object.freeze(awaitingUserTokens) } : {}),
 			...(replayedPrompts.length > 0 ? { replayedPrompts: Object.freeze(replayedPrompts) } : {}),
@@ -8691,7 +8681,6 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._paneStatuses.clear();
 		this._paneSessions.clear();
 		this._paneCursorAgents.clear();
-		this._antigravityPaneSessions.clear();
 		this._codexFrontSessions.clear();
 		this._activityApprovalTokens.clear();
 		this._elicitationWaits.clear();

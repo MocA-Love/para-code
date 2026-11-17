@@ -1599,6 +1599,10 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			? this.agentChat.sendOpenCodeMessage(token, sessionId, text) : false;
 	}
 
+	async listAntigravityPaneSessions(): Promise<readonly { readonly token: string; readonly sessionId: string }[]> {
+		return this.agentChat.antigravityPaneSessions();
+	}
+
 	async getOpenCodeReadiness(token: string, resumeKey: string): Promise<'ready' | 'pending' | 'unregistered'> {
 		return paradisIsAgentChatToken(token) && typeof resumeKey === 'string' && resumeKey.length <= 64 ? this.agentChat.openCodeReadiness(token, resumeKey) : 'unregistered';
 	}

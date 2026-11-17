@@ -133,13 +133,13 @@ export function paradisResumeRequestVerdict(previous: IParadisResumeLedgerEntry 
 export interface IParadisLiveSessionSources {
 	/** hook が報告した各ペインの会話（状態のスナップショットの `paneSessions`）。 */
 	readonly paneSessions: readonly { readonly token: string; readonly agent: ParadisResumeAgent; readonly sessionId: string }[];
-	/** Antigravity CLI が動いているペインの会話（状態のスナップショットの `antigravityPaneSessions`）。 */
+	/** Antigravity CLI の会話を写しているペイン（shared process のチャットの控え。agy が終わった後のペインも含む）。 */
 	readonly antigravityPaneSessions: readonly { readonly token: string; readonly sessionId: string }[];
 	/** ペインのターミナルのキー。ターミナルがもう無ければ undefined。 */
 	terminalKeyOfPane(token: string): string | undefined;
 	/**
-	 * ペインのシェルがコマンドを実行していない（プロンプトに戻っている）と分かるか。agy は終わりを hook で知らせないので、
-	 * Antigravity CLI のペインはこれで終わりを見る。シェル統合が無く分からないときは false。
+	 * ペインのシェルがプロンプトで入力を待っていると、はっきり分かるか。agy は終わりを hook で知らせないので、
+	 * Antigravity CLI のペインはこれで終わりを見る。シェル統合が無い・状態が分からないときは false（動いている扱い）。
 	 */
 	paneAtShellPrompt(token: string): boolean;
 	/** 各ターミナルで実行中のコマンド（シェル統合の記録）と、そのターミナルのキー。 */

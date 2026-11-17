@@ -9294,6 +9294,20 @@ export class ParadisMobileAgentChat extends Disposable {
 		return outcome === 'unknown' ? 'unconfirmed' : accepted;
 	}
 
+	/**
+	 * Antigravity CLI の会話を写しているペインと、その会話の ID。子の会話（invoke_subagent）の hook は捨ててあるので、
+	 * 親の会話だけが載る。再起動の後、ディスクから戻して確かめている途中のペイン（退避分）も含める。
+	 */
+	antigravityPaneSessions(): readonly { readonly token: string; readonly sessionId: string }[] {
+		const result = new Map<string, string>();
+		for (const session of [...[...this.retiredSessions.values()].map(entry => entry.session), ...this.paneSessions.values()]) {
+			if (session.agent === 'antigravity' && session.sessionId !== undefined && this.isLiveToken(session.token)) {
+				result.set(session.token, session.sessionId);
+			}
+		}
+		return [...result].map(([token, sessionId]) => ({ token, sessionId }));
+	}
+
 	/** 再開した OpenCode の会話が登録され、入力を待っているか（会話の中身は読まない）。 */
 	openCodeReadiness(token: string, resumeKey: string): 'ready' | 'pending' | 'unregistered' {
 		const session = this.paneSessions.get(token);

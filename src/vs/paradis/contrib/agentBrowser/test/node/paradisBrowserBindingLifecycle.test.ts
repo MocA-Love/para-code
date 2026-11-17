@@ -749,7 +749,6 @@ function createServiceFixture(generation: number): {
 		_announcedReviews: new Map<string, { turn: number; certain: boolean }>(),
 		_paneSessions: new Map(),
 		_paneCursorAgents: new Map(),
-		_antigravityPaneSessions: new Map(),
 		_codexFrontSessions: new ParadisCodexFrontSessions(),
 		_activityApprovalTokens: new Set(),
 		_elicitationWaits: new Map(),

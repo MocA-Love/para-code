@@ -46,6 +46,7 @@ import { IParadisTerminalIdentityService } from '../browser/paradisTerminalIdent
 import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSender.js';
 import { paradisStripTerminalControlCharacters } from '../../../common/paradisTerminalControlCharacters.js';
 import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
+import { PromptInputState } from '../../../../platform/terminal/common/capabilities/commandDetection/promptInputModel.js';
 import { paradisCanPasteMultiline, paradisTerminalRunsAgent } from '../../agentIde/browser/paradisAgentIdeTerminalInput.js';
 import { IParadisResumeLedgerEntry, PARADIS_AGENT_RESUME_PROMPT_LIMIT, PARADIS_AGENT_SESSION_KEY_PATTERN, PARADIS_AGENT_SESSIONS_PAGE_LIMIT, paradisAgentSessionKey, paradisClipAgentSessionText, paradisMobileAgentSessionMatches, paradisMobileAgentSessionView, paradisRecordResumeRequest, paradisLiveSessionTerminalKeys, paradisResumeRequestVerdict } from '../common/paradisMobileAgentResume.js';
 import { registerParadisMobileRequestHandler } from './paradisMobileRequestHandlers.js';
@@ -140,17 +141,13 @@ function collectTools(accessor: ServicesAccessor): IAgentSessionTools {
 
 /**
  * 今ターミナルで動いている会話（指紋 → そのターミナルのキー）。3 つの手がかりを合わせる（レビュー M6）:
- * - hook が報告した各ペインの会話（状態のスナップショットの `paneSessions` と、Antigravity CLI の `antigravityPaneSessions`）
+ * - hook が報告した各ペインの会話（状態のスナップショットの `paneSessions`。Antigravity CLI は `antigravityPaneSessions` で渡す）
  * - 各ターミナルのシェル統合が記録している実行中のコマンド（`claude --resume <id>` / `codex resume <id>`）
  * - このウィンドウがスマホから再開した直後の会話（hook も届いていない数分の間。レビュー H1）
  */
-function liveSessionTerminals(tools: IAgentSessionTools): Map<string, string> {
+function liveSessionTerminals(tools: IAgentSessionTools, antigravityPaneSessions: readonly { readonly token: string; readonly sessionId: string }[]): Map<string, string> {
 	let paneSessions: readonly IParadisAgentPaneSession[] = [];
-	let antigravityPaneSessions: readonly { readonly token: string; readonly sessionId: string }[] = [];
-	tools.snapshotService.subscribe(outcome => {
-		paneSessions = outcome.snapshot?.paneSessions ?? paneSessions;
-		antigravityPaneSessions = outcome.snapshot?.antigravityPaneSessions ?? antigravityPaneSessions;
-	}).dispose();
+	tools.snapshotService.subscribe(outcome => { paneSessions = outcome.snapshot?.paneSessions ?? paneSessions; }).dispose();
 	const instances = paradisCollectAllTerminalInstances(tools.terminalService, tools.terminalGroupService).filter(instance => !instance.isDisposed);
 	const result = paradisLiveSessionTerminalKeys({
 		paneSessions,
@@ -162,7 +159,8 @@ function liveSessionTerminals(tools: IAgentSessionTools): Map<string, string> {
 		paneAtShellPrompt: token => {
 			const instanceId = tools.paneTokenService.getInstanceForToken(token);
 			const detection = instances.find(instance => instance.instanceId === instanceId)?.capabilities.get(TerminalCapability.CommandDetection);
-			return detection !== undefined && detection.executingCommand === undefined;
+			// プロンプトの入力を待っていると、シェル統合がはっきり知らせているときだけ（分からないときは動いている扱い）
+			return detection !== undefined && detection.promptInputModel.state === PromptInputState.Input && detection.executingCommand === undefined;
 		},
 		executing: instances.flatMap(instance => {
 			const commandLine = instance.capabilities.get(TerminalCapability.CommandDetection)?.executingCommand;
@@ -182,6 +180,14 @@ function liveSessionTerminals(tools: IAgentSessionTools): Map<string, string> {
 		}
 	}
 	return result;
+}
+
+/**
+ * Antigravity CLI の会話を写しているペイン（shared process のチャットの控え。子の会話を含まず、再起動の後も残る）。
+ * 聞けなかったときは空（実行中のコマンドと直近の再開の手がかりだけで判定する）。
+ */
+async function antigravityPaneSessions(tools: IAgentSessionTools): Promise<readonly { readonly token: string; readonly sessionId: string }[]> {
+	return await tools.agentChatSource.listAntigravityPaneSessions?.().catch(() => undefined) ?? [];
 }
 
 /** スマホからの再開を処理している会話（指紋）と依頼 ID。最初の await より前に入れる（二重の再開を防ぐ。レビュー H1）。 */
@@ -251,8 +257,8 @@ registerParadisMobileRequestHandler('scm', 'agentSessions', {
 		const offset = typeof request.offset === 'number' && Number.isInteger(request.offset) && request.offset >= 0 ? request.offset : 0;
 		const limit = typeof request.limit === 'number' && Number.isInteger(request.limit) && request.limit > 0 ? Math.min(request.limit, PARADIS_AGENT_SESSIONS_PAGE_LIMIT) : PARADIS_AGENT_SESSIONS_PAGE_LIMIT;
 		const query = typeof request.query === 'string' ? request.query.slice(0, 200) : undefined;
-		const live = liveSessionTerminals(tools);
-		return listSessions(tools, space).then(sessions => {
+		return Promise.all([listSessions(tools, space), antigravityPaneSessions(tools)]).then(([sessions, antigravity]) => {
+			const live = liveSessionTerminals(tools, antigravity);
 			const views = sessions
 				.map(session => paradisMobileAgentSessionView(session, live.get(paradisAgentSessionKey(session.agent, session.id))))
 				.filter(session => paradisMobileAgentSessionMatches(session, query));
@@ -283,7 +289,7 @@ registerParadisMobileRequestHandler('scm', 'agentSessionPreview', {
 				text: message.text.length > PREVIEW_MESSAGE_LIMIT ? `${message.text.slice(0, PREVIEW_MESSAGE_LIMIT)}…` : message.text,
 				...(message.timestamp !== undefined ? { ts: message.timestamp } : {}),
 			}));
-			const terminalKey = liveSessionTerminals(tools).get(key);
+			const terminalKey = liveSessionTerminals(tools, await antigravityPaneSessions(tools)).get(key);
 			context.reply({
 				t: 'agentSessionPreview', session: paradisMobileAgentSessionView(session, terminalKey), messages,
 				truncated: preview.truncated || preview.messages.length > messages.length,
@@ -325,7 +331,8 @@ registerParadisMobileRequestHandler('scm', 'agentSessionResume', {
 			reply({ status: 'running', message: 'この会話は今スマホから再開しているところです。少し待ってから会話の画面で送ってください' });
 			return undefined;
 		}
-		const running = liveSessionTerminals(tools).get(key);
+		// Antigravity CLI のペインの会話は shared process に聞くので、再開の中で（`resumingKeys` に入れた後に）確かめる
+		const running = liveSessionTerminals(tools, []).get(key);
 		if (running !== undefined) {
 			reply({ status: 'running', terminalKey: running, message: 'この会話は PC で開いています' });
 			return undefined;
@@ -386,7 +393,7 @@ async function resumeFromMobile(
 			throw new Error('この会話は見つかりませんでした');
 		}
 		// 一覧を引いている間に PC で開かれていないか、もう一度確かめる。
-		const running = liveSessionTerminals(tools).get(key);
+		const running = liveSessionTerminals(tools, await antigravityPaneSessions(tools)).get(key);
 		if (running !== undefined) {
 			writeLedgerEntry(tools.storageService, { id: requestId, at: Date.now(), status: 'failed' });
 			reply({ status: 'running', terminalKey: running, message: 'この会話は PC で開いています' });

@@ -20,6 +20,7 @@ import { ParadisMobileAgentChat, paradisAgentChatImageLimitsForTest, paradisIsAl
 import { ParadisRemoteTranscriptMirrorStore } from '../../node/paradisRemoteTranscriptMirror.js';
 import { paradisAntigravityBrainRoot } from '../../../sessionResume/node/paradisAntigravityHistory.js';
 import { paradisAgentSessionKey } from '../../common/paradisMobileAgentResume.js';
+import { ParadisAgentSessionStore } from '../../node/paradisAgentSessionStore.js';
 import { paradisAntigravityApprovalHold } from '../../../agentBrowser/node/paradisAntigravityApprovalHold.js';
 
 const nodeRequire = createRequire(import.meta.url);
@@ -715,6 +716,55 @@ suite('ParadisMobileAgentChat', () => {
 			}, { transcriptPath: parentPath, interaction: false, exited: false });
 		} finally {
 			chat.dispose();
+		}
+	}));
+
+	test('lists the Antigravity CLI conversation of a pane for the "open on the PC" check: not the child conversation, back after a restart, gone with the pane', () => withFakeHome(async home => {
+		const token = 'pane-antigravity-live';
+		const brain = paradisAntigravityBrainRoot(home);
+		const parentId = '00000000-0000-4000-8000-00000000a6f5';
+		const childId = '00000000-0000-4000-8000-00000000a6f6';
+		const parentPath = join(brain, parentId, '.system_generated', 'logs', 'transcript_full.jsonl');
+		const childPath = join(brain, childId, '.system_generated', 'logs', 'transcript_full.jsonl');
+		const storePath = join(home, 'paradis-agent-sessions.json');
+		const start = (store: ParadisAgentSessionStore) => new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService(), undefined, undefined, store);
+		const hook = (event: string, sessionId: string, transcriptPath: string) => fireParadisAgentHookEvent({ token, event, sessionId, transcriptPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now() });
+		const store = new ParadisAgentSessionStore(storePath, new NullLogService());
+		const chat = start(store);
+		let restarted: ParadisMobileAgentChat | undefined;
+		try {
+			for (const [id, path, line] of [[parentId, parentPath, { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', status: 'DONE', created_at: '2026-11-16T01:00:00Z', content: '調べて' }], [childId, childPath, { step_index: 0, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', created_at: '2026-11-16T01:00:01Z', content: '<SYSTEM_MESSAGE>調べて</SYSTEM_MESSAGE>' }]] as const) {
+				await mkdir(join(brain, id, '.system_generated', 'logs'), { recursive: true });
+				await writeFile(path, JSON.stringify(line) + '\n');
+			}
+			// モバイルは 1 台もつながっていない（先読みもしていない）
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			hook('SessionStart', parentId, parentPath);
+			await waitFor(() => chat.antigravityPaneSessions().length === 1, 'the parent conversation was not listed');
+			const plain = chat.antigravityPaneSessions();
+			hook('SessionStart', childId, childPath);
+			hook('PreToolUse', childId, childPath);
+			await waitFor(() => !(chat as unknown as { hookProcessing: Map<string, unknown> }).hookProcessing.has(token), 'the child hooks were not handled');
+			const whileSubagentRuns = chat.antigravityPaneSessions();
+			await store.flush();
+			// PC・shared process の再起動: 控えはディスクから戻り、ペインが同期されたら載る（agy は入力待ちで hook を出さない）
+			restarted = start(new ParadisAgentSessionStore(storePath, new NullLogService()));
+			const beforePaneSync = restarted.antigravityPaneSessions();
+			assert.strictEqual(restarted.syncPanes(1, 'window-session-2', 1, 1, [{ terminalId: 1, token }]), true);
+			await waitFor(() => restarted!.antigravityPaneSessions().length === 1, 'the conversation did not come back after the restart');
+			const afterRestart = restarted.antigravityPaneSessions();
+			// ペインが無くなった（ターミナルを閉じた）
+			assert.strictEqual(restarted.syncPanes(1, 'window-session-2', 1, 2, []), true);
+			assert.deepStrictEqual({ plain, whileSubagentRuns, beforePaneSync, afterRestart, afterPaneClosed: restarted.antigravityPaneSessions() }, {
+				plain: [{ token, sessionId: parentId }],
+				whileSubagentRuns: [{ token, sessionId: parentId }],
+				beforePaneSync: [],
+				afterRestart: [{ token, sessionId: parentId }],
+				afterPaneClosed: [],
+			});
+		} finally {
+			chat.dispose();
+			restarted?.dispose();
 		}
 	}));
 
