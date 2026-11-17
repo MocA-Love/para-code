@@ -21,6 +21,7 @@ import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { createParadisEditorTerminalIndicator, IParadisEditorTerminalIndicatorController } from '../../../../paradis/contrib/agentBrowser/browser/paradisPaneIndicator.js';
 import { createParadisPromptCacheBadge, IParadisPromptCacheBadgeController } from '../../../../paradis/contrib/agentInsights/browser/paradisPromptCacheBadge.js';
+import { paradisReleaseTerminalLayout } from '../../../../paradis/contrib/terminalRenderer/browser/paradisTerminalLayoutHold.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { TerminalEditor } from '../../../../workbench/contrib/terminal/browser/terminalEditor.js';
 import { TerminalEditorInput } from '../../../../workbench/contrib/terminal/browser/terminalEditorInput.js';
@@ -48,6 +49,8 @@ export class SessionTerminalEditor extends TerminalEditor {
 	}
 
 	override async setInput(newInput: TerminalEditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
+		// スペースを離れる間に止めた layout を、開き直すときの layout より前に戻す (paradisTerminalLayoutHold.ts)。
+		paradisReleaseTerminalLayout(newInput.terminalInstance);
 		await super.setInput(newInput, options, context, token);
 		this._paradisIndicator?.setInstance(newInput.terminalInstance?.instanceId);
 		this._paradisPromptCacheBadge?.setInstance(newInput.terminalInstance?.instanceId);
