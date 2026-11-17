@@ -385,6 +385,15 @@ suite('Paradis devtools tool adjustments', () => {
 		}, { evaluate: [true, true], snapshot: true, other: 'Error: boom' });
 	});
 
+	// lighthouse_audit: ゲートウェイが断るストレージの削除と Network.loadNetworkResource を使わずに走る設定（パッケージを更新したら当て直す）
+	test('the vendored lighthouse_audit still audits without the storage reset and skips the audits that fetch with cookies', () => {
+		const source = readFileSync(FileAccess.asFileUri('vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build/src/tools/lighthouse.js').fsPath, 'utf8');
+		assert.deepStrictEqual(
+			{ storage: source.includes('disableStorageReset: true,'), skip: source.includes(`skipAudits: ['robots-txt', 'llms-txt', 'valid-source-maps'],`) },
+			{ storage: true, skip: true },
+		);
+	});
+
 	// q.html Q393・Q394: vendored の PARA-PATCH が当たっていること（パッケージを更新したら当て直す）
 	test('the vendored server still carries the PARA-PATCHes for the tool timeout, the bounded stable-DOM wait and the still-loading navigation', () => {
 		const read = (path: string) => readFileSync(FileAccess.asFileUri(`vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build/src/${path}`).fsPath, 'utf8');

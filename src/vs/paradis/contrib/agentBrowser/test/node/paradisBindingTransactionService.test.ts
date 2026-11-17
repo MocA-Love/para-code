@@ -92,6 +92,7 @@ function createFixture(): {
 		_tabScopes: new Map(),
 		_gatewayScopedLeases: new WeakMap<object, object>(),
 		_inputRejections: { forget: () => undefined, record: () => undefined, recent: () => undefined },
+		_otherTabGatewayInputs: { forget: () => undefined, record: () => undefined, recent: () => undefined },
 		_quarantinedBindings: quarantinedBindings,
 		_faultedTokens: new Set<string>(),
 		_quarantinedTokenState: new Map(),

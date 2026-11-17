@@ -2153,8 +2153,12 @@ export function paradisRegisterBrowserExtensions(
 		clearShortcut: (id, name) => created.clearShortcut(id, name),
 		resetShortcut: (id, name) => created.resetShortcut(id, name),
 	};
-	// unbufferedEvents: 拡張機能の管理画面を開くまで誰も聞かない。既定では、それまでの知らせを main に溜め続ける。
-	// 管理画面は開いたときに今の状態を読むので、開く前の知らせは捨ててよい。
-	channelHost.registerChannel(PARADIS_BROWSER_EXTENSIONS_CHANNEL, ProxyChannel.fromService(exposed, disposables, { unbufferedEvents: ['onDidChangeWorkers'] }));
+	// unbufferedEvents: 既定では、最初の購読者が付くまでの知らせを main に上限なしで溜め続ける。ここに挙げたものは溜めずに捨てる。
+	// - onDidChangeWorkers: 拡張機能の管理画面を開くまで誰も聞かない。管理画面は開いたときに今の状態を読む。
+	// - onDidChangeToolbar: workbench は購読を始めるときに、見ているタブのボタンとショートカットを取り直す。
+	// - onDidRequestPopup: 要求は 3 秒で失敗として拡張機能へ返る。購読前の要求を後から届けても、断った後にポップアップが出るだけ。
+	// - onDidRefuseSidePanel: 利用者の操作への断りで、その場で見せる知らせ。後から届けても何の操作への答えか分からない。
+	// onDidRequestActivateTab は挙げない（タブを前に出す要求は、workbench の用意ができてから届いても意味がある）。
+	channelHost.registerChannel(PARADIS_BROWSER_EXTENSIONS_CHANNEL, ProxyChannel.fromService(exposed, disposables, { unbufferedEvents: ['onDidChangeWorkers', 'onDidChangeToolbar', 'onDidRequestPopup', 'onDidRefuseSidePanel'] }));
 	return disposables;
 }
