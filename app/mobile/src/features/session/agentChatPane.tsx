@@ -49,6 +49,8 @@ import { SessionComposer, type SessionComposerHandle } from './sessionComposer.j
 import { useAgentHistory } from './useAgentHistory.js';
 import { useApprovalOptions } from './useApprovalOptions.js';
 import { useSessionView } from './useSessionView.js';
+import { liveDraftOf } from './liveDraft.js';
+import { LiveDraftRow } from './liveDraftRow.js';
 
 /** 回答カードの高さの上限。選択肢が多いと会話が見えなくなるので、超えたぶんはカードの中でスクロールする。 */
 const PINNED_CARD_MAX_HEIGHT = 380;
@@ -183,6 +185,9 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 		});
 	}, [sendTextAction, terminalKey, chatEpoch, live, canQueue, activePcId, sourceId, resumeKey, terminal.title]);
 	const messages = chat?.messages;
+	// 書いている最中の返信（Claude Code だけ。Q657 案 C）。会話の一覧の末尾に置く
+	const liveDraft = chat !== undefined && chat.none !== true ? liveDraftOf(chat) : undefined;
+	const liveDraftRow = useMemo(() => liveDraft !== undefined ? <LiveDraftRow live={liveDraft} /> : null, [liveDraft]);
 	useEffect(() => {
 		usePendingAgentMessages.getState().reconcile(
 			terminalKey,
@@ -448,6 +453,7 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 							history={history.header}
 							onLoadOlder={history.loadOlder}
 							allToolsOpen={allToolsOpen}
+							footer={liveDraftRow}
 						/>
 					</ChatQuoteContext.Provider>
 				)}
