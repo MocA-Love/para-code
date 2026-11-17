@@ -19,6 +19,7 @@ import { paradisMobileBrowserPageMessage, paradisNormalizeMobileBrowserFocusRepo
 import { paradisParseMobileBookmarks, paradisParseMobileBrowserFocus, paradisParseMobileBrowserInputRejected, paradisParseMobileBrowserPage } from '../../common/paradisMobileBrowserProtocol.js';
 import { paradisMobileBrowserTargetsScope } from '../../common/paradisMobileBrowserScope.js';
 import { paradisHasMobileCapability } from '../../common/paradisMobileCompat.js';
+import { PARADIS_AGENT_LIVE_APPEND_V2_ENCODING, paradisAgentLivePayloadForEncoding } from '../../common/paradisMobileAgentLivePatch.js';
 import { IParadisMobileAivisUsage, IParadisMobileVoiceUsage, paradisBuildMobileAivisUsage, paradisBuildMobileElevenLabsUsage, paradisMobileVoiceUsageFailure } from '../../common/paradisMobileVoiceUsage.js';
 import { ParadisMobileBrowserMirror } from '../../node/paradisMobileBrowserMirror.js';
 import type { MobileIdentity } from '../../common/paradisMobileCrypto.js';
@@ -205,6 +206,21 @@ suite('ParadisMobileWireGolden', () => {
 	test('agent: アプリが送る要求はすべて PC の検査を通る', function () {
 		const golden = readGolden<{ toPc: Array<{ t: string }> }>(this, 'agent.json');
 		assert.deepStrictEqual(golden.toPc.map(message => [message.t, paradisIsValidAgentInboundForTest(message)]), golden.toPc.map(message => [message.t, true]));
+	});
+
+	test('agent: v2 の購読へ PC が組み立てる生成中の文の追記（agent.live-append.v2）はゴールデンと同じ', function () {
+		type Live = { phase: 'message'; source: 'hook'; startedAt: number; updatedAt: number; text: string; textOffset?: number };
+		const golden = readGolden<{ toPc: Array<Record<string, unknown>>; liveV2: { legacyAttach: Record<string, unknown>; snapshot: { live: Live; liveRevision: number }; delta: { liveAppend: unknown } } }>(this, 'agent.json');
+		const previous = golden.liveV2.snapshot.live;
+		// 窓が 2 字進んで先頭が落ちた（textOffset 12 → 14）
+		const current: Live = { ...previous, updatedAt: 1760000004250, text: `${previous.text.slice(2)} 2 つあります。`, textOffset: 14 };
+		assert.deepStrictEqual({
+			delta: paradisAgentLivePayloadForEncoding(PARADIS_AGENT_LIVE_APPEND_V2_ENCODING, previous, current, golden.liveV2.snapshot.liveRevision, golden.liveV2.snapshot.liveRevision + 1),
+			attaches: [golden.toPc[0], golden.liveV2.legacyAttach].map(message => paradisIsValidAgentInboundForTest(message)),
+		}, {
+			delta: { liveAppend: golden.liveV2.delta.liveAppend },
+			attaches: [true, true],
+		});
 	});
 
 	test('agent: mod の一覧から PC が組み立てるコマンドの候補（agent.commands.v2）はゴールデンと同じ形', function () {

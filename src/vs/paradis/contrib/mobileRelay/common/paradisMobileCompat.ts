@@ -272,6 +272,13 @@ export const ParadisMobileCapability = {
 	 * PC だけが広告する。アプリは広告している PC にだけ、セッションのシートのコンテキストの行から内訳へ進める。
 	 */
 	AgentContextBreakdown: 'agent.context-breakdown.v1',
+	/**
+	 * agent の attach の `liveEncoding: 'agent-live-append-v2'`（`paradisMobileAgentLivePatch.ts`）。生成中の文を 6,000 字で切らず、
+	 * 64K 字の窓に収めて追記で送る。全量の `live` と差分 `liveAppend` に窓の始まりの位置 `textOffset`（先頭から落とした字数）が付く。
+	 * PC だけが広告する。アプリは広告している PC にだけ v2 を求め、広告しない PC には今までどおり v1 を求める。PC は v1・交渉なしの
+	 * 購読へ今までと同じ 6,000 字の形で送る。
+	 */
+	AgentLiveAppendV2: 'agent.live-append.v2',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -335,6 +342,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.FsAbsolutePath,
 	ParadisMobileCapability.AgentContextBreakdown,
 	ParadisMobileCapability.FsFindDir,
+	ParadisMobileCapability.AgentLiveAppendV2,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */

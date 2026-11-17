@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, it } from 'vitest';
-import { AGENT_LIVE_APPEND_ENCODING, applyAgentLiveAppendPatch } from './agentLivePatch.js';
+import { AGENT_LIVE_APPEND_ENCODING, AGENT_LIVE_APPEND_V2_ENCODING, applyAgentLiveAppendPatch } from './agentLivePatch.js';
 
 const live = {
 	phase: 'message' as const,
@@ -50,9 +50,29 @@ describe('agent live append patch', () => {
 		expect(applyAgentLiveAppendPatch(live, 7, { ...valid, startedAt: 11 })).toBeUndefined();
 		expect(applyAgentLiveAppendPatch(live, 7, { ...valid, final: false })).toBeUndefined();
 		expect(applyAgentLiveAppendPatch(live, 7, { ...valid, extra: true })).toBeUndefined();
-		expect(applyAgentLiveAppendPatch(live, 7, { ...valid, append: 'x'.repeat(6_001) })).toBeUndefined();
+		expect(applyAgentLiveAppendPatch(live, 7, { ...valid, append: 'x'.repeat(64 * 1024) })).toBeUndefined();
+		expect(applyAgentLiveAppendPatch(live, 7, { ...valid, textOffset: 0 })).toBeUndefined();
+		expect(applyAgentLiveAppendPatch(live, 7, { ...valid, textOffset: 1.5 })).toBeUndefined();
 		expect(applyAgentLiveAppendPatch({ ...live, phase: 'tool' }, 7, valid)).toBeUndefined();
 		expect(applyAgentLiveAppendPatch(undefined, 7, valid)).toBeUndefined();
 		expect(applyAgentLiveAppendPatch(live, 7, null)).toBeUndefined();
+	});
+
+	it('v2: grows past 6,000 chars and follows the window when the PC drops the head', () => {
+		expect(AGENT_LIVE_APPEND_V2_ENCODING).toBe('agent-live-append-v2');
+		const long = { ...live, text: 'a'.repeat(6_000) };
+		const grown = applyAgentLiveAppendPatch(long, 1, { baseRevision: 1, revision: 2, source: 'codex-daemon', startedAt: 10, updatedAt: 30, append: 'bcd' });
+		const window = { ...live, text: 'abcdef', textOffset: 100 };
+		expect({
+			grown: grown?.live.text?.length,
+			slid: applyAgentLiveAppendPatch(window, 3, { baseRevision: 3, revision: 4, source: 'codex-daemon', startedAt: 10, updatedAt: 40, append: 'gh', textOffset: 103 }),
+			behind: applyAgentLiveAppendPatch(window, 3, { baseRevision: 3, revision: 4, source: 'codex-daemon', startedAt: 10, updatedAt: 40, append: 'gh', textOffset: 99 }),
+			beyond: applyAgentLiveAppendPatch(window, 3, { baseRevision: 3, revision: 4, source: 'codex-daemon', startedAt: 10, updatedAt: 40, append: 'gh', textOffset: 109 }),
+		}).toEqual({
+			grown: 6_003,
+			slid: { live: { ...live, updatedAt: 40, text: 'defgh', textOffset: 103 }, liveRevision: 4 },
+			behind: undefined,
+			beyond: undefined,
+		});
 	});
 });

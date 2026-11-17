@@ -40,6 +40,17 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.26',
+		date: '2026-11-17',
+		items: [
+			{
+				icon: 'create-outline',
+				title: 'Claude Code の返信を、書かれている最中から読めるようになりました',
+				body: '書き終わった行はふつうの文で、書いている途中の 1 行は薄い色で会話の末尾に出ます。長い返信も途中で切れずに流れます。',
+			},
+		],
+	},
+	{
 		version: '0.12.25',
 		date: '2026-11-16',
 		items: [

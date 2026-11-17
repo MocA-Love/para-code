@@ -208,6 +208,8 @@ export interface IParadisAgentLiveState {
 	readonly detail?: string;
 	/** MessageDisplay / daemon deltaで先出しする生成中テキスト。 */
 	readonly text?: string;
+	/** `text` の前に落とした字数（窓に収めるため。0 のときは付けない。agent.live-append.v2）。 */
+	readonly textOffset?: number;
 	readonly final?: boolean;
 	/** transcript/PTYが明示的に報告した経過秒。無ければstartedAtから算出する。 */
 	readonly elapsedSeconds?: number;

@@ -451,6 +451,7 @@ Claude の使用量の取得・アカウントの保存・PC 全体の切り替�
 | `app/protocol/test/golden/state.json` / `state-request.json` | 両方の `capabilities` に `fs.html-images.v1` を追加（2026-10-10） | HTML のプレビューで埋め込み画像を抜いた本文を送り、画像は fs の `htmlImage` で 1 枚ずつ送る（q.html Q325 案 A。どちらかが古ければ今までどおり先頭の 20 MiB） |
 | `app/protocol/test/golden/state-request.json` | アプリの `capabilities` に `agent.pc-draft.v1` を追加（2026-10-15） | PC の Claude Code の入力欄の書きかけ（agent の snapshot・delta の `pcDraft`）。PC は広告したアプリが見ている会話へだけ送り、アプリは保存しない |
 | `app/protocol/test/golden/state.json` / `state-request.json` | 両方の `capabilities` に `agent.async-questions.v1` を追加（2026-10-28） | Codex の非同期の質問の一覧（agent の `asyncQuestions`）と返信の発言の表示（`questionReplies`）。答えは普通の `action/sendMessage` で送る |
+| `app/protocol/test/golden/agent.json` / `state.json` | `agent.json` に `liveV2`（v2 の attach・窓の位置付きの live と liveAppend、古い v1 の attach）を足し、`toPc` の attach を `agent-live-append-v2` に、`state.json` の `capabilities` に `agent.live-append.v2` を追加（2026-11-17、Q657） | Claude Code の書きかけの返信を 6,000 字で切らずに追記で送る電文の固定形 |
 | `app/mobile/app.json` | `expo.version` を `0.12.10` に（2026-10-10） | 画像を埋め込んだ大きな HTML のプレビューの配信 |
 | `app/mobile/app.json` | `expo.version` を `0.12.11` に（2026-10-15） | PC の入力欄の書きかけの帯（agent.pc-draft.v1）の配信 |
 | `app/mobile/app.json` | `expo.version` を `0.12.12` に（2026-10-16） | 通知の長押しの画面が暗い板だけになる件の修正（`ios/` の Frameworks）の配信 |

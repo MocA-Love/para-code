@@ -268,6 +268,67 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 		assert.strictEqual(liveTexts().includes('古い行\n'), false);
 	}));
 
+	test('does not bring back the last fragment that the mod sends after the row confirmed the block (Q657)', () => withHarness(async harness => {
+		const liveStates = (harness.chat as unknown as { readonly liveStates: Map<string, { phase: string; text?: string }> }).liveStates;
+		await harness.mod('event', { events: [{ type: 'turn.start', turnId: 't-1' }, { type: 'step', turnId: 't-1', step: 0, chunks: [{ index: 0, text: 'こんにちは、' }], end: false }] });
+		await waitFor(() => liveStates.get(harness.token)?.text === 'こんにちは、', 'the streamed text was not shown');
+		// mod は 150 ms に満たない最後の断片を応答の終わりにまとめて送るので、確定の行の後に届く
+		await harness.mod('event', { events: [{ type: 'row', uuid: 'u-tail', door: 'response', message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'こんにちは、世界' }] } }] });
+		await waitFor(() => liveStates.get(harness.token)?.phase !== 'message', 'the live message was not cleared');
+		const cleared = harness.sent.length;
+		await harness.mod('event', { events: [{ type: 'step', turnId: 't-1', step: 0, chunks: [{ index: 0, text: '世界' }], end: true }] });
+		// 確定したブロックとは別の、次のブロック（ツールの後の本文）は今までどおり流す
+		await harness.mod('event', { events: [{ type: 'step', turnId: 't-1', step: 1, chunks: [{ index: 0, text: '次の文' }], end: false }] });
+		await waitFor(() => liveStates.get(harness.token)?.text === '次の文', 'the next block was not streamed');
+		const liveTexts = harness.sent.slice(cleared).filter(message => message.t === 'delta').map(message => (message.live as { text?: string } | null | undefined)?.text).filter(text => text !== undefined);
+		assert.deepStrictEqual(liveTexts, ['次の文']);
+	}));
+
+	test('does not show a block whose row was confirmed before any of it streamed (Q657)', () => withHarness(async harness => {
+		const liveStates = (harness.chat as unknown as { readonly liveStates: Map<string, { phase: string; text?: string }> }).liveStates;
+		await harness.mod('event', { events: [{ type: 'turn.start', turnId: 't-1' }] });
+		await harness.mod('event', { events: [{ type: 'row', uuid: 'u-short', door: 'response', message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text: 'はい、直しました。' }] } }] });
+		await waitFor(() => harness.tailer()?.messages.some(message => message.text === 'はい、直しました。') === true, 'the row was not shown');
+		await harness.mod('event', { events: [{ type: 'step', turnId: 't-1', step: 0, chunks: [{ index: 0, text: 'はい、直しました。' }], end: true }] });
+		await harness.mod('event', { events: [{ type: 'step', turnId: 't-1', step: 1, chunks: [{ index: 0, text: 'はい、次は' }], end: false }] });
+		await waitFor(() => liveStates.get(harness.token)?.text === 'はい、次は', 'a different block was held back');
+		assert.strictEqual(harness.sent.some(message => message.t === 'delta' && (message.live as { text?: string } | null | undefined)?.text === 'はい、直しました。'), false);
+	}));
+
+	test('streams a long reply past 6,000 chars as appends to a v2 subscriber and keeps the 6,000-char form for v1 (Q657)', () => withHarness(async harness => {
+		const snapshots = () => harness.sent.filter(message => message.t === 'snapshot');
+		const liveDeltas = (from: number) => harness.sent.slice(from).filter(message => message.t === 'delta' && (message.live !== undefined || message.liveAppend !== undefined))
+			.map(message => message.liveAppend !== undefined ? `append:${(message.liveAppend as { append: string }).append.length}` : `live:${(message.live as { text?: string } | null)?.text?.length}`)
+			.filter(entry => entry !== 'append:0'); // 時刻だけが進んだ知らせは数えない
+		let steps = 0;
+		const step = () => harness.mod('event', { events: [{ type: 'step', turnId: 't-1', step: 0, chunks: [{ index: 0, text: String(steps++ % 10).repeat(1_000) }], end: false }] });
+		await harness.mod('event', { events: [{ type: 'turn.start', turnId: 't-1' }] });
+		harness.inbound({ t: 'attach', liveEncoding: 'agent-live-append-v2' });
+		await waitFor(() => snapshots().length === 2, 'the v2 attach was not answered');
+		const v2From = harness.sent.length;
+		for (let i = 0; i < 7; i++) {
+			await step();
+		}
+		await waitFor(() => liveDeltas(v2From).length === 7, 'the v2 deltas were not sent');
+		const v2 = liveDeltas(v2From);
+		harness.inbound({ t: 'attach', liveEncoding: 'agent-live-append-v1' });
+		await waitFor(() => snapshots().length === 3, 'the v1 attach was not answered');
+		const v1Snapshot = snapshots()[2]?.live as { text: string; textOffset?: number };
+		const v1From = harness.sent.length;
+		await step();
+		await waitFor(() => liveDeltas(v1From).length === 1, 'the v1 delta was not sent');
+		assert.deepStrictEqual({
+			v2,
+			v1Snapshot: { length: v1Snapshot.text.length, head: v1Snapshot.text[0], offset: v1Snapshot.textOffset },
+			v1: liveDeltas(v1From),
+		}, {
+			v2: ['live:1000', 'append:1000', 'append:1000', 'append:1000', 'append:1000', 'append:1000', 'append:1000'],
+			// allow-any-unicode-next-line
+			v1Snapshot: { length: 6_000, head: '…', offset: undefined },
+			v1: ['live:6000'],
+		});
+	}));
+
 	test('answers a question with values through the mod instead of keys', () => withHarness(async harness => {
 		const questions = [{ question: '色は？', header: '色', multiSelect: false, options: [{ label: '赤', description: '' }, { label: '緑', description: '' }] }];
 		const registered = await harness.mod('question', { toolUseId: 'toolu_q', questions });

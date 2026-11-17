@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState, type ReactElement } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, Text, View, type LayoutChangeEvent, type NativeScrollEvent, type NativeSyntheticEvent } from 'react-native';
 import { ChevronDown } from 'lucide-react-native';
 import type { AgentHistoryHeader } from '../../agentHistory.js';
@@ -43,7 +43,9 @@ export const ChatList = forwardRef<ChatListHandle, {
 	/** 古い発言を読み込む（さかのぼれない PC では何もしない）。 */
 	onLoadOlder: () => void;
 	allToolsOpen: boolean;
-}>(function ChatList({ rows, epoch, terminalKey, latest, history, onLoadOlder, allToolsOpen }, ref) {
+	/** 一覧の末尾に置く行（書いている最中の返信。`liveDraftRow.tsx`）。行の数・新着の数には入れない。 */
+	footer?: ReactElement | null;
+}>(function ChatList({ rows, epoch, terminalKey, latest, history, onLoadOlder, allToolsOpen, footer }, ref) {
 	const listRef = useRef<FlatList<ChatRow>>(null);
 	const rootRef = useRef<View>(null);
 	// 前後の発言をまとめて選ぶ（crossSelect.tsx）。一覧の上に重ねる
@@ -177,6 +179,7 @@ export const ChatList = forwardRef<ChatListHandle, {
 				renderItem={renderItem}
 				extraData={allToolsOpen}
 				ListHeaderComponent={<HistoryHeader header={history} onLoadOlder={onLoadOlder} />}
+				ListFooterComponent={footer}
 				maintainVisibleContentPosition={MAINTAIN_POSITION}
 				ListEmptyComponent={(
 					<View style={textStyles.empty}>
