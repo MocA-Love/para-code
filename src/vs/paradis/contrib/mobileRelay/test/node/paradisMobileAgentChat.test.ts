@@ -19,6 +19,7 @@ import { paradisClaudeConfigDir, paradisCodexHome } from '../../../agentBrowser/
 import { ParadisMobileAgentChat, paradisAgentChatImageLimitsForTest, paradisIsAllowedTranscriptPathForTest, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisCodexForkCandidateAllowed, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisIsLateHookAfterTurnEnd, paradisParseCodexTranscriptLineForTest, paradisParseCodexTranscriptLinesForTest, paradisPickCurrentInteraction, paradisReadCodexForkHistory, paradisResolveHookSessionTranscript, paradisSelectUnambiguousSessionCandidate, paradisSharedImageCacheForTest, paradisTakeLiveQuestionSyntheticId, paradisToolImageMeta, paradisQuestionReadyMarker } from '../../node/paradisMobileAgentChat.js';
 import { ParadisRemoteTranscriptMirrorStore } from '../../node/paradisRemoteTranscriptMirror.js';
 import { paradisAntigravityBrainRoot } from '../../../sessionResume/node/paradisAntigravityHistory.js';
+import { paradisAgentSessionKey } from '../../common/paradisMobileAgentResume.js';
 import { paradisAntigravityApprovalHold } from '../../../agentBrowser/node/paradisAntigravityApprovalHold.js';
 
 const nodeRequire = createRequire(import.meta.url);
@@ -404,6 +405,7 @@ suite('ParadisMobileAgentChat', () => {
 				sessionStatus: snapshot.sessionStatus,
 				dispatched: actions.map(action => ({ t: action.t, requestId: action.requestId, agent: action.agent, text: action.text })),
 				reply: sent.map(message => ({ requestId: message.requestId, status: message.status, code: message.code })),
+				settingMessage: sent.find(message => message.requestId === 'setting-1')?.message,
 			}, {
 				agent: 'antigravity',
 				capabilities: { agentActions: true },
@@ -414,6 +416,50 @@ suite('ParadisMobileAgentChat', () => {
 					{ requestId: 'approve-1', status: 'rejected', code: 'agent-unsupported' },
 					{ requestId: 'setting-1', status: 'rejected', code: 'agent-unsupported' },
 				],
+				settingMessage: 'このエージェントのモデルと effort は、アプリからは変えられません。PC のターミナルで変えてください',
+			});
+		} finally {
+			chat.dispose();
+		}
+	}));
+
+	test('refuses a setting change for a Codex pane at the entrance, and tells the app that its model cannot be changed', () => withFakeHome(async home => {
+		const token = 'pane-codex-setting';
+		const threadId = '00000000-0000-4000-8000-00000000c0d1';
+		const transcriptPath = join(home, '.codex', 'sessions', '2026', '01', '01', `rollout-2026-01-01T00-00-00-${threadId}.jsonl`);
+		const sent: Record<string, unknown>[] = [];
+		const actions: Record<string, unknown>[] = [];
+		const chat = new ParadisMobileAgentChat(
+			(_mobileId, payload) => sent.push(JSON.parse(new TextDecoder().decode(payload))),
+			(_mobileId, _windowId, _windowSession, _generation, payload) => actions.push(JSON.parse(new TextDecoder().decode(payload))),
+			() => { }, new NullLogService(),
+		);
+		const access = chat as unknown as { tailers: Map<string, { readonly epoch: string }> };
+		const inbound = (message: Record<string, unknown>) => chat.handleInbound('mobile-1', new TextEncoder().encode(JSON.stringify(message)));
+		try {
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			fireParadisAgentHookEvent({ token, event: 'SessionStart', sessionId: threadId, transcriptPath, cwd: '/workspace', agentKind: 'codex', at: Date.now() });
+			await waitFor(() => access.tailers.has(token), 'the Codex conversation was not followed');
+			inbound({ t: 'attach', id: 1, token });
+			await waitFor(() => sent.some(message => message.t === 'snapshot'), 'the attach did not answer with a snapshot');
+			const snapshot = sent.find(message => message.t === 'snapshot')!;
+			const epoch = access.tailers.get(token)!.epoch;
+			sent.length = 0;
+			inbound({ t: 'action/claudeSetting', id: 1, token, epoch, requestId: 'setting-1', setting: 'model', value: 'opus' });
+			await waitFor(() => sent.length >= 1, 'the setting was not answered');
+			assert.deepStrictEqual({
+				agent: snapshot.agent,
+				capabilities: snapshot.capabilities,
+				info: snapshot.info,
+				dispatched: actions.length,
+				reply: sent.map(message => ({ requestId: message.requestId, status: message.status, code: message.code, message: message.message })),
+			}, {
+				agent: 'codex',
+				capabilities: { agentActions: true },
+				info: { modelControl: 'none', resumeKey: paradisAgentSessionKey('codex', threadId) },
+				dispatched: 0,
+				reply: [{ requestId: 'setting-1', status: 'rejected', code: 'agent-unsupported', message: 'このエージェントのモデルと effort は、アプリからは変えられません。PC のターミナルで変えてください' }],
 			});
 		} finally {
 			chat.dispose();

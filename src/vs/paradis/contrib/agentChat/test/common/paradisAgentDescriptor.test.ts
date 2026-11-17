@@ -23,7 +23,7 @@ suite('paradisAgentDescriptor', () => {
 			claude: {
 				displayName: 'Claude Code', shortName: 'Claude', logo: 'claude',
 				resume: { fork: true, bypassFlag: '--dangerously-skip-permissions', deliverPromptAfterResume: true },
-				modelControl: 'mod-or-keys', settingsAction: true,
+				modelControl: 'mod-or-keys',
 				send: ['mod', 'keys'], answerQuestion: ['mod', 'keys'], answerApproval: ['mod', 'keys'],
 				interrupt: 'ctrl-c', commandCatalog: 'mod-or-files',
 				features: { subagents: true, teams: true, workflows: true, shells: true, panel: true, pcDraft: true, sessionStatus: true, asyncQuestions: false },
@@ -31,7 +31,7 @@ suite('paradisAgentDescriptor', () => {
 			codex: {
 				displayName: 'Codex', shortName: 'Codex', logo: 'codex',
 				resume: { fork: true, bypassFlag: '--dangerously-bypass-approvals-and-sandbox', deliverPromptAfterResume: true },
-				modelControl: 'none', settingsAction: true,
+				modelControl: 'none',
 				send: ['keys'], answerQuestion: ['keys'], answerApproval: ['keys'],
 				interrupt: 'ctrl-c', commandCatalog: 'files',
 				features: { subagents: true, teams: false, workflows: false, shells: false, panel: false, pcDraft: false, sessionStatus: true, asyncQuestions: true },
@@ -39,7 +39,7 @@ suite('paradisAgentDescriptor', () => {
 			opencode: {
 				displayName: 'OpenCode', shortName: 'OpenCode', logo: undefined,
 				resume: { fork: true, bypassFlag: undefined, deliverPromptAfterResume: true },
-				modelControl: 'unspecified', settingsAction: true,
+				modelControl: 'none',
 				send: ['api'], answerQuestion: ['api'], answerApproval: ['api'],
 				interrupt: 'api', commandCatalog: 'api',
 				features: { subagents: false, teams: false, workflows: false, shells: false, panel: false, pcDraft: false, sessionStatus: true, asyncQuestions: false },
@@ -47,7 +47,7 @@ suite('paradisAgentDescriptor', () => {
 			antigravity: {
 				displayName: 'Antigravity CLI', shortName: 'Antigravity', logo: 'antigravity',
 				resume: { fork: false, bypassFlag: undefined, deliverPromptAfterResume: false },
-				modelControl: 'none', settingsAction: false,
+				modelControl: 'none',
 				send: ['keys'], answerQuestion: [], answerApproval: ['hook'],
 				interrupt: 'ctrl-c', commandCatalog: 'none',
 				features: { subagents: false, teams: false, workflows: false, shells: false, panel: false, pcDraft: false, sessionStatus: false, asyncQuestions: false },
@@ -67,8 +67,8 @@ suite('paradisAgentDescriptor', () => {
 			described: paradisAgentDescriptor(kind) !== undefined,
 		})), [
 			{ kind: 'claude', support: { sendMessage: true, answerQuestion: true, answerApproval: true, settings: true }, resumeLabel: 'Claude Code', notifyLabel: 'Claude', handoffLabel: 'Claude Code', described: true },
-			{ kind: 'codex', support: { sendMessage: true, answerQuestion: true, answerApproval: true, settings: true }, resumeLabel: 'Codex', notifyLabel: 'Codex', handoffLabel: 'Codex', described: true },
-			{ kind: 'opencode', support: { sendMessage: true, answerQuestion: true, answerApproval: true, settings: true }, resumeLabel: 'OpenCode', notifyLabel: 'OpenCode', handoffLabel: 'OpenCode', described: true },
+			{ kind: 'codex', support: { sendMessage: true, answerQuestion: true, answerApproval: true, settings: false }, resumeLabel: 'Codex', notifyLabel: 'Codex', handoffLabel: 'Codex', described: true },
+			{ kind: 'opencode', support: { sendMessage: true, answerQuestion: true, answerApproval: true, settings: false }, resumeLabel: 'OpenCode', notifyLabel: 'OpenCode', handoffLabel: 'OpenCode', described: true },
 			{ kind: 'antigravity', support: { sendMessage: true, answerQuestion: false, answerApproval: false, settings: false }, resumeLabel: 'Antigravity CLI', notifyLabel: 'Antigravity', handoffLabel: undefined, described: true },
 			{ kind: 'other', support: undefined, resumeLabel: 'OpenCode', notifyLabel: 'Claude', handoffLabel: undefined, described: false },
 			{ kind: undefined, support: { sendMessage: true, answerQuestion: true, answerApproval: true, settings: true }, resumeLabel: undefined, notifyLabel: undefined, handoffLabel: undefined, described: false },

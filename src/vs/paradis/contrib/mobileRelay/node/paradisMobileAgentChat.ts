@@ -82,7 +82,8 @@ import type { IParadisNotifyPaneContent } from './paradisNotifyContentSource.js'
 import { IParadisAgentPaneInsight, IParadisAgentPaneInteraction, IParadisAgentPromptCache, PARADIS_PROMPT_CACHE_TTL_5M, paradisOneLine, paradisReadClaudePromptCacheUsage, paradisReadClaudeRequestStart, paradisSelectInsightSubagents, paradisSummarizePermissionInput, paradisSummarizeQuestionInput } from '../../agentInsights/common/paradisAgentInsights.js';
 import { IParadisAgentApprovalChoice, IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentChatView, IParadisAgentInteraction, IParadisAgentLiveState, IParadisAgentPanel, IParadisAgentSessionInfo, PARADIS_ADVISOR_TOOL, ParadisAgentKind, ParadisOpenCodeDesktopActionResult, paradisAgentQuestionHasPreview, paradisIsCodexDaemonApprovalInteraction, paradisPickCurrentInteraction } from '../../agentChat/common/paradisAgentChat.js';
 import { newParadisAntigravityParseState, paradisAntigravityQuestionInput, parseAntigravityLine } from '../../agentChat/common/paradisAntigravityTranscript.js';
-import { PARADIS_ANTIGRAVITY_ANSWER_ON_PC_MESSAGE, PARADIS_ANTIGRAVITY_APPROVAL_ON_PC_MESSAGE, PARADIS_ANTIGRAVITY_SEND_BLOCK_MESSAGES, paradisAgentChatActionSupport } from '../../agentChat/common/paradisAgentChatActionSupport.js';
+import { PARADIS_AGENT_SETTINGS_ON_PC_MESSAGE, PARADIS_ANTIGRAVITY_ANSWER_ON_PC_MESSAGE, PARADIS_ANTIGRAVITY_APPROVAL_ON_PC_MESSAGE, PARADIS_ANTIGRAVITY_SEND_BLOCK_MESSAGES, paradisAgentChatActionSupport } from '../../agentChat/common/paradisAgentChatActionSupport.js';
+import { PARADIS_AGENT_DESCRIPTORS, paradisAgentDescriptor } from '../../agentChat/common/paradisAgentDescriptor.js';
 import { paradisAntigravityApprovalCardInput } from '../../agentBrowser/common/paradisAntigravityApproval.js';
 import { paradisAntigravityApprovalHold } from '../../agentBrowser/node/paradisAntigravityApprovalHold.js';
 import { paradisIsAntigravityTranscriptPath, PARADIS_ANTIGRAVITY_QUESTION_TOOL } from '../../agentBrowser/common/paradisAntigravityHooks.js';
@@ -647,7 +648,7 @@ function agentKindForPath(transcriptPath: string): ParadisAgentKind {
  * （{@link paradisAgentChatActionSupport}）。
  */
 function paradisAgentChatCapabilitiesField(agent: ParadisAgentKind): { readonly capabilities?: { readonly agentActions: true; readonly claudeSettings?: true } } {
-	return { capabilities: { agentActions: true, ...(agent === 'claude' ? { claudeSettings: true } : {}) } };
+	return { capabilities: { agentActions: true, ...(PARADIS_AGENT_DESCRIPTORS[agent].modelControl === 'mod-or-keys' ? { claudeSettings: true } : {}) } };
 }
 
 /**
@@ -5068,7 +5069,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	/**
-	 * チャット欄から渡せない操作（{@link paradisAgentChatActionSupport}。Antigravity CLI の回答・承認・設定）を断る。断ったら true。
+	 * チャット欄から渡せない操作（{@link paradisAgentChatActionSupport}。Antigravity CLI の回答・承認、Claude Code 以外の設定）を断る。断ったら true。
 	 * キーの働きを確かめていない画面へは打たず、PC の端末で答えてもらう。
 	 */
 	private rejectUnsupportedAgentAction(mobileId: string, msg: AgentInbound): boolean {
@@ -5079,19 +5080,20 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (token === undefined) {
 			return false;
 		}
-		const support = paradisAgentChatActionSupport(this.paneSessions.get(token)?.agent);
+		const agent = this.paneSessions.get(token)?.agent;
+		const support = paradisAgentChatActionSupport(agent);
 		const supported = msg.t === 'action/sendMessage' ? support.sendMessage
 			: msg.t === 'action/answerQuestion' || msg.t === 'action/clarifyQuestion' ? support.answerQuestion
 				: msg.t === 'action/claudeSetting' ? support.settings
-					// Antigravity CLI の許可は、許可の hook が答えを待っている間だけ受ける（handleApprovalAction）
-					: support.answerApproval || (msg.t === 'action/answerApproval' && paradisAntigravityApprovalHold.isWaiting(token, msg.interactionId));
+					// 許可の hook の答えとして返す種類（Antigravity CLI）は、hook が答えを待っている間だけ受ける（handleApprovalAction）
+					: support.answerApproval || (msg.t === 'action/answerApproval' && paradisAgentDescriptor(agent)?.answerApproval.includes('hook') === true && paradisAntigravityApprovalHold.isWaiting(token, msg.interactionId));
 		if (supported) {
 			return false;
 		}
 		if (msg.t === 'approval-options') {
 			this.sendTo(mobileId, { t: 'approval-options', id: msg.id, requestId: msg.requestId, interactionId: msg.interactionId, error: 'stale-interaction' }, token);
 		} else {
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'agent-unsupported', message: msg.t === 'action/sendMessage' || msg.t === 'action/claudeSetting' ? 'このエージェントにはまだチャット欄から送れません。ターミナル表示で入力してください' : msg.t === 'action/answerApproval' ? PARADIS_ANTIGRAVITY_APPROVAL_ON_PC_MESSAGE : PARADIS_ANTIGRAVITY_ANSWER_ON_PC_MESSAGE }, token);
+			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'agent-unsupported', message: msg.t === 'action/sendMessage' ? 'このエージェントにはまだチャット欄から送れません。ターミナル表示で入力してください' : msg.t === 'action/claudeSetting' ? PARADIS_AGENT_SETTINGS_ON_PC_MESSAGE : msg.t === 'action/answerApproval' ? PARADIS_ANTIGRAVITY_APPROVAL_ON_PC_MESSAGE : PARADIS_ANTIGRAVITY_ANSWER_ON_PC_MESSAGE }, token);
 		}
 		return true;
 	}
@@ -10473,12 +10475,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		// ターミナルが閉じた後にスマホから再開するための指紋（W2-29）。セッション ID そのものは送らない。
 		const paneSession = this.paneSessions.get(token);
 		const sessionId = paneSession?.resumable === false ? undefined : paneSession?.sessionId;
-		// Antigravity CLI の再開（agy --conversation）はまだ無いので、再開の宛先を渡さない
+		// Antigravity CLI のペインには、再開の宛先を渡さない
 		const resumeKey = sessionId !== undefined && tailer.agent !== 'antigravity' && PARADIS_RESUME_SESSION_ID_PATTERN.test(sessionId) ? paradisAgentSessionKey(tailer.agent, sessionId) : undefined;
-		// 走っている Codex へ設定を渡す口が無いので、Codex のモデルはモバイルから変えられない。モデルが
+		// 走っているエージェントへ設定を渡す口が無い種類（Claude Code 以外）のモデルは、モバイルから変えられない。モデルが
 		// まだ分からないうちから伝えて、選択の画面を開かせない
-		// Antigravity CLI もモデルを渡す口が無い（PC のターミナルで変える）
-		const modelControl = tailer.agent === 'codex' || tailer.agent === 'antigravity' ? 'none' : undefined;
+		const modelControl = PARADIS_AGENT_DESCRIPTORS[tailer.agent].modelControl === 'none' ? 'none' : undefined;
 		// SSH の写しを続けられていない。写しの会話には、空の info も送る（止まった印が消えたことを、info を
 		// 丸ごと置き換えるモバイルへ伝えるため）
 		const remoteCopy = paradisIsRemoteAgentTranscriptMirrorPath(tailer.transcriptPath);

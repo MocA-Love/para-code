@@ -21,7 +21,7 @@ suite('paradisAgentChatActionSupport', () => {
 			unknown: paradisAgentChatActionSupport(undefined),
 		}, {
 			claude: { sendMessage: true, answerQuestion: true, answerApproval: true, settings: true },
-			codex: { sendMessage: true, answerQuestion: true, answerApproval: true, settings: true },
+			codex: { sendMessage: true, answerQuestion: true, answerApproval: true, settings: false },
 			antigravity: { sendMessage: true, answerQuestion: false, answerApproval: false, settings: false },
 			unknown: { sendMessage: true, answerQuestion: true, answerApproval: true, settings: true },
 		});
