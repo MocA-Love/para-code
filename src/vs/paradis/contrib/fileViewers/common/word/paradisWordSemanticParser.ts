@@ -24,6 +24,7 @@ import {
 	throwIfParadisOfficeCancelled,
 	resolveParadisOfficeRelationshipTarget,
 } from '../office/paradisOfficeArchive.js';
+import { paradisOfficeElementChildren as elementChildren } from '../office/paradisOfficeXmlAttributes.js';
 import type {
 	ParadisWordAltChunkNode,
 	ParadisWordBookmarkNode,
@@ -2112,10 +2113,6 @@ function wordNamespace(element: XmlElement): string {
 		throw new ParadisOfficePackageError('malformed');
 	}
 	return element.uri;
-}
-
-function elementChildren(element: XmlElement): readonly XmlElement[] {
-	return element.children.filter((child): child is XmlElement => child.kind === 'element');
 }
 
 function attribute(element: XmlElement | undefined, uri: string, local: string): string | undefined {

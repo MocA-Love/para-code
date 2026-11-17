@@ -5,6 +5,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { type ParadisOfficeXmlDocument, type ParadisOfficeXmlNode, ParadisOfficePackageError } from '../office/paradisOfficeArchive.js';
+import { paradisOfficeUnqualifiedAttribute as attribute, paradisOfficeAttributeInNamespaces as namespacedAttribute } from '../office/paradisOfficeXmlAttributes.js';
 import type { ParadisSemanticRange, ParadisSpreadsheetPartSource, ParadisSpreadsheetTextIdentity } from './paradisSpreadsheetSemantic.js';
 
 type XmlElement = Extract<ParadisOfficeXmlNode, { readonly kind: 'element' }>;
@@ -571,14 +572,6 @@ function exactAttributes(node: XmlElement, unqualified: readonly string[], relat
 		if (candidate.uri === '' ? ordinary.has(candidate.local) : relationshipNamespaces.has(candidate.uri) && relationship.has(candidate.local)) { continue; }
 		throw new ParadisOfficePackageError('malformed');
 	}
-}
-
-function attribute(node: XmlElement, local: string): string | undefined {
-	return node.attributes.find(candidate => candidate.uri === '' && candidate.local === local)?.value;
-}
-
-function namespacedAttribute(node: XmlElement, namespaces: ReadonlySet<string>, local: string): string | undefined {
-	return node.attributes.find(candidate => namespaces.has(candidate.uri) && candidate.local === local)?.value;
 }
 
 function optionalBooleans<T extends string>(node: XmlElement, keys: readonly T[]): Partial<Record<T, boolean>> {

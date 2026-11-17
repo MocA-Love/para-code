@@ -24,6 +24,7 @@ import {
 	throwIfParadisOfficeCancelled,
 	resolveParadisOfficeRelationshipTarget,
 } from '../office/paradisOfficeArchive.js';
+import { paradisOfficeUnqualifiedAttribute as attribute, paradisOfficeRequiredUnqualifiedAttribute as requiredAttribute, paradisOfficeBooleanAttribute as booleanAttribute } from '../office/paradisOfficeXmlAttributes.js';
 import { diagnoseSpreadsheetProjection, type IParadisCellData, type IParadisCellStyle, type IParadisDiagonalBorder, type IParadisRowData, type IParadisSheetData, type IParadisWorkbookData } from '../paradisSpreadsheet.js';
 import { formatPreparedSpreadsheetValue, formatSpreadsheetValue, prepareSpreadsheetNumberFormat, type ParadisFormattedCellValue, type ParadisSpreadsheetNumberFormatContext, type ParadisSpreadsheetPreparedNumberFormat } from './paradisSpreadsheetNumberFormat.js';
 import {
@@ -3290,20 +3291,8 @@ function directTextContent(node: XmlElement, checkpoint?: (force?: boolean) => v
 	return value;
 }
 
-function attribute(node: XmlElement, local: string): string | undefined {
-	return node.attributes.find(candidate => candidate.uri === '' && candidate.local === local)?.value;
-}
-
 function relationshipAttribute(node: XmlElement, local: string): string | undefined {
 	return node.attributes.find(candidate => relationshipNamespaces.has(candidate.uri) && candidate.local === local)?.value;
-}
-
-function requiredAttribute(node: XmlElement, local: string): string {
-	const value = attribute(node, local);
-	if (value === undefined) {
-		throw new ParadisOfficePackageError('malformed');
-	}
-	return value;
 }
 
 function integerAttribute(node: XmlElement, local: string): number | undefined {
@@ -3360,20 +3349,6 @@ function parseUnsignedInteger(value: string): number | undefined {
 	}
 	const result = Number.parseInt(value, 10);
 	return Number.isSafeInteger(result) ? result : undefined;
-}
-
-function booleanAttribute(node: XmlElement, local: string): boolean | undefined {
-	const value = attribute(node, local);
-	if (value === undefined) {
-		return undefined;
-	}
-	if (value === '1' || value === 'true') {
-		return true;
-	}
-	if (value === '0' || value === 'false') {
-		return false;
-	}
-	throw new ParadisOfficePackageError('malformed');
 }
 
 interface NamespacedAttributeAllowance {
