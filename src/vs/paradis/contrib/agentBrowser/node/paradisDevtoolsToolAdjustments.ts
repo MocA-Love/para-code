@@ -114,6 +114,8 @@ const PARADIS_DEVTOOLS_TOOL_DESCRIPTIONS: ReadonlyMap<string, string> = new Map(
 	['hover', 'Hover over an element by its uid from a snapshot.'],
 	['drag', 'Drag an element onto another element (HTML drag and drop, by uids from a snapshot). For sliders or canvas, use mouse_action.'],
 	['get_network_request', 'Get one network request of this pane\'s current tab (or tab_id) by its reqid from list_network_requests.'],
+	// vendored の lighthouse.js の PARA-PATCH（ストレージを消さない・Cookie 付きで取る監査を飛ばす）を LLM にも伝える
+	['lighthouse_audit', 'Get Lighthouse scores and reports for accessibility, SEO, best practices and agentic browsing of this pane\'s current tab (or tab_id). Performance is not included; for performance, use performance_start_trace. Para Code shares the browser storage and cache with the user, so the audit does not clear the page\'s storage or cache first (results can reflect what is already stored), and it skips the robots.txt, llms.txt and source map audits, which would need to fetch with the page\'s cookies.'],
 ]);
 
 /** 引数の説明の差し替え（道具 → 引数 → 説明）。単位と、上流の文の意味の通らないところを直す。 */

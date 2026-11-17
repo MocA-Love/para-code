@@ -481,13 +481,14 @@ CDPフィルタプロキシ（`paradisCdpFilterProxy.ts`）に以下を追加し
 - **denylist補強**: `Target.closeTarget` / `Page.close`（共有ビュー破壊防止、close_pageは非対応化） / `Page.setWebLifecycleState` / `Storage.clearDataForOrigin` / `Storage.clearDataForStorageKey` / `Storage.clearCookies` / `Network.clearBrowserCookies` / `Network.clearBrowserCache`（共有パーティション保護、lighthouse_auditの既定フロー対策）を常時拒否に追加。ページレベル透過プロキシもclient→upstream方向のみ同じdenylistを適用
 - **resize_page明示エラー**: `Browser.getWindowForTarget` / `Browser.{get,set}WindowBounds` / `Browser.setContentsSize` はElectron未実装（-32601）を素通しせず、-32000で「ワークベンチがレイアウト管理するため非対応、ビューポート変更はemulateを使え」を返す
 - **ガイダンス**: `get_cdp_endpoint` 応答に `limitations`（new_page/resize_page/close_page非対応等）を追加
+- **lighthouse_audit を通す（2026-11-17）**: `Browser.getVersion` だけは読むだけでほかのペインに触れないので、共有の状態の断り（`Browser.` の domain）から外し、ページへの接続と target のセッションでも通す（ほかの `Browser.*` は断ったまま）。Lighthouse は共有中のページに 2 本目のセッションを付けて最後に自分で外すので、クライアントが `Target.detachFromTarget` で頼んで外し、同じページにほかのセッションが残るときは接続を閉じない（頼まれていない剥離は従来どおり閉じる）。そのセッションが大きさの命令を送っていたら、接続を閉じたときと同じく `releaseBoundPageEmulation` で付けた大きさを戻す（Chromium ではセッションと一緒に消えるが、Para Code は共有のビューへ当てているため）。vendored 側の設定は「vendored chrome-devtools-mcp への変更」の表
 
 **ツール対応マトリクス（コード根拠ベース、2026-07-03時点）**:
 
 | 判定 | ツール |
 |---|---|
-| 動く | take_snapshot, wait_for, evaluate_script, navigate_page, list_pages, select_page, upload_file, list_network_requests, get_network_request, list_console_messages, get_console_message, take_heapsnapshot, emulate(CPU/network/UA/viewport), fill, fill_form, click, drag, hover, press_key, type_text（フォーカス強制済み）, take_screenshot（委譲実装済み。要素スクショのみ素通しフォールバック） |
-| 条件付き/未検証 | handle_dialog（ElectronのJSダイアログ発火未検証）, performance_start/stop_trace, lighthouse_audit（多domain依存。ストレージ消去は拒否済みなので既定フローの一部が失敗する可能性）, emulate(geolocation)（Browser.grantPermissions依存） |
+| 動く | lighthouse_audit（2026-11-17 から。ストレージを消さず、robots.txt・llms.txt・ソースマップの監査は飛ばす）, take_snapshot, wait_for, evaluate_script, navigate_page, list_pages, select_page, upload_file, list_network_requests, get_network_request, list_console_messages, get_console_message, take_heapsnapshot, emulate(CPU/network/UA/viewport), fill, fill_form, click, drag, hover, press_key, type_text（フォーカス強制済み）, take_screenshot（委譲実装済み。要素スクショのみ素通しフォールバック） |
+| 条件付き/未検証 | handle_dialog（ElectronのJSダイアログ発火未検証）, performance_start/stop_trace, emulate(geolocation)（Browser.grantPermissions依存） |
 | 非対応（明示エラー） | new_page（Target.createTarget拒否）, close_page（Target.closeTarget拒否、Para Code UIから閉じる）, resize_page（emulateへ誘導） |
 
 ### vendored chrome-devtools-mcp への変更（2026-10-04）
@@ -505,6 +506,7 @@ vendored の中身は原則そのまま同梱するが、次の表の所だけ�
 | `build/src/tools/pages.js` の `navigate_page`（2026-10-19） | 呼び出しの間に主フレームが新しい文書を確定したか（CDP の `Page.frameNavigated` で `parentId` が無い）を控え、確定した後の `TimeoutError` は `Unable to navigate …` ではなく「移動した。まだ読み込み中で、これは失敗ではない。wait_until で待つ」の文にする（url・back・forward・reload の 4 か所。`paraCodeStillLoadingLine`）。確定しなかった時間切れと、ほかの失敗は従来の文のまま | SSH 先の開発サーバーを転送したページは load まで 10 秒を超えやすく、SSH の移動の 54〜62% が開いているのに「Unable to navigate」と返っていた（実利用 250 回・3.48 時間。q.html Q393） |
 | `build/src/tools/pages.js` の `handle_dialog`（2026-10-26） | `dialog.accept()` / `dismiss()` を 5 秒との race に入れる（`paraCodeAnswerDialog`）。間に合わない・断られたときは「成功」と書かず、ダイアログの記録を消したことと、beforeunload なら遷移はそのまま進むので wait_until で待つことを返す | Para Code の beforeunload のダイアログはブラウザが自分で閉じる（`will-prevent-unload` を常に通す）ので、vendored の記録だけが残ることがある。描画が止まったページでその記録に答えると、puppeteer の 180 秒の protocol timeout まで返らず、例外は握りつぶされて「成功」になっていた（q.html Q461 の 2、1 回 184 秒） |
 | `build/src/McpContext.js` の `detectOpenDevToolsWindows`（2026-10-26） | `page.hasDevTools()` を 3 秒との race に入れ、答えなければ DevTools は開いていないとみなす | どの道具の呼び出しの前にも（`ToolHandler.js` から）呼ばれ、上限が無かった。描画が止まったページでは 180 秒の protocol timeout まで待ちうる（q.html Q461 の 2 のレビュー） |
+| `build/src/tools/lighthouse.js` の `lighthouse_audit`（2026-11-17） | Lighthouse に渡す `flags` に `disableStorageReset: true` と `skipAudits: ['robots-txt', 'llms-txt', 'valid-source-maps']` を足す。当たっていることは `paradisDevtoolsToolAdjustments.test.ts` が確かめる | 内蔵ブラウザはストレージとキャッシュを Para Code 全体で共有するので、CDP ゲートウェイは `Storage.clearDataForOrigin`・`Network.clearBrowserCache`・`Storage.getUsageAndQuota` を断る。既定の navigation はこれらを撃って失敗していた。robots.txt・llms.txt・ソースマップは `Network.loadNetworkResource`（ページの Cookie 付きで取る。Cookie の方針で断る）で取るので、断られると「取れなかった」で必ず 0 点になり、ページを調べた結果にならない |
 
 道具の説明と引数の説明は vendored を書き換えず、`paradisDevtoolsToolAdjustments.ts` の `PARADIS_DEVTOOLS_TOOL_DESCRIPTIONS`・`PARADIS_DEVTOOLS_PROPERTY_DESCRIPTIONS` で tools/list の時に差し替える（2026-11-02、q.html Q535。上流を更新しても当て直しは要らないが、上流で道具の働きが変わったら説明の文を見直す）。同じ所で `evaluate_script`・`navigate_page`・`wait_for` のミリ秒の `timeout` を秒の `timeout_seconds` として見せ、子へ渡す前に `paradisToolArgumentAliases.ts` がミリ秒へ戻す。
 
