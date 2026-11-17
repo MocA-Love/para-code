@@ -52,6 +52,8 @@ import { FocusMode, IApplicationBadge } from '../../native/common/native.js';
 import { Color } from '../../../base/common/color.js';
 // PARA-PATCH: Sentry opt-out decided by the main process (see paradisSentryOptOut.ts)
 import { isParadisSentryDisabledByEnv } from '../../environment/common/paradisSentryOptOut.js';
+// PARA-PATCH: remember how often an unresponsive sample was taken, for the Sentry hang report (see paradisUnresponsiveSample.ts)
+import { markParadisUnresponsiveSample } from '../common/paradisUnresponsiveSample.js';
 
 export interface IWindowCreationOptions {
 	readonly state: IWindowState;
@@ -1873,6 +1875,7 @@ export class CodeWindow extends BaseWindow implements ICodeWindow {
 				// to the error telemetry as UnresponsiveSampleError.
 				if (Math.round((count * 100) / this.jsCallStackEffectiveSampleCount) > 20) {
 					const fakeError = new UnresponsiveError(stack, this.id, this._win?.webContents.getOSProcessId());
+					markParadisUnresponsiveSample(fakeError, count, this.jsCallStackEffectiveSampleCount, this.id); // PARA-PATCH: see paradisUnresponsiveSample.ts
 					errorHandler.onUnexpectedError(fakeError);
 				}
 				logMessage += `<${count}> ${stack}\n`;

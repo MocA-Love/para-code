@@ -17,6 +17,7 @@ import { localize } from '../../../../nls.js';
 import type { ParadisBindingAuthorityStableScope } from './paradisBindingAuthority.js';
 import { paradisParseOwnerLabel } from './paradisCursorOverlay.js';
 import type { IBrowserDeviceProfile } from '../../../../platform/browserView/common/browserView.js';
+import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 
 /**
  * ターミナルのPTY環境へ注入する、ペインを一意に識別するトークンの環境変数名。
@@ -1082,7 +1083,7 @@ export interface IParadisAgentPaneStatus {
  */
 export interface IParadisAgentPaneSession {
 	readonly token: string;
-	readonly agent: 'claude' | 'codex' | 'opencode';
+	readonly agent: Extract<ParadisAgentKind, 'claude' | 'codex' | 'opencode'>;
 	/** OpenCode の会話を再開するもの（`opencode` か、確かめて覚えた互換 CLI の実行ファイルの絶対パス）。 */
 	readonly cli?: string;
 	/** OpenCode の会話を再開できない（確かめられなかった互換 CLI の会話）。再開の案内も操作も出さない。 */
@@ -1129,7 +1130,7 @@ export interface IParadisAgentStatusSnapshot {
 // --- ワンボタンMCPセットアップ（バインディングダイアログの「自動セットアップ」用） -----------------
 
 /** セットアップ対象のエージェントCLI種別。 */
-export type ParadisMcpCli = 'claude' | 'codex' | 'antigravity';
+export type ParadisMcpCli = Extract<ParadisAgentKind, 'claude' | 'codex' | 'antigravity'>;
 
 /** 1つのMCPサーバー登録の結果。 */
 export type ParadisMcpSetupOutcome = 'success' | 'already' | 'error';

@@ -41,6 +41,7 @@ import { paradisCommandLineBypassesPermissions, paradisIsShellCommandLine } from
 import { paradisClaudeConfigDir, paradisIsWithinCodexHome } from './paradisAgentHome.js';
 import { paradisIsAntigravityTranscriptPath } from '../common/paradisAntigravityHooks.js';
 import { IParadisClaudeJob, paradisCachedClaudeJobsReader, paradisClaudeAttachNameQuery, paradisClaudeJobOwnsSession, paradisSelectClaudeJobByName } from './paradisClaudeJobNames.js';
+import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 
 const execAsync = promisify(exec);
 
@@ -66,7 +67,7 @@ function defaultClaudeJobsReader(): Promise<readonly IParadisClaudeJob[]> {
 	return cachedClaudeJobsReader(paradisClaudeConfigDir());
 }
 
-export type ParadisHookAgentKind = 'claude' | 'codex' | 'opencode' | 'antigravity';
+export type ParadisHookAgentKind = ParadisAgentKind;
 
 export type ParadisHookOrigin = 'owner' | 'nested' | 'invalid' | 'background';
 

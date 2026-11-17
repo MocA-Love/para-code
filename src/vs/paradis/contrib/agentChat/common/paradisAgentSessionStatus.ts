@@ -6,6 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import type { ParadisAgentKind } from './paradisAgentDescriptor.js';
+
 /**
  * モバイルのコンポーザーの「セッションの輪」とシートに出す、会話 1 本分の状態（agent.session-status.v1）。
  *
@@ -308,7 +310,7 @@ export interface IParadisAgentContextStatus {
 
 /** snapshot / delta の任意項目 `sessionStatus` の中身。 */
 export interface IParadisAgentSessionStatus {
-	readonly agent: 'claude' | 'codex' | 'opencode' | 'antigravity';
+	readonly agent: ParadisAgentKind;
 	/** リクエストがまだ 1 回も無ければ省く。 */
 	readonly cache?: IParadisAgentCacheStatus;
 	readonly context?: IParadisAgentContextStatus;
@@ -340,7 +342,7 @@ export class ParadisAgentSessionStatusTracker {
 	private measure: IParadisAgentContextMeasure | undefined;
 	private readonly restartMarks: number[] = [];
 
-	constructor(readonly agent: 'claude' | 'codex' | 'opencode' | 'antigravity') {
+	constructor(readonly agent: ParadisAgentKind) {
 		this.ledger = new ParadisPromptCacheLedger(agent === 'codex');
 	}
 

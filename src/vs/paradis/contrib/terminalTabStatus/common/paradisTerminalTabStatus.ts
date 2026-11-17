@@ -10,6 +10,7 @@
 // 判定。DOM にもサービスにも触れない純粋な関数だけを置く。
 
 import { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 
 /**
  * ターミナルがユーザーを呼んでいる理由。
@@ -91,7 +92,7 @@ export function paradisAttentionColor(attention: ParadisTerminalAttention): stri
 }
 
 /** タブにロゴを出すエージェント。 */
-export type ParadisTerminalTabAgent = 'claude' | 'codex' | 'antigravity';
+export type ParadisTerminalTabAgent = Extract<ParadisAgentKind, 'claude' | 'codex' | 'antigravity'>;
 
 /** エディタのターミナルタブ左に出すアイコンの種類。 */
 export type ParadisTerminalTabIconKind = 'working' | 'permission' | 'question' | 'done' | ParadisTerminalTabAgent;

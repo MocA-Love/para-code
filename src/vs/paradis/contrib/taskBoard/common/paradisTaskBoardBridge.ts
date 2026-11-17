@@ -13,6 +13,7 @@
 import { StringSHA1 } from '../../../../base/common/hash.js';
 import { paradisIsCodexFormCancel } from '../../mobileRelay/common/paradisAgentApprovalOptions.js';
 import { isRecord } from '../../../common/paradisGuards.js';
+import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 
 /** 接続口を有効にする設定（オフなら HTTP を立てない）。 */
 export const PARADIS_TASK_BOARD_BRIDGE_ENABLED_SETTING = 'paradis.taskBoard.bridge.enabled';
@@ -41,7 +42,7 @@ export const PARADIS_TASK_BOARD_REPLY_TIMEOUT_MS = 20_000;
 /** SSE の生存確認の間隔。 */
 export const PARADIS_TASK_BOARD_PING_INTERVAL_MS = 15_000;
 
-export type ParadisTaskBoardAgent = 'claude' | 'codex';
+export type ParadisTaskBoardAgent = Extract<ParadisAgentKind, 'claude' | 'codex'>;
 
 /** ボードへ流すターミナルの状態。 */
 export type ParadisTaskBoardTerminalStatus = 'working' | 'question' | 'permission' | 'review' | 'idle' | 'exited';
