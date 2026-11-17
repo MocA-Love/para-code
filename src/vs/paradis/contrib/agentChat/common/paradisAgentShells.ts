@@ -100,7 +100,8 @@ export type IParadisShellSignal =
 
 const TASK_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
-function clip(value: string, limit: number): string {
+/** `limit` 文字を超えた分を切り、末尾に省略の印を付ける。 */
+export function clip(value: string, limit: number): string {
 	// allow-any-unicode-next-line
 	return value.length > limit ? `${value.slice(0, limit)}…` : value;
 }

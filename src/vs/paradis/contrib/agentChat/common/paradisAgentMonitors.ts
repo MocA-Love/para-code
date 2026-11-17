@@ -23,7 +23,7 @@
 // Node の API は使わない（パーサーと同じく common に置き、テストから直接呼ぶ）。
 // バックグラウンドの Bash（paradisAgentShells.ts）も同じ時計と同じ知らせの口で追う（{@link ParadisAgentMonitorWatch}）。
 
-import { IParadisAgentShell, IParadisShellSignal, ParadisAgentShellTracker, paradisShellNotificationSignals } from './paradisAgentShells.js';
+import { clip, IParadisAgentShell, IParadisShellSignal, ParadisAgentShellTracker, paradisShellNotificationSignals } from './paradisAgentShells.js';
 
 /** モバイルへ送る Monitor 1件（agent の snapshot / delta の任意項目 `monitors`）。 */
 export interface IParadisAgentMonitor {
@@ -96,11 +96,6 @@ function decodeEntities(value: string): string {
 
 function safeCodePoint(code: number): string {
 	return Number.isInteger(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : '';
-}
-
-function clip(value: string, limit: number): string {
-	// allow-any-unicode-next-line
-	return value.length > limit ? `${value.slice(0, limit)}…` : value;
 }
 
 /** `Monitor event: "説明"` / `Monitor "説明" stream ended` の説明。 */

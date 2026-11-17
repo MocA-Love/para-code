@@ -24,7 +24,7 @@
 // - 取消は 2 種類ある。`cancelOwner` は暗号セッションごと捨てるとき（封緘中・送り途中も捨てる）、`cancelTag` は
 //   renderer の世代が替わったときで、まだ 1 断片も封緘していない（nonce を予約していない）送信だけを取り下げる
 
-import type { ParadisMobileLinkMetrics } from './paradisMobileLinkMetrics.js';
+import { startsWithAscii, type ParadisMobileLinkMetrics } from './paradisMobileLinkMetrics.js';
 
 /** 送る順の優先度。小さいほど先に送る。 */
 export const ParadisMobileSendPriority = {
@@ -627,18 +627,6 @@ function startsWithBytes(payload: Uint8Array, magic: readonly number[]): boolean
 	}
 	for (let i = 0; i < magic.length; i++) {
 		if (payload[i] !== magic[i]) {
-			return false;
-		}
-	}
-	return true;
-}
-
-function startsWithAscii(payload: Uint8Array, prefix: string): boolean {
-	if (payload.length < prefix.length) {
-		return false;
-	}
-	for (let i = 0; i < prefix.length; i++) {
-		if (payload[i] !== prefix.charCodeAt(i)) {
 			return false;
 		}
 	}

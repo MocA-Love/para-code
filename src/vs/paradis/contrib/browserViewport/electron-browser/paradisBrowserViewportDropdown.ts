@@ -23,7 +23,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
-import { ParadisPopoverRows, paradisWatchPopoverDismiss } from '../../../browser/paradisAnchoredPopover.js';
+import { paradisLayoutAnchoredDropdown, ParadisPopoverRows, paradisWatchPopoverDismiss } from '../../../browser/paradisAnchoredPopover.js';
 import {
 	IParadisViewportSize,
 	IParadisViewportState,
@@ -35,8 +35,6 @@ import {
 const $ = dom.$;
 
 const DROPDOWN_WIDTH = 320;
-const ANCHOR_GAP = 4;
-const EDGE_MARGIN = 8;
 
 /** 行に付ける既定の印。 */
 export interface IParadisViewportDefaultMarks {
@@ -297,34 +295,8 @@ export class ParadisBrowserViewportDropdown extends Disposable {
 	// #region 位置・イベント
 
 	private _layout(): void {
-		const containerPosition = dom.getDomNodePagePosition(this._container);
-		const anchorPosition = dom.getDomNodePagePosition(this.options.anchor);
-
-		const availableWidth = Math.max(0, containerPosition.width - EDGE_MARGIN * 2);
-		const width = Math.min(DROPDOWN_WIDTH, availableWidth);
-		this._element.style.width = `${width}px`;
-
-		const anchorTop = anchorPosition.top - containerPosition.top;
-		const anchorBottom = anchorTop + anchorPosition.height;
-		const spaceBelow = containerPosition.height - anchorBottom - ANCHOR_GAP - EDGE_MARGIN;
-		const spaceAbove = anchorTop - ANCHOR_GAP - EDGE_MARGIN;
-		const flipUp = spaceBelow < 180 && spaceAbove > spaceBelow;
-		this._element.style.maxHeight = `${Math.max(120, flipUp ? spaceAbove : spaceBelow)}px`;
-
-		const height = this._element.offsetHeight;
-		const top = flipUp
-			? Math.max(EDGE_MARGIN, anchorTop - ANCHOR_GAP - height)
-			: Math.min(anchorBottom + ANCHOR_GAP, Math.max(EDGE_MARGIN, containerPosition.height - EDGE_MARGIN - height));
-
 		// chip の右端に揃える（chip はアドレスバーの右寄りにあるので、左揃えだと右へはみ出しやすい）
-		const anchorRight = anchorPosition.left - containerPosition.left + anchorPosition.width;
-		const left = Math.min(
-			Math.max(EDGE_MARGIN, anchorRight - width),
-			Math.max(EDGE_MARGIN, containerPosition.width - width - EDGE_MARGIN),
-		);
-
-		this._element.style.top = `${Math.round(top)}px`;
-		this._element.style.left = `${Math.round(left)}px`;
+		paradisLayoutAnchoredDropdown({ container: this._container, anchor: this.options.anchor, element: this._element, width: DROPDOWN_WIDTH, align: 'end' });
 	}
 
 	private _registerListeners(): void {

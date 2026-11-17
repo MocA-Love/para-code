@@ -17,6 +17,8 @@
 // Word の画像の検査（common/word/paradisWordImageInspection.ts）はチャンク全体の CRC を JS で計算し、
 // 動く PNG を断るので、開くたびに全体を見る画像ビューアには使わない。
 
+import { skipGifSubBlocks } from '../../common/word/paradisWordImageInspection.js';
+
 export type ParadisImageFormat = 'png' | 'jpeg' | 'gif' | 'webp' | 'bmp' | 'ico' | 'avif';
 
 export interface ParadisImageDimensions {
@@ -313,18 +315,6 @@ function avifDimensions(bytes: Uint8Array): Size {
 		}
 	}
 	return best;
-}
-
-/** GIF のサブブロック列（長さ 1 バイト + データ、長さ 0 で終わる）を飛ばした次の位置。壊れていれば undefined。 */
-function skipGifSubBlocks(bytes: Uint8Array, offset: number): number | undefined {
-	while (offset < bytes.byteLength) {
-		const length = bytes[offset];
-		offset += 1 + length;
-		if (length === 0) {
-			return offset;
-		}
-	}
-	return undefined;
 }
 
 /**

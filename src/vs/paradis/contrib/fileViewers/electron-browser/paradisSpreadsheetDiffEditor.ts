@@ -56,7 +56,8 @@ import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, 
 import { appendParadisOfficePanelHead, PARADIS_OFFICE_CHANGE_PANEL_CLASS, PARADIS_OFFICE_PANEL_SURFACE_CLASS, styleParadisOfficeChip } from './paradisOfficeInspectorParts.js';
 import { appendParadisSpreadsheetSheetTab, styleParadisSpreadsheetSheetTabList } from './paradisSpreadsheetSheetTabs.js';
 import { mapSpreadsheetLogicalAnchor } from '../browser/spreadsheet/paradisSpreadsheetViewport.js';
-import { createLegacySpreadsheetPrintModel, createLegacySpreadsheetSearchPage, createParadisSpreadsheetSourceDescriptor, isParadisSpreadsheetV1Enabled, searchLegacySpreadsheetWorkbook, snapshotSpreadsheetRuntimeConfiguration } from './paradisSpreadsheetEditor.js';
+import { createLegacySpreadsheetPrintModel, createLegacySpreadsheetSearchPage, createParadisSpreadsheetSourceDescriptor, isParadisSpreadsheetV1Enabled, searchLegacySpreadsheetWorkbook } from './paradisSpreadsheetEditor.js';
+import { snapshotParadisOfficeContributionConfiguration } from '../browser/paradisOfficeConfiguration.js';
 import { PARADIS_SPREADSHEET_CHANGE_CATEGORIES, ParadisSpreadsheetChangeInspector, ParadisSpreadsheetOpenGeneration, resolveParadisSpreadsheetNavigation, restoreParadisSpreadsheetViewState, type ParadisSpreadsheetViewState } from './spreadsheet/paradisSpreadsheetChangeInspector.js';
 import { renderSpreadsheetDiagnosticsRibbon } from './spreadsheet/paradisSpreadsheetDiagnostics.js';
 import { printParadisOfficeModelInBrowser, withParadisOfficePrintResult } from './paradisOfficePrintService.js';
@@ -598,7 +599,7 @@ export class ParadisSpreadsheetDiffEditor extends EditorPane {
 		}
 
 		const diffInput = input as ParadisSpreadsheetDiffInput;
-		this._runtimeConfiguration = snapshotSpreadsheetRuntimeConfiguration(this._configurationService);
+		this._runtimeConfiguration = snapshotParadisOfficeContributionConfiguration(this._configurationService);
 		// 母数は「利用者が1つの比較を開いた」回数。左右の組が同じならタブを往復しても増えない。
 		this._probe.beginOpen(
 			`${diffInput.originalResource.toString()}\u0000${diffInput.modifiedResource.toString()}`,
