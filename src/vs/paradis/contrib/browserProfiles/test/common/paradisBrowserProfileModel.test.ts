@@ -11,6 +11,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import {
 	IParadisBrowserProfile,
 	PARADIS_BROWSER_PROFILE_COLORS,
+	paradisDeserializeAgentAllowedProfiles,
 	paradisDeserializeProfiles,
 	paradisFindProfileByName,
 	paradisIsDuplicateProfileName,
@@ -101,5 +102,15 @@ suite('paradisBrowserProfileModel', () => {
 			[paradisNormalizeProfileName('P\u200bRD'), paradisNormalizeProfileName('Gmail\u202eliamG'), paradisNormalizeProfileName('\ufeffWork\u2066')],
 			['P RD', 'Gmail liamG', 'Work'],
 		);
+	});
+
+	// 「今後は聞かない」で残した許可。壊れた値は許可が無い側へ倒す（Q670）
+	test('reads the profiles allowed for agents, dropping anything that is not a profile id', () => {
+		assert.deepStrictEqual([
+			[...paradisDeserializeAgentAllowedProfiles('["a3f19c2b7e04","../x",3,"a3f19c2b7e04"]')],
+			[...paradisDeserializeAgentAllowedProfiles('{"a3f19c2b7e04":true}')],
+			[...paradisDeserializeAgentAllowedProfiles('not json')],
+			[...paradisDeserializeAgentAllowedProfiles(undefined)],
+		], [['a3f19c2b7e04'], [], [], []]);
 	});
 });

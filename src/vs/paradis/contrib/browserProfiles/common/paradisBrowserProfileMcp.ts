@@ -37,12 +37,6 @@ export type ParadisOpenProfileFailure =
 	 * 共有すると「ログイン済みのはずが空のセッション」をエージェントへ渡すことになるので、開かずに断る。
 	 */
 	| 'profileNotShareable'
-	/**
-	 * ペインが属するスペースが今画面に出ていない。`preview_file` と違って予約はしない:
-	 * 開いたページを即座にこのペインへ共有するのがこのツールの目的で、後から開いても
-	 * エージェントはもう操作できないため。
-	 */
-	| 'spaceNotVisible'
 	/** ペインが属するスペースへ二度と到達できない（リポジトリ / worktree が消えた）。 */
 	| 'unreachableSpace'
 	/**
@@ -75,17 +69,43 @@ export type IParadisOpenProfileResult =
 		readonly bound: boolean;
 		/** 開いたタブの ID（close_browser_tab / select_browser_tab に使う）。 */
 		readonly tabId?: string;
+		/**
+		 * ペインのスペースが画面に出ていないので、タブはそのスペースに置かずに開いた（open_browser_tab と同じ。
+		 * エージェントはすぐ使え、ユーザーにはそのスペースへ戻ったときに見える）。
+		 */
+		readonly spaceNotVisible?: boolean;
 	}
 	| {
 		readonly ok: false;
 		readonly reason: ParadisOpenProfileFailure;
 	};
 
+/**
+ * ユーザーのプロファイル（ユーザーのもの、別のペインが作ったもの）をエージェントが使うときの許可の設定。
+ * 共有プロセスではなく、ペインのウィンドウ（承認を出す側）が読む。
+ */
+export const PARADIS_BROWSER_PROFILE_ACCESS_SETTING = 'paradis.agentBrowser.profileAccess';
+
+/**
+ * - ask: 毎回聞く（「今後は聞かない」は出さない）
+ * - remembered: ユーザーが「今後は聞かない」で許可したプロファイルは聞かずに使う。ほかは聞く
+ * - all: すべてのプロファイルを聞かずに使う
+ */
+export type ParadisProfileAccess = 'ask' | 'remembered' | 'all';
+
+export const PARADIS_BROWSER_PROFILE_ACCESS_DEFAULT: ParadisProfileAccess = 'remembered';
+
+/** 設定の値を読む。知らない値（手で書き換えた・古い版）は、いちばん慎重な ask に倒す。 */
+export function paradisReadProfileAccess(value: unknown): ParadisProfileAccess {
+	return value === 'remembered' || value === 'all' || value === 'ask' ? value : 'ask';
+}
+
 // ---------------------------------------------------------------------------------------------
 // エージェントによるプロファイルの一覧・作成・切替・削除。同じチャネルに相乗りする。
-//  - 一覧に名前を出すのは、そのペインのエージェントが作ったものだけ。ほかは数だけ知らせる
+//  - 一覧に名前を出すのは、そのペインのエージェントが作ったものと、聞かずに使ってよいもの
+//    （設定が all ならすべて、remembered なら許可を残したもの）。ほかは数だけ知らせる
 //  - それ以外（ユーザーのもの、別のペインが作ったもの。ログイン状態を含みうる）を開く・切り替える
-//    ときは、ユーザーの承認を通す
+//    ときは、ユーザーの承認を通す（聞かずに使ってよいものでも、拡張機能の知らせが要るときは聞く）
 //  - 削除できるのは、そのペインのエージェントが作り、ユーザーがまだ自分で使っていないものだけ。
 //    それ以外の名前には「そんなプロファイルは無い」と同じ答えを返す（名前の有無を探らせない）
 //  - 切替できるのは、そのペインのエージェントが自分で開いたタブだけ（ユーザーのタブのログイン状態は変えない）
@@ -115,7 +135,10 @@ export const PARADIS_AGENT_CREATED_PROFILE_TOTAL_LIMIT = 30;
 /** エージェントへ見せるプロファイル1件分。ID やパーティション名は見せない。 */
 export interface IParadisAgentProfileInfo {
 	readonly name: string;
-	/** このペインのエージェントが作ったもの（削除できるのはこれだけ）。 */
+	/**
+	 * このペインのエージェントが作ったもの（削除できるのはこれだけ）。false はユーザーのプロファイルで、
+	 * 聞かずに使ってよいもの（設定と、ユーザーが残した許可による）。
+	 */
 	readonly createdByYou: boolean;
 	/** 保存されたログイン状態（Cookie）があるか。取得できなければ undefined。 */
 	readonly hasStoredLogin: boolean | undefined;
@@ -155,10 +178,12 @@ export type ParadisProfileManageFailure =
 
 export type IParadisListProfilesResult = {
 	readonly ok: true;
-	/** このペインのエージェントが作ったプロファイルだけ。 */
+	/** このペインのエージェントが作ったプロファイルと、聞かずに使ってよいプロファイル。 */
 	readonly profiles: readonly IParadisAgentProfileInfo[];
-	/** 名前を伏せたプロファイル（ユーザーのもの、別のペインが作ったもの）の数。 */
+	/** 名前を伏せたプロファイル（使うにはユーザーの承認が要るもの）の数。 */
 	readonly hiddenProfileCount: number;
+	/** 許可の設定（{@link PARADIS_BROWSER_PROFILE_ACCESS_SETTING}）。 */
+	readonly access: ParadisProfileAccess;
 	/** ワークスペースを信頼していて、名前付きプロファイルを使えるか。 */
 	readonly usable: boolean;
 	/** ネットワークフィルタが無効で、プロファイルのページをエージェントへ共有できるか。 */
