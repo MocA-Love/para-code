@@ -101,6 +101,11 @@ interface IParadisRenderSnapshot {
 	readonly divergence: IParadisRenderDivergence;
 	/** 画面の画像（PNG の base64）。記録するときだけ作る。 */
 	readonly png: string | undefined;
+	/**
+	 * ビューポートに見えている文字。1回目と2回目で変わっていたら出力が流れているので判定しない。記録には残さない。
+	 * 欠けが疑わしいときだけ作る（比較にしか使わないため）。
+	 */
+	readonly bufferText: string | undefined;
 	readonly rows: number;
 	readonly cols: number;
 }
@@ -135,7 +140,6 @@ function readRenderTarget(raw: RawXtermTerminal): { canvas: HTMLCanvasElement; g
 	}
 }
 
-/** ビューポートに見えている文字。1回目と2回目で変わっていたら出力が流れているので判定しない。記録には残さない。 */
 function viewportText(raw: RawXtermTerminal): string {
 	const buffer = raw.buffer.active;
 	const lines: string[] = [];
@@ -177,6 +181,7 @@ function takeSnapshot(raw: RawXtermTerminal, withImage: boolean): IParadisRender
 		return {
 			divergence,
 			png: dataUrl?.slice(dataUrl.indexOf(',') + 1),
+			bufferText: paradisIsSuspectDivergence(divergence) ? viewportText(raw) : undefined,
 			rows: grid.rows,
 			cols: grid.cols,
 		};
@@ -275,8 +280,6 @@ class ParadisRenderRepairContribution extends Disposable implements ITerminalCon
 		if (!first || !paradisIsSuspectDivergence(first.divergence)) {
 			return;
 		}
-		// 欠けが疑わしいときだけ、同じ時点の画面の文字を取っておく（2 回目との比較にしか使わない）
-		const firstText = viewportText(xterm.raw);
 		await this._wait(CONFIRM_DELAY);
 		if (!this._canSample()) {
 			return;
@@ -284,7 +287,7 @@ class ParadisRenderRepairContribution extends Disposable implements ITerminalCon
 		const second = takeSnapshot(xterm.raw, record);
 		// 本物の欠けは同じセルに居座る。出力が流れている・描画が追いついていないだけなら、
 		// 文字か欠けの位置のどちらかが動く。
-		if (!second || !paradisIsSuspectDivergence(second.divergence) || viewportText(xterm.raw) !== firstText
+		if (!second || !paradisIsSuspectDivergence(second.divergence) || second.bufferText !== first.bufferText
 			|| !paradisMissingSetsOverlap(first.divergence.missingCells, second.divergence.missingCells)) {
 			return;
 		}
