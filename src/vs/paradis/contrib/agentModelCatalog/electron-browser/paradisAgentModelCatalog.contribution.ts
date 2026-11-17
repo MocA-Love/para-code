@@ -216,11 +216,7 @@ export class ParadisAgentModelCatalogService extends Disposable implements IPara
 
 registerSingleton(IParadisAgentModelCatalogService, ParadisAgentModelCatalogService, InstantiationType.Delayed);
 
-/**
- * 起動したら一度取っておく（最初にダイアログを開いたときから新しい候補が並ぶように）。
- * 復元の直後には要らないので Eventually で始める（shared process は鮮度を見る前に CLI の `--version` を起動する。
- * 一覧を使うダイアログは、開いたときに自分でも refresh() を呼ぶ）。
- */
+/** 起動したら一度取っておく（最初にダイアログを開いたときから新しい候補が並ぶように）。 */
 class ParadisAgentModelCatalogWarmup implements IWorkbenchContribution {
 
 	static readonly ID = 'paradis.agentModelCatalogWarmup';
@@ -230,4 +226,4 @@ class ParadisAgentModelCatalogWarmup implements IWorkbenchContribution {
 	}
 }
 
-registerWorkbenchContribution2(ParadisAgentModelCatalogWarmup.ID, ParadisAgentModelCatalogWarmup, WorkbenchPhase.Eventually);
+registerWorkbenchContribution2(ParadisAgentModelCatalogWarmup.ID, ParadisAgentModelCatalogWarmup, WorkbenchPhase.AfterRestored);

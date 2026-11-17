@@ -230,13 +230,6 @@ export class ParadisBrowserExtensionUserScripts {
 			delete this._state.registrations[place][extensionId];
 		}
 		this._closeFor(port => port.extensionId === extensionId, NO_RECEIVER);
-		// world の番号の対応も忘れる（拡張機能・world・origin ごとに 1 件ずつ足すだけで、ほかに消す場所が無い）
-		const worldPrefix = `${extensionId}\u0000`;
-		for (const key of this._worldNumbers.keys()) {
-			if (key.startsWith(worldPrefix)) {
-				this._worldNumbers.delete(key);
-			}
-		}
 		await this._save();
 	}
 
