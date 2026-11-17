@@ -23,11 +23,8 @@ import { IConfigurationService } from '../../configuration/common/configuration.
 import { IInstantiationService } from '../../instantiation/common/instantiation.js';
 import { localize } from '../../../nls.js';
 import { IAgentNetworkFilterService } from '../../networkFilter/common/networkFilterService.js';
-// PARA-PATCH: load bundled devtools extensions (React DevTools) into browser view sessions
-import { paradisInstallBrowserExtensions } from '../../../paradis/contrib/browserExtensions/electron-main/paradisBrowserExtensions.js';
-import { paradisApplyChromeLikeUserAgent } from '../../../paradis/contrib/browserUserAgent/electron-main/paradisBrowserUserAgent.js'; // PARA-PATCH: strip Electron tokens from the built-in browser UA
-// PARA-PATCH: auto-save browser downloads to a fixed folder instead of showing a native save dialog
-import { paradisConfigureBrowserDownloads } from '../../../paradis/contrib/browserDownloads/electron-main/paradisBrowserDownloads.js';
+// PARA-PATCH: the fork's session setup (bundled and user-installed extensions, Chrome-like UA, auto-saved downloads)
+import { paradisConfigureBrowserSession } from './paradisBrowserSessionSetup.js';
 // PARA-PATCH: named persistent browser profiles get their own persist: partition
 import { paradisBrowserProfilePartition, paradisProfileIdFromSessionId } from '../../../paradis/contrib/browserProfiles/common/paradisBrowserProfileId.js';
 // PARA-PATCH: remote start/stop events for the browser extensions owner adapter in configure()
@@ -448,19 +445,17 @@ export class BrowserSession {
 	 * Apply permissions, protocols, and preload scripts to the session.
 	 */
 	private configure(): void {
-		// PARA-PATCH: bundled React DevTools + user-installed extensions (experimental). 1.144.0 removed
-		// IBrowserSessionRemote.isRemote/onDidStart/onDidStop; whether the session goes through a remote network
-		// now follows its network, which setNetwork() can still change (see the events fired there).
+		// PARA-PATCH: the fork's session setup (see paradisBrowserSessionSetup.ts). The owner is for the browser
+		// extensions: 1.144.0 removed IBrowserSessionRemote.isRemote/onDidStart/onDidStop; whether the session goes
+		// through a remote network now follows its network, which setNetwork() can still change (see the events fired there).
 		const paradisSession = this;
-		paradisInstallBrowserExtensions(this.electronSession, {
+		paradisConfigureBrowserSession(this.electronSession, this.configurationService, {
 			id: this.id, storageScope: this.storageScope, remote: {
 				get isRemote() { return paradisSession._network !== undefined; },
 				onDidStart: this._paradisOnDidStartRemote.event,
 				onDidStop: this._paradisOnDidStopRemote.event,
 			}
 		});
-		paradisApplyChromeLikeUserAgent(this.electronSession, this.configurationService); // PARA-PATCH: strip Electron (and by default ParaCode) tokens from UA
-		paradisConfigureBrowserDownloads(this.electronSession, this.configurationService); // PARA-PATCH: auto-save downloads to a fixed folder, no save dialog
 		this._permissions.configure(this.electronSession);
 		this.electronSession.registerPreloadScript({
 			type: 'frame',
