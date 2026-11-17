@@ -25,6 +25,12 @@ const useAgentHistoryStore = create<{
 const NO_MESSAGES: readonly AgentChatMessage[] = [];
 
 /**
+ * 合わせ済みの印。この古い発言は、この会話（epoch）とこの発言の並びに対して合わせ直しても変わらないと分かっている。
+ * 発言が増えない更新（状態だけの差分）のたびに同じ合わせ直しを繰り返さないために持つ。
+ */
+const settledHistory = new WeakMap<AgentHistoryState, { readonly epoch: string | undefined; readonly live: readonly AgentChatMessage[] }>();
+
+/**
  * 会話の状態が変わるたびに、古い発言を合わせ直す（画面を開いていなくても）。差分で 500 件に切られた発言は古い発言の
  * 末尾へ繰り入れてから合わせる（NG-1）。古い発言を持っているターミナルだけを見る。
  */
@@ -39,14 +45,24 @@ useAppStore.subscribe((state, previous) => {
 		if (history === undefined || chat === before) {
 			continue;
 		}
+		const live = chat?.messages ?? NO_MESSAGES;
+		// 発言・会話・切られた分のどれも前回と同じで、この古い発言を同じ入力で合わせ済みなら、結果は変わらない。
+		const settled = settledHistory.get(history);
+		if (settled !== undefined && settled.epoch === chat?.epoch && settled.live === live
+			&& before !== undefined && before.epoch === chat?.epoch && before.messages === live && before.trimmedByDelta === chat?.trimmedByDelta) {
+			continue;
+		}
 		const previousLive = before !== undefined && before.epoch === chat?.epoch ? before.messages : NO_MESSAGES;
 		// この更新で切られた発言（前の状態と同じ印なら、もう繰り入れ済み）。
 		const trim = chat?.trimmedByDelta;
 		const trimmedByUpdate = trim !== undefined && trim !== before?.trimmedByDelta && trim.epoch === chat?.epoch ? trim.messages : NO_MESSAGES;
-		const absorbed = absorbTrimmedIntoHistory(history, chat?.epoch, previousLive, chat?.messages ?? NO_MESSAGES, trimmedByUpdate);
-		const next = reconcileAgentHistory(absorbed, chat?.epoch, chat?.messages ?? NO_MESSAGES);
+		const absorbed = absorbTrimmedIntoHistory(history, chat?.epoch, previousLive, live, trimmedByUpdate);
+		const next = reconcileAgentHistory(absorbed, chat?.epoch, live);
 		if (next !== history) {
 			store.put(terminalKey, next);
+		}
+		if (next !== undefined) {
+			settledHistory.set(next, { epoch: chat?.epoch, live });
 		}
 	}
 });
