@@ -84,8 +84,9 @@ export function registerParadisMainProcessContributions(
 	// pin the real remote-debugging port now, before a second instance can overwrite
 	// DevToolsActivePort — this process is the one that wrote it (see paradisCdpUpstreamPortPin.ts).
 	paradisCdpTargetService.pinUpstreamPort();
-	// the shared process (mobile browser mirror) subscribes to the agent cursor only while a phone watches; do not buffer it until then
-	const paradisCdpTargetChannel = ProxyChannel.fromService(paradisCdpTargetService, disposables, { unbufferedEvents: ['onDidChangeAgentCursor'] });
+	// the shared process (mobile browser mirror) subscribes to the agent cursor only while a phone watches; do not buffer it until then.
+	// Frames (onDidFrame, a base64 JPEG each) are the same: the mirror only forwards a frame to a session that already exists
+	const paradisCdpTargetChannel = ProxyChannel.fromService(paradisCdpTargetService, disposables, { unbufferedEvents: ['onDidChangeAgentCursor', 'onDidFrame'] });
 	sharedProcessClient.then(client => client.registerChannel(PARADIS_CDP_TARGET_CHANNEL, paradisCdpTargetChannel));
 	// mirror the agent cursor to the workbench too (the browser wall redraws it over the thumbnails; a page that is not on screen never paints its own overlay). Read-only surface: the renderer only subscribes to the event.
 	const paradisAgentCursorSurface: IParadisAgentCursorEvents = { onDidChangeAgentCursor: paradisCdpTargetService.onDidChangeAgentCursor };
