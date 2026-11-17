@@ -1575,22 +1575,24 @@ export class TerminalTaskSystem extends Disposable implements ITaskSystem {
 
 		const taskKey = task.getMapKey();
 		let terminalToReuse: ITerminalData | undefined;
+		// PARA-PATCH: skip (and keep for later) terminals parked with another space; they are not in instances, so reusing one ran the task out of sight and threw in setActiveInstance
+		const paradisIsReusable = (terminalId: string | undefined): terminalId is string => !!terminalId && !!this._terminals[terminalId] && this._terminalService.instances.includes(this._terminals[terminalId].terminal);
 		if (prefersSameTerminal) {
 			const terminalId = this._sameTaskTerminals[taskKey];
-			if (terminalId) {
+			if (paradisIsReusable(terminalId)) { // PARA-PATCH: see paradisIsReusable
 				terminalToReuse = this._terminals[terminalId];
 				delete this._sameTaskTerminals[taskKey];
 			}
 		} else if (allowsSharedTerminal) {
 			// Always allow to reuse the terminal previously used by the same task.
-			let terminalId = this._idleTaskTerminals.remove(taskKey);
+			let terminalId = paradisIsReusable(this._idleTaskTerminals.get(taskKey)) ? this._idleTaskTerminals.remove(taskKey) : undefined; // PARA-PATCH: see paradisIsReusable
 			if (!terminalId) {
 				// There is no idle terminal which was used by the same task.
 				// Search for any idle terminal used previously by a task of the same group
 				// (or, if the task has no group, a terminal used by a task without group).
 				for (const taskId of this._idleTaskTerminals.keys()) {
 					const idleTerminalId = this._idleTaskTerminals.get(taskId)!;
-					if (idleTerminalId && this._terminals[idleTerminalId] && this._terminals[idleTerminalId].group === group) {
+					if (paradisIsReusable(idleTerminalId) && this._terminals[idleTerminalId].group === group) { // PARA-PATCH: see paradisIsReusable
 						terminalId = this._idleTaskTerminals.remove(taskId);
 						break;
 					}
