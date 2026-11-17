@@ -24,17 +24,23 @@ import { createParadisTitlebarFit } from '../browser/paradisTitlebarFit.js';
  */
 export function createParadisTitlebarWidgets(instantiationService: IInstantiationService, rootContainer: HTMLElement, leftContent: HTMLElement): IDisposable {
 	const store = new DisposableStore();
-	// CPU/RAM usage indicator (Superset resource monitor port)
-	store.add(createParadisResourceMonitorWidget(instantiationService, leftContent));
-	// AI limits monitor (Claude/Codex rate-limit ring gauges next to the resource monitor)
-	store.add(createParadisLimitsMonitorWidget(instantiationService, leftContent));
-	// Claude/Codex/GitHub service status chips next to the limits monitor
-	store.add(createParadisServiceStatusWidget(instantiationService, leftContent));
-	// local/remote listening-port list, grouped with the other left-side status widgets instead of
-	// the right side (right side ended up isolated next to the window controls depending on
-	// whether actionToolBarElement existed yet).
-	store.add(createParadisPortListWidget(instantiationService, leftContent));
-	// fold the widgets above by the title bar's own width so they never overlap the command center
-	store.add(createParadisTitlebarFit(rootContainer, leftContent));
+	try {
+		// CPU/RAM usage indicator (Superset resource monitor port)
+		store.add(createParadisResourceMonitorWidget(instantiationService, leftContent));
+		// AI limits monitor (Claude/Codex rate-limit ring gauges next to the resource monitor)
+		store.add(createParadisLimitsMonitorWidget(instantiationService, leftContent));
+		// Claude/Codex/GitHub service status chips next to the limits monitor
+		store.add(createParadisServiceStatusWidget(instantiationService, leftContent));
+		// local/remote listening-port list, grouped with the other left-side status widgets instead of
+		// the right side (right side ended up isolated next to the window controls depending on
+		// whether actionToolBarElement existed yet).
+		store.add(createParadisPortListWidget(instantiationService, leftContent));
+		// fold the widgets above by the title bar's own width so they never overlap the command center
+		store.add(createParadisTitlebarFit(rootContainer, leftContent));
+	} catch (error) {
+		// 途中で失敗したら、先に作った部品を持ち主なしで残さない
+		store.dispose();
+		throw error;
+	}
 	return store;
 }
