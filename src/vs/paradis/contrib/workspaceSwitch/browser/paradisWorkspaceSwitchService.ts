@@ -41,6 +41,7 @@ import { IParadisAuxiliaryWindowScopeService, IParadisSwitchOptions, IParadisWor
 import { IParadisEditorScopeService, ParadisScopeRetirementPreparation } from '../common/paradisEditorScope.js';
 import { ParadisScopeRetirementJournal, ParadisScopeRetirementJournalLoadState } from '../common/paradisScopeRetirementJournal.js';
 import { paradisApplyDesiredOrder } from '../common/paradisWorkspaceTreeState.js';
+import { paradisHoldTerminalLayout } from '../../terminalRenderer/browser/paradisTerminalLayoutHold.js';
 import { paradisAreAllParkedForScope, paradisParkTerminalEditorInstance, paradisRegisterParkedTerminalEditorEndedListener, paradisRegisterTerminalEditorRevealGuard, paradisRetireParkedTerminalEditorInstances, paradisTerminalEditorOpening, paradisTerminalEditorOwnerScope } from './paradisTerminalEditorPark.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
 import { IParadisTerminalEditorPlacement, PARADIS_TERMINAL_EDITOR_PLACEMENTS_STORAGE_KEY, paradisUpdateTerminalEditorPlacements } from '../common/paradisTerminalEditorPlacement.js';
@@ -1835,46 +1836,55 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 
 					// 切り替え元のエディタ状態 (レイアウト + タブ集合) とパネル表示状態を退避する
 					if (previousKey !== undefined) {
-						timeSyncPhase('capture_scope', () => {
-							this.editorScopeService.captureScope(previousKey, excludedEditors => this.saveWorkingSetFor(previousKey, excludedEditors));
-							// **`sourceCaptured` はここで立てる。** 退避が済んだ時点でロールバックの
-							// 対象になる。パネル表示の保存まで含めた後ろへ動かすと、そちらが投げたときに
-							// 退避済みのエディタ状態を復元しないまま戻ってしまう。
-							sourceCaptured = true;
-							this.updateSwitchTransaction(switchTransaction, 'sourceCaptured');
-							this.savePanelVisibilityFor(previousKey);
-						});
+						// 外す間、隣のグループが全幅になってもターミナルの大きさを変えない (paradisTerminalLayoutHold.ts)。
+						const terminalLayoutHold = paradisHoldTerminalLayout(this.mainAreaTerminalEditors());
+						try {
+							timeSyncPhase('capture_scope', () => {
+								this.editorScopeService.captureScope(previousKey, excludedEditors => this.saveWorkingSetFor(previousKey, excludedEditors));
+								// **`sourceCaptured` はここで立てる。** 退避が済んだ時点でロールバックの
+								// 対象になる。パネル表示の保存まで含めた後ろへ動かすと、そちらが投げたときに
+								// 退避済みのエディタ状態を復元しないまま戻ってしまう。
+								sourceCaptured = true;
+								this.updateSwitchTransaction(switchTransaction, 'sourceCaptured');
+								this.savePanelVisibilityFor(previousKey);
+							});
 
-						// エディタターミナルは working set の保存後・適用前にインスタンスを input から
-						// 切り離して生かしたままパークする。切り離さないと applyWorkingSet のエディタ close で
-						// PTY ごと破棄され、戻ってきた際に死んだ pty への再接続で壊れたターミナルが復元される
-						// (詳細は paradisTerminalEditorPark.ts のコメント参照)。working set を保存して
-						// いない場合 (previousKey なし) は復元先が無くインスタンスが孤児化するためパークしない。
-						// **端末数に比例する区間**。`safe_terminal_editors` を一緒に送っているのは、
-						// ここの伸びと突き合わせるため。
-						const parkedNonces = new Set<string>();
-						timeSyncPhase('park_terminals', () => this.parkTerminalEditorsFor(previousKey, instance => {
-							// 実際に park できた nonce だけを控える。復元時に「この顔ぶれが
-							// そのまま台帳に残っているか」を名指しで確かめるための唯一の材料。
-							// park に失敗した入力（PTY ID 未確定・nonce 不正）は載らないので、
-							// 集合が working set の端末数に届かず、判定は「引く側」へ倒れる。
-							// 持ち主のスペースへ park した端末は切り替え元の working set に載っていない
-							// (`captureScope` が除外する) ので数えない。
-							const parkedNonce = paradisTerminalIdentityNonce(instance.shellIntegrationNonce);
-							if (parkedNonce !== undefined && this.ownerParkScope(instance, previousKey) === previousKey) {
-								parkedNonces.add(parkedNonce);
+							// エディタターミナルは working set の保存後・適用前にインスタンスを input から
+							// 切り離して生かしたままパークする。切り離さないと applyWorkingSet のエディタ close で
+							// PTY ごと破棄され、戻ってきた際に死んだ pty への再接続で壊れたターミナルが復元される
+							// (詳細は paradisTerminalEditorPark.ts のコメント参照)。working set を保存して
+							// いない場合 (previousKey なし) は復元先が無くインスタンスが孤児化するためパークしない。
+							// **端末数に比例する区間**。`safe_terminal_editors` を一緒に送っているのは、
+							// ここの伸びと突き合わせるため。
+							const parkedNonces = new Set<string>();
+							timeSyncPhase('park_terminals', () => this.parkTerminalEditorsFor(previousKey, instance => {
+								// 実際に park できた nonce だけを控える。復元時に「この顔ぶれが
+								// そのまま台帳に残っているか」を名指しで確かめるための唯一の材料。
+								// park に失敗した入力（PTY ID 未確定・nonce 不正）は載らないので、
+								// 集合が working set の端末数に届かず、判定は「引く側」へ倒れる。
+								// 持ち主のスペースへ park した端末は切り替え元の working set に載っていない
+								// (`captureScope` が除外する) ので数えない。
+								const parkedNonce = paradisTerminalIdentityNonce(instance.shellIntegrationNonce);
+								if (parkedNonce !== undefined && this.ownerParkScope(instance, previousKey) === previousKey) {
+									parkedNonces.add(parkedNonce);
+								}
+							},
+								// 持ち主が別のスペースだと分かっている端末はそちらへ park する。子プロセスのある端末は
+								// `captureScope` が持ち主の預け先へ回すので、子プロセスの有無で行き先を変えない。
+								instance => this.ownerParkScope(instance, previousKey),
+								// 別のスペースへ開いている途中の端末は、ここでは行き先が分からない。後の2回
+								// （開き終わるのを待つ回と適用直前の回）に任せる。
+								instance => paradisTerminalEditorOpening(instance) !== undefined));
+							// **永続化しない。** 再起動を跨ぐと台帳の中身は起動時の孤児復活で作られた別物に
+							// なるので、「前回パークした顔ぶれ」として使ってはいけない。世代を跨いだ復元は
+							// 索引が唯一の防波堤なので、集合が無い＝必ず引く、で正しい。
+							this._workingSetTerminalNonces.set(previousKey, parkedNonces);
+						} finally {
+							// 外さずにエディタに残ったターミナルは layout を戻し、止めていた間の layout を受けていないので測り直す。
+							if (terminalLayoutHold.end(this.mainAreaTerminalEditors())) {
+								this.layoutService.layout();
 							}
-						},
-							// 持ち主が別のスペースだと分かっている端末はそちらへ park する。子プロセスのある端末は
-							// `captureScope` が持ち主の預け先へ回すので、子プロセスの有無で行き先を変えない。
-							instance => this.ownerParkScope(instance, previousKey),
-							// 別のスペースへ開いている途中の端末は、ここでは行き先が分からない。後の2回
-							// （開き終わるのを待つ回と適用直前の回）に任せる。
-							instance => paradisTerminalEditorOpening(instance) !== undefined));
-						// **永続化しない。** 再起動を跨ぐと台帳の中身は起動時の孤児復活で作られた別物に
-						// なるので、「前回パークした顔ぶれ」として使ってはいけない。世代を跨いだ復元は
-						// 索引が唯一の防波堤なので、集合が無い＝必ず引く、で正しい。
-						this._workingSetTerminalNonces.set(previousKey, parkedNonces);
+						}
 
 						// 上のループが拾えなかったエディタターミナルを、待ってから拾い直す。適用は切り替え元の
 						// エディタを全部閉じ、閉じられたターミナルは PTY ごと破棄される。拾えないのは、作った直後で
@@ -2754,6 +2764,15 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 				this.terminalEditorService.detachInstance(instance);
 			}
 		}
+	}
+
+	/** メインのエディタ領域にあるエディタのターミナル (retain 済みのものも含む)。 */
+	private mainAreaTerminalEditors(): ITerminalInstance[] {
+		return this.terminalEditorService.instances.filter(instance => {
+			const input = this.terminalEditorService.getInputFromResource(instance.resource);
+			const containingGroup = this.editorGroupsService.groups.find(group => group.contains(input));
+			return containingGroup !== undefined && this.editorGroupsService.getPart(containingGroup) === this.editorGroupsService.mainPart;
+		});
 	}
 
 	private parkableTerminalEditors(): ITerminalInstance[] {

@@ -840,6 +840,28 @@ suite('Workbench - TerminalInstance', () => {
 			);
 		});
 
+		// PARA-PATCH: a terminal that was never opened keeps the replayed size when the replay override is removed
+		test('keeps the replayed size when the replay ends on a terminal that was never opened', async () => {
+			const instance = await createTerminalInstance();
+			// basePty のリプレイ: pty の大きさで上書きし、終わると即時で外す。
+			instance.setOverrideDimensions({ cols: 84, rows: 29, forceExactSize: true }, true);
+			instance.setOverrideDimensions(undefined, true);
+			await timeout(0);
+			deepStrictEqual({ size: `${instance.cols}x${instance.rows}`, xterm: `${instance.xterm!.raw.cols}x${instance.xterm!.raw.rows}` }, { size: '84x29', xterm: '84x29' });
+		});
+
+		// PARA-PATCH: a terminal that has been laid out still goes back to its own size when the replay ends
+		test('goes back to its own size when the replay ends on a terminal that was laid out', async () => {
+			const instance = await createTerminalWithLongLine();
+			await timeout(0);
+			const own = `${instance.xterm!.raw.cols}x${instance.xterm!.raw.rows}`;
+			instance.setOverrideDimensions({ cols: 30, rows: 5, forceExactSize: true }, true);
+			const overridden = `${instance.xterm!.raw.cols}x${instance.xterm!.raw.rows}`;
+			instance.setOverrideDimensions(undefined, true);
+			await timeout(0);
+			deepStrictEqual({ overridden, after: `${instance.xterm!.raw.cols}x${instance.xterm!.raw.rows}` }, { overridden: '30x5', after: own });
+		});
+
 		// PARA-PATCH: redraw terminals after window moves — test renderer recreation on cross-window reattach
 		test('recreates the renderer when reattached to a different window document', async () => {
 			const instance = await createTerminalInstance();

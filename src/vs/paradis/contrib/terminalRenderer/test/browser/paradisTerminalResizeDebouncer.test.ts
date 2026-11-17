@@ -59,12 +59,38 @@ suite('ParadisTerminalResizeDebouncer', () => {
 		assert.deepStrictEqual({ synchronously, sent }, { synchronously: ['27x41'], sent: ['27x41'] });
 	});
 
-	test('flush sends the pending size synchronously', async () => {
+	test('flush sends the pending size in the next microtask, not synchronously', async () => {
 		const { debouncer, sent } = create();
 		debouncer.resize(27, 41, false);
 		debouncer.flush();
 		const synchronously = [...sent];
 		await nextMicrotask();
-		assert.deepStrictEqual({ synchronously, sent }, { synchronously: ['27x41'], sent: ['27x41'] });
+		assert.deepStrictEqual({ synchronously, sent }, { synchronously: [], sent: ['27x41'] });
+	});
+
+	test('reopening the panel sends only the real size when flush is followed by a new size in the same task', async () => {
+		const { debouncer, sent } = create();
+		// パネルのグリッドが見える直前に古い高さで layout し、setVisible(true) が flush してから本当の高さで _resize する。
+		debouncer.resize(83, 14, false);
+		debouncer.flush();
+		debouncer.resize(83, 13, false);
+		await nextMicrotask();
+		assert.deepStrictEqual(sent, ['83x13']);
+	});
+
+	test('flush sends both dimensions at once for a long buffer, like the upstream flush', async () => {
+		const sent: string[] = [];
+		const xterm = { raw: { buffer: { normal: { length: 500 } }, element: mainWindow.document.body } } as unknown as XtermTerminal;
+		const debouncer = store.add(new ParadisTerminalResizeDebouncer(
+			() => true,
+			() => xterm,
+			(cols, rows) => sent.push(`${cols}x${rows}`),
+			cols => sent.push(`${cols}x-`),
+			rows => sent.push(`-x${rows}`),
+		));
+		debouncer.flush();
+		debouncer.resize(40, 29, false);
+		await nextMicrotask();
+		assert.deepStrictEqual(sent, ['40x29']);
 	});
 });

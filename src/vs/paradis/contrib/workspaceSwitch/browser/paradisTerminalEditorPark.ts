@@ -11,6 +11,7 @@ import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js'
 import { TerminalExitReason } from '../../../../platform/terminal/common/terminal.js';
 import { IDeserializedTerminalEditorInput, ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
+import { paradisReleaseTerminalLayout } from '../../terminalRenderer/browser/paradisTerminalLayoutHold.js';
 import { paradisIsTerminalRestoreInputAmbiguous, paradisTerminalRestoreStateKey } from './paradisTerminalEditorRevive.js';
 
 /**
@@ -419,6 +420,7 @@ export function paradisUnparkTerminalEditorInstance(instance: ITerminalInstance)
 		if (entry.instance === instance) {
 			parkedInstances.delete(nonce);
 			entry.onDisposedListener.dispose();
+			paradisReleaseTerminalLayout(instance);
 			return true;
 		}
 	}
@@ -443,6 +445,7 @@ export function paradisTakeParkedTerminalEditorInstancesForScope(stateKey: strin
 		}
 		parkedInstances.delete(nonce);
 		entry.onDisposedListener.dispose();
+		paradisReleaseTerminalLayout(entry.instance);
 		taken.push(entry.instance);
 	}
 	return taken;
@@ -477,5 +480,8 @@ export function paradisTakeParkedTerminalEditorInstance(deserializedInput: IDese
 	}
 	parkedInstances.delete(nonce);
 	entry.onDisposedListener.dispose();
+	// 取り出した端末はこれからエディタかパネルに開かれる。開くときの layout が当たるよう、離れる間に
+	// 止めた layout をここで戻す (paradisTerminalLayoutHold.ts)。
+	paradisReleaseTerminalLayout(entry.instance);
 	return entry.instance;
 }
