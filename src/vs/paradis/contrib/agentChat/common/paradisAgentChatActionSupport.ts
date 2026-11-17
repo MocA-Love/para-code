@@ -8,7 +8,7 @@
 
 import type { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import type { IParadisProgramStatus } from '../../agentBrowser/common/paradisProgramStatus.js';
-import type { ParadisAgentKind } from './paradisAgentChat.js';
+import { PARADIS_AGENT_DESCRIPTORS, type IParadisAgentDescriptor, type ParadisAgentKind } from './paradisAgentDescriptor.js';
 
 /**
  * チャット欄（モバイル・PC）から、エージェントへどの操作を渡せるか。TUI へのキーで渡すエージェントは、
@@ -28,7 +28,7 @@ export interface IParadisAgentChatActionSupport {
 const ALL: IParadisAgentChatActionSupport = { sendMessage: true, answerQuestion: true, answerApproval: true, settings: true };
 
 /**
- * エージェントごとの対応の表。
+ * エージェントごとの対応の表（種類ごとの記述 {@link PARADIS_AGENT_DESCRIPTORS} から導く）。
  * - Claude Code・Codex: キーの列を実機で確かめてある（paradisAgentQuestionKeys.ts・paradisAgentApprovalOptions.ts）
  * - OpenCode: キーではなく連携の API で渡す
  * - Antigravity CLI（agy 1.5.9）: 発言だけ。許可の画面と ask_question の画面で番号・矢印・Enter・Esc が何を選ぶかを
@@ -36,11 +36,21 @@ const ALL: IParadisAgentChatActionSupport = { sendMessage: true, answerQuestion:
  *   （{@link paradisAntigravitySendBlock}）
  */
 const SUPPORT: Readonly<Record<ParadisAgentKind, IParadisAgentChatActionSupport>> = {
-	claude: ALL,
-	codex: ALL,
-	opencode: ALL,
-	antigravity: { sendMessage: true, answerQuestion: false, answerApproval: false, settings: false },
+	claude: supportOf(PARADIS_AGENT_DESCRIPTORS.claude),
+	codex: supportOf(PARADIS_AGENT_DESCRIPTORS.codex),
+	opencode: supportOf(PARADIS_AGENT_DESCRIPTORS.opencode),
+	antigravity: supportOf(PARADIS_AGENT_DESCRIPTORS.antigravity),
 };
+
+/** 記述の経路から、いつでも渡せる操作を導く。`hook` は待っている間だけの経路なので数えない（入口が別に確かめる）。 */
+function supportOf(descriptor: IParadisAgentDescriptor): IParadisAgentChatActionSupport {
+	return {
+		sendMessage: descriptor.send.length > 0,
+		answerQuestion: descriptor.answerQuestion.length > 0,
+		answerApproval: descriptor.answerApproval.some(route => route !== 'hook'),
+		settings: descriptor.settingsAction,
+	};
+}
 
 /** そのエージェントにチャット欄から渡せる操作。種類が分からないときは Claude Code と同じ（今までの扱い）。 */
 export function paradisAgentChatActionSupport(agent: ParadisAgentKind | undefined): IParadisAgentChatActionSupport {

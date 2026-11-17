@@ -13,6 +13,7 @@
 // 優先する（中身には秘密が載りうるため）。パスを受け取る側で読めないときだけ、画面の末尾を秘密の形を伏せたうえで上限付きで入れる。
 
 import { paradisRedactTextSecrets } from '../../../common/paradisSecretRedaction.js';
+import { PARADIS_AGENT_DESCRIPTORS } from '../../agentChat/common/paradisAgentDescriptor.js';
 
 /** 依頼文に入れる画面の末尾の上限（文字数）。依頼文の全体の上限（4 万字）の内に収める。 */
 export const PARADIS_HANDOFF_CAPTURE_MAX_CHARS = 20_000;
@@ -23,7 +24,7 @@ export const PARADIS_HANDOFF_CAPTURE_LINES = 400;
 export type ParadisHandoffAgentKind = 'claude' | 'codex' | 'opencode';
 
 export function paradisHandoffAgentLabel(agent: ParadisHandoffAgentKind | undefined): string | undefined {
-	return agent === 'claude' ? 'Claude Code' : agent === 'codex' ? 'Codex' : agent === 'opencode' ? 'OpenCode' : undefined;
+	return agent === 'claude' || agent === 'codex' || agent === 'opencode' ? PARADIS_AGENT_DESCRIPTORS[agent].displayName : undefined;
 }
 
 export interface IParadisTranscriptReadability {

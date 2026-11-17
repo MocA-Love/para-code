@@ -18,6 +18,7 @@ import { Event } from '../../../../base/common/event.js';
 import type { ParadisAgentQuestionAnswer } from '../../mobileRelay/common/paradisAgentQuestionKeys.js';
 import type { IParadisAgentApprovalRequest, ParadisAgentApprovalSuggestionScope } from '../../mobileRelay/common/paradisAgentApprovalRequest.js';
 import type { IParadisCodexAsyncQuestion } from '../../mobileRelay/common/paradisCodexAsyncQuestions.js';
+import type { ParadisAgentKind } from './paradisAgentDescriptor.js';
 
 /** デスクトップのチャット表示（エディタエリアのターミナルタブを ⌘⇧J でチャットに切り替える）を使うか。 */
 export const PARADIS_AGENT_CHAT_ENABLED_SETTING = 'paradis.agentChat.enabled';
@@ -31,8 +32,7 @@ export interface IParadisAgentApprovalChoice {
 	readonly tone: 'approve' | 'neutral' | 'deny';
 }
 
-/** エージェントCLIの種別 (transcriptパスから判定)。 */
-export type ParadisAgentKind = 'claude' | 'codex' | 'opencode' | 'antigravity';
+export type { ParadisAgentKind };
 
 /** kind==='question' の選択肢1件。 */
 export interface IParadisAgentQuestionOption {
