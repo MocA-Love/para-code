@@ -488,6 +488,7 @@ export class PromiseSource<T> {
 	reject(err: any): void {
 		if (!this._promise) {
 			this._promise = Promise.reject(err);
+			this._promise.catch(() => undefined); // PARA-PATCH: observe the stored rejection; a caller waiting on `promise` already gets `err` through `_onDidComplete`, so an unread copy was one unhandled rejection per file (gitignore decorations after a failed check-ignore)
 			this._onDidComplete.fire({ success: false, err });
 		}
 	}

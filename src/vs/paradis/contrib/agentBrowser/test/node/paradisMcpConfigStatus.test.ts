@@ -211,18 +211,10 @@ suite('Para Browser MCP config status', () => {
 		}
 	});
 
-	test('controller.status flags codex as manualOnly when a foreign mcp_servers table blocks auto-append (W2)', async () => {
+	test('controller.status offers the automatic codex setup next to tables of other MCP servers, and manual only for a bare mcp_servers table (W2)', async () => {
 		const directory = await fs.mkdtemp(join(tmpdir(), 'paradis-mcp-manualonly-'));
 		try {
 			const claudeJsonPath = join(directory, '.claude.json');
-			// A chrome-devtools entry that already points at the current gateway port is not "stale",
-			// so it classifies as unconfigured — but setupCodex would throw ambiguous on the foreign table.
-			await fs.writeFile(join(directory, 'config.toml'), [
-				'[mcp_servers.chrome-devtools-mcp]',
-				'command = "npx"',
-				'args = ["chrome-devtools-mcp", "--browser-url", "http://127.0.0.1:47286"]',
-				'',
-			].join('\n'));
 			const controller = new ParadisMcpSetupController({
 				platform: 'darwin',
 				resolveShellEnv: async () => ({}),
@@ -232,9 +224,25 @@ suite('Para Browser MCP config status', () => {
 				claudeConfigJsonPath: claudeJsonPath,
 				log: () => undefined,
 			});
-			const status = await controller.status(47286);
-			assert.strictEqual(status.codex.state, 'unconfigured');
-			assert.strictEqual(status.codex.manualOnly, true);
+			// A chrome-devtools entry that already points at the current gateway port is not "stale",
+			// so it classifies as unconfigured; setupCodex appends para-browser after the other table.
+			await fs.writeFile(join(directory, 'config.toml'), [
+				'[mcp_servers.chrome-devtools-mcp]',
+				'command = "npx"',
+				'args = ["chrome-devtools-mcp", "--browser-url", "http://127.0.0.1:47286"]',
+				'',
+			].join('\n'));
+			const otherTable = (await controller.status(47286)).codex;
+			// A bare [mcp_servers] table can hold para-browser as a key, so setupCodex still refuses it.
+			await fs.writeFile(join(directory, 'config.toml'), '[mcp_servers]\nother = { command = "npx" }\n');
+			const bareTable = (await controller.status(47286)).codex;
+			assert.deepStrictEqual({
+				otherTable: { state: otherTable.state, manualOnly: otherTable.manualOnly },
+				bareTable: { state: bareTable.state, manualOnly: bareTable.manualOnly },
+			}, {
+				otherTable: { state: 'unconfigured', manualOnly: undefined },
+				bareTable: { state: 'unconfigured', manualOnly: true },
+			});
 		} finally {
 			await fs.rm(directory, { recursive: true, force: true });
 		}

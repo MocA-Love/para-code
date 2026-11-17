@@ -74,6 +74,47 @@ suite('Para Browser MCP setup encoding', () => {
 			assert.strictEqual(inspectParadisMcpTomlSection(source), 'ambiguous');
 		}
 	});
+	test('treats tables of other MCP servers as neutral and keeps the shapes that could hold para-browser ambiguous', () => {
+		// A real Codex config lists other servers first and has no para-browser yet.
+		const others = [
+			'model = "gpt-5"',
+			'',
+			'[mcp_servers.chrome-devtools]',
+			'command = "npx"',
+			'',
+			'[mcp_servers.chrome-devtools.env]',
+			'DEBUG = "1"',
+			'',
+			'[mcp_servers."other.server"]',
+			'url = "http://127.0.0.1:1/"',
+			'',
+		].join('\n');
+		const appended = paradisUpsertCodexMcpToml(others, 47286);
+		assert.deepStrictEqual({
+			othersOnly: inspectParadisMcpTomlSection(others),
+			paraBrowserLater: inspectParadisMcpTomlSection(`${others}\n[mcp_servers.para-browser]\nurl = "x"\n`),
+			appendedAtEnd: appended.startsWith(`${others}\n[mcp_servers.para-browser]\n`),
+			appendedInspection: inspectParadisMcpTomlSection(appended),
+			secondApplyIsNoop: paradisUpsertCodexMcpToml(appended, 47286) === appended,
+			bareTable: inspectParadisMcpTomlSection(`${others}\n[mcp_servers]\npara-browser = { url = "x" }\n`),
+			childOfOurs: inspectParadisMcpTomlSection(`${others}\n[mcp_servers.para-browser.env]\nA = "1"\n`),
+			dottedKey: inspectParadisMcpTomlSection(`mcp_servers.para-browser.url = "x"\n${others}`),
+			arrayTable: inspectParadisMcpTomlSection(`${others}\n[[mcp_servers.other]]\n`),
+			unterminated: inspectParadisMcpTomlSection(`${others}\n[mcp_servers.other]\nnote = """open\n`),
+		}, {
+			othersOnly: 'absent',
+			paraBrowserLater: 'present',
+			appendedAtEnd: true,
+			appendedInspection: 'present',
+			secondApplyIsNoop: true,
+			bareTable: 'ambiguous',
+			childOfOurs: 'ambiguous',
+			dottedKey: 'ambiguous',
+			arrayTable: 'ambiguous',
+			unterminated: 'ambiguous',
+		});
+	});
+
 	test('registers para-browser for Codex over HTTP, replacing whatever was there', () => {
 		// 設定を別のマシンから移すと、手元のシムの絶対パスを指した節がそのまま残る。
 		// 接続先にそのファイルは無いので、中身を見て直すのではなく節ごと書き替える
