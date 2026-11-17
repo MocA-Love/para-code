@@ -4388,6 +4388,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (token === undefined || previous === undefined) {
 			return; // PTY文字列だけでエージェント起動を確定しない
 		}
+		if (previous.phase === 'message' && previous.text !== undefined) {
+			// 書いている最中の文には合成しない（始まりの時刻が変わると追記の差分が作れず、長い文の全量を送り直すことになる。
+			// 次の断片で消える値でもある）
+			return;
+		}
 		const now = Date.now();
 		this.setLiveState(token, {
 			...previous,

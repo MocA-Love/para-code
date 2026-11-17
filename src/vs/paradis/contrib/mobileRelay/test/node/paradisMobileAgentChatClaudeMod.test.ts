@@ -308,6 +308,8 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 		const v2From = harness.sent.length;
 		for (let i = 0; i < 7; i++) {
 			await step();
+			// 画面から読んだ経過秒は、書いている最中の文には合成しない（合成すると始まりの時刻が変わって全量に戻る）
+			harness.chat.onTerminalHint(1, 'window-session', 1, 1, { elapsedSeconds: 30 + i, tokenCount: 100 });
 		}
 		await waitFor(() => liveDeltas(v2From).length === 7, 'the v2 deltas were not sent');
 		const v2 = liveDeltas(v2From);
