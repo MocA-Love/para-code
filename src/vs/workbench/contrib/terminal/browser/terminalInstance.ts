@@ -104,8 +104,9 @@ import { hasKey, isNumber, isString } from '../../../../base/common/types.js';
 import { paradisIsTerminalInputBlocked } from '../../../../paradis/contrib/workspaceSwitch/browser/paradisTerminalInputGate.js';
 // PARA-PATCH: drop xterm.js mouse reports with NaN coordinates before they reach the pty
 import { paradisSanitizeTerminalInput } from '../../../../paradis/contrib/terminalMouseReport/common/paradisTerminalMouseReport.js';
-// PARA-PATCH: collapse a burst of synchronous resizes (an editor grid split relayouts the neighbor A→B→A) into the last one
-import { ParadisTerminalResizeDebouncer } from '../../../../paradis/contrib/terminalRenderer/browser/paradisTerminalResizeDebouncer.js';
+// PARA-PATCH: collapse a burst of synchronous resizes (an editor grid split relayouts the neighbor A→B→A) into the last one;
+// keep the replayed size of a terminal that was never opened
+import { paradisIsTerminalSizeUnmeasured, ParadisTerminalResizeDebouncer } from '../../../../paradis/contrib/terminalRenderer/browser/paradisTerminalResizeDebouncer.js';
 
 const enum Constants {
 	/**
@@ -2300,7 +2301,8 @@ export class TerminalInstance extends Disposable implements ITerminalInstance {
 	}
 
 	setOverrideDimensions(dimensions: ITerminalDimensionsOverride | undefined, immediate: boolean = false): void {
-		if (this._dimensionsOverride && this._dimensionsOverride.forceExactSize && !dimensions && this._rows === 0 && this._cols === 0) {
+		// PARA-PATCH: a terminal whose xterm was never opened (a background tab or a closed panel after a reload) has no real size either
+		if (this._dimensionsOverride && this._dimensionsOverride.forceExactSize && !dimensions && ((this._rows === 0 && this._cols === 0) || paradisIsTerminalSizeUnmeasured(this.xterm))) {
 			// this terminal never had a real size => keep the last dimensions override exact size
 			this._cols = this._dimensionsOverride.cols;
 			this._rows = this._dimensionsOverride.rows;
