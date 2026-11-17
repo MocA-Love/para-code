@@ -32,7 +32,7 @@ suite('paradisAgentDescriptor', () => {
 				displayName: 'Codex', shortName: 'Codex', logo: 'codex',
 				resume: { fork: true, bypassFlag: '--dangerously-bypass-approvals-and-sandbox', deliverPromptAfterResume: true },
 				modelControl: 'none', settingsAction: true,
-				send: ['keys'], answerQuestion: ['keys'], answerApproval: ['keys', 'structured'],
+				send: ['keys'], answerQuestion: ['keys'], answerApproval: ['keys'],
 				interrupt: 'ctrl-c', commandCatalog: 'files',
 				features: { subagents: true, teams: false, workflows: false, shells: false, panel: false, pcDraft: false, sessionStatus: true, asyncQuestions: true },
 			},
@@ -56,7 +56,7 @@ suite('paradisAgentDescriptor', () => {
 	});
 
 	test('keeps the action table, the names and the resume rules that existed before the descriptor', () => {
-		// 型に無い値（古い保存データ・電文）の落ち先も、置き換えの前と同じにする
+		// 型に無い値（古い保存データ・電文）の落ち先
 		const kinds: readonly (ParadisAgentKind | undefined)[] = [...PARADIS_AGENT_KINDS, 'other' as ParadisAgentKind, undefined];
 		assert.deepStrictEqual(kinds.map(kind => ({
 			kind,
