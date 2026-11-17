@@ -268,6 +268,42 @@ export function paradisScreenShowsPermissionPrompt(screen: string): boolean {
 	return permissionHeadingIndex(permissionRegion(screen)) >= 0;
 }
 
+/**
+ * 子エージェント（と転送された teammate）の計画の承認の見出し（空白を除いた小文字）。計画があれば `Ready to code?` の下に
+ * `… Would you like to proceed?`、計画が空なら `Exit plan mode?`（どちらも題名の後ろに `· from the <名前> agent` が付く）。
+ */
+const YES_NO_PLAN_PROMPT_MARKERS: readonly string[] = ['wouldyouliketoproceed?', 'exitplanmode?'];
+/** 番号の無い選択肢の行（`❯ Yes, and switch to default (ask each time) for this session` / `  No`）。 */
+const BARE_YES_OPTION_LINE = /^[\s│┃|]*(?:❯\s*)?Yes\b/;
+const BARE_NO_OPTION_LINE = /^[\s│┃|]*(?:❯\s*)?No\s*[│┃|]?\s*$/;
+
+/**
+ * 画面の下端に、子エージェントの計画の承認（Claude Code 2.1.326 の `yesOrNoOnly`）が出ているか。
+ *
+ * この画面の選択肢には番号が無く（{@link FIRST_OPTION_LINE} に当たらないので {@link paradisScreenShowsPermissionPrompt} は
+ * 見落とす）、矢印と Enter で選ぶ。2.1.326 の実画面で、出ている間に貼り付けた文と Enter は捨てられて「Not answered yet」の
+ * 注意が出るだけ、`1` はフォーカスを `No` へ移すだけで、どちらも答えにならないことを確かめた（その後の Enter は `No` を選ぶ）。
+ * キーでは答えず、PC で選んでもらう。
+ */
+export function paradisScreenShowsClaudeYesNoPlanPrompt(screen: string): boolean {
+	const lines = promptRegion(screen);
+	for (let index = lines.length - 1; index >= 0; index--) {
+		const from = Math.max(0, index - PROMPT_HEADING_SPAN_LINES + 1);
+		const through = compact(lines.slice(from, index + 1).join(''));
+		const before = compact(lines.slice(from, index).join(''));
+		if (!YES_NO_PLAN_PROMPT_MARKERS.some(marker => through.includes(marker) && !before.includes(marker))) {
+			continue;
+		}
+		const after = lines.slice(index + 1);
+		const yes = after.findIndex(line => BARE_YES_OPTION_LINE.test(line));
+		if (yes < 0 || !after.slice(yes + 1).some(line => BARE_NO_OPTION_LINE.test(line)) || after.some(line => FIRST_OPTION_LINE.test(line))) {
+			return false;
+		}
+		return !after.some((line, lineIndex) => IDLE_INPUT_LINE.test(line) && lineIndex > 0 && HORIZONTAL_RULE_LINE.test(after[lineIndex - 1]));
+	}
+	return false;
+}
+
 /** 画面の下端に、質問の選択の画面（操作説明か回答の確認）が出ているか。 */
 export function paradisScreenShowsQuestionPrompt(screen: string): boolean {
 	const region = compact(promptRegion(screen).join('\n'));
@@ -277,11 +313,13 @@ export function paradisScreenShowsQuestionPrompt(screen: string): boolean {
 /**
  * 画面に、エージェントの TUI が利用者の回答を待つ画面（許可の確認・質問の選択肢）が出ているか。
  * デスクトップのチャット表示が文を送る前に使う。送った文の Enter が許可の既定の「Yes」や、質問の
- * ハイライト中の選択肢を確定してしまうのを防ぐため。`agent` が `'claude'` のときは、会話を開き直した直後の Claude Code の確認
+ * ハイライト中の選択肢を確定してしまうのを防ぐため。子エージェントの計画の承認（{@link paradisScreenShowsClaudeYesNoPlanPrompt}）は
+ * Codex と分かっているとき以外は含める。`agent` が `'claude'` のときは、会話を開き直した直後の Claude Code の確認
  * （{@link paradisClaudeResumeScreenPrompt}）も含める（Codex の画面に同じ文言が出ても断らないよう、分からなければ見ない）。
  */
 export function paradisScreenShowsAgentPrompt(screen: string, agent?: 'claude' | 'codex' | 'opencode' | 'antigravity'): boolean {
 	return paradisScreenShowsPermissionPrompt(screen) || paradisScreenShowsQuestionPrompt(screen)
+		|| (agent !== 'codex' && paradisScreenShowsClaudeYesNoPlanPrompt(screen))
 		|| (agent === 'claude' && paradisScreenShowsClaudeResumePrompt(screen));
 }
 

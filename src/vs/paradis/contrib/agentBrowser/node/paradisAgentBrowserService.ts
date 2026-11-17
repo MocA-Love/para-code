@@ -53,6 +53,7 @@ import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, firePara
 import { ParadisHookAgentKind, ParadisAgentHookOwnership, paradisHookAgentKindForTranscript } from './paradisAgentHookOwnership.js';
 import { PARADIS_AGENT_HIBERNATION_HOOK_SUPPRESS_MS, PARADIS_AGENT_HIBERNATION_KILL_GRACE_MS, ParadisHibernationResult } from '../../agentHibernation/common/paradisAgentHibernation.js';
 import { ParadisCodexFrontSessions } from '../common/paradisCodexFrontSession.js';
+import { paradisCodexRolloutIsSideChat } from './paradisCodexSideChat.js';
 import { paradisOpenCodeBridge } from './paradisOpenCodeBridge.js';
 import { IParadisOpenCodeCliDatabase, paradisNormalizeOpenCodeCliAuthority, paradisOpenCodeCliRegistry, paradisResolveProcessExecutable, paradisVerifyOpenCodeCliProcess } from './paradisOpenCodeCliRegistry.js';
 import { PARADIS_OPENCODE_COMMAND, paradisIsOpenCodeCliExecutable, paradisIsOpenCodeCompatibleCommand, paradisNormalizeOpenCodeCliLabel } from '../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
@@ -1749,8 +1750,12 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 			// Codex の裏の会話の hook（command center で切り替えた後）は、ペインの会話にも状態にもしない
 			if (transcriptPath !== undefined && paradisHookAgentKindForTranscript(transcriptPath) === 'codex'
-				// 画面で確かめていない控えの許可要求では、裏の会話の承認待ちを覚えない（W2-20 の決まりと同じく、確かめずに待ちを出さない）
-				&& this._codexFrontSessions.classify(token, record.event, field('session_id'), field('source'), record.at, { recordWait: false }) === 'background') {
+				// 画面で確かめていない控えの許可要求では、裏の会話の承認待ちを覚えない（W2-20 の決まりと同じく、確かめずに待ちを出さない）。
+				// 保存したサイドチャット（Codex 0.171）の控えも表にしない
+				&& this._codexFrontSessions.classify(token, record.event, field('session_id'), field('source'), record.at, {
+					recordWait: false,
+					sideChat: (record.event === 'UserPromptSubmit' || record.event === 'SessionStart') && field('session_id') !== this._codexFrontSessions.front(token) && await paradisCodexRolloutIsSideChat(transcriptPath),
+				}) === 'background') {
 				continue;
 			}
 			accepted.push(record);
@@ -5012,9 +5017,16 @@ export class ParadisAgentBrowserService extends Disposable {
 			// Codex の command center（0.167.0 から）で裏へ回した会話の hook は、同じプロセス・同じペインのトークンで届く。
 			// ペインの会話の記録・状態・hook のバス（モバイルの会話の張り替え）には通さない。承認待ちだけを覚えて、ペインを
 			// 「待っている」として出す（listPaneStatuses）。表の会話は利用者が表でしか起こせない hook で決める（paradisCodexFrontSession.ts）
-			if (eventType && eventType !== 'TerminalExit' && agentKind !== 'opencode' && transcriptPath !== undefined
-				&& paradisHookAgentKindForTranscript(transcriptPath) === 'codex'
-				&& this._codexFrontSessions.classify(token, eventType, sessionId, stringField('source'), Date.now()) === 'background') {
+			// Codex 0.171 のサイドチャット（本会話から fork した横の会話）の hook も裏として扱い、表の会話を移さない。一時的な
+			// サイドチャットは transcript_path が null（表の会話が決まっている Codex のペインに、別の session_id で届く）、保存した
+			// ものは rollout の session_meta に `attached_thread: true` がある（paradisCodexSideChat.ts）
+			const codexFront = agentKind === undefined ? this._codexFrontSessions.front(token) : undefined;
+			const ephemeralCodexSideChat = transcriptPath === undefined && codexFront !== undefined && sessionId !== undefined && sessionId.length > 0 && sessionId !== codexFront;
+			const codexTranscript = transcriptPath !== undefined && agentKind !== 'opencode' && paradisHookAgentKindForTranscript(transcriptPath) === 'codex';
+			const codexSideChat = ephemeralCodexSideChat || (codexTranscript && transcriptPath !== undefined && (eventType === 'UserPromptSubmit' || eventType === 'SessionStart')
+				&& sessionId !== undefined && sessionId !== codexFront && await paradisCodexRolloutIsSideChat(transcriptPath));
+			if (eventType && eventType !== 'TerminalExit' && (codexTranscript || ephemeralCodexSideChat)
+				&& this._codexFrontSessions.classify(token, eventType, sessionId, stringField('source'), Date.now(), { sideChat: codexSideChat }) === 'background') {
 				// hook の届くペインとしては数える（控えの古い hook を後から流し直さない・OSC 7501 の状態を使わない）
 				this._agentHookTokens.add(token);
 				this._hookReportedTokens.add(token);

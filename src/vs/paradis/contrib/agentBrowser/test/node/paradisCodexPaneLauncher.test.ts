@@ -187,7 +187,7 @@ fs.writeFileSync(process.env.PARADIS_TEST_TUI_RECORD, JSON.stringify(records));
 				['app-server'], ['remote-control'], ['app'], ['completion'], ['update'], ['doctor'],
 				['sandbox'], ['debug'], ['apply'], ['a'], ['archive'], ['delete'], ['unarchive'], ['cloud'],
 				['exec-server'], ['execpolicy'], ['responses-api-proxy'], ['stdio-to-uds'], ['features'],
-				['help'], ['agents'], ['help', 'plugin'], ['--model', 'gpt-5', 'plugin', 'list'], ['-a', 'never', 'plugin'],
+				['help'], ['agents'], ['git-credential'], ['help', 'plugin'], ['--model', 'gpt-5', 'plugin', 'list'], ['-a', 'never', 'plugin'],
 				[], ['explain this repo'], ['resume'], ['fork'], ['--', 'plugin', 'list'],
 			];
 			const paneManaged: string[] = [];

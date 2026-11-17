@@ -528,6 +528,44 @@ suite('ParadisSessionResume', () => {
 		});
 	});
 
+	// Codex 0.171（alpha）の保存したサイドチャットは threads に attached_thread_parent_id 付きの行を持つ（0.171.0-alpha.10 の
+	// migrations/0062）。本会話の裏なので、アーカイブを含めても再開の一覧には出さない
+	test('does not list a saved Codex side chat attached to a conversation', async () => {
+		const mainPath = join(codexSessions, 'rollout-main-with-side-chat.jsonl');
+		const sidePath = join(codexSessions, 'rollout-side-chat.jsonl');
+		await writeLines(mainPath, [
+			JSON.stringify({ type: 'session_meta', payload: { id: 'main-with-side-chat', cwd: workspace } }),
+			codexMessage('user', 'Main conversation'),
+		]);
+		await writeLines(sidePath, [
+			JSON.stringify({ type: 'session_meta', payload: { id: 'side-chat', cwd: workspace, forked_from_id: 'main-with-side-chat', attached_thread: true } }),
+			codexMessage('user', 'Side question'),
+		]);
+		createCodexDatabase(`
+			CREATE TABLE threads (
+				id TEXT PRIMARY KEY,
+				cwd TEXT NOT NULL,
+				rollout_path TEXT NOT NULL,
+				title TEXT NOT NULL,
+				archived INTEGER NOT NULL,
+				attached_thread_parent_id TEXT
+			)
+		`, database => {
+			const insert = database.prepare('INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?)');
+			insert.run('main-with-side-chat', workspace, mainPath, 'Main title', 0, null);
+			insert.run('side-chat', workspace, sidePath, 'Side title', 0, 'main-with-side-chat');
+		});
+		const service = createService();
+
+		assert.deepStrictEqual({
+			visible: (await listSessions(service)).map(session => session.id),
+			includingArchived: (await listSessions(service, true)).map(session => session.id),
+		}, {
+			visible: ['main-with-side-chat'],
+			includingArchived: ['main-with-side-chat'],
+		});
+	});
+
 	test('reads the Codex index page by page and still finds an older conversation of the space behind many others', async () => {
 		const olderPath = join(codexSessions, 'rollout-older-db-session.jsonl');
 		await writeLines(olderPath, [

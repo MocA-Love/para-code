@@ -96,7 +96,7 @@ import { IParadisAgentApprovalOption, PARADIS_APPROVAL_OPTIONS_WAIT_MS, paradisA
 import { PARADIS_ANTIGRAVITY_ANSWER_ON_PC_MESSAGE, PARADIS_ANTIGRAVITY_SEND_BLOCK_MESSAGES, paradisAntigravityPaneStatus, paradisAntigravitySendBlock } from '../../agentChat/common/paradisAgentChatActionSupport.js';
 import { paradisLatestProgramStatus } from '../../agentBrowser/browser/paradisLatestProgramStatus.js';
 import { paradisTerminalRunsAntigravity } from '../../agentIde/browser/paradisAgentIdeTerminalInput.js';
-import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisClaudeResumeScreenPrompt, paradisPromptRegionShows, paradisScreenShowsPermissionPrompt, PARADIS_CLAUDE_RESUME_SCREEN_PROMPT_NAMES, type ParadisClaudeResumeScreenPrompt, paradisSendAgentInteractionKeys, paradisVisibleTerminalLogicalText, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
+import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisClaudeResumeScreenPrompt, paradisScreenShowsClaudeYesNoPlanPrompt, paradisPromptRegionShows, paradisScreenShowsPermissionPrompt, PARADIS_CLAUDE_RESUME_SCREEN_PROMPT_NAMES, type ParadisClaudeResumeScreenPrompt, paradisSendAgentInteractionKeys, paradisVisibleTerminalLogicalText, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
 import { paradisCreateMobileUploadTarget, paradisResolveMobileWorkspacePath } from '../common/paradisMobileWorkspacePath.js';
 import { paradisIsInSearchDir, paradisSanitizeSearchDir } from '../common/paradisRemoteSearch.js';
 import { paradisResolveMobileUploadHome } from './paradisMobileUploadHome.js';
@@ -116,6 +116,9 @@ const CODEX_COMPOSER_RESIDUE_MAX_MS = 10 * 60_000;
  * （Claude Code 2.1.306・2.1.309 の実画面で確かめた）。
  */
 const CLAUDE_RESUME_PROMPT_CODE = 'resume-prompt';
+// 子エージェントの計画の承認（番号の無い Yes / No。paradisScreenShowsClaudeYesNoPlanPrompt）は、キーでは答えられない
+const CLAUDE_PLAN_APPROVAL_ON_PC_CODE = 'plan-approval-on-pc';
+const CLAUDE_PLAN_APPROVAL_ON_PC_MESSAGE = 'PC のターミナルに子エージェントの計画の承認が出ています。PC で選んでください';
 function claudeResumePromptMessage(kind: ParadisClaudeResumeScreenPrompt): string {
 	return `PC の Claude Code で${PARADIS_CLAUDE_RESUME_SCREEN_PROMPT_NAMES[kind]}が出ています。PC で選んでから送り直してください`;
 }
@@ -1728,6 +1731,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', CLAUDE_RESUME_PROMPT_CODE, claudeResumePromptMessage(resumePrompt));
 					return;
 				}
+				// 子エージェントの計画の承認が出ている間に貼り付けた文と Enter は捨てられる（Claude Code 2.1.326 で実測）
+				if (msg.agent === 'claude' && paradisScreenShowsClaudeYesNoPlanPrompt(paradisVisibleTerminalText(instance))) {
+					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', CLAUDE_PLAN_APPROVAL_ON_PC_CODE, CLAUDE_PLAN_APPROVAL_ON_PC_MESSAGE);
+					return;
+				}
 				// Antigravity CLI は、入力欄で待っていると確かめられるときだけ打つ（キーの働きを実機で測っていない）。
 				// 貼り付けた後の Enter の直前にも確かめ直す
 				const antigravity = msg.agent === 'antigravity';
@@ -1795,10 +1803,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 						this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', PARADIS_SLASH_COMMAND_REJECTED_CODE, paradisClaudeModelNotListedMessage(msg.value));
 						return;
 					}
-					await this.modelSwitchGuard.execute(instance, `/model ${listed}`, validate);
+					await this.modelSwitchGuard.execute(instance, `/model ${listed}`, validate, undefined, () => paradisVisibleTerminalText(instance));
 				} else {
 					// effort（`/effort <段階>` は会話の途中だと「Change effort level?」を出すことがある）は、今までどおり確認に Enter を送るガードで切り替える
-					await this.modelSwitchGuard.execute(instance, `/${msg.setting} ${msg.value}`, validate);
+					await this.modelSwitchGuard.execute(instance, `/${msg.setting} ${msg.value}`, validate, undefined, () => paradisVisibleTerminalText(instance));
 				}
 				if (!(await this.validateAgentAction(mobileId, msg.requestId, msg.token, msg.epoch, msg.id, msg.windowId))) {
 					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'stale-session', '設定変更中にClaude Codeセッションが変わりました');
@@ -1825,6 +1833,11 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					return;
 				}
 				const optionAgent = msg.agent === 'codex' ? 'codex' : 'claude';
+				// 子エージェントの計画の承認は番号が無く、承認の `1` はフォーカスを No へ移すだけ（Claude Code 2.1.326 で実測）。打たずに PC で選んでもらう
+				if (optionAgent === 'claude' && interactionKind === 'approval' && paradisScreenShowsClaudeYesNoPlanPrompt(paradisVisibleTerminalText(instance))) {
+					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', CLAUDE_PLAN_APPROVAL_ON_PC_CODE, CLAUDE_PLAN_APPROVAL_ON_PC_MESSAGE);
+					return;
+				}
 				const approvalPiece = typeof msg.approvalPiece === 'string' && msg.approvalPiece.length <= 500 ? msg.approvalPiece : undefined;
 				const codexApprovalKey = interactionKind === 'approval' && expectOption === undefined && optionAgent === 'codex' && parts.length === 1
 					&& (parts[0] === 'd' || parts[0] === 'y') ? parts[0] : undefined;
@@ -3476,7 +3489,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		} else if (msg.data !== undefined) {
 			// 生入力を送る（改行はモバイル側が明示的に送る）。
 			// /model・/effort 切替の注入時は確認ダイアログ自動確定ウォッチを張る。
-			this.modelSwitchGuard.maybeArm(instance, msg.data);
+			this.modelSwitchGuard.maybeArm(instance, msg.data, () => paradisVisibleTerminalText(instance));
 			await instance.sendText(msg.data, false);
 		}
 	}
