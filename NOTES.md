@@ -481,13 +481,14 @@ CDPフィルタプロキシ（`paradisCdpFilterProxy.ts`）に以下を追加し
 - **denylist補強**: `Target.closeTarget` / `Page.close`（共有ビュー破壊防止、close_pageは非対応化） / `Page.setWebLifecycleState` / `Storage.clearDataForOrigin` / `Storage.clearDataForStorageKey` / `Storage.clearCookies` / `Network.clearBrowserCookies` / `Network.clearBrowserCache`（共有パーティション保護、lighthouse_auditの既定フロー対策）を常時拒否に追加。ページレベル透過プロキシもclient→upstream方向のみ同じdenylistを適用
 - **resize_page明示エラー**: `Browser.getWindowForTarget` / `Browser.{get,set}WindowBounds` / `Browser.setContentsSize` はElectron未実装（-32601）を素通しせず、-32000で「ワークベンチがレイアウト管理するため非対応、ビューポート変更はemulateを使え」を返す
 - **ガイダンス**: `get_cdp_endpoint` 応答に `limitations`（new_page/resize_page/close_page非対応等）を追加
+- **lighthouse_audit を通す（2026-11-17）**: `Browser.getVersion` だけは読むだけでほかのペインに触れないので、共有の状態の断り（`Browser.` の domain）から外し、ページへの接続と target のセッションでも通す（ほかの `Browser.*` は断ったまま）。Lighthouse は共有中のページに 2 本目のセッションを付けて最後に自分で外すので、クライアントが `Target.detachFromTarget` で頼んで外し、同じページにほかのセッションが残るときは接続を閉じない（頼まれていない剥離は従来どおり閉じる）。そのセッションが大きさの命令を送っていたら、接続を閉じたときと同じく `releaseBoundPageEmulation` で付けた大きさを戻す（Chromium ではセッションと一緒に消えるが、Para Code は共有のビューへ当てているため）。vendored 側の設定は「vendored chrome-devtools-mcp への変更」の表
 
 **ツール対応マトリクス（コード根拠ベース、2026-07-03時点）**:
 
 | 判定 | ツール |
 |---|---|
-| 動く | take_snapshot, wait_for, evaluate_script, navigate_page, list_pages, select_page, upload_file, list_network_requests, get_network_request, list_console_messages, get_console_message, take_heapsnapshot, emulate(CPU/network/UA/viewport), fill, fill_form, click, drag, hover, press_key, type_text（フォーカス強制済み）, take_screenshot（委譲実装済み。要素スクショのみ素通しフォールバック） |
-| 条件付き/未検証 | handle_dialog（ElectronのJSダイアログ発火未検証）, performance_start/stop_trace, lighthouse_audit（多domain依存。ストレージ消去は拒否済みなので既定フローの一部が失敗する可能性）, emulate(geolocation)（Browser.grantPermissions依存） |
+| 動く | lighthouse_audit（2026-11-17 から。ストレージを消さず、robots.txt・llms.txt・ソースマップの監査は飛ばす）, take_snapshot, wait_for, evaluate_script, navigate_page, list_pages, select_page, upload_file, list_network_requests, get_network_request, list_console_messages, get_console_message, take_heapsnapshot, emulate(CPU/network/UA/viewport), fill, fill_form, click, drag, hover, press_key, type_text（フォーカス強制済み）, take_screenshot（委譲実装済み。要素スクショのみ素通しフォールバック） |
+| 条件付き/未検証 | handle_dialog（ElectronのJSダイアログ発火未検証）, performance_start/stop_trace, emulate(geolocation)（Browser.grantPermissions依存） |
 | 非対応（明示エラー） | new_page（Target.createTarget拒否）, close_page（Target.closeTarget拒否、Para Code UIから閉じる）, resize_page（emulateへ誘導） |
 
 ### vendored chrome-devtools-mcp への変更（2026-10-04）

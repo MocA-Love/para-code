@@ -721,6 +721,35 @@ suite('Paradis CDP screenshot filter', () => {
 		assert.ok(fixture.client.closeCalls >= 1, 'connection was closed so the child reconnects');
 	});
 
+	test('browser proxy stays open when the client detaches its own second session on the bound target, and puts back the size it set (lighthouse_audit)', async () => {
+		const detachSecond = async (requestedByClient: boolean) => {
+			let released = 0;
+			const fixture = await createOpenBrowserProxyFixture(context({ applyBoundPageEmulation: async () => true, releaseBoundPageEmulation: () => released++ }));
+			publishAllowedSession(fixture, 'primary-session');
+			publishAllowedSession(fixture, 'lighthouse-session');
+			fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 1, sessionId: 'lighthouse-session', method: 'Emulation.setDeviceMetricsOverride', params: { width: 412, height: 823, deviceScaleFactor: 1.75, mobile: true } })));
+			await new Promise(resolve => setTimeout(resolve, 0));
+			if (requestedByClient) {
+				fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 2, method: 'Target.detachFromTarget', params: { sessionId: 'lighthouse-session' } })));
+			}
+			const closedBefore = fixture.client.closeCalls;
+			fixture.upstream.emit('message', Buffer.from(JSON.stringify({ method: 'Target.detachedFromTarget', params: { sessionId: 'lighthouse-session' } })));
+			return {
+				closed: fixture.client.closeCalls > closedBefore,
+				released: released > 0,
+				forwarded: parseSent(fixture.client).some(message => (message as { method?: string }).method === 'Target.detachedFromTarget'
+					&& (message as { params?: { sessionId?: string } }).params?.sessionId === 'lighthouse-session'),
+			};
+		};
+		assert.deepStrictEqual({
+			clientDetachWithPrimaryLeft: await detachSecond(true),
+			upstreamDetach: await detachSecond(false),
+		}, {
+			clientDetachWithPrimaryLeft: { closed: false, released: true, forwarded: true },
+			upstreamDetach: { closed: true, released: true, forwarded: true },
+		});
+	});
+
 	test('browser proxy does not close on detach of an out-of-scope (non-bound) target', async () => {
 		const fixture = await createOpenBrowserProxyFixture();
 		// A child session attached under the bound target, then detached: not the bound target itself.
