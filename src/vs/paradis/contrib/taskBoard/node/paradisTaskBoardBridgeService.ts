@@ -23,7 +23,7 @@ import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { isAbsolute } from '../../../../base/common/path.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
+import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider, paradisMcpToolError as toolError } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import type { IParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import {
 	IParadisTaskBoardLaunchRequest,
@@ -149,10 +149,6 @@ function error(code: ParadisTaskBoardErrorCode, message?: string): IParadisTaskB
 
 function toolText(text: string): unknown {
 	return { content: [{ type: 'text', text }] };
-}
-
-function toolError(text: string): unknown {
-	return { content: [{ type: 'text', text }], isError: true };
 }
 
 export class ParadisTaskBoardBridgeService extends Disposable implements IParadisMcpToolProvider {

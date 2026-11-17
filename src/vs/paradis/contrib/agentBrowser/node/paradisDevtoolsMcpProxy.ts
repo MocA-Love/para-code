@@ -734,7 +734,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			...(entry.rssMib !== undefined ? { safe_rss_mib: entry.rssMib } : {}),
 		}, 'info');
 		this._markReplaced(token, entry, 'recycled');
-		this._killChild(token, entry, `recycled (${reason})`);
+		this._killChild(token, entry);
 	}
 
 	/**
@@ -892,7 +892,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		}
 		const entry = this._children.get(token);
 		if (entry && entry.generation < generation) {
-			this._killChild(token, entry, 'pane retired');
+			this._killChild(token, entry);
 			this._snapshots.forget(token);
 			this._snapshotBaselines.forget(token);
 		}
@@ -905,7 +905,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		}
 		const entry = this._children.get(token);
 		if (entry) {
-			this._killChild(token, entry, 'pane forgotten');
+			this._killChild(token, entry);
 		}
 		this._snapshots.forget(token);
 		this._snapshotBaselines.forget(token);
@@ -925,7 +925,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		}
 		this._disposed = true;
 		for (const [token, entry] of [...this._children]) {
-			this._killChild(token, entry, 'service disposed');
+			this._killChild(token, entry);
 		}
 		this._generationHighWatermarks.clear();
 		this._replaced.clear();
@@ -955,7 +955,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			return existing;
 		}
 		if (existing) {
-			this._killChild(token, existing, 'binding generation changed');
+			this._killChild(token, existing);
 		}
 		if (this._childSlots.size >= this._limit(this.options.maxChildren, MAX_CHILDREN)) {
 			// 使っていない一番古い子を止めて席を空ける。席が空くのは止めた子が終わってからなので、この呼び出しは
@@ -1083,7 +1083,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 				duration_ms: Date.now() - entry.spawnedAt,
 				...(typeof code === 'string' && /^[A-Z_]{1,32}$/.test(code) ? { safe_errno: code } : {}),
 			});
-			this._killChild(token, entry, 'process error');
+			this._killChild(token, entry);
 		};
 		entry.processExitListener = (code, signal) => {
 			if (!entry.killed) {
@@ -1092,14 +1092,14 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 				this._reportUnexpectedExit(entry, code, signal);
 				this._markReplaced(token, entry, 'exited');
 				// 応答待ちの呼び出しは、読むだけのツールなら新しい子プロセスで呼び直す（tryCallTool）
-				this._cleanupEntry(token, entry, `process exited (code=${code}, signal=${signal})`, new ParadisDevtoolsChildExitedError());
+				this._cleanupEntry(token, entry, new ParadisDevtoolsChildExitedError());
 			} else {
-				this._cleanupEntry(token, entry, `process exited (code=${code}, signal=${signal})`);
+				this._cleanupEntry(token, entry);
 			}
 			this._releaseChildSlot(entry);
 		};
-		entry.processCloseListener = (code, signal) => {
-			this._cleanupEntry(token, entry, `process closed (code=${code}, signal=${signal})`);
+		entry.processCloseListener = () => {
+			this._cleanupEntry(token, entry);
 			this._releaseChildSlot(entry);
 		};
 		child.on('error', entry.processErrorListener);
@@ -1121,7 +1121,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			clientInfo: { name: 'para-code-agent-browser', version: '1.0.0' },
 		}, this.options.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS).then(() => {
 			if (!this._send(token, entry, { jsonrpc: '2.0', method: 'notifications/initialized' })) {
-				this._killChild(token, entry, 'failed to send initialized notification', new ParadisDevtoolsResourceLimitError());
+				this._killChild(token, entry, new ParadisDevtoolsResourceLimitError());
 			}
 		});
 		// ready の失敗は _request 側で pending 経由でも観測されるため、未処理拒否だけ握りつぶす
@@ -1142,7 +1142,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			if (requiredBytes > maxBufferBytes) {
 				entry.stdoutBuffer = Buffer.alloc(0);
 				entry.stdoutBufferLength = 0;
-				this._killChild(token, entry, 'stdout buffer resource limit reached', new ParadisDevtoolsResourceLimitError());
+				this._killChild(token, entry, new ParadisDevtoolsResourceLimitError());
 				return;
 			}
 			if (entry.stdoutBuffer.byteLength < requiredBytes) {
@@ -1195,7 +1195,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 					? { jsonrpc: '2.0', id: message.id, result: {} }
 					: { jsonrpc: '2.0', id: message.id, error: { code: -32601, message: `Method not found: ${method}` } };
 				if (!this._send(token, entry, response)) {
-					this._killChild(token, entry, 'failed to send child response', new ParadisDevtoolsResourceLimitError());
+					this._killChild(token, entry, new ParadisDevtoolsResourceLimitError());
 					return;
 				}
 				continue;
@@ -1234,7 +1234,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			}
 			entry.lastRoots = paradisDevtoolsRoots(entry.completeFolders ?? folders, entry.temporaryDirectory, dropped => this._warnRootsOverflow(entry, dropped));
 			if (!this._send(token, entry, { jsonrpc: '2.0', id, result: { roots: entry.lastRoots } })) {
-				this._killChild(token, entry, 'failed to send roots', new ParadisDevtoolsResourceLimitError());
+				this._killChild(token, entry, new ParadisDevtoolsResourceLimitError());
 			}
 		};
 		if (entry.completeFolders !== undefined) {
@@ -1299,7 +1299,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 				}
 				entry.completeFolders = resolution.folders;
 				if (!this._send(token, entry, { jsonrpc: '2.0', method: 'notifications/roots/list_changed' })) {
-					this._killChild(token, entry, 'failed to send roots change', new ParadisDevtoolsResourceLimitError());
+					this._killChild(token, entry, new ParadisDevtoolsResourceLimitError());
 				}
 			});
 		}, delay);
@@ -1346,7 +1346,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 					return;
 				}
 				reject(new Error(reason));
-				this._killChild(token, entry, reason);
+				this._killChild(token, entry);
 			};
 			const onAbort = (): void => failAndKill(`${method} aborted by client`);
 			const timer = setTimeout(() => failAndKill(`${method} timed out after ${timeoutMs}ms`), timeoutMs);
@@ -1382,7 +1382,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			};
 			const onAbort = (): void => {
 				finish(new Error('initialize aborted by client'));
-				this._killChild(token, entry, 'initialize aborted by client');
+				this._killChild(token, entry);
 			};
 			signal.addEventListener('abort', onAbort, { once: true });
 			if (signal.aborted) {
@@ -1407,7 +1407,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		const queuedBytes = Math.max(0, entry.child.stdin.writableLength);
 		const payloadBytes = Buffer.byteLength(payload);
 		if (queuedBytes > maxQueuedBytes) {
-			this._killChild(token, entry, 'stdin queue resource limit exceeded', new ParadisDevtoolsResourceLimitError());
+			this._killChild(token, entry, new ParadisDevtoolsResourceLimitError());
 			return false;
 		}
 		if (payloadBytes > maxQueuedBytes - queuedBytes) {
@@ -1416,7 +1416,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		try {
 			const acceptsMore = entry.child.stdin.write(payload);
 			if (entry.child.stdin.writableLength > maxQueuedBytes) {
-				this._killChild(token, entry, 'stdin queue resource limit exceeded', new ParadisDevtoolsResourceLimitError());
+				this._killChild(token, entry, new ParadisDevtoolsResourceLimitError());
 				return false;
 			}
 			if (!acceptsMore) {
@@ -1432,7 +1432,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			return true;
 		} catch {
 			this._warn(`[ParadisDevtoolsProxy] Failed to write to chrome-devtools-mcp stdin for pane ${entry.tokenFingerprint} generation=${entry.generation}`);
-			this._killChild(token, entry, 'stdin write failed', new ParadisDevtoolsResourceLimitError());
+			this._killChild(token, entry, new ParadisDevtoolsResourceLimitError());
 			return false;
 		}
 	}
@@ -1464,7 +1464,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			const [token, entry] = oldest;
 			this._debug(`[ParadisDevtoolsProxy] Stopping the least recently used chrome-devtools-mcp for pane ${entry.tokenFingerprint} to make room`);
 			this._markReplaced(token, entry, 'evicted');
-			this._killChild(token, entry, 'evicted at the child cap');
+			this._killChild(token, entry);
 		}
 	}
 
@@ -1475,15 +1475,15 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		entry.idleTimer = setTimeout(() => {
 			this._debug(`[ParadisDevtoolsProxy] Killing idle chrome-devtools-mcp for pane ${entry.tokenFingerprint} generation=${entry.generation}`);
 			this._markReplaced(token, entry, 'idle');
-			this._killChild(token, entry, 'idle timeout');
+			this._killChild(token, entry);
 		}, IDLE_KILL_MS);
 	}
 
-	private _killChild(token: string, entry: IChildEntry, reason: string, pendingError?: Error): void {
+	private _killChild(token: string, entry: IChildEntry, pendingError?: Error): void {
 		if (entry.killed) {
 			return;
 		}
-		this._cleanupEntry(token, entry, reason, pendingError);
+		this._cleanupEntry(token, entry, pendingError);
 		try {
 			entry.child.kill();
 		} catch {
@@ -1504,7 +1504,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		}
 	}
 
-	private _cleanupEntry(token: string, entry: IChildEntry, _reason: string, pendingError: Error = new Error(TERMINATED_ERROR_MESSAGE)): void {
+	private _cleanupEntry(token: string, entry: IChildEntry, pendingError: Error = new Error(TERMINATED_ERROR_MESSAGE)): void {
 		if (entry.killed) {
 			return;
 		}
@@ -1673,7 +1673,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			this._generationHighWatermarks.set(token, generation);
 			const entry = this._children.get(token);
 			if (entry && entry.generation < generation) {
-				this._killChild(token, entry, 'newer binding generation observed');
+				this._killChild(token, entry);
 			}
 		}
 	}

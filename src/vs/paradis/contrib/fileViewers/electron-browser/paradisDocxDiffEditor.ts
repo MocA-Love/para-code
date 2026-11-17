@@ -33,7 +33,7 @@ import { basename, isEqual } from '../../../../base/common/resources.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
-import { IConfigurationService, type IConfigurationValue } from '../../../../platform/configuration/common/configuration.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
@@ -73,7 +73,8 @@ import { ParadisDocxDiffInput } from './paradisDocxInput.js';
 import { buildParadisDocxDiffHtml } from './paradisDocxDiffWebview.js';
 import { PARADIS_DOCX_MEDIA_ROOT, sanitizeParadisDocxBytesForRenderer } from './word/paradisDocxSanitize.js';
 import { PARADIS_WORD_SEMANTIC_BUSY_RETRIES, PARADIS_WORD_SEMANTIC_BUSY_RETRY_MS, acceptRenderedParagraphs, createLegacyWordPrintModel, createParadisWordSourceDescriptor, equalParadisWordBytes, isParadisWordV1Enabled } from './paradisDocxFileEditor.js';
-import { createParadisOfficeSearchPrintCallbacks, snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
+import { createParadisOfficeSearchPrintCallbacks, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
+import { snapshotParadisOfficeContributionConfiguration } from '../browser/paradisOfficeConfiguration.js';
 import { PARADIS_WORD_CHANGE_CATEGORIES, ParadisWordChangeInspector, paradisWordExclusionItems, restoreParadisWordViewState, wordChangeText, type ParadisWordDisplayMode, type ParadisWordViewState } from './word/paradisWordChangeInspector.js';
 import { EMPTY_PARADIS_WORD_PACKAGE_EXCLUSIONS, mergeParadisWordPackageExclusions, paradisWordPackageExclusions, renderWordSemanticRibbon, summarizeParadisWordBlockedParts, wordSemanticFailureMessage, type ParadisWordPackageExclusions, type ParadisWordSemanticRibbonState } from './word/paradisWordDiagnostics.js';
 import { compareParadisWordDocuments } from './word/paradisWordSemanticClient.js';
@@ -144,14 +145,6 @@ export function adaptLegacyWordInspectorChangeSet(result: IParadisDocxDiffResult
 		outcome: 'degraded',
 		truncated: selected.length !== result.changes.length,
 	};
-}
-
-function snapshotWordDiffRuntimeConfiguration(configurationService: IConfigurationService): ParadisOfficeRuntimeConfiguration {
-	const reader: ParadisOfficeConfigurationReader = {
-		getValue: <T>(key: string) => configurationService.getValue<T>(key),
-		inspect: <T>(key: string) => configurationService.inspect<T>(key) as IConfigurationValue<T> | undefined,
-	};
-	return snapshotParadisOfficeRuntimeConfiguration(reader);
 }
 
 /**
@@ -376,7 +369,7 @@ export class ParadisDocxDiffEditor extends EditorPane {
 		}
 
 		const diffInput = input as ParadisDocxDiffInput;
-		this._runtimeConfiguration = snapshotWordDiffRuntimeConfiguration(this._configurationService);
+		this._runtimeConfiguration = snapshotParadisOfficeContributionConfiguration(this._configurationService);
 
 		const nestedState = options?.viewState && Object.prototype.hasOwnProperty.call(options.viewState, 'viewState')
 			? (options.viewState as { readonly viewState?: unknown }).viewState

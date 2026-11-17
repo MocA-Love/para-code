@@ -32,7 +32,7 @@ import { promises as fs } from 'fs';
 import { join } from '../../../../base/common/path.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 import { paradisWriteRollingBackup } from '../../../node/paradisRollingFileBackup.js';
-import { encodeParadisTomlBasicString, MultilineDelimiter, parseTomlKeyPath, scanTomlLine } from '../../agentBrowser/common/paradisMcpSetupEncoding.js';
+import { encodeParadisTomlBasicString, findTomlAssignment, MultilineDelimiter, parseTomlKeyPath, scanTomlLine } from '../../agentBrowser/common/paradisMcpSetupEncoding.js';
 import { IParadisCodexHookListing, IParadisCodexHookTrustGrantResult, IParadisCodexHookTrustStatus } from '../common/paradisCodexHookTrust.js';
 import { isRecord } from '../../../common/paradisGuards.js';
 
@@ -212,27 +212,6 @@ function decodeTomlString(source: string): string | undefined {
 	return undefined;
 }
 
-function assignmentIndex(code: string): number {
-	let quote: '"' | '\x27' | undefined;
-	for (let index = 0; index < code.length; index++) {
-		const char = code[index];
-		if (quote !== undefined) {
-			if (quote === '"' && char === '\\') {
-				index++;
-			} else if (char === quote) {
-				quote = undefined;
-			}
-			continue;
-		}
-		if (char === '"' || char === '\x27') {
-			quote = char;
-		} else if (char === '=') {
-			return index;
-		}
-	}
-	return -1;
-}
-
 function startsWithPath(path: readonly string[], prefix: readonly string[]): boolean {
 	return prefix.every((segment, index) => path[index] === segment);
 }
@@ -284,7 +263,7 @@ function scanHookState(source: string): IHookStateScan | undefined {
 			}
 			continue;
 		}
-		const equals = assignmentIndex(code);
+		const equals = findTomlAssignment(code);
 		const keyPath = equals >= 0 ? parseTomlKeyPath(code.slice(0, equals)) : undefined;
 		if (keyPath === undefined) {
 			// 配列やインラインの表の続きの行。`hooks` に触れていそうなら曖昧として止まる

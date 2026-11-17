@@ -11,7 +11,7 @@
 // url を省いた追加での今のタブの URL と題名の取り出しを受け持ち、木の読み書きと利用者への通知は呼び出し元ペインの
 // ウィンドウ（paradisBookmarkMcpChannel.ts）が行う。
 
-import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
+import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider, paradisMcpToolError as toolError, paradisMcpToolJson as toolText } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import {
 	PARADIS_BOOKMARK_CREATE_LIMIT,
 	PARADIS_BOOKMARK_CREATE_WINDOW_MS,
@@ -37,14 +37,6 @@ const TAB_URL_MESSAGE = 'That tab does not show an http or https page, so Para C
 const WINDOW_FAILURE_MESSAGE = 'Para Code could not reach the window of this terminal pane to use the bookmarks. Retry in a few seconds.';
 const CREATE_LIMIT_MESSAGE = `This terminal pane added ${PARADIS_BOOKMARK_CREATE_LIMIT} bookmarks and folders in the last ${PARADIS_BOOKMARK_CREATE_WINDOW_MS / 60_000} minutes, so Para Code turns this one down. Ask the user before adding more.`;
 const DELETE_TIMEOUT_MESSAGE = 'The user did not answer the deletion dialog in time, so nothing was deleted. Ask the user in the conversation before asking again.';
-
-function toolText(value: object): unknown {
-	return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] };
-}
-
-function toolError(text: string): unknown {
-	return { content: [{ type: 'text', text }], isError: true };
-}
 
 export class ParadisBookmarkToolProvider implements IParadisMcpToolProvider {
 

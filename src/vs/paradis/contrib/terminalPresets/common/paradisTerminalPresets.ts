@@ -332,12 +332,6 @@ export interface IParadisPresetService {
 	 */
 	savePreset(definition: IParadisPresetDefinition, target: ParadisPresetSource, options?: IParadisSavePresetOptions): Promise<void>;
 
-	/**
-	 * プリセットを同一スコープ内で1つ前(-1)／後ろ(+1)へ移動する（表示順＝配列順を入れ替える）。
-	 * スコープ（user / workspace）や workspace の定義元ファイルをまたぐ移動はしない（no-op）。
-	 */
-	movePreset(preset: IParadisResolvedPreset, direction: -1 | 1): Promise<void>;
-
 	/** プリセットを定義元から削除する。 */
 	deletePreset(preset: IParadisResolvedPreset): Promise<void>;
 
@@ -395,16 +389,10 @@ export interface IParadisPresetService {
 	setFolderLabelShown(folderKey: string, shown: boolean): void;
 
 	/**
-	 * 2つのプリセットの並び順（定義元ファイル内の位置）を入れ替える。
-	 * 保存先や定義元ファイルが異なる組み合わせでは何もしない。
-	 */
-	swapPresets(presetA: IParadisResolvedPreset, presetB: IParadisResolvedPreset): Promise<void>;
-
-	/**
 	 * プリセット 1 件、またはフォルダ 1 つ（中身ごと）を、同じ定義元の中の別の位置へ挿入する
 	 * （paradisPresetReorder.ts の paradisPlanPresetMove などで作った書き込み方を渡す）。間の行は 1 つずつずれる。
 	 * フォルダを動かすときは、一覧に出ていない中身（appliesTo が別リポジトリ等）も一緒に動かす。
-	 * 一覧を描いた後に定義が変わって対象を見失ったときは、swapPresets と同じく何もしない。
+	 * 一覧を描いた後に定義が変わって対象を見失ったときは、何もしない（例外にしない）。
 	 */
 	movePresets(plan: IParadisPresetMovePlan): Promise<void>;
 }

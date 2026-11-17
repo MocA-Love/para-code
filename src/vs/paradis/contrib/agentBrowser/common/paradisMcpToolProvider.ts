@@ -185,3 +185,13 @@ export function paradisRegisterMcpToolProvider(provider: IParadisMcpToolProvider
 export function paradisRegisteredMcpToolProviders(): readonly IParadisMcpToolProvider[] {
 	return [...registeredProviders];
 }
+
+/** ツールの失敗をエージェントへ返す結果（`isError` 付きの文 1 つ）。 */
+export function paradisMcpToolError(text: string): unknown {
+	return { content: [{ type: 'text', text }], isError: true };
+}
+
+/** 値を整形した JSON の文 1 つにして、ツールの結果として返す。 */
+export function paradisMcpToolJson(value: object): unknown {
+	return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] };
+}

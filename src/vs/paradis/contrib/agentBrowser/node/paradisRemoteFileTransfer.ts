@@ -21,7 +21,7 @@
 import { promises as fs } from 'fs';
 import { VSBuffer } from '../../../../base/common/buffer.js';
 import { basename, extname, join } from '../../../../base/common/path.js';
-import { ParadisMcpOwningWindowResult } from '../common/paradisMcpToolProvider.js';
+import { ParadisMcpOwningWindowResult, paradisMcpToolError as toolError } from '../common/paradisMcpToolProvider.js';
 import {
 	ParadisRemoteFileCheckResult,
 	ParadisRemoteFileFailure,
@@ -168,10 +168,6 @@ export function paradisReplacePathInToolResult(result: unknown, from: string, to
 function appendText(result: unknown, line: string): unknown {
 	const content = (result as { content?: unknown } | undefined)?.content;
 	return Array.isArray(content) ? { ...(result as object), content: [...content, { type: 'text', text: line }] } : result;
-}
-
-function toolError(text: string): unknown {
-	return { content: [{ type: 'text', text }], isError: true };
 }
 
 /** renderer が返した理由を、エージェントが次に何をすればよいか分かる英文にする。 */

@@ -77,6 +77,58 @@ export function paradisWatchPopoverDismiss(targetWindow: Window, options: IParad
 	return store;
 }
 
+/** アンカーとの縦の隙間。 */
+const ANCHOR_GAP = 4;
+/** コンテナ端との最小マージン。 */
+const EDGE_MARGIN = 8;
+
+export interface IParadisAnchoredDropdownLayout {
+	/** 位置の基準になる要素（小窓の `top` / `left` はこの中の座標）。 */
+	readonly container: HTMLElement;
+	/** 小窓を開いたボタン。 */
+	readonly anchor: HTMLElement;
+	readonly element: HTMLElement;
+	/** 小窓の幅。コンテナが狭いときは内側に収まるよう縮める。 */
+	readonly width: number;
+	/** アンカーの左端に揃えるか、右端に揃えるか。 */
+	readonly align: 'start' | 'end';
+}
+
+/**
+ * 小窓をアンカーの真下に置く。右端・下端でははみ出さないようにクランプし、下に入らないときは
+ * アンカーの上へ反転する。コンテナが極端に狭い場合は幅もコンテナに合わせて縮める。
+ */
+export function paradisLayoutAnchoredDropdown(options: IParadisAnchoredDropdownLayout): void {
+	const containerPosition = dom.getDomNodePagePosition(options.container);
+	const anchorPosition = dom.getDomNodePagePosition(options.anchor);
+
+	const availableWidth = Math.max(0, containerPosition.width - EDGE_MARGIN * 2);
+	const width = Math.min(options.width, availableWidth);
+	options.element.style.width = `${width}px`;
+
+	// 縦の最大サイズを先に決めてから測る（内容が長いと反転判定が狂うため）。
+	const anchorTop = anchorPosition.top - containerPosition.top;
+	const anchorBottom = anchorTop + anchorPosition.height;
+	const spaceBelow = containerPosition.height - anchorBottom - ANCHOR_GAP - EDGE_MARGIN;
+	const spaceAbove = anchorTop - ANCHOR_GAP - EDGE_MARGIN;
+	const flipUp = spaceBelow < 180 && spaceAbove > spaceBelow;
+	options.element.style.maxHeight = `${Math.max(120, flipUp ? spaceAbove : spaceBelow)}px`;
+
+	const height = options.element.offsetHeight;
+	const top = flipUp
+		? Math.max(EDGE_MARGIN, anchorTop - ANCHOR_GAP - height)
+		: Math.min(anchorBottom + ANCHOR_GAP, Math.max(EDGE_MARGIN, containerPosition.height - EDGE_MARGIN - height));
+
+	const anchorLeft = anchorPosition.left - containerPosition.left;
+	const left = Math.min(
+		Math.max(EDGE_MARGIN, options.align === 'start' ? anchorLeft : anchorLeft + anchorPosition.width - width),
+		Math.max(EDGE_MARGIN, containerPosition.width - width - EDGE_MARGIN),
+	);
+
+	options.element.style.top = `${Math.round(top)}px`;
+	options.element.style.left = `${Math.round(left)}px`;
+}
+
 /** 開く・閉じる動きの印（paradisTokens.css）。小窓の要素に付ける。 */
 export const PARADIS_POPOVER_MOTION_CLASS = 'paradis-popover-motion';
 
