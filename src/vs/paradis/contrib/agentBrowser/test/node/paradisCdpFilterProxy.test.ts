@@ -722,10 +722,12 @@ suite('Paradis CDP screenshot filter', () => {
 	});
 
 	test('browser proxy stays open when the client detaches its own second session on the bound target, and puts back the size it set (lighthouse_audit)', async () => {
-		const detachSecond = async (requestedByClient: boolean) => {
+		const detachSecond = async (requestedByClient: boolean, primaryLeft = true) => {
 			let released = 0;
 			const fixture = await createOpenBrowserProxyFixture(context({ applyBoundPageEmulation: async () => true, releaseBoundPageEmulation: () => released++ }));
-			publishAllowedSession(fixture, 'primary-session');
+			if (primaryLeft) {
+				publishAllowedSession(fixture, 'primary-session');
+			}
 			publishAllowedSession(fixture, 'lighthouse-session');
 			fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 1, sessionId: 'lighthouse-session', method: 'Emulation.setDeviceMetricsOverride', params: { width: 412, height: 823, deviceScaleFactor: 1.75, mobile: true } })));
 			await new Promise(resolve => setTimeout(resolve, 0));
@@ -744,9 +746,11 @@ suite('Paradis CDP screenshot filter', () => {
 		assert.deepStrictEqual({
 			clientDetachWithPrimaryLeft: await detachSecond(true),
 			upstreamDetach: await detachSecond(false),
+			clientDetachOfOnlySession: await detachSecond(true, false),
 		}, {
 			clientDetachWithPrimaryLeft: { closed: false, released: true, forwarded: true },
 			upstreamDetach: { closed: true, released: true, forwarded: true },
+			clientDetachOfOnlySession: { closed: true, released: true, forwarded: true },
 		});
 	});
 
