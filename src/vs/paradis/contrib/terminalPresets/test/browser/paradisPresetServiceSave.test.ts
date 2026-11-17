@@ -105,12 +105,6 @@ suite('ParadisPresetService save', () => {
 		assert.deepStrictEqual((JSON.parse(file.text).presets as { name: string }[]).map(preset => preset.name), ['a', 'other', 'mine']);
 	});
 
-	test('swapping presets keeps what another window saved', async () => {
-		const { service, file } = createService(initial, afterOtherWindow);
-		await service.swapPresets(a, b);
-		assert.deepStrictEqual(JSON.parse(file.text), { presets: [initial.presets[1], initial.presets[0], other], presetFolders: ['f'] });
-	});
-
 	test('moving presets keeps what another window saved', async () => {
 		const { service, file } = createService(initial, afterOtherWindow);
 		await service.movePresets({ item: { kind: 'preset', preset: a }, moving: [a], anchor: b, side: 'after', folder: undefined });

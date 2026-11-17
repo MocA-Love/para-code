@@ -25,7 +25,7 @@ import { FileAccess, Schemas } from '../../../../base/common/network.js';
 import { basename, dirname, isEqual } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
-import { IConfigurationService, type IConfigurationValue } from '../../../../platform/configuration/common/configuration.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { readParadisFileHead } from '../../../../platform/files/common/paradisReadFileHead.js';
 import { INativeHostService } from '../../../../platform/native/common/native.js';
@@ -52,7 +52,8 @@ import { PARADIS_DOCX_EDITOR_ID } from '../browser/paradisFileViewers.js';
 import { ParadisOfficeAccessibility, applyParadisOfficeWebviewAccessibility } from '../browser/paradisOfficeAccessibility.js';
 import { ParadisOfficeFindWidget } from '../browser/paradisOfficeFindWidget.js';
 import { PARADIS_DOCX_MAX_BYTES, type IParadisDocxOutline } from '../common/paradisDocx.js';
-import { createParadisOfficeSearchPrintCallbacks, snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
+import { createParadisOfficeSearchPrintCallbacks, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
+import { snapshotParadisOfficeContributionConfiguration } from '../browser/paradisOfficeConfiguration.js';
 import { createParadisOfficeWordPrintModel, type ParadisOfficeWordPrintItem } from '../common/paradisOfficePrint.js';
 import { buildParadisOfficeWordCsp, paradisOfficeBrokenImagePlaceholderSvg, paradisOfficeWebviewResourceOrigin } from '../common/paradisOfficeSanitizer.js';
 import type { ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficePrintModel, ParadisOfficeSearchResult, ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
@@ -211,14 +212,6 @@ export function createLegacyWordPrintModel(title: string, placeholders: readonly
 		});
 	}
 	return { ...model, approximationWarnings };
-}
-
-function snapshotWordRuntimeConfiguration(configurationService: IConfigurationService): ParadisOfficeRuntimeConfiguration {
-	const reader: ParadisOfficeConfigurationReader = {
-		getValue: <T>(key: string) => configurationService.getValue<T>(key),
-		inspect: <T>(key: string) => configurationService.inspect<T>(key) as IConfigurationValue<T> | undefined,
-	};
-	return snapshotParadisOfficeRuntimeConfiguration(reader);
 }
 
 function wordViewStateFromOptions(value: object | undefined, fallback: ParadisWordViewState): ParadisWordViewState {
@@ -516,7 +509,7 @@ export class ParadisDocxFileEditor extends EditorPane {
 		}
 
 		const resource = (input as ParadisDocxInput).resource;
-		this._runtimeConfiguration = snapshotWordRuntimeConfiguration(this._configurationService);
+		this._runtimeConfiguration = snapshotParadisOfficeContributionConfiguration(this._configurationService);
 		// 母数は「利用者が1つの文書を開いた」回数。同じ文書ならタブを往復しても増えない。
 		this._probe.beginOpen(input.resource?.toString() ?? '', this._diagnosticEngine());
 

@@ -593,69 +593,6 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 			joinPath(folder.uri, PARADIS_WORKSPACE_PRESET_FILE).toString() === presetFile.toString());
 	}
 
-	async movePreset(preset: IParadisResolvedPreset, direction: -1 | 1): Promise<void> {
-		// 表示順（this.presets）を基準に、同一スコープの隣接プリセットと入れ替える。
-		// appliesTo でユーザープリセットの一部が非表示でも、実際に隣り合って見えている2件を
-		// 入れ替えるため、表示上の直感どおりに並び替えられる。
-		const ordered = this.presets;
-		const currentIndex = ordered.findIndex(candidate => candidate.key === preset.key);
-		if (currentIndex < 0) {
-			return;
-		}
-		const targetIndex = currentIndex + direction;
-		if (targetIndex < 0 || targetIndex >= ordered.length) {
-			return;
-		}
-		await this.swapPresets(preset, ordered[targetIndex]);
-	}
-
-	async swapPresets(presetA: IParadisResolvedPreset, presetB: IParadisResolvedPreset): Promise<void> {
-		// スコープをまたぐ入れ替えは不可（workspace 群は常に user 群より前）
-		if (presetA.source !== presetB.source) {
-			return;
-		}
-		if (presetA.source === 'user') {
-			await this._swapUserPresets(presetA, presetB);
-			return;
-		}
-		// 同一 .paracode.json 内でのみ入れ替える
-		if (!presetA.sourceUri || !presetB.sourceUri || presetA.sourceUri.toString() !== presetB.sourceUri.toString()) {
-			return;
-		}
-		await this._swapWorkspacePresets(presetA.sourceUri, presetA, presetB);
-	}
-
-	/**
-	 * 並び替えだけは対象を見失っても黙って何もしない（保存・削除と違って例外にしない）。
-	 * ↑↓ は連打される操作で、ダイアログを出すと押した回数だけ積み上がる。次の再読み込みで
-	 * 一覧が正しい順序に更新されるので、取り返しの付かない結果にもならない。
-	 */
-	private async _swapUserPresets(presetA: IParadisResolvedPreset, presetB: IParadisResolvedPreset): Promise<void> {
-		const raw = this.configurationService.getValue<unknown>(PARADIS_PRESETS_SETTING);
-		const list: unknown[] = Array.isArray(raw) ? [...raw] : [];
-		const indexA = paradisResolvePresetIndex(list, presetA);
-		const indexB = paradisResolvePresetIndex(list, presetB);
-		if (indexA < 0 || indexB < 0) {
-			return;
-		}
-		[list[indexA], list[indexB]] = [list[indexB], list[indexA]];
-		await this.configurationService.updateValue(PARADIS_PRESETS_SETTING, list, {}, ConfigurationTarget.USER, { donotNotifyError: false });
-	}
-
-	private async _swapWorkspacePresets(presetFile: URI, presetA: IParadisResolvedPreset, presetB: IParadisResolvedPreset): Promise<void> {
-		await this._updatePresetFile(presetFile, parsed => {
-			const list: unknown[] = Array.isArray(parsed.presets) ? [...parsed.presets] : [];
-			const indexA = paradisResolvePresetIndex(list, presetA);
-			const indexB = paradisResolvePresetIndex(list, presetB);
-			if (indexA < 0 || indexB < 0) {
-				return false;
-			}
-			[list[indexA], list[indexB]] = [list[indexB], list[indexA]];
-			parsed.presets = list;
-			return true;
-		});
-	}
-
 	async movePresets(plan: IParadisPresetMovePlan): Promise<void> {
 		const first = plan.moving[0];
 		if (!first) {
@@ -667,8 +604,9 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 		if (plan.moving.some(preset => paradisPresetScopeKey(preset) !== scopeKey) || (plan.anchor && paradisPresetScopeKey(plan.anchor) !== scopeKey)) {
 			throw new Error(STR_PRESET_GONE);
 		}
-		// 一覧を描いた後に配列が変わって対象を見失ったら、swapPresets と同じく何も書かずに黙る
-		//（_swapUserPresets のコメント参照。連打される操作で、ダイアログを出すと積み上がる）。
+		// 一覧を描いた後に配列が変わって対象を見失ったら、何も書かずに黙る（保存・削除と違って例外にしない）。
+		// 並び替えは連打される操作で、ダイアログを出すと押した回数だけ積み上がる。次の再読み込みで
+		// 一覧が正しい順序に更新されるので、取り返しの付かない結果にもならない。
 		const gone = new Error(STR_PRESET_GONE);
 		const reorder = (list: readonly unknown[]): unknown[] | undefined => {
 			try {
@@ -1192,7 +1130,7 @@ export class ParadisPresetService extends Disposable implements IParadisPresetSe
 	/**
 	 * 台帳から空フォルダを1件削除する。定義元ファイル内の位置を使う点は他の削除操作と同じだが、
 	 * 見失っていても（並び替え・手編集等で位置がずれていても）例外にせず黙って何もしない——
-	 * 空フォルダの削除はやり直しが効く軽い操作で、{@link movePreset} と同様に安全側へ倒す。
+	 * 空フォルダの削除はやり直しが効く軽い操作で、{@link movePresets} と同様に安全側へ倒す。
 	 */
 	async deleteFolder(folder: IParadisResolvedPresetFolder): Promise<void> {
 		if (folder.source === 'user') {

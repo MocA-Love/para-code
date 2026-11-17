@@ -441,7 +441,8 @@ const MAX_PING_ID = 0x7fffffff;
 const MAX_REPORTED_RTT_MS = 600_000;
 const MAX_PING_BYTES = 128;
 
-function startsWithAscii(payload: Uint8Array, prefix: string): boolean {
+/** `payload` の先頭が ASCII の `prefix` と同じバイト列か。 */
+export function startsWithAscii(payload: Uint8Array, prefix: string): boolean {
 	if (payload.length < prefix.length) {
 		return false;
 	}

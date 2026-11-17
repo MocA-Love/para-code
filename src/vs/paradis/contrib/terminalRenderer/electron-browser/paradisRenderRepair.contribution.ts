@@ -101,8 +101,11 @@ interface IParadisRenderSnapshot {
 	readonly divergence: IParadisRenderDivergence;
 	/** 画面の画像（PNG の base64）。記録するときだけ作る。 */
 	readonly png: string | undefined;
-	/** ビューポートに見えている文字。1回目と2回目で変わっていたら出力が流れているので判定しない。記録には残さない。 */
-	readonly bufferText: string;
+	/**
+	 * ビューポートに見えている文字。1回目と2回目で変わっていたら出力が流れているので判定しない。記録には残さない。
+	 * 欠けが疑わしいときだけ作る（比較にしか使わないため）。
+	 */
+	readonly bufferText: string | undefined;
 	readonly rows: number;
 	readonly cols: number;
 }
@@ -178,7 +181,7 @@ function takeSnapshot(raw: RawXtermTerminal, withImage: boolean): IParadisRender
 		return {
 			divergence,
 			png: dataUrl?.slice(dataUrl.indexOf(',') + 1),
-			bufferText: viewportText(raw),
+			bufferText: paradisIsSuspectDivergence(divergence) ? viewportText(raw) : undefined,
 			rows: grid.rows,
 			cols: grid.cols,
 		};

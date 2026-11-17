@@ -434,7 +434,7 @@ export interface IParadisSharedPageBindings {
 /**
  * CDPゲートウェイ経由のスクリーンショット委譲リクエスト
  * （shared process → electron-main、{@link PARADIS_CDP_TARGET_CHANNEL} の
- * `captureScreenshot` メソッド引数）。
+ * `captureExactViewScreenshot` メソッド引数）。
  * upstream の `IBrowserViewCaptureScreenshotOptions`（vs/platform/browserView/common/browserView.ts）
  * のサブセット。CDP `Page.captureScreenshot` のパラメータから
  * paradisCdpFilterProxy.ts がマッピングして生成する。

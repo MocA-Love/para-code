@@ -3197,10 +3197,6 @@ export class MobileController {
 		}
 	}
 
-	private sendAgentAction(terminalKey: string, body: Record<string, unknown>, timeoutMs = 30_000): Promise<boolean> {
-		return this.sendAgentActionResult(terminalKey, body, timeoutMs).then(result => result.status === 'accepted');
-	}
-
 	private sendAgentActionResult(terminalKey: string, body: Record<string, unknown>, timeoutMs = 30_000, slashText?: string): Promise<AgentMessageSendResult> {
 		if (!this.isLiveAvailable()) {
 			return Promise.resolve({ status: 'rejected', message: 'PCへ再接続してから操作してください' });

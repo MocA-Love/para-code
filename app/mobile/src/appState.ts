@@ -979,6 +979,9 @@ function createRuntime(pc: PairedPc, operationRun: number, persistedOutbox: read
 	return pending;
 }
 
+/** 直前にアーカイブの印を点検したときの入力（点検の後の印の集合と、ターミナルの一覧）。同じ入力では点検を省く。 */
+let archiveCheck: { readonly keys: ReadonlySet<string>; readonly terminals: readonly unknown[] } | undefined;
+
 /**
  * コントローラからの状態更新をストアへ流す。いま見ているPCのぶんだけが画面の状態になり、
  * それ以外は一覧の件数（PcSummary）にだけ効く。
@@ -1034,13 +1037,17 @@ function applyControllerState(runtime: PcRuntime, next: StoreState): void {
 	// （切断時にクリアされる）は点検しない。ターミナルが0件に見えるため、全部の印を
 	// 「消えたターミナル」として捨ててしまう。
 	const archivedKeys = useAppStore.getState().archivedKeys;
-	const nextArchived = next.workspace !== undefined
-		? releaseArchivedOnAttention(archivedKeys, next.workspace.terminals)
-		: archivedKeys;
-	if (nextArchived !== archivedKeys) {
-		const value = nextArchived as Set<string>;
-		useAppStore.setState({ archivedKeys: value });
-		persistArchivedKeys(runtime.pc.id, value);
+	const terminals = next.workspace?.terminals;
+	// 印の集合とターミナルの一覧がどちらも前回の点検と同じなら、結果も同じなので点検しない
+	//（会話やブラウザの画像の配信だけの更新が、State よりずっと多く届く）。
+	if (terminals !== undefined && (archiveCheck?.keys !== archivedKeys || archiveCheck.terminals !== terminals)) {
+		const nextArchived = releaseArchivedOnAttention(archivedKeys, terminals);
+		if (nextArchived !== archivedKeys) {
+			const value = nextArchived as Set<string>;
+			useAppStore.setState({ archivedKeys: value });
+			persistArchivedKeys(runtime.pc.id, value);
+		}
+		archiveCheck = { keys: nextArchived, terminals };
 	}
 	useAppStore.setState(summaryInputsChanged ? { ...next, pcs: pcSummaries() } : next);
 }
