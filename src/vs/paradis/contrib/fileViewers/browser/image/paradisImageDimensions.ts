@@ -15,7 +15,8 @@
 // 形式は拡張子ではなく先頭の署名で決める（Chromium も <img> では署名で形式を決めるため。拡張子と中身が
 // 食い違っていても、実際にデコードされる形式で確かめる）。ここではヘッダーを読むだけで、展開はしない。
 // Word の画像の検査（common/word/paradisWordImageInspection.ts）はチャンク全体の CRC を JS で計算し、
-// 動く PNG を断るので、開くたびに全体を見る画像ビューアには使わない。
+// 動く PNG を断るので、開くたびに全体を見る画像ビューアには使わない。同じファイルから借りるのは、
+// GIF のサブブロック列を飛ばす小さな補助（skipGifSubBlocks）だけ。
 
 import { skipGifSubBlocks } from '../../common/word/paradisWordImageInspection.js';
 
