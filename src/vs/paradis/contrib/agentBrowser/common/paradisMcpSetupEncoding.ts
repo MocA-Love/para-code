@@ -114,6 +114,13 @@ export function inspectParadisMcpTomlSection(source: string): ParadisMcpTomlSect
 			if (path.length === 2 && path[1] === 'para-browser') {
 				return 'present';
 			}
+			// ほかの名前の MCP サーバーの節（`[mcp_servers.other]`・`[mcp_servers.other.env]`）は、私たちの節を
+			// 定義も上書きもしないので素通りする。Codex の config.toml はほかの MCP が先に並んでいるのが普通で、
+			// これを曖昧と扱うと自動セットアップが毎回失敗していた。`[mcp_servers]` そのもの（中で
+			// `para-browser = {...}` と書ける）と `[mcp_servers.para-browser.<子>]` は曖昧のまま
+			if (path.length >= 2 && path[1] !== 'para-browser') {
+				continue;
+			}
 			return 'ambiguous';
 		}
 		const assignment = findTomlAssignment(code);

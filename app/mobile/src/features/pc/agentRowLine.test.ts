@@ -53,6 +53,11 @@ describe('行の3段目の一文', () => {
 		expect(agentRowLine({ agent: true, agentStatus: 'working' }, chat)).toEqual({ text: 'Bash pnpm test', emphasized: false, at: 5_000 });
 	});
 
+	test('書いている最中は、その文の最新の 1 行（空の行・フェンスを飛ばし、箇条の印と行内のコードの記号を外す）', () => {
+		const chat = { messages: [message(1, 'assistant', 'text', '進めます')], live: { phase: 'message' as const, source: 'hook' as const, startedAt: 1, updatedAt: 5_000, text: '原因が分かりました。\n\n- 古い行は `final_answer` として\n```' } };
+		expect(agentRowLine({ agent: true, agentStatus: 'working' }, chat).text).toBe('古い行は final_answer として');
+	});
+
 	test('要対応は何を待っているかを添える', () => {
 		const chat = { messages: [], interaction: { kind: 'question' as const, id: 'q1', title: '上限は何回にしますか？' } };
 		expect(agentRowLine({ agent: true, agentStatus: 'question' }, chat).text).toBe('質問 · 上限は何回にしますか？');

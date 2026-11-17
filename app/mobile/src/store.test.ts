@@ -1602,6 +1602,86 @@ describe('MobileController agent live append protocol', () => {
 	});
 });
 
+describe('MobileController agent live append v2 (Q657)', () => {
+	it('asks for v2 only from a PC that advertises it, keeps a window past 6,000 chars, and swaps the draft for the confirmed reply', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		let latest: import('./store.js').StoreState | undefined;
+		const controller = new MobileController(mobile, () => pair.client, state => { latest = state; });
+		const pcMuxPromise = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxPromise;
+		await flush();
+		const encode = (value: object) => new TextEncoder().encode(JSON.stringify(value));
+		const requests: Record<string, unknown>[] = [];
+		pcMux.on(Channels.Agent, frame => requests.push(JSON.parse(new TextDecoder().decode(frame.payload))));
+		pcMux.send(Channels.State, encode({ ...desktopState([{ id: 7, title: 'claude', agentToken: 'agent-7' }]), capabilities: ['agent.live-append.v2'] }));
+		await flush();
+		controller.attachAgent('terminal-7');
+		await flush();
+		const head = 'あ'.repeat(6_500);
+		pcMux.send(Channels.Agent, encode({
+			t: 'snapshot', id: 7, token: 'agent-7', agent: 'claude', epoch: 'e1', rev: 1, liveRevision: 1,
+			messages: [{ rev: 0, role: 'user', kind: 'text', text: '書いて' }],
+			live: { phase: 'message', source: 'hook', startedAt: 10, updatedAt: 20, text: head },
+		}));
+		await flush();
+		pcMux.send(Channels.Agent, encode({
+			t: 'delta', id: 7, token: 'agent-7', epoch: 'e1', rev: 1, messages: [],
+			liveAppend: { baseRevision: 1, revision: 2, source: 'hook', startedAt: 10, updatedAt: 30, append: '\n続き' },
+		}));
+		await flush();
+		const streamed = latest?.agentChats.get('terminal-7')?.live;
+		// 確定した返信が先に届き、生成中の文を消す差分が後から届く
+		pcMux.send(Channels.Agent, encode({
+			t: 'delta', id: 7, token: 'agent-7', epoch: 'e1', rev: 2, messages: [{ rev: 1, role: 'assistant', kind: 'text', text: `${head}\n続き` }],
+		}));
+		await flush();
+		const confirmedFirst = latest?.agentChats.get('terminal-7');
+		pcMux.send(Channels.Agent, encode({ t: 'delta', id: 7, token: 'agent-7', epoch: 'e1', rev: 2, messages: [], live: null, liveRevision: 3 }));
+		await flush();
+		const chat = latest?.agentChats.get('terminal-7');
+		expect({
+			liveEncoding: requests[0]?.['liveEncoding'],
+			streamedLength: streamed?.text?.length,
+			attaches: requests.filter(request => request['t'] === 'attach').length,
+			liveWhileConfirmed: confirmedFirst?.live?.text?.length,
+			live: chat?.live,
+			last: chat?.messages.at(-1)?.text.length,
+		}).toEqual({
+			liveEncoding: 'agent-live-append-v2',
+			streamedLength: 6_503,
+			attaches: 1,
+			liveWhileConfirmed: 6_503,
+			live: undefined,
+			last: 6_503,
+		});
+	});
+
+	it('keeps asking for v1 from a PC that does not advertise v2', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		const controller = new MobileController(mobile, () => pair.client, () => { });
+		const pcMuxPromise = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxPromise;
+		await flush();
+		const requests: Record<string, unknown>[] = [];
+		pcMux.on(Channels.Agent, frame => requests.push(JSON.parse(new TextDecoder().decode(frame.payload))));
+		pcMux.send(Channels.State, new TextEncoder().encode(JSON.stringify({ ...desktopState([{ id: 7, title: 'claude', agentToken: 'agent-7' }]), capabilities: [] })));
+		await flush();
+		controller.attachAgent('terminal-7');
+		await flush();
+		expect(requests[0]?.['liveEncoding']).toBe('agent-live-append-v1');
+	});
+});
+
 describe('MobileController Codex model control', () => {
 	async function setup() {
 		const mobile = generateIdentity();

@@ -9,7 +9,7 @@
  */
 
 import { BROWSER_JPEG_BINARY_ENCODING, FS_BINARY_RESPONSE_ENCODING, FS_BINARY_UPLOAD_ENCODING, JSON_GZIP_RESPONSE_ENCODING, TERMINAL_BINARY_DATA_ENCODING, type Frame, type Identity, type NotifyPayload, decodeBinaryBrowserJpegFrame, decodeBinaryFsResponse, decodeBinaryTerminalData, decodeGzipJsonResponse, decodeUtf8, decodeNotify, decodeNotifyControl, decodeNotifyDismissLog, decodeNotifyVisibility, deriveNotifyKey, encodeBinaryFsUpload, encodeNotifyDismiss, encodeNotifyDismissSync, encodeNotifyVisibility, generateIdentity, isBinaryBrowserJpegFrame, isGzipJsonResponse, openNotify, randomToken, sealNotify, toBase64, toBase64Url } from '@para/protocol';
-import { AGENT_LIVE_APPEND_ENCODING, applyAgentLiveAppendPatch } from './agentLivePatch.js';
+import { AGENT_LIVE_APPEND_ENCODING, AGENT_LIVE_APPEND_V2_ENCODING, applyAgentLiveAppendPatch } from './agentLivePatch.js';
 import { ContentHashResponseCache, type PreparedContentHashRequest } from './contentHashCache.js';
 import { SpeculativeAgentAttaches } from './speculativeAgentAttaches.js';
 import { FsRequestTimings } from './fsRequestTiming.js';
@@ -1431,6 +1431,8 @@ export interface AgentLiveState {
 	tool?: string;
 	detail?: string;
 	text?: string;
+	/** `text` の前に PC が落とした字数（agent.live-append.v2 の窓の始まり。0 のときは無い）。 */
+	textOffset?: number;
 	final?: boolean;
 	elapsedSeconds?: number;
 	tokenCount?: number;
@@ -4202,9 +4204,11 @@ export class MobileController {
 			? existing.messages[existing.messages.length - 1]?.rev ?? existing.rev - 1
 			: undefined;
 		// responseEncoding: 大きい応答（snapshot・古い発言・サブエージェントの詳細）を gzip で受ける。知らない古い PC は無視する
+		// liveEncoding: 生成中の文の追記。v2（6,000 字で切らない）を知っている PC にだけ v2 を求める（古い PC は v1 しか合わせない）
+		const liveEncoding = this.hasPcCapability(PcCapability.AgentLiveAppendV2) ? AGENT_LIVE_APPEND_V2_ENCODING : AGENT_LIVE_APPEND_ENCODING;
 		const body = existing !== undefined && !existing.none && lastMessageRev !== undefined
-			? { t: 'attach', id: terminal.id, token: this.agentToken(terminalKey), epoch: existing.epoch, afterRev: lastMessageRev, liveEncoding: AGENT_LIVE_APPEND_ENCODING, responseEncoding: JSON_GZIP_RESPONSE_ENCODING }
-			: { t: 'attach', id: terminal.id, token: this.agentToken(terminalKey), liveEncoding: AGENT_LIVE_APPEND_ENCODING, responseEncoding: JSON_GZIP_RESPONSE_ENCODING };
+			? { t: 'attach', id: terminal.id, token: this.agentToken(terminalKey), epoch: existing.epoch, afterRev: lastMessageRev, liveEncoding, responseEncoding: JSON_GZIP_RESPONSE_ENCODING }
+			: { t: 'attach', id: terminal.id, token: this.agentToken(terminalKey), liveEncoding, responseEncoding: JSON_GZIP_RESPONSE_ENCODING };
 		this.client?.send('agent', encoder.encode(JSON.stringify(body)));
 		return this.client !== undefined;
 	}

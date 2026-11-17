@@ -57,6 +57,18 @@ function firstLine(text: string | undefined): string | undefined {
 	return collapsed.length > LINE_MAX ? `${collapsed.slice(0, LINE_MAX)}…` : collapsed;
 }
 
+/**
+ * 書いている最中の文の最新の 1 行（PC の画面の行。Q657 のモックの左の列）。空の行とコードのフェンスは飛ばし、
+ * 箇条の印と行内のコードの記号は外す。
+ */
+function latestLine(text: string | undefined): string | undefined {
+	if (text === undefined) {
+		return undefined;
+	}
+	const line = text.split('\n').map(part => part.trim()).filter(part => part.length > 0 && !part.startsWith('```')).at(-1);
+	return firstLine(line?.replace(/^[-*]\s+/, '').replace(/`/g, ''));
+}
+
 type ChatLike = Pick<AgentChatState, 'messages'> & Partial<Pick<AgentChatState, 'live' | 'interaction' | 'none'>>;
 
 /** 会話の写しのうち、エージェントの最後の本文（考え中・ツールの結果は除く）。 */
@@ -154,7 +166,7 @@ export function agentRowLine(terminal: { readonly agent?: boolean; readonly agen
 		const tool = live?.phase === 'tool' && live.tool !== undefined
 			? firstLine(live.detail !== undefined ? `${live.tool} ${live.detail}` : live.tool)
 			: undefined;
-		return { text: tool ?? firstLine(live?.text) ?? last ?? '実行中', emphasized: false, at };
+		return { text: tool ?? latestLine(live?.text) ?? last ?? '実行中', emphasized: false, at };
 	}
 	if (kind === 'review') {
 		return { text: last ?? '完了', emphasized: true, at };
