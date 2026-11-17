@@ -42,7 +42,7 @@ export interface IParadisAgentChatTerminal {
 	agentStatus?(): ParadisAgentStatus | undefined;
 }
 
-/** その種類の記述。種類が分からない会話は Claude Code と同じに扱う（キーで渡す。今までの扱い）。 */
+/** その種類の記述。種類が分からない会話は Claude Code と同じに扱う（キーで渡す）。 */
 function descriptorOf(agent: ParadisAgentKind | undefined): IParadisAgentDescriptor {
 	return paradisAgentDescriptor(agent) ?? PARADIS_AGENT_DESCRIPTORS.claude;
 }
