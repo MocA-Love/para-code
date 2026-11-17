@@ -6,6 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { PARADIS_AGENT_DESCRIPTORS, paradisAgentDescriptor } from '../../agentChat/common/paradisAgentDescriptor.js';
+
 /**
  * モバイル通知の見出しの組み立て。
  *
@@ -24,7 +26,7 @@
 
 /** 通知に出すエージェントの呼び名。 */
 export function paradisAgentLabel(agent: 'claude' | 'codex' | 'opencode' | 'antigravity'): string {
-	return agent === 'antigravity' ? 'Antigravity' : agent === 'opencode' ? 'OpenCode' : agent === 'codex' ? 'Codex' : 'Claude';
+	return (paradisAgentDescriptor(agent) ?? PARADIS_AGENT_DESCRIPTORS.claude).shortName;
 }
 
 /**

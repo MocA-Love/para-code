@@ -36,6 +36,7 @@ import { DraggedEditorGroupIdentifier, DraggedEditorIdentifier } from '../../../
 import { ParadisAgentQuestionAnswer } from '../../mobileRelay/common/paradisAgentQuestionKeys.js';
 import { IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentInteraction, IParadisAgentLiveState, paradisIsCodexDaemonApprovalInteraction } from '../common/paradisAgentChat.js';
 import { paradisAgentChatImagesToLinks } from '../common/paradisAgentChatMarkdown.js';
+import { PARADIS_AGENT_DESCRIPTORS, paradisAgentDescriptor } from '../common/paradisAgentDescriptor.js';
 import { IParadisAgentChatState } from '../common/paradisAgentChatState.js';
 import { IParadisAgentChatEditDiff, paradisAgentChatEditDiff, paradisBuildAgentChatItems, paradisPendingCodexQuestion, paradisDescribeAgentChatTool, paradisGroupAgentChatItems, paradisIsFileWriteTool, paradisIsPendingApprovalItem, paradisIsPendingQuestionItem, paradisPathBasename, paradisSummarizeAgentChatGroup, ParadisAgentChatEntry, ParadisAgentChatItem } from '../common/paradisAgentChatTimeline.js';
 import { paradisAgentChatButton } from './paradisAgentChatButton.js';
@@ -514,7 +515,7 @@ export class ParadisAgentChatView extends Disposable {
 	}
 
 	private renderHeader(state: IParadisAgentChatState | undefined): void {
-		this.headerAgent.textContent = state === undefined ? '' : state.agent === 'antigravity' ? 'Antigravity CLI' : state.agent === 'opencode' ? 'OpenCode' : state.agent === 'codex' ? 'Codex' : 'Claude Code';
+		this.headerAgent.textContent = state === undefined ? '' : (paradisAgentDescriptor(state.agent) ?? PARADIS_AGENT_DESCRIPTORS.claude).displayName;
 		const model = [state?.info?.model, state?.info?.effort].filter((part): part is string => part !== undefined && part.length > 0).join(' · ');
 		this.headerModel.textContent = model;
 		this.headerModel.style.display = model.length > 0 ? '' : 'none';

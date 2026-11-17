@@ -8,6 +8,7 @@
 
 import { PARADIS_OPENCODE_COMMAND, paradisIsOpenCodeResumeCli } from '../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
 import { ParadisHostPath } from '../../../common/paradisHostPath.js';
+import { PARADIS_AGENT_DESCRIPTORS, paradisAgentDescriptor } from '../../agentChat/common/paradisAgentDescriptor.js';
 import { paradisClaudeModelDisplayName } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import { PARADIS_CLAUDE_DEFAULT_PERMISSION_FLAG, PARADIS_CODEX_FULL_AUTO_FLAGS } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 
@@ -18,7 +19,7 @@ export type ParadisResumeAgent = 'claude' | 'codex' | 'opencode' | 'antigravity'
 export type ParadisResumeCli = string;
 
 export function paradisResumeAgentLabel(agent: ParadisResumeAgent): string {
-	return agent === 'claude' ? 'Claude Code' : agent === 'codex' ? 'Codex' : agent === 'antigravity' ? 'Antigravity CLI' : 'OpenCode';
+	return (paradisAgentDescriptor(agent) ?? PARADIS_AGENT_DESCRIPTORS.opencode).displayName;
 }
 
 /**
