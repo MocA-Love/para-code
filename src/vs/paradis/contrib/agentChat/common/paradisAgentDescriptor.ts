@@ -12,7 +12,7 @@
 /** エージェント CLI の種類。 */
 export type ParadisAgentKind = 'claude' | 'codex' | 'opencode' | 'antigravity';
 
-/** 種類の一覧（並びは表示の順）。 */
+/** 種類の一覧。 */
 export const PARADIS_AGENT_KINDS: readonly ParadisAgentKind[] = ['claude', 'codex', 'opencode', 'antigravity'];
 
 /**
@@ -21,9 +21,8 @@ export const PARADIS_AGENT_KINDS: readonly ParadisAgentKind[] = ['claude', 'code
  * - `keys`: TUI へのキー（貼り付けと打鍵）
  * - `api`: 連携の API（OpenCode の橋渡し）
  * - `hook`: 許可の hook が答えを待っている間だけ、その答えとして値で返す
- * - `structured`: Codex の app-server の構造化された回答
  */
-export type ParadisAgentRoute = 'mod' | 'keys' | 'api' | 'hook' | 'structured';
+type ParadisAgentRoute = 'mod' | 'keys' | 'api' | 'hook';
 
 /** 種類ごとの記述。その種類が「いつでも同じ」こと（静的な性質）だけを書く。mod が生きているか・hook が待っているかは書かない。 */
 export interface IParadisAgentDescriptor {
@@ -66,6 +65,10 @@ export interface IParadisAgentDescriptor {
 		readonly shells: boolean;
 		readonly panel: boolean;
 		readonly pcDraft: boolean;
+		/**
+		 * モバイルへ `sessionStatus` を配るか。PC の一覧（`paradisMobileAgentChat.ts` の `desktopPaneInsight`）は別の集合で、
+		 * この値では決めない。
+		 */
 		readonly sessionStatus: boolean;
 		readonly asyncQuestions: boolean;
 	};
@@ -96,7 +99,7 @@ export const PARADIS_AGENT_DESCRIPTORS: Readonly<Record<ParadisAgentKind, IParad
 		settingsAction: true,
 		send: ['keys'],
 		answerQuestion: ['keys'],
-		answerApproval: ['keys', 'structured'],
+		answerApproval: ['keys'],
 		interrupt: 'ctrl-c',
 		commandCatalog: 'files',
 		features: { subagents: true, teams: false, workflows: false, shells: false, panel: false, pcDraft: false, sessionStatus: true, asyncQuestions: true },
