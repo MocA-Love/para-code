@@ -266,13 +266,13 @@ class ParadisManageProfilesDialog extends ParadisProfileModal {
 		const info = dom.append(row, $('.pbpm-info'));
 		dom.append(info, $('.pbpm-name')).textContent = profile.name;
 		const meta = dom.append(info, $('.pbpm-meta'));
-		// 承認の「今後は聞かない」で、エージェントに聞かずに使わせると決めたプロファイル
-		const agentAllowed = this.profilesService.isAgentAllowed(profile.id);
 		const lastUsed = localize('paradis.browserProfiles.manage.lastUsed', "最終利用: {0}", fromNow(profile.lastUsedAt, true));
-		const withAgent = (text: string) => agentAllowed
-			? `${text} ・ ${localize('paradis.browserProfiles.manage.agentAllowed', "エージェントは聞かずに使えます")}`
-			: text;
-		meta.textContent = withAgent(lastUsed);
+		meta.textContent = lastUsed;
+		// 承認の「今後は聞かない」で、エージェントに聞かずに使わせると決めたプロファイル（別の行に出す）
+		const agentAllowed = this.profilesService.isAgentAllowed(profile.id);
+		if (agentAllowed) {
+			dom.append(info, $('.pbpm-meta')).textContent = localize('paradis.browserProfiles.manage.agentAllowed', "エージェントは聞かずに使えます");
+		}
 		// Cookie 件数は main へ聞く。Electron にはパーティション単位のストレージ使用量 API が
 		// 無いので、LocalStorage の容量は出さない（取れないものを 0 と出すより黙る）。
 		void this.profilesService.getProfileStats(profile.id).then(stats => {
@@ -282,7 +282,7 @@ class ParadisManageProfilesDialog extends ParadisProfileModal {
 			const cookies = stats.cookieCount === undefined
 				? localize('paradis.browserProfiles.manage.cookiesUnknown', "Cookie —")
 				: localize('paradis.browserProfiles.manage.cookies', "Cookie {0}件", stats.cookieCount);
-			meta.textContent = withAgent(`${lastUsed} ・ ${cookies}`);
+			meta.textContent = `${lastUsed} ・ ${cookies}`;
 		});
 
 		const actions = dom.append(row, $('.pbpm-row-actions'));
