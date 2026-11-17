@@ -721,6 +721,39 @@ suite('Paradis CDP screenshot filter', () => {
 		assert.ok(fixture.client.closeCalls >= 1, 'connection was closed so the child reconnects');
 	});
 
+	test('browser proxy stays open when the client detaches its own second session on the bound target, and puts back the size it set (lighthouse_audit)', async () => {
+		const detachSecond = async (requestedByClient: boolean, primaryLeft = true) => {
+			let released = 0;
+			const fixture = await createOpenBrowserProxyFixture(context({ applyBoundPageEmulation: async () => true, releaseBoundPageEmulation: () => released++ }));
+			if (primaryLeft) {
+				publishAllowedSession(fixture, 'primary-session');
+			}
+			publishAllowedSession(fixture, 'lighthouse-session');
+			fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 1, sessionId: 'lighthouse-session', method: 'Emulation.setDeviceMetricsOverride', params: { width: 412, height: 823, deviceScaleFactor: 1.75, mobile: true } })));
+			await new Promise(resolve => setTimeout(resolve, 0));
+			if (requestedByClient) {
+				fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 2, method: 'Target.detachFromTarget', params: { sessionId: 'lighthouse-session' } })));
+			}
+			const closedBefore = fixture.client.closeCalls;
+			fixture.upstream.emit('message', Buffer.from(JSON.stringify({ method: 'Target.detachedFromTarget', params: { sessionId: 'lighthouse-session' } })));
+			return {
+				closed: fixture.client.closeCalls > closedBefore,
+				released: released > 0,
+				forwarded: parseSent(fixture.client).some(message => (message as { method?: string }).method === 'Target.detachedFromTarget'
+					&& (message as { params?: { sessionId?: string } }).params?.sessionId === 'lighthouse-session'),
+			};
+		};
+		assert.deepStrictEqual({
+			clientDetachWithPrimaryLeft: await detachSecond(true),
+			upstreamDetach: await detachSecond(false),
+			clientDetachOfOnlySession: await detachSecond(true, false),
+		}, {
+			clientDetachWithPrimaryLeft: { closed: false, released: true, forwarded: true },
+			upstreamDetach: { closed: true, released: true, forwarded: true },
+			clientDetachOfOnlySession: { closed: true, released: true, forwarded: true },
+		});
+	});
+
 	test('browser proxy does not close on detach of an out-of-scope (non-bound) target', async () => {
 		const fixture = await createOpenBrowserProxyFixture();
 		// A child session attached under the bound target, then detached: not the bound target itself.
@@ -980,6 +1013,30 @@ suite('Paradis CDP screenshot filter', () => {
 		const responses = parseSent(fixture.client) as Array<{ id: number; error?: unknown }>;
 		assert.deepStrictEqual(responses.map(response => response.id), deniedMethods.map((_method, index) => 100 + index));
 		assert.ok(responses.every(response => response.error !== undefined));
+	});
+
+	test('page and browser-session routes forward Browser.getVersion (lighthouse_audit asks it on the page session)', async () => {
+		const page = createProxyFixture(context());
+		paradisProxyPageUpgrade({} as never, {} as never, Buffer.alloc(0), page.ws, page.wss, 41001, 'target-1', page.ctx, page.logService);
+		page.upstream.readyState = TestWebSocket.OPEN;
+		page.upstream.emit('open');
+		page.client.emit('message', Buffer.from(JSON.stringify({ id: 1, method: 'Browser.getVersion' })));
+
+		const browser = await createOpenBrowserProxyFixture();
+		publishAllowedSession(browser, 'session-1');
+		browser.client.sent.length = 0;
+		browser.upstream.sent.length = 0;
+		browser.client.emit('message', Buffer.from(JSON.stringify({ id: 1, sessionId: 'session-1', method: 'Browser.getVersion' })));
+		// The page route checks the page's URL once before its first command.
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		assert.deepStrictEqual({
+			page: { upstream: (parseSent(page.upstream) as Array<{ method?: string }>).map(frame => frame.method), client: parseSent(page.client) },
+			session: { upstream: (parseSent(browser.upstream) as Array<{ sessionId?: string; method?: string }>).map(frame => [frame.sessionId, frame.method]), client: parseSent(browser.client) },
+		}, {
+			page: { upstream: ['Browser.getVersion'], client: [] },
+			session: { upstream: [['session-1', 'Browser.getVersion']], client: [] },
+		});
 	});
 
 	test('page and browser-session routes reject shared cookies permissions downloads and global security', async () => {

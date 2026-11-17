@@ -847,7 +847,18 @@ const BROWSER_SESSION_ALLOWED_TARGET_METHODS = new Set([
 	'Target.detachFromTarget',
 ]);
 
+/**
+ * 共有の状態の domain にあっても、読むだけでほかのペインに触れない命令。ブラウザの root だけでなく、ページへの接続と
+ * target のセッションでも通す（lighthouse_audit の Lighthouse はページのセッションで Browser.getVersion を聞く）。
+ */
+const SHARED_STATE_READ_ONLY_ALLOWED_METHODS: ReadonlySet<string> = new Set([
+	'Browser.getVersion',
+]);
+
 function sharedStateDeniedMessage(method: string): string | undefined {
+	if (SHARED_STATE_READ_ONLY_ALLOWED_METHODS.has(method)) {
+		return undefined;
+	}
 	if (SHARED_STATE_DENIED_DOMAINS.some(domain => method.startsWith(domain)) || SHARED_STATE_DENIED_METHODS.has(method)) {
 		return `${method} is not permitted: this CDP connection is scoped to one Para Code browser pane and cannot access shared browser state.`;
 	}
@@ -1963,6 +1974,18 @@ export async function paradisProxyBrowserUpgrade(
 		const pendingUpstream: string[] = [];
 		let pendingUpstreamBytes = 0;
 		const allowedSessionIds = new Set<string>();
+		/**
+		 * クライアントが自分で Target.detachFromTarget を頼んだセッション。共有中のページに 2 本目のセッションを付けて
+		 * 外す（lighthouse_audit の Lighthouse）ときは、残ったセッションを使い続けられるよう接続を閉じない。
+		 */
+		const clientDetachRequestedSessionIds = new Set<string>();
+		/** 共有中のページの大きさ・タッチ・メディアの命令を送ったセッション。頼んで外したら、付けた大きさを戻す。 */
+		const emulatingSessionIds = new Set<string>();
+		const noteClientDetachRequest = (sessionId: string | undefined) => {
+			if (sessionId !== undefined && allowedSessionIds.has(sessionId) && clientDetachRequestedSessionIds.size < MAX_CDP_ROUTING_ENTRIES) {
+				clientDetachRequestedSessionIds.add(sessionId);
+			}
+		};
 		const sessionIdToTargetId = new ParadisReverseIndexedMap<string, string>();
 		const allowedTargetIds = new Set<string>();
 		const childToParent = new ParadisReverseIndexedMap<string, string>();
@@ -2115,6 +2138,8 @@ export async function paradisProxyBrowserUpgrade(
 		const forgetSessionOnly = (sessionId: string, synthesizeDetach: boolean) => {
 			const targetId = sessionIdToTargetId.get(sessionId);
 			allowedSessionIds.delete(sessionId);
+			clientDetachRequestedSessionIds.delete(sessionId);
+			emulatingSessionIds.delete(sessionId);
 			sessionIdToTargetId.delete(sessionId);
 			isolatedWorlds.forgetSession(sessionId);
 			completeForwardedRequestBarriersOfSession(forwardedRequestBarriers, sessionId);
@@ -2228,6 +2253,10 @@ export async function paradisProxyBrowserUpgrade(
 		/** Whether any session still points at the target (a target can have several, e.g. puppeteer's and the DevTools universe's). */
 		const targetHasSession = (targetId: string): boolean => {
 			return sessionIdToTargetId.hasValue(targetId);
+		};
+		/** 共有中のページのセッションが外れたときに接続を閉じるか。クライアントが頼んで外し、ほかのセッションが残るなら閉じない。 */
+		const closesOnBoundDetach = (detachedTargetId: string, requestedByClient: boolean): boolean => {
+			return !requestedByClient || !targetHasSession(detachedTargetId);
 		};
 		const backpressure = new ParadisClientBackpressureReporter('browser', logService);
 
@@ -2694,6 +2723,9 @@ export async function paradisProxyBrowserUpgrade(
 					if (!registerClientRequest(message, sessionTargetId)) {
 						return;
 					}
+					if (emulatingSessionIds.size < MAX_CDP_ROUTING_ENTRIES) {
+						emulatingSessionIds.add(message.sessionId);
+					}
 					const requestSessionId = message.sessionId;
 					void paradisResolveViewportEmulationRequest({ id: message.id, sessionId: requestSessionId, method: message.method, params: message.params }, ctx).then(response => {
 						if (!closed && pendingRequests.get(message.id)?.sessionId === requestSessionId) {
@@ -2762,6 +2794,9 @@ export async function paradisProxyBrowserUpgrade(
 					forwardClientRequest(message, sessionTargetId, { ...message, params: rewrittenParams });
 					return;
 				}
+				if (message.method === 'Target.detachFromTarget') {
+					noteClientDetachRequest(referencedSessionId);
+				}
 				const rewrittenParams = paradisRewriteForwardedParams(message.method, message.params);
 				forwardClientRequest(message, sessionTargetId, rewrittenParams ? { ...message, params: rewrittenParams } : undefined);
 				return;
@@ -2823,6 +2858,7 @@ export async function paradisProxyBrowserUpgrade(
 					rejectRequest(message, `${message.method} outside the bound scope is refused by the Para Code CDP gateway.`);
 					return;
 				}
+				noteClientDetachRequest(sessionId);
 				forwardClientRequest(message, targetId ?? (sessionId ? sessionIdToTargetId.get(sessionId) : undefined));
 				return;
 			}
@@ -3049,6 +3085,8 @@ export async function paradisProxyBrowserUpgrade(
 					const params = message.params as { sessionId?: string; targetId?: string } | undefined;
 					const detachedSessionId = boundedIdentifier(params?.sessionId);
 					const detachedTargetId = (detachedSessionId ? sessionIdToTargetId.get(detachedSessionId) : undefined) ?? boundedIdentifier(params?.targetId);
+					const requestedByClient = detachedSessionId !== undefined && clientDetachRequestedSessionIds.has(detachedSessionId);
+					const emulated = detachedSessionId !== undefined && emulatingSessionIds.has(detachedSessionId);
 					if (detachedSessionId) {
 						// Only this session goes: the DevTools universe keeps a second session on the same
 						// iframe or worker, and dropping the whole target took that sibling down with it.
@@ -3057,10 +3095,14 @@ export async function paradisProxyBrowserUpgrade(
 					// 保険: バインド済みtargetのセッションが剥離されたら、イベントを転送した上で接続を閉じる。
 					// 子プロセスは次のツール呼び出しでbrowser.connected===falseを検知して再接続し、
 					// コンテキストを再構築するので自己回復する。スコープ外targetのdetachには影響させない。
-					if (detachedTargetId !== undefined && ctx.boundTargetIds().has(detachedTargetId)) {
+					// クライアントが頼んで外し、同じページにほかのセッションが残るときは閉じない
+					if (detachedTargetId !== undefined && ctx.boundTargetIds().has(detachedTargetId) && closesOnBoundDetach(detachedTargetId, requestedByClient)) {
 						sendToClient(message);
 						closeBoth();
 						return;
+					}
+					if (emulated) {
+						ctx.releaseBoundPageEmulation?.();
 					}
 					sendToClient(message);
 					// The target itself is let go only once no session is left on it; its descendants'
@@ -3183,14 +3225,22 @@ export async function paradisProxyBrowserUpgrade(
 					return;
 				}
 				const detachedTargetId = sessionIdToTargetId.get(sessionId);
+				const requestedByClient = clientDetachRequestedSessionIds.has(sessionId);
+				const emulated = emulatingSessionIds.has(sessionId);
 				// Releases the session's outstanding requests and barriers too (Chromium will not answer them).
 				forgetSession(sessionId, false);
 				// 保険: バインド済みtargetのセッションが剥離されたら、イベントを転送した上で接続を閉じる。
 				// 子プロセスは再接続でコンテキストを再構築するので自己回復する。
-				if (detachedTargetId !== undefined && ctx.boundTargetIds().has(detachedTargetId)) {
+				// クライアントが頼んで外し、同じページにほかのセッションが残るときは閉じない
+				if (detachedTargetId !== undefined && ctx.boundTargetIds().has(detachedTargetId) && closesOnBoundDetach(detachedTargetId, requestedByClient)) {
 					sendToClient(message);
 					closeBoth();
 					return;
+				}
+				if (emulated) {
+					// Chromium drops a session's emulation with the session. Para Code applies it to the shared view
+					// instead, so put back the size this connection changed (as closing the connection does)
+					ctx.releaseBoundPageEmulation?.();
 				}
 				sendToClient(message);
 				return;

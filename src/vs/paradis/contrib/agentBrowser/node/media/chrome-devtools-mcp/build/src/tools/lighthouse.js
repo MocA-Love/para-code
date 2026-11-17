@@ -46,6 +46,12 @@ export const lighthouseAudit = definePageTool({
             output: formats,
             // Default 30 second timeout for page load.
             maxWaitForLoad: 30_000,
+            // PARA-PATCH: the embedded browser shares one storage partition and cache across Para Code, so the gateway
+            // refuses Storage.clearDataForOrigin and Network.clearBrowserCache. Audit without resetting storage.
+            disableStorageReset: true,
+            // PARA-PATCH: the gateway refuses Network.loadNetworkResource (it fetches with the page's cookies), so these
+            // fetch-based audits would always score 0 ("unable to download") instead of checking the page.
+            skipAudits: ['robots-txt', 'llms-txt', 'valid-source-maps'],
         };
         if (device === 'desktop') {
             flags.formFactor = 'desktop';

@@ -27,7 +27,7 @@ node build/src/bin/chrome-devtools-mcp.js --version  # 動作確認
 
 Para Code の変更（`PARA-PATCH`）は次のファイルにある: `build/src/McpContext.js`（`waitForTextOnPage`・`detectOpenDevToolsWindows`）、`build/src/McpResponse.js`（`handle`）、
 `build/src/ToolHandler.js`（`handle`）、`build/src/WaitForHelper.js`（`waitForStableDom`）、`build/src/tools/pages.js`（`navigate_page`・`handle_dialog`）、
-`build/src/tools/script.js`（`evaluate_script`）、`build/src/tools/snapshot.js`（`take_snapshot`）。
+`build/src/tools/script.js`（`evaluate_script`）、`build/src/tools/snapshot.js`（`take_snapshot`）、`build/src/tools/lighthouse.js`（`lighthouse_audit`）。
 更新したら当て直すこと（理由と内容は NOTES.md「vendored chrome-devtools-mcp への変更」）。
 
 更新時はこの README のバージョン表記と、`paradisDevtoolsMcpProxy.ts` が前提とする
