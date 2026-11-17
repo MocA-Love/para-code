@@ -11,7 +11,7 @@
 // 作るか・エージェントの id が正しいかの判断、保存、利用者への通知は呼び出し元ペインのウィンドウ
 // （paradisScheduledRunsMcpChannel.ts）が行う。ペインのスペースとエージェントの一覧を知っているのはウィンドウだけのため。
 
-import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
+import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider, paradisMcpToolError as toolError, paradisMcpToolJson as toolText } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import {
 	PARADIS_CREATE_SCHEDULED_RUN_TOOL,
 	PARADIS_SCHEDULED_RUN_TOOL_CREATE_LIMIT,
@@ -26,14 +26,6 @@ import {
 const CALLER_UNVERIFIED_MESSAGE = 'Para Code could not confirm that this request comes from a process inside your own terminal pane, so it does not create a scheduled run. This happens inside tmux, screen, zellij, WSL or a container, and for agents on an SSH host. Ask the user to create it in Para Code (gear menu > 定期実行).';
 const WINDOW_FAILURE_MESSAGE = 'Para Code could not reach the window of this terminal pane to create the scheduled run. Retry in a few seconds.';
 const CREATE_LIMIT_MESSAGE = `This terminal pane created ${PARADIS_SCHEDULED_RUN_TOOL_CREATE_LIMIT} scheduled runs in the last ${PARADIS_SCHEDULED_RUN_TOOL_CREATE_WINDOW_MS / 60_000} minutes, so Para Code turns this one down. Ask the user before creating more.`;
-
-function toolText(value: object): unknown {
-	return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] };
-}
-
-function toolError(text: string): unknown {
-	return { content: [{ type: 'text', text }], isError: true };
-}
 
 export class ParadisScheduledRunToolProvider implements IParadisMcpToolProvider {
 

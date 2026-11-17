@@ -130,24 +130,24 @@ export class DocxPreview037RenderAdapter implements IDocxRenderAdapter {
 	}
 }
 
-function terminalOutcome(token: CancellationToken, isCurrent: (sourceRevision: string) => boolean, sourceRevision: string): 'cancelled' | 'stale' | undefined {
+export function terminalOutcome(token: CancellationToken, isCurrent: (sourceRevision: string) => boolean, sourceRevision: string): 'cancelled' | 'stale' | undefined {
 	if (token.isCancellationRequested) {
 		return 'cancelled';
 	}
 	return isCurrent(sourceRevision) ? undefined : 'stale';
 }
 
-function terminalResult(outcome: 'cancelled' | 'stale', sourceRevision: string): RenderResult {
+export function terminalResult(outcome: 'cancelled' | 'stale', sourceRevision: string): RenderResult {
 	return Object.freeze({ outcome, sourceRevision, anchors: emptyAnchors, outcomes: emptyOutcomes });
 }
 
-function copyToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+export function copyToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 	const copy = new Uint8Array(bytes.byteLength);
 	copy.set(bytes);
 	return copy.buffer;
 }
 
-function createRenderStage(container: HTMLElement): HTMLDivElement {
+export function createRenderStage(container: HTMLElement): HTMLDivElement {
 	const stage = container.ownerDocument.createElement('div');
 	stage.style.position = 'absolute';
 	stage.style.visibility = 'hidden';

@@ -3974,7 +3974,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		// 自分なので、少し待てば空く（実測: ウィンドウの再読み込みで shared process が入れ替わる際に起きる）。
 		let listening = await listen(PARADIS_MCP_DEFAULT_PORT);
 		for (let attempt = 0; !listening && attempt < 5 && !this._store.isDisposed; attempt++) {
-			await new Promise(resolve => setTimeout(resolve, 400));
+			await timeout(400);
 			listening = await listen(PARADIS_MCP_DEFAULT_PORT);
 		}
 		if (!listening && !this._store.isDisposed) {
@@ -7465,7 +7465,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				if (index < commands.length - 1) {
 					// dragOver→drop間に短い猶予を置く（vendoredの `drag` ツールも同様に挟んでいる。
 					// isDragActive等のReact状態遷移がイベントハンドラの後で反映されるのを待つ）。
-					await new Promise<void>(resolve => setTimeout(resolve, 50));
+					await timeout(50);
 				}
 			}
 			completed = true;
@@ -8424,7 +8424,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			if (reservation !== undefined || this._serverDisposed || req.destroyed || Date.now() >= deadline) {
 				return reservation;
 			}
-			await new Promise<void>(resolve => setTimeout(resolve, MOBILE_VOICE_SLOT_POLL_MS));
+			await timeout(MOBILE_VOICE_SLOT_POLL_MS);
 		}
 	}
 

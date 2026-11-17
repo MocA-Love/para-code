@@ -1946,56 +1946,6 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 			? view
 			: undefined;
 	}
-
-	/** Return visibility from the same BrowserView instance resolved for this call. */
-	async isViewVisible(viewId: string): Promise<boolean | null> {
-		const view = this.browserViewMainService.tryGetBrowserView(viewId);
-		if (!view || view.webContents.isDestroyed()) {
-			return null;
-		}
-		const visible = view.getState().visible;
-		return this.browserViewMainService.tryGetBrowserView(viewId) === view && !view.webContents.isDestroyed() ? visible : null;
-	}
-
-	/**
-	 * バインド済みビューのスクリーンショットを撮り、base64エンコードした画像データを返す。
-	 * CDPゲートウェイが `Page.captureScreenshot` をインターセプトして委譲してくる
-	 * （ゲートウェイの素通し経路では WebContentsView が非表示のとき Chromium の
-	 * サーフェスコピーが失敗するため、upstream 自身の回避策付き実装
-	 * `BrowserView.captureScreenshot()`—可視化キック + capturePage(stayHidden) +
-	 * UnknownVizError リトライ、fullPage 時のピンチズーム復元—をそのまま使う）。
-	 * ビューが存在しない場合はnull。capture/validation失敗は呼び出し元へ伝播する。
-	 */
-	async captureScreenshot(viewId: string, options: IParadisCdpScreenshotOptions): Promise<string | null> {
-		const view = this.browserViewMainService.tryGetBrowserView(viewId);
-		if (!view || view.webContents.isDestroyed() || paradisShowsExtensionPage(view.webContents)) {
-			return null;
-		}
-		const buffer = await view.captureScreenshot({
-			format: options.format,
-			quality: options.quality,
-			fullPage: options.fullPage,
-			pageRect: options.pageRect ? { ...options.pageRect } : undefined,
-			captureBeyondViewport: options.captureBeyondViewport,
-		});
-		if (this.browserViewMainService.tryGetBrowserView(viewId) !== view || view.webContents.isDestroyed()) {
-			return null;
-		}
-		return encodeBase64(buffer);
-	}
-
-	/**
-	 * バインド済みビューの backgroundThrottling を切り替える。
-	 * バインド確立時に false（非表示状態でも rAF/タイマーが抑制されず、MCPの
-	 * navigate / wait_for が停滞しない）、アンバインド時に true（Electron既定）へ戻す。
-	 */
-	async setBackgroundThrottling(viewId: string, enabled: boolean): Promise<void> {
-		try {
-			this.browserViewMainService.tryGetBrowserView(viewId)?.webContents.setBackgroundThrottling(enabled);
-		} catch {
-			// ビューが破棄済み等。スロットリング設定はベストエフォートなので無視
-		}
-	}
 }
 
 /** カーソルの写し（一覧ウィンドウ・モバイル）に付ける持ち主。 */

@@ -203,7 +203,7 @@ function inspectJpeg(bytes: Uint8Array, limits: ParadisWordImageInspectionLimits
 }
 
 /** GIF のデータの小ブロック列（長さ 0 で終わる）を飛ばし、次の位置を返す。 */
-function skipGifSubBlocks(bytes: Uint8Array, offset: number): number | undefined {
+export function skipGifSubBlocks(bytes: Uint8Array, offset: number): number | undefined {
 	while (offset < bytes.byteLength) {
 		const length = bytes[offset];
 		offset += 1 + length;

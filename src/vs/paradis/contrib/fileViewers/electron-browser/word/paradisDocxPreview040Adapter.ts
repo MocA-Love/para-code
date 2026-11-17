@@ -14,11 +14,15 @@ import {
 	type IDocxPreviewAstDocument,
 	type IDocxPreviewAstNode,
 } from './paradisDocxRenderAnchor.js';
-import type {
-	IDocxPreview037RenderOptions,
-	IDocxRenderAdapter,
-	IDocxRenderOptions,
-	RenderResult,
+import {
+	copyToArrayBuffer,
+	createRenderStage,
+	terminalOutcome,
+	terminalResult,
+	type IDocxPreview037RenderOptions,
+	type IDocxRenderAdapter,
+	type IDocxRenderOptions,
+	type RenderResult,
 } from './paradisDocxRenderAdapter.js';
 
 export const PARADIS_DOCX_PREVIEW_040_NODE_ID_ATTRIBUTE = 'data-paradis-node-id';
@@ -118,9 +122,6 @@ export interface IDocxPreview040Api {
 	parseAsync(data: ArrayBuffer, options: IDocxPreview040RenderOptions): Promise<IDocxPreviewAstDocument>;
 	renderDocument(document: IDocxPreviewAstDocument, options: IDocxPreview040RenderOptions): Promise<readonly Node[]>;
 }
-
-const emptyAnchors: ReadonlyMap<string, Element> = new Map();
-const emptyOutcomes = Object.freeze([]);
 
 /**
  * docx-preview 0.4.0 adapter. Input bytes must already have passed Platform sanitization.
@@ -288,33 +289,6 @@ function bridgeMmlMathAnchorMarkers(parsed: IDocxPreviewAstDocument, renderedRoo
 		}
 	};
 	visitRendered(renderedRoot);
-}
-
-function terminalOutcome(token: CancellationToken, isCurrent: (sourceRevision: string) => boolean, sourceRevision: string): 'cancelled' | 'stale' | undefined {
-	if (token.isCancellationRequested) {
-		return 'cancelled';
-	}
-	return isCurrent(sourceRevision) ? undefined : 'stale';
-}
-
-function terminalResult(outcome: 'cancelled' | 'stale', sourceRevision: string): RenderResult {
-	return Object.freeze({ outcome, sourceRevision, anchors: emptyAnchors, outcomes: emptyOutcomes });
-}
-
-function copyToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-	const copy = new Uint8Array(bytes.byteLength);
-	copy.set(bytes);
-	return copy.buffer;
-}
-
-function createRenderStage(container: HTMLElement): HTMLDivElement {
-	const stage = container.ownerDocument.createElement('div');
-	stage.style.position = 'absolute';
-	stage.style.visibility = 'hidden';
-	stage.style.pointerEvents = 'none';
-	stage.style.inset = '0';
-	container.appendChild(stage);
-	return stage;
 }
 
 function publishStage(container: HTMLElement, stage: HTMLElement): void {
