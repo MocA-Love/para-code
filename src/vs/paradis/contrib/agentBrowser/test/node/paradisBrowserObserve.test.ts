@@ -32,7 +32,7 @@ interface IFakeHostOptions {
 	readonly read?: unknown;
 	readonly reads?: readonly unknown[];
 	/** 通信の様子（既定は静か）。`networkOf` があれば、操作を始めた時刻と今の時刻から作る。 */
-	readonly network?: { readonly inflight: number; readonly quietMs: number | undefined };
+	readonly network?: { readonly inflight: number; readonly quietMs: number | undefined; readonly documents?: number };
 	readonly networkOf?: (actionStartedAt: number, now: number) => { readonly inflight: number; readonly quietMs: number | undefined };
 	/** 待たない評価に対応していない vendored を真似る。 */
 	readonly cannotEvaluate?: boolean;
@@ -318,6 +318,20 @@ suite('Paradis browser observe', () => {
 			calls: ['list_pages', 'install', 'list_pages', 'read', 'list_pages'],
 			report: '[Page after the action] The page did not answer for 3 s after the action (it may be busy running scripts or loading); Para Code stopped waiting and did not read the changes. No JavaScript dialog is open. Check the page with take_snapshot or wait_until once it responds.\n\n[Browser state]\nYour tabs: t1 (current) "Orders" http://127.0.0.1/orders',
 		});
+	});
+
+	test('a page that does not answer right after a navigation is reported as loading, without reading the changes', async () => {
+		const observer = new ParadisBrowserObserver();
+		const options = { settle: true, state: false };
+		const noAnswer = { content: [{ type: 'text', text: 'PARA_BROWSER_DIALOG_OPEN: the page did not answer (a JavaScript dialog may have opened).' }], isError: true };
+		const loadingHead = '[Page after the action] Still changing or loading after 2000 ms (the wait limit: the document is still loading); use wait_until if you expect a slower update. A new document is loading and did not answer yet; check it with wait_until or take_snapshot.';
+		// タブの URL が操作の前と違う
+		const moved = fakeHost({ pages: [PAGES_ONE, text('## Pages\n1: Ticket (http://127.0.0.1/ticket/7) [selected]')], read: noAnswer });
+		const movedReport = await observer.after(moved.host, 'pane', options, await observer.before(moved.host, options, 'changes', 2000), 'changes', 2000);
+		// URL は同じ（再読み込み）だが、文書の要求が終わっていない
+		const reloading = fakeHost({ pages: [PAGES_ONE], read: noAnswer, network: { inflight: 1, quietMs: 0, documents: 1 } });
+		const reloadingReport = await observer.after(reloading.host, 'pane', options, await observer.before(reloading.host, options, 'changes', 2000), 'changes', 2000);
+		assert.deepStrictEqual({ movedReport, collected: moved.calls.includes('collect'), reloadingReport }, { movedReport: loadingHead, collected: false, reloadingReport: loadingHead });
 	});
 
 	test('a page that does not answer is not said to have no dialog when list_pages could not be read', async () => {
