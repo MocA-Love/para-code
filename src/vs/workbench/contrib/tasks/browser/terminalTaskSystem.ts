@@ -1469,7 +1469,7 @@ export class TerminalTaskSystem extends Disposable implements ITaskSystem {
 			// Try to find an existing terminal to split.
 			// Even if an existing terminal is found, the split can fail if the terminal width is too small.
 			for (const terminal of Object.values(this._terminals)) {
-				if (terminal.group === group) {
+				if (terminal.group === group && this._terminalService.instances.includes(terminal.terminal)) { // PARA-PATCH: never split a terminal parked with another space (see paradisIsReusable in _createTerminal)
 					this._logService.trace(`Found terminal to split for group ${group}`);
 					const originalInstance = terminal.terminal;
 					const result = await this._terminalService.createTerminal({ location: { parentTerminal: originalInstance }, config: launchConfigs });
