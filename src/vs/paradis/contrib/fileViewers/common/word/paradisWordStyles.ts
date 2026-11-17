@@ -7,6 +7,7 @@
 import type { CancellationToken } from '../../../../../base/common/cancellation.js';
 import type { ParadisOfficeFingerprint } from '../paradisOfficeProtocol.js';
 import { ParadisOfficePackageError, throwIfParadisOfficeCancelled, type ParadisOfficeXmlDocument, type ParadisOfficeXmlNode } from '../office/paradisOfficeArchive.js';
+import { paradisOfficeElementChildren as elementChildren, paradisOfficeUniqueAttribute as optionalAttribute, paradisOfficeRequiredUniqueAttribute as requiredAttribute } from '../office/paradisOfficeXmlAttributes.js';
 
 const wordNamespaces = new Set([
 	'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
@@ -713,10 +714,6 @@ function wordNamespace(element: XmlElement): string {
 	return element.uri;
 }
 
-function elementChildren(element: XmlElement): readonly XmlElement[] {
-	return element.children.filter((child): child is XmlElement => child.kind === 'element');
-}
-
 function uniqueWordChildWithIndex(element: XmlElement, local: string): { readonly element: XmlElement; readonly index: number } | undefined {
 	const matches = elementChildren(element).map((child, index) => ({ element: child, index })).filter(candidate => isWordElement(candidate.element, local));
 	if (matches.length > 1) {
@@ -752,24 +749,8 @@ function attributeRecord(element: XmlElement): Readonly<Record<string, string>> 
 	return result;
 }
 
-function requiredAttribute(element: XmlElement, uri: string, local: string): string {
-	const value = optionalAttribute(element, uri, local);
-	if (!value) {
-		throw new ParadisOfficePackageError('malformed');
-	}
-	return value;
-}
-
 function optionalRelationshipAttribute(element: XmlElement, local: string): string | undefined {
 	const matches = element.attributes.filter(attribute => relationshipNamespaces.has(attribute.uri) && attribute.local === local);
-	if (matches.length > 1) {
-		throw new ParadisOfficePackageError('malformed');
-	}
-	return matches[0]?.value;
-}
-
-function optionalAttribute(element: XmlElement, uri: string, local: string): string | undefined {
-	const matches = element.attributes.filter(attribute => attribute.uri === uri && attribute.local === local);
 	if (matches.length > 1) {
 		throw new ParadisOfficePackageError('malformed');
 	}

@@ -396,7 +396,25 @@ jobs:
         run: |
           stub="$RUNNER_TEMP/vscode-stub/node_modules"
           mkdir -p "$stub/vscode"
-          echo 'module.exports = { env: {} };' > "$stub/vscode/index.js"
+          # util.ts (git) reads env at load; PromiseSource needs an EventEmitter. fire() iterates a copy
+          # because onceEvent's listener disposes itself while firing.
+          cat > "$stub/vscode/index.js" <<'STUB'
+          class EventEmitter {
+            constructor() { this.listeners = new Set(); }
+            get event() {
+              return (listener, thisArgs, disposables) => {
+                const entry = e => listener.call(thisArgs, e);
+                this.listeners.add(entry);
+                const disposable = { dispose: () => { this.listeners.delete(entry); } };
+                if (disposables) { disposables.push(disposable); }
+                return disposable;
+              };
+            }
+            fire(e) { for (const entry of [...this.listeners]) { entry(e); } }
+            dispose() { this.listeners.clear(); }
+          }
+          module.exports = { env: {}, EventEmitter };
+          STUB
           NODE_PATH="$stub" node node_modules/mocha/bin/mocha --ui tdd --ignore '**/*Integration.test.js' \
             'extensions/git/out/test/**/paradis*.test.js' \
             'extensions/typescript-language-features/out/test/**/paradis*.test.js'
