@@ -983,6 +983,30 @@ suite('Paradis CDP screenshot filter', () => {
 		assert.ok(responses.every(response => response.error !== undefined));
 	});
 
+	test('page and browser-session routes forward Browser.getVersion (lighthouse_audit asks it on the page session)', async () => {
+		const page = createProxyFixture(context());
+		paradisProxyPageUpgrade({} as never, {} as never, Buffer.alloc(0), page.ws, page.wss, 41001, 'target-1', page.ctx, page.logService);
+		page.upstream.readyState = TestWebSocket.OPEN;
+		page.upstream.emit('open');
+		page.client.emit('message', Buffer.from(JSON.stringify({ id: 1, method: 'Browser.getVersion' })));
+
+		const browser = await createOpenBrowserProxyFixture();
+		publishAllowedSession(browser, 'session-1');
+		browser.client.sent.length = 0;
+		browser.upstream.sent.length = 0;
+		browser.client.emit('message', Buffer.from(JSON.stringify({ id: 1, sessionId: 'session-1', method: 'Browser.getVersion' })));
+		// The page route checks the page's URL once before its first command.
+		await new Promise(resolve => setTimeout(resolve, 0));
+
+		assert.deepStrictEqual({
+			page: { upstream: (parseSent(page.upstream) as Array<{ method?: string }>).map(frame => frame.method), client: parseSent(page.client) },
+			session: { upstream: (parseSent(browser.upstream) as Array<{ sessionId?: string; method?: string }>).map(frame => [frame.sessionId, frame.method]), client: parseSent(browser.client) },
+		}, {
+			page: { upstream: ['Browser.getVersion'], client: [] },
+			session: { upstream: [['session-1', 'Browser.getVersion']], client: [] },
+		});
+	});
+
 	test('page and browser-session routes reject shared cookies permissions downloads and global security', async () => {
 		const deniedMethods = [
 			'Storage.getCookies',

@@ -839,7 +839,18 @@ const BROWSER_SESSION_ALLOWED_TARGET_METHODS = new Set([
 	'Target.detachFromTarget',
 ]);
 
+/**
+ * 共有の状態の domain にあっても、読むだけでほかのペインに触れない命令。ブラウザの root だけでなく、ページへの接続と
+ * target のセッションでも通す（lighthouse_audit の Lighthouse はページのセッションで Browser.getVersion を聞く）。
+ */
+const SHARED_STATE_READ_ONLY_ALLOWED_METHODS: ReadonlySet<string> = new Set([
+	'Browser.getVersion',
+]);
+
 function sharedStateDeniedMessage(method: string): string | undefined {
+	if (SHARED_STATE_READ_ONLY_ALLOWED_METHODS.has(method)) {
+		return undefined;
+	}
 	if (SHARED_STATE_DENIED_DOMAINS.some(domain => method.startsWith(domain)) || SHARED_STATE_DENIED_METHODS.has(method)) {
 		return `${method} is not permitted: this CDP connection is scoped to one Para Code browser pane and cannot access shared browser state.`;
 	}
