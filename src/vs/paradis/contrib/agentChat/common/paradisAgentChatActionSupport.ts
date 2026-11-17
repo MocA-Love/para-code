@@ -48,7 +48,7 @@ function supportOf(descriptor: IParadisAgentDescriptor): IParadisAgentChatAction
 		sendMessage: descriptor.send.length > 0,
 		answerQuestion: descriptor.answerQuestion.length > 0,
 		answerApproval: descriptor.answerApproval.some(route => route !== 'hook'),
-		settings: descriptor.settingsAction,
+		settings: descriptor.modelControl === 'mod-or-keys',
 	};
 }
 
@@ -56,6 +56,9 @@ function supportOf(descriptor: IParadisAgentDescriptor): IParadisAgentChatAction
 export function paradisAgentChatActionSupport(agent: ParadisAgentKind | undefined): IParadisAgentChatActionSupport {
 	return agent === undefined ? ALL : SUPPORT[agent];
 }
+
+/** モデル・effort を変えられないエージェントの設定を変えようとしたときの断りの文（モバイル向け）。 */
+export const PARADIS_AGENT_SETTINGS_ON_PC_MESSAGE = 'このエージェントのモデルと effort は、アプリからは変えられません。PC のターミナルで変えてください';
 
 /** 回答を送れないエージェントの質問・確認に答えようとしたときの断りの文（モバイル向け。PC は nls の文を使う）。 */
 export const PARADIS_ANTIGRAVITY_ANSWER_ON_PC_MESSAGE = 'Antigravity CLI の質問・確認には、まだアプリから答えられません。PC の端末で答えてください';

@@ -40,13 +40,8 @@ export interface IParadisAgentDescriptor {
 		/** モバイルから再開した直後に、依頼の文を自動で渡すか。 */
 		readonly deliverPromptAfterResume: boolean;
 	};
-	/**
-	 * モデル・effort をチャット欄から変える口。`unspecified` は、変えられるとも変えられないとも配っていない種類
-	 * （モバイルへ `info.modelControl` を送らず、`claudeSettings` の能力も付けない）。
-	 */
-	readonly modelControl: 'mod-or-keys' | 'none' | 'unspecified';
-	/** 設定の操作（`action/claudeSetting`）を入口で断らずに通すか。 */
-	readonly settingsAction: boolean;
+	/** モデル・effort をチャット欄から変える口。`none` は変えられない（PC のターミナルで変える）。 */
+	readonly modelControl: 'mod-or-keys' | 'none';
 	/** 発言を送る経路（候補の順）。空は送れない。 */
 	readonly send: readonly ParadisAgentRoute[];
 	/** 質問のカードに答える経路（候補の順）。空は答えられない。 */
@@ -82,7 +77,6 @@ export const PARADIS_AGENT_DESCRIPTORS: Readonly<Record<ParadisAgentKind, IParad
 		logo: 'claude',
 		resume: { fork: true, bypassFlag: '--dangerously-skip-permissions', deliverPromptAfterResume: true },
 		modelControl: 'mod-or-keys',
-		settingsAction: true,
 		send: ['mod', 'keys'],
 		answerQuestion: ['mod', 'keys'],
 		answerApproval: ['mod', 'keys'],
@@ -96,7 +90,6 @@ export const PARADIS_AGENT_DESCRIPTORS: Readonly<Record<ParadisAgentKind, IParad
 		logo: 'codex',
 		resume: { fork: true, bypassFlag: '--dangerously-bypass-approvals-and-sandbox', deliverPromptAfterResume: true },
 		modelControl: 'none',
-		settingsAction: true,
 		send: ['keys'],
 		answerQuestion: ['keys'],
 		answerApproval: ['keys'],
@@ -109,8 +102,7 @@ export const PARADIS_AGENT_DESCRIPTORS: Readonly<Record<ParadisAgentKind, IParad
 		shortName: 'OpenCode',
 		logo: undefined,
 		resume: { fork: true, bypassFlag: undefined, deliverPromptAfterResume: true },
-		modelControl: 'unspecified',
-		settingsAction: true,
+		modelControl: 'none',
 		send: ['api'],
 		answerQuestion: ['api'],
 		answerApproval: ['api'],
@@ -124,7 +116,6 @@ export const PARADIS_AGENT_DESCRIPTORS: Readonly<Record<ParadisAgentKind, IParad
 		logo: 'antigravity',
 		resume: { fork: false, bypassFlag: undefined, deliverPromptAfterResume: false },
 		modelControl: 'none',
-		settingsAction: false,
 		send: ['keys'],
 		answerQuestion: [],
 		answerApproval: ['hook'],
