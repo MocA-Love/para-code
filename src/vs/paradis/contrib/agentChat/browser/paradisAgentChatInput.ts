@@ -22,6 +22,7 @@ import { paradisQuestionReadyMarker } from '../common/paradisAgentQuestionMarker
 import { paradisPendingCodexQuestion } from '../common/paradisAgentChatTimeline.js';
 import type { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisAntigravitySendBlock, paradisAntigravitySendBlock } from '../common/paradisAgentChatActionSupport.js';
+import { IParadisAgentDescriptor, PARADIS_AGENT_DESCRIPTORS, ParadisAgentKind, paradisAgentDescriptor } from '../common/paradisAgentDescriptor.js';
 import { ParadisAgentChatSession } from './paradisAgentChatSession.js';
 import { paradisPermissionPromptParts, paradisPromptRegionShows, paradisScreenShowsAgentPrompt, paradisScreenShowsMarker, paradisScreenShowsPermissionPrompt, paradisScreenShowsQuestionPrompt, paradisSendAgentInteractionKeys } from './paradisAgentTuiInput.js';
 
@@ -39,6 +40,11 @@ export interface IParadisAgentChatTerminal {
 	bracketedPasteMode(): boolean;
 	/** ペインの状態（hook と OSC 7501 から決めたもの）。無ければ見ない。Antigravity CLI の許可待ちはこれでしか分からない。 */
 	agentStatus?(): ParadisAgentStatus | undefined;
+}
+
+/** その種類の記述。種類が分からない会話は Claude Code と同じに扱う（キーで渡す。今までの扱い）。 */
+function descriptorOf(agent: ParadisAgentKind | undefined): IParadisAgentDescriptor {
+	return paradisAgentDescriptor(agent) ?? PARADIS_AGENT_DESCRIPTORS.claude;
 }
 
 /** {@link paradisAntigravitySendBlock} の理由を、チャット欄に出す文にする。 */
@@ -102,8 +108,8 @@ export class ParadisAgentChatInput {
 		if (state === undefined) {
 			return localize('paradisAgentChat.errorNoSession', "エージェントの会話が見つかりません");
 		}
-		// 取り直したら OpenCode だった。OpenCode の入力欄へは打鍵しない（会話への送信は API の経路だけ）
-		if (state.agent === 'opencode') {
+		// 取り直したら、キーで送らない種類（OpenCode）だった。入力欄へは打鍵しない（会話への送信は API の経路だけ）
+		if (!descriptorOf(state.agent).send.includes('keys')) {
 			return localize('paradisAgentChat.errorOpenCodeNotReady', "OpenCode の会話が変わったか、回答を待っています");
 		}
 		// Antigravity CLI のキーの働きは実機で測っていないので、入力欄で待っていると確かめられるときだけ打つ
@@ -155,11 +161,11 @@ export class ParadisAgentChatInput {
 		const session = this.dependencies.session(token);
 		// OpenCode（または種類がまだ分からない会話）だけは送る前に写しを取り直し、会話の ID が今のものか確かめる。
 		// Claude Code・Codex は今までどおり、下の確認の中で 1 回だけ取り直す
-		if (session.state === undefined || session.state.agent === 'opencode') {
+		if (session.state === undefined || descriptorOf(session.state.agent).send.includes('api')) {
 			await session.refresh();
 		}
 		const state = session.state;
-		if (state?.agent === 'opencode') {
+		if (state !== undefined && descriptorOf(state.agent).send.includes('api')) {
 			if (this.dependencies.terminal(instanceId, token) !== terminal || state.agentExited || !state.sessionId || state.interaction !== null) {
 				return localize('paradisAgentChat.errorOpenCodeNotReady', "OpenCode の会話が変わったか、回答を待っています");
 			}
@@ -227,10 +233,10 @@ export class ParadisAgentChatInput {
 			return localize('paradisAgentChat.errorQuestionChanged', "質問の選択肢が変わりました。もう一度選んでください");
 		}
 		const state = this.dependencies.session(token).state;
-		if (state?.agent === 'antigravity') {
+		if (descriptorOf(state?.agent).answerQuestion.length === 0) {
 			return localize('paradisAgentChat.errorAntigravityAnswerNotReady', "Antigravity CLI の質問・確認にはまだチャット欄から答えられません。ターミナルで答えてください");
 		}
-		if (state?.agent === 'opencode') {
+		if (state !== undefined && descriptorOf(state.agent).answerQuestion.includes('api')) {
 			if (!state.sessionId || this.dependencies.terminal(instanceId, token) !== terminal) {
 				return localize('paradisAgentChat.errorQuestionGone', "この質問はもう回答を待っていません");
 			}
@@ -274,7 +280,7 @@ export class ParadisAgentChatInput {
 			return localize('paradisAgentChat.errorApprovalGone', "この確認はもう回答を待っていません");
 		}
 		const openCode = this.dependencies.session(token).state;
-		if (openCode?.agent === 'opencode') {
+		if (openCode !== undefined && descriptorOf(openCode.agent).answerApproval.includes('api')) {
 			if (!openCode.sessionId || this.dependencies.terminal(instanceId, token) !== terminal) {
 				return localize('paradisAgentChat.errorApprovalGone', "この確認はもう回答を待っていません");
 			}
@@ -285,7 +291,7 @@ export class ParadisAgentChatInput {
 			}
 			return answered ? undefined : localize('paradisAgentChat.errorOpenCodeAnswer', "OpenCode へ回答を送れませんでした。接続を確かめてください");
 		}
-		if (openCode?.agent === 'antigravity') {
+		if (openCode !== undefined && descriptorOf(openCode.agent).answerApproval.includes('hook')) {
 			// Antigravity CLI の許可は、許可の hook が答えを待っている間だけ値で返す（キーは打たない。モバイルと同じ経路）
 			const answered = (choiceId === 'yes' || choiceId === 'no') && await this.dependencies.source.answerAgentChatApproval(token, interactionId, choiceId).catch(() => false);
 			void this.dependencies.session(token).refresh();

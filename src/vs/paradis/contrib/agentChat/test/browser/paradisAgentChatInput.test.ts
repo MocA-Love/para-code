@@ -13,6 +13,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import type { ParadisAgentStatus } from '../../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentChatSource, IParadisAgentChatView } from '../../common/paradisAgentChat.js';
+import { PARADIS_AGENT_KINDS, ParadisAgentKind } from '../../common/paradisAgentDescriptor.js';
 import { IParadisAgentChatTerminal, ParadisAgentChatInput, paradisCodexApprovalFormOptions, paradisIsShellProcessName } from '../../browser/paradisAgentChatInput.js';
 import { paradisScreenShowsAgentPrompt, paradisScreenShowsPermissionPrompt } from '../../browser/paradisAgentTuiInput.js';
 import { ParadisAgentChatSession } from '../../browser/paradisAgentChatSession.js';
@@ -367,5 +368,85 @@ suite('ParadisAgentChatInput', () => {
 		terminal.screen = CODEX_QUESTION_SCREEN;
 		const onScreen = await input.sendMessage(1, 't', 'deploy to dev');
 		assert.deepStrictEqual({ whileAsking: whileAsking !== undefined, onScreen: onScreen !== undefined, sent: terminal.sent }, { whileAsking: true, onScreen: true, sent: [] });
+	});
+
+	test('routes sends, question answers and approval answers by agent kind, with the same refusals for every kind', async () => {
+		const question = { rev: 0, role: 'assistant' as const, kind: 'question' as const, text: 'どちらの案で進めますか?', toolUseId: 'q1', questionGroup: 'g', options: [{ label: 'Yes' }, { label: 'No' }] };
+		const questionScreen = ['どちらの案で進めますか?', '❯ 1. Yes', '  2. No', 'Enter to select · ↑/↓ to navigate · Esc to cancel'].join('\n');
+		type Fixture = ReturnType<typeof setup>;
+		const run = async (agent: ParadisAgentKind, prepare: (fixture: Fixture) => void, act: (input: ParadisAgentChatInput) => Promise<string | undefined>) => {
+			const fixture = setup({ agent, sessionId: 'ses_1' });
+			fixture.source.sendOpenCodeAgentMessage = async (_token, sid, text) => { fixture.claims.push(`api:message:${sid}:${text}`); return true; };
+			fixture.source.answerOpenCodeAgentQuestions = async (_token, sid, id) => { fixture.claims.push(`api:question:${sid}:${id}`); return true; };
+			fixture.source.answerOpenCodeAgentApproval = async (_token, sid, id, choice) => { fixture.claims.push(`api:approval:${sid}:${id}:${choice}`); return true; };
+			prepare(fixture);
+			const error = await act(fixture.input);
+			return { error, keys: fixture.terminal.sent, calls: fixture.claims };
+		};
+		const approvalOf = (agent: ParadisAgentKind) => ({ kind: 'approval' as const, id: 'approval:e:0', detail: agent === 'codex' ? CODEX_EXEC_APPROVAL_DETAIL : 'Bash: npm test -- auth' });
+		const showApproval = (agent: ParadisAgentKind) => (fixture: Fixture) => {
+			fixture.setView({ interaction: approvalOf(agent) });
+			fixture.terminal.screen = agent === 'codex' ? CODEX_EXEC_APPROVAL_SCREEN : PERMISSION_SCREEN;
+		};
+		const table: Record<string, object> = {};
+		for (const agent of PARADIS_AGENT_KINDS) {
+			table[agent] = {
+				send: await run(agent, () => { }, input => input.sendMessage(1, 't', 'hello')),
+				sendFromShell: await run(agent, fixture => { fixture.terminal.front = 'shell'; }, input => input.sendMessage(1, 't', 'hello')),
+				sendWhileApprovalWaits: await run(agent, showApproval(agent), input => input.sendMessage(1, 't', 'hello')),
+				question: await run(agent, fixture => {
+					fixture.setView({ messages: [question], interaction: { kind: 'question', id: 'g' }, pendingQuestions: [question] });
+					fixture.terminal.screen = questionScreen;
+				}, input => input.answerQuestions(1, 't', 'g', [{ kind: 'option', index: 1 }])),
+				approval: await run(agent, showApproval(agent), input => input.answerApproval(1, 't', 'approval:e:0', 'yes')),
+				approvalAlways: await run(agent, showApproval(agent), input => input.answerApproval(1, 't', 'approval:e:0', 'always')),
+			};
+		}
+		// 送る直前の取り直しで、会話が OpenCode のものに変わっていた（入力欄へは打たない）
+		table.becameOpenCode = await run('claude', fixture => {
+			const getAgentChat = fixture.source.getAgentChat;
+			let reads = 0;
+			fixture.source.getAgentChat = async (...args) => {
+				if (++reads === 2) {
+					fixture.setView({ agent: 'opencode' });
+				}
+				return getAgentChat(...args);
+			};
+		}, input => input.sendMessage(1, 't', 'hello'));
+		assert.deepStrictEqual(table, {
+			claude: {
+				send: { error: undefined, keys: ['paste:"hello"', '"\\r"'], calls: [] },
+				sendFromShell: { error: 'エージェントが前面で動いていません。ターミナルで確かめてください', keys: [], calls: [] },
+				sendWhileApprovalWaits: { error: 'エージェントが回答を待っています。先に質問・許可の確認に答えてください', keys: [], calls: [] },
+				question: { error: undefined, keys: ['"2"'], calls: ['claim:question:g', 'release:question:g:true'] },
+				approval: { error: undefined, keys: ['"1"'], calls: ['claim:approval:approval:e:0', 'release:approval:approval:e:0:true'] },
+				approvalAlways: { error: undefined, keys: [], calls: ['codex:approval:e:0:always'] },
+			},
+			codex: {
+				send: { error: undefined, keys: ['paste:"hello"', '"\\r"'], calls: [] },
+				sendFromShell: { error: 'エージェントが前面で動いていません。ターミナルで確かめてください', keys: [], calls: [] },
+				sendWhileApprovalWaits: { error: 'エージェントが回答を待っています。先に質問・許可の確認に答えてください', keys: [], calls: [] },
+				question: { error: undefined, keys: ['"2"'], calls: ['claim:question:g', 'release:question:g:true'] },
+				approval: { error: undefined, keys: ['"y"'], calls: ['claim:approval:approval:e:0', 'release:approval:approval:e:0:true'] },
+				approvalAlways: { error: undefined, keys: [], calls: ['codex:approval:e:0:always'] },
+			},
+			opencode: {
+				send: { error: undefined, keys: [], calls: ['api:message:ses_1:hello'] },
+				sendFromShell: { error: undefined, keys: [], calls: ['api:message:ses_1:hello'] },
+				sendWhileApprovalWaits: { error: 'OpenCode の会話が変わったか、回答を待っています', keys: [], calls: [] },
+				question: { error: undefined, keys: [], calls: ['api:question:ses_1:g'] },
+				approval: { error: undefined, keys: [], calls: ['api:approval:ses_1:approval:e:0:yes'] },
+				approvalAlways: { error: undefined, keys: [], calls: ['api:approval:ses_1:approval:e:0:always'] },
+			},
+			antigravity: {
+				send: { error: undefined, keys: ['paste:"hello"', '"\\r"'], calls: [] },
+				sendFromShell: { error: 'ターミナルで Antigravity CLI が動いていることを確かめられませんでした。ターミナルで確かめてください', keys: [], calls: [] },
+				sendWhileApprovalWaits: { error: 'Antigravity CLI が質問の回答を待っています。ターミナルで答えてから送ってください', keys: [], calls: [] },
+				question: { error: 'Antigravity CLI の質問・確認にはまだチャット欄から答えられません。ターミナルで答えてください', keys: [], calls: [] },
+				approval: { error: undefined, keys: [], calls: ['codex:approval:e:0:yes'] },
+				approvalAlways: { error: 'この確認にはここから答えられなくなりました。ターミナルで答えてください', keys: [], calls: [] },
+			},
+			becameOpenCode: { error: 'OpenCode の会話が変わったか、回答を待っています', keys: [], calls: [] },
+		});
 	});
 });
