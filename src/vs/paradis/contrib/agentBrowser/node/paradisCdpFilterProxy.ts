@@ -743,11 +743,7 @@ function parseClientCommand(data: wsTypes.RawData): IParadisClientCommand | unde
 	return value as unknown as IParadisClientCommand;
 }
 
-function parseJsonRecord(data: wsTypes.RawData, maxBytes = MAX_CDP_FRAME_BYTES): IJsonRpcMsg | undefined {
-	return rawDataByteLength(data) > maxBytes ? undefined : parseJsonRecordFrame(paradisReadCdpFrame(data), maxBytes);
-}
-
-/** {@link parseJsonRecord} の、読み出し済みのフレームを受ける形（同じフレームを 2 度文字列にしない）。 */
+/** 読み出し済みのフレームを JSON-RPC の 1 件として読む（同じフレームを 2 度文字列にしない）。上限を超えたら undefined。 */
 function parseJsonRecordFrame(frame: IParadisCdpFrame, maxBytes = MAX_CDP_FRAME_BYTES): IJsonRpcMsg | undefined {
 	if (frame.bytes > maxBytes) {
 		return undefined;
@@ -2433,11 +2429,7 @@ export async function paradisProxyBrowserUpgrade(
 			}
 			return id;
 		};
-		/** sendInternal の応答を待つ。接続が閉じた・セッションが消えた・送れなかったときは undefined。 */
-		const requestInternal = (method: string, params: Record<string, unknown>, targetId?: string, sessionId?: string): Promise<IJsonRpcMsg | undefined> => {
-			return startInternalRequest(method, params, targetId, sessionId).response;
-		};
-		/** {@link requestInternal} の本体。待ち受けを外せるよう、送った id も返す（送らなかったら undefined）。 */
+		/** sendInternal の応答を待つ。接続が閉じた・セッションが消えた・送れなかったときは undefined を返す。待ち受けを外せるよう、送った id も返す（送らなかったら undefined）。 */
 		const startInternalRequest = (method: string, params: Record<string, unknown>, targetId?: string, sessionId?: string): { readonly id: number | undefined; readonly response: Promise<IJsonRpcMsg | undefined> } => {
 			if (closed || internalWaiters.size >= MAX_CDP_PENDING_REQUESTS) {
 				return { id: undefined, response: Promise.resolve(undefined) };
@@ -2449,8 +2441,8 @@ export async function paradisProxyBrowserUpgrade(
 			return { id, response: new Promise(resolve => internalWaiters.set(id, resolve)) };
 		};
 		/**
-		 * {@link requestInternal} を `timeoutMs` まで待つ。過ぎたら 'timeout'。そのときは待ち受けと台帳から外し、遅れて来た答えは
-		 * 退いた id として黙って捨てる（取り残しを溜めない。溜まると上限で requestInternal が送らずに undefined を返す）。
+		 * {@link startInternalRequest} を `timeoutMs` まで待つ。過ぎたら 'timeout'。そのときは待ち受けと台帳から外し、遅れて来た答えは
+		 * 退いた id として黙って捨てる（取り残しを溜めない。溜まると上限で startInternalRequest が送らずに undefined を返す）。
 		 */
 		const requestInternalWithin = (timeoutMs: number, method: string, params: Record<string, unknown>, targetId?: string, sessionId?: string): Promise<IJsonRpcMsg | 'timeout' | undefined> => {
 			const { id, response: request } = startInternalRequest(method, params, targetId, sessionId);

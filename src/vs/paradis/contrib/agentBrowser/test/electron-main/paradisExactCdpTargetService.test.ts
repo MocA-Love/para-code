@@ -977,10 +977,9 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 			screenshot: await service.captureExactViewScreenshot(exact, {}),
 			rect: await service.captureExactViewScreenshot(exact, { pageRect: { x: 0, y: 0, width: 10, height: 10 } }),
 			rawCapture: await service.beginExactViewRawCapture(exact),
-			legacy: await service.captureScreenshot('view-1', { format: 'png' }),
 			pdf: pdf.ok ? 'printed' : /browser extension page/.test(pdf.message ?? '') ? 'refused' : pdf.reason,
 			captures: current.counters.capture,
-		}, { screenshot: null, rect: null, rawCapture: null, legacy: null, pdf: 'refused', captures: 0 });
+		}, { screenshot: null, rect: null, rawCapture: null, pdf: 'refused', captures: 0 });
 	});
 
 	test('refuses agent input while the exact BrowserView shows a browser extension page', async () => {
@@ -1191,7 +1190,7 @@ suite('ParadisCdpTargetService exact BrowserView authority', () => {
 		const registry = createRegistry({ 'view-1': current.view });
 		const service = new ParadisCdpTargetService(registry.service, () => 'lease-1');
 		const exact = (await service.resolveExactViewDescriptor(1, 'view-1'))!;
-		for (const method of ['resolveTargetId', 'isViewVisible', 'captureScreenshot', 'setBackgroundThrottling'] as const) {
+		for (const method of ['resolveTargetId'] as const) {
 			Reflect.set(service, method, () => { throw new Error(`legacy ${method} called`); });
 		}
 

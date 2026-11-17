@@ -131,10 +131,6 @@ export function sessionResolveGridLayoutTerminalId(instance: ISessionTerminalGri
 }
 
 /** Whether a layout is well-formed enough to be persisted and later handed to `Grid.deserialize`. */
-export function sessionIsValidGridLayout(layout: unknown): layout is ISerializedGrid {
-	return isValidLayout(layout);
-}
-
 function isValidLayout(layout: unknown): layout is ISerializedGrid {
 	if (typeof layout !== 'object' || layout === null) {
 		return false;
