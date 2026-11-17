@@ -22,7 +22,7 @@ import { basename, isEqual } from '../../../../base/common/resources.js';
 import { escapeRegExpCharacters } from '../../../../base/common/strings.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
-import { IConfigurationService, type IConfigurationValue } from '../../../../platform/configuration/common/configuration.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
@@ -37,7 +37,8 @@ import { EditorInput } from '../../../../workbench/common/editor/editorInput.js'
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IParadisCellComment, IParadisCellData, IParadisRenderShape, IParadisSemanticDiagnosticsSummary, IParadisSheetData, IParadisSpreadsheetMetafileImages, IParadisWorkbookData, unavailableParadisSpreadsheetSemanticDiagnostics } from '../common/paradisSpreadsheet.js';
 import { pageRectangles } from '../common/paradisSpreadsheetPageLayout.js';
-import { createParadisOfficeSearchPrintCallbacks, snapshotParadisOfficeRuntimeConfiguration, type ParadisOfficeConfigurationReader, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
+import { createParadisOfficeSearchPrintCallbacks, type ParadisOfficeRuntimeConfiguration } from '../common/paradisOfficeCapabilities.js';
+import { snapshotParadisOfficeContributionConfiguration } from '../browser/paradisOfficeConfiguration.js';
 import { createParadisOfficeSpreadsheetPrintModel, type ParadisOfficePrintLinePrimitive, type ParadisOfficeSpreadsheetPrintCell, type ParadisOfficeSpreadsheetPrintSheet } from '../common/paradisOfficePrint.js';
 import type { ParadisOfficeCompletenessManifest, ParadisOfficePlaceholder, ParadisOfficePrintModel, ParadisOfficeRenderCoverage, ParadisOfficeSearchResult, ParadisOfficeSourceDescriptor } from '../common/paradisOfficeProtocol.js';
 import { beginParadisOfficeRecovery, createParadisOfficeRecoveryState, reduceParadisOfficeRecovery, type IParadisOfficeRecoveryState, type ParadisOfficeRecoveryEffect } from '../common/paradisOfficeRecovery.js';
@@ -135,14 +136,6 @@ function spreadsheetViewStateFromOptions(value: object | undefined, fallback: Pa
 		? (value as { readonly viewState?: unknown }).viewState
 		: value;
 	return restoreParadisSpreadsheetViewState(nested, fallback);
-}
-
-export function snapshotSpreadsheetRuntimeConfiguration(configurationService: IConfigurationService): ParadisOfficeRuntimeConfiguration {
-	const reader: ParadisOfficeConfigurationReader = {
-		getValue: <T>(key: string) => configurationService.getValue<T>(key),
-		inspect: <T>(key: string) => configurationService.inspect<T>(key) as IConfigurationValue<T> | undefined,
-	};
-	return snapshotParadisOfficeRuntimeConfiguration(reader);
 }
 
 function spreadsheetColumnLabel(column: number): string {
@@ -1286,7 +1279,7 @@ export class ParadisSpreadsheetEditor extends EditorPane {
 		const resource = (input as ParadisSpreadsheetInput).resource;
 		// ファイルを読み出している間に、解析の worker を起動して exceljs を読み込ませておく。
 		warmSpreadsheetParser(this._sharedProcessService);
-		this._runtimeConfiguration = snapshotSpreadsheetRuntimeConfiguration(this._configurationService);
+		this._runtimeConfiguration = snapshotParadisOfficeContributionConfiguration(this._configurationService);
 		// 母数は「利用者が1つのブックを開いた」回数。同じブックならタブを往復しても増えない。
 		this._probe.beginOpen(resource.toString(), this._diagnosticEngine());
 		this._openTiming.value = startParadisViewerOpenTiming('excel');

@@ -16,7 +16,7 @@
 // を受け持ち、範囲（同じスペースか・自分が作ったものか）の判断はウィンドウ側が行う。
 
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
+import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider, paradisMcpToolError as toolError } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import {
 	IParadisAgentIdeInternal,
 	PARADIS_AGENT_IDE_ACTIONS_DISABLED_MESSAGE,
@@ -110,10 +110,6 @@ const TOO_MANY_WAITS_MESSAGE = 'Too many wait_for_terminal calls are running at 
 
 function toolText(value: string | object): unknown {
 	return { content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }] };
-}
-
-function toolError(text: string): unknown {
-	return { content: [{ type: 'text', text }], isError: true };
 }
 
 function tailOf(screen: string | undefined, lines: number): string {

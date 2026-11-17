@@ -35,7 +35,7 @@ import { localize } from '../../../../nls.js';
 import { BrowserViewStorageScope } from '../../../../platform/browserView/common/browserView.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
-import { ParadisPopoverRows, paradisWatchPopoverDismiss } from '../../../browser/paradisAnchoredPopover.js';
+import { paradisLayoutAnchoredDropdown, ParadisPopoverRows, paradisWatchPopoverDismiss } from '../../../browser/paradisAnchoredPopover.js';
 import { IParadisBrowserProfile } from '../common/paradisBrowserProfileModel.js';
 import { IParadisViewSessionInfo } from '../common/paradisBrowserProfileChannel.js';
 import { IParadisSpaceDefaultResolution, ParadisSpaceDefaultTarget, paradisSpaceDefaultTargetsEqual } from '../common/paradisBrowserSpaceDefaults.js';
@@ -45,10 +45,6 @@ const $ = dom.$;
 
 /** ドロップダウンの幅（モック準拠）。狭いウィンドウではクランプで内側に収める。 */
 const DROPDOWN_WIDTH = 340;
-/** アンカー（ピル）との縦の隙間。 */
-const ANCHOR_GAP = 4;
-/** コンテナ端との最小マージン。 */
-const EDGE_MARGIN = 8;
 /** これより長く使っていないプロファイルは淡色にして「整理候補」と分かるようにする。 */
 const STALE_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -336,34 +332,7 @@ export class ParadisBrowserProfileDropdown extends Disposable {
 	 * ピルの上へ反転する。ウィンドウが極端に狭い場合は幅もコンテナに合わせて縮める。
 	 */
 	private _layout(): void {
-		const containerPosition = dom.getDomNodePagePosition(this._container);
-		const anchorPosition = dom.getDomNodePagePosition(this.options.anchor);
-
-		const availableWidth = Math.max(0, containerPosition.width - EDGE_MARGIN * 2);
-		const width = Math.min(DROPDOWN_WIDTH, availableWidth);
-		this._element.style.width = `${width}px`;
-
-		// 縦の最大サイズを先に決めてから測る（内容が長いと反転判定が狂うため）。
-		const anchorTop = anchorPosition.top - containerPosition.top;
-		const anchorBottom = anchorTop + anchorPosition.height;
-		const spaceBelow = containerPosition.height - anchorBottom - ANCHOR_GAP - EDGE_MARGIN;
-		const spaceAbove = anchorTop - ANCHOR_GAP - EDGE_MARGIN;
-		const flipUp = spaceBelow < 180 && spaceAbove > spaceBelow;
-		this._element.style.maxHeight = `${Math.max(120, flipUp ? spaceAbove : spaceBelow)}px`;
-
-		const height = this._element.offsetHeight;
-		const top = flipUp
-			? Math.max(EDGE_MARGIN, anchorTop - ANCHOR_GAP - height)
-			: Math.min(anchorBottom + ANCHOR_GAP, Math.max(EDGE_MARGIN, containerPosition.height - EDGE_MARGIN - height));
-
-		const anchorLeft = anchorPosition.left - containerPosition.left;
-		const left = Math.min(
-			Math.max(EDGE_MARGIN, anchorLeft),
-			Math.max(EDGE_MARGIN, containerPosition.width - width - EDGE_MARGIN),
-		);
-
-		this._element.style.top = `${Math.round(top)}px`;
-		this._element.style.left = `${Math.round(left)}px`;
+		paradisLayoutAnchoredDropdown({ container: this._container, anchor: this.options.anchor, element: this._element, width: DROPDOWN_WIDTH, align: 'start' });
 	}
 
 	private _registerListeners(): void {

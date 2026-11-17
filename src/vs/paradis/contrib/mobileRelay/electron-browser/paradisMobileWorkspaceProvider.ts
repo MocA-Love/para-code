@@ -1953,7 +1953,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		const outcome = await paradisConfirmQuestionChecks({
 			read: () => paradisVisibleTerminalText(instance),
 			send: key => instance.sendText(key, false),
-			wait: ms => new Promise<void>(resolve => setTimeout(resolve, ms)),
+			wait: ms => timeout(ms),
 			stillCurrent,
 		}, check, delayMs);
 		if (outcome === 'stale') {
@@ -1991,7 +1991,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	private async slashCommandRejected(instance: ITerminalInstance, check: { readonly agent: 'claude' | 'codex'; readonly command: string }, screenBefore: string): Promise<'no' | 'rejected' | 'left-in-composer'> {
 		const deadline = Date.now() + PARADIS_SLASH_REJECTION_WAIT_MS;
 		for (; ;) {
-			await new Promise<void>(resolve => setTimeout(resolve, PARADIS_SLASH_REJECTION_POLL_MS));
+			await timeout(PARADIS_SLASH_REJECTION_POLL_MS);
 			const screen = paradisVisibleTerminalText(instance);
 			if (paradisSlashCommandRejected(check.agent, check.command, screenBefore, screen)) {
 				return check.agent === 'codex' && paradisCodexComposerHoldsCommand(screen, check.command) ? 'left-in-composer' : 'rejected';
@@ -2033,7 +2033,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			if (options !== undefined || Date.now() >= deadline || this.findAuthoritativePaneInstance(msg.id, msg.token) !== instance) {
 				break;
 			}
-			await new Promise<void>(resolve => setTimeout(resolve, 200));
+			await timeout(200);
 		}
 		this.sendFrame({
 			ch: Channels.Agent, ws: undefined, seq: 0, mobileId,

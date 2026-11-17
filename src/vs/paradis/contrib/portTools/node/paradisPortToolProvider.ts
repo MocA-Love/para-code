@@ -14,7 +14,7 @@
 // なるので、変える操作も pane と tunnel から受け付け、確かめられない接続（unverified）だけを断る。変える操作の
 // 守りは、ウィンドウ側で毎回出す確認のダイアログが受け持つ（q.html の Q590-1、案 2）。
 
-import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
+import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider, paradisMcpToolError as toolError, paradisMcpToolJson as toolText } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import {
 	PARADIS_PORT_TOOLS,
 	PARADIS_PORT_TOOLS_CHANGE_TIMEOUT_MS,
@@ -29,14 +29,6 @@ import {
 const CALLER_UNVERIFIED_MESSAGE = 'Para Code could not confirm that this request comes from a process inside a Para Code terminal pane (or from the SSH host of its window), so it refuses the request. Start this agent CLI from a terminal inside Para Code.';
 const WINDOW_FAILURE_MESSAGE = 'Para Code could not reach the window of this terminal pane to use its port forwards. Retry in a few seconds.';
 const CHANGE_TIMEOUT_MESSAGE = 'Para Code did not finish in time. The user may not have answered the confirmation dialog, or the change may still be running. Call list_port_forwards to see the current state before asking again.';
-
-function toolText(value: object): unknown {
-	return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] };
-}
-
-function toolError(text: string): unknown {
-	return { content: [{ type: 'text', text }], isError: true };
-}
 
 export class ParadisPortToolProvider implements IParadisMcpToolProvider {
 
