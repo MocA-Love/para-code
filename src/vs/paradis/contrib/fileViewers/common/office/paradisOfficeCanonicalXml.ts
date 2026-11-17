@@ -923,7 +923,7 @@ function validateLimits(limits: ParadisOfficeXmlLimits): void {
 
 function sha256Fingerprint(value: string): ParadisOfficeFingerprint {
 	const bytes = new TextEncoder().encode(value);
-	return { algorithm: 'sha256', value: sha256Hex(bytes), byteLength: bytes.length };
+	return { algorithm: 'sha256', value: sha256ParadisOfficeBytes(bytes), byteLength: bytes.length };
 }
 
 const sha256Schedule = new Uint32Array(64);
@@ -932,8 +932,11 @@ const sha256Schedule = new Uint32Array(64);
  * FIPS 180-4 SHA-256 over typed arrays. `common` also runs in the Web worker, so no Node crypto here.
  * The previous implementation grew a sparse number array per byte; this one hashes the same bytes
  * into the same digest without per-byte allocation.
+ *
+ * `beforeBlock` runs once at the start of every 64-byte block of the padded input (`ceil((length + 9) / 64)`
+ * calls), before the shared schedule is written, so a caller can count work or stop by throwing.
  */
-function sha256Hex(bytes: Uint8Array): string {
+export function sha256ParadisOfficeBytes(bytes: Uint8Array, beforeBlock?: () => void): string {
 	const length = bytes.length;
 	const paddedLength = ((length + 9 + 63) >>> 6) << 6;
 	const padded = new Uint8Array(paddedLength);
@@ -946,6 +949,7 @@ function sha256Hex(bytes: Uint8Array): string {
 	let h0 = 0x6a09e667; let h1 = 0xbb67ae85; let h2 = 0x3c6ef372; let h3 = 0xa54ff53a;
 	let h4 = 0x510e527f; let h5 = 0x9b05688c; let h6 = 0x1f83d9ab; let h7 = 0x5be0cd19;
 	for (let offset = 0; offset < paddedLength; offset += 64) {
+		beforeBlock?.();
 		for (let index = 0; index < 16; index++) { w[index] = view.getUint32(offset + index * 4, false); }
 		for (let index = 16; index < 64; index++) {
 			const a = w[index - 15]; const b = w[index - 2];

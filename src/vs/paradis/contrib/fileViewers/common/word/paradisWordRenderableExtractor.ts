@@ -14,6 +14,7 @@
 
 import type { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { throwIfParadisOfficeCancelled, type ParadisOfficeXmlNode } from '../office/paradisOfficeArchive.js';
+import { paradisOfficeElementChildren as elementChildren } from '../office/paradisOfficeXmlAttributes.js';
 import { parseParadisOfficeXml, type ParadisOfficeXmlLimits } from '../office/paradisOfficeCanonicalXml.js';
 import type { ParadisOfficeFingerprint, ParadisOfficeTextRun } from '../paradisOfficeProtocol.js';
 import { fingerprintParadisWordObjectBytes } from './paradisWordObjects.js';
@@ -585,10 +586,6 @@ function objectId(storyUri: string, ordinal: number, docPrId: string | undefined
 }
 
 // ---- XML 小道具 -------------------------------------------------------------------
-
-function elementChildren(element: XmlElement): readonly XmlElement[] {
-	return element.children.filter((child): child is XmlElement => child.kind === 'element');
-}
 
 function attribute(element: XmlElement | undefined, uri: string, local: string): string | undefined {
 	return element?.attributes.find(candidate => candidate.uri === uri && candidate.local === local)?.value;

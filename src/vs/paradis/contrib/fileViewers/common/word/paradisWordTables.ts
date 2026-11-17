@@ -5,6 +5,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { ParadisOfficePackageError, type ParadisOfficeXmlNode } from '../office/paradisOfficeArchive.js';
+import { paradisOfficeElementChildren as elementChildren, paradisOfficeUniqueAttribute as optionalAttribute } from '../office/paradisOfficeXmlAttributes.js';
 import {
 	ParadisWordModelGuard,
 	sanitizeModelError,
@@ -347,10 +348,6 @@ function attributeRecord(element: XmlElement): Readonly<Record<string, string>> 
 	return result;
 }
 
-function elementChildren(element: XmlElement): readonly XmlElement[] {
-	return element.children.filter((child): child is XmlElement => child.kind === 'element');
-}
-
 function isWordElement(element: XmlElement, local?: string): boolean {
 	return wordNamespaces.has(element.uri) && (local === undefined || element.local === local);
 }
@@ -362,10 +359,3 @@ function wordNamespace(element: XmlElement): string {
 	return element.uri;
 }
 
-function optionalAttribute(element: XmlElement, uri: string, local: string): string | undefined {
-	const matches = element.attributes.filter(attribute => attribute.uri === uri && attribute.local === local);
-	if (matches.length > 1) {
-		throw new ParadisOfficePackageError('malformed');
-	}
-	return matches[0]?.value;
-}
