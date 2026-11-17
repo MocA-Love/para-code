@@ -279,9 +279,12 @@ export class TerminalQuickFixAddon extends Disposable implements ITerminalAddon,
 		}
 		const decoration = this._decoration.value = this._terminal.registerDecoration({ marker, width: 2, layer: 'top' });
 		if (!decoration) {
+			marker.dispose(); // PARA-PATCH: do not leak the marker when no decoration was made
 			return;
 		}
 		const store = this._decorationDisposables.value = new DisposableStore();
+		// PARA-PATCH: dispose the marker with the decoration; xterm leaves a decoration's marker alive, so one leaked per quick fix
+		store.add(marker);
 		store.add(decoration.onRender(e => {
 			const rect = e.getBoundingClientRect();
 			const anchor = {

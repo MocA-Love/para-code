@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { Disposable } from '../../../../../base/common/lifecycle.js';
+import { Disposable, MutableDisposable } from '../../../../../base/common/lifecycle.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { ITerminalLogService, TerminalSettingId } from '../../../../../platform/terminal/common/terminal.js';
 import { IXtermTerminal } from '../../../terminal/browser/terminal.js';
@@ -13,7 +13,10 @@ export class BufferContentTracker extends Disposable {
 	/**
 	 * Marks the last part of the buffer that was cached
 	 */
-	private _lastCachedMarker: IMarker | undefined;
+	// PARA-PATCH: hold only the latest marker and dispose the previous one; _register kept every marker alive, one more on each update
+	private readonly _lastCachedMarkerHolder = this._register(new MutableDisposable<IMarker>());
+	private get _lastCachedMarker(): IMarker | undefined { return this._lastCachedMarkerHolder.value; }
+	private set _lastCachedMarker(marker: IMarker | undefined) { this._lastCachedMarkerHolder.value = marker; }
 	/**
 	 * The number of wrapped lines in the viewport when the last cached marker was set
 	 */
@@ -47,7 +50,7 @@ export class BufferContentTracker extends Disposable {
 		this._removeViewportContent();
 		this._updateCachedContent();
 		this._updateViewportContent();
-		this._lastCachedMarker = this._register(this._xterm.raw.registerMarker());
+		this._lastCachedMarker = this._xterm.raw.registerMarker(); // PARA-PATCH: the holder disposes the previous marker
 		this._logService.debug('Buffer content tracker: set ', this._lines.length, ' lines');
 	}
 
@@ -66,9 +69,8 @@ export class BufferContentTracker extends Disposable {
 		const linesToAdd = end - start;
 		if (linesToAdd + this._lines.length > maxBufferSize) {
 			const numToRemove = linesToAdd + this._lines.length - maxBufferSize;
-			for (let i = 0; i < numToRemove; i++) {
-				this._lines.shift();
-			}
+			// PARA-PATCH: remove the old lines in one splice instead of shifting the whole array once per line
+			this._lines.splice(0, numToRemove);
 			this._logService.debug('Buffer content tracker: removed ', numToRemove, ' lines from top of cached lines, now ', this._lines.length, ' lines');
 		}
 

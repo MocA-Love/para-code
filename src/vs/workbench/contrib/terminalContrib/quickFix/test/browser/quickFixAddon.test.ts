@@ -4,9 +4,10 @@
  *--------------------------------------------------------------------------------------------*/
 
 import type { Terminal } from '@xterm/xterm';
-import { strictEqual } from 'assert';
+import { deepStrictEqual, strictEqual } from 'assert';
 import { importAMDNodeModule } from '../../../../../../amdX.js';
 import { IAction } from '../../../../../../base/common/actions.js';
+import { timeout } from '../../../../../../base/common/async.js';
 import { Event } from '../../../../../../base/common/event.js';
 import { isWindows } from '../../../../../../base/common/platform.js';
 import { URI } from '../../../../../../base/common/uri.js';
@@ -24,7 +25,7 @@ import { IStorageService } from '../../../../../../platform/storage/common/stora
 import { ITerminalCommand, TerminalCapability } from '../../../../../../platform/terminal/common/capabilities/capabilities.js';
 import { CommandDetectionCapability } from '../../../../../../platform/terminal/common/capabilities/commandDetectionCapability.js';
 import { TerminalCapabilityStore } from '../../../../../../platform/terminal/common/capabilities/terminalCapabilityStore.js';
-import { ITerminalOutputMatcher } from '../../../../../../platform/terminal/common/terminal.js';
+import { ITerminalOutputMatcher, TerminalSettingId } from '../../../../../../platform/terminal/common/terminal.js';
 import { ITerminalQuickFixService } from '../../browser/quickFix.js';
 import { getQuickFixesForCommand, TerminalQuickFixAddon } from '../../browser/quickFixAddon.js';
 import { freePort, FreePortOutputRegex, gitCreatePr, GitCreatePrOutputRegex, gitFastForwardPull, GitFastForwardPullOutputRegex, GitPushOutputRegex, gitPushSetUpstream, gitSimilar, GitSimilarOutputRegex, gitTwoDashes, GitTwoDashesRegex, pwshGeneralError, PwshGeneralErrorOutputRegex, pwshUnixCommandNotFoundError, PwshUnixCommandNotFoundErrorOutputRegex } from '../../browser/terminalQuickFixBuiltinActions.js';
@@ -470,6 +471,39 @@ suite('QuickFixAddon', () => {
 			test('returns actions when output matches', async () => {
 				assertMatchOptions((await getQuickFixesForCommand([], terminal, createCommand(command, output, PwshUnixCommandNotFoundErrorOutputRegex, exitCode), expectedMap, commandService, openerService, labelService)), actions);
 			});
+		});
+	});
+	// PARA-PATCH: the marker of each quick fix decoration was never disposed, one leaked per command with a quick fix
+	test('should not leak the marker of a replaced quick fix decoration', async () => {
+		await (instantiationService.get(IConfigurationService) as TestConfigurationService).setUserConfiguration(TerminalSettingId.ShellIntegrationQuickFixEnabled, true);
+		// The addon listens for finished commands only when command detection arrives after the terminal
+		const capabilities = store.add(new TerminalCapabilityStore());
+		const addon = instantiationService.createInstance(TerminalQuickFixAddon, generateUuid(), [], capabilities);
+		terminal.loadAddon(addon);
+		capabilities.add(TerminalCapability.CommandDetection, commandDetection);
+		addon.registerCommandFinishedListener(gitSimilar());
+		const write = (data: string) => new Promise<void>(resolve => terminal.write(data, resolve));
+		const runCommand = async () => {
+			commandDetection.handlePromptStart();
+			await write('$ ');
+			commandDetection.handleCommandStart();
+			await write('git sttatus');
+			commandDetection.handleCommandExecuted();
+			await write(`\r\ngit: 'sttatus' is not a git command. See 'git --help'.\r\n\r\nThe most similar command is\r\n\tstatus\r\n`);
+			commandDetection.handleCommandFinished(1);
+			await timeout(0);
+		};
+		await runCommand();
+		const markerCount = terminal.markers.length;
+		const quickFixCounts: number[] = [];
+		store.add(addon.onDidUpdateQuickFixes(e => quickFixCounts.push(e.actions?.length ?? 0)));
+		for (let i = 0; i < 3; i++) {
+			await runCommand();
+		}
+		// Each command keeps its own 4 markers (prompt, command, executed, finished); the quick fix adds none that outlive it
+		deepStrictEqual({ quickFixCounts, addedMarkers: terminal.markers.length - markerCount }, {
+			quickFixCounts: [0, 1, 0, 1, 0, 1],
+			addedMarkers: 3 * 4
 		});
 	});
 });
