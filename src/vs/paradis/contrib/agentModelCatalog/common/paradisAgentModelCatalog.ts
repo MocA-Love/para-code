@@ -26,12 +26,13 @@ import { createDecorator } from '../../../../platform/instantiation/common/insta
 import { IParadisAgentCommandTemplate, IParadisAgentModelOption, PARADIS_CODEX_FULL_AUTO_FLAGS, PARADIS_DEFAULT_AGENT_COMMANDS, paradisCodexEffortFlag } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { PARADIS_PAST_DEFAULT_AGENT_COMMANDS } from './paradisAgentListPastDefaults.js';
 import { isRecord } from '../../../common/paradisGuards.js';
+import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 
 export const PARADIS_AGENT_MODEL_CATALOG_CHANNEL = 'paradisAgentModelCatalog';
 
 export const PARADIS_WORKSPACE_AGENTS_SETTING = 'paradis.workspaceSwitch.agents';
 
-export type ParadisCatalogAgentId = 'claude' | 'codex';
+export type ParadisCatalogAgentId = Extract<ParadisAgentKind, 'claude' | 'codex'>;
 
 /** CLI から取れたモデル1件。 */
 export interface IParadisDiscoveredModel {

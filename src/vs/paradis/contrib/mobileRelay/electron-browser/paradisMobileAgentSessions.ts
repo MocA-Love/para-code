@@ -49,6 +49,7 @@ import { TerminalCapability } from '../../../../platform/terminal/common/capabil
 import { paradisCanPasteMultiline, paradisTerminalRunsAgent } from '../../agentIde/browser/paradisAgentIdeTerminalInput.js';
 import { IParadisResumeLedgerEntry, PARADIS_AGENT_RESUME_PROMPT_LIMIT, PARADIS_AGENT_SESSION_KEY_PATTERN, PARADIS_AGENT_SESSIONS_PAGE_LIMIT, paradisAgentSessionKey, paradisClipAgentSessionText, paradisMobileAgentSessionMatches, paradisMobileAgentSessionView, paradisRecordResumeRequest, paradisResumedSessionOfCommand, paradisResumeRequestVerdict } from '../common/paradisMobileAgentResume.js';
 import { registerParadisMobileRequestHandler } from './paradisMobileRequestHandlers.js';
+import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 
 /** 再開の依頼の台帳（PC の再起動をまたいで同じ依頼を二度実行しないため）。 */
 const RESUME_LEDGER_KEY = 'paradis.mobile.agentResumeRequests';
@@ -206,7 +207,7 @@ function requireString(value: unknown, name: string, limit: number): string {
  * 再開したエージェントが入力を待つまで待つ。信頼の確認で止まっていれば 'trust'、開き直した直後の確認で止まっていればその種類、待ちきれなければ 'timeout'。
  * OpenCode は画面ではなく連携の登録で決める（`openCodeReady`）。連携が名乗り出ないまま猶予が過ぎたら 'unsupported'。
  */
-async function waitForAgentReady(instance: ITerminalInstance, agent: 'claude' | 'codex' | 'opencode', openCodeReady?: () => Promise<'ready' | 'pending' | 'unregistered'>): Promise<'ready' | 'trust' | { readonly resumePrompt: ParadisClaudeResumeScreenPrompt } | 'timeout' | 'gone' | 'unsupported'> {
+async function waitForAgentReady(instance: ITerminalInstance, agent: Extract<ParadisAgentKind, 'claude' | 'codex' | 'opencode'>, openCodeReady?: () => Promise<'ready' | 'pending' | 'unregistered'>): Promise<'ready' | 'trust' | { readonly resumePrompt: ParadisClaudeResumeScreenPrompt } | 'timeout' | 'gone' | 'unsupported'> {
 	const startedAt = Date.now();
 	const deadline = startedAt + RESUME_READY_TIMEOUT_MS;
 	while (Date.now() < deadline) {

@@ -6,9 +6,11 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
+
 // スキルファイルの設置（O4）で、shared process（書き込み）と画面（確認ダイアログ）が共有する型。
 
-export type ParadisAgentIdeSkillAgent = 'claude' | 'codex';
+export type ParadisAgentIdeSkillAgent = Extract<ParadisAgentKind, 'claude' | 'codex'>;
 
 /** 設置先の今の状態。 */
 export type ParadisAgentIdeSkillState = 'missing' | 'same' | 'different' | 'notAFile';

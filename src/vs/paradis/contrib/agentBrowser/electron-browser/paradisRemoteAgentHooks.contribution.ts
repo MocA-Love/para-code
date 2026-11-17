@@ -38,6 +38,7 @@ import { PARADIS_REMOTE_HOOK_PORTS_DIR_NAME, paradisRemoteHookSourceId } from '.
 import { IParadisPaneTokenService } from '../browser/paradisPaneTokenService.js';
 import { ParadisClaudeModEnvironment } from '../../claudeMod/browser/paradisClaudeModEnvironment.js';
 import { IParadisRemoteClaudeModStatus, PARADIS_REMOTE_CLAUDE_MOD_CHANNEL } from '../../claudeMod/common/paradisClaudeMod.js';
+import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 
 /**
  * 既存設定を保ったまま接続先Claude用para-browser MCPをマージする。
@@ -174,7 +175,7 @@ export class ParadisRemoteAgentHooksController extends Disposable {
 }
 
 /** 接続先へ hook を置くエージェント CLI。 */
-export type ParadisRemoteHookCli = 'claude' | 'codex' | 'antigravity';
+export type ParadisRemoteHookCli = Extract<ParadisAgentKind, 'claude' | 'codex' | 'antigravity'>;
 
 /** {@link ParadisRemoteAgentHookFiles} が接続先とやり取りするための口。 */
 export interface IParadisRemoteAgentHookFilesHost {

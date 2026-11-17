@@ -17,6 +17,7 @@
 
 import { Event } from '../../../../base/common/event.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
+import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 
 /** サブエージェントの状態（モバイル中継の ParadisAgentActivityStatus と同じ語彙）。 */
 export type ParadisAgentPaneSubagentStatus = 'running' | 'idle' | 'completed' | 'failed' | 'interrupted' | 'unknown';
@@ -78,7 +79,7 @@ export interface IParadisAgentPaneCacheSummary {
 /** ペイン1つ分の様子。 */
 export interface IParadisAgentPaneInsight {
 	readonly token: string;
-	readonly agent: 'claude' | 'codex' | 'opencode' | 'antigravity';
+	readonly agent: ParadisAgentKind;
 	/** 動いているもの → 最近終わったもの の順。 */
 	readonly subagents: readonly IParadisAgentPaneSubagent[];
 	/** 最後のアシスタント発言（1行に畳んだもの）。 */
