@@ -733,6 +733,7 @@ function createServiceFixture(generation: number): {
 		_tabScopes: new Map(),
 		_gatewayScopedLeases: new WeakMap<object, object>(),
 		_inputRejections: { forget: () => undefined, record: () => undefined, recent: () => undefined },
+		_otherTabGatewayInputs: { forget: () => undefined, record: () => undefined, recent: () => undefined },
 		_bindingAuthority: authority,
 		_backgroundThrottlingCoordinator: new ParadisExactViewBackgroundThrottlingCoordinator(),
 		_quarantinedBindings: new Set(),

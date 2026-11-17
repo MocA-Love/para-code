@@ -998,7 +998,6 @@ suite('Paradis CDP screenshot filter', () => {
 			'Browser.grantPermissions',
 			'Browser.setPermission',
 			'Browser.resetPermissions',
-			'Browser.setDownloadBehavior',
 			'Browser.getBrowserCommandLine',
 			'Network.getAllCookies',
 			'Network.setCookie',
@@ -1995,6 +1994,95 @@ suite('Paradis CDP screenshot filter', () => {
 		await new Promise(resolve => setTimeout(resolve, 0));
 		const denied = parseSent(child.client).find(message => (message as { id?: number }).id === 12) as { error?: { message?: string } };
 		assert.match(denied.error?.message ?? '', /bound primary BrowserView session/);
+	});
+
+	test('sends Input on a popup the shared page opened to that popup through main, and still refuses an iframe with the reason recorded', async () => {
+		const inputCalls: Array<{ targetId: string; method: string }> = [];
+		let isPopupRouteCurrent: (() => boolean) | undefined;
+		const rejections: string[] = [];
+		const fixture = await createOpenBrowserProxyFixture(context({
+			dispatchBoundPageInput: (targetId, method, _paramsJson, isRouteCurrent) => {
+				inputCalls.push({ targetId, method });
+				isPopupRouteCurrent = isRouteCurrent;
+				return { response: Promise.resolve({ status: 'success', result: {} }), drained: Promise.resolve() };
+			},
+			noteInputRejection: message => rejections.push(message),
+		}));
+		publishAllowedSession(fixture, 'primary-session');
+		const root = (method: string, params: object) => fixture.upstream.emit('message', Buffer.from(JSON.stringify({ method, params })));
+		root('Target.attachedToTarget', { sessionId: 'popup-session', targetInfo: { targetId: 'popup', type: 'page', openerId: 'target-1', url: 'https://example.test/popup' } });
+		fixture.upstream.emit('message', Buffer.from(JSON.stringify({ sessionId: 'primary-session', method: 'Target.attachedToTarget', params: { sessionId: 'frame-session', targetInfo: { targetId: 'frame-1', type: 'iframe', url: 'https://example.test/frame' } } })));
+		fixture.client.sent.length = 0;
+
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 1, sessionId: 'popup-session', method: 'Input.dispatchMouseEvent', params: { type: 'mousePressed', x: 1, y: 1 } })));
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 2, sessionId: 'frame-session', method: 'Input.insertText', params: { text: 'blocked' } })));
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const routeWhileAttached = isPopupRouteCurrent?.();
+		root('Target.detachedFromTarget', { sessionId: 'popup-session', targetId: 'popup' });
+
+		const responses = (parseSent(fixture.client) as Array<{ id?: number; result?: unknown; error?: { message?: string } }>).filter(message => message.id !== undefined);
+		assert.deepStrictEqual({ inputCalls, routeWhileAttached, routeAfterDetach: isPopupRouteCurrent?.(), responses, rejections }, {
+			inputCalls: [{ targetId: 'popup', method: 'Input.dispatchMouseEvent' }],
+			routeWhileAttached: true,
+			routeAfterDetach: false,
+			responses: [
+				{ id: 2, sessionId: 'frame-session', error: { code: -32000, message: 'Input.insertText is permitted only on the bound primary BrowserView session and the pages it opened.' } },
+				{ id: 1, sessionId: 'popup-session', result: {} },
+			],
+			rejections: ['Input.insertText is permitted only on the bound primary BrowserView session and the pages it opened.'],
+		});
+	});
+
+	test('answers a JavaScript dialog without waiting for the input the dialog blocks, and keeps later commands behind that input', async () => {
+		let releaseDrain!: () => void;
+		const drained = new Promise<void>(resolve => releaseDrain = resolve);
+		const fixture = await createOpenBrowserProxyFixture(context({
+			// the click's mouseReleased is blocked by an alert, so main has not finished it yet
+			dispatchBoundPageInput: () => ({ response: new Promise(() => undefined), drained }),
+		}));
+		publishAllowedSession(fixture, 'primary-session');
+		fixture.upstream.sent.length = 0;
+
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 1, sessionId: 'primary-session', method: 'Input.dispatchMouseEvent', params: { type: 'mouseReleased', x: 1, y: 1 } })));
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 2, sessionId: 'primary-session', method: 'Runtime.evaluate', params: { expression: '1' } })));
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 3, sessionId: 'primary-session', method: 'Page.handleJavaScriptDialog', params: { accept: true } })));
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const beforeDrain = (parseSent(fixture.upstream) as Array<{ id?: number; method?: string }>).filter(message => message.id !== undefined && message.id > 0).map(message => message.method);
+
+		releaseDrain();
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const afterDrain = (parseSent(fixture.upstream) as Array<{ id?: number; method?: string }>).filter(message => message.id !== undefined && message.id > 0).map(message => message.method);
+		assert.deepStrictEqual({ beforeDrain, afterDrain }, {
+			beforeDrain: ['Page.handleJavaScriptDialog'],
+			afterDrain: ['Page.handleJavaScriptDialog', 'Runtime.evaluate'],
+		});
+	});
+
+	test('answers Browser.setDownloadBehavior on the browser root without changing the shared download folder', async () => {
+		const fixture = await createOpenBrowserProxyFixture();
+		fixture.upstream.sent.length = 0;
+		fixture.client.sent.length = 0;
+		// what Playwright's connectOverCDP sends for the default context
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 7, method: 'Browser.setDownloadBehavior', params: { behavior: 'allowAndName', downloadPath: '/tmp/playwright-artifacts', eventsEnabled: true } })));
+		await new Promise(resolve => setTimeout(resolve, 0));
+		assert.deepStrictEqual({ forwarded: parseSent(fixture.upstream), toClient: parseSent(fixture.client) }, { forwarded: [], toClient: [{ id: 7, result: {} }] });
+	});
+
+	test('answers a Target.getTargetInfo without a target on the browser root with a browser placeholder, and still checks one with a target', async () => {
+		const fixture = await createOpenBrowserProxyFixture();
+		fixture.upstream.sent.length = 0;
+		fixture.client.sent.length = 0;
+		// Playwright's connectOverCDP waits for this after Target.setAutoAttach and ignores the answer
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 8, method: 'Target.getTargetInfo' })));
+		fixture.client.emit('message', Buffer.from(JSON.stringify({ id: 9, method: 'Target.getTargetInfo', params: { targetId: 'someone-else' } })));
+		await new Promise(resolve => setTimeout(resolve, 0));
+		assert.deepStrictEqual({ forwarded: parseSent(fixture.upstream), toClient: parseSent(fixture.client) }, {
+			forwarded: [],
+			toClient: [
+				{ id: 8, result: { targetInfo: { targetId: 'para-code-browser', type: 'browser', title: '', url: '', attached: true, canAccessOpener: false } } },
+				{ id: 9, error: { code: -32000, message: 'Target.getTargetInfo outside the bound scope is refused by the Para Code CDP gateway.' } },
+			],
+		});
 	});
 
 	test('waits for prior browser-session responses and rechecks route authority before Input commit', async () => {

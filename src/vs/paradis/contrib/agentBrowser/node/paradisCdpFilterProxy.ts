@@ -271,6 +271,14 @@ const PARADIS_PAGE_MOVING_METHODS: ReadonlySet<string> = new Set(['Page.navigate
 /** 共有したページが開いたばかりの新しいタブの行き先が決まるまで、命令を待たせる上限（ミリ秒）。 */
 const PARADIS_UNDECIDED_TAB_WAIT_MS = 2_000;
 
+/** ダイアログへの答え。入力の後ろで待たせないよう、ブラウザの経路では別の列で処理する。 */
+const PARADIS_DIALOG_ANSWER_METHOD = 'Page.handleJavaScriptDialog';
+/** その列の鍵の頭（セッション ID には入らない NUL を含める）。 */
+const PARADIS_DIALOG_ANSWER_QUEUE_PREFIX = '\u0000dialog:';
+
+/** ブラウザの root への宛先の無い Target.getTargetInfo に返す、ブラウザそのものの情報（本物の ID などは見せない）。 */
+const PARADIS_BROWSER_ROOT_TARGET_INFO = Object.freeze({ targetId: 'para-code-browser', type: 'browser', title: '', url: '', attached: true, canAccessOpener: false });
+
 /** 再開の応答が来ないときに、スコープ外のセッションを切り離すまでの時間。 */
 export const PARADIS_OUT_OF_SCOPE_DETACH_FALLBACK_MS = 5_000;
 
@@ -1987,10 +1995,15 @@ export async function paradisProxyBrowserUpgrade(
 		const targetUrlCheckedAt = new Map<string, number>();
 		// 文書を持つターゲット（page・iframe など。worker は文書を持たないので URL を確かめない）
 		const documentTargetIds = new Set<string>();
+		// そのうちページ（タブ）のターゲット。共有したページが開いたポップアップへの入力を、iframe・worker と見分けるのに使う
+		const pageTargetIds = new Set<string>();
 		const noteTargetType = (targetId: string | undefined, type: unknown) => {
 			if (targetId !== undefined && typeof type === 'string' && type !== 'worker' && type !== 'shared_worker' && type !== 'service_worker'
 				&& (documentTargetIds.has(targetId) || documentTargetIds.size < MAX_CDP_ROUTING_ENTRIES)) {
 				documentTargetIds.add(targetId);
+				if (type === 'page') {
+					pageTargetIds.add(targetId);
+				}
 			}
 		};
 		// 問い合わせ中のもの（同じターゲットへ同時に来た命令で重ねない）
@@ -2111,6 +2124,7 @@ export async function paradisProxyBrowserUpgrade(
 					targetUrls.delete(descendantTargetId);
 					targetUrlCheckedAt.delete(descendantTargetId);
 					documentTargetIds.delete(descendantTargetId);
+					pageTargetIds.delete(descendantTargetId);
 					childToParent.delete(descendantTargetId);
 				}
 			}
@@ -2207,6 +2221,7 @@ export async function paradisProxyBrowserUpgrade(
 				targetUrls.delete(current);
 				targetUrlCheckedAt.delete(current);
 				documentTargetIds.delete(current);
+				pageTargetIds.delete(current);
 				// 消えたターゲットの移動の時刻と文書の場所も忘れる（残すと上限に達して、新しいターゲットの移動の確かめが抜ける）
 				movedAt.delete(current);
 				documentLocations.delete(current);
@@ -2268,6 +2283,7 @@ export async function paradisProxyBrowserUpgrade(
 			targetUrls.clear();
 			targetUrlCheckedAt.clear();
 			documentTargetIds.clear();
+			pageTargetIds.clear();
 			movedAt.clear();
 			documentLocations.clear();
 			targetUrlChecks.clear();
@@ -2719,8 +2735,14 @@ export async function paradisProxyBrowserUpgrade(
 					return;
 				}
 				if (message.method.startsWith('Input.')) {
-					if (!isBoundPrimary || sessionTargetId === undefined) {
-						rejectRequest(message, `${message.method} is permitted only on the bound primary BrowserView session.`);
+					// 共有中のタブ本体と、それが開いたページ（ポップアップ。ペインへ自動で共有されたタブ）は、そのタブの view へ
+					// main 経由で送る。送ってよいタブかは、送る側（_dispatchBoundPageInput）がペインの使えるタブの台帳で確かめる
+					const isOpenedPage = !isBoundPrimary && sessionTargetId !== undefined && childToParent.has(sessionTargetId) && pageTargetIds.has(sessionTargetId);
+					if ((!isBoundPrimary && !isOpenedPage) || sessionTargetId === undefined) {
+						const reason = `${message.method} is permitted only on the bound primary BrowserView session and the pages it opened.`;
+						// click などの道具は「操作できるようにならなかった」としか言わないので、理由を道具の結果へ足させる
+						ctx.noteInputRejection?.(reason);
+						rejectRequest(message, reason);
 						return;
 					}
 					let paramsJson: string;
@@ -2738,7 +2760,9 @@ export async function paradisProxyBrowserUpgrade(
 						() => !closed
 							&& allowedSessionIds.has(requestSessionId)
 							&& sessionIdToTargetId.get(requestSessionId) === sessionTargetId
-							&& ctx.boundTargetIds().has(sessionTargetId),
+							&& (isOpenedPage
+								? allowedTargetIds.has(sessionTargetId) && childToParent.has(sessionTargetId)
+								: ctx.boundTargetIds().has(sessionTargetId)),
 					);
 				}
 				if (isBoundPrimary && message.method === 'Page.captureScreenshot') {
@@ -2781,6 +2805,12 @@ export async function paradisProxyBrowserUpgrade(
 			if (!refreshBound()) {
 				return;
 			}
+			if (message.method === 'Browser.setDownloadBehavior') {
+				// Playwright の connectOverCDP は既定のコンテキストを作るときにこれを送り、断られると繋がらない。通すと Para Code
+				// 全体のダウンロード先が変わるので、上流へは流さずに成功だけ返す（ダウンロードは今の保存先のまま）
+				sendToClient({ id: message.id, result: {} });
+				return;
+			}
 			if (!BROWSER_ROOT_ALLOWED_METHODS.has(message.method)) {
 				rejectRequest(message, `${message.method} is not permitted on the browser root by the Para Code CDP gateway.`);
 				return;
@@ -2802,6 +2832,12 @@ export async function paradisProxyBrowserUpgrade(
 					return;
 				}
 				forwardClientRequest(message, targetId);
+				return;
+			}
+			if (message.method === 'Target.getTargetInfo' && message.params?.targetId === undefined) {
+				// 宛先の無い問い合わせはブラウザそのものの情報。Playwright の connectOverCDP は答えを使わず、接続の準備が
+				// 済んだかの区切りとして待つだけなので、上流へは流さずにブラウザの印だけ返す
+				sendToClient({ id: message.id, result: { targetInfo: PARADIS_BROWSER_ROOT_TARGET_INFO } });
 				return;
 			}
 			if (message.method === 'Target.getTargetInfo') {
@@ -2843,7 +2879,9 @@ export async function paradisProxyBrowserUpgrade(
 			// ブラウザ単位の接続は、sessionId で別の共有タブを操作することがある。宛先のタブを「使った」にする
 			ctx.noteClientCommand?.(command?.sessionId !== undefined ? sessionIdToTargetId.get(command.sessionId) : undefined);
 			const sessionKey = command?.sessionId ?? '';
-			clientCommands.enqueue(data, bytes, sessionKey);
+			// ダイアログへの答えは、そのダイアログに塞がれた入力（列の前で終わるのを待っている）を終わらせる命令なので、
+			// 同じセッションの列に並べず別の列で処理する（検査は同じものを通る）。並べると入力の時間切れまで答えが届かない
+			clientCommands.enqueue(data, bytes, command?.method === PARADIS_DIALOG_ANSWER_METHOD ? `${PARADIS_DIALOG_ANSWER_QUEUE_PREFIX}${sessionKey}` : sessionKey);
 		});
 
 		upstream.on('message', (data: wsTypes.RawData) => {
