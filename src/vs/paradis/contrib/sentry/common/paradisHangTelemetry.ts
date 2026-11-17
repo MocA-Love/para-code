@@ -126,7 +126,8 @@ export class ParadisHangEpisodeTracker extends Disposable {
 
 	setResponsive(responsive: boolean): void {
 		if (!responsive) {
-			if (this.startedAt !== undefined) {
+			// 知らせは状態が変わったときだけ来る。送った後に戻らないまま次の「応答なし」が来たら（拡張ホストが作り直された）、新しい 1 回として数える
+			if (this.startedAt !== undefined && !this.reported) {
 				return;
 			}
 			this.startedAt = this.now();

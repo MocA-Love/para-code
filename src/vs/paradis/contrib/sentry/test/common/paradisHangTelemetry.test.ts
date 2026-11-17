@@ -102,10 +102,14 @@ suite('ParadisHangTelemetry', () => {
 		tracker.setResponsive(true);
 		tracker.setResponsive(false);
 		await new Promise(resolve => setTimeout(resolve, PARADIS_HANG_REPORT_AFTER_MS + 5_000));
+		// 戻らないまま作り直された拡張ホストの次の固まりも 1 回として数える
+		tracker.setResponsive(false);
+		await new Promise(resolve => setTimeout(resolve, 2_000));
 		tracker.setResponsive(true);
 		assert.deepStrictEqual(reports, [
 			{ safe_hang_ms: 4_000, safe_hang_recovered: true },
 			{ safe_hang_ms: PARADIS_HANG_REPORT_AFTER_MS, safe_hang_recovered: false },
+			{ safe_hang_ms: 2_000, safe_hang_recovered: true },
 		]);
 	}));
 });
