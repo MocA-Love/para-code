@@ -19,6 +19,7 @@ suite('Paradis pane session transcript', () => {
 		const host = {
 			_paneSessions: new Map<string, object>(),
 			_paneCursorAgents: new Map(),
+			_antigravityPaneSessions: new Map(),
 			_currentEligibleTokens: () => new Set(['pane', 'open']),
 		};
 		const record = Reflect.get(ParadisAgentBrowserService.prototype, '_recordPaneSession') as (this: typeof host, ...args: unknown[]) => void;
