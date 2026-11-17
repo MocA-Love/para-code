@@ -16,7 +16,7 @@ import {
 	ParadisMcpSetupController,
 	runParadisMcpSetupCommand,
 } from '../../node/paradisMcpSetup.js';
-import { paradisClaudeMcpEntryNeedsToolTimeout } from '../../common/paradisMcpConfigStatus.js';
+import { inspectParadisCodexMcpToml, paradisClaudeMcpEntryNeedsToolTimeout } from '../../common/paradisMcpConfigStatus.js';
 
 /** para-browser MCP サーバーの番号。設定に書き込まれる宛先になる。 */
 const PORT = 47286;
@@ -938,6 +938,53 @@ suite('Para Browser MCP setup', () => {
 			await fs.writeFile(join(primary, 'config.toml'), `[mcp_servers.para-browser]\nurl = "http://127.0.0.1:${PORT}/"\n`);
 			await controller.propagateToCodexHomes(PORT);
 			assert.deepStrictEqual({ beforeSetup, afterSetup: await readSecond() }, { beforeSetup: false, afterSetup: true });
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	// 実際の config.toml は、ほかの MCP サーバーの節が先に並び、para-browser はまだ無い。この形を曖昧と見て
+	// 切り替え先のホームへの書き込みが毎回失敗していた。末尾に足し、2 回目は何もしない（知らせもしない）
+	test('adds the Codex MCP section to an account home whose config already lists other MCP servers', async () => {
+		const directory = await fs.mkdtemp(join(tmpdir(), 'paradis-mcp-homes-'));
+		try {
+			const primary = join(directory, '.codex');
+			const second = join(directory, '.codex-2');
+			await fs.mkdir(primary);
+			await fs.mkdir(second);
+			await fs.writeFile(join(primary, 'config.toml'), `[mcp_servers.para-browser]\nurl = "http://127.0.0.1:${PORT}/"\n`);
+			const secondConfig = [
+				'model = "gpt-5"',
+				'',
+				'[mcp_servers.chrome-devtools]',
+				'command = "npx"',
+				'args = ["chrome-devtools-mcp@latest"]',
+				'',
+				'[mcp_servers.chrome-devtools.env]',
+				'DEBUG = "1"',
+				'',
+			].join('\n');
+			await fs.writeFile(join(second, 'config.toml'), secondConfig);
+			const logs: string[] = [];
+			const controller = new ParadisMcpSetupController({
+				platform: 'darwin',
+				resolveShellEnv: async () => ({ PATH: '/safe' }),
+				findExecutable: async () => undefined,
+				runCommand: async (): Promise<IParadisMcpSetupCommandResult> => ({ kind: 'exit', code: 0, output: '' }),
+				codexHome: primary,
+				additionalCodexHomes: () => [primary, second],
+				log: message => logs.push(message),
+			});
+			await controller.propagateToCodexHomes(PORT);
+			const afterFirst = await fs.readFile(join(second, 'config.toml'), 'utf8');
+			await controller.propagateToCodexHomes(PORT);
+			assert.deepStrictEqual({
+				logs,
+				keepsOthers: afterFirst.startsWith(secondConfig),
+				appended: afterFirst.slice(secondConfig.length).startsWith('\n[mcp_servers.para-browser]\n'),
+				configured: inspectParadisCodexMcpToml(afterFirst, PORT).state,
+				unchangedOnSecondRun: await fs.readFile(join(second, 'config.toml'), 'utf8') === afterFirst,
+			}, { logs: [], keepsOthers: true, appended: true, configured: 'configured', unchangedOnSecondRun: true });
 		} finally {
 			await fs.rm(directory, { recursive: true, force: true });
 		}

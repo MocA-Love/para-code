@@ -2,6 +2,11 @@
 
 /** PCにAgent live生成文のappend差分を明示交渉するencoding名。 */
 export const AGENT_LIVE_APPEND_ENCODING = 'agent-live-append-v1';
+/**
+ * 生成中の文を 6,000 字で切らずに追記で受け取る encoding 名（agent.live-append.v2。PC の `paradisMobileAgentLivePatch.ts`）。
+ * PC が capability を広告しているときだけ求める。差分の形は v1 と同じで、窓の始まりの位置 `textOffset` が付く。
+ */
+export const AGENT_LIVE_APPEND_V2_ENCODING = 'agent-live-append-v2';
 
 type AgentLiveSource = 'hook' | 'transcript' | 'codex-daemon' | 'pty';
 
@@ -12,6 +17,8 @@ export interface AgentLiveMessageState {
 	readonly startedAt: number;
 	readonly updatedAt: number;
 	readonly text?: string;
+	/** `text` の前に PC が落とした字数（窓の始まりの位置。v2 だけ。0 のときは無い）。 */
+	readonly textOffset?: number;
 	readonly final?: boolean;
 }
 
@@ -21,9 +28,10 @@ export interface AppliedAgentLiveAppendPatch {
 	readonly liveRevision: number;
 }
 
-const PATCH_KEYS = new Set(['baseRevision', 'revision', 'source', 'startedAt', 'updatedAt', 'append', 'final']);
+const PATCH_KEYS = new Set(['baseRevision', 'revision', 'source', 'startedAt', 'updatedAt', 'append', 'textOffset', 'final']);
 const SOURCES = new Set<AgentLiveSource>(['hook', 'transcript', 'codex-daemon', 'pty']);
-const MAX_LIVE_TEXT_LENGTH = 6_000;
+/** 生成中の文の窓の長さ（PC の `PARADIS_AGENT_LIVE_TEXT_WINDOW`）。v1 の PC は 6,000 字までしか送らない。 */
+const MAX_LIVE_TEXT_LENGTH = 64 * 1024;
 
 /**
  * revisionとmessageの同一性を検証できた場合だけappendを適用する。
@@ -47,10 +55,18 @@ export function applyAgentLiveAppendPatch(
 		|| typeof patch['startedAt'] !== 'number' || !Number.isFinite(patch['startedAt']) || patch['startedAt'] !== existing.startedAt
 		|| typeof patch['updatedAt'] !== 'number' || !Number.isFinite(patch['updatedAt'])
 		|| typeof patch['append'] !== 'string'
+		|| (patch['textOffset'] !== undefined && (!Number.isSafeInteger(patch['textOffset']) || (patch['textOffset'] as number) <= 0))
 		|| (patch['final'] !== undefined && patch['final'] !== true)) {
 		return undefined;
 	}
-	const text = (existing.text ?? '') + patch['append'];
+	// v2 の PC は窓が進むと先頭を落とし、新しい窓の始まりの位置を付ける。手元の窓の始まりより前・追記した文の外は受けない
+	const existingOffset = existing.textOffset ?? 0;
+	const textOffset = (patch['textOffset'] as number | undefined) ?? 0;
+	const combined = (existing.text ?? '') + patch['append'];
+	if (textOffset < existingOffset || textOffset - existingOffset > combined.length) {
+		return undefined;
+	}
+	const text = combined.slice(textOffset - existingOffset);
 	if (text.length > MAX_LIVE_TEXT_LENGTH) {
 		return undefined;
 	}
@@ -61,6 +77,7 @@ export function applyAgentLiveAppendPatch(
 			startedAt: existing.startedAt,
 			updatedAt: patch['updatedAt'],
 			text,
+			...(textOffset > 0 ? { textOffset } : {}),
 			...(patch['final'] === true ? { final: true } : {}),
 		},
 		liveRevision: patch['revision'] as number,

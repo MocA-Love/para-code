@@ -8,7 +8,7 @@
 
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_AGENT_LIVE_APPEND_ENCODING, paradisAgentLivePayloadForEncoding, paradisCreateAgentLiveAppendPatch } from '../../common/paradisMobileAgentLivePatch.js';
+import { PARADIS_AGENT_LIVE_APPEND_ENCODING, PARADIS_AGENT_LIVE_APPEND_V2_ENCODING, PARADIS_AGENT_LIVE_TEXT_WINDOW, paradisAgentLiveForEncoding, paradisAgentLivePayloadForEncoding, paradisAgentLiveTextWindow, paradisCreateAgentLiveAppendPatch } from '../../common/paradisMobileAgentLivePatch.js';
 
 suite('ParadisMobileAgentLivePatch', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -65,7 +65,7 @@ suite('ParadisMobileAgentLivePatch', () => {
 		assert.notStrictEqual(negotiatedAppend, undefined);
 		assert.strictEqual(negotiatedAppend?.append, '続き');
 		assert.deepStrictEqual(paradisAgentLivePayloadForEncoding(undefined, previous, current, 4, 5), { live: current, liveRevision: 5 });
-		assert.deepStrictEqual(paradisAgentLivePayloadForEncoding('agent-live-append-v2', previous, current, 4, 5), { live: current, liveRevision: 5 });
+		assert.deepStrictEqual(paradisAgentLivePayloadForEncoding('agent-live-append-v3', previous, current, 4, 5), { live: current, liveRevision: 5 });
 	});
 
 	test('substantially reduces a representative streaming message while preserving every revision', () => {
@@ -82,5 +82,35 @@ suite('ParadisMobileAgentLivePatch', () => {
 			previous = current;
 		}
 		assert.ok(negotiatedBytes < fullBytes * 0.15, `expected negotiated=${negotiatedBytes} to be under 15% of full=${fullBytes}`);
+	});
+
+	test('v2: keeps appending past 6,000 chars, slides the window without a full resend, and old subscribers keep the 6,000-char form', () => {
+		const base = { phase: 'message' as const, source: 'hook' as const, startedAt: 10, updatedAt: 20 };
+		const previous = { ...base, text: 'a'.repeat(6_000) };
+		const current = { ...base, updatedAt: 30, text: `${previous.text}bcd` };
+		const windowStart = { ...base, ...paradisAgentLiveTextWindow('x'.repeat(PARADIS_AGENT_LIVE_TEXT_WINDOW - 2), 0) };
+		const windowSlid = { ...base, updatedAt: 40, ...paradisAgentLiveTextWindow(`${windowStart.text}yyyy`, 0) };
+		const legacyText = (payload: object) => ((payload as { live?: { text?: string } }).live?.text ?? '');
+		assert.deepStrictEqual({
+			v2: paradisAgentLivePayloadForEncoding(PARADIS_AGENT_LIVE_APPEND_V2_ENCODING, previous, current, 4, 5),
+			slid: paradisAgentLivePayloadForEncoding(PARADIS_AGENT_LIVE_APPEND_V2_ENCODING, windowStart, windowSlid, 5, 6),
+			slidOffset: windowSlid.textOffset,
+			// v1 は今までどおり、6,000 字を超えたら差分を作らず全文（先頭に「…」）
+			v1: { keys: Object.keys(paradisAgentLivePayloadForEncoding(PARADIS_AGENT_LIVE_APPEND_ENCODING, previous, current, 4, 5)), text: legacyText(paradisAgentLivePayloadForEncoding(PARADIS_AGENT_LIVE_APPEND_ENCODING, previous, current, 4, 5)) },
+			none: legacyText(paradisAgentLivePayloadForEncoding(undefined, windowStart, windowSlid, 5, 6)).length,
+			fullV2: paradisAgentLiveForEncoding(PARADIS_AGENT_LIVE_APPEND_V2_ENCODING, windowSlid) === windowSlid,
+			fullLegacy: Object.keys(paradisAgentLiveForEncoding(PARADIS_AGENT_LIVE_APPEND_ENCODING, windowSlid)).includes('textOffset'),
+			short: paradisAgentLiveForEncoding(undefined, previous) === previous,
+		}, {
+			v2: { liveAppend: { baseRevision: 4, revision: 5, source: 'hook', startedAt: 10, updatedAt: 30, append: 'bcd' } },
+			slid: { liveAppend: { baseRevision: 5, revision: 6, source: 'hook', startedAt: 10, updatedAt: 40, append: 'yyyy', textOffset: 2 } },
+			slidOffset: 2,
+			// allow-any-unicode-next-line
+			v1: { keys: ['live', 'liveRevision'], text: `…${'a'.repeat(5_996)}bcd` },
+			none: 6_000,
+			fullV2: true,
+			fullLegacy: false,
+			short: true,
+		});
 	});
 });

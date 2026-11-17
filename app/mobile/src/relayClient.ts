@@ -523,7 +523,10 @@ export class RelayClient {
 			if (isCurrent()) {
 				sawSocketError = true;
 				this.logEvent({ kind: 'socket-error', detail: errorMessage(error) });
-				reportMobileDiagnosticError('relay', 'socket-error', error, {
+				// RN の onerror が渡すのは WebSocket の Event で、Error ではない。そのまま送ると Sentry では
+				// 中身の無い「anonymous」の報告になる。決まった文の Error にする（Event の文は接続先の URL を
+				// 含みうるので載せない。文は上の logEvent にだけ残す）
+				reportMobileDiagnosticError('relay', 'socket-error', new Error('Relay socket error'), {
 					phase: this.state,
 					reconnect_count: this.reconnectAttempt,
 					transport: 'websocket',

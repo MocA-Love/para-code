@@ -116,7 +116,7 @@ async function connect() {
 const stateGolden = readGolden<{ current: Golden; preW217: Golden }>('state.json');
 const stateRequestGolden = readGolden<{ current: Golden; preW217: Golden }>('state-request.json');
 const termGolden = readGolden<{ toPc: Golden[]; toMobile: Golden[] }>('term.json');
-const agentGolden = readGolden<{ toPc: Golden[]; toMobile: Golden[]; approval: { delta: Golden; onPcDelta: Golden; expiredDelta: Golden } }>('agent.json');
+const agentGolden = readGolden<{ toPc: Golden[]; toMobile: Golden[]; approval: { delta: Golden; onPcDelta: Golden; expiredDelta: Golden }; liveV2: { legacyAttach: Golden; snapshot: Golden; delta: Golden } }>('agent.json');
 const agentApprovalGolden = agentGolden.approval;
 const browserGolden = readGolden<{ toPc: Golden[]; toMobile: Golden[]; bookmarks: { toPc: Golden; toMobile: Golden; push: Golden } }>('browser.json');
 
@@ -330,6 +330,37 @@ describe('wire golden (app side)', () => {
 			capabilities: { agentActions: true, claudeSettings: true },
 			monitors: goldenDelta?.['monitors'],
 			shifted: true,
+		});
+		controller.disconnect();
+	});
+
+	it('agent: 生成中の文の追記（agent.live-append.v2）は広告した PC にだけ求め、窓の始まりの位置ごと読む', async () => {
+		const { controller, pcMux, sent, latest } = await connect();
+		pcMux.send(Channels.State, encode({ ...stateGolden.current, capabilities: (stateGolden.current.capabilities as string[]).filter(name => name !== 'agent.live-append.v2') }));
+		await flush();
+		controller.attachAgent('terminal-key-1');
+		await flush();
+		const legacy = sent.agent![0];
+		controller.detachAgent('terminal-key-1');
+		pcMux.send(Channels.State, encode({ ...stateGolden.current, revision: (stateGolden.current.revision as number) + 1 }));
+		await flush();
+		controller.attachAgent('terminal-key-1');
+		await flush();
+		const negotiated = sent.agent!.filter(message => message.t === 'attach').at(-1);
+		pcMux.send(Channels.Agent, encode(agentGolden.liveV2.snapshot));
+		await flush();
+		pcMux.send(Channels.Agent, encode(agentGolden.liveV2.delta));
+		await flush();
+		expect({
+			legacy,
+			negotiated,
+			live: latest()?.agentChats.get('terminal-key-1')?.live,
+			liveRevision: latest()?.agentChats.get('terminal-key-1')?.liveRevision,
+		}).toEqual({
+			legacy: agentGolden.liveV2.legacyAttach,
+			negotiated: agentGolden.toPc[0],
+			live: { phase: 'message', source: 'hook', startedAt: 1760000004000, updatedAt: 1760000004250, text: 'が分かりました。\n直し方は 2 つあります。', textOffset: 14 },
+			liveRevision: 4,
 		});
 		controller.disconnect();
 	});

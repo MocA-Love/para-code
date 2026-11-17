@@ -47,6 +47,8 @@ class FakeSocketPair {
 	}
 
 	fireClose(): void { this.clientHandlers.onclose?.(); }
+
+	fireError(error: unknown): void { this.clientHandlers.onerror?.(error); }
 }
 
 function toArrayBuffer(data: string | ArrayBufferView | ArrayBuffer): ArrayBuffer {
@@ -369,6 +371,29 @@ describe('RelayClient diagnostics', () => {
 		await flush();
 
 		expect(operations).toEqual(['unexpected-close-0']);
+		client.close();
+	});
+
+	it('reports a socket error as an Error with a fixed message instead of the WebSocket Event', async () => {
+		// RN の onerror は Event を渡す。そのまま送ると Sentry では中身の無い報告になっていた（PARA-CODE-MOBILE-6）。
+		const reports: { operation: string; isError: boolean; message: unknown; extra: unknown }[] = [];
+		configureMobileDiagnosticReporter((_feature, operation, error, extra) => {
+			reports.push({ operation, isError: error instanceof Error, message: (error as { message?: unknown }).message, extra });
+		});
+		const timers = new StepTimers();
+		const pairs: FakeSocketPair[] = [];
+		const client = startClient(timers, pairs);
+
+		client.connect();
+		pairs[0]!.fireError({ type: 'error', message: 'wss://relay.test/device/x?token=secret' });
+		await flush();
+
+		expect(reports).toEqual([{
+			operation: 'socket-error',
+			isError: true,
+			message: 'Relay socket error',
+			extra: { phase: 'connecting', reconnect_count: 0, transport: 'websocket' },
+		}]);
 		client.close();
 	});
 });

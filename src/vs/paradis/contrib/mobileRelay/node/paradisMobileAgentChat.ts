@@ -51,7 +51,7 @@ import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
 import { ParadisRemoteTranscriptMirrorStore, paradisIsRemoteAgentTranscriptMirrorPath, paradisRemoteTranscriptCatchUpEnd, paradisRemoteTranscriptCopyState, paradisRemoteTranscriptMirrorRoots } from './paradisRemoteTranscriptMirror.js';
 import { type IParadisClaudeSubagentMeta, type IParadisRecoveredAgentActivity, paradisParseClaudeAdvisorsEntries, paradisParseClaudePersistedActivityEntries, paradisParseCodexPersistedActivityEntries } from './paradisPersistedAgentActivity.js';
 import { ParadisTranscriptEntryWindows } from './paradisTranscriptEntryWindow.js';
-import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, paradisAgentLivePayloadForEncoding } from '../common/paradisMobileAgentLivePatch.js';
+import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, PARADIS_AGENT_LIVE_APPEND_V2_ENCODING, paradisAgentLiveForEncoding, paradisAgentLivePayloadForEncoding, paradisAgentLiveTextWindow, paradisLegacyAgentLive } from '../common/paradisMobileAgentLivePatch.js';
 import { PARADIS_JSON_GZIP_RESPONSE_ENCODING } from '../common/paradisMobileGzipJson.js';
 import { paradisEncodeAgentOutboundPayload } from './paradisAgentChatGzip.js';
 import { paradisMobileLinkMetrics } from '../common/paradisMobileLinkMetricsRecorder.js';
@@ -613,12 +613,6 @@ const PARADIS_DESKTOP_CHAT_WATCH_TTL_MS = 30_000;
 const PARADIS_DESKTOP_CHAT_MAX_TOKENS = 256;
 /** 変化の知らせをまとめる間隔。生成中の文字の流れが途切れて見えない程度に短くする。 */
 const PARADIS_DESKTOP_CHAT_NOTIFY_DELAY_MS = 80;
-
-/** 生成中テキストは後続deltaが見えるよう、上限超過時は末尾を保持する。 */
-function truncateLiveText(text: string, limit: number): string {
-	// allow-any-unicode-next-line
-	return text.length > limit ? `…${text.slice(-(limit - 1))}` : text;
-}
 
 function newEpoch(): string {
 	return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -4139,7 +4133,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	/** PreToolUse/PostToolUseの対応付け。並行ツールの古い完了で最新表示を消さないために使う。 */
 	private readonly liveToolIds = new Map<string, string>();
 	/** Claude MessageDisplayの行バッチをメッセージ単位で連結する内部バッファ。 */
-	private readonly liveMessageBuffers = new Map<string, { messageId: string; lastIndex: number; text: string; startedAt: number; final: boolean }>();
+	private readonly liveMessageBuffers = new Map<string, { messageId: string; lastIndex: number; text: string; textOffset?: number; startedAt: number; final: boolean }>();
 	/**
 	 * ターンが終了した時刻（hook の at）。遅れて届いた MessageDisplay で live 状態を
 	 * 蘇生させないためのガードに使う。SubAgent活動側の「終了済みは蘇生させない」規約と対。
@@ -4398,6 +4392,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		const previous = token !== undefined ? this.liveStates.get(token) : undefined;
 		if (token === undefined || previous === undefined) {
 			return; // PTY文字列だけでエージェント起動を確定しない
+		}
+		if (previous.phase === 'message' && previous.text !== undefined) {
+			// 書いている最中の文には合成しない（始まりの時刻が変わると追記の差分が作れず、長い文の全量を送り直すことになる。
+			// 次の断片で消える値でもある）
+			return;
 		}
 		const now = Date.now();
 		this.setLiveState(token, {
@@ -7219,18 +7218,19 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		const startedAt = previous?.messageId === event.messageId ? previous.startedAt : event.at;
-		const prefix = previous?.messageId === event.messageId ? previous.text : '';
-		const text = truncateLiveText(prefix + event.messageDelta, TEXT_LIMIT);
+		const same = previous?.messageId === event.messageId;
+		// 長い文は窓に収め、落とした先頭の字数を textOffset に持つ（v1 の購読へは送るときに 6,000 字の形へ直す）
+		const window = paradisAgentLiveTextWindow((same ? previous.text : '') + event.messageDelta, same ? previous.textOffset ?? 0 : 0);
 		const buffer = {
 			messageId: event.messageId,
 			lastIndex: event.messageIndex,
-			text,
+			...window,
 			startedAt,
 			final: event.messageFinal === true,
 		};
 		this.liveMessageBuffers.set(event.token, buffer);
 		this.setLiveState(event.token, {
-			phase: 'message', source: 'hook', startedAt, updatedAt: event.at, text,
+			phase: 'message', source: 'hook', startedAt, updatedAt: event.at, ...window,
 			...(buffer.final ? { final: true } : {}),
 		});
 	}
@@ -7314,7 +7314,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		const now = Date.now();
 		if (text !== undefined) {
 			if (previous?.phase !== 'message' || previous.text !== text) {
-				this.setLiveState(token, { phase: 'message', source: 'transcript', startedAt: previous?.startedAt ?? now, updatedAt: now, text: truncateLiveText(text, TEXT_LIMIT) });
+				this.setLiveState(token, { phase: 'message', source: 'transcript', startedAt: previous?.startedAt ?? now, updatedAt: now, ...paradisAgentLiveTextWindow(text, 0) });
 			}
 			return;
 		}
@@ -7449,8 +7449,13 @@ export class ParadisMobileAgentChat extends Disposable {
 	//  - 質問・承認: モバイルの回答をキーではなく値で mod へ渡す（PC の TUI と並んで、先に答えた方を使う）
 	//  - 送信: エージェントが待機中のときだけ mod の `$.prompt.submit` で送る
 
-	/** mod が流している生成中の文章（本会話のいまのブロック）。 */
-	private readonly modLive = new Map<string, { readonly turnId: string; readonly step: number; readonly index: number; readonly text: string; readonly startedAt: number }>();
+	/** mod が流している生成中の文章（本会話のいまのブロック）。長い文は窓に収め、落とした字数を textOffset に持つ。 */
+	private readonly modLive = new Map<string, { readonly turnId: string; readonly step: number; readonly index: number; readonly text: string; readonly textOffset?: number; readonly startedAt: number }>();
+	/**
+	 * mod の会話の行で確定した本文（最後の 1 行分）。`block` はその行が届いたときに流れていたブロック、`texts` は行の本文。
+	 * 行より後に届いた同じブロックの断片（mod が応答の終わりにまとめて送る最後の分）を、生成中の文として出し直さないために使う。
+	 */
+	private readonly modConfirmed = new Map<string, { readonly block?: { readonly turnId: string; readonly step: number; readonly index: number }; readonly texts: readonly string[] }>();
 	/** mod から生成中の文章が最後に届いた時刻（MessageDisplay hook より mod を使う判断に使う）。 */
 	private readonly modStreamedAt = new Map<string, number>();
 	/** mod へ渡した回答（`token\0kind\0interactionId` → 時刻）。同じカードへの二度目をキーの経路へ回さない。 */
@@ -7500,8 +7505,14 @@ export class ParadisMobileAgentChat extends Disposable {
 				}
 				const ingested = tailer.ingestModRow(event);
 				if (event.door === 'response' && Array.isArray(content) && content.some(block => rec(block)?.type === 'text')) {
-					// 確定した本文が会話に入ったので、生成中の文章は消す（二重に見せない）
-					void ingested.then(() => this.clearModLive(token));
+					// 確定した本文が会話に入ったので、生成中の文章は消す（二重に見せない）。mod は 150 ms たまった時か
+					// 応答の終わりにしか chunk を送らないので、最後の断片はこの行より後に届く。その断片で末尾の数語だけの
+					// 生成中の文を作り直さないよう、確定したブロック（今流れているもの）と確定した文を覚えておく
+					const streaming = this.modLive.get(token);
+					const block = streaming !== undefined ? { turnId: streaming.turnId, step: streaming.step, index: streaming.index } : undefined;
+					const texts = content.map(item => rec(item)).filter(item => item?.type === 'text').map(item => str(item?.text) ?? '').filter(text => text.length > 0);
+					this.modConfirmed.set(token, { ...(block !== undefined ? { block } : {}), texts });
+					void ingested.then(() => this.clearModLive(token, block));
 				}
 				return;
 			}
@@ -7509,6 +7520,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.activeTurnTokens.add(token);
 				this.lastTurnEndedAt.delete(token);
 				this.modLive.delete(token);
+				this.modConfirmed.delete(token);
 				if (!this.liveStates.has(token)) {
 					this.setLiveState(token, { phase: 'thinking', source: 'hook', startedAt: event.at, updatedAt: event.at });
 				}
@@ -7521,6 +7533,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				// 本会話のターンの終わり。承認のカード・質問・ペインの状態の片付けは hook の Stop に任せる
 				// （mod の知らせだけで承認や質問を消さない）。生成中の文章の控えだけを捨てる。
 				this.modLive.delete(token);
+				this.modConfirmed.delete(token);
 				return;
 			case 'step':
 				this.updateLiveFromModStep(token, event.turnId, event.step, event.chunks, event.end, event.at);
@@ -7550,6 +7563,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				return;
 			case 'bye':
 				this.modLive.delete(token);
+				this.modConfirmed.delete(token);
 				this.modStreamedAt.delete(token);
 				return;
 			default:
@@ -7568,27 +7582,47 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		this.modStreamedAt.set(token, at);
+		const confirmed = this.modConfirmed.get(token);
 		let current = this.modLive.get(token);
 		let changed = false;
 		for (const chunk of chunks) {
+			if (confirmed?.block !== undefined && confirmed.block.turnId === turnId && confirmed.block.step === step && confirmed.block.index === chunk.index) {
+				continue; // 確定した後に届いた、同じブロックの最後の断片
+			}
 			if (current === undefined || current.turnId !== turnId || current.step !== step || current.index !== chunk.index) {
 				current = { turnId, step, index: chunk.index, text: '', startedAt: at };
 			}
-			current = { ...current, text: truncateLiveText(current.text + chunk.text, TEXT_LIMIT) };
+			current = { ...current, ...paradisAgentLiveTextWindow(current.text + chunk.text, current.textOffset ?? 0) };
 			changed = true;
 		}
 		if (current === undefined || (!changed && !end) || current.turnId !== turnId || current.step !== step || current.text.length === 0) {
 			return;
 		}
+		// 流れ始める前に行が確定していた（ブロックが 150 ms に満たず、断片がすべて応答の終わりに届いた）。確定した文の
+		// 始まりと同じ間は、生成中の文として出さない（同じ文を 2 つ並べない）
+		const held = confirmed?.block === undefined && (current.textOffset ?? 0) === 0 && confirmed?.texts.some(text => text.startsWith(current.text)) === true;
 		this.modLive.set(token, current);
+		if (held) {
+			return;
+		}
 		this.setLiveState(token, {
 			phase: 'message', source: 'hook', startedAt: current.startedAt, updatedAt: at, text: current.text,
+			...(current.textOffset !== undefined ? { textOffset: current.textOffset } : {}),
 			...(end ? { final: true } : {}),
 		});
 	}
 
-	private clearModLive(token: string): void {
-		if (this.modLive.delete(token) && this.liveStates.get(token)?.phase === 'message') {
+	/**
+	 * 会話の行で本文が確定したので、mod の生成中の文を消す。`block` は行が届いたときに流れていたブロックで、その後に
+	 * 別のブロックが流れ始めていたら（行の取り込みを待つ間に）そちらは消さない。
+	 */
+	private clearModLive(token: string, block: { readonly turnId: string; readonly step: number; readonly index: number } | undefined): void {
+		const current = this.modLive.get(token);
+		if (current === undefined || block === undefined || current.turnId !== block.turnId || current.step !== block.step || current.index !== block.index) {
+			return;
+		}
+		this.modLive.delete(token);
+		if (this.liveStates.get(token)?.phase === 'message') {
 			this.clearLiveState(token);
 		}
 	}
@@ -8527,6 +8561,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		// 差分で返せるのは「起点の続きが欠けずにリングに残っている」ときだけ（モバイルの attach と同じ）。
 		const incremental = cursor !== undefined && cursor.epoch === tailer.epoch && cursor.rev <= tailer.rev && cursor.rev >= oldestRev;
 		const messages = incremental ? tailer.messages.filter(message => message.rev >= cursor.rev) : [...tailer.messages];
+		const currentLive = this.liveStates.get(token);
 		const interaction = tailer.currentInteraction();
 		const info = this.infoOf(token, tailer);
 		return {
@@ -8540,7 +8575,8 @@ export class ParadisMobileAgentChat extends Disposable {
 			...(!incremental && (tailer.wasInitialTruncated || oldestRev > 0) ? { truncated: true } : {}),
 			...(paradisRemoteTranscriptCopyState(tailer.transcriptPath)?.partial === true ? { copyPartial: true } : {}),
 			...(info !== undefined ? { info } : {}),
-			live: this.liveStates.get(token) ?? null,
+			// PC のチャット欄は今までどおり 6,000 字の形で描く（長い文を 100 ms ごとに Markdown へ組み直さない）
+			live: currentLive !== undefined ? paradisLegacyAgentLive(currentLive) : null,
 			interaction,
 			...(interaction?.kind === 'question' ? { pendingQuestions: tailer.pendingQuestionMessages(interaction.id) } : {}),
 			...(tailer.agent === 'codex' ? { asyncQuestions: tailer.asyncQuestions.pending() } : {}),
@@ -10714,6 +10750,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.teamRefreshTimers.delete(token);
 		}
 		this.modLive.delete(token);
+		this.modConfirmed.delete(token);
 		const modApprovalTimer = this.modApprovalTimers.get(token);
 		if (modApprovalTimer !== undefined) {
 			clearTimeout(modApprovalTimer);
@@ -11393,7 +11430,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		subscribers.set(mobileId, {
 			owner,
 			terminalId: encodings.id,
-			liveEncoding: encodings.liveEncoding === PARADIS_AGENT_LIVE_APPEND_ENCODING ? PARADIS_AGENT_LIVE_APPEND_ENCODING : undefined,
+			liveEncoding: encodings.liveEncoding === PARADIS_AGENT_LIVE_APPEND_ENCODING || encodings.liveEncoding === PARADIS_AGENT_LIVE_APPEND_V2_ENCODING ? encodings.liveEncoding : undefined,
 			responseEncoding: encodings.responseEncoding === PARADIS_JSON_GZIP_RESPONSE_ENCODING ? PARADIS_JSON_GZIP_RESPONSE_ENCODING : undefined,
 		});
 		// デスクトップのためだけに入れていた質問・承認は、モバイルが見始めたらふつうの扱いに戻す。
@@ -11455,7 +11492,10 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	private async sendToAuthorized(mobileId: string, msg: AgentOutbound, token?: string, expectedOwner?: IParadisMobilePaneOwner): Promise<boolean> {
 		const stringifyStartedAt = performance.now();
-		const json = encoder.encode(JSON.stringify({ ...msg, ...(token !== undefined ? { token } : {}) }));
+		// 全量の live は購読が交渉した形で送る（v2 以外へは 6,000 字の形。送る場所が多いのでここで一度に直す）
+		const liveEncoding = token !== undefined ? this.subscribers.get(token)?.get(mobileId)?.liveEncoding : undefined;
+		const shaped = (msg.t === 'snapshot' || msg.t === 'delta') && msg.live !== undefined && msg.live !== null ? { ...msg, live: paradisAgentLiveForEncoding(liveEncoding, msg.live) } : msg;
+		const json = encoder.encode(JSON.stringify({ ...shaped, ...(token !== undefined ? { token } : {}) }));
 		const stringifyMs = performance.now() - stringifyStartedAt;
 		// attach で gzip を交渉した購読へは、大きい応答を縮めて送る（同期で縮めるので送る順は変わらない）
 		const responseEncoding = token !== undefined ? this.subscribers.get(token)?.get(mobileId)?.responseEncoding : undefined;
