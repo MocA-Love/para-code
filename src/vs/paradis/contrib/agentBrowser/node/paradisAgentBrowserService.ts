@@ -532,7 +532,7 @@ const EMBEDDED_DEVTOOLS_WS_ID = 'paradis-embedded';
  * get_cdp_endpoint 応答に添える、CDPゲートウェイの制約ガイダンス（LLM向け・英語）。
  * chrome-devtools-mcp のツールが「なぜ失敗するか」を接続前に伝えるためのもの。
  */
-const CDP_LIMITATIONS_NOTE = 'One gateway connection exposes one page: httpBase shows the page shared with this terminal pane, and tabWebSocketDebuggerUrl (present when a tab is resolved) shows only that tab. A browser-level connection also sees the pages that page opened with a target=_blank link or window.open. new_page (Target.createTarget) and close_page (Target.closeTarget) are not supported - use the open_browser_tab / close_browser_tab tools of this server and the tab_id argument of the browser tools instead (you can only close tabs you opened). list_pages / select_page see only that page and the pages it opened with a target=_blank link or window.open; list_browser_tabs shows every tab you can use, including tabs your tabs opened (openedFrom), which you can pass as tab_id. resize_page is not supported because the embedded browser is laid out by the workbench - use the set_viewport tool (or the emulate tool) instead. Clearing cookies/storage/cache over CDP is blocked because the browser partition is shared across Para Code.';
+const CDP_LIMITATIONS_NOTE = 'One gateway connection exposes one page: httpBase shows the page shared with this terminal pane, and tabWebSocketDebuggerUrl (present when a tab is resolved) shows only that tab. A browser-level connection also sees the pages that page opened with a target=_blank link or window.open. new_page (Target.createTarget) and close_page (Target.closeTarget) are not supported - use the open_browser_tab / close_browser_tab tools of this server and the tab_id argument of the browser tools instead (you can only close tabs you opened). list_pages / select_page see only that page and the pages it opened with a target=_blank link or window.open; list_browser_tabs shows every tab you can use, including tabs your tabs opened (openedFrom), which you can pass as tab_id. Browser.setDownloadBehavior on the browser root is answered but not applied: downloads keep going to the Para Code download folder (download_by_click, read_download), so a Playwright client gets no download events. resize_page is not supported because the embedded browser is laid out by the workbench - use the set_viewport tool (or the emulate tool) instead. Clearing cookies/storage/cache over CDP is blocked because the browser partition is shared across Para Code.';
 
 /** DevTools proxyのtoken別generationと、最終retireを待つactive operationを調停する。 */
 export class ParadisDevtoolsGenerationCoordinator {
@@ -664,6 +664,11 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _cdpInputQueue = this._register(new ParadisCdpInputQueue({ onDiagnostic: (event, queueKey) => this._onCdpInputQueueDiagnostic(event, queueKey) }));
 	/** ゲートウェイが断った入力の理由（ペインごとに直近 1 件）。click などの「not interactive」に書き足す。 */
 	private readonly _inputRejections = new ParadisInputRejectionLog();
+	/**
+	 * CDP の接続（キー）から、接続のタブではないタブ（select_page で選んだポップアップなど）へ送った入力の宛先。
+	 * fill の入れ直し（{@link _refillWithInsertText}）は接続のタブへ文字を入れるので、その間に別のタブへ打っていたら入れ直さない。
+	 */
+	private readonly _otherTabGatewayInputs = new ParadisInputRejectionLog();
 	/** 捨てた hook のペイン・理由ごとの累計（診断ログの間引き用。判定には使わない）。 */
 	private readonly _hookDrops = new ParadisAgentHookDropCounter();
 	private readonly _quarantinedBindings = new Set<IBindingEntry>();
@@ -1038,7 +1043,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				beginRawCapture: token => this._beginRawCapture(token),
 				endRawCapture: (token, captured) => this._endRawCapture(token, captured),
 				dispatchBoundPageInput: (token, connection, expectedTargetId, method, paramsJson, isConnectionCurrent) =>
-					this._dispatchBoundPageInput(token, connection, expectedTargetId, method, paramsJson, isConnectionCurrent),
+					this._dispatchBoundPageInput(this._gatewayInputKey(token, expectedTargetId), connection, expectedTargetId, method, paramsJson, isConnectionCurrent),
 				closeInputConnection: connection => this._cdpInputQueue.closeConnection(connection),
 				noteInputRejection: (token, message) => this._inputRejections.record(token, message),
 				noteAgentCdpConnections: (token, connections) => this._noteBrowserDiagnostic(token, { kind: 'agent-state', connections }),
@@ -2532,6 +2537,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._runNonThrowingCleanup('tab-scope-devtools', () => this._devtoolsGenerationCoordinator.forgetWhenIdle(key, generation));
 		this._runNonThrowingCleanup('tab-scope-gateway', () => this._cdpGateway.retireToken(key));
 		this._inputRejections.forget(key);
+		this._otherTabGatewayInputs.forget(key);
 	}
 
 	/** ペインが片付いた。許可・選んだタブ・タブのスコープをすべて外す。 */
@@ -3563,6 +3569,27 @@ export class ParadisAgentBrowserService extends Disposable {
 					break;
 			}
 		});
+	}
+
+	/**
+	 * CDP の接続（ゲートウェイの台帳のキー）から届いた入力の宛先のキー。宛先が接続のタブならそのまま返す。違えば、このペインが
+	 * 使えるタブ（接続のタブが開いたポップアップなど、自動で共有されたタブ）のうち、その targetId のタブのスコープキーを返す。
+	 * どちらでもなければそのまま返す（{@link _dispatchBoundPageInput} が「使えない」として断る）。宛先が接続のタブの子孫かは
+	 * ゲートウェイ（paradisCdpFilterProxy.ts）が確かめている。
+	 */
+	private _gatewayInputKey(key: string, targetId: string): string {
+		if (this._bindingForKey(key)?.exactView.targetId === targetId) {
+			return key;
+		}
+		this._otherTabGatewayInputs.record(key, targetId);
+		const token = paradisPaneTokenOfScopeKey(key);
+		for (const [tabId, grant] of this._agentTabGrants.get(token) ?? []) {
+			if (grant.exactView.targetId === targetId) {
+				const tabKey = paradisAgentTabScopeKey(token, tabId);
+				return this._bindingForKey(tabKey) === grant ? tabKey : key;
+			}
+		}
+		return key;
 	}
 
 	/** `key` はペインのトークン（共有中のページ）か、タブのスコープキー（そのタブ）。入力キューはタブ（exactView）ごと。 */
@@ -6633,10 +6660,11 @@ export class ParadisAgentBrowserService extends Disposable {
 					}
 				}
 				// para固有ツールでなければ、内蔵chrome-devtools-mcpへの転送を試みる
+				const devtoolsCalledAt = Date.now();
 				const devtoolsResult = paradisWithScriptHints(name, devtoolsArgs, await this._withToolCursorStatus(pageLease, name, () => this._callDevtoolsTool(pageLease, name, devtoolsArgs, signal, true, snapshotDiff?.mode)));
 				if (paradisFillNeedsInsertTextFallback(name, devtoolsResult)) {
 					// キーの抑止を用意できないページでは、fill_by と同じ insertText の経路で入れ直す（paradisBrowserFillFallback.ts）
-					return this._refillWithInsertText(ingressLease, pageLease, devtoolsArgs, devtoolsResult, signal, socket);
+					return this._refillWithInsertText(ingressLease, pageLease, devtoolsArgs, devtoolsResult, devtoolsCalledAt, signal, socket);
 				}
 				return devtoolsResult;
 			}, signal);
@@ -7032,10 +7060,15 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * 内蔵の `fill` がキーの抑止を用意できずに断られたとき、fill_by（uid で探す）で入れ直す。fill_by と同じく
 	 * 接続元（pane か tunnel）を確かめ、確かめられなければ元の失敗を返す。
 	 */
-	private async _refillWithInsertText(ingressLease: IParadisAgentBrowserIngressLease, pageLease: IParadisAgentBrowserIngressLease, args: unknown, originalResult: unknown, signal: AbortSignal | undefined, socket: Socket | undefined): Promise<unknown> {
+	private async _refillWithInsertText(ingressLease: IParadisAgentBrowserIngressLease, pageLease: IParadisAgentBrowserIngressLease, args: unknown, originalResult: unknown, fillCalledAt: number, signal: AbortSignal | undefined, socket: Socket | undefined): Promise<unknown> {
 		const fillArgs = paradisFillFallbackArgs(args);
 		const binding = this._bindingForKey(this._pageKeyOf(pageLease));
 		if (!fillArgs || !binding || signal?.aborted) {
+			return originalResult;
+		}
+		// fill が select_page で選んだ別のタブ（ポップアップなど）へ打っていたら入れ直さない。入れ直しは接続のタブへ文字を
+		// 入れるので、そのタブで focus のある欄へ誤って入る
+		if (this._otherTabGatewayInputs.recent(this._pageKeyOf(pageLease), fillCalledAt) !== undefined) {
 			return originalResult;
 		}
 		const caller = await this._classifyCaller(ingressLease.token, socket);
