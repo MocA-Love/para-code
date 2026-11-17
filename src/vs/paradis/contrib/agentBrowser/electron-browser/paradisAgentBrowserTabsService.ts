@@ -206,13 +206,22 @@ export type IParadisAgentTabTarget =
 	| { readonly ok: false; readonly reason: ParadisAgentTabTargetFailure };
 
 /**
+ * ペインから解いた、タブを開く先（画面に出ていないスペースも含む）。`hidden` なら、タブは
+ * {@link IParadisAgentBrowserTabsService.keepTabForHiddenSpace} で、そのスペースに戻ったときに置く。
+ */
+export type IParadisAgentTabOpenTarget =
+	| { readonly ok: true; readonly kind: 'visible'; readonly group: IEditorGroup }
+	| { readonly ok: true; readonly kind: 'hidden'; readonly stateKey: string }
+	| { readonly ok: false; readonly reason: Exclude<ParadisAgentTabTargetFailure, 'spaceNotVisible'> };
+
+/**
  * open_browser_tab の開く先。ペインのスペースが画面に出ていれば、その領域のエディタ部分。出ていなければ
  * そのスペースの状態キー（タブは窓へ隠したまま付けておき、スペースに戻ったときに置く）。
  */
 type ParadisAgentOpenTarget =
 	| { readonly ok: true; readonly kind: 'visible'; readonly parts: readonly IEditorPart[] }
 	| { readonly ok: true; readonly kind: 'hidden'; readonly stateKey: string }
-	| { readonly ok: false; readonly reason: ParadisAgentTabTargetFailure };
+	| { readonly ok: false; readonly reason: Exclude<ParadisAgentTabTargetFailure, 'spaceNotVisible'> };
 
 /**
  * 画面に出ていないスペースへ開き、戻ったら置くタブ。`own` はエージェントが open_browser_tab で開いたもの、
@@ -231,6 +240,19 @@ export interface IParadisAgentBrowserTabsService {
 
 	/** 呼び出し元ペインのスペースが見えているエディタ領域のグループ。 */
 	resolveTarget(token: string | undefined): IParadisAgentTabTarget;
+
+	/**
+	 * {@link resolveTarget} と同じだが、ペインのスペースが画面に出ていなければ断らずに `hidden` を返す
+	 * （open_browser_tab と同じ扱い。プロファイルの MCP が使う）。
+	 */
+	resolveOpenTarget(token: string | undefined): IParadisAgentTabOpenTarget;
+
+	/**
+	 * 画面に出ていないスペースへ開いたタブ（エディタに出していないもの）を、そのスペースのものとして記録し、
+	 * そのスペースに戻ったら置く（open_browser_tab と同じ口）。先に {@link registerAgentTab} で載せておく。
+	 * 記録できなければ投げる（呼び出し側がタブを捨てる）。
+	 */
+	keepTabForHiddenSpace(token: string, input: BrowserEditorInput, stateKey: string): Promise<void>;
 
 	/**
 	 * 共有中のページの共有の印（upstream の agent audience）を、upstream の確認を出さずに付け直す。直接共有できない
@@ -533,11 +555,27 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		if (where.kind === 'hidden') {
 			return { ok: false, reason: 'spaceNotVisible' };
 		}
-		const partSet = new Set(where.parts);
-		const group = this._editorGroupsService.getGroups(GroupsOrder.MOST_RECENTLY_ACTIVE)
+		return { ok: true, group: this._recentGroupIn(where.parts) };
+	}
+
+	resolveOpenTarget(token: string | undefined): IParadisAgentTabOpenTarget {
+		const where = this._resolveOpenTarget(token);
+		if (!where.ok) {
+			return where;
+		}
+		return where.kind === 'hidden' ? where : { ok: true, kind: 'visible', group: this._recentGroupIn(where.parts) };
+	}
+
+	async keepTabForHiddenSpace(token: string, input: BrowserEditorInput, stateKey: string): Promise<void> {
+		await this._keepForHiddenSpace(token, input, stateKey, false);
+	}
+
+	/** そのエディタ部分のうち、最近使ったグループ。 */
+	private _recentGroupIn(parts: readonly IEditorPart[]): IEditorGroup {
+		const partSet = new Set(parts);
+		return this._editorGroupsService.getGroups(GroupsOrder.MOST_RECENTLY_ACTIVE)
 			.find(candidate => partSet.has(this._editorGroupsService.getPart(candidate)))
-			?? where.parts[0].activeGroup;
-		return { ok: true, group };
+			?? parts[0].activeGroup;
 	}
 
 	/** ペイン → そのスペースが見えているエディタ部分（無ければ、画面に出ていないスペースの状態キー）。 */

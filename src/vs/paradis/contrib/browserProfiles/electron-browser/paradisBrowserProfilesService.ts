@@ -50,8 +50,10 @@ import {
 import { paradisIsValidProfileId, paradisProfileIdFromUuid } from '../common/paradisBrowserProfileId.js';
 import {
 	IParadisBrowserProfile,
+	PARADIS_BROWSER_AGENT_ALLOWED_PROFILES_STORAGE_KEY,
 	PARADIS_BROWSER_PROFILE_COLORS,
 	PARADIS_BROWSER_PROFILES_STORAGE_KEY,
+	paradisDeserializeAgentAllowedProfiles,
 	paradisDeserializeProfiles,
 	paradisFindProfileByName,
 	paradisIsDuplicateProfileName,
@@ -101,6 +103,15 @@ export interface IParadisBrowserProfilesService {
 	setColor(profileId: string, color: string): void;
 
 	/**
+	 * ユーザーがそのプロファイルを、エージェントに聞かずに使わせると決めたか（承認の「今後は聞かない」）。
+	 * PC ごとに持ち、設定が remembered のときだけ効く。
+	 */
+	isAgentAllowed(profileId: string): boolean;
+
+	/** {@link isAgentAllowed} の許可を残す・外す（外すのはプロファイルの管理から）。 */
+	setAgentAllowed(profileId: string, allowed: boolean): void;
+
+	/**
 	 * 台帳から削除し、保存されている Cookie / ストレージも main 側で消す。
 	 * そのプロファイルで開いているタブは先に閉じる（開いたままだと消した直後に書き戻される）。
 	 */
@@ -140,6 +151,13 @@ export interface IParadisBrowserProfilesService {
 	 * エージェントの経路ではユーザーのフォーカスを奪わないよう立てない。
 	 */
 	openInProfile(profileId: string, url?: string, group?: IEditorGroup, options?: { readonly openUrlPicker?: boolean }): Promise<BrowserEditorInput | undefined>;
+
+	/**
+	 * 指定プロファイルのタブを、エディタに出さずに作る（画面に出ていないスペースへエージェントが開くとき。
+	 * 置くのは呼び出し側）。ページはまだ作られておらず、resolve したときに作られて URL を読み込む。
+	 * 置けなかったら呼び出し側が dispose する（対応表からは閉じたときに外れる）。
+	 */
+	createInProfile(profileId: string, url?: string): BrowserEditorInput | undefined;
 
 	/**
 	 * 開いているビューを別のプロファイル／組み込みスコープへ「切り替える」。
@@ -226,6 +244,13 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 			this._onDidChangeProfiles.fire();
 		}));
 
+		// 許可の一覧も全ウィンドウで1つ。管理モーダルの表示を合わせるため、ほかのウィンドウの変更でも知らせる。
+		this._register(this.storageService.onDidChangeValue(StorageScope.APPLICATION, PARADIS_BROWSER_AGENT_ALLOWED_PROFILES_STORAGE_KEY, this._store)(event => {
+			if (event.external) {
+				this._onDidChangeProfiles.fire();
+			}
+		}));
+
 		this._register(this.lifecycleService.onWillShutdown(() => this._shutdownStarted = true));
 		this._register(this.browserViewWorkbenchService.onDidChangeBrowserViews(() => this._hookKnownViews()));
 		this._hookKnownViews();
@@ -278,10 +303,40 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 		this._updateProfile(profileId, profile => ({ ...paradisWithoutAgentMarks(profile), color }));
 	}
 
+	isAgentAllowed(profileId: string): boolean {
+		return this._readAgentAllowed().has(profileId);
+	}
+
+	setAgentAllowed(profileId: string, allowed: boolean): void {
+		// 書く直前に読み直し、この 1 件だけを足す・外す（ほかのウィンドウの変更を上書きしない）。
+		const current = this._readAgentAllowed();
+		if (current.has(profileId) === allowed || (allowed && !this._profiles.some(profile => profile.id === profileId))) {
+			return;
+		}
+		if (allowed) {
+			current.add(profileId);
+		} else {
+			current.delete(profileId);
+		}
+		if (current.size === 0) {
+			this.storageService.remove(PARADIS_BROWSER_AGENT_ALLOWED_PROFILES_STORAGE_KEY, StorageScope.APPLICATION);
+		} else {
+			// ログイン状態と同じくマシン固有。設定同期に載せると、別の PC で聞かずに使われる。
+			this.storageService.store(PARADIS_BROWSER_AGENT_ALLOWED_PROFILES_STORAGE_KEY, JSON.stringify([...current]), StorageScope.APPLICATION, StorageTarget.MACHINE);
+		}
+		this._onDidChangeProfiles.fire();
+	}
+
+	private _readAgentAllowed(): Set<string> {
+		return paradisDeserializeAgentAllowedProfiles(this.storageService.get(PARADIS_BROWSER_AGENT_ALLOWED_PROFILES_STORAGE_KEY, StorageScope.APPLICATION));
+	}
+
 	async remove(profileId: string): Promise<void> {
 		if (!this._profiles.some(profile => profile.id === profileId)) {
 			return;
 		}
+		// 許可も外す。残すと、同じ ID が作り直されることは無いが、一覧に死んだ ID が溜まる。
+		this.setAgentAllowed(profileId, false);
 		// 先にタブを閉じてから消す。開いたままのページは clearData() の直後から同じ
 		// パーティションへ Cookie を書き戻し、しかも台帳にはもう無いので二度と消せない孤児になる
 		// （モーダルは「すべて削除されます」と言い切っているので、実態を合わせる必要がある）。
@@ -509,6 +564,22 @@ export class ParadisBrowserProfilesService extends Disposable implements IParadi
 		} catch (error) {
 			this._releaseView(viewId);
 			this.logService.error('[ParadisBrowserProfiles] failed to open a page in a named profile', error);
+			return undefined;
+		}
+	}
+
+	createInProfile(profileId: string, url?: string): BrowserEditorInput | undefined {
+		if (!this._profiles.some(profile => profile.id === profileId) || !this.canUseProfiles()) {
+			return undefined;
+		}
+		const viewId = this._reserveView({ scope: BrowserViewStorageScope.Profile, profileId });
+		try {
+			const input = this.browserViewWorkbenchService.getOrCreateLazy({ id: viewId, ...(url ? { url } : {}) });
+			this.touch(profileId);
+			return input;
+		} catch (error) {
+			this._releaseView(viewId);
+			this.logService.error('[ParadisBrowserProfiles] failed to create a page in a named profile', error);
 			return undefined;
 		}
 	}

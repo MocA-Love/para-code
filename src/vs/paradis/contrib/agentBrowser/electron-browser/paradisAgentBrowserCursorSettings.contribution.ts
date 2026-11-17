@@ -10,6 +10,7 @@ import { localize } from '../../../../nls.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationNode, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { PARADIS_AGENT_TAB_MIN_SPLIT_WIDTH_DEFAULT, PARADIS_AGENT_TAB_MIN_SPLIT_WIDTH_SETTING } from '../common/paradisAgentTabPlacement.js';
+import { PARADIS_BROWSER_PROFILE_ACCESS_DEFAULT, PARADIS_BROWSER_PROFILE_ACCESS_SETTING } from '../../browserProfiles/common/paradisBrowserProfileMcp.js';
 import { PARADIS_AGENT_BROWSER_SHOW_CURSOR_OVERLAY_SETTING, PARADIS_BROWSER_REPORT_STATE_SETTING, PARADIS_BROWSER_RUN_STEPS_FLOW_SETTING, PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING, PARADIS_BROWSER_SITE_NOTES_SETTING, PARADIS_BROWSER_SNAPSHOT_DIFF_SETTING, PARADIS_BROWSER_SITE_RECIPES_SETTING } from '../common/paradisAgentBrowser.js';
 
 // 共通の 'paradis' セクションへプロパティを追加する（windowTransparency の設定登録と同じ id/title を
@@ -70,6 +71,19 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			default: false,
 			scope: ConfigurationScope.APPLICATION,
 			markdownDescription: localize('paradis.agentBrowser.snapshotDiff', "（試験的）エージェントが内蔵ブラウザで同じページの中身を 2 回目以降に読むとき、前回から変わったところだけを渡し、読む量を減らします。")
+		},
+		// 承認を出すウィンドウ（renderer）が読む。APPLICATION にして、リポジトリの設定から all へ上げられないようにする
+		[PARADIS_BROWSER_PROFILE_ACCESS_SETTING]: {
+			type: 'string',
+			enum: ['ask', 'remembered', 'all'],
+			enumDescriptions: [
+				localize('paradis.agentBrowser.profileAccess.ask', "毎回聞きます。"),
+				localize('paradis.agentBrowser.profileAccess.remembered', "確認のダイアログで「今後は聞かない」を押したプロファイルは、聞かずに使わせます。ほかは聞きます。"),
+				localize('paradis.agentBrowser.profileAccess.all', "すべてのプロファイルを聞かずに使わせます。"),
+			],
+			default: PARADIS_BROWSER_PROFILE_ACCESS_DEFAULT,
+			scope: ConfigurationScope.APPLICATION,
+			markdownDescription: localize('paradis.agentBrowser.profileAccess', "エージェントが、ログイン状態を保存したブラウザのプロファイルを使うときに確認するかどうかを制御します。聞かずに使わせると、ページに仕込まれた指示にエージェントが従い、ログイン中のサイトで操作してしまうおそれが増えます。許可は「プロファイルを管理」からプロファイルごとに外せます。エージェント向けのネットワークの制限（`chat.agent.networkFilter`）がオンの間は、この設定に関係なくプロファイルを使わせません。")
 		},
 		// 置き場所はタブを開くウィンドウ（renderer）が決めるので、ウィンドウごとに読む
 		[PARADIS_AGENT_TAB_MIN_SPLIT_WIDTH_SETTING]: {

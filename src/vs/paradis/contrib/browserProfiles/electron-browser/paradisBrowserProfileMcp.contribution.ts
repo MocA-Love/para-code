@@ -13,14 +13,14 @@
 // 「呼び出し元ペインが属するスペース」を解いて、そのスペースのエディタ領域へ開く。解決手順は
 // paradisAgentPreview.contribution.ts と同じ形にしてある（あちらが正、こちらは踏襲）。
 //
-// `preview_file` との違いは、非表示スペースのときに**予約しない**こと。このツールの目的は
-// 「開いたページをこのペインへ共有して、そのまま chrome-devtools 系ツールで操作させる」なので、
-// 後からユーザーが戻ってきたときに開いても、エージェントはもうそこにいない。開けないことを
-// その場で伝える方が誠実。
+// ペインのスペースが画面に出ていないときは、open_browser_tab と同じ口で、タブをそのスペースのものとして
+// エディタに出さずに開く（エージェントはすぐ使え、ユーザーにはそのスペースへ戻ったときに見える）。
 //
 // ユーザーのプロファイル（ユーザーが作った、またはユーザーが自分で使った）と、別のペインが作った
 // プロファイルはログイン状態を持ちうるので、エージェントが開く・切り替えるときはユーザーの承認を通し、
-// 一覧では名前を伏せる。承認なしで使え、削除できるのは、そのペインが作りユーザーがまだ使っていないものだけ。
+// 一覧では名前を伏せる。ただし許可の設定（paradis.agentBrowser.profileAccess）が all ならすべて、
+// remembered ならユーザーが「今後は聞かない」で許可を残したものは、聞かずに使え、一覧に名前を出す。
+// 削除できるのは、そのペインが作りユーザーがまだ使っていないものだけ。
 
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Event } from '../../../../base/common/event.js';
@@ -29,6 +29,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize } from '../../../../nls.js';
 import { BrowserViewStorageScope, isBrowserViewStorageScopeShareableWithAgent } from '../../../../platform/browserView/common/browserView.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IAgentNetworkFilterService } from '../../../../platform/networkFilter/common/networkFilterService.js';
@@ -46,6 +47,7 @@ import {
 	IParadisOpenProfileResult,
 	IParadisSwitchProfileResult,
 	PARADIS_AGENT_CREATED_PROFILE_LIMIT,
+	PARADIS_BROWSER_PROFILE_ACCESS_SETTING,
 	PARADIS_AGENT_CREATED_PROFILE_TOTAL_LIMIT,
 	PARADIS_BROWSER_PROFILE_MCP_CHANNEL,
 	PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD,
@@ -54,6 +56,8 @@ import {
 	PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD,
 	PARADIS_BROWSER_PROFILE_MCP_METHOD,
 	PARADIS_BROWSER_PROFILE_MCP_SWITCH_METHOD,
+	ParadisProfileAccess,
+	paradisReadProfileAccess,
 } from '../common/paradisBrowserProfileMcp.js';
 import { IParadisBrowserProfile, PARADIS_BROWSER_PROFILE_COLORS, paradisIsDuplicateProfileName, paradisNormalizeProfileName } from '../common/paradisBrowserProfileModel.js';
 import { IParadisBrowserProfilesService } from './paradisBrowserProfilesService.js';
@@ -92,8 +96,18 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 		private readonly agentTabsService: IParadisAgentBrowserTabsService,
 		private readonly browserViewWorkbenchService: IBrowserViewWorkbenchService,
 		private readonly browserExtensionsService: Pick<IParadisBrowserExtensionsService, 'getShareWarning'>,
+		private readonly configurationService: Pick<IConfigurationService, 'getValue'>,
 	) {
 		super();
+	}
+
+	private _access(): ParadisProfileAccess {
+		return paradisReadProfileAccess(this.configurationService.getValue(PARADIS_BROWSER_PROFILE_ACCESS_SETTING));
+	}
+
+	/** このペインのものでないプロファイルを、聞かずに使ってよいか（設定と、ユーザーが残した許可による）。 */
+	private _isAllowedWithoutAsking(profile: IParadisBrowserProfile, access: ParadisProfileAccess): boolean {
+		return access === 'all' || (access === 'remembered' && this.profilesService.isAgentAllowed(profile.id));
 	}
 
 	listen<T>(_ctx: unknown, event: string): Event<T> {
@@ -144,8 +158,9 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 		if (!isBrowserViewStorageScopeShareableWithAgent(BrowserViewStorageScope.Profile, this.agentNetworkFilterService.isEnabled())) {
 			return { ok: false, reason: 'profileNotShareable' };
 		}
-		// 開く先の判断（切替中・ペイン未解決・非表示スペース）はタブのサービスと共通にする。
-		const target = this.agentTabsService.resolveTarget(token);
+		// 開く先の判断（切替中・ペイン未解決・到達できないスペース）はタブのサービスと共通にする。画面に出ていない
+		// スペースは断らない（open_browser_tab と同じく、そのスペースのものとして開く）。
+		const target = this.agentTabsService.resolveOpenTarget(token);
 		if (!target.ok) {
 			return target;
 		}
@@ -168,15 +183,16 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 		}
 		let input: BrowserEditorInput | undefined;
 		let restored = false;
+		let hidden = false;
 		try {
 			const approval = await this._approveUserProfile(token, profile, deadline, url);
 			if (approval !== 'approved') {
 				return { ok: false, reason: approval };
 			}
-			// 承認を待っている間に状況が変わっていないか確かめ直す。
-			const group = this.agentTabsService.resolveTarget(token);
-			if (!group.ok) {
-				return group;
+			// 承認を待っている間に状況が変わっていないか確かめ直す（その間にスペースが表に出た・裏に回ったこともある）。
+			const target = this.agentTabsService.resolveOpenTarget(token);
+			if (!target.ok) {
+				return target;
 			}
 
 			// 開く前に Cookie の有無を見ておく。開いた後だとそのページ自身が置いた Cookie が混ざり、
@@ -184,11 +200,17 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 			const stats = await this.profilesService.getProfileStats(profile.id);
 			restored = (stats.cookieCount ?? 0) > 0;
 
-			input = await this.profilesService.openInProfile(profile.id, url, group.group);
-			if (input) {
-				// ユーザーのプロファイル（承認を得て使うもの）のタブは、ユーザーが共有を止めたら台帳から外れ、
-				// 次に使うときは承認し直しになる。自分で作ったプロファイルのタブは自分のタブと同じ扱い。
-				this.agentTabsService.registerAgentTab(token, input, { approvedProfile: !isOwnProfile(profile, token) });
+			// ユーザーのプロファイル（承認を得て使うもの）のタブは、ユーザーが共有を止めたら台帳から外れ、
+			// 次に使うときは承認し直しになる。自分で作ったプロファイルのタブは自分のタブと同じ扱い。
+			const registration = { approvedProfile: !isOwnProfile(profile, token) };
+			if (target.kind === 'visible') {
+				input = await this.profilesService.openInProfile(profile.id, url, target.group);
+				if (input) {
+					this.agentTabsService.registerAgentTab(token, input, registration);
+				}
+			} else {
+				input = await this._openInHiddenSpace(token, profile, url, target.stateKey, registration);
+				hidden = input !== undefined;
 			}
 		} finally {
 			slot.dispose();
@@ -213,20 +235,45 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 			this.logService.warn('[ParadisBrowserProfileMcp] opened the page but could not share it with the calling pane', error);
 		}
 
-		return { ok: true, profileName: profile.name, restored, bound, tabId: input.id };
+		return { ok: true, profileName: profile.name, restored, bound, tabId: input.id, ...(hidden ? { spaceNotVisible: true } : {}) };
+	}
+
+	/**
+	 * 画面に出ていないスペースへ、エディタに出さずにタブを開く（open_browser_tab と同じ口で、そのスペースに
+	 * 戻ったときに置かれる）。待たせられなければタブを捨てる（誰にも見えず閉じられないタブを残さない）。
+	 */
+	private async _openInHiddenSpace(token: string, profile: IParadisBrowserProfile, url: string | undefined, stateKey: string, registration: { readonly approvedProfile: boolean }): Promise<BrowserEditorInput | undefined> {
+		const input = this.profilesService.createInProfile(profile.id, url);
+		if (!input) {
+			return undefined;
+		}
+		try {
+			this.agentTabsService.registerAgentTab(token, input, registration);
+			await this.agentTabsService.keepTabForHiddenSpace(token, input, stateKey);
+			return input;
+		} catch (error) {
+			this.logService.warn('[ParadisBrowserProfileMcp] could not open a page in the requested profile for a space that is not on screen', error);
+			input.dispose(true);
+			return undefined;
+		}
 	}
 
 	/**
 	 * このペインのものでないプロファイル（ユーザーのもの、別のペインが作ったもの）を使う前の承認。
 	 * ダイアログには名前と、開く先のサイト（origin）を出す（何を渡すのかが分かるように）。
+	 * 許可の設定が remembered なら「今後は聞かない」も出し、押されたらそのプロファイルの許可を残す。
 	 */
 	private async _approveUserProfile(token: string, profile: IParadisBrowserProfile, deadline: ParadisApprovalDeadline, url: string | undefined): Promise<ParadisProfileApproval> {
 		// 拡張機能を有効にしたプロファイルなら、承認の本文で知らせる（D4）。このペインのプロファイルでも、
-		// 知らせが要るときは承認を挟む（利用者が拡張機能を有効にしたのはエージェントの知らないこと）
+		// 聞かずに使ってよいプロファイルでも、知らせが要るときは承認を挟む（利用者が拡張機能を有効にしたのは
+		// エージェントの知らないことで、許可を残したときには考えていなかったこと）
 		const extensionWarning = await this.browserExtensionsService.getShareWarning({ kind: 'profile', profileId: profile.id });
-		if (isOwnProfile(profile, token) && extensionWarning === undefined) {
+		const access = this._access();
+		if (extensionWarning === undefined && (isOwnProfile(profile, token) || this._isAllowedWithoutAsking(profile, access))) {
 			return 'approved';
 		}
+		// 許可を残しても、拡張機能の知らせがあるうちは聞き続けるので、そのときは出さない
+		const offerRemember = access === 'remembered' && extensionWarning === undefined;
 		const origin = paradisUrlOrigin(url);
 		const outcome = await this.agentTabsService.askApproval(token, {
 			messageTemplate: pane => localize('paradis.browserProfiles.mcp.approval.message', "{0} のエージェントが、ブラウザのプロファイル「{1}」を使いたいと求めています", pane, profile.name),
@@ -236,13 +283,20 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 					: localize('paradis.browserProfiles.mcp.approval.noSite', "開くサイト: 空のページ（その後エージェントが移動できます）"),
 				localize('paradis.browserProfiles.mcp.approval.detail', "許可すると、エージェントはこのプロファイルに保存されたログイン状態（Cookie など）のままページを開き、操作できます。"),
 				localize('paradis.browserProfiles.mcp.approval.detail2', "エージェントが開いたタブは、エージェントのタブとして一覧に載ります。共有を止めるか閉じれば使えなくなります。"),
+				...(offerRemember ? [localize('paradis.browserProfiles.mcp.approval.remember', "「今後は聞かない」を押すと、次からこのプロファイルは聞かずに使わせます。許可は、設定 (Para Code) の「プロファイルを管理」から外せます。")] : []),
 				...(extensionWarning !== undefined ? [extensionWarning] : []),
 			],
 			approveLabel: localize('paradis.browserProfiles.mcp.approval.allow', "このプロファイルを使わせる"),
+			alternativeLabel: offerRemember ? localize('paradis.browserProfiles.mcp.approval.allowAlways', "今後は聞かない") : undefined,
 		}, deadline.token);
 		switch (outcome) {
 			case 'approve':
+				return 'approved';
 			case 'alternative':
+				// 2つ目の選択肢は「今後は聞かない」だけ（出したときだけ返る）
+				if (offerRemember) {
+					this.profilesService.setAgentAllowed(profile.id, true);
+				}
 				return 'approved';
 			case 'denied':
 				return 'denied';
@@ -261,8 +315,15 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 	private async _listProfiles(token: string | undefined): Promise<IParadisListProfilesResult> {
 		const profiles: IParadisAgentProfileInfo[] = [];
 		let hiddenProfileCount = 0;
+		const access = this._access();
+		const usable = this.profilesService.canUseProfiles();
+		const shareable = isBrowserViewStorageScopeShareableWithAgent(BrowserViewStorageScope.Profile, this.agentNetworkFilterService.isEnabled());
 		for (const profile of this.profilesService.list()) {
-			if (token === undefined || !isOwnProfile(profile, token)) {
+			const own = token !== undefined && isOwnProfile(profile, token);
+			// 聞かずに使ってよいユーザーのプロファイルも名前を出す。ただし使えない間（信頼していない・ネットワークの
+			// 制限）は今までどおり伏せる（名前だけ見せても開けない）。
+			const allowed = !own && token !== undefined && usable && shareable && this._isAllowedWithoutAsking(profile, access);
+			if (!own && !allowed) {
 				// このペインのものでなければ、名前もログインの有無も出さない（どのサービスに入っているかが分かる）。
 				hiddenProfileCount++;
 				continue;
@@ -270,18 +331,12 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 			const stats = await this.profilesService.getProfileStats(profile.id);
 			profiles.push({
 				name: profile.name,
-				createdByYou: true,
+				createdByYou: own,
 				hasStoredLogin: stats.cookieCount === undefined ? undefined : stats.cookieCount > 0,
 				lastUsed: new Date(profile.lastUsedAt).toISOString(),
 			});
 		}
-		return {
-			ok: true,
-			profiles,
-			hiddenProfileCount,
-			usable: this.profilesService.canUseProfiles(),
-			shareable: isBrowserViewStorageScopeShareableWithAgent(BrowserViewStorageScope.Profile, this.agentNetworkFilterService.isEnabled()),
-		};
+		return { ok: true, profiles, hiddenProfileCount, access, usable, shareable };
 	}
 
 	private async _createProfile(token: string | undefined, name: string): Promise<IParadisManageProfileResult<{ readonly profileName: string }>> {
@@ -437,6 +492,7 @@ class ParadisBrowserProfileMcpContribution extends Disposable implements IWorkbe
 		@IParadisAgentBrowserTabsService agentTabsService: IParadisAgentBrowserTabsService,
 		@IBrowserViewWorkbenchService browserViewWorkbenchService: IBrowserViewWorkbenchService,
 		@IParadisBrowserExtensionsService browserExtensionsService: IParadisBrowserExtensionsService,
+		@IConfigurationService configurationService: IConfigurationService,
 	) {
 		super();
 		sharedProcessService.registerChannel(PARADIS_BROWSER_PROFILE_MCP_CHANNEL, this._register(new ParadisBrowserProfileMcpChannel(
@@ -448,6 +504,7 @@ class ParadisBrowserProfileMcpContribution extends Disposable implements IWorkbe
 			agentTabsService,
 			browserViewWorkbenchService,
 			browserExtensionsService,
+			configurationService,
 		)));
 	}
 }

@@ -1323,6 +1323,24 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-browser',
+		group: GROUP_BROWSER_AGENT,
+		key: 'paradis.agentBrowser.profileAccess',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.profileAccess', "エージェントにプロファイルを使わせるとき"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.profileAccessDesc', "ログインしたままのプロファイルをエージェントが使う前に、確認するかどうかです。聞かずに使わせると、ページに仕込まれた指示でログイン中のサイトを操作されるおそれが増えます。許可は「プロファイルを管理」から外せます。"),
+		keywords: 'agent browser profile login cookie approval ask permission',
+		choiceLabels: {
+			// allow-any-unicode-next-line
+			ask: localize('paradis.settings.profileAccessAsk', "毎回聞く"),
+			// allow-any-unicode-next-line
+			remembered: localize('paradis.settings.profileAccessRemembered', "許可したものは聞かない（既定）"),
+			// allow-any-unicode-next-line
+			all: localize('paradis.settings.profileAccessAll', "すべて聞かずに使わせる"),
+		},
+	},
+	{
+		sectionId: 'psd-sec-browser',
 		experimental: true,
 		group: GROUP_BROWSER_EXPERIMENTAL,
 		key: 'paradis.agentBrowser.settleAfterAction',
