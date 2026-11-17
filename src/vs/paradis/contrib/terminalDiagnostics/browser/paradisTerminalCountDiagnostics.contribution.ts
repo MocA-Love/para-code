@@ -10,9 +10,10 @@ import { Disposable, DisposableMap } from '../../../../base/common/lifecycle.js'
 import { Event } from '../../../../base/common/event.js';
 import { TerminalLocation } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
+import { paradisCollectAllTerminalInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 
 /** Only recent creations/disposals within this window count towards the rate. */
 const RECENT_WINDOW_MS = 5 * 60 * 1000;
@@ -37,6 +38,7 @@ export class ParadisTerminalCountDiagnosticsContribution extends Disposable impl
 	private readonly _createdAt: number[] = [];
 	private readonly _createdEditorAt: number[] = [];
 	private readonly _disposedAt: number[] = [];
+	private readonly _reattachedAt: number[] = [];
 	private _lastReportedAt = 0;
 	/** Per-instance disposal listeners, keyed by instance id (see the constructor for why not the service event). */
 	private readonly _disposalListeners = this._register(new DisposableMap<number>());
@@ -44,6 +46,7 @@ export class ParadisTerminalCountDiagnosticsContribution extends Disposable impl
 	constructor(
 		@ITerminalService private readonly _terminalService: ITerminalService,
 		@ILifecycleService private readonly _lifecycleService: ILifecycleService,
+		@ITerminalGroupService private readonly _terminalGroupService: ITerminalGroupService,
 	) {
 		super();
 		// Disposals are counted from each instance's own `onDisposed`, not from
@@ -59,6 +62,13 @@ export class ParadisTerminalCountDiagnosticsContribution extends Disposable impl
 
 	private _onCreate(instance: ITerminalInstance): void {
 		this._watchDisposal(instance);
+		// A terminal that reattaches a pty which is already running (the startup revive of other spaces'
+		// terminals, which parks them right away, or the reconnect after a reload) is not a new terminal.
+		// Counting it made ~15-33 revived terminals look like a burst 10 s after every start.
+		if (instance.shellLaunchConfig.attachPersistentProcess) {
+			this._reattachedAt.push(Date.now());
+			return;
+		}
 		if (instance.target === TerminalLocation.Editor) {
 			this._createdEditorAt.push(Date.now());
 		}
@@ -85,6 +95,7 @@ export class ParadisTerminalCountDiagnosticsContribution extends Disposable impl
 		this._prune(this._createdAt, now);
 		this._prune(this._createdEditorAt, now);
 		this._prune(this._disposedAt, now);
+		this._prune(this._reattachedAt, now);
 
 		// Both are the net change: terminals opened and closed again within the window (an agent
 		// launcher, a task run) are neither piling up nor dropping.
@@ -96,9 +107,12 @@ export class ParadisTerminalCountDiagnosticsContribution extends Disposable impl
 		reportParadisDiagnosticError('owned', 'terminal-count', operation,
 			new Error(`Terminal ${operation === 'rapid-growth' ? 'creation' : 'disposal'} rate exceeded threshold`), {
 			safe_total_instances: this._terminalService.instances.length,
+			// Parked terminals (other spaces) are alive but not in `instances`.
+			safe_total_with_parked: paradisCollectAllTerminalInstances(this._terminalService, this._terminalGroupService).length,
 			safe_recent_created_5min: this._createdAt.length,
 			safe_recent_created_editor_5min: this._createdEditorAt.length,
 			safe_recent_disposed_5min: this._disposedAt.length,
+			safe_recent_reattached_5min: this._reattachedAt.length,
 		});
 	}
 

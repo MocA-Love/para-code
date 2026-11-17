@@ -625,9 +625,10 @@ export class ParadisMcpSetupController {
 				return { cli: 'codex', state: 'unconfigured' };
 			}
 			const inspection = inspectParadisCodexMcpToml(snapshot.text, gatewayPort);
-			// 自動セットアップ（setupCodex）は para-browser テーブルを末尾に追記するが、既に別の
-			// mcp_servers テーブルがある等で inspectParadisMcpTomlSection が 'absent' 以外なら
+			// 自動セットアップ（setupCodex）は para-browser テーブルを末尾に追記するが、`[mcp_servers]` そのものや
+			// ドットのキーで書かれている等で inspectParadisMcpTomlSection が 'absent' 以外なら
 			// throw して失敗する。その場合は「押すと必ず失敗するボタン」を出さず手動導線へ誘導する。
+			// ほかの名前の `[mcp_servers.<名前>]` の節だけなら 'absent' なので、自動セットアップできる。
 			const manualOnly = inspection.state === 'unconfigured'
 				&& inspectParadisMcpTomlSection(snapshot.text) !== 'absent';
 			return {
