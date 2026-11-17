@@ -24,6 +24,7 @@ import { isAbsolute, join } from '../../../../base/common/path.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { paradisRedactSecrets } from '../../notificationInbox/common/paradisNotificationInbox.js';
 import { ParadisBrowserSiteStore, paradisLocalDate } from './paradisBrowserSiteStore.js';
+import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 
 const MAX_NOTES_PER_KEY = 20;
 const MAX_NOTE_CHARS = 600;
@@ -33,7 +34,7 @@ export interface IParadisSiteNote {
 	readonly text: string;
 	/** 書いた日（YYYY-MM-DD、利用者の暦）。 */
 	readonly date: string;
-	readonly agent?: 'claude' | 'codex' | 'opencode';
+	readonly agent?: Extract<ParadisAgentKind, 'claude' | 'codex' | 'opencode'>;
 	/** 書いたときのリポジトリの HEAD（短い形）。 */
 	readonly commit?: string;
 }
@@ -81,7 +82,7 @@ export class ParadisSiteNotesStore {
 		return this.store.list(space, origin);
 	}
 
-	write(space: string, origin: string, text: string, meta: { readonly agent?: 'claude' | 'codex' | 'opencode'; readonly commit?: string }): Promise<IParadisSiteNote> {
+	write(space: string, origin: string, text: string, meta: { readonly agent?: Extract<ParadisAgentKind, 'claude' | 'codex' | 'opencode'>; readonly commit?: string }): Promise<IParadisSiteNote> {
 		const note: IParadisSiteNote = {
 			id: generateUuid().slice(0, 8),
 			text: text.trim().slice(0, MAX_NOTE_CHARS),

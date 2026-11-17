@@ -8,13 +8,13 @@
 
 import { PARADIS_OPENCODE_COMMAND, paradisIsOpenCodeResumeCli } from '../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
 import { ParadisHostPath } from '../../../common/paradisHostPath.js';
-import { PARADIS_AGENT_DESCRIPTORS, paradisAgentDescriptor } from '../../agentChat/common/paradisAgentDescriptor.js';
+import { PARADIS_AGENT_DESCRIPTORS, paradisAgentDescriptor, type ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 import { paradisClaudeModelDisplayName } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import { PARADIS_CLAUDE_DEFAULT_PERMISSION_FLAG, PARADIS_CODEX_FULL_AUTO_FLAGS } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 
 export const PARADIS_SESSION_RESUME_CHANNEL = 'paradisSessionResume';
 
-export type ParadisResumeAgent = 'claude' | 'codex' | 'opencode' | 'antigravity';
+export type ParadisResumeAgent = ParadisAgentKind;
 /** What resumes an OpenCode session: `opencode`, or the absolute path of a remembered bridge-capable OpenCode-compatible CLI. */
 export type ParadisResumeCli = string;
 
