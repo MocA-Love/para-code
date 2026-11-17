@@ -5196,7 +5196,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	private async handleShellRequest(mobileId: string, msg: ParadisAgentShellInbound): Promise<void> {
 		const token = this.resolveInboundToken(msg.id, msg.token);
 		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
-		const valid = token !== undefined && tailer !== undefined && tailer.agent === 'claude' && tailer.epoch === msg.epoch && this.hasSubscriber(token, mobileId);
+		const valid = token !== undefined && tailer !== undefined && paradisAgentDescriptor(tailer.agent)?.features.shells === true && tailer.epoch === msg.epoch && this.hasSubscriber(token, mobileId);
 		const remoteShellOutputs = valid && this.canReadRemoteShellOutput(token) ? this.remoteShellOutputs : undefined;
 		await paradisHandleShellRequest(msg, valid ? {
 			// 出力の置き場も mod も、tailer が読んでいる transcript の会話のもの
@@ -5236,7 +5236,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	private resendShellsAccessIfChanged(token: string): void {
 		const tailer = this.tailers.get(token);
 		const terminalId = this.terminalIdForToken(token);
-		if (tailer === undefined || tailer.agent !== 'claude' || terminalId === undefined) {
+		if (tailer === undefined || paradisAgentDescriptor(tailer.agent)?.features.shells !== true || terminalId === undefined) {
 			return;
 		}
 		if (JSON.stringify(this.shellsAccessFor(token, tailer)) !== this.shellsAccessSent.get(token)) {
@@ -5792,7 +5792,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		const owner = token !== undefined ? this.ownerForPane(msg.id, token) : undefined;
 		const key = this.actionKey(mobileId, msg.requestId);
 		const sessionId = session?.sessionId;
-		if (token === undefined || session?.agent !== 'claude' || sessionId === undefined || tailer === undefined || tailer.epoch !== msg.epoch || owner === undefined
+		if (token === undefined || session === undefined || paradisAgentDescriptor(session.agent)?.features.panel !== true || sessionId === undefined || tailer === undefined || tailer.epoch !== msg.epoch || owner === undefined
 			|| !this.hasSubscriber(token, mobileId) || this.pendingActions.has(key) || this.completedActions.has(key) || (!checked && this.dialogChecks.has(key))) {
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-session', message: '操作対象のエージェントセッションが変わりました' }, token ?? msg.token);
 			return;
@@ -5944,7 +5944,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
 		const owner = token !== undefined ? this.ownerForPane(msg.id, token) : undefined;
 		const key = this.actionKey(mobileId, msg.requestId);
-		if (token === undefined || session?.agent !== 'claude' || tailer === undefined || tailer.epoch !== msg.epoch || owner === undefined
+		if (token === undefined || session === undefined || paradisAgentDescriptor(session.agent)?.modelControl !== 'mod-or-keys' || tailer === undefined || tailer.epoch !== msg.epoch || owner === undefined
 			|| !this.hasSubscriber(token, mobileId) || !this.isAgentPrompt(token, tailer) || this.pendingActions.has(key) || this.completedActions.has(key)
 			|| (!dialogChecked && this.dialogChecks.has(key))) {
 			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'not-at-prompt', message: 'Claude Codeが入力待ちの時だけ設定を変更できます' }, token ?? msg.token);
@@ -6111,7 +6111,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * （以後の知らせも送るよう覚える）。`explicit` は差分の応答（無いときも `null` を書く。持ち越させない）。
 	 */
 	private async pcDraftField(mobileId: string, token: string, session: IPaneSessionInfo, explicit: boolean): Promise<{ pcDraft?: IParadisAgentPcDraft | null }> {
-		if (session.agent !== 'claude' || !(await this.mobileHasCapability(mobileId, ParadisMobileCapability.AgentPcDraft).catch(() => false))) {
+		if (paradisAgentDescriptor(session.agent)?.features.pcDraft !== true || !(await this.mobileHasCapability(mobileId, ParadisMobileCapability.AgentPcDraft).catch(() => false))) {
 			this.pcDraftViewers.get(token)?.delete(mobileId);
 			return {};
 		}
@@ -6146,7 +6146,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			const session = this.paneSessions.get(token);
 			const tailer = this.tailers.get(token);
 			const terminalId = this.terminalIdForToken(token);
-			if (session?.agent !== 'claude' || tailer === undefined || terminalId === undefined) {
+			if (session === undefined || paradisAgentDescriptor(session.agent)?.features.pcDraft !== true || tailer === undefined || terminalId === undefined) {
 				return;
 			}
 			const pcDraft = this.currentPcDraft(token, session.sessionId);
@@ -8581,7 +8581,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			live: currentLive !== undefined ? paradisLegacyAgentLive(currentLive) : null,
 			interaction,
 			...(interaction?.kind === 'question' ? { pendingQuestions: tailer.pendingQuestionMessages(interaction.id) } : {}),
-			...(tailer.agent === 'codex' ? { asyncQuestions: tailer.asyncQuestions.pending() } : {}),
+			...(paradisAgentDescriptor(tailer.agent)?.features.asyncQuestions === true ? { asyncQuestions: tailer.asyncQuestions.pending() } : {}),
 			busy: this.activeTurnTokens.has(token) || this.liveStates.has(token),
 			...(this.desktopExitedTokens.has(token) ? { agentExited: true } : {}),
 		};
@@ -11047,7 +11047,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * いれば、動いているものを「中断（推定）」にして送る。時刻は PC の時計で、送信時刻 `workflowsAt` を添える。
 	 */
 	private workflowsField(token: string, tailer: TranscriptTailer, full: boolean): IParadisAgentWorkflowsField {
-		if (tailer.agent !== 'claude' || (tailer.workflows.size === 0 && !this.workflowsSent.has(token))) {
+		if (paradisAgentDescriptor(tailer.agent)?.features.workflows !== true || (tailer.workflows.size === 0 && !this.workflowsSent.has(token))) {
 			return {};
 		}
 		const paneStopped = this.desktopExitedTokens.has(token) || !this.isLiveToken(token);
@@ -11071,7 +11071,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	 */
 	private sessionStatusField(token: string, tailer: TranscriptTailer, full: boolean): { sessionStatus?: IParadisAgentSessionStatus; sessionStatusAt?: number } {
 		// Antigravity CLI の記録からはキャッシュ・コンテキストの数を出せない（アプリも知らない種別の状態は捨てる）
-		if (tailer.agent === 'antigravity') {
+		if (paradisAgentDescriptor(tailer.agent)?.features.sessionStatus === false) {
 			return {};
 		}
 		const status = tailer.sessionStatus.snapshot({
@@ -11104,7 +11104,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	private pushWorkflowsIfChanged(token: string): void {
 		const tailer = this.tailers.get(token);
 		const terminalId = this.terminalIdForToken(token);
-		if (tailer === undefined || tailer.agent !== 'claude' || terminalId === undefined) {
+		if (tailer === undefined || paradisAgentDescriptor(tailer.agent)?.features.workflows !== true || terminalId === undefined) {
 			return;
 		}
 		const field = this.workflowsField(token, tailer, false);
@@ -11143,7 +11143,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	 */
 	private async refreshWorkflows(token: string): Promise<void> {
 		const tailer = this.tailers.get(token);
-		if (tailer === undefined || tailer.agent !== 'claude') {
+		if (tailer === undefined || paradisAgentDescriptor(tailer.agent)?.features.workflows !== true) {
 			return;
 		}
 		let reads = this.workflowReads.get(tailer);
@@ -11199,7 +11199,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * 動いていたメンバーを「止まった（推定）」にする。時刻は PC の時計で、送信時刻 `teamsAt` を添える。
 	 */
 	private teamsField(token: string, tailer: TranscriptTailer, full: boolean): IParadisAgentTeamsField {
-		if (tailer.agent !== 'claude' || (tailer.teams.size === 0 && !this.teamsSent.has(token))) {
+		if (paradisAgentDescriptor(tailer.agent)?.features.teams !== true || (tailer.teams.size === 0 && !this.teamsSent.has(token))) {
 			return {};
 		}
 		const paneStopped = this.desktopExitedTokens.has(token) || !this.isLiveToken(token);
@@ -11219,7 +11219,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	/** チームの一覧が前に送ったものから変わっていれば、空 delta で届ける。 */
 	private pushTeamsIfChanged(token: string): void {
 		const tailer = this.tailers.get(token);
-		if (tailer === undefined || tailer.agent !== 'claude' || (tailer.teams.size === 0 && !this.teamsSent.has(token))) {
+		if (tailer === undefined || paradisAgentDescriptor(tailer.agent)?.features.teams !== true || (tailer.teams.size === 0 && !this.teamsSent.has(token))) {
 			return;
 		}
 		const terminalId = this.terminalIdForToken(token);
@@ -11237,7 +11237,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * 前に送ったものから変わったときだけ載せる。古いアプリは知らない項目として無視する。
 	 */
 	private asyncQuestionsField(token: string, tailer: TranscriptTailer, full: boolean): IParadisAgentAsyncQuestionsField {
-		if (tailer.agent !== 'codex') {
+		if (paradisAgentDescriptor(tailer.agent)?.features.asyncQuestions !== true) {
 			return {};
 		}
 		const signature = `${tailer.epoch}\0${tailer.asyncQuestions.revision}`;
@@ -11255,7 +11255,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	private pushAsyncQuestionsIfChanged(token: string): void {
 		const tailer = this.tailers.get(token);
 		const terminalId = this.terminalIdForToken(token);
-		if (tailer === undefined || tailer.agent !== 'codex' || terminalId === undefined) {
+		if (tailer === undefined || paradisAgentDescriptor(tailer.agent)?.features.asyncQuestions !== true || terminalId === undefined) {
 			return;
 		}
 		const field = this.asyncQuestionsField(token, tailer, false);
@@ -11293,7 +11293,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	 */
 	private async refreshTeams(token: string): Promise<void> {
 		const tailer = this.tailers.get(token);
-		if (tailer === undefined || tailer.agent !== 'claude' || tailer.teams.size === 0) {
+		if (tailer === undefined || paradisAgentDescriptor(tailer.agent)?.features.teams !== true || tailer.teams.size === 0) {
 			return;
 		}
 		let reads = this.teamReads.get(tailer);
