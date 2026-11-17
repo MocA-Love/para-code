@@ -7,16 +7,8 @@ import { Event } from '../../../../base/common/event.js';
 import { getZoomFactor } from '../../../../base/browser/browser.js';
 import { $, addDisposableListener, append, EventType, getWindow, getWindowId, hide, show } from '../../../../base/browser/dom.js';
 import { IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
-// PARA-PATCH: CPU/RAM usage indicator (title bar left side, Superset resource monitor port)
-import { createParadisResourceMonitorWidget } from '../../../../paradis/contrib/resourceMonitor/electron-browser/paradisResourceMonitorWidget.js';
-// PARA-PATCH: AI limits monitor (Claude/Codex rate-limit ring gauges next to the resource monitor)
-import { createParadisLimitsMonitorWidget } from '../../../../paradis/contrib/limitsMonitor/electron-browser/paradisLimitsMonitorWidget.js';
-// PARA-PATCH: Claude/Codex/GitHub service status chips next to the limits monitor
-import { createParadisServiceStatusWidget } from '../../../../paradis/contrib/serviceStatus/electron-browser/paradisServiceStatusWidget.js';
-// PARA-PATCH: local/remote listening-port list (title bar left side, grouped with the other status widgets)
-import { createParadisPortListWidget } from '../../../../paradis/contrib/portList/electron-browser/paradisPortListWidget.js';
-// PARA-PATCH: keep the fork's title bar widgets from overlapping the command center (width steps, menu bar visibility)
-import { createParadisTitlebarFit } from '../../../../paradis/contrib/titlebarFit/browser/paradisTitlebarFit.js';
+// PARA-PATCH: the fork's left-side status widgets (CPU/RAM, AI limits, service status, port list) and the fit that folds them
+import { createParadisTitlebarWidgets } from '../../../../paradis/contrib/titlebarFit/electron-browser/paradisTitlebarWidgets.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IConfigurationService, IConfigurationChangeEvent } from '../../../../platform/configuration/common/configuration.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
@@ -68,16 +60,8 @@ export class NativeTitlebarPart extends BrowserTitlebarPart {
 	private maxRestoreControl: HTMLElement | undefined;
 	private resizer: HTMLElement | undefined;
 
-	// PARA-PATCH: CPU/RAM usage indicator (title bar left side, Superset resource monitor port)
-	private readonly paradisResourceMonitorWidget = this._register(new MutableDisposable<IDisposable>());
-	// PARA-PATCH: AI limits monitor (Claude/Codex rate-limit ring gauges next to the resource monitor)
-	private readonly paradisLimitsMonitorWidget = this._register(new MutableDisposable<IDisposable>());
-	// PARA-PATCH: Claude/Codex/GitHub service status chips next to the limits monitor
-	private readonly paradisServiceStatusWidget = this._register(new MutableDisposable<IDisposable>());
-	// PARA-PATCH: local/remote listening-port list (title bar left side)
-	private readonly paradisPortListWidget = this._register(new MutableDisposable<IDisposable>());
-	// PARA-PATCH: keep the fork's title bar widgets from overlapping the command center
-	private readonly paradisTitlebarFit = this._register(new MutableDisposable<IDisposable>());
+	// PARA-PATCH: the fork's left-side status widgets (see paradisTitlebarWidgets.ts)
+	private readonly paradisTitlebarWidgets = this._register(new MutableDisposable<IDisposable>());
 
 	private cachedWindowControlStyles: { bgColor: string; fgColor: string } | undefined;
 	private cachedWindowControlHeight: number | undefined;
@@ -185,19 +169,7 @@ export class NativeTitlebarPart extends BrowserTitlebarPart {
 		// PARA-PATCH: auxiliary windows show only the title and the window controls, so the left-side
 		// status widgets below go to the main window only
 		if (targetWindowId === mainWindow.vscodeWindowId) {
-			// PARA-PATCH: CPU/RAM usage indicator (title bar left side, Superset resource monitor port)
-			this.paradisResourceMonitorWidget.value = createParadisResourceMonitorWidget(this.instantiationService, this.leftContent);
-			// PARA-PATCH: AI limits monitor (Claude/Codex rate-limit ring gauges next to the resource monitor)
-			this.paradisLimitsMonitorWidget.value = createParadisLimitsMonitorWidget(this.instantiationService, this.leftContent);
-			// PARA-PATCH: Claude/Codex/GitHub service status chips next to the limits monitor
-			this.paradisServiceStatusWidget.value = createParadisServiceStatusWidget(this.instantiationService, this.leftContent);
-
-			// PARA-PATCH: local/remote listening-port list, grouped with the other left-side
-			// status widgets instead of the right side (right side ended up isolated next to
-			// the window controls depending on whether actionToolBarElement existed yet).
-			this.paradisPortListWidget.value = createParadisPortListWidget(this.instantiationService, this.leftContent);
-			// PARA-PATCH: fold the widgets above by the title bar's own width so they never overlap the command center
-			this.paradisTitlebarFit.value = createParadisTitlebarFit(this.rootContainer, this.leftContent);
+			this.paradisTitlebarWidgets.value = createParadisTitlebarWidgets(this.instantiationService, this.rootContainer, this.leftContent);
 		}
 
 		// Native menu controller
