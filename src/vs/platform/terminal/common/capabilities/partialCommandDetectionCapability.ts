@@ -61,6 +61,8 @@ export class PartialCommandDetectionCapability extends DisposableStore implement
 			const marker = this._terminal.registerMarker(0);
 			if (marker) {
 				this._commands.push(marker);
+				// PARA-PATCH: drop the marker once xterm disposes it (trimmed from scrollback); otherwise every Enter without shell integration stays in this array forever
+				marker.onDispose(() => { const index = this._commands.indexOf(marker); if (index !== -1) { this._commands.splice(index, 1); } });
 				this._onCommandFinished.fire(marker);
 			}
 		}

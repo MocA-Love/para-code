@@ -23,9 +23,10 @@ import { createHash } from 'crypto';
 import { localize } from '../../../../nls.js';
 import { IParadisCursorOwner } from '../common/paradisCursorOverlay.js';
 import { PARADIS_CURSOR_LABEL_RATE_LIMIT, PARADIS_CURSOR_LABEL_RATE_WINDOW_MS, ParadisCursorLabelResult, paradisNormalizeCursorLabel } from '../common/paradisCursorLabel.js';
+import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 
 /** ペインで動いている CLI。分からなければ undefined（名前は「エージェント」相当の既定）。 */
-export type ParadisCursorCli = 'claude' | 'codex' | 'opencode' | 'antigravity';
+export type ParadisCursorCli = ParadisAgentKind;
 
 const CLI_NAME: Readonly<Record<ParadisCursorCli, string>> = { claude: 'Claude', codex: 'Codex', opencode: 'OpenCode', antigravity: 'Antigravity' };
 const CLI_MARK: Readonly<Record<ParadisCursorCli, string>> = { claude: 'C', codex: 'X', opencode: 'O', antigravity: 'A' };

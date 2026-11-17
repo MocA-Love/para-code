@@ -138,6 +138,7 @@ export class TerminalInitialHintContribution extends Disposable implements ITerm
 			}
 
 			if (this._xterm.raw.buffer.active.cursorX === 0) {
+				marker.dispose(); // PARA-PATCH: the marker was made above and is not registered yet, so it would leak
 				return;
 			}
 			this._register(marker);

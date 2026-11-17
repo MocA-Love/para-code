@@ -21,6 +21,7 @@ import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
 import { localize } from '../../../../nls.js';
 import { StateType } from '../../../../platform/update/common/update.js';
 import { ParadisKeepTerminalsChoice } from '../../../common/paradisTerminalKeepPlan.js';
+import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 
 /** main がウィンドウへ問い合わせるチャネル（各ウィンドウの renderer が持つ）。 */
 export const PARADIS_UPDATE_TERMINALS_WINDOW_CHANNEL = 'paradisUpdateTerminalsWindow';
@@ -36,7 +37,7 @@ export const PARADIS_UPDATE_MAX_ROWS = 5;
 /** 「この PC の常駐」を表す枠の鍵。接続先は remote authority をそのまま使う。 */
 export const PARADIS_UPDATE_LOCAL_HOST_KEY = 'local';
 
-export type ParadisUpdateTerminalAgent = 'claude' | 'codex' | 'opencode';
+export type ParadisUpdateTerminalAgent = Extract<ParadisAgentKind, 'claude' | 'codex' | 'opencode'>;
 export type ParadisUpdateTerminalAgentState = 'working' | 'permission' | 'question' | 'review';
 
 /**

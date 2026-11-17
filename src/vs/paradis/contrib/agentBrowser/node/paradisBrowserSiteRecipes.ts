@@ -29,6 +29,7 @@ import { paradisParseRunStepsFlow } from './paradisBrowserRunStepsFlow.js';
 import { paradisDevtoolsPathArguments } from './paradisDevtoolsPathPolicy.js';
 import { paradisSiteNoteContainsCardNumber, paradisSiteNoteLooksSecret } from './paradisBrowserSiteNotes.js';
 import { ParadisBrowserSiteStore, paradisLocalDate } from './paradisBrowserSiteStore.js';
+import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 
 const MAX_RECIPES_PER_KEY = 30;
 /** 1 つの手順の大きさ（JSON の文字数）。 */
@@ -55,7 +56,7 @@ export interface IParadisSiteRecipe {
 	readonly doneWhen?: Readonly<Record<string, unknown>>;
 	/** 保存した日（YYYY-MM-DD、利用者の暦）。 */
 	readonly date: string;
-	readonly agent?: 'claude' | 'codex' | 'opencode';
+	readonly agent?: Extract<ParadisAgentKind, 'claude' | 'codex' | 'opencode'>;
 	readonly commit?: string;
 }
 
@@ -180,7 +181,7 @@ function recipeStepsRefusal(steps: readonly unknown[], origin: string): string |
 	return refusal;
 }
 
-export function paradisCheckSiteRecipe(args: Record<string, unknown>, meta: { readonly date: Date; readonly agent?: 'claude' | 'codex' | 'opencode'; readonly commit?: string }, origin: string): { readonly ok: true; readonly recipe: IParadisSiteRecipe } | { readonly ok: false; readonly error: string } {
+export function paradisCheckSiteRecipe(args: Record<string, unknown>, meta: { readonly date: Date; readonly agent?: Extract<ParadisAgentKind, 'claude' | 'codex' | 'opencode'>; readonly commit?: string }, origin: string): { readonly ok: true; readonly recipe: IParadisSiteRecipe } | { readonly ok: false; readonly error: string } {
 	const name = typeof args.name === 'string' ? args.name.trim() : '';
 	if (!NAME_PATTERN.test(name)) {
 		return { ok: false, error: 'save_recipe needs a "name" of letters, digits, "-" or "_" (at most 40 characters), for example "export-orders-csv".' };

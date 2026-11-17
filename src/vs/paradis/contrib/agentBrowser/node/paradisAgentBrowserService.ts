@@ -86,6 +86,7 @@ import { ParadisCursorOwners } from './paradisCursorOwners.js';
 import type { IParadisCursorOwner, IParadisCursorStatusNote } from '../common/paradisCursorOverlay.js';
 import { ParadisCdpUpstream } from './paradisCdpUpstream.js';
 import { IParadisDevtoolsRootsResolution, IParadisProxiedTool, ParadisDevtoolsMcpProxy } from './paradisDevtoolsMcpProxy.js';
+import { ParadisDevtoolsInternalCall } from './paradisDevtoolsCallOrigin.js';
 import { ParadisInputRejectionLog } from './paradisInputRejectionLog.js';
 import { IParadisDevtoolsPathCaller, paradisDevtoolsCaptureOverwriteRefusal, paradisDevtoolsPathArguments, paradisDevtoolsPathDecision, paradisDevtoolsUserTemporaryFolders, paradisDevtoolsVersionControlRealpathRefusal } from './paradisDevtoolsPathPolicy.js';
 // PARA-PATCH: 他のparadis contribがこのMCPサーバーへ自前のツールを足すための拡張点（モバイル端末操作など）
@@ -7046,7 +7047,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				try {
 					// 待っている間に開いたダイアログ（confirm など）を承認しないよう、閉じる側にする。答えないページは
 					// 締め切りで諦める（`paraCodeDeadlineMs`。vendored が知らなければ proxy が外す。q.html Q379 の 4）
-					return await this._callDevtoolsTool(ingressLease, 'evaluate_script', { function: functionSource, ...(uids.length > 0 ? { args: [...uids] } : {}), dialogAction: 'dismiss', ...(deadlineMs !== undefined ? { paraCodeDeadlineMs: deadlineMs } : {}) }, signal);
+					return await this._callDevtoolsTool(ingressLease, 'evaluate_script', { function: functionSource, ...(uids.length > 0 ? { args: [...uids] } : {}), dialogAction: 'dismiss', ...(deadlineMs !== undefined ? { paraCodeDeadlineMs: deadlineMs } : {}) }, signal, true, undefined, 'query');
 				} catch (error) {
 					if (error instanceof ParadisIngressLeaseError || !this.isIngressLeaseCurrent(ingressLease)) {
 						throw new ParadisIngressLeaseError();
@@ -7097,7 +7098,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			},
 			evaluate: async (functionSource, uids, deadlineMs) => {
 				try {
-					return await this._callDevtoolsTool(ingressLease, 'evaluate_script', { function: functionSource, ...(uids.length > 0 ? { args: [...uids] } : {}), dialogAction: 'dismiss', ...(deadlineMs !== undefined ? { paraCodeDeadlineMs: deadlineMs } : {}) }, signal);
+					return await this._callDevtoolsTool(ingressLease, 'evaluate_script', { function: functionSource, ...(uids.length > 0 ? { args: [...uids] } : {}), dialogAction: 'dismiss', ...(deadlineMs !== undefined ? { paraCodeDeadlineMs: deadlineMs } : {}) }, signal, true, undefined, 'query');
 				} catch (error) {
 					if (error instanceof ParadisIngressLeaseError || !this.isIngressLeaseCurrent(ingressLease)) {
 						throw new ParadisIngressLeaseError();
@@ -7126,7 +7127,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			},
 			evaluate: async (functionSource, uids, deadlineMs) => {
 				try {
-					return await this._callDevtoolsTool(ingressLease, 'evaluate_script', { function: functionSource, ...(uids.length > 0 ? { args: [...uids] } : {}), dialogAction: 'dismiss', ...(deadlineMs !== undefined ? { paraCodeDeadlineMs: deadlineMs } : {}) }, signal);
+					return await this._callDevtoolsTool(ingressLease, 'evaluate_script', { function: functionSource, ...(uids.length > 0 ? { args: [...uids] } : {}), dialogAction: 'dismiss', ...(deadlineMs !== undefined ? { paraCodeDeadlineMs: deadlineMs } : {}) }, signal, true, undefined, 'query');
 				} catch (error) {
 					if (error instanceof ParadisIngressLeaseError || !this.isIngressLeaseCurrent(ingressLease)) {
 						throw new ParadisIngressLeaseError();
@@ -7339,9 +7340,9 @@ export class ParadisAgentBrowserService extends Disposable {
 
 	/** ツール呼び出しを内蔵chrome-devtools-mcpへ転送する（転送対象外の名前は -32602）。 */
 	/**
-	 * @param internal Para Code 自身の見張りの呼び出し（失敗をエージェントの道具の失敗とは別の名前で報告する。q.html Q462 の D1）。
+	 * @param internal Para Code 自身の見張り（`observe`）や、道具の中で要素を探す・読む評価（`query`）の呼び出し（失敗をエージェントの道具の失敗とは別の名前で報告する。q.html Q462 の D1）。
 	 */
-	private async _callDevtoolsTool(ingressLease: IParadisAgentBrowserIngressLease, name: string, args: unknown, signal?: AbortSignal, offerScreenshotHandoff: boolean = true, snapshotDiff?: ParadisSnapshotDiffMode, internal?: 'observe'): Promise<unknown> {
+	private async _callDevtoolsTool(ingressLease: IParadisAgentBrowserIngressLease, name: string, args: unknown, signal?: AbortSignal, offerScreenshotHandoff: boolean = true, snapshotDiff?: ParadisSnapshotDiffMode, internal?: ParadisDevtoolsInternalCall): Promise<unknown> {
 		this._requireIngressLease(ingressLease);
 		// 子プロセスと世代はタブのスコープキーごと（tab_id を解決していなければペインのトークン）。別のタブの
 		// 子プロセスは別なので、別のタブへの呼び出しは並行に走る

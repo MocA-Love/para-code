@@ -23,6 +23,8 @@ const MAX_URL = 200;
 interface IInflight {
 	readonly startedAt: number;
 	readonly url: string;
+	/** 文書（ページ・iframe の本体）の要求。 */
+	readonly document: boolean;
 	/** その要求の始まりを見た接続（同じタブを 2 本の接続が見ていれば両方）。全部閉じたら台帳から外す。 */
 	readonly connections: Set<object>;
 	/** 最後に応答・データを受け取った時刻。静かな時間は、数えなかった長く続く要求の受信では戻さない。 */
@@ -37,6 +39,8 @@ export interface IParadisNetworkActivitySnapshot {
 	readonly quietMs: number | undefined;
 	/** 終わっていない要求の URL（先頭のいくつか）。 */
 	readonly pendingUrls: readonly string[];
+	/** 終わっていない要求のうち、文書（`Network.requestWillBeSent` の `type` が `Document`）の数。 */
+	readonly documents?: number;
 	/** 数えなかった長く続く要求（ストリーミング・ロングポーリング）。 */
 	readonly longLived: number;
 }
@@ -66,7 +70,7 @@ export class ParadisNetworkActivity {
 						this._inflight.delete(this._inflight.keys().next().value!);
 					}
 					const url = (params as { request?: { url?: unknown } }).request?.url;
-					this._inflight.set(key, { startedAt: this._lastActivityAt, url: typeof url === 'string' ? url.slice(0, MAX_URL) : '', connections: new Set([connection]) });
+					this._inflight.set(key, { startedAt: this._lastActivityAt, url: typeof url === 'string' ? url.slice(0, MAX_URL) : '', document: (params as { type?: unknown }).type === 'Document', connections: new Set([connection]) });
 				}
 				return;
 			}
@@ -114,6 +118,7 @@ export class ParadisNetworkActivity {
 		const now = this._now();
 		let inflight = 0;
 		let longLived = 0;
+		let documents = 0;
 		let lastActivityAt = this._lastActivityAt;
 		const pendingUrls: string[] = [];
 		for (const entry of this._inflight.values()) {
@@ -122,6 +127,9 @@ export class ParadisNetworkActivity {
 				continue;
 			}
 			inflight++;
+			if (entry.document) {
+				documents++;
+			}
 			if (entry.lastDataAt !== undefined && (lastActivityAt === undefined || entry.lastDataAt > lastActivityAt)) {
 				lastActivityAt = entry.lastDataAt;
 			}
@@ -129,7 +137,7 @@ export class ParadisNetworkActivity {
 				pendingUrls.push(entry.url);
 			}
 		}
-		return { inflight, quietMs: lastActivityAt === undefined ? undefined : now - lastActivityAt, pendingUrls, longLived };
+		return { inflight, quietMs: lastActivityAt === undefined ? undefined : now - lastActivityAt, pendingUrls, longLived, documents };
 	}
 }
 

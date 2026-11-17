@@ -11,12 +11,19 @@
 // サービスは、エージェントが呼んだ道具（wait_until など）と、Para Code 自身の見張り（操作の前後の観測）かどうかを
 // tryCallTool に渡す。道具の結果は変えない。
 
+/** Para Code が道具の中で使う呼び出しの種類。 */
+export type ParadisDevtoolsInternalCall = 'observe' | 'query';
+
 /** 呼び出しの由来。 */
 export interface IParadisDevtoolsCallOrigin {
 	/** エージェントが呼んだ道具の名前。 */
 	readonly agentTool?: string;
-	/** Para Code 自身の見張り（操作の前後の観測）の呼び出し。エージェントには結果が届かない。 */
-	readonly internal?: 'observe';
+	/**
+	 * Para Code が道具の中で使う呼び出し。`observe` は見張り（操作の前後の観測）で、エージェントには結果が届かない。
+	 * `query` は wait_until・get_text・click_by・capture_screenshot などが要素を探す・読むための評価で、
+	 * 失敗はその道具が受け取って解釈する（wait_until は答えないページを待ち直す）。
+	 */
+	readonly internal?: ParadisDevtoolsInternalCall;
 }
 
 /** Sentry へ載せてよい道具の名前の形（エージェントが渡した名前をそのまま送らない）。 */

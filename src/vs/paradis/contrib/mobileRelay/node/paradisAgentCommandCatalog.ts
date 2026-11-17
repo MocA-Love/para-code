@@ -10,8 +10,9 @@ import { promises as fs } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, extname, join, resolve } from '../../../../base/common/path.js';
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../agentBrowser/node/paradisAgentHome.js';
+import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 
-type ParadisCommandAgentKind = 'claude' | 'codex';
+type ParadisCommandAgentKind = Extract<ParadisAgentKind, 'claude' | 'codex'>;
 
 /** 新しいアプリ（`agent.commands.v2`）へ返す上限。Claude Code は skill だけで数百件になる（2.1.289 の実測で 338 件）。 */
 export const PARADIS_AGENT_COMMAND_CATALOG_MAX_ITEMS = 500;

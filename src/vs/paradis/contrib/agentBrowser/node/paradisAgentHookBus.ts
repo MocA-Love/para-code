@@ -16,12 +16,13 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { paradisBackgroundTaskCounts } from '../common/paradisAgentStatusStale.js';
 import { paradisRedactToolInputSecrets } from '../common/paradisBrowserPageOps.js';
+import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 
 /** notify.sh (v2) がPOSTするhook JSONから抽出した、1回のhook発火の内容。 */
 export interface IParadisAgentHookEvent {
 	/** ペイントークン（PARA_CODE_TERMINAL_PANE_ID）。ターミナルペインの識別子。 */
 	readonly token: string;
-	readonly agentKind?: 'claude' | 'codex' | 'opencode' | 'antigravity';
+	readonly agentKind?: ParadisAgentKind;
 	readonly cli?: string;
 	/** OpenCode の会話を再開できない（確かめられなかった互換 CLI の会話）。 */
 	readonly resumable?: false;
@@ -132,7 +133,7 @@ export const onParadisAgentHookEvent: Event<IParadisAgentHookEvent> = emitter.ev
  */
 export interface IParadisAgentNestedHookEvent extends IParadisAgentHookEvent {
 	/** 子エージェントの種別（プロセスコマンドライン由来。不明なら undefined）。 */
-	readonly nestedAgent: 'claude' | 'codex' | 'opencode' | 'antigravity' | undefined;
+	readonly nestedAgent: ParadisAgentKind | undefined;
 	/**
 	 * Claude Code の daemon の配下で動く会話（`/fork` の分岐先・`claude --bg`）の hook。daemon を最初に起こした
 	 * ペインの token を持って届くが、そのペインの子エージェントではない。transcript を「どのペインの会話でもない」

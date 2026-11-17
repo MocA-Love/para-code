@@ -19,6 +19,7 @@
 
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ParadisAgentStatus } from './paradisAgentBrowser.js';
+import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 
 /**
  * MCPの `tools/list` が返すツール1件の定義。JSON Schema をそのまま載せるため
@@ -163,7 +164,7 @@ export interface IParadisMcpPaneTab {
 
 /** ペインのエージェントのカーソルの名前の元。 */
 export interface IParadisMcpCursorIdentity {
-	readonly cli?: 'claude' | 'codex' | 'opencode' | 'antigravity';
+	readonly cli?: ParadisAgentKind;
 	readonly label?: string;
 }
 

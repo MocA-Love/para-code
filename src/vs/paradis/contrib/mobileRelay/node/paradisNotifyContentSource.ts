@@ -12,6 +12,7 @@ import { IParadisAgentHookEvent, onParadisAgentHookEvent } from '../../agentBrow
 import { NotifyKind } from '../common/paradisMobileProtocol.js';
 import { ParadisNotifyCategory, paradisNormalizeNotifyErrorCode } from '../common/paradisNotifyCompose.js';
 import { IParadisNotifyPromptOrigin } from '../common/paradisNotifyDismissLedger.js';
+import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 
 /**
  * 通知の中身（最後の発言・失敗の理由・承認の中身・質問文）の出どころ（shared process）。
@@ -72,7 +73,7 @@ export interface IParadisNotifyHookQuestion {
 
 /** tailer から引けるペインの様子（`ParadisMobileAgentChat.notifyPaneContent`）。 */
 export interface IParadisNotifyPaneContent {
-	readonly agent?: 'claude' | 'codex' | 'opencode' | 'antigravity';
+	readonly agent?: ParadisAgentKind;
 	/** 最後のエージェントの発言（思考は除く）。 */
 	readonly lastAssistant?: { readonly text: string; readonly isError: boolean; readonly at?: number };
 	/** transcript で見たターンの終わり（Codex の usage limit などは hook が無く、ここだけが知っている）。 */

@@ -9,6 +9,7 @@
 import { promises as fs } from 'fs';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
+import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 
 /**
  * ディスクへ永続化するエージェントセッション1件。ペイントークン（terminalKey由来のUUID、
@@ -16,7 +17,7 @@ import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js'
  */
 export interface IParadisPersistedAgentSession {
 	readonly token: string;
-	readonly agent: 'claude' | 'codex' | 'opencode' | 'antigravity';
+	readonly agent: ParadisAgentKind;
 	readonly transcriptPath: string;
 	readonly sessionId?: string;
 	/** 保存時刻（ms）。TTL失効の判定に使う。 */
