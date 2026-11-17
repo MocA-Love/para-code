@@ -1102,6 +1102,11 @@ export interface IParadisAgentStatusSnapshot {
 	readonly agentHookTokens: readonly string[];
 	/** 各ペインで動いている会話。古い shared process は送らないので省略可能にしてある。 */
 	readonly paneSessions?: readonly IParadisAgentPaneSession[];
+	/**
+	 * Antigravity CLI が動いているペインと、その会話の ID。`paneSessions`（再開の案内・休止・引き継ぎが読む）には載せず、
+	 * 「その会話が今ターミナルで開いているか」の判定だけが読む。
+	 */
+	readonly antigravityPaneSessions?: readonly { readonly token: string; readonly sessionId: string }[];
 	/** Para Code が覚えた OpenCode 互換 CLI のコマンド（タブ名の判定に使う）。無ければ `opencode` だけ。 */
 	readonly openCodeCommands?: readonly string[];
 	/**

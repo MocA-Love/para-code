@@ -47,7 +47,7 @@ import { paradisSendAgentMessageToTui } from '../common/paradisAgentMessageSende
 import { paradisStripTerminalControlCharacters } from '../../../common/paradisTerminalControlCharacters.js';
 import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
 import { paradisCanPasteMultiline, paradisTerminalRunsAgent } from '../../agentIde/browser/paradisAgentIdeTerminalInput.js';
-import { IParadisResumeLedgerEntry, PARADIS_AGENT_RESUME_PROMPT_LIMIT, PARADIS_AGENT_SESSION_KEY_PATTERN, PARADIS_AGENT_SESSIONS_PAGE_LIMIT, paradisAgentSessionKey, paradisClipAgentSessionText, paradisMobileAgentSessionMatches, paradisMobileAgentSessionView, paradisRecordResumeRequest, paradisResumedSessionOfCommand, paradisResumeRequestVerdict } from '../common/paradisMobileAgentResume.js';
+import { IParadisResumeLedgerEntry, PARADIS_AGENT_RESUME_PROMPT_LIMIT, PARADIS_AGENT_SESSION_KEY_PATTERN, PARADIS_AGENT_SESSIONS_PAGE_LIMIT, paradisAgentSessionKey, paradisClipAgentSessionText, paradisMobileAgentSessionMatches, paradisMobileAgentSessionView, paradisRecordResumeRequest, paradisLiveSessionTerminalKeys, paradisResumeRequestVerdict } from '../common/paradisMobileAgentResume.js';
 import { registerParadisMobileRequestHandler } from './paradisMobileRequestHandlers.js';
 
 /** 再開の依頼の台帳（PC の再起動をまたいで同じ依頼を二度実行しないため）。 */
@@ -140,33 +140,35 @@ function collectTools(accessor: ServicesAccessor): IAgentSessionTools {
 
 /**
  * 今ターミナルで動いている会話（指紋 → そのターミナルのキー）。3 つの手がかりを合わせる（レビュー M6）:
- * - hook が報告した各ペインの会話（状態のスナップショットの `paneSessions`）
+ * - hook が報告した各ペインの会話（状態のスナップショットの `paneSessions` と、Antigravity CLI の `antigravityPaneSessions`）
  * - 各ターミナルのシェル統合が記録している実行中のコマンド（`claude --resume <id>` / `codex resume <id>`）
  * - このウィンドウがスマホから再開した直後の会話（hook も届いていない数分の間。レビュー H1）
  */
 function liveSessionTerminals(tools: IAgentSessionTools): Map<string, string> {
 	let paneSessions: readonly IParadisAgentPaneSession[] = [];
-	tools.snapshotService.subscribe(outcome => { paneSessions = outcome.snapshot?.paneSessions ?? paneSessions; }).dispose();
-	const result = new Map<string, string>();
-	for (const session of paneSessions) {
-		const instanceId = tools.paneTokenService.getInstanceForToken(session.token);
-		const terminalKey = instanceId !== undefined ? tools.identityService.getTerminalKey(instanceId) : undefined;
-		if (terminalKey !== undefined) {
-			result.set(paradisAgentSessionKey(session.agent, session.sessionId), terminalKey);
-		}
-	}
+	let antigravityPaneSessions: readonly { readonly token: string; readonly sessionId: string }[] = [];
+	tools.snapshotService.subscribe(outcome => {
+		paneSessions = outcome.snapshot?.paneSessions ?? paneSessions;
+		antigravityPaneSessions = outcome.snapshot?.antigravityPaneSessions ?? antigravityPaneSessions;
+	}).dispose();
 	const instances = paradisCollectAllTerminalInstances(tools.terminalService, tools.terminalGroupService).filter(instance => !instance.isDisposed);
-	for (const instance of instances) {
-		const executing = instance.capabilities.get(TerminalCapability.CommandDetection)?.executingCommand;
-		const resumed = executing !== undefined ? paradisResumedSessionOfCommand(executing) : undefined;
-		const terminalKey = resumed !== undefined ? tools.identityService.getTerminalKey(instance.instanceId) : undefined;
-		if (resumed !== undefined && terminalKey !== undefined) {
-			const key = paradisAgentSessionKey(resumed.agent, resumed.sessionId);
-			if (!result.has(key)) {
-				result.set(key, terminalKey);
-			}
-		}
-	}
+	const result = paradisLiveSessionTerminalKeys({
+		paneSessions,
+		antigravityPaneSessions,
+		terminalKeyOfPane: token => {
+			const instanceId = tools.paneTokenService.getInstanceForToken(token);
+			return instanceId !== undefined ? tools.identityService.getTerminalKey(instanceId) : undefined;
+		},
+		paneAtShellPrompt: token => {
+			const instanceId = tools.paneTokenService.getInstanceForToken(token);
+			const detection = instances.find(instance => instance.instanceId === instanceId)?.capabilities.get(TerminalCapability.CommandDetection);
+			return detection !== undefined && detection.executingCommand === undefined;
+		},
+		executing: instances.flatMap(instance => {
+			const commandLine = instance.capabilities.get(TerminalCapability.CommandDetection)?.executingCommand;
+			return commandLine !== undefined ? [{ commandLine, terminalKey: () => tools.identityService.getTerminalKey(instance.instanceId) }] : [];
+		}),
+	});
 	const now = Date.now();
 	for (const [key, recent] of recentResumes) {
 		const alive = instances.some(instance => instance.instanceId === recent.instanceId);

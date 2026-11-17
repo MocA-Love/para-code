@@ -129,6 +129,49 @@ export function paradisResumeRequestVerdict(previous: IParadisResumeLedgerEntry 
 	return 'duplicate';
 }
 
+/** {@link paradisLiveSessionTerminalKeys} が見る、今のターミナルの様子。 */
+export interface IParadisLiveSessionSources {
+	/** hook が報告した各ペインの会話（状態のスナップショットの `paneSessions`）。 */
+	readonly paneSessions: readonly { readonly token: string; readonly agent: ParadisResumeAgent; readonly sessionId: string }[];
+	/** Antigravity CLI が動いているペインの会話（状態のスナップショットの `antigravityPaneSessions`）。 */
+	readonly antigravityPaneSessions: readonly { readonly token: string; readonly sessionId: string }[];
+	/** ペインのターミナルのキー。ターミナルがもう無ければ undefined。 */
+	terminalKeyOfPane(token: string): string | undefined;
+	/**
+	 * ペインのシェルがコマンドを実行していない（プロンプトに戻っている）と分かるか。agy は終わりを hook で知らせないので、
+	 * Antigravity CLI のペインはこれで終わりを見る。シェル統合が無く分からないときは false。
+	 */
+	paneAtShellPrompt(token: string): boolean;
+	/** 各ターミナルで実行中のコマンド（シェル統合の記録）と、そのターミナルのキー。 */
+	readonly executing: readonly { readonly commandLine: string; terminalKey(): string | undefined }[];
+}
+
+/**
+ * 今ターミナルで動いている会話（指紋 → そのターミナルのキー）。hook が報告した会話を先に、実行中のコマンド
+ * （{@link paradisResumedSessionOfCommand}）を後に見る（同じ会話は先に見つけたターミナルを使う）。
+ */
+export function paradisLiveSessionTerminalKeys(sources: IParadisLiveSessionSources): Map<string, string> {
+	const result = new Map<string, string>();
+	const antigravity = sources.antigravityPaneSessions.filter(session => !sources.paneAtShellPrompt(session.token)).map(session => ({ ...session, agent: 'antigravity' as const }));
+	for (const session of [...sources.paneSessions, ...antigravity]) {
+		const terminalKey = sources.terminalKeyOfPane(session.token);
+		if (terminalKey !== undefined) {
+			result.set(paradisAgentSessionKey(session.agent, session.sessionId), terminalKey);
+		}
+	}
+	for (const entry of sources.executing) {
+		const resumed = paradisResumedSessionOfCommand(entry.commandLine);
+		const terminalKey = resumed !== undefined ? entry.terminalKey() : undefined;
+		if (resumed !== undefined && terminalKey !== undefined) {
+			const key = paradisAgentSessionKey(resumed.agent, resumed.sessionId);
+			if (!result.has(key)) {
+				result.set(key, terminalKey);
+			}
+		}
+	}
+	return result;
+}
+
 /** 台帳に入れる（同じ id の古い記録・期限を過ぎたもの・上限を超えたものを捨てる）。 */
 export function paradisRecordResumeRequest(ledger: readonly IParadisResumeLedgerEntry[], entry: IParadisResumeLedgerEntry, now: number): IParadisResumeLedgerEntry[] {
 	return [...ledger.filter(item => item.id !== entry.id && now - item.at < RESUME_LEDGER_TTL_MS), entry].slice(-RESUME_LEDGER_LIMIT);

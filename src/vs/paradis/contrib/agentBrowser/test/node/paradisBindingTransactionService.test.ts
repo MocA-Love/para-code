@@ -110,6 +110,7 @@ function createFixture(): {
 		_announcedReviews: new Map<string, { turn: number; certain: boolean }>(),
 		_paneSessions: new Map(),
 		_paneCursorAgents: new Map(),
+		_antigravityPaneSessions: new Map(),
 		_activityApprovalTokens: new Set(),
 		_elicitationWaits: new Map(),
 		_awaitingUserTokens: new Set<string>(),

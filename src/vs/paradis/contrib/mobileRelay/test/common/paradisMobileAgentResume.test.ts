@@ -11,7 +11,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { IParadisResumeSession, paradisAgentResumeCommandLine } from '../../../sessionResume/common/paradisSessionResume.js';
 import { PARADIS_AGENT_APPROVAL_OPTIONS_CAPABILITY } from '../../common/paradisAgentApprovalOptions.js';
 import { ParadisMobileCapability, PARADIS_MOBILE_PC_CAPABILITIES } from '../../common/paradisMobileCompat.js';
-import { PARADIS_AGENT_RESUME_CAPABILITY, PARADIS_AGENT_SESSION_KEY_PATTERN, paradisAgentSessionKey, paradisMobileAgentSessionMatches, paradisMobileAgentSessionView, PARADIS_RESUME_STALE_START_MS, paradisRecordResumeRequest, paradisResumedSessionOfCommand, paradisResumeRequestVerdict } from '../../common/paradisMobileAgentResume.js';
+import { PARADIS_AGENT_RESUME_CAPABILITY, PARADIS_AGENT_SESSION_KEY_PATTERN, paradisAgentSessionKey, paradisLiveSessionTerminalKeys, paradisMobileAgentSessionMatches, paradisMobileAgentSessionView, PARADIS_RESUME_STALE_START_MS, paradisRecordResumeRequest, paradisResumedSessionOfCommand, paradisResumeRequestVerdict } from '../../common/paradisMobileAgentResume.js';
 
 suite('paradisMobileAgentResume (W2-29)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -139,6 +139,39 @@ suite('paradisMobileAgentResume (W2-29)', () => {
 			startedLongAgo: 'run',
 			startedWithTerminal: 'duplicate',
 			resumed: 'duplicate',
+		});
+	});
+
+	test('finds the terminal that already runs a conversation, from the pane hooks or from the running command', () => {
+		const conversation = '00000000-0000-4000-8000-00000000a6f1';
+		const key = paradisAgentSessionKey('antigravity', conversation);
+		const live = (sources: { readonly hookPane?: string; readonly command?: string; readonly paneClosed?: boolean; readonly atPrompt?: boolean }) => paradisLiveSessionTerminalKeys({
+			paneSessions: [{ token: 'pane-claude', agent: 'claude', sessionId: 'claude-1' }],
+			antigravityPaneSessions: sources.hookPane !== undefined ? [{ token: sources.hookPane, sessionId: conversation }] : [],
+			terminalKeyOfPane: token => sources.paneClosed === true && token !== 'pane-claude' ? undefined : `terminal-of-${token}`,
+			paneAtShellPrompt: () => sources.atPrompt === true,
+			executing: sources.command !== undefined ? [{ commandLine: sources.command, terminalKey: () => 'terminal-of-command' }] : [],
+		}).get(key);
+		assert.deepStrictEqual({
+			// 素の `agy` で始めたペイン: 実行中のコマンドに会話の ID は無く、hook の報告だけが手がかり
+			plainAgy: live({ hookPane: 'pane-agy', command: 'agy' }),
+			// `agy --conversation` で始めた直後（hook が届く前）
+			resumedBeforeHooks: live({ command: `agy --conversation ${conversation}` }),
+			// 両方ある（hook が報告したペインを使う）
+			resumedWithHooks: live({ hookPane: 'pane-agy', command: `agy --conversation ${conversation}` }),
+			// ターミナルを閉じた・agy が終わってシェルに戻った（agy は終わりを hook で知らせない）
+			closedPane: live({ hookPane: 'pane-agy', paneClosed: true }),
+			backAtPrompt: live({ hookPane: 'pane-agy', atPrompt: true }),
+			otherCommand: live({ command: 'ls' }),
+			otherKindsStay: paradisLiveSessionTerminalKeys({ paneSessions: [{ token: 'pane-claude', agent: 'claude', sessionId: 'claude-1' }], antigravityPaneSessions: [], terminalKeyOfPane: token => `terminal-of-${token}`, paneAtShellPrompt: () => true, executing: [] }).get(paradisAgentSessionKey('claude', 'claude-1')),
+		}, {
+			plainAgy: 'terminal-of-pane-agy',
+			resumedBeforeHooks: 'terminal-of-command',
+			resumedWithHooks: 'terminal-of-pane-agy',
+			closedPane: undefined,
+			backAtPrompt: undefined,
+			otherCommand: undefined,
+			otherKindsStay: 'terminal-of-pane-claude',
 		});
 	});
 });
