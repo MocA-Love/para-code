@@ -308,7 +308,8 @@ export class MarkNavigationAddon extends Disposable implements IMarkTracker, ITe
 			}
 			for (let i = 0; i < decorationCount; i++) {
 				const decoration = this._terminal.registerDecoration({
-					marker: this._createMarkerForOffset(startLine, i)
+					// PARA-PATCH: dispose the per-line marker with the guide; startLine is a number, so every marker here is new and otherwise leaks on each hover
+					marker: store.add(this._createMarkerForOffset(startLine, i))
 				});
 				if (decoration) {
 					store.add(decoration);
@@ -369,7 +370,8 @@ export class MarkNavigationAddon extends Disposable implements IMarkTracker, ITe
 						element.classList.add('terminal-range-highlight');
 					}
 				});
-				decoration.onDispose(() => { this._navigationDecorations = this._navigationDecorations?.filter(d => d !== decoration); });
+				// PARA-PATCH: also dispose the per-line marker; xterm leaves a decoration's marker alive and every marker here is new
+				decoration.onDispose(() => { this._navigationDecorations = this._navigationDecorations?.filter(d => d !== decoration); decoration.marker.dispose(); });
 			}
 		}
 	}
@@ -412,7 +414,8 @@ export class MarkNavigationAddon extends Disposable implements IMarkTracker, ITe
 					}
 				});
 				// TODO: This is not efficient for a large decorationCount
-				decoration.onDispose(() => { this._navigationDecorations = this._navigationDecorations?.filter(d => d !== decoration); });
+				// PARA-PATCH: also dispose the per-line marker, but never the caller's marker that offset 0 reuses
+				decoration.onDispose(() => { this._navigationDecorations = this._navigationDecorations?.filter(d => d !== decoration); if (decoration.marker !== marker) { decoration.marker.dispose(); } });
 				// Number picked to align with symbol highlight in the editor
 				if (showOutline) {
 					timeout(350).then(() => {
