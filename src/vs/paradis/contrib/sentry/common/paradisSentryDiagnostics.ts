@@ -610,18 +610,35 @@ export function markParadisErrorOrigin(error: unknown, origin: ParadisErrorOrigi
 	}
 }
 
+const errorGroupKeys = new WeakMap<object, string>();
+
+/**
+ * Gives `error` its own grouping key, sent as the `para.group_key` tag and appended to the fingerprint
+ * (see `paradisSentryFingerprint`). For reports whose frames do not tell causes apart in a packaged
+ * build: there every frame is in one bundle with a minified function name, so all window hangs shared
+ * one issue. The key must carry no content (a hash). A primitive cannot be marked.
+ */
+export function markParadisErrorGroupKey(error: unknown, groupKey: string): void {
+	if (typeof error === 'object' && error !== null) {
+		errorGroupKeys.set(error, groupKey);
+	}
+}
+
 /**
  * Tags every process adapter attaches to an explicit report. `para.error_message_hash` only joins the
- * grouping key when the event has no frames (see `paradisSentryFingerprint`); `para.origin` always does.
+ * grouping key when the event has no frames (see `paradisSentryFingerprint`); `para.origin` and
+ * `para.group_key` always do.
  */
 export function paradisSafeErrorTags(error: unknown): Record<string, string> {
 	const messageHash = paradisErrorMessageHash(error);
 	const mark = typeof error === 'object' && error !== null ? errorOrigins.get(error) : undefined;
+	const groupKey = typeof error === 'object' && error !== null ? errorGroupKeys.get(error) : undefined;
 	return {
 		'para.error_name': paradisSafeErrorName(error),
 		...(messageHash !== undefined ? { 'para.error_message_hash': messageHash } : {}),
 		...(mark !== undefined ? { 'para.origin': mark.origin } : {}),
 		...(mark?.extensionId !== undefined ? { 'para.extension_id': mark.extensionId } : {}),
+		...(groupKey !== undefined ? { 'para.group_key': groupKey } : {}),
 	};
 }
 

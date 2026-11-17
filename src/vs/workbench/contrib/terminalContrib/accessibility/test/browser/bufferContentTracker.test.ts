@@ -148,6 +148,16 @@ suite('Buffer Content Tracker', () => {
 		assert.strictEqual(bufferTracker.lines.length, expected.length);
 		assert.deepStrictEqual(bufferTracker.lines, expected);
 	});
+	// PARA-PATCH: every update registered a new marker and kept the old ones alive
+	test('repeated updates should not add markers', async () => {
+		await writeP(xterm.raw, prompt);
+		bufferTracker.update();
+		const markerCount = xterm.raw.markers.length;
+		for (let i = 0; i < 5; i++) {
+			bufferTracker.update();
+		}
+		assert.strictEqual(xterm.raw.markers.length, markerCount);
+	});
 });
 
 async function writeAndAssertBufferState(data: string, rows: number, terminal: Terminal, bufferTracker: BufferContentTracker): Promise<void> {

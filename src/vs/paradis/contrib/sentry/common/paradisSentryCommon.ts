@@ -262,6 +262,8 @@ export function paradisSentryFingerprint(event: IParadisSentryEvent): string {
 	// Errors relayed from the extension host (`para.origin`) get their own issues, apart from the
 	// workbench's own errors that happen to leave the same frames behind.
 	const origin = event.tags?.['para.origin'];
+	// A key the reporter computed from what the frames cannot tell apart (`markParadisErrorGroupKey`).
+	const groupKey = event.tags?.['para.group_key'];
 	return [
 		event.tags?.['para.scope'] ?? 'unknown',
 		event.tags?.['para.feature'] ?? 'unknown',
@@ -272,6 +274,7 @@ export function paradisSentryFingerprint(event: IParadisSentryEvent): string {
 		...(errorName !== undefined ? [errorName] : []),
 		...(messageHash !== undefined ? [messageHash] : []),
 		...(origin !== undefined ? [origin] : []),
+		...(groupKey !== undefined ? [groupKey] : []),
 	].map(value => paradisSanitizeSentryText(String(value))).join('|');
 }
 

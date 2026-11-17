@@ -137,7 +137,7 @@ export interface IParadisObserveHost {
 	/** take_snapshot を呼ぶ（observe: snapshot）。 */
 	snapshot(): Promise<unknown>;
 	/** ペインの通信の様子（終わっていない要求の数と、最後の出入りからの経過）。 */
-	network(actionStartedAt: number): { readonly inflight: number; readonly quietMs: number | undefined } | undefined;
+	network(actionStartedAt: number): { readonly inflight: number; readonly quietMs: number | undefined; readonly documents?: number } | undefined;
 	/** エージェントが使えるタブ（I1）。取れなければ undefined。 */
 	tabs(): Promise<readonly { readonly tabId: string; readonly url: string; readonly title: string; readonly current: boolean; readonly shared: boolean }[] | undefined>;
 	/** ダウンロードの保存先の中のファイル（名前 → 大きさ）。取れなければ undefined。 */
@@ -203,6 +203,8 @@ interface ISettled extends ISettledHead {
 	readonly navigated: boolean;
 	readonly dialog?: string;
 	readonly unresponsive?: 'noDialog' | 'unchecked';
+	/** 遷移の直後で新しい文書が読みに答えないまま待ち終えた（変化は読まない）。 */
+	readonly loadingNoAnswer?: true;
 }
 
 interface ICollected {
@@ -279,7 +281,7 @@ export class ParadisBrowserObserver {
 		let pages = paradisParseListPages(await host.listPages().catch(() => undefined));
 		// 記録を始められたときだけページを読む（ダイアログ・未対応の vendored・評価の失敗では読まない）
 		if (options.settle && before.installed && pages?.dialog === undefined) {
-			const settled = await this._settle(host, before.name, settleMs, before.actionStartedAt);
+			const settled = await this._settle(host, before.name, before.url, settleMs, before.actionStartedAt);
 			if (settleMs > 0) {
 				// 実際に待った結末を数える（待ちを 0 にした呼び出しは noteObserved が数える）
 				// 上限まで待ったときだけ timeout と、そのとき落ち着いていなかった理由を数える（評価の失敗・取り消しで
@@ -292,6 +294,9 @@ export class ParadisBrowserObserver {
 				// 変化を読む評価も同じように止まるので読まない
 				const dialogNote = settled.unresponsive === 'noDialog' ? 'No JavaScript dialog is open.' : 'Para Code could not check whether a JavaScript dialog is open (list_pages did not answer); call list_pages to check.';
 				parts.push(`[Page after the action] The page did not answer for ${UNRESPONSIVE_MS / 1000} s after the action (it may be busy running scripts or loading); Para Code stopped waiting and did not read the changes. ${dialogNote} Check the page with take_snapshot or wait_until once it responds.`);
+			} else if (settled.loadingNoAnswer) {
+				// 新しい文書がまだ答えないので、変化を読む評価も 3 秒待たされる。読まずに読み込み中と伝える
+				parts.push(`${settleHead(settled)} A new document is loading and did not answer yet; check it with wait_until or take_snapshot.`);
 			} else if (observe === 'snapshot') {
 				parts.push(`${settleHead(settled)} Page snapshot:`);
 				const snapshot = await host.snapshot().catch(() => undefined);
@@ -343,9 +348,11 @@ export class ParadisBrowserObserver {
 	 * ページの中では待たず、{@link POLL_MS} ごとに記録を読む。読むのは待たない評価（vendored の PARA-PATCH
 	 * `paraCodeObserve`）で、ダイアログが開いていれば断られる（閉じない）。
 	 */
-	private async _settle(host: IParadisObserveHost, name: string, settleMs: number, actionStartedAt: number): Promise<ISettled> {
+	private async _settle(host: IParadisObserveHost, name: string, beforeUrl: string | undefined, settleMs: number, actionStartedAt: number): Promise<ISettled> {
 		const start = host.now();
 		let navigated = false;
+		// 遷移の直後で、新しい文書が読みに答えなかった（変化を読む評価も同じく待たされるので読まない）
+		let noAnswer = false;
 		let quiet = settleMs === 0;
 		let dialog: string | undefined;
 		let unresponsive: 'noDialog' | 'unchecked' | undefined;
@@ -365,18 +372,28 @@ export class ParadisBrowserObserver {
 					const listed = listedPages?.dialog;
 					if (listed !== undefined || failure === 'open') {
 						dialog = listed ?? 'a JavaScript dialog';
+						break;
+					}
+					// 遷移の直後（新しい文書の要求が終わっていない、またはタブの URL が操作の前と違う）なら、新しい文書がまだ
+					// 答えられないだけなので、応答なしにせず読み込み中として待ち続ける
+					if (listedPages !== undefined && paradisSettleIsNavigating(listedPages, beforeUrl, host.network(actionStartedAt))) {
+						navigated = true;
+						noAnswer = true;
+						lastBlocked = { loading: true };
 					} else {
 						unresponsive = listedPages === undefined ? 'unchecked' : 'noDialog';
+						break;
 					}
-					break;
+				} else {
+					// 遷移の途中（文書が入れ替わった）ならやり直す。それ以外の失敗は待つのをやめる
+					if (result !== undefined && !paradisIsTransientEvaluateFailure(result)) {
+						break;
+					}
+					navigated = true;
+					lastBlocked = { loading: true };
 				}
-				// 遷移の途中（文書が入れ替わった）ならやり直す。それ以外の失敗は待つのをやめる
-				if (result !== undefined && !paradisIsTransientEvaluateFailure(result)) {
-					break;
-				}
-				navigated = true;
-				lastBlocked = { loading: true };
 			} else {
+				noAnswer = false;
 				navigated = navigated || value.navigated === true;
 				const network = host.network(actionStartedAt);
 				const networkIdle = network === undefined || (network.inflight === 0 && (network.quietMs === undefined || network.quietMs >= QUIET_MS));
@@ -399,7 +416,7 @@ export class ParadisBrowserObserver {
 			await host.sleep(POLL_MS);
 		}
 		const blocked = !quiet && limited && dialog === undefined && unresponsive === undefined ? lastBlocked ?? {} : undefined;
-		return { quiet, waited: host.now() - start, navigated, ...(blocked !== undefined ? { blocked } : {}), ...(dialog !== undefined ? { dialog } : {}), ...(unresponsive !== undefined ? { unresponsive } : {}) };
+		return { quiet, waited: host.now() - start, navigated, ...(noAnswer && !quiet ? { loadingNoAnswer: true } : {}), ...(blocked !== undefined ? { blocked } : {}), ...(dialog !== undefined ? { dialog } : {}), ...(unresponsive !== undefined ? { unresponsive } : {}) };
 	}
 
 	private async _state(host: IParadisObserveHost, stateKey: string, before: IBefore, pages: IPagesState | undefined, ownTabId: string | undefined, failed: boolean): Promise<string | undefined> {
@@ -479,6 +496,18 @@ export class ParadisBrowserObserver {
 		this.usage?.noteBrowserState({ tabs: tabs !== undefined && (shownTabs?.length ?? 0) > 0, newPage: opened.length > 0, download: newDownloads.length > 0, dialog: pages?.dialog !== undefined, chars: text.length }, failed);
 		return text;
 	}
+}
+
+/**
+ * 待たない読みに答えなかったのが、遷移の直後だからか。新しい文書の要求が終わっていない（通信の台帳）か、
+ * タブの URL が操作の前と違う（list_pages は文書に答えてもらわずに読める）。
+ */
+export function paradisSettleIsNavigating(pages: { readonly pages: readonly { readonly url: string; readonly selected: boolean }[] }, beforeUrl: string | undefined, network: { readonly documents?: number } | undefined): boolean {
+	if ((network?.documents ?? 0) > 0) {
+		return true;
+	}
+	const selectedUrl = pages.pages.find(page => page.selected)?.url;
+	return beforeUrl !== undefined && selectedUrl !== undefined && selectedUrl !== beforeUrl;
 }
 
 function settleHead(settled: ISettledHead): string {
