@@ -1046,7 +1046,11 @@ export class ParadisSessionResumeDialog extends Disposable {
 				dom.append(meta, $('span.model')).textContent = modelLabel;
 			}
 			if (session.archived) {
-				dom.append(meta, $('span.archived')).textContent = localize('paradis.sessionResume.archivedBadge', "アーカイブ済み");
+				// Codex 0.171（alpha）から、アーカイブした会話を TUI が読み取り専用で開く（TUI で U を押すと戻して再開できる）。
+				// 再開の前に勝手に unarchive すると利用者の整理を崩すので、一覧で知らせるだけにする
+				dom.append(meta, $('span.archived')).textContent = session.agent === 'codex'
+					? localize('paradis.sessionResume.archivedCodexBadge', "アーカイブ済み（Codex 0.171 以降は読み取り専用で開きます）")
+					: localize('paradis.sessionResume.archivedBadge', "アーカイブ済み");
 			}
 			this.renderDisposables.add(dom.addDisposableListener(row, dom.EventType.CLICK, () => {
 				this.selected = session;

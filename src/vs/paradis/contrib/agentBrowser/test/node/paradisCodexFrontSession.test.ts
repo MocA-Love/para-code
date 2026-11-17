@@ -47,4 +47,24 @@ suite('ParadisCodexFrontSessions', () => {
 			sessions.classify('compacting', 'Stop', 'other', undefined, 8),
 		], ['front', 'front', 'front', 'background', 'front', 'front']);
 	});
+
+	// Codex 0.171（alpha）のサイドチャットは、送っても表の会話を移さない（0.171.0-alpha.10 のソースの形。hook の印は呼び出し側が
+	// transcript_path と session_meta の attached_thread から決める）。サイドチャットの承認待ちは裏の待ちとして覚える。
+	test('keeps the main conversation on screen when a Codex side chat sends, also for a pane it does not know yet', () => {
+		const sessions = new ParadisCodexFrontSessions();
+		const results = [
+			sessions.classify('pane', 'UserPromptSubmit', 'main', undefined, 1),
+			sessions.classify('pane', 'SessionStart', 'side', 'fork', 2, { sideChat: true }),
+			sessions.classify('pane', 'UserPromptSubmit', 'side', undefined, 3, { sideChat: true }),
+			sessions.classify('pane', 'PermissionRequest', 'side', undefined, 4, { sideChat: true }),
+			sessions.classify('pane', 'Stop', 'main', undefined, 5),
+			sessions.classify('restarted', 'UserPromptSubmit', 'side', undefined, 6, { sideChat: true }),
+			sessions.classify('restarted', 'Stop', 'main', undefined, 7),
+		];
+		assert.deepStrictEqual({ results, front: [sessions.front('pane'), sessions.front('restarted')], waits: sessions.backgroundWaits() }, {
+			results: ['front', 'background', 'background', 'background', 'front', 'background', 'front'],
+			front: ['main', undefined],
+			waits: [{ token: 'pane', since: 4 }],
+		});
+	});
 });

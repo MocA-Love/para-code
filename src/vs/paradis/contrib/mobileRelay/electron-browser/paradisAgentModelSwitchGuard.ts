@@ -29,6 +29,14 @@ const MODEL_SWITCH_COMMAND = /^\/(?:model|effort)\s+\S/;
 // ダイアログのタイトル文言（Claude Code 2.1.207）。model 切替は "Switch model?"、
 // effort 切替は "Change effort level?"。ANSI を除去した後に照合する。
 const CONFIRM_TITLE = /switch model\?|change effort level\?/i;
+// 確認が描かれてから Enter を送るまでの待ち。Claude Code 2.1.326 の選択肢の一覧は、最初の描画から 150ms 未満に
+// 押し始めたキーを打ち間違いとして捨てる（バイナリの判定式。実機の 2 回の切り替えでは捨てられなかった）。
+const CONFIRM_SETTLE_MS = 200;
+// 直前の Enter（コマンドの送信）から次の Enter までの間。2.1.326 は同じキーを 700ms 以内に続けると、前の打鍵の続きとして
+// 押し始めを前の時刻に揃えるので、上の 150ms の判定に当たる。
+const CONFIRM_ENTER_GAP_MS = 750;
+// Enter を送ってから、確認の題名が画面から消えたかを見るまでの待ち。消えていなければ 1 回だけ送り直す。
+const CONFIRM_RECHECK_MS = 1_000;
 // Ctrl+U（行頭まで削除）。前回の失敗で入力欄に残ったコマンド文字列の掃除に使う。
 // 空行なら無害で、実行中ターンを中断しうる Esc のような副作用がない。PCユーザーが
 // 同じペインで打ちかけていた未送信テキストは消えるが、消さなくても直後の貼り付けが
@@ -45,12 +53,24 @@ export interface IParadisModelSwitchTerminal {
 	sendText(text: string, shouldExecute: boolean, bracketedPasteMode?: boolean): Promise<void>;
 }
 
+/** ガードの待ち時間（テストで短くする）。省いたものは既定値。 */
+export interface IParadisModelSwitchGuardTiming {
+	readonly watchMs: number;
+	readonly graceMs: number;
+	readonly settleMs?: number;
+	readonly enterGapMs?: number;
+	readonly recheckMs?: number;
+}
+
 /**
  * モバイル発の `/model` / `/effort` 切替でClaude TUIが出す確認ダイアログを、注入直後の
  * 時限ウォッチ中に限って自動確定（Enter送出）する。
  *
  * PCでユーザー自身が操作して出したダイアログには介入しない（モバイル注入を起点にした
- * 時限ウォッチの中でしか発火しないことで担保する）。1回のウォッチで Enter は最大1回。
+ * 時限ウォッチの中でしか発火しないことで担保する）。
+ *
+ * Enter は確認が描かれてから少し待って送る（{@link CONFIRM_SETTLE_MS}・{@link CONFIRM_ENTER_GAP_MS}）。画面を読めるときは、
+ * 送った後に確認の題名が消えたかで成功を決め、残っていれば 1 回だけ送り直す（1 回のウォッチで Enter は最大 2 回）。
  */
 export class ParadisAgentModelSwitchGuard extends Disposable {
 	// ターミナルinstanceId → 進行中ウォッチのdisposable群（onData購読 + 期限タイマー）。
@@ -58,32 +78,37 @@ export class ParadisAgentModelSwitchGuard extends Disposable {
 
 	constructor(
 		private readonly logService: ILogService,
-		private readonly timing: { readonly watchMs: number; readonly graceMs: number } = { watchMs: WATCH_DURATION_MS, graceMs: NO_DIALOG_GRACE_MS },
+		private readonly timing: IParadisModelSwitchGuardTiming = { watchMs: WATCH_DURATION_MS, graceMs: NO_DIALOG_GRACE_MS },
 	) {
 		super();
 	}
 
 	/**
 	 * モバイルから注入された生入力を検査し、切替コマンドならウォッチを開始する。
-	 * `\r` 単独やそれ以外の入力では何もしない（コマンド文字列でのみ武装する）。
+	 * `\r` 単独やそれ以外の入力では何もしない（コマンド文字列でのみ武装する）。`readScreen` を渡すと、確認が消えたかを見て
+	 * 1 回だけ送り直す。
 	 */
-	maybeArm(instance: IParadisModelSwitchTerminal, data: string): void {
+	maybeArm(instance: IParadisModelSwitchTerminal, data: string, readScreen?: () => string): void {
 		if (!MODEL_SWITCH_COMMAND.test(data.trimStart())) {
 			return;
 		}
-		this.arm(instance);
+		this.arm(instance, undefined, readScreen);
 	}
 
-	/** Agent Action用。コマンド送信から確認ダイアログの決着（自動確定または確認不要の確定）までを1つのPromiseで追跡する。 */
-	async execute(instance: IParadisModelSwitchTerminal, command: string, validate: () => Promise<boolean>, delay?: () => Promise<void>): Promise<void> {
+	/**
+	 * Agent Action用。コマンド送信から確認ダイアログの決着（自動確定または確認不要の確定）までを1つのPromiseで追跡する。
+	 * `readScreen`（見えている範囲の文字）を渡すと、Enter の後に確認の題名が消えたことで成功を決める。
+	 */
+	async execute(instance: IParadisModelSwitchTerminal, command: string, validate: () => Promise<boolean>, delay?: () => Promise<void>, readScreen?: () => string): Promise<void> {
 		if (!MODEL_SWITCH_COMMAND.test(command.trimStart())) {
 			throw new Error('Unsupported Claude setting command');
 		}
 		// 前回の失敗（Enter取りこぼし等）で入力欄に残ったコマンド文字列を先に掃除する。
 		// 掃除しないと今回の貼り付けが同じ行へ追記され `/model … /model …` と連結される。
 		await instance.sendText(CLEAR_INPUT_LINE, false);
-		let cancel = () => { };
-		const confirmation = new Promise<void>((resolve, reject) => { cancel = this.arm(instance, { resolve, reject, validate }); });
+		let watch: { readonly cancel: () => void; readonly submitted: () => void } = { cancel: () => { }, submitted: () => { } };
+		const confirmation = new Promise<void>((resolve, reject) => { watch = this.arm(instance, { resolve, reject, validate }, readScreen); });
+		const cancel = () => watch.cancel();
 		// 貼り付け中にウォッチが破棄された場合の reject を unhandled rejection にしない
 		// （結果自体は下の await confirmation で受け取る）。
 		confirmation.catch(() => undefined);
@@ -93,6 +118,7 @@ export class ParadisAgentModelSwitchGuard extends Disposable {
 			// TUIが貼り付け処理中の Enter を取りこぼし、コマンドが入力欄に残ったまま
 			// ダイアログ待ちだけが走ってタイムアウトする。
 			outcome = await paradisSendAgentMessageToTui(command, (text, execute, bracketedPasteMode) => instance.sendText(text, execute ?? false, bracketedPasteMode), validate, delay);
+			watch.submitted();
 		} catch (error) {
 			cancel();
 			await confirmation.catch(() => undefined);
@@ -106,7 +132,7 @@ export class ParadisAgentModelSwitchGuard extends Disposable {
 		await confirmation;
 	}
 
-	private arm(instance: IParadisModelSwitchTerminal, completion?: { resolve: () => void; reject: (error: Error) => void; validate?: () => Promise<boolean> }): () => void {
+	private arm(instance: IParadisModelSwitchTerminal, completion?: { resolve: () => void; reject: (error: Error) => void; validate?: () => Promise<boolean> }, readScreen?: () => string): { readonly cancel: () => void; readonly submitted: () => void } {
 		const id = instance.instanceId;
 		const store = new DisposableStore();
 		const disposeOwnWatch = () => {
@@ -116,6 +142,39 @@ export class ParadisAgentModelSwitchGuard extends Disposable {
 		};
 		let buffer = '';
 		let confirming = false;
+		// 最後に Enter を送った時刻（コマンドの送信の Enter。execute が送った後に更新する）
+		let lastEnterAt = Date.now();
+		const sleep = (ms: number) => new Promise<void>(resolve => {
+			const handle = setTimeout(resolve, Math.max(0, ms));
+			store.add(toDisposable(() => clearTimeout(handle)));
+		});
+		const stillOwn = async () => this.watches.get(id) === store && await Promise.resolve(completion?.validate?.() ?? true) && this.watches.get(id) === store;
+		const sendEnter = async () => {
+			if (!(await stillOwn())) {
+				throw new Error('Claude setting session changed before confirmation');
+			}
+			lastEnterAt = Date.now();
+			await instance.sendText('\r', false);
+		};
+		const titleShown = () => readScreen !== undefined && CONFIRM_TITLE.test(readScreen());
+		const confirm = async (seenAt: number) => {
+			await sleep(Math.max(seenAt + (this.timing.settleMs ?? CONFIRM_SETTLE_MS), lastEnterAt + (this.timing.enterGapMs ?? CONFIRM_ENTER_GAP_MS)) - Date.now());
+			await sendEnter();
+			if (readScreen === undefined) {
+				return;
+			}
+			await sleep(this.timing.recheckMs ?? CONFIRM_RECHECK_MS);
+			if (!titleShown()) {
+				return;
+			}
+			// 確認が残っている（Enter が捨てられた）。1 回だけ送り直し、消えなければ失敗にする
+			this.logService.info('[paradisMobileRelay] model switch confirmation still open; sending enter once more');
+			await sendEnter();
+			await sleep(this.timing.recheckMs ?? CONFIRM_RECHECK_MS);
+			if (titleShown()) {
+				throw new Error('Claude setting confirmation did not close');
+			}
+		};
 		let resolved = false;
 		const settle = (error?: Error) => {
 			if (resolved) {
@@ -141,13 +200,8 @@ export class ParadisAgentModelSwitchGuard extends Disposable {
 				return;
 			}
 			confirming = true;
-			// フォーカス既定は "Yes" 側なので Enter 1回で確定できる。
-			Promise.resolve(completion?.validate?.() ?? true).then(valid => {
-				if (!valid || this.watches.get(id) !== store) {
-					throw new Error('Claude setting session changed before confirmation');
-				}
-				return instance.sendText('\r', false);
-			}).then(() => {
+			// フォーカス既定は "Yes" 側なので Enter で確定できる。
+			confirm(Date.now()).then(() => {
 				settle();
 				// 確定したらウォッチ終了（購読・タイマーを破棄。二重確定を防ぐ）。
 				disposeOwnWatch();
@@ -176,6 +230,6 @@ export class ParadisAgentModelSwitchGuard extends Disposable {
 		// 同一端末で連続切替した場合は前回ウォッチを破棄して張り直す（DisposableMap.set は
 		// 上書き時に旧値を dispose する）。
 		this.watches.set(id, store);
-		return disposeOwnWatch;
+		return { cancel: disposeOwnWatch, submitted: () => { lastEnterAt = Date.now(); } };
 	}
 }

@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { ITerminalInstance } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
-import { paradisClaudeResumeScreenPrompt, paradisPermissionPromptHash, paradisPermissionPromptParts, paradisPromptRegionShows, paradisScreenShowsAgentPrompt, paradisScreenShowsClaudeResumePrompt, paradisScreenShowsPermissionPrompt, paradisVisibleTerminalLogicalText } from '../../browser/paradisAgentTuiInput.js';
+import { paradisClaudeResumeScreenPrompt, paradisPermissionPromptHash, paradisPermissionPromptParts, paradisPromptRegionShows, paradisScreenShowsAgentPrompt, paradisScreenShowsClaudeResumePrompt, paradisScreenShowsClaudeYesNoPlanPrompt, paradisScreenShowsPermissionPrompt, paradisVisibleTerminalLogicalText } from '../../browser/paradisAgentTuiInput.js';
 import { paradisApprovalScreenPiece, paradisCodexApprovalFormShown, paradisCodexApprovalFormShows, paradisParseApprovalOptions, paradisParsePermissionWarning } from '../../../mobileRelay/common/paradisAgentApprovalOptions.js';
 import { CODEX_EXEC_APPROVAL_DETAIL, CODEX_EXEC_APPROVAL_SCREEN, CODEX_MCP_APPROVAL_DETAIL, CODEX_MCP_APPROVAL_SCREEN, CODEX_WORKING_SCREEN } from './paradisCodexPromptScreens.js';
 
@@ -318,3 +318,58 @@ suite('Claude Code resume prompt on screen (Claude Code 2.1.306)', () => {
 		});
 	});
 });
+
+suite('Claude Code sub-agent plan approval on screen (Claude Code 2.1.326)', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	const RULE = '  ' + '\u2500'.repeat(60);
+	// 2.1.326 の実画面（計画が空の子エージェントが ExitPlanMode を呼んだとき。120 桁のペイン）
+	const emptyPlan = [
+		'● planner(hello.txt作成の計画)',
+		'  \u23bf  Backgrounded agent (\u2193 to manage \u00b7 ctrl+o to expand)',
+		'',
+		RULE,
+		'   Exit plan mode? \u00b7 from the planner agent',
+		'',
+		'    Claude wants to exit plan mode',
+		'',
+		'    \u276f Yes, and switch to default (ask each time) for this session',
+		'      No',
+	].join('\n');
+	// 同じ画面で、貼り付けた文と Enter を捨てた後（注意の行が出る。2.1.326 の実画面）
+	const afterText = `${emptyPlan}\n    Not answered yet \u00b7 \u2191/\u2193 to choose \u00b7 Esc to decline`;
+	// 計画のある子エージェント（2.1.326 のバイナリの文字列から組み立てた形。見出しは狭いペインで折り返す）
+	const withPlan = [
+		RULE,
+		'   Ready to code? \u00b7 from the planner agent',
+		'   Here is Claude\'s plan:',
+		'   Create hello.txt containing hi',
+		'   Claude has written up a plan and is ready to execute. Would you',
+		'   like to proceed?',
+		'    \u276f Yes, and switch to default (ask each time) for this session',
+		'      No',
+	].join('\n');
+	// 本会話の計画の確定（番号付き。従来の許可の確認として見つかる）
+	const mainPlan = [
+		RULE,
+		'   Exit plan mode?',
+		'    Claude wants to exit plan mode',
+		'    \u276f 1. Yes, and switch to default (ask each time) for this session',
+		'      2. No, keep planning',
+	].join('\n');
+	// 承認が済んで入力欄に戻った後（会話の本文に同じ文が残っている）
+	const answered = `${emptyPlan}\n${RULE}\n\u276f \n${RULE}`;
+
+	test('finds the yes/no-only plan approval, also when the heading wraps, and refuses chat sends while it is shown', () => {
+		assert.deepStrictEqual({
+			yesNo: [emptyPlan, afterText, withPlan, mainPlan, answered].map(paradisScreenShowsClaudeYesNoPlanPrompt),
+			permission: [emptyPlan, withPlan].map(paradisScreenShowsPermissionPrompt),
+			agent: [paradisScreenShowsAgentPrompt(emptyPlan, 'claude'), paradisScreenShowsAgentPrompt(withPlan), paradisScreenShowsAgentPrompt(emptyPlan, 'codex'), paradisScreenShowsAgentPrompt(answered, 'claude')],
+		}, {
+			yesNo: [true, true, true, false, false],
+			permission: [false, false],
+			agent: [true, true, false, false],
+		});
+	});
+});
+
