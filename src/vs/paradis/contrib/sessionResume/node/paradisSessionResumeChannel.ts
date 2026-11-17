@@ -1117,7 +1117,13 @@ export class ParadisSessionResumeService {
 				columns.has('model') ? 'model' : 'NULL AS model',
 				columns.has('reasoning_effort') ? 'reasoning_effort' : 'NULL AS reasoning_effort',
 			].join(', ');
-			const archivedClause = !includeArchived && columns.has('archived') ? 'WHERE archived = 0' : '';
+			// Codex 0.171 のサイドチャット（`tui_workspace`。本会話から fork した裏の会話）は、保存すると threads に
+			// `attached_thread_parent_id` 付きの行を持つ。本会話の裏なので再開の一覧には出さない（Codex 自身の一覧も同じく隠す）
+			const conditions = [
+				...(!includeArchived && columns.has('archived') ? ['archived = 0'] : []),
+				...(columns.has('attached_thread_parent_id') ? ['attached_thread_parent_id IS NULL'] : []),
+			];
+			const archivedClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 			// 新しい順に 1 ページずつ読み、表示する上限に届いたら止める（全行を一度に JS へ読まない）。
 			// ページの間に Codex が会話を更新すると並びがずれて同じ会話が 2 回並ぶ・飛ぶので、読む間は 1 つの読み取りの
 			// トランザクションで同じ時点を見る（念のため id でも重ねない）

@@ -360,8 +360,9 @@ suite('paradisAgentTranscriptParser', () => {
 		});
 	});
 
-	test('hides the additional context that Codex 0.170 writes as a tool result without a call', () => {
-		// Codex 0.170 の codex-rs（context-fragments / history）から組み立てた形（実物の記録ではない）
+	test('hides the additional context that Codex 0.169 writes as a tool result without a call', () => {
+		// Codex の codex-rs（context-fragments / history）から組み立てた形（実物の記録ではない）。`untrusted_as_tool_output` は
+		// 0.170 の alpha で入り、0.169.0 の安定版で既定オンになった。0.169.0 の実物の行（/goal を動かしたもの）に置き換えるのは残り
 		const goal = JSON.stringify({ timestamp: '2026-11-13T01:00:00.000Z', type: 'response_item', payload: { type: 'function_call_output', name: 'goal_objective', namespace: 'agent', output: 'ゴールの目的文' }, metadata: { additional_context_tool_output: true } });
 		const noMetadata = JSON.stringify({ timestamp: '2026-11-13T01:00:01.000Z', type: 'response_item', payload: { type: 'function_call_output', call_id: null, name: 'browser_context', namespace: 'agent', output: 'ブラウザの情報' } });
 		const withCall = JSON.stringify({ timestamp: '2026-11-13T01:00:02.000Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'call_agent', namespace: 'agent', output: '結果' } });

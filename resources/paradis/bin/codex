@@ -97,7 +97,7 @@ done
 # because `--no-daemon` is a TUI option and some subcommands (`agents`, `queue`) reject it.
 # The list is Codex 0.146's full set (including aliases and the internal subcommands that
 # `codex --help` hides) minus the two TUI commands, plus `agents`, and the 0.158 additions
-# `queue`, `migrate-rollouts` and `tcp-tunnel`, and the 0.166 `migrate-nfs-db`. A subcommand missing here gets `--no-daemon`
+# `queue`, `migrate-rollouts` and `tcp-tunnel`, the 0.166 `migrate-nfs-db`, and the 0.169 `git-credential`. A subcommand missing here gets `--no-daemon`
 # and may refuse it; keep the list current (the Windows launcher and the mobile relay's
 # command parser carry the same list).
 command_kind=unknown
@@ -110,7 +110,7 @@ else
 		resume|fork)
 			command_kind=tui
 			;;
-		exec|e|review|login|logout|mcp|plugin|mcp-server|app-server|remote-control|app|completion|update|doctor|sandbox|debug|apply|a|archive|delete|unarchive|cloud|exec-server|execpolicy|responses-api-proxy|stdio-to-uds|features|help|agents|queue|migrate-rollouts|migrate-nfs-db|tcp-tunnel)
+		exec|e|review|login|logout|mcp|plugin|mcp-server|app-server|remote-control|app|completion|update|doctor|sandbox|debug|apply|a|archive|delete|unarchive|cloud|exec-server|execpolicy|responses-api-proxy|stdio-to-uds|features|help|agents|queue|migrate-rollouts|migrate-nfs-db|tcp-tunnel|git-credential)
 			command_kind=delegated
 			;;
 	esac

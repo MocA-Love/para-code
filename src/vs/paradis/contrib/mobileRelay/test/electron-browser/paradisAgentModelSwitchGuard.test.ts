@@ -10,7 +10,7 @@ import * as assert from 'assert';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisModelSwitchTerminal, ParadisAgentModelSwitchGuard } from '../../electron-browser/paradisAgentModelSwitchGuard.js';
+import { IParadisModelSwitchGuardTiming, IParadisModelSwitchTerminal, ParadisAgentModelSwitchGuard } from '../../electron-browser/paradisAgentModelSwitchGuard.js';
 
 interface ISentText { readonly text: string; readonly execute: boolean; readonly bracketed: boolean | undefined }
 
@@ -50,8 +50,8 @@ suite('ParadisAgentModelSwitchGuard', () => {
 		return new FakeTerminal(store.add(new Emitter<string>()));
 	}
 
-	function createGuard(timing: { watchMs: number; graceMs: number }): ParadisAgentModelSwitchGuard {
-		return store.add(new ParadisAgentModelSwitchGuard(new NullLogService(), timing));
+	function createGuard(timing: IParadisModelSwitchGuardTiming): ParadisAgentModelSwitchGuard {
+		return store.add(new ParadisAgentModelSwitchGuard(new NullLogService(), { settleMs: 1, enterGapMs: 1, recheckMs: 5, ...timing }));
 	}
 
 	test('clears leftover input, splits paste and enter, and auto-confirms the dialog', async () => {
@@ -118,5 +118,51 @@ suite('ParadisAgentModelSwitchGuard', () => {
 		terminal.emitData(DIALOG);
 		await waitUntil(() => terminal.sent.length === 1);
 		assert.deepStrictEqual(terminal.sent[0], { text: '\r', execute: false, bracketed: undefined });
+	});
+
+	test('waits after the dialog appears before sending enter (Claude Code 2.1.326 drops keys pressed within 150ms of the first frame)', async () => {
+		const terminal = createTerminal();
+		const guard = createGuard({ watchMs: 1_000, graceMs: 1_000, settleMs: 40, enterGapMs: 1 });
+		const done = guard.execute(terminal, '/model claude-sonnet-5', async () => true, noDelay);
+		await waitUntil(() => terminal.sent.length === 3);
+		terminal.emitData(DIALOG);
+		await new Promise<void>(resolve => setTimeout(resolve, 10));
+		const beforeSettle = terminal.sent.length;
+		await done;
+		assert.deepStrictEqual([beforeSettle, terminal.sent.length], [3, 4]);
+	});
+
+	test('sends enter once more when the dialog is still on screen, and succeeds once it is gone', async () => {
+		const terminal = createTerminal();
+		const guard = createGuard({ watchMs: 1_000, graceMs: 1_000, recheckMs: 40 });
+		let screen = 'Switch model?';
+		const done = guard.execute(terminal, '/model claude-sonnet-5', async () => true, noDelay, () => screen);
+		await waitUntil(() => terminal.sent.length === 3);
+		terminal.emitData(DIALOG);
+		// 1 回目の Enter は捨てられた（画面に残る）。2 回目で閉じる
+		await waitUntil(() => terminal.sent.length === 5);
+		screen = 'Set model to Sonnet 5';
+		await done;
+		assert.deepStrictEqual(terminal.sent.slice(3).map(sent => sent.text), ['\r', '\r']);
+	});
+
+	test('does not resend when the dialog closed after the first enter', async () => {
+		const terminal = createTerminal();
+		const guard = createGuard({ watchMs: 1_000, graceMs: 1_000 });
+		const done = guard.execute(terminal, '/effort high', async () => true, noDelay, () => 'Set effort level to high');
+		await waitUntil(() => terminal.sent.length === 3);
+		terminal.emitData('Change effort level?');
+		await done;
+		assert.strictEqual(terminal.sent.length, 4);
+	});
+
+	test('fails when the dialog stays open after the second enter', async () => {
+		const terminal = createTerminal();
+		const guard = createGuard({ watchMs: 1_000, graceMs: 1_000 });
+		const done = guard.execute(terminal, '/model claude-sonnet-5', async () => true, noDelay, () => 'Switch model?');
+		await waitUntil(() => terminal.sent.length === 3);
+		terminal.emitData(DIALOG);
+		await assert.rejects(done, /did not close/);
+		assert.strictEqual(terminal.sent.length, 5);
 	});
 });

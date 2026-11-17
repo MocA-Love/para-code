@@ -19,6 +19,12 @@
 // hook が来ないので、送るまでは前の会話が表のまま（開いた会話の hook は裏として扱われる）。子エージェントの hook は親の会話の session_id で届く
 // （codex-rs/core/src/agent/control.rs の `session_id` は木全体で同じ）ので、親と同じ側に入る。
 // 裏の会話の承認待ち（PermissionRequest）だけは覚え、その会話の次の hook か、Codex の終了（端末の状態の clear）で外す。
+//
+// Codex 0.171（alpha）で既定オンになったサイドチャット（`tui_workspace`。画面の右に出る横の会話）は、表の会話から fork した
+// 別の thread で、そこで送ると UserPromptSubmit・SessionStart（source `fork`）が自分の session_id で届く。サイドチャットは
+// 本会話の裏なので、表を決める hook でも表にしない（`classify` の `sideChat`）。見分けるのは呼び出し側で、一時的な
+// サイドチャットは rollout を持たない（hook の transcript_path が null）、保存したものは rollout の先頭行の session_meta に
+// `attached_thread: true` がある（codex-rs/tui/src/app_server_session.rs の `attach_to_source`、protocol.rs の `attached_thread`）。
 
 /** 表の会話を決める hook か。compact の SessionStart は裏の会話の自動の要約でも来るので数えない。 */
 function setsFrontSession(event: string, source: string | undefined): boolean {
@@ -53,14 +59,19 @@ export class ParadisCodexFrontSessions {
 	 * 最初に届いた hook が裏の会話のものでも、それを表に固定しないため。
 	 *
 	 * @param options.recordWait 裏の会話の承認待ちを覚えるか（控えの流し直しでは、画面で確かめていない待ちを覚えない）。
+	 * @param options.sideChat サイドチャット（Codex 0.171 の横の会話）の hook か。表の会話にはせず、台帳に無いペインでも裏として扱う。
 	 */
-	classify(token: string, event: string, sessionId: string | undefined, source: string | undefined, at: number, options?: { readonly recordWait?: boolean }): 'front' | 'background' {
+	classify(token: string, event: string, sessionId: string | undefined, source: string | undefined, at: number, options?: { readonly recordWait?: boolean; readonly sideChat?: boolean }): 'front' | 'background' {
 		if (sessionId === undefined || sessionId.length === 0) {
 			return 'front';
 		}
-		const setsFront = setsFrontSession(event, source);
+		const sideChat = options?.sideChat === true;
+		const setsFront = !sideChat && setsFrontSession(event, source);
 		let pane = this._panes.get(token);
 		if (pane === undefined) {
+			if (sideChat) {
+				return 'background';
+			}
 			if (!setsFront) {
 				return 'front';
 			}
@@ -83,6 +94,11 @@ export class ParadisCodexFrontSessions {
 			pane.backgroundWaits.delete(sessionId);
 		}
 		return 'background';
+	}
+
+	/** ペインの表の会話の session_id（まだ決まっていなければ undefined）。 */
+	front(token: string): string | undefined {
+		return this._panes.get(token)?.front;
 	}
 
 	/** 裏の会話が承認を待っているペイン。 */

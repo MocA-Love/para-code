@@ -1420,6 +1420,12 @@ suite('ParadisMobileAgentChat', () => {
 		assert.strictEqual(paradisCliDiscoveryCandidateIsFresh(oldButUpdated, 100, 'resume'), true);
 	});
 
+	// Codex 0.171（alpha）の保存したサイドチャット（0.171.0-alpha.10 の SessionMeta の形から組み立てた。実物ではない）
+	test('marks a saved Codex side chat so it is not taken as the conversation of the pane', () => {
+		assert.deepStrictEqual(paradisParseCodexSessionMeta(JSON.stringify({ type: 'session_meta', payload: { cwd: '/workspace', id: 'side', forked_from_id: 'main', attached_thread: true } })),
+			{ cwd: '/workspace', sessionId: 'side', forkedFromId: 'main', attachedThread: true });
+	});
+
 	test('rejects non-session metadata', () => {
 		assert.strictEqual(paradisParseCodexSessionMeta('{"type":"event_msg","payload":{}}'), undefined);
 	});

@@ -1162,6 +1162,8 @@ export interface IParadisCodexSessionMeta {
 	readonly forkedFromId?: string;
 	/** fork 先の rollout が過去の会話を写さずに参照している、元の rollout の範囲（`history_base`）。 */
 	readonly historyBase?: IParadisCodexHistoryBase;
+	/** Codex 0.171 の保存したサイドチャット（`attached_thread: true`。本会話から fork した横の会話）か。 */
+	readonly attachedThread?: true;
 }
 
 /** fork 先の rollout の `history_base`。元の rollout の先頭から `endByteOffset` バイトまでが、fork 先の過去の会話。 */
@@ -1209,6 +1211,7 @@ export function paradisParseCodexSessionMeta(firstLine: string): IParadisCodexSe
 			...(agentNickname !== undefined ? { agentNickname } : {}),
 			...(forkedFromId !== undefined && forkedFromId.length > 0 && forkedFromId !== ownThreadId ? { forkedFromId } : {}),
 			...(historyBase !== undefined ? { historyBase } : {}),
+			...(payload?.attached_thread === true ? { attachedThread: true as const } : {}),
 		};
 	} catch {
 		return undefined;
@@ -1430,11 +1433,13 @@ async function discoverCodexSessionsFromStateDbInHome(cwd: string, minMtime: num
 		}
 		const { DatabaseSync: DatabaseSyncCtor } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
 		database = new DatabaseSyncCtor(join(homes.codex, stateDb), { readOnly: true });
+		// Codex 0.171 の保存したサイドチャット（本会話から fork した横の会話）は、本会話の裏なのでペインの会話の候補にしない
+		const attachedColumn = (database.prepare('PRAGMA table_info(threads)').all() as Array<{ name?: unknown }>).some(column => column.name === 'attached_thread_parent_id');
 		const rows = database.prepare(`
 			SELECT id, rollout_path, source, COALESCE(updated_at_ms, updated_at * 1000) AS mtime,
 				COALESCE(created_at_ms, created_at * 1000) AS created_at
 			FROM threads
-			WHERE (cwd = ? OR cwd = ?) AND archived = 0
+			WHERE (cwd = ? OR cwd = ?) AND archived = 0${attachedColumn ? ' AND attached_thread_parent_id IS NULL' : ''}
 				AND (? IS NULL OR COALESCE(updated_at_ms, updated_at * 1000) >= ?)
 			ORDER BY mtime DESC
 		`).all(homes.matchCwd, realCwd, minMtime ?? null, minMtime ?? null) as unknown[];
@@ -1790,7 +1795,7 @@ async function discoverSessionByCwd(cwd: string, agent: ParadisAgentKind, minMti
 				for (const rollout of rollouts) {
 					try {
 						const meta = await readCodexRolloutSessionMeta(rollout.path);
-						if (meta?.cwd === homes.matchCwd && meta.subagent !== true) {
+						if (meta?.cwd === homes.matchCwd && meta.subagent !== true && meta.attachedThread !== true) {
 							const sessionId = meta.sessionId;
 							candidates.push({
 								agent: 'codex', transcriptPath: rollout.path, mtime: rollout.mtime,
