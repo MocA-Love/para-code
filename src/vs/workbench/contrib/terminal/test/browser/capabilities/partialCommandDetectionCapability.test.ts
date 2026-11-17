@@ -81,4 +81,21 @@ suite('PartialCommandDetectionCapability', () => {
 
 		deepStrictEqual(capability.commands, []);
 	});
+
+	// PARA-PATCH: markers trimmed from the scrollback stayed in the commands array forever
+	test('should drop commands whose marker was trimmed from the scrollback', async () => {
+		xterm.options.scrollback = 0;
+		for (let i = 0; i < xterm.rows * 2; i++) {
+			await writeP(xterm, 'ab');
+			xterm.input('\x0d');
+			await writeP(xterm, '\r\n');
+		}
+		deepStrictEqual({
+			count: capability.commands.length,
+			anyDisposed: capability.commands.some(e => e.isDisposed)
+		}, {
+			count: xterm.rows - 1,
+			anyDisposed: false
+		});
+	});
 });
