@@ -2153,6 +2153,8 @@ export function paradisRegisterBrowserExtensions(
 		clearShortcut: (id, name) => created.clearShortcut(id, name),
 		resetShortcut: (id, name) => created.resetShortcut(id, name),
 	};
-	channelHost.registerChannel(PARADIS_BROWSER_EXTENSIONS_CHANNEL, ProxyChannel.fromService(exposed, disposables));
+	// unbufferedEvents: 拡張機能の管理画面を開くまで誰も聞かない。既定では、それまでの知らせを main に溜め続ける。
+	// 管理画面は開いたときに今の状態を読むので、開く前の知らせは捨ててよい。
+	channelHost.registerChannel(PARADIS_BROWSER_EXTENSIONS_CHANNEL, ProxyChannel.fromService(exposed, disposables, { unbufferedEvents: ['onDidChangeWorkers'] }));
 	return disposables;
 }

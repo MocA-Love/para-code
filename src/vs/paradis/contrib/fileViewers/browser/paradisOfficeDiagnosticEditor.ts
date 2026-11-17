@@ -46,7 +46,7 @@ import {
 	type IParadisOfficeWebWorkerEndpoint,
 	type ParadisOfficeBrowserSemanticSummary,
 	type ParadisOfficeBrowserSpreadsheetDiagonal,
-} from './paradisOfficeWebWorker.js';
+} from './paradisOfficeWebWorkerClient.js';
 import {
 	snapshotParadisOfficeRuntimeConfiguration,
 	type ParadisOfficeConfigurationReader,
