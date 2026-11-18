@@ -14,6 +14,8 @@
 import './media/paradisAgentDocsView.css';
 import * as DOM from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
+import { DomScrollableElement } from '../../../../base/browser/ui/scrollbar/scrollableElement.js';
+import { ScrollbarVisibility } from '../../../../base/common/scrollable.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { fromNow } from '../../../../base/common/date.js';
@@ -88,18 +90,18 @@ export function paradisReadDocsGrouping(storageService: IStorageService): Paradi
 	return value === 'date' || value === 'folder' ? value : 'session';
 }
 
-/** ウィンドウの接続先の印（手元は空文字）。 */
-export function paradisWindowDocHostId(remoteAuthority: string | undefined): string {
-	return remoteAuthority !== undefined ? paradisAgentHookRemoteHostId(remoteAuthority) ?? '' : '';
+/** ウィンドウの接続先の印（手元は空文字）。接続先の名前から印を作れない窓は undefined（その窓では資料を扱わない）。 */
+export function paradisWindowDocHostId(remoteAuthority: string | undefined): string | undefined {
+	return remoteAuthority !== undefined ? paradisAgentHookRemoteHostId(remoteAuthority) : '';
 }
 
 /**
  * エディタの URI を台帳の形（接続先の印と絶対パス）にする。このウィンドウの接続先のファイルだけ。
  * Windows のドライブ文字は大文字にそろえる（URI.fsPath は小文字にし、hook のパスは大文字で来る）。
  */
-export function paradisDocTargetOf(resource: URI, windowHostId: string): { hostId: string; path: string } | undefined {
+export function paradisDocTargetOf(resource: URI, windowHostId: string | undefined): { hostId: string; path: string } | undefined {
 	const folder = paradisDocFolderOf(resource);
-	if (folder === undefined || folder.hostId !== windowHostId) {
+	if (folder === undefined || windowHostId === undefined || folder.hostId !== windowHostId) {
 		return undefined;
 	}
 	const path = /^[a-z]:\\/.test(folder.path) ? folder.path[0].toUpperCase() + folder.path.slice(1) : folder.path;
@@ -143,7 +145,7 @@ export class ParadisAgentDocsView extends ViewPane {
 
 	private readonly _channel;
 	private readonly _remoteAuthority: string | undefined;
-	private readonly _windowHostId: string;
+	private readonly _windowHostId: string | undefined;
 	private _records: readonly IParadisDocViewRecord[] = [];
 	/** このウィンドウのペインで動いている会話（トークン → 会話）。 */
 	private _paneSessions = new Map<string, IParadisDocPaneSessionInfo>();
@@ -157,7 +159,10 @@ export class ParadisAgentDocsView extends ViewPane {
 
 	private _countElement: HTMLElement | undefined;
 	private _listElement: HTMLElement | undefined;
+	private _scrollable: DomScrollableElement | undefined;
 	private _rows: IRowEntry[] = [];
+	/** 描いた行と組の見出し（data-key で見分ける。描き直しの後にフォーカスを戻すため）。 */
+	private _keyed: HTMLElement[] = [];
 	private readonly _renderStore = this._register(new DisposableStore());
 	private readonly _refreshScheduler = this._register(new RunOnceScheduler(() => this._refresh(), 50));
 	private readonly _renderScheduler = this._register(new RunOnceScheduler(() => this._render(), 0));
@@ -271,11 +276,21 @@ export class ParadisAgentDocsView extends ViewPane {
 			this._render();
 		}));
 
-		this._listElement = DOM.append(root, DOM.$('.paradis-agent-docs-list'));
+		this._listElement = DOM.$('.paradis-agent-docs-list');
+		this._scrollable = this._register(new DomScrollableElement(this._listElement, { vertical: ScrollbarVisibility.Auto, horizontal: ScrollbarVisibility.Hidden }));
+		this._scrollable.getDomNode().classList.add('paradis-agent-docs-scroll');
+		root.appendChild(this._scrollable.getDomNode());
+		// 行へフォーカスを移したときなど、要素そのものが動いたらつまみを合わせる
+		this._register(DOM.addDisposableListener(this._listElement, DOM.EventType.SCROLL, () => this._scrollable?.scanDomNode()));
 		this._listElement.setAttribute('role', 'list');
 		this._listElement.setAttribute('aria-label', localize('paradis.agentDocs.list', "資料"));
 		this._register(DOM.addDisposableListener(this._listElement, DOM.EventType.KEY_DOWN, event => this._onListKeyDown(new StandardKeyboardEvent(event))));
 		this._scheduleRefresh();
+	}
+
+	protected override layoutBody(height: number, width: number): void {
+		super.layoutBody(height, width);
+		this._scrollable?.scanDomNode();
 	}
 
 	override focus(): void {
@@ -296,7 +311,8 @@ export class ParadisAgentDocsView extends ViewPane {
 				this._channel.call<IParadisDocViewRecord[]>(ParadisAgentDocsViewCall.List),
 				tokens.length > 0 ? this._channel.call<IParadisDocPaneSessionInfo[]>(ParadisAgentDocsViewCall.PaneSessions, [tokens]) : Promise.resolve([]),
 			]);
-			this._records = Array.isArray(records) ? records : [];
+			// 接続先の印が分からない窓では何も出さない（ほかの機械の資料をこの窓のファイルとして確かめない）
+			this._records = Array.isArray(records) && this._windowHostId !== undefined ? records : [];
 			this._paneSessions = new Map((Array.isArray(sessions) ? sessions : []).map(session => [session.token, session]));
 		} catch {
 			this._records = [];
@@ -340,16 +356,18 @@ export class ParadisAgentDocsView extends ViewPane {
 		if (list === undefined) {
 			return;
 		}
-		const focusedKey = this._rows.find(row => DOM.isAncestorOfActiveElement(row.element))?.element.dataset.key;
+		// 描き直しで行と組の見出しは作り直すので、フォーカスのあったものを覚えて戻す
+		const focusedKey = this._keyed.find(element => DOM.isAncestorOfActiveElement(element))?.dataset.key;
 		const scrollTop = list.scrollTop;
 		this._renderStore.clear();
 		DOM.clearNode(list);
 		this._rows = [];
+		this._keyed = [];
 
 		const activeKey = this._activeDocKey();
 		const filtered = paradisFilterDocs(this._records, {
 			scope: this._scope,
-			hostId: this._windowHostId,
+			hostId: this._windowHostId ?? '',
 			session: this._scope === 'session' ? this._currentSession(activeKey) : undefined,
 			folder: this._scope === 'space' ? this._currentFolder() : undefined,
 			html: this._html,
@@ -361,6 +379,7 @@ export class ParadisAgentDocsView extends ViewPane {
 		}
 		if (filtered.length === 0) {
 			DOM.append(list, DOM.$('.paradis-agent-docs-empty')).textContent = this._emptyMessage();
+			this._scrollable?.scanDomNode();
 			return;
 		}
 		const grouping = paradisReadDocsGrouping(this._storageService);
@@ -375,8 +394,9 @@ export class ParadisAgentDocsView extends ViewPane {
 			}
 		}
 		list.scrollTop = scrollTop;
+		this._scrollable?.scanDomNode();
 		if (focusedKey !== undefined) {
-			this._rows.find(row => row.element.dataset.key === focusedKey)?.element.focus();
+			this._keyed.find(element => element.dataset.key === focusedKey)?.focus();
 		}
 		this._checkExistence(filtered.slice(0, MAX_STAT_ROWS));
 	}
@@ -422,6 +442,8 @@ export class ParadisAgentDocsView extends ViewPane {
 	private _renderGroupHeader(list: HTMLElement, group: ParadisDocsGroup, collapsed: boolean, sessionTitles: Map<string, string>): void {
 		const header = DOM.append(list, DOM.$<HTMLButtonElement>('button.paradis-agent-docs-group.paradis-focus-ring-inset'));
 		header.type = 'button';
+		header.dataset.key = `group:${group.key}`;
+		this._keyed.push(header);
 		header.setAttribute('aria-expanded', String(!collapsed));
 		DOM.append(header, DOM.$(ThemeIcon.asCSSSelector(collapsed ? Codicon.chevronRight : Codicon.chevronDown))).setAttribute('aria-hidden', 'true');
 		let title: string;
@@ -473,6 +495,7 @@ export class ParadisAgentDocsView extends ViewPane {
 		const missing = record.missingSince !== undefined;
 		const row = DOM.append(list, DOM.$('.paradis-agent-docs-row.paradis-focus-subtle'));
 		row.dataset.key = key;
+		this._keyed.push(row);
 		row.tabIndex = 0;
 		row.setAttribute('role', 'listitem');
 		row.classList.toggle('current', key === activeKey);

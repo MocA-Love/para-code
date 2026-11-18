@@ -122,7 +122,7 @@ class ParadisAgentDocsViewContribution extends Disposable implements IWorkbenchC
 	}
 
 	/** 表示中のエディタが Para Code の Markdown・HTML のプレビューなら、まだ台帳に無いときだけ持ち主なしで載せる。 */
-	private _registerOpened(windowHostId: string): void {
+	private _registerOpened(windowHostId: string | undefined): void {
 		const editor = this._editorService.activeEditor;
 		if (editor === undefined || (editor.typeId !== PARADIS_MARKDOWN_INPUT_TYPE_ID && editor.typeId !== PARADIS_HTML_INPUT_TYPE_ID) || editor.resource === undefined) {
 			return;

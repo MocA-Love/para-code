@@ -57,10 +57,16 @@
 	height: var(--paradis-height-sm);
 }
 
-.monaco-workbench .paradis-agent-docs-list {
+.monaco-workbench .paradis-agent-docs-scroll {
 	flex: 1 1 0;
 	min-height: 0;
-	overflow: auto;
+}
+
+/* Scrolled by the upstream scrollbar around it (DomScrollableElement), not the native one. */
+.monaco-workbench .paradis-agent-docs-list {
+	box-sizing: border-box;
+	height: 100%;
+	overflow: hidden;
 	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size60) var(--vscode-spacing-size80);
 }
 
