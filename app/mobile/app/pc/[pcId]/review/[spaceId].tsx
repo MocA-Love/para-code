@@ -29,7 +29,7 @@ import { clearNotesConfirmMessage, newReviewNoteId, noteAnchorOf, noteCountsByPa
 import { DiffLines, ReviewFileList, ReviewFileSummary, ReviewFooter, ReviewSummary } from '../../../../src/features/code/reviewParts.js';
 import { MAX_RAW_LINES } from '../../../../src/features/code/officeRawDiff.js';
 import { effectiveReviewMode, reviewContentKindOf, reviewSidesOf, reviewViewPlan, type ReviewContentKind, type ReviewViewMode } from '../../../../src/features/code/reviewViewModes.js';
-import { OfficeDiffWebView, ReviewImageCompare, ReviewViewSwitch } from '../../../../src/features/code/reviewViewParts.js';
+import { OfficeDiffWebView, RenderedDiffWebView, ReviewImageCompare, ReviewViewSwitch } from '../../../../src/features/code/reviewViewParts.js';
 import { RightDrawer } from '../../../../src/features/code/rightDrawer.js';
 import { orderedScmEntries, scmEntries } from '../../../../src/features/code/scmModel.js';
 import { useCodeSpace } from '../../../../src/features/code/useCodeSpace.js';
@@ -100,9 +100,10 @@ export default function ReviewScreen() {
 	// 見方（表示・差分・Raw）。種類と PC の機能で並べる見方と既定が決まり、ファイルを移ったら既定に戻る（項目 6）
 	const fileAtCapable = usePcCapability(PcCapability.ScmFileAt);
 	const wordDiffCapable = usePcCapability(PcCapability.ScmWordDiff);
+	const renderedDiffCapable = usePcCapability(PcCapability.ScmRenderedDiff);
 	const contentKind = path !== undefined ? reviewContentKindOf(path) : 'text';
 	const sides = reviewSidesOf(entry);
-	const viewPlan = reviewViewPlan(contentKind, sides, { fileAt: fileAtCapable, wordDiff: wordDiffCapable }, path ?? '');
+	const viewPlan = reviewViewPlan(contentKind, sides, { fileAt: fileAtCapable, wordDiff: wordDiffCapable, renderedDiff: renderedDiffCapable }, path ?? '');
 	const [chosenView, setChosenView] = useState<{ readonly path: string; readonly mode: ReviewViewMode } | undefined>(undefined);
 	const viewMode = effectiveReviewMode(viewPlan, chosenView !== undefined && chosenView.path === path ? chosenView.mode : undefined);
 	const office = contentKind === 'spreadsheet' || contentKind === 'docx';
@@ -524,6 +525,9 @@ function ReviewViewBody({ path, kind, mode, view, unavailable, sideBySide }: {
 	}
 	if (content.html !== undefined && (kind === 'spreadsheet' || kind === 'docx')) {
 		return <OfficeDiffWebView html={content.html} kind={kind} />;
+	}
+	if (content.html !== undefined && kind === 'markdown') {
+		return <RenderedDiffWebView html={content.html} />;
 	}
 	if (content.rows !== undefined) {
 		const unit = kind === 'docx' ? '段落' : 'セル';

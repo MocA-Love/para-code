@@ -40,6 +40,18 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.27',
+		date: '2026-11-19',
+		items: [
+			{
+				icon: 'git-compare-outline',
+				title: '変更の画面の「差分」で、Markdown を描いた見た目のまま比べられるようになりました',
+				body: 'PC の Para Code の更新が要ります。',
+				tone: 'yellow',
+			},
+		],
+	},
+	{
 		version: '0.12.26',
 		date: '2026-11-18',
 		items: [

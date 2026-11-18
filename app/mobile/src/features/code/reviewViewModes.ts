@@ -7,11 +7,13 @@ import type { ScmEntry } from './scmModel.js';
  * 差分の画面の見方（「表示・差分・Raw」）の決まり。React に依存しない純関数で、`reviewViewModes.test.ts` で固定している。
  *
  *  - 表示（render）: 変更後の中身をファイルビューアと同じ部品で描く（削除したファイルは変更前）
- *  - 差分（diff）: 変更前と変更後を比べる。画像は並べ、Excel は PC の `xlsxDiff`、Word は PC の Word 差分
+ *  - 差分（diff）: 変更前と変更後を比べる。画像は並べ、Excel は PC の `xlsxDiff`、Word は PC の Word 差分、
+ *    Markdown は PC の 1 列のプレビュー差分（`renderedDiff`）
  *  - Raw（raw）: 文字の差分。テキストは `git diff`、Excel・Word は書式を外した中身（セルの値・段落）の比較
  *
  * 種類ごとの見方と既定（ユーザーの決定 Q6-1・Q6-2）:
- *  - Markdown・HTML: 表示（既定）・Raw
+ *  - Markdown: 表示（既定）・差分（PC が作るプレビュー差分。`scm.rendered-diff.v1` の PC で、変更前と変更後の両方があるとき）・Raw
+ *  - HTML: 表示（既定）・Raw
  *  - 画像: 表示（既定）・差分
  *  - Excel・Word: 表示・差分（既定）・Raw
  *  - その他のテキスト: Raw だけ（切り替えは出さない）
@@ -34,6 +36,8 @@ export interface ReviewViewCaps {
 	readonly fileAt: boolean;
 	/** `scm.word-diff.v1`: Word の差分。 */
 	readonly wordDiff: boolean;
+	/** `scm.rendered-diff.v1`: Markdown のプレビュー差分。 */
+	readonly renderedDiff: boolean;
 }
 
 /** 中身をどこから読むか。`missing` はその側にファイルが無い（新規・削除）。 */
@@ -84,8 +88,15 @@ export function reviewViewPlan(kind: ReviewContentKind, sides: ReviewSides, caps
 	const both = sides.before !== 'missing' && sides.after !== 'missing';
 	switch (kind) {
 		case 'markdown':
-		case 'html':
-			return plan(canRead(renderSide) ? ['render', 'raw'] : ['raw'], 'render');
+		case 'html': {
+			const modes: ReviewViewMode[] = canRead(renderSide) ? ['render'] : [];
+			// プレビュー差分は PC が両側を読んで描く（HTML は扱える PC がまだ無い）。片側しか無いファイルは全体が追加・削除になるだけなので出さない
+			if (kind === 'markdown' && both && caps.renderedDiff) {
+				modes.push('diff');
+			}
+			modes.push('raw');
+			return plan(modes, 'render');
+		}
 		case 'image': {
 			const modes: ReviewViewMode[] = [];
 			if (canRead(renderSide)) {
