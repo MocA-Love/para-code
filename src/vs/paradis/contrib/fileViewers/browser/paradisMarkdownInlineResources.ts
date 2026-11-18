@@ -425,14 +425,22 @@ export async function inlineParadisMarkdownMedia(
 	rewriteBody?: (body: HTMLElement) => void,
 	mediaCache?: ParadisInlineMediaCache,
 ): Promise<IParadisInlineMediaResult> {
-	// TrustedHTML はそのまま渡す（文字列化すると Trusted Types に弾かれる）。
-	// 型定義は string しか受け付けないので、その1点だけキャストする。
-	const doc = new DOMParser().parseFromString(rendered as string, 'text/html');
+	const doc = parseParadisMarkdownHtml(rendered);
 	// 同じ木に対するほかの書き換え（リンクの絶対化など）。文字列に戻したあとで解析し直すと
 	// Trusted Types に弾かれるので、解析はここの1回で済ませる。
 	rewriteBody?.(doc.body);
 	const { inlined, skipped } = await inlineParadisMarkdownMediaInBody(doc.body, documentUri, workspaceFolder, fileService, token, limits, mediaCache);
 	return { html: doc.body.innerHTML, inlined, skipped };
+}
+
+/**
+ * 消毒済みの Markdown の HTML を解析する（{@link inlineParadisMarkdownMedia} と、自分で木を組み替えるプレビュー差分が使う）。
+ * 呼び出し側は消毒済みの HTML を渡すこと。
+ */
+export function parseParadisMarkdownHtml(rendered: TrustedHTML | string): Document {
+	// TrustedHTML はそのまま渡す（文字列化すると Trusted Types に弾かれる）。
+	// 型定義は string しか受け付けないので、その1点だけキャストする。
+	return new DOMParser().parseFromString(rendered as string, 'text/html');
 }
 
 /**
