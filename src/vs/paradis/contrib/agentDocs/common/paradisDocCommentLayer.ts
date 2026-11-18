@@ -442,8 +442,24 @@ const LAYER_BODY = `function (O, A, env) {
 		return out;
 	}
 	function texts(list) { var out = []; for (var i = 0; i < list.length; i++) { out.push(list[i].text); } return out; }
+	/**
+	 * 本文のブロックの大きさが変わったら描き直す（Mermaid の図や画像が後から描かれると、下のブロックの位置がずれる。
+	 * 本文が画面より短いと body の大きさは変わらないので、body だけを見ていては気づかない）。
+	 */
+	var blockObserver = null;
+	function observeBlocks(idx) {
+		var w = env.win();
+		if (blockObserver) { blockObserver.disconnect(); blockObserver = null; }
+		if (!idx || !w || typeof w.ResizeObserver !== 'function') { return; }
+		try {
+			blockObserver = new w.ResizeObserver(function () { schedule(); });
+			var kids = idx.root.children;
+			for (var i = 0; i < kids.length && i < 2000; i++) { blockObserver.observe(kids[i]); }
+		} catch (e) { blockObserver = null; }
+	}
 	function takeSnapshot() {
 		var idx = buildIndex();
+		observeBlocks(idx);
 		snap = idx ? texts(blockList(idx)) : null;
 		changedEls = []; pillTarget = null;
 	}
@@ -452,8 +468,10 @@ const LAYER_BODY = `function (O, A, env) {
 		reported = {};
 		if (editingSeen) { editingSeen.swapped = true; }
 		var idx = buildIndex(), next = idx ? blockList(idx) : null;
+		observeBlocks(idx);
 		changedEls = []; pillTarget = null;
-		if (snap && next) {
+		// 空の文書から描いたとき（初めの書き込み・空にした後の書き戻し）は全部が変わったことになるので色を付けない
+		if (snap && snap.length && next) {
 			var r = A.diffBlocks(snap, texts(next));
 			if (r.changed.length <= ${DIFF_MAX_BLOCKS}) {
 				for (var i = 0; i < r.changed.length; i++) {
@@ -465,6 +483,10 @@ const LAYER_BODY = `function (O, A, env) {
 		}
 		snap = next ? texts(next) : null;
 		draw();
+		// 差し替えの後に描かれるもの（Mermaid の図・画像）で位置がずれても追いつく。大きさの見張りは描画の拍に
+		// 合わせて届くので、拍が止まっている間にも間に合うよう時間でも描き直す
+		setTimeout(schedule, 200);
+		setTimeout(schedule, 800);
 	}
 	/** 足された節が画面より下にあれば知らせを出す。見える所まで来たら外す。 */
 	function checkPill() {

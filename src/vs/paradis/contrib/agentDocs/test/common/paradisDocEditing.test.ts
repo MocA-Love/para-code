@@ -9,7 +9,7 @@
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisDocAnchorFunctions, PARADIS_DOC_ANCHOR_FUNCTIONS } from '../../common/paradisDocCommentAnchor.js';
-import { IParadisDocEditingHook, PARADIS_DOC_EDITING_SOURCE_MAX, paradisDocEditingActionOf, paradisDocEditingSource, paradisReadDocEditingMark } from '../../common/paradisDocEditing.js';
+import { IParadisDocEditingHook, PARADIS_DOC_EDITING_SOURCE_MAX, paradisDocEditingActionOf, paradisDocEditingHead, paradisReadDocEditingMark } from '../../common/paradisDocEditing.js';
 
 /** ページに埋める文字列そのものを動かす。 */
 const fn: IParadisDocAnchorFunctions = new Function(`return ${PARADIS_DOC_ANCHOR_FUNCTIONS};`)();
@@ -75,15 +75,15 @@ suite('ParadisDocEditing', () => {
 		const lines = Array.from({ length: 400 }, (_, i) => line(i));
 		// hook は文字列を 10,000 字で切る。タグの途中・リンクの途中で切れたもの
 		const cutInTag = lines.join('\n').slice(0, 10_000);
-		const source = paradisDocEditingSource(cutInTag)!;
+		const source = paradisDocEditingHead(cutInTag)!;
 		const sourceLines = source.split('\n');
 		assert.deepStrictEqual({
-			short: paradisDocEditingSource('<p>短い</p>'),
-			blank: paradisDocEditingSource('  \n '),
-			notText: paradisDocEditingSource(42),
+			short: paradisDocEditingHead('<p>短い</p>'),
+			blank: paradisDocEditingHead('  \n '),
+			notText: paradisDocEditingHead(42),
 			withinCap: source.length <= PARADIS_DOC_EDITING_SOURCE_MAX,
 			endsOnWholeLine: sourceLines[sourceLines.length - 1] === line(sourceLines.length - 1),
-			oneLongLine: paradisDocEditingSource('x'.repeat(10_000)),
+			oneLongLine: paradisDocEditingHead('x'.repeat(10_000)),
 		}, {
 			short: '<p>短い</p>',
 			blank: undefined,
@@ -98,7 +98,7 @@ suite('ParadisDocEditing', () => {
 		const paragraphs = Array.from({ length: 400 }, (_, i) => `行 ${i} の文。リンク`);
 		const rendered = fn.normalize(paragraphs.join(' '));
 		const html = Array.from({ length: 400 }, (_, i) => `<p>行 ${i} の文。<a href="./x.html">リンク</a></p>`).join('\n');
-		const source = paradisDocEditingSource(html.slice(0, 10_000))!;
+		const source = paradisDocEditingHead(html.slice(0, 10_000))!;
 		const located = fn.locate(rendered, source, 'html');
 		const count = source.split('\n').length;
 		assert.deepStrictEqual(located && { text: rendered.slice(located.start, located.end), match: located.match }, {

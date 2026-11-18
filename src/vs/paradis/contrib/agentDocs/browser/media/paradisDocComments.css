@@ -170,15 +170,15 @@
 }
 
 /* The "Comments N" toggle makes the Markdown bar about 100px longer, so between the bar's own folding width (420px) and
- * about 610px the view toggle on the left ("Preview | Source") was cut off. Bars with the toggle fold the text width
- * into one button and drop the zoom percentage earlier, keeping the comment count. */
+ * about 610px the view toggle on the left ("Preview | Source") was cut off. Markdown bars with the toggle fold the text
+ * width into one button and drop the zoom percentage earlier, keeping the comment count (the HTML bar fits as it is). */
 @container paradis-viewer-toolbar (max-width: 640px) {
-	.monaco-workbench .paradis-viewer-toolbar:has(.paradis-doc-comments-toolbar) .paradis-viewer-toolbar-end > .paradis-viewer-toolbar-unfolded,
-	.monaco-workbench .paradis-viewer-toolbar:has(.paradis-doc-comments-toolbar) .paradis-viewer-toolbar-percent {
+	.monaco-workbench .paradis-viewer-toolbar:has(.paradis-doc-comments-toolbar):has(.paradis-markdown-width) .paradis-viewer-toolbar-end > .paradis-viewer-toolbar-unfolded,
+	.monaco-workbench .paradis-viewer-toolbar:has(.paradis-doc-comments-toolbar):has(.paradis-markdown-width) .paradis-viewer-toolbar-percent {
 		display: none;
 	}
 
-	.monaco-workbench .paradis-viewer-toolbar:has(.paradis-doc-comments-toolbar) .paradis-viewer-toolbar-end > .paradis-viewer-toolbar-folded {
+	.monaco-workbench .paradis-viewer-toolbar:has(.paradis-doc-comments-toolbar):has(.paradis-markdown-width) .paradis-viewer-toolbar-end > .paradis-viewer-toolbar-folded {
 		display: inline-flex;
 	}
 }

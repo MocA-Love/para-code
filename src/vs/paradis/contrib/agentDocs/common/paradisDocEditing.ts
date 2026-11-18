@@ -85,7 +85,7 @@ const WRITE_TOOLS: ReadonlySet<string> = new Set(['Write']);
  * `old_string` を、ページで探す先頭の部分にする。hook で切れている（10,000 字ちょうど）かもしれない最後の行と、
  * {@link PARADIS_DOC_EDITING_SOURCE_MAX} を超える分は、行の切れ目で捨てる。1 行も残らなければ undefined（札だけ）。
  */
-export function paradisDocEditingSource(oldString: unknown): string | undefined {
+export function paradisDocEditingHead(oldString: unknown): string | undefined {
 	if (typeof oldString !== 'string' || oldString.trim().length === 0) {
 		return undefined;
 	}
@@ -140,7 +140,7 @@ export function paradisDocEditingActionOf(hook: IParadisDocEditingHook, agentKin
 	if (hook.event !== 'PreToolUse' || (!isEdit && !isWrite) || target === undefined || input === undefined) {
 		return undefined;
 	}
-	const source = isEdit ? paradisDocEditingSource(oldStringOf(hook.toolName ?? '', input)) : undefined;
+	const source = isEdit ? paradisDocEditingHead(oldStringOf(hook.toolName ?? '', input)) : undefined;
 	return {
 		type: 'start', hostId: target.hostId, path: target.path, tool: isEdit ? 'edit' : 'write',
 		...(source !== undefined ? { source } : {}),
