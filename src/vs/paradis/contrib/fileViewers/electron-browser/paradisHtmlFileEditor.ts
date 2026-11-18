@@ -314,7 +314,7 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		const base = await this._resolveBase(resource);
 		// 外枠は保存先がある（デスクトップ）限り常に使う（webview のスクリプトの可否と同じ条件にし、入力の切り替えと
 		// 重なっても、スクリプトを許した webview に信頼していないページをそのまま書かない）。コメントは資料だけ
-		const comments = this._comments.available;
+		const framed = this._comments.available;
 		const commentable = this._comments.enabledFor(resource);
 		const pageScriptsAllowed = this._pageScriptsAllowed;
 		const baseHref = escapeAttribute(base.url);
@@ -327,12 +327,12 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		// ページが body にだけ背景を付けているときは、読み込んだ後に白を外して body の背景を画面全体に広げる。
 		const headInjection = `<base href="${baseHref}">${paradisHtmlViewerHeadStyle(this._zoom.factor)}`;
 		// ライブなズーム変更（ボタン操作）を postMessage で受け取り、スクロール位置を保ったまま反映する。
-		const zoomScript = comments ? '' : paradisViewerZoomScript();
+		const zoomScript = framed ? '' : paradisViewerZoomScript();
 
 		const injected = paradisInjectHtmlHead(text, headInjection);
 		// 外の文書の CSP と、保存領域を消すスクリプトは、ページのどのスクリプトよりも前に置く（{@link paradisInsertAtDocumentStart}）。
 		// 外枠に入れるときは、webview の基盤の既定のスタイルも先頭に置く（中のページには基盤のスタイルが届かない）
-		const documentStart = (comments ? paradisHtmlFrameDefaultStyle() : '')
+		const documentStart = (framed ? paradisHtmlFrameDefaultStyle() : '')
 			+ (base.outsideWorkspace ? paradisHtmlOutsideWorkspaceCsp(base.url) : '')
 			+ (pageScriptsAllowed ? paradisHtmlStorageResetScript(paradisHtmlDocumentStorageKey(resource)) : '');
 		const html = documentStart ? paradisInsertAtDocumentStart(injected, documentStart) : injected;
@@ -344,7 +344,7 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		// スクロール位置の復元と検索結果の色のスクリプトも同じ理由で末尾に足す。スクリプトを動かさない
 		// とき（制限モード）は入れても動かないので入れない（webview を作り直した直後の初回表示だけは
 		// webview 自身がスクロール位置を戻す）。
-		if (comments) {
+		if (framed) {
 			// 外枠にページを入れる。スクロール位置の復元と拡大は外枠がするので、ページには検索の色と白い地のスクリプトだけ
 			// （ページのスクリプトを動かすときだけ）。2 回目からは外枠を残してページだけを送る（外枠が入れ替える）。
 			const pageHtml = `${html}${pageScriptsAllowed ? paradisFindHighlightScript() + paradisHtmlViewerCanvasScript() : ''}`;
