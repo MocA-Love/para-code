@@ -17,6 +17,7 @@
 
 import { localize } from '../../../../nls.js';
 import type { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import { paradisIsInsideFolder } from './paradisAgentDocs.js';
 import { ParadisDocDeliveryBlock } from './paradisDocComments.js';
 
 /** shared process の届け方のチャネル。 */
@@ -29,6 +30,17 @@ export const PARADIS_DOC_DELIVERY_CLAIM_METHOD = 'claim';
 export const PARADIS_DOC_DELIVERY_CONFIRM_METHOD = 'confirmEnter';
 /** 取った分の結果を知らせる。引数は `[attempt, ParadisDocDeliveryOutcome]`。 */
 export const PARADIS_DOC_DELIVERY_FINISH_METHOD = 'finish';
+/**
+ * 終了した持ち主の会話を起こす券を取る（カードの「起こして届ける」）。引数は `[hostId, path, windowIsRemote]`、答えは
+ * {@link ParadisDocWakeAnswer}。券を渡した時点で、その会話は「起こしている途中」になり、二度目の券は出ない。
+ */
+export const PARADIS_DOC_DELIVERY_WAKE_METHOD = 'wake';
+/** 起こしたペインを知らせる。引数は `[session, paneToken | undefined]`。 */
+export const PARADIS_DOC_DELIVERY_WOKE_METHOD = 'woke';
+/** 起こせなかった・起こしたターミナルで CLI が終わった。引数は `[session, paneToken?]`（渡したときは、そのペインで起こした分だけを外す）。 */
+export const PARADIS_DOC_DELIVERY_WAKE_FAILED_METHOD = 'wakeFailed';
+/** 持ち主のいない・終了した持ち主の資料を、選んだペインの会話へ渡す（カードの「別のエージェントに渡す」）。引数は `[hostId, path, token]`。 */
+export const PARADIS_DOC_DELIVERY_HAND_OFF_METHOD = 'handOff';
 
 /** ウィンドウが取った、1 回の貼り付け。 */
 export interface IParadisDocDeliveryClaim {
@@ -54,8 +66,8 @@ export function paradisReadDocDeliveryOutcome(value: unknown): ParadisDocDeliver
 
 // --- 届けてよいか -----------------------------------------------------------------------------
 
-/** 持ち主の会話の見え方。live = その会話がどれかのペインで動いている。 */
-export type ParadisDocDeliveryOwner = 'none' | 'ended' | 'unknown' | 'live';
+/** 持ち主の会話の見え方。live = その会話がどれかのペインで動いている、waking = ユーザーが起こし、CLI の起動を待っている。 */
+export type ParadisDocDeliveryOwner = 'none' | 'ended' | 'unknown' | 'waking' | 'live';
 
 /** 入力欄の中身。`unknown` は確かめる手段が無い（Codex・入力欄の mod の無い Claude Code など）。 */
 export type ParadisDocDraftState = 'empty' | 'text' | 'unknown';
@@ -77,6 +89,8 @@ export interface IParadisDocDeliveryInput {
 	readonly remote: boolean;
 	/** 同じペインへ前の分を貼って、届いた知らせを待っている。 */
 	readonly busy: boolean;
+	/** 起こしたばかりのペインで、CLI の起動の猶予がまだ過ぎていない。 */
+	readonly starting?: boolean;
 }
 
 export type ParadisDocDeliveryDecision =
@@ -97,12 +111,17 @@ export function paradisDecideDocDelivery(input: IParadisDocDeliveryInput): Parad
 			return { kind: 'undeliverable', block: 'ended' };
 		case 'unknown':
 			return { kind: 'undeliverable', block: 'unknown' };
+		case 'waking':
+			return { kind: 'wait', block: 'waking' };
 	}
 	if (!input.hasHooks) {
 		return { kind: 'undeliverable', block: 'noHooks' };
 	}
 	if (input.status === 'permission' || input.status === 'question') {
 		return { kind: 'wait', block: input.status };
+	}
+	if (input.starting === true) {
+		return { kind: 'wait', block: 'waking' };
 	}
 	if (input.busy) {
 		return { kind: 'wait', block: 'sending' };
@@ -129,6 +148,91 @@ export function paradisDocDeliveryMayEnter(status: ParadisAgentStatus | undefine
 		return false;
 	}
 	return draft === undefined || draft.trim().length === 0 || draft.trim() === typed.trim();
+}
+
+// --- 終了した持ち主を起こす（Q663-4、Q667-7） ------------------------------------------------------
+
+/** 再開のコマンドで起こせる CLI（SessionStart の hook で起きたペインを見つけられるもの）。 */
+export type ParadisDocWakeAgent = 'claude' | 'codex';
+
+/** ウィンドウへ渡す起こす券。会話 ID・CLI・作業ディレクトリは台帳から引く（ウィンドウの値を使わない）。 */
+export interface IParadisDocWakeTicket {
+	readonly kind: 'wake';
+	readonly agent: ParadisDocWakeAgent;
+	readonly session: string;
+	/** 会話を始めた作業ディレクトリ（再開はここで行う。Claude Code はこのフォルダのプロジェクトから会話を探す）。 */
+	readonly cwd: string;
+}
+
+/**
+ * 起こさない理由。`noOwner` 持ち主がいない、`live` 持ち主の会話がどこかのペインで動いている、`unknown` 動いているか
+ * 分からない（終了を見ていない）、`waking` もう起こしている途中、`maybeLive` 持ち主と確かめられない hook がその会話から
+ * 届いている、`agent` 起こせない CLI、`remote` SSH 先の資料・SSH の窓、`noCwd` 会話を始めたフォルダが分からない。
+ */
+export type ParadisDocWakeRefusal = 'noOwner' | 'live' | 'unknown' | 'waking' | 'maybeLive' | 'agent' | 'remote' | 'noCwd';
+
+export type ParadisDocWakeAnswer = IParadisDocWakeTicket | { readonly kind: 'refused'; readonly reason: ParadisDocWakeRefusal };
+
+export interface IParadisDocWakeInput {
+	readonly owner: { readonly agent: string; readonly session: string; readonly cwd?: string; readonly ended?: number } | undefined;
+	/** 持ち主の会話が動いているペインがある。 */
+	readonly live: boolean;
+	/** その会話を起こしている途中。 */
+	readonly waking: boolean;
+	/** 持ち主と確かめられない hook がその会話から届いた。 */
+	readonly seenUnverified: boolean;
+	/** 資料の接続先の印（手元は空文字）。 */
+	readonly hostId: string;
+	/** 押したウィンドウが SSH の窓か。 */
+	readonly windowIsRemote: boolean;
+}
+
+/**
+ * 起こしてよいかを決める。生きている会話を再開すると会話が枝分かれするので、終了を見た会話だけを起こす。
+ * 状態の分からない会話は、自動でも手動でも起こさない（note-tools-design.html の「届け方」の表）。
+ */
+export function paradisDecideDocWake(input: IParadisDocWakeInput): ParadisDocWakeAnswer {
+	const owner = input.owner;
+	const refuse = (reason: ParadisDocWakeRefusal): ParadisDocWakeAnswer => ({ kind: 'refused', reason });
+	if (owner === undefined) {
+		return refuse('noOwner');
+	}
+	if (input.live) {
+		return refuse('live');
+	}
+	if (input.waking) {
+		return refuse('waking');
+	}
+	if (owner.ended === undefined) {
+		return refuse('unknown');
+	}
+	if (input.seenUnverified) {
+		return refuse('maybeLive');
+	}
+	if (owner.agent !== 'claude' && owner.agent !== 'codex') {
+		return refuse('agent');
+	}
+	if (input.hostId !== '' || input.windowIsRemote) {
+		return refuse('remote');
+	}
+	if (owner.cwd === undefined) {
+		return refuse('noCwd');
+	}
+	return { kind: 'wake', agent: owner.agent, session: owner.session, cwd: owner.cwd };
+}
+
+/**
+ * 起こすスペース。作業ディレクトリを含むスペースのうち、いちばん深いもの（ワークツリーを本体より先に）。無ければ undefined。
+ * スペースのフォルダは正規化した絶対パス（paradisNormalizeDocPath）で渡す。
+ */
+export function paradisDocWakeSpaceFor<T extends { readonly path: string }>(spaces: readonly T[], cwd: string): T | undefined {
+	let best: T | undefined;
+	for (const space of spaces) {
+		if (paradisIsInsideFolder(cwd, space.path) && (best === undefined || space.path.length > best.path.length)) {
+			best = space;
+		}
+	}
+	return best;
 }
 
 // --- 貼る文 -----------------------------------------------------------------------------------

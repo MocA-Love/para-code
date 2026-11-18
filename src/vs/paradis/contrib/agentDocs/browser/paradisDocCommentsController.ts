@@ -89,9 +89,9 @@ export function paradisDocCommentStatus(thread: IParadisDocCommentThread): IPara
 			const label = localize('paradis.docComments.status.undeliverable', "届けられません");
 			switch (delivery?.blockedBy) {
 				case 'ended':
-					return { label, tone: 'neutral', note: localize('paradis.docComments.status.ended', "作成元のセッションは終了しています。") };
+					return { label, tone: 'neutral', note: localize('paradis.docComments.status.ended', "作成元のセッションは終了しています。起こして届けるか、別のエージェントに渡せます。") };
 				case 'unknown':
-					return { label, tone: 'warning', note: localize('paradis.docComments.status.unknown', "作成元のセッションが動いているか分かりません。そのターミナルで 1 回メッセージを送ると届けます。") };
+					return { label, tone: 'warning', note: localize('paradis.docComments.status.unknown', "作成元のセッションが動いているか分かりません。動いていれば、そのターミナルで 1 回メッセージを送ると届けます。動いているセッションを起こすと会話が分かれるため、ここからは起こしません。") };
 				case 'noHooks':
 					return { label, tone: 'warning', note: localize('paradis.docComments.status.noHooks', "作成元のターミナルからエージェントの状態が届いていないため、届けられません。") };
 				default:
@@ -122,9 +122,23 @@ export function paradisDocCommentStatus(thread: IParadisDocCommentThread): IPara
 			return { label, tone: 'warning', note: localize('paradis.docComments.status.screen', "ターミナルに確認の画面が出ています。閉じた後に届けます。") };
 		case 'notRunning':
 			return { label, tone: 'warning', note: localize('paradis.docComments.status.notRunning', "作成元のターミナルでエージェントが動いていません。動き出したら届けます。") };
+		case 'waking':
+			return { label, tone: 'running', note: localize('paradis.docComments.status.waking', "作成元のセッションを起こしています。起動したら届けます。届かないときは、起こしたターミナルで 1 回メッセージを送ってください。") };
 		default:
 			return { label, tone: 'neutral' };
 	}
+}
+
+/**
+ * 持ち主への操作を出すか。終了を見た持ち主は「起こして届ける」と「別のエージェントに渡す」、持ち主のいない資料は
+ * 「別のエージェントに渡す」だけ。動いているか分からない持ち主には出さない（動いている会話を起こすと枝分かれする）。
+ */
+export function paradisDocCommentOwnerActions(thread: IParadisDocCommentThread): { readonly wake: boolean; readonly handOff: boolean } {
+	if (thread.state !== 'undeliverable' || thread.delivery?.typedAt !== undefined) {
+		return { wake: false, handOff: false };
+	}
+	const block = thread.delivery?.blockedBy;
+	return { wake: block === 'ended', handOff: block === 'ended' || block === 'noOwner' };
 }
 
 /** 引用を 1 行に均す。 */
@@ -665,8 +679,20 @@ export class ParadisDocCommentsController extends Disposable {
 		return card;
 	}
 
-	/** カードの下のボタン（今すぐ届ける・返信・解決にする／開き直す）。 */
+	/** カードの下のボタン（起こして届ける・別のエージェントに渡す・今すぐ届ける・返信・解決にする／開き直す）。 */
 	private _renderCardActions(card: HTMLElement, thread: IParadisDocCommentThread): void {
+		const owner = paradisDocCommentOwnerActions(thread);
+		if ((owner.wake && this._backend?.wake) || (owner.handOff && this._backend?.handOff)) {
+			const ownerRow = dom.append(card, dom.$('.paradis-doc-comment-footer'));
+			if (owner.wake && this._backend?.wake) {
+				const wake = this._listStore.add(new ParadisButton(ownerRow, { kind: 'primary', small: true, label: localize('paradis.docComments.wake', "起こして届ける") }));
+				this._listStore.add(wake.onDidClick(() => this._ownerAction('wake')));
+			}
+			if (owner.handOff && this._backend?.handOff) {
+				const handOff = this._listStore.add(new ParadisButton(ownerRow, { kind: 'ghost', small: true, label: localize('paradis.docComments.handOff', "別のエージェントに渡す") }));
+				this._listStore.add(handOff.onDidClick(() => this._ownerAction('handOff')));
+			}
+		}
 		const footer = dom.append(card, dom.$('.paradis-doc-comment-footer'));
 		const button = (label: string, run: () => void) => {
 			const created = this._listStore.add(new ParadisButton(footer, { kind: 'ghost', small: true, label }));
@@ -739,6 +765,16 @@ export class ParadisDocCommentsController extends Disposable {
 		store.add(send.onDidClick(submit));
 		this._replyBox = { id, element, textarea };
 		return element;
+	}
+
+	/** 持ち主への操作（起こす・別のエージェントに渡す）をウィンドウへ頼む。 */
+	private _ownerAction(action: 'wake' | 'handOff'): void {
+		const target = this._target;
+		if (target === undefined) {
+			return;
+		}
+		const done = action === 'wake' ? this._backend?.wake?.(target.hostId, target.path) : this._backend?.handOff?.(target.hostId, target.path);
+		done?.catch(onUnexpectedError);
 	}
 
 	/** カードの操作を保存係へ頼む。結果は保存係の知らせで読み直す。 */

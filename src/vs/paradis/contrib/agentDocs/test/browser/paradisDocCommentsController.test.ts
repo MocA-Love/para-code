@@ -23,7 +23,7 @@ suite('ParadisDocCommentsController', () => {
 
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function setup(initial: IParadisDocCommentThread[] = [], editing?: IParadisDocEditingSource) {
+	function setup(initial: IParadisDocCommentThread[] = [], editing?: IParadisDocEditingSource, owner?: unknown[][]) {
 		const added: { hostId: string; path: string; draft: IParadisDocCommentDraft }[] = [];
 		const acts: unknown[][] = [];
 		const threads: IParadisDocCommentThread[] = [...initial];
@@ -38,6 +38,10 @@ suite('ParadisDocCommentsController', () => {
 			},
 			setPlaces: async () => { },
 			act: async (_hostId, _path, id, action, text) => { acts.push([id, action, text]); },
+			...(owner !== undefined ? {
+				wake: async (hostId: string, path: string) => { owner.push(['wake', hostId, path]); },
+				handOff: async (hostId: string, path: string) => { owner.push(['handOff', hostId, path]); },
+			} : {}),
 		};
 		const messages = disposables.add(new Emitter<WebviewMessageReceivedEvent>());
 		const posted: unknown[] = [];
@@ -159,6 +163,34 @@ suite('ParadisDocCommentsController', () => {
 			],
 			acts: [['c-000000000002', 'deliverNow', undefined], ['c-000000000001', 'resolve', undefined], ['c-000000000001', 'append', '脚注の番号は?']],
 			replyOpen: false,
+		});
+	});
+
+	test('offers to wake an ended owner or hand the document to another agent, only hand-off without an owner, and nothing for an owner that may be alive', async () => {
+		const thread = (id: string, blockedBy: 'ended' | 'noOwner' | 'unknown' | 'waking'): IParadisDocCommentThread => ({
+			id, startedBy: 'user', anchor: { quote: id }, state: blockedBy === 'waking' ? 'queued' : 'undeliverable', createdAt: 1,
+			messages: [{ by: 'user', text: 'x', at: 1 }], delivery: { attempts: 0, blockedBy },
+		});
+		const owner: unknown[][] = [];
+		const { content } = setup([thread('c-000000000001', 'ended'), thread('c-000000000002', 'noOwner'), thread('c-000000000003', 'unknown'), thread('c-000000000004', 'waking')], undefined, owner);
+		await flush();
+		const cards = [...content.querySelectorAll<HTMLElement>('.paradis-doc-comment-card')];
+		const summary = cards.map(card => ({
+			status: card.querySelector('.paradis-status-label')?.textContent,
+			buttons: [...card.querySelectorAll('.paradis-doc-comment-footer .paradis-button')].map(button => button.textContent),
+		}));
+		const button = (card: HTMLElement, label: string) => [...card.querySelectorAll<HTMLElement>('.paradis-doc-comment-footer .paradis-button')].find(candidate => candidate.textContent === label)!;
+		button(cards[0], '起こして届ける').click();
+		button(cards[0], '別のエージェントに渡す').click();
+		await flush();
+		assert.deepStrictEqual({ summary, owner }, {
+			summary: [
+				{ status: '届けられません', buttons: ['起こして届ける', '別のエージェントに渡す', '返信', '解決にする'] },
+				{ status: '届けられません', buttons: ['別のエージェントに渡す', '返信', '解決にする'] },
+				{ status: '届けられません', buttons: ['返信', '解決にする'] },
+				{ status: '届け待ち', buttons: ['返信', '解決にする'] },
+			],
+			owner: [['wake', '', '/w/note.md'], ['handOff', '', '/w/note.md']],
 		});
 	});
 

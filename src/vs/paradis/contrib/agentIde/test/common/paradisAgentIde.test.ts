@@ -368,6 +368,13 @@ suite('paradisAgentIde (common)', () => {
 		], [true, false, true]);
 	});
 
+	test('prompt detection sees the folder trust and the project MCP server prompts of Claude Code', () => {
+		const trust = 'Accessing workspace:\n\n /repo\n\n Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team).\n\n \u276f 1. Yes, I trust this folder\n   2. No, exit\n\n Enter to confirm \u00b7 Esc to cancel';
+		const mcp = 'New MCP server found in this project: docs\n\n \u276f 1. Use this and all future MCP servers in this project\n   2. Use this MCP server\n   3. Continue without using this MCP server\n\n Enter to confirm \u00b7 Esc to cancel';
+		const idle = '\u256d\u2500\u2500\u2500\u256e\n\u2502 > \u2502\n\u2570\u2500\u2500\u2500\u256f\n  ? for shortcuts';
+		assert.deepStrictEqual([trust, mcp, idle].map(screen => paradisAgentIdeScreenShowsPrompt(screen)), [true, true, false]);
+	});
+
 	test('status labels, key sequences, tail lines, titles and the agent marker', () => {
 		assert.deepStrictEqual({
 			labels: [paradisAgentIdeStatusLabel('working'), paradisAgentIdeStatusLabel('permission'), paradisAgentIdeStatusLabel('question'), paradisAgentIdeStatusLabel('review'), paradisAgentIdeStatusLabel(undefined)],

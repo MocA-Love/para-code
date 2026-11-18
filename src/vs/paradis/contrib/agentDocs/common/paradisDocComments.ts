@@ -71,12 +71,13 @@ const STATES: ReadonlySet<string> = new Set<ParadisDocCommentState>(['queued', '
  * 届けられない・待っている理由。
  * 待つもの: `working` 作業中、`permission` 許可待ち、`question` 質問待ち、`draft` 入力欄に書きかけがある、
  * `draftUnknown` 入力欄の中身を確かめられない（次のターンの終わりの直後に届ける）、`sending` 同じペインへ前の分を届けている、
- * `screen` ペインの画面に確認が出ている（画面を読めないときも）、`notRunning` ペインの前面でエージェントが動いていない。
+ * `screen` ペインの画面に確認が出ている（画面を読めないときも）、`notRunning` ペインの前面でエージェントが動いていない、
+ * `waking` 終了した持ち主の会話をユーザーが起こした（CLI の起動を待っている）。
  * 届けられないもの（状態は `undeliverable`）: `noOwner` 持ち主がいない、`ended` 持ち主の会話が終わった、`unknown` 持ち主の
  * 会話が動いているか分からない、`noHooks` 持ち主のペインから状態の知らせが一度も来ていない。
  */
-export type ParadisDocDeliveryBlock = 'working' | 'permission' | 'question' | 'draft' | 'draftUnknown' | 'sending' | 'screen' | 'notRunning' | 'noOwner' | 'ended' | 'unknown' | 'noHooks';
-const BLOCKS: ReadonlySet<string> = new Set<ParadisDocDeliveryBlock>(['working', 'permission', 'question', 'draft', 'draftUnknown', 'sending', 'screen', 'notRunning', 'noOwner', 'ended', 'unknown', 'noHooks']);
+export type ParadisDocDeliveryBlock = 'working' | 'permission' | 'question' | 'draft' | 'draftUnknown' | 'sending' | 'screen' | 'notRunning' | 'waking' | 'noOwner' | 'ended' | 'unknown' | 'noHooks';
+const BLOCKS: ReadonlySet<string> = new Set<ParadisDocDeliveryBlock>(['working', 'permission', 'question', 'draft', 'draftUnknown', 'sending', 'screen', 'notRunning', 'waking', 'noOwner', 'ended', 'unknown', 'noHooks']);
 const UNDELIVERABLE_BLOCKS: ReadonlySet<ParadisDocDeliveryBlock> = new Set<ParadisDocDeliveryBlock>(['noOwner', 'ended', 'unknown', 'noHooks']);
 
 /** 届けられない理由（待てば届くものではない）か。 */

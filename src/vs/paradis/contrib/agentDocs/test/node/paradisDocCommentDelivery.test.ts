@@ -69,7 +69,7 @@ suite('ParadisDocCommentDelivery', () => {
 			await ledger.ready;
 			await new Promise(resolve => setTimeout(resolve, 0));
 		};
-		return { hooks, turnEnded, comments, delivery, statuses, drafts, noHooks, wanted, state, settle, advance: (ms: number) => { now += ms; } };
+		return { hooks, turnEnded, comments, delivery, ledger, statuses, drafts, noHooks, wanted, state, settle, now: () => now, advance: (ms: number) => { now += ms; } };
 	}
 
 	test('waits while the owner asks for a permission, types once and presses Enter when it is idle, and marks it delivered on the submitted prompt', async () => {
@@ -153,6 +153,111 @@ suite('ParadisDocCommentDelivery', () => {
 			exited: { state: [[a!.id, 'undeliverable', 'unknown']], claim: undefined },
 			back: [[a!.id, 'queued', undefined]],
 			wanted: ['p1'],
+		});
+	});
+
+	async function endedOwner() {
+		const t = setup();
+		t.hooks.fire(write('p1', 's1', '/repo/a.md'));
+		await t.settle();
+		t.hooks.fire(hook('p1', 'TerminalExit', ''));
+		await t.settle();
+		const a = await t.comments.add('', '/repo/a.md', { anchor: { quote: 'A' }, text: '根拠は?' });
+		await t.delivery.evaluate();
+		return { t, a: a! };
+	}
+
+	test('wakes an ended owner once, waits for the start of the woken CLI, and then delivers there', async () => {
+		const { t, a } = await endedOwner();
+		const ended = await t.state('/repo/a.md');
+		const ticket = await t.delivery.wake('', '/repo/a.md', false);
+		const twice = await t.delivery.wake('', '/repo/a.md', false);
+		await t.delivery.evaluate();
+		const waking = await t.state('/repo/a.md');
+		t.delivery.woke('s1', 'p9');
+		t.drafts.set('p9', undefined);
+		t.hooks.fire(hook('p9', 'SessionStart', 's1', { at: t.now() }));
+		await t.settle();
+		await t.delivery.evaluate();
+		const starting = { state: await t.state('/repo/a.md'), wanted: t.wanted.length, claim: await t.delivery.claim('p9') };
+		t.advance(1_500);
+		await t.delivery.evaluate();
+		const claim = await t.delivery.claim('p9');
+		assert.deepStrictEqual({ ended, ticket, twice, waking, starting, wanted: t.wanted.flat(), claimed: claim?.text.includes(a.id), enter: claim?.enter }, {
+			ended: [[a.id, 'undeliverable', 'ended']],
+			ticket: { kind: 'wake', agent: 'claude', session: 's1', cwd: '/repo' },
+			twice: { kind: 'refused', reason: 'waking' },
+			waking: [[a.id, 'queued', 'waking']],
+			starting: { state: [[a.id, 'queued', 'waking']], wanted: 0, claim: undefined },
+			wanted: ['p9'],
+			claimed: true,
+			enter: true,
+		});
+	});
+
+	test('does not deliver to a woken pane that reports another session, and lets the owner be woken again after the pane closes', async () => {
+		const { t, a } = await endedOwner();
+		await t.delivery.wake('', '/repo/a.md', false);
+		t.delivery.woke('s1', 'p9');
+		t.hooks.fire(hook('p9', 'SessionStart', 's-other', { at: t.now() }));
+		await t.settle();
+		await t.delivery.evaluate();
+		const other = { state: await t.state('/repo/a.md'), wanted: t.wanted.length };
+		const again = await t.delivery.wake('', '/repo/a.md', false);
+		t.delivery.woke('s1', 'p8');
+		// 前に起こしたターミナル（p9）で CLI が終わっても、後から起こした分（p8）の印は外さない
+		t.delivery.wakeFailed('s1', 'p9');
+		const keptForP8 = (await t.delivery.wake('', '/repo/a.md', false)).kind;
+		t.hooks.fire(hook('p8', 'TerminalExit', ''));
+		await t.settle();
+		const afterExit = (await t.delivery.wake('', '/repo/a.md', false)).kind;
+		t.delivery.wakeFailed('s1');
+		await t.delivery.wake('', '/repo/a.md', false);
+		const notReported = await t.delivery.wake('', '/repo/a.md', false);
+		t.advance(61_000);
+		const expired = (await t.delivery.wake('', '/repo/a.md', false)).kind;
+		assert.deepStrictEqual({ other, again: again.kind, keptForP8, afterExit, notReported: notReported.kind, expired }, {
+			other: { state: [[a.id, 'undeliverable', 'ended']], wanted: 0 },
+			again: 'wake',
+			keptForP8: 'refused',
+			afterExit: 'wake',
+			notReported: 'refused',
+			expired: 'wake',
+		});
+	});
+
+	test('never wakes a live owner, an owner whose end was not seen, or a session that sends unverified hooks', async () => {
+		const t = setup();
+		t.hooks.fire(write('p1', 's1', '/repo/live.md'));
+		t.hooks.fire(write('p3', 's3', '/repo/maybe.md'));
+		await t.settle();
+		t.hooks.fire(hook('p3', 'TerminalExit', ''));
+		await t.settle();
+		t.hooks.fire(hook('px', 'Stop', 's3', { ownerUnverified: true }));
+		const reasons: string[] = [];
+		for (const path of ['/repo/live.md', '/repo/maybe.md']) {
+			const answer = await t.delivery.wake('', path, false);
+			reasons.push(answer.kind === 'refused' ? answer.reason : answer.kind);
+		}
+		assert.deepStrictEqual(reasons, ['live', 'maybeLive']);
+	});
+
+	test('hands a document of an ended owner to a live pane, which then gets the comments, but not a document of a live owner', async () => {
+		const { t, a } = await endedOwner();
+		t.hooks.fire(write('p2', 's2', '/repo/b.md'));
+		t.hooks.fire(write('p3', 's3', '/repo/c.md'));
+		await t.settle();
+		const handedOff = await t.delivery.handOff('', '/repo/a.md', 'p2');
+		const active = await t.delivery.handOff('', '/repo/c.md', 'p2');
+		const unknownPane = await t.delivery.handOff('', '/repo/a.md', 'nobody');
+		await t.delivery.evaluate();
+		const claim = await t.delivery.claim('p2');
+		assert.deepStrictEqual({ handedOff, active, unknownPane, owner: t.ledger.get('', '/repo/a.md')?.owner?.session, claimed: claim?.text.includes(a.id) }, {
+			handedOff: 'handedOff',
+			active: 'ownerActive',
+			unknownPane: 'sessionUnknown',
+			owner: 's2',
+			claimed: true,
 		});
 	});
 });

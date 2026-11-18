@@ -25,6 +25,10 @@ export interface IParadisDocCommentsBackend {
 	setPlaces(hostId: string, path: string, places: ReadonlyMap<string, ParadisDocCommentPlace>): Promise<void>;
 	/** カードの操作（解決・開き直し・追記・今すぐ届ける）。 */
 	act(hostId: string, path: string, id: string, action: ParadisDocCommentUserAction, text?: string): Promise<void>;
+	/** 終了した持ち主の会話を起こし、起動を待って届ける（カードの「起こして届ける」）。結果はウィンドウが知らせる。 */
+	wake?(hostId: string, path: string): Promise<void>;
+	/** 選んだペインの会話へ資料を渡す（カードの「別のエージェントに渡す」）。結果はウィンドウが知らせる。 */
+	handOff?(hostId: string, path: string): Promise<void>;
 }
 
 let backend: IParadisDocCommentsBackend | undefined;
