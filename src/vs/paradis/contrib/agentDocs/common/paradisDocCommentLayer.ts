@@ -342,9 +342,11 @@ const LAYER_BODY = `function (O, A, env) {
 		}, true);
 		// 中で巻き取る要素のスクロールだけ描き直す（文書そのもののスクロールでは枠は文書と一緒に動く）
 		d.addEventListener('scroll', function (e) { if (e.target !== d) { schedule(); } }, true);
-		w.addEventListener('resize', schedule);
+		// 幅が変わると選んだ文字の位置も変わるので、「コメント」のボタンは外す（選び直せば出る）
+		function relayout() { hideButton(); schedule(); }
+		w.addEventListener('resize', relayout);
 		if (typeof w.ResizeObserver === 'function') {
-			try { new w.ResizeObserver(schedule).observe(d.body); } catch (e) { }
+			try { new w.ResizeObserver(relayout).observe(d.body); } catch (e) { }
 		}
 	}
 	var timer = 0;
