@@ -1,0 +1,55 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/* The bar of the rendered diff of Markdown (paradisMarkdownRenderedDiffView.ts). */
+
+.paradis-rendered-diff-legend-item {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size40);
+}
+
+.paradis-rendered-diff-legend-swatch {
+	width: 9px;
+	height: 9px;
+	border-radius: 2px;
+	flex: 0 0 auto;
+}
+
+.paradis-rendered-diff-legend-added {
+	background: var(--vscode-editorGutter-addedBackground);
+}
+
+.paradis-rendered-diff-legend-removed {
+	background: var(--vscode-editorGutter-deletedBackground);
+}
+
+.paradis-rendered-diff-legend-changed {
+	background: var(--vscode-editorGutter-modifiedBackground);
+}
+
+.paradis-rendered-diff-note {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: var(--vscode-paradis-textMuted);
+}
+
+.paradis-rendered-diff-note:empty {
+	display: none;
+}
+
+@container paradis-viewer-toolbar (max-width: 700px) {
+	.paradis-rendered-diff-note {
+		display: none;
+	}
+}
+
+/* The text diff while the rendered diff is shown (visibility alone leaves parts of the diff editor visible). */
+.paradis-file-viewer-editor.paradis-rendered-diff-text-hidden {
+	display: none;
+}

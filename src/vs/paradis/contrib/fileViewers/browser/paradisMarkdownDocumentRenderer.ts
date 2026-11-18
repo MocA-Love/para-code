@@ -46,6 +46,12 @@ export interface IParadisMarkdownDocumentOptions {
 	readonly allowRelativeMediaPaths?: boolean;
 	readonly allowRelativeLinkPaths?: boolean;
 	readonly markedExtensions?: readonly marked.MarkedExtension[];
+	/**
+	 * 一番上のブロック（lexer の一番上のトークン。空行の `space` は除く）を 1 つずつ、このクラスの `div` で包む。
+	 * プレビュー差分がブロックごとに印を付けるために使う。包んだ数は {@link IParadisMarkdownDocument.tokens} の
+	 * `space` 以外の数と同じ（文書の生の HTML が包みを閉じてしまうと、消毒の後の木では数が合わなくなる）。
+	 */
+	readonly blockClass?: string;
 }
 
 /**
@@ -76,6 +82,8 @@ export interface IParadisMarkdownDocument {
 	 * コピーで元のタブに戻すために使う（paradisMarkdownCodeSource）。
 	 */
 	readonly codeSources: readonly IParadisMarkdownCodeSource[];
+	/** lexer の結果（コードのトークンの `text` は色付けで書き換わっている。`raw` は書いたまま）。 */
+	readonly tokens: marked.TokensList;
 }
 
 /**
@@ -141,24 +149,29 @@ async function renderMarkdown(
 		}));
 	});
 	await raceCancellationError(Promise.all(highlighting), token);
-	const html = sanitizeMarkdownHtml(m.parser(tokens), options);
+	const blockClass = options.blockClass;
+	const parse = () => blockClass
+		? tokens.map(block => block.type === 'space' ? '' : `<div class="${blockClass}">${m.parser([block])}</div>`).join('')
+		: m.parser(tokens);
+	const html = sanitizeMarkdownHtml(parse(), options);
 	if (deferred.length === 0) {
-		return { html, insertHighlightedCode: () => { }, codeSources };
+		return { html, insertHighlightedCode: () => { }, codeSources, tokens };
 	}
 	// 印を消して、色付けしたコードを含む今までどおりの HTML に戻す。
 	const restoreWhole = () => {
 		for (const code of deferred) {
 			code.token.text = code.html;
 		}
-		return m.parser(tokens);
+		return parse();
 	};
 	if (!hasEachMarkerOnce(html.toString(), marker, deferred.length)) {
 		// 消毒で印が消えた・増えた。差し込む場所が決まらないので、今までどおり全体を消毒する。
-		return { html: sanitizeMarkdownHtml(restoreWhole(), options), insertHighlightedCode: () => { }, codeSources };
+		return { html: sanitizeMarkdownHtml(restoreWhole(), options), insertHighlightedCode: () => { }, codeSources, tokens };
 	}
 	return {
 		html,
 		codeSources,
+		tokens,
 		insertHighlightedCode: body => {
 			if (!insertParadisTokenizedCode(body, marker, deferred)) {
 				// 文字列では 1 回ずつあった印が、text node としては揃わなかった（属性の中に入った等）。
