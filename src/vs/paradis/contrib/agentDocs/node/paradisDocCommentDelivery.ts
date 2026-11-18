@@ -87,6 +87,8 @@ export class ParadisDocCommentDelivery extends Disposable {
 	private readonly _lastSubmit = new Map<string, number>();
 	/** ユーザーが「今すぐ届ける」を押したスレッド。 */
 	private readonly _forced = new Set<string>();
+	/** CLI が終わったのを見たペイン（次の hook で外す）。 */
+	private readonly _exited = new Set<string>();
 	private readonly _scheduler: RunOnceScheduler;
 	private readonly _retry: RunOnceScheduler;
 
@@ -100,15 +102,21 @@ export class ParadisDocCommentDelivery extends Disposable {
 		private readonly _status: () => IParadisPaneAgentStatusSource | undefined,
 		private readonly _draftOf: ParadisDocDraftReader,
 		hookEvents: Event<IParadisAgentHookEvent>,
-		turnEnded: Event<{ readonly token: string; readonly at: number }>,
+		turnEnded: Event<{ readonly token: string; readonly at: number; readonly cause?: 'turn' | 'cli-exit' }>,
 		private readonly _now: () => number = Date.now,
 	) {
 		super();
 		this._scheduler = this._register(new RunOnceScheduler(() => void this.evaluate(), EVALUATE_DELAY_MS));
 		this._retry = this._register(new RunOnceScheduler(() => void this.evaluate(), RETRY_MS));
 		this._register(hookEvents(event => this._onHook(event)));
-		this._register(turnEnded(({ token, at }) => {
-			this._lastTurnEnd.set(token, at);
+		this._register(turnEnded(({ token, at, cause }) => {
+			if (cause === 'cli-exit') {
+				// CLI が終わった。前面はシェルに戻るので、次の hook が来るまでそのペインへは届けない
+				this._exited.add(token);
+				this._lastTurnEnd.delete(token);
+			} else {
+				this._lastTurnEnd.set(token, at);
+			}
 			this._scheduler.schedule();
 		}));
 		this._register(_docs.ledger.onDidChange(() => this._scheduler.schedule()));
@@ -140,8 +148,8 @@ export class ParadisDocCommentDelivery extends Disposable {
 					wanted.add(target.token);
 				}
 				waiting = true;
-				// 画面の確認の印は、ウィンドウが貼れるまで残す（2 秒ごとの見直しで消して書き直さない）
-				await this._setBlocked(sidecar.hostId, sidecar.path, pending.filter(thread => thread.delivery?.blockedBy !== 'screen'), undefined);
+				// ウィンドウが貼れなかった理由（画面の確認・前面にエージェントがいない）は、貼れるまで残す（2 秒ごとに消して書き直さない）
+				await this._setBlocked(sidecar.hostId, sidecar.path, pending.filter(thread => thread.delivery?.blockedBy !== 'screen' && thread.delivery?.blockedBy !== 'notRunning'), undefined);
 				continue;
 			}
 			if (decision.kind === 'wait' || target.owner === 'live') {
@@ -227,7 +235,8 @@ export class ParadisDocCommentDelivery extends Disposable {
 				break;
 			}
 			case 'screen':
-				await this._comments.update(claim.hostId, claim.path, thread => ids.has(thread.id) ? paradisWithDocCommentBlocked(thread, 'screen') : thread);
+			case 'notRunning':
+				await this._comments.update(claim.hostId, claim.path, thread => ids.has(thread.id) ? paradisWithDocCommentBlocked(thread, outcome) : thread);
 				break;
 		}
 		this._scheduler.schedule();
@@ -237,6 +246,7 @@ export class ParadisDocCommentDelivery extends Disposable {
 		if (event.ownerUnverified) {
 			return;
 		}
+		this._exited.delete(event.token);
 		if (event.event === 'UserPromptSubmit') {
 			this._lastSubmit.set(event.token, event.at);
 			void this._onPromptSubmitted(event.token, event.payload?.prompt, event.at);
@@ -288,7 +298,7 @@ export class ParadisDocCommentDelivery extends Disposable {
 	private _decide(target: { readonly owner: ParadisDocDeliveryOwner; readonly token?: string; readonly session?: string }, forced: boolean): ParadisDocDeliveryDecision {
 		const token = target.token;
 		const source = this._status();
-		if (token === undefined || target.session === undefined || source === undefined) {
+		if (token === undefined || target.session === undefined || source === undefined || this._exited.has(token)) {
 			return paradisDecideDocDelivery({ owner: target.owner === 'live' ? 'unknown' : target.owner, hasHooks: false, status: undefined, unconfirmedRelease: undefined, draft: 'unknown', turnJustEnded: false, forced, remote: false, busy: false });
 		}
 		const now = this._now();

@@ -88,7 +88,8 @@ suite('Paradis doc comments: delivery rules', () => {
 			working: paradisDocDeliveryMayEnter('working', undefined, typed, typed),
 			unconfirmed: paradisDocDeliveryMayEnter(undefined, 'unverifiable', typed, typed),
 			joined: paradisDocDeliveryMayEnter(undefined, undefined, `hello ${typed}`, typed),
-		}, { idle: true, unknownDraft: true, permission: false, working: false, unconfirmed: false, joined: false });
+			notYetReported: paradisDocDeliveryMayEnter(undefined, undefined, '', typed),
+		}, { idle: true, unknownDraft: true, permission: false, working: false, unconfirmed: false, joined: false, notYetReported: true });
 	});
 
 	test('types one line: the ID and the first line of what the user wrote (200 characters, no control characters), only IDs for several', () => {

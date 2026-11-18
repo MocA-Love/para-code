@@ -23,6 +23,7 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { paradisCollectLivePaneInstances } from '../../agentBrowser/browser/paradisLivePaneInstances.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
+import { paradisTerminalRunsAgent, paradisTerminalRunsAntigravity } from '../../agentIde/browser/paradisAgentIdeTerminalInput.js';
 import { paradisAgentIdeScreenShowsPrompt } from '../../agentIde/common/paradisAgentIde.js';
 import { paradisBuildPresetInsertText } from '../../terminalPresets/common/paradisTerminalPresets.js';
 import {
@@ -105,14 +106,18 @@ class ParadisDocCommentDeliveryContribution extends Disposable implements IWorkb
 		if (instance === undefined || instance.isDisposed || text === undefined) {
 			return 'gone';
 		}
-		// 画面に確認（許可・質問・選択の画面）が出ていたら貼らない（貼った文は捨てられ、数字や Enter が選択になる）
+		// 前面でエージェントが動いていなければ貼らない（シェルへ貼ると Enter で行として実行される。send_terminal_input と同じ判定）
+		if (!paradisTerminalRunsAgent(instance) && !paradisTerminalRunsAntigravity(instance)) {
+			return 'notRunning';
+		}
+		// 画面に確認（許可・質問・選択の画面）が出ていたら貼らない（貼った文は捨てられ、数字や Enter が選択になる）。
+		// 画面を読めないときも確かめようがないので貼らない
 		const before = this._screenTail(instance);
-		if (before !== undefined && paradisAgentIdeScreenShowsPrompt(before)) {
+		if (before === undefined || paradisAgentIdeScreenShowsPrompt(before)) {
 			return 'screen';
 		}
 		await instance.sendText(text, false, true);
-		// 画面を読めないときは確かめようがないので Enter を送らない
-		if (!claim.enter || before === undefined) {
+		if (!claim.enter) {
 			return 'typed';
 		}
 		await timeout(SUBMIT_SETTLE_MS);

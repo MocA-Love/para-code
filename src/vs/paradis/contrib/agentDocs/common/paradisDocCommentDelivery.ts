@@ -42,10 +42,11 @@ export interface IParadisDocDeliveryClaim {
 
 /**
  * ウィンドウが知らせる結果。`entered`: 貼って Enter も送った、`typed`: 貼ったが Enter は送らなかった（ユーザーが送る）、
- * `screen`: 画面に確認が出ていたので貼らなかった、`gone`: ペインが見つからない・閉じた・貼れなかった。
+ * `screen`: 画面に確認が出ていた・画面を読めなかったので貼らなかった、`notRunning`: 前面でエージェントが動いていない
+ * （シェルへ貼ると行として実行される）ので貼らなかった、`gone`: ペインが見つからない・閉じた・貼れなかった。
  */
-export type ParadisDocDeliveryOutcome = 'entered' | 'typed' | 'screen' | 'gone';
-const OUTCOMES: ReadonlySet<string> = new Set<ParadisDocDeliveryOutcome>(['entered', 'typed', 'screen', 'gone']);
+export type ParadisDocDeliveryOutcome = 'entered' | 'typed' | 'screen' | 'notRunning' | 'gone';
+const OUTCOMES: ReadonlySet<string> = new Set<ParadisDocDeliveryOutcome>(['entered', 'typed', 'screen', 'notRunning', 'gone']);
 
 export function paradisReadDocDeliveryOutcome(value: unknown): ParadisDocDeliveryOutcome | undefined {
 	return typeof value === 'string' && OUTCOMES.has(value) ? value as ParadisDocDeliveryOutcome : undefined;
@@ -121,12 +122,13 @@ export function paradisDecideDocDelivery(input: IParadisDocDeliveryInput): Parad
 /**
  * 貼った後、Enter の直前に確かめ直す。許可待ち・質問待ち・確かめられない解除・作業中なら送らない。
  * 入力欄に貼った文以外のものが入っていたら送らない（分からないときは貼った直後の画面の確認に任せる）。
+ * 空のままなのは、入力欄の mod の知らせが貼った文にまだ追いついていないだけ（貼る前は空だったときだけ貼る）なので送る。
  */
 export function paradisDocDeliveryMayEnter(status: ParadisAgentStatus | undefined, unconfirmedRelease: 'pending' | 'unverifiable' | undefined, draft: string | undefined, typed: string): boolean {
 	if (status === 'permission' || status === 'question' || status === 'working' || unconfirmedRelease !== undefined) {
 		return false;
 	}
-	return draft === undefined || draft.trim() === typed.trim();
+	return draft === undefined || draft.trim().length === 0 || draft.trim() === typed.trim();
 }
 
 // --- 貼る文 -----------------------------------------------------------------------------------

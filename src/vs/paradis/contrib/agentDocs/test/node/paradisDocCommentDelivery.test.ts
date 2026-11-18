@@ -48,7 +48,7 @@ suite('ParadisDocCommentDelivery', () => {
 		const store = disposables.add(new DisposableStore());
 		let now = 1_000;
 		const hooks = store.add(new Emitter<IParadisAgentHookEvent>());
-		const turnEnded = store.add(new Emitter<{ token: string; at: number }>());
+		const turnEnded = store.add(new Emitter<{ token: string; at: number; cause?: 'turn' | 'cli-exit' }>());
 		const ledger = store.add(new ParadisAgentDocsLedger({ read: async () => undefined, write: async () => undefined }, error => { throw error; }, () => now));
 		const docs = store.add(new ParadisAgentDocsService(ledger, hooks.event));
 		let id = 0;
@@ -135,6 +135,24 @@ suite('ParadisDocCommentDelivery', () => {
 			before: [[a!.id, 'queued', 'draft'], [b!.id, 'undeliverable', 'noHooks'], [c!.id, 'queued', 'draftUnknown'], [d!.id, 'undeliverable', 'noOwner']],
 			wanted: ['p3'],
 			claimed: true,
+		});
+	});
+
+	test('does not deliver after the CLI exited (the shell is in front) until a hook comes again', async () => {
+		const t = setup();
+		t.hooks.fire(write('p1', 's1', '/repo/a.md'));
+		await t.settle();
+		const a = await t.comments.add('', '/repo/a.md', { anchor: { quote: 'A' }, text: 'x' });
+		t.turnEnded.fire({ token: 'p1', at: 1_000, cause: 'cli-exit' });
+		await t.delivery.evaluate();
+		const exited = { state: await t.state('/repo/a.md'), claim: await t.delivery.claim('p1') };
+		t.hooks.fire(hook('p1', 'SessionStart', 's1'));
+		await t.settle();
+		await t.delivery.evaluate();
+		assert.deepStrictEqual({ exited, back: await t.state('/repo/a.md'), wanted: t.wanted.flat() }, {
+			exited: { state: [[a!.id, 'undeliverable', 'unknown']], claim: undefined },
+			back: [[a!.id, 'queued', undefined]],
+			wanted: ['p1'],
 		});
 	});
 });

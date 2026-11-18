@@ -116,6 +116,8 @@ export function paradisDocCommentStatus(thread: IParadisDocCommentThread): IPara
 			return { label, tone: 'neutral', note: localize('paradis.docComments.status.sending', "同じターミナルへ前のコメントを届けています。続けて届けます。") };
 		case 'screen':
 			return { label, tone: 'warning', note: localize('paradis.docComments.status.screen', "ターミナルに確認の画面が出ています。閉じた後に届けます。") };
+		case 'notRunning':
+			return { label, tone: 'warning', note: localize('paradis.docComments.status.notRunning', "作成元のターミナルでエージェントが動いていません。動き出したら届けます。") };
 		default:
 			return { label, tone: 'neutral' };
 	}
