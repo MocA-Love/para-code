@@ -121,6 +121,14 @@ export function paradisViewerRerenderDelay(lastRenderMs: number): number {
 }
 
 /**
+ * 保存の通知からの描き直しで、ファイルが一瞬 0 バイトに見えたときに描くのを 1 回見送るか。書き出す途中（中身を空にしてから
+ * 書く道具）の 0 バイトを描くと、プレビューが一瞬白くなる。見送った後の描き直しでもまだ空なら、空のファイルとして描く。
+ */
+export function paradisHoldsEmptyViewerText(text: string, shownText: string | undefined, alreadyHeld: boolean): boolean {
+	return text.length === 0 && shownText !== undefined && shownText.length > 0 && !alreadyHeld;
+}
+
+/**
  * Rendered/Raw を内蔵する EditorPane 基底。webview と埋め込みコードエディタのライフサイクル管理・
  * ファイル読込・自動再レンダリング・モード切替を担い、Rendered の HTML 生成はサブクラスの {@link renderDocument} に委ねる。
  */
@@ -218,6 +226,8 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	private _renderInput = 0;
 	private _renderingInput: number | undefined;
 	private _renderAgain = false;
+	/** 0 バイトに見えたので描くのを 1 回見送った（{@link paradisHoldsEmptyViewerText}）。 */
+	private _heldEmpty = false;
 	/** 覚えた頼みの中に、同一内容の抑止を外した頼み（テーマの変更・{@link requestRerender}）があったか。 */
 	private _renderAgainInvalidates = false;
 	private _renderAgainAfter: ((lastRenderMs: number) => void) | undefined;
@@ -520,6 +530,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		this._renderingInput = undefined;
 		this._renderAgain = false;
 		this._renderAgainInvalidates = false;
+		this._heldEmpty = false;
 		// ペインは別のファイルを開くときも使い回されるので、前のファイルの失敗回数を持ち越さない。
 		this._recoveryPolicy.reset();
 		this._currentResource = resource;
@@ -667,6 +678,15 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		if (!this._isRenderCurrent(generation, resource, token)) {
 			return;
 		}
+		// 保存の通知からの描き直し（裏の描画）で一瞬 0 バイトに見えたら、今の表示を残して描き直しの予約に回す
+		const shownText = this._renderedSource && isEqual(this._renderedSource.resource, resource) ? this._renderedSource.text : undefined;
+		const background = this._renderingInput !== undefined && this._renderingInput === this._renderInput;
+		if (background && paradisHoldsEmptyViewerText(text, shownText, this._heldEmpty)) {
+			this._heldEmpty = true;
+			this._renderAgain = true;
+			return;
+		}
+		this._heldEmpty = false;
 
 		// service worker の要否が前回と変わっていたら、生成時オプションなので作り直すしかない。
 		if (this._pane.webview && this._pane.serviceWorkerDisabled !== this.disableServiceWorkerFor(resource)) {

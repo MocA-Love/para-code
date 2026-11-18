@@ -8,7 +8,7 @@
 import * as assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { FileOperationError, FileOperationResult } from '../../../../../platform/files/common/files.js';
-import { paradisShouldReportViewModeError, paradisViewerRerenderDelay } from '../../browser/paradisRenderedFileEditor.js';
+import { paradisHoldsEmptyViewerText, paradisShouldReportViewModeError, paradisViewerRerenderDelay } from '../../browser/paradisRenderedFileEditor.js';
 
 suite('ParadisRenderedFileEditor', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -35,5 +35,15 @@ suite('ParadisRenderedFileEditor', () => {
 
 	test('waits for the previous render before drawing a saved file again, between 50 ms and 2 s', () => {
 		assert.deepStrictEqual([0, 12, 50, 400, 1_700, 90_000].map(paradisViewerRerenderDelay), [50, 50, 50, 400, 1_700, 2_000]);
+	});
+
+	test('holds a file that looks empty for one render while it shows text, then draws it if it is still empty', () => {
+		assert.deepStrictEqual({
+			truncatedWhileWriting: paradisHoldsEmptyViewerText('', '# 見出し', false),
+			stillEmptyAfterHolding: paradisHoldsEmptyViewerText('', '# 見出し', true),
+			wasEmptyAlready: paradisHoldsEmptyViewerText('', '', false),
+			nothingShownYet: paradisHoldsEmptyViewerText('', undefined, false),
+			hasText: paradisHoldsEmptyViewerText('# 新しい', '# 見出し', false),
+		}, { truncatedWhileWriting: true, stillEmptyAfterHolding: false, wasEmptyAlready: false, nothingShownYet: false, hasText: false });
 	});
 });

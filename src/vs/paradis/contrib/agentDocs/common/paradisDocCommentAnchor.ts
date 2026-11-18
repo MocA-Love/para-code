@@ -19,6 +19,7 @@
 //     そこ（`fuzzy`）。次に、引用の前半・後半・中ほどのどれかが残っていれば、そこから引用の長さぶんを取って似ていればそこ。
 //  3. どれも当たらなければ null（位置不明）。
 // `locate`・`fragmentToText` は、ソースの断片（Edit の old_string）を描いた後の本文から探す（編集中の印で使う）。
+// `diffBlocks` は、描き直しの前後のブロックの文字の並びから変わったブロックを選ぶ（差分の色で使う）。
 
 /** コメントの位置。`quote`・`before`・`after` は空白を均した本文の文字。 */
 export interface IParadisDocAnchor {
@@ -59,6 +60,12 @@ export interface IParadisDocAnchorFunctions {
 	/** ソースの断片（Markdown の記法・HTML のタグ入り）から、描いた後の文字に近いものを作る。 */
 	fragmentToText(source: string, kind: 'markdown' | 'html'): string;
 	locate(text: string, source: string, kind: 'markdown' | 'html'): IParadisDocLocated | null;
+	/**
+	 * 前後のブロックの文字の並びを比べ、`next` の中で変わった（足された・書き換わった）ブロックの番号を返す。先頭と末尾の
+	 * 同じ並びを外し、残りの中で前に無かった文だけを選ぶ（1 つ足しても後ろを全部変わったことにしない）。`added` は残りの
+	 * ブロックの数が増えた（節が足された）。
+	 */
+	diffBlocks(prev: readonly string[], next: readonly string[]): { readonly changed: number[]; readonly added: boolean };
 }
 
 /** 文脈として前後に覚える文字数。 */
@@ -190,7 +197,19 @@ export const PARADIS_DOC_ANCHOR_FUNCTIONS = `(function () {
 		if (start === -1) { return null; }
 		return { start: start, end: end, match: 'partial', matchedLines: matched, totalLines: texts.length };
 	}
-	return { normalize: normalize, resolve: resolve, fragmentToText: fragmentToText, locate: locate, similarity: similarity };
+	function diffBlocks(prev, next) {
+		var a = 0, m = prev.length, n = next.length;
+		while (a < m && a < n && prev[a] === next[a]) { a++; }
+		var b = 0;
+		while (b < m - a && b < n - a && prev[m - 1 - b] === next[n - 1 - b]) { b++; }
+		var old = Object.create(null), changed = [];
+		for (var i = a; i < m - b; i++) { old[prev[i]] = (old[prev[i]] || 0) + 1; }
+		for (var j = a; j < n - b; j++) {
+			if (old[next[j]]) { old[next[j]]--; } else { changed.push(j); }
+		}
+		return { changed: changed, added: (n - b - a) > (m - b - a) };
+	}
+	return { normalize: normalize, resolve: resolve, fragmentToText: fragmentToText, locate: locate, similarity: similarity, diffBlocks: diffBlocks };
 })()`;
 
 /**
