@@ -10,6 +10,7 @@
 // `paradis-docs/ledger.json` へ書く。書き込みはまとめて遅らせ、一時ファイルからの置き換えで行う。
 
 import { RunOnceScheduler } from '../../../../base/common/async.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import {
 	IParadisDocOwner,
@@ -17,6 +18,7 @@ import {
 	IParadisDocWrite,
 	PARADIS_DOC_MAX_RECORDS,
 	ParadisDocOwnerVia,
+	ParadisDocRegisteredBy,
 	paradisDocKey,
 	paradisDocKind,
 	paradisDocLastActivity,
@@ -45,6 +47,10 @@ export class ParadisAgentDocsLedger extends Disposable {
 	private _saving: Promise<void> = Promise.resolve();
 	readonly ready: Promise<void>;
 
+	private readonly _onDidChange = this._register(new Emitter<void>());
+	/** 台帳の中身が変わった（「資料」ビューが一覧を取り直す）。 */
+	readonly onDidChange: Event<void> = this._onDidChange.event;
+
 	constructor(
 		private readonly _storage: IParadisDocLedgerStorage,
 		private readonly _onError: (error: unknown) => void,
@@ -69,6 +75,7 @@ export class ParadisAgentDocsLedger extends Disposable {
 				this._records.set(key, record);
 			}
 		}
+		this._onDidChange.fire();
 	}
 
 	get(hostId: string, path: string): IParadisDocRecord | undefined {
@@ -85,7 +92,8 @@ export class ParadisAgentDocsLedger extends Disposable {
 		if (record === undefined) {
 			return;
 		}
-		this._set(paradisWithDocWrite(paradisWithDocOwner(record, this._owner(owner, 'write')), { ...write, session: owner.session }));
+		const { missingSince: _missingSince, ...present } = record;
+		this._set(paradisWithDocWrite(paradisWithDocOwner(present, this._owner(owner, 'write')), { ...write, session: owner.session }));
 	}
 
 	/**
@@ -118,6 +126,63 @@ export class ParadisAgentDocsLedger extends Disposable {
 		if (record !== undefined) {
 			this._set(paradisWithDocOwner(record, this._owner(owner, 'adopt')));
 		}
+	}
+
+	/**
+	 * 利用者が Para Code のプレビューで開いた資料を、まだ台帳に無ければ持ち主なしで載せる。持ち主には触らない
+	 * （preview_file で開いたときもプレビューは開くので、エージェントの登録を上書きしない）。
+	 * @returns 今載せたか
+	 */
+	registerUserOpened(hostId: string, path: string): boolean {
+		if (this.get(hostId, path) !== undefined) {
+			return false;
+		}
+		const record = this._getOrCreate(hostId, path, 'user_opened');
+		if (record === undefined) {
+			return false;
+		}
+		this._set(record);
+		return true;
+	}
+
+	/**
+	 * 持ち主のいない資料を、利用者が選んだ会話の資料にする（「このセッションの資料にする」）。
+	 * @returns assigned = 持ち主にした、owned = 既に持ち主がいる（何もしない）、unknown = 台帳に無い
+	 */
+	assignOwner(hostId: string, path: string, owner: ParadisDocOwnerCandidate): 'assigned' | 'owned' | 'unknown' {
+		const record = this.get(hostId, path);
+		if (record === undefined) {
+			return 'unknown';
+		}
+		if (record.owner !== undefined) {
+			return 'owned';
+		}
+		this._set(paradisWithDocOwner(record, this._owner(owner, 'user')));
+		return 'assigned';
+	}
+
+	/** ファイルが見つからない・また見つかったのを記録する。変わらなければ何もしない。 */
+	setMissing(hostId: string, path: string, missing: boolean): void {
+		const record = this.get(hostId, path);
+		if (record === undefined || (record.missingSince !== undefined) === missing) {
+			return;
+		}
+		if (missing) {
+			this._set({ ...record, missingSince: this._now() });
+		} else {
+			const { missingSince: _missingSince, ...present } = record;
+			this._set(present);
+		}
+	}
+
+	/** 一覧から外す（ファイルには触らない）。 */
+	remove(hostId: string, path: string): boolean {
+		const removed = this._records.delete(paradisDocKey(hostId, path));
+		if (removed) {
+			this._saver.schedule();
+			this._onDidChange.fire();
+		}
+		return removed;
 	}
 
 	/** 会話の終わりを見た。その会話が持ち主の資料に終了の印を付ける。 */
@@ -161,7 +226,7 @@ export class ParadisAgentDocsLedger extends Disposable {
 		return { agent: owner.agent, session: owner.session, ...(owner.cwd !== undefined ? { cwd: owner.cwd } : {}), via, since: this._now() };
 	}
 
-	private _getOrCreate(hostId: string, path: string, via: ParadisDocOwnerVia): IParadisDocRecord | undefined {
+	private _getOrCreate(hostId: string, path: string, via: ParadisDocRegisteredBy): IParadisDocRecord | undefined {
 		const existing = this.get(hostId, path);
 		if (existing !== undefined) {
 			return existing;
@@ -179,6 +244,7 @@ export class ParadisAgentDocsLedger extends Disposable {
 			this._records.delete(oldest[0]);
 		}
 		this._saver.schedule();
+		this._onDidChange.fire();
 	}
 
 	private _save(): void {

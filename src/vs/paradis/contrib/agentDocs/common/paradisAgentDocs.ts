@@ -18,8 +18,14 @@ import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescri
 /** 資料の種類。 */
 export type ParadisDocKind = 'html' | 'md';
 
-/** 持ち主になった経路。write = Write・Edit の hook、preview = preview_file で開いた、adopt = adopt_doc で引き取った。 */
-export type ParadisDocOwnerVia = 'write' | 'preview' | 'adopt';
+/**
+ * 持ち主になった経路。write = Write・Edit の hook、preview = preview_file で開いた、adopt = adopt_doc で引き取った、
+ * user = 利用者が「資料」ビューで「このセッションの資料にする」を選んだ。
+ */
+export type ParadisDocOwnerVia = 'write' | 'preview' | 'adopt' | 'user';
+
+/** 台帳に載った経路。持ち主の経路のほか、user_opened = 利用者が Para Code のプレビューで開いた（持ち主はいない）。 */
+export type ParadisDocRegisteredBy = ParadisDocOwnerVia | 'user_opened';
 
 /** 資料の持ち主（エージェントの会話 1 つ）。 */
 export interface IParadisDocOwner {
@@ -55,9 +61,11 @@ export interface IParadisDocRecord {
 	/** 書き込みの記録（新しい順、{@link PARADIS_DOC_MAX_WRITES} 件まで）。 */
 	readonly writes: readonly IParadisDocWrite[];
 	/** 最初に台帳へ載った経路。 */
-	readonly registeredBy: ParadisDocOwnerVia;
+	readonly registeredBy: ParadisDocRegisteredBy;
 	/** 最初に台帳へ載った時刻。 */
 	readonly firstSeen: number;
+	/** ファイルが見つからなくなったのを見た時刻（消された・移された）。見つかれば外す。 */
+	readonly missingSince?: number;
 }
 
 export const PARADIS_DOC_MAX_PREVIOUS_OWNERS = 5;
@@ -264,7 +272,8 @@ export function paradisDocLastActivity(record: IParadisDocRecord): number {
 // --- 台帳のファイル --------------------------------------------------------------------------
 
 const AGENT_KINDS: ReadonlySet<string> = new Set<ParadisAgentKind>(['claude', 'codex', 'opencode', 'antigravity']);
-const VIAS: ReadonlySet<string> = new Set<ParadisDocOwnerVia>(['write', 'preview', 'adopt']);
+const VIAS: ReadonlySet<string> = new Set<ParadisDocOwnerVia>(['write', 'preview', 'adopt', 'user']);
+const REGISTERED_BY: ReadonlySet<string> = new Set<ParadisDocRegisteredBy>(['write', 'preview', 'adopt', 'user', 'user_opened']);
 const SESSION_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/;
 const HOST_ID_PATTERN = /^[A-Za-z0-9._-]{0,64}$/;
 
@@ -311,7 +320,7 @@ function parseRecord(value: unknown): IParadisDocRecord | undefined {
 	const path = paradisNormalizeDocPath(record.path);
 	const kind = path !== undefined ? paradisDocKind(path) : undefined;
 	if (path === undefined || kind === undefined || typeof record.hostId !== 'string' || !HOST_ID_PATTERN.test(record.hostId)
-		|| typeof record.registeredBy !== 'string' || !VIAS.has(record.registeredBy) || !isTime(record.firstSeen)) {
+		|| typeof record.registeredBy !== 'string' || !REGISTERED_BY.has(record.registeredBy) || !isTime(record.firstSeen)) {
 		return undefined;
 	}
 	const owner = record.owner !== undefined ? parseOwner(record.owner) : undefined;
@@ -325,8 +334,9 @@ function parseRecord(value: unknown): IParadisDocRecord | undefined {
 		...(owner !== undefined ? { owner } : {}),
 		previousOwners: list(record.previousOwners, parseOwner, PARADIS_DOC_MAX_PREVIOUS_OWNERS),
 		writes: list(record.writes, parseWrite, PARADIS_DOC_MAX_WRITES),
-		registeredBy: record.registeredBy as ParadisDocOwnerVia,
+		registeredBy: record.registeredBy as ParadisDocRegisteredBy,
 		firstSeen: record.firstSeen,
+		...(isTime(record.missingSince) ? { missingSince: record.missingSince } : {}),
 	};
 }
 
