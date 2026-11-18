@@ -348,7 +348,8 @@ const GROUP_BROWSER_EXPERIMENTAL = localize('paradis.settings.groupBrowserExperi
 const GROUP_OFFICE_WORD_EXCEL = localize('paradis.settings.groupOfficeWordExcel', "Word・Excel");
 // allow-any-unicode-next-line
 const GROUP_OFFICE_OTHER = localize('paradis.settings.groupOfficeOther', "CSV・画像");
-const GROUP_OFFICE_MARKDOWN = localize('paradis.settings.groupOfficeMarkdown', "Markdown");
+// allow-any-unicode-next-line
+const GROUP_OFFICE_MARKDOWN = localize('paradis.settings.groupOfficeMarkdown', "Markdown・HTML");
 // allow-any-unicode-next-line
 const GROUP_WINDOW_LOOK = localize('paradis.settings.groupWindowLook', "見た目");
 // allow-any-unicode-next-line
@@ -1503,6 +1504,24 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 			text: localize('paradis.settings.markdownDiffView.text', "テキスト差分"),
 			// allow-any-unicode-next-line
 			remember: localize('paradis.settings.markdownDiffView.remember', "前回のまま"),
+		},
+	},
+	{
+		sectionId: 'psd-sec-office',
+		group: GROUP_OFFICE_MARKDOWN,
+		key: 'paradis.htmlViewer.diffView',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.htmlDiffView', "HTML の差分を開いたときの表示"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.htmlDiffViewDesc', "プレビュー差分はスクリプトを止めて描き、変わった文字と要素に色を付けます。CSS だけの変更には色が付きません。"),
+		keywords: 'html diff preview rendered text compare',
+		choiceLabels: {
+			// allow-any-unicode-next-line
+			rendered: localize('paradis.settings.htmlDiffView.rendered', "プレビュー差分"),
+			// allow-any-unicode-next-line
+			text: localize('paradis.settings.htmlDiffView.text', "テキスト差分"),
+			// allow-any-unicode-next-line
+			remember: localize('paradis.settings.htmlDiffView.remember', "前回のまま"),
 		},
 	},
 	// --- 使用量 ---

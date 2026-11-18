@@ -8,7 +8,8 @@
 
 // MD/HTML ビューア共用の差分 EditorPane。本体は標準の DiffEditorWidget を埋め込む（テキスト差分）。
 // Markdown では上にバーを置き、描いた見た目どうしの「プレビュー差分」に切り替えられる
-// （paradisMarkdownRenderedDiffView）。HTML は今はバーを出さず、テキスト差分だけ。
+// （paradisMarkdownRenderedDiffView）。HTML のプレビュー差分はデスクトップだけで、electron-browser から
+// paradisRenderedDiffViews に登録される。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
@@ -30,6 +31,13 @@ import { IEditorGroup } from '../../../../workbench/services/editor/common/edito
 import { isParadisMarkdownResource, PARADIS_FILE_DIFF_EDITOR_ID } from './paradisFileViewers.js';
 import { ParadisFileDiffInput } from './paradisFileDiffInput.js';
 import { ParadisMarkdownRenderedDiffView } from './paradisMarkdownRenderedDiffView.js';
+import { IParadisRenderedDiffViewFactory, paradisRenderedDiffViewFactoryFor } from './paradisRenderedDiffViews.js';
+
+/** Markdown のプレビュー差分（ほかの種類は paradisRenderedDiffViews に登録される）。 */
+const MARKDOWN_RENDERED_DIFF: IParadisRenderedDiffViewFactory = {
+	matches: isParadisMarkdownResource,
+	create: (instantiationService, host) => instantiationService.createInstance(ParadisMarkdownRenderedDiffView, host),
+};
 
 import './media/paradisFileViewer.css';
 
@@ -41,8 +49,10 @@ export class ParadisFileDiffEditor extends EditorPane {
 	private _contentElement: HTMLElement | undefined;
 	private _diffContainer: HTMLElement | undefined;
 	private _widget: DiffEditorWidget | undefined;
-	/** Markdown のバーとプレビュー差分（最初に Markdown の差分を開いたときに作る）。 */
+	/** いまの差分のバーとプレビュー差分（Markdown・HTML。プレビュー差分の無い種類では `undefined`）。 */
 	private _rendered: ParadisMarkdownRenderedDiffView | undefined;
+	/** 種類ごとに、最初にその種類の差分を開いたときに作った部品。 */
+	private readonly _renderedViews = new Map<IParadisRenderedDiffViewFactory, ParadisMarkdownRenderedDiffView>();
 	private readonly _modelRefs = this._register(new MutableDisposable<DisposableStore>());
 
 	constructor(
@@ -64,9 +74,10 @@ export class ParadisFileDiffEditor extends EditorPane {
 		this._diffContainer = dom.append(this._contentElement, dom.$('.paradis-file-viewer-editor.active'));
 	}
 
-	private _ensureRendered(): ParadisMarkdownRenderedDiffView {
-		if (!this._rendered) {
-			this._rendered = this._register(this._instantiationService.createInstance(ParadisMarkdownRenderedDiffView, {
+	private _ensureRendered(factory: IParadisRenderedDiffViewFactory): ParadisMarkdownRenderedDiffView {
+		let view = this._renderedViews.get(factory);
+		if (!view) {
+			view = this._register(factory.create(this._instantiationService, {
 				root: this._rootElement!,
 				content: this._contentElement!,
 				window: () => this.window,
@@ -76,9 +87,14 @@ export class ParadisFileDiffEditor extends EditorPane {
 					this._diffContainer?.classList.toggle('paradis-rendered-diff-text-hidden', !visible);
 				},
 			}));
-			this._rendered.setVisible(this.isVisible());
+			this._renderedViews.set(factory, view);
 		}
-		return this._rendered;
+		if (this._rendered !== view) {
+			this._rendered?.clearInput();
+			this._rendered = view;
+			view.setVisible(this.isVisible());
+		}
+		return view;
 	}
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
@@ -130,10 +146,12 @@ export class ParadisFileDiffEditor extends EditorPane {
 		});
 		// 変更後の側は編集できる。読み取り専用のファイルなら編集させない（編集しても保存されずに消えるため）
 		store.add(paradisFollowModelReadonly(modifiedRef.object, options => widget.updateOptions(options)));
-		if (isParadisMarkdownResource(diffInput.modifiedResource)) {
-			this._ensureRendered().setInput(diffInput.originalResource, diffInput.modifiedResource, originalRef.object.textEditorModel, modifiedRef.object.textEditorModel);
+		const factory = MARKDOWN_RENDERED_DIFF.matches(diffInput.modifiedResource) ? MARKDOWN_RENDERED_DIFF : paradisRenderedDiffViewFactoryFor(diffInput.modifiedResource);
+		if (factory) {
+			this._ensureRendered(factory).setInput(diffInput.originalResource, diffInput.modifiedResource, originalRef.object.textEditorModel, modifiedRef.object.textEditorModel);
 		} else {
 			this._rendered?.clearInput();
+			this._rendered = undefined;
 		}
 	}
 

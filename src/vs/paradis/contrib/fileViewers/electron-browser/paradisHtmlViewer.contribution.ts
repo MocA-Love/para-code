@@ -23,6 +23,10 @@ import { ParadisHtmlFileEditor } from './paradisHtmlFileEditor.js';
 import { ParadisHtmlFileInput, ParadisHtmlFileInputSerializer } from './paradisHtmlFileInput.js';
 import { ParadisFileDiffInput } from '../browser/paradisFileDiffInput.js';
 import { PARADIS_HTML_EDITOR_ID, PARADIS_HTML_EXTENSIONS, PARADIS_HTML_INPUT_TYPE_ID, isParadisHtmlResource, paradisGlobForExtension } from '../browser/paradisFileViewers.js';
+import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
+import { PARADIS_MARKDOWN_DIFF_VIEW_SETTINGS } from '../browser/paradisMarkdownRenderedDiffView.js';
+import { registerParadisRenderedDiffView } from '../browser/paradisRenderedDiffViews.js';
+import { PARADIS_HTML_DIFF_VIEW_SETTING, ParadisHtmlRenderedDiffView } from './paradisHtmlRenderedDiffView.js';
 
 const HTML_PREVIEW_LABEL = localize('paradis.htmlPreview', "HTMLプレビュー");
 
@@ -88,3 +92,34 @@ class ParadisHtmlViewerResolverContribution implements IWorkbenchContribution {
 }
 
 registerWorkbenchContribution2(ParadisHtmlViewerResolverContribution.ID, ParadisHtmlViewerResolverContribution, WorkbenchPhase.BlockStartup);
+
+// HTML の差分のプレビュー差分（差分エディタは browser にあり、配信サーバを使うこの部品はここから渡す）。
+registerParadisRenderedDiffView({
+	matches: isParadisHtmlResource,
+	create: (instantiationService, host) => instantiationService.createInstance(ParadisHtmlRenderedDiffView, host),
+});
+
+Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
+	id: 'paradis',
+	order: 999,
+	title: localize('paradisConfigurationTitle', "Para Code"),
+	type: 'object',
+	properties: {
+		[PARADIS_HTML_DIFF_VIEW_SETTING]: {
+			type: 'string',
+			enum: [...PARADIS_MARKDOWN_DIFF_VIEW_SETTINGS],
+			enumDescriptions: [
+				// allow-any-unicode-next-line
+				localize('paradis.htmlViewer.diffView.rendered', "プレビュー差分（スクリプトを止めて描き、変わった要素と語に色を付ける）。"),
+				// allow-any-unicode-next-line
+				localize('paradis.htmlViewer.diffView.text', "テキスト差分（HTML のソースのまま行で比べる）。"),
+				// allow-any-unicode-next-line
+				localize('paradis.htmlViewer.diffView.remember', "前回、上の帯で選んだ表示。"),
+			],
+			default: 'text',
+			scope: ConfigurationScope.WINDOW,
+			// allow-any-unicode-next-line
+			description: localize('paradis.htmlViewer.diffView', "HTML の差分を開いたときの表示です。差分の上の帯の「テキスト差分 | プレビュー差分」でいつでも切り替えられます。"),
+		},
+	},
+});

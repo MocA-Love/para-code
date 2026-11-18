@@ -9,7 +9,7 @@
 // ビューアが読むファイルを配るローカルサーバの、renderer / shared process / リモートサーバで
 // 共有する定義。
 
-import { joinPath } from '../../../../base/common/resources.js';
+import { dirname, joinPath, relativePath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 
 /** workbench(renderer) ⇔ shared process / リモートサーバ のチャネル名。 */
@@ -133,4 +133,32 @@ export function paradisPreviewLinkTarget(link: string, base: { readonly url: str
 		}
 	}
 	return { kind: 'external', uri };
+}
+
+/** 文書のどのフォルダーを配信サーバに載せるか（{@link paradisPreviewMountTarget} の結果）。 */
+export interface IParadisPreviewMountTarget {
+	/** 載せるフォルダー。 */
+	readonly root: URI;
+	/** `root` から文書のフォルダーまでの道（`<base>` の URL の末尾に足す）。 */
+	readonly suffix: readonly string[];
+	/** ワークスペースの中に素直に下れず、文書のフォルダーを載せたか。 */
+	readonly outsideWorkspace: boolean;
+}
+
+/**
+ * 載せるのは、文書が属するワークスペースフォルダー（`workspaceFolder`。無ければ文書のフォルダー）。ページの中の
+ * `../assets/style.css` のような参照はごく普通なので、文書のフォルダーだけを載せると上へ出られず読めなくなる。
+ *
+ * フォルダーの中での位置が素直に下る道で出せないときは、そのフォルダーを載せない。ワークスペースの判定は大文字小文字を
+ * 無視することがあるのに `relativePath` は区別するので、属していると判定されたのに `../` で上へ抜ける道が返ることがあり、
+ * そのまま `<base>` に足すと URL のトークンより外を指してページの読み込みが全部落ちる。
+ */
+export function paradisPreviewMountTarget(resource: URI, workspaceFolder: URI | undefined): IParadisPreviewMountTarget {
+	const documentDirectory = dirname(resource);
+	const candidate = workspaceFolder && workspaceFolder.scheme === resource.scheme ? workspaceFolder : undefined;
+	const relative = candidate ? relativePath(candidate, documentDirectory) : undefined;
+	const descends = candidate !== undefined && relative !== undefined && !relative.startsWith('..');
+	return descends
+		? { root: candidate, suffix: relative ? relative.split('/') : [], outsideWorkspace: false }
+		: { root: documentDirectory, suffix: [], outsideWorkspace: true };
 }

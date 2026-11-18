@@ -37,7 +37,7 @@
 import { StringSHA1 } from '../../../../base/common/hash.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { escape } from '../../../../base/common/strings.js';
-import { dirname, relativePath } from '../../../../base/common/resources.js';
+import { dirname } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { onUnexpectedError } from '../../../../base/common/errors.js';
@@ -71,7 +71,7 @@ import { ParadisRenderedFileEditor } from '../browser/paradisRenderedFileEditor.
 import { createParadisViewerReloadButton, ParadisViewerZoomControls, paradisViewerZoomMessage, paradisViewerZoomScript } from '../browser/paradisViewerZoom.js';
 import { PARADIS_HTML_EDITOR_ID } from '../browser/paradisFileViewers.js';
 import { IParadisPreviewLocation, ParadisRemotePreviewMounter, paradisMountLocalPreview } from './paradisHtmlPreviewClient.js';
-import { IParadisPreviewMountOptions, paradisPreviewLinkTarget, paradisPreviewUrl } from '../common/paradisHtmlPreview.js';
+import { IParadisPreviewMountOptions, paradisPreviewLinkTarget, paradisPreviewMountTarget, paradisPreviewUrl } from '../common/paradisHtmlPreview.js';
 import { paradisHtmlFrameDefaultStyle, paradisHtmlViewerCanvasScript, paradisHtmlViewerHeadStyle } from '../common/paradisHtmlViewerDefaultStyles.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
@@ -246,26 +246,10 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 	 * `outsideWorkspace` は、ワークスペースの中に素直に下れず文書のフォルダーを載せたこと。
 	 */
 	private async _resolveBase(resource: URI): Promise<{ readonly url: string; readonly outsideWorkspace: boolean }> {
-		// 載せるのは、そのファイルが属するワークスペースフォルダー（無ければファイルのフォルダー）。
-		// ページの中の `../assets/style.css` のような参照はごく普通なので、フォルダー1つだけを
-		// 載せると URL のトークンより上へ出てしまい読めなくなる。
-		const documentDirectory = dirname(resource);
-		const folder = this._workspaceContextService.getWorkspaceFolder(resource)?.uri;
-		// フォルダーの中での位置が「素直に下る道」で出せないときは、そのフォルダーを
-		// 載せてはいけない。`getWorkspaceFolder` は大文字小文字を無視して照合する環境が
-		// あるのに対し `relativePath` は区別するため、**属していると判定されたのに
-		// `../` で上へ抜ける相対パスが返る**ことが起こり得る。そのまま base に足すと
-		// URL のトークンより外を指してページの読み込みが全部落ちる。
-		const candidate = folder && folder.scheme === resource.scheme ? folder : undefined;
-		const relative = candidate ? relativePath(candidate, documentDirectory) : undefined;
-		const descends = relative !== undefined && !relative.startsWith('..');
-		// ワークスペースの中に素直に下れないものは、文書のフォルダーを載せる「外の文書」として扱う。
-		const outsideWorkspace = !descends;
+		// 載せるフォルダーと、その中の文書のフォルダーまでの道（paradisPreviewMountTarget）。
+		const { root, suffix, outsideWorkspace } = paradisPreviewMountTarget(resource, this._workspaceContextService.getWorkspaceFolder(resource)?.uri);
 		if (this._canServeFromPreviewServer(resource)) {
 			try {
-				const root = descends ? candidate! : documentDirectory;
-				const suffix = descends && relative ? relative.split('/') : [];
-
 				// 外の文書は、ページが iframe で開く子のフレームにも同じ `connect-src` を付けるよう、配信サーバーに頼む
 				const located = await this._mountPreview(root, outsideWorkspace ? { connectSelfOnly: true } : undefined);
 				this._linkBase = { url: paradisPreviewUrl(located.mount, located.port), root };
