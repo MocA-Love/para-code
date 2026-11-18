@@ -6,6 +6,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { deepStrictEqual, rejects, strictEqual } from 'assert';
+import { Dimension } from '../../../../../base/browser/dom.js';
 import { DeferredPromise } from '../../../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { Event } from '../../../../../base/common/event.js';
@@ -435,7 +436,7 @@ suite('ParadisFileDiffEditor', () => {
 		const html = disposables.add(createInput(URI.parse('git:/workspace/index.html?ref=HEAD'), URI.file('/workspace/index.html')));
 
 		await editor.setInput(markdown, undefined, Object.create(null), CancellationToken.None);
-		editor.layout({ width: 560, height: 400 });
+		editor.layout(new Dimension(560, 400));
 		await editor.setInput(html, undefined, Object.create(null), CancellationToken.None);
 		await editor.setInput(markdown, undefined, Object.create(null), CancellationToken.None);
 
