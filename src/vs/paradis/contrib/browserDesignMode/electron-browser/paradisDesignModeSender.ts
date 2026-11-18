@@ -175,13 +175,14 @@ function agentLabel(kind: IParadisDesignTargetEntry['agentKind']): string {
 	}
 }
 
+/** 一覧の状態の文言。語はサイドバーと同じ「動作中・許可待ち・質問中・完了」（Q663-17）。 */
 function statusLabel(status: ParadisAgentStatus | undefined): string {
 	switch (status) {
-		case 'working': return localize('paradis.designMode.send.status.working', "作業中");
-		case 'permission': return localize('paradis.designMode.send.status.permissionQueue', "承認待ち・空いたら入れます");
-		case 'question': return localize('paradis.designMode.send.status.questionQueue', "質問中・空いたら入れます");
-		case 'review': return localize('paradis.designMode.send.status.review', "完了");
-		default: return localize('paradis.designMode.send.status.idle', "待機");
+		case 'permission':
+		case 'question':
+			return localize('paradis.designMode.send.status.queue', "{0}・空いたら入れます", paradisDesignStatusWord(status));
+		default:
+			return paradisDesignStatusWord(status);
 	}
 }
 
