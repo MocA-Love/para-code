@@ -137,6 +137,9 @@ suite('Paradis doc comments: states', () => {
 			resolved: resolved.state,
 			reopened: reopened.state,
 			appended: [appended.state, appended.messages.map(message => message.text), appended.delivery, paradisDocCommentAwaitsDelivery(appended)],
+			// 追記を貼り終えた後に解決・開き直すと届いたへ戻す（同じ文を二度貼らない）。貼る前なら届け直す
+			reopenSent: paradisWithDocCommentUserAction(paradisWithDocCommentUserAction(paradisWithDocCommentTyped(appended, 70, true), 'resolve', undefined, 80), 'reopen', undefined, 90).state,
+			reopenUnsent: paradisWithDocCommentUserAction(paradisWithDocCommentUserAction(appended, 'resolve', undefined, 80), 'reopen', undefined, 90).state,
 			open: paradisCountOpenDocComments([THREAD, undeliverable, delivered, answered, resolved]),
 			sinceDelivered: paradisDocCommentReplySince(delivered),
 		}, {
@@ -148,6 +151,8 @@ suite('Paradis doc comments: states', () => {
 			resolved: 'resolved',
 			reopened: 'answered',
 			appended: ['queued', ['5 分の根拠は?', '出典を足しました。', '脚注の番号は?'], { attempts: 1 }, true],
+			reopenSent: 'delivered',
+			reopenUnsent: 'queued',
 			open: 3,
 			sinceDelivered: 25,
 		});

@@ -256,7 +256,8 @@ export class ParadisDocCommentDelivery extends Disposable {
 		if (busy !== undefined && paradisDocDeliveryPromptMatches(prompt, busy.ids)) {
 			this._busy.delete(token);
 			const ids = new Set(busy.ids);
-			await this._comments.update(busy.hostId, busy.path, thread => ids.has(thread.id) ? paradisWithDocCommentDelivered(thread, at) : thread);
+			// 貼った後に追記された（貼り直しを待っている）スレッドは、まだ届いていない
+			await this._comments.update(busy.hostId, busy.path, thread => ids.has(thread.id) && thread.delivery?.typedAt !== undefined ? paradisWithDocCommentDelivered(thread, at) : thread);
 			return;
 		}
 		// 待ちの上限を過ぎた後でユーザーが送った分も、ID が入っていれば届いたことにする

@@ -410,8 +410,12 @@ export function paradisWithDocCommentUserAction(thread: IParadisDocCommentThread
 			if (thread.state !== 'resolved') {
 				return thread;
 			}
+			// 最後が回答なら回答ありへ。最後のユーザーの文を貼り終えていれば届いたものとして戻す（同じ文を二度貼らない）
 			const last = thread.messages[thread.messages.length - 1];
-			return last?.by === 'agent' ? { ...thread, state: 'answered' } : { ...thread, state: 'queued', delivery: freshDelivery(thread) };
+			if (last?.by === 'agent') {
+				return { ...thread, state: 'answered' };
+			}
+			return thread.delivery?.typedAt !== undefined ? { ...thread, state: 'delivered' } : { ...thread, state: 'queued', delivery: freshDelivery(thread) };
 		}
 		case 'append': {
 			const trimmed = text?.trim();

@@ -123,6 +123,7 @@
 
 .monaco-workbench .paradis-doc-comment-footer {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
 	gap: var(--vscode-spacing-size60);
 	margin-top: var(--vscode-spacing-size80);
@@ -147,7 +148,8 @@
 	font-size: var(--vscode-fontSize-label2);
 }
 
-.monaco-workbench .paradis-doc-comment-text + .paradis-doc-comment-text {
+.monaco-workbench .paradis-doc-comment-text + .paradis-doc-comment-text,
+.monaco-workbench .paradis-doc-comment-answer + .paradis-doc-comment-text {
 	margin-top: var(--vscode-spacing-size60);
 }
 
