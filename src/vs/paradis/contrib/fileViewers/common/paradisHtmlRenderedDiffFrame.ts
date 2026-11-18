@@ -57,7 +57,7 @@ export interface IParadisHtmlRenderedDiffFrameOptions {
 }
 
 function scriptJson(value: unknown): string {
-	return JSON.stringify(value).replace(/[<>&  ]/g, character => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`);
+	return JSON.stringify(value).replace(/[<>&\u2028\u2029]/g, character => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`);
 }
 
 /** 外枠から届いたメッセージを読む（印が違うもの・形の違うものは `undefined`）。 */

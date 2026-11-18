@@ -87,7 +87,7 @@ export function stopParadisHtmlScripts(doc: Document): IParadisHtmlScriptStopRes
 			const name = attribute.name.toLowerCase();
 			// URL の前の空白と制御文字はブラウザが読み飛ばす
 			// eslint-disable-next-line no-control-regex
-			if (name.startsWith('on') || (URL_ATTRIBUTES.has(name) && /^[\u0000- ]*(?:javascript|vbscript):/i.test(attribute.value.replace(/[\t\n\r]/g, '')))) {
+			if (name.startsWith('on') || (URL_ATTRIBUTES.has(name) && /^[\u0000-\u0020]*(?:javascript|vbscript):/i.test(attribute.value.replace(/[\t\n\r]/g, '')))) {
 				element.removeAttribute(attribute.name);
 				found = true;
 			}
