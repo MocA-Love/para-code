@@ -75,6 +75,7 @@ import './contrib/portTools/node/paradisPortTools.sharedProcess.js';
 import './contrib/notifications/node/paradisAgentDictionary.sharedProcess.js';
 import './contrib/claudeMod/node/paradisClaudeContext.sharedProcess.js';
 import './contrib/tasks/node/paradisTasksGithub.sharedProcess.js';
+import './contrib/agentDocs/node/paradisAgentDocs.sharedProcess.js';
 
 /**
  * shared process へ fork のチャネルをすべて登録する。`sharedProcessMain.ts` から1回だけ呼ばれる。

@@ -1,0 +1,159 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese comments)
+
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+// 資料の台帳を hook から育てるサービス（shared process）。
+//  - ペイン → 会話: hook のバスから自分で控える（ParadisAgentBrowserService の控えはプロバイダへ渡る口が無い）
+//  - ファイル → 会話: Claude Code の PostToolUse（Write・Edit・NotebookEdit）で、書いた会話を持ち主にする
+//  - 会話の終わり: SessionEnd と、ペインの終了（TerminalExit。会話の ID は載らないので控えから引く）
+//  - preview_file で開いた html・md: 持ち主がいなければ開いたペインの会話の資料にする
+// 持ち主の取り違えを避けるため、ペインの持ち主と確かめられなかった hook（ownerUnverified）は使わない。
+// 入れ子の子エージェントの hook は別の知らせ（onParadisAgentNestedHookEvent）に流れるので、ここには来ない。
+
+import { Event } from '../../../../base/common/event.js';
+import { Disposable } from '../../../../base/common/lifecycle.js';
+import type { IParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHookBus.js';
+import { paradisAgentHookRemoteHostId } from '../../agentBrowser/common/paradisAgentHooks.js';
+import { paradisHookAgentKindForTranscript } from '../../agentBrowser/node/paradisAgentHookOwnership.js';
+import type { IParadisPreviewFileOpened } from '../../agentBrowser/node/paradisPreviewFileObservers.js';
+import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
+import { IParadisDocOwner, ParadisDocOwnerLiveness, paradisDocKind, paradisNormalizeDocPath } from '../common/paradisAgentDocs.js';
+import { ParadisAgentDocsLedger } from './paradisAgentDocsLedger.js';
+
+/** ペインで動いている会話。 */
+export interface IParadisDocPaneSession {
+	readonly agent: ParadisAgentKind;
+	readonly session: string;
+	/** その会話で最初に報告された作業ディレクトリ。 */
+	readonly cwd?: string;
+	/** hook が名乗った接続先の印（手元は空文字）。 */
+	readonly hostId: string;
+}
+
+/** 台帳に載せる書き込みのツール（Claude Code）。パスの欄の名前。 */
+const WRITE_TOOLS: ReadonlyMap<string, string> = new Map([['Write', 'file_path'], ['Edit', 'file_path'], ['NotebookEdit', 'notebook_path']]);
+const SESSION_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/;
+
+export class ParadisAgentDocsService extends Disposable {
+
+	private readonly _paneSessions = new Map<string, IParadisDocPaneSession>();
+	/** この起動で生きているのを見た会話（終了の印を外す処理を hook ごとに繰り返さないため）。 */
+	private readonly _seenAlive = new Set<string>();
+
+	constructor(
+		readonly ledger: ParadisAgentDocsLedger,
+		hookEvents: Event<IParadisAgentHookEvent>,
+	) {
+		super();
+		this._register(hookEvents(event => this.handleHook(event)));
+	}
+
+	/** そのペインで動いている会話。hook がまだ届いていなければ undefined。 */
+	sessionOf(token: string): IParadisDocPaneSession | undefined {
+		return this._paneSessions.get(token);
+	}
+
+	/** 持ち主の会話の状態。 */
+	livenessOf(owner: IParadisDocOwner): ParadisDocOwnerLiveness {
+		for (const pane of this._paneSessions.values()) {
+			if (pane.session === owner.session) {
+				return 'live';
+			}
+		}
+		return owner.ended !== undefined ? 'ended' : 'unknown';
+	}
+
+	handleHook(event: IParadisAgentHookEvent): void {
+		if (event.ownerUnverified) {
+			return;
+		}
+		const token = event.token;
+		if (event.event === 'TerminalExit' || event.event === 'SessionEnd') {
+			const pane = this._paneSessions.get(token);
+			const session = event.event === 'SessionEnd' && event.sessionId !== undefined && SESSION_PATTERN.test(event.sessionId) ? event.sessionId : pane?.session;
+			this._paneSessions.delete(token);
+			if (session !== undefined && !this._isLive(session)) {
+				this._seenAlive.delete(session);
+				void this.ledger.ready.then(() => this.ledger.markSessionEnded(session));
+			}
+			return;
+		}
+		const pane = this._recordPane(event);
+		if (pane === undefined) {
+			return;
+		}
+		if (!this._seenAlive.has(pane.session)) {
+			this._seenAlive.add(pane.session);
+			void this.ledger.ready.then(() => this.ledger.markSessionAlive(pane.session));
+		}
+		if (event.event !== 'PostToolUse' || pane.agent !== 'claude' || event.toolName === undefined) {
+			return;
+		}
+		const pathField = WRITE_TOOLS.get(event.toolName);
+		const input = event.payload?.tool_input ?? event.toolInput;
+		const rawPath = pathField !== undefined && typeof input === 'object' && input !== null ? (input as Record<string, unknown>)[pathField] : undefined;
+		const path = paradisNormalizeDocPath(rawPath);
+		if (path === undefined || paradisDocKind(path) === undefined) {
+			return;
+		}
+		const tool = event.toolName;
+		const toolUseId = event.toolUseId;
+		void this.ledger.ready.then(() => this.ledger.recordWrite(event.remoteHostId ?? pane.hostId, path, pane, { at: event.at, tool, ...(toolUseId !== undefined ? { toolUseId } : {}) }));
+	}
+
+	/** preview_file が開いた・予約した後に呼ばれる。結果の文に足す英文を返す。 */
+	async onPreviewFileOpened(opened: IParadisPreviewFileOpened): Promise<string | undefined> {
+		const path = paradisNormalizeDocPath(opened.path);
+		if (path === undefined || paradisDocKind(path) === undefined) {
+			return undefined;
+		}
+		const pane = this._paneSessions.get(opened.token);
+		if (pane === undefined) {
+			// どの会話のペインか分からないうちは登録しない（開くだけ）
+			return undefined;
+		}
+		const hostId = opened.remoteAuthority !== undefined ? paradisAgentHookRemoteHostId(opened.remoteAuthority) ?? pane.hostId : pane.hostId;
+		await this.ledger.ready;
+		switch (this.ledger.registerPreview(hostId, path, pane)) {
+			case 'registered':
+				return 'It is now a document of this session (list_docs shows it).';
+			case 'other':
+				return 'Another session owns this document. Call adopt_doc if the user asked you to take it over.';
+			default:
+				return undefined;
+		}
+	}
+
+	private _isLive(session: string): boolean {
+		for (const pane of this._paneSessions.values()) {
+			if (pane.session === session) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private _recordPane(event: IParadisAgentHookEvent): IParadisDocPaneSession | undefined {
+		const previous = this._paneSessions.get(event.token);
+		const session = event.sessionId;
+		if (session === undefined || !SESSION_PATTERN.test(session)) {
+			return previous;
+		}
+		const agent = event.agentKind ?? (event.transcriptPath !== undefined ? paradisHookAgentKindForTranscript(event.transcriptPath) : previous?.agent);
+		if (agent === undefined) {
+			return previous;
+		}
+		if (previous !== undefined && previous.session === session && previous.agent === agent) {
+			return previous;
+		}
+		// 同じ会話の間は最初に報告された作業ディレクトリを使う（後の hook の cwd はツールが cd した先になりうる）
+		const cwd = event.cwd !== undefined ? paradisNormalizeDocPath(event.cwd) : undefined;
+		const next: IParadisDocPaneSession = { agent, session, ...(cwd !== undefined ? { cwd } : {}), hostId: event.remoteHostId ?? '' };
+		this._paneSessions.set(event.token, next);
+		return next;
+	}
+}

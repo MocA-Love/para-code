@@ -163,3 +163,5 @@ import './contrib/portTools/electron-browser/paradisPortTools.contribution.js';
 import './contrib/portTools/electron-browser/paradisPortPanelActions.contribution.js';
 // Q599: ファイル・フォルダの右クリックの共通の項目（ダウンロード・パスのコピー・ターミナルで開く・エージェントへ送る など）を足りない場所に足す
 import './contrib/fileMenus/electron-browser/paradisFileMenus.contribution.js';
+// para-browser MCP の資料のツール（list_docs・adopt_doc）のウィンドウ側: ペインのスペースのフォルダ、ファイルの有無、引き取りの確認
+import './contrib/agentDocs/electron-browser/paradisAgentDocs.contribution.js';
