@@ -72,21 +72,19 @@ const URL_ATTRIBUTES = new Set(['href', 'src', 'action', 'formaction', 'xlink:hr
  */
 export function stopParadisHtmlScripts(doc: Document): IParadisHtmlScriptStopResult {
 	let stopped = 0;
-	for (const element of Array.from(doc.querySelectorAll('script'))) {
-		element.remove();
-		stopped++;
-	}
-	for (const element of Array.from(doc.querySelectorAll('base, meta[http-equiv]'))) {
-		if (element.localName === 'base' || element.getAttribute('http-equiv')?.trim().toLowerCase() === 'refresh') {
+	for (const element of descendants(doc)) {
+		if (element.localName === 'script') {
+			element.remove();
+			stopped++;
+		} else if (element.localName === 'base' || (element.localName === 'meta' && element.getAttribute('http-equiv')?.trim().toLowerCase() === 'refresh')) {
 			element.remove();
 		}
 	}
-	for (const element of Array.from(doc.getElementsByTagName('*'))) {
+	for (const element of descendants(doc)) {
 		let found = false;
 		for (const attribute of Array.from(element.attributes)) {
 			const name = attribute.name.toLowerCase();
 			// URL の前の空白と制御文字はブラウザが読み飛ばす
-			// eslint-disable-next-line no-control-regex
 			if (name.startsWith('on') || (URL_ATTRIBUTES.has(name) && /^[\u0000-\u0020]*(?:javascript|vbscript):/i.test(attribute.value.replace(/[\t\n\r]/g, '')))) {
 				element.removeAttribute(attribute.name);
 				found = true;
@@ -101,7 +99,7 @@ export function stopParadisHtmlScripts(doc: Document): IParadisHtmlScriptStopRes
 
 /** body の下の要素の数。 */
 export function countParadisHtmlElements(doc: Document): number {
-	return doc.body ? doc.body.getElementsByTagName('*').length : 0;
+	return doc.body ? descendants(doc.body).length : 0;
 }
 
 /** 突き合わせの 1 件と、その元の節。 */
@@ -143,7 +141,7 @@ function isLeaf(element: Element): boolean {
 	if (OPAQUE_TAGS.has(element.localName)) {
 		return false;
 	}
-	for (const descendant of Array.from(element.getElementsByTagName('*'))) {
+	for (const descendant of descendants(element)) {
 		if (!INLINE_TAGS.has(descendant.localName)) {
 			return false;
 		}
@@ -170,10 +168,10 @@ function onlyStyleAttributesDiffer(o: Element, m: Element): boolean {
 /** 文書の CSS（`<style>` の中身と `<link rel="stylesheet">` の行き先）の並び。 */
 function styleItems(doc: Document): IParadisRenderedDiffItem[] {
 	const items: IParadisRenderedDiffItem[] = [];
-	for (const element of Array.from(doc.querySelectorAll('style, link'))) {
+	for (const element of descendants(doc)) {
 		if (element.localName === 'style') {
 			items.push({ kind: 'style', key: collapse(element.textContent ?? '') });
-		} else if ((element.getAttribute('rel') ?? '').toLowerCase().split(/\s+/).includes('stylesheet')) {
+		} else if (element.localName === 'link' && (element.getAttribute('rel') ?? '').toLowerCase().split(/\s+/).includes('stylesheet')) {
 			items.push({ kind: 'link', key: element.getAttribute('href') ?? '' });
 		}
 	}
@@ -236,7 +234,7 @@ class ParadisHtmlDiffMarker {
 						this._anchor(left, right);
 						this._markPair(left, right);
 					} else if (!isElement(left!) && !isElement(right!)) {
-						this._markTextPair(left, right);
+						this._markTextPair(left as Text, right as Text);
 					} else {
 						// 文字と要素が入れ替わった。消えた方を先に置く
 						this._markRemoved(left!, pending);
@@ -374,6 +372,17 @@ class ParadisHtmlDiffMarker {
 			m.setAttribute(PARADIS_HTML_RENDERED_DIFF_ANCHOR_ATTRIBUTE, anchor);
 		}
 	}
+}
+
+/** `root` の下の要素を文書の順に並べる（`root` 自身は含めない）。 */
+function descendants(root: Node): Element[] {
+	const doc = root.ownerDocument ?? root as Document;
+	const walker = doc.createTreeWalker(root, 1 /* NodeFilter.SHOW_ELEMENT */);
+	const result: Element[] = [];
+	for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+		result.push(node as Element);
+	}
+	return result;
 }
 
 function isElement(node: Node): node is Element {
