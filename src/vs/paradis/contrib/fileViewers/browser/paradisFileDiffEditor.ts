@@ -151,7 +151,7 @@ export class ParadisFileDiffEditor extends EditorPane {
 		store.add(paradisFollowModelReadonly(modifiedRef.object, options => widget.updateOptions(options)));
 		const factory = MARKDOWN_RENDERED_DIFF.matches(diffInput.modifiedResource) ? MARKDOWN_RENDERED_DIFF : paradisRenderedDiffViewFactoryFor(diffInput.modifiedResource);
 		if (factory) {
-			this._ensureRendered(factory).setInput(diffInput.originalResource, diffInput.modifiedResource, originalRef.object.textEditorModel, modifiedRef.object.textEditorModel);
+			this._ensureRendered(factory).setInput(diffInput.originalResource, diffInput.modifiedResource, originalRef.object.textEditorModel, modifiedRef.object.textEditorModel, diffInput.openInRenderedDiff);
 		} else {
 			this._rendered?.clearInput();
 			this._rendered = undefined;
