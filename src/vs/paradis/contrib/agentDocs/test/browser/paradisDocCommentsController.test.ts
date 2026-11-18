@@ -16,12 +16,14 @@ import { IOverlayWebview, WebviewMessageReceivedEvent } from '../../../../../wor
 import { IParadisDocCommentsBackend } from '../../browser/paradisDocCommentsBackend.js';
 import { ParadisDocCommentsController } from '../../browser/paradisDocCommentsController.js';
 import { IParadisDocCommentDraft, IParadisDocCommentThread } from '../../common/paradisDocComments.js';
+import { IParadisDocEditingSource } from '../../browser/paradisDocEditingSource.js';
+import { IParadisDocEditingChange, IParadisDocEditingMark } from '../../common/paradisDocEditing.js';
 
 suite('ParadisDocCommentsController', () => {
 
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function setup(initial: IParadisDocCommentThread[] = []) {
+	function setup(initial: IParadisDocCommentThread[] = [], editing?: IParadisDocEditingSource) {
 		const added: { hostId: string; path: string; draft: IParadisDocCommentDraft }[] = [];
 		const acts: unknown[][] = [];
 		const threads: IParadisDocCommentThread[] = [...initial];
@@ -41,7 +43,7 @@ suite('ParadisDocCommentsController', () => {
 		const posted: unknown[] = [];
 		const webview = { onMessage: messages.event, postMessage: async (message: unknown) => { posted.push(message); return true; }, isFocused: false } as unknown as IOverlayWebview;
 		const opened: string[] = [];
-		const controller = disposables.add(new ParadisDocCommentsController({ webview: () => webview, openLink: link => opened.push(link), recordScroll: () => { } }, backend));
+		const controller = disposables.add(new ParadisDocCommentsController({ webview: () => webview, openLink: link => opened.push(link), recordScroll: () => { } }, backend, editing));
 		const toolbar = mainWindow.document.createElement('div');
 		const content = mainWindow.document.createElement('div');
 		mainWindow.document.body.append(toolbar, content);
@@ -157,6 +159,25 @@ suite('ParadisDocCommentsController', () => {
 			],
 			acts: [['c-000000000002', 'deliverNow', undefined], ['c-000000000001', 'resolve', undefined], ['c-000000000001', 'append', '脚注の番号は?']],
 			replyOpen: false,
+		});
+	});
+
+	test('passes the editing mark of the open document to the page and drops it when it is cleared', async () => {
+		const changes = disposables.add(new Emitter<IParadisDocEditingChange>());
+		const current: IParadisDocEditingMark = { id: 'm-1', tool: 'edit', source: '## 概要', at: 1 };
+		const { controller } = setup([], { onDidChange: changes.event, get: async (_hostId, path) => path === '/w/note.md' ? current : undefined });
+		await flush();
+		const opened = controller.layerState.editing;
+		changes.fire({ hostId: '', path: '/w/other.md', mark: { id: 'm-2', tool: 'write', at: 2 } });
+		const otherDocument = controller.layerState.editing?.id;
+		changes.fire({ hostId: '', path: '/w/note.md', mark: { id: 'm-3', tool: 'write', at: 3 } });
+		const rewriting = controller.layerState.editing;
+		changes.fire({ hostId: '', path: '/w/note.md' });
+		assert.deepStrictEqual({ opened, otherDocument, rewriting, cleared: controller.layerState.editing }, {
+			opened: { id: 'm-1', label: 'Claude Code が編集中', source: '## 概要' },
+			otherDocument: 'm-1',
+			rewriting: { id: 'm-3', label: 'Claude Code が書き直し中' },
+			cleared: undefined,
 		});
 	});
 });

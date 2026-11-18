@@ -161,4 +161,29 @@ suite('Paradis doc comment anchor', () => {
 			partial: { text: '主因は新規顧客の獲得である。', match: 'partial', lines: '1/2' },
 		});
 	});
+
+	test('blocks that changed between two renders: a sequence diff, not a positional compare', () => {
+		const before = ['見出し', '段落 1', '段落 2', '段落 3'];
+		assert.deepStrictEqual({
+			same: fn.diffBlocks(before, [...before]),
+			// 間に 1 つ足しても、後ろのブロックは変わったことにしない
+			inserted: fn.diffBlocks(before, ['見出し', '段落 1', '新しい節', '段落 2', '段落 3']),
+			appended: fn.diffBlocks(before, [...before, '新しい節']),
+			rewritten: fn.diffBlocks(before, ['見出し', '段落 1（直した）', '段落 2', '段落 3']),
+			removed: fn.diffBlocks(before, ['見出し', '段落 2', '段落 3']),
+			// 入れ替えただけの文は変わったことにしない
+			moved: fn.diffBlocks(before, ['見出し', '段落 2', '段落 1', '段落 3']),
+			fromEmpty: fn.diffBlocks([], ['見出し']),
+			prototypeNames: fn.diffBlocks(['constructor'], ['constructor', 'toString']),
+		}, {
+			same: { changed: [], added: false },
+			inserted: { changed: [2], added: true },
+			appended: { changed: [4], added: true },
+			rewritten: { changed: [1], added: false },
+			removed: { changed: [], added: false },
+			moved: { changed: [], added: false },
+			fromEmpty: { changed: [0], added: true },
+			prototypeNames: { changed: [1], added: true },
+		});
+	});
 });

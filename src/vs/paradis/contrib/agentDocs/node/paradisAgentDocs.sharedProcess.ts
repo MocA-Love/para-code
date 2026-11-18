@@ -17,7 +17,7 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
-import { onParadisAgentHookEvent, onParadisAgentTurnEnded } from '../../agentBrowser/node/paradisAgentHookBus.js';
+import { onParadisAgentAwaitingUser, onParadisAgentHookEvent, onParadisAgentTurnEnded } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { paradisPaneAgentStatusSource } from '../../agentBrowser/node/paradisPaneAgentStatusSource.js';
 import { paradisClaudeModBridge } from '../../claudeMod/node/paradisClaudeModBridge.js';
 import { PARADIS_DOC_DELIVERY_CHANNEL } from '../common/paradisDocCommentDelivery.js';
@@ -32,6 +32,8 @@ import { ParadisAgentDocsService } from './paradisAgentDocsService.js';
 import { ParadisAgentDocsToolProvider } from './paradisAgentDocsToolProvider.js';
 import { PARADIS_AGENT_DOCS_VIEW_CHANNEL } from '../common/paradisAgentDocsView.js';
 import { ParadisAgentDocsViewChannel } from './paradisAgentDocsViewChannel.js';
+import { PARADIS_DOC_EDITING_CHANNEL } from '../common/paradisDocEditing.js';
+import { ParadisDocEditingChannel, ParadisDocEditingTracker } from './paradisDocEditingTracker.js';
 
 /** 台帳のファイル。読めなければ無いものとして始め、書くときは一時ファイルから置き換える。 */
 function ledgerFileStorage(folder: string): IParadisDocLedgerStorage {
@@ -72,5 +74,7 @@ ParadisSharedProcessContributions.register('agentDocs', ({ server, accessor }) =
 	// プレビューのコメントの読み書きと、持ち主のペインへ貼る口
 	server.registerChannel(PARADIS_DOC_COMMENTS_CHANNEL, new ParadisDocCommentsChannel(comments, id => delivery.deliverNow(id)));
 	server.registerChannel(PARADIS_DOC_DELIVERY_CHANNEL, new ParadisDocDeliveryChannel(delivery));
+	// プレビューの「編集中」の印（Claude Code の PreToolUse から）
+	server.registerChannel(PARADIS_DOC_EDITING_CHANNEL, new ParadisDocEditingChannel(store.add(new ParadisDocEditingTracker(onParadisAgentHookEvent, onParadisAgentTurnEnded, onParadisAgentAwaitingUser))));
 	return store;
 });
