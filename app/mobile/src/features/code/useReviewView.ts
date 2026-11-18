@@ -7,6 +7,7 @@ import { FS_BINARY_RESPONSE_ENCODING, decodeUtf8 } from '@para/protocol';
 import { sendPcRequest, useAppStore } from '../../appState.js';
 import { base64ByteLength } from '../../attachments/attachmentFetchPolicy.js';
 import type { DiffRow } from '../../components/diffParser.js';
+import { PcReplyError } from '../../store.js';
 import { officeRawDiff } from './officeRawDiff.js';
 import { reviewRenderSide, type ReviewContentKind, type ReviewSide, type ReviewSides, type ReviewViewMode } from './reviewViewModes.js';
 import { errorMessage } from './scmModel.js';
@@ -19,13 +20,15 @@ export interface ReviewViewContent {
 	readonly render?: FileContent;
 	/** 画像の差分: 変更前・変更後（base64。その側に無ければ undefined）。 */
 	readonly images?: { readonly before: string | undefined; readonly after: string | undefined };
-	/** Excel・Word・Markdown の差分: PC が描いた HTML。 */
+	/** Excel・Word・Markdown・HTML の差分: PC が描いた HTML。 */
 	readonly html?: string;
 	/** Excel・Word の Raw: セルの値・段落の比較の行。 */
 	readonly rows?: readonly DiffRow[];
 	/** Raw を上限（`MAX_RAW_LINES`）で打ち切った（先頭だけを比べた）。 */
 	readonly rowsCapped?: boolean;
 	readonly error?: string;
+	/** Markdown・HTML の差分を PC が作れなかった（大きい・突き合わせられない・形が読めない）。届かなかった失敗では立てない。 */
+	readonly renderedDiffFailed?: boolean;
 }
 
 export interface ReviewViewState {
@@ -155,8 +158,8 @@ export function useReviewView(space: CodeSpace, path: string | undefined, kind: 
 				if (kind === 'spreadsheet') {
 					return { html: (await scmXlsxDiff(wsId, path)).html };
 				}
-				if (kind === 'markdown') {
-					// PC が両側を描いて突き合わせた 1 列のプレビュー差分（scm.rendered-diff.v1）
+				if (kind === 'markdown' || kind === 'html') {
+					// PC が両側を描いて突き合わせた 1 列のプレビュー差分（Markdown は scm.rendered-diff.v1、HTML は scm.rendered-diff-html.v1）
 					const reply = await sendPcRequest<{ readonly html?: string }>(pcId, 'scm', { t: 'renderedDiff', ws: wsId, path, original: sides.before, modified: sides.after }, { timeoutMs: 120_000 });
 					return { html: reply.html ?? '' };
 				}
@@ -186,7 +189,9 @@ export function useReviewView(space: CodeSpace, path: string | undefined, kind: 
 			.catch((e: unknown) => {
 				// 置き換えられた要求（同じ端末から次の Word 差分・プレビュー差分を頼んだ）は、次の応答を待つだけで何も出さない
 				if (current() && errorMessage(e) !== SUPERSEDED_ERROR) {
-					remember({ error: errorMessage(e) });
+					// PC が答えた失敗（code の無いもの）だけを、プレビュー差分を作れなかったとみなす（時間切れ・切断は除く）
+					const renderedDiffFailed = mode === 'diff' && (kind === 'markdown' || kind === 'html') && e instanceof PcReplyError && e.code === undefined;
+					remember({ error: errorMessage(e), ...(renderedDiffFailed ? { renderedDiffFailed } : {}) });
 				}
 			});
 		return () => { cancelled = true; };
