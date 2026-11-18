@@ -59,11 +59,15 @@ import { IParadisCodeCopyLabels, PARADIS_CODE_COPY_RERUN_SCRIPT, PARADIS_CODE_CO
 import { IParadisViewerScrollState } from '../common/paradisViewerScroll.js';
 import { paradisRecoverMarkdownCodeSources } from '../common/paradisMarkdownCodeSource.js';
 import { PARADIS_MARKDOWN_EDITOR_ID } from './paradisFileViewers.js';
-import { ParadisFileViewerInput } from './paradisFileViewerInput.js';
+import { ParadisFileViewerInput, ParadisFileViewerMode } from './paradisFileViewerInput.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { localize } from '../../../../nls.js';
+import { ParadisDocCommentsController } from '../../agentDocs/browser/paradisDocCommentsController.js';
+import { paradisDocCommentsBackend } from '../../agentDocs/browser/paradisDocCommentsBackend.js';
+import { PARADIS_DOC_LAYER_RERUN_SCRIPT, paradisDocCommentInPageScript } from '../../agentDocs/common/paradisDocCommentLayer.js';
+import { PARADIS_WEBVIEW_HOST_MESSAGE_CHECK } from '../common/paradisWebviewHostMessage.js';
 
 /** 図の拡大の窓の文言。 */
 function mermaidZoomLabels(): IParadisMermaidZoomLabels {
@@ -110,6 +114,8 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 	 * だけ）。コピーで元のタブに戻す。
 	 */
 	private _codeSources = new Map<string, string>();
+	/** 資料のコメント（右の列と、ページの中の層）。 */
+	private readonly _comments: ParadisDocCommentsController;
 
 	constructor(
 		group: IEditorGroup,
@@ -137,6 +143,8 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		super(PARADIS_MARKDOWN_EDITOR_ID, group, telemetryService, themeService, storageService, webviewService, textFileService, fileService, textModelService, instantiationService, layoutService, configurationService, notificationService, textResourceConfigurationService, editorService, editorGroupService);
 		// 拡大縮小はページ内のスクリプトで反映する（Markdown はスクリプトを常に許可している）。
 		this._zoom = this._register(new ParadisViewerZoomControls(() => void this.webview?.postMessage(paradisViewerZoomMessage(this._zoom.factor))));
+		// リンクとスクロール位置は webview の基盤が知らせる（文書の中に層を置くので外枠は無い）
+		this._comments = this._register(new ParadisDocCommentsController({ webview: () => this.webview, openLink: () => { }, recordScroll: () => { } }, paradisDocCommentsBackend()));
 		this._register(this._configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration(PARADIS_MARKDOWN_WIDTH_SETTING)) {
 				this._showWidth();
@@ -188,6 +196,7 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 			this._mediaCache.clear();
 			this._mediaCacheResource = resource;
 		}
+		this._comments.setResource(resource);
 		await super.setInput(input, options, context, token);
 	}
 
@@ -203,7 +212,20 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		super.dispose();
 	}
 
+	protected override createEditor(parent: HTMLElement): void {
+		super.createEditor(parent);
+		const content = this.viewerContentElement;
+		if (content) {
+			this._comments.createColumn(content);
+		}
+	}
+
+	protected override onDidChangeViewMode(mode: ParadisFileViewerMode): void {
+		this._comments.setRendered(mode === 'rendered');
+	}
+
 	protected override onCreateToolbar(toolbar: HTMLElement): void {
+		this._comments.createToolbarToggle(toolbar);
 		// 本文の幅はズームの左。帯が狭いときは 1 つのボタンに畳む（区切り線は狭い帯では出ない）。
 		this._widthControl = this._register(new ParadisMarkdownWidthControl(toolbar, this._widthFor(undefined), width => this._chooseWidth(width), this._contextMenuService));
 		appendParadisViewerToolbarSeparator(toolbar);
@@ -233,6 +255,7 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 	// webview 基盤は `#見出し` 以外のリンクを通知するだけで自分では開かないので、ここで開く。
 	// 相対パスのリンクは描画時に絶対 URI へ書き換え済み（paradisMarkdownLinks）。
 	protected override onWebviewCreated(webview: IOverlayWebview, store: DisposableStore): void {
+		this._comments.attach(webview, store);
 		store.add(webview.onDidClickLink(link => {
 			const target = paradisMarkdownLinkToOpen(link);
 			if (target) {
@@ -311,6 +334,8 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		const body = `${frontMatter.htmlPrefix}${media.html}`;
 		this._codeSources = paradisRecoverMarkdownCodeSources(frontMatter.markdown, rendered.codeSources);
 		const width = this._widthFor(resource);
+		// 資料のコメントの層（保存先があり、手元か SSH 先のファイルのとき）
+		const comments = this._comments.enabled;
 
 		// 実行できるのは、この HTML 自身が埋め込む nonce 付き <script>（ビューアの補助スクリプトと、
 		// mermaid を使う文書では vendored mermaid.js 本体 + 直後の初期化コード）だけであり、
@@ -342,13 +367,14 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		${paradisViewerZoomScript(nonce)}
 		${paradisMarkdownWidthScript(nonce)}
 		${paradisCodeCopyScript(nonce, codeCopyLabels())}
-		${paradisViewerBodySwapScript(nonce, PARADIS_CODE_COPY_RERUN_SCRIPT + (mermaidEnabled ? PARADIS_MERMAID_RERUN_SCRIPT : ''))}
+		${paradisViewerBodySwapScript(nonce, PARADIS_CODE_COPY_RERUN_SCRIPT + (mermaidEnabled ? PARADIS_MERMAID_RERUN_SCRIPT : '') + (comments ? PARADIS_DOC_LAYER_RERUN_SCRIPT : ''))}
 		${this.viewerPageScripts(resource, nonce)}
+		${comments ? paradisDocCommentInPageScript(nonce, this._comments.token, this._comments.labels, this._comments.layerState, PARADIS_WEBVIEW_HOST_MESSAGE_CHECK) : ''}
 	</body>
 </html>`;
 		// 2 回目以降の描き直しは、外側（nonce・配色・Mermaid の有無）が同じなら本文だけを送る。Mermaid 本体（約 3.5MB）と
 		// スタイルは最初の 1 回だけ読み込む。倍率と本文の幅はページへ別に送っているので鍵に入れない（`<html>` は差し替えの外）。
-		return { html, swap: { key: `${nonce}\n${mermaidEnabled}\n${tokenCss}`, body } };
+		return { html, swap: { key: `${nonce}\n${mermaidEnabled}\n${comments}\n${tokenCss}`, body } };
 	}
 
 	/**

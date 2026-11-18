@@ -165,3 +165,4 @@ import './contrib/portTools/electron-browser/paradisPortPanelActions.contributio
 import './contrib/fileMenus/electron-browser/paradisFileMenus.contribution.js';
 // para-browser MCP の資料のツール（list_docs・adopt_doc）のウィンドウ側: ペインのスペースのフォルダ、ファイルの有無、引き取りの確認
 import './contrib/agentDocs/electron-browser/paradisAgentDocs.contribution.js';
+import './contrib/agentDocs/electron-browser/paradisDocComments.contribution.js';

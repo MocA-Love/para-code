@@ -61,6 +61,8 @@ import { IWorkspaceContextService } from '../../../../platform/workspace/common/
 import { IWorkspaceTrustManagementService } from '../../../../platform/workspace/common/workspaceTrust.js';
 import { ILifecycleService, LifecyclePhase } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
+import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
+import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IOverlayWebview, IWebviewService } from '../../../../workbench/contrib/webview/browser/webview.js';
@@ -74,6 +76,14 @@ import { paradisHtmlViewerCanvasScript, paradisHtmlViewerHeadStyle } from '../co
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ParadisViewerOpenKind } from '../common/paradisViewerOpenTiming.js';
+import { IParadisRenderedDocument } from '../common/paradisViewerBodySwap.js';
+import { paradisFindHighlightScript } from '../common/paradisViewerScroll.js';
+import { PARADIS_WEBVIEW_HOST_MESSAGE_CHECK } from '../common/paradisWebviewHostMessage.js';
+import { ParadisFileViewerMode } from '../browser/paradisFileViewerInput.js';
+import { paradisHtmlFrameDefaultStyle } from '../common/paradisHtmlViewerDefaultStyles.js';
+import { ParadisDocCommentsController } from '../../agentDocs/browser/paradisDocCommentsController.js';
+import { paradisDocCommentsBackend } from '../../agentDocs/browser/paradisDocCommentsBackend.js';
+import { paradisDocCommentWrapperDocument } from '../../agentDocs/common/paradisDocCommentLayer.js';
 
 /**
  * 属性値に埋める前のエスケープ。`toString(true)`(skipEncoding) は `"` 等をそのまま残すため、
@@ -94,6 +104,8 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 	private _previewServerUnavailable = false;
 	/** SSH 先のフォルダーを載せる係（ペインと寿命を共にし、転送もここで閉じる）。 */
 	private readonly _remoteMounter: ParadisRemotePreviewMounter;
+	/** 資料のコメント（右の列と、外枠の中の層）。 */
+	private readonly _comments: ParadisDocCommentsController;
 
 	constructor(
 		group: IEditorGroup,
@@ -123,13 +135,52 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		super(PARADIS_HTML_EDITOR_ID, group, telemetryService, themeService, storageService, webviewService, textFileService, fileService, textModelService, instantiationService, layoutService, configurationService, notificationService, textResourceConfigurationService, editorService, editorGroupService);
 		this._zoom = this._register(new ParadisViewerZoomControls(() => this._onDidChangeZoom()));
 		this._remoteMounter = this._register(new ParadisRemotePreviewMounter(this._remoteAgentService, this._remoteAuthorityResolverService, this._tunnelService));
+		this._comments = this._register(new ParadisDocCommentsController({
+			webview: () => this.webview,
+			openLink: link => this._openLink(link),
+			recordScroll: progress => this.recordScrollProgress(progress),
+		}, paradisDocCommentsBackend()));
 		// 信頼の状態が変わったら、スクリプトの可否を反映するため描き直す。
 		this._register(this._workspaceTrustManagementService.onDidChangeTrust(() => this.requestRerender()));
 	}
 
-	/** 信頼していないワークスペースではスクリプトを動かさない（冒頭の説明を参照）。 */
+	/**
+	 * webview のスクリプトを動かすか。コメントの外枠を使うときは、信頼していないワークスペースでも外枠（ビューア
+	 * 自身）のスクリプトだけ動かす（ページと子のフレームは中の iframe の sandbox で止める）。外枠を使わないときは、
+	 * 信頼していないワークスペースではスクリプトを動かさない（冒頭の説明を参照）。
+	 */
 	protected override get allowScripts(): boolean {
+		return this._comments.enabled || this._pageScriptsAllowed;
+	}
+
+	/** ページ自身のスクリプトを動かしてよいか（信頼したワークスペースだけ）。 */
+	private get _pageScriptsAllowed(): boolean {
 		return this._workspaceTrustManagementService.isWorkspaceTrusted();
+	}
+
+	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
+		this._comments.setResource(input.resource);
+		await super.setInput(input, options, context, token);
+	}
+
+	protected override createEditor(parent: HTMLElement): void {
+		super.createEditor(parent);
+		const content = this.viewerContentElement;
+		if (content) {
+			this._comments.createColumn(content);
+		}
+	}
+
+	protected override onDidChangeViewMode(mode: ParadisFileViewerMode): void {
+		this._comments.setRendered(mode === 'rendered');
+	}
+
+	/** ページの中で押したリンクを開く（表示しているフォルダーの中のファイルはエディタで、外は http(s)・mailto だけ）。 */
+	private _openLink(link: string): void {
+		const target = paradisPreviewLinkTarget(link, this._linkBase);
+		if (target) {
+			this._openerService.open(target.uri, { fromUserGesture: true, allowContributedOpeners: true }).catch(onUnexpectedError);
+		}
 	}
 
 	protected override get openTimingKind(): ParadisViewerOpenKind {
@@ -139,12 +190,8 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 	// webview 基盤はページ内のアンカー以外のリンクを知らせるだけで自分では開かない（Markdown と同じ）。表示している
 	// フォルダーの中のファイルはエディタで開き、外は http(s)・mailto だけを開く（file: や配信サーバの URL は開かない）
 	protected override onWebviewCreated(webview: IOverlayWebview, store: DisposableStore): void {
-		store.add(webview.onDidClickLink(link => {
-			const target = paradisPreviewLinkTarget(link, this._linkBase);
-			if (target) {
-				this._openerService.open(target.uri, { fromUserGesture: true, allowContributedOpeners: true }).catch(onUnexpectedError);
-			}
-		}));
+		this._comments.attach(webview, store);
+		store.add(webview.onDidClickLink(link => this._openLink(link)));
 	}
 
 	/**
@@ -185,6 +232,7 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 	}
 
 	protected override onCreateToolbar(toolbar: HTMLElement): void {
+		this._comments.createToolbarToggle(toolbar);
 		this._zoom.createButtons(toolbar);
 
 		// ページを読み込み直す（スクリプトの再実行、CSS・画像の取り直し）
@@ -252,6 +300,7 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 	}
 
 	private _onDidChangeZoom(): void {
+		// 外枠はページのスクリプトの可否に関係なく倍率を受け取る
 		if (this.allowScripts) {
 			void this.webview?.postMessage(paradisViewerZoomMessage(this._zoom.factor));
 		} else {
@@ -261,8 +310,10 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		}
 	}
 
-	protected override async renderDocument(text: string, resource: URI, _webview: IOverlayWebview): Promise<string> {
+	protected override async renderDocument(text: string, resource: URI, _webview: IOverlayWebview): Promise<string | IParadisRenderedDocument> {
 		const base = await this._resolveBase(resource);
+		const comments = this._comments.enabled;
+		const pageScriptsAllowed = this._pageScriptsAllowed;
 		const baseHref = escapeAttribute(base.url);
 
 		// <base> で相対リソースの解決先を決め（ローカルサーバ、またはリモート用の webview リソース URL）、
@@ -273,12 +324,14 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		// ページが body にだけ背景を付けているときは、読み込んだ後に白を外して body の背景を画面全体に広げる。
 		const headInjection = `<base href="${baseHref}">${paradisHtmlViewerHeadStyle(this._zoom.factor)}`;
 		// ライブなズーム変更（ボタン操作）を postMessage で受け取り、スクロール位置を保ったまま反映する。
-		const zoomScript = paradisViewerZoomScript();
+		const zoomScript = comments ? '' : paradisViewerZoomScript();
 
 		const injected = paradisInjectHtmlHead(text, headInjection);
 		// 外の文書の CSP と、保存領域を消すスクリプトは、ページのどのスクリプトよりも前に置く（{@link paradisInsertAtDocumentStart}）。
-		const documentStart = (base.outsideWorkspace ? paradisHtmlOutsideWorkspaceCsp(base.url) : '')
-			+ (this.allowScripts ? paradisHtmlStorageResetScript(paradisHtmlDocumentStorageKey(resource)) : '');
+		// 外枠に入れるときは、webview の基盤の既定のスタイルも先頭に置く（中のページには基盤のスタイルが届かない）
+		const documentStart = (comments ? paradisHtmlFrameDefaultStyle() : '')
+			+ (base.outsideWorkspace ? paradisHtmlOutsideWorkspaceCsp(base.url) : '')
+			+ (pageScriptsAllowed ? paradisHtmlStorageResetScript(paradisHtmlDocumentStorageKey(resource)) : '');
 		const html = documentStart ? paradisInsertAtDocumentStart(injected, documentStart) : injected;
 
 		// 末尾に足す。`</body>` を探して差し込むと、**ページ自身のスクリプトの中にある文字列**の
@@ -288,6 +341,24 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		// スクロール位置の復元と検索結果の色のスクリプトも同じ理由で末尾に足す。スクリプトを動かさない
 		// とき（制限モード）は入れても動かないので入れない（webview を作り直した直後の初回表示だけは
 		// webview 自身がスクロール位置を戻す）。
+		if (comments) {
+			// 外枠にページを入れる。スクロール位置の復元と拡大は外枠がするので、ページには検索の色と白い地のスクリプトだけ
+			// （ページのスクリプトを動かすときだけ）。2 回目からは外枠を残してページだけを送る（外枠が入れ替える）。
+			const pageHtml = `${html}${pageScriptsAllowed ? paradisFindHighlightScript() + paradisHtmlViewerCanvasScript() : ''}`;
+			const token = this._comments.token;
+			return {
+				html: paradisDocCommentWrapperDocument({
+					pageHtml,
+					allowPageScripts: pageScriptsAllowed,
+					token,
+					labels: this._comments.labels,
+					state: this._comments.layerState,
+					scrollProgress: this.scrollProgressFor(resource),
+					fromHost: PARADIS_WEBVIEW_HOST_MESSAGE_CHECK,
+				}),
+				swap: { key: `doc-comments\n${pageScriptsAllowed}\n${token}`, body: pageHtml },
+			};
+		}
 		const pageScripts = this.allowScripts ? this.viewerPageScripts(resource) + paradisHtmlViewerCanvasScript() : '';
 		return `${html}${zoomScript}${pageScripts}`;
 	}
