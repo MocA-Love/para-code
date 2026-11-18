@@ -127,6 +127,7 @@ export function paradisViewerRerenderDelay(lastRenderMs: number): number {
 export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewState<IParadisViewerScrollState> {
 
 	private _rootElement: HTMLElement | undefined;
+	private _contentElement: HTMLElement | undefined;
 	private _webviewContainer: HTMLElement | undefined;
 	private _editorContainer: HTMLElement | undefined;
 	private _toolbarRightElement: HTMLElement | undefined;
@@ -377,6 +378,31 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	/** ツールバー右側（トグルの隣）へサブクラス固有のコントロール（HTMLズーム等）を追加するためのフック。 */
 	protected onCreateToolbar(_toolbarRight: HTMLElement): void { }
 
+	/** プレビューとソースを重ねる置き場（`.paradis-file-viewer-content`）。横に列を足すビューアが使う。 */
+	protected get viewerContentElement(): HTMLElement | undefined {
+		return this._contentElement;
+	}
+
+	/** プレビューとソースを切り替えた（ソースの間は横の列を隠すなど）。 */
+	protected onDidChangeViewMode(_mode: ParadisFileViewerMode): void { }
+
+	/**
+	 * 表示中の文書のスクロール位置を覚える（`scrollY / body.clientHeight`）。webview の基盤はページの window の
+	 * スクロールだけを知らせるので、ページを入れ子の iframe に入れるビューア（HTML のコメントの外枠）が自分で知らせる。
+	 */
+	protected recordScrollProgress(value: number): void {
+		const resource = this._displayedResource;
+		const progress = paradisNormalizeScrollProgress(value);
+		if (resource && progress !== undefined) {
+			this._scroll = { resource, progress };
+		}
+	}
+
+	/** そのファイルで覚えているスクロール位置（無ければ 0）。 */
+	protected scrollProgressFor(resource: URI): number {
+		return this._scrollProgressFor(resource);
+	}
+
 	/** 現在アクティブな webview（存在すれば）。 */
 	protected get webview(): IOverlayWebview | undefined {
 		return this._pane.webview;
@@ -467,6 +493,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		this.onCreateToolbar(this._toolbarRightElement);
 
 		const content = dom.append(this._rootElement, dom.$('.paradis-file-viewer-content'));
+		this._contentElement = content;
 		// webview コンテナは overlay webview を重ねる「アンカー(位置合わせ用の空要素)」。overlay 自身は
 		// workbench の webview レイヤーに属し、ここには描画されない。常にレイアウトさせておく(矩形が必要)。
 		this._webviewContainer = dom.append(content, dom.$('.paradis-file-viewer-webview'));
@@ -982,6 +1009,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 
 	private async _applyViewMode(mode: ParadisFileViewerMode, resource: URI, token: CancellationToken = CancellationToken.None): Promise<void> {
 		this._mode = mode;
+		this.onDidChangeViewMode(mode);
 		if (this._modeSegmented) {
 			this._modeSegmented.value = mode;
 		}
