@@ -362,6 +362,7 @@ suite('ParadisHtmlFileEditor', () => {
 				get: async (hostId, path) => ({ hostId, path, threads: [] }),
 				add: async () => undefined,
 				setPlaces: async () => { },
+				act: async () => { },
 			});
 		});
 		teardown(() => backendRegistration?.dispose());

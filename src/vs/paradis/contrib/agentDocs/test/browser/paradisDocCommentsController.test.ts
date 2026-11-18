@@ -21,9 +21,10 @@ suite('ParadisDocCommentsController', () => {
 
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function setup() {
+	function setup(initial: IParadisDocCommentThread[] = []) {
 		const added: { hostId: string; path: string; draft: IParadisDocCommentDraft }[] = [];
-		const threads: IParadisDocCommentThread[] = [];
+		const acts: unknown[][] = [];
+		const threads: IParadisDocCommentThread[] = [...initial];
 		const backend: IParadisDocCommentsBackend = {
 			onDidChange: BaseEvent.None,
 			get: async (hostId, path) => ({ hostId, path, threads: [...threads] }),
@@ -34,6 +35,7 @@ suite('ParadisDocCommentsController', () => {
 				return thread;
 			},
 			setPlaces: async () => { },
+			act: async (_hostId, _path, id, action, text) => { acts.push([id, action, text]); },
 		};
 		const messages = disposables.add(new Emitter<WebviewMessageReceivedEvent>());
 		const posted: unknown[] = [];
@@ -50,7 +52,7 @@ suite('ParadisDocCommentsController', () => {
 		const store = disposables.add(new DisposableStore());
 		controller.attach(webview, store);
 		const send = (message: object) => messages.fire({ message: { ...message, token: controller.token } } as WebviewMessageReceivedEvent);
-		return { controller, added, posted, opened, content, send, messages };
+		return { controller, added, acts, posted, opened, content, send, messages };
 	}
 
 	const flush = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -120,5 +122,41 @@ suite('ParadisDocCommentsController', () => {
 		const withoutBackend = disposables.add(new ParadisDocCommentsController({ webview: () => undefined, openLink: () => { }, recordScroll: () => { } }, undefined));
 		withoutBackend.setResource(URI.file('/w/note.md'));
 		assert.deepStrictEqual([controller.enabled, withoutBackend.enabled], [false, false]);
+	});
+
+	test('shows the delivery state and the answer as plain text in the card, and sends the actions of the card through the window', async () => {
+		const answered: IParadisDocCommentThread = {
+			id: 'c-000000000001', startedBy: 'user', anchor: { quote: 'A' }, state: 'answered', createdAt: 1,
+			messages: [{ by: 'user', text: '根拠は?', at: 1 }, { by: 'agent', text: '<b>出典</b>を足しました。', at: 2, edits: [{ at: 2, tool: 'Edit' }] }],
+		};
+		const waiting: IParadisDocCommentThread = {
+			id: 'c-000000000002', startedBy: 'user', anchor: { quote: 'B' }, state: 'queued', createdAt: 2,
+			messages: [{ by: 'user', text: '別件', at: 2 }], delivery: { attempts: 0, blockedBy: 'draftUnknown' },
+		};
+		const { acts, content } = setup([answered, waiting]);
+		await flush();
+		const cards = [...content.querySelectorAll<HTMLElement>('.paradis-doc-comment-card')];
+		const summary = cards.map(card => ({
+			status: card.querySelector('.paradis-status-label')?.textContent,
+			answer: card.querySelector('.paradis-doc-comment-answer .paradis-doc-comment-text')?.innerHTML,
+			buttons: [...card.querySelectorAll('.paradis-doc-comment-footer .paradis-button')].map(button => button.textContent),
+		}));
+		const button = (card: HTMLElement, label: string) => [...card.querySelectorAll<HTMLElement>('.paradis-doc-comment-footer .paradis-button')].find(candidate => candidate.textContent === label)!;
+		button(cards[0], '今すぐ届ける').click();
+		button(cards[1], '解決にする').click();
+		button(cards[1], '返信').click();
+		const reply = content.querySelector<HTMLTextAreaElement>('.paradis-doc-comment-reply textarea')!;
+		reply.value = ' 脚注の番号は? ';
+		reply.dispatchEvent(new Event('input'));
+		content.querySelector<HTMLElement>('.paradis-doc-comment-reply .paradis-button-primary')!.click();
+		await flush();
+		assert.deepStrictEqual({ summary, acts, replyOpen: content.querySelector('.paradis-doc-comment-reply') !== null }, {
+			summary: [
+				{ status: '届け待ち', answer: undefined, buttons: ['今すぐ届ける', '返信', '解決にする'] },
+				{ status: '回答あり', answer: '&lt;b&gt;出典&lt;/b&gt;を足しました。', buttons: ['返信', '解決にする'] },
+			],
+			acts: [['c-000000000002', 'deliverNow', undefined], ['c-000000000001', 'resolve', undefined], ['c-000000000001', 'append', '脚注の番号は?']],
+			replyOpen: false,
+		});
 	});
 });

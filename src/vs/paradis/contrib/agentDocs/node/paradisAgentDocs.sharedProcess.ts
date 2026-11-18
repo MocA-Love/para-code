@@ -6,8 +6,9 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// shared process で、資料の台帳（hook の購読と preview_file の後の登録）と、para-browser MCP の資料のツールを足す。
-// `paradis.sharedProcess.contribution.ts` から副作用 import される。台帳は利用者データの `paradis-docs/ledger.json`。
+// shared process で、資料の台帳（hook の購読と preview_file の後の登録）、資料のコメントの保存係と届け方の係、
+// para-browser MCP の資料のツールを足す。`paradis.sharedProcess.contribution.ts` から副作用 import される。
+// 台帳は利用者データの `paradis-docs/ledger.json`、コメントは `paradis-docs/comments/`。
 
 import { promises as fs } from 'fs';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
@@ -16,7 +17,14 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
-import { onParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHookBus.js';
+import { onParadisAgentHookEvent, onParadisAgentTurnEnded } from '../../agentBrowser/node/paradisAgentHookBus.js';
+import { paradisPaneAgentStatusSource } from '../../agentBrowser/node/paradisPaneAgentStatusSource.js';
+import { paradisClaudeModBridge } from '../../claudeMod/node/paradisClaudeModBridge.js';
+import { PARADIS_DOC_DELIVERY_CHANNEL } from '../common/paradisDocCommentDelivery.js';
+import { PARADIS_DOC_COMMENTS_CHANNEL } from '../common/paradisDocComments.js';
+import { ParadisDocCommentDelivery } from './paradisDocCommentDelivery.js';
+import { ParadisDocCommentsChannel, ParadisDocDeliveryChannel, paradisDocCommentsFileStorage } from './paradisDocComments.sharedProcess.js';
+import { ParadisDocCommentsStore } from './paradisDocCommentsStore.js';
 import { paradisRegisterMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { paradisRegisterPreviewFileObserver } from '../../agentBrowser/node/paradisPreviewFileObservers.js';
 import { IParadisDocLedgerStorage, ParadisAgentDocsLedger } from './paradisAgentDocsLedger.js';
@@ -54,9 +62,15 @@ ParadisSharedProcessContributions.register('agentDocs', ({ server, accessor }) =
 	const store = new DisposableStore();
 	const ledger = store.add(new ParadisAgentDocsLedger(ledgerFileStorage(folder), error => logService.warn('[ParadisAgentDocs] could not read or write the document ledger', error)));
 	const service = store.add(new ParadisAgentDocsService(ledger, onParadisAgentHookEvent));
+	const comments = store.add(new ParadisDocCommentsStore(paradisDocCommentsFileStorage(join(folder, 'comments')), error => logService.warn('[ParadisDocComments] could not read or write the comments of a document', error)));
+	// 書きかけは Claude Code の入力欄の mod からだけ分かる（無ければ「分からない」）
+	const delivery = store.add(new ParadisDocCommentDelivery(service, comments, paradisPaneAgentStatusSource, (token, session) => paradisClaudeModBridge.draftOf(token, session)?.text, onParadisAgentHookEvent, onParadisAgentTurnEnded));
 	store.add(paradisRegisterPreviewFileObserver(opened => service.onPreviewFileOpened(opened)));
-	store.add(paradisRegisterMcpToolProvider(new ParadisAgentDocsToolProvider(service)));
+	store.add(paradisRegisterMcpToolProvider(new ParadisAgentDocsToolProvider(service, comments)));
 	// 「資料」ビュー（ウィンドウ）が台帳を読む・頼む口
-	server.registerChannel(PARADIS_AGENT_DOCS_VIEW_CHANNEL, store.add(new ParadisAgentDocsViewChannel(service)));
+	server.registerChannel(PARADIS_AGENT_DOCS_VIEW_CHANNEL, store.add(new ParadisAgentDocsViewChannel(service, comments)));
+	// プレビューのコメントの読み書きと、持ち主のペインへ貼る口
+	server.registerChannel(PARADIS_DOC_COMMENTS_CHANNEL, new ParadisDocCommentsChannel(comments, id => delivery.deliverNow(id)));
+	server.registerChannel(PARADIS_DOC_DELIVERY_CHANNEL, new ParadisDocDeliveryChannel(delivery));
 	return store;
 });

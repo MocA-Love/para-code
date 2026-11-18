@@ -123,6 +123,7 @@
 
 .monaco-workbench .paradis-doc-comment-footer {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
 	gap: var(--vscode-spacing-size60);
 	margin-top: var(--vscode-spacing-size80);
@@ -130,4 +131,40 @@
 
 .monaco-workbench .paradis-doc-comment-grow {
 	flex: 1 1 auto;
+}
+
+/* An answer of the agent under the comment (plain text), with the count of the edits linked to it. */
+.monaco-workbench .paradis-doc-comment-answer {
+	margin-top: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size80);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--vscode-cornerRadius-small);
+	background: var(--vscode-paradis-sunken);
+}
+
+.monaco-workbench .paradis-doc-comment-answer-by {
+	margin-bottom: var(--vscode-spacing-size20);
+	color: var(--vscode-paradis-textMuted);
+	font-size: var(--vscode-fontSize-label2);
+}
+
+.monaco-workbench .paradis-doc-comment-text + .paradis-doc-comment-text,
+.monaco-workbench .paradis-doc-comment-answer + .paradis-doc-comment-text {
+	margin-top: var(--vscode-spacing-size60);
+}
+
+/* The delivery state in the card (Q663-3): a status dot with a short word, and a note under it. */
+.monaco-workbench .paradis-doc-comment-status {
+	display: flex;
+	margin-top: var(--vscode-spacing-size80);
+}
+
+.monaco-workbench .paradis-doc-comment-note {
+	margin-top: var(--vscode-spacing-size20);
+	color: var(--vscode-paradis-textMuted);
+	font-size: var(--vscode-fontSize-label2);
+}
+
+.monaco-workbench .paradis-doc-comment-reply {
+	margin-top: var(--vscode-spacing-size80);
 }

@@ -166,5 +166,7 @@ import './contrib/fileMenus/electron-browser/paradisFileMenus.contribution.js';
 // para-browser MCP の資料のツール（list_docs・adopt_doc）のウィンドウ側: ペインのスペースのフォルダ、ファイルの有無、引き取りの確認
 import './contrib/agentDocs/electron-browser/paradisAgentDocs.contribution.js';
 import './contrib/agentDocs/electron-browser/paradisDocComments.contribution.js';
+// 資料のコメントを、持ち主のエージェントのペインへ貼って Enter（届けてよいかは shared process が決める）
+import './contrib/agentDocs/electron-browser/paradisDocCommentDelivery.contribution.js';
 // 左サイドバーの「資料」ビュー（エージェントが作った資料の一覧）と、利用者がプレビューで開いた資料の登録
 import './contrib/agentDocs/electron-browser/paradisAgentDocsView.contribution.js';

@@ -42,11 +42,13 @@ suite('paradisAgentDocs', () => {
 			paradisNormalizeDocPath('/work/./a/../report.html'),
 			paradisNormalizeDocPath('/work/docs/'),
 			paradisNormalizeDocPath('C:\\work\\.\\a.md'),
+			// ドライブ文字の大小（URI.fsPath は小文字、hook は大文字）で台帳とサイドカーのキーが分かれない
+			paradisDocKey('', paradisNormalizeDocPath('c:\\work\\a.md')!) === paradisDocKey('', paradisNormalizeDocPath('C:\\work\\a.md')!),
 			paradisNormalizeDocPath('report.html'),
 			paradisNormalizeDocPath('./report.html'),
 			paradisNormalizeDocPath('/work/a\nb.html'),
 			paradisNormalizeDocPath(42),
-		], ['/work/report.html', '/work/docs', 'C:\\work\\a.md', undefined, undefined, undefined, undefined]);
+		], ['/work/report.html', '/work/docs', 'C:\\work\\a.md', true, undefined, undefined, undefined, undefined]);
 	});
 
 	test('decides the kind, the key and the version control folders', () => {

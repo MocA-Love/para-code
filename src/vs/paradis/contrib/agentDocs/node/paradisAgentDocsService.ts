@@ -61,6 +61,11 @@ export class ParadisAgentDocsService extends Disposable {
 		return this._paneSessions.get(token);
 	}
 
+	/** その会話が動いているペインのトークン（hook が名乗った順）。 */
+	tokensOf(session: string): string[] {
+		return [...this._paneSessions.entries()].filter(([, pane]) => pane.session === session).map(([token]) => token);
+	}
+
 	/** 持ち主の会話の状態。 */
 	livenessOf(owner: IParadisDocOwner): ParadisDocOwnerLiveness {
 		for (const pane of this._paneSessions.values()) {
@@ -126,7 +131,7 @@ export class ParadisAgentDocsService extends Disposable {
 		await this.ledger.ready;
 		switch (this.ledger.registerPreview(hostId, path, pane)) {
 			case 'registered':
-				return 'It is now a document of this session (list_docs shows it).';
+				return 'It is now a document of this session (list_docs shows it). The user\'s comments on it will be typed into this terminal.';
 			case 'other':
 				return 'Another session owns this document. Call adopt_doc if the user asked you to take it over.';
 			default:

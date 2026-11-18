@@ -46,7 +46,7 @@ import { ITerminalService } from '../../../../workbench/contrib/terminal/browser
 import { GroupsOrder, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
-import { createParadisStatusDot, ParadisStatusTone } from '../../../browser/paradisBadges.js';
+import { createParadisStatusDot, ParadisCountBadge, ParadisStatusTone } from '../../../browser/paradisBadges.js';
 import { ParadisInputField } from '../../../browser/paradisInputField.js';
 import { showParadisMenu } from '../../../browser/paradisMenu.js';
 import { ParadisSegmented } from '../../../browser/paradisSegmented.js';
@@ -97,15 +97,11 @@ export function paradisWindowDocHostId(remoteAuthority: string | undefined): str
 
 /**
  * エディタの URI を台帳の形（接続先の印と絶対パス）にする。このウィンドウの接続先のファイルだけ。
- * Windows のドライブ文字は大文字にそろえる（URI.fsPath は小文字にし、hook のパスは大文字で来る）。
+ * Windows のドライブ文字は paradisNormalizeDocPath が大文字にそろえる（URI.fsPath は小文字にし、hook のパスは大文字で来る）。
  */
 export function paradisDocTargetOf(resource: URI, windowHostId: string | undefined): { hostId: string; path: string } | undefined {
 	const folder = paradisDocFolderOf(resource);
-	if (folder === undefined || windowHostId === undefined || folder.hostId !== windowHostId) {
-		return undefined;
-	}
-	const path = /^[a-z]:\\/.test(folder.path) ? folder.path[0].toUpperCase() + folder.path.slice(1) : folder.path;
-	return { hostId: folder.hostId, path };
+	return folder !== undefined && windowHostId !== undefined && folder.hostId === windowHostId ? folder : undefined;
 }
 
 /** 「無い」と分かったときだけ true（読めない・つながらないは「確かめられない」）。 */
@@ -507,6 +503,15 @@ export class ParadisAgentDocsView extends ViewPane {
 		DOM.append(line1, DOM.$('span.paradis-agent-docs-row-name')).textContent = paradisDocFileName(record.path);
 		if (key === activeKey) {
 			DOM.append(line1, DOM.$('span.paradis-chip.paradis-chip-neutral.paradis-agent-docs-row-shown')).textContent = localize('paradis.agentDocs.shown', "表示中");
+		}
+		if (record.openComments !== undefined && record.openComments > 0) {
+			// 未回答のコメントの数（対応が要るので色を付ける）
+			const label = localize('paradis.agentDocs.openComments', "未回答のコメント {0} 件", record.openComments);
+			const badge = new ParadisCountBadge(line1, 'inline');
+			badge.update(record.openComments, 'attention');
+			badge.element.removeAttribute('aria-hidden');
+			badge.element.setAttribute('aria-label', label);
+			badge.element.title = label;
 		}
 		const line2 = DOM.append(body, DOM.$('.paradis-agent-docs-row-line2'));
 		if (missing) {
