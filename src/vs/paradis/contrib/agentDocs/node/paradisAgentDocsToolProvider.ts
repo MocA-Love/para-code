@@ -35,6 +35,7 @@ import {
 	ParadisDocAdoptConfirmOutcome,
 	paradisDecideAdopt,
 	paradisDocBelongsToFolder,
+	paradisDocKey,
 	paradisDocKind,
 	paradisDocLastActivity,
 	paradisDocOwnerRelation,
@@ -49,9 +50,10 @@ import {
 	paradisCountOpenDocComments,
 	paradisDocCommentReplySince,
 	paradisIsDocCommentOpen,
+	paradisWithDocCommentDelivered,
 	paradisWithDocCommentReply,
 } from '../common/paradisDocComments.js';
-import { ParadisAgentDocsService } from './paradisAgentDocsService.js';
+import { IParadisDocPaneSession, ParadisAgentDocsService } from './paradisAgentDocsService.js';
 import { ParadisDocCommentsStore } from './paradisDocCommentsStore.js';
 
 const CALLER_UNVERIFIED_MESSAGE = 'Para Code could not confirm that this request comes from a process inside a Para Code terminal pane (or from the SSH host of its window), so it refuses the request. Start this agent CLI from a terminal inside Para Code.';
@@ -292,8 +294,9 @@ export class ParadisAgentDocsToolProvider implements IParadisMcpToolProvider {
 		}
 		const listed = (args.includeAnswered || args.commentIds !== undefined ? found : found.filter(item => paradisIsDocCommentOpen(item.thread)))
 			.sort((a, b) => a.thread.createdAt - b.thread.createdAt);
+		const returned = await this._markReadByOwner(pane, listed.slice(0, PARADIS_READ_DOC_COMMENTS_MAX));
 		return toolJson({
-			comments: listed.slice(0, PARADIS_READ_DOC_COMMENTS_MAX).map(({ path, thread }) => {
+			comments: returned.map(({ path, thread }) => {
 				const userMessages = thread.messages.filter(message => message.by === 'user');
 				return {
 					id: thread.id,
@@ -313,6 +316,36 @@ export class ParadisAgentDocsToolProvider implements IParadisMcpToolProvider {
 			truncated: listed.length > PARADIS_READ_DOC_COMMENTS_MAX,
 			note: QUOTE_NOTE,
 		});
+	}
+
+	/**
+	 * 持ち主の会話が読んだ届け待ちのコメントを「届いた」にする（貼る前に読まれたものを後から貼らない）。
+	 * 別の会話が同じスペースの資料として読んだものは、持ち主へ届いたことにならないので変えない。読んだ後の中身を返す。
+	 */
+	private async _markReadByOwner<T extends { readonly hostId: string; readonly path: string; readonly thread: IParadisDocCommentThread }>(pane: IParadisDocPaneSession | undefined, items: readonly T[]): Promise<T[]> {
+		const now = this._now();
+		const byDoc = new Map<string, { hostId: string; path: string; ids: Set<string> }>();
+		for (const item of items) {
+			if (pane === undefined || (item.thread.state !== 'queued' && item.thread.state !== 'undeliverable')
+				|| this._service.ledger.get(item.hostId, item.path)?.owner?.session !== pane.session) {
+				continue;
+			}
+			const key = paradisDocKey(item.hostId, item.path);
+			const entry = byDoc.get(key) ?? { hostId: item.hostId, path: item.path, ids: new Set<string>() };
+			entry.ids.add(item.thread.id);
+			byDoc.set(key, entry);
+		}
+		const updated = new Map<string, IParadisDocCommentThread>();
+		for (const { hostId, path, ids } of byDoc.values()) {
+			const threads = await this._comments.update(hostId, path, thread => ids.has(thread.id) ? paradisWithDocCommentDelivered(thread, now) : thread);
+			ids.forEach(id => {
+				const thread = threads.get(id);
+				if (thread !== undefined) {
+					updated.set(id, thread);
+				}
+			});
+		}
+		return items.map(item => updated.has(item.thread.id) ? { ...item, thread: updated.get(item.thread.id)! } : item);
 	}
 
 	/**

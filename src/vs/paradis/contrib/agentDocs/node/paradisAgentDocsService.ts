@@ -8,7 +8,8 @@
 
 // 資料の台帳を hook から育てるサービス（shared process）。
 //  - ペイン → 会話: hook のバスから自分で控える（ParadisAgentBrowserService の控えはプロバイダへ渡る口が無い）
-//  - ファイル → 会話: Claude Code の PostToolUse（Write・Edit・NotebookEdit）で、書いた会話を持ち主にする
+//  - ファイル → 会話: Claude Code の PostToolUse（Write・Edit・NotebookEdit）と Codex の PostToolUse（apply_patch）で、
+//    書いた会話を持ち主にする
 //  - 会話の終わり: SessionEnd と、ペインの終了（TerminalExit。会話の ID は載らないので控えから引く）
 //  - preview_file で開いた html・md: 持ち主がいなければ開いたペインの会話の資料にする
 // 持ち主の取り違えを避けるため、ペインの持ち主と確かめられなかった hook（ownerUnverified）は使わない。
@@ -21,7 +22,7 @@ import { paradisAgentHookRemoteHostId } from '../../agentBrowser/common/paradisA
 import { paradisHookAgentKindForTranscript } from '../../agentBrowser/node/paradisAgentHookOwnership.js';
 import type { IParadisPreviewFileOpened } from '../../agentBrowser/node/paradisPreviewFileObservers.js';
 import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
-import { IParadisDocOwner, ParadisDocOwnerLiveness, paradisDocKind, paradisNormalizeDocPath } from '../common/paradisAgentDocs.js';
+import { IParadisDocOwner, ParadisDocOwnerLiveness, paradisDocKind, paradisDocPatchWrites, paradisNormalizeDocPath } from '../common/paradisAgentDocs.js';
 import { ParadisAgentDocsLedger } from './paradisAgentDocsLedger.js';
 
 /** ペインで動いている会話。 */
@@ -101,19 +102,26 @@ export class ParadisAgentDocsService extends Disposable {
 			this._seenAlive.add(pane.session);
 			void this.ledger.ready.then(() => this.ledger.markSessionAlive(pane.session));
 		}
-		if (event.event !== 'PostToolUse' || pane.agent !== 'claude' || event.toolName === undefined) {
-			return;
-		}
-		const pathField = WRITE_TOOLS.get(event.toolName);
-		const input = event.payload?.tool_input ?? event.toolInput;
-		const rawPath = pathField !== undefined && typeof input === 'object' && input !== null ? (input as Record<string, unknown>)[pathField] : undefined;
-		const path = paradisNormalizeDocPath(rawPath);
-		if (path === undefined || paradisDocKind(path) === undefined) {
+		if (event.event !== 'PostToolUse' || event.toolName === undefined) {
 			return;
 		}
 		const tool = event.toolName;
+		const input = event.payload?.tool_input ?? event.toolInput;
+		let paths: string[] = [];
+		if (pane.agent === 'claude') {
+			const pathField = WRITE_TOOLS.get(tool);
+			const path = paradisNormalizeDocPath(pathField !== undefined && typeof input === 'object' && input !== null ? (input as Record<string, unknown>)[pathField] : undefined);
+			paths = path !== undefined && paradisDocKind(path) !== undefined ? [path] : [];
+		} else if (pane.agent === 'codex' && tool === 'apply_patch') {
+			// Codex のパッチのパスは、その hook の作業ディレクトリからの相対パス
+			paths = paradisDocPatchWrites(input, event.payload?.tool_response, event.cwd ?? pane.cwd);
+		}
+		if (paths.length === 0) {
+			return;
+		}
 		const toolUseId = event.toolUseId;
-		void this.ledger.ready.then(() => this.ledger.recordWrite(event.remoteHostId ?? pane.hostId, path, pane, { at: event.at, tool, ...(toolUseId !== undefined ? { toolUseId } : {}) }));
+		const hostId = event.remoteHostId ?? pane.hostId;
+		void this.ledger.ready.then(() => paths.forEach(path => this.ledger.recordWrite(hostId, path, pane, { at: event.at, tool, ...(toolUseId !== undefined ? { toolUseId } : {}) })));
 	}
 
 	/** preview_file が開いた・予約した後に呼ばれる。結果の文に足す英文を返す。 */
