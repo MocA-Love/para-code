@@ -40,15 +40,15 @@ import { DEFAULT_MARKDOWN_STYLES } from '../../../../workbench/contrib/markdown/
 import { IOverlayWebview } from '../../../../workbench/contrib/webview/browser/webview.js';
 import { IExtensionService } from '../../../../workbench/services/extensions/common/extensions.js';
 import { ParadisSegmented } from '../../../browser/paradisSegmented.js';
-import { isParadisRenderedDiffTooLarge, paradisMarkdownRenderedDiffItems, PARADIS_RENDERED_DIFF_LIMITS } from '../common/paradisRenderedDiff.js';
+import { isParadisRenderedDiffTooLarge, PARADIS_RENDERED_DIFF_LIMITS } from '../common/paradisRenderedDiff.js';
 import { paradisFindHighlightScript } from '../common/paradisViewerScroll.js';
-import { markedParadisAlertExtension, PARADIS_MARKDOWN_ALERT_STYLES } from './paradisMarkdownAlerts.js';
-import { renderParadisMarkdownDocumentDeferred } from './paradisMarkdownDocumentRenderer.js';
-import { applyParadisFrontMatter, PARADIS_FRONTMATTER_STYLES } from './paradisMarkdownFrontMatter.js';
-import { inlineParadisMarkdownMediaInBody, parseParadisMarkdownHtml, PARADIS_INLINE_MEDIA_LIMITS, PARADIS_INLINE_MEDIA_STYLES } from './paradisMarkdownInlineResources.js';
-import { paradisMarkdownLinkToOpen, rewriteParadisMarkdownLinks } from './paradisMarkdownLinks.js';
-import { containsParadisMermaidBlock, loadParadisMermaidScriptSource, markedMermaidExtension, paradisMermaidScripts } from './paradisMarkdownMermaid.js';
-import { buildParadisRenderedDiff, IParadisRenderedDiffSide, paradisRenderedDiffGoMessage, paradisRenderedDiffNavigationScript, ParadisRenderedDiffLayout, PARADIS_RENDERED_DIFF_STYLES } from './paradisRenderedDiffDom.js';
+import { PARADIS_MARKDOWN_ALERT_STYLES } from './paradisMarkdownAlerts.js';
+import { PARADIS_FRONTMATTER_STYLES } from './paradisMarkdownFrontMatter.js';
+import { PARADIS_INLINE_MEDIA_STYLES } from './paradisMarkdownInlineResources.js';
+import { paradisMarkdownLinkToOpen } from './paradisMarkdownLinks.js';
+import { IParadisMarkdownRenderedDiffSide, renderParadisMarkdownRenderedDiffSide } from './paradisMarkdownRenderedDiffSide.js';
+import { containsParadisMermaidBlock, loadParadisMermaidScriptSource, paradisMermaidScripts } from './paradisMarkdownMermaid.js';
+import { buildParadisRenderedDiff, paradisRenderedDiffGoMessage, paradisRenderedDiffNavigationScript, ParadisRenderedDiffLayout, PARADIS_RENDERED_DIFF_STYLES } from './paradisRenderedDiffDom.js';
 import { PARADIS_FILE_DIFF_EDITOR_ID } from './paradisFileViewers.js';
 import { ParadisOverlayWebviewPane } from './paradisOverlayWebviewPane.js';
 import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarIconButton, appendParadisViewerToolbarSeparator, createParadisViewerToolbar, IParadisViewerToolbar } from './paradisViewerToolbar.js';
@@ -102,12 +102,6 @@ interface IParadisRenderedDiffInput {
 	readonly modified: URI;
 	readonly originalModel: ITextModel;
 	readonly modifiedModel: ITextModel;
-}
-
-/** 片側の描画の結果。 */
-interface IRenderedSide extends IParadisRenderedDiffSide {
-	/** 描いた木に画像があったか（古い側の画像を今の作業ツリーから読んだことを知らせる）。 */
-	readonly hasImages: boolean;
 }
 
 export class ParadisMarkdownRenderedDiffView extends Disposable {
@@ -472,26 +466,8 @@ export class ParadisMarkdownRenderedDiffView extends Disposable {
 	}
 
 	/** 片側を Markdown のビューアと同じ変換で描き、一番上のブロックに分ける。ブロックの数が合わなければ `undefined`。 */
-	private async _renderSide(text: string, resource: URI, blockClass: string, token: CancellationToken): Promise<IRenderedSide | undefined> {
-		// front matter は YAML のコードのブロックとして 1 つのブロックで比べる。
-		const frontMatter = applyParadisFrontMatter(text, 'codeBlock');
-		const rendered = await renderParadisMarkdownDocumentDeferred(frontMatter.markdown, this._extensionService, this._languageService, {
-			allowRelativeMediaPaths: true,
-			allowRelativeLinkPaths: true,
-			markedExtensions: [markedMermaidExtension(), markedParadisAlertExtension()],
-			blockClass,
-		}, token);
-		const doc = parseParadisMarkdownHtml(rendered.html);
-		rendered.insertHighlightedCode(doc.body);
+	private _renderSide(text: string, resource: URI, blockClass: string, token: CancellationToken): Promise<IParadisMarkdownRenderedDiffSide | undefined> {
 		const workspaceFolder = this._workspaceContextService.getWorkspaceFolder(resource)?.uri;
-		rewriteParadisMarkdownLinks(doc.body, resource, workspaceFolder);
-		await inlineParadisMarkdownMediaInBody(doc.body, resource, workspaceFolder, this._fileService, token, PARADIS_INLINE_MEDIA_LIMITS);
-		const blocks = Array.from(doc.body.children).filter((element): element is HTMLElement => element.classList.contains(blockClass));
-		const items = paradisMarkdownRenderedDiffItems(rendered.tokens, rendered.tokens.links);
-		if (blocks.length !== items.length) {
-			// 文書の生の HTML が包みを閉じた・増やした。どのブロックがどの描画か決められない。
-			return undefined;
-		}
-		return { blocks, items, hasImages: doc.body.innerHTML.includes('<img') };
+		return renderParadisMarkdownRenderedDiffSide(text, resource, workspaceFolder, blockClass, { extensionService: this._extensionService, languageService: this._languageService, fileService: this._fileService }, token);
 	}
 }

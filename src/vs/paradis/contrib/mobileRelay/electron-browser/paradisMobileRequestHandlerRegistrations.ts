@@ -19,6 +19,7 @@ import './paradisMobilePullRequestRequests.js'; // PR の状態・CI の失敗�
 import './paradisMobileBookmarkRequests.js'; // ブラウザのブックマークバー（browser.bookmarks.v1）
 import './paradisMobileFileAtRequests.js'; // 差分の画面の変更前・変更後の中身（scm.file-at.v1）
 import './paradisMobileWordDiffRequests.js'; // 差分の画面の Word の差分（scm.word-diff.v1）
+import './paradisMobileRenderedDiffRequests.js'; // 差分の画面の Markdown のプレビュー差分（scm.rendered-diff.v1）
 import './paradisMobileFileIconRequests.js'; // ファイルの一覧のアイコン（fs.icon-theme.v1）
 import './paradisMobileAttachmentRequests.js'; // モバイルから上げた添付画像のサムネイルと原寸（fs.attachment.v1）
 import './paradisMobileVoiceUsageRequests.js'; // 読み上げ（Aivis・ElevenLabs）の使用量（usage.voice.v1）

@@ -14,7 +14,7 @@ import { REVIEW_VIEW_LABELS, type ReviewViewMode } from './reviewViewModes.js';
 import { buildImageHtml, fileExt } from './viewerHtml.js';
 
 /**
- * 差分の画面の見方の部品（モックの項目 6 の案A）。ファイルの帯の下の切り替え、画像の比較、PC が描いた Office の差分。
+ * 差分の画面の見方の部品（モックの項目 6 の案A）。ファイルの帯の下の切り替え、画像の比較、PC が描いた Office・Markdown の差分。
  */
 
 /** 切り替えの高さ（pt。ファイルの画面の検索欄の `.sfield` と同じ）。 */
@@ -96,6 +96,25 @@ export function OfficeDiffWebView({ html, kind }: { html: string; kind: 'spreads
 			onContentProcessDidTerminate={revival.onContentProcessDidTerminate}
 			originWhitelist={kind === 'docx' ? [...MOBILE_OFFICE_ORIGIN_WHITELIST] : ['*']}
 			javaScriptEnabled={isDiffViewerJavaScriptEnabled(kind)}
+			onShouldStartLoadWithRequest={guardWebViewNavigation}
+		/>
+	);
+}
+
+/**
+ * PC が描いた Markdown のプレビュー差分（1 列の HTML）。PC がスクリプトを入れずに作るので、JS は常に止める
+ * （HTML の差分を足しても、ページのスクリプトを動かさない）。幅は WebView の幅に合わせて PC の CSS が折り返す。
+ */
+export function RenderedDiffWebView({ html }: { html: string }) {
+	const revival = useWebViewRevival();
+	return (
+		<WebView
+			key={revival.generation}
+			style={styles.web}
+			source={{ html }}
+			onContentProcessDidTerminate={revival.onContentProcessDidTerminate}
+			originWhitelist={['*']}
+			javaScriptEnabled={false}
 			onShouldStartLoadWithRequest={guardWebViewNavigation}
 		/>
 	);
