@@ -155,6 +155,65 @@ export function paradisNormalizeDocPath(path: unknown): string | undefined {
 	return undefined;
 }
 
+/** Codex の apply_patch の入力から、パッチ本文（`*** Begin Patch` で始まるもの）を取り出す。 */
+function applyPatchText(input: unknown): string | undefined {
+	const isPatch = (value: unknown): value is string => typeof value === 'string' && value.trimStart().startsWith('*** Begin Patch');
+	if (isPatch(input)) {
+		return input;
+	}
+	if (typeof input !== 'object' || input === null) {
+		return undefined;
+	}
+	const fields = input as Record<string, unknown>;
+	return [fields.command, fields.input, fields.patch].find(isPatch);
+}
+
+/**
+ * Codex の apply_patch の PostToolUse から、書いた資料（html・md）の絶対パスを返す（Codex 0.169.1 で実測）。
+ * `tool_input.command` がパッチ本文で、パスは hook の `cwd` からの相対パス。`tool_response` に
+ * 「Success. Updated the following files:」の一覧（`A`・`M`・`D` と相対パス）があればそれを使い、無ければパッチの見出し
+ * （`*** Add/Update/Delete File:`、名前を変えたら `*** Move to:` の先）を使う（hook の文字列は 10,000 字で切れるため）。
+ * 終了コードが 0 でない結果は書いていないものとして空を返す。
+ */
+export function paradisDocPatchWrites(toolInput: unknown, toolResponse: unknown, cwd: string | undefined): string[] {
+	const response = typeof toolResponse === 'string' ? toolResponse : '';
+	const exit = /^Exit code: (?<code>\d+)/.exec(response);
+	if (exit?.groups !== undefined && exit.groups.code !== '0') {
+		return [];
+	}
+	const paths: string[] = [];
+	const listed = /Success\. Updated the following files:\r?\n(?<list>[\s\S]*)$/.exec(response)?.groups?.list;
+	if (listed !== undefined) {
+		for (const line of listed.split(/\r?\n/)) {
+			const entry = /^[AMD] (?<path>.+)$/.exec(line.trim());
+			if (entry?.groups !== undefined) {
+				paths.push(entry.groups.path);
+			}
+		}
+	} else {
+		for (const line of (applyPatchText(toolInput) ?? '').split(/\r?\n/)) {
+			const header = /^\*\*\* (?:Add|Update|Delete) File: (?<path>.+)$/.exec(line);
+			const moved = /^\*\*\* Move to: (?<path>.+)$/.exec(line);
+			if (header?.groups !== undefined) {
+				paths.push(header.groups.path.trim());
+			} else if (moved?.groups !== undefined && paths.length > 0) {
+				paths[paths.length - 1] = moved.groups.path.trim();
+			}
+		}
+	}
+	const base = cwd !== undefined ? paradisNormalizeDocPath(cwd) : undefined;
+	const result: string[] = [];
+	for (const raw of paths) {
+		const absolute = raw.startsWith('/') || /^[A-Za-z]:[\\/]/.test(raw) ? raw
+			: base === undefined ? undefined : base.startsWith('/') ? posix.join(base, raw) : win32.join(base, raw);
+		const path = paradisNormalizeDocPath(absolute);
+		if (path !== undefined && paradisDocKind(path) !== undefined && !result.includes(path)) {
+			result.push(path);
+		}
+	}
+	return result;
+}
+
 /** コメント（スレッド）の ID の形か（`c-` で始まる）。 */
 export function paradisIsDocCommentId(value: unknown): value is string {
 	return typeof value === 'string' && /^c-[a-z0-9]{6,32}$/.test(value);
