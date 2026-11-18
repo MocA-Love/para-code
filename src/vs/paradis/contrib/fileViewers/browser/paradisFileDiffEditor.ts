@@ -6,10 +6,9 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// MD/HTML ビューア共用のテキスト差分 EditorPane。通常ビューアと同じ見た目のヘッダー
-// (paradisFileViewer.css のツールバー)を上に載せ、本体は標準の DiffEditorWidget を埋め込む。
-// レンダリング済みの見た目同士の差分(変更ハイライト付き)は対応しない方針(コスト対効果が合わない)。
-// 将来「Rendered 並列表示」を足す場合はこのヘッダーのトグルに追加する。
+// MD/HTML ビューア共用の差分 EditorPane。本体は標準の DiffEditorWidget を埋め込む（テキスト差分）。
+// Markdown では上にバーを置き、描いた見た目どうしの「プレビュー差分」に切り替えられる
+// （paradisMarkdownRenderedDiffView）。HTML は今はバーを出さず、テキスト差分だけ。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
@@ -28,8 +27,9 @@ import { EditorPane } from '../../../../workbench/browser/parts/editor/editorPan
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
-import { PARADIS_FILE_DIFF_EDITOR_ID } from './paradisFileViewers.js';
+import { isParadisMarkdownResource, PARADIS_FILE_DIFF_EDITOR_ID } from './paradisFileViewers.js';
 import { ParadisFileDiffInput } from './paradisFileDiffInput.js';
+import { ParadisMarkdownRenderedDiffView } from './paradisMarkdownRenderedDiffView.js';
 
 import './media/paradisFileViewer.css';
 
@@ -38,8 +38,11 @@ export class ParadisFileDiffEditor extends EditorPane {
 	static readonly ID = PARADIS_FILE_DIFF_EDITOR_ID;
 
 	private _rootElement: HTMLElement | undefined;
+	private _contentElement: HTMLElement | undefined;
 	private _diffContainer: HTMLElement | undefined;
 	private _widget: DiffEditorWidget | undefined;
+	/** Markdown のバーとプレビュー差分（最初に Markdown の差分を開いたときに作る）。 */
+	private _rendered: ParadisMarkdownRenderedDiffView | undefined;
 	private readonly _modelRefs = this._register(new MutableDisposable<DisposableStore>());
 
 	constructor(
@@ -56,9 +59,26 @@ export class ParadisFileDiffEditor extends EditorPane {
 	protected override createEditor(parent: HTMLElement): void {
 		this._rootElement = dom.append(parent, dom.$('.paradis-file-viewer'));
 
-		// 本家の差分エディタと同じく上のバーは出さない（切り替える表示が無いため）。
-		const content = dom.append(this._rootElement, dom.$('.paradis-file-viewer-content'));
-		this._diffContainer = dom.append(content, dom.$('.paradis-file-viewer-editor.active'));
+		// バーは Markdown のときだけ、プレビュー差分の部品が content の上に置く。
+		this._contentElement = dom.append(this._rootElement, dom.$('.paradis-file-viewer-content'));
+		this._diffContainer = dom.append(this._contentElement, dom.$('.paradis-file-viewer-editor.active'));
+	}
+
+	private _ensureRendered(): ParadisMarkdownRenderedDiffView {
+		if (!this._rendered) {
+			this._rendered = this._register(this._instantiationService.createInstance(ParadisMarkdownRenderedDiffView, {
+				root: this._rootElement!,
+				content: this._contentElement!,
+				window: () => this.window,
+				setTextVisible: visible => {
+					// visibility だけでは差分の部品の中の要素が見えたまま残るので、プレビュー差分の間は置かない。
+					this._diffContainer?.classList.toggle('active', visible);
+					this._diffContainer?.classList.toggle('paradis-rendered-diff-text-hidden', !visible);
+				},
+			}));
+			this._rendered.setVisible(this.isVisible());
+		}
+		return this._rendered;
 	}
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
@@ -110,6 +130,11 @@ export class ParadisFileDiffEditor extends EditorPane {
 		});
 		// 変更後の側は編集できる。読み取り専用のファイルなら編集させない（編集しても保存されずに消えるため）
 		store.add(paradisFollowModelReadonly(modifiedRef.object, options => widget.updateOptions(options)));
+		if (isParadisMarkdownResource(diffInput.modifiedResource)) {
+			this._ensureRendered().setInput(diffInput.originalResource, diffInput.modifiedResource, originalRef.object.textEditorModel, modifiedRef.object.textEditorModel);
+		} else {
+			this._rendered?.clearInput();
+		}
 	}
 
 	private _ensureWidget(): DiffEditorWidget {
@@ -130,18 +155,29 @@ export class ParadisFileDiffEditor extends EditorPane {
 	}
 
 	override clearInput(): void {
+		this._rendered?.clearInput();
 		this._widget?.setModel(null);
 		this._modelRefs.clear();
 		super.clearInput();
 	}
 
 	override getControl(): IDiffEditor | undefined {
-		return this._widget;
+		// プレビュー差分を出している間は、テキスト差分の操作（AI メモ・差分の移動など）を隠れた部品へ向けない。
+		return this._rendered?.mode === 'rendered' ? undefined : this._widget;
 	}
 
 	override focus(): void {
 		super.focus();
-		this._widget?.focus();
+		if (this._rendered?.mode === 'rendered') {
+			this._rendered.focus();
+		} else {
+			this._widget?.focus();
+		}
+	}
+
+	protected override setEditorVisible(visible: boolean): void {
+		this._rendered?.setVisible(visible);
+		super.setEditorVisible(visible);
 	}
 
 	override layout(dimension: dom.Dimension): void {
@@ -150,5 +186,8 @@ export class ParadisFileDiffEditor extends EditorPane {
 			this._rootElement.style.height = `${dimension.height}px`;
 		}
 		// DiffEditorWidget は automaticLayout: true でコンテナへ自動追従する。
+		this._rendered?.layout(dimension.width);
+		// タブの切り替えでペインが 0x0 に畳まれる経路でも、プレビュー差分の webview を手放す。
+		this._rendered?.setVisible(this.isVisible() && dimension.width > 0 && dimension.height > 0);
 	}
 }

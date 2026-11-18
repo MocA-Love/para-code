@@ -48,7 +48,7 @@ import { ParadisViewerOpenKind } from '../common/paradisViewerOpenTiming.js';
 import { PARADIS_VIEWER_BODY_ROOT_ID, paradisViewerBodySwapScript, type IParadisRenderedDocument } from '../common/paradisViewerBodySwap.js';
 import { inlineParadisMarkdownMedia, ParadisInlineMediaCache, PARADIS_INLINE_MEDIA_LIMITS, PARADIS_INLINE_MEDIA_STYLES } from './paradisMarkdownInlineResources.js';
 import { paradisMarkdownLinkToOpen, rewriteParadisMarkdownLinks } from './paradisMarkdownLinks.js';
-import { containsParadisMermaidBlock, IParadisMermaidZoomLabels, loadParadisMermaidScriptSource, markedMermaidExtension, PARADIS_MERMAID_RERUN_SCRIPT, PARADIS_MERMAID_ZOOM_STYLES, paradisMermaidZoomScript } from './paradisMarkdownMermaid.js';
+import { containsParadisMermaidBlock, IParadisMermaidZoomLabels, loadParadisMermaidScriptSource, markedMermaidExtension, PARADIS_MERMAID_RERUN_SCRIPT, PARADIS_MERMAID_ZOOM_STYLES, paradisMermaidScripts, paradisMermaidZoomScript } from './paradisMarkdownMermaid.js';
 import { markedParadisAlertExtension, PARADIS_MARKDOWN_ALERT_STYLES } from './paradisMarkdownAlerts.js';
 import { ParadisRenderedFileEditor } from './paradisRenderedFileEditor.js';
 import { createParadisViewerReloadButton, ParadisViewerZoomControls, paradisViewerZoomMessage, paradisViewerZoomScript } from './paradisViewerZoom.js';
@@ -363,7 +363,7 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 	<body class="paradis-markdown-body">
 		<div id="${PARADIS_VIEWER_BODY_ROOT_ID}">${body}</div>
 		${mermaidEnabled ? paradisMermaidZoomScript(nonce, mermaidZoomLabels()) : ''}
-		${mermaidEnabled ? this._renderMermaidScripts(nonce, mermaidScriptSource!) : ''}
+		${mermaidEnabled ? paradisMermaidScripts(nonce, mermaidScriptSource!) : ''}
 		${paradisViewerZoomScript(nonce)}
 		${paradisMarkdownWidthScript(nonce)}
 		${paradisCodeCopyScript(nonce, codeCopyLabels())}
@@ -375,38 +375,5 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		// 2 回目以降の描き直しは、外側（nonce・配色・Mermaid の有無）が同じなら本文だけを送る。Mermaid 本体（約 3.5MB）と
 		// スタイルは最初の 1 回だけ読み込む。倍率と本文の幅はページへ別に送っているので鍵に入れない（`<html>` は差し替えの外）。
 		return { html, swap: { key: `${nonce}\n${mermaidEnabled}\n${comments}\n${tokenCss}`, body } };
-	}
-
-	/**
-	 * vendored mermaid.js 本体と、それに続く初期化コードを nonce 付き <script> として埋め込む。
-	 *
-	 * `securityLevel: 'strict'` で HTML ラベル注入やクリックイベント等のスクリプト機能を無効化する
-	 * （mermaid 標準のサンドボックスモード）。テーマは `--vscode-editor-background` の輝度から
-	 * 単純に判定する（webview 内側のこのドキュメント自身には `vscode-dark` 等のクラスが付かないため）。
-	 */
-	private _renderMermaidScripts(nonce: string, mermaidScriptSource: string): string {
-		return `<script nonce="${nonce}">${mermaidScriptSource}</script>
-		<script nonce="${nonce}">
-			(function () {
-				function isDarkBackground() {
-					var probe = document.createElement('div');
-					probe.style.color = getComputedStyle(document.body).getPropertyValue('--vscode-editor-background');
-					document.body.appendChild(probe);
-					var rgb = getComputedStyle(probe).color;
-					document.body.removeChild(probe);
-					var m = rgb.match(/\\d+/g);
-					if (!m || m.length < 3) { return false; }
-					return (0.299 * Number(m[0]) + 0.587 * Number(m[1]) + 0.114 * Number(m[2])) < 128;
-				}
-				try {
-					mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: isDarkBackground() ? 'dark' : 'default' });
-					var run = mermaid.run({ querySelector: '.paradis-mermaid' });
-					var done = function () { if (window.__paradisMermaidZoom) { window.__paradisMermaidZoom.decorate(); } };
-					if (run && run.then) { run.then(done, function (err) { console.error('[paradis] mermaid render failed', err); done(); }); } else { done(); }
-				} catch (err) {
-					console.error('[paradis] mermaid render failed', err);
-				}
-			})();
-		</script>`;
 	}
 }

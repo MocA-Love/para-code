@@ -425,13 +425,39 @@ export async function inlineParadisMarkdownMedia(
 	rewriteBody?: (body: HTMLElement) => void,
 	mediaCache?: ParadisInlineMediaCache,
 ): Promise<IParadisInlineMediaResult> {
-	// TrustedHTML はそのまま渡す（文字列化すると Trusted Types に弾かれる）。
-	// 型定義は string しか受け付けないので、その1点だけキャストする。
-	const doc = new DOMParser().parseFromString(rendered as string, 'text/html');
+	const doc = parseParadisMarkdownHtml(rendered);
 	// 同じ木に対するほかの書き換え（リンクの絶対化など）。文字列に戻したあとで解析し直すと
 	// Trusted Types に弾かれるので、解析はここの1回で済ませる。
 	rewriteBody?.(doc.body);
-	const elements = collectMediaElements(doc.body);
+	const { inlined, skipped } = await inlineParadisMarkdownMediaInBody(doc.body, documentUri, workspaceFolder, fileService, token, limits, mediaCache);
+	return { html: doc.body.innerHTML, inlined, skipped };
+}
+
+/**
+ * 消毒済みの Markdown の HTML を解析する（{@link inlineParadisMarkdownMedia} と、自分で木を組み替えるプレビュー差分が使う）。
+ * 呼び出し側は消毒済みの HTML を渡すこと。
+ */
+export function parseParadisMarkdownHtml(rendered: TrustedHTML | string): Document {
+	// TrustedHTML はそのまま渡す（文字列化すると Trusted Types に弾かれる）。
+	// 型定義は string しか受け付けないので、その1点だけキャストする。
+	return new DOMParser().parseFromString(rendered as string, 'text/html');
+}
+
+/**
+ * 解析済みの木（{@link inlineParadisMarkdownMedia} と同じく、消毒済みの HTML を解析したもの）のローカルの画像を、
+ * その場で data: URI に置き換える。解析を自分で行い、木をさらに組み替える呼び出し側（プレビュー差分）が使う。
+ */
+export async function inlineParadisMarkdownMediaInBody(
+	body: HTMLElement,
+	documentUri: URI,
+	workspaceFolder: URI | undefined,
+	fileService: IFileService,
+	token: CancellationToken,
+	limits: IParadisInlineMediaLimits = PARADIS_INLINE_MEDIA_LIMITS,
+	mediaCache?: ParadisInlineMediaCache,
+): Promise<{ readonly inlined: number; readonly skipped: number }> {
+	const doc = body.ownerDocument;
+	const elements = collectMediaElements(body);
 
 	// 先に「どの要素がどのファイルを指すか」を出し切ってから、まとめて読む。
 	// 1枚ずつ順番に読むと、SSH 越しでは画像の枚数だけ往復が積み上がり、そのぶん最初の描画が
@@ -494,7 +520,7 @@ export async function inlineParadisMarkdownMedia(
 		inlined++;
 	}
 
-	return { html: doc.body.innerHTML, inlined, skipped };
+	return { inlined, skipped };
 }
 
 /** 一度に走らせる読み込みの数。遠いファイルシステムで往復を重ねないための並列度。 */
