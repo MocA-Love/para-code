@@ -186,6 +186,149 @@
 	cursor: default;
 }
 
+/*
+ * The send target (Q663-7): the send button names the default target, and the chevron opens the
+ * picker. Both halves never shrink below the label's ellipsis, so the tray texts give way first.
+ */
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-target {
+	display: inline-flex;
+	flex-shrink: 0;
+	gap: 1px;
+	height: 22px;
+	border-radius: var(--vscode-cornerRadius-small);
+	overflow: hidden;
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-target > button {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size40);
+	height: 22px;
+	padding: 0 var(--vscode-spacing-size60);
+	border: none;
+	background-color: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+	font: inherit;
+	font-size: var(--vscode-fontSize-label2);
+	line-height: 14px;
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-target > button:not(:disabled):hover {
+	background-color: var(--vscode-button-hoverBackground);
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-target > button:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-target .codicon {
+	font-size: var(--vscode-codiconFontSize-compact);
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-target > .paradis-design-tray-target-more {
+	padding: 0 3px;
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-target-label {
+	max-width: 220px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* While the target waits for an answer, Send becomes the secondary "insert when free" action. */
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-target.queue > button {
+	background-color: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-target.queue > button:not(:disabled):hover {
+	background-color: var(--vscode-button-secondaryHoverBackground);
+}
+
+/* The target's state: shown only while it waits for an answer or a reservation is pending. */
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-state {
+	display: inline-flex;
+	align-items: center;
+	flex: 0 1 auto;
+	gap: var(--vscode-spacing-size60);
+	min-width: 0;
+	height: 20px;
+	padding: 0 var(--vscode-spacing-size80);
+	border: var(--vscode-strokeThickness) solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--vscode-cornerRadius-circle);
+	color: var(--vscode-paradis-text);
+	font-size: var(--vscode-fontSize-label2);
+	white-space: nowrap;
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-state-who {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: var(--vscode-paradis-textMuted);
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-state-text {
+	flex: none;
+}
+
+/* The dot uses the sidebar's status colors; it stays still here (the sidebar owns the blink phase). */
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-state-dot {
+	flex: none;
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background-color: currentColor;
+	color: var(--vscode-paradis-textMuted);
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-state-dot.working {
+	color: var(--vscode-charts-yellow);
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-state-dot.permission,
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-state-dot.question {
+	color: var(--vscode-charts-red);
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-state-dot.review {
+	color: var(--vscode-charts-green);
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-state-dot.queued {
+	box-sizing: border-box;
+	border: 1.5px solid var(--vscode-paradis-textMuted);
+	background-color: transparent;
+}
+
+/* Enter inserts, Cmd/Ctrl+Enter submits (Q663-10). */
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-keys {
+	display: inline-flex;
+	align-items: center;
+	flex: 0 1 auto;
+	gap: var(--vscode-spacing-size40);
+	min-width: 0;
+	overflow: hidden;
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label2);
+	white-space: nowrap;
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-keys > kbd {
+	padding: 0 var(--vscode-spacing-size40);
+	border: var(--vscode-strokeThickness) solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--vscode-cornerRadius-small);
+	font-family: inherit;
+	line-height: 14px;
+}
+
+.monaco-workbench .browser-root .paradis-design-tray .paradis-design-tray-keys > kbd:not(:first-child) {
+	margin-left: var(--vscode-spacing-size40);
+}
+
 /* ---- Markup overlay ---- */
 
 /*
