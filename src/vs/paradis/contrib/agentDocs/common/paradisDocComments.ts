@@ -376,7 +376,10 @@ export function paradisWithDocCommentTyped(thread: IParadisDocCommentThread, at:
 	return { ...thread, state: 'queued', delivery: { attempts: (thread.delivery?.attempts ?? 0) + 1, typedAt: at, ...(entered ? { entered: true } : {}) } };
 }
 
-/** 届いた（エージェントが入力を受け取った）。届け待ちのときだけ移る。 */
+/**
+ * 届いた（エージェントが入力を受け取った・持ち主の会話が read_doc_comments で読んだ）。届け待ちのときだけ移る。
+ * 貼る前に読まれたものも、貼った時刻を埋めて二度と貼らない。
+ */
 export function paradisWithDocCommentDelivered(thread: IParadisDocCommentThread, at: number): IParadisDocCommentThread {
 	if (thread.state !== 'queued' && thread.state !== 'undeliverable') {
 		return thread;
@@ -385,10 +388,19 @@ export function paradisWithDocCommentDelivered(thread: IParadisDocCommentThread,
 	return { ...thread, state: 'delivered', delivery: { ...rest, typedAt: rest.typedAt ?? at, deliveredAt: at } };
 }
 
-/** エージェントの回答を足す。 */
+/**
+ * エージェントの回答を足す。答えたコメントは届いたものとし、届け待ちの理由を外して貼った・届いた時刻を埋める
+ * （read_doc_comments で読んで答えた・貼る前に答えたコメントを、後から貼らない。開き直しても貼り直さない）。
+ */
 export function paradisWithDocCommentReply(thread: IParadisDocCommentThread, text: string, resolved: boolean, edits: readonly IParadisDocCommentEdit[], at: number): IParadisDocCommentThread {
 	const message: IParadisDocCommentMessage = { by: 'agent', text, at, edits: edits.slice(0, PARADIS_DOC_COMMENT_MAX_EDITS) };
-	return { ...thread, state: resolved ? 'resolved' : 'answered', messages: [...thread.messages, message].slice(-MAX_MESSAGES) };
+	const { blockedBy: _blockedBy, ...rest } = thread.delivery ?? { attempts: 0 };
+	return {
+		...thread,
+		state: resolved ? 'resolved' : 'answered',
+		messages: [...thread.messages, message].slice(-MAX_MESSAGES),
+		delivery: { ...rest, typedAt: rest.typedAt ?? at, deliveredAt: rest.deliveredAt ?? at },
+	};
 }
 
 /** ユーザーがカードで行う操作。 */
