@@ -335,7 +335,7 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		this._codeSources = paradisRecoverMarkdownCodeSources(frontMatter.markdown, rendered.codeSources);
 		const width = this._widthFor(resource);
 		// 資料のコメントの層（保存先があり、手元か SSH 先のファイルのとき）
-		const comments = this._comments.enabled;
+		const comments = this._comments.enabledFor(resource);
 
 		// 実行できるのは、この HTML 自身が埋め込む nonce 付き <script>（ビューアの補助スクリプトと、
 		// mermaid を使う文書では vendored mermaid.js 本体 + 直後の初期化コード）だけであり、

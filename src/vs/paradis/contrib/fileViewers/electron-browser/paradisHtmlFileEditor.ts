@@ -149,7 +149,7 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 	 * 信頼していないワークスペースではスクリプトを動かさない（冒頭の説明を参照）。
 	 */
 	protected override get allowScripts(): boolean {
-		return this._comments.enabled || this._pageScriptsAllowed;
+		return this._comments.available || this._pageScriptsAllowed;
 	}
 
 	/** ページ自身のスクリプトを動かしてよいか（信頼したワークスペースだけ）。 */
@@ -234,8 +234,9 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 		this._comments.createToolbarToggle(toolbar);
 		this._zoom.createButtons(toolbar);
 
-		// ページを読み込み直す（スクリプトの再実行、CSS・画像の取り直し）
-		this._register(createParadisViewerReloadButton(toolbar, () => this.webview?.reload()));
+		// ページを読み込み直す（スクリプトの再実行、CSS・画像の取り直し）。外枠では本文だけを差し替えているので、webview の
+		// reload は最初に送ったページへ戻ってしまう。描き直して今の内容で外枠ごと送り直す
+		this._register(createParadisViewerReloadButton(toolbar, () => this._comments.available ? this.requestRerender() : this.webview?.reload()));
 	}
 
 	/**
@@ -311,7 +312,10 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 
 	protected override async renderDocument(text: string, resource: URI, _webview: IOverlayWebview): Promise<string | IParadisRenderedDocument> {
 		const base = await this._resolveBase(resource);
-		const comments = this._comments.enabled;
+		// 外枠は保存先がある（デスクトップ）限り常に使う（webview のスクリプトの可否と同じ条件にし、入力の切り替えと
+		// 重なっても、スクリプトを許した webview に信頼していないページをそのまま書かない）。コメントは資料だけ
+		const comments = this._comments.available;
+		const commentable = this._comments.enabledFor(resource);
 		const pageScriptsAllowed = this._pageScriptsAllowed;
 		const baseHref = escapeAttribute(base.url);
 
@@ -351,11 +355,12 @@ export class ParadisHtmlFileEditor extends ParadisRenderedFileEditor {
 					allowPageScripts: pageScriptsAllowed,
 					token,
 					labels: this._comments.labels,
-					state: this._comments.layerState,
+					state: commentable ? this._comments.layerState : { comments: [] },
+					commentable,
 					scrollProgress: this.scrollProgressFor(resource),
 					fromHost: PARADIS_WEBVIEW_HOST_MESSAGE_CHECK,
 				}),
-				swap: { key: `doc-comments\n${pageScriptsAllowed}\n${token}`, body: pageHtml },
+				swap: { key: `doc-comments\n${pageScriptsAllowed}\n${commentable}\n${token}`, body: pageHtml },
 			};
 		}
 		const pageScripts = this.allowScripts ? this.viewerPageScripts(resource) + paradisHtmlViewerCanvasScript() : '';

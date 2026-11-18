@@ -116,6 +116,16 @@ export class ParadisDocCommentsController extends Disposable {
 		return this._backend !== undefined && this._target !== undefined;
 	}
 
+	/** 保存先があるか（デスクトップ）。 */
+	get available(): boolean {
+		return this._backend !== undefined;
+	}
+
+	/** そのファイルにコメントを書けるか。描画は入力の切り替えと重なりうるので、描いているファイルで決める。 */
+	enabledFor(resource: URI): boolean {
+		return this._backend !== undefined && paradisDocCommentTargetOf(resource) !== undefined;
+	}
+
 	/** ページへ渡す文言。 */
 	get labels(): IParadisDocLayerLabels {
 		return { comment: localize('paradis.docComments.commentButton', "コメント") };

@@ -8,11 +8,12 @@
 /*
  * The comment column on the right of the Markdown / HTML preview (paradisDocCommentsController.ts): a header with the
  * count, the box to write a comment, and one card per comment. While the column is shown, the webview's anchor is made
- * narrower by the column's width (the overlay webview is laid out over the anchor, so it follows).
+ * narrower by the column's width (the overlay webview is laid out over the anchor, so it follows). The column is
+ * 306px wide, and narrower in a narrow pane (40% of the pane, at least 200px) so the page keeps most of the width.
  */
 
 .monaco-workbench .paradis-file-viewer-content.paradis-doc-comments-open > .paradis-file-viewer-webview {
-	right: 306px;
+	right: min(306px, max(200px, 40%));
 	width: auto;
 }
 
@@ -21,7 +22,7 @@
 	top: 0;
 	right: 0;
 	bottom: 0;
-	width: 306px;
+	width: min(306px, max(200px, 40%));
 	box-sizing: border-box;
 	display: flex;
 	flex-direction: column;

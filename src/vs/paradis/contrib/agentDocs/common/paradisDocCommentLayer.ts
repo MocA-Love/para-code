@@ -324,7 +324,7 @@ const LAYER_BODY = `function (O, A, env) {
 		d.addEventListener('keyup', function (e) { if (e.isTrusted && e.shiftKey) { setTimeout(onSelect, 0); } });
 		d.addEventListener('click', function (e) {
 			if (!e.isTrusted || !index) { return; }
-			if (e.altKey) {
+			if (e.altKey && O.commentable !== false) {
 				e.preventDefault(); e.stopPropagation();
 				var r = d.createRange();
 				r.selectNodeContents(e.target);
@@ -340,7 +340,8 @@ const LAYER_BODY = `function (O, A, env) {
 				}
 			}
 		}, true);
-		d.addEventListener('scroll', schedule, true);
+		// 中で巻き取る要素のスクロールだけ描き直す（文書そのもののスクロールでは枠は文書と一緒に動く）
+		d.addEventListener('scroll', function (e) { if (e.target !== d) { schedule(); } }, true);
 		w.addEventListener('resize', schedule);
 		if (typeof w.ResizeObserver === 'function') {
 			try { new w.ResizeObserver(schedule).observe(d.body); } catch (e) { }
@@ -350,6 +351,7 @@ const LAYER_BODY = `function (O, A, env) {
 	function schedule() { if (!timer) { timer = setTimeout(function () { timer = 0; draw(); }, 60); } }
 	function hideButton() { if (button && button.parentNode) { button.parentNode.removeChild(button); } button = null; }
 	function onSelect() {
+		if (O.commentable === false) { return; }
 		var w = env.win(), sel = w && w.getSelection && w.getSelection();
 		if (!sel || sel.rangeCount === 0 || sel.isCollapsed || !ensureLayer()) { hideButton(); return; }
 		index = buildIndex();
@@ -395,13 +397,20 @@ const LAYER_BODY = `function (O, A, env) {
 	function clear(node) { while (node && node.firstChild) { node.removeChild(node.firstChild); } }
 	function draw() {
 		if (!ensureLayer()) { return; }
+		var comments = state.comments || [];
+		if (!comments.length && !state.draft) {
+			// 描くものが無ければ文書を読み直さない（選んだ文字の「コメント」のボタンだけ残す）
+			var keep = button; button = null;
+			clear(boxes); hits = [];
+			if (keep) { button = keep; boxes.appendChild(button); }
+			return;
+		}
 		index = buildIndex();
 		if (!index) { return; }
 		var keepButton = button; button = null;
 		clear(boxes);
 		hits = [];
 		var places = {}, changed = false;
-		var comments = state.comments || [];
 		for (var k = 0; k < comments.length; k++) {
 			var c = comments[k], hit = A.resolve(index.text, c.anchor, hintFor(c.anchor.selector));
 			var range = hit ? rangeFor(hit.start, hit.end) : null, rs = range ? rectsOf(range) : [];
@@ -433,7 +442,7 @@ const LAYER_BODY = `function (O, A, env) {
 		}
 	}
 	env.listen(function (d) {
-		if (d && d.${LAYER_STATE_KEY}) { state = d.${LAYER_STATE_KEY}; reported = {}; draw(); }
+		if (d && d.${LAYER_STATE_KEY}) { state = d.${LAYER_STATE_KEY}; draw(); }
 		if (d && typeof d.${LAYER_REVEAL_KEY} === 'string') { reveal(d.${LAYER_REVEAL_KEY}); }
 	});
 	return {
@@ -472,6 +481,8 @@ export interface IParadisDocCommentWrapperOptions {
 	readonly token: string;
 	readonly labels: IParadisDocLayerLabels;
 	readonly state: IParadisDocLayerState;
+	/** コメントを書けるか（資料でないファイルは外枠だけ使い、選んでも「コメント」を出さない）。 */
+	readonly commentable: boolean;
 	/** 最初に開いたときに戻すスクロール位置（`scrollY / body.clientHeight`）。 */
 	readonly scrollProgress: number;
 	/** `fromHost` の判定の関数式（paradisWebviewHostMessage.ts）。 */
@@ -503,6 +514,7 @@ export function paradisDocCommentWrapperDocument(options: IParadisDocCommentWrap
 	const config = {
 		labels: options.labels,
 		state: options.state,
+		commentable: options.commentable,
 		sandbox: paradisDocCommentFrameSandbox(options.allowPageScripts),
 		scroll: options.scrollProgress,
 	};
