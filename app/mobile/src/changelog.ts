@@ -45,9 +45,14 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		items: [
 			{
 				icon: 'git-compare-outline',
-				title: '変更の画面の「差分」で、Markdown を描いた見た目のまま比べられるようになりました',
+				title: '変更の画面の「差分」で、Markdown・HTML を描いた見た目のまま比べられるようになりました',
 				body: 'PC の Para Code の更新が要ります。',
 				tone: 'yellow',
+			},
+			{
+				icon: 'options-outline',
+				title: '変更の画面で開いたときの見方を、Markdown は「差分」、HTML は「Raw」にしました',
+				tone: 'green',
 			},
 		],
 	},
