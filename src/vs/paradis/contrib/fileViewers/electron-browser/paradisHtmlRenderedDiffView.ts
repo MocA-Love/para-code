@@ -132,19 +132,6 @@ export class ParadisHtmlRenderedDiffView extends ParadisMarkdownRenderedDiffView
 		if (!pages) {
 			return localize('paradis.renderedDiff.tooLarge', "大きいのでテキスト差分で表示しています");
 		}
-		const html = paradisHtmlRenderedDiffFrameDocument({
-			originalHtml: pages.originalHtml,
-			modifiedHtml: pages.modifiedHtml,
-			labels: {
-				original: localize('paradis.renderedDiff.originalCaption', "変更前"),
-				modified: localize('paradis.renderedDiff.modifiedCaption', "変更後"),
-			},
-			token: this._token,
-			zoom: this.zoomFactor,
-			fromHost: PARADIS_WEBVIEW_HOST_MESSAGE_CHECK,
-			changeAttribute: PARADIS_RENDERED_DIFF_CHANGE_ATTRIBUTE,
-			anchorAttribute: PARADIS_HTML_RENDERED_DIFF_ANCHOR_ATTRIBUTE,
-		});
 		const notes: string[] = [];
 		if (pages.changes === 0 && pages.styleChanges === 0 && originalText !== modifiedText) {
 			notes.push(localize('paradis.htmlRenderedDiff.noVisibleChanges', "文字と要素に違いはありません"));
@@ -155,10 +142,28 @@ export class ParadisHtmlRenderedDiffView extends ParadisMarkdownRenderedDiffView
 		if (pages.stoppedScripts > 0) {
 			notes.push(localize('paradis.htmlRenderedDiff.scriptsStopped', "スクリプトは止めています"));
 		}
-		if (this.workingTreeResource(input.original) !== input.original) {
+		// 古い側（と、両側とも git: のときは新しい側も）の CSS・画像は、ディスクの上の今のファイルのもの
+		if (base !== input.modified) {
+			notes.push(localize('paradis.htmlRenderedDiff.allFromWorkingTree', "CSS・画像は今の作業ツリーのものです"));
+		} else if (this.workingTreeResource(input.original) !== input.original) {
 			notes.push(localize('paradis.htmlRenderedDiff.workingTreeResources', "変更前の CSS・画像は今の作業ツリーのものです"));
 		}
-		return { html, changes: pages.changes, note: notes.join(localize('paradis.htmlRenderedDiff.noteSeparator', "。")) };
+		const html = paradisHtmlRenderedDiffFrameDocument({
+			originalHtml: pages.originalHtml,
+			modifiedHtml: pages.modifiedHtml,
+			labels: {
+				original: localize('paradis.renderedDiff.originalCaption', "変更前"),
+				modified: localize('paradis.renderedDiff.modifiedCaption', "変更後"),
+			},
+			notes,
+			token: this._token,
+			zoom: this.zoomFactor,
+			fromHost: PARADIS_WEBVIEW_HOST_MESSAGE_CHECK,
+			changeAttribute: PARADIS_RENDERED_DIFF_CHANGE_ATTRIBUTE,
+			anchorAttribute: PARADIS_HTML_RENDERED_DIFF_ANCHOR_ATTRIBUTE,
+		});
+		// 断り書きはページの上の 1 行に出す（バーの上では幅が足りず切れる）
+		return { html, changes: pages.changes, note: '' };
 	}
 
 	/** 文書のフォルダーを配信サーバに載せ、`<base>` の URL を返す。 */

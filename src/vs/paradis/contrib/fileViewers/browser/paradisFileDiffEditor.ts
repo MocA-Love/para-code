@@ -53,6 +53,8 @@ export class ParadisFileDiffEditor extends EditorPane {
 	private _rendered: ParadisMarkdownRenderedDiffView | undefined;
 	/** 種類ごとに、最初にその種類の差分を開いたときに作った部品。 */
 	private readonly _renderedViews = new Map<IParadisRenderedDiffViewFactory, ParadisMarkdownRenderedDiffView>();
+	/** 最後に受け取った幅（後から使い始めた部品にも渡す。狭い幅で 1 列にする判定に使う）。 */
+	private _width = 0;
 	private readonly _modelRefs = this._register(new MutableDisposable<DisposableStore>());
 
 	constructor(
@@ -92,6 +94,7 @@ export class ParadisFileDiffEditor extends EditorPane {
 		if (this._rendered !== view) {
 			this._rendered?.clearInput();
 			this._rendered = view;
+			view.layout(this._width);
 			view.setVisible(this.isVisible());
 		}
 		return view;
@@ -204,6 +207,7 @@ export class ParadisFileDiffEditor extends EditorPane {
 			this._rootElement.style.height = `${dimension.height}px`;
 		}
 		// DiffEditorWidget は automaticLayout: true でコンテナへ自動追従する。
+		this._width = dimension.width;
 		this._rendered?.layout(dimension.width);
 		// タブの切り替えでペインが 0x0 に畳まれる経路でも、プレビュー差分の webview を手放す。
 		this._rendered?.setVisible(this.isVisible() && dimension.width > 0 && dimension.height > 0);

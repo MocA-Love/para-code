@@ -32,6 +32,7 @@ suite('paradisHtmlRenderedDiffFrame', () => {
 			originalHtml: '<p>a</p></script><script>alert(1)</script>',
 			modifiedHtml: '<p>b</p>',
 			labels: { original: 'Before', modified: 'After <b>' },
+			notes: ['Scripts <stopped>'],
 			token: 't',
 			zoom: 1,
 			fromHost: '(function(){return true;})',
@@ -42,7 +43,7 @@ suite('paradisHtmlRenderedDiffFrame', () => {
 			sandbox: /"sandbox":"([^"]*)"/.exec(html)?.[1],
 			scripts: html.match(/<script>/g)?.length,
 			closing: html.match(/<\/script>/g)?.length,
-			caption: html.includes('After &#60;b&#62;'),
-		}, { sandbox: 'allow-same-origin allow-pointer-lock', scripts: 1, closing: 1, caption: true });
+			escaped: html.includes('After &#60;b&#62;') && html.includes('<span>Scripts &#60;stopped&#62;</span>'),
+		}, { sandbox: 'allow-same-origin allow-pointer-lock', scripts: 1, closing: 1, escaped: true });
 	});
 });

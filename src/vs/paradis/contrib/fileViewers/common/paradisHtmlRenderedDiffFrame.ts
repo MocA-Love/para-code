@@ -45,6 +45,11 @@ export interface IParadisHtmlRenderedDiffFrameOptions {
 	readonly modifiedHtml: string;
 	/** 左右の列の見出し。 */
 	readonly labels: { readonly original: string; readonly modified: string };
+	/**
+	 * 断り書き（スクリプトを止めたこと・CSS の変更に色が付かないこと・CSS と画像が今の作業ツリーのものであること）。
+	 * バーの上では幅が足りず切れるので、ページの上の 1 行に折り返して全部出す。
+	 */
+	readonly notes: readonly string[];
 	/** ワークベンチへのメッセージに付ける印。 */
 	readonly token: string;
 	/** 最初の拡大率。 */
@@ -97,19 +102,24 @@ export function paradisHtmlRenderedDiffFrameDocument(options: IParadisHtmlRender
 		change: options.changeAttribute,
 		anchor: options.anchorAttribute,
 	};
+	const notes = options.notes.length
+		? `<div class="notes">${options.notes.map(note => `<span>${escapeHtml(note)}</span>`).join('')}</div>`
+		: '';
 	const captions = split
 		? `<div class="cap">${escapeHtml(options.labels.original)}</div><div class="cap cap-r">${escapeHtml(options.labels.modified)}</div>`
 		: '';
+	const rows = [notes ? 'auto' : '', split ? 'auto' : '', 'minmax(0, 1fr)'].filter(row => row).join(' ');
 	return `<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
 <style>
 html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: transparent; }
-#stage { display: grid; width: 100%; height: 100%; grid-template-columns: ${split ? 'minmax(0, 1fr) minmax(0, 1fr)' : 'minmax(0, 1fr)'}; grid-template-rows: ${split ? 'auto minmax(0, 1fr)' : 'minmax(0, 1fr)'}; }
+#stage { display: grid; width: 100%; height: 100%; grid-template-columns: ${split ? 'minmax(0, 1fr) minmax(0, 1fr)' : 'minmax(0, 1fr)'}; grid-template-rows: ${rows}; }
 #stage > iframe { width: 100%; height: 100%; border: 0; background: transparent; visibility: hidden; }
 #stage > iframe.r { box-shadow: inset 1px 0 0 var(--vscode-editorGroup-border); }
 .cap { padding: 3px 12px; font: 11px/18px var(--vscode-font-family); color: var(--vscode-descriptionForeground); background: var(--vscode-editor-background); box-shadow: 0 1px 0 var(--vscode-editorGroup-border); }
+.notes { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 2px 16px; padding: 3px 12px; font: 12px/18px var(--vscode-font-family); color: var(--vscode-descriptionForeground); background: var(--vscode-editor-background); box-shadow: 0 1px 0 var(--vscode-editorGroup-border); }
 .cap-r { box-shadow: inset 1px 0 0 var(--vscode-editorGroup-border), 0 1px 0 var(--vscode-editorGroup-border); }
 </style>
 <script>(function(){try{
@@ -200,7 +210,7 @@ if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded'
 }catch(err){console.error('[paradis] html rendered diff frame failed',err);}})();</script>
 </head>
 <body>
-<div id="stage">${captions}</div>
+<div id="stage">${notes}${captions}</div>
 </body>
 </html>`;
 }
