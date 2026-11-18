@@ -38,6 +38,7 @@ export class ParadisFileDiffEditor extends EditorPane {
 	static readonly ID = PARADIS_FILE_DIFF_EDITOR_ID;
 
 	private _rootElement: HTMLElement | undefined;
+	private _contentElement: HTMLElement | undefined;
 	private _diffContainer: HTMLElement | undefined;
 	private _widget: DiffEditorWidget | undefined;
 	/** Markdown のバーとプレビュー差分（最初に Markdown の差分を開いたときに作る）。 */
@@ -62,8 +63,6 @@ export class ParadisFileDiffEditor extends EditorPane {
 		this._contentElement = dom.append(this._rootElement, dom.$('.paradis-file-viewer-content'));
 		this._diffContainer = dom.append(this._contentElement, dom.$('.paradis-file-viewer-editor.active'));
 	}
-
-	private _contentElement: HTMLElement | undefined;
 
 	private _ensureRendered(): ParadisMarkdownRenderedDiffView {
 		if (!this._rendered) {
