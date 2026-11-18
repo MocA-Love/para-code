@@ -25,6 +25,11 @@ import { ParadisResourcePairDiffInput, ParadisResourcePairDiffInputSerializer } 
 /** MD/HTML 共用のテキスト差分エディタの EditorInput。 */
 export class ParadisFileDiffInput extends ParadisResourcePairDiffInput {
 
+	/**
+	 * 設定に関わらずプレビュー差分で開く（複数ファイルの差分の「プレビュー差分」ボタンから開いたとき）。保存はしない。
+	 */
+	openInRenderedDiff = false;
+
 	constructor(
 		originalResource: URI,
 		modifiedResource: URI,

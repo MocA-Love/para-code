@@ -476,6 +476,8 @@ export class DiffEditorItemTemplate extends VirtualizedItemTemplate<DocumentDiff
 				this._contextKeyService.createKey(key, value);
 			}
 		}
+		// PARA-PATCH: lets Para Code's "Rendered Diff" button on the file toolbar show only for .md files (rendered diff of Markdown)
+		this._contextKeyService.createKey('paradisMultiDiffItemExtname', /\.[^./]*$/.exec((item.modifiedUri ?? item.originalUri)?.path ?? '')?.[0].toLowerCase() ?? '');
 	}
 
 	private readonly _headerHeight;
