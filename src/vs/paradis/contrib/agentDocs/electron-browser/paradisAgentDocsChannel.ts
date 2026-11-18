@@ -154,7 +154,7 @@ export class ParadisAgentDocsChannel implements IServerChannel<unknown> {
 		}
 		detail.push(localize('paradis.agentDocs.adopt.note', "移すと、資料の持ち主がこのターミナルのエージェントになります。ファイルの中身は変わりません。"));
 		const outcome = await this._ask(token, {
-			messageTemplate: paneLabel => localize('paradis.agentDocs.adopt.message', "{0} のエージェントが、別のエージェントが作った資料を自分の資料に移そうとしています。", paneLabel),
+			messageTemplate: paneLabel => localize('paradis.agentDocs.adopt.message', "{0} のエージェントが、別のエージェントが作った資料を自分の資料に移そうとしています", paneLabel),
 			detail,
 			approveLabel: localize('paradis.agentDocs.adopt.approve', "移す"),
 			cooldownKey: APPROVAL_COOLDOWN_KEY,
