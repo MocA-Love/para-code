@@ -15,6 +15,7 @@ import { IParadisDocViewRecord, ParadisAgentDocsViewCall } from '../../common/pa
 import { IParadisDocLedgerStorage, ParadisAgentDocsLedger } from '../../node/paradisAgentDocsLedger.js';
 import { ParadisAgentDocsService } from '../../node/paradisAgentDocsService.js';
 import { ParadisAgentDocsViewChannel } from '../../node/paradisAgentDocsViewChannel.js';
+import { ParadisDocCommentsStore } from '../../node/paradisDocCommentsStore.js';
 
 class MemoryStorage implements IParadisDocLedgerStorage {
 	constructor(public text: string | undefined = undefined) { }
@@ -40,8 +41,9 @@ suite('ParadisAgentDocsViewChannel', () => {
 		const storage = new MemoryStorage();
 		const ledger = disposables.add(new ParadisAgentDocsLedger(storage, error => { throw error; }, now));
 		const service = disposables.add(new ParadisAgentDocsService(ledger, hooks.event));
-		const channel = disposables.add(new ParadisAgentDocsViewChannel(service));
-		return { hooks, ledger, service, channel, storage };
+		const comments = disposables.add(new ParadisDocCommentsStore({ read: async () => undefined, write: async () => undefined }, error => { throw error; }, now));
+		const channel = disposables.add(new ParadisAgentDocsViewChannel(service, comments));
+		return { hooks, ledger, service, channel, storage, comments };
 	}
 
 	const call = <T>(channel: ParadisAgentDocsViewChannel, command: string, ...args: unknown[]) => channel.call<T>(undefined, command, args);

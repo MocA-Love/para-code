@@ -51,6 +51,8 @@ export interface IParadisDocViewRecord {
 	/** 最後に動いた時刻（書き込み・持ち主の交代・初めて載った時刻の新しい方）。 */
 	readonly lastActivity: number;
 	readonly missingSince?: number;
+	/** 未回答のコメントの数（0 なら無い）。 */
+	readonly openComments?: number;
 }
 
 /** ペインで動いている会話。 */
@@ -65,7 +67,7 @@ export interface IParadisDocPaneSessionInfo {
 export type ParadisDocAssignResult = 'assigned' | 'owned' | 'unknown' | 'sessionUnknown' | 'hostMismatch';
 
 /** 台帳の 1 件をビューに渡す形にする。 */
-export function paradisDocViewRecord(record: IParadisDocRecord, liveness: ParadisDocOwnerLiveness | undefined): IParadisDocViewRecord {
+export function paradisDocViewRecord(record: IParadisDocRecord, liveness: ParadisDocOwnerLiveness | undefined, openComments = 0): IParadisDocViewRecord {
 	const owner = record.owner;
 	return {
 		hostId: record.hostId,
@@ -76,7 +78,13 @@ export function paradisDocViewRecord(record: IParadisDocRecord, liveness: Paradi
 		registeredBy: record.registeredBy,
 		lastActivity: paradisDocLastActivity(record),
 		...(record.missingSince !== undefined ? { missingSince: record.missingSince } : {}),
+		...(openComments > 0 ? { openComments } : {}),
 	};
+}
+
+/** このウィンドウの接続先の資料の、未回答のコメントの合計（「資料」アイコンのバッジ）。 */
+export function paradisDocsOpenCommentTotal(records: readonly IParadisDocViewRecord[], hostId: string | undefined): number {
+	return records.reduce((total, record) => record.hostId === hostId ? total + (record.openComments ?? 0) : total, 0);
 }
 
 // --- 絞り込み ----------------------------------------------------------------------------------

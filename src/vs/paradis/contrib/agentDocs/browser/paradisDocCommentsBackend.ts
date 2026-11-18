@@ -15,7 +15,7 @@ import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js'
 import { URI } from '../../../../base/common/uri.js';
 import { Schemas } from '../../../../base/common/network.js';
 import { paradisAgentHookRemoteHostId } from '../../agentBrowser/common/paradisAgentHooks.js';
-import { IParadisDocCommentDraft, IParadisDocCommentSidecar, IParadisDocCommentThread, IParadisDocCommentsChange, ParadisDocCommentPlace, paradisReadDocCommentTarget } from '../common/paradisDocComments.js';
+import { IParadisDocCommentDraft, IParadisDocCommentSidecar, IParadisDocCommentThread, IParadisDocCommentsChange, ParadisDocCommentPlace, ParadisDocCommentUserAction, paradisReadDocCommentTarget } from '../common/paradisDocComments.js';
 
 /** コメントの保存先（shared process の保存係へ頼む）。 */
 export interface IParadisDocCommentsBackend {
@@ -23,6 +23,8 @@ export interface IParadisDocCommentsBackend {
 	get(hostId: string, path: string): Promise<IParadisDocCommentSidecar>;
 	add(hostId: string, path: string, draft: IParadisDocCommentDraft): Promise<IParadisDocCommentThread | undefined>;
 	setPlaces(hostId: string, path: string, places: ReadonlyMap<string, ParadisDocCommentPlace>): Promise<void>;
+	/** カードの操作（解決・開き直し・追記・今すぐ届ける）。 */
+	act(hostId: string, path: string, id: string, action: ParadisDocCommentUserAction, text?: string): Promise<void>;
 }
 
 let backend: IParadisDocCommentsBackend | undefined;

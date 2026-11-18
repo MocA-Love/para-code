@@ -12,12 +12,13 @@
 // コメントの保存係だけで、ウィンドウはチャネルで頼む。キーは台帳と同じ（接続先の印＋正規化した絶対パス、
 // {@link paradisDocKey}）なので、資料のツールは台帳の 1 件からそのままコメントへ辿れる。
 //
-// 1 件のコメントは「スレッド」で持つ（回答と追記を同じ場所に足すため。届け方と回答は後の段で足す）。
+// 1 件のコメントは「スレッド」で持つ（回答と追記を同じ場所に足すため）。届け方の状態（delivery）と、エージェントの回答・
+// 回答に結び付けた本文の書き込み（edits）も同じスレッドに持つ。
 // 本文はユーザーがワークベンチの欄に打ったものだけで、プレビューのページからは受け取らない
 // （ページのスクリプトが書いた文がユーザーのコメントとして届かないようにするため。paradisDocCommentLayer.ts の冒頭）。
 
 import { IParadisDocAnchor } from './paradisDocCommentAnchor.js';
-import { paradisDocKind, paradisNormalizeDocPath } from './paradisAgentDocs.js';
+import { paradisDocKind, paradisIsDocCommentId, paradisNormalizeDocPath } from './paradisAgentDocs.js';
 
 /** ウィンドウから shared process のコメントの保存係へ頼むチャネル。 */
 export const PARADIS_DOC_COMMENTS_CHANNEL = 'paradisDocComments';
@@ -27,6 +28,11 @@ export const PARADIS_DOC_COMMENTS_GET_METHOD = 'get';
 export const PARADIS_DOC_COMMENTS_ADD_METHOD = 'add';
 /** プレビューが当て直した結果を書く。引数は `[hostId, path, Record<id, place>]`。 */
 export const PARADIS_DOC_COMMENTS_SET_PLACES_METHOD = 'setPlaces';
+/**
+ * ユーザーがカードで操作する。引数は `[hostId, path, id, ParadisDocCommentUserAction, text?]`。
+ * `deliverNow` は、入力欄の中身を確かめられないペインへ、次のターンの終わりを待たずに届ける頼み。
+ */
+export const PARADIS_DOC_COMMENTS_ACT_METHOD = 'act';
 /** コメントが変わった資料の知らせ（`{ hostId, path }`）。 */
 export const PARADIS_DOC_COMMENTS_CHANGED_EVENT = 'onDidChange';
 
@@ -41,6 +47,10 @@ const SELECTOR_MAX = 2_000;
 export const PARADIS_DOC_COMMENT_MAX_THREADS = 500;
 /** 1 つのスレッドの書き込みの上限。 */
 const MAX_MESSAGES = 200;
+/** 1 つの回答に結び付ける本文の書き込みの上限。 */
+export const PARADIS_DOC_COMMENT_MAX_EDITS = 50;
+/** エージェントの回答の上限（文字）。 */
+export const PARADIS_DOC_COMMENT_REPLY_MAX = 4_000;
 
 /**
  * 当て直しの結果。`found`: 引用がそのまま 1 か所に見つかった。`changed`: 引用は書き換わっているが場所は決められた。
@@ -49,9 +59,51 @@ const MAX_MESSAGES = 200;
 export type ParadisDocCommentPlace = 'found' | 'changed' | 'ambiguous' | 'lost';
 const PLACES: ReadonlySet<string> = new Set<ParadisDocCommentPlace>(['found', 'changed', 'ambiguous', 'lost']);
 
-/** スレッドの状態。この段で作るのは `queued`（届け待ち）だけ。残りは届け方の段で使う。 */
+/**
+ * スレッドの状態。`queued`: 届け待ち（貼った後、届いた知らせを待っている間も含む）、`delivered`: 届いた（エージェントが
+ * 入力を受け取った）、`answered`: 回答あり、`resolved`: 解決済み、`undeliverable`: 今は届けられない（持ち主がいない・終了・
+ * 状態が分からない。持ち主のペインが動けば届け待ちに戻る）。
+ */
 export type ParadisDocCommentState = 'queued' | 'delivered' | 'answered' | 'resolved' | 'undeliverable';
 const STATES: ReadonlySet<string> = new Set<ParadisDocCommentState>(['queued', 'delivered', 'answered', 'resolved', 'undeliverable']);
+
+/**
+ * 届けられない・待っている理由。
+ * 待つもの: `working` 作業中、`permission` 許可待ち、`question` 質問待ち、`draft` 入力欄に書きかけがある、
+ * `draftUnknown` 入力欄の中身を確かめられない（次のターンの終わりの直後に届ける）、`sending` 同じペインへ前の分を届けている、
+ * `screen` ペインの画面に確認が出ている。
+ * 届けられないもの（状態は `undeliverable`）: `noOwner` 持ち主がいない、`ended` 持ち主の会話が終わった、`unknown` 持ち主の
+ * 会話が動いているか分からない、`noHooks` 持ち主のペインから状態の知らせが一度も来ていない。
+ */
+export type ParadisDocDeliveryBlock = 'working' | 'permission' | 'question' | 'draft' | 'draftUnknown' | 'sending' | 'screen' | 'noOwner' | 'ended' | 'unknown' | 'noHooks';
+const BLOCKS: ReadonlySet<string> = new Set<ParadisDocDeliveryBlock>(['working', 'permission', 'question', 'draft', 'draftUnknown', 'sending', 'screen', 'noOwner', 'ended', 'unknown', 'noHooks']);
+const UNDELIVERABLE_BLOCKS: ReadonlySet<ParadisDocDeliveryBlock> = new Set<ParadisDocDeliveryBlock>(['noOwner', 'ended', 'unknown', 'noHooks']);
+
+/** 届けられない理由（待てば届くものではない）か。 */
+export function paradisIsDocDeliveryUndeliverable(block: ParadisDocDeliveryBlock | undefined): boolean {
+	return block !== undefined && UNDELIVERABLE_BLOCKS.has(block);
+}
+
+/** 届け方の記録。 */
+export interface IParadisDocCommentDelivery {
+	/** ペインへ貼った回数。 */
+	readonly attempts: number;
+	/** いま待っている・届けられない理由。 */
+	readonly blockedBy?: ParadisDocDeliveryBlock;
+	/** ペインへ貼った時刻。貼った後は二度と貼らない（追記・開き直しで消える）。 */
+	readonly typedAt?: number;
+	/** 貼った後に Enter も送ったか。送っていなければ、ユーザーがターミナルで送るのを待つ。 */
+	readonly entered?: boolean;
+	/** 届いた（エージェントが入力を受け取った）時刻。 */
+	readonly deliveredAt?: number;
+}
+
+/** 回答に結び付けた、資料への書き込み 1 回。 */
+export interface IParadisDocCommentEdit {
+	readonly at: number;
+	readonly tool: string;
+	readonly toolUseId?: string;
+}
 
 /** スレッドの位置（当て直しの結果つき）。 */
 export interface IParadisDocCommentAnchor extends IParadisDocAnchor {
@@ -62,6 +114,8 @@ export interface IParadisDocCommentMessage {
 	readonly by: 'user' | 'agent';
 	readonly text: string;
 	readonly at: number;
+	/** エージェントの回答のとき、前の回答（無ければ届いた時刻）からこの回答までの資料への書き込み。 */
+	readonly edits?: readonly IParadisDocCommentEdit[];
 }
 
 export interface IParadisDocCommentThread {
@@ -72,6 +126,7 @@ export interface IParadisDocCommentThread {
 	readonly state: ParadisDocCommentState;
 	readonly messages: readonly IParadisDocCommentMessage[];
 	readonly createdAt: number;
+	readonly delivery?: IParadisDocCommentDelivery;
 }
 
 /** サイドカー 1 つの中身。 */
@@ -94,7 +149,6 @@ export interface IParadisDocCommentsChange {
 }
 
 const HOST_ID_PATTERN = /^[A-Za-z0-9._-]{0,64}$/;
-const THREAD_ID_PATTERN = /^c-[a-z0-9]{6,32}$/;
 
 function isTime(value: unknown): value is number {
 	return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
@@ -161,11 +215,24 @@ export function paradisReadDocCommentPlaces(value: unknown): ReadonlyMap<string,
 		return places;
 	}
 	for (const [id, place] of Object.entries(value).slice(0, PARADIS_DOC_COMMENT_MAX_THREADS)) {
-		if (THREAD_ID_PATTERN.test(id) && typeof place === 'string' && PLACES.has(place)) {
+		if (paradisIsDocCommentId(id) && typeof place === 'string' && PLACES.has(place)) {
 			places.set(id, place as ParadisDocCommentPlace);
 		}
 	}
 	return places;
+}
+
+function parseEdit(value: unknown): IParadisDocCommentEdit | undefined {
+	if (typeof value !== 'object' || value === null) {
+		return undefined;
+	}
+	const edit = value as Record<string, unknown>;
+	const tool = readText(edit.tool, 64);
+	if (!isTime(edit.at) || tool === undefined) {
+		return undefined;
+	}
+	const toolUseId = readText(edit.toolUseId, 200);
+	return { at: edit.at, tool, ...(toolUseId !== undefined ? { toolUseId } : {}) };
 }
 
 function parseMessage(value: unknown): IParadisDocCommentMessage | undefined {
@@ -177,7 +244,26 @@ function parseMessage(value: unknown): IParadisDocCommentMessage | undefined {
 	if ((message.by !== 'user' && message.by !== 'agent') || text === undefined || !isTime(message.at)) {
 		return undefined;
 	}
-	return { by: message.by, text, at: message.at };
+	const edits = message.by === 'agent' && Array.isArray(message.edits)
+		? message.edits.slice(0, PARADIS_DOC_COMMENT_MAX_EDITS).map(parseEdit).filter((edit): edit is IParadisDocCommentEdit => edit !== undefined)
+		: undefined;
+	return { by: message.by, text, at: message.at, ...(edits !== undefined ? { edits } : {}) };
+}
+
+function parseDelivery(value: unknown): IParadisDocCommentDelivery | undefined {
+	if (typeof value !== 'object' || value === null) {
+		return undefined;
+	}
+	const delivery = value as Record<string, unknown>;
+	const attempts = typeof delivery.attempts === 'number' && Number.isSafeInteger(delivery.attempts) && delivery.attempts >= 0 ? delivery.attempts : 0;
+	const blockedBy = typeof delivery.blockedBy === 'string' && BLOCKS.has(delivery.blockedBy) ? delivery.blockedBy as ParadisDocDeliveryBlock : undefined;
+	return {
+		attempts,
+		...(blockedBy !== undefined ? { blockedBy } : {}),
+		...(isTime(delivery.typedAt) ? { typedAt: delivery.typedAt } : {}),
+		...(delivery.entered === true ? { entered: true } : {}),
+		...(isTime(delivery.deliveredAt) ? { deliveredAt: delivery.deliveredAt } : {}),
+	};
 }
 
 function parseThread(value: unknown): IParadisDocCommentThread | undefined {
@@ -187,11 +273,12 @@ function parseThread(value: unknown): IParadisDocCommentThread | undefined {
 	const thread = value as Record<string, unknown>;
 	const anchor = paradisReadDocAnchor(thread.anchor);
 	const messages = Array.isArray(thread.messages) ? thread.messages.slice(0, MAX_MESSAGES).map(parseMessage).filter((message): message is IParadisDocCommentMessage => message !== undefined) : [];
-	if (typeof thread.id !== 'string' || !THREAD_ID_PATTERN.test(thread.id) || (thread.startedBy !== 'user' && thread.startedBy !== 'agent')
+	if (!paradisIsDocCommentId(thread.id) || (thread.startedBy !== 'user' && thread.startedBy !== 'agent')
 		|| anchor === undefined || typeof thread.state !== 'string' || !STATES.has(thread.state) || !isTime(thread.createdAt) || messages.length === 0) {
 		return undefined;
 	}
-	return { id: thread.id, startedBy: thread.startedBy, anchor, state: thread.state as ParadisDocCommentState, messages, createdAt: thread.createdAt };
+	const delivery = parseDelivery(thread.delivery);
+	return { id: thread.id, startedBy: thread.startedBy, anchor, state: thread.state as ParadisDocCommentState, messages, createdAt: thread.createdAt, ...(delivery !== undefined ? { delivery } : {}) };
 }
 
 /** サイドカーの中身を読む。壊れた件は捨て、全体が読めない・別の資料のものなら空にする。 */
@@ -248,4 +335,113 @@ export function paradisWithDocCommentPlaces(sidecar: IParadisDocCommentSidecar, 
 		return { ...thread, anchor: { ...thread.anchor, place } };
 	});
 	return changed ? { ...sidecar, threads } : sidecar;
+}
+
+// --- 届け方と回答の状態の移り変わり（純関数。変わらなければ同じものを返す） ---------------------------
+
+/** 未回答（届け待ち・届いた・届けられない）か。「資料」の一覧の数・アイコンのバッジ・list_docs の数はこれで数える。 */
+export function paradisIsDocCommentOpen(thread: IParadisDocCommentThread): boolean {
+	return thread.state === 'queued' || thread.state === 'delivered' || thread.state === 'undeliverable';
+}
+
+/** 未回答の数。 */
+export function paradisCountOpenDocComments(threads: readonly IParadisDocCommentThread[]): number {
+	return threads.filter(paradisIsDocCommentOpen).length;
+}
+
+/** まだペインへ貼っていない届け待ちか（届け方が拾う対象）。 */
+export function paradisDocCommentAwaitsDelivery(thread: IParadisDocCommentThread): boolean {
+	return (thread.state === 'queued' || thread.state === 'undeliverable') && thread.delivery?.typedAt === undefined;
+}
+
+/** 待っている・届けられない理由を書く（undefined で外す）。貼る前の届け待ちだけが対象。 */
+export function paradisWithDocCommentBlocked(thread: IParadisDocCommentThread, block: ParadisDocDeliveryBlock | undefined): IParadisDocCommentThread {
+	if (!paradisDocCommentAwaitsDelivery(thread)) {
+		return thread;
+	}
+	const state: ParadisDocCommentState = paradisIsDocDeliveryUndeliverable(block) ? 'undeliverable' : 'queued';
+	if (thread.state === state && thread.delivery?.blockedBy === block) {
+		return thread;
+	}
+	const { blockedBy: _blockedBy, ...rest } = thread.delivery ?? { attempts: 0 };
+	return { ...thread, state, delivery: { ...rest, ...(block !== undefined ? { blockedBy: block } : {}) } };
+}
+
+/** ペインへ貼った。`entered` は Enter も送ったか。 */
+export function paradisWithDocCommentTyped(thread: IParadisDocCommentThread, at: number, entered: boolean): IParadisDocCommentThread {
+	if (!paradisDocCommentAwaitsDelivery(thread)) {
+		return thread;
+	}
+	return { ...thread, state: 'queued', delivery: { attempts: (thread.delivery?.attempts ?? 0) + 1, typedAt: at, ...(entered ? { entered: true } : {}) } };
+}
+
+/** 届いた（エージェントが入力を受け取った）。届け待ちのときだけ移る。 */
+export function paradisWithDocCommentDelivered(thread: IParadisDocCommentThread, at: number): IParadisDocCommentThread {
+	if (thread.state !== 'queued' && thread.state !== 'undeliverable') {
+		return thread;
+	}
+	const { blockedBy: _blockedBy, ...rest } = thread.delivery ?? { attempts: 0 };
+	return { ...thread, state: 'delivered', delivery: { ...rest, typedAt: rest.typedAt ?? at, deliveredAt: at } };
+}
+
+/** エージェントの回答を足す。 */
+export function paradisWithDocCommentReply(thread: IParadisDocCommentThread, text: string, resolved: boolean, edits: readonly IParadisDocCommentEdit[], at: number): IParadisDocCommentThread {
+	const message: IParadisDocCommentMessage = { by: 'agent', text, at, edits: edits.slice(0, PARADIS_DOC_COMMENT_MAX_EDITS) };
+	return { ...thread, state: resolved ? 'resolved' : 'answered', messages: [...thread.messages, message].slice(-MAX_MESSAGES) };
+}
+
+/** ユーザーがカードで行う操作。 */
+export type ParadisDocCommentUserAction = 'resolve' | 'reopen' | 'append' | 'deliverNow';
+
+/** 新しく届け直すときの届け方の記録（貼った回数だけ残す）。 */
+function freshDelivery(thread: IParadisDocCommentThread): IParadisDocCommentDelivery {
+	return { attempts: thread.delivery?.attempts ?? 0 };
+}
+
+/**
+ * ユーザーの操作を反映する。`resolve` 解決にする、`reopen` 開き直す（最後が回答なら回答ありへ、そうでなければ届け直す）、
+ * `append` 追記する（届け直す）。`deliverNow` は状態を変えない（届け方の側で扱う）。
+ */
+export function paradisWithDocCommentUserAction(thread: IParadisDocCommentThread, action: ParadisDocCommentUserAction, text: string | undefined, at: number): IParadisDocCommentThread {
+	switch (action) {
+		case 'resolve':
+			return thread.state === 'resolved' ? thread : { ...thread, state: 'resolved' };
+		case 'reopen': {
+			if (thread.state !== 'resolved') {
+				return thread;
+			}
+			const last = thread.messages[thread.messages.length - 1];
+			return last?.by === 'agent' ? { ...thread, state: 'answered' } : { ...thread, state: 'queued', delivery: freshDelivery(thread) };
+		}
+		case 'append': {
+			const trimmed = text?.trim();
+			if (!trimmed) {
+				return thread;
+			}
+			const message: IParadisDocCommentMessage = { by: 'user', text: trimmed.slice(0, PARADIS_DOC_COMMENT_TEXT_MAX), at };
+			return { ...thread, state: 'queued', messages: [...thread.messages, message].slice(-MAX_MESSAGES), delivery: freshDelivery(thread) };
+		}
+		default:
+			return thread;
+	}
+}
+
+/** 回答に結び付ける書き込みの起点（前の回答、無ければ届いた・貼った・書いた時刻）。 */
+export function paradisDocCommentReplySince(thread: IParadisDocCommentThread): number {
+	for (let index = thread.messages.length - 1; index >= 0; index--) {
+		if (thread.messages[index].by === 'agent') {
+			return thread.messages[index].at;
+		}
+	}
+	return thread.delivery?.deliveredAt ?? thread.delivery?.typedAt ?? thread.createdAt;
+}
+
+/** ユーザーの最後の書き込み（届けるときに先頭 1 行を貼る）。 */
+export function paradisDocCommentLastUserText(thread: IParadisDocCommentThread): string {
+	for (let index = thread.messages.length - 1; index >= 0; index--) {
+		if (thread.messages[index].by === 'user') {
+			return thread.messages[index].text;
+		}
+	}
+	return '';
 }

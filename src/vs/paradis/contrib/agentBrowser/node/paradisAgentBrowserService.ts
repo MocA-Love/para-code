@@ -51,6 +51,7 @@ import { IParadisExactViewBackgroundThrottlingEffect, PARADIS_EXACT_VIEW_BACKGRO
 import { IParadisMobileRendererManifest, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } from '../../mobileRelay/common/paradisMobileWindowLease.js';
 import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, getParadisAgentPaneIssueUrls, onParadisAgentAwaitingUser, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, ParadisAgentTurnEndCause, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
 import { paradisNotifyPreviewFileOpened } from './paradisPreviewFileObservers.js';
+import { paradisSetPaneAgentStatusSource } from './paradisPaneAgentStatusSource.js';
 import { ParadisHookAgentKind, ParadisAgentHookOwnership, paradisHookAgentKindForTranscript } from './paradisAgentHookOwnership.js';
 import { PARADIS_AGENT_HIBERNATION_HOOK_SUPPRESS_MS, PARADIS_AGENT_HIBERNATION_KILL_GRACE_MS, ParadisHibernationResult } from '../../agentHibernation/common/paradisAgentHibernation.js';
 import { ParadisCodexFrontSessions } from '../common/paradisCodexFrontSession.js';
@@ -1030,6 +1031,16 @@ export class ParadisAgentBrowserService extends Disposable {
 			} catch {
 				// フォルダが無い・書けない。次の起動は 1 時間以内の分だけを流す。
 			}
+		}));
+		// ツールの呼び出しの外でペインの状態を読む側（資料のコメントの届け方）へ、ツールの中と同じ 3 つを渡す
+		this._register(paradisSetPaneAgentStatusSource({
+			getPaneAgentStatus: paneToken => {
+				const entry = this._paneStatuses.get(paneToken);
+				const unconfirmedRelease = this._unconfirmedReleaseOf(paneToken);
+				return entry ? { status: entry.status, changedAt: entry.changedAt, ...(unconfirmedRelease !== undefined ? { unconfirmedRelease } : {}) } : undefined;
+			},
+			getUnconfirmedRelease: paneToken => this._unconfirmedReleaseOf(paneToken),
+			hasAgentHookHistory: paneToken => this._hookReportedTokens.has(paneToken),
 		}));
 		this._cdpGateway = this._register(new ParadisCdpGateway(
 			{

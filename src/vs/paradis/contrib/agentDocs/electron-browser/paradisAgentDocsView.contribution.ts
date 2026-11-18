@@ -12,7 +12,8 @@
 // 「スペース」と同じにし、本家のファイルには触らない。
 
 import { Codicon } from '../../../../base/common/codicons.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { RunOnceScheduler } from '../../../../base/common/async.js';
+import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { ContextKeyExpr, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
@@ -25,11 +26,12 @@ import { registerIcon } from '../../../../platform/theme/common/iconRegistry.js'
 import { ViewPaneContainer } from '../../../../workbench/browser/parts/views/viewPaneContainer.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { Extensions as ViewExtensions, IViewContainersRegistry, IViewsRegistry, ViewContainer, ViewContainerLocation } from '../../../../workbench/common/views.js';
+import { IActivityService, NumberBadge } from '../../../../workbench/services/activity/common/activity.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { PARADIS_HTML_INPUT_TYPE_ID, PARADIS_MARKDOWN_INPUT_TYPE_ID } from '../../fileViewers/browser/paradisFileViewers.js';
 import { paradisDocKind, paradisIsVcsInternalPath } from '../common/paradisAgentDocs.js';
-import { PARADIS_AGENT_DOCS_VIEW_CHANNEL, ParadisAgentDocsViewCall, ParadisDocsGrouping } from '../common/paradisAgentDocsView.js';
+import { IParadisDocViewRecord, PARADIS_AGENT_DOCS_VIEW_CHANNEL, PARADIS_AGENT_DOCS_VIEW_ON_DID_CHANGE, ParadisAgentDocsViewCall, ParadisDocsGrouping, paradisDocsOpenCommentTotal } from '../common/paradisAgentDocsView.js';
 import { PARADIS_AGENT_DOCS_GROUPING_STORAGE_KEY, PARADIS_AGENT_DOCS_VIEW_ID, ParadisAgentDocsView, paradisDocTargetOf, paradisReadDocsGrouping, paradisWindowDocHostId } from './paradisAgentDocsView.js';
 
 const PARADIS_AGENT_DOCS_CONTAINER_ID = 'workbench.view.paradisAgentDocs';
@@ -97,11 +99,15 @@ GROUPINGS.forEach(({ value, title }, index) => {
 	});
 });
 
-// --- 窓ごとの仕事: まとめ方の印と、利用者が開いた資料の登録 ---------------------------------------
+// --- 窓ごとの仕事: まとめ方の印、利用者が開いた資料の登録、アイコンのバッジ ---------------------------
 
 class ParadisAgentDocsViewContribution extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'workbench.contrib.paradisAgentDocsView';
+
+	/** 「資料」アイコンのバッジと、いま出している数。 */
+	private readonly _badge = this._register(new MutableDisposable());
+	private _badgeCount = -1;
 
 	constructor(
 		@IStorageService storageService: IStorageService,
@@ -109,6 +115,7 @@ class ParadisAgentDocsViewContribution extends Disposable implements IWorkbenchC
 		@IEditorService private readonly _editorService: IEditorService,
 		@ISharedProcessService private readonly _sharedProcessService: ISharedProcessService,
 		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService,
+		@IActivityService private readonly _activityService: IActivityService,
 	) {
 		super();
 		const grouping = GROUPING_CONTEXT_KEY.bindTo(contextKeyService);
@@ -119,6 +126,28 @@ class ParadisAgentDocsViewContribution extends Disposable implements IWorkbenchC
 		const registerActive = () => this._registerOpened(windowHostId);
 		this._register(_editorService.onDidActiveEditorChange(registerActive));
 		registerActive();
+
+		// 「資料」アイコンのバッジ = このウィンドウの接続先の資料の、未回答のコメントの合計（Q664-15）
+		const badgeScheduler = this._register(new RunOnceScheduler(() => void this._updateBadge(windowHostId), 0));
+		this._register(_sharedProcessService.getChannel(PARADIS_AGENT_DOCS_VIEW_CHANNEL).listen<void>(PARADIS_AGENT_DOCS_VIEW_ON_DID_CHANGE)(() => badgeScheduler.schedule()));
+		badgeScheduler.schedule();
+	}
+
+	private async _updateBadge(windowHostId: string | undefined): Promise<void> {
+		let count = 0;
+		try {
+			const records = await this._sharedProcessService.getChannel(PARADIS_AGENT_DOCS_VIEW_CHANNEL).call<IParadisDocViewRecord[]>(ParadisAgentDocsViewCall.List);
+			count = Array.isArray(records) && windowHostId !== undefined ? paradisDocsOpenCommentTotal(records, windowHostId) : 0;
+		} catch {
+			return;
+		}
+		if (count === this._badgeCount) {
+			return;
+		}
+		this._badgeCount = count;
+		this._badge.value = count > 0
+			? this._activityService.showViewContainerActivity(PARADIS_AGENT_DOCS_CONTAINER_ID, { badge: new NumberBadge(count, value => localize('paradis.agentDocs.badge', "未回答のコメント {0} 件", value)) })
+			: undefined;
 	}
 
 	/** 表示中のエディタが Para Code の Markdown・HTML のプレビューなら、まだ台帳に無いときだけ持ち主なしで載せる。 */

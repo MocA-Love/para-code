@@ -16,7 +16,9 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { paradisDocKind, paradisIsVcsInternalPath, paradisNormalizeDocPath } from '../common/paradisAgentDocs.js';
 import { IParadisDocPaneSessionInfo, IParadisDocViewRecord, PARADIS_AGENT_DOCS_VIEW_ON_DID_CHANGE, ParadisAgentDocsViewCall, ParadisDocAssignResult, paradisDocViewRecord } from '../common/paradisAgentDocsView.js';
+import { paradisCountOpenDocComments } from '../common/paradisDocComments.js';
 import { ParadisAgentDocsService } from './paradisAgentDocsService.js';
+import { ParadisDocCommentsStore } from './paradisDocCommentsStore.js';
 
 const HOST_ID_PATTERN = /^[A-Za-z0-9._-]{0,64}$/;
 /** 一度に問えるペインの数。 */
@@ -38,9 +40,14 @@ export class ParadisAgentDocsViewChannel extends Disposable implements IServerCh
 	private readonly _onDidChange = this._register(new Emitter<void>());
 	private readonly _changeScheduler = this._register(new RunOnceScheduler(() => this._onDidChange.fire(), CHANGE_DELAY_MS));
 
-	constructor(private readonly _service: ParadisAgentDocsService) {
+	constructor(
+		private readonly _service: ParadisAgentDocsService,
+		private readonly _comments: ParadisDocCommentsStore,
+	) {
 		super();
 		this._register(_service.ledger.onDidChange(() => this._changeScheduler.schedule()));
+		// 未回答のコメントの数（一覧の行とアイコンのバッジ）も変わる
+		this._register(_comments.onDidChange(() => this._changeScheduler.schedule()));
 		this._register(_service.onDidChangeSessions(() => this._changeScheduler.schedule()));
 	}
 
@@ -53,7 +60,7 @@ export class ParadisAgentDocsViewChannel extends Disposable implements IServerCh
 
 	async call<T>(_ctx: unknown, command: string, arg?: unknown): Promise<T> {
 		const args = Array.isArray(arg) ? arg : [];
-		await this._service.ledger.ready;
+		await Promise.all([this._service.ledger.ready, this._comments.ready]);
 		switch (command) {
 			case ParadisAgentDocsViewCall.List:
 				return this.list() as T;
@@ -81,7 +88,11 @@ export class ParadisAgentDocsViewChannel extends Disposable implements IServerCh
 	}
 
 	list(): IParadisDocViewRecord[] {
-		return this._service.ledger.all().map(record => paradisDocViewRecord(record, record.owner !== undefined ? this._service.livenessOf(record.owner) : undefined));
+		return this._service.ledger.all().map(record => paradisDocViewRecord(
+			record,
+			record.owner !== undefined ? this._service.livenessOf(record.owner) : undefined,
+			paradisCountOpenDocComments(this._comments.peek(record.hostId, record.path)?.threads ?? []),
+		));
 	}
 
 	paneSessions(rawTokens: unknown): IParadisDocPaneSessionInfo[] {

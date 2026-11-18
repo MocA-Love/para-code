@@ -18,6 +18,7 @@ import {
 	IParadisDocCommentSidecar,
 	IParadisDocCommentThread,
 	IParadisDocCommentsChange,
+	PARADIS_DOC_COMMENTS_ACT_METHOD,
 	PARADIS_DOC_COMMENTS_ADD_METHOD,
 	PARADIS_DOC_COMMENTS_CHANGED_EVENT,
 	PARADIS_DOC_COMMENTS_CHANNEL,
@@ -37,6 +38,7 @@ class ParadisDocCommentsContribution extends Disposable implements IWorkbenchCon
 			get: (hostId, path) => channel.call<IParadisDocCommentSidecar>(PARADIS_DOC_COMMENTS_GET_METHOD, [hostId, path]),
 			add: (hostId, path, draft) => channel.call<IParadisDocCommentThread | undefined>(PARADIS_DOC_COMMENTS_ADD_METHOD, [hostId, path, draft]),
 			setPlaces: (hostId, path, places) => channel.call<void>(PARADIS_DOC_COMMENTS_SET_PLACES_METHOD, [hostId, path, Object.fromEntries(places)]),
+			act: (hostId, path, id, action, text) => channel.call<void>(PARADIS_DOC_COMMENTS_ACT_METHOD, [hostId, path, id, action, ...(text !== undefined ? [text] : [])]),
 		}));
 	}
 }

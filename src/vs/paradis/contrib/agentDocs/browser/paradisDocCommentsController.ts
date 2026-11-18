@@ -13,6 +13,9 @@
 //  - ページ側の層（paradisDocCommentLayer.ts）から届く「ここにコメントを書きたい」で書く欄を開き、本文は
 //    この欄で打ったものだけを保存する。ページからのメッセージは印（token）が合うものだけ受け、本文を運ぶものは無い。
 //  - 保存と読み込みは shared process の保存係へ頼む（paradisDocCommentsBackend.ts）。
+//  - カードには、届け方の状態（Q663-3: カードの中に出す）とエージェントの回答を並べ、解決・開き直し・返信（追記）を置く。
+//    回答は文字のまま（textContent）出し、HTML・Markdown として描かない。操作はワークベンチの DOM とチャネルだけで行い、
+//    ページ（webview）からのメッセージでは受けない。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
@@ -25,12 +28,12 @@ import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { IOverlayWebview } from '../../../../workbench/contrib/webview/browser/webview.js';
-import { createParadisChip, ParadisChipTone } from '../../../browser/paradisBadges.js';
+import { createParadisChip, createParadisStatusDot, ParadisChipTone, ParadisStatusTone } from '../../../browser/paradisBadges.js';
 import { ParadisButton } from '../../../browser/paradisButton.js';
 import { appendParadisViewerToolbarGroup, appendParadisViewerToolbarPanelToggle, appendParadisViewerToolbarSeparator, setParadisViewerToolbarOptionChecked } from '../../fileViewers/browser/paradisViewerToolbar.js';
 import { IParadisDocAnchor } from '../common/paradisDocCommentAnchor.js';
 import { IParadisDocLayerKey, IParadisDocLayerLabels, IParadisDocLayerState, ParadisDocLayerMessage, paradisDocLayerRevealMessage, paradisDocLayerStateMessage, paradisReadDocLayerMessage } from '../common/paradisDocCommentLayer.js';
-import { IParadisDocCommentThread, IParadisDocCommentsChange, PARADIS_DOC_COMMENT_TEXT_MAX, ParadisDocCommentPlace } from '../common/paradisDocComments.js';
+import { IParadisDocCommentThread, IParadisDocCommentsChange, PARADIS_DOC_COMMENT_TEXT_MAX, ParadisDocCommentPlace, ParadisDocCommentUserAction } from '../common/paradisDocComments.js';
 import { IParadisDocCommentsBackend, paradisDocCommentTargetOf } from './paradisDocCommentsBackend.js';
 import './media/paradisDocComments.css';
 
@@ -61,6 +64,63 @@ function placeChip(place: ParadisDocCommentPlace | undefined): { readonly label:
 	}
 }
 
+/** カードに出す届け方の状態。`label` は点の横の短い語、`note` はその下の説明。 */
+export interface IParadisDocCommentStatus {
+	readonly label: string;
+	readonly tone: ParadisStatusTone;
+	readonly note?: string;
+}
+
+/** スレッドの状態を、カードに出す語にする（Q663-3）。 */
+export function paradisDocCommentStatus(thread: IParadisDocCommentThread): IParadisDocCommentStatus {
+	const delivery = thread.delivery;
+	switch (thread.state) {
+		case 'resolved':
+			return { label: localize('paradis.docComments.status.resolved', "解決済み"), tone: 'success' };
+		case 'answered':
+			return { label: localize('paradis.docComments.status.answered', "回答あり"), tone: 'success' };
+		case 'delivered':
+			return { label: localize('paradis.docComments.status.delivered', "届きました"), tone: 'running', note: localize('paradis.docComments.status.deliveredNote', "回答を待っています。") };
+		case 'undeliverable': {
+			const label = localize('paradis.docComments.status.undeliverable', "届けられません");
+			switch (delivery?.blockedBy) {
+				case 'ended':
+					return { label, tone: 'neutral', note: localize('paradis.docComments.status.ended', "作成元のセッションは終了しています。") };
+				case 'unknown':
+					return { label, tone: 'warning', note: localize('paradis.docComments.status.unknown', "作成元のセッションが動いているか分かりません。そのターミナルで 1 回メッセージを送ると届けます。") };
+				case 'noHooks':
+					return { label, tone: 'warning', note: localize('paradis.docComments.status.noHooks', "作成元のターミナルからエージェントの状態が届いていないため、届けられません。") };
+				default:
+					return { label, tone: 'warning', note: localize('paradis.docComments.status.noOwner', "作成元のセッションが分かりません。「資料」ビューで「このセッションの資料にする」を選ぶと届けます。") };
+			}
+		}
+	}
+	if (delivery?.typedAt !== undefined) {
+		return delivery.entered
+			? { label: localize('paradis.docComments.status.sent', "送信しました"), tone: 'running', note: localize('paradis.docComments.status.sentNote', "エージェントが受け取るのを待っています。") }
+			: { label: localize('paradis.docComments.status.typed', "入力欄に入れました"), tone: 'warning', note: localize('paradis.docComments.status.typedNote', "ターミナルで内容を確かめて Enter で送ってください。") };
+	}
+	const label = localize('paradis.docComments.status.queued', "届け待ち");
+	switch (delivery?.blockedBy) {
+		case 'working':
+			return { label, tone: 'neutral', note: localize('paradis.docComments.status.working', "エージェントが動作中です。終わったら届けます。") };
+		case 'permission':
+			return { label, tone: 'warning', note: localize('paradis.docComments.status.permission', "エージェントが許可待ちです。答えた後に届けます。") };
+		case 'question':
+			return { label, tone: 'warning', note: localize('paradis.docComments.status.question', "エージェントが質問しています。答えた後に届けます。") };
+		case 'draft':
+			return { label, tone: 'warning', note: localize('paradis.docComments.status.draft', "ターミナルの入力欄に書きかけがあります。空いたら届けます。") };
+		case 'draftUnknown':
+			return { label, tone: 'neutral', note: localize('paradis.docComments.status.draftUnknown', "入力欄の中身を確かめられないため、エージェントの次の応答の後に届けます。") };
+		case 'sending':
+			return { label, tone: 'neutral', note: localize('paradis.docComments.status.sending', "同じターミナルへ前のコメントを届けています。続けて届けます。") };
+		case 'screen':
+			return { label, tone: 'warning', note: localize('paradis.docComments.status.screen', "ターミナルに確認の画面が出ています。閉じた後に届けます。") };
+		default:
+			return { label, tone: 'neutral' };
+	}
+}
+
 /** 引用を 1 行に均す。 */
 function quoteLine(anchor: IParadisDocAnchor): string {
 	return localize('paradis.docComments.quote', "「{0}」", anchor.quote.replace(/\s+/g, ' ').trim());
@@ -74,6 +134,10 @@ export class ParadisDocCommentsController extends Disposable {
 	private readonly _places = new Map<string, ParadisDocCommentPlace>();
 	private _activeId: string | undefined;
 	private _draft: { readonly anchor: IParadisDocAnchor; text: string } | undefined;
+	/** 返信（追記）を書いているカード。 */
+	private _reply: { readonly id: string; text: string } | undefined;
+	/** 返信の欄（作り直さないよう覚えておく）。 */
+	private _replyBox: { readonly id: string; readonly element: HTMLElement; readonly textarea: HTMLTextAreaElement } | undefined;
 	private _saving = false;
 	/** ユーザーが列を畳んだ。 */
 	private _collapsed = false;
@@ -95,6 +159,8 @@ export class ParadisDocCommentsController extends Disposable {
 	/** いま並べているカード（ID → 要素）。 */
 	private readonly _cards = new Map<string, HTMLElement>();
 	private readonly _listStore = this._register(new DisposableStore());
+	/** 返信の欄の購読（欄を捨てるまで持つ。カードを描き直しても欄は使い回す）。 */
+	private readonly _replyStore = this._register(new DisposableStore());
 	private readonly _changeListener = this._register(new MutableDisposable());
 
 	constructor(
@@ -193,6 +259,9 @@ export class ParadisDocCommentsController extends Disposable {
 		this._places.clear();
 		this._activeId = undefined;
 		this._draft = undefined;
+		this._reply = undefined;
+		this._replyBox = undefined;
+		this._replyStore.clear();
 		this._pinned = false;
 		this._update();
 		this._load();
@@ -390,6 +459,8 @@ export class ParadisDocCommentsController extends Disposable {
 			this._listStore.clear();
 			dom.clearNode(this._list);
 			this._composer = undefined;
+			this._replyBox = undefined;
+			this._replyStore.clear();
 			this._cards.clear();
 			return;
 		}
@@ -408,6 +479,12 @@ export class ParadisDocCommentsController extends Disposable {
 			this._composer = undefined;
 		}
 		this._cards.clear();
+		// 返信の欄は新しいカードへ移す。移すとフォーカスが外れるので戻す
+		const replyFocused = this._replyBox !== undefined && dom.getActiveElement() === this._replyBox.textarea;
+		if (this._reply === undefined && this._replyBox !== undefined) {
+			this._replyBox = undefined;
+			this._replyStore.clear();
+		}
 		for (const child of [...list.children]) {
 			if (child !== composer?.card) {
 				child.remove();
@@ -425,6 +502,9 @@ export class ParadisDocCommentsController extends Disposable {
 		}
 		if (threads.length === 0 && !this._draft) {
 			dom.append(list, dom.$('.paradis-doc-comments-empty', undefined, localize('paradis.docComments.empty', "本文の文字を選ぶと、コメントを書けます。")));
+		}
+		if (replyFocused && this._replyBox?.textarea.isConnected) {
+			this._replyBox.textarea.focus();
 		}
 	}
 
@@ -475,8 +555,30 @@ export class ParadisDocCommentsController extends Disposable {
 		}
 		const quote = dom.append(card, dom.$('.paradis-doc-comment-quote', undefined, quoteLine(thread.anchor)));
 		quote.classList.toggle('lost', place === 'lost');
-		const first = thread.messages.find(message => message.by === 'user') ?? thread.messages[0];
-		dom.append(card, dom.$('.paradis-doc-comment-text', undefined, first?.text ?? ''));
+		for (const message of thread.messages) {
+			if (message.by === 'user') {
+				dom.append(card, dom.$('.paradis-doc-comment-text', undefined, message.text));
+				continue;
+			}
+			// 回答は文字のまま出す（HTML・Markdown として描かない）
+			const answer = dom.append(card, dom.$('.paradis-doc-comment-answer'));
+			dom.append(answer, dom.$('.paradis-doc-comment-answer-by', undefined, localize('paradis.docComments.answerBy', "回答")));
+			dom.append(answer, dom.$('.paradis-doc-comment-text', undefined, message.text));
+			if (message.edits !== undefined && message.edits.length > 0) {
+				dom.append(answer, dom.$('.paradis-doc-comment-note', undefined, localize('paradis.docComments.edits', "本文の変更 {0} 件", message.edits.length)));
+			}
+		}
+		const status = paradisDocCommentStatus(thread);
+		createParadisStatusDot(dom.append(card, dom.$('.paradis-doc-comment-status')), status.label, status.tone);
+		if (status.note !== undefined) {
+			dom.append(card, dom.$('.paradis-doc-comment-note', undefined, status.note));
+		}
+		const replying = this._reply?.id === thread.id;
+		if (replying) {
+			card.appendChild(this._replyBoxFor(thread.id));
+		} else {
+			this._renderCardActions(card, thread);
+		}
 		const reveal = () => {
 			this._activeId = thread.id;
 			for (const [id, other] of this._cards) {
@@ -485,8 +587,17 @@ export class ParadisDocCommentsController extends Disposable {
 			this._push();
 			void this._host.webview()?.postMessage(paradisDocLayerRevealMessage(thread.id));
 		};
-		this._listStore.add(dom.addDisposableListener(card, dom.EventType.CLICK, reveal));
+		this._listStore.add(dom.addDisposableListener(card, dom.EventType.CLICK, e => {
+			// カードの中のボタン・返信の欄を押したときは位置へ移らない
+			if (dom.isHTMLElement(e.target) && e.target.closest('button, textarea')) {
+				return;
+			}
+			reveal();
+		}));
 		this._listStore.add(dom.addDisposableListener(card, dom.EventType.KEY_DOWN, e => {
+			if (e.target !== card) {
+				return;
+			}
 			const event = new StandardKeyboardEvent(e);
 			if (event.equals(KeyCode.Enter) || event.equals(KeyCode.Space)) {
 				dom.EventHelper.stop(e, true);
@@ -494,5 +605,89 @@ export class ParadisDocCommentsController extends Disposable {
 			}
 		}));
 		return card;
+	}
+
+	/** カードの下のボタン（今すぐ届ける・返信・解決にする／開き直す）。 */
+	private _renderCardActions(card: HTMLElement, thread: IParadisDocCommentThread): void {
+		const footer = dom.append(card, dom.$('.paradis-doc-comment-footer'));
+		const button = (label: string, run: () => void) => {
+			const created = this._listStore.add(new ParadisButton(footer, { kind: 'ghost', small: true, label }));
+			this._listStore.add(created.onDidClick(run));
+		};
+		if (thread.delivery?.blockedBy === 'draftUnknown' && thread.state === 'queued' && thread.delivery.typedAt === undefined) {
+			button(localize('paradis.docComments.deliverNow', "今すぐ届ける"), () => this._act(thread.id, 'deliverNow'));
+		}
+		button(localize('paradis.docComments.reply', "返信"), () => {
+			this._reply = { id: thread.id, text: '' };
+			this._update();
+			this._replyBox?.textarea.focus();
+		});
+		dom.append(footer, dom.$('span.paradis-doc-comment-grow'));
+		if (thread.state === 'resolved') {
+			button(localize('paradis.docComments.reopen', "開き直す"), () => this._act(thread.id, 'reopen'));
+		} else {
+			button(localize('paradis.docComments.resolve', "解決にする"), () => this._act(thread.id, 'resolve'));
+		}
+	}
+
+	/** 返信の欄。同じカードの返信の間は使い回す（描き直しで打っている文字を消さないため）。 */
+	private _replyBoxFor(id: string): HTMLElement {
+		if (this._replyBox?.id === id) {
+			return this._replyBox.element;
+		}
+		this._replyStore.clear();
+		const store = this._replyStore;
+		const element = dom.$('.paradis-doc-comment-reply');
+		const textarea = dom.append(element, dom.$<HTMLTextAreaElement>('textarea.paradis-doc-comment-input.paradis-text-focus'));
+		textarea.setAttribute('aria-label', localize('paradis.docComments.replyLabel', "返信"));
+		textarea.placeholder = localize('paradis.docComments.replyPlaceholder', "返信を書く");
+		textarea.maxLength = PARADIS_DOC_COMMENT_TEXT_MAX;
+		const footer = dom.append(element, dom.$('.paradis-doc-comment-footer'));
+		const cancel = store.add(new ParadisButton(footer, { kind: 'ghost', small: true, label: localize('paradis.docComments.cancel', "やめる") }));
+		dom.append(footer, dom.$('span.paradis-doc-comment-grow'));
+		const send = store.add(new ParadisButton(footer, { kind: 'primary', small: true, label: localize('paradis.docComments.send', "送る") }));
+		send.enabled = false;
+		const close = () => {
+			this._reply = undefined;
+			this._replyStore.clear();
+			this._replyBox = undefined;
+			this._update();
+		};
+		const submit = () => {
+			const text = textarea.value.trim();
+			if (text.length === 0) {
+				return;
+			}
+			close();
+			this._act(id, 'append', text);
+		};
+		store.add(dom.addDisposableListener(textarea, dom.EventType.INPUT, () => {
+			if (this._reply?.id === id) {
+				this._reply.text = textarea.value;
+			}
+			send.enabled = textarea.value.trim().length > 0;
+		}));
+		store.add(dom.addDisposableListener(textarea, dom.EventType.KEY_DOWN, e => {
+			const event = new StandardKeyboardEvent(e);
+			if (event.equals(KeyMod.CtrlCmd | KeyCode.Enter)) {
+				dom.EventHelper.stop(e, true);
+				submit();
+			} else if (event.equals(KeyCode.Escape)) {
+				dom.EventHelper.stop(e, true);
+				close();
+			}
+		}));
+		store.add(cancel.onDidClick(close));
+		store.add(send.onDidClick(submit));
+		this._replyBox = { id, element, textarea };
+		return element;
+	}
+
+	/** カードの操作を保存係へ頼む。結果は保存係の知らせで読み直す。 */
+	private _act(id: string, action: ParadisDocCommentUserAction, text?: string): void {
+		const target = this._target;
+		if (target && this._backend) {
+			this._backend.act(target.hostId, target.path, id, action, text).catch(onUnexpectedError);
+		}
 	}
 }
