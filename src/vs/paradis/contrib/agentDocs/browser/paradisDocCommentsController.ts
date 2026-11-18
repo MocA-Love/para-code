@@ -89,7 +89,11 @@ export class ParadisDocCommentsController extends Disposable {
 	private _column: HTMLElement | undefined;
 	private _header: HTMLElement | undefined;
 	private _list: HTMLElement | undefined;
-	private _textarea: HTMLTextAreaElement | undefined;
+	private _toggleLabel: HTMLElement | undefined;
+	/** 開いている書く欄（作り直さないよう覚えておく）。 */
+	private _composer: { readonly card: HTMLElement; readonly textarea: HTMLTextAreaElement; readonly save: ParadisButton } | undefined;
+	/** いま並べているカード（ID → 要素）。 */
+	private readonly _cards = new Map<string, HTMLElement>();
 	private readonly _listStore = this._register(new DisposableStore());
 	private readonly _changeListener = this._register(new MutableDisposable());
 
@@ -139,6 +143,7 @@ export class ParadisDocCommentsController extends Disposable {
 		}
 		const group = appendParadisViewerToolbarGroup(toolbar, 'paradis-doc-comments-toolbar');
 		this._toggle = appendParadisViewerToolbarPanelToggle(group, '', Codicon.commentDiscussion);
+		this._toggleLabel = dom.isHTMLElement(this._toggle.lastElementChild) ? this._toggle.lastElementChild : undefined;
 		appendParadisViewerToolbarSeparator(toolbar);
 		this._register(dom.addDisposableListener(this._toggle, dom.EventType.CLICK, () => {
 			if (this._columnVisible) {
@@ -218,7 +223,7 @@ export class ParadisDocCommentsController extends Disposable {
 				this._activeId = message.id;
 				this._update();
 				this._push();
-				this._list?.querySelector<HTMLElement>(`[data-id="${message.id}"]`)?.scrollIntoView({ block: 'nearest' });
+				this._cards.get(message.id)?.scrollIntoView({ block: 'nearest' });
 				return;
 			case 'link':
 				this._host.openLink(message.href);
@@ -252,14 +257,14 @@ export class ParadisDocCommentsController extends Disposable {
 		}
 		// 書きかけの文があるときは引用を差し替えない（ページから届く知らせで書きかけを消さない）
 		if (this._draft && this._draft.text.trim().length > 0) {
-			this._textarea?.focus();
+			this._composer?.textarea.focus();
 			return;
 		}
 		this._draft = { anchor, text: '' };
 		this._collapsed = false;
 		this._update();
 		this._push();
-		this._textarea?.focus();
+		this._composer?.textarea.focus();
 	}
 
 	private _onPlaces(places: ReadonlyMap<string, ParadisDocCommentPlace>): void {
@@ -355,9 +360,8 @@ export class ParadisDocCommentsController extends Disposable {
 		const visible = this._columnVisible;
 		if (this._toggle) {
 			this._toggle.style.display = this.enabled ? '' : 'none';
-			const label = this._toggle.querySelector('.paradis-viewer-toolbar-option-label');
-			if (label) {
-				label.textContent = localize('paradis.docComments.toggle', "コメント {0}", this._threads.length);
+			if (this._toggleLabel) {
+				this._toggleLabel.textContent = localize('paradis.docComments.toggle', "コメント {0}", this._threads.length);
 			}
 			setParadisViewerToolbarOptionChecked(this._toggle, visible);
 		}
@@ -369,7 +373,8 @@ export class ParadisDocCommentsController extends Disposable {
 		if (!visible) {
 			this._listStore.clear();
 			dom.clearNode(this._list);
-			this._textarea = undefined;
+			this._composer = undefined;
+			this._cards.clear();
 			return;
 		}
 		dom.reset(this._header,
@@ -381,24 +386,21 @@ export class ParadisDocCommentsController extends Disposable {
 	private _renderList(): void {
 		const list = this._list!;
 		// 書きかけの欄は作り直さない（打っている文字と IME の変換を消さないため）
-		const keepComposer = this._textarea !== undefined && this._draft !== undefined && this._textarea.isConnected;
-		const composer = keepComposer ? this._textarea!.closest<HTMLElement>('.paradis-doc-comment-card') : undefined;
-		if (!keepComposer) {
+		const composer = this._draft !== undefined && this._composer?.card.isConnected ? this._composer : undefined;
+		if (!composer) {
 			this._listStore.clear();
-			this._textarea = undefined;
+			this._composer = undefined;
 		}
+		this._cards.clear();
 		for (const child of [...list.children]) {
-			if (child !== composer) {
+			if (child !== composer?.card) {
 				child.remove();
 			}
 		}
-		if (this._draft && !keepComposer) {
+		if (this._draft && !composer) {
 			list.appendChild(this._renderComposer(this._draft));
 		} else if (composer) {
-			const save = composer.querySelector<HTMLButtonElement>('.paradis-doc-comment-save');
-			if (save) {
-				save.disabled = this._saving || this._draft!.text.trim().length === 0;
-			}
+			composer.save.enabled = !this._saving && this._draft!.text.trim().length > 0;
 		}
 		// 新しいものを上に
 		const threads = [...this._threads].sort((a, b) => b.createdAt - a.createdAt);
@@ -419,12 +421,11 @@ export class ParadisDocCommentsController extends Disposable {
 		textarea.placeholder = localize('paradis.docComments.placeholder', "コメントを書く");
 		textarea.maxLength = PARADIS_DOC_COMMENT_TEXT_MAX;
 		textarea.value = draft.text;
-		this._textarea = textarea;
 		const footer = dom.append(card, dom.$('.paradis-doc-comment-footer'));
 		const cancel = store.add(new ParadisButton(footer, { kind: 'ghost', small: true, label: localize('paradis.docComments.cancel', "やめる") }));
 		dom.append(footer, dom.$('span.paradis-doc-comment-grow'));
 		const save = store.add(new ParadisButton(footer, { kind: 'primary', small: true, label: localize('paradis.docComments.save', "保存") }));
-		save.element.classList.add('paradis-doc-comment-save');
+		this._composer = { card, textarea, save };
 		save.enabled = draft.text.trim().length > 0 && !this._saving;
 		store.add(dom.addDisposableListener(textarea, dom.EventType.INPUT, () => {
 			draft.text = textarea.value;
@@ -447,7 +448,7 @@ export class ParadisDocCommentsController extends Disposable {
 
 	private _renderCard(thread: IParadisDocCommentThread): HTMLElement {
 		const card = dom.$('.paradis-doc-comment-card.paradis-focus-ring');
-		card.dataset.id = thread.id;
+		this._cards.set(thread.id, card);
 		card.tabIndex = 0;
 		card.setAttribute('role', 'button');
 		card.classList.toggle('active', thread.id === this._activeId);
@@ -462,8 +463,8 @@ export class ParadisDocCommentsController extends Disposable {
 		dom.append(card, dom.$('.paradis-doc-comment-text', undefined, first?.text ?? ''));
 		const reveal = () => {
 			this._activeId = thread.id;
-			for (const other of this._list?.querySelectorAll('.paradis-doc-comment-card[data-id]') ?? []) {
-				other.classList.toggle('active', (other as HTMLElement).dataset.id === thread.id);
+			for (const [id, other] of this._cards) {
+				other.classList.toggle('active', id === thread.id);
 			}
 			this._push();
 			void this._host.webview()?.postMessage(paradisDocLayerRevealMessage(thread.id));

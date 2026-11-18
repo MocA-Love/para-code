@@ -182,7 +182,6 @@ const LAYER_BODY = `function (O, A, env) {
 	var TEXT = color('--vscode-editorWidget-foreground', color('--vscode-foreground', '#1f2328'));
 	var LINE = color('--vscode-widget-border', color('--vscode-editorWidget-border', '#d0d7de'));
 	var MARK = color('--vscode-editor-findMatchHighlightBackground', 'rgba(234,92,0,.33)');
-	var SELECT = color('--vscode-editor-selectionBackground', 'rgba(38,79,120,.5)');
 	var FONT = '12px/22px system-ui, sans-serif';
 
 	var layer = null, boxes = null, index = null, bound = null, button = null, pending = null;
@@ -419,7 +418,7 @@ const LAYER_BODY = `function (O, A, env) {
 		if (state.draft) {
 			var dh = A.resolve(index.text, state.draft, hintFor(state.draft.selector)), dr = dh ? rangeFor(dh.start, dh.end) : null;
 			var drs = dr ? rectsOf(dr) : [];
-			for (var m = 0; m < drs.length; m++) { box(drs[m], { background: SELECT }); }
+			for (var m = 0; m < drs.length; m++) { box(drs[m], { background: MARK, 'border-bottom': '2px solid ' + ACCENT }); }
 		}
 		if (keepButton) { button = keepButton; boxes.appendChild(button); }
 		if (changed) { reported = places; env.post({ ${LAYER_MESSAGE_KEY}: 'places', places: places }); }

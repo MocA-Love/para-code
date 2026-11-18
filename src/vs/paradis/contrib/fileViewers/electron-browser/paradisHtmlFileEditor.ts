@@ -72,7 +72,7 @@ import { createParadisViewerReloadButton, ParadisViewerZoomControls, paradisView
 import { PARADIS_HTML_EDITOR_ID } from '../browser/paradisFileViewers.js';
 import { IParadisPreviewLocation, ParadisRemotePreviewMounter, paradisMountLocalPreview } from './paradisHtmlPreviewClient.js';
 import { IParadisPreviewMountOptions, paradisPreviewLinkTarget, paradisPreviewUrl } from '../common/paradisHtmlPreview.js';
-import { paradisHtmlViewerCanvasScript, paradisHtmlViewerHeadStyle } from '../common/paradisHtmlViewerDefaultStyles.js';
+import { paradisHtmlFrameDefaultStyle, paradisHtmlViewerCanvasScript, paradisHtmlViewerHeadStyle } from '../common/paradisHtmlViewerDefaultStyles.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ParadisViewerOpenKind } from '../common/paradisViewerOpenTiming.js';
@@ -80,7 +80,6 @@ import { IParadisRenderedDocument } from '../common/paradisViewerBodySwap.js';
 import { paradisFindHighlightScript } from '../common/paradisViewerScroll.js';
 import { PARADIS_WEBVIEW_HOST_MESSAGE_CHECK } from '../common/paradisWebviewHostMessage.js';
 import { ParadisFileViewerMode } from '../browser/paradisFileViewerInput.js';
-import { paradisHtmlFrameDefaultStyle } from '../common/paradisHtmlViewerDefaultStyles.js';
 import { ParadisDocCommentsController } from '../../agentDocs/browser/paradisDocCommentsController.js';
 import { paradisDocCommentsBackend } from '../../agentDocs/browser/paradisDocCommentsBackend.js';
 import { paradisDocCommentWrapperDocument } from '../../agentDocs/common/paradisDocCommentLayer.js';

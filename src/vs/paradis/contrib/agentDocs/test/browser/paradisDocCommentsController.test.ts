@@ -84,7 +84,7 @@ suite('ParadisDocCommentsController', () => {
 		textarea.dispatchEvent(new Event('input'));
 		send({ __paradisDocComment: 'compose', anchor: { quote: 'B' } });
 		const quoteWhileTyping = content.querySelector('.paradis-doc-comment-quote')?.textContent;
-		content.querySelector<HTMLElement>('.paradis-doc-comment-save')!.click();
+		content.querySelector<HTMLElement>('.paradis-doc-comment-footer .paradis-button-primary')!.click();
 		await flush();
 		await flush();
 		assert.deepStrictEqual({
