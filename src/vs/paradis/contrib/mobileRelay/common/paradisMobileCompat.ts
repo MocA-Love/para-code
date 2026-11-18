@@ -124,6 +124,11 @@ export const ParadisMobileCapability = {
 	 */
 	ScmRenderedDiff: 'scm.rendered-diff.v1',
 	/**
+	 * scm の `renderedDiff` が HTML（`.html`・`.htm`・`.xhtml`）も受ける（1 列のプレビュー差分。スクリプトを外し、
+	 * CSS・画像は今の作業ツリーのものを埋め込む）。`scm.rendered-diff.v1` だけのアプリは HTML を頼まないので印を分ける。
+	 */
+	ScmRenderedDiffHtml: 'scm.rendered-diff-html.v1',
+	/**
 	 * 使用量を全PCで合計するための情報。desktop state の `machineIdHash` と `renderers[].host.machineIdHash`
 	 * （機械の印）、`github` の `account`、`limits` の Codex の `accountId`、`usage`・`rtk`・`limits`・`github` の
 	 * `fetchedAt`・`stale`、時間内に返せないときの `{ error, code: 'no-response' }`（50 秒）。
@@ -321,6 +326,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.ScmFileAt,
 	ParadisMobileCapability.ScmWordDiff,
 	ParadisMobileCapability.ScmRenderedDiff,
+	ParadisMobileCapability.ScmRenderedDiffHtml,
 	ParadisMobileCapability.UsageMachineId,
 	ParadisMobileCapability.NotifyContent,
 	ParadisMobileCapability.AgentQuestionNotes,
