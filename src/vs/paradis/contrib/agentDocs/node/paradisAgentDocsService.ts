@@ -14,7 +14,7 @@
 // 持ち主の取り違えを避けるため、ペインの持ち主と確かめられなかった hook（ownerUnverified）は使わない。
 // 入れ子の子エージェントの hook は別の知らせ（onParadisAgentNestedHookEvent）に流れるので、ここには来ない。
 
-import { Event } from '../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import type { IParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { paradisAgentHookRemoteHostId } from '../../agentBrowser/common/paradisAgentHooks.js';
@@ -43,6 +43,10 @@ export class ParadisAgentDocsService extends Disposable {
 	private readonly _paneSessions = new Map<string, IParadisDocPaneSession>();
 	/** この起動で生きているのを見た会話（終了の印を外す処理を hook ごとに繰り返さないため）。 */
 	private readonly _seenAlive = new Set<string>();
+
+	private readonly _onDidChangeSessions = this._register(new Emitter<void>());
+	/** ペインで動いている会話が変わった（持ち主の「動作中」の表示が変わる）。 */
+	readonly onDidChangeSessions: Event<void> = this._onDidChangeSessions.event;
 
 	constructor(
 		readonly ledger: ParadisAgentDocsLedger,
@@ -75,7 +79,9 @@ export class ParadisAgentDocsService extends Disposable {
 		if (event.event === 'TerminalExit' || event.event === 'SessionEnd') {
 			const pane = this._paneSessions.get(token);
 			const session = event.event === 'SessionEnd' && event.sessionId !== undefined && SESSION_PATTERN.test(event.sessionId) ? event.sessionId : pane?.session;
-			this._paneSessions.delete(token);
+			if (this._paneSessions.delete(token)) {
+				this._onDidChangeSessions.fire();
+			}
 			if (session !== undefined && !this._isLive(session)) {
 				this._seenAlive.delete(session);
 				void this.ledger.ready.then(() => this.ledger.markSessionEnded(session));
@@ -154,6 +160,7 @@ export class ParadisAgentDocsService extends Disposable {
 		const cwd = event.cwd !== undefined ? paradisNormalizeDocPath(event.cwd) : undefined;
 		const next: IParadisDocPaneSession = { agent, session, ...(cwd !== undefined ? { cwd } : {}), hostId: event.remoteHostId ?? '' };
 		this._paneSessions.set(event.token, next);
+		this._onDidChangeSessions.fire();
 		return next;
 	}
 }
