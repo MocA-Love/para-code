@@ -24,7 +24,7 @@ suite('ParadisDocCommentWake', () => {
 			windowIsRemote: false,
 			wake: async (hostId, path, remote) => { calls.push(['wake', hostId, path, remote]); return answer; },
 			woke: async (session, token) => { calls.push(['woke', session, token]); },
-			wakeFailed: async session => { calls.push(['wakeFailed', session]); },
+			wakeFailed: async (session, paneToken) => { calls.push(paneToken !== undefined ? ['wakeFailed', session, paneToken] : ['wakeFailed', session]); },
 			resumedSessions: () => new Set(options.resumed ?? []),
 			spaces: () => [{ stateKey: 'repo', path: '/repo' }, { stateKey: 'wt', path: '/repo/.worktrees/a' }],
 			activeStateKey: options.activeStateKey,
@@ -53,7 +53,7 @@ suite('ParadisDocCommentWake', () => {
 			['resume', { rootUri: '/repo/.worktrees/a/src', stateKey: 'wt', agent: 'claude', sessionId: 's1', dangerouslyBypassPermissions: false, preserveFocus: true }],
 			['woke', 's1', 'p9'],
 			['watch', 7],
-			['wakeFailed', 's1'],
+			['wakeFailed', 's1', 'p9'],
 		]);
 	});
 

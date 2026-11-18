@@ -37,7 +37,7 @@ export const PARADIS_DOC_DELIVERY_FINISH_METHOD = 'finish';
 export const PARADIS_DOC_DELIVERY_WAKE_METHOD = 'wake';
 /** 起こしたペインを知らせる。引数は `[session, paneToken | undefined]`。 */
 export const PARADIS_DOC_DELIVERY_WOKE_METHOD = 'woke';
-/** 起こせなかった（ターミナルを作れなかった・ウィンドウで動いている会話を見つけた）。引数は `[session]`。 */
+/** 起こせなかった・起こしたターミナルで CLI が終わった。引数は `[session, paneToken?]`（渡したときは、そのペインで起こした分だけを外す）。 */
 export const PARADIS_DOC_DELIVERY_WAKE_FAILED_METHOD = 'wakeFailed';
 /** 持ち主のいない・終了した持ち主の資料を、選んだペインの会話へ渡す（カードの「別のエージェントに渡す」）。引数は `[hostId, path, token]`。 */
 export const PARADIS_DOC_DELIVERY_HAND_OFF_METHOD = 'handOff';

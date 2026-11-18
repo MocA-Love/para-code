@@ -321,7 +321,8 @@ function compactForPromptMatch(text: string): string {
 const PROMPT_PATTERNS: readonly RegExp[] = [
 	/Doyouwantto(?:proceed|makethisedit|create|delete|allow|run|use|overwrite)/i,
 	/Doyoutrustthe(?:contents|files)(?:of|in)this/i,
-	// Claude Code 2.1.327 のフォルダの信頼の確認と、プロジェクトの MCP サーバーの許可の聞き直し（起こした直後に出うる）
+	// Claude Code 2.1.327 のフォルダの信頼の確認と、プロジェクトの MCP サーバーの許可の聞き直し（起こした直後に出うる。
+	// 文言は実行ファイルから拾った）。最後の行は選択の画面の下のキーの案内の目安（実行ファイルでは確かめていない）
 	/Isthisaprojectyoucreatedoroneyoutrust/i,
 	/Yes,Itrustthisfolder/i,
 	/NewMCPserverfound/i,

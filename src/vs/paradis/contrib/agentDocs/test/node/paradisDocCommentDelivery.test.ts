@@ -205,6 +205,9 @@ suite('ParadisDocCommentDelivery', () => {
 		const other = { state: await t.state('/repo/a.md'), wanted: t.wanted.length };
 		const again = await t.delivery.wake('', '/repo/a.md', false);
 		t.delivery.woke('s1', 'p8');
+		// 前に起こしたターミナル（p9）で CLI が終わっても、後から起こした分（p8）の印は外さない
+		t.delivery.wakeFailed('s1', 'p9');
+		const keptForP8 = (await t.delivery.wake('', '/repo/a.md', false)).kind;
 		t.hooks.fire(hook('p8', 'TerminalExit', ''));
 		await t.settle();
 		const afterExit = (await t.delivery.wake('', '/repo/a.md', false)).kind;
@@ -213,9 +216,10 @@ suite('ParadisDocCommentDelivery', () => {
 		const notReported = await t.delivery.wake('', '/repo/a.md', false);
 		t.advance(61_000);
 		const expired = (await t.delivery.wake('', '/repo/a.md', false)).kind;
-		assert.deepStrictEqual({ other, again: again.kind, afterExit, notReported: notReported.kind, expired }, {
+		assert.deepStrictEqual({ other, again: again.kind, keptForP8, afterExit, notReported: notReported.kind, expired }, {
 			other: { state: [[a.id, 'undeliverable', 'ended']], wanted: 0 },
 			again: 'wake',
+			keptForP8: 'refused',
 			afterExit: 'wake',
 			notReported: 'refused',
 			expired: 'wake',

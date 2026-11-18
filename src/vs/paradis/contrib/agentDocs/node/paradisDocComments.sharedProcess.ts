@@ -195,7 +195,7 @@ export class ParadisDocDeliveryChannel implements IServerChannel<unknown> {
 				this._delivery.woke(value, shortString(args[1]));
 				return undefined as T;
 			case PARADIS_DOC_DELIVERY_WAKE_FAILED_METHOD:
-				this._delivery.wakeFailed(value);
+				this._delivery.wakeFailed(value, shortString(args[1]));
 				return undefined as T;
 			case PARADIS_DOC_DELIVERY_CLAIM_METHOD:
 				return await this._delivery.claim(value) as T;

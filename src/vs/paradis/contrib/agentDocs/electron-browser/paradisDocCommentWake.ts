@@ -56,7 +56,8 @@ export interface IParadisDocWakeDependencies {
 	/** 起こす券を取る（shared process）。 */
 	wake(hostId: string, path: string, windowIsRemote: boolean): Promise<ParadisDocWakeAnswer>;
 	woke(session: string, paneToken: string | undefined): Promise<void>;
-	wakeFailed(session: string): Promise<void>;
+	/** 起こせなかった。`paneToken` を渡したときは、そのペインで起こした分の印だけを外す。 */
+	wakeFailed(session: string, paneToken?: string): Promise<void>;
 	/** このウィンドウのターミナルで、再開のコマンドとして動いている会話の ID。 */
 	resumedSessions(): ReadonlySet<string>;
 	/** スペースの一覧（フォルダは正規化した絶対パス）と今のスペース。 */
@@ -128,7 +129,7 @@ export async function paradisWakeDocOwner(dependencies: IParadisDocWakeDependenc
 	}
 	await dependencies.woke(answer.session, launched.paneToken);
 	// 起きた後に CLI が終わったときも呼ばれるが、そのときは起こす途中の印がもう無いので何も変わらない
-	dependencies.watchLaunched(launched.instanceId, () => void dependencies.wakeFailed(answer.session));
+	dependencies.watchLaunched(launched.instanceId, () => void dependencies.wakeFailed(answer.session, launched.paneToken));
 }
 
 /** 渡す先の候補（このウィンドウでエージェントが動いているペイン）。 */
@@ -195,7 +196,7 @@ export class ParadisDocCommentWaker extends Disposable {
 				windowIsRemote: this._environmentService.remoteAuthority !== undefined,
 				wake: (h, p, remote) => channel.call<ParadisDocWakeAnswer>(PARADIS_DOC_DELIVERY_WAKE_METHOD, [h, p, remote]),
 				woke: (session, paneToken) => channel.call<void>(PARADIS_DOC_DELIVERY_WOKE_METHOD, [session, paneToken]),
-				wakeFailed: session => channel.call<void>(PARADIS_DOC_DELIVERY_WAKE_FAILED_METHOD, [session]),
+				wakeFailed: (session, paneToken) => channel.call<void>(PARADIS_DOC_DELIVERY_WAKE_FAILED_METHOD, paneToken !== undefined ? [session, paneToken] : [session]),
 				resumedSessions: () => this._resumedSessions(),
 				spaces: () => paradisListSpaces(this._switchService.repositories, this._worktreeService).flatMap(entry => {
 					const folder = entry.uri.scheme === Schemas.file ? paradisNormalizeDocPath(entry.uri.fsPath) : undefined;
@@ -252,8 +253,13 @@ export class ParadisDocCommentWaker extends Disposable {
 
 	/** 起こしたターミナルで、再開のコマンドが終わる・ターミナルが閉じるのを一度だけ知らせる。 */
 	private _watchLaunched(instanceId: number, onEnd: () => void): void {
-		const instance = this._terminalService.getInstanceFromId(instanceId);
-		if (instance === undefined || instance.isDisposed) {
+		// 別のスペースへ起こしたターミナルは、戻った時点で退避されている
+		const instance = paradisCollectAllTerminalInstances(this._terminalService, this._terminalGroupService).find(candidate => candidate.instanceId === instanceId);
+		if (instance === undefined) {
+			// 見つからないときは、shared process の時間切れに任せる（起動中の CLI があるかもしれないので外さない）
+			return;
+		}
+		if (instance.isDisposed) {
 			onEnd();
 			return;
 		}

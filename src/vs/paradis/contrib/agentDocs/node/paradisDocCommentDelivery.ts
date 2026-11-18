@@ -198,9 +198,14 @@ export class ParadisDocCommentDelivery extends Disposable {
 		this._scheduler.schedule();
 	}
 
-	/** 起こせなかった。 */
-	wakeFailed(session: string): void {
-		if (this._waking.delete(session)) {
+	/**
+	 * 起こせなかった・起こしたペインで CLI が終わった。`token` を渡したときは、そのペインで起こした分の印だけを外す
+	 * （前に起こしたターミナルの終わりで、後から起こした分の印を外さない）。
+	 */
+	wakeFailed(session: string, token?: string): void {
+		const waking = this._waking.get(session);
+		if (waking !== undefined && waking.token === token) {
+			this._waking.delete(session);
 			this._scheduler.schedule();
 		}
 	}
