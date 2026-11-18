@@ -97,7 +97,7 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			{
 				icon: 'accessibility-outline',
 				title: 'VoiceOver で、お知らせ・状態の点・一覧の値や列の幅を読み上げるようにしました',
-				body: '「視差効果を減らす」がオンのときは輪を回しません。',
+				tone: 'green',
 			},
 			{
 				icon: 'hand-left-outline',
@@ -168,6 +168,26 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				tone: 'green',
 			},
 			{
+				icon: 'accessibility-outline',
+				title: 'VoiceOver で、セッションのタブ・メモの選択の丸・ウィジェットの「確認済み」を読み上げるようにしました',
+				tone: 'green',
+			},
+			{
+				icon: 'accessibility-outline',
+				title: '「視差効果を減らす」がオンのときは、実行中の輪を回さないようにしました',
+				tone: 'green',
+			},
+			{
+				icon: 'text-outline',
+				title: 'ボタン・空の表示・更新のお知らせの文字の太さを、ほかの画面とそろえました',
+				tone: 'green',
+			},
+			{
+				icon: 'refresh-outline',
+				title: 'レビューのメモから起動するエージェントの候補を、PC とつながり直したら読み直すようにしました',
+				tone: 'green',
+			},
+			{
 				icon: 'git-merge-outline',
 				title: 'マージ中にスペースを移ると、前のスペースの失敗が移った先に出ていたのを直しました',
 				tone: 'green',
@@ -193,6 +213,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				title: 'ホームの数字と内蔵ブラウザのページ数が、桁が変わると横に揺れていたのを直しました',
 				tone: 'green',
 			},
+			{
+				icon: 'open-outline',
+				title: 'HTML のファイルを開くと、Safari が勝手に開くことがあったのを直しました',
+				tone: 'green',
+			},
 		],
 	},
 	{
@@ -208,6 +233,17 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			{
 				icon: 'cloud-offline-outline',
 				title: 'SSH 先の会話を PC が読めていないとき、トークに「最新を取得できていません」と出すようにしました',
+				tone: 'green',
+			},
+			{
+				icon: 'shield-checkmark-outline',
+				title: '「名前を打って確認」にしたコマンドプリセットは、名前を打つまで実行しないようにしました',
+				body: 'PC の Para Code の更新が要ります。',
+				tone: 'yellow',
+			},
+			{
+				icon: 'cloud-offline-outline',
+				title: 'SSH 先の長い会話で前の発言を読み込めないときは、PC のターミナルで見られると出すようにしました',
 				tone: 'green',
 			},
 			{
@@ -237,6 +273,12 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				icon: 'information-circle-outline',
 				title: '使用量の画面で、金額に含められないモデルがあるとき、その名前を注記で出すようにしました',
 				tone: 'green',
+			},
+			{
+				icon: 'eye-off-outline',
+				title: '使用量の画面で、隠したアカウントを「非表示中のアカウント」に畳んで名前だけ出すようにしました',
+				body: 'PC の Para Code の更新が要ります。',
+				tone: 'yellow',
 			},
 			{
 				icon: 'swap-horizontal-outline',
@@ -298,6 +340,10 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			{
 				icon: 'link-outline',
 				title: '会話の中の素の URL を、押して開いたりコピーしたりできるようになりました',
+			},
+			{
+				icon: 'ellipsis-horizontal-circle-outline',
+				title: '過去の会話の発言や差分レビューの見出しのパスも、長押しで操作できるようになりました',
 			},
 			{
 				icon: 'server-outline',
@@ -376,6 +422,16 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				tone: 'green',
 			},
 			{
+				icon: 'copy-outline',
+				title: 'コピーしたときのお知らせを、どの画面でもそろえました',
+				tone: 'green',
+			},
+			{
+				icon: 'checkmark-done-outline',
+				title: '「確認済みをステージ」で足せなかったファイルは、理由を分けて知らせるようにしました',
+				tone: 'green',
+			},
+			{
 				icon: 'git-branch-outline',
 				title: 'ソース管理の未追跡のフォルダの行で、アイコンと名前が正しく出ないのを直しました',
 				tone: 'green',
@@ -402,7 +458,7 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			},
 			{
 				icon: 'tablet-landscape-outline',
-				title: 'iPad で開いているセッションの行をもう一度押すと、入力途中の文字が消えていたのを直しました',
+				title: 'iPad で開いているセッションの行をもう一度押すと、入力途中の文字やターミナルが消えていたのを直しました',
 				tone: 'green',
 			},
 			{
@@ -444,6 +500,10 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			{
 				icon: 'chatbubbles-outline',
 				title: 'OpenCode の会話を、モバイルで確認・操作できるようになりました',
+			},
+			{
+				icon: 'time-outline',
+				title: '連携に対応していない OpenCode でも、過去の会話の一覧と再開を使えるようになりました',
 			},
 		],
 	},
@@ -508,6 +568,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				title: 'スクリーンショット用に、使用量のアカウントのメールを番号で出せるようになりました',
 				body: '使用量の画面の右上の目のボタンで切り替えます。',
 			},
+			{
+				icon: 'home-outline',
+				title: 'ホームのカードのメールも、使用量の画面と同じ番号で出すようにしました',
+				tone: 'green',
+			},
 		],
 	},
 	{
@@ -529,6 +594,13 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				icon: 'create-outline',
 				title: 'PC の Claude Code の入力欄の書きかけが、会話の入力欄の上に出るようになりました',
 				body: 'Para Code と Claude Code 2.1.300 以上が要ります。',
+				tone: 'yellow',
+			},
+			{
+				icon: 'create-outline',
+				title: 'PC の入力欄に書きかけがある間は、送った発言が書きかけにつながらないようにしました',
+				body: 'Para Code と Claude Code 2.1.300 以上が要ります。',
+				tone: 'yellow',
 			},
 		],
 	},
@@ -555,6 +627,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			{
 				icon: 'stats-chart-outline',
 				title: 'ホームの「実行中」を全 PC の合計にし、見ていない PC のカードにも数を出すようにしました',
+				tone: 'green',
+			},
+			{
+				icon: 'stats-chart-outline',
+				title: 'ホームで、つながっていない PC の台数をカードの下に出すようにしました',
 				tone: 'green',
 			},
 		],
@@ -629,6 +706,12 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			{
 				icon: 'terminal-outline',
 				title: 'SSH の接続先で動くエージェントの、バックグラウンドのシェルの出力を読めるようになりました',
+				body: 'PC の Para Code の更新が要ります。',
+				tone: 'yellow',
+			},
+			{
+				icon: 'ellipse-outline',
+				title: '入力欄の輪を押して、キャッシュやコンテキスト、シェルと Monitor の一覧を見られるようになりました',
 				body: 'PC の Para Code の更新が要ります。',
 				tone: 'yellow',
 			},
@@ -734,6 +817,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				title: '電話で音声通知が途切れても、終わった後に続きから鳴るようにしました',
 				tone: 'green',
 			},
+			{
+				icon: 'volume-high-outline',
+				title: '続けて届いた音声通知を、捨てずに順に鳴らすようにしました',
+				tone: 'green',
+			},
 		],
 	},
 	{
@@ -778,8 +866,34 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				tone: 'green',
 			},
 			{
+				icon: 'alert-circle-outline',
+				title: 'Codex の入力欄に文字が残っているときは、送らずに理由と端末を開くボタンを出すようにしました',
+				tone: 'green',
+			},
+			{
+				icon: 'options-outline',
+				title: 'Codex で /model を送ろうとしたときは、送る前に案内を出すようにしました',
+				tone: 'green',
+			},
+			{
+				icon: 'albums-outline',
+				title: '画面を開くスラッシュコマンドは、候補に札を付け、手で打って送るときは確かめるようにしました',
+				body: 'PC の Para Code の更新が要ります。',
+				tone: 'yellow',
+			},
+			{
+				icon: 'layers-outline',
+				title: 'コンテキストの圧縮中は「会話を要約しています」と出し、Codex の圧縮も区切り線で出すようにしました',
+				tone: 'green',
+			},
+			{
 				icon: 'send-outline',
 				title: 'Codex で、送信ボタンが押せないままになることがあったのを直しました',
+				tone: 'green',
+			},
+			{
+				icon: 'layers-outline',
+				title: '圧縮の要約が自分の発言として出る・「/compact」が 2 つ並ぶのを直しました',
 				tone: 'green',
 			},
 		],
@@ -809,6 +923,12 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				icon: 'pulse-outline',
 				title: 'システムの画面で、グラフと同じ値のバーを出さないようにしました',
 				tone: 'green',
+			},
+			{
+				icon: 'shield-checkmark-outline',
+				title: 'サブエージェントからの許可のカードに、送り元を出すようにしました',
+				body: 'PC の Para Code の更新が要ります。',
+				tone: 'yellow',
 			},
 			{
 				icon: 'resize-outline',
@@ -852,6 +972,24 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				title: '会話の中で、呼んだサブエージェントの状態が分かるようになりました',
 			},
 			{
+				icon: 'pulse-outline',
+				title: 'システム使用率のグラフで、SSH の接続先のマシンも選べるようになりました',
+				body: 'PC の Para Code の更新が要ります。',
+				tone: 'yellow',
+			},
+			{
+				icon: 'images-outline',
+				title: '送った画像を共有・写真に保存し、長押しでパスをコピーできるようになりました',
+			},
+			{
+				icon: 'notifications-outline',
+				title: '設定の「通知に内容を含める」で、通知に中身を出すかどうかを選べるようになりました',
+			},
+			{
+				icon: 'bulb-outline',
+				title: 'サブエージェントの画面の「アドバイザー」で、相談のモデルや返答を確かめられるようになりました',
+			},
+			{
 				icon: 'images-outline',
 				title: '送った画像を会話の先頭に札で並べ、押すと全画面で開けるようにしました',
 				tone: 'green',
@@ -869,6 +1007,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			{
 				icon: 'shield-checkmark-outline',
 				title: 'ロック中に、確認のダイアログを操作できないようにしました',
+				tone: 'green',
+			},
+			{
+				icon: 'notifications-outline',
+				title: '通知で、失敗を完了と分けて知らせるようにしました',
 				tone: 'green',
 			},
 		],
@@ -889,8 +1032,19 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				title: 'ホーム画面のウィジェットで、全 PC の合計か特定の PC かを選べるようになりました',
 			},
 			{
+				icon: 'stats-chart-outline',
+				title: '使用量の画面で PC の行を押すと、その PC だけを見られるようになりました',
+				body: 'PC の Para Code の更新が要ります。',
+				tone: 'yellow',
+			},
+			{
 				icon: 'time-outline',
 				title: '使用量の画面で「request timeout」を出にくくし、前回の値を残すようにしました',
+				tone: 'green',
+			},
+			{
+				icon: 'time-outline',
+				title: '使用量の画面で、オフラインの PC は最後に取れた値を薄く出すようにしました',
 				tone: 'green',
 			},
 		],
@@ -912,6 +1066,8 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			{
 				icon: 'search-outline',
 				title: 'ブラウザのアドレスに URL でない言葉を打つと、検索するようになりました',
+				body: 'PC の Para Code の更新が要ります。',
+				tone: 'yellow',
 			},
 			{
 				icon: 'search-outline',
@@ -964,6 +1120,20 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				title: '使わないモデルを、モデルを選ぶ画面から隠せるようになりました',
 			},
 			{
+				icon: 'expand-outline',
+				title: 'iPhone で端末を横に倒すと、ブラウザを横向きの全画面で見られるようになりました',
+			},
+			{
+				icon: 'create-outline',
+				title: 'メモの項目を消した後、お知らせの「元に戻す」で戻せるようになりました',
+				body: 'PC の Para Code の更新が要ります。',
+				tone: 'yellow',
+			},
+			{
+				icon: 'pulse-outline',
+				title: '設定の「触覚フィードバック」で、操作の手応えをオフにできるようになりました',
+			},
+			{
 				icon: 'browsers-outline',
 				title: 'ブラウザのページの一覧には、今見ているスペースのページだけを並べるようにしました',
 				body: 'PC の Para Code の更新が要ります。',
@@ -1012,6 +1182,21 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				tone: 'green',
 			},
 			{
+				icon: 'browsers-outline',
+				title: 'ブラウザの上へ・下へのボタンと下のツールバーをなくし、映像を広く出すようにしました',
+				tone: 'green',
+			},
+			{
+				icon: 'pulse-outline',
+				title: '承認や質問が届いたときは、手応えで知らせるようにしました',
+				tone: 'green',
+			},
+			{
+				icon: 'accessibility-outline',
+				title: 'VoiceOver で、切り替えられないモデルの理由を読み上げるようにしました',
+				tone: 'green',
+			},
+			{
 				icon: 'pulse-outline',
 				title: '操作の手応え（触覚）を、確定・選択・警告・失敗で変わるように作り直しました',
 				tone: 'green',
@@ -1048,6 +1233,12 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			},
 			{
 				icon: 'git-branch-outline',
+				title: 'サブエージェントの一覧に、バックグラウンドのコマンドのような中身の無い項目を並べないようにしました',
+				body: 'PC の Para Code の更新が要ります。',
+				tone: 'yellow',
+			},
+			{
+				icon: 'git-branch-outline',
 				title: 'サブエージェントの一覧で、動いているものを「完了」「中断」と出していたのを直しました',
 				body: 'PC の Para Code の更新が要ります。',
 				tone: 'yellow',
@@ -1061,6 +1252,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			{
 				icon: 'funnel-outline',
 				title: 'PC の画面の絞り込みで、エージェントだけ・ターミナルだけを出せるようになりました',
+			},
+			{
+				icon: 'funnel-outline',
+				title: 'PC の画面の状態の絞り込みに、ふつうのターミナルが混ざらないようにしました',
+				tone: 'green',
 			},
 		],
 	},
@@ -1139,6 +1335,7 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				icon: 'git-pull-request-outline',
 				title: 'ソース管理の「プルリクエスト」で、PR と CI の状態を見てマージできるようになりました',
 				body: 'PC に GitHub CLI（gh）が要ります。',
+				tone: 'yellow',
 			},
 			{
 				icon: 'git-pull-request-outline',
@@ -1193,6 +1390,54 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			{
 				icon: 'git-compare-outline',
 				title: '差分から、実際のファイルを開けるようになりました',
+			},
+			{
+				icon: 'list-outline',
+				title: 'ホームのクイック操作から、ペアリングと新しいスペースの作成へ進めるようになりました',
+			},
+			{
+				icon: 'funnel-outline',
+				title: 'PC の画面の右下の＋でエージェントを起動し、長押しで操作を選べるようになりました',
+			},
+			{
+				icon: 'tablet-landscape-outline',
+				title: 'iPad で、左の列の幅を変えたり隠したりできるようになりました',
+			},
+			{
+				icon: 'chatbubbles-outline',
+				title: '承認のカードで、長いコマンドの全文を開いて確かめられるようになりました',
+			},
+			{
+				icon: 'chatbubbles-outline',
+				title: 'ほかのエージェントの要対応へ、画面の上から続けて移れるようになりました',
+			},
+			{
+				icon: 'paper-plane-outline',
+				title: '設定の「クイック返信」で、返信の候補を足したり並べ替えたりできるようになりました',
+			},
+			{
+				icon: 'apps-outline',
+				title: 'ウィジェットから、未確認を確認済みにできるようになりました',
+			},
+			{
+				icon: 'apps-outline',
+				title: '設定 → ウィジェットで、ウィジェットとロック画面に出す中身を選べるようになりました',
+			},
+			{
+				icon: 'cloud-upload-outline',
+				title: 'ソース管理から、ブランチを公開できるようになりました',
+				body: 'PC の Para Code の更新が要ります。',
+				tone: 'yellow',
+			},
+			{
+				icon: 'chatbox-ellipses-outline',
+				title: '送ったメモや古くなった差分のメモを、まとめて消せるようになりました',
+				body: 'PC の Para Code の更新が要ります。',
+				tone: 'yellow',
+			},
+			{
+				icon: 'pulse-outline',
+				title: '「接続の記録」の診断を、「報告をコピー」で写せるようになりました',
 			},
 			{
 				icon: 'notifications-outline',
@@ -1333,6 +1578,94 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				tone: 'green',
 			},
 			{
+				icon: 'funnel-outline',
+				title: 'PC の画面の並び順や畳んだ段を、アプリを閉じても覚えるようにしました',
+				tone: 'green',
+			},
+			{
+				icon: 'chatbubbles-outline',
+				title: '質問への回答を「回答する」で送り、届いたかどうか分かるようにしました',
+				tone: 'green',
+			},
+			{
+				icon: 'pulse-outline',
+				title: 'ロック画面と Dynamic Island を押すと、そのセッションを直接開くようにしました',
+				tone: 'green',
+			},
+			{
+				icon: 'pulse-outline',
+				title: 'アプリが止まって古くなったロック画面の表示は、灰色にするようにしました',
+				tone: 'green',
+			},
+			{
+				icon: 'color-palette-outline',
+				title: '色の設定で、読みにくい色や状態の色に近い色を選ぶと注意を出すようにしました',
+				tone: 'green',
+			},
+			{
+				icon: 'git-pull-request-outline',
+				title: 'マージキューに入れたときは、「マージキューに入れました」と出すようにしました',
+				body: 'PC の Para Code の更新が要ります。',
+				tone: 'yellow',
+			},
+			{
+				icon: 'link-outline',
+				title: 'ターミナルの localhost のような URL は、PC の内蔵ブラウザで開いて映すようにしました',
+				tone: 'green',
+			},
+			{
+				icon: 'terminal-outline',
+				title: 'ターミナルの文字を設定より小さくせず、はみ出す分は横にスクロールできるようにしました',
+				tone: 'green',
+			},
+			{
+				icon: 'time-outline',
+				title: 'PC に届かない間に送った続きの依頼を、預かって後で届けるようにしました',
+				body: 'PC の Para Code の更新が要ります。',
+				tone: 'yellow',
+			},
+			{
+				icon: 'arrow-up-circle-outline',
+				title: 'PC とアプリの版が少し違うだけなら、そのままつながるようにしました',
+				tone: 'green',
+			},
+			{
+				icon: 'arrow-up-circle-outline',
+				title: '起動直後は「接続されていません」ではなく、準備中と出すようにしました',
+				tone: 'green',
+			},
+			{
+				icon: 'contrast-outline',
+				title: '水色のボタンの文字・差分の行番号・待機中の点・iPad の件数バッジを読みやすくしました',
+				tone: 'green',
+			},
+			{
+				icon: 'git-compare-outline',
+				title: '差分からファイルを読み込めないときは、理由を出すようにしました',
+				tone: 'green',
+			},
+			{
+				icon: 'document-text-outline',
+				title: 'スペースのメモが PC で書き換えられていたら、書きかけをクリップボードに写すようにしました',
+				body: 'PC の Para Code の更新が要ります。',
+				tone: 'yellow',
+			},
+			{
+				icon: 'speedometer-outline',
+				title: 'とても長いコマンドの出力は途中を省いて出し、コピーでは全文を写すようにしました',
+				tone: 'green',
+			},
+			{
+				icon: 'stats-chart-outline',
+				title: 'GitHub の Rate Limit の一覧で、再ログインが要るときだけそう伝えるようにしました',
+				tone: 'green',
+			},
+			{
+				icon: 'sparkles-outline',
+				title: 'モデルの候補に、PC の Claude Code から取った一覧を使うようにしました',
+				tone: 'green',
+			},
+			{
 				icon: 'pulse-outline',
 				title: 'ロック画面と Dynamic Island の表示を、状況に合わせて切り替わる形に作り直しました',
 				tone: 'green',
@@ -1400,6 +1733,31 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			{
 				icon: 'terminal-outline',
 				title: 'PC 版の「空いていれば実行・忙しければ新規」のプリセットが一覧から消えるのを直しました',
+				tone: 'green',
+			},
+			{
+				icon: 'stats-chart-outline',
+				title: 'GitHub の「直近5分の消費量」が正しく出ていなかったのを直しました',
+				tone: 'green',
+			},
+			{
+				icon: 'checkmark-circle-outline',
+				title: 'Claude の許可に答えたとき、PC の入力欄に余計な改行が残るのを直しました',
+				tone: 'green',
+			},
+			{
+				icon: 'keypad-outline',
+				title: 'ソース管理のコミット欄が、キーボードの下に沈んでいたのを直しました',
+				tone: 'green',
+			},
+			{
+				icon: 'keypad-outline',
+				title: '回転や Split View で幅が変わると、ターミナルの高さがずれていたのを直しました',
+				tone: 'green',
+			},
+			{
+				icon: 'hand-left-outline',
+				title: '長押しのメニューを開いている間に、一覧の行が動いていたのを直しました',
 				tone: 'green',
 			},
 		],
@@ -1546,6 +1904,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				tone: 'green',
 			},
 			{
+				icon: 'flash-outline',
+				title: 'コマンドプリセットを初めて実行するときは、走るコマンドを見せて確かめるようにしました',
+				tone: 'green',
+			},
+			{
 				icon: 'contract-outline',
 				title: '上のバーの中身が固まる・絞り込みのボタンが枠だけになる・1 行目が潜るのを直しました',
 				tone: 'green',
@@ -1570,6 +1933,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				title: 'スペース一覧の＋と、ソース管理の「最近のコミット」の余白のずれを直しました',
 				tone: 'green',
 			},
+			{
+				icon: 'lock-open-outline',
+				title: 'アプリを閉じている間の通知を押しても、目的の画面へ飛べなかったのを直しました',
+				tone: 'green',
+			},
 		],
 	},
 	{
@@ -1585,6 +1953,10 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			{
 				icon: 'chevron-down-circle-outline',
 				title: 'シートを、下へ引いて閉じられるようになりました',
+			},
+			{
+				icon: 'notifications-outline',
+				title: 'お知らせを上へ払って、待たずに消せるようになりました',
 			},
 			{
 				icon: 'add-circle-outline',
@@ -1705,6 +2077,16 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				tone: 'green',
 			},
 			{
+				icon: 'layers-outline',
+				title: '上のバーに、画面の名前を出すのをやめました',
+				tone: 'green',
+			},
+			{
+				icon: 'chevron-forward-outline',
+				title: '設定の右上の×で、どこからでも設定を閉じられるようにしました',
+				tone: 'green',
+			},
+			{
 				icon: 'phone-portrait-outline',
 				title: 'キーボードを開くと、ターミナルの表示が崩れていたのを直しました',
 				tone: 'green',
@@ -1762,6 +2144,14 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				title: 'システムの「ボリューム」で、スペースごとの容量を見られるようになりました',
 			},
 			{
+				icon: 'filter-outline',
+				title: 'Ccusage に、いつ取得した数字かが出るようになりました',
+			},
+			{
+				icon: 'pie-chart-outline',
+				title: 'システムの「ボリューム」で、worktree を持つスペースの内訳を開けるようになりました',
+			},
+			{
 				icon: 'notifications-outline',
 				title: '通知を押すと、その PC の該当の会話が開くようにしました',
 				tone: 'green',
@@ -1797,6 +2187,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				tone: 'green',
 			},
 			{
+				icon: 'desktop-outline',
+				title: '使用量の見出しに、いま見ている PC の名前を出すようにしました',
+				tone: 'green',
+			},
+			{
 				icon: 'browsers-outline',
 				title: 'PC の欄で、切り替えの矢印が設定ボタンに重なるのを直しました',
 				tone: 'green',
@@ -1827,6 +2222,10 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			{
 				icon: 'options-outline',
 				title: '見ていない PC との接続を保つか、ほかの PC の通知を出すかを選べるようになりました',
+			},
+			{
+				icon: 'notifications-outline',
+				title: 'ほかの PC の通知を押すと、その PC へ切り替えて会話を開けるようになりました',
 			},
 		],
 	},
@@ -1868,6 +2267,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				body: '元に近い並びは「並び替え」から選べます。',
 				tone: 'green',
 			},
+			{
+				icon: 'text-outline',
+				title: 'iPad では、ターミナルの文字を広い画面いっぱいまで大きくするようにしました',
+				tone: 'green',
+			},
 		],
 	},
 	{
@@ -1882,6 +2286,10 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			{
 				icon: 'information-circle-outline',
 				title: 'エージェントの画面から、名前の変更とメモの書き込みができるようになりました',
+			},
+			{
+				icon: 'information-circle-outline',
+				title: 'エージェントの画面から、ピン留め・アーカイブ・削除もできるようになりました',
 			},
 			{
 				icon: 'musical-notes-outline',
@@ -1930,6 +2338,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			{
 				icon: 'archive-outline',
 				title: 'オフラインの間に届いた通知を、通知一覧に並べるようにしました',
+				tone: 'green',
+			},
+			{
+				icon: 'trash-outline',
+				title: '通知一覧をまとめて消すと、ほかの端末の一覧からも消えるようにしました',
 				tone: 'green',
 			},
 			{
@@ -2041,6 +2454,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				title: '送信予定の一覧が、最後まで読めなかったのを直しました',
 				tone: 'green',
 			},
+			{
+				icon: 'swap-horizontal-outline',
+				title: 'ホーム一覧の右スワイプで、ワークスペースが開かなかったのを直しました',
+				tone: 'green',
+			},
 		],
 	},
 	{
@@ -2060,6 +2478,10 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 				title: 'PC でピン留めしたスペースを、ドロワーに残せるようになりました',
 			},
 			{
+				icon: 'file-tray-full-outline',
+				title: 'アーカイブしたエージェントを、ヘッダーの箱から見返して戻せるようになりました',
+			},
+			{
 				icon: 'reader-outline',
 				title: 'メモと新しいエージェントを、押したところから広がる全画面で開くようにしました',
 				tone: 'green',
@@ -2072,6 +2494,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			{
 				icon: 'hand-left-outline',
 				title: '一覧の長押しメニューを、早く開くようにしました',
+				tone: 'green',
+			},
+			{
+				icon: 'file-tray-full-outline',
+				title: 'アーカイブしたエージェントは、質問や応答待ちになるとホームへ戻すようにしました',
 				tone: 'green',
 			},
 			{
@@ -2103,6 +2530,11 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			{
 				icon: 'people-outline',
 				title: 'SubAgent の詳細も、エージェントの画面と同じ表示にそろえました',
+				tone: 'green',
+			},
+			{
+				icon: 'list-outline',
+				title: '思考やツールの中身が、数行で切られていたのを直しました',
 				tone: 'green',
 			},
 		],
