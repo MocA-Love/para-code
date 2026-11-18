@@ -50,6 +50,13 @@ export interface IParadisDesignModeService {
 	setPins(pageId: string, pins: readonly IParadisDesignPin[]): Promise<void>;
 	/** PNG を userData 配下へ保存し、その絶対パスを返す。 */
 	saveImage(png: Uint8Array): Promise<string>;
+
+	/**
+	 * このページ（ブラウザのタブ）で前回、一覧から選んだ送り先のターミナル（Q663-9）。メモリだけに持ち、
+	 * ページが閉じられたら捨てる。共有（バインド）は増やさない。
+	 */
+	getLastTarget(pageId: string): number | undefined;
+	setLastTarget(page: IBrowserViewModel, instanceId: number): void;
 }
 
 export class ParadisDesignModeService extends Disposable implements IParadisDesignModeService {
@@ -63,6 +70,9 @@ export class ParadisDesignModeService extends Disposable implements IParadisDesi
 	private readonly _annotations = new Map<string, IParadisDesignAnnotation[]>();
 	/** 注釈を持っているページの「閉じられたら捨てる」購読。 */
 	private readonly _pageListeners = this._register(new DisposableMap<string>());
+	/** 前回の送り先と、その「閉じられたら捨てる」購読（注釈の購読とは別。注釈が 0 件になっても残す）。 */
+	private readonly _lastTargets = new Map<string, number>();
+	private readonly _lastTargetListeners = this._register(new DisposableMap<string>());
 	private readonly _main: IParadisDesignModeMainService;
 	private _attachImages = true;
 	private _includeHtml = false;
@@ -153,6 +163,21 @@ export class ParadisDesignModeService extends Disposable implements IParadisDesi
 
 	saveImage(png: Uint8Array): Promise<string> {
 		return this._main.saveImage(VSBuffer.wrap(png));
+	}
+
+	getLastTarget(pageId: string): number | undefined {
+		return this._lastTargets.get(pageId);
+	}
+
+	setLastTarget(page: IBrowserViewModel, instanceId: number): void {
+		const pageId = page.id;
+		this._lastTargets.set(pageId, instanceId);
+		if (!this._lastTargetListeners.has(pageId)) {
+			this._lastTargetListeners.set(pageId, page.onWillDispose(() => {
+				this._lastTargets.delete(pageId);
+				this._lastTargetListeners.deleteAndDispose(pageId);
+			}));
+		}
 	}
 }
 

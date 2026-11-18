@@ -11,7 +11,8 @@
 //  - Design Mode: ページの要素をクリック → コメントを入力 → 注釈トレイへ。モードは Esc か
 //    ボタンでやめるまで続く（upstream の「Comment on Elements」と同じ続け方）
 //  - Markup: ページのスクリーンショットに書き込み、その画像を注釈としてトレイへ
-//  - 注釈トレイ: ナビバーとページの間の帯。[送る] で送り先を一覧から選ぶ
+//  - 注釈トレイ: ナビバーとページの間の帯。右端のボタンに既定の送り先の名前を出して 1 回で送り、
+//    ▾ で一覧を開く（Q663-7〜10）。相手が質問・許可の確認を出している間は「空いたら入れる」予約になる
 //
 // upstream のファイルには触らず、BrowserEditor.registerContribution() と
 // BrowserWidgetLocation.Toolbar（ナビバーとページの間）だけを使う。
@@ -21,13 +22,17 @@
 // エラーはトレイに出したうえで、後から見返せるようベル（通知センター）にも残す。
 
 import { $, addDisposableListener, append, clearNode, EventType, isActiveElement } from '../../../../base/browser/dom.js';
+import { IManagedHover } from '../../../../base/browser/ui/hover/hover.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { Checkbox } from '../../../../base/browser/ui/toggle/toggle.js';
+import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
-import { CancellationTokenSource } from '../../../../base/common/cancellation.js';
+import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
-import { DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
+import { DisposableMap, DisposableStore, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { isMacintosh } from '../../../../base/common/platform.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
@@ -40,10 +45,13 @@ import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickin
 import { defaultCheckboxStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { BrowserEditor, BrowserEditorContribution, BrowserWidgetLocation, IBrowserEditorWidget } from '../../../../workbench/contrib/browserView/electron-browser/browserEditor.js';
+import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { IParadisAgentBrowserBindingModel } from '../../agentBrowser/electron-browser/paradisAgentBrowserBindingModel.js';
+import { IParadisAgentStatusStore } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisDesignPin, IParadisPickedElement, PARADIS_DESIGN_BUDGET, paradisClipRectToViewport, paradisDesignSanitizeUrl } from '../common/paradisDesignMode.js';
 import { IParadisDesignAnnotation, paradisDesignInlineText } from '../common/paradisDesignModeFormat.js';
 import { IParadisDesignModeService } from './paradisDesignModeService.js';
-import { ParadisDesignModeSender } from './paradisDesignModeSender.js';
+import { IParadisDesignSendResult, IParadisDesignTargetEntry, ParadisDesignModeSender, ParadisDesignTargetPick, paradisDesignStatusWord, paradisDesignSubmitKeyLabel } from './paradisDesignModeSender.js';
 import { ParadisMarkupOverlay, paradisMarkupAreaOf } from './paradisMarkupOverlay.js';
 
 export const CONTEXT_PARADIS_DESIGN_MODE_ACTIVE = new RawContextKey<boolean>('paradisBrowserDesignModeActive', false, localize('paradis.designMode.contextActive', "内蔵ブラウザで Design Mode（要素にコメント）が有効か"));
@@ -66,6 +74,13 @@ async function validateComment(value: string): Promise<string | undefined> {
 	return value.length > PARADIS_DESIGN_BUDGET.commentMaxLength
 		? localize('paradis.designMode.commentTooLong', "{0} 文字までです。", PARADIS_DESIGN_BUDGET.commentMaxLength)
 		: undefined;
+}
+
+/** 「空いたら入れる」予約（ページごと）。相手が質問・許可の確認を閉じたら、その時点のトレイの中身を入れる。 */
+interface IParadisDesignReservation {
+	readonly model: IBrowserViewModel;
+	readonly instanceId: number;
+	readonly title: string;
 }
 
 function describeElement(element: IParadisPickedElement): string {
@@ -94,8 +109,24 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 	private clearedAnnotations: { readonly pageId: string; readonly annotations: readonly IParadisDesignAnnotation[] } | undefined;
 	/** 「元に戻す」で注釈を戻している間（その追加では戻せる状態を捨てない）。 */
 	private restoringCleared = false;
-	private readonly sendButton: HTMLButtonElement;
 	private readonly stopButton: HTMLButtonElement;
+	/** 送り先の札（相手の状態。回答待ち・予約中のときだけ出す）。 */
+	private readonly targetState: HTMLElement;
+	private readonly targetStateDot: HTMLElement;
+	private readonly targetStateWho: HTMLElement;
+	private readonly targetStateText: HTMLElement;
+	/** 送るキーの案内（Enter で入れる・⌘Enter で送信まで）。 */
+	private readonly keysHint: HTMLElement;
+	/** 送るボタン（送り先の名前）と ▾ の組。予約中は「取り消す」に替える。 */
+	private readonly target: HTMLElement;
+	private readonly sendButton: HTMLButtonElement;
+	private readonly sendIcon: HTMLElement;
+	private readonly sendLabel: HTMLElement;
+	private readonly moreButton: HTMLButtonElement;
+	private readonly sendHover: IManagedHover;
+	private readonly cancelReservationButton: HTMLButtonElement;
+	private readonly reservations = new Map<string, IParadisDesignReservation>();
+	private readonly reservationListeners = this._register(new DisposableMap<string>());
 
 	private readonly designModeActive: IContextKey<boolean>;
 	private readonly markupActive: IContextKey<boolean>;
@@ -118,6 +149,9 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 		@INotificationService private readonly notificationService: INotificationService,
 		@ILogService private readonly logService: ILogService,
 		@IHoverService private readonly hoverService: IHoverService,
+		@IParadisAgentStatusStore private readonly agentStatusStore: IParadisAgentStatusStore,
+		@ITerminalService private readonly terminalService: ITerminalService,
+		@IParadisAgentBrowserBindingModel bindingModel: IParadisAgentBrowserBindingModel,
 	) {
 		super(editor);
 		this.designModeActive = CONTEXT_PARADIS_DESIGN_MODE_ACTIVE.bindTo(contextKeyService);
@@ -177,7 +211,53 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 		this.clearButton.setAttribute('aria-label', clearLabel);
 		this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), this.clearButton, clearLabel));
 		this._register(addDisposableListener(this.clearButton, EventType.CLICK, () => this.clearAnnotations()));
-		this.sendButton = this.trayButton(localize('paradis.designMode.send', "送る"), true, () => void this.sendAnnotations());
+
+		this.keysHint = append(this.tray, $('span.paradis-design-tray-keys'));
+		const enterKey = append(this.keysHint, $('kbd'));
+		enterKey.textContent = 'Enter';
+		append(this.keysHint, $('span')).textContent = localize('paradis.designMode.keys.insert', "入力欄へ入れる");
+		const submitKey = append(this.keysHint, $('kbd'));
+		submitKey.textContent = paradisDesignSubmitKeyLabel();
+		append(this.keysHint, $('span')).textContent = localize('paradis.designMode.keys.submit', "送信まで");
+
+		this.targetState = append(this.tray, $('span.paradis-design-tray-state'));
+		this.targetStateDot = append(this.targetState, $('span.paradis-design-tray-state-dot'));
+		this.targetStateWho = append(this.targetState, $('span.paradis-design-tray-state-who'));
+		this.targetStateText = append(this.targetState, $('span.paradis-design-tray-state-text'));
+
+		this.target = append(this.tray, $('span.paradis-design-tray-target'));
+		this.target.setAttribute('role', 'group');
+		this.sendButton = append(this.target, $<HTMLButtonElement>('button.paradis-design-tray-target-send'));
+		this.sendButton.type = 'button';
+		this.sendIcon = append(this.sendButton, $('span'));
+		this.sendLabel = append(this.sendButton, $('span.paradis-design-tray-target-label'));
+		this.sendHover = this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), this.sendButton, ''));
+		// クリックは入れるだけ、⌘（Ctrl）を押しながらのクリックと ⌘Enter（Ctrl+Enter）は送信まで（Q663-10）
+		this._register(addDisposableListener(this.sendButton, EventType.CLICK, (event: MouseEvent) => {
+			void this.sendAnnotations({ submit: isMacintosh ? event.metaKey : event.ctrlKey });
+		}));
+		this._register(addDisposableListener(this.sendButton, EventType.KEY_DOWN, (event: KeyboardEvent) => {
+			if (new StandardKeyboardEvent(event).equals(KeyMod.CtrlCmd | KeyCode.Enter)) {
+				event.preventDefault();
+				event.stopPropagation();
+				void this.sendAnnotations({ submit: true });
+			}
+		}));
+		this.moreButton = append(this.target, $<HTMLButtonElement>('button.paradis-design-tray-target-more'));
+		this.moreButton.type = 'button';
+		// アイコンは子に付ける（ボタンの font: inherit が codicon のフォントを打ち消すため）
+		append(this.moreButton, $(ThemeIcon.asCSSSelector(Codicon.chevronDown)));
+		const moreLabel = localize('paradis.designMode.pickTarget', "別の送り先を選ぶ");
+		this.moreButton.setAttribute('aria-label', moreLabel);
+		this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), this.moreButton, moreLabel));
+		this._register(addDisposableListener(this.moreButton, EventType.CLICK, () => void this.sendAnnotations({ pick: true })));
+		this.cancelReservationButton = this.trayButton(localize('paradis.designMode.cancelReservation', "取り消す"), false, () => this.cancelReservation(this.editor.model?.id));
+
+		// 送り先の名前と状態は、相手の状態・共有・ターミナルの名前が変わったら描き直す
+		this._register(this.agentStatusStore.onDidChangeAgentStatuses(() => this.renderTray()));
+		this._register(bindingModel.onDidChange(() => this.renderTray()));
+		this._register(this.terminalService.onDidChangeInstances(() => this.renderTray()));
+		this._register(this.terminalService.onAnyInstanceTitleChange(() => this.renderTray()));
 	}
 
 	override get widgets(): readonly IBrowserEditorWidget[] {
@@ -190,6 +270,10 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 				// 消した後に新しい注釈が付いたら、戻すと番号が元の順とずれるので、もう戻せなくする
 				if (this.clearedAnnotations && !this.restoringCleared && this.designModeService.getAnnotations(model.id).length > 0) {
 					this.dropUndo();
+				}
+				// トレイが空になったら、入れるものが無いので予約も取り消す
+				if (this.designModeService.getAnnotations(model.id).length === 0) {
+					this.cancelReservation(model.id);
 				}
 				this.renderTray();
 				void this.syncPins(model);
@@ -369,9 +453,14 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 		}
 	}
 
-	async sendAnnotations(): Promise<void> {
+	/**
+	 * トレイの注釈を送る。既定の送り先があればそこへ、無いか `pick` のときは一覧から選ぶ。
+	 * `submit` は Enter まで送るか（⌘Enter・Ctrl+Enter）。相手が質問・許可の確認を出していれば
+	 * 「空いたら入れる」予約にする。
+	 */
+	async sendAnnotations(options: { readonly pick?: boolean; readonly submit?: boolean } = {}): Promise<void> {
 		const model = this.editor.model;
-		if (!model || this.sending) {
+		if (!model || this.sending || this.reservations.has(model.id)) {
 			return;
 		}
 		const annotations = this.designModeService.getAnnotations(model.id);
@@ -386,23 +475,125 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 		const cancellation = new CancellationTokenSource();
 		this.sendCancellation.value = cancellation;
 		try {
-			const result = await this.sender.send(model, annotations, cancellation.token);
-			if (result.inserted) {
-				// 入れた分だけ消す（送っている間に足された注釈は残す）
-				for (const annotation of annotations) {
-					this.designModeService.removeAnnotation(model.id, annotation.id);
+			let target: ParadisDesignTargetPick | undefined;
+			let submit = !!options.submit;
+			const defaultTarget = options.pick ? undefined : this.sender.defaultTarget(model);
+			if (defaultTarget) {
+				target = { kind: 'pane', instanceId: defaultTarget.instanceId };
+			} else {
+				const picked = await this.sender.pickTarget(model, annotations);
+				if (!picked || cancellation.token.isCancellationRequested) {
+					return;
+				}
+				target = picked.target;
+				submit ||= picked.submit;
+				if (target.kind === 'pane') {
+					// 一覧から選んだペインを、このタブの次からの送り先にする（Q663-9。共有はしない）
+					this.designModeService.setLastTarget(model, target.instanceId);
 				}
 			}
-			if (result.message && this.editor.model === model) {
-				// エラーはベルへの記録を送る側で済ませてあるので、ここではトレイに出すだけ
-				this.showMessage(result.message, result.severity ?? Severity.Info, false);
+			if (target.kind === 'pane' && !this.sender.isReady(target.instanceId)) {
+				this.reserve(model, target.instanceId);
+				return;
 			}
+			const result = await this.sender.deliver(model, annotations, target, { submit, focus: true }, cancellation.token);
+			if (target.kind === 'launch' && result.inserted && result.instanceId !== undefined && this.editor.model === model) {
+				// 新しく起動して入れたペインも、このタブの次からの送り先にする
+				this.designModeService.setLastTarget(model, result.instanceId);
+			}
+			this.applyResult(model, annotations, result);
 		} finally {
 			if (this.sendCancellation.value === cancellation) {
 				this.sendCancellation.clear();
 			}
 			this.sending = false;
 			this.renderTray();
+			this.retryReservations();
+		}
+	}
+
+	/** 送っている間に予約の相手が空いていたら、その分を入れる（空いた知らせは送っている間は見送るため）。 */
+	private retryReservations(): void {
+		for (const reservation of [...this.reservations.values()]) {
+			void this.fireReservation(reservation.model);
+		}
+	}
+
+	private applyResult(model: IBrowserViewModel, annotations: readonly IParadisDesignAnnotation[], result: IParadisDesignSendResult): void {
+		if (result.inserted) {
+			// 入れた分だけ消す（送っている間に足された注釈は残す）
+			for (const annotation of annotations) {
+				this.designModeService.removeAnnotation(model.id, annotation.id);
+			}
+		}
+		if (result.message && this.editor.model === model) {
+			// エラーはベルへの記録を送る側で済ませてあるので、ここではトレイに出すだけ
+			this.showMessage(result.message, result.severity ?? Severity.Info, false);
+		}
+	}
+
+	/** 「空いたら入れる」予約を始める（Q663-8）。 */
+	private reserve(model: IBrowserViewModel, instanceId: number): void {
+		const instance = this.terminalService.getInstanceFromId(instanceId);
+		if (!instance || instance.isDisposed) {
+			return;
+		}
+		const pageId = model.id;
+		const store = new DisposableStore();
+		store.add(this.agentStatusStore.onDidChangeAgentStatuses(() => void this.fireReservation(model)));
+		store.add(this.terminalService.onDidDisposeInstance(disposed => {
+			if (disposed.instanceId === instanceId) {
+				this.cancelReservation(pageId, localize('paradis.designMode.reservationGone', "「{0}」が閉じられたため、予約を取り消しました。", instance.title));
+			}
+		}));
+		store.add(model.onWillDispose(() => this.cancelReservation(pageId)));
+		this.reservations.set(pageId, { model, instanceId, title: instance.title });
+		this.reservationListeners.set(pageId, store);
+		this.showMessage(localize('paradis.designMode.reserved', "「{0}」が空いたら入れます。", instance.title), Severity.Info);
+	}
+
+	private cancelReservation(pageId: string | undefined, message?: string): void {
+		if (pageId === undefined || !this.reservations.delete(pageId)) {
+			return;
+		}
+		this.reservationListeners.deleteAndDispose(pageId);
+		if (this.editor.model?.id === pageId) {
+			if (isActiveElement(this.cancelReservationButton)) {
+				this.editor.focus();
+			}
+			if (message) {
+				this.showMessage(message, Severity.Info);
+			} else {
+				this.renderTray();
+			}
+		}
+	}
+
+	/**
+	 * 予約の相手が空いたら、その時点のトレイの中身を入れる。Enter は送らず、フォーカスも移さない
+	 * （利用者が別の操作をしている時刻に起きるため）。結果はトレイの文で知らせる。
+	 */
+	private async fireReservation(model: IBrowserViewModel): Promise<void> {
+		const reservation = this.reservations.get(model.id);
+		if (!reservation || this.sending || !this.sender.isReady(reservation.instanceId)) {
+			return;
+		}
+		this.reservations.delete(model.id);
+		this.reservationListeners.deleteAndDispose(model.id);
+		const annotations = this.designModeService.getAnnotations(model.id);
+		if (annotations.length === 0) {
+			this.renderTray();
+			return;
+		}
+		this.sending = true;
+		this.renderTray();
+		try {
+			const result = await this.sender.deliver(model, annotations, { kind: 'pane', instanceId: reservation.instanceId }, { submit: false, focus: false }, CancellationToken.None);
+			this.applyResult(model, annotations, result);
+		} finally {
+			this.sending = false;
+			this.renderTray();
+			this.retryReservations();
 		}
 	}
 
@@ -547,13 +738,57 @@ export class ParadisDesignModeFeature extends BrowserEditorContribution {
 		this.htmlLabel.style.display = annotations.some(annotation => annotation.element?.htmlSnippet) ? '' : 'none';
 		this.stopButton.style.display = picking ? '' : 'none';
 		this.clearButton.disabled = annotations.length === 0 || this.sending;
-		this.sendButton.disabled = annotations.length === 0 || this.sending;
+		this.renderTarget(visible ? model : undefined, annotations.length > 0);
 
 		if (visible !== this.trayVisible) {
 			this.trayVisible = visible;
 			this.tray.style.display = visible ? '' : 'none';
 			// 帯の高さの分だけページの領域が変わるので、ネイティブのビューの位置を合わせ直す
 			this.editor.layoutBrowserContainer();
+		}
+	}
+
+	/** 送り先のボタン・状態の札・キーの案内を描く。 */
+	private renderTarget(model: IBrowserViewModel | undefined, hasAnnotations: boolean): void {
+		const reservation = model ? this.reservations.get(model.id) : undefined;
+		// 送った直後（0 件）も、次の送り先の名前は出したままにする（押せないだけ）
+		const entry: IParadisDesignTargetEntry | undefined = model && !reservation ? this.sender.defaultTarget(model) : undefined;
+		const queue = !!entry && !entry.available;
+
+		this.cancelReservationButton.style.display = reservation ? '' : 'none';
+		this.target.style.display = reservation ? 'none' : '';
+		this.target.classList.toggle('queue', queue);
+		this.sendButton.disabled = !hasAnnotations || this.sending;
+		this.moreButton.disabled = !hasAnnotations || this.sending;
+		this.moreButton.style.display = entry ? '' : 'none';
+		this.sendIcon.className = ThemeIcon.asClassName(queue ? Codicon.clock : Codicon.send);
+		let label: string;
+		let hover: string;
+		if (!entry) {
+			label = localize('paradis.designMode.chooseTarget', "送り先を選ぶ…");
+			hover = label;
+		} else if (queue) {
+			label = localize('paradis.designMode.sendWhenFree', "空いたら入れる");
+			hover = localize('paradis.designMode.sendWhenFreeHover', "「{0}」が確認を閉じたら、入力欄へ入れます", entry.title);
+		} else {
+			label = localize('paradis.designMode.sendTo', "{0}へ送る", entry.title);
+			hover = localize('paradis.designMode.sendToHover', "「{0}」の入力欄へ入れる（{1} で送信まで）", entry.title, paradisDesignSubmitKeyLabel());
+		}
+		this.sendLabel.textContent = label;
+		this.sendButton.setAttribute('aria-label', hover);
+		this.sendHover.update(hover);
+
+		// キーの案内は、すぐ入れられる送り先が決まっていて、お知らせが出ていないときだけ
+		this.keysHint.style.display = entry && !queue && hasAnnotations && !this.messageText && !this.sending ? '' : 'none';
+
+		const state = reservation
+			? { kind: 'queued', who: reservation.title, text: localize('paradis.designMode.reservedState', "空いたら入れる（予約中）") }
+			: queue && entry && hasAnnotations ? { kind: entry.status ?? 'idle', who: entry.title, text: paradisDesignStatusWord(entry.status) } : undefined;
+		this.targetState.style.display = state ? '' : 'none';
+		if (state) {
+			this.targetStateDot.className = `paradis-design-tray-state-dot ${state.kind}`;
+			this.targetStateWho.textContent = state.who;
+			this.targetStateText.textContent = state.text;
 		}
 	}
 
