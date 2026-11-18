@@ -60,7 +60,7 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 	},
 	{
 		name: 'preview_file',
-		description: 'Open a file in the Para Code space that this terminal pane belongs to, rendered with its rich viewer (Markdown preview, HTML/WebKit rendering, PDF, images, spreadsheets, ...). Use this instead of shell commands like "open" or "xdg-open" when you want to show an HTML/Markdown/other file to the user. Requires an absolute file path. If the user is currently looking at a different space, the file is queued and opens when they switch back, so it never interrupts the space on screen.',
+		description: 'Open a file in the Para Code space that this terminal pane belongs to, rendered with its rich viewer (Markdown preview, HTML/WebKit rendering, PDF, images, spreadsheets, ...). Use this instead of shell commands like "open" or "xdg-open" when you want to show an HTML/Markdown/other file to the user. Requires an absolute file path. If the user is currently looking at a different space, the file is queued and opens when they switch back, so it never interrupts the space on screen. When you write an HTML or Markdown document for the user, write a skeleton first (head, styles, title and one empty placeholder per section), call preview_file right away, then fill in one section per edit so the user can read while you write. The preview refreshes by itself; do not call preview_file again for the same file. Opening an HTML or Markdown file that no session owns also registers it as a document of your session (see list_docs).',
 		inputSchema: {
 			type: 'object',
 			properties: {

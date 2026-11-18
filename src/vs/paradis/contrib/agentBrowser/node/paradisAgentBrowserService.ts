@@ -50,6 +50,7 @@ import { IParadisAnnouncedReview, paradisIsHarnessNotificationPrompt, paradisIsR
 import { IParadisExactViewBackgroundThrottlingEffect, PARADIS_EXACT_VIEW_BACKGROUND_THROTTLING_MAX_BINDINGS, ParadisExactViewBackgroundThrottlingCoordinator, ParadisExactViewBackgroundThrottlingDispatcher } from '../common/paradisExactViewBackgroundThrottling.js';
 import { IParadisMobileRendererManifest, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } from '../../mobileRelay/common/paradisMobileWindowLease.js';
 import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, getParadisAgentPaneIssueUrls, onParadisAgentAwaitingUser, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, ParadisAgentTurnEndCause, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
+import { paradisNotifyPreviewFileOpened } from './paradisPreviewFileObservers.js';
 import { ParadisHookAgentKind, ParadisAgentHookOwnership, paradisHookAgentKindForTranscript } from './paradisAgentHookOwnership.js';
 import { PARADIS_AGENT_HIBERNATION_HOOK_SUPPRESS_MS, PARADIS_AGENT_HIBERNATION_KILL_GRACE_MS, ParadisHibernationResult } from '../../agentHibernation/common/paradisAgentHibernation.js';
 import { ParadisCodexFrontSessions } from '../common/paradisCodexFrontSession.js';
@@ -7721,11 +7722,15 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (!call.value.ok) {
 			return this._toolError(this._previewFailureMessage(call.value.reason));
 		}
-		if (call.value.deferred) {
+		// 資料の台帳など、開いた後の動きを足す側（paradisPreviewFileObservers.ts）。足す英文があれば結果の後ろに付ける
+		const deferred = call.value.deferred === true;
+		const note = await paradisNotifyPreviewFileOpened({ token: ingressLease.token, path, deferred, ...(remoteAuthority !== undefined ? { remoteAuthority } : {}) });
+		const suffix = note.length > 0 ? ` ${note}` : '';
+		if (deferred) {
 			const space = this._describeSpace(call.value.spaceName);
-			return this._toolText(`The user is looking at a different space right now, so ${path} was not opened yet: Para Code queued it for ${space ?? 'the space this terminal pane belongs to'} and it opens as soon as the user switches back. Nothing was shown on screen, so do not assume the user has seen the file.`);
+			return this._toolText(`The user is looking at a different space right now, so ${path} was not opened yet: Para Code queued it for ${space ?? 'the space this terminal pane belongs to'} and it opens as soon as the user switches back. Nothing was shown on screen, so do not assume the user has seen the file.${suffix}`);
 		}
-		return this._toolText(`Opened ${path} in the Para Code space that owns this terminal pane.`);
+		return this._toolText(`Opened ${path} in the Para Code space that owns this terminal pane.${suffix}`);
 	}
 
 	/**
