@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisDocDeliveryInput, paradisDecideDocDelivery, paradisDocDeliveryFirstLine, paradisDocDeliveryMayEnter, paradisDocDeliveryPromptMatches, paradisDocDeliveryText } from '../../common/paradisDocCommentDelivery.js';
+import { IParadisDocDeliveryInput, IParadisDocWakeInput, paradisDecideDocDelivery, paradisDecideDocWake, paradisDocDeliveryFirstLine, paradisDocDeliveryMayEnter, paradisDocDeliveryPromptMatches, paradisDocDeliveryText, paradisDocWakeSpaceFor } from '../../common/paradisDocCommentDelivery.js';
 import {
 	IParadisDocCommentThread,
 	paradisCountOpenDocComments,
@@ -77,6 +77,66 @@ suite('Paradis doc comments: delivery rules', () => {
 			ended: { kind: 'undeliverable', block: 'ended' },
 			unknown: { kind: 'undeliverable', block: 'unknown' },
 		});
+	});
+
+	test('waits while the owner is being woken and for the start of a woken CLI, but never over a permission', () => {
+		const decide = (input: Partial<IParadisDocDeliveryInput>) => paradisDecideDocDelivery({ ...READY, ...input });
+		assert.deepStrictEqual([
+			decide({ owner: 'waking' }),
+			decide({ starting: true, draft: 'unknown', turnJustEnded: true }),
+			decide({ starting: true, status: 'permission' }),
+			decide({ starting: false, draft: 'unknown', turnJustEnded: true }),
+		], [
+			{ kind: 'wait', block: 'waking' },
+			{ kind: 'wait', block: 'waking' },
+			{ kind: 'wait', block: 'permission' },
+			{ kind: 'deliver', enter: true },
+		]);
+	});
+
+	test('wakes only a session that was seen ending, nowhere alive, not being woken, on this machine, with a known folder', () => {
+		const owner = { agent: 'claude', session: 's1', cwd: '/repo/sub', ended: 5 };
+		const base: IParadisDocWakeInput = { owner, live: false, waking: false, seenUnverified: false, hostId: '', windowIsRemote: false };
+		const wake = (input: Partial<IParadisDocWakeInput>) => paradisDecideDocWake({ ...base, ...input });
+		const reason = (input: Partial<IParadisDocWakeInput>) => {
+			const answer = wake(input);
+			return answer.kind === 'refused' ? answer.reason : answer.kind;
+		};
+		assert.deepStrictEqual({
+			ticket: wake({}),
+			codex: reason({ owner: { ...owner, agent: 'codex' } }),
+			noOwner: reason({ owner: undefined }),
+			live: reason({ live: true }),
+			waking: reason({ waking: true }),
+			unknown: reason({ owner: { ...owner, ended: undefined } }),
+			maybeLive: reason({ seenUnverified: true }),
+			agent: reason({ owner: { ...owner, agent: 'opencode' } }),
+			remoteDoc: reason({ hostId: 'devbox' }),
+			remoteWindow: reason({ windowIsRemote: true }),
+			noCwd: reason({ owner: { ...owner, cwd: undefined } }),
+		}, {
+			ticket: { kind: 'wake', agent: 'claude', session: 's1', cwd: '/repo/sub' },
+			codex: 'wake',
+			noOwner: 'noOwner',
+			live: 'live',
+			waking: 'waking',
+			unknown: 'unknown',
+			maybeLive: 'maybeLive',
+			agent: 'agent',
+			remoteDoc: 'remote',
+			remoteWindow: 'remote',
+			noCwd: 'noCwd',
+		});
+	});
+
+	test('wakes in the deepest space that holds the folder where the session started', () => {
+		const spaces = [{ stateKey: 'repo', path: '/repo' }, { stateKey: 'wt', path: '/repo/.worktrees/a' }, { stateKey: 'other', path: '/repo2' }];
+		assert.deepStrictEqual([
+			paradisDocWakeSpaceFor(spaces, '/repo/.worktrees/a/src')?.stateKey,
+			paradisDocWakeSpaceFor(spaces, '/repo/src')?.stateKey,
+			paradisDocWakeSpaceFor(spaces, '/repo2')?.stateKey,
+			paradisDocWakeSpaceFor(spaces, '/elsewhere')?.stateKey,
+		], ['wt', 'repo', 'other', undefined]);
 	});
 
 	test('checks again before Enter: the state, and that the input holds only what was typed', () => {

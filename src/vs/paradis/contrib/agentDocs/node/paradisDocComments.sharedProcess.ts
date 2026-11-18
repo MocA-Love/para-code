@@ -21,7 +21,11 @@ import {
 	PARADIS_DOC_DELIVERY_CLAIM_METHOD,
 	PARADIS_DOC_DELIVERY_CONFIRM_METHOD,
 	PARADIS_DOC_DELIVERY_FINISH_METHOD,
+	PARADIS_DOC_DELIVERY_HAND_OFF_METHOD,
+	PARADIS_DOC_DELIVERY_WAKE_FAILED_METHOD,
+	PARADIS_DOC_DELIVERY_WAKE_METHOD,
 	PARADIS_DOC_DELIVERY_WANTED_EVENT,
+	PARADIS_DOC_DELIVERY_WOKE_METHOD,
 	paradisReadDocDeliveryOutcome,
 } from '../common/paradisDocCommentDelivery.js';
 import {
@@ -146,7 +150,12 @@ export class ParadisDocCommentsChannel implements IServerChannel<unknown> {
 
 const USER_ACTIONS: ReadonlySet<string> = new Set<ParadisDocCommentUserAction>(['resolve', 'reopen', 'append', 'deliverNow']);
 
-/** ウィンドウが持ち主のペインへ貼るためのチャネル。引数はここで確かめ直す。 */
+/** 1〜200 文字の文字列（トークン・会話 ID・貼り付けの印）。 */
+function shortString(value: unknown): string | undefined {
+	return typeof value === 'string' && value.length > 0 && value.length <= 200 ? value : undefined;
+}
+
+/** ウィンドウが持ち主のペインへ貼る・終了した持ち主を起こすためのチャネル。引数はここで確かめ直す。 */
 export class ParadisDocDeliveryChannel implements IServerChannel<unknown> {
 
 	constructor(private readonly _delivery: ParadisDocCommentDelivery) { }
@@ -160,11 +169,34 @@ export class ParadisDocDeliveryChannel implements IServerChannel<unknown> {
 
 	async call<T>(_ctx: unknown, command: string, arg?: unknown): Promise<T> {
 		const args = Array.isArray(arg) ? arg : [];
-		const value = typeof args[0] === 'string' && args[0].length > 0 && args[0].length <= 200 ? args[0] : undefined;
+		switch (command) {
+			case PARADIS_DOC_DELIVERY_WAKE_METHOD: {
+				const target = paradisReadDocCommentTarget(args[0], args[1]);
+				if (target === undefined || typeof args[2] !== 'boolean') {
+					throw new Error('invalid argument');
+				}
+				return await this._delivery.wake(target.hostId, target.path, args[2]) as T;
+			}
+			case PARADIS_DOC_DELIVERY_HAND_OFF_METHOD: {
+				const target = paradisReadDocCommentTarget(args[0], args[1]);
+				const token = shortString(args[2]);
+				if (target === undefined || token === undefined) {
+					throw new Error('invalid argument');
+				}
+				return await this._delivery.handOff(target.hostId, target.path, token) as T;
+			}
+		}
+		const value = shortString(args[0]);
 		if (value === undefined) {
 			throw new Error('invalid argument');
 		}
 		switch (command) {
+			case PARADIS_DOC_DELIVERY_WOKE_METHOD:
+				this._delivery.woke(value, shortString(args[1]));
+				return undefined as T;
+			case PARADIS_DOC_DELIVERY_WAKE_FAILED_METHOD:
+				this._delivery.wakeFailed(value);
+				return undefined as T;
 			case PARADIS_DOC_DELIVERY_CLAIM_METHOD:
 				return await this._delivery.claim(value) as T;
 			case PARADIS_DOC_DELIVERY_CONFIRM_METHOD:

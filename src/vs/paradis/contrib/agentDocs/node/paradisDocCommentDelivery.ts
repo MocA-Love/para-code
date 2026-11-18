@@ -12,8 +12,11 @@
 //  2. 届けてよいペインがあれば、ウィンドウへ「届けたいペインがある」を知らせる（onDidWant）
 //  3. ウィンドウが claim で 1 回分（資料 1 つ）を取り、貼る。Enter の直前に confirmEnter で確かめ直し、finish で結果を返す
 //  4. そのペインの UserPromptSubmit（prompt に ID があるもの）で「届いた」にする。届くまでは同じペインへ次を貼らない
-// 決まりそのものは純関数（common/paradisDocCommentDelivery.ts）。生きているセッションに claude --resume は使わない
-// （終わった持ち主を起こすのは段 3 で、ユーザーがボタンを押したときだけ）。
+//  5. 終了した持ち主は、ユーザーがカードの「起こして届ける」を押したときだけ起こす（wake → ウィンドウが再開のコマンドを
+//     打つ → woke）。同じ ID の hook が起こしたペインから来たら、そのペインが持ち主のペインになり、CLI の起動の猶予の
+//     後に 1〜3 と同じ道で届ける。終了を見ていない会話・動いている会話・起こしている途中の会話は起こさない
+//     （生きているセッションを再開すると会話が枝分かれする）。
+// 決まりそのものは純関数（common/paradisDocCommentDelivery.ts）。
 
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
@@ -25,10 +28,12 @@ import { paradisDocFileName } from '../common/paradisAgentDocsView.js';
 import {
 	IParadisDocDeliveryClaim,
 	ParadisDocDeliveryDecision,
+	ParadisDocWakeAnswer,
 	ParadisDocDeliveryOutcome,
 	ParadisDocDeliveryOwner,
 	ParadisDocDraftState,
 	paradisDecideDocDelivery,
+	paradisDecideDocWake,
 	paradisDocDeliveryMayEnter,
 	paradisDocDeliveryPromptMatches,
 	paradisDocDeliveryText,
@@ -62,6 +67,28 @@ const TYPED_BUSY_MS = 10 * 60_000;
 const TURN_END_WINDOW_MS = 10_000;
 /** 1 回に届けるコメントの上限。 */
 const MAX_IDS_PER_DELIVERY = 10;
+/** 起こすと決めてから、ウィンドウが起こしたペインを知らせるまでの上限（過ぎたら起こしていないものとする）。 */
+const WAKE_LAUNCH_MS = 60_000;
+/** ウィンドウが起こしたペインを知らせた後、起こす途中の印を持つ上限（ウィンドウが閉じて知らせが来ないとき）。 */
+const WAKE_PANE_MS = 30 * 60_000;
+/** 起こしたペインから同じ会話の hook が来た後、CLI の入力欄が使えるようになるのを待つ時間。 */
+const WAKE_SETTLE_MS = 1_500;
+/** 起こしたペインへ、入力欄の中身が分からなくても入れてよい時間（hook が来てから。起こした直後の入力欄は空）。 */
+const WAKE_DELIVER_WINDOW_MS = 60_000;
+
+/** 起こしている途中の会話。 */
+interface IWaking {
+	/** 起こしたペイン（ウィンドウが知らせた後）。ペインが閉じる・CLI が終わるまで、同じ会話をもう一度起こさない。 */
+	readonly token?: string;
+	/** ペインを知らせてこないときに諦める時刻。 */
+	readonly until: number;
+}
+
+/** 起こしたペインで、同じ会話の hook が来た後の猶予。 */
+interface IWoken {
+	readonly readyAt: number;
+	readonly until: number;
+}
 
 interface IClaim {
 	readonly token: string;
@@ -89,6 +116,12 @@ export class ParadisDocCommentDelivery extends Disposable {
 	private readonly _forced = new Set<string>();
 	/** CLI が終わったのを見たペイン（次の hook で外す）。 */
 	private readonly _exited = new Set<string>();
+	/** 起こしている途中の会話（会話 ID → 控え）。 */
+	private readonly _waking = new Map<string, IWaking>();
+	/** 起こしたペインの、起動の猶予（トークン → 猶予）。 */
+	private readonly _woken = new Map<string, IWoken>();
+	/** 持ち主と確かめられない hook が届いた会話（その会話はどこかで動いているかもしれないので起こさない）。 */
+	private readonly _unverifiedSessions = new Set<string>();
 	private readonly _scheduler: RunOnceScheduler;
 	private readonly _retry: RunOnceScheduler;
 
@@ -114,6 +147,8 @@ export class ParadisDocCommentDelivery extends Disposable {
 				// CLI が終わった。前面はシェルに戻るので、次の hook が来るまでそのペインへは届けない
 				this._exited.add(token);
 				this._lastTurnEnd.delete(token);
+				// 起こした CLI が起きないまま終わった（会話が見つからない など）
+				this._forgetWakingPane(token);
 			} else {
 				this._lastTurnEnd.set(token, at);
 			}
@@ -129,6 +164,74 @@ export class ParadisDocCommentDelivery extends Disposable {
 	deliverNow(id: string): void {
 		this._forced.add(id);
 		this._scheduler.schedule();
+	}
+
+	/**
+	 * 終了した持ち主の会話を起こす券を出す（ユーザーがカードの「起こして届ける」を押した）。券を出したら、その会話は
+	 * 起こしている途中になり、ペインが閉じるまで二度目の券は出さない（二度押し・別の資料・別のウィンドウから）。
+	 */
+	async wake(hostId: string, path: string, windowIsRemote: boolean): Promise<ParadisDocWakeAnswer> {
+		await Promise.all([this._docs.ledger.ready, this._comments.ready]);
+		const owner = this._docs.ledger.get(hostId, path)?.owner;
+		this._expireWaking();
+		const answer = paradisDecideDocWake({
+			owner,
+			live: owner !== undefined && this._docs.tokensOf(owner.session).length > 0,
+			waking: owner !== undefined && this._waking.has(owner.session),
+			seenUnverified: owner !== undefined && this._unverifiedSessions.has(owner.session),
+			hostId,
+			windowIsRemote,
+		});
+		if (answer.kind === 'wake') {
+			this._waking.set(answer.session, { until: this._now() + WAKE_LAUNCH_MS });
+			this._scheduler.schedule();
+		}
+		return answer;
+	}
+
+	/** ウィンドウが再開のコマンドを打ったペイン。トークンが分からなければ、起こす途中の印は時間で消える。 */
+	woke(session: string, token: string | undefined): void {
+		if (!this._waking.has(session)) {
+			return;
+		}
+		this._waking.set(session, token !== undefined ? { token, until: this._now() + WAKE_PANE_MS } : { until: this._now() + WAKE_LAUNCH_MS });
+		this._scheduler.schedule();
+	}
+
+	/** 起こせなかった。 */
+	wakeFailed(session: string): void {
+		if (this._waking.delete(session)) {
+			this._scheduler.schedule();
+		}
+	}
+
+	/**
+	 * 持ち主のいない・終了した持ち主の資料を、選んだペインの会話へ渡す（ユーザーがカードで選んだので確認はしない）。
+	 * 動いている・状態の分からない・起こしている途中の持ち主からは渡さない。
+	 */
+	async handOff(hostId: string, path: string, token: string): Promise<'handedOff' | 'sessionUnknown' | 'hostMismatch' | 'ownerActive' | 'unknown'> {
+		await Promise.all([this._docs.ledger.ready, this._comments.ready]);
+		const record = this._docs.ledger.get(hostId, path);
+		if (record === undefined) {
+			return 'unknown';
+		}
+		const pane = this._docs.sessionOf(token);
+		if (pane === undefined) {
+			return 'sessionUnknown';
+		}
+		if (pane.hostId !== hostId) {
+			return 'hostMismatch';
+		}
+		const owner = record.owner;
+		this._expireWaking();
+		if (owner !== undefined && owner.session !== pane.session && (owner.ended === undefined || this._docs.tokensOf(owner.session).length > 0 || this._waking.has(owner.session))) {
+			return 'ownerActive';
+		}
+		if (owner?.session !== pane.session) {
+			this._docs.ledger.adopt(hostId, path, pane);
+		}
+		this._scheduler.schedule();
+		return 'handedOff';
 	}
 
 	/** 届け待ちを見直し、待つ理由を書き、届けてよいペインをウィンドウへ知らせる。 */
@@ -244,9 +347,13 @@ export class ParadisDocCommentDelivery extends Disposable {
 
 	private _onHook(event: IParadisAgentHookEvent): void {
 		if (event.ownerUnverified) {
+			if (event.sessionId !== undefined) {
+				this._unverifiedSessions.add(event.sessionId);
+			}
 			return;
 		}
 		this._exited.delete(event.token);
+		this._onWakingPaneHook(event);
 		if (event.event === 'UserPromptSubmit') {
 			this._lastSubmit.set(event.token, event.at);
 			void this._onPromptSubmitted(event.token, event.payload?.prompt, event.at);
@@ -256,6 +363,11 @@ export class ParadisDocCommentDelivery extends Disposable {
 			this._busy.delete(event.token);
 			this._lastTurnEnd.delete(event.token);
 			this._lastSubmit.delete(event.token);
+			this._woken.delete(event.token);
+			this._forgetWakingPane(event.token);
+		} else if (event.event === 'SessionEnd' && event.sessionId !== undefined) {
+			// 持ち主と確かめられたペインで会話が終わった
+			this._unverifiedSessions.delete(event.sessionId);
 		}
 		this._scheduler.schedule();
 	}
@@ -282,6 +394,42 @@ export class ParadisDocCommentDelivery extends Disposable {
 		}
 	}
 
+	/**
+	 * 起こしたペインから hook が来た。同じ会話なら起動の猶予を置いてから届ける（そのペインは資料のサービスが持ち主の
+	 * ペインとして覚える）。別の会話なら起こす途中の印を外す（そのペインへは届けず、持ち主も移さない）。
+	 */
+	private _onWakingPaneHook(event: IParadisAgentHookEvent): void {
+		if (event.sessionId === undefined || event.event === 'TerminalExit') {
+			return;
+		}
+		for (const [session, waking] of this._waking) {
+			if (session === event.sessionId) {
+				this._waking.delete(session);
+				this._woken.set(event.token, { readyAt: event.at + WAKE_SETTLE_MS, until: event.at + WAKE_DELIVER_WINDOW_MS });
+			} else if (waking.token === event.token) {
+				this._waking.delete(session);
+			}
+		}
+	}
+
+	/** 起こしたペインが閉じた・CLI が終わった。 */
+	private _forgetWakingPane(token: string): void {
+		for (const [session, waking] of this._waking) {
+			if (waking.token === token) {
+				this._waking.delete(session);
+			}
+		}
+	}
+
+	private _expireWaking(): void {
+		const now = this._now();
+		for (const [session, waking] of this._waking) {
+			if (waking.until <= now) {
+				this._waking.delete(session);
+			}
+		}
+	}
+
 	/** 資料の持ち主と、その会話が動いているペイン。 */
 	private _targetOf(hostId: string, path: string): { readonly owner: ParadisDocDeliveryOwner; readonly token?: string; readonly session?: string } {
 		const owner = this._docs.ledger.get(hostId, path)?.owner;
@@ -291,6 +439,10 @@ export class ParadisDocCommentDelivery extends Disposable {
 		const token = this._docs.tokensOf(owner.session)[0];
 		if (token !== undefined) {
 			return { owner: 'live', token, session: owner.session };
+		}
+		this._expireWaking();
+		if (this._waking.has(owner.session)) {
+			return { owner: 'waking' };
 		}
 		return { owner: owner.ended !== undefined ? 'ended' : 'unknown' };
 	}
@@ -307,7 +459,14 @@ export class ParadisDocCommentDelivery extends Disposable {
 			this._busy.delete(token);
 		}
 		const lastTurnEnd = this._lastTurnEnd.get(token);
-		const turnJustEnded = lastTurnEnd !== undefined && now - lastTurnEnd <= TURN_END_WINDOW_MS && lastTurnEnd >= (this._lastSubmit.get(token) ?? 0);
+		let woken = this._woken.get(token);
+		if (woken !== undefined && woken.until <= now) {
+			this._woken.delete(token);
+			woken = undefined;
+		}
+		// 起こした直後の入力欄は空なので、中身が分からなくても猶予の後は入れる（ユーザーが何か送った後は除く）
+		const wokenWindow = woken !== undefined && (this._lastSubmit.get(token) ?? 0) < woken.readyAt - WAKE_SETTLE_MS;
+		const turnJustEnded = (lastTurnEnd !== undefined && now - lastTurnEnd <= TURN_END_WINDOW_MS && lastTurnEnd >= (this._lastSubmit.get(token) ?? 0)) || wokenWindow;
 		const draft = this._draftOf(token, target.session);
 		const draftState: ParadisDocDraftState = draft === undefined ? 'unknown' : draft.trim().length > 0 ? 'text' : 'empty';
 		return paradisDecideDocDelivery({
@@ -320,6 +479,7 @@ export class ParadisDocCommentDelivery extends Disposable {
 			forced,
 			remote: this._docs.sessionOf(token)?.hostId !== '',
 			busy: this._busy.has(token),
+			starting: woken !== undefined && now < woken.readyAt,
 		});
 	}
 
