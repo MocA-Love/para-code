@@ -59,11 +59,25 @@ export interface IParadisDocLayerState {
 	readonly activeId?: string;
 	/** 書きかけのコメントの場所（欄を開いている間、本文に色を付ける）。 */
 	readonly draft?: IParadisDocAnchor;
+	/** エージェントがいま書き換えようとしているところ（「編集中」の印。Q663-5）。 */
+	readonly editing?: IParadisDocLayerEditing;
+}
+
+/** ページに見せる「編集中」の印。 */
+export interface IParadisDocLayerEditing {
+	/** 印ごとの番号（同じ番号の間は、描き直しの後に場所が見つからなければ枠を外す）。 */
+	readonly id: string;
+	/** 札の文（「Claude Code が編集中」など）。 */
+	readonly label: string;
+	/** 書き換え前の文字列の先頭（Edit の `old_string`）。無ければ場所を探さず札だけ出す。 */
+	readonly source?: string;
 }
 
 export interface IParadisDocLayerLabels {
 	/** 選んだ文字の横に出すボタン。 */
 	readonly comment: string;
+	/** 読んでいる所より下に節が足されたときの知らせ（押すとそこへ移る）。 */
+	readonly newSection: string;
 }
 
 /** ワークベンチへ転送するキーの中身（webview の基盤の `KeyEvent` と同じ欄）。 */
@@ -155,8 +169,14 @@ export function paradisDocLayerRevealMessage(id: string): { readonly [LAYER_REVE
 	return { [LAYER_REVEAL_KEY]: id };
 }
 
-/** Markdown の本文を差し替えた後に動かす JavaScript（`paradisViewerBodySwapScript` の `afterSwap` に足す）。 */
-export const PARADIS_DOC_LAYER_RERUN_SCRIPT = `if(window.__paradisDocLayerRefresh){window.__paradisDocLayerRefresh();}`;
+/**
+ * Markdown の本文を差し替えた後に動かす JavaScript（`paradisViewerBodySwapScript` の `afterSwap` に足す）。差し替えの前後の
+ * ブロックを比べて、変わったブロックに差分の色を付ける（拡大・読み込み・表示の更新では比べない）。
+ */
+export const PARADIS_DOC_LAYER_RERUN_SCRIPT = `if(window.__paradisDocLayerSwapped){window.__paradisDocLayerSwapped();}`;
+
+/** 描き直しで変わったブロックがこれより多ければ（書き直し）、差分の色も知らせも出さない。 */
+const DIFF_MAX_BLOCKS = 60;
 
 /** `<script>` の中に置く JSON。 */
 function scriptJson(value: unknown): string {
@@ -182,10 +202,18 @@ const LAYER_BODY = `function (O, A, env) {
 	var TEXT = color('--vscode-editorWidget-foreground', color('--vscode-foreground', '#1f2328'));
 	var LINE = color('--vscode-widget-border', color('--vscode-editorWidget-border', '#d0d7de'));
 	var MARK = color('--vscode-editor-findMatchHighlightBackground', 'rgba(234,92,0,.33)');
+	var ADDED = color('--vscode-diffEditor-insertedTextBackground', 'rgba(46,160,67,.25)');
+	var EDIT = color('--vscode-paradis-accent', ACCENT);
+	var EDIT_TEXT = color('--vscode-badge-foreground', '#ffffff');
 	var FONT = '12px/22px system-ui, sans-serif';
+	var TAG_FONT = '10px/16px system-ui, sans-serif';
 
-	var layer = null, boxes = null, index = null, bound = null, button = null, pending = null;
+	var layer = null, boxes = null, fixed = null, index = null, bound = null, button = null, pending = null;
 	var hits = [], reported = {};
+	// 差分: 前の差し替えのときのブロックの文字の並び（snap。前の文書の要素は持たない）と、変わったブロックの要素。知らせ（pill）は足された節が画面より下のとき
+	var snap = null, changedEls = [], pill = null, pillTarget = null;
+	// 「編集中」の印: 同じ番号の印のまま本文が差し替わったか（差し替わった後は、そのままの文が見つかるときだけ枠を出す）
+	var editingSeen = null, editRect = null;
 	function zoomOf() { var d = env.doc(), z = d && d.documentElement && d.documentElement.currentCSSZoom; return z && z > 0 ? z : 1; }
 	var blockCache = null;
 	function blockOf(el, root) {
@@ -207,7 +235,7 @@ const LAYER_BODY = `function (O, A, env) {
 		if (!root) { return null; }
 		blockCache = typeof WeakMap === 'function' ? new WeakMap() : null;
 		var w = d.createTreeWalker(root, 4);
-		var text = '', nodes = [], maps = [], heads = [], lastSpace = true, lastBlock = null, n;
+		var text = '', nodes = [], maps = [], heads = [], blocks = [], lastSpace = true, lastBlock = null, n;
 		while ((n = w.nextNode())) {
 			var p = n.parentNode;
 			if (!p || p.nodeType !== 1) { continue; }
@@ -216,6 +244,8 @@ const LAYER_BODY = `function (O, A, env) {
 			var block = blockOf(p, root);
 			if (block !== lastBlock) {
 				if (!lastSpace) { text += ' '; lastSpace = true; }
+				if (blocks.length) { blocks[blocks.length - 1].end = text.length; }
+				blocks.push({ el: block, start: text.length, end: text.length });
 				lastBlock = block;
 				if (/^H[1-6]$/.test(block.nodeName)) { heads.push({ at: text.length, text: String(block.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 200) }); }
 			}
@@ -228,7 +258,8 @@ const LAYER_BODY = `function (O, A, env) {
 			map[data.length] = text.length;
 			nodes.push(n); maps.push(map);
 		}
-		return { text: text, nodes: nodes, maps: maps, root: root, heads: heads };
+		if (blocks.length) { blocks[blocks.length - 1].end = text.length; }
+		return { text: text, nodes: nodes, maps: maps, root: root, heads: heads, blocks: blocks };
 	}
 	function headingAt(pos) {
 		var h = '';
@@ -314,6 +345,10 @@ const LAYER_BODY = `function (O, A, env) {
 		var shadow = layer.attachShadow({ mode: 'closed' });
 		boxes = el(d, 'div', { position: 'absolute', left: '0', top: '0', font: FONT, color: TEXT });
 		shadow.appendChild(boxes);
+		// 画面に留める札と知らせ（本文と一緒に流れない）
+		fixed = el(d, 'div', { position: 'fixed', left: '0', top: '0', width: '0', height: '0', font: FONT, color: TEXT });
+		shadow.appendChild(fixed);
+		pill = null;
 		d.documentElement.appendChild(layer);
 		if (bound !== d) { bound = d; bind(d); }
 		return true;
@@ -341,7 +376,7 @@ const LAYER_BODY = `function (O, A, env) {
 			}
 		}, true);
 		// 中で巻き取る要素のスクロールだけ描き直す（文書そのもののスクロールでは枠は文書と一緒に動く）
-		d.addEventListener('scroll', function (e) { if (e.target !== d) { schedule(); } }, true);
+		d.addEventListener('scroll', function (e) { if (e.target !== d) { schedule(); } else { checkPill(); } }, true);
 		// 幅が変わると選んだ文字の位置も変わるので、「コメント」のボタンは外す（選び直せば出る）
 		function relayout() { hideButton(); schedule(); }
 		w.addEventListener('resize', relayout);
@@ -397,40 +432,183 @@ const LAYER_BODY = `function (O, A, env) {
 		env.post({ ${LAYER_MESSAGE_KEY}: 'compose', anchor: anchor });
 	}
 	function clear(node) { while (node && node.firstChild) { node.removeChild(node.firstChild); } }
+	/** 差分を比べるブロックの並び（文字の無いブロックは除く）。 */
+	function blockList(idx) {
+		var out = [];
+		for (var i = 0; i < idx.blocks.length; i++) {
+			var b = idx.blocks[i], t = idx.text.slice(b.start, b.end).trim();
+			if (t) { out.push({ el: b.el, text: t }); }
+		}
+		return out;
+	}
+	function texts(list) { var out = []; for (var i = 0; i < list.length; i++) { out.push(list[i].text); } return out; }
+	/**
+	 * 本文のブロックの大きさが変わったら描き直す（Mermaid の図や画像が後から描かれると、下のブロックの位置がずれる。
+	 * 本文が画面より短いと body の大きさは変わらないので、body だけを見ていては気づかない）。
+	 */
+	var blockObserver = null;
+	function observeBlocks(idx) {
+		var w = env.win();
+		if (blockObserver) { blockObserver.disconnect(); blockObserver = null; }
+		if (!idx || !w || typeof w.ResizeObserver !== 'function') { return; }
+		try {
+			blockObserver = new w.ResizeObserver(function () { schedule(); });
+			var kids = idx.root.children;
+			for (var i = 0; i < kids.length && i < 2000; i++) { blockObserver.observe(kids[i]); }
+		} catch (e) { blockObserver = null; }
+	}
+	function takeSnapshot() {
+		var idx = buildIndex();
+		observeBlocks(idx);
+		snap = idx ? texts(blockList(idx)) : null;
+		changedEls = []; pillTarget = null;
+	}
+	/** 本文が差し替わった（Markdown の本文の差し替え・HTML の中のページの入れ替え）。変わったブロックに差分の色を付ける。 */
+	function swapped() {
+		reported = {};
+		if (editingSeen) { editingSeen.swapped = true; }
+		var idx = buildIndex(), next = idx ? blockList(idx) : null;
+		observeBlocks(idx);
+		changedEls = []; pillTarget = null;
+		// 空の文書から描いたとき（初めの書き込み・空にした後の書き戻し）は全部が変わったことになるので色を付けない
+		if (snap && snap.length && next) {
+			var r = A.diffBlocks(snap, texts(next));
+			if (r.changed.length <= ${DIFF_MAX_BLOCKS}) {
+				for (var i = 0; i < r.changed.length; i++) {
+					var e = next[r.changed[i]].el;
+					if (changedEls.indexOf(e) === -1) { changedEls.push(e); }
+				}
+				if (r.added && changedEls.length) { pillTarget = changedEls[0]; }
+			}
+		}
+		snap = next ? texts(next) : null;
+		draw();
+		// 差し替えの後に描かれるもの（Mermaid の図・画像）で位置がずれても追いつく。大きさの見張りは描画の拍に
+		// 合わせて届くので、拍が止まっている間にも間に合うよう時間でも描き直す
+		setTimeout(schedule, 200);
+		setTimeout(schedule, 800);
+	}
+	/** 足された節が画面より下にあれば知らせを出す。見える所まで来たら外す。 */
+	function checkPill() {
+		if (!fixed) { return; }
+		var w = env.win(), below = false;
+		if (pillTarget && pillTarget.isConnected && w) {
+			var r = pillTarget.getBoundingClientRect();
+			below = r.top >= w.innerHeight;
+			if (!below) { pillTarget = null; }
+		}
+		if (!below) {
+			if (pill && pill.parentNode) { pill.parentNode.removeChild(pill); }
+			pill = null;
+			return;
+		}
+		if (pill && pill.isConnected) { return; }
+		pill = el(env.doc(), 'button', {
+			position: 'fixed', left: '50%', bottom: '10px', transform: 'translateX(-50%)', height: '24px', 'box-sizing': 'border-box', 'pointer-events': 'auto', cursor: 'pointer',
+			font: FONT, color: TEXT, background: PANEL, border: '1px solid ' + LINE, 'border-radius': '999px', padding: '0 10px', 'white-space': 'nowrap', 'box-shadow': '0 2px 8px rgba(0,0,0,.25)',
+		}, L.newSection);
+		pill.setAttribute('type', 'button');
+		pill.setAttribute('data-paradis-doc-comment', 'new-section');
+		pill.addEventListener('click', function (ev) {
+			ev.preventDefault(); ev.stopPropagation();
+			if (!ev.isTrusted) { return; }
+			var target = pillTarget, w2 = env.win();
+			pillTarget = null; checkPill();
+			if (target && target.isConnected && w2) {
+				var r2 = target.getBoundingClientRect();
+				try { w2.scrollTo({ top: Math.max(0, w2.scrollY + r2.top - 16), behavior: 'smooth' }); } catch (e) { }
+			}
+		});
+		fixed.appendChild(pill);
+	}
+	/** 要素たちを囲む矩形（層の座標）。 */
+	function unionRect(els) {
+		var x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+		for (var i = 0; i < els.length; i++) {
+			if (!els[i] || !els[i].isConnected) { continue; }
+			var r = toLayer(els[i].getBoundingClientRect());
+			if (r.w < 1 && r.h < 1) { continue; }
+			x1 = Math.min(x1, r.x); y1 = Math.min(y1, r.y); x2 = Math.max(x2, r.x + r.w); y2 = Math.max(y2, r.y + r.h);
+		}
+		return x1 === Infinity ? null : { x: x1, y: y1, w: x2 - x1, h: y2 - y1 };
+	}
+	function drawDiff() {
+		for (var i = 0; i < changedEls.length; i++) {
+			var r = unionRect([changedEls[i]]);
+			if (r) { box(r, { background: ADDED, 'box-shadow': '0 0 0 2px ' + ADDED }); }
+		}
+	}
+	function tag(text, css) {
+		var t = el(env.doc(), 'div', { 'box-sizing': 'border-box', height: '16px', padding: '0 6px', 'border-radius': '999px', background: EDIT, color: EDIT_TEXT, font: TAG_FONT, 'white-space': 'nowrap', 'pointer-events': 'none' }, text);
+		sx(t, css);
+		t.setAttribute('data-paradis-doc-comment', 'editing');
+		return t;
+	}
+	/**
+	 * 「編集中」の印。書き換え前の文字列が見つかれば、そのブロックを破線の枠で囲み、右上に札を出す。見つからない
+	 * （Write・属性だけの書き換え）ときは画面の右上に札だけ。本文が差し替わった後は、そのままの文が見つかるときだけ枠を
+	 * 出す（書き換えが入った後は、残った行の一部に当たって違う所を囲みうるため）。
+	 */
+	function drawEditing(idx) {
+		var e = state.editing;
+		editRect = null;
+		if (!e) { editingSeen = null; return; }
+		if (!editingSeen || editingSeen.id !== e.id) { editingSeen = { id: e.id, swapped: false }; }
+		var loc = e.source && idx ? A.locate(idx.text, e.source, O.kind) : null;
+		if (loc && editingSeen.swapped && loc.match !== 'exact') { loc = null; }
+		var range = loc ? rangeFor(loc.start, Math.max(loc.start + 1, loc.end)) : null;
+		var rect = null;
+		if (range) {
+			var sc = range.startContainer, ec = range.endContainer;
+			rect = unionRect([blockOf(sc.nodeType === 1 ? sc : sc.parentElement, idx.root), blockOf(ec.nodeType === 1 ? ec : ec.parentElement, idx.root)]);
+		}
+		if (rect) {
+			var pad = 5;
+			editRect = { x: rect.x - pad, y: rect.y - pad, w: rect.w + pad * 2, h: rect.h + pad * 2 };
+			box(editRect, { border: '1px dashed ' + EDIT });
+			boxes.appendChild(tag(e.label, { position: 'absolute', left: (editRect.x + editRect.w + 1) + 'px', top: Math.max(0, editRect.y - 17) + 'px', transform: 'translateX(-100%)' }));
+			return;
+		}
+		if (!editingSeen.swapped || !e.source) {
+			fixed.appendChild(tag(e.label, { position: 'fixed', right: '12px', top: '8px' }));
+		}
+	}
 	function draw() {
 		if (!ensureLayer()) { return; }
 		var comments = state.comments || [];
-		if (!comments.length && !state.draft) {
-			// 描くものが無ければ文書を読み直さない（選んだ文字の「コメント」のボタンだけ残す）
-			var keep = button; button = null;
-			clear(boxes); hits = [];
-			if (keep) { button = keep; boxes.appendChild(button); }
-			return;
-		}
-		index = buildIndex();
-		if (!index) { return; }
 		var keepButton = button; button = null;
 		clear(boxes);
+		var keepPill = pill && pill.parentNode === fixed ? pill : null;
+		clear(fixed);
 		hits = [];
+		// 本文を読み直すのは、当てるもの（コメント・書きかけ・編集中の場所）があるときだけ
+		var needIndex = comments.length > 0 || !!state.draft || !!(state.editing && state.editing.source);
+		if (needIndex) { index = buildIndex(); }
 		var places = {}, changed = false;
-		for (var k = 0; k < comments.length; k++) {
-			var c = comments[k], hit = A.resolve(index.text, c.anchor, hintFor(c.anchor.selector));
-			var range = hit ? rangeFor(hit.start, hit.end) : null, rs = range ? rectsOf(range) : [];
-			var place = 'lost';
-			if (hit && rs.length) {
-				place = hit.match === 'fuzzy' ? 'changed' : hit.ambiguous ? 'ambiguous' : 'found';
-				var active = c.id === state.activeId;
-				for (var q = 0; q < rs.length; q++) { box(rs[q], { background: MARK, 'border-bottom': (active ? '2px' : '1px') + ' solid ' + (active ? ACCENT : 'transparent') }); }
-				hits.push({ id: c.id, rects: rs });
+		if (needIndex && index) {
+			for (var k = 0; k < comments.length; k++) {
+				var c = comments[k], hit = A.resolve(index.text, c.anchor, hintFor(c.anchor.selector));
+				var range = hit ? rangeFor(hit.start, hit.end) : null, rs = range ? rectsOf(range) : [];
+				var place = 'lost';
+				if (hit && rs.length) {
+					place = hit.match === 'fuzzy' ? 'changed' : hit.ambiguous ? 'ambiguous' : 'found';
+					var active = c.id === state.activeId;
+					for (var q = 0; q < rs.length; q++) { box(rs[q], { background: MARK, 'border-bottom': (active ? '2px' : '1px') + ' solid ' + (active ? ACCENT : 'transparent') }); }
+					hits.push({ id: c.id, rects: rs });
+				}
+				places[c.id] = place;
+				if (reported[c.id] !== place) { changed = true; }
 			}
-			places[c.id] = place;
-			if (reported[c.id] !== place) { changed = true; }
+			if (state.draft) {
+				var dh = A.resolve(index.text, state.draft, hintFor(state.draft.selector)), dr = dh ? rangeFor(dh.start, dh.end) : null;
+				var drs = dr ? rectsOf(dr) : [];
+				for (var m = 0; m < drs.length; m++) { box(drs[m], { background: MARK, 'border-bottom': '2px solid ' + ACCENT }); }
+			}
 		}
-		if (state.draft) {
-			var dh = A.resolve(index.text, state.draft, hintFor(state.draft.selector)), dr = dh ? rangeFor(dh.start, dh.end) : null;
-			var drs = dr ? rectsOf(dr) : [];
-			for (var m = 0; m < drs.length; m++) { box(drs[m], { background: MARK, 'border-bottom': '2px solid ' + ACCENT }); }
-		}
+		drawDiff();
+		drawEditing(needIndex ? index : null);
+		if (keepPill) { fixed.appendChild(keepPill); }
+		checkPill();
 		if (keepButton) { button = keepButton; boxes.appendChild(button); }
 		if (changed) { reported = places; env.post({ ${LAYER_MESSAGE_KEY}: 'places', places: places }); }
 	}
@@ -449,7 +627,11 @@ const LAYER_BODY = `function (O, A, env) {
 	});
 	return {
 		refresh: function () { reported = {}; draw(); },
-		start: function () { reported = {}; draw(); env.post({ ${LAYER_MESSAGE_KEY}: 'ready' }); },
+		start: function () { reported = {}; takeSnapshot(); draw(); env.post({ ${LAYER_MESSAGE_KEY}: 'ready' }); },
+		swapped: swapped,
+		// 「編集中」の枠の矩形（層の座標）。カーソルの演出（Q663-6、今は無し）を足すときはここへ
+		// paradisCursorOverlay.ts の press・status を置く
+		editingRect: function () { return editRect; },
 	};
 }`;
 
@@ -462,12 +644,12 @@ export function paradisDocCommentInPageScript(nonce: string, token: string, labe
 var T=${scriptJson(token)};
 var api=window.__paradisVsCodeApi;if(!api&&typeof acquireVsCodeApi==='function'){api=window.__paradisVsCodeApi=acquireVsCodeApi();}
 var fromHost=${fromHost};
-var layer=(${LAYER_BODY})(${scriptJson({ labels, state })},${PARADIS_DOC_ANCHOR_FUNCTIONS},{
+var layer=(${LAYER_BODY})(${scriptJson({ labels, state, kind: 'markdown' })},${PARADIS_DOC_ANCHOR_FUNCTIONS},{
 post:function(m){var o={token:T};for(var k in m){if(k!=='token'){o[k]=m[k];}}try{if(api){api.postMessage(o);}}catch(e){}},
 doc:function(){return document;},win:function(){return window;},
 listen:function(cb){window.addEventListener('message',function(e){if(fromHost(e)){cb(e.data);}});}
 });
-window.__paradisDocLayerRefresh=layer.refresh;
+window.__paradisDocLayerRefresh=layer.refresh;window.__paradisDocLayerSwapped=layer.swapped;
 if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',layer.start);}else{layer.start();}
 window.addEventListener('load',layer.refresh);
 }catch(err){console.error('[paradis] doc comment layer failed',err);}})();</script>`;
@@ -517,6 +699,7 @@ export function paradisDocCommentWrapperDocument(options: IParadisDocCommentWrap
 		labels: options.labels,
 		state: options.state,
 		commentable: options.commentable,
+		kind: 'html',
 		sandbox: paradisDocCommentFrameSandbox(options.allowPageScripts),
 		scroll: options.scrollProgress,
 	};
@@ -579,7 +762,7 @@ try{if(old){w.scrollTo(x,y);}else if(firstLoad&&O.scroll>0&&d&&d.body){w.scrollT
 firstLoad=false;
 next.style.visibility='visible';
 if(old&&old.parentNode){old.parentNode.removeChild(old);}
-if(layer){layer.start();}
+if(layer){if(old){layer.swapped();}else{layer.start();}}
 }
 function load(html){
 var old=frame;

@@ -16,6 +16,8 @@
 //  - カードには、届け方の状態（Q663-3: カードの中に出す）とエージェントの回答を並べ、解決・開き直し・返信（追記）を置く。
 //    回答は文字のまま（textContent）出し、HTML・Markdown として描かない。操作はワークベンチの DOM とチャネルだけで行い、
 //    ページ（webview）からのメッセージでは受けない。
+//  - エージェントが書き換えようとしている所の「編集中」の印（Q663-5）を、shared process の控え（paradisDocEditingSource.ts）から
+//    受けてページへ渡す。描き直しで変わったブロックの差分の色と、下に足された節の知らせはページの層だけで出す。
 
 import * as dom from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
@@ -35,6 +37,8 @@ import { IParadisDocAnchor } from '../common/paradisDocCommentAnchor.js';
 import { IParadisDocLayerKey, IParadisDocLayerLabels, IParadisDocLayerState, ParadisDocLayerMessage, paradisDocLayerRevealMessage, paradisDocLayerStateMessage, paradisReadDocLayerMessage } from '../common/paradisDocCommentLayer.js';
 import { IParadisDocCommentThread, IParadisDocCommentsChange, PARADIS_DOC_COMMENT_TEXT_MAX, ParadisDocCommentPlace, ParadisDocCommentUserAction } from '../common/paradisDocComments.js';
 import { IParadisDocCommentsBackend, paradisDocCommentTargetOf } from './paradisDocCommentsBackend.js';
+import { IParadisDocEditingMark } from '../common/paradisDocEditing.js';
+import { IParadisDocEditingSource, paradisDocEditingSource } from './paradisDocEditingSource.js';
 import './media/paradisDocComments.css';
 
 /** ビューアがコントローラーへ渡すもの。 */
@@ -163,6 +167,9 @@ export class ParadisDocCommentsController extends Disposable {
 	/** いまの webview の文書に渡した印。webview を作るたびに作り直す。 */
 	private _token: string | undefined;
 	private _loadGeneration = 0;
+	/** いまの資料の「編集中」の印。 */
+	private _editing: IParadisDocEditingMark | undefined;
+	private _editingGeneration = 0;
 
 	private _toggle: HTMLButtonElement | undefined;
 	private _content: HTMLElement | undefined;
@@ -182,8 +189,18 @@ export class ParadisDocCommentsController extends Disposable {
 	constructor(
 		private readonly _host: IParadisDocCommentsHost,
 		private readonly _backend: IParadisDocCommentsBackend | undefined,
+		private readonly _editingSource: IParadisDocEditingSource | undefined = paradisDocEditingSource(),
 	) {
 		super();
+		if (this._editingSource) {
+			this._register(this._editingSource.onDidChange(change => {
+				if (this._target && change.hostId === this._target.hostId && change.path === this._target.path) {
+					// 読みに行った結果より新しい知らせを優先する
+					this._editingGeneration++;
+					this._setEditing(change.mark);
+				}
+			}));
+		}
 		if (this._backend) {
 			this._changeListener.value = this._backend.onDidChange(change => {
 				if (this._target && change.hostId === this._target.hostId && change.path === this._target.path) {
@@ -210,7 +227,10 @@ export class ParadisDocCommentsController extends Disposable {
 
 	/** ページへ渡す文言。 */
 	get labels(): IParadisDocLayerLabels {
-		return { comment: localize('paradis.docComments.commentButton', "コメント") };
+		return {
+			comment: localize('paradis.docComments.commentButton', "コメント"),
+			newSection: localize('paradis.docComments.newSection', "下に新しい節が入りました"),
+		};
 	}
 
 	/** ページへ渡す、いまの表示。 */
@@ -219,6 +239,15 @@ export class ParadisDocCommentsController extends Disposable {
 			comments: this._threads.map(thread => ({ id: thread.id, anchor: thread.anchor })),
 			...(this._activeId !== undefined ? { activeId: this._activeId } : {}),
 			...(this._draft !== undefined ? { draft: this._draft.anchor } : {}),
+			...(this._editing !== undefined ? {
+				editing: {
+					id: this._editing.id,
+					label: this._editing.tool === 'write'
+						? localize('paradis.docComments.rewriting', "Claude Code が書き直し中")
+						: localize('paradis.docComments.editing', "Claude Code が編集中"),
+					...(this._editing.source !== undefined ? { source: this._editing.source } : {}),
+				},
+			} : {}),
 		};
 	}
 
@@ -279,8 +308,35 @@ export class ParadisDocCommentsController extends Disposable {
 		this._replyBox = undefined;
 		this._replyStore.clear();
 		this._pinned = false;
+		this._editing = undefined;
 		this._update();
 		this._load();
+		this._loadEditing();
+	}
+
+	/** 開いた資料にいま出ている「編集中」の印を読む（書いている途中で開いたとき）。 */
+	private async _loadEditing(): Promise<void> {
+		const target = this._target;
+		const generation = ++this._editingGeneration;
+		if (!target || !this._editingSource) {
+			return;
+		}
+		try {
+			const mark = await this._editingSource.get(target.hostId, target.path);
+			if (generation === this._editingGeneration && this._target === target) {
+				this._setEditing(mark);
+			}
+		} catch (error) {
+			onUnexpectedError(error);
+		}
+	}
+
+	private _setEditing(mark: IParadisDocEditingMark | undefined): void {
+		if (this._editing?.id === mark?.id) {
+			return;
+		}
+		this._editing = mark;
+		this._push();
 	}
 
 	/** プレビュー（true）とソース（false）の切り替え。ソースの間は列を出さない。 */
