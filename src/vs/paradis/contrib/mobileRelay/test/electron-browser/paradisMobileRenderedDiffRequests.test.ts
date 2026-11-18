@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import * as assert from 'assert';
+import { mainWindow } from '../../../../../base/browser/window.js';
 import { DeferredPromise } from '../../../../../base/common/async.js';
 import { bufferToStream, VSBuffer } from '../../../../../base/common/buffer.js';
 import { URI } from '../../../../../base/common/uri.js';
@@ -16,7 +17,7 @@ import { ServicesAccessor } from '../../../../../platform/instantiation/common/i
 import { IRemoteAgentService } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IParadisGitResult } from '../../common/paradisMobileRelay.js';
 import { renderParadisMobileRenderedDiffHtml } from '../../electron-browser/paradisMobileRenderedDiffHtml.js';
-import '../../electron-browser/paradisMobileRenderedDiffRequests.js';
+import { replaceOutsideImages } from '../../electron-browser/paradisMobileRenderedDiffRequests.js';
 import { IParadisMobileRequestHost, paradisDispatchMobileRequest } from '../../electron-browser/paradisMobileRequestHandlers.js';
 
 const ROOT = URI.file('/repo');
@@ -95,6 +96,13 @@ suite('ParadisMobileRenderedDiffRequests', () => {
 			['escape', 'invalid path'],
 			['side', 'invalid renderedDiff request'],
 		]);
+	});
+
+	test('replaces images that are not embedded with their alt text', () => {
+		const root = mainWindow.document.createElement('div');
+		root.innerHTML = '<p><img src="data:image/png;base64,AA==" alt="kept"><img src="https://example.com/a.png" alt="outside"><img src="./big.png"></p>';
+		replaceOutsideImages(root);
+		assert.strictEqual(root.innerHTML, '<p><img src="data:image/png;base64,AA==" alt="kept"><span class="paradis-mobile-rdiff-ext-img">outside</span></p>');
 	});
 
 	test('builds a document that blocks scripts and outside loads, and escapes the note', () => {

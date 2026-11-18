@@ -71,6 +71,7 @@ table { display: block; max-width: 100%; overflow-x: auto; }
 th, td { overflow-wrap: break-word; }
 blockquote { color: var(--vscode-descriptionForeground); border-left-color: #3a3a3a; }
 .paradis-rdiff-unified { padding: 4px 12px 0 30px; }
+.paradis-mobile-rdiff-ext-img { color: var(--vscode-descriptionForeground); }
 .paradis-mobile-rdiff-note { margin: 8px 12px 0; padding: 6px 10px; border: 0.5px solid var(--vscode-widget-border); border-radius: 6px; font-size: 12px; line-height: 18px; color: var(--vscode-descriptionForeground); }
 `;
 
