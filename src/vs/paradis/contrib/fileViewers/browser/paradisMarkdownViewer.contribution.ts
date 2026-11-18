@@ -26,6 +26,7 @@ import { ParadisFileDiffInput, ParadisFileDiffInputSerializer } from './paradisF
 import { registerParadisFileViewerActions } from './paradisFileViewerActions.js';
 import './paradisMarkdownWidthConfiguration.js';
 import './paradisRenderedDiffConfiguration.js';
+import './paradisMultiDiffRenderedDiffAction.js';
 import { PARADIS_FILE_DIFF_EDITOR_ID, PARADIS_FILE_DIFF_INPUT_TYPE_ID, PARADIS_MARKDOWN_EDITOR_ID, PARADIS_MARKDOWN_EXTENSIONS, PARADIS_MARKDOWN_INPUT_TYPE_ID, isParadisMarkdownResource, paradisGlobForExtension } from './paradisFileViewers.js';
 
 // allow-any-unicode-next-line

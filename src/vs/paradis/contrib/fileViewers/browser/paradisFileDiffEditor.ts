@@ -131,7 +131,7 @@ export class ParadisFileDiffEditor extends EditorPane {
 		// 変更後の側は編集できる。読み取り専用のファイルなら編集させない（編集しても保存されずに消えるため）
 		store.add(paradisFollowModelReadonly(modifiedRef.object, options => widget.updateOptions(options)));
 		if (isParadisMarkdownResource(diffInput.modifiedResource)) {
-			this._ensureRendered().setInput(diffInput.originalResource, diffInput.modifiedResource, originalRef.object.textEditorModel, modifiedRef.object.textEditorModel);
+			this._ensureRendered().setInput(diffInput.originalResource, diffInput.modifiedResource, originalRef.object.textEditorModel, modifiedRef.object.textEditorModel, diffInput.openInRenderedDiff);
 		} else {
 			this._rendered?.clearInput();
 		}

@@ -215,8 +215,11 @@ export class ParadisMarkdownRenderedDiffView extends Disposable {
 		return this._input ? this._mode : 'text';
 	}
 
-	/** 開いた差分を受け取る。モデルの変更（右側の編集・ファイルの更新）に合わせて描き直す。 */
-	setInput(original: URI, modified: URI, originalModel: ITextModel, modifiedModel: ITextModel): void {
+	/**
+	 * 開いた差分を受け取る。モデルの変更（右側の編集・ファイルの更新）に合わせて描き直す。`preferRendered` なら設定に
+	 * 関わらずプレビュー差分で開く（大きすぎる文書はテキスト差分のまま）。
+	 */
+	setInput(original: URI, modified: URI, originalModel: ITextModel, modifiedModel: ITextModel, preferRendered = false): void {
 		const store = new DisposableStore();
 		this._inputStore.value = store;
 		this._input = { original, modified, originalModel, modifiedModel };
@@ -229,7 +232,7 @@ export class ParadisMarkdownRenderedDiffView extends Disposable {
 		store.add(modifiedModel.onDidChangeContent(() => this._scheduleRender()));
 		this._toolbar.element.style.display = '';
 		this._checkSize();
-		const mode = this._unavailable ? 'text' : paradisInitialDiffViewMode(this._configurationService.getValue(PARADIS_MARKDOWN_DIFF_VIEW_SETTING), this._storageService.get(LAST_MODE_STORAGE_KEY, StorageScope.PROFILE));
+		const mode = this._unavailable ? 'text' : preferRendered ? 'rendered' : paradisInitialDiffViewMode(this._configurationService.getValue(PARADIS_MARKDOWN_DIFF_VIEW_SETTING), this._storageService.get(LAST_MODE_STORAGE_KEY, StorageScope.PROFILE));
 		this._applyMode(mode);
 	}
 
