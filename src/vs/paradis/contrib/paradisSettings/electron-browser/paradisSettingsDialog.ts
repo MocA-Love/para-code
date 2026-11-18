@@ -1487,6 +1487,24 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		description: localize('paradis.settings.markdownWidthDesc', "開いたときの本文の幅です。プレビューの上の帯の「読みやすい | 広い | 全幅」で替えた幅は、ファイルごとに覚えて次もその幅で開きます。"),
 		keywords: 'markdown preview width wide full readable md',
 	},
+	{
+		sectionId: 'psd-sec-office',
+		group: GROUP_OFFICE_MARKDOWN,
+		key: 'paradis.markdownViewer.diffView',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.markdownDiffView', "Markdown の差分を開いたときの表示"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.markdownDiffViewDesc', "プレビュー差分は描いた見た目で比べ、変わった所に色を付けます。差分の上の帯でいつでもテキスト差分に切り替えられます。"),
+		keywords: 'markdown diff preview rendered text compare md',
+		choiceLabels: {
+			// allow-any-unicode-next-line
+			rendered: localize('paradis.settings.markdownDiffView.rendered', "プレビュー差分"),
+			// allow-any-unicode-next-line
+			text: localize('paradis.settings.markdownDiffView.text', "テキスト差分"),
+			// allow-any-unicode-next-line
+			remember: localize('paradis.settings.markdownDiffView.remember', "前回のまま"),
+		},
+	},
 	// --- 使用量 ---
 	{
 		sectionId: PARADIS_SETTINGS_TITLEBAR_SECTION_ID,
