@@ -67,6 +67,8 @@ upstreamを定期的に取り込み続ける前提のため、「どこが独自
 
 PC版・モバイルアプリ版のそれぞれに、ユーザーが読む更新履歴がある。**どちらも「実装した作業の中で書く」のがルール**で、後からまとめて書き起こさない。
 
+1 行の書き方は `.claude/skills/para-changelog/SKILL.md`（実体は `.agents/skills/para-changelog/SKILL.md`）に従う。
+
 ### PC版（Para Code デスクトップ）
 
 歯車メニュー（左下）→「更新履歴」で、forkが加えた変更の一覧をユーザーがアプリ内で確認できる（`paradis.showChangelog` コマンド、`src/vs/paradis/contrib/releaseNotes/`）。
