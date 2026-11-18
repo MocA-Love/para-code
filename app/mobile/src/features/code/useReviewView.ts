@@ -19,7 +19,7 @@ export interface ReviewViewContent {
 	readonly render?: FileContent;
 	/** 画像の差分: 変更前・変更後（base64。その側に無ければ undefined）。 */
 	readonly images?: { readonly before: string | undefined; readonly after: string | undefined };
-	/** Excel・Word の差分: PC が描いた HTML。 */
+	/** Excel・Word・Markdown の差分: PC が描いた HTML。 */
 	readonly html?: string;
 	/** Excel・Word の Raw: セルの値・段落の比較の行。 */
 	readonly rows?: readonly DiffRow[];
@@ -155,6 +155,11 @@ export function useReviewView(space: CodeSpace, path: string | undefined, kind: 
 				if (kind === 'spreadsheet') {
 					return { html: (await scmXlsxDiff(wsId, path)).html };
 				}
+				if (kind === 'markdown') {
+					// PC が両側を描いて突き合わせた 1 列のプレビュー差分（scm.rendered-diff.v1）
+					const reply = await sendPcRequest<{ readonly html?: string }>(pcId, 'scm', { t: 'renderedDiff', ws: wsId, path, original: sides.before, modified: sides.after }, { timeoutMs: 120_000 });
+					return { html: reply.html ?? '' };
+				}
 				const reply = await sendPcRequest<{ readonly html?: string }>(pcId, 'scm', { t: 'wordDiff', ws: wsId, path, original: sides.before, modified: sides.after }, { timeoutMs: 120_000 });
 				return { html: reply.html ?? '' };
 			}
@@ -179,7 +184,7 @@ export function useReviewView(space: CodeSpace, path: string | undefined, kind: 
 		load()
 			.then(content => { if (current()) { remember(content); } })
 			.catch((e: unknown) => {
-				// 置き換えられた要求（同じ端末から次の Word 差分を頼んだ）は、次の応答を待つだけで何も出さない
+				// 置き換えられた要求（同じ端末から次の Word 差分・プレビュー差分を頼んだ）は、次の応答を待つだけで何も出さない
 				if (current() && errorMessage(e) !== SUPERSEDED_ERROR) {
 					remember({ error: errorMessage(e) });
 				}

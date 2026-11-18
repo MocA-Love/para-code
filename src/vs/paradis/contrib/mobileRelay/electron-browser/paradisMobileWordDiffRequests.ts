@@ -31,11 +31,13 @@ import { loadParadisMobileWordDiffBundle, renderParadisMobileWordDiffHtml } from
 type OriginalSide = 'head' | 'index' | 'missing';
 type ModifiedSide = 'index' | 'worktree' | 'missing';
 
-function parseOriginal(value: unknown): OriginalSide | undefined {
+/** 変更前の側（`head`・`index`・`missing`）。プレビュー差分（paradisMobileRenderedDiffRequests）も使う。 */
+export function paradisParseMobileDiffOriginal(value: unknown): OriginalSide | undefined {
 	return value === 'head' || value === 'index' || value === 'missing' ? value : undefined;
 }
 
-function parseModified(value: unknown): ModifiedSide | undefined {
+/** 変更後の側（`index`・`worktree`・`missing`）。 */
+export function paradisParseMobileDiffModified(value: unknown): ModifiedSide | undefined {
 	return value === 'index' || value === 'worktree' || value === 'missing' ? value : undefined;
 }
 
@@ -79,8 +81,8 @@ registerParadisMobileRequestHandler('scm', 'wordDiff', {
 	handle(accessor, request, context) {
 		const sharedProcessService = accessor.get(ISharedProcessService);
 		const remoteAgentService = accessor.get(IRemoteAgentService);
-		const original = parseOriginal(request.original);
-		const modified = parseModified(request.modified);
+		const original = paradisParseMobileDiffOriginal(request.original);
+		const modified = paradisParseMobileDiffModified(request.modified);
 		if (typeof request.path !== 'string' || original === undefined || modified === undefined || (original === 'missing' && modified === 'missing')) {
 			context.reply({ error: 'invalid wordDiff request' });
 			return;
