@@ -271,6 +271,8 @@ export class ParadisDocCommentsController extends Disposable {
 			return;
 		}
 		this._draft = { anchor, text: '' };
+		// 空の欄が開いていれば、新しい引用で作り直す
+		this._composer = undefined;
 		this._collapsed = false;
 		this._update();
 		this._push();

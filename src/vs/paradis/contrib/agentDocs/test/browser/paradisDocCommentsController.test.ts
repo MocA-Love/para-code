@@ -100,6 +100,20 @@ suite('ParadisDocCommentsController', () => {
 		});
 	});
 
+	test('a new request replaces the quote of an empty box', async () => {
+		const { added, content, send } = setup();
+		await flush();
+		send({ __paradisDocComment: 'compose', anchor: { quote: 'A' } });
+		send({ __paradisDocComment: 'compose', anchor: { quote: 'B' } });
+		const textarea = content.querySelector('textarea')!;
+		textarea.value = 'x';
+		textarea.dispatchEvent(new Event('input'));
+		content.querySelector<HTMLElement>('.paradis-doc-comment-footer .paradis-button-primary')!.click();
+		await flush();
+		await flush();
+		assert.deepStrictEqual({ boxes: content.querySelectorAll('textarea').length, added: added.map(item => item.draft) }, { boxes: 0, added: [{ anchor: { quote: 'B' }, text: 'x' }] });
+	});
+
 	test('does not show the layer for a file that is not a document, nor without a place to save', () => {
 		const { controller } = setup();
 		controller.setResource(URI.file('/w/data.json'));
