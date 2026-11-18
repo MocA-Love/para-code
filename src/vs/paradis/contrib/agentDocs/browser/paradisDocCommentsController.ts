@@ -267,7 +267,7 @@ export class ParadisDocCommentsController extends Disposable {
 		}
 		// 書きかけの文があるときは引用を差し替えない（ページから届く知らせで書きかけを消さない）
 		if (this._draft && this._draft.text.trim().length > 0) {
-			this._composer?.textarea.focus();
+			this._focusComposer();
 			return;
 		}
 		this._draft = { anchor, text: '' };
@@ -276,6 +276,10 @@ export class ParadisDocCommentsController extends Disposable {
 		this._collapsed = false;
 		this._update();
 		this._push();
+		this._focusComposer();
+	}
+
+	private _focusComposer(): void {
 		this._composer?.textarea.focus();
 	}
 
