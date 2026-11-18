@@ -22,6 +22,8 @@ import { paradisRegisterPreviewFileObserver } from '../../agentBrowser/node/para
 import { IParadisDocLedgerStorage, ParadisAgentDocsLedger } from './paradisAgentDocsLedger.js';
 import { ParadisAgentDocsService } from './paradisAgentDocsService.js';
 import { ParadisAgentDocsToolProvider } from './paradisAgentDocsToolProvider.js';
+import { PARADIS_AGENT_DOCS_VIEW_CHANNEL } from '../common/paradisAgentDocsView.js';
+import { ParadisAgentDocsViewChannel } from './paradisAgentDocsViewChannel.js';
 
 /** 台帳のファイル。読めなければ無いものとして始め、書くときは一時ファイルから置き換える。 */
 function ledgerFileStorage(folder: string): IParadisDocLedgerStorage {
@@ -46,7 +48,7 @@ function ledgerFileStorage(folder: string): IParadisDocLedgerStorage {
 	};
 }
 
-ParadisSharedProcessContributions.register('agentDocs', ({ accessor }) => {
+ParadisSharedProcessContributions.register('agentDocs', ({ server, accessor }) => {
 	const logService = accessor.get(ILogService);
 	const folder = join(accessor.get(INativeEnvironmentService).userDataPath, 'paradis-docs');
 	const store = new DisposableStore();
@@ -54,5 +56,7 @@ ParadisSharedProcessContributions.register('agentDocs', ({ accessor }) => {
 	const service = store.add(new ParadisAgentDocsService(ledger, onParadisAgentHookEvent));
 	store.add(paradisRegisterPreviewFileObserver(opened => service.onPreviewFileOpened(opened)));
 	store.add(paradisRegisterMcpToolProvider(new ParadisAgentDocsToolProvider(service)));
+	// 「資料」ビュー（ウィンドウ）が台帳を読む・頼む口
+	server.registerChannel(PARADIS_AGENT_DOCS_VIEW_CHANNEL, store.add(new ParadisAgentDocsViewChannel(service)));
 	return store;
 });
