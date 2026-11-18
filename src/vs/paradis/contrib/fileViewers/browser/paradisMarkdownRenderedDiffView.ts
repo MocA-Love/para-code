@@ -45,7 +45,7 @@ import { paradisFindHighlightScript } from '../common/paradisViewerScroll.js';
 import { markedParadisAlertExtension, PARADIS_MARKDOWN_ALERT_STYLES } from './paradisMarkdownAlerts.js';
 import { renderParadisMarkdownDocumentDeferred } from './paradisMarkdownDocumentRenderer.js';
 import { applyParadisFrontMatter, PARADIS_FRONTMATTER_STYLES } from './paradisMarkdownFrontMatter.js';
-import { inlineParadisMarkdownMediaInBody, PARADIS_INLINE_MEDIA_LIMITS, PARADIS_INLINE_MEDIA_STYLES } from './paradisMarkdownInlineResources.js';
+import { inlineParadisMarkdownMediaInBody, parseParadisMarkdownHtml, PARADIS_INLINE_MEDIA_LIMITS, PARADIS_INLINE_MEDIA_STYLES } from './paradisMarkdownInlineResources.js';
 import { paradisMarkdownLinkToOpen, rewriteParadisMarkdownLinks } from './paradisMarkdownLinks.js';
 import { containsParadisMermaidBlock, loadParadisMermaidScriptSource, markedMermaidExtension, paradisMermaidScripts } from './paradisMarkdownMermaid.js';
 import { buildParadisRenderedDiff, IParadisRenderedDiffSide, paradisRenderedDiffGoMessage, paradisRenderedDiffNavigationScript, ParadisRenderedDiffLayout, PARADIS_RENDERED_DIFF_STYLES } from './paradisRenderedDiffDom.js';
@@ -502,8 +502,7 @@ export class ParadisMarkdownRenderedDiffView extends Disposable {
 			markedExtensions: [markedMermaidExtension(), markedParadisAlertExtension()],
 			blockClass,
 		}, token);
-		// TrustedHTML はそのまま渡す（文字列にすると Trusted Types に弾かれる）。
-		const doc = new DOMParser().parseFromString(rendered.html as unknown as string, 'text/html');
+		const doc = parseParadisMarkdownHtml(rendered.html);
 		rendered.insertHighlightedCode(doc.body);
 		const workspaceFolder = this._workspaceContextService.getWorkspaceFolder(resource)?.uri;
 		rewriteParadisMarkdownLinks(doc.body, resource, workspaceFolder);
