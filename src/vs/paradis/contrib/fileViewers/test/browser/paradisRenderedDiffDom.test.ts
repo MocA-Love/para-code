@@ -108,9 +108,12 @@ suite('paradisRenderedDiffDom', () => {
 			paradisInitialDiffViewMode('text', 'rendered'),
 			paradisInitialDiffViewMode('remember', 'text'),
 			paradisInitialDiffViewMode('remember', undefined),
+			paradisInitialDiffViewMode(undefined, undefined, 'text'),
+			paradisInitialDiffViewMode('remember', undefined, 'text'),
+			paradisInitialDiffViewMode('rendered', 'text', 'text'),
 			paradisEffectiveDiffLayout('split', 1200),
 			paradisEffectiveDiffLayout('split', 560),
 			paradisEffectiveDiffLayout('unified', 1200),
-		], ['rendered', 'text', 'text', 'rendered', 'split', 'unified', 'unified']);
+		], ['rendered', 'text', 'text', 'rendered', 'text', 'text', 'rendered', 'split', 'unified', 'unified']);
 	});
 });

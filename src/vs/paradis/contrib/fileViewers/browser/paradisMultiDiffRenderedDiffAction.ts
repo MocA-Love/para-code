@@ -10,7 +10,7 @@
 // 置く「プレビュー差分」ボタン。押すと、そのファイルだけを単体の差分エディタ（paradisFileDiffEditor）のプレビュー差分で
 // 別のタブに開く。複数ファイルの差分の中身は本家のテキスト差分のまま（中に描く口が無いため）。
 //
-// ボタンを .md の行にだけ出すため、本家の diffEditorItemTemplate.ts に 1 行の PARA-PATCH を当て、行ごとの
+// ボタンを .md・.html の行にだけ出すため、本家の diffEditorItemTemplate.ts に 1 行の PARA-PATCH を当て、行ごとの
 // コンテキストキー `paradisMultiDiffItemExtname`（拡張子、小文字・ドット付き）を立てている。
 
 import { Codicon } from '../../../../base/common/codicons.js';
@@ -23,13 +23,13 @@ import { ActiveEditorContext } from '../../../../workbench/common/contextkeys.js
 import { MultiDiffEditor } from '../../../../workbench/contrib/multiDiffEditor/browser/multiDiffEditor.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { ParadisFileDiffInput } from './paradisFileDiffInput.js';
-import { PARADIS_MARKDOWN_EXTENSIONS } from './paradisFileViewers.js';
+import { PARADIS_HTML_EXTENSIONS, PARADIS_MARKDOWN_EXTENSIONS } from './paradisFileViewers.js';
 
 /** 複数ファイルの差分の行ごとに立つ、その行のファイルの拡張子（本家への PARA-PATCH が立てる）。 */
 const ITEM_EXTNAME_CONTEXT = 'paradisMultiDiffItemExtname';
 
-/** 「プレビュー差分」ボタンを出す拡張子。HTML のプレビュー差分を足したら、ここに HTML の拡張子も足す。 */
-const RENDERED_DIFF_EXTENSIONS: readonly string[] = PARADIS_MARKDOWN_EXTENSIONS;
+/** 「プレビュー差分」ボタンを出す拡張子（Markdown と HTML）。 */
+const RENDERED_DIFF_EXTENSIONS: readonly string[] = [...PARADIS_MARKDOWN_EXTENSIONS, ...PARADIS_HTML_EXTENSIONS];
 
 class ParadisMultiDiffOpenRenderedDiffAction extends Action2 {
 	constructor() {

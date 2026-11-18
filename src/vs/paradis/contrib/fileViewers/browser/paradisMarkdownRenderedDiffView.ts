@@ -70,15 +70,15 @@ const LAYOUT_STORAGE_KEY = 'paradis.markdownViewer.diffView.layout';
 /** この幅（px）より狭いと、左右を選んでいても 1 列で出す。 */
 const SPLIT_MIN_WIDTH = 700;
 
-/** 設定とバーで選んだ表示から、開いたときの表示を決める。 */
-export function paradisInitialDiffViewMode(setting: unknown, last: unknown): ParadisFileDiffViewMode {
-	if (setting === 'text') {
-		return 'text';
+/** 設定とバーで選んだ表示から、開いたときの表示を決める。`fallback` は設定もバーの記録も無いときの表示。 */
+export function paradisInitialDiffViewMode(setting: unknown, last: unknown, fallback: ParadisFileDiffViewMode = 'rendered'): ParadisFileDiffViewMode {
+	if (setting === 'text' || setting === 'rendered') {
+		return setting;
 	}
 	if (setting === 'remember') {
-		return last === 'text' ? 'text' : 'rendered';
+		return last === 'text' || last === 'rendered' ? last : fallback;
 	}
-	return 'rendered';
+	return fallback;
 }
 
 /** 選んだ並べ方とエディタの幅から、実際の並べ方を決める。 */
@@ -97,7 +97,8 @@ export interface IParadisRenderedDiffHost {
 	setTextVisible(visible: boolean): void;
 }
 
-interface IParadisRenderedDiffInput {
+/** 描く差分（HTML のプレビュー差分も同じものを受け取る）。 */
+export interface IParadisRenderedDiffInput {
 	readonly original: URI;
 	readonly modified: URI;
 	readonly originalModel: ITextModel;
@@ -197,7 +198,7 @@ export class ParadisMarkdownRenderedDiffView extends Disposable {
 			enableFindWidget: true,
 			// 実行できるのは、この部品が埋め込む nonce 付きの補助スクリプト（移動・拡大・Mermaid）だけ（CSP）。
 			allowScripts: true,
-			onDidCreate: (webview, store) => this._onWebviewCreated(webview, store),
+			onDidCreate: (webview, store) => this.onWebviewCreated(webview, store),
 			onDidDispose: () => this._renderedLayout = undefined,
 		}));
 		// コードの配色は HTML に焼き込んでいるので、テーマが変わったら描き直す。
@@ -226,7 +227,7 @@ export class ParadisMarkdownRenderedDiffView extends Disposable {
 		store.add(modifiedModel.onDidChangeContent(() => this._scheduleRender()));
 		this._toolbar.element.style.display = '';
 		this._checkSize();
-		const mode = this._unavailable ? 'text' : preferRendered ? 'rendered' : paradisInitialDiffViewMode(this._configurationService.getValue(PARADIS_MARKDOWN_DIFF_VIEW_SETTING), this._storageService.get(LAST_MODE_STORAGE_KEY, StorageScope.PROFILE));
+		const mode = this._unavailable ? 'text' : preferRendered ? 'rendered' : paradisInitialDiffViewMode(this._configurationService.getValue(this.diffViewSetting), this._storageService.get(this.lastModeStorageKey, StorageScope.PROFILE), this.fallbackMode);
 		this._applyMode(mode);
 	}
 
@@ -269,8 +270,8 @@ export class ParadisMarkdownRenderedDiffView extends Disposable {
 	}
 
 	private _chooseMode(mode: ParadisFileDiffViewMode): void {
-		if (this._configurationService.getValue(PARADIS_MARKDOWN_DIFF_VIEW_SETTING) === 'remember') {
-			this._storageService.store(LAST_MODE_STORAGE_KEY, mode, StorageScope.PROFILE, StorageTarget.USER);
+		if (this._configurationService.getValue(this.diffViewSetting) === 'remember') {
+			this._storageService.store(this.lastModeStorageKey, mode, StorageScope.PROFILE, StorageTarget.USER);
 		}
 		this._applyMode(mode);
 	}
@@ -329,7 +330,27 @@ export class ParadisMarkdownRenderedDiffView extends Disposable {
 		}
 	}
 
-	private _onWebviewCreated(webview: IOverlayWebview, store: DisposableStore): void {
+	/** 開いたときの表示の設定（HTML の差分は別の設定）。 */
+	protected get diffViewSetting(): string {
+		return PARADIS_MARKDOWN_DIFF_VIEW_SETTING;
+	}
+
+	/** 「前回のまま」のために、バーで選んだ表示を覚えておくキー。 */
+	protected get lastModeStorageKey(): string {
+		return LAST_MODE_STORAGE_KEY;
+	}
+
+	/** 設定もバーの記録も無いときの表示。 */
+	protected get fallbackMode(): ParadisFileDiffViewMode {
+		return 'rendered';
+	}
+
+	/** いまの拡大率。 */
+	protected get zoomFactor(): number {
+		return this._zoom.factor;
+	}
+
+	protected onWebviewCreated(webview: IOverlayWebview, store: DisposableStore): void {
 		store.add(webview.onDidClickLink(link => {
 			const target = paradisMarkdownLinkToOpen(link);
 			if (target) {
@@ -368,7 +389,7 @@ export class ParadisMarkdownRenderedDiffView extends Disposable {
 		const source = new CancellationTokenSource();
 		this._render.value = source;
 		const layout = paradisEffectiveDiffLayout(this._layout, this._width);
-		this._renderDocument(input, layout, source.token).then(result => {
+		this.renderDocument(input, layout, source.token).then(result => {
 			if (source.token.isCancellationRequested || this._input !== input) {
 				return;
 			}
@@ -392,12 +413,12 @@ export class ParadisMarkdownRenderedDiffView extends Disposable {
 	}
 
 	/** 両側を描いて突き合わせ、webview に書く HTML を作る。プレビュー差分を出せないときは理由の文言を返す。 */
-	private async _renderDocument(input: IParadisRenderedDiffInput, layout: ParadisRenderedDiffLayout, token: CancellationToken): Promise<{ readonly html: string; readonly changes: number; readonly note: string } | string> {
+	protected async renderDocument(input: IParadisRenderedDiffInput, layout: ParadisRenderedDiffLayout, token: CancellationToken): Promise<{ readonly html: string; readonly changes: number; readonly note: string } | string> {
 		const blockClass = `paradis-rdiff-src-${generateUuid().replace(/-/g, '')}`;
 		// git: などディスクに無い版は、相対パスの画像とリンクを今の作業ツリーの同じファイルから解決する
 		// （git: の URI のまま解決すると、クエリに入っている文書そのものを読んでしまう）。
-		const originalBase = this._workingTreeResource(input.original);
-		const modifiedBase = this._workingTreeResource(input.modified);
+		const originalBase = this.workingTreeResource(input.original);
+		const modifiedBase = this.workingTreeResource(input.modified);
 		const [original, modified] = await Promise.all([
 			this._renderSide(input.originalModel.getValue(), originalBase, blockClass, token),
 			this._renderSide(input.modifiedModel.getValue(), modifiedBase, blockClass, token),
@@ -460,7 +481,7 @@ export class ParadisMarkdownRenderedDiffView extends Disposable {
 	 * 相対パスの画像とリンクを解決する元のファイル。ディスクの上のファイル（file:・vscode-remote:）はそのまま、git: などの
 	 * 版は、同じパスの作業ツリーのファイル（パスを含むワークスペースフォルダーのスキームで）にする。
 	 */
-	private _workingTreeResource(resource: URI): URI {
+	protected workingTreeResource(resource: URI): URI {
 		if (resource.scheme === Schemas.file || resource.scheme === Schemas.vscodeRemote) {
 			return resource;
 		}
