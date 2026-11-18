@@ -194,7 +194,7 @@ if(other&&!other.querySelector('['+O.change+'="'+n+'"]')){syncing=null;onScroll(
 }
 window.addEventListener('message',function(e){
 if(!fromHost(e)){return;}var d=e.data;if(!d){return;}
-if(typeof d.__paradisZoom==='number'){zoom=d.__paradisZoom;copyAll();return;}
+if(typeof d.__paradisZoom==='number'){zoom=d.__paradisZoom;copyAll();setTimeout(function(){syncing=null;onScroll(0)();},50);return;}
 if(typeof d.paradisRenderedDiffGo==='number'){go(d.paradisRenderedDiffGo);return;}
 });
 function start(){
