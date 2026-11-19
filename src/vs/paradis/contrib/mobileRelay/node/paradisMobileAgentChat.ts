@@ -10120,9 +10120,9 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * SYSTEM_MESSAGE で始まる場合に、後から DB の行で正せるように）。
 	 *
 	 * どちらでも決まらない hook は、ペインが今写している会話のものでなければ捨てる（ペインが空でも控えにしない。子の hook が
-	 * 親より先に届いても、子が控えにならない）。上位の会話なら、一覧の行（agy は起動して会話を作ったときに書く）か記録の
-	 * 先頭の行ができた次の hook で結ばれる。接続先（SSH 先）の会話は、一覧も記録も手元に無く決まることが無いので、
-	 * ペインが別の agy の会話を写していなければ今までどおり結ぶ。
+	 * 親より先に届いても、子が控えにならない）。上位の会話なら、一覧の行か記録の先頭の行ができた次の hook で結ばれる
+	 * （agy 1.5.12 では、発言の無い会話にも一覧の行があるのを観察した。行が書かれる時期は確かめていない）。接続先（SSH 先）の
+	 * 会話は、一覧も記録も手元に無く決まることが無いので、ペインが別の agy の会話を写していなければ今までどおり結ぶ。
 	 */
 	private async dropsAntigravityHook(token: string, transcriptPath: string, remote: boolean): Promise<boolean> {
 		const conversationId = paradisAntigravityConversationIdFromTranscriptPath(transcriptPath);

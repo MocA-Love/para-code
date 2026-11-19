@@ -122,8 +122,8 @@ function createEmptyCodexStateDatabase(codexHome: string): void {
 }
 
 /**
- * 偽の HOME に Antigravity CLI の会話の一覧（conversation_summaries.db）の行を足す（親子の列だけ）。agy 1.5.12 は会話を
- * 作ったとき（最初の発言より前、記録のファイルができる前）に上位の会話の行を書く。
+ * 偽の HOME に Antigravity CLI の会話の一覧（conversation_summaries.db）の行を足す（親子の列だけ）。agy 1.5.12 では、
+ * 発言が無く記録のファイルも無い上位の会話にも行があるのを観察した（行が書かれる時期は確かめていない）。
  */
 async function listAntigravityConversations(home: string, rows: readonly { readonly id: string; readonly parentId?: string }[]): Promise<void> {
 	await mkdir(paradisAntigravityCliHome(home), { recursive: true });
@@ -404,7 +404,7 @@ suite('ParadisMobileAgentChat', () => {
 		);
 		const access = chat as unknown as { tailers: Map<string, { readonly epoch: string; readonly agent: string }> };
 		const inbound = (message: Record<string, unknown>) => chat.handleInbound('mobile-1', new TextEncoder().encode(JSON.stringify(message)));
-		// agy は会話を作ったときに一覧へ行を書く（記録のファイルはまだ無い）
+		// 一覧に上位の会話の行がある（記録のファイルはまだ無い）
 		await listAntigravityConversations(home, [{ id: conversationId }]);
 		try {
 			chat.setEagerTailing(true);
@@ -503,7 +503,7 @@ suite('ParadisMobileAgentChat', () => {
 		const access = chat as unknown as { tailers: Map<string, { readonly epoch: string }> };
 		const inbound = (message: Record<string, unknown>) => chat.handleInbound('mobile-1', new TextEncoder().encode(JSON.stringify(message)));
 		const fields = ['monitors', 'shells', 'workflows', 'teams', 'pcDraft', 'asyncQuestions', 'sessionStatus'];
-		// agy は会話を作ったときに一覧へ行を書く（記録のファイルはまだ無い）
+		// 一覧に上位の会話の行がある（記録のファイルはまだ無い）
 		await listAntigravityConversations(home, [{ id: conversationId }]);
 		try {
 			chat.setEagerTailing(true);
@@ -567,7 +567,7 @@ suite('ParadisMobileAgentChat', () => {
 		const register = (sessionId: string, toolUseId: string) => paradisAntigravityApprovalHold.register(token, { sessionId, toolUseId, toolName: 'run_command' });
 		paradisAntigravityApprovalHold.setPresence(() => true);
 		paradisAntigravityApprovalHold.setGate((candidate, sessionId) => chat.canHoldAntigravityApproval(candidate, sessionId));
-		// agy は会話を作ったときに一覧へ行を書く（記録のファイルはまだ無い）
+		// 一覧に上位の会話の行がある（記録のファイルはまだ無い）
 		await listAntigravityConversations(home, [{ id: conversationId }]);
 		try {
 			chat.setEagerTailing(true);
@@ -636,7 +636,7 @@ suite('ParadisMobileAgentChat', () => {
 		paradisAntigravityApprovalHold.setPresence(() => true);
 		paradisAntigravityApprovalHold.setGate((candidate, sessionId) => chat.canHoldAntigravityApproval(candidate, sessionId));
 		paradisAntigravityApprovalHold.setOnUnanswered((candidate, toolUseId) => chat.expireAntigravityApproval(candidate, toolUseId));
-		// agy は会話を作ったときに一覧へ行を書く（記録のファイルはまだ無い）
+		// 一覧に上位の会話の行がある（記録のファイルはまだ無い）
 		await listAntigravityConversations(home, [{ id: conversationId }]);
 		try {
 			chat.setEagerTailing(true);
