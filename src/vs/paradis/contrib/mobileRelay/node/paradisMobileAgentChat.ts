@@ -958,9 +958,19 @@ function paradisTruncateOptionLabel(label: string): string {
 	return truncateText(label, 200);
 }
 
+/** 会話の世代（epoch）の形: 空でない 200 文字までの文字列。 */
+function isValidEpoch(epoch: unknown): boolean {
+	return typeof epoch === 'string' && epoch.length > 0 && epoch.length <= 200;
+}
+
+/** 質問・承認の ID の形: 空でない 500 文字までの文字列。 */
+function isValidInteractionId(interactionId: unknown): boolean {
+	return typeof interactionId === 'string' && interactionId.length > 0 && interactionId.length <= 500;
+}
+
 function isValidAttachRequest(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'attach' }> {
 	return msg.t === 'attach'
-		&& (msg.epoch === undefined || (typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200))
+		&& (msg.epoch === undefined || isValidEpoch(msg.epoch))
 		&& (msg.afterRev === undefined || (typeof msg.afterRev === 'number' && Number.isSafeInteger(msg.afterRev) && msg.afterRev >= -1))
 		&& (msg.liveEncoding === undefined || (typeof msg.liveEncoding === 'string' && msg.liveEncoding.length > 0 && msg.liveEncoding.length <= 100))
 		&& (msg.responseEncoding === undefined || (typeof msg.responseEncoding === 'string' && msg.responseEncoding.length > 0 && msg.responseEncoding.length <= 100))
@@ -973,7 +983,7 @@ function isValidDetachRequest(msg: AgentInboundCandidate): msg is AgentInboundCa
 
 function isValidSendMessageAction(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'action/sendMessage' }> {
 	return msg.t === 'action/sendMessage'
-		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
+		&& isValidEpoch(msg.epoch)
 		&& typeof msg.text === 'string' && msg.text.trim().length > 0 && msg.text.length <= 100_000
 		&& (msg.sendId === undefined || (typeof msg.sendId === 'string' && /^[A-Za-z0-9._:-]{1,100}$/.test(msg.sendId)))
 		&& isValidControlRequest(msg);
@@ -981,8 +991,8 @@ function isValidSendMessageAction(msg: AgentInboundCandidate): msg is AgentInbou
 
 function isValidQuestionAction(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'action/answerQuestion' }> {
 	return msg.t === 'action/answerQuestion'
-		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
-		&& typeof msg.interactionId === 'string' && msg.interactionId.length > 0 && msg.interactionId.length <= 500
+		&& isValidEpoch(msg.epoch)
+		&& isValidInteractionId(msg.interactionId)
 		&& Array.isArray(msg.answers) && msg.answers.length > 0 && msg.answers.length <= 20
 		&& msg.answers.every(isValidAgentQuestionAnswer)
 		&& isValidControlRequest(msg);
@@ -990,8 +1000,8 @@ function isValidQuestionAction(msg: AgentInboundCandidate): msg is AgentInboundC
 
 function isValidClarifyQuestionAction(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'action/clarifyQuestion' }> {
 	return msg.t === 'action/clarifyQuestion'
-		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
-		&& typeof msg.interactionId === 'string' && msg.interactionId.length > 0 && msg.interactionId.length <= 500
+		&& isValidEpoch(msg.epoch)
+		&& isValidInteractionId(msg.interactionId)
 		&& (msg.response === undefined || (typeof msg.response === 'string' && msg.response.trim().length > 0 && msg.response.length <= PARADIS_AGENT_QUESTION_RESPONSE_LIMIT))
 		&& (msg.answers === undefined || (Array.isArray(msg.answers) && msg.answers.length > 0 && msg.answers.length <= 20
 			&& msg.answers.every((answer: unknown) => answer === null || isValidAgentQuestionAnswer(answer))))
@@ -1000,8 +1010,8 @@ function isValidClarifyQuestionAction(msg: AgentInboundCandidate): msg is AgentI
 
 function isValidApprovalAction(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'action/answerApproval' }> {
 	return msg.t === 'action/answerApproval'
-		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
-		&& typeof msg.interactionId === 'string' && msg.interactionId.length > 0 && msg.interactionId.length <= 500
+		&& isValidEpoch(msg.epoch)
+		&& isValidInteractionId(msg.interactionId)
 		&& typeof msg.choice === 'string' && /^[A-Za-z0-9._:-]{1,100}$/.test(msg.choice)
 		&& (msg.optionLabel === undefined || (typeof msg.optionLabel === 'string' && msg.optionLabel.length > 0 && msg.optionLabel.length <= 500))
 		&& (msg.promptHash === undefined || (typeof msg.promptHash === 'string' && /^[0-9a-f]{40}$/.test(msg.promptHash)))
@@ -1011,14 +1021,14 @@ function isValidApprovalAction(msg: AgentInboundCandidate): msg is AgentInboundC
 
 function isValidApprovalOptionsRequest(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'approval-options' }> {
 	return msg.t === 'approval-options'
-		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
-		&& typeof msg.interactionId === 'string' && msg.interactionId.length > 0 && msg.interactionId.length <= 500
+		&& isValidEpoch(msg.epoch)
+		&& isValidInteractionId(msg.interactionId)
 		&& isValidControlRequest(msg);
 }
 
 function isValidClaudeSettingAction(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'action/claudeSetting' }> {
 	return msg.t === 'action/claudeSetting'
-		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
+		&& isValidEpoch(msg.epoch)
 		&& (msg.setting === 'model' || msg.setting === 'effort')
 		&& typeof msg.value === 'string' && PARADIS_CLAUDE_SETTING_VALUE_PATTERN.test(msg.value)
 		&& isValidControlRequest(msg);
@@ -1026,7 +1036,7 @@ function isValidClaudeSettingAction(msg: AgentInboundCandidate): msg is AgentInb
 
 function isValidClosePanelAction(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'action/closePanel' }> {
 	return msg.t === 'action/closePanel'
-		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
+		&& isValidEpoch(msg.epoch)
 		&& isValidControlRequest(msg);
 }
 
@@ -1058,7 +1068,7 @@ export function paradisAdvisorReplyMessage(reply: NonNullable<ReturnType<Paradis
 
 function isValidActivityDetailRequest(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'activity-detail' }> {
 	return msg.t === 'activity-detail'
-		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
+		&& isValidEpoch(msg.epoch)
 		&& typeof msg.activityId === 'string' && msg.activityId.length > 0 && msg.activityId.length <= 500
 		&& isValidControlRequest(msg);
 }
@@ -1083,14 +1093,14 @@ function isValidContextBreakdownRequest(msg: AgentInboundCandidate): msg is Agen
 
 function isValidToolFullRequest(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'tool-full' }> {
 	return msg.t === 'tool-full'
-		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
+		&& isValidEpoch(msg.epoch)
 		&& typeof msg.rev === 'number' && Number.isInteger(msg.rev) && msg.rev >= 0
 		&& isValidControlRequest(msg);
 }
 
 function isValidToolImageRequest(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'tool-image' }> {
 	return msg.t === 'tool-image'
-		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
+		&& isValidEpoch(msg.epoch)
 		&& typeof msg.rev === 'number' && Number.isInteger(msg.rev) && msg.rev >= 0
 		&& typeof msg.index === 'number' && Number.isInteger(msg.index) && msg.index >= 0 && msg.index < 100
 		&& isValidControlRequest(msg);
@@ -1098,7 +1108,7 @@ function isValidToolImageRequest(msg: AgentInboundCandidate): msg is AgentInboun
 
 function isValidHistoryRequest(msg: AgentInboundCandidate): msg is AgentInboundCandidate & Extract<AgentInbound, { t: 'history' }> {
 	return msg.t === 'history'
-		&& typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200
+		&& isValidEpoch(msg.epoch)
 		&& typeof msg.beforeRev === 'number' && Number.isSafeInteger(msg.beforeRev) && msg.beforeRev >= -PARADIS_HISTORY_FILE_CAP - 1
 		&& (msg.cursor === undefined || (typeof msg.cursor === 'string' && paradisDecodeHistoryCursor(msg.cursor) !== undefined))
 		&& (msg.limit === undefined || (typeof msg.limit === 'number' && Number.isInteger(msg.limit) && msg.limit >= 1 && msg.limit <= PARADIS_HISTORY_PAGE_LIMIT))
@@ -1113,7 +1123,7 @@ function parseAgentInbound(value: unknown): AgentInbound | undefined {
 	switch (msg.t) {
 		case 'attach': return isValidAttachRequest(msg) ? msg : undefined;
 		case 'detach': return isValidDetachRequest(msg) ? msg : undefined;
-		case 'action/interrupt': return isValidControlRequest(msg) && typeof msg.epoch === 'string' && msg.epoch.length > 0 && msg.epoch.length <= 200 ? msg as Extract<AgentInbound, { t: 'action/interrupt' }> : undefined;
+		case 'action/interrupt': return isValidControlRequest(msg) && isValidEpoch(msg.epoch) ? msg as Extract<AgentInbound, { t: 'action/interrupt' }> : undefined;
 		case 'action/sendMessage': return isValidSendMessageAction(msg) ? msg : undefined;
 		case 'action/answerQuestion': return isValidQuestionAction(msg) ? msg : undefined;
 		case 'action/clarifyQuestion': return isValidClarifyQuestionAction(msg) ? msg : undefined;
@@ -5111,7 +5121,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (msg.t === 'approval-options') {
 			this.sendTo(mobileId, { t: 'approval-options', id: msg.id, requestId: msg.requestId, interactionId: msg.interactionId, error: 'stale-interaction' }, token);
 		} else {
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'agent-unsupported', message: msg.t === 'action/sendMessage' ? 'このエージェントにはまだチャット欄から送れません。ターミナル表示で入力してください' : msg.t === 'action/claudeSetting' ? PARADIS_AGENT_SETTINGS_ON_PC_MESSAGE : msg.t === 'action/answerApproval' ? PARADIS_ANTIGRAVITY_APPROVAL_ON_PC_MESSAGE : PARADIS_ANTIGRAVITY_ANSWER_ON_PC_MESSAGE }, token);
+			this.rejectAction(mobileId, msg, token, 'agent-unsupported', msg.t === 'action/sendMessage' ? 'このエージェントにはまだチャット欄から送れません。ターミナル表示で入力してください' : msg.t === 'action/claudeSetting' ? PARADIS_AGENT_SETTINGS_ON_PC_MESSAGE : msg.t === 'action/answerApproval' ? PARADIS_ANTIGRAVITY_APPROVAL_ON_PC_MESSAGE : PARADIS_ANTIGRAVITY_ANSWER_ON_PC_MESSAGE);
 		}
 		return true;
 	}
@@ -5558,27 +5568,55 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 	}
 
+	/** アクション系の要求の入口で引くもの: ペインのトークン・会話・tailer・所有ウィンドウと、操作の鍵。 */
+	private actionContext(mobileId: string, msg: { readonly id: number; readonly token?: string; readonly requestId: string }) {
+		const token = this.resolveInboundToken(msg.id, msg.token);
+		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
+		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
+		const owner = token !== undefined ? this.ownerForPane(msg.id, token) : undefined;
+		const key = this.actionKey(mobileId, msg.requestId);
+		return { token, session, tailer, owner, key };
+	}
+
+	/** 操作を断ったと返す（action-result の rejected）。 */
+	private rejectAction(mobileId: string, msg: { readonly id: number; readonly requestId: string }, token: string | undefined, code: string, message: string): void {
+		this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code, message }, token);
+	}
+
+	/** 操作を受け付けたと返す（action-result の accepted）。 */
+	private acceptAction(mobileId: string, msg: { readonly id: number; readonly requestId: string }, token: string | undefined, code?: string): void {
+		this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'accepted', ...(code !== undefined ? { code } : {}) }, token);
+	}
+
+	/**
+	 * 所有ウィンドウへ渡した操作の期限（5 秒）。応答が無ければ操作を取り下げ、`beforeReject`（預かっていたものの後始末）の後で断る。
+	 */
+	private startActionTimeout(mobileId: string, msg: { readonly id: number; readonly requestId: string }, token: string, key: string, beforeReject?: () => void): ReturnType<typeof setTimeout> {
+		return setTimeout(() => {
+			if (this.pendingActions.delete(key)) {
+				beforeReject?.();
+				this.rejectAction(mobileId, msg, token, 'action-timeout', '操作対象のウィンドウが応答しませんでした');
+			}
+		}, 5_000);
+	}
+
 	/**
 	 * `viaMod` が true（モバイルからの最初の受け付け）なら、待機中の Claude Code へは mod（Claude Mods）の
 	 * `$.prompt.submit` で送る。mod へ渡せなかったときは false で呼び直し、今までどおりウィンドウのキー入力で送る。
 	 * `dialogChecked` は、承認・質問以外の画面（`/config` など）が開いていないかを mod に聞き終えたか（{@link checkClaudeDialog}）。
 	 */
 	private handleSendMessageAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/sendMessage' }>, viaMod = true, dialogChecked = false, keysWaitUntil?: number): void {
-		const token = this.resolveInboundToken(msg.id, msg.token);
-		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
-		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
-		const owner = token !== undefined ? this.ownerForPane(msg.id, token) : undefined;
-		const key = this.actionKey(mobileId, msg.requestId);
+		const { token, session, tailer, owner, key } = this.actionContext(mobileId, msg);
 		// 預かった送信（W2-29）の送り直し: 同じ id を一度ウィンドウへ渡したら、二度目は送らずに受け付け済みと答える
 		// （アプリが送っている途中で落ちて、起動し直して送り直したとき。レビュー M4）。
 		const sendKey = msg.sendId !== undefined ? `${mobileId}\0${msg.sendId}` : undefined;
 		if (sendKey !== undefined && this.dispatchedSendIds.has(sendKey)) {
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'accepted', code: 'duplicate' }, token ?? msg.token);
+			this.acceptAction(mobileId, msg, token ?? msg.token, 'duplicate');
 			return;
 		}
 		if (token === undefined || session === undefined || tailer === undefined || tailer.epoch !== msg.epoch || owner === undefined || !this.hasSubscriber(token, mobileId) || this.pendingActions.has(key) || this.completedActions.has(key)
 			|| (!dialogChecked && this.dialogChecks.has(key))) {
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-session', message: '操作対象のエージェントセッションが変わりました' }, token ?? msg.token);
+			this.rejectAction(mobileId, msg, token ?? msg.token, 'stale-session', '操作対象のエージェントセッションが変わりました');
 			return;
 		}
 		if (session.agent === 'opencode') {
@@ -5588,7 +5626,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		// Antigravity CLI が質問の回答を待っている間は打たない（貼った文の Enter が選択肢を確定しうる）。許可待ち・作業中・
 		// 前面に agy がいるかは、ペインの状態と画面を持つ所有ウィンドウが確かめる（paradisAntigravitySendBlock）
 		if (session.agent === 'antigravity' && tailer.currentInteraction() !== null) {
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'agent-busy', message: PARADIS_ANTIGRAVITY_SEND_BLOCK_MESSAGES.question }, token);
+			this.rejectAction(mobileId, msg, token, 'agent-busy', PARADIS_ANTIGRAVITY_SEND_BLOCK_MESSAGES.question);
 			return;
 		}
 		// `/model <別名>`（古いアプリは打った文のまま送ってくる）は、確認の画面を出さない `/config model=<別名>` にして送る。
@@ -5600,7 +5638,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		if (modelSwitch?.kind === 'not-alias') {
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: PARADIS_SLASH_COMMAND_REJECTED_CODE, message: paradisClaudeModelNotAliasMessage(modelSwitch.value) }, token);
+			this.rejectAction(mobileId, msg, token, PARADIS_SLASH_COMMAND_REJECTED_CODE, paradisClaudeModelNotAliasMessage(modelSwitch.value));
 			return;
 		}
 		if (modelSwitch?.kind === 'switch') {
@@ -5629,16 +5667,11 @@ export class ParadisMobileAgentChat extends Disposable {
 			}
 			if (waiting !== undefined || this.pcDraftBlocksKeys(token, session.sessionId)) {
 				const message = waiting === 'stash' ? PARADIS_PC_DRAFT_RESTORING_MESSAGE : waiting === 'typed' ? PARADIS_PC_LEFTOVER_MESSAGE : PARADIS_PC_DRAFT_MESSAGE;
-				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: PARADIS_COMPOSER_NOT_EMPTY_CODE, message }, token);
+				this.rejectAction(mobileId, msg, token, PARADIS_COMPOSER_NOT_EMPTY_CODE, message);
 				return;
 			}
 		}
-		const timer = setTimeout(() => {
-			if (this.pendingActions.delete(key)) {
-				this.forgetSendId(sendKey);
-				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'action-timeout', message: '操作対象のウィンドウが応答しませんでした' }, token);
-			}
-		}, 5_000);
+		const timer = this.startActionTimeout(mobileId, msg, token, key, () => this.forgetSendId(sendKey));
 		this.rememberSendId(sendKey);
 		this.pendingActions.set(key, { mobileId, token, epoch: msg.epoch, terminalId: msg.id, windowId: owner.windowId, windowSession: owner.windowSession, timer, ...(sendKey !== undefined ? { sendKey } : {}) });
 		// スラッシュコマンドが「そのコマンドは無い」と断られたら、受け付けずに断る。
@@ -5743,7 +5776,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		const terminalId = this.terminalIdForToken(token);
 		const tailer = this.tailers.get(token);
 		if (terminalId !== undefined && tailer !== undefined) {
-			this.sendToSubscribers(token, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages: [], panel: this.panels.get(token)?.panel ?? null });
+			this.sendEmptyDelta(token, terminalId, tailer, { panel: this.panels.get(token)?.panel ?? null });
 		}
 	}
 
@@ -5804,21 +5837,17 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * 届くので、打つ直前に mod へ画面が開いているかを聞き、開いているとき・作業中でないとき・承認や質問を待っていないときだけ打つ。
 	 */
 	private handleClosePanelAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/closePanel' }>, checked = false): void {
-		const token = this.resolveInboundToken(msg.id, msg.token);
-		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
-		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
-		const owner = token !== undefined ? this.ownerForPane(msg.id, token) : undefined;
-		const key = this.actionKey(mobileId, msg.requestId);
+		const { token, session, tailer, owner, key } = this.actionContext(mobileId, msg);
 		const sessionId = session?.sessionId;
 		if (token === undefined || session === undefined || paradisAgentDescriptor(session.agent)?.features.panel !== true || sessionId === undefined || tailer === undefined || tailer.epoch !== msg.epoch || owner === undefined
 			|| !this.hasSubscriber(token, mobileId) || this.pendingActions.has(key) || this.completedActions.has(key) || (!checked && this.dialogChecks.has(key))) {
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-session', message: '操作対象のエージェントセッションが変わりました' }, token ?? msg.token);
+			this.rejectAction(mobileId, msg, token ?? msg.token, 'stale-session', '操作対象のエージェントセッションが変わりました');
 			return;
 		}
 		// 入力待ちでない（作業中・ライブの本文が流れている・承認や質問を待っている）、圧縮中、mod に確かめられないときは
 		// Esc を打たない（Esc は作業中のエージェントには中断として届く）
 		if (!this.isAgentPrompt(token, tailer) || this.isCompacting(token) || !this.claudeModBridge.supports(token, sessionId, 'prompt.dialog')) {
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: PANEL_NOT_CLOSABLE_CODE, message: PANEL_NOT_CLOSABLE_MESSAGE }, token);
+			this.rejectAction(mobileId, msg, token, PANEL_NOT_CLOSABLE_CODE, PANEL_NOT_CLOSABLE_MESSAGE);
 			return;
 		}
 		if (!checked) {
@@ -5828,18 +5857,14 @@ export class ParadisMobileAgentChat extends Disposable {
 				if (open !== true) {
 					// もう閉じている（PC で閉じた）。Esc は打たない
 					this.clearPanel(token);
-					this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'accepted', code: 'already-closed' }, token);
+					this.acceptAction(mobileId, msg, token, 'already-closed');
 					return;
 				}
 				this.handleClosePanelAction(mobileId, msg, true);
 			});
 			return;
 		}
-		const timer = setTimeout(() => {
-			if (this.pendingActions.delete(key)) {
-				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'action-timeout', message: '操作対象のウィンドウが応答しませんでした' }, token);
-			}
-		}, 5_000);
+		const timer = this.startActionTimeout(mobileId, msg, token, key);
 		// 所有ウィンドウが受け取ったとき（claim）にも入力待ちかを確かめ直す（Esc の前にターンが始まったら打たない）
 		this.pendingActions.set(key, { mobileId, token, epoch: msg.epoch, terminalId: msg.id, windowId: owner.windowId, windowSession: owner.windowSession, requirePrompt: true, timer });
 		this.requestAction(mobileId, owner.windowId, owner.windowSession, owner.rendererGeneration, encoder.encode(JSON.stringify({
@@ -5957,15 +5982,11 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	private handleClaudeSettingAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/claudeSetting' }>, dialogChecked = false, draftStashed = false, keysWaitUntil?: number): void {
-		const token = this.resolveInboundToken(msg.id, msg.token);
-		const session = token !== undefined ? this.paneSessions.get(token) : undefined;
-		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
-		const owner = token !== undefined ? this.ownerForPane(msg.id, token) : undefined;
-		const key = this.actionKey(mobileId, msg.requestId);
+		const { token, session, tailer, owner, key } = this.actionContext(mobileId, msg);
 		if (token === undefined || session === undefined || paradisAgentDescriptor(session.agent)?.modelControl !== 'mod-or-keys' || tailer === undefined || tailer.epoch !== msg.epoch || owner === undefined
 			|| !this.hasSubscriber(token, mobileId) || !this.isAgentPrompt(token, tailer) || this.pendingActions.has(key) || this.completedActions.has(key)
 			|| (!dialogChecked && this.dialogChecks.has(key))) {
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'not-at-prompt', message: 'Claude Codeが入力待ちの時だけ設定を変更できます' }, token ?? msg.token);
+			this.rejectAction(mobileId, msg, token ?? msg.token, 'not-at-prompt', 'Claude Codeが入力待ちの時だけ設定を変更できます');
 			return;
 		}
 		// `/model` などを打つので、ほかの画面（モバイルから開いた /config など）が開いていればキーを打たずに断る
@@ -5983,14 +6004,14 @@ export class ParadisMobileAgentChat extends Disposable {
 				return;
 			}
 			if (waiting === 'stash') {
-				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: PARADIS_COMPOSER_NOT_EMPTY_CODE, message: PARADIS_PC_DRAFT_RESTORING_MESSAGE }, token);
+				this.rejectAction(mobileId, msg, token, PARADIS_COMPOSER_NOT_EMPTY_CODE, PARADIS_PC_DRAFT_RESTORING_MESSAGE);
 				return;
 			}
 			// 待っても貼った文が残っている（Enter が効かなかった）なら、PC の書きかけと同じによけて戻す
 			const draft = this.claudeModBridge.draftOf(token, sessionId);
 			const draftState = paradisClaudeDraftState(draft);
 			if (draftState === 'cut' || (draftState === 'text' && !this.claudeModBridge.supports(token, session.sessionId, 'draft.fill'))) {
-				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: PARADIS_COMPOSER_NOT_EMPTY_CODE, message: PARADIS_PC_DRAFT_SETTING_MESSAGE }, token);
+				this.rejectAction(mobileId, msg, token, PARADIS_COMPOSER_NOT_EMPTY_CODE, PARADIS_PC_DRAFT_SETTING_MESSAGE);
 				return;
 			}
 			if (draftState === 'text' && draft !== undefined) {
@@ -6004,12 +6025,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				return;
 			}
 		}
-		const timer = setTimeout(() => {
-			if (this.pendingActions.delete(key)) {
-				this.finishStashedDraft(key);
-				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'action-timeout', message: '操作対象のウィンドウが応答しませんでした' }, token);
-			}
-		}, 5_000);
+		const timer = this.startActionTimeout(mobileId, msg, token, key, () => this.finishStashedDraft(key));
 		this.pendingActions.set(key, { mobileId, token, epoch: msg.epoch, terminalId: msg.id, windowId: owner.windowId, windowSession: owner.windowSession, requirePrompt: true, claudeSetting: true, timer });
 		this.requestAction(mobileId, owner.windowId, owner.windowSession, owner.rendererGeneration, encoder.encode(JSON.stringify({
 			t: 'action/claudeSetting', id: msg.id, token, requestId: msg.requestId, epoch: msg.epoch,
@@ -6377,13 +6393,13 @@ export class ParadisMobileAgentChat extends Disposable {
 		const answersMatch = questions.length === msg.answers.length && msg.answers.every((answer, index) => paradisQuestionAnswerFits(questions[index], answer));
 		if (!answersMatch) {
 			this.recordQuestionAnswerShape(token, msg, questions, 0, 'rejected-mismatch');
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'invalid-answer', message: '質問の選択肢が更新されました' }, token ?? msg.token);
+			this.rejectAction(mobileId, msg, token ?? msg.token, 'invalid-answer', '質問の選択肢が更新されました');
 			return;
 		}
 		if (token !== undefined && this.paneSessions.get(token)?.agent === 'opencode') {
 			const sessionId = this.paneSessions.get(token)?.sessionId ?? '';
 			if (msg.answers.some(answer => answer.kind === 'notes' || answer.notes !== undefined)) {
-				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'invalid-answer', message: 'この質問には選択肢か回答の本文を送ってください' }, token);
+				this.rejectAction(mobileId, msg, token, 'invalid-answer', 'この質問には選択肢か回答の本文を送ってください');
 				return;
 			}
 			const values = msg.answers.map((answer, index) => answer.kind === 'text' ? [answer.text] : answer.kind === 'option' ? [questions[index].options?.[answer.index]?.label ?? ''] : answer.kind === 'multi' ? answer.indices.map(option => questions[index].options?.[option]?.label ?? '') : []);
@@ -6400,7 +6416,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		const parts = plan.parts;
 		if (parts.length === 0) {
 			this.recordQuestionAnswerShape(token, msg, questions, 0, 'rejected-mismatch');
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'invalid-answer', message: 'この回答は PC のターミナルへ渡せません。メモと、下書きのある質問への「その他」は PC の画面で答えてください' }, token ?? msg.token);
+			this.rejectAction(mobileId, msg, token ?? msg.token, 'invalid-answer', 'この回答は PC のターミナルへ渡せません。メモと、下書きのある質問への「その他」は PC の画面で答えてください');
 			return;
 		}
 		this.recordQuestionAnswerShape(token, msg, questions, parts.length, 'dispatched');
@@ -6504,7 +6520,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		if (paradisIsCodexDaemonApprovalInteraction(msg.interactionId)) {
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-interaction', message: 'この承認要求はすでに完了しています' }, token ?? msg.token);
+			this.rejectAction(mobileId, msg, token ?? msg.token, 'stale-interaction', 'この承認要求はすでに完了しています');
 			return;
 		}
 		// Antigravity CLI の許可は、許可の hook が待っている答えとして値で返す（キーは打たない）。指示を添えた拒否は受けない
@@ -6520,14 +6536,14 @@ export class ParadisMobileAgentChat extends Disposable {
 		// 端末の確認の画面でしか許可できない承認は、モバイルからの許可を断る（古いアプリの古いカード・画面の選択肢・通知から。
 		// カードに印が付く前でも、mod が知らせていれば断る。キーの経路へ流すと Enter で許可されてしまう）
 		if (token !== undefined && session?.agent === 'claude' && paradisApprovalChoiceAllows(msg.choice, msg.optionLabel) && this.isPersonOnlyApproval(token, msg.interactionId)) {
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'invalid-answer', message: PARADIS_APPROVAL_ANSWER_ON_PC_MESSAGE }, token);
+			this.rejectAction(mobileId, msg, token, 'invalid-answer', PARADIS_APPROVAL_ANSWER_ON_PC_MESSAGE);
 			return;
 		}
 		// mod（Claude Mods）が承認を待っていれば、キーを打たずに値で答える（「以後は確認しない」もここだけ）。
 		if (token !== undefined && session?.agent === 'claude') {
 			const viaMod = this.tryAnswerApprovalViaMod(token, msg.interactionId, msg.choice, msg.optionLabel, { mobileId, epoch: msg.epoch }, msg.message);
 			if (viaMod === 'refused') {
-				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'invalid-answer', message: PARADIS_APPROVAL_ANSWER_ON_PC_MESSAGE }, token);
+				this.rejectAction(mobileId, msg, token, 'invalid-answer', PARADIS_APPROVAL_ANSWER_ON_PC_MESSAGE);
 				return;
 			}
 			if (viaMod === 'answered' || viaMod === 'locked') {
@@ -6540,12 +6556,12 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (msg.message !== undefined) {
 			// 指示を添えた拒否は mod でしか渡せない（キーの経路は選択肢の位置に依って確かめられない）。指示を落として
 			// Esc で拒否すると、指示を書いた人には伝わったように見えてしまうので、送らずに断る
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-interaction', message: '指示を添えて拒否できなくなりました。拒否だけを送るか、PCの画面で回答してください' }, token ?? msg.token);
+			this.rejectAction(mobileId, msg, token ?? msg.token, 'stale-interaction', '指示を添えて拒否できなくなりました。拒否だけを送るか、PCの画面で回答してください');
 			return;
 		}
 		if (msg.choice === 'always') {
 			// 「以後は確認しない」は mod でしか渡せない（キーの列を確かめていない）。mod が待つのをやめた後に押された
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-interaction', message: 'この確認はもう回答を待っていません。PCの画面で確認してください' }, token ?? msg.token);
+			this.rejectAction(mobileId, msg, token ?? msg.token, 'stale-interaction', 'この確認はもう回答を待っていません。PCの画面で確認してください');
 			return;
 		}
 		const agent = session?.agent;
@@ -6554,7 +6570,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		const optionNumber = paradisParseApprovalOptionChoice(msg.choice);
 		const validOption = optionNumber !== undefined && msg.optionLabel !== undefined;
 		if (msg.choice !== 'yes' && msg.choice !== 'no' && !validOption) {
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'invalid-answer', message: '承認の選択肢が更新されました' }, token ?? msg.token);
+			this.rejectAction(mobileId, msg, token ?? msg.token, 'invalid-answer', '承認の選択肢が更新されました');
 			return;
 		}
 		// 画面は所有ウィンドウでしか読めない。Codex のキーは送る直前に画面で決め直すので、どの承認の確認かを確かめる一片を添える
@@ -6623,22 +6639,17 @@ export class ParadisMobileAgentChat extends Disposable {
 			// 上限は暴走した列を弾くための安全弁。複数選択の質問は送信ボタンまでの移動キーが
 			// 選択肢の数だけ増えるため、多問ぶんを見込んだ余裕を持たせている。
 			|| parts.length === 0 || parts.length > 400 || this.pendingActions.has(key) || this.completedActions.has(key)) {
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-interaction', message: '回答対象の質問または承認要求が変わりました' }, token ?? msg.token);
+			this.rejectAction(mobileId, msg, token ?? msg.token, 'stale-interaction', '回答対象の質問または承認要求が変わりました');
 			return;
 		}
 		// 同じ interaction への回答が既にPC側へ渡っている。TUI が消費し損ねてカードが残った場合、
 		// ユーザーは押し直すしかないが、これを stale-interaction と同じ扱いで黙って弾くと
 		// 「押しても何も起きない」ようにしか見えない。状態を区別して伝える。
 		if (this.interactionClaims.has(interactionKey)) {
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'interaction-locked', message: 'PC側で反映を待っています。変わらない場合はPCの画面で確認してください' }, token);
+			this.rejectAction(mobileId, msg, token, 'interaction-locked', 'PC側で反映を待っています。変わらない場合はPCの画面で確認してください');
 			return;
 		}
-		const timer = setTimeout(() => {
-			if (this.pendingActions.delete(key)) {
-				this.releaseInteractionClaim(interactionKey, key);
-				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'action-timeout', message: '操作対象のウィンドウが応答しませんでした' }, token);
-			}
-		}, 5_000);
+		const timer = this.startActionTimeout(mobileId, msg, token, key, () => this.releaseInteractionClaim(interactionKey, key));
 		this.interactionClaims.set(interactionKey, key);
 		this.pendingActions.set(key, { mobileId, token, epoch: msg.epoch, terminalId: msg.id, windowId: owner.windowId, windowSession: owner.windowSession, interaction, interactionKey, timer });
 		this.requestAction(mobileId, owner.windowId, owner.windowSession, owner.rendererGeneration, encoder.encode(JSON.stringify({
@@ -7901,7 +7912,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		const lockKey = `${token}\0question\0${msg.interactionId}`;
 		if (this.isModAnswerLocked(lockKey)) {
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'interaction-locked', message: 'PC側で反映を待っています。変わらない場合はPCの画面で確認してください' }, token);
+			this.rejectAction(mobileId, msg, token, 'interaction-locked', 'PC側で反映を待っています。変わらない場合はPCの画面で確認してください');
 			return true;
 		}
 		const target = this.matchModQuestion(token, msg.interactionId, questions);
@@ -7911,7 +7922,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			return false;
 		}
 		this.lockModAnswer(lockKey);
-		this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'accepted' }, token);
+		this.acceptAction(mobileId, msg, token);
 		return true;
 	}
 
@@ -7922,7 +7933,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	private handleClarifyQuestionAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/clarifyQuestion' }>): void {
 		const token = this.resolveInboundToken(msg.id, msg.token);
 		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
-		const reject = (code: string, message: string) => this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code, message }, token ?? msg.token);
+		const reject = (code: string, message: string) => this.rejectAction(mobileId, msg, token ?? msg.token, code, message);
 		if (token === undefined || tailer === undefined || tailer.epoch !== msg.epoch || !this.hasSubscriber(token, mobileId)
 			|| !tailer.hasPendingInteraction({ kind: 'question', id: msg.interactionId })) {
 			reject('stale-interaction', '回答対象の質問が変わりました');
@@ -7951,7 +7962,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		this.lockModAnswer(lockKey);
-		this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'accepted' }, token);
+		this.acceptAction(mobileId, msg, token);
 	}
 
 	/**
@@ -8081,12 +8092,9 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (/^[!#]/.test(text.trimStart())) {
 			return false;
 		}
-		if (this.modSendRequests.has(key)) {
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-session', message: '操作対象のエージェントセッションが変わりました' }, token);
+		if (!this.beginModSend(mobileId, msg, token, key, sendKey)) {
 			return true;
 		}
-		this.modSendRequests.add(key);
-		this.rememberSendId(sendKey);
 		const submittedAt = Date.now();
 		const onLateFailure = () => {
 			// mod は受け取ったが、送れなかった（`$.prompt.submit` が失敗した）。モバイルは答え終えた requestId の 2 回目の
@@ -8100,13 +8108,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		// そのときは 1 通目の行方（受け取った・送れた・失敗）が分かるまで待ってからキーで送る（先に打つと順番が入れ替わる）
 		const previousModSend = this.modSendsInFlight.get(token);
 		const sending = this.claudeModBridge.submitPrompt(token, sessionId, text, onLateFailure);
-		const settled = sending.then(() => undefined, () => undefined);
-		this.modSendsInFlight.set(token, settled);
-		void settled.then(() => {
-			if (this.modSendsInFlight.get(token) === settled) {
-				this.modSendsInFlight.delete(token);
-			}
-		});
+		this.trackModSend(token, sending);
 		sending.then(async result => {
 			if (result === 'busy') {
 				await paradisClaudeModWaitForPrevious(previousModSend, MOD_BUSY_WAIT_MS);
@@ -8120,7 +8122,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			}
 			this.modSendRequests.delete(key);
 			if (result === 'accepted') {
-				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'accepted' }, token);
+				this.acceptAction(mobileId, msg, token);
 				return;
 			}
 			this.forgetSendId(sendKey);
@@ -8145,16 +8147,37 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	/**
+	 * mod 経由の送信を始める印を付ける。同じ requestId の送信が mod に渡っている最中なら、断って false を返す。
+	 */
+	private beginModSend(mobileId: string, msg: Extract<AgentInbound, { t: 'action/sendMessage' }>, token: string, key: string, sendKey: string | undefined): boolean {
+		if (this.modSendRequests.has(key)) {
+			this.rejectAction(mobileId, msg, token, 'stale-session', '操作対象のエージェントセッションが変わりました');
+			return false;
+		}
+		this.modSendRequests.add(key);
+		this.rememberSendId(sendKey);
+		return true;
+	}
+
+	/** mod へ渡した送信の行方が分かるまでを、ペインの「送っている最中」として覚える（次の送信が busy のときに待つ）。 */
+	private trackModSend(token: string, sending: Promise<unknown>): void {
+		const settled = sending.then(() => undefined, () => undefined);
+		this.modSendsInFlight.set(token, settled);
+		void settled.then(() => {
+			if (this.modSendsInFlight.get(token) === settled) {
+				this.modSendsInFlight.delete(token);
+			}
+		});
+	}
+
+	/**
 	 * スラッシュコマンドを mod の `$.command.run` で実行する。Claude Code が断ったら（名前が無い等）、その理由を付けて
 	 * 受け付けずに返す（アプリは理由を入力欄の上に出し、文を入力欄へ戻す）。mod へ渡せなければキーの経路で送る。
 	 */
 	private trySendSlashCommandViaMod(mobileId: string, msg: Extract<AgentInbound, { t: 'action/sendMessage' }>, token: string, sessionId: string, slash: IParadisSlashCommand, key: string, sendKey: string | undefined): boolean {
-		if (this.modSendRequests.has(key)) {
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-session', message: '操作対象のエージェントセッションが変わりました' }, token);
+		if (!this.beginModSend(mobileId, msg, token, key, sendKey)) {
 			return true;
 		}
-		this.modSendRequests.add(key);
-		this.rememberSendId(sendKey);
 		const onLateFailure = (reason: string | undefined) => {
 			// 画面を開くコマンドなどで、受け取った後に失敗した。モバイルはもう答えを受け取っているので、会話に知らせの行を足す
 			this.forgetSendId(sendKey);
@@ -8164,20 +8187,14 @@ export class ParadisMobileAgentChat extends Disposable {
 		// 画面を開いたコマンドは、閉じたところで終わりの ack が届く。帯を外す
 		const onFinished = () => this.clearPanel(token, sessionId);
 		const running = this.claudeModBridge.runCommand(token, sessionId, slash.name, slash.args, onLateFailure, onFinished);
-		const settled = running.then(() => undefined, () => undefined);
-		this.modSendsInFlight.set(token, settled);
-		void settled.then(() => {
-			if (this.modSendsInFlight.get(token) === settled) {
-				this.modSendsInFlight.delete(token);
-			}
-		});
+		this.trackModSend(token, running);
 		running.then(async result => {
 			if (result.outcome === 'busy') {
 				await paradisClaudeModWaitForPrevious(previousModSend, MOD_BUSY_WAIT_MS);
 			}
 			this.modSendRequests.delete(key);
 			if (result.outcome === 'accepted') {
-				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'accepted' }, token);
+				this.acceptAction(mobileId, msg, token);
 				if (result.running === true && slash.name.toLowerCase() !== 'compact') {
 					// まだ終わっていない: 画面を開いたかを mod に聞き、開いていればアプリに帯を出させる（/compact は画面ではない）
 					void this.checkPanelAfterCommand(token, sessionId, slash.name);
@@ -8187,7 +8204,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			this.forgetSendId(sendKey);
 			if (result.outcome === 'refused') {
 				// 理由が届かなくても断りとして返す（キーでは送り直さない）
-				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: PARADIS_SLASH_COMMAND_REJECTED_CODE, message: paradisSlashRejectionMessage('claude', slash.name, result.message) }, token);
+				this.rejectAction(mobileId, msg, token, PARADIS_SLASH_COMMAND_REJECTED_CODE, paradisSlashRejectionMessage('claude', slash.name, result.message));
 				return;
 			}
 			const refusal = paradisModRefusalResult(result.outcome);
@@ -8200,7 +8217,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			}
 			if (result.outcome === 'unconfirmed') {
 				// mod へ渡したが返事が無い。キーで送り直すと二度実行しうるので、送らずに確かめてもらう
-				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'action-timeout', message: 'PC の Claude Code から返事がありませんでした。PC の画面で確かめてから送り直してください' }, token);
+				this.rejectAction(mobileId, msg, token, 'action-timeout', 'PC の Claude Code から返事がありませんでした。PC の画面で確かめてから送り直してください');
 				return;
 			}
 			// mod へ渡していない（または mod が送れなかった）。今までどおりウィンドウのキー入力で送る
@@ -9390,10 +9407,10 @@ export class ParadisMobileAgentChat extends Disposable {
 			&& this.hasSubscriber(token, mobileId) && owner !== undefined
 			&& this.openCodeOwnerIsCurrent(msg.id, token, owner)
 			&& (interaction === undefined ? (msg.t === 'action/interrupt' || tailer.currentInteraction() === null) && !this.desktopExitedTokens.has(token) : tailer.hasPendingInteraction(interaction));
-		const reject = () => this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'stale-interaction', message: '対象の会話または確認が変わりました。もう一度確認してください' }, token);
+		const reject = () => this.rejectAction(mobileId, msg, token, 'stale-interaction', '対象の会話または確認が変わりました。もう一度確認してください');
 		// 同じ送信（sendId）を送っている最中に送り直してきた。Claude Code の経路と同じく、受け付け済みと答える
 		if (msg.t === 'action/sendMessage' && msg.sendId !== undefined && dedupeKey !== key && this.openCodeActions.has(dedupeKey)) {
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'accepted', code: 'duplicate' }, token);
+			this.acceptAction(mobileId, msg, token, 'duplicate');
 			return;
 		}
 		if (!valid() || this.openCodeActions.has(dedupeKey) || this.openCodeActions.has(key) || this.openCodeActions.size >= 256) { reject(); return; }
@@ -9409,12 +9426,12 @@ export class ParadisMobileAgentChat extends Disposable {
 			if (outcome === 'unknown') {
 				// frontend は受け取ったが結果が返らなかった。動いたかもしれないので印は残し（同じ送信・同じ回答を二度渡さない）、
 				// 利用者には届いたかを会話で確かめてもらう
-				this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: 'action-timeout', message: 'OpenCode が結果を返しませんでした。届いたかを会話で確かめてください' }, token);
+				this.rejectAction(mobileId, msg, token, 'action-timeout', 'OpenCode が結果を返しませんでした。届いたかを会話で確かめてください');
 				return;
 			}
 			if (interaction?.kind === 'approval') { tailer?.clearApprovalRequest(interaction.id, false); }
 			if (interaction?.kind === 'question') { tailer?.clearPendingQuestions(interaction.id); }
-			this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'accepted' }, token);
+			this.acceptAction(mobileId, msg, token);
 		})();
 	}
 
@@ -10559,7 +10576,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		const tailer = this.tailers.get(token);
 		const info = tailer !== undefined ? this.infoOf(token, tailer) : undefined;
 		if (terminalId !== undefined && tailer !== undefined && info !== undefined) {
-			this.sendToSubscribers(token, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages: [], info });
+			this.sendEmptyDelta(token, terminalId, tailer, { info });
 		}
 	}
 
@@ -11144,6 +11161,11 @@ export class ParadisMobileAgentChat extends Disposable {
 		return { sessionStatus: status, sessionStatusAt: Date.now() };
 	}
 
+	/** 本文の無い delta（rev は今のまま）に、変わった項目だけを載せて購読者へ届ける。 */
+	private sendEmptyDelta(token: string, terminalId: number, tailer: TranscriptTailer, fields: Omit<Extract<AgentOutbound, { t: 'delta' }>, 't' | 'id' | 'agent' | 'epoch' | 'rev' | 'messages'>): void {
+		this.sendToSubscribers(token, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages: [], ...fields });
+	}
+
 	/** 会話の状態が前に送ったものから変わっていれば、空 delta で届ける。 */
 	private pushSessionStatusIfChanged(token: string): void {
 		const tailer = this.tailers.get(token);
@@ -11153,7 +11175,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		const field = this.sessionStatusField(token, tailer, false);
 		if (field.sessionStatus !== undefined) {
-			this.sendToSubscribers(token, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages: [], ...field });
+			this.sendEmptyDelta(token, terminalId, tailer, field);
 		}
 	}
 
@@ -11166,13 +11188,30 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		const field = this.workflowsField(token, tailer, false);
 		if (field.workflows !== undefined) {
-			this.sendToSubscribers(token, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages: [], ...field });
+			this.sendEmptyDelta(token, terminalId, tailer, field);
 		}
 	}
 
 	/** Workflow の実行のフォルダを読み直す予約（同じペインの予約は早い方に寄せる）。 */
 	private scheduleWorkflowRefresh(token: string, delay: number): void {
-		const previous = this.workflowRefreshTimers.get(token);
+		this.scheduleRefresh(this.workflowRefreshTimers, this.workflowRefreshing, token, delay,
+			() => this.scheduleWorkflowRefresh(token, WORKFLOW_REFRESH_SOON_MS), () => this.refreshWorkflows(token), '[paradisAgentChat] workflow refresh failed');
+	}
+
+	/**
+	 * ペインごとの読み直しの予約（Workflow とチームで共通）。同じペインの予約は早い方に寄せる。読んでいる最中に時間が来たら
+	 * （同じ位置を二重に読まない）、`retrySoon` で終わってから読み直す。
+	 */
+	private scheduleRefresh(
+		timers: Map<string, { readonly timer: ReturnType<typeof setTimeout>; readonly at: number }>,
+		refreshing: Set<string>,
+		token: string,
+		delay: number,
+		retrySoon: () => void,
+		refresh: () => Promise<void>,
+		failureLog: string,
+	): void {
+		const previous = timers.get(token);
 		if (previous !== undefined) {
 			if (previous.at <= Date.now() + delay) {
 				return;
@@ -11180,18 +11219,17 @@ export class ParadisMobileAgentChat extends Disposable {
 			clearTimeout(previous.timer);
 		}
 		const timer = setTimeout(() => {
-			this.workflowRefreshTimers.delete(token);
-			if (this.workflowRefreshing.has(token)) {
-				// 読んでいる最中（同じ位置を二重に読まない）。終わってから読み直す
-				this.scheduleWorkflowRefresh(token, WORKFLOW_REFRESH_SOON_MS);
+			timers.delete(token);
+			if (refreshing.has(token)) {
+				retrySoon();
 				return;
 			}
-			this.workflowRefreshing.add(token);
-			this.refreshWorkflows(token)
-				.catch(error => this.logService.trace('[paradisAgentChat] workflow refresh failed', String(error)))
-				.finally(() => this.workflowRefreshing.delete(token));
+			refreshing.add(token);
+			refresh()
+				.catch(error => this.logService.trace(failureLog, String(error)))
+				.finally(() => refreshing.delete(token));
 		}, delay);
-		this.workflowRefreshTimers.set(token, { timer, at: Date.now() + delay });
+		timers.set(token, { timer, at: Date.now() + delay });
 	}
 
 	/**
@@ -11285,7 +11323,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		const field = this.teamsField(token, tailer, false);
 		if (field.teams !== undefined) {
-			this.sendToSubscribers(token, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages: [], ...field });
+			this.sendEmptyDelta(token, terminalId, tailer, field);
 		}
 	}
 
@@ -11317,31 +11355,14 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		const field = this.asyncQuestionsField(token, tailer, false);
 		if (field.asyncQuestions !== undefined) {
-			this.sendToSubscribers(token, { t: 'delta', id: terminalId, agent: tailer.agent, epoch: tailer.epoch, rev: tailer.rev, messages: [], ...field });
+			this.sendEmptyDelta(token, terminalId, tailer, field);
 		}
 	}
 
 	/** チームのファイルを読み直す予約（同じペインの予約は早い方に寄せる）。 */
 	private scheduleTeamRefresh(token: string, delay: number): void {
-		const previous = this.teamRefreshTimers.get(token);
-		if (previous !== undefined) {
-			if (previous.at <= Date.now() + delay) {
-				return;
-			}
-			clearTimeout(previous.timer);
-		}
-		const timer = setTimeout(() => {
-			this.teamRefreshTimers.delete(token);
-			if (this.teamRefreshing.has(token)) {
-				this.scheduleTeamRefresh(token, TEAM_REFRESH_SOON_MS);
-				return;
-			}
-			this.teamRefreshing.add(token);
-			this.refreshTeams(token)
-				.catch(error => this.logService.trace('[paradisAgentChat] team refresh failed', String(error)))
-				.finally(() => this.teamRefreshing.delete(token));
-		}, delay);
-		this.teamRefreshTimers.set(token, { timer, at: Date.now() + delay });
+		this.scheduleRefresh(this.teamRefreshTimers, this.teamRefreshing, token, delay,
+			() => this.scheduleTeamRefresh(token, TEAM_REFRESH_SOON_MS), () => this.refreshTeams(token), '[paradisAgentChat] team refresh failed');
 	}
 
 	/**
