@@ -22,6 +22,7 @@ import type { IParadisCellComment, IParadisCellCommentEntry } from '../../common
 import { canShowSpreadsheetNoChanges, spreadsheetPrintWarning } from './paradisSpreadsheetDiagnostics.js';
 import { ParadisInputField } from '../../../../browser/paradisInputField.js';
 import { appendParadisOfficeInspectorButton, appendParadisOfficePanelHead, setParadisOfficeRowHover, type ParadisOfficeInspectorButtonKind } from '../paradisOfficeInspectorParts.js';
+import { ParadisOfficeInputRestoration, ParadisOfficeOpenGeneration, paradisOfficeDataRecord } from '../paradisOfficeInspectorState.js';
 
 export const PARADIS_SPREADSHEET_CHANGE_CATEGORIES: readonly ParadisOfficeChangeCategory[] = Object.freeze([
 	'content',
@@ -52,21 +53,7 @@ export interface ParadisSpreadsheetRestorableInput {
 }
 
 /** Input-open fence: only the newest open may commit or restore editor state. */
-export class ParadisSpreadsheetOpenGeneration {
-	private generation = 0;
-
-	begin(): number {
-		return ++this.generation;
-	}
-
-	invalidate(): void {
-		this.generation++;
-	}
-
-	isCurrent(generation: number): boolean {
-		return generation === this.generation;
-	}
-}
+export class ParadisSpreadsheetOpenGeneration extends ParadisOfficeOpenGeneration { }
 
 export interface ParadisSpreadsheetNavigationTarget {
 	readonly kind: 'change' | 'placeholder' | 'search';
@@ -141,39 +128,6 @@ export interface ParadisSpreadsheetChangeInspectorOptions {
 	readonly onDidChangeViewState?: (state: ParadisSpreadsheetViewState) => void;
 }
 
-interface DataRecord {
-	readonly values: ReadonlyMap<string, unknown>;
-	readonly keys: readonly string[];
-}
-
-function dataRecord(value: unknown, maximumKeys: number): DataRecord | undefined {
-	if (!value || typeof value !== 'object' || Array.isArray(value)) {
-		return undefined;
-	}
-	try {
-		const prototype = Object.getPrototypeOf(value);
-		if (prototype !== Object.prototype && prototype !== null) {
-			return undefined;
-		}
-		const ownKeys = Reflect.ownKeys(value);
-		if (ownKeys.length > maximumKeys || ownKeys.some(key => typeof key !== 'string')) {
-			return undefined;
-		}
-		const keys = ownKeys as string[];
-		const values = new Map<string, unknown>();
-		for (const key of keys) {
-			const descriptor = Object.getOwnPropertyDescriptor(value, key);
-			if (!descriptor?.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
-				return undefined;
-			}
-			values.set(key, descriptor.value);
-		}
-		return { keys, values };
-	} catch {
-		return undefined;
-	}
-}
-
 function copyViewState(state: ParadisSpreadsheetViewState): ParadisSpreadsheetViewState {
 	return Object.freeze({
 		zoom: state.zoom,
@@ -183,23 +137,9 @@ function copyViewState(state: ParadisSpreadsheetViewState): ParadisSpreadsheetVi
 	});
 }
 
-function copySource(source: ParadisOfficeSourceDescriptor): ParadisOfficeSourceDescriptor {
-	return Object.freeze({
-		kind: source.kind,
-		...(source.uri ? { uri: source.uri } : {}),
-		...(source.revisionHint ? { revisionHint: source.revisionHint } : {}),
-		displayName: source.displayName,
-		...(source.side ? { side: source.side } : {}),
-	});
-}
-
-function copyInput(input: ParadisSpreadsheetRestorableInput): ParadisSpreadsheetRestorableInput {
-	return Object.freeze({ source: copySource(input.source), viewState: copyViewState(input.viewState) });
-}
-
 /** Accepts only the bounded source-specific view-state fields; backend handle capabilities are not a view-state field. */
 export function restoreParadisSpreadsheetViewState(value: unknown, fallback: ParadisSpreadsheetViewState): ParadisSpreadsheetViewState {
-	const record = dataRecord(value, 4);
+	const record = paradisOfficeDataRecord(value, 4);
 	if (!record || record.keys.some(key => key !== 'zoom' && key !== 'activeSheet' && key !== 'categories' && key !== 'selectedChangeId')) {
 		return copyViewState(fallback);
 	}
@@ -226,37 +166,9 @@ export function restoreParadisSpreadsheetViewState(value: unknown, fallback: Par
 }
 
 /** Two-phase input state used by rapid input switches. Cancel always returns the last committed descriptor/view state. */
-export class ParadisSpreadsheetInputRestoration {
-	private committed: ParadisSpreadsheetRestorableInput;
-	private pending: ParadisSpreadsheetRestorableInput | undefined;
-
+export class ParadisSpreadsheetInputRestoration extends ParadisOfficeInputRestoration<ParadisSpreadsheetViewState> {
 	constructor(initial: ParadisSpreadsheetRestorableInput) {
-		this.committed = copyInput(initial);
-	}
-
-	begin(input: ParadisSpreadsheetRestorableInput): void {
-		this.pending = copyInput(input);
-	}
-
-	commit(viewState?: ParadisSpreadsheetViewState): ParadisSpreadsheetRestorableInput {
-		if (this.pending) {
-			this.committed = copyInput({ source: this.pending.source, viewState: viewState ?? this.pending.viewState });
-			this.pending = undefined;
-		}
-		return copyInput(this.committed);
-	}
-
-	cancel(): ParadisSpreadsheetRestorableInput {
-		this.pending = undefined;
-		return copyInput(this.committed);
-	}
-
-	snapshot(): ParadisSpreadsheetRestorableInput {
-		return copyInput(this.committed);
-	}
-
-	serialize(): string {
-		return JSON.stringify(this.committed);
+		super(initial, copyViewState);
 	}
 }
 

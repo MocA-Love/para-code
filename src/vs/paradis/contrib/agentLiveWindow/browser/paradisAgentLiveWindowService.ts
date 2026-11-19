@@ -16,6 +16,7 @@ import { InstantiationType, registerSingleton } from '../../../../platform/insta
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ServiceCollection } from '../../../../platform/instantiation/common/serviceCollection.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { IParadisSerializedWindowBounds, paradisRestoreLiveWindowBounds } from '../../../browser/paradisLiveWindowBounds.js';
 import { IAuxiliaryWindowService } from '../../../../workbench/services/auxiliaryWindow/browser/auxiliaryWindowService.js';
 import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
@@ -36,13 +37,6 @@ import { ParadisAgentLiveWindowView } from './paradisAgentLiveWindowView.js';
 const VIEW_STATE_STORAGE_KEY = 'paradis.agentLiveWindow.viewState';
 const WINDOW_STATE_STORAGE_KEY = 'paradis.agentLiveWindow.windowState';
 const STATE_SAVE_DELAY = 500;
-
-interface ISerializedWindowBounds {
-	readonly x?: number;
-	readonly y?: number;
-	readonly width?: number;
-	readonly height?: number;
-}
 
 const EMPTY_SUMMARY: IParadisAgentLiveSummary = { total: 0, active: 0, attention: 0, byStatus: new Map() };
 
@@ -126,7 +120,7 @@ export class ParadisAgentLiveWindowService extends Disposable implements IParadi
 			// 塗れる) に切り替える。ドラッグ領域と信号ボタン用の余白は
 			// paradisAgentLiveWindow.css の .paradis-agent-live-transparent 側で確保している。
 			const auxiliaryWindow = disposables.add(await this.auxiliaryWindowService.open({
-				bounds: this.restoreBounds(),
+				bounds: paradisRestoreLiveWindowBounds(this.storageService, WINDOW_STATE_STORAGE_KEY),
 				nativeTitlebar: !transparencyActive,
 				transparent: transparencyActive,
 			}));
@@ -207,7 +201,7 @@ export class ParadisAgentLiveWindowService extends Disposable implements IParadi
 		this.closeWindow?.();
 	}
 
-	private onWindowClosed(disposables: DisposableStore, bounds: { bounds?: ISerializedWindowBounds }): void {
+	private onWindowClosed(disposables: DisposableStore, bounds: { bounds?: IParadisSerializedWindowBounds }): void {
 		if (this.windowDisposables !== disposables) {
 			return;
 		}
@@ -224,26 +218,6 @@ export class ParadisAgentLiveWindowService extends Disposable implements IParadi
 			this._store.deleteAndLeak(disposables);
 			disposables.dispose();
 		});
-	}
-
-	private restoreBounds(): ISerializedWindowBounds | undefined {
-		const raw = this.storageService.get(WINDOW_STATE_STORAGE_KEY, StorageScope.WORKSPACE);
-		if (!raw) {
-			return undefined;
-		}
-		try {
-			const parsed: unknown = JSON.parse(raw);
-			if (parsed && typeof parsed === 'object') {
-				const bounds = parsed as ISerializedWindowBounds;
-				const isFinite = (value: number | undefined): boolean => value === undefined || Number.isFinite(value);
-				if (isFinite(bounds.x) && isFinite(bounds.y) && isFinite(bounds.width) && isFinite(bounds.height)) {
-					return bounds;
-				}
-			}
-		} catch {
-			// 壊れた値は捨てて既定の位置で開く。
-		}
-		return undefined;
 	}
 
 	private scheduleSave(): void {

@@ -14,6 +14,7 @@ import { IConfigurationService } from '../../../../platform/configuration/common
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { IParadisSerializedWindowBounds, paradisRestoreLiveWindowBounds } from '../../../browser/paradisLiveWindowBounds.js';
 import { IAuxiliaryWindowService } from '../../../../workbench/services/auxiliaryWindow/browser/auxiliaryWindowService.js';
 import { IWorkbenchLayoutService } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { paradisApplyAuxiliaryWindowTransparency, paradisIsAuxiliaryWindowTransparencyActive } from '../../windowTransparency/browser/paradisAuxiliaryWindowTransparency.js';
@@ -31,13 +32,6 @@ import { ParadisBrowserLiveWindowView } from './paradisBrowserLiveWindowView.js'
 const VIEW_STATE_STORAGE_KEY = 'paradis.browserLiveWindow.viewState';
 const WINDOW_STATE_STORAGE_KEY = 'paradis.browserLiveWindow.windowState';
 const STATE_SAVE_DELAY = 500;
-
-interface ISerializedWindowBounds {
-	readonly x?: number;
-	readonly y?: number;
-	readonly width?: number;
-	readonly height?: number;
-}
 
 const EMPTY_SUMMARY: IParadisBrowserLiveSummary = { total: 0, shared: 0, totalAll: 0, sharedAll: 0 };
 
@@ -109,7 +103,7 @@ export class ParadisBrowserLiveWindowService extends Disposable implements IPara
 			// nativeTitlebar と transparent の組み合わせについてはエージェント一覧ウィンドウと
 			// 同じ制約がある (macOS で両立させると信号ボタンの帯まで透ける)。
 			const auxiliaryWindow = disposables.add(await this.auxiliaryWindowService.open({
-				bounds: this.restoreBounds(),
+				bounds: paradisRestoreLiveWindowBounds(this.storageService, WINDOW_STATE_STORAGE_KEY),
 				nativeTitlebar: !transparencyActive,
 				transparent: transparencyActive,
 			}));
@@ -166,7 +160,7 @@ export class ParadisBrowserLiveWindowService extends Disposable implements IPara
 		}
 	}
 
-	private onWindowClosed(disposables: DisposableStore, bounds: { bounds?: ISerializedWindowBounds }): void {
+	private onWindowClosed(disposables: DisposableStore, bounds: { bounds?: IParadisSerializedWindowBounds }): void {
 		// open() の途中で閉じられた場合はまだ windowDisposables へ入っていない。その store も
 		// 必ず回収する (取りこぼすとサービスの寿命まで残る)。
 		if (this.windowDisposables === disposables) {
@@ -182,26 +176,6 @@ export class ParadisBrowserLiveWindowService extends Disposable implements IPara
 			this._store.deleteAndLeak(disposables);
 			disposables.dispose();
 		});
-	}
-
-	private restoreBounds(): ISerializedWindowBounds | undefined {
-		const raw = this.storageService.get(WINDOW_STATE_STORAGE_KEY, StorageScope.WORKSPACE);
-		if (!raw) {
-			return undefined;
-		}
-		try {
-			const parsed: unknown = JSON.parse(raw);
-			if (parsed && typeof parsed === 'object') {
-				const bounds = parsed as ISerializedWindowBounds;
-				const isFinite = (value: number | undefined): boolean => value === undefined || Number.isFinite(value);
-				if (isFinite(bounds.x) && isFinite(bounds.y) && isFinite(bounds.width) && isFinite(bounds.height)) {
-					return bounds;
-				}
-			}
-		} catch {
-			// 壊れた値は捨てて既定の位置で開く。
-		}
-		return undefined;
 	}
 
 	private scheduleSave(): void {

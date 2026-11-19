@@ -25,6 +25,7 @@ import type { IParadisWordInlineMark } from '../../common/word/paradisWordRender
 import { canShowWordNoChanges, paradisWordBlockedFeatureLabel, paradisWordIgnoredReasonLabel, wordPrintWarning, type ParadisWordPackageExclusions } from './paradisWordDiagnostics.js';
 import { ParadisInputField } from '../../../../browser/paradisInputField.js';
 import { appendParadisOfficeInspectorButton, appendParadisOfficePanelHead, setParadisOfficeRowHover, type ParadisOfficeInspectorButtonKind } from '../paradisOfficeInspectorParts.js';
+import { ParadisOfficeInputRestoration, ParadisOfficeOpenGeneration, paradisOfficeDataRecord } from '../paradisOfficeInspectorState.js';
 
 // 表示名は common へ移した（スマホの Word 差分と共有）。既存の import 先を変えないため、ここからも出す。
 export { paradisWordStoryLabel, wordChangeLabel, wordChangeText };
@@ -65,21 +66,7 @@ export interface ParadisWordRestorableInput {
 }
 
 /** Input-open fence: only the newest open may commit or restore editor state. */
-export class ParadisWordOpenGeneration {
-	private generation = 0;
-
-	begin(): number {
-		return ++this.generation;
-	}
-
-	invalidate(): void {
-		this.generation++;
-	}
-
-	isCurrent(generation: number): boolean {
-		return generation === this.generation;
-	}
-}
+export class ParadisWordOpenGeneration extends ParadisOfficeOpenGeneration { }
 
 /** Grants at most one blank-render retry to the current open generation. */
 export class ParadisWordBlankRetry {
@@ -272,39 +259,6 @@ export function paradisWordMarkItem(id: number, mark: IParadisWordInlineMark, st
 	return { id, kind: markKindLabel(mark, value), summary: truncateParadisWordText(markSummary(mark, value), MARK_SUMMARY_LIMIT), location };
 }
 
-interface DataRecord {
-	readonly values: ReadonlyMap<string, unknown>;
-	readonly keys: readonly string[];
-}
-
-function dataRecord(value: unknown, maximumKeys: number): DataRecord | undefined {
-	if (!value || typeof value !== 'object' || Array.isArray(value)) {
-		return undefined;
-	}
-	try {
-		const prototype = Object.getPrototypeOf(value);
-		if (prototype !== Object.prototype && prototype !== null) {
-			return undefined;
-		}
-		const ownKeys = Reflect.ownKeys(value);
-		if (ownKeys.length > maximumKeys || ownKeys.some(key => typeof key !== 'string')) {
-			return undefined;
-		}
-		const keys = ownKeys as string[];
-		const values = new Map<string, unknown>();
-		for (const key of keys) {
-			const descriptor = Object.getOwnPropertyDescriptor(value, key);
-			if (!descriptor?.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
-				return undefined;
-			}
-			values.set(key, descriptor.value);
-		}
-		return { keys, values };
-	} catch {
-		return undefined;
-	}
-}
-
 function copyViewState(state: ParadisWordViewState): ParadisWordViewState {
 	return Object.freeze({
 		zoom: state.zoom,
@@ -315,23 +269,9 @@ function copyViewState(state: ParadisWordViewState): ParadisWordViewState {
 	});
 }
 
-function copySource(source: ParadisOfficeSourceDescriptor): ParadisOfficeSourceDescriptor {
-	return Object.freeze({
-		kind: source.kind,
-		...(source.uri ? { uri: source.uri } : {}),
-		...(source.revisionHint ? { revisionHint: source.revisionHint } : {}),
-		displayName: source.displayName,
-		...(source.side ? { side: source.side } : {}),
-	});
-}
-
-function copyInput(input: ParadisWordRestorableInput): ParadisWordRestorableInput {
-	return Object.freeze({ source: copySource(input.source), viewState: copyViewState(input.viewState) });
-}
-
 /** Accepts bounded source-specific fields only; backend handle IDs are not view state. */
 export function restoreParadisWordViewState(value: unknown, fallback: ParadisWordViewState): ParadisWordViewState {
-	const record = dataRecord(value, 5);
+	const record = paradisOfficeDataRecord(value, 5);
 	if (!record || record.keys.some(key => key !== 'zoom' && key !== 'displayMode' && key !== 'activeStory' && key !== 'categories' && key !== 'selectedChangeId')) {
 		return copyViewState(fallback);
 	}
@@ -366,37 +306,9 @@ export function restoreParadisWordViewState(value: unknown, fallback: ParadisWor
 }
 
 /** Two-phase input state. Cancellation always returns the last committed descriptor and view state. */
-export class ParadisWordInputRestoration {
-	private committed: ParadisWordRestorableInput;
-	private pending: ParadisWordRestorableInput | undefined;
-
+export class ParadisWordInputRestoration extends ParadisOfficeInputRestoration<ParadisWordViewState> {
 	constructor(initial: ParadisWordRestorableInput) {
-		this.committed = copyInput(initial);
-	}
-
-	begin(input: ParadisWordRestorableInput): void {
-		this.pending = copyInput(input);
-	}
-
-	commit(viewState?: ParadisWordViewState): ParadisWordRestorableInput {
-		if (this.pending) {
-			this.committed = copyInput({ source: this.pending.source, viewState: viewState ?? this.pending.viewState });
-			this.pending = undefined;
-		}
-		return copyInput(this.committed);
-	}
-
-	cancel(): ParadisWordRestorableInput {
-		this.pending = undefined;
-		return copyInput(this.committed);
-	}
-
-	snapshot(): ParadisWordRestorableInput {
-		return copyInput(this.committed);
-	}
-
-	serialize(): string {
-		return JSON.stringify(this.committed);
+		super(initial, copyViewState);
 	}
 }
 
