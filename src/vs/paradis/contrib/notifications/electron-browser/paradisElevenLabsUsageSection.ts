@@ -25,10 +25,10 @@ import { PARADIS_NOTIFICATIONS_CHANNEL } from '../common/paradisNotifications.js
 import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
 import { ParadisAivisRenderGeneration } from './paradisAivisApiCache.js';
 import { paradisElevenLabsModelCache } from './paradisElevenLabsApiCache.js';
+import { paradisNotifStatCard } from './paradisNotificationKitParts.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
 import { ParadisRequestCache } from '../common/paradisVoiceUsage.js';
 import { ParadisSegmented } from '../../../browser/paradisSegmented.js';
-import { PARADIS_CARD_CLASS, PARADIS_CARD_LABEL_CLASS, PARADIS_CARD_NOTE_CLASS, PARADIS_CARD_VALUE_CLASS } from '../../../browser/paradisCard.js';
 
 const $ = dom.$;
 
@@ -175,18 +175,18 @@ export class ParadisElevenLabsUsageSection extends Disposable {
 		const { usage, subscription } = bundle;
 
 		const statGrid = dom.append(container, $('.pns-stat-grid'));
-		this._statCard(statGrid, STR_CHARACTERS, usage.totalCharacters.toLocaleString(), strDaysTotal(days));
+		paradisNotifStatCard(statGrid, STR_CHARACTERS, usage.totalCharacters.toLocaleString(), strDaysTotal(days));
 		if (subscription.kind === 'ok') {
 			const sub = subscription.subscription;
 			const quota = paradisElevenLabsQuota(sub);
-			this._statCard(statGrid, STR_LIMIT, sub.characterLimit.toLocaleString(), strPlanUsed(sub.characterCount.toLocaleString()));
-			this._statCard(statGrid, STR_REMAINING, quota.remaining.toLocaleString(), sub.nextResetAt !== null ? strResetsAt(new Date(sub.nextResetAt).toLocaleDateString()) : '—');
+			paradisNotifStatCard(statGrid, STR_LIMIT, sub.characterLimit.toLocaleString(), strPlanUsed(sub.characterCount.toLocaleString()));
+			paradisNotifStatCard(statGrid, STR_REMAINING, quota.remaining.toLocaleString(), sub.nextResetAt !== null ? strResetsAt(new Date(sub.nextResetAt).toLocaleDateString()) : '—');
 			const bar = dom.append(container, $('.pns-quota-bar'));
 			const fill = dom.append(bar, $('.pns-quota-fill')) as HTMLElement;
 			fill.style.width = `${Math.round(quota.usedRatio * 100)}%`;
 		} else {
-			this._statCard(statGrid, STR_LIMIT, '—', STR_PLAN_UNKNOWN);
-			this._statCard(statGrid, STR_REMAINING, '—', STR_PLAN_UNKNOWN);
+			paradisNotifStatCard(statGrid, STR_LIMIT, '—', STR_PLAN_UNKNOWN);
+			paradisNotifStatCard(statGrid, STR_REMAINING, '—', STR_PLAN_UNKNOWN);
 			const note = dom.append(container, $(subscription.kind === 'missing-permissions' ? '.pns-row-hint' : '.pns-error'));
 			note.textContent = subscription.kind === 'missing-permissions' ? STR_MISSING_PERMISSION : subscription.message;
 			note.style.marginBottom = '10px';
@@ -236,12 +236,5 @@ export class ParadisElevenLabsUsageSection extends Disposable {
 			dom.append(row, $('span')).textContent = entry.label;
 			dom.append(row, $('span.pns-row-hint')).textContent = strChars(entry.characterCount.toLocaleString());
 		}
-	}
-
-	private _statCard(container: HTMLElement, label: string, value: string, sub: string): void {
-		const card = dom.append(container, $(`.pns-stat-card.${PARADIS_CARD_CLASS}`));
-		dom.append(card, $(`.${PARADIS_CARD_LABEL_CLASS}`)).textContent = label;
-		dom.append(card, $(`.${PARADIS_CARD_VALUE_CLASS}`)).textContent = value;
-		dom.append(card, $(`.${PARADIS_CARD_NOTE_CLASS}`)).textContent = sub;
 	}
 }

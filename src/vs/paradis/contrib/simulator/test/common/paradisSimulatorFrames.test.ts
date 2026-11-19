@@ -110,6 +110,34 @@ suite('Paradis simulator: frames', () => {
 		assert.deepStrictEqual([fromBytes, fromWhole], [[first, second, second], [first, second, second]]);
 	});
 
+	// 塊の切れ目がどこに来ても、切り出す枚は同じ（中身を待つ間は塊を溜めるだけにしているので、その境目を全部通す）
+	test('splits an MJPEG stream into the same JPEGs wherever the chunks are cut', () => {
+		const big = new Uint8Array(300).map((_, index) => index % 251);
+		const small = new Uint8Array([0xff, 0xd8, 1, 2, 3, 0xff, 0xd9]);
+		// 上限（32 MiB）を 1 バイト超える Content-Length の頭は読み飛ばし、次の `--frame` から続ける
+		const stream = concat(encode('junk'), part(big), encode('--frame\r\nContent-Length: 33554433\r\n\r\n'), part(small), part(big), encode('--fra'));
+		const hex = (frames: Uint8Array[]) => frames.map(frame => `${frame.length}:${frame[0]}:${frame[frame.length - 1]}`);
+		const differing: string[] = [];
+		const check = (label: string, chunks: Uint8Array[]) => {
+			const splitter = new ParadisMjpegSplitter();
+			const frames = chunks.flatMap(chunk => splitter.push(chunk));
+			if (JSON.stringify(frames.map(frame => [...frame])) !== JSON.stringify([big, small, big].map(frame => [...frame]))) {
+				differing.push(label);
+			}
+		};
+		for (let size = 1; size <= stream.length; size++) {
+			const chunks: Uint8Array[] = [];
+			for (let offset = 0; offset < stream.length; offset += size) {
+				chunks.push(stream.slice(offset, offset + size));
+			}
+			check(`size ${size}`, chunks);
+		}
+		for (let cut = 0; cut <= stream.length; cut++) {
+			check(`cut ${cut}`, [stream.slice(0, cut), stream.slice(cut)]);
+		}
+		assert.deepStrictEqual({ whole: hex(new ParadisMjpegSplitter().push(stream)), differing }, { whole: ['300:0:48', '7:255:217', '300:0:48'], differing: [] });
+	});
+
 	test('parses simctl devices and the Device Hub flag', () => {
 		const stdout = JSON.stringify({
 			devices: {

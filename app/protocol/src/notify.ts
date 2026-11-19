@@ -74,7 +74,7 @@ export interface NotifyPayload {
 	 */
 	readonly category?: NotifyCategory;
 	/** 送り主のエージェント（副題と、Communication Notification の送り主のアイコン）。 */
-	readonly agent?: 'claude' | 'codex';
+	readonly agent?: NotifyAgent;
 	/** タブ名（エージェントの印を外したもの）。 */
 	readonly tab?: string;
 	/** 長押しの画面（Content Extension）に出す Markdown の原文。「通知に内容を含める」がオンのときだけ付く。 */
@@ -82,6 +82,9 @@ export interface NotifyPayload {
 	/** 承認・質問の ID（通知のボタンで答えるとき、同じ確認かを確かめる）。 */
 	readonly interactionId?: string;
 }
+
+/** 通知の送り主のエージェント。PC の `ParadisAgentKind`（`paradisMobileProtocol.ts` の `NotifyPayload.agent`）と一致させる。 */
+type NotifyAgent = 'claude' | 'codex' | 'opencode' | 'antigravity';
 
 /** 通知の種類。PC の `paradisNotifyCompose.ts` の `ParadisNotifyCategory` と一致させる。 */
 export type NotifyCategory = 'done' | 'approval' | 'question' | 'error';
@@ -125,7 +128,7 @@ export function decodeNotify(bytes: Uint8Array): NotifyPayload {
 		: undefined;
 	const categoryRaw = raw['category'];
 	const category = categoryRaw === 'done' || categoryRaw === 'approval' || categoryRaw === 'question' || categoryRaw === 'error' ? categoryRaw : undefined;
-	const agent = raw['agent'] === 'claude' || raw['agent'] === 'codex' ? raw['agent'] : undefined;
+	const agent = raw['agent'] === 'claude' || raw['agent'] === 'codex' || raw['agent'] === 'opencode' || raw['agent'] === 'antigravity' ? raw['agent'] : undefined;
 	const tab = typeof raw['tab'] === 'string' && raw['tab'].length > 0 && raw['tab'].length <= 100 ? raw['tab'] : undefined;
 	const detail = typeof raw['detail'] === 'string' && raw['detail'].length > 0 && raw['detail'].length <= NOTIFY_DETAIL_MAX_LENGTH ? raw['detail'] : undefined;
 	const interactionId = typeof raw['interactionId'] === 'string' && raw['interactionId'].length > 0 && raw['interactionId'].length <= 200 ? raw['interactionId'] : undefined;

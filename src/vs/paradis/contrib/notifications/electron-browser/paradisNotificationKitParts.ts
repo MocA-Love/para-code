@@ -25,6 +25,7 @@ import { generateUuid } from '../../../../base/common/uuid.js';
 import { ParadisButtonKind, paradisButtonClasses } from '../../../browser/paradisButton.js';
 import { ParadisInputField } from '../../../browser/paradisInputField.js';
 import { createParadisChip, ParadisChipTone } from '../../../browser/paradisBadges.js';
+import { PARADIS_CARD_CLASS, PARADIS_CARD_LABEL_CLASS, PARADIS_CARD_NOTE_CLASS, PARADIS_CARD_VALUE_CLASS } from '../../../browser/paradisCard.js';
 
 const $ = dom.$;
 
@@ -140,4 +141,12 @@ export function paradisNotifChip(parent: HTMLElement, label: string, tone: Parad
 		chip.classList.add(className);
 	}
 	return chip;
+}
+
+/** 数字のカード（見出し・値・補足）。使用量と読み上げのキャッシュの節が並べる。 */
+export function paradisNotifStatCard(container: HTMLElement, label: string, value: string, sub: string): void {
+	const card = dom.append(container, $(`.pns-stat-card.${PARADIS_CARD_CLASS}`));
+	dom.append(card, $(`.${PARADIS_CARD_LABEL_CLASS}`)).textContent = label;
+	dom.append(card, $(`.${PARADIS_CARD_VALUE_CLASS}`)).textContent = value;
+	dom.append(card, $(`.${PARADIS_CARD_NOTE_CLASS}`)).textContent = sub;
 }

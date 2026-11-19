@@ -16,45 +16,25 @@ import { localize } from '../../../../nls.js';
 import { EditorInputCapabilities, IEditorSerializer, IUntypedEditorInput } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { PARADIS_ANDROID_SERIAL_PREFIX, paradisAndroidSerialOf } from '../common/paradisAndroid.js';
-import { PARADIS_SIMULATOR_SCHEME, paradisSimulatorTabName } from './paradisSimulatorEditorInput.js';
+import { PARADIS_SIMULATOR_SCHEME, ParadisDeviceEditorInput, paradisSimulatorTabName } from './paradisSimulatorEditorInput.js';
 
 export const PARADIS_ANDROID_EDITOR_ID = 'paradis.editor.androidDevice';
 export const PARADIS_ANDROID_INPUT_TYPE_ID = 'paradis.input.androidDevice';
 
-export class ParadisAndroidEditorInput extends EditorInput {
+export class ParadisAndroidEditorInput extends ParadisDeviceEditorInput {
 
 	static readonly ID = PARADIS_ANDROID_INPUT_TYPE_ID;
 
 	readonly resource: URI;
-	private _assignedTerminals: readonly string[] = [];
 
-	constructor(readonly serial: string, private _deviceName: string) {
-		super();
+	constructor(readonly serial: string, deviceName: string) {
+		super(deviceName);
 		this.resource = URI.from({ scheme: PARADIS_SIMULATOR_SCHEME, path: `/android/${serial}` });
 	}
 
 	/** mobile_* のツールでの端末の id（台帳を引くため）。 */
 	get deviceId(): string {
 		return `${PARADIS_ANDROID_SERIAL_PREFIX}${this.serial}`;
-	}
-
-	get deviceName(): string {
-		return this._deviceName;
-	}
-
-	setDeviceName(name: string): void {
-		if (name && name !== this._deviceName) {
-			this._deviceName = name;
-			this._onDidChangeLabel.fire();
-		}
-	}
-
-	setAssignedTerminals(names: readonly string[]): void {
-		if (names.length === this._assignedTerminals.length && names.every((name, index) => name === this._assignedTerminals[index])) {
-			return;
-		}
-		this._assignedTerminals = [...names];
-		this._onDidChangeLabel.fire();
 	}
 
 	override get typeId(): string {
