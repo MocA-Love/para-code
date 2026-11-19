@@ -92,29 +92,30 @@ export class ParadisSessionResumeDialog extends Disposable {
 
 	private readonly backdrop: HTMLElement;
 	private readonly modal: HTMLElement;
-	private root: HTMLElement | undefined;
-	private list: HTMLElement | undefined;
+	// 「!:」の欄は、constructor が呼ぶ buildContent（と、そこから呼ぶ renderListBar）で必ず代入する
+	private root!: HTMLElement;
+	private list!: HTMLElement;
 	/** 一覧の行（描いた順）。↑↓ で隣の行へ移るときに使う。 */
 	private readonly rowElements: HTMLElement[] = [];
 	/** グループの見出し（summary）と行を一覧の並びのまま持つ（↑↓ の移動先）。 */
 	private readonly listItems: HTMLElement[] = [];
-	private detail: HTMLElement | undefined;
-	private searchInput: HTMLInputElement | undefined;
+	private detail!: HTMLElement;
+	private searchInput!: HTMLInputElement;
 	/** 左フィルタナビの項目(ボタン化した旧 select)。render() から updateRailSelection() 経由で aria-pressed と件数を同期する(初回ローディング中のプレースホルダ表示時は未同期)。 */
 	private readonly agentNavButtons = new Map<AgentFilter, { button: HTMLButtonElement; count: HTMLElement }>();
-	private spaceNavCurrent: { button: HTMLButtonElement; count: HTMLElement } | undefined;
-	private spaceNavAll: { button: HTMLButtonElement; count: HTMLElement } | undefined;
+	private spaceNavCurrent!: { button: HTMLButtonElement; count: HTMLElement };
+	private spaceNavAll!: { button: HTMLButtonElement; count: HTMLElement };
 	/** 一覧上部のツールバー（並び・グループ・空を隠す・全文索引の状態）。 */
-	private listBar: HTMLElement | undefined;
+	private listBar!: HTMLElement;
 	/** 行メニューの操作結果を出す、ダイアログ内の一時的な表示。 */
 	private inlineMessage: HTMLElement | undefined;
 	private readonly inlineMessageTimer = this._register(new MutableDisposable());
 	/** 一覧上部に出す全文索引の状態。索引の状態が変わったときは、この要素だけを書き換える。 */
-	private indexStatus: HTMLElement | undefined;
+	private indexStatus!: HTMLElement;
 	private listOptions: IParadisResumeListOptions;
 	private readonly indexController: ParadisSessionIndexController;
 	private readonly rowMenu: ParadisSessionResumeRowMenu;
-	private railSpaceTree: HTMLElement | undefined;
+	private railSpaceTree!: HTMLElement;
 	private readonly spaceNavButtons = new Map<string, { button: HTMLButtonElement; count: HTMLElement }>();
 	/** ワークツリーを展開しているリポジトリの stateKey。updateSpaceNavOptions() は refresh() のたびに
 	 * ツリーを作り直す(DOMのクラスだけでは状態が消える)ため、開閉状態はここに持って復元する。 */
@@ -122,12 +123,12 @@ export class ParadisSessionResumeDialog extends Disposable {
 	/** 利用者が開いた「他のスペース」のグループ（spaceStateKey）。render() は一覧を作り直すので、開閉はここに持って復元する。 */
 	private readonly expandedOtherSpaces = new Set<string>();
 	private readonly periodNavButtons = new Map<PeriodFilter, { button: HTMLButtonElement; count: HTMLElement }>();
-	private railSummary: HTMLElement | undefined;
-	private archivedInput: ParadisCheck | undefined;
-	/** 更新ボタン(左ナビのフッターとリスト列ヘッダーの2箇所)。loading 状態は両方へ同期する。 */
-	private readonly refreshButtons: HTMLButtonElement[] = [];
+	private railSummary!: HTMLElement;
+	private archivedInput!: ParadisCheck;
+	/** 更新ボタン（見出しの帯の 1 つ）。読み込み中は loading の印を付ける。 */
+	private readonly refreshButton: HTMLButtonElement;
 	/** 狭い幅で折りたたんだ左ナビを出し入れするトグル。広い幅では CSS で隠れる。 */
-	private railToggleButton: HTMLButtonElement | undefined;
+	private railToggleButton!: HTMLButtonElement;
 	private readonly renderDisposables = this._register(new DisposableStore());
 	private readonly searchScheduler = this._register(new RunOnceScheduler(() => this.searchTranscripts(), 250));
 	private readonly client: ParadisSessionResumeClient;
@@ -172,9 +173,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 		this.rowMenu = instantiationService.createInstance(ParadisSessionResumeRowMenu, this.client, (message: string, severity: 'info' | 'error') => this.showInlineMessage(message, severity));
 		this._register(this.indexController.onDidChange(() => {
 			// ツールバーは作り直さず、状態の表示だけを書き換える（開いている select やフォーカスを奪わない）。
-			if (this.indexStatus) {
-				this.indexController.renderStatus(this.indexStatus);
-			}
+			this.indexController.renderStatus(this.indexStatus);
 			if (this.query) {
 				this.searchScheduler.schedule();
 			}
@@ -200,9 +199,9 @@ export class ParadisSessionResumeDialog extends Disposable {
 		const head = renderParadisModalHead(this.modal, STR_DIALOG_TITLE);
 		head.element.classList.add('paradis-session-resume-modal-header');
 		// 「履歴を更新」は見出しの帯の素のボタン（以前は左の列の下と検索欄の横の 2 か所）
-		const headRefresh = this.createRefreshButton(head.actions, localize('paradis.sessionResume.refreshShort', "履歴を更新"));
-		headRefresh.classList.remove('paradis-focus-ring-inset');
-		headRefresh.classList.add(...paradisButtonClasses('ghost', true), PARADIS_MODAL_COMPACT_CLASS);
+		this.refreshButton = this.createRefreshButton(head.actions, localize('paradis.sessionResume.refreshShort', "履歴を更新"));
+		this.refreshButton.classList.remove('paradis-focus-ring-inset');
+		this.refreshButton.classList.add(...paradisButtonClasses('ghost', true), PARADIS_MODAL_COMPACT_CLASS);
 		const closeBtn = dom.append(head.actions, $('button.paradis-session-resume-modal-close')) as HTMLButtonElement;
 		closeBtn.classList.add(...paradisButtonClasses('icon'));
 		closeBtn.type = 'button';
@@ -227,7 +226,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 			backdrop: this.backdrop,
 			modal: this.modal,
 			onEscape: () => {
-				if (this.searchInput && this.searchInput.value.length > 0) {
+				if (this.searchInput.value.length > 0) {
 					this.searchInput.value = '';
 					this.onSearchInput();
 					return;
@@ -245,7 +244,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 
 	/** 検索欄の内容を取り込んで再描画する。Escape による消去からも同じ経路を通す。 */
 	private onSearchInput(): void {
-		this.query = this.searchInput?.value.trim().toLocaleLowerCase() ?? '';
+		this.query = this.searchInput.value.trim().toLocaleLowerCase();
 		this.searchMatches = undefined;
 		this.currentSearchMatchIndex = 0;
 		this.searchScheduler.schedule();
@@ -270,7 +269,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 
 	/** 既に開いているダイアログを前面へ。入力位置も戻す。 */
 	focus(): void {
-		this.searchInput?.focus();
+		this.searchInput.focus();
 	}
 
 	close(): void {
@@ -367,8 +366,8 @@ export class ParadisSessionResumeDialog extends Disposable {
 		this.railToggleButton.setAttribute('aria-expanded', 'false');
 		dom.append(this.railToggleButton, $(`span${ThemeIcon.asCSSSelector(Codicon.layoutSidebarLeft)}`));
 		this._register(dom.addDisposableListener(this.railToggleButton, dom.EventType.CLICK, () => {
-			const open = this.root?.classList.toggle('rail-open') === true;
-			this.railToggleButton?.setAttribute('aria-expanded', String(open));
+			const open = this.root.classList.toggle('rail-open') === true;
+			this.railToggleButton.setAttribute('aria-expanded', String(open));
 		}));
 		// エージェントの絞り込み（押せるチップ）と期間（切り替えの組）は、一覧の上に置く（UI キットの段 4）
 		const filters = dom.append(listColumn, $('.paradis-session-resume-filters'));
@@ -434,12 +433,8 @@ export class ParadisSessionResumeDialog extends Disposable {
 	 * 一覧の再描画（render）や索引の状態の変化では作り直さない（select を開いている最中に閉じないように）。
 	 */
 	private renderListBar(): void {
-		if (!this.listBar) {
-			return;
-		}
-
 		const addSelect = <T extends string>(label: string, values: readonly T[], current: T, text: (value: T) => string, onChange: (value: T) => void) => {
-			const wrap = dom.append(this.listBar!, $('span.listbar-field'));
+			const wrap = dom.append(this.listBar, $('span.listbar-field'));
 			dom.append(wrap, $('span.listbar-label')).textContent = label;
 			const select = this._register(new ParadisSelect(wrap, this.contextViewService, this.configurationService, values.map(value => ({ value, label: text(value) })), current, { ariaLabel: label }));
 			this._register(select.onDidChange(value => onChange(value as T)));
@@ -483,7 +478,6 @@ export class ParadisSessionResumeDialog extends Disposable {
 			dom.append(button, $('span')).textContent = label;
 		}
 		this._register(dom.addDisposableListener(button, dom.EventType.CLICK, () => this.refreshController.requestImmediate()));
-		this.refreshButtons.push(button);
 		return button;
 	}
 
@@ -512,9 +506,6 @@ export class ParadisSessionResumeDialog extends Disposable {
 
 	/** ワークツリーが多いリポジトリで一覧が埋まらないよう、既定で折りたたんだツリーとして描画する。開閉は railSpaceTree のクリック委譲で受ける。 */
 	private updateSpaceNavOptions(): void {
-		if (!this.railSpaceTree) {
-			return;
-		}
 		dom.clearNode(this.railSpaceTree);
 		this.spaceNavButtons.clear();
 		for (const group of this.groupSpacesByRepository()) {
@@ -571,12 +562,8 @@ export class ParadisSessionResumeDialog extends Disposable {
 		for (const [value, entry] of this.agentNavButtons) {
 			setPressed(entry, this.agentFilter === value, value === 'all' ? sessions.length : sessions.filter(session => session.agent === value).length);
 		}
-		if (this.spaceNavAll) {
-			setPressed(this.spaceNavAll, this.spaceFilter === 'all', sessions.length);
-		}
-		if (this.spaceNavCurrent) {
-			setPressed(this.spaceNavCurrent, this.spaceFilter === 'current', sessions.filter(session => session.currentSpace).length);
-		}
+		setPressed(this.spaceNavAll, this.spaceFilter === 'all', sessions.length);
+		setPressed(this.spaceNavCurrent, this.spaceFilter === 'current', sessions.filter(session => session.currentSpace).length);
 		for (const [value, entry] of this.spaceNavButtons) {
 			setPressed(entry, this.spaceFilter === value, sessions.filter(session => session.spaceStateKey === value.slice(SPACE_FILTER_PREFIX.length)).length);
 		}
@@ -585,9 +572,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 			const threshold = periodMs ? Date.now() - periodMs : undefined;
 			setPressed(entry, this.periodFilter === value, threshold === undefined ? sessions.length : sessions.filter(session => session.updatedAt >= threshold).length);
 		}
-		if (this.railSummary) {
-			this.railSummary.textContent = localize('paradis.sessionResume.filterSummary', "{0} / {1} 件表示", filteredCount, sessions.length);
-		}
+		this.railSummary.textContent = localize('paradis.sessionResume.filterSummary', "{0} / {1} 件表示", filteredCount, sessions.length);
 	}
 
 	private ensureSelectedSessionIsVisible(): boolean {
@@ -636,9 +621,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 		this.searchSequence++;
 		this.searchMatches = undefined;
 		this.loading = true;
-		for (const button of this.refreshButtons) {
-			button.classList.add('loading');
-		}
+		this.refreshButton.classList.add('loading');
 		this.render();
 		try {
 			await this.worktreeService.initializationBarrier;
@@ -649,7 +632,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 			this.updateSpaceNavOptions();
 			this.sessions = await this.client.list({
 				spaces: this.spaces,
-				includeArchived: this.archivedInput?.checked === true,
+				includeArchived: this.archivedInput.checked === true,
 			});
 			if (this._store.isDisposed) {
 				return;
@@ -669,9 +652,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 		} finally {
 			if (!this._store.isDisposed) {
 				this.loading = false;
-				for (const button of this.refreshButtons) {
-					button.classList.remove('loading');
-				}
+				this.refreshButton.classList.remove('loading');
 				this.render();
 				if (this.query) {
 					this.searchScheduler.schedule();
@@ -765,7 +746,6 @@ export class ParadisSessionResumeDialog extends Disposable {
 	}
 
 	private render(): void {
-		if (!this.list || !this.detail) { return; }
 		// 一覧を作り直すと、フォーカスしていた行が DOM から外れる。同じ会話の行へ戻す（↑↓ で続けて動けるように）
 		const active = this.list.ownerDocument.activeElement;
 		const focusedRow = dom.isHTMLElement(active) && this.list.contains(active) ? active.closest<HTMLElement>('.paradis-session-resume-row') : null;
@@ -1058,7 +1038,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 				this.currentSearchMatchIndex = 0;
 				// 1カラムまで狭いときは一覧を隠して詳細を出す(CSS 側の @container で効く)。
 				// 広い幅では一覧と詳細が並ぶのでこのクラスは何もしない。
-				this.root?.classList.add('detail-open');
+				this.root.classList.add('detail-open');
 				this.render();
 				void this.loadPreview(session);
 			}));
@@ -1079,9 +1059,6 @@ export class ParadisSessionResumeDialog extends Disposable {
 	 * 見出しならフォーカスだけ移す。
 	 */
 	private moveSelection(from: HTMLElement, delta: -1 | 1): void {
-		if (!this.list) {
-			return;
-		}
 		// 閉じたグループの中の行（見えていない行）は飛ばす
 		const visible = new Set(this.visibleRows());
 		const items = this.listItems.filter(item => item.tagName === 'SUMMARY' || visible.has(item));
@@ -1122,7 +1099,6 @@ export class ParadisSessionResumeDialog extends Disposable {
 	}
 
 	private renderDetail(): void {
-		if (!this.detail) { return; }
 		const session = this.selected;
 		if (!session) {
 			this.renderState(this.detail, Codicon.history, localize('paradis.sessionResume.selectSession', "セッションを選択すると会話を確認できます。"));
@@ -1137,7 +1113,7 @@ export class ParadisSessionResumeDialog extends Disposable {
 		backButton.appendChild($(`span${ThemeIcon.asCSSSelector(Codicon.arrowLeft)}`));
 		dom.append(backButton, $('span')).textContent = localize('paradis.sessionResume.backToList', "一覧へ");
 		this.renderDisposables.add(dom.addDisposableListener(backButton, dom.EventType.CLICK, () => {
-			this.root?.classList.remove('detail-open');
+			this.root.classList.remove('detail-open');
 		}));
 		const heading = dom.append(header, $('.detail-heading'));
 		this.renderAgentIcon(heading, session.agent);
