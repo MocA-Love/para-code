@@ -786,7 +786,7 @@ suite('ParadisMobileAgentChat', () => {
 		const parentPath = join(brain, parentId, '.system_generated', 'logs', 'transcript_full.jsonl');
 		const childPath = join(brain, childId, '.system_generated', 'logs', 'transcript_full.jsonl');
 		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
-		const access = chat as unknown as { paneSessions: Map<string, { readonly transcriptPath: string }>; desktopInteractions: Map<string, unknown>; desktopExitedTokens: Set<string>; hookProcessing: Map<string, unknown> };
+		const access = chat as unknown as { paneSessions: Map<string, { readonly transcriptPath: string }>; desktopInteractions: Map<string, unknown>; sessionEndedAt: Map<string, number>; hookProcessing: Map<string, unknown> };
 		try {
 			await mkdir(join(brain, childId, '.system_generated', 'logs'), { recursive: true });
 			// 子の会話は親から渡された指示（SYSTEM_MESSAGE）で始まる。一覧には親の行だけがある（子は記録の先頭で決める経路）
@@ -803,7 +803,7 @@ suite('ParadisMobileAgentChat', () => {
 			assert.deepStrictEqual({
 				transcriptPath: access.paneSessions.get(token)?.transcriptPath,
 				interaction: access.desktopInteractions.has(token),
-				exited: access.desktopExitedTokens.has(token),
+				exited: access.sessionEndedAt.has(token),
 			}, { transcriptPath: parentPath, interaction: false, exited: false });
 		} finally {
 			chat.dispose();

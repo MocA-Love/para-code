@@ -87,7 +87,7 @@ suite('Paradis OpenCode mobile', () => {
 			});
 			hasSession.callsFake(() => false);
 			fireParadisAgentHookEvent({ ...hookBase, token: 'pane-a', sessionId: 'ses_alpha', event: 'SessionEnd', at: Date.now(), payload: { agent_kind: 'opencode' } });
-			await waitFor(() => (chat as unknown as { desktopExitedTokens: Set<string> }).desktopExitedTokens.has('pane-a'));
+			await waitFor(() => (chat as unknown as { sessionEndedAt: Map<string, number> }).sessionEndedAt.has('pane-a'));
 			assert.strictEqual((await chat.getDesktopChat('pane-a', undefined))?.agentExited, true);
 			inbound({ ...base, t: 'action/interrupt', requestId: 'interrupt-after-exit' });
 			await waitFor(() => sent.some(frame => frame.requestId === 'interrupt-after-exit'));
@@ -317,7 +317,7 @@ suite('Paradis OpenCode mobile', () => {
 			});
 			// A bridge-capable CLI reports its exit with TerminalExit, after which Ctrl+C belongs to the shell.
 			hook('TerminalExit');
-			await waitFor(() => (chat as unknown as { desktopExitedTokens: Set<string> }).desktopExitedTokens.has('pane-a'));
+			await waitFor(() => (chat as unknown as { sessionEndedAt: Map<string, number> }).sessionEndedAt.has('pane-a'));
 			inbound({ ...base, t: 'action/interrupt', requestId: 'interrupt-after-terminal-exit' });
 			await waitFor(() => sent.some(frame => frame.requestId === 'interrupt-after-terminal-exit'));
 			assert.deepStrictEqual(sent.filter(frame => frame.requestId === 'interrupt-after-terminal-exit').map(frame => [frame.status, frame.code]), [['rejected', 'agent-exited']]);
