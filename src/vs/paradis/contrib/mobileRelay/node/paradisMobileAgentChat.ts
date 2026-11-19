@@ -958,6 +958,17 @@ function paradisTruncateOptionLabel(label: string): string {
 	return truncateText(label, 200);
 }
 
+/** 上限を超えたぶんを、古い鍵（入れた順の先頭）から消す。 */
+function evictOldest<K>(map: Map<K, unknown>, limit: number): void {
+	while (map.size > limit) {
+		const oldest = map.keys().next();
+		if (oldest.done === true) {
+			break;
+		}
+		map.delete(oldest.value);
+	}
+}
+
 /** 会話の世代（epoch）の形: 空でない 200 文字までの文字列。 */
 function isValidEpoch(epoch: unknown): boolean {
 	return typeof epoch === 'string' && epoch.length > 0 && epoch.length <= 200;
@@ -1900,13 +1911,7 @@ async function paradisCodexForkedFromId(rolloutPath: string): Promise<string | n
 	}
 	const forkedFromId = meta.forkedFromId ?? null;
 	codexForkedFromCache.set(rolloutPath, forkedFromId);
-	while (codexForkedFromCache.size > CODEX_FORKED_FROM_CACHE_LIMIT) {
-		const oldest = codexForkedFromCache.keys().next();
-		if (oldest.done === true) {
-			break;
-		}
-		codexForkedFromCache.delete(oldest.value);
-	}
+	evictOldest(codexForkedFromCache, CODEX_FORKED_FROM_CACHE_LIMIT);
 	return forkedFromId;
 }
 
@@ -2593,13 +2598,7 @@ class TranscriptTailer {
 				this.evictedPositions.set(message.rev, position);
 			}
 		}
-		while (this.evictedPositions.size > EVICTED_POSITION_LIMIT) {
-			const oldest = this.evictedPositions.keys().next();
-			if (oldest.done === true) {
-				break;
-			}
-			this.evictedPositions.delete(oldest.value);
-		}
+		evictOldest(this.evictedPositions, EVICTED_POSITION_LIMIT);
 	}
 
 	/**
@@ -2768,13 +2767,7 @@ class TranscriptTailer {
 
 	private retainCompactSummary(rev: number, text: string): void {
 		this.compactSummaryTexts.set(rev, text);
-		while (this.compactSummaryTexts.size > COMPACT_SUMMARY_KEEP) {
-			const oldest = this.compactSummaryTexts.keys().next();
-			if (oldest.done === true) {
-				break;
-			}
-			this.compactSummaryTexts.delete(oldest.value);
-		}
+		evictOldest(this.compactSummaryTexts, COMPACT_SUMMARY_KEEP);
 	}
 
 	/**
@@ -3048,13 +3041,7 @@ class TranscriptTailer {
 
 	private rememberModRow(uuid: string, revs: readonly { readonly rev: number; readonly keep: number }[]): void {
 		this.modRowRevs.set(uuid, revs);
-		while (this.modRowRevs.size > MOD_ROW_LEDGER_LIMIT) {
-			const oldest = this.modRowRevs.keys().next();
-			if (oldest.done === true) {
-				break;
-			}
-			this.modRowRevs.delete(oldest.value);
-		}
+		evictOldest(this.modRowRevs, MOD_ROW_LEDGER_LIMIT);
 	}
 
 	/**
@@ -3182,8 +3169,7 @@ class TranscriptTailer {
 				}
 			}
 			if (changed) {
-				this.delegate.onDelta([]);
-				this.delegate.onActivity();
+				this.notifyInteractionChanged();
 			}
 		});
 	}
@@ -3363,6 +3349,12 @@ class TranscriptTailer {
 		});
 	}
 
+	/** 質問・承認の待ちが変わった: 本文の無い delta（interaction を載せ直す）と、活動の送り直しを頼む。 */
+	private notifyInteractionChanged(): void {
+		this.delegate.onDelta([]);
+		this.delegate.onActivity();
+	}
+
 	/**
 	 * 承認を解く。toolUseId が一致するものを外す。force（拒否の hook）は、一致するものが無ければ表の1件を
 	 * 外す。all（ターン終了）はすべて外す。
@@ -3380,8 +3372,7 @@ class TranscriptTailer {
 			if (!removed) {
 				return;
 			}
-			this.delegate.onDelta([]);
-			this.delegate.onActivity();
+			this.notifyInteractionChanged();
 		});
 	}
 
@@ -3394,8 +3385,7 @@ class TranscriptTailer {
 			if (!this.removeApprovals(entry => agentId === 'all' || entry.agentId === agentId)) {
 				return;
 			}
-			this.delegate.onDelta([]);
-			this.delegate.onActivity();
+			this.notifyInteractionChanged();
 		});
 	}
 
@@ -3486,8 +3476,7 @@ class TranscriptTailer {
 			if (!this.removeApprovals(entry => entry.waitKey === waitKey && entry.interaction.id.startsWith('approval:'))) {
 				return;
 			}
-			this.delegate.onDelta([]);
-			this.delegate.onActivity();
+			this.notifyInteractionChanged();
 		});
 	}
 
@@ -3513,8 +3502,7 @@ class TranscriptTailer {
 			const entry = this.approvalQueue[index];
 			const { answerVia: _answerVia, ...rest } = entry.interaction;
 			this.approvalQueue[index] = { ...entry, interaction: { ...rest, choices: [], expired: true } };
-			this.delegate.onDelta([]);
-			this.delegate.onActivity();
+			this.notifyInteractionChanged();
 		});
 	}
 
@@ -3539,8 +3527,7 @@ class TranscriptTailer {
 				}
 			}
 			if (changed) {
-				this.delegate.onDelta([]);
-				this.delegate.onActivity();
+				this.notifyInteractionChanged();
 			}
 		});
 	}
@@ -3577,14 +3564,13 @@ class TranscriptTailer {
 					}
 				}
 				for (const key of this.liveQuestions.keys()) { if (key.startsWith(`${interactionId}\0`)) { this.liveQuestions.delete(key); } }
-				if (changed) { this.delegate.onDelta([]); this.delegate.onActivity(); }
+				if (changed) { this.notifyInteractionChanged(); }
 				return;
 			}
 			if (!this.discardPendingQuestions()) {
 				return;
 			}
-			this.delegate.onDelta([]);
-			this.delegate.onActivity();
+			this.notifyInteractionChanged();
 		});
 	}
 
@@ -5156,7 +5142,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			case 'action/interrupt': {
 				const token = this.resolveInboundToken(msg.id, msg.token);
 				const session = token !== undefined ? this.paneSessions.get(token) : undefined;
-				if (token !== undefined && session?.agent === 'opencode' && (this.desktopExitedTokens.has(token) || session.sessionId === undefined || !paradisOpenCodeBridge.hasSession(token, session.sessionId))) {
+				if (token !== undefined && session?.agent === 'opencode' && (this.sessionEndedAt.has(token) || session.sessionId === undefined || !paradisOpenCodeBridge.hasSession(token, session.sessionId))) {
 					// OpenCode はもう終わっている。Ctrl+C はその後のシェルへ渡してよい（モバイルが打鍵へ切り替える）
 					this.sendTo(mobileId, { t: 'action-result', id: msg.id, requestId: msg.requestId, status: 'rejected', code: PARADIS_OPENCODE_EXITED_CODE }, token);
 				} else if (token !== undefined && session?.agent === 'opencode') {
@@ -8453,45 +8439,12 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	private checkDesktopInsights(): void {
 		const live = this.allLiveTokens();
-		for (const token of [...this.desktopInteractions.keys()]) {
-			if (!live.has(token)) {
-				this.desktopInteractions.delete(token);
-			}
-		}
-		for (const token of [...this.desktopTailerInteractionSeenAt.keys()]) {
-			if (!live.has(token)) {
-				this.desktopTailerInteractionSeenAt.delete(token);
-			}
-		}
-		for (const token of [...this.desktopExitedTokens]) {
-			if (!live.has(token)) {
-				this.desktopExitedTokens.delete(token);
-				this.sessionEndedAt.delete(token);
-			}
-		}
-		for (const token of [...this.shellsAccessSent.keys()]) {
-			if (!live.has(token)) {
-				this.shellsAccessSent.delete(token);
-			}
-		}
-		for (const token of [...this.workflowsSent.keys()]) {
-			if (!live.has(token)) {
-				this.workflowsSent.delete(token);
-			}
-		}
-		for (const token of [...this.teamsSent.keys()]) {
-			if (!live.has(token)) {
-				this.teamsSent.delete(token);
-			}
-		}
-		for (const token of [...this.sessionStatusSent.keys()]) {
-			if (!live.has(token)) {
-				this.sessionStatusSent.delete(token);
-			}
-		}
-		for (const token of [...this.asyncQuestionsSent.keys()]) {
-			if (!live.has(token)) {
-				this.asyncQuestionsSent.delete(token);
+		// いなくなったペインの控えを消す
+		for (const ledger of [this.desktopInteractions, this.desktopTailerInteractionSeenAt, this.sessionEndedAt, this.shellsAccessSent, this.workflowsSent, this.teamsSent, this.sessionStatusSent, this.asyncQuestionsSent]) {
+			for (const token of [...ledger.keys()]) {
+				if (!live.has(token)) {
+					ledger.delete(token);
+				}
 			}
 		}
 		let changed = false;
@@ -8529,10 +8482,16 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * 期限で外す。
 	 */
 	private readonly desktopChatWatchers = new Map<string, { readonly tokens: ReadonlySet<string>; readonly visible: ReadonlySet<string>; readonly expiresAt: number }>();
-	/** SessionEnd を受けてからまだ次の hook が来ていないペイン。 */
-	private readonly desktopExitedTokens = new Set<string>();
-	/** SessionEnd を受けた時刻（Monitor を「停止（推定）」にするときの終わった時刻）。desktopExitedTokens と同じ寿命。 */
+	/**
+	 * SessionEnd を受けてからまだ次の hook が来ていないペインと、SessionEnd を受けた時刻（Monitor を「停止（推定）」に
+	 * するときの終わった時刻）。鍵があるペインは「エージェントが終わった」。
+	 */
 	private readonly sessionEndedAt = new Map<string, number>();
+
+	/** エージェントが終わった（SessionEnd を受けた）か、ペインがもう無い。 */
+	private isPaneStopped(token: string): boolean {
+		return this.sessionEndedAt.has(token) || !this.isLiveToken(token);
+	}
 	private readonly _onDidChangeDesktopChat = this._register(new Emitter<readonly string[]>());
 	/** 見られているペインの会話（履歴・生成中の様子・待っている内容・モデル）が変わった。 */
 	readonly onDidChangeDesktopChat = this._onDidChangeDesktopChat.event;
@@ -8618,7 +8577,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			...(interaction?.kind === 'question' ? { pendingQuestions: tailer.pendingQuestionMessages(interaction.id) } : {}),
 			...(paradisAgentDescriptor(tailer.agent)?.features.asyncQuestions === true ? { asyncQuestions: tailer.asyncQuestions.pending() } : {}),
 			busy: this.activeTurnTokens.has(token) || this.liveStates.has(token),
-			...(this.desktopExitedTokens.has(token) ? { agentExited: true } : {}),
+			...(this.sessionEndedAt.has(token) ? { agentExited: true } : {}),
 		};
 	}
 
@@ -8906,7 +8865,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			info?.model ?? '', info?.effort ?? '', info?.transcriptStale === true ? 'stale' : '',
 			tailer.asyncQuestions.revision,
 			this.activeTurnTokens.has(token) ? 'busy' : 'idle',
-			this.desktopExitedTokens.has(token) ? 'exited' : '',
+			this.sessionEndedAt.has(token) ? 'exited' : '',
 		].join('\0');
 	}
 
@@ -9306,7 +9265,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		const tailer = this.tailers.get(token);
 		const valid = () => session?.agent === 'opencode' && session.sessionId === sessionId && this.paneSessions.get(token) === session
 			&& terminalId !== undefined && owner !== undefined && this.openCodeOwnerIsCurrent(terminalId, token, owner)
-			&& this.isLiveToken(token) && !this.desktopExitedTokens.has(token) && paradisOpenCodeBridge.hasSession(token, sessionId)
+			&& this.isLiveToken(token) && !this.sessionEndedAt.has(token) && paradisOpenCodeBridge.hasSession(token, sessionId)
 			&& tailer !== undefined && this.tailers.get(token) === tailer
 			&& (interaction === undefined ? tailer.currentInteraction() === null : tailer.hasPendingInteraction(interaction));
 		for (const [key, at] of this.openCodeActions) { if (Date.now() - at > 60_000) { this.openCodeActions.delete(key); } }
@@ -9363,7 +9322,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			|| paradisAgentSessionKey('opencode', session.sessionId) !== resumeKey || !paradisOpenCodeBridge.hasSession(token, session.sessionId) || tailer === undefined) {
 			return 'unregistered';
 		}
-		return !this.desktopExitedTokens.has(token) && tailer.currentInteraction() === null ? 'ready' : 'pending';
+		return !this.sessionEndedAt.has(token) && tailer.currentInteraction() === null ? 'ready' : 'pending';
 	}
 
 	async sendOpenCodeMessage(token: string, sessionId: string, text: string): Promise<ParadisOpenCodeDesktopActionResult> {
@@ -9406,7 +9365,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			&& tailer !== undefined && this.tailers.get(token) === tailer && tailer.epoch === msg.epoch
 			&& this.hasSubscriber(token, mobileId) && owner !== undefined
 			&& this.openCodeOwnerIsCurrent(msg.id, token, owner)
-			&& (interaction === undefined ? (msg.t === 'action/interrupt' || tailer.currentInteraction() === null) && !this.desktopExitedTokens.has(token) : tailer.hasPendingInteraction(interaction));
+			&& (interaction === undefined ? (msg.t === 'action/interrupt' || tailer.currentInteraction() === null) && !this.sessionEndedAt.has(token) : tailer.hasPendingInteraction(interaction));
 		const reject = () => this.rejectAction(mobileId, msg, token, 'stale-interaction', '対象の会話または確認が変わりました。もう一度確認してください');
 		// 同じ送信（sendId）を送っている最中に送り直してきた。Claude Code の経路と同じく、受け付け済みと答える
 		if (msg.t === 'action/sendMessage' && msg.sendId !== undefined && dedupeKey !== key && this.openCodeActions.has(dedupeKey)) {
@@ -9446,7 +9405,6 @@ export class ParadisMobileAgentChat extends Disposable {
 		const current = this.paneSessions.get(event.token);
 		// ブリッジ対応の CLI は終わるときに SessionEnd ではなく TerminalExit を送る（どちらも登録が外れた後に届く）
 		if ((event.event === 'SessionEnd' || event.event === 'TerminalExit') && current?.agent === 'opencode' && current.sessionId === sessionId) {
-			this.desktopExitedTokens.add(event.token);
 			this.sessionEndedAt.set(event.token, event.at);
 			this.completeTurnFromHook(event);
 			this.scheduleDesktopChatCheck();
@@ -9493,9 +9451,8 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (session === undefined) { return; }
 		const tailer = this.ensureTailer(event.token, session);
 		if (event.event === 'SessionEnd') {
-			this.desktopExitedTokens.add(event.token);
 			this.sessionEndedAt.set(event.token, event.at);
-		} else { this.desktopExitedTokens.delete(event.token); this.sessionEndedAt.delete(event.token); }
+		} else { this.sessionEndedAt.delete(event.token); }
 		this.updateLiveFromHook(event);
 		const requestId = str(event.payload?.opencode_request_id);
 		if (requestId !== undefined && requestId.length > 0 && requestId.length <= 480) {
@@ -9580,14 +9537,12 @@ export class ParadisMobileAgentChat extends Disposable {
 	/** hook の種類からペインのエージェントが終わったか・また動き出したかを覚える（{@link onHookEvent} の続き）。 */
 	private applyHookExitState(event: IParadisAgentHookEvent): void {
 		if (event.event === 'SessionEnd') {
-			this.desktopExitedTokens.add(event.token);
 			this.sessionEndedAt.set(event.token, event.at);
 			this.tailers.get(event.token)?.endMonitorsForSessionEnd(event.at);
 			// 動いていた Workflow を「中断（推定）」にして届ける（送るときに判定する。Monitor が無いと delta が出ないため）
 			this.pushWorkflowsIfChanged(event.token);
 			this.pushTeamsIfChanged(event.token);
-		} else if (this.desktopExitedTokens.delete(event.token)) {
-			this.sessionEndedAt.delete(event.token);
+		} else if (this.sessionEndedAt.delete(event.token)) {
 			this.scheduleDesktopChatCheck();
 		}
 	}
@@ -11102,7 +11057,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		const monitors = tailer.monitors();
 		const shells = tailer.shells();
-		const paneStopped = this.desktopExitedTokens.has(token) || !this.isLiveToken(token);
+		const paneStopped = this.isPaneStopped(token);
 		const now = Date.now();
 		const shellsAccess = this.shellsAccessFor(token, tailer);
 		this.shellsAccessSent.set(token, JSON.stringify(shellsAccess));
@@ -11124,7 +11079,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (paradisAgentDescriptor(tailer.agent)?.features.workflows !== true || (tailer.workflows.size === 0 && !this.workflowsSent.has(token))) {
 			return {};
 		}
-		const paneStopped = this.desktopExitedTokens.has(token) || !this.isLiveToken(token);
+		const paneStopped = this.isPaneStopped(token);
 		// 中身を文字列にせず、追跡の版とペインの停止で変化を見る（子が多いと一覧が大きいため）
 		const signature = `${tailer.epoch}\0${tailer.workflows.revision}\0${paneStopped ? this.sessionEndedAt.get(token) ?? 'stopped' : ''}`;
 		if (!full && this.workflowsSent.get(token) === signature) {
@@ -11268,7 +11223,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (changed) {
 			this.pushWorkflowsIfChanged(token);
 		}
-		const paneStopped = this.desktopExitedTokens.has(token) || !this.isLiveToken(token);
+		const paneStopped = this.isPaneStopped(token);
 		if (more) {
 			this.scheduleWorkflowRefresh(token, WORKFLOW_REFRESH_SOON_MS);
 		} else if (tailer.workflows.hasRunning() && !paneStopped) {
@@ -11297,7 +11252,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (paradisAgentDescriptor(tailer.agent)?.features.teams !== true || (tailer.teams.size === 0 && !this.teamsSent.has(token))) {
 			return {};
 		}
-		const paneStopped = this.desktopExitedTokens.has(token) || !this.isLiveToken(token);
+		const paneStopped = this.isPaneStopped(token);
 		const approvals: ParadisTeamApprovals = this.teamApprovals(tailer);
 		const signature = `${tailer.epoch}\0${tailer.teams.revision}\0${[...approvals].map(([agentId, approval]) => `${agentId}=${approval.id}`).join(',')}\0${paneStopped ? this.sessionEndedAt.get(token) ?? 'stopped' : ''}`;
 		if (!full && this.teamsSent.get(token) === signature) {
@@ -11411,7 +11366,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		// hook の印（今やっていること）で進んだ版もここで送る（印ごとに送らない）
 		this.pushTeamsIfChanged(token);
-		const paneStopped = this.desktopExitedTokens.has(token) || !this.isLiveToken(token);
+		const paneStopped = this.isPaneStopped(token);
 		if (more) {
 			this.scheduleTeamRefresh(token, TEAM_REFRESH_SOON_MS);
 		} else if (!paneStopped && tailer.teams.hasActive(this.teamApprovals(tailer))) {
