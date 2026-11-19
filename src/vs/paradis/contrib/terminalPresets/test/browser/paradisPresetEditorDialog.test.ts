@@ -135,6 +135,99 @@ suite('preset editor dialog: row actions', () => {
 			container.remove();
 		}
 	});
+	test('edit views: Save passes the definition built from the form, Back discards after the confirm, and the empty folder view creates in the chosen target', async () => {
+		const saved: unknown[] = [];
+		const created: unknown[] = [];
+		const presetService = {
+			presets: [], folders: [], onDidChangePresets: Event.None, isFolderLabelShown: () => false,
+			savePreset: async (definition: unknown, target: unknown, options: unknown) => { saved.push(JSON.parse(JSON.stringify({ definition, target, options }))); },
+			createFolder: async (name: string, target: string) => { created.push([name, target]); return true; },
+		} as unknown as IParadisPresetService;
+		let confirms = 0;
+		const container = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(container);
+		const services = new Map<unknown, unknown>([
+			[ILayoutService, { activeContainer: container }],
+			[IParadisPresetService, presetService],
+			[IDialogService, {}],
+			[IParadisDialogService, { confirm: async () => { confirms++; return { confirmed: true }; } }],
+			[IWorkspaceContextService, { getWorkspace: () => ({ folders: [{ uri: URI.file('/repo') }] }) }],
+			[IContextMenuService, {}],
+			[IHoverService, NullHoverService],
+			[IContextViewService, {}],
+			[IConfigurationService, { getValue: () => undefined }],
+		]);
+		const accessor = { get: (id: unknown) => services.get(id) } as unknown as ServicesAccessor;
+		const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+		const button = (text: string) => [...container.querySelectorAll<HTMLElement>('button')].find(candidate => candidate.textContent?.includes(text))!;
+		const type = (selector: string, value: string) => {
+			const input = container.querySelector<HTMLInputElement | HTMLTextAreaElement>(selector)!;
+			input.value = value;
+			input.dispatchEvent(new mainWindow.Event('input', { bubbles: true }));
+		};
+		const footer = () => [...container.querySelectorAll<HTMLElement>('.ppe-footer button')].map(candidate => candidate.textContent);
+		try {
+			openParadisPresetEditorDialog(accessor);
+			button('新規作成').click();
+			await tick();
+			const editFooter = footer();
+			button('保存').click();
+			await tick();
+			const nameRequired = container.querySelector('.ppe-error')?.textContent;
+			type('.ppe-form-grid input.ppe-input', ' Build ');
+			type('.ppe-task-card textarea', 'pnpm build\n\n pnpm test ');
+			type('.ppe-icon-input', 'rocket');
+			const radios = [...container.querySelectorAll<HTMLInputElement>('input.ppe-radio')].map(radio => ({ name: radio.name, value: radio.value, checked: radio.checked, disabled: radio.disabled }));
+			button('保存').click();
+			await tick();
+			await tick();
+			const backToListAfterSave = container.querySelector('.ppe-footer') === null;
+
+			// 書きかけで「戻る」: 確認の後で一覧へ戻る
+			button('新規作成').click();
+			await tick();
+			type('.ppe-form-grid input.ppe-input', 'draft');
+			const confirmsBeforeBack = confirms;
+			button('戻る').click();
+			await tick();
+			const backDiscarded = { asked: confirms - confirmsBeforeBack, list: container.querySelector('.ppe-footer') === null };
+
+			button('新規フォルダ').click();
+			await tick();
+			const folderFooter = footer();
+			const folderRadios = [...container.querySelectorAll<HTMLInputElement>('input.ppe-radio')].map(radio => ({ name: radio.name, value: radio.value, checked: radio.checked, disabled: radio.disabled }));
+			type('.ppe-form-grid input.ppe-input', ' Tools ');
+			[...container.querySelectorAll<HTMLElement>('label.ppe-check-label')][1].click();
+			container.querySelector<HTMLElement>('.ppe-footer .ppe-btn-primary')!.click();
+			await tick();
+			assert.deepStrictEqual({ editFooter, nameRequired, radios, saved, backToListAfterSave, backDiscarded, folderFooter, folderRadios, created, backToListAfterCreate: container.querySelector('.ppe-footer') === null }, {
+				editFooter: ['戻る', '保存'],
+				nameRequired: '名前を入力してください。',
+				radios: [
+					{ name: 'ppe-target', value: 'user', checked: true, disabled: false },
+					{ name: 'ppe-target', value: 'workspace', checked: false, disabled: false },
+				],
+				saved: [{
+					definition: { name: 'Build', tasks: [{ commands: ['pnpm build', 'pnpm test'] }], layout: 'tabs', icon: 'rocket', pinned: true, autoRun: false },
+					target: 'user',
+					options: {},
+				}],
+				backToListAfterSave: true,
+				backDiscarded: { asked: 1, list: true },
+				folderFooter: ['戻る', '作成'],
+				folderRadios: [
+					{ name: 'ppe-folder-target', value: 'user', checked: true, disabled: false },
+					{ name: 'ppe-folder-target', value: 'workspace', checked: false, disabled: false },
+				],
+				created: [['Tools', 'workspace']],
+				backToListAfterCreate: true,
+			});
+		} finally {
+			container.querySelector<HTMLElement>('.ppe-close-btn')?.click();
+			await tick();
+			container.remove();
+		}
+	});
 	test('the dialog is named by its title, takes the focus when it opens, and closes on Escape right away', () => {
 		const presetService = { presets: [], folders: [], onDidChangePresets: Event.None, isFolderLabelShown: () => false } as unknown as IParadisPresetService;
 		const container = mainWindow.document.createElement('div');
