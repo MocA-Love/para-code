@@ -41,6 +41,7 @@ import { paradisMobileResponseRequestId } from './paradisMobileResponseRequestId
 import { IParadisCdpFrameSubscription, IParadisSharedPageBindings } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.js';
 import { ParadisMobileAgentChat } from './paradisMobileAgentChat.js';
+import type { IParadisAntigravityPaneSession } from '../common/paradisMobileAgentResume.js';
 import { ParadisRemoteTranscriptMirrorStore } from './paradisRemoteTranscriptMirror.js';
 import { ParadisRemoteShellOutputRequests } from './paradisRemoteShellOutputRequests.js';
 import { ParadisAgentSessionStore } from './paradisAgentSessionStore.js';
@@ -1600,7 +1601,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 			? this.agentChat.sendOpenCodeMessage(token, sessionId, text) : false;
 	}
 
-	async listAntigravityPaneSessions(): Promise<readonly { readonly token: string; readonly sessionId: string }[]> {
+	async listAntigravityPaneSessions(): Promise<readonly IParadisAntigravityPaneSession[]> {
 		return this.agentChat.antigravityPaneSessions();
 	}
 

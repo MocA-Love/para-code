@@ -11,7 +11,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { IParadisResumeSession, paradisAgentResumeCommandLine } from '../../../sessionResume/common/paradisSessionResume.js';
 import { PARADIS_AGENT_APPROVAL_OPTIONS_CAPABILITY } from '../../common/paradisAgentApprovalOptions.js';
 import { ParadisMobileCapability, PARADIS_MOBILE_PC_CAPABILITIES } from '../../common/paradisMobileCompat.js';
-import { PARADIS_AGENT_RESUME_CAPABILITY, PARADIS_AGENT_SESSION_KEY_PATTERN, paradisAgentSessionKey, paradisLiveSessionTerminalKeys, paradisMobileAgentSessionMatches, paradisMobileAgentSessionView, PARADIS_RESUME_STALE_START_MS, paradisRecordResumeRequest, paradisResumedSessionOfCommand, paradisResumeRequestVerdict } from '../../common/paradisMobileAgentResume.js';
+import { IParadisTerminalCommandEvidence, PARADIS_AGENT_RESUME_CAPABILITY, PARADIS_AGENT_SESSION_KEY_PATTERN, paradisAgentSessionKey, paradisAntigravityConversationLeftPane, paradisAntigravityPaneHoldsConversation, paradisLiveSessionTerminalKeys, paradisMobileAgentSessionMatches, paradisMobileAgentSessionView, PARADIS_RESUME_STALE_START_MS, paradisRecordResumeRequest, paradisResumedSessionOfCommand, paradisResumeRequestVerdict } from '../../common/paradisMobileAgentResume.js';
 
 suite('paradisMobileAgentResume (W2-29)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -145,11 +145,11 @@ suite('paradisMobileAgentResume (W2-29)', () => {
 	test('finds the terminal that already runs a conversation, from the pane hooks or from the running command', () => {
 		const conversation = '00000000-0000-4000-8000-00000000a6f1';
 		const key = paradisAgentSessionKey('antigravity', conversation);
-		const live = (sources: { readonly hookPane?: string; readonly command?: string; readonly paneClosed?: boolean; readonly atPrompt?: boolean }) => paradisLiveSessionTerminalKeys({
+		const live = (sources: { readonly hookPane?: string; readonly command?: string; readonly paneClosed?: boolean; readonly finishedAt?: number; readonly noShellIntegration?: boolean }) => paradisLiveSessionTerminalKeys({
 			paneSessions: [{ token: 'pane-claude', agent: 'claude', sessionId: 'claude-1' }],
-			antigravityPaneSessions: sources.hookPane !== undefined ? [{ token: sources.hookPane, sessionId: conversation }] : [],
+			antigravityPaneSessions: sources.hookPane !== undefined ? [{ token: sources.hookPane, sessionId: conversation, lastHookAt: 1000 }] : [],
 			terminalKeyOfPane: token => sources.paneClosed === true && token !== 'pane-claude' ? undefined : `terminal-of-${token}`,
-			paneAtShellPrompt: () => sources.atPrompt === true,
+			commandEvidenceOfPane: () => sources.noShellIntegration === true ? undefined : { finished: sources.finishedAt !== undefined ? [{ at: sources.finishedAt, exitCode: 0 }] : [], executing: sources.command },
 			executing: sources.command !== undefined ? [{ commandLine: sources.command, terminalKey: () => 'terminal-of-command' }] : [],
 		}).get(key);
 		assert.deepStrictEqual({
@@ -159,19 +159,98 @@ suite('paradisMobileAgentResume (W2-29)', () => {
 			resumedBeforeHooks: live({ command: `agy --conversation ${conversation}` }),
 			// 両方ある（hook が報告したペインを使う）
 			resumedWithHooks: live({ hookPane: 'pane-agy', command: `agy --conversation ${conversation}` }),
-			// ターミナルを閉じた・agy が終わってシェルに戻った（agy は終わりを hook で知らせない）
+			// ターミナルを閉じた・最後の hook より後にコマンドが終わった（agy は終わりを hook で知らせない）
 			closedPane: live({ hookPane: 'pane-agy', paneClosed: true }),
-			backAtPrompt: live({ hookPane: 'pane-agy', atPrompt: true }),
+			finishedAfterLastHook: live({ hookPane: 'pane-agy', finishedAt: 2000 }),
+			// 最後の hook より前に終わったコマンドしか無い・シェル統合が無い: 動いている扱い
+			finishedBeforeLastHook: live({ hookPane: 'pane-agy', finishedAt: 500 }),
+			noShellIntegration: live({ hookPane: 'pane-agy', noShellIntegration: true }),
 			otherCommand: live({ command: 'ls' }),
-			otherKindsStay: paradisLiveSessionTerminalKeys({ paneSessions: [{ token: 'pane-claude', agent: 'claude', sessionId: 'claude-1' }], antigravityPaneSessions: [], terminalKeyOfPane: token => `terminal-of-${token}`, paneAtShellPrompt: () => true, executing: [] }).get(paradisAgentSessionKey('claude', 'claude-1')),
+			otherKindsStay: paradisLiveSessionTerminalKeys({ paneSessions: [{ token: 'pane-claude', agent: 'claude', sessionId: 'claude-1' }], antigravityPaneSessions: [], terminalKeyOfPane: token => `terminal-of-${token}`, commandEvidenceOfPane: () => ({ finished: [{ at: 9999, exitCode: 0 }], executing: undefined }), executing: [] }).get(paradisAgentSessionKey('claude', 'claude-1')),
 		}, {
 			plainAgy: 'terminal-of-pane-agy',
 			resumedBeforeHooks: 'terminal-of-command',
 			resumedWithHooks: 'terminal-of-pane-agy',
 			closedPane: undefined,
-			backAtPrompt: undefined,
+			finishedAfterLastHook: undefined,
+			finishedBeforeLastHook: 'terminal-of-pane-agy',
+			noShellIntegration: 'terminal-of-pane-agy',
 			otherCommand: undefined,
 			otherKindsStay: 'terminal-of-pane-claude',
+		});
+	});
+
+	test('treats an Antigravity CLI conversation as gone from its pane only when a command finished after its last hook', () => {
+		const conversation = '00000000-0000-4000-8000-00000000a6f1';
+		const other = '00000000-0000-4000-8000-00000000a6f2';
+		const evidence = (finished: readonly (number | readonly [number, number])[], executing?: string): IParadisTerminalCommandEvidence => ({
+			finished: finished.map(entry => typeof entry === 'number' ? { at: entry, exitCode: 0 } : { at: entry[0], exitCode: entry[1] }),
+			executing,
+		});
+		const hooked = { token: 'pane', sessionId: conversation, lastHookAt: 1000 };
+		const restored = { token: 'pane', sessionId: conversation, restoredAt: 5000 };
+		assert.deepStrictEqual({
+			// agy が動いている: 最後の hook より後に終わったコマンドは無い
+			running: paradisAntigravityConversationLeftPane(hooked, evidence([200, 900], 'agy')),
+			// 再読み込みの後。保存したときにコマンドの文字列が空で、実行中のコマンドが戻らなかった（プロンプトの状態は入力待ちに戻る）
+			reloadedWithoutCommandLine: paradisAntigravityConversationLeftPane(hooked, evidence([200, 900])),
+			// agy を終えてプロンプトに戻った・その後に別のコマンドが動いている
+			backAtPrompt: paradisAntigravityConversationLeftPane(hooked, evidence([900, 1500])),
+			otherCommandRunning: paradisAntigravityConversationLeftPane(hooked, evidence([1500], 'sleep 600')),
+			// Ctrl+Z で止めただけ（裏で生きている）。その後に別のコマンドが終わっても動いている扱い
+			suspended: paradisAntigravityConversationLeftPane(hooked, evidence([[1500, 148]])),
+			suspendedThenOther: paradisAntigravityConversationLeftPane(hooked, evidence([[1500, 146], 1600])),
+			// 同じペインで agy を始め直した: 素の agy・`-c` は同じ会話を開き直したかもしれない。別の会話を名指ししたら終わった扱い
+			restartedPlain: paradisAntigravityConversationLeftPane(hooked, evidence([1500], 'agy')),
+			restartedContinue: paradisAntigravityConversationLeftPane(hooked, evidence([1500], 'agy -c')),
+			restartedSame: paradisAntigravityConversationLeftPane(hooked, evidence([1500], `agy --conversation ${conversation}`)),
+			restartedOther: paradisAntigravityConversationLeftPane(hooked, evidence([1500], `agy --conversation ${other}`)),
+			// PC の再起動の後（控えを読み戻しただけ）: 戻したコマンドは古い時刻のまま。新しくコマンドが終わるまで動いている扱い
+			restoredOldCommands: paradisAntigravityConversationLeftPane(restored, evidence([200, 900])),
+			restoredThenCommandFinished: paradisAntigravityConversationLeftPane(restored, evidence([900, 6000])),
+			// 時刻が無い・シェル統合が無い
+			noTime: paradisAntigravityConversationLeftPane({ token: 'pane', sessionId: conversation }, evidence([9000])),
+			noShellIntegration: paradisAntigravityConversationLeftPane(hooked, undefined),
+		}, {
+			running: false,
+			reloadedWithoutCommandLine: false,
+			backAtPrompt: true,
+			otherCommandRunning: true,
+			suspended: false,
+			suspendedThenOther: false,
+			restartedPlain: false,
+			restartedContinue: false,
+			restartedSame: false,
+			restartedOther: true,
+			restoredOldCommands: false,
+			restoredThenCommandFinished: true,
+			noTime: false,
+			noShellIntegration: false,
+		});
+	});
+
+	test('types into an Antigravity CLI pane only while its front agy is known to hold the recorded conversation', () => {
+		const conversation = '00000000-0000-4000-8000-00000000a6f1';
+		const hooked = { token: 'pane', sessionId: conversation, lastHookAt: 1000 };
+		const finished = (...at: number[]) => at.map(time => ({ at: time, exitCode: 0 }));
+		assert.deepStrictEqual({
+			running: paradisAntigravityPaneHoldsConversation(hooked, { finished: finished(900), executing: 'agy' }),
+			// agy を終えて始め直した直後（新しい会話の hook は最初の発言まで来ない）: 前の会話宛ての文を打たない
+			restartedPlain: paradisAntigravityPaneHoldsConversation(hooked, { finished: finished(1500), executing: 'agy' }),
+			restartedSame: paradisAntigravityPaneHoldsConversation(hooked, { finished: finished(1500), executing: `agy --conversation ${conversation}` }),
+			restartedOther: paradisAntigravityPaneHoldsConversation(hooked, { finished: finished(1500), executing: 'agy --conversation 00000000-0000-4000-8000-00000000a6f2' }),
+			// この起動中にその会話の hook をまだ受けていない（控えを読み戻しただけ）・控えが無い・シェル統合が無い
+			restoredOnly: paradisAntigravityPaneHoldsConversation({ token: 'pane', sessionId: conversation, restoredAt: 5000 }, { finished: [], executing: 'agy' }),
+			noRecord: paradisAntigravityPaneHoldsConversation(undefined, { finished: [], executing: 'agy' }),
+			noShellIntegration: paradisAntigravityPaneHoldsConversation(hooked, undefined),
+		}, {
+			running: true,
+			restartedPlain: false,
+			restartedSame: true,
+			restartedOther: false,
+			restoredOnly: false,
+			noRecord: false,
+			noShellIntegration: false,
 		});
 	});
 });
