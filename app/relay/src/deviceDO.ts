@@ -219,11 +219,7 @@ export class DeviceDO implements DurableObject {
 	private sweepUnusedMobiles(ttlMs: number, now: number = Date.now()): string[] {
 		const expired = this.sql.exec('SELECT mobileId FROM mobiles WHERE COALESCE(lastSeenAt, createdAt, 0) < ?', now - ttlMs).toArray().map(row => row.mobileId as string);
 		for (const mobileId of expired) {
-			this.sql.exec('DELETE FROM mobiles WHERE mobileId = ?', mobileId);
-			this.sql.exec('DELETE FROM push_queue WHERE mobileId = ?', mobileId);
-			for (const ws of this.state.getWebSockets(`m:${mobileId}`)) {
-				try { ws.close(PARADIS_RELAY_CLOSE_CODE.UNKNOWN_MOBILE, 'expired'); } catch { /* ignore */ }
-			}
+			this.removeMobile(mobileId, PARADIS_RELAY_CLOSE_CODE.UNKNOWN_MOBILE, 'expired');
 			this.noticeMobileRevoked(mobileId, now);
 		}
 		return expired;
@@ -321,6 +317,31 @@ export class DeviceDO implements DurableObject {
 		return row ? { pcPublicKey: row.pcPublicKey as string, pcTokenHash: row.pcTokenHash as string } : null;
 	}
 
+	/** 渡されたトークンが、登録済みの PC のものか（未登録・トークン無しは false）。 */
+	private async authorizePc(token: string | null): Promise<boolean> {
+		const device = this.device();
+		return device !== null && token !== null && timingSafeEqualHex(await hashToken(token), device.pcTokenHash);
+	}
+
+	/**
+	 * モバイルの資格と、そのモバイル宛てのプッシュの再送待ち（届け先が無くなる）を消し、つながっているソケットを閉じる。
+	 * 閉じるコードと理由、PC への知らせ（{@link noticeMobileRevoked}）は場面ごとに違うので、呼ぶ側が決める。
+	 */
+	private removeMobile(mobileId: string, closeCode: number, closeReason: string): void {
+		this.sql.exec('DELETE FROM mobiles WHERE mobileId = ?', mobileId);
+		this.sql.exec('DELETE FROM push_queue WHERE mobileId = ?', mobileId);
+		this.closeTag(`m:${mobileId}`, closeCode, closeReason);
+	}
+
+	/** タグの付いたソケットを全部閉じ、閉じようとした本数を返す。 */
+	private closeTag(tag: string, code: number, reason: string): number {
+		const sockets = this.state.getWebSockets(tag);
+		for (const ws of sockets) {
+			try { ws.close(code, reason); } catch { /* ignore */ }
+		}
+		return sockets.length;
+	}
+
 	private async provision(request: Request): Promise<Response> {
 		const body = await request.json<{ pcPublicKey?: string; pcToken?: string }>().catch(() => ({} as { pcPublicKey?: string; pcToken?: string }));
 		if (!body.pcPublicKey || !body.pcToken) {
@@ -349,9 +370,7 @@ export class DeviceDO implements DurableObject {
 		// C-1: ペアリングセッションの発行はPC本人（pcToken保持者）に限定する。
 		// 未認証だと deviceId を知る第三者が有効な pairId/token を発行してペアリング
 		// ソケットを開けてしまう。
-		const device = this.device();
-		const token = extractToken(request);
-		if (!device || token === null || !timingSafeEqualHex(await hashToken(token), device.pcTokenHash)) {
+		if (!await this.authorizePc(extractToken(request))) {
 			return new Response('unauthorized', { status: 401 });
 		}
 		this.cleanupPairings();
@@ -370,9 +389,7 @@ export class DeviceDO implements DurableObject {
 	 * 判別するための唯一の手段。
 	 */
 	private async checkPcToken(request: Request): Promise<Response> {
-		const device = this.device();
-		const token = extractToken(request);
-		if (!device || token === null || !timingSafeEqualHex(await hashToken(token), device.pcTokenHash)) {
+		if (!await this.authorizePc(extractToken(request))) {
 			return new Response('unauthorized', { status: 401 });
 		}
 		return Response.json({ ok: true });
@@ -388,9 +405,7 @@ export class DeviceDO implements DurableObject {
 		// 自己closeするが、強制終了・half-open等の異常系では hibernated WS として積み上がる。
 		// TTL切れの pair ソケットをサーバ側からも閉じる（QR再読込のたびに積み上がる問題）。
 		for (const row of expired) {
-			for (const ws of this.state.getWebSockets(`pair:${row.pairId}`)) {
-				try { ws.close(1000, 'expired'); } catch { /* ignore */ }
-			}
+			this.closeTag(`pair:${row.pairId}`, 1000, 'expired');
 		}
 	}
 
@@ -450,23 +465,16 @@ export class DeviceDO implements DurableObject {
 
 	// M-1: PC(pcToken保持者)からのデバイス失効。資格情報を削除し、既存のモバイル接続を切断する。
 	private async revokeMobile(request: Request): Promise<Response> {
-		const device = this.device();
-		const token = extractToken(request);
-		if (!device || token === null || !timingSafeEqualHex(await hashToken(token), device.pcTokenHash)) {
+		if (!await this.authorizePc(extractToken(request))) {
 			return new Response('unauthorized', { status: 401 });
 		}
 		const body = await request.json<{ mobileId?: string }>().catch(() => ({} as { mobileId?: string }));
 		if (typeof body.mobileId !== 'string') {
 			return Response.json({ error: 'missing mobileId' }, { status: 400 });
 		}
-		this.sql.exec('DELETE FROM mobiles WHERE mobileId = ?', body.mobileId);
-		// 失効した端末へのプッシュの再送待ちは届け先が無いので消す
-		this.sql.exec('DELETE FROM push_queue WHERE mobileId = ?', body.mobileId);
 		// 1000 で閉じるとアプリは理由を知らずに張り直し続ける。アプリが認証拒否として扱う 4404 で閉じる
 		// （4410 は新しいアプリしか知らないので、まだ使わない）
-		for (const ws of this.state.getWebSockets(`m:${body.mobileId}`)) {
-			try { ws.close(PARADIS_RELAY_CLOSE_CODE.UNKNOWN_MOBILE, 'revoked'); } catch { /* ignore */ }
-		}
+		this.removeMobile(body.mobileId, PARADIS_RELAY_CLOSE_CODE.UNKNOWN_MOBILE, 'revoked');
 		return Response.json({ ok: true });
 	}
 
@@ -482,11 +490,7 @@ export class DeviceDO implements DurableObject {
 		if (!record || token === null || !timingSafeEqualHex(await hashToken(token), record.tokenHash)) {
 			return new Response('unauthorized', { status: 401 });
 		}
-		this.sql.exec('DELETE FROM mobiles WHERE mobileId = ?', body.mobileId);
-		this.sql.exec('DELETE FROM push_queue WHERE mobileId = ?', body.mobileId);
-		for (const ws of this.state.getWebSockets(`m:${body.mobileId}`)) {
-			try { ws.close(1000, 'revoked'); } catch { /* ignore */ }
-		}
+		this.removeMobile(body.mobileId, 1000, 'revoked');
 		// PC側にも通知し、PCの登録デバイス一覧から取り除けるようにする（PC がつながっていなければ次につながったときに）。
 		this.noticeMobileRevoked(body.mobileId);
 		return Response.json({ ok: true });
@@ -543,20 +547,16 @@ export class DeviceDO implements DurableObject {
 	// --- WebSocket accept ---------------------------------------------------------
 
 	private async acceptPc(token: string, echoSubprotocol?: string): Promise<Response> {
-		const device = this.device();
-		if (!device || !timingSafeEqualHex(await hashToken(token), device.pcTokenHash)) {
+		if (!await this.authorizePc(token)) {
 			return new Response('unauthorized', { status: 401 });
 		}
 		// 既存PCソケットは閉じる（1本に限定）
-		const superseded = this.state.getWebSockets('pc');
-		for (const ws of superseded) {
-			try { ws.close(1000, 'superseded'); } catch { /* ignore */ }
-		}
+		const superseded = this.closeTag('pc', 1000, 'superseded');
 		// 張り替え時はモバイルへ offline→online のフラップを見せる。webSocketClose の offline通知は
 		// 「PCソケットが1本も無い」ときだけなので、張り替えでは発火しない。しかしPCが張り替える＝
 		// PC側のE2Eセッションは破棄済みなので、モバイルが再ハンドシェイクしないまま旧muxで送り続けると
 		// PCがそれをhelloと誤解して恒久的に無視する（acceptMobile側と同じ理由の措置）。
-		if (superseded.length > 0) {
+		if (superseded > 0) {
 			this.notifyPcPresence(false);
 		}
 		// 失効を有効にしていれば掃除の予定を張る（PC がつながるのは頻繁なので、ここで張れば取りこぼさない）。
@@ -592,11 +592,8 @@ export class DeviceDO implements DurableObject {
 		// ソケットをhalf-openのまま放置した場合、これが残っていると再接続時に
 		// 「offline通知が飛ばない→PC側が古いE2Eセッションを保持し続ける→新しい
 		// ハンドシェイクを復号失敗で無視し続ける」恒久ループになる（acceptPcと同様の措置）。
-		const superseded = this.state.getWebSockets(`m:${mobileIdStr}`);
-		for (const ws of superseded) {
-			try { ws.close(1000, 'superseded'); } catch { /* ignore */ }
-		}
-		if (superseded.length > 0) {
+		const superseded = this.closeTag(`m:${mobileIdStr}`, 1000, 'superseded');
+		if (superseded > 0) {
 			this.sendToPc({ type: 'presence', peer: 'mobile', mobileId: mobileIdStr, online: false });
 		}
 		return this.upgrade(ws => this.state.acceptWebSocket(ws, [`m:${mobileIdStr}`]), () => {
@@ -746,9 +743,7 @@ export class DeviceDO implements DurableObject {
 				// 拒否したペアリングは即座に無効化する。pending を残したままだと、PCが後から
 				// 同じ pairId を承認できてしまい「拒否した」が守られない。
 				this.sql.exec('DELETE FROM pending WHERE pairId = ?', msg.pairId);
-				for (const ws of this.state.getWebSockets(`pair:${msg.pairId}`)) {
-					try { ws.close(1000, 'rejected'); } catch { /* ignore */ }
-				}
+				this.closeTag(`pair:${msg.pairId}`, 1000, 'rejected');
 			} else if (msg.type === 'push-notify') {
 				const requestId = pushIdOrUndefined(msg.requestId);
 				if (requestId !== undefined) {
