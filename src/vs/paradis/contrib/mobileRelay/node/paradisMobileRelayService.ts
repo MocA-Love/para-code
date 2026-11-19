@@ -304,7 +304,7 @@ export class MobileSession {
 
 	constructor(
 		readonly mobileId: string,
-		private readonly mobileIdBytes: Uint8Array,
+		_mobileIdBytes: Uint8Array,
 		private readonly mobilePubKey: Uint8Array,
 		private readonly pcIdentity: MobileIdentity,
 		private readonly sendToRelay: (payload: Uint8Array) => boolean,
@@ -781,10 +781,6 @@ export class MobileSession {
 	/** 断片の組み立ての誤りの数（暗号層の失敗とは別に数える）。 */
 	private assemblyErrors = 0;
 
-	get assemblyErrorCount(): number {
-		return this.assemblyErrors;
-	}
-
 	private recordAssemblyError(error: Error): void {
 		this.assemblyErrors++;
 		// 1 回目と、その後は 100 回ごとに残す（壊れた送り手がログを埋めないように）
@@ -796,10 +792,6 @@ export class MobileSession {
 	/** このセッションを捨てる。列に残った送信を取り下げる。 */
 	close(): void {
 		this.resetSessionState();
-	}
-
-	get idBytes(): Uint8Array {
-		return this.mobileIdBytes;
 	}
 }
 
@@ -839,6 +831,36 @@ function probeFailureCause(err: unknown): string {
 /** renderer から届いたペイントークンの形を確かめる（IPC の入力は信用しない）。 */
 function paradisIsAgentChatToken(token: unknown): token is string {
 	return typeof token === 'string' && token.length > 0 && token.length <= 200;
+}
+
+/** 通知のバイト列を JSON のオブジェクトとして読む。読めない・オブジェクトでない（null・配列・値）なら undefined。 */
+function parseNotifyRecord(bytes: Uint8Array): Record<string, unknown> | undefined {
+	try {
+		const parsed = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+		if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+			return undefined;
+		}
+		return parsed as Record<string, unknown>;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * 通知の JSON を書き換えて、バイト列に戻す。JSON のオブジェクトとして読めない・`patch` が undefined を返した・
+ * 書き換えに失敗したときは、元のバイト列をそのまま返す（判定不能なものを黙って作り替えない）。
+ */
+function patchNotifyJson(bytes: Uint8Array, patch: (record: Record<string, unknown>) => Record<string, unknown> | undefined): Uint8Array {
+	const record = parseNotifyRecord(bytes);
+	if (record === undefined) {
+		return bytes;
+	}
+	try {
+		const patched = patch(record);
+		return patched === undefined ? bytes : new TextEncoder().encode(JSON.stringify(patched));
+	} catch {
+		return bytes;
+	}
 }
 
 export class ParadisMobileRelayService extends Disposable implements IParadisMobileRelayService, IParadisAgentPaneInsightSource, IParadisAgentChatSource {
@@ -908,7 +930,6 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private readonly writeRelayState: (filePath: string, state: IParadisRelayPersistedState) => Promise<void>;
 	private readonly readMachineIdHash: () => Promise<string | undefined>;
 	private machineIdHashRequested = false;
-	private stateBroadcastMetricsEnabled = false;
 	private stateBroadcastMetricsGeneration = 0;
 
 	private socket: WebSocket | undefined;
@@ -1174,16 +1195,17 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	}
 
 	/**
-	 * Mobile relayが有効な間だけdesktop state broadcast計測タイマーを動かす。
+	 * 有効・無効を切り替え、Mobile relayが有効な間だけdesktop state broadcast計測タイマーを動かす
+	 * （値が変わらないときは、タイマーも集計も触らない）。
 	 *
 	 * 無効化時は、停止済みタイマーのキュー済みcallbackが実行されても古い集計を報告しないよう、
 	 * 集計も同時に捨てる。
 	 */
-	private setStateBroadcastMetricsEnabled(enabled: boolean): void {
-		if (this.stateBroadcastMetricsEnabled === enabled) {
+	private applyEnabled(enabled: boolean): void {
+		if (this.enabled === enabled) {
 			return;
 		}
-		this.stateBroadcastMetricsEnabled = enabled;
+		this.enabled = enabled;
 		const generation = ++this.stateBroadcastMetricsGeneration;
 		if (!enabled) {
 			this.stateBroadcastMetricsTimer.cancel();
@@ -1192,7 +1214,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}
 		this.resetStateBroadcastMetrics();
 		this.stateBroadcastMetricsTimer.cancelAndSet(() => {
-			if (this.stateBroadcastMetricsEnabled && generation === this.stateBroadcastMetricsGeneration) {
+			if (this.enabled && generation === this.stateBroadcastMetricsGeneration) {
 				this.reportStateBroadcastMetrics();
 			}
 		}, 60_000);
@@ -1847,8 +1869,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		this.loadMachineIdHash();
 		await this.ensureLoaded();
 		this.updateDiagnosticCorrelation();
-		this.enabled = enabled;
-		this.setStateBroadcastMetricsEnabled(enabled);
+		this.applyEnabled(enabled);
 		this.disconnectReporter.setEnabled(enabled);
 		this.connectIfReady();
 		this.updateEagerTailing();
@@ -1858,8 +1879,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		if (this.enabled === enabled) {
 			return;
 		}
-		this.enabled = enabled;
-		this.setStateBroadcastMetricsEnabled(enabled);
+		this.applyEnabled(enabled);
 		if (enabled) {
 			this.connectIfReady();
 		} else {
@@ -1878,30 +1898,19 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	private notifyAgentQuestion(info: { terminalId: number; agent: ParadisAgentKind; text: string; ws?: string; agentToken: string; owner: IParadisMobilePaneOwner; interactionId?: string }): void {
 		// 本文には質問文の原文を入れ、`category: 'question'` を付けて出口へ渡す。種類の言葉・Markdown の除去・
 		// 伏せ字・長さの調整は出口（composeNotifyVariants）がまとめて行う（プッシュの 3800B に収まるまで削るのも出口）。
-		const body = info.text.slice(0, PARADIS_NOTIFY_DETAIL_MAX_CHARS);
-		const desktopState = this.terminalRegistry.desktopState();
-		const terminal = desktopState.terminals.find(candidate => candidate.agentToken === info.agentToken);
-		// ターミナルの ws は shared process が窓IDを冠したキーなので、workspaces 側も同じキーで引ける。
-		const workspace = terminal?.ws !== undefined ? desktopState.workspaces.find(candidate => candidate.id === terminal.ws) : undefined;
-		const payload: NotifyPayload = {
+		// タイトルはワークツリー名だけに使い、質問の見出し（header）は本文に譲る。
+		// 本文には質問文そのものが入っているので、見出しを足しても同じことを二度言うだけになる。
+		this.dispatchAgentNotify(info.owner, {
 			kind: 'agent-question',
-			id: `q${generateUuid()}`,
-			// タイトルはワークツリー名だけに使い、質問の見出し（header）は本文に譲る。
-			// 本文には質問文そのものが入っているので、見出しを足しても同じことを二度言うだけになる。
-			title: paradisNotifyTitle(workspace?.name, terminal?.title),
-			subtitle: paradisAgentLabel(info.agent),
-			body,
+			idPrefix: 'q',
+			body: info.text.slice(0, PARADIS_NOTIFY_DETAIL_MAX_CHARS),
 			category: 'question',
 			agent: info.agent,
 			terminalId: info.terminalId,
-			...(terminal !== undefined ? { terminalKey: terminal.terminalKey, windowId: terminal.windowId } : {}),
 			agentToken: info.agentToken,
-			...(terminal?.ws !== undefined ? { ws: terminal.ws } : {}),
 			// Codex の非同期の質問だけが付ける（答えたらこの ID で片付ける）
-			...(info.interactionId !== undefined ? { interactionId: info.interactionId } : {}),
-			at: Date.now(),
-		};
-		this.dispatchNotify(encodeNotify(payload), info.owner);
+			interactionId: info.interactionId,
+		});
 	}
 
 	/**
@@ -1909,21 +1918,37 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * 出口（composeNotifyVariants）が transcript のターンの終わりから決める。
 	 */
 	private notifyAgentAutoContinueStopped(token: string, terminalId: number, owner: IParadisMobilePaneOwner): void {
+		this.dispatchAgentNotify(owner, { kind: 'agent-error', idPrefix: 'e', body: '', category: 'error', agent: 'codex', terminalId, agentToken: token });
+	}
+
+	/** エージェントのペインについての通知を組み立てて出す（題・端末・ワークスペースは今の desktop state から引く）。 */
+	private dispatchAgentNotify(owner: IParadisMobilePaneOwner, notify: {
+		readonly kind: 'agent-question' | 'agent-error';
+		readonly idPrefix: string;
+		readonly body: string;
+		readonly category: 'question' | 'error';
+		readonly agent: ParadisAgentKind;
+		readonly terminalId: number;
+		readonly agentToken: string;
+		readonly interactionId?: string;
+	}): void {
 		const desktopState = this.terminalRegistry.desktopState();
-		const terminal = desktopState.terminals.find(candidate => candidate.agentToken === token);
+		const terminal = desktopState.terminals.find(candidate => candidate.agentToken === notify.agentToken);
+		// ターミナルの ws は shared process が窓IDを冠したキーなので、workspaces 側も同じキーで引ける。
 		const workspace = terminal?.ws !== undefined ? desktopState.workspaces.find(candidate => candidate.id === terminal.ws) : undefined;
 		const payload: NotifyPayload = {
-			kind: 'agent-error',
-			id: `e${generateUuid()}`,
+			kind: notify.kind,
+			id: `${notify.idPrefix}${generateUuid()}`,
 			title: paradisNotifyTitle(workspace?.name, terminal?.title),
-			subtitle: paradisAgentLabel('codex'),
-			body: '',
-			category: 'error',
-			agent: 'codex',
-			terminalId,
+			subtitle: paradisAgentLabel(notify.agent),
+			body: notify.body,
+			category: notify.category,
+			agent: notify.agent,
+			terminalId: notify.terminalId,
 			...(terminal !== undefined ? { terminalKey: terminal.terminalKey, windowId: terminal.windowId } : {}),
-			agentToken: token,
+			agentToken: notify.agentToken,
 			...(terminal?.ws !== undefined ? { ws: terminal.ws } : {}),
+			...(notify.interactionId !== undefined ? { interactionId: notify.interactionId } : {}),
 			at: Date.now(),
 		};
 		this.dispatchNotify(encodeNotify(payload), owner);
@@ -2028,13 +2053,9 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * 付いていない）。
 	 */
 	private codexApprovalNotifyHold(bytes: Uint8Array): { readonly token: string; readonly since: number; readonly waitMs: number } | undefined {
-		let record: { readonly kind?: unknown; readonly agentToken?: unknown; readonly category?: unknown };
-		try {
-			record = JSON.parse(new TextDecoder().decode(bytes)) as typeof record;
-		} catch {
-			return undefined;
-		}
-		if (record === null || typeof record !== 'object' || record.kind !== 'agent-question' || record.category === 'question'
+		// 配列は kind を持たないので、形の検査を共通にしても undefined になるのは同じ
+		const record = parseNotifyRecord(bytes);
+		if (record === undefined || record.kind !== 'agent-question' || record.category === 'question'
 			|| typeof record.agentToken !== 'string' || record.agentToken.length === 0) {
 			return undefined;
 		}
@@ -2147,16 +2168,13 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	/** 詳細（detail）を外した版。JSONとして読めない・詳細が無いときはそのまま返す。 */
 	private withoutNotifyDetail(bytes: Uint8Array): Uint8Array {
-		try {
-			const parsed = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown> | null;
-			if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed) || parsed.detail === undefined) {
-				return bytes;
+		return patchNotifyJson(bytes, parsed => {
+			if (parsed.detail === undefined) {
+				return undefined;
 			}
 			delete parsed.detail;
-			return new TextEncoder().encode(JSON.stringify(parsed));
-		} catch {
-			return bytes;
-		}
+			return parsed;
+		});
 	}
 
 	/**
@@ -2165,14 +2183,8 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * 「通知に内容を含める」の版（withContent）と含めない版（withoutContent）を返す。
 	 */
 	private composeNotifyVariants(bytes: Uint8Array, now: number): { readonly withContent: Uint8Array; readonly withoutContent: Uint8Array; readonly origin?: IParadisNotifyPromptOrigin } | undefined {
-		let record: Record<string, unknown>;
-		try {
-			const parsed = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
-			if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-				return undefined;
-			}
-			record = parsed as Record<string, unknown>;
-		} catch {
+		const record = parseNotifyRecord(bytes);
+		if (record === undefined) {
 			return undefined;
 		}
 		const kind = record.kind;
@@ -2241,19 +2253,11 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		if (pcId === undefined && this.pcName === undefined) {
 			return bytes;
 		}
-		try {
-			const parsed = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown> | null;
-			if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-				return bytes;
-			}
-			return new TextEncoder().encode(JSON.stringify({
-				...parsed,
-				...(pcId !== undefined ? { pcId } : {}),
-				...(this.pcName !== undefined ? { pcName: this.pcName } : {}),
-			}));
-		} catch {
-			return bytes;
-		}
+		return patchNotifyJson(bytes, parsed => ({
+			...parsed,
+			...(pcId !== undefined ? { pcId } : {}),
+			...(this.pcName !== undefined ? { pcName: this.pcName } : {}),
+		}));
 	}
 
 	/**
@@ -2261,15 +2265,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * JSONとして読めないバイト列はそのまま返す（判定不能なものを黙って作り替えない）。
 	 */
 	private quietNotifyBytes(bytes: Uint8Array, reason: ParadisNotifyQuiet): Uint8Array {
-		try {
-			const parsed = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown> | null;
-			if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-				return bytes;
-			}
-			return new TextEncoder().encode(JSON.stringify({ ...parsed, quiet: reason }));
-		} catch {
-			return bytes;
-		}
+		return patchNotifyJson(bytes, parsed => ({ ...parsed, quiet: reason }));
 	}
 
 	/** セッションが確立した直後に取り置き分を流す。IDが同じものはモバイル側が弾く。 */
@@ -3965,16 +3961,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		// per-mobileリソース（browserMirrorのcaptureTimer/上流CDPソケット、agentChatの購読）を解放する。
 		const mobileSessionCount = this.sessions.size;
 		this.clearStableConnectionReset();
-		this.noteMobilesSeen(this.sessions.keys());
-		for (const [id, session] of this.sessions) {
-			this.browserMirror.stopSession(id);
-			this.agentChat.dropSubscriber(id);
-			session.close();
-		}
-		this.sessions.clear();
-		this.webrtcRendererLeases.clear();
-		this.voiceSubscriptions.clear();
-		this.voiceDelivery.clear();
+		this.dropAllMobileSessions();
 		if (!this.enabled) {
 			this.setConnectionState('disabled');
 			return;
@@ -4027,6 +4014,23 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		}, () => { });
 	}
 
+	/**
+	 * 繋がっている全モバイルのセッションと、それに付いた配信（ブラウザミラー・チャットの購読・WebRTC・音声）を捨てる
+	 * （リレーとの接続が切れたときと、こちらから切るとき）。
+	 */
+	private dropAllMobileSessions(): void {
+		this.noteMobilesSeen(this.sessions.keys());
+		for (const [id, session] of this.sessions) {
+			this.browserMirror.stopSession(id);
+			this.agentChat.dropSubscriber(id);
+			session.close();
+		}
+		this.sessions.clear();
+		this.webrtcRendererLeases.clear();
+		this.voiceSubscriptions.clear();
+		this.voiceDelivery.clear();
+	}
+
 	private disconnect(): void {
 		if (this.reconnectTimer) {
 			clearTimeout(this.reconnectTimer);
@@ -4041,16 +4045,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		// 「復帰できなかった」と報告してしまわないように）。
 		this.disconnectReporter.setEnabled(false);
 		// onclose と同様、セッション破棄前に per-mobile リソースを解放する。
-		this.noteMobilesSeen(this.sessions.keys());
-		for (const [id, session] of this.sessions) {
-			this.browserMirror.stopSession(id);
-			this.agentChat.dropSubscriber(id);
-			session.close();
-		}
-		this.sessions.clear();
-		this.webrtcRendererLeases.clear();
-		this.voiceSubscriptions.clear();
-		this.voiceDelivery.clear();
+		this.dropAllMobileSessions();
 		if (this.socket) {
 			try { this.socket.close(); } catch { /* ignore */ }
 			this.socket = undefined;
