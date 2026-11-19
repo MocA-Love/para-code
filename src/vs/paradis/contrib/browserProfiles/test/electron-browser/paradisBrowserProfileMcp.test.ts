@@ -131,16 +131,13 @@ suite('ParadisBrowserProfileMcpChannel', () => {
 		assert.deepStrictEqual(await busy.channel.call<IParadisOpenProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_METHOD, ['pane-a', 'PRD'], CancellationToken.None), { ok: false, reason: 'alreadyPending' });
 	});
 
-	test('asks with the browser extension warning when the profile has extensions enabled, even for its own profile', async () => {
-		const warning = 'extension warning';
+	test('a profile this pane made opens without asking even when it has browser extensions enabled', async () => {
 		const channel = createChannel([
-			profile('a3f19c2b7e04', 'PRD'),
 			profile('b1c2d3e4f506', 'TEST', { createdByAgent: true, agentOwner: paradisAgentOwnerMark('pane-a') }),
-		], 'denied', true, undefined, warning);
+		], 'denied', true, undefined, 'extension warning');
 		store.add(channel.channel);
-		const user = await channel.channel.call<IParadisOpenProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_METHOD, ['pane-a', 'PRD'], CancellationToken.None);
 		const own = await channel.channel.call<IParadisOpenProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_METHOD, ['pane-a', 'TEST'], CancellationToken.None);
-		assert.deepStrictEqual([user, own, channel.calls], [{ ok: false, reason: 'denied' }, { ok: false, reason: 'denied' }, ['ask-with-warning', 'ask-with-warning']]);
+		assert.deepStrictEqual([own.ok, channel.calls], [true, ['open:b1c2d3e4f506']]);
 	});
 
 	// ユーザーのプロファイルのタブは、ユーザーが共有を止めたら台帳から外れる印付きで載る（M22）。
@@ -253,11 +250,42 @@ suite('ParadisBrowserProfileMcpChannel', () => {
 		assert.deepStrictEqual([opened.ok, again.ok, first.calls], [true, true, ['ask+remember', 'allow:a3f19c2b7e04:true', 'open:a3f19c2b7e04', 'open:a3f19c2b7e04']]);
 	});
 
-	test('still asks, without "do not ask again", when a profile allowed without asking has browser extensions enabled', async () => {
-		const { channel, calls } = createChannel([profile('a3f19c2b7e04', 'PRD')], 'denied', true, undefined, 'extension warning', { access: 'all' });
+	// 許可の設定 3 つ × 拡張機能の有無 × 許可を残したか。拡張機能があっても聞くかどうかは設定のとおりで、
+	// 拡張機能の注意は聞くときの本文にだけ載る。
+	test('browser extensions do not change whether a user profile is asked about, only what the dialog says', async () => {
+		const outcomes: Record<string, string[]> = {};
+		for (const access of ['ask', 'remembered', 'all']) {
+			for (const extensions of [false, true]) {
+				for (const remembered of [false, true]) {
+					const { channel, calls } = createChannel([profile('a3f19c2b7e04', 'PRD')], 'denied', true, undefined, extensions ? 'extension warning' : undefined, { access, allowed: new Set(remembered ? ['a3f19c2b7e04'] : []) });
+					store.add(channel);
+					await channel.call<IParadisOpenProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_METHOD, ['pane-a', 'PRD'], CancellationToken.None);
+					outcomes[`${access}/${extensions ? 'extensions' : 'no extensions'}/${remembered ? 'allowed' : 'not allowed'}`] = calls;
+				}
+			}
+		}
+		assert.deepStrictEqual(outcomes, {
+			'ask/no extensions/not allowed': ['ask'],
+			'ask/no extensions/allowed': ['ask'],
+			'ask/extensions/not allowed': ['ask-with-warning'],
+			'ask/extensions/allowed': ['ask-with-warning'],
+			'remembered/no extensions/not allowed': ['ask+remember'],
+			'remembered/no extensions/allowed': ['open:a3f19c2b7e04'],
+			'remembered/extensions/not allowed': ['ask-with-warning+remember'],
+			'remembered/extensions/allowed': ['open:a3f19c2b7e04'],
+			'all/no extensions/not allowed': ['open:a3f19c2b7e04'],
+			'all/no extensions/allowed': ['open:a3f19c2b7e04'],
+			'all/extensions/not allowed': ['open:a3f19c2b7e04'],
+			'all/extensions/allowed': ['open:a3f19c2b7e04'],
+		});
+	});
+
+	test('"do not ask again" on a profile with browser extensions keeps the permission, so the next call opens it without a dialog', async () => {
+		const { channel, calls } = createChannel([profile('a3f19c2b7e04', 'PRD')], 'alternative', true, undefined, 'extension warning', { access: 'remembered' });
 		store.add(channel);
-		await channel.call<IParadisOpenProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_METHOD, ['pane-a', 'PRD'], CancellationToken.None);
-		assert.deepStrictEqual(calls, ['ask-with-warning']);
+		const opened = await channel.call<IParadisOpenProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_METHOD, ['pane-a', 'PRD'], CancellationToken.None);
+		const again = await channel.call<IParadisOpenProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_METHOD, ['pane-a', 'PRD'], CancellationToken.None);
+		assert.deepStrictEqual([opened.ok, again.ok, calls], [true, true, ['ask-with-warning+remember', 'allow:a3f19c2b7e04:true', 'open:a3f19c2b7e04', 'open:a3f19c2b7e04']]);
 	});
 
 	test('the network filter and an untrusted workspace still keep allowed profiles away from the agent', async () => {
