@@ -72,6 +72,60 @@ suite('Paradis simulator: scrcpy protocol', () => {
 		assert.throws(() => new ParadisScrcpyVideoParser(false).push(u32(0x68323635)), /unexpected video codec/);
 	});
 
+	// 塊の切れ目がどこに来ても、読めるできごとは同じ（中身を待つ間は塊を溜めるだけにしているので、その境目を全部通す）
+	test('reads the same events from the video socket wherever the chunks are cut', () => {
+		const stream = paradisScrcpyTestStream();
+		const differing: string[] = [];
+		const read = (chunks: Uint8Array[]) => {
+			const parser = new ParadisScrcpyVideoParser(true);
+			return chunks.flatMap(chunk => parser.push(chunk)).map(event => event.kind === 'config' || event.kind === 'frame' ? { ...event, data: hex(event.data) } : event);
+		};
+		const expected = [
+			{ kind: 'device', name: 'Pixel 9' },
+			{ kind: 'session', width: 1080, height: 2400 },
+			{ kind: 'config', data: '0000000167640028ac' },
+			{ kind: 'frame', data: '0000000165010203', key: true, pts: 1000 },
+			{ kind: 'frame', data: '000000014109', key: false, pts: 2000 },
+		];
+		const check = (label: string, chunks: Uint8Array[]) => {
+			if (JSON.stringify(read(chunks)) !== JSON.stringify(expected)) {
+				differing.push(label);
+			}
+		};
+		for (let size = 1; size <= stream.length; size++) {
+			const chunks: Uint8Array[] = [];
+			for (let offset = 0; offset < stream.length; offset += size) {
+				chunks.push(stream.slice(offset, offset + size));
+			}
+			check(`size ${size}`, chunks);
+		}
+		for (let cut = 0; cut <= stream.length; cut++) {
+			check(`cut ${cut}`, [stream.slice(0, cut), stream.slice(cut)]);
+		}
+
+		// 上限（16 MiB）を 1 バイト超える包みは、頭の 12 バイトが揃った push で投げる
+		const tooBig = concat(stream, u32(0, 0, 16 * 1024 * 1024 + 1), new Uint8Array(4));
+		const thrown: string[] = [];
+		for (let cut = 0; cut <= tooBig.length; cut++) {
+			const parser = new ParadisScrcpyVideoParser(true);
+			let message = 'no error';
+			let failedAt = -1;
+			[tooBig.slice(0, cut), tooBig.slice(cut)].forEach((chunk, index) => {
+				try {
+					parser.push(chunk);
+				} catch (error) {
+					message = (error as Error).message;
+					failedAt = failedAt === -1 ? index : failedAt;
+				}
+			});
+			const outcome = `${failedAt === (cut >= stream.length + 12 ? 0 : 1)}:${message}`;
+			if (!thrown.includes(outcome)) {
+				thrown.push(outcome);
+			}
+		}
+		assert.deepStrictEqual({ differing, thrown }, { differing: [], thrown: ['true:scrcpy sent a video packet of 16777217 bytes'] });
+	});
+
 	test('serializes control messages like the scrcpy client', () => {
 		assert.deepStrictEqual({
 			touch: hex(paradisScrcpyTouch(ParadisScrcpyTouchAction.Down, 1, 100, 200, 1080, 2400)),

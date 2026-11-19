@@ -57,70 +57,99 @@ export class ParadisScrcpyVideoParser {
 
 	private _buffer = new Uint8Array(0);
 	private _state: 'device' | 'codec' | 'packets';
+	/**
+	 * 頭（12 バイト）まで読めて中身を待っている包みに要るバイト数（`_buffer` の先頭から数える）。待っている間は
+	 * 届いた塊を `_pending` に置くだけにし、揃ったときに 1 回だけつなぐ（塊ごとに溜めた分を写し直さない）。
+	 */
+	private _awaitedBytes: number | undefined;
+	private _pending: Uint8Array[] = [];
+	private _pendingBytes = 0;
 
 	constructor(expectDeviceName: boolean) {
 		this._state = expectDeviceName ? 'device' : 'codec';
 	}
 
 	push(chunk: Uint8Array): ParadisScrcpyVideoEvent[] {
-		const merged = new Uint8Array(this._buffer.length + chunk.length);
-		merged.set(this._buffer, 0);
-		merged.set(chunk, this._buffer.length);
-		this._buffer = merged;
-		const events: ParadisScrcpyVideoEvent[] = [];
-		for (; ;) {
-			const view = new DataView(this._buffer.buffer, this._buffer.byteOffset, this._buffer.byteLength);
-			if (this._state === 'device') {
-				if (this._buffer.length < DEVICE_NAME_LENGTH) {
-					return events;
-				}
-				const bytes = this._buffer.subarray(0, DEVICE_NAME_LENGTH);
-				const end = bytes.indexOf(0);
-				events.push({ kind: 'device', name: new TextDecoder().decode(bytes.subarray(0, end === -1 ? DEVICE_NAME_LENGTH : end)) });
-				this._consume(DEVICE_NAME_LENGTH);
-				this._state = 'codec';
-				continue;
+		if (this._awaitedBytes !== undefined) {
+			this._pending.push(chunk);
+			this._pendingBytes += chunk.length;
+			if (this._buffer.length + this._pendingBytes < this._awaitedBytes) {
+				// 先頭は同じ頭のままなので、つないで読み直しても同じ「まだ足りない」になる
+				return [];
 			}
-			if (this._state === 'codec') {
-				if (this._buffer.length < 4) {
-					return events;
-				}
-				const codec = view.getUint32(0);
-				if (codec !== CODEC_H264) {
-					throw new Error(`scrcpy sent an unexpected video codec 0x${codec.toString(16)}`);
-				}
-				this._consume(4);
-				this._state = 'packets';
-				continue;
-			}
-			if (this._buffer.length < 12) {
-				return events;
-			}
-			const first = view.getUint32(0);
-			if (first & 0x80000000) {
-				events.push({ kind: 'session', width: view.getUint32(4), height: view.getUint32(8) });
-				this._consume(12);
-				continue;
-			}
-			const size = view.getUint32(8);
-			if (size > MAX_PACKET_BYTES) {
-				throw new Error(`scrcpy sent a video packet of ${size} bytes`);
-			}
-			if (this._buffer.length < 12 + size) {
-				return events;
-			}
-			const config = (first & 0x40000000) !== 0;
-			const key = (first & 0x20000000) !== 0;
-			// PTS は下の 61 ビット（マイクロ秒）。上の 32 ビットのうち 29 ビットと下の 32 ビットを合わせる
-			const pts = (first & 0x1fffffff) * 0x100000000 + view.getUint32(4);
-			const data = this._buffer.slice(12, 12 + size);
-			events.push(config ? { kind: 'config', data } : { kind: 'frame', data, key, pts });
-			this._consume(12 + size);
+		} else {
+			this._pending = [chunk];
+			this._pendingBytes = chunk.length;
 		}
-	}
+		const merged = new Uint8Array(this._buffer.length + this._pendingBytes);
+		merged.set(this._buffer, 0);
+		let filled = this._buffer.length;
+		for (const pending of this._pending) {
+			merged.set(pending, filled);
+			filled += pending.length;
+		}
+		this._awaitedBytes = undefined;
+		this._pending = [];
+		this._pendingBytes = 0;
 
-	private _consume(length: number): void {
-		this._buffer = this._buffer.slice(length);
+		const events: ParadisScrcpyVideoEvent[] = [];
+		const view = new DataView(merged.buffer, merged.byteOffset, merged.byteLength);
+		// 読み終えた位置。包み 1 個ごとに残りを写さず、抜けるとき（投げるときも）に 1 回だけ残りを取る
+		let offset = 0;
+		try {
+			for (; ;) {
+				const available = merged.length - offset;
+				if (this._state === 'device') {
+					if (available < DEVICE_NAME_LENGTH) {
+						return events;
+					}
+					const bytes = merged.subarray(offset, offset + DEVICE_NAME_LENGTH);
+					const end = bytes.indexOf(0);
+					events.push({ kind: 'device', name: new TextDecoder().decode(bytes.subarray(0, end === -1 ? DEVICE_NAME_LENGTH : end)) });
+					offset += DEVICE_NAME_LENGTH;
+					this._state = 'codec';
+					continue;
+				}
+				if (this._state === 'codec') {
+					if (available < 4) {
+						return events;
+					}
+					const codec = view.getUint32(offset);
+					if (codec !== CODEC_H264) {
+						throw new Error(`scrcpy sent an unexpected video codec 0x${codec.toString(16)}`);
+					}
+					offset += 4;
+					this._state = 'packets';
+					continue;
+				}
+				if (available < 12) {
+					return events;
+				}
+				const first = view.getUint32(offset);
+				if (first & 0x80000000) {
+					events.push({ kind: 'session', width: view.getUint32(offset + 4), height: view.getUint32(offset + 8) });
+					offset += 12;
+					continue;
+				}
+				const size = view.getUint32(offset + 8);
+				if (size > MAX_PACKET_BYTES) {
+					throw new Error(`scrcpy sent a video packet of ${size} bytes`);
+				}
+				if (available < 12 + size) {
+					this._awaitedBytes = 12 + size;
+					return events;
+				}
+				const config = (first & 0x40000000) !== 0;
+				const key = (first & 0x20000000) !== 0;
+				// PTS は下の 61 ビット（マイクロ秒）。上の 32 ビットのうち 29 ビットと下の 32 ビットを合わせる
+				const pts = (first & 0x1fffffff) * 0x100000000 + view.getUint32(offset + 4);
+				const data = merged.slice(offset + 12, offset + 12 + size);
+				events.push(config ? { kind: 'config', data } : { kind: 'frame', data, key, pts });
+				offset += 12 + size;
+			}
+		} finally {
+			this._buffer = offset === 0 ? merged : merged.slice(offset);
+		}
 	}
 }
 

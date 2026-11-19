@@ -218,12 +218,37 @@ function indexOfSequence(haystack: Uint8Array, needle: readonly number[], from: 
 export class ParadisMjpegSplitter {
 
 	private _buffer = new Uint8Array(0);
+	/**
+	 * 頭まで読めて中身を待っている 1 枚に要るバイト数（`_buffer` の先頭の `--frame` から数える）。待っている間は
+	 * 届いた塊を `_pending` に置くだけにし、揃ったときに 1 回だけつなぐ（塊ごとに溜めた分を写し直さない）。
+	 */
+	private _awaitedBytes: number | undefined;
+	private _pending: Uint8Array[] = [];
+	private _pendingBytes = 0;
 
 	push(chunk: Uint8Array): Uint8Array[] {
-		const merged = new Uint8Array(this._buffer.length + chunk.length);
+		if (this._awaitedBytes !== undefined) {
+			this._pending.push(chunk);
+			this._pendingBytes += chunk.length;
+			if (this._buffer.length + this._pendingBytes < this._awaitedBytes) {
+				// 先頭は同じ頭のままなので、つないで読み直しても同じ「まだ足りない」になる
+				return [];
+			}
+		} else {
+			this._pending = [chunk];
+			this._pendingBytes = chunk.length;
+		}
+		const merged = new Uint8Array(this._buffer.length + this._pendingBytes);
 		merged.set(this._buffer, 0);
-		merged.set(chunk, this._buffer.length);
+		let offset = this._buffer.length;
+		for (const pending of this._pending) {
+			merged.set(pending, offset);
+			offset += pending.length;
+		}
 		this._buffer = merged;
+		this._awaitedBytes = undefined;
+		this._pending = [];
+		this._pendingBytes = 0;
 
 		const frames: Uint8Array[] = [];
 		for (; ;) {
@@ -252,6 +277,7 @@ export class ParadisMjpegSplitter {
 			const bodyStart = headerEnd + CRLF_CRLF.length;
 			if (this._buffer.length < bodyStart + length) {
 				this._buffer = this._buffer.slice(start);
+				this._awaitedBytes = bodyStart + length - start;
 				return frames;
 			}
 			frames.push(this._buffer.slice(bodyStart, bodyStart + length));
