@@ -445,6 +445,16 @@ const PRESET_MAX_COMMANDS_PER_TASK = 20;
 const PRESET_MAX_ENTRIES = 60;
 
 /**
+ * 予約済みでなければ予約する（間引き）。素の `schedule()` は既存のタイマーを張り直す＝デバウンスになり、
+ * 呼ばれ続ける間は 1 回も走らなくなる。
+ */
+function scheduleUnlessScheduled(scheduler: RunOnceScheduler): void {
+	if (!scheduler.isScheduled()) {
+		scheduler.schedule();
+	}
+}
+
+/**
  * 承認の突き合わせに使う署名。
  *
  * **モバイルが組み立てた署名を信じない。** モバイルへ渡す tasks は表示のために切り詰めてあり
@@ -1023,9 +1033,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 
 	/** イベント起点の対応表の同期。cwd の変化と同じ 500ms の間引き（`agentPaneCwdSyncScheduler`）に乗せる。 */
 	private pushAgentPanesSoon(): void {
-		if (!this.agentPaneCwdSyncScheduler.isScheduled()) {
-			this.agentPaneCwdSyncScheduler.schedule();
-		}
+		scheduleUnlessScheduled(this.agentPaneCwdSyncScheduler);
 	}
 
 	private readonly agentPaneCwdListeners = this._register(new DisposableMap<number>());
@@ -1099,9 +1107,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 	pushStateSoon(): void {
 		// 構造変化のスナップショットには見た目の変化も入るので、待たせていたぶんは取り下げる。
 		this.pushStateCosmeticScheduler.cancel();
-		if (!this.pushStateScheduler.isScheduled()) {
-			this.pushStateScheduler.schedule();
-		}
+		scheduleUnlessScheduled(this.pushStateScheduler);
 	}
 
 	/** 通知の材料が変わったときの再送。100ms の集約には乗せ、オフラインの 5 秒のまとめは通さない。 */
@@ -1457,9 +1463,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			// オンラインのモバイルが居ない間も、プッシュ通知の見出し（スペース名・ターミナル名）のために
 			// shared process の状態は追わせる。ただしイベントのたびには組み立てず、5 秒に 1 回へまとめる。
 			// モバイルが繋がった瞬間には contribution が pushState(true) で最新を送る。
-			if (!this.offlineStatePushScheduler.isScheduled()) {
-				this.offlineStatePushScheduler.schedule();
-			}
+			scheduleUnlessScheduled(this.offlineStatePushScheduler);
 			return;
 		}
 		// 待たせていたオフラインの再送は、この送信が運ぶ
@@ -1719,12 +1723,14 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			// 拒否を返さず、tokenが一致する所有windowだけに処理を任せる。
 			return;
 		}
+		const result = (status: 'accepted' | 'rejected', code?: string, message?: string, consumed?: boolean) =>
+			this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, status, code, message, consumed);
 		const claim = await this.claimAgentAction(mobileId, msg.requestId, msg.token, msg.epoch);
 		if (claim === 'expired') {
 			return; // shared process側のtimeout応答がすでに要求元へ送られている
 		}
 		if (claim === 'stale') {
-			this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'stale-session', '操作対象のエージェントセッションが変わりました');
+			result('rejected', 'stale-session', '操作対象のエージェントセッションが変わりました');
 			return;
 		}
 		try {
@@ -1736,19 +1742,19 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				const residue = msg.agent === 'codex' ? this.codexComposerResidue.get(instance) : undefined;
 				if (residue !== undefined) {
 					if (Date.now() - residue.at < CODEX_COMPOSER_RESIDUE_MAX_MS && paradisCodexComposerHoldsCommand(paradisVisibleTerminalText(instance), residue.command)) {
-						this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', PARADIS_COMPOSER_NOT_EMPTY_CODE, PARADIS_COMPOSER_NOT_EMPTY_MESSAGE);
+						result('rejected', PARADIS_COMPOSER_NOT_EMPTY_CODE, PARADIS_COMPOSER_NOT_EMPTY_MESSAGE);
 						return;
 					}
 					this.codexComposerResidue.delete(instance);
 				}
 				const resumePrompt = msg.agent === 'claude' ? paradisClaudeResumeScreenPrompt(paradisVisibleTerminalText(instance)) : undefined;
 				if (resumePrompt !== undefined) {
-					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', CLAUDE_RESUME_PROMPT_CODE, claudeResumePromptMessage(resumePrompt));
+					result('rejected', CLAUDE_RESUME_PROMPT_CODE, claudeResumePromptMessage(resumePrompt));
 					return;
 				}
 				// 子エージェントの計画の承認が出ている間に貼り付けた文と Enter は捨てられる（Claude Code 2.1.326 で実測）
 				if (msg.agent === 'claude' && paradisScreenShowsClaudeYesNoPlanPrompt(paradisVisibleTerminalText(instance))) {
-					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', CLAUDE_PLAN_APPROVAL_ON_PC_CODE, CLAUDE_PLAN_APPROVAL_ON_PC_MESSAGE);
+					result('rejected', CLAUDE_PLAN_APPROVAL_ON_PC_CODE, CLAUDE_PLAN_APPROVAL_ON_PC_MESSAGE);
 					return;
 				}
 				// Antigravity CLI は、入力欄で待っていると確かめられるときだけ打つ（キーの働きを実機で測っていない）。
@@ -1763,19 +1769,19 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				}) : undefined;
 				const blockedBefore = antigravityBlock();
 				if (blockedBefore !== undefined) {
-					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'agent-busy', PARADIS_ANTIGRAVITY_SEND_BLOCK_MESSAGES[blockedBefore]);
+					result('rejected', 'agent-busy', PARADIS_ANTIGRAVITY_SEND_BLOCK_MESSAGES[blockedBefore]);
 					return;
 				}
 				// 同じターミナルで agy を始め直した後は、前面が別の会話かもしれない（新しい会話の hook は最初の発言まで来ない）。
 				// アプリは控えの会話を見せているので、前面が控えの会話だと確かめられるときだけ打つ
 				if (antigravity && !(await this.antigravityPaneHoldsConversation(instance, msg.token))) {
-					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'agent-busy', PARADIS_ANTIGRAVITY_OTHER_CONVERSATION_MESSAGE);
+					result('rejected', 'agent-busy', PARADIS_ANTIGRAVITY_OTHER_CONVERSATION_MESSAGE);
 					return;
 				}
 				// 確かめている間に状態が変わっていないか、貼り付ける直前にもう一度見る
 				const blockedAfter = antigravityBlock();
 				if (blockedAfter !== undefined) {
-					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'agent-busy', PARADIS_ANTIGRAVITY_SEND_BLOCK_MESSAGES[blockedAfter]);
+					result('rejected', 'agent-busy', PARADIS_ANTIGRAVITY_SEND_BLOCK_MESSAGES[blockedAfter]);
 					return;
 				}
 				const screenBefore = slashCheck !== undefined ? paradisVisibleTerminalText(instance) : '';
@@ -1789,7 +1795,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				);
 				messageTyped = outcome.executed;
 				if (!outcome.executed) {
-					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'stale-session', outcome.consumed ? 'メッセージの貼り付け後にエージェントセッションが変わりました' : '送信前にエージェントセッションが変わりました', outcome.consumed);
+					result('rejected', 'stale-session', outcome.consumed ? 'メッセージの貼り付け後にエージェントセッションが変わりました' : '送信前にエージェントセッションが変わりました', outcome.consumed);
 					return;
 				}
 				const slashRejected = slashCheck !== undefined ? await this.slashCommandRejected(instance, slashCheck, screenBefore) : 'no';
@@ -1798,7 +1804,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					if (left) {
 						this.codexComposerResidue.set(instance, { command: slashCheck.command, at: Date.now() });
 					}
-					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', left ? PARADIS_COMPOSER_NOT_EMPTY_CODE : PARADIS_SLASH_COMMAND_REJECTED_CODE,
+					result('rejected', left ? PARADIS_COMPOSER_NOT_EMPTY_CODE : PARADIS_SLASH_COMMAND_REJECTED_CODE,
 						`${paradisSlashRejectionMessage(slashCheck.agent, slashCheck.command)}${left ? PARADIS_SLASH_LEFT_IN_COMPOSER : ''}`);
 					return;
 				}
@@ -1807,7 +1813,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				// 打たずに PC で選んでもらう
 				const resumePrompt = paradisClaudeResumeScreenPrompt(paradisVisibleTerminalText(instance));
 				if (resumePrompt !== undefined) {
-					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', CLAUDE_RESUME_PROMPT_CODE, claudeResumePromptCloseMessage(resumePrompt));
+					result('rejected', CLAUDE_RESUME_PROMPT_CODE, claudeResumePromptCloseMessage(resumePrompt));
 					return;
 				}
 				await instance.sendText('\x1b', false);
@@ -1827,7 +1833,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					// 照合は新しいスペースの候補（系統ごとに最新の版だけ）ではなく、絞る前の CLI の一覧も見る
 					const listed = paradisFindListedClaudeModel(msg.value, this.getSwitchableClaudeModels());
 					if (listed === undefined) {
-						this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', PARADIS_SLASH_COMMAND_REJECTED_CODE, paradisClaudeModelNotListedMessage(msg.value));
+						result('rejected', PARADIS_SLASH_COMMAND_REJECTED_CODE, paradisClaudeModelNotListedMessage(msg.value));
 						return;
 					}
 					await this.modelSwitchGuard.execute(instance, `/model ${listed}`, validate, undefined, () => paradisVisibleTerminalText(instance));
@@ -1836,14 +1842,14 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					await this.modelSwitchGuard.execute(instance, `/${msg.setting} ${msg.value}`, validate, undefined, () => paradisVisibleTerminalText(instance));
 				}
 				if (!(await this.validateAgentAction(mobileId, msg.requestId, msg.token, msg.epoch, msg.id, msg.windowId))) {
-					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'stale-session', '設定変更中にClaude Codeセッションが変わりました');
+					result('rejected', 'stale-session', '設定変更中にClaude Codeセッションが変わりました');
 					return;
 				}
 			} else {
 				// Antigravity CLI の許可・質問の画面でどのキーが何を選ぶかは測っていない。打たずに PC で答えてもらう
 				// （shared process も断るが、古い shared process から届いても打たない）
 				if (msg.agent === 'antigravity') {
-					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'agent-unsupported', PARADIS_ANTIGRAVITY_ANSWER_ON_PC_MESSAGE);
+					result('rejected', 'agent-unsupported', PARADIS_ANTIGRAVITY_ANSWER_ON_PC_MESSAGE);
 					return;
 				}
 				let parts = [...msg.parts];
@@ -1856,13 +1862,13 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				const expectPromptHash = typeof msg.expectPromptHash === 'string' && /^[0-9a-f]{40}$/.test(msg.expectPromptHash) ? msg.expectPromptHash : undefined;
 				if (msg.expectOption !== undefined && (expectOption === undefined || parts.length !== 1)) {
 					// 番号の選択肢の回答は 1 打鍵だけ（L3）。形が違うものは送らない。
-					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'invalid-answer', '承認の選択肢が更新されました');
+					result('rejected', 'invalid-answer', '承認の選択肢が更新されました');
 					return;
 				}
 				const optionAgent = msg.agent === 'codex' ? 'codex' : 'claude';
 				// 子エージェントの計画の承認は番号が無く、承認の `1` はフォーカスを No へ移すだけ（Claude Code 2.1.326 で実測）。打たずに PC で選んでもらう
 				if (optionAgent === 'claude' && interactionKind === 'approval' && paradisScreenShowsClaudeYesNoPlanPrompt(paradisVisibleTerminalText(instance))) {
-					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', CLAUDE_PLAN_APPROVAL_ON_PC_CODE, CLAUDE_PLAN_APPROVAL_ON_PC_MESSAGE);
+					result('rejected', CLAUDE_PLAN_APPROVAL_ON_PC_CODE, CLAUDE_PLAN_APPROVAL_ON_PC_MESSAGE);
 					return;
 				}
 				const approvalPiece = typeof msg.approvalPiece === 'string' && msg.approvalPiece.length <= 500 ? msg.approvalPiece : undefined;
@@ -1963,20 +1969,20 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				});
 				if (sent !== 'sent') {
 					if (stopped.reason !== undefined) {
-						this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', stopped.reason.code, stopped.reason.message);
+						result('rejected', stopped.reason.code, stopped.reason.message);
 					}
 					return;
 				}
 				interactionAccepted = true;
 			}
-			this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'accepted');
+			result('accepted');
 		} catch {
 			if (messageTyped) {
 				// 文は Enter まで届いている（後の画面の確かめで失敗した）。断りを返すと送り直しで二重に送られる
-				this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'accepted');
+				result('accepted');
 				return;
 			}
-			this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', claudeSetting ? 'confirmation-failed' : 'send-failed', claudeSetting ? 'Claude Codeの設定変更を確認できませんでした' : closePanel ? 'PC の画面を閉じられませんでした' : 'メッセージを送信できませんでした');
+			result('rejected', claudeSetting ? 'confirmation-failed' : 'send-failed', claudeSetting ? 'Claude Codeの設定変更を確認できませんでした' : closePanel ? 'PC の画面を閉じられませんでした' : 'メッセージを送信できませんでした');
 		} finally {
 			// Claude Code の設定も終わりを知らせる（shared process が、よけていた PC の入力欄の書きかけを戻す）
 			if (interaction || claudeSetting) {
@@ -2110,12 +2116,15 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (repo) {
 			return repo.uri;
 		}
-		if (ws.startsWith('worktree:')) {
-			for (const r of this.workspaceSwitchService.repositories) {
-				for (const worktree of this.worktreeService.getWorktrees(r.id)) {
-					if (paradisWorktreeStateKey(worktree.uri) === ws) {
-						return worktree.uri;
-					}
+		return ws.startsWith('worktree:') ? this.findWorktreeByStateKey(ws)?.uri : undefined;
+	}
+
+	/** 状態キー（`worktree:<uri>`）が指す worktree を、全リポジトリから探す（PC に無い worktree も含む）。 */
+	private findWorktreeByStateKey(ws: string) {
+		for (const r of this.workspaceSwitchService.repositories) {
+			for (const worktree of this.worktreeService.getWorktrees(r.id)) {
+				if (paradisWorktreeStateKey(worktree.uri) === ws) {
+					return worktree;
 				}
 			}
 		}
@@ -2146,16 +2155,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		if (repo) {
 			return repo.name;
 		}
-		for (const r of this.workspaceSwitchService.repositories) {
-			for (const worktree of this.worktreeService.getWorktrees(r.id)) {
-				if (paradisWorktreeStateKey(worktree.uri) === ws) {
-					return worktree.name;
-				}
-			}
-		}
 		// 状態キー（`worktree:file:///…`）をそのまま見出しにはしない。呼び出し側が
-		// ターミナル名へ落とすので、名前が引けなかったことをそのまま伝える。
-		return undefined;
+		// ターミナル名へ落とすので、名前が引けなかったときは undefined をそのまま伝える。
+		return this.findWorktreeByStateKey(ws)?.name;
 	}
 
 	// --- scm チャネル -----------------------------------------------------------
@@ -2174,6 +2176,47 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		return root && this.isReachableWorkspaceUri(root) ? root : undefined;
 	}
 
+	/**
+	 * scm・fs の応答の出口を作る。`reply` は JSON をそのまま送り、`replyCompressed` は交渉できていれば圧縮して送る
+	 * （再結合の上限を超えたら、代わりに `tooLarge` を返す）。所要時間（`timing`）を測るのは fs のファイルビューアの要求だけ。
+	 */
+	private createMobileReplier(
+		ch: typeof Channels.Scm | typeof Channels.Fs,
+		channel: 'scm' | 'fs',
+		msg: { readonly id: unknown; readonly t: string },
+		mobileId: string | undefined,
+		responseEncoding: unknown,
+		tooLarge: object,
+		timing?: ParadisMobileFileTiming,
+	): { readonly reply: (body: object) => void; readonly replyCompressed: (body: object) => Promise<void> } {
+		const sendReply = (replyPayload: Uint8Array) => {
+			this.sendFrame({ ch, ws: undefined, seq: 0, payload: VSBuffer.wrap(replyPayload), mobileId: mobileId || undefined });
+			timing?.sent(replyPayload.byteLength);
+		};
+		// 応答の出口で error に伏せ字を当てる（git の stderr や例外の文に資格情報が混ざりうる）
+		const jsonReply = (body: object) => encoder.encode(JSON.stringify({ id: msg.id, ...paradisRedactMobileReplyError(body) }));
+		const reply = (body: object) => {
+			if ((body as { readonly error?: unknown }).error !== undefined) {
+				timing?.setOutcome('error');
+			}
+			sendReply(jsonReply(body));
+		};
+		const replyCompressed = async (body: object) => {
+			const json = jsonReply(body);
+			timing?.mark('json');
+			const encoded = await paradisEncodeJsonResponsePayload(channel, msg.t, responseEncoding, json);
+			timing?.mark('gzip');
+			timing?.set({ safe_json_bytes: json.byteLength, safe_gzip: encoded !== json });
+			if (encoded.length > FS_RESPONSE_PAYLOAD_LIMIT) {
+				timing?.setOutcome('too-large');
+				sendReply(jsonReply(tooLarge));
+				return;
+			}
+			sendReply(encoded);
+		};
+		return { reply, replyCompressed };
+	}
+
 	private async handleScmInbound(payload: VSBuffer, mobileId: string | undefined): Promise<void> {
 		let msg: ScmInbound;
 		try {
@@ -2181,26 +2224,10 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		} catch {
 			return;
 		}
-		const sendReply = (replyPayload: Uint8Array) => {
-			this.sendFrame({ ch: Channels.Scm, ws: undefined, seq: 0, payload: VSBuffer.wrap(replyPayload), mobileId: mobileId || undefined });
-		};
-		// 応答の出口で error に伏せ字を当てる（git の stderr や例外の文に資格情報が混ざりうる）
-		const jsonReply = (body: object) => encoder.encode(JSON.stringify({ id: msg.id, ...paradisRedactMobileReplyError(body) }));
-		const reply = (body: object) => {
-			sendReply(jsonReply(body));
-		};
-		const replyCompressed = async (body: object) => {
-			const json = jsonReply(body);
-			const responseEncoding = msg.t === 'diff' || msg.t === 'xlsxDiff' ? msg.responseEncoding : undefined;
-			const encoded = await paradisEncodeJsonResponsePayload('scm', msg.t, responseEncoding, json);
-			// 再結合の上限を超える応答は送れない（送るとアプリは期限まで待つ）。明示的に too-large を返す
-			if (encoded.length > FS_RESPONSE_PAYLOAD_LIMIT) {
-				// allow-any-unicode-next-line
-				sendReply(jsonReply({ error: `差分が大きすぎてスマホへ送れません（上限 ${FS_RESPONSE_PAYLOAD_LIMIT / 1024 / 1024}MB）。PC で開いてください。`, code: 'too-large' }));
-				return;
-			}
-			sendReply(encoded);
-		};
+		// 再結合の上限を超える応答は送れない（送るとアプリは期限まで待つ）。明示的に too-large を返す
+		const { reply, replyCompressed } = this.createMobileReplier(Channels.Scm, 'scm', msg, mobileId, msg.t === 'diff' || msg.t === 'xlsxDiff' ? msg.responseEncoding : undefined,
+			// allow-any-unicode-next-line
+			{ error: `差分が大きすぎてスマホへ送れません（上限 ${FS_RESPONSE_PAYLOAD_LIMIT / 1024 / 1024}MB）。PC で開いてください。`, code: 'too-large' });
 		// worktree作成系は特定ワークスペースに紐づかない（wsを持たない）ため、repoPath解決より先に処理する
 		if (msg.t === 'worktreeForm' || msg.t === 'createWorktree') {
 			try {
@@ -2838,36 +2865,12 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		}
 		// ファイルビューアの要求（read/xlsx/pdf/docx/media）だけ、各区間の所要時間を Sentry へ送る。
 		const timing = binaryUpload === undefined ? ParadisMobileFileTiming.start(msg, receivedAt) : undefined;
-		const sendReply = (replyPayload: Uint8Array) => {
-			this.sendFrame({ ch: Channels.Fs, ws: undefined, seq: 0, payload: VSBuffer.wrap(replyPayload), mobileId: mobileId || undefined });
-			timing?.sent(replyPayload.byteLength);
-		};
-		// 応答の出口で error に伏せ字を当てる（git の stderr や例外の文に資格情報が混ざりうる）
-		const jsonReply = (body: object) => encoder.encode(JSON.stringify({ id: msg.id, ...paradisRedactMobileReplyError(body) }));
-		const reply = (body: object) => {
-			if ((body as { readonly error?: unknown }).error !== undefined) {
-				timing?.setOutcome('error');
-			}
-			sendReply(jsonReply(body));
-		};
-		const replyCompressed = async (body: object) => {
-			const json = jsonReply(body);
-			timing?.mark('json');
-			const responseEncoding = msg.t === 'read' || msg.t === 'xlsx' ? msg.responseEncoding : undefined;
-			const encoded = await paradisEncodeJsonResponsePayload('fs', msg.t, responseEncoding, json);
-			timing?.mark('gzip');
-			timing?.set({ safe_json_bytes: json.byteLength, safe_gzip: encoded !== json });
-			// gzip交渉が効かない場合や、非UTF-8バイト/制御文字のJSONエスケープ膨張で
-			// FrameMuxの再結合上限を超えると、フレームが再結合されずソケットごと切断される
-			// （黙って表示が乱れるだけでは済まない）。実サイズをここで検査して弾く。
-			if (encoded.length > FS_RESPONSE_PAYLOAD_LIMIT) {
-				timing?.setOutcome('too-large');
-				// allow-any-unicode-next-line
-				sendReply(jsonReply({ error: `このファイルは転送できる上限（${FS_RESPONSE_PAYLOAD_LIMIT / 1024 / 1024}MB）を超えています。テキストとして扱えない内容の可能性があります。` }));
-				return;
-			}
-			sendReply(encoded);
-		};
+		// gzip交渉が効かない場合や、非UTF-8バイト/制御文字のJSONエスケープ膨張で
+		// FrameMuxの再結合上限を超えると、フレームが再結合されずソケットごと切断される
+		// （黙って表示が乱れるだけでは済まない）。実サイズを応答の出口で検査して弾く。
+		const { reply, replyCompressed } = this.createMobileReplier(Channels.Fs, 'fs', msg, mobileId, msg.t === 'read' || msg.t === 'xlsx' ? msg.responseEncoding : undefined,
+			// allow-any-unicode-next-line
+			{ error: `このファイルは転送できる上限（${FS_RESPONSE_PAYLOAD_LIMIT / 1024 / 1024}MB）を超えています。テキストとして扱えない内容の可能性があります。` }, timing);
 		const replyCacheable = async (body: { readonly t: string } & Record<string, unknown>) => {
 			const cacheEncoding = msg.t === 'read' || msg.t === 'xlsx' ? msg.cacheEncoding : undefined;
 			const ifContentHash = msg.t === 'read' || msg.t === 'xlsx' ? msg.ifContentHash : undefined;
@@ -2918,72 +2921,51 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 			}
 			return;
 		}
+		// ワークスペースに紐付かない閲覧用のデータ（下の 6 種類）は、取れたら { t, data }、失敗したら種類ごとの断りを返す。
+		const replyHostData = async (t: string, fetch: () => Promise<unknown>, errorReply: (err: unknown) => object) => {
+			try {
+				const data = await fetch();
+				reply({ t, data });
+			} catch (err) {
+				reply(errorReply(err));
+			}
+		};
 		// ccusage 使用量ダッシュボード。ワークスペースに紐付かないため、パス解決の前に処理する。
 		// usage・rtk・limits・github は 50 秒で打ち切り、{ error, code: 'no-response' } を返す（裏の実行は続け、
 		// 終わればキャッシュに入る）。打ち切らないと、ccusage が数分かかる PC ではアプリが自分の上限まで待たされる。
 		if (msg.t === 'usage') {
-			try {
-				const data = await paradisWithHostDeadline(this.fetchUsageDashboard(!!msg.bypassCache), PARADIS_MOBILE_USAGE_DEADLINE_MS);
-				reply({ t: 'usage', data });
-			} catch (err) {
-				reply(paradisMobileUsageErrorReply(err));
-			}
+			await replyHostData('usage', () => paradisWithHostDeadline(this.fetchUsageDashboard(!!msg.bypassCache), PARADIS_MOBILE_USAGE_DEADLINE_MS), paradisMobileUsageErrorReply);
 			return;
 		}
 		// PARA-PATCH: RTK節約データのモバイル配信。usage と同じくワークスペース非依存。
 		if (msg.t === 'rtk') {
-			try {
-				const data = await paradisWithHostDeadline(this.fetchRtkSavings(!!msg.bypassCache), PARADIS_MOBILE_USAGE_DEADLINE_MS);
-				reply({ t: 'rtk', data });
-			} catch (err) {
-				// 未インストールは内部マーカー入りの英文で来る。そのまま見せない。
-				reply(isParadisRtkNotFoundError(err)
-					? { error: localize('paradis.mobile.rtkNotFound', "rtk が見つかりません。PC（SSH 接続中は接続先）にインストールすると節約量を見られます。") }
-					: paradisMobileUsageErrorReply(err));
-			}
+			// 未インストールは内部マーカー入りの英文で来る。そのまま見せない。
+			await replyHostData('rtk', () => paradisWithHostDeadline(this.fetchRtkSavings(!!msg.bypassCache), PARADIS_MOBILE_USAGE_DEADLINE_MS), err => isParadisRtkNotFoundError(err)
+				? { error: localize('paradis.mobile.rtkNotFound', "rtk が見つかりません。PC（SSH 接続中は接続先）にインストールすると節約量を見られます。") }
+				: paradisMobileUsageErrorReply(err));
 			return;
 		}
 		// AIリミット(Rate Limit)。usage と同じくワークスペース非依存(閲覧専用。追加・再ログインはPC側のみ)。
 		if (msg.t === 'limits') {
-			try {
-				const data = await paradisWithHostDeadline(this.fetchLimitsSnapshot(!!msg.bypassCache, paradisMobileLimitsClaudeFromLocal(msg)), PARADIS_MOBILE_USAGE_DEADLINE_MS);
-				reply({ t: 'limits', data });
-			} catch (err) {
-				reply(paradisMobileUsageErrorReply(err));
-			}
+			await replyHostData('limits', () => paradisWithHostDeadline(this.fetchLimitsSnapshot(!!msg.bypassCache, paradisMobileLimitsClaudeFromLocal(msg)), PARADIS_MOBILE_USAGE_DEADLINE_MS), paradisMobileUsageErrorReply);
 			return;
 		}
 		// GitHub API利用状況。usage/limits と同じくワークスペース非依存(閲覧専用)。
 		if (msg.t === 'github') {
-			try {
-				const data = await paradisWithHostDeadline(this.fetchGithubMetrics(!!msg.bypassCache), PARADIS_MOBILE_USAGE_DEADLINE_MS);
-				reply({ t: 'github', data });
-			} catch (err) {
-				reply(paradisMobileUsageErrorReply(err));
-			}
+			await replyHostData('github', () => paradisWithHostDeadline(this.fetchGithubMetrics(!!msg.bypassCache), PARADIS_MOBILE_USAGE_DEADLINE_MS), paradisMobileUsageErrorReply);
 			return;
 		}
 		// PC本体のリソース使用量(「システム」画面)。usage/limits/github と同じくワークスペース非依存。
 		// ドロワーに常時出る3値は desktop state 経由で別途届くので、こちらは内訳を見るときだけ呼ばれる。
 		if (msg.t === 'sysres') {
-			try {
-				const data = await this.fetchResourceReport(!!msg.bypassCache, msg.history);
-				reply({ t: 'sysres', data });
-			} catch (err) {
-				reply({ error: String(err) });
-			}
+			await replyHostData('sysres', () => this.fetchResourceReport(!!msg.bypassCache, msg.history), err => ({ error: String(err) }));
 			return;
 		}
 		// スペースごとのディスク使用量（「システム」画面のボリューム内訳）。
 		// sysres の6秒ポーリングとは別系統。あちらへ混ぜると、数十秒かかる計測の完了待ちで
 		// CPU/メモリの表示まで固まる。
 		if (msg.t === 'spacedisk') {
-			try {
-				const data = await this.fetchSpaceDisk(!!msg.bypassCache);
-				reply({ t: 'spacedisk', data });
-			} catch (err) {
-				reply({ error: String(err) });
-			}
+			await replyHostData('spacedisk', () => this.fetchSpaceDisk(!!msg.bypassCache), err => ({ error: String(err) }));
 			return;
 		}
 		// テキスト断片のハイライト（エージェントチャットのコードブロック用）。ファイルの
