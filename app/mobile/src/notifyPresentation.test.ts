@@ -39,6 +39,12 @@ describe('notifyPayloadSubtitle', () => {
 		]).toEqual(['Claude · monitor · Mag-Mini', 'monitor', 'Codex · Mag-Mini', undefined]);
 	});
 
+	test('エージェントの呼び名は 4 種とも出し、知らない種類は省く（通知拡張の agentLabel と同じ）', () => {
+		expect(['claude', 'codex', 'opencode', 'antigravity', 'gemini', undefined].map(agent =>
+			notifyPayloadSubtitle({ category: 'done', agent: agent as 'claude' | undefined, tab: 'monitor' }, 'Mag-Mini', true),
+		)).toEqual(['Claude · monitor · Mag-Mini', 'Codex · monitor · Mag-Mini', 'OpenCode · monitor · Mag-Mini', 'Antigravity · monitor · Mag-Mini', 'monitor · Mag-Mini', 'monitor · Mag-Mini']);
+	});
+
 	test('種類の無い旧 PC の通知は従来の規則', () => {
 		expect([
 			notifyPayloadSubtitle({ subtitle: 'Claude' }, 'Mag-Mini', true),

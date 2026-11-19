@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useAppStore } from '../appState.js';
 import { newAgentSendId } from '../agentSendIds.js';
+import { agentHasModelControl } from '../agentKind.js';
 import { agentApprovalKeySequence, agentQuestionKeySequence, type AgentQuestionKeyAnswer, type AgentQuestionShape } from '../agentQuestionKeys.js';
 import type { AgentMessageSendResult, AgentQuestionAnswer } from '../store.js';
 
@@ -274,7 +275,7 @@ export function useAgentActions(terminalKey: string | undefined, agent: string |
 		if (terminalKey === undefined) {
 			return Promise.resolve(NO_TARGET_RESULT);
 		}
-		if (agent !== 'claude') {
+		if (!agentHasModelControl(agent)) {
 			return Promise.resolve({ status: 'rejected', message: 'このエージェントでは変更できません' });
 		}
 		if (interaction !== undefined) {

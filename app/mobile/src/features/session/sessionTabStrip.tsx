@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Globe, Plus, Sparkles, SquareChevronRight } from 'lucide-react-native';
+import { isAgentKind } from '../../agentKind.js';
 import { useAppStore } from '../../appState.js';
 import { ProviderLogo } from '../../components/providerLogo.js';
 import { haptic } from '../../haptics.js';
@@ -106,7 +107,7 @@ function AgentTabGlyph({ terminalKey, agentStatus }: { terminalKey: string; agen
 	const agent = useAppStore(s => s.agentChats.get(terminalKey)?.agent);
 	return (
 		<>
-			{agent === 'claude' || agent === 'codex' || agent === 'opencode' || agent === 'antigravity'
+			{isAgentKind(agent)
 				? <ProviderLogo provider={agent} size={LOGO_SIZE} />
 				: <Icon icon={Sparkles} size={LOGO_SIZE} color={colors.textDim} />}
 			<AgentStateDot kind={agentKindFromStatus(agentStatus)} />

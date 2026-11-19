@@ -49,6 +49,13 @@ describe('notify codec', () => {
 		]);
 	});
 
+	test('keeps the four agent kinds the PC sends, dropping anything else', () => {
+		const raw = { kind: 'agent-done', id: 'n5', title: 't', body: 'b', at: 1, category: 'done' };
+		expect(['claude', 'codex', 'opencode', 'antigravity', 'gemini', 'constructor', '', 7].map(agent =>
+			decodeNotify(new TextEncoder().encode(JSON.stringify({ ...raw, agent }))).agent,
+		)).toEqual(['claude', 'codex', 'opencode', 'antigravity', undefined, undefined, undefined, undefined]);
+	});
+
 	test('rejects malformed / unknown kind', () => {
 		expect(() => decodeNotify(new TextEncoder().encode('{"kind":"bogus","id":"x","title":"a","body":"b","at":1}'))).toThrow();
 		expect(() => decodeNotify(new TextEncoder().encode('not json'))).toThrow();

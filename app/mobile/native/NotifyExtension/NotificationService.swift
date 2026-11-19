@@ -456,9 +456,9 @@ final class NotificationService: UNNotificationServiceExtension {
 		return value
 	}
 
-	/// 送り主のエージェント。知らない値は捨てる。
+	/// 送り主のエージェント（PC の ParadisAgentKind の 4 種）。知らない値は捨てる。
 	private static func agent(_ raw: Any?) -> String? {
-		guard let value = raw as? String, value == "claude" || value == "codex" else {
+		guard let value = raw as? String, ["claude", "codex", "opencode", "antigravity"].contains(value) else {
 			return nil
 		}
 		return value
@@ -468,6 +468,8 @@ final class NotificationService: UNNotificationServiceExtension {
 		switch agent {
 		case "claude": return "Claude"
 		case "codex": return "Codex"
+		case "opencode": return "OpenCode"
+		case "antigravity": return "Antigravity"
 		default: return nil
 		}
 	}
@@ -481,7 +483,8 @@ final class NotificationService: UNNotificationServiceExtension {
 	/// 【要確認】アプリの entitlement（com.apple.developer.usernotifications.communication）と Info.plist の
 	/// NSUserActivityTypes（INSendMessageIntent）が無いと updating(from:) は効かない（例外か無変化）。
 	private static func communicationContent(_ content: UNMutableNotificationContent, agent: String?, threadKey: String) -> UNNotificationContent {
-		guard let agent = agent, let name = agentLabel(agent) else {
+		// 送り主として載せるのは、同梱のマークがある Claude / Codex だけ（ほかの種類は副題に名前を出すだけで、送り主のアイコンは変えない）。
+		guard let agent = agent, agent == "claude" || agent == "codex", let name = agentLabel(agent) else {
 			return content
 		}
 		let image = Bundle.main.url(forResource: "agent-\(agent)", withExtension: "png")
