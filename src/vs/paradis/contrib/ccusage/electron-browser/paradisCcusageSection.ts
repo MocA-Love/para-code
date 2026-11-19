@@ -78,12 +78,6 @@ type ParadisCcusagePresetKey = 'today' | 'yesterday' | 'thisWeek' | 'lastWeek' |
 /** チャートの表示単位。7日未満の期間では daily に強制される(effectiveGranularity 参照)。 */
 type ParadisCcusageGranularity = 'daily' | 'weekly';
 
-/** `YYYY-MM-DD` を「11/9」の形にする。 */
-function formatMonthDay(value: string): string {
-	const [, month, day] = value.split('-');
-	return `${Number(month)}/${Number(day)}`;
-}
-
 /** 粒度のプルダウンの選択肢。 */
 const GRANULARITY_OPTIONS = [
 	{ value: 'daily', label: localize('paradis.ccusage.granularity.daily', "日別") },
@@ -126,9 +120,9 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 
 	readonly element: HTMLElement;
 
-	private body: HTMLElement | undefined;
-	private tooltip: HTMLElement | undefined;
-	private updatedLabel: HTMLElement | undefined;
+	private readonly body: HTMLElement;
+	private readonly tooltip: HTMLElement;
+	private readonly updatedLabel: HTMLElement;
 	private readonly periodSeg: ParadisSegmented<ParadisCcusagePresetKey>;
 	private readonly otherPeriodSelect: ParadisSelect;
 	/** 適用したカスタムの期間（押すと日付の欄を開き直す）。 */
@@ -136,9 +130,9 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 	private readonly granularitySelect: ParadisSelect;
 	private readonly metricSelect: ParadisSelect;
 	private readonly agentSelect: ParadisSelect;
-	private customRangeRow: HTMLElement | undefined;
-	private customFromInput: HTMLInputElement | undefined;
-	private customToInput: HTMLInputElement | undefined;
+	private readonly customRangeRow: HTMLElement;
+	private readonly customFromInput: HTMLInputElement;
+	private readonly customToInput: HTMLInputElement;
 
 	private readonly client: ParadisCcusageClient;
 	/** リポジトリ別の束ね方（会話ログの作業フォルダ）を取る先。 */
@@ -406,7 +400,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 	}
 
 	focus(): void {
-		this.body?.focus();
+		this.body.focus();
 	}
 
 	private updateWarmLease(): void {
@@ -423,7 +417,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		}
 		this.presetKey = key;
 		this.customRange = undefined;
-		this.customRangeRow?.classList.remove('open');
+		this.customRangeRow.classList.remove('open');
 		this.updateFilterButtons();
 		// データは常に90日分保持しているので、期間切り替えは再描画(日付スライス)だけで済む
 		this.renderBody();
@@ -450,34 +444,28 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 
 	/** 「カスタム…」を選んだとき、ツールバーの下に日付の欄を開く。適用するまで期間は替えない。 */
 	private openCustomRangePanel(): void {
-		if (!this.customRangeRow || !this.customFromInput || !this.customToInput) {
-			return;
-		}
-		const opening = true;
-		if (opening) {
-			// 開くたびに範囲(取得済みの90日窓)を最新化する。タブを長時間開きっぱなしでも日付がずれない。
-			const today = new Date();
-			const minStr = localDateString(addDaysLocal(today, -(FETCH_WINDOW_DAYS - 1)));
-			const maxStr = localDateString(today);
-			this.customFromInput.min = minStr;
-			this.customFromInput.max = maxStr;
-			this.customToInput.min = minStr;
-			this.customToInput.max = maxStr;
-			this.customFromInput.value ||= this.customRange?.from ?? minStr;
-			this.customToInput.value ||= this.customRange?.to ?? maxStr;
-		}
+		// 開くたびに範囲(取得済みの90日窓)を最新化する。タブを長時間開きっぱなしでも日付がずれない。
+		const today = new Date();
+		const minStr = localDateString(addDaysLocal(today, -(FETCH_WINDOW_DAYS - 1)));
+		const maxStr = localDateString(today);
+		this.customFromInput.min = minStr;
+		this.customFromInput.max = maxStr;
+		this.customToInput.min = minStr;
+		this.customToInput.max = maxStr;
+		this.customFromInput.value ||= this.customRange?.from ?? minStr;
+		this.customToInput.value ||= this.customRange?.to ?? maxStr;
 		this.customRangeRow.classList.add('open');
 		this.updateFilterButtons();
 	}
 
 	/** 日付の欄を適用せずに閉じ、フォーカスを開いた所（範囲のボタンかプルダウン）へ戻す。 */
 	private closeCustomRangePanel(): void {
-		if (!this.customRangeRow?.classList.contains('open')) {
+		if (!this.customRangeRow.classList.contains('open')) {
 			return;
 		}
 		this.customRangeRow.classList.remove('open');
 		this.updateFilterButtons();
-		if (this.customRangeButton && !this.customRangeButton.hidden) {
+		if (!this.customRangeButton.hidden) {
 			this.customRangeButton.focus();
 		} else {
 			this.otherPeriodSelect.focus();
@@ -485,7 +473,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 	}
 
 	private applyCustomRange(): void {
-		if (!this.customFromInput?.value || !this.customToInput?.value) {
+		if (!this.customFromInput.value || !this.customToInput.value) {
 			return;
 		}
 		// <input type=date> の min/max はピッカー操作の補助でしかなく、値そのものは窓外でも
@@ -501,7 +489,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		}
 		this.customRange = { from, to };
 		this.presetKey = 'custom';
-		this.customRangeRow?.classList.remove('open');
+		this.customRangeRow.classList.remove('open');
 		this.updateFilterButtons();
 		this.renderBody();
 	}
@@ -548,14 +536,14 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 	}
 
 	private updateFilterButtons(): void {
-		const customOpen = !!this.customRangeRow?.classList.contains('open');
+		const customOpen = this.customRangeRow.classList.contains('open');
 		// 組の 4 つのどれかを選んでいるときだけ組に印を付け、ほかの期間はプルダウンに出す
 		const inSeg = !this.customRange && !customOpen && (this.presetKey === 'today' || this.presetKey === '7d' || this.presetKey === '30d' || this.presetKey === '90d');
 		this.periodSeg.value = inSeg ? this.presetKey : undefined;
 		this.otherPeriodSelect.value = this.customRange || customOpen ? 'custom' : (inSeg ? '' : this.presetKey);
 		this.customRangeButton.hidden = !this.customRange;
 		if (this.customRange) {
-			const label = localize('paradis.ccusage.customRange.label', "{0}〜{1}", formatMonthDay(this.customRange.from), formatMonthDay(this.customRange.to));
+			const label = localize('paradis.ccusage.customRange.label', "{0}〜{1}", shortDate(this.customRange.from), shortDate(this.customRange.to));
 			this.customRangeButton.textContent = label;
 			this.customRangeButton.setAttribute('aria-label', localize('paradis.ccusage.customRange.change', "カスタムの期間 {0} を変える", label));
 		}
@@ -577,9 +565,6 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			if (bypassCache && !this.loadingBypassesCache) {
 				this.pendingBypassRefresh = true;
 			}
-			return;
-		}
-		if (!this.body) {
 			return;
 		}
 		this.loading = true;
@@ -658,19 +643,14 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 	}
 
 	private renderBody(): void {
-		if (!this.body) {
-			return;
-		}
 		this.bodyDisposables.clear();
 		dom.clearNode(this.body);
 		this.hideTooltip();
 		this.lastRenderedWidth = this.availableWidth;
 
-		if (this.updatedLabel) {
-			this.updatedLabel.textContent = this.data
-				? localize('paradis.ccusage.updatedAt', "更新: {0}", new Date(this.data.fetchedAt).toLocaleTimeString())
-				: '';
-		}
+		this.updatedLabel.textContent = this.data
+			? localize('paradis.ccusage.updatedAt', "更新: {0}", new Date(this.data.fetchedAt).toLocaleTimeString())
+			: '';
 
 		if (this.lastError && !this.data) {
 			const message = dom.append(this.body, $('.paradis-ccusage-message'));
@@ -933,6 +913,17 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		}
 	}
 
+	/** チャートの土台: カードの幅に合わせた svg を足し、描く領域の寸法を返す。 */
+	private createChartFrame(card: HTMLElement, height: number, pad: { readonly padL: number; readonly padR: number; readonly padT: number; readonly padB: number }): IChartFrame {
+		const doc = card.ownerDocument;
+		const width = Math.max(320, card.clientWidth > 0 ? card.clientWidth - 34 : this.availableWidth * 0.55);
+		const plotW = width - pad.padL - pad.padR;
+		const plotH = height - pad.padT - pad.padB;
+		const svg = svgEl(doc, 'svg', { width: String(width), height: String(height), viewBox: `0 0 ${width} ${height}` });
+		card.appendChild(svg);
+		return { doc, svg, width, height, ...pad, plotW, plotH };
+	}
+
 	// ---------- daily stacked bar ----------
 
 	private renderDailyChart(card: HTMLElement, buckets: IBucket[], totals: IModelTotal[], granularity: ParadisCcusageGranularity): void {
@@ -971,15 +962,8 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			item.appendChild(card.ownerDocument.createTextNode(localize('paradis.ccusage.other', "その他")));
 		}
 
-		const doc = card.ownerDocument;
-		const width = Math.max(320, card.clientWidth > 0 ? card.clientWidth - 34 : this.availableWidth * 0.55);
-		const height = 235;
-		const padL = 44; const padR = 8; const padT = 14; const padB = 20;
-		const plotW = width - padL - padR;
-		const plotH = height - padT - padB;
-
-		const svg = svgEl(doc, 'svg', { width: String(width), height: String(height), viewBox: `0 0 ${width} ${height}` });
-		card.appendChild(svg);
+		const frame = this.createChartFrame(card, 235, { padL: 44, padR: 8, padT: 14, padB: 20 });
+		const { doc, svg, width, height, padL, padT, plotW, plotH } = frame;
 
 		const barCosts = buckets.map(bucket => {
 			const perModel = new Map<string, number>();
@@ -1001,15 +985,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		const maxY = step * 4;
 		const y = (v: number) => padT + plotH - (v / maxY) * plotH;
 
-		for (let i = 0; i <= 4; i++) {
-			const value = step * i;
-			const line = svgEl(doc, 'line', { x1: String(padL), x2: String(width - padR), y1: String(y(value)), y2: String(y(value)), 'stroke-width': '1' });
-			line.style.stroke = i === 0 ? 'color-mix(in srgb, var(--vscode-foreground) 28%, transparent)' : 'color-mix(in srgb, var(--vscode-foreground) 10%, transparent)';
-			svg.appendChild(line);
-			const tick = svgEl(doc, 'text', { x: String(padL - 6), y: String(y(value) + 3), 'text-anchor': 'end', class: 'paradis-ccusage-axis-text' });
-			tick.textContent = this.metric === 'tokens' ? paradisFormatTokens(value) : `$${formatAxisNumber(value)}`;
-			svg.appendChild(tick);
-		}
+		drawYAxis(frame, step, y, value => this.metric === 'tokens' ? paradisFormatTokens(value) : `$${formatAxisNumber(value)}`);
 
 		const band = plotW / Math.max(1, barCosts.length);
 		const barW = Math.max(2, Math.min(24, band * 0.6));
@@ -1132,12 +1108,8 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 			? localize('paradis.ccusage.trend.descWeekly', "週別の入力+出力トークン数（キャッシュ除く）。カーソルを合わせるか、矢印キーで選ぶとキャッシュ読み取り数も表示します。")
 			: localize('paradis.ccusage.trend.desc', "日別の入力+出力トークン数（キャッシュ除く）。カーソルを合わせるか、矢印キーで選ぶとキャッシュ読み取り数も表示します。");
 
-		const doc = card.ownerDocument;
-		const width = Math.max(320, card.clientWidth > 0 ? card.clientWidth - 34 : this.availableWidth * 0.55);
-		const height = 185;
-		const padL = 46; const padR = 10; const padT = 12; const padB = 20;
-		const plotW = width - padL - padR;
-		const plotH = height - padT - padB;
+		const frame = this.createChartFrame(card, 185, { padL: 46, padR: 10, padT: 12, padB: 20 });
+		const { doc, svg, width, height, padL, padT, plotW, plotH } = frame;
 
 		const points = buckets.map(bucket => ({
 			axisLabel: bucket.axisLabel,
@@ -1149,21 +1121,10 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		const step = niceStep(maxIo * 1.15 / 4);
 		const maxY = step * 4;
 
-		const svg = svgEl(doc, 'svg', { width: String(width), height: String(height), viewBox: `0 0 ${width} ${height}` });
-		card.appendChild(svg);
-
 		const x = (i: number) => points.length > 1 ? padL + (i / (points.length - 1)) * plotW : padL + plotW / 2;
 		const y = (v: number) => padT + plotH - (v / maxY) * plotH;
 
-		for (let i = 0; i <= 4; i++) {
-			const value = step * i;
-			const line = svgEl(doc, 'line', { x1: String(padL), x2: String(width - padR), y1: String(y(value)), y2: String(y(value)), 'stroke-width': '1' });
-			line.style.stroke = i === 0 ? 'color-mix(in srgb, var(--vscode-foreground) 28%, transparent)' : 'color-mix(in srgb, var(--vscode-foreground) 10%, transparent)';
-			svg.appendChild(line);
-			const tick = svgEl(doc, 'text', { x: String(padL - 6), y: String(y(value) + 3), 'text-anchor': 'end', class: 'paradis-ccusage-axis-text' });
-			tick.textContent = paradisFormatTokens(value);
-			svg.appendChild(tick);
-		}
+		drawYAxis(frame, step, y, paradisFormatTokens);
 		const labelEvery = Math.max(1, Math.ceil(34 / (plotW / Math.max(1, points.length - 1))));
 		points.forEach((point, index) => {
 			if (index % labelEvery === 0) {
@@ -1462,9 +1423,6 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 
 	/** @param e 吹き出しを寄せる画面の座標（マウスの位置か、キーボードで選んだ棒の上端）。 */
 	private showTooltip(e: { readonly clientX: number; readonly clientY: number }, title: string, rows: ITooltipRow[]): void {
-		if (!this.tooltip) {
-			return;
-		}
 		// pointermove ごとの DOM 再構築を避ける(同じ内容なら位置更新だけ)
 		const signature = `${title}|${rows.map(row => `${row.name}=${row.value}`).join('|')}`;
 		if (signature !== this.lastTooltipSignature) {
@@ -1497,10 +1455,8 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 	}
 
 	private hideTooltip(): void {
-		if (this.tooltip) {
-			this.tooltip.style.display = 'none';
-			this.lastTooltipSignature = undefined;
-		}
+		this.tooltip.style.display = 'none';
+		this.lastTooltipSignature = undefined;
 	}
 }
 
@@ -1512,6 +1468,34 @@ interface ITooltipRow {
 }
 
 // ---------- helpers ----------
+
+/** チャートの土台（createChartFrame）。 */
+interface IChartFrame {
+	readonly doc: Document;
+	readonly svg: SVGElement;
+	readonly width: number;
+	readonly height: number;
+	readonly padL: number;
+	readonly padR: number;
+	readonly padT: number;
+	readonly padB: number;
+	readonly plotW: number;
+	readonly plotH: number;
+}
+
+/** 縦軸の目盛りの線 5 本（0 と step の 1〜4 倍）と、その左の数字を描く。 */
+function drawYAxis(frame: IChartFrame, step: number, y: (value: number) => number, formatTick: (value: number) => string): void {
+	const { doc, svg, width, padL, padR } = frame;
+	for (let i = 0; i <= 4; i++) {
+		const value = step * i;
+		const line = svgEl(doc, 'line', { x1: String(padL), x2: String(width - padR), y1: String(y(value)), y2: String(y(value)), 'stroke-width': '1' });
+		line.style.stroke = i === 0 ? 'color-mix(in srgb, var(--vscode-foreground) 28%, transparent)' : 'color-mix(in srgb, var(--vscode-foreground) 10%, transparent)';
+		svg.appendChild(line);
+		const tick = svgEl(doc, 'text', { x: String(padL - 6), y: String(y(value) + 3), 'text-anchor': 'end', class: 'paradis-ccusage-axis-text' });
+		tick.textContent = formatTick(value);
+		svg.appendChild(tick);
+	}
+}
 
 function svgEl(doc: Document, tag: string, attrs: Record<string, string>): SVGElement {
 	const el = doc.createElementNS('http://www.w3.org/2000/svg', tag) as SVGElement;
