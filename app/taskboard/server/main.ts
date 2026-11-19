@@ -595,6 +595,48 @@ async function main(restart?: IRestart): Promise<void> {
 		await recountArchived().catch(err => log(`archive count failed: ${(err as Error).message}`));
 	};
 
+	/**
+	 * 「常に許可」を、足りない設定ファイルすべてに足す（Codex の config と Claude Code の settings.json で同じ流れ）。
+	 * 読み方に迷う形のものは書かず、理由をまとめて返す。
+	 */
+	const approveTools = async (target: {
+		readonly states: () => Promise<readonly { readonly path: string; readonly manual?: string }[]>;
+		readonly add: (file: string) => Promise<void>;
+		readonly configError: typeof CodexConfigError | typeof ClaudeConfigError;
+		readonly refresh: () => Promise<void>;
+	}): Promise<{ path: string }> => {
+		if (relay) {
+			throw new TaskBoardError('invalid-state', `${RELAY_UNSUPPORTED}（常に許可）`);
+		}
+		if (!paraCodeMode) {
+			throw new TaskBoardError('invalid-state', 'Para Code につないで起動したときだけ使えます');
+		}
+		// 1 つが失敗（読めない形・権限・容量など）しても残りは試し、終わったら帯を出し直す
+		const refused: string[] = [];
+		const written: string[] = [];
+		try {
+			for (const pending of await target.states()) {
+				// 書き方を読み切れない設定は書かない（帯に手で足す方法を出している）
+				if (pending.manual !== undefined) {
+					continue;
+				}
+				try {
+					await target.add(pending.path);
+					written.push(pending.path);
+				} catch (err) {
+					refused.push(`${pending.path}: ${err instanceof target.configError ? err.message : `書き込めませんでした（${err instanceof Error ? err.message : String(err)}）`}`);
+				}
+			}
+		} finally {
+			await target.refresh();
+		}
+		if (refused.length) {
+			const done = written.length ? `足しました: ${written.join(', ')}。` : '';
+			throw new TaskBoardError('invalid-state', `${done}次は手で足してください。${refused.join(' / ')}`);
+		}
+		return { path: written.join(', ') };
+	};
+
 	/* ---------------- RPC ---------------- */
 
 	const handlers: { [M in TaskBoardRpcMethod]: (params: ITaskBoardRpc[M]['params']) => Promise<ITaskBoardRpc[M]['result']> | ITaskBoardRpc[M]['result'] } = {
@@ -845,70 +887,8 @@ async function main(restart?: IRestart): Promise<void> {
 			await store.saveSettings({ ...((await store.loadSettings()) ?? {}), launchApprovals: true });
 			broadcastSoon();
 		},
-		approveCodexTools: async () => {
-			if (relay) {
-				throw new TaskBoardError('invalid-state', `${RELAY_UNSUPPORTED}（常に許可）`);
-			}
-			if (!paraCodeMode) {
-				throw new TaskBoardError('invalid-state', 'Para Code につないで起動したときだけ使えます');
-			}
-			// 足りない設定ファイルすべてに足す。読み方に迷う形のものは書かず、理由をまとめて返す
-			// 1 つが失敗（読めない形・権限・容量など）しても残りは試し、終わったら帯を出し直す
-			const refused: string[] = [];
-			const written: string[] = [];
-			try {
-				for (const pending of await codexApprovalStates()) {
-					// 書き方を読み切れない設定は書かない（帯に手で足す方法を出している）
-					if (pending.manual !== undefined) {
-						continue;
-					}
-					try {
-						await addCodexApprovals(pending.path);
-						written.push(pending.path);
-					} catch (err) {
-						refused.push(`${pending.path}: ${err instanceof CodexConfigError ? err.message : `書き込めませんでした（${err instanceof Error ? err.message : String(err)}）`}`);
-					}
-				}
-			} finally {
-				await refreshCodexApproval();
-			}
-			if (refused.length) {
-				const done = written.length ? `足しました: ${written.join(', ')}。` : '';
-				throw new TaskBoardError('invalid-state', `${done}次は手で足してください。${refused.join(' / ')}`);
-			}
-			return { path: written.join(', ') };
-		},
-		approveClaudeTools: async () => {
-			if (relay) {
-				throw new TaskBoardError('invalid-state', `${RELAY_UNSUPPORTED}（常に許可）`);
-			}
-			if (!paraCodeMode) {
-				throw new TaskBoardError('invalid-state', 'Para Code につないで起動したときだけ使えます');
-			}
-			// Codex と同じく、足りない settings.json すべてに足し、読めない形のものは書かずに理由をまとめて返す
-			const refused: string[] = [];
-			const written: string[] = [];
-			try {
-				for (const pending of await claudeApprovalStates()) {
-					if (pending.manual !== undefined) {
-						continue;
-					}
-					try {
-						await addClaudeApprovals(pending.path);
-						written.push(pending.path);
-					} catch (err) {
-						refused.push(`${pending.path}: ${err instanceof ClaudeConfigError ? err.message : `書き込めませんでした（${err instanceof Error ? err.message : String(err)}）`}`);
-					}
-				}
-			} finally {
-				await refreshClaudeApproval();
-			}
-			if (refused.length) {
-				const done = written.length ? `足しました: ${written.join(', ')}。` : '';
-				throw new TaskBoardError('invalid-state', `${done}次は手で足してください。${refused.join(' / ')}`);
-			}
-			return { path: written.join(', ') };
-		},
+		approveCodexTools: () => approveTools({ states: codexApprovalStates, add: addCodexApprovals, configError: CodexConfigError, refresh: refreshCodexApproval }),
+		approveClaudeTools: () => approveTools({ states: claudeApprovalStates, add: addClaudeApprovals, configError: ClaudeConfigError, refresh: refreshClaudeApproval }),
 
 		pullFilePatch: async p => {
 			const task = engine.getTask(p.taskId);
