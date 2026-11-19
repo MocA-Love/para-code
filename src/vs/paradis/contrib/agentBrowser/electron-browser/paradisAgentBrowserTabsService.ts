@@ -28,6 +28,8 @@
 // 再読み込みすると忘れ、それまでエージェントが開いていたタブは普通のタブとして残る（エージェントは
 // もう閉じられない）。安全側に倒れるだけなので、永続化はしていない。
 
+import './media/paradisAgentApprovalDialog.css';
+import { PARADIS_AGENT_APPROVAL_DIALOG_CLASS } from '../common/paradisAgentApprovalDialog.js';
 import { raceCancellation, raceTimeout, Sequencer } from '../../../../base/common/async.js';
 import * as dom from '../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../base/browser/window.js';
@@ -1224,7 +1226,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 						message,
 						detail: detail.join('\n\n'),
 						buttons,
-						custom: { classes: ['paradis-agent-approval-dialog', marker] },
+						custom: { classes: [PARADIS_AGENT_APPROVAL_DIALOG_CLASS, marker] },
 						token: cancellation,
 					});
 				if (cancellation.isCancellationRequested) {

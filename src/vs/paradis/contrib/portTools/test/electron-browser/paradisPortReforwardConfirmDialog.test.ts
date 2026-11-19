@@ -16,6 +16,7 @@ import { ILayoutService } from '../../../../../platform/layout/browser/layoutSer
 import { IHostService } from '../../../../../workbench/services/host/browser/host.js';
 import { IParadisConfirmServices } from '../../../confirmDialog/browser/paradisConfirmDialog.js';
 import { paradisReforwardConfirm } from '../../common/paradisPortReforwardConfirm.js';
+import { PARADIS_AGENT_APPROVAL_DIALOG_CLASS } from '../../../agentBrowser/common/paradisAgentApprovalDialog.js';
 import { PARADIS_PORT_REFORWARD_CONFIRM_CLASS, paradisShowReforwardConfirm } from '../../electron-browser/paradisPortReforwardConfirmDialog.js';
 
 suite('Paradis port reforward confirmation', () => {
@@ -56,7 +57,7 @@ suite('Paradis port reforward confirmation', () => {
 		toggle.click();
 		const after = { hidden: list.hidden, toggle: toggle.textContent, expanded: toggle.getAttribute('aria-expanded'), rows: list.children.length };
 		const shown = {
-			classes: [PARADIS_PORT_REFORWARD_CONFIRM_CLASS, 'marker', 'paradis-confirm-dialog'].map(name => box.classList.contains(name)),
+			classes: [PARADIS_AGENT_APPROVAL_DIALOG_CLASS, PARADIS_PORT_REFORWARD_CONFIRM_CLASS, 'marker', 'paradis-confirm-dialog'].map(name => box.classList.contains(name)),
 			title: box.querySelector('.dialog-message-text')?.textContent,
 			focused: mainWindow.document.activeElement?.textContent,
 			// 並びは OS ごとに本家が決めるので、並びは見ない
@@ -73,7 +74,7 @@ suite('Paradis port reforward confirmation', () => {
 		const result = await pending;
 		assert.deepStrictEqual({ shown, before, after, result, closed: container.querySelector('.monaco-dialog-box') === null }, {
 			shown: {
-				classes: [true, true, true],
+				classes: [true, true, true, true],
 				title: 'エージェントが転送 21 件のつなぎ直しを求めています',
 				focused: '拒否',
 				buttons: ['21 件をつなぎ直す:primary', '拒否:secondary'],
