@@ -26,6 +26,7 @@ suite('ParadisOpenCodeHistory', () => {
 		const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
 		const database = new DatabaseSync(dbPath);
 		try {
+			database.exec('PRAGMA journal_mode = MEMORY; PRAGMA synchronous = OFF');
 			database.exec(`CREATE TABLE ${legacy ? 'session' : 'session_v2'} (id TEXT, title TEXT, directory TEXT, parent_id TEXT, time_created INTEGER, time_updated INTEGER, time_archived INTEGER, metadata TEXT)`);
 			const insert = database.prepare(`INSERT INTO ${legacy ? 'session' : 'session_v2'} VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
 			insert.run('ses_one', 'First topic', '/project', null, 10, 30, null, '{}');
@@ -79,6 +80,7 @@ suite('ParadisOpenCodeHistory', () => {
 		const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
 		const database = new DatabaseSync(dbPath);
 		try {
+			database.exec('PRAGMA journal_mode = MEMORY; PRAGMA synchronous = OFF');
 			database.exec('CREATE TABLE session_message (id TEXT, session_id TEXT, type TEXT, seq INTEGER, time_created INTEGER, data TEXT)');
 			database.prepare('INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?)').run('msg_new', 'ses_two', 'user', 1, 21, JSON.stringify({ text: 'Newer schema request' }));
 		} finally { database.close(); }
@@ -94,6 +96,7 @@ suite('ParadisOpenCodeHistory', () => {
 		const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
 		const database = new DatabaseSync(dbPath);
 		try {
+			database.exec('PRAGMA journal_mode = MEMORY; PRAGMA synchronous = OFF');
 			database.prepare('INSERT INTO session_v2 VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run('ses_windows', 'Windows', 'C:/work/app', null, 1, 2, null, '{}');
 		} finally { database.close(); }
 		assert.deepStrictEqual((await listOpenCodeSessions(dbPath, ['C:\\work\\app'])).map(session => session.id), ['ses_windows']);
@@ -103,6 +106,7 @@ suite('ParadisOpenCodeHistory', () => {
 		const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
 		const database = new DatabaseSync(dbPath);
 		try {
+			database.exec('PRAGMA journal_mode = MEMORY; PRAGMA synchronous = OFF');
 			database.exec('CREATE TABLE session_v2 (id TEXT, title TEXT, directory TEXT, parent_id TEXT, time_created INTEGER, time_updated INTEGER, time_archived INTEGER, model TEXT)');
 			const insert = database.prepare('INSERT INTO session_v2 VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
 			insert.run('ses_variant', 'Variant', '/project', null, 1, 40, null, JSON.stringify({ id: 'ox-alpha-free', providerID: 'opencode-go', variant: 'max' }));
@@ -113,6 +117,7 @@ suite('ParadisOpenCodeHistory', () => {
 		const legacyPath = join(root, 'opencode.db');
 		const legacy = new DatabaseSync(legacyPath);
 		try {
+			legacy.exec('PRAGMA journal_mode = MEMORY; PRAGMA synchronous = OFF');
 			legacy.exec('CREATE TABLE session (id TEXT, title TEXT, directory TEXT, parent_id TEXT, time_created INTEGER, time_updated INTEGER)');
 			legacy.prepare('INSERT INTO session VALUES (?, ?, ?, ?, ?, ?)').run('ses_old', 'Old', '/project', null, 1, 10);
 		} finally { legacy.close(); }
@@ -136,6 +141,7 @@ suite('ParadisOpenCodeHistory', () => {
 		const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
 		const database = new DatabaseSync(dbPath);
 		try {
+			database.exec('PRAGMA journal_mode = MEMORY; PRAGMA synchronous = OFF');
 			database.prepare('INSERT INTO session_message VALUES (?, ?, ?, ?, ?, ?)').run('msg_credentials', 'ses_one', 'assistant', 3, 13, JSON.stringify({ content: [{ type: 'tool', id: 'credentials', name: 'para-browser_set_http_credentials', state: { status: 'completed', input: { password: 'fixture-private-value' } } }] }));
 		} finally { database.close(); }
 		assert.strictEqual(JSON.stringify(await readOpenCodeMessages(dbPath, 'ses_one')).includes('fixture-private-value'), false);
@@ -177,6 +183,7 @@ suite('ParadisOpenCodeHistory', () => {
 		const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
 		const database = new DatabaseSync(copyPath);
 		try {
+			database.exec('PRAGMA journal_mode = MEMORY; PRAGMA synchronous = OFF');
 			database.prepare('UPDATE session_v2 SET time_updated = ? WHERE id = ?').run(99, 'ses_two');
 		} finally { database.close(); }
 		const service = new ParadisSessionResumeService({

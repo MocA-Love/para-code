@@ -100,6 +100,7 @@ suite('ParadisSessionResume', () => {
 		const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
 		const database = new DatabaseSync(join(codexHome, 'state_1.sqlite'));
 		try {
+			database.exec('PRAGMA journal_mode = MEMORY; PRAGMA synchronous = OFF');
 			database.exec(schema);
 			populate?.(database);
 		} finally {
@@ -158,6 +159,7 @@ suite('ParadisSessionResume', () => {
 		const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
 		const database = new DatabaseSync(join(cliHome, 'conversation_summaries.db'));
 		try {
+			database.exec('PRAGMA journal_mode = MEMORY; PRAGMA synchronous = OFF');
 			database.exec('CREATE TABLE `conversation_summaries` (`conversation_id` text, `title` text NOT NULL DEFAULT "", `preview` text NOT NULL DEFAULT "", `step_count` integer NOT NULL DEFAULT 0, `last_modified_time` datetime NOT NULL, `workspace_uris` text NOT NULL, `parent_conversation_id` text NOT NULL DEFAULT "", `nesting_depth` integer NOT NULL DEFAULT 0, `raw_summary` blob, PRIMARY KEY (`conversation_id`))');
 			const insert = database.prepare('INSERT INTO conversation_summaries (conversation_id, title, preview, last_modified_time, workspace_uris, parent_conversation_id, nesting_depth) VALUES (?, ?, ?, ?, ?, ?, ?)');
 			const inWorkspace = JSON.stringify([URI.file(join(workspace, 'packages', 'app')).toString()]);
@@ -207,6 +209,7 @@ suite('ParadisSessionResume', () => {
 		const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
 		const database = new DatabaseSync(join(cliHome, 'conversation_summaries.db'));
 		try {
+			database.exec('PRAGMA journal_mode = MEMORY; PRAGMA synchronous = OFF');
 			database.exec('CREATE TABLE `conversation_summaries` (`conversation_id` text, `title` text NOT NULL DEFAULT "", `preview` text NOT NULL DEFAULT "", `last_modified_time` datetime NOT NULL, `workspace_uris` text NOT NULL, `parent_conversation_id` text NOT NULL DEFAULT "", `nesting_depth` integer NOT NULL DEFAULT 0, PRIMARY KEY (`conversation_id`))');
 			database.exec('CREATE VIRTUAL TABLE conversations_fts USING fts5(conversation_id UNINDEXED, chunk_index UNINDEXED, last_modified_time UNINDEXED, archived UNINDEXED, title, user_body, agent_body)');
 			const summary = database.prepare('INSERT INTO conversation_summaries (conversation_id, title, last_modified_time, workspace_uris, parent_conversation_id, nesting_depth) VALUES (?, ?, ?, ?, ?, ?)');
@@ -1506,6 +1509,7 @@ suite('ParadisSessionResume', () => {
 		const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
 		const database = new DatabaseSync(join(secondHome, 'state_1.sqlite'));
 		try {
+			database.exec('PRAGMA journal_mode = MEMORY; PRAGMA synchronous = OFF');
 			database.exec('CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT, rollout_path TEXT, updated_at INTEGER)');
 		} finally {
 			database.close();
