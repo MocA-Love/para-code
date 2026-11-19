@@ -870,6 +870,7 @@ suite('ParadisMobileAgentChat', () => {
 		const store = new ParadisAgentSessionStore(storePath, new NullLogService());
 		const chat = start(store);
 		let restarted: ParadisMobileAgentChat | undefined;
+		let fromOldFile: ParadisMobileAgentChat | undefined;
 		try {
 			for (const [id, path, line] of [[parentId, parentPath, { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', status: 'DONE', created_at: '2026-11-16T01:00:00Z', content: '調べて' }], [childId, childPath, { step_index: 0, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', created_at: '2026-11-16T01:00:01Z', content: '<SYSTEM_MESSAGE>調べて</SYSTEM_MESSAGE>' }]] as const) {
 				await mkdir(join(brain, id, '.system_generated', 'logs'), { recursive: true });
@@ -891,24 +892,33 @@ suite('ParadisMobileAgentChat', () => {
 			const beforePaneSync = restarted.antigravityPaneSessions();
 			assert.strictEqual(restarted.syncPanes(1, 'window-session-2', 1, 1, [{ terminalId: 1, token }]), true);
 			await waitFor(() => restarted!.antigravityPaneSessions().length === 1, 'the conversation did not come back after the restart');
-			// 再起動の後は hook の時刻が無く、控えを読み戻した時刻が付く
+			// 再起動の後は、保存してあった hook の時刻と、控えを読み戻した時刻が付く
 			const afterRestart = restarted.antigravityPaneSessions().map(session => ({ ...session, restoredAt: typeof session.restoredAt }));
 			hook('PreToolUse', parentId, parentPath, 3000);
 			await waitFor(() => restarted!.antigravityPaneSessions()[0]?.lastHookAt === 3000, 'the hook after the restart was not noted');
 			const afterRestartHook = restarted.antigravityPaneSessions();
 			// ペインが無くなった（ターミナルを閉じた）
 			assert.strictEqual(restarted.syncPanes(1, 'window-session-2', 1, 2, []), true);
-			assert.deepStrictEqual({ plain, whileSubagentRuns, beforePaneSync, afterRestart, afterRestartHook, afterPaneClosed: restarted.antigravityPaneSessions() }, {
+			// hook の時刻の項目が無い古い保存ファイル: 時刻は付かない（文は打たない側になる）
+			const oldStorePath = join(home, 'paradis-agent-sessions-old.json');
+			await writeFile(oldStorePath, JSON.stringify([{ token: 'pane-antigravity-old', agent: 'antigravity', transcriptPath: parentPath, sessionId: parentId, savedAt: Date.now() }]));
+			fromOldFile = start(new ParadisAgentSessionStore(oldStorePath, new NullLogService()));
+			assert.strictEqual(fromOldFile.syncPanes(1, 'window-session-3', 1, 1, [{ terminalId: 1, token: 'pane-antigravity-old' }]), true);
+			await waitFor(() => fromOldFile!.antigravityPaneSessions().length === 1, 'the conversation of the old file did not come back');
+			const oldFile = fromOldFile.antigravityPaneSessions().map(session => ({ ...session, restoredAt: typeof session.restoredAt }));
+			assert.deepStrictEqual({ plain, whileSubagentRuns, beforePaneSync, afterRestart, afterRestartHook, oldFile, afterPaneClosed: restarted.antigravityPaneSessions() }, {
 				plain: [{ token, sessionId: parentId, lastHookAt: 1000 }],
 				whileSubagentRuns: [{ token, sessionId: parentId, lastHookAt: 1000 }],
 				beforePaneSync: [],
-				afterRestart: [{ token, sessionId: parentId, restoredAt: 'number' }],
+				afterRestart: [{ token, sessionId: parentId, lastHookAt: 1000, restoredAt: 'number' }],
 				afterRestartHook: [{ token, sessionId: parentId, lastHookAt: 3000 }],
+				oldFile: [{ token: 'pane-antigravity-old', sessionId: parentId, restoredAt: 'number' }],
 				afterPaneClosed: [],
 			});
 		} finally {
 			chat.dispose();
 			restarted?.dispose();
+			fromOldFile?.dispose();
 		}
 	}));
 

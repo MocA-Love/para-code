@@ -133,9 +133,12 @@ export function paradisResumeRequestVerdict(previous: IParadisResumeLedgerEntry 
 export interface IParadisAntigravityPaneSession {
 	readonly token: string;
 	readonly sessionId: string;
-	/** このペインでこの会話の hook を最後に受けた時刻 (epoch ms)。shared process が起動してからまだ受けていなければ undefined。 */
+	/**
+	 * このペインでこの会話の hook を最後に受けた時刻 (epoch ms)。前回の起動から引き継いだ控えでは、保存してあった値
+	 * （実際より古いことがある。保存に無ければ undefined）。
+	 */
 	readonly lastHookAt?: number;
-	/** 前回の起動から引き継いだ控えを、shared process が読み戻した時刻 (epoch ms)。この起動中に結んだ控えには無い。 */
+	/** 前回の起動から引き継いだ控えを、shared process が読み戻した時刻 (epoch ms)。この起動中に hook を受けた控えには無い。 */
 	readonly restoredAt?: number;
 }
 
@@ -170,7 +173,8 @@ function finishedSince(evidence: IParadisTerminalCommandEvidence, since: number)
  *   最初の発言まで hook が来ず、同じ会話を開き直していても見分けられない）
  */
 export function paradisAntigravityConversationLeftPane(session: IParadisAntigravityPaneSession, evidence: IParadisTerminalCommandEvidence | undefined): boolean {
-	const since = session.lastHookAt ?? session.restoredAt;
+	// 引き継いだ控えの `lastHookAt` は実際より古いことがあるので、読み戻した時刻があればそちら（新しい方）から見る
+	const since = session.restoredAt !== undefined ? Math.max(session.restoredAt, session.lastHookAt ?? 0) : session.lastHookAt;
 	if (evidence === undefined || since === undefined || finishedSince(evidence, since) !== 'finished') {
 		return false;
 	}
@@ -185,7 +189,9 @@ export function paradisAntigravityConversationLeftPane(session: IParadisAntigrav
  * ペインの前面の agy が、控えの会話を開いていると言えるか（true のときだけ、チャット欄や預かりの文をそのペインへ打つ）。
  * 控えの会話の後に agy を始め直していると、前面は別の会話かもしれない（新しい会話の hook は最初の発言まで来ない）。
  * - 前面のコマンドが控えの会話を名指ししている（`agy --conversation <同じ id>`）なら true
- * - それ以外は、この起動中にその会話の hook を受けていて、それより後に終わったコマンドが無いときだけ true
+ * - それ以外は、その会話の hook を受けた時刻が分かっていて、それより後に終わったコマンドが無いときだけ true。時刻は
+ *   再起動をまたいで引き継ぐ（終わったコマンドの時刻も復元で元のまま戻る）ので、動き続けている agy へは再起動の後も
+ *   打てる。引き継いだ時刻が実際より古くても、数えるコマンドが増えるだけ（打たない側）。時刻の無い古い保存では打たない
  */
 export function paradisAntigravityPaneHoldsConversation(session: IParadisAntigravityPaneSession | undefined, evidence: IParadisTerminalCommandEvidence | undefined): boolean {
 	if (session === undefined || evidence === undefined) {

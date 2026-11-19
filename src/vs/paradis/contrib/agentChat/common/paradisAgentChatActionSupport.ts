@@ -134,7 +134,7 @@ export function paradisAntigravityPaneStatus(stored: ParadisAgentStatus | undefi
  * ペインの前面の Antigravity CLI が、アプリが見ている会話を開いていると確かめられなかったときの断りの文（モバイル向け）。
  * 同じターミナルで agy を始め直した後は、新しい会話の hook が最初の発言まで来ない（paradisAntigravityPaneHoldsConversation）。
  */
-export const PARADIS_ANTIGRAVITY_OTHER_CONVERSATION_MESSAGE = 'PC の端末の Antigravity CLI がこの会話を開いていると確かめられなかったため、送りませんでした。PC の端末で入力してください';
+export const PARADIS_ANTIGRAVITY_OTHER_CONVERSATION_MESSAGE = 'PC の端末の Antigravity CLI がこの会話を開いていると確かめられなかったため、送りませんでした。PC の端末かターミナル表示で 1 回発言すると、また送れます';
 
 /** {@link paradisAntigravitySendBlock} の理由ごとの断りの文（モバイル向け。PC は nls の文を使う）。 */
 export const PARADIS_ANTIGRAVITY_SEND_BLOCK_MESSAGES: Readonly<Record<ParadisAntigravitySendBlock, string>> = {

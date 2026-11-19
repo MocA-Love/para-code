@@ -208,6 +208,11 @@ suite('paradisMobileAgentResume (W2-29)', () => {
 			// PC の再起動の後（控えを読み戻しただけ）: 戻したコマンドは古い時刻のまま。新しくコマンドが終わるまで動いている扱い
 			restoredOldCommands: paradisAntigravityConversationLeftPane(restored, evidence([200, 900])),
 			restoredThenCommandFinished: paradisAntigravityConversationLeftPane(restored, evidence([900, 6000])),
+			// 引き継いだ控えに保存してあった hook の時刻は実際より古いことがあるので、読み戻した時刻から見る
+			restoredWithSavedHookTime: paradisAntigravityConversationLeftPane({ ...restored, lastHookAt: 1000 }, evidence([1500])),
+			// 同時刻に終わったコマンドは「後」に数えない。止めただけの終了コードは 145〜150
+			finishedAtSameTime: paradisAntigravityConversationLeftPane(hooked, evidence([1000])),
+			exitCodes: [144, 145, 150, 151].map(exitCode => paradisAntigravityConversationLeftPane(hooked, evidence([[1500, exitCode]]))),
 			// 時刻が無い・シェル統合が無い
 			noTime: paradisAntigravityConversationLeftPane({ token: 'pane', sessionId: conversation }, evidence([9000])),
 			noShellIntegration: paradisAntigravityConversationLeftPane(hooked, undefined),
@@ -224,6 +229,9 @@ suite('paradisMobileAgentResume (W2-29)', () => {
 			restartedOther: true,
 			restoredOldCommands: false,
 			restoredThenCommandFinished: true,
+			restoredWithSavedHookTime: false,
+			finishedAtSameTime: false,
+			exitCodes: [true, false, false, true],
 			noTime: false,
 			noShellIntegration: false,
 		});
@@ -239,8 +247,13 @@ suite('paradisMobileAgentResume (W2-29)', () => {
 			restartedPlain: paradisAntigravityPaneHoldsConversation(hooked, { finished: finished(1500), executing: 'agy' }),
 			restartedSame: paradisAntigravityPaneHoldsConversation(hooked, { finished: finished(1500), executing: `agy --conversation ${conversation}` }),
 			restartedOther: paradisAntigravityPaneHoldsConversation(hooked, { finished: finished(1500), executing: 'agy --conversation 00000000-0000-4000-8000-00000000a6f2' }),
-			// この起動中にその会話の hook をまだ受けていない（控えを読み戻しただけ）・控えが無い・シェル統合が無い
-			restoredOnly: paradisAntigravityPaneHoldsConversation({ token: 'pane', sessionId: conversation, restoredAt: 5000 }, { finished: [], executing: 'agy' }),
+			// 再起動の後（控えを読み戻しただけ）: 保存に hook の時刻があれば、それより後に終わったコマンドが無い間は打つ
+			// （agy が動き続けている）。agy が終わっていれば、終わったコマンドの時刻で止まる。保存に時刻が無ければ打たない
+			restoredWithSavedHookTime: paradisAntigravityPaneHoldsConversation({ token: 'pane', sessionId: conversation, restoredAt: 5000, lastHookAt: 1000 }, { finished: finished(900), executing: 'agy' }),
+			restoredAfterAgyEnded: paradisAntigravityPaneHoldsConversation({ token: 'pane', sessionId: conversation, restoredAt: 5000, lastHookAt: 1000 }, { finished: finished(1500), executing: 'agy' }),
+			restoredWithoutShellIntegration: paradisAntigravityPaneHoldsConversation({ token: 'pane', sessionId: conversation, restoredAt: 5000, lastHookAt: 1000 }, undefined),
+			restoredFromOldFile: paradisAntigravityPaneHoldsConversation({ token: 'pane', sessionId: conversation, restoredAt: 5000 }, { finished: [], executing: 'agy' }),
+			finishedAtSameTime: paradisAntigravityPaneHoldsConversation(hooked, { finished: finished(1000), executing: 'agy' }),
 			noRecord: paradisAntigravityPaneHoldsConversation(undefined, { finished: [], executing: 'agy' }),
 			noShellIntegration: paradisAntigravityPaneHoldsConversation(hooked, undefined),
 		}, {
@@ -248,7 +261,11 @@ suite('paradisMobileAgentResume (W2-29)', () => {
 			restartedPlain: false,
 			restartedSame: true,
 			restartedOther: false,
-			restoredOnly: false,
+			restoredWithSavedHookTime: true,
+			restoredAfterAgyEnded: false,
+			restoredWithoutShellIntegration: false,
+			restoredFromOldFile: false,
+			finishedAtSameTime: true,
 			noRecord: false,
 			noShellIntegration: false,
 		});

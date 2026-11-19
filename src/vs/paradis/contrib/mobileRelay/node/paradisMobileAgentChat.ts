@@ -4774,7 +4774,7 @@ export class ParadisMobileAgentChat extends Disposable {
 					retiredAt: entry.savedAt,
 				});
 				if (entry.agent === 'antigravity' && entry.sessionId !== undefined) {
-					this.antigravityAliveAt.set(entry.token, { sessionId: entry.sessionId, restoredAt: Date.now() });
+					this.antigravityAliveAt.set(entry.token, { sessionId: entry.sessionId, restoredAt: Date.now(), ...(entry.lastHookAt !== undefined ? { lastHookAt: entry.lastHookAt } : {}) });
 				}
 			}
 			for (const token of [...this.retiredSessions.keys()]) {
@@ -4807,6 +4807,8 @@ export class ParadisMobileAgentChat extends Disposable {
 		const signature = [
 			...[...this.paneSessions.values()].map(session => `${session.token}\u0000${session.agent}\u0000${session.transcriptPath}\u0000${session.sessionId ?? ''}`),
 			...[...this.retiredSessions.values()].map(({ session }) => `${session.token}\u0000${session.agent}\u0000${session.transcriptPath}\u0000${session.sessionId ?? ''}\u0000retired`),
+			// Antigravity CLI の最後の hook の時刻は、1 分の刻みで変わったときだけ書き直す（hook のたびには書かない）
+			...[...this.antigravityAliveAt].map(([token, alive]) => `${token}\u0000hook\u0000${alive.sessionId}\u0000${alive.lastHookAt !== undefined ? Math.floor(alive.lastHookAt / 60_000) : ''}`),
 		].sort().join('\n');
 		if (signature === this.lastPersistedSessionSignature) {
 			return;
@@ -4817,13 +4819,21 @@ export class ParadisMobileAgentChat extends Disposable {
 				token: session.token, agent: session.agent, transcriptPath: session.transcriptPath,
 				...(session.sessionId !== undefined ? { sessionId: session.sessionId } : {}),
 				savedAt: now,
+				...this.persistedAntigravityHookAt(session),
 			})),
 			...[...this.retiredSessions.values()].map(({ session, retiredAt }) => ({
 				token: session.token, agent: session.agent, transcriptPath: session.transcriptPath,
 				...(session.sessionId !== undefined ? { sessionId: session.sessionId } : {}),
 				savedAt: retiredAt,
+				...this.persistedAntigravityHookAt(session),
 			})),
 		]);
+	}
+
+	/** 保存に足す Antigravity CLI の最後の hook の時刻（その会話のものがあるときだけ）。 */
+	private persistedAntigravityHookAt(session: IPaneSessionInfo): { readonly lastHookAt?: number } {
+		const alive = this.antigravityAliveAt.get(session.token);
+		return session.agent === 'antigravity' && alive !== undefined && alive.sessionId === session.sessionId && alive.lastHookAt !== undefined ? { lastHookAt: alive.lastHookAt } : {};
 	}
 
 	/** 退避済みセッションを、tokenが再びliveになったペインへ検証付きで復活させる。 */
@@ -9304,8 +9314,8 @@ export class ParadisMobileAgentChat extends Disposable {
 
 	/**
 	 * Antigravity CLI のペインで、控えの会話が動いていたと分かる時刻（ペインの token → 会話の id と時刻）。`lastHookAt` は
-	 * その会話として受け入れた hook を受けた時刻（捨てた hook・子の会話の hook では進めない）、`restoredAt` は前回の起動の
-	 * 控えを読み戻した時刻。agy は終わりを知らせないので、renderer がこの時刻より後に終わったコマンドがあるかで終わりを見る。
+	 * その会話として受け入れた hook を受けた時刻（捨てた hook・子の会話の hook では進めない。保存して次の起動へ引き継ぐ。
+	 * 保存は 1 分の刻みなので、引き継いだ値は実際より古いことがある）、`restoredAt` は前回の起動の控えを読み戻した時刻。agy は終わりを知らせないので、renderer がこの時刻より後に終わったコマンドがあるかで終わりを見る。
 	 */
 	private readonly antigravityAliveAt = new Map<string, { readonly sessionId: string; readonly lastHookAt?: number; readonly restoredAt?: number }>();
 
@@ -10319,6 +10329,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			// 後回しにした hook を流し直すときは受けた時刻が前後しうるので、同じ会話の時刻は戻さない
 			const alive = this.antigravityAliveAt.get(event.token);
 			this.antigravityAliveAt.set(event.token, { sessionId: info.sessionId, lastHookAt: alive?.sessionId === info.sessionId ? Math.max(alive.lastHookAt ?? 0, event.at) : event.at });
+			this.persistSessions();
 		}
 		const subagentActivityId = event.event === 'SubagentStart' || event.event === 'SubagentStop' ? str(event.payload?.agent_id) : undefined;
 		const subagentId = subagentActivityId !== undefined && PARADIS_CLAUDE_AGENT_ID_PATTERN.test(subagentActivityId) ? subagentActivityId : undefined;
