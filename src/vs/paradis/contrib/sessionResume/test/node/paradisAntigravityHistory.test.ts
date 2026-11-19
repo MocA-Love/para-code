@@ -31,6 +31,7 @@ suite('ParadisAntigravityHistory', () => {
 		const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
 		const database = new DatabaseSync(dbPath);
 		try {
+			database.exec('PRAGMA journal_mode = MEMORY; PRAGMA synchronous = OFF');
 			database.exec('CREATE TABLE `conversation_summaries` (`conversation_id` text, `title` text NOT NULL DEFAULT "", `preview` text NOT NULL DEFAULT "", `parent_conversation_id` text NOT NULL DEFAULT "", `nesting_depth` integer NOT NULL DEFAULT 0, PRIMARY KEY (`conversation_id`))');
 			const insert = database.prepare('INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?)');
 			insert.run(PARENT, 'fake parent', 'fake preview', '', 0);

@@ -102,6 +102,7 @@ function createEmptyCodexStateDatabase(codexHome: string): void {
 	const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
 	const database = new DatabaseSync(join(codexHome, 'state_1.sqlite'));
 	try {
+		database.exec('PRAGMA journal_mode = MEMORY; PRAGMA synchronous = OFF');
 		database.exec(`
 			CREATE TABLE threads (
 				id TEXT PRIMARY KEY,
@@ -1957,6 +1958,7 @@ suite('ParadisMobileAgentChat', () => {
 			const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
 			const database = new DatabaseSync(join(codexHome, 'state_1.sqlite'));
 			try {
+				database.exec('PRAGMA journal_mode = MEMORY; PRAGMA synchronous = OFF');
 				const insert = database.prepare('INSERT INTO threads (id, rollout_path, source, cwd, archived, updated_at_ms, updated_at, created_at_ms, created_at) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)');
 				for (const row of rows) {
 					insert.run(row.id, row.path, 'cli', row.cwd, row.updatedAt, Math.floor(row.updatedAt / 1000), row.createdAt, Math.floor(row.createdAt / 1000));

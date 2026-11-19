@@ -35,6 +35,7 @@ suite('ParadisCodexTerminalTitleService', () => {
 		const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
 		const database = new DatabaseSync(join(codexHome, 'state_5.sqlite'));
 		try {
+			database.exec('PRAGMA journal_mode = MEMORY; PRAGMA synchronous = OFF');
 			database.prepare('INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
 				.run(id, 'cli', '/workspace/original', '', '', '', rolloutPath, 0);
 		} finally {
@@ -48,6 +49,7 @@ suite('ParadisCodexTerminalTitleService', () => {
 		const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
 		const database = new DatabaseSync(join(codexHome, 'state_5.sqlite'));
 		try {
+			database.exec('PRAGMA journal_mode = MEMORY; PRAGMA synchronous = OFF');
 			database.exec(`
 				CREATE TABLE threads (
 					id TEXT PRIMARY KEY,
@@ -195,6 +197,7 @@ suite('ParadisCodexTerminalTitleService', () => {
 			const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
 			const database = new DatabaseSync(join(codexHome, 'state_5.sqlite'));
 			try {
+				database.exec('PRAGMA journal_mode = MEMORY; PRAGMA synchronous = OFF');
 				database.prepare('INSERT INTO threads VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
 					.run(rolloutThreadId, 'cli', '/workspace/original', '', '', '', join(codexHome, 'sessions', 'missing.jsonl'), 0);
 			} finally {

@@ -50,6 +50,7 @@ suite('ParadisRtkHistoryDb', function () {
 			const dbPath = join(root, 'history.db');
 			const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
 			const db = new DatabaseSync(dbPath);
+			db.exec('PRAGMA journal_mode = MEMORY; PRAGMA synchronous = OFF');
 			db.exec(`CREATE TABLE commands (id INTEGER PRIMARY KEY, timestamp TEXT NOT NULL, original_cmd TEXT NOT NULL, rtk_cmd TEXT NOT NULL, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, saved_tokens INTEGER NOT NULL, savings_pct REAL NOT NULL, exec_time_ms INTEGER DEFAULT 0, project_path TEXT DEFAULT '')`);
 			const insert = db.prepare('INSERT INTO commands (timestamp, original_cmd, rtk_cmd, input_tokens, output_tokens, saved_tokens, savings_pct, exec_time_ms, project_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
 			const inDay = `${paradisRtkUtcStamp('2026-11-02', 0)}.123456789+00:00`;
@@ -68,6 +69,7 @@ suite('ParadisRtkHistoryDb', function () {
 			const stats = await paradisReadRtkHistoryStats(dbPath, '2026-11-02', '2026-11-02', reason => unexpected.push(reason));
 			const otherPath = join(root, 'other.db');
 			const other = new DatabaseSync(otherPath);
+			other.exec('PRAGMA journal_mode = MEMORY; PRAGMA synchronous = OFF');
 			other.exec('CREATE TABLE commands (id INTEGER PRIMARY KEY, when_at TEXT)');
 			other.close();
 			assert.deepStrictEqual({
