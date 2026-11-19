@@ -10845,7 +10845,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			const seenKey = `${token}\0${group}`;
 			if (!this.questionFirstSeenAt.has(seenKey)) {
 				this.questionFirstSeenAt.set(seenKey, Date.now());
-				this.evictOldest(this.questionFirstSeenAt, QUESTION_NOTIFY_COUNT_LIMIT);
+				evictOldest(this.questionFirstSeenAt, QUESTION_NOTIFY_COUNT_LIMIT);
 			}
 		}
 		// 群が引けない質問はカウンタを引き当てられないが、**記録自体は必ず残す**。ここで
@@ -10876,19 +10876,8 @@ export class ParadisMobileAgentChat extends Disposable {
 		// 最終利用順になる（そうしないと、よく使われているキーほど先に追い出される）。
 		this.questionNotifyCounts.delete(key);
 		this.questionNotifyCounts.set(key, seq);
-		this.evictOldest(this.questionNotifyCounts, QUESTION_NOTIFY_COUNT_LIMIT);
+		evictOldest(this.questionNotifyCounts, QUESTION_NOTIFY_COUNT_LIMIT);
 		return seq;
-	}
-
-	/** 計測用の台帳が無限に伸びないよう、上限を超えたぶんを古い順に捨てる。 */
-	private evictOldest(ledger: Map<string, number>, limit: number): void {
-		while (ledger.size > limit) {
-			const stalest = ledger.keys().next();
-			if (stalest.done) {
-				return;
-			}
-			ledger.delete(stalest.value);
-		}
 	}
 
 	/** 質問が最初に浮上してからの経過ms。起点を覚えていなければ `undefined`。 */
@@ -10997,7 +10986,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			// （群キーの名前空間が live と transcript で違う）で浮上したときに素通りし、
 			// 経路またぎの重複が半分残る＝この抑制の狙いの半分が効かなくなる。
 			this.questionNotifiedAt.set(keys.content, now);
-			this.evictOldest(this.questionNotifiedAt, QUESTION_NOTIFY_COUNT_LIMIT);
+			evictOldest(this.questionNotifiedAt, QUESTION_NOTIFY_COUNT_LIMIT);
 			return 'suppressed-group';
 		}
 		return this.recentlyNotifiedQuestion(keys.content, now, QUESTION_NOTIFY_CONTENT_SUPPRESS_TTL_MS) ? 'suppressed-content' : undefined;
@@ -11023,7 +11012,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		for (const key of reserved) {
 			this.questionNotifiedAt.set(key, now);
 		}
-		this.evictOldest(this.questionNotifiedAt, QUESTION_NOTIFY_COUNT_LIMIT);
+		evictOldest(this.questionNotifiedAt, QUESTION_NOTIFY_COUNT_LIMIT);
 		return {
 			release: () => {
 				for (const key of reserved) {
