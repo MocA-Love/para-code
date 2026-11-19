@@ -23,6 +23,7 @@ import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { createParadisChip } from '../../../browser/paradisBadges.js';
 import { paradisButtonClasses } from '../../../browser/paradisButton.js';
+import { PARADIS_AGENT_APPROVAL_DIALOG_CLASS } from '../../agentBrowser/common/paradisAgentApprovalDialog.js';
 import { IParadisAgentApprovalPresentation } from '../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
 import { IParadisConfirmServices, paradisConfirm } from '../../confirmDialog/browser/paradisConfirmDialog.js';
 import { IParadisReforwardConfirm } from '../common/paradisPortReforwardConfirm.js';
@@ -44,7 +45,7 @@ export async function paradisShowReforwardConfirm(services: IParadisConfirmServi
 				{ label: confirm.approveLabel, kind: 'primary', run: () => 'approve' },
 			],
 			cancelIndex: 0,
-			extraClasses: [PARADIS_PORT_REFORWARD_CONFIRM_CLASS, presentation.markerClass],
+			extraClasses: [PARADIS_AGENT_APPROVAL_DIALOG_CLASS, PARADIS_PORT_REFORWARD_CONFIRM_CLASS, presentation.markerClass],
 			renderBody: container => paradisRenderReforwardConfirmBody(container, confirm, presentation.paneLabel, store),
 			token: presentation.token,
 		});

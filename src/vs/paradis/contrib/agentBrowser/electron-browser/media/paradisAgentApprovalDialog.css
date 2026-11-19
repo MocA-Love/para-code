@@ -1,0 +1,41 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+	The approval dialog an agent's request opens (paradisAgentBrowserTabsService.ts askApproval): browser profiles, port
+	forwards, mobile devices and the other requests that go through it. Its detail runs to several paragraphs, so the box
+	takes the M tier's width (paradisModal.css, Q612) instead of upstream's 480px floor or the confirmation's S width.
+	Only the width: the height still follows the content. Two ways draw it:
+	- upstream's Dialog, which puts the class on the body inside the box (dialogHandler.ts custom.classes)
+	- the kit's confirmation (paradisConfirmDialog.ts), which puts it on the box
+*/
+
+.monaco-dialog-box:has(> .dialog-message-row .dialog-message-body.paradis-agent-approval-dialog),
+.monaco-dialog-box.paradis-confirm-dialog.paradis-agent-approval-dialog {
+	box-sizing: border-box;
+	width: clamp(720px, 50vw, 1120px);
+	min-width: 0;
+	max-width: 94vw;
+}
+
+/*
+	The text uses the whole width of the box: the container grows instead of fitting its content (a short body would
+	leave the right of the box empty), and the confirmation's 560 stop for the S box is lifted.
+*/
+.monaco-dialog-box:has(> .dialog-message-row .dialog-message-body.paradis-agent-approval-dialog) .dialog-message-row .dialog-message-container,
+.monaco-dialog-box.paradis-confirm-dialog.paradis-agent-approval-dialog .dialog-message-row .dialog-message-container {
+	flex: 1 1 auto;
+	min-width: 0;
+	max-width: none;
+}
+
+/* A long URL, path or pane title without spaces wraps inside the box instead of running out of it. */
+.monaco-dialog-box:has(> .dialog-message-row .dialog-message-body.paradis-agent-approval-dialog) .dialog-message-row .dialog-message-container .dialog-message,
+.monaco-dialog-box:has(> .dialog-message-row .dialog-message-body.paradis-agent-approval-dialog) .dialog-message-row .dialog-message-container .dialog-message-detail,
+.monaco-dialog-box.paradis-confirm-dialog.paradis-agent-approval-dialog .dialog-message-row .dialog-message-container {
+	overflow-wrap: anywhere;
+}
