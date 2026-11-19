@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
-import { asFiniteNumber, asRecord, isRecord } from '../../common/paradisGuards.js';
+import { asFiniteNumber, asRecord, isExactPlainArray, isExactPlainRecord, isPlainRecord, isRecord } from '../../common/paradisGuards.js';
 
 suite('paradisGuards', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -22,6 +22,24 @@ suite('paradisGuards', () => {
 			isRecord: [true, false, false, false, false, false, false, false],
 			asRecord: [{ a: 1 }, undefined, undefined, undefined, undefined, undefined, undefined, undefined],
 			asFiniteNumber: [undefined, undefined, undefined, undefined, undefined, 1, undefined, undefined],
+		});
+	});
+
+	test('accepts only plain records and arrays whose own keys are exactly the expected data properties', () => {
+		const withGetter = Object.defineProperty({}, 'a', { enumerable: true, get: () => 1 });
+		const hidden = Object.defineProperty({}, 'a', { enumerable: false, value: 1 });
+		const sparse = [1, 2];
+		delete sparse[0];
+		const records: readonly unknown[] = [{ a: 1 }, Object.assign(Object.create(null), { a: 1 }), new Map(), new Date(0), [], null, 'x', { a: 1, b: 2 }, { a: 1, [Symbol.iterator]: 2 }, withGetter, hidden, {}];
+		const arrays: readonly unknown[] = [[], [1, 'x'], sparse, Object.assign([1], { extra: true }), new (class extends Array { })(), Object.defineProperty([0], '0', { enumerable: true, get: () => 1 }), { length: 0 }, 'ab'];
+		assert.deepStrictEqual({
+			isPlainRecord: records.map(isPlainRecord),
+			isExactPlainRecord: records.map(value => isExactPlainRecord(value, ['a'])),
+			isExactPlainArray: arrays.map(isExactPlainArray),
+		}, {
+			isPlainRecord: [true, true, false, false, false, false, false, true, true, true, true, true],
+			isExactPlainRecord: [true, true, false, false, false, false, false, false, false, false, false, false],
+			isExactPlainArray: [true, true, false, false, false, false, false, false],
 		});
 	});
 });
