@@ -5,6 +5,7 @@ import { AccessibilityInfo, ActivityIndicator, Pressable, StyleSheet, Text, View
 import { paraAlert } from '../../paraAlert.js';
 import { Check, ChevronDown, ChevronLeft, Settings, X } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
+import { agentDisplayName } from '../../agentKind.js';
 import { agentHasNoModelCatalog, claudeModelDisplayName, matchAgentModel } from '../../agentModels.js';
 import { useAppStore } from '../../appState.js';
 import { isMaximumEffort } from '../../components/effortSliderBehavior.js';
@@ -40,8 +41,6 @@ export interface ModelPillHandle {
 
 /** シートの中身。歯車で「表示するモデル」に切り替え、「完了」か戻るで「モデルを選ぶ」へ戻る。 */
 type DrawerPage = 'pick' | 'visibility';
-
-const AGENT_NAMES: Readonly<Record<'claude' | 'codex', string>> = { claude: 'Claude Code', codex: 'Codex' };
 
 /**
  * コンポーザーのモデルと effort のピル（モックの `.pill`）と、押すと開く「モデルを選ぶ」のシート。
@@ -305,7 +304,7 @@ export const ModelPill = forwardRef<ModelPillHandle, {
 					<>
 						{options.length > 0 ? (
 							<>
-								<Text style={[styles.section, styles.sectionFirst]}>{visibilityAgent !== undefined ? AGENT_NAMES[visibilityAgent] : ''}</Text>
+								<Text style={[styles.section, styles.sectionFirst]}>{agentDisplayName(visibilityAgent) ?? ''}</Text>
 								<View style={styles.group}>
 									{options.map((option, index) => {
 										const shown = !hiddenIds.includes(option.id);

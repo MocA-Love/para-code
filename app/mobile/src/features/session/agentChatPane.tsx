@@ -6,6 +6,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { RotateCw } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { shouldShowQuickReplies } from '../../agentConversationUx.js';
+import { agentHasPcDraft } from '../../agentKind.js';
 import { useAppStore } from '../../appState.js';
 import { useAppLocked } from '../../appLock.js';
 import { AGENT_RESUME_CAPABILITY } from '../../agentSessions.js';
@@ -513,7 +514,7 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 						onSlashRejectionHandled={handleSlashRejection}
 						onOpenTerminal={openTerminal}
 						panel={chatReady ? chat?.panel : undefined}
-						pcDraft={chatReady && chat?.agent === 'claude' ? chat.pcDraft : undefined}
+						pcDraft={chatReady && agentHasPcDraft(chat?.agent) ? chat?.pcDraft : undefined}
 						panelSupported={panelSupported}
 						{...(panelSupported ? { onClosePanel: closePanel } : {})}
 						onOpenUsage={openUsage}

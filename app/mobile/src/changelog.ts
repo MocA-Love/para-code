@@ -40,6 +40,17 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.28',
+		date: '2026-11-19',
+		items: [
+			{
+				icon: 'notifications-outline',
+				title: 'PC が 2 台以上のとき、通知の副題に OpenCode・Antigravity の名前が出ないのを直しました',
+				tone: 'green',
+			},
+		],
+	},
+	{
 		version: '0.12.27',
 		date: '2026-11-19',
 		items: [

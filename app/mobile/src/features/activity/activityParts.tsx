@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
 import { ChevronDown, ChevronRight, ChevronUp, CircleCheck, CircleDashed, CircleX, GitBranch } from 'lucide-react-native';
+import { agentDisplayName, isAgentKind, type AgentKind } from '../../agentKind.js';
 import { activityStatusColor, activityStatusKind, activityStatusLabel } from '../../agentStatus.js';
 import { useAppStore } from '../../appState.js';
 import { useRouteSpace } from '../../hooks/useRouteTargets.js';
@@ -80,13 +81,14 @@ export function useActivityRoute(): ActivityRoute {
 }
 
 /** 会話の CLI の種類（agent チャネルの `agent` は文字列で届く）。 */
-export function chatProvider(chat: AgentChatState | undefined): 'claude' | 'codex' | 'opencode' | 'antigravity' | undefined {
-	return chat?.agent === 'antigravity' ? 'antigravity' : chat?.agent === 'opencode' ? 'opencode' : chat?.agent === 'codex' ? 'codex' : chat?.agent === 'claude' ? 'claude' : undefined;
+export function chatProvider(chat: AgentChatState | undefined): AgentKind | undefined {
+	const agent = chat?.agent;
+	return isAgentKind(agent) ? agent : undefined;
 }
 
 /** 呼び名（Claude Code / Codex）。 */
-export function providerLabel(provider: 'claude' | 'codex' | 'opencode' | 'antigravity' | undefined): string {
-	return provider === 'antigravity' ? 'Antigravity CLI' : provider === 'opencode' ? 'OpenCode' : provider === 'codex' ? 'Codex' : provider === 'claude' ? 'Claude Code' : 'エージェント';
+export function providerLabel(provider: AgentKind | undefined): string {
+	return agentDisplayName(provider) ?? 'エージェント';
 }
 
 /** 数字の並び（モックの `.stats`）。 */
@@ -113,7 +115,7 @@ const INDENT = 16;
 export function ActivityAgentRow({ agent, depth, fallbackProvider, now, onOpen }: {
 	agent: AgentActivityAgent;
 	depth: number;
-	fallbackProvider: 'claude' | 'codex' | 'opencode' | 'antigravity' | undefined;
+	fallbackProvider: AgentKind | undefined;
 	now: number;
 	onOpen: (agent: AgentActivityAgent) => void;
 }) {

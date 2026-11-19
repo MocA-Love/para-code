@@ -16,6 +16,8 @@
  * 孤児鍵が残っていたり、こちらで名前を付け替えていると表示が食い違う（遷移先は別に決めるので実害はない）。
  */
 
+import { agentShortName, type AgentKind } from './agentKind.js';
+
 /** 中黒は前後に空白を置く（iOSの通知でPC名と種別が詰まって読めなくなるのを避ける）。 */
 const SEPARATOR = ' · ';
 
@@ -40,11 +42,6 @@ export function notifySubtitle(subtitle: string | undefined, pcName: string | un
 	return parts.length > 0 ? parts.join(SEPARATOR) : undefined;
 }
 
-/** エージェントの呼び名（PC の `paradisAgentLabel` と同じ）。 */
-function agentLabel(agent: string | undefined): string | undefined {
-	return agent === 'antigravity' ? 'Antigravity' : agent === 'codex' ? 'Codex' : agent === 'claude' ? 'Claude' : undefined;
-}
-
 /**
  * 通知の副題を、届いた通知から組み立てる（notify.content.v1 の並べ方 A1）。
  *
@@ -55,14 +52,14 @@ function agentLabel(agent: string | undefined): string | undefined {
  * 通知拡張（NotificationService.swift の composeSubtitle）が同じ規則を Swift で持つ。変えるときは両方直すこと。
  */
 export function notifyPayloadSubtitle(
-	payload: { readonly category?: string; readonly agent?: 'claude' | 'codex'; readonly tab?: string; readonly subtitle?: string },
+	payload: { readonly category?: string; readonly agent?: AgentKind; readonly tab?: string; readonly subtitle?: string },
 	pcName: string | undefined,
 	multiplePcs: boolean,
 ): string | undefined {
 	if (payload.category === undefined) {
 		return notifySubtitle(payload.subtitle, pcName, multiplePcs);
 	}
-	const parts = (multiplePcs ? [agentLabel(payload.agent), payload.tab, pcName] : [payload.tab])
+	const parts = (multiplePcs ? [agentShortName(payload.agent), payload.tab, pcName] : [payload.tab])
 		.map(part => part?.trim())
 		.filter((part): part is string => part !== undefined && part.length > 0);
 	return parts.length > 0 ? parts.join(SEPARATOR) : undefined;

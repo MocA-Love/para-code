@@ -28,6 +28,7 @@ import { localizeAgentTeams, parseAgentTeams, type AgentTeam } from './agentTeam
 import { parseAsyncQuestions, type AsyncQuestion } from './asyncQuestions.js';
 import { localizeAgentSessionStatus, parseAgentSessionStatus, type AgentSessionStatus } from './agentSessionStatus.js';
 import { ShellOutputBusyError, isShellStoppable, localizeAgentShells, parseAgentShells, parseAgentShellsAccess, parseShellOutputReply, type AgentShell, type AgentShellOutput, type AgentShellsAccess } from './agentShells.js';
+import { agentHasModelControl, agentHasPanel, agentInterruptsViaApi } from './agentKind.js';
 import { APP_PROTOCOL_VERSION, PcCapability, evaluatePcCompat, parseCapabilities, pcHasCapability, stateRequestFields, updateTargetOf, type UpdateTarget } from './pcCompat.js';
 import { parsePcDoNotDisturb, type PcDoNotDisturb } from './features/doNotDisturb/pcDoNotDisturb.js';
 import { VoiceUsageUnsupportedError, parseVoiceUsageResult, type VoiceUsageResult } from './features/usage/voiceUsageWire.js';
@@ -2828,7 +2829,7 @@ export class MobileController {
 		if (chat?.none === true) {
 			return sendToShell();
 		}
-		if (!this.isLiveAvailable() || chat?.agent !== 'opencode' || chat.capabilities?.agentActions !== true) {
+		if (!this.isLiveAvailable() || !agentInterruptsViaApi(chat?.agent) || chat?.capabilities?.agentActions !== true) {
 			return false;
 		}
 		const result = await this.sendAgentActionResult(terminalKey, { t: 'action/interrupt', token: this.agentToken(terminalKey), epoch: chat.epoch }, 30_000);
@@ -2840,7 +2841,7 @@ export class MobileController {
 
 	/** ターミナルへ入力を送る。 */
 	sendInput(terminalKey: string, data: string): Promise<boolean> {
-		if (data === '\u0003' && this.state.agentChats.get(terminalKey)?.agent === 'opencode') { return this.interruptOpenCodeAgent(terminalKey, () => this.sendTerm(terminalKey, { t: 'input', data })); }
+		if (data === '\u0003' && agentInterruptsViaApi(this.state.agentChats.get(terminalKey)?.agent)) { return this.interruptOpenCodeAgent(terminalKey, () => this.sendTerm(terminalKey, { t: 'input', data })); }
 		return this.sendTerm(terminalKey, { t: 'input', data });
 	}
 
@@ -2857,7 +2858,7 @@ export class MobileController {
 	}
 
 	sendLiveInput(terminalKey: string, data: string): boolean {
-		if (data === '\u0003' && this.state.agentChats.get(terminalKey)?.agent === 'opencode' && this.state.agentChats.get(terminalKey)?.none !== true) {
+		if (data === '\u0003' && agentInterruptsViaApi(this.state.agentChats.get(terminalKey)?.agent) && this.state.agentChats.get(terminalKey)?.none !== true) {
 			if (!this.isLiveAvailable()) { return false; }
 			// 停止を頼んだ後で OpenCode がもう終わっていたと分かったら、Ctrl+C は下と同じ確かめ方でシェルへ渡す
 			void this.interruptOpenCodeAgent(terminalKey, async () => this.sendLiveInputToTerminal(terminalKey, data));
@@ -2896,7 +2897,7 @@ export class MobileController {
 	 * `sendLiveInput`（エージェントの操作のキー列）と違い、durable な操作が保存を待っている間も捨てずに列で待つ。
 	 */
 	sendLiveKeys(terminalKey: string, data: string): Promise<boolean> {
-		if (data === '\u0003' && this.state.agentChats.get(terminalKey)?.agent === 'opencode') { return this.interruptOpenCodeAgent(terminalKey, () => this.sendTerm(terminalKey, { t: 'input', data }, false)); }
+		if (data === '\u0003' && agentInterruptsViaApi(this.state.agentChats.get(terminalKey)?.agent)) { return this.interruptOpenCodeAgent(terminalKey, () => this.sendTerm(terminalKey, { t: 'input', data }, false)); }
 		return this.sendTerm(terminalKey, { t: 'input', data }, false);
 	}
 
@@ -3023,7 +3024,7 @@ export class MobileController {
 		if (!this.isLiveAvailable()) {
 			return Promise.resolve({ status: 'rejected', message: 'PCとの接続が切れています' });
 		}
-		if (chat?.agent !== 'claude' || chat.capabilities?.claudeSettings !== true) {
+		if (!agentHasModelControl(chat?.agent) || chat?.capabilities?.claudeSettings !== true) {
 			return Promise.resolve({ status: 'rejected', message: 'このセッションでは設定を変更できません' });
 		}
 		if (chat.interaction !== undefined) {
@@ -3048,7 +3049,7 @@ export class MobileController {
 		if (!this.isLiveAvailable()) {
 			return Promise.resolve({ status: 'rejected', message: 'PCとの接続が切れています' });
 		}
-		if (chat?.agent !== 'claude' || chat.panel === undefined || !this.hasPcCapability(PcCapability.AgentPanel)) {
+		if (!agentHasPanel(chat?.agent) || chat?.panel === undefined || !this.hasPcCapability(PcCapability.AgentPanel)) {
 			return Promise.resolve({ status: 'rejected', message: 'PC で開いている画面はありません' });
 		}
 		return this.sendAgentActionResult(terminalKey, { t: 'action/closePanel', token: this.agentToken(terminalKey), epoch: chat.epoch }, 15_000);

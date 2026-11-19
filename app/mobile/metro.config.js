@@ -66,6 +66,8 @@ config.watchFolders = [
 	path.join(__dirname, '..', '..', 'src', 'vs', 'paradis', 'contrib', 'mobileRelay', 'common'),
 	// おやすみモードの期限の選択肢と残り時間（paradisDoNotDisturbRules.ts。PC のステータスバーと同じ計算と文言）
 	path.join(__dirname, '..', '..', 'src', 'vs', 'paradis', 'contrib', 'notifications', 'common'),
+	// エージェントの種類ごとの記述（paradisAgentDescriptor.ts。呼び名と静的な性質を PC と同じ表から引く。src/agentKind.ts）
+	path.join(__dirname, '..', '..', 'src', 'vs', 'paradis', 'contrib', 'agentChat', 'common'),
 ];
 
 module.exports = config;
