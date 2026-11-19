@@ -16,10 +16,10 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import { IParadisAivisMeResult, IParadisAivisUsageDayEntry, IParadisAivisUsageResult, PARADIS_NOTIFICATIONS_CHANNEL } from '../common/paradisNotifications.js';
 import { IParadisNotificationsSettingsService } from '../browser/paradisNotificationsSettings.js';
 import { ParadisAivisRenderGeneration, ParadisAivisUsageRequestCache } from './paradisAivisApiCache.js';
+import { paradisNotifStatCard } from './paradisNotificationKitParts.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
 import { paradisFillAivisUsageDays, paradisVoiceUsageRange } from '../common/paradisVoiceUsage.js';
 import { ParadisSegmented } from '../../../browser/paradisSegmented.js';
-import { PARADIS_CARD_CLASS, PARADIS_CARD_LABEL_CLASS, PARADIS_CARD_NOTE_CLASS, PARADIS_CARD_VALUE_CLASS } from '../../../browser/paradisCard.js';
 
 const $ = dom.$;
 
@@ -174,9 +174,9 @@ export class ParadisAivisUsageSection extends Disposable {
 		const total = usage.total;
 
 		const statGrid = dom.append(container, $('.pns-stat-grid'));
-		this._statCard(statGrid, STR_REQUESTS, total.requestCount.toLocaleString(), total.requestCount > 0 ? strAvgChars((total.characterCount / total.requestCount).toFixed(1)) : '—');
-		this._statCard(statGrid, STR_CHARACTERS, total.characterCount.toLocaleString(), strDaysTotal(range.days));
-		this._statCard(statGrid, STR_CREDITS, total.creditConsumed.toFixed(2), me?.creditBalance !== null && me?.creditBalance !== undefined ? strBalance(me.creditBalance.toLocaleString()) : '—');
+		paradisNotifStatCard(statGrid, STR_REQUESTS, total.requestCount.toLocaleString(), total.requestCount > 0 ? strAvgChars((total.characterCount / total.requestCount).toFixed(1)) : '—');
+		paradisNotifStatCard(statGrid, STR_CHARACTERS, total.characterCount.toLocaleString(), strDaysTotal(range.days));
+		paradisNotifStatCard(statGrid, STR_CREDITS, total.creditConsumed.toFixed(2), me?.creditBalance !== null && me?.creditBalance !== undefined ? strBalance(me.creditBalance.toLocaleString()) : '—');
 
 		// グラフ指標トグル（Requests / Chars / Credits）＋バーチャート。指標の切り替えは
 		// 取得済みデータのままチャートだけ描き直す（再フェッチしない）
@@ -250,12 +250,5 @@ export class ParadisAivisUsageSection extends Disposable {
 				value.textContent = `${entry.requestCount.toLocaleString()} req · ${entry.creditConsumed.toFixed(2)} credits`;
 			}
 		}
-	}
-
-	private _statCard(container: HTMLElement, label: string, value: string, sub: string): void {
-		const card = dom.append(container, $(`.pns-stat-card.${PARADIS_CARD_CLASS}`));
-		dom.append(card, $(`.${PARADIS_CARD_LABEL_CLASS}`)).textContent = label;
-		dom.append(card, $(`.${PARADIS_CARD_VALUE_CLASS}`)).textContent = value;
-		dom.append(card, $(`.${PARADIS_CARD_NOTE_CLASS}`)).textContent = sub;
 	}
 }

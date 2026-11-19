@@ -20,8 +20,7 @@ import { IParadisVoiceCacheInfo, paradisVoiceCacheTotals } from '../common/parad
 import { ParadisAivisRenderGeneration } from './paradisAivisApiCache.js';
 import { paradisPreserveScroll } from './paradisNotificationSettingsDomUtils.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
-import { paradisNotifButton } from './paradisNotificationKitParts.js';
-import { PARADIS_CARD_CLASS, PARADIS_CARD_LABEL_CLASS, PARADIS_CARD_NOTE_CLASS, PARADIS_CARD_VALUE_CLASS } from '../../../browser/paradisCard.js';
+import { paradisNotifButton, paradisNotifStatCard } from './paradisNotificationKitParts.js';
 
 const $ = dom.$;
 
@@ -120,9 +119,9 @@ export class ParadisVoiceCacheSection extends Disposable {
 	private _renderInfo(container: HTMLElement, info: IParadisVoiceCacheInfo): void {
 		const totals = paradisVoiceCacheTotals(info.days, Date.now(), PERIOD_DAYS);
 		const grid = dom.append(container, $('.pns-stat-grid'));
-		this._statCard(grid, STR_FROM_CACHE, strTimes(totals.hits.toLocaleString()), strSaved(totals.hitCharacters.toLocaleString(), PERIOD_DAYS));
-		this._statCard(grid, STR_FROM_API, strTimes(totals.calls.toLocaleString()), strSent(totals.callCharacters.toLocaleString(), PERIOD_DAYS));
-		this._statCard(grid, STR_STORED, strEntries(info.entries.toLocaleString()), strMegabytes((info.bytes / (1024 * 1024)).toFixed(1)));
+		paradisNotifStatCard(grid, STR_FROM_CACHE, strTimes(totals.hits.toLocaleString()), strSaved(totals.hitCharacters.toLocaleString(), PERIOD_DAYS));
+		paradisNotifStatCard(grid, STR_FROM_API, strTimes(totals.calls.toLocaleString()), strSent(totals.callCharacters.toLocaleString(), PERIOD_DAYS));
+		paradisNotifStatCard(grid, STR_STORED, strEntries(info.entries.toLocaleString()), strMegabytes((info.bytes / (1024 * 1024)).toFixed(1)));
 
 		const actions = dom.append(container, $('.pns-row'));
 		const clearBtn = paradisNotifButton(actions, 'danger', { label: STR_CLEAR });
@@ -133,12 +132,5 @@ export class ParadisVoiceCacheSection extends Disposable {
 			void this.sharedProcessService.getChannel(PARADIS_NOTIFICATIONS_CHANNEL).call('clearVoiceCache')
 				.finally(() => this._render());
 		}));
-	}
-
-	private _statCard(container: HTMLElement, label: string, value: string, sub: string): void {
-		const card = dom.append(container, $(`.pns-stat-card.${PARADIS_CARD_CLASS}`));
-		dom.append(card, $(`.${PARADIS_CARD_LABEL_CLASS}`)).textContent = label;
-		dom.append(card, $(`.${PARADIS_CARD_VALUE_CLASS}`)).textContent = value;
-		dom.append(card, $(`.${PARADIS_CARD_NOTE_CLASS}`)).textContent = sub;
 	}
 }
