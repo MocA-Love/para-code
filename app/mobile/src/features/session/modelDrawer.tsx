@@ -5,7 +5,7 @@ import { AccessibilityInfo, ActivityIndicator, Pressable, StyleSheet, Text, View
 import { paraAlert } from '../../paraAlert.js';
 import { Check, ChevronDown, ChevronLeft, Settings, X } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
-import { AGENT_DESCRIPTORS } from '../../agentKind.js';
+import { agentDisplayName } from '../../agentKind.js';
 import { agentHasNoModelCatalog, claudeModelDisplayName, matchAgentModel } from '../../agentModels.js';
 import { useAppStore } from '../../appState.js';
 import { isMaximumEffort } from '../../components/effortSliderBehavior.js';
@@ -304,7 +304,7 @@ export const ModelPill = forwardRef<ModelPillHandle, {
 					<>
 						{options.length > 0 ? (
 							<>
-								<Text style={[styles.section, styles.sectionFirst]}>{visibilityAgent !== undefined ? AGENT_DESCRIPTORS[visibilityAgent].displayName : ''}</Text>
+								<Text style={[styles.section, styles.sectionFirst]}>{agentDisplayName(visibilityAgent) ?? ''}</Text>
 								<View style={styles.group}>
 									{options.map((option, index) => {
 										const shown = !hiddenIds.includes(option.id);

@@ -10,6 +10,10 @@ APNs リモート通知のカスタムペイロード `e`（base64url の AES-25
 `ParaCodeMobile.xcodeproj` のターゲット定義）はリポジトリに残らない。ここに追跡用の
 ソースコピーを置き、`ios/` を作り直した場合の復元手順を記す。
 
+## このディレクトリのファイルを変えたとき
+
+`NotificationService.swift` などを変えたら、Mac でビルドする前に、同じ変更を git 管理外の `app/mobile/ios/NotifyExtension/` へ写す。写し忘れると、ビルドに入るのは前の版のままで、プッシュ通知の表示は変わらない。
+
 ## `npx expo prebuild --clean` 等で ios/ を作り直した場合の復元手順
 
 1. このディレクトリの3ファイルと `agent-claude.png` / `agent-codex.png`（Resources に入れる）を `app/mobile/ios/NotifyExtension/` へコピー。あわせて

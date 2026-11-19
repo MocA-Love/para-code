@@ -45,7 +45,7 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 		items: [
 			{
 				icon: 'notifications-outline',
-				title: '通知の副題に OpenCode・Antigravity の名前が出ないのを直しました',
+				title: 'PC を 2 台以上つないでいるとき、通知の副題に OpenCode・Antigravity の名前が出ないのを直しました',
 				tone: 'green',
 			},
 		],

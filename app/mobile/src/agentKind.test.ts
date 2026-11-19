@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, test } from 'vitest';
-import { agentDisplayName, agentHasModelControl, agentHasPanel, agentHasPcDraft, agentInterruptsViaApi, agentShortName, isAgentKind } from './agentKind.js';
+import { agentDisplayName, launchAgentShortName, agentHasModelControl, agentHasPanel, agentHasPcDraft, agentInterruptsViaApi, agentShortName, isAgentKind } from './agentKind.js';
 
 /**
  * 種類への問いを、記述の引きに替える前の判定（`agent === 'claude'` などの照合）と同じ結果に固定する。
@@ -20,6 +20,10 @@ describe('agentKind', () => {
 
 	test('短い名前', () => {
 		expect(INPUTS.map(agent => agentShortName(agent))).toEqual(['Claude', 'Codex', 'OpenCode', 'Antigravity', undefined, undefined, undefined, undefined, undefined]);
+	});
+
+	test('起動の知らせの名前は claude だけ Claude、ほかは型に無い値も Codex', () => {
+		expect(['claude', 'codex', 'opencode', 'antigravity', '', 'gemini', 'constructor'].map(agent => launchAgentShortName(agent))).toEqual(['Claude', 'Codex', 'Codex', 'Codex', 'Codex', 'Codex', 'Codex']);
 	});
 
 	test('中断を API へ頼むのは OpenCode だけ', () => {

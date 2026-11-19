@@ -6,7 +6,7 @@ import { useIsFocused, useRouter } from 'expo-router';
 import { ChevronRight, Ellipsis, Folder, GitBranch, NotebookPen, PanelLeftOpen, SquareTerminal, Unplug } from 'lucide-react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { nextAttentionAgent } from '../../../../src/agentConversationUx.js';
-import { AGENT_DESCRIPTORS } from '../../../../src/agentKind.js';
+import { launchAgentShortName } from '../../../../src/agentKind.js';
 import { launchAgentInBackground } from '../../../../src/agentLaunch.js';
 import { AGENT_RESUME_CAPABILITY } from '../../../../src/agentSessions.js';
 import { createAgentLatestEntryToken } from '../../../../src/agentNavigation.js';
@@ -541,7 +541,7 @@ export default function SessionScreen() {
 						}
 						awaitNewTab();
 						launchAgentInBackground({
-							agentLabel: AGENT_DESCRIPTORS[agent].shortName,
+							agentLabel: launchAgentShortName(agent),
 							subtitle: space?.branch !== undefined ? `${spaceLabel} · ${space.branch}` : spaceLabel,
 							agent,
 							ws: spaceId,

@@ -19,9 +19,6 @@ import { PARADIS_AGENT_DESCRIPTORS, paradisAgentDescriptor, type ParadisAgentKin
 /** エージェント CLI の種類（PC の `ParadisAgentKind` と同じ）。 */
 export type AgentKind = ParadisAgentKind;
 
-/** 種類ごとの記述の表（種類が型で決まっている所から引く）。 */
-export const AGENT_DESCRIPTORS = PARADIS_AGENT_DESCRIPTORS;
-
 /** 電文の値が、知っている種類か。 */
 export function isAgentKind(agent: string | undefined): agent is AgentKind {
 	return paradisAgentDescriptor(agent) !== undefined;
@@ -35,6 +32,11 @@ export function agentDisplayName(agent: string | undefined): string | undefined 
 /** 通知の副題などの短い名前（Claude・Codex・OpenCode・Antigravity）。知らない種類は undefined。 */
 export function agentShortName(agent: string | undefined): string | undefined {
 	return paradisAgentDescriptor(agent)?.shortName;
+}
+
+/** アプリから起動する 2 種（Claude Code・Codex）の短い名前。claude 以外は Codex の名前。 */
+export function launchAgentShortName(agent: string): string {
+	return agent === 'claude' ? PARADIS_AGENT_DESCRIPTORS.claude.shortName : PARADIS_AGENT_DESCRIPTORS.codex.shortName;
 }
 
 /** 中断を端末の Ctrl+C ではなく、PC の連携の API へ頼む種類か（OpenCode）。 */
