@@ -610,6 +610,56 @@ class RepositoryRenderer implements ITreeRenderer<IParadisWorkspaceRepository, F
 	}
 }
 
+/**
+ * 行の中のボタン（PR・ピン・「…」）のクリックを、行のクリック (切り替え・開閉) へ届く前に止め、クリックで run を呼ぶ。
+ * テンプレートは使い回されるので、対象は押されたときに target で引く。対象が無い間は何もしない (行のクリックのまま)。
+ */
+function addRowButtonListeners<T>(store: DisposableStore, button: HTMLElement, target: () => T | undefined, run: (target: T) => void): void {
+	for (const eventType of [DOM.EventType.MOUSE_DOWN, DOM.EventType.CLICK]) {
+		store.add(DOM.addDisposableListener(button, eventType, event => {
+			const current = target();
+			if (!current) {
+				return;
+			}
+			DOM.EventHelper.stop(event, true);
+			if (eventType === DOM.EventType.CLICK) {
+				run(current);
+			}
+		}));
+	}
+}
+
+/** メニューの「上へ移動」「下へ移動」の組。 */
+function moveActions(upId: string, downId: string, canMoveUp: boolean, canMoveDown: boolean, move: (direction: -1 | 1) => unknown): [IAction, IAction] {
+	return [
+		new Action(
+			upId,
+			// allow-any-unicode-next-line
+			localize('paradis.workspaceSwitch.moveUp', "上へ移動"),
+			'paradis-menu-icon codicon codicon-arrow-up',
+			canMoveUp,
+			() => move(-1)
+		),
+		new Action(
+			downId,
+			// allow-any-unicode-next-line
+			localize('paradis.workspaceSwitch.moveDown', "下へ移動"),
+			'paradis-menu-icon codicon codicon-arrow-down',
+			canMoveDown,
+			() => move(1)
+		),
+	];
+}
+
+/** 数え上げの 1 件: リポジトリの本体 (worktree は undefined) か、実体のある worktree。 */
+interface ILiveSpace {
+	readonly repository: IParadisWorkspaceRepository;
+	readonly worktree: IParadisWorktree | undefined;
+	readonly uri: URI;
+	/** 本体は repository.id、worktree は worktreeStateKeyFor */
+	readonly stateKey: string;
+}
+
 interface ISectionHeaderTemplateData {
 	readonly row: HTMLElement;
 	readonly dot: HTMLElement;
@@ -723,17 +773,7 @@ class SectionHeaderRenderer implements ITreeRenderer<ISectionHeaderElement, Fuzz
 		more.setAttribute('aria-label', moreLabel);
 		DOM.append(more, DOM.$(ThemeIcon.asCSSSelector(Codicon.ellipsis)));
 		templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), more, moreLabel));
-		for (const eventType of [DOM.EventType.MOUSE_DOWN, DOM.EventType.CLICK]) {
-			templateDisposables.add(DOM.addDisposableListener(more, eventType, event => {
-				if (!context.element) {
-					return;
-				}
-				DOM.EventHelper.stop(event, true);
-				if (eventType === DOM.EventType.CLICK) {
-					this.delegate.showMenu(context.element, more);
-				}
-			}));
-		}
+		addRowButtonListeners(templateDisposables, more, () => context.element, element => this.delegate.showMenu(element, more));
 		return { row, dot, name, renameBox, input, count, attention, attentionHover, more, context, templateDisposables };
 	}
 
@@ -858,45 +898,50 @@ class SectionEmptyRenderer implements ITreeRenderer<ISectionEmptyElement, FuzzyS
 	disposeTemplate(): void { }
 }
 
+/** worktree の行が呼び返す口（ビューが実装する）。 */
+interface IWorktreeRowDelegate {
+	isActive(worktree: IParadisWorktree): boolean;
+	getBreakdown(stateKey: string): readonly ParadisAgentStatus[];
+	getDiffStat(worktree: IParadisWorktree): IParadisDiffStat | undefined;
+	getPrStatus(worktree: IParadisWorktree): IParadisPrStatus | undefined;
+	/** そのスペースのペインでエージェントが対話から検出した Issue URL (未検出なら空配列)。 */
+	getIssueUrls(worktree: IParadisWorktree): readonly string[];
+	getIssueStatus(url: string): IParadisIssueStatus | undefined;
+	getNoteSummary(worktree: IParadisWorktree): IParadisSpaceNoteSummary;
+	getRepositoryColorHex(repositoryId: string): string | undefined;
+	/** バックグラウンド作成が進行中なら、その工程ラベル (ブランチ名の代わりに出す) */
+	getPendingStage(worktree: IParadisWorktree): string | undefined;
+	isPinned(worktree: IParadisWorktree): boolean;
+	togglePin(worktree: IParadisWorktree): void;
+	/** ツリーのインデント1段ぶんの幅 (控え行を子行の位置に揃えるのに使う) */
+	getTreeIndent(): number;
+	openPrUrl(url: string): void;
+	/** そのスペースへの切り替えが進行中か (チェックの代わりにスピナーを出す) */
+	isSwitchTarget(worktree: IParadisWorktree): boolean;
+	/** メタ段の表示/並び順/寄せの現在設定 (paradis.workspaceSwitch.rowMeta) */
+	getMetaEntries(): readonly IParadisWorktreeMetaEntry[];
+	/**
+	 * その行が実際にどのメタ情報を持っているか。行の高さを決める WorkspaceTreeDelegate と
+	 * **同じ Map** を読む。既定値を持たせない (片方だけ渡した実装が高さと中身を食い違わせ、
+	 * 3段の中身が2段の高さに押し込まれる形で静かに壊れるため)。
+	 */
+	getMetaPresence(worktree: IParadisWorktree): IParadisWorktreeMetaPresence;
+	/** ドットのホバーに足すサブエージェント一覧の材料 (スペースに確実に属するペインだけ) */
+	getScopePanes(stateKey: string): readonly IParadisAgentScopePane[];
+	/** 行の「…」を押したとき、右クリックと同じメニューをその下に出す */
+	showWorktreeMenu(worktree: IParadisWorktree, anchor: HTMLElement): void;
+}
+
 class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IWorktreeTemplateData> {
 
 	static readonly TEMPLATE_ID = 'paradisWorktree';
 	readonly templateId = WorktreeRenderer.TEMPLATE_ID;
 
 	constructor(
-		private readonly isActive: (worktree: IParadisWorktree) => boolean,
-		private readonly getBreakdown: (stateKey: string) => readonly ParadisAgentStatus[],
-		private readonly getDiffStat: (worktree: IParadisWorktree) => IParadisDiffStat | undefined,
-		private readonly getPrStatus: (worktree: IParadisWorktree) => IParadisPrStatus | undefined,
-		/** そのスペースのペインでエージェントが対話から検出した Issue URL (未検出なら空配列)。 */
-		private readonly getIssueUrls: (worktree: IParadisWorktree) => readonly string[],
-		private readonly getIssueStatus: (url: string) => IParadisIssueStatus | undefined,
-		private readonly getNoteSummary: (worktree: IParadisWorktree) => IParadisSpaceNoteSummary,
-		private readonly getRepositoryColorHex: (repositoryId: string) => string | undefined,
-		/** バックグラウンド作成が進行中なら、その工程ラベル (ブランチ名の代わりに出す) */
-		private readonly getPendingStage: (worktree: IParadisWorktree) => string | undefined,
-		private readonly isPinned: (worktree: IParadisWorktree) => boolean,
-		private readonly togglePin: (worktree: IParadisWorktree) => void,
-		/** ツリーのインデント1段ぶんの幅 (控え行を子行の位置に揃えるのに使う) */
-		private readonly getTreeIndent: () => number,
-		private readonly openPrUrl: (url: string) => void,
+		private readonly delegate: IWorktreeRowDelegate,
 		private readonly hoverService: IHoverService,
-		/** そのスペースへの切り替えが進行中か (チェックの代わりにスピナーを出す) */
-		private readonly isSwitchTarget: (worktree: IParadisWorktree) => boolean,
-		/** メタ段の表示/並び順/寄せの現在設定 (paradis.workspaceSwitch.rowMeta) */
-		private readonly getMetaEntries: () => readonly IParadisWorktreeMetaEntry[],
-		/**
-		 * その行が実際にどのメタ情報を持っているか。行の高さを決める WorkspaceTreeDelegate と
-		 * **同じ Map** を読む。既定値を持たせない (片方だけ渡した実装が高さと中身を食い違わせ、
-		 * 3段の中身が2段の高さに押し込まれる形で静かに壊れるため)。
-		 */
-		private readonly getMetaPresence: (worktree: IParadisWorktree) => IParadisWorktreeMetaPresence,
 		/** メタ段の「プロンプトキャッシュの残り時間」の枠を作る係 (agentInsights) */
 		private readonly promptCacheChips: ParadisPromptCacheChips,
-		/** ドットのホバーに足すサブエージェント一覧の材料 (スペースに確実に属するペインだけ) */
-		private readonly getScopePanes: (stateKey: string) => readonly IParadisAgentScopePane[],
-		/** 行の「…」を押したとき、右クリックと同じメニューをその下に出す */
-		private readonly showWorktreeMenu: (worktree: IParadisWorktree, anchor: HTMLElement) => void,
 	) { }
 
 	/**
@@ -942,17 +987,7 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		const prIcon = DOM.append(pr, DOM.$('.codicon'));
 		const prNumber = DOM.append(pr, DOM.$('span.paradis-worktree-pr-number'));
 		const prContext: { url?: string } = {};
-		for (const eventType of [DOM.EventType.MOUSE_DOWN, DOM.EventType.CLICK]) {
-			templateDisposables.add(DOM.addDisposableListener(pr, eventType, event => {
-				if (!prContext.url) {
-					return;
-				}
-				DOM.EventHelper.stop(event, true);
-				if (eventType === DOM.EventType.CLICK) {
-					this.openPrUrl(prContext.url);
-				}
-			}));
-		}
+		addRowButtonListeners(templateDisposables, pr, () => prContext.url, url => this.delegate.openPrUrl(url));
 		const prHover = templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), pr, ''));
 		// 検出済み Issue のマーク。PR チップのすぐ隣 (同じ下段) に置く。番号は持たず、
 		// アイコン＋件数のみ（メモ件数バッジと同じ語彙）。行の切り替えには繋げず、
@@ -987,17 +1022,7 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		const pinContext: { worktree?: IParadisWorktree } = {};
 		const pin = DOM.append(row, DOM.$('.paradis-worktree-pin'));
 		const pinIcon = DOM.append(pin, DOM.$('.codicon'));
-		for (const eventType of [DOM.EventType.MOUSE_DOWN, DOM.EventType.CLICK]) {
-			templateDisposables.add(DOM.addDisposableListener(pin, eventType, event => {
-				if (!pinContext.worktree) {
-					return;
-				}
-				DOM.EventHelper.stop(event, true);
-				if (eventType === DOM.EventType.CLICK) {
-					this.togglePin(pinContext.worktree);
-				}
-			}));
-		}
+		addRowButtonListeners(templateDisposables, pin, () => pinContext.worktree, worktree => this.delegate.togglePin(worktree));
 		const pinHover = templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), pin, ''));
 		// 行の「…」。1 段目の点の右に置き、ピンと同じく行のクリック (切り替え) へ届く前に止める
 		const more = DOM.append(line1, DOM.$('.paradis-worktree-more'));
@@ -1009,39 +1034,29 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		more.setAttribute('aria-label', moreLabel);
 		DOM.append(more, DOM.$(ThemeIcon.asCSSSelector(Codicon.ellipsis)));
 		templateDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), more, moreLabel));
-		for (const eventType of [DOM.EventType.MOUSE_DOWN, DOM.EventType.CLICK]) {
-			templateDisposables.add(DOM.addDisposableListener(more, eventType, event => {
-				if (!pinContext.worktree) {
-					return;
-				}
-				DOM.EventHelper.stop(event, true);
-				if (eventType === DOM.EventType.CLICK) {
-					this.showWorktreeMenu(pinContext.worktree, more);
-				}
-			}));
-		}
+		addRowButtonListeners(templateDisposables, more, () => pinContext.worktree, worktree => this.delegate.showWorktreeMenu(worktree, more));
 		return { more, row, icon, name, branch, meta, metaSpacer, metaElements: new Map<ParadisWorktreeMetaId, HTMLElement>([['pr', pr], ['issues', issue], ['diff', diff], ['notes', note], ['promptCache', promptCache.element]]), dots, dotsHover, pr, prIcon, prNumber, prHover, prContext, issue, issueCount, issueHover, note, noteCount, noteHover, diff, diffAdded, diffRemoved, promptCache, pin, pinIcon, pinHover, pinContext, templateDisposables };
 	}
 
 	renderElement(node: ITreeNode<IParadisWorktree, FuzzyScore>, _index: number, templateData: IWorktreeTemplateData): void {
 		const worktree = node.element;
-		const active = this.isActive(worktree);
+		const active = this.delegate.isActive(worktree);
 		// 案E のメタ段。並びは設定 (rowMeta) が、出す/出さないは「設定で表示 かつ その行が実際に持っている」
 		// の両方が揃ったときだけ。1つも残らなければ段ごと隠れ、行は2段 (44px) に戻る
 		// (高さ側の判定は WorkspaceTreeDelegate.getHeight が同じ getMetaPresence で行う)
-		const metaEntries = this.getMetaEntries();
-		const metaPresence = worktree.missing ? PARADIS_NO_WORKTREE_META : this.getMetaPresence(worktree);
+		const metaEntries = this.delegate.getMetaEntries();
+		const metaPresence = worktree.missing ? PARADIS_NO_WORKTREE_META : this.delegate.getMetaPresence(worktree);
 		this.applyMetaOrder(templateData, metaEntries);
 		templateData.meta.classList.toggle('hidden', !paradisWorktreeRowHasMeta(metaEntries, metaPresence));
 		// この行への切り替えが進行中。チェックはもう付いている (active) が、まだ着いていないことを
 		// 同時に伝える必要があるので、アイコンだけスピナーに差し替える
-		const switching = !worktree.missing && this.isSwitchTarget(worktree);
+		const switching = !worktree.missing && this.delegate.isSwitchTarget(worktree);
 		// 作成直後で setup 等がまだ走っている間は、エージェント状態の有無に関わらず稼働中として見せる
-		const pendingStage = worktree.missing ? undefined : this.getPendingStage(worktree);
+		const pendingStage = worktree.missing ? undefined : this.delegate.getPendingStage(worktree);
 		// 作成中は実際のエージェント状態がまだ無いので、1体が動いている扱いで見せる
 		const breakdown: readonly ParadisAgentStatus[] = worktree.missing ? []
 			: pendingStage !== undefined ? ['working']
-				: this.getBreakdown(worktreeStateKeyFor(worktree));
+				: this.delegate.getBreakdown(worktreeStateKeyFor(worktree));
 		const fallback = worktree.missing ? Codicon.warning : active ? Codicon.check : worktree.isMainCheckout ? Codicon.repo : Codicon.gitBranch;
 		// 左のアイコンは行の種類（今いる・本体・ワークツリー・消えた）だけを出し、エージェントの状態は右の点に
 		// まとめる（Q537 の 51 A）。切り替え中だけは回転を許す。常時動くエージェント状態と違って、ユーザーが
@@ -1054,7 +1069,7 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		// サブエージェントはホバーしたときだけ一覧で出す (常時表示はしない)。中身は出す直前に組み立てる
 		const stateKey = worktreeStateKeyFor(worktree);
 		templateData.dotsHover.update(worktree.missing || breakdown.length === 0 ? dotsTooltip : {
-			markdown: async () => paradisScopeSubagentsHoverMarkdown(dotsTooltip, this.getScopePanes(stateKey), Date.now()) ?? dotsTooltip,
+			markdown: async () => paradisScopeSubagentsHoverMarkdown(dotsTooltip, this.delegate.getScopePanes(stateKey), Date.now()) ?? dotsTooltip,
 			markdownNotSupportedFallback: dotsTooltip,
 		});
 		// ドットは色と明滅だけで状態を表すので、支援技術向けに同じ内容を文字でも持たせる
@@ -1076,9 +1091,9 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		// ツリーは兄弟の深さで字下げするため、本来の深さとの差 (keepLevels 段) だけ自分で寄せる
 		const keep = isPinnedKeep(worktree);
 		templateData.row.classList.toggle('paradis-pinned-keep', keep);
-		templateData.row.style.paddingLeft = keep ? `${worktree.keepLevels * this.getTreeIndent()}px` : '';
+		templateData.row.style.paddingLeft = keep ? `${worktree.keepLevels * this.delegate.getTreeIndent()}px` : '';
 
-		const pinned = this.isPinned(worktree);
+		const pinned = this.delegate.isPinned(worktree);
 		templateData.pinContext.worktree = worktree;
 		templateData.pin.classList.toggle('pinned', pinned);
 		templateData.pinIcon.className = ThemeIcon.asClassName(pinned ? Codicon.pinned : Codicon.pin);
@@ -1090,10 +1105,10 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 
 		// リポジトリ見出し行と同じ色を worktree 行にも継続させる (RepositoryRenderer.renderElement 参照)。
 		// 別要素の .monaco-tl-row なのでカスタムプロパティは継承されず、ここで明示的に設定する必要がある
-		const colorHex = this.getRepositoryColorHex(worktree.repositoryId);
+		const colorHex = this.delegate.getRepositoryColorHex(worktree.repositoryId);
 		templateData.row.closest<HTMLElement>('.monaco-tl-row')?.style.setProperty('--paradis-workspace-color', colorHex ?? 'transparent');
 
-		const diffStat = worktree.missing ? undefined : this.getDiffStat(worktree);
+		const diffStat = worktree.missing ? undefined : this.delegate.getDiffStat(worktree);
 		const hasDiff = !!diffStat && (diffStat.insertions > 0 || diffStat.deletions > 0);
 		templateData.diff.classList.toggle('hidden', !paradisWorktreeMetaShown(metaEntries, metaPresence, 'diff'));
 		if (hasDiff && diffStat) {
@@ -1110,7 +1125,7 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		templateData.promptCache.element.classList.toggle('hidden', !promptCacheShown);
 		templateData.promptCache.setScope(promptCacheShown ? stateKey : undefined);
 
-		const noteSummary = worktree.missing ? undefined : this.getNoteSummary(worktree);
+		const noteSummary = worktree.missing ? undefined : this.delegate.getNoteSummary(worktree);
 		const hasOpenTasks = !!noteSummary && noteSummary.open > 0;
 		templateData.note.classList.toggle('hidden', !paradisWorktreeMetaShown(metaEntries, metaPresence, 'notes'));
 		if (hasOpenTasks && noteSummary) {
@@ -1122,7 +1137,7 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 			templateData.noteHover.update('');
 		}
 
-		const prStatus = worktree.missing ? undefined : this.getPrStatus(worktree);
+		const prStatus = worktree.missing ? undefined : this.delegate.getPrStatus(worktree);
 		templateData.pr.classList.toggle('hidden', !paradisWorktreeMetaShown(metaEntries, metaPresence, 'pr'));
 		templateData.prContext.url = prStatus?.url;
 		for (const state of ['open', 'draft', 'merged', 'closed'] as const) {
@@ -1145,11 +1160,11 @@ class WorktreeRenderer implements ITreeRenderer<IParadisWorktree, FuzzyScore, IW
 		// Issueマーク: そのスペースにペイン(生存中、一時的なアイドルも含む)があるときだけ出す。
 		// 件数の変化がなくても getIssueUrls は毎回配列を作るため、空配列との比較で
 		// hidden の付け外しだけ行う。
-		const issueUrls = worktree.missing ? [] : this.getIssueUrls(worktree);
+		const issueUrls = worktree.missing ? [] : this.delegate.getIssueUrls(worktree);
 		templateData.issue.classList.toggle('hidden', !paradisWorktreeMetaShown(metaEntries, metaPresence, 'issues'));
 		if (issueUrls.length > 0) {
 			templateData.issueCount.textContent = String(issueUrls.length);
-			const content = issueHoverContent(issueUrls, this.getIssueStatus);
+			const content = issueHoverContent(issueUrls, url => this.delegate.getIssueStatus(url));
 			templateData.issueHover.update(content);
 			// マークはアイコン＋件数のみで文字情報が乏しいので、支援技術向けに同じ内容を
 			// aria-label でも持たせる (dots.ariaLabel と同じ考え方)。
@@ -1530,34 +1545,32 @@ export class ParadisWorkspacesView extends ViewPane {
 				}
 			},
 		}, this.hoverService);
-		const worktreeRenderer = new WorktreeRenderer(
+		const worktreeRenderer = new WorktreeRenderer({
 			// 切り替えの最中は行き先を「今ここ」として見せる。activeStateKey は folders が
 			// 入れ替わるまで切り替え元を指したままなので、そのまま使うと**遅い切り替えの間ずっと
 			// 前のスペースにチェックが付いたまま**になり、もう切り替わったものとして操作されてしまう
-			worktree => (this.workspaceSwitchService.pendingSwitchTargetKey ?? this.workspaceSwitchService.activeStateKey) === worktreeStateKeyFor(worktree),
+			isActive: worktree => (this.workspaceSwitchService.pendingSwitchTargetKey ?? this.workspaceSwitchService.activeStateKey) === worktreeStateKeyFor(worktree),
 			getBreakdown,
-			worktree => this._diffStats.get(worktree.uri.fsPath),
-			worktree => this._prStatuses.get(worktree.uri.fsPath),
-			worktree => this.agentStatusStore.getScopeIssueUrls(worktreeStateKeyFor(worktree)),
-			url => this._issueStatuses.get(url),
-			worktree => this.spaceNotesService.summary(worktreeStateKeyFor(worktree)),
-			repositoryId => paradisWorkspaceColorHex(this.workspaceSwitchService.repositories.find(repository => repository.id === repositoryId)?.color),
-			worktree => this.pendingStageFor(worktree),
-			worktree => this.worktreeService.isPinned(worktreeStateKeyFor(worktree)),
-			worktree => this.togglePin(worktree),
-			() => this.effectiveTreeIndent(),
-			url => { this.openerService.open(URI.parse(url)).catch(error => this.notificationService.error(error)); },
-			this.hoverService,
-			worktree => this.workspaceSwitchService.pendingSwitchTargetKey === worktreeStateKeyFor(worktree),
-			() => this.rowMeta,
-			worktree => this.worktreeMetaPresence(worktree),
-			promptCacheChips,
-			stateKey => this.agentInsightsService.getScopePanes(stateKey),
-			(worktree, anchor) => this.contextMenuService.showContextMenu({
+			getDiffStat: worktree => this._diffStats.get(worktree.uri.fsPath),
+			getPrStatus: worktree => this._prStatuses.get(worktree.uri.fsPath),
+			getIssueUrls: worktree => this.agentStatusStore.getScopeIssueUrls(worktreeStateKeyFor(worktree)),
+			getIssueStatus: url => this._issueStatuses.get(url),
+			getNoteSummary: worktree => this.spaceNotesService.summary(worktreeStateKeyFor(worktree)),
+			getRepositoryColorHex: repositoryId => paradisWorkspaceColorHex(this.workspaceSwitchService.repositories.find(repository => repository.id === repositoryId)?.color),
+			getPendingStage: worktree => this.pendingStageFor(worktree),
+			isPinned: worktree => this.worktreeService.isPinned(worktreeStateKeyFor(worktree)),
+			togglePin: worktree => this.togglePin(worktree),
+			getTreeIndent: () => this.effectiveTreeIndent(),
+			openPrUrl: url => { this.openerService.open(URI.parse(url)).catch(error => this.notificationService.error(error)); },
+			isSwitchTarget: worktree => this.workspaceSwitchService.pendingSwitchTargetKey === worktreeStateKeyFor(worktree),
+			getMetaEntries: () => this.rowMeta,
+			getMetaPresence: worktree => this.worktreeMetaPresence(worktree),
+			getScopePanes: stateKey => this.agentInsightsService.getScopePanes(stateKey),
+			showWorktreeMenu: (worktree, anchor) => this.contextMenuService.showContextMenu({
 				getAnchor: () => anchor,
 				getActions: () => this.buildWorktreeContextMenuActions(worktree),
-			})
-		);
+			}),
+		}, this.hoverService, promptCacheChips);
 		const creatingRenderer = new CreatingSpaceRenderer(
 			repositoryId => paradisWorkspaceColorHex(this.workspaceSwitchService.repositories.find(repository => repository.id === repositoryId)?.color)
 		);
@@ -1806,13 +1819,8 @@ export class ParadisWorkspacesView extends ViewPane {
 	 */
 	private pollTargets(): URI[] {
 		const targets = new ResourceMap<URI>();
-		for (const repository of this.workspaceSwitchService.repositories) {
-			targets.set(repository.uri, repository.uri);
-			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
-				if (!worktree.missing) {
-					targets.set(worktree.uri, worktree.uri);
-				}
-			}
+		for (const { uri } of this.liveSpaces()) {
+			targets.set(uri, uri);
 		}
 		return [...targets.values()];
 	}
@@ -1822,12 +1830,11 @@ export class ParadisWorkspacesView extends ViewPane {
 	 */
 	private diffStatsTargets(): IParadisDiffStatsTarget[] {
 		const targets = new ResourceMap<IParadisDiffStatsTarget>();
-		for (const repository of this.workspaceSwitchService.repositories) {
-			targets.set(repository.uri, { uri: repository.uri, gitDir: joinPath(repository.uri, '.git') });
-			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
-				if (!worktree.missing && !targets.has(worktree.uri)) {
-					targets.set(worktree.uri, { uri: worktree.uri, gitDir: worktree.isMainCheckout ? joinPath(worktree.uri, '.git') : worktree.gitDir });
-				}
+		for (const { worktree, uri } of this.liveSpaces()) {
+			if (!worktree) {
+				targets.set(uri, { uri, gitDir: joinPath(uri, '.git') });
+			} else if (!targets.has(uri)) {
+				targets.set(uri, { uri, gitDir: worktree.isMainCheckout ? joinPath(uri, '.git') : worktree.gitDir });
 			}
 		}
 		return [...targets.values()];
@@ -1838,12 +1845,9 @@ export class ParadisWorkspacesView extends ViewPane {
 	 * ウィンドウの監視には映らないため（stage していなければ git のメタデータも書かれない）。
 	 */
 	private noteAgentStatusesForDiffStats(): void {
-		for (const repository of this.workspaceSwitchService.repositories) {
-			this._diffStatsTracker.markDirtyWhenChanged(repository.uri, this.agentStatusStore.getScopeBreakdown(repository.id).join(','));
-			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
-				if (!worktree.missing && !worktree.isMainCheckout) {
-					this._diffStatsTracker.markDirtyWhenChanged(worktree.uri, this.agentStatusStore.getScopeBreakdown(worktreeStateKeyFor(worktree)).join(','));
-				}
+		for (const { worktree, uri, stateKey } of this.liveSpaces()) {
+			if (!worktree?.isMainCheckout) {
+				this._diffStatsTracker.markDirtyWhenChanged(uri, this.agentStatusStore.getScopeBreakdown(stateKey).join(','));
 			}
 		}
 	}
@@ -1857,14 +1861,9 @@ export class ParadisWorkspacesView extends ViewPane {
 		if (activeStateKey === undefined) {
 			return undefined;
 		}
-		for (const repository of this.workspaceSwitchService.repositories) {
-			if (repository.id === activeStateKey) {
-				return repository.uri;
-			}
-			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
-				if (!worktree.missing && worktreeStateKeyFor(worktree) === activeStateKey) {
-					return worktree.uri;
-				}
+		for (const { uri, stateKey } of this.liveSpaces()) {
+			if (stateKey === activeStateKey) {
+				return uri;
 			}
 		}
 		return undefined;
@@ -1873,13 +1872,8 @@ export class ParadisWorkspacesView extends ViewPane {
 	/** PR・Issue の問い合わせ対象の指紋（paradisGithubTargetsFingerprint）。 */
 	private githubTargetsFingerprint(): string {
 		const targets: { uri: string; branch: string | undefined }[] = [];
-		for (const repository of this.workspaceSwitchService.repositories) {
-			targets.push({ uri: repository.uri.toString(), branch: this.worktreeService.getRepositoryBranch(repository.id) });
-			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
-				if (!worktree.missing) {
-					targets.push({ uri: worktree.uri.toString(), branch: worktree.branch });
-				}
-			}
+		for (const { repository, worktree, uri } of this.liveSpaces()) {
+			targets.push({ uri: uri.toString(), branch: worktree ? worktree.branch : this.worktreeService.getRepositoryBranch(repository.id) });
 		}
 		return paradisGithubTargetsFingerprint(targets, this.activePollTarget()?.toString());
 	}
@@ -1932,27 +1926,38 @@ export class ParadisWorkspacesView extends ViewPane {
 	 */
 	private pollIssueTargets(): { resource: UriComponents; issueUrls: readonly string[] }[] {
 		const targets: { resource: UriComponents; issueUrls: readonly string[] }[] = [];
-		for (const repository of this.workspaceSwitchService.repositories) {
-			// main checkout は getWorktrees() に含まれず、updateTree() が毎回合成行として描き足す
-			// (WorktreeRenderer 参照)。ここでも同じ合成をしないと、main checkout での対話から
-			// 検出した Issue が一覧には表示されるのに永遠に番号・タイトルへ解決されなくなる
-			// (実機で確認: 表示側は worktreeStateKeyFor(合成行) を見るのに、ポーリング側は
-			// getWorktrees() だけを見ていて main checkout を素通りしていた)。
-			const mainCheckoutIssueUrls = this.agentStatusStore.getScopeIssueUrls(repository.id);
-			if (mainCheckoutIssueUrls.length > 0) {
-				targets.push({ resource: repository.uri, issueUrls: mainCheckoutIssueUrls });
-			}
-			for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
-				if (worktree.missing) {
-					continue;
-				}
-				const issueUrls = this.agentStatusStore.getScopeIssueUrls(worktreeStateKeyFor(worktree));
-				if (issueUrls.length > 0) {
-					targets.push({ resource: worktree.uri, issueUrls });
-				}
+		// main checkout は getWorktrees() に含まれず、updateTree() が毎回合成行として描き足す
+		// (WorktreeRenderer 参照)。ここでも本体を含めないと、main checkout での対話から
+		// 検出した Issue が一覧には表示されるのに永遠に番号・タイトルへ解決されなくなる
+		// (実機で確認: 表示側は worktreeStateKeyFor(合成行) を見るのに、ポーリング側は
+		// getWorktrees() だけを見ていて main checkout を素通りしていた)。liveSpaces() は本体も返す。
+		for (const { uri, stateKey } of this.liveSpaces()) {
+			const issueUrls = this.agentStatusStore.getScopeIssueUrls(stateKey);
+			if (issueUrls.length > 0) {
+				targets.push({ resource: uri, issueUrls });
 			}
 		}
 		return targets;
+	}
+
+	/**
+	 * リポジトリの本体 (worktree は undefined、鍵は repository.id) と、実体のある (missing でない) worktree を、本体を先に返す。
+	 * main checkout は getWorktrees() に含まれないので、スペースを数え上げる所はこれを通して本体を含め忘れないようにする。
+	 */
+	private *liveSpacesOf(repository: IParadisWorkspaceRepository): Iterable<ILiveSpace> {
+		yield { repository, worktree: undefined, uri: repository.uri, stateKey: repository.id };
+		for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
+			if (!worktree.missing) {
+				yield { repository, worktree, uri: worktree.uri, stateKey: worktreeStateKeyFor(worktree) };
+			}
+		}
+	}
+
+	/** 登録済みの全リポジトリの liveSpacesOf を、一覧の順に続けて返す。 */
+	private *liveSpaces(): Iterable<ILiveSpace> {
+		for (const repository of this.workspaceSwitchService.repositories) {
+			yield* this.liveSpacesOf(repository);
+		}
 	}
 
 	/**
@@ -2272,13 +2277,10 @@ export class ParadisWorkspacesView extends ViewPane {
 			}
 			statuses.push(...this.agentStatusStore.getScopeBreakdown(stateKey));
 		};
-		collect(repository.id);
-		for (const worktree of this.worktreeService.getWorktrees(repository.id)) {
-			if (!worktree.missing) {
-				// 行側と同じキー導出を使う (getWorktrees は main checkout を含まないが、
-				// 将来含むようになったときに要約だけが別のキーを引いてズレないようにする)
-				collect(worktreeStateKeyFor(worktree));
-			}
+		// worktree は行側と同じキー導出 (worktreeStateKeyFor) を使う (getWorktrees は main checkout を含まないが、
+		// 将来含むようになったときに要約だけが別のキーを引いてズレないようにする)
+		for (const { stateKey } of this.liveSpacesOf(repository)) {
+			collect(stateKey);
 		}
 		// まだ実体が無い作成中ジョブ (専用の「作成中」行として出ているもの)
 		for (const job of this.createProgressStore.jobs) {
@@ -2505,22 +2507,8 @@ export class ParadisWorkspacesView extends ViewPane {
 			new Separator(),
 			// 色は名前の前の点にだけ使う（左端の線はプロジェクトの色のまま、Q601-3）
 			...this.buildColorActions(section.color, color => this.sectionsService.setSectionColor(section.id, color)),
-			new Action(
-				'paradis.workspaceSections.moveUp',
-				// allow-any-unicode-next-line
-				localize('paradis.workspaceSwitch.moveUp', "上へ移動"),
-				'paradis-menu-icon codicon codicon-arrow-up',
-				index > 0,
-				() => this.sectionsService.moveSection(section.id, -1)
-			),
-			new Action(
-				'paradis.workspaceSections.moveDown',
-				// allow-any-unicode-next-line
-				localize('paradis.workspaceSwitch.moveDown', "下へ移動"),
-				'paradis-menu-icon codicon codicon-arrow-down',
-				index >= 0 && index < sections.length - 1,
-				() => this.sectionsService.moveSection(section.id, 1)
-			),
+			...moveActions('paradis.workspaceSections.moveUp', 'paradis.workspaceSections.moveDown', index > 0, index >= 0 && index < sections.length - 1,
+				direction => this.sectionsService.moveSection(section.id, direction)),
 			new Separator(),
 			this.newSectionAction(),
 			new Separator(),
@@ -2563,22 +2551,9 @@ export class ParadisWorkspacesView extends ViewPane {
 			this.buildMoveToSectionAction(repository),
 			new Separator(),
 			// 上へ・下へは同じセクションの中だけで動かす（境目を越えると台帳だけが動いて見た目が変わらない）
-			new Action(
-				'paradis.workspaceSwitch.repository.moveUp',
-				// allow-any-unicode-next-line
-				localize('paradis.workspaceSwitch.moveUp', "上へ移動"),
-				'paradis-menu-icon codicon codicon-arrow-up',
-				this.sectionsService.canMoveRepositoryWithinSection(repository.id, -1),
-				() => this.sectionsService.moveRepositoryWithinSection(repository.id, -1)
-			),
-			new Action(
-				'paradis.workspaceSwitch.repository.moveDown',
-				// allow-any-unicode-next-line
-				localize('paradis.workspaceSwitch.moveDown', "下へ移動"),
-				'paradis-menu-icon codicon codicon-arrow-down',
-				this.sectionsService.canMoveRepositoryWithinSection(repository.id, 1),
-				() => this.sectionsService.moveRepositoryWithinSection(repository.id, 1)
-			),
+			...moveActions('paradis.workspaceSwitch.repository.moveUp', 'paradis.workspaceSwitch.repository.moveDown',
+				this.sectionsService.canMoveRepositoryWithinSection(repository.id, -1), this.sectionsService.canMoveRepositoryWithinSection(repository.id, 1),
+				direction => this.sectionsService.moveRepositoryWithinSection(repository.id, direction)),
 			new Separator(),
 			new Action(
 				'paradis.workspaceSwitch.reveal',
@@ -2700,23 +2675,10 @@ export class ParadisWorkspacesView extends ViewPane {
 				// allow-any-unicode-next-line
 				localize('paradis.workspaceSwitch.rowMeta.arrange', "{0}の並び", paradisWorktreeMetaLabel(entry.id)),
 				[
-					new Action(
-						`paradis.workspaceSwitch.rowMeta.moveUp.${entry.id}`,
-						// allow-any-unicode-next-line
-						localize('paradis.workspaceSwitch.moveUp', "上へ移動"),
-						'paradis-menu-icon codicon codicon-arrow-up',
-						// 動かせるのは同じ寄せの中だけ。押しても見た目が変わらない状態では出さない
-						paradisCanMoveWorktreeMeta(entries, entry.id, -1),
-						() => setEntries(paradisMoveWorktreeMeta(entries, entry.id, -1))
-					),
-					new Action(
-						`paradis.workspaceSwitch.rowMeta.moveDown.${entry.id}`,
-						// allow-any-unicode-next-line
-						localize('paradis.workspaceSwitch.moveDown', "下へ移動"),
-						'paradis-menu-icon codicon codicon-arrow-down',
-						paradisCanMoveWorktreeMeta(entries, entry.id, 1),
-						() => setEntries(paradisMoveWorktreeMeta(entries, entry.id, 1))
-					),
+					// 動かせるのは同じ寄せの中だけ。押しても見た目が変わらない状態では出さない
+					...moveActions(`paradis.workspaceSwitch.rowMeta.moveUp.${entry.id}`, `paradis.workspaceSwitch.rowMeta.moveDown.${entry.id}`,
+						paradisCanMoveWorktreeMeta(entries, entry.id, -1), paradisCanMoveWorktreeMeta(entries, entry.id, 1),
+						direction => setEntries(paradisMoveWorktreeMeta(entries, entry.id, direction))),
 					new Separator(),
 					left,
 					right
@@ -2833,22 +2795,8 @@ export class ParadisWorkspacesView extends ViewPane {
 		if (!isPinnedKeep(worktree)) {
 			actions.push(
 				new Separator(),
-				new Action(
-					'paradis.workspaceSwitch.worktree.moveUp',
-					// allow-any-unicode-next-line
-					localize('paradis.workspaceSwitch.moveUp', "上へ移動"),
-					'paradis-menu-icon codicon codicon-arrow-up',
-					index > 0,
-					() => this.moveWorktree(worktree, -1)
-				),
-				new Action(
-					'paradis.workspaceSwitch.worktree.moveDown',
-					// allow-any-unicode-next-line
-					localize('paradis.workspaceSwitch.moveDown', "下へ移動"),
-					'paradis-menu-icon codicon codicon-arrow-down',
-					index >= 0 && index < siblings.length - 1,
-					() => this.moveWorktree(worktree, 1)
-				)
+				...moveActions('paradis.workspaceSwitch.worktree.moveUp', 'paradis.workspaceSwitch.worktree.moveDown', index > 0, index >= 0 && index < siblings.length - 1,
+					direction => this.moveWorktree(worktree, direction))
 			);
 		}
 
@@ -2895,17 +2843,23 @@ export class ParadisWorkspacesView extends ViewPane {
 	}
 
 	private async promptRename(repository: IParadisWorkspaceRepository): Promise<void> {
+		const name = await this.promptName(repository.name, localize('paradis.workspaceSwitch.renamePrompt', "このリポジトリの新しい名前を入力してください"));
+		if (name !== undefined) {
+			await this.workspaceSwitchService.renameRepository(repository.id, name);
+		}
+	}
+
+	/** 名前を変える入力欄。今の名前を全選択で出し、空でない入力を前後の空白を除いて返す (取り消しは undefined)。 */
+	private async promptName(current: string, prompt: string): Promise<string | undefined> {
 		const name = await this.quickInputService.input({
-			value: repository.name,
-			valueSelection: [0, repository.name.length],
-			prompt: localize('paradis.workspaceSwitch.renamePrompt', "このリポジトリの新しい名前を入力してください"),
+			value: current,
+			valueSelection: [0, current.length],
+			prompt,
 			validateInput: async value => value.trim()
 				? undefined
 				: localize('paradis.workspaceSwitch.renameEmpty', "名前を空にすることはできません")
 		});
-		if (name !== undefined && name.trim()) {
-			await this.workspaceSwitchService.renameRepository(repository.id, name.trim());
-		}
+		return name !== undefined && name.trim() ? name.trim() : undefined;
 	}
 
 	/**
@@ -2925,16 +2879,9 @@ export class ParadisWorkspacesView extends ViewPane {
 	}
 
 	private async promptRenameWorktree(worktree: IParadisWorktree): Promise<void> {
-		const name = await this.quickInputService.input({
-			value: worktree.name,
-			valueSelection: [0, worktree.name.length],
-			prompt: localize('paradis.workspaceSwitch.worktreeRenamePrompt', "このワークツリーの新しい名前を入力してください"),
-			validateInput: async value => value.trim()
-				? undefined
-				: localize('paradis.workspaceSwitch.renameEmpty', "名前を空にすることはできません")
-		});
-		if (name !== undefined && name.trim()) {
-			this.worktreeService.addKnownWorktree({ ...worktree, name: name.trim() });
+		const name = await this.promptName(worktree.name, localize('paradis.workspaceSwitch.worktreeRenamePrompt', "このワークツリーの新しい名前を入力してください"));
+		if (name !== undefined) {
+			this.worktreeService.addKnownWorktree({ ...worktree, name });
 		}
 	}
 }
