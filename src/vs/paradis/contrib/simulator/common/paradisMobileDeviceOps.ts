@@ -399,3 +399,12 @@ function clampInside(point: IParadisPoint, size: IParadisPointSize): IParadisPoi
 		y: Math.round(Math.min(size.height - marginY, Math.max(marginY, point.y)) * 10) / 10,
 	};
 }
+
+/** ツールの引数から有限の数を読む。無い・数でないときは投げる。 */
+export function paradisRequireNumber(body: Record<string, unknown>, name: string): number {
+	const value = body[name];
+	if (typeof value !== 'number' || !Number.isFinite(value)) {
+		throw new Error(`"${name}" must be a number.`);
+	}
+	return value;
+}

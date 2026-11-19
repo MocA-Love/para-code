@@ -11,6 +11,7 @@
 // 頼らず、生のトークン列（<A>/<Hn>/<DL>/<DT>）を正規表現で走査してツリーを復元する。
 
 import { createTrustedTypesPolicy } from '../../../../base/browser/trustedTypes.js';
+import { paradisEscapeHtml } from '../../../common/paradisEscapeHtml.js';
 import {
 	IParadisImportedFolder,
 	isParadisBookmark,
@@ -19,33 +20,25 @@ import {
 	ParadisImportedNode,
 } from '../common/paradisBookmarkModel.js';
 
-function escapeHtml(value: string): string {
-	return value
-		.replaceAll('&', '&amp;')
-		.replaceAll('<', '&lt;')
-		.replaceAll('>', '&gt;')
-		.replaceAll('"', '&quot;');
-}
-
 function buildBookmarkHtml(node: ParadisBookmarkNode, getFavicon: (hash: string | undefined) => string | undefined, depth = 1): string {
 	const indent = '    '.repeat(depth);
 
 	if (isParadisBookmark(node)) {
 		const parts = [
-			`${indent}<DT><A HREF="${escapeHtml(node.url)}"`,
+			`${indent}<DT><A HREF="${paradisEscapeHtml(node.url)}"`,
 			` ADD_DATE="${Math.floor(node.createdAt / 1000)}"`,
 		];
 		const favicon = getFavicon(node.faviconHash);
 		if (favicon) {
-			parts.push(` ICON="${escapeHtml(favicon)}"`);
+			parts.push(` ICON="${paradisEscapeHtml(favicon)}"`);
 		}
-		parts.push(`>${escapeHtml(node.title || node.url)}</A>\n`);
+		parts.push(`>${paradisEscapeHtml(node.title || node.url)}</A>\n`);
 		return parts.join('');
 	}
 
 	const title = node.title.trim() || 'Untitled Folder';
 	return [
-		`${indent}<DT><H3 ADD_DATE="${Math.floor(node.createdAt / 1000)}">${escapeHtml(title)}</H3>\n`,
+		`${indent}<DT><H3 ADD_DATE="${Math.floor(node.createdAt / 1000)}">${paradisEscapeHtml(title)}</H3>\n`,
 		`${indent}<DL><p>\n`,
 		...node.children.map(child => buildBookmarkHtml(child, getFavicon, depth + 1)),
 		`${indent}</DL><p>\n`,

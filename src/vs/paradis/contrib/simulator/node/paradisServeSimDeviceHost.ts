@@ -22,8 +22,8 @@ import { tmpdir } from 'os';
 import { join } from '../../../../base/common/path.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, PARADIS_SIMULATOR_DEVICE_ID_PREFIX, PARADIS_SIMULATOR_ORIENTATIONS, ParadisSimulatorOrientation, paradisResolveSimulatorButton, paradisSimulatorButtonNames, paradisSimulatorUdidOfDeviceId } from '../common/paradisSimulator.js';
-import { paradisFindSimulatorAx, paradisMarkTypedSimulatorField, paradisNormalizeSimulatorAx, paradisPickSimulatorAxTarget, paradisSimulatorFieldValues, IParadisSimulatorAxSnapshot } from '../common/paradisSimulatorAx.js';
-import { paradisPngSize } from '../common/paradisMobileDeviceOps.js';
+import { paradisFindSimulatorAx, paradisMarkTypedSimulatorField, paradisNormalizeSimulatorAx, paradisPickSimulatorAxTarget, paradisSimulatorFieldValues, IParadisSimulatorAxSnapshot, paradisSimulatorAxQueryOf } from '../common/paradisSimulatorAx.js';
+import { paradisPngSize, paradisRequireNumber } from '../common/paradisMobileDeviceOps.js';
 import { paradisSimulatorButtonFrame, paradisSimulatorKeyFrame, paradisSimulatorMultiTouchFrame, paradisSimulatorRotateFrame, paradisSimulatorTouchFrame } from '../common/paradisSimulatorFrames.js';
 import { paradisSimulatorDisplayGeometry, paradisSimulatorDuoPanel, paradisSimulatorKeystrokes, paradisSimulatorRawPoint } from '../common/paradisSimulatorInput.js';
 import { ParadisServeSimBackend } from './paradisServeSimBackend.js';
@@ -110,14 +110,6 @@ function record(value: unknown): Record<string, unknown> {
 	return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-function requireNumber(body: Record<string, unknown>, name: string): number {
-	const value = body[name];
-	if (typeof value !== 'number' || !Number.isFinite(value)) {
-		throw new Error(`"${name}" must be a number.`);
-	}
-	return value;
-}
-
 function hyphenOrientation(orientation: string): string {
 	return orientation.replace(/_/g, '-');
 }
@@ -187,11 +179,11 @@ export class ParadisServeSimDeviceHost {
 				return before ? paradisMarkTypedSimulatorField(snapshot, before) : snapshot;
 			}
 			case 'POST /ui/find':
-				return paradisFindSimulatorAx(await this._snapshot(udid), this._query(args));
+				return paradisFindSimulatorAx(await this._snapshot(udid), paradisSimulatorAxQueryOf(args));
 			case 'POST /ui/tap':
 				return this._uiTap(deviceId, udid, args, signal);
 			case 'POST /input/tap':
-				await this._tap(deviceId, udid, requireNumber(args, 'x'), requireNumber(args, 'y'), typeof args.duration === 'number' ? args.duration : TAP_SECONDS, signal);
+				await this._tap(deviceId, udid, paradisRequireNumber(args, 'x'), paradisRequireNumber(args, 'y'), typeof args.duration === 'number' ? args.duration : TAP_SECONDS, signal);
 				return undefined;
 			case 'POST /input/swipe':
 				await this._swipe(deviceId, udid, args, signal);
@@ -290,19 +282,8 @@ export class ParadisServeSimDeviceHost {
 		return paradisNormalizeSimulatorAx(await this._backend.getAccessibilityTree(udid));
 	}
 
-	private _query(args: Record<string, unknown>) {
-		return {
-			text: typeof args.text === 'string' && args.text ? args.text : undefined,
-			identifier: typeof args.identifier === 'string' && args.identifier ? args.identifier : undefined,
-			role: typeof args.role === 'string' && args.role ? args.role : undefined,
-			exact: args.exact === true,
-			interactableOnly: args.interactableOnly === true,
-			limit: typeof args.limit === 'number' ? args.limit : 20,
-		};
-	}
-
 	private async _uiTap(deviceId: string, udid: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
-		const found = paradisFindSimulatorAx(await this._snapshot(udid), { ...this._query(args), limit: 200 });
+		const found = paradisFindSimulatorAx(await this._snapshot(udid), { ...paradisSimulatorAxQueryOf(args), limit: 200 });
 		const target = paradisPickSimulatorAxTarget(found.matches);
 		if (!target) {
 			throw new Error('No element on the screen matched. Call mobile_ui_find or mobile_ui_snapshot to see what is there.');
@@ -330,8 +311,8 @@ export class ParadisServeSimDeviceHost {
 	}
 
 	private async _swipe(deviceId: string, udid: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<void> {
-		const start = await this._normalize(deviceId, udid, requireNumber(args, 'startX'), requireNumber(args, 'startY'));
-		const end = await this._normalize(deviceId, udid, requireNumber(args, 'endX'), requireNumber(args, 'endY'));
+		const start = await this._normalize(deviceId, udid, paradisRequireNumber(args, 'startX'), paradisRequireNumber(args, 'startY'));
+		const end = await this._normalize(deviceId, udid, paradisRequireNumber(args, 'endX'), paradisRequireNumber(args, 'endY'));
 		const seconds = typeof args.duration === 'number' && args.duration > 0 ? Math.min(10, args.duration) : 0.4;
 		const steps = Math.max(2, Math.round(seconds * 1000 / SWIPE_STEP_MS));
 		await this._backend.send(udid, paradisSimulatorTouchFrame('begin', start.x, start.y));
@@ -411,7 +392,7 @@ export class ParadisServeSimDeviceHost {
 		if (!phase || (fingerId !== 0 && fingerId !== 1)) {
 			throw new Error('The new iOS simulator takes touches from fingers 0 and 1 with phase down, move or up.');
 		}
-		const point = await this._normalize(deviceId, udid, requireNumber(args, 'x'), requireNumber(args, 'y'));
+		const point = await this._normalize(deviceId, udid, paradisRequireNumber(args, 'x'), paradisRequireNumber(args, 'y'));
 		let fingers = this._fingers.get(udid);
 		if (!fingers) {
 			fingers = new Map();

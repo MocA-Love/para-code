@@ -24,25 +24,18 @@ export const PARADIS_SIMULATOR_EDITOR_ID = 'paradis.editor.simulator';
 export const PARADIS_SIMULATOR_INPUT_TYPE_ID = 'paradis.input.simulator';
 export const PARADIS_SIMULATOR_SCHEME = 'paradis-simulator';
 
-export class ParadisSimulatorEditorInput extends EditorInput {
+/** 端末のタブ（iOS のシミュレータ・Android の端末）に共通の、端末の名前と割り当てたターミナルの名前の持ち方。 */
+export abstract class ParadisDeviceEditorInput extends EditorInput {
 
-	static readonly ID = PARADIS_SIMULATOR_INPUT_TYPE_ID;
+	protected _assignedTerminals: readonly string[] = [];
 
-	readonly resource: URI;
-
-	constructor(
-		readonly udid: string,
-		private _deviceName: string,
-	) {
+	constructor(protected _deviceName: string) {
 		super();
-		this.resource = URI.from({ scheme: PARADIS_SIMULATOR_SCHEME, path: `/${udid}` });
 	}
 
 	get deviceName(): string {
 		return this._deviceName;
 	}
-
-	private _assignedTerminals: readonly string[] = [];
 
 	/** その端末を割り当てたターミナルの名前（タブの名前に添える。paradisSimulatorTabLabels.contribution.ts）。 */
 	get assignedTerminals(): readonly string[] {
@@ -55,6 +48,29 @@ export class ParadisSimulatorEditorInput extends EditorInput {
 		}
 		this._assignedTerminals = [...names];
 		this._onDidChangeLabel.fire();
+	}
+
+	/** 一覧から名前を読み直したとき（名前を変えた端末など）。 */
+	setDeviceName(name: string): void {
+		if (name && name !== this._deviceName) {
+			this._deviceName = name;
+			this._onDidChangeLabel.fire();
+		}
+	}
+}
+
+export class ParadisSimulatorEditorInput extends ParadisDeviceEditorInput {
+
+	static readonly ID = PARADIS_SIMULATOR_INPUT_TYPE_ID;
+
+	readonly resource: URI;
+
+	constructor(
+		readonly udid: string,
+		deviceName: string,
+	) {
+		super(deviceName);
+		this.resource = URI.from({ scheme: PARADIS_SIMULATOR_SCHEME, path: `/${udid}` });
 	}
 
 	private _bootRequested = false;
@@ -72,14 +88,6 @@ export class ParadisSimulatorEditorInput extends EditorInput {
 		const requested = this._bootRequested;
 		this._bootRequested = false;
 		return requested;
-	}
-
-	/** 一覧から名前を読み直したとき（名前を変えた端末など）。 */
-	setDeviceName(name: string): void {
-		if (name && name !== this._deviceName) {
-			this._deviceName = name;
-			this._onDidChangeLabel.fire();
-		}
 	}
 
 	override get typeId(): string {

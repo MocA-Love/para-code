@@ -153,6 +153,18 @@ export interface IParadisSimulatorAxQuery {
 	readonly limit?: number;
 }
 
+/** ツールの引数（`mobile_ui_find`・`mobile_ui_tap`）から、要素の探し方を読む。件数の既定は 20。 */
+export function paradisSimulatorAxQueryOf(args: Record<string, unknown>) {
+	return {
+		text: typeof args.text === 'string' && args.text ? args.text : undefined,
+		identifier: typeof args.identifier === 'string' && args.identifier ? args.identifier : undefined,
+		role: typeof args.role === 'string' && args.role ? args.role : undefined,
+		exact: args.exact === true,
+		interactableOnly: args.interactableOnly === true,
+		limit: typeof args.limit === 'number' ? args.limit : 20,
+	};
+}
+
 export interface IParadisSimulatorAxMatch {
 	readonly role: ParadisSimulatorAxRole;
 	readonly type: string;

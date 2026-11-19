@@ -7,6 +7,7 @@
 import type JSZip from 'jszip';
 import type { IParadisOfficeArchive } from '../../common/office/paradisOfficeArchive.js';
 import { createParadisOfficeNodeArchive } from '../office/paradisOfficeNodeArchive.js';
+import { paradisEscapeXmlAttribute, paradisUnescapeXmlAttribute } from './paradisSpreadsheetXmlAttribute.js';
 
 /** The package files the layout check reads: every relationships part and the content types part. */
 export interface IExcelJsPackageListing {
@@ -191,7 +192,7 @@ export function planExcelJsPackageLayout(listing: IExcelJsPackageListing): IExce
 			if (!sourceMoved && newPart === partName && !relationship.target.startsWith('/')) {
 				continue;
 			}
-			const target = escapeAttribute(relativeTarget(newDirectory, newPart));
+			const target = paradisEscapeXmlAttribute(relativeTarget(newDirectory, newPart));
 			rewrites.set(relationship.element, relationship.element.replace(/\bTarget\s*=\s*("[^"]*"|'[^']*')/, () => `Target="${target}"`));
 		}
 		const xml = listing.relationships.get(relsName)!;
@@ -233,23 +234,9 @@ function relationshipElements(xml: string): RelationshipElement[] {
 function attributeValue(element: string, name: string): string | undefined {
 	const match = new RegExp(`\\b${name}\\s*=\\s*(?:"(?<double>[^"]*)"|'(?<single>[^']*)')`).exec(element);
 	const raw = match?.groups?.double ?? match?.groups?.single;
-	return raw === undefined ? undefined : unescapeAttribute(raw);
+	return raw === undefined ? undefined : paradisUnescapeXmlAttribute(raw);
 }
 
-function unescapeAttribute(value: string): string {
-	return value.replace(/&(?:#x(?<hex>[0-9a-fA-F]+)|#(?<decimal>[0-9]+)|(?<named>amp|lt|gt|quot|apos));/g, (entity, ...args) => {
-		const groups = args[args.length - 1] as { hex?: string; decimal?: string; named?: string };
-		if (groups.hex !== undefined || groups.decimal !== undefined) {
-			const codePoint = groups.hex !== undefined ? parseInt(groups.hex, 16) : parseInt(groups.decimal!, 10);
-			return codePoint <= 0x10FFFF ? String.fromCodePoint(codePoint) : entity;
-		}
-		return { amp: '&', lt: '<', gt: '>', quot: '"', apos: '\'' }[groups.named as 'amp'];
-	});
-}
-
-function escapeAttribute(value: string): string {
-	return value.replace(/[&<"]/g, character => character === '&' ? '&amp;' : character === '<' ? '&lt;' : '&quot;');
-}
 
 function rewriteContentTypes(xml: string, moves: ReadonlyMap<string, string>): string {
 	const byLowerName = new Map<string, string>();
@@ -260,7 +247,7 @@ function rewriteContentTypes(xml: string, moves: ReadonlyMap<string, string>): s
 	return xml.replace(/<Override\b[^>]*>/g, element => {
 		const partName = attributeValue(element, 'PartName');
 		const moved = partName === undefined ? undefined : byLowerName.get(partName.toLowerCase());
-		return moved === undefined ? element : element.replace(/\bPartName\s*=\s*("[^"]*"|'[^']*')/, () => `PartName="${escapeAttribute(moved)}"`);
+		return moved === undefined ? element : element.replace(/\bPartName\s*=\s*("[^"]*"|'[^']*')/, () => `PartName="${paradisEscapeXmlAttribute(moved)}"`);
 	});
 }
 
