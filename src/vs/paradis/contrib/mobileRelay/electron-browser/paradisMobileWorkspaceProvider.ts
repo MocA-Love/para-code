@@ -49,7 +49,7 @@ import { Channels, decodeParadisMobileWarmLeaseRequest, encodeNotify, NotifyKind
 import { decodeParadisMobileOfficeRequest, getParadisMobileOfficeHostFeatureBits, paradisMobileOfficeCapabilities, PARADIS_MOBILE_OFFICE_PROTOCOL_VERSION, type ParadisMobileOfficeRequest, type ParadisMobileOfficeResponse } from '../common/paradisMobileOfficeProtocol.js';
 import { paradisNotifySubtitleCandidate, paradisNotifyTitle } from '../common/paradisNotifyPresentation.js';
 import { paradisPickNotifyInstance } from '../common/paradisNotifySource.js';
-import { IParadisGitResult, IParadisMobileDesktopBattery, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2, ParadisMobileTerminalOperationStatus, paradisResolveMobileTerminalStateKey } from '../common/paradisMobileRelay.js';
+import { PARADIS_MOBILE_RELAY_CHANNEL, IParadisGitResult, IParadisMobileDesktopBattery, IParadisMobileInboundFrame, IParadisMobileInboundFrame as InboundFrame, IParadisMobileWindowStateV2, IParadisMobileWindowWorkspaceV2, ParadisMobileTerminalOperationStatus, paradisResolveMobileTerminalStateKey } from '../common/paradisMobileRelay.js';
 import { IParadisMobileWindowHost } from '../common/paradisMobileHost.js';
 import { IParadisMobileLimitsSnapshot, paradisMobileLimitsClaudeFromLocal } from '../common/paradisMobileLimitsScope.js';
 import { IParadisCcusageDashboardData } from '../../ccusage/electron-browser/paradisCcusageClient.js';
@@ -93,9 +93,10 @@ import { paradisRedactMobileReplyError } from '../common/paradisMobileOutputReda
 import { PARADIS_MOBILE_FILE_READ_DEADLINE_MS, PARADIS_MOBILE_HOST_NO_RESPONSE_CODE, PARADIS_MOBILE_READ_DEADLINE_MS, PARADIS_MOBILE_STATUS_OPTIONAL_GRACE_MS, PARADIS_MOBILE_USAGE_DEADLINE_MS, paradisIsMobileHostNoResponse, paradisMobileHostErrorReply, paradisMobileUsageErrorReply, paradisSettleWithin, paradisWithCancellableHostDeadline, paradisWithHostDeadline } from '../common/paradisMobileHostDeadline.js';
 import { IParadisAgentQuestionKeyCheck, paradisCodexMobileApprovalKeys, paradisConfirmQuestionChecks, paradisReadQuestionKeyChecks } from '../common/paradisAgentQuestionKeys.js';
 import { IParadisAgentApprovalOption, PARADIS_APPROVAL_OPTIONS_WAIT_MS, paradisApprovalOptionsForMobile, paradisCodexApprovalFormShown, paradisMobileApprovalOptionKey, paradisParseApprovalOptions, paradisParsePermissionWarning, paradisReadExpectedApprovalOption } from '../common/paradisAgentApprovalOptions.js';
-import { PARADIS_ANTIGRAVITY_ANSWER_ON_PC_MESSAGE, PARADIS_ANTIGRAVITY_SEND_BLOCK_MESSAGES, paradisAntigravityPaneStatus, paradisAntigravitySendBlock } from '../../agentChat/common/paradisAgentChatActionSupport.js';
+import { PARADIS_ANTIGRAVITY_ANSWER_ON_PC_MESSAGE, PARADIS_ANTIGRAVITY_OTHER_CONVERSATION_MESSAGE, PARADIS_ANTIGRAVITY_SEND_BLOCK_MESSAGES, paradisAntigravityPaneStatus, paradisAntigravitySendBlock } from '../../agentChat/common/paradisAgentChatActionSupport.js';
 import { paradisLatestProgramStatus } from '../../agentBrowser/browser/paradisLatestProgramStatus.js';
-import { paradisTerminalRunsAntigravity } from '../../agentIde/browser/paradisAgentIdeTerminalInput.js';
+import { IParadisAntigravityPaneSession, paradisAntigravityPaneHoldsConversation } from '../common/paradisMobileAgentResume.js';
+import { paradisTerminalCommandEvidence, paradisTerminalRunsAntigravity } from '../../agentIde/browser/paradisAgentIdeTerminalInput.js';
 import { paradisPermissionPromptHash, paradisPermissionPromptParts, paradisClaudeResumeScreenPrompt, paradisScreenShowsClaudeYesNoPlanPrompt, paradisPromptRegionShows, paradisScreenShowsPermissionPrompt, PARADIS_CLAUDE_RESUME_SCREEN_PROMPT_NAMES, type ParadisClaudeResumeScreenPrompt, paradisSendAgentInteractionKeys, paradisVisibleTerminalLogicalText, paradisVisibleTerminalText } from '../../agentChat/browser/paradisAgentTuiInput.js';
 import { paradisCreateMobileUploadTarget, paradisResolveMobileWorkspacePath } from '../common/paradisMobileWorkspacePath.js';
 import { paradisIsInSearchDir, paradisSanitizeSearchDir } from '../common/paradisRemoteSearch.js';
@@ -1332,6 +1333,20 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 		return paradisCollectLivePaneInstances(this.terminalService, this.terminalGroupService, this.paneTokenService).map(({ instance }) => instance);
 	}
 
+	/**
+	 * ペインの前面の Antigravity CLI が、shared process のチャットの控えの会話を開いていると言えるか
+	 * （{@link paradisAntigravityPaneHoldsConversation}）。控えを聞けなかったときは false（打たない）。
+	 */
+	private async antigravityPaneHoldsConversation(instance: ITerminalInstance, token: string): Promise<boolean> {
+		let sessions: readonly IParadisAntigravityPaneSession[];
+		try {
+			sessions = await this.sharedProcessService.getChannel(PARADIS_MOBILE_RELAY_CHANNEL).call<readonly IParadisAntigravityPaneSession[]>('listAntigravityPaneSessions');
+		} catch {
+			return false;
+		}
+		return paradisAntigravityPaneHoldsConversation(sessions.find(session => session.token === token), paradisTerminalCommandEvidence(instance));
+	}
+
 	private findAuthoritativePaneInstance(instanceId: number, token: string): ITerminalInstance | undefined {
 		if (this.paneTokenService.getInstanceForToken(token) !== instanceId) {
 			return undefined;
@@ -1749,6 +1764,18 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				const blockedBefore = antigravityBlock();
 				if (blockedBefore !== undefined) {
 					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'agent-busy', PARADIS_ANTIGRAVITY_SEND_BLOCK_MESSAGES[blockedBefore]);
+					return;
+				}
+				// 同じターミナルで agy を始め直した後は、前面が別の会話かもしれない（新しい会話の hook は最初の発言まで来ない）。
+				// アプリは控えの会話を見せているので、前面が控えの会話だと確かめられるときだけ打つ
+				if (antigravity && !(await this.antigravityPaneHoldsConversation(instance, msg.token))) {
+					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'agent-busy', PARADIS_ANTIGRAVITY_OTHER_CONVERSATION_MESSAGE);
+					return;
+				}
+				// 確かめている間に状態が変わっていないか、貼り付ける直前にもう一度見る
+				const blockedAfter = antigravityBlock();
+				if (blockedAfter !== undefined) {
+					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'agent-busy', PARADIS_ANTIGRAVITY_SEND_BLOCK_MESSAGES[blockedAfter]);
 					return;
 				}
 				const screenBefore = slashCheck !== undefined ? paradisVisibleTerminalText(instance) : '';

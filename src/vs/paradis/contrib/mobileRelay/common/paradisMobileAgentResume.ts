@@ -8,7 +8,7 @@
 
 import { StringSHA1 } from '../../../../base/common/hash.js';
 import { PARADIS_RESUME_SESSION_ID_PATTERN, type IParadisResumeSession, type ParadisResumeAgent } from '../../sessionResume/common/paradisSessionResume.js';
-import { paradisAntigravityResumedConversationId, paradisInteractiveAgentCommand } from './paradisAgentCliCommand.js';
+import { paradisAntigravityResumedConversationId, paradisInteractiveAgentCommand, paradisIsInteractiveAntigravityCommand } from './paradisAgentCliCommand.js';
 
 /**
  * 終わった会話をスマホから開き直して続きを頼む（Orca W2-29）の、PC とアプリで共有する取り決め。
@@ -127,6 +127,122 @@ export function paradisResumeRequestVerdict(previous: IParadisResumeLedgerEntry 
 		return now - previous.at >= PARADIS_RESUME_STALE_START_MS ? 'run' : 'pending';
 	}
 	return 'duplicate';
+}
+
+/** Antigravity CLI の会話を写しているペイン（shared process のチャットの控え。agy が終わった後のペインも含む）。 */
+export interface IParadisAntigravityPaneSession {
+	readonly token: string;
+	readonly sessionId: string;
+	/**
+	 * このペインでこの会話の hook を最後に受けた時刻 (epoch ms)。前回の起動から引き継いだ控えでは、保存してあった値
+	 * （実際より古いことがある。保存に無ければ undefined）。
+	 */
+	readonly lastHookAt?: number;
+	/** 前回の起動から引き継いだ控えを、shared process が読み戻した時刻 (epoch ms)。この起動中に hook を受けた控えには無い。 */
+	readonly restoredAt?: number;
+}
+
+/** ターミナルのシェル統合が記録しているコマンド（Antigravity CLI が終わったか・前面が同じ会話かの手がかり）。 */
+export interface IParadisTerminalCommandEvidence {
+	/** 終わったコマンド（終わった時刻と終了コード）。ウィンドウの再読み込みの後も、終わった時刻は元のまま戻る。 */
+	readonly finished: readonly { readonly at: number; readonly exitCode: number | undefined }[];
+	/** 実行中のコマンド。無い・分からないときは undefined。 */
+	readonly executing: string | undefined;
+}
+
+/** Ctrl+Z で止めただけのコマンドの終了コード（128 + SIGSTOP・SIGTSTP・SIGTTIN・SIGTTOU。macOS と Linux で番号が違う）。 */
+function isSuspendedExitCode(exitCode: number | undefined): boolean {
+	return exitCode !== undefined && exitCode >= 145 && exitCode <= 150;
+}
+
+/** `since` より後に終わったコマンドがあるか。止めただけ（Ctrl+Z）のものが混じっていれば `suspended`。 */
+function finishedSince(evidence: IParadisTerminalCommandEvidence, since: number): 'none' | 'finished' | 'suspended' {
+	const later = evidence.finished.filter(command => command.at > since);
+	return later.length === 0 ? 'none' : later.some(command => isSuspendedExitCode(command.exitCode)) ? 'suspended' : 'finished';
+}
+
+/**
+ * 控えの会話の agy が、そのペインでもう動いていないと言えるか（true なら「PC で開いています」から外し、再開を許す）。
+ *
+ * agy は終わりを hook で知らせない。証拠は「最後の hook（無ければ控えを読み戻した時刻）より後に、そのターミナルで
+ * コマンドが終わった」こと: agy が前面にいる間は、シェルのコマンドは終わらない。シェル統合のプロンプトの状態は使わない
+ * （再読み込み・復元の後は、動いている最中でも入力待ちに戻る）。次のときは動いている扱いにする（二重に起動しない側）:
+ * - 時刻が無い・シェル統合が無い・後に終わったコマンドが無い
+ * - 後に終わったコマンドに、止めただけ（Ctrl+Z）のものがある（agy は裏で生きている）
+ * - 前面でまた agy が動いていて、別の会話を名指しして（`--conversation <別の id>`）いない（素の `agy` や `agy -c` は、
+ *   最初の発言まで hook が来ず、同じ会話を開き直していても見分けられない）
+ */
+export function paradisAntigravityConversationLeftPane(session: IParadisAntigravityPaneSession, evidence: IParadisTerminalCommandEvidence | undefined): boolean {
+	// 引き継いだ控えの `lastHookAt` は実際より古いことがあるので、読み戻した時刻があればそちら（新しい方）から見る
+	const since = session.restoredAt !== undefined ? Math.max(session.restoredAt, session.lastHookAt ?? 0) : session.lastHookAt;
+	if (evidence === undefined || since === undefined || finishedSince(evidence, since) !== 'finished') {
+		return false;
+	}
+	if (evidence.executing === undefined || !paradisIsInteractiveAntigravityCommand(evidence.executing)) {
+		return true;
+	}
+	const named = paradisAntigravityResumedConversationId(evidence.executing);
+	return named !== undefined && named !== session.sessionId;
+}
+
+/**
+ * ペインの前面の agy が、控えの会話を開いていると言えるか（true のときだけ、チャット欄や預かりの文をそのペインへ打つ）。
+ * 控えの会話の後に agy を始め直していると、前面は別の会話かもしれない（新しい会話の hook は最初の発言まで来ない）。
+ * - 前面のコマンドが控えの会話を名指ししている（`agy --conversation <同じ id>`）なら true
+ * - それ以外は、その会話の hook を受けた時刻が分かっていて、それより後に終わったコマンドが無いときだけ true。時刻は
+ *   再起動をまたいで引き継ぐ（終わったコマンドの時刻も復元で元のまま戻る）ので、動き続けている agy へは再起動の後も
+ *   打てる。引き継いだ時刻が実際より古くても、数えるコマンドが増えるだけ（打たない側）。時刻の無い古い保存では打たない
+ */
+export function paradisAntigravityPaneHoldsConversation(session: IParadisAntigravityPaneSession | undefined, evidence: IParadisTerminalCommandEvidence | undefined): boolean {
+	if (session === undefined || evidence === undefined) {
+		return false;
+	}
+	if (evidence.executing !== undefined && paradisAntigravityResumedConversationId(evidence.executing) === session.sessionId) {
+		return true;
+	}
+	return session.lastHookAt !== undefined && finishedSince(evidence, session.lastHookAt) === 'none';
+}
+
+/** {@link paradisLiveSessionTerminalKeys} が見る、今のターミナルの様子。 */
+export interface IParadisLiveSessionSources {
+	/** hook が報告した各ペインの会話（状態のスナップショットの `paneSessions`）。 */
+	readonly paneSessions: readonly { readonly token: string; readonly agent: ParadisResumeAgent; readonly sessionId: string }[];
+	/** Antigravity CLI の会話を写しているペイン。 */
+	readonly antigravityPaneSessions: readonly IParadisAntigravityPaneSession[];
+	/** ペインのターミナルのキー。ターミナルがもう無ければ undefined。 */
+	terminalKeyOfPane(token: string): string | undefined;
+	/** ペインのターミナルのシェル統合の記録。シェル統合が無ければ undefined（Antigravity CLI のペインは動いている扱いになる）。 */
+	commandEvidenceOfPane(token: string): IParadisTerminalCommandEvidence | undefined;
+	/** 各ターミナルで実行中のコマンド（シェル統合の記録）と、そのターミナルのキー。 */
+	readonly executing: readonly { readonly commandLine: string; terminalKey(): string | undefined }[];
+}
+
+/**
+ * 今ターミナルで動いている会話（指紋 → そのターミナルのキー）。hook が報告した会話を先に、実行中のコマンド
+ * （{@link paradisResumedSessionOfCommand}）を後に見る（同じ会話は先に見つけたターミナルを使う）。
+ */
+export function paradisLiveSessionTerminalKeys(sources: IParadisLiveSessionSources): Map<string, string> {
+	const result = new Map<string, string>();
+	const antigravity = sources.antigravityPaneSessions
+		.filter(session => !paradisAntigravityConversationLeftPane(session, sources.commandEvidenceOfPane(session.token)))
+		.map(session => ({ token: session.token, sessionId: session.sessionId, agent: 'antigravity' as const }));
+	for (const session of [...sources.paneSessions, ...antigravity]) {
+		const terminalKey = sources.terminalKeyOfPane(session.token);
+		if (terminalKey !== undefined) {
+			result.set(paradisAgentSessionKey(session.agent, session.sessionId), terminalKey);
+		}
+	}
+	for (const entry of sources.executing) {
+		const resumed = paradisResumedSessionOfCommand(entry.commandLine);
+		const terminalKey = resumed !== undefined ? entry.terminalKey() : undefined;
+		if (resumed !== undefined && terminalKey !== undefined) {
+			const key = paradisAgentSessionKey(resumed.agent, resumed.sessionId);
+			if (!result.has(key)) {
+				result.set(key, terminalKey);
+			}
+		}
+	}
+	return result;
 }
 
 /** 台帳に入れる（同じ id の古い記録・期限を過ぎたもの・上限を超えたものを捨てる）。 */

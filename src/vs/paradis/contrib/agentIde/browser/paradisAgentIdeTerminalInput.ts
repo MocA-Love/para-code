@@ -16,6 +16,7 @@
 import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
 import type { ITerminalInstance } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { paradisInteractiveAgentCommand, paradisIsInteractiveAntigravityCommand } from '../../mobileRelay/common/paradisAgentCliCommand.js';
+import type { IParadisTerminalCommandEvidence } from '../../mobileRelay/common/paradisMobileAgentResume.js';
 
 type TerminalLike = Pick<ITerminalInstance, 'capabilities' | 'xterm'>;
 
@@ -37,6 +38,19 @@ export function paradisTerminalRunsAgent(instance: TerminalLike): boolean {
 export function paradisTerminalRunsAntigravity(instance: TerminalLike): boolean {
 	const executing = instance.capabilities.get(TerminalCapability.CommandDetection)?.executingCommand;
 	return executing !== undefined && paradisIsInteractiveAntigravityCommand(executing);
+}
+
+/**
+ * シェル統合が記録している、終わったコマンド（終わった時刻と終了コード）と実行中のコマンド。Antigravity CLI が終わったか・
+ * 前面が同じ会話かの判定（paradisMobileAgentResume.ts）に渡す。シェル統合が無ければ undefined。
+ */
+export function paradisTerminalCommandEvidence(instance: Pick<ITerminalInstance, 'capabilities'>): IParadisTerminalCommandEvidence | undefined {
+	const detection = instance.capabilities.get(TerminalCapability.CommandDetection);
+	return detection === undefined ? undefined : {
+		// `timestamp` はコマンドが終わった時刻（再読み込みで戻したコマンドも、保存したときの値のまま）
+		finished: detection.commands.map(command => ({ at: command.timestamp, exitCode: command.exitCode })),
+		executing: detection.executingCommand,
+	};
 }
 
 /** 複数行をそのまま貼り付けてよいか（行ごとに実行される心配が無いか）。 */

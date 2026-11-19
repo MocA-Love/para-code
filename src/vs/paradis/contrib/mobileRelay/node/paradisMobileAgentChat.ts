@@ -62,7 +62,7 @@ import { IParadisAgentApprovalOption, paradisApprovalScreenPiece, paradisApprova
 import { IParadisAgentApprovalAgent, IParadisAgentApprovalRequest, PARADIS_AGENT_APPROVAL_DENY_MESSAGE_LIMIT, PARADIS_APPROVAL_INSTRUCTION_MARKER, ParadisAgentApprovalSuggestionScope, paradisApprovalDenyMessage, paradisSanitizeApprovalInstruction, paradisApprovalSuggestionScope, paradisBuildAgentApprovalRequest } from '../common/paradisAgentApprovalRequest.js';
 import { PARADIS_CODEX_APPROVAL_HOLD_MS } from '../common/paradisCodexApprovalHold.js';
 import { PARADIS_CODEX_AUTO_CONTINUE_PHASES, PARADIS_CODEX_OVERLOAD_ERROR_CODES, PARADIS_CODEX_OVERLOAD_RETRY_DELAYS_MS, ParadisCodexAutoContinuePhase, ParadisCodexOverloadContinue } from '../common/paradisCodexOverloadContinue.js';
-import { paradisAgentSessionKey } from '../common/paradisMobileAgentResume.js';
+import { paradisAgentSessionKey, type IParadisAntigravityPaneSession } from '../common/paradisMobileAgentResume.js';
 import { PARADIS_RESUME_SESSION_ID_PATTERN } from '../../sessionResume/common/paradisSessionResume.js';
 import { paradisIsCodexNonUserSource, paradisIsCodexRootSource } from '../../sessionResume/common/paradisSessionTranscript.js';
 import { IParadisHistoryCursor, PARADIS_HISTORY_FILE_CAP, PARADIS_HISTORY_PAGE_LIMIT, paradisDecodeHistoryCursor, paradisEncodeHistoryCursor, paradisHistoryCursorHasMore, paradisReadTranscriptHistory } from './paradisAgentChatHistory.js';
@@ -4773,6 +4773,9 @@ export class ParadisMobileAgentChat extends Disposable {
 					session: { token: entry.token, agent: entry.agent, transcriptPath: entry.transcriptPath, sessionId: entry.sessionId, restoredFromDisk: true },
 					retiredAt: entry.savedAt,
 				});
+				if (entry.agent === 'antigravity' && entry.sessionId !== undefined) {
+					this.antigravityAliveAt.set(entry.token, { sessionId: entry.sessionId, restoredAt: Date.now(), ...(entry.lastHookAt !== undefined ? { lastHookAt: entry.lastHookAt } : {}) });
+				}
 			}
 			for (const token of [...this.retiredSessions.keys()]) {
 				if (this.isLiveToken(token) && !this.paneSessions.has(token)) {
@@ -4795,10 +4798,17 @@ export class ParadisMobileAgentChat extends Disposable {
 				this.retiredSessions.delete(token);
 			}
 		}
+		for (const token of [...this.antigravityAliveAt.keys()]) {
+			if (!this.paneSessions.has(token) && !this.retiredSessions.has(token)) {
+				this.antigravityAliveAt.delete(token);
+			}
+		}
 		// pane syncのたびに呼ばれるため、対応表の実内容が変わった時だけ書き出す。
 		const signature = [
 			...[...this.paneSessions.values()].map(session => `${session.token}\u0000${session.agent}\u0000${session.transcriptPath}\u0000${session.sessionId ?? ''}`),
 			...[...this.retiredSessions.values()].map(({ session }) => `${session.token}\u0000${session.agent}\u0000${session.transcriptPath}\u0000${session.sessionId ?? ''}\u0000retired`),
+			// Antigravity CLI の最後の hook の時刻は、1 分の刻みで変わったときだけ書き直す（hook のたびには書かない）
+			...[...this.antigravityAliveAt].map(([token, alive]) => `${token}\u0000hook\u0000${alive.sessionId}\u0000${alive.lastHookAt !== undefined ? Math.floor(alive.lastHookAt / 60_000) : ''}`),
 		].sort().join('\n');
 		if (signature === this.lastPersistedSessionSignature) {
 			return;
@@ -4809,13 +4819,21 @@ export class ParadisMobileAgentChat extends Disposable {
 				token: session.token, agent: session.agent, transcriptPath: session.transcriptPath,
 				...(session.sessionId !== undefined ? { sessionId: session.sessionId } : {}),
 				savedAt: now,
+				...this.persistedAntigravityHookAt(session),
 			})),
 			...[...this.retiredSessions.values()].map(({ session, retiredAt }) => ({
 				token: session.token, agent: session.agent, transcriptPath: session.transcriptPath,
 				...(session.sessionId !== undefined ? { sessionId: session.sessionId } : {}),
 				savedAt: retiredAt,
+				...this.persistedAntigravityHookAt(session),
 			})),
 		]);
+	}
+
+	/** 保存に足す Antigravity CLI の最後の hook の時刻（その会話のものがあるときだけ）。 */
+	private persistedAntigravityHookAt(session: IPaneSessionInfo): { readonly lastHookAt?: number } {
+		const alive = this.antigravityAliveAt.get(session.token);
+		return session.agent === 'antigravity' && alive !== undefined && alive.sessionId === session.sessionId && alive.lastHookAt !== undefined ? { lastHookAt: alive.lastHookAt } : {};
 	}
 
 	/** 退避済みセッションを、tokenが再びliveになったペインへ検証付きで復活させる。 */
@@ -9294,6 +9312,32 @@ export class ParadisMobileAgentChat extends Disposable {
 		return outcome === 'unknown' ? 'unconfirmed' : accepted;
 	}
 
+	/**
+	 * Antigravity CLI のペインで、控えの会話が動いていたと分かる時刻（ペインの token → 会話の id と時刻）。`lastHookAt` は
+	 * その会話として受け入れた hook を受けた時刻（捨てた hook・子の会話の hook では進めない。保存して次の起動へ引き継ぐ。
+	 * 保存は 1 分の刻みなので、引き継いだ値は実際より古いことがある）、`restoredAt` は前回の起動の控えを読み戻した時刻。agy は終わりを知らせないので、renderer がこの時刻より後に終わったコマンドがあるかで終わりを見る。
+	 */
+	private readonly antigravityAliveAt = new Map<string, { readonly sessionId: string; readonly lastHookAt?: number; readonly restoredAt?: number }>();
+
+	/**
+	 * Antigravity CLI の会話を写しているペインと、その会話の ID。子の会話（invoke_subagent）の hook は捨ててあるので、
+	 * 親の会話だけが載る。再起動の後、ディスクから戻して確かめている途中のペイン（退避分）も含める。
+	 */
+	antigravityPaneSessions(): readonly IParadisAntigravityPaneSession[] {
+		const result = new Map<string, string>();
+		for (const session of [...[...this.retiredSessions.values()].map(entry => entry.session), ...this.paneSessions.values()]) {
+			if (session.agent === 'antigravity' && session.sessionId !== undefined && this.isLiveToken(session.token)) {
+				result.set(session.token, session.sessionId);
+			}
+		}
+		return [...result].map(([token, sessionId]) => {
+			const alive = this.antigravityAliveAt.get(token);
+			return alive?.sessionId === sessionId
+				? { token, sessionId, ...(alive.lastHookAt !== undefined ? { lastHookAt: alive.lastHookAt } : {}), ...(alive.restoredAt !== undefined ? { restoredAt: alive.restoredAt } : {}) }
+				: { token, sessionId };
+		});
+	}
+
 	/** 再開した OpenCode の会話が登録され、入力を待っているか（会話の中身は読まない）。 */
 	openCodeReadiness(token: string, resumeKey: string): 'ready' | 'pending' | 'unregistered' {
 		const session = this.paneSessions.get(token);
@@ -10080,13 +10124,17 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly antigravityChildConversations = new Map<string, boolean>();
 
 	/**
-	 * Antigravity CLI の hook が子の会話（invoke_subagent が起こした会話）のものか。会話の一覧（conversation_summaries.db）の
-	 * 親子の列で決め、一覧にまだ行が無ければ記録の先頭の行（子は親から渡された指示の SYSTEM_MESSAGE で始まる）で決める。
-	 * 記録の先頭で決めた結果は覚えない（上位の会話が SYSTEM_MESSAGE で始まる場合に、後から DB の行で正せるように）。
-	 * どちらでも決まらないときは、ペインが既に別の agy の会話を写していれば今の会話を保つ（子の会話の最初の hook で
-	 * ペインを取り替えないため。同じペインで新しい上位の会話を始めたときは、記録か DB の行ができた次の hook で替わる）。
+	 * Antigravity CLI の hook を、ペインの会話として扱わずに捨てるか。子の会話（invoke_subagent が起こした会話）の hook は捨てる。
+	 * 会話の一覧（conversation_summaries.db）の親子の列で決め、一覧にまだ行が無ければ記録の先頭の行（子は親から渡された
+	 * 指示の SYSTEM_MESSAGE で、上位の会話は USER_INPUT で始まる）で決める。記録の先頭で決めた結果は覚えない（上位の会話が
+	 * SYSTEM_MESSAGE で始まる場合に、後から DB の行で正せるように）。
+	 *
+	 * どちらでも決まらない hook は、ペインが今写している会話のものでなければ捨てる（ペインが空でも控えにしない。子の hook が
+	 * 親より先に届いても、子が控えにならない）。上位の会話なら、一覧の行か記録の先頭の行ができた次の hook で結ばれる
+	 * （agy 1.5.12 では、発言の無い会話にも一覧の行があるのを観察した。行が書かれる時期は確かめていない）。接続先（SSH 先）の
+	 * 会話は、一覧も記録も手元に無く決まることが無いので、ペインが別の agy の会話を写していなければ今までどおり結ぶ。
 	 */
-	private async isAntigravityChildHook(token: string, transcriptPath: string): Promise<boolean> {
+	private async dropsAntigravityHook(token: string, transcriptPath: string, remote: boolean): Promise<boolean> {
 		const conversationId = paradisAntigravityConversationIdFromTranscriptPath(transcriptPath);
 		if (conversationId === undefined) {
 			return false;
@@ -10114,7 +10162,10 @@ export class ParadisMobileAgentChat extends Disposable {
 			return startsAsChild;
 		}
 		const current = this.paneSessions.get(token);
-		return current?.agent === 'antigravity' && current.transcriptPath !== transcriptPath;
+		if (current?.agent === 'antigravity') {
+			return current.transcriptPath !== transcriptPath;
+		}
+		return !remote;
 	}
 
 	private async onHookEventChecked(event: IParadisAgentHookEvent, transcriptPath: string, pathAlreadyChecked: boolean, deferredDesktopState = false): Promise<void> {
@@ -10127,8 +10178,8 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		// Antigravity CLI の子の会話（invoke_subagent）の hook は、親と同じプロセスから届くので所有者の判定では
 		// 見分けられない。ペインの会話を子の会話へ取り替えないよう、一覧と記録の先頭で子かどうかを確かめて捨てる
-		if (agentKindForPath(transcriptPath) === 'antigravity' && await this.isAntigravityChildHook(event.token, transcriptPath)) {
-			this.logService.trace(`[paradisAgentChat] dropped a hook from an Antigravity CLI child conversation: ${event.event}`);
+		if (agentKindForPath(transcriptPath) === 'antigravity' && await this.dropsAntigravityHook(event.token, transcriptPath, event.remoteHostId !== undefined)) {
+			this.logService.trace(`[paradisAgentChat] dropped a hook from an Antigravity CLI child or not yet listed conversation: ${event.event}`);
 			return;
 		}
 		if (deferredDesktopState) {
@@ -10274,6 +10325,12 @@ export class ParadisMobileAgentChat extends Disposable {
 					: event.sessionId,
 		};
 		this.bindPaneSession(info, previous);
+		if (info.agent === 'antigravity' && info.sessionId !== undefined) {
+			// 後回しにした hook を流し直すときは受けた時刻が前後しうるので、同じ会話の時刻は戻さない
+			const alive = this.antigravityAliveAt.get(event.token);
+			this.antigravityAliveAt.set(event.token, { sessionId: info.sessionId, lastHookAt: alive?.sessionId === info.sessionId ? Math.max(alive.lastHookAt ?? 0, event.at) : event.at });
+			this.persistSessions();
+		}
 		const subagentActivityId = event.event === 'SubagentStart' || event.event === 'SubagentStop' ? str(event.payload?.agent_id) : undefined;
 		const subagentId = subagentActivityId !== undefined && PARADIS_CLAUDE_AGENT_ID_PATTERN.test(subagentActivityId) ? subagentActivityId : undefined;
 		if (event.event === 'SubagentStop') {

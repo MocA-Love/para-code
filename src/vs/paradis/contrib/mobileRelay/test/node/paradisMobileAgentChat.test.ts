@@ -18,8 +18,9 @@ import { fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, onParadisAg
 import { paradisClaudeConfigDir, paradisCodexHome } from '../../../agentBrowser/node/paradisAgentHome.js';
 import { ParadisMobileAgentChat, paradisAgentChatImageLimitsForTest, paradisIsAllowedTranscriptPathForTest, paradisClaudeAgentIdFromTranscriptPath, paradisClaudeRootTranscriptPath, paradisClaudeSubagentTranscriptCandidates, paradisCliDiscoveryCandidateIsFresh, paradisCodexForkCandidateAllowed, paradisConfirmedAgentPaneTokens, paradisHasPendingDuplicateQuestion, paradisIsCodexDaemonApprovalInteraction, paradisIsCodexRootThreadSource, paradisIsValidAgentInboundForTest, paradisParseClaudeTranscriptLineForTest, paradisParseCodexDetailLinesForTest, paradisParseCodexSessionMeta, paradisParseCodexThreadSource, paradisIsLateHookAfterTurnEnd, paradisParseCodexTranscriptLineForTest, paradisParseCodexTranscriptLinesForTest, paradisPickCurrentInteraction, paradisReadCodexForkHistory, paradisResolveHookSessionTranscript, paradisSelectUnambiguousSessionCandidate, paradisSharedImageCacheForTest, paradisTakeLiveQuestionSyntheticId, paradisToolImageMeta, paradisQuestionReadyMarker } from '../../node/paradisMobileAgentChat.js';
 import { ParadisRemoteTranscriptMirrorStore } from '../../node/paradisRemoteTranscriptMirror.js';
-import { paradisAntigravityBrainRoot } from '../../../sessionResume/node/paradisAntigravityHistory.js';
+import { paradisAntigravityBrainRoot, paradisAntigravityCliHome, paradisAntigravitySummariesDatabasePath } from '../../../sessionResume/node/paradisAntigravityHistory.js';
 import { paradisAgentSessionKey } from '../../common/paradisMobileAgentResume.js';
+import { ParadisAgentSessionStore } from '../../node/paradisAgentSessionStore.js';
 import { paradisAntigravityApprovalHold } from '../../../agentBrowser/node/paradisAntigravityApprovalHold.js';
 
 const nodeRequire = createRequire(import.meta.url);
@@ -116,6 +117,25 @@ function createEmptyCodexStateDatabase(codexHome: string): void {
 				created_at INTEGER
 			)
 		`);
+	} finally {
+		database.close();
+	}
+}
+
+/**
+ * 偽の HOME に Antigravity CLI の会話の一覧（conversation_summaries.db）の行を足す（親子の列だけ）。agy 1.5.12 では、
+ * 発言が無く記録のファイルも無い上位の会話にも行があるのを観察した（行が書かれる時期は確かめていない）。
+ */
+async function listAntigravityConversations(home: string, rows: readonly { readonly id: string; readonly parentId?: string }[]): Promise<void> {
+	await mkdir(paradisAntigravityCliHome(home), { recursive: true });
+	const { DatabaseSync } = nodeRequire('node:sqlite') as typeof import('node:sqlite');
+	const database = new DatabaseSync(paradisAntigravitySummariesDatabasePath(home));
+	try {
+		database.exec('CREATE TABLE IF NOT EXISTS conversation_summaries (conversation_id TEXT PRIMARY KEY, parent_conversation_id TEXT NOT NULL, nesting_depth INTEGER NOT NULL)');
+		const insert = database.prepare('INSERT INTO conversation_summaries (conversation_id, parent_conversation_id, nesting_depth) VALUES (?, ?, ?)');
+		for (const row of rows) {
+			insert.run(row.id, row.parentId ?? '', row.parentId !== undefined ? 1 : 0);
+		}
 	} finally {
 		database.close();
 	}
@@ -385,6 +405,8 @@ suite('ParadisMobileAgentChat', () => {
 		);
 		const access = chat as unknown as { tailers: Map<string, { readonly epoch: string; readonly agent: string }> };
 		const inbound = (message: Record<string, unknown>) => chat.handleInbound('mobile-1', new TextEncoder().encode(JSON.stringify(message)));
+		// 一覧に上位の会話の行がある（記録のファイルはまだ無い）
+		await listAntigravityConversations(home, [{ id: conversationId }]);
 		try {
 			chat.setEagerTailing(true);
 			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
@@ -482,6 +504,8 @@ suite('ParadisMobileAgentChat', () => {
 		const access = chat as unknown as { tailers: Map<string, { readonly epoch: string }> };
 		const inbound = (message: Record<string, unknown>) => chat.handleInbound('mobile-1', new TextEncoder().encode(JSON.stringify(message)));
 		const fields = ['monitors', 'shells', 'workflows', 'teams', 'pcDraft', 'asyncQuestions', 'sessionStatus'];
+		// 一覧に上位の会話の行がある（記録のファイルはまだ無い）
+		await listAntigravityConversations(home, [{ id: conversationId }]);
 		try {
 			chat.setEagerTailing(true);
 			// PC の書きかけは、アプリが広告していても Claude Code の会話にしか付かない
@@ -544,6 +568,8 @@ suite('ParadisMobileAgentChat', () => {
 		const register = (sessionId: string, toolUseId: string) => paradisAntigravityApprovalHold.register(token, { sessionId, toolUseId, toolName: 'run_command' });
 		paradisAntigravityApprovalHold.setPresence(() => true);
 		paradisAntigravityApprovalHold.setGate((candidate, sessionId) => chat.canHoldAntigravityApproval(candidate, sessionId));
+		// 一覧に上位の会話の行がある（記録のファイルはまだ無い）
+		await listAntigravityConversations(home, [{ id: conversationId }]);
 		try {
 			chat.setEagerTailing(true);
 			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
@@ -611,6 +637,8 @@ suite('ParadisMobileAgentChat', () => {
 		paradisAntigravityApprovalHold.setPresence(() => true);
 		paradisAntigravityApprovalHold.setGate((candidate, sessionId) => chat.canHoldAntigravityApproval(candidate, sessionId));
 		paradisAntigravityApprovalHold.setOnUnanswered((candidate, toolUseId) => chat.expireAntigravityApproval(candidate, toolUseId));
+		// 一覧に上位の会話の行がある（記録のファイルはまだ無い）
+		await listAntigravityConversations(home, [{ id: conversationId }]);
 		try {
 			chat.setEagerTailing(true);
 			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
@@ -761,7 +789,8 @@ suite('ParadisMobileAgentChat', () => {
 		const access = chat as unknown as { paneSessions: Map<string, { readonly transcriptPath: string }>; desktopInteractions: Map<string, unknown>; desktopExitedTokens: Set<string>; hookProcessing: Map<string, unknown> };
 		try {
 			await mkdir(join(brain, childId, '.system_generated', 'logs'), { recursive: true });
-			// 子の会話は親から渡された指示（SYSTEM_MESSAGE）で始まる。一覧の DB は作らない（記録の先頭で決める経路）
+			// 子の会話は親から渡された指示（SYSTEM_MESSAGE）で始まる。一覧には親の行だけがある（子は記録の先頭で決める経路）
+			await listAntigravityConversations(home, [{ id: parentId }]);
 			await writeFile(childPath, JSON.stringify({ step_index: 0, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', created_at: '2026-11-16T01:00:00Z', content: '<SYSTEM_MESSAGE>調べて</SYSTEM_MESSAGE>' }) + '\n');
 			chat.setEagerTailing(true);
 			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
@@ -778,6 +807,119 @@ suite('ParadisMobileAgentChat', () => {
 			}, { transcriptPath: parentPath, interaction: false, exited: false });
 		} finally {
 			chat.dispose();
+		}
+	}));
+
+	test('decides an Antigravity CLI child conversation from the conversation list, and binds no pane to a conversation it cannot place yet', () => withFakeHome(async home => {
+		const brain = paradisAntigravityBrainRoot(home);
+		const pathOf = (id: string) => join(brain, id, '.system_generated', 'logs', 'transcript_full.jsonl');
+		const parentId = '00000000-0000-4000-8000-00000000a701';
+		const otherParentId = '00000000-0000-4000-8000-00000000a705';
+		const listedChildId = '00000000-0000-4000-8000-00000000a702';
+		const unlistedChildId = '00000000-0000-4000-8000-00000000a703';
+		const laterTopId = '00000000-0000-4000-8000-00000000a704';
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as { hookProcessing: Map<string, unknown> };
+		const hook = (token: string, sessionId: string) => fireParadisAgentHookEvent({ token, event: 'PreToolUse', sessionId, transcriptPath: pathOf(sessionId), cwd: '/workspace', agentKind: 'antigravity', at: Date.now() });
+		const settled = (token: string) => waitFor(() => !access.hookProcessing.has(token), 'the hooks were not handled');
+		const sessionOf = (token: string) => chat.antigravityPaneSessions().find(session => session.token === token)?.sessionId;
+		try {
+			// 一覧の親子の列: 親は上位、子は親を持つ。どの会話も記録のファイルはまだ無い
+			await listAntigravityConversations(home, [{ id: parentId }, { id: listedChildId, parentId }, { id: otherParentId }]);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token: 'pane-listed' }, { terminalId: 2, token: 'pane-child-first' }, { terminalId: 3, token: 'pane-unplaced' }]), true);
+			// 空のペインへ、子の hook が親より先に届く（一覧で子と分かる・一覧にも記録にも無い、の両方）
+			hook('pane-listed', listedChildId);
+			hook('pane-child-first', unlistedChildId);
+			await Promise.all([settled('pane-listed'), settled('pane-child-first')]);
+			const childFirst = { listed: sessionOf('pane-listed'), unlisted: sessionOf('pane-child-first') };
+			// 続いて親の hook が届く。その後の子の hook でも親のまま
+			hook('pane-listed', parentId);
+			hook('pane-child-first', otherParentId);
+			await waitFor(() => sessionOf('pane-listed') === parentId && sessionOf('pane-child-first') === otherParentId, 'the parent conversation was not bound');
+			hook('pane-listed', listedChildId);
+			hook('pane-child-first', unlistedChildId);
+			await Promise.all([settled('pane-listed'), settled('pane-child-first')]);
+			const afterParent = { listed: sessionOf('pane-listed'), unlisted: sessionOf('pane-child-first') };
+			// 一覧にも記録にも無い上位の会話: 決まるまで結ばず、記録の先頭の行（USER_INPUT）ができた次の hook で結ぶ
+			hook('pane-unplaced', laterTopId);
+			await settled('pane-unplaced');
+			const unplaced = sessionOf('pane-unplaced');
+			await mkdir(join(brain, laterTopId, '.system_generated', 'logs'), { recursive: true });
+			await writeFile(pathOf(laterTopId), JSON.stringify({ step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', status: 'DONE', created_at: '2026-11-16T01:00:00Z', content: '調べて' }) + '\n');
+			hook('pane-unplaced', laterTopId);
+			await waitFor(() => sessionOf('pane-unplaced') === laterTopId, 'the conversation was not bound after its record appeared');
+			assert.deepStrictEqual({ childFirst, afterParent, unplaced }, {
+				childFirst: { listed: undefined, unlisted: undefined },
+				afterParent: { listed: parentId, unlisted: otherParentId },
+				unplaced: undefined,
+			});
+		} finally {
+			chat.dispose();
+		}
+	}));
+
+	test('lists the Antigravity CLI conversation of a pane for the "open on the PC" check: not the child conversation, back after a restart, gone with the pane', () => withFakeHome(async home => {
+		const token = 'pane-antigravity-live';
+		const brain = paradisAntigravityBrainRoot(home);
+		const parentId = '00000000-0000-4000-8000-00000000a6f5';
+		const childId = '00000000-0000-4000-8000-00000000a6f6';
+		const parentPath = join(brain, parentId, '.system_generated', 'logs', 'transcript_full.jsonl');
+		const childPath = join(brain, childId, '.system_generated', 'logs', 'transcript_full.jsonl');
+		const storePath = join(home, 'paradis-agent-sessions.json');
+		const start = (store: ParadisAgentSessionStore) => new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService(), undefined, undefined, store);
+		const hook = (event: string, sessionId: string, transcriptPath: string, at: number) => fireParadisAgentHookEvent({ token, event, sessionId, transcriptPath, cwd: '/workspace', agentKind: 'antigravity', at });
+		const store = new ParadisAgentSessionStore(storePath, new NullLogService());
+		const chat = start(store);
+		let restarted: ParadisMobileAgentChat | undefined;
+		let fromOldFile: ParadisMobileAgentChat | undefined;
+		try {
+			for (const [id, path, line] of [[parentId, parentPath, { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', status: 'DONE', created_at: '2026-11-16T01:00:00Z', content: '調べて' }], [childId, childPath, { step_index: 0, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE', created_at: '2026-11-16T01:00:01Z', content: '<SYSTEM_MESSAGE>調べて</SYSTEM_MESSAGE>' }]] as const) {
+				await mkdir(join(brain, id, '.system_generated', 'logs'), { recursive: true });
+				await writeFile(path, JSON.stringify(line) + '\n');
+			}
+			// モバイルは 1 台もつながっていない（先読みもしていない）
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			hook('SessionStart', parentId, parentPath, 1000);
+			await waitFor(() => chat.antigravityPaneSessions().length === 1, 'the parent conversation was not listed');
+			const plain = chat.antigravityPaneSessions();
+			// 子の hook では、親の会話の「最後の hook の時刻」を進めない
+			hook('SessionStart', childId, childPath, 2000);
+			hook('PreToolUse', childId, childPath, 2100);
+			await waitFor(() => !(chat as unknown as { hookProcessing: Map<string, unknown> }).hookProcessing.has(token), 'the child hooks were not handled');
+			const whileSubagentRuns = chat.antigravityPaneSessions();
+			await store.flush();
+			// PC・shared process の再起動: 控えはディスクから戻り、ペインが同期されたら載る（agy は入力待ちで hook を出さない）
+			restarted = start(new ParadisAgentSessionStore(storePath, new NullLogService()));
+			const beforePaneSync = restarted.antigravityPaneSessions();
+			assert.strictEqual(restarted.syncPanes(1, 'window-session-2', 1, 1, [{ terminalId: 1, token }]), true);
+			await waitFor(() => restarted!.antigravityPaneSessions().length === 1, 'the conversation did not come back after the restart');
+			// 再起動の後は、保存してあった hook の時刻と、控えを読み戻した時刻が付く
+			const afterRestart = restarted.antigravityPaneSessions().map(session => ({ ...session, restoredAt: typeof session.restoredAt }));
+			hook('PreToolUse', parentId, parentPath, 3000);
+			await waitFor(() => restarted!.antigravityPaneSessions()[0]?.lastHookAt === 3000, 'the hook after the restart was not noted');
+			const afterRestartHook = restarted.antigravityPaneSessions();
+			// ペインが無くなった（ターミナルを閉じた）
+			assert.strictEqual(restarted.syncPanes(1, 'window-session-2', 1, 2, []), true);
+			// hook の時刻の項目が無い古い保存ファイル: 時刻は付かない（文は打たない側になる）
+			const oldStorePath = join(home, 'paradis-agent-sessions-old.json');
+			await writeFile(oldStorePath, JSON.stringify([{ token: 'pane-antigravity-old', agent: 'antigravity', transcriptPath: parentPath, sessionId: parentId, savedAt: Date.now() }]));
+			fromOldFile = start(new ParadisAgentSessionStore(oldStorePath, new NullLogService()));
+			assert.strictEqual(fromOldFile.syncPanes(1, 'window-session-3', 1, 1, [{ terminalId: 1, token: 'pane-antigravity-old' }]), true);
+			await waitFor(() => fromOldFile!.antigravityPaneSessions().length === 1, 'the conversation of the old file did not come back');
+			const oldFile = fromOldFile.antigravityPaneSessions().map(session => ({ ...session, restoredAt: typeof session.restoredAt }));
+			assert.deepStrictEqual({ plain, whileSubagentRuns, beforePaneSync, afterRestart, afterRestartHook, oldFile, afterPaneClosed: restarted.antigravityPaneSessions() }, {
+				plain: [{ token, sessionId: parentId, lastHookAt: 1000 }],
+				whileSubagentRuns: [{ token, sessionId: parentId, lastHookAt: 1000 }],
+				beforePaneSync: [],
+				afterRestart: [{ token, sessionId: parentId, lastHookAt: 1000, restoredAt: 'number' }],
+				afterRestartHook: [{ token, sessionId: parentId, lastHookAt: 3000 }],
+				oldFile: [{ token: 'pane-antigravity-old', sessionId: parentId, restoredAt: 'number' }],
+				afterPaneClosed: [],
+			});
+		} finally {
+			chat.dispose();
+			restarted?.dispose();
+			fromOldFile?.dispose();
 		}
 	}));
 

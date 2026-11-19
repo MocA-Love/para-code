@@ -22,6 +22,11 @@ export interface IParadisPersistedAgentSession {
 	readonly sessionId?: string;
 	/** 保存時刻（ms）。TTL失効の判定に使う。 */
 	readonly savedAt: number;
+	/**
+	 * Antigravity CLI の会話だけ: そのペインでその会話の hook を最後に受けた時刻（ms）。再起動の後、動き続けている agy の
+	 * ペインへ文を打ってよいかの判定に使う。この項目の無い古い保存ファイルでは undefined（打たない側になる）。
+	 */
+	readonly lastHookAt?: number;
 }
 
 const MAX_ENTRIES = 256;
@@ -66,7 +71,8 @@ export class ParadisAgentSessionStore {
 					|| (entry.agent !== 'claude' && entry.agent !== 'codex' && entry.agent !== 'opencode' && entry.agent !== 'antigravity')
 					|| typeof entry.transcriptPath !== 'string' || entry.transcriptPath.length === 0 || entry.transcriptPath.length > 4096
 					|| (entry.sessionId !== undefined && (typeof entry.sessionId !== 'string' || entry.sessionId.length > 500))
-					|| typeof entry.savedAt !== 'number' || !Number.isFinite(entry.savedAt)) {
+					|| typeof entry.savedAt !== 'number' || !Number.isFinite(entry.savedAt)
+					|| (entry.lastHookAt !== undefined && (typeof entry.lastHookAt !== 'number' || !Number.isFinite(entry.lastHookAt)))) {
 					continue;
 				}
 				if (now - entry.savedAt > ENTRY_TTL_MS) {
@@ -78,6 +84,7 @@ export class ParadisAgentSessionStore {
 					transcriptPath: entry.transcriptPath,
 					...(entry.sessionId !== undefined ? { sessionId: entry.sessionId } : {}),
 					savedAt: entry.savedAt,
+					...(entry.lastHookAt !== undefined ? { lastHookAt: entry.lastHookAt } : {}),
 				});
 			}
 			return entries;
