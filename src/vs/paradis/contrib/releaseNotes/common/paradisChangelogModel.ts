@@ -6,6 +6,8 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { paradisEscapeHtml } from '../../../common/paradisEscapeHtml.js';
+
 /**
  * アプリ内更新履歴 (paradisChangelog.md) の解析モデル。
  *
@@ -113,16 +115,12 @@ export function mergeChangelogs(remote: readonly IParadisChangelogRelease[], bun
 	return [...byVersion.values()].sort((a, b) => b.version - a.version);
 }
 
-function escapeHtml(text: string): string {
-	return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
 /**
  * 項目本文のインライン記法(`` `code` `` と **太字**)を HTML へ変換する。
  * 入力はまず HTML エスケープされるので、項目に書かれた生のタグは表示されるだけ。
  */
 export function formatInlineMarkdown(text: string): string {
-	const escaped = escapeHtml(text);
+	const escaped = paradisEscapeHtml(text);
 	return escaped
 		.replace(/`([^`]+)`/g, '<code>$1</code>')
 		.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');

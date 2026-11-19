@@ -7,6 +7,7 @@
 import type JSZip from 'jszip';
 import type { IParadisOfficeArchive } from '../../common/office/paradisOfficeArchive.js';
 import { createParadisOfficeNodeArchive } from '../office/paradisOfficeNodeArchive.js';
+import { paradisEscapeXmlAttribute, paradisUnescapeXmlAttribute } from './paradisSpreadsheetXmlAttribute.js';
 
 /** The SpreadsheetML main namespace (transitional). Only elements and attributes bound to it are changed. */
 const SPREADSHEETML_MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
@@ -405,7 +406,7 @@ export function unprefixSpreadsheetMlXml(xml: string): string | undefined {
 		}
 		const parts = [...attributes];
 		if (setDefault !== undefined) {
-			const value = `"${escapeAttribute(setDefault)}"`;
+			const value = `"${paradisEscapeXmlAttribute(setDefault)}"`;
 			const existing = parts.findIndex(attribute => attribute.name === 'xmlns');
 			if (existing >= 0) {
 				parts[existing] = { ...parts[existing], equals: '=', value };
@@ -429,16 +430,5 @@ export function unprefixSpreadsheetMlXml(xml: string): string | undefined {
 
 /** The value of a quoted attribute, with the predefined and character references resolved. */
 function attributeText(quoted: string): string {
-	return quoted.slice(1, -1).replace(/&(?:#x(?<hex>[0-9a-fA-F]+)|#(?<decimal>[0-9]+)|(?<named>amp|lt|gt|quot|apos));/g, (entity, ...args) => {
-		const groups = args[args.length - 1] as { hex?: string; decimal?: string; named?: string };
-		if (groups.hex !== undefined || groups.decimal !== undefined) {
-			const codePoint = groups.hex !== undefined ? parseInt(groups.hex, 16) : parseInt(groups.decimal!, 10);
-			return codePoint <= 0x10FFFF ? String.fromCodePoint(codePoint) : entity;
-		}
-		return { amp: '&', lt: '<', gt: '>', quot: '"', apos: '\'' }[groups.named as 'amp'];
-	});
-}
-
-function escapeAttribute(value: string): string {
-	return value.replace(/[&<"]/g, character => character === '&' ? '&amp;' : character === '<' ? '&lt;' : '&quot;');
+	return paradisUnescapeXmlAttribute(quoted.slice(1, -1));
 }

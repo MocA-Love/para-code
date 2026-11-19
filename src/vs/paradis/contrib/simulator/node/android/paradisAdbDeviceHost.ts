@@ -22,7 +22,8 @@ import { homedir } from 'os';
 import { dirname, join } from '../../../../../base/common/path.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
 import { paradisAdbCandidates } from '../../node/paradisMobileDeviceCommands.js';
-import { IParadisSimulatorAxSnapshot, paradisFindSimulatorAx, paradisPickSimulatorAxTarget } from '../../common/paradisSimulatorAx.js';
+import { IParadisSimulatorAxSnapshot, paradisFindSimulatorAx, paradisPickSimulatorAxTarget, paradisSimulatorAxQueryOf } from '../../common/paradisSimulatorAx.js';
+import { paradisRequireNumber } from '../../common/paradisMobileDeviceOps.js';
 import { PARADIS_SCRCPY_AGENT_POINTER_BASE, ParadisScrcpyTouchAction, paradisScrcpyTouch } from '../../common/paradisScrcpy.js';
 import { ParadisScrcpySession } from './paradisScrcpySession.js';
 import { ParadisScrcpySessions } from './paradisScrcpySessions.js';
@@ -243,9 +244,9 @@ export class ParadisAdbDeviceHost {
 			case 'GET /ui':
 				return this._snapshot(serial);
 			case 'POST /ui/find':
-				return paradisFindSimulatorAx(await this._snapshot(serial), this._query(args));
+				return paradisFindSimulatorAx(await this._snapshot(serial), paradisSimulatorAxQueryOf(args));
 			case 'POST /ui/tap': {
-				const found = paradisFindSimulatorAx(await this._snapshot(serial), { ...this._query(args), limit: 200 });
+				const found = paradisFindSimulatorAx(await this._snapshot(serial), { ...paradisSimulatorAxQueryOf(args), limit: 200 });
 				const target = paradisPickSimulatorAxTarget(found.matches);
 				if (!target) {
 					throw new Error('No element on the screen matched. Call mobile_ui_find or mobile_ui_snapshot to see what is there.');
@@ -254,12 +255,12 @@ export class ParadisAdbDeviceHost {
 				return { tapped: target, candidates: found.total, ambiguous: found.total > 1 };
 			}
 			case 'POST /input/tap':
-				await this._tap(serial, requireNumber(args, 'x'), requireNumber(args, 'y'), typeof args.duration === 'number' ? args.duration : undefined);
+				await this._tap(serial, paradisRequireNumber(args, 'x'), paradisRequireNumber(args, 'y'), typeof args.duration === 'number' ? args.duration : undefined);
 				return undefined;
 			case 'POST /input/swipe': {
 				const scale = (await this._display(serial)).scale;
 				const seconds = typeof args.duration === 'number' && args.duration > 0 ? Math.min(10, args.duration) : 0.4;
-				await this._shell(serial, ['input', 'swipe', ...[requireNumber(args, 'startX'), requireNumber(args, 'startY'), requireNumber(args, 'endX'), requireNumber(args, 'endY')].map(value => String(Math.round(value * scale))), String(Math.round(seconds * 1000))], 30_000);
+				await this._shell(serial, ['input', 'swipe', ...[paradisRequireNumber(args, 'startX'), paradisRequireNumber(args, 'startY'), paradisRequireNumber(args, 'endX'), paradisRequireNumber(args, 'endY')].map(value => String(Math.round(value * scale))), String(Math.round(seconds * 1000))], 30_000);
 				return undefined;
 			}
 			case 'POST /input/text': {
@@ -357,17 +358,6 @@ export class ParadisAdbDeviceHost {
 		return paradisNormalizeUiautomator(xml, scale);
 	}
 
-	private _query(args: Record<string, unknown>) {
-		return {
-			text: typeof args.text === 'string' && args.text ? args.text : undefined,
-			identifier: typeof args.identifier === 'string' && args.identifier ? args.identifier : undefined,
-			role: typeof args.role === 'string' && args.role ? args.role : undefined,
-			exact: args.exact === true,
-			interactableOnly: args.interactableOnly === true,
-			limit: typeof args.limit === 'number' ? args.limit : 20,
-		};
-	}
-
 	private async _tap(serial: string, x: number, y: number, seconds: number | undefined): Promise<void> {
 		const scale = (await this._display(serial)).scale;
 		const px = String(Math.round(x * scale));
@@ -399,8 +389,8 @@ export class ParadisAdbDeviceHost {
 		const cached = this._touchDisplays.get(serial);
 		const display = cached && this._now() - cached.at < TOUCH_DISPLAY_CACHE_MS ? cached.display : await this._display(serial);
 		this._touchDisplays.set(serial, { display, at: cached && cached.display === display ? cached.at : this._now() });
-		const x = requireNumber(args, 'x') * display.scale;
-		const y = requireNumber(args, 'y') * display.scale;
+		const x = paradisRequireNumber(args, 'x') * display.scale;
+		const y = paradisRequireNumber(args, 'y') * display.scale;
 		await this._options.scrcpy.use(serial, async session => {
 			const size = session.size;
 			if (!size) {
@@ -463,12 +453,4 @@ export async function paradisPasteKeepingClipboard(session: Pick<ParadisScrcpySe
 		throw new Error(`${reason}. The text may still have been pasted on the device: check the screen (mobile_ui_snapshot or mobile_screenshot) before typing it again.${restored ? ' The previous device clipboard was put back.' : note ? ` ${note}` : ''}`);
 	}
 	return restored ? { method: 'paste', clipboardRestored: true } : { method: 'paste', clipboardRestored: false, ...(note ? { note } : {}) };
-}
-
-function requireNumber(body: Record<string, unknown>, name: string): number {
-	const value = body[name];
-	if (typeof value !== 'number' || !Number.isFinite(value)) {
-		throw new Error(`"${name}" must be a number.`);
-	}
-	return value;
 }
