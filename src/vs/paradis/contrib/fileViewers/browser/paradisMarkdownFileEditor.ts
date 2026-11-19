@@ -48,7 +48,7 @@ import { ParadisViewerOpenKind } from '../common/paradisViewerOpenTiming.js';
 import { PARADIS_VIEWER_BODY_ROOT_ID, paradisViewerBodySwapScript, type IParadisRenderedDocument } from '../common/paradisViewerBodySwap.js';
 import { inlineParadisMarkdownMedia, ParadisInlineMediaCache, PARADIS_INLINE_MEDIA_LIMITS, PARADIS_INLINE_MEDIA_STYLES } from './paradisMarkdownInlineResources.js';
 import { paradisMarkdownLinkToOpen, rewriteParadisMarkdownLinks } from './paradisMarkdownLinks.js';
-import { containsParadisMermaidBlock, IParadisMermaidZoomLabels, loadParadisMermaidScriptSource, markedMermaidExtension, PARADIS_MERMAID_RERUN_SCRIPT, PARADIS_MERMAID_ZOOM_STYLES, paradisMermaidZoomScript } from './paradisMarkdownMermaid.js';
+import { containsParadisMermaidBlock, IParadisMermaidZoomLabels, loadParadisMermaidScriptSource, markedMermaidExtension, PARADIS_MERMAID_RERUN_SCRIPT, PARADIS_MERMAID_ZOOM_STYLES, paradisMermaidScripts, paradisMermaidZoomScript } from './paradisMarkdownMermaid.js';
 import { markedParadisAlertExtension, PARADIS_MARKDOWN_ALERT_STYLES } from './paradisMarkdownAlerts.js';
 import { ParadisRenderedFileEditor } from './paradisRenderedFileEditor.js';
 import { createParadisViewerReloadButton, ParadisViewerZoomControls, paradisViewerZoomMessage, paradisViewerZoomScript } from './paradisViewerZoom.js';
@@ -59,11 +59,15 @@ import { IParadisCodeCopyLabels, PARADIS_CODE_COPY_RERUN_SCRIPT, PARADIS_CODE_CO
 import { IParadisViewerScrollState } from '../common/paradisViewerScroll.js';
 import { paradisRecoverMarkdownCodeSources } from '../common/paradisMarkdownCodeSource.js';
 import { PARADIS_MARKDOWN_EDITOR_ID } from './paradisFileViewers.js';
-import { ParadisFileViewerInput } from './paradisFileViewerInput.js';
+import { ParadisFileViewerInput, ParadisFileViewerMode } from './paradisFileViewerInput.js';
 import { IEditorOpenContext } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { localize } from '../../../../nls.js';
+import { ParadisDocCommentsController } from '../../agentDocs/browser/paradisDocCommentsController.js';
+import { paradisDocCommentsBackend } from '../../agentDocs/browser/paradisDocCommentsBackend.js';
+import { PARADIS_DOC_LAYER_RERUN_SCRIPT, paradisDocCommentInPageScript } from '../../agentDocs/common/paradisDocCommentLayer.js';
+import { PARADIS_WEBVIEW_HOST_MESSAGE_CHECK } from '../common/paradisWebviewHostMessage.js';
 
 /** 図の拡大の窓の文言。 */
 function mermaidZoomLabels(): IParadisMermaidZoomLabels {
@@ -110,6 +114,8 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 	 * だけ）。コピーで元のタブに戻す。
 	 */
 	private _codeSources = new Map<string, string>();
+	/** 資料のコメント（右の列と、ページの中の層）。 */
+	private readonly _comments: ParadisDocCommentsController;
 
 	constructor(
 		group: IEditorGroup,
@@ -137,6 +143,8 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		super(PARADIS_MARKDOWN_EDITOR_ID, group, telemetryService, themeService, storageService, webviewService, textFileService, fileService, textModelService, instantiationService, layoutService, configurationService, notificationService, textResourceConfigurationService, editorService, editorGroupService);
 		// 拡大縮小はページ内のスクリプトで反映する（Markdown はスクリプトを常に許可している）。
 		this._zoom = this._register(new ParadisViewerZoomControls(() => void this.webview?.postMessage(paradisViewerZoomMessage(this._zoom.factor))));
+		// リンクとスクロール位置は webview の基盤が知らせる（文書の中に層を置くので外枠は無い）
+		this._comments = this._register(new ParadisDocCommentsController({ webview: () => this.webview, openLink: () => { }, recordScroll: () => { } }, paradisDocCommentsBackend()));
 		this._register(this._configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration(PARADIS_MARKDOWN_WIDTH_SETTING)) {
 				this._showWidth();
@@ -188,6 +196,7 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 			this._mediaCache.clear();
 			this._mediaCacheResource = resource;
 		}
+		this._comments.setResource(resource);
 		await super.setInput(input, options, context, token);
 	}
 
@@ -203,7 +212,20 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		super.dispose();
 	}
 
+	protected override createEditor(parent: HTMLElement): void {
+		super.createEditor(parent);
+		const content = this.viewerContentElement;
+		if (content) {
+			this._comments.createColumn(content);
+		}
+	}
+
+	protected override onDidChangeViewMode(mode: ParadisFileViewerMode): void {
+		this._comments.setRendered(mode === 'rendered');
+	}
+
 	protected override onCreateToolbar(toolbar: HTMLElement): void {
+		this._comments.createToolbarToggle(toolbar);
 		// 本文の幅はズームの左。帯が狭いときは 1 つのボタンに畳む（区切り線は狭い帯では出ない）。
 		this._widthControl = this._register(new ParadisMarkdownWidthControl(toolbar, this._widthFor(undefined), width => this._chooseWidth(width), this._contextMenuService));
 		appendParadisViewerToolbarSeparator(toolbar);
@@ -233,6 +255,7 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 	// webview 基盤は `#見出し` 以外のリンクを通知するだけで自分では開かないので、ここで開く。
 	// 相対パスのリンクは描画時に絶対 URI へ書き換え済み（paradisMarkdownLinks）。
 	protected override onWebviewCreated(webview: IOverlayWebview, store: DisposableStore): void {
+		this._comments.attach(webview, store);
 		store.add(webview.onDidClickLink(link => {
 			const target = paradisMarkdownLinkToOpen(link);
 			if (target) {
@@ -311,6 +334,8 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 		const body = `${frontMatter.htmlPrefix}${media.html}`;
 		this._codeSources = paradisRecoverMarkdownCodeSources(frontMatter.markdown, rendered.codeSources);
 		const width = this._widthFor(resource);
+		// 資料のコメントの層（保存先があり、手元か SSH 先のファイルのとき）
+		const comments = this._comments.enabledFor(resource);
 
 		// 実行できるのは、この HTML 自身が埋め込む nonce 付き <script>（ビューアの補助スクリプトと、
 		// mermaid を使う文書では vendored mermaid.js 本体 + 直後の初期化コード）だけであり、
@@ -338,49 +363,17 @@ export class ParadisMarkdownFileEditor extends ParadisRenderedFileEditor {
 	<body class="paradis-markdown-body">
 		<div id="${PARADIS_VIEWER_BODY_ROOT_ID}">${body}</div>
 		${mermaidEnabled ? paradisMermaidZoomScript(nonce, mermaidZoomLabels()) : ''}
-		${mermaidEnabled ? this._renderMermaidScripts(nonce, mermaidScriptSource!) : ''}
+		${mermaidEnabled ? paradisMermaidScripts(nonce, mermaidScriptSource!) : ''}
 		${paradisViewerZoomScript(nonce)}
 		${paradisMarkdownWidthScript(nonce)}
 		${paradisCodeCopyScript(nonce, codeCopyLabels())}
-		${paradisViewerBodySwapScript(nonce, PARADIS_CODE_COPY_RERUN_SCRIPT + (mermaidEnabled ? PARADIS_MERMAID_RERUN_SCRIPT : ''))}
+		${paradisViewerBodySwapScript(nonce, PARADIS_CODE_COPY_RERUN_SCRIPT + (mermaidEnabled ? PARADIS_MERMAID_RERUN_SCRIPT : '') + (comments ? PARADIS_DOC_LAYER_RERUN_SCRIPT : ''))}
 		${this.viewerPageScripts(resource, nonce)}
+		${comments ? paradisDocCommentInPageScript(nonce, this._comments.token, this._comments.labels, this._comments.layerState, PARADIS_WEBVIEW_HOST_MESSAGE_CHECK) : ''}
 	</body>
 </html>`;
 		// 2 回目以降の描き直しは、外側（nonce・配色・Mermaid の有無）が同じなら本文だけを送る。Mermaid 本体（約 3.5MB）と
 		// スタイルは最初の 1 回だけ読み込む。倍率と本文の幅はページへ別に送っているので鍵に入れない（`<html>` は差し替えの外）。
-		return { html, swap: { key: `${nonce}\n${mermaidEnabled}\n${tokenCss}`, body } };
-	}
-
-	/**
-	 * vendored mermaid.js 本体と、それに続く初期化コードを nonce 付き <script> として埋め込む。
-	 *
-	 * `securityLevel: 'strict'` で HTML ラベル注入やクリックイベント等のスクリプト機能を無効化する
-	 * （mermaid 標準のサンドボックスモード）。テーマは `--vscode-editor-background` の輝度から
-	 * 単純に判定する（webview 内側のこのドキュメント自身には `vscode-dark` 等のクラスが付かないため）。
-	 */
-	private _renderMermaidScripts(nonce: string, mermaidScriptSource: string): string {
-		return `<script nonce="${nonce}">${mermaidScriptSource}</script>
-		<script nonce="${nonce}">
-			(function () {
-				function isDarkBackground() {
-					var probe = document.createElement('div');
-					probe.style.color = getComputedStyle(document.body).getPropertyValue('--vscode-editor-background');
-					document.body.appendChild(probe);
-					var rgb = getComputedStyle(probe).color;
-					document.body.removeChild(probe);
-					var m = rgb.match(/\\d+/g);
-					if (!m || m.length < 3) { return false; }
-					return (0.299 * Number(m[0]) + 0.587 * Number(m[1]) + 0.114 * Number(m[2])) < 128;
-				}
-				try {
-					mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: isDarkBackground() ? 'dark' : 'default' });
-					var run = mermaid.run({ querySelector: '.paradis-mermaid' });
-					var done = function () { if (window.__paradisMermaidZoom) { window.__paradisMermaidZoom.decorate(); } };
-					if (run && run.then) { run.then(done, function (err) { console.error('[paradis] mermaid render failed', err); done(); }); } else { done(); }
-				} catch (err) {
-					console.error('[paradis] mermaid render failed', err);
-				}
-			})();
-		</script>`;
+		return { html, swap: { key: `${nonce}\n${mermaidEnabled}\n${comments}\n${tokenCss}`, body } };
 	}
 }

@@ -16,6 +16,7 @@ import { StringSHA1 } from '../../../../base/common/hash.js';
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { ITerminalInstance } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { paradisCodexApprovalFormHeadingAt } from '../../mobileRelay/common/paradisAgentApprovalOptions.js';
+import type { ParadisAgentKind } from '../common/paradisAgentDescriptor.js';
 
 /**
  * 質問の選択肢が画面に出るのを待つ上限。ここを過ぎたら待たずに流す（送信を止める門ではない）。
@@ -317,7 +318,7 @@ export function paradisScreenShowsQuestionPrompt(screen: string): boolean {
  * Codex と分かっているとき以外は含める。`agent` が `'claude'` のときは、会話を開き直した直後の Claude Code の確認
  * （{@link paradisClaudeResumeScreenPrompt}）も含める（Codex の画面に同じ文言が出ても断らないよう、分からなければ見ない）。
  */
-export function paradisScreenShowsAgentPrompt(screen: string, agent?: 'claude' | 'codex' | 'opencode' | 'antigravity'): boolean {
+export function paradisScreenShowsAgentPrompt(screen: string, agent?: ParadisAgentKind): boolean {
 	return paradisScreenShowsPermissionPrompt(screen) || paradisScreenShowsQuestionPrompt(screen)
 		|| (agent !== 'codex' && paradisScreenShowsClaudeYesNoPlanPrompt(screen))
 		|| (agent === 'claude' && paradisScreenShowsClaudeResumePrompt(screen));

@@ -29,7 +29,7 @@ import { clearNotesConfirmMessage, newReviewNoteId, noteAnchorOf, noteCountsByPa
 import { DiffLines, ReviewFileList, ReviewFileSummary, ReviewFooter, ReviewSummary } from '../../../../src/features/code/reviewParts.js';
 import { MAX_RAW_LINES } from '../../../../src/features/code/officeRawDiff.js';
 import { effectiveReviewMode, reviewContentKindOf, reviewSidesOf, reviewViewPlan, type ReviewContentKind, type ReviewViewMode } from '../../../../src/features/code/reviewViewModes.js';
-import { OfficeDiffWebView, ReviewImageCompare, ReviewViewSwitch } from '../../../../src/features/code/reviewViewParts.js';
+import { OfficeDiffWebView, RenderedDiffWebView, ReviewImageCompare, ReviewViewSwitch } from '../../../../src/features/code/reviewViewParts.js';
 import { RightDrawer } from '../../../../src/features/code/rightDrawer.js';
 import { orderedScmEntries, scmEntries } from '../../../../src/features/code/scmModel.js';
 import { useCodeSpace } from '../../../../src/features/code/useCodeSpace.js';
@@ -100,9 +100,11 @@ export default function ReviewScreen() {
 	// 見方（表示・差分・Raw）。種類と PC の機能で並べる見方と既定が決まり、ファイルを移ったら既定に戻る（項目 6）
 	const fileAtCapable = usePcCapability(PcCapability.ScmFileAt);
 	const wordDiffCapable = usePcCapability(PcCapability.ScmWordDiff);
+	const renderedDiffCapable = usePcCapability(PcCapability.ScmRenderedDiff);
+	const renderedDiffHtmlCapable = usePcCapability(PcCapability.ScmRenderedDiffHtml);
 	const contentKind = path !== undefined ? reviewContentKindOf(path) : 'text';
 	const sides = reviewSidesOf(entry);
-	const viewPlan = reviewViewPlan(contentKind, sides, { fileAt: fileAtCapable, wordDiff: wordDiffCapable }, path ?? '');
+	const viewPlan = reviewViewPlan(contentKind, sides, { fileAt: fileAtCapable, wordDiff: wordDiffCapable, renderedDiff: renderedDiffCapable, renderedDiffHtml: renderedDiffHtmlCapable }, path ?? '');
 	const [chosenView, setChosenView] = useState<{ readonly path: string; readonly mode: ReviewViewMode } | undefined>(undefined);
 	const viewMode = effectiveReviewMode(viewPlan, chosenView !== undefined && chosenView.path === path ? chosenView.mode : undefined);
 	const office = contentKind === 'spreadsheet' || contentKind === 'docx';
@@ -110,6 +112,14 @@ export default function ReviewScreen() {
 	const officeRaw = office && fileAtCapable;
 	const textRaw = viewMode === 'raw' && !officeRaw;
 	const view = useReviewView(codeSpace, path, contentKind, viewMode, sides, entry?.identity, officeRaw);
+	// 既定で開いたプレビュー差分を PC が作れなかった（大きい・突き合わせられない）ときは Raw へ移る（PC の差分エディタが
+	// テキスト差分のまま開くのと同じ）。自分で「差分」を選んだときは、断りの文を出したままにする
+	const renderedDiffFailed = view.content?.renderedDiffFailed === true && viewMode === 'diff' && !(chosenView !== undefined && chosenView.path === path);
+	useEffect(() => {
+		if (renderedDiffFailed && path !== undefined) {
+			setChosenView({ path, mode: 'raw' });
+		}
+	}, [renderedDiffFailed, path]);
 	// 識別もキーにする（確認した後に書き換えられたら差分を取り直す）。テキストの差分は Office 以外でだけ読む
 	// （行数・行へのメモに使うので、見方が「表示」でも読む）
 	const diff = useDiffContent(codeSpace, !office || textRaw ? path : undefined, entry?.staged ?? false, entry?.identity);
@@ -524,6 +534,9 @@ function ReviewViewBody({ path, kind, mode, view, unavailable, sideBySide }: {
 	}
 	if (content.html !== undefined && (kind === 'spreadsheet' || kind === 'docx')) {
 		return <OfficeDiffWebView html={content.html} kind={kind} />;
+	}
+	if (content.html !== undefined && (kind === 'markdown' || kind === 'html')) {
+		return <RenderedDiffWebView html={content.html} />;
 	}
 	if (content.rows !== undefined) {
 		const unit = kind === 'docx' ? '段落' : 'セル';

@@ -62,3 +62,23 @@ export function paradisHtmlViewerCanvasScript(): string {
 		+ `o.observe(document.documentElement,opts);o.observe(document.body,opts);setTimeout(function(){o.disconnect();},${PARADIS_HTML_VIEWER_CANVAS_WATCH_MS});}`
 		+ `check();if(document.readyState==='complete'){watch();}else{window.addEventListener('load',watch);}}catch(err){}})();</script>`;
 }
+
+/**
+ * webview の基盤がページへ入れる既定のスタイル（pre/index.html の `#_defaultStyles`）のうち、ページの見た目に効くもの。
+ *
+ * 資料のコメントの外枠（paradisDocCommentLayer.ts）はページを入れ子の iframe に入れるので、基盤のスタイルと
+ * `--vscode-*` の変数が中のページに届かない（文字の大きさと字体が変わる）。同じ規則を文書の先頭に置き、変数は外枠が
+ * 中のページの `<html>` へ写す。文書の先頭に置くので、ページ自身の CSP（`style-src`）より前に読まれる。
+ */
+export function paradisHtmlFrameDefaultStyle(): string {
+	return '<style>@layer vscode-default{'
+		+ 'html{scrollbar-color:var(--vscode-scrollbarSlider-background) var(--vscode-editor-background);}'
+		+ 'body{overscroll-behavior-x:none;background-color:transparent;color:var(--vscode-editor-foreground);font-family:var(--vscode-font-family);font-weight:var(--vscode-font-weight);font-size:var(--vscode-font-size);margin:0;padding:0 20px;}'
+		+ 'img,video{max-width:100%;max-height:100%;}'
+		+ '::-webkit-scrollbar{width:10px;height:10px;}'
+		+ '::-webkit-scrollbar-corner{background-color:var(--vscode-editor-background);}'
+		+ '::-webkit-scrollbar-thumb{background-color:var(--vscode-scrollbarSlider-background);}'
+		+ '::-webkit-scrollbar-thumb:hover{background-color:var(--vscode-scrollbarSlider-hoverBackground);}'
+		+ '::-webkit-scrollbar-thumb:active{background-color:var(--vscode-scrollbarSlider-activeBackground);}'
+		+ '}</style>';
+}

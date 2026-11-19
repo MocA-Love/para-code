@@ -6,6 +6,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { deepStrictEqual, rejects, strictEqual } from 'assert';
+import { Dimension } from '../../../../../base/browser/dom.js';
 import { DeferredPromise } from '../../../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { Event } from '../../../../../base/common/event.js';
@@ -23,6 +24,8 @@ import { TestEditorGroupView } from '../../../../../workbench/test/browser/workb
 import { TestStorageService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import { ParadisFileDiffEditor } from '../../browser/paradisFileDiffEditor.js';
 import { ParadisFileDiffInput } from '../../browser/paradisFileDiffInput.js';
+import { ParadisMarkdownRenderedDiffView } from '../../browser/paradisMarkdownRenderedDiffView.js';
+import { registerParadisRenderedDiffView } from '../../browser/paradisRenderedDiffViews.js';
 
 interface IControlledReference {
 	readonly deferred: DeferredPromise<IReference<IResolvedTextEditorModel>>;
@@ -55,6 +58,20 @@ function createInput(original: URI, modified: URI): ParadisFileDiffInput {
 	return new ParadisFileDiffInput(original, modified, undefined, textFileService, workingCopyService);
 }
 
+/** Markdown のバーとプレビュー差分の部品を、受け取った呼び出しを数えるだけの物に差し替える。 */
+function stubRenderedView(instantiationService: TestInstantiationService): string[] {
+	const calls: string[] = [];
+	instantiationService.stubInstance(ParadisMarkdownRenderedDiffView, {
+		mode: 'text',
+		setInput: (original: URI, modified: URI) => { calls.push(`setInput ${original.path} ${modified.path}`); },
+		clearInput: () => { calls.push('clearInput'); },
+		setVisible: () => { },
+		layout: () => { },
+		dispose: () => { },
+	});
+	return calls;
+}
+
 suite('ParadisFileDiffEditor', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 
@@ -74,6 +91,7 @@ suite('ParadisFileDiffEditor', () => {
 			updateOptions: () => { },
 			dispose: () => { },
 		});
+		stubRenderedView(instantiationService);
 		const editor = new ParadisFileDiffEditor(
 			new TestEditorGroupView(1),
 			NullTelemetryService,
@@ -317,6 +335,7 @@ suite('ParadisFileDiffEditor', () => {
 			updateOptions: () => { },
 			dispose: () => { },
 		});
+		stubRenderedView(instantiationService);
 		const editor = new ParadisFileDiffEditor(
 			new TestEditorGroupView(1),
 			NullTelemetryService,
@@ -350,5 +369,84 @@ suite('ParadisFileDiffEditor', () => {
 		strictEqual(references.get(firstModified.toString())!.disposeCount, 1);
 		strictEqual(references.get(secondOriginal.toString())!.disposeCount, 1);
 		strictEqual(references.get(secondModified.toString())!.disposeCount, 1);
+	});
+
+	test('hands a Markdown diff to the rendered diff view and only clears it for an HTML diff', async () => {
+		const modelService = {
+			createModelReference: () => Promise.resolve(createReference(createControlledReference())),
+		} as unknown as ITextModelService;
+		const instantiationService = disposables.add(new TestInstantiationService());
+		instantiationService.stubInstance(DiffEditorWidget, {
+			setModel: () => { },
+			updateOptions: () => { },
+			dispose: () => { },
+		});
+		const calls = stubRenderedView(instantiationService);
+		const editor = disposables.add(new ParadisFileDiffEditor(
+			new TestEditorGroupView(1),
+			NullTelemetryService,
+			new TestThemeService(),
+			disposables.add(new TestStorageService()),
+			instantiationService,
+			modelService,
+		));
+		const markdown = disposables.add(createInput(URI.parse('git:/workspace/readme.md?ref=HEAD'), URI.file('/workspace/readme.md')));
+		const html = disposables.add(createInput(URI.parse('git:/workspace/index.html?ref=HEAD'), URI.file('/workspace/index.html')));
+
+		await editor.setInput(markdown, undefined, Object.create(null), CancellationToken.None);
+		await editor.setInput(html, undefined, Object.create(null), CancellationToken.None);
+
+		deepStrictEqual(calls, ['setInput /workspace/readme.md /workspace/readme.md', 'clearInput']);
+	});
+
+	test('hands an HTML diff to the registered view with the last width, and clears the view of the previous kind', async () => {
+		const modelService = {
+			createModelReference: () => Promise.resolve(createReference(createControlledReference())),
+		} as unknown as ITextModelService;
+		const instantiationService = disposables.add(new TestInstantiationService());
+		instantiationService.stubInstance(DiffEditorWidget, {
+			setModel: () => { },
+			updateOptions: () => { },
+			dispose: () => { },
+		});
+		const calls = stubRenderedView(instantiationService);
+		disposables.add(registerParadisRenderedDiffView({
+			matches: resource => resource.path.endsWith('.html'),
+			create: () => {
+				const view = {
+					mode: 'text',
+					setInput: (original: URI, modified: URI) => { calls.push(`html setInput ${modified.path}`); },
+					clearInput: () => { calls.push('html clearInput'); },
+					setVisible: () => { },
+					layout: (width: number) => { calls.push(`html layout ${width}`); },
+					dispose: () => { },
+				};
+				return view as unknown as ParadisMarkdownRenderedDiffView;
+			},
+		}));
+		const editor = disposables.add(new ParadisFileDiffEditor(
+			new TestEditorGroupView(1),
+			NullTelemetryService,
+			new TestThemeService(),
+			disposables.add(new TestStorageService()),
+			instantiationService,
+			modelService,
+		));
+		const markdown = disposables.add(createInput(URI.parse('git:/workspace/readme.md?ref=HEAD'), URI.file('/workspace/readme.md')));
+		const html = disposables.add(createInput(URI.parse('git:/workspace/index.html?ref=HEAD'), URI.file('/workspace/index.html')));
+
+		await editor.setInput(markdown, undefined, Object.create(null), CancellationToken.None);
+		editor.layout(new Dimension(560, 400));
+		await editor.setInput(html, undefined, Object.create(null), CancellationToken.None);
+		await editor.setInput(markdown, undefined, Object.create(null), CancellationToken.None);
+
+		deepStrictEqual(calls, [
+			'setInput /workspace/readme.md /workspace/readme.md',
+			'clearInput',
+			'html layout 560',
+			'html setInput /workspace/index.html',
+			'html clearInput',
+			'setInput /workspace/readme.md /workspace/readme.md',
+		]);
 	});
 });

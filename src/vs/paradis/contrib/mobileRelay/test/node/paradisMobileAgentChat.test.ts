@@ -467,6 +467,68 @@ suite('ParadisMobileAgentChat', () => {
 		}
 	}));
 
+	test('sends a Codex and an Antigravity CLI pane only the snapshot fields of their kind, and refuses the Claude-only requests', () => withFakeHome(async home => {
+		const threadId = '00000000-0000-4000-8000-00000000c0d2';
+		const conversationId = '00000000-0000-4000-8000-00000000a6e2';
+		const panes = [
+			{ terminalId: 1, token: 'pane-codex-fields', agentKind: 'codex' as const, sessionId: threadId, transcriptPath: join(home, '.codex', 'sessions', '2026', '01', '01', `rollout-2026-01-01T00-00-00-${threadId}.jsonl`) },
+			{ terminalId: 2, token: 'pane-antigravity-fields', agentKind: 'antigravity' as const, sessionId: conversationId, transcriptPath: join(paradisAntigravityBrainRoot(home), conversationId, '.system_generated', 'logs', 'transcript_full.jsonl') },
+		];
+		const sent: Record<string, unknown>[] = [];
+		const chat = new ParadisMobileAgentChat(
+			(_mobileId, payload) => sent.push(JSON.parse(new TextDecoder().decode(payload))),
+			() => { }, () => { }, new NullLogService(),
+		);
+		const access = chat as unknown as { tailers: Map<string, { readonly epoch: string }> };
+		const inbound = (message: Record<string, unknown>) => chat.handleInbound('mobile-1', new TextEncoder().encode(JSON.stringify(message)));
+		const fields = ['monitors', 'shells', 'workflows', 'teams', 'pcDraft', 'asyncQuestions', 'sessionStatus'];
+		try {
+			chat.setEagerTailing(true);
+			// PC の書きかけは、アプリが広告していても Claude Code の会話にしか付かない
+			chat.setMobileCapabilityCheck(async () => true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, panes.map(pane => ({ terminalId: pane.terminalId, token: pane.token }))), true);
+			const seen: Record<string, unknown> = {};
+			for (const pane of panes) {
+				fireParadisAgentHookEvent({ token: pane.token, event: 'SessionStart', sessionId: pane.sessionId, transcriptPath: pane.transcriptPath, cwd: '/workspace', agentKind: pane.agentKind, at: Date.now() });
+				await waitFor(() => access.tailers.has(pane.token), `the ${pane.agentKind} conversation was not followed`);
+				sent.length = 0;
+				inbound({ t: 'attach', id: pane.terminalId, token: pane.token });
+				await waitFor(() => sent.some(message => message.t === 'snapshot'), 'the attach did not answer with a snapshot');
+				const snapshot = sent.find(message => message.t === 'snapshot')!;
+				const epoch = access.tailers.get(pane.token)!.epoch;
+				sent.length = 0;
+				inbound({ t: 'action/closePanel', id: pane.terminalId, token: pane.token, epoch, requestId: 'close-1' });
+				inbound({ t: 'shell-output', id: pane.terminalId, token: pane.token, epoch, requestId: 'shell-1', shellIds: ['b1'] });
+				await waitFor(() => sent.length >= 2, 'the Claude-only requests were not answered');
+				seen[pane.agentKind] = {
+					fields: fields.filter(field => Object.prototype.hasOwnProperty.call(snapshot, field)),
+					asyncQuestions: snapshot.asyncQuestions,
+					replies: sent.map(message => ({ t: message.t, requestId: message.requestId, status: message.status, code: message.code, error: message.error })),
+				};
+			}
+			assert.deepStrictEqual(seen, {
+				codex: {
+					fields: ['asyncQuestions', 'sessionStatus'],
+					asyncQuestions: [],
+					replies: [
+						{ t: 'action-result', requestId: 'close-1', status: 'rejected', code: 'stale-session', error: undefined },
+						{ t: 'shell-output', requestId: 'shell-1', status: undefined, code: undefined, error: 'stale-session' },
+					],
+				},
+				antigravity: {
+					fields: [],
+					asyncQuestions: undefined,
+					replies: [
+						{ t: 'action-result', requestId: 'close-1', status: 'rejected', code: 'stale-session', error: undefined },
+						{ t: 'shell-output', requestId: 'shell-1', status: undefined, code: undefined, error: 'stale-session' },
+					],
+				},
+			});
+		} finally {
+			chat.dispose();
+		}
+	}));
+
 	test('returns an Antigravity CLI approval from the mobile card to the waiting approval hook, only while the mobile app watches the pane', () => withFakeHome(async home => {
 		const token = 'pane-antigravity-approval';
 		// 偽の会話の id（手元の agy の会話とは重ならない）。記録のファイルは作らない

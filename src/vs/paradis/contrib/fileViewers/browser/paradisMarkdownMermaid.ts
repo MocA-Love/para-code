@@ -199,3 +199,38 @@ export async function loadParadisMermaidScriptSource(fileService: IFileService):
 	}
 	return source;
 }
+
+/**
+ * vendored mermaid.js 本体と、それに続く初期化コードを nonce 付き <script> として埋め込む（Markdown のビューアと
+ * プレビュー差分で共用）。
+ *
+ * `securityLevel: 'strict'` で HTML ラベル注入やクリックイベント等のスクリプト機能を無効化する
+ * （mermaid 標準のサンドボックスモード）。テーマは `--vscode-editor-background` の輝度から
+ * 単純に判定する（webview 内側のこのドキュメント自身には `vscode-dark` 等のクラスが付かないため）。
+ * 描き終えたら、図の拡大の部品（{@link paradisMermaidZoomScript}）があれば図に拡大のボタンを付ける。
+ */
+export function paradisMermaidScripts(nonce: string, mermaidScriptSource: string): string {
+	return `<script nonce="${nonce}">${mermaidScriptSource}</script>
+		<script nonce="${nonce}">
+			(function () {
+				function isDarkBackground() {
+					var probe = document.createElement('div');
+					probe.style.color = getComputedStyle(document.body).getPropertyValue('--vscode-editor-background');
+					document.body.appendChild(probe);
+					var rgb = getComputedStyle(probe).color;
+					document.body.removeChild(probe);
+					var m = rgb.match(/\\d+/g);
+					if (!m || m.length < 3) { return false; }
+					return (0.299 * Number(m[0]) + 0.587 * Number(m[1]) + 0.114 * Number(m[2])) < 128;
+				}
+				try {
+					mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: isDarkBackground() ? 'dark' : 'default' });
+					var run = mermaid.run({ querySelector: '.paradis-mermaid' });
+					var done = function () { if (window.__paradisMermaidZoom) { window.__paradisMermaidZoom.decorate(); } };
+					if (run && run.then) { run.then(done, function (err) { console.error('[paradis] mermaid render failed', err); done(); }); } else { done(); }
+				} catch (err) {
+					console.error('[paradis] mermaid render failed', err);
+				}
+			})();
+		</script>`;
+}

@@ -7,11 +7,14 @@ import type { ScmEntry } from './scmModel.js';
  * 差分の画面の見方（「表示・差分・Raw」）の決まり。React に依存しない純関数で、`reviewViewModes.test.ts` で固定している。
  *
  *  - 表示（render）: 変更後の中身をファイルビューアと同じ部品で描く（削除したファイルは変更前）
- *  - 差分（diff）: 変更前と変更後を比べる。画像は並べ、Excel は PC の `xlsxDiff`、Word は PC の Word 差分
+ *  - 差分（diff）: 変更前と変更後を比べる。画像は並べ、Excel は PC の `xlsxDiff`、Word は PC の Word 差分、
+ *    Markdown・HTML は PC の 1 列のプレビュー差分（`renderedDiff`）
  *  - Raw（raw）: 文字の差分。テキストは `git diff`、Excel・Word は書式を外した中身（セルの値・段落）の比較
  *
- * 種類ごとの見方と既定（ユーザーの決定 Q6-1・Q6-2）:
- *  - Markdown・HTML: 表示（既定）・Raw
+ * 種類ごとの見方と既定（ユーザーの決定 Q6-1・Q6-2。Markdown・HTML の既定は PC の差分エディタに合わせた Q665 b）:
+ *  - Markdown: 表示・差分（既定。PC が作るプレビュー差分。`scm.rendered-diff.v1` の PC で、変更前と変更後の両方があるとき）・Raw。
+ *    差分を出せないとき（古い PC・新規・削除）は表示
+ *  - HTML: 表示・差分（`scm.rendered-diff-html.v1` の PC で、変更前と変更後の両方があるとき）・Raw（既定。PC の HTML の差分の既定がテキスト差分のため）
  *  - 画像: 表示（既定）・差分
  *  - Excel・Word: 表示・差分（既定）・Raw
  *  - その他のテキスト: Raw だけ（切り替えは出さない）
@@ -34,6 +37,10 @@ export interface ReviewViewCaps {
 	readonly fileAt: boolean;
 	/** `scm.word-diff.v1`: Word の差分。 */
 	readonly wordDiff: boolean;
+	/** `scm.rendered-diff.v1`: Markdown のプレビュー差分。 */
+	readonly renderedDiff: boolean;
+	/** `scm.rendered-diff-html.v1`: HTML のプレビュー差分。 */
+	readonly renderedDiffHtml: boolean;
 }
 
 /** 中身をどこから読むか。`missing` はその側にファイルが無い（新規・削除）。 */
@@ -84,8 +91,16 @@ export function reviewViewPlan(kind: ReviewContentKind, sides: ReviewSides, caps
 	const both = sides.before !== 'missing' && sides.after !== 'missing';
 	switch (kind) {
 		case 'markdown':
-		case 'html':
-			return plan(canRead(renderSide) ? ['render', 'raw'] : ['raw'], 'render');
+		case 'html': {
+			const modes: ReviewViewMode[] = canRead(renderSide) ? ['render'] : [];
+			// プレビュー差分は PC が両側を読んで描く（種類ごとに印が違う）。片側しか無いファイルは全体が追加・削除になるだけなので出さない
+			if (both && (kind === 'markdown' ? caps.renderedDiff : caps.renderedDiffHtml)) {
+				modes.push('diff');
+			}
+			modes.push('raw');
+			// 既定は PC の差分エディタと同じ（Markdown はプレビュー差分、HTML はテキスト差分）
+			return kind === 'markdown' ? plan(modes, 'diff', ['render', 'raw']) : plan(modes, 'raw');
+		}
 		case 'image': {
 			const modes: ReviewViewMode[] = [];
 			if (canRead(renderSide)) {

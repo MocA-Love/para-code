@@ -1,0 +1,245 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+	The documents view in the left sidebar (paradisAgentDocsView.ts, screen 9 of the mock): a filter band (scope
+	segments, kind chips with the count, search field) above a scrolling list of groups and two-line rows.
+	Sizes and colors come from the UI kit only (paradisTokens.css, paradis.* colors); focus rings are paradisFocusRing.css.
+*/
+
+.monaco-workbench .paradis-agent-docs {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	min-height: 0;
+}
+
+.monaco-workbench .paradis-agent-docs-filter {
+	flex: none;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size100) var(--vscode-spacing-size80);
+	border-bottom: 1px solid var(--vscode-paradis-lineSubtle);
+}
+
+.monaco-workbench .paradis-agent-docs-filter > .paradis-seg {
+	height: var(--paradis-height-sm);
+}
+
+.monaco-workbench .paradis-agent-docs-filter > .paradis-seg > button {
+	font-size: var(--vscode-fontSize-label2);
+	padding: 0 var(--vscode-spacing-size80);
+}
+
+.monaco-workbench .paradis-agent-docs-chips {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	flex: 1 1 100%;
+	min-width: 0;
+}
+
+.monaco-workbench .paradis-agent-docs-count {
+	margin-left: auto;
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-paradis-textMuted);
+	white-space: nowrap;
+}
+
+.monaco-workbench .paradis-agent-docs-search {
+	flex: 1 1 100%;
+	height: var(--paradis-height-sm);
+}
+
+.monaco-workbench .paradis-agent-docs-scroll {
+	flex: 1 1 0;
+	min-height: 0;
+}
+
+/* Scrolled by the upstream scrollbar around it (DomScrollableElement), not the native one. */
+.monaco-workbench .paradis-agent-docs-list {
+	box-sizing: border-box;
+	height: 100%;
+	overflow: hidden;
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size60) var(--vscode-spacing-size80);
+}
+
+.monaco-workbench .paradis-agent-docs-empty {
+	padding: var(--vscode-spacing-size240) var(--vscode-spacing-size120);
+	text-align: center;
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+}
+
+/* Group header: a button that folds the group. */
+.monaco-workbench .paradis-agent-docs-group {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	width: 100%;
+	height: 26px;
+	margin-top: var(--vscode-spacing-size40);
+	padding: 0 var(--vscode-spacing-size40);
+	border: none;
+	border-radius: var(--paradis-radius-control);
+	background: none;
+	color: var(--vscode-paradis-textMuted);
+	font: inherit;
+	font-size: var(--vscode-fontSize-label2);
+	text-align: left;
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.monaco-workbench .paradis-agent-docs-group:hover {
+	background: var(--vscode-paradis-fillHover);
+}
+
+.monaco-workbench .paradis-agent-docs-group > .codicon {
+	flex: none;
+	font-size: var(--vscode-codiconFontSize-compact);
+}
+
+.monaco-workbench .paradis-agent-docs-group-label {
+	flex: 0 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.monaco-workbench .paradis-agent-docs-group-label.paradis-status > .paradis-status-label,
+.monaco-workbench .paradis-agent-docs-group-label.strong {
+	color: var(--vscode-paradis-textStrong);
+	font-weight: var(--vscode-fontWeight-semiBold);
+}
+
+.monaco-workbench .paradis-agent-docs-group-label.paradis-status {
+	font-size: var(--vscode-fontSize-label2);
+}
+
+.monaco-workbench .paradis-agent-docs-group-state {
+	flex: none;
+}
+
+.monaco-workbench .paradis-agent-docs-group-sub {
+	flex: 1 1 0;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.monaco-workbench .paradis-agent-docs-group-count {
+	flex: none;
+	font-variant-numeric: tabular-nums;
+}
+
+/* Two-line row: file name, then folder and time (or the missing-file warning). */
+.monaco-workbench .paradis-agent-docs-row {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	height: var(--paradis-row-two-line);
+	padding: 0 var(--vscode-spacing-size80);
+	border-radius: var(--paradis-radius-control);
+	cursor: pointer;
+}
+
+.monaco-workbench .paradis-agent-docs-row:hover {
+	background: var(--vscode-paradis-fillHover);
+}
+
+.monaco-workbench .paradis-agent-docs-row.current {
+	background: var(--vscode-paradis-fillSelected);
+}
+
+.monaco-workbench .paradis-agent-docs-row.missing {
+	cursor: default;
+}
+
+.monaco-workbench .paradis-agent-docs-row > .codicon {
+	flex: none;
+	color: var(--vscode-paradis-textMuted);
+}
+
+.monaco-workbench .paradis-agent-docs-row-body {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size20);
+}
+
+.monaco-workbench .paradis-agent-docs-row-line1,
+.monaco-workbench .paradis-agent-docs-row-line2 {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	min-width: 0;
+	line-height: 1.4;
+}
+
+.monaco-workbench .paradis-agent-docs-row-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.monaco-workbench .paradis-agent-docs-row.missing .paradis-agent-docs-row-name {
+	text-decoration: line-through;
+	color: var(--vscode-paradis-textMuted);
+}
+
+.monaco-workbench .paradis-agent-docs-row-shown {
+	flex: none;
+}
+
+.monaco-workbench .paradis-agent-docs-row-line2 {
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-paradis-textMuted);
+}
+
+.monaco-workbench .paradis-agent-docs-row-folder,
+.monaco-workbench .paradis-agent-docs-row-warning {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.monaco-workbench .paradis-agent-docs-row-warning {
+	color: var(--vscode-paradis-warning);
+}
+
+.monaco-workbench .paradis-agent-docs-row-when {
+	flex: none;
+	white-space: nowrap;
+}
+
+/* A text button inside a row (remove from the list, make it a document of a session). */
+.monaco-workbench .paradis-agent-docs-link {
+	flex: none;
+	padding: 0;
+	border: none;
+	background: none;
+	color: var(--vscode-paradis-accent);
+	font: inherit;
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.monaco-workbench .paradis-agent-docs-link:hover {
+	text-decoration: underline;
+}
+
+.monaco-workbench .paradis-agent-docs-row:not(:hover):not(.current) .paradis-agent-docs-link.on-hover {
+	display: none;
+}

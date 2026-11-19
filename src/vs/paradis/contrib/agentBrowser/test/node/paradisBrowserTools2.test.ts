@@ -87,11 +87,21 @@ suite('para-browser tools: network idle, run_steps, capture_screenshot, read_dow
 		const afterFirstClosed = activity.snapshot(30_000);
 		activity.forgetConnection(second);
 		assert.deepStrictEqual([afterFinish, longLived, afterFirstClosed, activity.snapshot(30_000)], [
-			{ inflight: 1, quietMs: 0, pendingUrls: ['https://example.com/a'], longLived: 0 },
-			{ inflight: 0, quietMs: 39_900, pendingUrls: [], longLived: 1 },
-			{ inflight: 0, quietMs: 39_900, pendingUrls: [], longLived: 1 },
-			{ inflight: 0, quietMs: 39_900, pendingUrls: [], longLived: 0 },
+			{ inflight: 1, quietMs: 0, pendingUrls: ['https://example.com/a'], longLived: 0, documents: 0 },
+			{ inflight: 0, quietMs: 39_900, pendingUrls: [], longLived: 1, documents: 0 },
+			{ inflight: 0, quietMs: 39_900, pendingUrls: [], longLived: 1, documents: 0 },
+			{ inflight: 0, quietMs: 39_900, pendingUrls: [], longLived: 0, documents: 0 },
 		]);
+	});
+
+	test('the network ledger counts pending document requests apart from the rest', () => {
+		const activity = new ParadisNetworkActivity(() => 0);
+		const connection = {};
+		activity.onEvent(connection, 'page', 'Network.requestWillBeSent', { requestId: 'doc', type: 'Document', request: { url: 'https://example.com/next' } });
+		activity.onEvent(connection, 'page', 'Network.requestWillBeSent', { requestId: 'img', type: 'Image', request: { url: 'https://example.com/a.png' } });
+		const loading = activity.snapshot(30_000).documents;
+		activity.onEvent(connection, 'page', 'Network.loadingFinished', { requestId: 'doc' });
+		assert.deepStrictEqual([loading, activity.snapshot(30_000).documents], [1, 0]);
 	});
 
 	test('data of a long-lived request that is no longer counted does not reset the quiet time', () => {
@@ -112,8 +122,8 @@ suite('para-browser tools: network idle, run_steps, capture_screenshot, read_dow
 		activity.onEvent(connection, 'page', 'Network.dataReceived', { requestId: 'sse' });
 		now = 45_000;
 		assert.deepStrictEqual([counted, activity.snapshot(30_000)], [
-			{ inflight: 1, quietMs: 500, pendingUrls: ['https://example.com/r'], longLived: 1 },
-			{ inflight: 0, quietMs: 3_000, pendingUrls: [], longLived: 1 },
+			{ inflight: 1, quietMs: 500, pendingUrls: ['https://example.com/r'], longLived: 1, documents: 0 },
+			{ inflight: 0, quietMs: 3_000, pendingUrls: [], longLived: 1, documents: 0 },
 		]);
 	});
 

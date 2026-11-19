@@ -166,3 +166,33 @@ function paradisReviveProfile(entry: unknown): IParadisBrowserProfile | undefine
 		...(candidate.createdByAgent === true && typeof candidate.agentOwner === 'string' && AGENT_OWNER_PATTERN.test(candidate.agentOwner) ? { agentOwner: candidate.agentOwner } : {}),
 	};
 }
+
+/**
+ * エージェントが聞かずに使ってよいプロファイル（承認のダイアログの「今後は聞かない」で残した許可）の
+ * ストレージキー（APPLICATION スコープ・MACHINE。台帳と同じく PC ごと）。台帳の 1 件に持たせないのは、
+ * 台帳の書き戻しが「自分の写しを優先」して合わせるため、別のウィンドウの古い写しが外した許可を戻しうるから。
+ * ここは書く直前に読み直し、足す・外すだけを当てる。
+ */
+export const PARADIS_BROWSER_AGENT_ALLOWED_PROFILES_STORAGE_KEY = 'paradis.browser.agentAllowedProfiles';
+
+/** 許可の一覧を読み戻す。壊れた値・形の合わない ID は捨てる（許可が無い側へ倒す）。 */
+export function paradisDeserializeAgentAllowedProfiles(raw: string | undefined): Set<string> {
+	const allowed = new Set<string>();
+	if (!raw) {
+		return allowed;
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		return allowed;
+	}
+	if (Array.isArray(parsed)) {
+		for (const entry of parsed) {
+			if (typeof entry === 'string' && paradisIsValidProfileId(entry)) {
+				allowed.add(entry);
+			}
+		}
+	}
+	return allowed;
+}

@@ -21,10 +21,11 @@ import {
 	paradisTranscriptString,
 	paradisTranscriptTimestamp,
 } from '../../sessionResume/common/paradisSessionTranscript.js';
+import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 
 export const PARADIS_AGENT_ACTIVITY_CHANNEL = 'paradisAgentActivity';
 
-export type ParadisActivityAgent = 'claude' | 'codex';
+export type ParadisActivityAgent = Extract<ParadisAgentKind, 'claude' | 'codex'>;
 
 export const PARADIS_ACTIVITY_AGENTS: readonly ParadisActivityAgent[] = ['claude', 'codex'];
 

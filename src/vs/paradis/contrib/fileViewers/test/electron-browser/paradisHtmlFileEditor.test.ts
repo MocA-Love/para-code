@@ -12,6 +12,7 @@ import { timeout } from '../../../../../base/common/async.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { URI } from '../../../../../base/common/uri.js';
+import { IDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ITextModelService } from '../../../../../editor/common/services/resolverService.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
@@ -36,6 +37,8 @@ import { ILifecycleService, LifecyclePhase } from '../../../../../workbench/serv
 import { ParadisHtmlFileEditor, paradisHtmlDocumentStorageKey, paradisHtmlOutsideWorkspaceCsp, paradisHtmlStorageResetScript, paradisInjectHtmlHead, paradisInsertAtDocumentStart } from '../../electron-browser/paradisHtmlFileEditor.js';
 import { ParadisHtmlFileInput } from '../../electron-browser/paradisHtmlFileInput.js';
 import { notifyParadisWebviewSignal, ParadisWebviewSignalCode } from '../../../sentry/common/paradisWebviewSignals.js';
+import { IParadisRenderedDocument } from '../../common/paradisViewerBodySwap.js';
+import { paradisSetDocCommentsBackend } from '../../../agentDocs/browser/paradisDocCommentsBackend.js';
 
 class TestParadisHtmlFileEditor extends ParadisHtmlFileEditor {
 
@@ -59,6 +62,10 @@ class TestParadisHtmlFileEditor extends ParadisHtmlFileEditor {
 	}
 
 	render(text: string, resource: URI): Promise<string> {
+		return this.renderWhole(text, resource).then(rendered => typeof rendered === 'string' ? rendered : rendered.html);
+	}
+
+	renderWhole(text: string, resource: URI): Promise<string | IParadisRenderedDocument> {
 		return Promise.resolve(this.renderDocument(text, resource, Object.create(null) as IOverlayWebview));
 	}
 }
@@ -183,9 +190,8 @@ suite('ParadisHtmlFileEditor', () => {
 		));
 	}
 
-	async function renderThroughSetInput(trusted: boolean): Promise<{ contentOptions: { allowScripts: boolean | undefined; localResourceRoots: string[] | undefined } | undefined; html: string | undefined; editor: TestParadisHtmlFileEditor }> {
+	async function renderThroughSetInput(trusted: boolean, source = '<main><img src="./assets/logo.png"></main>'): Promise<{ contentOptions: { allowScripts: boolean | undefined; localResourceRoots: string[] | undefined } | undefined; html: string | undefined; editor: TestParadisHtmlFileEditor }> {
 		const resource = URI.file('/workspace/site/index.html');
-		const source = '<main><img src="./assets/logo.png"></main>';
 		let renderedHtml: string | undefined;
 		let contentOptionsAtSetHtml: { allowScripts: boolean | undefined; localResourceRoots: string[] | undefined } | undefined;
 		const webview = {
@@ -193,6 +199,7 @@ suite('ParadisHtmlFileEditor', () => {
 			onFatalError: Event.None,
 			onDidScroll: Event.None,
 			onDidClickLink: Event.None,
+			onMessage: Event.None,
 			setHtml: (html: string) => {
 				renderedHtml = html;
 				contentOptionsAtSetHtml = {
@@ -343,6 +350,54 @@ suite('ParadisHtmlFileEditor', () => {
 			contentOptions: { allowScripts: false, localResourceRoots: ['file:///workspace/site'] },
 			rerenders: [1, 0],
 			zoomBakedIn: true,
+		});
+	});
+
+	suite('with document comments', () => {
+
+		let backendRegistration: IDisposable | undefined;
+		setup(() => {
+			backendRegistration = paradisSetDocCommentsBackend({
+				onDidChange: Event.None,
+				get: async (hostId, path) => ({ hostId, path, threads: [] }),
+				add: async () => undefined,
+				setPlaces: async () => { },
+				act: async () => { },
+			});
+		});
+		teardown(() => backendRegistration?.dispose());
+
+		/** 外枠の文書に埋めた設定（JSON）と、外枠の文書の中の <script> の数。 */
+		function wrapperOf(html: string) {
+			const document = new DOMParser().parseFromString(html, 'text/html');
+			const sandbox = /"sandbox":"([^"]*)"/.exec(html)?.[1];
+			return { scripts: document.querySelectorAll('script').length, iframes: document.querySelectorAll('iframe').length, sandbox };
+		}
+
+		test('puts the page into a frame whose sandbox stops the page scripts in an untrusted workspace, while the viewer script runs', async () => {
+			const page = '<p>x</p><script>document.title = "</script><script>alert(1)</script>";</script><a href="javascript:alert(2)">j</a><iframe srcdoc="<script>parent.alert(3)</script>"></iframe>';
+			const untrusted = await renderThroughSetInput(false, page);
+			const trusted = await renderThroughSetInput(true, page);
+			const untrustedDocument = await untrusted.editor.renderWhole(page, URI.file('/workspace/site/index.html'));
+			const trustedDocument = await trusted.editor.renderWhole(page, URI.file('/workspace/site/index.html'));
+			const body = (document: string | IParadisRenderedDocument) => typeof document === 'string' ? '' : document.swap?.body ?? '';
+			const key = (document: string | IParadisRenderedDocument) => typeof document === 'string' ? undefined : document.swap?.key.split('\n').slice(0, 2).join(' ');
+			deepStrictEqual({
+				allowScripts: [untrusted.contentOptions?.allowScripts, trusted.contentOptions?.allowScripts],
+				// ページは JSON の文字列として外枠のスクリプトに入るので、ページの </script> で外枠のスクリプトが切れない
+				untrusted: wrapperOf(untrusted.html!),
+				trusted: wrapperOf(trusted.html!),
+				storageReset: [body(untrustedDocument).includes('__paradisViewerDocument'), body(trustedDocument).includes('__paradisViewerDocument')],
+				keys: [key(untrustedDocument), key(trustedDocument)],
+				baseInPage: body(untrustedDocument).includes(`<base href="${PREVIEW_BASE}">`),
+			}, {
+				allowScripts: [true, true],
+				untrusted: { scripts: 1, iframes: 0, sandbox: 'allow-same-origin allow-pointer-lock' },
+				trusted: { scripts: 1, iframes: 0, sandbox: 'allow-same-origin allow-pointer-lock allow-scripts allow-downloads allow-forms' },
+				storageReset: [false, true],
+				keys: ['doc-comments false', 'doc-comments true'],
+				baseInPage: true,
+			});
 		});
 	});
 

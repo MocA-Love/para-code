@@ -121,12 +121,21 @@ export function paradisViewerRerenderDelay(lastRenderMs: number): number {
 }
 
 /**
+ * 保存の通知からの描き直しで、ファイルが一瞬 0 バイトに見えたときに描くのを 1 回見送るか。書き出す途中（中身を空にしてから
+ * 書く道具）の 0 バイトを描くと、プレビューが一瞬白くなる。見送った後の描き直しでもまだ空なら、空のファイルとして描く。
+ */
+export function paradisHoldsEmptyViewerText(text: string, shownText: string | undefined, alreadyHeld: boolean): boolean {
+	return text.length === 0 && shownText !== undefined && shownText.length > 0 && !alreadyHeld;
+}
+
+/**
  * Rendered/Raw を内蔵する EditorPane 基底。webview と埋め込みコードエディタのライフサイクル管理・
  * ファイル読込・自動再レンダリング・モード切替を担い、Rendered の HTML 生成はサブクラスの {@link renderDocument} に委ねる。
  */
 export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewState<IParadisViewerScrollState> {
 
 	private _rootElement: HTMLElement | undefined;
+	private _contentElement: HTMLElement | undefined;
 	private _webviewContainer: HTMLElement | undefined;
 	private _editorContainer: HTMLElement | undefined;
 	private _toolbarRightElement: HTMLElement | undefined;
@@ -217,6 +226,8 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	private _renderInput = 0;
 	private _renderingInput: number | undefined;
 	private _renderAgain = false;
+	/** 0 バイトに見えたので描くのを 1 回見送った（{@link paradisHoldsEmptyViewerText}）。 */
+	private _heldEmpty = false;
 	/** 覚えた頼みの中に、同一内容の抑止を外した頼み（テーマの変更・{@link requestRerender}）があったか。 */
 	private _renderAgainInvalidates = false;
 	private _renderAgainAfter: ((lastRenderMs: number) => void) | undefined;
@@ -377,6 +388,31 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 	/** ツールバー右側（トグルの隣）へサブクラス固有のコントロール（HTMLズーム等）を追加するためのフック。 */
 	protected onCreateToolbar(_toolbarRight: HTMLElement): void { }
 
+	/** プレビューとソースを重ねる置き場（`.paradis-file-viewer-content`）。横に列を足すビューアが使う。 */
+	protected get viewerContentElement(): HTMLElement | undefined {
+		return this._contentElement;
+	}
+
+	/** プレビューとソースを切り替えた（ソースの間は横の列を隠すなど）。 */
+	protected onDidChangeViewMode(_mode: ParadisFileViewerMode): void { }
+
+	/**
+	 * 表示中の文書のスクロール位置を覚える（`scrollY / body.clientHeight`）。webview の基盤はページの window の
+	 * スクロールだけを知らせるので、ページを入れ子の iframe に入れるビューア（HTML のコメントの外枠）が自分で知らせる。
+	 */
+	protected recordScrollProgress(value: number): void {
+		const resource = this._displayedResource;
+		const progress = paradisNormalizeScrollProgress(value);
+		if (resource && progress !== undefined) {
+			this._scroll = { resource, progress };
+		}
+	}
+
+	/** そのファイルで覚えているスクロール位置（無ければ 0）。 */
+	protected scrollProgressFor(resource: URI): number {
+		return this._scrollProgressFor(resource);
+	}
+
 	/** 現在アクティブな webview（存在すれば）。 */
 	protected get webview(): IOverlayWebview | undefined {
 		return this._pane.webview;
@@ -467,6 +503,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		this.onCreateToolbar(this._toolbarRightElement);
 
 		const content = dom.append(this._rootElement, dom.$('.paradis-file-viewer-content'));
+		this._contentElement = content;
 		// webview コンテナは overlay webview を重ねる「アンカー(位置合わせ用の空要素)」。overlay 自身は
 		// workbench の webview レイヤーに属し、ここには描画されない。常にレイアウトさせておく(矩形が必要)。
 		this._webviewContainer = dom.append(content, dom.$('.paradis-file-viewer-webview'));
@@ -493,6 +530,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		this._renderingInput = undefined;
 		this._renderAgain = false;
 		this._renderAgainInvalidates = false;
+		this._heldEmpty = false;
 		// ペインは別のファイルを開くときも使い回されるので、前のファイルの失敗回数を持ち越さない。
 		this._recoveryPolicy.reset();
 		this._currentResource = resource;
@@ -640,6 +678,15 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 		if (!this._isRenderCurrent(generation, resource, token)) {
 			return;
 		}
+		// 保存の通知からの描き直し（裏の描画）で一瞬 0 バイトに見えたら、今の表示を残して描き直しの予約に回す
+		const shownText = this._renderedSource && isEqual(this._renderedSource.resource, resource) ? this._renderedSource.text : undefined;
+		const background = this._renderingInput !== undefined && this._renderingInput === this._renderInput;
+		if (background && paradisHoldsEmptyViewerText(text, shownText, this._heldEmpty)) {
+			this._heldEmpty = true;
+			this._renderAgain = true;
+			return;
+		}
+		this._heldEmpty = false;
 
 		// service worker の要否が前回と変わっていたら、生成時オプションなので作り直すしかない。
 		if (this._pane.webview && this._pane.serviceWorkerDisabled !== this.disableServiceWorkerFor(resource)) {
@@ -982,6 +1029,7 @@ export abstract class ParadisRenderedFileEditor extends AbstractEditorWithViewSt
 
 	private async _applyViewMode(mode: ParadisFileViewerMode, resource: URI, token: CancellationToken = CancellationToken.None): Promise<void> {
 		this._mode = mode;
+		this.onDidChangeViewMode(mode);
 		if (this._modeSegmented) {
 			this._modeSegmented.value = mode;
 		}

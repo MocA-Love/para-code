@@ -6,13 +6,17 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 注釈トレイの中身を、選んだエージェントのペイン（エディタエリアのターミナル）の入力欄へ入れる
-// （送り先は送るときに一覧から選ぶ。注釈を溜めて1回で渡せ、作業中のエージェントを細切れに
-// 止めずに済むため）。
+// 注釈トレイの中身を、エージェントのペイン（エディタエリアのターミナル）の入力欄へ入れる
+// （注釈を溜めて1回で渡せ、作業中のエージェントを細切れに止めずに済むため）。
+//
+// 送り先（Q663-7〜9）: このタブで前回一覧から選んだペイン、無ければこのページを共有しているペインが
+// ちょうど 1 つならそれを既定にし、トレイのボタンに名前を出して 1 回で送る。決まらなければ一覧から
+// 選ぶ（▾ でもいつでも開ける）。共有（バインド）は増やさない。
 //
 // 入れ方はフェーズ5の「エージェント向けプリセット」と同じ規則にしてあり、判定と整形の処理も
 // プリセットのもの（terminalPresets/common/paradisTerminalPresets.ts）をそのまま使う:
-//  - Enter は送らない（送るかどうかはユーザーが入力欄で決める）
+//  - 既定では Enter は送らない（送るかどうかはユーザーが入力欄で決める）。⌘Enter（Ctrl+Enter）の
+//    ときだけ、貼った後に状態を確かめ直してから Enter を送る（Q663-10。send_terminal_input と同じ順）
 //  - 貼り付け（bracketed paste）として送る。制御文字は paradisBuildPresetInsertText で落とす
 //  - 質問・許可の確認が出ている間は入れない（入れた文字が選択肢の操作に食われる）。
 //    paradisAgentPromptAvailability / paradisThrowIfAgentAwaitingAnswer で判定する
@@ -32,6 +36,7 @@ import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
+import { isMacintosh } from '../../../../base/common/platform.js';
 import { localize } from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -61,6 +66,7 @@ import {
 	paradisFormatDesignAnnotations,
 } from '../common/paradisDesignModeFormat.js';
 import { IParadisDesignModeService } from './paradisDesignModeService.js';
+import { paradisAgentIdeScreenShowsPrompt } from '../../agentIde/common/paradisAgentIde.js';
 import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 
 /** 貼り付けを1つずつ区切る間隔。続けて送ると TUI が1回の貼り付けにまとめることがある。 */
@@ -68,6 +74,10 @@ const PASTE_GAP_MS = 150;
 /** 新しく起動したエージェントの入力欄が使えるようになるまで待つ上限。 */
 const LAUNCH_READY_TIMEOUT_MS = 30_000;
 const LAUNCH_READY_POLL_MS = 250;
+/** 貼り付けてから Enter を送るまで待つ時間（send_terminal_input と同じ）。この間に出た確認を拾う。 */
+const SUBMIT_SETTLE_MS = 250;
+/** Enter の前に確認の文言を探す、画面の末尾の行数。 */
+const SUBMIT_SCREEN_LINES = 40;
 
 /** 送り先の候補（同じスペースで動いているエージェントのペイン）。 */
 export interface IParadisDesignTargetEntry {
@@ -93,6 +103,11 @@ export function paradisDesignTargetEntries(
 	pageId: string,
 	isAgentInstance: (instanceId: number) => boolean,
 	getStatus: (instanceId: number) => ParadisAgentStatus | undefined,
+	/**
+	 * このページを共有しているペインのトークン（`getBindingsForPage` の結果）。`pane.binding` はそのペインの
+	 * current の 1 件だけなので、2 枚目以降に共有したページもこれで拾う。
+	 */
+	sharedTokens?: ReadonlySet<string>,
 ): IParadisDesignTargetEntry[] {
 	const entries: IParadisDesignTargetEntry[] = [];
 	for (const pane of panes) {
@@ -109,7 +124,7 @@ export function paradisDesignTargetEntries(
 			title: pane.title,
 			agentKind: pane.agentKind === 'shell' ? 'agent' : pane.agentKind,
 			status,
-			sharedWithPage: pane.binding?.pageId === pageId,
+			sharedWithPage: pane.binding?.pageId === pageId || !!sharedTokens?.has(pane.token),
 			// 一覧に載せる時点でエージェントのペインに限っているので、hook の実績が無くても
 			// エージェントとして扱い、回答待ちかどうかだけを見る
 			available: paradisAgentPromptAvailability(true, true, status) === ParadisAgentPromptAvailability.Ready,
@@ -122,6 +137,36 @@ export function paradisDesignTargetEntries(
 		.map(({ entry }) => entry);
 }
 
+/**
+ * 選ばずに送る送り先（Q663-7・9）。このタブで前回一覧から選んだペインがまだ候補にあればそれ、無ければ
+ * このページを共有しているペインがちょうど 1 つならそれ。決まらなければ undefined（一覧から選ぶ）。
+ * 回答待ちでも既定は変えない（入れ方が「空いたら入れる」予約に変わるだけ）。
+ */
+export function paradisDesignDefaultTarget(entries: readonly IParadisDesignTargetEntry[], lastTarget: number | undefined): IParadisDesignTargetEntry | undefined {
+	const remembered = lastTarget === undefined ? undefined : entries.find(entry => entry.instanceId === lastTarget);
+	if (remembered) {
+		return remembered;
+	}
+	const shared = entries.filter(entry => entry.sharedWithPage);
+	return shared.length === 1 ? shared[0] : undefined;
+}
+
+/** エージェントの状態の短い語（トレイの札と一覧で使う）。 */
+export function paradisDesignStatusWord(status: ParadisAgentStatus | undefined): string {
+	switch (status) {
+		case 'working': return localize('paradis.designMode.status.working', "動作中");
+		case 'permission': return localize('paradis.designMode.status.permission', "許可待ち");
+		case 'question': return localize('paradis.designMode.status.question', "質問中");
+		case 'review': return localize('paradis.designMode.status.review', "完了");
+		default: return localize('paradis.designMode.status.idle', "待機");
+	}
+}
+
+/** 送信まで（⌘Enter）を押すキーの表記。 */
+export function paradisDesignSubmitKeyLabel(): string {
+	return isMacintosh ? '⌘Enter' : 'Ctrl+Enter';
+}
+
 function agentLabel(kind: IParadisDesignTargetEntry['agentKind']): string {
 	switch (kind) {
 		case 'claude': return 'Claude Code';
@@ -130,17 +175,18 @@ function agentLabel(kind: IParadisDesignTargetEntry['agentKind']): string {
 	}
 }
 
+/** 一覧の状態の文言。語はサイドバーと同じ「動作中・許可待ち・質問中・完了」（Q663-17）。 */
 function statusLabel(status: ParadisAgentStatus | undefined): string {
 	switch (status) {
-		case 'working': return localize('paradis.designMode.send.status.working', "作業中");
-		case 'permission': return localize('paradis.designMode.send.status.permission', "承認待ちのため選べません");
-		case 'question': return localize('paradis.designMode.send.status.question', "質問中のため選べません");
-		case 'review': return localize('paradis.designMode.send.status.review', "完了");
-		default: return localize('paradis.designMode.send.status.idle', "待機");
+		case 'permission':
+		case 'question':
+			return localize('paradis.designMode.send.status.queue', "{0}・空いたら入れます", paradisDesignStatusWord(status));
+		default:
+			return paradisDesignStatusWord(status);
 	}
 }
 
-type ParadisDesignTargetPick =
+export type ParadisDesignTargetPick =
 	| { readonly kind: 'pane'; readonly instanceId: number }
 	| { readonly kind: 'launch'; readonly agentId: string; readonly rootUri: URI; readonly stateKey: string }
 	| { readonly kind: 'copy' };
@@ -149,12 +195,28 @@ interface IParadisDesignTargetItem extends IQuickPickItem {
 	readonly target: ParadisDesignTargetPick;
 }
 
+/** 一覧から選んだ送り先と、⌘Enter（Ctrl+Enter）で選んだか。 */
+export interface IParadisDesignPickedTarget {
+	readonly target: ParadisDesignTargetPick;
+	readonly submit: boolean;
+}
+
 /** 送った結果。`message` は呼び出し側がトレイに出す（通知のトーストは内蔵ブラウザの裏に隠れるため）。 */
 export interface IParadisDesignSendResult {
 	/** エージェントの入力欄へ入れた（トレイから消してよい）。 */
 	readonly inserted: boolean;
+	/** 入れた先のターミナル（新しく起動したときはその id。次からの送り先として覚える）。 */
+	readonly instanceId?: number;
+	/** Enter まで送った。 */
+	readonly submitted?: boolean;
 	readonly message?: string;
 	readonly severity?: Severity;
+}
+
+/** 入れ方。`submit` は Enter まで送るか、`focus` は入れた後にターミナルへフォーカスを移すか。 */
+export interface IParadisDesignDeliverOptions {
+	readonly submit: boolean;
+	readonly focus: boolean;
 }
 
 /** 区切りに付ける使い捨ての値（ページが推測できない長さ）。 */
@@ -185,16 +247,33 @@ export class ParadisDesignModeSender {
 		@ILogService private readonly logService: ILogService,
 	) { }
 
+	/** 送り先の候補（このページと同じスペースのエージェントのペイン）。 */
+	targetEntries(model: IBrowserViewModel): IParadisDesignTargetEntry[] {
+		return paradisDesignTargetEntries(
+			this.bindingModel.getPanesForPage(model),
+			model.id,
+			instanceId => this.agentStatusStore.isAgentInstance(instanceId),
+			instanceId => this.agentStatusStore.getInstanceStatus(instanceId),
+			new Set(this.bindingModel.getBindingsForPage(model.id).map(binding => binding.token)),
+		);
+	}
+
+	/** 選ばずに送る送り先（{@link paradisDesignDefaultTarget}）。 */
+	defaultTarget(model: IBrowserViewModel): IParadisDesignTargetEntry | undefined {
+		return paradisDesignDefaultTarget(this.targetEntries(model), this.designModeService.getLastTarget(model.id));
+	}
+
+	/** そのペインへ今すぐ入れられるか（質問・許可の確認を待っていないか）。 */
+	isReady(instanceId: number): boolean {
+		return paradisAgentPromptAvailability(true, true, this.agentStatusStore.getInstanceStatus(instanceId)) === ParadisAgentPromptAvailability.Ready;
+	}
+
 	/**
-	 * 送り先を選ばせて送る。入力欄へ入れたら `inserted: true`（呼び出し側はトレイを空にする）。
+	 * 選んだ送り先へ入れる。入れたら `inserted: true`（呼び出し側はトレイを空にする）。
 	 * `token` はエディタのページが替わる・閉じられたときに取り消す。
 	 */
-	async send(model: IBrowserViewModel, annotations: readonly IParadisDesignAnnotation[], token: CancellationToken): Promise<IParadisDesignSendResult> {
-		if (annotations.length === 0) {
-			return { inserted: false };
-		}
-		const target = await this._pickTarget(model, annotations);
-		if (!target || token.isCancellationRequested) {
+	async deliver(model: IBrowserViewModel, annotations: readonly IParadisDesignAnnotation[], target: ParadisDesignTargetPick, options: IParadisDesignDeliverOptions, token: CancellationToken): Promise<IParadisDesignSendResult> {
+		if (annotations.length === 0 || token.isCancellationRequested) {
 			return { inserted: false };
 		}
 		try {
@@ -207,10 +286,7 @@ export class ParadisDesignModeSender {
 					if (!instance || instance.isDisposed) {
 						throw new Error(localize('paradis.designMode.send.gone', "選んだターミナルは閉じられています。"));
 					}
-					if (!await this._insert(instance, annotations)) {
-						return { inserted: false };
-					}
-					return { inserted: true, message: localize('paradis.designMode.send.inserted', "「{0}」の入力欄へ入れました。内容を確かめてから Enter で送ってください。", instance.title), severity: Severity.Info };
+					return await this._insert(instance, annotations, options);
 				}
 				case 'launch':
 					return await this._launchAndInsert(target, annotations, token);
@@ -242,13 +318,12 @@ export class ParadisDesignModeSender {
 		return { rootUri, stateKey: activeStateKey };
 	}
 
-	private async _pickTarget(model: IBrowserViewModel, annotations: readonly IParadisDesignAnnotation[]): Promise<ParadisDesignTargetPick | undefined> {
-		const entries = paradisDesignTargetEntries(
-			this.bindingModel.getPanesForPage(model),
-			model.id,
-			instanceId => this.agentStatusStore.isAgentInstance(instanceId),
-			instanceId => this.agentStatusStore.getInstanceStatus(instanceId),
-		);
+	/**
+	 * 送り先を一覧から選ばせる。許可・質問の確認を待っているペインも選べる（呼び出し側が「空いたら入れる」
+	 * 予約にする）。⌘Enter（Ctrl+Enter）で選んだら `submit: true`。
+	 */
+	async pickTarget(model: IBrowserViewModel, annotations: readonly IParadisDesignAnnotation[]): Promise<IParadisDesignPickedTarget | undefined> {
+		const entries = this.targetEntries(model);
 		const imageCount = this.designModeService.attachImages ? annotations.filter(annotation => annotation.image).length : 0;
 		const items: (IParadisDesignTargetItem | IQuickPickSeparator)[] = [];
 		for (const entry of entries) {
@@ -264,7 +339,6 @@ export class ParadisDesignModeSender {
 				detail: remote && imageCount > 0
 					? localize('paradis.designMode.send.remoteNoImages', "{0}（SSH 先のため画像は添えません）", where)
 					: where,
-				disabled: !entry.available,
 				target: { kind: 'pane', instanceId: entry.instanceId },
 			});
 		}
@@ -287,14 +361,16 @@ export class ParadisDesignModeSender {
 			iconClass: ThemeIcon.asClassName(Codicon.copy),
 			target: { kind: 'copy' },
 		});
+		let submit = false;
 		const picked = await this.quickInputService.pick(items, {
 			title: localize('paradis.designMode.send.title', "注釈 {0} 件の送り先を選択", annotations.length),
 			placeHolder: entries.length === 0
 				? localize('paradis.designMode.send.noAgents', "このスペースで動いているエージェントが見つかりません")
-				: localize('paradis.designMode.send.placeholder', "入力欄へ入れるだけで、Enter は送りません"),
+				: localize('paradis.designMode.send.placeholderKeys', "Enter で入力欄へ入れる・{0} で送信まで", paradisDesignSubmitKeyLabel()),
 			matchOnDescription: true,
+			onKeyMods: keyMods => { submit = keyMods.ctrlCmd; },
 		});
-		return picked?.target;
+		return picked ? { target: picked.target, submit } : undefined;
 	}
 
 	/** 画像を保存し、本文での呼び名とパスを決める。 */
@@ -351,10 +427,10 @@ export class ParadisDesignModeSender {
 		return result.confirmed;
 	}
 
-	/** 入れたら true。ユーザーが確認で取りやめたら false。 */
-	private async _insert(instance: ITerminalInstance, annotations: readonly IParadisDesignAnnotation[]): Promise<boolean> {
+	/** 入れる。ユーザーが確認で取りやめたら `inserted: false`。 */
+	private async _insert(instance: ITerminalInstance, annotations: readonly IParadisDesignAnnotation[], options: IParadisDesignDeliverOptions): Promise<IParadisDesignSendResult> {
 		if (!await this._confirmIfStatusUnknown(instance)) {
-			return false;
+			return { inserted: false };
 		}
 		// SSH 先で動くエージェントは手元の userData を読めないので、画像は添えない
 		const remote = !!instance.remoteAuthority;
@@ -379,10 +455,66 @@ export class ParadisDesignModeSender {
 				await instance.sendText(pasted, false, true);
 			}
 		}
-		this.terminalService.setActiveInstance(instance);
-		await this.terminalService.revealTerminal(instance);
-		instance.focus(true);
+		const submitted = options.submit ? await this._submit(instance, body ?? '') : undefined;
+		if (submitted === true) {
+			return { inserted: true, instanceId: instance.instanceId, submitted: true, message: localize('paradis.designMode.send.submitted', "「{0}」へ送信しました。", instance.title), severity: Severity.Info };
+		}
+		if (options.focus) {
+			this.terminalService.setActiveInstance(instance);
+			await this.terminalService.revealTerminal(instance);
+			instance.focus(true);
+		}
+		return {
+			inserted: true,
+			instanceId: instance.instanceId,
+			message: submitted ?? localize('paradis.designMode.send.inserted', "「{0}」の入力欄へ入れました。内容を確かめてから Enter で送ってください。", instance.title),
+			severity: submitted ? Severity.Warning : Severity.Info,
+		};
+	}
+
+	/**
+	 * 貼った後に Enter を送る。送ったら true、送らなかったらその理由（トレイに出す文）。
+	 * 貼り付けと Enter の間に状態を確かめ直す（貼っている間に許可の確認が出たら、Enter でそれを承認してしまう）。
+	 * 状態を偽れる接続先のペインと、状態が届かないペインには送らない（send_terminal_input と同じ線引き）。
+	 * 動作中のペインには送る（利用者が自分で押したキーで、エージェントは次の指示として受け取る）。
+	 */
+	private async _submit(instance: ITerminalInstance, typedText: string): Promise<true | string> {
+		const title = instance.title;
+		if (instance.remoteAuthority) {
+			return localize('paradis.designMode.send.submitRemote', "「{0}」の入力欄へ入れました。SSH 先のターミナルには Enter を送らないので、内容を確かめてから Enter で送ってください。", title);
+		}
+		if (!this.agentStatusStore.isAgentInstance(instance.instanceId)) {
+			return localize('paradis.designMode.send.submitUnknown', "「{0}」の入力欄へ入れました。エージェントの状態が分からないので Enter は送っていません。", title);
+		}
+		await timeout(SUBMIT_SETTLE_MS);
+		if (instance.isDisposed) {
+			throw new Error(localize('paradis.designMode.send.gone', "選んだターミナルは閉じられています。"));
+		}
+		// 状態を読んでから Enter を送るまでの間に await を挟まない
+		const screen = this._screenTail(instance);
+		if (paradisAgentPromptAvailability(true, true, this.agentStatusStore.getInstanceStatus(instance.instanceId)) !== ParadisAgentPromptAvailability.Ready
+			|| screen === undefined || paradisAgentIdeScreenShowsPrompt(screen, typedText)) {
+			return localize('paradis.designMode.send.submitPrompt', "「{0}」の入力欄へ入れました。エージェントが確認を出しているため Enter は送っていません。", title);
+		}
+		await instance.sendText('\r', false);
 		return true;
+	}
+
+	/** 画面の末尾の行（確認の文言を探すため）。読めなければ undefined。 */
+	private _screenTail(instance: ITerminalInstance): string | undefined {
+		const raw = instance.xterm?.raw;
+		if (!raw) {
+			return undefined;
+		}
+		const buffer = raw.buffer.active;
+		const lines: string[] = [];
+		for (let y = Math.max(0, buffer.length - SUBMIT_SCREEN_LINES); y < buffer.length; y++) {
+			const line = buffer.getLine(y);
+			if (line) {
+				lines.push(line.translateToString(true));
+			}
+		}
+		return lines.join('\n');
 	}
 
 	/**
@@ -401,10 +533,8 @@ export class ParadisDesignModeSender {
 			this.notificationService.notify({ severity: Severity.Warning, message, sticky: true });
 			return { inserted: false, message, severity: Severity.Warning };
 		}
-		if (!await this._insert(instance, annotations)) {
-			return { inserted: false };
-		}
-		return { inserted: true, message: localize('paradis.designMode.send.inserted', "「{0}」の入力欄へ入れました。内容を確かめてから Enter で送ってください。", instance.title), severity: Severity.Info };
+		// 起動直後は入れるだけにする（Enter は送らない）
+		return this._insert(instance, annotations, { submit: false, focus: true });
 	}
 
 	/**

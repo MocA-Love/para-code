@@ -814,9 +814,17 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		// window; otherwise an agent's ordinary mis-clicks would crowd out a real transport fault.
 		const kind = first ? classifyToolErrorText(first.text) : 'other';
 		const gate = first ? paradisClassifyBrowserToolErrorText(first.text) : undefined;
-		// Para Code's own watcher (the observation around an action) gets its own operation: the agent never sees
-		// those failures, and they would crowd the agents' real failures out of the rate-limit window (q.html Q462 D1).
-		const operation = origin?.internal !== undefined ? `devtools-observe-error-${kind}` : `devtools-tool-error-${kind}`;
+		// Right after navigate_page the new document often cannot answer the watcher's 3 s read yet. The watcher treats that
+		// as loading (paradisBrowserObserve.ts) and the usage tally counts it; as an issue it was only noise (Sentry NM: 21 of
+		// 25 events were navigate_page, 3.0 to 3.2 s).
+		if (origin?.internal === 'observe' && origin.agentTool === 'navigate_page' && kind === 'unresponsive') {
+			return;
+		}
+		// Para Code's own calls get their own operation (q.html Q462 D1): the watcher (the observation around an action,
+		// `observe`) and the evaluations a tool makes to find or read elements (`query`: wait_until, get_text, click_by, ...).
+		// The tool reads those failures itself (wait_until waits again for a page that did not answer), so they are not
+		// failures of the tool the agent called, and would crowd its real failures out of the rate-limit window.
+		const operation = origin?.internal !== undefined ? `devtools-${origin.internal}-error-${kind}` : `devtools-tool-error-${kind}`;
 		reportParadisDiagnosticError('owned', 'agent-browser', operation, new Error('chrome-devtools-mcp tool returned isError'), {
 			duration_ms: durationMs,
 			safe_tool_name: safeToolName,

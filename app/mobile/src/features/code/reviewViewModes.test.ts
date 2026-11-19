@@ -3,15 +3,15 @@
 import { describe, expect, it } from 'vitest';
 import { effectiveReviewMode, reviewContentKindOf, reviewRenderSide, reviewSidesOf, reviewViewPlan, type ReviewViewCaps } from './reviewViewModes.js';
 
-const NEW_PC: ReviewViewCaps = { fileAt: true, wordDiff: true };
-const OLD_PC: ReviewViewCaps = { fileAt: false, wordDiff: false };
+const NEW_PC: ReviewViewCaps = { fileAt: true, wordDiff: true, renderedDiff: true, renderedDiffHtml: true };
+const OLD_PC: ReviewViewCaps = { fileAt: false, wordDiff: false, renderedDiff: false, renderedDiffHtml: false };
 const modified = reviewSidesOf({ staged: false, kind: 'modified' });
 
 describe('reviewViewModes', () => {
 	it('decides the modes and the default per kind on a new PC', () => {
 		expect(['README.md', 'index.html', 'a.png', 'book.xlsx', 'report.docx', 'main.ts'].map(path => reviewViewPlan(reviewContentKindOf(path), modified, NEW_PC, path))).toEqual([
-			{ modes: ['render', 'raw'], initial: 'render' },
-			{ modes: ['render', 'raw'], initial: 'render' },
+			{ modes: ['render', 'diff', 'raw'], initial: 'diff' },
+			{ modes: ['render', 'diff', 'raw'], initial: 'raw' },
 			{ modes: ['render', 'diff'], initial: 'render' },
 			{ modes: ['render', 'diff', 'raw'], initial: 'diff' },
 			{ modes: ['render', 'diff', 'raw'], initial: 'diff' },
@@ -61,9 +61,36 @@ describe('reviewViewModes', () => {
 		});
 	});
 
+	it('offers the rendered diff of Markdown and HTML only when the PC can make it and both sides exist', () => {
+		const added = reviewSidesOf({ staged: false, kind: 'untracked' });
+		const staged = reviewSidesOf({ staged: true, kind: 'modified' });
+		// scm.rendered-diff.v1 だけの PC（HTML を扱えない）
+		const markdownOnlyPc = { ...NEW_PC, renderedDiffHtml: false };
+		expect({
+			oldPc: reviewViewPlan('markdown', modified, { ...NEW_PC, renderedDiff: false }),
+			added: reviewViewPlan('markdown', added, NEW_PC),
+			staged: reviewViewPlan('markdown', staged, NEW_PC),
+			stagedWithoutFileAt: reviewViewPlan('markdown', staged, { ...OLD_PC, renderedDiff: true }),
+			htmlOnMarkdownOnlyPc: reviewViewPlan('html', modified, markdownOnlyPc),
+			markdownOnMarkdownOnlyPc: reviewViewPlan('markdown', modified, markdownOnlyPc),
+			addedHtml: reviewViewPlan('html', added, NEW_PC),
+			stagedHtml: reviewViewPlan('html', staged, NEW_PC),
+		}).toEqual({
+			oldPc: { modes: ['render', 'raw'], initial: 'render' },
+			added: { modes: ['render', 'raw'], initial: 'render' },
+			staged: { modes: ['render', 'diff', 'raw'], initial: 'diff' },
+			stagedWithoutFileAt: { modes: ['diff', 'raw'], initial: 'diff' },
+			htmlOnMarkdownOnlyPc: { modes: ['render', 'raw'], initial: 'raw' },
+			markdownOnMarkdownOnlyPc: { modes: ['render', 'diff', 'raw'], initial: 'diff' },
+			addedHtml: { modes: ['render', 'raw'], initial: 'raw' },
+			stagedHtml: { modes: ['render', 'diff', 'raw'], initial: 'raw' },
+		});
+	});
+
 	it('keeps a chosen mode only while the file offers it', () => {
 		const docx = reviewViewPlan('docx', modified, NEW_PC);
 		const markdown = reviewViewPlan('markdown', modified, NEW_PC);
-		expect([effectiveReviewMode(docx, 'raw'), effectiveReviewMode(markdown, 'diff'), effectiveReviewMode(markdown, undefined)]).toEqual(['raw', 'render', 'render']);
+		const html = reviewViewPlan('html', modified, { ...NEW_PC, renderedDiffHtml: false });
+		expect([effectiveReviewMode(docx, 'raw'), effectiveReviewMode(markdown, 'render'), effectiveReviewMode(html, 'diff'), effectiveReviewMode(markdown, undefined)]).toEqual(['raw', 'render', 'raw', 'diff']);
 	});
 });

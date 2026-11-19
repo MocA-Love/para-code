@@ -9,6 +9,7 @@ import * as assert from 'assert';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { toDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IAgentNetworkFilterService } from '../../../../../platform/networkFilter/common/networkFilterService.js';
 import { BrowserEditorInput } from '../../../../../workbench/contrib/browserView/common/browserEditorInput.js';
@@ -17,7 +18,7 @@ import { IEditorGroup } from '../../../../../workbench/services/editor/common/ed
 import { IParadisAgentBrowserBindingModel } from '../../../agentBrowser/electron-browser/paradisAgentBrowserBindingModel.js';
 import { IParadisAgentBrowserTabsService, ParadisAgentApprovalOutcome } from '../../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
 import { IParadisWorkspaceSwitchService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import { IParadisListProfilesResult, IParadisManageProfileResult, IParadisOpenProfileResult, PARADIS_AGENT_CREATED_PROFILE_LIMIT, PARADIS_AGENT_CREATED_PROFILE_TOTAL_LIMIT, PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD, PARADIS_BROWSER_PROFILE_MCP_METHOD } from '../../common/paradisBrowserProfileMcp.js';
+import { IParadisListProfilesResult, IParadisManageProfileResult, IParadisOpenProfileResult, PARADIS_AGENT_CREATED_PROFILE_LIMIT, PARADIS_BROWSER_PROFILE_ACCESS_SETTING, paradisReadProfileAccess, PARADIS_AGENT_CREATED_PROFILE_TOTAL_LIMIT, PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD, PARADIS_BROWSER_PROFILE_MCP_METHOD } from '../../common/paradisBrowserProfileMcp.js';
 import { IParadisBrowserProfile } from '../../common/paradisBrowserProfileModel.js';
 import { paradisAgentOwnerMark, ParadisBrowserProfileMcpChannel } from '../../electron-browser/paradisBrowserProfileMcp.contribution.js';
 import { IParadisBrowserProfilesService, IParadisCreateProfileOptions } from '../../electron-browser/paradisBrowserProfilesService.js';
@@ -26,11 +27,26 @@ function profile(id: string, name: string, extra: Partial<IParadisBrowserProfile
 	return { id, name, color: '#3fb950', createdAt: 1, lastUsedAt: 2, ...extra };
 }
 
+interface IChannelOptions {
+	/** 許可の設定（既定は ask: 今までどおり毎回聞く）。 */
+	readonly access?: string;
+	/** 「今後は聞かない」で許可を残したプロファイルの ID。 */
+	readonly allowed?: Set<string>;
+	/** ペインのスペースが画面に出ていない。 */
+	readonly hidden?: boolean;
+	/** ネットワークの制限が有効。 */
+	readonly networkFilter?: boolean;
+}
+
 /** `onStats` は main へ数を聞いている間に起きることを差し込む口。 */
-function createChannel(profiles: IParadisBrowserProfile[], approval: ParadisAgentApprovalOutcome, slotAvailable = true, onStats?: () => void, shareWarning?: string) {
+function createChannel(profiles: IParadisBrowserProfile[], approval: ParadisAgentApprovalOutcome, slotAvailable = true, onStats?: () => void, shareWarning?: string, options: IChannelOptions = {}) {
 	const calls: string[] = [];
 	const registrations: string[] = [];
+	const allowed = options.allowed ?? new Set<string>();
 	const profilesService = {
+		isAgentAllowed: (id: string) => allowed.has(id),
+		setAgentAllowed: (id: string, value: boolean) => { calls.push(`allow:${id}:${value}`); if (value) { allowed.add(id); } else { allowed.delete(id); } },
+		createInProfile: (id: string, url?: string) => { calls.push(`create:${id}:${url ?? ''}`); return { id: 'view-hidden', resolve: async () => ({ isDirectlyShareable: true }), dispose: () => calls.push('dispose') } as unknown as BrowserEditorInput; },
 		list: () => profiles,
 		findByName: (name: string) => profiles.find(candidate => candidate.name === name),
 		canUseProfiles: () => true,
@@ -46,7 +62,12 @@ function createChannel(profiles: IParadisBrowserProfile[], approval: ParadisAgen
 	} as unknown as IParadisBrowserProfilesService;
 	const agentTabsService = {
 		resolveTarget: () => ({ ok: true, group: {} as IEditorGroup }),
-		askApproval: async (_token: string, request: { readonly detail: readonly string[] }) => { calls.push(shareWarning !== undefined && request.detail.includes(shareWarning) ? 'ask-with-warning' : 'ask'); return approval; },
+		resolveOpenTarget: () => options.hidden ? { ok: true, kind: 'hidden', stateKey: 'space-b' } : { ok: true, kind: 'visible', group: {} as IEditorGroup },
+		keepTabForHiddenSpace: async (_token: string, input: BrowserEditorInput, stateKey: string) => { calls.push(`keep:${input.id}:${stateKey}`); },
+		askApproval: async (_token: string, request: { readonly detail: readonly string[]; readonly alternativeLabel?: string }) => {
+			calls.push((shareWarning !== undefined && request.detail.includes(shareWarning) ? 'ask-with-warning' : 'ask') + (request.alternativeLabel !== undefined ? '+remember' : ''));
+			return approval;
+		},
 		reserveSlot: () => slotAvailable ? toDisposable(() => { }) : undefined,
 		registerAgentTab: (token: string, input: BrowserEditorInput, options?: { readonly approvedProfile?: boolean }) => { registrations.push(`${token}:${input.id}:${options?.approvedProfile === true ? 'approved-profile' : 'own'}`); },
 		bindTab: async () => true,
@@ -57,11 +78,12 @@ function createChannel(profiles: IParadisBrowserProfile[], approval: ParadisAgen
 		profilesService,
 		{ getBindingForToken: () => undefined } as unknown as IParadisAgentBrowserBindingModel,
 		{ isSwitching: false } as unknown as IParadisWorkspaceSwitchService,
-		{ isEnabled: () => false } as unknown as IAgentNetworkFilterService,
+		{ isEnabled: () => options.networkFilter === true } as unknown as IAgentNetworkFilterService,
 		new NullLogService(),
 		agentTabsService,
 		{ getKnownBrowserViews: () => new Map() } as unknown as IBrowserViewWorkbenchService,
 		{ getShareWarning: async () => shareWarning },
+		{ getValue: (key?: unknown) => key === PARADIS_BROWSER_PROFILE_ACCESS_SETTING ? options.access ?? 'ask' : undefined } as unknown as IConfigurationService,
 	);
 	return { channel, calls, profiles, registrations };
 }
@@ -200,5 +222,84 @@ suite('ParadisBrowserProfileMcpChannel', () => {
 			await channel.call<IParadisManageProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, ['pane-a', 'personal gmail']),
 			await channel.call<IParadisManageProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, ['pane-a', '   ']),
 		], [{ ok: false, reason: 'invalidName' }, { ok: false, reason: 'invalidName' }]);
+	});
+
+	// 許可の設定 3 つ × 許可を残したか（Q670）。ask は残した許可を見ず、「今後は聞かない」も出さない。
+	test('the access setting decides whether a user profile is opened without asking', async () => {
+		const outcomes: Record<string, [boolean, string[]]> = {};
+		for (const access of ['ask', 'remembered', 'all']) {
+			for (const remembered of [false, true]) {
+				const { channel, calls } = createChannel([profile('a3f19c2b7e04', 'PRD')], 'denied', true, undefined, undefined, { access, allowed: new Set(remembered ? ['a3f19c2b7e04'] : []) });
+				store.add(channel);
+				const result = await channel.call<IParadisOpenProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_METHOD, ['pane-a', 'PRD'], CancellationToken.None);
+				outcomes[`${access}/${remembered ? 'allowed' : 'not allowed'}`] = [result.ok, calls];
+			}
+		}
+		assert.deepStrictEqual(outcomes, {
+			'ask/not allowed': [false, ['ask']],
+			'ask/allowed': [false, ['ask']],
+			'remembered/not allowed': [false, ['ask+remember']],
+			'remembered/allowed': [true, ['open:a3f19c2b7e04']],
+			'all/not allowed': [true, ['open:a3f19c2b7e04']],
+			'all/allowed': [true, ['open:a3f19c2b7e04']],
+		});
+	});
+
+	test('"do not ask again" keeps the permission for that profile, so the next call opens it without a dialog', async () => {
+		const first = createChannel([profile('a3f19c2b7e04', 'PRD')], 'alternative', true, undefined, undefined, { access: 'remembered' });
+		store.add(first.channel);
+		const opened = await first.channel.call<IParadisOpenProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_METHOD, ['pane-a', 'PRD'], CancellationToken.None);
+		const again = await first.channel.call<IParadisOpenProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_METHOD, ['pane-a', 'PRD'], CancellationToken.None);
+		assert.deepStrictEqual([opened.ok, again.ok, first.calls], [true, true, ['ask+remember', 'allow:a3f19c2b7e04:true', 'open:a3f19c2b7e04', 'open:a3f19c2b7e04']]);
+	});
+
+	test('still asks, without "do not ask again", when a profile allowed without asking has browser extensions enabled', async () => {
+		const { channel, calls } = createChannel([profile('a3f19c2b7e04', 'PRD')], 'denied', true, undefined, 'extension warning', { access: 'all' });
+		store.add(channel);
+		await channel.call<IParadisOpenProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_METHOD, ['pane-a', 'PRD'], CancellationToken.None);
+		assert.deepStrictEqual(calls, ['ask-with-warning']);
+	});
+
+	test('the network filter and an untrusted workspace still keep allowed profiles away from the agent', async () => {
+		const filtered = createChannel([profile('a3f19c2b7e04', 'PRD')], 'approve', true, undefined, undefined, { access: 'all', networkFilter: true });
+		store.add(filtered.channel);
+		const result = await filtered.channel.call<IParadisOpenProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_METHOD, ['pane-a', 'PRD'], CancellationToken.None);
+		const list = await filtered.channel.call<IParadisListProfilesResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD, ['pane-a']);
+		assert.deepStrictEqual([result, list.profiles, list.hiddenProfileCount, filtered.calls], [{ ok: false, reason: 'profileNotShareable' }, [], 1, []]);
+	});
+
+	test('lists the names of the user profiles the agent may use without asking, and only counts the rest', async () => {
+		const profiles = () => [
+			profile('a3f19c2b7e04', 'PRD'),
+			profile('d1c2d3e4f506', 'Personal'),
+			profile('b1c2d3e4f506', 'agent-test', { createdByAgent: true, agentOwner: paradisAgentOwnerMark('pane-a') }),
+		];
+		const listed: Record<string, [string[], number]> = {};
+		for (const access of ['ask', 'remembered', 'all']) {
+			const { channel } = createChannel(profiles(), 'denied', true, undefined, undefined, { access, allowed: new Set(['a3f19c2b7e04']) });
+			store.add(channel);
+			const result = await channel.call<IParadisListProfilesResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD, ['pane-a']);
+			listed[access] = [result.profiles.map(entry => `${entry.name}${entry.createdByYou ? ' (yours)' : ''}`), result.hiddenProfileCount];
+		}
+		assert.deepStrictEqual(listed, {
+			ask: [['agent-test (yours)'], 2],
+			remembered: [['PRD', 'agent-test (yours)'], 1],
+			all: [['PRD', 'Personal', 'agent-test (yours)'], 0],
+		});
+	});
+
+	test('opens a profile in the space of the pane even while that space is not on screen', async () => {
+		const { channel, calls, registrations } = createChannel([profile('a3f19c2b7e04', 'PRD')], 'approve', true, undefined, undefined, { access: 'all', hidden: true });
+		store.add(channel);
+		const result = await channel.call<IParadisOpenProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_METHOD, ['pane-a', 'PRD', 'https://example.com/'], CancellationToken.None);
+		assert.deepStrictEqual([result, calls, registrations], [
+			{ ok: true, profileName: 'PRD', restored: true, bound: true, tabId: 'view-hidden', spaceNotVisible: true },
+			['create:a3f19c2b7e04:https://example.com/', 'keep:view-hidden:space-b'],
+			['pane-a:view-hidden:approved-profile'],
+		]);
+	});
+
+	test('reads an unknown access value as the most careful one', () => {
+		assert.deepStrictEqual(['ask', 'remembered', 'all', 'always', undefined].map(paradisReadProfileAccess), ['ask', 'remembered', 'all', 'ask', 'ask']);
 	});
 });

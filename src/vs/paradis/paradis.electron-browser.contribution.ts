@@ -13,6 +13,7 @@
 
 import './contrib/sentry/electron-browser/paradisSentryRenderer.js';
 import './contrib/sentry/electron-browser/paradisUnhandledErrorReporter.contribution.js';
+import './contrib/sentry/electron-browser/paradisExtensionHostHangReporter.contribution.js';
 // main プロセスの混雑の計測チャネルを、スペースの切り替えの計測へつなぐ（M1〜M4）
 import './contrib/mainLoad/electron-browser/paradisMainLoadProbe.contribution.js';
 // ターミナルの履歴の一覧（Q372）の、スペースに属さないターミナルの記録を本人だけが読めるファイルに置く
@@ -162,3 +163,12 @@ import './contrib/portTools/electron-browser/paradisPortTools.contribution.js';
 import './contrib/portTools/electron-browser/paradisPortPanelActions.contribution.js';
 // Q599: ファイル・フォルダの右クリックの共通の項目（ダウンロード・パスのコピー・ターミナルで開く・エージェントへ送る など）を足りない場所に足す
 import './contrib/fileMenus/electron-browser/paradisFileMenus.contribution.js';
+// para-browser MCP の資料のツール（list_docs・adopt_doc）のウィンドウ側: ペインのスペースのフォルダ、ファイルの有無、引き取りの確認
+import './contrib/agentDocs/electron-browser/paradisAgentDocs.contribution.js';
+import './contrib/agentDocs/electron-browser/paradisDocComments.contribution.js';
+// プレビューの「編集中」の印（Claude Code が書き換えようとしている資料の場所）
+import './contrib/agentDocs/electron-browser/paradisDocEditing.contribution.js';
+// 資料のコメントを、持ち主のエージェントのペインへ貼って Enter（届けてよいかは shared process が決める）
+import './contrib/agentDocs/electron-browser/paradisDocCommentDelivery.contribution.js';
+// 左サイドバーの「資料」ビュー（エージェントが作った資料の一覧）と、利用者がプレビューで開いた資料の登録
+import './contrib/agentDocs/electron-browser/paradisAgentDocsView.contribution.js';

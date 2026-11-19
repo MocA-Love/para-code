@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisPreviewLinkTarget, paradisPreviewLinkToFile } from '../../common/paradisHtmlPreview.js';
+import { paradisPreviewLinkTarget, paradisPreviewLinkToFile, paradisPreviewMountTarget } from '../../common/paradisHtmlPreview.js';
 
 suite('paradisPreviewLinkToFile', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -50,5 +50,27 @@ suite('paradisPreviewLinkToFile', () => {
 			otherPreview: undefined,
 			devServer: 'external',
 		});
+	});
+});
+
+suite('paradisPreviewMountTarget', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('serves the workspace folder when the document is inside it, and the document folder otherwise', () => {
+		const show = (resource: URI, folder: URI | undefined) => {
+			const target = paradisPreviewMountTarget(resource, folder);
+			return { root: target.root.path, suffix: target.suffix.join('/'), outside: target.outsideWorkspace };
+		};
+		assert.deepStrictEqual([
+			show(URI.file('/work/site/docs/a.html'), URI.file('/work/site')),
+			show(URI.file('/work/site/a.html'), URI.file('/work/site')),
+			show(URI.file('/tmp/a.html'), undefined),
+			show(URI.file('/Work/site/a.html'), URI.file('/work/site')),
+		], [
+			{ root: '/work/site', suffix: 'docs', outside: false },
+			{ root: '/work/site', suffix: '', outside: false },
+			{ root: '/tmp', suffix: '', outside: true },
+			{ root: '/Work/site', suffix: '', outside: true },
+		]);
 	});
 });
