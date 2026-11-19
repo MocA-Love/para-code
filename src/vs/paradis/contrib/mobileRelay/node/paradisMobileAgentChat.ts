@@ -10532,7 +10532,8 @@ export class ParadisMobileAgentChat extends Disposable {
 		// ターミナルが閉じた後にスマホから再開するための指紋（W2-29）。セッション ID そのものは送らない。
 		const paneSession = this.paneSessions.get(token);
 		const sessionId = paneSession?.resumable === false ? undefined : paneSession?.sessionId;
-		const resumeKey = sessionId !== undefined && PARADIS_RESUME_SESSION_ID_PATTERN.test(sessionId) ? paradisAgentSessionKey(tailer.agent, sessionId) : undefined;
+		// Antigravity CLI のペインには、再開の宛先を渡さない
+		const resumeKey = sessionId !== undefined && tailer.agent !== 'antigravity' && PARADIS_RESUME_SESSION_ID_PATTERN.test(sessionId) ? paradisAgentSessionKey(tailer.agent, sessionId) : undefined;
 		// 走っているエージェントへ設定を渡す口が無い種類（Claude Code 以外）のモデルは、モバイルから変えられない。モデルが
 		// まだ分からないうちから伝えて、選択の画面を開かせない
 		const modelControl = PARADIS_AGENT_DESCRIPTORS[tailer.agent].modelControl === 'none' ? 'none' : undefined;

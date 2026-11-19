@@ -431,7 +431,7 @@ suite('ParadisMobileAgentChat', () => {
 			}, {
 				agent: 'antigravity',
 				capabilities: { agentActions: true },
-				info: { modelControl: 'none', resumeKey: paradisAgentSessionKey('antigravity', conversationId) },
+				info: { modelControl: 'none' },
 				sessionStatus: undefined,
 				dispatched: [{ t: 'action/sendMessage', requestId: 'send-1', agent: 'antigravity', text: '続きをお願い' }],
 				reply: [
@@ -732,7 +732,7 @@ suite('ParadisMobileAgentChat', () => {
 				interaction: interaction.kind,
 			}, {
 				agent: 'antigravity',
-				info: { model: 'gemini-3.8-flash-high', modelControl: 'none', resumeKey: paradisAgentSessionKey('antigravity', conversationId) },
+				info: { model: 'gemini-3.8-flash-high', modelControl: 'none' },
 				messages: [
 					{ kind: 'text', text: '一覧を見て', toolUseId: undefined },
 					{ kind: 'tool_use', text: '{"CommandLine":"ls"}', toolUseId: 'agy-1-0' },

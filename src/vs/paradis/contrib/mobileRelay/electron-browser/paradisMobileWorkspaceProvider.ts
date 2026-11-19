@@ -1767,7 +1767,7 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					return;
 				}
 				// 同じターミナルで agy を始め直した後は、前面が別の会話かもしれない（新しい会話の hook は最初の発言まで来ない）。
-				// 預かりの文が前の会話の指紋のまま届くので、前面が控えの会話だと確かめられるときだけ打つ
+				// アプリは控えの会話を見せているので、前面が控えの会話だと確かめられるときだけ打つ
 				if (antigravity && !(await this.antigravityPaneHoldsConversation(instance, msg.token))) {
 					this.sendAgentActionResult(mobileId, msg.id, msg.token, msg.requestId, 'rejected', 'agent-busy', PARADIS_ANTIGRAVITY_OTHER_CONVERSATION_MESSAGE);
 					return;
