@@ -264,16 +264,14 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 	 * 許可の設定が remembered なら「今後は聞かない」も出し、押されたらそのプロファイルの許可を残す。
 	 */
 	private async _approveUserProfile(token: string, profile: IParadisBrowserProfile, deadline: ParadisApprovalDeadline, url: string | undefined): Promise<ParadisProfileApproval> {
-		// 拡張機能を有効にしたプロファイルなら、承認の本文で知らせる（D4）。このペインのプロファイルでも、
-		// 聞かずに使ってよいプロファイルでも、知らせが要るときは承認を挟む（利用者が拡張機能を有効にしたのは
-		// エージェントの知らないことで、許可を残したときには考えていなかったこと）
-		const extensionWarning = await this.browserExtensionsService.getShareWarning({ kind: 'profile', profileId: profile.id });
+		// 聞くかどうかは設定のとおり（拡張機能の有無では変えない）。拡張機能を有効にしたプロファイルなら、
+		// 聞くときの本文で知らせる（D4）。許可を残した後で拡張機能を有効にしても聞き直さない
 		const access = this._access();
-		if (extensionWarning === undefined && (isOwnProfile(profile, token) || this._isAllowedWithoutAsking(profile, access))) {
+		if (isOwnProfile(profile, token) || this._isAllowedWithoutAsking(profile, access)) {
 			return 'approved';
 		}
-		// 許可を残しても、拡張機能の知らせがあるうちは聞き続けるので、そのときは出さない
-		const offerRemember = access === 'remembered' && extensionWarning === undefined;
+		const extensionWarning = await this.browserExtensionsService.getShareWarning({ kind: 'profile', profileId: profile.id });
+		const offerRemember = access === 'remembered';
 		const origin = paradisUrlOrigin(url);
 		const outcome = await this.agentTabsService.askApproval(token, {
 			messageTemplate: pane => localize('paradis.browserProfiles.mcp.approval.message', "{0} のエージェントが、ブラウザのプロファイル「{1}」を使いたいと求めています", pane, profile.name),
