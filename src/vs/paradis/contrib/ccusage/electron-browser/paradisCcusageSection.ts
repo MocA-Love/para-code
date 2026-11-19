@@ -78,6 +78,12 @@ type ParadisCcusagePresetKey = 'today' | 'yesterday' | 'thisWeek' | 'lastWeek' |
 /** チャートの表示単位。7日未満の期間では daily に強制される(effectiveGranularity 参照)。 */
 type ParadisCcusageGranularity = 'daily' | 'weekly';
 
+/** `YYYY-MM-DD` を「11/9」の形にする。 */
+function formatMonthDay(value: string): string {
+	const [, month, day] = value.split('-');
+	return `${Number(month)}/${Number(day)}`;
+}
+
 /** 粒度のプルダウンの選択肢。 */
 const GRANULARITY_OPTIONS = [
 	{ value: 'daily', label: localize('paradis.ccusage.granularity.daily', "日別") },
@@ -543,7 +549,7 @@ export class ParadisCcusageSection extends Disposable implements IParadisUsageSe
 		this.otherPeriodSelect.value = this.customRange || customOpen ? 'custom' : (inSeg ? '' : this.presetKey);
 		this.customRangeButton.hidden = !this.customRange;
 		if (this.customRange) {
-			const label = localize('paradis.ccusage.customRange.label', "{0}〜{1}", shortDate(this.customRange.from), shortDate(this.customRange.to));
+			const label = localize('paradis.ccusage.customRange.label', "{0}〜{1}", formatMonthDay(this.customRange.from), formatMonthDay(this.customRange.to));
 			this.customRangeButton.textContent = label;
 			this.customRangeButton.setAttribute('aria-label', localize('paradis.ccusage.customRange.change', "カスタムの期間 {0} を変える", label));
 		}
