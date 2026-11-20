@@ -18,6 +18,7 @@ import { INativeEnvironmentService } from '../../../../platform/environment/comm
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
 import { onParadisAgentAwaitingUser, onParadisAgentHookEvent, onParadisAgentTurnEnded } from '../../agentBrowser/node/paradisAgentHookBus.js';
+import { onParadisAgentTranscriptEntries } from '../../agentBrowser/node/paradisAgentTranscriptEntryBus.js';
 import { paradisPaneAgentStatusSource } from '../../agentBrowser/node/paradisPaneAgentStatusSource.js';
 import { paradisClaudeModBridge } from '../../claudeMod/node/paradisClaudeModBridge.js';
 import { PARADIS_DOC_DELIVERY_CHANNEL } from '../common/paradisDocCommentDelivery.js';
@@ -63,7 +64,7 @@ ParadisSharedProcessContributions.register('agentDocs', ({ server, accessor }) =
 	const folder = join(accessor.get(INativeEnvironmentService).userDataPath, 'paradis-docs');
 	const store = new DisposableStore();
 	const ledger = store.add(new ParadisAgentDocsLedger(ledgerFileStorage(folder), error => logService.warn('[ParadisAgentDocs] could not read or write the document ledger', error)));
-	const service = store.add(new ParadisAgentDocsService(ledger, onParadisAgentHookEvent));
+	const service = store.add(new ParadisAgentDocsService(ledger, onParadisAgentHookEvent, onParadisAgentTranscriptEntries));
 	const comments = store.add(new ParadisDocCommentsStore(paradisDocCommentsFileStorage(join(folder, 'comments')), error => logService.warn('[ParadisDocComments] could not read or write the comments of a document', error)));
 	// 書きかけは Claude Code の入力欄の mod からだけ分かる（無ければ「分からない」）。hook は台帳が確かめた後のもの（SSH の窓の hook も使える）
 	const delivery = store.add(new ParadisDocCommentDelivery(service, comments, paradisPaneAgentStatusSource, (token, session) => paradisClaudeModBridge.draftOf(token, session)?.text, service.onHook, onParadisAgentTurnEnded));

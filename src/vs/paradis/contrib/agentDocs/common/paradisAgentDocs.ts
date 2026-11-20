@@ -454,9 +454,40 @@ export function paradisParseDocLedger(text: string | undefined): IParadisDocReco
 	return records;
 }
 
+/** 利用者が一覧から外した資料（会話の記録の読み直しで、外す前の書き込みから載せ直さないために覚える）。 */
+export interface IParadisDocRemoval {
+	readonly hostId: string;
+	readonly path: string;
+	/** 外した時刻（epoch ms）。 */
+	readonly at: number;
+}
+
+/** 覚えておく「一覧から外した資料」の上限（古い順に捨てる）。 */
+export const PARADIS_DOC_MAX_REMOVALS = 500;
+
+/** 台帳のファイルから、一覧から外した資料の控えを読む。 */
+export function paradisParseDocRemovals(text: string | undefined): IParadisDocRemoval[] {
+	let parsed: unknown;
+	try {
+		parsed = text !== undefined ? JSON.parse(text) : undefined;
+	} catch {
+		return [];
+	}
+	const removed = typeof parsed === 'object' && parsed !== null ? (parsed as { removed?: unknown }).removed : undefined;
+	const removals: IParadisDocRemoval[] = [];
+	for (const item of Array.isArray(removed) ? removed.slice(-PARADIS_DOC_MAX_REMOVALS) : []) {
+		const fields = typeof item === 'object' && item !== null ? item as Record<string, unknown> : {};
+		const path = paradisNormalizeDocPath(fields.path);
+		if (typeof fields.hostId === 'string' && HOST_ID_PATTERN.test(fields.hostId) && path !== undefined && isTime(fields.at)) {
+			removals.push({ hostId: fields.hostId, path, at: fields.at });
+		}
+	}
+	return removals;
+}
+
 /** 台帳のファイルへ書く中身。 */
-export function paradisSerializeDocLedger(records: readonly IParadisDocRecord[]): string {
-	return JSON.stringify({ version: 1, docs: records }, null, '\t');
+export function paradisSerializeDocLedger(records: readonly IParadisDocRecord[], removed: readonly IParadisDocRemoval[] = []): string {
+	return JSON.stringify({ version: 1, docs: records, ...(removed.length > 0 ? { removed } : {}) }, null, '\t');
 }
 
 // --- ツール ----------------------------------------------------------------------------------

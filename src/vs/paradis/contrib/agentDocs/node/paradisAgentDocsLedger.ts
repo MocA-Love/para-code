@@ -15,14 +15,17 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import {
 	IParadisDocOwner,
 	IParadisDocRecord,
+	IParadisDocRemoval,
 	IParadisDocWrite,
 	PARADIS_DOC_MAX_RECORDS,
+	PARADIS_DOC_MAX_REMOVALS,
 	ParadisDocOwnerVia,
 	ParadisDocRegisteredBy,
 	paradisDocKey,
 	paradisDocKind,
 	paradisDocLastActivity,
 	paradisParseDocLedger,
+	paradisParseDocRemovals,
 	paradisSerializeDocLedger,
 	paradisWithDocOwner,
 	paradisWithDocWrite,
@@ -43,6 +46,8 @@ const SAVE_DELAY_MS = 500;
 export class ParadisAgentDocsLedger extends Disposable {
 
 	private readonly _records = new Map<string, IParadisDocRecord>();
+	/** 利用者が一覧から外した資料（キー → 控え）。その後の書き込み・登録で消える。 */
+	private readonly _removed = new Map<string, IParadisDocRemoval>();
 	private readonly _saver: RunOnceScheduler;
 	private _saving: Promise<void> = Promise.resolve();
 	readonly ready: Promise<void>;
@@ -75,6 +80,12 @@ export class ParadisAgentDocsLedger extends Disposable {
 				this._records.set(key, record);
 			}
 		}
+		for (const removal of paradisParseDocRemovals(text)) {
+			const key = paradisDocKey(removal.hostId, removal.path);
+			if (!this._records.has(key) && !this._removed.has(key)) {
+				this._removed.set(key, removal);
+			}
+		}
 		this._onDidChange.fire();
 	}
 
@@ -86,14 +97,44 @@ export class ParadisAgentDocsLedger extends Disposable {
 		return [...this._records.values()];
 	}
 
-	/** 書き込みを記録し、書いた会話を持ち主にする（最後に書いた会話が持ち主）。資料でないパスは何もしない。 */
+	/**
+	 * 書き込みを記録し、書いた会話を持ち主にする（最後に書いた会話が持ち主）。資料でないパスは何もしない。
+	 * 同じ会話の同じ呼び出し（toolUseId）が既に載っていれば何もしない（hook と会話の記録の両方から届くため）。
+	 */
 	recordWrite(hostId: string, path: string, owner: ParadisDocOwnerCandidate, write: Omit<IParadisDocWrite, 'session'>): void {
 		const record = this._getOrCreate(hostId, path, 'write');
-		if (record === undefined) {
+		if (record === undefined || (write.toolUseId !== undefined && record.writes.some(known => known.toolUseId === write.toolUseId && known.session === owner.session))) {
 			return;
 		}
 		const { missingSince: _missingSince, ...present } = record;
 		this._set(paradisWithDocWrite(paradisWithDocOwner(present, this._owner(owner, 'write')), { ...write, session: owner.session }));
+	}
+
+	/**
+	 * 会話の記録（transcript）から拾った書き込みを記録する。`at` は記録の行の時刻。
+	 *
+	 * 書かれてすぐ読んだ行（`live`）は hook と同じ扱い（書いた会話が持ち主）。過去の分として読んだ行（起動の後の
+	 * 読み込み・読み直し）は、台帳がまだ知らないことだけを足す: 台帳に無い資料を載せる、持ち主のいない資料の持ち主にする、
+	 * 台帳の最後の動きより新しい書き込みなら持ち主を移す。台帳の最後の動きより古い書き込みは、引き取り（adopt_doc）や
+	 * 後から書いた会話を巻き戻すので使わない。利用者が一覧から外した資料は、外す前の書き込みからは載せ直さない。
+	 * @returns 台帳を変えたか
+	 */
+	recordTranscriptWrite(hostId: string, path: string, owner: ParadisDocOwnerCandidate, write: Omit<IParadisDocWrite, 'session'>, live: boolean): boolean {
+		const existing = this.get(hostId, path);
+		if (existing !== undefined && write.toolUseId !== undefined && existing.writes.some(known => known.toolUseId === write.toolUseId && known.session === owner.session)) {
+			return false;
+		}
+		if (!live) {
+			const removal = this._removed.get(paradisDocKey(hostId, path));
+			if (existing === undefined ? removal !== undefined && write.at <= removal.at : existing.owner !== undefined && write.at <= paradisDocLastActivity(existing)) {
+				return false;
+			}
+		}
+		if (paradisDocKind(path) === undefined) {
+			return false;
+		}
+		this.recordWrite(hostId, path, owner, write);
+		return true;
 	}
 
 	/**
@@ -177,8 +218,17 @@ export class ParadisAgentDocsLedger extends Disposable {
 
 	/** 一覧から外す（ファイルには触らない）。 */
 	remove(hostId: string, path: string): boolean {
-		const removed = this._records.delete(paradisDocKey(hostId, path));
+		const key = paradisDocKey(hostId, path);
+		const removed = this._records.delete(key);
 		if (removed) {
+			this._removed.delete(key);
+			this._removed.set(key, { hostId, path, at: this._now() });
+			if (this._removed.size > PARADIS_DOC_MAX_REMOVALS) {
+				const oldest = this._removed.keys().next();
+				if (oldest.done !== true) {
+					this._removed.delete(oldest.value);
+				}
+			}
 			this._saver.schedule();
 			this._onDidChange.fire();
 		}
@@ -239,6 +289,7 @@ export class ParadisAgentDocsLedger extends Disposable {
 		const key = paradisDocKey(record.hostId, record.path);
 		this._records.delete(key);
 		this._records.set(key, record);
+		this._removed.delete(key);
 		if (this._records.size > PARADIS_DOC_MAX_RECORDS) {
 			const oldest = [...this._records.entries()].sort((a, b) => paradisDocLastActivity(a[1]) - paradisDocLastActivity(b[1]))[0];
 			this._records.delete(oldest[0]);
@@ -251,7 +302,7 @@ export class ParadisAgentDocsLedger extends Disposable {
 		// 読み込みの前に書くと、ファイルにあった分を消してしまう
 		this._saving = this._saving.then(async () => {
 			await this.ready;
-			await this._storage.write(paradisSerializeDocLedger(this.all()));
+			await this._storage.write(paradisSerializeDocLedger(this.all(), [...this._removed.values()]));
 		}).catch(error => this._onError(error));
 	}
 }
