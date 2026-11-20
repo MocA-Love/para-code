@@ -21,16 +21,22 @@
 // その場で届く（paradisAgentTranscriptEntryBus.ts）。hook が届かなかった書き込み（Para Code が止まっていた間・hook の
 // 取りこぼし・REPL の中から呼んだ Write・Antigravity CLI）も記録には残るので、台帳は記録を正本にして同じ結果にそろえる。
 // hook は今までどおり一番速い経路で、同じ呼び出しが両方から届いても 1 回として載る。
+//
+// hook にも記録にも書き込みとして残らない資料（コマンドで書いた html・md）は、ウィンドウのファイルの変化の見張りから
+// 知らせてもらう（noteFileChanged）。そのスペースで作業中の会話が 1 つだけならその会話の資料にし、2 つ以上なら決めずに
+// 持ち主なしで載せる。持ち主のいる資料には触らない。
 
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { disposableTimeout } from '../../../../base/common/async.js';
+import { Disposable, DisposableMap } from '../../../../base/common/lifecycle.js';
 import type { IParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import type { IParadisAgentTranscriptEntries } from '../../agentBrowser/node/paradisAgentTranscriptEntryBus.js';
+import type { IParadisPaneAgentStatusSource } from '../../agentBrowser/node/paradisPaneAgentStatusSource.js';
 import { paradisAgentHookRemoteHostId } from '../../agentBrowser/common/paradisAgentHooks.js';
 import { paradisHookAgentKindForTranscript } from '../../agentBrowser/node/paradisAgentHookOwnership.js';
 import type { IParadisPreviewFileOpened } from '../../agentBrowser/node/paradisPreviewFileObservers.js';
 import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
-import { IParadisDocOwner, ParadisDocOwnerLiveness, paradisDocHookNamesTranscript, paradisDocKind, paradisDocPatchWrites, paradisNormalizeDocPath } from '../common/paradisAgentDocs.js';
+import { IParadisDocOwner, ParadisDocOwnerLiveness, paradisDocHookNamesTranscript, paradisDocKey, paradisDocKind, paradisDocPatchWrites, paradisNormalizeDocPath } from '../common/paradisAgentDocs.js';
 import { IParadisDocTranscriptWrite, ParadisDocTranscriptWriteReader } from '../common/paradisDocTranscriptWrites.js';
 import { ParadisAgentDocsLedger } from './paradisAgentDocsLedger.js';
 
@@ -53,6 +59,16 @@ const SESSION_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/;
 const MAX_HELD_TRANSCRIPT_WRITES = 200;
 /** 記録を読んでいるペインの数の上限（終了の知らせを取りこぼしても伸び続けないように）。 */
 const MAX_TRANSCRIPT_READERS = 500;
+
+/**
+ * ファイルが変わったとき、ターンが終わってからこの時間のうちの会話も「作業中だった」とみなす（書いた直後にターンが
+ * 終わり、見張りの知らせが後から届く）。
+ */
+const WATCH_RECENT_MS = 10_000;
+/** 作業中の会話が 2 つ以上のとき、hook・会話の記録が持ち主を付けるのを待つ時間。過ぎても持ち主がいなければ持ち主なしで載せる。 */
+const WATCH_SETTLE_MS = 4_000;
+/** 待っている資料の数の上限。 */
+const MAX_WATCH_SETTLES = 200;
 
 /** 1 つのペインの記録の読み手（読み始めごとに作り直す）。 */
 interface ITranscriptReader {
@@ -89,6 +105,10 @@ export class ParadisAgentDocsService extends Disposable {
 	/** ペインで動いている会話が変わった（持ち主の「動作中」の表示が変わる）。 */
 	readonly onDidChangeSessions: Event<void> = this._onDidChangeSessions.event;
 
+	/** ペインに最後に hook か記録の追記が届いた時刻（見張りの「作業中だった」の判定に使う）。 */
+	private readonly _lastActivity = new Map<string, number>();
+	/** 見張りで見つけて、持ち主が付くのを待っている資料（台帳のキー → 待ち）。 */
+	private readonly _watchSettles = this._register(new DisposableMap<string>());
 	/** ペインごとの、記録の読み手。 */
 	private readonly _transcriptReaders = new Map<string, ITranscriptReader>();
 	/** 接続先の印が分かるまで待たせている書き込み（ペインごと）。 */
@@ -105,6 +125,8 @@ export class ParadisAgentDocsService extends Disposable {
 		readonly ledger: ParadisAgentDocsLedger,
 		hookEvents: Event<IParadisAgentHookEvent>,
 		transcriptEntries: Event<IParadisAgentTranscriptEntries> = Event.None,
+		private readonly _status: () => IParadisPaneAgentStatusSource | undefined = () => undefined,
+		private readonly _now: () => number = Date.now,
 	) {
 		super();
 		this._register(transcriptEntries(batch => this._onTranscriptEntries(batch)));
@@ -189,6 +211,53 @@ export class ParadisAgentDocsService extends Disposable {
 		return owner.ended !== undefined ? 'ended' : 'unknown';
 	}
 
+	/**
+	 * ウィンドウが見張っているフォルダで、資料（html・md）が作られた・変わった。`tokens` はその資料のスペースのペイン。
+	 * 作業中かどうかは知らせが届いた今の状態で決める（待ってから決めると、書いた直後に終わったターンを取りこぼす）。
+	 */
+	noteFileChanged(hostId: string, path: string, tokens: readonly string[]): void {
+		const working = this._workingSessions(hostId, tokens);
+		if (working.length === 0) {
+			return;
+		}
+		void this.ledger.ready.then(() => {
+			if (this.ledger.get(hostId, path)?.owner !== undefined) {
+				return;
+			}
+			if (working.length === 1) {
+				this.ledger.recordWatched(hostId, path, working[0]);
+				return;
+			}
+			const key = paradisDocKey(hostId, path);
+			if (this._watchSettles.has(key) || this._watchSettles.size >= MAX_WATCH_SETTLES) {
+				return;
+			}
+			this._watchSettles.set(key, disposableTimeout(() => {
+				this._watchSettles.deleteAndDispose(key);
+				this.ledger.recordWatched(hostId, path, undefined);
+			}, WATCH_SETTLE_MS));
+		});
+	}
+
+	/** そのペインのうち、その機械で作業中（か、終わったばかり）の会話。同じ会話は 1 つに数える。 */
+	private _workingSessions(hostId: string, tokens: readonly string[]): IParadisDocPaneSession[] {
+		const now = this._now();
+		const status = this._status();
+		const sessions = new Map<string, IParadisDocPaneSession>();
+		for (const token of tokens) {
+			const pane = this._paneSessions.get(token);
+			if (pane === undefined || pane.hostId !== hostId || sessions.has(pane.session)) {
+				continue;
+			}
+			const paneStatus = status?.getPaneAgentStatus(token);
+			const inTurn = paneStatus !== undefined && (paneStatus.status !== 'review' || now - paneStatus.changedAt <= WATCH_RECENT_MS);
+			if (inTurn || now - (this._lastActivity.get(token) ?? Number.NEGATIVE_INFINITY) <= WATCH_RECENT_MS) {
+				sessions.set(pane.session, pane);
+			}
+		}
+		return [...sessions.values()];
+	}
+
 	/** 会話の記録の行から書き込みを拾い、台帳へ載せる。 */
 	private _onTranscriptEntries(batch: IParadisAgentTranscriptEntries): void {
 		const key = `${batch.transcriptPath}\0${batch.epoch}`;
@@ -203,6 +272,9 @@ export class ParadisAgentDocsService extends Disposable {
 					this._transcriptReaders.delete(oldest.value);
 				}
 			}
+		}
+		if (batch.live) {
+			this._lastActivity.set(batch.token, this._now());
 		}
 		const writes = batch.entries.flatMap(line => entry.reader.read(line));
 		if (writes.length === 0) {
@@ -257,6 +329,9 @@ export class ParadisAgentDocsService extends Disposable {
 		if (event.event === 'TerminalExit') {
 			this._transcriptReaders.delete(token);
 			this._heldTranscriptWrites.delete(token);
+			this._lastActivity.delete(token);
+		} else {
+			this._lastActivity.set(token, this._now());
 		}
 		if (event.event === 'TerminalExit' || event.event === 'SessionEnd') {
 			const pane = this._paneSessions.get(token);

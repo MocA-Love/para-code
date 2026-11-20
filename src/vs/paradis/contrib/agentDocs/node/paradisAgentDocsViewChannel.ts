@@ -14,7 +14,7 @@ import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
-import { paradisDocKind, paradisIsVcsInternalPath, paradisNormalizeDocPath } from '../common/paradisAgentDocs.js';
+import { paradisDocKind, paradisIsVcsInternalPath, paradisIsWatchableDocPath, paradisNormalizeDocPath } from '../common/paradisAgentDocs.js';
 import { IParadisDocPaneSessionInfo, IParadisDocViewRecord, PARADIS_AGENT_DOCS_VIEW_ON_DID_CHANGE, ParadisAgentDocsViewCall, ParadisDocAssignResult, paradisDocViewRecord } from '../common/paradisAgentDocsView.js';
 import { paradisCountOpenDocComments } from '../common/paradisDocComments.js';
 import { ParadisAgentDocsService } from './paradisAgentDocsService.js';
@@ -83,6 +83,13 @@ export class ParadisAgentDocsViewChannel extends Disposable implements IServerCh
 			}
 			case ParadisAgentDocsViewCall.Assign:
 				return this.assign(args[0], args[1], args[2]) as T;
+			case ParadisAgentDocsViewCall.NoteChanged: {
+				const target = docTarget(args[0], args[1]);
+				if (target !== undefined && paradisIsWatchableDocPath(target.path) && Array.isArray(args[2])) {
+					this._service.noteFileChanged(target.hostId, target.path, args[2].slice(0, MAX_TOKENS).filter((token): token is string => typeof token === 'string'));
+				}
+				return undefined as T;
+			}
 		}
 		throw new Error(`Call not found: ${command}`);
 	}

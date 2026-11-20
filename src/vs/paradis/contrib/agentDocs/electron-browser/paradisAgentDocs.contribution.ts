@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // 呼び出し元ペインのウィンドウとして、資料のツールの受け口（paradisAgentDocsChannel.ts）を shared process へ登録する。
-// ペイン → スペースの解き方は preview_file・メモと同じ（paradisResolveInstanceSpace）。確認はページ共有と同じ承認のダイアログ。
+// ペイン → スペースの解き方は preview_file・メモと同じ（paradisAgentDocsPaneFolder.ts）。確認はページ共有と同じ承認のダイアログ。
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
@@ -17,9 +17,10 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisAgentBrowserTabsService, ParadisApprovalDeadline } from '../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
-import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisListSpaces, paradisResolveInstanceSpace } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { PARADIS_AGENT_DOCS_CHANNEL } from '../common/paradisAgentDocs.js';
 import { ParadisAgentDocsChannel } from './paradisAgentDocsChannel.js';
+import { paradisDocPaneFolder } from './paradisAgentDocsPaneFolder.js';
 
 class ParadisAgentDocsContribution extends Disposable implements IWorkbenchContribution {
 
@@ -41,20 +42,7 @@ class ParadisAgentDocsContribution extends Disposable implements IWorkbenchContr
 			{
 				remoteAuthority: environmentService.remoteAuthority,
 				paneKnown: token => paneTokenService.getInstanceForToken(token) !== undefined,
-				paneFolder: token => {
-					const instanceId = paneTokenService.getInstanceForToken(token);
-					if (instanceId === undefined) {
-						return undefined;
-					}
-					// 所属が決まっていない（端末の再接続中など）なら分からないとする。スペースを持たないペイン
-					// （管理下でないフォルダを開いた窓）は、そのウィンドウのフォルダ（preview_file と同じ）
-					const scope = terminalScopeService.getStateKeyForInstance(instanceId) === undefined ? terminalScopeService.resolveScope(instanceId) : undefined;
-					if (scope?.kind === 'unscoped') {
-						return workspaceContextService.getWorkspace().folders[0]?.uri;
-					}
-					const stateKey = paradisResolveInstanceSpace(terminalScopeService, workspaceSwitchService.activeStateKey, instanceId);
-					return stateKey !== undefined ? paradisListSpaces(workspaceSwitchService.repositories, worktreeService).find(candidate => candidate.space === stateKey)?.uri : undefined;
-				},
+				paneFolder: token => paradisDocPaneFolder(token, { paneTokenService, terminalScopeService, workspaceSwitchService, worktreeService, workspaceContextService }),
 				stat: async resource => {
 					if (!await fileService.exists(resource)) {
 						return undefined;

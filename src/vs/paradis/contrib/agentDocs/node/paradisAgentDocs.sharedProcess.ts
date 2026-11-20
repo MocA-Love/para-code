@@ -64,7 +64,7 @@ ParadisSharedProcessContributions.register('agentDocs', ({ server, accessor }) =
 	const folder = join(accessor.get(INativeEnvironmentService).userDataPath, 'paradis-docs');
 	const store = new DisposableStore();
 	const ledger = store.add(new ParadisAgentDocsLedger(ledgerFileStorage(folder), error => logService.warn('[ParadisAgentDocs] could not read or write the document ledger', error)));
-	const service = store.add(new ParadisAgentDocsService(ledger, onParadisAgentHookEvent, onParadisAgentTranscriptEntries));
+	const service = store.add(new ParadisAgentDocsService(ledger, onParadisAgentHookEvent, onParadisAgentTranscriptEntries, paradisPaneAgentStatusSource));
 	const comments = store.add(new ParadisDocCommentsStore(paradisDocCommentsFileStorage(join(folder, 'comments')), error => logService.warn('[ParadisDocComments] could not read or write the comments of a document', error)));
 	// 書きかけは Claude Code の入力欄の mod からだけ分かる（無ければ「分からない」）。hook は台帳が確かめた後のもの（SSH の窓の hook も使える）
 	const delivery = store.add(new ParadisDocCommentDelivery(service, comments, paradisPaneAgentStatusSource, (token, session) => paradisClaudeModBridge.draftOf(token, session)?.text, service.onHook, onParadisAgentTurnEnded));

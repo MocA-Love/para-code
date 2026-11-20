@@ -9,6 +9,10 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
+	PARADIS_DOC_WATCH_BURST,
+	PARADIS_DOC_WATCH_BURST_WINDOW_MS,
+	ParadisDocWatchBurstGate,
+	paradisIsWatchableDocPath,
 	IParadisDocOwner,
 	IParadisDocRecord,
 	PARADIS_DOC_MAX_PREVIOUS_OWNERS,
@@ -137,6 +141,22 @@ suite('paradisAgentDocs', () => {
 			mixed: [['/work/a.md', 's1']],
 			broken: [[], [], []],
 		});
+	});
+
+	test('the file watch takes html and md outside dependency and version control folders, and stops while many files change at once', () => {
+		assert.deepStrictEqual([
+			'/repo/report.html', '/repo/docs/guide.md', 'C:\\repo\\notes.MD',
+			'/repo/main.ts', '/repo/node_modules/pkg/README.md', '/repo/.git/COMMIT_EDITMSG.md', '/repo/.venv/lib/site-packages/x/index.html', 'C:\\repo\\node_modules\\pkg\\readme.md',
+		].map(paradisIsWatchableDocPath), [true, true, true, false, false, false, false, false]);
+		const gate = new ParadisDocWatchBurstGate();
+		assert.deepStrictEqual([
+			gate.admit(1, 0), gate.admit(PARADIS_DOC_WATCH_BURST - 1, 1000),
+			// 短い間の合計が上限を超えた（ブランチの切り替えが小分けに届く）。収まるまで通さない
+			gate.admit(1, 2000), gate.admit(1, 5000), gate.admit(1, 14_000),
+			gate.admit(1, 14_000 + PARADIS_DOC_WATCH_BURST_WINDOW_MS),
+			// 1 回の知らせが上限を超えた
+			gate.admit(PARADIS_DOC_WATCH_BURST + 1, 100_000), gate.admit(1, 100_001), gate.admit(1, 100_001 + PARADIS_DOC_WATCH_BURST_WINDOW_MS),
+		], [true, true, false, false, false, true, false, false, true]);
 	});
 
 	test('checks the tool arguments strictly', () => {

@@ -7,12 +7,14 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { timeout } from '../../../../../base/common/async.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
+import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IParadisAgentHookEvent } from '../../../agentBrowser/node/paradisAgentHookBus.js';
 import type { IParadisAgentTranscriptEntries } from '../../../agentBrowser/node/paradisAgentTranscriptEntryBus.js';
-import type { IParadisMcpOwningWindowRequest, IParadisMcpToolCallContext, ParadisMcpCallerKind, ParadisMcpOwningWindowResult } from '../../../agentBrowser/common/paradisMcpToolProvider.js';
+import type { IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpToolCallContext, ParadisMcpCallerKind, ParadisMcpOwningWindowResult } from '../../../agentBrowser/common/paradisMcpToolProvider.js';
 import { IParadisDocInspectItem, IParadisDocInspectResult, ParadisDocAdoptConfirmOutcome, paradisParseDocLedger } from '../../common/paradisAgentDocs.js';
 import { IParadisDocLedgerStorage, ParadisAgentDocsLedger } from '../../node/paradisAgentDocsLedger.js';
 import { ParadisAgentDocsService } from '../../node/paradisAgentDocsService.js';
@@ -140,6 +142,8 @@ suite('paradisAgentDocsService', () => {
 	let store: DisposableStore;
 	let hooks: Emitter<IParadisAgentHookEvent>;
 	let transcripts: Emitter<IParadisAgentTranscriptEntries>;
+	/** ペインのエージェントの状態（サイドバーの「動作中」と同じもの）。 */
+	let statuses: Map<string, IParadisMcpPaneAgentStatus>;
 	let storage: MemoryStorage;
 	let ledger: ParadisAgentDocsLedger;
 	let service: ParadisAgentDocsService;
@@ -149,7 +153,7 @@ suite('paradisAgentDocsService', () => {
 	function create(text?: string): void {
 		storage = new MemoryStorage(text);
 		ledger = store.add(new ParadisAgentDocsLedger(storage, error => { throw error; }, () => now));
-		service = store.add(new ParadisAgentDocsService(ledger, hooks.event, transcripts.event));
+		service = store.add(new ParadisAgentDocsService(ledger, hooks.event, transcripts.event, () => ({ getPaneAgentStatus: token => statuses.get(token), getUnconfirmedRelease: () => undefined, hasAgentHookHistory: () => true }), () => now));
 		comments = store.add(new ParadisDocCommentsStore(new MemoryCommentsStorage(), error => { throw error; }, () => now));
 	}
 
@@ -157,6 +161,7 @@ suite('paradisAgentDocsService', () => {
 		store = disposables.add(new DisposableStore());
 		hooks = store.add(new Emitter<IParadisAgentHookEvent>());
 		transcripts = store.add(new Emitter<IParadisAgentTranscriptEntries>());
+		statuses = new Map();
 		now = 100;
 		create();
 	});
@@ -166,7 +171,7 @@ suite('paradisAgentDocsService', () => {
 		await new Promise(resolve => setTimeout(resolve, 0));
 	}
 
-	function owners(): unknown {
+	function owners(): unknown[] {
 		return ledger.all().map(entry => [entry.hostId, entry.path, entry.owner?.session, entry.owner?.via, entry.owner?.ended, entry.writes.length]);
 	}
 
@@ -382,6 +387,72 @@ suite('paradisAgentDocsService', () => {
 		]);
 	});
 
+	test('a file the watch found belongs to the only session working in its space; with two or more it is listed without an owner', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const flush = async () => {
+			await ledger.ready;
+			await timeout(0);
+		};
+		now = 100_000;
+		hooks.fire(start('p1', 's1'));
+		hooks.fire(start('p2', 's2'));
+		hooks.fire(start('p3', 's3', '/srv', SSH));
+		hooks.fire(start('idle', 's4'));
+		// 作業中は p1 だけ（p2 は 1 分前に終わった。idle は hook も状態も古い）
+		now = 200_000;
+		statuses.set('p1', { status: 'working', changedAt: 190_000 });
+		statuses.set('p2', { status: 'review', changedAt: 140_000 });
+		service.noteFileChanged('', '/repo/by-bash.html', ['p1', 'p2', 'idle', 'unknown-pane']);
+		// 接続先のペインは、手元のファイルの持ち主の候補にしない
+		statuses.set('p3', { status: 'working', changedAt: 190_000 });
+		service.noteFileChanged('', '/repo/local-only.md', ['p3']);
+		// 作業中の会話が無ければ載せない（利用者が自分で書いたファイル）
+		service.noteFileChanged('', '/repo/nobody.md', ['p2', 'idle']);
+		await flush();
+		assert.deepStrictEqual(owners(), [['', '/repo/by-bash.html', 's1', 'watch', undefined, 0]]);
+
+		// 書いた直後にターンが終わった会話も、作業中だったものとして数える。2 つ以上なら決めない
+		statuses.set('p2', { status: 'review', changedAt: 195_000 });
+		service.noteFileChanged('', '/repo/two-agents.md', ['p1', 'p2']);
+		service.noteFileChanged('', '/repo/claimed-later.md', ['p1', 'p2']);
+		await flush();
+		assert.strictEqual(ledger.get('', '/repo/two-agents.md'), undefined);
+		// 待っている間に hook が持ち主を付けたら、そのまま
+		hooks.fire(write('p2', 's2', '/repo/claimed-later.md'));
+		await timeout(4_000);
+		assert.deepStrictEqual(owners().slice(1), [
+			['', '/repo/claimed-later.md', 's2', 'write', undefined, 1],
+			['', '/repo/two-agents.md', undefined, undefined, undefined, 0],
+		]);
+		assert.strictEqual(ledger.get('', '/repo/two-agents.md')?.registeredBy, 'watch');
+
+		// 持ち主のいる資料は動かさない。見張りで付いた持ち主は、書いたと分かった会話に替わる
+		statuses.delete('p2');
+		now = 300_000;
+		statuses.set('p1', { status: 'working', changedAt: 299_000 });
+		service.noteFileChanged('', '/repo/claimed-later.md', ['p1']);
+		hooks.fire(write('p2', 's2', '/repo/by-bash.html'));
+		// 持ち主なしで載っている資料は、次に 1 つの会話だけが作業中のときに書かれたら、その会話の資料になる
+		service.noteFileChanged('', '/repo/two-agents.md', ['p1']);
+		await flush();
+		assert.deepStrictEqual(owners(), [
+			['', '/repo/claimed-later.md', 's2', 'write', undefined, 1],
+			['', '/repo/by-bash.html', 's2', 'write', undefined, 1],
+			['', '/repo/two-agents.md', 's1', 'watch', undefined, 0],
+		]);
+		// 同じ会話が Write で書き直したら、経路は書き込みになる
+		hooks.fire(write('p1', 's1', '/repo/two-agents.md'));
+		await flush();
+		assert.deepStrictEqual(ledger.get('', '/repo/two-agents.md')?.owner?.via, 'write');
+	}));
+
+	test('a file the watch found in an SSH window belongs to the session of that host', async () => {
+		hooks.fire(start('p1', 's1', '/srv', SSH));
+		hooks.fire(start('local', 'l1'));
+		service.noteFileChanged('ssh-remote-box', '/srv/out.html', ['p1', 'local']);
+		await settle();
+		assert.deepStrictEqual(owners(), [['ssh-remote-box', '/srv/out.html', 's1', 'watch', undefined, 0]]);
+	});
+
 	test('marks the owner ended on SessionEnd and on the exit of its terminal, and clears the mark when it comes back', async () => {
 		hooks.fire(start('p1', 's1'));
 		hooks.fire(start('p2', 's2'));
@@ -412,6 +483,7 @@ suite('paradisAgentDocsService', () => {
 		store.clear();
 		hooks = store.add(new Emitter<IParadisAgentHookEvent>());
 		transcripts = store.add(new Emitter<IParadisAgentTranscriptEntries>());
+		statuses = new Map();
 		create(saved);
 		const restored = ledger.get('', '/repo/a.md');
 		await settle();
