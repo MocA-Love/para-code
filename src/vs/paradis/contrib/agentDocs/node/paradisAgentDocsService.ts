@@ -255,7 +255,8 @@ export class ParadisAgentDocsService extends Disposable {
 				continue;
 			}
 			const paneStatus = status?.getPaneAgentStatus(token);
-			const inTurn = paneStatus !== undefined && (paneStatus.status !== 'review' || now - paneStatus.changedAt <= WATCH_RECENT_MS);
+			// 許可待ち・質問待ちで止まっているペインは数えない（その間の変更は、利用者が自分の端末で行ったものでありうる）
+			const inTurn = paneStatus !== undefined && (paneStatus.status === 'working' || now - paneStatus.changedAt <= WATCH_RECENT_MS);
 			if (inTurn || now - (this._lastActivity.get(token) ?? Number.NEGATIVE_INFINITY) <= WATCH_RECENT_MS) {
 				sessions.set(pane.session, pane);
 			}
@@ -304,7 +305,7 @@ export class ParadisAgentDocsService extends Disposable {
 	private _recordTranscriptWrites(hostId: string, agent: ParadisAgentKind, session: string, writes: readonly IParadisDocTranscriptWrite[], live: boolean): void {
 		// 同じ会話のペインが分かっていれば、その会話で最初に報告された作業ディレクトリを使う（hook の登録と同じ）
 		const known = [...this._paneSessions.values()].find(pane => pane.session === session);
-		const receivedAt = Date.now();
+		const receivedAt = this._now();
 		void this.ledger.ready.then(() => {
 			for (const write of writes) {
 				// 時刻の無い行は、書かれてすぐ読んだときだけ使う（過去の分は、いつの書き込みか分からない）

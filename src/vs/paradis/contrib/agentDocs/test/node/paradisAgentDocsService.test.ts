@@ -412,11 +412,13 @@ suite('paradisAgentDocsService', () => {
 		hooks.fire(start('p2', 's2'));
 		hooks.fire(start('p3', 's3', '/srv', SSH));
 		hooks.fire(start('idle', 's4'));
-		// 作業中は p1 だけ（p2 は 1 分前に終わった。idle は hook も状態も古い）
+		hooks.fire(start('waiting', 's5'));
+		// 作業中は p1 だけ（p2 は 1 分前に終わった。idle は hook も状態も古い。waiting は 1 分前から許可待ちで止まっている）
 		now = 200_000;
 		statuses.set('p1', { status: 'working', changedAt: 190_000 });
 		statuses.set('p2', { status: 'review', changedAt: 140_000 });
-		service.noteFileChanged('', '/repo/by-bash.html', ['p1', 'p2', 'idle', 'unknown-pane']);
+		statuses.set('waiting', { status: 'permission', changedAt: 140_000 });
+		service.noteFileChanged('', '/repo/by-bash.html', ['p1', 'p2', 'idle', 'waiting', 'unknown-pane']);
 		// 接続先のペインは、手元のファイルの持ち主の候補にしない
 		statuses.set('p3', { status: 'working', changedAt: 190_000 });
 		service.noteFileChanged('', '/repo/local-only.md', ['p3']);
