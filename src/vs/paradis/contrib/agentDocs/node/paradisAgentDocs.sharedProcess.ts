@@ -65,8 +65,8 @@ ParadisSharedProcessContributions.register('agentDocs', ({ server, accessor }) =
 	const ledger = store.add(new ParadisAgentDocsLedger(ledgerFileStorage(folder), error => logService.warn('[ParadisAgentDocs] could not read or write the document ledger', error)));
 	const service = store.add(new ParadisAgentDocsService(ledger, onParadisAgentHookEvent));
 	const comments = store.add(new ParadisDocCommentsStore(paradisDocCommentsFileStorage(join(folder, 'comments')), error => logService.warn('[ParadisDocComments] could not read or write the comments of a document', error)));
-	// 書きかけは Claude Code の入力欄の mod からだけ分かる（無ければ「分からない」）
-	const delivery = store.add(new ParadisDocCommentDelivery(service, comments, paradisPaneAgentStatusSource, (token, session) => paradisClaudeModBridge.draftOf(token, session)?.text, onParadisAgentHookEvent, onParadisAgentTurnEnded));
+	// 書きかけは Claude Code の入力欄の mod からだけ分かる（無ければ「分からない」）。hook は台帳が確かめた後のもの（SSH の窓の hook も使える）
+	const delivery = store.add(new ParadisDocCommentDelivery(service, comments, paradisPaneAgentStatusSource, (token, session) => paradisClaudeModBridge.draftOf(token, session)?.text, service.onHook, onParadisAgentTurnEnded));
 	store.add(paradisRegisterPreviewFileObserver(opened => service.onPreviewFileOpened(opened)));
 	store.add(paradisRegisterMcpToolProvider(new ParadisAgentDocsToolProvider(service, comments)));
 	// 「資料」ビュー（ウィンドウ）が台帳を読む・頼む口
@@ -75,6 +75,6 @@ ParadisSharedProcessContributions.register('agentDocs', ({ server, accessor }) =
 	server.registerChannel(PARADIS_DOC_COMMENTS_CHANNEL, new ParadisDocCommentsChannel(comments, id => delivery.deliverNow(id)));
 	server.registerChannel(PARADIS_DOC_DELIVERY_CHANNEL, new ParadisDocDeliveryChannel(delivery));
 	// プレビューの「編集中」の印（Claude Code の PreToolUse から）
-	server.registerChannel(PARADIS_DOC_EDITING_CHANNEL, new ParadisDocEditingChannel(store.add(new ParadisDocEditingTracker(onParadisAgentHookEvent, onParadisAgentTurnEnded, onParadisAgentAwaitingUser))));
+	server.registerChannel(PARADIS_DOC_EDITING_CHANNEL, new ParadisDocEditingChannel(store.add(new ParadisDocEditingTracker(service.onHook, onParadisAgentTurnEnded, onParadisAgentAwaitingUser))));
 	return store;
 });
