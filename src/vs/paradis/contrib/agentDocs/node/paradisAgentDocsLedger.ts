@@ -107,7 +107,29 @@ export class ParadisAgentDocsLedger extends Disposable {
 			return;
 		}
 		const { missingSince: _missingSince, ...present } = record;
-		this._set(paradisWithDocWrite(paradisWithDocOwner(present, this._owner(owner, 'write')), { ...write, session: owner.session }));
+		// 見張りで付いた持ち主が、書いたと分かった会話と同じなら、経路を書き込みに直す
+		const base = present.owner !== undefined && present.owner.session === owner.session && present.owner.via === 'watch' ? { ...present, owner: { ...present.owner, via: 'write' as const } } : present;
+		this._set(paradisWithDocWrite(paradisWithDocOwner(base, this._owner(owner, 'write')), { ...write, session: owner.session }));
+	}
+
+	/**
+	 * ファイルの変化の見張りで見つけた資料を載せる。既に持ち主がいる資料には触らない（hook・会話の記録・引き取りの方が確か）。
+	 * `owner` があれば（書かれたとき作業中の会話が 1 つだけだった）その会話を持ち主にし、無ければ持ち主なしで載せる
+	 * （「資料」ビューで「このセッションの資料にする」を選べる）。
+	 * @returns owned = 持ち主にした、listed = 持ち主なしで載せた、undefined = 何もしなかった
+	 */
+	recordWatched(hostId: string, path: string, owner: ParadisDocOwnerCandidate | undefined): 'owned' | 'listed' | undefined {
+		const existing = this.get(hostId, path);
+		if (existing?.owner !== undefined || (existing !== undefined && owner === undefined)) {
+			return undefined;
+		}
+		const record = existing ?? this._getOrCreate(hostId, path, 'watch');
+		if (record === undefined) {
+			return undefined;
+		}
+		const { missingSince: _missingSince, ...present } = record;
+		this._set(owner !== undefined ? paradisWithDocOwner(present, this._owner(owner, 'watch')) : present);
+		return owner !== undefined ? 'owned' : 'listed';
 	}
 
 	/**

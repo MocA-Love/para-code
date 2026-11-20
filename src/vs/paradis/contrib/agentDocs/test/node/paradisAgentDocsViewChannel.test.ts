@@ -94,6 +94,19 @@ suite('ParadisAgentDocsViewChannel', () => {
 		});
 	});
 
+	test('a changed file the window reports goes to the only working session; paths outside the watch and bad arguments are dropped', async () => {
+		const { hooks, channel, ledger } = setup();
+		hooks.fire(hook('pane-1', 'UserPromptSubmit', 's1'));
+		await call(channel, ParadisAgentDocsViewCall.NoteChanged, '', '/repo/by-command.html', ['pane-1', 42, 'pane-unknown']);
+		await call(channel, ParadisAgentDocsViewCall.NoteChanged, '', '/repo/node_modules/pkg/README.md', ['pane-1']);
+		await call(channel, ParadisAgentDocsViewCall.NoteChanged, '', '/repo/script.ts', ['pane-1']);
+		await call(channel, ParadisAgentDocsViewCall.NoteChanged, 'bad host!', '/repo/x.md', ['pane-1']);
+		await call(channel, ParadisAgentDocsViewCall.NoteChanged, '', '/repo/no-tokens.md', 'pane-1');
+		await ledger.ready;
+		await Promise.resolve();
+		assert.deepStrictEqual(ledger.all().map(record => [record.path, record.owner?.session, record.owner?.via, record.registeredBy]), [['/repo/by-command.html', 's1', 'watch', 'watch']]);
+	});
+
 	test('the missing mark is set once, cleared when the file is back or written again, and removing drops the row', async () => {
 		let now = 100;
 		const { hooks, channel, ledger } = setup(() => now);

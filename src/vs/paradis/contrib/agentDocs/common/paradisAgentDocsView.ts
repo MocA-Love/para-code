@@ -29,6 +29,11 @@ export const ParadisAgentDocsViewCall = {
 	SetMissing: 'setMissing',
 	/** 持ち主のいない資料をペインの会話の資料にする。引数は `[hostId, path, token]`、答えは {@link ParadisDocAssignResult}。 */
 	Assign: 'assign',
+	/**
+	 * ウィンドウが見張っているフォルダで資料（html・md）が作られた・変わった。引数は `[hostId, path, tokens]`
+	 * （tokens はその資料のスペースのペイン）。作業中の会話が 1 つだけならその会話の資料にする。
+	 */
+	NoteChanged: 'noteChanged',
 } as const;
 
 /** チャネルの知らせ。 */

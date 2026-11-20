@@ -172,3 +172,5 @@ import './contrib/agentDocs/electron-browser/paradisDocEditing.contribution.js';
 import './contrib/agentDocs/electron-browser/paradisDocCommentDelivery.contribution.js';
 // 左サイドバーの「資料」ビュー（エージェントが作った資料の一覧）と、利用者がプレビューで開いた資料の登録
 import './contrib/agentDocs/electron-browser/paradisAgentDocsView.contribution.js';
+// コマンドで書かれた資料（html・md）を、開いているフォルダのファイルの変化から拾って資料の台帳へ知らせる
+import './contrib/agentDocs/electron-browser/paradisAgentDocsWatch.contribution.js';

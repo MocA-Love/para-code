@@ -20,12 +20,16 @@ import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescri
 export type ParadisDocKind = 'html' | 'md';
 
 /**
- * 持ち主になった経路。write = Write・Edit の hook、preview = preview_file で開いた、adopt = adopt_doc で引き取った、
- * user = 利用者が「資料」ビューで「このセッションの資料にする」を選んだ。
+ * 持ち主になった経路。write = Write・Edit の hook か会話の記録、preview = preview_file で開いた、adopt = adopt_doc で引き取った、
+ * user = 利用者が「資料」ビューで「このセッションの資料にする」を選んだ、watch = ファイルが書かれたとき、そのスペースで
+ * 作業中だった会話が 1 つだけだった（コマンドなどで書いた資料。hook にも会話の記録にも書き込みとして残らない）。
  */
-export type ParadisDocOwnerVia = 'write' | 'preview' | 'adopt' | 'user';
+export type ParadisDocOwnerVia = 'write' | 'preview' | 'adopt' | 'user' | 'watch';
 
-/** 台帳に載った経路。持ち主の経路のほか、user_opened = 利用者が Para Code のプレビューで開いた（持ち主はいない）。 */
+/**
+ * 台帳に載った経路。持ち主の経路のほか、user_opened = 利用者が Para Code のプレビューで開いた（持ち主はいない）。
+ * watch で載って持ち主がいないのは、書かれたときに作業中の会話が 2 つ以上あった資料。
+ */
 export type ParadisDocRegisteredBy = ParadisDocOwnerVia | 'user_opened';
 
 /** 資料の持ち主（エージェントの会話 1 つ）。 */
@@ -254,6 +258,50 @@ export function paradisIsVcsInternalPath(path: string): boolean {
 	return path.split(/[\\/]/).some(segment => segment === '.git' || segment === '.hg' || segment === '.svn');
 }
 
+/** ファイルの変化の見張りで拾わないフォルダ（依存・仮想環境・キャッシュ。中の html・md は資料ではない）。 */
+const UNWATCHED_FOLDERS: ReadonlySet<string> = new Set(['node_modules', 'bower_components', 'site-packages', '.venv', 'venv', '__pycache__', '.cache', '.next', '.nuxt', '.turbo', '.pnpm-store', '.yarn']);
+
+/** ファイルの変化の見張りで拾う資料のパスか（html・md で、バージョン管理の中・依存のフォルダの中でない）。 */
+export function paradisIsWatchableDocPath(path: string): boolean {
+	return paradisDocKind(path) !== undefined && !path.split(/[\\/]/).some(segment => segment === '.git' || segment === '.hg' || segment === '.svn' || UNWATCHED_FOLDERS.has(segment));
+}
+
+/**
+ * 1 回の知らせ・短い間に、これより多くの資料が変わったら拾わない（ブランチの切り替え・取り込み・ビルドの出力。
+ * エージェントが 1 つずつ書いた資料ではなく、台帳を埋めて本物の資料を押し出す）。
+ */
+export const PARADIS_DOC_WATCH_BURST = 20;
+/** まとめての変化を数える間（ms）。 */
+export const PARADIS_DOC_WATCH_BURST_WINDOW_MS = 10_000;
+
+/**
+ * まとめての変化を見分ける門。1 回の知らせか、{@link PARADIS_DOC_WATCH_BURST_WINDOW_MS} のうちに
+ * {@link PARADIS_DOC_WATCH_BURST} を超える資料が変わったら、変化が収まるまで通さない。
+ */
+export class ParadisDocWatchBurstGate {
+
+	private _admitted: number[] = [];
+	private _closedUntil = 0;
+
+	/** `count` 件の資料の変化を通すか。 */
+	admit(count: number, now: number): boolean {
+		this._admitted = this._admitted.filter(at => now - at < PARADIS_DOC_WATCH_BURST_WINDOW_MS);
+		if (count > PARADIS_DOC_WATCH_BURST || this._admitted.length + count > PARADIS_DOC_WATCH_BURST) {
+			this._closedUntil = now + PARADIS_DOC_WATCH_BURST_WINDOW_MS;
+			return false;
+		}
+		if (now < this._closedUntil) {
+			// 収まるまでは、続きの変化で締め切りを延ばす
+			this._closedUntil = now + PARADIS_DOC_WATCH_BURST_WINDOW_MS;
+			return false;
+		}
+		for (let index = 0; index < count; index++) {
+			this._admitted.push(now);
+		}
+		return true;
+	}
+}
+
 /** 台帳のキー。 */
 export function paradisDocKey(hostId: string, path: string): string {
 	return hostId === '' ? `local:${path}` : `ssh:${hostId}:${path}`;
@@ -358,8 +406,8 @@ export function paradisDocLastActivity(record: IParadisDocRecord): number {
 // --- 台帳のファイル --------------------------------------------------------------------------
 
 const AGENT_KINDS: ReadonlySet<string> = new Set<ParadisAgentKind>(['claude', 'codex', 'opencode', 'antigravity']);
-const VIAS: ReadonlySet<string> = new Set<ParadisDocOwnerVia>(['write', 'preview', 'adopt', 'user']);
-const REGISTERED_BY: ReadonlySet<string> = new Set<ParadisDocRegisteredBy>(['write', 'preview', 'adopt', 'user', 'user_opened']);
+const VIAS: ReadonlySet<string> = new Set<ParadisDocOwnerVia>(['write', 'preview', 'adopt', 'user', 'watch']);
+const REGISTERED_BY: ReadonlySet<string> = new Set<ParadisDocRegisteredBy>(['write', 'preview', 'adopt', 'user', 'watch', 'user_opened']);
 const SESSION_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/;
 const HOST_ID_PATTERN = /^[A-Za-z0-9._-]{0,64}$/;
 
