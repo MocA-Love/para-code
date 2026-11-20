@@ -367,6 +367,21 @@ suite('paradisAgentDocsService', () => {
 		assert.strictEqual(ledger.get('', '/repo/removed.md')?.owner?.session, 's1');
 	});
 
+	test('a line read as an append but dated long ago is treated as the past: it does not take a document from another session', async () => {
+		now = Date.now();
+		hooks.fire(start('p1', 's1'));
+		hooks.fire(write('p1', 's1', '/repo/owned.md', 'Write', { at: now - 10_000 }));
+		await settle();
+		// 別の会話の記録に、1 時間前の日付の書き込みが追記として届く（別の会話から写された行）
+		transcripts.fire(transcript('p2', 's2', transcriptWrite('toolu_copied', '/repo/owned.md', now - 3_600_000)));
+		await settle();
+		assert.deepStrictEqual(owners(), [['', '/repo/owned.md', 's1', 'write', undefined, 1]]);
+		// 今の日付の追記は、書いた会話が持ち主になる
+		transcripts.fire(transcript('p2', 's2', transcriptWrite('toolu_now', '/repo/owned.md', Date.now())));
+		await settle();
+		assert.deepStrictEqual(owners(), [['', '/repo/owned.md', 's2', 'write', undefined, 2]]);
+	});
+
 	test('transcript lines of an SSH pane are keyed by its host, and wait until the host is known', async () => {
 		const mirror = { transcriptPath: '/user-data/paradisRemoteTranscripts/home/u/.claude/projects/x/s1.jsonl', remote: true };
 		// shared process が起き直した直後: 接続先の印は次の hook まで分からない。手元のファイルとしては載せない

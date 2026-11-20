@@ -36,8 +36,8 @@ export interface IParadisAgentTranscriptEntries {
 	 */
 	readonly epoch: string;
 	/**
-	 * 書かれてすぐ読んだ追記か。false は過去の分（初回の読み込み・読み直し・SSH の写しが追いつくために写した分）で、
-	 * いつ書かれた行かは行の時刻でしか分からない。
+	 * 書かれてすぐ読んだ追記か。false は過去の分（初回の読み込み・読み直し・tailer より後にできたファイルの最初の読み・
+	 * SSH の写しが追いつくために写した分）で、いつ書かれた行かは行の時刻でしか分からない。
 	 */
 	readonly live: boolean;
 	readonly entries: readonly Readonly<Record<string, unknown>>[];
