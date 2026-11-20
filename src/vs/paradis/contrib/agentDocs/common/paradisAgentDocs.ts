@@ -155,6 +155,26 @@ export function paradisNormalizeDocPath(path: unknown): string | undefined {
 	return undefined;
 }
 
+/**
+ * hook の会話の ID と会話の記録（transcript）のパスが、同じ会話を指しているか。発信元のプロセスを辿れない hook
+ * （SSH の窓の hook）を、この組で確かめる。Claude Code の記録は `<会話の ID>.jsonl`、Codex の rollout は
+ * `rollout-<日時>-<会話の ID>.jsonl`（Claude Code 2.1.327・Codex 0.169.1 の hook で確かめた形）。
+ * ファイル名の形を確かめていない種類（Antigravity CLI・OpenCode）は、記録のパスがあることだけを求める。
+ */
+export function paradisDocHookNamesTranscript(agent: string, sessionId: string, transcriptPath: string | undefined): boolean {
+	if (transcriptPath === undefined || transcriptPath.length === 0 || sessionId.length === 0) {
+		return false;
+	}
+	const name = transcriptPath.slice(Math.max(transcriptPath.lastIndexOf('/'), transcriptPath.lastIndexOf('\\')) + 1);
+	if (agent === 'claude') {
+		return name === `${sessionId}.jsonl`;
+	}
+	if (agent === 'codex') {
+		return name.endsWith(`-${sessionId}.jsonl`);
+	}
+	return true;
+}
+
 /** Codex の apply_patch の入力から、パッチ本文（`*** Begin Patch` で始まるもの）を取り出す。 */
 function applyPatchText(input: unknown): string | undefined {
 	const isPatch = (value: unknown): value is string => typeof value === 'string' && value.trimStart().startsWith('*** Begin Patch');

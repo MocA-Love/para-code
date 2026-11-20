@@ -12,7 +12,9 @@
 //    書いた会話を持ち主にする
 //  - 会話の終わり: SessionEnd と、ペインの終了（TerminalExit。会話の ID は載らないので控えから引く）
 //  - preview_file で開いた html・md: 持ち主がいなければ開いたペインの会話の資料にする
-// 持ち主の取り違えを避けるため、ペインの持ち主と確かめられなかった hook（ownerUnverified）は使わない。
+// 持ち主の取り違えを避けるため、発信元のプロセスでペインの持ち主と確かめられなかった hook（ownerUnverified）は、
+// SSH の窓の hook（接続先の pid は手元で辿れないので、必ずこの印が付く）を「会話の ID と会話の記録のパスの組」で
+// 確かめられたときだけ使う（accepts）。手元のペインの確かめられなかった hook は使わない。
 // 入れ子の子エージェントの hook は別の知らせ（onParadisAgentNestedHookEvent）に流れるので、ここには来ない。
 
 import { Emitter, Event } from '../../../../base/common/event.js';
@@ -22,7 +24,7 @@ import { paradisAgentHookRemoteHostId } from '../../agentBrowser/common/paradisA
 import { paradisHookAgentKindForTranscript } from '../../agentBrowser/node/paradisAgentHookOwnership.js';
 import type { IParadisPreviewFileOpened } from '../../agentBrowser/node/paradisPreviewFileObservers.js';
 import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
-import { IParadisDocOwner, ParadisDocOwnerLiveness, paradisDocKind, paradisDocPatchWrites, paradisNormalizeDocPath } from '../common/paradisAgentDocs.js';
+import { IParadisDocOwner, ParadisDocOwnerLiveness, paradisDocHookNamesTranscript, paradisDocKind, paradisDocPatchWrites, paradisNormalizeDocPath } from '../common/paradisAgentDocs.js';
 import { ParadisAgentDocsLedger } from './paradisAgentDocsLedger.js';
 
 /** ペインで動いている会話。 */
@@ -33,6 +35,8 @@ export interface IParadisDocPaneSession {
 	readonly cwd?: string;
 	/** hook が名乗った接続先の印（手元は空文字）。 */
 	readonly hostId: string;
+	/** その会話の記録（transcript）のパス（hook が書いた綴り。接続先のペインでは接続先のパス）。 */
+	readonly transcriptPath?: string;
 }
 
 /** 台帳に載せる書き込みのツール（Claude Code）。パスの欄の名前。 */
@@ -49,12 +53,73 @@ export class ParadisAgentDocsService extends Disposable {
 	/** ペインで動いている会話が変わった（持ち主の「動作中」の表示が変わる）。 */
 	readonly onDidChangeSessions: Event<void> = this._onDidChangeSessions.event;
 
+	private readonly _onHook = this._register(new Emitter<IParadisAgentHookEvent>());
+	/**
+	 * 台帳が受けた後の hook。{@link accepts} で確かめた SSH の窓の hook からは ownerUnverified を外してあるので、
+	 * 資料のコメントの届け方と「編集中」の印は、台帳と同じ hook を信じる。
+	 */
+	readonly onHook: Event<IParadisAgentHookEvent> = this._onHook.event;
+
 	constructor(
 		readonly ledger: ParadisAgentDocsLedger,
 		hookEvents: Event<IParadisAgentHookEvent>,
 	) {
 		super();
-		this._register(hookEvents(event => this.handleHook(event)));
+		this._register(hookEvents(event => {
+			const accepted = this.accepts(event);
+			if (accepted) {
+				this._handleAccepted(event);
+			}
+			if (accepted && event.ownerUnverified) {
+				const { ownerUnverified: _ownerUnverified, ...verified } = event;
+				this._onHook.fire(verified);
+			} else {
+				this._onHook.fire(event);
+			}
+		}));
+	}
+
+	/**
+	 * その hook を、ペインの会話のものとして使ってよいか。発信元のプロセスで確かめられた hook はそのまま使う。
+	 * 確かめられなかった hook（ownerUnverified）は、接続先の hook（`remoteHostId` 付き）で、次をすべて満たすときだけ:
+	 *  - 会話の ID と会話の記録のパスが同じ会話を指す（{@link paradisDocHookNamesTranscript}）
+	 *  - そのペインにまだ会話が結ばれていないか、結ばれている会話と ID・記録・接続先が同じ。別の会話へ結び替えるのは、
+	 *    SessionEnd を送らない種類（Codex など）の、サブエージェントのものでない SessionStart だけ。Claude Code は
+	 *    SessionEnd で結びが外れてから次の会話を結ぶので、`/fork` で分かれた会話（別の ID・別の記録）の hook が
+	 *    同じペインのトークンで届いても結び替えない
+	 *  - その会話が別のペインで生きていない（コメントの届け先を、名乗っただけのペインへ増やさない）
+	 */
+	accepts(event: IParadisAgentHookEvent): boolean {
+		if (!event.ownerUnverified || event.event === 'TerminalExit') {
+			return true;
+		}
+		const session = event.sessionId;
+		const hostId = event.remoteHostId;
+		if (hostId === undefined || session === undefined || !SESSION_PATTERN.test(session) || event.transcriptPath === undefined) {
+			return false;
+		}
+		const agent = event.agentKind ?? paradisHookAgentKindForTranscript(event.transcriptPath);
+		if (!paradisDocHookNamesTranscript(agent, session, event.transcriptPath)) {
+			return false;
+		}
+		const previous = this._paneSessions.get(event.token);
+		if (previous !== undefined) {
+			if (previous.hostId !== hostId) {
+				return false;
+			}
+			if (previous.session === session) {
+				return previous.agent === agent && (previous.transcriptPath === undefined || previous.transcriptPath === event.transcriptPath);
+			}
+			if (agent === 'claude' || previous.agent !== agent || event.event !== 'SessionStart' || event.payload?.agent_id !== undefined) {
+				return false;
+			}
+		}
+		for (const [token, pane] of this._paneSessions) {
+			if (token !== event.token && pane.session === session) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	/** そのペインで動いている会話。hook がまだ届いていなければ undefined。 */
@@ -77,10 +142,7 @@ export class ParadisAgentDocsService extends Disposable {
 		return owner.ended !== undefined ? 'ended' : 'unknown';
 	}
 
-	handleHook(event: IParadisAgentHookEvent): void {
-		if (event.ownerUnverified) {
-			return;
-		}
+	private _handleAccepted(event: IParadisAgentHookEvent): void {
 		const token = event.token;
 		if (event.event === 'TerminalExit' || event.event === 'SessionEnd') {
 			const pane = this._paneSessions.get(token);
@@ -171,7 +233,7 @@ export class ParadisAgentDocsService extends Disposable {
 		}
 		// 同じ会話の間は最初に報告された作業ディレクトリを使う（後の hook の cwd はツールが cd した先になりうる）
 		const cwd = event.cwd !== undefined ? paradisNormalizeDocPath(event.cwd) : undefined;
-		const next: IParadisDocPaneSession = { agent, session, ...(cwd !== undefined ? { cwd } : {}), hostId: event.remoteHostId ?? '' };
+		const next: IParadisDocPaneSession = { agent, session, ...(cwd !== undefined ? { cwd } : {}), hostId: event.remoteHostId ?? '', ...(event.transcriptPath !== undefined ? { transcriptPath: event.transcriptPath } : {}) };
 		this._paneSessions.set(event.token, next);
 		this._onDidChangeSessions.fire();
 		return next;

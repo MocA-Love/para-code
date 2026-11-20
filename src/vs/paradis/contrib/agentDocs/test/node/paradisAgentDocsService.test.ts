@@ -186,6 +186,103 @@ suite('paradisAgentDocsService', () => {
 		assert.deepStrictEqual(ledger.get('', '/repo/report.html')?.previousOwners.map(entry => entry.session), ['s1']);
 	});
 
+	// SSH の窓の hook の形: 接続先の notify スクリプトが `host=` を名乗り、受け口は接続先の pid を手元で辿れないので、
+	// 持ち主を記録（transcript）だけで決めた印（ownerUnverified）を必ず付ける。remoteHostId だけの hook は実際には届かない。
+	const SSH = { remoteHostId: 'ssh-remote-box', ownerUnverified: true as const };
+
+	test('hooks from an SSH window (no pid, so never verified by process) register the session and its documents', async () => {
+		hooks.fire(start('p1', 's1', '/srv', SSH));
+		hooks.fire(write('p1', 's1', '/srv/report.html', 'Write', SSH));
+		// shared process が起き直した後は SessionStart が来ない。最初の hook が書き込みでも結ぶ
+		hooks.fire(write('p2', 's2', '/srv/notes.md', 'Edit', SSH));
+		await settle();
+		assert.deepStrictEqual({ owners: owners(), p1: service.sessionOf('p1'), p2: service.sessionOf('p2')?.session, live: service.tokensOf('s1') }, {
+			owners: [
+				['ssh-remote-box', '/srv/report.html', 's1', 'write', undefined, 1],
+				['ssh-remote-box', '/srv/notes.md', 's2', 'write', undefined, 1],
+			],
+			p1: { agent: 'claude', session: 's1', cwd: '/srv', hostId: 'ssh-remote-box', transcriptPath: '/home/u/.claude/projects/x/s1.jsonl' },
+			p2: 's2',
+			live: ['p1'],
+		});
+		// 会話の終わりも受ける
+		hooks.fire(hook('p1', 'SessionEnd', { sessionId: 's1', transcriptPath: '/home/u/.claude/projects/x/s1.jsonl', ...SSH }));
+		await settle();
+		assert.deepStrictEqual([service.sessionOf('p1'), ledger.get('ssh-remote-box', '/srv/report.html')?.owner?.ended], [undefined, 100]);
+	});
+
+	test('an unverified hook is refused unless its session id and transcript are the conversation of that SSH pane', async () => {
+		hooks.fire(start('p1', 's1', '/srv', SSH));
+		hooks.fire(start('local', 'l1'));
+		// 手元のペインの確かめられなかった hook（プロセス表が取れない など）
+		hooks.fire(write('p9', 's9', '/repo/local.md', 'Write', { ownerUnverified: true }));
+		// 記録のパスが無い・会話の ID と記録のファイル名が合わない
+		hooks.fire(write('p3', 's3', '/srv/no-transcript.md', 'Write', { ...SSH, transcriptPath: undefined }));
+		hooks.fire(write('p3', 's3', '/srv/mismatch.md', 'Write', { ...SSH, transcriptPath: '/home/u/.claude/projects/x/other.jsonl' }));
+		// /fork で分かれた会話（別の ID・別の記録）が同じペインのトークンで届く。書き込みでも SessionStart でも結び替えない
+		hooks.fire(write('p1', 'fork', '/srv/fork.md', 'Write', SSH));
+		hooks.fire(start('p1', 'fork', '/srv', SSH));
+		hooks.fire(write('p1', 'fork', '/srv/fork-after-start.md', 'Write', SSH));
+		// 同じ会話の ID で別の記録
+		hooks.fire(write('p1', 's1', '/srv/other-transcript.md', 'Write', { ...SSH, transcriptPath: '/home/u/.claude/projects/y/s1.jsonl' }));
+		// 別のペインが、生きている会話を名乗る（コメントの届け先を増やさない）
+		hooks.fire(write('p2', 's1', '/srv/claimed.md', 'Write', SSH));
+		// 手元で結ばれたペインに、接続先を名乗る hook
+		hooks.fire(write('local', 'l1', '/srv/pretend-remote.md', 'Write', SSH));
+		await settle();
+		assert.deepStrictEqual({ owners: owners(), p1: service.sessionOf('p1')?.session, p2: service.sessionOf('p2'), p3: service.sessionOf('p3'), p9: service.sessionOf('p9'), s1: service.tokensOf('s1'), local: service.sessionOf('local')?.hostId }, {
+			owners: [], p1: 's1', p2: undefined, p3: undefined, p9: undefined, s1: ['p1'], local: '',
+		});
+		// 会話が終わった後の SessionStart（/clear・/resume・起動し直し）は次の会話として結ぶ
+		hooks.fire(hook('p1', 'SessionEnd', { sessionId: 's1', transcriptPath: '/home/u/.claude/projects/x/s1.jsonl', ...SSH }));
+		hooks.fire(start('p1', 'next', '/srv', SSH));
+		hooks.fire(write('p1', 'next', '/srv/next.md', 'Write', SSH));
+		await settle();
+		assert.deepStrictEqual(owners(), [['ssh-remote-box', '/srv/next.md', 'next', 'write', undefined, 1]]);
+	});
+
+	test('passes the hooks on after its own check: an accepted SSH hook loses the unverified mark, a refused one keeps it', () => {
+		const seen: unknown[] = [];
+		store.add(service.onHook(event => seen.push([event.token, event.event, event.sessionId, event.ownerUnverified])));
+		hooks.fire(start('p1', 's1', '/srv', SSH));
+		hooks.fire(hook('p1', 'UserPromptSubmit', { sessionId: 's1', transcriptPath: '/home/u/.claude/projects/x/s1.jsonl', ...SSH }));
+		hooks.fire(hook('p1', 'UserPromptSubmit', { sessionId: 'fork', transcriptPath: '/home/u/.claude/projects/x/fork.jsonl', ...SSH }));
+		hooks.fire(hook('p9', 'Stop', { sessionId: 's9', transcriptPath: '/home/u/.claude/projects/x/s9.jsonl', ownerUnverified: true }));
+		hooks.fire(start('p2', 's2'));
+		assert.deepStrictEqual(seen, [
+			['p1', 'SessionStart', 's1', undefined],
+			['p1', 'UserPromptSubmit', 's1', undefined],
+			['p1', 'UserPromptSubmit', 'fork', true],
+			['p9', 'Stop', 's9', true],
+			['p2', 'SessionStart', 's2', undefined],
+		]);
+	});
+
+	test('a Codex pane in an SSH window follows the conversation on SessionStart (Codex sends no SessionEnd), not on other hooks', async () => {
+		const rollout = (session: string) => `/home/u/.codex/sessions/2026/01/01/rollout-2026-01-01T00-00-00-${session}.jsonl`;
+		const patch = (session: string, file: string) => hook('p1', 'PostToolUse', {
+			sessionId: session, transcriptPath: rollout(session), cwd: '/srv', toolName: 'apply_patch', toolUseId: `call-${file}`, ...SSH,
+			payload: { tool_input: { command: `*** Begin Patch\n*** Add File: ${file}\n+x\n*** End Patch` }, tool_response: `Exit code: 0\nOutput:\nSuccess. Updated the following files:\nA ${file}\n` },
+		});
+		hooks.fire(start('p1', 'c1', '/srv', { ...SSH, transcriptPath: rollout('c1') }));
+		hooks.fire(patch('c1', 'one.md'));
+		hooks.fire(patch('c2', 'stray.md'));
+		hooks.fire(start('p1', 'c2', '/srv', { ...SSH, transcriptPath: rollout('c2') }));
+		hooks.fire(patch('c2', 'two.md'));
+		// サブエージェントの SessionStart（agent_id 付き）では結び替えない
+		hooks.fire(start('p1', 'c3', '/srv', { ...SSH, transcriptPath: rollout('c3'), payload: { agent_id: 'a1' } }));
+		// 記録のファイル名が会話の ID で終わらない
+		hooks.fire(start('p2', 'c9', '/srv', { ...SSH, transcriptPath: rollout('other') }));
+		await settle();
+		assert.deepStrictEqual({ owners: owners(), p1: service.sessionOf('p1')?.session, p2: service.sessionOf('p2') }, {
+			owners: [
+				['ssh-remote-box', '/srv/one.md', 'c1', 'write', undefined, 1],
+				['ssh-remote-box', '/srv/two.md', 'c2', 'write', undefined, 1],
+			],
+			p1: 'c2', p2: undefined,
+		});
+	});
+
 	test('marks the owner ended on SessionEnd and on the exit of its terminal, and clears the mark when it comes back', async () => {
 		hooks.fire(start('p1', 's1'));
 		hooks.fire(start('p2', 's2'));
