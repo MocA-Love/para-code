@@ -302,6 +302,46 @@ export class ParadisDocWatchBurstGate {
 	}
 }
 
+/** 表示していないスペースに張る見張りの数の上限（最近まで作業中だったスペースを残す）。 */
+export const PARADIS_DOC_BACKGROUND_WATCH_MAX = 8;
+/**
+ * 作業中のエージェントが居なくなってから、見張りを外すまでの時間（ms）。書いた直後に終わったターンの資料を拾い、
+ * ターンの合間ごとに張り直さないため。
+ */
+export const PARADIS_DOC_BACKGROUND_WATCH_LINGER_MS = 60_000;
+/** 表示していないスペースの見張りが拾うファイル（フォルダからの相対の glob）。 */
+export const PARADIS_DOC_BACKGROUND_WATCH_INCLUDES: readonly string[] = ['**/*.html', '**/*.htm', '**/*.md'];
+/** 表示していないスペースの見張りが降りないフォルダ（{@link paradisIsWatchableDocPath} が拾わないもの）。 */
+export const PARADIS_DOC_BACKGROUND_WATCH_EXCLUDES: readonly string[] = ['.git', '.hg', '.svn', ...UNWATCHED_FOLDERS].map(folder => `**/${folder}/**`);
+
+/**
+ * 表示していないスペースのうち、どのフォルダを見張るかを決める。作業中のエージェントがいるフォルダと、居なくなって
+ * {@link PARADIS_DOC_BACKGROUND_WATCH_LINGER_MS} 以内のフォルダを、新しく作業中だった順に
+ * {@link PARADIS_DOC_BACKGROUND_WATCH_MAX} 個まで。
+ */
+export class ParadisDocBackgroundWatchPlan {
+
+	/** フォルダ → 最後に作業中のエージェントを見た時刻。 */
+	private readonly _lastWorking = new Map<string, number>();
+
+	/**
+	 * @param working いま作業中のエージェントがいて、ウィンドウがまだ見張っていないフォルダ
+	 * @param covered 覚えているフォルダのうち、ウィンドウが見張るようになった（表示中のスペースになった）もの
+	 * @returns 見張るフォルダ
+	 */
+	update(working: readonly string[], now: number, covered: (folder: string) => boolean = () => false): string[] {
+		for (const folder of working) {
+			this._lastWorking.set(folder, now);
+		}
+		for (const [folder, at] of [...this._lastWorking]) {
+			if (now - at > PARADIS_DOC_BACKGROUND_WATCH_LINGER_MS || covered(folder)) {
+				this._lastWorking.delete(folder);
+			}
+		}
+		return [...this._lastWorking.entries()].sort((a, b) => b[1] - a[1]).slice(0, PARADIS_DOC_BACKGROUND_WATCH_MAX).map(([folder]) => folder);
+	}
+}
+
 /** 台帳のキー。 */
 export function paradisDocKey(hostId: string, path: string): string {
 	return hostId === '' ? `local:${path}` : `ssh:${hostId}:${path}`;

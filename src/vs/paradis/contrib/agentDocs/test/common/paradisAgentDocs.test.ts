@@ -9,6 +9,9 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
+	PARADIS_DOC_BACKGROUND_WATCH_EXCLUDES,
+	PARADIS_DOC_BACKGROUND_WATCH_LINGER_MS,
+	ParadisDocBackgroundWatchPlan,
 	PARADIS_DOC_WATCH_BURST,
 	PARADIS_DOC_WATCH_BURST_WINDOW_MS,
 	ParadisDocWatchBurstGate,
@@ -157,6 +160,18 @@ suite('paradisAgentDocs', () => {
 			// 1 回の知らせが上限を超えた
 			gate.admit(PARADIS_DOC_WATCH_BURST + 1, 100_000), gate.admit(1, 100_001), gate.admit(1, 100_001 + PARADIS_DOC_WATCH_BURST_WINDOW_MS),
 		], [true, true, false, false, false, true, false, false, true]);
+	});
+
+	test('the watch of spaces that are not displayed follows the working agents, lingers after they stop, and skips dependency folders', () => {
+		const plan = new ParadisDocBackgroundWatchPlan();
+		assert.deepStrictEqual([
+			plan.update(['/a', '/b'], 1_000),
+			plan.update(['/b'], 2_000),
+			plan.update([], 1_000 + PARADIS_DOC_BACKGROUND_WATCH_LINGER_MS + 1),
+			plan.update(['/c'], 3_000 + PARADIS_DOC_BACKGROUND_WATCH_LINGER_MS, folder => folder === '/b'),
+			plan.update([], 4_000 + 2 * PARADIS_DOC_BACKGROUND_WATCH_LINGER_MS),
+		], [['/a', '/b'], ['/b', '/a'], ['/b'], ['/c'], []]);
+		assert.deepStrictEqual(PARADIS_DOC_BACKGROUND_WATCH_EXCLUDES.filter(glob => glob === '**/node_modules/**' || glob === '**/.git/**'), ['**/.git/**', '**/node_modules/**']);
 	});
 
 	test('checks the tool arguments strictly', () => {
