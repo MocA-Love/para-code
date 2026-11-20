@@ -2888,7 +2888,8 @@ class TranscriptTailer {
 		}
 		this.lineBase = lineOffset + (lastPiece.length > this.remainder.length ? Buffer.byteLength(lastPiece.slice(0, lastPiece.length - this.remainder.length), 'utf8') : 0);
 		if (readEntries.length > 0) {
-			this.delegate.onEntries?.(readEntries, emitDelta && !this.readingCatchUp);
+			// 末尾を掴む前の読み（tailer より後にできたファイルを頭から読む）は追記ではない（onAppended と同じ条件）
+			this.delegate.onEntries?.(readEntries, emitDelta && !this.readingCatchUp && this.sawInitialEof);
 		}
 		this.consumeEntries(entries, signals, emitDelta, latestProgress, issueUrlsChanged);
 		// 初回読み込み・読み直し（emitDelta でない）では知らせない。その後の snapshot が運ぶ

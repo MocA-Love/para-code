@@ -57,6 +57,11 @@ const WRITE_TOOLS: ReadonlyMap<string, string> = new Map([['Write', 'file_path']
 const SESSION_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/;
 /** 接続先の印がまだ分からないペインの、記録から拾った書き込みを覚えておく上限（ペインごと）。 */
 const MAX_HELD_TRANSCRIPT_WRITES = 200;
+/**
+ * 追記として読んだ行でも、行の時刻が今からこれより離れていれば過去の分として扱う（別の会話から写された古い行を
+ * 持つ記録・時計の大きくずれた接続先）。過去の分は、台帳の最後の動きより新しいときだけ持ち主を移す。
+ */
+const TRANSCRIPT_LIVE_SKEW_MS = 60_000;
 /** 記録を読んでいるペインの数の上限（終了の知らせを取りこぼしても伸び続けないように）。 */
 const MAX_TRANSCRIPT_READERS = 500;
 
@@ -306,7 +311,8 @@ export class ParadisAgentDocsService extends Disposable {
 				const at = write.at ?? (live ? receivedAt : undefined);
 				const cwd = known?.cwd ?? (write.cwd !== undefined ? paradisNormalizeDocPath(write.cwd) : undefined);
 				if (at !== undefined) {
-					this.ledger.recordTranscriptWrite(hostId, write.path, { agent, session, ...(cwd !== undefined ? { cwd } : {}) }, { at, tool: write.tool, ...(write.toolUseId !== undefined ? { toolUseId: write.toolUseId } : {}) }, live);
+					const fresh = live && Math.abs(receivedAt - at) <= TRANSCRIPT_LIVE_SKEW_MS;
+					this.ledger.recordTranscriptWrite(hostId, write.path, { agent, session, ...(cwd !== undefined ? { cwd } : {}) }, { at, tool: write.tool, ...(write.toolUseId !== undefined ? { toolUseId: write.toolUseId } : {}) }, fresh);
 				}
 			}
 		});
