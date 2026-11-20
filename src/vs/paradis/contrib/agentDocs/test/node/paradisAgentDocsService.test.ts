@@ -11,6 +11,7 @@ import { Emitter } from '../../../../../base/common/event.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IParadisAgentHookEvent } from '../../../agentBrowser/node/paradisAgentHookBus.js';
+import type { IParadisAgentTranscriptEntries } from '../../../agentBrowser/node/paradisAgentTranscriptEntryBus.js';
 import type { IParadisMcpOwningWindowRequest, IParadisMcpToolCallContext, ParadisMcpCallerKind, ParadisMcpOwningWindowResult } from '../../../agentBrowser/common/paradisMcpToolProvider.js';
 import { IParadisDocInspectItem, IParadisDocInspectResult, ParadisDocAdoptConfirmOutcome, paradisParseDocLedger } from '../../common/paradisAgentDocs.js';
 import { IParadisDocLedgerStorage, ParadisAgentDocsLedger } from '../../node/paradisAgentDocsLedger.js';
@@ -47,8 +48,11 @@ function hook(token: string, event: string, extra: Partial<IParadisAgentHookEven
 	return { token, event, sessionId: undefined, transcriptPath: undefined, cwd: undefined, at: 1000, ...extra };
 }
 
+/** 呼び出しの ID は 1 回ごとに違う（同じ会話の同じ ID の書き込みは、台帳が 1 回として数える）。 */
+let toolUseSequence = 0;
+
 function write(token: string, session: string, filePath: string, toolName = 'Write', extra: Partial<IParadisAgentHookEvent> = {}): IParadisAgentHookEvent {
-	return hook(token, 'PostToolUse', { sessionId: session, transcriptPath: `/home/u/.claude/projects/x/${session}.jsonl`, cwd: '/repo', toolName, payload: { tool_input: { file_path: filePath } }, toolUseId: `tu-${filePath}`, ...extra });
+	return hook(token, 'PostToolUse', { sessionId: session, transcriptPath: `/home/u/.claude/projects/x/${session}.jsonl`, cwd: '/repo', toolName, payload: { tool_input: { file_path: filePath } }, toolUseId: `tu-${toolUseSequence++}`, ...extra });
 }
 
 function start(token: string, session: string, cwd = '/repo', extra: Partial<IParadisAgentHookEvent> = {}): IParadisAgentHookEvent {
@@ -135,6 +139,7 @@ suite('paradisAgentDocsService', () => {
 	const disposables = ensureNoDisposablesAreLeakedInTestSuite();
 	let store: DisposableStore;
 	let hooks: Emitter<IParadisAgentHookEvent>;
+	let transcripts: Emitter<IParadisAgentTranscriptEntries>;
 	let storage: MemoryStorage;
 	let ledger: ParadisAgentDocsLedger;
 	let service: ParadisAgentDocsService;
@@ -144,13 +149,14 @@ suite('paradisAgentDocsService', () => {
 	function create(text?: string): void {
 		storage = new MemoryStorage(text);
 		ledger = store.add(new ParadisAgentDocsLedger(storage, error => { throw error; }, () => now));
-		service = store.add(new ParadisAgentDocsService(ledger, hooks.event));
+		service = store.add(new ParadisAgentDocsService(ledger, hooks.event, transcripts.event));
 		comments = store.add(new ParadisDocCommentsStore(new MemoryCommentsStorage(), error => { throw error; }, () => now));
 	}
 
 	setup(() => {
 		store = disposables.add(new DisposableStore());
 		hooks = store.add(new Emitter<IParadisAgentHookEvent>());
+		transcripts = store.add(new Emitter<IParadisAgentTranscriptEntries>());
 		now = 100;
 		create();
 	});
@@ -283,6 +289,114 @@ suite('paradisAgentDocsService', () => {
 		});
 	});
 
+	// 会話の記録の行（Claude Code 2.1.329 の形。paradisDocTranscriptWrites.test.ts と同じ）。呼び出しの行と結果の行の組
+	function transcriptWrite(id: string, filePath: string, at: number, virtual = false): Record<string, unknown>[] {
+		const extra = virtual ? { isVirtual: true } : {};
+		return [
+			{ type: 'assistant', timestamp: new Date(at - 1).toISOString(), cwd: '/repo', message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Write', input: { file_path: filePath, content: 'x' } }] }, ...extra },
+			{ type: 'user', timestamp: new Date(at).toISOString(), cwd: '/repo', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: '', is_error: false }] }, ...extra },
+		];
+	}
+
+	function transcript(token: string, session: string, entries: readonly Record<string, unknown>[], extra: Partial<IParadisAgentTranscriptEntries> = {}): IParadisAgentTranscriptEntries {
+		return { token, agent: 'claude', transcriptPath: `/home/u/.claude/projects/x/${session}.jsonl`, sessionId: session, remote: false, remoteHostId: undefined, epoch: 'e1', live: true, entries, ...extra };
+	}
+
+	test('writes read from the transcript own the document even when no hook arrived, and the same call from both is one write', async () => {
+		// hook が 1 つも届いていないペイン（ペインの会話の ID は記録のファイル名から）。REPL の中から呼んだ Write も拾う
+		transcripts.fire(transcript('p1', 's1', transcriptWrite('toolu_1', '/repo/no-hook.html', 5000), { sessionId: undefined }));
+		transcripts.fire(transcript('p1', 's1', transcriptWrite('toolu_2', '/repo/from-repl.md', 6000, true)));
+		// 呼び出しの行と結果の行が別々の読みで届く
+		const [use, result] = transcriptWrite('toolu_3', '/repo/split.md', 7000);
+		transcripts.fire(transcript('p1', 's1', [use]));
+		transcripts.fire(transcript('p1', 's1', [result]));
+		// hook が先、記録が後（普段の順）と、その逆
+		hooks.fire(write('p2', 's2', '/repo/both.html', 'Write', { toolUseId: 'toolu_4' }));
+		transcripts.fire(transcript('p2', 's2', transcriptWrite('toolu_4', '/repo/both.html', 8000)));
+		transcripts.fire(transcript('p2', 's2', transcriptWrite('toolu_5', '/repo/transcript-first.html', 9000)));
+		hooks.fire(write('p2', 's2', '/repo/transcript-first.html', 'Write', { toolUseId: 'toolu_5' }));
+		await settle();
+		assert.deepStrictEqual(owners(), [
+			['', '/repo/no-hook.html', 's1', 'write', undefined, 1],
+			['', '/repo/from-repl.md', 's1', 'write', undefined, 1],
+			['', '/repo/split.md', 's1', 'write', undefined, 1],
+			['', '/repo/both.html', 's2', 'write', undefined, 1],
+			['', '/repo/transcript-first.html', 's2', 'write', undefined, 1],
+		]);
+	});
+
+	test('transcript lines read later (after a restart, a re-read) only add what the ledger does not know yet', async () => {
+		const replay = (token: string, session: string, entries: readonly Record<string, unknown>[], epoch = 'e1') => transcript(token, session, entries, { live: false, epoch });
+		now = 10_000;
+		hooks.fire(start('p1', 's1'));
+		hooks.fire(start('p2', 's2'));
+		hooks.fire(write('p1', 's1', '/repo/adopted.md', 'Write', { toolUseId: 'toolu_a', at: 5000 }));
+		hooks.fire(write('p1', 's1', '/repo/removed.md', 'Write', { toolUseId: 'toolu_r', at: 5000 }));
+		hooks.fire(write('p2', 's2', '/repo/rewritten.md', 'Write', { toolUseId: 'toolu_w', at: 5000 }));
+		await settle();
+		// s2 が引き取り、利用者が 1 件を一覧から外し、持ち主のいない資料を開いた
+		ledger.adopt('', '/repo/adopted.md', { agent: 'claude', session: 's2' });
+		ledger.remove('', '/repo/removed.md');
+		ledger.registerUserOpened('', '/repo/opened.html');
+		// Para Code が起き直して、s1 の記録を頭から読み直す。台帳が知っている書き込み・古い書き込みでは何も変えない
+		transcripts.fire(replay('p1', 's1', [
+			...transcriptWrite('toolu_a', '/repo/adopted.md', 5000),
+			...transcriptWrite('toolu_old', '/repo/adopted.md', 4000),
+			...transcriptWrite('toolu_r', '/repo/removed.md', 5000),
+			...transcriptWrite('toolu_o', '/repo/opened.html', 3000),
+			// 止まっていた間の書き込み（台帳の最後の動きより新しい）
+			...transcriptWrite('toolu_down', '/repo/while-down.md', 20_000),
+			...transcriptWrite('toolu_w2', '/repo/rewritten.md', 20_000),
+		], 'e2'));
+		await settle();
+		assert.deepStrictEqual(owners(), [
+			['', '/repo/adopted.md', 's2', 'adopt', undefined, 1],
+			['', '/repo/opened.html', 's1', 'write', undefined, 1],
+			['', '/repo/while-down.md', 's1', 'write', undefined, 1],
+			['', '/repo/rewritten.md', 's1', 'write', undefined, 2],
+		]);
+		// 外した資料は、外した後の新しい書き込みでまた載る。外した控えは保存される
+		await ledger.flush();
+		assert.deepStrictEqual((JSON.parse(storage.text!) as { removed: unknown }).removed, [{ hostId: '', path: '/repo/removed.md', at: 10_000 }]);
+		create(storage.text);
+		transcripts.fire(replay('p1', 's1', transcriptWrite('toolu_r', '/repo/removed.md', 5000), 'e3'));
+		await settle();
+		assert.strictEqual(ledger.get('', '/repo/removed.md'), undefined);
+		transcripts.fire(transcript('p1', 's1', transcriptWrite('toolu_r2', '/repo/removed.md', 30_000)));
+		await settle();
+		assert.strictEqual(ledger.get('', '/repo/removed.md')?.owner?.session, 's1');
+	});
+
+	test('a line read as an append but dated long ago is treated as the past: it does not take a document from another session', async () => {
+		now = Date.now();
+		hooks.fire(start('p1', 's1'));
+		hooks.fire(write('p1', 's1', '/repo/owned.md', 'Write', { at: now - 10_000 }));
+		await settle();
+		// 別の会話の記録に、1 時間前の日付の書き込みが追記として届く（別の会話から写された行）
+		transcripts.fire(transcript('p2', 's2', transcriptWrite('toolu_copied', '/repo/owned.md', now - 3_600_000)));
+		await settle();
+		assert.deepStrictEqual(owners(), [['', '/repo/owned.md', 's1', 'write', undefined, 1]]);
+		// 今の日付の追記は、書いた会話が持ち主になる
+		transcripts.fire(transcript('p2', 's2', transcriptWrite('toolu_now', '/repo/owned.md', Date.now())));
+		await settle();
+		assert.deepStrictEqual(owners(), [['', '/repo/owned.md', 's2', 'write', undefined, 2]]);
+	});
+
+	test('transcript lines of an SSH pane are keyed by its host, and wait until the host is known', async () => {
+		const mirror = { transcriptPath: '/user-data/paradisRemoteTranscripts/home/u/.claude/projects/x/s1.jsonl', remote: true };
+		// shared process が起き直した直後: 接続先の印は次の hook まで分からない。手元のファイルとしては載せない
+		transcripts.fire(transcript('p1', 's1', transcriptWrite('toolu_1', '/srv/early.md', 5000), { ...mirror, live: false }));
+		await settle();
+		assert.deepStrictEqual(owners(), []);
+		hooks.fire(hook('p1', 'UserPromptSubmit', { sessionId: 's1', transcriptPath: '/home/u/.claude/projects/x/s1.jsonl', cwd: '/srv', ...SSH }));
+		transcripts.fire(transcript('p1', 's1', transcriptWrite('toolu_2', '/srv/later.html', 6000), { ...mirror, remoteHostId: 'ssh-remote-box' }));
+		await settle();
+		assert.deepStrictEqual(ledger.all().map(entry => [entry.hostId, entry.path, entry.owner?.session, entry.owner?.cwd]), [
+			['ssh-remote-box', '/srv/early.md', 's1', '/srv'],
+			['ssh-remote-box', '/srv/later.html', 's1', '/srv'],
+		]);
+	});
+
 	test('marks the owner ended on SessionEnd and on the exit of its terminal, and clears the mark when it comes back', async () => {
 		hooks.fire(start('p1', 's1'));
 		hooks.fire(start('p2', 's2'));
@@ -312,6 +426,7 @@ suite('paradisAgentDocsService', () => {
 		const saved = storage.text;
 		store.clear();
 		hooks = store.add(new Emitter<IParadisAgentHookEvent>());
+		transcripts = store.add(new Emitter<IParadisAgentTranscriptEntries>());
 		create(saved);
 		const restored = ledger.get('', '/repo/a.md');
 		await settle();

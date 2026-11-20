@@ -55,6 +55,7 @@ import { type IParadisAgentLiveAppendPatch, PARADIS_AGENT_LIVE_APPEND_ENCODING, 
 import { PARADIS_JSON_GZIP_RESPONSE_ENCODING } from '../common/paradisMobileGzipJson.js';
 import { paradisEncodeAgentOutboundPayload } from './paradisAgentChatGzip.js';
 import { paradisMobileLinkMetrics } from '../common/paradisMobileLinkMetricsRecorder.js';
+import { fireParadisAgentTranscriptEntries } from '../../agentBrowser/node/paradisAgentTranscriptEntryBus.js';
 import { PARADIS_CLAUDE_WORKFLOW_SUBAGENT_TYPE, paradisClaudeWorkflowRunLastWrite, paradisDiscoverClaudeSubagentFiles, paradisFindClaudeSubagentTranscript, paradisParseClaudeSubagentTranscriptPath } from './paradisClaudeSubagentFiles.js';
 import { IParadisAgentQuestionKeyCheck, paradisAgentApprovalKeySequence, paradisAgentQuestionKeyPlan, paradisQuestionChecksMaxWaitMs } from '../common/paradisAgentQuestionKeys.js';
 import { PARADIS_AGENT_QUESTION_NOTES_LIMIT, PARADIS_AGENT_QUESTION_RESPONSE_LIMIT, paradisAgentQuestionClarifyDeny, paradisBuildModQuestionAnswer } from '../common/paradisAgentQuestionModAnswer.js';
@@ -2036,6 +2037,11 @@ interface ITailerDelegate {
 	 * rejected は、利用者が許可を拒否した結果（Claude Code の定型文）が含まれていたか。
 	 */
 	onToolResults?(toolUseIds: readonly string[], rejected: boolean): void;
+	/**
+	 * 記録から読めた行（JSON として読めたものすべて。進み具合の行・mod から先に受け取った行も含む）。`live` は書かれて
+	 * すぐ読んだ追記（初回の読み込み・読み直し・SSH の写しが追いつく分は false）。資料の台帳が書き込みを拾う。
+	 */
+	onEntries?(entries: readonly Record<string, unknown>[], live: boolean): void;
 }
 
 /**
@@ -2822,6 +2828,7 @@ class TranscriptTailer {
 		let lineOffset = this.lineBase;
 		const signals = newParseSignals(this.claudeQueuedPrompts);
 		const entries: { readonly obj: Record<string, unknown>; readonly lineStart: number }[] = [];
+		const readEntries: Record<string, unknown>[] = [];
 		let latestProgress: ITranscriptProgress | undefined;
 		let issueUrlsChanged = false;
 		let sessionStatusChanged = false;
@@ -2849,6 +2856,7 @@ class TranscriptTailer {
 			if (!obj) {
 				continue;
 			}
+			readEntries.push(obj);
 			if (this.firstLineAt === undefined) {
 				const lineAt = Date.parse(str(obj.timestamp) ?? '');
 				if (Number.isFinite(lineAt)) {
@@ -2879,6 +2887,10 @@ class TranscriptTailer {
 			entries.push({ obj, lineStart });
 		}
 		this.lineBase = lineOffset + (lastPiece.length > this.remainder.length ? Buffer.byteLength(lastPiece.slice(0, lastPiece.length - this.remainder.length), 'utf8') : 0);
+		if (readEntries.length > 0) {
+			// 末尾を掴む前の読み（tailer より後にできたファイルを頭から読む）は追記ではない（onAppended と同じ条件）
+			this.delegate.onEntries?.(readEntries, emitDelta && !this.readingCatchUp && this.sawInitialEof);
+		}
 		this.consumeEntries(entries, signals, emitDelta, latestProgress, issueUrlsChanged);
 		// 初回読み込み・読み直し（emitDelta でない）では知らせない。その後の snapshot が運ぶ
 		if (sessionStatusChanged && emitDelta) {
@@ -10555,6 +10567,10 @@ export class ParadisMobileAgentChat extends Disposable {
 		};
 		const remote = this.isRemoteAgentPane(token) || paradisIsRemoteAgentTranscriptMirrorPath(session.transcriptPath);
 		const tailer = new TranscriptTailer(session.transcriptPath, session.agent, {
+			onEntries: (entries, live) => fireParadisAgentTranscriptEntries({
+				token, agent: session.agent, transcriptPath: session.transcriptPath, sessionId: session.sessionId,
+				remote, remoteHostId: this.tokenToRemoteHost.get(token)?.host, epoch: tailer.epoch, live, entries,
+			}),
 			onDelta: (messages, options) => {
 				this.scheduleDesktopInsightCheck();
 				const live = this.liveStates.get(token);
