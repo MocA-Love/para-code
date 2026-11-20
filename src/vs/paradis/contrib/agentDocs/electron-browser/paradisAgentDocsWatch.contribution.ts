@@ -10,8 +10,9 @@
 // エージェントがコマンド（Bash・python など）で書いた資料は、hook にも会話の記録にも書き込みとして残らないので、
 // ファイルが変わったことから拾う。持ち主を決めるのは台帳の側（そのスペースで作業中の会話が 1 つだけならその会話）。
 //
-// 新しい見張りは張らない。ウィンドウが開いているフォルダは本体が既に見張っていて（IFileService.onDidFilesChange）、
-// その知らせから拡張子で選ぶだけ。したがって拾えるのは、ウィンドウが今開いているフォルダ（表示中のスペース）の中の資料。
+// ウィンドウが開いているフォルダ（表示中のスペース）は本体が既に見張っていて（IFileService.onDidFilesChange）、その知らせから
+// 拡張子で選ぶだけ。表示していないスペースは、作業中のエージェントがいる間だけ html・md の見張りを足す（居なくなって
+// しばらくしたら外す。数にも上限がある）。足した見張りの知らせも同じ口へ届くので、拾い方は 1 つ。
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { ResourceMap } from '../../../../base/common/map.js';
@@ -23,9 +24,11 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { ITextFileService } from '../../../../workbench/services/textfile/common/textfiles.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
+import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import { ParadisDocWatchBurstGate, paradisIsWatchableDocPath } from '../common/paradisAgentDocs.js';
+import { PARADIS_DOC_BACKGROUND_WATCH_EXCLUDES, PARADIS_DOC_BACKGROUND_WATCH_INCLUDES, ParadisDocWatchBurstGate, paradisIsWatchableDocPath } from '../common/paradisAgentDocs.js';
 import { PARADIS_AGENT_DOCS_VIEW_CHANNEL, ParadisAgentDocsViewCall } from '../common/paradisAgentDocsView.js';
+import { ParadisDocBackgroundWatchers } from './paradisAgentDocsBackgroundWatch.js';
 import { IParadisDocPaneFolderServices, paradisDocPaneFolder, paradisDocWatchPaneTokens } from './paradisAgentDocsPaneFolder.js';
 import { paradisDocTargetOf, paradisWindowDocHostId } from './paradisAgentDocsView.js';
 
@@ -54,12 +57,25 @@ class ParadisAgentDocsWatchContribution extends Disposable implements IWorkbench
 		@IParadisTerminalScopeService terminalScopeService: IParadisTerminalScopeService,
 		@IParadisWorkspaceSwitchService workspaceSwitchService: IParadisWorkspaceSwitchService,
 		@IParadisWorktreeService worktreeService: IParadisWorktreeService,
+		@IParadisAgentStatusSnapshotService statusSnapshotService: IParadisAgentStatusSnapshotService,
 	) {
 		super();
 		this._windowHostId = paradisWindowDocHostId(environmentService.remoteAuthority);
 		this._paneFolderServices = { paneTokenService: _paneTokenService, terminalScopeService, workspaceSwitchService, worktreeService, workspaceContextService };
 		this._register(textFileService.files.onDidSave(event => this._noteUserSave(event.model.resource)));
 		this._register(fileService.onDidFilesChange(event => this._onFilesChanged(event)));
+		// 作業中かどうかは、サイドバーの「動作中」と同じ知らせ（2 秒ごと）で知る
+		const backgroundWatchers = this._register(new ParadisDocBackgroundWatchers({
+			openedFolders: () => workspaceContextService.getWorkspace().folders.map(folder => folder.uri),
+			paneFolder: token => paradisDocPaneFolder(token, this._paneFolderServices),
+			onWindowHost: folder => paradisDocTargetOf(folder, this._windowHostId) !== undefined,
+			watch: folder => fileService.watch(folder, { recursive: true, excludes: [...PARADIS_DOC_BACKGROUND_WATCH_EXCLUDES], includes: [...PARADIS_DOC_BACKGROUND_WATCH_INCLUDES] }),
+		}));
+		this._register(statusSnapshotService.subscribe(outcome => {
+			if (outcome.snapshot !== undefined) {
+				backgroundWatchers.update(outcome.snapshot.paneStatuses.filter(pane => pane.status !== 'review').map(pane => pane.token), Date.now());
+			}
+		}));
 	}
 
 	private _noteUserSave(resource: URI): void {
