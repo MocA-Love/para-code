@@ -114,7 +114,7 @@ export function registerParadisMainProcessContributions(
 	// This one, updateTerminals and taskBoardHost act on onWillShutdown, so they stay out of `disposables`:
 	// this application disposes itself inside its own onWillShutdown listener, which would unsubscribe
 	// them before the event reaches them. They live until the process exits.
-	paradisRegisterHealthBeacon(mainProcessElectronServer, accessor.get(IWindowsMainService), accessor.get(IBrowserViewMainService), lifecycleMainService, logService);
+	paradisRegisterHealthBeacon(mainProcessElectronServer, accessor.get(IWindowsMainService), accessor.get(IBrowserViewMainService), lifecycleMainService, logService, { commit: productService.commit });
 
 	// send the stacks upstream samples from a window that stopped responding to Sentry; upstream only logs them in main (see paradis/contrib/sentry)
 	disposables.add(paradisRegisterWindowHangReporter(accessor.get(IWindowsMainService)));

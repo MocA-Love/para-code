@@ -49,6 +49,7 @@ import {
 	paradisNormalizeHealthRole,
 } from '../common/paradisHealthBeacon.js';
 import { paradisStartMainHangWatchdog } from './paradisMainHangMain.js';
+import { IParadisRunMarkerBuild, paradisStartRunMarker } from './paradisRunMarkerMain.js';
 
 /** 終了時の送信を待ち切る上限。これを超えたら諦めて終了を進める。 */
 const SHUTDOWN_FLUSH_TIMEOUT_MS = 2_000;
@@ -296,11 +297,16 @@ export function paradisRegisterHealthBeacon(
 	lifecycleMainService: ILifecycleMainService,
 	/** main の混雑の計測のログの出し先。無ければ混雑の記録をログに出さない (要約は取る)。 */
 	logService: ILogService = new NullLogService(),
+	/** The build the run marker records. Without it the marker says only the application version. */
+	build: IParadisRunMarkerBuild = {},
 ): IDisposable {
 	const disposables = new DisposableStore();
 	const beacon = disposables.add(new ParadisHealthBeacon(windowsMainService, browserViewMainService, lifecycleMainService));
 	channelHost.registerChannel(PARADIS_HEALTH_BEACON_CHANNEL, ProxyChannel.fromService(new ParadisHealthBeaconMainService(beacon), disposables));
 	beacon.start();
+	// The "this run is alive" marker: left behind by a run that did not end normally, and reported by
+	// the next startup. It has to outlive `untilShutdown`, because it is removed at the very end.
+	disposables.add(paradisStartRunMarker(lifecycleMainService, windowsMainService, logService, build));
 	// 見張りと計測は終了が始まったら止める。この入り口は終了時の 1 本を送るため app.ts の store の外に
 	// あって終了の最後まで生きるので、止めないと終了中の遅れを固まりとして記録してしまう。
 	const untilShutdown = disposables.add(new DisposableStore());
