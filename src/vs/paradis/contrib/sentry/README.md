@@ -26,6 +26,7 @@ para.operation:devtools-call-timeout
 para.operation:devtools-child-exited
 para.operation:cdp-upstream-closed
 para.feature:desktop-relay
+para.feature:run-marker
 ```
 
 Explicit diagnostics should go through `reportParadisDiagnosticError` on desktop and

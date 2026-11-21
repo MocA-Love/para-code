@@ -21,6 +21,38 @@ import { registerParadisProcessGoneDiagnostics } from './paradisProcessGoneDiagn
 
 let sentry: typeof SentryMain | undefined;
 
+/**
+ * Whether Sentry runs in this main process, or which condition skipped it. A run without Sentry
+ * leaves no minidump and no event, so the run marker (paradisRunMarkerMain.ts) writes this to the
+ * main log and keeps it for the next startup's report.
+ */
+export type ParadisSentryMainState = 'pending' | 'ready' | 'opted-out-argv' | 'opted-out-flag' | 'dev-build' | 'load-failed';
+
+let sentryState: ParadisSentryMainState = 'pending';
+let sentryLoadErrorCode: string | undefined;
+let resolveSentrySettled: () => void = () => { };
+const sentrySettled = new Promise<void>(resolve => { resolveSentrySettled = resolve; });
+
+function settleParadisSentryMain(state: ParadisSentryMainState, error?: unknown): void {
+	sentryState = state;
+	if (error !== undefined) {
+		// Only an identifier-shaped code or name: the message can hold a path.
+		const candidate = (error as { code?: unknown } | null)?.code ?? (error as { name?: unknown } | null)?.name;
+		sentryLoadErrorCode = typeof candidate === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,60}$/.test(candidate) ? candidate : undefined;
+	}
+	resolveSentrySettled();
+}
+
+/** The current state, and the error code or name of a failed load when it is identifier-shaped. */
+export function paradisSentryMainState(): { readonly state: ParadisSentryMainState; readonly errorCode: string | undefined } {
+	return { state: sentryState, errorCode: sentryLoadErrorCode };
+}
+
+/** Resolves once the state is no longer `pending`. Never rejects. */
+export function whenParadisSentryMainSettled(): Promise<void> {
+	return sentrySettled;
+}
+
 type ParadisCustomScheme = Parameters<typeof protocol.registerSchemesAsPrivileged>[0][number];
 
 /**
@@ -60,6 +92,7 @@ export function initializeParadisSentryMain(product: Pick<IProductConfiguration,
 	const optedOut = isParadisSentryOptedOut(crashReporting);
 	setParadisSentryDisabledEnv(process.env, optedOut);
 	if (optedOut) {
+		settleParadisSentryMain(crashReporting.enableCrashReporter === false ? 'opted-out-argv' : 'opted-out-flag');
 		onUnavailable();
 		return;
 	}
@@ -68,6 +101,7 @@ export function initializeParadisSentryMain(product: Pick<IProductConfiguration,
 	// process も同じ判定で止まる。クラッシュレポーターは Sentry が無かった頃の upstream の扱い
 	// （--crash-reporter-directory 等の指定時だけローカルに保存）へ戻す。
 	if (isParadisSentryDevelopmentBuild(process.env)) {
+		settleParadisSentryMain('dev-build');
 		onUnavailable();
 		return;
 	}
@@ -145,7 +179,9 @@ export function initializeParadisSentryMain(product: Pick<IProductConfiguration,
 			}, () => { });
 		});
 		sentry = Sentry;
+		settleParadisSentryMain('ready');
 	}).catch(error => {
+		settleParadisSentryMain('load-failed', error);
 		console.error('[Para Code] Failed to initialize Sentry; using the existing crash reporter fallback.', error);
 		onUnavailable();
 	});

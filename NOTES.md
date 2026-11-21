@@ -2696,6 +2696,8 @@ main の固まりの検知は、`@sentry/electron/native` の `eventLoopBlockInt
 
 自作の見張りは worker を文字列から起こす（`eval: true`、Node の組み込みだけを使う）ので、上の 2 つを踏まない。main が 2 秒ごとに共有メモリへ時刻とヒープの大きさを書き、worker が 10 秒途切れたら `<userData>/paradis-main-hang.json` に印を書き、戻れば `main-hang` / `blocked` で報告して消す。戻らずに終了されたら次の起動の 60 秒後に `blocked-until-exit` で報告する。スタックは取れない。配布版だけで動かす（開発版はデバッガの停止を誤検知する）。スリープは `powerMonitor` の suspend / resume と、worker 自身の見回りの間隔（15 秒）の両方で除く。resume が来ないまま 1 分心拍が続いたら、取りこぼしとみなして数え直す。
 
+**正常に終わらなかった起動の記録（2026-11-21）**: main は起動時に `<userData>/paradis-run-marker.json` を書き、30 秒ごとに心拍（時刻・稼働時間・main の rss とヒープ・`app.getAppMetrics()` の種類ごとの合計 MB と数・窓の数・版・Sentry の状態）で上書きし、終了（`quit` / `exit`）で消す。次の起動で残っていたら main のログに 1 行書き、Sentry が起きていれば `run-marker` / `ended:<種類>` で 1 件送る。種類は `os-shutdown`（macOS が終了を予告した）・`os-restart`（OS の起動時刻が進んだ）・`quitting`（終了の途中）・`suspended`（スリープ中）・`running`（それ以外。クラッシュ・強制終了・SIGKILL）。Sentry が起きなかった理由（`opted-out-argv`・`opted-out-flag`・`dev-build`・`load-failed`）は main のログに `[paradisSentry]` の行で残り、印にも入るので、Sentry が無かった起動の終わり方も次の起動の報告で分かる。開発版でも動く。SIGTERM は Electron が普通の終了として扱うので印は残らない。実体は `src/vs/paradis/contrib/healthBeacon/common/paradisRunMarker.ts` と `electron-main/paradisRunMarkerMain.ts`。
+
 ## fork の worker は共通の入口から起こす（2026-10-16、#419）
 
 npm パッケージを読む fork の worker_threads の worker（Word・Excel の詳しい解析、Office v1）は、`new Worker` ではなく `src/vs/paradis/node/paradisWorker.ts` の `createParadisWorker`（Office の worker は見張り付きの `createParadisOfficeWorker`）で起こす。asar の解決は登録したスレッドにしか効かず、配布版では 3 本とも `ERR_MODULE_NOT_FOUND 'yauzl'` で起動のたびに落ちていた（Office v1 は worker のファイル自体がパッケージに無かった）。入口の `paradisWorkerBootstrap.ts` が worker の中で解決を登録してから本体を読む。起動・読み込み・解析の失敗は Sentry の `office-workers`（`safe_worker`・`safe_stage`・`safe_kind`）へ 1 起動に 1 回ずつ届く。
