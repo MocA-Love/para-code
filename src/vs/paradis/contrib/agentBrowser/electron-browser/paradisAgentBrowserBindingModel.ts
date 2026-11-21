@@ -13,7 +13,7 @@
 // バインド/解除の実処理もここに集約する（コマンドパレットとダイアログの二重実装を避ける）。
 
 import { mainWindow } from '../../../../base/browser/window.js';
-import { raceTimeout, RunOnceScheduler } from '../../../../base/common/async.js';
+import { DeferredPromise, raceTimeout, RunOnceScheduler } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
@@ -93,6 +93,16 @@ export interface IParadisPaneDescriptor {
 }
 
 /**
+ * 頼まれて外す共有（利用者の操作、エージェントのタブの付け替え、ネットワークの制限）。`token` が無ければそのページの
+ * 全ペイン、`pageId` が無ければそのペインの全ページ。`done` は外し終わったら（失敗しても）決着する。
+ */
+export interface IParadisRequestedUnbind {
+	readonly token?: string;
+	readonly pageId?: string;
+	readonly done: Promise<void>;
+}
+
+/**
  * バインディング状態のキャッシュ + バインド/解除操作の集約サービス（electron-browser専用）。
  */
 export interface IParadisAgentBrowserBindingModel {
@@ -100,6 +110,13 @@ export interface IParadisAgentBrowserBindingModel {
 
 	/** キャッシュされたバインディング/接続実績/ペイン一覧が変化したときに発火する。 */
 	readonly onDidChange: Event<void>;
+
+	/**
+	 * 共有を頼まれて外し始めるときに発火する（{@link unbindPane}・{@link unbindPageFromToken}・{@link unbindToken}・
+	 * {@link unbindPage} と、ネットワークの制限での解除）。一覧からの欠落や窓の消滅で勝手に外れたときは発火しない。
+	 * 共有の復元（paradisAgentBrowserBindingRestore）が、戻してはいけない共有を見分けるのに使う。
+	 */
+	readonly onWillUnbindByRequest: Event<IParadisRequestedUnbind>;
 
 	/** このウィンドウの現在のバインディング一覧（キャッシュ）。 */
 	readonly bindings: readonly IParadisPaneBinding[];
@@ -347,6 +364,9 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 
 	private readonly _onDidChange = this._register(new Emitter<void>());
 	readonly onDidChange: Event<void> = this._onDidChange.event;
+
+	private readonly _onWillUnbindByRequest = this._register(new Emitter<IParadisRequestedUnbind>());
+	readonly onWillUnbindByRequest: Event<IParadisRequestedUnbind> = this._onWillUnbindByRequest.event;
 
 	private _bindings: readonly IParadisPaneBinding[] = [];
 	private _bindingByToken: ReadonlyMap<string, IParadisPaneBinding> = new Map();
@@ -1148,7 +1168,21 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 		await this.unbindPageFromToken(model.id, token);
 	}
 
+	private async _asRequestedUnbind<T>(token: string | undefined, pageId: string | undefined, run: () => Promise<T>): Promise<T> {
+		const done = new DeferredPromise<void>();
+		this._onWillUnbindByRequest.fire({ token, pageId, done: done.p });
+		try {
+			return await run();
+		} finally {
+			void done.complete();
+		}
+	}
+
 	async unbindPageFromToken(pageId: string, token: string): Promise<void> {
+		await this._asRequestedUnbind(token, pageId, () => this._unbindPageFromToken(pageId, token));
+	}
+
+	private async _unbindPageFromToken(pageId: string, token: string): Promise<void> {
 		await this._runSerializedForPageAndTokens(pageId, [token], async () => {
 			const channel = this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL);
 			// 世代で外す（同じペインのほかのページの共有・後から張り直した共有は外さない）
@@ -1181,11 +1215,13 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 
 	async unbindToken(token: string): Promise<void> {
 		const pageId = this.getBindingForToken(token)?.pageId ?? this._findPendingPageForToken(token);
-		if (pageId) {
-			await this._runSerializedForPageAndTokens(pageId, [token], () => this._unbindToken(token));
-		} else {
-			await this._runSerializedForToken(token, () => this._unbindToken(token));
-		}
+		await this._asRequestedUnbind(token, undefined, async () => {
+			if (pageId) {
+				await this._runSerializedForPageAndTokens(pageId, [token], () => this._unbindToken(token));
+			} else {
+				await this._runSerializedForToken(token, () => this._unbindToken(token));
+			}
+		});
 	}
 
 	private async _unbindToken(token: string): Promise<void> {
@@ -1375,7 +1411,11 @@ export class ParadisAgentBrowserBindingModel extends Disposable implements IPara
 	}
 
 	/** Page-wide unbind. Without a resolved model only the bindings are released, not the sharing. */
-	private async _unbindPage(pageId: string, model: IBrowserViewModel | undefined): Promise<number> {
+	private _unbindPage(pageId: string, model: IBrowserViewModel | undefined): Promise<number> {
+		return this._asRequestedUnbind(undefined, pageId, () => this._unbindPageNow(pageId, model));
+	}
+
+	private async _unbindPageNow(pageId: string, model: IBrowserViewModel | undefined): Promise<number> {
 		const channel = this.sharedProcessService.getChannel(PARADIS_AGENT_BROWSER_CHANNEL);
 		const matching = this.getBindingsForPage(pageId);
 		const savedBindings = new Map(matching.map(binding => [binding.token, binding]));

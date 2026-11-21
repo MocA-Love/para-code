@@ -74,6 +74,7 @@ class TestStatuses implements IParadisAgentStatusStore {
 class TestPaneTokens implements IParadisPaneTokenService {
 	declare readonly _serviceBrand: undefined;
 	readonly onDidChange = Event.None;
+	readonly onDidEndPane = Event.None;
 	constructor(private readonly insights: TestInsights) { }
 	getTokenForInstance(instanceId: number): string | undefined { return `t${instanceId}`; }
 	getInstanceForToken(token: string): number | undefined { return Number(token.slice(1)); }
