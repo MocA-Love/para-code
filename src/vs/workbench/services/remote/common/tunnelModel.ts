@@ -23,7 +23,7 @@ import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { isNumber, isObject, isString } from '../../../../base/common/types.js';
 import { deepClone } from '../../../../base/common/objects.js';
 import { IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
-import { paradisDeferTunnelStoreWhileRestoring, paradisRestoreTunnelsOneByOne } from '../../../../platform/tunnel/common/paradisTunnelRestoreLoop.js';
+import { paradisDeferTunnelStoreWhileRestoring, paradisRestoreTunnelsOneByOne } from '../../../../platform/tunnel/common/paradisTunnelRestoreLoop.js'; // PARA-PATCH: see restoreForwarded and storeForwarded
 import { paradisForwardExplicitly, paradisImplicitTunnelSource, paradisMarkExplicitTunnelRecords, paradisTunnelsToRestore } from '../../../../platform/tunnel/common/paradisTunnelRestorePolicy.js'; // PARA-PATCH: see onTunnelOpened, restoreForwarded, storeForwarded and forward
 
 const MISMATCH_LOCAL_PORT_COOLDOWN = 10 * 1000; // 10 seconds

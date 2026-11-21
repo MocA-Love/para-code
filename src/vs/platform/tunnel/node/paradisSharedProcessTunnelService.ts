@@ -23,6 +23,9 @@ import { ISharedTunnelsService, isAllInterfaces, isLocalhost, RemoteTunnel } fro
  * - a window that stops forwarding (the row is closed, or the window closes or reloads) is taken
  *   out, and the latest address of the windows that are left is used.
  * - while none of the windows that are left has sent an address, the answer waits for the first.
+ * - a tunnel waits for the first address of the window that created it, as upstream's does. A
+ *   tunnel that was forwarded again ("Reforward") therefore never starts out on the address of
+ *   another window that still holds the port, which may be the one that stopped working.
  */
 export class ParadisTunnelAddressGroup implements IAddressProvider {
 
@@ -31,7 +34,8 @@ export class ParadisTunnelAddressGroup implements IAddressProvider {
 	private _order = 0;
 	/** The address used last before every window left. Nothing should ask any more by then. */
 	private _lastAddress: IAddress | undefined;
-	private _pending: DeferredPromise<IAddress> | undefined;
+	/** Completed whenever an address arrives or a window leaves. */
+	private _changed: DeferredPromise<void> | undefined;
 
 	get isEmpty(): boolean {
 		return this._members.size === 0;
@@ -48,26 +52,42 @@ export class ParadisTunnelAddressGroup implements IAddressProvider {
 			return;
 		}
 		this._members.set(id, { address, order: ++this._order });
-		this._pending?.complete(address);
-		this._pending = undefined;
+		this._didChange();
 	}
 
 	remove(id: string): void {
 		const current = this._current();
-		if (this._members.delete(id) && this._members.size === 0) {
-			this._lastAddress = current ?? this._lastAddress;
+		if (this._members.delete(id)) {
+			if (this._members.size === 0) {
+				this._lastAddress = current ?? this._lastAddress;
+			}
+			this._didChange();
 		}
 	}
 
-	getAddress(): Promise<IAddress> {
-		const address = this._current() ?? (this._members.size === 0 ? this._lastAddress : undefined);
-		if (address) {
-			return Promise.resolve(address);
+	/**
+	 * The address to connect through now. `creatorId` is the id of the window whose request
+	 * created the tunnel that asks: until that window has sent its first address (or has left),
+	 * the answer waits for it.
+	 */
+	async getAddress(creatorId?: string): Promise<IAddress> {
+		while (true) {
+			const creatorHasNotSentYet = creatorId !== undefined && this._members.has(creatorId) && !this._members.get(creatorId);
+			const address = creatorHasNotSentYet ? undefined : (this._current() ?? (this._members.size === 0 ? this._lastAddress : undefined));
+			if (address) {
+				return address;
+			}
+			if (!this._changed) {
+				this._changed = new DeferredPromise<void>();
+			}
+			await this._changed.p;
 		}
-		if (!this._pending) {
-			this._pending = new DeferredPromise<IAddress>();
-		}
-		return this._pending.p;
+	}
+
+	private _didChange(): void {
+		const changed = this._changed;
+		this._changed = undefined;
+		changed?.complete();
 	}
 
 	private _current(): IAddress | undefined {
@@ -94,8 +114,12 @@ class ParadisTunnelData extends Disposable implements IAddressProvider {
 	private readonly _group = new DeferredPromise<ParadisTunnelAddressGroup>();
 	groupKey: string | undefined;
 
+	constructor(private readonly _id: string) {
+		super();
+	}
+
 	async getAddress(): Promise<IAddress> {
-		return (await this._group.p).getAddress();
+		return (await this._group.p).getAddress(this._id);
 	}
 
 	join(groupKey: string, group: ParadisTunnelAddressGroup, tunnel: RemoteTunnel): void {
@@ -147,7 +171,7 @@ export class ParadisSharedProcessTunnelService extends Disposable implements ISh
 	}
 
 	async startTunnel(authority: string, id: string, tunnelRemoteHost: string, tunnelRemotePort: number, tunnelLocalHost: string, tunnelLocalPort: number | undefined, elevateIfNeeded: boolean | undefined): Promise<ISharedProcessTunnel> {
-		const tunnelData = new ParadisTunnelData();
+		const tunnelData = new ParadisTunnelData(id);
 
 		const tunnel = await Promise.resolve(this._tunnelService.openTunnel(authority, tunnelData, tunnelRemoteHost, tunnelRemotePort, tunnelLocalHost, tunnelLocalPort, elevateIfNeeded));
 		if (!tunnel || (typeof tunnel === 'string')) {

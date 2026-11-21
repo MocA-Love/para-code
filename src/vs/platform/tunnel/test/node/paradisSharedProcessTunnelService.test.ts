@@ -161,7 +161,8 @@ suite('ParadisSharedProcessTunnelService', () => {
 		const b = await forward(service, 3000);
 		await service.setAddress(b, address(2));
 
-		// B reforwards: the tunnel is dropped for every window and B forwards the port again.
+		// B reforwards: the tunnel is dropped for every window and B forwards the port again. Until
+		// B's new address is there, the new tunnel does not fall back on what the others sent before.
 		tunnels.forceClose(3000);
 		const b2 = await forward(service, 3000);
 		const beforeB2Sent = await tunnels.dials(3000);
@@ -170,7 +171,7 @@ suite('ParadisSharedProcessTunnelService', () => {
 		await service.destroyTunnel(b);
 		await service.destroyTunnel(b2);
 
-		assert.deepStrictEqual({ beforeB2Sent, afterB2Sent, afterBLeft: await tunnels.dials(3000) }, { beforeB2Sent: 2, afterB2Sent: 3, afterBLeft: 1 });
+		assert.deepStrictEqual({ beforeB2Sent, afterB2Sent, afterBLeft: await tunnels.dials(3000) }, { beforeB2Sent: 'waiting', afterB2Sent: 3, afterBLeft: 1 });
 		await service.destroyTunnel(a);
 	});
 
