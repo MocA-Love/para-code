@@ -32,6 +32,7 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { paradisSshHostFromAuthority } from '../../../common/paradisHostPath.js';
+import { ParadisReturnTunnelLedger } from './paradisReturnTunnelLedger.js';
 
 // かつてこのファイルにあった paradisSshHostFromAuthority は、browser 側（コマンドプリセットの
 // 実行環境条件）でも必要になったため common へ移した。既存の import 経路を壊さないよう再エクスポートする。
@@ -273,6 +274,11 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 		spawnSsh: ((args: string[], captureOutput?: boolean) => ChildProcess) | undefined = undefined,
 		/** ログインシェル由来の環境の解決。渡されなければ shared process の素の環境で ssh を起こす。 */
 		resolveSshEnv: (() => Promise<NodeJS.ProcessEnv>) | undefined = undefined,
+		/**
+		 * 張った戻りトンネルの ssh の控え。渡すと、前の起動が落ちて残した ssh を起動時に片付ける
+		 * （paradisReturnTunnelLedger.ts）。渡さなければ控えない。
+		 */
+		private readonly ledger: ParadisReturnTunnelLedger | undefined = undefined,
 	) {
 		super();
 		this.spawnSsh = spawnSsh ?? ((args, captureOutput) => spawn(
@@ -472,6 +478,7 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 			return;
 		}
 		entry.preferredChild = child;
+		this.trackTunnelChild(child);
 		const timer = setTimeout(() => {
 			if (entry.preferredChild === child) {
 				child.kill();
@@ -543,6 +550,16 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 		this.settle(entry, listenPort);
 	}
 
+	/** 張った ssh を控えに載せ、終わったら外す。 */
+	private trackTunnelChild(child: ChildProcess): void {
+		const pid = child.pid;
+		if (this.ledger === undefined || typeof pid !== 'number') {
+			return;
+		}
+		this.ledger.add(pid);
+		child.on('close', () => this.ledger?.remove(pid));
+	}
+
 	/** `ssh -N -R <listenPort>:127.0.0.1:<port>` の引数。 */
 	private tunnelArgs(host: string, listenPort: number, port: number): string[] {
 		return [
@@ -590,6 +607,7 @@ export class ParadisRemoteAgentTunnels extends Disposable {
 			return;
 		}
 		entry.child = child;
+		this.trackTunnelChild(child);
 
 		// 確認（動的なら `Allocated port ...`、固定候補なら `remote forward success for: ...`）が
 		// 来ないまま待たせ続けない。番号が分かるか接続が終わるかのどちらかが先に起きるので、

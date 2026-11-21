@@ -71,6 +71,9 @@ import { ParadisRemoteAgentTunnels } from './paradisRemoteAgentTunnel.js';
 import { ParadisLocalVoicePlayer } from './paradisLocalVoicePlayer.js';
 import { paradisReceiveRemoteVoice, paradisSendVoiceIngressUnavailable, paradisSendVoiceTicketRejected } from './paradisRemoteVoiceIngress.js';
 import { paradisArmRequestBodyTimeout, paradisConfigureMcpHttpServer } from './paradisHttpRequestTimeouts.js';
+import { PARADIS_AGENT_GATEWAY_REQUEST_HEADER, PARADIS_AGENT_GATEWAY_UNSYNCED_HEADER } from '../common/paradisAgentGateway.js';
+import { paradisWaitForUnsyncedPane } from './paradisUnsyncedPaneWait.js';
+import { ParadisReturnTunnelLedger } from './paradisReturnTunnelLedger.js';
 import { IParadisLocalVoiceOutput } from '../../notifications/common/paradisVoiceIngest.js';
 import { PARADIS_MOBILE_VOICE_TICKET_RELEASE_PATH, PARADIS_REMOTE_VOICE_LOCAL_PLAYBACK_SETTING, PARADIS_REMOTE_VOICE_STREAM_INGRESS, paradisRemoteVoiceLocalPlaybackEnabled } from '../common/paradisRemoteVoice.js';
 import { createParadisMcpSetupController, ParadisMcpSetupController } from './paradisMcpSetup.js';
@@ -1126,7 +1129,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		// ssh はログインシェル由来の環境で起こす: `SSH_AUTH_SOCK` を rc で設定する鍵エージェント
 		// 構成（1Password / gpg-agent 等）だと、shared process が継いだ環境のままでは公開鍵認証が
 		// 黙って失敗し、拡張機能側の接続だけ成功して戻り経路が張れない状態になる
-		this._remoteTunnels = this._register(new ParadisRemoteAgentTunnels(logService, undefined, () => cachedShellEnv.getEnv()));
+		this._remoteTunnels = this._register(new ParadisRemoteAgentTunnels(logService, undefined, () => cachedShellEnv.getEnv(), new ParadisReturnTunnelLedger(join(this._userDataPath, 'paradis-return-tunnels.json'), logService)));
 		this._probeClaudeVersion = () => paradisProbeClaudeVersionOutput(() => cachedShellEnv.getEnv());
 		// 手元の aivis-mcp もログインシェルの PATH（npm・bun のグローバル）で探す
 		this._localVoicePlayer = new ParadisLocalVoicePlayer(() => cachedShellEnv.getEnv());
@@ -1556,6 +1559,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (this._rendererConnections.get(windowCtx) === connection) {
 			this._rendererConnections.delete(windowCtx);
 			this._rendererConnectionContexts.delete(connection);
+			// 窓の再読み込みでは、前の窓が切れてから次の窓がつながるまでに間がある。その間に届いた要求も
+			// 「同期前かも」として扱う（つながった時点でもう一度数え直す）。
+			this._hookSyncGraceSince = Date.now();
 		}
 	}
 
@@ -4166,7 +4172,22 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 
 		const requestedToken = this._extractToken(req);
-		const ingressLease = requestedToken === undefined ? undefined : this.captureIngressLease(requestedToken);
+		let ingressLease = requestedToken === undefined ? undefined : this.captureIngressLease(requestedToken);
+		if (ingressLease === undefined && requestedToken !== undefined && this._isHookTokenPossiblyUnsynced(requestedToken)) {
+			// まだ同期していないだけかもしれないペイン（窓の再読み込み・アプリの起動の直後）。即 404 にしない。
+			if (req.headers[PARADIS_AGENT_GATEWAY_REQUEST_HEADER] !== undefined) {
+				// 接続先の受け口から来た。すぐ答えて、待つのは受け口に任せる（paradisUnsyncedPaneWait.ts）
+				res.writeHead(503, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Retry-After': '1', [PARADIS_AGENT_GATEWAY_UNSYNCED_HEADER]: '1' });
+				res.end(JSON.stringify({ error: 'Pane not synced yet.' }));
+				return;
+			}
+			// 待ちは受け口の枠（_reserveIngressRequest）を使わない。相手が切れたらやめる
+			ingressLease = await paradisWaitForUnsyncedPane(
+				() => this.captureIngressLease(requestedToken),
+				() => this._isHookTokenPossiblyUnsynced(requestedToken),
+				() => res.destroyed || req.socket.destroyed,
+			);
+		}
 		if (ingressLease === undefined) {
 			this._sendIngressRejected(res);
 			return;
