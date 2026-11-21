@@ -57,7 +57,7 @@ export type ParadisBindingRestoreOutcome = 'restored' | 'skipped' | 'retry' | 'm
 
 /**
  * 共有の経路が投げた失敗の扱いを決める。別の窓のペイン・ページ（ownerConflict）とスペースの違い
- * （scopeMismatch）は戻せないので行を消す（`skipped`）。状態が動いている最中の失敗（PARA_BROWSER_RETRYABLE と、
+ * （scopeMismatch）は戻さないが、行は残す（`failed`）。状態が動いている最中の失敗（PARA_BROWSER_RETRYABLE と、
  * 窓の一覧の同期が済む前・変わった直後に authority が返すもの）はもう一度試す。ほかの失敗（shared process に
  * 届かない等）は行を残し、次に期間を数え直すまで試さない（`failed`）。
  */
@@ -68,7 +68,10 @@ export function paradisBindingRestoreFailureOutcome(error: unknown): 'retry' | '
 	}
 	const reason = /Binding authority rejected: (?<reason>\w+)/.exec(message)?.groups?.reason;
 	if (reason === 'ownerConflict' || reason === 'scopeMismatch') {
-		return 'skipped';
+		// 戻さない。ただし行は消さない（`failed`）。窓の再読み込みの直後は、前の窓の持ち物の整理が済む前に
+		// 同じ拒否が一時的に返ることを否定できず、消すとその共有は二度と戻らない。残した行は次に期間を
+		// 数え直したときにもう一度検査を受け、古くなれば台帳の上限（14 日）で消える。
+		return 'failed';
 	}
 	return reason !== undefined && ['manifestRequired', 'missingEntry', 'pendingScope', 'revisionMismatch', 'staleRevision', 'staleSnapshot', 'staleTicket', 'expiredTicket', 'staleConnection'].includes(reason) ? 'retry' : 'failed';
 }

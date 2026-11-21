@@ -282,7 +282,7 @@ suite('ParadisBindingRestoreController', () => {
 	});
 
 	// 自動の戻しも窓の一覧の検査（別の窓のペイン・スペースの違い）を通り、断られた組は消えて試し直さない
-	test('a share the binding authority rejects as ownerConflict or scopeMismatch is dropped, not counted and not retried', async () => {
+	test('a share the binding authority rejects as ownerConflict or scopeMismatch is not restored, not counted and not retried, but its record is kept', async () => {
 		const authority = new ParadisBindingAuthority<string, object, { readonly targetId: string }, { readonly generation: number }>({
 			now: () => 0,
 			createTicketId: () => 'unused',
@@ -329,7 +329,7 @@ suite('ParadisBindingRestoreController', () => {
 			rejections: ['token-a: Binding authority rejected: ownerConflict', 'token-b: Binding authority rejected: scopeMismatch'],
 			restored: ['token-c->page-3:restored'],
 			reports: [[1, 0]],
-			stored: ['token-c'],
+			stored: ['token-a', 'token-b', 'token-c'],
 		});
 	});
 
@@ -342,7 +342,7 @@ suite('ParadisBindingRestoreController', () => {
 			'Binding authority rejected: ownerConflict',
 			'Binding authority rejected: scopeMismatch',
 			'something else',
-		].map(message => paradisBindingRestoreFailureOutcome(new Error(message))), ['retry', 'retry', 'retry', 'retry', 'skipped', 'skipped', 'failed']);
+		].map(message => paradisBindingRestoreFailureOutcome(new Error(message))), ['retry', 'retry', 'retry', 'retry', 'failed', 'failed', 'failed']);
 	});
 
 	test('restores a pane once per window: a share that drops again right away, or a failure it cannot classify, waits for the next window', async () => {
