@@ -56,6 +56,7 @@ import './contrib/ptyDaemon/node/paradisPtyHandover.server.js'; // 常駐の端�
 import './contrib/taskBoard/node/paradisTaskBoardRemote.server.js'; // タスクボードの SSH 中継（接続先の検査と実行）
 import './contrib/claudeMod/node/paradisRemoteClaudeMod.server.js'; // 接続先の Claude Code へ mod を読ませてよいか（方針と版）
 import './contrib/agentModelCatalog/node/paradisAgentModelCatalog.server.js'; // 接続先の Claude Code・Codex から取るモデルの一覧
+import './contrib/agentBrowser/node/paradisAgentGateway.server.js'; // 接続先の番号の変わらない受け口（戻りトンネルへの中継）
 
 /**
  * REH サーバーへ fork のチャネルをすべて登録する。`serverServices.ts` から1回だけ呼ばれる。

@@ -7,6 +7,7 @@
 
 import assert from 'assert';
 import { EventEmitter } from 'events';
+import { PARADIS_AGENT_GATEWAY_REQUEST_HEADER, PARADIS_AGENT_GATEWAY_UNSYNCED_HEADER } from '../../common/paradisAgentGateway.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisExactBrowserViewDescriptor, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent } from '../../common/paradisAgentBrowser.js';
 import { IParadisBindingAuthorityManifest, ParadisBindingAuthority } from '../../common/paradisBindingAuthority.js';
@@ -1809,6 +1810,8 @@ suite('ParadisAgentBrowser authority integration', () => {
 		const connection = {};
 		fixture.service.registerRendererConnection('window:1', connection);
 		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'owned' }]));
+		// 窓がつながった直後は、知らないトークンを「同期前かも」として待たせる。ここではその猶予を過ぎた後を見る
+		Reflect.set(fixture.service, '_hookSyncGraceSince', Date.now() - 61_000);
 		const handleRequest = Reflect.get(fixture.service, '_handleRequest').bind(fixture.service) as (request: TestRequest, response: TestResponse) => Promise<void>;
 		const cases: readonly [TestRequest, () => void][] = [
 			[new TestRequest('POST', '/'), () => undefined],
@@ -1830,6 +1833,39 @@ suite('ParadisAgentBrowser authority integration', () => {
 			assert.strictEqual(response.body, expectedBody);
 		}
 		assert.strictEqual(Reflect.get(fixture.service, '_seenTokens').size, 0);
+	});
+
+	test('holds an MCP request for a pane that may not be synced yet instead of rejecting it, and leaves the waiting to the gateway when it came through one', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		const handleRequest = Reflect.get(fixture.service, '_handleRequest').bind(fixture.service) as (request: TestRequest, response: TestResponse) => Promise<void>;
+
+		const viaGateway = mcpRequest('late');
+		viaGateway.headers[PARADIS_AGENT_GATEWAY_REQUEST_HEADER] = '1';
+		const gatewayResponse = new TestResponse();
+		let gatewayHeaders: Record<string, string> = {};
+		gatewayResponse.writeHead = (statusCode: number, headers?: Record<string, string>) => {
+			gatewayResponse.statusCode = statusCode;
+			gatewayResponse.headersSent = true;
+			gatewayHeaders = headers ?? {};
+		};
+		await handleRequest(viaGateway, gatewayResponse);
+
+		// 同期された後の処理は見ない。枠が取れなかったことにして、ペインとして受け付けられた直後（429）で止める
+		Reflect.set(fixture.service, '_reserveIngressRequest', () => undefined);
+		const directResponse = new TestResponse();
+		let settled = false;
+		const direct = handleRequest(mcpRequest('late'), directResponse).finally(() => { settled = true; });
+		await new Promise(resolve => setTimeout(resolve, 400));
+		const heldBeforeSync = !settled && directResponse.statusCode === undefined;
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'late' }]));
+		await direct;
+
+		assert.deepStrictEqual(
+			{ gateway: gatewayResponse.statusCode, unsyncedMark: gatewayHeaders[PARADIS_AGENT_GATEWAY_UNSYNCED_HEADER], heldBeforeSync, afterSync: directResponse.statusCode },
+			{ gateway: 503, unsyncedMark: '1', heldBeforeSync: true, afterSync: 429 },
+		);
 	});
 
 	test('answers a voice ingress that arrives while shutting down with 503 so the remote side plays it, and other requests with 404', async () => {
