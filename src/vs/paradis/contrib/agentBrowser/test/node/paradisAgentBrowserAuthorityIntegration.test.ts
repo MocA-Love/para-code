@@ -1862,9 +1862,24 @@ suite('ParadisAgentBrowser authority integration', () => {
 		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'late' }]));
 		await direct;
 
+		// 窓が長く開いた後で切れた（再読み込みの始まり）。次の窓がつながる前に届いた要求も、知らないとは答えない
+		Reflect.set(fixture.service, '_hookSyncGraceSince', Date.now() - 61_000);
+		const expiredResponse = new TestResponse();
+		const expired = mcpRequest('reloading');
+		expired.headers[PARADIS_AGENT_GATEWAY_REQUEST_HEADER] = '1';
+		await handleRequest(expired, expiredResponse);
+		fixture.service.unregisterRendererConnection('window:1', connection);
+		const reloadingResponse = new TestResponse();
+		const reloading = mcpRequest('reloading');
+		reloading.headers[PARADIS_AGENT_GATEWAY_REQUEST_HEADER] = '1';
+		await handleRequest(reloading, reloadingResponse);
+
 		assert.deepStrictEqual(
-			{ gateway: gatewayResponse.statusCode, unsyncedMark: gatewayHeaders[PARADIS_AGENT_GATEWAY_UNSYNCED_HEADER], heldBeforeSync, afterSync: directResponse.statusCode },
-			{ gateway: 503, unsyncedMark: '1', heldBeforeSync: true, afterSync: 429 },
+			{
+				gateway: gatewayResponse.statusCode, unsyncedMark: gatewayHeaders[PARADIS_AGENT_GATEWAY_UNSYNCED_HEADER], heldBeforeSync, afterSync: directResponse.statusCode,
+				unknownLongAfterConnect: expiredResponse.statusCode, unknownRightAfterDisconnect: reloadingResponse.statusCode,
+			},
+			{ gateway: 503, unsyncedMark: '1', heldBeforeSync: true, afterSync: 429, unknownLongAfterConnect: 404, unknownRightAfterDisconnect: 503 },
 		);
 	});
 

@@ -1559,6 +1559,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (this._rendererConnections.get(windowCtx) === connection) {
 			this._rendererConnections.delete(windowCtx);
 			this._rendererConnectionContexts.delete(connection);
+			// 窓の再読み込みでは、前の窓が切れてから次の窓がつながるまでに間がある。その間に届いた要求も
+			// 「同期前かも」として扱う（つながった時点でもう一度数え直す）。
+			this._hookSyncGraceSince = Date.now();
 		}
 	}
 
