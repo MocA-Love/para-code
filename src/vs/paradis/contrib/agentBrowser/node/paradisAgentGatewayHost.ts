@@ -414,7 +414,10 @@ export class ParadisAgentGatewayHost {
 			res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', Connection: 'close' });
 			res.end(JSON.stringify({ released: true }), () => {
 				this.options.log.info('[ParadisAgentGateway] handing the gateway port over to a newer server');
+				const port = this.heldPort;
 				this.release();
+				// 譲った番号は新しいサーバーが持つ。聞き直すまでの間も、窓には同じ番号を答える
+				this.observed = port === undefined ? undefined : { port, version: requestedVersion };
 				this.notify();
 				// 譲った先の受け口の番号を、控えとして聞き直す
 				this.scheduleAcquire(this.standbyPollMs);

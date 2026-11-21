@@ -443,6 +443,13 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 	 */
 	private mcpConfigPending = false;
 
+	/**
+	 * 最後に接続先のサーバーが答えた受け口の番号。受け口は一時的に答えられないことがある（サーバーの
+	 * 入れ替わりの最中・呼び出しの失敗）。そのたびに設定を戻りトンネルの番号へ書き戻すと、その間に起動した
+	 * エージェントが変わる番号を覚えてしまうので、答えが無い間はこの番号を使い続ける。
+	 */
+	private lastGatewayPort: number | undefined;
+
 	/** 設定を書けなかった旨の警告を、30秒ごとの見直しで出し続けないための目印。 */
 	private hasWarnedAboutMcpConfig = false;
 
@@ -633,7 +640,7 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 			}
 			// 接続先に受け口があれば、エージェントの設定の URL は受け口を指す（番号が変わらず、切れている間は
 			// 待たせてくれる）。古い REH には無いので、今までどおり戻りトンネルの番号を書く
-			await this.writeMcpConfig(home, paradisRemoteMcpConfigPort(await this.gatewayEndpoint(), remotePort));
+			await this.writeMcpConfig(home, await this.mcpConfigPort(remotePort));
 			await this.mergeAntigravityMcp(home);
 			this.installedPort = remotePort;
 			if (hooked) {
@@ -804,21 +811,28 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 	}
 
 	/**
-	 * 接続先の受け口の番号を接続先のサーバーに聞く。受け口を持たない古い REH・受け口が番号を取れなかった
-	 * 接続先では undefined（戻りトンネルの番号を直に使う）。
+	 * エージェントの設定の URL に書く番号。接続先のサーバーに受け口の番号を聞く。受け口を持たない古い REH
+	 * （チャネルが無い）では戻りトンネルの番号を直に使う。答えが一時的に無いだけなら、前に聞いた番号を使い続ける。
 	 */
-	private async gatewayEndpoint(): Promise<IParadisAgentGatewayEndpoint | undefined> {
+	private async mcpConfigPort(tunnelPort: number): Promise<number> {
 		const connection = this.remoteAgentService.getConnection();
-		if (connection === null) {
-			return undefined;
+		let endpoint: IParadisAgentGatewayEndpoint | undefined;
+		let channelMissing = connection === null;
+		if (connection !== null) {
+			try {
+				const answer = await connection.getChannel(PARADIS_AGENT_GATEWAY_CHANNEL).call<IParadisAgentGatewayEndpoint | undefined>('getEndpoint');
+				endpoint = paradisIsAgentGatewayEndpoint(answer) ? answer : undefined;
+			} catch (error) {
+				channelMissing = paradisIsUnknownChannelError(error);
+				this.logService.trace('[paradis] could not ask the host for its agent gateway', error);
+			}
 		}
-		try {
-			const endpoint = await connection.getChannel(PARADIS_AGENT_GATEWAY_CHANNEL).call<IParadisAgentGatewayEndpoint | undefined>('getEndpoint');
-			return paradisIsAgentGatewayEndpoint(endpoint) ? endpoint : undefined;
-		} catch (error) {
-			this.logService.trace('[paradis] the host has no agent gateway (older server?)', error);
-			return undefined;
+		if (endpoint !== undefined) {
+			this.lastGatewayPort = endpoint.port;
+		} else if (channelMissing) {
+			this.lastGatewayPort = undefined;
 		}
+		return paradisRemoteMcpConfigPort(endpoint, tunnelPort, this.lastGatewayPort);
 	}
 
 	/**
@@ -848,7 +862,7 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 		if (tunnelPort === undefined) {
 			return;
 		}
-		const port = paradisRemoteMcpConfigPort(await this.gatewayEndpoint(), tunnelPort);
+		const port = await this.mcpConfigPort(tunnelPort);
 		if (!paradisShouldRewriteRemoteMcpConfig(port, this.installedMcpPort, this.mcpConfigPending)) {
 			return;
 		}
@@ -914,9 +928,18 @@ export function paradisIsAgentGatewayEndpoint(value: unknown): value is IParadis
 	return typeof port === 'number' && Number.isInteger(port) && port > 0 && port <= 65535;
 }
 
-/** エージェントの設定の URL に書く番号。受け口があればその番号、無ければ戻りトンネルの番号。 */
-export function paradisRemoteMcpConfigPort(gateway: IParadisAgentGatewayEndpoint | undefined, tunnelPort: number): number {
-	return gateway?.port ?? tunnelPort;
+/**
+ * エージェントの設定の URL に書く番号。受け口があればその番号。答えが無ければ前に聞いた受け口の番号、
+ * それも無ければ（受け口を持たない接続先）戻りトンネルの番号。
+ */
+export function paradisRemoteMcpConfigPort(gateway: IParadisAgentGatewayEndpoint | undefined, tunnelPort: number, lastGatewayPort?: number): number {
+	return gateway?.port ?? lastGatewayPort ?? tunnelPort;
+}
+
+/** 接続先のサーバーがそのチャネルを持たない（古い版）ことを示す失敗か。 */
+export function paradisIsUnknownChannelError(error: unknown): boolean {
+	// 知らないチャネルへの呼び出しは、名前が `Unknown channel` の失敗で返る（base/parts/ipc/common/ipc.ts）
+	return error instanceof Error && (/unknown channel/i.test(error.name) || /unknown channel/i.test(error.message));
 }
 
 /** エージェントの設定を書き直すか。書きたい番号が前と違うときと、前の書き込みに失敗したとき。 */

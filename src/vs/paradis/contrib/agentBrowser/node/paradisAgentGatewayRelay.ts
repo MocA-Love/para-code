@@ -19,6 +19,10 @@
 //     送る前に軽い生存確認（手元の health の GET）を挟み、通った後に本体を送る。本体を送り始めて
 //     からの失敗は流し直さず 502 にする（道具の二重実行を避ける）
 //  4. PC が 2 台あるときは、「そのトークンを知らない」（404）と答えた PC を飛ばして次を試す
+//  5. 前に届いていた PC が急に「知らない」と答えたら、すぐには信じない。窓の閉じ際・アプリの終了中・
+//     窓の再読み込みの途中でも同じ 404 が返るので、短い間は聞き直す
+//  6. 生存確認は「Para Code の受け口が答えた」ときだけ通す。ポートファイルは消されないので、もう
+//     繋いでこない PC の番号を別のプログラムが取っていることがあり、そこへトークンと本文を送らない
 //
 // WebSocket（Upgrade）は通さない。要求の本文は流し直しのために一度メモリへ受けるので、流し続ける
 // 本文（chunked の音声など）にも向かない。応答はそのまま流す（SSE を含む）。
@@ -50,9 +54,10 @@ export interface IParadisAgentGatewayRelayOptions {
 	 */
 	readonly probeFreshMs?: number;
 	/**
-	 * 初めて見るトークンで、生きている PC がすべて「知らない」と答えたとき、落ちている流し先を待つ長さ。
-	 * 古いポートファイル（もう繋いでこない PC のもの）が残っていても、終わったペインの要求を上限まで
-	 * 待たせないために短くする。
+	 * 生きている PC が「知らない」と答えたとき、それでも待つ長さ。対象は 2 つ。前に届いていた PC が
+	 * 「知らない」と答えた（窓の閉じ際・アプリの終了中かもしれない）ときと、初めて見るトークンで、落ちている
+	 * 流し先が残っているとき。古いポートファイル（もう繋いでこない PC のもの）が残っていても、終わった
+	 * ペインの要求を上限まで待たせないために短くする。
 	 */
 	readonly unknownTokenWaitMs?: number;
 	/** 受ける本文の上限。 */
@@ -65,6 +70,29 @@ const HOP_BY_HOP_HEADERS = new Set(['connection', 'keep-alive', 'proxy-authentic
 
 /** 手元が「そのトークンのペインは無い」と答えるときの本文（paradisAgentBrowserService の `_sendIngressRejected`）。 */
 const NOT_THIS_WINDOW_MARKER = 'Para Browser endpoint unavailable';
+
+/** 手元の health が、古い版（health を知らない）で返す 405 の本文に含む言葉。 */
+const LEGACY_ENDPOINT_MARKER = 'Para Code MCP endpoint';
+
+/** 生存確認の応答を受ける上限。 */
+const MAX_PROBE_BODY_BYTES = 4096;
+
+/**
+ * 生存確認の応答が、今使える Para Code の受け口のものか。
+ * 200 で `instanceId` を名乗る（今の版）か、405 で Para Code と名乗る（health を知らない古い版）ときだけ通す。
+ * 終了中の 404 と、関係の無いプログラムの応答は通さない。
+ */
+export function paradisIsLiveWindowProbe(status: number | undefined, body: string): boolean {
+	if (status === 200) {
+		try {
+			const value: unknown = JSON.parse(body);
+			return typeof value === 'object' && value !== null && typeof (value as { readonly instanceId?: unknown }).instanceId === 'string';
+		} catch {
+			return false;
+		}
+	}
+	return status === 405 && body.includes(LEGACY_ENDPOINT_MARKER);
+}
 
 /** 404・503 の本文を、中身を確かめるために受ける上限。 */
 const MAX_INSPECTED_BODY_BYTES = 256 * 1024;
@@ -198,6 +226,7 @@ export class ParadisAgentGatewayRelay {
 			let sawUnsynced = false;
 			let sawDown = sources.length === 0;
 			let rememberedDown = false;
+			let rememberedNotMine = false;
 			let notMine: IBufferedResponse | undefined;
 			for (const source of ordered) {
 				if (clientGone || this.disposed) {
@@ -226,24 +255,26 @@ export class ParadisAgentGatewayRelay {
 					sawUnsynced = true;
 				} else {
 					notMine = outcome.response;
-					if (tokenKey !== undefined && source.id === rememberedId) {
-						this.tokenSources.delete(tokenKey);
-					}
+					rememberedNotMine ||= source.id === rememberedId;
 				}
 			}
 
-			if (!sawUnsynced && !sawDown && notMine !== undefined) {
-				// 生きている PC がすべて「知らない」と答えた。待っても変わらない
+			if (!sawUnsynced && !sawDown && !rememberedNotMine && notMine !== undefined) {
+				// 生きている PC がすべて、覚えの無いトークンを「知らない」と答えた。待っても変わらない
 				this.sendBuffered(res, notMine);
 				return;
 			}
-			// 待つ長さ。生きている PC が「知らない」と答え、覚えの無いトークンで、残りは落ちている流し先だけ
-			// （古いポートファイルかもしれない）なら短く切り上げる
+			// 待つ長さ。生きている PC が「知らない」と答え、同期前とも言われず、前に届いていた PC も落ちていない
+			// なら短く切り上げる（終わったペインか、古いポートファイルが残っているだけかもしれない）
 			const waitUntil = !sawUnsynced && !rememberedDown && notMine !== undefined
 				? Math.min(deadline, startedAt + this.unknownTokenWaitMs)
 				: deadline;
 			if (Date.now() >= waitUntil) {
 				if (notMine !== undefined) {
+					if (tokenKey !== undefined && rememberedNotMine) {
+						// 聞き直しても「知らない」のまま。前に届いていた PC の覚えを捨てる
+						this.tokenSources.delete(tokenKey);
+					}
 					this.sendBuffered(res, notMine);
 				} else {
 					sendJson(res, 503, {
@@ -325,8 +356,8 @@ export class ParadisAgentGatewayRelay {
 	}
 
 	/**
-	 * 流し先が今応えるか。直前に応答があったなら確かめ直さない。
-	 * 応答の中身は見ない（古い版の手元は health を知らず 405 を返すが、届いていることは分かる）。
+	 * 流し先で、今使える Para Code の受け口が応えるか（{@link paradisIsLiveWindowProbe}）。
+	 * 直前に応答があったなら確かめ直さない。
 	 */
 	private async isAlive(port: number): Promise<boolean> {
 		const last = this.lastAlive.get(port);
@@ -352,10 +383,17 @@ export class ParadisAgentGatewayRelay {
 				host: '127.0.0.1', port, method: 'GET', path: PARADIS_AGENT_GATEWAY_PROBE_PATH, agent,
 				headers: { [PARADIS_AGENT_GATEWAY_REQUEST_HEADER]: '1' },
 			}, response => {
-				response.resume();
-				response.on('end', () => settle(true));
+				const chunks: Buffer[] = [];
+				let size = 0;
+				response.on('data', (chunk: Buffer) => {
+					size += chunk.length;
+					if (size <= MAX_PROBE_BODY_BYTES) {
+						chunks.push(chunk);
+					}
+				});
+				response.on('end', () => settle(size <= MAX_PROBE_BODY_BYTES && paradisIsLiveWindowProbe(response.statusCode, Buffer.concat(chunks).toString('utf8'))));
 				response.on('error', () => settle(false));
-				response.on('close', () => settle(response.complete));
+				response.on('close', () => settle(false));
 			});
 			probe.setTimeout(this.probeTimeoutMs, () => probe.destroy(new Error('probe timed out')));
 			probe.on('error', () => settle(false));

@@ -105,10 +105,12 @@ suite('ParadisAgentGatewayHost', () => {
 	test('holds a port, records it for other processes on the host, and relays to the port file', async () => {
 		const received: string[] = [];
 		const window = httpModule.createServer((req, res) => {
-			if (req.url !== PARADIS_AGENT_GATEWAY_PROBE_PATH) {
-				received.push(`${req.method} ${req.url}`);
-			}
 			res.writeHead(200, { 'Content-Type': 'application/json' });
+			if (req.url === PARADIS_AGENT_GATEWAY_PROBE_PATH) {
+				res.end(JSON.stringify({ instanceId: 'test-instance' }));
+				return;
+			}
+			received.push(`${req.method} ${req.url}`);
 			res.end('{"ok":true}');
 		});
 		servers.push(window);

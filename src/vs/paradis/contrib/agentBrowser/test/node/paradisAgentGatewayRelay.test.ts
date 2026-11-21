@@ -12,7 +12,7 @@ import type * as net from 'net';
 import type { AddressInfo, Socket } from 'net';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PARADIS_AGENT_GATEWAY_PROBE_PATH, PARADIS_AGENT_GATEWAY_REQUEST_HEADER, PARADIS_AGENT_GATEWAY_TIMEOUT_CODE, PARADIS_AGENT_GATEWAY_UNSYNCED_HEADER } from '../../common/paradisAgentGateway.js';
-import { IParadisAgentGatewaySource, ParadisAgentGatewayRelay } from '../../node/paradisAgentGatewayRelay.js';
+import { IParadisAgentGatewaySource, ParadisAgentGatewayRelay, paradisIsLiveWindowProbe } from '../../node/paradisAgentGatewayRelay.js';
 import { PARADIS_MCP_HEALTH_PATH } from '../../node/paradisBrowserMcpShimCore.js';
 
 interface IReceived {
@@ -59,13 +59,17 @@ suite('ParadisAgentGatewayRelay', () => {
 	}
 
 	/** 手元の Para Code の HTTP の代わり。health には答え、それ以外は渡された答え方で答える。 */
-	async function fakeWindow(respond: Responder, port = 0): Promise<{ readonly port: number; readonly received: IReceived[]; close(): Promise<void> }> {
+	async function fakeWindow(respond: Responder, port = 0, health?: Responder): Promise<{ readonly port: number; readonly received: IReceived[]; close(): Promise<void> }> {
 		const received: IReceived[] = [];
 		const sockets = new Set<Socket>();
 		const server = httpModule.createServer((req, res) => {
-			if (req.method === 'GET' && req.url === PARADIS_AGENT_GATEWAY_PROBE_PATH) {
+			if (req.method === 'GET' && req.url === PARADIS_AGENT_GATEWAY_PROBE_PATH && health === undefined) {
 				res.writeHead(200, { 'Content-Type': 'application/json' });
-				res.end('{}');
+				res.end(JSON.stringify({ protocolVersion: 1, instanceId: 'test-instance', serviceStartedAt: 1 }));
+				return;
+			}
+			if (req.method === 'GET' && req.url === PARADIS_AGENT_GATEWAY_PROBE_PATH && health !== undefined) {
+				health({ method: 'GET', url: req.url, body: '', gateway: undefined, authorization: req.headers.authorization }, res);
 				return;
 			}
 			const chunks: Buffer[] = [];
@@ -252,6 +256,78 @@ suite('ParadisAgentGatewayRelay', () => {
 		assert.deepStrictEqual(
 			{ statuses: responses.map(response => response.status), first: first.received.map(entry => entry.body), second: second.received.map(entry => entry.body) },
 			{ statuses: [200, 200], first: ['one'], second: ['one', 'two'] },
+		);
+	});
+
+	test('keeps asking the PC that served a pane before when it suddenly says it does not know it, across a restart of the app', async () => {
+		// アプリの終了中は、health にも要求にも「知らない」の 404 が返り、その後に接続拒否になる
+		let phase: 'running' | 'window-closing' | 'app-quitting' = 'running';
+		const before = await fakeWindow(
+			(received, res) => phase === 'running' ? ok(received, res) : NOT_MINE(received, res),
+			0,
+			(received, res) => {
+				if (phase === 'app-quitting') {
+					NOT_MINE(received, res);
+					return;
+				}
+				res.writeHead(200, { 'Content-Type': 'application/json' });
+				res.end(JSON.stringify({ instanceId: 'before' }));
+			},
+		);
+		let sources: IParadisAgentGatewaySource[] = [{ id: 'a', port: before.port }];
+		const port = await gateway(() => sources);
+
+		const first = await call(port, { body: 'first', token: 't' });
+		phase = 'window-closing';
+		const pending = call(port, { body: 'during-restart', token: 't' });
+		await new Promise(resolve => setTimeout(resolve, 100));
+		phase = 'app-quitting';
+		await new Promise(resolve => setTimeout(resolve, 100));
+		await before.close();
+		await new Promise(resolve => setTimeout(resolve, 100));
+		const after = await fakeWindow(ok);
+		sources = [{ id: 'a', port: after.port }];
+		const response = await pending;
+
+		assert.deepStrictEqual(
+			{ first: first.status, status: response.status, delivered: after.received.map(entry => entry.body) },
+			{ first: 200, status: 200, delivered: ['during-restart'] },
+		);
+	});
+
+	test('gives the 404 back after a short while when the PC that served a pane keeps saying it does not know it', async () => {
+		let known = true;
+		const window = await fakeWindow((received, res) => known ? ok(received, res) : NOT_MINE(received, res));
+		const port = await gateway(() => [{ id: 'a', port: window.port }], { waitLimitMs: 60_000, unknownTokenWaitMs: 150 });
+
+		const first = await call(port, { token: 't' });
+		known = false;
+		const startedAt = Date.now();
+		const second = await call(port, { token: 't' });
+
+		assert.deepStrictEqual({ first: first.status, second: second.status, askedAgain: window.received.length > 2, waited: Date.now() - startedAt >= 150 }, { first: 200, second: 404, askedAgain: true, waited: true });
+	});
+
+	test('does not send the token or the body to a port that is not a Para Code window', async () => {
+		// もう繋いでこない PC のポートファイルの番号を、関係の無い HTTP サーバーが取っていた
+		const stranger = await fakeWindow(ok, 0, (_received, res) => { res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('hello'); });
+		const window = await fakeWindow(ok);
+		const port = await gateway(() => [{ id: 'stale', port: stranger.port }, { id: 'a', port: window.port }]);
+
+		const response = await call(port, { body: 'secret', token: 't' });
+
+		assert.deepStrictEqual({ status: response.status, stranger: stranger.received, delivered: window.received.length }, { status: 200, stranger: [], delivered: 1 });
+	});
+
+	test('accepts only a Para Code window as alive', () => {
+		assert.deepStrictEqual(
+			{
+				current: paradisIsLiveWindowProbe(200, '{"protocolVersion":1,"instanceId":"abc","serviceStartedAt":1}'),
+				olderWithoutHealth: paradisIsLiveWindowProbe(405, '{"error":"Method not allowed. This is a Para Code MCP endpoint (Streamable HTTP, POST only) with a CDP gateway under /cdp."}'),
+				quitting: paradisIsLiveWindowProbe(404, '{"error":"Para Browser endpoint unavailable."}'),
+				otherServer: [paradisIsLiveWindowProbe(200, 'hello'), paradisIsLiveWindowProbe(200, '{}'), paradisIsLiveWindowProbe(405, 'Method Not Allowed'), paradisIsLiveWindowProbe(undefined, '')],
+			},
+			{ current: true, olderWithoutHealth: true, quitting: false, otherServer: [false, false, false, false] },
 		);
 	});
 
