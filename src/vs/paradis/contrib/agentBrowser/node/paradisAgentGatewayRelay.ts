@@ -255,6 +255,10 @@ export class ParadisAgentGatewayRelay {
 			}
 			await this.sleep(Math.min(this.retryDelayMs, Math.max(0, waitUntil - Date.now())), onClientGone);
 		}
+		if (!clientGone) {
+			// 受け口のサーバーが終わる。待たせたまま黙って切らない（何も実行していない）
+			sendJson(res, 503, { error: 'The Para Code gateway on this host is shutting down; nothing was run. Try again.', code: PARADIS_AGENT_GATEWAY_TIMEOUT_CODE });
+		}
 	}
 
 	private remember(tokenKey: string, sourceId: string): void {
