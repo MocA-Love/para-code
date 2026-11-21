@@ -19,6 +19,7 @@
 import { app, powerMonitor } from 'electron';
 import { promises as fs, unlinkSync } from 'fs';
 import { freemem, loadavg, uptime } from 'os';
+import { raceTimeout } from '../../../../base/common/async.js';
 import { join } from '../../../../base/common/path.js';
 import { DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILifecycleMainService } from '../../../../platform/lifecycle/electron-main/lifecycleMainService.js';
@@ -27,6 +28,9 @@ import { IWindowsMainService } from '../../../../platform/windows/electron-main/
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisSentryMainState, whenParadisSentryMainSettled } from '../../sentry/electron-main/paradisSentryMain.js';
 import { IParadisRunMarker, PARADIS_RUN_MARKER_BEAT_MS, paradisBuildRunMarker, paradisClassifyRunEnd, paradisParseRunMarker, paradisRunEndExtra } from '../common/paradisRunMarker.js';
+
+/** How long the shutdown waits for the marker to say `quitting`. */
+const QUIT_WRITE_TIMEOUT_MS = 1_000;
 
 /** The marker file, directly under the user data folder. */
 const MARKER_FILE_NAME = 'paradis-run-marker.json';
@@ -68,6 +72,8 @@ export function paradisStartRunMarker(
 	let suspended = false;
 	let osShutdown = false;
 	let writing = false;
+	// Nothing is written until the marker of the previous run has been read and removed.
+	let previousTaken = false;
 	// Set once the shutdown owns the file: a heartbeat still in flight must not write over it.
 	let stopped = false;
 
@@ -112,7 +118,7 @@ export function paradisStartRunMarker(
 		}
 	};
 	const beat = (): void => {
-		if (stopped || writing) {
+		if (stopped || writing || !previousTaken) {
 			return;
 		}
 		writing = true;
@@ -134,6 +140,7 @@ export function paradisStartRunMarker(
 	void (async () => {
 		// Read the previous marker before the first heartbeat replaces it.
 		const previous = await takePreviousMarker(markerPath);
+		previousTaken = true;
 		if (previous) {
 			reportPreviousRun(previous, { now: Date.now(), osUptimeSeconds: uptime(), appVersion, commit: build.commit }, logService);
 		}
@@ -176,10 +183,15 @@ export function paradisStartRunMarker(
 	// The shutdown has begun: say so in the marker right away, and remove the marker when the process
 	// really ends. A quit that hangs and is then forced leaves a marker that says `quitting`.
 	store.add(lifecycleMainService.onWillShutdown(event => {
+		const wasStopped = stopped;
 		stopped = true;
 		phase = 'quitting';
-		// After the heartbeat in flight, if any. The shutdown waits for this small write.
-		event.join('paradisRunMarker', lastWrite.then(() => write(quitTempPath, () => true)));
+		if (wasStopped || !previousTaken) {
+			return;
+		}
+		// After the heartbeat in flight, if any. The shutdown waits for this small write, but not
+		// for a disk that does not answer.
+		event.join('paradisRunMarker', raceTimeout(lastWrite.then(() => write(quitTempPath, () => true)), QUIT_WRITE_TIMEOUT_MS).then(() => undefined));
 	}));
 	// `quit` is the last Electron event of an orderly end; `exit` covers `process.exit()`.
 	app.once('quit', remove);
