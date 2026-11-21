@@ -16,7 +16,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { FileService } from '../../../../../platform/files/common/fileService.js';
 import { InMemoryFileSystemProvider } from '../../../../../platform/files/common/inMemoryFilesystemProvider.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { IParadisRemoteAgentHookFilesHost, ParadisRemoteAgentHookFiles, ParadisRemoteAgentHooksController, paradisCodexAccountHomePaths, paradisMergeRemoteClaudeMcpJson } from '../../electron-browser/paradisRemoteAgentHooks.contribution.js';
+import { IParadisRemoteAgentHookFilesHost, ParadisRemoteAgentHookFiles, ParadisRemoteAgentHooksController, paradisCodexAccountHomePaths, paradisIsAgentGatewayEndpoint, paradisIsUnknownChannelError, paradisMergeRemoteClaudeMcpJson, paradisRemoteMcpConfigPort, paradisShouldRewriteRemoteMcpConfig } from '../../electron-browser/paradisRemoteAgentHooks.contribution.js';
 import { paradisRollingBackupUri } from '../../../../common/paradisRollingFileBackupUri.js';
 
 interface IDeferred {
@@ -311,6 +311,33 @@ suite('Paradis remote agent JSON merge', () => {
 			notAnObject: undefined,
 			nullRoot: undefined,
 		});
+	});
+});
+
+suite('Paradis remote agent gateway port', () => {
+
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('the agent settings point at the gateway when the host has one, and are rewritten when that changes or a write failed', () => {
+		assert.deepStrictEqual(
+			{
+				withGateway: paradisRemoteMcpConfigPort({ port: 21000, version: 1 }, 36647),
+				olderServer: paradisRemoteMcpConfigPort(undefined, 36647),
+				// 受け口が一時的に答えないだけなら、前に聞いた番号のまま（戻りトンネルの番号へ書き戻さない）
+				noAnswerForNow: paradisRemoteMcpConfigPort(undefined, 36647, 21000),
+				unknownChannel: [Object.assign(new Error('Channel name \'paradisAgentGateway\' timed out after 1000ms'), { name: 'Unknown channel' }), new Error('Canceled')].map(error => paradisIsUnknownChannelError(error)),
+				validEndpoint: paradisIsAgentGatewayEndpoint({ port: 21000, version: 1 }),
+				noEndpoint: [undefined, null, {}, { port: 0 }, { port: 70000 }, { port: '21000' }].map(value => paradisIsAgentGatewayEndpoint(value)),
+				// 戻りトンネルの番号が変わっても、受け口の番号が同じなら書き直さない
+				unchanged: paradisShouldRewriteRemoteMcpConfig(21000, 21000, false),
+				gatewayAppeared: paradisShouldRewriteRemoteMcpConfig(21000, 36647, false),
+				failedBefore: paradisShouldRewriteRemoteMcpConfig(21000, 21000, true),
+			},
+			{
+				withGateway: 21000, olderServer: 36647, noAnswerForNow: 21000, unknownChannel: [true, false], validEndpoint: true, noEndpoint: [false, false, false, false, false, false],
+				unchanged: false, gatewayAppeared: true, failedBefore: true,
+			},
+		);
 	});
 });
 

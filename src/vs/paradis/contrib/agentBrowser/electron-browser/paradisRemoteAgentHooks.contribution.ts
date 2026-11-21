@@ -26,6 +26,7 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IPathService } from '../../../../workbench/services/path/common/pathService.js';
 import { PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js';
+import { IParadisAgentGatewayEndpoint, PARADIS_AGENT_GATEWAY_CHANNEL } from '../common/paradisAgentGateway.js';
 import { PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, paradisAgentHooksEnabled } from '../common/paradisAgentHooks.js';
 import { paradisAntigravityRemoteMcpServerEntry, paradisUpsertAntigravityMcpJson, paradisUpsertClaudeMcpJson, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
 import { paradisResolveRemoteMcpBridge } from './paradisRemoteMcpBridge.js';
@@ -430,6 +431,28 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 	/** 直前に接続先へ聞いたアカウント用ホームの顔ぶれ（置けたら {@link codexAccountHomesKey} へ移す）。 */
 	private listedCodexAccountHomesKey: string | undefined;
 
+	/**
+	 * 直前に接続先のエージェントの設定（para-browser の URL）へ書いた番号。接続先に受け口があればその番号、
+	 * 無ければ（古い REH）戻りトンネルの番号。
+	 */
+	private installedMcpPort: number | undefined;
+
+	/**
+	 * エージェントの設定を書けなかった（読めない・組み立てている間に書き換えられ続けた）ので、次の見直しで
+	 * やり直す目印。これが無いと、番号は「書いたつもり」になり、次に番号が変わるまで古い URL が残る。
+	 */
+	private mcpConfigPending = false;
+
+	/**
+	 * 最後に接続先のサーバーが答えた受け口の番号。受け口は一時的に答えられないことがある（サーバーの
+	 * 入れ替わりの最中・呼び出しの失敗）。そのたびに設定を戻りトンネルの番号へ書き戻すと、その間に起動した
+	 * エージェントが変わる番号を覚えてしまうので、答えが無い間はこの番号を使い続ける。
+	 */
+	private lastGatewayPort: number | undefined;
+
+	/** 設定を書けなかった旨の警告を、30秒ごとの見直しで出し続けないための目印。 */
+	private hasWarnedAboutMcpConfig = false;
+
 	/** 接続先へ写す Claude Code の mod（最初に hook 一式を置けたときに作る）。 */
 	private claudeMod: ParadisClaudeModEnvironment | undefined;
 
@@ -476,7 +499,7 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 			const codexAccounts = this.remoteAgentService.getConnection()?.getChannel(PARADIS_CODEX_ACCOUNTS_CHANNEL);
 			if (codexAccounts) {
 				this._register(codexAccounts.listen<IParadisCodexAccountsState>('onDidChangeState')(state => {
-					const port = this.installedPort;
+					const port = this.installedMcpPort ?? this.installedPort;
 					if (port !== undefined && codexAccountHomesKey(state) !== this.codexAccountHomesKey) {
 						void this.hookFiles.runExclusive(() => this.syncCodexAccountHomes(port));
 					}
@@ -487,6 +510,8 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 				async () => {
 					// 30秒ごとの見直しのついでに、ホームが分からず保留していた切り替えを反映し直す
 					await this.hookFiles.retryPending();
+					// 受け口の番号が変わった・前の書き込みに失敗したなら、エージェントの設定だけ書き直す
+					await this.hookFiles.runExclusive(() => this.refreshMcpConfigIfNeeded());
 					return channel.call<number | undefined>('ensureRemoteAgentTunnel', [this.environmentService.remoteAuthority]);
 				},
 				delayMs => new Promise(resolve => setTimeout(resolve, delayMs)),
@@ -613,8 +638,9 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 				// 読めない・書き換えが続いた。MCP と戻り経路は使えるので設置自体は続ける
 				this.logService.warn('[paradis] could not update the agent hook settings on the host; leaving them as they are');
 			}
-			await this.mergeClaudeMcp(home, remotePort);
-			await this.mergeCodexMcp(home, remotePort);
+			// 接続先に受け口があれば、エージェントの設定の URL は受け口を指す（番号が変わらず、切れている間は
+			// 待たせてくれる）。古い REH には無いので、今までどおり戻りトンネルの番号を書く
+			await this.writeMcpConfig(home, await this.mcpConfigPort(remotePort));
 			await this.mergeAntigravityMcp(home);
 			this.installedPort = remotePort;
 			if (hooked) {
@@ -779,9 +805,77 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 	 * トークンはペインごとに違うため、値を焼き込まず `${PARA_CODE_TERMINAL_PANE_ID}` の
 	 * まま書く。エージェントはターミナルの env を継いで起動するので、そこで解決される。
 	 */
-	private async mergeClaudeMcp(home: URI, port: number): Promise<void> {
+	private async mergeClaudeMcp(home: URI, port: number): Promise<boolean> {
 		const file = joinPath(home, '.claude.json');
-		await this.hookFiles.mergeJson(file, current => paradisMergeRemoteClaudeMcpJson(current, port));
+		return this.hookFiles.mergeJson(file, current => paradisMergeRemoteClaudeMcpJson(current, port));
+	}
+
+	/**
+	 * エージェントの設定の URL に書く番号。接続先のサーバーに受け口の番号を聞く。受け口を持たない古い REH
+	 * （チャネルが無い）では戻りトンネルの番号を直に使う。答えが一時的に無いだけなら、前に聞いた番号を使い続ける。
+	 */
+	private async mcpConfigPort(tunnelPort: number): Promise<number> {
+		const connection = this.remoteAgentService.getConnection();
+		let endpoint: IParadisAgentGatewayEndpoint | undefined;
+		let channelMissing = connection === null;
+		if (connection !== null) {
+			try {
+				const answer = await connection.getChannel(PARADIS_AGENT_GATEWAY_CHANNEL).call<IParadisAgentGatewayEndpoint | undefined>('getEndpoint');
+				endpoint = paradisIsAgentGatewayEndpoint(answer) ? answer : undefined;
+			} catch (error) {
+				channelMissing = paradisIsUnknownChannelError(error);
+				this.logService.trace('[paradis] could not ask the host for its agent gateway', error);
+			}
+		}
+		if (endpoint !== undefined) {
+			this.lastGatewayPort = endpoint.port;
+		} else if (channelMissing) {
+			this.lastGatewayPort = undefined;
+		}
+		return paradisRemoteMcpConfigPort(endpoint, tunnelPort, this.lastGatewayPort);
+	}
+
+	/**
+	 * Claude Code と Codex の設定へ para-browser の URL を書く。{@link ParadisRemoteAgentHookFiles.runExclusive} の中から呼ぶ。
+	 * 書けなかったら覚えておき、次の見直しでやり直す（{@link refreshMcpConfigIfNeeded}）。
+	 */
+	private async writeMcpConfig(home: URI, port: number): Promise<void> {
+		const claude = await this.mergeClaudeMcp(home, port);
+		const codex = await this.mergeCodexMcp(home, port);
+		this.installedMcpPort = port;
+		this.mcpConfigPending = !(claude && codex);
+		if (!this.mcpConfigPending) {
+			this.hasWarnedAboutMcpConfig = false;
+		} else if (!this.hasWarnedAboutMcpConfig) {
+			this.hasWarnedAboutMcpConfig = true;
+			this.logService.warn('[paradis] could not update the para-browser settings of an agent on the host; will retry');
+		}
+	}
+
+	/**
+	 * 30秒ごとの見直しで、エージェントの設定の URL だけを書き直す。受け口の番号が変わった（接続先のサーバーが
+	 * 入れ替わって番号を取り直した・受け口が後から立った）ときと、前の書き込みに失敗したときに書く。
+	 * hook 一式を置けるまでは何もしない（そちらが同じ番号で書く）。
+	 */
+	private async refreshMcpConfigIfNeeded(): Promise<void> {
+		const tunnelPort = this.installedPort;
+		if (tunnelPort === undefined) {
+			return;
+		}
+		const port = await this.mcpConfigPort(tunnelPort);
+		if (!paradisShouldRewriteRemoteMcpConfig(port, this.installedMcpPort, this.mcpConfigPending)) {
+			return;
+		}
+		const home = await this.remoteUserHome();
+		if (home === undefined) {
+			return;
+		}
+		try {
+			await this.writeMcpConfig(home, port);
+		} catch (error) {
+			this.mcpConfigPending = true;
+			this.logService.trace('[paradis] could not rewrite the para-browser settings on the host', error);
+		}
 	}
 
 	/**
@@ -794,13 +888,15 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 	 * トークンはペインごとに違うので値を焼き込まず、環境変数の名前だけを渡す
 	 * （Codex が起動時にその変数を読んで Bearer に載せる）。
 	 */
-	private async mergeCodexMcp(home: URI, port: number): Promise<void> {
+	private async mergeCodexMcp(home: URI, port: number): Promise<boolean> {
 		// アカウントを切り替えた Codex は、そのホームの config.toml を読む。アカウント用ホームにも同じ節を入れる
 		// （作るときに既定のホームの config.toml を写しているので、たいていは番号の書き換えだけになる）
 		const codexHomes = [joinPath(home, '.codex'), ...await this.codexAccountHomes()];
+		let applied = true;
 		for (const codexHome of codexHomes) {
-			await this.hookFiles.mergeJson(joinPath(codexHome, 'config.toml'), current => paradisUpsertCodexMcpToml(current ?? '', port));
+			applied = await this.hookFiles.mergeJson(joinPath(codexHome, 'config.toml'), current => paradisUpsertCodexMcpToml(current ?? '', port)) && applied;
 		}
+		return applied;
 	}
 
 	/**
@@ -824,6 +920,31 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 		const entry = paradisAntigravityRemoteMcpServerEntry(bridge);
 		await this.hookFiles.mergeJson(joinPath(configDir, 'mcp_config.json'), current => paradisUpsertAntigravityMcpJson(current, entry, true));
 	}
+}
+
+/** 接続先のサーバーが返した受け口の場所として使える形か。 */
+export function paradisIsAgentGatewayEndpoint(value: unknown): value is IParadisAgentGatewayEndpoint {
+	const port = (value as { port?: unknown } | undefined | null)?.port;
+	return typeof port === 'number' && Number.isInteger(port) && port > 0 && port <= 65535;
+}
+
+/**
+ * エージェントの設定の URL に書く番号。受け口があればその番号。答えが無ければ前に聞いた受け口の番号、
+ * それも無ければ（受け口を持たない接続先）戻りトンネルの番号。
+ */
+export function paradisRemoteMcpConfigPort(gateway: IParadisAgentGatewayEndpoint | undefined, tunnelPort: number, lastGatewayPort?: number): number {
+	return gateway?.port ?? lastGatewayPort ?? tunnelPort;
+}
+
+/** 接続先のサーバーがそのチャネルを持たない（古い版）ことを示す失敗か。 */
+export function paradisIsUnknownChannelError(error: unknown): boolean {
+	// 知らないチャネルへの呼び出しは、名前が `Unknown channel` の失敗で返る（base/parts/ipc/common/ipc.ts）
+	return error instanceof Error && (/unknown channel/i.test(error.name) || /unknown channel/i.test(error.message));
+}
+
+/** エージェントの設定を書き直すか。書きたい番号が前と違うときと、前の書き込みに失敗したとき。 */
+export function paradisShouldRewriteRemoteMcpConfig(port: number, installedPort: number | undefined, pending: boolean): boolean {
+	return pending || port !== installedPort;
 }
 
 /** 接続先の状態から、Codex のアカウント用ホーム（ログイン済みで、既定のホーム以外）のパスを取り出す。 */
