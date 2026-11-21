@@ -114,7 +114,14 @@ export class ParadisAgentStatusPoller extends Disposable implements IWorkbenchCo
 		};
 		// token serviceとpollerのcreate listener順に依存しないよう、未解決なら割当変更時に補完する。
 		listeners.add(this.paneTokenService.onDidChange(() => token ??= this.paneTokenService.getTokenForInstance(instance.instanceId)));
-		listeners.add(instance.onExit(notify));
+		listeners.add(instance.onExit(() => {
+			// 窓の再読み込みでは、端末をプロセスから切り離して片付けるときにも onExit が届く（プロセスは生きていて、
+			// 次の窓がつなぎ直す）。これを終了として知らせると、そのペインの印は終わったものとして扱われ続け、
+			// つなぎ直した後のエージェントの hook も para-browser も断られる。
+			if (!this.preserveTerminalsForReload) {
+				notify();
+			}
+		}));
 		listeners.add(instance.onDisposed(() => {
 			if (!this.preserveTerminalsForReload) {
 				notify();
