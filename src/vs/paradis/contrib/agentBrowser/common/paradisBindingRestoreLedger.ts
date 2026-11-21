@@ -12,6 +12,13 @@
 // 決まる）とブラウザのページの ID（エディタの復元で同じ値に戻る）は再起動の後も同じなので、その組を
 // WORKSPACE の storage に控え、起動後に同じ組だけを既存の共有の経路で張り直す。
 //
+// 行は、共有が続いている間は今の状態で書き直し、共有が外れても残す（一覧からの欠落・窓の消滅のように勝手に
+// 外れたものを、後で同じ組へ戻すため）。行を消すのは、利用者が共有を外したとき・端末が終わったとき・戻せないと
+// 分かったときで、消す側（paradisBindingRestoreController.ts）が決める。
+//
+// ページのオリジン（共有していた間の最後のもの）も控える。戻すときにページが別のサイトへ移っていたら戻さない。
+// オリジンの無い行（この項目を足す前の版が書いた行）は確かめられないので戻さない。
+//
 // 1 つのペインは複数のページを共有できる。current のページを `pageId` に、2 枚目以降を `more`（古い順）に控え、
 // 張り直すときは `more` を古い順に共有してから `pageId` を共有する（最後に共有したものが current になる）。
 //
@@ -29,6 +36,8 @@ export interface IParadisBindingRestoreEntry {
 	readonly at: number;
 	/** そのペインへ 2 枚目以降に共有していたページ（古い順。current の `pageId` は含まない）。 */
 	readonly more?: readonly string[];
+	/** 共有していた間の最後のオリジン（ページの ID → オリジン）。外れた後は書き直さない。 */
+	readonly origins?: Readonly<Record<string, string>>;
 }
 
 /** 台帳に残す件数の上限。 */
@@ -42,6 +51,24 @@ export const PARADIS_BINDING_RESTORE_REFRESH_MS = 24 * 60 * 60_000;
 
 const KEY_PATTERN = /^[0-9a-f]{40}$/;
 const MAX_PAGE_ID_LENGTH = 512;
+const MAX_ORIGIN_LENGTH = 512;
+
+/**
+ * 照合に使うオリジン（スキームとホスト・ポート）。`file:` や `about:` のようにホストの無い URL は
+ * スキームだけになる（パスは比べない）。読めない URL は undefined（照合できないので戻さない）。
+ */
+export function paradisBindingRestoreOrigin(url: string | undefined): string | undefined {
+	if (url === undefined || url.length === 0) {
+		return undefined;
+	}
+	try {
+		const parsed = new URL(url);
+		const origin = `${parsed.protocol}//${parsed.host}`.toLowerCase();
+		return origin.length <= MAX_ORIGIN_LENGTH ? origin : undefined;
+	} catch {
+		return undefined;
+	}
+}
 
 /** トークンから台帳のキーを作る。読めても元のトークンに戻せなければよく、衝突への強さは要らない。 */
 export function paradisBindingRestoreKey(token: string): string {
@@ -66,16 +93,53 @@ export function paradisParseBindingRestoreLedger(raw: string | undefined, now: n
 		return result;
 	}
 	for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-		const entry = value as { pageId?: unknown; at?: unknown; more?: unknown } | null;
+		const entry = value as { pageId?: unknown; at?: unknown; more?: unknown; origins?: unknown } | null;
 		if (!KEY_PATTERN.test(key) || !entry || typeof entry !== 'object'
 			|| !isPageId(entry.pageId)
 			|| typeof entry.at !== 'number' || !Number.isFinite(entry.at) || now - entry.at > PARADIS_BINDING_RESTORE_MAX_AGE_MS) {
 			continue;
 		}
 		const more = paradisNormalizeMorePages(entry.pageId, Array.isArray(entry.more) ? entry.more.filter(isPageId) : []);
-		result.set(key, more.length > 0 ? { pageId: entry.pageId, at: entry.at, more } : { pageId: entry.pageId, at: entry.at });
+		const stored = entry.origins && typeof entry.origins === 'object' && !Array.isArray(entry.origins) ? entry.origins as Record<string, unknown> : {};
+		const origins = new Map<string, string>();
+		for (const pageId of [...more, entry.pageId]) {
+			const origin = Object.hasOwn(stored, pageId) ? stored[pageId] : undefined;
+			if (typeof origin === 'string' && origin.length > 0 && origin.length <= MAX_ORIGIN_LENGTH) {
+				origins.set(pageId, origin);
+			}
+		}
+		result.set(key, makeEntry(entry.pageId, entry.at, more, origins));
 	}
 	return paradisTrimBindingRestoreLedger(result);
+}
+
+function makeEntry(pageId: string, at: number, more: readonly string[], originByPageId: ReadonlyMap<string, string>): IParadisBindingRestoreEntry {
+	const origins: Record<string, string> = {};
+	for (const candidate of [...more, pageId]) {
+		const origin = originByPageId.get(candidate);
+		if (origin !== undefined) {
+			origins[candidate] = origin;
+		}
+	}
+	return {
+		pageId,
+		at,
+		...(more.length > 0 ? { more } : {}),
+		...(Object.keys(origins).length > 0 ? { origins } : {}),
+	};
+}
+
+/**
+ * 行から 1 ページを外す。current を外したら、残りのうち最後に共有したものが current になる。
+ * ページが残らなければ undefined。
+ */
+export function paradisRemovePageFromBindingRestoreEntry(entry: IParadisBindingRestoreEntry, pageId: string): IParadisBindingRestoreEntry | undefined {
+	const pages = [...(entry.more ?? []), entry.pageId].filter(candidate => candidate !== pageId);
+	const current = pages.pop();
+	if (current === undefined) {
+		return undefined;
+	}
+	return makeEntry(current, entry.at, pages, new Map(Object.entries(entry.origins ?? {})));
 }
 
 function isPageId(value: unknown): value is string {
@@ -105,32 +169,32 @@ export function paradisSerializeBindingRestoreLedger(ledger: ReadonlyMap<string,
 /**
  * 今の紐づけから次の台帳を作る。
  *
- * - このウィンドウのペインの紐づけは、今のものだけを残す（ユーザーが外した・ページを閉じた・ペインが消えた
- *   ものは消える）
- * - まだ張り直しを決めていない起動時の記録（`pendingKeys`）は消さない（起動直後は紐づけが空なので、
- *   そのまま書くと張り直す前に台帳が消える。ペインやページが別のスペースにあって今回は試せなかったものも残す）
+ * - 共有が続いているペインの行は、今の状態（ページとそのオリジン）で書き直す
+ * - 共有が無いペインの行はそのまま残す（起動直後でまだ張り直していないもの、勝手に外れたもの、ペインや
+ *   ページがまだ戻っていないもの）。時刻も書き直さないので、戻らないまま古くなった行は読むときに捨てられる
  *
  * @param boundPageByKey このウィンドウの生きているペインのうち、紐づいているもの（キー → current のページの ID）
  * @param morePagesByKey そのペインが 2 枚目以降に共有しているページ（キー → 古い順のページの ID）
+ * @param originByPageId ページの今のオリジン（分からないページは入れない）
  */
 export function paradisNextBindingRestoreLedger(
 	previous: ReadonlyMap<string, IParadisBindingRestoreEntry>,
-	pendingKeys: ReadonlySet<string>,
 	boundPageByKey: ReadonlyMap<string, string>,
 	now: number,
 	morePagesByKey: ReadonlyMap<string, readonly string[]> = new Map(),
+	originByPageId: ReadonlyMap<string, string> = new Map(),
 ): Map<string, IParadisBindingRestoreEntry> {
 	const next = new Map<string, IParadisBindingRestoreEntry>();
 	for (const [key, pageId] of boundPageByKey) {
 		const more = paradisNormalizeMorePages(pageId, morePagesByKey.get(key) ?? []);
-		// 同じ組の時刻は、古くなるまで書き直さない（評価のたびに storage へ書かないため）
+		const fresh = makeEntry(pageId, now, more, originByPageId);
+		// 同じ内容の行の時刻は、古くなるまで書き直さない（評価のたびに storage へ書かないため）
 		const kept = previous.get(key);
-		const same = kept !== undefined && kept.pageId === pageId && (kept.more ?? []).join('\n') === more.join('\n');
-		next.set(key, same && now - kept.at < PARADIS_BINDING_RESTORE_REFRESH_MS ? kept : more.length > 0 ? { pageId, at: now, more } : { pageId, at: now });
+		const same = kept !== undefined && JSON.stringify({ ...kept, at: 0 }) === JSON.stringify({ ...fresh, at: 0 });
+		next.set(key, same && now - kept.at < PARADIS_BINDING_RESTORE_REFRESH_MS ? kept : fresh);
 	}
-	for (const key of pendingKeys) {
-		const entry = previous.get(key);
-		if (entry !== undefined && !next.has(key)) {
+	for (const [key, entry] of previous) {
+		if (!next.has(key)) {
 			next.set(key, entry);
 		}
 	}
@@ -145,37 +209,60 @@ export interface IParadisBindingRestoreCandidate {
 	readonly pageId: string;
 	/** 先に共有する 2 枚目以降のページ（古い順。このウィンドウにあるものだけ）。 */
 	readonly morePageIds: readonly string[];
+	/** 行に控えたオリジン（ページの ID → オリジン）。ページを開いた後にもう一度照合する。 */
+	readonly origins: Readonly<Record<string, string>>;
+}
+
+/** 戻さないと決まったページ。`moved` は別のサイトへ移っていた、`unverified` は行にオリジンが無く確かめられない。 */
+export interface IParadisBindingRestoreDroppedPage {
+	readonly key: string;
+	readonly pageId: string;
+	readonly reason: 'moved' | 'unverified';
 }
 
 /**
- * まだ試していない記録のうち、今張り直せるもの（同じトークンのペインが生きていて、まだ紐づいておらず、
- * 同じページがこのウィンドウにある）。ペインやページがまだ復元されていない記録は候補にしない（後で再び見る）。
+ * 共有が無い行のうち、今張り直せるもの（同じトークンのペインが生きていて、まだ紐づいておらず、同じページが
+ * このウィンドウにあり、ページのオリジンが控えと同じ）。ペインやページがまだ復元されていない行は候補にしない
+ * （後で再び見る）。オリジンが違う・控えに無いページは `dropped` に入れる（呼び出し側が行から外す）。
  *
  * @param liveTokenByKey このウィンドウの生きているペイン（キー → トークン）
  * @param boundKeys 今紐づいているペインのキー
  * @param knownPageIds このウィンドウにあるページの ID
+ * @param originOf ページの今のオリジン（まだ分からなければ undefined。そのページは後で再び見る）
  */
 export function paradisBindingRestoreCandidates(
 	ledger: ReadonlyMap<string, IParadisBindingRestoreEntry>,
-	pendingKeys: ReadonlySet<string>,
 	liveTokenByKey: ReadonlyMap<string, string>,
 	boundKeys: ReadonlySet<string>,
 	knownPageIds: ReadonlySet<string>,
-): IParadisBindingRestoreCandidate[] {
+	originOf: (pageId: string) => string | undefined,
+): { candidates: IParadisBindingRestoreCandidate[]; dropped: IParadisBindingRestoreDroppedPage[] } {
 	const candidates: IParadisBindingRestoreCandidate[] = [];
-	for (const key of pendingKeys) {
-		const entry = ledger.get(key);
+	const dropped: IParadisBindingRestoreDroppedPage[] = [];
+	for (const [key, entry] of ledger) {
 		const token = liveTokenByKey.get(key);
-		if (entry === undefined || token === undefined || boundKeys.has(key)) {
+		if (token === undefined || boundKeys.has(key)) {
 			continue;
 		}
+		const alive: string[] = [];
+		for (const pageId of [...(entry.more ?? []), entry.pageId]) {
+			const origin = knownPageIds.has(pageId) ? originOf(pageId) : undefined;
+			if (origin === undefined) {
+				continue;
+			}
+			const recorded = entry.origins && Object.hasOwn(entry.origins, pageId) ? entry.origins[pageId] : undefined;
+			if (recorded === origin) {
+				alive.push(pageId);
+			} else {
+				dropped.push({ key, pageId, reason: recorded === undefined ? 'unverified' : 'moved' });
+			}
+		}
 		// current のページが無くなっていたら、2 枚目以降のうち最後に共有した生きているページを current にする
-		const alive = [...(entry.more ?? []), entry.pageId].filter(pageId => knownPageIds.has(pageId));
 		const pageId = alive.pop();
 		if (pageId === undefined) {
 			continue;
 		}
-		candidates.push({ key, token, pageId, morePageIds: alive });
+		candidates.push({ key, token, pageId, morePageIds: alive, origins: entry.origins ?? {} });
 	}
-	return candidates;
+	return { candidates, dropped };
 }

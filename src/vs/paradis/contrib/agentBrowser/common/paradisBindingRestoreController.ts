@@ -6,18 +6,20 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 再起動で外れたブラウザページの共有を張り直す手順（ワークベンチのサービスに依存しない部分）。
-// 実際のサービスへの接続は electron-browser/paradisAgentBrowserBindingRestore.contribution.ts。
+// 外れたブラウザページの共有（再起動・つなぎ直しで勝手に外れたもの）を張り直す手順（ワークベンチのサービスに
+// 依存しない部分）。実際のサービスへの接続は electron-browser/paradisAgentBrowserBindingRestore.contribution.ts。
 //
-//  1. 起動時の台帳のうち、同じペインと同じページが揃い、まだ共有されていないものを候補にする
-//  2. 候補のうち、ユーザーが今見ているスペースのもの（見えないページへの同意にしない）を 1 回の通知にまとめ、
-//     「戻す」を選んだものだけを既存の共有の経路で張り直す。「戻さない」なら台帳から消す
-//  3. 試す期間（{@link PARADIS_BINDING_RESTORE_WINDOW_MS}）を過ぎたら今回は試さない。台帳からは消さない。
-//     スペースの切り替えとリモートの接続が済んだときに期間を数え直す
+//  1. 台帳の行のうち、同じペインと同じページが揃い、まだ共有されておらず、ページのオリジンが控えと同じものを
+//     候補にする。尋ねずに既存の共有の経路で張り直し、戻した件数を知らせる
+//  2. 時間で試し直す期間（{@link PARADIS_BINDING_RESTORE_WINDOW_MS}）は、起動・スペースの切り替え・リモートの
+//     接続と、台帳にあるペインの端末がつなぎ直された（トークンが現れた）ときに数え直す。端末がまだ戻っていない
+//     行はタイマーを回さず、現れるのを待つ。期間を過ぎたら試さないが、台帳からは消さない
+//     同じ期間の中では、1 つのペインを戻すのは 1 回だけ（戻した直後にまた外れても、次の期間まで戻さない）
+//  3. 行を消すのは、利用者が共有を外したとき・端末が終わったとき・戻せないと分かったとき（スペースが違う、
+//     共有の検査に断られた等）。勝手に外れただけの行は残す
 
 import { RunOnceScheduler } from '../../../../base/common/async.js';
-import { CancellationToken, CancellationTokenSource } from '../../../../base/common/cancellation.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import {
 	IParadisBindingRestoreCandidate,
 	IParadisBindingRestoreEntry,
@@ -25,10 +27,11 @@ import {
 	paradisBindingRestoreKey,
 	paradisNextBindingRestoreLedger,
 	paradisParseBindingRestoreLedger,
+	paradisRemovePageFromBindingRestoreEntry,
 	paradisSerializeBindingRestoreLedger,
 } from './paradisBindingRestoreLedger.js';
 
-/** 張り直しを試す期間。起動・スペースの切り替え・リモートの接続から数える。 */
+/** 時間で試し直す期間。起動・スペースの切り替え・リモートの接続・端末のつなぎ直しから数える。 */
 export const PARADIS_BINDING_RESTORE_WINDOW_MS = 3 * 60_000;
 
 /** 状態の変化をまとめて見る間隔。 */
@@ -39,23 +42,39 @@ const RETRY_DELAY_MS = 2_000;
 
 /**
  * 候補を今試してよいか。
- * - `ready`: 試せる（ペインとページが同じスペースで、そのスペースを今ユーザーが見ている）
- * - `wait`: まだ決められない・今は見えないスペース。記録は残して後で見る
+ * - `ready`: 試せる（ペインとページが同じスペース。今見ていないスペースでもよい）
+ * - `wait`: まだ決められない。記録は残して後で見る
  * - `never`: 張り直せない（スペースが違う等）。台帳から外す
  */
 export type ParadisBindingRestoreReadiness = 'ready' | 'wait' | 'never';
 
-/** 張り直しの結果。`retry` は記録を残してもう一度試す。 */
-export type ParadisBindingRestoreOutcome = 'restored' | 'declined' | 'skipped' | 'retry';
+/**
+ * 張り直しの結果。`retry` は記録を残してもう一度試す。`moved` はページが別のサイトへ移っていた（そのページだけ
+ * 台帳から外す）。`skipped` は戻せない（行を台帳から外し、試し直さない）。`failed` は理由の分からない失敗
+ * （行は残し、次に期間を数え直すまで試さない）。
+ */
+export type ParadisBindingRestoreOutcome = 'restored' | 'skipped' | 'retry' | 'moved' | 'failed';
 
-/** 通知に出す 1 件分（ページの名前とペインの名前）。 */
-export interface IParadisBindingRestoreDescription {
-	readonly page: string;
-	readonly pane: string;
+/**
+ * 共有の経路が投げた失敗の扱いを決める。別の窓のペイン・ページ（ownerConflict）とスペースの違い
+ * （scopeMismatch）は戻さないが、行は残す（`failed`）。状態が動いている最中の失敗（PARA_BROWSER_RETRYABLE と、
+ * 窓の一覧の同期が済む前・変わった直後に authority が返すもの）はもう一度試す。ほかの失敗（shared process に
+ * 届かない等）は行を残し、次に期間を数え直すまで試さない（`failed`）。
+ */
+export function paradisBindingRestoreFailureOutcome(error: unknown): 'retry' | 'skipped' | 'failed' {
+	const message = error instanceof Error ? error.message : '';
+	if (message.startsWith('PARA_BROWSER_RETRYABLE')) {
+		return 'retry';
+	}
+	const reason = /Binding authority rejected: (?<reason>\w+)/.exec(message)?.groups?.reason;
+	if (reason === 'ownerConflict' || reason === 'scopeMismatch') {
+		// 戻さない。ただし行は消さない（`failed`）。窓の再読み込みの直後は、前の窓の持ち物の整理が済む前に
+		// 同じ拒否が一時的に返ることを否定できず、消すとその共有は二度と戻らない。残した行は次に期間を
+		// 数え直したときにもう一度検査を受け、古くなれば台帳の上限（14 日）で消える。
+		return 'failed';
+	}
+	return reason !== undefined && ['manifestRequired', 'missingEntry', 'pendingScope', 'revisionMismatch', 'staleRevision', 'staleSnapshot', 'staleTicket', 'expiredTicket', 'staleConnection'].includes(reason) ? 'retry' : 'failed';
 }
-
-/** 確認の通知の答え。`later` は通知を閉じただけ（今回は試さない。記録は残す）。 */
-export type ParadisBindingRestoreAnswer = 'restore' | 'discard' | 'later';
 
 /** 通知に出す名前の長さの上限。 */
 export const PARADIS_BINDING_RESTORE_NAME_MAX_LENGTH = 60;
@@ -96,15 +115,14 @@ export interface IParadisBindingRestoreHost {
 	morePagesForToken?(token: string): readonly string[];
 	/** このウィンドウにあるページの ID。 */
 	knownPageIds(): ReadonlySet<string>;
+	/** ページの今のオリジン（ページを開かずに分かる範囲で。分からなければ undefined）。 */
+	originOf(pageId: string): string | undefined;
 	/** ページを開かずに（ID だけで）判定する。 */
 	readiness(pageId: string, token: string): ParadisBindingRestoreReadiness;
-	describe(pageId: string, token: string): IParadisBindingRestoreDescription;
-	/**
-	 * まとめて 1 回だけ尋ねる。`token` が取り消されたら（答える前にスペースが切り替わった）、出している
-	 * 通知を閉じて `later` を返す。
-	 */
-	confirm(items: readonly IParadisBindingRestoreDescription[], token: CancellationToken): Promise<ParadisBindingRestoreAnswer>;
-	restore(pageId: string, token: string): Promise<ParadisBindingRestoreOutcome>;
+	/** 既存の共有の経路で張り直す。`origin` は台帳に控えたオリジンで、ページを開いた後にもう一度照合する。 */
+	restore(pageId: string, token: string, origin: string): Promise<ParadisBindingRestoreOutcome>;
+	/** 1 回の評価で戻したページの数と、別のサイトへ移っていて戻さなかったページの数（どちらかが 1 以上のときだけ呼ぶ）。 */
+	report(restored: number, moved: number): void;
 	log(message: string, error?: unknown): void;
 }
 
@@ -115,22 +133,30 @@ export interface IParadisBindingRestoreControllerOptions {
 	readonly retryDelayMs?: number;
 }
 
+/** 利用者が外している最中の共有。`key` が無ければ全ペイン、`pageId` が無ければそのペインの全ページ。 */
+interface IUserUnbind {
+	readonly key: string | undefined;
+	readonly pageId: string | undefined;
+}
+
 export class ParadisBindingRestoreController extends Disposable {
 
 	private _ledger: Map<string, IParadisBindingRestoreEntry>;
-	/** 起動時の台帳のうち、まだ張り直すかを決めていない記録のキー。 */
-	private readonly _undecided: Set<string>;
-	/** この起動でユーザーが「戻す」と答えた記録（再試行では尋ね直さない）。 */
-	private readonly _approved = new Set<string>();
 	private _deadline: number;
 	private _lastWritten: string | undefined;
-	/** 尋ねている・張り直している最中か（その間も台帳の更新は続ける。重ねて尋ねないためだけに使う）。 */
+	/** 張り直している最中か（その間も台帳の更新は続ける。重ねて張り直さないためだけに使う）。 */
 	private _busy = false;
-	/** 出している確認の通知を閉じるため。 */
-	private _confirmation: CancellationTokenSource | undefined;
 	private _shuttingDown = false;
 	/** 1 つのペインへ複数のページを戻している最中（途中の状態で台帳を書かない）。 */
 	private _ledgerHeld = false;
+	/** 前の評価で生きていたペインのキー（端末がつなぎ直されたのを見つけるため）。 */
+	private _liveKeys = new Set<string>();
+	/** 今の期間で戻した・失敗したペインのキー（同じ期間ではもう試さない。期間を数え直すと空にする）。 */
+	private readonly _triedKeys = new Set<string>();
+	/** 端末が終わったと知らされたペインのキー。次の評価でも居なければ行を消す（付け替えの途中と区別する）。 */
+	private readonly _endedKeys = new Set<string>();
+	/** 利用者が外している最中の共有（外し終わるまで台帳に書き戻さず、張り直しもしない）。 */
+	private readonly _userUnbinds = new Set<IUserUnbind>();
 	private readonly _now: () => number;
 	private readonly _windowMs: number;
 	private readonly _retryDelayMs: number;
@@ -145,7 +171,6 @@ export class ParadisBindingRestoreController extends Disposable {
 		const raw = host.readStorage();
 		this._lastWritten = raw;
 		this._ledger = paradisParseBindingRestoreLedger(raw, this._now());
-		this._undecided = new Set(this._ledger.keys());
 		this._deadline = this._now() + this._windowMs;
 	}
 
@@ -161,18 +186,40 @@ export class ParadisBindingRestoreController extends Disposable {
 		}
 	}
 
-	/**
-	 * スペースが切り替わった。尋ねている最中なら、その通知は前のスペースのページについてなので閉じる
-	 * （今回は試さない扱い）。そのうえで試す期間を数え直す。
-	 */
-	spaceSwitched(): void {
-		this._confirmation?.cancel();
-		this.restartWindow();
+	/** スペースが切り替わった・リモートの接続が済んだ。試し直す期間を数え直す。 */
+	restartWindow(): void {
+		this._startWindow();
+		this.schedule();
 	}
 
-	/** リモートの接続が済んだ（スペースの切り替えからも呼ぶ）。試す期間を数え直す。 */
-	restartWindow(): void {
+	private _startWindow(): void {
 		this._deadline = this._now() + this._windowMs;
+		this._triedKeys.clear();
+	}
+
+	/**
+	 * 利用者が共有を外し始めた。その共有を台帳から消し、返した IDisposable を dispose する（外し終わる）まで
+	 * 台帳に書き戻さず、張り直しもしない。`token` が無ければそのページの全ペイン、`pageId` が無ければそのペインの
+	 * 全ページ。
+	 */
+	userUnbind(token: string | undefined, pageId: string | undefined): IDisposable {
+		const unbind: IUserUnbind = { key: token === undefined ? undefined : paradisBindingRestoreKey(token), pageId };
+		this._userUnbinds.add(unbind);
+		this._forget(unbind);
+		return toDisposable(() => {
+			// 外している間に書き戻された分（張り直しの途中だった等）も消す。外せずに共有が残っていれば、次の評価で書き直される
+			this._userUnbinds.delete(unbind);
+			this._forget(unbind);
+			this.schedule();
+		});
+	}
+
+	/** 端末が終わった（シェルの終了・利用者が閉じた）。次の評価でもそのペインが居なければ行を消す。 */
+	paneEnded(token: string): void {
+		if (this._shuttingDown || this._store.isDisposed) {
+			return;
+		}
+		this._endedKeys.add(paradisBindingRestoreKey(token));
 		this.schedule();
 	}
 
@@ -186,104 +233,68 @@ export class ParadisBindingRestoreController extends Disposable {
 		this._shuttingDown = true;
 	}
 
-	override dispose(): void {
-		// 出したままの通知を閉じる
-		this._confirmation?.cancel();
-		super.dispose();
-	}
-
 	/** 終了が取り消された。 */
 	cancelShutdown(): void {
 		this._shuttingDown = false;
 		this.schedule();
 	}
 
-	get undecidedCount(): number {
-		return this._undecided.size;
-	}
-
-	/** 1 回分の評価。台帳を書き、試せる候補があれば尋ねて張り直す（終わるまで待つ）。 */
+	/** 1 回分の評価。台帳を書き、試せる候補があれば張り直す（終わるまで待つ）。 */
 	async evaluate(): Promise<void> {
 		if (this._shuttingDown || this._store.isDisposed) {
 			return;
 		}
 		const { liveTokenByKey, boundKeys } = this._updateLedger();
-		if (this._busy || this._undecided.size === 0 || this._now() > this._deadline) {
+		if (this._busy || this._now() > this._deadline) {
 			return;
 		}
+		let restored = 0;
+		let moved = 0;
+		const { candidates, dropped } = paradisBindingRestoreCandidates(this._ledger, liveTokenByKey, boundKeys, this.host.knownPageIds(), pageId => this.host.originOf(pageId));
+		for (const page of dropped) {
+			if (this._isUserUnbinding(page.key, page.pageId)) {
+				continue;
+			}
+			this._forgetPage(page.key, page.pageId);
+			if (page.reason === 'moved') {
+				moved++;
+			} else {
+				this.host.log('did not restore a browser share: the record has no origin to compare the page with');
+			}
+		}
 		const ready: IParadisBindingRestoreCandidate[] = [];
-		let waiting = false;
-		for (const candidate of paradisBindingRestoreCandidates(this._ledger, this._undecided, liveTokenByKey, boundKeys, this.host.knownPageIds())) {
+		let retry = false;
+		for (const candidate of candidates) {
+			if (this._triedKeys.has(candidate.key)) {
+				continue;
+			}
+			if ([...candidate.morePageIds, candidate.pageId].some(pageId => this._isUserUnbinding(candidate.key, pageId))) {
+				continue;
+			}
 			const readiness = this.host.readiness(candidate.pageId, candidate.token);
 			if (readiness === 'ready') {
 				ready.push(candidate);
 			} else if (readiness === 'never') {
-				this._undecided.delete(candidate.key);
+				this._ledger.delete(candidate.key);
 			} else {
-				waiting = true;
+				retry = true;
 			}
-		}
-		if (ready.length === 0) {
-			if (waiting) {
-				this.schedule(this._retryDelayMs);
-			}
-			this._updateLedger();
-			return;
 		}
 		this._busy = true;
-		let retry = waiting;
 		try {
-			const toAsk = ready.filter(candidate => !this._approved.has(candidate.key));
-			if (toAsk.length > 0) {
-				const confirmation = this._confirmation = new CancellationTokenSource();
-				let answer: ParadisBindingRestoreAnswer;
-				let cancelled = false;
-				try {
-					// 1 つのペインへ複数のページを戻すときは、ページごとに並べる（何への同意かが分かるように）
-					answer = await this.host.confirm(toAsk.flatMap(candidate => [...candidate.morePageIds, candidate.pageId].map(pageId => this.host.describe(pageId, candidate.token))), confirmation.token);
-				} finally {
-					cancelled = confirmation.token.isCancellationRequested;
-					this._confirmation = undefined;
-					confirmation.dispose();
-				}
-				if (this._shuttingDown || this._store.isDisposed) {
-					return;
-				}
-				if (cancelled) {
-					// 答える前にスペースが切り替わった。期間は数え直し済みなので、そのまま次の評価に任せる
-					return;
-				}
-				if (answer === 'discard') {
-					for (const candidate of toAsk) {
-						this._undecided.delete(candidate.key);
-					}
-				} else if (answer === 'later') {
-					// 閉じただけ。今回は試さず、次のスペースの切り替え・接続で尋ね直す
-					this._deadline = 0;
-					return;
-				} else {
-					for (const candidate of toAsk) {
-						this._approved.add(candidate.key);
-					}
-				}
-			}
 			for (const candidate of ready) {
-				if (!this._approved.has(candidate.key) || this._shuttingDown || this._store.isDisposed) {
-					continue;
+				if (this._shuttingDown || this._store.isDisposed) {
+					break;
 				}
-				// 尋ねている間・前の張り直しの間にスペースが切り替わっていれば、見えなくなったページは後回しにする
-				if (this.host.readiness(candidate.pageId, candidate.token) !== 'ready') {
-					retry = true;
-					continue;
-				}
-				// current を先に戻す（戻らなければ 2 枚目以降も戻さず、記録は今までどおり残す・捨てる）。戻ったら
-				// 2 枚目以降を古い順に戻し、最後に current をもう一度共有して current に戻す（共有は最後のものが current）。
+				// current を先に戻す（戻らなければ 2 枚目以降も戻さない）。戻ったら 2 枚目以降を古い順に戻し、最後に
+				// current をもう一度共有して current に戻す（共有は最後のものが current）。
 				// その間は台帳を書かない（途中の状態で台帳を上書きしない）
 				this._ledgerHeld = true;
 				let outcome: ParadisBindingRestoreOutcome;
 				try {
-					outcome = await this._restoreOne(candidate.pageId, candidate.token);
-					if (outcome === 'restored' && candidate.morePageIds.length > 0) {
+					outcome = await this._restoreOne(candidate, candidate.pageId);
+					if (outcome === 'restored') {
+						restored++;
 						let restoredMore = false;
 						for (const pageId of candidate.morePageIds) {
 							if (this._shuttingDown || this._store.isDisposed) {
@@ -291,13 +302,19 @@ export class ParadisBindingRestoreController extends Disposable {
 							}
 							const readiness = this.host.readiness(pageId, candidate.token);
 							if (readiness !== 'ready') {
-								this.host.log(`did not restore one of the other pages a pane shared (${readiness === 'never' ? 'it moved to another space' : 'its space is not on screen'})`);
+								this.host.log(`did not restore one of the other pages a pane shared (${readiness === 'never' ? 'it moved to another space' : 'its space is not settled'})`);
 								continue;
 							}
-							restoredMore = (await this._restoreOne(pageId, candidate.token)) === 'restored' || restoredMore;
+							const more = await this._restoreOne(candidate, pageId);
+							if (more === 'restored') {
+								restored++;
+								restoredMore = true;
+							} else if (more === 'moved') {
+								moved++;
+							}
 						}
 						if (restoredMore && !this._shuttingDown && !this._store.isDisposed) {
-							await this._restoreOne(candidate.pageId, candidate.token);
+							await this._restoreOne(candidate, candidate.pageId);
 						}
 					}
 				} finally {
@@ -305,9 +322,14 @@ export class ParadisBindingRestoreController extends Disposable {
 				}
 				if (outcome === 'retry') {
 					retry = true;
-				} else {
-					this._undecided.delete(candidate.key);
-					this._approved.delete(candidate.key);
+				} else if (outcome === 'restored' || outcome === 'failed') {
+					this._triedKeys.add(candidate.key);
+				} else if (outcome === 'moved') {
+					// そのページだけ外す。残りのページは次の評価で戻す
+					this._forgetPage(candidate.key, candidate.pageId);
+					moved++;
+				} else if (outcome === 'skipped') {
+					this._ledger.delete(candidate.key);
 				}
 			}
 		} finally {
@@ -316,19 +338,57 @@ export class ParadisBindingRestoreController extends Disposable {
 				this._updateLedger();
 				if (retry) {
 					this.schedule(this._retryDelayMs);
-				} else {
+				} else if (ready.length > 0) {
 					this.schedule();
+				}
+				if (restored > 0 || moved > 0) {
+					this.host.report(restored, moved);
 				}
 			}
 		}
 	}
 
-	private async _restoreOne(pageId: string, token: string): Promise<ParadisBindingRestoreOutcome> {
+	private async _restoreOne(candidate: IParadisBindingRestoreCandidate, pageId: string): Promise<ParadisBindingRestoreOutcome> {
 		try {
-			return await this.host.restore(pageId, token);
+			return await this.host.restore(pageId, candidate.token, candidate.origins[pageId]);
 		} catch (error) {
-			this.host.log('failed to restore a browser share after restart', error);
-			return 'skipped';
+			this.host.log('failed to restore a browser share', error);
+			return paradisBindingRestoreFailureOutcome(error);
+		}
+	}
+
+	private _isUserUnbinding(key: string, pageId: string): boolean {
+		for (const unbind of this._userUnbinds) {
+			if ((unbind.key === undefined || unbind.key === key) && (unbind.pageId === undefined || unbind.pageId === pageId)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private _forget(unbind: IUserUnbind): void {
+		for (const key of unbind.key === undefined ? [...this._ledger.keys()] : [unbind.key]) {
+			if (unbind.pageId === undefined) {
+				this._ledger.delete(key);
+			} else {
+				this._forgetPage(key, unbind.pageId);
+			}
+		}
+		if (!this._shuttingDown && !this._ledgerHeld) {
+			this._persist();
+		}
+	}
+
+	private _forgetPage(key: string, pageId: string): void {
+		const entry = this._ledger.get(key);
+		if (entry === undefined) {
+			return;
+		}
+		const next = paradisRemovePageFromBindingRestoreEntry(entry, pageId);
+		if (next === undefined) {
+			this._ledger.delete(key);
+		} else {
+			this._ledger.set(key, next);
 		}
 	}
 
@@ -337,22 +397,51 @@ export class ParadisBindingRestoreController extends Disposable {
 		for (const token of this.host.listPaneTokens()) {
 			liveTokenByKey.set(paradisBindingRestoreKey(token), token);
 		}
+		const boundKeys = new Set<string>();
 		const boundPageByKey = new Map<string, string>();
 		const morePagesByKey = new Map<string, readonly string[]>();
+		const originByPageId = new Map<string, string>();
 		for (const [key, token] of liveTokenByKey) {
-			const pageId = this.host.boundPageForToken(token);
-			if (pageId !== undefined) {
-				boundPageByKey.set(key, pageId);
-				morePagesByKey.set(key, this.host.morePagesForToken?.(token) ?? []);
-				// 既に紐づいている（ウィンドウの再読み込みで shared process に残っていた・張り直した）
-				this._undecided.delete(key);
+			const current = this.host.boundPageForToken(token);
+			if (current === undefined) {
+				continue;
+			}
+			boundKeys.add(key);
+			// 利用者が外している最中のページは書かない
+			const pages = [...(this.host.morePagesForToken?.(token) ?? []), current].filter(pageId => !this._isUserUnbinding(key, pageId));
+			const pageId = pages.pop();
+			if (pageId === undefined) {
+				continue;
+			}
+			boundPageByKey.set(key, pageId);
+			morePagesByKey.set(key, pages);
+			for (const page of [...pages, pageId]) {
+				const origin = this.host.originOf(page);
+				if (origin !== undefined) {
+					originByPageId.set(page, origin);
+				}
 			}
 		}
 		if (!this._shuttingDown && !this._ledgerHeld) {
-			this._ledger = paradisNextBindingRestoreLedger(this._ledger, this._undecided, boundPageByKey, this._now(), morePagesByKey);
+			// 終わったと知らされた端末が、付け替えではなく本当に居なくなっていたら行を消す
+			for (const key of this._endedKeys) {
+				if (!liveTokenByKey.has(key)) {
+					this._ledger.delete(key);
+				}
+			}
+			this._endedKeys.clear();
+			// 台帳にあるペインの端末がつなぎ直された。そこから試し直す期間を数える
+			for (const key of liveTokenByKey.keys()) {
+				if (!this._liveKeys.has(key) && this._ledger.has(key) && !boundKeys.has(key)) {
+					this._startWindow();
+					break;
+				}
+			}
+			this._liveKeys = new Set(liveTokenByKey.keys());
+			this._ledger = paradisNextBindingRestoreLedger(this._ledger, boundPageByKey, this._now(), morePagesByKey, originByPageId);
 			this._persist();
 		}
-		return { liveTokenByKey, boundKeys: new Set(boundPageByKey.keys()) };
+		return { liveTokenByKey, boundKeys };
 	}
 
 	private _persist(): void {

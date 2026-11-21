@@ -19,7 +19,7 @@ import { join } from '../../../../base/common/path.js';
 import { isWindows } from '../../../../base/common/platform.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator, IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
-import { IShellLaunchConfig } from '../../../../platform/terminal/common/terminal.js';
+import { IShellLaunchConfig, TerminalExitReason } from '../../../../platform/terminal/common/terminal.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { ITerminalInstance, ITerminalInstanceService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { paneTokenFromShellIntegrationNonce, restoredPaneToken } from '../../mobileRelay/common/paradisTerminalPersistence.js';
@@ -45,6 +45,12 @@ export interface IParadisPaneTokenService {
 
 	/** トークンの割り当て・解除が起きたときに発火する。 */
 	readonly onDidChange: Event<void>;
+
+	/**
+	 * ペインの端末が終わった（シェルの終了・利用者や拡張機能が閉じた）ときに、そのトークンで発火する。
+	 * ウィンドウの終了・再読み込みでの片付けと、同じ PTY を別のインスタンスへ付け替えた後の片付けでは発火しない。
+	 */
+	readonly onDidEndPane: Event<string>;
 
 	/** 指定インスタンスに割り当てられたトークンを返す。 */
 	getTokenForInstance(instanceId: number): string | undefined;
@@ -77,6 +83,9 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 
 	private readonly _onDidChange = this._register(new Emitter<void>());
 	readonly onDidChange: Event<void> = this._onDidChange.event;
+
+	private readonly _onDidEndPane = this._register(new Emitter<string>());
+	readonly onDidEndPane: Event<string> = this._onDidEndPane.event;
 
 	private readonly _tokenByInstanceId = new Map<number, string>();
 	private readonly _instanceIdByToken = new Map<string, number>();
@@ -300,6 +309,9 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 			if (this._instanceIdByToken.get(token) === instance.instanceId) {
 				this._instanceIdByToken.delete(token);
 				this.codexLaunchHomeService.forgetPaneHome(token);
+				if (instance.exitReason === TerminalExitReason.Process || instance.exitReason === TerminalExitReason.User || instance.exitReason === TerminalExitReason.Extension) {
+					this._onDidEndPane.fire(token);
+				}
 			}
 			this._instanceListeners.deleteAndDispose(instance.instanceId);
 			this._onDidChange.fire();

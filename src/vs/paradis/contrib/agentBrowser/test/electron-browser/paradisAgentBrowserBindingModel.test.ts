@@ -1456,6 +1456,36 @@ suite('ParadisAgentBrowserBindingModel transactions', () => {
 		assert.deepStrictEqual(fixture.sharingCalls, [false]);
 	});
 
+	test('announces every requested unbind before it starts and settles it even when the unbind fails', async () => {
+		let failBindingReads = false;
+		let backend: IParadisPaneBinding[] = [binding(42)];
+		const fixture = createFixture({
+			hasPaneTokens: false,
+			listBindings: async () => {
+				if (failBindingReads) {
+					throw new Error('binding snapshot unavailable');
+				}
+				return backend;
+			},
+		});
+		const announced: string[] = [];
+		const settled: Promise<void>[] = [];
+		store.add(fixture.bindingModel.onWillUnbindByRequest(event => {
+			announced.push(`${event.token ?? '*'} ${event.pageId === undefined ? '*' : event.pageId === fixture.model.id ? 'page' : 'other'} bindings=${backend.length}`);
+			settled.push(event.done);
+		}));
+
+		await fixture.bindingModel.unbindPage(fixture.model);
+		backend = [];
+		await fixture.bindingModel.unbindToken('token');
+		await fixture.bindingModel.unbindPageFromToken(fixture.model.id, 'token');
+		failBindingReads = true;
+		await assert.rejects(fixture.bindingModel.unbindPage(fixture.model));
+		await Promise.all(settled);
+
+		assert.deepStrictEqual(announced, ['* page bindings=1', 'token * bindings=0', 'token page bindings=0', '* page bindings=0']);
+	});
+
 	test('manual unbindPage forces an authority read before terminal tokens are restored', async () => {
 		const fixture = createFixture({ hasPaneTokens: false });
 		fixture.backendBindings = [binding(42)];
