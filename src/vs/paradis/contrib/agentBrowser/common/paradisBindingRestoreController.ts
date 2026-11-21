@@ -14,6 +14,7 @@
 //  2. 時間で試し直す期間（{@link PARADIS_BINDING_RESTORE_WINDOW_MS}）は、起動・スペースの切り替え・リモートの
 //     接続と、台帳にあるペインの端末がつなぎ直された（トークンが現れた）ときに数え直す。端末がまだ戻っていない
 //     行はタイマーを回さず、現れるのを待つ。期間を過ぎたら試さないが、台帳からは消さない
+//     同じ期間の中では、1 つのペインを戻すのは 1 回だけ（戻した直後にまた外れても、次の期間まで戻さない）
 //  3. 行を消すのは、利用者が共有を外したとき・端末が終わったとき・戻せないと分かったとき（スペースが違う、
 //     共有の検査に断られた等）。勝手に外れただけの行は残す
 
@@ -49,21 +50,27 @@ export type ParadisBindingRestoreReadiness = 'ready' | 'wait' | 'never';
 
 /**
  * 張り直しの結果。`retry` は記録を残してもう一度試す。`moved` はページが別のサイトへ移っていた（そのページだけ
- * 台帳から外す）。`skipped` は戻せない（行を台帳から外し、試し直さない）。
+ * 台帳から外す）。`skipped` は戻せない（行を台帳から外し、試し直さない）。`failed` は理由の分からない失敗
+ * （行は残し、次に期間を数え直すまで試さない）。
  */
-export type ParadisBindingRestoreOutcome = 'restored' | 'skipped' | 'retry' | 'moved';
+export type ParadisBindingRestoreOutcome = 'restored' | 'skipped' | 'retry' | 'moved' | 'failed';
 
 /**
- * 共有の経路が投げた失敗を、もう一度試すか決める。別の窓のペイン・ページ（ownerConflict）とスペースの違い
- * （scopeMismatch）は試し直さない。状態が動いている最中の失敗（PARA_BROWSER_RETRYABLE と、窓の一覧の同期が
- * 済む前・変わった直後に authority が返すもの）だけもう一度試し、ほかは戻さない。
+ * 共有の経路が投げた失敗の扱いを決める。別の窓のペイン・ページ（ownerConflict）とスペースの違い
+ * （scopeMismatch）は戻せないので行を消す（`skipped`）。状態が動いている最中の失敗（PARA_BROWSER_RETRYABLE と、
+ * 窓の一覧の同期が済む前・変わった直後に authority が返すもの）はもう一度試す。ほかの失敗（shared process に
+ * 届かない等）は行を残し、次に期間を数え直すまで試さない（`failed`）。
  */
-export function paradisBindingRestoreFailureOutcome(error: unknown): 'retry' | 'skipped' {
+export function paradisBindingRestoreFailureOutcome(error: unknown): 'retry' | 'skipped' | 'failed' {
 	const message = error instanceof Error ? error.message : '';
 	if (message.startsWith('PARA_BROWSER_RETRYABLE')) {
 		return 'retry';
 	}
-	return /Binding authority rejected: (manifestRequired|missingEntry|pendingScope|revisionMismatch|staleRevision|staleSnapshot|staleTicket|expiredTicket|staleConnection)\b/.test(message) ? 'retry' : 'skipped';
+	const reason = /Binding authority rejected: (?<reason>\w+)/.exec(message)?.groups?.reason;
+	if (reason === 'ownerConflict' || reason === 'scopeMismatch') {
+		return 'skipped';
+	}
+	return reason !== undefined && ['manifestRequired', 'missingEntry', 'pendingScope', 'revisionMismatch', 'staleRevision', 'staleSnapshot', 'staleTicket', 'expiredTicket', 'staleConnection'].includes(reason) ? 'retry' : 'failed';
 }
 
 /** 通知に出す名前の長さの上限。 */
@@ -141,6 +148,8 @@ export class ParadisBindingRestoreController extends Disposable {
 	private _ledgerHeld = false;
 	/** 前の評価で生きていたペインのキー（端末がつなぎ直されたのを見つけるため）。 */
 	private _liveKeys = new Set<string>();
+	/** 今の期間で戻した・失敗したペインのキー（同じ期間ではもう試さない。期間を数え直すと空にする）。 */
+	private readonly _triedKeys = new Set<string>();
 	/** 端末が終わったと知らされたペインのキー。次の評価でも居なければ行を消す（付け替えの途中と区別する）。 */
 	private readonly _endedKeys = new Set<string>();
 	/** 利用者が外している最中の共有（外し終わるまで台帳に書き戻さず、張り直しもしない）。 */
@@ -176,8 +185,13 @@ export class ParadisBindingRestoreController extends Disposable {
 
 	/** スペースが切り替わった・リモートの接続が済んだ。試し直す期間を数え直す。 */
 	restartWindow(): void {
-		this._deadline = this._now() + this._windowMs;
+		this._startWindow();
 		this.schedule();
+	}
+
+	private _startWindow(): void {
+		this._deadline = this._now() + this._windowMs;
+		this._triedKeys.clear();
 	}
 
 	/**
@@ -248,6 +262,9 @@ export class ParadisBindingRestoreController extends Disposable {
 		const ready: IParadisBindingRestoreCandidate[] = [];
 		let retry = false;
 		for (const candidate of candidates) {
+			if (this._triedKeys.has(candidate.key)) {
+				continue;
+			}
 			if ([...candidate.morePageIds, candidate.pageId].some(pageId => this._isUserUnbinding(candidate.key, pageId))) {
 				continue;
 			}
@@ -302,6 +319,8 @@ export class ParadisBindingRestoreController extends Disposable {
 				}
 				if (outcome === 'retry') {
 					retry = true;
+				} else if (outcome === 'restored' || outcome === 'failed') {
+					this._triedKeys.add(candidate.key);
 				} else if (outcome === 'moved') {
 					// そのページだけ外す。残りのページは次の評価で戻す
 					this._forgetPage(candidate.key, candidate.pageId);
@@ -411,7 +430,7 @@ export class ParadisBindingRestoreController extends Disposable {
 			// 台帳にあるペインの端末がつなぎ直された。そこから試し直す期間を数える
 			for (const key of liveTokenByKey.keys()) {
 				if (!this._liveKeys.has(key) && this._ledger.has(key) && !boundKeys.has(key)) {
-					this._deadline = this._now() + this._windowMs;
+					this._startWindow();
 					break;
 				}
 			}

@@ -342,7 +342,37 @@ suite('ParadisBindingRestoreController', () => {
 			'Binding authority rejected: ownerConflict',
 			'Binding authority rejected: scopeMismatch',
 			'something else',
-		].map(message => paradisBindingRestoreFailureOutcome(new Error(message))), ['retry', 'retry', 'retry', 'retry', 'skipped', 'skipped', 'skipped']);
+		].map(message => paradisBindingRestoreFailureOutcome(new Error(message))), ['retry', 'retry', 'retry', 'retry', 'skipped', 'skipped', 'failed']);
+	});
+
+	test('restores a pane once per window: a share that drops again right away, or a failure it cannot classify, waits for the next window', async () => {
+		const flapping = new FakeHost({ 'token-a': 'page-1' });
+		// The share is gone again as soon as it was restored.
+		flapping.beforeRestore = () => queueMicrotask(() => flapping.drop('token-a'));
+		const flappingController = create(flapping);
+		await flappingController.evaluate();
+		await flappingController.evaluate();
+		await flappingController.evaluate();
+		const once = { restored: [...flapping.restored], reports: [...flapping.reports], stored: flapping.storedTokens() };
+		flappingController.restartWindow();
+		await flappingController.evaluate();
+
+		const failing = new FakeHost({ 'token-a': 'page-1' });
+		failing.outcomeOf = () => { throw new Error('the shared process is not reachable'); };
+		const failingController = create(failing);
+		await failingController.evaluate();
+		await failingController.evaluate();
+		const failedOnce = { restored: [...failing.restored], stored: failing.storedTokens() };
+		failing.outcomeOf = () => 'restored';
+		failingController.restartWindow();
+		await failingController.evaluate();
+
+		assert.deepStrictEqual({ once, flapping: flapping.restored.length, failedOnce, failing: failing.restored }, {
+			once: { restored: ['token-a->page-1:restored'], reports: [[1, 0]], stored: ['token-a'] },
+			flapping: 2,
+			failedOnce: { restored: [], stored: ['token-a'] },
+			failing: ['token-a->page-1:restored'],
+		});
 	});
 
 	test('waits for the terminal to be reconnected however long that takes, then retries only inside the window', async () => {

@@ -13,7 +13,7 @@ import { Schemas } from '../../../../../base/common/network.js';
 import { isWindows } from '../../../../../base/common/platform.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import type { IShellLaunchConfig } from '../../../../../platform/terminal/common/terminal.js';
+import { TerminalExitReason, type IShellLaunchConfig } from '../../../../../platform/terminal/common/terminal.js';
 import type { IWorkbenchEnvironmentService } from '../../../../../workbench/services/environment/common/environmentService.js';
 import type { ITerminalInstance, ITerminalInstanceService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import type { IPathService } from '../../../../../workbench/services/path/common/pathService.js';
@@ -186,6 +186,50 @@ suite('Paradis pane token service', () => {
 				recorded: [[PANE_TOKEN, '/home/test/.codex-2']],
 			});
 		} finally {
+			service.dispose();
+			onDidCreateInstance.dispose();
+		}
+	});
+
+	// 共有の復元は、端末が本当に終わったペインの記録だけを消す。終了・再読み込みの片付けと、同じ PTY を別の
+	// インスタンスへ付け替えた後の片付けを「終わった」と取り違えない。
+	test('announces a pane as ended only when its terminal was closed or its shell exited, not on shutdown or after a move', () => {
+		const onDidCreateInstance = new Emitter<ITerminalInstance>();
+		const service = new ParadisPaneTokenService(
+			{ onDidCreateInstance: onDidCreateInstance.event } as unknown as ITerminalInstanceService,
+			{ appRoot: APP_ROOT, userDataPath: USER_DATA_PATH, execPath: `${APP_ROOT}/Para Code` } as unknown as IWorkbenchEnvironmentService,
+			{ userHome: async () => URI.file('/home/test') } as unknown as IPathService,
+			codexLaunchHomeStub(undefined),
+			claudeModStub(),
+		);
+		const emitters: Emitter<void>[] = [];
+		const ended: string[] = [];
+		const listener = service.onDidEndPane(token => ended.push(token));
+		try {
+			const open = (instanceId: number, nonce: string) => {
+				const onDisposed = new Emitter<void>();
+				emitters.push(onDisposed);
+				const instance = { instanceId, shellIntegrationNonce: nonce, shellLaunchConfig: {}, onDisposed: onDisposed.event, exitReason: undefined as TerminalExitReason | undefined };
+				onDidCreateInstance.fire(instance as unknown as ITerminalInstance);
+				return (reason: TerminalExitReason | undefined) => {
+					instance.exitReason = reason;
+					onDisposed.fire();
+				};
+			};
+			open(1, 'nonce-exited')(TerminalExitReason.Process);
+			open(2, 'nonce-closed')(TerminalExitReason.User);
+			open(3, 'nonce-shutdown')(TerminalExitReason.Shutdown);
+			open(4, 'nonce-unknown')(undefined);
+			// The same PTY moves to a new instance before the old one is disposed.
+			const moved = open(5, 'nonce-moved');
+			open(6, 'nonce-moved');
+			moved(TerminalExitReason.User);
+			assert.deepStrictEqual({ ended: ended.length, movedStillListed: service.listPaneTokens().map(pane => pane.instanceId) }, { ended: 2, movedStillListed: [6] });
+		} finally {
+			listener.dispose();
+			for (const emitter of emitters) {
+				emitter.dispose();
+			}
 			service.dispose();
 			onDidCreateInstance.dispose();
 		}

@@ -161,6 +161,9 @@ export class ParadisAgentBrowserBindingRestoreContribution extends Disposable im
 		if (input === undefined) {
 			return 'skipped';
 		}
+		// 自分で付けた共有の印（共有が成立しなければ下ろす）
+		let marked = false;
+		let restored = false;
 		try {
 			const model = input.model ?? await input.resolve();
 			// 開いている間にペインやページのスペースが変わっていれば、決まるまで待つ
@@ -193,19 +196,25 @@ export class ParadisAgentBrowserBindingRestoreContribution extends Disposable im
 			}
 			// upstream の確認（Share this browser page with the agent?）を出さないよう、先に共有の印を付ける。
 			// 印が付かなければ進まない（進むと確認が出る）
+			marked = model.sharingState !== BrowserViewSharingState.Shared;
 			await this.tabsService.restoreShareMark(model);
 			if (model.sharingState !== BrowserViewSharingState.Shared) {
 				return 'retry';
 			}
-			const bound = await this.bindingModel.bindPageToPane(model, token);
-			this.logService.info(`[ParadisAgentBrowserBindingRestore] ${bound ? 'restored' : 'did not restore'} a browser share`);
-			return bound ? 'restored' : 'skipped';
+			restored = await this.bindingModel.bindPageToPane(model, token);
+			this.logService.info(`[ParadisAgentBrowserBindingRestore] ${restored ? 'restored' : 'did not restore'} a browser share`);
+			return restored ? 'restored' : 'skipped';
 		} catch (error) {
 			const outcome = paradisBindingRestoreFailureOutcome(error);
-			if (outcome === 'skipped') {
+			if (outcome !== 'retry') {
 				this.logService.warn('[ParadisAgentBrowserBindingRestore] failed to restore a browser share', error);
 			}
 			return outcome;
+		} finally {
+			if (marked && !restored) {
+				// 共有が無いまま印だけ残さない（共有の一覧を取り直してから見るので、成立していた共有の印は下ろさない）
+				await this.bindingModel.releaseShareMarkIfUnused(pageId).catch(() => undefined);
+			}
 		}
 	}
 }
