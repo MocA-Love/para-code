@@ -213,12 +213,14 @@ function carriedKey(remoteHost: string, remotePort: number): string {
  *
  * The shared process keeps one tunnel per remote authority and remote port. A second window that
  * forwards the same port only bumps the reference count and gets the existing tunnel back, so the
- * tunnel keeps connecting through the address of whichever window created it. When that window is
- * gone (closed, reloaded, crashed or reopened after it stopped responding), the tunnel keeps
- * dialling an address that no longer exists, and stopping and forwarding the port again from the
- * Ports view only drops one reference and hands the same broken tunnel back. The Ports view's
- * "Reforward" command uses {@link forceCloseTunnel} to drop the tunnel for every window first, so
- * the forward that follows creates a fresh tunnel with the address of the window that asked.
+ * tunnel keeps asking the address provider of whichever window created it. That provider answers
+ * with the address of the windows that still forward the port (`ParadisSharedProcessTunnelService`),
+ * so a window that closes, reloads or reconnects no longer leaves the tunnel on a dead address.
+ * What is left is a window that went away without saying so (crashed, or stopped responding):
+ * its address can stay the one in use, and stopping and forwarding the port again from the Ports
+ * view only drops one reference and hands the same tunnel back. The Ports view's "Reforward"
+ * command uses {@link forceCloseTunnel} to drop the tunnel for every window first, so the forward
+ * that follows creates a fresh tunnel that starts on the address of the window that asked.
  *
  * The rest follows upstream's `SharedTunnelsService` (`node/tunnelService.ts`). It is copied rather
  * than subclassed because the map of per-authority services is private there; the copy also keeps

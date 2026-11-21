@@ -23,6 +23,7 @@ import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { isNumber, isObject, isString } from '../../../../base/common/types.js';
 import { deepClone } from '../../../../base/common/objects.js';
 import { IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
+import { paradisDeferTunnelStoreWhileRestoring, paradisRestoreTunnelsOneByOne } from '../../../../platform/tunnel/common/paradisTunnelRestoreLoop.js'; // PARA-PATCH: see restoreForwarded and storeForwarded
 import { paradisForwardExplicitly, paradisImplicitTunnelSource, paradisMarkExplicitTunnelRecords, paradisTunnelsToRestore } from '../../../../platform/tunnel/common/paradisTunnelRestorePolicy.js'; // PARA-PATCH: see onTunnelOpened, restoreForwarded, storeForwarded and forward
 
 const MISMATCH_LOCAL_PORT_COOLDOWN = 10 * 1000; // 10 seconds
@@ -598,7 +599,8 @@ export class TunnelModel extends Disposable {
 				// PARA-PATCH: skip implicit tunnels and stale ephemeral ports instead of reopening them every time (platform/tunnel/common/paradisTunnelRestorePolicy.ts)
 				const tunnels = paradisTunnelsToRestore(<RestorableTunnel[] | undefined>JSON.parse(tunnelRestoreValue) ?? [], TunnelSource.Extension, (host, port) => !!mapHasAddressLocalhostOrAllInterfaces(this._candidates ?? new Map(), host, port));
 				this.logService.trace(`ForwardedPorts: (TunnelModel) restoring ports ${tunnels.map(tunnel => tunnel.remotePort).join(', ')}`);
-				for (const tunnel of tunnels) {
+				// PARA-PATCH: a tunnel that fails does not end the restore, and the saved list is not replaced by a partial one while it runs (platform/tunnel/common/paradisTunnelRestoreLoop.ts)
+				await paradisRestoreTunnelsOneByOne(this, tunnels, async tunnel => {
 					const alreadyForwarded = mapHasAddressLocalhostOrAllInterfaces(this.detected, tunnel.remoteHost, tunnel.remotePort);
 					// Extension forwarded ports should only be updated, not restored.
 					if ((tunnel.source.source !== TunnelSource.Extension && !alreadyForwarded) || (tunnel.source.source === TunnelSource.Extension && alreadyForwarded)) {
@@ -612,7 +614,7 @@ export class TunnelModel extends Disposable {
 					} else if (tunnel.source.source === TunnelSource.Extension && !alreadyForwarded) {
 						this.unrestoredExtensionTunnels.set(makeAddress(tunnel.remoteHost, tunnel.remotePort), tunnel);
 					}
-				}
+				}, this.logService, () => this.storeForwarded());
 			}
 		}
 
@@ -647,7 +649,8 @@ export class TunnelModel extends Disposable {
 
 	@debounce(1000)
 	private async storeForwarded() {
-		if (this.configurationService.getValue('remote.restoreForwardedPorts')) {
+		// PARA-PATCH: no save while the restore runs; it is made up for when the restore is done (platform/tunnel/common/paradisTunnelRestoreLoop.ts)
+		if (!paradisDeferTunnelStoreWhileRestoring(this) && this.configurationService.getValue('remote.restoreForwardedPorts')) {
 			const forwarded = Array.from(this.forwarded.values());
 			const restorableTunnels: RestorableTunnel[] = forwarded.map(tunnel => {
 				return {
