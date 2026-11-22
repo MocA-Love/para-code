@@ -19,14 +19,15 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 	type: 'object',
 	title: localize('paradis.terminal.title', "Para Code Terminal"),
 	properties: {
-		// 前のスイッチ。設定画面には出さず、settings.json に残っている値に取り消し線と案内を出すためだけに登録を残す
-		// （登録を外すと APPLICATION の縛りが外れ、ワークスペースの設定からも読めてしまう）。
+		// 前のスイッチ。非推奨の案内つきで登録だけ残す（値を書いている人にだけ、設定エディタと settings.json に案内が出る）。
+		// 登録を外すと APPLICATION の縛りが外れ、ワークスペースの設定からも読めてしまう。`included: false` にもしない:
+		// 隠した鍵は「未登録」として扱われ、既定でないプロファイルの renderer は値を読まず（configuration.ts の
+		// `skipUnregistered`）、main だけが読んで食い違う。
 		// `true` はこの PC で「常駐で動かす」のオンとして読む（paradisPtyDaemonSettingKey.ts）。
 		[PARADIS_PTY_DAEMON_LEGACY_ENABLED]: {
 			type: 'boolean',
 			default: false,
 			scope: ConfigurationScope.APPLICATION,
-			included: false,
 			markdownDeprecationMessage: localize('paradis.terminal.daemon.enabled.deprecated', "この設定は {0} にまとめました。オンのままなら、そちらをオンにしたのと同じに動きます。", `\`#${PARADIS_PTY_HOST_DAEMON_ENABLED}#\``),
 		},
 		[PARADIS_PTY_HOST_DAEMON_ENABLED]: {
