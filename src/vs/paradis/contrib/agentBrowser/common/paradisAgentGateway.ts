@@ -63,6 +63,13 @@ export const PARADIS_AGENT_GATEWAY_WAIT_LIMIT_MS = 120_000;
  */
 export const PARADIS_AGENT_GATEWAY_WAIT_SECONDS_HEADER = 'x-para-code-gateway-wait-seconds';
 
+/**
+ * 手元が、要求を処理した後で「このペインはもう今のものではない」と断るとき（404）に付ける印。処理の前に断る 404
+ * （知らないトークン）と違い、道具はもう走ったかもしれない。受け口はこの 404 を聞き直さずにそのまま返し、`para` コマンドは
+ * 操作を送り直さない。
+ */
+export const PARADIS_AGENT_GATEWAY_AFTER_DISPATCH_HEADER = 'x-para-code-after-dispatch';
+
 /** 受け口が打ち切ったときの応答に載せる符丁。 */
 export const PARADIS_AGENT_GATEWAY_TIMEOUT_CODE = 'para-code-window-not-connected';
 

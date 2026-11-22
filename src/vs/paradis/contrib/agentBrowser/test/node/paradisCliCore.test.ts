@@ -16,10 +16,10 @@ import { dirname, join } from '../../../../../base/common/path.js';
 import { isWindows } from '../../../../../base/common/platform.js';
 import { FileAccess } from '../../../../../base/common/network.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_AGENT_GATEWAY_FILE_NAME, PARADIS_AGENT_GATEWAY_TIMEOUT_CODE, PARADIS_AGENT_GATEWAY_WAIT_SECONDS_HEADER } from '../../common/paradisAgentGateway.js';
+import { PARADIS_AGENT_GATEWAY_AFTER_DISPATCH_HEADER, PARADIS_AGENT_GATEWAY_FILE_NAME, PARADIS_AGENT_GATEWAY_TIMEOUT_CODE, PARADIS_AGENT_GATEWAY_WAIT_SECONDS_HEADER } from '../../common/paradisAgentGateway.js';
 import { IParadisCliCatalog, PARADIS_CLI_CATALOG_METHOD, PARADIS_CLI_META_KEY, PARADIS_CLI_PROTOCOL_VERSION, paradisBuildCliCatalog } from '../../common/paradisCliCatalog.js';
 import { PARADIS_CLI_LAUNCHER_FOLDER_SEGMENTS, PARADIS_CLI_LAUNCHER_NAME, PARADIS_CLI_REMOTE_TARGET_NAME, paradisAddParaCliToPaneEnvironment, paradisCliRemoteTargetContent } from '../../common/paradisCliPaneEnvironment.js';
-import { IParadisCliEndpoint, IParadisCliRuntime, PARADIS_CLI_GATEWAY_WAIT_HEADER, PARADIS_CLI_PORT_FILE_ENV, PARADIS_CLI_TOKEN_ENV, ParadisCliAttempt, ParadisCliUsageError, paradisCliCallMeta, paradisCliCheckOutputPath, paradisCliClaudePermissions, paradisCliEndpoints, paradisCliParseFlags, paradisCliRpc, paradisCliVerdict, paradisRunCli } from '../../node/paradisCliCore.js';
+import { IParadisCliEndpoint, IParadisCliRuntime, PARADIS_CLI_AFTER_DISPATCH_HEADER, PARADIS_CLI_GATEWAY_WAIT_HEADER, PARADIS_CLI_PORT_FILE_ENV, PARADIS_CLI_TOKEN_ENV, ParadisCliAttempt, ParadisCliUsageError, paradisCliCallMeta, paradisCliCheckOutputPath, paradisCliClaudePermissions, paradisCliEndpoints, paradisCliParseFlags, paradisCliRpc, paradisCliVerdict, paradisRunCli } from '../../node/paradisCliCore.js';
 
 const PNG = Buffer.from('89504e470d0a1a0a', 'hex');
 
@@ -128,7 +128,7 @@ suite('paradisCliCore', () => {
 		});
 	});
 
-	test('only answers that mean nothing ran are sent again; an action is never sent twice', () => {
+	test('an action is sent again only after an answer that means nothing ran', () => {
 		const direct = { port: 1, gateway: false };
 		const gateway = { port: 2, gateway: true };
 		const response = (status: number, text = ''): ParadisCliAttempt => ({ kind: 'response', status, text });
@@ -142,6 +142,7 @@ suite('paradisCliCore', () => {
 			gatewayBrokeAfterSending: verdict(response(502), gateway),
 			unknownPane: verdict(response(404), direct),
 			unknownPaneAtGateway: verdict(response(404), gateway),
+			handledThenRefused: [verdict({ kind: 'response', status: 404, text: '', afterDispatch: true }, direct), verdict({ kind: 'response', status: 404, text: '', afterDispatch: true }, gateway)],
 			busy: verdict(response(429), direct),
 			other: verdict(response(500, 'boom'), direct),
 		}, {
@@ -153,6 +154,8 @@ suite('paradisCliCore', () => {
 			gatewayBrokeAfterSending: 'retry / unknown-state',
 			unknownPane: 'retry / retry',
 			unknownPaneAtGateway: 'next-endpoint / next-endpoint',
+			// 本体が処理した後の 404（窓の再読み込みなど）。道具は走ったかもしれない
+			handledThenRefused: ['retry / unknown-state', 'retry / unknown-state'],
 			busy: 'retry / retry',
 			other: 'fail / fail',
 		});
@@ -182,6 +185,8 @@ suite('paradisCliCore', () => {
 		const gatewayDoesNotKnowResult = await outcome(paradisCliRpc({ ...runtime({ env: remoteEnv }), ...gatewayDoesNotKnow.hooks }, 'tools/call', {}, false));
 		const unknownPane = scripted([notFound]);
 		const unknownPaneResult = await outcome(paradisCliRpc({ ...runtime({ env: { ...remoteEnv, [PARADIS_CLI_PORT_FILE_ENV]: join(root, 'user-data', 'paradis-browser-mcp.json') } }), ...unknownPane.hooks }, 'tools/call', {}, false));
+		const handled = scripted([{ kind: 'response', status: 404, text: '{}', afterDispatch: true }, ok]);
+		const handledResult = await outcome(paradisCliRpc({ ...runtime({ env: remoteEnv }), ...handled.hooks }, 'tools/call', {}, false));
 		const sandbox = scripted([{ kind: 'not-sent', code: 'EPERM' }]);
 		const sandboxResult = await outcome(paradisCliRpc({ ...runtime(), ...sandbox.hooks }, 'tools/call', {}, false));
 
@@ -194,18 +199,21 @@ suite('paradisCliCore', () => {
 			disconnected: [disconnectedResult, disconnected.elapsed(), disconnected.sent[0]],
 			gatewayDoesNotKnow: [gatewayDoesNotKnowResult, gatewayDoesNotKnow.sent.map(entry => entry.gateway)],
 			unknownPane: [unknownPaneResult, unknownPane.elapsed()],
+			handled: [handledResult, handled.sent.length],
 			sandbox: [sandboxResult, sandbox.sent.length],
 		}, {
 			comesBack: ['{"done":true}', 3],
 			never: ['3: Para Code did not answer for 5 seconds (ECONNREFUSED)', 5000],
 			// 届いたかもしれない操作は送り直さない。読むだけなら送り直す
-			brokenAction: ['3: The connection to Para Code broke after the request was sent (ECONNRESET)', 1],
+			brokenAction: ['3: Para Code did not confirm the request after it was sent (ECONNRESET)', 1],
 			brokenRead: ['{"done":true}', 2],
-			gatewayAction502: ['3: The connection to Para Code broke after the request was sent (HTTP 502)', 1],
+			gatewayAction502: ['3: Para Code did not confirm the request after it was sent (HTTP 502)', 1],
 			// 受け口には残りの待ち時間を伝える（受け口の既定の 120 秒より先に答えてもらう）
 			disconnected: ['3: Para Code did not answer for 75 seconds (the Para Code window is not connected)', 75_000, { gateway: true, wait: '75' }],
 			gatewayDoesNotKnow: ['{"done":true}', [true, false]],
 			unknownPane: ['3: Para Code does not know this terminal (waited 20 s)', 20_000],
+			// 受け口ごしでも、処理した後の 404 では直結へ落として送り直さない
+			handled: ['3: Para Code did not confirm the request after it was sent (the terminal changed while the request was handled)', 1],
 			sandbox: ['4: Your sandbox blocked the connection to Para Code (Para Code is running; do not restart it)', 1],
 		});
 	});
@@ -427,7 +435,19 @@ suite('paradisCliCore', () => {
 
 	test('the pane environment puts the launcher folder first on PATH and names the executable that runs the script', () => {
 		const posix = paradisAddParaCliToPaneEnvironment({ PATH: '/codex/bin:${env:PATH}', VSCODE_PATH_PREFIX: '/codex/bin:', KEEP: '1' }, { launcherDirectory: '/app/resources/paradis/cli', pathDelimiter: ':', nodeExecutablePath: '/app/para-code' });
+		const windowsRuntime = { launcherDirectory: 'C:\\app\\resources\\paradis\\cli', pathDelimiter: ';', nodeExecutablePath: 'C:\\app\\Para Code.exe' };
 		const windows = paradisAddParaCliToPaneEnvironment(undefined, { launcherDirectory: 'C:\\app\\resources\\paradis\\cli', pathDelimiter: ';' });
+		assert.deepStrictEqual({
+			// Windows の PATH の鍵は多くが `Path`。別の鍵を並べず、ある鍵に足す
+			windowsPathKey: paradisAddParaCliToPaneEnvironment({ Path: 'C:\\tools', OTHER: null }, windowsRuntime),
+			// 渡した環境変数だけで起動する端末では ${env:PATH} が解決されない。PATH が無ければ足さない
+			strictWithoutPath: [paradisAddParaCliToPaneEnvironment({ KEEP: '1' }, windowsRuntime, true), paradisAddParaCliToPaneEnvironment({ KEEP: '1' }, { launcherDirectory: '/app/cli', pathDelimiter: ':' }, true)],
+			strictWithPath: paradisAddParaCliToPaneEnvironment({ PATH: '/usr/bin' }, { launcherDirectory: '/app/cli', pathDelimiter: ':' }, true),
+		}, {
+			windowsPathKey: { Path: 'C:\\app\\resources\\paradis\\cli;C:\\tools', OTHER: null, PARA_CODE_CLI_NODE: 'C:\\app\\Para Code.exe' },
+			strictWithoutPath: [{ KEEP: '1', PARA_CODE_CLI_NODE: 'C:\\app\\Para Code.exe' }, { KEEP: '1' }],
+			strictWithPath: { PATH: '/app/cli:/usr/bin', VSCODE_PATH_PREFIX: '/app/cli:' },
+		});
 		assert.deepStrictEqual({ posix, windows, none: paradisAddParaCliToPaneEnvironment({ KEEP: '1' }, undefined), target: paradisCliRemoteTargetContent('/srv/node', '/srv/out/cli.js') }, {
 			posix: { PATH: '/app/resources/paradis/cli:/codex/bin:${env:PATH}', VSCODE_PATH_PREFIX: '/app/resources/paradis/cli:/codex/bin:', KEEP: '1', PARA_CODE_CLI_NODE: '/app/para-code' },
 			windows: { PATH: 'C:\\app\\resources\\paradis\\cli;${env:PATH}' },
@@ -461,6 +481,6 @@ suite('paradisCliCore', () => {
 	});
 
 	test('the names this file shares with the gateway are the same', () => {
-		assert.strictEqual(PARADIS_CLI_GATEWAY_WAIT_HEADER, PARADIS_AGENT_GATEWAY_WAIT_SECONDS_HEADER);
+		assert.deepStrictEqual([PARADIS_CLI_GATEWAY_WAIT_HEADER, PARADIS_CLI_AFTER_DISPATCH_HEADER], [PARADIS_AGENT_GATEWAY_WAIT_SECONDS_HEADER, PARADIS_AGENT_GATEWAY_AFTER_DISPATCH_HEADER]);
 	});
 });
