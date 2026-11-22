@@ -50,7 +50,7 @@ import {
 	paradisDaemonSeverity,
 } from '../common/paradisPtyDaemonStatus.js';
 import { IParadisDaemonScope, paradisDaemonScopeFor, paradisDaemonStatusAria, paradisDaemonStatusTooltip } from '../common/paradisPtyDaemonScope.js';
-import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
+import { paradisAffectsLocalPtyHostDaemon } from '../common/paradisPtyDaemonSettingKey.js';
 import { ParadisPtyDaemonPopover } from './paradisPtyDaemonPopover.js';
 
 const ENTRY_ID = 'paradis.ptyDaemon';
@@ -107,11 +107,10 @@ class ParadisPtyDaemonStatusBarContribution extends Disposable implements IWorkb
 			: ProxyChannel.toService<IParadisPtyDaemonStatusService>(channel);
 
 		this._register(CommandsRegistry.registerCommand(TOGGLE_COMMAND, () => this.togglePopover()));
-		// **常駐が2種類あるので、鍵も2つ見る。** 出すかどうかはどちらかが有効なら真なので
-		// (`paradisAnyDaemonEnabled`)、片方しか見ていないと、薄い常駐だけを有効にした人には
-		// 次の定期更新まで項目が出ない（切ったときは、無いものが最大30秒出たままになる）。
+		// **前の鍵も見る。** 出すかどうかは前の鍵を書いたままでも真なので (`paradisAnyDaemonEnabled`)、
+		// 片方しか見ていないと、次の定期更新まで項目が出ない（切ったときは、無いものが最大30秒出たままになる）。
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
-			if (e.affectsConfiguration(PARADIS_PTY_DAEMON_ENABLED) || e.affectsConfiguration(PARADIS_PTY_HOST_DAEMON_ENABLED)) {
+			if (paradisAffectsLocalPtyHostDaemon(e)) {
 				void this.refresh();
 			}
 		}));

@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { PARADIS_PTY_DAEMON_LEGACY_ENABLED, PARADIS_PTY_HOST_DAEMON_ENABLED, paradisAffectsLocalPtyHostDaemon, paradisLocalPtyHostDaemonEnabled } from '../../common/paradisPtyDaemonSettingKey.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { isParadisSentryScrubbedWord } from '../../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisPtyHandoverSpans } from '../../common/paradisPtyHandover.js';
@@ -36,5 +37,26 @@ suite('Para Code pty hosting mode diagnostics (Sentry)', () => {
 		const reattach = { unchanged: 0, tail: 0, rebuild: 0, handedOff: 0, gone: 0, failed: 0, tailChars: 0, rebuildChars: 0, maxRebuildMs: 0, rebuildReasons: {} };
 		const spans = [true, false].map(daemon => paradisPtyHandoverSpans({ protocolVersion: 1, platform: 'linux', daemon, foreignHeld: 0, adoptions: [], letGo: 1, letGoFailed: 0, reattach, spared: 0, finishedWhileAway: 0 }, false));
 		assert.deepStrictEqual(spans.map(list => list.map(span => [span.operation, span.attributes.safe_daemon])), [[['reattach', true]], [['reattach', false]]]);
+	});
+
+	test('この PC では、前の鍵の true も「常駐で動かす」のオンとして読む', () => {
+		const enabled = (values: Record<string, unknown>) => paradisLocalPtyHostDaemonEnabled({ getValue: key => values[key] });
+		const affects = (changed: string) => paradisAffectsLocalPtyHostDaemon({ affectsConfiguration: key => key === changed });
+		assert.deepStrictEqual({
+			none: enabled({}),
+			current: enabled({ [PARADIS_PTY_HOST_DAEMON_ENABLED]: true }),
+			legacy: enabled({ [PARADIS_PTY_DAEMON_LEGACY_ENABLED]: true }),
+			// 前の鍵がオンなら、新しい鍵を明示的にオフにしていても常駐を使う（前の方式を使っていた人のターミナルを残す）
+			legacyWithCurrentOff: enabled({ [PARADIS_PTY_DAEMON_LEGACY_ENABLED]: true, [PARADIS_PTY_HOST_DAEMON_ENABLED]: false }),
+			notBoolean: enabled({ [PARADIS_PTY_DAEMON_LEGACY_ENABLED]: 'true', [PARADIS_PTY_HOST_DAEMON_ENABLED]: 1 }),
+			affects: [affects(PARADIS_PTY_HOST_DAEMON_ENABLED), affects(PARADIS_PTY_DAEMON_LEGACY_ENABLED), affects('paradis.terminal.daemon.saveScreens')],
+		}, {
+			none: false,
+			current: true,
+			legacy: true,
+			legacyWithCurrentOff: true,
+			notBoolean: false,
+			affects: [true, true, false],
+		});
 	});
 });

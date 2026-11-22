@@ -901,12 +901,12 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	{
 		sectionId: 'psd-sec-terminal',
 		group: GROUP_TERMINAL_KEEP,
-		key: 'paradis.terminal.daemon.enabled',
+		key: 'paradis.terminal.daemon.reattachAcrossUpdates',
 		// allow-any-unicode-next-line
-		label: localize('paradis.settings.daemon', "ターミナルをアプリの終了後も残す"),
+		label: localize('paradis.settings.daemonReattach', "ターミナルをアプリの終了・更新の後も残す"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.daemonDesc', "Para Code を閉じても、走っているコマンドが止まりません。"),
-		keywords: 'terminal daemon pty keep alive persistent',
+		description: localize('paradis.settings.daemonReattachDesc', "Para Code を閉じても更新しても、走っているコマンドが止まらず、次に開いたときに同じターミナルに繋がります。SSH 接続先では、接続先の設定でオンにします。再起動の後に効きます。"),
+		keywords: 'terminal daemon pty keep alive persistent reattach update pty host',
 	},
 	{
 		sectionId: 'psd-sec-terminal',
@@ -935,17 +935,6 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		description: localize('paradis.settings.daemonSaveScreensDesc', "ターミナルを残しているとき、画面とシェルの環境変数をディスクに保存しておき、PC の再起動後に直前の画面とタブを戻します。本人だけが読めるファイルに書き、30日で消えます。"),
 		keywords: 'terminal daemon save screen restore reboot scrollback disk',
-	},
-	{
-		sectionId: 'psd-sec-terminal',
-		experimental: true,
-		group: GROUP_TERMINAL_KEEP,
-		key: 'paradis.terminal.daemon.reattachAcrossUpdates',
-		// allow-any-unicode-next-line
-		label: localize('paradis.settings.daemonReattach', "更新をまたいで繋ぎ直す"),
-		// allow-any-unicode-next-line
-		description: localize('paradis.settings.daemonReattachDesc', "更新したあとも、それまでのターミナルにそのまま繋がります。SSH 接続先でも同じように動きます。"),
-		keywords: 'terminal daemon reattach update experimental pty host',
 	},
 	{
 		sectionId: 'psd-sec-terminal',

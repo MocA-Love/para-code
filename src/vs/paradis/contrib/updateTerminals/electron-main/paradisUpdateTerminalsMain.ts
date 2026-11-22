@@ -35,7 +35,7 @@ import { IUpdateService, StateType } from '../../../../platform/update/common/up
 import { ICodeWindow } from '../../../../platform/window/electron-main/window.js';
 import { IWindowsMainService } from '../../../../platform/windows/electron-main/windows.js';
 import { paradisParseKeepTerminalsChoice } from '../../../common/paradisTerminalKeepPlan.js';
-import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_DAEMON_KEEP_ALIVE_ON_CLOSE, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../../ptyDaemon/common/paradisPtyDaemonSettingKey.js';
+import { PARADIS_PTY_DAEMON_KEEP_ALIVE_ON_CLOSE, paradisLocalPtyHostDaemonEnabled } from '../../ptyDaemon/common/paradisPtyDaemonSettingKey.js';
 import { paradisPtyDaemonPathsFor } from '../../ptyDaemon/electron-main/paradisPtyHostStarterFactory.js';
 import { IParadisDaemonLedgerScope, ParadisDaemonStatusCollector } from '../../ptyDaemon/node/paradisDaemonStatusCollector.js';
 import {
@@ -324,8 +324,9 @@ class ParadisUpdateTerminalsMain extends Disposable implements IParadisUpdateQui
 	 */
 	private perBuildDaemonScope(): IParadisDaemonLedgerScope | undefined {
 		const acrossUpdate = paradisLocalTerminalsAcrossUpdate(
-			this.configurationService.getValue(PARADIS_PTY_DAEMON_ENABLED) === true,
-			this.configurationService.getValue(PARADIS_PTY_HOST_DAEMON_ENABLED) === true,
+			// 版で区切られた前の方式の常駐はもう選ばれない（paradisPtyDaemonSettingKey.ts）
+			false,
+			paradisLocalPtyHostDaemonEnabled(this.configurationService),
 		);
 		if (acrossUpdate !== 'stranded') {
 			return undefined;

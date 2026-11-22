@@ -31,6 +31,9 @@ const NOT_IN_DIALOG = new Map<string, string>([
 	['paradis.notifications.openSettings', 'link-only entry for the settings editor; the dialog has its own button row'],
 	// 通知の領域のデスクトップ通知の節が、ほかの通知の項目と並べて自前のスイッチで描いている（paradisNotificationSettingsArea.ts）
 	['paradis.notifications.osIncludeMessage', 'drawn by the desktop notification section of the notification area'],
+	// 「ターミナルをアプリの終了・更新の後も残す」(paradis.terminal.daemon.reattachAcrossUpdates) にまとめた前のスイッチ。
+	// settings.json に残っている値を読むためだけに、非推奨の案内つきで登録を残している
+	['paradis.terminal.daemon.enabled', 'deprecated: superseded by paradis.terminal.daemon.reattachAcrossUpdates'],
 	// 設定エディタにも出さない (included: false) 内部向けの切り替え
 	['paradis.officeViewer.engine', 'internal (included: false)'],
 	['paradis.officeViewer.kernelShadow', 'internal diagnostics (included: false)'],

@@ -45,7 +45,7 @@ import { paradisTimeBoundedTeardownStep } from '../../sentry/common/paradisTeard
 import { IParadisTerminalPrivateFiles, PARADIS_TERMINAL_PRIVATE_FILES_CHANNEL } from '../../terminalPrivateFiles/common/paradisTerminalPrivateFiles.js';
 import { paradisCollectAllTerminalInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { IParadisPtyDaemonStatus, IParadisPtyDaemonStatusService, PARADIS_PTY_DAEMON_CHANNEL } from '../common/paradisPtyDaemonStatus.js';
-import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_DAEMON_SAVE_SCREENS, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
+import { PARADIS_PTY_DAEMON_SAVE_SCREENS, paradisAffectsLocalPtyHostDaemon, paradisLocalPtyHostDaemonEnabled } from '../common/paradisPtyDaemonSettingKey.js';
 import {
 	IParadisDaemonStatusLike,
 	IParadisSavedTerminalScreens,
@@ -82,8 +82,7 @@ function paradisScreensEnabled(configurationService: IConfigurationService): boo
 	if (isWindows || configurationService.getValue<boolean>(PARADIS_PTY_DAEMON_SAVE_SCREENS) === false) {
 		return false;
 	}
-	return configurationService.getValue<boolean>(PARADIS_PTY_DAEMON_ENABLED) === true
-		|| configurationService.getValue<boolean>(PARADIS_PTY_HOST_DAEMON_ENABLED) === true;
+	return paradisLocalPtyHostDaemonEnabled(configurationService);
 }
 
 function toStatusLike(status: IParadisPtyDaemonStatus | undefined): IParadisDaemonStatusLike | undefined {
@@ -280,7 +279,7 @@ class ParadisTerminalScreenSaverContribution extends Disposable implements IWork
 		}));
 		// 設定で止めたら、今のワークスペースの保存物もすぐ消す（残しておく理由が無い）
 		this._register(this._configurationService.onDidChangeConfiguration(e => {
-			if ((e.affectsConfiguration(PARADIS_PTY_DAEMON_SAVE_SCREENS) || e.affectsConfiguration(PARADIS_PTY_DAEMON_ENABLED) || e.affectsConfiguration(PARADIS_PTY_HOST_DAEMON_ENABLED))
+			if ((e.affectsConfiguration(PARADIS_PTY_DAEMON_SAVE_SCREENS) || paradisAffectsLocalPtyHostDaemon(e))
 				&& !paradisScreensEnabled(this._configurationService)) {
 				void this._files.deleteScreens(this._workspaceId()).catch(() => { });
 			}

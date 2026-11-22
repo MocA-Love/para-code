@@ -26,10 +26,10 @@ import { IPtyHostStarter } from '../../../../platform/terminal/node/ptyHost.js';
 import { PARADIS_PTY_HOST_STATE_DIR, paradisPtyHostPaths } from '../common/paradisPtyHostPaths.js';
 import { paradisDeletePtyDaemonEnv } from '../common/paradisPtyEnvHygiene.js';
 import { PARADIS_PTY_PROTOCOL_VERSION } from '../common/paradisPtyProtocol.js';
-import { ParadisDaemonPtyHostStarter, ParadisPtyHostIpc } from './paradisDaemonPtyHostStarter.js';
+import { ParadisPtyHostIpc } from './paradisDaemonPtyHostStarter.js';
 import { ParadisScopedEnvPtyHostStarter } from './paradisScopedEnvPtyHostStarter.js';
 import { IParadisPtyDaemonPaths, ParadisDaemonPlatform, paradisPtyDaemonPaths } from '../common/paradisPtyDaemonPaths.js';
-import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
+import { PARADIS_PTY_DAEMON_LEGACY_ENABLED, PARADIS_PTY_HOST_DAEMON_ENABLED, paradisLocalPtyHostDaemonEnabled } from '../common/paradisPtyDaemonSettingKey.js';
 import { ParadisPtyHostingFallback, ParadisPtyHostingMode, paradisPtyModeAttributes, recordParadisPtyMode } from '../common/paradisPtyModeDiagnostics.js';
 
 /**
@@ -63,9 +63,9 @@ export function paradisPtyDaemonPathsFor(
 /**
  * 見るべき台帳のすべて。
  *
- * **切り替えの途中では両方見る。** 旧い常駐が端末を抱えたまま走っている状態で新しい方へ
- * 切り替えると、片方しか見ていないと旧い常駐は状態パネルにも出ず、**止める手立ても無くなる**。
- * 掃除の導線を残すために、いま使う方に加えてもう片方も読む。
+ * **両方見る。** 前の方式の常駐（設定 `paradis.terminal.daemon.enabled`。2026-11-22 に選べなくした）が
+ * 端末を抱えたまま走っていることがある。片方しか見ていないと、それは状態パネルにも出ず、
+ * **止める手立ても無くなる**。掃除の導線を残すために、いま使う方に加えてもう片方も読む。
  */
 export function paradisAllDaemonLedgers(
 	configurationService: IConfigurationService,
@@ -73,7 +73,7 @@ export function paradisAllDaemonLedgers(
 	productService: IProductService,
 ): readonly string[] {
 	const active = paradisActiveDaemonLedger(configurationService, environmentMainService, productService);
-	const other = configurationService.getValue(PARADIS_PTY_HOST_DAEMON_ENABLED) === true
+	const other = paradisLocalPtyHostDaemonEnabled(configurationService)
 		? paradisPtyDaemonPathsFor(environmentMainService, productService).ledgerDir
 		: paradisPtyHostPaths({ stateDir: environmentMainService.userDataPath, platform: currentPlatform() }).ledgerDir;
 	return active.ledgerDir === other ? [active.ledgerDir] : [active.ledgerDir, other];
@@ -84,7 +84,7 @@ export function paradisActiveDaemonLedger(
 	environmentMainService: IEnvironmentMainService,
 	productService: IProductService,
 ): { readonly ledgerDir: string; readonly buildKey: string } {
-	if (configurationService.getValue(PARADIS_PTY_HOST_DAEMON_ENABLED) === true) {
+	if (paradisLocalPtyHostDaemonEnabled(configurationService)) {
 		const paths = paradisPtyHostPaths({ stateDir: environmentMainService.userDataPath, platform: currentPlatform() });
 		return { ledgerDir: paths.ledgerDir, buildKey: `v${PARADIS_PTY_PROTOCOL_VERSION}` };
 	}
@@ -92,10 +92,9 @@ export function paradisActiveDaemonLedger(
 	return { ledgerDir: paths.ledgerDir, buildKey: paths.buildKey };
 }
 
-/** どちらかの常駐が使われる設定になっているか。 */
+/** 常駐が使われる設定になっているか（前の鍵を書いたままの人も含む）。 */
 export function paradisAnyDaemonEnabled(configurationService: IConfigurationService): boolean {
-	return configurationService.getValue(PARADIS_PTY_DAEMON_ENABLED) === true
-		|| configurationService.getValue(PARADIS_PTY_HOST_DAEMON_ENABLED) === true;
+	return paradisLocalPtyHostDaemonEnabled(configurationService);
 }
 
 /**
@@ -124,8 +123,9 @@ export function paradisCreatePtyHostStarter(
 
 	const inApp = (via: ParadisPtyHostIpc = ipc) => new ElectronPtyHostStarter(reconnectConstants, configurationService, environmentMainService, lifecycleMainService, logService, via);
 	// 選んだ飼い方を Sentry へ 1 件送る（paradisPtyModeDiagnostics.ts）
+	// `daemonEnabled` は前の鍵を書いたままの人の数を数えるために残す（その人も下で `handover` になる）
 	const settings = {
-		daemonEnabled: configurationService.getValue(PARADIS_PTY_DAEMON_ENABLED) === true,
+		daemonEnabled: configurationService.getValue(PARADIS_PTY_DAEMON_LEGACY_ENABLED) === true,
 		reattachAcrossUpdates: configurationService.getValue(PARADIS_PTY_HOST_DAEMON_ENABLED) === true,
 	};
 	const chose = <T>(mode: ParadisPtyHostingMode, fallback: ParadisPtyHostingFallback, starter: T): T => {
@@ -136,12 +136,24 @@ export function paradisCreatePtyHostStarter(
 	// 更新をまたいで繋ぎ直せる薄い常駐。**pty ホストはアプリの中のまま**で、その中から常駐へ
 	// 繋ぐので、ここは今までどおりの起こし方でよい。渡すのは置き場所だけ
 	// (`paradisPtyHostBootstrap.ts` が受け取る)。
-	if (configurationService.getValue(PARADIS_PTY_HOST_DAEMON_ENABLED) === true) {
-		// **Windows はここでも止める。** 塞ぐ理由は旧い常駐とまったく同じ（下の判断を参照）で、
-		// 名前付きパイプが相手を確かめられないという protocol より下の話なので、薄くしたことでは
-		// 何も変わらない。加えて、こちらは題名も cwd も ConPTY も Windows では機能しない前提で
-		// 書いてあり、文字列の引数（Windows 専用の形）を渡されると起動を断る。
-		// **「動かない前提」で書いたものが、実際には止められていなかった。**
+	//
+	// 前の方式（pty ホスト一式を常駐にする `ParadisDaemonPtyHostStarter`）は 2026-11-22（q.html Q681）から
+	// ここでは選ばない。前の鍵 `paradis.terminal.daemon.enabled` を書いたままの人も、この薄い常駐になる。
+	if (paradisLocalPtyHostDaemonEnabled(configurationService)) {
+		// **Windows では止める。名前付きパイプを使う限り、こちらでは塞げない穴が残るため。**
+		//
+		// 名前付きパイプの名前空間はマシン全体で共有で、名前は userDataPath から他のユーザーにも計算できる。
+		// 作るのに特権は要らず、先に作った側が持ち主になる。unix は置き場所が 0700 なので、他のユーザーは
+		// そもそもファイルを作れない。盗聴の方（偽物に繋いで全打鍵と環境変数を渡す）は名乗り合い
+		// (`paradisPtyDaemonAuth`) で塞いであるが、**接続した時点で成立してしまう方**が残る。libuv の
+		// `open_named_pipe()` の `CreateFileW` は `SECURITY_SQOS_PRESENT` を付けず、Microsoft の
+		// "Impersonating a Named Pipe Client" いわく未指定は SecurityImpersonation（危険な側の既定）。
+		// `ImpersonateNamedPipeClient` が通るのは偽サーバーが `SeImpersonatePrivilege` を持つ場合か同じユーザーの
+		// 場合だけだが、特権サービスが名前を先に取って管理者の Para Code を待ち構える経路は残る（2026-08-20 調査）。
+		// 開けるなら Windows では名前付きパイプをやめてループバック TCP にするのが筋。
+		//
+		// 加えて、こちらは題名も cwd も ConPTY も Windows では機能しない前提で書いてあり、
+		// 文字列の引数（Windows 専用の形）を渡されると起動を断る。
 		if (currentPlatform() === 'win32') {
 			logService.info('[ParadisPtyHost] not using a daemon on Windows yet: the named pipe cannot tell us who it is talking to');
 			return chose('in_app', 'windows', inApp());
@@ -157,60 +169,5 @@ export function paradisCreatePtyHostStarter(
 		return chose('handover', 'none', new ParadisScopedEnvPtyHostStarter(inApp(), { [PARADIS_PTY_HOST_STATE_DIR]: environmentMainService.userDataPath }));
 	}
 
-	if (configurationService.getValue(PARADIS_PTY_DAEMON_ENABLED) !== true) {
-		return chose('in_app', 'none', inApp());
-	}
-
-	// Windows はここで止める。**名前付きパイプを使う限り、こちらでは塞げない穴が残るため。**
-	//
-	// 名前付きパイプの名前空間はマシン全体で共有で、名前は userDataPath とビルドから他のユーザー
-	// にも計算できる。作るのに特権は要らず、先に作った側が持ち主になる。unix は置き場所が 0700
-	// なので、他のユーザーはそもそもファイルを作れない。
-	//
-	// 盗聴の方 (偽物に繋いで全打鍵と環境変数を渡す) は、名乗り合い (`paradisPtyDaemonAuth`) で
-	// 塞いである。残っているのは**接続した時点で成立してしまう方**で、こちらが相手を拒んでも
-	// 遅い。
-	//
-	// 調査済み (2026-08-20):
-	//  - libuv の `src/win/pipe.c` `open_named_pipe()` にある `CreateFileW` は3箇所とも
-	//    `dwFlagsAndAttributes` が `FILE_FLAG_OVERLAPPED` のみ。ファイル全体に
-	//    `SECURITY_SQOS_PRESENT` も `SECURITY_IDENTIFICATION` も出てこない。接続の両パス
-	//    (即時・`ERROR_PIPE_BUSY` 後のリトライ) ともここを通る
-	//  - Microsoft の "Impersonating a Named Pipe Client" いわく
-	//    "By default, a server impersonates at the SecurityImpersonation impersonation level"。
-	//    つまり未指定は危険な側の既定
-	//
-	// ただし被害の範囲は限られる。`ImpersonateNamedPipeClient` が通るのは、偽サーバーが
-	// `SeImpersonatePrivilege` を持つ場合 (サービスアカウントなど) か、そもそも同じユーザーの
-	// 場合だけ。**一般ユーザーの別アカウントでは成立しない**。それでも、特権サービスが名前を
-	// 先に取って管理者の Para Code を待ち構える経路は残る。
-	//
-	// フラグを付けさせる手段はこちらに無い (Node の `net` にその口が無い)。開けるなら
-	// **Windows では名前付きパイプをやめてループバック TCP にする**のが筋で、TCP には偽装の
-	// 仕組み自体が無いので問題が丸ごと消える。認証は今の名乗り合いがそのまま使え、ポート番号は
-	// 台帳に書けばよい。`ipc.net` の `serve`/`connect` は両方に対応している。
-	if (currentPlatform() === 'win32') {
-		logService.info('[ParadisPtyDaemon] not using a daemon on Windows yet: the named pipe cannot tell us who it is talking to');
-		return chose('in_app', 'windows', inApp());
-	}
-
-	const paths = paradisPtyDaemonPathsFor(environmentMainService, productService);
-	if (paths.socketPathTooLong) {
-		// 黙って落とすと、症状は「毎回ターミナルが作り直される」だけになり原因に辿り着けない。
-		logService.warn(`[ParadisPtyDaemon] not using a daemon: the socket path is too long for this platform (${paths.socketPath.length} chars at ${paths.socketPath}). Try a shorter --user-data-dir.`);
-		return chose('in_app', 'path_too_long', inApp());
-	}
-
-	logService.info(`[ParadisPtyDaemon] terminals will run in a daemon at ${paths.socketPath}`);
-	return chose('daemon', 'none', new ParadisDaemonPtyHostStarter(
-		reconnectConstants,
-		paths,
-		paradisPtyDaemonBuildId(productService),
-		environmentMainService,
-		lifecycleMainService,
-		logService,
-		ipc,
-		// 常駐が名乗りに答えないときは、待つのをやめてアプリの中で動かす（薄い常駐の側と同じ）。
-		{ createInApp: inApp },
-	));
+	return chose('in_app', 'none', inApp());
 }

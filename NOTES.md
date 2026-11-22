@@ -2196,6 +2196,10 @@ iPadOS 26 以降のウィンドウアプリでは、左上に閉じる・最小�
 
 ## 常駐ターミナル（pty デーモン）で踏みうる罠（2026-08-20）
 
+**2026-11-22 追記（q.html Q681）**: 常駐のスイッチは `paradis.terminal.daemon.reattachAcrossUpdates`（設定画面の名前は「ターミナルをアプリの終了・更新の後も残す」。既定オフ、「試験的」の札は外した）の 1 つにまとめた。前のスイッチ `paradis.terminal.daemon.enabled` は「設定 (Para Code)」から消し、非推奨の案内つきで登録だけ残している（値を書いている人にだけ、設定エディタと settings.json に案内が出る。登録を外しても `included: false` で隠しても、既定でないプロファイルの renderer は値を読まなくなり、main の読む値と食い違う。`configurationModels.ts` の `skipUnregistered`）。この PC の読み手はすべて `paradisLocalPtyHostDaemonEnabled`（`ptyDaemon/common/paradisPtyDaemonSettingKey.ts`）を通し、前の鍵の `true` を新しい鍵のオンとして読む。読み手を足すときもここを通すこと（1 か所でも別の読み方をすると、main は常駐を選んだのに状態が「無効」と答え、終了時にターミナルが全部畳まれる）。接続先（SSH）の読み手 2 つ（`paradisRemotePtyHost.ts`・`paradisPtyDaemonStatusServer.ts`）は新しい鍵だけを読む。前の方式（pty ホスト一式を常駐にする `ParadisDaemonPtyHostStarter` とその常駐の入口）は main から選ばれなくなったが、コードは残してある。更新の前に前の方式で残した常駐を、状態パネルの一覧に出して止める経路（`paradisAllDaemonLedgers`・`stopForeign`）が台帳と停止の部品を共有しているため。前の鍵だけがオンの人は、設定画面のスイッチはオフに見えるが常駐は動く（settings.json の取り消し線の案内に従って書き換えてもらう）。Sentry の `para.ptyDaemon.mode` の `safe_set_daemon_enabled:on` が、前の鍵を書いたままの人の起動の数になる。これが 0 のまま続けば、読み替えと前の方式のコードを消せる。
+
+以下はまとめる前の記述（「設定 `paradis.terminal.daemon.enabled`」は今の「ターミナルをアプリの終了・更新の後も残す」に読み替える）。
+
 設定 `paradis.terminal.daemon.enabled` を有効にすると、ターミナルのプロセスは Para Code の外の常駐プロセスが持つ。閉じても残せるようになった代わりに、**ローカルの端末が最大24時間 detach 状態で置かれる**という、今まで無かった状態が生まれる。そこに upstream の既存挙動がぶつかる箇所がある。
 
 ### 「Terminal: Attach to Session」は、残した端末を巻き添えで殺す
@@ -2249,7 +2253,7 @@ upstream の挙動そのもので、接続先（SSH）側も同じ露出を持�
 
 接続先のマシンでこの機能をオンにする方法（ユーザー向け）:
 
-1. SSH のウィンドウで設定を開き、「リモート [SSH: <接続先>]」のタブで「更新をまたいで繋ぎ直す」（`paradis.terminal.daemon.reattachAcrossUpdates`）にチェックを入れる。手元の「ユーザー」のタブでオンにしても接続先には効かない（MACHINE スコープの設定は接続先のマシン設定 `~/.para-code-server/data/Machine/settings.json` から読む）
+1. SSH のウィンドウで設定を開き、「リモート [SSH: <接続先>]」のタブで「ターミナルをアプリの終了・更新の後も残す」（`paradis.terminal.daemon.reattachAcrossUpdates`。2026-11-22 までの名前は「更新をまたいで繋ぎ直す」）にチェックを入れる。手元の「ユーザー」のタブでオンにしても接続先には効かない（MACHINE スコープの設定は接続先のマシン設定 `~/.para-code-server/data/Machine/settings.json` から読む）
 2. コマンドパレットで「ターミナル: PTY ホストの再起動」を実行する（いま開いているターミナルは起動し直しになる）。以前はサーバーが起き直すまで効かなかったが、設定が入った時点で環境変数を足すようにしたので、次に pty ホストが起きたときから常駐を使う
 3. 左下の常駐ターミナルの表示が「稼働中」になれば有効。接続先の `~/.para-code-server/data/ptyHost/` に `v2.json` とソケットができる
 
@@ -2795,7 +2799,7 @@ Explore の spans（または Discover の transactions）で見る例。どれ�
 | 休止が働いているか | `transaction:para.agentHibernation.hibernate`、`safe_outcome` で group by | `count()`、`p50(tags[safe_idle_ms,number])`。`ok` 以外が多ければ理由を見る |
 | 休止中のタブに打ってしまうか・再開できるか | `transaction:para.agentHibernation.resume`、`safe_outcome` で group by | `count()`、`sum(tags[safe_inputs_while_hibernated,number])`、`p50(tags[safe_hibernated_ms,number])` |
 | 拡張機能の読み込みとポップアップ | `transaction:para.browserExtensions.usage` | `load_*`・`worker_start_failed`・`popup_no_window_*` の sum、`ext_count_*` の sum（入れている数の分布） |
-| 旧い常駐だけの人がどれだけいるか | `transaction:para.ptyDaemon.mode`、`safe_pty_mode` で group by | `count()`（起動の数）。`daemon` がほぼ 0 なら旧い常駐を引き継ぎへ寄せて消す案を検討する。`safe_pty_fallback` が `none` 以外なら、常駐を使う設定なのにアプリの中へ倒した起動 |
+| 旧い常駐だけの人がどれだけいるか | `transaction:para.ptyDaemon.mode`、`safe_pty_mode` で group by | `count()`（起動の数）。`daemon` がほぼ 0 なら旧い常駐を引き継ぎへ寄せて消す案を検討する（2026-11-22 に寄せた。以後は `daemon` は届かず、`safe_set_daemon_enabled:on` が前の鍵を書いたままの人の起動）。`safe_pty_fallback` が `none` 以外なら、常駐を使う設定なのにアプリの中へ倒した起動 |
 | 引き継ぎの失敗（11 月の直しの効き目） | `transaction:para.ptyHandover.adopt safe_daemon:true` | `count()` を `safe_reachable` で分け、`sum(tags[safe_failed,number])` ÷ `sum(tags[safe_adopted,number])` を release で分ける。起動時の取り残しは `transaction:para.pty-daemon.startup-revive` の `safe_left_behind`・`safe_revived_unclaimed` を `safe_set_reattach` で分けて見る |
 
 利用者の数は数えられません（`user` を送っていないため）。上の `count()` は起動・窓・30 分の窓の数です。
