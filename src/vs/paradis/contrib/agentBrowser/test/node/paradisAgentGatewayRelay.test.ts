@@ -11,7 +11,7 @@ import type * as http from 'http';
 import type * as net from 'net';
 import type { AddressInfo, Socket } from 'net';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_AGENT_GATEWAY_PROBE_PATH, PARADIS_AGENT_GATEWAY_REQUEST_HEADER, PARADIS_AGENT_GATEWAY_TIMEOUT_CODE, PARADIS_AGENT_GATEWAY_UNSYNCED_HEADER } from '../../common/paradisAgentGateway.js';
+import { PARADIS_AGENT_GATEWAY_PROBE_PATH, PARADIS_AGENT_GATEWAY_REQUEST_HEADER, PARADIS_AGENT_GATEWAY_TIMEOUT_CODE, PARADIS_AGENT_GATEWAY_WAIT_SECONDS_HEADER, PARADIS_AGENT_GATEWAY_UNSYNCED_HEADER } from '../../common/paradisAgentGateway.js';
 import { IParadisAgentGatewaySource, ParadisAgentGatewayRelay, paradisIsLiveWindowProbe } from '../../node/paradisAgentGatewayRelay.js';
 import { PARADIS_MCP_HEALTH_PATH } from '../../node/paradisBrowserMcpShimCore.js';
 
@@ -132,11 +132,11 @@ suite('ParadisAgentGatewayRelay', () => {
 		return (server.address() as AddressInfo).port;
 	}
 
-	function call(port: number, options: { method?: string; path?: string; body?: string; token?: string } = {}): Promise<{ readonly status: number; readonly body: string; readonly headers: http.IncomingHttpHeaders }> {
+	function call(port: number, options: { method?: string; path?: string; body?: string; token?: string; headers?: Record<string, string> } = {}): Promise<{ readonly status: number; readonly body: string; readonly headers: http.IncomingHttpHeaders }> {
 		return new Promise((resolve, reject) => {
 			const request = httpModule.request({
 				host: '127.0.0.1', port, method: options.method ?? 'POST', path: options.path ?? '/', agent: false,
-				headers: { 'content-type': 'application/json', ...(options.token !== undefined ? { authorization: `Bearer ${options.token}` } : {}) },
+				headers: { 'content-type': 'application/json', ...(options.token !== undefined ? { authorization: `Bearer ${options.token}` } : {}), ...options.headers },
 			}, response => {
 				const chunks: Buffer[] = [];
 				response.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -194,6 +194,18 @@ suite('ParadisAgentGatewayRelay', () => {
 		const response = await call(port, { token: 't' });
 
 		assert.deepStrictEqual({ status: response.status, code: JSON.parse(response.body).code }, { status: 503, code: PARADIS_AGENT_GATEWAY_TIMEOUT_CODE });
+	});
+
+	test('gives up sooner when the request names a shorter wait, and never later than its own limit', async () => {
+		const deadPort = await unusedPort();
+		const patient = await gateway(() => [{ id: 'a', port: deadPort }], { waitLimitMs: 60_000 });
+		const impatient = await gateway(() => [{ id: 'a', port: deadPort }], { waitLimitMs: 200 });
+
+		const short = await call(patient, { token: 't', headers: { [PARADIS_AGENT_GATEWAY_WAIT_SECONDS_HEADER]: '0.2' } });
+		const startedAt = Date.now();
+		const capped = await call(impatient, { token: 't', headers: { [PARADIS_AGENT_GATEWAY_WAIT_SECONDS_HEADER]: '600' } });
+
+		assert.deepStrictEqual({ short: [short.status, JSON.parse(short.body).code], capped: capped.status, cappedInTime: Date.now() - startedAt < 5000 }, { short: [503, PARADIS_AGENT_GATEWAY_TIMEOUT_CODE], capped: 503, cappedInTime: true });
 	});
 
 	test('treats a missing or unreadable port file as not yet, and waits', async () => {

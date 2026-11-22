@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { EventEmitter } from 'events';
-import { PARADIS_AGENT_GATEWAY_REQUEST_HEADER, PARADIS_AGENT_GATEWAY_UNSYNCED_HEADER } from '../../common/paradisAgentGateway.js';
+import { PARADIS_AGENT_GATEWAY_REQUEST_HEADER, PARADIS_AGENT_GATEWAY_UNSYNCED_HEADER, PARADIS_AGENT_GATEWAY_AFTER_DISPATCH_HEADER } from '../../common/paradisAgentGateway.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisExactBrowserViewDescriptor, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent } from '../../common/paradisAgentBrowser.js';
 import { IParadisBindingAuthorityManifest, ParadisBindingAuthority } from '../../common/paradisBindingAuthority.js';
@@ -81,8 +81,11 @@ class TestResponse extends EventEmitter {
 	body = '';
 	endCalls = 0;
 
-	writeHead(statusCode: number): void {
+	headers: Record<string, unknown> = {};
+
+	writeHead(statusCode: number, headers?: Record<string, unknown>): void {
 		this.statusCode = statusCode;
+		this.headers = headers ?? {};
 		this.headersSent = true;
 	}
 
@@ -2007,6 +2010,8 @@ suite('ParadisAgentBrowser authority integration', () => {
 		mcpPost.emit('end');
 		await mcpPending;
 		assert.strictEqual(mcpResponse.statusCode, 404);
+		// 処理の前に断った 404 には、処理した後の印を付けない
+		assert.strictEqual(mcpResponse.headers[PARADIS_AGENT_GATEWAY_AFTER_DISPATCH_HEADER], undefined);
 		assert.strictEqual(Reflect.get(fixture.service, '_seenTokens').has('token'), false);
 
 		await fixture.service.syncBindingAuthority(connectionB, authorityManifest(1, true, [{ token: 'token' }]));
@@ -2348,6 +2353,10 @@ suite('ParadisAgentBrowser authority integration', () => {
 
 		assert.strictEqual(response.statusCode, 404);
 		assert.strictEqual(response.body.includes('/tmp/example.txt'), false);
+		// 処理した後の 404 には印を付け、「知らないトークン」の本文にしない（受け口が聞き直さず、para コマンドが操作を送り直さない）
+		assert.deepStrictEqual(
+			{ mark: response.headers[PARADIS_AGENT_GATEWAY_AFTER_DISPATCH_HEADER], unknownTokenBody: response.body.includes('Para Browser endpoint unavailable') },
+			{ mark: '1', unknownTokenBody: false });
 	});
 
 	test('genericizes renderer preview failures before returning them to MCP clients', async () => {

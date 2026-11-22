@@ -1,0 +1,45 @@
+#!/bin/sh
+
+# PARA-CODE: fork-owned file (Para Code) - not present in upstream microsoft/vscode. See CLAUDE.md.
+#
+# Launcher of the `para` command (the Para Code tools as a CLI). It only finds a Node.js and the
+# CLI script (out/vs/paradis/contrib/agentBrowser/node/paradisCli.js) and runs it.
+#
+# - On the machine of Para Code this file sits in <app>/resources/paradis/cli, which Para Code puts
+#   on the PATH of its terminals. The script is three folders up, and PARA_CODE_CLI_NODE names the
+#   Para Code executable, which runs it as Node.js (ELECTRON_RUN_AS_NODE=1).
+# - On an SSH host Para Code copies this file to ~/.para-code/bin and writes para.target next to it
+#   on every connect: line 1 is the node of the Para Code server there, line 2 the script it ships.
+
+set -u
+
+launcher_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 3
+
+node=
+script=
+if [ -r "$launcher_dir/para.target" ]; then
+	{
+		IFS= read -r node || true
+		IFS= read -r script || true
+	} < "$launcher_dir/para.target"
+	if [ -z "$script" ] || [ ! -f "$script" ] || [ -z "$node" ] || [ ! -x "$node" ]; then
+		echo "para: the Para Code server this command belongs to is gone from this host (it was updated or removed). Reconnect the Para Code window to this host and run the command again. Nothing was done." >&2
+		exit 3
+	fi
+else
+	script=$launcher_dir/../../../out/vs/paradis/contrib/agentBrowser/node/paradisCli.js
+	node=${PARA_CODE_CLI_NODE:-}
+	if [ ! -f "$script" ]; then
+		echo "para: the Para Code CLI script was not found next to this launcher. Open a new terminal in Para Code and try again. Nothing was done." >&2
+		exit 3
+	fi
+fi
+
+if [ -n "$node" ] && [ -x "$node" ]; then
+	ELECTRON_RUN_AS_NODE=1 exec "$node" "$script" "$@"
+fi
+if command -v node >/dev/null 2>&1; then
+	exec node "$script" "$@"
+fi
+echo "para: no Node.js was found to run the Para Code CLI (PARA_CODE_CLI_NODE is not set in this terminal). Open a new terminal in Para Code and try again. Nothing was done." >&2
+exit 3

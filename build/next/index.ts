@@ -129,6 +129,9 @@ const desktopEntryPoints = [
 	// run it directly via `node out/vs/paradis/contrib/agentBrowser/node/paradisBrowserMcpShim.js`
 	// (see paradisMcpSnippets.ts), so packaged builds must emit it at that exact path.
 	'vs/paradis/contrib/agentBrowser/node/paradisBrowserMcpShim',
+	// PARA-PATCH: the `para` command (the Para Code tools as a CLI). The launcher in resources/paradis/cli runs it
+	// with the app itself as Node.js, so packaged builds must emit it at this exact path as one file.
+	'vs/paradis/contrib/agentBrowser/node/paradisCli',
 	// PARA-PATCH: common entry of the fork's worker threads. It registers the node_modules.asar
 	// resolution in the worker before importing the real entry (see paradisWorkerAsarResolution.ts).
 	'vs/paradis/node/paradisWorkerBootstrap',
@@ -183,6 +186,8 @@ const serverEntryPoints = [
 	'vs/paradis/contrib/fileViewers/node/office/paradisOfficeWorkerMain',
 	// PARA-PATCH: the agent-browser MCP stdio shim, which Antigravity CLI on an SSH host runs with the server's node
 	'vs/paradis/contrib/agentBrowser/node/paradisBrowserMcpShim',
+	// PARA-PATCH: the `para` command, which terminals on an SSH host run with the server's node (~/.para-code/bin/para)
+	'vs/paradis/contrib/agentBrowser/node/paradisCli',
 	'vs/platform/agentHost/node/agentHostMain',
 	'vs/platform/agentHost/node/diffWorkerMain',
 ];

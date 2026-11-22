@@ -57,6 +57,19 @@ export const PARADIS_AGENT_GATEWAY_PROBE_PATH = '/paradis-mcp/health';
 /** 待たせる上限。エージェントの道具の制限（300 秒）より短い。 */
 export const PARADIS_AGENT_GATEWAY_WAIT_LIMIT_MS = 120_000;
 
+/**
+ * 待たせる上限を、要求の側から短くするヘッダー（秒。{@link PARADIS_AGENT_GATEWAY_WAIT_LIMIT_MS} より長くはならない）。
+ * `para` コマンドが、自分の待てる残りの時間を伝えるのに使う（エージェントのシェルの制限より先に答えを返すため）。
+ */
+export const PARADIS_AGENT_GATEWAY_WAIT_SECONDS_HEADER = 'x-para-code-gateway-wait-seconds';
+
+/**
+ * 手元が、要求を処理した後で「このペインはもう今のものではない」と断るとき（404）に付ける印。処理の前に断る 404
+ * （知らないトークン）と違い、道具はもう走ったかもしれない。受け口はこの 404 を聞き直さずにそのまま返し、`para` コマンドは
+ * 操作を送り直さない。
+ */
+export const PARADIS_AGENT_GATEWAY_AFTER_DISPATCH_HEADER = 'x-para-code-after-dispatch';
+
 /** 受け口が打ち切ったときの応答に載せる符丁。 */
 export const PARADIS_AGENT_GATEWAY_TIMEOUT_CODE = 'para-code-window-not-connected';
 

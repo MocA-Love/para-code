@@ -71,7 +71,7 @@ import { ParadisRemoteAgentTunnels } from './paradisRemoteAgentTunnel.js';
 import { ParadisLocalVoicePlayer } from './paradisLocalVoicePlayer.js';
 import { paradisReceiveRemoteVoice, paradisSendVoiceIngressUnavailable, paradisSendVoiceTicketRejected } from './paradisRemoteVoiceIngress.js';
 import { paradisArmRequestBodyTimeout, paradisConfigureMcpHttpServer } from './paradisHttpRequestTimeouts.js';
-import { PARADIS_AGENT_GATEWAY_REQUEST_HEADER, PARADIS_AGENT_GATEWAY_UNSYNCED_HEADER } from '../common/paradisAgentGateway.js';
+import { PARADIS_AGENT_GATEWAY_REQUEST_HEADER, PARADIS_AGENT_GATEWAY_UNSYNCED_HEADER, PARADIS_AGENT_GATEWAY_AFTER_DISPATCH_HEADER } from '../common/paradisAgentGateway.js';
 import { paradisWaitForUnsyncedPane } from './paradisUnsyncedPaneWait.js';
 import { ParadisReturnTunnelLedger } from './paradisReturnTunnelLedger.js';
 import { IParadisLocalVoiceOutput } from '../../notifications/common/paradisVoiceIngest.js';
@@ -4327,14 +4327,14 @@ export class ParadisAgentBrowserService extends Disposable {
 				if (!controller.signal.aborted && this.isIngressLeaseCurrent(ingressLease)) {
 					this._sendJsonRpc(res, { jsonrpc: '2.0', id: rpc.id, result });
 				} else if (!controller.signal.aborted) {
-					this._sendIngressRejected(res);
+					this._sendIngressRejectedAfterDispatch(res);
 				}
 			} catch (error) {
 				if (controller.signal.aborted) {
 					return;
 				}
 				if (!this.isIngressLeaseCurrent(ingressLease) || error instanceof ParadisIngressLeaseError) {
-					this._sendIngressRejected(res);
+					this._sendIngressRejectedAfterDispatch(res);
 				} else if (error instanceof JsonRpcMethodError) {
 					this._sendJsonRpc(res, { jsonrpc: '2.0', id: rpc.id, error: { code: error.code, message: error.message } });
 				} else {
@@ -8701,6 +8701,21 @@ export class ParadisAgentBrowserService extends Disposable {
 			res.writeHead(404, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
 		}
 		res.end(JSON.stringify({ error: 'Para Browser endpoint unavailable.' }));
+	}
+
+	/**
+	 * 要求を処理した後で、ペインがもう今のものでなくなっていた（窓の再読み込みなど）。処理の前の 404 と同じ状態で返すが、
+	 * 道具はもう走ったかもしれないので印を付け、本文も変える（接続先の受け口は「知らないトークン」の本文の 404 だけを
+	 * 聞き直す。paradisAgentGatewayRelay.ts）。`para` コマンドはこの印の付いた 404 では操作を送り直さない。
+	 */
+	private _sendIngressRejectedAfterDispatch(res: http.ServerResponse): void {
+		if (res.writableEnded) {
+			return;
+		}
+		if (!res.headersSent) {
+			res.writeHead(404, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', [PARADIS_AGENT_GATEWAY_AFTER_DISPATCH_HEADER]: '1' });
+		}
+		res.end(JSON.stringify({ error: 'The terminal pane changed while the request was being handled.' }));
 	}
 
 	private _sendIngressCapacityRejected(res: http.ServerResponse): void {

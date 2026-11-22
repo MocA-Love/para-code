@@ -29,6 +29,7 @@ import { PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js'
 import { IParadisAgentGatewayEndpoint, PARADIS_AGENT_GATEWAY_CHANNEL } from '../common/paradisAgentGateway.js';
 import { PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, paradisAgentHooksEnabled } from '../common/paradisAgentHooks.js';
 import { paradisAntigravityRemoteMcpServerEntry, paradisUpsertAntigravityMcpJson, paradisUpsertClaudeMcpJson, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
+import { PARADIS_CLI_LAUNCHER_FOLDER_SEGMENTS, PARADIS_CLI_LAUNCHER_NAME, PARADIS_CLI_REMOTE_TARGET_NAME, PARADIS_CLI_SCRIPT_SEGMENTS, paradisCliRemoteTargetContent } from '../common/paradisCliPaneEnvironment.js';
 import { paradisResolveRemoteMcpBridge } from './paradisRemoteMcpBridge.js';
 import { PARADIS_REMOTE_AGENT_TUNNEL_SETTING } from './paradisRemoteAgentTunnel.contribution.js';
 import { paradisRemoteUserHome } from '../common/paradisRemoteUserHome.js';
@@ -630,6 +631,7 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 			}
 
 			await this.installCodexLauncher(home, channel);
+			await this.installParaCli(home, channel).catch(error => this.logService.warn('[paradis] could not install the para command on the host (will retry)', error));
 
 			// 自動設置をオフにしている間は hook だけ置かない（MCP と戻り経路は hook と関係なく使う）。
 			// 保留中の取り外しがあればここで済ませる
@@ -724,6 +726,53 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 		await this.fileService.writeFile(staging, content.value);
 		await channel.call('markRemoteHookExecutable', [this.environmentService.remoteAuthority, staging.path]);
 		await this.fileService.move(staging, target, true);
+	}
+
+	/**
+	 * `para` コマンド（para-browser の道具の CLI）を接続先の `~/.para-code/bin` に置く。Codex のランチャーと同じフォルダで、
+	 * 接続先のペインの PATH の先頭にもうある（paradisPaneTokenService.ts）。
+	 *
+	 * 置くのは 2 つ。ランチャー（手元の `resources/paradis/cli/para` の写し。素の sh）と、行き先のファイル
+	 * （`para.target`。接続先のサーバーの node と、サーバーに同梱の CLI のスクリプトの場所）。サーバーの場所は
+	 * 更新のたびに変わるので、つなぐたびに書き直す。CLI のスクリプトを同梱する前の古いサーバーには置かない
+	 * （動かないコマンドを PATH に残さない）。
+	 */
+	private async installParaCli(home: URI, channel: IChannel): Promise<void> {
+		const appRoot = (this.environmentService as IWorkbenchEnvironmentService & { readonly appRoot?: string }).appRoot;
+		if (typeof appRoot !== 'string' || appRoot.length === 0) {
+			return;
+		}
+		const remote = await this.remoteAgentService.getEnvironment().catch(() => undefined);
+		if (!remote || typeof remote.execPath !== 'string' || remote.execPath.length === 0) {
+			return;
+		}
+		const script = joinPath(remote.appRoot, ...PARADIS_CLI_SCRIPT_SEGMENTS);
+		if (!await this.fileService.exists(script)) {
+			return;
+		}
+		const bin = joinPath(home, '.para-code', 'bin');
+		const replace = async (name: string, content: VSBuffer, executable: boolean): Promise<void> => {
+			const target = joinPath(bin, name);
+			const existing = await this.fileService.readFile(target).catch(() => undefined);
+			if (existing !== undefined && existing.value.equals(content)) {
+				return; // 既に同じもの。30 秒ごとの見直しで毎回書き直さない
+			}
+			// 走っているシェルはランチャーを開いたまま読み進めるので、別名で書いてから置き換える
+			const staging = joinPath(bin, `${name}.${generateUuid()}`);
+			await this.fileService.writeFile(staging, content);
+			if (executable) {
+				await channel.call('markRemoteHookExecutable', [this.environmentService.remoteAuthority, staging.path]);
+			}
+			await this.fileService.move(staging, target, true);
+		};
+		// 行き先を先に書く（ランチャーだけがあって行き先が無い間は、ランチャーは手元の形だと思って失敗する）
+		await replace(PARADIS_CLI_REMOTE_TARGET_NAME, VSBuffer.fromString(paradisCliRemoteTargetContent(remote.execPath, script.path)), false);
+		const launcher = await this.fileService.readFile(URI.file(`${appRoot}/${PARADIS_CLI_LAUNCHER_FOLDER_SEGMENTS.join('/')}/${PARADIS_CLI_LAUNCHER_NAME}`)).catch(() => undefined);
+		if (launcher === undefined) {
+			this.logService.warn('[paradis] could not read the para launcher to copy to the host');
+			return;
+		}
+		await replace(PARADIS_CLI_LAUNCHER_NAME, launcher.value, true);
 	}
 
 	/**
