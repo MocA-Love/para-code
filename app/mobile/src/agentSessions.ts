@@ -356,8 +356,25 @@ export function deserializeAgentSendQueue(pcId: string, text: string): readonly 
 }
 
 /**
- * 預かりの行の状態の文。`terminalOpen` は宛先のターミナルが今も開いているか（分からなければ省く）。`unverified` の確認は
- * ターミナルが開いている間の文なので、閉じていれば閉じたときの文にする。
+ * 宛先のターミナルが送り先に使えないときの文。アプリが見ているのは「エージェントの印の付いたターミナルが一覧にあるか」
+ * だけで、ターミナルごと閉じたのか、開いたままエージェントが終わったのかは分けない。PC が再開を断ることもある
+ * （その会話がまだ開いていると PC が見ているとき）ので、送れるとも言い切らない。
+ */
+const AGENT_SEND_TARGET_GONE_TEXT = '宛先のターミナルが閉じられたか、エージェントが終わっています。会話を再開して送るか確かめてください';
+
+/**
+ * 預かりの行に「再開して送る」を出すか。`terminalOpen` は宛先のエージェントのターミナルが今も開いているか。
+ * 確認待ちは、時間がたっただけ（`stale`）・同じ会話に見える（`unverified`）ものでは、ターミナルが開いている間は出さない
+ * （`unverified` は PC がそのターミナルでその会話が開いていると見ていて、再開は断られる）。失敗したものは、過去の会話宛てだけ。
+ */
+export function agentSendShowsResume(item: AgentSendQueueItem, terminalOpen: boolean): boolean {
+	const resumable = agentSendResumeTarget(item) !== undefined;
+	return (item.status === 'needs-confirm' && resumable && ((item.reason !== 'stale' && item.reason !== 'unverified') || !terminalOpen)) || (item.status === 'failed' && resumable && item.target.kind === 'resume');
+}
+
+/**
+ * 預かりの行の状態の文。`terminalOpen` は宛先のエージェントのターミナルが今も開いているか（分からなければ省く）。
+ * `unverified` の確認はターミナルが開いている間の文なので、開いていなければ送り先に使えないときの文にする。
  */
 export function agentSendStatusText(item: AgentSendQueueItem, terminalOpen?: boolean): string {
 	switch (item.status) {
@@ -367,8 +384,8 @@ export function agentSendStatusText(item: AgentSendQueueItem, terminalOpen?: boo
 			switch (item.reason) {
 				case 'stale': return '預けてから時間がたちました。今も送ってよいか確かめてください';
 				case 'other-conversation': return '宛先のターミナルで別の会話が動いています。そのまま送るか、元の会話を再開して送るかを選んでください';
-				case 'unverified': return terminalOpen === false ? 'ターミナルが閉じられていました。会話を再開して送れます' : 'このターミナルの会話が預けたときと同じかを確かめられません。別の会話に入ることがあります。ターミナル表示で確かめてから送ってください';
-				default: return item.target.kind === 'resume' ? '会話を再開して送るか確かめてください' : 'ターミナルが閉じられていました。会話を再開して送れます';
+				case 'unverified': return terminalOpen === false ? AGENT_SEND_TARGET_GONE_TEXT : 'このターミナルの会話が預けたときと同じかを確かめられません。別の会話に入ることがあります。ターミナル表示で確かめてから送ってください';
+				default: return item.target.kind === 'resume' ? '会話を再開して送るか確かめてください' : AGENT_SEND_TARGET_GONE_TEXT;
 			}
 		case 'failed': return item.error ?? '送れませんでした';
 		case 'expired': return '24 時間を過ぎたので送りませんでした';

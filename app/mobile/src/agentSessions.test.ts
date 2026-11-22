@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-	AGENT_RESUME_CAPABILITY, AGENT_SEND_AUTO_WINDOW_MS, AGENT_SEND_QUEUE_LIMIT, agentSendConversationMatches, agentSendLiveConfirmReason, agentSendLiveDecision, AGENT_SEND_QUEUE_TTL_MS, addAgentSendQueueItem, agentSendResumeTarget, agentSendStatusText, deserializeAgentSendQueue, expireAgentSendQueue, parseAgentPastSessionPage,
+	AGENT_RESUME_CAPABILITY, AGENT_SEND_AUTO_WINDOW_MS, AGENT_SEND_QUEUE_LIMIT, agentSendConversationMatches, agentSendLiveConfirmReason, agentSendLiveDecision, AGENT_SEND_QUEUE_TTL_MS, addAgentSendQueueItem, agentSendResumeTarget, agentSendShowsResume, agentSendStatusText, deserializeAgentSendQueue, expireAgentSendQueue, parseAgentPastSessionPage,
 	parseAgentPastSessionPreview, parseAgentResumeResult, planAgentSendQueue, serializeAgentSendQueue, type AgentSendQueueItem,
 } from './agentSessions.js';
 import { AGENT_HISTORY_CAPABILITY } from './agentHistory.js';
@@ -132,10 +132,37 @@ describe('agentSessions (W2-29)', () => {
 				'needs-confirm', 'unverified',
 				'このターミナルの会話が預けたときと同じかを確かめられません。別の会話に入ることがあります。ターミナル表示で確かめてから送ってください',
 				'このターミナルの会話が預けたときと同じかを確かめられません。別の会話に入ることがあります。ターミナル表示で確かめてから送ってください',
-				// 確かめを待つ間にターミナルが閉じたら、閉じたときの文（ボタンは「再開して送る」だけになる）
-				'ターミナルが閉じられていました。会話を再開して送れます',
+				// 確かめを待つ間に宛先が使えなくなったら（閉じた・開いたままエージェントが終わった）、言い切らない文（ボタンは「再開して送る」だけになる）
+				'宛先のターミナルが閉じられたか、エージェントが終わっています。会話を再開して送るか確かめてください',
 			],
 		]);
+	});
+
+	it('offers to resume a queued send only when resuming can go through', () => {
+		const live = (extra: Partial<AgentSendQueueItem>) => item('a', extra);
+		const noKey = (extra: Partial<AgentSendQueueItem>) => item('a', { target: { kind: 'live', terminalKey: 'term-1' }, ...extra });
+		const past = (extra: Partial<AgentSendQueueItem>) => item('a', { target: { kind: 'resume', ws: 'space-1', key: KEY }, ...extra });
+		/** [宛先のターミナルが開いている, 開いていない] */
+		const shown = (entry: AgentSendQueueItem) => [agentSendShowsResume(entry, true), agentSendShowsResume(entry, false)];
+		expect({
+			closed: shown(live({ status: 'needs-confirm', reason: 'closed' })),
+			otherConversation: shown(live({ status: 'needs-confirm', reason: 'other-conversation' })),
+			// 時間がたっただけ・同じ会話に見えるものは、ターミナルが開いている間は出さない
+			stale: shown(live({ status: 'needs-confirm', reason: 'stale' })),
+			unverified: shown(live({ status: 'needs-confirm', reason: 'unverified' })),
+			// 再開の指紋が無ければ出さない
+			noKey: shown(noKey({ status: 'needs-confirm', reason: 'other-conversation' })),
+			// 失敗したものは過去の会話宛てだけ
+			failedLive: shown(live({ status: 'failed' })),
+			failedPast: shown(past({ status: 'failed' })),
+			pastConfirm: shown(past({ status: 'needs-confirm', reason: 'closed' })),
+			waiting: shown(live({ status: 'waiting' })),
+			expired: shown(past({ status: 'expired' })),
+		}).toEqual({
+			closed: [true, true], otherConversation: [true, true], stale: [false, true], unverified: [false, true],
+			noKey: [false, false], failedLive: [false, false], failedPast: [true, true], pastConfirm: [true, true],
+			waiting: [false, false], expired: [false, false],
+		});
 	});
 
 	it('expires items after 24 hours and keeps at most the limit per PC', () => {
