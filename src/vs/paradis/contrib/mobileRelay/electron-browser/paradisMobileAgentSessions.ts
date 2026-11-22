@@ -437,10 +437,10 @@ async function resumeFromMobile(
 		writeLedgerEntry(tools.storageService, { id: requestId, at: Date.now(), status: 'started', ...(terminalKey !== undefined ? { terminalKey } : {}) });
 		if (session.agent === 'antigravity') {
 			// Antigravity CLI が入力を待つ画面（waitForAgentReady が見る起動直後の画面）をまだ測っていないので、再開した直後に
-			// 依頼を自動では渡さない。会話を開いたことだけ知らせ、依頼はスマホの入力欄に残させる
+			// 依頼を自動では渡さない。会話を開いたことだけ知らせ、依頼はスマホの会話表示の入力欄に残させる（会話表示は、そのペインにエージェントの印が付くまで出ないので、出ないときの入れ先も案内する）
 			notifyResumed(tools, space, session, instance);
 			writeLedgerEntry(tools.storageService, { id: requestId, at: Date.now(), status: 'resumed', ...(terminalKey !== undefined ? { terminalKey } : {}), delivered: false });
-			reply({ status: 'resumed', ...(terminalKey !== undefined ? { terminalKey } : {}), delivered: false, message: 'Antigravity CLI の会話は PC で再開しましたが、依頼はまだアプリから渡せません。ターミナル表示で入力してください' });
+			reply({ status: 'resumed', ...(terminalKey !== undefined ? { terminalKey } : {}), delivered: false, message: 'Antigravity CLI の会話を PC で再開しました。依頼はアプリから渡せないため、アプリの会話表示の入力欄に残しています。会話表示が出ないときは、ターミナル表示で入力してください' });
 			return;
 		}
 		const openCodeToken = session.agent === 'opencode' ? launched.paneToken : undefined;

@@ -5,9 +5,11 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
 import { agentSendResumeTarget, agentSendStatusText, type AgentSendQueueItem } from '../../agentSessions.js';
-import { confirmResumeAndSend, mobileSpaceIdFor, removeAgentSend, retryAgentSend, sendToLiveTerminal, useAgentSendQueue } from '../../agentSendQueue.js';
+import { agentResumeKeptQueuedSend, confirmResumeAndSend, mobileSpaceIdFor, removeAgentSend, retryAgentSend, sendToLiveTerminal, useAgentSendQueue } from '../../agentSendQueue.js';
 import { useAppStore } from '../../appState.js';
 import { haptic } from '../../haptics.js';
+import { agentLeavesPromptAfterResume } from '../../agentKind.js';
+import { useParaToast } from '../../paraToast.js';
 import { routes } from '../../routes.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { BottomDrawer, Button, DrawerCaption, DrawerTitle } from '../../ui/index.js';
@@ -75,12 +77,21 @@ function QueuedSendsDrawer({ visible, pcId, items, onClose }: { visible: boolean
 			haptic('error');
 			return;
 		}
+		if (agentResumeKeptQueuedSend(item, result)) {
+			// 文を渡せず預かりに残した。理由は行に出る（成功の触覚は鳴らさず、同じ文をシートの上に重ねない）
+			haptic('error');
+			return;
+		}
 		haptic('success');
 		if (result.message !== undefined) {
 			setMessage(result.message);
 		}
 		const spaceId = mobileSpaceIdFor(target.ws);
 		if (result.terminalKey !== undefined && result.status !== 'running' && spaceId !== undefined) {
+			if (result.delivered !== true && agentLeavesPromptAfterResume(item.target.agent)) {
+				// シートを閉じて開いた会話へ移るので、文の在りかをトーストで知らせる（PC はこの種類の文を渡さない）
+				useParaToast.getState().show({ key: `agent-resume-${item.id}`, text: '会話を再開しました。文は会話表示の入力欄に残しています。会話表示が出ないときは、ターミナル表示で入力してください', icon: 'information-circle-outline', tone: 'warn' }, 6_000);
+			}
 			onClose();
 			router.push(routes.session(pcId, spaceId, { tab: { kind: 'terminal', terminalKey: result.terminalKey } }));
 		}

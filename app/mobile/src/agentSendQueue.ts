@@ -21,7 +21,6 @@ import {
 } from './agentSessions.js';
 import { createAgentSendOutboxStore } from './platform.js';
 import { agentLeavesPromptAfterResume } from './agentKind.js';
-import { terminalDraftKey, useTerminalDrafts } from './features/session/terminalDrafts.js';
 
 const encoder = new TextEncoder();
 
@@ -172,20 +171,20 @@ export function mobileSpaceIdFor(sourceId: string): string | undefined {
 }
 
 /**
- * 会話は開けたが PC が依頼の文を渡さなかったとき、文を開いた会話の入力欄に残す。再開の後に PC が文を渡さない種類
- * （Antigravity CLI。PC は「ターミナル表示で入力してください」と返す）では、ターミナル表示の入力欄にも入れる
- * （会話表示の入力欄だけだと、ターミナル表示で開いたときに文が見えない）。
+ * 「再開して送る」の返事を受けて、預かりを残すか。再開の後に PC が文を渡さない種類（預けたときの種類が分かるものだけ）で、
+ * 文を渡しておらず、開いたターミナルも返らなかったとき。
  */
-export function keepUndeliveredPrompt(pcId: string, terminalKey: string, text: string, agent: string | undefined): void {
-	useAppStore.getState().setAgentDraft(terminalKey, text);
-	if (agentLeavesPromptAfterResume(agent)) {
-		useTerminalDrafts.getState().update(terminalDraftKey(pcId, terminalKey), text);
-	}
+export function agentResumeKeptQueuedSend(item: AgentSendQueueItem, result: AgentResumeResult): boolean {
+	return result.status !== 'running' && result.delivered !== true && result.terminalKey === undefined && agentLeavesPromptAfterResume(item.target.agent);
 }
 
 /**
- * 預かった 1 件を「再開して送る」。PC が文を渡したか、開いた会話の入力欄へ文を移せたら預かりから外し、結果を返す。
- * どちらもできなかった（PC が文を渡さず、開いたターミナルも返らなかった）ときは、文を失わないよう預かりに残す。
+ * 預かった 1 件を「再開して送る」。成功したら預かりから外し、結果を返す。会話は開けたが文を渡せなかったときは、
+ * 開いた会話の会話表示の入力欄へ文を移す。
+ *
+ * 再開の後に PC が文を渡さない種類（Antigravity CLI）で、開いたターミナルも返らなかったとき（PC がまだ処理している
+ * 最中の `duplicate` など）は、文の行き先が無いので預かりに残す（{@link agentResumeKeptQueuedSend}）。PC が文を渡す
+ * 種類は、同じ返事でも PC がこの後に文を渡すので、今までどおり預かりから外す。
  */
 export async function confirmResumeAndSend(item: AgentSendQueueItem): Promise<AgentResumeResult | undefined> {
 	const target = agentSendResumeTarget(item);
@@ -200,15 +199,14 @@ export async function confirmResumeAndSend(item: AgentSendQueueItem): Promise<Ag
 			patch(item.pcId, item.id, { status: 'failed', error: 'この会話は PC で開いています。会話の画面から送ってください' });
 			return result;
 		}
-		if (result.delivered !== true) {
-			if (result.terminalKey === undefined) {
-				// 文は PC に渡っておらず、移す先の入力欄も分からない（PC がまだ処理している最中の `duplicate` など）。
-				// 預かりを消すと文が失われるので、もう一度選べる状態で残す。
-				patch(item.pcId, item.id, { status: 'failed', error: result.message ?? '会話を再開できたか分かりませんでした。少し待ってからもう一度送ってください' });
-				return result;
-			}
+		if (agentResumeKeptQueuedSend(item, result)) {
+			// PC はこの種類の文を渡さず、移す先の入力欄も分からない。預かりを消すと文が失われるので、もう一度選べる状態で残す。
+			patch(item.pcId, item.id, { status: 'failed', error: result.message ?? '会話を再開できたか分かりませんでした。少し待ってからもう一度送ってください' });
+			return result;
+		}
+		if (result.delivered !== true && result.terminalKey !== undefined) {
 			// 会話は開けたが依頼を渡せなかった。消さずに、開いた会話の入力欄へ移しておく。
-			keepUndeliveredPrompt(item.pcId, result.terminalKey, item.text, item.target.agent);
+			useAppStore.getState().setAgentDraft(result.terminalKey, item.text);
 		}
 		removeAgentSend(item.pcId, item.id);
 		return result;

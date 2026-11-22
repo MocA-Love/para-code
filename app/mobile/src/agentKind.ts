@@ -71,8 +71,8 @@ export function agentQueuedSendNeedsConfirm(agent: string | undefined): boolean 
 }
 
 /**
- * 再開した直後に、PC が依頼の文をエージェントへ渡さない種類か（Antigravity CLI）。渡さない種類では、文を利用者が
- * ターミナル表示で入れ直す。知らない種類・undefined は false（今までどおり）。
+ * 再開した直後に、PC が依頼の文をエージェントへ渡さない種類か（Antigravity CLI）。渡さない種類では、文は開いた会話の
+ * 会話表示の入力欄に残り、利用者が送り直す。知らない種類・undefined は false（今までどおり）。
  */
 export function agentLeavesPromptAfterResume(agent: string | undefined): boolean {
 	return paradisAgentDescriptor(agent)?.resume.deliverPromptAfterResume === false;
