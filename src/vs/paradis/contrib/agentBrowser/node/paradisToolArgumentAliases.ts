@@ -11,6 +11,11 @@
 // `timeout`）は、保存済みの手順（save_recipe）や前からのエージェントの呼び出しが壊れないよう、スキーマには載せずに
 // 黙って受けて新しい名前と単位へ読み替える。読み替えは引数の突き合わせ（paradisToolArgumentCheck.ts）より前に行う。
 // 両方を渡されたら新しい名前を使う。数でない値は読み替えない（前の名前のまま残し、突き合わせが正しい名前を案内する）。
+//
+// 単位の読み替えのほかに、同じ場所で 2 つを受ける（どちらもスキーマには載せない）。
+//   - write_site_note の `note`: エージェントが `text` の代わりによく渡す名前（q.html Q681）。`text` として受ける
+//   - take_snapshot の `full`: 前回との差分を返す設定（paradis.agentBrowser.snapshotDiff）があった頃の引数。
+//     設定と一緒に無くしたので、渡されても断らずに捨てる（take_snapshot はいつも全体を返す）
 
 import { PARADIS_SETTLE_TOOLS } from './paradisBrowserObserve.js';
 import { isRecord } from '../../../common/paradisGuards.js';
@@ -108,6 +113,19 @@ export function paradisNormalizeLegacyToolArguments(toolName: string, args: unkn
 	const renames = MILLISECOND_RENAMES.get(toolName);
 	if (renames !== undefined) {
 		result = renamed(result, renames);
+	}
+	if (toolName === 'write_site_note' && Object.hasOwn(result, 'note')) {
+		// `text` があればそちらを使う。文字列でない `note` は残し、突き合わせに案内させる
+		const { note, ...rest } = result;
+		if (Object.hasOwn(result, 'text')) {
+			result = rest;
+		} else if (typeof note === 'string') {
+			result = { ...rest, text: note };
+		}
+	}
+	if (toolName === 'take_snapshot' && Object.hasOwn(result, 'full')) {
+		const { full: _dropped, ...rest } = result;
+		result = rest;
 	}
 	if ((toolName === 'run_steps' || toolName === 'save_recipe') && Object.hasOwn(result, 'steps')) {
 		const steps = normalizedSteps(result.steps, depth);

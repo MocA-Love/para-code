@@ -283,10 +283,19 @@ export const PARADIS_OFFICE_CONFIGURATION_KEYS = [
 	'paradis.officeViewer.enabled',
 ] as const;
 
-/** Master checkbox for the viewer; the advanced keys (engine/kernelShadow/platformBackend) stay settings.json-only. */
+/** Master checkbox for the viewer (on by default); the advanced keys (engine/kernelShadow/platformBackend) stay settings.json-only. */
 export const PARADIS_OFFICE_ENABLED_SETTING = 'paradis.officeViewer.enabled' as const;
 
 export type ParadisOfficeEngine = 'auto' | 'legacy' | 'v1';
+
+/**
+ * Whether the platform backend may serve Office requests. Uses the same effective engine as the viewer
+ * ({@link snapshotParadisOfficeRuntimeConfiguration}): the master checkbox promotes the hidden engine key to 'v1'.
+ */
+export function paradisOfficePlatformBackendEnabled(reader: { getValue<T>(key: string): T | undefined }): boolean {
+	const engineOn = reader.getValue<unknown>(PARADIS_OFFICE_ENABLED_SETTING) === true || reader.getValue<unknown>('paradis.officeViewer.engine') !== 'legacy';
+	return engineOn && reader.getValue<unknown>('paradis.officeViewer.platformBackend') !== false;
+}
 
 export interface ParadisOfficeRuntimeConfiguration {
 	readonly engine: ParadisOfficeEngine;
@@ -532,7 +541,8 @@ export const PARADIS_OFFICE_CONFIGURATION_PROPERTIES: Readonly<Record<typeof PAR
 	'paradis.officeViewer.searchPrint': officeBooleanSetting(true, localize('paradis.officeViewer.searchPrint', "変更点パネルから文書の検索と印刷ができるようにします（次に開く文書から反映されます）。"), 'ParadisOfficeViewerSearchPrint', { key: 'paradis.officeViewer.searchPrint.policy', value: localize('paradis.officeViewer.searchPrint.policy', "Controls semantic Office search and print.") }, true),
 	[PARADIS_OFFICE_ENABLED_SETTING]: {
 		type: 'boolean',
-		default: false,
+		// 既定はオン（q.html Q681）。オフにすると、隠しの engine（既定 legacy）のとおり従来の表示になる
+		default: true,
 		scope: ConfigurationScope.WINDOW,
 		restricted: true,
 		included: true,

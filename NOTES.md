@@ -2752,7 +2752,7 @@ renderer の待ちは、Long Animation Frames で「何から呼ばれた処理�
 
 ## Sentry で試験的な設定 12 件が働いているかを見る（2026-11-12、Q611）
 
-試験的な設定 12 件（`paradis.agentBrowser.*` 6 件・`agentHibernation.*` 2 件・`browser.extensions.*` 2 件・`terminal.daemon.*` 2 件）の扱いを Sentry を見て決めるための計装です。どれもエラーではなく時間の無い transaction（`recordParadisUsageSpan`、`sentry/common/paradisSentryDiagnostics.ts`）で送るので、エラーの枠と「10 分 3 件」の上限を使いません。値はすべて `safe_` の span attribute で、custom measurement（10 個まで）は使いません。設定の値は `safe_set_<名前>` に `on` / `off`（分は数）で載せ、オンとオフを同じ transaction の中で比べられるようにしています。呼び出しの多い 2 つ（内蔵ブラウザの道具・拡張機能）は `sentry/common/paradisUsageTally.ts` で 30 分ごとの 1 件にまとめ、窓の途中で設定が変わったらそれまでの分を先に送ります（1 件の中でオンとオフが混ざらない）。回数は別々の数値の属性なので、Explore の spans で `sum(tags[safe_x,number])` を設定ごとに足せます。
+試験的な設定 12 件（`paradis.agentBrowser.*` 6 件・`agentHibernation.*` 2 件・`browser.extensions.*` 2 件・`terminal.daemon.*` 2 件）の扱いを Sentry を見て決めるための計装です。どれもエラーではなく時間の無い transaction（`recordParadisUsageSpan`、`sentry/common/paradisSentryDiagnostics.ts`）で送るので、エラーの枠と「10 分 3 件」の上限を使いません。値はすべて `safe_` の span attribute で、custom measurement（10 個まで）は使いません。2026-11-22（Q681）に `runStepsFlow` は常に有効にして設定を消し、`snapshotDiff` は機能ごと消したので、`safe_set_steps_flow`・`safe_set_snapshot_diff`・`steps_flow_calls`・`snap_*`（`snap_calls` を除く）はその後の版からは届きません。設定の値は `safe_set_<名前>` に `on` / `off`（分は数）で載せ、オンとオフを同じ transaction の中で比べられるようにしています。呼び出しの多い 2 つ（内蔵ブラウザの道具・拡張機能）は `sentry/common/paradisUsageTally.ts` で 30 分ごとの 1 件にまとめ、窓の途中で設定が変わったらそれまでの分を先に送ります（1 件の中でオンとオフが混ざらない）。回数は別々の数値の属性なので、Explore の spans で `sum(tags[safe_x,number])` を設定ごとに足せます。
 
 main は span runner を持たない（繋ぐと素通しだった既存の span が一斉に届く）ので、`configureParadisUsageSpanSender` で集計の送り口だけを繋いでいます。Sentry の読み込みより前に送った記録（main の飼い方の 1 件など）は 20 件まで溜め、main は送り口、renderer と shared process は span runner が繋がったときに送ります。
 
@@ -2773,10 +2773,10 @@ main は span runner を持たない（繋ぐと素通しだった既存の span
 | settleAfterAction | `observe_calls`・`observe_none`・`observe_snapshot`・`settle_zero` | 観測を添える道具の呼び出しと、`observe: "none"`・`"snapshot"`・待ち 0 を渡した数 |
 | | `settle_quiet`・`settle_timeout`・`settle_unresponsive`・`settle_dialog`・`settle_stopped` と各 `_ms`、`settle_wait_ms`、`settle_wait_le_500/le_2000/gt_2000` | 実際に待った結末（落ち着いた・上限で打ち切った・ページが答えない・ダイアログ・上限の前に読めなくなってやめた）と待ったミリ秒の合計・帯。`settle_stopped` は 2026-11-12（Q618）から。それより前の版では、評価の失敗・取り消しで上限の前に抜けた回も `settle_timeout` に入っていた |
 | | `settle_timeout_dom`・`settle_timeout_dom_style`・`settle_timeout_network`・`settle_timeout_busy`・`settle_timeout_loading` | 上限で打ち切った回に、最後に読んだ時点で残っていた理由（DOM が静かな時間に届かない・そのうち最後の変化が style・通信・読み込み中の印・文書の読み込み中）。理由は重なりうるので、それぞれ 1 回ずつ数え、和は `settle_timeout` を超えうる。2026-11-12（Q618）から |
-| runStepsFlow | `steps_calls`・`steps_flow_calls`・`steps_used_for_each/repeat_until/expect/sleep/reference` | run_steps の数、手順書の経路を通った数、使った書き方 |
+| run_steps（手順書。設定は無く常に有効） | `steps_calls`・`steps_used_for_each/repeat_until/expect/sleep/reference` | run_steps の数、使った書き方 |
 | | `steps_ok`・`steps_partial`・`steps_refused`・`steps_stop_failure/step_limit/time_limit/cancelled`・`steps_expect_failed`・`steps_executed` | 結末（`partial` は continue_on_error で失敗を含んで最後まで）、成り立たなかった expect を含んだ回、動いた手順の合計 |
 | | `steps_arg_refused`・`steps_step_refused`・`steps_step_observe_refused` | run_steps 自体の引数・手順の引数を断った数。最後は手順の args に `observe`・`settle_seconds` を書いて断られた数 |
-| snapshotDiff | `snap_calls`、`snap_diff`、`snap_full_requested/no_baseline/truncated/child_changed/too_large`、`snap_refetch_after_diff` | take_snapshot の数、差分を返した数、全体を返した理由、差分の後 60 秒以内に同じタブで `full: true` を取り直した数 |
+| take_snapshot | `snap_calls` | take_snapshot の数 |
 | siteNotes | `note_write_<結末>`・`note_list_<結末>`・`note_delete_<結末>` | 結末は `ok`・`no_text`・`card_number`・`private_text`・`store_full`・`site_not_open`・`no_site`・`no_space`・`no_tabs`・`unverified`・`missing`・`error` |
 | | `note_len_le_200/le_400/le_600`、`note_arg_refused`・`note_arg_note`、`note_hint_shown`・`note_hint_chars`・`note_hint_le_2000/le_5000/gt_5000` | 保存したメモの文字数の帯、引数の検査で断った数とそのうち `note` を渡した数、サイトを開いたときに添えたメモの見出しの数と文字数 |
 | siteRecipes | `recipe_save/run/list/delete_<結末>`、`recipe_run_<same_pane/other_pane/unknown>_<ok/failed>`、`recipe_arg_refused`・`recipe_hint_shown` | 結末は `ok`・`failed`・`invalid`・`store_full`・`missing` ほか siteNotes と同じ。動かした手順を保存したのが同じペインか別のペインか（この起動の中で保存したものだけ分かる。前の起動で保存したものは `unknown`） |
@@ -2792,8 +2792,7 @@ Explore の spans（または Discover の transactions）で見る例。どれ�
 | settle が上限まで待った理由（Q618 の判定の後） | 同上 | `settle_timeout_dom`・`_dom_style`・`_network`・`_busy`・`_loading` の sum を `settle_timeout` の sum で割る（重なるので和は 1 を超えうる）。`_dom_style` が多ければアニメーションの間引きがまだ足りない、`_busy` が多ければ読み込み中の印が飾りに当たっている |
 | observe: none で外す割合 | 同上 | `sum(tags[safe_observe_none,number])` ÷ `sum(tags[safe_observe_calls,number])` |
 | オンとオフで道具の失敗率が変わるか | `transaction:para.agentBrowser.usage`、`safe_set_settle` で group by | `sum(tags[safe_call_failures,number])` ÷ `sum(tags[safe_calls,number])` |
-| run_steps の手順書が壊れていないか | `transaction:para.agentBrowser.usage safe_set_steps_flow:on` | `steps_ok`・`steps_stop_failure`・`steps_refused`・`steps_step_observe_refused` の sum。`steps_step_observe_refused` が 0 でなければ「手順の中の observe を断る」件がまだ起きている |
-| 差分の効き目と取り違え | `transaction:para.agentBrowser.usage safe_set_snapshot_diff:on` | `snap_diff` ÷ `snap_calls`、`snap_refetch_after_diff` ÷ `snap_diff`、`snap_full_too_large` と `snap_full_child_changed` の比（調べた記録で理由の分からなかった 225 件の内訳） |
+| run_steps の手順書が壊れていないか | `transaction:para.agentBrowser.usage`（paracode-193 までの版は `safe_set_steps_flow:on` を足す） | `steps_ok`・`steps_stop_failure`・`steps_refused`・`steps_step_observe_refused` の sum。`steps_step_observe_refused` が 0 でなければ「手順の中の observe を断る」件がまだ起きている |
 | サイトメモの書き込みの失敗 | `transaction:para.agentBrowser.usage safe_set_site_notes:on` | `note_write_ok` と `note_write_*`（失敗）の sum、`note_arg_note`、`note_hint_gt_5000` |
 | 手順を別のペインが動かして通るか | `transaction:para.agentBrowser.usage safe_set_site_recipes:on` | `recipe_run_other_pane_ok` ÷ (`_ok`+`_failed`)、`unknown` も同様 |
 | 添え書きの中身 | `transaction:para.agentBrowser.usage safe_set_state:on` | `state_tabs_only` ÷ `state_added`、`state_chars` ÷ `state_added` |
@@ -3088,7 +3087,7 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
 
 ## 内蔵ブラウザのサイトメモ（agentBrowser、2026-10-10、E4・Q303・Q304・Q326）
 
-設定 `paradis.agentBrowser.siteNotes`（既定オフ）。エージェントが `write_site_note` でサイトの気づきを残し、同じリポジトリで次にそのサイトを開いたエージェントへ、結果の末尾に 1 回だけヒントとして添える。実体は `src/vs/paradis/contrib/agentBrowser/node/paradisBrowserSiteNotes.ts`。
+設定 `paradis.agentBrowser.siteNotes`（既定オフ。2026-11-22 に「試験的」の札を外した）。`write_site_note` は `text` の代わりに `note` で渡されても受ける（スキーマには載せない。`paradisToolArgumentAliases.ts`）。エージェントが `write_site_note` でサイトの気づきを残し、同じリポジトリで次にそのサイトを開いたエージェントへ、結果の末尾に 1 回だけヒントとして添える。実体は `src/vs/paradis/contrib/agentBrowser/node/paradisBrowserSiteNotes.ts`。
 
 - 置き場は利用者のフォルダの `~/.para-code/browser-notes/site-notes.json`（0600）。鍵はスペースの最初のフォルダ（接続先のペインは接続先の名前）とオリジンの組。スペースが分からないペインでは書きも添えもしない
 - 道具（`write_site_note`・`list_site_notes`・`delete_site_note`）は設定がオンのときだけ一覧に出る。一覧はエージェントの起動時に読まれるので、オンにした後に起動したエージェントから使える
@@ -3117,15 +3116,7 @@ Chrome / Edge / Brave / Arc など Chromium 系ブラウザの Cookie を、選�
 
 ## 内蔵ブラウザのスナップショットの差分（agentBrowser、2026-10-10、E2・Q303）
 
-設定 `paradis.agentBrowser.snapshotDiff`（既定オフ）。エージェントの take_snapshot を、同じタブの 2 回目からは前回との差分（消えた・変わった・増えた要素、uid 付き）で返す。実体は `src/vs/paradis/contrib/agentBrowser/node/paradisBrowserSnapshotDiff.ts`、控えは `paradisDevtoolsMcpProxy.ts` が子プロセスの台帳のキー（タブ）ごとに持つ。
-
-- 全体を返すのは、初回・別の文書（根の uid が違う）・子プロセスか世代が違う（uid の数え直し）・10 分を過ぎた・差分が「本文と 1 回に返す上限 20,000 字の小さい方」の半分を超える・前回の本文が 20,000 字を超えて切って返した、のどれか。`full: true` でも全体
-- run_steps の中の take_snapshot は全体を返し、控えも変えない（まとめに残るのは頭だけなので）
-- 控えは 32 枠・本文の合計 8,000,000 字まで。期限切れは取るときに捨てる
-- 差分にするのは素の take_snapshot だけ。`root`・`filePath`・`verbose`・`offset` の呼び出しは今までどおりで、控えも変えない。Para Code が中で使う take_snapshot（観測など）も差分にしない
-- MCP の initialize で、そのペインの控えを捨てる（新しいエージェントは前のスナップショットを見ていない）
-- tools/list の `full` の引数と説明は、設定がオンのときだけ足す。オンにした後に起動したエージェントから見える（差分そのものは、オンにしたときから返る）
-- 台での比較では精度は変わらず、スナップショットの文字数が 16〜40% 減った。効き目は素の take_snapshot の読み直しに限られ、`filePath` に保存して grep する使い方では減らない（`filePath` への保存は既にあるファイルを上書きしないので、保存のたびに新しい名前（`snapshot-2.txt` など）を付ける。2026-10-24、q.html Q413）
+2026-11-22（q.html Q681）に機能ごと消した。差分が返るのは take_snapshot の 1% 前後で、エージェントが `full: true` で避けていたため。設定 `paradis.agentBrowser.snapshotDiff` は無くなり、settings.json に残っていても何もしない。`full` の引数は、前からのエージェントや保存済みの手順が壊れないよう、スキーマには載せずに受けて捨てる（`paradisToolArgumentAliases.ts`）。`filePath` への保存の決まり（既にあるファイルを上書きしないので、保存のたびに新しい名前を付ける。2026-10-24、q.html Q413）は変わらない。
 
 ## 縮めて表示している固定サイズのタブの撮り方と resize（agentBrowser、2026-11-12、PR #916）
 

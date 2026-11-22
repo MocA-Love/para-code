@@ -16,6 +16,7 @@ import { ParadisOfficeChannel, ParadisOfficeChannelError, type IParadisOfficeCon
 import { ParadisOfficeRemoteBackend, ParadisOfficeRemoteRuntime } from './paradisOfficeRemoteBackend.js';
 import { ParadisSpreadsheetChannel } from './paradisSpreadsheetChannel.js';
 import { PARADIS_SPREADSHEET_CHANNEL } from '../common/paradisSpreadsheet.js';
+import { paradisOfficePlatformBackendEnabled } from '../common/paradisOfficeCapabilities.js';
 
 export interface ParadisOfficeServerChannelOptions<TContext> {
 	readonly onDidDisconnect?: Event<void>;
@@ -108,8 +109,7 @@ export function registerParadisOfficeForServer(server: IPCServer<RemoteAgentConn
 		const store = new DisposableStore();
 		const channel = store.add(new ParadisOfficeServerChannel(connection.ctx, {
 			connectionEpoch: ++epoch,
-			isPlatformBackendEnabled: () => configurationService?.getValue<string>('paradis.officeViewer.engine') !== 'legacy'
-				&& configurationService?.getValue<boolean>('paradis.officeViewer.platformBackend') !== false,
+			isPlatformBackendEnabled: () => configurationService === undefined || paradisOfficePlatformBackendEnabled(configurationService),
 			createBackend: authority => runtime.createBackend(authority),
 		}));
 		connection.channelServer.registerChannel(PARADIS_OFFICE_CHANNEL, channel);

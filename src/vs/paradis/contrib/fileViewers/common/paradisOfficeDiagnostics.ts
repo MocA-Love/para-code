@@ -35,7 +35,7 @@ import { paradisFileOperationResultName, reportParadisDiagnosticError } from '..
 /** どの面で起きたか。Discover でこの4値だけ見れば切り分けが済むようにしてある。 */
 export type ParadisOfficeDiagnosticSurface = 'word-view' | 'word-diff' | 'excel-view' | 'excel-diff';
 
-/** 有効だった処理エンジン。既定は `legacy`（設定 `paradis.officeViewer.enabled` が off のとき）。 */
+/** 有効だった処理エンジン。設定 `paradis.officeViewer.enabled`（既定はオン）がオフのときは `legacy`。 */
 export type ParadisOfficeDiagnosticEngine = 'legacy' | 'v1';
 
 /** 時間切れがどこで起きたか。描画側が一度でも応答したかで、疑う場所が変わる。 */

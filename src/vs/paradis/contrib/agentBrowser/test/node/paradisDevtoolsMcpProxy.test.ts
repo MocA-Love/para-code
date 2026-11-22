@@ -419,35 +419,6 @@ suite('ParadisDevtoolsMcpProxy', () => {
 		}, { afterCachedPart: 1, cachedNote: true, afterClick: 3, afterVerbose: 5 });
 	});
 
-	test('turns an agent take_snapshot into the changes since its previous one only when asked', async () => {
-		const rows = Array.from({ length: 500 }, (_, i) => `  uid=1_${i + 10} StaticText "Row ${i}"`).join('\n');
-		const page = (value: string) => ({ content: [{ type: 'text', text: `## Latest page snapshot\nuid=1_0 RootWebArea "Form"\n  uid=1_1 textbox "Name" value="${value}"\n${rows}\n` }] });
-		const fixture = createFakeDevtoolsChildren({
-			toolsListResult: { tools: [{ name: 'take_snapshot' }] },
-			toolCallResults: [page('Ann'), page('Bob'), page('Bob'), page('Cid')],
-		});
-		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { temporaryDirectory: TEST_TEMPORARY_DIRECTORY, spawnChild: fixture.spawn }));
-		const call = async (args: object, mode?: 'diff' | 'full') => ((await proxy.tryCallTool('secret-token', 1, 'ws://one', 'take_snapshot', args, undefined, mode)) as { content: { text: string }[] }).content[0].text;
-
-		const first = await call({}, 'diff');
-		const second = await call({}, 'diff');
-		const withoutMode = await call({});
-		const afterWithoutMode = await call({}, 'diff');
-		assert.deepStrictEqual({
-			first: first.startsWith('## Latest page snapshot\n'),
-			// The uids carry this child's mark (paradisTagChildUids); the lines are compared without it
-			second: second.replace(/uid=[a-z][a-z0-9]{3}\./g, 'uid=').split('\n').slice(2),
-			withoutMode: withoutMode.startsWith('## Latest page snapshot\n'),
-			afterWithoutMode: afterWithoutMode.replace(/uid=[a-z][a-z0-9]{3}\./g, 'uid=').split('\n').slice(2),
-		}, {
-			first: true,
-			second: ['Changed:', '~ uid=1_1 textbox "Name" value="Bob"', ''],
-			withoutMode: true,
-			// the call without a mode (Para Code's own, or the setting off) does not move what the agent last saw
-			afterWithoutMode: ['Changed:', '~ uid=1_1 textbox "Name" value="Cid"', ''],
-		});
-	});
-
 	test('asks to measure the snapshot root only when the vendored take_snapshot knows the argument, and keeps the measurement out of the text', async () => {
 		const rect = { x: 5, y: 6, width: 70, height: 80 };
 		const body = '## Latest page snapshot\nuid=1_0 RootWebArea\n  uid=1_1 dialog\n    uid=1_2 textbox\n';
@@ -510,9 +481,9 @@ suite('ParadisDevtoolsMcpProxy', () => {
 		const fixture = createFakeDevtoolsChildren({ toolsListResult: { tools: [{ name: 'evaluate_script', inputSchema: { type: 'object', properties: { function: { type: 'string' } } } }] }, toolCallResults: [failed, failed, failed] });
 		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { temporaryDirectory: TEST_TEMPORARY_DIRECTORY, spawnChild: fixture.spawn }));
 		const { reports } = await withRecordedReports(async () => [
-			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, undefined, { agentTool: 'wait_until' }),
-			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, undefined, { agentTool: 'click_by', internal: 'observe' }),
-			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, undefined, { agentTool: 'Not A Safe Name!' }),
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, { agentTool: 'wait_until' }),
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, { agentTool: 'click_by', internal: 'observe' }),
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, { agentTool: 'Not A Safe Name!' }),
 		]);
 		assert.deepStrictEqual(reports.map(report => ({ operation: report.operation, agentTool: report.extra?.safe_agent_tool, internal: report.extra?.safe_internal })), [
 			{ operation: 'devtools-tool-error-dialog', agentTool: 'wait_until', internal: undefined },
@@ -528,8 +499,8 @@ suite('ParadisDevtoolsMcpProxy', () => {
 		const failures: string[] = [];
 		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { temporaryDirectory: TEST_TEMPORARY_DIRECTORY, spawnChild: fixture.spawn, onToolFailure: (_token, failure) => failures.push(failure.tool) }));
 		const { reports } = await withRecordedReports(async () => [
-			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, undefined, { agentTool: 'wait_until' }),
-			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, undefined, { agentTool: 'get_text' }),
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, { agentTool: 'wait_until' }),
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, { agentTool: 'get_text' }),
 		]);
 		assert.deepStrictEqual({ reports: reports.map(report => ({ agentTool: report.extra?.safe_agent_tool, reason: report.extra?.safe_gate_reason })), failures }, {
 			reports: [{ agentTool: 'get_text', reason: 'retryable-other' }],
@@ -547,10 +518,10 @@ suite('ParadisDevtoolsMcpProxy', () => {
 		const fixture = createFakeDevtoolsChildren({ toolsListResult: { tools: [{ name: 'evaluate_script', inputSchema: { type: 'object', properties: { function: { type: 'string' } } } }] }, toolCallResults: texts.map(text => ({ content: [{ type: 'text', text }], isError: true })) });
 		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { temporaryDirectory: TEST_TEMPORARY_DIRECTORY, spawnChild: fixture.spawn }));
 		const { reports } = await withRecordedReports(async () => [
-			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, undefined, { agentTool: 'click_by', internal: 'observe' }),
-			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, undefined, { agentTool: 'wait_until' }),
-			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, undefined, { agentTool: 'wait_until' }),
-			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, undefined, { agentTool: 'click_by' }),
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, { agentTool: 'click_by', internal: 'observe' }),
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, { agentTool: 'wait_until' }),
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, { agentTool: 'wait_until' }),
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, { agentTool: 'click_by' }),
 		]);
 		assert.deepStrictEqual(reports.map(report => ({ operation: report.operation, kind: report.extra?.safe_error_kind })), [
 			{ operation: 'devtools-observe-error-unresponsive', kind: 'unresponsive' },
@@ -569,9 +540,9 @@ suite('ParadisDevtoolsMcpProxy', () => {
 		const fixture = createFakeDevtoolsChildren({ toolsListResult: { tools: [{ name: 'evaluate_script', inputSchema: { type: 'object', properties: { function: { type: 'string' } } } }] }, toolCallResults: texts.map(text => ({ content: [{ type: 'text', text }], isError: true })) });
 		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { temporaryDirectory: TEST_TEMPORARY_DIRECTORY, spawnChild: fixture.spawn }));
 		const { reports } = await withRecordedReports(async () => [
-			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, undefined, { agentTool: 'wait_until', internal: 'query' }),
-			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, undefined, { agentTool: 'navigate_page', internal: 'observe' }),
-			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, undefined, { agentTool: 'click_by', internal: 'observe' }),
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, { agentTool: 'wait_until', internal: 'query' }),
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, { agentTool: 'navigate_page', internal: 'observe' }),
+			await proxy.tryCallTool('secret-token', 1, 'ws://one', 'evaluate_script', { function: '() => 1' }, undefined, { agentTool: 'click_by', internal: 'observe' }),
 		]);
 		assert.deepStrictEqual(reports.map(report => ({ operation: report.operation, agentTool: report.extra?.safe_agent_tool, internal: report.extra?.safe_internal })), [
 			{ operation: 'devtools-query-error-unresponsive', agentTool: 'wait_until', internal: 'query' },

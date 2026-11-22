@@ -26,7 +26,6 @@ suite('paradisMcpReadOnlyTools in tools/list', () => {
 			_requireIngressLease: () => { },
 			_allToolProviders: () => [],
 			_observeSettings: () => ({ settle: false, state: false }),
-			_runStepsFlowEnabled: () => false,
 			_siteNotesEnabled: () => false,
 			_paneRemoteAuthorityOf: () => undefined,
 		}) as unknown as IListInternals;
