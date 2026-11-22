@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
-	paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisResolveTerminalScopeCandidate,
+	paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisShouldMoveGuessedScopeToCwdScope, paradisResolveTerminalScopeCandidate,
 	paradisShouldParkUnattributedGroup, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage
 } from '../../common/paradisTerminalProcessScope.js';
 
@@ -154,6 +154,29 @@ suite('paradisRecordInstanceScopes / paradisLookupInstanceScope', () => {
 		assert.strictEqual(paradisResolveInitialCwdScope('/repos/project-other', [
 			{ root: '/repos/project', stateKey: 'repository' },
 		]), undefined, 'prefix-only path collisions must not count as descendants');
+	});
+
+	test('moves a guessed space to the space of the cwd only when that space is not coarser', () => {
+		const roots = [
+			{ root: '/repos/project', stateKey: 'repository' },
+			{ root: '/repos/project/worktrees/topic', stateKey: 'worktree:topic' },
+			{ root: '/repos/other', stateKey: 'other' },
+		];
+		assert.deepStrictEqual({
+			same: paradisShouldMoveGuessedScopeToCwdScope('repository', 'repository', roots),
+			sibling: paradisShouldMoveGuessedScopeToCwdScope('repository', 'other', roots),
+			finer: paradisShouldMoveGuessedScopeToCwdScope('repository', 'worktree:topic', roots),
+			coarser: paradisShouldMoveGuessedScopeToCwdScope('worktree:topic', 'repository', roots),
+			currentNotListed: paradisShouldMoveGuessedScopeToCwdScope('worktree:unlisted', 'repository', roots),
+			currentUnknown: paradisShouldMoveGuessedScopeToCwdScope(undefined, 'repository', roots),
+		}, {
+			same: false,
+			sibling: true,
+			finer: true,
+			coarser: false,
+			currentNotListed: false,
+			currentUnknown: false,
+		});
 	});
 
 	test('does not change ownership when the terminal later cd-s outside its initial root', () => {

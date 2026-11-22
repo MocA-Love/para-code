@@ -30,7 +30,7 @@ import { paradisRegisterTerminalCreationScopeProvider, paradisTakeTerminalCreati
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisTerminalStableScopeChangeEvent, IParadisWorkspaceSwitchService, IParadisWorktreeService, ParadisBindingScope, ParadisTerminalInstanceRetirementTracker, ParadisTerminalStableScopeTracker, paradisResolveTerminalBindingScope, paradisScopeRootPath, paradisWorktreeStateKey, PARADIS_UNATTRIBUTED_TERMINAL_SCOPE } from '../common/paradisWorkspaceSwitch.js';
 import { paradisWaitForProcessReady } from '../../../common/paradisProcessReady.js';
-import { IParadisScopedTerminalInstanceLike, IParadisTerminalScopeRoot, paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisResolveTerminalScopeCandidate, paradisShouldParkUnattributedGroup, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage } from '../common/paradisTerminalProcessScope.js';
+import { IParadisScopedTerminalInstanceLike, IParadisTerminalScopeRoot, paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisShouldMoveGuessedScopeToCwdScope, paradisResolveTerminalScopeCandidate, paradisShouldParkUnattributedGroup, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage } from '../common/paradisTerminalProcessScope.js';
 import { IParadisTerminalNonceScopeDisagreement, paradisLookupProcessDetailScope, paradisMigrateProcessScopesToNonceScopes, paradisProcessDetailScopeLookupId, paradisParseTerminalNonceScopeStorage, paradisPruneNonceScopes, paradisResolveNonceScope, paradisRetireScopeFromNonceScopeStorage, paradisSerializeTerminalNonceScopeStorage } from '../common/paradisTerminalNonceScope.js';
 import { ParadisPtyAdoptionState, paradisOrphanListingIsComplete, paradisPtyAdoptionState } from '../../ptyDaemon/common/paradisPtyHandover.js';
 import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisListParkedTerminalEditorInstances, paradisMarkOrphanTerminalRevivalComplete, paradisParkTerminalEditorInstance, paradisRegisterParkedTerminalGroupProbe, paradisRegisterTerminalEditorOwnerProbe, paradisUnparkTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
@@ -507,6 +507,9 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				this._restoredPersistentProcessScopes.set(persistentProcessId, stateKey);
 			}
 			this._quarantinedPersistentProcessScopes.clear();
+			// 一覧が確定する前に付いた推測・借り物のうち、cwd が別のスペースを指すものをここで移す。
+			// （初回の `onDidChangeWorktrees` はこの then より先に来て `_worktreeSnapshotReady` で捨てられる）
+			this.correctGuessedScopesFromInitialCwd(this.collectLiveInstances().values());
 			const liveInstances = this.refreshAllStableScopes();
 			if (this._terminalRestoreComplete) {
 				paradisPrunePersistentProcessScopes(this._persistentProcessScopes, liveInstances.map(instance => this.toScopedInstance(instance)));
@@ -1253,6 +1256,9 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				}
 				this._initialCwdResolvedInstances.add(instance.instanceId);
 				this.recordRecoveredScopeIfUnassigned(instance);
+				// cwd より先に所属が入っていた端末（タグ付け済みのグループへ後から入った分）は、
+				// 上の呼び出しでは「所属あり」で素通りする。cwd が別のスペースを指していればここで移す。
+				this.correctGuessedScopesFromInitialCwd([instance]);
 				this.tagUntaggedGroups();
 				this._stableScopeTracker.observe(instance.instanceId, this.resolveScope(instance.instanceId));
 				this.recordPersistentProcessScopes([instance]);
@@ -1352,6 +1358,11 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		if (!this._initialCwdResolvedInstances.has(instance.instanceId) || !this._worktreeSnapshotReady) {
 			return undefined;
 		}
+		return paradisResolveInitialCwdScope(this._initialCwds.get(instance.instanceId), this.collectScopeRoots());
+	}
+
+	/** 登録済みのリポジトリと、一覧に載っている worktree の root。 */
+	private collectScopeRoots(): IParadisTerminalScopeRoot[] {
 		const roots: IParadisTerminalScopeRoot[] = [];
 		const connectedAuthority = this.remoteAgentService.getConnection()?.remoteAuthority;
 		for (const repository of this.workspaceSwitchService.repositories) {
@@ -1366,7 +1377,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				}
 			}
 		}
-		return paradisResolveInitialCwdScope(this._initialCwds.get(instance.instanceId), roots);
+		return roots;
 	}
 
 	private recordRecoveredScopeIfUnassigned(instance: ITerminalInstance): void {
@@ -1566,19 +1577,70 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			// ここで `assignInstanceScope` を使ってはいけない。あれは「ユーザーの明示指定なので
 			// グループごと動かす」経路で、同居している端末の所属まで突き合わせ無しに上書きする。
 			// これは自動訂正なので、直したい1本だけを動かし、グループの扱いはタグ付けに任せる。
-			this._instanceScopes.set(instanceId, resolved);
-			this._activeFallbackInstances.delete(instanceId);
-			this._inheritedGroupScopes.delete(instanceId);
-			this.recordPersistentProcessScopes([instance]);
-			this._stableScopeTracker.observe(instanceId, this.resolveScope(instanceId));
+			this.promoteGuessedScope(instance, resolved);
 			promoted = true;
 		}
 		if (promoted) {
-			this.rehomeGroupsWithoutAClaimingMember();
-			// 昇格をここで保存する。呼び出し元はタグ付けが動いたときしか保存しないので、
-			// 任せると「次のセッションで根拠ゼロから始まらないようにする」という目的に届かない。
-			this.persistMapping();
+			this.settlePromotedScopes();
 		}
+	}
+
+	/**
+	 * 推測・借り物の所属が入っている端末のうち、初期 cwd が**別のスペース**を指しているものを、
+	 * そのスペースへ移す。その端末の cwd と worktree の一覧が揃った時点（初期 cwd の解決、
+	 * 初期化バリアの通過）で呼ぶ。
+	 *
+	 * 動かすのは、cwd の最長一致で出たスペースが今入っている値と違い、かつ今の値より粗くない端末だけ
+	 * （`paradisShouldMoveGuessedScopeToCwdScope`）。
+	 * - 今の値が入れ子の worktree で、cwd の一致がそれを含む外側のリポジトリだった端末には触らない。
+	 *   worktree が一覧にまだ載っていないだけかもしれず、載った通知でその worktree に確定する。
+	 * - 一致しなかった端末と、値が同じだった端末には触らない。印を残し、確定への昇格・nonce 台帳への
+	 *   書き出し・グループの置き直しは worktree の一覧の通知（`reevaluateActiveFallbackScopes`）に
+	 *   任せる。ここで確定させると、一覧が欠けたままバリアを通った起動や、直後に入れ子の worktree が
+	 *   現れる場面で、外側のリポジトリが確定値として台帳に残り、通知による自己修復が効かなくなる。
+	 * - 値が違った端末は、通知の経路と同じく印を外して確定させる（cwd は自前の根拠で、cwd が
+	 *   分かってから所属を入れる単独の新しい端末もこの時点の一覧で確定する）。
+	 *
+	 * 投げない。呼び出し元の後続（タグ付け・台帳の保存）は、ここが失敗しても走らせる。
+	 */
+	private correctGuessedScopesFromInitialCwd(instances: Iterable<ITerminalInstance>): void {
+		try {
+			let corrected = false;
+			for (const instance of instances) {
+				if (!this._activeFallbackInstances.has(instance.instanceId) && !this._inheritedGroupScopes.has(instance.instanceId)) {
+					continue;
+				}
+				// cwd か worktree の一覧のどちらかが未確定なら undefined（揃った側の契機でやり直す）。
+				const resolved = this.resolveInstanceInitialCwdScope(instance);
+				if (resolved === undefined
+					|| !paradisShouldMoveGuessedScopeToCwdScope(this._instanceScopes.get(instance.instanceId), resolved, this.collectScopeRoots())) {
+					continue;
+				}
+				this.promoteGuessedScope(instance, resolved);
+				corrected = true;
+			}
+			if (corrected) {
+				this.settlePromotedScopes();
+			}
+		} catch (error) {
+			onUnexpectedError(error);
+		}
+	}
+
+	/** 推測・借り物だった1本の所属を、自前の根拠で確定させる（同居している端末は動かさない）。 */
+	private promoteGuessedScope(instance: ITerminalInstance, stateKey: string): void {
+		this._instanceScopes.set(instance.instanceId, stateKey);
+		this._activeFallbackInstances.delete(instance.instanceId);
+		this._inheritedGroupScopes.delete(instance.instanceId);
+		this.recordPersistentProcessScopes([instance]);
+		this._stableScopeTracker.observe(instance.instanceId, this.resolveScope(instance.instanceId));
+	}
+
+	private settlePromotedScopes(): void {
+		this.rehomeGroupsWithoutAClaimingMember();
+		// 昇格をここで保存する。呼び出し元はタグ付けが動いたときしか保存しないので、
+		// 任せると「次のセッションで根拠ゼロから始まらないようにする」という目的に届かない。
+		this.persistMapping();
 	}
 
 	/**
