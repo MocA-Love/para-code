@@ -344,6 +344,28 @@ suite('paradisCliCore', () => {
 		});
 	});
 
+	test('reading or waiting for another terminal and switching the page of the pane are asked every time, although they only read', () => {
+		const readOnly = { annotations: { readOnlyHint: true }, inputSchema: { type: 'object', properties: {} } };
+		const catalog = paradisBuildCliCatalog(['list_terminals', 'read_terminal', 'wait_for_terminal', 'select_page', 'list_pages'].map(name => ({ name, description: '', ...readOnly })), []);
+		const reading = paradisCliClaudePermissions(catalog, false);
+		assert.deepStrictEqual({
+			marks: catalog.commands.map(command => command.readOnly),
+			reading: reading.slice(5),
+			onRequest: paradisCliClaudePermissions(catalog, true).filter(rule => !reading.includes(rule)),
+		}, {
+			marks: [true, true, true, true, true],
+			reading: [
+				'Bash(para terminal list-terminals:*)', 'Bash(para terminal list:*)', 'Bash(para terminal list_terminals:*)',
+				'Bash(para browser list-pages:*)', 'Bash(para browser list_pages:*)',
+			],
+			onRequest: [
+				'Bash(para terminal read-terminal:*)', 'Bash(para terminal read:*)', 'Bash(para terminal read_terminal:*)',
+				'Bash(para terminal wait-for-terminal:*)', 'Bash(para terminal wait:*)', 'Bash(para terminal wait_for_terminal:*)',
+				'Bash(para browser select-page:*)', 'Bash(para browser select_page:*)',
+			],
+		});
+	});
+
 	test('runs commands against a server: help from the catalog, calls by any name, images to files, exit codes', async () => {
 		const requests: { method: string; params: { name?: string; arguments?: unknown; _meta?: Record<string, { conversation?: string }> }; token: string | undefined }[] = [];
 		const server = (await import('http')).createServer((req, res) => {

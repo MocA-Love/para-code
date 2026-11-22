@@ -576,7 +576,7 @@ export function paradisCliHelpTop(catalog: IParadisCliCatalog): string {
 		'  para commands [--read-only|--actions] [--json]   every command',
 		'  para call <tool_name> --json \'{...}\'              call a tool by its name',
 		'  para status                   check that Para Code answers',
-		'  para permissions [--all]      permission rules for Claude Code (commands that only read; --all adds the ones that act)',
+		'  para permissions [--all]      permission rules for Claude Code (commands that only read, except reading or waiting for another terminal and switching the pane\'s page; --all adds those and the ones that act)',
 		'',
 		'Every command takes --json \'<all arguments as a JSON object>\' (flags override it), --out <file> and --raw (print the JSON result).',
 		'',
@@ -624,13 +624,20 @@ export function paradisCliHelpCommand(command: IParadisCliCommand): string {
 }
 
 /**
- * Claude Code の許可の規則（`permissions.allow` に入れる形）。読むだけのコマンドと、手引き・一覧だけを許す。
- * `all` なら操作のコマンドも入れる。`para call` と `--json` だけの形は入れない（どの道具でも呼べるため）。
+ * 読むだけの印（MCP の `readOnlyHint`）は付いているが、Claude Code の許可の一覧には入れない道具（q.html Q682 の 2）。
+ * ほかのペインの画面を読む・ほかのエージェントを待つ・ペインの今のページを替えるもので、実行のたびに利用者へ聞く。
+ * 読むだけの印そのもの（手引きの R と、切れたときの送り直し）は変えない。
+ */
+const ASK_EVERY_TIME_TOOLS: ReadonlySet<string> = new Set(['read_terminal', 'wait_for_terminal', 'select_page']);
+
+/**
+ * Claude Code の許可の規則（`permissions.allow` に入れる形）。読むだけのコマンド（{@link ASK_EVERY_TIME_TOOLS} を除く）と、
+ * 手引き・一覧だけを許す。`all` なら残りのコマンドも入れる。`para call` と `--json` だけの形は入れない（どの道具でも呼べるため）。
  */
 export function paradisCliClaudePermissions(catalog: IParadisCliCatalog, all: boolean): string[] {
 	const rules = ['Bash(para help:*)', 'Bash(para --help)', 'Bash(para commands:*)', 'Bash(para status)', 'Bash(para permissions:*)'];
 	for (const command of catalog.commands) {
-		if (command.readOnly || all) {
+		if ((command.readOnly && !ASK_EVERY_TIME_TOOLS.has(command.tool)) || all) {
 			for (const name of [command.verb, ...command.aliases, ...(command.tool !== command.verb ? [command.tool] : [])]) {
 				rules.push(`Bash(para ${command.group} ${name}:*)`);
 			}
