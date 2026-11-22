@@ -20,6 +20,7 @@
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ParadisAgentStatus } from './paradisAgentBrowser.js';
 import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
+import type { ParadisCliGroup } from './paradisCliCatalog.js';
 
 /**
  * MCPの `tools/list` が返すツール1件の定義。JSON Schema をそのまま載せるため
@@ -61,6 +62,13 @@ export interface IParadisMcpToolProvider {
 	 * エージェントCLIは接続のたびにこれを読むので、短く保つこと（詳しい説明はツールで返す）。
 	 */
 	instructions?(): string | undefined;
+
+	/**
+	 * `para` コマンド（CLI）でこの提供元の道具と説明を置く分野（`para <分野> <コマンド>`、`para help <分野>`）。
+	 * 名前の形で決まる道具（端末・メモ・ポート転送、computer_・mobile_・board_ で始まるもの）はそちらが先に効く。
+	 * 名乗らなければブラウザの分野に入る（paradisCliCatalog.ts）。
+	 */
+	readonly cliGroup?: ParadisCliGroup;
 }
 
 /**

@@ -52,6 +52,7 @@ function message(error: unknown): string {
 }
 
 export class ParadisSimulatorFoldToolProvider implements IParadisMcpToolProvider {
+	readonly cliGroup = 'mobile';
 
 	constructor(
 		private readonly _ledger: Pick<IParadisMobileDeviceLedger, 'getAttachment'>,

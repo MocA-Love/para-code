@@ -31,6 +31,7 @@ const WINDOW_FAILURE_MESSAGE = 'Para Code could not reach the window of this ter
 const CHANGE_TIMEOUT_MESSAGE = 'Para Code did not finish in time. The user may not have answered the confirmation dialog, or the change may still be running. Call list_port_forwards to see the current state before asking again.';
 
 export class ParadisPortToolProvider implements IParadisMcpToolProvider {
+	readonly cliGroup = 'port';
 
 	listTools(): readonly IParadisMcpToolDefinition[] {
 		return PARADIS_PORT_TOOLS;

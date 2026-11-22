@@ -351,6 +351,7 @@ export interface IParadisComputerUseToolOptions {
 }
 
 export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
+	readonly cliGroup = 'computer';
 
 	/** 入力を送る操作を、全ペインで 1 本の列に並べる。 */
 	private readonly _inputQueue = new Sequencer();

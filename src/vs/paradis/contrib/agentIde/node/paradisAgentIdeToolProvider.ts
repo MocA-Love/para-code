@@ -121,6 +121,7 @@ function tailOf(screen: string | undefined, lines: number): string {
 }
 
 export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
+	readonly cliGroup = 'ide';
 
 	private readonly _waitsByPane = new Map<string, number>();
 	private _waitsTotal = 0;

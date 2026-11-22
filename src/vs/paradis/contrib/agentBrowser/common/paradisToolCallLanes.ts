@@ -8,7 +8,7 @@
 
 // para-browser のツール呼び出しを、タブごとに 1 本ずつ流すための列。
 //
-// para-browser の案内（PARADIS_BROWSER_MCP_INSTRUCTIONS）は「別のタブへの呼び出しは並行に、同じタブへの呼び出しは
+// para-browser の案内（PARADIS_BROWSER_INSTRUCTION_PARTS）は「別のタブへの呼び出しは並行に、同じタブへの呼び出しは
 // 1 本ずつ」と約束している。内蔵 chrome-devtools-mcp の道具は子プロセスがタブごとで、子の中の toolMutex が
 // 1 本ずつにしていたが、Para の道具（click_by・fill_by・wait_until・get_text など）には列が無く、同じタブへ
 // 同時に届くと交互に動いていた。Codex は `supports_parallel_tool_calls` が無いと 1 本ずつ送るので表に出な

@@ -28,6 +28,7 @@ const WINDOW_FAILURE_MESSAGE = 'Para Code could not reach the window of this ter
 const CREATE_LIMIT_MESSAGE = `This terminal pane created ${PARADIS_SCHEDULED_RUN_TOOL_CREATE_LIMIT} scheduled runs in the last ${PARADIS_SCHEDULED_RUN_TOOL_CREATE_WINDOW_MS / 60_000} minutes, so Para Code turns this one down. Ask the user before creating more.`;
 
 export class ParadisScheduledRunToolProvider implements IParadisMcpToolProvider {
+	readonly cliGroup = 'ide';
 
 	/** ペインごとの、作った時刻（{@link PARADIS_SCHEDULED_RUN_TOOL_CREATE_WINDOW_MS} より古いものは捨てる）。 */
 	private readonly _created = new Map<string, number[]>();

@@ -152,6 +152,7 @@ function toolText(text: string): unknown {
 }
 
 export class ParadisTaskBoardBridgeService extends Disposable implements IParadisMcpToolProvider {
+	readonly cliGroup = 'board';
 
 	private readonly terminals = new Map<string, ITerminalEntry>();
 	/** 起動中の要求（同じ launchId が重ねて来ても 1 回だけ起動する）。 */
