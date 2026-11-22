@@ -186,6 +186,12 @@ export const ParadisMobileCapability = {
 	 */
 	AgentPcDraft: 'agent.pc-draft.v1',
 	/**
+	 * アプリが、預かった送信を確認なしで送ってよくない種類（記述の `resume.sendQueuedWithoutConfirm` が false。Antigravity CLI）の
+	 * ペイン宛てでは、会話の指紋が一致しても必ず利用者に確かめる。PC はこれを広告したアプリへだけ、その種類のペインの
+	 * `info.resumeKey` を送る（広告しない古いアプリは、指紋が一致すると確認なしで送るため）。
+	 */
+	AgentQueuedSendConfirm: 'agent.queued-send-confirm.v1',
+	/**
 	 * fs の `voiceUsage`（読み上げの Aivis・ElevenLabs の使用量。キーは送らず、キーの印 `keyId` だけを付ける。
 	 * `paradisMobileVoiceUsage.ts`）。
 	 */
@@ -386,6 +392,8 @@ export const PARADIS_MOBILE_APP_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.AgentPcDraft,
 	// 非同期の質問のカード。PC は広告の有無に関わらず `asyncQuestions` を載せる（古いアプリは無視する）。
 	ParadisMobileCapability.AgentAsyncQuestions,
+	// PC はこれを見て、Antigravity CLI のペインの `info.resumeKey` を送る（古いアプリには送らない）。
+	ParadisMobileCapability.AgentQueuedSendConfirm,
 ];
 
 /** 受け取る capability の上限。相手は信用しない前提で、表を無制限に膨らませない。 */

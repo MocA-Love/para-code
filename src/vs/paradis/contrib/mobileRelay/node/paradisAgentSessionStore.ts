@@ -71,8 +71,7 @@ export class ParadisAgentSessionStore {
 					|| (entry.agent !== 'claude' && entry.agent !== 'codex' && entry.agent !== 'opencode' && entry.agent !== 'antigravity')
 					|| typeof entry.transcriptPath !== 'string' || entry.transcriptPath.length === 0 || entry.transcriptPath.length > 4096
 					|| (entry.sessionId !== undefined && (typeof entry.sessionId !== 'string' || entry.sessionId.length > 500))
-					|| typeof entry.savedAt !== 'number' || !Number.isFinite(entry.savedAt)
-					|| (entry.lastHookAt !== undefined && (typeof entry.lastHookAt !== 'number' || !Number.isFinite(entry.lastHookAt)))) {
+					|| typeof entry.savedAt !== 'number' || !Number.isFinite(entry.savedAt)) {
 					continue;
 				}
 				if (now - entry.savedAt > ENTRY_TTL_MS) {
@@ -84,7 +83,9 @@ export class ParadisAgentSessionStore {
 					transcriptPath: entry.transcriptPath,
 					...(entry.sessionId !== undefined ? { sessionId: entry.sessionId } : {}),
 					savedAt: entry.savedAt,
-					...(entry.lastHookAt !== undefined ? { lastHookAt: entry.lastHookAt } : {}),
+					// 数値でない値と、今より先の時刻（時計を戻した後など）は、行ごと捨てずにこの項目だけ落とす。先の時刻を残すと、
+					// 後に終わったコマンドが 1 つも数えられず、打つ側に倒れる。項目が無ければ打たない側になる
+					...(typeof entry.lastHookAt === 'number' && Number.isFinite(entry.lastHookAt) && entry.lastHookAt <= now ? { lastHookAt: entry.lastHookAt } : {}),
 				});
 			}
 			return entries;

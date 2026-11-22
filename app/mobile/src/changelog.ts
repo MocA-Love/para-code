@@ -40,6 +40,18 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.29',
+		date: '2026-11-22',
+		items: [
+			{
+				icon: 'play-circle-outline',
+				title: '閉じた Antigravity CLI のターミナル宛ての預かり送信から、会話を再開できるようになりました',
+				body: 'PC の Para Code の更新が要ります。',
+				tone: 'yellow',
+			},
+		],
+	},
+	{
 		version: '0.12.28',
 		date: '2026-11-19',
 		items: [

@@ -58,3 +58,22 @@ export function agentHasPanel(agent: string | undefined): boolean {
 export function agentHasPcDraft(agent: string | undefined): boolean {
 	return paradisAgentDescriptor(agent)?.features.pcDraft === true;
 }
+
+/**
+ * 預かった送信を、宛先のペインの会話が預けたときと同じに見えても、必ず利用者に確かめる種類か（Antigravity CLI）。
+ * TUI の中で会話が替わっても PC が気付けない種類。
+ *
+ * このアプリが知らない種類（新しい PC が足した種類）も確かめる側に倒す。確認なしで送るのは、送ってよいと記述にある
+ * 種類だけ。種類が届いていない（undefined）ときは false（会話の状態を受け取る前で、呼ぶ側は送る判断をしない）。
+ */
+export function agentQueuedSendNeedsConfirm(agent: string | undefined): boolean {
+	return agent !== undefined && paradisAgentDescriptor(agent)?.resume.sendQueuedWithoutConfirm !== true;
+}
+
+/**
+ * 再開した直後に、PC が依頼の文をエージェントへ渡さない種類か（Antigravity CLI）。渡さない種類では、文は開いた会話の
+ * 会話表示の入力欄に残り、利用者が送り直す。知らない種類・undefined は false（今までどおり）。
+ */
+export function agentLeavesPromptAfterResume(agent: string | undefined): boolean {
+	return paradisAgentDescriptor(agent)?.resume.deliverPromptAfterResume === false;
+}
