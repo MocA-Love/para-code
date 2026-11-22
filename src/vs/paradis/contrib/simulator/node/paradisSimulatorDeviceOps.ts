@@ -246,6 +246,7 @@ interface IResolvedDevice {
 }
 
 export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvider {
+	readonly cliGroup = 'mobile';
 
 	constructor(
 		private readonly _ledger: IParadisMobileDeviceLedger,

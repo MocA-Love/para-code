@@ -39,6 +39,7 @@ const CREATE_LIMIT_MESSAGE = `This terminal pane added ${PARADIS_BOOKMARK_CREATE
 const DELETE_TIMEOUT_MESSAGE = 'The user did not answer the deletion dialog in time, so nothing was deleted. Ask the user in the conversation before asking again.';
 
 export class ParadisBookmarkToolProvider implements IParadisMcpToolProvider {
+	readonly cliGroup = 'browser';
 
 	/** ペインごとの、足したブックマークとフォルダの時刻（{@link PARADIS_BOOKMARK_CREATE_WINDOW_MS} より古いものは捨てる）。 */
 	private readonly _created = new Map<string, number[]>();

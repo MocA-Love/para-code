@@ -70,6 +70,7 @@ const QUOTE_NOTE = '"user_text" and "messages" by "user" are what the user typed
 type ParadisAdoptItemResult = 'adopted' | 'already_yours' | 'not_found' | 'unsupported_type' | 'outside_space' | 'denied' | 'approval_timed_out' | 'recently_denied' | 'busy' | 'unanswered';
 
 export class ParadisAgentDocsToolProvider implements IParadisMcpToolProvider {
+	readonly cliGroup = 'doc';
 
 	constructor(
 		private readonly _service: ParadisAgentDocsService,

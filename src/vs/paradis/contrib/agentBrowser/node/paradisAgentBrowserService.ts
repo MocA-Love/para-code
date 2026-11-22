@@ -95,6 +95,7 @@ import { ParadisDevtoolsInternalCall } from './paradisDevtoolsCallOrigin.js';
 import { ParadisInputRejectionLog } from './paradisInputRejectionLog.js';
 import { IParadisDevtoolsPathCaller, paradisDevtoolsCaptureOverwriteRefusal, paradisDevtoolsPathArguments, paradisDevtoolsPathDecision, paradisDevtoolsUserTemporaryFolders, paradisDevtoolsVersionControlRealpathRefusal } from './paradisDevtoolsPathPolicy.js';
 // PARA-PATCH: 他のparadis contribがこのMCPサーバーへ自前のツールを足すための拡張点（モバイル端末操作など）
+import { IParadisAgentInstructionPart, IParadisAgentInstructionSection, IParadisCliCatalog, PARADIS_CLI_CATALOG_METHOD, ParadisCliConversations, ParadisCliGroup, paradisBuildCliCatalog, paradisCliCallMetaOf, paradisMcpInstructionsText } from '../common/paradisCliCatalog.js';
 import { IParadisMcpCursorIdentity, IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpPaneTab, IParadisMcpToolCallContext, IParadisMcpToolProvider, ParadisMcpCallerKind, ParadisMcpOwningWindowResult, paradisRegisteredMcpToolProviders } from '../common/paradisMcpToolProvider.js';
 import { paradisWithReadOnlyToolAnnotation } from '../common/paradisMcpReadOnlyTools.js';
 import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendScreenshotFetchHint, paradisReadScreenshotFile, paradisScreenshotContentType, paradisScreenshotIdFromUrl, paradisScreenshotPathsFromToolResult } from './paradisScreenshotHandoff.js';
@@ -226,8 +227,18 @@ const MAX_ACTIVE_INGRESS_REQUESTS = 128;
 const PARADIS_USER_SHARED_PAGE_LIMIT_ERROR = `${PARADIS_USER_SHARED_PAGE_LIMIT_ERROR_MARK}: this terminal pane already has the maximum number of shared pages`;
 /** instructions の read_download の括弧書き。接続先のペインでは {@link PARADIS_REMOTE_READ_DOWNLOAD_OWN_TOOLS_INSTRUCTION} に言い換える。 */
 const PARADIS_READ_DOWNLOAD_OWN_TOOLS_INSTRUCTION = '(you may also read the saved file with your own tools)';
-/** `initialize` の `instructions` の先頭に置く、このサーバー自身（ブラウザ共有）の説明。 */
-const PARADIS_BROWSER_MCP_INSTRUCTIONS = 'Read a tool\'s description before you call it (in Claude Code, load it with ToolSearch first; this applies to subagents too): arguments with other names or types are refused. Waiting times are in seconds (arguments ending in _seconds; for example wait_until takes timeout_seconds, not timeout or timeout_ms). Para Code MCP server (runs inside the Para Code editor that hosts this terminal). Browser tools act on this terminal pane\'s current tab (by default the page the user shared most recently), or on the tab you pass as tab_id. A pane can use every page the user shared with it (the user may share up to ' + PARADIS_USER_SHARED_PAGE_LIMIT + ') plus up to ' + PARADIS_AGENT_TAB_LIMIT + ' tabs it opens itself with open_browser_tab, plus the tabs and windows those pages open (target=_blank links, window.open; shared automatically, up to ' + PARADIS_OPENED_TAB_LIMIT + '); list_browser_tabs shows all of their tabIds and which ones the user shared. When you split browser work across subagents, open (or pick) one tab per subagent and tell each subagent its tabId; the subagent must pass that tab_id on every browser tool call (take_snapshot, click, navigate_page, wait_until, click_by, ...). Para Code runs calls on different tabs in parallel and calls on the same tab one at a time. Your MCP client may still run several tool calls of one message one after another (Claude Code can do this for tools that are not read-only), so to work on several tabs at the same time, give each tab its own subagent. Without tab_id, tools act on the pane\'s current tab, which open_browser_tab and select_browser_tab change for everyone in this pane. To wait for the page, use wait_until (with network_idle_seconds to wait for requests to settle) instead of setTimeout loops in evaluate_script or sleep in the shell; get_text, inspect_element and scroll_to read, measure and scroll without mouse or key input. To click or fill an element you can describe (role + name, text, CSS), use click_by and fill_by instead of take_snapshot + click or DOM changes in evaluate_script; they work with React/MUI inputs and explain why an element cannot be clicked. run_steps runs a known sequence of these tools in one call. capture_screenshot crops elements or a rectangle and can save straight to a file; read_download returns the sheets and cells of a downloaded xlsx, the rows of a csv, or the text of each page of a PDF ' + PARADIS_READ_DOWNLOAD_OWN_TOOLS_INSTRUCTION + '. Before your first click, key or scroll on a page, call set_cursor_label with a short name for your current task (2-12 characters, e.g. "Checkout", "注文入力"). Name the task, not a person or the page title. Subagents that open their own tab can pass label to open_browser_tab instead. On pages the user shared, submit, buy, send or delete something only when the user asked for it.';
+/**
+ * `initialize` の `instructions` の先頭に置く、このサーバー自身（ブラウザ共有）の説明。文を空白でつなぐと MCP の説明になる。
+ * `mcpOnly` の文は MCP のクライアントにだけ意味があるので、CLI の手引き（`para help browser`）には出さない。
+ */
+const PARADIS_BROWSER_INSTRUCTION_PARTS: readonly IParadisAgentInstructionPart[] = [
+	{ text: 'Read a tool\'s description before you call it (in Claude Code, load it with ToolSearch first; this applies to subagents too): arguments with other names or types are refused.', mcpOnly: true },
+	{ text: 'Waiting times are in seconds (arguments ending in _seconds; for example wait_until takes timeout_seconds, not timeout or timeout_ms).' },
+	{ text: 'Para Code MCP server (runs inside the Para Code editor that hosts this terminal).', mcpOnly: true },
+	{ text: 'Browser tools act on this terminal pane\'s current tab (by default the page the user shared most recently), or on the tab you pass as tab_id. A pane can use every page the user shared with it (the user may share up to ' + PARADIS_USER_SHARED_PAGE_LIMIT + ') plus up to ' + PARADIS_AGENT_TAB_LIMIT + ' tabs it opens itself with open_browser_tab, plus the tabs and windows those pages open (target=_blank links, window.open; shared automatically, up to ' + PARADIS_OPENED_TAB_LIMIT + '); list_browser_tabs shows all of their tabIds and which ones the user shared. When you split browser work across subagents, open (or pick) one tab per subagent and tell each subagent its tabId; the subagent must pass that tab_id on every browser tool call (take_snapshot, click, navigate_page, wait_until, click_by, ...). Para Code runs calls on different tabs in parallel and calls on the same tab one at a time.' },
+	{ text: 'Your MCP client may still run several tool calls of one message one after another (Claude Code can do this for tools that are not read-only), so to work on several tabs at the same time, give each tab its own subagent.', mcpOnly: true },
+	{ text: 'Without tab_id, tools act on the pane\'s current tab, which open_browser_tab and select_browser_tab change for everyone in this pane. To wait for the page, use wait_until (with network_idle_seconds to wait for requests to settle) instead of setTimeout loops in evaluate_script or sleep in the shell; get_text, inspect_element and scroll_to read, measure and scroll without mouse or key input. To click or fill an element you can describe (role + name, text, CSS), use click_by and fill_by instead of take_snapshot + click or DOM changes in evaluate_script; they work with React/MUI inputs and explain why an element cannot be clicked. run_steps runs a known sequence of these tools in one call. capture_screenshot crops elements or a rectangle and can save straight to a file; read_download returns the sheets and cells of a downloaded xlsx, the rows of a csv, or the text of each page of a PDF ' + PARADIS_READ_DOWNLOAD_OWN_TOOLS_INSTRUCTION + '. Before your first click, key or scroll on a page, call set_cursor_label with a short name for your current task (2-12 characters, e.g. "Checkout", "注文入力"). Name the task, not a person or the page title. Subagents that open their own tab can pass label to open_browser_tab instead. On pages the user shared, submit, buy, send or delete something only when the user asked for it.' },
+];
 /**
  * 1 ペインが同時に送れる MCP の呼び出しの数。1 タブ 1 サブエージェントで並べられるよう 32 にする（タブの上限は 50 だが、
  * 同じタブの呼び出しは 1 つずつ走るので、並ぶのは使っているタブの数まで）。全体の上限（{@link MAX_ACTIVE_INGRESS_REQUESTS}）は
@@ -969,6 +980,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * {@link PARADIS_SITE_NOTE_SPACE_CACHE_MS} の間控える。initialize とペインの片付けで消す。書く・消す道具は毎回窓に聞く
 	 * （ペインの所属の選び直しやフォルダの開き直しの後に、古いスペースへ書かないように）。
 	 */
+	/** CLI が名乗った会話の識別子（ペインごと）。初めて見た識別子で会話の始まりの片付けをする。 */
+	private readonly _cliConversations = new ParadisCliConversations();
 	private readonly _siteNoteSpaces = new Map<string, { readonly space: Promise<{ readonly key: string; readonly folder?: string } | undefined>; readonly at: number }>();
 	/** run_steps を手順書にするか（E6）。設定（既定は無効）を毎回読む。設定の無いテストでは undefined。 */
 	private readonly _runStepsFlowEnabled: (() => boolean) | undefined;
@@ -2383,6 +2396,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._forgetHumanChecks(token);
 		this._siteNoteSpaces?.delete(token);
 		this._listedToolSchemas?.delete(token);
+		this._cliConversations?.forget(token);
 		// 操作の後に添えたブラウザの状態の控え（ペインとそのタブごと）
 		this._browserObserver.forget(token);
 		this._runNonThrowingCleanup('agent-tabs', () => this._forgetAgentTabState(token));
@@ -3674,26 +3688,79 @@ export class ParadisAgentBrowserService extends Disposable {
 		return [...this._toolProviders, ...paradisRegisteredMcpToolProviders()];
 	}
 
-	/** プロバイダが足したサーバーの説明（`initialize` の `instructions`）。 */
-	private _serverInstructions(): string {
+	/**
+	 * サーバーの説明の段（提供元ごと）。MCP の `initialize` の `instructions` と、CLI の `para help <分野>` の手引きの
+	 * 両方をここから作る（paradisCliCatalog.ts）。
+	 *
+	 * @param remotePane 呼び出し元が接続先（SSH など）のペインなら、ファイルの受け渡しの説明に言い換える
+	 */
+	private _instructionSections(remotePane = false): IParadisAgentInstructionSection[] {
 		// ブラウザの説明はこのサーバー自身のものなので、プロバイダの有無に関係なく先頭に置く
-		const parts: string[] = [PARADIS_BROWSER_MCP_INSTRUCTIONS];
+		const sections: IParadisAgentInstructionSection[] = [{
+			group: 'browser',
+			parts: remotePane
+				? PARADIS_BROWSER_INSTRUCTION_PARTS.map(part => ({ ...part, text: part.text.replace(PARADIS_READ_DOWNLOAD_OWN_TOOLS_INSTRUCTION, PARADIS_REMOTE_READ_DOWNLOAD_OWN_TOOLS_INSTRUCTION) }))
+				: PARADIS_BROWSER_INSTRUCTION_PARTS,
+		}];
 		// サイトメモ（E4）・サイトの手順（E3）の設定がオンなら、作業の終わりに残すよう 1 文足す（Q327 A。オフなら足さない）
 		const siteMemory = paradisSiteMemoryInstructions({ notes: this._siteNotesEnabled?.() === true, recipes: this._siteRecipesEnabled?.() === true });
 		if (siteMemory !== undefined) {
-			parts.push(siteMemory);
+			sections.push({ group: 'browser', parts: [{ text: siteMemory }] });
 		}
 		for (const provider of this._allToolProviders()) {
 			try {
 				const text = provider.instructions?.();
 				if (text && text.trim().length > 0) {
-					parts.push(text.trim());
+					sections.push({ group: provider.cliGroup ?? 'browser', parts: [{ text: text.trim() }] });
 				}
 			} catch (error) {
 				this._runNonThrowingDiagnostic(() => this.logService.warn('[ParadisAgentBrowser] MCP instructions provider failed', error));
 			}
 		}
-		return parts.join('\n\n');
+		if (remotePane) {
+			sections.push({ group: 'browser', parts: [{ text: PARADIS_REMOTE_PANE_FILE_INSTRUCTIONS }] });
+		}
+		return sections;
+	}
+
+	/** MCP の `initialize` の `instructions`（サーバーの説明）。 */
+	private _serverInstructions(remotePane = false): string {
+		return paradisMcpInstructionsText(this._instructionSections(remotePane));
+	}
+
+	/**
+	 * 会話の始まりの片付け。MCP の `initialize` と、CLI が初めて名乗った会話の識別子（paradisCliCatalog.ts）で走る。
+	 */
+	private _noteConversationStart(token: string): void {
+		// 新しいエージェント（や接続し直したエージェント）には、サイトメモ（E4）をもう一度添える
+		this._siteNotesShown?.delete(token);
+		this._siteNudges?.forget(token);
+		this._forgetHumanChecks(token);
+		this._siteNoteSpaces?.delete(token);
+		// 新しいエージェントは前のエージェントのスナップショットを見ていない。次の take_snapshot は全体を返す（E2）
+		this._devtoolsProxy?.forgetSnapshotBaselines(key => paradisPaneTokenOfScopeKey(key) === token);
+	}
+
+	/** CLI からの呼び出しなら、添えられた会話の識別子を見て、初めてのものなら会話の始まりとして片付ける。 */
+	private _noteCliCall(token: string, params: unknown): void {
+		const conversation = paradisCliCallMetaOf(params)?.conversation;
+		if (conversation !== undefined && this._cliConversations?.note(token, conversation) === true) {
+			this._noteConversationStart(token);
+		}
+	}
+
+	/** CLI の品書き（分野・コマンド・手引き）。MCP の tools/list と同じ一覧から作る。 */
+	private async _cliCatalog(ingressLease: IParadisAgentBrowserIngressLease, signal: AbortSignal | undefined): Promise<IParadisCliCatalog> {
+		const tools = await this._listTools(ingressLease, signal);
+		const providerGroups = new Map<string, ParadisCliGroup>();
+		for (const provider of this._allToolProviders()) {
+			if (provider.cliGroup !== undefined) {
+				for (const tool of provider.listTools()) {
+					providerGroups.set(tool.name, provider.cliGroup);
+				}
+			}
+		}
+		return paradisBuildCliCatalog(tools, this._instructionSections(this._paneRemoteAuthorityOf(ingressLease.token) !== undefined), providerGroups);
 	}
 
 	/** 呼び出し元ペインが使えるタブ（今のタブと、利用者が共有したものの印つき）。一覧を取れなければ undefined。 */
@@ -5602,18 +5669,10 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._requireIngressLease(ingressLease);
 		switch (rpc.method) {
 			case 'initialize': {
-				// 新しいエージェント（や接続し直したエージェント）には、サイトメモ（E4）をもう一度添える
-				this._siteNotesShown?.delete(ingressLease.token);
-				this._siteNudges?.forget(ingressLease.token);
-				this._forgetHumanChecks(ingressLease.token);
-				this._siteNoteSpaces?.delete(ingressLease.token);
+				this._noteConversationStart(ingressLease.token);
 				const params = rpc.params as { protocolVersion?: unknown } | undefined;
 				const requested = typeof params?.protocolVersion === 'string' ? params.protocolVersion : '2025-03-26';
-				const instructions: string | undefined = this._paneRemoteAuthorityOf(ingressLease.token) !== undefined
-					? `${this._serverInstructions().replace(PARADIS_READ_DOWNLOAD_OWN_TOOLS_INSTRUCTION, PARADIS_REMOTE_READ_DOWNLOAD_OWN_TOOLS_INSTRUCTION)}\n\n${PARADIS_REMOTE_PANE_FILE_INSTRUCTIONS}`
-					: this._serverInstructions();
-				// 新しいエージェントは前のエージェントのスナップショットを見ていない。次の take_snapshot は全体を返す（E2）
-				this._devtoolsProxy?.forgetSnapshotBaselines(key => paradisPaneTokenOfScopeKey(key) === ingressLease.token);
+				const instructions: string | undefined = this._serverInstructions(this._paneRemoteAuthorityOf(ingressLease.token) !== undefined);
 				return {
 					protocolVersion: requested,
 					capabilities: { tools: { listChanged: false } },
@@ -5625,7 +5684,11 @@ export class ParadisAgentBrowserService extends Disposable {
 				return {};
 			case 'tools/list':
 				return { tools: await this._listTools(ingressLease, signal) };
+			case PARADIS_CLI_CATALOG_METHOD:
+				this._noteCliCall(ingressLease.token, rpc.params);
+				return this._cliCatalog(ingressLease, signal);
 			case 'tools/call':
+				this._noteCliCall(ingressLease.token, rpc.params);
 				return this._callTool(ingressLease, rpc.params as { name?: unknown; arguments?: unknown } | undefined, signal, socket);
 			default:
 				throw new JsonRpcMethodError(-32601, `Method not found: ${rpc.method}`);
