@@ -71,6 +71,8 @@ describe('agent send queue', () => {
 			// ほかの種類: 処理中の duplicate は、PC がこの後に文を渡す。今までどおり預かりを消す（種類の分からない古い預かりも同じ）
 			claudeDuplicate: await run('claude-3', 'claude', { status: 'duplicate', message: 'この依頼は PC で処理している最中です' }),
 			unknownDuplicate: await run('old-1', undefined, { status: 'duplicate', message: 'この依頼は PC で処理している最中です' }),
+			// PC が再開済みの依頼を送り直した（開いたターミナルを控えられなかった）。同じ返事が続くので、入れ先を伝える
+			antigravityResumedBefore: await run('agy-4', 'antigravity', { status: 'duplicate', delivered: false }),
 			// PC で開いていた
 			running: await run('agy-3', 'antigravity', { status: 'running', terminalKey: 'term-agy-3' }),
 		}).toEqual({
@@ -82,6 +84,7 @@ describe('agent send queue', () => {
 			claudeNotDelivered: { kept: undefined, chatDrafts: [['term-claude-2', 'text claude-2']] },
 			claudeDuplicate: { kept: undefined, chatDrafts: [] },
 			unknownDuplicate: { kept: undefined, chatDrafts: [] },
+			antigravityResumedBefore: { kept: ['failed', 'text agy-4', 'この会話は PC で再開済みで、送り直しても文は渡りません。ターミナルの一覧から再開した会話を開いて入力し、この預かりは取り消してください'], chatDrafts: [] },
 			running: { kept: ['failed', 'text agy-3', 'この会話は PC で開いています。会話の画面から送ってください'], chatDrafts: [] },
 		});
 	});

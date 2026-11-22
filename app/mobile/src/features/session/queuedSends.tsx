@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useShallow } from 'zustand/react/shallow';
-import { agentSendResumeTarget, agentSendStatusText, type AgentSendQueueItem } from '../../agentSessions.js';
+import { agentSendResumeTarget, agentSendShowsResume, agentSendStatusText, type AgentSendQueueItem } from '../../agentSessions.js';
 import { agentResumeKeptQueuedSend, confirmResumeAndSend, mobileSpaceIdFor, removeAgentSend, retryAgentSend, sendToLiveTerminal, useAgentSendQueue } from '../../agentSendQueue.js';
 import { useAppStore } from '../../appState.js';
 import { haptic } from '../../haptics.js';
@@ -103,7 +103,6 @@ function QueuedSendsDrawer({ visible, pcId, items, onClose }: { visible: boolean
 			{message !== undefined ? <Text style={styles.message}>{message}</Text> : null}
 			<View style={styles.list}>
 				{items.map(item => {
-					const resumable = agentSendResumeTarget(item) !== undefined;
 					const terminalOpen = item.target.kind === 'live' && openAgentTerminals.includes(item.target.terminalKey);
 					return (
 						<View key={item.id} style={styles.row}>
@@ -115,7 +114,7 @@ function QueuedSendsDrawer({ visible, pcId, items, onClose }: { visible: boolean
 									<Button label="このターミナルへ送る" size="sm" loading={busy === item.id} disabled={busy !== undefined} onPress={() => { void sendHere(item); }} />
 								) : null}
 								{/* `unverified` は、PC が宛先のターミナルでその会話が開いていると見ている。再開は断られるので、開いている間は出さない。 */}
-								{((item.status === 'needs-confirm' && resumable && ((item.reason !== 'stale' && item.reason !== 'unverified') || !terminalOpen)) || (item.status === 'failed' && resumable && item.target.kind === 'resume')) ? (
+								{agentSendShowsResume(item, terminalOpen) ? (
 									<Button label="再開して送る" size="sm" variant={item.status === 'needs-confirm' && terminalOpen ? 'secondary' : 'primary'} loading={busy === item.id && !terminalOpen} disabled={busy !== undefined} onPress={() => { void resume(item); }} />
 								) : null}
 								{item.status === 'failed' && item.target.kind === 'live' ? (

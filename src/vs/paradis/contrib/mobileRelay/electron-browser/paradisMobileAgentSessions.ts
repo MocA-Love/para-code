@@ -440,7 +440,14 @@ async function resumeFromMobile(
 			// 依頼を自動では渡さない。会話を開いたことだけ知らせ、依頼はスマホの会話表示の入力欄に残させる（会話表示は、そのペインにエージェントの印が付くまで出ないので、出ないときの入れ先も案内する）
 			notifyResumed(tools, space, session, instance);
 			writeLedgerEntry(tools.storageService, { id: requestId, at: Date.now(), status: 'resumed', ...(terminalKey !== undefined ? { terminalKey } : {}), delivered: false });
-			reply({ status: 'resumed', ...(terminalKey !== undefined ? { terminalKey } : {}), delivered: false, message: 'Antigravity CLI の会話を PC で再開しました。依頼はアプリから渡せないため、アプリの会話表示の入力欄に残しています。会話表示が出ないときは、ターミナル表示で入力してください' });
+			// 開いたターミナルのキーが取れないと、アプリは文を移す先（会話表示の入力欄）が分からない。文の在りかはアプリの画面ごとに
+			// 違う（預かり・過去の会話の画面の入力欄）ので言わず、渡していないことと入れ先だけを知らせる
+			reply({
+				status: 'resumed', ...(terminalKey !== undefined ? { terminalKey } : {}), delivered: false,
+				message: terminalKey !== undefined
+					? 'Antigravity CLI の会話を PC で再開しました。依頼はアプリから渡せないため、アプリの会話表示の入力欄に残しています。会話表示が出ないときは、ターミナル表示で入力してください'
+					: 'Antigravity CLI の会話を PC で再開しましたが、開いたターミナルを確かめられませんでした。依頼は渡していません。ターミナルの一覧に再開した会話が出ていれば、そこから入力してください',
+			});
 			return;
 		}
 		const openCodeToken = session.agent === 'opencode' ? launched.paneToken : undefined;

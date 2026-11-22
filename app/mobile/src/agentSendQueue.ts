@@ -179,6 +179,20 @@ export function agentResumeKeptQueuedSend(item: AgentSendQueueItem, result: Agen
 }
 
 /**
+ * 預かりに残したとき（{@link agentResumeKeptQueuedSend}）に行へ出す文。PC の案内があればそれを出す。案内の無い `duplicate`
+ * は、PC がこの依頼で会話を再開済みで、開いたターミナルを控えられなかったもの。同じ依頼は二度実行されないので、
+ * 送り直しても同じ返事になる。待たせず、文の入れ先と預かりの片付け方を伝える。
+ */
+export function agentResumeKeptText(result: AgentResumeResult): string {
+	if (result.message !== undefined) {
+		return result.message;
+	}
+	return result.status === 'duplicate'
+		? 'この会話は PC で再開済みで、送り直しても文は渡りません。ターミナルの一覧から再開した会話を開いて入力し、この預かりは取り消してください'
+		: '会話を再開できたか分かりませんでした。少し待ってからもう一度送ってください';
+}
+
+/**
  * 預かった 1 件を「再開して送る」。成功したら預かりから外し、結果を返す。会話は開けたが文を渡せなかったときは、
  * 開いた会話の会話表示の入力欄へ文を移す。
  *
@@ -201,7 +215,7 @@ export async function confirmResumeAndSend(item: AgentSendQueueItem): Promise<Ag
 		}
 		if (agentResumeKeptQueuedSend(item, result)) {
 			// PC はこの種類の文を渡さず、移す先の入力欄も分からない。預かりを消すと文が失われるので、もう一度選べる状態で残す。
-			patch(item.pcId, item.id, { status: 'failed', error: result.message ?? '会話を再開できたか分かりませんでした。少し待ってからもう一度送ってください' });
+			patch(item.pcId, item.id, { status: 'failed', error: agentResumeKeptText(result) });
 			return result;
 		}
 		if (result.delivered !== true && result.terminalKey !== undefined) {
