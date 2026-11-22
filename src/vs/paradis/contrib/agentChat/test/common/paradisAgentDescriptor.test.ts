@@ -22,7 +22,7 @@ suite('paradisAgentDescriptor', () => {
 		assert.deepStrictEqual(PARADIS_AGENT_DESCRIPTORS, {
 			claude: {
 				displayName: 'Claude Code', shortName: 'Claude', logo: 'claude',
-				resume: { fork: true, bypassFlag: '--dangerously-skip-permissions', deliverPromptAfterResume: true },
+				resume: { fork: true, bypassFlag: '--dangerously-skip-permissions', deliverPromptAfterResume: true, sendQueuedWithoutConfirm: true },
 				modelControl: 'mod-or-keys',
 				send: ['mod', 'keys'], answerQuestion: ['mod', 'keys'], answerApproval: ['mod', 'keys'],
 				interrupt: 'ctrl-c', commandCatalog: 'mod-or-files',
@@ -30,7 +30,7 @@ suite('paradisAgentDescriptor', () => {
 			},
 			codex: {
 				displayName: 'Codex', shortName: 'Codex', logo: 'codex',
-				resume: { fork: true, bypassFlag: '--dangerously-bypass-approvals-and-sandbox', deliverPromptAfterResume: true },
+				resume: { fork: true, bypassFlag: '--dangerously-bypass-approvals-and-sandbox', deliverPromptAfterResume: true, sendQueuedWithoutConfirm: true },
 				modelControl: 'none',
 				send: ['keys'], answerQuestion: ['keys'], answerApproval: ['keys'],
 				interrupt: 'ctrl-c', commandCatalog: 'files',
@@ -38,7 +38,7 @@ suite('paradisAgentDescriptor', () => {
 			},
 			opencode: {
 				displayName: 'OpenCode', shortName: 'OpenCode', logo: undefined,
-				resume: { fork: true, bypassFlag: undefined, deliverPromptAfterResume: true },
+				resume: { fork: true, bypassFlag: undefined, deliverPromptAfterResume: true, sendQueuedWithoutConfirm: true },
 				modelControl: 'none',
 				send: ['api'], answerQuestion: ['api'], answerApproval: ['api'],
 				interrupt: 'api', commandCatalog: 'api',
@@ -46,7 +46,7 @@ suite('paradisAgentDescriptor', () => {
 			},
 			antigravity: {
 				displayName: 'Antigravity CLI', shortName: 'Antigravity', logo: 'antigravity',
-				resume: { fork: false, bypassFlag: undefined, deliverPromptAfterResume: false },
+				resume: { fork: false, bypassFlag: undefined, deliverPromptAfterResume: false, sendQueuedWithoutConfirm: false },
 				modelControl: 'none',
 				send: ['keys'], answerQuestion: [], answerApproval: ['hook'],
 				interrupt: 'ctrl-c', commandCatalog: 'none',

@@ -58,3 +58,11 @@ export function agentHasPanel(agent: string | undefined): boolean {
 export function agentHasPcDraft(agent: string | undefined): boolean {
 	return paradisAgentDescriptor(agent)?.features.pcDraft === true;
 }
+
+/**
+ * 預かった送信を、宛先のペインの会話が預けたときと同じに見えても、必ず利用者に確かめる種類か（Antigravity CLI）。
+ * TUI の中で会話が替わっても PC が気付けない種類。知らない種類は false（今までどおり、会話が同じなら送る）。
+ */
+export function agentQueuedSendNeedsConfirm(agent: string | undefined): boolean {
+	return paradisAgentDescriptor(agent)?.resume.sendQueuedWithoutConfirm === false;
+}

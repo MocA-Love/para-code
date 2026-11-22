@@ -61,6 +61,27 @@ suite('ParadisAgentSessionStore', () => {
 		});
 	});
 
+	test('keeps the entry and drops only a last hook time that is in the future or not a number', async () => {
+		await withTempFile(async filePath => {
+			const now = Date.now();
+			const entry = (token: string, lastHookAt: unknown) => ({ token, agent: 'antigravity', transcriptPath: `/t/${token}.jsonl`, sessionId: token, savedAt: now, lastHookAt });
+			await fs.writeFile(filePath, JSON.stringify([
+				entry('past', now - 60_000),
+				// 時計を戻した後に残る、今より先の時刻。残すと「後に終わったコマンド」が数えられず、打つ側に倒れる
+				entry('future', now + 24 * 60 * 60 * 1000),
+				entry('text', 'yesterday'),
+				entry('null', null),
+			]));
+			const reloaded = await new ParadisAgentSessionStore(filePath, new NullLogService()).load();
+			assert.deepStrictEqual(reloaded.map(session => [session.token, session.lastHookAt]), [
+				['past', now - 60_000],
+				['future', undefined],
+				['text', undefined],
+				['null', undefined],
+			]);
+		});
+	});
+
 	test('returns an empty list when the file is missing or corrupted', async () => {
 		await withTempFile(async filePath => {
 			assert.deepStrictEqual(await new ParadisAgentSessionStore(filePath, new NullLogService()).load(), []);

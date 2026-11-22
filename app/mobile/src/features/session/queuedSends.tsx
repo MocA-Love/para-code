@@ -103,7 +103,8 @@ function QueuedSendsDrawer({ visible, pcId, items, onClose }: { visible: boolean
 								{item.status === 'needs-confirm' && terminalOpen ? (
 									<Button label="このターミナルへ送る" size="sm" loading={busy === item.id} disabled={busy !== undefined} onPress={() => { void sendHere(item); }} />
 								) : null}
-								{((item.status === 'needs-confirm' && resumable && (item.reason !== 'stale' || !terminalOpen)) || (item.status === 'failed' && resumable && item.target.kind === 'resume')) ? (
+								{/* `unverified` は、PC が宛先のターミナルでその会話が開いていると見ている。再開は断られるので、開いている間は出さない。 */}
+								{((item.status === 'needs-confirm' && resumable && ((item.reason !== 'stale' && item.reason !== 'unverified') || !terminalOpen)) || (item.status === 'failed' && resumable && item.target.kind === 'resume')) ? (
 									<Button label="再開して送る" size="sm" variant={item.status === 'needs-confirm' && terminalOpen ? 'secondary' : 'primary'} loading={busy === item.id && !terminalOpen} disabled={busy !== undefined} onPress={() => { void resume(item); }} />
 								) : null}
 								{item.status === 'failed' && item.target.kind === 'live' ? (

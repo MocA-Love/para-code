@@ -16,7 +16,7 @@ import { agentSendQueueKey, sendPcRequest, useAppStore } from './appState.js';
 import { useAppLocked } from './appLock.js';
 import { isAppLockedNow } from './appLockState.js';
 import {
-	addAgentSendQueueItem, agentSendLiveDecision, agentSendResumeTarget, deserializeAgentSendQueue, expireAgentSendQueue, parseAgentResumeResult, planAgentSendQueue, serializeAgentSendQueue,
+	addAgentSendQueueItem, agentSendLiveConfirmReason, agentSendLiveDecision, agentSendResumeTarget, deserializeAgentSendQueue, expireAgentSendQueue, parseAgentResumeResult, planAgentSendQueue, serializeAgentSendQueue,
 	type AgentResumeResult, type AgentSendQueueItem, type AgentSendTarget,
 } from './agentSessions.js';
 import { createAgentSendOutboxStore } from './platform.js';
@@ -198,7 +198,7 @@ export async function confirmResumeAndSend(item: AgentSendQueueItem): Promise<Ag
 /**
  * 開いているエージェントのターミナルへ 1 件送る。会話の準備を待ち、送れたら預かりから外す。
  * `confirmed`（利用者が「このターミナルへ送る」を押した）でなければ、ターミナルの会話が預けたときと同じかを確かめ、
- * 違う・分からないなら送らずに確認へ回す（レビュー H2）。送信には預かりの id を付け、PC は同じ id を二度送らない（M4）。
+ * 違う・分からない・同じだと確かめられない種類（Antigravity CLI）なら送らずに確認へ回す（レビュー H2）。送信には預かりの id を付け、PC は同じ id を二度送らない（M4）。
  */
 export async function sendToLiveTerminal(item: AgentSendQueueItem, confirmed = false): Promise<void> {
 	if (item.target.kind !== 'live') {
@@ -229,7 +229,7 @@ export async function sendToLiveTerminal(item: AgentSendQueueItem, confirmed = f
 			return;
 		}
 		if (decision === 'confirm') {
-			patch(item.pcId, item.id, { status: 'needs-confirm', reason: 'other-conversation' });
+			patch(item.pcId, item.id, { status: 'needs-confirm', reason: agentSendLiveConfirmReason(item, useAppStore.getState().agentChats.get(terminalKey)) });
 			return;
 		}
 		const result = await useAppStore.getState().sendAgentMessage(terminalKey, item.text, item.id);

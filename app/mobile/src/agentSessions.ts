@@ -12,6 +12,8 @@
  * 副作用の無い関数だけを置く。
  */
 
+import { agentQueuedSendNeedsConfirm } from './agentKind.js';
+
 /** capability の名前（PC の `PARADIS_AGENT_RESUME_CAPABILITY` と同じ）。 */
 export const AGENT_RESUME_CAPABILITY = 'agent.resume.v1';
 /** 預かった送信の期限（Q121）。 */
@@ -181,12 +183,13 @@ export interface AgentSendQueueItem {
 	readonly error?: string;
 	/**
 	 * 確かめが要る理由（`needs-confirm` のとき）。`stale` は預けてから 15 分を過ぎた、`other-conversation` は宛先のターミナルが
-	 * 別の会話（か会話が分からない）になっていた、`closed` はターミナルが閉じていた。
+	 * 別の会話（か会話が分からない）になっていた、`closed` はターミナルが閉じていた。`unverified` は、会話は預けたときと同じに
+	 * 見えるが、同じだと確かめられない種類のエージェント（Antigravity CLI）だった。
 	 */
 	readonly reason?: AgentSendConfirmReason;
 }
 
-export type AgentSendConfirmReason = 'stale' | 'other-conversation' | 'closed';
+export type AgentSendConfirmReason = 'stale' | 'other-conversation' | 'closed' | 'unverified';
 
 /** 期限を過ぎたものを expired にする。変わらなければ同じ配列を返す。 */
 export function expireAgentSendQueue(items: readonly AgentSendQueueItem[], now: number): readonly AgentSendQueueItem[] {
@@ -255,10 +258,13 @@ export function agentSendConversationMatches(item: AgentSendQueueItem, currentRe
  * 預かりの 1 件を開いているターミナルへ送るときの判断（NG-2）。`since` は受け取り直しを頼んだ時刻で、それより前に
  * 受け取った会話の状態（つながり直す前のもの）では判断しない（`wait`）。受け取り直した状態で、会話が無い・別の会話なら
  * `confirm`（利用者が「このターミナルへ送る」を押した `confirmed` なら送る）。
+ *
+ * 会話が同じに見えても確かめられない種類（{@link agentQueuedSendNeedsConfirm}。Antigravity CLI）のターミナルへは、
+ * `confirmed` でない限り送らない。指紋が同じでも、TUI の中で会話が替わっていることがある。
  */
 export function agentSendLiveDecision(
 	item: AgentSendQueueItem,
-	chat: { readonly syncedAt?: number; readonly none?: boolean; readonly capabilities?: { readonly agentActions?: boolean }; readonly info?: { readonly resumeKey?: string } } | undefined,
+	chat: AgentSendLiveChat | undefined,
 	since: number,
 	confirmed: boolean,
 ): 'wait' | 'send' | 'confirm' {
@@ -268,7 +274,24 @@ export function agentSendLiveDecision(
 	if (confirmed && chat.none !== true) {
 		return 'send';
 	}
-	return chat.none !== true && agentSendConversationMatches(item, chat.info?.resumeKey) ? 'send' : 'confirm';
+	return chat.none !== true && !agentQueuedSendNeedsConfirm(chat.agent) && agentSendConversationMatches(item, chat.info?.resumeKey) ? 'send' : 'confirm';
+}
+
+/** {@link agentSendLiveDecision} が読む、宛先のターミナルの会話の状態。 */
+export interface AgentSendLiveChat {
+	readonly agent?: string;
+	readonly syncedAt?: number;
+	readonly none?: boolean;
+	readonly capabilities?: { readonly agentActions?: boolean };
+	readonly info?: { readonly resumeKey?: string };
+}
+
+/**
+ * {@link agentSendLiveDecision} が `confirm` を返したときに、利用者へ見せる理由。会話が預けたときと同じに見えるのに
+ * 確かめへ回したとき（確かめられない種類）は `unverified`、それ以外は `other-conversation`。
+ */
+export function agentSendLiveConfirmReason(item: AgentSendQueueItem, chat: AgentSendLiveChat | undefined): AgentSendConfirmReason {
+	return chat !== undefined && chat.none !== true && agentQueuedSendNeedsConfirm(chat.agent) && agentSendConversationMatches(item, chat.info?.resumeKey) ? 'unverified' : 'other-conversation';
 }
 
 /** 預かりに足す（同じ PC の上限を超えたら古いものから捨てる）。 */
@@ -318,7 +341,7 @@ export function deserializeAgentSendQueue(pcId: string, text: string): readonly 
 		// 送っている途中で止まったもの（M4）: 開いているターミナル宛ては待ちに戻す（同じ id で送り直し、PC が重複を捨てる）。
 		// 再開して送るものは、結果が分からないので利用者に確かめ直してもらう（PC も同じ id の二度目の再開はしない）。
 		const status: AgentSendStatus = item.status === 'sending' ? (target!.kind === 'live' ? 'waiting' : 'needs-confirm') : item.status as AgentSendStatus;
-		const reason = item.reason === 'stale' || item.reason === 'other-conversation' || item.reason === 'closed' ? item.reason
+		const reason = item.reason === 'stale' || item.reason === 'other-conversation' || item.reason === 'closed' || item.reason === 'unverified' ? item.reason
 			: item.status === 'sending' && target!.kind === 'resume' ? 'closed' : undefined;
 		items.push({
 			id: item.id, pcId, createdAt: item.createdAt, text: item.text, target: target as AgentSendTarget, status,
@@ -338,6 +361,7 @@ export function agentSendStatusText(item: AgentSendQueueItem): string {
 			switch (item.reason) {
 				case 'stale': return '預けてから時間がたちました。今も送ってよいか確かめてください';
 				case 'other-conversation': return '宛先のターミナルで別の会話が動いています。そのまま送るか、元の会話を再開して送るかを選んでください';
+				case 'unverified': return 'このターミナルの会話が預けたときと同じかを確かめられません。別の会話に入ることがあります。ターミナル表示で確かめてから送ってください';
 				default: return item.target.kind === 'resume' ? '会話を再開して送るか確かめてください' : 'ターミナルが閉じられていました。会話を再開して送れます';
 			}
 		case 'failed': return item.error ?? '送れませんでした';

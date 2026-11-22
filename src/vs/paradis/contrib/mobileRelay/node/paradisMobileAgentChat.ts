@@ -4019,6 +4019,11 @@ interface IAgentSubscriber {
 	readonly liveEncoding: string | undefined;
 	/** attach で交渉した応答の圧縮（`json-gzip-v1`）。古いアプリは付けないので undefined（圧縮しない）。 */
 	readonly responseEncoding: string | undefined;
+	/**
+	 * agent.queued-send-confirm.v1 を広告したモバイルか（attach で確かめた結果）。預かった送信を確認なしで送ってよくない種類の
+	 * ペインの `info.resumeKey` は、これが true の購読へだけ足す。確かめる前と、広告しないモバイルは undefined・false。
+	 */
+	readonly confirmsQueuedSend?: boolean;
 }
 
 /**
@@ -6139,6 +6144,19 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	/**
+	 * そのモバイルが agent.queued-send-confirm.v1 を広告しているかを、購読の記録に残す（{@link withResumeKeyForSubscriber} が読む）。
+	 * 購読の記録は attach のたびに作り直すので、attach のたびに確かめ直す。確かめられなければ広告していない扱い。
+	 */
+	private async noteQueuedSendConfirm(mobileId: string, token: string): Promise<void> {
+		const confirms = await this.mobileHasCapability(mobileId, ParadisMobileCapability.AgentQueuedSendConfirm).catch(() => false);
+		const subscribers = this.subscribers.get(token);
+		const subscriber = subscribers?.get(mobileId);
+		if (subscribers !== undefined && subscriber !== undefined && (subscriber.confirmsQueuedSend === true) !== confirms) {
+			subscribers.set(mobileId, { ...subscriber, confirmsQueuedSend: confirms });
+		}
+	}
+
+	/**
 	 * attach の応答に添える PC の書きかけ。Claude Code の会話で、そのモバイルが agent.pc-draft.v1 を広告しているときだけ
 	 * （以後の知らせも送るよう覚える）。`explicit` は差分の応答（無いときも `null` を書く。持ち越させない）。
 	 */
@@ -7040,6 +7058,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			const afterRev = msg.afterRev;
 			const resuming = msg.epoch === tailer.epoch && typeof afterRev === 'number';
 			const pcDraft = await this.pcDraftField(mobileId, token, currentSession, resuming);
+			await this.noteQueuedSendConfirm(mobileId, token);
 			if (this.attachDisposed || this.attachGenerations.get(pendingKey) !== attachGeneration || !this.hasSubscriber(token, mobileId) || this.paneSessions.get(token) !== currentSession) {
 				return;
 			}
@@ -10516,8 +10535,10 @@ export class ParadisMobileAgentChat extends Disposable {
 		// ターミナルが閉じた後にスマホから再開するための指紋（W2-29）。セッション ID そのものは送らない。
 		const paneSession = this.paneSessions.get(token);
 		const sessionId = paneSession?.resumable === false ? undefined : paneSession?.sessionId;
-		// Antigravity CLI のペインには、再開の宛先を渡さない
-		const resumeKey = sessionId !== undefined && tailer.agent !== 'antigravity' && PARADIS_RESUME_SESSION_ID_PATTERN.test(sessionId) ? paradisAgentSessionKey(tailer.agent, sessionId) : undefined;
+		// 預かった送信を確認なしで送ってよくない種類（Antigravity CLI）の指紋は、ここでは入れない。指紋が一致すると確認なしで
+		// 送る古いモバイルにも同じ info が届くため。必ず確かめると広告したモバイルへだけ、送る直前に足す
+		// （withResumeKeyForSubscriber）。PC のチャット欄へ渡す info にも入らない
+		const resumeKey = PARADIS_AGENT_DESCRIPTORS[tailer.agent].resume.sendQueuedWithoutConfirm ? this.resumeKeyOf(sessionId, tailer.agent) : undefined;
 		// 走っているエージェントへ設定を渡す口が無い種類（Claude Code 以外）のモデルは、モバイルから変えられない。モデルが
 		// まだ分からないうちから伝えて、選択の画面を開かせない
 		const modelControl = PARADIS_AGENT_DESCRIPTORS[tailer.agent].modelControl === 'none' ? 'none' : undefined;
@@ -10535,6 +10556,26 @@ export class ParadisMobileAgentChat extends Disposable {
 			...(modelControl !== undefined ? { modelControl } : {}),
 			...(transcriptStale ? { transcriptStale: true } : {}),
 		};
+	}
+
+	/** 再開の宛先の指紋。セッション ID が再開に使える形でなければ undefined。 */
+	private resumeKeyOf(sessionId: string | undefined, agent: ParadisAgentKind): string | undefined {
+		return sessionId !== undefined && PARADIS_RESUME_SESSION_ID_PATTERN.test(sessionId) ? paradisAgentSessionKey(agent, sessionId) : undefined;
+	}
+
+	/**
+	 * 預かった送信を確認なしで送ってよくない種類（Antigravity CLI）のペインの `info` に、再開の宛先の指紋を足す。足すのは、
+	 * 必ず確かめると広告したモバイル（購読の `confirmsQueuedSend`）へ送る電文だけ。info を載せる電文は全購読者へ同じものを
+	 * 配る経路（info の押し出し・読み直しの snapshot）もあるので、モバイルごとの送信の入口（sendToAuthorized）で足す。
+	 */
+	private withResumeKeyForSubscriber(mobileId: string, token: string | undefined, msg: AgentOutbound): AgentOutbound {
+		if ((msg.t !== 'snapshot' && msg.t !== 'delta') || msg.info === undefined || msg.info.resumeKey !== undefined || token === undefined
+			|| PARADIS_AGENT_DESCRIPTORS[msg.agent].resume.sendQueuedWithoutConfirm || this.subscribers.get(token)?.get(mobileId)?.confirmsQueuedSend !== true) {
+			return msg;
+		}
+		const paneSession = this.paneSessions.get(token);
+		const resumeKey = paneSession === undefined || paneSession.resumable === false || paneSession.agent !== msg.agent ? undefined : this.resumeKeyOf(paneSession.sessionId, msg.agent);
+		return resumeKey !== undefined ? { ...msg, info: { ...msg.info, resumeKey } } : msg;
 	}
 
 	private pushInfoToSubscribers(token: string): void {
@@ -11533,7 +11574,8 @@ export class ParadisMobileAgentChat extends Disposable {
 		const stringifyStartedAt = performance.now();
 		// 全量の live は購読が交渉した形で送る（v2 以外へは 6,000 字の形。送る場所が多いのでここで一度に直す）
 		const liveEncoding = token !== undefined ? this.subscribers.get(token)?.get(mobileId)?.liveEncoding : undefined;
-		const shaped = (msg.t === 'snapshot' || msg.t === 'delta') && msg.live !== undefined && msg.live !== null ? { ...msg, live: paradisAgentLiveForEncoding(liveEncoding, msg.live) } : msg;
+		const withLive = (msg.t === 'snapshot' || msg.t === 'delta') && msg.live !== undefined && msg.live !== null ? { ...msg, live: paradisAgentLiveForEncoding(liveEncoding, msg.live) } : msg;
+		const shaped = this.withResumeKeyForSubscriber(mobileId, token, withLive);
 		const json = encoder.encode(JSON.stringify({ ...shaped, ...(token !== undefined ? { token } : {}) }));
 		const stringifyMs = performance.now() - stringifyStartedAt;
 		// attach で gzip を交渉した購読へは、大きい応答を縮めて送る（同期で縮めるので送る順は変わらない）
