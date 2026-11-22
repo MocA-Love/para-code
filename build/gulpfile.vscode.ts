@@ -364,6 +364,10 @@ function packageTask(platform: string, arch: string, sourceFolderName: string, d
 		// starts it from there (src/vs/paradis/contrib/taskBoard/electron-main/paradisTaskBoardHostMain.ts).
 		all = es.merge(all, gulp.src('.build/paradis/taskboard/**', { base: '.build/paradis/taskboard', dot: true, allowEmpty: true })
 			.pipe(rename(f => { f.dirname = `resources/paradis/taskboard/${f.dirname}`; })));
+		// PARA-PATCH: launcher of the `para` command (the Para Code tools as a CLI). Its folder is put on the PATH of
+		// every local terminal (src/vs/paradis/contrib/agentBrowser/common/paradisCliPaneEnvironment.ts); the sh one is
+		// also what gets copied to SSH hosts.
+		all = es.merge(all, gulp.src(platform === 'win32' ? ['resources/paradis/cli/para', 'resources/paradis/cli/para.cmd'] : 'resources/paradis/cli/para', { base: '.', allowEmpty: false }));
 		if (platform !== 'win32') {
 			all = es.merge(all, gulp.src('resources/paradis/bin/codex', { base: '.', allowEmpty: false }));
 			// PARA-PATCH: the Claude Code mod (Claude Mods) loaded into local terminals on macOS/Linux

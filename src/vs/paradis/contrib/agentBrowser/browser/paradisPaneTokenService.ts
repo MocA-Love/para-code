@@ -13,6 +13,7 @@
 // shellIntegrationNonceから同じトークンを復元する。再接続に失敗して新しいシェルを起こし直す
 // 経路でも同じトークンのenvが付くよう、再接続時も env を用意しておく。
 
+import { IParadisCliPaneRuntime, PARADIS_CLI_LAUNCHER_FOLDER_SEGMENTS, paradisAddParaCliToPaneEnvironment } from '../common/paradisCliPaneEnvironment.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableMap, IDisposable } from '../../../../base/common/lifecycle.js';
 import { join } from '../../../../base/common/path.js';
@@ -177,6 +178,8 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 			: paneTokenFromShellIntegrationNonce(nonce);
 		// CDP URLは動的ポート確定前に固定注入せず、ユーザーが指定済みならその値を保持する。
 		shellLaunchConfig.env = paradisCreateTerminalPaneEnvironment(shellLaunchConfig.env, token, portFilePath, this._getCodexRuntime(onWindowHost));
+		// `para` コマンド（para-browser の道具の CLI）を呼べるようにする（手元のペイン。接続先のペインは ~/.para-code/bin に置かれる）
+		shellLaunchConfig.env = paradisAddParaCliToPaneEnvironment(shellLaunchConfig.env, this._getParaCliRuntime(onWindowHost));
 		// Codex のアカウント切替: 選んだアカウントのホームを新しく開くターミナルへ渡す。選択はウィンドウの
 		// マシン（手元のウィンドウなら手元、SSH のウィンドウなら接続先）のホームを指すので、別のマシンで
 		// 動くターミナルには渡さない。
@@ -239,6 +242,25 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 			return undefined;
 		}
 		return { launcherDirectory: join(appRoot, 'resources', 'paradis', 'bin'), pathDelimiter: ':' };
+	}
+
+	/**
+	 * 手元で動くペインへ渡す `para` のランチャーの居場所と、CLI のスクリプトを動かす実行ファイル（Para Code 自身）。
+	 * SSH の窓の接続先のペインと、アプリの場所が分からない環境（web）には渡さない。
+	 */
+	private _getParaCliRuntime(onWindowHost: boolean): IParadisCliPaneRuntime | undefined {
+		if (this.environmentService.remoteAuthority !== undefined && onWindowHost) {
+			return undefined;
+		}
+		const environment = this.environmentService as IWorkbenchEnvironmentService & { readonly appRoot?: string; readonly execPath?: string };
+		if (typeof environment.appRoot !== 'string' || environment.appRoot.length === 0) {
+			return undefined;
+		}
+		return {
+			launcherDirectory: join(environment.appRoot, ...PARADIS_CLI_LAUNCHER_FOLDER_SEGMENTS),
+			pathDelimiter: isWindows ? ';' : ':',
+			...(typeof environment.execPath === 'string' && environment.execPath.length > 0 ? { nodeExecutablePath: environment.execPath } : {}),
+		};
 	}
 
 	/**

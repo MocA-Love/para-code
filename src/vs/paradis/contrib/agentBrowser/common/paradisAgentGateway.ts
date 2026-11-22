@@ -57,6 +57,12 @@ export const PARADIS_AGENT_GATEWAY_PROBE_PATH = '/paradis-mcp/health';
 /** 待たせる上限。エージェントの道具の制限（300 秒）より短い。 */
 export const PARADIS_AGENT_GATEWAY_WAIT_LIMIT_MS = 120_000;
 
+/**
+ * 待たせる上限を、要求の側から短くするヘッダー（秒。{@link PARADIS_AGENT_GATEWAY_WAIT_LIMIT_MS} より長くはならない）。
+ * `para` コマンドが、自分の待てる残りの時間を伝えるのに使う（エージェントのシェルの制限より先に答えを返すため）。
+ */
+export const PARADIS_AGENT_GATEWAY_WAIT_SECONDS_HEADER = 'x-para-code-gateway-wait-seconds';
+
 /** 受け口が打ち切ったときの応答に載せる符丁。 */
 export const PARADIS_AGENT_GATEWAY_TIMEOUT_CODE = 'para-code-window-not-connected';
 

@@ -68,6 +68,11 @@ const PARADIS_ENTRY_POINTS: readonly { readonly entry: string; readonly lists: r
 		lists: ['desktopEntryPoints', 'serverEntryPoints'],
 	},
 	{
+		// ペインのランチャー（resources/paradis/cli/para）が Node.js として直接起動する `para` コマンド（SSH の接続先ではサーバーの node で起動する）
+		entry: 'vs/paradis/contrib/agentBrowser/node/paradisCli',
+		lists: ['desktopEntryPoints', 'serverEntryPoints'],
+	},
+	{
 		// shared process が worker_threads で起動する、会話ログを読む worker（パスを指定して起動するので import されない）
 		entry: 'vs/paradis/contrib/agentActivity/node/paradisAgentActivityWorkerMain',
 		lists: ['desktopEntryPoints'],

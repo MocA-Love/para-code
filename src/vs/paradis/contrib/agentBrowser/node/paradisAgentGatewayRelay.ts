@@ -29,7 +29,7 @@
 
 import { createHash } from 'crypto';
 import type * as http from 'http';
-import { PARADIS_AGENT_GATEWAY_PROBE_PATH, PARADIS_AGENT_GATEWAY_REQUEST_HEADER, PARADIS_AGENT_GATEWAY_TIMEOUT_CODE, PARADIS_AGENT_GATEWAY_UNSYNCED_HEADER, PARADIS_AGENT_GATEWAY_WAIT_LIMIT_MS } from '../common/paradisAgentGateway.js';
+import { PARADIS_AGENT_GATEWAY_PROBE_PATH, PARADIS_AGENT_GATEWAY_REQUEST_HEADER, PARADIS_AGENT_GATEWAY_TIMEOUT_CODE, PARADIS_AGENT_GATEWAY_UNSYNCED_HEADER, PARADIS_AGENT_GATEWAY_WAIT_SECONDS_HEADER, PARADIS_AGENT_GATEWAY_WAIT_LIMIT_MS } from '../common/paradisAgentGateway.js';
 
 /** 流し先の 1 つ（接続元の PC ごとのポートファイル）。 */
 export interface IParadisAgentGatewaySource {
@@ -211,7 +211,9 @@ export class ParadisAgentGatewayRelay {
 
 		const token = bearerToken(req);
 		const tokenKey = token === undefined ? undefined : createHash('sha256').update(token).digest('hex').slice(0, 32);
-		const deadline = startedAt + this.waitLimitMs;
+		// 要求の側が待てる時間を名乗っていれば、それより長くは待たせない（para コマンド）
+		const requestedWaitSeconds = Number(req.headers[PARADIS_AGENT_GATEWAY_WAIT_SECONDS_HEADER]);
+		const deadline = startedAt + (Number.isFinite(requestedWaitSeconds) && requestedWaitSeconds > 0 ? Math.min(this.waitLimitMs, requestedWaitSeconds * 1000) : this.waitLimitMs);
 
 		while (!clientGone && !this.disposed) {
 			let sources: readonly IParadisAgentGatewaySource[];
