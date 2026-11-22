@@ -10,7 +10,8 @@
 //
 // `para.ptyHandover.*` は引き継ぎ（reattachAcrossUpdates）を使う人からしか届かず、`para.pty-daemon.startup-revive` は
 // どちらの常駐か分からない。起動ごとのこの 1 件（`para.ptyDaemon.mode`）で、旧い常駐（enabled）だけを使う起動と
-// 引き継ぎの起動の数を分けて数えられる。決めたのは main の起動の途中で、Sentry の読み込みより前なので、
+// 引き継ぎの起動の数を分けて数えられる。2026-11-22（Q681）から旧い常駐は選ばれず、`daemon` は届かない。
+// `safe_set_daemon_enabled` は、前の鍵を settings.json に書いたままの人の起動を数えるために残している。決めたのは main の起動の途中で、Sentry の読み込みより前なので、
 // 送るのは読み込みの後になる（paradisSentryDiagnostics.ts の `pendingUsageSpans`）。
 //
 // キーと値に `terminal` を入れない（Sentry のプロジェクト設定が値ごと消す）。

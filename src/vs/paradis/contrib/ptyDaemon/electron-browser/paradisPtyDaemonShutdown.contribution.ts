@@ -34,7 +34,7 @@ import { paradisTimeTeardownStep } from '../../sentry/common/paradisTeardownTimi
 import { paradisCollectAllTerminalInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { paradisDaemonHandlesTerminal, paradisParseKeepTerminalsChoice, paradisPlanTerminalKeep, paradisRememberedKeepChoice } from '../../../common/paradisTerminalKeepPlan.js';
 import { IParadisPtyDaemonStatusService, PARADIS_PTY_DAEMON_CHANNEL } from '../common/paradisPtyDaemonStatus.js';
-import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_DAEMON_KEEP_ALIVE_ON_CLOSE, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
+import { PARADIS_PTY_DAEMON_KEEP_ALIVE_ON_CLOSE, paradisLocalPtyHostDaemonEnabled } from '../common/paradisPtyDaemonSettingKey.js';
 import { IUpdateService } from '../../../../platform/update/common/update.js';
 import { paradisIsUpdateQuitApproved, paradisLocalTerminalsAcrossUpdate, paradisUpdateAppliesOnQuitHere, paradisUpdateQuitEndsTerminals } from '../../updateTerminals/common/paradisUpdateTerminals.js';
 
@@ -148,8 +148,9 @@ class ParadisPtyDaemonShutdown extends Disposable implements IWorkbenchContribut
 				appliesOnQuit: paradisUpdateAppliesOnQuitHere(),
 				approved: paradisIsUpdateQuitApproved(Date.now()),
 				acrossUpdate: paradisLocalTerminalsAcrossUpdate(
-					this.configurationService.getValue(PARADIS_PTY_DAEMON_ENABLED) === true,
-					this.configurationService.getValue(PARADIS_PTY_HOST_DAEMON_ENABLED) === true,
+					// 版で区切られた前の方式の常駐はもう選ばれない（paradisPtyDaemonSettingKey.ts）
+					false,
+					paradisLocalPtyHostDaemonEnabled(this.configurationService),
 				),
 			}),
 			choice: paradisParseKeepTerminalsChoice(this.configurationService.getValue(PARADIS_PTY_DAEMON_KEEP_ALIVE_ON_CLOSE)),

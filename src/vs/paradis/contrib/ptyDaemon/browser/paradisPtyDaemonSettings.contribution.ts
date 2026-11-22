@@ -11,7 +11,7 @@
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { localize } from '../../../../nls.js';
-import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_DAEMON_KEEP_ALIVE_ON_CLOSE, PARADIS_PTY_DAEMON_SAVE_SCREENS, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
+import { PARADIS_PTY_DAEMON_KEEP_ALIVE_ON_CLOSE, PARADIS_PTY_DAEMON_LEGACY_ENABLED, PARADIS_PTY_DAEMON_SAVE_SCREENS, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'paradis.terminal',
@@ -19,14 +19,15 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 	type: 'object',
 	title: localize('paradis.terminal.title', "Para Code Terminal"),
 	properties: {
-		[PARADIS_PTY_DAEMON_ENABLED]: {
+		// 前のスイッチ。設定画面には出さず、settings.json に残っている値に取り消し線と案内を出すためだけに登録を残す
+		// （登録を外すと APPLICATION の縛りが外れ、ワークスペースの設定からも読めてしまう）。
+		// `true` はこの PC で「常駐で動かす」のオンとして読む（paradisPtyDaemonSettingKey.ts）。
+		[PARADIS_PTY_DAEMON_LEGACY_ENABLED]: {
 			type: 'boolean',
 			default: false,
-			// APPLICATION スコープ: ターミナルのプロセスを持つのは main プロセスなので、
-			// ウィンドウやワークスペースごとに切り替えられる設定にはできない。
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.terminal.daemon.enabled', "ターミナルを Para Code の外の常駐プロセスで動かします。有効にすると、ウィンドウを閉じても Para Code を終了しても、実行中のコマンドやエージェントはそのまま動き続け、次に開いたときに元の画面のまま繋ぎ直せます。\n\n変更は Para Code の再起動後に反映されます。PC を再起動すると常駐も終了します。残したターミナルは、Para Code を終了したあと24時間どのウィンドウからも開かれなければ終了します（Para Code が起動している間は、開いていなくても残ります）。"),
-			tags: ['experimental'],
+			included: false,
+			markdownDeprecationMessage: localize('paradis.terminal.daemon.enabled.deprecated', "この設定は {0} にまとめました。オンのままなら、そちらをオンにしたのと同じに動きます。", `\`#${PARADIS_PTY_HOST_DAEMON_ENABLED}#\``),
 		},
 		[PARADIS_PTY_HOST_DAEMON_ENABLED]: {
 			type: 'boolean',
@@ -39,14 +40,13 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			// MACHINE はワークスペースからの上書きを許さない点は APPLICATION と同じなので、
 			// 「ターミナルのプロセスを持つのはマシンごとの1つ」という前提は保たれる。
 			scope: ConfigurationScope.MACHINE,
-			markdownDescription: localize('paradis.terminal.daemon.reattachAcrossUpdates', "ターミナルを常駐プロセスで動かし、**Para Code を更新しても繋ぎ直せる**ようにします。SSH 先でも同じように動きます。\n\n{0} との違いは、更新したときの振る舞いだけです。あちらは更新すると新しい常駐に切り替わり、それまでのターミナルは古い常駐に取り残されます。\n\nまた、閉じている間もコマンドは止まらずに走り切ります（そのぶん、長く走ると古い出力から消えることがあります。消えた場合は画面にその旨が出ます）。\n\n変更は Para Code の再起動後に反映されます。", `\`#${PARADIS_PTY_DAEMON_ENABLED}#\``),
-			tags: ['experimental'],
+			markdownDescription: localize('paradis.terminal.daemon.reattachAcrossUpdates', "ターミナルを Para Code の外の常駐プロセスで動かします。ウィンドウを閉じても、Para Code を終了しても更新しても、実行中のコマンドやエージェントはそのまま動き続け、次に開いたときに元の画面のまま繋ぎ直せます。SSH 先でも同じように動きます（SSH 先では、接続先の設定でオンにします）。\n\n閉じている間もコマンドは止まらずに走り切ります（そのぶん、長く走ると古い出力から消えることがあります。消えた場合は画面にその旨が出ます）。\n\n変更は Para Code の再起動後に反映されます。PC を再起動すると常駐も終了します。残したターミナルは、Para Code を終了したあと24時間どのウィンドウからも開かれなければ終了します（Para Code が起動している間は、開いていなくても残ります）。"),
 		},
 		[PARADIS_PTY_DAEMON_SAVE_SCREENS]: {
 			type: 'boolean',
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.terminal.daemon.saveScreens', "常駐を使っている間、ターミナルの画面を定期的にディスクへ保存し、PC を再起動した後に開いたとき、直前の画面とタブの配置を戻します（シェルは起動し直されます）。{0} または「更新をまたいで繋ぎ直す」が有効なときに意味を持ちます。\n\n常駐へ実際に繋がっている間だけ保存します。保存するのは画面の中身に加えて、シェルの起動条件（ターミナルに設定した環境変数を含みます。Para Code の秘密の値は除きますが、ターミナルの識別子は残り、そこからペイントークンが分かります）で、本人だけが読める権限のファイルに書きます。保存した画面は30日で消え、ターミナルを閉じるとすぐに消えます。画面や環境変数に含まれていた秘密情報もその間ディスクに残るため、気になる場合はオフにしてください。", `\`#${PARADIS_PTY_DAEMON_ENABLED}#\``),
+			markdownDescription: localize('paradis.terminal.daemon.saveScreens', "常駐を使っている間、ターミナルの画面を定期的にディスクへ保存し、PC を再起動した後に開いたとき、直前の画面とタブの配置を戻します（シェルは起動し直されます）。{0} が有効なときに意味を持ちます。\n\n常駐へ実際に繋がっている間だけ保存します。保存するのは画面の中身に加えて、シェルの起動条件（ターミナルに設定した環境変数を含みます。Para Code の秘密の値は除きますが、ターミナルの識別子は残り、そこからペイントークンが分かります）で、本人だけが読める権限のファイルに書きます。保存した画面は30日で消え、ターミナルを閉じるとすぐに消えます。画面や環境変数に含まれていた秘密情報もその間ディスクに残るため、気になる場合はオフにしてください。", `\`#${PARADIS_PTY_HOST_DAEMON_ENABLED}#\``),
 		},
 		[PARADIS_PTY_DAEMON_KEEP_ALIVE_ON_CLOSE]: {
 			type: 'string',
@@ -58,7 +58,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 				localize('paradis.terminal.daemon.keepAliveOnClose.always', "尋ねずに残します。"),
 				localize('paradis.terminal.daemon.keepAliveOnClose.never', "尋ねずに終了します（常駐を使わないのと同じ結果になります）。"),
 			],
-			markdownDescription: localize('paradis.terminal.daemon.keepAliveOnClose', "ウィンドウを閉じるときに、実行中のターミナルを常駐へ残すかどうかです。{0} または「更新をまたいで繋ぎ直す」が有効なときに意味を持ちます。\n\nPara Code を終了するときは尋ねません（開いているウィンドウの数だけダイアログが並ぶため）。覚えている選択があればそれに従い、無ければ残します。\n\n残したターミナルは、Para Code を終了したあと24時間どのウィンドウからも開かれなければ終了します（Para Code が起動している間は、開いていなくても残ります）。", `\`#${PARADIS_PTY_DAEMON_ENABLED}#\``),
+			markdownDescription: localize('paradis.terminal.daemon.keepAliveOnClose', "ウィンドウを閉じるときに、実行中のターミナルを常駐へ残すかどうかです。{0} が有効なときに意味を持ちます。\n\nPara Code を終了するときは尋ねません（開いているウィンドウの数だけダイアログが並ぶため）。覚えている選択があればそれに従い、無ければ残します。\n\n残したターミナルは、Para Code を終了したあと24時間どのウィンドウからも開かれなければ終了します（Para Code が起動している間は、開いていなくても残ります）。", `\`#${PARADIS_PTY_HOST_DAEMON_ENABLED}#\``),
 		},
 	},
 });

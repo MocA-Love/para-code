@@ -46,7 +46,7 @@ import {
 	paradisDaemonSharedHostWarning,
 	paradisDaemonStopTitle,
 } from '../common/paradisPtyDaemonScope.js';
-import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
+import { PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
 import { ConfigurationTarget } from '../../../../platform/configuration/common/configuration.js';
 import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
@@ -265,10 +265,9 @@ export class ParadisPtyDaemonPopover extends Disposable {
 			this.options.onClose();
 			// 接続先の常駐を有効にするのは**接続先のマシン設定**で、こちらのユーザー設定では
 			// ない。同じ画面を開くと、押した人はここで切ったつもりのまま接続先が変わらない。
-			// 接続先に読み手が居る鍵は薄い常駐のものだけなので、開く先もそれに合わせる。
 			return this.options.scope.isRemote
 				? this.preferencesService.openSettings({ query: PARADIS_PTY_HOST_DAEMON_ENABLED, target: ConfigurationTarget.USER_REMOTE })
-				: this.preferencesService.openSettings({ query: PARADIS_PTY_DAEMON_ENABLED });
+				: this.preferencesService.openSettings({ query: PARADIS_PTY_HOST_DAEMON_ENABLED });
 		});
 	}
 

@@ -31,7 +31,7 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisUsageSwitch } from '../../sentry/common/paradisUsageTally.js';
 import { paradisReattachSpanAttributes } from '../common/paradisReattachDiagnostics.js';
-import { PARADIS_PTY_DAEMON_ENABLED, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
+import { PARADIS_PTY_DAEMON_LEGACY_ENABLED, PARADIS_PTY_HOST_DAEMON_ENABLED } from '../common/paradisPtyDaemonSettingKey.js';
 
 /** 起動してから聞くまで。起こし直した画面へタブが繋ぎに来るのを待つ。 */
 const REPORT_DELAY_MS = 60_000;
@@ -64,11 +64,11 @@ class ParadisReattachDiagnosticsContribution extends Disposable implements IWork
 			const tally = await raceTimeout(this._localPtyService.paradisTakeReattachTally?.(this._workspaceContextService.getWorkspace().id) ?? Promise.resolve(undefined), TALLY_TIMEOUT_MS);
 			const attributes = paradisReattachSpanAttributes(tally);
 			if (attributes && !cancellation.token.isCancellationRequested) {
-				// 旧い常駐（enabled）と引き継ぎ（reattachAcrossUpdates）のどちらを使う人の起動かを分ける（q.html Q611）。
+				// 前の鍵（enabled）を書いたままの人の起動かを分ける（q.html Q611・Q681。その人も引き継ぎの常駐になる）。
 				// 今の設定の値なので、起動の後に切り替えていればずれる（実際に選んだ飼い方は main の `para.ptyDaemon.mode`）
 				runInParadisSpan('pty-daemon', 'startup-revive', {
 					...attributes,
-					safe_set_daemon_enabled: paradisUsageSwitch(this._configurationService.getValue(PARADIS_PTY_DAEMON_ENABLED) === true),
+					safe_set_daemon_enabled: paradisUsageSwitch(this._configurationService.getValue(PARADIS_PTY_DAEMON_LEGACY_ENABLED) === true),
 					safe_set_reattach: paradisUsageSwitch(this._configurationService.getValue(PARADIS_PTY_HOST_DAEMON_ENABLED) === true),
 				}, () => undefined, { forceTransaction: true });
 			}

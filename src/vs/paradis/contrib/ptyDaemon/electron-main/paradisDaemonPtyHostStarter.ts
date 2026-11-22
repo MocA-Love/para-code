@@ -125,6 +125,9 @@ function paradisTryConnect(socketPath: string): Promise<NodeSocket | undefined> 
 	});
 }
 
+// 2026-11-22（q.html Q681）: 設定のスイッチを 1 つにまとめ、main はこの起こし方を選ばなくなった
+// （paradisPtyHostStarterFactory.ts）。更新の前にこの方式で残した常駐を一覧して止める経路が台帳と停止の部品を
+// 共有しているので、コードは残してある（NOTES.md の「常駐ターミナル（pty デーモン）で踏みうる罠」）。
 export class ParadisDaemonPtyHostStarter extends Disposable implements IPtyHostStarter {
 
 	private readonly _onRequestConnection = this._register(new Emitter<void>());
