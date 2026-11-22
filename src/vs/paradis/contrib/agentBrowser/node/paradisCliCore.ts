@@ -34,6 +34,8 @@ const CATALOG_CACHE_MS = 5 * 60 * 1000;
 const GATEWAY_FILE_NAME = 'gateway.json';
 const GATEWAY_FILE_PROTOCOL_VERSION = 1;
 const GATEWAY_TIMEOUT_CODE = 'para-code-window-not-connected';
+/** 本体が、要求を処理した後の 404 に付ける印（`../common/paradisAgentGateway.ts` と同じ値）。 */
+export const PARADIS_CLI_AFTER_DISPATCH_HEADER = 'x-para-code-after-dispatch';
 /** 受け口へ、待たせる上限（秒）を伝えるヘッダー（`../common/paradisAgentGateway.ts` と同じ値）。 */
 export const PARADIS_CLI_GATEWAY_WAIT_HEADER = 'x-para-code-gateway-wait-seconds';
 /** Para Code の専用フォルダ（ホームからの相対）。`--out` に使える場所と、既定の画像の置き場所。 */
@@ -113,7 +115,7 @@ export async function paradisCliEndpoints(portFile: string | undefined): Promise
 
 /** 1 回の送信の結果。 */
 export type ParadisCliAttempt =
-	| { readonly kind: 'response'; readonly status: number; readonly text: string }
+	| { readonly kind: 'response'; readonly status: number; readonly text: string; /** 本体が要求を処理した後に断った（道具は走ったかもしれない）。 */ readonly afterDispatch?: boolean }
 	/** つながる前に失敗した（何も送っていない）。 */
 	| { readonly kind: 'not-sent'; readonly code: string }
 	/** つながった後に切れた（届いたかは分からない）。 */
@@ -132,7 +134,7 @@ export const paradisCliHttpPost: ParadisCliPost = async (endpoint, token, body, 
 		}, res => {
 			const chunks: Buffer[] = [];
 			res.on('data', (chunk: Buffer) => chunks.push(chunk));
-			res.on('end', () => resolve({ kind: 'response', status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString('utf8') }));
+			res.on('end', () => resolve({ kind: 'response', status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString('utf8'), ...(res.headers[PARADIS_CLI_AFTER_DISPATCH_HEADER] !== undefined ? { afterDispatch: true } : {}) }));
 			res.on('error', (error: NodeJS.ErrnoException) => resolve({ kind: 'broken', code: error.code ?? 'ECONNRESET' }));
 		});
 		// つながった後の失敗は「届いたかもしれない」。操作を 2 回送らないために、つながる前の失敗と分ける
@@ -156,9 +158,9 @@ export type ParadisCliVerdict =
 
 /**
  * 送信の結果の扱いを決める。送り直してよいのは「何も実行されていない」と言えるときだけ:
- * つながる前の失敗、404（ペインを知らない）、429（混んでいる）、503（受け口の打ち切り・同期前）。
- * つながった後に切れたとき・502（受け口が手元へ送り始めた後に切れた）は実行されたか分からないので、
- * 読むだけのコマンドだけ送り直す。
+ * つながる前の失敗、404（ペインを知らない。処理の前に断られたもの）、429（混んでいる）、503（受け口の打ち切り・同期前）。
+ * つながった後に切れたとき・502（受け口が手元へ送り始めた後に切れた）・印の付いた 404（本体が処理した後に、ペインが
+ * 今のものでなくなっていた）は実行されたか分からないので、読むだけのコマンドだけ送り直す。
  */
 export function paradisCliVerdict(attempt: ParadisCliAttempt, endpoint: IParadisCliEndpoint, readOnly: boolean): ParadisCliVerdict {
 	if (attempt.kind === 'not-sent') {
@@ -172,6 +174,9 @@ export function paradisCliVerdict(attempt: ParadisCliAttempt, endpoint: IParadis
 		case 200:
 			return { action: 'done' };
 		case 404:
+			if (attempt.afterDispatch) {
+				return readOnly ? { action: 'retry', reason: 'the terminal changed while the request was handled (HTTP 404)', short: true } : { action: 'unknown-state', reason: 'the terminal changed while the request was handled' };
+			}
 			return endpoint.gateway ? { action: 'next-endpoint', reason: 'HTTP 404' } : { action: 'retry', reason: 'this terminal is not known to Para Code yet (HTTP 404)', short: true };
 		case 429:
 			return { action: 'retry', reason: 'Para Code is busy (HTTP 429)' };
@@ -266,7 +271,7 @@ export async function paradisCliRpc(runtime: IParadisCliRuntime, method: string,
 				throw new ParadisCliUnavailableError('Your sandbox blocked the connection to Para Code (Para Code is running; do not restart it). Run this same command again outside the sandbox (ask for escalated permissions). Nothing was done.', ParadisCliExit.Sandbox);
 			}
 			if (verdict.action === 'unknown-state') {
-				throw new ParadisCliUnavailableError(`The connection to Para Code broke after the request was sent (${verdict.reason}). The action may or may not have happened: check the state (for example read the page) before you repeat it.`);
+				throw new ParadisCliUnavailableError(`Para Code did not confirm the request after it was sent (${verdict.reason}). The action may or may not have happened: check the state (for example read the page) before you repeat it.`);
 			}
 			if (verdict.action === 'fail') {
 				throw new ParadisCliUnavailableError(verdict.message);

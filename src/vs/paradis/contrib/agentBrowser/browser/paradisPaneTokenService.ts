@@ -179,7 +179,7 @@ export class ParadisPaneTokenService extends Disposable implements IParadisPaneT
 		// CDP URLは動的ポート確定前に固定注入せず、ユーザーが指定済みならその値を保持する。
 		shellLaunchConfig.env = paradisCreateTerminalPaneEnvironment(shellLaunchConfig.env, token, portFilePath, this._getCodexRuntime(onWindowHost));
 		// `para` コマンド（para-browser の道具の CLI）を呼べるようにする（手元のペイン。接続先のペインは ~/.para-code/bin に置かれる）
-		shellLaunchConfig.env = paradisAddParaCliToPaneEnvironment(shellLaunchConfig.env, this._getParaCliRuntime(onWindowHost));
+		shellLaunchConfig.env = paradisAddParaCliToPaneEnvironment(shellLaunchConfig.env, this._getParaCliRuntime(onWindowHost), shellLaunchConfig.strictEnv === true);
 		// Codex のアカウント切替: 選んだアカウントのホームを新しく開くターミナルへ渡す。選択はウィンドウの
 		// マシン（手元のウィンドウなら手元、SSH のウィンドウなら接続先）のホームを指すので、別のマシンで
 		// 動くターミナルには渡さない。

@@ -41,24 +41,37 @@ export interface IParadisCliPaneRuntime {
  * ペインの環境変数へ `para` のランチャーのフォルダを足す。もう PATH が決まっていればその前に、決まっていなければ
  * ペインを開く側の PATH（`${env:PATH}`）の前に足す。シェルの統合が rc の後で付け直す `VSCODE_PATH_PREFIX` にも
  * 同じフォルダを足す（rc が PATH を組み直しても先頭に残る。Windows のシェルでは使われないので足さない）。
+ *
+ * Windows の環境変数の名前は大小文字を区別せず、多くは `Path` と書かれる。区切りが `;` のときは、もうある PATH の鍵を
+ * 大小文字を無視して探し、その鍵に足す（`PATH` と `Path` を並べない）。
+ *
+ * `strictEnv` の端末（渡した環境変数だけで起動する。タスクや拡張機能が開く端末）では `${env:PATH}` が解決されない
+ * （terminalEnvironment.ts の `createTerminalEnvironment`）。PATH が渡されていればその前に足し、渡されていなければ
+ * PATH は足さない（解決されない文字列を PATH にしない）。
  */
 export function paradisAddParaCliToPaneEnvironment(
 	existing: Readonly<Record<string, string | null | undefined>> | undefined,
 	runtime: IParadisCliPaneRuntime | undefined,
+	strictEnv = false,
 ): Record<string, string | null | undefined> {
 	const environment: Record<string, string | null | undefined> = { ...existing };
 	if (runtime === undefined || runtime.launcherDirectory.length === 0 || runtime.pathDelimiter.length === 0) {
 		return environment;
 	}
+	if (runtime.nodeExecutablePath !== undefined && runtime.nodeExecutablePath.length > 0) {
+		environment[PARADIS_CLI_NODE_ENV_VAR] = runtime.nodeExecutablePath;
+	}
 	const prefix = `${runtime.launcherDirectory}${runtime.pathDelimiter}`;
-	const currentPath = existing?.PATH;
-	environment.PATH = `${prefix}${typeof currentPath === 'string' ? currentPath : '${env:PATH}'}`;
+	const windows = runtime.pathDelimiter === ';';
+	const pathKey = (windows ? Object.keys(environment).find(key => key.toUpperCase() === 'PATH' && typeof environment[key] === 'string') : undefined) ?? 'PATH';
+	const currentPath = environment[pathKey];
+	if (typeof currentPath !== 'string' && strictEnv) {
+		return environment;
+	}
+	environment[pathKey] = `${prefix}${typeof currentPath === 'string' ? currentPath : '${env:PATH}'}`;
 	if (runtime.pathDelimiter === ':') {
 		const currentPrefix = existing?.VSCODE_PATH_PREFIX;
 		environment.VSCODE_PATH_PREFIX = `${prefix}${typeof currentPrefix === 'string' ? currentPrefix : ''}`;
-	}
-	if (runtime.nodeExecutablePath !== undefined && runtime.nodeExecutablePath.length > 0) {
-		environment[PARADIS_CLI_NODE_ENV_VAR] = runtime.nodeExecutablePath;
 	}
 	return environment;
 }

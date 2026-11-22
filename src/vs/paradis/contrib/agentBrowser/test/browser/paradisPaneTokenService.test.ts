@@ -63,18 +63,24 @@ suite('Paradis pane token service', () => {
 	// ペイン専用 app-server（モバイルのライブ連携）はやめたので、ソケットは入れない。para-browser MCP の
 	// 識別に要る2つは必ず残す（ここが落ちると全ペインでブラウザ操作が動かなくなる）。POSIX では
 	// ランチャーだけを入れ、Codex を共有バックグラウンドサーバーから切り離して起動させる。
-	// Windows は実機で確かめるまで何も入れない。
+	// Windows は実機で確かめるまで Codex のランチャーを入れない。
+	// `para` コマンドのランチャーのフォルダ（resources/paradis/cli）は Windows を含めて PATH の先頭に入れ、スクリプトを
+	// 動かす実行ファイル（Para Code 自身）の場所も渡す。
 	test('keeps the MCP routing variables and only the launcher, never a pane app-server socket', () => {
 		const launcherDirectory = join(APP_ROOT, 'resources', 'paradis', 'bin');
+		const cliDirectory = join(APP_ROOT, 'resources', 'paradis', 'cli');
 		const expected = isWindows ? {
 			PARA_CODE_TERMINAL_PANE_ID: PANE_TOKEN,
 			PARA_CODE_MCP_PORT_FILE: join(USER_DATA_PATH, 'paradis-browser-mcp.json'),
+			PATH: `${cliDirectory};\${env:PATH}`,
+			PARA_CODE_CLI_NODE: `${APP_ROOT}/Para Code`,
 		} : {
 			PARA_CODE_TERMINAL_PANE_ID: PANE_TOKEN,
 			PARA_CODE_MCP_PORT_FILE: join(USER_DATA_PATH, 'paradis-browser-mcp.json'),
-			PATH: `${launcherDirectory}:\${env:PATH}`,
-			VSCODE_PATH_PREFIX: `${launcherDirectory}:`,
+			PATH: `${cliDirectory}:${launcherDirectory}:\${env:PATH}`,
+			VSCODE_PATH_PREFIX: `${cliDirectory}:${launcherDirectory}:`,
 			PARA_CODE_CODEX_LAUNCHER_DIR: launcherDirectory,
+			PARA_CODE_CLI_NODE: `${APP_ROOT}/Para Code`,
 		};
 		assert.deepStrictEqual(paneEnvironmentFor(), expected);
 	});
@@ -101,6 +107,7 @@ suite('Paradis pane token service', () => {
 			}
 		};
 		const localLauncher = join(APP_ROOT, 'resources', 'paradis', 'bin');
+		const localCli = join(APP_ROOT, 'resources', 'paradis', 'cli');
 		const launcher = {
 			PATH: '/home/test/.para-code/bin:${env:PATH}',
 			VSCODE_PATH_PREFIX: '/home/test/.para-code/bin:',
@@ -119,8 +126,9 @@ suite('Paradis pane token service', () => {
 			localFolderInRemoteWindow: {
 				PARA_CODE_TERMINAL_PANE_ID: PANE_TOKEN,
 				PARA_CODE_MCP_PORT_FILE: join(USER_DATA_PATH, 'paradis-browser-mcp.json'),
-				PATH: `${localLauncher}:\${env:PATH}`,
-				VSCODE_PATH_PREFIX: `${localLauncher}:`,
+				// 手元で動くので、`para` のランチャーのフォルダも手元のものを足す（接続先のペインには足さない。~/.para-code/bin に置かれる）
+				PATH: `${localCli}:${localLauncher}:\${env:PATH}`,
+				VSCODE_PATH_PREFIX: `${localCli}:${localLauncher}:`,
 				PARA_CODE_CODEX_LAUNCHER_DIR: localLauncher,
 			},
 			otherMachineDiffers: true,
