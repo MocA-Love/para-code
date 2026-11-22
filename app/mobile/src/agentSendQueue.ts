@@ -181,14 +181,15 @@ export function agentResumeKeptQueuedSend(item: AgentSendQueueItem, result: Agen
 /**
  * 預かりに残したとき（{@link agentResumeKeptQueuedSend}）に行へ出す文。PC の案内があればそれを出す。案内の無い `duplicate`
  * は、PC がこの依頼で会話を再開済みで、開いたターミナルを控えられなかったもの。同じ依頼は二度実行されないので、
- * 送り直しても同じ返事になる。待たせず、文の入れ先と預かりの片付け方を伝える。
+ * 送り直しても同じ返事になる。待たせず、文の入れ先と預かりの片付け方を伝える。キーを控えられないのは開いたターミナルが
+ * すぐ破棄されたときなので、一覧に無いときの道（過去の会話の画面は新しい依頼として送る）も添える。
  */
 export function agentResumeKeptText(result: AgentResumeResult): string {
 	if (result.message !== undefined) {
 		return result.message;
 	}
 	return result.status === 'duplicate'
-		? 'この会話は PC で再開済みで、送り直しても文は渡りません。ターミナルの一覧から再開した会話を開いて入力し、この預かりは取り消してください'
+		? 'この依頼では PC が会話を再開済みで、送り直しても文は渡りません。ターミナルの一覧に再開した会話があればそこから入力し、無ければ「過去の会話」から送り直して、この預かりは取り消してください'
 		: '会話を再開できたか分かりませんでした。少し待ってからもう一度送ってください';
 }
 

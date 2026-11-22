@@ -84,7 +84,7 @@ describe('agent send queue', () => {
 			claudeNotDelivered: { kept: undefined, chatDrafts: [['term-claude-2', 'text claude-2']] },
 			claudeDuplicate: { kept: undefined, chatDrafts: [] },
 			unknownDuplicate: { kept: undefined, chatDrafts: [] },
-			antigravityResumedBefore: { kept: ['failed', 'text agy-4', 'この会話は PC で再開済みで、送り直しても文は渡りません。ターミナルの一覧から再開した会話を開いて入力し、この預かりは取り消してください'], chatDrafts: [] },
+			antigravityResumedBefore: { kept: ['failed', 'text agy-4', 'この依頼では PC が会話を再開済みで、送り直しても文は渡りません。ターミナルの一覧に再開した会話があればそこから入力し、無ければ「過去の会話」から送り直して、この預かりは取り消してください'], chatDrafts: [] },
 			running: { kept: ['failed', 'text agy-3', 'この会話は PC で開いています。会話の画面から送ってください'], chatDrafts: [] },
 		});
 	});
