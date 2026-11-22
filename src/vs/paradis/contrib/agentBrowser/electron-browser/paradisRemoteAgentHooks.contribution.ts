@@ -29,6 +29,8 @@ import { PARADIS_AGENT_BROWSER_CHANNEL } from '../common/paradisAgentBrowser.js'
 import { IParadisAgentGatewayEndpoint, PARADIS_AGENT_GATEWAY_CHANNEL } from '../common/paradisAgentGateway.js';
 import { PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_NOTIFY_HOOK_RELATIVE_PATH, paradisAgentHooksEnabled } from '../common/paradisAgentHooks.js';
 import { paradisAntigravityRemoteMcpServerEntry, paradisUpsertAntigravityMcpJson, paradisUpsertClaudeMcpJson, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
+import { PARADIS_AGENT_CLI_ENABLED_SETTING, paradisAgentCliEnabled } from '../common/paradisAgentCliSkill.js';
+import { paradisSyncRemoteAgentCliFiles } from './paradisRemoteAgentCliFiles.js';
 import { PARADIS_CLI_LAUNCHER_FOLDER_SEGMENTS, PARADIS_CLI_LAUNCHER_NAME, PARADIS_CLI_REMOTE_TARGET_NAME, PARADIS_CLI_SCRIPT_SEGMENTS, paradisCliRemoteTargetContent } from '../common/paradisCliPaneEnvironment.js';
 import { paradisResolveRemoteMcpBridge } from './paradisRemoteMcpBridge.js';
 import { PARADIS_REMOTE_AGENT_TUNNEL_SETTING } from './paradisRemoteAgentTunnel.contribution.js';
@@ -425,6 +427,10 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 
 	/** 直前に hook 一式を置いたときの接続先側の番号。アカウント用ホームが増えたときの書き足しに使う。 */
 	private installedPort: number | undefined;
+	/** この窓が、接続先へ `para` の手引きと Codex の規則を置いたか（オフへ切り替わったときに外すかを決める）。 */
+	private agentCliFilesInstalled = false;
+	/** 接続先へ `para` コマンド（ランチャーと行き先のファイル）を置けたか。 */
+	private paraCliInstalled = false;
 
 	/** 最後に hook を置けた Codex のアカウント用ホームの顔ぶれ（増減したら書き足す目印）。 */
 	private codexAccountHomesKey: string | undefined;
@@ -493,6 +499,17 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 			this._register(this.configurationService.onDidChangeConfiguration(e => {
 				if (e.affectsConfiguration(PARADIS_AGENT_HOOKS_ENABLED_SETTING)) {
 					void this.hookFiles.setEnabled(paradisAgentHooksEnabled(this.configurationService.getValue(PARADIS_AGENT_HOOKS_ENABLED_SETTING)));
+				}
+			}));
+			// `para` コマンドの手引きと Codex の規則の切り替えも、次の見直しを待たずに接続先へ反映する
+			this._register(this.configurationService.onDidChangeConfiguration(e => {
+				if (e.affectsConfiguration(PARADIS_AGENT_CLI_ENABLED_SETTING)) {
+					void this.hookFiles.runExclusive(async () => {
+						const remoteHome = await this.remoteUserHome();
+						if (remoteHome !== undefined) {
+							await this.syncAgentCliFiles(remoteHome);
+						}
+					});
 				}
 			}));
 			// 接続先で Codex のアカウントが増えたら（使用量パネルからの追加・接続先での codex login）、
@@ -631,7 +648,11 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 			}
 
 			await this.installCodexLauncher(home, channel);
-			await this.installParaCli(home, channel).catch(error => this.logService.warn('[paradis] could not install the para command on the host (will retry)', error));
+			this.paraCliInstalled = await this.installParaCli(home, channel).catch(error => {
+				this.logService.warn('[paradis] could not install the para command on the host (will retry)', error);
+				return false;
+			});
+			await this.syncAgentCliFiles(home);
 
 			// 自動設置をオフにしている間は hook だけ置かない（MCP と戻り経路は hook と関係なく使う）。
 			// 保留中の取り外しがあればここで済ませる
@@ -729,26 +750,50 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 	}
 
 	/**
+	 * `para` コマンドの手引き（スキル）と Codex の規則を、設定（`paradis.agentCli.enabled`。既定はオフ）に合わせて接続先へ
+	 * 置く・外す。つないだ時点でオフなら何もしない（外しもしない。別の PC の Para Code が置いたものを消さないため）。
+	 * この窓がオンの間に置き、オフへ切り替わったら外す。置けなくても接続と hook の設置は続ける。
+	 */
+	private async syncAgentCliFiles(home: URI): Promise<void> {
+		// コマンドを置けなかった接続先（CLI を同梱する前のサーバー・失敗）には、動かないコマンドの手引きと規則を置かない
+		const enabled = this.paraCliInstalled && paradisAgentCliEnabled(this.configurationService.getValue(PARADIS_AGENT_CLI_ENABLED_SETTING));
+		if (!enabled && !this.agentCliFilesInstalled) {
+			return;
+		}
+		try {
+			const changed = await paradisSyncRemoteAgentCliFiles(this.fileService, home, enabled);
+			this.agentCliFilesInstalled = enabled;
+			if (changed > 0) {
+				this.logService.info(`[paradis] ${enabled ? 'installed' : 'removed'} the para skill and the Codex rule on ${this.environmentService.remoteAuthority} (${changed} files)`);
+			}
+		} catch (error) {
+			this.logService.warn('[paradis] could not update the para skill and the Codex rule on the host', error);
+		}
+	}
+
+	/**
 	 * `para` コマンド（para-browser の道具の CLI）を接続先の `~/.para-code/bin` に置く。Codex のランチャーと同じフォルダで、
 	 * 接続先のペインの PATH の先頭にもうある（paradisPaneTokenService.ts）。
+	 *
+	 * @returns 置けた（もう置いてあった）ら true。置けなければ、手引きと規則も置かない
 	 *
 	 * 置くのは 2 つ。ランチャー（手元の `resources/paradis/cli/para` の写し。素の sh）と、行き先のファイル
 	 * （`para.target`。接続先のサーバーの node と、サーバーに同梱の CLI のスクリプトの場所）。サーバーの場所は
 	 * 更新のたびに変わるので、つなぐたびに書き直す。CLI のスクリプトを同梱する前の古いサーバーには置かない
 	 * （動かないコマンドを PATH に残さない）。
 	 */
-	private async installParaCli(home: URI, channel: IChannel): Promise<void> {
+	private async installParaCli(home: URI, channel: IChannel): Promise<boolean> {
 		const appRoot = (this.environmentService as IWorkbenchEnvironmentService & { readonly appRoot?: string }).appRoot;
 		if (typeof appRoot !== 'string' || appRoot.length === 0) {
-			return;
+			return false;
 		}
 		const remote = await this.remoteAgentService.getEnvironment().catch(() => undefined);
 		if (!remote || typeof remote.execPath !== 'string' || remote.execPath.length === 0) {
-			return;
+			return false;
 		}
 		const script = joinPath(remote.appRoot, ...PARADIS_CLI_SCRIPT_SEGMENTS);
 		if (!await this.fileService.exists(script)) {
-			return;
+			return false;
 		}
 		const bin = joinPath(home, '.para-code', 'bin');
 		const replace = async (name: string, content: VSBuffer, executable: boolean): Promise<void> => {
@@ -770,9 +815,10 @@ class ParadisRemoteAgentHooks extends Disposable implements IWorkbenchContributi
 		const launcher = await this.fileService.readFile(URI.file(`${appRoot}/${PARADIS_CLI_LAUNCHER_FOLDER_SEGMENTS.join('/')}/${PARADIS_CLI_LAUNCHER_NAME}`)).catch(() => undefined);
 		if (launcher === undefined) {
 			this.logService.warn('[paradis] could not read the para launcher to copy to the host');
-			return;
+			return false;
 		}
 		await replace(PARADIS_CLI_LAUNCHER_NAME, launcher.value, true);
+		return true;
 	}
 
 	/**

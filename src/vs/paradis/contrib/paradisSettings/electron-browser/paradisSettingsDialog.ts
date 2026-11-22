@@ -608,6 +608,16 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	{
 		sectionId: 'psd-sec-agent',
 		group: GROUP_AGENT_HOOKS,
+		key: 'paradis.agentCli.enabled',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.agentCli', "Claude Code・Codex に para コマンドの手引きを置く（試験的）"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.agentCliDesc', "エージェントが Para Code のブラウザやターミナルを、ターミナルの para コマンドで使えるようになります。オンにすると ~/.claude と ~/.agents に手引きを、~/.codex/rules に para を通す規則を置きます（SSH で接続中は接続先にも）。オフにすると Para Code が置いた分だけ消します。"),
+		keywords: 'agent cli para command skill codex rules claude browser mcp',
+	},
+	{
+		sectionId: 'psd-sec-agent',
+		group: GROUP_AGENT_HOOKS,
 		key: 'paradis.agentHooks.codexTrust',
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.codexHookTrust', "Codex の hook に信頼を付ける"),

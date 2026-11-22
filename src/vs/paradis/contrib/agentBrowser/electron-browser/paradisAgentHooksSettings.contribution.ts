@@ -23,6 +23,7 @@ import { INotificationService, Severity } from '../../../../platform/notificatio
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
+import { PARADIS_AGENT_CLI_ENABLED_SETTING } from '../common/paradisAgentCliSkill.js';
 import { PARADIS_AGENT_HOOKS_ENABLED_SETTING, paradisAgentHooksEnabled } from '../common/paradisAgentHooks.js';
 import { PARADIS_REMOTE_VOICE_LOCAL_PLAYBACK_SETTING } from '../common/paradisRemoteVoice.js';
 import { PARADIS_ANTIGRAVITY_APPROVAL_WAIT_DEFAULT_MINUTES, PARADIS_ANTIGRAVITY_APPROVAL_WAIT_MAX_MINUTES, PARADIS_ANTIGRAVITY_APPROVAL_WAIT_SETTING } from '../common/paradisAntigravityApproval.js';
@@ -46,6 +47,14 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			scope: ConfigurationScope.APPLICATION,
 			// allow-any-unicode-next-line
 			markdownDescription: localize('paradis.agentHooks.enabled', "Claude Code・Codex・Antigravity CLI へ、Para Code がエージェントの状態を受け取るための hook を自動で設置します（`~/.claude/settings.json`・`~/.codex/hooks.json`・`~/.gemini/config/hooks.json`。Antigravity CLI は一度起動して `~/.gemini/config` ができてから。SSH で接続中は Claude Code と Codex の分を接続先にも）。\n\nオフにすると、その時点で Para Code が設置した hook だけを取り外し、オフの間は設置し直しません。あなた自身が書いた hook は触りません。起動した時点でオフの場合は、取り外しもしません（同じ PC の別の Para Code が使っている hook を壊さないため）。\n\nオフの間は、エージェントの状態表示（実行中・許可待ち・完了）、完了や許可待ちの通知、モバイルへの通知とチャットの表示、音声での読み上げが弱くなるか、働かなくなります。"),
+		},
+		[PARADIS_AGENT_CLI_ENABLED_SETTING]: {
+			type: 'boolean',
+			default: false,
+			// 手引きと規則のファイルは PC（接続先）全体で 1 つなので、ワークスペースごとに変えられても意味が無い
+			scope: ConfigurationScope.APPLICATION,
+			// allow-any-unicode-next-line
+			markdownDescription: localize('paradis.agentCli.enabled', "Claude Code と Codex に、Para Code の道具（ブラウザ・ターミナル・スペース・メモ）を `para` コマンドで使う手引きを置きます（試験的）。`para` コマンドそのものは、この設定に関わらず Para Code のターミナルで使えます。\n\nオンにすると次のファイルを置きます。SSH で接続中は接続先のホームにも置きます。\n\n- `~/.claude/skills/para-cli/SKILL.md`（Claude Code の手引き）\n- `~/.agents/skills/para-cli/SKILL.md`（Codex の手引き）\n- `~/.codex/rules/para-code.rules`（Codex のサンドボックスの外で `para` で始まるコマンドを実行してよい、という規則。Codex のサンドボックスは Para Code への接続を止めるため）\n\nオフにすると、Para Code が置いたファイルだけを消します。同じ名前のファイルを自分で置いている場合は、上書きも削除もしません。MCP の para-browser はこの設定に関わらずそのまま使えます。"),
 		},
 		[PARADIS_ANTIGRAVITY_APPROVAL_WAIT_SETTING]: {
 			type: 'number',
