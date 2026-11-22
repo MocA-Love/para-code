@@ -3334,6 +3334,92 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		}
 	});
 
+	// 借り物が入れ子の worktree で、その worktree がまだ一覧に載っていないと、cwd の最長一致は
+	// 外側のリポジトリになる。ここで外側へ確定させると台帳に残り、worktree が載っても直らない。
+	// 動かさずに印を残し、worktree が載った通知でその worktree に確定させる。
+	test('does not move a terminal borrowed into a nested worktree out to the enclosing repository', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const worktreeStateKey = paradisWorktreeStateKey(URI.file('/workspace-a/nested'));
+			const members = [createRestoredTerminalInstance(4040)];
+			const group = createTerminalGroup(members);
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			const scope = harness.installTerminalScope(async () => { }, {
+				groups: [group],
+				worktreeReady: true,
+				connected: true,
+				// 台帳は worktree を覚えているが、worktree の一覧にはまだ載っていない。
+				persistentProcessScopes: [[4040, worktreeStateKey]],
+			});
+			await settle();
+			harness.fireGroupsChanged();
+			await settle();
+
+			members.push(createRestoredTerminalInstance(4041, { initialCwd: '/workspace-a/nested/sub' }));
+			harness.fireInstancesChanged();
+			await settle();
+			const stateKeyBeforeNotification = scope.getStateKeyForInstance(4041);
+			const persistedNoncesBeforeNotification = harness.persistedNonceScopes();
+
+			harness.addWorktree('space-a', '/workspace-a/nested');
+			await settle();
+
+			assert.deepStrictEqual({
+				ledgerBackedStateKey: scope.getStateKeyForInstance(4040),
+				stateKeyBeforeNotification,
+				persistedNoncesBeforeNotification,
+				stateKeyAfterNotification: scope.getStateKeyForInstance(4041),
+				persistedNoncesAfterNotification: harness.persistedNonceScopes(),
+			}, {
+				ledgerBackedStateKey: worktreeStateKey,
+				stateKeyBeforeNotification: worktreeStateKey,
+				persistedNoncesBeforeNotification: [['nonce-4040', worktreeStateKey]],
+				stateKeyAfterNotification: worktreeStateKey,
+				persistedNoncesAfterNotification: [['nonce-4040', worktreeStateKey], ['nonce-4041', worktreeStateKey]],
+			});
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
+	// 逆向き（借り物が外側のリポジトリ、cwd の一致が入れ子の worktree）は、より細かい方へ移すだけ
+	// なので、通知を待たずに訂正する。
+	test('moves a terminal borrowed into a repository to the nested worktree its cwd points at', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const members = [createRestoredTerminalInstance(4042, { initialCwd: '/workspace-a/sub' })];
+			const group = createTerminalGroup(members);
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			// 組み立てる前に載せておく（組み立てた後は通知を1度も発火させない）。
+			harness.addWorktree('space-a', '/workspace-a/nested');
+
+			const scope = harness.installTerminalScope(async () => { }, { groups: [group], worktreeReady: true, connected: true });
+			await settle();
+			harness.fireGroupsChanged();
+			await settle();
+
+			members.push(createRestoredTerminalInstance(4043, { initialCwd: '/workspace-a/nested/sub' }));
+			harness.fireInstancesChanged();
+			const borrowedStateKey = scope.getStateKeyForInstance(4043);
+			await settle();
+
+			assert.deepStrictEqual({
+				borrowedStateKey,
+				correctedStateKey: scope.getStateKeyForInstance(4043),
+				neighbourStateKey: scope.getStateKeyForInstance(4042),
+			}, {
+				borrowedStateKey: 'space-a',
+				correctedStateKey: paradisWorktreeStateKey(URI.file('/workspace-a/nested')),
+				neighbourStateKey: 'space-a',
+			});
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
 	// 同じスペースの中で分割しただけでは、グループの置き直しを走らせない。走らせると、分割とは
 	// 関係の無い「所属を主張する端末が居なくなった、見えているグループ」が分割のたびに隠れうる。
 	test('does not move an unrelated group when a split stays in the same space', async () => {

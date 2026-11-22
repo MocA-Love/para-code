@@ -313,6 +313,26 @@ export function paradisResolveInitialCwdScope(initialCwd: string | undefined, ro
 	return best?.stateKey;
 }
 
+/**
+ * 推測・借り物の所属を、初期 cwd から引けた所属へ移してよいか。
+ *
+ * 移すのは、cwd から引けた所属が今の値と違い、かつ今の値より粗くないときだけ。今の値の root が
+ * cwd から引けた所属の root の配下にある（入れ子の worktree を持っていて、cwd の一致は外側の
+ * リポジトリ）なら、worktree の一覧がまだ欠けているだけかもしれないので移さない。今の値の root が
+ * 一覧から引けないときも移さない（どちらが粗いか比べられない）。
+ */
+export function paradisShouldMoveGuessedScopeToCwdScope(currentStateKey: string | undefined, cwdStateKey: string, roots: readonly IParadisTerminalScopeRoot[]): boolean {
+	if (currentStateKey === cwdStateKey) {
+		return false;
+	}
+	const currentRoot = roots.find(candidate => candidate.stateKey === currentStateKey)?.root;
+	const cwdRoot = roots.find(candidate => candidate.stateKey === cwdStateKey)?.root;
+	if (currentRoot === undefined || cwdRoot === undefined) {
+		return false;
+	}
+	return paradisResolveInitialCwdScope(currentRoot, [{ root: cwdRoot, stateKey: cwdStateKey }]) === undefined;
+}
+
 /** 実terminal破棄時は対応するprocessも削除する。renderer shutdown時だけ再接続用process台帳を保持する。 */
 export function paradisRetireInstanceScope(instanceScopes: Map<number, string>, persistentProcessScopes: Map<number, string>, instance: IParadisScopedTerminalInstanceLike, persistentProcessOwners?: ReadonlyMap<number, number>, preservePersistentProcess = false): void {
 	const stateKey = instanceScopes.get(instance.instanceId)

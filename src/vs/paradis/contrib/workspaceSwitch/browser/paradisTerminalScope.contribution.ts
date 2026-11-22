@@ -30,7 +30,7 @@ import { paradisRegisterTerminalCreationScopeProvider, paradisTakeTerminalCreati
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisTerminalScopeService, IParadisTerminalStableScopeChangeEvent, IParadisWorkspaceSwitchService, IParadisWorktreeService, ParadisBindingScope, ParadisTerminalInstanceRetirementTracker, ParadisTerminalStableScopeTracker, paradisResolveTerminalBindingScope, paradisScopeRootPath, paradisWorktreeStateKey, PARADIS_UNATTRIBUTED_TERMINAL_SCOPE } from '../common/paradisWorkspaceSwitch.js';
 import { paradisWaitForProcessReady } from '../../../common/paradisProcessReady.js';
-import { IParadisScopedTerminalInstanceLike, IParadisTerminalScopeRoot, paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisResolveTerminalScopeCandidate, paradisShouldParkUnattributedGroup, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage } from '../common/paradisTerminalProcessScope.js';
+import { IParadisScopedTerminalInstanceLike, IParadisTerminalScopeRoot, paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisShouldMoveGuessedScopeToCwdScope, paradisResolveTerminalScopeCandidate, paradisShouldParkUnattributedGroup, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage } from '../common/paradisTerminalProcessScope.js';
 import { IParadisTerminalNonceScopeDisagreement, paradisLookupProcessDetailScope, paradisMigrateProcessScopesToNonceScopes, paradisProcessDetailScopeLookupId, paradisParseTerminalNonceScopeStorage, paradisPruneNonceScopes, paradisResolveNonceScope, paradisRetireScopeFromNonceScopeStorage, paradisSerializeTerminalNonceScopeStorage } from '../common/paradisTerminalNonceScope.js';
 import { ParadisPtyAdoptionState, paradisOrphanListingIsComplete, paradisPtyAdoptionState } from '../../ptyDaemon/common/paradisPtyHandover.js';
 import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisListParkedTerminalEditorInstances, paradisMarkOrphanTerminalRevivalComplete, paradisParkTerminalEditorInstance, paradisRegisterParkedTerminalGroupProbe, paradisRegisterTerminalEditorOwnerProbe, paradisUnparkTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
@@ -1358,6 +1358,11 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		if (!this._initialCwdResolvedInstances.has(instance.instanceId) || !this._worktreeSnapshotReady) {
 			return undefined;
 		}
+		return paradisResolveInitialCwdScope(this._initialCwds.get(instance.instanceId), this.collectScopeRoots());
+	}
+
+	/** 登録済みのリポジトリと、一覧に載っている worktree の root。 */
+	private collectScopeRoots(): IParadisTerminalScopeRoot[] {
 		const roots: IParadisTerminalScopeRoot[] = [];
 		const connectedAuthority = this.remoteAgentService.getConnection()?.remoteAuthority;
 		for (const repository of this.workspaceSwitchService.repositories) {
@@ -1372,7 +1377,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				}
 			}
 		}
-		return paradisResolveInitialCwdScope(this._initialCwds.get(instance.instanceId), roots);
+		return roots;
 	}
 
 	private recordRecoveredScopeIfUnassigned(instance: ITerminalInstance): void {
@@ -1585,7 +1590,10 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 * そのスペースへ移す。その端末の cwd と worktree の一覧が揃った時点（初期 cwd の解決、
 	 * 初期化バリアの通過）で呼ぶ。
 	 *
-	 * 動かすのは、cwd の最長一致で出たスペースが今入っている値と違う端末だけ。
+	 * 動かすのは、cwd の最長一致で出たスペースが今入っている値と違い、かつ今の値より粗くない端末だけ
+	 * （`paradisShouldMoveGuessedScopeToCwdScope`）。
+	 * - 今の値が入れ子の worktree で、cwd の一致がそれを含む外側のリポジトリだった端末には触らない。
+	 *   worktree が一覧にまだ載っていないだけかもしれず、載った通知でその worktree に確定する。
 	 * - 一致しなかった端末と、値が同じだった端末には触らない。印を残し、確定への昇格・nonce 台帳への
 	 *   書き出し・グループの置き直しは worktree の一覧の通知（`reevaluateActiveFallbackScopes`）に
 	 *   任せる。ここで確定させると、一覧が欠けたままバリアを通った起動や、直後に入れ子の worktree が
@@ -1604,7 +1612,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				}
 				// cwd か worktree の一覧のどちらかが未確定なら undefined（揃った側の契機でやり直す）。
 				const resolved = this.resolveInstanceInitialCwdScope(instance);
-				if (resolved === undefined || resolved === this._instanceScopes.get(instance.instanceId)) {
+				if (resolved === undefined
+					|| !paradisShouldMoveGuessedScopeToCwdScope(this._instanceScopes.get(instance.instanceId), resolved, this.collectScopeRoots())) {
 					continue;
 				}
 				this.promoteGuessedScope(instance, resolved);
