@@ -155,12 +155,15 @@ export function parseAgentResumeResult(reply: Record<string, unknown>): AgentRes
 
 // ---- PC に届かない間の送信の預かり ----------------------------------------------------------
 
-/** 預かった送信の宛先。`ws` は PC のスペースの id（`sourceId`。アプリの画面の id と違い、PC を再起動しても変わらない）。 */
+/**
+ * 預かった送信の宛先。`ws` は PC のスペースの id（`sourceId`。アプリの画面の id と違い、PC を再起動しても変わらない）。
+ * `agent` は預けたときの会話の種類（再開の後に PC が文を渡さない種類かを見るため。古い預かりには無い）。
+ */
 export type AgentSendTarget =
 	/** 開いていたターミナル（のエージェント）。`resumeKey` はターミナルが閉じていたときに再開するための指紋。 */
-	| { readonly kind: 'live'; readonly terminalKey: string; readonly ws?: string; readonly resumeKey?: string; readonly title?: string }
+	| { readonly kind: 'live'; readonly terminalKey: string; readonly ws?: string; readonly resumeKey?: string; readonly title?: string; readonly agent?: string }
 	/** 過去の会話（再開して送る）。 */
-	| { readonly kind: 'resume'; readonly ws: string; readonly key: string; readonly title?: string };
+	| { readonly kind: 'resume'; readonly ws: string; readonly key: string; readonly title?: string; readonly agent?: string };
 
 /**
  * 預かった送信の状態。
@@ -352,8 +355,11 @@ export function deserializeAgentSendQueue(pcId: string, text: string): readonly 
 	return items;
 }
 
-/** 預かりの行の状態の文。 */
-export function agentSendStatusText(item: AgentSendQueueItem): string {
+/**
+ * 預かりの行の状態の文。`terminalOpen` は宛先のターミナルが今も開いているか（分からなければ省く）。`unverified` の確認は
+ * ターミナルが開いている間の文なので、閉じていれば閉じたときの文にする。
+ */
+export function agentSendStatusText(item: AgentSendQueueItem, terminalOpen?: boolean): string {
 	switch (item.status) {
 		case 'waiting': return 'PC に届き次第送ります';
 		case 'sending': return '送っています';
@@ -361,7 +367,7 @@ export function agentSendStatusText(item: AgentSendQueueItem): string {
 			switch (item.reason) {
 				case 'stale': return '預けてから時間がたちました。今も送ってよいか確かめてください';
 				case 'other-conversation': return '宛先のターミナルで別の会話が動いています。そのまま送るか、元の会話を再開して送るかを選んでください';
-				case 'unverified': return 'このターミナルの会話が預けたときと同じかを確かめられません。別の会話に入ることがあります。ターミナル表示で確かめてから送ってください';
+				case 'unverified': return terminalOpen === false ? 'ターミナルが閉じられていました。会話を再開して送れます' : 'このターミナルの会話が預けたときと同じかを確かめられません。別の会話に入ることがあります。ターミナル表示で確かめてから送ってください';
 				default: return item.target.kind === 'resume' ? '会話を再開して送るか確かめてください' : 'ターミナルが閉じられていました。会話を再開して送れます';
 			}
 		case 'failed': return item.error ?? '送れませんでした';

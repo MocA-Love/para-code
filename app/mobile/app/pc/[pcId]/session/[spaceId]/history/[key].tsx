@@ -5,7 +5,7 @@ import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { CircleAlert } from 'lucide-react-native';
 import { AGENT_RESUME_CAPABILITY, AGENT_RESUME_PROMPT_LIMIT, parseAgentPastSessionPreview, type AgentPastSessionPreview } from '../../../../../../src/agentSessions.js';
-import { enqueueAgentSend, resumeAndSend, useAgentSendLive, type AgentResumeCodexAccount } from '../../../../../../src/agentSendQueue.js';
+import { enqueueAgentSend, keepUndeliveredPrompt, resumeAndSend, useAgentSendLive, type AgentResumeCodexAccount } from '../../../../../../src/agentSendQueue.js';
 import { sendPcRequest, useAppStore } from '../../../../../../src/appState.js';
 import { scaleChatStyles } from '../../../../../../src/chatTextScale.js';
 import { MarkdownText } from '../../../../../../src/components/markdownText.js';
@@ -105,7 +105,7 @@ export default function AgentHistorySessionScreen() {
 		try {
 			if (!live) {
 				// PC に届かない。預かって、つながった後に「再開して送る」を確かめる（黙って再開しない）。
-				await enqueueAgentSend(pcId, prompt, { kind: 'resume', ws: sourceId, key, ...(preview !== undefined ? { title: preview.session.title } : {}) });
+				await enqueueAgentSend(pcId, prompt, { kind: 'resume', ws: sourceId, key, ...(preview !== undefined ? { title: preview.session.title, agent: preview.session.agent } : {}) });
 				haptic('warning');
 				setText('');
 				setNotice('PC に届かないため預かりました。つながったら、再開して送るか確かめます（24 時間まで）');
@@ -130,7 +130,7 @@ export default function AgentHistorySessionScreen() {
 			if (result.terminalKey !== undefined && result.status !== 'needs-trust') {
 				if (result.delivered !== true) {
 					// 会話は開けたが依頼を渡せなかった・既に開いていた。開いた先の入力欄へ移して送り直してもらう。
-					useAppStore.getState().setAgentDraft(result.terminalKey, prompt);
+					keepUndeliveredPrompt(pcId, result.terminalKey, prompt, preview?.session.agent);
 					useParaToast.getState().show({ key: `agent-resume-${key}`, text: result.message ?? '依頼は入力欄に残しました。送り直してください', icon: 'information-circle-outline', tone: 'warn' }, 6_000);
 				}
 				openTerminal(result.terminalKey);

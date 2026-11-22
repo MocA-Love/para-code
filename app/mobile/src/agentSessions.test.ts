@@ -92,17 +92,17 @@ describe('agentSessions (W2-29)', () => {
 		}).toEqual({ beforeReconnect: 'wait', notReady: 'wait', same: 'send', cleared: 'confirm', noSession: 'confirm', confirmedOther: 'send', confirmedNoSession: 'confirm' });
 	});
 
-	it('keeps the decision for Claude Code, Codex, OpenCode and unknown kinds as it was before the kind was read', () => {
-		// 期待値は、種類を見る前のコードが返していた値（種類を見ないので 3 種とも同じ）
+	it('keeps the decision for Claude Code, Codex and OpenCode as it was before the kind was read, and asks for a kind this app does not know', () => {
+		// 3 種と、種類が届いていないときの期待値は、種類を見る前のコードが返していた値
 		const decide = (agent: string | undefined, resumeKey: string | undefined, confirmed: boolean) =>
 			agentSendLiveDecision(item('a'), { ...(agent !== undefined ? { agent } : {}), syncedAt: 200, capabilities: { agentActions: true }, info: { ...(resumeKey !== undefined ? { resumeKey } : {}) } }, 100, confirmed);
-		expect(['claude', 'codex', 'opencode', undefined, '', 'gemini'].map(agent => [decide(agent, KEY, false), decide(agent, 'b'.repeat(40), false), decide(agent, undefined, false), decide(agent, undefined, true)])).toEqual([
+		expect(['claude', 'codex', 'opencode', undefined, 'gemini'].map(agent => [decide(agent, KEY, false), decide(agent, 'b'.repeat(40), false), decide(agent, undefined, false), decide(agent, undefined, true)])).toEqual([
 			['send', 'confirm', 'confirm', 'send'],
 			['send', 'confirm', 'confirm', 'send'],
 			['send', 'confirm', 'confirm', 'send'],
 			['send', 'confirm', 'confirm', 'send'],
-			['send', 'confirm', 'confirm', 'send'],
-			['send', 'confirm', 'confirm', 'send'],
+			// 新しい PC が足した、このアプリの知らない種類。指紋が同じでも確かめる
+			['confirm', 'confirm', 'confirm', 'send'],
 		]);
 	});
 
@@ -127,8 +127,14 @@ describe('agentSessions (W2-29)', () => {
 		// 確認の理由は保存をまたいで残り、文は別の会話に入りうることを伝える
 		const saved = serializeAgentSendQueue('pc-1', [item('a', { status: 'needs-confirm', reason: 'unverified' })]);
 		const restored = deserializeAgentSendQueue('pc-1', saved);
-		expect(restored.map(entry => [entry.status, entry.reason, agentSendStatusText(entry)])).toEqual([
-			['needs-confirm', 'unverified', 'このターミナルの会話が預けたときと同じかを確かめられません。別の会話に入ることがあります。ターミナル表示で確かめてから送ってください'],
+		expect(restored.map(entry => [entry.status, entry.reason, agentSendStatusText(entry), agentSendStatusText(entry, true), agentSendStatusText(entry, false)])).toEqual([
+			[
+				'needs-confirm', 'unverified',
+				'このターミナルの会話が預けたときと同じかを確かめられません。別の会話に入ることがあります。ターミナル表示で確かめてから送ってください',
+				'このターミナルの会話が預けたときと同じかを確かめられません。別の会話に入ることがあります。ターミナル表示で確かめてから送ってください',
+				// 確かめを待つ間にターミナルが閉じたら、閉じたときの文（ボタンは「再開して送る」だけになる）
+				'ターミナルが閉じられていました。会話を再開して送れます',
+			],
 		]);
 	});
 

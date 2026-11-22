@@ -695,7 +695,7 @@ suite('ParadisMobileAgentChat', () => {
 		const sent: { readonly mobileId: string; readonly message: Record<string, unknown> }[] = [];
 		const chat = new ParadisMobileAgentChat((mobileId, payload) => sent.push({ mobileId, message: JSON.parse(new TextDecoder().decode(payload)) }), () => { }, () => { }, new NullLogService());
 		const access = chat as unknown as {
-			tailers: Map<string, { readonly messages: readonly unknown[]; readonly delegate: { onEpochReset(): void } }>;
+			tailers: Map<string, { readonly epoch: string; readonly rev: number; readonly messages: readonly unknown[]; readonly delegate: { onEpochReset(): void } }>;
 			pushInfoToSubscribers(token: string): void;
 		};
 		/** 2 台それぞれに届いた、その種類の電文の最後の `info`。 */
@@ -727,10 +727,29 @@ suite('ParadisMobileAgentChat', () => {
 			access.tailers.get(token)!.delegate.onEpochReset();
 			await waitFor(() => count('snapshot') >= 2, 'the re-read snapshot was not sent');
 			const reread = infos('snapshot');
+			// つなぎ直しの attach（続きだけを返す delta）でも同じ
+			sent.length = 0;
+			const tailer = access.tailers.get(token)!;
+			for (const mobileId of ['phone-old', 'phone-new']) {
+				chat.handleInbound(mobileId, new TextEncoder().encode(JSON.stringify({ t: 'attach', id: 1, token, epoch: tailer.epoch, afterRev: tailer.rev })));
+			}
+			await waitFor(() => count('delta') >= 2, 'the re-attaches did not answer with a delta');
+			const reattach = infos('delta');
+			// 広告を確かめられなかったときは、広告していない扱い（鍵を載せない）
+			sent.length = 0;
+			chat.setMobileCapabilityCheck(async () => { throw new Error('the capability check failed'); });
+			chat.handleInbound('phone-new', new TextEncoder().encode(JSON.stringify({ t: 'attach', id: 1, token })));
+			await waitFor(() => count('snapshot') >= 1, 'the attach after the failed check did not answer');
+			const checkFailed = infos('snapshot')[1];
+			sent.length = 0;
+			access.pushInfoToSubscribers(token);
+			await waitFor(() => count('delta') >= 2, 'the info was not pushed after the failed check');
+			const pushedAfterFailedCheck = infos('delta');
 			const without = { model: 'gemini-3.8-flash-high', modelControl: 'none' };
 			const withKey = { ...without, resumeKey: paradisAgentSessionKey('antigravity', conversationId) };
-			assert.deepStrictEqual({ attach, pushed, reread, desktop: (await chat.getDesktopChat(token, undefined))?.info }, {
-				attach: [without, withKey], pushed: [without, withKey], reread: [without, withKey], desktop: without,
+			assert.deepStrictEqual({ attach, pushed, reread, reattach, checkFailed, pushedAfterFailedCheck, desktop: (await chat.getDesktopChat(token, undefined))?.info }, {
+				attach: [without, withKey], pushed: [without, withKey], reread: [without, withKey], reattach: [without, withKey],
+				checkFailed: without, pushedAfterFailedCheck: [without, without], desktop: without,
 			});
 		} finally {
 			chat.dispose();

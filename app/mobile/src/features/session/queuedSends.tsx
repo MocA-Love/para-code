@@ -98,7 +98,7 @@ function QueuedSendsDrawer({ visible, pcId, items, onClose }: { visible: boolean
 						<View key={item.id} style={styles.row}>
 							{item.target.title !== undefined ? <Text style={styles.target} numberOfLines={1}>{item.target.title}</Text> : null}
 							<Text style={styles.body} numberOfLines={4} selectable>{displaySentText(item.text)}</Text>
-							<Text style={[styles.status, item.status === 'failed' || item.status === 'expired' ? styles.statusError : undefined]}>{agentSendStatusText(item)}</Text>
+							<Text style={[styles.status, item.status === 'failed' || item.status === 'expired' ? styles.statusError : undefined]}>{agentSendStatusText(item, item.target.kind === 'live' ? terminalOpen : undefined)}</Text>
 							<View style={styles.actions}>
 								{item.status === 'needs-confirm' && terminalOpen ? (
 									<Button label="このターミナルへ送る" size="sm" loading={busy === item.id} disabled={busy !== undefined} onPress={() => { void sendHere(item); }} />

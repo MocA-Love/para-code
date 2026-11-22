@@ -20,6 +20,8 @@ import {
 	type AgentResumeResult, type AgentSendQueueItem, type AgentSendTarget,
 } from './agentSessions.js';
 import { createAgentSendOutboxStore } from './platform.js';
+import { agentLeavesPromptAfterResume } from './agentKind.js';
+import { terminalDraftKey, useTerminalDrafts } from './features/session/terminalDrafts.js';
 
 const encoder = new TextEncoder();
 
@@ -169,7 +171,22 @@ export function mobileSpaceIdFor(sourceId: string): string | undefined {
 	return useAppStore.getState().workspace?.workspaces.find(space => space.sourceId === sourceId)?.id;
 }
 
-/** 預かった 1 件を「再開して送る」。成功したら預かりから外し、結果を返す。 */
+/**
+ * 会話は開けたが PC が依頼の文を渡さなかったとき、文を開いた会話の入力欄に残す。再開の後に PC が文を渡さない種類
+ * （Antigravity CLI。PC は「ターミナル表示で入力してください」と返す）では、ターミナル表示の入力欄にも入れる
+ * （会話表示の入力欄だけだと、ターミナル表示で開いたときに文が見えない）。
+ */
+export function keepUndeliveredPrompt(pcId: string, terminalKey: string, text: string, agent: string | undefined): void {
+	useAppStore.getState().setAgentDraft(terminalKey, text);
+	if (agentLeavesPromptAfterResume(agent)) {
+		useTerminalDrafts.getState().update(terminalDraftKey(pcId, terminalKey), text);
+	}
+}
+
+/**
+ * 預かった 1 件を「再開して送る」。PC が文を渡したか、開いた会話の入力欄へ文を移せたら預かりから外し、結果を返す。
+ * どちらもできなかった（PC が文を渡さず、開いたターミナルも返らなかった）ときは、文を失わないよう預かりに残す。
+ */
 export async function confirmResumeAndSend(item: AgentSendQueueItem): Promise<AgentResumeResult | undefined> {
 	const target = agentSendResumeTarget(item);
 	if (target === undefined) {
@@ -183,9 +200,15 @@ export async function confirmResumeAndSend(item: AgentSendQueueItem): Promise<Ag
 			patch(item.pcId, item.id, { status: 'failed', error: 'この会話は PC で開いています。会話の画面から送ってください' });
 			return result;
 		}
-		if (result.delivered !== true && result.terminalKey !== undefined) {
+		if (result.delivered !== true) {
+			if (result.terminalKey === undefined) {
+				// 文は PC に渡っておらず、移す先の入力欄も分からない（PC がまだ処理している最中の `duplicate` など）。
+				// 預かりを消すと文が失われるので、もう一度選べる状態で残す。
+				patch(item.pcId, item.id, { status: 'failed', error: result.message ?? '会話を再開できたか分かりませんでした。少し待ってからもう一度送ってください' });
+				return result;
+			}
 			// 会話は開けたが依頼を渡せなかった。消さずに、開いた会話の入力欄へ移しておく。
-			useAppStore.getState().setAgentDraft(result.terminalKey, item.text);
+			keepUndeliveredPrompt(item.pcId, result.terminalKey, item.text, item.target.agent);
 		}
 		removeAgentSend(item.pcId, item.id);
 		return result;
