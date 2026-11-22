@@ -64,6 +64,7 @@ import { IParadisReplayedAgentPrompt, IParadisSpooledAgentHook, PARADIS_AGENT_HO
 import { paradisPruneAgentHookSpool, paradisStampAgentHookSpoolAlive, paradisTakeAgentHookSpool } from './paradisAgentHookSpoolStore.js';
 import { onDidChangeParadisCodexHomes, paradisClaudeConfigDir, paradisCodexConfigHomes, paradisCodexHome } from './paradisAgentHome.js';
 import { ParadisAgentHooksReconciler, paradisClaudeManagedHookEvents, paradisProbeClaudeVersionOutput, paradisGetNotifyScriptContent, paradisMergeAgentHooksJson, paradisMergeAntigravityHooksJson, paradisRemoveAgentHooks, paradisRemoveAgentHooksJson, paradisRemoveAntigravityHooksJson } from './paradisAgentHooksSetup.js';
+import { ParadisAgentCliAutoInstall, paradisAgentCliFiles } from './paradisAgentCliInstall.js';
 import { ParadisAgentHooksAutoInstall } from './paradisAgentHooksAutoInstall.js';
 import { paradisClaudeModBridge } from '../../claudeMod/node/paradisClaudeModBridge.js';
 import { PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING, PARADIS_CLAUDE_MOD_HTTP_PREFIX, paradisClaudeModApprovalWaitMs } from '../../claudeMod/common/paradisClaudeMod.js';
@@ -95,6 +96,7 @@ import { ParadisDevtoolsInternalCall } from './paradisDevtoolsCallOrigin.js';
 import { ParadisInputRejectionLog } from './paradisInputRejectionLog.js';
 import { IParadisDevtoolsPathCaller, paradisDevtoolsCaptureOverwriteRefusal, paradisDevtoolsPathArguments, paradisDevtoolsPathDecision, paradisDevtoolsUserTemporaryFolders, paradisDevtoolsVersionControlRealpathRefusal } from './paradisDevtoolsPathPolicy.js';
 // PARA-PATCH: 他のparadis contribがこのMCPサーバーへ自前のツールを足すための拡張点（モバイル端末操作など）
+import { PARADIS_AGENT_CLI_ENABLED_SETTING, PARADIS_CURSOR_LABEL_INSTRUCTION, PARADIS_SHARED_PAGE_ACTION_INSTRUCTION, paradisAgentCliEnabled } from '../common/paradisAgentCliSkill.js';
 import { IParadisAgentInstructionPart, IParadisAgentInstructionSection, IParadisCliCatalog, PARADIS_CLI_CATALOG_METHOD, ParadisCliConversations, ParadisCliGroup, paradisBuildCliCatalog, paradisCliCallMetaOf, paradisMcpInstructionsText } from '../common/paradisCliCatalog.js';
 import { IParadisMcpCursorIdentity, IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpPaneTab, IParadisMcpToolCallContext, IParadisMcpToolProvider, ParadisMcpCallerKind, ParadisMcpOwningWindowResult, paradisRegisteredMcpToolProviders } from '../common/paradisMcpToolProvider.js';
 import { paradisWithReadOnlyToolAnnotation } from '../common/paradisMcpReadOnlyTools.js';
@@ -237,7 +239,7 @@ const PARADIS_BROWSER_INSTRUCTION_PARTS: readonly IParadisAgentInstructionPart[]
 	{ text: 'Para Code MCP server (runs inside the Para Code editor that hosts this terminal).', mcpOnly: true },
 	{ text: 'Browser tools act on this terminal pane\'s current tab (by default the page the user shared most recently), or on the tab you pass as tab_id. A pane can use every page the user shared with it (the user may share up to ' + PARADIS_USER_SHARED_PAGE_LIMIT + ') plus up to ' + PARADIS_AGENT_TAB_LIMIT + ' tabs it opens itself with open_browser_tab, plus the tabs and windows those pages open (target=_blank links, window.open; shared automatically, up to ' + PARADIS_OPENED_TAB_LIMIT + '); list_browser_tabs shows all of their tabIds and which ones the user shared. When you split browser work across subagents, open (or pick) one tab per subagent and tell each subagent its tabId; the subagent must pass that tab_id on every browser tool call (take_snapshot, click, navigate_page, wait_until, click_by, ...). Para Code runs calls on different tabs in parallel and calls on the same tab one at a time.' },
 	{ text: 'Your MCP client may still run several tool calls of one message one after another (Claude Code can do this for tools that are not read-only), so to work on several tabs at the same time, give each tab its own subagent.', mcpOnly: true },
-	{ text: 'Without tab_id, tools act on the pane\'s current tab, which open_browser_tab and select_browser_tab change for everyone in this pane. To wait for the page, use wait_until (with network_idle_seconds to wait for requests to settle) instead of setTimeout loops in evaluate_script or sleep in the shell; get_text, inspect_element and scroll_to read, measure and scroll without mouse or key input. To click or fill an element you can describe (role + name, text, CSS), use click_by and fill_by instead of take_snapshot + click or DOM changes in evaluate_script; they work with React/MUI inputs and explain why an element cannot be clicked. run_steps runs a known sequence of these tools in one call. capture_screenshot crops elements or a rectangle and can save straight to a file; read_download returns the sheets and cells of a downloaded xlsx, the rows of a csv, or the text of each page of a PDF ' + PARADIS_READ_DOWNLOAD_OWN_TOOLS_INSTRUCTION + '. Before your first click, key or scroll on a page, call set_cursor_label with a short name for your current task (2-12 characters, e.g. "Checkout", "注文入力"). Name the task, not a person or the page title. Subagents that open their own tab can pass label to open_browser_tab instead. On pages the user shared, submit, buy, send or delete something only when the user asked for it.' },
+	{ text: 'Without tab_id, tools act on the pane\'s current tab, which open_browser_tab and select_browser_tab change for everyone in this pane. To wait for the page, use wait_until (with network_idle_seconds to wait for requests to settle) instead of setTimeout loops in evaluate_script or sleep in the shell; get_text, inspect_element and scroll_to read, measure and scroll without mouse or key input. To click or fill an element you can describe (role + name, text, CSS), use click_by and fill_by instead of take_snapshot + click or DOM changes in evaluate_script; they work with React/MUI inputs and explain why an element cannot be clicked. run_steps runs a known sequence of these tools in one call. capture_screenshot crops elements or a rectangle and can save straight to a file; read_download returns the sheets and cells of a downloaded xlsx, the rows of a csv, or the text of each page of a PDF ' + PARADIS_READ_DOWNLOAD_OWN_TOOLS_INSTRUCTION + '. ' + PARADIS_CURSOR_LABEL_INSTRUCTION + ' Subagents that open their own tab can pass label to open_browser_tab instead. ' + PARADIS_SHARED_PAGE_ACTION_INSTRUCTION },
 ];
 /**
  * 1 ペインが同時に送れる MCP の呼び出しの数。1 タブ 1 サブエージェントで並べられるよう 32 にする（タブの上限は 50 だが、
@@ -1216,6 +1218,16 @@ export class ParadisAgentBrowserService extends Disposable {
 				reportParadisDiagnosticError('owned', 'agent-browser', 'configure-agent-hooks', error, { phase: 'setup' });
 				this._runNonThrowingDiagnostic(() => logService.warn('[ParadisAgentBrowser] Agent hooks setup failed', error));
 			},
+		}));
+		// `para` コマンドの手引き（スキル）と Codex の規則。設定（既定はオフ）をオンにした利用者にだけ置く（paradisAgentCliInstall.ts）
+		this._register(new ParadisAgentCliAutoInstall({
+			isEnabled: () => paradisAgentCliEnabled(configurationService?.getValue(PARADIS_AGENT_CLI_ENABLED_SETTING)),
+			onDidChangeEnabled: configurationService
+				? Event.map(Event.filter(configurationService.onDidChangeConfiguration, e => e.affectsConfiguration(PARADIS_AGENT_CLI_ENABLED_SETTING)), () => undefined)
+				: Event.None,
+			onDidChangeTargets: Event.map(onDidChangeParadisCodexHomes, () => undefined),
+			files: async () => paradisAgentCliFiles(await cachedShellEnv.getEnv(), paradisCodexConfigHomes()),
+			logService,
 		}));
 		// Claude Code の mod（Claude Mods）がモバイルの承認を待つ上限（paradisClaudeModBridge.ts）。
 		paradisClaudeModBridge.setApprovalWait(() => paradisClaudeModApprovalWaitMs(configurationService?.getValue(PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING)));
