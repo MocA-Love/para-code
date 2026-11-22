@@ -288,6 +288,15 @@ export const PARADIS_OFFICE_ENABLED_SETTING = 'paradis.officeViewer.enabled' as 
 
 export type ParadisOfficeEngine = 'auto' | 'legacy' | 'v1';
 
+/**
+ * Whether the platform backend may serve Office requests. Uses the same effective engine as the viewer
+ * ({@link snapshotParadisOfficeRuntimeConfiguration}): the master checkbox promotes the hidden engine key to 'v1'.
+ */
+export function paradisOfficePlatformBackendEnabled(reader: { getValue<T>(key: string): T | undefined }): boolean {
+	const engineOn = reader.getValue<unknown>(PARADIS_OFFICE_ENABLED_SETTING) === true || reader.getValue<unknown>('paradis.officeViewer.engine') !== 'legacy';
+	return engineOn && reader.getValue<unknown>('paradis.officeViewer.platformBackend') !== false;
+}
+
 export interface ParadisOfficeRuntimeConfiguration {
 	readonly engine: ParadisOfficeEngine;
 	readonly kernelShadow: boolean;

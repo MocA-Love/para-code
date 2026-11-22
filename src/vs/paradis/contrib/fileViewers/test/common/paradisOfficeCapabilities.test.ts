@@ -18,6 +18,7 @@ import {
 	ParadisOfficeRuntimeOverrides,
 	getParadisOfficeRuntimeFeatureBits,
 	negotiateParadisOfficeCapabilities,
+	paradisOfficePlatformBackendEnabled,
 	snapshotParadisOfficeRuntimeConfiguration,
 } from '../../common/paradisOfficeCapabilities.js';
 
@@ -346,6 +347,17 @@ suite('ParadisOfficeConfiguration', () => {
 			platformBackend: true,
 			searchPrint: true,
 		});
+	});
+
+	test('the platform backend follows the same effective engine as the viewer', () => {
+		const enabled = (values: Record<string, unknown>) => paradisOfficePlatformBackendEnabled({ getValue: <T>(key: string) => values[key] as T | undefined });
+		deepStrictEqual({
+			defaults: enabled({ 'paradis.officeViewer.enabled': true, 'paradis.officeViewer.engine': 'legacy', 'paradis.officeViewer.platformBackend': true }),
+			checkboxOff: enabled({ 'paradis.officeViewer.enabled': false, 'paradis.officeViewer.engine': 'legacy' }),
+			checkboxOffEngineV1: enabled({ 'paradis.officeViewer.enabled': false, 'paradis.officeViewer.engine': 'v1' }),
+			backendOff: enabled({ 'paradis.officeViewer.enabled': true, 'paradis.officeViewer.platformBackend': false }),
+			unregistered: enabled({}),
+		}, { defaults: true, checkboxOff: false, checkboxOffEngineV1: true, backendOff: false, unregistered: true });
 	});
 
 	test('an explicit engine setting still wins over the Settings UI checkbox left off', () => {

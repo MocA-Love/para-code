@@ -5713,16 +5713,16 @@ export class ParadisAgentBrowserService extends Disposable {
 		const provided = this._allToolProviders().flatMap(provider => [...provider.listTools()]);
 		// ページを操作するツールには、どのタブかを選ぶ `tab_id` を足す（サブエージェントごとに別のタブを使える）
 		const listed = [
-			...TOOLS.map(tool => PARADIS_TAB_SCOPED_TOOL_NAMES.has(tool.name) ? paradisWithTabIdArgument(tool) : tool),
+			// run_steps は手順書（E6。参照・expect・for_each・repeat_until）の説明と引数で出す。引数を丸ごと置き換えるので、
+			// `tab_id` と観測の引数を足す前に当てる（後で当てると、足した引数が一覧から消えて突き合わせで断られる）
+			...TOOLS.map(tool => paradisRunStepsFlowDescriptor(tool)).map(tool => PARADIS_TAB_SCOPED_TOOL_NAMES.has(tool.name) ? paradisWithTabIdArgument(tool) : tool),
 			...provided,
 			...devtoolsTools.map(tool => paradisWithTabIdArgument(tool)),
 		];
 		// 接続先のペインには、パスの引数を「エージェントの機械のパス」として説明し直す
 		// 操作の後に待つ・状態を添える設定（既定は無効）が有効なら、その引数と説明を足す
 		const observeSettings = this._observeSettings?.();
-		const observedTools = observeSettings?.settle || observeSettings?.state ? listed.map(tool => paradisWithObserveArguments(tool, observeSettings)) : listed;
-		// run_steps は手順書（E6。参照・expect・for_each・repeat_until）の説明と引数で出す
-		const observed = observedTools.map(tool => paradisRunStepsFlowDescriptor(tool));
+		const observed = observeSettings?.settle || observeSettings?.state ? listed.map(tool => paradisWithObserveArguments(tool, observeSettings)) : listed;
 		// サイトメモの道具（E4）は、設定が有効なときだけ一覧に出す
 		const withNotes = this._siteNotesEnabled?.() === true ? [...observed, ...PARADIS_SITE_NOTE_TOOLS] : observed;
 		// サイトの手順の道具（E3）も、設定が有効なときだけ一覧に出す。run_recipe はタブを選べる

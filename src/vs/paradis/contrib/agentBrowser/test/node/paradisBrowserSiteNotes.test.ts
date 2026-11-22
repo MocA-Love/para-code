@@ -136,12 +136,14 @@ suite('Paradis site notes (E4)', () => {
 				_siteNotesEnabled: () => notes,
 				_paneRemoteAuthorityOf: () => undefined,
 			}) as unknown as ISiteNotesInternals;
-			const result = await service._dispatch({ token: TOKEN }, { jsonrpc: '2.0', id: 1, method: 'tools/list' }) as { tools: { name: string; description?: string }[] };
-			return { flow: /for_each/.test(result.tools.find(tool => tool.name === 'run_steps')?.description ?? ''), notes: result.tools.filter(tool => tool.name.endsWith('site_note') || tool.name === 'list_site_notes').map(tool => tool.name) };
+			const result = await service._dispatch({ token: TOKEN }, { jsonrpc: '2.0', id: 1, method: 'tools/list' }) as { tools: { name: string; description?: string; inputSchema?: { properties?: object } }[] };
+			const runSteps = result.tools.find(tool => tool.name === 'run_steps');
+			// the flow descriptor replaces the schema, so tab_id has to be added after it
+			return { flow: /for_each/.test(runSteps?.description ?? ''), tabId: Object.hasOwn(runSteps?.inputSchema?.properties ?? {}, 'tab_id'), notes: result.tools.filter(tool => tool.name.endsWith('site_note') || tool.name === 'list_site_notes').map(tool => tool.name) };
 		};
 		assert.deepStrictEqual({ off: await list(false), on: await list(true) }, {
-			off: { flow: true, notes: [] },
-			on: { flow: true, notes: ['write_site_note', 'list_site_notes', 'delete_site_note'] },
+			off: { flow: true, tabId: true, notes: [] },
+			on: { flow: true, tabId: true, notes: ['write_site_note', 'list_site_notes', 'delete_site_note'] },
 		});
 	});
 
