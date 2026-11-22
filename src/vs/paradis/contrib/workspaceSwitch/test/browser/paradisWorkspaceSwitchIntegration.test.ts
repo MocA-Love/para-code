@@ -3211,6 +3211,86 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		}
 	});
 
+	// 訂正の契機は「その端末の cwd が分かった時点」。worktree の一覧の通知は中身が変わらなくても
+	// 来るので訂正が偶然そこに乗っていたが、通知を間引くと黙って止まる。このテストは通知を
+	// 1度も発火させない（`addWorktree` を呼ばない）。
+	test('corrects a guessed space once the cwd of the terminal is known, without a worktree notification', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const members = [createRestoredTerminalInstance(4030, { initialCwd: '/workspace-a/sub' })];
+			const group = createTerminalGroup(members);
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			const scope = harness.installTerminalScope(async () => { }, { groups: [group], worktreeReady: true });
+			await settle();
+			harness.fireGroupsChanged();
+			await settle();
+
+			// タグ付け済みのグループへ、別のスペースのフォルダで起きた新しい端末が分割で加わる。
+			members.push(createRestoredTerminalInstance(4031, { restored: false, initialCwd: '/workspace-b/sub' }));
+			harness.fireInstancesChanged();
+			const guessedStateKey = scope.getStateKeyForInstance(4031);
+			await settle();
+
+			assert.deepStrictEqual({
+				// cwd が分かるまでは、作られた時のスペースという推測で持つ。
+				guessedStateKey,
+				correctedStateKey: scope.getStateKeyForInstance(4031),
+				neighbourStateKey: scope.getStateKeyForInstance(4030),
+				// 今のスペースを主張する端末が残っているので、グループは隠さない。
+				parked: harness.parkedGroups.has(group),
+				persistedNonces: harness.persistedNonceScopes(),
+			}, {
+				guessedStateKey: 'space-a',
+				correctedStateKey: 'space-b',
+				neighbourStateKey: 'space-a',
+				parked: false,
+				persistedNonces: [['nonce-4030', 'space-a'], ['nonce-4031', 'space-b']],
+			});
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
+	// worktree の一覧が確定する前は cwd から所属を引けないので、借り物はそのまま残る。
+	// 一覧が確定した時点（初期化バリアの通過）で突き合わせる。ここでも通知は発火させない。
+	test('corrects a borrowed space once the worktree list is ready, without a worktree notification', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const group = createTerminalGroup([
+				createRestoredTerminalInstance(4032),
+				createRestoredTerminalInstance(4033, { initialCwd: '/workspace-b/sub' }),
+			]);
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			const scope = harness.installTerminalScope(async () => { }, {
+				groups: [group],
+				worktreeReadyLater: true,
+				persistentProcessScopes: [[4032, 'space-a']],
+			});
+			await settle();
+			const borrowedStateKey = scope.getStateKeyForInstance(4033);
+
+			harness.finishWorktreeScan();
+			await settle();
+
+			assert.deepStrictEqual({
+				// 台帳から引けた隣の端末の所属を借りている。
+				borrowedStateKey,
+				correctedStateKey: scope.getStateKeyForInstance(4033),
+				ledgerBackedStateKey: scope.getStateKeyForInstance(4032),
+			}, {
+				borrowedStateKey: 'space-a',
+				correctedStateKey: 'space-b',
+				ledgerBackedStateKey: 'space-a',
+			});
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
 	// 訂正は端末1本だけを動かすので、グループの置き場所を直す契機を別に用意しないと、
 	// 台帳は正しいのに別のスペースの端末が今のスペースに出続ける（1本しか入っていない
 	// グループでは必ずこうなる）。
@@ -3604,6 +3684,8 @@ interface IWorkspaceSwitchIntegrationHarness {
 	addGroup(group: ITerminalGroup): void;
 	/** `connectLater` で止めていたターミナルの復元完了を進める。 */
 	finishConnecting(): void;
+	/** `worktreeReadyLater` で止めておいた worktree の初期化バリアを通す。 */
+	finishWorktreeScan(): void;
 	/**
 	 * ターミナルの接続完了だけを知らせる（`whenConnected` は進めない）。リモートで
 	 * replay 待ちが長引き、接続完了だけが先に来る状況を踏むのに使う。
@@ -3653,6 +3735,8 @@ interface IParadisTerminalScopeHarnessOptions {
 	readonly groups?: readonly ITerminalGroup[];
 	/** worktree の初期化バリアを解決済みにするか（待避判定の材料の1つ）。 */
 	readonly worktreeReady?: boolean;
+	/** worktree の初期化バリアを「後から」通す。`harness.finishWorktreeScan()` を呼ぶまで待つ。 */
+	readonly worktreeReadyLater?: boolean;
 	/** エディタ領域に復元済みとして置いておくターミナル。 */
 	readonly editorInstances?: readonly ITerminalInstance[];
 	/** ターミナルの復元を完了させるか（park の保留が解けて実際に待避が走る）。 */
@@ -3951,6 +4035,7 @@ async function createHarness(
 	const onDidChangeInstances = testDisposables.add(new Emitter<void>());
 	const liveGroups: ITerminalGroup[] = [];
 	const deferredConnection = new DeferredPromise<void>();
+	const deferredWorktreeScan = new DeferredPromise<void>();
 	const onDidChangeConnectionState = testDisposables.add(new Emitter<void>());
 	let connectionState = TerminalConnectionState.Connecting;
 	const onDidChangeWorktrees = testDisposables.add(new Emitter<void>());
@@ -3976,6 +4061,7 @@ async function createHarness(
 		setActiveTerminalGroup: group => setActiveTerminalGroup(group),
 		activeTerminalGroup: () => activeTerminalGroup(),
 		finishConnecting: () => deferredConnection.complete(),
+		finishWorktreeScan: () => deferredWorktreeScan.complete(),
 		markTerminalsConnected: () => {
 			connectionState = TerminalConnectionState.Connected;
 			onDidChangeConnectionState.fire();
@@ -4063,7 +4149,9 @@ async function createHarness(
 				createTerminal: options.createTerminal,
 			} satisfies Partial<ITerminalService> as unknown as ITerminalService;
 			const worktreeService = {
-				initializationBarrier: options.worktreeReady === true ? Promise.resolve() : new Promise<void>(() => { }),
+				initializationBarrier: options.worktreeReadyLater === true
+					? deferredWorktreeScan.p
+					: (options.worktreeReady === true ? Promise.resolve() : new Promise<void>(() => { })),
 				onDidChangeWorktrees: onDidChangeWorktrees.event,
 				getWorktrees: (repositoryId: string) => worktrees.get(repositoryId) ?? [],
 			} satisfies Partial<IParadisWorktreeService> as unknown as IParadisWorktreeService;

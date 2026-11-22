@@ -507,6 +507,9 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				this._restoredPersistentProcessScopes.set(persistentProcessId, stateKey);
 			}
 			this._quarantinedPersistentProcessScopes.clear();
+			// 一覧が確定する前に付いた推測・借り物を、ここで cwd と突き合わせる。初回の
+			// `onDidChangeWorktrees` はこの then より先に来て `_worktreeSnapshotReady` で捨てられている。
+			this.correctGuessedScopesFromInitialCwd(this.collectLiveInstances().values());
 			const liveInstances = this.refreshAllStableScopes();
 			if (this._terminalRestoreComplete) {
 				paradisPrunePersistentProcessScopes(this._persistentProcessScopes, liveInstances.map(instance => this.toScopedInstance(instance)));
@@ -1253,6 +1256,9 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				}
 				this._initialCwdResolvedInstances.add(instance.instanceId);
 				this.recordRecoveredScopeIfUnassigned(instance);
+				// cwd より先に所属が入っていた端末（タグ付け済みのグループへ後から入った分）は、
+				// 上の呼び出しでは「所属あり」で素通りする。cwd が分かったここで訂正する。
+				this.correctGuessedScopesFromInitialCwd([instance]);
 				this.tagUntaggedGroups();
 				this._stableScopeTracker.observe(instance.instanceId, this.resolveScope(instance.instanceId));
 				this.recordPersistentProcessScopes([instance]);
@@ -1566,19 +1572,59 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 			// ここで `assignInstanceScope` を使ってはいけない。あれは「ユーザーの明示指定なので
 			// グループごと動かす」経路で、同居している端末の所属まで突き合わせ無しに上書きする。
 			// これは自動訂正なので、直したい1本だけを動かし、グループの扱いはタグ付けに任せる。
-			this._instanceScopes.set(instanceId, resolved);
-			this._activeFallbackInstances.delete(instanceId);
-			this._inheritedGroupScopes.delete(instanceId);
-			this.recordPersistentProcessScopes([instance]);
-			this._stableScopeTracker.observe(instanceId, this.resolveScope(instanceId));
+			this.promoteGuessedScope(instance, resolved);
 			promoted = true;
 		}
 		if (promoted) {
-			this.rehomeGroupsWithoutAClaimingMember();
-			// 昇格をここで保存する。呼び出し元はタグ付けが動いたときしか保存しないので、
-			// 任せると「次のセッションで根拠ゼロから始まらないようにする」という目的に届かない。
-			this.persistMapping();
+			this.settlePromotedScopes();
 		}
+	}
+
+	/**
+	 * 確定していない所属を、初期 cwd が分かった時点で cwd だけを根拠に訂正する。
+	 *
+	 * `reevaluateActiveFallbackScopes` は worktree の一覧の通知でしか走らない。あの通知は一覧の
+	 * 中身が変わらなくても来る（スペースの切り替えの後など）ので訂正が偶然そこに乗っていたが、
+	 * 訂正の本来の契機は「その端末の cwd と worktree の一覧が揃った時点」なので、そこから直接呼ぶ。
+	 *
+	 * cwd が登録済みの root に一致した端末だけを動かす。一致しなかった端末の印は外さない
+	 * （`ownScopeEvidence` は見ない）。外すと、後から worktree が一覧に現れたときに訂正できなくなる。
+	 * 結果は次の通知が出すものと同じで、時点が早まるだけ。訂正済みの端末は印が無いので、
+	 * 通知と重なっても2度目は何もしない。
+	 */
+	private correctGuessedScopesFromInitialCwd(instances: Iterable<ITerminalInstance>): void {
+		let promoted = false;
+		for (const instance of instances) {
+			if (!this._activeFallbackInstances.has(instance.instanceId) && !this._inheritedGroupScopes.has(instance.instanceId)) {
+				continue;
+			}
+			// cwd か worktree の一覧のどちらかが未確定なら undefined（揃った側の契機でやり直す）。
+			const resolved = this.resolveInstanceInitialCwdScope(instance);
+			if (resolved === undefined) {
+				continue;
+			}
+			this.promoteGuessedScope(instance, resolved);
+			promoted = true;
+		}
+		if (promoted) {
+			this.settlePromotedScopes();
+		}
+	}
+
+	/** 推測・借り物だった1本の所属を、自前の根拠で確定させる（同居している端末は動かさない）。 */
+	private promoteGuessedScope(instance: ITerminalInstance, stateKey: string): void {
+		this._instanceScopes.set(instance.instanceId, stateKey);
+		this._activeFallbackInstances.delete(instance.instanceId);
+		this._inheritedGroupScopes.delete(instance.instanceId);
+		this.recordPersistentProcessScopes([instance]);
+		this._stableScopeTracker.observe(instance.instanceId, this.resolveScope(instance.instanceId));
+	}
+
+	private settlePromotedScopes(): void {
+		this.rehomeGroupsWithoutAClaimingMember();
+		// 昇格をここで保存する。呼び出し元はタグ付けが動いたときしか保存しないので、
+		// 任せると「次のセッションで根拠ゼロから始まらないようにする」という目的に届かない。
+		this.persistMapping();
 	}
 
 	/**
