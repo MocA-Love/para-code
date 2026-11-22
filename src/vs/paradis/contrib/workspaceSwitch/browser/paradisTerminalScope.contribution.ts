@@ -1589,8 +1589,10 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	 *
 	 * cwd が登録済みの root に一致した端末だけを動かす。一致しなかった端末の印は外さない
 	 * （`ownScopeEvidence` は見ない）。外すと、後から worktree が一覧に現れたときに訂正できなくなる。
-	 * 結果は次の通知が出すものと同じで、時点が早まるだけ。訂正済みの端末は印が無いので、
-	 * 通知と重なっても2度目は何もしない。
+	 * worktree の一覧が変わらない間は、結果は次の通知が出すものと同じで、時点が早まるだけ。
+	 * 訂正済みの端末は印が無いので、通知と重なっても2度目は何もしない。確定はこの時点の一覧で
+	 * 行うので、後からより深い root（入れ子の worktree）が現れても動かない（cwd が分かってから
+	 * 所属を入れる単独の新しい端末と同じ扱い）。
 	 */
 	private correctGuessedScopesFromInitialCwd(instances: Iterable<ITerminalInstance>): void {
 		let promoted = false;
