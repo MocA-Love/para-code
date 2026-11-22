@@ -3211,9 +3211,8 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		}
 	});
 
-	// 訂正の契機は「その端末の cwd が分かった時点」。worktree の一覧の通知は中身が変わらなくても
-	// 来るので訂正が偶然そこに乗っていたが、通知を間引くと黙って止まる。このテストは通知を
-	// 1度も発火させない（`addWorktree` を呼ばない）。
+	// cwd が別のスペースを指していると分かった端末は、その時点で移す。worktree の一覧の通知は
+	// 待たない（このテストは `addWorktree` を呼ばないので、通知は1度も発火しない）。
 	test('corrects a guessed space once the cwd of the terminal is known, without a worktree notification', async () => {
 		const testDisposables = new DisposableStore();
 		try {
@@ -3222,7 +3221,8 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
 			await harness.workspaceSwitchService.switchRepository('space-a');
 
-			const scope = harness.installTerminalScope(async () => { }, { groups: [group], worktreeReady: true });
+			// 復元を完了させておく（待避の保留が解けた状態でも、グループが隠れないことを見る）。
+			const scope = harness.installTerminalScope(async () => { }, { groups: [group], worktreeReady: true, connected: true });
 			await settle();
 			harness.fireGroupsChanged();
 			await settle();
@@ -3285,6 +3285,102 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 				borrowedStateKey: 'space-a',
 				correctedStateKey: 'space-b',
 				ledgerBackedStateKey: 'space-a',
+			});
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
+	// cwd が今入っている借り物と同じスペースを指す端末は、cwd が分かった時点では確定させない。
+	// 確定（印を外して台帳へ書く）は worktree の一覧の通知に任せる。ここで確定させると、一覧が
+	// 欠けている間に外側のリポジトリが台帳へ残り、後から現れた worktree で直せなくなる。
+	test('leaves a borrowed space that the cwd agrees with unconfirmed until a worktree notification', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			const members = [createRestoredTerminalInstance(4034, { initialCwd: '/workspace-a/sub' })];
+			const group = createTerminalGroup(members);
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			const scope = harness.installTerminalScope(async () => { }, { groups: [group], worktreeReady: true, connected: true });
+			await settle();
+			harness.fireGroupsChanged();
+			await settle();
+
+			// 同じスペースのフォルダで動いていた復元端末が、タグ付け済みのグループへ後から加わる。
+			members.push(createRestoredTerminalInstance(4035, { initialCwd: '/workspace-a/other' }));
+			harness.fireInstancesChanged();
+			await settle();
+			const stateKeyBeforeNotification = scope.getStateKeyForInstance(4035);
+			const persistedNoncesBeforeNotification = harness.persistedNonceScopes();
+
+			harness.addWorktree('space-b', '/worktree-unrelated');
+			await settle();
+
+			assert.deepStrictEqual({
+				stateKeyBeforeNotification,
+				// 借り物の印が残っている間は、nonce の台帳に載らない。
+				persistedNoncesBeforeNotification,
+				stateKeyAfterNotification: scope.getStateKeyForInstance(4035),
+				persistedNoncesAfterNotification: harness.persistedNonceScopes(),
+			}, {
+				stateKeyBeforeNotification: 'space-a',
+				persistedNoncesBeforeNotification: [['nonce-4034', 'space-a']],
+				stateKeyAfterNotification: 'space-a',
+				persistedNoncesAfterNotification: [['nonce-4034', 'space-a'], ['nonce-4035', 'space-a']],
+			});
+		} finally {
+			testDisposables.dispose();
+		}
+	});
+
+	// 同じスペースの中で分割しただけでは、グループの置き直しを走らせない。走らせると、分割とは
+	// 関係の無い「所属を主張する端末が居なくなった、見えているグループ」が分割のたびに隠れうる。
+	test('does not move an unrelated group when a split stays in the same space', async () => {
+		const testDisposables = new DisposableStore();
+		try {
+			// 台帳から今のスペースと引ける端末が居るので、このグループは今のスペースに置かれる。
+			const elsewhere = createRestoredTerminalInstance(4036, { initialCwd: '/workspace-b/sub' });
+			const claimsActive = createRestoredTerminalInstance(4037);
+			const unrelated = createTerminalGroup([elsewhere, claimsActive]);
+			const members = [createRestoredTerminalInstance(4038, { initialCwd: '/workspace-a/sub' })];
+			const group = createTerminalGroup(members);
+			const harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			harness.installTerminalScope(async () => { }, {
+				groups: [unrelated, group],
+				worktreeReady: true,
+				connected: true,
+				persistentProcessScopes: [[4037, 'space-a']],
+			});
+			await settle();
+			harness.fireGroupsChanged();
+			await settle();
+			const parkedBeforeSplit = harness.parkedGroups.has(unrelated);
+			// 今のスペースを主張していた端末が閉じられ、別のスペースの端末だけが残る。
+			(claimsActive as { isDisposed: boolean }).isDisposed = true;
+
+			// もう一方のグループを、同じスペースのフォルダで分割する。
+			members.push(createRestoredTerminalInstance(4039, { restored: false, initialCwd: '/workspace-a/other' }));
+			harness.fireInstancesChanged();
+			await settle();
+			const parkedAfterSplit = harness.parkedGroups.has(unrelated);
+
+			harness.addWorktree('space-b', '/worktree-unrelated');
+			await settle();
+
+			assert.deepStrictEqual({
+				parkedBeforeSplit,
+				parkedAfterSplit,
+				// 置き直しは、従来どおり worktree の一覧の通知で走る。
+				parkedAfterNotification: harness.parkedGroups.has(unrelated),
+				splitGroupParked: harness.parkedGroups.has(group),
+			}, {
+				parkedBeforeSplit: false,
+				parkedAfterSplit: false,
+				parkedAfterNotification: true,
+				splitGroupParked: false,
 			});
 		} finally {
 			testDisposables.dispose();

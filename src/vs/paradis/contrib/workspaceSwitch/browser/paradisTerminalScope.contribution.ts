@@ -507,8 +507,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				this._restoredPersistentProcessScopes.set(persistentProcessId, stateKey);
 			}
 			this._quarantinedPersistentProcessScopes.clear();
-			// 一覧が確定する前に付いた推測・借り物を、ここで cwd と突き合わせる。初回の
-			// `onDidChangeWorktrees` はこの then より先に来て `_worktreeSnapshotReady` で捨てられている。
+			// 一覧が確定する前に付いた推測・借り物のうち、cwd が別のスペースを指すものをここで移す。
+			// （初回の `onDidChangeWorktrees` はこの then より先に来て `_worktreeSnapshotReady` で捨てられる）
 			this.correctGuessedScopesFromInitialCwd(this.collectLiveInstances().values());
 			const liveInstances = this.refreshAllStableScopes();
 			if (this._terminalRestoreComplete) {
@@ -1257,7 +1257,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 				this._initialCwdResolvedInstances.add(instance.instanceId);
 				this.recordRecoveredScopeIfUnassigned(instance);
 				// cwd より先に所属が入っていた端末（タグ付け済みのグループへ後から入った分）は、
-				// 上の呼び出しでは「所属あり」で素通りする。cwd が分かったここで訂正する。
+				// 上の呼び出しでは「所属あり」で素通りする。cwd が別のスペースを指していればここで移す。
 				this.correctGuessedScopesFromInitialCwd([instance]);
 				this.tagUntaggedGroups();
 				this._stableScopeTracker.observe(instance.instanceId, this.resolveScope(instance.instanceId));
@@ -1581,35 +1581,40 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	}
 
 	/**
-	 * 確定していない所属を、初期 cwd が分かった時点で cwd だけを根拠に訂正する。
+	 * 推測・借り物の所属が入っている端末のうち、初期 cwd が**別のスペース**を指しているものを、
+	 * そのスペースへ移す。その端末の cwd と worktree の一覧が揃った時点（初期 cwd の解決、
+	 * 初期化バリアの通過）で呼ぶ。
 	 *
-	 * `reevaluateActiveFallbackScopes` は worktree の一覧の通知でしか走らない。あの通知は一覧の
-	 * 中身が変わらなくても来る（スペースの切り替えの後など）ので訂正が偶然そこに乗っていたが、
-	 * 訂正の本来の契機は「その端末の cwd と worktree の一覧が揃った時点」なので、そこから直接呼ぶ。
+	 * 動かすのは、cwd の最長一致で出たスペースが今入っている値と違う端末だけ。
+	 * - 一致しなかった端末と、値が同じだった端末には触らない。印を残し、確定への昇格・nonce 台帳への
+	 *   書き出し・グループの置き直しは worktree の一覧の通知（`reevaluateActiveFallbackScopes`）に
+	 *   任せる。ここで確定させると、一覧が欠けたままバリアを通った起動や、直後に入れ子の worktree が
+	 *   現れる場面で、外側のリポジトリが確定値として台帳に残り、通知による自己修復が効かなくなる。
+	 * - 値が違った端末は、通知の経路と同じく印を外して確定させる（cwd は自前の根拠で、cwd が
+	 *   分かってから所属を入れる単独の新しい端末もこの時点の一覧で確定する）。
 	 *
-	 * cwd が登録済みの root に一致した端末だけを動かす。一致しなかった端末の印は外さない
-	 * （`ownScopeEvidence` は見ない）。外すと、後から worktree が一覧に現れたときに訂正できなくなる。
-	 * worktree の一覧が変わらない間は、結果は次の通知が出すものと同じで、時点が早まるだけ。
-	 * 訂正済みの端末は印が無いので、通知と重なっても2度目は何もしない。確定はこの時点の一覧で
-	 * 行うので、後からより深い root（入れ子の worktree）が現れても動かない（cwd が分かってから
-	 * 所属を入れる単独の新しい端末と同じ扱い）。
+	 * 投げない。呼び出し元の後続（タグ付け・台帳の保存）は、ここが失敗しても走らせる。
 	 */
 	private correctGuessedScopesFromInitialCwd(instances: Iterable<ITerminalInstance>): void {
-		let promoted = false;
-		for (const instance of instances) {
-			if (!this._activeFallbackInstances.has(instance.instanceId) && !this._inheritedGroupScopes.has(instance.instanceId)) {
-				continue;
+		try {
+			let corrected = false;
+			for (const instance of instances) {
+				if (!this._activeFallbackInstances.has(instance.instanceId) && !this._inheritedGroupScopes.has(instance.instanceId)) {
+					continue;
+				}
+				// cwd か worktree の一覧のどちらかが未確定なら undefined（揃った側の契機でやり直す）。
+				const resolved = this.resolveInstanceInitialCwdScope(instance);
+				if (resolved === undefined || resolved === this._instanceScopes.get(instance.instanceId)) {
+					continue;
+				}
+				this.promoteGuessedScope(instance, resolved);
+				corrected = true;
 			}
-			// cwd か worktree の一覧のどちらかが未確定なら undefined（揃った側の契機でやり直す）。
-			const resolved = this.resolveInstanceInitialCwdScope(instance);
-			if (resolved === undefined) {
-				continue;
+			if (corrected) {
+				this.settlePromotedScopes();
 			}
-			this.promoteGuessedScope(instance, resolved);
-			promoted = true;
-		}
-		if (promoted) {
-			this.settlePromotedScopes();
+		} catch (error) {
+			onUnexpectedError(error);
 		}
 	}
 
