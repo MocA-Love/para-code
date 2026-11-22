@@ -16,10 +16,11 @@ import { agentSendQueueKey, sendPcRequest, useAppStore } from './appState.js';
 import { useAppLocked } from './appLock.js';
 import { isAppLockedNow } from './appLockState.js';
 import {
-	addAgentSendQueueItem, agentSendLiveDecision, agentSendResumeTarget, deserializeAgentSendQueue, expireAgentSendQueue, parseAgentResumeResult, planAgentSendQueue, serializeAgentSendQueue,
+	addAgentSendQueueItem, agentSendLiveConfirmReason, agentSendLiveDecision, agentSendResumeTarget, deserializeAgentSendQueue, expireAgentSendQueue, parseAgentResumeResult, planAgentSendQueue, serializeAgentSendQueue,
 	type AgentResumeResult, type AgentSendQueueItem, type AgentSendTarget,
 } from './agentSessions.js';
 import { createAgentSendOutboxStore } from './platform.js';
+import { agentLeavesPromptAfterResume } from './agentKind.js';
 
 const encoder = new TextEncoder();
 
@@ -169,7 +170,22 @@ export function mobileSpaceIdFor(sourceId: string): string | undefined {
 	return useAppStore.getState().workspace?.workspaces.find(space => space.sourceId === sourceId)?.id;
 }
 
-/** 預かった 1 件を「再開して送る」。成功したら預かりから外し、結果を返す。 */
+/**
+ * 「再開して送る」の返事を受けて、預かりを残すか。再開の後に PC が文を渡さない種類（預けたときの種類が分かるものだけ）で、
+ * 文を渡しておらず、開いたターミナルも返らなかったとき。
+ */
+export function agentResumeKeptQueuedSend(item: AgentSendQueueItem, result: AgentResumeResult): boolean {
+	return result.status !== 'running' && result.delivered !== true && result.terminalKey === undefined && agentLeavesPromptAfterResume(item.target.agent);
+}
+
+/**
+ * 預かった 1 件を「再開して送る」。成功したら預かりから外し、結果を返す。会話は開けたが文を渡せなかったときは、
+ * 開いた会話の会話表示の入力欄へ文を移す。
+ *
+ * 再開の後に PC が文を渡さない種類（Antigravity CLI）で、開いたターミナルも返らなかったとき（PC がまだ処理している
+ * 最中の `duplicate` など）は、文の行き先が無いので預かりに残す（{@link agentResumeKeptQueuedSend}）。PC が文を渡す
+ * 種類は、同じ返事でも PC がこの後に文を渡すので、今までどおり預かりから外す。
+ */
 export async function confirmResumeAndSend(item: AgentSendQueueItem): Promise<AgentResumeResult | undefined> {
 	const target = agentSendResumeTarget(item);
 	if (target === undefined) {
@@ -181,6 +197,11 @@ export async function confirmResumeAndSend(item: AgentSendQueueItem): Promise<Ag
 		const result = await resumeAndSend(item.pcId, target.ws, target.key, item.text, item.id);
 		if (result.status === 'running') {
 			patch(item.pcId, item.id, { status: 'failed', error: 'この会話は PC で開いています。会話の画面から送ってください' });
+			return result;
+		}
+		if (agentResumeKeptQueuedSend(item, result)) {
+			// PC はこの種類の文を渡さず、移す先の入力欄も分からない。預かりを消すと文が失われるので、もう一度選べる状態で残す。
+			patch(item.pcId, item.id, { status: 'failed', error: result.message ?? '会話を再開できたか分かりませんでした。少し待ってからもう一度送ってください' });
 			return result;
 		}
 		if (result.delivered !== true && result.terminalKey !== undefined) {
@@ -198,7 +219,7 @@ export async function confirmResumeAndSend(item: AgentSendQueueItem): Promise<Ag
 /**
  * 開いているエージェントのターミナルへ 1 件送る。会話の準備を待ち、送れたら預かりから外す。
  * `confirmed`（利用者が「このターミナルへ送る」を押した）でなければ、ターミナルの会話が預けたときと同じかを確かめ、
- * 違う・分からないなら送らずに確認へ回す（レビュー H2）。送信には預かりの id を付け、PC は同じ id を二度送らない（M4）。
+ * 違う・分からない・同じだと確かめられない種類（Antigravity CLI）なら送らずに確認へ回す（レビュー H2）。送信には預かりの id を付け、PC は同じ id を二度送らない（M4）。
  */
 export async function sendToLiveTerminal(item: AgentSendQueueItem, confirmed = false): Promise<void> {
 	if (item.target.kind !== 'live') {
@@ -229,7 +250,7 @@ export async function sendToLiveTerminal(item: AgentSendQueueItem, confirmed = f
 			return;
 		}
 		if (decision === 'confirm') {
-			patch(item.pcId, item.id, { status: 'needs-confirm', reason: 'other-conversation' });
+			patch(item.pcId, item.id, { status: 'needs-confirm', reason: agentSendLiveConfirmReason(item, useAppStore.getState().agentChats.get(terminalKey)) });
 			return;
 		}
 		const result = await useAppStore.getState().sendAgentMessage(terminalKey, item.text, item.id);

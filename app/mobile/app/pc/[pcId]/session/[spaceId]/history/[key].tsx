@@ -105,7 +105,7 @@ export default function AgentHistorySessionScreen() {
 		try {
 			if (!live) {
 				// PC に届かない。預かって、つながった後に「再開して送る」を確かめる（黙って再開しない）。
-				await enqueueAgentSend(pcId, prompt, { kind: 'resume', ws: sourceId, key, ...(preview !== undefined ? { title: preview.session.title } : {}) });
+				await enqueueAgentSend(pcId, prompt, { kind: 'resume', ws: sourceId, key, ...(preview !== undefined ? { title: preview.session.title, agent: preview.session.agent } : {}) });
 				haptic('warning');
 				setText('');
 				setNotice('PC に届かないため預かりました。つながったら、再開して送るか確かめます（24 時間まで）');

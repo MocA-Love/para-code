@@ -686,6 +686,76 @@ suite('ParadisMobileAgentChat', () => {
 		}
 	}));
 
+	test('gives the resume key of an Antigravity CLI pane only to a phone that advertises agent.queued-send-confirm.v1', () => withFakeHome(async home => {
+		// 偽の HOME に自作の偽の会話を置く（本物の ~/.gemini には触らない）
+		const token = 'pane-antigravity-resume-key';
+		const conversationId = '00000000-0000-4000-8000-00000000a6e9';
+		const logs = join(paradisAntigravityBrainRoot(home), conversationId, '.system_generated', 'logs');
+		const transcriptPath = join(logs, 'transcript_full.jsonl');
+		const sent: { readonly mobileId: string; readonly message: Record<string, unknown> }[] = [];
+		const chat = new ParadisMobileAgentChat((mobileId, payload) => sent.push({ mobileId, message: JSON.parse(new TextDecoder().decode(payload)) }), () => { }, () => { }, new NullLogService());
+		const access = chat as unknown as {
+			tailers: Map<string, { readonly epoch: string; readonly rev: number; readonly messages: readonly unknown[]; readonly delegate: { onEpochReset(): void } }>;
+			pushInfoToSubscribers(token: string): void;
+		};
+		/** 2 台それぞれに届いた、その種類の電文の最後の `info`。 */
+		const infos = (t: string) => ['phone-old', 'phone-new'].map(mobileId => sent.filter(entry => entry.mobileId === mobileId && entry.message.t === t && entry.message.info !== undefined).at(-1)?.message.info);
+		const count = (t: string) => sent.filter(entry => entry.message.t === t && entry.message.info !== undefined).length;
+		try {
+			await mkdir(logs, { recursive: true });
+			await writeFile(transcriptPath, [
+				{ step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', status: 'DONE', created_at: '2026-11-16T01:00:00Z', content: '<USER_REQUEST>\n一覧を見て\n</USER_REQUEST>' },
+				{ step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', created_at: '2026-11-16T01:00:01Z', model: 'gemini-3.8-flash-high', content: 'README.md があります' },
+			].map(line => JSON.stringify(line)).join('\n') + '\n');
+			// 古いアプリ（phone-old）は何も広告しない。新しいアプリ（phone-new）だけが、預かりを必ず確かめると広告する
+			chat.setMobileCapabilityCheck(async (mobileId, name) => mobileId === 'phone-new' && name === 'agent.queued-send-confirm.v1');
+			chat.setEagerTailing(true);
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			fireParadisAgentHookEvent({ token, event: 'SessionStart', sessionId: conversationId, transcriptPath, cwd: '/workspace', agentKind: 'antigravity', at: Date.now() });
+			await waitFor(() => (access.tailers.get(token)?.messages.length ?? 0) >= 2, 'the Antigravity CLI record was not read');
+			for (const mobileId of ['phone-old', 'phone-new']) {
+				chat.handleInbound(mobileId, new TextEncoder().encode(JSON.stringify({ t: 'attach', id: 1, token })));
+			}
+			await waitFor(() => count('snapshot') >= 2, 'the attaches did not answer with a snapshot');
+			const attach = infos('snapshot');
+			// 全購読者へ同じ電文を配る 2 つの経路でも、古いアプリへは足さない
+			sent.length = 0;
+			access.pushInfoToSubscribers(token);
+			await waitFor(() => count('delta') >= 2, 'the info was not pushed');
+			const pushed = infos('delta');
+			sent.length = 0;
+			access.tailers.get(token)!.delegate.onEpochReset();
+			await waitFor(() => count('snapshot') >= 2, 'the re-read snapshot was not sent');
+			const reread = infos('snapshot');
+			// つなぎ直しの attach（続きだけを返す delta）でも同じ
+			sent.length = 0;
+			const tailer = access.tailers.get(token)!;
+			for (const mobileId of ['phone-old', 'phone-new']) {
+				chat.handleInbound(mobileId, new TextEncoder().encode(JSON.stringify({ t: 'attach', id: 1, token, epoch: tailer.epoch, afterRev: tailer.rev })));
+			}
+			await waitFor(() => count('delta') >= 2, 'the re-attaches did not answer with a delta');
+			const reattach = infos('delta');
+			// 広告を確かめられなかったときは、広告していない扱い（鍵を載せない）
+			sent.length = 0;
+			chat.setMobileCapabilityCheck(async () => { throw new Error('the capability check failed'); });
+			chat.handleInbound('phone-new', new TextEncoder().encode(JSON.stringify({ t: 'attach', id: 1, token })));
+			await waitFor(() => count('snapshot') >= 1, 'the attach after the failed check did not answer');
+			const checkFailed = infos('snapshot')[1];
+			sent.length = 0;
+			access.pushInfoToSubscribers(token);
+			await waitFor(() => count('delta') >= 2, 'the info was not pushed after the failed check');
+			const pushedAfterFailedCheck = infos('delta');
+			const without = { model: 'gemini-3.8-flash-high', modelControl: 'none' };
+			const withKey = { ...without, resumeKey: paradisAgentSessionKey('antigravity', conversationId) };
+			assert.deepStrictEqual({ attach, pushed, reread, reattach, checkFailed, pushedAfterFailedCheck, desktop: (await chat.getDesktopChat(token, undefined))?.info }, {
+				attach: [without, withKey], pushed: [without, withKey], reread: [without, withKey], reattach: [without, withKey],
+				checkFailed: without, pushedAfterFailedCheck: [without, without], desktop: without,
+			});
+		} finally {
+			chat.dispose();
+		}
+	}));
+
 	test('shows an Antigravity CLI conversation read from its record, and its question from the hook before the record has it', () => withFakeHome(async home => {
 		// 偽の HOME に自作の偽の会話を置く（本物の ~/.gemini には触らない）
 		const token = 'pane-antigravity-record';

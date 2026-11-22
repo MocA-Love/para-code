@@ -160,6 +160,7 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 	}));
 	const sourceId = spaceInfo.sourceId;
 	const resumeKey = chat?.info?.resumeKey;
+	const chatAgent = chat?.agent;
 	const sendText = useCallback((text: string) => {
 		const afterRev = (messagesRef.current ?? []).reduce((max, message) => Math.max(max, message.rev), 0);
 		const wasWorking = workingRef.current;
@@ -167,7 +168,7 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 		const sendId = agentSendIds.idFor(terminalKey, text);
 		if (!live && canQueue && activePcId !== undefined) {
 			return enqueueAgentSend(activePcId, text, {
-				kind: 'live', terminalKey, ...(sourceId !== undefined ? { ws: sourceId } : {}), ...(resumeKey !== undefined ? { resumeKey } : {}), title: terminal.title,
+				kind: 'live', terminalKey, ...(sourceId !== undefined ? { ws: sourceId } : {}), ...(resumeKey !== undefined ? { resumeKey } : {}), title: terminal.title, ...(chatAgent !== undefined && chatAgent.length > 0 ? { agent: chatAgent } : {}),
 			}, sendId).then(
 				(): AgentMessageSendResult => {
 					// 預けたので、この id は預かりの送信が使う（同じ文をもう一度送っても別の送信）
@@ -184,7 +185,7 @@ export function AgentChatPane({ terminal, latest, active, bottomInset }: {
 			}
 			return result;
 		});
-	}, [sendTextAction, terminalKey, chatEpoch, live, canQueue, activePcId, sourceId, resumeKey, terminal.title]);
+	}, [sendTextAction, terminalKey, chatEpoch, live, canQueue, activePcId, sourceId, resumeKey, chatAgent, terminal.title]);
 	const messages = chat?.messages;
 	// 書いている最中の返信（Claude Code だけ。Q657 案 C）。会話の一覧の末尾に置く
 	const liveDraft = chat !== undefined && chat.none !== true ? liveDraftOf(chat) : undefined;

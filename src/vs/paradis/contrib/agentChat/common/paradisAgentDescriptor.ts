@@ -39,6 +39,11 @@ export interface IParadisAgentDescriptor {
 		readonly bypassFlag: string | undefined;
 		/** モバイルから再開した直後に、依頼の文を自動で渡すか。 */
 		readonly deliverPromptAfterResume: boolean;
+		/**
+		 * モバイルが預かった送信を、宛先のペインの会話が預けたときと同じなら確認なしで送ってよいか。`false` は、TUI の中で
+		 * 会話が替わっても PC が受け身に気付けない種類で、会話が同じに見えても必ず利用者に確かめる。
+		 */
+		readonly sendQueuedWithoutConfirm: boolean;
 	};
 	/** モデル・effort をチャット欄から変える口。`none` は変えられない（PC のターミナルで変える）。 */
 	readonly modelControl: 'mod-or-keys' | 'none';
@@ -75,7 +80,7 @@ export const PARADIS_AGENT_DESCRIPTORS: Readonly<Record<ParadisAgentKind, IParad
 		displayName: 'Claude Code',
 		shortName: 'Claude',
 		logo: 'claude',
-		resume: { fork: true, bypassFlag: '--dangerously-skip-permissions', deliverPromptAfterResume: true },
+		resume: { fork: true, bypassFlag: '--dangerously-skip-permissions', deliverPromptAfterResume: true, sendQueuedWithoutConfirm: true },
 		modelControl: 'mod-or-keys',
 		send: ['mod', 'keys'],
 		answerQuestion: ['mod', 'keys'],
@@ -88,7 +93,7 @@ export const PARADIS_AGENT_DESCRIPTORS: Readonly<Record<ParadisAgentKind, IParad
 		displayName: 'Codex',
 		shortName: 'Codex',
 		logo: 'codex',
-		resume: { fork: true, bypassFlag: '--dangerously-bypass-approvals-and-sandbox', deliverPromptAfterResume: true },
+		resume: { fork: true, bypassFlag: '--dangerously-bypass-approvals-and-sandbox', deliverPromptAfterResume: true, sendQueuedWithoutConfirm: true },
 		modelControl: 'none',
 		send: ['keys'],
 		answerQuestion: ['keys'],
@@ -101,7 +106,7 @@ export const PARADIS_AGENT_DESCRIPTORS: Readonly<Record<ParadisAgentKind, IParad
 		displayName: 'OpenCode',
 		shortName: 'OpenCode',
 		logo: undefined,
-		resume: { fork: true, bypassFlag: undefined, deliverPromptAfterResume: true },
+		resume: { fork: true, bypassFlag: undefined, deliverPromptAfterResume: true, sendQueuedWithoutConfirm: true },
 		modelControl: 'none',
 		send: ['api'],
 		answerQuestion: ['api'],
@@ -114,7 +119,7 @@ export const PARADIS_AGENT_DESCRIPTORS: Readonly<Record<ParadisAgentKind, IParad
 		displayName: 'Antigravity CLI',
 		shortName: 'Antigravity',
 		logo: 'antigravity',
-		resume: { fork: false, bypassFlag: undefined, deliverPromptAfterResume: false },
+		resume: { fork: false, bypassFlag: undefined, deliverPromptAfterResume: false, sendQueuedWithoutConfirm: false },
 		modelControl: 'none',
 		send: ['keys'],
 		answerQuestion: [],

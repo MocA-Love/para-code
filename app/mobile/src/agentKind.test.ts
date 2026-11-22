@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, test } from 'vitest';
-import { agentDisplayName, launchAgentShortName, agentHasModelControl, agentHasPanel, agentHasPcDraft, agentInterruptsViaApi, agentShortName, isAgentKind } from './agentKind.js';
+import { agentDisplayName, agentLeavesPromptAfterResume, agentQueuedSendNeedsConfirm, launchAgentShortName, agentHasModelControl, agentHasPanel, agentHasPcDraft, agentInterruptsViaApi, agentShortName, isAgentKind } from './agentKind.js';
 
 /**
  * 種類への問いを、記述の引きに替える前の判定（`agent === 'claude'` などの照合）と同じ結果に固定する。
@@ -35,5 +35,13 @@ describe('agentKind', () => {
 		expect(INPUTS.map(agent => agentHasModelControl(agent))).toEqual(claudeOnly);
 		expect(INPUTS.map(agent => agentHasPanel(agent))).toEqual(claudeOnly);
 		expect(INPUTS.map(agent => agentHasPcDraft(agent))).toEqual(claudeOnly);
+	});
+
+	test('預かった送信を確認なしで送ってよいのは Claude Code・Codex・OpenCode だけで、知らない種類は確かめる', () => {
+		expect(INPUTS.map(agent => agentQueuedSendNeedsConfirm(agent))).toEqual([false, false, false, true, false, true, true, true, true]);
+	});
+
+	test('再開の後に PC が文を渡さないのは Antigravity CLI だけ', () => {
+		expect(INPUTS.map(agent => agentLeavesPromptAfterResume(agent))).toEqual([false, false, false, true, false, false, false, false, false]);
 	});
 });

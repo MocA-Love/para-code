@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 import {
-	AGENT_RESUME_CAPABILITY, AGENT_SEND_AUTO_WINDOW_MS, AGENT_SEND_QUEUE_LIMIT, agentSendConversationMatches, agentSendLiveDecision, AGENT_SEND_QUEUE_TTL_MS, addAgentSendQueueItem, agentSendResumeTarget, deserializeAgentSendQueue, expireAgentSendQueue, parseAgentPastSessionPage,
+	AGENT_RESUME_CAPABILITY, AGENT_SEND_AUTO_WINDOW_MS, AGENT_SEND_QUEUE_LIMIT, agentSendConversationMatches, agentSendLiveConfirmReason, agentSendLiveDecision, AGENT_SEND_QUEUE_TTL_MS, addAgentSendQueueItem, agentSendResumeTarget, agentSendStatusText, deserializeAgentSendQueue, expireAgentSendQueue, parseAgentPastSessionPage,
 	parseAgentPastSessionPreview, parseAgentResumeResult, planAgentSendQueue, serializeAgentSendQueue, type AgentSendQueueItem,
 } from './agentSessions.js';
 import { AGENT_HISTORY_CAPABILITY } from './agentHistory.js';
@@ -90,6 +90,52 @@ describe('agentSessions (W2-29)', () => {
 			confirmedOther: agentSendLiveDecision(item('a'), { ...fresh, info: {} }, 100, true),
 			confirmedNoSession: agentSendLiveDecision(item('a'), { syncedAt: 200, none: true }, 100, true),
 		}).toEqual({ beforeReconnect: 'wait', notReady: 'wait', same: 'send', cleared: 'confirm', noSession: 'confirm', confirmedOther: 'send', confirmedNoSession: 'confirm' });
+	});
+
+	it('keeps the decision for Claude Code, Codex and OpenCode as it was before the kind was read, and asks for a kind this app does not know', () => {
+		// 3 種と、種類が届いていないときの期待値は、種類を見る前のコードが返していた値
+		const decide = (agent: string | undefined, resumeKey: string | undefined, confirmed: boolean) =>
+			agentSendLiveDecision(item('a'), { ...(agent !== undefined ? { agent } : {}), syncedAt: 200, capabilities: { agentActions: true }, info: { ...(resumeKey !== undefined ? { resumeKey } : {}) } }, 100, confirmed);
+		expect(['claude', 'codex', 'opencode', undefined, 'gemini'].map(agent => [decide(agent, KEY, false), decide(agent, 'b'.repeat(40), false), decide(agent, undefined, false), decide(agent, undefined, true)])).toEqual([
+			['send', 'confirm', 'confirm', 'send'],
+			['send', 'confirm', 'confirm', 'send'],
+			['send', 'confirm', 'confirm', 'send'],
+			['send', 'confirm', 'confirm', 'send'],
+			// 新しい PC が足した、このアプリの知らない種類。指紋が同じでも確かめる
+			['confirm', 'confirm', 'confirm', 'send'],
+		]);
+	});
+
+	it('always asks before sending a queued message to an Antigravity CLI terminal, even when the conversation key matches', () => {
+		const chat = (resumeKey: string | undefined, extra: object = {}) => ({ agent: 'antigravity', syncedAt: 200, capabilities: { agentActions: true }, info: { ...(resumeKey !== undefined ? { resumeKey } : {}) }, ...extra });
+		expect({
+			// 指紋が同じでも、agy の中で会話が替わっていることがある。確認なしでは送らない
+			same: [agentSendLiveDecision(item('a'), chat(KEY), 100, false), agentSendLiveConfirmReason(item('a'), chat(KEY))],
+			other: [agentSendLiveDecision(item('a'), chat('b'.repeat(40)), 100, false), agentSendLiveConfirmReason(item('a'), chat('b'.repeat(40)))],
+			// 古い PC は Antigravity CLI の指紋を配らない
+			noKey: [agentSendLiveDecision(item('a'), chat(undefined), 100, false), agentSendLiveConfirmReason(item('a'), chat(undefined))],
+			beforeReconnect: agentSendLiveDecision(item('a'), chat(KEY, { syncedAt: 99 }), 100, false),
+			// 利用者が「このターミナルへ送る」を押したときだけ送る
+			confirmed: agentSendLiveDecision(item('a'), chat(KEY), 100, true),
+			// ほかの種類の確認の理由は今までどおり
+			claudeOther: agentSendLiveConfirmReason(item('a'), { agent: 'claude', syncedAt: 200, info: { resumeKey: 'b'.repeat(40) } }),
+			noSession: agentSendLiveConfirmReason(item('a'), { agent: '', syncedAt: 200, none: true }),
+		}).toEqual({
+			same: ['confirm', 'unverified'], other: ['confirm', 'other-conversation'], noKey: ['confirm', 'other-conversation'],
+			beforeReconnect: 'wait', confirmed: 'send', claudeOther: 'other-conversation', noSession: 'other-conversation',
+		});
+		// 確認の理由は保存をまたいで残り、文は別の会話に入りうることを伝える
+		const saved = serializeAgentSendQueue('pc-1', [item('a', { status: 'needs-confirm', reason: 'unverified' })]);
+		const restored = deserializeAgentSendQueue('pc-1', saved);
+		expect(restored.map(entry => [entry.status, entry.reason, agentSendStatusText(entry), agentSendStatusText(entry, true), agentSendStatusText(entry, false)])).toEqual([
+			[
+				'needs-confirm', 'unverified',
+				'このターミナルの会話が預けたときと同じかを確かめられません。別の会話に入ることがあります。ターミナル表示で確かめてから送ってください',
+				'このターミナルの会話が預けたときと同じかを確かめられません。別の会話に入ることがあります。ターミナル表示で確かめてから送ってください',
+				// 確かめを待つ間にターミナルが閉じたら、閉じたときの文（ボタンは「再開して送る」だけになる）
+				'ターミナルが閉じられていました。会話を再開して送れます',
+			],
+		]);
 	});
 
 	it('expires items after 24 hours and keeps at most the limit per PC', () => {
