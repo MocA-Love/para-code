@@ -155,8 +155,11 @@ export interface IParadisAgentCliAutoInstallOptions {
 	readonly onDidChangeEnabled: Event<void>;
 	/** 置き場所が増えたかもしれないとき（Codex のホームが増えた）。 */
 	readonly onDidChangeTargets: Event<void>;
-	/** 今の置き場所の一覧。 */
-	readonly files: () => Promise<readonly IParadisAgentCliFile[]>;
+	/**
+	 * 置き場所の一覧。外すとき（`forRemoval`）は、ログアウトした Codex のホームも含めて広く見る（前に置いた規則が
+	 * 残っているため。印の付いたものだけを消すので安全）。
+	 */
+	readonly files: (forRemoval: boolean) => Promise<readonly IParadisAgentCliFile[]>;
 	readonly logService: ILogService;
 }
 
@@ -200,7 +203,7 @@ export class ParadisAgentCliAutoInstall extends Disposable {
 		}
 		this.installed = wanted;
 		try {
-			const results = await paradisSyncAgentCliFiles(await this.options.files(), wanted);
+			const results = await paradisSyncAgentCliFiles(await this.options.files(!wanted), wanted);
 			const changed = results.filter(result => result.outcome !== 'unchanged');
 			if (changed.length > 0) {
 				this.options.logService.info(`[ParadisAgentCli] ${wanted ? 'installed' : 'removed'} the para skill and the Codex rule: ${changed.map(result => `${result.kind} ${result.outcome}${result.detail ? ` (${result.detail})` : ''}`).join(', ')}`);

@@ -62,7 +62,7 @@ import { PARADIS_OPENCODE_COMMAND, paradisIsOpenCodeCliExecutable, paradisIsOpen
 import { IParadisAgentHookDropRecord, ParadisAgentHookDropCounter, ParadisHookIngressCause, paradisFormatHookDropLog, paradisHookDropPaneKey } from '../common/paradisAgentHookDropLog.js';
 import { IParadisReplayedAgentPrompt, IParadisSpooledAgentHook, PARADIS_AGENT_HOOK_ID_PARAM, PARADIS_AGENT_HOOK_ID_PATTERN, PARADIS_AGENT_HOOK_REPLAY_PROMPT_WINDOW_MS, PARADIS_AGENT_HOOK_SPOOL_ALIVE_FILE, PARADIS_AGENT_HOOK_SPOOL_ALIVE_INTERVAL_MS, PARADIS_AGENT_HOOK_SPOOL_DIR_NAME, PARADIS_AGENT_HOOK_SYNC_GRACE_MS, paradisPlanAgentHookReplay } from '../common/paradisAgentHookSpool.js';
 import { paradisPruneAgentHookSpool, paradisStampAgentHookSpoolAlive, paradisTakeAgentHookSpool } from './paradisAgentHookSpoolStore.js';
-import { onDidChangeParadisCodexHomes, paradisClaudeConfigDir, paradisCodexConfigHomes, paradisCodexHome } from './paradisAgentHome.js';
+import { onDidChangeParadisCodexHomes, paradisClaudeConfigDir, paradisCodexConfigHomes, paradisCodexHomeCandidates, paradisCodexHome } from './paradisAgentHome.js';
 import { ParadisAgentHooksReconciler, paradisClaudeManagedHookEvents, paradisProbeClaudeVersionOutput, paradisGetNotifyScriptContent, paradisMergeAgentHooksJson, paradisMergeAntigravityHooksJson, paradisRemoveAgentHooks, paradisRemoveAgentHooksJson, paradisRemoveAntigravityHooksJson } from './paradisAgentHooksSetup.js';
 import { ParadisAgentCliAutoInstall, paradisAgentCliFiles } from './paradisAgentCliInstall.js';
 import { ParadisAgentHooksAutoInstall } from './paradisAgentHooksAutoInstall.js';
@@ -1226,7 +1226,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				? Event.map(Event.filter(configurationService.onDidChangeConfiguration, e => e.affectsConfiguration(PARADIS_AGENT_CLI_ENABLED_SETTING)), () => undefined)
 				: Event.None,
 			onDidChangeTargets: Event.map(onDidChangeParadisCodexHomes, () => undefined),
-			files: async () => paradisAgentCliFiles(await cachedShellEnv.getEnv(), paradisCodexConfigHomes()),
+			files: async forRemoval => paradisAgentCliFiles(await cachedShellEnv.getEnv(), forRemoval ? paradisCodexHomeCandidates() : paradisCodexConfigHomes()),
 			logService,
 		}));
 		// Claude Code の mod（Claude Mods）がモバイルの承認を待つ上限（paradisClaudeModBridge.ts）。

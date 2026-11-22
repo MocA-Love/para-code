@@ -148,9 +148,10 @@ suite('paradisAgentCliInstall', () => {
 		fs.mkdirSync(join(home, '.claude', 'skills', 'para-cli'), { recursive: true });
 		fs.writeFileSync(join(home, ...claudeSkill), PARADIS_AGENT_CLI_SKILL_CONTENT);
 		let enabled = false;
+		const asked: boolean[] = [];
 		const onDidChangeEnabled = store.add(new Emitter<void>());
 		const onDidChangeTargets = store.add(new Emitter<void>());
-		const installer = store.add(new ParadisAgentCliAutoInstall({ isEnabled: () => enabled, onDidChangeEnabled: onDidChangeEnabled.event, onDidChangeTargets: onDidChangeTargets.event, files, logService: new NullLogService() }));
+		const installer = store.add(new ParadisAgentCliAutoInstall({ isEnabled: () => enabled, onDidChangeEnabled: onDidChangeEnabled.event, onDidChangeTargets: onDidChangeTargets.event, files: async forRemoval => { asked.push(forRemoval); return files(); }, logService: new NullLogService() }));
 		await installer.whenIdle();
 		const atStart = read(...claudeSkill) !== undefined;
 		onDidChangeEnabled.fire();
@@ -168,6 +169,7 @@ suite('paradisAgentCliInstall', () => {
 		enabled = false;
 		onDidChangeEnabled.fire();
 		await installer.whenIdle();
-		assert.deepStrictEqual({ atStart, unchangedSetting, beforeTargets, afterTargets, afterOff: [read(...claudeSkill), read(...codexSkill), read(...codexRules)] }, { atStart: true, unchangedSetting: true, beforeTargets: undefined, afterTargets: true, afterOff: [undefined, undefined, undefined] });
+		// 外すときだけ、置き場所を広く見る（ログアウトした Codex のホームに残った規則も消す）
+		assert.deepStrictEqual({ atStart, unchangedSetting, beforeTargets, afterTargets, afterOff: [read(...claudeSkill), read(...codexSkill), read(...codexRules)], asked }, { atStart: true, unchangedSetting: true, beforeTargets: undefined, afterTargets: true, afterOff: [undefined, undefined, undefined], asked: [false, false, true] });
 	});
 });
