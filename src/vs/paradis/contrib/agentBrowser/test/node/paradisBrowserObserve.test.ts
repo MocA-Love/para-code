@@ -270,7 +270,7 @@ suite('Paradis browser observe', () => {
 			return (await observer.after(host, 'pane', options, before, 'changes', 2000))?.split('\n')[0];
 		};
 		const sent: ParadisSpanAttributes[] = [];
-		const usage = new ParadisAgentBrowserUsage(() => ({ settle: true, state: false, snapshotDiff: false, siteNotes: false, siteRecipes: false, runStepsFlow: false }), (_feature, _operation, attributes) => sent.push(attributes), new ParadisFakeUsageClock());
+		const usage = new ParadisAgentBrowserUsage(() => ({ settle: true, state: false, siteNotes: false, siteRecipes: false }), (_feature, _operation, attributes) => sent.push(attributes), new ParadisFakeUsageClock());
 		const quiet = await run(fakeHost({ pages: [PAGES_ONE], collect, reads: [{ age: 0, lastKind: 'elements', ready: true, busy: false }, { age: 100, lastKind: 'elements', ready: true, busy: false }] }).host, usage);
 		const animating = await run(fakeHost({ pages: [PAGES_ONE], collect, reads: [{ age: 40, lastKind: 'style', ready: true, busy: false }] }).host, usage);
 		const polling = await run(fakeHost({ pages: [PAGES_ONE], collect, network: { inflight: 2, quietMs: 0 }, read: evaluateResult({ age: 900, lastKind: 'text', ready: true, busy: true }) }).host, usage);

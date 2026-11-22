@@ -39,7 +39,7 @@ import { IParadisListProfilesResult, IParadisManageProfileResult, IParadisOpenPr
 import { IParadisListViewportsResult, IParadisSetViewportResult, IParadisViewportState, PARADIS_BROWSER_VIEWPORT_MCP_CHANNEL, ParadisViewportMcpMethod } from '../../browserViewport/common/paradisBrowserViewport.js';
 import { paradisFormatSetViewportResult, paradisFormatViewportList, paradisViewportForAgent } from '../../browserViewport/common/paradisBrowserViewportTools.js';
 import { IParadisAgentPageRequestResult, IParadisCloseAgentTabResult, IParadisListAgentTabsResult, IParadisOpenAgentTabResult, IParadisSelectAgentTabResult, PARADIS_AGENT_BROWSER_TABS_CHANNEL, PARADIS_AGENT_PAGE_REQUEST_TIMEOUT_MS, PARADIS_AGENT_TAB_LIMIT, PARADIS_MAX_WAITING_CHILDREN, PARADIS_MAX_WAITING_CHILDREN_PER_TAB, PARADIS_OPENED_TAB_BURST_LIMIT, PARADIS_OPENED_TAB_BURST_RETRIES, PARADIS_OPENED_TAB_BURST_WINDOW_MS, PARADIS_OPENED_TAB_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT, PARADIS_USER_SHARED_PAGE_LIMIT_ERROR_MARK, ParadisAgentPageRequestFailure, ParadisOpenedTabBurstGuard, ParadisOpenedTabGrantResult, ParadisAgentTabFailure, ParadisAgentTabMethod } from '../common/paradisAgentBrowserTabs.js';
-import { IParadisExactViewEmulationResult, IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisAgentTabGrant, IParadisGrantAgentTabRequest, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisAgentHookEntersWait, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent, paradisPaneFingerprint, paradisParseCdpInputDispatchResult, paradisExactViewKey, paradisParseExactBrowserViewDescriptor, PARADIS_BROWSER_REPORT_STATE_SETTING, PARADIS_BROWSER_RUN_STEPS_FLOW_SETTING, PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING, PARADIS_BROWSER_SITE_NOTES_SETTING, PARADIS_BROWSER_SNAPSHOT_DIFF_SETTING, PARADIS_BROWSER_SITE_RECIPES_SETTING } from '../common/paradisAgentBrowser.js';
+import { IParadisExactViewEmulationResult, IParadisAbortBindResult, IParadisAgentPaneSession, IParadisAgentPaneStatus, IParadisAgentStatusSnapshot, IParadisBindingTicketRequest, IParadisCdpInputDispatchResult, IParadisCdpScreenshotOptions, IParadisCommitBindResult, IParadisExactBrowserViewDescriptor, IParadisGatewayEndpoint, IParadisAgentTabGrant, IParadisGrantAgentTabRequest, IParadisMcpConfigStatus, IParadisMcpFixRequest, IParadisMcpSetupRequest, IParadisMcpSetupResult, IParadisPaneBinding, IParadisPrepareBindRequest, IParadisPrepareBindResult, IParadisPreviewFileResult, IParadisSharedPageInfo, ParadisPreviewFileFailure, PARADIS_AGENT_BROWSER_CHANNEL, PARADIS_AGENT_PANE_ROOTS_METHOD, PARADIS_AGENT_PREVIEW_CHANNEL, PARADIS_CDP_TARGET_CHANNEL, PARADIS_MCP_DEFAULT_PORT, PARADIS_MCP_PORT_FILE_NAME, ParadisAgentStatus, paradisAgentHookEntersWait, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent, paradisPaneFingerprint, paradisParseCdpInputDispatchResult, paradisExactViewKey, paradisParseExactBrowserViewDescriptor, PARADIS_BROWSER_REPORT_STATE_SETTING, PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING, PARADIS_BROWSER_SITE_NOTES_SETTING, PARADIS_BROWSER_SITE_RECIPES_SETTING } from '../common/paradisAgentBrowser.js';
 import { PARADIS_AGENT_HOOK_MAX_BODY_BYTES, PARADIS_AGENT_HOOK_REMOTE_HOST_PARAM, PARADIS_AGENT_HOOKS_ENABLED_SETTING, PARADIS_CODEX_HOOK_EVENTS, paradisAgentHookRemoteHostId, paradisAgentHooksEnabled, paradisIsAgentHookRemoteHostId } from '../common/paradisAgentHooks.js';
 import { PARADIS_ANTIGRAVITY_QUESTION_TOOL, paradisAntigravityHookEvent, paradisIsAntigravityHookPayload, paradisWithAntigravityHookAliases } from '../common/paradisAntigravityHooks.js';
 import { PARADIS_ANTIGRAVITY_APPROVAL_HTTP_PREFIX, PARADIS_ANTIGRAVITY_APPROVAL_WAIT_PREFIX, PARADIS_ANTIGRAVITY_APPROVAL_WAIT_SETTING, paradisAntigravityApprovalSkippedByLaunch, paradisAntigravityApprovalWaitMs } from '../common/paradisAntigravityApproval.js';
@@ -106,9 +106,7 @@ import { paradisAdjustDevtoolsToolResult, paradisStripInternalDevtoolsArguments,
 import { PARADIS_BROWSER_QUERY_TOOL_NAME_SET, ParadisBrowserQuery } from './paradisBrowserQuery.js';
 import { PARADIS_BROWSER_ACT_TOOL_NAME_SET, ParadisBrowserActBy } from './paradisBrowserActBy.js';
 import { IParadisObserveHost, IParadisObserveOptions, PARADIS_FAILED_STATE_DEADLINE_MS, PARADIS_SETTLE_NETWORK_WINDOW_MS, ParadisBrowserObserver, paradisFailureWasUnanswered, paradisObserveOptionsFor, paradisTakeObserveArguments, paradisWithObserveArguments } from './paradisBrowserObserve.js';
-import { ParadisSnapshotDiffMode, paradisTakeSnapshotDiffMode, paradisWithSnapshotDiffArgument } from './paradisBrowserSnapshotDiff.js';
 import { paradisFillFallbackArgs, paradisFillNeedsInsertTextFallback, paradisMergeFillFallbackResult } from './paradisBrowserFillFallback.js';
-import { paradisRunSteps } from './paradisBrowserRunSteps.js';
 import { IParadisSiteNote, PARADIS_SITE_NOTE_TOOL_NAMES, PARADIS_SITE_NOTE_TOOLS, ParadisSiteNotesStore, paradisFormatSiteNotesHint, paradisSiteNoteCommit, paradisSiteNoteContainsCardNumber, paradisSiteNoteLooksSecret, paradisSiteMemoryInstructions, paradisSiteNoteOrigin, paradisSiteNotesDefaultPath } from './paradisBrowserSiteNotes.js';
 import { paradisRunStepsFlow, paradisRunStepsFlowDescriptor } from './paradisBrowserRunStepsFlow.js';
 import { IParadisAgentBrowserUsageSettings, IParadisRunStepsStats, ParadisAgentBrowserUsage, ParadisRecipeRunner, ParadisSiteNoteOutcome, ParadisSiteRecipeOutcome, paradisRunStepsFeatures } from '../common/paradisAgentBrowserUsage.js';
@@ -957,8 +955,6 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _remoteVoiceLocalPlaybackEnabled: () => boolean;
 	/** 操作の後に待って変化を添えるか（E1）・ブラウザの状態を添えるか（I1）。設定（既定は無効）を毎回読む。設定の無いテストでは undefined。 */
 	private readonly _observeSettings: (() => IParadisObserveOptions) | undefined;
-	/** take_snapshot の 2 回目以降を前回との差分にするか（E2）。設定（既定は無効）を毎回読む。設定の無いテストでは undefined。 */
-	private readonly _snapshotDiffEnabled: (() => boolean) | undefined;
 	/** サイトメモ（E4）を使うか。設定（既定は無効）を毎回読む。設定の無いテストでは undefined。 */
 	private readonly _siteNotesEnabled: (() => boolean) | undefined;
 	/** サイトメモの置き場（paradisBrowserSiteNotes.ts）。 */
@@ -985,9 +981,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	/** CLI が名乗った会話の識別子（ペインごと）。初めて見た識別子で会話の始まりの片付けをする。 */
 	private readonly _cliConversations = new ParadisCliConversations();
 	private readonly _siteNoteSpaces = new Map<string, { readonly space: Promise<{ readonly key: string; readonly folder?: string } | undefined>; readonly at: number }>();
-	/** run_steps を手順書にするか（E6）。設定（既定は無効）を毎回読む。設定の無いテストでは undefined。 */
-	private readonly _runStepsFlowEnabled: (() => boolean) | undefined;
-	/** 試験的な設定 6 件の使われ方を Sentry へまとめて送る（paradisAgentBrowserUsage.ts、q.html Q611）。 */
+	/** 設定 4 件の使われ方を Sentry へまとめて送る（paradisAgentBrowserUsage.ts、q.html Q611）。 */
 	private readonly _browserUsage = new ParadisAgentBrowserUsage(() => this._usageSettings());
 	/** run_recipe の手順を、この起動の中でどのペインが保存したか（キーは「スペース\nオリジン\n名前」。Sentry の集計用）。 */
 	private readonly _recipeSavers = new Map<string, string>();
@@ -1100,7 +1094,6 @@ export class ParadisAgentBrowserService extends Disposable {
 			resolveRoots: key => this._resolveDevtoolsRoots(paradisPaneTokenOfScopeKey(key)),
 			recentInputRejection: (token, since) => this._inputRejections.recent(token, since),
 			onToolFailure: (token, failure) => this._noteBrowserDiagnostic(token, { kind: 'tool-failure', ...failure }),
-			onSnapshotDiffOutcome: (token, outcome) => this._browserUsage?.noteSnapshotOutcome(token, outcome),
 		}));
 		this._agentNetworkFilter = configurationService ? this._register(new AgentNetworkFilterService(configurationService)) : undefined;
 		this._pageOps = new ParadisBrowserPageOps({
@@ -1153,10 +1146,8 @@ export class ParadisAgentBrowserService extends Disposable {
 			settle: configurationService?.getValue(PARADIS_BROWSER_SETTLE_AFTER_ACTION_SETTING) === true,
 			state: configurationService?.getValue(PARADIS_BROWSER_REPORT_STATE_SETTING) === true,
 		});
-		this._snapshotDiffEnabled = () => configurationService?.getValue(PARADIS_BROWSER_SNAPSHOT_DIFF_SETTING) === true;
 		this._siteNotesEnabled = () => configurationService?.getValue(PARADIS_BROWSER_SITE_NOTES_SETTING) === true;
 		this._siteRecipesEnabled = () => configurationService?.getValue(PARADIS_BROWSER_SITE_RECIPES_SETTING) === true;
-		this._runStepsFlowEnabled = () => configurationService?.getValue(PARADIS_BROWSER_RUN_STEPS_FLOW_SETTING) === true;
 		this._register(this._browserUsage);
 		this._devtoolsGenerationCoordinator = new ParadisDevtoolsGenerationCoordinator(token => this._devtoolsProxy.forget(token));
 		// Renderer IPC切断はreloadでも発生するため、退役根拠にはしない。実windowの生存権威は
@@ -3749,8 +3740,6 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._siteNudges?.forget(token);
 		this._forgetHumanChecks(token);
 		this._siteNoteSpaces?.delete(token);
-		// 新しいエージェントは前のエージェントのスナップショットを見ていない。次の take_snapshot は全体を返す（E2）
-		this._devtoolsProxy?.forgetSnapshotBaselines(key => paradisPaneTokenOfScopeKey(key) === token);
 	}
 
 	/** CLI からの呼び出しなら、添えられた会話の識別子を見て、初めてのものなら会話の始まりとして片付ける。 */
@@ -5720,22 +5709,20 @@ export class ParadisAgentBrowserService extends Disposable {
 		// para固有ツールのみに縮退し、一覧自体は失敗させない）
 		const devtoolsTools = await this._listDevtoolsTools(ingressLease, signal);
 		this._requireIngressLease(ingressLease);
-		// take_snapshot を差分にする設定（既定は無効）が有効なら、全体を取る `full` と説明を足す
-		const tools = this._snapshotDiffEnabled?.() === true ? devtoolsTools.map(tool => paradisWithSnapshotDiffArgument(tool)) : devtoolsTools;
 		// PARA-PATCH: 登録されたツールプロバイダ（モバイル端末操作など）のツールも1本のサーバーに混ぜて出す
 		const provided = this._allToolProviders().flatMap(provider => [...provider.listTools()]);
 		// ページを操作するツールには、どのタブかを選ぶ `tab_id` を足す（サブエージェントごとに別のタブを使える）
 		const listed = [
 			...TOOLS.map(tool => PARADIS_TAB_SCOPED_TOOL_NAMES.has(tool.name) ? paradisWithTabIdArgument(tool) : tool),
 			...provided,
-			...tools.map(tool => paradisWithTabIdArgument(tool)),
+			...devtoolsTools.map(tool => paradisWithTabIdArgument(tool)),
 		];
 		// 接続先のペインには、パスの引数を「エージェントの機械のパス」として説明し直す
 		// 操作の後に待つ・状態を添える設定（既定は無効）が有効なら、その引数と説明を足す
 		const observeSettings = this._observeSettings?.();
 		const observedTools = observeSettings?.settle || observeSettings?.state ? listed.map(tool => paradisWithObserveArguments(tool, observeSettings)) : listed;
-		// 手順書の run_steps（E6）は、設定が有効なときだけ説明と引数を替える
-		const observed = this._runStepsFlowEnabled?.() === true ? observedTools.map(tool => paradisRunStepsFlowDescriptor(tool)) : observedTools;
+		// run_steps は手順書（E6。参照・expect・for_each・repeat_until）の説明と引数で出す
+		const observed = observedTools.map(tool => paradisRunStepsFlowDescriptor(tool));
 		// サイトメモの道具（E4）は、設定が有効なときだけ一覧に出す
 		const withNotes = this._siteNotesEnabled?.() === true ? [...observed, ...PARADIS_SITE_NOTE_TOOLS] : observed;
 		// サイトの手順の道具（E3）も、設定が有効なときだけ一覧に出す。run_recipe はタブを選べる
@@ -5992,16 +5979,14 @@ export class ParadisAgentBrowserService extends Disposable {
 		return this._scopeBinding(token, tabId) !== undefined ? paradisAgentTabScopeKey(token, tabId) : undefined;
 	}
 
-	/** Sentry の集計に載せる、試験的な設定 6 件の今の値（設定の無いテストではすべてオフ）。 */
+	/** Sentry の集計に載せる、設定 4 件の今の値（設定の無いテストではすべてオフ）。 */
 	private _usageSettings(): IParadisAgentBrowserUsageSettings {
 		const observe = this._observeSettings?.();
 		return {
 			settle: observe?.settle === true,
 			state: observe?.state === true,
-			snapshotDiff: this._snapshotDiffEnabled?.() === true,
 			siteNotes: this._siteNotesEnabled?.() === true,
 			siteRecipes: this._siteRecipesEnabled?.() === true,
-			runStepsFlow: this._runStepsFlowEnabled?.() === true,
 		};
 	}
 
@@ -6668,9 +6653,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		return {
 			// 待たずに評価する（vendored の PARA-PATCH。ダイアログが開いていれば断られ、閉じない）。観測の呼び出しの失敗は、
 			// エージェントの道具の失敗とは別の名前で報告する（paradisDevtoolsCallOrigin.ts、q.html Q462 の D1）
-			evaluate: source => this._callDevtoolsTool(tabLease, 'evaluate_script', { function: source, paraCodeObserve: true }, signal, true, undefined, 'observe'),
-			listPages: () => this._callDevtoolsTool(tabLease, 'list_pages', {}, signal, true, undefined, 'observe'),
-			snapshot: async () => paradisAdjustDevtoolsToolResult('take_snapshot', { args: {}, snapshotOffset: 0 }, await this._callDevtoolsTool(tabLease, 'take_snapshot', {}, signal, true, undefined, 'observe')),
+			evaluate: source => this._callDevtoolsTool(tabLease, 'evaluate_script', { function: source, paraCodeObserve: true }, signal, true, 'observe'),
+			listPages: () => this._callDevtoolsTool(tabLease, 'list_pages', {}, signal, true, 'observe'),
+			snapshot: async () => paradisAdjustDevtoolsToolResult('take_snapshot', { args: {}, snapshotOffset: 0 }, await this._callDevtoolsTool(tabLease, 'take_snapshot', {}, signal, true, 'observe')),
 			// 通信はタブの鍵で見る（ペインの鍵では対象のタブの通信を数えない。wait_until と同じ）
 			// 操作の前から続く要求は 1.5 秒で外し、操作の後に始まった要求は長くても待つ
 			network: actionStartedAt => this._cdpGateway.getNetworkActivity(this._pageKeyOf(tabLease), PARADIS_SETTLE_NETWORK_WINDOW_MS, actionStartedAt),
@@ -6730,9 +6715,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			const pageLease = scopedCall.lease;
 			// Para Code だけが付ける内部の引数は、エージェントから来たら捨てる（観測の待たない評価を勝手に使わせない）
 			const strippedArgs = paradisStripInternalDevtoolsArguments(name, scopedCall.args);
-			// take_snapshot を差分にする設定（既定は無効）が有効なら、`full` を取り除いて、差分か全体かを決める
-			const snapshotDiff = name === 'take_snapshot' && this._snapshotDiffEnabled?.() === true ? paradisTakeSnapshotDiffMode(strippedArgs, nested === true) : undefined;
-			const devtoolsArgs = snapshotDiff?.args ?? strippedArgs;
+			const devtoolsArgs = strippedArgs;
 			// 同じタブへの呼び出しは 1 本ずつ（paradisToolCallLanes.ts）。子プロセスの toolMutex は内蔵の道具どうししか
 			// 並べないので、Para の道具（click_by など）と同じ列に入れる
 			const devtoolsLane = this._pageKeyOf(pageLease);
@@ -6770,7 +6753,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				}
 				// para固有ツールでなければ、内蔵chrome-devtools-mcpへの転送を試みる
 				const devtoolsCalledAt = Date.now();
-				const devtoolsResult = paradisWithScriptHints(name, devtoolsArgs, await this._withToolCursorStatus(pageLease, name, () => this._callDevtoolsTool(pageLease, name, devtoolsArgs, signal, true, snapshotDiff?.mode)));
+				const devtoolsResult = paradisWithScriptHints(name, devtoolsArgs, await this._withToolCursorStatus(pageLease, name, () => this._callDevtoolsTool(pageLease, name, devtoolsArgs, signal)));
 				if (paradisFillNeedsInsertTextFallback(name, devtoolsResult)) {
 					// キーの抑止を用意できないページでは、fill_by と同じ insertText の経路で入れ直す（paradisBrowserFillFallback.ts）
 					return this._refillWithInsertText(ingressLease, pageLease, devtoolsArgs, devtoolsResult, devtoolsCalledAt, signal, socket);
@@ -6808,11 +6791,10 @@ export class ParadisAgentBrowserService extends Disposable {
 						return stepRefusal ?? this._callTool(ingressLease, { name: stepName, arguments: stepArguments }, signal, socket, true);
 					},
 				};
-				// 手順書（参照・expect・for_each・repeat_until）は設定が有効なときだけ（E6。paradisBrowserRunStepsFlow.ts）
-				const flow = this._runStepsFlowEnabled?.() === true;
 				const stepsArguments = toolArguments;
-				const reportedCall = { ...runStepsCall, report: (stats: IParadisRunStepsStats) => this._browserUsage?.noteRunSteps(flow, paradisRunStepsFeatures(stepsArguments), stats) };
-				return flow ? paradisRunStepsFlow(reportedCall, toolArguments) : paradisRunSteps(reportedCall, toolArguments);
+				const reportedCall = { ...runStepsCall, report: (stats: IParadisRunStepsStats) => this._browserUsage?.noteRunSteps(paradisRunStepsFeatures(stepsArguments), stats) };
+				// 手順書（参照・expect・for_each・repeat_until。paradisBrowserRunStepsFlow.ts）として動かす
+				return paradisRunStepsFlow(reportedCall, toolArguments);
 			}
 		}
 
@@ -7155,7 +7137,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				try {
 					// 待っている間に開いたダイアログ（confirm など）を承認しないよう、閉じる側にする。答えないページは
 					// 締め切りで諦める（`paraCodeDeadlineMs`。vendored が知らなければ proxy が外す。q.html Q379 の 4）
-					return await this._callDevtoolsTool(ingressLease, 'evaluate_script', { function: functionSource, ...(uids.length > 0 ? { args: [...uids] } : {}), dialogAction: 'dismiss', ...(deadlineMs !== undefined ? { paraCodeDeadlineMs: deadlineMs } : {}) }, signal, true, undefined, 'query');
+					return await this._callDevtoolsTool(ingressLease, 'evaluate_script', { function: functionSource, ...(uids.length > 0 ? { args: [...uids] } : {}), dialogAction: 'dismiss', ...(deadlineMs !== undefined ? { paraCodeDeadlineMs: deadlineMs } : {}) }, signal, true, 'query');
 				} catch (error) {
 					if (error instanceof ParadisIngressLeaseError || !this.isIngressLeaseCurrent(ingressLease)) {
 						throw new ParadisIngressLeaseError();
@@ -7206,7 +7188,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			},
 			evaluate: async (functionSource, uids, deadlineMs) => {
 				try {
-					return await this._callDevtoolsTool(ingressLease, 'evaluate_script', { function: functionSource, ...(uids.length > 0 ? { args: [...uids] } : {}), dialogAction: 'dismiss', ...(deadlineMs !== undefined ? { paraCodeDeadlineMs: deadlineMs } : {}) }, signal, true, undefined, 'query');
+					return await this._callDevtoolsTool(ingressLease, 'evaluate_script', { function: functionSource, ...(uids.length > 0 ? { args: [...uids] } : {}), dialogAction: 'dismiss', ...(deadlineMs !== undefined ? { paraCodeDeadlineMs: deadlineMs } : {}) }, signal, true, 'query');
 				} catch (error) {
 					if (error instanceof ParadisIngressLeaseError || !this.isIngressLeaseCurrent(ingressLease)) {
 						throw new ParadisIngressLeaseError();
@@ -7235,7 +7217,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			},
 			evaluate: async (functionSource, uids, deadlineMs) => {
 				try {
-					return await this._callDevtoolsTool(ingressLease, 'evaluate_script', { function: functionSource, ...(uids.length > 0 ? { args: [...uids] } : {}), dialogAction: 'dismiss', ...(deadlineMs !== undefined ? { paraCodeDeadlineMs: deadlineMs } : {}) }, signal, true, undefined, 'query');
+					return await this._callDevtoolsTool(ingressLease, 'evaluate_script', { function: functionSource, ...(uids.length > 0 ? { args: [...uids] } : {}), dialogAction: 'dismiss', ...(deadlineMs !== undefined ? { paraCodeDeadlineMs: deadlineMs } : {}) }, signal, true, 'query');
 				} catch (error) {
 					if (error instanceof ParadisIngressLeaseError || !this.isIngressLeaseCurrent(ingressLease)) {
 						throw new ParadisIngressLeaseError();
@@ -7450,7 +7432,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	/**
 	 * @param internal Para Code 自身の見張り（`observe`）や、道具の中で要素を探す・読む評価（`query`）の呼び出し（失敗をエージェントの道具の失敗とは別の名前で報告する。q.html Q462 の D1）。
 	 */
-	private async _callDevtoolsTool(ingressLease: IParadisAgentBrowserIngressLease, name: string, args: unknown, signal?: AbortSignal, offerScreenshotHandoff: boolean = true, snapshotDiff?: ParadisSnapshotDiffMode, internal?: ParadisDevtoolsInternalCall): Promise<unknown> {
+	private async _callDevtoolsTool(ingressLease: IParadisAgentBrowserIngressLease, name: string, args: unknown, signal?: AbortSignal, offerScreenshotHandoff: boolean = true, internal?: ParadisDevtoolsInternalCall): Promise<unknown> {
 		this._requireIngressLease(ingressLease);
 		// 子プロセスと世代はタブのスコープキーごと（tab_id を解決していなければペインのトークン）。別のタブの
 		// 子プロセスは別なので、別のタブへの呼び出しは並行に走る
@@ -7485,7 +7467,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				}
 				let result: unknown;
 				try {
-					result = await this._devtoolsProxy.tryCallTool(token, generation, wsEndpoint, name, forwardedArgs, signal, snapshotDiff, { ...(agentTool !== undefined ? { agentTool } : {}), ...(internal !== undefined ? { internal } : {}) });
+					result = await this._devtoolsProxy.tryCallTool(token, generation, wsEndpoint, name, forwardedArgs, signal, { ...(agentTool !== undefined ? { agentTool } : {}), ...(internal !== undefined ? { internal } : {}) });
 				} finally {
 					if (sharp) {
 						const count = (this._sharpScreenshotKeys.get(token) ?? 1) - 1;

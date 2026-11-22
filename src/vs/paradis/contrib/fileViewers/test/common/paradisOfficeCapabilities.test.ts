@@ -329,7 +329,7 @@ suite('ParadisOfficeConfiguration', () => {
 			'paradis.officeViewer.semanticWord': { type: 'boolean', default: true, scope: ConfigurationScope.WINDOW, restricted: true, included: true, enum: undefined, policy: 'ParadisOfficeViewerSemanticWord' },
 			'paradis.officeViewer.platformBackend': { type: 'boolean', default: true, scope: ConfigurationScope.WINDOW, restricted: true, included: false, enum: undefined, policy: 'ParadisOfficeViewerPlatformBackend' },
 			'paradis.officeViewer.searchPrint': { type: 'boolean', default: true, scope: ConfigurationScope.WINDOW, restricted: true, included: true, enum: undefined, policy: 'ParadisOfficeViewerSearchPrint' },
-			'paradis.officeViewer.enabled': { type: 'boolean', default: false, scope: ConfigurationScope.WINDOW, restricted: true, included: true, enum: undefined, policy: 'ParadisOfficeViewerEnabled' },
+			'paradis.officeViewer.enabled': { type: 'boolean', default: true, scope: ConfigurationScope.WINDOW, restricted: true, included: true, enum: undefined, policy: 'ParadisOfficeViewerEnabled' },
 		});
 	});
 
