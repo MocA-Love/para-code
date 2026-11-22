@@ -69,10 +69,8 @@ suite('paradisToolArgumentCheck', () => {
 			_requireIngressLease: () => { },
 			_allToolProviders: () => [],
 			_observeSettings: () => ({ settle: false, state: false }),
-			_runStepsFlowEnabled: () => false,
 			_siteNotesEnabled: () => false,
 			_siteRecipesEnabled: () => false,
-			_snapshotDiffEnabled: () => false,
 			_paneRemoteAuthorityOf: () => undefined,
 			_listedToolSchemas: new Map(),
 		}) as unknown as IInternals;

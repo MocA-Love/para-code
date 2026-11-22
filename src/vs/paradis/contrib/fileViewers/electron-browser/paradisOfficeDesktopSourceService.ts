@@ -21,6 +21,7 @@ import { IRemoteAgentService } from '../../../../workbench/services/remote/commo
 import { ParadisOfficeGitSource, type IParadisOfficeGitByteProvider, type IParadisOfficeGitRepository, type ParadisOfficeGitChange, type ParadisOfficeGitRepositorySnapshot } from '../browser/paradisOfficeGitSource.js';
 import { ParadisOfficeRemoteClient, type ParadisOfficeRemoteClientOptions } from '../browser/paradisOfficeRemoteClient.js';
 import { PARADIS_OFFICE_CHANNEL } from '../common/paradisOfficeChannel.js';
+import { paradisOfficePlatformBackendEnabled } from '../common/paradisOfficeCapabilities.js';
 
 export const IParadisOfficeDesktopSourceService = createDecorator<IParadisOfficeDesktopSourceService>('paradisOfficeDesktopSourceService');
 
@@ -108,7 +109,7 @@ export class ParadisOfficeDesktopSourceService implements IParadisOfficeDesktopS
 	}
 
 	createRemoteClient(options: Pick<ParadisOfficeRemoteClientOptions, 'sourceBroker' | 'spoolClient' | 'onWarning'>): ParadisOfficeRemoteClient {
-		return new ParadisOfficeRemoteClient({ ...options, remoteAgentService: this.remoteAgentService, localChannel: this.sharedProcessService.getChannel(PARADIS_OFFICE_CHANNEL), isPlatformBackendEnabled: () => this.configurationService.getValue<string>('paradis.officeViewer.engine') !== 'legacy' && this.configurationService.getValue<boolean>('paradis.officeViewer.platformBackend') !== false });
+		return new ParadisOfficeRemoteClient({ ...options, remoteAgentService: this.remoteAgentService, localChannel: this.sharedProcessService.getChannel(PARADIS_OFFICE_CHANNEL), isPlatformBackendEnabled: () => paradisOfficePlatformBackendEnabled(this.configurationService) });
 	}
 }
 

@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// run_steps を小さな手順書にする（para-browser-improvement.html の E6、設定 `paradis.agentBrowser.runStepsFlow`。既定は無効）。
+// run_steps を小さな手順書にする（para-browser-improvement.html の E6。設定 `paradis.agentBrowser.runStepsFlow` で試した後、q.html Q681 で常に有効にした）。
 // 今の run_steps（paradisBrowserRunSteps.ts）に次を足す:
 //   - 前の手順の結果の参照（`$3.text`・`$3.items`、for_each の中の `$item`・`$index`）
 //   - expect（文字が出る・消える・要素が見える・消える・押せる・押せない・URL・JavaScript の条件を、上限まで待って確かめる）
@@ -666,7 +666,7 @@ export async function paradisRunStepsFlow(call: IParadisRunStepsFlowCall, rawArg
 	return { content: [{ type: 'text', text: summary }, ...run.content], ...(run.failed > 0 || stoppedWithoutFailure ? { isError: true } : {}) };
 }
 
-/** tools/list の run_steps を、手順書を書ける形にする（設定が有効なときだけ）。 */
+/** tools/list の run_steps を、手順書を書ける形にする。 */
 export function paradisRunStepsFlowDescriptor<T extends { readonly name: string; readonly description?: string; readonly inputSchema?: unknown }>(tool: T): T {
 	if (tool.name !== 'run_steps') {
 		return tool;

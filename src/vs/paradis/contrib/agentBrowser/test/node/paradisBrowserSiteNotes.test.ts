@@ -126,35 +126,24 @@ suite('Paradis site notes (E4)', () => {
 		});
 	});
 
-	test('tools/list gets the run_steps flow description and the note tools for each setting that is on', async () => {
-		const list = async (flow: boolean, notes: boolean) => {
+	test('tools/list always gets the run_steps flow description, and the note tools only while the setting is on', async () => {
+		const list = async (notes: boolean) => {
 			const service = Object.assign(Object.create(ParadisAgentBrowserService.prototype) as object, {
 				_listDevtoolsTools: async () => [],
 				_requireIngressLease: () => { },
 				_allToolProviders: () => [],
 				_observeSettings: () => ({ settle: false, state: false }),
-				_runStepsFlowEnabled: () => flow,
 				_siteNotesEnabled: () => notes,
 				_paneRemoteAuthorityOf: () => undefined,
 			}) as unknown as ISiteNotesInternals;
-			const result = await service._dispatch({ token: TOKEN }, { jsonrpc: '2.0', id: 1, method: 'tools/list' }) as { tools: { name: string; description?: string }[] };
-			return { runSteps: result.tools.find(tool => tool.name === 'run_steps')?.description, notes: result.tools.filter(tool => tool.name.endsWith('site_note') || tool.name === 'list_site_notes').map(tool => tool.name) };
+			const result = await service._dispatch({ token: TOKEN }, { jsonrpc: '2.0', id: 1, method: 'tools/list' }) as { tools: { name: string; description?: string; inputSchema?: { properties?: object } }[] };
+			const runSteps = result.tools.find(tool => tool.name === 'run_steps');
+			// the flow descriptor replaces the schema, so tab_id has to be added after it
+			return { flow: /for_each/.test(runSteps?.description ?? ''), tabId: Object.hasOwn(runSteps?.inputSchema?.properties ?? {}, 'tab_id'), notes: result.tools.filter(tool => tool.name.endsWith('site_note') || tool.name === 'list_site_notes').map(tool => tool.name) };
 		};
-		const plain = await list(false, false);
-		const flowOnly = await list(true, false);
-		const notesOnly = await list(false, true);
-		const both = await list(true, true);
-		const noteTools = ['write_site_note', 'list_site_notes', 'delete_site_note'];
-		assert.deepStrictEqual({
-			flowOnly: { flow: flowOnly.runSteps !== plain.runSteps, notes: flowOnly.notes },
-			notesOnly: { flow: notesOnly.runSteps !== plain.runSteps, notes: notesOnly.notes },
-			both: { flow: both.runSteps === flowOnly.runSteps && both.runSteps !== plain.runSteps, notes: both.notes },
-			plain: plain.notes,
-		}, {
-			flowOnly: { flow: true, notes: [] },
-			notesOnly: { flow: false, notes: noteTools },
-			both: { flow: true, notes: noteTools },
-			plain: [],
+		assert.deepStrictEqual({ off: await list(false), on: await list(true) }, {
+			off: { flow: true, tabId: true, notes: [] },
+			on: { flow: true, tabId: true, notes: ['write_site_note', 'list_site_notes', 'delete_site_note'] },
 		});
 	});
 

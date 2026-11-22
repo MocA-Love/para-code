@@ -37,6 +37,26 @@ suite('paradisToolArgumentAliases', () => {
 		});
 	});
 
+	test('takes "note" as the text of write_site_note, and drops the "full" that take_snapshot no longer has', () => {
+		assert.deepStrictEqual({
+			note: paradisNormalizeLegacyToolArguments('write_site_note', { url: 'https://example.com/', note: 'Use the second button.' }),
+			both: paradisNormalizeLegacyToolArguments('write_site_note', { text: 'kept', note: 'dropped' }),
+			notText: paradisNormalizeLegacyToolArguments('write_site_note', { note: 5 }),
+			neither: paradisNormalizeLegacyToolArguments('write_site_note', { url: 'https://example.com/' }),
+			otherTool: paradisNormalizeLegacyToolArguments('list_site_notes', { note: 'x' }),
+			full: paradisNormalizeLegacyToolArguments('take_snapshot', { full: true, verbose: false }),
+			inSteps: paradisNormalizeLegacyToolArguments('run_steps', { steps: [{ tool: 'take_snapshot', args: { full: true } }] }),
+		}, {
+			note: { url: 'https://example.com/', text: 'Use the second button.' },
+			both: { text: 'kept' },
+			notText: { note: 5 },
+			neither: { url: 'https://example.com/' },
+			otherTool: { note: 'x' },
+			full: { verbose: false },
+			inSteps: { steps: [{ tool: 'take_snapshot', args: {} }] },
+		});
+	});
+
 	test('reads the old names inside run_steps and saved recipe steps, including nested loops and the tool arguments', () => {
 		const legacySteps = [
 			{ tool: 'click_by', args: { text: 'Next', settle_ms: 300 } },
@@ -129,16 +149,15 @@ suite('paradisToolArgumentAliases', () => {
 		const devtools = [
 			paradisAdjustDevtoolsToolDescriptor({ name: 'wait_for', description: 'Wait for the specified text.', inputSchema: { type: 'object', properties: { text: { type: 'array', items: { type: 'string' }, minItems: 1 }, timeout: upstreamTimeout }, required: ['text'], additionalProperties: false } }),
 			paradisAdjustDevtoolsToolDescriptor({ name: 'navigate_page', description: 'Go to a URL.', inputSchema: { type: 'object', properties: { type: { type: 'string' }, url: { type: 'string' }, timeout: upstreamTimeout }, additionalProperties: false } }),
+			paradisAdjustDevtoolsToolDescriptor({ name: 'take_snapshot', description: 'Take a text snapshot.', inputSchema: { type: 'object', properties: { verbose: { type: 'boolean' } }, additionalProperties: false } }),
 		];
 		const service = Object.assign(Object.create(ParadisAgentBrowserService.prototype) as object, {
 			_listDevtoolsTools: async () => devtools,
 			_requireIngressLease: () => { },
 			_allToolProviders: () => [],
 			_observeSettings: () => ({ settle: false, state: false }),
-			_runStepsFlowEnabled: () => false,
 			_siteNotesEnabled: () => false,
 			_siteRecipesEnabled: () => false,
-			_snapshotDiffEnabled: () => false,
 			_paneRemoteAuthorityOf: () => undefined,
 			_listedToolSchemas: new Map(),
 			_cursorPacing: { begin: () => ({ dispose: () => { } }) },
@@ -158,6 +177,8 @@ suite('paradisToolArgumentAliases', () => {
 		await call('wait_for', { text: ['Done'], timeout: 4000 });
 		await call('wait_for', { text: ['Done'], timeout_seconds: 2.5 });
 		await call('navigate_page', { type: 'reload', timeout_seconds: 0 });
+		// the argument of the removed "changes only" setting is accepted and ignored instead of being refused
+		await call('take_snapshot', { full: true, verbose: true });
 		assert.deepStrictEqual({
 			refused: [refused.isError, refused.content[0].text.split(' Arguments ')[0]],
 			tooShort: tooShort.content[0].text,
@@ -170,6 +191,7 @@ suite('paradisToolArgumentAliases', () => {
 				'wait_for {"text":["Done"],"timeout":4000}',
 				'wait_for {"text":["Done"],"timeout":2500}',
 				'navigate_page {"type":"reload"}',
+				'take_snapshot {"verbose":true}',
 			],
 		});
 	});

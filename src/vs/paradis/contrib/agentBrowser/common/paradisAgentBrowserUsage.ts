@@ -6,11 +6,10 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 内蔵ブラウザの試験的な設定 6 件（paradis.agentBrowser.settleAfterAction・runStepsFlow・snapshotDiff・siteNotes・
-// siteRecipes・reportBrowserState）が、使われたか・うまくいったかを Sentry で読めるようにする（q.html Q611）。
+// 内蔵ブラウザの設定 4 件（paradis.agentBrowser.settleAfterAction・siteNotes・siteRecipes・reportBrowserState）が、使われたか・うまくいったかを Sentry で読めるようにする（q.html Q611）。
 //
 // shared process の para-browser の道具の呼び出しを数え、30 分ごとに `para.agentBrowser.usage` の 1 件にまとめる
-// （paradisUsageTally.ts）。6 件の設定の値を `safe_set_*` に載せ、設定がオフでも道具の呼び出し・失敗・
+// （paradisUsageTally.ts）。4 件の設定の値を `safe_set_*` に載せ、設定がオフでも道具の呼び出し・失敗・
 // take_snapshot・run_steps の回数は数えるので、オンとオフを比べられる。
 //
 // 送るのは決まった語の回数・ミリ秒の合計・文字数の帯だけ。ページの中身・URL・メモや手順の文・道具の引数の値は
@@ -22,19 +21,12 @@ import { IParadisUsageClock, ParadisUsageSender, ParadisUsageTally, paradisUsage
 /** まとめて送る間隔。 */
 export const PARADIS_AGENT_BROWSER_USAGE_INTERVAL_MS = 30 * 60_000;
 
-/** 差分を返した後にこの時間内に同じタブで `full: true` を取り直したら「取り直し」と数える。 */
-export const PARADIS_SNAPSHOT_REFETCH_WINDOW_MS = 60_000;
-/** 差分を返したタブを覚える数。 */
-const MAX_DIFF_KEYS = 64;
-
-/** 6 件の設定。 */
+/** 4 件の設定。 */
 export interface IParadisAgentBrowserUsageSettings {
 	readonly settle: boolean;
 	readonly state: boolean;
-	readonly snapshotDiff: boolean;
 	readonly siteNotes: boolean;
 	readonly siteRecipes: boolean;
-	readonly runStepsFlow: boolean;
 }
 
 /**
@@ -57,21 +49,6 @@ export interface IParadisSettleBlocked {
 	/** 文書の読み込みが終わっていなかった（遷移の途中を含む）。 */
 	readonly loading?: boolean;
 }
-
-/** take_snapshot を差分にする設定（snapshotDiff）で、何を返したか。 */
-export type ParadisSnapshotDiffOutcome =
-	/** 差分を返した。 */
-	| 'diff'
-	/** エージェントが `full: true` を渡した。 */
-	| 'full_requested'
-	/** 前回の控えが無い（最初の 1 回・期限切れ・移動の後など）。 */
-	| 'full_no_baseline'
-	/** 前回の本文が上限より長くて切って返していた。 */
-	| 'full_truncated'
-	/** 子プロセスか世代が替わり、uid が続かない。 */
-	| 'full_child_changed'
-	/** 差分が大きすぎた、または読めなかった。 */
-	| 'full_too_large';
 
 /** run_steps 1 回の結果（paradisBrowserRunSteps.ts・paradisBrowserRunStepsFlow.ts が終わったときに渡す）。 */
 export interface IParadisRunStepsStats {
@@ -209,16 +186,12 @@ const SITE_RECIPE_TOOLS = new Set(['save_recipe', 'run_recipe', 'list_recipes', 
 export class ParadisAgentBrowserUsage implements IDisposable {
 
 	private readonly tally: ParadisUsageTally;
-	/** 差分を返したタブ（子プロセスの台帳のキー）と、その時刻。 */
-	private readonly lastDiffAt = new Map<string, number>();
-	private readonly now: () => number;
 
 	constructor(
 		settings: () => IParadisAgentBrowserUsageSettings,
 		send?: ParadisUsageSender,
 		clock?: IParadisUsageClock,
 	) {
-		this.now = clock !== undefined ? () => clock.now() : () => Date.now();
 		this.tally = new ParadisUsageTally({
 			feature: 'agentBrowser',
 			operation: 'usage',
@@ -228,10 +201,8 @@ export class ParadisAgentBrowserUsage implements IDisposable {
 				return {
 					settle: paradisUsageSwitch(value.settle),
 					state: paradisUsageSwitch(value.state),
-					snapshot_diff: paradisUsageSwitch(value.snapshotDiff),
 					site_notes: paradisUsageSwitch(value.siteNotes),
 					site_recipes: paradisUsageSwitch(value.siteRecipes),
-					steps_flow: paradisUsageSwitch(value.runStepsFlow),
 				};
 			},
 			send,
@@ -307,12 +278,9 @@ export class ParadisAgentBrowserUsage implements IDisposable {
 		}
 	}
 
-	/** run_steps が終わった（`flow` は手順書の経路を通ったか）。 */
-	noteRunSteps(flow: boolean, features: IParadisRunStepsFeatures, stats: IParadisRunStepsStats): void {
+	/** run_steps が終わった。 */
+	noteRunSteps(features: IParadisRunStepsFeatures, stats: IParadisRunStepsStats): void {
 		this.tally.add('steps_calls');
-		if (flow) {
-			this.tally.add('steps_flow_calls');
-		}
 		if (features.forEach) {
 			this.tally.add('steps_used_for_each');
 		}
@@ -350,29 +318,6 @@ export class ParadisAgentBrowserUsage implements IDisposable {
 	/** エージェントの take_snapshot（設定に関わらず数える）。 */
 	noteSnapshotCall(): void {
 		this.tally.add('snap_calls');
-	}
-
-	/** 差分の設定が有効なときに take_snapshot で何を返したか。`key` は子プロセスの台帳のキー（送らない）。 */
-	noteSnapshotOutcome(key: string, outcome: ParadisSnapshotDiffOutcome): void {
-		this.tally.add(`snap_${outcome}`);
-		const now = this.now();
-		if (outcome === 'diff') {
-			this.lastDiffAt.delete(key);
-			this.lastDiffAt.set(key, now);
-			while (this.lastDiffAt.size > MAX_DIFF_KEYS) {
-				const oldest = this.lastDiffAt.keys().next();
-				if (oldest.done) {
-					break;
-				}
-				this.lastDiffAt.delete(oldest.value);
-			}
-			return;
-		}
-		const diffAt = this.lastDiffAt.get(key);
-		this.lastDiffAt.delete(key);
-		if (outcome === 'full_requested' && diffAt !== undefined && now - diffAt <= PARADIS_SNAPSHOT_REFETCH_WINDOW_MS) {
-			this.tally.add('snap_refetch_after_diff');
-		}
 	}
 
 	/** サイトメモの道具の結末。`chars` は保存したメモの文字数（書いたときだけ）。 */
@@ -434,7 +379,6 @@ export class ParadisAgentBrowserUsage implements IDisposable {
 	}
 
 	dispose(): void {
-		this.lastDiffAt.clear();
 		this.tally.dispose();
 	}
 }

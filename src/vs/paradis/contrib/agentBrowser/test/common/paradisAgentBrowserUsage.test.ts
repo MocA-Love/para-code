@@ -10,12 +10,12 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { isParadisSentryScrubbedWord, ParadisSpanAttributes } from '../../../sentry/common/paradisSentryDiagnostics.js';
 import { ParadisFakeUsageClock } from '../../../sentry/test/common/paradisFakeUsageClock.js';
-import { IParadisAgentBrowserUsageSettings, IParadisRunStepsStats, PARADIS_AGENT_BROWSER_USAGE_INTERVAL_MS, PARADIS_SNAPSHOT_REFETCH_WINDOW_MS, ParadisAgentBrowserUsage, ParadisSiteNoteOutcome, ParadisSiteRecipeOutcome, ParadisSnapshotDiffOutcome, paradisRunStepsFeatures } from '../../common/paradisAgentBrowserUsage.js';
+import { IParadisAgentBrowserUsageSettings, IParadisRunStepsStats, PARADIS_AGENT_BROWSER_USAGE_INTERVAL_MS, ParadisAgentBrowserUsage, ParadisSiteNoteOutcome, ParadisSiteRecipeOutcome, paradisRunStepsFeatures } from '../../common/paradisAgentBrowserUsage.js';
 
 suite('Para Browser experimental feature usage (Sentry)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	const allOff: IParadisAgentBrowserUsageSettings = { settle: false, state: false, snapshotDiff: false, siteNotes: false, siteRecipes: false, runStepsFlow: false };
+	const allOff: IParadisAgentBrowserUsageSettings = { settle: false, state: false, siteNotes: false, siteRecipes: false };
 
 	function create(settings: () => IParadisAgentBrowserUsageSettings = () => allOff) {
 		const sent: { readonly name: string; readonly attributes: ParadisSpanAttributes }[] = [];
@@ -27,7 +27,7 @@ suite('Para Browser experimental feature usage (Sentry)', () => {
 	const noRun: IParadisRunStepsStats = { refused: false, executed: 0, failed: 0, expectFailed: 0, stop: 'none' };
 
 	test('どの回数の名前も、Sentry が消す語を含まず送れる形になっている（全部を 1 回ずつ数えて確かめる）', () => {
-		const { sent, usage } = create(() => ({ settle: true, state: true, snapshotDiff: true, siteNotes: true, siteRecipes: true, runStepsFlow: true }));
+		const { sent, usage } = create(() => ({ settle: true, state: true, siteNotes: true, siteRecipes: true }));
 		usage.noteCall(true);
 		for (const tool of ['write_site_note', 'save_recipe', 'run_steps', 'click']) {
 			usage.noteArgumentRefusal(tool, { note: 'x' });
@@ -43,14 +43,12 @@ suite('Para Browser experimental feature usage (Sentry)', () => {
 		usage.noteSettle('timeout', 2_000, { dom: 'style', network: 1, busy: true, loading: true });
 		const features = { forEach: true, repeatUntil: true, expect: true, sleep: true, reference: true };
 		for (const stop of ['none', 'failure', 'step_limit', 'time_limit', 'cancelled'] as const) {
-			usage.noteRunSteps(true, features, { ...noRun, stop, failed: stop === 'none' ? 1 : 0, expectFailed: 1 });
+			usage.noteRunSteps(features, { ...noRun, stop, failed: stop === 'none' ? 1 : 0, expectFailed: 1 });
 		}
-		usage.noteRunSteps(false, features, { ...noRun, refused: true });
-		usage.noteRunSteps(false, features, noRun);
+		usage.noteRunSteps(features, { ...noRun, refused: true });
+		usage.noteRunSteps(features, noRun);
 		usage.noteStepRefusal({ observe: 'none' });
 		usage.noteSnapshotCall();
-		const snapshotOutcomes: ParadisSnapshotDiffOutcome[] = ['diff', 'full_requested', 'full_no_baseline', 'full_truncated', 'full_child_changed', 'full_too_large'];
-		snapshotOutcomes.forEach(outcome => usage.noteSnapshotOutcome('tab', outcome));
 		const noteOutcomes: ParadisSiteNoteOutcome[] = ['ok', 'no_text', 'card_number', 'private_text', 'store_full', 'site_not_open', 'no_site', 'no_space', 'no_tabs', 'unverified', 'missing', 'error'];
 		for (const tool of ['write', 'list', 'delete'] as const) {
 			noteOutcomes.forEach(outcome => usage.noteSiteNote(tool, outcome, 700));
@@ -90,7 +88,7 @@ suite('Para Browser experimental feature usage (Sentry)', () => {
 			scrubbedKeys: [],
 			scrubbedValues: [],
 			dropped: undefined,
-			settings: ['safe_set_settle', 'safe_set_state', 'safe_set_snapshot_diff', 'safe_set_site_notes', 'safe_set_site_recipes', 'safe_set_steps_flow'],
+			settings: ['safe_set_settle', 'safe_set_state', 'safe_set_site_notes', 'safe_set_site_recipes'],
 		});
 	});
 
@@ -105,36 +103,23 @@ suite('Para Browser experimental feature usage (Sentry)', () => {
 		usage.noteSettle('stopped', 300, { loading: true });
 		usage.noteArgumentRefusal('write_site_note', { note: 'try the second button' });
 		usage.noteSiteNote('write', 'ok', 296);
-		usage.noteRunSteps(true, paradisRunStepsFeatures({ steps: [{ tool: 'click_by', args: { text: '$item' } }] }), { refused: false, executed: 3, failed: 1, expectFailed: 0, stop: 'failure' });
+		usage.noteRunSteps(paradisRunStepsFeatures({ steps: [{ tool: 'click_by', args: { text: '$item' } }] }), { refused: false, executed: 3, failed: 1, expectFailed: 0, stop: 'failure' });
 		usage.noteStepRefusal({ selector: '#a', observe: 'none' });
 		usage.noteBrowserState({ tabs: true, newPage: false, download: false, dialog: false, chars: 456 }, false);
 		usage.dispose();
 		assert.deepStrictEqual(sent[0].attributes, {
-			safe_set_settle: 'on', safe_set_state: 'off', safe_set_snapshot_diff: 'off', safe_set_site_notes: 'on', safe_set_site_recipes: 'off', safe_set_steps_flow: 'off',
+			safe_set_settle: 'on', safe_set_state: 'off', safe_set_site_notes: 'on', safe_set_site_recipes: 'off',
 			safe_calls: 2, safe_call_failures: 1,
 			safe_observe_calls: 2, safe_observe_none: 1, safe_settle_zero: 1,
 			safe_settle_quiet: 1, safe_settle_quiet_ms: 240, safe_settle_timeout: 1, safe_settle_timeout_ms: 2_010, safe_settle_wait_ms: 2_550, safe_settle_wait_le_500: 2, safe_settle_wait_gt_2000: 1,
 			safe_settle_timeout_dom: 1, safe_settle_timeout_dom_style: 1, safe_settle_timeout_network: 1, safe_settle_stopped: 1, safe_settle_stopped_ms: 300,
 			safe_arg_refused: 1, safe_note_arg_refused: 1, safe_note_arg_note: 1,
 			safe_note_write_ok: 1, safe_note_len_le_400: 1,
-			safe_steps_calls: 1, safe_steps_flow_calls: 1, safe_steps_used_reference: 1, safe_steps_executed: 3, safe_steps_stop_failure: 1,
+			safe_steps_calls: 1, safe_steps_used_reference: 1, safe_steps_executed: 3, safe_steps_stop_failure: 1,
 			safe_steps_step_refused: 1, safe_steps_step_observe_refused: 1,
 			safe_state_added: 1, safe_state_tabs_only: 1, safe_state_chars: 456, safe_state_len_le_500: 1,
 			safe_window_ms: 0,
 		});
-	});
-
-	test('差分を返した後に同じタブで full を取り直したら、期限の中だけ「取り直し」に数える', () => {
-		const { sent, clock, usage } = create(() => ({ ...allOff, snapshotDiff: true }));
-		usage.noteSnapshotOutcome('tab-a', 'diff');
-		clock.advance(10_000);
-		usage.noteSnapshotOutcome('tab-a', 'full_requested');
-		usage.noteSnapshotOutcome('tab-b', 'diff');
-		clock.advance(PARADIS_SNAPSHOT_REFETCH_WINDOW_MS + 1);
-		usage.noteSnapshotOutcome('tab-b', 'full_requested');
-		usage.noteSnapshotOutcome('tab-c', 'full_requested');
-		usage.dispose();
-		assert.deepStrictEqual([sent[0].attributes.safe_snap_diff, sent[0].attributes.safe_snap_full_requested, sent[0].attributes.safe_snap_refetch_after_diff], [2, 3, 1]);
 	});
 
 	test('30 分ごとに送り、オフの人の呼び出しも数える', () => {

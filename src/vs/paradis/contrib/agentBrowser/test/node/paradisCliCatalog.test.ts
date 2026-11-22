@@ -74,7 +74,6 @@ function catalogService(overrides: object): ICatalogInternals {
 		_requireIngressLease: () => { },
 		_allToolProviders: () => [],
 		_observeSettings: () => ({ settle: false, state: false }),
-		_runStepsFlowEnabled: () => false,
 		_siteNotesEnabled: () => false,
 		_siteRecipesEnabled: () => false,
 		_paneRemoteAuthorityOf: () => undefined,

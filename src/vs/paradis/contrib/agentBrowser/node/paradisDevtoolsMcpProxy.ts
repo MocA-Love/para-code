@@ -40,8 +40,6 @@ import { paradisCrashRoleNodeArgs } from '../../sentry/common/paradisCrashRole.j
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisDevtoolsRoot, paradisDevtoolsExplainRootsDenial, paradisDevtoolsRoots } from './paradisDevtoolsPathPolicy.js';
 import { ParadisDevtoolsTemporaryDirectory } from './paradisDevtoolsTemporaryDirectory.js';
-import { ParadisSnapshotBaselines, ParadisSnapshotDiffMode } from './paradisBrowserSnapshotDiff.js';
-import { ParadisSnapshotDiffOutcome } from '../common/paradisAgentBrowserUsage.js';
 import { IParadisDevtoolsRecycleLimits, PARADIS_DEVTOOLS_HEALTH_INTERVAL_MS, PARADIS_DEVTOOLS_RECYCLE_LIMITS, PARADIS_DEVTOOLS_RECYCLE_QUIET_MS, ParadisDevtoolsReplacedReason, paradisAppendStderrTail, paradisDevtoolsReadsRecords, paradisDevtoolsRecordsResetNote, paradisDevtoolsRecycleIsUrgent, paradisDevtoolsRecycleReason, paradisDevtoolsStaleUidMessage, paradisNewUidTag, PARADIS_UID_TAG_HISTORY, paradisParseV8FatalStderr, paradisReadProcessRssMib, paradisTagChildUids, paradisTagSnapshotFileText, paradisUntagUids } from './paradisDevtoolsChildHealth.js';
 import { ParadisSnapshotCache, paradisAdjustCachedSnapshotResult, paradisAttachSnapshotRootRect, paradisSnapshotCacheUsable, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotMeasuresRoot, paradisTakeSnapshotRootRect, paradisEvaluateObserves, paradisEvaluateHasDeadline, paradisDevtoolsTimeoutTools, paradisDevtoolsToolIsRetrySafe } from './paradisDevtoolsToolAdjustments.js';
 import { IParadisDevtoolsCallOrigin, paradisDevtoolsCallOriginExtra } from './paradisDevtoolsCallOrigin.js';
@@ -142,8 +140,6 @@ export interface IParadisDevtoolsMcpProxyOptions {
 	 * 共有中のタブのフォーカス診断（Sentry のパンくずとまとめのイベント）へ回す。
 	 */
 	readonly onToolFailure?: (token: string, failure: { readonly tool: string; readonly errorKind: string; readonly gateReason?: string }) => void;
-	/** take_snapshot を差分にしたか・全体を返した理由（設定 snapshotDiff が有効なときだけ。Sentry の集計用）。 */
-	readonly onSnapshotDiffOutcome?: (token: string, outcome: ParadisSnapshotDiffOutcome) => void;
 	/** 子プロセスを作り直す目安（テスト用。既定 {@link PARADIS_DEVTOOLS_RECYCLE_LIMITS}）。 */
 	readonly recycleLimits?: IParadisDevtoolsRecycleLimits;
 	/** 最後の呼び出しからこれだけ経つまでは作り直さない（テスト用）。 */
@@ -315,8 +311,6 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 	private readonly _children = new Map<string, IChildEntry>();
 	/** take_snapshot の続き（offset）用に、上限より長かった直近のスナップショット（ペインごと）。 */
 	private readonly _snapshots = new ParadisSnapshotCache();
-	/** エージェントが前回 take_snapshot で受け取ったページ（差分の元。設定 snapshotDiff が有効なときだけ使う）。 */
-	private readonly _snapshotBaselines = new ParadisSnapshotBaselines(Date.now, undefined, (token, outcome) => this.options.onSnapshotDiffOutcome?.(token, outcome));
 	/** kill要求済みでも実process exit/errorを観測するまではslotを占有する。 */
 	private readonly _childSlots = new Set<IChildEntry>();
 	private readonly _generationHighWatermarks = new Map<string, number>();
@@ -422,12 +416,11 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 	 * ツール呼び出しを子プロセスへ転送する。`name` が転送対象でなければ `undefined` を返す
 	 * （未知ツールのJSON-RPCエラー化は呼び出し側の責務）。転送対象で実行に失敗した場合は
 	 * MCPツールエラー（`isError: true` のcontent）を返し、プロトコルエラーにはしない。
-	 * @param snapshotDiff エージェントの take_snapshot を前回との差分にするか（paradisBrowserSnapshotDiff.ts）。省くと従来どおり。
 	 */
 	/**
 	 * @param origin 何のための呼び出しか（エージェントが呼んだ道具・Para Code の見張り）。失敗の報告にだけ使う（paradisDevtoolsCallOrigin.ts）。
 	 */
-	async tryCallTool(token: string, generation: number, wsEndpoint: string, name: string, args: unknown, signal?: AbortSignal, snapshotDiff?: ParadisSnapshotDiffMode, origin?: IParadisDevtoolsCallOrigin): Promise<unknown | undefined> {
+	async tryCallTool(token: string, generation: number, wsEndpoint: string, name: string, args: unknown, signal?: AbortSignal, origin?: IParadisDevtoolsCallOrigin): Promise<unknown | undefined> {
 		let known: boolean;
 		try {
 			known = (await this._listTools(token, generation, wsEndpoint, signal)).some(tool => tool.name === name);
@@ -456,7 +449,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		}
 		this._inFlight.set(token, (this._inFlight.get(token) ?? 0) + 1);
 		try {
-			return await this._callProxiedTool(token, generation, wsEndpoint, name, args, prepared, signal, snapshotDiff, origin);
+			return await this._callProxiedTool(token, generation, wsEndpoint, name, args, prepared, signal, origin);
 		} finally {
 			const remaining = (this._inFlight.get(token) ?? 1) - 1;
 			if (remaining > 0) {
@@ -472,7 +465,7 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		}
 	}
 
-	private async _callProxiedTool(token: string, generation: number, wsEndpoint: string, name: string, args: unknown, prepared: ReturnType<typeof paradisPrepareDevtoolsToolCall>, signal: AbortSignal | undefined, snapshotDiff: ParadisSnapshotDiffMode | undefined, origin: IParadisDevtoolsCallOrigin | undefined): Promise<unknown> {
+	private async _callProxiedTool(token: string, generation: number, wsEndpoint: string, name: string, args: unknown, prepared: ReturnType<typeof paradisPrepareDevtoolsToolCall>, signal: AbortSignal | undefined, origin: IParadisDevtoolsCallOrigin | undefined): Promise<unknown> {
 		const startedAt = Date.now();
 		const now = this.options.now ?? Date.now;
 		const budgetStartedAt = now();
@@ -543,10 +536,6 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			}
 			if (snapshotCacheUsable && (name === 'take_snapshot' || (name === 'wait_for' && prepared.includeSnapshot === true))) {
 				this._snapshots.remember(token, result, producer, producer.generation, snapshotEpoch);
-			}
-			if (snapshotDiff !== undefined && name === 'take_snapshot' && snapshotCacheUsable && prepared.snapshotRoot === undefined && (prepared.snapshotOffset ?? 0) === 0) {
-				// 続き（offset）の控えは全体のまま。エージェントへ返す分だけを差分にする
-				result = this._snapshotBaselines.apply(token, producer, producer.generation, result, snapshotDiff);
 			}
 			const adjusted = paradisAdjustDevtoolsToolResult(name, prepared, result, this.options.recentInputRejection?.(token, startedAt));
 			// undefined は呼び出し側で「未知ツール」を意味するため、成功時は必ずオブジェクトを返す。
@@ -677,7 +666,6 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		}
 		this._replaced.set(token, { reason, recordsNote: true, hadTrace: entry.tracing });
 		this._snapshots.forget(token);
-		this._snapshotBaselines.forget(token);
 	}
 
 	/** RSS を測り、溜まっていれば合間に作り直す。 */
@@ -902,7 +890,6 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 		if (entry && entry.generation < generation) {
 			this._killChild(token, entry);
 			this._snapshots.forget(token);
-			this._snapshotBaselines.forget(token);
 		}
 	}
 
@@ -916,15 +903,9 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			this._killChild(token, entry);
 		}
 		this._snapshots.forget(token);
-		this._snapshotBaselines.forget(token);
 		this._replaced.delete(token);
 		this._issuedUidTags.delete(token);
 		this._generationHighWatermarks.delete(token);
-	}
-
-	/** 条件に合うキーの、差分の元にする控えを捨てる（新しいエージェントがつながったペイン）。 */
-	forgetSnapshotBaselines(predicate: (token: string) => boolean): void {
-		this._snapshotBaselines.forgetWhere(predicate);
 	}
 
 	override dispose(): void {
@@ -942,7 +923,6 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 			settle();
 		}
 		this._snapshots.clear();
-		this._snapshotBaselines.clear();
 		this._toolsCache = undefined;
 		void this._temporaryDirectory?.dispose();
 		super.dispose();
