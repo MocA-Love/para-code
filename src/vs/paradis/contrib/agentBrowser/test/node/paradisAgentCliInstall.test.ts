@@ -47,7 +47,7 @@ suite('paradisAgentCliInstall', () => {
 		assert.deepStrictEqual({
 			short: Buffer.byteLength(PARADIS_AGENT_CLI_SKILL_CONTENT) < 3500,
 			frontmatter: PARADIS_AGENT_CLI_SKILL_CONTENT.startsWith('---\nname: para-cli\ndescription: >-\n'),
-			promises: [PARADIS_CURSOR_LABEL_INSTRUCTION, PARADIS_SHARED_PAGE_ACTION_INSTRUCTION, 'write_site_note', 'para help browser', 'Never print the environment'].filter(text => !PARADIS_AGENT_CLI_SKILL_CONTENT.includes(text)),
+			promises: [PARADIS_CURSOR_LABEL_INSTRUCTION, PARADIS_SHARED_PAGE_ACTION_INSTRUCTION, 'write_site_note', 'para help browser', 'Never print the environment', 'Do not install anything'].filter(text => !PARADIS_AGENT_CLI_SKILL_CONTENT.includes(text)),
 			// 1 段目では MCP も並んでいる。「MCP は無い」とは書かない
 			mcp: /no MCP|only way/i.test(PARADIS_AGENT_CLI_SKILL_CONTENT),
 			marks: [PARADIS_AGENT_CLI_SKILL_CONTENT, PARADIS_AGENT_CLI_CODEX_RULES_CONTENT].map(content => content.includes(PARADIS_AGENT_CLI_MANAGED_MARK)),
