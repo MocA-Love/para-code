@@ -17,9 +17,12 @@ import { IInstantiationService, ServicesAccessor } from '../../../../../platform
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
 import { IMarkdownRendererService } from '../../../../../platform/markdown/browser/markdownRenderer.js';
 import { IDialogService } from '../../../../../platform/dialogs/common/dialogs.js';
+import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
+import { ILogService, NullLogService } from '../../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { TerminalLocation } from '../../../../../platform/terminal/common/terminal.js';
 import { ITerminalEditorService, ITerminalInstance, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
+import { IRemoteAgentService } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisPaneTokenService } from '../../../agentBrowser/browser/paradisPaneTokenService.js';
 import { paradisResumeAgentInWorkspace } from '../../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
@@ -824,11 +827,14 @@ suite('paradisResumeAgentInWorkspace', () => {
 		readonly ready: DeferredPromise<void>;
 	}
 
-	function createFixture(options?: { activeStateKey?: string; openError?: Error }): IFixture {
+	function createFixture(options?: { activeStateKey?: string; openError?: Error; shellType?: string; claudeResumeProfile?: (args: unknown[]) => Promise<unknown> }): IFixture {
 		const events: string[] = [];
 		const ready = new DeferredPromise<void>();
 		const instance = {
 			instanceId: 17,
+			remoteAuthority: undefined,
+			shellType: options?.shellType ?? 'zsh',
+			onDidChangeShellType: BaseEvent.None,
 			onDisposed: BaseEvent.None,
 			processReady: ready.p.then(() => { events.push('ready'); }),
 			sendText: async (command: string, shouldExecute: boolean) => { events.push(`send:${command}:${shouldExecute}`); },
@@ -863,8 +869,21 @@ suite('paradisResumeAgentInWorkspace', () => {
 		const paneTokenService = {
 			getTokenForInstance: (instanceId: number) => instanceId === 17 ? 'pane-token-17' : undefined,
 		} as unknown as IParadisPaneTokenService;
+		// 会話のあるマシン（手元なら shared process）への「Code Mode で始めた会話か」の問い合わせ
+		const sharedProcessService = {
+			getChannel: () => ({
+				call: async (command: string, args: unknown[]) => {
+					assert.strictEqual(command, 'claudeResumeProfile');
+					events.push(`profile:${JSON.stringify(args)}`);
+					return options?.claudeResumeProfile?.(args) ?? { codeMode: false };
+				},
+			}),
+		} as unknown as ISharedProcessService;
 		const accessor = {
 			get: (service: unknown) => {
+				if (service === ISharedProcessService) { return sharedProcessService; }
+				if (service === IRemoteAgentService) { return { getConnection: () => null }; }
+				if (service === ILogService) { return new NullLogService(); }
 				if (service === IParadisPaneTokenService) { return paneTokenService; }
 				if (service === ITerminalService) { return terminalService; }
 				if (service === ITerminalEditorService) { return terminalEditorService; }
@@ -901,7 +920,7 @@ suite('paradisResumeAgentInWorkspace', () => {
 		const claude = createFixture();
 		claude.ready.complete();
 		await paradisResumeAgentInWorkspace(claude.accessor, { ...request('claude'), codexHome: '/home/user/.codex-2' });
-		assert.deepStrictEqual([fixture.events[0], claude.events[0]], ['env:{"CODEX_HOME":"/home/user/.codex-2"}', 'create']);
+		assert.deepStrictEqual([fixture.events[0], claude.events.filter(event => !event.startsWith('profile:'))[0]], ['env:{"CODEX_HOME":"/home/user/.codex-2"}', 'create']);
 	});
 
 	test('waits for process readiness before opening, assigning, activating, and sending', async () => {
@@ -909,12 +928,14 @@ suite('paradisResumeAgentInWorkspace', () => {
 		const result = paradisResumeAgentInWorkspace(fixture.accessor, request('claude'));
 		await Promise.resolve();
 		await Promise.resolve();
-		assert.deepStrictEqual(fixture.events, ['create']);
+		assert.deepStrictEqual(fixture.events, ['profile:["session-123","/repo-worktrees/feature",false]', 'create']);
 
 		fixture.ready.complete();
 		const launched = await result;
 		assert.deepStrictEqual({ events: fixture.events, launched }, {
 			events: [
+				// Code Mode で始めた会話かは、ターミナルを開く前に聞き始める
+				'profile:["session-123","/repo-worktrees/feature",false]',
 				'create',
 				'ready',
 				'open',
@@ -937,7 +958,7 @@ suite('paradisResumeAgentInWorkspace', () => {
 			const fixture = createFixture();
 			fixture.ready.complete();
 			await paradisResumeAgentInWorkspace(fixture.accessor, request(testCase.agent, testCase.dangerous));
-			assert.deepStrictEqual(fixture.events, [
+			assert.deepStrictEqual(fixture.events.filter(event => !event.startsWith('profile:')), [
 				'create',
 				'ready',
 				'open',
@@ -945,6 +966,39 @@ suite('paradisResumeAgentInWorkspace', () => {
 				`send:${testCase.command}:true`,
 			]);
 		}
+	});
+
+	test('resumes a Claude Code session started in Code Mode with the settings quoted for the shell of the terminal, and plainly when it cannot ask', async () => {
+		const settings = `{"env":{"CLAUDE_CODE_ENHANCED_TELEMETRY_BETA":"0","ENABLE_BETA_TRACING_DETAILED":"0","CLAUDE_CODE_EXPERIMENTAL_CODE_MODE":"1"}}`;
+		const settingsFile = 'C:\\Users\\me\\.para-code\\claude-code-mode-resume.settings.json';
+		const run = async (options: Parameters<typeof createFixture>[0], mode?: 'fork') => {
+			const fixture = createFixture(options);
+			fixture.ready.complete();
+			await paradisResumeAgentInWorkspace(fixture.accessor, { ...request('claude'), mode });
+			return fixture.events.filter(event => event.startsWith('profile:') || event.startsWith('send:'));
+		};
+		assert.deepStrictEqual({
+			zsh: await run({ claudeResumeProfile: async () => ({ codeMode: true }) }),
+			fork: await run({ claudeResumeProfile: async () => ({ codeMode: true }) }, 'fork'),
+			powershell: await run({ shellType: 'pwsh', claudeResumeProfile: async args => args[2] === true ? { codeMode: true, settingsFile } : { codeMode: true } }),
+			powershellWithoutFile: await run({ shellType: 'pwsh', claudeResumeProfile: async () => ({ codeMode: true }) }),
+			// 古い REH サーバーには問い合わせ口が無い
+			oldServer: await run({ claudeResumeProfile: async () => { throw new Error('Method not found: claudeResumeProfile'); } }),
+		}, {
+			zsh: ['profile:["session-123","/repo-worktrees/feature",false]', `send:claude --permission-mode manual --settings '${settings}' --resume session-123:true`],
+			fork: ['profile:["session-123","/repo-worktrees/feature",false]', `send:claude --permission-mode manual --settings '${settings}' --resume session-123 --fork-session:true`],
+			powershell: [
+				'profile:["session-123","/repo-worktrees/feature",false]',
+				'profile:["session-123","/repo-worktrees/feature",true]',
+				`send:claude --permission-mode manual --settings '${settingsFile}' --resume session-123:true`,
+			],
+			powershellWithoutFile: [
+				'profile:["session-123","/repo-worktrees/feature",false]',
+				'profile:["session-123","/repo-worktrees/feature",true]',
+				'send:claude --permission-mode manual --resume session-123:true',
+			],
+			oldServer: ['profile:["session-123","/repo-worktrees/feature",false]', 'send:claude --permission-mode manual --resume session-123:true'],
+		});
 	});
 
 	test('rejects empty and option-like session IDs before creating a terminal', async () => {
