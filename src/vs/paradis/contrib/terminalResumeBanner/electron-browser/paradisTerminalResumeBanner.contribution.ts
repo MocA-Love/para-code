@@ -35,7 +35,7 @@ import { ITerminalEditorService, ITerminalInstance, ITerminalService } from '../
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
-import { paradisAgentResumeCommandForTerminal } from '../../sessionResume/electron-browser/paradisClaudeCodeModeResume.js';
+import { paradisAgentResumeCommandForTerminal, paradisPrepareAgentResumeCommand } from '../../sessionResume/electron-browser/paradisClaudeCodeModeResume.js';
 import { paradisRegisterEditorTerminalOverlay } from '../../agentBrowser/browser/paradisPaneIndicator.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisAgentStatusSnapshot } from '../../agentBrowser/common/paradisAgentBrowser.js';
@@ -433,7 +433,9 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 		}
 		// Code Mode で始めた Claude Code の会話には、再開に要る設定を足す。会話のあるマシンに聞くので、シェルの状態を
 		// 確かめる前に済ませる（確かめた後に待つと、その間に打たれた文字へコマンドをつなげてしまう）
-		const command = await this.resumeCommandFor(instance, offer.entry, 'resume', dangerouslyBypassPermissions) ?? plainCommand;
+		const command = await paradisAgentResumeCommandForTerminal(this.resumeCommandServices(), instance, {
+			agent: offer.entry.agent, sessionId: offer.entry.sessionId, mode: 'resume', dangerouslyBypassPermissions, cli: offer.entry.cli, cwd: offer.entry.cwd,
+		}) ?? plainCommand;
 		if (instance.isDisposed || this._offers.get(instanceId) !== offer) {
 			return 'no-offer';
 		}
@@ -558,18 +560,19 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 	private async openForkTerminal(instanceId: number, entry: IParadisResumeLedgerEntry, plainCommand: string, dangerouslyBypassPermissions: boolean): Promise<void> {
 		const source = this.terminalService.instances.find(candidate => candidate.instanceId === instanceId);
 		const cwd = entry.cwd !== undefined ? this.toCwdUri(entry.cwd) : (source === undefined ? undefined : await source.getInitialCwd());
+		// Code Mode で始めた会話かは、ターミナルを開く前に聞き始める（開いた後の待ちを増やさない）
+		const commandFor = paradisPrepareAgentResumeCommand(this.resumeCommandServices(), this.environmentService.remoteAuthority !== undefined, {
+			agent: entry.agent, sessionId: entry.sessionId, mode: 'fork', dangerouslyBypassPermissions, cli: entry.cli, cwd: entry.cwd,
+		});
 		const instance = await this.terminalService.createTerminal({ cwd, location: TerminalLocation.Editor });
 		await instance.processReady;
 		await this.terminalEditorService.openEditor(instance);
 		this.terminalService.setActiveInstance(instance);
-		await instance.sendText(await this.resumeCommandFor(instance, entry, 'fork', dangerouslyBypassPermissions) ?? plainCommand, true);
+		await instance.sendText(await commandFor(instance) ?? plainCommand, true);
 	}
 
-	/** このターミナルのシェルに合わせた再開・分岐のコマンド（Code Mode で始めた Claude Code の会話には設定を足す）。 */
-	private resumeCommandFor(instance: ITerminalInstance, entry: IParadisResumeLedgerEntry, mode: 'resume' | 'fork', dangerouslyBypassPermissions: boolean): Promise<string | undefined> {
-		return paradisAgentResumeCommandForTerminal({ sharedProcessService: this.sharedProcessService, remoteAgentService: this.remoteAgentService, logService: this.logService }, instance, {
-			agent: entry.agent, sessionId: entry.sessionId, mode, dangerouslyBypassPermissions, cli: entry.cli, cwd: entry.cwd,
-		});
+	private resumeCommandServices() {
+		return { sharedProcessService: this.sharedProcessService, remoteAgentService: this.remoteAgentService, logService: this.logService };
 	}
 
 	private toCwdUri(path: string): URI {

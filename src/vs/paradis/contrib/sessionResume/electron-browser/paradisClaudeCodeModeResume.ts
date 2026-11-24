@@ -38,22 +38,22 @@ export interface IParadisTerminalResumeCommandServices {
 }
 
 /**
- * このターミナルへ送る、会話の再開・分岐のコマンド。
+ * ターミナルへ送る、会話の再開・分岐のコマンドを用意する。返す関数に、送り先のターミナルを渡すとコマンドになる。
  *
- * Claude Code の会話は、ターミナルのあるマシン（SSH の窓なら接続先の REH サーバー）に Code Mode で始めた会話かを聞き、
- * そうなら Code Mode をオンにしてトレースを切る `--settings` を、ターミナルのシェルに合わせた引用で足す
- * （`paradisClaudeCodeModeSettingsArgument`）。聞けない・時間切れ・引用できないときは、従来どおりのコマンドを返す。
- * ほかのエージェントは {@link paradisAgentResumeCommandLine} のまま。ID が検証に通らなければ undefined。
+ * Claude Code の会話は、ターミナルのあるマシン（`remote` なら接続先の REH サーバー、そうでなければ手元の shared process）に
+ * Code Mode で始めた会話かを聞き、そうなら Code Mode をオンにしてトレースを切る `--settings` を、ターミナルのシェルに
+ * 合わせた引用で足す（`paradisClaudeCodeModeSettingsArgument`）。聞けない・時間切れ・引用できないときは、従来どおりの
+ * コマンドを返す。ほかのエージェントは {@link paradisAgentResumeCommandLine} のまま。ID が検証に通らなければ undefined。
+ *
+ * 問い合わせはここで始める。ターミナルを開く前に呼べば、開いている間に答えが届き、開いたターミナルへコマンドを送るまでの
+ * 待ちが増えない（待っている間に利用者が打った文字の後ろへ、コマンドと Enter をつなげないため）。
  */
-export async function paradisAgentResumeCommandForTerminal(services: IParadisTerminalResumeCommandServices, instance: ITerminalInstance, request: IParadisTerminalResumeCommandRequest): Promise<string | undefined> {
+export function paradisPrepareAgentResumeCommand(services: IParadisTerminalResumeCommandServices, remote: boolean, request: IParadisTerminalResumeCommandRequest): (instance: ITerminalInstance) => Promise<string | undefined> {
 	const options = { dangerouslyBypassPermissions: request.dangerouslyBypassPermissions, cli: request.cli };
 	const plain = paradisAgentResumeCommandLine(request.agent, request.sessionId, request.mode, options);
-	if (plain === undefined || request.agent !== 'claude') {
-		return plain;
-	}
-	const channel = paradisResumeChannelOfTerminal(services, instance);
+	const channel = plain === undefined || request.agent !== 'claude' ? undefined : paradisResumeChannel(services, remote);
 	if (channel === undefined) {
-		return plain;
+		return async () => plain;
 	}
 	const lookup = (wantSettingsFile: boolean): Promise<IParadisClaudeResumeProfile | undefined> => raceTimeout(
 		channel.call<IParadisClaudeResumeProfile>('claudeResumeProfile', [request.sessionId, request.cwd, wantSettingsFile]).catch(error => {
@@ -62,25 +62,32 @@ export async function paradisAgentResumeCommandForTerminal(services: IParadisTer
 			return undefined;
 		}),
 		PROFILE_LOOKUP_TIMEOUT_MS);
-	if ((await lookup(false))?.codeMode !== true) {
-		return plain;
-	}
-	if (instance.shellType === undefined) {
-		const arrived = Event.toPromise(Event.filter(instance.onDidChangeShellType, type => type !== undefined));
-		await raceTimeout(arrived, SHELL_TYPE_WAIT_MS, () => arrived.cancel());
-	}
-	const shellType = instance.shellType;
-	const settingsFile = paradisClaudeCodeModeNeedsSettingsFile(shellType) ? (await lookup(true))?.settingsFile : undefined;
-	const claudeCodeMode: IParadisClaudeCodeModeShell = { shellType, windows: paradisTerminalRunsOnWindows(instance), ...(settingsFile !== undefined ? { settingsFile } : {}) };
-	return paradisAgentResumeCommandLine(request.agent, request.sessionId, request.mode, { ...options, claudeCodeMode }) ?? plain;
+	const profile = lookup(false);
+	return async instance => {
+		if ((await profile)?.codeMode !== true) {
+			return plain;
+		}
+		if (instance.shellType === undefined) {
+			const arrived = Event.toPromise(Event.filter(instance.onDidChangeShellType, type => type !== undefined));
+			await raceTimeout(arrived, SHELL_TYPE_WAIT_MS, () => arrived.cancel());
+		}
+		const shellType = instance.shellType;
+		const settingsFile = paradisClaudeCodeModeNeedsSettingsFile(shellType) ? (await lookup(true))?.settingsFile : undefined;
+		const claudeCodeMode: IParadisClaudeCodeModeShell = { shellType, windows: paradisTerminalRunsOnWindows(instance), ...(settingsFile !== undefined ? { settingsFile } : {}) };
+		return paradisAgentResumeCommandLine(request.agent, request.sessionId, request.mode, { ...options, claudeCodeMode }) ?? plain;
+	};
 }
 
-/** ターミナルのあるマシンのセッション履歴のチャネル。接続先のターミナルなのに接続が無ければ undefined。 */
-function paradisResumeChannelOfTerminal(services: IParadisTerminalResumeCommandServices, instance: ITerminalInstance): IChannel | undefined {
-	if (instance.remoteAuthority === undefined) {
-		return services.sharedProcessService.getChannel(PARADIS_SESSION_RESUME_CHANNEL);
-	}
-	return services.remoteAgentService.getConnection()?.getChannel(PARADIS_SESSION_RESUME_CHANNEL);
+/** もう開いているターミナルへ送る、会話の再開・分岐のコマンド（{@link paradisPrepareAgentResumeCommand}）。 */
+export function paradisAgentResumeCommandForTerminal(services: IParadisTerminalResumeCommandServices, instance: ITerminalInstance, request: IParadisTerminalResumeCommandRequest): Promise<string | undefined> {
+	return paradisPrepareAgentResumeCommand(services, instance.remoteAuthority !== undefined, request)(instance);
+}
+
+/** 会話のあるマシンのセッション履歴のチャネル。接続先なのに接続が無ければ undefined。 */
+function paradisResumeChannel(services: IParadisTerminalResumeCommandServices, remote: boolean): IChannel | undefined {
+	return remote
+		? services.remoteAgentService.getConnection()?.getChannel(PARADIS_SESSION_RESUME_CHANNEL)
+		: services.sharedProcessService.getChannel(PARADIS_SESSION_RESUME_CHANNEL);
 }
 
 /** シェルが Windows で動いているか。まだ分からない手元のターミナルは、このアプリの OS とみなす。 */

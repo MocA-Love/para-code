@@ -920,7 +920,7 @@ suite('paradisResumeAgentInWorkspace', () => {
 		const claude = createFixture();
 		claude.ready.complete();
 		await paradisResumeAgentInWorkspace(claude.accessor, { ...request('claude'), codexHome: '/home/user/.codex-2' });
-		assert.deepStrictEqual([fixture.events[0], claude.events[0]], ['env:{"CODEX_HOME":"/home/user/.codex-2"}', 'create']);
+		assert.deepStrictEqual([fixture.events[0], claude.events.filter(event => !event.startsWith('profile:'))[0]], ['env:{"CODEX_HOME":"/home/user/.codex-2"}', 'create']);
 	});
 
 	test('waits for process readiness before opening, assigning, activating, and sending', async () => {
@@ -928,18 +928,19 @@ suite('paradisResumeAgentInWorkspace', () => {
 		const result = paradisResumeAgentInWorkspace(fixture.accessor, request('claude'));
 		await Promise.resolve();
 		await Promise.resolve();
-		assert.deepStrictEqual(fixture.events, ['create']);
+		assert.deepStrictEqual(fixture.events, ['profile:["session-123","/repo-worktrees/feature",false]', 'create']);
 
 		fixture.ready.complete();
 		const launched = await result;
 		assert.deepStrictEqual({ events: fixture.events, launched }, {
 			events: [
+				// Code Mode で始めた会話かは、ターミナルを開く前に聞き始める
+				'profile:["session-123","/repo-worktrees/feature",false]',
 				'create',
 				'ready',
 				'open',
 				'assign:17:worktree:feature',
 				'active',
-				'profile:["session-123","/repo-worktrees/feature",false]',
 				'send:claude --permission-mode manual --resume session-123:true',
 			],
 			launched: { instanceId: 17, paneToken: 'pane-token-17' },

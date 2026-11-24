@@ -847,6 +847,7 @@ export class ParadisSessionResumeService {
 	/**
 	 * Code Mode の再開用の設定を `~/.para-code/` のファイルに書き、絶対パスを返す。中身が同じなら書かない。
 	 * 中身は固定で、再開のたびに確かめ直すので、ほかの誰かが書き換えていても元に戻る。
+	 * 別名のファイルに書いてから名前を替える（書きかけのファイルを CLI に読ませない）。
 	 */
 	private async writeClaudeCodeModeSettingsFile(): Promise<string> {
 		const path = join(this.paraCodeDirectory, PARADIS_CLAUDE_CODE_MODE_RESUME_SETTINGS_FILE);
@@ -854,7 +855,14 @@ export class ParadisSessionResumeService {
 		const current = await fs.readFile(path, 'utf8').catch(() => undefined);
 		if (current !== content) {
 			await fs.mkdir(this.paraCodeDirectory, { recursive: true });
-			await fs.writeFile(path, content, { encoding: 'utf8', mode: 0o600 });
+			const temporary = `${path}.${generateUuid()}.tmp`;
+			try {
+				await fs.writeFile(temporary, content, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+				await fs.rename(temporary, path);
+			} catch (error) {
+				await fs.rm(temporary, { force: true }).catch(() => undefined);
+				throw error;
+			}
 		}
 		return path;
 	}
