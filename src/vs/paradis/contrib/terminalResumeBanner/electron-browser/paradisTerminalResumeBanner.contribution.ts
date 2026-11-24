@@ -23,6 +23,7 @@ import { localize } from '../../../../nls.js';
 import { IClipboardService } from '../../../../platform/clipboard/common/clipboardService.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
+import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
@@ -33,6 +34,8 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { ITerminalEditorService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
+import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
+import { paradisAgentResumeCommandForTerminal } from '../../sessionResume/electron-browser/paradisClaudeCodeModeResume.js';
 import { paradisRegisterEditorTerminalOverlay } from '../../agentBrowser/browser/paradisPaneIndicator.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisAgentStatusSnapshot } from '../../agentBrowser/common/paradisAgentBrowser.js';
@@ -87,6 +90,8 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 		@ILifecycleService lifecycleService: ILifecycleService,
 		@ILogService private readonly logService: ILogService,
 		@IInstantiationService instantiationService: IInstantiationService,
+		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
+		@IRemoteAgentService private readonly remoteAgentService: IRemoteAgentService,
 	) {
 		super();
 		const now = Date.now();
@@ -422,8 +427,14 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 	private async resumeInConversationFolder(instanceId: number, dangerouslyBypassPermissions: boolean, options: { readonly quiet: boolean; readonly focus: boolean }): Promise<ParadisHibernationResumeOutcome> {
 		const offer = this._offers.get(instanceId);
 		const instance = this.terminalService.instances.find(candidate => candidate.instanceId === instanceId);
-		const command = offer === undefined ? undefined : paradisResumeCommandLine(offer.entry.agent, offer.entry.sessionId, 'resume', dangerouslyBypassPermissions, offer.entry.cli);
-		if (offer === undefined || instance === undefined || command === undefined) {
+		const plainCommand = offer === undefined ? undefined : paradisResumeCommandLine(offer.entry.agent, offer.entry.sessionId, 'resume', dangerouslyBypassPermissions, offer.entry.cli);
+		if (offer === undefined || instance === undefined || plainCommand === undefined) {
+			return 'no-offer';
+		}
+		// Code Mode で始めた Claude Code の会話には、再開に要る設定を足す。会話のあるマシンに聞くので、シェルの状態を
+		// 確かめる前に済ませる（確かめた後に待つと、その間に打たれた文字へコマンドをつなげてしまう）
+		const command = await this.resumeCommandFor(instance, offer.entry, 'resume', dangerouslyBypassPermissions) ?? plainCommand;
+		if (instance.isDisposed || this._offers.get(instanceId) !== offer) {
 			return 'no-offer';
 		}
 		// 休止から自動で起こすとき（quiet）は知らせを出さない。帯が残り、押せば同じ確かめ方で知らせる
@@ -534,7 +545,7 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 		if (offer === undefined || command === undefined) {
 			return;
 		}
-		void this.openForkTerminal(instanceId, offer.entry, command).catch(error => {
+		void this.openForkTerminal(instanceId, offer.entry, command, dangerouslyBypassPermissions === true).catch(error => {
 			this.logService.error('[paradisTerminalResumeBanner] could not open a terminal for the fork', error);
 			this.notificationService.error(localize('paradis.resumeBanner.forkFailed', "分岐用のターミナルを開けませんでした。"));
 		});
@@ -544,14 +555,21 @@ class ParadisTerminalResumeBannerContribution extends Disposable implements IWor
 	 * 分岐は新しいタブで行う（元のタブではあとから同じ会話を続けられるよう、元のタブの案内は残す）。
 	 * フォルダは会話を始めた場所。分からなければ元のタブの開始フォルダ。
 	 */
-	private async openForkTerminal(instanceId: number, entry: IParadisResumeLedgerEntry, command: string): Promise<void> {
+	private async openForkTerminal(instanceId: number, entry: IParadisResumeLedgerEntry, plainCommand: string, dangerouslyBypassPermissions: boolean): Promise<void> {
 		const source = this.terminalService.instances.find(candidate => candidate.instanceId === instanceId);
 		const cwd = entry.cwd !== undefined ? this.toCwdUri(entry.cwd) : (source === undefined ? undefined : await source.getInitialCwd());
 		const instance = await this.terminalService.createTerminal({ cwd, location: TerminalLocation.Editor });
 		await instance.processReady;
 		await this.terminalEditorService.openEditor(instance);
 		this.terminalService.setActiveInstance(instance);
-		await instance.sendText(command, true);
+		await instance.sendText(await this.resumeCommandFor(instance, entry, 'fork', dangerouslyBypassPermissions) ?? plainCommand, true);
+	}
+
+	/** このターミナルのシェルに合わせた再開・分岐のコマンド（Code Mode で始めた Claude Code の会話には設定を足す）。 */
+	private resumeCommandFor(instance: ITerminalInstance, entry: IParadisResumeLedgerEntry, mode: 'resume' | 'fork', dangerouslyBypassPermissions: boolean): Promise<string | undefined> {
+		return paradisAgentResumeCommandForTerminal({ sharedProcessService: this.sharedProcessService, remoteAgentService: this.remoteAgentService, logService: this.logService }, instance, {
+			agent: entry.agent, sessionId: entry.sessionId, mode, dangerouslyBypassPermissions, cli: entry.cli, cwd: entry.cwd,
+		});
 	}
 
 	private toCwdUri(path: string): URI {

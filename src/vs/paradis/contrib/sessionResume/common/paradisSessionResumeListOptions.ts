@@ -112,9 +112,13 @@ export function paradisResumeGroupLabel(group: ParadisResumeGrouping): string {
  *
  * 再開の部分は「ターミナルで再開」と同じ {@link paradisAgentResumeCommandLine}（確認ありの権限を明示する。付けないと
  * Claude Code は auto mode、Codex は 0.163.0 から会話を始めたときの権限になる）。ID が検証に通らなければ undefined。
+ *
+ * Code Mode で始めた Claude Code の会話には、再開に要る設定を JSON のまま単一引用符で囲んで足す（POSIX 系のシェル向け）。
+ * Windows 向けには足さない（PowerShell の版によって中の `"` の渡り方が違い、貼り付け先で通る形を 1 つに決められない。
+ * 「ターミナルで再開」は設定ファイルのパスで渡す）。
  */
-export function paradisResumeCommandLine(session: Pick<IParadisResumeSession, 'agent' | 'id' | 'cwd' | 'cli'>, windows: boolean): string | undefined {
-	const resume = paradisAgentResumeCommandLine(session.agent, session.id, 'resume', { cli: session.cli });
+export function paradisResumeCommandLine(session: Pick<IParadisResumeSession, 'agent' | 'id' | 'cwd' | 'cli' | 'codeMode'>, windows: boolean): string | undefined {
+	const resume = paradisAgentResumeCommandLine(session.agent, session.id, 'resume', { cli: session.cli, ...(session.codeMode === true && !windows ? { claudeCodeMode: { shellType: undefined, windows: false } } : {}) });
 	if (resume === undefined) {
 		return undefined;
 	}

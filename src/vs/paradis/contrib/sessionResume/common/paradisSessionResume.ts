@@ -115,6 +115,8 @@ export interface IParadisResumeSession {
 	readonly gitBranch?: string;
 	/** ユーザーの依頼が1つも無い会話（起動しただけで閉じたもの）。「空を隠す」で隠す。 */
 	readonly empty?: boolean;
+	/** Claude Code の Code Mode で始めた会話（{@link PARADIS_CLAUDE_CODE_MODE_RESUME_SETTINGS} を付けて再開する）。 */
+	readonly codeMode?: true;
 	/**
 	 * Codex の会話が見つかったホーム（既定のホームを含む）。再開するターミナルへ `CODEX_HOME` として
 	 * 渡す（選んでいるアカウントのホームには無いことがあるため）。
@@ -184,6 +186,90 @@ export interface IParadisSessionResumeService {
 	search(query: string, catalogIds: readonly string[]): Promise<readonly IParadisResumeSearchResult[]>;
 }
 
+/**
+ * Code Mode（`CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1`）で始めた Claude Code の会話を再開するときに、`--settings` で足す設定。
+ *
+ * Claude Code 2.1.331 は、記録に Code Mode の印がある会話を、次のどれかに当たると「can't be resumed」で断る
+ * （HOME を分けた環境で `claude -p --resume` を回して確かめた）:
+ * - Code Mode がオンでない（`CLAUDE_CODE_EXPERIMENTAL_CODE_MODE`）
+ * - OpenTelemetry のトレースがオン（`CLAUDE_CODE_ENHANCED_TELEMETRY_BETA`・`ENABLE_ENHANCED_TELEMETRY_BETA`・
+ *   `ENABLE_BETA_TRACING_DETAILED`。利用者の `settings.json` の `env` で付いていることが多い）
+ *
+ * `ENABLE_ENHANCED_TELEMETRY_BETA` は 1 つ目が決まっていれば読まれないので書かない。`ENABLE_BETA_TRACING_DETAILED` は
+ * 別に読まれるので "0" にする。`--settings` は利用者・プロジェクトの設定より優先され、シェルで export した値にも勝つ。
+ * 切るのはこの再開の 1 回だけで、利用者の設定ファイルは書き換えない。
+ *
+ * 空白・`'`・`\` を含めない（シェルごとの引用を 1 つの形で済ませるため）。Claude Code は厳密な JSON だけを受ける。
+ */
+export const PARADIS_CLAUDE_CODE_MODE_RESUME_SETTINGS = '{"env":{"CLAUDE_CODE_ENHANCED_TELEMETRY_BETA":"0","ENABLE_BETA_TRACING_DETAILED":"0","CLAUDE_CODE_EXPERIMENTAL_CODE_MODE":"1"}}';
+
+/** {@link PARADIS_CLAUDE_CODE_MODE_RESUME_SETTINGS} を書いたファイルの名前（会話のあるマシンの `~/.para-code/` に置く）。 */
+export const PARADIS_CLAUDE_CODE_MODE_RESUME_SETTINGS_FILE = 'claude-code-mode-resume.settings.json';
+
+/** 会話のあるマシンが答える、Claude Code の会話の再開のしかた。 */
+export interface IParadisClaudeResumeProfile {
+	/** Code Mode で始めた会話（記録の最後の `repl-mode` の行が `replMode: true`）。 */
+	readonly codeMode: boolean;
+	/** 頼まれたときだけ書く、{@link PARADIS_CLAUDE_CODE_MODE_RESUME_SETTINGS} の入ったファイルの絶対パス（そのマシンの上のもの）。 */
+	readonly settingsFile?: string;
+}
+
+/** Code Mode の設定を渡す先のシェル。 */
+export interface IParadisClaudeCodeModeShell {
+	/** ターミナルのシェルの種類（`TerminalShellType`）。分からなければ undefined。 */
+	readonly shellType: string | undefined;
+	/** シェルが Windows で動いている。 */
+	readonly windows: boolean;
+	/** {@link IParadisClaudeResumeProfile.settingsFile}。 */
+	readonly settingsFile?: string;
+}
+
+/** {@link paradisClaudeCodeModeSettingsArgument} が JSON ではなくファイルのパスで渡すシェル（PowerShell と cmd）。 */
+export function paradisClaudeCodeModeNeedsSettingsFile(shellType: string | undefined): boolean {
+	return shellType === 'pwsh' || shellType === 'cmd';
+}
+
+/**
+ * `--settings` の値を、シェルが展開も解釈もしない 1 つの引数にする。できなければ undefined（付けない）。
+ *
+ * - POSIX 系（bash / zsh / sh / ksh / csh / fish / Git Bash / WSL）: JSON を単一引用符で囲む。JSON は `'` と `\` を
+ *   含まないので、fish でも同じ形で済む
+ * - PowerShell・cmd: JSON を直接は渡さない。Windows PowerShell 5.1 は外部コマンドへ渡すときに中の `"` を落とし、
+ *   7.3 以降は落とさないので、版によらず通る書き方が無い。cmd は `'` を引用符として扱わない。会話のあるマシンが
+ *   書いたファイルのパスを渡す（`--settings` はパスも受ける）。パスが無い・引用できないときは付けない
+ * - 種類が分からないシェル: Windows では付けない。それ以外では POSIX 式で渡す（tmux や `exec zsh` などのラッパー
+ *   経由。fish でも同じ形）
+ * - それ以外（nushell など）は付けない
+ */
+export function paradisClaudeCodeModeSettingsArgument(shell: IParadisClaudeCodeModeShell): string | undefined {
+	switch (shell.shellType) {
+		case 'bash':
+		case 'zsh':
+		case 'sh':
+		case 'ksh':
+		case 'csh':
+		case 'fish':
+		case 'gitbash':
+		case 'wsl':
+			return `'${PARADIS_CLAUDE_CODE_MODE_RESUME_SETTINGS}'`;
+		case 'pwsh': {
+			const file = shell.settingsFile;
+			if (file === undefined || file.length === 0 || /[\r\n\u0000]/.test(file)) { return undefined; }
+			return `'${file.replace(/['\u2018\u2019\u201a\u201b]/g, quote => quote + quote)}'`;
+		}
+		case 'cmd': {
+			const file = shell.settingsFile;
+			// 二重引用符の中でも `%VAR%` は展開され、遅延展開が有効なら `!` も読まれる
+			if (file === undefined || file.length === 0 || /[\r\n\u0000%"!^]/.test(file)) { return undefined; }
+			return `"${file}"`;
+		}
+		case undefined:
+			return shell.windows ? undefined : `'${PARADIS_CLAUDE_CODE_MODE_RESUME_SETTINGS}'`;
+		default:
+			return undefined;
+	}
+}
+
 /** 先頭の `-` を拒否し、CLIオプションとして解釈されない単一引数だけを許す。 */
 export const PARADIS_RESUME_SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,499}$/;
 
@@ -192,7 +278,7 @@ export const PARADIS_RESUME_SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,
  * ID はホワイトリスト（先頭に `-` を許さない）を通ったものだけを使い、シェルの特殊文字を含まない。
  * 通らなければ undefined。
  */
-export function paradisAgentResumeCommandLine(agent: ParadisResumeAgent, sessionId: string, mode: 'resume' | 'fork', options?: { readonly dangerouslyBypassPermissions?: boolean; readonly cli?: ParadisResumeCli }): string | undefined {
+export function paradisAgentResumeCommandLine(agent: ParadisResumeAgent, sessionId: string, mode: 'resume' | 'fork', options?: { readonly dangerouslyBypassPermissions?: boolean; readonly cli?: ParadisResumeCli; readonly claudeCodeMode?: IParadisClaudeCodeModeShell }): string | undefined {
 	if (!PARADIS_RESUME_SESSION_ID_PATTERN.test(sessionId)) {
 		return undefined;
 	}
@@ -215,7 +301,10 @@ export function paradisAgentResumeCommandLine(agent: ParadisResumeAgent, session
 		// 権限の確認を省かない再開は、確認を出すモードを明示する（Claude Code 2.1.284 から、指定しないと auto mode になる）。
 		// 省くときは `--permission-mode` を付けない（`--dangerously-skip-permissions` は `--permission-mode bypassPermissions` と同じ意味で、
 		// 両方を付けたときにどちらが勝つかは公式の文書に無い）
-		return `claude ${bypass ? '--dangerously-skip-permissions' : PARADIS_CLAUDE_DEFAULT_PERMISSION_FLAG} --resume ${sessionId}${mode === 'fork' ? ' --fork-session' : ''}`;
+		// Code Mode で始めた会話は、Code Mode をオンにし OpenTelemetry のトレースを切った設定を足さないと再開を断られる
+		// （{@link PARADIS_CLAUDE_CODE_MODE_RESUME_SETTINGS}）。シェルに合わせて引用できないときは足さない（従来のコマンド）
+		const settings = options?.claudeCodeMode === undefined ? undefined : paradisClaudeCodeModeSettingsArgument(options.claudeCodeMode);
+		return `claude ${bypass ? '--dangerously-skip-permissions' : PARADIS_CLAUDE_DEFAULT_PERMISSION_FLAG}${settings !== undefined ? ` --settings ${settings}` : ''} --resume ${sessionId}${mode === 'fork' ? ' --fork-session' : ''}`;
 	}
 	// 権限の確認を省かない再開は、確認ありの権限を明示する。0.163.0 から cold resume は会話を始めたときの権限を戻すので、
 	// 何も付けないと確認を省いて始めた会話が確認なしのまま動く（2026-10-16 に `/status` で実測。0.162.1 は設定の既定に

@@ -61,6 +61,7 @@ suite('ParadisSessionResume', () => {
 			antigravityHome: join(root, 'agy-home'),
 			openCodeDatabases: async () => [],
 			resolveAgentHomes: cwd => ({ claude: claudeHome, codex: codexHome, matchCwd: cwd }),
+			paraCodeDirectory: join(root, 'para-code'),
 			readBoundedFile,
 			beforeSummaryRead,
 			beforeTranscriptRead,
@@ -276,6 +277,58 @@ suite('ParadisSessionResume', () => {
 			'renamed-short': { title: 'My name', preview: 'Short prompt' },
 			'renamed-long': { title: 'Late name', preview: 'Long prompt' },
 			'ai-only': { title: 'Tail only topic', preview: 'Plain prompt' },
+		});
+	});
+
+	test('reads Code Mode from the last repl-mode line of a Claude session, in the list and by id, and writes the resume settings file only on request', async () => {
+		const replMode = (value: boolean, sessionId: string) => JSON.stringify({ type: 'repl-mode', replMode: value, sessionId });
+		const padding = claudeMessage('assistant', 'x'.repeat(700 * 1024));
+		// 別のフォルダで始めた会話（今のスペースのフォルダには無い）
+		const otherProject = join(claudeHome, 'projects', '-somewhere-else');
+		await fs.mkdir(otherProject, { recursive: true });
+		await Promise.all([
+			writeLines(join(claudeProject, 'code-mode.jsonl'), [replMode(true, 'code-mode'), claudeMessage('user', 'Prompt')]),
+			writeLines(join(claudeProject, 'code-mode-long.jsonl'), [replMode(true, 'code-mode-long'), claudeMessage('user', 'Prompt'), padding, replMode(true, 'code-mode-long')]),
+			writeLines(join(claudeProject, 'turned-off.jsonl'), [replMode(true, 'turned-off'), claudeMessage('user', 'Prompt'), padding, replMode(false, 'turned-off')]),
+			writeLines(join(claudeProject, 'ordinary.jsonl'), [claudeMessage('user', 'A prompt that mentions "repl-mode" and replMode true')]),
+			writeLines(join(otherProject, 'elsewhere.jsonl'), [replMode(true, 'elsewhere'), claudeMessage('user', 'Prompt')]),
+		]);
+		const service = createService();
+		const listed = new Map((await listSessions(service)).map(session => [session.id, session.codeMode]));
+		const settingsFile = join(root, 'para-code', 'claude-code-mode-resume.settings.json');
+		const beforeRequest = await fs.readFile(settingsFile, 'utf8').catch(() => undefined);
+		const profiles = {
+			codeMode: await service.claudeResumeProfile('code-mode', workspace, false),
+			codeModeLong: await service.claudeResumeProfile('code-mode-long', workspace, false),
+			turnedOff: await service.claudeResumeProfile('turned-off', workspace, true),
+			ordinary: await service.claudeResumeProfile('ordinary', workspace, true),
+			elsewhere: await service.claudeResumeProfile('elsewhere', workspace, false),
+			withoutCwd: await service.claudeResumeProfile('elsewhere', undefined, false),
+			missing: await service.claudeResumeProfile('missing', workspace, true),
+			optionLikeId: await service.claudeResumeProfile('../code-mode', workspace, true),
+		};
+		const afterPlainRequests = await fs.readFile(settingsFile, 'utf8').catch(() => undefined);
+		const withFile = await service.claudeResumeProfile('code-mode', workspace, true);
+		assert.deepStrictEqual({
+			listed: Object.fromEntries(['code-mode', 'code-mode-long', 'turned-off', 'ordinary'].map(id => [id, listed.get(id)])),
+			profiles, beforeRequest, afterPlainRequests, withFile,
+			written: await fs.readFile(settingsFile, 'utf8'),
+		}, {
+			listed: { 'code-mode': true, 'code-mode-long': true, 'turned-off': undefined, 'ordinary': undefined },
+			profiles: {
+				codeMode: { codeMode: true },
+				codeModeLong: { codeMode: true },
+				turnedOff: { codeMode: false },
+				ordinary: { codeMode: false },
+				elsewhere: { codeMode: true },
+				withoutCwd: { codeMode: true },
+				missing: { codeMode: false },
+				optionLikeId: { codeMode: false },
+			},
+			beforeRequest: undefined,
+			afterPlainRequests: undefined,
+			withFile: { codeMode: true, settingsFile },
+			written: '{"env":{"CLAUDE_CODE_ENHANCED_TELEMETRY_BETA":"0","ENABLE_BETA_TRACING_DETAILED":"0","CLAUDE_CODE_EXPERIMENTAL_CODE_MODE":"1"}}\n',
 		});
 	});
 

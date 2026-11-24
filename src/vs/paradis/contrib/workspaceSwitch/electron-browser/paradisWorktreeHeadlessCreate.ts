@@ -34,6 +34,7 @@ import { ChatMessageRole, getTextResponseFromStream, ILanguageModelsService } fr
 import { IAuthenticationService } from '../../../../workbench/services/authentication/common/authentication.js';
 import { ITerminalEditorService, ITerminalInstance, ITerminalService, TerminalEditorLocation } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { ACTIVE_GROUP, SIDE_GROUP } from '../../../../workbench/services/editor/common/editorService.js';
+import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
 import {
 	IParadisCopilotUtilityRequest,
 	IParadisCopilotUtilityResult,
@@ -65,7 +66,8 @@ import { paradisWriteWorktreeImages } from '../browser/paradisWorktreeImageWrite
 import { paradisGetParkedTerminalEditorStateKey, paradisMarkTerminalEditorOpeningForScope } from '../browser/paradisTerminalEditorPark.js';
 import { paradisReadWorkspaceLifecycleConfig, paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
 import { paradisWorktreeGitHostResolver, paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
-import { PARADIS_RESUME_SESSION_ID_PATTERN, ParadisResumeAgent, ParadisResumeCli, paradisAgentResumeCommandLine, paradisResumeAgentLabel } from '../../sessionResume/common/paradisSessionResume.js';
+import { PARADIS_RESUME_SESSION_ID_PATTERN, ParadisResumeAgent, ParadisResumeCli, paradisResumeAgentLabel } from '../../sessionResume/common/paradisSessionResume.js';
+import { paradisAgentResumeCommandForTerminal } from '../../sessionResume/electron-browser/paradisClaudeCodeModeResume.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 
 /**
@@ -638,6 +640,7 @@ export async function paradisResumeAgentInWorkspace(accessor: ServicesAccessor, 
 	const terminalEditorService = accessor.get(ITerminalEditorService);
 	const terminalScopeService = accessor.get(IParadisTerminalScopeService);
 	const switchService = accessor.get(IParadisWorkspaceSwitchService);
+	const resumeCommandServices = { sharedProcessService: accessor.get(ISharedProcessService), remoteAgentService: accessor.get(IRemoteAgentService), logService: accessor.get(ILogService) };
 	const wsl = paradisResolveWslAgentHome(request.rootUri.fsPath);
 	const codexHome = request.agent === 'codex' && request.rootUri.scheme === Schemas.file && request.codexHome !== undefined && isAbsolute(request.codexHome)
 		? request.codexHome
@@ -664,8 +667,12 @@ export async function paradisResumeAgentInWorkspace(accessor: ServicesAccessor, 
 	if (!preserveFocus && request.stateKey === switchService.activeStateKey) {
 		terminalService.setActiveInstance(instance);
 	}
-	// IDは上のホワイトリストを通り、実行ファイルと引数位置も固定。シェル文字を含まない。
-	const command = paradisAgentResumeCommandLine(request.agent, request.sessionId, request.mode ?? 'resume', { dangerouslyBypassPermissions: request.dangerouslyBypassPermissions, cli: request.cli });
+	// IDは上のホワイトリストを通り、実行ファイルと引数位置も固定。シェル文字を含まない。Code Mode で始めた Claude Code の
+	// 会話にだけ、固定の設定（JSON か、会話のあるマシンが書いたファイルのパス）をシェルに合わせて引用して足す。
+	const command = await paradisAgentResumeCommandForTerminal(resumeCommandServices, instance, {
+		agent: request.agent, sessionId: request.sessionId, mode: request.mode ?? 'resume', dangerouslyBypassPermissions: request.dangerouslyBypassPermissions, cli: request.cli,
+		cwd: request.rootUri.scheme === Schemas.file ? request.rootUri.fsPath : request.rootUri.path,
+	});
 	if (command === undefined) {
 		throw new Error('Invalid agent session id.');
 	}

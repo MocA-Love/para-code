@@ -41,6 +41,7 @@ import {
 	paradisTranscriptString as string,
 } from '../common/paradisSessionTranscript.js';
 import {
+	IParadisClaudeResumeProfile,
 	IParadisResumeLatestMessage,
 	IParadisResumeListRequest,
 	IParadisResumeMessage,
@@ -50,6 +51,8 @@ import {
 	IParadisResumeSession,
 	IParadisResumeSessionDetails,
 	IParadisResumeSpace,
+	PARADIS_CLAUDE_CODE_MODE_RESUME_SETTINGS,
+	PARADIS_CLAUDE_CODE_MODE_RESUME_SETTINGS_FILE,
 	PARADIS_RESUME_SESSION_ID_PATTERN,
 	PARADIS_SESSION_RESUME_CHANNEL,
 	ParadisResumeAgent,
@@ -77,6 +80,10 @@ const SUMMARY_HEAD_BYTES = 512 * 1024;
  * 長い会話では先頭の {@link SUMMARY_HEAD_BYTES} に入らない。名前の行は短いので、末尾はこれだけ読めば足りる。
  */
 const SUMMARY_TAIL_BYTES = 256 * 1024;
+/** Code Mode の印（`repl-mode` の行）を探すときに先頭から読む量。印は記録の最初の数行にある。 */
+const CODE_MODE_HEAD_BYTES = 64 * 1024;
+/** 会話の ID から記録を探すときに見るプロジェクトのフォルダの上限。 */
+const MAX_CLAUDE_PROJECT_DIRECTORIES = 5000;
 const MAX_SEARCH_TEXT_CHARS = 64 * 1024;
 const MAX_CATALOG_ENTRIES = 2400;
 // tail 再読を避ける最新メッセージキャッシュの上限。catalog の最大件数に合わせる。
@@ -287,6 +294,29 @@ export function paradisClaudeTranscriptTitle(lines: Iterable<string>): string | 
 }
 
 /**
+ * Claude の記録の行から、Code Mode で始めた会話かを読む（最後の `{"type":"repl-mode","replMode":true}` の行）。
+ *
+ * Claude Code 2.1.331 は、Code Mode の状態をこの行に書く（バンドルの `currentSessionCodeMode`）。記録の先頭と、その後も
+ * 繰り返し書き足すので、先頭と末尾を読めば入っている。後の行が勝つ。行が無い会話（Code Mode を使っていない会話、
+ * 古い版の会話）は false。再開を断るのはこの値が true の会話だけ（合成の記録で確かめた）。
+ * テストから直接確かめられるよう export している。
+ */
+export function paradisClaudeTranscriptCodeMode(lines: readonly string[]): boolean {
+	for (let index = lines.length - 1; index >= 0; index--) {
+		const line = lines[index];
+		if (!line.includes('"repl-mode"')) {
+			continue;
+		}
+		let item: Record<string, unknown> | undefined;
+		try { item = record(JSON.parse(line)); } catch { continue; }
+		if (item?.type === 'repl-mode' && typeof item.replMode === 'boolean') {
+			return item.replMode;
+		}
+	}
+	return false;
+}
+
+/**
  * Claude の記録の行から、最後に使ったモデルを選ぶ（後ろの行から見て、最初に見つかった assistant 行の `message.model`）。
  * 空と `<synthetic>` は除き、サブエージェントの行（`isSidechain`）は見ない。テストから直接確かめられるよう export している。
  */
@@ -388,6 +418,7 @@ export class ParadisSessionResumeService {
 	private readonly beforeSummaryRead: ((filePath: string) => Promise<void>) | undefined;
 	private readonly beforeTranscriptRead: ((filePath: string) => Promise<void>) | undefined;
 	private readonly antigravityHome: string;
+	private readonly paraCodeDirectory: string;
 
 	constructor(
 		dependencies: {
@@ -399,6 +430,8 @@ export class ParadisSessionResumeService {
 			readonly searchCacheMaxBytes?: number;
 			/** Antigravity CLI の記録を探すホーム（既定はこのマシンのホーム。テストは仮のフォルダを渡す）。 */
 			readonly antigravityHome?: string;
+			/** Code Mode の再開用の設定ファイルを置くフォルダ（既定はこのマシンの `~/.para-code`。テストは仮のフォルダを渡す）。 */
+			readonly paraCodeDirectory?: string;
 		} | undefined,
 		@ILogService private readonly logService: ILogService,
 	) {
@@ -409,6 +442,7 @@ export class ParadisSessionResumeService {
 		this.beforeSummaryRead = dependencies?.beforeSummaryRead;
 		this.beforeTranscriptRead = dependencies?.beforeTranscriptRead;
 		this.antigravityHome = dependencies?.antigravityHome ?? homedir();
+		this.paraCodeDirectory = dependencies?.paraCodeDirectory ?? join(homedir(), '.para-code');
 		this.searchTextCache = new ParadisSessionSearchTextCache(dependencies?.searchCacheMaxBytes ?? DEFAULT_SEARCH_TEXT_CACHE_BYTES);
 	}
 
@@ -733,6 +767,99 @@ export class ParadisSessionResumeService {
 	}
 
 	/**
+	 * Claude Code の会話を ID から探し、再開のしかたを答える（バナー・分岐・スマホからの再開は ID しか持たない）。
+	 *
+	 * 記録は `cwd` のエージェントのホーム（WSL の中のフォルダならディストロのホーム）の `projects/<フォルダ>/<id>.jsonl`。
+	 * `cwd` のフォルダに無ければ、ほかのプロジェクトのフォルダも見る（会話を始めたフォルダが `cwd` と違うことがある）。
+	 * 見つからない・読めないときは Code Mode でない扱いにする（従来どおりのコマンドで再開する）。
+	 * `wantSettingsFile` なら、Code Mode の会話のときだけ設定ファイルを書いてパスを返す（PowerShell・cmd 向け）。
+	 */
+	async claudeResumeProfile(sessionId: string, cwd: string | undefined, wantSettingsFile: boolean): Promise<IParadisClaudeResumeProfile> {
+		if (!PARADIS_RESUME_SESSION_ID_PATTERN.test(sessionId)) {
+			return { codeMode: false };
+		}
+		const validCwd = cwd !== undefined && cwd.length <= 32_768 && isAbsolute(cwd) ? cwd : undefined;
+		const homes = this.resolveAgentHomes(validCwd ?? homedir());
+		try {
+			const transcript = await this.findClaudeTranscript(homes.claude, sessionId, validCwd === undefined ? undefined : homes.matchCwd);
+			if (transcript === undefined) {
+				return { codeMode: false };
+			}
+			const data = await readFileHeadAndTail(transcript.path, homes.claude, transcript.identity, CODE_MODE_HEAD_BYTES, SUMMARY_TAIL_BYTES, this.beforeSummaryRead);
+			const headLines = data.head.split('\n');
+			if (!paradisClaudeTranscriptCodeMode(data.tail.length > 0 ? [...headLines, ...data.tail.split('\n')] : headLines)) {
+				return { codeMode: false };
+			}
+		} catch (error) {
+			this.logService.debug('[ParadisSessionResume] unable to read the Claude session to resume', error);
+			return { codeMode: false };
+		}
+		// WSL の中の CLI から、この Windows のプロセスが書いたファイルは同じパスでは読めない。WSL のシェルには JSON を直接渡す
+		if (!wantSettingsFile || homes.wsl !== undefined) {
+			return { codeMode: true };
+		}
+		try {
+			return { codeMode: true, settingsFile: await this.writeClaudeCodeModeSettingsFile() };
+		} catch (error) {
+			this.logService.warn('[ParadisSessionResume] unable to write the Code Mode resume settings file', error);
+			return { codeMode: true };
+		}
+	}
+
+	/** `projects/<フォルダ>/<id>.jsonl` のうち、いちばん新しいもの。`matchCwd` のフォルダにあれば、ほかは見ない。 */
+	private async findClaudeTranscript(claudeHome: string, sessionId: string, matchCwd: string | undefined): Promise<{ readonly path: string; readonly identity: IFileIdentity } | undefined> {
+		const projects = join(claudeHome, 'projects');
+		const [realHome, realProjects] = await Promise.all([fs.realpath(claudeHome), fs.realpath(projects)]);
+		if (!pathInside(realHome, realProjects)) {
+			return undefined;
+		}
+		const name = `${sessionId}.jsonl`;
+		const statTranscript = async (directory: string): Promise<{ readonly path: string; readonly identity: IFileIdentity; readonly updatedAt: number } | undefined> => {
+			const path = join(projects, directory, name);
+			try {
+				const stat = await fs.lstat(path);
+				return stat.isFile() ? { path, identity: { dev: stat.dev, ino: stat.ino }, updatedAt: stat.mtimeMs } : undefined;
+			} catch {
+				return undefined;
+			}
+		};
+		if (matchCwd !== undefined) {
+			const inCwd = await statTranscript(paradisClaudeProjectSlug(matchCwd));
+			if (inCwd !== undefined) {
+				return inCwd;
+			}
+		}
+		const directories = (await fs.readdir(projects, { withFileTypes: true })).filter(entry => entry.isDirectory()).slice(0, MAX_CLAUDE_PROJECT_DIRECTORIES);
+		let newest: { readonly path: string; readonly identity: IFileIdentity; readonly updatedAt: number } | undefined;
+		let cursor = 0;
+		const worker = async (): Promise<void> => {
+			while (cursor < directories.length) {
+				const found = await statTranscript(directories[cursor++].name);
+				if (found !== undefined && (newest === undefined || found.updatedAt > newest.updatedAt)) {
+					newest = found;
+				}
+			}
+		};
+		await Promise.all(Array.from({ length: Math.min(16, directories.length) }, () => worker()));
+		return newest;
+	}
+
+	/**
+	 * Code Mode の再開用の設定を `~/.para-code/` のファイルに書き、絶対パスを返す。中身が同じなら書かない。
+	 * 中身は固定で、再開のたびに確かめ直すので、ほかの誰かが書き換えていても元に戻る。
+	 */
+	private async writeClaudeCodeModeSettingsFile(): Promise<string> {
+		const path = join(this.paraCodeDirectory, PARADIS_CLAUDE_CODE_MODE_RESUME_SETTINGS_FILE);
+		const content = `${PARADIS_CLAUDE_CODE_MODE_RESUME_SETTINGS}\n`;
+		const current = await fs.readFile(path, 'utf8').catch(() => undefined);
+		if (current !== content) {
+			await fs.mkdir(this.paraCodeDirectory, { recursive: true });
+			await fs.writeFile(path, content, { encoding: 'utf8', mode: 0o600 });
+		}
+		return path;
+	}
+
+	/**
 	 * 「…」メニューのコピー・開く操作に使う、ログの置き場所と最初の依頼の全文。
 	 * 一覧には最初の依頼を切り詰めて載せているので、コピー用はここで読み直す。
 	 */
@@ -979,6 +1106,7 @@ export class ParadisSessionResumeService {
 					const lines = data.tail.length > 0 ? [...headLines, ...data.tail.split('\n')] : headLines;
 					const title = paradisClaudeTranscriptTitle(lines);
 					const model = paradisClaudeTranscriptLastModel(lines);
+					const codeMode = paradisClaudeTranscriptCodeMode(lines);
 					let firstPrompt: string | undefined;
 					let createdAt: number | undefined;
 					for (const line of headLines) {
@@ -994,6 +1122,7 @@ export class ParadisSessionResumeService {
 						cwd: space.cwd, spaceStateKey: space.stateKey, spaceName: space.name, currentSpace: space.current,
 						createdAt, updatedAt: candidate.updatedAt, archived: false, empty: firstPrompt === undefined,
 						...(model !== undefined ? { model } : {}),
+						...(codeMode ? { codeMode: true as const } : {}),
 					}, candidate.transcriptPath, claudeHome, target);
 				} catch (error) {
 					this.logService.debug('[ParadisSessionResume] unable to read Claude session', error);
@@ -1291,6 +1420,7 @@ export class ParadisSessionResumeChannel<TContext = string> implements IServerCh
 		switch (command) {
 			case 'list': return this.service.list((args[0] ?? {}) as IParadisResumeListRequest<string>) as Promise<T>;
 			case 'details': return this.service.details(typeof args[0] === 'string' ? args[0] : '') as Promise<T>;
+			case 'claudeResumeProfile': return this.service.claudeResumeProfile(typeof args[0] === 'string' ? args[0] : '', typeof args[1] === 'string' ? args[1] : undefined, args[2] === true) as Promise<T>;
 			case 'linkCodexSession': return this.service.linkCodexSession(typeof args[0] === 'string' ? args[0] : '', typeof args[1] === 'string' ? args[1] : undefined) as Promise<T>;
 			case 'preview': return this.service.preview(typeof args[0] === 'string' ? args[0] : '', typeof args[1] === 'string' ? args[1] : undefined) as Promise<T>;
 			case 'search': return this.service.search(clientIdFrom(ctx), typeof args[0] === 'string' ? args[0] : '', Array.isArray(args[1]) ? args[1].filter((value): value is string => typeof value === 'string') : []) as Promise<T>;
