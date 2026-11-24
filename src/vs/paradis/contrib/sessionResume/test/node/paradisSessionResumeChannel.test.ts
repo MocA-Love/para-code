@@ -16,7 +16,7 @@ import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisResumeListRequest, IParadisResumeSpace, paradisAgentResumeCommandLine, paradisAntigravityModelParts, paradisResumeModelLabel } from '../../common/paradisSessionResume.js';
-import { ParadisSessionResumeService } from '../../node/paradisSessionResumeChannel.js';
+import { ParadisSessionResumeChannel, ParadisSessionResumeService } from '../../node/paradisSessionResumeChannel.js';
 
 const nodeRequire = createRequire(import.meta.url);
 type IParadisSessionResumeServiceDependencies = NonNullable<ConstructorParameters<typeof ParadisSessionResumeService>[0]>;
@@ -308,7 +308,8 @@ suite('ParadisSessionResume', () => {
 			optionLikeId: await service.claudeResumeProfile('../code-mode', workspace, true),
 		};
 		const afterPlainRequests = await fs.readFile(settingsFile, 'utf8').catch(() => undefined);
-		const withFile = await service.claudeResumeProfile('code-mode', workspace, true);
+		// renderer と同じ形（IPC のチャネル）で頼む
+		const withFile = await new ParadisSessionResumeChannel(service).call('client', 'claudeResumeProfile', ['code-mode', workspace, true]);
 		assert.deepStrictEqual({
 			listed: Object.fromEntries(['code-mode', 'code-mode-long', 'turned-off', 'ordinary'].map(id => [id, listed.get(id)])),
 			profiles, beforeRequest, afterPlainRequests, withFile,
