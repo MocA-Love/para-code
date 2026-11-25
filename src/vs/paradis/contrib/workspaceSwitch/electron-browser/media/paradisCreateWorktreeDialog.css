@@ -670,10 +670,15 @@
 	overflow-wrap: anywhere;
 }
 
-/* While a card is shown the prompt gives up one of its three lines, so the card pushes the fields below it down less
- * (in a 900px-tall window the body already scrolls; the footer with Create stays put either way). */
+/* While a card is shown the prompt gives up one of its three lines and its help line (the card says what names the
+ * space; the image limits are still enforced with their own messages), so a card pushes the fields below it down by
+ * about 20px instead of 89px. In a 900px-tall window the body already scrolls, and the footer with Create stays put. */
 .paradis-create-worktree-dialog.pcw-d.pcw-d-has-refs .paradis-image-composer > .paradis-image-composer-area {
 	min-height: 36px;
+}
+
+.paradis-create-worktree-dialog.pcw-d.pcw-d-has-refs .pcw-d-help {
+	display: none;
 }
 
 /* 隠す指定は最後に置き、上の display の指定に勝たせる */

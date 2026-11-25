@@ -927,8 +927,8 @@ export function paradisToBranchName(text: string | undefined): string | undefine
 /** 命名のモデルへ渡す Issue・PR の題名の上限。題名は第三者が書いた文なので、長さを決めて渡す。 */
 const PARADIS_REFERENCE_NAMING_TITLE_MAX_CHARS = 200;
 
-/** Issue・PR の題名を 1 行に整える（制御文字・ゼロ幅・双方向制御を落とし、空白を畳む）。 */
-function paradisCleanReferenceTitle(title: string): string {
+/** Issue・PR の題名を 1 行に整える（制御文字・ゼロ幅・双方向制御を落とし、空白を畳む）。題名は第三者の文なので、表示の前にも通す。 */
+export function paradisCleanReferenceTitle(title: string): string {
 	return stripUnsafeTitleCharacters(title).replace(/\s+/g, ' ').trim();
 }
 

@@ -37,6 +37,7 @@ import {
 	IParadisGitBranches,
 	IParadisWorktreeGitCommandResult,
 	paradisBuildAgentCommand,
+	paradisCleanReferenceTitle,
 	PARADIS_AGENT_LAUNCH_OPTIONS_STORAGE_KEY,
 	paradisDeduplicateWorktreeDirName,
 	paradisNextBranchNameAfter,
@@ -397,6 +398,8 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 	private _refSlot!: HTMLElement;
 	/** カードのボタン・ホバー（描き直すたびに作り直す）。 */
 	private readonly _refStore = this._register(new DisposableStore());
+	/** カードのボタン（`種類:カードのキー` → 要素）。描き直した後に、同じボタンへフォーカスを戻すため。 */
+	private readonly _refActions = new Map<string, HTMLElement>();
 	private readonly _refScheduler = this._register(new RunOnceScheduler(() => this._syncReferences(), REFERENCE_DEBOUNCE_MS));
 	/** 指示に出てきた順のカード（3 枚まで）。 */
 	private _refs: IParadisReferenceCard[] = [];
@@ -1677,6 +1680,16 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		this._refScheduler.cancel();
 		this._refs = [];
 		this._originRepository = undefined;
+		// 前のリポジトリで自動で当てた元のブランチは持ち越さない（このリポジトリのものなら、取り直した後で当て直す）
+		if (this._refBranchKey !== undefined) {
+			this._refBranchKey = undefined;
+			this._pendingRefBranch = undefined;
+			this._refPullRequestBranch = undefined;
+			if (!this._modeTouched && this._mode === 'existing') {
+				this._modeSeg.value = 'new';
+				this._setMode('new', false);
+			}
+		}
 		this._syncReferences();
 	}
 
@@ -1888,9 +1901,10 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 			return;
 		}
 		const active = dom.getActiveElement();
-		const focused = dom.isHTMLElement(active) && slot.contains(active) ? active.closest<HTMLElement>('[data-ref-action]')?.dataset.refAction : undefined;
 		const hadFocus = dom.isHTMLElement(active) && slot.contains(active);
+		const focused = hadFocus ? [...this._refActions].find(([, element]) => element.contains(active))?.[0] : undefined;
 		this._refStore.clear();
+		this._refActions.clear();
 		dom.clearNode(slot);
 		const live = this._refs.filter(card => !card.dismissed);
 		const current = this._currentReference;
@@ -1901,8 +1915,7 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		this._dialog.classList.toggle('pcw-d-has-refs', live.length > 0);
 		this._promptInput.rows = live.length > 0 ? 2 : 3;
 		if (hadFocus) {
-			const target = focused !== undefined ? [...slot.querySelectorAll<HTMLElement>('[data-ref-action]')].find(element => element.dataset.refAction === focused) : undefined;
-			(target ?? this._promptInput).focus();
+			((focused !== undefined ? this._refActions.get(focused) : undefined) ?? this._promptInput).focus();
 		}
 	}
 
@@ -1914,7 +1927,7 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		const body = dom.append(element, $('.pcw-d-ref-body'));
 		const title = dom.append(body, $('.pcw-d-ref-title'));
 		const action = (kind: string, button: ParadisButton, run: () => void) => {
-			button.element.dataset.refAction = `${kind}:${card.key}`;
+			this._refActions.set(`${kind}:${card.key}`, button.element);
 			this._refStore.add(button);
 			this._refStore.add(button.onDidClick(run));
 		};
@@ -1972,9 +1985,11 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 			? (info.state === 'draft' ? Codicon.gitPullRequestDraft : info.state === 'merged' ? Codicon.gitMerge : info.state === 'closed' ? Codicon.gitPullRequestClosed : Codicon.gitPullRequest)
 			: (info.state === 'closed' ? Codicon.issueClosed : Codicon.issueOpened);
 		icon.className = `${ThemeIcon.asClassName(iconId)}${open ? ' pcw-d-ref-open' : ''}`;
-		title.textContent = info.title;
+		// 題名は第三者の文: 改行・双方向制御を落としてから出す
+		const cleanTitle = paradisCleanReferenceTitle(info.title);
+		title.textContent = cleanTitle;
 		// 2 行で切れる題名は、ポインタを重ねたときに全体を出す
-		this._refStore.add(this.hoverService.setupDelayedHover(title, () => ({ content: info.title })));
+		this._refStore.add(this.hoverService.setupDelayedHover(title, () => ({ content: cleanTitle })));
 		const repository = this._selectedRepository;
 		const parts = [label, info.kind === 'pr' ? STR_REF_PR : STR_REF_ISSUE];
 		if (repository?.uri.scheme === Schemas.vscodeRemote && card.via !== undefined) {
