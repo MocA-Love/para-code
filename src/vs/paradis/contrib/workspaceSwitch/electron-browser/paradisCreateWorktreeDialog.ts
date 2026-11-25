@@ -30,6 +30,7 @@ import { ILayoutService } from '../../../../platform/layout/browser/layoutServic
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { PosixShellType } from '../../../../platform/terminal/common/terminal.js';
+import { IParadisSpaceSectionsService } from '../common/paradisSpaceSections.js';
 import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService } from '../common/paradisWorkspaceSwitch.js';
 import {
 	IParadisAgentCommandTemplate,
@@ -119,6 +120,10 @@ const STR_TITLE = localize('paradis.createWorktree.title', "新しいスペー�
 const STR_CLOSE = localize('paradis.createWorktree.close', "閉じる");
 // allow-any-unicode-next-line
 const STR_ADVANCED = localize('paradis.createWorktree.advanced', "詳細オプション");
+// allow-any-unicode-next-line
+const STR_SECTION_LABEL = localize('paradis.createWorktree.section', "セクション");
+// allow-any-unicode-next-line
+const STR_SECTION_NONE = localize('paradis.createWorktree.sectionNone', "セクションなし");
 // allow-any-unicode-next-line
 const STR_NAME_PLACEHOLDER = localize('paradis.createWorktree.namePlaceholder', "(省略可)");
 // allow-any-unicode-next-line
@@ -282,6 +287,35 @@ function paradisTakeCreateWorktreeDraft(repositoryId: string | undefined): IPara
 /** コマンドプレビューに埋め込むプロンプトの省略表示長。 */
 const PREVIEW_PROMPT_MAX_LENGTH = 40;
 
+/**
+ * 一覧のセクションの「+」が渡す、リポジトリとセクションだけの入力値か。作成に失敗した後の再表示（入力値の全部を持つ）と違い、
+ * 書きかけの下書きがあればそれを戻し、セクションだけを押した「+」のものに替える。
+ */
+function paradisIsSectionOnlyPrefill(prefill: IParadisHeadlessWorktreeRequest): boolean {
+	return Object.keys(prefill).every(key => key === 'repositoryId' || key === 'sectionId');
+}
+
+/**
+ * ダイアログを開くときのフォームの中身を決める。
+ * - 再表示（入力値の全部を持つ prefill）: その中身。下書きは見ない
+ * - セクションの「+」（リポジトリとセクションだけの prefill）: 下書きがあればそれを戻し、セクションは押した「+」のものにする
+ * - それ以外: 下書きがあればそれ（セクションも下書きのまま）
+ */
+export function paradisResolveCreateWorktreeForm(prefill: IParadisHeadlessWorktreeRequest | undefined, takeDraft: () => IParadisHeadlessWorktreeRequest | undefined): { readonly form: IParadisHeadlessWorktreeRequest | undefined; readonly restored: boolean } {
+	if (prefill && !paradisIsSectionOnlyPrefill(prefill)) {
+		return { form: prefill, restored: false };
+	}
+	const draft = takeDraft();
+	if (!prefill) {
+		return { form: draft, restored: draft !== undefined };
+	}
+	if (!draft) {
+		return { form: prefill, restored: false };
+	}
+	const { sectionId: _draftSectionId, ...rest } = draft;
+	return { form: prefill.sectionId !== undefined ? { ...rest, sectionId: prefill.sectionId } : rest, restored: true };
+}
+
 export function openParadisCreateWorktreeDialog(accessor: ServicesAccessor, preselectedRepositoryId?: string, prefill?: IParadisHeadlessWorktreeRequest): void {
 	const dialog = new ParadisCreateWorktreeDialog(
 		accessor.get(ILayoutService),
@@ -303,6 +337,7 @@ export function openParadisCreateWorktreeDialog(accessor: ServicesAccessor, pres
 		// fetch は refs を書き換えるので、作成と同じく別のマシンへ流さない解決関数で動かす
 		paradisWorktreeGitWriteHostResolver(accessor),
 		paradisGithubReferenceResolver(accessor),
+		accessor.get(IParadisSpaceSectionsService),
 	);
 	// ダイアログは自身の close で自己 dispose する
 	void dialog;
@@ -334,6 +369,9 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 	private _setupCheckbox!: ParadisSwitch;
 	private _setupScriptEl!: HTMLElement;
 	private _repoSelect!: ParadisSelect;
+	/** 詳細オプションの「セクション」の行（セクションが 0 個のリポジトリでは隠す）。値の空文字はセクションなし */
+	private _sectionRow!: HTMLElement;
+	private _sectionSelect!: ParadisSelect;
 	private _branchSelect!: ParadisSelect;
 	private _pathPreview!: HTMLElement;
 	private _errorEl!: HTMLElement;
@@ -437,6 +475,8 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		private readonly resolveGitWriteHost: (resource: URI) => IParadisWorktreeGitHost | undefined = resolveGitHost,
 		/** 指示に貼った Issue・PR を取る関数。省くとカードも候補も出さない。 */
 		private readonly lookupReference?: ParadisGithubReferenceResolver,
+		/** スペースのセクションの一覧。省くと「セクション」の欄を出さない。 */
+		private readonly spaceSections?: Pick<IParadisSpaceSectionsService, 'sectionsOf'>,
 	) {
 		super();
 
@@ -469,9 +509,10 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		// 中の欄へフォーカスを移す前に作る（開く前の場所を覚えて、閉じたらそこへ戻す）。Esc は重なった中の一番上だけが受ける
 		this._register(new ParadisModalFocus({ backdrop: this._backdrop, modal: this._dialog, onEscape: () => this._onEscape(), close: () => this.dispose() }));
 		// 書きかけを残して閉じたリポジトリなら、その中身で開く（作成に失敗した後の再表示は、その中身を優先する）
+		// セクションの「+」から開いたときは、下書きを戻したうえで、押した「+」のセクションを選ぶ
 		const repositoryId = preselectedRepositoryId ?? prefill?.repositoryId;
-		const draft = prefill ? undefined : paradisTakeCreateWorktreeDraft(repositoryId ?? this.switchService.activeRepository?.id);
-		this._renderForm(repositoryId ?? draft?.repositoryId, prefill ?? draft, draft !== undefined);
+		const { form, restored } = paradisResolveCreateWorktreeForm(prefill, () => paradisTakeCreateWorktreeDraft(repositoryId ?? this.switchService.activeRepository?.id));
+		this._renderForm(repositoryId ?? form?.repositoryId, form, restored);
 		// インストール済み CLI のモデル候補を取り直し、届いたら選択を保ったまま並べ直す
 		this._register(this.modelCatalogService.onDidChange(() => this._onAgentTemplatesChanged()));
 		this.modelCatalogService.refresh();
@@ -520,7 +561,14 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 			// 「origin に合わせる」を選んでいたら、それも写す（再表示は sync の有無で選んだかを戻す）
 			...(choice ? { existingBranch: this._existingBranchChoice() ?? { branch: choice.name, source: choice.source } } : {}),
 			...(images.length > 0 ? { images } : {}),
+			...this._sectionForRequest(),
 		});
+	}
+
+	/** キューと下書きへ渡すセクション（セクションなしなら何も足さない）。 */
+	private _sectionForRequest(): { readonly sectionId?: string } {
+		const section = this._selectedSection();
+		return section ? { sectionId: section.id } : {};
 	}
 
 	/** 「キャンセル」「作成」で閉じる。書きかけを下書きに残さず、残っていたものも捨てる。 */
@@ -744,6 +792,12 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 			repositoryOptions,
 			repositoryOptions.some(option => option.value === initialRepoId) ? initialRepoId : undefined, { ariaLabel: STR_BASE_REPO_LABEL, className: 'pcw-d-adv-select' }));
 
+		// スペースのセクション（リポジトリを選び直すと候補が入れ替わるので、リポジトリのすぐ下に置く）
+		this._sectionRow = dom.append(advGrid, $('label.pcw-d-adv-row.pcw-section-row'));
+		dom.append(this._sectionRow, $('span.pcw-d-adv-label')).textContent = STR_SECTION_LABEL;
+		this._sectionSelect = this._register(new ParadisSelect(this._sectionRow, this.contextViewService, this.configurationService, [], undefined, { ariaLabel: STR_SECTION_LABEL, className: 'pcw-d-adv-select' }));
+		this._register(this._sectionSelect.onDidChange(() => this._updateSubtitle()));
+
 		const branchRow = dom.append(advGrid, $('label.pcw-d-adv-row'));
 		this._baseBranchRow = branchRow;
 		dom.append(branchRow, $('span.pcw-d-adv-label')).textContent = STR_BASE_BRANCH_LABEL;
@@ -802,7 +856,7 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		}
 
 		this._onAgentChanged(prefill);
-		this._onRepositoryChanged(prefill?.runSetup);
+		this._onRepositoryChanged(prefill?.runSetup, prefill?.sectionId);
 		// 再表示ではモードと選んだブランチも戻す（エージェントの `auto` はダイアログからは来ないので origin として扱う）
 		if (prefill?.existingBranch) {
 			const choice = prefill.existingBranch;
@@ -1050,7 +1104,8 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		}
 	}
 
-	private _onRepositoryChanged(prefillRunSetup?: boolean): void {
+	private _onRepositoryChanged(prefillRunSetup?: boolean, sectionId?: string): void {
+		this._loadSections(sectionId);
 		this._imageComposer.setRemote(this._selectedRepository?.uri.scheme === Schemas.vscodeRemote);
 		void this._loadBranches();
 		void this._loadSetupScript(prefillRunSetup);
@@ -1067,6 +1122,27 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 			void this._loadCandidates();
 			this._fetchOrigin(false);
 		}
+	}
+
+	/**
+	 * 選んだリポジトリのスペースのセクションを「セクション」の欄に並べる。0 個なら行ごと隠す。
+	 * sectionId（開いたときの値）がそのリポジトリに無ければ、セクションなしを選ぶ（リポジトリを選び直したときも同じ）。
+	 */
+	private _loadSections(sectionId?: string): void {
+		const repository = this._selectedRepository;
+		const sections = repository ? this.spaceSections?.sectionsOf(repository.id) ?? [] : [];
+		this._sectionRow.classList.toggle('hidden', sections.length === 0);
+		this._sectionSelect.setOptions(
+			[{ value: '', label: STR_SECTION_NONE }, ...sections.map(section => ({ value: section.id, label: section.name }))],
+			sectionId !== undefined && sections.some(section => section.id === sectionId) ? sectionId : '');
+		this._updateSubtitle();
+	}
+
+	/** 「セクション」の欄で選んでいるセクション（セクションなし・欄を出していないときは undefined）。 */
+	private _selectedSection(): { readonly id: string; readonly name: string } | undefined {
+		const repository = this._selectedRepository;
+		const id = this._sectionSelect.value;
+		return repository && id ? this.spaceSections?.sectionsOf(repository.id).find(section => section.id === id) : undefined;
 	}
 
 	/** 選択中リポジトリの .paracode.json から setupScript を読み、setup 行の表示を更新する。 */
@@ -1149,13 +1225,19 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 	private _updateSubtitle(): void {
 		const repository = this._selectedRepository;
 		const baseRef = this._branchSelect.value;
-		this._subtitleEl.textContent = !repository ? ''
+		const section = this._selectedSection();
+		const subtitle = !repository ? ''
 			// allow-any-unicode-next-line
 			: this._mode === 'existing' ? localize('paradis.createWorktree.subtitleExisting', "{0} · 既存のブランチを新しい worktree で開きます", repository.name)
 				// allow-any-unicode-next-line
 				: baseRef ? localize('paradis.createWorktree.subtitle', "{0} · {1} から新しい worktree を作ります", repository.name, baseRef)
 					// allow-any-unicode-next-line
 					: localize('paradis.createWorktree.subtitleNoBase', "{0} に新しい worktree を作ります", repository.name);
+		// 行き先のセクションは、詳細オプションを開かなくてもここで確かめられる
+		this._subtitleEl.textContent = section
+			// allow-any-unicode-next-line
+			? localize('paradis.createWorktree.subtitleSection', "{0} · セクション「{1}」に入れます", subtitle, section.name)
+			: subtitle;
 	}
 
 	private _updatePathPreview(): void {
@@ -1253,6 +1335,7 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 			...(existingBranch ? { existingBranch } : {}),
 			...(images.length > 0 ? { images } : {}),
 			...this._referenceForRequest(),
+			...this._sectionForRequest(),
 		});
 		this._close(true);
 	}

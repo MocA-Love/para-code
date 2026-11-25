@@ -61,6 +61,20 @@ html body .monaco-workbench .paradis-focus-subtle-list {
 }
 
 /*
+	Section bands of the spaces list (paradisWorkspaceSwitch.css): the row keeps the full height the list counts, and the
+	band is the inner box (.monaco-tl-row), 2px shorter at the top and bottom. The row's own background and outline are
+	turned off there, so the selection fill and the focus ring of a focused list are drawn on the inner box instead.
+*/
+html body .monaco-workbench .paradis-focus-subtle-list .monaco-list:focus .monaco-list-row.paradis-section-band.selected > .monaco-tl-row {
+	background-color: var(--vscode-list-activeSelectionBackground);
+}
+
+html body .monaco-workbench .paradis-focus-subtle-list .monaco-list:focus .monaco-list-row.paradis-section-band.focused > .monaco-tl-row {
+	outline: 1px solid var(--vscode-paradis-focusSubtle);
+	outline-offset: -1px;
+}
+
+/*
 	paradisFocusRing.ts adds .paradis-pointer-focus to a focused element inside Para Code's own UI when the
 	focus did not come from the keyboard (and to fork dialog roots, role="dialog", that focus themselves to
 	receive Escape). It is not added in high contrast themes.

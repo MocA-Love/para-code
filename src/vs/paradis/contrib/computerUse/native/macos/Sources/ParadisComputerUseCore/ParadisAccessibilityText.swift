@@ -73,10 +73,48 @@ func paradisSanitizeText(_ text: String, maxLength: Int = paradisAXMaxTextLength
 	return String(collapsed.prefix(maxLength)) + "\u{2026}"
 }
 
-/** ツリーを番号付きの字下げした文字列にする。 */
-func paradisRenderAXTree(_ nodes: [ParadisAXNode], truncated: Bool) -> String {
+/** 入れ物としてだけ働く役割（名前も値も操作も無ければ、表示から外してよい）。 */
+private let paradisAXContainerRoles: Set<String> = [
+	"AXGroup", "AXUnknown", "AXSplitGroup", "AXLayoutArea", "AXLayoutItem", "AXRow", "AXColumn", "AXCell", "AXGenericElement",
+]
+
+/** エージェントが使う操作（これがあれば入れ物でも残す）。`AXShowMenu`・`AXScrollToVisible` などは数えない。 */
+private let paradisAXMeaningfulActions: Set<String> = ["AXPress", "AXPick", "AXConfirm", "AXCancel", "AXIncrement", "AXDecrement", "AXOpen"]
+
+/**
+ * 表示から外してよい要素か: 入れ物の役割で、名前・値・説明が無く、フォーカスも選択も無く、使える操作も無い。
+ * 外すのは表示だけで、番号は詰めない（外した要素の番号も、番号で指す道具でそのまま使える）。
+ */
+func paradisAXNodeIsBareContainer(_ node: ParadisAXNode) -> Bool {
+	guard paradisAXContainerRoles.contains(node.role), !node.redacted, node.focused != true, !node.selected else {
+		return false
+	}
+	let hasText = [node.title, node.value, node.label].contains { text in
+		text.map { !paradisSanitizeText($0).isEmpty } ?? false
+	}
+	return !hasText && !node.actions.contains { paradisAXMeaningfulActions.contains($0) }
+}
+
+/**
+ * ツリーを番号付きの字下げした文字列にする。`prune` なら、名前も操作も無い入れ物の行を出さず（番号はそのまま）、
+ * 字下げを出している祖先の数に詰め、外した数を最後の行に書く。
+ */
+func paradisRenderAXTree(_ nodes: [ParadisAXNode], truncated: Bool, prune: Bool = false) -> String {
 	var lines: [String] = []
+	var hidden = 0
+	// 今の枝の祖先（元の深さと、表示しているか）。字下げは表示している祖先の数にする
+	var ancestors: [(depth: Int, shown: Bool)] = []
 	for node in nodes {
+		while let last = ancestors.last, last.depth >= node.depth {
+			ancestors.removeLast()
+		}
+		let indent = prune ? ancestors.filter { $0.shown }.count : max(0, node.depth)
+		let bare = prune && paradisAXNodeIsBareContainer(node)
+		ancestors.append((node.depth, !bare))
+		if bare {
+			hidden += 1
+			continue
+		}
 		var parts: [String] = ["[\(node.index)]", node.role]
 		if let subrole = node.subrole, !subrole.isEmpty {
 			parts.append("(\(subrole))")
@@ -107,7 +145,10 @@ func paradisRenderAXTree(_ nodes: [ParadisAXNode], truncated: Bool) -> String {
 		if !node.actions.isEmpty {
 			parts.append("actions=" + node.actions.map { paradisSanitizeText($0, maxLength: 40) }.joined(separator: ","))
 		}
-		lines.append(String(repeating: "  ", count: max(0, node.depth)) + parts.joined(separator: " "))
+		lines.append(String(repeating: "  ", count: indent) + parts.joined(separator: " "))
+	}
+	if hidden > 0 {
+		lines.append("... (\(hidden) unnamed containers hidden; their numbers still work)")
 	}
 	if truncated {
 		lines.append("... (tree truncated)")
