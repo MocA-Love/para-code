@@ -100,8 +100,30 @@ export interface IParadisSimulatorStreamEndEvent {
  */
 export const PARADIS_SIMULATOR_CAPTURE_START_TIMEOUT_MS = 15_000;
 
+/**
+ * ホストが応答の頭を返した（取り込みを始めた）後、最初の 1 枚を待つ時間。動いている取り込みは、画面が変わらなくても
+ * すぐに 1 枚を送る（Xcode 27.2 の実測で、起動済みの端末は 0.02 秒、起動中の端末は 1 秒）。これだけ待って来なければ、
+ * ホストが握っている端末のセッションは死んでいる（端末が起動し直された）。
+ */
+export const PARADIS_SIMULATOR_FIRST_FRAME_TIMEOUT_MS = 6_000;
+
 /** チャネルの `frames` のイベント。 */
 export type ParadisSimulatorStreamEvent = IParadisSimulatorFrameEvent | IParadisSimulatorStreamEndEvent;
+
+/**
+ * {@link ParadisSimulatorStreamEvent} をチャネルで運ぶ形。VS Code の IPC は、オブジェクトの中の VSBuffer を JSON
+ * （バイトの数字の並び）にしてしまい、受け側では VSBuffer に戻らない（ペインが `jpeg.buffer.slice is not a function`
+ * で 1 枚も描けなかった。paracode-183〜194）。配列の要素なら VSBuffer のまま運ぶので、画像は `[見出し, 画像]` にする。
+ */
+export type ParadisSimulatorStreamWire = IParadisSimulatorStreamEndEvent | [Omit<IParadisSimulatorFrameEvent, 'jpeg'>, VSBuffer];
+
+export function paradisSimulatorStreamToWire(event: ParadisSimulatorStreamEvent): ParadisSimulatorStreamWire {
+	return event.kind === 'frame' ? [{ kind: 'frame', udid: event.udid }, event.jpeg] : event;
+}
+
+export function paradisSimulatorStreamFromWire(wire: ParadisSimulatorStreamWire): ParadisSimulatorStreamEvent {
+	return Array.isArray(wire) ? { ...wire[0], jpeg: wire[1] } : wire;
+}
 
 // --- 開閉（iPhone Duo） ---
 

@@ -391,9 +391,33 @@ export function paradisAndroidInputMessages(input: unknown, size: { readonly wid
 	throw new Error(`Invalid Android input: ${JSON.stringify(input)?.slice(0, 200)}`);
 }
 
-/** チャネルの `androidVideo` のイベントで届くもの（H.264 の Annex B の包み）。 */
+/** ペインへ届ける Android の映像のイベント（H.264 の Annex B の包み）。チャネルでは {@link ParadisAndroidVideoTransport} の形で運ぶ。 */
 export type ParadisAndroidVideoWire =
 	| { readonly serial: string; readonly kind: 'size'; readonly width: number; readonly height: number }
 	| { readonly serial: string; readonly kind: 'config'; readonly data: VSBuffer }
 	| { readonly serial: string; readonly kind: 'frame'; readonly data: VSBuffer; readonly key: boolean; readonly pts: number }
 	| { readonly serial: string; readonly kind: 'ended'; readonly reason?: string };
+
+type ParadisAndroidVideoWithData = Extract<ParadisAndroidVideoWire, { readonly data: VSBuffer }>;
+type ParadisAndroidVideoHeader = ParadisAndroidVideoWithData extends infer M ? M extends ParadisAndroidVideoWithData ? Omit<M, 'data'> : never : never;
+
+/**
+ * {@link ParadisAndroidVideoWire} をチャネルで運ぶ形。VS Code の IPC は、オブジェクトの中の VSBuffer を JSON にして
+ * しまう（受け側で VSBuffer に戻らず、ペインは映像を復号できなかった）。配列の要素なら VSBuffer のまま運ぶので、
+ * 映像の中身があるものは `[見出し, 中身]` にする。
+ */
+export type ParadisAndroidVideoTransport = Exclude<ParadisAndroidVideoWire, ParadisAndroidVideoWithData> | [ParadisAndroidVideoHeader, VSBuffer];
+
+export function paradisAndroidVideoToTransport(message: ParadisAndroidVideoWire): ParadisAndroidVideoTransport {
+	if (message.kind === 'config') {
+		return [{ serial: message.serial, kind: 'config' }, message.data];
+	}
+	if (message.kind === 'frame') {
+		return [{ serial: message.serial, kind: 'frame', key: message.key, pts: message.pts }, message.data];
+	}
+	return message;
+}
+
+export function paradisAndroidVideoFromTransport(transport: ParadisAndroidVideoTransport): ParadisAndroidVideoWire {
+	return Array.isArray(transport) ? { ...transport[0], data: transport[1] } : transport;
+}
