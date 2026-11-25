@@ -124,7 +124,7 @@ export const PARADIS_LAUNCH_BYPASS_FLAG: Readonly<Record<ParadisLaunchAgent, str
 	codex: '--dangerously-bypass-approvals-and-sandbox',
 };
 
-/** 権限を広げる控え。会話を始めた起動（新規・分岐）に付いていたときだけ控え、再開の起動からは足しも消しもしない。 */
+/** 権限を広げる控え。会話を始めた起動（新規・分岐）に付いていたときだけ控える（再開の起動からは控えない）。 */
 const PERMISSION_WIDENING_FLAGS: ReadonlySet<string> = new Set([
 	'--dangerously-skip-permissions',
 	'--allow-dangerously-skip-permissions',
@@ -253,29 +253,23 @@ export function paradisAgentLaunchFromCommandLine(commandLine: string): IParadis
 }
 
 /**
- * 起動を台帳に入れるときの控え。会話を始めた起動（新規・分岐）は読めたものをそのまま控える。再開の起動は、
- * 権限を広げるもの（確認を省くフラグと環境変数）だけ前の控えのままにする: 「権限確認なしで再開」を一度選んだだけで、
- * その後の普通の再開まで確認なしにしないため。空になったら控えない。
+ * 起動を台帳に入れるときの控え。会話を始めた起動（新規・分岐）は読めたものをそのまま控える。再開の起動は:
+ * - 控えのある会話では、控えを変えない。再開は素のコマンドになることがあり（問い合わせの時間切れ、環境変数を
+ *   付け直せない PowerShell・csh）、その起動で会話を始めたときの控えを消さないため
+ * - 控えの無い会話（この機能より前に始めた会話など）では、権限を広げるもの（確認を省くフラグと環境変数）以外を控える。
+ *   「権限確認なしで再開」を一度選んだだけで、その後の普通の再開まで確認なしにしないため
  */
 export function paradisMergeAgentLaunchProfile(existing: IParadisAgentLaunchProfile | undefined, captured: IParadisAgentLaunchProfile, mode: 'new' | 'resume' | 'fork'): IParadisAgentLaunchProfile {
 	if (mode !== 'resume') {
 		return captured;
 	}
-	const env: Record<string, string> = {};
-	const flags: Record<string, string | true> = {};
-	for (const [name, value] of Object.entries(captured.env)) {
-		if (!PERMISSION_WIDENING_ENV.has(name)) { env[name] = value; }
+	if (existing !== undefined && !paradisIsEmptyLaunchProfile(existing)) {
+		return existing;
 	}
-	for (const [name, value] of Object.entries(captured.flags)) {
-		if (!PERMISSION_WIDENING_FLAGS.has(name)) { flags[name] = value; }
-	}
-	for (const [name, value] of Object.entries(existing?.env ?? {})) {
-		if (PERMISSION_WIDENING_ENV.has(name)) { env[name] = value; }
-	}
-	for (const [name, value] of Object.entries(existing?.flags ?? {})) {
-		if (PERMISSION_WIDENING_FLAGS.has(name)) { flags[name] = value; }
-	}
-	return { env, flags };
+	return {
+		env: Object.fromEntries(Object.entries(captured.env).filter(([name]) => !PERMISSION_WIDENING_ENV.has(name))),
+		flags: Object.fromEntries(Object.entries(captured.flags).filter(([name]) => !PERMISSION_WIDENING_FLAGS.has(name))),
+	};
 }
 
 /** 控えを付け直す先のシェル。 */

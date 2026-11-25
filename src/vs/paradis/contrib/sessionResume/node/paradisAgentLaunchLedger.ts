@@ -217,7 +217,7 @@ export class ParadisAgentLaunchLedger {
 
 	/**
 	 * ペインでの起動を控える。コマンド行のフラグと先頭の `名前=値`、プロセスの環境（読めるとき）を合わせ、
-	 * 許可リストで絞って台帳に入れる。会話を始めた起動は上書きし、再開の起動は権限を広げるものを前のままにする
+	 * 許可リストで絞って台帳に入れる。会話を始めた起動は上書きし、再開の起動は控えのある会話を変えない
 	 * （{@link paradisMergeAgentLaunchProfile}）。控えるものが無くなった会話は台帳から消す。
 	 */
 	record(request: IParadisAgentLaunchRecordRequest): Promise<void> {
@@ -228,6 +228,11 @@ export class ParadisAgentLaunchLedger {
 			}
 			const launch = paradisAgentLaunchFromCommandLine(request.commandLine);
 			if (launch === undefined || launch.agent !== request.agent) {
+				return;
+			}
+			// 分岐の起動のコマンド行にある ID は、元の会話のもの。分岐した直後に hook が元の ID を報告しても、
+			// 分岐の起動（確認なしを選んだかもしれない）で元の会話の控えを置き換えない
+			if (launch.mode === 'fork' && request.commandLine.includes(request.sessionId)) {
 				return;
 			}
 			let processEnvironment: Record<string, string> = {};
@@ -242,6 +247,9 @@ export class ParadisAgentLaunchLedger {
 			const key = paradisAgentLaunchLedgerKey(request.agent, request.sessionId);
 			const entries = await this.read();
 			const merged = paradisMergeAgentLaunchProfile(entries[key], captured, launch.mode);
+			if (merged === entries[key]) {
+				return;
+			}
 			if (paradisIsEmptyLaunchProfile(merged)) {
 				if (entries[key] === undefined) {
 					return;

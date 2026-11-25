@@ -117,14 +117,14 @@ suite('ParadisAgentLaunchProfile', () => {
 		});
 	});
 
-	test('a launch that starts a conversation replaces the record; a resume keeps what widens permissions as it was', () => {
+	test('a launch that starts a conversation replaces the record; a resume keeps an existing record and never adds what widens permissions', () => {
 		const started = profile({ CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS: '1', CLAUDE_CODE_SIMPLE: '1' }, { '--dangerously-skip-permissions': true, '--model': 'opus' });
 		const confirmed = profile({ CLAUDE_CODE_NO_FLICKER: '1' }, { '--model': 'sonnet' });
 		const bypassed = profile({ CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS: '1' }, { '--dangerously-skip-permissions': true, '--allow-dangerously-skip-permissions': true, '--effort': 'high' });
 		assert.deepStrictEqual({
 			newReplaces: paradisMergeAgentLaunchProfile(started, confirmed, 'new'),
 			forkReplaces: paradisMergeAgentLaunchProfile(undefined, bypassed, 'fork'),
-			// 確認ありで再開しても、会話を始めたときの「確認なし」は残る
+			// 再開の起動は、会話を始めたときの控えを変えない（素のコマンドで再開しても消えない）
 			resumeKeepsBypass: paradisMergeAgentLaunchProfile(started, confirmed, 'resume'),
 			// 「権限確認なしで再開」を選んだだけでは、確認ありで始めた会話を確認なしにしない
 			resumeDoesNotAddBypass: paradisMergeAgentLaunchProfile(confirmed, bypassed, 'resume'),
@@ -132,8 +132,8 @@ suite('ParadisAgentLaunchProfile', () => {
 		}, {
 			newReplaces: confirmed,
 			forkReplaces: bypassed,
-			resumeKeepsBypass: profile({ CLAUDE_CODE_NO_FLICKER: '1', CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS: '1' }, { '--model': 'sonnet', '--dangerously-skip-permissions': true }),
-			resumeDoesNotAddBypass: profile({}, { '--effort': 'high' }),
+			resumeKeepsBypass: started,
+			resumeDoesNotAddBypass: confirmed,
 			resumeWithoutRecord: profile({}, { '--effort': 'high' }),
 		});
 	});

@@ -85,6 +85,10 @@ suite('ParadisAgentLaunchLedger', () => {
 		delete environment.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
 		await ledger.record({ agent: 'claude', sessionId: id, commandLine: `claude --permission-mode manual --model sonnet --resume ${id}` });
 		const resumed = await ledger.profile('claude', id);
+		// 分岐の起動が元の会話の ID で届いても、元の会話の控えを置き換えない。分岐先の ID なら控える
+		await ledger.record({ agent: 'claude', sessionId: id, commandLine: `claude --permission-mode manual --resume ${id} --fork-session` });
+		await ledger.record({ agent: 'claude', sessionId: 'f1', commandLine: `claude --dangerously-skip-permissions --resume ${id} --fork-session` });
+		const forkOfSameId = [await ledger.profile('claude', id), await ledger.profile('claude', 'f1')];
 		// 種類の違うコマンド行・対話でない起動・形の違う ID は控えない
 		await ledger.record({ agent: 'codex', sessionId: 'c1', commandLine: 'claude --model opus' });
 		await ledger.record({ agent: 'claude', sessionId: 'p1', commandLine: 'claude -p hi --model opus' });
@@ -113,6 +117,7 @@ suite('ParadisAgentLaunchLedger', () => {
 			started,
 			secretWritten: /sk-secret|sk-typed|ANTHROPIC|has space/.test(written),
 			resumed,
+			forkOfSameId,
 			codex,
 			skipped: [await ledger.profile('codex', 'c1'), await ledger.profile('claude', 'p1'), await ledger.profile('claude', '-bad'), await ledger.profile(undefined, 3)],
 			sanitized,
@@ -123,7 +128,11 @@ suite('ParadisAgentLaunchLedger', () => {
 			asked: [4242, 'claude'],
 			started: { env: { CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS: '1', CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' }, flags: { '--dangerously-skip-permissions': true, '--model': 'opus' } },
 			secretWritten: false,
-			resumed: { env: { CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS: '1' }, flags: { '--dangerously-skip-permissions': true, '--model': 'sonnet' } },
+			resumed: { env: { CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS: '1', CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' }, flags: { '--dangerously-skip-permissions': true, '--model': 'opus' } },
+			forkOfSameId: [
+				{ env: { CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS: '1', CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' }, flags: { '--dangerously-skip-permissions': true, '--model': 'opus' } },
+				{ env: {}, flags: { '--dangerously-skip-permissions': true } },
+			],
 			codex: { env: {}, flags: { '--dangerously-bypass-approvals-and-sandbox': true, '--model': 'gpt-6.2-sol' } },
 			skipped: [undefined, undefined, undefined, undefined],
 			sanitized: [{ env: { CLAUDE_CODE_SIMPLE: '1' }, flags: {} }, undefined, undefined],
