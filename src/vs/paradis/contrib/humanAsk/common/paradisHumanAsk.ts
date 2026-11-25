@@ -37,7 +37,8 @@ export const PARADIS_HUMAN_ASK_BOARD_OPTION_LIMIT = 10;
 /** 1 件のボタン（許可・拒否、承認して次へ・差し戻す など）の数の上限。 */
 export const PARADIS_HUMAN_ASK_ACTION_LIMIT = 6;
 
-const ID_LIMIT = 200;
+/** id の長さの上限。ペインの id は「ペインの鍵（40 字）＋中継の対話の id（200 字まで）」になるので、それが入る長さ。 */
+const ID_LIMIT = 400;
 const TITLE_LIMIT = 200;
 const LABEL_LIMIT = 400;
 const QUESTION_TEXT_LIMIT = 2000;
@@ -118,7 +119,8 @@ export interface IParadisHumanAskInput {
 	readonly source: ParadisHumanAskSource;
 	/**
 	 * 出どころの中の id。**1 回の問いごとに別の値**にする（同じペイン・同じタスクが次に聞くときは別の id）。
-	 * 回答済みになった鍵は短い間覚えていて、遅れて届いた古い一覧で待ちに戻さないため。
+	 * 回答済みになった鍵は短い間覚えていて、遅れて届いた古い一覧で待ちに戻さないため
+	 * （同じ id のまま次の問いを出すと、その間は出てこない）。
 	 */
 	readonly id: string;
 	readonly kind: ParadisHumanAskKind;

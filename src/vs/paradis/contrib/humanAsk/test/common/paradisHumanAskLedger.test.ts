@@ -151,9 +151,9 @@ suite('Paradis human ask ledger', () => {
 		ledger.resolve('board', 'board:t1:q1', { surface: 'board', summary: 'ボードで答えた' });
 		ledger.withdraw('board', 'board:t2:q1');
 
-		// 答える前に作られた一覧が遅れて届いた
+		// 答える前に作られた一覧が遅れて届いた。回答済みの 1 件は待ちに戻さない
 		time.advance(1_000);
-		assert.strictEqual(ledger.sync('board', [ask('board', 't1:q1'), ask('board', 't2:q1')]), false);
+		assert.strictEqual(ledger.sync('board', [ask('board', 't1:q1')]), false);
 		assert.deepStrictEqual(view(ledger), {
 			entries: ['board:t2:q1 withdrawn', 'board:t1:q1 answered by board ボードで答えた'],
 			counts: { total: 0, pane: 0, board: 0, bot: 0 },
@@ -163,6 +163,19 @@ suite('Paradis human ask ledger', () => {
 		time.advance(10_000);
 		ledger.sync('board', [ask('board', 't1:q1')]);
 		assert.deepStrictEqual(view(ledger), { entries: ['board:t1:q1 waiting', 'board:t2:q1 withdrawn'], counts: { total: 1, pane: 0, board: 1, bot: 0 } });
+	});
+
+	test('an entry that left the owner\'s list and comes right back is waiting again at once', () => {
+		const time = clock();
+		const ledger = new ParadisHumanAskLedger(time.now);
+		// 持ち主は変わったときしか知らせない。取り下げた鍵を守ると、すぐ出直した問いが出てこないままになる
+		ledger.sync('panes', [permission('pane', 'p1')]);
+		ledger.sync('panes', []);
+		time.advance(200);
+		ledger.sync('panes', [permission('pane', 'p1')]);
+		ledger.withdraw('panes', 'pane:p1');
+		ledger.upsert('panes', permission('pane', 'p1'));
+		assert.deepStrictEqual(view(ledger), { entries: ['pane:p1 waiting'], counts: { total: 1, pane: 1, board: 0, bot: 0 } });
 	});
 
 	test('entries missing from the owner\'s list are withdrawn, and an owner that comes back gets its entries back at once', () => {

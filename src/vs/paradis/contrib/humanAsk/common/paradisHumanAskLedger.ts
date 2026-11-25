@@ -23,7 +23,10 @@ import {
 export interface IParadisHumanAskLedgerOptions {
 	/** 答えを届ける依頼を出してから、持ち主の一覧にまだ残っていたら「届かなかった」とみなすまでの時間。 */
 	readonly claimTimeoutMs: number;
-	/** 回答済み・取り下げにした鍵を、遅れて届いた古い一覧で待ちに戻さない時間。 */
+	/**
+	 * 回答済みにした鍵を、遅れて届いた古い一覧で待ちに戻さない時間。取り下げた鍵は守らない: 持ち主は
+	 * 変わったときしか知らせないので、同じ問いがすぐ出直したときに無視すると、そのまま出てこなくなる。
+	 */
 	readonly reviveGuardMs: number;
 	/** 回答済み・取り下げになったものを、ほかの場所が「よそで回答済み」と出せるように残しておく時間。 */
 	readonly recentTtlMs: number;
@@ -59,8 +62,6 @@ interface IMutableEntry {
 	pending?: IPending;
 	failedAt?: number;
 	resolution?: IParadisHumanAskResolution;
-	/** 持ち主がいなくなって取り下げた（持ち主が戻って同じ鍵を知らせたら、すぐ待ちに戻す）。 */
-	ownerGone?: boolean;
 }
 
 /**
@@ -68,7 +69,8 @@ interface IMutableEntry {
  * 変更系のメソッドは「中身が変わったか」を返す。変わったときだけ呼び出し側が知らせを出す。
  *
  * 持ち主（出どころごとの取り込み役）との決まり:
- * - 自分の待ちは {@link sync}（丸ごと）か {@link upsert}（1 件）で知らせる。一覧から消えた待ちは取り下げになる
+ * - 自分の待ちは {@link sync}（丸ごと）か {@link upsert}（1 件）で知らせる。一覧から消えた待ちは取り下げになる。
+ *   知らせは作った順に 1 つずつ送る（順序が入れ替わると、古い一覧が新しい一覧を上書きする）
  * - 元の場所（ターミナル・ボードの窓）で答えられたら {@link resolve}、エージェントが先へ進んだら {@link withdraw}
  * - {@link claim} が返した依頼を受け取ったら、答えを届け、届いたら {@link resolve}、届かなかったら {@link reject}。
  *   どちらも呼べないときは、次の {@link sync} で決まる（一覧から消えていれば回答済み、時間切れの後も
@@ -170,7 +172,6 @@ export class ParadisHumanAskLedger {
 		for (const entry of this.entries.values()) {
 			if (entry.owner === owner && entry.state === 'waiting') {
 				this.settle(entry, 'withdrawn', { at });
-				entry.ownerGone = true;
 				changed = true;
 			}
 		}
@@ -273,8 +274,9 @@ export class ParadisHumanAskLedger {
 			}
 			return changed;
 		}
-		// 回答済み・取り下げになった鍵。直後に届いた一覧は、答える前に作られた古いものかもしれないので待ちに戻さない
-		if (!existing.ownerGone && at - (existing.resolution?.at ?? 0) < this.options.reviveGuardMs) {
+		// 回答済みになった鍵。直後に届いた一覧は、答える前に作られた古いものかもしれないので待ちに戻さない。
+		// 取り下げた鍵は、持ち主がまた知らせてきたらすぐ待ちに戻す
+		if (existing.state === 'answered' && at - (existing.resolution?.at ?? 0) < this.options.reviveGuardMs) {
 			return false;
 		}
 		if (this.waitingCount() >= this.options.waitingLimit) {
@@ -294,7 +296,6 @@ export class ParadisHumanAskLedger {
 		entry.resolution = resolution;
 		entry.pending = undefined;
 		entry.failedAt = undefined;
-		entry.ownerGone = undefined;
 	}
 
 	private waitingCount(): number {
