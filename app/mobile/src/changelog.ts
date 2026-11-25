@@ -46,7 +46,7 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 			{
 				icon: 'refresh-circle-outline',
 				title: '質問や許可に答えた後、カードや「質問」「許可待ち」の表示が残ることがある問題を直しました',
-				body: '答えた後もカードが残るときは、PC から状態を取り直します。PC の Para Code の更新も要ります。',
+				body: '答えた後もカードが残るときは、PC から状態を取り直します。それでも残るときは「選び直す」が出ます。PC の Para Code の更新も要ります。',
 				tone: 'green',
 			},
 		],
