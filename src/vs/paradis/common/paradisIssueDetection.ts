@@ -153,3 +153,179 @@ export function paradisSelectIssueLookupBatch<TResource>(
 	}
 	return [...byResource.entries()].map(([resource, issueUrls]) => ({ resource, issueUrls }));
 }
+
+// --- 指示に貼った Issue・PR の URL（「新しいスペース」の名前付け、q.html Q684） ------------------
+
+/** 指示の文から拾う Issue・PR の URL の上限（カードに並べる数。名前に使うのは先頭の 1 件）。 */
+export const PARADIS_GITHUB_REFERENCE_LIMIT = 3;
+
+/** URL の種類。GitHub は `/issues/N` を PR へ転送するので、実際の種類は取得した結果（{@link IParadisGithubReferenceInfo}）が持つ。 */
+export type ParadisGithubReferenceKind = 'issue' | 'pr';
+
+/** 指示に貼られた GitHub の Issue・PR の URL を分解したもの。 */
+export interface IParadisGithubReference {
+	readonly url: string;
+	readonly owner: string;
+	readonly repo: string;
+	readonly number: number;
+	readonly kind: ParadisGithubReferenceKind;
+}
+
+/** Issue・PR の状態。`draft` は開いている下書きの PR。 */
+export type ParadisGithubReferenceState = 'open' | 'closed' | 'merged' | 'draft';
+
+/** gh で取った Issue・PR。題名は第三者が書いた文なので、表示・命名の前に必ず整形を通す。 */
+export interface IParadisGithubReferenceInfo {
+	readonly kind: ParadisGithubReferenceKind;
+	readonly owner: string;
+	readonly repo: string;
+	readonly number: number;
+	readonly title: string;
+	readonly url: string;
+	readonly state: ParadisGithubReferenceState;
+	/** PR の元のブランチ、または Issue に紐づいたブランチ（Development の欄。同じリポジトリのものだけ）。 */
+	readonly branch?: string;
+	/** PR が fork から来ている（`branch` は origin に無い。`refs/pull/<番号>/head` から取る）。 */
+	readonly crossRepository?: boolean;
+}
+
+/**
+ * 取れなかった理由。表示は 3 つに分ける: `unreachable`・`rateLimited`（届かない・枠切れ）、
+ * `notFound`（見つからないか権限なし。GitHub は非公開と不在に同じ応答を返すので分けられない）、`noGh`（gh が無い・未ログイン）。
+ */
+export type ParadisGithubReferenceFailure = 'unreachable' | 'rateLimited' | 'notFound' | 'noGh';
+
+export type ParadisGithubReferenceLookup =
+	| { readonly kind: 'ok'; readonly info: IParadisGithubReferenceInfo }
+	| { readonly kind: 'failed'; readonly reason: ParadisGithubReferenceFailure };
+
+/** 抽出用（global）。上の Issue 用と同じく、exec/test を直接呼ばない（lastIndex を持ち越す）。 */
+const GITHUB_REFERENCE_URL_EXTRACT_RE = /https:\/\/github\.com\/(?<owner>[a-zA-Z0-9._-]+)\/(?<repo>[a-zA-Z0-9._-]+)\/(?<kind>issues|pull)\/(?<number>\d{1,9})(?!\d)/g;
+
+/** 単発解析用（非 global、先頭一致。`/pull/12/files` や `#issuecomment-…` が続いても同じ PR・Issue として読む）。 */
+const GITHUB_REFERENCE_URL_PARSE_RE = /^https:\/\/github\.com\/(?<owner>[a-zA-Z0-9._-]+)\/(?<repo>[a-zA-Z0-9._-]+)\/(?<kind>issues|pull)\/(?<number>\d{1,9})(?!\d)/;
+
+function toGithubReference(match: RegExpMatchArray): IParadisGithubReference | undefined {
+	const groups = match.groups;
+	const number = Number(groups?.number);
+	if (!groups || !Number.isSafeInteger(number) || number <= 0) {
+		return undefined;
+	}
+	return { url: match[0], owner: groups.owner, repo: groups.repo, number, kind: groups.kind === 'pull' ? 'pr' : 'issue' };
+}
+
+/** 同じ Issue・PR を指す URL を 1 つに数えるためのキー（`/issues/N` と `/pull/N` は同じ番号空間）。 */
+export function paradisGithubReferenceKey(reference: { readonly owner: string; readonly repo: string; readonly number: number }): string {
+	return `${reference.owner}/${reference.repo}#${reference.number}`.toLowerCase();
+}
+
+/**
+ * 指示の文から GitHub の Issue・PR の URL を、出てきた順に `limit` 件まで拾う（同じ Issue・PR は 1 回だけ）。
+ * github.com だけを対象にする（GitHub Enterprise・ほかのサービスは拾わない）。
+ */
+export function paradisExtractGithubReferences(text: string, limit: number = PARADIS_GITHUB_REFERENCE_LIMIT): IParadisGithubReference[] {
+	const seen = new Set<string>();
+	const result: IParadisGithubReference[] = [];
+	for (const match of text.matchAll(GITHUB_REFERENCE_URL_EXTRACT_RE)) {
+		if (result.length >= limit) {
+			break;
+		}
+		const reference = toGithubReference(match);
+		if (reference === undefined) {
+			continue;
+		}
+		const key = paradisGithubReferenceKey(reference);
+		if (!seen.has(key)) {
+			seen.add(key);
+			result.push(reference);
+		}
+	}
+	return result;
+}
+
+/** Issue・PR の URL を分解する。github.com の Issue・PR でなければ undefined。 */
+export function paradisParseGithubReferenceUrl(url: string): IParadisGithubReference | undefined {
+	const match = GITHUB_REFERENCE_URL_PARSE_RE.exec(url);
+	return match ? toGithubReference(match) : undefined;
+}
+
+/**
+ * Issue・PR を 1 回で取る GraphQL の問い合わせ（`gh api graphql -f query=…`）。`issueOrPullRequest` なので、
+ * `/issues/N` の URL が PR でも、その逆でも取れる。Issue は紐づいたブランチ、PR は元のブランチも返す。本文は取らない。
+ */
+export const PARADIS_GITHUB_REFERENCE_QUERY = 'query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issueOrPullRequest(number:$number){__typename ... on Issue{number title url state linkedBranches(first:5){nodes{ref{name repository{nameWithOwner}}}}} ... on PullRequest{number title url state isDraft headRefName isCrossRepository}}}}';
+
+/** {@link PARADIS_GITHUB_REFERENCE_QUERY} の応答（stdout）を読む。読めなければ undefined。 */
+export function paradisParseGithubReferenceResponse(stdout: string, owner: string, repo: string): IParadisGithubReferenceInfo | undefined {
+	let raw: unknown;
+	try {
+		raw = JSON.parse(stdout);
+	} catch {
+		return undefined;
+	}
+	const node = (raw as { data?: { repository?: { issueOrPullRequest?: unknown } | null } | null } | null)?.data?.repository?.issueOrPullRequest;
+	if (typeof node !== 'object' || node === null) {
+		return undefined;
+	}
+	const item = node as {
+		__typename?: unknown; number?: unknown; title?: unknown; url?: unknown; state?: unknown; isDraft?: unknown; headRefName?: unknown; isCrossRepository?: unknown;
+		linkedBranches?: { nodes?: unknown } | null;
+	};
+	if (typeof item.number !== 'number' || typeof item.url !== 'string' || !/^https:\/\//.test(item.url) || (item.__typename !== 'Issue' && item.__typename !== 'PullRequest')) {
+		return undefined;
+	}
+	const kind: ParadisGithubReferenceKind = item.__typename === 'PullRequest' ? 'pr' : 'issue';
+	let state: ParadisGithubReferenceState;
+	switch (item.state) {
+		case 'OPEN': state = kind === 'pr' && item.isDraft === true ? 'draft' : 'open'; break;
+		case 'CLOSED': state = 'closed'; break;
+		case 'MERGED': state = 'merged'; break;
+		default: return undefined;
+	}
+	let branch: string | undefined;
+	let crossRepository = false;
+	if (kind === 'pr') {
+		branch = typeof item.headRefName === 'string' && item.headRefName.length > 0 ? item.headRefName : undefined;
+		crossRepository = item.isCrossRepository === true;
+	} else if (Array.isArray(item.linkedBranches?.nodes)) {
+		// 紐づいたブランチは別のリポジトリ（fork）にも作れる。origin で開けるのは同じリポジトリのものだけ
+		const sameRepository = `${owner}/${repo}`.toLowerCase();
+		for (const linked of item.linkedBranches.nodes as readonly { ref?: { name?: unknown; repository?: { nameWithOwner?: unknown } | null } | null }[]) {
+			const name = linked?.ref?.name;
+			const repository = linked?.ref?.repository?.nameWithOwner;
+			if (typeof name === 'string' && name.length > 0 && typeof repository === 'string' && repository.toLowerCase() === sameRepository) {
+				branch = name;
+				break;
+			}
+		}
+	}
+	return {
+		kind, owner, repo, number: item.number, title: typeof item.title === 'string' ? item.title : '', url: item.url, state,
+		...(branch !== undefined ? { branch } : {}),
+		...(crossRepository ? { crossRepository } : {}),
+	};
+}
+
+/**
+ * gh の失敗の文から、取れなかった理由を決める。枠切れは呼び出し側が先に見分ける（ここへは渡さない）。
+ * 「見つからない」は GraphQL の `Could not resolve to …`（リポジトリ・Issue・PR のどれでも同じ形）と HTTP 404。
+ */
+export function paradisClassifyGithubReferenceFailure(message: string): Exclude<ParadisGithubReferenceFailure, 'rateLimited'> {
+	// 「gh が無い」を先に見る（WSL へ振り分けたときはシェルの `gh: not found` になり、「見つからない」の文と紛れる）
+	if (/\bENOENT\b|command not found|\bgh: not found\b/i.test(message)) {
+		return 'noGh';
+	}
+	if (/could not resolve to|http 404/i.test(message)) {
+		return 'notFound';
+	}
+	if (/gh auth login|not logged in|authentication|GH_TOKEN|bad credentials|http 401/i.test(message)) {
+		return 'noGh';
+	}
+	return 'unreachable';
+}
+
+/** 手元と接続先の両方で取れなかったときに、どちらの理由を見せるか（手がかりの多い順）。 */
+export function paradisPreferGithubReferenceFailure(first: ParadisGithubReferenceFailure, second: ParadisGithubReferenceFailure): ParadisGithubReferenceFailure {
+	const order: readonly ParadisGithubReferenceFailure[] = ['notFound', 'rateLimited', 'unreachable', 'noGh'];
+	return order.indexOf(first) <= order.indexOf(second) ? first : second;
+}
