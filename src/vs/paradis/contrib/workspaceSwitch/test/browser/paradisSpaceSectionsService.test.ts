@@ -189,6 +189,29 @@ suite('ParadisSpaceSectionsService', () => {
 		});
 	});
 
+	test('a list notification that arrives before the scan shows the new order does not write the old order back', () => {
+		const harness = create();
+		const { service } = harness;
+		const doing = service.createSection('repo', 'Doing')!;
+		service.moveSpaceToSection(worktree('a'), doing);
+		// A space found by the scan sorts last, so the plain order is not the list order until it is realigned.
+		harness.worktrees = [worktree('b'), worktree('c'), worktree('a'), worktree('new')];
+		harness.orders.length = 0;
+		// The user moves c first; the real service keeps the old list until its next scan.
+		const stale = harness.worktrees;
+		service.moveSpaceToSection(worktree('c'), undefined, 'first');
+		const written = harness.worktrees;
+		harness.worktrees = stale;
+		harness.onDidChangeWorktrees.fire();
+		const whilePending = harness.orders.length;
+		harness.worktrees = written;
+		harness.onDidChangeWorktrees.fire();
+		assert.deepStrictEqual({ whilePending, orders: harness.orders }, {
+			whilePending: 1,
+			orders: [['c', 'b', 'new', 'a']],
+		});
+	});
+
 	test('picks up what another window wrote, does not re-read its own writes, and drops the sections of a removed repository', () => {
 		const harness = create();
 		const { service, storage } = harness;

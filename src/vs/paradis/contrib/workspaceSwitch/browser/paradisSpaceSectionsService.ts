@@ -31,6 +31,8 @@ export class ParadisSpaceSectionsService extends Disposable implements IParadisS
 	 */
 	private lastWrittenSections: string | undefined;
 	private lastWrittenCollapsed: string | undefined;
+	/** リポジトリ id → 最後に書いた並び（URI の列）。一覧がその並びになるまで残す */
+	private readonly pendingOrders = new Map<string, readonly string[]>();
 
 	constructor(
 		@IStorageService private readonly storageService: IStorageService,
@@ -63,7 +65,10 @@ export class ParadisSpaceSectionsService extends Disposable implements IParadisS
 		// モバイルへ送る順など、並びをそのまま読む所が一覧と同じ順になる。同じ順なら書かない
 		this._register(this.worktreeService.onDidChangeWorktrees(() => {
 			for (const [repositoryId, entry] of this._state) {
-				this.alignOrder(repositoryId, paradisSectionOrderedSpaceKeys(this.orderKeys(repositoryId), entry));
+				// 並びを書いた直後は、次の走査が終わるまで一覧が前の並びのまま。その並びから揃え直すと、いま書いた並びを書き戻してしまう
+				if (!this.isOrderWritePending(repositoryId)) {
+					this.alignOrder(repositoryId, paradisSectionOrderedSpaceKeys(this.orderKeys(repositoryId), entry));
+				}
 			}
 		}));
 		// リポジトリを一覧から外したら、そのリポジトリの分を丸ごと消す（一覧が空のときは何もしない）
@@ -243,7 +248,24 @@ export class ParadisSpaceSectionsService extends Disposable implements IParadisS
 		if (orderedUris.length !== worktrees.length || equals(orderedUris, worktrees.map(worktree => worktree.uri.toString()))) {
 			return;
 		}
+		this.pendingOrders.set(repositoryId, orderedUris);
 		this.worktreeService.setWorktreeOrder(repositoryId, orderedUris);
+	}
+
+	/** 書いた並びがまだ一覧に出ていないか。出ていれば（消えた・増えたスペースは除いて比べる）覚えを捨てる。 */
+	private isOrderWritePending(repositoryId: string): boolean {
+		const pending = this.pendingOrders.get(repositoryId);
+		if (!pending) {
+			return false;
+		}
+		const listed = this.worktreeService.getWorktrees(repositoryId).map(worktree => worktree.uri.toString());
+		const written = new Set(pending);
+		const present = new Set(listed);
+		if (equals(listed.filter(uri => written.has(uri)), pending.filter(uri => present.has(uri)))) {
+			this.pendingOrders.delete(repositoryId);
+			return false;
+		}
+		return true;
 	}
 
 	private storeCollapsed(): void {
