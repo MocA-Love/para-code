@@ -7,7 +7,8 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisAppendStderrTail, paradisDevtoolsRecycleReason, paradisNewUidTag, paradisParseV8FatalStderr, paradisReadProcessRssMib, paradisTagChildUids, paradisTagSnapshotFileText, paradisUntagUids } from '../../node/paradisDevtoolsChildHealth.js';
+import { isParadisSentryScrubbedWord } from '../../../sentry/common/paradisSentryDiagnostics.js';
+import { paradisAppendStderrTail, paradisClassifyDevtoolsExitStderr, paradisDevtoolsRecycleReason, paradisNewUidTag, paradisParseV8FatalStderr, paradisReadProcessRssMib, paradisTagChildUids, paradisTagSnapshotFileText, paradisUntagUids } from '../../node/paradisDevtoolsChildHealth.js';
 
 suite('paradisDevtoolsChildHealth', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -28,6 +29,42 @@ suite('paradisDevtoolsChildHealth', () => {
 			heapLimit: { kind: 'heap-limit', heapBeforeMib: 4049, heapAfterMib: 4033 },
 			ineffective: { kind: 'ineffective-mark-compacts' },
 			notOutOfMemory: undefined,
+		});
+	});
+
+	test('folds the end of stderr into a fixed kind and a known error name, never the text', () => {
+		const uncaught = [
+			'file:///Users/alice/app/build/src/McpContext.js:120',
+			'        throw new TypeError(`Cannot read properties of undefined (reading \'secret-page-title\')`);',
+			'              ^',
+			'',
+			'TypeError: Cannot read properties of undefined (reading \'secret-page-title\')',
+			'    at McpContext.getPage (file:///Users/alice/app/build/src/McpContext.js:120:15)',
+			'',
+			'Node.js v24.22.1',
+		].join('\n');
+		const summaries = {
+			none: paradisClassifyDevtoolsExitStderr(' \n'),
+			outOfMemory: paradisClassifyDevtoolsExitStderr('FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory'),
+			refused: paradisClassifyDevtoolsExitStderr('Error: connect ECONNREFUSED 127.0.0.1:9222\n    at TCPConnectWrap.afterConnect [as oncomplete] (node:net:1637:16)'),
+			peerClosed: paradisClassifyDevtoolsExitStderr('ProtocolError: Protocol error (Page.navigate): Target closed\n    at CdpCDPSession.send (file:///Users/alice/x.js:1:1)'),
+			timeout: paradisClassifyDevtoolsExitStderr('TimeoutError: Navigation timeout of 10000 ms exceeded'),
+			errorEvent: paradisClassifyDevtoolsExitStderr('node:events:497\n      throw er; // Unhandled \'error\' event\n      ^\n\nError: write after end'),
+			uncaught,
+			other: paradisClassifyDevtoolsExitStderr('ERROR: `chrome-devtools-mcp` does not support Node v18.0.0.'),
+		};
+		const uncaughtSummary = paradisClassifyDevtoolsExitStderr(uncaught);
+		const sent = [...Object.values({ ...summaries, uncaught: uncaughtSummary }).flatMap(summary => [summary.kind, summary.errorName ?? '']), 'safe_exit_kind', 'safe_exit_error_name', 'safe_exit_stderr_chars'];
+		assert.deepStrictEqual({ ...summaries, uncaught: uncaughtSummary, scrubbed: sent.filter(isParadisSentryScrubbedWord) }, {
+			none: { kind: 'none' },
+			outOfMemory: { kind: 'out-of-memory' },
+			refused: { kind: 'connection-refused' },
+			peerClosed: { kind: 'peer-closed', errorName: 'ProtocolError' },
+			timeout: { kind: 'timeout', errorName: 'TimeoutError' },
+			errorEvent: { kind: 'unhandled-error-event' },
+			uncaught: { kind: 'uncaught-exception', errorName: 'TypeError' },
+			other: { kind: 'other' },
+			scrubbed: [],
 		});
 	});
 

@@ -1665,12 +1665,16 @@ suite('ParadisDevtoolsMcpProxy', () => {
 				stderrSettleMs: 1000,
 				readRssMib: async () => undefined,
 			}));
+			const stderrLines = [
+				'private /Users/alice/project\n[71190:0x1]  11921000 ms: Mark-Compact 4049.2 (4130.5) -> 4033.1 (4131.0) MB, pooled: 0 MB\n',
+				'FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory\n',
+			];
 			const { result, reports } = await withRecordedReports(async () => {
 				const call = proxy.tryCallTool('secret-token', 1, 'ws://one', 'take_snapshot', {});
 				await fixture.waitForHungToolCalls(1);
 				const stderr = fixture.children[0].child.stderr as PassThrough;
-				stderr.write('private /Users/alice/project\n[71190:0x1]  11921000 ms: Mark-Compact 4049.2 (4130.5) -> 4033.1 (4131.0) MB, pooled: 0 MB\n');
-				stderr.write('FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory\n');
+				stderr.write(stderrLines[0]);
+				stderr.write(stderrLines[1]);
 				fixture.children[0].child.emit('exit', null, 'SIGABRT');
 				stderr.end();
 				const retried = await call;
@@ -1687,7 +1691,7 @@ suite('ParadisDevtoolsMcpProxy', () => {
 				childCount: 2,
 				reports: [{
 					operation: 'devtools-child-exited',
-					extra: { duration_ms: 'number', safe_pending_count: 1, safe_pending_tool: 'take_snapshot', safe_calls: 1, signal: 'SIGABRT', safe_oom_kind: 'heap-limit', safe_heap_before_mib: 4049, safe_heap_after_mib: 4033 },
+					extra: { duration_ms: 'number', safe_pending_count: 1, safe_pending_tool: 'take_snapshot', safe_calls: 1, signal: 'SIGABRT', safe_exit_kind: 'out-of-memory', safe_exit_stderr_chars: stderrLines[0].length + stderrLines[1].length, safe_oom_kind: 'heap-limit', safe_heap_before_mib: 4049, safe_heap_after_mib: 4033 },
 				}, {
 					operation: 'devtools-child-exited-retry',
 					extra: { safe_tool_name: 'take_snapshot', safe_retry_succeeded: true },
