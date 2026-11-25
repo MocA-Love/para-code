@@ -100,6 +100,12 @@ export interface IParadisSimulatorStreamEndEvent {
  */
 export const PARADIS_SIMULATOR_CAPTURE_START_TIMEOUT_MS = 15_000;
 
+/**
+ * ホストが応答の頭を返した（取り込みを始めた）後、最初の 1 枚を待つ時間。動いている取り込みは、画面が変わらなくても
+ * すぐに 1 枚を送る。これだけ待って来なければ、ホストが握っている端末のセッションは死んでいる（端末が起動し直された）。
+ */
+export const PARADIS_SIMULATOR_FIRST_FRAME_TIMEOUT_MS = 4_000;
+
 /** チャネルの `frames` のイベント。 */
 export type ParadisSimulatorStreamEvent = IParadisSimulatorFrameEvent | IParadisSimulatorStreamEndEvent;
 

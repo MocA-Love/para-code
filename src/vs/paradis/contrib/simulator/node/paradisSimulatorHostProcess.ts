@@ -43,6 +43,11 @@ export interface IParadisSimulatorHostProvider {
 	ensure(): Promise<IParadisSimulatorHostConnection>;
 	readonly isRunning: boolean;
 	readonly lastError: string | undefined;
+	/**
+	 * ホストを止める。次の {@link ensure} が新しいホストを起こす（token とソケットも変わる）。serve-sim は端末ごとの
+	 * セッションを閉じる口を許可のルートの中に持たないので、死んだセッションを捨てるにはホストごと起こし直す。
+	 */
+	recycle?(reason: string): Promise<void>;
 }
 
 export type ParadisSimulatorSpawn = (command: string, args: readonly string[], options: { env: NodeJS.ProcessEnv; stdio: ['pipe', 'pipe', 'pipe'] }) => ChildProcess;
@@ -204,6 +209,13 @@ export class ParadisSimulatorHostProcess extends Disposable implements IParadisS
 			this._starting = this._start().finally(() => this._starting = undefined);
 		}
 		return this._starting;
+	}
+
+	/** わざと止める（「落ちた」には数えない）。起こしている途中なら、起きるのを待ってから止める。 */
+	async recycle(reason: string): Promise<void> {
+		this._options.logService.info(`[paradis-simulator] restarting the host: ${reason}`);
+		await this._starting?.catch(() => undefined);
+		await this.stop();
 	}
 
 	/** ホストを止める（stdin を閉じ、終わらなければ SIGTERM、まだなら SIGKILL）。 */

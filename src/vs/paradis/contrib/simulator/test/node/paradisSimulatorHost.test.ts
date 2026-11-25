@@ -16,7 +16,7 @@ import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
 import { randomBytes } from 'crypto';
 import { promises as fs, readdirSync, readFileSync, readlinkSync } from 'fs';
-import type { IncomingMessage } from 'http';
+import type { IncomingMessage, ServerResponse } from 'http';
 import { tmpdir } from 'os';
 import { pathToFileURL } from 'url';
 import { FileAccess } from '../../../../../base/common/network.js';
@@ -28,7 +28,7 @@ import { ParadisServeSimBackend, ParadisSimulatorCaptureNotStartedError } from '
 import { IParadisSimulatorMiddleware, paradisStartSimulatorHostServer } from '../../node/paradisSimulatorHostServer.js';
 import { PARADIS_SIMULATOR_HOST_READY } from '../../common/paradisSimulator.js';
 import { PARADIS_SERVE_SIM_DIR, PARADIS_SERVE_SIM_MIDDLEWARE } from '../../node/paradisServeSimDist.js';
-import { paradisEnsurePrivateDir, paradisRemoveStaleSimulatorSockets, ParadisSimulatorHostProcess, ParadisSimulatorSpawn } from '../../node/paradisSimulatorHostProcess.js';
+import { IParadisSimulatorHostConnection, paradisEnsurePrivateDir, paradisRemoveStaleSimulatorSockets, ParadisSimulatorHostProcess, ParadisSimulatorSpawn } from '../../node/paradisSimulatorHostProcess.js';
 
 const UDID = 'A1B2C3D4-0000-1111-2222-333344445555';
 
@@ -111,6 +111,86 @@ class RecordingLogService extends NullLogService {
 	}
 	override warn(message: string): void {
 		this.lines.push(message);
+	}
+}
+
+const OTHER_UDID = 'B1B2C3D4-0000-1111-2222-333344445555';
+const JPEG = Buffer.from([0xff, 0xd8, 1, 2, 3, 0xff, 0xd9]);
+
+function mjpegPart(jpeg: Buffer): Buffer {
+	return Buffer.concat([Buffer.from(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpeg.length}\r\n\r\n`), jpeg, Buffer.from('\r\n')]);
+}
+
+/**
+ * serve-sim の代わり。端末ごとのセッションを持ち続け、`stale` に入っている端末の映像の要求には頭だけ返して
+ * 1 枚も送らない（端末が起動し直された後に残ったセッション）。{@link IFakeSessionHost.provider} の `recycle` は
+ * 本物のホストの起こし直しと同じく、開いている応答を切り、セッションを捨て、新しい接続を返すようにする。
+ */
+interface IFakeSessionHost {
+	readonly provider: { ensure(): Promise<IParadisSimulatorHostConnection>; recycle(reason: string): Promise<void>; readonly isRunning: boolean; readonly lastError: undefined };
+	readonly stale: Set<string>;
+	readonly recycled: string[];
+	/** 映像の要求が来た端末（来た順）。 */
+	readonly streamRequests: string[];
+	close(): Promise<void>;
+}
+
+async function startFakeSessionHost(name: string): Promise<IFakeSessionHost> {
+	const token = randomBytes(32).toString('base64url');
+	const socketPath = join(await scratchDir(name), `pcsim-${randomBytes(4).toString('hex')}.sock`);
+	const stale = new Set<string>();
+	const recycled: string[] = [];
+	const streamRequests: string[] = [];
+	const open = new Set<ServerResponse>();
+	const middleware = (async (req, res) => {
+		const [, , udid, endpoint] = (req.url ?? '').split('/');
+		if (endpoint !== 'stream.mjpeg') {
+			res.writeHead(200, { 'Content-Type': 'application/json' });
+			res.end(JSON.stringify({ width: 100, height: 200, orientation: 'portrait' }));
+			return;
+		}
+		streamRequests.push(udid);
+		open.add(res);
+		res.once('close', () => open.delete(res));
+		res.writeHead(200, { 'Content-Type': 'multipart/x-mixed-replace; boundary=frame' });
+		if (!stale.has(udid)) {
+			res.write(mjpegPart(JPEG));
+		}
+	}) as IParadisSimulatorMiddleware;
+	middleware.handleUpgrade = () => { };
+	const server = await paradisStartSimulatorHostServer({ socketPath, token, middleware });
+	let connection: IParadisSimulatorHostConnection = { socketPath, token };
+	return {
+		provider: {
+			ensure: async () => connection,
+			recycle: async reason => {
+				recycled.push(reason);
+				stale.clear();
+				connection = { socketPath, token };
+				for (const res of [...open]) {
+					res.destroy();
+				}
+			},
+			isRunning: true,
+			lastError: undefined,
+		},
+		stale, recycled, streamRequests,
+		close: () => server.close(),
+	};
+}
+
+/** 様子が変わるたびに {@link changed} を呼んでもらい、条件が満たされたら解ける待ち（時計で見回らない）。 */
+class Watch {
+	private _waiters: { readonly check: () => boolean; readonly resolve: () => void }[] = [];
+
+	changed(): void {
+		const met = this._waiters.filter(waiter => waiter.check());
+		this._waiters = this._waiters.filter(waiter => !met.includes(waiter));
+		met.forEach(waiter => waiter.resolve());
+	}
+
+	when(check: () => boolean): Promise<void> {
+		return check() ? Promise.resolve() : new Promise(resolve => this._waiters.push({ check, resolve }));
 	}
 }
 
@@ -371,5 +451,142 @@ async function scratchDir(name: string): Promise<string> {
 		} finally {
 			await server.close();
 		}
+	});
+
+	// 端末が起動し直された後に残ったセッション: 頭は返るが 1 枚も来ない。ホストを起こし直して 1 回だけ頼み直し、
+	// 利用者には映像が届く（paracode-194 では「端末の取り込みが始まりません」のまま、Para Code を開き直すまで直らなかった）
+	test('restarts the host and asks again when a device session answers but sends no frame', async () => {
+		const host = await startFakeSessionHost('staleSession');
+		try {
+			host.stale.add(UDID);
+			const log = new RecordingLogService();
+			const backend = store.add(new ParadisServeSimBackend(host.provider, log, async () => '', 2000, { readBootId: async () => undefined, firstFrameTimeoutMs: 60 }));
+			const watch = new Watch();
+			let frames = 0;
+			let ended: Error | 'ended' | undefined;
+			const subscription = backend.subscribeFrames(UDID, () => {
+				frames++;
+				watch.changed();
+			}, error => {
+				ended = error ?? 'ended';
+				watch.changed();
+			});
+			await watch.when(() => frames > 0 || ended !== undefined);
+			subscription.dispose();
+			assert.deepStrictEqual({
+				frames, ended, recycled: host.recycled, streamRequests: host.streamRequests,
+				warnings: log.lines.filter(line => line.includes('no frame')).map(line => line.replace(/\d+ ms/g, 'N ms')),
+			}, {
+				frames: 1, ended: undefined, recycled: [`no frame from ${UDID}`], streamRequests: [UDID, UDID],
+				warnings: [
+					`[paradis-simulator] video ${UDID}: the host answered but sent no frame within N ms`,
+					`[paradis-simulator] no frame from ${UDID}; restarting the simulator host to drop its device sessions`,
+				],
+			});
+		} finally {
+			await host.close();
+		}
+	});
+
+	// 起こし直しても 1 枚も来ない: 2 回目は起こし直さずに「取り込みが始まらない」で終える（起こし直しを繰り返さない）
+	test('gives up after one restart when the device still sends no frame', async () => {
+		const host = await startFakeSessionHost('deadDevice');
+		try {
+			host.stale.add(UDID);
+			const watch = new Watch();
+			const recycle = host.provider.recycle;
+			// 起こし直しても死んだまま
+			host.provider.recycle = async reason => {
+				await recycle(reason);
+				host.stale.add(UDID);
+				watch.changed();
+			};
+			const backend = store.add(new ParadisServeSimBackend(host.provider, new NullLogService(), async () => '', 2000, { readBootId: async () => undefined, firstFrameTimeoutMs: 40 }));
+			const ended = await new Promise<Error | undefined>(resolve => {
+				const subscription = backend.subscribeFrames(UDID, () => { }, error => {
+					subscription.dispose();
+					resolve(error);
+				});
+			});
+			await watch.when(() => host.recycled.length === 2);
+			assert.deepStrictEqual({
+				notStarted: ended instanceof ParadisSimulatorCaptureNotStartedError, reason: ended?.message, streamRequests: host.streamRequests,
+				// 2 回目は「再試行」が新しいホストから始まるように、終えた後で捨てておく分
+				recycled: host.recycled,
+			}, {
+				notStarted: true, reason: `The simulator host started capturing ${UDID} but sent no frame within 1 s`, streamRequests: [UDID, UDID],
+				recycled: [`no frame from ${UDID}`, `no video from ${UDID}`],
+			});
+		} finally {
+			await host.close();
+		}
+	});
+
+	// 端末の起動の識別が、ホストがセッションを開いたときと変わった: 次の要求の前にホストを起こし直す。
+	// 起こし直しで切れた映像（その端末のものも、別の端末のものも）は、終わりにせず頼み直す
+	test('restarts the host before a request when the device was booted again, and keeps every video stream', async () => {
+		const host = await startFakeSessionHost('rebooted');
+		try {
+			const bootIds = new Map([[UDID, '100'], [OTHER_UDID, '200']]);
+			const backend = store.add(new ParadisServeSimBackend(host.provider, new NullLogService(), async () => '', 2000, { readBootId: async udid => bootIds.get(udid) ?? '', firstFrameTimeoutMs: 2000, bootIdTtlMs: 0 }));
+			const watch = new Watch();
+			const frames: Record<string, number> = { [UDID]: 0, [OTHER_UDID]: 0 };
+			const ended: string[] = [];
+			const subscriptions = [UDID, OTHER_UDID].map(udid => backend.subscribeFrames(udid, () => {
+				frames[udid]++;
+				watch.changed();
+			}, () => ended.push(udid)));
+			await watch.when(() => frames[UDID] === 1 && frames[OTHER_UDID] === 1);
+			const before = { recycled: [...host.recycled], config: await backend.getScreenConfig(UDID) };
+			// 端末が止まって起動し直された。残ったセッションは 1 枚も送らない
+			bootIds.set(UDID, '101');
+			host.stale.add(UDID);
+			await backend.getScreenConfig(UDID);
+			await watch.when(() => frames[UDID] === 2 && frames[OTHER_UDID] === 2);
+			// 同じ起動のままなら、もう起こし直さない
+			await backend.getScreenConfig(UDID);
+			await backend.getScreenConfig(OTHER_UDID);
+			subscriptions.forEach(subscription => subscription.dispose());
+			assert.deepStrictEqual({ before, frames, ended, recycled: host.recycled }, {
+				before: { recycled: [], config: { width: 100, height: 200, orientation: 'portrait' } },
+				frames: { [UDID]: 2, [OTHER_UDID]: 2 },
+				ended: [],
+				recycled: [`${UDID} was booted again after the host opened its session`],
+			});
+		} finally {
+			await host.close();
+		}
+	});
+
+	// わざと起こし直すのは「落ちた」に数えない（60 秒に 3 回落ちると起こさなくなる決まりに掛からない）
+	test('does not count restarting the host on purpose as a crash', async () => {
+		let spawned = 0;
+		const spawnChild: ParadisSimulatorSpawn = () => {
+			spawned++;
+			const child = new EventEmitter() as EventEmitter & { stdin: PassThrough; stdout: PassThrough; stderr: PassThrough; pid: number; exitCode: number | null; signalCode: null; kill(): boolean };
+			child.stdin = new PassThrough();
+			child.stdout = new PassThrough();
+			child.stderr = new PassThrough();
+			child.pid = 200000 + spawned;
+			child.exitCode = null;
+			child.signalCode = null;
+			child.kill = () => true;
+			child.stdin.once('data', () => child.stdout.write(`${PARADIS_SIMULATOR_HOST_READY}\n`));
+			// stdin が閉じたら終わる（本物のホストと同じ）
+			child.stdin.once('end', () => {
+				child.exitCode = 0;
+				child.emit('exit', 0, null);
+			});
+			return child as unknown as ChildProcess;
+		};
+		const host = store.add(new ParadisSimulatorHostProcess({ userDataPath: await scratchDir('recycling'), logService: new NullLogService(), socketParentDir: await scratchDir('recyclingSockets'), spawnChild, bootstrapPath: 'bootstrap-fork', serveSimDir: FileAccess.asFileUri(PARADIS_SERVE_SIM_DIR).fsPath }));
+		const connections = new Set<IParadisSimulatorHostConnection>();
+		for (let i = 0; i < 5; i++) {
+			connections.add(await host.ensure());
+			await host.recycle('test');
+		}
+		connections.add(await host.ensure());
+		assert.deepStrictEqual({ spawned, connections: connections.size, running: host.isRunning }, { spawned: 6, connections: 6, running: true });
+		await host.stop();
 	});
 });

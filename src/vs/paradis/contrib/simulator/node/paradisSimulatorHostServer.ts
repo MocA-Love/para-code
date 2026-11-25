@@ -67,7 +67,13 @@ function traceRequest(res: ServerResponse, endpoint: string, udid: string, log: 
 		if (stream) {
 			log(`${label}: answered ${status} after ${Date.now() - started} ms`);
 		}
-		return writeHead.apply(this, args);
+		const result = writeHead.apply(this, args);
+		if (stream) {
+			// Node は頭を最初の書き込みまで送らない。映像は頭をすぐ送り、shared process が「取り込みは始まったが
+			// 1 枚も来ない」（端末が起動し直され、セッションが死んでいる）を「取り込みが始まらない」と見分けられるようにする
+			this.flushHeaders();
+		}
+		return result;
 	} as ServerResponse['writeHead'];
 	const write = res.write;
 	res.write = function (this: ServerResponse, ...args: Parameters<ServerResponse['write']>) {
@@ -135,9 +141,8 @@ export async function paradisStartSimulatorHostServer(options: IParadisSimulator
 		}
 		// クエリを落とした形に直してから渡す（`?device=` で別の端末へ向け直させない）
 		req.url = route.url;
-		if (options.onLog) {
-			traceRequest(res, route.endpoint, route.udid, options.onLog, options.slowHeadersMs ?? 10_000);
-		}
+		// 記録の口が無くても通す（映像の応答の頭をすぐ送る手当てもここにある）
+		traceRequest(res, route.endpoint, route.udid, options.onLog ?? (() => { }), options.slowHeadersMs ?? 10_000);
 		middleware(req, res, async () => sendStatus(res, 404)).catch(error => {
 			options.onError?.(`request ${route.endpoint} failed`, error);
 			sendStatus(res, 500);

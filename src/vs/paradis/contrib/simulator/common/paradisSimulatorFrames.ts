@@ -345,6 +345,22 @@ export function paradisParseSimctlDevices(stdout: string): IParadisSimulatorDevi
 }
 
 /**
+ * `ps -axo pid=,command=` の出力から、起動している端末ごとの `launchd_sim` の pid を読む（端末の udid → pid）。
+ * 端末を起動するたびに `launchd_sim` は作り直されるので、pid が変われば「起動し直された」と分かる
+ * （`simctl list devices -j` には起動のたびに変わる値が無い）。
+ */
+export function paradisParseSimulatorBootIds(psOutput: string): Map<string, string> {
+	const bootIds = new Map<string, string>();
+	for (const line of psOutput.split('\n')) {
+		const match = /^\s*(?<pid>\d+)\s+(?:\S*\/)?launchd_sim\s.*\/Devices\/(?<udid>[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12})\//.exec(line);
+		if (match?.groups) {
+			bootIds.set(match.groups.udid.toUpperCase(), match.groups.pid);
+		}
+	}
+	return bootIds;
+}
+
+/**
  * Device Hub が入力を奪っているか（`simctl spawn <udid> notifyutil -g com.apple.coredevice.dtuhidd.active`
  * の出力。`<名前> 1` なら奪っている）。
  */
