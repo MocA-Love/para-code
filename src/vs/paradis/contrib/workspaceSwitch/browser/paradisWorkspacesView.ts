@@ -893,6 +893,8 @@ class SectionMemberRowMarker<T extends WorkspaceTreeElement, TTemplateData> impl
 	constructor(
 		private readonly inner: ITreeRenderer<T, FuzzyScore, TTemplateData>,
 		private readonly rowState: (element: T) => ISectionRowState,
+		/** いまツリーが使う 1 段の字下げ（スペースのセクションの中の行が戻す幅） */
+		private readonly getTreeIndent: () => number,
 	) {
 		this.templateId = inner.templateId;
 		this.rowClassName = inner.rowClassName;
@@ -909,6 +911,13 @@ class SectionMemberRowMarker<T extends WorkspaceTreeElement, TTemplateData> impl
 		row?.classList.toggle('paradis-section-member', state.member);
 		row?.classList.toggle('paradis-section-last', state.last);
 		row?.classList.toggle('paradis-space-section-member', state.spaceMember);
+		// スペースのセクションの中の行は、ツリーが足す 1 段の字下げを戻す（Q683 案 A）。本家は矢印の左の余白（padding-left）を
+		// 行の中のスタイルで入れるので、同じ矢印の margin-left で打ち消す（本家はこの値に触らない）
+		// 矢印は行の中身（.monaco-tl-contents）のすぐ前に並ぶ
+		const twistie = templateData.container.previousElementSibling;
+		if (DOM.isHTMLElement(twistie) && twistie.classList.contains('monaco-tl-twistie')) {
+			twistie.style.marginLeft = state.spaceMember ? `-${this.getTreeIndent()}px` : '';
+		}
 	}
 
 	disposeElement(node: ITreeNode<T, FuzzyScore>, index: number, templateData: ISectionMemberRowTemplateData<TTemplateData>, details?: ITreeElementRenderDetails): void {
@@ -1830,13 +1839,13 @@ export class ParadisWorkspacesView extends ViewPane {
 			treeContainer,
 			new WorkspaceTreeDelegate(worktree => paradisWorktreeRowHeight(this.rowMeta, this.worktreeMetaPresence(worktree))),
 			[
-				new SectionMemberRowMarker(repositoryRenderer, element => this.sectionRowState(element)),
-				new SectionMemberRowMarker(worktreeRenderer, element => this.sectionRowState(element)),
-				new SectionMemberRowMarker(creatingRenderer, element => this.sectionRowState(element)),
+				new SectionMemberRowMarker(repositoryRenderer, element => this.sectionRowState(element), () => this.effectiveTreeIndent()),
+				new SectionMemberRowMarker(worktreeRenderer, element => this.sectionRowState(element), () => this.effectiveTreeIndent()),
+				new SectionMemberRowMarker(creatingRenderer, element => this.sectionRowState(element), () => this.effectiveTreeIndent()),
 				sectionHeaderRenderer,
-				new SectionMemberRowMarker(new SectionEmptyRenderer(), element => this.sectionRowState(element)),
-				new SectionMemberRowMarker(spaceSectionHeaderRenderer, element => this.sectionRowState(element)),
-				new SectionMemberRowMarker(new SpaceSectionEmptyRenderer(getRepositoryColorHex), element => this.sectionRowState(element)),
+				new SectionMemberRowMarker(new SectionEmptyRenderer(), element => this.sectionRowState(element), () => this.effectiveTreeIndent()),
+				new SectionMemberRowMarker(spaceSectionHeaderRenderer, element => this.sectionRowState(element), () => this.effectiveTreeIndent()),
+				new SectionMemberRowMarker(new SpaceSectionEmptyRenderer(getRepositoryColorHex), element => this.sectionRowState(element), () => this.effectiveTreeIndent()),
 			],
 			{
 				identityProvider: {
@@ -2379,8 +2388,6 @@ export class ParadisWorkspacesView extends ViewPane {
 		this.sectioned = sectioned;
 		this.treeContainer?.classList.toggle('paradis-workspaces-sectioned', sectioned);
 		const indent = this.effectiveTreeIndent();
-		// スペースのセクションの中の行が 1 段ぶん戻る幅（media/paradisSpaceSections.css）
-		this.treeContainer?.style.setProperty('--paradis-tree-indent', `${indent}px`);
 		if (this.appliedTreeIndent !== indent) {
 			this.appliedTreeIndent = indent;
 			this.tree.updateOptions({ indent });

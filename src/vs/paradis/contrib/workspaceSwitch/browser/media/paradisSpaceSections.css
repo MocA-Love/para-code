@@ -8,14 +8,9 @@
 /* allow-any-unicode-next-line */
 /* スペースのセクション（リポジトリの中のスペースをまとめる見出し、Q683 案 A の「仕切りの見出し」）。
  * 見出しは面を塗らず、細い字の名前・件数と、その右へ伸びる細い線だけで区切る。字下げは足さない:
- * 見出しはツリーの本当の親なので本家は中の行を 1 段下げるが、中の行（paradis-space-section-member）で
- * その 1 段ぶんを戻す。幅はビューが --paradis-tree-indent で渡す（設定 workbench.tree.indent に追従）。 */
-.paradis-workspaces-list .monaco-list-row.paradis-space-section-member > .monaco-tl-row > .monaco-tl-twistie {
-	margin-left: calc(-1 * var(--paradis-tree-indent, 8px));
-}
-
-/* allow-any-unicode-next-line */
-/* 字下げを戻すと本家の案内線は位置がずれるので、スペースのセクションが 1 つでもある一覧では消す
+ * 見出しはツリーの本当の親なので本家は中の行を 1 段下げるが、中の行（paradis-space-section-member）では
+ * レンダラが矢印の margin-left でその 1 段ぶんを戻す（幅は設定 workbench.tree.indent に追従する。paradisWorkspacesView.ts の
+ * SectionMemberRowMarker）。字下げを戻すと本家の案内線は位置がずれるので、スペースのセクションが 1 つでもある一覧では消す
  * （プロジェクトのセクションがあるときと同じ扱い） */
 .paradis-workspaces-list.paradis-workspaces-space-sectioned .monaco-tl-indent {
 	display: none;
@@ -37,7 +32,7 @@
 /* allow-any-unicode-next-line */
 /* 見出しの矢印は小さく薄く（上に貼り付いた見出しにも同じ印が付く） */
 .paradis-workspaces-list .paradis-space-section-head .monaco-tl-twistie.codicon {
-	font-size: 14px;
+	font-size: var(--vscode-codiconFontSize-compact);
 	color: var(--vscode-paradis-textFaint);
 }
 
