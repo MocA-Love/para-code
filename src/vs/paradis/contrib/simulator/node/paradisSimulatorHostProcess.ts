@@ -64,6 +64,8 @@ export interface IParadisSimulatorHostProcessOptions {
 	readonly bootstrapPath?: string;
 	/** 準備できた印を待つ時間。 */
 	readonly readyTimeoutMs?: number;
+	/** 準備できた後のホストの stdout の 1 行ごとに呼ぶ（ログへ流す数の上限とは別に、全部の行で呼ぶ）。 */
+	readonly onStdoutLine?: (line: string) => void;
 	/** 同梱した serve-sim のフォルダ（テスト用。既定は `out/` の中の同梱の場所）。 */
 	readonly serveSimDir?: string;
 }
@@ -370,6 +372,7 @@ export class ParadisSimulatorHostProcess extends Disposable implements IParadisS
 				if (!line) {
 					continue;
 				}
+				this._options.onStdoutLine?.(line);
 				const now = Date.now();
 				if (now - windowStart >= 60_000) {
 					if (dropped) {

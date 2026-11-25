@@ -53,8 +53,11 @@ export function registerParadisSimulator(
 	const useServeSim = () => isMacintosh;
 
 	// ホストはここでは起こさない（最初の要求で起こす）。macOS 以外でも作るだけなら何も起きない
-	const host = store.add(new ParadisSimulatorHostProcess({ userDataPath, logService }));
+	// ホストの出力のうち「キーを旧来の HID で送った」の行を backend が覚える（帯と mobile_type_text の知らせに使う）
+	const hostOutput: { listener?: (line: string) => void } = {};
+	const host = store.add(new ParadisSimulatorHostProcess({ userDataPath, logService, onStdoutLine: line => hostOutput.listener?.(line) }));
 	const backend = store.add(new ParadisServeSimBackend(host, logService));
+	hostOutput.listener = line => backend.noteHostOutput(line);
 	const deviceHost = new ParadisServeSimDeviceHost(backend, logService);
 	const deviceHub = new ParadisSimulatorDeviceHub();
 	// Android は利用者の adb（⑥a。adb は同梱しない）と、同梱した scrcpy-server（⑥b。映像・ペインの入力・2 本指・日本語）

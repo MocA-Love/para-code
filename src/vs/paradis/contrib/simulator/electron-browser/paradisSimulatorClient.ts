@@ -35,6 +35,8 @@ export interface IParadisSimulatorClient {
 	sendInput(udid: string, input: ParadisSimulatorInput): Promise<void>;
 	fold(udid: string, fold: { readonly pose: string } | { readonly hinge: number }): Promise<{ readonly ok: boolean }>;
 	deviceHubActive(udid: string): Promise<boolean>;
+	/** この端末へのキーが、Device Hub の経路を使えず旧来の経路で送られたか（届いていないことがある）。 */
+	keyboardFallback(udid: string): Promise<boolean>;
 	/** Android の端末の一覧（adb で動いているもの・起動していない AVD）。adb が無ければ空。 */
 	listAndroidDevices(): Promise<IParadisAndroidDeviceSummary[]>;
 	/** Android の映像（scrcpy の H.264）の購読。最後の購読が外れると shared process は通話を手放す。 */
@@ -90,6 +92,9 @@ export class ParadisSimulatorChannelClient implements IParadisSimulatorClient {
 	}
 	deviceHubActive(udid: string): Promise<boolean> {
 		return this._channel.call('deviceHubActive', { udid });
+	}
+	keyboardFallback(udid: string): Promise<boolean> {
+		return this._channel.call('keyboardFallback', { udid });
 	}
 	deviceHubRunning(): Promise<boolean> {
 		return this._channel.call('deviceHubRunning');

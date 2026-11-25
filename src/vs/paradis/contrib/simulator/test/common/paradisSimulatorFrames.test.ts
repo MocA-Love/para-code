@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisDeviceHubActive, paradisParseSimctlDevices, paradisParseSimulatorFold, paradisParseSimulatorHostMessage, paradisSimulatorFoldFrame, paradisSimulatorInputFrame, ParadisMjpegSplitter } from '../../common/paradisSimulatorFrames.js';
+import { paradisDeviceHubActive, paradisParseSimctlDevices, paradisParseSimulatorKeyboardFallback, paradisParseSimulatorFold, paradisParseSimulatorHostMessage, paradisSimulatorFoldFrame, paradisSimulatorInputFrame, ParadisMjpegSplitter } from '../../common/paradisSimulatorFrames.js';
 
 function decode(frame: Uint8Array): [number, unknown] {
 	return [frame[0], JSON.parse(new TextDecoder().decode(frame.subarray(1)))];
@@ -136,6 +136,16 @@ suite('Paradis simulator: frames', () => {
 			check(`cut ${cut}`, [stream.slice(0, cut), stream.slice(cut)]);
 		}
 		assert.deepStrictEqual({ whole: hex(new ParadisMjpegSplitter().push(stream)), differing }, { whole: ['300:0:48', '7:255:217', '300:0:48'], differing: [] });
+	});
+
+	// serve-sim のネイティブ部品が出す行（Xcode 27.2 の実物）。ほかの [hid] の行は拾わない
+	test('reads which simulator had its keys sent through the legacy HID path', () => {
+		assert.deepStrictEqual([
+			'[hid] Device Hub keyboard unavailable for iPad Pro 11-inch (M5) (5291324e): macOS Accessibility permission is not granted (System Settings > Privacy & Security > Accessibility); using legacy HID',
+			'[hid] Device Hub keyboard unavailable for Para Code Test iPhone 17 (DB4F859B): Device Hub has no visible simulator window; using legacy HID',
+			'[hid] Posted Device Hub key 4 for iPhone 17 (DB4F859B)',
+			'[capture] Framebuffer: 1206x2622 (direct IOSurface, zero-copy)',
+		].map(paradisParseSimulatorKeyboardFallback), ['5291324E', 'DB4F859B', undefined, undefined]);
 	});
 
 	test('parses simctl devices and the Device Hub flag', () => {
