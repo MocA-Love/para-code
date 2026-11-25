@@ -7,8 +7,7 @@
 /*
  * Port list widget: title bar trigger (paradisPortListWidget.ts) and the click-to-open
  * search/kill panel (paradisPortListPanel.ts). Layout mirrors the limits monitor panel
- * (paradisLimitsMonitor.css); colors come from --vscode-* theme tokens except the fixed
- * severity accent (red), which matches the rest of Para Code.
+ * (paradisLimitsMonitor.css); colors come from --vscode-* theme tokens.
  */
 
 /* ---------- trigger (title bar) ---------- */
@@ -138,9 +137,86 @@
 	color: var(--vscode-button-foreground);
 }
 
-.paradis-port-list-panel .ppl-list {
+.paradis-port-list-panel .ppl-group-toggle {
+	margin-left: auto;
+}
+
+.paradis-port-list-panel .ppl-scroll {
 	overflow-y: auto;
 	flex: 1;
+	min-height: 0;
+}
+
+/* Column headings: each one sorts the list. Sticky inside the scroll area so the columns line up with the rows. */
+.paradis-port-list-panel .ppl-cols {
+	position: sticky;
+	top: 0;
+	z-index: 1;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 2px 14px;
+	background: var(--vscode-editorWidget-background);
+	border-bottom: 1px solid color-mix(in srgb, var(--vscode-paradis-textMuted) 9%, transparent);
+}
+
+.paradis-port-list-panel .ppl-col {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	height: 22px;
+	min-width: 0;
+	padding: 0;
+	border: none;
+	border-radius: 4px;
+	background: none;
+	color: var(--vscode-descriptionForeground);
+	font-family: inherit;
+	font-size: 11px;
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.paradis-port-list-panel .ppl-col:hover,
+.paradis-port-list-panel .ppl-col.on {
+	color: var(--vscode-foreground);
+}
+
+/* The arrow keeps its width in the columns that are not sorted, so the labels do not move when the sort changes. */
+.paradis-port-list-panel .ppl-col .ppl-col-arrow {
+	font-size: 12px;
+	visibility: hidden;
+}
+
+.paradis-port-list-panel .ppl-col.on .ppl-col-arrow {
+	visibility: visible;
+}
+
+.paradis-port-list-panel .ppl-col-port {
+	width: 52px;
+	flex: none;
+}
+
+.paradis-port-list-panel .ppl-col-process {
+	flex: 1;
+}
+
+.paradis-port-list-panel .ppl-col-scope {
+	width: 56px;
+	flex: none;
+}
+
+/* PIDs are right-aligned, so the arrow goes before the label and the label ends where the numbers end. */
+.paradis-port-list-panel .ppl-col-pid {
+	width: 68px;
+	flex: none;
+	flex-direction: row-reverse;
+}
+
+/* Keeps the width of the kill button in the rows that have none (column headings, group headings). */
+.paradis-port-list-panel .ppl-kill-space {
+	width: 20px;
+	flex: none;
 }
 
 .paradis-port-list-panel .ppl-row {
@@ -151,28 +227,49 @@
 	border-bottom: 1px solid color-mix(in srgb, var(--vscode-paradis-textMuted) 9%, transparent);
 }
 
-.paradis-port-list-panel .ppl-row:last-child {
+.paradis-port-list-panel .ppl-row:last-child,
+.paradis-port-list-panel .ppl-group:last-child {
 	border-bottom: none;
 }
 
-.paradis-port-list-panel .ppl-row:hover {
+.paradis-port-list-panel .ppl-row:hover,
+.paradis-port-list-panel .ppl-group:hover {
 	background: var(--vscode-toolbar-hoverBackground);
 }
 
-.paradis-port-list-panel .ppl-row.risky {
-	background: color-mix(in srgb, var(--vscode-paradis-danger) 6%, transparent);
+/* A row inside an opened group: indented under the group heading, the repeated name is muted. */
+.paradis-port-list-panel .ppl-row.child {
+	padding-left: 40px;
 }
 
-.paradis-port-list-panel .ppl-dot {
-	width: 6px;
-	height: 6px;
-	border-radius: 50%;
+.paradis-port-list-panel .ppl-row.child .ppl-proc {
+	color: var(--vscode-descriptionForeground);
+}
+
+/* Group heading (rows of one process folded into one line). A button laid out like a row. */
+.paradis-port-list-panel .ppl-group {
+	box-sizing: border-box;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	width: 100%;
+	/* Same height as a row (20px kill button + 6px padding on each side). */
+	min-height: 33px;
+	padding: 6px 14px;
+	border: none;
+	border-bottom: 1px solid color-mix(in srgb, var(--vscode-paradis-textMuted) 9%, transparent);
+	background: transparent;
+	color: inherit;
+	font-family: inherit;
+	font-size: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+
+.paradis-port-list-panel .ppl-group-chevron {
 	flex: none;
-	background: var(--vscode-paradis-success);
-}
-
-.paradis-port-list-panel .ppl-dot.risky {
-	background: var(--vscode-paradis-danger);
+	font-size: var(--vscode-codiconFontSize);
+	color: var(--vscode-descriptionForeground);
 }
 
 .paradis-port-list-panel .ppl-port {
@@ -191,8 +288,15 @@
 	white-space: nowrap;
 }
 
-.paradis-port-list-panel .ppl-risk-badge {
-	/* The look is the kit's danger chip (paradis-chip paradis-chip-danger, paradisBadges.css). */
+/*
+ * The scope column. Only a port open to every address shows a chip (the kit's warning chip, paradisBadges.css:
+ * no fill, a thin border); a row without a chip is not open to every address.
+ */
+.paradis-port-list-panel .ppl-scope {
+	display: flex;
+	align-items: center;
+	width: 56px;
+	min-width: 0;
 	flex: none;
 }
 
@@ -311,20 +415,26 @@
 		padding-inline: 10px;
 	}
 
-	.paradis-port-list-panel .ppl-port {
-		width: 46px;
+	.paradis-port-list-panel .ppl-cols,
+	.paradis-port-list-panel .ppl-group {
+		gap: 6px;
+		padding-inline: 10px;
 	}
 
-	.paradis-port-list-panel .ppl-pid {
+	.paradis-port-list-panel .ppl-row.child {
+		padding-left: 32px;
+	}
+
+	/* Wide enough for the heading "ポート" with its arrow. */
+	.paradis-port-list-panel .ppl-port,
+	.paradis-port-list-panel .ppl-col-port {
+		width: 50px;
+	}
+
+	.paradis-port-list-panel .ppl-pid,
+	.paradis-port-list-panel .ppl-col-pid {
 		width: 48px;
 	}
-
-	.paradis-port-list-panel .ppl-risk-badge {
-		max-width: 64px;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
-
 }
 
 /* Preserve wide row information for touch displays while enlarging their tap target. */
@@ -332,6 +442,10 @@
 	.paradis-port-list-panel .ppl-kill-btn {
 		width: 44px;
 		height: 44px;
+	}
+
+	.paradis-port-list-panel .ppl-kill-space {
+		width: 44px;
 	}
 }
 

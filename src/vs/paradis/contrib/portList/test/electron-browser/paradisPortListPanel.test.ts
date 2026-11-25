@@ -12,6 +12,7 @@ import { upcastPartial } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
+import { InMemoryStorageService, IStorageService, StorageScope } from '../../../../../platform/storage/common/storage.js';
 import { IParadisPortEntry, IParadisPortListSnapshot } from '../../common/paradisPortList.js';
 import { ParadisPortListPanel } from '../../electron-browser/paradisPortListPanel.js';
 
@@ -19,13 +20,16 @@ interface IPanelFixture {
 	readonly root: HTMLElement;
 	readonly panel: ParadisPortListPanel;
 	readonly killedEntries: readonly IParadisPortEntry[];
+	readonly killAllRequests: readonly (readonly IParadisPortEntry[])[];
 	readonly closes: readonly boolean[];
 	readonly anchorRectReadCount: number;
 	setViewport(viewportWidth: number, anchorRight: number): void;
 	dispose(): void;
 }
 
-function createPanelFixture(): IPanelFixture {
+/** `sharedStorage` を渡すと、保存した並びを次のパネルへ引き継げる（片付けは渡した側）。 */
+function createPanelFixture(sharedStorage?: IStorageService): IPanelFixture {
+	const ownStorage = sharedStorage ? undefined : new InMemoryStorageService();
 	const root = document.createElement('div');
 	document.body.appendChild(root);
 	const window = dom.getWindow(root);
@@ -34,6 +38,7 @@ function createPanelFixture(): IPanelFixture {
 	let anchorRight = 300;
 	let anchorRectReadCount = 0;
 	const killedEntries: IParadisPortEntry[] = [];
+	const killAllRequests: (readonly IParadisPortEntry[])[] = [];
 	const closes: boolean[] = [];
 	anchor.getBoundingClientRect = () => {
 		anchorRectReadCount++;
@@ -47,16 +52,18 @@ function createPanelFixture(): IPanelFixture {
 			onManualRefresh() { },
 			onClose(restoreFocus) { closes.push(restoreFocus); },
 			onKill(entry) { killedEntries.push(entry); },
-			onKillAll() { },
+			onKillAll(entries) { killAllRequests.push(entries); },
 		},
 		upcastPartial<ILayoutService>({ activeContainer: root }),
 		upcastPartial<IHoverService>({ setupManagedHover: () => upcastPartial<IManagedHover>({ dispose() { } }) }),
+		sharedStorage ?? ownStorage!,
 	);
 
 	return {
 		root,
 		panel,
 		killedEntries,
+		killAllRequests,
 		closes,
 		get anchorRectReadCount(): number { return anchorRectReadCount; },
 		setViewport(viewportWidth: number, nextAnchorRight: number): void {
@@ -66,6 +73,7 @@ function createPanelFixture(): IPanelFixture {
 		},
 		dispose(): void {
 			panel.dispose();
+			ownStorage?.dispose();
 			root.remove();
 		},
 	};
@@ -118,24 +126,23 @@ function killTargetMediaRule(stylesheet: HTMLLinkElement): CSSMediaRule | undefi
 	return mediaRule(stylesheet, rule => rule.conditionText.includes('pointer: coarse') && nestedStyleRule(rule, '.paradis-port-list-panel .ppl-kill-btn') !== undefined);
 }
 
-function rowStructure(window: Window, root: HTMLElement): { readonly gap: string; readonly paddingLeft: string; readonly paddingRight: string; readonly portWidth: string; readonly pidWidth: string; readonly badgeMaxWidth: string; readonly badgeOverflow: string; readonly badgeTextOverflow: string } {
+function rowStructure(window: Window, root: HTMLElement): { readonly gap: string; readonly paddingLeft: string; readonly paddingRight: string; readonly portWidth: string; readonly pidWidth: string; readonly scopeWidth: string; readonly scopeFlexShrink: string } {
 	const row = root.querySelector<HTMLElement>('.ppl-row')!;
 	const port = root.querySelector<HTMLElement>('.ppl-port')!;
 	const pid = root.querySelector<HTMLElement>('.ppl-pid')!;
-	const badge = root.querySelector<HTMLElement>('.ppl-risk-badge')!;
+	const scope = root.querySelector<HTMLElement>('.ppl-row .ppl-scope')!;
 	const rowStyle = window.getComputedStyle(row);
 	const portStyle = window.getComputedStyle(port);
 	const pidStyle = window.getComputedStyle(pid);
-	const badgeStyle = window.getComputedStyle(badge);
+	const scopeStyle = window.getComputedStyle(scope);
 	return {
 		gap: rowStyle.gap,
 		paddingLeft: rowStyle.paddingLeft,
 		paddingRight: rowStyle.paddingRight,
 		portWidth: portStyle.width,
 		pidWidth: pidStyle.width,
-		badgeMaxWidth: badgeStyle.maxWidth,
-		badgeOverflow: badgeStyle.overflow,
-		badgeTextOverflow: badgeStyle.textOverflow,
+		scopeWidth: scopeStyle.width,
+		scopeFlexShrink: scopeStyle.flexShrink,
 	};
 }
 
@@ -195,12 +202,28 @@ suite('Paradis port list panel', () => {
 				gap: '6px',
 				paddingLeft: '10px',
 				paddingRight: '10px',
-				portWidth: '46px',
+				portWidth: '50px',
 				pidWidth: '48px',
-				badgeMaxWidth: '64px',
-				badgeOverflow: 'hidden',
-				badgeTextOverflow: 'ellipsis',
+				scopeWidth: '56px',
+				scopeFlexShrink: '0',
 			});
+			// 列の見出しは行の列と揃い、見出しの文字と矢印は列の幅に収まる
+			const rowRect = (selector: string) => fixture.root.querySelector<HTMLElement>(`.ppl-row ${selector}`)!.getBoundingClientRect();
+			const columns = ['port', 'process', 'scope', 'pid'].map(key => fixture.root.querySelector<HTMLElement>(`.ppl-col-${key}`)!);
+			const [portColumn, , scopeColumn, pidColumn] = columns.map(column => column.getBoundingClientRect());
+			assert.deepStrictEqual({
+				port: [portColumn.left, portColumn.right],
+				scope: [scopeColumn.left, scopeColumn.right],
+				pid: [pidColumn.left, pidColumn.right],
+				overflowing: columns.filter(column => column.scrollWidth > column.clientWidth).map(column => column.className),
+			}, {
+				port: [rowRect('.ppl-port').left, rowRect('.ppl-port').right],
+				scope: [rowRect('.ppl-scope').left, rowRect('.ppl-scope').right],
+				pid: [rowRect('.ppl-pid').left, rowRect('.ppl-pid').right],
+				overflowing: [],
+			});
+			const chip = fixture.root.querySelector<HTMLElement>('.ppl-row .ppl-scope .paradis-chip')!.getBoundingClientRect();
+			assert.ok(chip.left >= rowRect('.ppl-scope').left && chip.right <= rowRect('.ppl-scope').right);
 			assert.strictEqual(killButton.getAttribute('aria-label'), 'PID 4321 を終了');
 			assert.strictEqual(killButton.tabIndex, 0);
 			killButton.focus();
@@ -283,6 +306,126 @@ suite('Paradis port list panel', () => {
 			fixture.root.querySelectorAll<HTMLButtonElement>('.ppl-chip')[1].click();
 			const risky = count();
 			assert.deepStrictEqual({ all, risky }, { all: '2', risky: '1 / 2' });
+		} finally {
+			fixture.dispose();
+		}
+	});
+
+	test('marks a port open to every address with one text chip and nothing else', () => {
+		const fixture = createPanelFixture();
+		try {
+			const otherEntry: IParadisPortEntry = { port: 3000, proto: 'TCP', pid: 99, processName: 'node', address: '127.0.0.1', risky: false };
+			fixture.panel.updateSnapshot({ entries: [otherEntry, longRiskyEntry], collectedAt: 1 });
+			const rows = [...fixture.root.querySelectorAll<HTMLElement>('.ppl-row')];
+			assert.deepStrictEqual({
+				rows: rows.map(row => ({ port: row.querySelector('.ppl-port')?.textContent, scope: row.querySelector('.ppl-scope')?.textContent, className: row.className })),
+				dots: fixture.root.querySelectorAll('.ppl-dot').length,
+				chipClass: fixture.root.querySelector('.ppl-scope .paradis-chip')?.className,
+			}, {
+				rows: [{ port: ':3000', scope: '', className: 'ppl-row' }, { port: ':65535', scope: '全公開', className: 'ppl-row' }],
+				dots: 0,
+				chipClass: 'paradis-chip paradis-chip-warning',
+			});
+		} finally {
+			fixture.dispose();
+		}
+	});
+
+	test('sorts by the pressed column, flips on the second press and remembers the choice', () => {
+		const storage = new InMemoryStorageService();
+		const entries: IParadisPortEntry[] = [
+			{ port: 8080, proto: 'TCP', pid: 30, processName: 'beta', address: '127.0.0.1', risky: false },
+			{ port: 3000, proto: 'TCP', pid: 99, processName: 'alpha', address: '*', risky: true },
+			{ port: 5432, proto: 'TCP', pid: 10, processName: 'gamma', address: '127.0.0.1', risky: false },
+		];
+		const ports = (fixture: IPanelFixture) => [...fixture.root.querySelectorAll('.ppl-port')].map(port => port.textContent);
+		const column = (fixture: IPanelFixture, key: string) => fixture.root.querySelector<HTMLButtonElement>(`.ppl-col-${key}`)!;
+		const first = createPanelFixture(storage);
+		let second: IPanelFixture | undefined;
+		try {
+			first.panel.updateSnapshot({ entries, collectedAt: 1 });
+			const byDefault = ports(first);
+			column(first, 'pid').click();
+			const byPid = ports(first);
+			column(first, 'pid').click();
+			const byPidDescending = ports(first);
+			column(first, 'scope').click();
+			const byScope = ports(first);
+			column(first, 'process').click();
+			column(first, 'process').click();
+			const byProcessDescending = ports(first);
+			first.dispose();
+
+			second = createPanelFixture(storage);
+			second.panel.updateSnapshot({ entries, collectedAt: 2 });
+			assert.deepStrictEqual({
+				byDefault, byPid, byPidDescending, byScope, byProcessDescending,
+				stored: storage.get('paradis.portList.view', StorageScope.APPLICATION),
+				reopened: ports(second),
+				reopenedColumns: ['port', 'process', 'scope', 'pid'].map(key => `${column(second!, key).className.includes(' on') ? 'on' : 'off'}: ${column(second!, key).getAttribute('aria-label')}`),
+				arrow: column(second, 'process').querySelector('.ppl-col-arrow')?.className,
+			}, {
+				byDefault: [':3000', ':5432', ':8080'],
+				byPid: [':5432', ':8080', ':3000'],
+				byPidDescending: [':3000', ':8080', ':5432'],
+				byScope: [':3000', ':5432', ':8080'],
+				byProcessDescending: [':5432', ':8080', ':3000'],
+				stored: '{"sortKey":"process","sortDirection":"desc","grouped":false}',
+				reopened: [':5432', ':8080', ':3000'],
+				reopenedColumns: [
+					'off: ポートで並べ替え',
+					'on: プロセスの降順で並べています。押すと昇順にします',
+					'off: 公開の範囲で並べ替え',
+					'off: PIDで並べ替え',
+				],
+				arrow: 'ppl-col-arrow codicon codicon-arrow-down',
+			});
+		} finally {
+			first.dispose();
+			second?.dispose();
+			storage.dispose();
+		}
+	});
+
+	test('folds the rows of one process under a heading, and Kill All still covers the folded rows', () => {
+		const fixture = createPanelFixture();
+		try {
+			const entries: IParadisPortEntry[] = [
+				{ port: 9229, proto: 'TCP', pid: 12, processName: 'node', address: '*', risky: true },
+				{ port: 5432, proto: 'TCP', pid: 10, processName: 'postgres', address: '127.0.0.1', risky: false },
+				{ port: 3000, proto: 'TCP', pid: 11, processName: 'node', address: '127.0.0.1', risky: false },
+				{ port: 3001, proto: 'TCP', pid: 11, processName: 'node', address: '127.0.0.1', risky: false },
+			];
+			fixture.panel.updateSnapshot({ entries, collectedAt: 1 });
+			const groupChip = fixture.root.querySelector<HTMLButtonElement>('.ppl-group-toggle')!;
+			const heading = () => fixture.root.querySelector<HTMLButtonElement>('.ppl-group')!;
+			const list = () => [...fixture.root.querySelectorAll<HTMLElement>('.ppl-list > *')].map(item => item.classList.contains('ppl-group')
+				? `group ${item.querySelector('.ppl-proc')?.textContent} ${item.querySelector('.ppl-pid')?.textContent} ${item.querySelector('.ppl-scope')?.textContent} expanded=${item.getAttribute('aria-expanded')}`
+				: `${item.className} ${item.querySelector('.ppl-port')?.textContent}`);
+			groupChip.click();
+			const folded = { pressed: groupChip.getAttribute('aria-pressed'), list: list(), count: fixture.root.querySelector('.ppl-count')?.textContent };
+			fixture.root.querySelector<HTMLButtonElement>('.ppl-fbtn.danger')!.click();
+			heading().focus();
+			heading().click();
+			const opened = { list: list(), focusOnHeading: document.activeElement === heading() };
+			// 開いた中の行で確認を出したまま畳むと、確認もやめる
+			fixture.root.querySelector<HTMLButtonElement>('.ppl-row.child .ppl-kill-btn')!.click();
+			const asking = fixture.root.querySelectorAll('.ppl-confirm').length;
+			heading().click();
+			const foldedAgain = { list: list(), confirms: fixture.root.querySelectorAll('.ppl-confirm').length, focusOnHeading: document.activeElement === heading() };
+			// 検索中は一致した行を隠さない
+			const search = fixture.root.querySelector<HTMLInputElement>('.ppl-search-box input')!;
+			search.value = 'node';
+			search.dispatchEvent(new Event('input'));
+			const searching = list();
+			assert.deepStrictEqual({ folded, killAll: fixture.killAllRequests.map(request => request.map(entry => entry.port)), opened, asking, foldedAgain, searching }, {
+				folded: { pressed: 'true', list: ['group node 3 件 全公開 expanded=false', 'ppl-row :5432'], count: '4' },
+				killAll: [[3000, 3001, 5432, 9229]],
+				opened: { list: ['group node 3 件 全公開 expanded=true', 'ppl-row child :3000', 'ppl-row child :3001', 'ppl-row child :9229', 'ppl-row :5432'], focusOnHeading: true },
+				asking: 1,
+				foldedAgain: { list: ['group node 3 件 全公開 expanded=false', 'ppl-row :5432'], confirms: 0, focusOnHeading: true },
+				searching: ['group node 3 件 全公開 expanded=true', 'ppl-row child :3000', 'ppl-row child :3001', 'ppl-row child :9229'],
+			});
 		} finally {
 			fixture.dispose();
 		}
