@@ -28,6 +28,8 @@ class ParadisSimulatorTabLabelsContribution extends Disposable implements IWorkb
 	static readonly ID = 'workbench.contrib.paradisSimulatorTabLabels';
 
 	private readonly _polling = this._register(new MutableDisposable());
+	/** True while `beginPolling()` runs: the model may fire onDidChange before it returns. */
+	private _startingPolling = false;
 
 	constructor(
 		@IEditorService private readonly _editorService: IEditorService,
@@ -53,8 +55,13 @@ class ParadisSimulatorTabLabelsContribution extends Disposable implements IWorkb
 		const visible = this._editorService.visibleEditors.some(editor => editor instanceof ParadisSimulatorEditorInput || editor instanceof ParadisAndroidEditorInput);
 		if (!visible) {
 			this._polling.clear();
-		} else if (!this._polling.value) {
-			this._polling.value = this._model.beginPolling();
+		} else if (!this._polling.value && !this._startingPolling) {
+			this._startingPolling = true;
+			try {
+				this._polling.value = this._model.beginPolling();
+			} finally {
+				this._startingPolling = false;
+			}
 		}
 		if (inputs.length === 0) {
 			return;

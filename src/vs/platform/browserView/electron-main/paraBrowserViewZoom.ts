@@ -101,8 +101,10 @@ function isolatorFor(webContents: WebContents): IParaBrowserZoomIsolator {
  * 描画のプロセスが生きていて、メインの文書があるか。`enableDeviceEmulation` は描画のプロセスが落ちた・入れ替え中の
  * タブに呼ぶと main ごと落ちうる（Sentry NK: `WebContents::EnableDeviceEmulation` の EXC_BAD_ACCESS。推測: 遅れて来た
  * `onReady` が、描画のプロセスの居ないタブへ当て直した）。確かめられないときは当てない側に倒す。
+ * `browserViewEmulator.ts` の `isSafeToApplyEmulation` も同じ確かめを使う（配置の変更・デバイスの切り替え・移動の後の
+ * 当て直しも、ページが落ちたままのタブへ `enableDeviceEmulation` / `disableDeviceEmulation` を呼んでいた）。
  */
-function rendererAlive(webContents: WebContents): boolean {
+export function paraBrowserViewRendererAlive(webContents: WebContents): boolean {
 	try {
 		if (webContents.isDestroyed() || webContents.isCrashed()) {
 			return false;
@@ -116,7 +118,7 @@ function rendererAlive(webContents: WebContents): boolean {
 
 /** 切り離しが済んだ・画面の倍率が替わったので当て直してもらう。描画のプロセスが居なければ呼ばない。 */
 function notifyReady(webContents: WebContents, state: IZoomState): void {
-	if (rendererAlive(webContents)) {
+	if (paraBrowserViewRendererAlive(webContents)) {
 		state.onIsolated?.();
 	}
 }

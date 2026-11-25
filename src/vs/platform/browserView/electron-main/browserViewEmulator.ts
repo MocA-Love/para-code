@@ -9,7 +9,7 @@ import { IBrowserDeviceProfile } from '../common/browserView.js';
 import { ILogService } from '../../log/common/log.js';
 import type { BrowserView } from './browserView.js';
 import { ICDPConnection } from '../common/cdp/types.js';
-import { paraBrowserViewEmulationParams, paraBrowserViewScalesByZoom, paraSetBrowserViewEmulationZoom } from './paraBrowserViewZoom.js'; // PARA-PATCH: shrink fixed viewport sizes by page zoom instead of the emulation scale (Para Code, paraBrowserViewZoom.ts)
+import { paraBrowserViewEmulationParams, paraBrowserViewRendererAlive, paraBrowserViewScalesByZoom, paraSetBrowserViewEmulationZoom } from './paraBrowserViewZoom.js'; // PARA-PATCH: shrink fixed viewport sizes by page zoom instead of the emulation scale (Para Code, paraBrowserViewZoom.ts)
 
 /**
  * Manages device emulation for a browser view. The renderer is authoritative
@@ -72,6 +72,10 @@ export class BrowserViewEmulator extends Disposable {
 			this.browser.webContents.disableDeviceEmulation();
 			paraSetBrowserViewEmulationZoom(this.browser.webContents, 1); // PARA-PATCH: drop the zoom that shrank the fixed size (paraBrowserViewZoom.ts)
 			void this._applyTouchAndMedia();
+		}
+		// PARA-PATCH: the block above is skipped while the page is crashed; still drop the zoom so the reloaded page is not left shrunk (paraBrowserViewZoom.ts)
+		if (prev && !device && !this.browser.webContents.isDestroyed()) {
+			paraSetBrowserViewEmulationZoom(this.browser.webContents, 1);
 		}
 
 		this._lastApplied = undefined;
@@ -143,7 +147,8 @@ export class BrowserViewEmulator extends Disposable {
 	}
 
 	private isSafeToApplyEmulation(): boolean {
-		return !this.browser.webContents.isDestroyed() && !!this.browser.webContents.getURL();
+		// PARA-PATCH: skip a tab whose render process is gone; enable/disableDeviceEmulation on it crashes the main process (Sentry NK, paraBrowserViewZoom.ts)
+		return !this.browser.webContents.isDestroyed() && !!this.browser.webContents.getURL() && paraBrowserViewRendererAlive(this.browser.webContents);
 	}
 
 	private async _applyTouchAndMedia(): Promise<void> {
