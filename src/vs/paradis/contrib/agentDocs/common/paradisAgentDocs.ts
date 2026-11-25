@@ -53,6 +53,21 @@ export interface IParadisDocWrite {
 	readonly toolUseId?: string;
 }
 
+/**
+ * ファイルの指紋。ファイルが見つからなくなったとき、同じスペースの中の移動先を中身で確かめるために控える
+ * （paradisAgentDocsRelocate.ts）。取るのはウィンドウ（接続先のファイルも読める）で、台帳は預かるだけ。
+ */
+export interface IParadisDocFingerprint {
+	/** 大きさ（バイト）。 */
+	readonly size: number;
+	/** 更新時刻（epoch ms。その機械の時計）。 */
+	readonly mtime: number;
+	/** 中身の SHA-256（16 進 64 文字）。 */
+	readonly hash: string;
+	/** 指紋を取った時刻（epoch ms）。これより後に書かれた資料は取り直す。 */
+	readonly at: number;
+}
+
 /** 台帳の 1 件。 */
 export interface IParadisDocRecord {
 	/** 接続先の印（hook の remoteHostId の形）。手元のファイルは空文字。 */
@@ -71,6 +86,8 @@ export interface IParadisDocRecord {
 	readonly firstSeen: number;
 	/** ファイルが見つからなくなったのを見た時刻（消された・移された）。見つかれば外す。 */
 	readonly missingSince?: number;
+	/** 最後に取った指紋。取れていない資料（大きすぎる・スペースの外・まだ取っていない）には無い。 */
+	readonly fingerprint?: IParadisDocFingerprint;
 }
 
 export const PARADIS_DOC_MAX_PREVIOUS_OWNERS = 5;
@@ -486,6 +503,18 @@ function parseWrite(value: unknown): IParadisDocWrite | undefined {
 	return { at: write.at, tool: write.tool, session: write.session, ...(typeof write.toolUseId === 'string' && write.toolUseId.length <= 200 ? { toolUseId: write.toolUseId } : {}) };
 }
 
+/** 指紋を検査して読む。形が合わなければ undefined。 */
+export function paradisParseDocFingerprint(value: unknown): IParadisDocFingerprint | undefined {
+	if (typeof value !== 'object' || value === null) {
+		return undefined;
+	}
+	const fingerprint = value as Record<string, unknown>;
+	if (!isTime(fingerprint.size) || !isTime(fingerprint.mtime) || !isTime(fingerprint.at) || typeof fingerprint.hash !== 'string' || !/^[0-9a-f]{64}$/.test(fingerprint.hash)) {
+		return undefined;
+	}
+	return { size: fingerprint.size, mtime: fingerprint.mtime, hash: fingerprint.hash, at: fingerprint.at };
+}
+
 function parseRecord(value: unknown): IParadisDocRecord | undefined {
 	if (typeof value !== 'object' || value === null) {
 		return undefined;
@@ -498,6 +527,7 @@ function parseRecord(value: unknown): IParadisDocRecord | undefined {
 		return undefined;
 	}
 	const owner = record.owner !== undefined ? parseOwner(record.owner) : undefined;
+	const fingerprint = paradisParseDocFingerprint(record.fingerprint);
 	const list = <T>(items: unknown, parse: (item: unknown) => T | undefined, max: number): T[] => Array.isArray(items)
 		? items.slice(0, max).map(parse).filter((item): item is T => item !== undefined)
 		: [];
@@ -511,6 +541,7 @@ function parseRecord(value: unknown): IParadisDocRecord | undefined {
 		registeredBy: record.registeredBy as ParadisDocRegisteredBy,
 		firstSeen: record.firstSeen,
 		...(isTime(record.missingSince) ? { missingSince: record.missingSince } : {}),
+		...(fingerprint !== undefined ? { fingerprint } : {}),
 	};
 }
 

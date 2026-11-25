@@ -139,6 +139,57 @@
 	font-variant-numeric: tabular-nums;
 }
 
+/*
+	The folded line at the end of a group: "N documents not found". A toggle button that takes the free width, and,
+	when open, a text button that removes all of them. Indented like a row so the chevron sits under the row icons.
+*/
+.monaco-workbench .paradis-agent-docs-missing {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	height: 26px;
+	padding: 0 var(--vscode-spacing-size80) 0 var(--vscode-spacing-size40);
+	font-size: var(--vscode-fontSize-label2);
+}
+
+/* The group of documents whose session, day or folder has nothing left: no header above it, so keep the header gap. */
+.monaco-workbench .paradis-agent-docs-missing.standalone {
+	margin-top: var(--vscode-spacing-size40);
+}
+
+.monaco-workbench .paradis-agent-docs-missing-toggle {
+	flex: 1 1 0;
+	min-width: 0;
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	height: 100%;
+	padding: 0 var(--vscode-spacing-size40);
+	border: none;
+	border-radius: var(--paradis-radius-control);
+	background: none;
+	color: var(--vscode-paradis-textMuted);
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+
+.monaco-workbench .paradis-agent-docs-missing-toggle:hover {
+	background: var(--vscode-paradis-fillHover);
+}
+
+.monaco-workbench .paradis-agent-docs-missing-toggle > .codicon {
+	flex: none;
+	font-size: var(--vscode-codiconFontSize-compact);
+}
+
+.monaco-workbench .paradis-agent-docs-missing-label {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 /* Two-line row: file name, then folder and time (or the missing-file warning). */
 .monaco-workbench .paradis-agent-docs-row {
 	display: flex;
@@ -216,6 +267,7 @@
 }
 
 .monaco-workbench .paradis-agent-docs-row-warning {
+	flex: none;
 	color: var(--vscode-paradis-warning);
 }
 

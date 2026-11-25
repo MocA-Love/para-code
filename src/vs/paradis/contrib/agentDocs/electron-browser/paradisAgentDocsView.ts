@@ -83,6 +83,11 @@ const SCOPE_STORAGE_KEY = 'paradis.agentDocs.scope';
 const KINDS_STORAGE_KEY = 'paradis.agentDocs.kinds';
 /** 有無を確かめる行の上限（見えている範囲の先頭から）。 */
 const MAX_STAT_ROWS = 200;
+/**
+ * ファイルが消えた・現れた知らせから、有無を確かめ直すまでの間。移された資料は追従（paradisAgentDocsRelocate）が先に
+ * 記録の場所を書き換えるので、その間「見つからない」に出さない。
+ */
+const FILE_CHANGE_RECHECK_MS = 1_500;
 
 /** 保存してあるまとめ方。 */
 export function paradisReadDocsGrouping(storageService: IStorageService): ParadisDocsGrouping {
@@ -104,8 +109,13 @@ export function paradisDocTargetOf(resource: URI, windowHostId: string | undefin
 	return folder !== undefined && windowHostId !== undefined && folder.hostId === windowHostId ? folder : undefined;
 }
 
+/** 台帳のパスを、このウィンドウのファイルの URI にする（SSH の窓では接続先のファイル）。 */
+export function paradisDocResource(path: string, remoteAuthority: string | undefined): URI {
+	return remoteAuthority !== undefined ? URI.from({ scheme: Schemas.vscodeRemote, authority: remoteAuthority, path: path.replace(/\\/g, '/') }) : URI.file(path);
+}
+
 /** 「無い」と分かったときだけ true（読めない・つながらないは「確かめられない」）。 */
-function isFileNotFound(error: unknown): boolean {
+export function paradisIsFileNotFound(error: unknown): boolean {
 	if (error instanceof FileOperationError) {
 		return error.fileOperationResult === FileOperationResult.FILE_NOT_FOUND;
 	}
@@ -150,6 +160,11 @@ export class ParadisAgentDocsView extends ViewPane {
 	private _md: boolean;
 	private _query = '';
 	private readonly _collapsed = new Set<string>();
+	/** 「見つからない資料」を開いている組（既定は畳む）。 */
+	private readonly _missingExpanded = new Set<string>();
+	/** ファイルの変化の知らせで、有無を確かめ直す資料（キー → 資料）。 */
+	private readonly _recheck = new Map<string, IParadisDocViewRecord>();
+	private readonly _recheckScheduler = this._register(new RunOnceScheduler(() => this._recheckChanged(), FILE_CHANGE_RECHECK_MS));
 	/** 有無を確かめ中・確かめた結果（キー → 有るか）。同じ結果を何度も送らない。 */
 	private readonly _checked = new Map<string, boolean>();
 
@@ -157,6 +172,8 @@ export class ParadisAgentDocsView extends ViewPane {
 	private _listElement: HTMLElement | undefined;
 	private _scrollable: DomScrollableElement | undefined;
 	private _rows: IRowEntry[] = [];
+	/** 有無を確かめている資料（畳んで描いていない「見つからない資料」も入る）。 */
+	private _statRows: { readonly record: IParadisDocViewRecord }[] = [];
 	/** 描いた行と組の見出し（data-key で見分ける。描き直しの後にフォーカスを戻すため）。 */
 	private _keyed: HTMLElement[] = [];
 	private readonly _renderStore = this._register(new DisposableStore());
@@ -208,15 +225,16 @@ export class ParadisAgentDocsView extends ViewPane {
 		this._register(_storageService.onDidChangeValue(StorageScope.PROFILE, PARADIS_AGENT_DOCS_GROUPING_STORAGE_KEY, this._store)(() => this._renderScheduler.schedule()));
 		this._register(_fileService.onDidFilesChange(event => {
 			// 消した・移した（また置いた）ファイルを見直す（結果が変わったものだけ台帳へ送る）
-			const affected = this._rows.filter(row => event.contains(this._resourceOf(row.record.path)));
+			const affected = this._statRows.filter(row => event.contains(this._resourceOf(row.record.path)));
 			if (affected.length > 0) {
-				affected.forEach(row => this._checked.delete(paradisDocKey(row.record.hostId, row.record.path)));
-				this._checkExistence(affected.map(row => row.record));
+				affected.forEach(row => this._recheck.set(paradisDocKey(row.record.hostId, row.record.path), row.record));
+				this._recheckScheduler.schedule();
 			}
 		}));
 		this._register(this.onDidChangeBodyVisibility(visible => {
 			if (visible) {
 				this._checked.clear();
+				this._recheck.clear();
 				this._scheduleRefresh();
 			}
 		}));
@@ -371,8 +389,10 @@ export class ParadisAgentDocsView extends ViewPane {
 			query: this._query,
 		});
 		if (this._countElement) {
-			this._countElement.textContent = localize('paradis.agentDocs.count', "{0} 件", filtered.length);
+			// 数えるのはファイルのある資料（見つからない資料は、畳んだ行に数を出す）
+			this._countElement.textContent = localize('paradis.agentDocs.count', "{0} 件", filtered.filter(record => record.missingSince === undefined).length);
 		}
+		this._statRows = filtered.slice(0, MAX_STAT_ROWS).map(record => ({ record }));
 		if (filtered.length === 0) {
 			DOM.append(list, DOM.$('.paradis-agent-docs-empty')).textContent = this._emptyMessage();
 			this._scrollable?.scanDomNode();
@@ -380,12 +400,18 @@ export class ParadisAgentDocsView extends ViewPane {
 		}
 		const grouping = paradisReadDocsGrouping(this._storageService);
 		const sessionTitles = this._sessionTitles();
-		for (const group of paradisGroupDocs(filtered, grouping, Date.now())) {
-			const collapsed = this._collapsed.has(group.key);
-			this._renderGroupHeader(list, group, collapsed, sessionTitles);
+		const groups = paradisGroupDocs(filtered, grouping, Date.now());
+		for (const group of groups) {
+			const collapsed = group.kind !== 'missing' && this._collapsed.has(group.key);
+			if (group.kind !== 'missing') {
+				this._renderGroupHeader(list, group, collapsed, sessionTitles);
+			}
 			if (!collapsed) {
 				for (const record of group.records) {
 					this._renderRow(list, record, activeKey, grouping !== 'session');
+				}
+				if (group.missing.length > 0) {
+					this._renderMissing(list, group, activeKey, grouping !== 'session' || group.kind === 'missing', groups.length === 1);
 				}
 			}
 		}
@@ -435,7 +461,43 @@ export class ParadisAgentDocsView extends ViewPane {
 		return best?.name ?? paradisDocFileName(cwd);
 	}
 
-	private _renderGroupHeader(list: HTMLElement, group: ParadisDocsGroup, collapsed: boolean, sessionTitles: Map<string, string>): void {
+	/**
+	 * 組の末尾の「見つからない資料 N 件」。畳んだ 1 行で、開くと中の資料と「まとめて外す」が出る。
+	 * 見つからない資料を 1 件ずつ並べると、ファイルのある資料が埋もれる。
+	 */
+	private _renderMissing(list: HTMLElement, group: ParadisDocsGroup, activeKey: string | undefined, showOwner: boolean, alone: boolean): void {
+		const expanded = this._missingExpanded.has(group.key);
+		const fold = DOM.append(list, DOM.$('.paradis-agent-docs-missing'));
+		fold.classList.toggle('standalone', group.kind === 'missing');
+		const toggle = DOM.append(fold, DOM.$<HTMLButtonElement>('button.paradis-agent-docs-missing-toggle.paradis-focus-ring-inset'));
+		toggle.type = 'button';
+		toggle.dataset.key = `missing:${group.key}`;
+		this._keyed.push(toggle);
+		toggle.setAttribute('aria-expanded', String(expanded));
+		DOM.append(toggle, DOM.$(ThemeIcon.asCSSSelector(expanded ? Codicon.chevronDown : Codicon.chevronRight))).setAttribute('aria-hidden', 'true');
+		// 一覧の最後の組（資料の残っていない会話・日付・フォルダの分）は、すぐ上の組の行と見分けられる名前にする
+		const label = group.kind === 'missing' && !alone
+			? localize('paradis.agentDocs.missingGroup.other', "そのほかの見つからない資料 {0} 件", group.missing.length)
+			: localize('paradis.agentDocs.missingGroup', "見つからない資料 {0} 件", group.missing.length);
+		DOM.append(toggle, DOM.$('span.paradis-agent-docs-missing-label')).textContent = label;
+		toggle.title = localize('paradis.agentDocs.missingGroup.title', "{0}（消したか、スペースの外へ移したファイル。7 日たつと一覧から外れます）", label);
+		this._renderStore.add(DOM.addDisposableListener(toggle, DOM.EventType.CLICK, () => {
+			if (!this._missingExpanded.delete(group.key)) {
+				this._missingExpanded.add(group.key);
+			}
+			this._render();
+		}));
+		if (!expanded) {
+			return;
+		}
+		const missing = group.missing;
+		this._appendLink(fold, localize('paradis.agentDocs.removeAllMissing', "まとめて外す"), () => this._removeMany(missing));
+		for (const record of missing) {
+			this._renderRow(list, record, activeKey, showOwner);
+		}
+	}
+
+	private _renderGroupHeader(list: HTMLElement, group: Exclude<ParadisDocsGroup, { kind: 'missing' }>, collapsed: boolean, sessionTitles: Map<string, string>): void {
 		const header = DOM.append(list, DOM.$<HTMLButtonElement>('button.paradis-agent-docs-group.paradis-focus-ring-inset'));
 		header.type = 'button';
 		header.dataset.key = `group:${group.key}`;
@@ -515,8 +577,10 @@ export class ParadisAgentDocsView extends ViewPane {
 		}
 		const line2 = DOM.append(body, DOM.$('.paradis-agent-docs-row-line2'));
 		if (missing) {
+			// 外すのは、上の「まとめて外す」か行のメニューから（行ごとにリンクを並べると、それだけで一覧が埋まる）
 			DOM.append(line2, DOM.$('span.paradis-agent-docs-row-warning')).textContent = localize('paradis.agentDocs.missing', "ファイルが見つかりません");
-			this._appendLink(line2, localize('paradis.agentDocs.remove', "一覧から外す"), () => this._remove(record));
+			const folder = this._labelService.getUriLabel(this._resourceOf(paradisDocParentPath(record.path)), { relative: true });
+			DOM.append(line2, DOM.$('span.paradis-agent-docs-row-folder')).textContent = `· ${folder}`;
 		} else {
 			const folder = this._labelService.getUriLabel(this._resourceOf(paradisDocParentPath(record.path)), { relative: true });
 			const owner = showOwner ? this._ownerShortLabel(record) : undefined;
@@ -592,8 +656,7 @@ export class ParadisAgentDocsView extends ViewPane {
 	// --- 操作 ------------------------------------------------------------------------------
 
 	private _resourceOf(path: string): URI {
-		const authority = this._remoteAuthority;
-		return authority !== undefined ? URI.from({ scheme: Schemas.vscodeRemote, authority, path: path.replace(/\\/g, '/') }) : URI.file(path);
+		return paradisDocResource(path, this._remoteAuthority);
 	}
 
 	/** preview_file と同じ規則で開く: そのファイルを開いているグループ、無ければ直近のグループ。固定のタブで開く。 */
@@ -612,6 +675,23 @@ export class ParadisAgentDocsView extends ViewPane {
 
 	private async _remove(record: IParadisDocViewRecord): Promise<void> {
 		await this._channel.call(ParadisAgentDocsViewCall.Remove, [record.hostId, record.path]);
+	}
+
+	private async _removeMany(records: readonly IParadisDocViewRecord[]): Promise<void> {
+		const byHost = new Map<string, string[]>();
+		for (const record of records) {
+			byHost.set(record.hostId, [...(byHost.get(record.hostId) ?? []), record.path]);
+		}
+		await Promise.all([...byHost].map(([hostId, paths]) => this._channel.call(ParadisAgentDocsViewCall.RemoveMany, [hostId, paths])));
+	}
+
+	/** ファイルの変化の知らせのあった資料の有無を確かめ直す（台帳の今の記録で。移された資料はもう別の場所の記録になっている）。 */
+	private _recheckChanged(): void {
+		const keys = new Set(this._recheck.keys());
+		this._recheck.clear();
+		const records = this._records.filter(record => keys.has(paradisDocKey(record.hostId, record.path)));
+		records.forEach(record => this._checked.delete(paradisDocKey(record.hostId, record.path)));
+		this._checkExistence(records);
 	}
 
 	/** 持ち主のいない資料を、選んだペインの会話の資料にする。 */
@@ -656,7 +736,7 @@ export class ParadisAgentDocsView extends ViewPane {
 			this._checked.set(key, record.missingSince === undefined);
 			void this._fileService.stat(this._resourceOf(record.path)).then(
 				() => true,
-				error => isFileNotFound(error) ? false : undefined,
+				error => paradisIsFileNotFound(error) ? false : undefined,
 			).then(exists => {
 				if (exists !== undefined && exists !== (record.missingSince === undefined)) {
 					this._checked.set(key, exists);

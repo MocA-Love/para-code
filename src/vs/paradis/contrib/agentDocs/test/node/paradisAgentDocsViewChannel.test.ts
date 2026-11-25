@@ -39,9 +39,10 @@ suite('ParadisAgentDocsViewChannel', () => {
 		const disposables = store.add(new DisposableStore());
 		const hooks = disposables.add(new Emitter<IParadisAgentHookEvent>());
 		const storage = new MemoryStorage();
+		const sidecars = new Map<string, string>();
 		const ledger = disposables.add(new ParadisAgentDocsLedger(storage, error => { throw error; }, now));
 		const service = disposables.add(new ParadisAgentDocsService(ledger, hooks.event));
-		const comments = disposables.add(new ParadisDocCommentsStore({ read: async () => undefined, write: async () => undefined }, error => { throw error; }, now));
+		const comments = disposables.add(new ParadisDocCommentsStore({ read: async name => sidecars.get(name), write: async (name, text) => { sidecars.set(name, text); } }, error => { throw error; }, now));
 		const channel = disposables.add(new ParadisAgentDocsViewChannel(service, comments));
 		return { hooks, ledger, service, channel, storage, comments };
 	}
@@ -130,6 +131,69 @@ suite('ParadisAgentDocsViewChannel', () => {
 			removed: [true, false],
 			left: ['/repo/b.md'],
 		});
+	});
+
+	test('a missing document moves to the place the window verified, with its owner, writes and comments; anything else is refused', async () => {
+		let now = 100;
+		const { hooks, channel, ledger, storage, comments } = setup(() => now);
+		const hash = 'ab'.repeat(32);
+		const fingerprint = { size: 9, mtime: 50, hash, at: 150 };
+		hooks.fire(hook('pane-1', 'PostToolUse', 's1', { toolName: 'Write', toolUseId: 'tool-1', payload: { tool_input: { file_path: '/repo/plan.md' } } }));
+		hooks.fire(hook('pane-1', 'PostToolUse', 's1', { toolName: 'Write', toolUseId: 'tool-2', payload: { tool_input: { file_path: '/repo/other.md' } } }));
+		hooks.fire(hook('pane-1', 'PostToolUse', 's1', { toolName: 'Write', toolUseId: 'tool-3', payload: { tool_input: { file_path: '/repo/bare.md' } } }));
+		await ledger.ready;
+		await Promise.resolve();
+		await comments.add('', '/repo/plan.md', { anchor: { quote: 'A' }, text: 'look here' });
+		await call(channel, ParadisAgentDocsViewCall.SetFingerprints, '', [
+			{ path: '/repo/plan.md', fingerprint },
+			{ path: '/repo/other.md', fingerprint: { ...fingerprint, hash: 'cd'.repeat(32) } },
+			{ path: '/repo/unknown.md', fingerprint },
+			{ path: '/repo/bare.md', fingerprint: { ...fingerprint, hash: 'nope' } },
+		]);
+		// 見張りが、移ってきたファイルを先に載せていた
+		await call(channel, ParadisAgentDocsViewCall.NoteChanged, '', '/repo/mock/plan.md', ['pane-1']);
+		await Promise.resolve();
+		now = 200;
+		await call(channel, ParadisAgentDocsViewCall.SetMissing, '', '/repo/plan.md', true);
+		now = 300;
+		const results = {
+			wrongHash: await call<boolean>(channel, ParadisAgentDocsViewCall.Relocate, '', '/repo/plan.md', '/repo/mock/plan.md', 'cd'.repeat(32)),
+			otherKind: await call<boolean>(channel, ParadisAgentDocsViewCall.Relocate, '', '/repo/plan.md', '/repo/mock/plan.html', hash),
+			ownedPlace: await call<boolean>(channel, ParadisAgentDocsViewCall.Relocate, '', '/repo/plan.md', '/repo/other.md', hash),
+			dependencyFolder: await call<boolean>(channel, ParadisAgentDocsViewCall.Relocate, '', '/repo/plan.md', '/repo/node_modules/x/plan.md', hash),
+			noFingerprint: await call<boolean>(channel, ParadisAgentDocsViewCall.Relocate, '', '/repo/bare.md', '/repo/mock/bare.md', hash),
+			moved: await call<boolean>(channel, ParadisAgentDocsViewCall.Relocate, '', '/repo/plan.md', '/repo/mock/plan.md', hash),
+			again: await call<boolean>(channel, ParadisAgentDocsViewCall.Relocate, '', '/repo/plan.md', '/repo/mock/plan.md', hash),
+		};
+		await comments.get('', '/repo/plan.md');
+		// 移す前の書き込みを会話の記録から読み直しても、元の場所には載せ直さない
+		const replayed = ledger.recordTranscriptWrite('', '/repo/plan.md', { agent: 'claude', session: 's1' }, { at: 250, tool: 'Write', toolUseId: 'tool-1' }, false);
+		await ledger.flush();
+		const moved = ledger.get('', '/repo/mock/plan.md');
+		assert.deepStrictEqual({
+			results,
+			replayed,
+			paths: ledger.all().map(record => record.path),
+			moved: { owner: moved?.owner?.session, via: moved?.owner?.via, writes: moved?.writes.map(write => write.toolUseId), missingSince: moved?.missingSince, fingerprint: moved?.fingerprint, registeredBy: moved?.registeredBy },
+			comments: [comments.peek('', '/repo/plan.md')?.threads.length, comments.peek('', '/repo/mock/plan.md')?.threads.map(thread => thread.messages[0].text)],
+			saved: (JSON.parse(storage.text!) as { removed: { path: string }[] }).removed.map(removal => removal.path),
+		}, {
+			results: { wrongHash: false, otherKind: false, ownedPlace: false, dependencyFolder: false, noFingerprint: false, moved: true, again: false },
+			replayed: false,
+			paths: ['/repo/other.md', '/repo/bare.md', '/repo/mock/plan.md'],
+			moved: { owner: 's1', via: 'write', writes: ['tool-1'], missingSince: undefined, fingerprint, registeredBy: 'write' },
+			comments: [undefined, ['look here']],
+			saved: ['/repo/plan.md'],
+		});
+	});
+
+	test('missing documents are removed in one call', async () => {
+		const { channel, ledger } = setup();
+		for (const path of ['/repo/a.md', '/repo/b.md', '/repo/c.md']) {
+			await call(channel, ParadisAgentDocsViewCall.RegisterOpened, '', path);
+		}
+		const removed = await call<number>(channel, ParadisAgentDocsViewCall.RemoveMany, '', ['/repo/a.md', '/repo/c.md', '/repo/unknown.md', 'relative.md', 7]);
+		assert.deepStrictEqual({ removed, left: ledger.all().map(record => record.path) }, { removed: 2, left: ['/repo/b.md'] });
 	});
 
 	test('changes to the ledger and to the live sessions reach the window as one notice', async () => {
