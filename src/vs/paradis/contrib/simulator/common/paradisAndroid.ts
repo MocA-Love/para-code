@@ -11,7 +11,7 @@
 
 import { IParadisSimulatorAxNode, IParadisSimulatorAxSnapshot, ParadisSimulatorAxRole } from './paradisSimulatorAx.js';
 
-/** mobile_* のツールでの Android の端末の id の頭（【要確認】Mobile Canvas の Android の id と同じ形か。Mac で確かめる）。 */
+/** mobile_* のツールでの Android の端末の id の頭。 */
 export const PARADIS_ANDROID_SERIAL_PREFIX = 'android:serial:';
 /** 起動していない AVD（Android Virtual Device）の id の頭。要求を承認すると起動する。 */
 export const PARADIS_ANDROID_AVD_PREFIX = 'android:avd:';
@@ -77,10 +77,17 @@ export function paradisParseWmDensity(stdout: string): number | undefined {
 	return density > 0 ? density : undefined;
 }
 
-/** `dumpsys input` の `SurfaceOrientation`（0〜3。90° 刻みに左回り）。 */
-export function paradisParseSurfaceOrientation(stdout: string): number {
-	const value = Number(/SurfaceOrientation:\s*(?<o>\d)/.exec(stdout)?.groups?.o ?? 0);
-	return value >= 0 && value <= 3 ? value : 0;
+/**
+ * 画面の向き（0〜3。90° 刻みに左回り）。`dumpsys input` の `SurfaceOrientation`（Android 15 まで）か、
+ * `dumpsys window displays` の `mDisplayRotation=ROTATION_90`・`mRotation=1`（Android 16 は `dumpsys input` に
+ * 向きを出さない。API 36 のエミュレータで確かめた）を読む。どれも無ければ undefined。
+ */
+export function paradisParseDisplayRotation(stdout: string): number | undefined {
+	const surface = /SurfaceOrientation:\s*(?<o>\d)/.exec(stdout)?.groups?.o;
+	const degrees = /\bmDisplayRotation=ROTATION_(?<d>\d+)/.exec(stdout)?.groups?.d;
+	const window = /\bmRotation=(?:ROTATION_)?(?<r>\d+)/.exec(stdout)?.groups?.r;
+	const raw = surface !== undefined ? Number(surface) : degrees !== undefined ? Number(degrees) / 90 : window !== undefined ? (Number(window) > 3 ? Number(window) / 90 : Number(window)) : undefined;
+	return raw !== undefined && Number.isInteger(raw) && raw >= 0 && raw <= 3 ? raw : undefined;
 }
 
 /** mobile_rotate の向き → Android の `user_rotation`（0〜3）。 */
