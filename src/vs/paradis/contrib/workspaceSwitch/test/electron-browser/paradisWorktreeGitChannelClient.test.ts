@@ -15,7 +15,8 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
 import { IRemoteAgentService } from '../../../../../workbench/services/remote/common/remoteAgentService.js';
-import { IParadisWorktreeGitHost, paradisChannelHostResolver, paradisCollectPerWorktree, paradisWorktreeGitHostResolver, paradisWorktreeGitWriteHostResolver } from '../../electron-browser/paradisWorktreeGitChannelClient.js';
+import { IParadisWorktreeGitHost, paradisChannelHostResolver, paradisCollectPerWorktree, paradisGithubReferenceResolver, paradisWorktreeGitHostResolver, paradisWorktreeGitWriteHostResolver } from '../../electron-browser/paradisWorktreeGitChannelClient.js';
+import { ParadisGithubReferenceLookup } from '../../../../common/paradisIssueDetection.js';
 
 const CHANNEL_NAME = 'testChannel';
 const REMOTE_AUTHORITY = 'ssh-remote+host';
@@ -156,6 +157,67 @@ suite('paradisCollectPerWorktree', () => {
 		}, {
 			withFailedValue: { [URI.file('/up').fsPath]: { insertions: 1, deletions: 0 }, [URI.file('/down').fsPath]: failed },
 			withoutFailedValue: { [URI.file('/up').fsPath]: { insertions: 1, deletions: 0 } },
+		});
+	});
+});
+
+suite('paradisGithubReferenceResolver', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	const URL = 'https://github.com/acme/app/issues/2236';
+	const ok: ParadisGithubReferenceLookup = { kind: 'ok', info: { kind: 'issue', owner: 'acme', repo: 'app', number: 2236, title: 'Mapping is off', url: URL, state: 'open' } };
+
+	/** 手元と接続先の gh の答え（関数なら投げられる）を決めて、どちらへ何を渡したかを集める。 */
+	function createResolver(answers: { readonly local: ParadisGithubReferenceLookup | (() => never); readonly remote?: ParadisGithubReferenceLookup | (() => never) }) {
+		const calls: string[] = [];
+		const channel = (side: 'local' | 'remote', answer: ParadisGithubReferenceLookup | (() => never)) => ({
+			call: async (command: string, args: readonly string[]) => {
+				calls.push(`${side} ${command} ${args.join(' ')}`);
+				return typeof answer === 'function' ? answer() : answer;
+			},
+		}) as unknown as IChannel;
+		const remote = answers.remote;
+		const accessor = {
+			get: (id: unknown) => id === ISharedProcessService
+				? { getChannel: () => channel('local', answers.local) }
+				: { getConnection: () => remote !== undefined ? { remoteAuthority: REMOTE_AUTHORITY, getChannel: () => channel('remote', remote) } : null },
+		} as ServicesAccessor;
+		return { resolve: paradisGithubReferenceResolver(accessor), calls };
+	}
+
+	const remoteRepository = URI.parse(`vscode-remote://${REMOTE_AUTHORITY}/home/dev/app`);
+
+	test('asks the gh on the machine that has the repository, with its path there', async () => {
+		const local = createResolver({ local: ok, remote: ok });
+		const remote = createResolver({ local: ok, remote: ok });
+
+		assert.deepStrictEqual({
+			local: [(await local.resolve(URI.file('/repo'), URL)).via, local.calls],
+			remote: [(await remote.resolve(remoteRepository, URL)).via, remote.calls],
+		}, {
+			local: ['local', [`local lookupGithubReference ${URL} ${URI.file('/repo').fsPath}`]],
+			remote: ['remote', [`remote lookupGithubReference ${URL} /home/dev/app`]],
+		});
+	});
+
+	test('falls back to the local gh, without the remote path, when the remote one fails for any reason', async () => {
+		const noGh = createResolver({ local: ok, remote: { kind: 'failed', reason: 'noGh' } });
+		const oldHost = createResolver({ local: ok, remote: () => { throw new Error('Method not found: lookupGithubReference'); } });
+		const both = createResolver({ local: { kind: 'failed', reason: 'noGh' }, remote: { kind: 'failed', reason: 'notFound' } });
+		// 別のホストの古い登録: どのマシンの物か決められないので、パスなしで手元の gh
+		const otherHost = createResolver({ local: ok, remote: ok });
+
+		assert.deepStrictEqual({
+			noGh: [await noGh.resolve(remoteRepository, URL), noGh.calls],
+			oldHost: [(await oldHost.resolve(remoteRepository, URL)).via, oldHost.calls.length],
+			both: await both.resolve(remoteRepository, URL),
+			otherHost: [(await otherHost.resolve(URI.parse('vscode-remote://ssh-remote+other/repo'), URL)).via, otherHost.calls],
+		}, {
+			noGh: [{ ...ok, via: 'local' }, [`remote lookupGithubReference ${URL} /home/dev/app`, `local lookupGithubReference ${URL}`]],
+			oldHost: ['local', 2],
+			// 両方で駄目なら、手がかりの多い理由を見せる
+			both: { kind: 'failed', reason: 'notFound', via: 'local' },
+			otherHost: ['local', [`local lookupGithubReference ${URL}`]],
 		});
 	});
 });

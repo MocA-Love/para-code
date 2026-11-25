@@ -12,6 +12,7 @@
 // （ダイアログで見た状態と、キューで実際に作る時点の状態はずれうるので、git の側で判定し直す）。
 
 import { ParadisHostPath } from '../../../common/paradisHostPath.js';
+import { paradisSanitizeBranchName } from './paradisWorktreeCreate.js';
 
 /** ブランチの一覧の 1 件。 */
 export interface IParadisBranchCandidate {
@@ -117,6 +118,25 @@ export interface IParadisExistingBranchChoice {
 	readonly sync?: ParadisExistingBranchSync;
 	/** `reset` のときにダイアログで見たローカルの先頭のコミット。 */
 	readonly expectedLocalSha?: string;
+	/** fork から来た PR の番号。作るときに `refs/pull/<番号>/head` を `branch` へ取ってから開く（`source` は `local`）。 */
+	readonly pullRequestNumber?: number;
+}
+
+/**
+ * fork から来た PR を開くローカルブランチの名前。fork の元のブランチ名（`main` のこともある）をそのまま使うと、手元の
+ * 同じ名前のブランチとぶつかるので、番号を前に置いた別の名前にする。git の ref として通らない名前なら undefined。
+ */
+export function paradisPullRequestBranchName(number: number, headBranch: string): string | undefined {
+	const name = `pr-${number}-${headBranch}`;
+	return paradisIsPlainBranchName(name) ? name : undefined;
+}
+
+/**
+ * 第三者が決めたブランチ名（PR の元のブランチ・Issue に紐づいたブランチ）を、そのまま git へ渡してよい形か。
+ * git のオプションに読まれる形・ref として通らない記号や空白を含む名前は扱わない（名前は変えずに断る。git の側の検査と同じ規則）。
+ */
+export function paradisIsPlainBranchName(name: string): boolean {
+	return name.length > 0 && name.length <= 255 && !name.startsWith('-') && paradisSanitizeBranchName(name) === name;
 }
 
 /** `addWorktreeFromBranch` の要求。パスはすべて「git を動かすマシン」から見たパス。 */
@@ -133,6 +153,11 @@ export interface IParadisAddBranchWorktreeRequest<TPath extends string = Paradis
 	 * その後に足されたコミットまで捨てないため）。
 	 */
 	readonly expectedLocalSha?: string;
+	/**
+	 * fork から来た PR の番号。先に `git fetch origin refs/pull/<番号>/head:refs/heads/<branch>` を行う（`source` は `local`、
+	 * `sync` は受けない）。ローカルに同じ名前があって早送りできなければ、ローカルをそのまま開く。
+	 */
+	readonly pullRequestNumber?: number;
 	/** 作った後に Claude Code と Codex のフォルダの信頼を済ませるか（{@link IParadisAddWorktreeRequest} と同じ）。 */
 	readonly trustClaudeFolder?: boolean;
 }

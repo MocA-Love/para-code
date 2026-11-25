@@ -922,6 +922,68 @@ export function paradisToBranchName(text: string | undefined): string | undefine
 	return PARADIS_ASCII_BRANCH_PATTERN.test(sliced) ? sliced : undefined;
 }
 
+// --- 指示に貼った Issue・PR から付ける名前（q.html Q684） ----------------------------------------
+
+/** 命名のモデルへ渡す Issue・PR の題名の上限。題名は第三者が書いた文なので、長さを決めて渡す。 */
+const PARADIS_REFERENCE_NAMING_TITLE_MAX_CHARS = 200;
+
+/** Issue・PR の題名を 1 行に整える（制御文字・ゼロ幅・双方向制御を落とし、空白を畳む）。題名は第三者の文なので、表示の前にも通す。 */
+export function paradisCleanReferenceTitle(title: string): string {
+	return stripUnsafeTitleCharacters(title).replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Issue・PR の題名から付けるスペース名（`#2236 題名`）。番号を除いた題名に見出しの上限（24 字）を当てる。
+ *
+ * {@link paradisToWorktreeTitle} は行頭の `#` を装飾として落とし、全体を 24 字で切るので、番号つきの名前には使えない。
+ * この関数の結果は、打った名前と同じ扱い（そのまま表示名）で {@link paradisBuildWorktreeNames} へ渡す。
+ */
+export function paradisToReferenceWorktreeTitle(number: number, title: string): string {
+	const cleaned = paradisCleanReferenceTitle(title);
+	const points = Array.from(cleaned);
+	const cut = points.length <= PARADIS_WORKTREE_TITLE_MAX_CHARS ? cleaned : `${points.slice(0, PARADIS_WORKTREE_TITLE_MAX_CHARS).join('').trim()}\u2026`;
+	return cut ? `#${number} ${cut}` : `#${number}`;
+}
+
+/**
+ * 命名のモデルへ渡す文。題名を先頭の行に置き、指示を続ける。**起動するエージェントへ渡す指示には使わない**
+ * （題名も本文も足さない。指示には URL が残っているので、エージェントは自分で読める）。
+ */
+export function paradisReferenceNamingPrompt(title: string, prompt: string): string {
+	const cleaned = Array.from(paradisCleanReferenceTitle(title)).slice(0, PARADIS_REFERENCE_NAMING_TITLE_MAX_CHARS).join('');
+	return cleaned ? (prompt ? `${cleaned}\n${prompt}` : cleaned) : prompt;
+}
+
+/**
+ * Issue・PR の番号を前に置いたブランチ名（`2236-<英語>`）。英語の部分は命名のモデルの答え（`generated`）、
+ * 無ければ英数字だけの題名から作り、それも無ければ `issue-2236`・`pr-2241` にする（URL の文字から作らない）。
+ * 番号を足した後で 40 字に切り、末尾の `-` `.` を落とす。重複の回避は呼び出し側が後で行う。
+ */
+export function paradisToReferenceBranchName(number: number, kind: 'issue' | 'pr', generated: string | undefined, title: string): string {
+	const cleanedTitle = paradisCleanReferenceTitle(title);
+	const fromTitle = /^[\x20-\x7e]+$/.test(cleanedTitle) ? cleanedTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-') : undefined;
+	const english = (paradisToBranchName(generated) ?? paradisToBranchName(fromTitle))
+		?.replace(/\//g, '-')
+		// モデルが番号を自分で付けてきたときに二重にしない
+		.replace(new RegExp(`^(?:issue-|pr-)?${number}-`), '');
+	const numbered = english ? paradisToBranchName(Array.from(`${number}-${english}`).slice(0, 40).join('')) : undefined;
+	return numbered ?? `${kind}-${number}`;
+}
+
+/**
+ * 元のブランチ（PR の元のブランチ・Issue に紐づいたブランチ）を開かず、新しいブランチを切るときの名前。
+ * 元のブランチ自身とも、既にあるブランチ（ローカル・origin）とも重ならないよう、`<元のブランチ名>-2` から番号を進める。
+ */
+export function paradisNextBranchNameAfter(sourceBranch: string, existingBranches: readonly string[], ignoreCase: boolean = !isLinux): string {
+	const occupied = new Set(existingBranches.map(name => paradisNameComparisonKey(name, ignoreCase)));
+	for (let suffix = 2; ; suffix++) {
+		const candidate = `${sourceBranch}-${suffix}`;
+		if (!occupied.has(paradisNameComparisonKey(candidate, ignoreCase))) {
+			return candidate;
+		}
+	}
+}
+
 /**
  * 命名モデルの応答から「見出し」と「ブランチ名」を取り出す。
  *

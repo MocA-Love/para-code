@@ -65,7 +65,8 @@ import { IParadisWorktreeImage, paradisAgentImageMode } from '../common/paradisW
 import { paradisWriteWorktreeImages } from '../browser/paradisWorktreeImageWrite.js';
 import { paradisGetParkedTerminalEditorStateKey, paradisMarkTerminalEditorOpeningForScope } from '../browser/paradisTerminalEditorPark.js';
 import { paradisReadWorkspaceLifecycleConfig, paradisRunWorkspaceLifecycleScript } from './paradisWorkspaceLifecycleService.js';
-import { paradisWorktreeGitHostResolver, paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
+import { paradisGithubReferenceResolver, paradisWorktreeGitHostResolver, paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
+import { IParadisWorktreeNameReference, paradisDecideWorktreeNaming } from '../common/paradisWorktreeNaming.js';
 import { PARADIS_RESUME_SESSION_ID_PATTERN, ParadisResumeAgent, ParadisResumeCli, paradisResumeAgentLabel } from '../../sessionResume/common/paradisSessionResume.js';
 import { paradisPrepareAgentResumeCommand } from '../../sessionResume/electron-browser/paradisClaudeCodeModeResume.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
@@ -81,6 +82,12 @@ const NAMING_TOTAL_TIMEOUT_MS = 10_000;
 const NAMING_COPILOT_TIMEOUT_MS = 5_000;
 /** 残り時間がこれを下回ったら2段目は起動しない（結果を待てないリクエストを投げるだけになる）。 */
 const NAMING_MIN_REMAINING_MS = 1_000;
+
+/**
+ * 作成の流れが、指示に貼った Issue・PR の題名を待つ上限（q.html Q684 の D2）。過ぎたら今までの付け方で進む
+ * （取得そのものは裏で続き、次に同じ URL を貼ったときに使い回される）。
+ */
+const NAMING_REFERENCE_TIMEOUT_MS = 3_000;
 
 /** 作成フォームの材料（モバイルの作成シート・エージェント起動シートが選択肢を組み立てるのに使う）。 */
 export interface IParadisWorktreeCreateFormData {
@@ -121,6 +128,14 @@ export interface IParadisHeadlessWorktreeRequest {
 	 * スペースの `.para-code/pasted-images/` へ書き、起動コマンドにパスで渡す。画像を渡せないエージェントでは使わない。
 	 */
 	readonly images?: readonly IParadisWorktreeImage[];
+	/**
+	 * 名前に使う Issue・PR（ダイアログのカードで選ばれているもの）。省くと、指示に最初に出てくる Issue・PR の URL を使う
+	 * （モバイル・エージェントの create_space・定期実行）。打ったスペース名・ブランチ名が常に勝つ。題名は命名にだけ使い、
+	 * エージェントへ渡す指示には足さない。
+	 */
+	readonly reference?: IParadisWorktreeNameReference;
+	/** true なら、指示に Issue・PR の URL があっても名前に使わない（ダイアログのカードを閉じた）。 */
+	readonly skipReference?: boolean;
 }
 
 export interface IParadisHeadlessWorktreeResult {
@@ -755,6 +770,7 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 	const logService = accessor.get(ILogService);
 	const paneTokenService = accessor.get(IParadisPaneTokenService);
 	const fileService = accessor.get(IFileService);
+	const lookupReference = paradisGithubReferenceResolver(accessor);
 
 	const repository = switchService.repositories.find(r => r.id === request.repositoryId);
 	if (!repository) {
@@ -784,41 +800,40 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 
 	const callbacks = options.callbacks;
 
-	// 1. ブランチ名の決定（手入力 > Copilot API > Copilot Chat 拡張のモデル > フォールバック）
-	let branch = existingBranch ? existingBranch.branch : paradisSanitizeBranchName(request.branch ?? '');
-	let suggestedTitle: string | undefined;
-	if (!branch) {
-		if (prompt.length > 0) {
-			callbacks?.onStage?.('naming');
+	// 1. スペース名とブランチ名の決定（決め方は paradisDecideWorktreeNaming。打った名前 > 指示に貼った Issue・PR > 命名のモデル > フォールバック）
+	const naming = await paradisDecideWorktreeNaming({
+		name: request.name ?? '',
+		branch: existingBranch ? existingBranch.branch : paradisSanitizeBranchName(request.branch ?? ''),
+		prompt,
+		...(request.reference !== undefined ? { reference: request.reference } : {}),
+		...(request.skipReference === true ? { skipReference: true } : {}),
+	}, {
+		onNaming: () => callbacks?.onStage?.('naming'),
+		lookupReference: url => raceTimeout(lookupReference(repository.uri, url), NAMING_REFERENCE_TIMEOUT_MS),
+		generate: async namingPrompt => {
 			// Copilot API 側はエンドポイント探索とトークン発行が呼び出し側の中断要求を意図的に無視する
 			// 作りなので、shared process のタイムアウトだけでは止まらない。ここで打ち切らないと、
 			// 命名で待たされて worktree 作成が始まらない。
 			const deadline = Date.now() + NAMING_TOTAL_TIMEOUT_MS;
 			const primary = await raceTimeout(
-				generateWorktreeNamingViaCopilotApi(authenticationService, sharedProcessService, logService, prompt),
+				generateWorktreeNamingViaCopilotApi(authenticationService, sharedProcessService, logService, namingPrompt),
 				NAMING_COPILOT_TIMEOUT_MS,
 			);
-			branch = primary?.branch;
-			suggestedTitle = primary?.title;
 			// 1段目が食い潰した分だけ2段目を短くする。残りが無いなら、結果を待てないリクエストを
 			// 投げるだけになるので起動しない。
 			const remaining = deadline - Date.now();
-			if (!branch && remaining >= NAMING_MIN_REMAINING_MS) {
-				const secondary = await generateWorktreeNaming(languageModelsService, logService, prompt, remaining);
-				branch = secondary?.branch;
-				suggestedTitle = suggestedTitle ?? secondary?.title;
+			if (primary?.branch || remaining < NAMING_MIN_REMAINING_MS) {
+				return primary ?? {};
 			}
-		}
-		// 命名モデルが使えない環境（Copilot 未ログイン等）でも英字のブランチ名を見出しにしない。
-		// 依頼文の先頭は利用者自身の言葉なので、日付だけの名前やブランチ名よりは手がかりになる。
-		// ブランチ名を手入力した場合はここへ来ない（利用者が決めた名前をそのまま見出しに残す）。
-		suggestedTitle = suggestedTitle ?? paradisToWorktreeTitle(prompt);
-		branch = branch ?? fallbackBranchName([request.name, prompt]);
-	}
+			const secondary = await generateWorktreeNaming(languageModelsService, logService, namingPrompt, remaining);
+			return { branch: secondary?.branch, title: primary?.title ?? secondary?.title };
+		},
+		fallbackBranchName,
+		log: message => logService.info(`[ParadisWorktreeHeadlessCreate] ${message}`),
+	});
 	// 既存のブランチは名前を変えない（番号を足すと別のブランチを作ってしまう）
-	if (!existingBranch) {
-		branch = paradisDeduplicateBranchName(branch, branchesInfo.branches);
-	}
+	const branch = existingBranch ? naming.branch : paradisDeduplicateBranchName(naming.branch, branchesInfo.branches);
+	const { spaceName, suggestedTitle } = naming;
 
 	// 2. worktree 作成
 	callbacks?.onStage?.('creating');
@@ -826,8 +841,8 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 	// 既存のブランチでは、開くブランチ自身をディレクトリ名の衝突に数えない（数えると自分とぶつかって `-2` が付く）。
 	// スペース名の既定はブランチ名
 	const { displayName, dirName } = existingBranch
-		? paradisBuildWorktreeNames((request.name ?? '').trim() || branch, branch, branchesInfo.branches.filter(name => name !== branch), existingDirNames)
-		: paradisBuildWorktreeNames(request.name ?? '', branch, branchesInfo.branches, existingDirNames, suggestedTitle);
+		? paradisBuildWorktreeNames(spaceName || branch, branch, branchesInfo.branches.filter(name => name !== branch), existingDirNames)
+		: paradisBuildWorktreeNames(spaceName, branch, branchesInfo.branches, existingDirNames, suggestedTitle);
 	callbacks?.onNameResolved?.(displayName, branch);
 	const worktreeUri = computeWorktreeUri(configurationService, repository, dirName);
 	// ダイアログ実装と同じく、これから作るターミナルを常にこのworktreeへ明示的に紐付ける
@@ -848,6 +863,7 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 			source: existingBranch.source,
 			...(existingBranch.sync !== undefined ? { sync: existingBranch.sync } : {}),
 			...(existingBranch.expectedLocalSha !== undefined ? { expectedLocalSha: existingBranch.expectedLocalSha } : {}),
+			...(existingBranch.pullRequestNumber !== undefined ? { pullRequestNumber: existingBranch.pullRequestNumber } : {}),
 			trustClaudeFolder,
 		};
 		await paradisCallNewerGitHost(gitHost.channel.call('addWorktreeFromBranch', [branchRequest]));

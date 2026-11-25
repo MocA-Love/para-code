@@ -18,7 +18,8 @@ import { URI } from '../../../../base/common/uri.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
-import { ParadisHostPath, paradisHostPathFor, paradisResolveHostPath } from '../../../common/paradisHostPath.js';
+import { IParadisResolvedHostPath, ParadisHostPath, paradisHostPathFor, paradisResolveHostPath } from '../../../common/paradisHostPath.js';
+import { ParadisGithubReferenceLookup, paradisPreferGithubReferenceFailure } from '../../../common/paradisIssueDetection.js';
 import { PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
 
 /** git を動かすマシンと、そのマシンへ渡すパスの書き方。 */
@@ -137,4 +138,54 @@ export function paradisChannelHostResolver(accessor: ServicesAccessor, channelNa
 		// host が 'remote' になるのは connection がある場合だけなので、remote は必ず存在する。
 		return resolved.host === 'remote' ? remote : local;
 	};
+}
+
+/** 指示に貼った Issue・PR を取った結果と、どちらのマシンの gh で取ったか。 */
+export type ParadisGithubReferenceResult = ParadisGithubReferenceLookup & {
+	/** `remote` は接続先（SSH 先など）の gh。取れなかったときは、最後に試した側。 */
+	readonly via: 'local' | 'remote';
+};
+
+/** リポジトリと URL から Issue・PR を取る関数。投げない。 */
+export type ParadisGithubReferenceResolver = (repository: URI, url: string) => Promise<ParadisGithubReferenceResult>;
+
+/**
+ * Issue・PR を、リポジトリのあるマシンの gh で取り、接続先で駄目なら手元の gh で取り直す（q.html Q684 の D9）。
+ *
+ * 接続先で駄目、には gh が無い・未ログイン・古い Para Code で呼び出しが無い・通信の切断を含む。題名はリポジトリの場所に
+ * 依らない読み取りで、URL がリポジトリを名指しするので、手元へ回しても取り違えは起きない。手元へ回すときは
+ * リポジトリのパスを渡さない（接続先のパスは手元に無く、渡すと「gh が無い」と見分けられない失敗になる）。
+ */
+export async function paradisLookupGithubReference(channels: { readonly local: IChannel; readonly remote?: IChannel }, resolved: IParadisResolvedHostPath | undefined, url: string): Promise<ParadisGithubReferenceResult> {
+	const lookup = async (channel: IChannel, path: ParadisHostPath | undefined): Promise<ParadisGithubReferenceLookup> => {
+		try {
+			const result = await channel.call<ParadisGithubReferenceLookup | undefined>('lookupGithubReference', path !== undefined ? [url, path] : [url]);
+			return result?.kind === 'ok' || result?.kind === 'failed' ? result : { kind: 'failed', reason: 'unreachable' };
+		} catch {
+			return { kind: 'failed', reason: 'unreachable' };
+		}
+	};
+	if (resolved?.host !== 'remote' || channels.remote === undefined) {
+		// 手元のリポジトリ。別のホストの古い登録など、どのマシンの物か決められないときはパスなしで手元の gh を使う
+		return { ...await lookup(channels.local, resolved?.host === 'local' ? resolved.path : undefined), via: 'local' };
+	}
+	const fromRemote = await lookup(channels.remote, resolved.path);
+	if (fromRemote.kind === 'ok') {
+		return { ...fromRemote, via: 'remote' };
+	}
+	const fromLocal = await lookup(channels.local, undefined);
+	if (fromLocal.kind === 'ok') {
+		return { ...fromLocal, via: 'local' };
+	}
+	return { kind: 'failed', reason: paradisPreferGithubReferenceFailure(fromRemote.reason, fromLocal.reason), via: 'local' };
+}
+
+/** 「新しいスペース」の指示に貼った Issue・PR を取る関数を作る。ダイアログと作成の流れの両方がこれを使う。 */
+export function paradisGithubReferenceResolver(accessor: ServicesAccessor): ParadisGithubReferenceResolver {
+	const connection = accessor.get(IRemoteAgentService).getConnection();
+	const channels = {
+		local: accessor.get(ISharedProcessService).getChannel(PARADIS_WORKTREE_GIT_CHANNEL),
+		...(connection ? { remote: connection.getChannel(PARADIS_WORKTREE_GIT_CHANNEL) } : {}),
+	};
+	return (repository, url) => paradisLookupGithubReference(channels, paradisResolveHostPath(repository, connection ?? undefined), url);
 }

@@ -10,7 +10,8 @@ import assert from 'assert';
 import { decodeBase64 } from '../../../../../base/common/buffer.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { GeneralShellType, PosixShellType, WindowsShellType } from '../../../../../platform/terminal/common/terminal.js';
-import { PARADIS_DEFAULT_AGENT_COMMANDS, paradisBuildAgentCommand, paradisBuildWorktreeNames, paradisMobileAgentRefusal, paradisMobileFormAgents, paradisDeduplicateBranchName, paradisParseWorktreeNaming, paradisToBranchName, paradisToWorktreeTitle, paradisDeduplicateWorktreeDirName, paradisFindWorktreeLock, paradisFormatWorktreeLockReason, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, paradisShouldCreateDefaultTerminal } from '../../common/paradisWorktreeCreate.js';
+import { paradisIsPlainBranchName, paradisPullRequestBranchName } from '../../common/paradisWorktreeExistingBranch.js';
+import { PARADIS_DEFAULT_AGENT_COMMANDS, paradisBuildAgentCommand, paradisBuildWorktreeNames, paradisMobileAgentRefusal, paradisMobileFormAgents, paradisDeduplicateBranchName, paradisParseWorktreeNaming, paradisToBranchName, paradisToWorktreeTitle, paradisDeduplicateWorktreeDirName, paradisFindWorktreeLock, paradisFormatWorktreeLockReason, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, paradisShouldCreateDefaultTerminal, paradisNextBranchNameAfter, paradisReferenceNamingPrompt, paradisToReferenceBranchName, paradisToReferenceWorktreeTitle } from '../../common/paradisWorktreeCreate.js';
 
 suite('paradisWorktreeCreate', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -528,5 +529,75 @@ suite('paradisWorktreeCreate', () => {
 		assert.ok(formatted.startsWith('held by x'));
 		assert.ok(formatted.endsWith('…'));
 		assert.strictEqual(paradisFormatWorktreeLockReason('   '), '');
+	});
+
+	test('names a space after an issue with its number, cutting only the title at 24 characters', () => {
+		assert.deepStrictEqual([
+			// allow-any-unicode-next-line
+			paradisToReferenceWorktreeTitle(2236, 'テンプレートJSONの重説マッピング'),
+			// allow-any-unicode-next-line
+			paradisToReferenceWorktreeTitle(2250, 'テンプレートJSONの重説マッピングで特約条項の差し込み位置がずれて、PDFの2ページ目以降が空になる'),
+			// 題名は第三者の文: 改行・双方向制御・ゼロ幅を落とす
+			paradisToReferenceWorktreeTitle(7, '  Fix\nlogin\u202e bug\u200b '),
+			paradisToReferenceWorktreeTitle(8, '\u200b'),
+		], [
+			// allow-any-unicode-next-line
+			'#2236 テンプレートJSONの重説マッピング',
+			// allow-any-unicode-next-line
+			'#2250 テンプレートJSONの重説マッピングで特約条項の\u2026',
+			'#7 Fix login bug',
+			'#8',
+		]);
+	});
+
+	test('puts the issue number in front of the branch name and never builds one from the URL', () => {
+		assert.deepStrictEqual([
+			// allow-any-unicode-next-line
+			paradisToReferenceBranchName(2236, 'issue', 'template-json-mapping', 'テンプレートJSONの重説マッピング'),
+			// モデルが番号を付けてきても二重にしない。スラッシュは使わない
+			paradisToReferenceBranchName(2236, 'issue', '2236-fix/mapping', 'x'),
+			// モデルが使えない: 英数字だけの題名からは作る。日本語の題名からは作らない
+			paradisToReferenceBranchName(7, 'issue', undefined, 'Fix login bug (again)!'),
+			// allow-any-unicode-next-line
+			paradisToReferenceBranchName(2236, 'issue', undefined, 'テンプレートJSONの重説マッピング'),
+			// allow-any-unicode-next-line
+			paradisToReferenceBranchName(2241, 'pr', '日本語', '重説マッピングの差し込み位置を直す'),
+			// 番号を足した後で 40 字に切り、末尾の区切りを落とす
+			paradisToReferenceBranchName(123456789, 'issue', 'a-very-long-branch-name-that-goes-on.and-on', 'x'),
+		], [
+			'2236-template-json-mapping',
+			'2236-fix-mapping',
+			'7-fix-login-bug-again',
+			'issue-2236',
+			'pr-2241',
+			'123456789-a-very-long-branch-name-that-g',
+		]);
+		assert.strictEqual(paradisToReferenceBranchName(123456789, 'issue', 'a-very-long-branch-name-that-goes-on.and-on', 'x').length, 40);
+	});
+
+	test('feeds the title to the naming model as its own line, cleaned and capped', () => {
+		assert.deepStrictEqual([
+			paradisReferenceNamingPrompt('Fix\tlogin\u202e', 'https://github.com/o/r/issues/1'),
+			paradisReferenceNamingPrompt('t'.repeat(500), '').length,
+			paradisReferenceNamingPrompt('\u200b', 'do it'),
+		], ['Fix login\nhttps://github.com/o/r/issues/1', 200, 'do it']);
+	});
+
+	test('numbers a new branch after the source branch so it collides with neither that branch nor an existing one', () => {
+		assert.deepStrictEqual([
+			paradisNextBranchNameAfter('fix/mapping', ['main'], false),
+			paradisNextBranchNameAfter('fix/mapping', ['fix/mapping', 'fix/mapping-2', 'Fix/Mapping-3'], true),
+		], ['fix/mapping-2', 'fix/mapping-4']);
+	});
+
+	test('names the local branch of a fork pull request after its number, and refuses names git could misread', () => {
+		assert.deepStrictEqual([
+			paradisPullRequestBranchName(7, 'main'),
+			paradisPullRequestBranchName(7, 'feature/x'),
+			paradisPullRequestBranchName(7, 'a b'),
+			paradisPullRequestBranchName(7, 'x..y'),
+			// allow-any-unicode-next-line
+			['fix/mapping', '修正', '-rf', 'a b', 'x~1', ''].map(paradisIsPlainBranchName),
+		], ['pr-7-main', 'pr-7-feature/x', undefined, undefined, [true, true, false, false, false, false]]);
 	});
 });

@@ -37,7 +37,7 @@ import { IParadisGithubCallResource, paradisGithubCallSiteFromArgs, paradisGithu
 import { paradisGithubRateLimitPause, ParadisGithubRateLimitPause } from '../../githubMetrics/common/paradisGithubRateLimitPause.js';
 import { PARADIS_GITHUB_ACTIVE_SPACE_MAX_AGE_MS, PARADIS_GITHUB_CLOSED_ISSUE_MAX_AGE_MS, paradisCoerceGithubStatusMaxAge, ParadisGithubLookupCache } from '../common/paradisGithubLookupCache.js';
 import { IParadisAddWorktreeRequest, IParadisDiffStat, IParadisGitBranches, paradisSanitizeBranchName, ParadisDiffStatFailure, IParadisPrStatus, IParadisRemoveWorktreeRequest, IParadisRemoveWorktreeResult, IParadisForceDeleteBranchesRequest, IParadisForceDeleteBranchesResult, IParadisRunLifecycleScriptRequest, IParadisWorktreeGitCommandResult, IParadisWorktreeLockInfo, IParadisWorktreeLockQuery, paradisFindWorktreeLock, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, paradisWorktreeListOverlaps, PARADIS_WORKTREE_GIT_CHANNEL } from '../common/paradisWorktreeCreate.js';
-import { IParadisIssueStatus, IParadisIssueStatusesResult, paradisParseGhIssueStatus, paradisParseIssueUrl } from '../../../common/paradisIssueDetection.js';
+import { IParadisGithubReferenceInfo, IParadisIssueStatus, IParadisIssueStatusesResult, PARADIS_GITHUB_REFERENCE_QUERY, ParadisGithubReferenceLookup, paradisClassifyGithubReferenceFailure, paradisGithubReferenceKey, paradisParseGhIssueStatus, paradisParseGithubReferenceResponse, paradisParseGithubReferenceUrl, paradisParseGithubRemoteRepository, paradisParseIssueUrl } from '../../../common/paradisIssueDetection.js';
 import { IParadisCloneProgressEvent, IParadisCloneRepositoryRequest, paradisCloneOverallPercent, paradisParseCloneProgressLine, paradisRedactCloneLogText } from '../common/paradisRepositoryClone.js';
 import { paradisResolveLifecycleTimeoutMinutes } from '../common/paradisWorkspaceLifecycle.js';
 import { IParadisFindGeneratedOutputsRequest, IParadisGeneratedOutputCandidate, IParadisRemoveGeneratedOutputsRequest, IParadisRemoveGeneratedOutputsResult, PARADIS_GENERATED_OUTPUT_MIN_AGE_DAYS } from '../common/paradisWorktreeGeneratedCleanup.js';
@@ -109,6 +109,12 @@ const PARADIS_GH_UNAVAILABLE_RETRY_MS = 10 * 60_000;
  * 実行するため、対話から大量のURLが検出された回でもレート枠を食い潰さないよう先着で丸める。
  */
 const PARADIS_ISSUE_STATUS_LOOKUPS_PER_CALL = 8;
+
+/**
+ * 「新しいスペース」の指示に貼った Issue・PR を使い回す時間。打ち直すたび・下書きを開き直すたびに gh を呼ばないための短い時間で、
+ * 題名の変更は次に貼ったときに拾えれば足りる。
+ */
+const PARADIS_GITHUB_REFERENCE_MAX_AGE_MS = 60_000;
 
 /** PR の状態を使い回すキー（作業ツリーのパスと今のブランチ）。 */
 function paradisPrStatusCacheKey(worktreePath: string, branch: string): string {
@@ -242,6 +248,10 @@ export class ParadisWorktreeGitService {
 	private readonly prStatusCache: ParadisGithubLookupCache<IParadisPrStatus | undefined>;
 	/** `owner/repo#number`（小文字）→ Issue の状態。 */
 	private readonly issueStatusCache: ParadisGithubLookupCache<IParadisIssueStatus | undefined>;
+	/** 実行名前空間と `owner/repo#number`（小文字）→ 指示に貼った Issue・PR。一覧のチップ用の上の 2 つとは別に持つ（形も寿命も違う）。 */
+	private readonly referenceCache: ParadisGithubLookupCache<IParadisGithubReferenceInfo>;
+	/** 同じ Issue・PR の取得が進行中なら相乗りする（失敗の理由も同じものを返す）。 */
+	private readonly referenceLookups = new Map<string, Promise<ParadisGithubReferenceLookup>>();
 
 	constructor(
 		private readonly logService: ILogService,
@@ -265,6 +275,7 @@ export class ParadisWorktreeGitService {
 		this.prStatusCache = new ParadisGithubLookupCache<IParadisPrStatus | undefined>(PARADIS_GITHUB_ACTIVE_SPACE_MAX_AGE_MS, PARADIS_GITHUB_STATUS_CACHE_MAX_ENTRIES, undefined, now);
 		// 閉じた Issue はめったに変わらないので、開いているものより長く（数時間）使い回す
 		this.issueStatusCache = new ParadisGithubLookupCache<IParadisIssueStatus | undefined>(PARADIS_GITHUB_ACTIVE_SPACE_MAX_AGE_MS, PARADIS_GITHUB_STATUS_CACHE_MAX_ENTRIES, status => status?.state === 'closed' ? PARADIS_GITHUB_CLOSED_ISSUE_MAX_AGE_MS : undefined, now);
+		this.referenceCache = new ParadisGithubLookupCache<IParadisGithubReferenceInfo>(PARADIS_GITHUB_REFERENCE_MAX_AGE_MS, PARADIS_GITHUB_STATUS_CACHE_MAX_ENTRIES, undefined, now);
 		this.cachedShellEnv = new ParadisCachedShellEnv(
 			logService,
 			'ParadisWorktreeGit',
@@ -941,6 +952,61 @@ export class ParadisWorktreeGitService {
 		return { resolved, attempted };
 	}
 
+	/**
+	 * 「新しいスペース」の指示に貼った Issue・PR を 1 件取る（q.html Q684）。`getIssueStatuses` と違い、取れなかった理由を返す
+	 * （届かない・枠切れ／見つからないか権限なし／gh が使えない）。投げない。
+	 *
+	 * `repoPath` は gh を動かす場所を決めるためだけに使う（WSL のリポジトリならそのディストロの gh）。問い合わせは URL の
+	 * リポジトリを名指しするので、省いてもよい（SSH の窓で接続先の gh が駄目なとき、手元はリポジトリのパスを持たない）。
+	 * 取るのは題名・状態・元のブランチまでで、本文は取らない。
+	 */
+	async lookupGithubReference(url: string, repoPath?: string): Promise<ParadisGithubReferenceLookup> {
+		const reference = typeof url === 'string' ? paradisParseGithubReferenceUrl(url) : undefined;
+		if (reference === undefined) {
+			return { kind: 'failed', reason: 'notFound' };
+		}
+		const cwd = typeof repoPath === 'string' && repoPath.length > 0 ? repoPath : homedir();
+		const key = `${this.executionNamespaceKey(cwd)}\n${paradisGithubReferenceKey(reference)}`;
+		const fresh = this.referenceCache.getFresh(key);
+		if (fresh !== undefined) {
+			return { kind: 'ok', info: fresh.value };
+		}
+		if (this.isGhUnavailable(cwd)) {
+			return { kind: 'failed', reason: 'noGh' };
+		}
+		if (this.isGithubPaused(cwd, 'graphql')) {
+			// 枠を使い切っている間は gh を呼ばない。前に取れていればそれを使う
+			const last = this.referenceCache.getLast(key);
+			return last !== undefined ? { kind: 'ok', info: last.value } : { kind: 'failed', reason: 'rateLimited' };
+		}
+		const running = this.referenceLookups.get(key);
+		if (running !== undefined) {
+			return running;
+		}
+		const lookup = (async (): Promise<ParadisGithubReferenceLookup> => {
+			try {
+				// owner・name は `-f`（文字のまま）で渡す。`-F` は `true`・数字・`@file` を別の意味に読む
+				const stdout = await this.execGh(['api', 'graphql', '-f', `query=${PARADIS_GITHUB_REFERENCE_QUERY}`, '-f', `owner=${reference.owner}`, '-f', `name=${reference.repo}`, '-F', `number=${reference.number}`], cwd);
+				const info = paradisParseGithubReferenceResponse(stdout, reference.owner, reference.repo);
+				if (info === undefined) {
+					return { kind: 'failed', reason: 'notFound' };
+				}
+				this.referenceCache.set(key, info);
+				return { kind: 'ok', info };
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				this.logService.trace(`[ParadisWorktreeGit] looking up ${reference.owner}/${reference.repo}#${reference.number} failed: ${message}`);
+				if (paradisIsGithubRateLimitMessage(message)) {
+					return { kind: 'failed', reason: 'rateLimited' };
+				}
+				// WSL へ振り分けたときの「gh が無い」は終了コードでしか分からない（execGh が台帳に書く）
+				return { kind: 'failed', reason: this.isGhUnavailable(cwd) ? 'noGh' : paradisClassifyGithubReferenceFailure(message) };
+			}
+		})().finally(() => this.referenceLookups.delete(key));
+		this.referenceLookups.set(key, lookup);
+		return lookup;
+	}
+
 	/** ローカルブランチ一覧（コミット日時の新しい順）と現在の HEAD ブランチを返す。 */
 	async listBranches(repoPath: string): Promise<IParadisGitBranches> {
 		const raw = await this.exec(['-C', paradisWslPathArg(repoPath), 'for-each-ref', '--sort=-committerdate', '--format=%(refname:short)', 'refs/heads/']);
@@ -1045,6 +1111,18 @@ export class ParadisWorktreeGitService {
 		return { local: refs.local, remote: refs.remote, inUse, hasOrigin, ...(lastFetchedAt !== undefined ? { lastFetchedAt } : {}) };
 	}
 
+	/**
+	 * origin が github.com のリポジトリなら、その `owner/repo`（小文字）。origin が無い・github.com でなければ undefined。
+	 * 指示に貼った PR・Issue がこのリポジトリのものかを、ダイアログが確かめるのに使う。
+	 */
+	async getOriginRepository(repoPath: string): Promise<string | undefined> {
+		try {
+			return paradisParseGithubRemoteRepository(await this.exec(['-C', paradisWslPathArg(repoPath), 'config', '--get', 'remote.origin.url'], undefined, { quiet: true }));
+		} catch {
+			return undefined;
+		}
+	}
+
 	/** 選んだ 1 本のローカルと origin の関係（先行・遅れ・使用中）。 */
 	async inspectExistingBranch(repoPath: string, branch: string): Promise<IParadisExistingBranchState> {
 		paradisCheckExistingBranchName(branch);
@@ -1096,15 +1174,33 @@ export class ParadisWorktreeGitService {
 		if (request.sync !== undefined && request.sync !== 'fastForward' && request.sync !== 'reset') {
 			throw new Error('Invalid argument: sync');
 		}
+		const pullRequestNumber = request.pullRequestNumber;
+		if (pullRequestNumber !== undefined && (typeof pullRequestNumber !== 'number' || !Number.isSafeInteger(pullRequestNumber) || pullRequestNumber <= 0 || request.source !== 'local' || request.sync !== undefined)) {
+			throw new Error('Invalid argument: pullRequestNumber');
+		}
 		const repo = paradisWslPathArg(request.repoPath);
 		try {
 			await this.exec(['-C', repo, 'worktree', 'prune']);
 		} catch {
 			// prune の失敗は致命的ではない
 		}
+		// fork から来た PR: origin の `refs/pull/<番号>/head` をローカルブランチへ取る。`+` は付けない（ローカルに同じ名前があって
+		// 早送りできなければ git が断り、ローカルをそのまま開く。別のワークツリーで開いていれば下の判定が使用中として止める）
+		let pullRequestFetchError: string | undefined;
+		if (pullRequestNumber !== undefined) {
+			try {
+				await this.exec(['-C', repo, '-c', 'credential.interactive=false', 'fetch', '--no-tags', '--quiet', 'origin', `refs/pull/${pullRequestNumber}/head:refs/heads/${request.branch}`], undefined, { quiet: true, timeout: this.gitTimeouts.long });
+			} catch (error) {
+				pullRequestFetchError = error instanceof Error ? error.message : String(error);
+			}
+		}
 		const state = await this.inspectExistingBranch(request.repoPath, request.branch);
 		const source = request.source === 'auto' ? (state.localSha !== undefined ? 'local' : 'origin') : request.source;
 		const plan = paradisPlanExistingBranch(source, state);
+		if (plan.kind === 'missing' && pullRequestNumber !== undefined) {
+			// allow-any-unicode-next-line
+			throw new Error(localize('paradis.worktree.existingBranch.pullRequestFetchFailed', "プルリクエスト #{0} のブランチを origin から取得できませんでした。{1}", pullRequestNumber, pullRequestFetchError ?? ''));
+		}
 		if (plan.kind === 'missing') {
 			throw new Error(source === 'origin'
 				// allow-any-unicode-next-line
@@ -2112,11 +2208,13 @@ export class ParadisWorktreeGitChannel<TContext extends ParadisCloneOwner = stri
 			case 'listBranches': return this.service.listBranches(String(args[0])) as Promise<T>;
 			case 'addWorktree': return this.service.addWorktree(args[0] as IParadisAddWorktreeRequest<string>) as Promise<T>;
 			case 'listBranchCandidates': return this.service.listBranchCandidates(String(args[0])) as Promise<T>;
+			case 'getOriginRepository': return this.service.getOriginRepository(String(args[0])) as Promise<T>;
 			case 'inspectExistingBranch': return this.service.inspectExistingBranch(String(args[0]), String(args[1])) as Promise<T>;
 			case 'addWorktreeFromBranch': return this.service.addWorktreeFromBranch(args[0] as IParadisAddBranchWorktreeRequest<string>) as Promise<T>;
 			case 'getDiffStat': return this.service.getDiffStat(String(args[0])) as Promise<T>;
 			case 'getPrStatus': return this.service.getPrStatus(String(args[0]), paradisCoerceGithubStatusMaxAge(args[1])) as Promise<T>;
 			case 'getIssueStatuses': return this.service.getIssueStatuses(String(args[0]), Array.isArray(args[1]) ? args[1].filter((value): value is string => typeof value === 'string') : [], paradisCoerceGithubStatusMaxAge(args[2])) as Promise<T>;
+			case 'lookupGithubReference': return this.service.lookupGithubReference(String(args[0]), typeof args[1] === 'string' ? args[1] : undefined) as Promise<T>;
 			case 'findGeneratedOutputs': return this.service.findGeneratedOutputs(args[0] as IParadisFindGeneratedOutputsRequest<string>) as Promise<T>;
 			case 'removeGeneratedOutputs': return this.service.removeGeneratedOutputs(args[0] as IParadisRemoveGeneratedOutputsRequest<string>) as Promise<T>;
 			case 'forceDeleteBranches': return this.service.forceDeleteBranches(args[0] as IParadisForceDeleteBranchesRequest<string>) as Promise<T>;
