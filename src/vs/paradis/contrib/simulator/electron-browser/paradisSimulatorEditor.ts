@@ -127,6 +127,17 @@ class ParadisSimulatorEditorSession extends DisposableStore {
 	}
 }
 
+/**
+ * Device Hub が入力を使っているときの帯の文。キーを旧来の経路で送った後（`keysMayBeLost`）は、届いていないかも
+ * しれないことと、試すこと（Device Hub を閉じる）を書く。Para Code 本体への「アクセシビリティ」の許可は勧めない
+ * （許可は Computer Use の補助アプリにだけ付ける決まり。本体に付けると、ターミナルの全プロセスが同じ許可を使える）。
+ */
+export function paradisSimulatorDeviceHubText(keysMayBeLost: boolean): string {
+	return keysMayBeLost
+		? localize('paradis.simulator.deviceHubKeys', "Device Hub が起動しているため、キー入力が端末に届いていないことがあります（タップとホームボタンは届きます）。届かないときは Device Hub を閉じて試してください。")
+		: localize('paradis.simulator.deviceHub', "Device Hub がこの端末の入力を使っています。タップやキーが届かないときは Device Hub を閉じてください。");
+}
+
 export class ParadisSimulatorEditor extends EditorPane {
 
 	static readonly ID = PARADIS_SIMULATOR_EDITOR_ID;
@@ -191,7 +202,7 @@ export class ParadisSimulatorEditor extends EditorPane {
 
 		this._deviceHub = dom.append(this._root, $('.paradis-simulator-device-hub'));
 		this._deviceHub.setAttribute('role', 'status');
-		this._deviceHub.textContent = localize('paradis.simulator.deviceHub', "Device Hub がこの端末の入力を使っています。タップやキーが届かないときは Device Hub を閉じてください。");
+		this._deviceHub.textContent = paradisSimulatorDeviceHubText(false);
 		this._deviceHub.style.display = 'none';
 
 		this._notice = dom.append(this._root, $('.paradis-simulator-notice'));
@@ -468,12 +479,17 @@ export class ParadisSimulatorEditor extends EditorPane {
 
 	private async _checkDeviceHub(session: ParadisSimulatorEditorSession): Promise<void> {
 		let active = false;
+		let keysMayBeLost = false;
 		try {
 			active = await this._client.deviceHubActive(session.input.udid);
+			// キーを旧来の経路で送っていたら（届いていないことがある）、帯の文を替えて試すことを書く
+			keysMayBeLost = active && await this._client.keyboardFallback(session.input.udid);
 		} catch {
 			// 確かめられないときは出さない
 		}
 		if (this._session.value === session && this._deviceHub) {
+			this._deviceHub.textContent = paradisSimulatorDeviceHubText(keysMayBeLost);
+			this._deviceHub.setAttribute('role', keysMayBeLost ? 'alert' : 'status');
 			this._deviceHub.style.display = active ? '' : 'none';
 			this._relayout();
 		}

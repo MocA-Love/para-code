@@ -320,6 +320,12 @@ export class ParadisSimulatorService extends Disposable {
 		return this._backend.deviceHubActive(udid);
 	}
 
+	/** この端末へのキーが旧来の HID で送られたか（届いていないことがある。帯の文を替える）。 */
+	async keyboardFallback(udid: string): Promise<boolean> {
+		this.assertAvailable();
+		return this._backend.keyboardFallback(udid);
+	}
+
 	/** 使えないときは何も届かないイベントを返す（`listen` の中で投げると shared process の未処理の例外になるため）。 */
 	onFrames(udid: string): Event<ParadisSimulatorStreamEvent> {
 		try {
@@ -430,6 +436,8 @@ export class ParadisSimulatorChannel<TContext> implements IServerChannel<TContex
 				return await this._service.openDeviceHub() as T;
 			case 'deviceHubActive':
 				return await this._service.deviceHubActive(requireUdidArg(arg)) as T;
+			case 'keyboardFallback':
+				return await this._service.keyboardFallback(requireUdidArg(arg)) as T;
 			case 'ackFrame':
 				this._service.ackFrame(requireUdidArg(arg));
 				return undefined as T;

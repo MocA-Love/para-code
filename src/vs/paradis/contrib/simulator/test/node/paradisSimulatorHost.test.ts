@@ -580,6 +580,25 @@ async function scratchDir(name: string): Promise<string> {
 		}
 	});
 
+	// ホストが「キーを旧来の HID で送った」と出した端末を覚え、ホストを起こし直したら忘れる（新しいホストはまだ送っていない）
+	test('remembers which simulator had its keys sent the legacy way until the host restarts', async () => {
+		const host = await startFakeSessionHost('keyboardFallback');
+		try {
+			let bootId = '100';
+			const backend = store.add(new ParadisServeSimBackend(host.provider, new NullLogService(), async () => '', 2000, { readBootId: async () => bootId, firstFrameTimeoutMs: 2000 }));
+			await backend.getScreenConfig(UDID);
+			const before = [backend.keyboardFallback(UDID), backend.keyboardFallback(OTHER_UDID)];
+			backend.noteHostOutput(`[hid] Device Hub keyboard unavailable for iPhone 17 (${UDID.slice(0, 8).toLowerCase()}): macOS Accessibility permission is not granted; using legacy HID`);
+			backend.noteHostOutput('[capture] Frame callbacks registered (event-driven) + 5fps idle floor');
+			const noted = [backend.keyboardFallback(UDID), backend.keyboardFallback(OTHER_UDID)];
+			bootId = '101';
+			await backend.getScreenConfig(UDID);
+			assert.deepStrictEqual({ before, noted, afterRestart: backend.keyboardFallback(UDID), recycled: host.recycled.length }, { before: [false, false], noted: [true, false], afterRestart: false, recycled: 1 });
+		} finally {
+			await host.close();
+		}
+	});
+
 	// わざと起こし直すのは「落ちた」に数えない（60 秒に 3 回落ちると起こさなくなる決まりに掛からない）
 	test('does not count restarting the host on purpose as a crash', async () => {
 		let spawned = 0;
