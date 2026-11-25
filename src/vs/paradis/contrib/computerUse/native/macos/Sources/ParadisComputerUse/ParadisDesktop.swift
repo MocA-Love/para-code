@@ -154,7 +154,7 @@ final class ParadisDesktop: ParadisDesktopBackend {
 
 	// MARK: - アクセシビリティのツリー
 
-	func accessibilityTree(pid: Int32, windowId: UInt32?, maxNodes: Int, maxDepth: Int, enableManualAccessibility: Bool) throws -> [String: Any] {
+	func accessibilityTree(pid: Int32, windowId: UInt32?, maxNodes: Int, maxDepth: Int, enableManualAccessibility: Bool, prune: Bool) throws -> [String: Any] {
 		guard AXIsProcessTrusted() else {
 			throw ParadisHelperError(code: "accessibility_not_granted", message: "Accessibility permission is not granted to Para Code Computer Use")
 		}
@@ -223,7 +223,7 @@ final class ParadisDesktop: ParadisDesktopBackend {
 		lastSnapshot = ParadisElementSnapshot(id: snapshotId, pid: pid, windowId: windowId, elements: elements)
 		var result: [String: Any] = [
 			"snapshotId": snapshotId,
-			"text": paradisRenderAXTree(nodes, truncated: truncated),
+			"text": paradisRenderAXTree(nodes, truncated: truncated, prune: prune),
 			"nodeCount": nodes.count,
 			"truncated": truncated,
 			"window": paradisRectJson(windowFrame),

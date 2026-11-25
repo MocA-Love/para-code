@@ -8,6 +8,7 @@
 import assert from 'assert';
 import { DeferredPromise } from '../../../../../base/common/async.js';
 import { Event } from '../../../../../base/common/event.js';
+import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { IChannel } from '../../../../../base/parts/ipc/common/ipc.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
@@ -76,6 +77,8 @@ suite('ParadisMobileCanvasSnapshotState', () => {
 		const snapshots = new ParadisMobileCanvasSnapshotState();
 
 		assert.strictEqual(snapshots.beginRefresh(), true);
+		// A second refresh that starts before the first one completes does not announce loading again
+		assert.strictEqual(snapshots.beginRefresh(), false);
 		assert.strictEqual(snapshots.complete(EMPTY), false);
 		assert.strictEqual(snapshots.beginRefresh(), false);
 		assert.strictEqual(snapshots.complete({ devices: [], attachments: [] }), false);
@@ -185,6 +188,38 @@ suite('ParadisMobileCanvasModel', () => {
 
 		await deferred.complete(EMPTY);
 		await Promise.all([first, second]);
+	});
+
+	test('a listener that starts polling from the first loading event joins the refresh in flight instead of recursing', async () => {
+		// The simulator tab labels start polling from onDidChange until `beginPolling()` has returned. The first
+		// refresh fires onDidChange before its first await, so this used to recurse until the stack overflowed (Sentry PY, PZ).
+		const channel = new RecordingMobileCanvasChannel();
+		const model = createModel(channel);
+		const deferred = channel.queueDeferredSnapshot();
+		const pollers = store.add(new DisposableStore());
+		let started = false;
+		let events = 0;
+		store.add(model.onDidChange(() => {
+			events++;
+			if (!started) {
+				pollers.add(model.beginPolling());
+			}
+		}));
+
+		pollers.add(model.beginPolling());
+		started = true;
+		const inFlight = model.refresh();
+		const during = { events, loading: model.loading, calls: channel.calls.length };
+		await deferred.complete(WITH_DEVICE);
+		await inFlight;
+		pollers.dispose();
+
+		assert.deepStrictEqual({ during, events, loading: model.loading, snapshot: model.snapshot }, {
+			during: { events: 1, loading: true, calls: 1 },
+			events: 2,
+			loading: false,
+			snapshot: WITH_DEVICE,
+		});
 	});
 
 	test('refreshes after attach and detach commands in channel order', async () => {

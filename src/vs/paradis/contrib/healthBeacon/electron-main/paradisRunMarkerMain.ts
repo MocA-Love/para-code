@@ -18,7 +18,7 @@
 
 import { app, powerMonitor } from 'electron';
 import { promises as fs, unlinkSync } from 'fs';
-import { freemem, loadavg, uptime } from 'os';
+import { loadavg, uptime } from 'os';
 import { raceTimeout } from '../../../../base/common/async.js';
 import { join } from '../../../../base/common/path.js';
 import { DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
@@ -37,6 +37,21 @@ const MARKER_FILE_NAME = 'paradis-run-marker.json';
 
 export interface IParadisRunMarkerBuild {
 	readonly commit?: string;
+}
+
+const BYTES_PER_KB = 1024;
+
+/**
+ * Free system memory in bytes, as Chromium counts it. `os.freemem()` on macOS is only the pages nobody
+ * holds (84 to 5,995 MB on a 128 GB machine with tens of GB reclaimable), so it says nothing about
+ * memory pressure. 0 when the number cannot be read.
+ */
+function systemFreeMemoryBytes(): number {
+	try {
+		return process.getSystemMemoryInfo().free * BYTES_PER_KB;
+	} catch {
+		return 0;
+	}
 }
 
 /** Reads the marker of the previous run and removes it, so that it is reported once. */
@@ -97,7 +112,7 @@ export function paradisStartRunMarker(
 			heapUsed: memory.heapUsed,
 			heapTotal: memory.heapTotal,
 			windowCount: windowsMainService.getWindowCount(),
-			freeMem: freemem(),
+			freeMem: systemFreeMemoryBytes(),
 			load1: loadavg()[0] ?? 0,
 			metrics: app.getAppMetrics().map(metric => ({ type: metric.type, workingSetKb: metric.memory?.workingSetSize ?? 0 })),
 		}));

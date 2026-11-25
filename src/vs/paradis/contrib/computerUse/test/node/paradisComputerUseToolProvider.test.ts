@@ -38,10 +38,21 @@ class FakeHelper implements IParadisComputerUseHelper {
 	failTree: string | undefined;
 	/** 設定するとツリーの答えに snapshotId を付け、読むたびに 1 つ進める。 */
 	nextSnapshotId: number | undefined;
+	/** 設定すると、ツリーを読むたびに先頭から 1 つずつ返す（最後の 1 つは返し続ける）。関数なら読んだ回数から作る。 */
+	trees: string[] | ((read: number) => string) | undefined;
+	private _treeReads = 0;
 	/** ツリーを読んだときの引数。 */
 	readonly treeParams: Record<string, unknown>[] = [];
 	/** 入力の命令の答え（既定は成功）。 */
 	onInput: (method: string, params: Record<string, unknown>) => Promise<unknown> = async () => ({ ok: true });
+
+	private _nextTree(): string {
+		const read = this._treeReads++;
+		if (typeof this.trees === 'function') {
+			return this.trees(read);
+		}
+		return this.trees ? this.trees[Math.min(read, this.trees.length - 1)] : '[0] AXWindow "Desktop"';
+	}
 
 	async request(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
 		this.calls.push(params.pid !== undefined ? `${method}:${params.pid}${params.windowId !== undefined ? `/${params.windowId}` : ''}` : method);
@@ -61,7 +72,7 @@ class FakeHelper implements IParadisComputerUseHelper {
 				if (this.failTree) {
 					throw new ParadisComputerUseHelperError(this.failTree, 'no');
 				}
-				return { text: '[0] AXWindow "Desktop"', nodeCount: 1, truncated: false, ...(this.nextSnapshotId !== undefined ? { snapshotId: this.nextSnapshotId++ } : {}) };
+				return { text: this._nextTree(), nodeCount: 1, truncated: false, ...(this.nextSnapshotId !== undefined ? { snapshotId: this.nextSnapshotId++ } : {}) };
 			case 'screenshotWindow':
 				return { mimeType: 'image/png', data: 'UE5H', width: 1600, height: 1200, scale: 2 };
 		}
@@ -102,7 +113,7 @@ function text(result: unknown): string {
 suite('ParadisComputerUseToolProvider', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	function setup(options: { enabled?: boolean; blockSystemSurfaces?: boolean; confirmForeground?: boolean; showCursor?: boolean } = {}) {
+	function setup(options: { enabled?: boolean; blockSystemSurfaces?: boolean; confirmForeground?: boolean; showCursor?: boolean; settleMaxMs?: number } = {}) {
 		const helper = new FakeHelper();
 		const ledger = new ParadisComputerUseGrantLedger();
 		const state = { enabled: options.enabled ?? true, confirmForeground: options.confirmForeground, showCursor: options.showCursor };
@@ -115,6 +126,7 @@ suite('ParadisComputerUseToolProvider', () => {
 			...(options.showCursor !== undefined ? { showCursor: () => state.showCursor === true } : {}),
 			blockOptions,
 			settleMs: 0,
+			...(options.settleMaxMs !== undefined ? { settleMaxMs: options.settleMaxMs, settlePollMs: 0 } : {}),
 			recordCall: attributes => recorded.push(attributes),
 			now: () => clock.time,
 		}, undefined);
@@ -970,6 +982,80 @@ suite('ParadisComputerUseToolProvider', () => {
 			summary: { app: { name: 'Notes', bundleId: 'com.apple.Notes', pid: 200 }, action: 'paste_text', pasted: true, pasteVerified: true, clipboardRestored: false, clipboard: 'cleared', note: 'The user\'s clipboard held a password manager\'s secret, so Para Code cleared it instead of putting it back.' },
 			parts: ['text', 'text', 'text', 'image'],
 			calls: ['listApps', 'listWindows:200', 'pasteText:200', 'permissions', 'accessibilityTree:200/72', 'screenshotWindow:200/72'],
+		});
+	});
+
+	// 操作の後のツリーは、このペインへ前に返したツリーとの差分にする。最初の読み取り（基準が無い）と computer_get_app_state は全文
+	test('returns only what changed in the tree after an action, and the whole tree from computer_get_app_state', async () => {
+		const { helper, ledger, provider } = setup();
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		const base = ['[0] AXWindow "Desktop"', ...Array.from({ length: 20 }, (_value, index) => `  [${index + 1}] AXButton "Item ${index + 1}"`)];
+		const edited = base.map(line => line === '  [3] AXButton "Item 3"' ? '  [3] AXButton "Item 3" focused' : line);
+		helper.trees = [base.join('\n'), edited.join('\n'), edited.join('\n'), edited.join('\n')];
+		const call = (name: string, args: object) => provider.callTool('pane-a', name, { app: 'Notes', ...args }, undefined, createContext('pane', []).context) as Promise<IResult>;
+		const state = (result: IResult, first: number) => ({
+			notes: JSON.parse((result.content[first] as { text: string }).text).notes,
+			screen: screenData(result.content[first + 1]),
+		});
+		const first = state(await call('computer_get_app_state', {}), 0);
+		const changed = state(await call('computer_press_key', { key: 'tab' }), 1);
+		const unchanged = state(await call('computer_press_key', { key: 'tab' }), 1);
+		const whole = state(await call('computer_get_app_state', { allElements: true }), 0);
+		assert.deepStrictEqual({ first, changed, unchanged, whole, prune: helper.treeParams.map(params => params.prune) }, {
+			first: { notes: undefined, screen: ['window title: Desktop', ...base] },
+			changed: {
+				notes: ['The accessibility tree below lists only what changed since the tree you last received for this window: "~" changed, "+" new, "-" gone. The other 20 elements keep their numbers and content. Call computer_get_app_state for the whole tree.'],
+				screen: ['window title: Desktop', '~   [3] AXButton "Item 3" focused'],
+			},
+			unchanged: {
+				notes: ['The accessibility tree did not change (21 elements, same numbers as the tree you last received for this window).'],
+				screen: ['window title: Desktop'],
+			},
+			whole: { notes: undefined, screen: ['window title: Desktop', ...edited] },
+			// 名前も操作も無い入れ物は既定で外す。allElements のときだけ全部出す
+			prune: [true, true, true, undefined],
+		});
+	});
+
+	// 別のペインが同じウィンドウを読んでも、このペインの差分の基準は変わらない（差分はペインごと）
+	test('keeps the baseline of the tree changes per pane', async () => {
+		const { helper, ledger, provider } = setup();
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		ledger.set('pane-b', 'com.apple.Notes', 'operate');
+		const base = ['[0] AXWindow "Desktop"', ...Array.from({ length: 20 }, (_value, index) => `  [${index + 1}] AXButton "Item ${index + 1}"`)].join('\n');
+		helper.trees = [base, `${base}\n  [21] AXStaticText "Saved"`];
+		const call = (pane: string, name: string, args: object = {}) => provider.callTool(pane, name, { app: 'Notes', ...args }, undefined, createContext('pane', []).context) as Promise<IResult>;
+		await call('pane-a', 'computer_get_app_state');
+		const other = await call('pane-b', 'computer_press_key', { key: 'tab' });
+		const mine = await call('pane-a', 'computer_press_key', { key: 'tab' });
+		assert.deepStrictEqual({ otherLines: screenData(other.content[2]).length, mine: screenData(mine.content[2]) }, {
+			// pane-b は初めて読むので全文（題 1 行 + 22 行）
+			otherLines: 23,
+			mine: ['window title: Desktop', '+   [21] AXStaticText "Saved"'],
+		});
+	});
+
+	// 操作の後は、ツリーが 2 回続けて同じになるまで読み直す。上限まで変わり続けたら、最後に読んだものを返してその旨を添える
+	test('waits until the tree stops changing after an action, up to a limit', async () => {
+		const settling = setup({ settleMaxMs: 1000 });
+		settling.ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		settling.helper.trees = ['[0] AXWindow "Loading"', '[0] AXWindow "Half"', '[0] AXWindow "Done"', '[0] AXWindow "Done"', '[0] AXWindow "Later"'];
+		const settled = await settling.provider.callTool('pane-a', 'computer_press_key', { app: 'Notes', key: 'tab' }, undefined, createContext('pane', []).context) as IResult;
+		const moving = setup({ settleMaxMs: 1000 });
+		moving.ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		moving.helper.trees = read => `[0] AXWindow "Frame ${read}"`;
+		const restless = await moving.provider.callTool('pane-a', 'computer_press_key', { app: 'Notes', key: 'tab' }, undefined, createContext('pane', []).context) as IResult;
+		const treeReads = (helper: FakeHelper) => helper.calls.filter(call => call.startsWith('accessibilityTree')).length;
+		assert.deepStrictEqual({
+			settled: { screen: screenData(settled.content[2]), notes: JSON.parse((settled.content[1] as { text: string }).text).notes, reads: treeReads(settling.helper) },
+			restless: { screen: screenData(restless.content[2]), notes: JSON.parse((restless.content[1] as { text: string }).text).notes, reads: treeReads(moving.helper) },
+		}, {
+			settled: { screen: ['window title: Desktop', '[0] AXWindow "Done"'], notes: undefined, reads: 4 },
+			restless: {
+				screen: ['window title: Desktop', '[0] AXWindow "Frame 8"'],
+				notes: ['The window was still changing 1.5 s after the action, so this state may already be out of date. Read it again with computer_get_app_state before you rely on it.'],
+				reads: 9,
+			},
 		});
 	});
 });

@@ -112,6 +112,57 @@ export function paradisParseV8FatalStderr(text: string): IParadisV8FatalSummary 
 	return { kind, heapBeforeMib: Math.round(Number(last.groups.before)), heapAfterMib: Math.round(Number(last.groups.after)) };
 }
 
+/** 子プロセスが終わる前に標準エラーへ書いたものの種類（固定の語だけ。文そのものは Sentry へ送らない）。 */
+export type ParadisDevtoolsExitKind = 'none' | 'out-of-memory' | 'connection-refused' | 'peer-closed' | 'timeout' | 'unhandled-error-event' | 'uncaught-exception' | 'other';
+
+/** 標準エラーの末尾から抜いた、終わった理由の種類。 */
+export interface IParadisDevtoolsExitSummary {
+	readonly kind: ParadisDevtoolsExitKind;
+	/** 末尾に最後に出た例外の型の名前。決まった名前（{@link EXIT_ERROR_NAMES}）のどれかのときだけ入る。 */
+	readonly errorName?: string;
+}
+
+/** Sentry へ送ってよい例外の型の名前（JavaScript・Node・puppeteer が決めている名前だけ。ページや利用者の文は入らない）。 */
+const EXIT_ERROR_NAMES = ['TypeError', 'RangeError', 'ReferenceError', 'SyntaxError', 'AggregateError', 'AssertionError', 'AbortError', 'ProtocolError', 'TargetCloseError', 'TimeoutError', 'ConnectionClosedError', 'UnsupportedOperation', 'McpError'];
+const exitErrorName = new RegExp(`\\b(?<name>${EXIT_ERROR_NAMES.join('|')})\\b`, 'g');
+
+/**
+ * 標準エラーの末尾を、終わった理由の種類へ畳む（Sentry MV: 子プロセスが exit code 1 で続けて終わるのに、理由が
+ * 分からなかった）。同梱の chrome-devtools-mcp は unhandledRejection を自分で受けて落ちないので、exit code 1 は
+ * 受けられなかった例外（Node が呼び出し履歴と `Node.js v24...` を書く）か、受け手の無い 'error' の出来事が多い。
+ * 文には URL やパスが混じりうるので、返すのは固定の語だけ。接続の語は例外の形より先に見る（接続が切れて落ちた
+ * 例外は「接続」と数える方が原因に近い）。
+ */
+export function paradisClassifyDevtoolsExitStderr(text: string): IParadisDevtoolsExitSummary {
+	let errorName: string | undefined;
+	for (const match of text.matchAll(exitErrorName)) {
+		errorName = match.groups?.name;
+	}
+	const named = (kind: ParadisDevtoolsExitKind): IParadisDevtoolsExitSummary => errorName === undefined ? { kind } : { kind, errorName };
+	if (text.trim().length === 0) {
+		return { kind: 'none' };
+	}
+	if (paradisParseV8FatalStderr(text)) {
+		return named('out-of-memory');
+	}
+	if (/ECONNREFUSED|connection refused/i.test(text)) {
+		return named('connection-refused');
+	}
+	if (/ECONNRESET|EPIPE|socket hang up|WebSocket is not open|(?:Connection|Target|Session|Page|Browser|Transport)(?: has been)? closed|disconnected/i.test(text)) {
+		return named('peer-closed');
+	}
+	if (/ETIMEDOUT|TimeoutError|timed out/i.test(text)) {
+		return named('timeout');
+	}
+	if (/Unhandled 'error' event/.test(text)) {
+		return named('unhandled-error-event');
+	}
+	if (/^Uncaught |^\s+at .+:\d+:\d+\)?$|^Node\.js v\d/m.test(text)) {
+		return named('uncaught-exception');
+	}
+	return named('other');
+}
+
 /** 標準エラーの末尾として残す最大の文字数（V8 の最後の数行が入れば足りる）。 */
 const STDERR_TAIL_CHARS = 16 * 1024;
 

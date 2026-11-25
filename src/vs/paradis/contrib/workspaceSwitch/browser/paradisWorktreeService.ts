@@ -149,6 +149,9 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 	 */
 	private readonly _refreshRun = new ParadisCoalescedRun(() => this.runRefresh());
 
+	/** 直近の refresh で .git/worktrees を最後まで読めたリポジトリ（isWorktreeListComplete）。 */
+	private _completeScans: ReadonlySet<string> = new Set<string>();
+
 	/** 初回 refresh を終えたか。起動直後は端末の復元前なので missing の自動退役を見送る。 */
 	private _initialRefreshDone = false;
 
@@ -220,6 +223,10 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 
 	getRepositoryBranch(repositoryId: string): string | undefined {
 		return this._branches.get(repositoryId);
+	}
+
+	isWorktreeListComplete(repositoryId: string): boolean {
+		return this._completeScans.has(repositoryId);
 	}
 
 	addKnownWorktree(worktree: IParadisWorktree): void {
@@ -372,6 +379,7 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 		const result = new Map<string, IParadisWorktree[]>();
 		const detectedWorktrees = new Map<string, IParadisWorktree[]>();
 		const branches = new Map<string, string>();
+		const completeScans = new Set<string>();
 		let knownChanged = false;
 		const retiredStateKeys = new Set<string>();
 
@@ -381,6 +389,9 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 			const repository = repositories[index];
 			const [scan, repositoryBranch] = reads[index];
 			const scanned = scan.worktrees;
+			if (scan.complete) {
+				completeScans.add(repository.id);
+			}
 			// .git を読めなかった回は、ブランチ名も「無い」ではなく「分からない」。前回の値を
 			// 引き継がないと、接続が不安定なあいだブランチ表示だけが点滅する
 			const branch = repositoryBranch ?? (scan.complete ? undefined : this._branches.get(repository.id));
@@ -481,6 +492,7 @@ export class ParadisWorktreeService extends Disposable implements IParadisWorktr
 		this._worktrees = result;
 		this._detectedWorktrees = detectedWorktrees;
 		this._branches = branches;
+		this._completeScans = completeScans;
 		this.pruneStalePinned();
 		this.acknowledgeAbsentCommittedRetirements();
 		// 冒頭ではなくここで立てる。初回が await 中に2本目が走っても、初回の完了までは

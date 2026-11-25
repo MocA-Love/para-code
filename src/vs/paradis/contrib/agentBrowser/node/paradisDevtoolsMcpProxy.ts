@@ -40,7 +40,7 @@ import { paradisCrashRoleNodeArgs } from '../../sentry/common/paradisCrashRole.j
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IParadisDevtoolsRoot, paradisDevtoolsExplainRootsDenial, paradisDevtoolsRoots } from './paradisDevtoolsPathPolicy.js';
 import { ParadisDevtoolsTemporaryDirectory } from './paradisDevtoolsTemporaryDirectory.js';
-import { IParadisDevtoolsRecycleLimits, PARADIS_DEVTOOLS_HEALTH_INTERVAL_MS, PARADIS_DEVTOOLS_RECYCLE_LIMITS, PARADIS_DEVTOOLS_RECYCLE_QUIET_MS, ParadisDevtoolsReplacedReason, paradisAppendStderrTail, paradisDevtoolsReadsRecords, paradisDevtoolsRecordsResetNote, paradisDevtoolsRecycleIsUrgent, paradisDevtoolsRecycleReason, paradisDevtoolsStaleUidMessage, paradisNewUidTag, PARADIS_UID_TAG_HISTORY, paradisParseV8FatalStderr, paradisReadProcessRssMib, paradisTagChildUids, paradisTagSnapshotFileText, paradisUntagUids } from './paradisDevtoolsChildHealth.js';
+import { IParadisDevtoolsRecycleLimits, PARADIS_DEVTOOLS_HEALTH_INTERVAL_MS, PARADIS_DEVTOOLS_RECYCLE_LIMITS, PARADIS_DEVTOOLS_RECYCLE_QUIET_MS, ParadisDevtoolsReplacedReason, paradisAppendStderrTail, paradisDevtoolsReadsRecords, paradisDevtoolsRecordsResetNote, paradisDevtoolsRecycleIsUrgent, paradisDevtoolsRecycleReason, paradisDevtoolsStaleUidMessage, paradisNewUidTag, PARADIS_UID_TAG_HISTORY, paradisClassifyDevtoolsExitStderr, paradisParseV8FatalStderr, paradisReadProcessRssMib, paradisTagChildUids, paradisTagSnapshotFileText, paradisUntagUids } from './paradisDevtoolsChildHealth.js';
 import { ParadisSnapshotCache, paradisAdjustCachedSnapshotResult, paradisAttachSnapshotRootRect, paradisSnapshotCacheUsable, paradisAdjustDevtoolsToolDescriptor, paradisAdjustDevtoolsToolResult, paradisPrepareDevtoolsToolCall, paradisShouldRetryDevtoolsToolAfterTargetClosed, paradisSnapshotMeasuresRoot, paradisTakeSnapshotRootRect, paradisEvaluateObserves, paradisEvaluateHasDeadline, paradisDevtoolsTimeoutTools, paradisDevtoolsToolIsRetrySafe } from './paradisDevtoolsToolAdjustments.js';
 import { IParadisDevtoolsCallOrigin, paradisDevtoolsCallOriginExtra } from './paradisDevtoolsCallOrigin.js';
 import { paradisIsTransientEvaluateFailure } from './paradisBrowserQuery.js';
@@ -753,9 +753,15 @@ export class ParadisDevtoolsMcpProxy extends Disposable {
 				// 既に閉じていれば無視
 			}
 			const fatal = paradisParseV8FatalStderr(entry.stderrTail);
+			// 終わった理由は、種類の語と、決まった名前のどれかの例外の型だけを送る（標準エラーの文は送らない）
+			const exit = paradisClassifyDevtoolsExitStderr(entry.stderrTail);
+			const stderrChars = entry.stderrTail.length;
 			entry.stderrTail = '';
 			reportParadisDiagnosticError('owned', 'agent-browser', 'devtools-child-exited', new Error('chrome-devtools-mcp exited unexpectedly'), {
 				...extra,
+				safe_exit_kind: exit.kind,
+				safe_exit_stderr_chars: stderrChars,
+				...(exit.errorName !== undefined ? { safe_exit_error_name: exit.errorName } : {}),
 				...(fatal ? { safe_oom_kind: fatal.kind } : {}),
 				...(fatal?.heapBeforeMib !== undefined ? { safe_heap_before_mib: fatal.heapBeforeMib } : {}),
 				...(fatal?.heapAfterMib !== undefined ? { safe_heap_after_mib: fatal.heapAfterMib } : {}),
