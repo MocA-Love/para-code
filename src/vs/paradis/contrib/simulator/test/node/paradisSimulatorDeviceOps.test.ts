@@ -588,7 +588,7 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 			results: { launch: false, launchInjection: true, grantSystem: true, grantNotInstalled: true, grantUnknownPermission: true, grantDevelopmentPermission: true, grant: false },
 			runs: [
 				'am force-stop com.example.myapp',
-				'monkey -p com.example.myapp -c android.intent.category.LAUNCHER 1',
+				'monkey -p com.example.myapp -c android.intent.category.LAUNCHER --pct-syskeys 0 1',
 				'pm list packages -3',
 				'pm path com.android.settings',
 				'pm list packages -3',

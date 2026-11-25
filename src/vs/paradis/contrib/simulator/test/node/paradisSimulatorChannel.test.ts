@@ -179,6 +179,24 @@ suite('Paradis simulator: video relay in the shared process', () => {
 		});
 	});
 
+	// 始まったばかりの通話（config がまだ無い）には key frame を求めない。取り込みの用意ができる前に求めると
+	// scrcpy-server が落ちる（最初の config と key frame は server が自分から送る）
+	test('does not ask a scrcpy session that has just started for a key frame', async () => {
+		const video = store.add(new Emitter<ParadisScrcpyVideoEvent>());
+		const resets: string[] = [];
+		const session = { size: undefined, config: undefined, onVideo: video.event, onDidEnd: store.add(new Emitter<Error | undefined>()).event, resetVideo: async () => { resets.push('reset'); } };
+		const scrcpy = { acquire: async () => ({ session: session as never, lease: { dispose: () => { } } }), use: async () => { throw new Error('not used'); } };
+		const host = { ensure: async (): Promise<IParadisSimulatorHostConnection> => ({ socketPath: '', token: '' }), isRunning: false, lastError: undefined, stop: async () => { } };
+		const service = store.add(new ParadisSimulatorService(host, {} as ParadisServeSimBackend, true, new NullLogService(), undefined, { adb: { bootAvd: async () => { }, listDevices: async () => [] }, scrcpy }));
+		const received: string[] = [];
+		const listener = service.onAndroidVideo('emulator-5554')(message => received.push(message.kind));
+		await new Promise(resolve => setTimeout(resolve, 0));
+		video.fire({ kind: 'config', data: new Uint8Array([7]) });
+		video.fire({ kind: 'frame', data: new Uint8Array([1]), key: true, pts: 1 });
+		listener.dispose();
+		assert.deepStrictEqual({ received, resets }, { received: ['config', 'frame'], resets: [] });
+	});
+
 	// Android（adb・scrcpy）は全 OS で使う。iOS（serve-sim）を使えない OS でも Android の呼び出しは断らない（Q588）
 	test('serves Android calls where the iOS simulator is not supported', async () => {
 		const booted: string[] = [];
