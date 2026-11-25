@@ -119,9 +119,11 @@ final class FakeDesktop: ParadisDesktopBackend {
 		return ["width": 1]
 	}
 	var manualAccessibilityCalls: [Bool] = []
-	func accessibilityTree(pid: Int32, windowId: UInt32?, maxNodes: Int, maxDepth: Int, enableManualAccessibility: Bool) throws -> [String: Any] {
+	var pruneCalls: [Bool] = []
+	func accessibilityTree(pid: Int32, windowId: UInt32?, maxNodes: Int, maxDepth: Int, enableManualAccessibility: Bool, prune: Bool) throws -> [String: Any] {
 		treeCalls.append((pid, windowId, maxNodes, maxDepth))
 		manualAccessibilityCalls.append(enableManualAccessibility)
+		pruneCalls.append(prune)
 		throw ParadisHelperError(code: "accessibility_not_granted", message: "no")
 	}
 	var optionCalls: [ParadisInputOptions] = []
@@ -334,6 +336,8 @@ do {
 	_ = code(#"{"id":43,"method":"accessibilityTree","params":{"pid":100,"bundleId":"com.apple.finder","enableManualAccessibility":true}}"#)
 	_ = code(#"{"id":44,"method":"accessibilityTree","params":{"pid":100,"bundleId":"com.apple.finder","enableManualAccessibility":1}}"#)
 	check(desktop.manualAccessibilityCalls == [false, true, false], "sets AXManualAccessibility only when asked with true")
+	_ = code(#"{"id":45,"method":"accessibilityTree","params":{"pid":100,"bundleId":"com.apple.finder","prune":true}}"#)
+	check(desktop.pruneCalls.suffix(2) == [false, true], "prunes bare containers only when asked with true")
 	check(desktop.optionCalls[0].cursor == nil && desktop.optionCalls[2].cursor == nil, "no cursor without a valid owner")
 }
 
@@ -1124,6 +1128,35 @@ do {
 	check(paradisRenderAXTree([selectedCell], truncated: false) == "  [3] AXCell \"Desktop\" selected", "shows selection separately from focus")
 	let text = paradisRenderAXTree(nodes, truncated: true)
 	check(text == "[0] AXWindow \"Doc\" @0,0 100x50\n  [1] AXTextField \"Password\" value=<redacted> focused actions=AXConfirm\n  [2] AXButton \"OK\" @10,21 30x12 disabled actions=AXPress\n... (tree truncated)", "renders the tree")
+	// 名前も操作も無い入れ物は表示から外す。番号は詰めず、字下げは出している祖先の数に詰める。
+	// 名前・選択・フォーカス・使える操作のどれかがある入れ物と、入れ物でない役割（スクロールの的など）は残す
+	func node(_ index: Int, _ depth: Int, _ role: String, title: String? = nil, focused: Bool? = nil, selected: Bool = false, actions: [String] = []) -> ParadisAXNode {
+		ParadisAXNode(index: index, depth: depth, role: role, subrole: nil, title: title, value: nil, label: nil, frame: nil, enabled: nil, focused: focused, selected: selected, actions: actions, redacted: false)
+	}
+	let nested = [
+		node(0, 0, "AXWindow", title: "Doc"),
+		node(1, 1, "AXGroup", actions: ["AXShowMenu"]),
+		node(2, 2, "AXGroup"),
+		node(3, 3, "AXButton", title: "Save", actions: ["AXPress"]),
+		node(4, 2, "AXGroup", title: "Toolbar"),
+		node(5, 3, "AXGroup", actions: ["AXPress"]),
+		node(6, 1, "AXScrollArea"),
+		node(7, 2, "AXRow", selected: true),
+		node(8, 2, "AXRow"),
+		node(9, 3, "AXCell", focused: true),
+		node(10, 1, "AXGroup", title: " "),
+	]
+	check(paradisRenderAXTree(nested, truncated: false, prune: true) == [
+		"[0] AXWindow \"Doc\"",
+		"  [3] AXButton \"Save\" actions=AXPress",
+		"  [4] AXGroup \"Toolbar\"",
+		"    [5] AXGroup actions=AXPress",
+		"  [6] AXScrollArea",
+		"    [7] AXRow selected",
+		"    [9] AXCell focused",
+		"... (4 unnamed containers hidden; their numbers still work)",
+	].joined(separator: "\n"), "hides bare containers without renumbering")
+	check(!paradisRenderAXTree(nested, truncated: false).contains("hidden"), "keeps every element without prune")
 }
 
 do {

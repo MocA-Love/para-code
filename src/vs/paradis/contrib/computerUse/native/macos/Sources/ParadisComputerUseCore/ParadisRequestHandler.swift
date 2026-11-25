@@ -105,7 +105,8 @@ protocol ParadisDesktopBackend: AnyObject {
 	func listWindows(pid: Int32) throws -> [[String: Any]]
 	func screenshotWindow(pid: Int32, windowId: UInt32, maxLongEdge: Int) throws -> [String: Any]
 	/** `enableManualAccessibility` は操作の許可があるときだけ true（Electron 製のアプリに AXManualAccessibility を立ててよい）。 */
-	func accessibilityTree(pid: Int32, windowId: UInt32?, maxNodes: Int, maxDepth: Int, enableManualAccessibility: Bool) throws -> [String: Any]
+	/** `prune` なら、名前も操作も無い入れ物を文から外す（番号は変えない）。 */
+	func accessibilityTree(pid: Int32, windowId: UInt32?, maxNodes: Int, maxDepth: Int, enableManualAccessibility: Bool, prune: Bool) throws -> [String: Any]
 	/**
 	 * 入力を送る（前面に出す・クリック・ドラッグ・スクロール・文字入力・貼り付け・キー・値の変更）。
 	 * 送り方の段（ParadisInputRoute.swift）を順に試し、結果の `route` に送った段を書く。
@@ -289,7 +290,8 @@ final class ParadisRequestHandler {
 			let maxNodes = try optionalIntParam(params, "maxNodes", minimum: 1, maximum: paradisMaxAXMaxNodes) ?? paradisDefaultAXMaxNodes
 			let maxDepth = try optionalIntParam(params, "maxDepth", minimum: 1, maximum: paradisMaxAXMaxDepth) ?? paradisDefaultAXMaxDepth
 			let enableManualAccessibility = (params["enableManualAccessibility"] as? NSNumber).map { CFGetTypeID($0) == CFBooleanGetTypeID() && $0.boolValue } ?? false
-			return try backend.accessibilityTree(pid: try pidParam(params), windowId: try windowIdParam(params, required: false), maxNodes: maxNodes, maxDepth: maxDepth, enableManualAccessibility: enableManualAccessibility)
+			let prune = (params["prune"] as? NSNumber).map { CFGetTypeID($0) == CFBooleanGetTypeID() && $0.boolValue } ?? false
+			return try backend.accessibilityTree(pid: try pidParam(params), windowId: try windowIdParam(params, required: false), maxNodes: maxNodes, maxDepth: maxDepth, enableManualAccessibility: enableManualAccessibility, prune: prune)
 		default:
 			throw ParadisHelperError(code: "unknown_method", message: "unknown method: \(request.method)")
 		}
