@@ -11,12 +11,12 @@
 //
 //  - 指紋: スペース（か開いているフォルダ）の中の資料の、大きさ・更新時刻・中身の SHA-256 を控える。書かれるたびに取り直す
 //  - 追従: 資料が消えたら、同じスペースの中の html・md を 1 回だけ探し、指紋と同じ中身のファイルへ記録の場所を書き換える。
-//    決めるのは中身のハッシュの一致だけ（名前・大きさ・ファイルの変化の知らせは候補を絞るだけ）。同じ名前で一致する
-//    ものを先に見て、無ければほかの名前を見る。一致が 2 つ以上・探しきれなかった・指紋が無い資料は決めない
+//    決めるのは中身のハッシュの一致だけ（大きさ・ファイルの変化の知らせは候補を絞るだけで、名前は見ない）。
+//    一致が 2 つ以上・探しきれなかった・指紋が無い資料は決めない
 //  - 後片付け: 見つからないまま {@link PARADIS_DOC_MISSING_RETENTION_MS} が過ぎた資料は、もう一度確かめてから一覧から外す
 
 import { IParadisDocFingerprint, PARADIS_DOC_BACKGROUND_WATCH_EXCLUDES, paradisDocKey, paradisDocKind, paradisIsInsideFolder, paradisIsWatchableDocPath } from './paradisAgentDocs.js';
-import { IParadisDocViewRecord, paradisDocFileName } from './paradisAgentDocsView.js';
+import { IParadisDocViewRecord } from './paradisAgentDocsView.js';
 
 /** 見つからないままの資料を一覧から外すまでの時間（7 日）。 */
 export const PARADIS_DOC_MISSING_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -24,12 +24,15 @@ export const PARADIS_DOC_MISSING_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const PARADIS_DOC_FINGERPRINT_MAX_BYTES = 8 * 1024 * 1024;
 /** 1 回の探索で受け取るファイルの数の上限。超えたら探しきれなかったものとして決めない。 */
 export const PARADIS_DOC_RELOCATE_MAX_FOUND = 20_000;
-/** 1 回の探索で大きさを確かめるファイルの数の上限（名前の違う候補）。超えたら名前の違う候補は見ない。 */
+/** 1 件の資料につき大きさを確かめる候補（同じ種類のファイル）の数の上限。超えたら決めない。 */
 export const PARADIS_DOC_RELOCATE_MAX_STATS = 2_000;
 /** 1 件の資料につき中身を読む候補の数の上限（同じ大きさのもの）。超えたら決めない。 */
 export const PARADIS_DOC_RELOCATE_MAX_HASHES = 8;
-/** 探索が降りないフォルダ（見張りが拾わないものと、ビルドの出力）。 */
-export const PARADIS_DOC_RELOCATE_EXCLUDES: readonly string[] = [...PARADIS_DOC_BACKGROUND_WATCH_EXCLUDES, '**/out/**'];
+/**
+ * 探索が降りないフォルダ（見張りが拾わないもの、ビルドの出力、エージェントが作るワークツリー）。消した資料の写しが
+ * ここに残っていても、移動先にはしない。
+ */
+export const PARADIS_DOC_RELOCATE_EXCLUDES: readonly string[] = [...PARADIS_DOC_BACKGROUND_WATCH_EXCLUDES, '**/out/**', '**/dist/**', '**/build/**', '**/.claude/worktrees/**'];
 
 /** 1 回の見直しで指紋を取る資料の数の上限（残りは次の見直しで取る）。 */
 const FINGERPRINTS_PER_PASS = 200;
@@ -410,36 +413,31 @@ export class ParadisDocRelocator {
 		}
 	}
 
-	/** 指紋と同じ中身の候補。同じ名前のものを先に見る。一致が 1 つだけのときに決める。 */
+	/**
+	 * 指紋と同じ中身の候補。スペースの中の同じ種類の候補をすべて見て、一致が 1 つだけのときに決める（名前が同じでも、
+	 * 同じ中身のファイルがほかにあれば決めない）。確かめきれない数の候補があるときも決めない。
+	 */
 	private async _pick(record: IParadisDocViewRecord, candidates: readonly string[], probe: Probe): Promise<string | undefined> {
 		const fingerprint = record.fingerprint!;
-		const name = paradisDocFileName(record.path);
-		const sameName = candidates.filter(path => paradisDocFileName(path) === name);
-		const otherName = candidates.filter(path => paradisDocFileName(path) !== name);
-		for (const tier of [sameName, otherName]) {
-			if (tier.length > PARADIS_DOC_RELOCATE_MAX_STATS) {
-				return undefined;
+		if (candidates.length > PARADIS_DOC_RELOCATE_MAX_STATS) {
+			return undefined;
+		}
+		const sized: string[] = [];
+		await forEachLimited(candidates, async path => {
+			if (await probe.size(path) === fingerprint.size) {
+				sized.push(path);
 			}
-			const sized: string[] = [];
-			await forEachLimited(tier, async path => {
-				if (await probe.size(path) === fingerprint.size) {
-					sized.push(path);
-				}
-			});
-			if (sized.length > PARADIS_DOC_RELOCATE_MAX_HASHES) {
-				return undefined;
-			}
-			const matches: string[] = [];
-			for (const path of sized) {
-				if (await probe.hash(path) === fingerprint.hash) {
-					matches.push(path);
-				}
-			}
-			if (matches.length > 0) {
-				return matches.length === 1 ? matches[0] : undefined;
+		});
+		if (sized.length > PARADIS_DOC_RELOCATE_MAX_HASHES) {
+			return undefined;
+		}
+		const matches: string[] = [];
+		for (const path of sized) {
+			if (await probe.hash(path) === fingerprint.hash) {
+				matches.push(path);
 			}
 		}
-		return undefined;
+		return matches.length === 1 ? matches[0] : undefined;
 	}
 
 	/** 見つからないまま日数の過ぎた資料を、もう一度確かめてから外す。 */

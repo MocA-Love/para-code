@@ -193,6 +193,7 @@ suite('ParadisAgentDocsRelocate', () => {
 		host.doc('/repo/taken.md', 'same words');
 		host.doc('/repo/other/owned.md', 'same words');
 		host.doc('/repo/refused.md', 'refused');
+		host.doc('/repo/named.md', 'named');
 		const relocator = new ParadisDocRelocator(host);
 		await relocator.sync();
 		// 同じ名前の別物（大きさは同じ）
@@ -203,14 +204,17 @@ suite('ParadisAgentDocsRelocate', () => {
 		host.files.set('/repo/b/twin.md', { content: 'twin', mtime: 30 });
 		// 同じ中身のファイルは、別の資料として載っている
 		host.files.delete('/repo/taken.md');
+		// 同じ名前で移した先のほかに、別の名前の写しがある
+		host.move('/repo/named.md', '/repo/a/named.md');
+		host.files.set('/repo/b/copy-of-named.md', { content: 'named', mtime: 30 });
 		// 台帳が断る
 		host.move('/repo/refused.md', '/repo/z/refused.md');
 		host.refused.add('/repo/z/refused.md');
-		await relocator.filesChanged({ added: [], updated: [], deleted: ['/repo/report.html', '/repo/twin.md', '/repo/taken.md', '/repo/refused.md'] });
+		await relocator.filesChanged({ added: [], updated: [], deleted: ['/repo/report.html', '/repo/twin.md', '/repo/taken.md', '/repo/refused.md', '/repo/named.md'] });
 		await relocator.sync();
 		assert.deepStrictEqual({ state: host.state(), log: host.log, searches: host.searches }, {
-			state: ['/repo/report.html (missing)', '/repo/twin.md (missing)', '/repo/taken.md (missing)', '/repo/other/owned.md', '/repo/refused.md (missing)'],
-			log: ['refused /repo/refused.md -> /repo/z/refused.md', 'missing /repo/report.html', 'missing /repo/twin.md', 'missing /repo/taken.md', 'missing /repo/refused.md'],
+			state: ['/repo/report.html (missing)', '/repo/twin.md (missing)', '/repo/taken.md (missing)', '/repo/other/owned.md', '/repo/refused.md (missing)', '/repo/named.md (missing)'],
+			log: ['refused /repo/refused.md -> /repo/z/refused.md', 'missing /repo/report.html', 'missing /repo/twin.md', 'missing /repo/taken.md', 'missing /repo/refused.md', 'missing /repo/named.md'],
 			searches: ['/repo'],
 		});
 	});
