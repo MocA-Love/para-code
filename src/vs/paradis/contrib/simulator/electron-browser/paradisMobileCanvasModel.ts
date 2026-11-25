@@ -12,7 +12,7 @@
 // 端末一覧は serve-sim のホストの起動や adb の呼び出しを伴うことがあり安くないので、ダイアログが
 // 開いている間だけ `beginPolling()` で定期取得し、閉じたら止める。
 
-import { IntervalTimer } from '../../../../base/common/async.js';
+import { DeferredPromise, IntervalTimer } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { equals } from '../../../../base/common/objects.js';
@@ -53,10 +53,21 @@ const EMPTY_SNAPSHOT: IParadisMobileCanvasSnapshot = { devices: [], attachments:
 export class ParadisMobileCanvasSnapshotState {
 	private current: IParadisMobileCanvasSnapshot = EMPTY_SNAPSHOT;
 	private loaded = false;
+	private loadingPublished = false;
 
 	get snapshot(): IParadisMobileCanvasSnapshot { return this.current; }
 
-	beginRefresh(): boolean { return !this.loaded; }
+	/**
+	 * Whether this refresh announces "loading". True once, for the first refresh only: a listener that
+	 * starts another refresh from that announcement must not be told to announce it again.
+	 */
+	beginRefresh(): boolean {
+		if (this.loaded || this.loadingPublished) {
+			return false;
+		}
+		this.loadingPublished = true;
+		return true;
+	}
 
 	complete(next: IParadisMobileCanvasSnapshot): boolean {
 		this.loaded = true;
@@ -93,7 +104,20 @@ export class ParadisMobileCanvasModel extends Disposable implements IParadisMobi
 	get loading(): boolean { return this._loading; }
 
 	refresh(): Promise<void> {
-		this._inFlight ??= this._refresh().finally(() => { this._inFlight = undefined; });
+		if (!this._inFlight) {
+			// `_refresh()` は最初の await までを同期で走り、その中で onDidChange を出す。受け手がそこから refresh() を
+			// 呼び直しても同じ 1 本にまとまるよう、走らせる前に _inFlight を入れておく（入れる前に出すと、受け手と
+			// ここの間で再帰してスタックがあふれる。Sentry PY・PZ）
+			const done = new DeferredPromise<void>();
+			this._inFlight = done.p;
+			this._refresh().then(() => {
+				this._inFlight = undefined;
+				void done.complete();
+			}, error => {
+				this._inFlight = undefined;
+				void done.error(error);
+			});
+		}
 		return this._inFlight;
 	}
 

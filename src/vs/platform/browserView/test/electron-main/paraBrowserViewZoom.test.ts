@@ -9,7 +9,7 @@ import assert from 'assert';
 import { EventEmitter } from 'events';
 import type { WebContents } from 'electron';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../base/test/common/utils.js';
-import { paraBrowserViewEmulationParams, paraBrowserViewScalesByZoom, paraSetBrowserViewEmulationZoom, paraSetBrowserViewUserZoom, paraCreateBrowserZoomHelperForTest, paraSetBrowserZoomIsolatorForTest } from '../../electron-main/paraBrowserViewZoom.js';
+import { paraBrowserViewEmulationParams, paraBrowserViewRendererAlive, paraBrowserViewScalesByZoom, paraSetBrowserViewEmulationZoom, paraSetBrowserViewUserZoom, paraCreateBrowserZoomHelperForTest, paraSetBrowserZoomIsolatorForTest } from '../../electron-main/paraBrowserViewZoom.js';
 
 /** A tab whose zoom is either per site (shared by every tab on it) or, once isolated, its own until the next navigation. */
 class FakeTab extends EventEmitter {
@@ -64,6 +64,19 @@ suite('paraBrowserViewZoom', () => {
 
 	const request = (tab: FakeTab, pageScale: number, onReady: () => void = () => { }) => paraBrowserViewEmulationParams(tab as unknown as WebContents, {
 		width: 1920, height: 1080, pageScale, mobile: false, deviceScaleFactor: 2, onReady,
+	});
+
+	test('a tab is safe for device emulation only while its render process and main document are there', () => {
+		const alive = new FakeTab();
+		const crashed = new FakeTab();
+		crashed.crashed = true;
+		const detached = Object.assign(new FakeTab(), { mainFrame: { detached: true } });
+		const destroyed = Object.assign(new FakeTab(), { isDestroyed: () => true });
+		const noFrame = Object.assign(new FakeTab(), { mainFrame: null });
+		const throwing = Object.assign(new FakeTab(), { isCrashed: () => { throw new Error('Object has been destroyed'); } });
+		assert.deepStrictEqual(
+			[alive, crashed, detached, destroyed, noFrame, throwing].map(tab => paraBrowserViewRendererAlive(tab as unknown as WebContents)),
+			[true, false, false, false, false, false]);
 	});
 
 	test('a fixed size is shrunk by the emulation scale until the tab is isolated, then by its own zoom with a full devicePixelRatio', async () => {
