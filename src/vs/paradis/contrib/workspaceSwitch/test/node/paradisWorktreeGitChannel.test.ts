@@ -26,6 +26,7 @@ import { TestConfigurationService } from '../../../../../platform/configuration/
 import { paradisClassifyDiffStatFailure, ParadisWorktreeGitChannel, ParadisWorktreeGitService, registerParadisWorktreeGit, registerParadisWorktreeGitForServer } from '../../node/paradisWorktreeGitChannel.js';
 import { ParadisGithubCallLog, paradisClearGithubCallSink, paradisSetGithubCallSink } from '../../../githubMetrics/common/paradisGithubMetrics.js';
 import { ParadisGithubRateLimitPause } from '../../../githubMetrics/common/paradisGithubRateLimitPause.js';
+import { PARADIS_GITHUB_REFERENCE_QUERY } from '../../../../common/paradisIssueDetection.js';
 
 interface IExecFileCall {
 	command: string;
@@ -831,6 +832,46 @@ suite('ParadisWorktreeGitService', () => {
 				pausedUntil: 1_000_000 + 270_000 + 15 * 60_000,
 				callsAfterResume: 3,
 			});
+		});
+
+		test('looks up a pasted issue or pull request once, telling why when it cannot, and never pauses on a missing one', async () => {
+			const harness = createHarness();
+			const url = 'https://github.com/acme/app/issues/2236';
+			const node = { __typename: 'PullRequest', number: 2236, title: 'Fix the mapping', url: 'https://github.com/acme/app/pull/2236', state: 'OPEN', isDraft: false, headRefName: 'fix/mapping', isCrossRepository: false };
+			harness.state.respond = () => ({ stdout: JSON.stringify({ data: { repository: { issueOrPullRequest: node } } }) });
+
+			const [first, second] = await Promise.all([harness.service.lookupGithubReference(url, '/repo'), harness.service.lookupGithubReference(`${url}#issuecomment-1`)]);
+			const reused = await harness.service.lookupGithubReference(url);
+			const callsWhileFresh = harness.state.ghCalls.length;
+			harness.state.respond = () => ({ error: 'gh: Could not resolve to a Repository with the name \'acme/private\'.' });
+			const missing = await harness.service.lookupGithubReference('https://github.com/acme/private/issues/41');
+			harness.state.respond = () => ({ error: 'To get started with GitHub CLI, please run:  gh auth login' });
+			const loggedOut = await harness.service.lookupGithubReference('https://github.com/acme/app/issues/2');
+			const notGithub = await harness.service.lookupGithubReference('https://example.com/acme/app/issues/2');
+			const callsBeforeLimit = harness.state.ghCalls.length;
+			harness.state.now += 61_000;
+			harness.state.respond = () => ({ error: RATE_LIMITED });
+			const limited = await harness.service.lookupGithubReference('https://github.com/acme/app/issues/3');
+			// 枠を使い切っている間は gh を呼ばない。前に取れていた分は出す
+			const whileLimited = [await harness.service.lookupGithubReference('https://github.com/acme/app/issues/4'), await harness.service.lookupGithubReference(url)];
+
+			assert.deepStrictEqual({ first, sameAsFirst: second === first, reused: reused.kind, callsWhileFresh, args: harness.state.ghCalls[0], missing, loggedOut, notGithub, callsBeforeLimit, limited, whileLimited: whileLimited.map(result => result.kind === 'ok' ? result.info.number : result.reason), callsAfterLimit: harness.state.ghCalls.length }, {
+				first: { kind: 'ok', info: { kind: 'pr', owner: 'acme', repo: 'app', number: 2236, title: 'Fix the mapping', url: 'https://github.com/acme/app/pull/2236', state: 'open', branch: 'fix/mapping' } },
+				sameAsFirst: true,
+				reused: 'ok',
+				// 同時の 2 本と期限内の 1 本で 1 回
+				callsWhileFresh: 1,
+				// owner・name は文字のまま（-f）、番号だけ数として（-F）渡す。本文は問い合わせない
+				args: ['api', 'graphql', '-f', `query=${PARADIS_GITHUB_REFERENCE_QUERY}`, '-f', 'owner=acme', '-f', 'name=app', '-F', 'number=2236'],
+				missing: { kind: 'failed', reason: 'notFound' },
+				loggedOut: { kind: 'failed', reason: 'noGh' },
+				notGithub: { kind: 'failed', reason: 'notFound' },
+				callsBeforeLimit: 3,
+				limited: { kind: 'failed', reason: 'rateLimited' },
+				whileLimited: ['rateLimited', 2236],
+				callsAfterLimit: 4,
+			});
+			assert.ok(!PARADIS_GITHUB_REFERENCE_QUERY.includes('body'));
 		});
 
 		test('refetches the current space every 5 minutes and the others every 15, and only the new one after a switch', async () => {

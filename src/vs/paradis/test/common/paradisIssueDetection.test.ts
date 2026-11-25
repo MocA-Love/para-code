@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
-import { IParadisIssueLookupTarget, paradisExtractIssueUrls, paradisParseGhIssueStatus, paradisParseIssueUrl, paradisSelectIssueLookupBatch } from '../../common/paradisIssueDetection.js';
+import { IParadisIssueLookupTarget, paradisClassifyGithubReferenceFailure, paradisExtractGithubReferences, paradisExtractIssueUrls, paradisParseGhIssueStatus, paradisParseGithubReferenceResponse, paradisParseGithubReferenceUrl, paradisParseIssueUrl, paradisPreferGithubReferenceFailure, paradisSelectIssueLookupBatch } from '../../common/paradisIssueDetection.js';
 
 suite('paradisExtractIssueUrls / paradisParseIssueUrl', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -191,5 +191,75 @@ suite('paradisSelectIssueLookupBatch', () => {
 
 	test('returns nothing when the budget is exhausted (non-positive)', () => {
 		assert.deepStrictEqual(paradisSelectIssueLookupBatch(targetsFor([3]), new Set(), 0), []);
+	});
+});
+
+suite('issue and pull request URLs pasted into a prompt', () => {
+	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('picks up issues and pull requests in order, once each, up to three, and only on github.com', () => {
+		const text = [
+			'fix https://github.com/acme/app/pull/2241/files#diff-1 and https://github.com/acme/app/issues/2236#issuecomment-9,',
+			'again https://github.com/Acme/App/issues/2241 then https://github.com/acme/tools/issues/41',
+			'https://github.com/acme/app/issues/7 https://ghe.example.com/acme/app/issues/8 https://github.com/acme/app/discussions/9',
+		].join('\n');
+
+		assert.deepStrictEqual({
+			found: paradisExtractGithubReferences(text),
+			first: paradisExtractGithubReferences(text, 1).map(reference => reference.url),
+			none: paradisExtractGithubReferences('https://gitlab.com/acme/app/issues/1 https://github.com/acme/app/issues/'),
+			// 抽出の後でも単発の解析がずれない（正規表現を分けている）
+			parsed: [paradisParseGithubReferenceUrl('https://github.com/acme/app/pull/12/files'), paradisParseGithubReferenceUrl('https://github.com/acme/app/issues/0'), paradisParseGithubReferenceUrl('see https://github.com/acme/app/issues/3')],
+		}, {
+			found: [
+				{ url: 'https://github.com/acme/app/pull/2241', owner: 'acme', repo: 'app', number: 2241, kind: 'pr' },
+				{ url: 'https://github.com/acme/app/issues/2236', owner: 'acme', repo: 'app', number: 2236, kind: 'issue' },
+				{ url: 'https://github.com/acme/tools/issues/41', owner: 'acme', repo: 'tools', number: 41, kind: 'issue' },
+			],
+			first: ['https://github.com/acme/app/pull/2241'],
+			none: [],
+			parsed: [{ url: 'https://github.com/acme/app/pull/12', owner: 'acme', repo: 'app', number: 12, kind: 'pr' }, undefined, undefined],
+		});
+	});
+
+	test('reads the issue or pull request behind the URL, whichever the URL said, and only branches of the same repository', () => {
+		const response = (node: object | null) => JSON.stringify({ data: { repository: { issueOrPullRequest: node } } });
+
+		assert.deepStrictEqual([
+			// /issues/N の URL でも、実体が PR なら PR として読む
+			paradisParseGithubReferenceResponse(response({ __typename: 'PullRequest', number: 2241, title: 'Fix the mapping', url: 'https://github.com/acme/app/pull/2241', state: 'OPEN', isDraft: true, headRefName: 'fix/mapping', isCrossRepository: false }), 'acme', 'app'),
+			paradisParseGithubReferenceResponse(response({ __typename: 'PullRequest', number: 5, title: 'From a fork', url: 'https://github.com/acme/app/pull/5', state: 'MERGED', isDraft: false, headRefName: 'main', isCrossRepository: true }), 'acme', 'app'),
+			paradisParseGithubReferenceResponse(response({
+				__typename: 'Issue', number: 2236, title: 'Mapping is off', url: 'https://github.com/acme/app/issues/2236', state: 'CLOSED',
+				linkedBranches: { nodes: [{ ref: null }, { ref: { name: 'theirs', repository: { nameWithOwner: 'someone/app' } } }, { ref: { name: '2236-mapping', repository: { nameWithOwner: 'Acme/App' } } }] },
+			}), 'acme', 'app'),
+			paradisParseGithubReferenceResponse(response({ __typename: 'Issue', number: 1, title: 'No branch', url: 'https://github.com/acme/app/issues/1', state: 'OPEN', linkedBranches: { nodes: [] } }), 'acme', 'app'),
+			paradisParseGithubReferenceResponse(response(null), 'acme', 'app'),
+			paradisParseGithubReferenceResponse(response({ __typename: 'Issue', number: 1, title: 'x', url: 'file:///etc/passwd', state: 'OPEN' }), 'acme', 'app'),
+			paradisParseGithubReferenceResponse('not json', 'acme', 'app'),
+		], [
+			{ kind: 'pr', owner: 'acme', repo: 'app', number: 2241, title: 'Fix the mapping', url: 'https://github.com/acme/app/pull/2241', state: 'draft', branch: 'fix/mapping' },
+			{ kind: 'pr', owner: 'acme', repo: 'app', number: 5, title: 'From a fork', url: 'https://github.com/acme/app/pull/5', state: 'merged', branch: 'main', crossRepository: true },
+			{ kind: 'issue', owner: 'acme', repo: 'app', number: 2236, title: 'Mapping is off', url: 'https://github.com/acme/app/issues/2236', state: 'closed', branch: '2236-mapping' },
+			{ kind: 'issue', owner: 'acme', repo: 'app', number: 1, title: 'No branch', url: 'https://github.com/acme/app/issues/1', state: 'open' },
+			undefined,
+			undefined,
+			undefined,
+		]);
+	});
+
+	test('sorts a gh failure into not found, gh unusable, or unreachable', () => {
+		assert.deepStrictEqual([
+			'gh: Could not resolve to an issue or pull request with the number of 99999999.',
+			'gh: Could not resolve to a Repository with the name \'acme/private\'.',
+			'spawn gh ENOENT',
+			'sh: 1: gh: not found',
+			'To get started with GitHub CLI, please run:  gh auth login',
+			'gh: Bad credentials (HTTP 401)',
+			'error connecting to api.github.com',
+			'Command failed: gh api graphql',
+		].map(paradisClassifyGithubReferenceFailure), ['notFound', 'notFound', 'noGh', 'noGh', 'noGh', 'noGh', 'unreachable', 'unreachable']);
+		// 両方のマシンで駄目なら、手がかりの多い方を見せる
+		assert.deepStrictEqual([paradisPreferGithubReferenceFailure('noGh', 'notFound'), paradisPreferGithubReferenceFailure('unreachable', 'noGh'), paradisPreferGithubReferenceFailure('rateLimited', 'unreachable')], ['notFound', 'unreachable', 'rateLimited']);
 	});
 });
