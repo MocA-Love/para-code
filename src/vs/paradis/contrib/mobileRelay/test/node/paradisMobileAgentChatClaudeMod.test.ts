@@ -15,7 +15,7 @@ import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { fireParadisAgentHookEvent, onParadisAgentAwaitingUser } from '../../../agentBrowser/node/paradisAgentHookBus.js';
+import { fireParadisAgentHookEvent, getParadisAgentPaneActivity, onParadisAgentAwaitingUser, registerParadisAgentPaneActivityGuard } from '../../../agentBrowser/node/paradisAgentHookBus.js';
 import { ParadisClaudeModBridge } from '../../../claudeMod/node/paradisClaudeModBridge.js';
 import { ParadisMobileAgentChat, paradisModApprovalChoices } from '../../node/paradisMobileAgentChat.js';
 import { paradisApprovalDenyMessage } from '../../common/paradisAgentApprovalRequest.js';
@@ -398,11 +398,13 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 		// 同じカードへの 2 度目は受けない
 		harness.inbound({ t: 'action/clarifyQuestion', requestId: 'chat-2', epoch: harness.tailer()!.epoch, interactionId: 'toolu_c' });
 		await waitFor(() => harness.sent.filter(message => message.t === 'action-result').length >= 2, 'the withdrawals were not acknowledged');
-		// 同じカードへの二度目を断る時間（60 秒）を過ぎたことにする
-		harness.clockOffset = 61_000;
-		const second = await harness.mod('question', { toolUseId: 'toolu_c', questions });
+		// 取り下げを mod が受け取ったので、カードの回答待ちは解けている。同じ質問がもう一度出た（別の呼び出し）
+		await waitFor(() => harness.tailer()?.currentInteraction() === null, 'the withdrawn question kept waiting');
+		await harness.mod('event', { events: [{ type: 'row', uuid: 'u-d', door: 'response', message: { type: 'assistant', role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_d', name: 'AskUserQuestion', input: { questions } }] } }] });
+		await waitFor(() => harness.tailer()?.currentInteraction()?.id === 'toolu_d', 'the second question card was not shown');
+		const second = await harness.mod('question', { toolUseId: 'toolu_d', questions });
 		const waitingSecond = harness.mod('wait', { id: second.id });
-		harness.inbound({ t: 'action/clarifyQuestion', requestId: 'chat-3', epoch: harness.tailer()!.epoch, interactionId: 'toolu_c', answers: [{ kind: 'option', index: 0, notes: '短めに' }, null] });
+		harness.inbound({ t: 'action/clarifyQuestion', requestId: 'chat-3', epoch: harness.tailer()!.epoch, interactionId: 'toolu_d', answers: [{ kind: 'option', index: 0, notes: '短めに' }, null] });
 		const withoutMessage = await waitingSecond;
 		assert.deepStrictEqual({
 			withMessage,
@@ -1593,5 +1595,90 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 			delivered: harness.sent.some(message => message.t === 'delta' && (message.messages as { text: string; notice?: boolean }[]).some(item => item.text === notice()?.text && item.notice === true)),
 			keys: harness.actions.filter(action => action.t === 'action/sendMessage').length,
 		}, { notice: `送れませんでした: ${head}…`, delivered: true, keys: 0 });
+	}));
+	// 答えた後に「待ち」が残らないこと（カードの interaction・ペインの状態の元になる活動・生成中の様子の 3 つ）。
+	// 決着の知らせ（PostToolUse・transcript の tool_result）が来ない・遅れる場合でも、答えが渡った時点で解く。
+	const waitingStates = (harness: IHarness) => {
+		const access = harness.chat as unknown as { liveStates: Map<string, { phase: string }> };
+		const activity = getParadisAgentPaneActivity(harness.token);
+		return {
+			interaction: harness.tailer()?.currentInteraction()?.kind ?? 'none',
+			pendingQuestion: activity.pendingQuestion,
+			pendingApproval: activity.pendingApproval,
+			live: access.liveStates.get(harness.token)?.phase ?? 'none',
+		};
+	};
+	/** ペインの活動（ペインの状態の元）は持ち主の確かめを通ったものだけ入る。テストでは通す。 */
+	const withActivity = (run: (harness: IHarness) => Promise<void>) => withHarness(async harness => {
+		const guard = registerParadisAgentPaneActivityGuard(() => true);
+		try {
+			await run(harness);
+		} finally {
+			guard.dispose();
+		}
+	});
+	const QUESTIONS = [{ question: '色は？', header: '色', multiSelect: false, options: [{ label: '赤', description: '' }, { label: '緑', description: '' }] }];
+
+	test('a question answered through the mod stops waiting when the mod takes the answer, without a PostToolUse or a transcript result', () => withActivity(async harness => {
+		harness.hook('PreToolUse', { toolName: 'AskUserQuestion', toolUseId: 'toolu_q', toolInput: { questions: QUESTIONS } });
+		const registered = await harness.mod('question', { toolUseId: 'toolu_q', questions: QUESTIONS });
+		await waitFor(() => harness.tailer()?.currentInteraction()?.kind === 'question' && getParadisAgentPaneActivity(harness.token).pendingQuestion, 'the question card was not shown');
+		const before = waitingStates(harness);
+		const interactionId = harness.tailer()!.currentInteraction()!.id;
+		const waiting = harness.mod('wait', { id: registered.id });
+		harness.inbound({ t: 'action/answerQuestion', requestId: 'answer-1', epoch: harness.tailer()!.epoch, interactionId, answers: [{ kind: 'option', index: 1 }] });
+		await waiting;
+		await waitFor(() => harness.tailer()?.currentInteraction() === null, 'the question kept waiting after the mod took the answer');
+		await waitFor(() => !getParadisAgentPaneActivity(harness.token).pendingQuestion, 'the pane kept its question state');
+		assert.deepStrictEqual({ before, after: waitingStates(harness) }, {
+			before: { interaction: 'question', pendingQuestion: true, pendingApproval: false, live: 'permission' },
+			after: { interaction: 'none', pendingQuestion: false, pendingApproval: false, live: 'thinking' },
+		});
+	}));
+
+	test('a question answered through the mod keeps waiting until the mod takes the answer, and stops when it does', () => withHarness(async harness => {
+		harness.hook('PreToolUse', { toolName: 'AskUserQuestion', toolUseId: 'toolu_q', toolInput: { questions: QUESTIONS } });
+		const registered = await harness.mod('question', { toolUseId: 'toolu_q', questions: QUESTIONS });
+		await waitFor(() => harness.tailer()?.currentInteraction()?.kind === 'question', 'the question card was not shown');
+		const interactionId = harness.tailer()!.currentInteraction()!.id;
+		// mod の長いポーリングが切れている間に答えた（次のポーリングで受け取る）
+		harness.inbound({ t: 'action/answerQuestion', requestId: 'answer-1', epoch: harness.tailer()!.epoch, interactionId, answers: [{ kind: 'option', index: 0 }] });
+		await waitFor(() => harness.sent.some(message => message.t === 'action-result' && message.requestId === 'answer-1'), 'the answer was not acknowledged');
+		await new Promise<void>(resolve => setTimeout(resolve, 50));
+		const undelivered = waitingStates(harness).interaction;
+		const reply = await harness.mod('wait', { id: registered.id });
+		await waitFor(() => harness.tailer()?.currentInteraction() === null, 'the question kept waiting after the mod took the answer');
+		assert.deepStrictEqual({ undelivered, reply, after: waitingStates(harness).interaction }, { undelivered: 'question', reply: { state: 'answer', answers: { '色は？': '赤' } }, after: 'none' });
+	}));
+
+	test('an approval answered through the mod stops showing "waiting for permission" while the allowed tool still runs', () => withActivity(async harness => {
+		harness.hook('PreToolUse', { toolName: 'Bash', toolUseId: 'toolu_b', toolInput: { command: 'npm test' } });
+		harness.hook('PermissionRequest', { toolName: 'Bash', toolInput: { command: 'npm test' } });
+		const registered = await harness.mod('permission', { toolUseId: 'toolu_b', toolName: 'Bash', toolInput: { command: 'npm test' } });
+		await waitFor(() => harness.tailer()?.currentInteraction()?.kind === 'approval' && getParadisAgentPaneActivity(harness.token).pendingApproval, 'the approval card was not shown');
+		const before = waitingStates(harness);
+		const waiting = harness.mod('wait', { id: registered.id });
+		harness.inbound({ t: 'action/answerApproval', requestId: 'approve-1', epoch: harness.tailer()!.epoch, interactionId: 'toolu_b', choice: 'yes' });
+		await waiting;
+		await waitFor(() => harness.tailer()?.currentInteraction() === null && !getParadisAgentPaneActivity(harness.token).pendingApproval, 'the approval kept waiting');
+		await waitFor(() => waitingStates(harness).live !== 'permission', 'the live state kept waiting for permission');
+		assert.deepStrictEqual({ before, after: waitingStates(harness) }, {
+			before: { interaction: 'approval', pendingQuestion: false, pendingApproval: true, live: 'permission' },
+			after: { interaction: 'none', pendingQuestion: false, pendingApproval: false, live: 'tool' },
+		});
+	}));
+
+	test('an approval answered by keys stops showing "waiting for permission" once the window reports the keys went in', () => withActivity(async harness => {
+		harness.hook('PreToolUse', { toolName: 'Bash', toolUseId: 'toolu_k', toolInput: { command: 'npm test' } });
+		harness.hook('PermissionRequest', { toolName: 'Bash', toolInput: { command: 'npm test' } });
+		await waitFor(() => harness.tailer()?.currentInteraction()?.kind === 'approval', 'the approval card was not shown');
+		harness.inbound({ t: 'action/answerApproval', requestId: 'approve-k', epoch: harness.tailer()!.epoch, interactionId: 'toolu_k', choice: 'yes' });
+		await waitFor(() => harness.actions.some(action => action.t === 'action/interaction'), 'the keys were not handed to the window');
+		const epoch = harness.tailer()!.epoch;
+		assert.strictEqual(harness.chat.claimSendMessageAction('mobile-1', 'approve-k', harness.token, epoch, 1, 'window-session'), 'claimed');
+		harness.chat.finalizeInteractionAction('mobile-1', 'approve-k', harness.token, 'accepted', 1, 'window-session');
+		await waitFor(() => harness.tailer()?.currentInteraction() === null, 'the approval kept waiting');
+		await waitFor(() => waitingStates(harness).live !== 'permission', 'the live state kept waiting for permission');
+		assert.deepStrictEqual(waitingStates(harness), { interaction: 'none', pendingQuestion: false, pendingApproval: false, live: 'tool' });
 	}));
 });

@@ -1946,6 +1946,59 @@ describe('MobileController agent approval', () => {
 		await expect(answer).resolves.toEqual({ status: 'accepted' });
 	});
 
+	it('asks the PC for the conversation and the list again when an accepted answer is still on the card, and stops once the card is gone', async () => {
+		const mobile = generateIdentity();
+		const pc = generateIdentity();
+		const pair = new FakePair();
+		const creds: PairedCredentials = { relayUrl: 'wss://r', deviceId: 'd', mobileId: 'AAAAAAAAAAAAAAAAAAAAAA', mobileToken: 't', pcPublicKey: pc.publicKey };
+		let latest: import('./store.js').StoreState | undefined;
+		const controller = new MobileController(mobile, () => pair.client, state => { latest = state; });
+		const pcMuxPromise = drivePc(pair, pc, mobile.publicKey);
+		controller.connect(creds);
+		pair.fireOpen();
+		const pcMux = await pcMuxPromise;
+		await flush();
+		const encode = (value: object) => new TextEncoder().encode(JSON.stringify(value));
+		const requests: Record<string, unknown>[] = [];
+		let stateRequests = 0;
+		pcMux.on(Channels.Agent, frame => requests.push(JSON.parse(new TextDecoder().decode(frame.payload))));
+		pcMux.on(Channels.State, () => { stateRequests++; });
+		pcMux.send(Channels.State, encode(desktopState([{ id: 7, title: 'claude', agentToken: 'agent-7' }])));
+		await flush();
+		controller.attachAgent('terminal-7');
+		await flush();
+		pcMux.send(Channels.Agent, encode({
+			t: 'snapshot', id: 7, token: 'agent-7', agent: 'claude', epoch: 'e1', rev: 0, messages: [],
+			capabilities: { agentActions: true },
+			interaction: { kind: 'approval', id: 'toolu_1', title: 'コマンドの実行許可', detail: 'npm test' },
+		}));
+		await flush();
+		requests.length = 0;
+		vi.useFakeTimers();
+		try {
+			const answer = controller.answerAgentApproval('terminal-7', 'toolu_1', 'yes');
+			await vi.advanceTimersByTimeAsync(0);
+			pcMux.send(Channels.Agent, encode({ t: 'action-result', id: 7, token: 'agent-7', requestId: requests[0]?.requestId, status: 'accepted' }));
+			await vi.advanceTimersByTimeAsync(0);
+			await expect(answer).resolves.toEqual({ status: 'accepted' });
+			requests.length = 0;
+			stateRequests = 0;
+			// 15 秒たってもカードが残っている: 会話（attach）と一覧（state）を取り直す
+			await vi.advanceTimersByTimeAsync(15_000);
+			const first = { attaches: requests.filter(request => request.t === 'attach').length, states: stateRequests };
+			// PC の今の状態では回答待ちが終わっていた（知らせの差分を取りこぼしていた）
+			pcMux.send(Channels.Agent, encode({ t: 'delta', id: 7, token: 'agent-7', agent: 'claude', epoch: 'e1', rev: 0, messages: [], interaction: null }));
+			await vi.advanceTimersByTimeAsync(0);
+			requests.length = 0;
+			await vi.advanceTimersByTimeAsync(70_000);
+			expect({ first, cardAfter: latest?.agentChats.get('terminal-7')?.interaction, laterAttaches: requests.filter(request => request.t === 'attach').length })
+				.toEqual({ first: { attaches: 1, states: 1 }, cardAfter: undefined, laterAttaches: 0 });
+		} finally {
+			vi.useRealTimers();
+			controller.dispose();
+		}
+	});
+
 	it('hands over the messages a large delta trimmed, including the old side of the delta itself', async () => {
 		const mobile = generateIdentity();
 		const pc = generateIdentity();

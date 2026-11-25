@@ -517,6 +517,8 @@ const SUBAGENT_START_PAIRING_WINDOW_MS = 10 * 60_000;
 const MOD_ROW_LEDGER_LIMIT = 2_000;
 /** mod へ渡した回答を覚えておく時間（同じカードへの二度目をキーの経路へ回さないため）。 */
 const MOD_ANSWER_LOCK_MS = 60_000;
+/** mod へ渡した質問の答えを覚えておく上限（mod の質問の待ちの上限と同じ）。受け取られたら先に消す。 */
+const MOD_QUESTION_ANSWER_KEEP_MS = 60 * 60_000;
 /** mod が生成中の文章を流している間、MessageDisplay hook の先出しを使わない時間。 */
 const MOD_STREAM_PREFERRED_MS = 5 * 60_000;
 /** mod が busy で断った発言を、1 通目の行方が分かるまで待つ上限。過ぎたらキーで送る。 */
@@ -6406,6 +6408,11 @@ export class ParadisMobileAgentChat extends Disposable {
 	private handleQuestionAction(mobileId: string, msg: Extract<AgentInbound, { t: 'action/answerQuestion' }>): void {
 		const token = this.resolveInboundToken(msg.id, msg.token);
 		const questions = token !== undefined ? this.tailers.get(token)?.pendingQuestionMessages(msg.interactionId) ?? [] : [];
+		// mod が答えを受け取って回答待ちを解いた直後に、同じカードへの二度目が届いた（アプリのカードが消える前に押した）
+		if (token !== undefined && questions.length === 0 && this.isModAnswerLocked(`${token}\0question\0${msg.interactionId}`)) {
+			this.rejectAction(mobileId, msg, token, 'interaction-locked', 'PC側で反映を待っています。変わらない場合はPCの画面で確認してください');
+			return;
+		}
 		const answersMatch = questions.length === msg.answers.length && msg.answers.every((answer, index) => paradisQuestionAnswerFits(questions[index], answer));
 		if (!answersMatch) {
 			this.recordQuestionAnswerShape(token, msg, questions, 0, 'rejected-mismatch');
@@ -6775,6 +6782,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (outcome === 'accepted' && answered?.token === token && answered.windowId === windowId && answered.windowSession === windowSession
 			&& answered.interaction?.kind === 'approval') {
 			this.tailers.get(token)?.markApprovalAnswered(answered.interaction.id);
+			this.settleLiveAfterApprovalAnswered(token);
 		}
 		if (outcome === 'failed' && completed?.token === token && completed.windowId === windowId && completed.windowSession === windowSession
 			&& this.ownerForPane(completed.terminalId, token)?.windowSession === windowSession) {
@@ -7508,6 +7516,12 @@ export class ParadisMobileAgentChat extends Disposable {
 	private readonly modStreamedAt = new Map<string, number>();
 	/** mod へ渡した回答（`token\0kind\0interactionId` → 時刻）。同じカードへの二度目をキーの経路へ回さない。 */
 	private readonly modAnswered = new Map<string, number>();
+	/**
+	 * mod へ渡した質問の答え（mod の待ちの id → どのカードか）。mod が受け取ったら（`answer-taken`）そのカードの回答待ちを解く。
+	 * 答えを受け取った mod はそのまま Claude Code へ返すので、決着の知らせ（AskUserQuestion の PostToolUse・transcript の結果）を
+	 * 待たない。待つと、その知らせが来ない・遅れる間、カードとペインが「質問」のまま残る。
+	 */
+	private readonly modQuestionAnswers = new Map<string, { readonly token: string; readonly epoch: string; readonly interactionId: string; readonly at: number }>();
 	/** mod で送っている最中の発言（actionKey）。同じ requestId の二度目を弾く。 */
 	private readonly modSendRequests = new Set<string>();
 	/** ペインごとに、mod へ渡して行方を待っている発言（受け取った・送れた・失敗で決着する）。 */
@@ -7607,6 +7621,11 @@ export class ParadisMobileAgentChat extends Disposable {
 					this.refreshModApprovals(token);
 				} else {
 					this.refreshModQuestions(token);
+				}
+				return;
+			case 'answer-taken':
+				if (event.kind === 'question') {
+					this.settleModQuestionAnswer(token, event.id);
 				}
 				return;
 			case 'bye':
@@ -7865,6 +7884,56 @@ export class ParadisMobileAgentChat extends Disposable {
 		void (this.hookProcessing.get(token) ?? Promise.resolve()).then(() => tailer.afterQueue(apply));
 	}
 
+	private rememberModQuestionAnswer(itemId: string, token: string, epoch: string, interactionId: string): void {
+		const now = this.modAnswerNow();
+		for (const [candidate, entry] of this.modQuestionAnswers) {
+			// 受け取られなかった答え（mod が去った）は、mod の待ちの上限（1 時間）より長くは残さない
+			if (now - entry.at > MOD_QUESTION_ANSWER_KEEP_MS) {
+				this.modQuestionAnswers.delete(candidate);
+			}
+		}
+		this.modQuestionAnswers.set(itemId, { token, epoch, interactionId, at: now });
+	}
+
+	/**
+	 * mod がモバイルの答えを受け取った（`answer-taken`）。質問はここで決着している: カードの回答待ちを解き、
+	 * 生成中の様子を「質問の回答待ち」から戻す（PostToolUse が来たときと同じ）。承認は、渡した時点で答え終えた印を付けてある。
+	 */
+	private settleModQuestionAnswer(token: string, itemId: string): void {
+		const entry = this.modQuestionAnswers.get(itemId);
+		if (entry === undefined || entry.token !== token) {
+			return;
+		}
+		this.modQuestionAnswers.delete(itemId);
+		const tailer = this.tailers.get(token);
+		if (tailer === undefined || tailer.epoch !== entry.epoch) {
+			return;
+		}
+		tailer.clearPendingQuestions(entry.interactionId);
+		this.releaseInteractionClaimsFor(token, entry.interactionId);
+		const live = this.liveStates.get(token);
+		if (live?.phase === 'permission' && live.tool === 'AskUserQuestion') {
+			this.liveToolIds.delete(token);
+			this.setLiveState(token, { phase: 'thinking', source: 'hook', startedAt: live.startedAt, updatedAt: Date.now() });
+		}
+	}
+
+	/**
+	 * 承認に答え終えた印を付けた後の、生成中の様子を直す。許可したツールが終わるまで hook は来ないので、そのままだと
+	 * ツールが動いている間ずっと「許可待ち」と出る。答えていない承認が残っていなければ、許可を待つ前の様子へ戻す。
+	 */
+	private settleLiveAfterApprovalAnswered(token: string): void {
+		const tailer = this.tailers.get(token);
+		if (tailer === undefined) {
+			return;
+		}
+		void tailer.afterQueue(() => {
+			if (this.tailers.get(token) === tailer) {
+				this.settleLiveAfterApprovals(token, false);
+			}
+		});
+	}
+
 	private lockModAnswer(key: string): void {
 		const now = this.modAnswerNow();
 		this.modAnswered.set(key, now);
@@ -7935,7 +8004,13 @@ export class ParadisMobileAgentChat extends Disposable {
 		const target = this.matchModQuestion(token, msg.interactionId, questions);
 		// カードの選択肢（表示用に切り詰めたもの）から、mod が受け取った元のラベルと preview を引く
 		const built = target !== undefined ? paradisBuildModQuestionAnswer(target.questions, questions.map(paradisShownOptionLabels), msg.answers, paradisTruncateOptionLabel) : undefined;
-		if (target === undefined || built === undefined || !this.claudeModBridge.answerQuestion(token, target.id, built.answers, built.annotations)) {
+		if (target === undefined || built === undefined) {
+			return false;
+		}
+		// 先に覚える（mod が長いポーリングで待っていれば、渡した呼び出しの中で受け取りの知らせが来る）
+		this.rememberModQuestionAnswer(target.id, token, msg.epoch, msg.interactionId);
+		if (!this.claudeModBridge.answerQuestion(token, target.id, built.answers, built.annotations)) {
+			this.modQuestionAnswers.delete(target.id);
 			return false;
 		}
 		this.lockModAnswer(lockKey);
@@ -7951,14 +8026,18 @@ export class ParadisMobileAgentChat extends Disposable {
 		const token = this.resolveInboundToken(msg.id, msg.token);
 		const tailer = token !== undefined ? this.tailers.get(token) : undefined;
 		const reject = (code: string, message: string) => this.rejectAction(mobileId, msg, token ?? msg.token, code, message);
-		if (token === undefined || tailer === undefined || tailer.epoch !== msg.epoch || !this.hasSubscriber(token, mobileId)
-			|| !tailer.hasPendingInteraction({ kind: 'question', id: msg.interactionId })) {
+		if (token === undefined || tailer === undefined || tailer.epoch !== msg.epoch || !this.hasSubscriber(token, mobileId)) {
 			reject('stale-interaction', '回答対象の質問が変わりました');
 			return;
 		}
+		// 鍵を先に見る（mod が受け取って回答待ちを解いた直後の二度目も、同じ断りで返す）
 		const lockKey = `${token}\0question\0${msg.interactionId}`;
 		if (this.isModAnswerLocked(lockKey)) {
 			reject('interaction-locked', 'PC側で反映を待っています。変わらない場合はPCの画面で確認してください');
+			return;
+		}
+		if (!tailer.hasPendingInteraction({ kind: 'question', id: msg.interactionId })) {
+			reject('stale-interaction', '回答対象の質問が変わりました');
 			return;
 		}
 		const questions = tailer.pendingQuestionMessages(msg.interactionId);
@@ -7974,7 +8053,9 @@ export class ParadisMobileAgentChat extends Disposable {
 		const clarify = msg.response !== undefined
 			? { kind: 'response' as const, response: msg.response }
 			: { kind: 'deny' as const, deny: paradisAgentQuestionClarifyDeny(target.questions, questions.map(paradisShownOptionLabels), partial, paradisTruncateOptionLabel, index => paradisAgentQuestionHasPreview(questions[index] ?? {})) };
+		this.rememberModQuestionAnswer(target.id, token, msg.epoch, msg.interactionId);
 		if (!this.claudeModBridge.clarifyQuestion(token, target.id, clarify)) {
+			this.modQuestionAnswers.delete(target.id);
 			reject('stale-interaction', 'この質問はもう取り下げられません。PC の画面で確認してください');
 			return;
 		}
@@ -8027,6 +8108,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		this.lockModAnswer(lockKey);
 		tailer.markApprovalAnswered(interactionId);
+		this.settleLiveAfterApprovalAnswered(token);
 		return 'answered';
 	}
 
@@ -8056,6 +8138,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		// 答えた印を先に付ける（ペインの許可待ちは、カードの答えた印で解ける。agy は許可したツールが終わるまで hook を出さない）
 		tailer.markApprovalAnswered(interactionId);
+		this.settleLiveAfterApprovalAnswered(token);
 		return paradisAntigravityApprovalHold.answer(token, interactionId, choice === 'yes' ? 'allow' : 'deny');
 	}
 
@@ -8818,6 +8901,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			// 同じ本文の許可要求がもう一度出たら（同じコマンドの再実行）、新しい承認として受け付ける。
 			// 覚えたままだと重複として捨て、答え終えた古いカードだけが残る。
 			this.tailers.get(token)?.markApprovalAnswered(id);
+			this.settleLiveAfterApprovalAnswered(token);
 		}
 		if (!sent) {
 			this.releaseInteractionClaim(entry.key, entry.claim);
@@ -8842,6 +8926,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			return false;
 		}
 		await tailer.markApprovalsSeenAnswered(interactionIds);
+		this.settleLiveAfterApprovalAnswered(token);
 		return tailer.hasAnyPendingApproval();
 	}
 

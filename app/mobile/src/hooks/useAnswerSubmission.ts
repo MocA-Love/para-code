@@ -4,7 +4,7 @@ import { useCallback, useEffect, useReducer, useRef } from 'react';
 import { haptic } from '../haptics.js';
 import type { AgentMessageSendResult } from '../store.js';
 import {
-	ANSWER_RESPONSE_TIMEOUT_MS, IDLE_SUBMISSION, reduceAnswerSubmission, type AnswerSubmissionState,
+	ANSWER_RESPONSE_TIMEOUT_MS, ANSWER_STALE_TIMEOUT_MS, IDLE_SUBMISSION, reduceAnswerSubmission, type AnswerSubmissionState,
 } from '../components/answerSubmission.js';
 
 export interface AnswerSubmission {
@@ -27,6 +27,7 @@ export function useAnswerSubmission(resetKey: unknown): AnswerSubmission {
 	const [state, dispatch] = useReducer(reduceAnswerSubmission, IDLE_SUBMISSION);
 	const generationRef = useRef(0);
 	const timerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	const staleTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 	const lastActionRef = useRef<(() => Promise<AgentMessageSendResult>) | undefined>(undefined);
 	// 実行中ガード。送信を始めたら、拒否されるか「送信中のまま時間切れ」になるまで新たに送らない
 	// （PCが受け付けたあとも、カードが消えるまで送り直さない）。状態（phase）は再レンダリングまで
@@ -37,6 +38,10 @@ export function useAnswerSubmission(resetKey: unknown): AnswerSubmission {
 		if (timerRef.current !== undefined) {
 			clearTimeout(timerRef.current);
 			timerRef.current = undefined;
+		}
+		if (staleTimerRef.current !== undefined) {
+			clearTimeout(staleTimerRef.current);
+			staleTimerRef.current = undefined;
 		}
 	}, []);
 
@@ -74,6 +79,14 @@ export function useAnswerSubmission(resetKey: unknown): AnswerSubmission {
 				dispatch({ type: 'timeout' });
 			}
 		}, ANSWER_RESPONSE_TIMEOUT_MS);
+		// PC が受け付けたのにカードが残り続けたら「選び直す」を出す（受け付けていなければ reducer が何もしない）。
+		staleTimerRef.current = setTimeout(() => {
+			staleTimerRef.current = undefined;
+			if (generationRef.current === generation && settled) {
+				haptic('warning');
+				dispatch({ type: 'stale' });
+			}
+		}, ANSWER_STALE_TIMEOUT_MS);
 		const pending: Promise<AgentMessageSendResult> = action()
 			.catch((): AgentMessageSendResult => ({ status: 'rejected', message: '回答を送信できませんでした' }))
 			.then(result => {

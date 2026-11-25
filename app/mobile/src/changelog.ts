@@ -40,6 +40,18 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.30',
+		date: '2026-11-26',
+		items: [
+			{
+				icon: 'refresh-circle-outline',
+				title: '質問や許可に答えた後、カードや「質問」「許可待ち」の表示が残ることがある問題を直しました',
+				body: 'PC が受け付けたのにカードが残るときは、PC から状態を取り直します。それでも残るときは「選び直す」が出ます。PC の Para Code の更新も要ります。',
+				tone: 'green',
+			},
+		],
+	},
+	{
 		version: '0.12.29',
 		date: '2026-11-22',
 		items: [
