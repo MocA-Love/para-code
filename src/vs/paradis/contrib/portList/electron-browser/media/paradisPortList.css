@@ -447,6 +447,11 @@
 	.paradis-port-list-panel .ppl-kill-space {
 		width: 44px;
 	}
+
+	/* Same height as a row with the enlarged kill button. */
+	.paradis-port-list-panel .ppl-group {
+		min-height: 57px;
+	}
 }
 
 @keyframes paradis-port-list-spin {

@@ -172,12 +172,13 @@ export class ParadisPortListPanel extends Disposable {
 		this.updateViewControls();
 
 		this.listElement = dom.append(scroll, $('.ppl-list'));
-		// 確認を出している行の外（別の行など）を押したら確認をやめる。別の行の終了ボタンは、そのボタンの click で確認を移す
+		// 確認を出している行の外（別の行など）を押したら確認をやめる。別の行の終了ボタンは、そのボタンの click で確認を移す。
+		// まとまりの見出しも、その click で確認をやめる（ここで描き直すと、押した見出しが作り直されて click が届かない）
 		this._register(dom.addDisposableListener(this.listElement, 'mousedown', e => {
 			if (this.confirmingKey === undefined || !dom.isHTMLElement(e.target)) {
 				return;
 			}
-			if (e.target.closest('.ppl-confirm, .ppl-kill-btn')) {
+			if (e.target.closest('.ppl-confirm, .ppl-kill-btn, .ppl-group')) {
 				return;
 			}
 			this.cancelConfirm(false);
@@ -411,10 +412,9 @@ export class ParadisPortListPanel extends Disposable {
 		dom.append(header, $('span.ppl-kill-space'));
 		this.rowButtons.set(`group|${name}`, header);
 		this._listListeners.add(dom.addDisposableListener(header, 'click', () => {
-			if (this.searchQuery.trim().length > 0) {
-				return;
-			}
-			if (!this.expandedGroups.delete(name)) {
+			this.confirmingKey = undefined;
+			this.confirmTimer.clear();
+			if (this.searchQuery.trim().length === 0 && !this.expandedGroups.delete(name)) {
 				this.expandedGroups.add(name);
 			}
 			this.renderList(`group|${name}`);

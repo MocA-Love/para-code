@@ -408,21 +408,25 @@ suite('Paradis port list panel', () => {
 			heading().focus();
 			heading().click();
 			const opened = { list: list(), focusOnHeading: document.activeElement === heading() };
-			// 開いた中の行で確認を出したまま畳むと、確認もやめる
+			// 開いた中の行で確認を出したまま見出しを押すと（マウスは mousedown の後に click）、確認をやめて畳む
 			fixture.root.querySelector<HTMLButtonElement>('.ppl-row.child .ppl-kill-btn')!.click();
 			const asking = fixture.root.querySelectorAll('.ppl-confirm').length;
-			heading().click();
+			const pressed = heading();
+			pressed.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+			const headingKeptForClick = pressed.isConnected;
+			pressed.click();
 			const foldedAgain = { list: list(), confirms: fixture.root.querySelectorAll('.ppl-confirm').length, focusOnHeading: document.activeElement === heading() };
 			// 検索中は一致した行を隠さない
 			const search = fixture.root.querySelector<HTMLInputElement>('.ppl-search-box input')!;
 			search.value = 'node';
 			search.dispatchEvent(new Event('input'));
 			const searching = list();
-			assert.deepStrictEqual({ folded, killAll: fixture.killAllRequests.map(request => request.map(entry => entry.port)), opened, asking, foldedAgain, searching }, {
+			assert.deepStrictEqual({ folded, killAll: fixture.killAllRequests.map(request => request.map(entry => entry.port)), opened, asking, headingKeptForClick, foldedAgain, searching }, {
 				folded: { pressed: 'true', list: ['group node 3 件 全公開 expanded=false', 'ppl-row :5432'], count: '4' },
 				killAll: [[3000, 3001, 5432, 9229]],
 				opened: { list: ['group node 3 件 全公開 expanded=true', 'ppl-row child :3000', 'ppl-row child :3001', 'ppl-row child :9229', 'ppl-row :5432'], focusOnHeading: true },
 				asking: 1,
+				headingKeptForClick: true,
 				foldedAgain: { list: ['group node 3 件 全公開 expanded=false', 'ppl-row :5432'], confirms: 0, focusOnHeading: true },
 				searching: ['group node 3 件 全公開 expanded=true', 'ppl-row child :3000', 'ppl-row child :3001', 'ppl-row child :9229'],
 			});
