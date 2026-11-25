@@ -10,14 +10,15 @@
 //
 // 緊急停止:
 //  - 入力の見張り（ParadisInputMonitor）が、目印の無い（補助アプリが送ったのではない）Esc の押下を知らせる。
-//    0.6 秒以内に 2 回続き、直近 30 秒以内に Computer Use が入力の要求を受けていたら、掛け金を掛ける
+//    0.6 秒以内に 2 回続き、Computer Use が入力の要求を処理している最中か、直近 30 秒以内に処理していたら、掛け金を掛ける
 //  - 1 回では掛けない。Para Code は背面のアプリを操作するので、利用者が別のアプリで IME の変換やダイアログを
 //    Esc 1 回で取り消すだけで止まってしまうため。エージェントが送る Esc は目印で除かれる
 //  - 掛かっている間、入力の要求は送る前に `stopped_by_user` で断る。長い文字入力の途中でも、次の 1 打の前に止まる
 //    （利用者の入力を見るフェンスと同じ場所で見る）。読むだけの要求は通す
 //  - 外せるのは `resume` の要求だけ。shared process は、Para Code の画面での人の操作からしかこれを送らない。
-//    補助アプリが終わると（10 分の無操作・設定のオフ・Para Code の終了）掛け金も消えるので、shared process も
-//    同じ状態を持ち、補助アプリが起動し直しても断り続ける
+//    補助アプリが終わると（10 分の無操作・設定のオフ・Para Code の終了）掛け金も消える。shared process は、止まったことを
+//    一度見た後は同じ状態を自分でも持ち、補助アプリが起動し直しても断り続ける。shared process が見る前（止めた後に
+//    どの要求も来ないまま）補助アプリが終わったときは、停止は残らない
 //
 // 既知の限界（実機では未確認）:
 //  - macOS のセキュア入力中（パスワード欄に入力中）は、イベントタップにキーが届かないので、Esc の 2 回押しは効かない見込み
@@ -32,16 +33,33 @@ let paradisEmergencyStopDoublePressSeconds: Double = 0.6
 /** Computer Use が入力の要求を受けてから、Esc の 2 回押しで止められる時間。 */
 let paradisEmergencyStopRecentInputSeconds: Double = 30
 
-/**
- * その押下を、緊急停止の Esc として数えるか。補助アプリが送ったもの・自動リピート・⌘ ⌃ ⌥ 付き（⌘⌥Esc の強制終了など）は数えない。
- */
-func paradisCountsAsEmergencyEscape(keyCode: Int64, autorepeat: Bool, ours: Bool, hasCommandControlOrOption: Bool) -> Bool {
-	return keyCode == paradisEscapeKeyCode && !autorepeat && !ours && !hasCommandControlOrOption
+/** キーの押下の、緊急停止での扱い。 */
+enum ParadisEmergencyKey: Equatable {
+	/** 2 回押しの 1 回として数える Esc。 */
+	case escape
+	/** ほかのキー。挟まったら数え直す。 */
+	case other
+	/** 無かったことにする（数えず、数え直しもしない）。 */
+	case ignored
 }
 
 /**
- * 掛け金を掛けるか。直前の Esc から 0.6 秒以内の Esc で、Computer Use が直近 30 秒以内に入力の要求を受けていること。
- * 時刻はどれも同じ単調な時計の秒。
+ * その押下を、緊急停止でどう扱うか。補助アプリが送ったものと、Esc の自動リピートは無視する（1 回目を少し長く押して
+ * リピートが始まっても、2 回目で止まるように）。⌘ ⌃ ⌥ 付きの Esc（⌘⌥Esc の強制終了など）はほかのキーとして扱う。
+ */
+func paradisEmergencyKey(keyCode: Int64, autorepeat: Bool, ours: Bool, hasCommandControlOrOption: Bool) -> ParadisEmergencyKey {
+	if ours {
+		return .ignored
+	}
+	guard keyCode == paradisEscapeKeyCode, !hasCommandControlOrOption else {
+		return .other
+	}
+	return autorepeat ? .ignored : .escape
+}
+
+/**
+ * 掛け金を掛けるか。直前の Esc から 0.6 秒以内の Esc で、Computer Use が直近 30 秒以内に入力の要求を処理していたこと
+ * （処理している最中なら、呼び出し側が `lastInputAt` に今の時刻を渡す）。時刻はどれも同じ単調な時計の秒。
  */
 func paradisEmergencyStopTriggered(previousEscapeAt: Double?, escapeAt: Double, lastInputAt: Double?) -> Bool {
 	guard let previousEscapeAt, let lastInputAt else {
@@ -64,6 +82,8 @@ final class ParadisEmergencyStop {
 	private var stopped = false
 	private var previousEscapeAt: Double?
 	private var lastInputAt: Double?
+	/** 処理している最中の入力の要求の数（1 つの要求が 30 秒を超えても、その間は止められるように）。 */
+	private var activeInputs = 0
 
 	var isStopped: Bool {
 		lock.lock()
@@ -73,28 +93,42 @@ final class ParadisEmergencyStop {
 		return stopped
 	}
 
-	/** 入力の要求を受けた・終えた時刻を覚える。 */
-	func noteInput(at time: Double) {
+	/** 入力の要求の処理を始めた。終えたら必ず `endInput` を呼ぶ。 */
+	func beginInput(at time: Double) {
 		lock.lock()
+		activeInputs += 1
+		lastInputAt = time
+		lock.unlock()
+	}
+
+	/** 入力の要求の処理を終えた（成功でも失敗でも）。ここから 30 秒は Esc の 2 回押しで止められる。 */
+	func endInput(at time: Double) {
+		lock.lock()
+		activeInputs = max(0, activeInputs - 1)
 		lastInputAt = time
 		lock.unlock()
 	}
 
 	/**
-	 * 目印の無いキーの押下を知らせる。`escape` は `paradisCountsAsEmergencyEscape` の答え。ほかのキーを挟むと数え直す。
+	 * キーの押下を知らせる。`key` は `paradisEmergencyKey` の答え。ほかのキーを挟むと数え直す。
 	 * この押下で掛け金が掛かったら true。
 	 */
 	@discardableResult
-	func notePhysicalKeyDown(escape: Bool, at time: Double) -> Bool {
+	func noteKeyDown(_ key: ParadisEmergencyKey, at time: Double) -> Bool {
 		lock.lock()
 		defer {
 			lock.unlock()
 		}
-		guard escape else {
+		switch key {
+		case .ignored:
+			return false
+		case .other:
 			previousEscapeAt = nil
 			return false
+		case .escape:
+			break
 		}
-		let triggered = !stopped && paradisEmergencyStopTriggered(previousEscapeAt: previousEscapeAt, escapeAt: time, lastInputAt: lastInputAt)
+		let triggered = !stopped && paradisEmergencyStopTriggered(previousEscapeAt: previousEscapeAt, escapeAt: time, lastInputAt: activeInputs > 0 ? time : lastInputAt)
 		previousEscapeAt = time
 		if triggered {
 			stopped = true

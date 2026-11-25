@@ -1138,19 +1138,28 @@ do {
 	check(!paradisEmergencyStopTriggered(previousEscapeAt: nil, escapeAt: 10.5, lastInputAt: 2), "one Escape does not stop")
 	check(!paradisEmergencyStopTriggered(previousEscapeAt: 10, escapeAt: 10.5, lastInputAt: nil), "Escapes do not stop when Computer Use sent nothing")
 	check(!paradisEmergencyStopTriggered(previousEscapeAt: 40, escapeAt: 40.5, lastInputAt: 10) && paradisEmergencyStopTriggered(previousEscapeAt: 39.6, escapeAt: 40, lastInputAt: 10), "Escapes stop only within 30 s of the last input")
-	check(paradisCountsAsEmergencyEscape(keyCode: 53, autorepeat: false, ours: false, hasCommandControlOrOption: false), "a physical Escape counts")
-	check(!paradisCountsAsEmergencyEscape(keyCode: 53, autorepeat: true, ours: false, hasCommandControlOrOption: false), "a repeating Escape does not count")
-	check(!paradisCountsAsEmergencyEscape(keyCode: 53, autorepeat: false, ours: true, hasCommandControlOrOption: false), "the agent's own Escape does not count")
-	check(!paradisCountsAsEmergencyEscape(keyCode: 53, autorepeat: false, ours: false, hasCommandControlOrOption: true) && !paradisCountsAsEmergencyEscape(keyCode: 36, autorepeat: false, ours: false, hasCommandControlOrOption: false), "Force Quit and other keys do not count")
+	check(paradisEmergencyKey(keyCode: 53, autorepeat: false, ours: false, hasCommandControlOrOption: false) == .escape, "a physical Escape counts")
+	check(paradisEmergencyKey(keyCode: 53, autorepeat: true, ours: false, hasCommandControlOrOption: false) == .ignored, "a repeating Escape is ignored")
+	check(paradisEmergencyKey(keyCode: 53, autorepeat: false, ours: true, hasCommandControlOrOption: false) == .ignored && paradisEmergencyKey(keyCode: 0, autorepeat: false, ours: true, hasCommandControlOrOption: false) == .ignored, "the agent's own keys are ignored")
+	check(paradisEmergencyKey(keyCode: 53, autorepeat: false, ours: false, hasCommandControlOrOption: true) == .other && paradisEmergencyKey(keyCode: 36, autorepeat: false, ours: false, hasCommandControlOrOption: false) == .other, "Force Quit and other keys start over")
 
 	let latch = ParadisEmergencyStop()
-	check(!latch.notePhysicalKeyDown(escape: true, at: 1) && !latch.notePhysicalKeyDown(escape: true, at: 1.2) && !latch.isStopped && latch.failure() == nil, "the latch stays open while Computer Use is idle")
-	latch.noteInput(at: 5)
-	check(!latch.notePhysicalKeyDown(escape: true, at: 6) && !latch.notePhysicalKeyDown(escape: false, at: 6.1) && !latch.notePhysicalKeyDown(escape: true, at: 6.2), "another key between the Escapes starts over")
-	check(latch.notePhysicalKeyDown(escape: true, at: 6.5) && latch.isStopped && latch.failure()?.code == "stopped_by_user", "the second Escape closes the latch")
-	check(!latch.notePhysicalKeyDown(escape: true, at: 6.6) && latch.isStopped, "more Escapes keep it closed and do not report again")
+	check(!latch.noteKeyDown(.escape, at: 1) && !latch.noteKeyDown(.escape, at: 1.2) && !latch.isStopped && latch.failure() == nil, "the latch stays open while Computer Use is idle")
+	latch.beginInput(at: 5)
+	latch.endInput(at: 5)
+	check(!latch.noteKeyDown(.escape, at: 6) && !latch.noteKeyDown(.other, at: 6.1) && !latch.noteKeyDown(.escape, at: 6.2), "another key between the Escapes starts over")
+	// 1 回目を少し長く押して自動リピートが始まっても、2 回目で止まる（エージェントの送ったキーが挟まっても同じ）
+	check(!latch.noteKeyDown(.ignored, at: 6.3) && latch.noteKeyDown(.escape, at: 6.5) && latch.isStopped && latch.failure()?.code == "stopped_by_user", "the second Escape closes the latch, across ignored keys")
+	check(!latch.noteKeyDown(.escape, at: 6.6) && latch.isStopped, "more Escapes keep it closed and do not report again")
 	latch.resume()
-	check(!latch.isStopped && !latch.notePhysicalKeyDown(escape: true, at: 6.9), "resume opens the latch and forgets the earlier Escape")
+	check(!latch.isStopped && !latch.noteKeyDown(.escape, at: 6.9), "resume opens the latch and forgets the earlier Escape")
+	// 1 つの要求が 30 秒を超えても、処理している間は止められる。終えてから 30 秒を過ぎたら止めない
+	let long = ParadisEmergencyStop()
+	long.beginInput(at: 100)
+	check(!long.noteKeyDown(.escape, at: 150) && long.noteKeyDown(.escape, at: 150.3), "a request that runs longer than 30 s can still be stopped")
+	long.resume()
+	long.endInput(at: 160)
+	check(!long.noteKeyDown(.escape, at: 195) && !long.noteKeyDown(.escape, at: 195.3) && !long.isStopped, "30 s after the request ended, Escapes no longer stop")
 
 	let desktop = FakeDesktop()
 	var clock = 100.0
@@ -1165,10 +1174,10 @@ do {
 	}
 	let click = #"{"id":2,"method":"click","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"x":1,"y":1}}"#
 	// 読むだけの要求は「入力を送った」に数えない
-	check(code(#"{"id":2,"method":"listWindows","params":{"pid":100,"bundleId":"com.apple.finder"}}"#) == "ok" && !handler.emergencyStop.notePhysicalKeyDown(escape: true, at: 100.1) && !handler.emergencyStop.notePhysicalKeyDown(escape: true, at: 100.2), "reading does not arm the emergency stop")
+	check(code(#"{"id":2,"method":"listWindows","params":{"pid":100,"bundleId":"com.apple.finder"}}"#) == "ok" && !handler.emergencyStop.noteKeyDown(.escape, at: 100.1) && !handler.emergencyStop.noteKeyDown(.escape, at: 100.2), "reading does not arm the emergency stop")
 	check(code(click) == "ok", "input is sent before the stop")
 	clock = 120
-	check(!handler.emergencyStop.notePhysicalKeyDown(escape: true, at: 120) && handler.emergencyStop.notePhysicalKeyDown(escape: true, at: 120.3), "two Escapes after an input request stop the helper")
+	check(!handler.emergencyStop.noteKeyDown(.escape, at: 120) && handler.emergencyStop.noteKeyDown(.escape, at: 120.3), "two Escapes after an input request stop the helper")
 	let methods = [
 		#"{"id":3,"method":"activateApp","params":{"pid":100,"bundleId":"com.apple.finder"}}"#,
 		click,

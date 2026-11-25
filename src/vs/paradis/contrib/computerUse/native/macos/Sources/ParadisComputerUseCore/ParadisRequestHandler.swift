@@ -236,10 +236,10 @@ final class ParadisRequestHandler {
 			throw failure
 		}
 		try requireOperableApp(request.params)
-		// Esc の 2 回押しで止められるのは、入力の要求を受けてから 30 秒の間。長い入力に備えて終わりにも刻む
-		emergencyStop.noteInput(at: now())
+		// Esc の 2 回押しで止められるのは、入力の要求を処理している間と、終えてから 30 秒の間
+		emergencyStop.beginInput(at: now())
 		defer {
-			emergencyStop.noteInput(at: now())
+			emergencyStop.endInput(at: now())
 		}
 		return try dispatchMethod(request)
 	}

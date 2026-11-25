@@ -738,15 +738,16 @@ private let paradisInputTapCallback: CGEventTapCallBack = { _, type, event, user
 	} else {
 		let ours = paradisIsOurEvent(userData: event.getIntegerValueField(.eventSourceUserData), sourcePid: event.getIntegerValueField(.eventSourceUnixProcessID), selfPid: getpid())
 		monitor.record(type: type, ours: ours)
-		// Esc の 2 回押しで止める（ParadisEmergencyStop.swift）。自分の送ったキーは数えず、ほかのキーを挟んだら数え直す
-		if type == .keyDown && !ours {
-			let escape = paradisCountsAsEmergencyEscape(
+		// Esc の 2 回押しで止める（ParadisEmergencyStop.swift）。自分の送ったキーと Esc の自動リピートは数えず、
+		// ほかのキーを挟んだら数え直す
+		if type == .keyDown {
+			let key = paradisEmergencyKey(
 				keyCode: event.getIntegerValueField(.keyboardEventKeycode),
 				autorepeat: event.getIntegerValueField(.keyboardEventAutorepeat) != 0,
 				ours: ours,
 				hasCommandControlOrOption: !event.flags.intersection([.maskCommand, .maskControl, .maskAlternate]).isEmpty
 			)
-			if monitor.emergencyStop?.notePhysicalKeyDown(escape: escape, at: ProcessInfo.processInfo.systemUptime) == true {
+			if monitor.emergencyStop?.noteKeyDown(key, at: ProcessInfo.processInfo.systemUptime) == true {
 				fputs("[paradis-computer-use] stopped by the user (Escape pressed twice)\n", stderr)
 			}
 		}

@@ -613,13 +613,29 @@ suite('ParadisComputerUseToolProvider', () => {
 		// 補助アプリが再開に失敗したら、止めたままにする
 		helper.failResume = new ParadisComputerUseHelperError('timeout', 'no answer');
 		const failedResume = await provider.resume().then(() => 'resumed', () => 'failed');
-		assert.deepStrictEqual({ typing: text(typing), typedChunks, stoppedByRead, failedResume, stillStopped: provider.stopped, changes: activity.filter(entry => entry !== 'input') }, {
+		const stillStopped = provider.stopped;
+		// 補助アプリが居ない（起動できない・切れた）なら掛け金も無いので、こちらの状態だけ下ろす
+		helper.failResume = new ParadisComputerUseHelperError('helper_disconnected', 'The Computer Use helper is not connected.');
+		const goneResume = await provider.resume().then(() => 'resumed', () => 'failed');
+		// 塊の間で止まった（進み具合なし）ときは、その塊は 1 文字も送っていないと伝える
+		helper.failResume = undefined;
+		helper.stopped = false;
+		helper.onInput = async () => {
+			if (helper.inputs.length === 4) {
+				throw new ParadisComputerUseHelperError('stopped_by_user', 'the user stopped Computer Use by pressing Escape twice');
+			}
+			return { verified: true, method: 'keys', route: 'foreground' };
+		};
+		const betweenChunks = await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: 'x'.repeat(900), includeState: false }, undefined, context);
+		assert.deepStrictEqual({ typing: text(typing), typedChunks, stoppedByRead, failedResume, stillStopped, goneResume, betweenChunks: text(betweenChunks), changes: activity.filter(entry => entry !== 'input') }, {
 			typing: 'The user stopped Computer Use by pressing Esc twice. Do not retry; tell the user and wait until they resume it in Para Code. Para Code typed the first 405 of 900 characters before it stopped. They are already in the app: if you continue, send only the remaining 495 characters (from character 406) and do not retype the first part.',
 			typedChunks: 2,
 			stoppedByRead: true,
 			failedResume: 'failed',
 			stillStopped: true,
-			changes: ['stopped', 'resumed', 'stopped'],
+			goneResume: 'resumed',
+			betweenChunks: 'The user stopped Computer Use by pressing Esc twice. Do not retry; tell the user and wait until they resume it in Para Code. No input was sent for the current chunk. The first 400 characters had arrived. Continue from character 401; do not resend the earlier chunks.',
+			changes: ['stopped', 'resumed', 'stopped', 'resumed', 'stopped'],
 		});
 	});
 

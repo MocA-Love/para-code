@@ -527,11 +527,18 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 	/**
 	 * 止めた Computer Use を再開する。状態のチャネルからだけ呼ぶ（ウィンドウでの人の操作: 通知の「再開」・ステータスバー・
 	 * コマンド）。ツールからは呼ばない。補助アプリが動いていれば掛け金を外させ、外せなかったら止めたままにする。
-	 * 動いていなければ掛け金はもう無い（補助アプリは終わると忘れる）ので、こちらの状態だけ下ろす。
+	 * 動いていない・起動できない・つながっていないなら掛け金はもう無い（補助アプリは終わると忘れる）ので、こちらの状態だけ下ろす
+	 * （無操作で終わっていた補助アプリは、この要求で起動し直る）。
 	 */
 	async resume(): Promise<void> {
 		if (this._helper.availability === 'ok') {
-			await this._helper.request('resume', {});
+			try {
+				await this._helper.request('resume', {});
+			} catch (error) {
+				if (!(error instanceof ParadisComputerUseHelperError) || (error.code !== 'unavailable' && error.code !== 'helper_disconnected')) {
+					throw error;
+				}
+			}
 		}
 		this._setStopped(false);
 	}
@@ -1034,11 +1041,13 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 					return 'needsForeground';
 				}
 				const total = graphemes.length;
-				if (error.sent !== undefined) {
-					if (error.sent === 0) {
+				// 利用者が止めた（進み具合なし）は、補助アプリがこの塊を送る前に断っている
+				const sent = error.sent ?? (error.code === 'stopped_by_user' && error.progress === undefined ? 0 : undefined);
+				if (sent !== undefined) {
+					if (sent === 0) {
 						return { ok: false, error: helperErrorResult(`${describeHelperError(error)} No input was sent for the current chunk.${typed > 0 ? ` ${sentBefore} Continue from character ${typed + 1}; do not resend the earlier chunks.` : ''}`, error) };
 					}
-					const done = typed + Math.min(error.sent, chunk.length);
+					const done = typed + Math.min(sent, chunk.length);
 					return { ok: false, error: helperErrorResult(`${describeHelperError(error)} The first ${done} of ${total} characters were sent; receipt of the current chunk is unconfirmed. Do not resend them. Read the app state before continuing${done < total ? ` with character ${done + 1}` : '; no characters remain to send'}.`, error) };
 				}
 				if (error.progress !== undefined) {
