@@ -1553,6 +1553,16 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		const sub = (message: string, ...values: string[]) => paradisAppendWithCode(dom.append(body, $('span.pcw-d-branch-note-sub')), message, values);
 		if (!choice) {
 			// 指示に貼った PR・Issue の元のブランチが、取得し直した一覧に出るのを待っている
+			if (this._fetchState === 'failed') {
+				// origin から取得できなかった: 無いとは言えないので、取得し直すか、一覧から選ぶかを任せる
+				icon.className = ThemeIcon.asClassName(Codicon.warning);
+				note.classList.add('warning');
+				// allow-any-unicode-next-line
+				line(localize('paradis.createWorktree.note.pendingReferenceFailed', "元のブランチ {0} は手元の一覧にありません。origin から取得できなかったため、あるかどうかを確かめられていません。"), pending?.name ?? '');
+				// allow-any-unicode-next-line
+				sub(localize('paradis.createWorktree.note.pendingReferenceFailedSub', "上の「再試行」で取得し直すか、一覧から選ぶか、「新しいブランチ」に切り替えてください。"));
+				return;
+			}
 			icon.className = ThemeIcon.asClassName(ThemeIcon.modify(Codicon.loading, 'spin'));
 			// allow-any-unicode-next-line
 			line(localize('paradis.createWorktree.note.pendingReference', "元のブランチ {0} を origin から探しています…"), pending?.name ?? '');
@@ -1866,8 +1876,10 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 			void this._inspectChoice();
 			return;
 		}
-		if (candidates.hasOrigin && this._fetchState !== 'done' && this._fetchState !== 'failed') {
-			// origin から取得中。届いたら一覧を読み直して、もう一度ここへ来る
+		if (candidates.hasOrigin && this._fetchState !== 'done') {
+			// origin から取得中か、取得に失敗した（gh は通っても git の認証は別）。「見つからない」とは言えないので待ちを解かない。
+			// 届いたら（「再試行」で取れたら）一覧を読み直して、もう一度ここへ来る
+			this._renderBranchNote();
 			return;
 		}
 		this._pendingRefBranch = undefined;
@@ -2002,7 +2014,12 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		}
 		// allow-any-unicode-next-line
 		dom.append(body, $('.pcw-d-ref-sub')).textContent = parts.join(' · ');
-		createParadisChip(element, info.state === 'open' ? 'Open' : info.state === 'draft' ? 'Draft' : info.state === 'merged' ? 'Merged' : 'Closed', open ? 'success' : 'neutral');
+		// 状態の名前は GitHub の画面の表記に合わせる
+		const stateLabel = info.state === 'open' ? localize('paradis.createWorktree.refStateOpen', "Open")
+			: info.state === 'draft' ? localize('paradis.createWorktree.refStateDraft', "Draft")
+				: info.state === 'merged' ? localize('paradis.createWorktree.refStateMerged', "Merged")
+					: localize('paradis.createWorktree.refStateClosed', "Closed");
+		createParadisChip(element, stateLabel, open ? 'success' : 'neutral');
 		if (!isCurrent) {
 			action('pick', new ParadisButton(element, { kind: 'ghost', small: true, label: STR_REF_PICK }), () => {
 				this._refPick = card.key;

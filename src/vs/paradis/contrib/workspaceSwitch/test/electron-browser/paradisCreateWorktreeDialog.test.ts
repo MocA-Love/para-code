@@ -290,8 +290,10 @@ suite('create worktree dialog: issues and pull requests pasted into the prompt',
 		readonly prompt?: string;
 		/** URL ごとの gh の答え（無ければ「見つからない」）。 */
 		readonly lookups?: Record<string, ParadisGithubReferenceResult>;
-		/** git の答えの差し替え。 */
+		/** git の答えの差し替え（関数なら、呼び出しの引数から答えを作る）。 */
 		readonly git?: Record<string, unknown>;
+		/** 2 つ目のリポジトリ（詳細オプションで選び替える）。 */
+		readonly secondRepository?: boolean;
 		readonly worktrees?: readonly { readonly name: string; readonly path: string }[];
 	}
 
@@ -306,9 +308,16 @@ suite('create worktree dialog: issues and pull requests pasted into the prompt',
 			getOriginRepository: 'acme/app',
 			...options.git,
 		};
-		const channel = { call: async (command: string) => answers[command], listen: () => Event.None } as unknown as IChannel;
+		const channel = {
+			call: async (command: string, args: readonly unknown[]) => {
+				const answer = answers[command];
+				return typeof answer === 'function' ? answer(...args) : answer;
+			},
+			listen: () => Event.None,
+		} as unknown as IChannel;
 		const gitHost: IParadisWorktreeGitHost = { channel, path: resource => resource.path as unknown as ReturnType<IParadisWorktreeGitHost['path']> };
 		const contextViewService = { showContextView: () => ({ close: () => { } }), hideContextView: () => { } } as unknown as IContextViewService;
+		const repositories = options.secondRepository ? [repository, { id: 'other', name: 'other', uri: URI.file('/other') } satisfies IParadisWorkspaceRepository] : [repository];
 		const enqueued: IParadisHeadlessWorktreeRequest[] = [];
 		const switched: string[] = [];
 		const lookedUp: string[] = [];
@@ -316,7 +325,7 @@ suite('create worktree dialog: issues and pull requests pasted into the prompt',
 		const dialog = new ParadisCreateWorktreeDialog(
 			{ activeContainer: container } as unknown as ILayoutService,
 			() => gitHost,
-			{ repositories: [repository], activeRepository: repository, switchToWorktree: async (worktree: { name: string }) => { switched.push(worktree.name); } } as unknown as IParadisWorkspaceSwitchService,
+			{ repositories, activeRepository: repository, switchToWorktree: async (worktree: { name: string }) => { switched.push(worktree.name); } } as unknown as IParadisWorkspaceSwitchService,
 			{ getDetectedWorktrees: () => worktrees } as unknown as IParadisWorktreeService,
 			new TestConfigurationService(),
 			fileService,
@@ -326,8 +335,9 @@ suite('create worktree dialog: issues and pull requests pasted into the prompt',
 			{ onDidChange: Event.None, refresh: () => { }, getAgentTemplates: () => [], isFixedBySettings: () => false } as unknown as IParadisAgentModelCatalogService,
 			contextViewService,
 			NullHoverService,
-			undefined,
-			{ repositoryId: 'repo', prompt: options.prompt ?? '' },
+			// 指示を持って開くときは再表示の値として渡す（渡さなければ、残っている下書きを取り出す）
+			options.prompt !== undefined ? undefined : 'repo',
+			options.prompt !== undefined ? { repositoryId: 'repo', prompt: options.prompt } : undefined,
 			undefined,
 			async (_repository, url) => {
 				lookedUp.push(url);
@@ -365,9 +375,8 @@ suite('create worktree dialog: issues and pull requests pasted into the prompt',
 			await timeout(0);
 			return await run(opened);
 		} finally {
-			if (container.querySelector('.paradis-create-worktree-dialog')) {
-				opened.button('キャンセル').click();
-			}
+			// 「キャンセル」「作成」以外で閉じた（切り替えのボタン）ときは下書きが残るので、開き直して「キャンセル」で捨てる
+			(container.querySelector('.paradis-create-worktree-dialog') ? opened : open(container)).button('キャンセル').click();
 			container.remove();
 		}
 	}
@@ -561,6 +570,56 @@ suite('create worktree dialog: issues and pull requests pasted into the prompt',
 			// 別のリポジトリの PR: 元のブランチは当てず、番号を足す今までの付け方
 			elsewhere: { name: '#2241 Fix the mapping', branch: '2241-(自動生成)', mode: '新しいブランチ', path: URI.file('/repo-worktrees/2241-(自動生成)').fsPath },
 			merged: ['新しいブランチ', '2241-(自動生成)', 'Merged'],
+		});
+	});
+
+	test('keeps waiting when origin could not be fetched, and goes back to a new branch when the fetch shows the branch is gone', async () => {
+		const listed = { local: [{ name: 'main' }], remote: [{ name: 'main' }], inUse: [], hasOrigin: true };
+		const unreachable = await withDialog({ prompt: PR_URL, lookups: { [PR_URL]: ok(PR) }, git: { listBranchCandidates: listed, runGit: { code: 1, stdout: '', stderr: 'could not read Username' } } }, async dialog => {
+			await timeout(0);
+			await timeout(0);
+			return { mode: dialog.fields().mode, note: dialog.modal.querySelector('.pcw-d-branch-note')!.textContent, sub: dialog.cards()[0].sub, canCreate: !dialog.button('作成').classList.contains('disabled') };
+		});
+		const gone = await withDialog({ prompt: PR_URL, lookups: { [PR_URL]: ok(PR) }, git: { listBranchCandidates: listed, runGit: { code: 0, stdout: '', stderr: '' } } }, async dialog => {
+			await timeout(0);
+			await timeout(0);
+			return { fields: dialog.fields(), sub: dialog.cards()[0].sub };
+		});
+
+		assert.deepStrictEqual({ unreachable, gone }, {
+			unreachable: {
+				mode: '既存のブランチ',
+				// allow-any-unicode-next-line
+				note: '元のブランチ fix/mapping は手元の一覧にありません。origin から取得できなかったため、あるかどうかを確かめられていません。上の「再試行」で取得し直すか、一覧から選ぶか、「新しいブランチ」に切り替えてください。',
+				// allow-any-unicode-next-line
+				sub: 'acme/app #2241 · プルリクエスト · スペース名に使います',
+				canCreate: false,
+			},
+			gone: {
+				fields: { name: '#2241 Fix the mapping', branch: 'fix/mapping-2', mode: '新しいブランチ', path: URI.file('/repo-worktrees/fix-mapping-2').fsPath },
+				// allow-any-unicode-next-line
+				sub: 'acme/app #2241 · プルリクエスト · スペース名に使います · 元のブランチ fix/mapping は origin に見つかりませんでした',
+			},
+		});
+	});
+
+	test('choosing another repository drops the source branch that was applied for the first one', async () => {
+		await withDialog({ prompt: PR_URL, lookups: { [PR_URL]: ok(PR) }, secondRepository: true, git: { getOriginRepository: (path: string) => path === '/repo' ? 'acme/app' : 'acme/other' } }, async dialog => {
+			await timeout(0);
+			const first = dialog.fields().mode;
+			// 詳細オプションのリポジトリを選び替える
+			const select = dialog.modal.querySelector<HTMLSelectElement>('select[aria-label="リポジトリ"]')!;
+			select.selectedIndex = 1;
+			select.dispatchEvent(new InputEvent('change', { bubbles: true }));
+			await timeout(0);
+			await timeout(0);
+
+			assert.deepStrictEqual({ first, second: dialog.fields(), chosen: dialog.modal.querySelector<HTMLInputElement>('.pcw-d-existing input')!.value }, {
+				first: '既存のブランチ',
+				// 別のリポジトリの PR なので、元のブランチは当てず、番号を足す付け方に戻る
+				second: { name: '#2241 Fix the mapping', branch: '2241-(自動生成)', mode: '新しいブランチ', path: URI.file('/other-worktrees/2241-(自動生成)').fsPath },
+				chosen: '',
+			});
 		});
 	});
 });
