@@ -114,7 +114,9 @@
 	touch-action: none;
 }
 
-.paradis-simulator-frame:not([src]) {
+/* まだ 1 枚も来ていない <img> だけを隠す（Android の映像は同じクラスの <canvas> で、src を持たない。
+   img に絞らないと、復号できても隠れたままになる） */
+img.paradis-simulator-frame:not([src]) {
 	visibility: hidden;
 }
 

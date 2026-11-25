@@ -146,8 +146,11 @@ class ParadisAndroidVideoRelay extends Disposable {
 			}
 			if (session.config) {
 				this._onMessage.fire({ serial: this._serial, kind: 'config', data: VSBuffer.wrap(session.config) });
+				// もう流れている通話へ後から加わったときだけ、key frame を求める。始まったばかりの通話（config がまだ無い）は
+				// 最初に config と key frame を送ってくるので求めない。取り込みの用意ができる前に求めると、scrcpy-server 5.0.1 は
+				// `CaptureControl.reset` の NullPointerException で落ち、ペインは黒いままになる（API 36 のエミュレータで毎回）
+				void session.resetVideo().catch(() => undefined);
 			}
-			void session.resetVideo().catch(() => undefined);
 			store.add(session.onVideo(event => {
 				if (event.kind === 'session') {
 					this._onMessage.fire({ serial: this._serial, kind: 'size', width: event.width, height: event.height });
