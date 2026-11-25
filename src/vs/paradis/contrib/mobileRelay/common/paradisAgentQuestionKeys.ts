@@ -37,6 +37,14 @@ import { paradisApprovalOptionKey, paradisCodexApprovalFormShown, paradisCodexAp
  * そこへ届いたキーは入力欄へ吸われて消える**（待たずに送ると入力欄に文字が残るだけで質問は
  * 動かず、3秒待った同じキーはそのまま通った）。注入側は先頭の打鍵の前に画面を確かめる
  * （paradisMobileWorkspaceProvider の waitForInteractionTarget）。
+ *
+ * **2026-11-26に Claude Code 2.1.326・2.1.330・2.1.332 で測り直した**（認証の無い分けた HOME、手元の代役の API が
+ * AskUserQuestion を返す台、各 3〜5 回）: この列は 3 版とも通る（単一選択、同じ番号・違う番号の複数の質問、その他、
+ * 複数選択と送信ボタン、複数選択の次の単一選択、確認画面の Enter）。隙間は **操作説明が描かれてから 150ms**（0・50・100ms の
+ * 番号は捨てられ、150ms 以降は通る。2.1.326 と 2.1.332 で同じ）で、注入側の一拍（400ms）の内側。2 問目以降と確認画面には
+ * この隙間が無い（100ms 間隔でも通る）。
+ * 2.1.329 から操作説明は利用者の keybindings.json に従う（`Select` の `enter` を外した画面では、番号は効くが締めの Enter は
+ * 確認画面を送信しない。割り当てを変えた利用者には PC で答えてもらう）。
  * 送信側（PC/モバイル）で同じ列を組み立てられるよう、副作用のない関数だけを置く。
  * この段取りは Claude Code 2.1.220 の TUI に**生バイトを PTY へ書き込んで**実測したもので、
  * 注入の形式（`\u001b[B` をそのまま流す）まで本番と同じ条件で確かめてある。行の並びが前提なので、
@@ -250,6 +258,10 @@ export function paradisAgentQuestionNeedsReviewSubmit(questions: readonly IParad
  *
  * モバイルとデスクトップのチャット表示が同じ関数を使う（Codex の app-server 経由の承認は
  * キーではなく構造化された回答で返すので、ここは通らない）。
+ *
+ * 2026-11-26 の実測: 2.1.332 でも `1` だけで確定する（描かれてから 150ms 未満の `1` は捨てられる。Esc は 0ms でも通る。
+ * 2.1.326 は 0ms の Esc を捨てた）。選択肢より大きい番号は、2.1.327 から「No」へフォーカスを移す（2.1.332 で `9` は確定せず、
+ * 続く Enter が拒否になった。2.1.326 は `9` を捨て、続く Enter が許可になった）。番号は必ず画面の選択肢から決めること。
  */
 export function paradisAgentApprovalKeySequence(agent: 'claude' | 'codex', choice: 'yes' | 'no' | `opt:${number}`, options?: { readonly screen?: string; readonly confirmWithEnter?: boolean }): string[] {
 	// 画面の番号付きの選択肢から選んだ回答（W2-21）。Claude は数字 1 文字だけ（Enter は付けない）。

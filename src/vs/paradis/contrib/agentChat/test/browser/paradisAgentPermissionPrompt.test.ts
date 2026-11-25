@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { ITerminalInstance } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
-import { paradisClaudeResumeScreenPrompt, paradisPermissionPromptHash, paradisPermissionPromptParts, paradisPromptRegionShows, paradisScreenShowsAgentPrompt, paradisScreenShowsClaudeResumePrompt, paradisScreenShowsClaudeYesNoPlanPrompt, paradisScreenShowsPermissionPrompt, paradisVisibleTerminalLogicalText } from '../../browser/paradisAgentTuiInput.js';
+import { paradisClaudeResumeScreenPrompt, paradisPermissionPromptHash, paradisPermissionPromptParts, paradisPromptRegionShows, paradisScreenShowsAgentPrompt, paradisScreenShowsClaudeResumePrompt, paradisScreenShowsClaudeYesNoPlanPrompt, paradisScreenShowsPermissionPrompt, paradisScreenShowsQuestionPrompt, paradisVisibleTerminalLogicalText } from '../../browser/paradisAgentTuiInput.js';
 import { paradisApprovalScreenPiece, paradisCodexApprovalFormShown, paradisCodexApprovalFormShows, paradisParseApprovalOptions, paradisParsePermissionWarning } from '../../../mobileRelay/common/paradisAgentApprovalOptions.js';
 import { CODEX_EXEC_APPROVAL_DETAIL, CODEX_EXEC_APPROVAL_SCREEN, CODEX_MCP_APPROVAL_DETAIL, CODEX_MCP_APPROVAL_SCREEN, CODEX_WORKING_SCREEN } from './paradisCodexPromptScreens.js';
 
@@ -315,6 +315,34 @@ suite('Claude Code resume prompt on screen (Claude Code 2.1.306)', () => {
 		}, {
 			kinds: ['resume', 'resume', 'session-age', 'newer-model', undefined, undefined],
 			agent: [true, false, true, false],
+		});
+	});
+
+	test('still finds the prompts when keybindings.json renames the keys in the footer (Claude Code 2.1.332)', () => {
+		const rebound = (screen: string) => screen.replace('Enter to confirm \u00b7 Esc to cancel', 'ctrl+y to confirm \u00b7 ctrl+g to cancel');
+		// 2.1.332 の実画面（`Select` の `enter` を外し、`ctrl+y` に `select:accept` を割り当てたときの質問）
+		const question = [
+			RULE,
+			'\u2190  \u2610 Fruit  \u2610 Color  \u2714 Submit  \u2192',
+			'',
+			'Which fruit do you want?',
+			'',
+			'\u276f 1. Apple',
+			'     desc Apple',
+			'  2. Banana',
+			'     desc Banana',
+			'  3. Type something.',
+			RULE,
+			'  4. Chat about this',
+			'',
+			'ctrl+y to select \u00b7 Tab/Arrow keys to navigate \u00b7 Esc to cancel',
+		].join('\n');
+		assert.deepStrictEqual({
+			kinds: [sessionAge, newerModel, otherDialog].map(screen => paradisClaudeResumeScreenPrompt(rebound(screen))),
+			question: [paradisScreenShowsQuestionPrompt(question), paradisScreenShowsAgentPrompt(question, 'claude'), paradisScreenShowsQuestionPrompt(answered)],
+		}, {
+			kinds: ['session-age', 'newer-model', undefined],
+			question: [true, true, false],
 		});
 	});
 });
