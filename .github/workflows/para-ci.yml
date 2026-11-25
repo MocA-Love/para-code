@@ -511,8 +511,12 @@ jobs:
 
       # Fail when vitest did not report any passing test, instead of trusting the exit code alone
       # (the node.js unit test job once stayed green while running 0 tests).
+      # NO_COLOR: vitest colors its summary when CI is set, and the escape codes sit between
+      # "Tests" and the count, so the grep below would never match.
       - name: Run task board unit tests
         working-directory: app/taskboard
+        env:
+          NO_COLOR: 1
         run: |
           set -o pipefail
           pnpm run test 2>&1 | tee "$RUNNER_TEMP/taskboard-test.log"
