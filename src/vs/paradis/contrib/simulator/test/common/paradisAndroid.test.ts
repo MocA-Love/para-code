@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisAdbInputText, paradisAndroidAvdOf, paradisAndroidKeycode, paradisAndroidRotation, paradisAndroidSerialOf, paradisFilterLogcat, paradisNormalizeUiautomator, paradisParseAdbDevices, paradisParseAvdList, paradisParseDisplayRotation, paradisParseWmDensity, paradisParseWmSize } from '../../common/paradisAndroid.js';
+import { paradisAdbInputText, paradisAndroidAvdOf, paradisAndroidKeycode, paradisAndroidRotation, paradisAndroidSerialOf, paradisFilterLogcat, paradisNormalizeUiautomator, paradisParseAdbDevices, paradisParseAvdList, paradisDefaultDisplayDump, paradisParseDisplayRotation, paradisParseWmDensity, paradisParseWmSize } from '../../common/paradisAndroid.js';
 import { paradisFindSimulatorAx } from '../../common/paradisSimulatorAx.js';
 
 const UI_DUMP = `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0">
@@ -37,12 +37,18 @@ suite('Paradis simulator: Android with adb', () => {
 				'      AbsState: ABS_MT_ORIENTATION=0\n',
 				'',
 			].map(paradisParseDisplayRotation),
+			// 画面が複数あるときは、既定のディスプレイ（mDisplayId=0）の節だけを読む（ほかの画面が先に出ても）
+			defaultDisplay: [
+				'WINDOW MANAGER DISPLAY CONTENTS\n  Display: mDisplayId=2 (organized)\n    mRotation=1 x\n  Display: mDisplayId=0 (organized)\n    mRotation=0 x\n  Display: mDisplayId=3\n    mRotation=3 x\n',
+				'SurfaceOrientation: 2\n',
+			].map(dump => paradisParseDisplayRotation(paradisDefaultDisplayDump(dump))),
 		}, {
 			devices: [{ serial: 'emulator-5554', state: 'device', model: 'sdk gphone64 arm64' }, { serial: 'R5CT10ABC', state: 'unauthorized' }],
 			avds: ['Pixel_9_API_36', 'Medium_Phone'],
 			size: [{ width: 1080, height: 2400 }, { width: 720, height: 1600 }, undefined],
 			density: [420, 320],
 			orientation: [1, 1, 3, undefined, undefined, undefined],
+			defaultDisplay: [0, 2],
 		});
 	});
 

@@ -27,7 +27,7 @@ import { paradisRequireNumber } from '../../common/paradisMobileDeviceOps.js';
 import { PARADIS_SCRCPY_AGENT_POINTER_BASE, ParadisScrcpyTouchAction, paradisScrcpyTouch } from '../../common/paradisScrcpy.js';
 import { ParadisScrcpySession } from './paradisScrcpySession.js';
 import { ParadisScrcpySessions } from './paradisScrcpySessions.js';
-import { IParadisAdbDevice, PARADIS_ANDROID_AVD_PREFIX, PARADIS_ANDROID_SERIAL_PREFIX, paradisAdbInputText, paradisAndroidAvdOf, paradisAndroidButtonNames, paradisAndroidKeycode, paradisAndroidOrientationName, paradisAndroidRotation, paradisAndroidSerialOf, paradisFilterLogcat, paradisNormalizeUiautomator, paradisParseAdbDevices, paradisParseAvdList, paradisParseDisplayRotation, paradisParseWmDensity, paradisParseWmSize } from '../../common/paradisAndroid.js';
+import { IParadisAdbDevice, PARADIS_ANDROID_AVD_PREFIX, PARADIS_ANDROID_SERIAL_PREFIX, paradisAdbInputText, paradisAndroidAvdOf, paradisAndroidButtonNames, paradisAndroidKeycode, paradisAndroidOrientationName, paradisAndroidRotation, paradisAndroidSerialOf, paradisFilterLogcat, paradisNormalizeUiautomator, paradisParseAdbDevices, paradisParseAvdList, paradisDefaultDisplayDump, paradisParseDisplayRotation, paradisParseWmDensity, paradisParseWmSize } from '../../common/paradisAndroid.js';
 
 /** adb・emulator を呼ぶ口（テストで差し替える）。`binary` なら stdout を bytes で返す。 */
 export type ParadisAdbExec = (file: string, args: readonly string[], options: { readonly timeoutMs: number; readonly binary?: boolean }) => Promise<string | Uint8Array>;
@@ -358,8 +358,9 @@ export class ParadisAdbDeviceHost {
 	private async _rotation(serial: string): Promise<number> {
 		const sources: readonly (readonly string[])[] = [['dumpsys', 'input'], ['dumpsys', 'window', 'displays']];
 		const known = this._rotationSources.get(serial);
-		for (const source of known ? [known] : sources) {
-			const rotation = paradisParseDisplayRotation(await this._shell(serial, source).catch(() => ''));
+		// 前に読めた方を先に試す。それが読めなかったとき（一時的な失敗）は、もう一方も試す
+		for (const source of known ? [known, ...sources.filter(candidate => candidate.join(' ') !== known.join(' '))] : sources) {
+			const rotation = paradisParseDisplayRotation(paradisDefaultDisplayDump(await this._shell(serial, source).catch(() => '')));
 			if (rotation !== undefined) {
 				this._rotationSources.set(serial, source);
 				return rotation;

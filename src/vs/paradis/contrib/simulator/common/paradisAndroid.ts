@@ -90,6 +90,21 @@ export function paradisParseDisplayRotation(stdout: string): number | undefined 
 	return raw !== undefined && Number.isInteger(raw) && raw >= 0 && raw <= 3 ? raw : undefined;
 }
 
+/**
+ * `dumpsys window displays` の出力から、既定のディスプレイ（`mDisplayId=0`）の節だけを取り出す。画面が複数ある端末では
+ * ほかの画面の節が先に出ることがあり、そちらの向きを読まないようにする（`wm size` も既定のディスプレイを見る）。
+ * 節の見出しが無い出力（`dumpsys input` など）はそのまま返す。
+ */
+export function paradisDefaultDisplayDump(stdout: string): string {
+	const heading = /^\s*Display: mDisplayId=(?<id>\d+)/gm;
+	const starts = [...stdout.matchAll(heading)];
+	const index = starts.findIndex(match => match.groups?.id === '0');
+	if (index === -1) {
+		return stdout;
+	}
+	return stdout.slice(starts[index].index, index + 1 < starts.length ? starts[index + 1].index : undefined);
+}
+
 /** mobile_rotate の向き → Android の `user_rotation`（0〜3）。 */
 export function paradisAndroidRotation(orientation: string): number | undefined {
 	switch (orientation) {

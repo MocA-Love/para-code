@@ -122,6 +122,19 @@ suite('Paradis simulator: adb answers the Mobile Canvas REST for Android', () =>
 		});
 	});
 
+	// 前に読めた取得元が一時的に読めないときは、もう一方も試す（縦と決めつけない）
+	test('tries the other dump when the remembered one has no rotation this time', async () => {
+		const options = { dumpsysInput: 'SurfaceOrientation: 1\n', dumpsysWindow: '    mRotation=1 x\n' };
+		const { host, calls } = setup(options);
+		const first = await host.request('GET', `/api/v1/devices/${SERIAL_ID}/display`, undefined) as { orientation: string };
+		options.dumpsysInput = '';
+		const second = await host.request('GET', `/api/v1/devices/${SERIAL_ID}/display`, undefined) as { orientation: string };
+		assert.deepStrictEqual({ orientations: [first.orientation, second.orientation], dumps: calls.filter(line => line.includes('dumpsys')).map(line => line.replace('adb -s emulator-5554 shell ', '')) }, {
+			orientations: ['landscape-left', 'landscape-left'],
+			dumps: ['dumpsys input', 'dumpsys input', 'dumpsys window displays'],
+		});
+	});
+
 	test('resolves an AVD id to its running emulator and boots it when it is not running', async () => {
 		const runningSetup = setup();
 		const png = await runningSetup.host.requestBinary('/api/v1/devices/android%3Aavd%3APixel_9_API_36/screenshot');
