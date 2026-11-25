@@ -863,6 +863,7 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 			source: existingBranch.source,
 			...(existingBranch.sync !== undefined ? { sync: existingBranch.sync } : {}),
 			...(existingBranch.expectedLocalSha !== undefined ? { expectedLocalSha: existingBranch.expectedLocalSha } : {}),
+			...(existingBranch.pullRequestNumber !== undefined ? { pullRequestNumber: existingBranch.pullRequestNumber } : {}),
 			trustClaudeFolder,
 		};
 		await paradisCallNewerGitHost(gitHost.channel.call('addWorktreeFromBranch', [branchRequest]));

@@ -218,6 +218,45 @@ import { ParadisWorktreeGitService } from '../../node/paradisWorktreeGitChannel.
 		});
 	});
 
+	test('opens a pull request from a fork by fetching its head into a local branch of its own', async () => {
+		// origin が持つ PR の先頭（GitHub の refs/pull/<番号>/head）。ブランチとしては origin に無い
+		git(other, 'switch', '-q', '-c', 'fork-work', 'origin/main');
+		const prHead = await commit(other, 'from the fork');
+		git(other, 'push', '-q', 'origin', 'HEAD:refs/pull/7/head');
+		git(other, 'switch', '-q', 'main');
+		const mainBefore = git(repo, 'rev-parse', 'refs/heads/main');
+
+		const result = await service.addWorktreeFromBranch({ repoPath: repo, worktreePath: wt('pr'), branch: 'pr-7-main', source: 'local', pullRequestNumber: 7 });
+		// 同じ PR をもう一度開く: ブランチは上のワークツリーで開いているので、使用中として断る（取得は git が断る）
+		git(other, 'switch', '-q', 'fork-work');
+		await commit(other, 'more from the fork');
+		git(other, 'push', '-q', 'origin', 'HEAD:refs/pull/7/head');
+		const inUse = await service.addWorktreeFromBranch({ repoPath: repo, worktreePath: wt('pr-again'), branch: 'pr-7-main', source: 'local', pullRequestNumber: 7 }).then(() => 'opened', error => /開いています/.test(String(error)) ? 'in use' : String(error));
+		const missing = await service.addWorktreeFromBranch({ repoPath: repo, worktreePath: wt('pr-none'), branch: 'pr-8-x', source: 'local', pullRequestNumber: 8 }).then(() => 'opened', error => /#8/.test(String(error)) ? 'not fetched' : String(error));
+		const invalid = await Promise.all([
+			service.addWorktreeFromBranch({ repoPath: repo, worktreePath: wt('x'), branch: 'pr-7-main', source: 'origin', pullRequestNumber: 7 }).then(() => 'opened', () => 'rejected'),
+			service.addWorktreeFromBranch({ repoPath: repo, worktreePath: wt('y'), branch: 'pr-7-main', source: 'local', pullRequestNumber: 1.5 }).then(() => 'opened', () => 'rejected'),
+		]);
+
+		assert.deepStrictEqual({ result, head: head(wt('pr')), sha: git(wt('pr'), 'rev-parse', 'HEAD') === prHead, mainUntouched: git(repo, 'rev-parse', 'refs/heads/main') === mainBefore, upstream: upstream('pr-7-main'), inUse, missing, invalid }, {
+			result: { plan: 'open', synced: false },
+			head: 'pr-7-main',
+			sha: true,
+			mainUntouched: true,
+			upstream: undefined,
+			inUse: 'in use',
+			missing: 'not fetched',
+			invalid: ['rejected', 'rejected'],
+		});
+	});
+
+	test('tells which github.com repository origin is, and nothing for other remotes', async () => {
+		const local = await service.getOriginRepository(repo);
+		git(repo, 'remote', 'set-url', 'origin', 'git@github.com:Acme/App.git');
+
+		assert.deepStrictEqual([local, await service.getOriginRepository(repo), await service.getOriginRepository(join(root, 'nowhere'))], [undefined, 'acme/app', undefined]);
+	});
+
 	test('rejects branch names that git could read as options or that are not valid refs', async () => {
 		const results = await Promise.all(['-x', 'a..b', 'a b', ''].map(branch => service.addWorktreeFromBranch({ repoPath: repo, worktreePath: wt('z'), branch, source: 'local' }).then(() => 'created', () => 'refused')));
 		assert.deepStrictEqual(results, ['refused', 'refused', 'refused', 'refused']);

@@ -329,3 +329,13 @@ export function paradisPreferGithubReferenceFailure(first: ParadisGithubReferenc
 	const order: readonly ParadisGithubReferenceFailure[] = ['notFound', 'rateLimited', 'unreachable', 'noGh'];
 	return order.indexOf(first) <= order.indexOf(second) ? first : second;
 }
+
+/**
+ * git のリモートの URL（`remote.origin.url`）から、github.com のリポジトリを `owner/repo`（小文字）で取り出す。
+ * github.com でなければ undefined。指示に貼った PR・Issue が、選んだリポジトリのものかを確かめるのに使う
+ * （別のリポジトリの PR の元のブランチを、このリポジトリの origin で探さないため）。
+ */
+export function paradisParseGithubRemoteRepository(remoteUrl: string): string | undefined {
+	const match = /^(?:https?:\/\/(?:[^@/]+@)?github\.com\/|(?:ssh:\/\/)?git@github\.com[:/]|git:\/\/github\.com\/)(?<owner>[a-zA-Z0-9._-]+)\/(?<repo>[a-zA-Z0-9._-]+?)(?:\.git)?\/?$/.exec(remoteUrl.trim());
+	return match?.groups ? `${match.groups.owner}/${match.groups.repo}`.toLowerCase() : undefined;
+}

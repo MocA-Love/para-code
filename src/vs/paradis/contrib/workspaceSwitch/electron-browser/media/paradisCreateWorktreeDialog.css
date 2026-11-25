@@ -596,6 +596,86 @@
 	gap: var(--vscode-spacing-size80);
 }
 
+/* The issues and pull requests pasted into the prompt (q.html Q684, plan A): one card each under the prompt, saying what
+ * was fetched and whether the space is named after it. Same surface as the branch note above. */
+.paradis-create-worktree-dialog.pcw-d .pcw-d-refs {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size60);
+	min-width: 0;
+	margin-top: var(--vscode-spacing-size40);
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-refs:empty {
+	display: none;
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-ref {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	min-width: 0;
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size80) var(--vscode-spacing-size60) var(--vscode-spacing-size100);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-control);
+	background: var(--vscode-paradis-raised);
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-ref > .codicon {
+	flex: none;
+	color: var(--vscode-paradis-textMuted);
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-ref > .codicon.pcw-d-ref-open {
+	color: var(--vscode-paradis-success);
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-ref > .codicon.pcw-d-ref-warn {
+	color: var(--vscode-paradis-warning);
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-ref > .paradis-chip,
+.paradis-create-worktree-dialog.pcw-d .pcw-d-ref > .paradis-button {
+	flex: none;
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-ref-body {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	flex: 1;
+	min-width: 0;
+}
+
+/* A long title wraps to two lines and is cut there (the hover shows all of it). */
+.paradis-create-worktree-dialog.pcw-d .pcw-d-ref-title {
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	overflow: hidden;
+	overflow-wrap: anywhere;
+	font-size: var(--vscode-fontSize-label1);
+	line-height: 1.5;
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-ref-title.pcw-d-ref-muted {
+	color: var(--vscode-paradis-textMuted);
+}
+
+.paradis-create-worktree-dialog.pcw-d .pcw-d-ref-sub {
+	font-size: var(--vscode-fontSize-label2);
+	line-height: 1.5;
+	color: var(--vscode-paradis-textMuted);
+	overflow-wrap: anywhere;
+}
+
+/* While a card is shown the prompt gives up one of its three lines, so the card pushes the fields below it down less
+ * (in a 900px-tall window the body already scrolls; the footer with Create stays put either way). */
+.paradis-create-worktree-dialog.pcw-d.pcw-d-has-refs .paradis-image-composer > .paradis-image-composer-area {
+	min-height: 36px;
+}
+
 /* 隠す指定は最後に置き、上の display の指定に勝たせる */
 .paradis-create-worktree-dialog.pcw-d .hidden {
 	display: none;
