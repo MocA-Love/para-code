@@ -31,21 +31,27 @@ suite('ParadisSpaceSectionsService', () => {
 		/** setWorktreeOrder に渡された並び（名前の列） */
 		readonly orders: string[][];
 		worktrees: IParadisWorktree[];
+		/** addKnownWorktree 済みで、一覧（getWorktrees）にはまだ載っていないスペース */
+		known: IParadisWorktree[];
 		complete: boolean;
 		repositories: IParadisWorkspaceRepository[];
 		readonly onDidChangeRepositories: Emitter<void>;
+		readonly onDidChangeWorktrees: Emitter<void>;
 		stored(): unknown;
 	}
 
 	function create(storage = store.add(new InMemoryStorageService())): IHarness {
 		const onDidChangeRepositories = store.add(new Emitter<void>());
+		const onDidChangeWorktrees = store.add(new Emitter<void>());
 		const harness: Omit<IHarness, 'service'> = {
 			storage,
 			orders: [],
 			worktrees: [worktree('a'), worktree('b'), worktree('c')],
+			known: [],
 			complete: true,
 			repositories: [{ id: 'repo', name: 'repo', uri: URI.file('/repos/repo') }],
 			onDidChangeRepositories,
+			onDidChangeWorktrees,
 			stored: () => JSON.parse(storage.get(PARADIS_SPACE_SECTIONS_STORAGE_KEY, StorageScope.WORKSPACE) ?? '{}'),
 		};
 		const service = store.add(new ParadisSpaceSectionsService(
@@ -55,7 +61,9 @@ suite('ParadisSpaceSectionsService', () => {
 				onDidChangeRepositories: onDidChangeRepositories.event,
 			}),
 			upcastPartial<IParadisWorktreeService>({
+				onDidChangeWorktrees: onDidChangeWorktrees.event,
 				getWorktrees: repositoryId => repositoryId === 'repo' ? harness.worktrees : [],
+				getKnownWorktreeStateKeys: repositoryId => repositoryId === 'repo' ? [...harness.worktrees, ...harness.known].map(candidate => key(candidate.name)) : [],
 				isWorktreeListComplete: () => harness.complete,
 				setWorktreeOrder: (_repositoryId, orderedUris) => {
 					harness.orders.push(orderedUris.map(uri => uri.substring(uri.lastIndexOf('/') + 1)));
@@ -67,6 +75,26 @@ suite('ParadisSpaceSectionsService', () => {
 		));
 		return Object.assign(harness, { service });
 	}
+
+	test('a repository without sections reorders its spaces as before and writes no ledger', () => {
+		const harness = create();
+		const { service, storage } = harness;
+		// Drag c before a, then move b up and down with the menu.
+		service.moveSpaceToSection(worktree('c'), undefined, { worktree: worktree('a'), after: false });
+		service.moveSpaceWithinSection(worktree('b'), -1);
+		service.moveSpaceWithinSection(worktree('b'), 1);
+		assert.deepStrictEqual({
+			orders: harness.orders,
+			canMove: [service.canMoveSpaceWithinSection(worktree('c'), -1), service.canMoveSpaceWithinSection(worktree('c'), 1), service.canMoveSpaceWithinSection(worktree('b'), 1), service.canMoveSpaceWithinSection({ ...worktree('a'), isMainCheckout: true }, 1)],
+			ordered: service.orderedWorktrees('repo').map(candidate => candidate.name),
+			ledger: [storage.get(PARADIS_SPACE_SECTIONS_STORAGE_KEY, StorageScope.WORKSPACE), storage.get(PARADIS_SPACE_SECTIONS_COLLAPSED_STORAGE_KEY, StorageScope.WORKSPACE)],
+		}, {
+			orders: [['c', 'a', 'b'], ['c', 'b', 'a'], ['c', 'a', 'b']],
+			canMove: [false, true, false, false],
+			ordered: ['c', 'a', 'b'],
+			ledger: [undefined, undefined],
+		});
+	});
 
 	test('creating a section from a space moves it there, and the space order follows the list order', () => {
 		const harness = create();
@@ -144,6 +172,63 @@ suite('ParadisSpaceSectionsService', () => {
 			whileDisconnected: { repo: { sections: [{ id: 'doing', name: 'Now' }], assignments: { [key('a')]: 'doing', [key('gone')]: 'doing' } } },
 			whileEmpty: { repo: { sections: [{ id: 'doing', name: 'Still' }], assignments: { [key('a')]: 'doing', [key('gone')]: 'doing' } } },
 			afterScan: { repo: { sections: [{ id: 'doing', name: 'Doing' }], assignments: { [key('a')]: 'doing' } } },
+		});
+	});
+
+	test('a space that was just created keeps its section until the list shows it, and then takes its place in the order', () => {
+		const harness = create();
+		const { service } = harness;
+		const doing = service.createSection('repo', 'Doing')!;
+		const review = service.createSection('repo', 'Review')!;
+		service.moveSpaceToSection(worktree('c'), review);
+		harness.orders.length = 0;
+		// The create flow registers the space and assigns it before the next scan lists it.
+		harness.known = [worktree('fresh')];
+		service.moveSpaceToSection(worktree('fresh'), doing);
+		// Another write before the scan must not prune it.
+		service.renameSection('repo', doing, 'Now');
+		const beforeScan = harness.stored();
+		const ordersBeforeScan = harness.orders.length;
+		// The scan lists the new space last; the order is realigned so that readers of the plain order (mobile) see the list order.
+		harness.worktrees = [...harness.worktrees, worktree('fresh')];
+		harness.known = [];
+		harness.onDidChangeWorktrees.fire();
+		harness.onDidChangeWorktrees.fire();
+		assert.deepStrictEqual({
+			beforeScan,
+			ordersBeforeScan,
+			orders: harness.orders,
+			listed: harness.worktrees.map(candidate => candidate.name),
+		}, {
+			beforeScan: { repo: { sections: [{ id: doing, name: 'Now' }, { id: review, name: 'Review' }], assignments: { [key('c')]: review, [key('fresh')]: doing } } },
+			// Nothing was listed to reorder while the space was not in the list.
+			ordersBeforeScan: 0,
+			// One write; the second notification finds the order already aligned.
+			orders: [['a', 'b', 'fresh', 'c']],
+			listed: ['a', 'b', 'fresh', 'c'],
+		});
+	});
+
+	test('a list notification that arrives before the scan shows the new order does not write the old order back', () => {
+		const harness = create();
+		const { service } = harness;
+		const doing = service.createSection('repo', 'Doing')!;
+		service.moveSpaceToSection(worktree('a'), doing);
+		// A space found by the scan sorts last, so the plain order is not the list order until it is realigned.
+		harness.worktrees = [worktree('b'), worktree('c'), worktree('a'), worktree('new')];
+		harness.orders.length = 0;
+		// The user moves c first; the real service keeps the old list until its next scan.
+		const stale = harness.worktrees;
+		service.moveSpaceToSection(worktree('c'), undefined, 'first');
+		const written = harness.worktrees;
+		harness.worktrees = stale;
+		harness.onDidChangeWorktrees.fire();
+		const whilePending = harness.orders.length;
+		harness.worktrees = written;
+		harness.onDidChangeWorktrees.fire();
+		assert.deepStrictEqual({ whilePending, orders: harness.orders }, {
+			whilePending: 1,
+			orders: [['c', 'b', 'new', 'a']],
 		});
 	});
 

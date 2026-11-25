@@ -37,10 +37,6 @@ registerColor('paradis.fillSelected', {
 }, localize('paradis.color.fillSelected', "Para Code の部品: 選んでいる行の塗り。"));
 registerColor('paradis.fillNeutral', 'button.secondaryBackground', localize('paradis.color.fillNeutral', "Para Code の部品: 副のボタンの塗り。"));
 registerColor('paradis.scrim', '#00000080', localize('paradis.color.scrim', "Para Code の部品: モーダルの下の暗い幕。"));
-// 見出しの帯。sideBarSectionHeader.background はサイドバーの地と同じ色にしているテーマが多く（Dark 2026・Light 2026・Dark Modern・
-// Light Modern、Dark+ 系は透明）帯が見えないので、地に文字の色を少し混ぜて作る。Houston は見出しの面の色（#343841）を
-// paradisDefaultSettings.contribution.ts のテーマごとの上書きで入れる。
-registerColor('paradis.band', { op: ColorTransformType.Mix, color: 'sideBar.background', with: 'foreground', ratio: 0.07 }, localize('paradis.color.band', "Para Code の部品: 一覧の中の見出しの帯の面。"));
 // ページの画像（サムネイル）の上に乗る小さな印の地と文字（ブラウザ一覧の「更新を止めた」印）。画像の明るさに関わらず
 // 見えるよう、テーマによらず黒の半透明に白で描く。テーマや workbench.colorCustomizations で替えられる。
 registerColor('paradis.imageBadge', '#00000073', localize('paradis.color.imageBadge', "Para Code の部品: 画像の上に乗る印の地。"));

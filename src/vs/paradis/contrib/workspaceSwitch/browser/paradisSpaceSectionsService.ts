@@ -31,6 +31,8 @@ export class ParadisSpaceSectionsService extends Disposable implements IParadisS
 	 */
 	private lastWrittenSections: string | undefined;
 	private lastWrittenCollapsed: string | undefined;
+	/** リポジトリ id → 最後に書いた並び（URI の列）。一覧がその並びになるまで残す */
+	private readonly pendingOrders = new Map<string, readonly string[]>();
 
 	constructor(
 		@IStorageService private readonly storageService: IStorageService,
@@ -58,6 +60,16 @@ export class ParadisSpaceSectionsService extends Disposable implements IParadisS
 			}
 			this._collapsed = paradisParseCollapsedSections(raw, PARADIS_SPACE_SECTIONS_MAX_COLLAPSED);
 			this._onDidChange.fire();
+		}));
+		// 新しく見つかった・作ったスペースは並びの最後に入るので、一覧が変わるたびに並び（worktreeOrder）を一覧の順へ揃える。
+		// モバイルへ送る順など、並びをそのまま読む所が一覧と同じ順になる。同じ順なら書かない
+		this._register(this.worktreeService.onDidChangeWorktrees(() => {
+			for (const [repositoryId, entry] of this._state) {
+				// 並びを書いた直後は、次の走査が終わるまで一覧が前の並びのまま。その並びから揃え直すと、いま書いた並びを書き戻してしまう
+				if (!this.isOrderWritePending(repositoryId)) {
+					this.alignOrder(repositoryId, paradisSectionOrderedSpaceKeys(this.orderKeys(repositoryId), entry));
+				}
+			}
 		}));
 		// リポジトリを一覧から外したら、そのリポジトリの分を丸ごと消す（一覧が空のときは何もしない）
 		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => {
@@ -180,6 +192,12 @@ export class ParadisSpaceSectionsService extends Disposable implements IParadisS
 		return this.worktreeService.getWorktrees(repositoryId).map(worktree => paradisWorktreeStateKey(worktree.uri));
 	}
 
+	/** 割り当てを残してよいスペース: 一覧にあるものと、既知のスペース。一覧が空なら空（刈らない）。 */
+	private liveKeys(repositoryId: string): string[] {
+		const listed = this.orderKeys(repositoryId);
+		return listed.length === 0 ? listed : [...listed, ...this.worktreeService.getKnownWorktreeStateKeys(repositoryId)];
+	}
+
 	/**
 	 * 新しい状態を保存して知らせ、aligned のリポジトリのスペースの並び（worktreeOrder）を一覧の順へ揃える。
 	 * aligned.stateKey があれば、そのスペースを target の位置へ置いてから揃える。
@@ -190,7 +208,8 @@ export class ParadisSpaceSectionsService extends Disposable implements IParadisS
 		}
 		// 一覧から消えたスペースの割り当ては、書くときに刈る（溜まると上限で新しい割り当てが断られる）。
 		// 走査が終わっていない・一覧が空のリポジトリは刈らない（SSH の切断で全部の割り当てを失わないため）
-		next = paradisPruneSpaceAssignments(next, repositoryId => this.worktreeService.isWorktreeListComplete?.(repositoryId) ? this.orderKeys(repositoryId) : undefined);
+		// 作った直後のスペースは一覧（getWorktrees）にまだ載っていないので、既知のスペース（addKnownWorktree 済み）も今あるものに数える
+		next = paradisPruneSpaceAssignments(next, repositoryId => this.worktreeService.isWorktreeListComplete?.(repositoryId) ? this.liveKeys(repositoryId) : undefined);
 		const serialized = paradisSerializeSpaceSections(next);
 		if (serialized === undefined) {
 			this.logService.warn('[ParadisSpaceSections] Refused to persist oversized space sections');
@@ -229,7 +248,24 @@ export class ParadisSpaceSectionsService extends Disposable implements IParadisS
 		if (orderedUris.length !== worktrees.length || equals(orderedUris, worktrees.map(worktree => worktree.uri.toString()))) {
 			return;
 		}
+		this.pendingOrders.set(repositoryId, orderedUris);
 		this.worktreeService.setWorktreeOrder(repositoryId, orderedUris);
+	}
+
+	/** 書いた並びがまだ一覧に出ていないか。出ていれば（消えた・増えたスペースは除いて比べる）覚えを捨てる。 */
+	private isOrderWritePending(repositoryId: string): boolean {
+		const pending = this.pendingOrders.get(repositoryId);
+		if (!pending) {
+			return false;
+		}
+		const listed = this.worktreeService.getWorktrees(repositoryId).map(worktree => worktree.uri.toString());
+		const written = new Set(pending);
+		const present = new Set(listed);
+		if (equals(listed.filter(uri => written.has(uri)), pending.filter(uri => present.has(uri)))) {
+			this.pendingOrders.delete(repositoryId);
+			return false;
+		}
+		return true;
 	}
 
 	private storeCollapsed(): void {
