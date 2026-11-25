@@ -1251,52 +1251,49 @@
 }
 
 /* allow-any-unicode-next-line */
-/* セクションの範囲を見せる（Q607 案 B）。セクションがあるときだけ一覧の器に paradis-workspaces-sectioned が付き、
+/* セクションの範囲を見せる（Q607 案 B、見出しの形は Q685 案 3）。セクションがあるときだけ一覧の器に paradis-workspaces-sectioned が付き、
  * 中身（プロジェクト・スペース）は本当の子として 1 段 12px ずつ字下げされる（字下げはビューがツリーへ渡す）。
- * 見出しの行は面の色の帯にし、中身の行には見出しの矢印の下から中立の色の細い罫線を引く。罫線と字下げがずれるので
+ * 見出しの行は薄い帯にし、中身の行には見出しの矢印の下から中立の色の細い罫線を引く。罫線と字下げがずれるので
  * 本家の案内線は消す。左端のプロジェクトの色の線（::before）はそのまま。セクションが 0 個なら何も変わらない。 */
 .paradis-workspaces-list.paradis-workspaces-sectioned .monaco-tl-indent {
 	display: none;
 }
 
+/* allow-any-unicode-next-line */
+/* 薄い帯（Q685 案 3）: 検索の行（.paradis-workspaces-nav-search）と同じ塗り（文字の色の 5%）と同じ角丸。色を固定せず文字の色から
+ * 作るので、テーマと利用者の色の変更に付いて来る。一覧が数える行の高さは 32px のまま（paradisWorkspacesView.ts の
+ * PARADIS_SECTION_HEADER_HEIGHT）で、行の器そのものを上下 2px ずつ縮めて 28px の帯にする（一覧は行に top と height を
+ * インラインで付けるので、height は !important、位置は margin で動かす）。器ごと縮めるので、本家が器に付けるポインタの塗り・
+ * 選択の塗り・フォーカスの枠・ドロップ先の塗りも同じ帯の形になる。帯と帯の間は 4px 空き、閉じた見出しが続いても 1 つの塊にならない */
 .paradis-workspaces-list .monaco-list-row.paradis-section-band {
-	background-color: var(--vscode-paradis-band);
+	height: 28px !important;
+	margin-top: 2px;
+	border-radius: var(--vscode-cornerRadius-medium);
+	background-color: color-mix(in srgb, var(--vscode-foreground) 5%, transparent);
 }
 
 /* allow-any-unicode-next-line */
-/* 上に貼り付いた見出し（本家の sticky scroll）も帯にする。本家は貼り付いた行を一覧の地の色で塗るため、それより強く当てる */
+/* 上に貼り付いた見出し（本家の sticky scroll）も同じ帯にする。本家は貼り付いた行を一覧の地の色で不透明に塗るため、それより強く当てる。
+ * 下には本家が貼り付く枠（.monaco-tree-sticky-container）に塗る不透明な地があるので、半透明の帯でも後ろの行は透けない */
 .paradis-workspaces-list .monaco-list .monaco-scrollable-element .monaco-tree-sticky-container .monaco-tree-sticky-row.paradis-section-band {
-	background-color: var(--vscode-paradis-band);
+	background-color: color-mix(in srgb, var(--vscode-foreground) 5%, transparent);
 }
 
 /* allow-any-unicode-next-line */
-/* 帯の上でもポインタを重ねたことが分かるよう、帯の色に重ね塗りする（本家の塗りは帯の色を置き換えてしまう） */
-.paradis-workspaces-list .monaco-list:not(.drop-target):not(.dragging) .monaco-list-row.paradis-section-band:hover:not(.selected):not(.focused) {
-	background-color: var(--vscode-paradis-band);
-	background-image: linear-gradient(var(--vscode-paradis-fillHover), var(--vscode-paradis-fillHover));
-}
-
-/* allow-any-unicode-next-line */
-/* 帯が続くと 1 つの塊に見えるので、先頭以外の帯の上に地の色で 1px の切れ目を入れる */
-.paradis-workspaces-list .monaco-list-row.paradis-section-band:not(.paradis-section-band-first) {
-	box-shadow: inset 0 1px 0 var(--vscode-paradis-surface);
-}
-
-/* allow-any-unicode-next-line */
-/* 帯は四隅とも角を付けない（Modern UI は行の角丸を !important で付ける） */
-.modern-ui .paradis-workspaces-list .monaco-list .monaco-list-row.paradis-section-band {
-	border-radius: 0 !important;
+/* 帯は四隅とも検索の行と同じ角丸（Modern UI は行の角丸を !important で付け、このビューは左の 2 隅を 0 に戻しているので、それより強く当てる） */
+.modern-ui .paradis-workspaces-list .monaco-list .monaco-list-row.paradis-section-band:not(.separator) {
+	border-radius: var(--vscode-cornerRadius-medium) !important;
 }
 
 .paradis-workspaces-list .monaco-list-row.paradis-section-band .paradis-section-row {
 	border-top-color: transparent;
 	font-size: var(--vscode-fontSize-label1);
-	color: var(--vscode-paradis-textStrong);
+	color: var(--vscode-sideBar-foreground, var(--vscode-foreground));
 }
 
 .paradis-workspaces-list .monaco-list-row.paradis-section-band .paradis-section-count {
-	font-size: var(--vscode-fontSize-label1);
-	color: var(--vscode-paradis-textMuted);
+	font-size: var(--vscode-fontSize-label2);
+	color: var(--vscode-paradis-textFaint);
 }
 
 /* allow-any-unicode-next-line */
