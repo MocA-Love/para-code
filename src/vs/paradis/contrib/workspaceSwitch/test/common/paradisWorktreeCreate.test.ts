@@ -10,6 +10,7 @@ import assert from 'assert';
 import { decodeBase64 } from '../../../../../base/common/buffer.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { GeneralShellType, PosixShellType, WindowsShellType } from '../../../../../platform/terminal/common/terminal.js';
+import { paradisIsPlainBranchName, paradisPullRequestBranchName } from '../../common/paradisWorktreeExistingBranch.js';
 import { PARADIS_DEFAULT_AGENT_COMMANDS, paradisBuildAgentCommand, paradisBuildWorktreeNames, paradisMobileAgentRefusal, paradisMobileFormAgents, paradisDeduplicateBranchName, paradisParseWorktreeNaming, paradisToBranchName, paradisToWorktreeTitle, paradisDeduplicateWorktreeDirName, paradisFindWorktreeLock, paradisFormatWorktreeLockReason, paradisParseGhPrStatus, paradisParseWorktreeListPorcelain, paradisShouldCreateDefaultTerminal, paradisNextBranchNameAfter, paradisReferenceNamingPrompt, paradisToReferenceBranchName, paradisToReferenceWorktreeTitle } from '../../common/paradisWorktreeCreate.js';
 
 suite('paradisWorktreeCreate', () => {
@@ -587,5 +588,16 @@ suite('paradisWorktreeCreate', () => {
 			paradisNextBranchNameAfter('fix/mapping', ['main'], false),
 			paradisNextBranchNameAfter('fix/mapping', ['fix/mapping', 'fix/mapping-2', 'Fix/Mapping-3'], true),
 		], ['fix/mapping-2', 'fix/mapping-4']);
+	});
+
+	test('names the local branch of a fork pull request after its number, and refuses names git could misread', () => {
+		assert.deepStrictEqual([
+			paradisPullRequestBranchName(7, 'main'),
+			paradisPullRequestBranchName(7, 'feature/x'),
+			paradisPullRequestBranchName(7, 'a b'),
+			paradisPullRequestBranchName(7, 'x..y'),
+			// allow-any-unicode-next-line
+			['fix/mapping', '修正', '-rf', 'a b', 'x~1', ''].map(paradisIsPlainBranchName),
+		], ['pr-7-main', 'pr-7-feature/x', undefined, undefined, [true, true, false, false, false, false]]);
 	});
 });

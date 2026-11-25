@@ -15,6 +15,7 @@
 
 import './media/paradisCreateWorktreeDialog.css';
 import * as dom from '../../../../base/browser/dom.js';
+import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { basename, dirname, joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -36,17 +37,22 @@ import {
 	IParadisGitBranches,
 	IParadisWorktreeGitCommandResult,
 	paradisBuildAgentCommand,
+	paradisCleanReferenceTitle,
 	PARADIS_AGENT_LAUNCH_OPTIONS_STORAGE_KEY,
 	paradisDeduplicateWorktreeDirName,
+	paradisNextBranchNameAfter,
 	paradisSanitizeBranchName,
+	paradisToReferenceWorktreeTitle,
 } from '../common/paradisWorktreeCreate.js';
+import { IParadisGithubReference, IParadisGithubReferenceInfo, ParadisGithubReferenceFailure, paradisExtractGithubReferences, paradisGithubReferenceKey } from '../../../common/paradisIssueDetection.js';
+import { createParadisChip } from '../../../browser/paradisBadges.js';
 import { appendParadisAgentLogoSvg } from '../../limitsMonitor/electron-browser/paradisLimitsLogos.js';
 import { paradisAgentLogoForId } from '../../../common/paradisAgentLogoPaths.js';
 import { IParadisAgentModelCatalogService } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { paradisAppendAgentListLockNotice } from '../../agentModelCatalog/browser/paradisAgentListLockNotice.js';
 import { paradisReadWorkspaceLifecycleConfig } from './paradisWorkspaceLifecycleService.js';
-import { IParadisWorktreeGitHost, paradisWorktreeGitHostResolver, paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
+import { IParadisWorktreeGitHost, ParadisGithubReferenceResolver, paradisGithubReferenceResolver, paradisWorktreeGitHostResolver, paradisWorktreeGitWriteHostResolver } from './paradisWorktreeGitChannelClient.js';
 import { IParadisWorktreeCreateQueueService } from './paradisWorktreeCreateQueueService.js';
 import { IParadisHeadlessWorktreeRequest } from './paradisWorktreeHeadlessCreate.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
@@ -58,7 +64,7 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
 import { paradisFormatCrossJumpAgo } from '../../crossJump/common/paradisCrossJump.js';
-import { IParadisBranchCandidates, IParadisExistingBranchChoice, IParadisExistingBranchState, ParadisExistingBranchPlan, ParadisExistingBranchSource, paradisPlanExistingBranch } from '../common/paradisWorktreeExistingBranch.js';
+import { IParadisBranchCandidates, IParadisExistingBranchChoice, IParadisExistingBranchState, ParadisExistingBranchPlan, ParadisExistingBranchSource, paradisIsPlainBranchName, paradisPlanExistingBranch, paradisPullRequestBranchName } from '../common/paradisWorktreeExistingBranch.js';
 import { PARADIS_MODAL_BACKDROP_CLASS, PARADIS_MODAL_BODY_CLASS, PARADIS_MODAL_FOOT_CLASS, paradisModalClasses, ParadisModalSize, renderParadisModalHead } from '../../../browser/paradisModal.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { PARADIS_MODAL_DRAFT_RESTORED } from '../../paradisSettings/browser/paradisModalDrafts.js';
@@ -164,8 +170,6 @@ const STR_SETUP_LABEL = localize('paradis.createWorktree.setupLabel', "setup ス
 // allow-any-unicode-next-line
 const STR_NO_BRANCHES = localize('paradis.createWorktree.noBranches', "ブランチを取得できませんでした");
 // allow-any-unicode-next-line
-const STR_AUTO = localize('paradis.createWorktree.autoName', "(自動生成)");
-// allow-any-unicode-next-line
 const STR_MODE_ARIA = localize('paradis.createWorktree.modeAria', "ブランチ");
 // allow-any-unicode-next-line
 const STR_MODE_NEW = localize('paradis.createWorktree.modeNew', "新しいブランチ");
@@ -201,6 +205,43 @@ const STR_PROMPT_PLACEHOLDER_EXISTING = localize('paradis.createWorktree.promptP
 const STR_PICK_BRANCH = localize('paradis.createWorktree.pickBranch', "(ブランチを選んでください)");
 // allow-any-unicode-next-line
 const STR_CHECKING = localize('paradis.createWorktree.checking', "ブランチの状態を確かめています…");
+// allow-any-unicode-next-line
+const STR_REFS_ARIA = localize('paradis.createWorktree.refsAria', "指示に貼った Issue・プルリクエスト");
+// allow-any-unicode-next-line
+const STR_REF_ISSUE = localize('paradis.createWorktree.refIssue', "Issue");
+// allow-any-unicode-next-line
+const STR_REF_PR = localize('paradis.createWorktree.refPullRequest', "プルリクエスト");
+// allow-any-unicode-next-line
+const STR_REF_DISMISS = localize('paradis.createWorktree.refDismiss', "名前に使わない");
+// allow-any-unicode-next-line
+const STR_REF_PICK = localize('paradis.createWorktree.refPick', "こちらを使う");
+// allow-any-unicode-next-line
+const STR_REF_VIA_REMOTE = localize('paradis.createWorktree.refViaRemote', "SSH 先の gh で取得");
+// allow-any-unicode-next-line
+const STR_REF_VIA_LOCAL = localize('paradis.createWorktree.refViaLocal', "手元の gh で取得");
+// allow-any-unicode-next-line
+const STR_REF_FALLBACK = localize('paradis.createWorktree.refFallback', "スペース名は今までどおり指示から付けます");
+// allow-any-unicode-next-line
+const STR_GROUP_PULL_REQUEST = localize('paradis.createWorktree.groupPullRequest', "プルリクエスト（fork）");
+/** 指示の入力が止まってから Issue・PR を取りに行くまでの時間（q.html Q684 の D2）。 */
+const REFERENCE_DEBOUNCE_MS = 500;
+
+/** 指示に貼った Issue・PR の 1 枚のカード。 */
+interface IParadisReferenceCard {
+	readonly reference: IParadisGithubReference;
+	readonly key: string;
+	status: 'loading' | 'ok' | 'failed';
+	info?: IParadisGithubReferenceInfo;
+	reason?: ParadisGithubReferenceFailure;
+	via?: 'local' | 'remote';
+	/** 「名前に使わない」で閉じた。 */
+	dismissed: boolean;
+	/** この Issue・PR が、選んだリポジトリ（origin）のものか。確かめる前は undefined。 */
+	sameRepository?: boolean;
+	/** 元のブランチが origin にもローカルにも見つからなかった。 */
+	branchMissing?: boolean;
+}
+
 /** 前回選択したエージェント id の保存キー（StorageScope.PROFILE）。 */
 const STORAGE_KEY_LAST_AGENT = 'paradis.workspaceSwitch.lastSelectedAgent';
 /** エージェントごとのモデル/エフォート/権限の前回選択の保存キー（タブの「＋」のランチャーと共有）。 */
@@ -261,6 +302,7 @@ export function openParadisCreateWorktreeDialog(accessor: ServicesAccessor, pres
 		prefill,
 		// fetch は refs を書き換えるので、作成と同じく別のマシンへ流さない解決関数で動かす
 		paradisWorktreeGitWriteHostResolver(accessor),
+		paradisGithubReferenceResolver(accessor),
 	);
 	// ダイアログは自身の close で自己 dispose する
 	void dialog;
@@ -339,7 +381,7 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 	/** fetch を済ませた（または走らせている）リポジトリ。切り替えの連打で fetch を重ねない。 */
 	private _fetchRepoId: string | undefined;
 	/** 選んだ既存のブランチ。 */
-	private _choice: { readonly source: ParadisExistingBranchSource; readonly name: string } | undefined;
+	private _choice: { readonly source: ParadisExistingBranchSource; readonly name: string; /** fork から来た PR（作るときに取得する）。 */ readonly pullRequestNumber?: number } | undefined;
 	/** 選んだブランチの今の状態と、どう開くか（確かめている間は undefined）。 */
 	private _choiceState: IParadisExistingBranchState | undefined;
 	private _plan: ParadisExistingBranchPlan | undefined;
@@ -351,6 +393,30 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 	private _focusSyncCheck = false;
 	/** 注意の中のチェック（描き直すたびに作り直す）。 */
 	private readonly _noteStore = this._register(new DisposableStore());
+
+	// --- 指示に貼った Issue・PR（q.html Q684 案 A） ---
+	private _refSlot!: HTMLElement;
+	/** カードのボタン・ホバー（描き直すたびに作り直す）。 */
+	private readonly _refStore = this._register(new DisposableStore());
+	/** カードのボタン（`種類:カードのキー` → 要素）。描き直した後に、同じボタンへフォーカスを戻すため。 */
+	private readonly _refActions = new Map<string, HTMLElement>();
+	private readonly _refScheduler = this._register(new RunOnceScheduler(() => this._syncReferences(), REFERENCE_DEBOUNCE_MS));
+	/** 指示に出てきた順のカード（3 枚まで）。 */
+	private _refs: IParadisReferenceCard[] = [];
+	/** 「こちらを使う」で選んだカード（無ければ閉じていない先頭）。 */
+	private _refPick: string | undefined;
+	/** 再表示のとき、最初に拾ったカードを閉じた状態で出すか（閉じたまま作成に失敗した）。 */
+	private _refDismissRestored = false;
+	/** 利用者がモードを切り替えた・ブランチを選んだ（以後、元のブランチへ自動では切り替えない）。 */
+	private _modeTouched = false;
+	/** 元のブランチ（PR の元のブランチ・Issue に紐づいたブランチ）を自動で当てたカード。 */
+	private _refBranchKey: string | undefined;
+	/** 一覧に出るのを待っている元のブランチ。 */
+	private _pendingRefBranch: { readonly key: string; readonly name: string } | undefined;
+	/** fork から来た PR を開くローカルブランチ（一覧に専用の組で出す）。 */
+	private _refPullRequestBranch: { readonly name: string; readonly number: number } | undefined;
+	/** 選んだリポジトリの origin（github.com の `owner/repo`）。 */
+	private _originRepository: { readonly repositoryId: string; readonly value: Promise<string | undefined> } | undefined;
 
 	constructor(
 		layoutService: ILayoutService,
@@ -369,6 +435,8 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		prefill: IParadisHeadlessWorktreeRequest | undefined,
 		/** fetch（refs を書く）に使う解決関数。省くと読み取りと同じものを使う。 */
 		private readonly resolveGitWriteHost: (resource: URI) => IParadisWorktreeGitHost | undefined = resolveGitHost,
+		/** 指示に貼った Issue・PR を取る関数。省くとカードも候補も出さない。 */
+		private readonly lookupReference?: ParadisGithubReferenceResolver,
 	) {
 		super();
 
@@ -554,7 +622,10 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 			value: 'new',
 			ariaLabel: STR_MODE_ARIA,
 		}));
-		this._register(this._modeSeg.onDidChange(mode => this._setMode(mode, true)));
+		this._register(this._modeSeg.onDidChange(mode => {
+			this._modeTouched = true;
+			this._setMode(mode, true);
+		}));
 
 		// 既存のブランチの欄。どれを開くかが一番の決めごとになるので、DOM の順でも指示より前に置く（Tab の順と見た目をそろえる）
 		// 見出しは真上の「ブランチ」と同じなので、この欄には出さない（読み上げの名前は一覧の欄が持つ）
@@ -595,6 +666,10 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		}));
 		this._promptHelpEl = dom.append(promptField, $('.pcw-d-help'));
 		this._promptHelpEl.textContent = STR_PROMPT_HELP;
+		// 指示に貼った Issue・PR のカード（何を取ってきたか・名前に使うか）。指示のすぐ下に置く
+		this._refSlot = dom.append(promptField, $('.pcw-d-refs'));
+		this._refSlot.setAttribute('role', 'group');
+		this._refSlot.setAttribute('aria-label', STR_REFS_ARIA);
 		this._promptInput = this._imageComposer.textarea;
 		this._register(this._imageComposer.onDidChange(() => {
 			this._updateCommandPreview();
@@ -703,7 +778,10 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		this._register(dom.addDisposableListener(this._branchInput, 'input', () => this._updatePathPreview()));
 		this._register(this._modelSelect.onDidChange(() => this._onModelChanged()));
 		this._register(this._effortSelect.onDidChange(() => this._updateCommandPreview()));
-		this._register(dom.addDisposableListener(this._promptInput, 'input', () => this._updateCommandPreview()));
+		this._register(dom.addDisposableListener(this._promptInput, 'input', () => {
+			this._updateCommandPreview();
+			this._scheduleReferenceSync();
+		}));
 		this._register(this._setupCheckbox.onDidChange(() => {
 			this._setupRow.classList.toggle('off', !this._setupCheckbox.checked);
 		}));
@@ -716,6 +794,11 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 			this._branchInput.value = prefill.branch ?? '';
 			this._promptInput.value = prefill.prompt ?? '';
 			this._pendingBaseRef = prefill.baseRef;
+			// 既存のブランチを選んであった再表示では、元のブランチへ自動で切り替えない
+			this._modeTouched = prefill.existingBranch !== undefined;
+			this._refDismissRestored = prefill.skipReference === true;
+			const picked = prefill.reference ? paradisExtractGithubReferences(prefill.reference.url, 1).at(0) : undefined;
+			this._refPick = picked ? paradisGithubReferenceKey(picked) : undefined;
 		}
 
 		this._onAgentChanged(prefill);
@@ -724,7 +807,8 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		if (prefill?.existingBranch) {
 			const choice = prefill.existingBranch;
 			const source: ParadisExistingBranchSource = choice.source === 'local' ? 'local' : 'origin';
-			this._choice = { source, name: choice.branch };
+			this._choice = { source, name: choice.branch, ...(choice.pullRequestNumber !== undefined ? { pullRequestNumber: choice.pullRequestNumber } : {}) };
+			this._refPullRequestBranch = choice.pullRequestNumber !== undefined ? { name: choice.branch, number: choice.pullRequestNumber } : undefined;
 			this._syncChoice = choice.sync !== undefined ? true : undefined;
 			this._branchCombo.selected = this._comboItemFor(source, choice.branch);
 			this._modeSeg.value = 'existing';
@@ -978,6 +1062,7 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 			this._fetchState = 'idle';
 			this._clearChoice();
 		}
+		this._resetReferences();
 		if (this._mode === 'existing') {
 			void this._loadCandidates();
 			this._fetchOrigin(false);
@@ -1075,6 +1160,9 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 
 	private _updatePathPreview(): void {
 		this._updateSubtitle();
+		// 打った名前・モードで「何に使うか」の文が変わるので、カードとブランチ名の候補も合わせて描き直す
+		this._renderReferences();
+		this._branchInput.placeholder = this._autoBranch().label;
 		const repository = this._selectedRepository;
 		if (!repository) {
 			this._pathPreview.textContent = '';
@@ -1095,10 +1183,12 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 			this._updateCreateEnabled();
 			return;
 		}
-		const branch = paradisSanitizeBranchName(this._branchInput.value);
+		// ブランチ名を打っていなければ、Issue・PR から付く名前（元のブランチの次の番号か、番号 +（自動生成））で見せる
+		const auto = this._autoBranch();
+		const branch = paradisSanitizeBranchName(this._branchInput.value) ?? auto.branch;
 		const dirName = branch
 			? paradisDeduplicateWorktreeDirName(branch, this._branches?.branches ?? [], existingDirNames)
-			: STR_AUTO;
+			: auto.label;
 		this._pathPreview.textContent = this._computeWorktreeUri(repository, dirName).fsPath;
 		this._updateCreateEnabled();
 	}
@@ -1119,6 +1209,11 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		const existingBranch = this._mode === 'existing' ? this._existingBranchChoice() : undefined;
 		if (this._mode === 'existing' && !existingBranch) {
 			return;
+		}
+		// 貼った直後（入力が止まるのを待っている間）に押されても、今の指示の URL で決める
+		if (this._refScheduler.isScheduled()) {
+			this._refScheduler.cancel();
+			this._syncReferences();
 		}
 
 		const agentId = this._selectedAgentId;
@@ -1148,7 +1243,8 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		this.createQueueService.enqueue({
 			repositoryId: repository.id,
 			name: this._nameInput.value,
-			branch: existingBranch ? '' : this._branchInput.value,
+			// 打っていなければ、元のブランチの次の番号（PR の元のブランチ・Issue に紐づいたブランチがあるとき）
+			branch: existingBranch ? '' : this._branchInput.value.trim() || this._autoBranch().branch || '',
 			baseRef: existingBranch ? '' : baseRef,
 			prompt: this._promptInput.value.trim(),
 			agentId,
@@ -1156,6 +1252,7 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 			runSetup: this._setupScript ? this._setupCheckbox.checked : true,
 			...(existingBranch ? { existingBranch } : {}),
 			...(images.length > 0 ? { images } : {}),
+			...this._referenceForRequest(),
 		});
 		this._close(true);
 	}
@@ -1166,7 +1263,7 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 			return !!this._branchSelect.value;
 		}
 		const plan = this._plan;
-		return !!this._choice && !!plan && plan.kind !== 'inUse' && plan.kind !== 'missing';
+		return !!this._choice && !!plan && plan.kind !== 'inUse' && (plan.kind !== 'missing' || this._choice.pullRequestNumber !== undefined);
 	}
 
 	private _updateCreateEnabled(): void {
@@ -1179,8 +1276,12 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 	private _existingBranchChoice(): IParadisExistingBranchChoice | undefined {
 		const choice = this._choice;
 		const plan = this._plan;
-		if (!choice || !plan || plan.kind === 'inUse' || plan.kind === 'missing') {
+		if (!choice || !plan || plan.kind === 'inUse' || (plan.kind === 'missing' && choice.pullRequestNumber === undefined)) {
 			return undefined;
+		}
+		if (choice.pullRequestNumber !== undefined) {
+			// fork から来た PR: 作るときに origin の refs/pull/<番号>/head を取ってから開く（合わせる操作は無い）
+			return { branch: choice.name, source: 'local', pullRequestNumber: choice.pullRequestNumber };
 		}
 		const sync = this._syncEnabled(plan);
 		if (sync && plan.kind === 'behind') {
@@ -1221,7 +1322,10 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 	}
 
 	private _updateNamePlaceholder(): void {
-		this._nameInput.placeholder = this._mode === 'existing' && this._choice && this._plan?.kind !== 'inUse' ? this._choice.name : STR_NAME_PLACEHOLDER;
+		// 指示に貼った Issue・PR の題名が候補。打てばその名前が勝ち、消せば候補に戻る（placeholder なので値は入れない）
+		const current = this._currentReference;
+		this._nameInput.placeholder = current?.status === 'ok' && current.info ? paradisToReferenceWorktreeTitle(current.info.number, current.info.title)
+			: this._mode === 'existing' && this._choice && this._plan?.kind !== 'inUse' ? this._choice.name : STR_NAME_PLACEHOLDER;
 	}
 
 	/** 手元の refs から候補を読む（fetch はしない）。 */
@@ -1352,6 +1456,11 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		if (candidates) {
 			groups.push({ label: STR_GROUP_LOCAL, icon: Codicon.gitBranch, items: candidates.local.map(branch => this._comboItemFor('local', branch.name)) });
 			groups.push({ label: STR_GROUP_ORIGIN, icon: Codicon.cloud, items: candidates.remote.map(branch => this._comboItemFor('origin', branch.name)) });
+			// fork から来た PR のブランチは、作るときに取るまで手元に無い。選べるよう専用の組で出す
+			const pullRequest = this._refPullRequestBranch;
+			if (pullRequest && !candidates.local.some(branch => branch.name === pullRequest.name)) {
+				groups.push({ label: STR_GROUP_PULL_REQUEST, icon: Codicon.gitPullRequest, items: [{ id: `local:${pullRequest.name}`, label: pullRequest.name, icon: Codicon.gitPullRequest, detail: `#${pullRequest.number}` }] });
+			}
 		}
 		const before = this._branchCombo.selected;
 		this._branchCombo.setGroups(groups);
@@ -1359,11 +1468,16 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		if (candidates && before && !this._branchCombo.selected) {
 			this._clearChoice();
 		}
+		this._applyPendingReferenceBranch();
 	}
 
 	private _onBranchChosen(item: IParadisComboItem): void {
 		const source: ParadisExistingBranchSource = item.id.startsWith('origin:') ? 'origin' : 'local';
-		this._choice = { source, name: item.label };
+		const pullRequest = source === 'local' && this._refPullRequestBranch?.name === item.label ? this._refPullRequestBranch : undefined;
+		this._choice = { source, name: item.label, ...(pullRequest ? { pullRequestNumber: pullRequest.number } : {}) };
+		// 利用者が選んだので、以後は元のブランチへ自動で切り替えない
+		this._modeTouched = true;
+		this._pendingRefBranch = undefined;
 		this._syncChoice = undefined;
 		// スペース名の既定はブランチ名
 		this._updateNamePlaceholder();
@@ -1426,7 +1540,8 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		dom.clearNode(note);
 		note.className = 'pcw-d-branch-note';
 		const choice = this._choice;
-		if (this._mode !== 'existing' || !choice) {
+		const pending = this._pendingRefBranch;
+		if (this._mode !== 'existing' || (!choice && !pending)) {
 			note.classList.add('hidden');
 			return;
 		}
@@ -1436,10 +1551,35 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 		const body = dom.append(note, $('.pcw-d-branch-note-body'));
 		const line = (message: string, ...values: string[]) => paradisAppendWithCode(dom.append(body, $('span')), message, values);
 		const sub = (message: string, ...values: string[]) => paradisAppendWithCode(dom.append(body, $('span.pcw-d-branch-note-sub')), message, values);
+		if (!choice) {
+			// 指示に貼った PR・Issue の元のブランチが、取得し直した一覧に出るのを待っている
+			if (this._fetchState === 'failed') {
+				// origin から取得できなかった: 無いとは言えないので、取得し直すか、一覧から選ぶかを任せる
+				icon.className = ThemeIcon.asClassName(Codicon.warning);
+				note.classList.add('warning');
+				// allow-any-unicode-next-line
+				line(localize('paradis.createWorktree.note.pendingReferenceFailed', "元のブランチ {0} は手元の一覧にありません。origin から取得できなかったため、あるかどうかを確かめられていません。"), pending?.name ?? '');
+				// allow-any-unicode-next-line
+				sub(localize('paradis.createWorktree.note.pendingReferenceFailedSub', "上の「再試行」で取得し直すか、一覧から選ぶか、「新しいブランチ」に切り替えてください。"));
+				return;
+			}
+			icon.className = ThemeIcon.asClassName(ThemeIcon.modify(Codicon.loading, 'spin'));
+			// allow-any-unicode-next-line
+			line(localize('paradis.createWorktree.note.pendingReference', "元のブランチ {0} を origin から探しています…"), pending?.name ?? '');
+			return;
+		}
 		const b = choice.name;
 		if (!plan) {
 			icon.className = ThemeIcon.asClassName(ThemeIcon.modify(Codicon.loading, 'spin'));
 			line(STR_CHECKING);
+			return;
+		}
+		if (plan.kind === 'missing' && choice.pullRequestNumber !== undefined) {
+			icon.className = ThemeIcon.asClassName(Codicon.info);
+			// allow-any-unicode-next-line
+			line(localize('paradis.createWorktree.note.forkPullRequest', "fork から来たプルリクエスト #{0} です。作るときに origin から取得し、ローカルブランチ {1} を作って開きます。", String(choice.pullRequestNumber), '{0}'), b);
+			// allow-any-unicode-next-line
+			sub(localize('paradis.createWorktree.note.forkPullRequestSub', "push しても、fork の元のブランチには載りません。"));
 			return;
 		}
 		icon.className = ThemeIcon.asClassName(plan.kind === 'behind' || plan.kind === 'diverged' || plan.kind === 'missing' ? Codicon.warning : Codicon.info);
@@ -1532,6 +1672,384 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 			this._focusSyncCheck = true;
 			this._renderBranchNote();
 		}));
+	}
+
+	// --- 指示に貼った Issue・PR（q.html Q684 案 A） ----------------------------------------------
+
+	private _scheduleReferenceSync(): void {
+		if (this.lookupReference) {
+			this._refScheduler.schedule();
+		}
+	}
+
+	/** リポジトリが変わった: 取る先のマシンも「このリポジトリのものか」も変わるので、カードを取り直す。 */
+	private _resetReferences(): void {
+		if (!this.lookupReference) {
+			return;
+		}
+		this._refScheduler.cancel();
+		this._refs = [];
+		this._originRepository = undefined;
+		// 前のリポジトリで自動で当てた元のブランチは持ち越さない（このリポジトリのものなら、取り直した後で当て直す）
+		if (this._refBranchKey !== undefined) {
+			this._refBranchKey = undefined;
+			this._pendingRefBranch = undefined;
+			this._refPullRequestBranch = undefined;
+			if (!this._modeTouched && this._mode === 'existing') {
+				this._modeSeg.value = 'new';
+				this._setMode('new', false);
+			}
+		}
+		this._syncReferences();
+	}
+
+	/** 指示の文から Issue・PR の URL を拾い直し、新しく出てきたものを取りに行く。 */
+	private _syncReferences(): void {
+		if (!this.lookupReference || this._store.isDisposed) {
+			return;
+		}
+		const previous = new Map(this._refs.map(card => [card.key, card]));
+		const added: IParadisReferenceCard[] = [];
+		this._refs = paradisExtractGithubReferences(this._promptInput.value).map(reference => {
+			const key = paradisGithubReferenceKey(reference);
+			const known = previous.get(key);
+			if (known) {
+				return known;
+			}
+			const card: IParadisReferenceCard = { reference, key, status: 'loading', dismissed: this._refDismissRestored };
+			added.push(card);
+			return card;
+		});
+		this._refDismissRestored = false;
+		for (const card of added) {
+			void this._lookupReferenceCard(card);
+		}
+		this._onReferencesChanged();
+	}
+
+	private async _lookupReferenceCard(card: IParadisReferenceCard): Promise<void> {
+		const repository = this._selectedRepository;
+		const lookup = this.lookupReference;
+		card.status = 'loading';
+		card.reason = undefined;
+		const result = repository && lookup ? await lookup(repository.uri, card.reference.url) : undefined;
+		// 閉じた後・指示から消えた後・リポジトリを替えた後の遅い応答は捨てる
+		if (this._store.isDisposed || !this._refs.includes(card)) {
+			return;
+		}
+		if (result?.kind === 'ok') {
+			card.status = 'ok';
+			card.info = result.info;
+		} else {
+			card.status = 'failed';
+			card.reason = result?.reason ?? 'unreachable';
+		}
+		card.via = result?.via;
+		this._onReferencesChanged();
+	}
+
+	/** 名前に使うカード: 「こちらを使う」で選んだもの、無ければ閉じていない先頭（指示に最初に出てくる URL）。 */
+	private get _currentReference(): IParadisReferenceCard | undefined {
+		const live = this._refs.filter(card => !card.dismissed);
+		return live.find(card => card.key === this._refPick) ?? live.at(0);
+	}
+
+	private _onReferencesChanged(): void {
+		this._updateNamePlaceholder();
+		this._updatePathPreview();
+		void this._syncReferenceBranch();
+	}
+
+	/**
+	 * 今のカードが持つ元のブランチ（PR の元のブランチ・Issue に紐づいたブランチ）。選んだリポジトリのもので、開いている
+	 * Issue・PR のときだけ（閉じた PR のブランチは消えていることが多い）。fork から来た PR は、取る先のローカルブランチの名前。
+	 */
+	private _referenceSourceBranch(): { readonly card: IParadisReferenceCard; readonly name: string; readonly pullRequestNumber?: number } | undefined {
+		const card = this._currentReference;
+		const info = card?.status === 'ok' ? card.info : undefined;
+		if (!card || !info?.branch || card.sameRepository !== true || (info.state !== 'open' && info.state !== 'draft')) {
+			return undefined;
+		}
+		if (info.crossRepository) {
+			const name = paradisPullRequestBranchName(info.number, info.branch);
+			return name !== undefined ? { card, name, pullRequestNumber: info.number } : undefined;
+		}
+		return paradisIsPlainBranchName(info.branch) ? { card, name: info.branch } : undefined;
+	}
+
+	/**
+	 * ブランチ名を打っていないときに付く名前。元のブランチがあれば、それと重ならない次の番号（`<元のブランチ名>-2`）を
+	 * そのまま使う。Issue・PR の番号だけ分かっていれば、英語の部分は作成時に付くので `2236-(自動生成)` と見せる。
+	 */
+	private _autoBranch(): { readonly branch?: string; readonly label: string } {
+		const source = this._referenceSourceBranch();
+		if (source) {
+			const candidates = this._candidatesRepoId === this._selectedRepository?.id ? this._candidates : undefined;
+			const branch = paradisNextBranchNameAfter(source.name, [...(this._branches?.branches ?? []), ...(candidates?.local ?? []).map(entry => entry.name), ...(candidates?.remote ?? []).map(entry => entry.name)]);
+			return { branch, label: branch };
+		}
+		const current = this._currentReference;
+		// allow-any-unicode-next-line
+		return { label: current?.status === 'ok' && current.info ? localize('paradis.createWorktree.branchPlaceholderNumbered', "{0}-(自動生成)", current.info.number) : STR_BRANCH_PLACEHOLDER };
+	}
+
+	/** 選んだリポジトリの origin（github.com の `owner/repo`、小文字）。古い接続先など、分からなければ undefined。 */
+	private _originRepositoryOf(repository: IParadisWorkspaceRepository): Promise<string | undefined> {
+		if (this._originRepository?.repositoryId !== repository.id) {
+			const host = this.resolveGitHost(repository.uri);
+			this._originRepository = {
+				repositoryId: repository.id,
+				value: host.channel.call<string | undefined>('getOriginRepository', [host.path(repository.uri)]).then(value => typeof value === 'string' ? value : undefined, () => undefined),
+			};
+		}
+		return this._originRepository.value;
+	}
+
+	/**
+	 * PR の URL なら「既存のブランチ」に切り替えて、PR の元のブランチを出す（Issue は紐づいたブランチがあれば同じ。Q684 の D11）。
+	 * 利用者がモードやブランチを自分で選んだ後は、切り替えない。カードが外れたら（閉じた・URL を消した）、自動で当てた分を戻す。
+	 */
+	private async _syncReferenceBranch(): Promise<void> {
+		const current = this._currentReference;
+		if (this._refBranchKey !== undefined && this._refBranchKey !== current?.key) {
+			this._refBranchKey = undefined;
+			this._pendingRefBranch = undefined;
+			this._refPullRequestBranch = undefined;
+			if (!this._modeTouched && this._mode === 'existing') {
+				this._clearChoice();
+				this._modeSeg.value = 'new';
+				this._setMode('new', false);
+			}
+		}
+		const repository = this._selectedRepository;
+		const info = current?.status === 'ok' ? current.info : undefined;
+		if (!current || !info?.branch || !repository) {
+			return;
+		}
+		if (current.sameRepository === undefined) {
+			const origin = await this._originRepositoryOf(repository);
+			if (this._store.isDisposed || !this._refs.includes(current) || this._selectedRepository?.id !== repository.id) {
+				return;
+			}
+			current.sameRepository = origin !== undefined && origin === `${info.owner}/${info.repo}`.toLowerCase();
+			// 「新しいブランチ」のままでも、ブランチ名の候補（元のブランチの次の番号）が変わる
+			this._updatePathPreview();
+		}
+		const source = this._currentReference === current ? this._referenceSourceBranch() : undefined;
+		// 一度当てて見つからなかったカード（_refBranchKey が残る）には、当て直さない
+		if (!source || this._modeTouched || this._mode !== 'new' || this._refBranchKey === current.key) {
+			return;
+		}
+		this._refBranchKey = current.key;
+		this._modeSeg.value = 'existing';
+		if (source.pullRequestNumber !== undefined) {
+			// fork から来た PR: origin のブランチではないので、一覧を待たずに選ぶ（作るときに refs/pull/<番号>/head を取る）
+			this._refPullRequestBranch = { name: source.name, number: source.pullRequestNumber };
+			this._choice = { source: 'local', name: source.name, pullRequestNumber: source.pullRequestNumber };
+			this._syncChoice = undefined;
+			this._setMode('existing', false);
+			this._renderCandidates();
+			this._branchCombo.selected = { id: `local:${source.name}`, label: source.name, icon: Codicon.gitPullRequest, detail: `#${source.pullRequestNumber}` };
+			void this._inspectChoice();
+			return;
+		}
+		// origin のブランチは、取得し直した一覧に出てから選ぶ（_renderCandidates → _applyPendingReferenceBranch）
+		this._pendingRefBranch = { key: current.key, name: source.name };
+		this._setMode('existing', false);
+		this._renderBranchNote();
+	}
+
+	/** 待っていた元のブランチが一覧に出たら選ぶ。取得が済んでも無ければ、「新しいブランチ」に戻してカードに書く。 */
+	private _applyPendingReferenceBranch(): void {
+		const pending = this._pendingRefBranch;
+		const candidates = this._candidatesRepoId === this._selectedRepository?.id ? this._candidates : undefined;
+		if (!pending || !candidates || this._mode !== 'existing') {
+			return;
+		}
+		const source: ParadisExistingBranchSource | undefined = candidates.remote.some(branch => branch.name === pending.name) ? 'origin'
+			: candidates.local.some(branch => branch.name === pending.name) ? 'local' : undefined;
+		if (source !== undefined) {
+			this._pendingRefBranch = undefined;
+			this._choice = { source, name: pending.name };
+			this._syncChoice = undefined;
+			this._branchCombo.selected = this._comboItemFor(source, pending.name);
+			void this._inspectChoice();
+			return;
+		}
+		if (candidates.hasOrigin && this._fetchState !== 'done') {
+			// origin から取得中か、取得に失敗した（gh は通っても git の認証は別）。「見つからない」とは言えないので待ちを解かない。
+			// 届いたら（「再試行」で取れたら）一覧を読み直して、もう一度ここへ来る
+			this._renderBranchNote();
+			return;
+		}
+		this._pendingRefBranch = undefined;
+		const card = this._refs.find(entry => entry.key === pending.key);
+		if (card) {
+			card.branchMissing = true;
+		}
+		if (!this._modeTouched) {
+			this._modeSeg.value = 'new';
+			this._setMode('new', false);
+		} else {
+			this._renderBranchNote();
+		}
+	}
+
+	/** 作成の要求に載せる「名前に使う Issue・PR」。取れていれば題名も載せ、作成の流れが取り直さないようにする。 */
+	private _referenceForRequest(): Pick<IParadisHeadlessWorktreeRequest, 'reference' | 'skipReference'> {
+		const current = this._currentReference;
+		if (current) {
+			const info = current.status === 'ok' ? current.info : undefined;
+			return { reference: { url: current.reference.url, number: info?.number ?? current.reference.number, kind: info?.kind ?? current.reference.kind, ...(info ? { title: info.title } : {}) } };
+		}
+		// カードを全部閉じた: 作成の流れにも、指示の URL から名前を付けさせない
+		return this._refs.length > 0 ? { skipReference: true } : {};
+	}
+
+	/** カードを描く。押した後もキーボードの操作を続けられるよう、同じカードの同じボタン（無ければ指示の欄）へフォーカスを戻す。 */
+	private _renderReferences(): void {
+		const slot = this._refSlot;
+		if (!slot) {
+			return;
+		}
+		const active = dom.getActiveElement();
+		const hadFocus = dom.isHTMLElement(active) && slot.contains(active);
+		const focused = hadFocus ? [...this._refActions].find(([, element]) => element.contains(active))?.[0] : undefined;
+		this._refStore.clear();
+		this._refActions.clear();
+		dom.clearNode(slot);
+		const live = this._refs.filter(card => !card.dismissed);
+		const current = this._currentReference;
+		for (const card of live) {
+			this._renderReferenceCard(slot, card, card === current);
+		}
+		// カードが出ている間は指示の欄を 1 行ぶん縮め、下の欄（エージェント・詳細オプション）を押し下げる分を減らす
+		this._dialog.classList.toggle('pcw-d-has-refs', live.length > 0);
+		this._promptInput.rows = live.length > 0 ? 2 : 3;
+		if (hadFocus) {
+			((focused !== undefined ? this._refActions.get(focused) : undefined) ?? this._promptInput).focus();
+		}
+	}
+
+	private _renderReferenceCard(slot: HTMLElement, card: IParadisReferenceCard, isCurrent: boolean): void {
+		const label = `${card.reference.owner}/${card.reference.repo} #${card.reference.number}`;
+		const element = dom.append(slot, $('.pcw-d-ref'));
+		const icon = dom.append(element, $('span'));
+		icon.setAttribute('aria-hidden', 'true');
+		const body = dom.append(element, $('.pcw-d-ref-body'));
+		const title = dom.append(body, $('.pcw-d-ref-title'));
+		const action = (kind: string, button: ParadisButton, run: () => void) => {
+			this._refActions.set(`${kind}:${card.key}`, button.element);
+			this._refStore.add(button);
+			this._refStore.add(button.onDidClick(run));
+		};
+		const appendDismiss = () => {
+			// allow-any-unicode-next-line
+			const ariaLabel = localize('paradis.createWorktree.refDismissAria', "{0} を名前に使わない", label);
+			action('dismiss', new ParadisButton(element, { kind: 'icon', small: true, icon: Codicon.close, ariaLabel, title: STR_REF_DISMISS }), () => {
+				card.dismissed = true;
+				if (this._refPick === card.key) {
+					this._refPick = undefined;
+				}
+				this._onReferencesChanged();
+			});
+		};
+		if (card.status === 'loading') {
+			element.setAttribute('role', 'status');
+			icon.className = ThemeIcon.asClassName(ThemeIcon.modify(Codicon.loading, 'spin'));
+			title.classList.add('pcw-d-ref-muted');
+			// allow-any-unicode-next-line
+			title.textContent = localize('paradis.createWorktree.refLoading', "{0} を取得中…", label);
+			appendDismiss();
+			return;
+		}
+		const info = card.info;
+		if (card.status === 'failed' || !info) {
+			element.setAttribute('role', 'status');
+			const missing = card.reason === 'notFound';
+			icon.className = `${ThemeIcon.asClassName(missing ? Codicon.lock : Codicon.warning)} pcw-d-ref-warn`;
+			title.textContent = missing
+				// allow-any-unicode-next-line
+				? localize('paradis.createWorktree.refNotFound', "{0} は見つからないか、読む権限がありません", label)
+				// allow-any-unicode-next-line
+				: localize('paradis.createWorktree.refFailed', "{0} を取得できませんでした", label);
+			const reason = missing
+				// allow-any-unicode-next-line
+				? localize('paradis.createWorktree.refNotFoundSub', "gh にログインしているアカウントで読めるか確かめてください。")
+				: card.reason === 'noGh'
+					// allow-any-unicode-next-line
+					? localize('paradis.createWorktree.refNoGhSub', "gh（GitHub CLI）が使えません。gh を入れて gh auth login を済ませると取れます。")
+					: card.reason === 'rateLimited'
+						// allow-any-unicode-next-line
+						? localize('paradis.createWorktree.refRateLimitedSub', "GitHub の利用枠を使い切っています。しばらくしてから試してください。")
+						// allow-any-unicode-next-line
+						: localize('paradis.createWorktree.refUnreachableSub', "GitHub に届きませんでした。");
+			dom.append(body, $('.pcw-d-ref-sub')).textContent = `${reason}${STR_REF_FALLBACK}`;
+			action('retry', new ParadisButton(element, { kind: 'ghost', small: true, label: STR_RETRY }), () => {
+				void this._lookupReferenceCard(card);
+				this._onReferencesChanged();
+			});
+			appendDismiss();
+			return;
+		}
+		const open = info.state === 'open';
+		const iconId = info.kind === 'pr'
+			? (info.state === 'draft' ? Codicon.gitPullRequestDraft : info.state === 'merged' ? Codicon.gitMerge : info.state === 'closed' ? Codicon.gitPullRequestClosed : Codicon.gitPullRequest)
+			: (info.state === 'closed' ? Codicon.issueClosed : Codicon.issueOpened);
+		icon.className = `${ThemeIcon.asClassName(iconId)}${open ? ' pcw-d-ref-open' : ''}`;
+		// 題名は第三者の文: 改行・双方向制御を落としてから出す
+		const cleanTitle = paradisCleanReferenceTitle(info.title);
+		title.textContent = cleanTitle;
+		// 2 行で切れる題名は、ポインタを重ねたときに全体を出す
+		this._refStore.add(this.hoverService.setupDelayedHover(title, () => ({ content: cleanTitle })));
+		const repository = this._selectedRepository;
+		const parts = [label, info.kind === 'pr' ? STR_REF_PR : STR_REF_ISSUE];
+		if (repository?.uri.scheme === Schemas.vscodeRemote && card.via !== undefined) {
+			parts.push(card.via === 'remote' ? STR_REF_VIA_REMOTE : STR_REF_VIA_LOCAL);
+		}
+		parts.push(this._referenceUseText(isCurrent));
+		if (card.branchMissing && info.branch) {
+			// allow-any-unicode-next-line
+			parts.push(localize('paradis.createWorktree.refBranchMissing', "元のブランチ {0} は origin に見つかりませんでした", info.branch));
+		}
+		// allow-any-unicode-next-line
+		dom.append(body, $('.pcw-d-ref-sub')).textContent = parts.join(' · ');
+		// 状態の名前は GitHub の画面の表記に合わせる
+		const stateLabel = info.state === 'open' ? localize('paradis.createWorktree.refStateOpen', "Open")
+			: info.state === 'draft' ? localize('paradis.createWorktree.refStateDraft', "Draft")
+				: info.state === 'merged' ? localize('paradis.createWorktree.refStateMerged', "Merged")
+					: localize('paradis.createWorktree.refStateClosed', "Closed");
+		createParadisChip(element, stateLabel, open ? 'success' : 'neutral');
+		if (!isCurrent) {
+			action('pick', new ParadisButton(element, { kind: 'ghost', small: true, label: STR_REF_PICK }), () => {
+				this._refPick = card.key;
+				this._onReferencesChanged();
+			});
+		}
+		appendDismiss();
+	}
+
+	/** カードの 2 行目の末尾: この Issue・PR を何に使うか（打った名前が勝つ）。 */
+	private _referenceUseText(isCurrent: boolean): string {
+		if (!isCurrent) {
+			// allow-any-unicode-next-line
+			return localize('paradis.createWorktree.refUnused', "名前には使いません");
+		}
+		const nameTyped = this._nameInput.value.trim().length > 0;
+		// 番号をブランチ名に足すのは、新しいブランチで、ブランチ名を打っておらず、元のブランチも無いときだけ
+		const numbersBranch = this._mode === 'new' && this._branchInput.value.trim().length === 0 && this._referenceSourceBranch() === undefined;
+		if (nameTyped) {
+			return numbersBranch
+				// allow-any-unicode-next-line
+				? localize('paradis.createWorktree.refUseNumberOnly', "番号だけブランチ名に使います（スペース名は打った名前）")
+				// allow-any-unicode-next-line
+				: localize('paradis.createWorktree.refUseTyped', "スペース名は打った名前を使います");
+		}
+		return numbersBranch
+			// allow-any-unicode-next-line
+			? localize('paradis.createWorktree.refUseBoth', "スペース名とブランチ名の番号に使います")
+			// allow-any-unicode-next-line
+			: localize('paradis.createWorktree.refUseName', "スペース名に使います");
 	}
 
 	/** git の一覧のパスに当たるスペース（今知っているワークツリー）。 */

@@ -25,7 +25,8 @@ import { InMemoryStorageService } from '../../../../../platform/storage/common/s
 import { IParadisAgentModelCatalogService } from '../../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../common/paradisWorkspaceSwitch.js';
 import { ParadisCreateWorktreeDialog } from '../../electron-browser/paradisCreateWorktreeDialog.js';
-import { IParadisWorktreeGitHost } from '../../electron-browser/paradisWorktreeGitChannelClient.js';
+import { IParadisWorktreeGitHost, ParadisGithubReferenceResult } from '../../electron-browser/paradisWorktreeGitChannelClient.js';
+import { IParadisGithubReferenceInfo } from '../../../../common/paradisIssueDetection.js';
 import { IParadisWorktreeCreateQueueService } from '../../electron-browser/paradisWorktreeCreateQueue.js';
 import { IParadisHeadlessWorktreeRequest } from '../../electron-browser/paradisWorktreeHeadlessCreate.js';
 import { IParadisWorktreeImage } from '../../common/paradisWorktreeImageAttach.js';
@@ -273,5 +274,352 @@ suite('create worktree dialog: closing and drafts', () => {
 			discardDrafts(container);
 			container.remove();
 		}
+	});
+});
+
+suite('create worktree dialog: issues and pull requests pasted into the prompt', () => {
+	const store = ensureNoDisposablesAreLeakedInTestSuite();
+
+	const ISSUE_URL = 'https://github.com/acme/app/issues/2236';
+	const PR_URL = 'https://github.com/acme/app/pull/2241';
+	// allow-any-unicode-next-line
+	const ISSUE: IParadisGithubReferenceInfo = { kind: 'issue', owner: 'acme', repo: 'app', number: 2236, title: 'テンプレートJSONの重説マッピング', url: ISSUE_URL, state: 'open' };
+	const PR: IParadisGithubReferenceInfo = { kind: 'pr', owner: 'acme', repo: 'app', number: 2241, title: 'Fix the mapping', url: PR_URL, state: 'open', branch: 'fix/mapping' };
+
+	interface IOpenOptions {
+		readonly prompt?: string;
+		/** URL ごとの gh の答え（無ければ「見つからない」）。 */
+		readonly lookups?: Record<string, ParadisGithubReferenceResult>;
+		/** git の答えの差し替え（関数なら、呼び出しの引数から答えを作る）。 */
+		readonly git?: Record<string, unknown>;
+		/** 2 つ目のリポジトリ（詳細オプションで選び替える）。 */
+		readonly secondRepository?: boolean;
+		readonly worktrees?: readonly { readonly name: string; readonly path: string }[];
+	}
+
+	function open(container: HTMLElement, options: IOpenOptions = {}) {
+		const fileService = store.add(new FileService(new NullLogService()));
+		store.add(fileService.registerProvider('file', store.add(new InMemoryFileSystemProvider())));
+		const repository = { id: 'repo', name: 'repo', uri: URI.file('/repo') } satisfies IParadisWorkspaceRepository;
+		const answers: Record<string, unknown> = {
+			listBranches: { branches: ['main'], head: 'main' },
+			listBranchCandidates: { local: [{ name: 'main' }], remote: [{ name: 'main' }, { name: 'fix/mapping' }], inUse: [], hasOrigin: false },
+			inspectExistingBranch: { remoteSha: 'b', behind: 0, ahead: 0 },
+			getOriginRepository: 'acme/app',
+			...options.git,
+		};
+		const channel = {
+			call: async (command: string, args: readonly unknown[]) => {
+				const answer = answers[command];
+				return typeof answer === 'function' ? answer(...args) : answer;
+			},
+			listen: () => Event.None,
+		} as unknown as IChannel;
+		const gitHost: IParadisWorktreeGitHost = { channel, path: resource => resource.path as unknown as ReturnType<IParadisWorktreeGitHost['path']> };
+		const contextViewService = { showContextView: () => ({ close: () => { } }), hideContextView: () => { } } as unknown as IContextViewService;
+		const repositories = options.secondRepository ? [repository, { id: 'other', name: 'other', uri: URI.file('/other') } satisfies IParadisWorkspaceRepository] : [repository];
+		const enqueued: IParadisHeadlessWorktreeRequest[] = [];
+		const switched: string[] = [];
+		const lookedUp: string[] = [];
+		const worktrees = (options.worktrees ?? []).map(worktree => ({ repositoryId: 'repo', name: worktree.name, branch: '', uri: URI.file(worktree.path) }));
+		const dialog = new ParadisCreateWorktreeDialog(
+			{ activeContainer: container } as unknown as ILayoutService,
+			() => gitHost,
+			{ repositories, activeRepository: repository, switchToWorktree: async (worktree: { name: string }) => { switched.push(worktree.name); } } as unknown as IParadisWorkspaceSwitchService,
+			{ getDetectedWorktrees: () => worktrees } as unknown as IParadisWorktreeService,
+			new TestConfigurationService(),
+			fileService,
+			new NullLogService(),
+			store.add(new InMemoryStorageService()),
+			{ enqueue: (request: IParadisHeadlessWorktreeRequest) => { enqueued.push(request); } } as unknown as IParadisWorktreeCreateQueueService,
+			{ onDidChange: Event.None, refresh: () => { }, getAgentTemplates: () => [], isFixedBySettings: () => false } as unknown as IParadisAgentModelCatalogService,
+			contextViewService,
+			NullHoverService,
+			// 指示を持って開くときは再表示の値として渡す（渡さなければ、残っている下書きを取り出す）
+			options.prompt !== undefined ? undefined : 'repo',
+			options.prompt !== undefined ? { repositoryId: 'repo', prompt: options.prompt } : undefined,
+			undefined,
+			async (_repository, url) => {
+				lookedUp.push(url);
+				return options.lookups?.[url] ?? { kind: 'failed', reason: 'notFound', via: 'local' };
+			},
+		);
+		const modal = container.querySelector<HTMLElement>('.paradis-create-worktree-dialog')!;
+		const cards = () => [...modal.querySelectorAll<HTMLElement>('.pcw-d-ref')].map(card => ({
+			title: card.querySelector('.pcw-d-ref-title')!.textContent,
+			sub: card.querySelector('.pcw-d-ref-sub')?.textContent,
+			chip: card.querySelector('.paradis-chip')?.textContent,
+			buttons: [...card.querySelectorAll<HTMLElement>('.paradis-button')].map(button => button.textContent || button.getAttribute('aria-label')),
+		}));
+		const button = (label: string) => [...modal.querySelectorAll<HTMLElement>('.paradis-button, .pcw-d-mode button')].find(candidate => candidate.textContent === label || candidate.getAttribute('aria-label') === label)!;
+		const fields = () => ({
+			name: modal.querySelector<HTMLInputElement>('.pcw-name')!.placeholder,
+			branch: modal.querySelector<HTMLInputElement>('.pcw-branch')!.placeholder,
+			mode: [...modal.querySelectorAll<HTMLElement>('.pcw-d-mode button')].find(candidate => candidate.getAttribute('aria-pressed') === 'true')?.textContent,
+			path: modal.querySelector('.pcw-path-preview')!.textContent,
+		});
+		const type = (selector: string, value: string) => {
+			const input = modal.querySelector<HTMLInputElement | HTMLTextAreaElement>(selector)!;
+			input.value = value;
+			input.dispatchEvent(new InputEvent('input', { bubbles: true }));
+		};
+		return { dialog, modal, enqueued, switched, lookedUp, cards, button, fields, type, create: () => button('作成').click() };
+	}
+
+	/** 下書きはモジュールの単位で持つので、開いたダイアログは「キャンセル」で閉じる（次のテストへ残さない）。 */
+	async function withDialog<T>(options: IOpenOptions, run: (opened: ReturnType<typeof open>) => Promise<T>): Promise<T> {
+		const container = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(container);
+		const opened = open(container, options);
+		try {
+			await timeout(0);
+			return await run(opened);
+		} finally {
+			// 「キャンセル」「作成」以外で閉じた（切り替えのボタン）ときは下書きが残るので、開き直して「キャンセル」で捨てる
+			(container.querySelector('.paradis-create-worktree-dialog') ? opened : open(container)).button('キャンセル').click();
+			container.remove();
+		}
+	}
+
+	const ok = (info: IParadisGithubReferenceInfo): ParadisGithubReferenceResult => ({ kind: 'ok', info, via: 'local' });
+
+	test('shows the issue as a card, offers its title as the space name, and a typed name wins until it is cleared', async () => {
+		await withDialog({ prompt: `${ISSUE_URL} を対応して`, lookups: { [ISSUE_URL]: ok(ISSUE) } }, async dialog => {
+			const offered = { cards: dialog.cards(), fields: dialog.fields(), rows: dialog.modal.querySelector<HTMLTextAreaElement>('textarea')!.rows };
+			// allow-any-unicode-next-line
+			dialog.type('.pcw-name', '重説マッピング修正');
+			const typed = dialog.cards()[0].sub;
+			dialog.type('.pcw-branch', 'my-branch');
+			const bothTyped = dialog.cards()[0].sub;
+			dialog.type('.pcw-name', '');
+			dialog.type('.pcw-branch', '');
+			const cleared = dialog.fields().name;
+			dialog.create();
+
+			assert.deepStrictEqual({ offered, typed, bothTyped, cleared, request: dialog.enqueued.map(request => ({ name: request.name, branch: request.branch, reference: request.reference, skipReference: request.skipReference })) }, {
+				offered: {
+					// allow-any-unicode-next-line
+					cards: [{ title: 'テンプレートJSONの重説マッピング', sub: 'acme/app #2236 · Issue · スペース名とブランチ名の番号に使います', chip: 'Open', buttons: ['acme/app #2236 を名前に使わない'] }],
+					// allow-any-unicode-next-line
+					fields: { name: '#2236 テンプレートJSONの重説マッピング', branch: '2236-(自動生成)', mode: '新しいブランチ', path: URI.file('/repo-worktrees/2236-(自動生成)').fsPath },
+					// カードが出ている間は指示の欄を 1 行ぶん縮める
+					rows: 2,
+				},
+				// allow-any-unicode-next-line
+				typed: 'acme/app #2236 · Issue · 番号だけブランチ名に使います（スペース名は打った名前）',
+				// allow-any-unicode-next-line
+				bothTyped: 'acme/app #2236 · Issue · スペース名は打った名前を使います',
+				// allow-any-unicode-next-line
+				cleared: '#2236 テンプレートJSONの重説マッピング',
+				// 取れた題名を要求に載せる（作成の流れは取り直さない）。名前の欄には値を入れない
+				// allow-any-unicode-next-line
+				request: [{ name: '', branch: '', reference: { url: ISSUE_URL, number: 2236, kind: 'issue', title: 'テンプレートJSONの重説マッピング' }, skipReference: undefined }],
+			});
+		});
+	});
+
+	test('fetches half a second after typing stops, uses the first of several, lets another be picked, and stops naming when all are dismissed', async () => {
+		const second = 'https://github.com/acme/app/issues/2198';
+		// allow-any-unicode-next-line
+		const other: IParadisGithubReferenceInfo = { ...ISSUE, number: 2198, title: 'フォントが置き換わる', url: second, state: 'closed' };
+		await withDialog({ lookups: { [ISSUE_URL]: ok(ISSUE), [second]: ok(other) } }, async dialog => {
+			dialog.type('textarea', `${ISSUE_URL} ${second}`);
+			const beforeDebounce = dialog.lookedUp.length;
+			await timeout(600);
+			const both = dialog.cards().map(card => [card.sub, card.chip, card.buttons]);
+			dialog.button('こちらを使う').click();
+			const picked = dialog.fields().name;
+			dialog.button('acme/app #2198 を名前に使わない').click();
+			const afterDismiss = dialog.fields().name;
+			dialog.button('acme/app #2236 を名前に使わない').click();
+			const none = { cards: dialog.cards().length, fields: dialog.fields(), rows: dialog.modal.querySelector<HTMLTextAreaElement>('textarea')!.rows };
+			dialog.create();
+
+			assert.deepStrictEqual({ beforeDebounce, lookedUp: dialog.lookedUp, both, picked, afterDismiss, none, request: dialog.enqueued.map(request => [request.reference, request.skipReference]) }, {
+				beforeDebounce: 0,
+				lookedUp: [ISSUE_URL, second],
+				both: [
+					// allow-any-unicode-next-line
+					['acme/app #2236 · Issue · スペース名とブランチ名の番号に使います', 'Open', ['acme/app #2236 を名前に使わない']],
+					// allow-any-unicode-next-line
+					['acme/app #2198 · Issue · 名前には使いません', 'Closed', ['こちらを使う', 'acme/app #2198 を名前に使わない']],
+				],
+				// allow-any-unicode-next-line
+				picked: '#2198 フォントが置き換わる',
+				// allow-any-unicode-next-line
+				afterDismiss: '#2236 テンプレートJSONの重説マッピング',
+				// allow-any-unicode-next-line
+				none: { cards: 0, fields: { name: '(省略可)', branch: '(自動生成)', mode: '新しいブランチ', path: URI.file('/repo-worktrees/(自動生成)').fsPath }, rows: 3 },
+				request: [[undefined, true]],
+			});
+		});
+	});
+
+	test('tells the three kinds of failure apart, never blocks Create, and lets the create flow try again', async () => {
+		const urls = ['https://github.com/acme/app/issues/1', 'https://github.com/acme/app/issues/2', 'https://github.com/acme/app/issues/3'];
+		const failed = (reason: 'unreachable' | 'notFound' | 'noGh'): ParadisGithubReferenceResult => ({ kind: 'failed', reason, via: 'local' });
+		const lookups: Record<string, ParadisGithubReferenceResult> = { [urls[0]]: failed('unreachable'), [urls[1]]: failed('notFound'), [urls[2]]: failed('noGh') };
+		await withDialog({ prompt: urls.join(' '), lookups }, async dialog => {
+			const cards = dialog.cards().map(card => [card.title, card.sub, card.buttons.slice(0, 1)]);
+			const fields = dialog.fields();
+			lookups[urls[0]] = ok({ ...ISSUE, number: 1, title: 'Now it works' });
+			// 「再試行」は既存のブランチの取得の行にもあるので、カードの中から探す
+			[...dialog.modal.querySelectorAll<HTMLElement>('.pcw-d-ref .paradis-button')].find(candidate => candidate.textContent === '再試行')!.click();
+			await timeout(0);
+			const retried = dialog.cards()[0].title;
+			dialog.button('acme/app #1 を名前に使わない').click();
+			dialog.create();
+
+			assert.deepStrictEqual({ cards, fields, retried, request: dialog.enqueued.map(request => request.reference) }, {
+				cards: [
+					// allow-any-unicode-next-line
+					['acme/app #1 を取得できませんでした', 'GitHub に届きませんでした。スペース名は今までどおり指示から付けます', ['再試行']],
+					// allow-any-unicode-next-line
+					['acme/app #2 は見つからないか、読む権限がありません', 'gh にログインしているアカウントで読めるか確かめてください。スペース名は今までどおり指示から付けます', ['再試行']],
+					// allow-any-unicode-next-line
+					['acme/app #3 を取得できませんでした', 'gh（GitHub CLI）が使えません。gh を入れて gh auth login を済ませると取れます。スペース名は今までどおり指示から付けます', ['再試行']],
+				],
+				// allow-any-unicode-next-line
+				fields: { name: '(省略可)', branch: '(自動生成)', mode: '新しいブランチ', path: URI.file('/repo-worktrees/(自動生成)').fsPath },
+				retried: 'Now it works',
+				// 取れていないカードは URL だけを載せ、作成の流れが 3 秒まで取り直す
+				request: [{ url: urls[1], number: 2, kind: 'issue' }],
+			});
+		});
+	});
+
+	test('a pull request of this repository switches to its source branch, and choosing a new branch numbers it after that branch', async () => {
+		await withDialog({ prompt: PR_URL, lookups: { [PR_URL]: ok(PR) } }, async dialog => {
+			await timeout(0);
+			const switched = { fields: dialog.fields(), chosen: dialog.modal.querySelector<HTMLInputElement>('.pcw-d-existing input')!.value, sub: dialog.cards()[0].sub };
+			dialog.button('新しいブランチ').click();
+			await timeout(0);
+			const asNew = dialog.fields();
+			dialog.create();
+
+			assert.deepStrictEqual({ switched, asNew, request: dialog.enqueued.map(request => ({ branch: request.branch, existingBranch: request.existingBranch, reference: request.reference?.title })) }, {
+				switched: {
+					fields: { name: '#2241 Fix the mapping', branch: 'fix/mapping-2', mode: '既存のブランチ', path: URI.file('/repo-worktrees/fix-mapping').fsPath },
+					chosen: 'origin/fix/mapping',
+					// allow-any-unicode-next-line
+					sub: 'acme/app #2241 · プルリクエスト · スペース名に使います',
+				},
+				// allow-any-unicode-next-line
+				asNew: { name: '#2241 Fix the mapping', branch: 'fix/mapping-2', mode: '新しいブランチ', path: URI.file('/repo-worktrees/fix-mapping-2').fsPath },
+				request: [{ branch: 'fix/mapping-2', existingBranch: undefined, reference: 'Fix the mapping' }],
+			});
+		});
+	});
+
+	test('opens the source branch as an existing one, and offers to switch when another space has it open', async () => {
+		const opened = await withDialog({ prompt: PR_URL, lookups: { [PR_URL]: ok(PR) } }, async dialog => {
+			await timeout(0);
+			dialog.create();
+			return dialog.enqueued.map(request => ({ branch: request.branch, existingBranch: request.existingBranch }));
+		});
+		const inUse = await withDialog({
+			prompt: PR_URL, lookups: { [PR_URL]: ok(PR) }, worktrees: [{ name: 'Mapping', path: '/repo-worktrees/fix-mapping' }],
+			git: { inspectExistingBranch: { remoteSha: 'b', localSha: 'b', behind: 0, ahead: 0, inUse: { branch: 'fix/mapping', path: '/repo-worktrees/fix-mapping', main: false } } },
+		}, async dialog => {
+			await timeout(0);
+			const note = dialog.modal.querySelector('.pcw-d-branch-note')!.textContent;
+			const canCreate = !dialog.button('作成').classList.contains('disabled');
+			// allow-any-unicode-next-line
+			dialog.button('そのスペースへ切り替える').click();
+			await timeout(0);
+			return { note, canCreate, switched: dialog.switched, enqueued: dialog.enqueued.length };
+		});
+
+		assert.deepStrictEqual({ opened, inUse }, {
+			opened: [{ branch: '', existingBranch: { branch: 'fix/mapping', source: 'origin' } }],
+			inUse: {
+				// allow-any-unicode-next-line
+				note: 'fix/mapping はスペース「Mapping」で開いています。git では 1 つのブランチを 2 か所で開けません。そのスペースへ切り替える',
+				canCreate: false,
+				switched: ['Mapping'],
+				enqueued: 0,
+			},
+		});
+	});
+
+	test('a fork pull request opens through a local branch fetched at creation; another repository or a closed one only names the space', async () => {
+		const fork = await withDialog({ prompt: PR_URL, lookups: { [PR_URL]: ok({ ...PR, branch: 'main', crossRepository: true }) }, git: { inspectExistingBranch: { behind: 0, ahead: 0 } } }, async dialog => {
+			await timeout(0);
+			const fields = dialog.fields();
+			const note = dialog.modal.querySelector('.pcw-d-branch-note')!.textContent;
+			dialog.create();
+			return { mode: fields.mode, path: fields.path, note, existingBranch: dialog.enqueued[0]?.existingBranch };
+		});
+		const elsewhere = await withDialog({ prompt: PR_URL, lookups: { [PR_URL]: ok(PR) }, git: { getOriginRepository: 'acme/other' } }, async dialog => {
+			await timeout(0);
+			return dialog.fields();
+		});
+		const merged = await withDialog({ prompt: PR_URL, lookups: { [PR_URL]: ok({ ...PR, state: 'merged' }) } }, async dialog => {
+			await timeout(0);
+			return [dialog.fields().mode, dialog.fields().branch, dialog.cards()[0].chip];
+		});
+
+		assert.deepStrictEqual({ fork, elsewhere, merged }, {
+			fork: {
+				mode: '既存のブランチ',
+				path: URI.file('/repo-worktrees/pr-2241-main').fsPath,
+				// allow-any-unicode-next-line
+				note: 'fork から来たプルリクエスト #2241 です。作るときに origin から取得し、ローカルブランチ pr-2241-main を作って開きます。push しても、fork の元のブランチには載りません。',
+				existingBranch: { branch: 'pr-2241-main', source: 'local', pullRequestNumber: 2241 },
+			},
+			// 別のリポジトリの PR: 元のブランチは当てず、番号を足す今までの付け方
+			elsewhere: { name: '#2241 Fix the mapping', branch: '2241-(自動生成)', mode: '新しいブランチ', path: URI.file('/repo-worktrees/2241-(自動生成)').fsPath },
+			merged: ['新しいブランチ', '2241-(自動生成)', 'Merged'],
+		});
+	});
+
+	test('keeps waiting when origin could not be fetched, and goes back to a new branch when the fetch shows the branch is gone', async () => {
+		const listed = { local: [{ name: 'main' }], remote: [{ name: 'main' }], inUse: [], hasOrigin: true };
+		const unreachable = await withDialog({ prompt: PR_URL, lookups: { [PR_URL]: ok(PR) }, git: { listBranchCandidates: listed, runGit: { code: 1, stdout: '', stderr: 'could not read Username' } } }, async dialog => {
+			await timeout(0);
+			await timeout(0);
+			return { mode: dialog.fields().mode, note: dialog.modal.querySelector('.pcw-d-branch-note')!.textContent, sub: dialog.cards()[0].sub, canCreate: !dialog.button('作成').classList.contains('disabled') };
+		});
+		const gone = await withDialog({ prompt: PR_URL, lookups: { [PR_URL]: ok(PR) }, git: { listBranchCandidates: listed, runGit: { code: 0, stdout: '', stderr: '' } } }, async dialog => {
+			await timeout(0);
+			await timeout(0);
+			return { fields: dialog.fields(), sub: dialog.cards()[0].sub };
+		});
+
+		assert.deepStrictEqual({ unreachable, gone }, {
+			unreachable: {
+				mode: '既存のブランチ',
+				// allow-any-unicode-next-line
+				note: '元のブランチ fix/mapping は手元の一覧にありません。origin から取得できなかったため、あるかどうかを確かめられていません。上の「再試行」で取得し直すか、一覧から選ぶか、「新しいブランチ」に切り替えてください。',
+				// allow-any-unicode-next-line
+				sub: 'acme/app #2241 · プルリクエスト · スペース名に使います',
+				canCreate: false,
+			},
+			gone: {
+				fields: { name: '#2241 Fix the mapping', branch: 'fix/mapping-2', mode: '新しいブランチ', path: URI.file('/repo-worktrees/fix-mapping-2').fsPath },
+				// allow-any-unicode-next-line
+				sub: 'acme/app #2241 · プルリクエスト · スペース名に使います · 元のブランチ fix/mapping は origin に見つかりませんでした',
+			},
+		});
+	});
+
+	test('choosing another repository drops the source branch that was applied for the first one', async () => {
+		await withDialog({ prompt: PR_URL, lookups: { [PR_URL]: ok(PR) }, secondRepository: true, git: { getOriginRepository: (path: string) => path === '/repo' ? 'acme/app' : 'acme/other' } }, async dialog => {
+			await timeout(0);
+			const first = dialog.fields().mode;
+			// 詳細オプションのリポジトリを選び替える
+			const select = dialog.modal.querySelector<HTMLSelectElement>('select[aria-label="リポジトリ"]')!;
+			select.selectedIndex = 1;
+			select.dispatchEvent(new InputEvent('change', { bubbles: true }));
+			await timeout(0);
+			await timeout(0);
+
+			assert.deepStrictEqual({ first, second: dialog.fields(), chosen: dialog.modal.querySelector<HTMLInputElement>('.pcw-d-existing input')!.value }, {
+				first: '既存のブランチ',
+				// 別のリポジトリの PR なので、元のブランチは当てず、番号を足す付け方に戻る
+				second: { name: '#2241 Fix the mapping', branch: '2241-(自動生成)', mode: '新しいブランチ', path: URI.file('/other-worktrees/2241-(自動生成)').fsPath },
+				chosen: '',
+			});
+		});
 	});
 });

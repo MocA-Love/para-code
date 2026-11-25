@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../base/test/common/utils.js';
-import { IParadisIssueLookupTarget, paradisClassifyGithubReferenceFailure, paradisExtractGithubReferences, paradisExtractIssueUrls, paradisParseGhIssueStatus, paradisParseGithubReferenceResponse, paradisParseGithubReferenceUrl, paradisParseIssueUrl, paradisPreferGithubReferenceFailure, paradisSelectIssueLookupBatch } from '../../common/paradisIssueDetection.js';
+import { IParadisIssueLookupTarget, paradisClassifyGithubReferenceFailure, paradisExtractGithubReferences, paradisExtractIssueUrls, paradisParseGhIssueStatus, paradisParseGithubReferenceResponse, paradisParseGithubReferenceUrl, paradisParseGithubRemoteRepository, paradisParseIssueUrl, paradisPreferGithubReferenceFailure, paradisSelectIssueLookupBatch } from '../../common/paradisIssueDetection.js';
 
 suite('paradisExtractIssueUrls / paradisParseIssueUrl', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -261,5 +261,19 @@ suite('issue and pull request URLs pasted into a prompt', () => {
 		].map(paradisClassifyGithubReferenceFailure), ['notFound', 'notFound', 'noGh', 'noGh', 'noGh', 'noGh', 'unreachable', 'unreachable']);
 		// 両方のマシンで駄目なら、手がかりの多い方を見せる
 		assert.deepStrictEqual([paradisPreferGithubReferenceFailure('noGh', 'notFound'), paradisPreferGithubReferenceFailure('unreachable', 'noGh'), paradisPreferGithubReferenceFailure('rateLimited', 'unreachable')], ['notFound', 'unreachable', 'rateLimited']);
+	});
+
+	test('reads the github.com repository out of an origin URL in any of its spellings', () => {
+		assert.deepStrictEqual([
+			'https://github.com/Acme/App.git',
+			'https://github.com/acme/app',
+			'https://user@github.com/acme/app.git/',
+			'git@github.com:acme/app.git',
+			'ssh://git@github.com/acme/app.git',
+			'git://github.com/acme/app',
+			'git@ghe.example.com:acme/app.git',
+			'https://github.com.example.com/acme/app.git',
+			'/srv/git/app.git',
+		].map(paradisParseGithubRemoteRepository), ['acme/app', 'acme/app', 'acme/app', 'acme/app', 'acme/app', 'acme/app', undefined, undefined, undefined]);
 	});
 });
