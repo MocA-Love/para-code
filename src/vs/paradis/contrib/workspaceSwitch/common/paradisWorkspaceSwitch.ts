@@ -129,6 +129,12 @@ export interface IParadisWorktreeService {
 	 */
 	isPinned(stateKey: string): boolean;
 	setPinned(stateKey: string, pinned: boolean): void;
+	/**
+	 * そのリポジトリの直近の走査が最後まで読めたか（getWorktrees が「今あるスペースの全部」と言えるか）。
+	 * 初回の走査の前と、接続が切れていて .git を読めなかった回は false。消えたスペースに紐づく台帳
+	 * （スペースのセクションの割り当て）を刈ってよいかの判定に使う。実装していなければ「言えない」扱い。
+	 */
+	isWorktreeListComplete?(repositoryId: string): boolean;
 }
 
 /** スペース (リポジトリ本体 / worktree) を画面に出すための情報。 */
