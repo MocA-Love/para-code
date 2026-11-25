@@ -70,6 +70,16 @@ function shellWords(commandLine: string): string[] {
 	return words;
 }
 
+/** コマンド行を、引用符とバックスラッシュを解いた語に分ける（起動時のフラグと先頭の `名前=値` を読む側が使う）。 */
+export function paradisShellWords(commandLine: string): string[] {
+	return shellWords(commandLine);
+}
+
+/** 次の語を値として取るオプションか（`--model opus` の `--model`。値を別のオプションと読まないために使う）。 */
+export function paradisAgentOptionTakesValue(agent: 'claude' | 'codex', option: string): boolean {
+	return (agent === 'claude' ? claudeOptionsWithValue : codexOptionsWithValue).has(option);
+}
+
 function firstPositionalIndex(args: readonly string[], optionsWithValue: ReadonlySet<string>): number | undefined {
 	for (let index = 0; index < args.length; index++) {
 		const argument = args[index];
