@@ -76,6 +76,26 @@ suite('ParadisSpaceSectionsService', () => {
 		return Object.assign(harness, { service });
 	}
 
+	test('a repository without sections reorders its spaces as before and writes no ledger', () => {
+		const harness = create();
+		const { service, storage } = harness;
+		// Drag c before a, then move b up and down with the menu.
+		service.moveSpaceToSection(worktree('c'), undefined, { worktree: worktree('a'), after: false });
+		service.moveSpaceWithinSection(worktree('b'), -1);
+		service.moveSpaceWithinSection(worktree('b'), 1);
+		assert.deepStrictEqual({
+			orders: harness.orders,
+			canMove: [service.canMoveSpaceWithinSection(worktree('c'), -1), service.canMoveSpaceWithinSection(worktree('c'), 1), service.canMoveSpaceWithinSection(worktree('b'), 1), service.canMoveSpaceWithinSection({ ...worktree('a'), isMainCheckout: true }, 1)],
+			ordered: service.orderedWorktrees('repo').map(candidate => candidate.name),
+			ledger: [storage.get(PARADIS_SPACE_SECTIONS_STORAGE_KEY, StorageScope.WORKSPACE), storage.get(PARADIS_SPACE_SECTIONS_COLLAPSED_STORAGE_KEY, StorageScope.WORKSPACE)],
+		}, {
+			orders: [['c', 'a', 'b'], ['c', 'b', 'a'], ['c', 'a', 'b']],
+			canMove: [false, true, false, false],
+			ordered: ['c', 'a', 'b'],
+			ledger: [undefined, undefined],
+		});
+	});
+
 	test('creating a section from a space moves it there, and the space order follows the list order', () => {
 		const harness = create();
 		const { service } = harness;
