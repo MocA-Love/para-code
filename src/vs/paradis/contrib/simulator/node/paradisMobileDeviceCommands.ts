@@ -316,9 +316,14 @@ export class ParadisMobileDeviceCommands {
 				throw new Error(describeFailure('adb am force-stop', stopped));
 			}
 		}
-		// 起動する Activity の名前を知らなくてよいよう、LAUNCHER の入口を1回だけ叩く
-		const result = await this._run(adb, ['-s', deviceId, 'shell', 'monkey', '-p', appId, '-c', 'android.intent.category.LAUNCHER', '1'], { timeoutMs: COMMAND_TIMEOUT_MS, signal });
-		if (result.code !== 0 || /No activities found|monkey aborted/i.test(`${result.stdout}${result.stderr}`)) {
+		// 起動する Activity の名前を知らなくてよいよう、LAUNCHER の入口を1回だけ叩く。`--pct-syskeys 0` が無いと、
+		// 物理キーの無い端末（API 36 のエミュレータなど）では monkey が「SYS_KEYS has no physical keys」で何もせずに終わる
+		const result = await this._run(adb, ['-s', deviceId, 'shell', 'monkey', '-p', appId, '-c', 'android.intent.category.LAUNCHER', '--pct-syskeys', '0', '1'], { timeoutMs: COMMAND_TIMEOUT_MS, signal });
+		const output = `${result.stdout}${result.stderr}`;
+		if (/No activities found/i.test(output)) {
+			throw new Error(`adb launch failed: "${appId}" is not installed on this device, or it has no launcher activity.`);
+		}
+		if (result.code !== 0 || /monkey aborted/i.test(output)) {
 			throw new Error(describeFailure('adb launch', result));
 		}
 	}
