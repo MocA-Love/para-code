@@ -478,6 +478,49 @@ jobs:
           pnpm typecheck
           pnpm test
 
+  # The task board (app/taskboard) is not part of the app/ workspace: it has its own lockfile and
+  # ships inside Para Code (build/paradis/taskboard/buildTaskBoard.ts), so "Para Code Fork Workspace"
+  # above never ran its tests. Its engine lives in src/vs/paradis/contrib/taskBoard/common and is
+  # only exercised by these tests.
+  taskboard-tests:
+    name: Para Code Task Board (typecheck & test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+
+      # Same pnpm as the release build of the board (the root packageManager)
+      - name: Setup pnpm
+        uses: ./.github/actions/setup-pnpm
+
+      # Same flags as buildTaskBoard.ts: --ignore-workspace keeps pnpm out of app/pnpm-workspace.yaml,
+      # and esbuild (vitest, vite) is the only install script the board needs.
+      - name: Install task board dependencies
+        working-directory: app/taskboard
+        run: pnpm install --frozen-lockfile --ignore-workspace --allow-build=esbuild
+
+      - name: Type check task board
+        working-directory: app/taskboard
+        run: pnpm run typecheck
+
+      # Fail when vitest did not report any passing test, instead of trusting the exit code alone
+      # (the node.js unit test job once stayed green while running 0 tests).
+      - name: Run task board unit tests
+        working-directory: app/taskboard
+        run: |
+          set -o pipefail
+          pnpm run test 2>&1 | tee "$RUNNER_TEMP/taskboard-test.log"
+          if ! grep -Eq 'Tests +[0-9]+ passed' "$RUNNER_TEMP/taskboard-test.log"; then
+            echo "::error::vitest reported no passing test in app/taskboard"
+            exit 1
+          fi
+
   copilot-checks:
     name: Copilot Extension (typecheck, lint, unit test)
     runs-on: ubuntu-latest
