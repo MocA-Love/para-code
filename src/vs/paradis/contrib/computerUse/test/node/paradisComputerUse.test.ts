@@ -7,9 +7,11 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisComputerUseBlockReason, paradisComputerUseConfirmForeground, paradisComputerUseEnabled, paradisComputerUseNoticeWindowId, paradisComputerUseRunsCommands, paradisParseComputerUseApprovalOutcome, paradisParseComputerUseStatus } from '../../common/paradisComputerUse.js';
+import { Emitter } from '../../../../../base/common/event.js';
+import { IParadisComputerUseActivity, paradisComputerUseActivityView, paradisComputerUseAllowOperatingReadOnlyApps, paradisComputerUseBlockReason, paradisComputerUseConfirmForeground, paradisComputerUseEnabled, paradisComputerUseNextActivity, paradisComputerUseNoticeWindowId, paradisComputerUseReadOnlyReason, paradisComputerUseRunsCommands, paradisParseComputerUseActivity, paradisParseComputerUseApprovalOutcome, paradisParseComputerUseStatus } from '../../common/paradisComputerUse.js';
 import { createParadisComputerUseCallDiagnostics, PARADIS_COMPUTER_USE_FAILURES, paradisComputerUseCallAttributes, paradisComputerUseFailureCode } from '../../common/paradisComputerUseDiagnostics.js';
 import { ParadisComputerUseGrantLedger } from '../../node/paradisComputerUseGrantLedger.js';
+import { ParadisComputerUseStatusChannel } from '../../node/paradisComputerUse.sharedProcess.js';
 import { PARADIS_COMPUTER_USE_TOOLS } from '../../node/paradisComputerUseToolProvider.js';
 import { isParadisSentryScrubbedWord } from '../../../sentry/common/paradisSentryDiagnostics.js';
 
@@ -47,6 +49,89 @@ suite('ParadisComputerUse common', () => {
 			withoutSystem: ['password-manager', 'password-manager', 'password-manager', 'keychain', 'para-code', 'para-code', 'para-code', '', 'password-manager', '', '', '', '', '', '', 'authenticator', 'authenticator'],
 			// Q98 の回答 A: ターミナル類は断らず、ダイアログで警告する
 			commands: [true, true, true, true, true, true, true, true, false],
+		});
+	});
+
+	test('reads browsers, remote desktop apps and trading apps only, unless they are blocked outright', () => {
+		const ids = [
+			'com.apple.Safari', 'com.apple.SafariTechnologyPreview', 'COM.GOOGLE.CHROME', 'com.google.Chrome.canary', 'com.google.Chrome.app.abcdef', 'org.mozilla.firefox', 'com.microsoft.edgemac.Beta', 'company.thebrowser.Browser',
+			'com.apple.ScreenSharing', 'com.microsoft.rdc.macos', 'com.teamviewer.TeamViewer',
+			'com.tradingview.tradingviewapp.desktop', 'com.example.Binance', 'com.ledger.live',
+			'com.apple.finder', 'com.apple.Notes', 'com.axosoft.gitkraken', 'com.apple.Terminal',
+		];
+		assert.deepStrictEqual({
+			reasons: ids.map(id => paradisComputerUseReadOnlyReason(id) ?? ''),
+			// 常に断るアプリは、読むだけにする一覧より先に見る（1Password の Safari 拡張など）
+			blockedFirst: paradisComputerUseBlockReason('com.1password.safari'),
+			setting: [paradisComputerUseAllowOperatingReadOnlyApps(true), paradisComputerUseAllowOperatingReadOnlyApps(undefined), paradisComputerUseAllowOperatingReadOnlyApps('true')],
+		}, {
+			reasons: ['browser', 'browser', 'browser', 'browser', 'browser', 'browser', 'browser', 'browser', 'remote-desktop', 'remote-desktop', 'remote-desktop', 'trading', 'trading', 'trading', '', '', '', ''],
+			blockedFirst: 'password-manager',
+			setting: [true, false, false],
+		});
+	});
+
+	test('notifies once when the user stops Computer Use, shows "operating" only while input is sent, and hides both while the setting is off', () => {
+		const idle = { stopped: false, active: false };
+		const steps: IParadisComputerUseActivity[] = [
+			{ stopped: false, input: true },
+			{ stopped: true, input: false },
+			// 止まっている間の入力の知らせ（断られた操作）では「操作中」にしない。通知ももう出さない
+			{ stopped: true, input: true },
+			{ stopped: false, input: false },
+			{ stopped: false, input: true },
+		];
+		let state = idle;
+		const log = steps.map(activity => {
+			const next = paradisComputerUseNextActivity(state, activity);
+			state = next.state;
+			return [paradisComputerUseActivityView(next.state, true) ?? '', next.notify, next.closeNotice, next.armActiveTimer];
+		});
+		assert.deepStrictEqual({
+			log,
+			off: [paradisComputerUseActivityView({ stopped: true, active: false }, false), paradisComputerUseActivityView({ stopped: false, active: true }, false)],
+			parsed: [paradisParseComputerUseActivity({ stopped: true, input: 1 }), paradisParseComputerUseActivity({ stopped: false, input: true }), paradisParseComputerUseActivity({ stopped: 'yes' }), paradisParseComputerUseActivity(undefined)],
+		}, {
+			log: [
+				['active', false, false, true],
+				['stopped', true, false, false],
+				['stopped', false, false, false],
+				['', false, true, false],
+				['active', false, false, true],
+			],
+			off: [undefined, undefined],
+			parsed: [{ stopped: true, input: false }, { stopped: false, input: true }, undefined, undefined],
+		});
+	});
+
+	test('the status channel tells windows about the stop and resumes only through its resume method', async () => {
+		const emitter = new Emitter<IParadisComputerUseActivity>();
+		let stopped = true;
+		let resumes = 0;
+		const helper = { availability: 'ok' as const, detail: undefined, lastStatus: undefined, check: async () => 'ok' as const };
+		const channel = new ParadisComputerUseStatusChannel(helper, () => true, {
+			onDidChangeActivity: emitter.event,
+			get stopped() { return stopped; },
+			resume: async () => { resumes++; stopped = false; },
+		});
+		const seen: IParadisComputerUseActivity[] = [];
+		const listener = channel.listen<IParadisComputerUseActivity>(undefined, 'onDidChangeActivity')(activity => seen.push(activity));
+		emitter.fire({ stopped: true, input: false });
+		const before = await channel.call<IParadisComputerUseActivity>(undefined, 'getActivity');
+		// 状態を読む・確かめ直すだけでは再開しない
+		await channel.call<unknown>(undefined, 'getStatus');
+		await channel.call<unknown>(undefined, 'refresh');
+		const resumesAfterReads = resumes;
+		const after = await channel.call<IParadisComputerUseActivity>(undefined, 'resume');
+		listener.dispose();
+		emitter.dispose();
+		assert.deepStrictEqual({ seen, before, resumesAfterReads, after, resumes, unknownEvent: (() => { try { channel.listen(undefined, 'other'); return 'ok'; } catch { return 'threw'; } })() }, {
+			seen: [{ stopped: true, input: false }],
+			before: { stopped: true, input: false },
+			resumesAfterReads: 0,
+			after: { stopped: false, input: false },
+			resumes: 1,
+			unknownEvent: 'threw',
 		});
 	});
 
@@ -118,6 +203,7 @@ suite('ParadisComputerUse common', () => {
 			'input_unsupported', 'internal_error', 'invalid_argument', 'invalid_request', 'key_blocked', 'menu_open', 'point_obscured', 'point_outside_window',
 			'queue_full', 'screen_locked', 'screen_recording_not_granted', 'screenshot_failed', 'stale_element', 'system_dialog', 'unknown_method',
 			'user_active', 'window_not_focused', 'window_not_found', 'timeout', 'helper_disconnected', 'helper_error', 'unavailable',
+			'stopped_by_user', 'secure_input_active', 'read_only_app',
 		];
 		// computer_press_key・computer_hotkey は素の key を含む。Sentry の既定のスクラブ（api_key 等）には当たらない
 		const tools = PARADIS_COMPUTER_USE_TOOLS.map(tool => tool.name);

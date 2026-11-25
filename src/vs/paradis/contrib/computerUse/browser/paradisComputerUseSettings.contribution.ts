@@ -11,7 +11,7 @@
 import { localize } from '../../../../nls.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
-import { PARADIS_COMPUTER_USE_CONFIRM_FOREGROUND_SETTING, PARADIS_COMPUTER_USE_ENABLED_SETTING, PARADIS_COMPUTER_USE_SHOW_CURSOR_SETTING } from '../common/paradisComputerUse.js';
+import { PARADIS_COMPUTER_USE_ALLOW_OPERATING_READ_ONLY_APPS_SETTING, PARADIS_COMPUTER_USE_CONFIRM_FOREGROUND_SETTING, PARADIS_COMPUTER_USE_ENABLED_SETTING, PARADIS_COMPUTER_USE_SHOW_CURSOR_SETTING } from '../common/paradisComputerUse.js';
 
 Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).registerConfiguration({
 	id: 'paradis',
@@ -33,6 +33,14 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			scope: ConfigurationScope.APPLICATION,
 			restricted: true,
 			markdownDescription: localize('paradis.computerUse.confirmForegroundInput', "エージェントがアプリを前面に出して、あなたのマウスポインタやキーボードを実際に動かす前に、確認のダイアログを出します。ボタンを押す・欄へ文字を入れるなど、ポインタを動かさずに済む操作では確認は出ません。オフにすると、確認なしで前面に出して操作します。"),
+		},
+		[PARADIS_COMPUTER_USE_ALLOW_OPERATING_READ_ONLY_APPS_SETTING]: {
+			type: 'boolean',
+			default: false,
+			// リポジトリの .vscode/settings.json から勝手にオンにされないよう、利用者の設定でだけ変えられる
+			scope: ConfigurationScope.APPLICATION,
+			restricted: true,
+			markdownDescription: localize('paradis.computerUse.allowOperatingReadOnlyApps', "オフの間、ブラウザ（Safari・Chrome など）、リモートデスクトップ・画面共有のアプリ、証券・暗号資産の取引アプリは、エージェントに画面を読ませるだけで、クリックや文字入力はさせません。オンにすると、これらのアプリもほかのアプリと同じように操作させられます。その場合も、アプリごとの「操作も許可」の承認は必ず求めます。\n\nオンにすると、エージェントはログイン中のサイトでの送信や購入、遠隔先のパソコンの操作、取り消せない注文や送金もできるようになります。Web ページの操作は、内蔵ブラウザのツールでもできます。"),
 		},
 		[PARADIS_COMPUTER_USE_SHOW_CURSOR_SETTING]: {
 			type: 'boolean',

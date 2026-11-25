@@ -49,7 +49,7 @@ import { PARADIS_AGENT_IDE_INSTALL_SKILLS_COMMAND_ID } from '../../agentIde/comm
 import { PARADIS_SHOW_CODEX_HOOK_STATUS_COMMAND_ID } from '../../agentHookTrust/common/paradisCodexHookTrust.js';
 import { PARADIS_CLAUDE_MOD_APPROVAL_WAIT_SETTING, PARADIS_CLAUDE_MOD_ENABLED_SETTING } from '../../claudeMod/common/paradisClaudeMod.js';
 import { PARADIS_ANTIGRAVITY_APPROVAL_WAIT_SETTING } from '../../agentBrowser/common/paradisAntigravityApproval.js';
-import { PARADIS_COMPUTER_USE_BLOCK_SYSTEM_SURFACES, PARADIS_COMPUTER_USE_CONFIRM_FOREGROUND_SETTING, PARADIS_COMPUTER_USE_ENABLED_SETTING, PARADIS_COMPUTER_USE_SHOW_CURSOR_SETTING, PARADIS_COMPUTER_USE_SHOW_STATUS_COMMAND_ID } from '../../computerUse/common/paradisComputerUse.js';
+import { PARADIS_COMPUTER_USE_ALLOW_OPERATING_READ_ONLY_APPS_SETTING, PARADIS_COMPUTER_USE_BLOCK_SYSTEM_SURFACES, PARADIS_COMPUTER_USE_CONFIRM_FOREGROUND_SETTING, PARADIS_COMPUTER_USE_ENABLED_SETTING, PARADIS_COMPUTER_USE_SHOW_CURSOR_SETTING, PARADIS_COMPUTER_USE_SHOW_STATUS_COMMAND_ID } from '../../computerUse/common/paradisComputerUse.js';
 import { PARADIS_PRESET_FOLDERS_SETTING } from '../../terminalPresets/common/paradisTerminalPresets.js';
 import { PARADIS_BROWSER_HOME_PAGE_SETTING, PARADIS_BROWSER_IMPORT_LOGINS_COMMAND_ID, PARADIS_BROWSER_SITE_PERMISSIONS_COMMAND_ID } from '../../browserSettings/common/paradisBrowserSettings.js';
 import { paradisResourceTitleBarFormatTitle, paradisResourceTitleBarItemLabel } from '../../resourceMonitor/common/paradisResourceTitleBar.js';
@@ -806,6 +806,15 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		description: localize('paradis.settings.computerUseConfirmForegroundDesc', "エージェントがアプリを前面に出して、あなたのマウスポインタやキーボードを実際に動かす前に確認します。ポインタを動かさずに済む操作（ボタンを押す・欄へ文字を入れるなど）では確認は出ません。"),
 		keywords: 'computer use confirm foreground mouse pointer keyboard approval accessibility',
+	},
+	{
+		sectionId: 'psd-sec-computeruse',
+		key: PARADIS_COMPUTER_USE_ALLOW_OPERATING_READ_ONLY_APPS_SETTING,
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.computerUseAllowReadOnlyApps', "ブラウザ・リモートデスクトップ・取引アプリも操作させる"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.computerUseAllowReadOnlyAppsDesc', "オフの間、これらのアプリはエージェントに画面を読ませるだけで、クリックや文字入力はさせません。オンにすると操作もさせられ、ログイン中のサイトでの送信や購入、遠隔先のパソコンの操作、取り消せない注文や送金もできるようになります。オンでも、アプリごとの「操作も許可」の承認は必ず求めます。"),
+		keywords: 'computer use browser safari chrome remote desktop screen sharing trading read only operate',
 	},
 	{
 		sectionId: 'psd-sec-computeruse',

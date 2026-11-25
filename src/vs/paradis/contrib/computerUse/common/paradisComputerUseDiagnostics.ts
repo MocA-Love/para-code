@@ -87,7 +87,7 @@ export const PARADIS_COMPUTER_USE_FAILURES = [
 	'unavailable_unchecked', 'unavailable_unsupported_os', 'unavailable_missing', 'unavailable_launch_failed', 'unavailable_incompatible', 'unavailable_misattributed',
 	'app_argument_invalid', 'app_not_running', 'app_ambiguous', 'app_no_bundle_id', 'app_restarted', 'no_windows', 'no_such_window', 'permissions_missing',
 	'blocked_vault_app', 'blocked_otp_app', 'blocked_os_vault', 'blocked_self_app', 'blocked_system_app',
-	'user_denied', 'read_only',
+	'user_denied', 'read_only', 'read_only_app', 'stopped_by_user',
 	'approval_dialog_failed', 'approval_recently_denied', 'approval_busy', 'approval_unanswered', 'approval_pane_unresolved', 'approval_timed_out', 'approval_cancelled',
 	'foreground_dialog_failed', 'foreground_denied', 'foreground_recently_denied', 'foreground_busy', 'foreground_unanswered', 'foreground_pane_unresolved', 'foreground_timed_out', 'foreground_cancelled', 'foreground_retry_failed',
 	'typing_mismatch', 'typing_rewritten', 'typing_focus_changed',

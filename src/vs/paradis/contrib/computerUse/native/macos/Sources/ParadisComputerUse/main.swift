@@ -68,7 +68,7 @@ case .agent(let socketPath, let tokenFile, let stateDirectory):
 	atexit {
 		paradisManualAccessibility.restoreAll()
 	}
-	let handler = ParadisRequestHandler(backend: desktop, expectedToken: token, selfPid: getpid())
+	let handler = ParadisRequestHandler(backend: desktop, expectedToken: token, selfPid: getpid(), emergencyStop: desktop.emergencyStop)
 	let server = ParadisAgentServer(socketPath: socketPath, handler: handler, helperIdentity: paradisSelfSigningIdentity(), mainBundleIdentifier: paradisMainBundleIdentifier(), dataFolderName: paradisDataFolderName())
 	let application = NSApplication.shared
 	application.setActivationPolicy(.accessory)

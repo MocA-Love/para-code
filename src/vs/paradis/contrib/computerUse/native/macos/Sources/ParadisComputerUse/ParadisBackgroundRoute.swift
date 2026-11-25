@@ -189,6 +189,8 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 			case .pressChord(let chord):
 				if let reason = paradisBlockedChordReason(chord) { throw ParadisHelperError(code: "key_blocked", message: reason) }
 				try revalidate(pid: pid, started: started, windowId: windowId, bounds: info.bounds, keyboard: true)
+				// キーは的のプロセスへ直接届くので、セキュア入力の持ち主が的のときだけ断る
+				if let failure = desktop.secureInputFailure(pid: pid, viaFrontmost: false) { throw failure }
 				try key(transaction, code: chord.keyCode, flags: paradisEventFlags(chord.modifiers))
 				result["pressed"] = true
 			case .typeText(let text, let units):
@@ -199,6 +201,7 @@ final class ParadisBackgroundRoute: ParadisInputRoute {
 						try revalidate(pid: pid, started: started, windowId: windowId, bounds: info.bounds, keyboard: true)
 						lastFullCheck = Date()
 					}
+					if let failure = desktop.secureInputFailure(pid: pid, viaFrontmost: false) { throw failure }
 					if case .text(let character) = unit { try key(transaction, code: 0, flags: [], text: character) }
 					usleep(paradisInterCharacterMicroseconds)
 				}

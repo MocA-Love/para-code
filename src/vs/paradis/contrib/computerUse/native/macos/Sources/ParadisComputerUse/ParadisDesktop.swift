@@ -40,12 +40,15 @@ final class ParadisDesktop: ParadisDesktopBackend {
 	private var nextSnapshotId = 1
 	/** 利用者の物理的な入力の見張り（入力の命令を初めて受けたときに作る）。 */
 	let inputMonitor = ParadisInputMonitor()
+	/** 緊急停止の掛け金（Esc の 2 回押し）。入力の見張りが掛け、要求の処理（ParadisRequestHandler）と入力のフェンスが読む。 */
+	let emergencyStop = ParadisEmergencyStop()
 	/** 2 段目（背面への入力）。未送信で対応できない操作は前面経路へ譲る（ParadisInputRoutes.swift）。 */
 	lazy var backgroundRoute: ParadisInputRoute = paradisMakeBackgroundRoute(desktop: self)
 
 	init() {
 		// AX の問い合わせ全体に上限を付ける。固まったアプリで補助アプリが長く止まり、切断に気づかず残らないように（レビュー L5）
 		AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 1.0)
+		inputMonitor.emergencyStop = emergencyStop
 	}
 
 	func bundleIdentifier(pid: Int32) -> String? {

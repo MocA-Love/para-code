@@ -59,6 +59,18 @@ export function paradisComputerUseShowCursor(value: unknown): boolean {
 	return value !== false;
 }
 
+/**
+ * ブラウザ・リモートデスクトップ・取引アプリ（{@link paradisComputerUseReadOnlyReason}）も操作させるか（既定オフ。
+ * オフの間は画面を読むだけ）。ペインのエージェントは settings.json を書き換えられるので、これは守りの境界ではない。
+ * オンでも、アプリごとの「操作」の承認は必ず通る。
+ */
+export const PARADIS_COMPUTER_USE_ALLOW_OPERATING_READ_ONLY_APPS_SETTING = 'paradis.computerUse.allowOperatingReadOnlyApps';
+
+/** スキーマは画面側でしか登録されないので、shared process では明示のオン（true）だけをオンにする（既定オフ）。 */
+export function paradisComputerUseAllowOperatingReadOnlyApps(value: unknown): boolean {
+	return value === true;
+}
+
 // --- 補助アプリ ---
 
 export const PARADIS_COMPUTER_USE_APP_NAME = 'Para Code Computer Use.app';
@@ -67,7 +79,7 @@ export const PARADIS_COMPUTER_USE_EXECUTABLE = 'ParadisComputerUse';
  * 補助アプリとの約束の版。Swift 側の `ParadisComputerUseVersion.protocolVersion`
  * （native/macos/Sources/ParadisComputerUseCore/ParadisProtocol.swift）と同じ値にする。
  */
-export const PARADIS_COMPUTER_USE_PROTOCOL_VERSION = 8;
+export const PARADIS_COMPUTER_USE_PROTOCOL_VERSION = 9;
 /** 対応する macOS の最低の Darwin の版（macOS 14 = Darwin 23）。ScreenCaptureKit の単一ウィンドウ撮影に要る。 */
 export const PARADIS_COMPUTER_USE_MIN_DARWIN_MAJOR = 23;
 
@@ -126,6 +138,12 @@ export function paradisParseComputerUseStatus(value: unknown): IParadisComputerU
 /** 状態（補助アプリ・OS の許可）を確かめて見せるコマンド。設定画面の行から呼ぶ。 */
 export const PARADIS_COMPUTER_USE_SHOW_STATUS_COMMAND_ID = 'paradis.computerUse.showStatus';
 
+/**
+ * 利用者が Esc の 2 回押しで止めた Computer Use を再開するコマンド。再開できるのは Para Code の画面での人の操作
+ * （通知の「再開」・ステータスバー・このコマンド）だけで、MCP のツール・para CLI・設定からは再開できない。
+ */
+export const PARADIS_COMPUTER_USE_RESUME_COMMAND_ID = 'paradis.computerUse.resume';
+
 // --- チャネル ---
 
 /** shared process が持つ、状態を返すチャネル（設定画面・コマンドが読む）。 */
@@ -133,6 +151,64 @@ export const PARADIS_COMPUTER_USE_STATUS_CHANNEL = 'paradisComputerUseStatus';
 export const PARADIS_COMPUTER_USE_STATUS_METHOD = 'getStatus';
 /** 状態を確かめ直す（補助アプリを起動し直す）。 */
 export const PARADIS_COMPUTER_USE_REFRESH_METHOD = 'refresh';
+
+/** 止まっているか（{@link IParadisComputerUseActivity}）を返す。 */
+export const PARADIS_COMPUTER_USE_ACTIVITY_METHOD = 'getActivity';
+/** 止めた Computer Use を再開する（補助アプリの掛け金を外す）。ウィンドウの人の操作からだけ呼ぶ。 */
+export const PARADIS_COMPUTER_USE_RESUME_METHOD = 'resume';
+/** 止まった・再開した・入力を送ったときに全ウィンドウへ知らせるイベント（{@link IParadisComputerUseActivity}）。 */
+export const PARADIS_COMPUTER_USE_ACTIVITY_EVENT = 'onDidChangeActivity';
+
+/**
+ * Computer Use の動き（ステータスバーと「止めました」の通知に使う）。
+ * `stopped`: 利用者が Esc の 2 回押しで止めていて、再開するまで入力を送らない。
+ * `input`: 今この知らせの時点で、入力の要求を補助アプリへ送った（ステータスバーの「操作中」を数秒出す）。
+ */
+export interface IParadisComputerUseActivity {
+	readonly stopped: boolean;
+	readonly input: boolean;
+}
+
+export function paradisParseComputerUseActivity(value: unknown): IParadisComputerUseActivity | undefined {
+	if (!value || typeof value !== 'object') {
+		return undefined;
+	}
+	const record = value as Record<string, unknown>;
+	return typeof record.stopped === 'boolean' ? { stopped: record.stopped, input: record.input === true } : undefined;
+}
+
+/** ステータスバーに出すもの。 */
+export type ParadisComputerUseActivityView = 'stopped' | 'active' | undefined;
+
+/** ウィンドウが覚えている状態。 */
+export interface IParadisComputerUseActivityState {
+	readonly stopped: boolean;
+	/** 入力を送ってから数秒の間（ウィンドウ側が時間で下ろす）。 */
+	readonly active: boolean;
+}
+
+/**
+ * 知らせを受けたときの次の状態と、することを決める。
+ * `notify`: 止まった（止まっていなかった状態から）。通知を 1 回出す。`closeNotice`: 再開した。通知を閉じる。
+ * `armActiveTimer`: 入力を送った。「操作中」を出し、時間が来たら消す。止まっている間の入力の知らせでは「操作中」にしない。
+ */
+export function paradisComputerUseNextActivity(state: IParadisComputerUseActivityState, activity: IParadisComputerUseActivity): { readonly state: IParadisComputerUseActivityState; readonly notify: boolean; readonly closeNotice: boolean; readonly armActiveTimer: boolean } {
+	const armActiveTimer = activity.input && !activity.stopped;
+	return {
+		state: { stopped: activity.stopped, active: activity.stopped ? false : armActiveTimer || state.active },
+		notify: activity.stopped && !state.stopped,
+		closeNotice: !activity.stopped && state.stopped,
+		armActiveTimer,
+	};
+}
+
+/** ステータスバーに何を出すか。設定がオフの間は何も出さない（使っていない機能の痕跡を残さない）。 */
+export function paradisComputerUseActivityView(state: IParadisComputerUseActivityState, enabled: boolean): ParadisComputerUseActivityView {
+	if (!enabled) {
+		return undefined;
+	}
+	return state.stopped ? 'stopped' : state.active ? 'active' : undefined;
+}
 
 /** ウィンドウ側が持つ、承認ダイアログのチャネル（shared process が呼び出し元ペインのウィンドウへだけ送る）。 */
 export const PARADIS_COMPUTER_USE_APPROVAL_CHANNEL = 'paradisComputerUseApproval';
@@ -332,6 +408,105 @@ export function paradisComputerUseBlockReason(bundleId: string, options: IParadi
 	}
 	if ((options.blockSystemSurfaces ?? PARADIS_COMPUTER_USE_BLOCK_SYSTEM_SURFACES) && paradisComputerUseMatchesBundle(bundleId, PARADIS_COMPUTER_USE_SYSTEM_SURFACES)) {
 		return 'system';
+	}
+	return undefined;
+}
+
+// --- 読むだけにするアプリ ---
+//
+// 画面を読むのは許すが、入力は送らないアプリ。常に断るアプリ（上）と違い、利用者が設定
+// {@link PARADIS_COMPUTER_USE_ALLOW_OPERATING_READ_ONLY_APPS_SETTING} をオンにすれば操作も許せる。
+// 一覧は補助アプリの側（ParadisBlocklist.swift）と同じにする（突き合わせテストが見る）。補助アプリも同じ判定をして二重にする。
+// 一覧は公開されている bundle id の知識から作った。【要確認】は実機で実在を確かめていないもの。
+
+/** 読むだけにする理由。エージェントへの説明に使う。 */
+export type ParadisComputerUseReadOnlyReason = 'remote-desktop' | 'browser' | 'trading';
+
+/**
+ * リモートデスクトップ・画面共有。遠隔先の画面の中では、常に断るアプリの一覧もアプリごとの承認も効かない。
+ * 【要確認】com.apple.ScreenSharing・com.apple.RemoteDesktop・com.microsoft.rdc.macos・com.teamviewer.TeamViewer 以外の各 id の実在。
+ */
+export const PARADIS_COMPUTER_USE_READ_ONLY_REMOTE_DESKTOP_APPS: readonly string[] = [
+	'com.apple.ScreenSharing',
+	'com.apple.RemoteDesktop',
+	'com.microsoft.rdc.macos',
+	'com.teamviewer.TeamViewer',
+	'com.philandro.anydesk',
+	'com.realvnc.vncviewer',
+	'tv.parsec.www',
+	'com.p5sys.jump.mac.viewer',
+	'com.edovia.screens*',
+	'com.citrix.receiver.*',
+	'com.vmware.horizon',
+	'com.omnissa.horizon.client.mac',
+	'com.carriez.rustdesk',
+	'com.nomachine.nxplayer',
+	'com.splashtop.*',
+	'*chromeremotedesktop*',
+];
+
+/**
+ * ブラウザ。ログイン中のサイトを利用者として操作できる。Para Code には内蔵ブラウザの道具があるので、そちらを使わせる。
+ * 末尾が `*` のものは、派生の版（Beta・Dev・Canary）とブラウザが作るウェブアプリも含む。
+ * 【要確認】company.thebrowser.dia・com.kagi.kagimacOS・app.zen-browser.zen・ai.perplexity.comet・com.openai.atlas の実在。
+ */
+export const PARADIS_COMPUTER_USE_READ_ONLY_BROWSERS: readonly string[] = [
+	'com.apple.Safari*',
+	'com.google.Chrome*',
+	'org.chromium.Chromium',
+	'org.mozilla.firefox*',
+	'org.mozilla.nightly',
+	'com.microsoft.edgemac*',
+	'com.brave.Browser*',
+	'company.thebrowser.Browser',
+	'company.thebrowser.dia',
+	'com.operasoftware.Opera*',
+	'com.vivaldi.Vivaldi*',
+	'com.duckduckgo.macos.browser',
+	'org.torproject.torbrowser',
+	'com.kagi.kagimacOS*',
+	'app.zen-browser.zen',
+	'ai.perplexity.comet',
+	'com.openai.atlas',
+];
+
+/**
+ * 証券・暗号資産の取引アプリとウォレット。注文と送金は取り消せない。
+ * 【要確認】どの id も実機で確かめていない（名前を含むものに広く当てている）。
+ */
+export const PARADIS_COMPUTER_USE_READ_ONLY_TRADING_APPS: readonly string[] = [
+	'com.tradingview.tradingviewapp.desktop',
+	'*tradingview*',
+	'*metatrader*',
+	'*thinkorswim*',
+	'*interactivebrokers*',
+	'*webull*',
+	'*moomoo*',
+	'*binance*',
+	'*coinbase*',
+	'*bitflyer*',
+	'*coincheck*',
+	'com.kraken.desktop',
+	'com.ledger.live',
+	'io.trezor.TrezorSuite',
+	'io.exodus.exodus',
+	'*marketspeed*',
+	'*hypersbi*',
+];
+
+/**
+ * そのアプリを読むだけにするなら理由を返す。設定で操作を許しているかは呼び出し側が見る
+ * （常に断るアプリかどうかは {@link paradisComputerUseBlockReason} が先に見る）。
+ */
+export function paradisComputerUseReadOnlyReason(bundleId: string): ParadisComputerUseReadOnlyReason | undefined {
+	if (paradisComputerUseMatchesBundle(bundleId, PARADIS_COMPUTER_USE_READ_ONLY_REMOTE_DESKTOP_APPS)) {
+		return 'remote-desktop';
+	}
+	if (paradisComputerUseMatchesBundle(bundleId, PARADIS_COMPUTER_USE_READ_ONLY_BROWSERS)) {
+		return 'browser';
+	}
+	if (paradisComputerUseMatchesBundle(bundleId, PARADIS_COMPUTER_USE_READ_ONLY_TRADING_APPS)) {
+		return 'trading';
 	}
 	return undefined;
 }

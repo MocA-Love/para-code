@@ -20,6 +20,10 @@
 // 「拒否」「操作も許可」の 2 つにする。ターミナル類とスクリプトエディタには、コマンドを打てる旨の一文を足す（Q98 の回答 A）。
 // Computer Use はエージェントの作業フォルダ・サンドボックス・許可設定の外で動くので、本文に必ず書く（設計書 6.6）。
 //
+// ブラウザ・リモートデスクトップ・取引アプリ（`paradisComputerUseReadOnlyReason`）は読むだけにする。shared process も
+// 操作の求めを送ってこないが、ここでも bundle id と設定から同じ判定をして、「操作も許可」を出さない（ボタンは「拒否」
+// 「読み取りを許可」の 2 つ）。設定 `paradis.computerUse.allowOperatingReadOnlyApps` がオンのときだけ、ほかのアプリと同じにする。
+//
 // 設定 `paradis.computerUse.confirmForegroundInput` がオンのときは、アプリを前面に出して実際のマウスポインタと
 // キーボードを使う前の確認（`requestForeground`）もここで受ける。ボタンは「拒否」「今回だけ許可」「このターミナルでは
 // 今後も許可」。⌘D の位置（2 番目）には狭い方の「今回だけ許可」を置く。拒否の後 3 分の自動の断りは、操作の許可とは
@@ -30,18 +34,22 @@ import { Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize } from '../../../../nls.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { paradisSanitizeDisplayText } from '../../agentBrowser/common/paradisAgentBrowserTabs.js';
 import { IParadisAgentApprovalRequest, IParadisAgentBrowserTabsService, ParadisApprovalDeadline } from '../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
 import {
+	PARADIS_COMPUTER_USE_ALLOW_OPERATING_READ_ONLY_APPS_SETTING,
 	PARADIS_COMPUTER_USE_APPROVAL_CHANNEL,
 	PARADIS_COMPUTER_USE_APPROVAL_METHOD,
 	PARADIS_COMPUTER_USE_APPROVAL_TIMEOUT_MS,
 	PARADIS_COMPUTER_USE_FOREGROUND_METHOD,
 	ParadisComputerUseApprovalOutcome,
 	ParadisComputerUseForegroundOutcome,
+	paradisComputerUseAllowOperatingReadOnlyApps,
+	paradisComputerUseReadOnlyReason,
 	paradisComputerUseRunsCommands,
 } from '../common/paradisComputerUse.js';
 
@@ -75,7 +83,14 @@ export class ParadisComputerUseApprovalChannel implements IServerChannel {
 		private readonly _paneTokens: Pick<IParadisPaneTokenService, 'getInstanceForToken'>,
 		// 締め切りは shared process の待ち（2 分）より少し短くし、こちらで閉じてから答えを返す
 		private readonly _deadlineMs: number = PARADIS_COMPUTER_USE_APPROVAL_TIMEOUT_MS - 5_000,
+		// 読むだけにするアプリも操作させる設定か（毎回読む。渡されなければ読むだけ）
+		private readonly _allowOperatingReadOnlyApps: () => boolean = () => false,
 	) { }
+
+	/** 読むだけにするアプリか（設定で操作を許していれば違う）。shared process と同じ判定を、ここでも独立に行う。 */
+	private _isReadOnlyApp(bundleId: string): boolean {
+		return !this._allowOperatingReadOnlyApps() && paradisComputerUseReadOnlyReason(bundleId) !== undefined;
+	}
 
 	listen<T>(_ctx: unknown, event: string): Event<T> {
 		throw new Error(`Event not found: ${event}`);
@@ -103,6 +118,10 @@ export class ParadisComputerUseApprovalChannel implements IServerChannel {
 		}
 		const bundleId = typeof prompt.bundleId === 'string' && BUNDLE_ID_PATTERN.test(prompt.bundleId) ? paradisSanitizeDisplayText(prompt.bundleId, BUNDLE_ID_MAX_LENGTH) : undefined;
 		if (!bundleId) {
+			return 'cancelled';
+		}
+		// 読むだけにするアプリへの入力は聞かない（shared process が先に断るので、来たら取り消しとして返す）
+		if (this._isReadOnlyApp(bundleId)) {
 			return 'cancelled';
 		}
 		const appName = paradisSanitizeDisplayText(typeof prompt.appName === 'string' ? prompt.appName : undefined, APP_NAME_MAX_LENGTH) ?? bundleId;
@@ -156,7 +175,13 @@ export class ParadisComputerUseApprovalChannel implements IServerChannel {
 		// アプリ名はアプリ自身が決める文字列なので、制御文字と双方向制御を落としてから出す
 		const appName = paradisSanitizeDisplayText(typeof prompt.appName === 'string' ? prompt.appName : undefined, APP_NAME_MAX_LENGTH) ?? bundleId;
 		const wantsOperate = prompt.requested === 'operate';
-		const offerOperate = prompt.offerOperate === true || wantsOperate;
+		// 読むだけにするアプリには「操作」を出さない。操作の求めは shared process が先に断るので、来たら取り消しとして返す
+		// （「拒否」と返すと、読み取りまで断る記録が残る）
+		const readOnlyApp = this._isReadOnlyApp(bundleId);
+		if (readOnlyApp && wantsOperate) {
+			return 'cancelled';
+		}
+		const offerOperate = !readOnlyApp && (prompt.offerOperate === true || wantsOperate);
 		// 格上げは、読み取りを許可済みのアプリへの操作の求めだけ
 		const upgrade = prompt.upgrade === true && wantsOperate;
 
@@ -167,6 +192,9 @@ export class ParadisComputerUseApprovalChannel implements IServerChannel {
 				: [localize('paradis.computerUse.approval.read', "読み取り: このアプリのウィンドウの画面とアクセシビリティの情報（ボタンや文字の並び）を読みます。画面に写ったメール本文やチャットなどもエージェントへ渡り、エージェントの提供元へ送られます。")]),
 			...(offerOperate && !upgrade
 				? [localize('paradis.computerUse.approval.operate', "操作: クリック・文字入力・貼り付け・キー操作・前面に出すこともします。あなたがキーを打っている間は止まり、マウスポインタを動かす操作はマウスを使っている間も止まります。")]
+				: []),
+			...(readOnlyApp
+				? [localize('paradis.computerUse.approval.readOnlyApp', "このアプリで許可できるのは読み取りだけです。ブラウザ・リモートデスクトップ・取引アプリは、エージェントに操作させません。")]
 				: []),
 			...(offerOperate && paradisComputerUseRunsCommands(bundleId)
 				? [localize('paradis.computerUse.approval.commands', "このアプリを操作すると、コマンドをあなたの権限で実行できます。")]
@@ -221,9 +249,11 @@ class ParadisComputerUseApprovalContribution extends Disposable implements IWork
 		@ISharedProcessService sharedProcessService: ISharedProcessService,
 		@IParadisAgentBrowserTabsService approvals: IParadisAgentBrowserTabsService,
 		@IParadisPaneTokenService paneTokens: IParadisPaneTokenService,
+		@IConfigurationService configurationService: IConfigurationService,
 	) {
 		super();
-		sharedProcessService.registerChannel(PARADIS_COMPUTER_USE_APPROVAL_CHANNEL, new ParadisComputerUseApprovalChannel(approvals, paneTokens));
+		sharedProcessService.registerChannel(PARADIS_COMPUTER_USE_APPROVAL_CHANNEL, new ParadisComputerUseApprovalChannel(approvals, paneTokens, undefined,
+			() => paradisComputerUseAllowOperatingReadOnlyApps(configurationService.getValue(PARADIS_COMPUTER_USE_ALLOW_OPERATING_READ_ONLY_APPS_SETTING))));
 	}
 }
 
