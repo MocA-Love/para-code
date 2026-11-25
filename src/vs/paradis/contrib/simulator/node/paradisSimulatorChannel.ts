@@ -21,7 +21,7 @@ import { VSBuffer } from '../../../../base/common/buffer.js';
 import { Disposable, DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, IParadisSimulatorStatus, ParadisSimulatorStreamEvent, paradisIsSimulatorUdid } from '../common/paradisSimulator.js';
+import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, IParadisSimulatorStatus, ParadisSimulatorStreamEvent, paradisIsSimulatorUdid, paradisSimulatorStreamToWire } from '../common/paradisSimulator.js';
 import { paradisParseSimulatorFold, paradisSimulatorInputFrame } from '../common/paradisSimulatorFrames.js';
 import { ParadisServeSimBackend, ParadisSimulatorCaptureNotStartedError } from './paradisServeSimBackend.js';
 import { IParadisSimulatorHostProvider } from './paradisSimulatorHostProcess.js';
@@ -29,7 +29,7 @@ import { ParadisSimulatorDeviceHub } from './paradisSimulatorDeviceHub.js';
 import { ParadisAdbDeviceHost } from './android/paradisAdbDeviceHost.js';
 import { ParadisScrcpySessions } from './android/paradisScrcpySessions.js';
 import { IParadisAndroidDeviceSummary, PARADIS_ANDROID_SERIAL_PREFIX, paradisAndroidKeycode, paradisAndroidSerialOf } from '../common/paradisAndroid.js';
-import { ParadisAndroidVideoWire, paradisAndroidInputMessages } from '../common/paradisScrcpy.js';
+import { ParadisAndroidVideoWire, paradisAndroidInputMessages, paradisAndroidVideoToTransport } from '../common/paradisScrcpy.js';
 
 const MIN_FRAME_INTERVAL_MS = 1000 / 30;
 
@@ -384,9 +384,10 @@ export class ParadisSimulatorChannel<TContext> implements IServerChannel<TContex
 	listen<T>(_ctx: TContext, event: string, arg?: unknown): Event<T> {
 		switch (event) {
 			case 'frames':
-				return this._service.onFrames(requireUdidArg(arg)) as Event<T>;
+				// 画像は VSBuffer のまま運べる形（配列）にして出す
+				return Event.map(this._service.onFrames(requireUdidArg(arg)), paradisSimulatorStreamToWire) as Event<T>;
 			case 'androidVideo':
-				return this._service.onAndroidVideo(requireSerialArg(arg)) as Event<T>;
+				return Event.map(this._service.onAndroidVideo(requireSerialArg(arg)), paradisAndroidVideoToTransport) as Event<T>;
 			default:
 				throw new Error(`Event not found: ${event}`);
 		}

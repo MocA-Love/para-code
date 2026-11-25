@@ -19,8 +19,8 @@ import { InstantiationType, registerSingleton } from '../../../../platform/insta
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IParadisAndroidDeviceSummary } from '../common/paradisAndroid.js';
-import { ParadisAndroidInput, ParadisAndroidVideoWire } from '../common/paradisScrcpy.js';
-import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, IParadisSimulatorStatus, PARADIS_SIMULATOR_CHANNEL, ParadisSimulatorInput, ParadisSimulatorStreamEvent } from '../common/paradisSimulator.js';
+import { ParadisAndroidInput, ParadisAndroidVideoTransport, ParadisAndroidVideoWire, paradisAndroidVideoFromTransport } from '../common/paradisScrcpy.js';
+import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, IParadisSimulatorStatus, PARADIS_SIMULATOR_CHANNEL, ParadisSimulatorInput, ParadisSimulatorStreamEvent, ParadisSimulatorStreamWire, paradisSimulatorStreamFromWire } from '../common/paradisSimulator.js';
 
 export const IParadisSimulatorClient = createDecorator<IParadisSimulatorClient>('paradisSimulatorClient');
 
@@ -101,7 +101,7 @@ export class ParadisSimulatorChannelClient implements IParadisSimulatorClient {
 		return this._channel.call('listAndroidDevices');
 	}
 	onAndroidVideo(serial: string): Event<ParadisAndroidVideoWire> {
-		return this._channel.listen('androidVideo', { serial });
+		return Event.map(this._channel.listen<ParadisAndroidVideoTransport>('androidVideo', { serial }), paradisAndroidVideoFromTransport);
 	}
 	androidInput(serial: string, input: ParadisAndroidInput): Promise<void> {
 		return this._channel.call('androidInput', { serial, input });
@@ -113,7 +113,7 @@ export class ParadisSimulatorChannelClient implements IParadisSimulatorClient {
 		return this._channel.call('openDeviceHub');
 	}
 	onFrames(udid: string): Event<ParadisSimulatorStreamEvent> {
-		return this._channel.listen('frames', { udid });
+		return Event.map(this._channel.listen<ParadisSimulatorStreamWire>('frames', { udid }), paradisSimulatorStreamFromWire);
 	}
 	ackFrame(udid: string): Promise<void> {
 		return this._channel.call('ackFrame', { udid });

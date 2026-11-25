@@ -9,14 +9,16 @@
 // 窓を閉じると、その窓の IPC の購読は shared process 側で外れる。最後の購読が外れたら映像の流れを閉じること。
 
 import assert from 'assert';
+import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { Emitter } from '../../../../../base/common/event.js';
-import { ParadisAndroidVideoWire, ParadisScrcpyVideoEvent } from '../../common/paradisScrcpy.js';
+import { BufferReader, BufferWriter, deserialize, serialize } from '../../../../../base/parts/ipc/common/ipc.js';
+import { ParadisAndroidVideoTransport, ParadisAndroidVideoWire, ParadisScrcpyVideoEvent, paradisAndroidVideoFromTransport } from '../../common/paradisScrcpy.js';
 import { IDisposable, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ParadisServeSimBackend, ParadisSimulatorCaptureNotStartedError } from '../../node/paradisServeSimBackend.js';
-import { ParadisSimulatorService } from '../../node/paradisSimulatorChannel.js';
-import { ParadisSimulatorStreamEvent } from '../../common/paradisSimulator.js';
+import { ParadisSimulatorChannel, ParadisSimulatorService } from '../../node/paradisSimulatorChannel.js';
+import { ParadisSimulatorStreamEvent, ParadisSimulatorStreamWire, paradisSimulatorStreamFromWire } from '../../common/paradisSimulator.js';
 import { IParadisSimulatorHostConnection } from '../../node/paradisSimulatorHostProcess.js';
 
 const UDID = 'A1B2C3D4-0000-1111-2222-333344445555';
@@ -120,6 +122,61 @@ suite('Paradis simulator: video relay in the shared process', () => {
 		});
 	});
 
+	// チャネルが出すイベントを、本物の IPC の直列化（serialize → deserialize）に通す。オブジェクトの中に VSBuffer を
+	// 入れて送ると JSON になり、窓の側で VSBuffer に戻らない（paracode-183〜194 で、iOS も Android もペインに映像が
+	// 1 枚も描かれなかった。これまでのテストは service を直接購読していて、直列化を通っていなかった）
+	test('sends frames through the IPC serialization so that the window gets the bytes back', async () => {
+		const overWire = <T>(value: unknown): T => {
+			const writer = new BufferWriter();
+			serialize(writer, value);
+			return deserialize(new BufferReader(writer.buffer)) as T;
+		};
+		const bytes = (buffer: VSBuffer) => buffer instanceof VSBuffer ? [...buffer.buffer] : 'not a VSBuffer';
+		let emit: ((jpeg: Uint8Array) => void) | undefined;
+		let end: ((error?: Error) => void) | undefined;
+		const backend = {
+			subscribeFrames(_udid: string, onFrame: (jpeg: Uint8Array) => void, onEnd: (error?: Error) => void): IDisposable {
+				emit = onFrame;
+				end = onEnd;
+				return toDisposable(() => { });
+			},
+		} as unknown as ParadisServeSimBackend;
+		const video = store.add(new Emitter<ParadisScrcpyVideoEvent>());
+		const session = { size: { width: 720, height: 1600 }, config: new Uint8Array([7, 8]), onVideo: video.event, onDidEnd: store.add(new Emitter<Error | undefined>()).event, resetVideo: async () => { } };
+		const scrcpy = { acquire: async () => ({ session: session as never, lease: { dispose: () => { } } }), use: async () => { throw new Error('not used'); } };
+		const host = { ensure: async (): Promise<IParadisSimulatorHostConnection> => ({ socketPath: '', token: '' }), isRunning: false, lastError: undefined, stop: async () => { } };
+		const service = store.add(new ParadisSimulatorService(host, backend, true, new NullLogService(), undefined, { adb: { bootAvd: async () => { }, listDevices: async () => [] }, scrcpy }));
+		const channel = new ParadisSimulatorChannel<string>(service);
+
+		const ios: unknown[] = [];
+		const frames = channel.listen<ParadisSimulatorStreamWire>('window', 'frames', { udid: UDID })(wire => {
+			const event = paradisSimulatorStreamFromWire(overWire<ParadisSimulatorStreamWire>(wire));
+			ios.push(event.kind === 'frame' ? { kind: event.kind, udid: event.udid, jpeg: bytes(event.jpeg) } : event);
+		});
+		emit?.(new Uint8Array([0xff, 0xd8, 0xff, 0xd9]));
+		end?.(new Error('gone'));
+		frames.dispose();
+
+		const android: unknown[] = [];
+		const androidVideo = channel.listen<ParadisAndroidVideoTransport>('window', 'androidVideo', { serial: 'emulator-5554' })(transport => {
+			const message = paradisAndroidVideoFromTransport(overWire<ParadisAndroidVideoTransport>(transport));
+			android.push(message.kind === 'config' || message.kind === 'frame' ? { ...message, data: bytes(message.data) } : message);
+		});
+		await new Promise(resolve => setTimeout(resolve, 0));
+		video.fire({ kind: 'frame', data: new Uint8Array([1, 2, 3]), key: true, pts: 40 });
+		androidVideo.dispose();
+
+		assert.deepStrictEqual({ ios, android }, {
+			ios: [
+				{ kind: 'frame', udid: UDID, jpeg: [0xff, 0xd8, 0xff, 0xd9] },
+				{ kind: 'ended', udid: UDID, reason: 'gone' },
+			],
+			android: [
+				{ serial: 'emulator-5554', kind: 'size', width: 720, height: 1600 },
+				{ serial: 'emulator-5554', kind: 'config', data: [7, 8] },
+				{ serial: 'emulator-5554', kind: 'frame', key: true, pts: 40, data: [1, 2, 3] },
+			],
+		});
 	// 始まったばかりの通話（config がまだ無い）には key frame を求めない。取り込みの用意ができる前に求めると
 	// scrcpy-server が落ちる（最初の config と key frame は server が自分から送る）
 	test('does not ask a scrcpy session that has just started for a key frame', async () => {

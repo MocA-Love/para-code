@@ -74,6 +74,11 @@ function readHandshake(): Promise<IParadisSimulatorHostHandshake> {
 }
 
 async function main(): Promise<void> {
+	// 親（shared process）が消えると、stdout・stderr は相手のいないソケットになる。そこへの書き込みの失敗を誰も
+	// 受けないと「未処理の例外」になり、bootstrap-fork がそれを stderr へ書こうとしてまた失敗し、回り続ける
+	// （Para Code を終了した後、ホストが CPU を 95% 使ったまま残った）。失敗は捨てる
+	process.stdout.on('error', () => { });
+	process.stderr.on('error', () => { });
 	const handshake = await readHandshake();
 	// 自分の TMPDIR は shared process が用意した専用のフォルダ（serve-sim の状態のフォルダ `$TMPDIR/serve-sim/` を
 	// 利用者の serve-sim や Orca と共有しないため）
@@ -97,6 +102,11 @@ async function main(): Promise<void> {
 			return;
 		}
 		closing = true;
+		if (reason === 'stdin closed') {
+			// 親が止めた・消えた。待つ相手はいないので、受け口を閉じるのを待たずに終わる（残ったソケットのファイルは、
+			// 次に起こすときに shared process が消す）。端末のセッションはこのプロセスと一緒に終わる
+			process.exit(0);
+		}
 		log(`shutting down (${reason})`);
 		// 端末のセッション（ネイティブの映像・HID）はこのプロセスと一緒に終わる
 		const exit = setTimeout(() => process.exit(0), 2000);
