@@ -102,9 +102,10 @@ export const PARADIS_SIMULATOR_CAPTURE_START_TIMEOUT_MS = 15_000;
 
 /**
  * ホストが応答の頭を返した（取り込みを始めた）後、最初の 1 枚を待つ時間。動いている取り込みは、画面が変わらなくても
- * すぐに 1 枚を送る。これだけ待って来なければ、ホストが握っている端末のセッションは死んでいる（端末が起動し直された）。
+ * すぐに 1 枚を送る（Xcode 27.2 の実測で、起動済みの端末は 0.02 秒、起動中の端末は 1 秒）。これだけ待って来なければ、
+ * ホストが握っている端末のセッションは死んでいる（端末が起動し直された）。
  */
-export const PARADIS_SIMULATOR_FIRST_FRAME_TIMEOUT_MS = 4_000;
+export const PARADIS_SIMULATOR_FIRST_FRAME_TIMEOUT_MS = 6_000;
 
 /** チャネルの `frames` のイベント。 */
 export type ParadisSimulatorStreamEvent = IParadisSimulatorFrameEvent | IParadisSimulatorStreamEndEvent;

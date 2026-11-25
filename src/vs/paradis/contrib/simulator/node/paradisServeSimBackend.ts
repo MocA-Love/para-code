@@ -17,17 +17,20 @@
 // 閉じない（閉じる処理は、許可のルートの外の画面と grid の API からしか呼ばれない）。端末が起動し直されると、
 // 残ったセッションは前の起動の画面を見たままで、映像の要求は頭だけ返して 1 枚も送らず、入力も届かない
 // （paracode-194。「端末の取り込みが始まりません」が出て、Para Code を開き直すまで直らなかった）。
-// そこで、端末ごとに「セッションを開いたときの起動の識別」（`launchd_sim` の pid）を覚え、要求の前に見比べて、
-// 変わっていればホストを起こし直す。見比べをすり抜けた分は、頭の後に最初の 1 枚が来ないことで気づき、
+// そこで、端末ごとに「セッションを開いたときの起動の識別」（CoreSimulator が起動と停止のたびに 1 回ずつ書き直す
+// `device.plist` の更新時刻）を覚え、要求の前に見比べて、変わっていればホストを起こし直す。見比べをすり抜けた分は、頭の後に最初の 1 枚が来ないことで気づき、
 // 起こし直して 1 回だけ頼み直す。起こし直しで切れたほかの端末の映像は、黙って頼み直す。
 
 import { execFile } from 'child_process';
+import { promises as fs } from 'fs';
 import type { IncomingMessage } from 'http';
+import { homedir } from 'os';
 import type * as WsTypes from 'ws';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { join } from '../../../../base/common/path.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, PARADIS_SIMULATOR_CAPTURE_START_TIMEOUT_MS, PARADIS_SIMULATOR_FIRST_FRAME_TIMEOUT_MS, paradisIsSimulatorUdid, ParadisSimulatorFold } from '../common/paradisSimulator.js';
-import { paradisDeviceHubActive, paradisParseSimctlDevices, paradisParseSimulatorBootIds, paradisParseSimulatorHostMessage, paradisParseSimulatorScreenConfig, paradisSimulatorFoldFrame, ParadisMjpegSplitter } from '../common/paradisSimulatorFrames.js';
+import { paradisDeviceHubActive, paradisParseSimctlDevices, paradisParseSimulatorHostMessage, paradisParseSimulatorScreenConfig, paradisSimulatorFoldFrame, ParadisMjpegSplitter } from '../common/paradisSimulatorFrames.js';
 import { IParadisSimulatorHostConnection, IParadisSimulatorHostProvider } from './paradisSimulatorHostProcess.js';
 
 /** `xcrun` を呼ぶ口（テストで差し替える）。 */
@@ -44,26 +47,31 @@ const realSimctl: ParadisSimctlRunner = (args, timeoutMs) => new Promise((resolv
 });
 
 /**
- * 端末の起動の識別を読む口（テストで差し替える）。起動のたびに変わる値を返す。起動していなければ空の文字列、
- * 読めなければ undefined（見比べを飛ばす）。
+ * 端末の起動の識別を読む口（テストで差し替える）。端末が起動するたび・止まるたびに変わる値を返す。
+ * 読めなければ undefined（見比べを飛ばす。そのときは「最初の 1 枚が来ない」で気づく）。
  */
 export type ParadisSimulatorBootIdReader = (udid: string) => Promise<string | undefined>;
 
-const realBootId: ParadisSimulatorBootIdReader = udid => new Promise(resolve => {
-	execFile('/bin/ps', ['-axww', '-o', 'pid=,command='], { timeout: 5000, maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => {
-		resolve(error ? undefined : paradisParseSimulatorBootIds(String(stdout)).get(udid.toUpperCase()) ?? '');
-	});
-});
+/**
+ * CoreSimulator は端末の様子を `<端末の置き場>/<udid>/device.plist` に持ち、起動と停止のたびに 1 回ずつ書き直す
+ * （動いている間は書かない。Xcode 27.2 で確かめた）。その更新時刻を識別にする。`simctl list devices -j` には
+ * 起動のたびに変わる値が無く、プロセスの一覧（`ps`）は端末の起動直後に 10 秒以上返らないことがあった。
+ */
+const realBootId: ParadisSimulatorBootIdReader = async udid => {
+	try {
+		const stat = await fs.stat(join(homedir(), 'Library', 'Developer', 'CoreSimulator', 'Devices', udid.toUpperCase(), 'device.plist'), { bigint: true });
+		return String(stat.mtimeNs);
+	} catch {
+		return undefined;
+	}
+};
 
 export interface IParadisServeSimBackendOptions {
 	readonly readBootId?: ParadisSimulatorBootIdReader;
 	/** 頭の後、最初の 1 枚を待つ時間。 */
 	readonly firstFrameTimeoutMs?: number;
-	/** 起動の識別を読み直さずに使い回す時間（タッチの移動のたびに `ps` を呼ばないため）。 */
-	readonly bootIdTtlMs?: number;
 }
 
-const BOOT_ID_TTL_MS = 2_000;
 const FOLD_ACK_TIMEOUT_MS = 10_000;
 const FRAME_TIMEOUT_MS = 15_000;
 const BOOT_TIMEOUT_MS = 180_000;
@@ -102,14 +110,12 @@ export class ParadisServeSimBackend extends Disposable {
 	/** いまのホストがセッションを開いた端末 → そのときの起動の識別。 */
 	private readonly _sessions = new Map<string, string>();
 	private _sessionsOf: IParadisSimulatorHostConnection | undefined;
-	private readonly _bootIds = new Map<string, { readonly at: number; readonly id: string | undefined }>();
 	/** 見比べと起こし直しを 1 つずつ進めるための列。 */
 	private _gate: Promise<unknown> = Promise.resolve();
 	/** ホストをわざと起こし直した回数。映像の流れは、これが変わっていれば「切れた」ではなく頼み直す。 */
 	private _generation = 0;
 	private readonly _readBootId: ParadisSimulatorBootIdReader;
 	private readonly _firstFrameTimeoutMs: number;
-	private readonly _bootIdTtlMs: number;
 
 	constructor(
 		private readonly _host: IParadisSimulatorHostProvider,
@@ -121,7 +127,6 @@ export class ParadisServeSimBackend extends Disposable {
 		super();
 		this._readBootId = options.readBootId ?? realBootId;
 		this._firstFrameTimeoutMs = options.firstFrameTimeoutMs ?? PARADIS_SIMULATOR_FIRST_FRAME_TIMEOUT_MS;
-		this._bootIdTtlMs = options.bootIdTtlMs ?? BOOT_ID_TTL_MS;
 		this._register(toDisposable(() => {
 			for (const input of this._inputs.values()) {
 				input.socket.terminate();
@@ -141,7 +146,6 @@ export class ParadisServeSimBackend extends Disposable {
 		requireUdid(udid);
 		// 起動済みなら simctl boot は失敗するので、結果は bootstatus で確かめる
 		await this._simctl(['boot', udid], 60_000).catch(() => undefined);
-		this._bootIds.delete(udid);
 		await this._simctl(['bootstatus', udid], BOOT_TIMEOUT_MS);
 	}
 
@@ -153,7 +157,6 @@ export class ParadisServeSimBackend extends Disposable {
 			return;
 		}
 		await this._simctl(['shutdown', udid], 60_000);
-		this._bootIds.delete(udid);
 	}
 
 	/** Device Hub が入力を奪っているか。 */
@@ -163,16 +166,6 @@ export class ParadisServeSimBackend extends Disposable {
 	}
 
 	// --- ホスト（端末のセッションの鮮度） ---
-
-	private async _currentBootId(udid: string): Promise<string | undefined> {
-		const cached = this._bootIds.get(udid);
-		if (cached && Date.now() - cached.at < this._bootIdTtlMs) {
-			return cached.id;
-		}
-		const id = await this._readBootId(udid).catch(() => undefined);
-		this._bootIds.set(udid, { at: Date.now(), id });
-		return id;
-	}
 
 	private _queue<T>(task: () => Promise<T>): Promise<T> {
 		const run = this._gate.then(task);
@@ -213,19 +206,17 @@ export class ParadisServeSimBackend extends Disposable {
 				this._sessions.clear();
 				this._sessionsOf = connection;
 			}
-			const bootId = await this._currentBootId(udid);
+			const bootId = await this._readBootId(udid).catch(() => undefined);
 			if (bootId === undefined) {
 				return connection;
 			}
 			const opened = this._sessions.get(udid);
 			if (opened !== undefined && opened !== bootId && this._host.recycle) {
-				await this._recycle(`${udid} was ${bootId ? 'booted again' : 'shut down'} after the host opened its session`);
+				await this._recycle(`${udid} was shut down or booted again after the host opened its session`);
 				connection = await this._host.ensure();
 				this._sessionsOf = connection;
 			}
-			if (bootId) {
-				this._sessions.set(udid, bootId);
-			}
+			this._sessions.set(udid, bootId);
 			return connection;
 		});
 	}

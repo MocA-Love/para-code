@@ -528,7 +528,7 @@ async function scratchDir(name: string): Promise<string> {
 		const host = await startFakeSessionHost('rebooted');
 		try {
 			const bootIds = new Map([[UDID, '100'], [OTHER_UDID, '200']]);
-			const backend = store.add(new ParadisServeSimBackend(host.provider, new NullLogService(), async () => '', 2000, { readBootId: async udid => bootIds.get(udid) ?? '', firstFrameTimeoutMs: 2000, bootIdTtlMs: 0 }));
+			const backend = store.add(new ParadisServeSimBackend(host.provider, new NullLogService(), async () => '', 2000, { readBootId: async udid => bootIds.get(udid), firstFrameTimeoutMs: 2000 }));
 			const watch = new Watch();
 			const frames: Record<string, number> = { [UDID]: 0, [OTHER_UDID]: 0 };
 			const ended: string[] = [];
@@ -551,7 +551,7 @@ async function scratchDir(name: string): Promise<string> {
 				before: { recycled: [], config: { width: 100, height: 200, orientation: 'portrait' } },
 				frames: { [UDID]: 2, [OTHER_UDID]: 2 },
 				ended: [],
-				recycled: [`${UDID} was booted again after the host opened its session`],
+				recycled: [`${UDID} was shut down or booted again after the host opened its session`],
 			});
 		} finally {
 			await host.close();

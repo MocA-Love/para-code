@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisDeviceHubActive, paradisParseSimctlDevices, paradisParseSimulatorBootIds, paradisParseSimulatorFold, paradisParseSimulatorHostMessage, paradisSimulatorFoldFrame, paradisSimulatorInputFrame, ParadisMjpegSplitter } from '../../common/paradisSimulatorFrames.js';
+import { paradisDeviceHubActive, paradisParseSimctlDevices, paradisParseSimulatorFold, paradisParseSimulatorHostMessage, paradisSimulatorFoldFrame, paradisSimulatorInputFrame, ParadisMjpegSplitter } from '../../common/paradisSimulatorFrames.js';
 
 function decode(frame: Uint8Array): [number, unknown] {
 	return [frame[0], JSON.parse(new TextDecoder().decode(frame.subarray(1)))];
@@ -136,22 +136,6 @@ suite('Paradis simulator: frames', () => {
 			check(`cut ${cut}`, [stream.slice(0, cut), stream.slice(cut)]);
 		}
 		assert.deepStrictEqual({ whole: hex(new ParadisMjpegSplitter().push(stream)), differing }, { whole: ['300:0:48', '7:255:217', '300:0:48'], differing: [] });
-	});
-
-	// 起動している端末ごとの launchd_sim の pid（起動し直すと変わる）。ほかのプロセスと、Devices の外の launchd_sim は拾わない
-	test('reads which launchd_sim belongs to which booted simulator', () => {
-		const ps = [
-			'    1 /sbin/launchd',
-			'13075 launchd_sim /Users/example/Library/Developer/CoreSimulator/Devices/DB4F859B-A7C7-490A-883D-F2FA17F4AA66/data/var/run/launchd_bootstrap.plist',
-			'  812 /Library/Developer/CoreSimulator/Volumes/iOS_24B91/usr/libexec/launchd_sim /Users/example/Library/Developer/CoreSimulator/Devices/5291324e-08bc-457c-9a65-a978e7d13e76/data/var/run/launchd_bootstrap.plist',
-			'  900 grep launchd_sim /Users/example/Library/Developer/CoreSimulator/Devices/AAAAAAAA-0000-0000-0000-000000000000/data',
-			'  901 launchd_sim /tmp/not-a-device/launchd_bootstrap.plist',
-			'',
-		].join('\n');
-		assert.deepStrictEqual([...paradisParseSimulatorBootIds(ps)], [
-			['DB4F859B-A7C7-490A-883D-F2FA17F4AA66', '13075'],
-			['5291324E-08BC-457C-9A65-A978E7D13E76', '812'],
-		]);
 	});
 
 	test('parses simctl devices and the Device Hub flag', () => {
