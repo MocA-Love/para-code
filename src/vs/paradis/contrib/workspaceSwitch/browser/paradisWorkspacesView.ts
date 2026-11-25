@@ -1052,8 +1052,9 @@ class SpaceSectionHeaderRenderer implements ITreeRenderer<ISpaceSectionHeaderEle
 		templateData.name.textContent = label;
 		templateData.count.textContent = String(element.spaces.length + element.creatingCount);
 
-		// 開いている間は各行がドット列を持っているので、集計は閉じているときだけ出す
-		const breakdown = node.collapsed ? this.delegate.breakdown(element) : [];
+		const renaming = this.delegate.isRenaming(element);
+		// 開いている間は各行がドット列を持っているので、集計は閉じているときだけ出す（名前の欄を出している間は欄に幅を譲る）
+		const breakdown = node.collapsed && !renaming ? this.delegate.breakdown(element) : [];
 		renderStatusCounts(templateData.summary, breakdown);
 		const summaryTooltip = agentStatusSummaryTooltip(breakdown);
 		templateData.summaryHover.update(summaryTooltip);
@@ -1068,7 +1069,6 @@ class SpaceSectionHeaderRenderer implements ITreeRenderer<ISpaceSectionHeaderEle
 		templateData.addHover.update(addLabel);
 		templateData.actions.firstElementChild?.setAttribute('aria-label', addLabel);
 
-		const renaming = this.delegate.isRenaming(element);
 		for (const part of [templateData.name, templateData.count, templateData.rule, templateData.actions]) {
 			part.classList.toggle('hidden', renaming);
 		}
