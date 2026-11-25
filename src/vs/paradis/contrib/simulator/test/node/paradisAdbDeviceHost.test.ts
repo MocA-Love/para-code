@@ -17,7 +17,7 @@ const SDK = '/Users/example/Library/Android/sdk';
 const ADB = `${SDK}/platform-tools/adb`;
 const EMULATOR = `${SDK}/emulator/emulator`;
 
-function setup(options: { files?: string[]; running?: boolean; now?: () => number; sleep?: (ms: number) => Promise<void>; scrcpy?: ConstructorParameters<typeof ParadisAdbDeviceHost>[0]['scrcpy'] } = {}) {
+function setup(options: { files?: string[]; running?: boolean; now?: () => number; sleep?: (ms: number) => Promise<void>; scrcpy?: ConstructorParameters<typeof ParadisAdbDeviceHost>[0]['scrcpy']; dumpsysInput?: string; dumpsysWindow?: string } = {}) {
 	const calls: string[] = [];
 	const launched: string[] = [];
 	const files = new Set(options.files ?? [ADB, EMULATOR]);
@@ -53,7 +53,10 @@ function setup(options: { files?: string[]; running?: boolean; now?: () => numbe
 				return 'Physical density: 480\n';
 			}
 			if (line.endsWith('dumpsys input')) {
-				return 'SurfaceOrientation: 0\n';
+				return options.dumpsysInput ?? 'SurfaceOrientation: 0\n';
+			}
+			if (line.endsWith('dumpsys window displays')) {
+				return options.dumpsysWindow ?? '';
 			}
 			if (line.includes('exec-out screencap')) {
 				return new Uint8Array([0x89, 0x50]);
@@ -106,6 +109,32 @@ suite('Paradis simulator: adb answers the Mobile Canvas REST for Android', () =>
 	});
 
 	// AVD の id を割り当てたペインは、そのエミュレータが動いていればその serial へ。動いていなければ理由を返し、承認で起動する
+	// Android 16 は dumpsys input に向きを出さない。窓の管理の表示から読み、2 回目からは input を呼ばない
+	// （直す前は横向きでも「縦」と読み、幅と高さが入れ替わらず、タップの位置がずれた）
+	test('reads the rotation from the window manager when the input dump has none', async () => {
+		const { host, calls } = setup({ dumpsysInput: '      AbsState: ABS_MT_ORIENTATION=0\n', dumpsysWindow: '  winConfig={ mDisplayRotation=ROTATION_90 mRotation=ROTATION_90}\n    mRotation=1 mDeferredRotationPauseCount=0\n' });
+		const first = await host.request('GET', `/api/v1/devices/${SERIAL_ID}/display`, undefined);
+		const second = await host.request('GET', `/api/v1/devices/${SERIAL_ID}/display`, undefined);
+		assert.deepStrictEqual({ first, same: JSON.stringify(first) === JSON.stringify(second), dumps: calls.filter(line => line.includes('dumpsys')).map(line => line.replace('adb -s emulator-5554 shell ', '')) }, {
+			first: { pointWidth: 800, pointHeight: 360, pixelWidth: 2400, pixelHeight: 1080, scale: 3, orientation: 'landscape-left' },
+			same: true,
+			dumps: ['dumpsys input', 'dumpsys window displays', 'dumpsys window displays'],
+		});
+	});
+
+	// 前に読めた取得元が一時的に読めないときは、もう一方も試す（縦と決めつけない）
+	test('tries the other dump when the remembered one has no rotation this time', async () => {
+		const options = { dumpsysInput: 'SurfaceOrientation: 1\n', dumpsysWindow: '    mRotation=1 x\n' };
+		const { host, calls } = setup(options);
+		const first = await host.request('GET', `/api/v1/devices/${SERIAL_ID}/display`, undefined) as { orientation: string };
+		options.dumpsysInput = '';
+		const second = await host.request('GET', `/api/v1/devices/${SERIAL_ID}/display`, undefined) as { orientation: string };
+		assert.deepStrictEqual({ orientations: [first.orientation, second.orientation], dumps: calls.filter(line => line.includes('dumpsys')).map(line => line.replace('adb -s emulator-5554 shell ', '')) }, {
+			orientations: ['landscape-left', 'landscape-left'],
+			dumps: ['dumpsys input', 'dumpsys input', 'dumpsys window displays'],
+		});
+	});
+
 	test('resolves an AVD id to its running emulator and boots it when it is not running', async () => {
 		const runningSetup = setup();
 		const png = await runningSetup.host.requestBinary('/api/v1/devices/android%3Aavd%3APixel_9_API_36/screenshot');

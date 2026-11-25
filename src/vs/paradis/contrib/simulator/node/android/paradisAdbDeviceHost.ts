@@ -27,7 +27,7 @@ import { paradisRequireNumber } from '../../common/paradisMobileDeviceOps.js';
 import { PARADIS_SCRCPY_AGENT_POINTER_BASE, ParadisScrcpyTouchAction, paradisScrcpyTouch } from '../../common/paradisScrcpy.js';
 import { ParadisScrcpySession } from './paradisScrcpySession.js';
 import { ParadisScrcpySessions } from './paradisScrcpySessions.js';
-import { IParadisAdbDevice, PARADIS_ANDROID_AVD_PREFIX, PARADIS_ANDROID_SERIAL_PREFIX, paradisAdbInputText, paradisAndroidAvdOf, paradisAndroidButtonNames, paradisAndroidKeycode, paradisAndroidOrientationName, paradisAndroidRotation, paradisAndroidSerialOf, paradisFilterLogcat, paradisNormalizeUiautomator, paradisParseAdbDevices, paradisParseAvdList, paradisParseSurfaceOrientation, paradisParseWmDensity, paradisParseWmSize } from '../../common/paradisAndroid.js';
+import { IParadisAdbDevice, PARADIS_ANDROID_AVD_PREFIX, PARADIS_ANDROID_SERIAL_PREFIX, paradisAdbInputText, paradisAndroidAvdOf, paradisAndroidButtonNames, paradisAndroidKeycode, paradisAndroidOrientationName, paradisAndroidRotation, paradisAndroidSerialOf, paradisFilterLogcat, paradisNormalizeUiautomator, paradisParseAdbDevices, paradisParseAvdList, paradisDefaultDisplayDump, paradisParseDisplayRotation, paradisParseWmDensity, paradisParseWmSize } from '../../common/paradisAndroid.js';
 
 /** adb・emulator を呼ぶ口（テストで差し替える）。`binary` なら stdout を bytes で返す。 */
 export type ParadisAdbExec = (file: string, args: readonly string[], options: { readonly timeoutMs: number; readonly binary?: boolean }) => Promise<string | Uint8Array>;
@@ -95,6 +95,8 @@ export class ParadisAdbDeviceHost {
 	private readonly _booting = new Map<string, number>();
 	/** ピンチの間に覚えておく画面の大きさ。 */
 	private readonly _touchDisplays = new Map<string, { readonly display: IAndroidDisplay; readonly at: number }>();
+	/** 端末ごとの、画面の向きを読めた `dumpsys` の引数。 */
+	private readonly _rotationSources = new Map<string, readonly string[]>();
 
 	constructor(private readonly _options: IParadisAdbDeviceHostOptions, private readonly _logService: ILogService) {
 		this._exec = _options.exec ?? realExec;
@@ -330,7 +332,7 @@ export class ParadisAdbDeviceHost {
 		const [size, density, input] = await Promise.all([
 			this._shell(serial, ['wm', 'size']).then(paradisParseWmSize),
 			this._shell(serial, ['wm', 'density']).then(paradisParseWmDensity),
-			this._shell(serial, ['dumpsys', 'input']).then(paradisParseSurfaceOrientation, () => 0),
+			this._rotation(serial),
 		]);
 		if (!size || !density) {
 			throw new Error('Para Code could not read the screen size of the Android device. Try again in a moment.');
@@ -347,6 +349,25 @@ export class ParadisAdbDeviceHost {
 			scale,
 			orientation: paradisAndroidOrientationName(input),
 		};
+	}
+
+	/**
+	 * 画面の向き（0〜3）。`dumpsys input` に無ければ（Android 16）`dumpsys window displays` から読む。
+	 * どちらで読めたかを端末ごとに覚え、タップのたびに 2 つ呼ばない。読めなければ縦（0）。
+	 */
+	private async _rotation(serial: string): Promise<number> {
+		const sources: readonly (readonly string[])[] = [['dumpsys', 'input'], ['dumpsys', 'window', 'displays']];
+		const known = this._rotationSources.get(serial);
+		// 前に読めた方を先に試す。それが読めなかったとき（一時的な失敗）は、もう一方も試す
+		for (const source of known ? [known, ...sources.filter(candidate => candidate.join(' ') !== known.join(' '))] : sources) {
+			const rotation = paradisParseDisplayRotation(paradisDefaultDisplayDump(await this._shell(serial, source).catch(() => '')));
+			if (rotation !== undefined) {
+				this._rotationSources.set(serial, source);
+				return rotation;
+			}
+		}
+		this._rotationSources.delete(serial);
+		return 0;
 	}
 
 	private async _snapshot(serial: string): Promise<IParadisSimulatorAxSnapshot> {
