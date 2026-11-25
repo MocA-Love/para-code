@@ -72,6 +72,8 @@ export interface IParadisServeSimBackendOptions {
 	readonly firstFrameTimeoutMs?: number;
 }
 
+/** 起動の識別を読めないまま開いたセッションの印。 */
+const UNKNOWN_BOOT_ID = '';
 const FOLD_ACK_TIMEOUT_MS = 10_000;
 const FRAME_TIMEOUT_MS = 15_000;
 const BOOT_TIMEOUT_MS = 180_000;
@@ -207,12 +209,19 @@ export class ParadisServeSimBackend extends Disposable {
 				this._sessionsOf = connection;
 			}
 			const bootId = await this._readBootId(udid).catch(() => undefined);
+			const opened = this._sessions.get(udid);
 			if (bootId === undefined) {
+				// 読めなかった間に開いたセッションは、どの起動のものか分からない。後で読めた識別を「開いたときのもの」と
+				// みなさないよう、分からない印を付けておく
+				if (opened === undefined) {
+					this._sessions.set(udid, UNKNOWN_BOOT_ID);
+				}
 				return connection;
 			}
-			const opened = this._sessions.get(udid);
 			if (opened !== undefined && opened !== bootId && this._host.recycle) {
-				await this._recycle(`${udid} was shut down or booted again after the host opened its session`);
+				await this._recycle(opened === UNKNOWN_BOOT_ID
+					? `the host opened its session of ${udid} before Para Code could tell which boot it belongs to`
+					: `${udid} was shut down or booted again after the host opened its session`);
 				connection = await this._host.ensure();
 				this._sessionsOf = connection;
 			}
@@ -310,6 +319,19 @@ export class ParadisServeSimBackend extends Disposable {
 			let generation = this._generation;
 			// このやり方の応答を捨てた（頼み直した）。後から届く data・end・error を無視する
 			let superseded = false;
+			// 期限が来たとき、待っている間にホストが（別の端末のために）起こし直されていたら、期限切れにせず新しいホストへ
+			// 頼み直す。頼み直しの 1 回も使わない（前のホストの止まるのが遅いと、切れる前に期限が来る）
+			const askAgainAfterRestart = () => {
+				if (this._generation === generation) {
+					return false;
+				}
+				superseded = true;
+				this._logService.info(`[paradis-simulator] video ${udid}: the host was restarted while waiting; asking again`);
+				abort.abort();
+				response?.destroy();
+				attempt();
+				return true;
+			};
 			// 期限はホストが準備できて要求を送った時点から数える（ホストの初回の起動は最長 20 秒かかり、それを
 			// 「取り込みが始まらない」と取り違えないため）
 			this._connect(udid).then(connection => {
@@ -318,7 +340,12 @@ export class ParadisServeSimBackend extends Disposable {
 				}
 				generation = this._generation;
 				this._logService.info(`[paradis-simulator] video ${udid}: host ready after ${Date.now() - started} ms, request sent`);
-				timer = setTimeout(() => giveUp(new ParadisSimulatorCaptureNotStartedError(udid, this._captureStartTimeoutMs), generation), this._captureStartTimeoutMs);
+				timer = setTimeout(() => {
+					if (askAgainAfterRestart()) {
+						return;
+					}
+					giveUp(new ParadisSimulatorCaptureNotStartedError(udid, this._captureStartTimeoutMs), generation);
+				}, this._captureStartTimeoutMs);
 				return this._request(connection, `/helper/${udid}/stream.mjpeg`, signal);
 			}).then(res => {
 				if (!res) {
@@ -338,6 +365,9 @@ export class ParadisServeSimBackend extends Disposable {
 				}
 				let attemptFrames = 0;
 				timer = setTimeout(() => {
+					if (askAgainAfterRestart()) {
+						return;
+					}
 					if (restartedForFrames || !this._host.recycle) {
 						giveUp(new ParadisSimulatorCaptureNotStartedError(udid, this._firstFrameTimeoutMs, 'frame'), generation);
 						return;

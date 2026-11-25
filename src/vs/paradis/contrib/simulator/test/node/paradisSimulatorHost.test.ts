@@ -558,6 +558,28 @@ async function scratchDir(name: string): Promise<string> {
 		}
 	});
 
+	// 起動の識別を読めないまま開いたセッションは、どの起動のものか分からない。後で読めた識別を「開いたときのもの」と
+	// みなさず、読めた時点で 1 回だけ起こし直す（読めないままなら起こし直さない）
+	test('restarts the host once when the boot of an already opened session becomes readable', async () => {
+		const host = await startFakeSessionHost('unknownBoot');
+		try {
+			let bootId: string | undefined = undefined;
+			const backend = store.add(new ParadisServeSimBackend(host.provider, new NullLogService(), async () => '', 2000, { readBootId: async () => bootId, firstFrameTimeoutMs: 2000 }));
+			await backend.getScreenConfig(UDID);
+			await backend.getScreenConfig(UDID);
+			const whileUnreadable = [...host.recycled];
+			bootId = '100';
+			await backend.getScreenConfig(UDID);
+			await backend.getScreenConfig(UDID);
+			assert.deepStrictEqual({ whileUnreadable, recycled: host.recycled }, {
+				whileUnreadable: [],
+				recycled: [`the host opened its session of ${UDID} before Para Code could tell which boot it belongs to`],
+			});
+		} finally {
+			await host.close();
+		}
+	});
+
 	// わざと起こし直すのは「落ちた」に数えない（60 秒に 3 回落ちると起こさなくなる決まりに掛からない）
 	test('does not count restarting the host on purpose as a crash', async () => {
 		let spawned = 0;
