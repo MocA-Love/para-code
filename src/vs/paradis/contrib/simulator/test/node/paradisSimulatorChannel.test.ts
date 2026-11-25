@@ -177,6 +177,8 @@ suite('Paradis simulator: video relay in the shared process', () => {
 				{ serial: 'emulator-5554', kind: 'frame', key: true, pts: 40, data: [1, 2, 3] },
 			],
 		});
+	});
+
 	// 始まったばかりの通話（config がまだ無い）には key frame を求めない。取り込みの用意ができる前に求めると
 	// scrcpy-server が落ちる（最初の config と key frame は server が自分から送る）
 	test('does not ask a scrcpy session that has just started for a key frame', async () => {
