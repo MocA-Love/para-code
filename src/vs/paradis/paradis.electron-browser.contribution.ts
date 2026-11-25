@@ -175,3 +175,5 @@ import './contrib/agentDocs/electron-browser/paradisDocCommentDelivery.contribut
 import './contrib/agentDocs/electron-browser/paradisAgentDocsView.contribution.js';
 // コマンドで書かれた資料（html・md）を、開いているフォルダのファイルの変化から拾って資料の台帳へ知らせる
 import './contrib/agentDocs/electron-browser/paradisAgentDocsWatch.contribution.js';
+// 見つからなくなった資料を同じスペースの中の移動先へ追従させ、7 日見つからないままの資料を一覧から外す
+import './contrib/agentDocs/electron-browser/paradisAgentDocsRelocate.contribution.js';

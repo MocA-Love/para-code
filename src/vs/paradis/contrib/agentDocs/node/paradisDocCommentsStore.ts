@@ -165,6 +165,24 @@ export class ParadisDocCommentsStore extends Disposable {
 		});
 	}
 
+	/**
+	 * 資料の場所が変わった（移動先を追従した）。コメントを新しい場所の資料へ移す。新しい場所に既にコメントがあれば、
+	 * その後ろへ足す（上限まで）。
+	 */
+	move(hostId: string, from: string, to: string): Promise<void> {
+		return this._enqueue(hostId, from, async () => {
+			const source = await this._read(hostId, from);
+			if (source.threads.length === 0 || paradisDocKey(hostId, from) === paradisDocKey(hostId, to)) {
+				return;
+			}
+			await this._enqueue(hostId, to, async () => {
+				const target = await this._read(hostId, to);
+				await this._write({ ...target, threads: [...target.threads, ...source.threads].slice(0, PARADIS_DOC_COMMENT_MAX_THREADS) });
+			});
+			await this._write({ ...source, threads: [] });
+		});
+	}
+
 	/** プレビューが当て直した結果を書く（変わった件があるときだけ書く）。 */
 	setPlaces(hostId: string, path: string, places: ReadonlyMap<string, ParadisDocCommentPlace>): Promise<void> {
 		if (places.size === 0) {

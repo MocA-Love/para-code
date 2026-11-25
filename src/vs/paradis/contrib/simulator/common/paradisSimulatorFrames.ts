@@ -345,6 +345,19 @@ export function paradisParseSimctlDevices(stdout: string): IParadisSimulatorDevi
 }
 
 /**
+ * ホスト（serve-sim のネイティブ部品）の出力から「Device Hub のキーボードの経路を使えず、旧来の HID でキーを送った」
+ * の行を読む。返すのは端末の UDID の頭 8 桁（大文字）。それ以外の行は undefined。
+ *
+ * Device Hub が起動していると、serve-sim は Device Hub の窓へキーを送ろうとし、使えなければ（macOS のアクセシビリティの
+ * 許可が無い・その端末の窓が無いなど）旧来の HID へ落ちる。Xcode 27.2 では、落ちたキーが端末に届かないことがあった
+ * （タップとホームボタンは届く）。
+ */
+export function paradisParseSimulatorKeyboardFallback(line: string): string | undefined {
+	const match = /\[hid\] Device Hub keyboard unavailable for .*\((?<udid>[0-9A-Fa-f]{8})\).*using legacy HID/.exec(line);
+	return match?.groups?.udid.toUpperCase();
+}
+
+/**
  * Device Hub が入力を奪っているか（`simctl spawn <udid> notifyutil -g com.apple.coredevice.dtuhidd.active`
  * の出力。`<名前> 1` なら奪っている）。
  */

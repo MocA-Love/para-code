@@ -16,7 +16,7 @@ import { IParadisMobileAttachment } from '../../common/paradisMobileCanvas.js';
 import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, ParadisSimulatorFold } from '../../common/paradisSimulator.js';
 import { ParadisSimulatorDeviceRouter } from '../../node/paradisSimulatorDeviceRouter.js';
 import { ParadisServeSimBackend } from '../../node/paradisServeSimBackend.js';
-import { ParadisServeSimDeviceHost } from '../../node/paradisServeSimDeviceHost.js';
+import { PARADIS_SIMULATOR_KEYS_MAY_BE_LOST, ParadisServeSimDeviceHost } from '../../node/paradisServeSimDeviceHost.js';
 import { PARADIS_SIMULATOR_FOLD_TOOL, ParadisSimulatorFoldToolProvider } from '../../node/paradisSimulatorFoldTool.js';
 
 const UDID = 'CA66CB4A-B18A-410E-AECB-D50C73A15A51';
@@ -47,6 +47,11 @@ class FakeBackend {
 	readonly frames: [number, unknown][] = [];
 	config: IParadisSimulatorScreenConfig = { width: 1206, height: 2622, orientation: 'portrait' };
 	foldAccepted = true;
+	/** ホストが「キーを旧来の HID で送った」と出したか。 */
+	keysFellBack = false;
+	keyboardFallback(): boolean {
+		return this.keysFellBack;
+	}
 	ax: unknown = AX;
 	devices: IParadisSimulatorDevice[] = [{ udid: UDID, name: 'iPhone 17', runtime: 'iOS 27.2', state: 'Booted' }];
 	async listDevices(): Promise<IParadisSimulatorDevice[]> {
@@ -138,6 +143,21 @@ suite('Paradis simulator: serve-sim answers the Mobile Canvas REST for iOS', () 
 			paste: { method: 'paste' },
 			pasteFrames: [{ type: 'down', usage: 0xe3 }, { type: 'down', usage: 0x19 }, { type: 'up', usage: 0x19 }, { type: 'up', usage: 0xe3 }],
 			simctl: [{ args: ['pbcopy', UDID], input: 'こんにちは' }],
+		});
+	});
+
+	// Device Hub が起動していてキーを旧来の経路で送ったとき（ホストがそう出したとき）は、届いていないかもしれないことと
+	// 次にすることを結果に添える（直す前は、届かなくても何も言わずに成功を返していた）
+	test('says when keys may not have reached the simulator because Device Hub is running', async () => {
+		const { host, backend } = setup();
+		const before = await host.request('POST', `${PATH}/input/text`, { text: 'a' });
+		backend.keysFellBack = true;
+		const keys = await host.request('POST', `${PATH}/input/text`, { text: 'a' });
+		const paste = await host.request('POST', `${PATH}/input/text`, { text: 'あ' });
+		assert.deepStrictEqual({ before, keys, paste }, {
+			before: { method: 'keys' },
+			keys: { method: 'keys', note: PARADIS_SIMULATOR_KEYS_MAY_BE_LOST },
+			paste: { method: 'paste', note: PARADIS_SIMULATOR_KEYS_MAY_BE_LOST },
 		});
 	});
 
