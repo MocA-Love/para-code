@@ -5,14 +5,13 @@ import { Ionicons } from '@expo/vector-icons';
 import { Button } from './button.js';
 import { HIT_SIZE, colors, space, type } from '../theme.js';
 import { haptic } from '../haptics.js';
-import { canReselectSubmission, canRetrySubmission, type AnswerSubmissionState } from './answerSubmission.js';
+import { canRetrySubmission, type AnswerSubmissionState } from './answerSubmission.js';
 
 /**
  * 承認・質問カードの送信後の表示。送信中〜応答待ちは「送信済み・PC の応答を待っています」、
  * 送信中のまま待ち時間を過ぎたら「PC から応答がありません」と再送・選び直しを出す。
  * PCが受け付けたあとに待ち時間を過ぎた場合は、再送も選び直しも出さずPCでの確認を促す
- * （受け付け済みの回答を再送すると二重に入力されるため）。さらに待ってもカードが消えなければ、
- * 「まだ反映されていません」と選び直しだけを出す（PC が同じ回答の送り直しを受け付ける頃）。
+ * （受け付け済みの回答を再送すると二重に入力されるため）。
  * 押せる状態へ黙って戻すことはしない（{@link ./answerSubmission.ts}）。
  */
 export function AnswerSubmissionStatus({ state, onRetry, onReselect }: {
@@ -32,20 +31,6 @@ export function AnswerSubmissionStatus({ state, onRetry, onReselect }: {
 					<Text style={styles.title}>PC は受け付けました</Text>
 				</View>
 				<Text style={styles.hint}>PC の画面で確認してください。</Text>
-			</View>
-		);
-	}
-	if (canReselectSubmission(state)) {
-		return (
-			<View style={styles.block} accessibilityLiveRegion="polite">
-				<View style={styles.row}>
-					<Ionicons name="alert-circle-outline" size={16} color={colors.yellow} />
-					<Text style={styles.title}>PC は受け付けましたが、まだ反映されていません</Text>
-				</View>
-				<Text style={styles.hint}>PC の画面で確認してください。回答が入っていなければ、選び直して送れます。</Text>
-				<View style={styles.buttons}>
-					<Button label="選び直す" variant="secondary" flex onPress={() => { haptic('move'); onReselect(); }} />
-				</View>
 			</View>
 		);
 	}

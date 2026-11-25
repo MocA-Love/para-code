@@ -1946,7 +1946,7 @@ describe('MobileController agent approval', () => {
 		await expect(answer).resolves.toEqual({ status: 'accepted' });
 	});
 
-	it('asks the PC for the conversation and the list again when an accepted answer is still on the card, and stops once the card is gone', async () => {
+	it('asks the PC for the conversation and the list again when an answer is still on the card 15 s after it was sent, stops once the card is gone, and does not ask after a rejection', async () => {
 		const mobile = generateIdentity();
 		const pc = generateIdentity();
 		const pair = new FakePair();
@@ -1991,8 +1991,24 @@ describe('MobileController agent approval', () => {
 			await vi.advanceTimersByTimeAsync(0);
 			requests.length = 0;
 			await vi.advanceTimersByTimeAsync(70_000);
-			expect({ first, cardAfter: latest?.agentChats.get('terminal-7')?.interaction, laterAttaches: requests.filter(request => request.t === 'attach').length })
-				.toEqual({ first: { attaches: 1, states: 1 }, cardAfter: undefined, laterAttaches: 0 });
+			const laterAttaches = requests.filter(request => request.t === 'attach').length;
+			const cardAfter = latest?.agentChats.get('terminal-7')?.interaction;
+			// PC が断った回答では取り直さない（カードは残っていて、押し直せる）
+			pcMux.send(Channels.Agent, encode({
+				t: 'delta', id: 7, token: 'agent-7', agent: 'claude', epoch: 'e1', rev: 0, messages: [],
+				interaction: { kind: 'approval', id: 'toolu_2', title: 'コマンドの実行許可', detail: 'npm run build' },
+			}));
+			await vi.advanceTimersByTimeAsync(0);
+			requests.length = 0;
+			const refused = controller.answerAgentApproval('terminal-7', 'toolu_2', 'yes');
+			await vi.advanceTimersByTimeAsync(0);
+			pcMux.send(Channels.Agent, encode({ t: 'action-result', id: 7, token: 'agent-7', requestId: requests[0]?.requestId, status: 'rejected', code: 'stale-interaction', message: '回答対象の質問または承認要求が変わりました' }));
+			await vi.advanceTimersByTimeAsync(0);
+			await refused;
+			requests.length = 0;
+			await vi.advanceTimersByTimeAsync(70_000);
+			expect({ first, cardAfter, laterAttaches, afterRejection: requests.filter(request => request.t === 'attach').length })
+				.toEqual({ first: { attaches: 1, states: 1 }, cardAfter: undefined, laterAttaches: 0, afterRejection: 0 });
 		} finally {
 			vi.useRealTimers();
 			controller.dispose();

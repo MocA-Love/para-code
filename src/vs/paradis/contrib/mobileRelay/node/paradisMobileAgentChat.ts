@@ -517,8 +517,11 @@ const SUBAGENT_START_PAIRING_WINDOW_MS = 10 * 60_000;
 const MOD_ROW_LEDGER_LIMIT = 2_000;
 /** mod へ渡した回答を覚えておく時間（同じカードへの二度目をキーの経路へ回さないため）。 */
 const MOD_ANSWER_LOCK_MS = 60_000;
-/** mod へ渡した質問の答えを覚えておく上限（mod の質問の待ちの上限と同じ）。受け取られたら先に消す。 */
-const MOD_QUESTION_ANSWER_KEEP_MS = 60 * 60_000;
+/**
+ * mod へ渡した質問の答えを覚えておく上限。受け取られたら先に消す。mod は 25 秒ごとに聞きに来て、来なくなった待ちは
+ * 60 秒で捨てられるので、これより後に受け取られることは無い。
+ */
+const MOD_QUESTION_ANSWER_KEEP_MS = 5 * 60_000;
 /** mod が生成中の文章を流している間、MessageDisplay hook の先出しを使わない時間。 */
 const MOD_STREAM_PREFERRED_MS = 5 * 60_000;
 /** mod が busy で断った発言を、1 通目の行方が分かるまで待つ上限。過ぎたらキーで送る。 */
@@ -3657,7 +3660,9 @@ class TranscriptTailer {
 				const occurrence = occurrences.get(key) ?? 0;
 				occurrences.set(key, occurrence + 1);
 				const existingIds = this.liveQuestions.get(key) ?? [];
-				if (existingIds.length > occurrence) {
+				// 数えるのは回答待ちのものだけ。答えが渡って回答待ちを解いたカード（clearPendingQuestions(interactionId)）は、
+				// transcript の行と突き合わせるために台帳へ残してある。それを数えると、同じ文の次の質問のカードが出ない
+				if (existingIds.filter(id => this.pendingQuestions.has(id)).length > occurrence) {
 					continue; // 同一質問の多重hook（リトライ等）は無視
 				}
 				const syntheticId = `live:${this.epoch}:${this.liveQuestionSeq++}`;
@@ -7887,7 +7892,7 @@ export class ParadisMobileAgentChat extends Disposable {
 	private rememberModQuestionAnswer(itemId: string, token: string, epoch: string, interactionId: string): void {
 		const now = this.modAnswerNow();
 		for (const [candidate, entry] of this.modQuestionAnswers) {
-			// 受け取られなかった答え（mod が去った）は、mod の待ちの上限（1 時間）より長くは残さない
+			// 受け取られなかった答え（mod が去った）を残さない
 			if (now - entry.at > MOD_QUESTION_ANSWER_KEEP_MS) {
 				this.modQuestionAnswers.delete(candidate);
 			}
@@ -7928,9 +7933,21 @@ export class ParadisMobileAgentChat extends Disposable {
 			return;
 		}
 		void tailer.afterQueue(() => {
-			if (this.tailers.get(token) === tailer) {
-				this.settleLiveAfterApprovals(token, false);
+			// MCP の入力の依頼が待っている間は、許可待ちの様子を解かない（その決着の hook が戻す）
+			if (this.tailers.get(token) !== tailer || tailer.hasAnyPendingApproval() || (this.liveElicitations.get(token) ?? 0) > 0) {
+				return;
 			}
+			const live = this.liveStates.get(token);
+			if (live?.phase !== 'permission' || live.tool === 'AskUserQuestion') {
+				return;
+			}
+			const before = this.liveBeforePermission.get(token);
+			this.liveBeforePermission.delete(token);
+			// 答えた後はエージェントが続きを動かしている。待つ前の様子を覚えていなくても（PermissionRequest だけが届いた）、
+			// 様子なしにはしない（様子なしは入力待ちと読まれ、動いている最中に発言や設定のキーを打つ: isAgentPrompt）
+			this.setLiveState(token, before !== undefined
+				? { ...before, updatedAt: Date.now() }
+				: { phase: 'thinking', source: 'hook', startedAt: live.startedAt, updatedAt: Date.now() });
 		});
 	}
 

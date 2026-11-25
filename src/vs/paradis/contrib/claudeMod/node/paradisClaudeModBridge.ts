@@ -38,8 +38,12 @@ const LONG_POLL_MS = 25_000;
 const ALIVE_MS = 75_000;
 /** 待ちの項目に長いポーリングが来なくなったら捨てるまで（mod の hook が外れた・Esc 等）。 */
 const ORPHAN_MS = 60_000;
-/** 質問の待ちの上限（PC の TUI と並んでいるので長くてよい）。 */
-const QUESTION_TTL_MS = 60 * 60_000;
+/**
+ * 質問の待ちの上限（PC の TUI と並んでいるので長くてよい）。過ぎるとモバイルの回答はキーの経路へ回る。席を外している間の
+ * 質問に 1 時間より後で答えることは普通にあり（Sentry のキーの経路の回答 2 件は、質問から 65 分・89 分後だった）、
+ * そのたびに確かさの低いキーへ回していたので 1 日にした。mod が去った待ちは {@link ORPHAN_MS} で先に捨てる。
+ */
+const QUESTION_TTL_MS = 24 * 60 * 60_000;
 /** 待たなかった承認の性質（{@link ParadisClaudeModBridge.permissionTraits}）を覚えておく上限。結果が書かれた・ターンが終わったら先に消す。 */
 const PERMISSION_TRAITS_TTL_MS = 30 * 60_000;
 /** モバイルが繋がっていない状態が続いたら承認の待ちを打ち切るまで（一時的な切断は待つ）。 */

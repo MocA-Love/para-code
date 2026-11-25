@@ -1668,6 +1668,46 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 		});
 	}));
 
+	test('after the mod took the answer, the transcript rows of that question do not bring the card back, and the same question asked again gets a new card', () => withActivity(async harness => {
+		harness.hook('PreToolUse', { toolName: 'AskUserQuestion', toolUseId: 'toolu_q', toolInput: { questions: QUESTIONS } });
+		const registered = await harness.mod('question', { toolUseId: 'toolu_q', questions: QUESTIONS });
+		await waitFor(() => harness.tailer()?.currentInteraction()?.kind === 'question', 'the question card was not shown');
+		const interactionId = harness.tailer()!.currentInteraction()!.id;
+		const waiting = harness.mod('wait', { id: registered.id });
+		harness.inbound({ t: 'action/answerQuestion', requestId: 'answer-1', epoch: harness.tailer()!.epoch, interactionId, answers: [{ kind: 'option', index: 1 }] });
+		await waiting;
+		await waitFor(() => harness.tailer()?.currentInteraction() === null, 'the question kept waiting after the mod took the answer');
+		const settledAt = harness.sent.length;
+		const pause = () => new Promise<void>(resolve => setTimeout(resolve, 400));
+		const seen: string[] = [];
+		// 会話の記録の呼び出しの行と結果の行が、別々に読まれる
+		await appendFile(harness.transcriptPath, `${JSON.stringify({ type: 'assistant', uuid: 'row-use', timestamp: new Date().toISOString(), message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_q', name: 'AskUserQuestion', input: { questions: QUESTIONS } }] } })}\n`);
+		await pause();
+		seen.push(waitingStates(harness).interaction);
+		await appendFile(harness.transcriptPath, `${JSON.stringify({ type: 'user', uuid: 'row-result', timestamp: new Date().toISOString(), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_q', content: 'User has answered your questions: "色は？"="緑".' }] } })}\n`);
+		await pause();
+		seen.push(waitingStates(harness).interaction);
+		const cardsSentAfter = harness.sent.slice(settledAt).filter(message => (message.interaction as { kind?: string } | null | undefined)?.kind === 'question').length;
+		// 同じ文の質問がもう一度出た（別の呼び出し）
+		harness.hook('PreToolUse', { toolName: 'AskUserQuestion', toolUseId: 'toolu_q2', toolInput: { questions: QUESTIONS } });
+		await waitFor(() => harness.tailer()?.currentInteraction()?.kind === 'question', 'the same question asked again got no card');
+		assert.deepStrictEqual({ seen, cardsSentAfter, again: harness.tailer()!.currentInteraction()!.id !== interactionId }, { seen: ['none', 'none'], cardsSentAfter: 0, again: true });
+	}));
+
+	test('an approval answered without a remembered state before it shows "thinking", not an idle prompt', () => withActivity(async harness => {
+		const access = harness.chat as unknown as { liveBeforePermission: Map<string, unknown> };
+		// PermissionRequest だけが届いた（PreToolUse を見ていない: Para Code の再起動の後など）
+		harness.hook('PermissionRequest', { toolName: 'Bash', toolUseId: 'toolu_only', toolInput: { command: 'npm test' } });
+		const registered = await harness.mod('permission', { toolUseId: 'toolu_only', toolName: 'Bash', toolInput: { command: 'npm test' } });
+		await waitFor(() => harness.tailer()?.currentInteraction()?.kind === 'approval', 'the approval card was not shown');
+		access.liveBeforePermission.delete(harness.token);
+		const waiting = harness.mod('wait', { id: registered.id });
+		harness.inbound({ t: 'action/answerApproval', requestId: 'approve-only', epoch: harness.tailer()!.epoch, interactionId: harness.tailer()!.currentInteraction()!.id, choice: 'yes' });
+		await waiting;
+		await waitFor(() => waitingStates(harness).live !== 'permission', 'the live state kept waiting for permission');
+		assert.deepStrictEqual(waitingStates(harness), { interaction: 'none', pendingQuestion: false, pendingApproval: false, live: 'thinking' });
+	}));
+
 	test('an approval answered by keys stops showing "waiting for permission" once the window reports the keys went in', () => withActivity(async harness => {
 		harness.hook('PreToolUse', { toolName: 'Bash', toolUseId: 'toolu_k', toolInput: { command: 'npm test' } });
 		harness.hook('PermissionRequest', { toolName: 'Bash', toolInput: { command: 'npm test' } });

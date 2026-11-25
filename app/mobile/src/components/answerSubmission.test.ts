@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, it } from 'vitest';
-import { IDLE_SUBMISSION, canReselectSubmission, canRetrySubmission, isSubmissionLocked, reduceAnswerSubmission, type AnswerSubmissionState } from './answerSubmission.js';
+import { IDLE_SUBMISSION, canRetrySubmission, isSubmissionLocked, reduceAnswerSubmission, type AnswerSubmissionState } from './answerSubmission.js';
 
 const sending: AnswerSubmissionState = { phase: 'sending' };
 
@@ -45,19 +45,6 @@ describe('reduceAnswerSubmission', () => {
 		expect(reduceAnswerSubmission(noResponse, { type: 'result', result: { status: 'consumed' } })).toEqual({ phase: 'acceptedNoResponse' });
 		expect(reduceAnswerSubmission(noResponse, { type: 'result', result: { status: 'rejected', message: '対象が変わりました' } }))
 			.toEqual({ phase: 'idle', error: '対象が変わりました' });
-	});
-
-	it('offers to choose again, without a resend, when an accepted answer is still on the card long after', () => {
-		const accepted: AnswerSubmissionState = { phase: 'acceptedNoResponse' };
-		const stale = reduceAnswerSubmission(accepted, { type: 'stale' });
-		expect({ stale, locked: isSubmissionLocked(stale), retry: canRetrySubmission(stale), reselect: canReselectSubmission(stale), before: canReselectSubmission(accepted) })
-			.toEqual({ stale: { phase: 'acceptedStale' }, locked: true, retry: false, reselect: true, before: false });
-		// 受け付けが届いていない送信（送信中・応答なし）と、押せる状態では何もしない
-		const sending: AnswerSubmissionState = { phase: 'sending' };
-		const noResponse: AnswerSubmissionState = { phase: 'noResponse' };
-		expect([reduceAnswerSubmission(sending, { type: 'stale' }), reduceAnswerSubmission(noResponse, { type: 'stale' }), reduceAnswerSubmission(IDLE_SUBMISSION, { type: 'stale' })])
-			.toEqual([sending, noResponse, IDLE_SUBMISSION]);
-		expect(reduceAnswerSubmission(stale, { type: 'reset' })).toBe(IDLE_SUBMISSION);
 	});
 
 	it('ignores timers and results while idle', () => {

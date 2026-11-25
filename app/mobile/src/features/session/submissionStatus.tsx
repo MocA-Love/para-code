@@ -2,7 +2,7 @@
 
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { CircleAlert, CircleCheck, RotateCw } from 'lucide-react-native';
-import { canReselectSubmission, canRetrySubmission, type AnswerSubmissionState } from '../../components/answerSubmission.js';
+import { canRetrySubmission, type AnswerSubmissionState } from '../../components/answerSubmission.js';
 import { haptic } from '../../haptics.js';
 import { HIT_SIZE, colors, space, type } from '../../theme.js';
 import { useChatIconSize, useChatStyles } from '../../ui/chatTextScale.js';
@@ -13,7 +13,6 @@ import { Button, Icon, iconSize } from '../../ui/index.js';
  *  - 送信中〜PC の応答待ち: 「送信済み・PC の応答を待っています」
  *  - 送信中のまま時間切れ: 「PC から応答がありません」と「選び直す」「再送」
  *  - PC が受け付けたあとに時間切れ: 再送は出さず PC での確認を促す（二重に入力されるため）
- *  - さらに待ってもカードが消えない: 「まだ反映されていません」と「選び直す」だけを出す
  */
 export function SubmissionStatus({ state, onRetry, onReselect }: {
 	state: AnswerSubmissionState;
@@ -33,20 +32,6 @@ export function SubmissionStatus({ state, onRetry, onReselect }: {
 					<Text style={styles.title}>PC は受け付けました</Text>
 				</View>
 				<Text style={styles.hint}>PC の画面で確認してください。</Text>
-			</View>
-		);
-	}
-	if (canReselectSubmission(state)) {
-		return (
-			<View style={styles.block} accessibilityLiveRegion="polite">
-				<View style={styles.row}>
-					<Icon icon={CircleAlert} size={statusIconSize} color={colors.amber} />
-					<Text style={styles.title}>PC は受け付けましたが、まだ反映されていません</Text>
-				</View>
-				<Text style={styles.hint}>PC の画面で確認してください。回答が入っていなければ、選び直して送れます。</Text>
-				<View style={styles.buttons}>
-					<Button label="選び直す" variant="secondary" style={styles.flex} onPress={() => { haptic('move'); onReselect(); }} />
-				</View>
 			</View>
 		);
 	}

@@ -542,8 +542,8 @@ export type AgentMessageSendResult =
 /** OpenCode の停止を頼んだが、PC ではもう終わっていた（PC の `PARADIS_OPENCODE_EXITED_CODE`）。 */
 const AGENT_OPENCODE_EXITED_CODE = 'agent-exited';
 /**
- * PC が受け付けた回答のカードが残っているかを確かめる時点（送ってからの ms）。1 回目はカードの「PC は受け付けました」と同じ頃、
- * 2 回目は PC が同じ回答の送り直しを受け付けるようになる頃（60 秒）の後。
+ * 送った回答のカードが残っているかを確かめる時点（送ってからの ms）。1 回目はカードが「PC は受け付けました」
+ * 「PC から応答がありません」に変わるのと同じ頃、2 回目は PC が同じ回答の送り直しを受け付けるようになる頃（60 秒）の後。
  */
 const ANSWERED_INTERACTION_RECHECK_MS: readonly number[] = [15_000, 70_000];
 /** 送ったスラッシュコマンドをエージェントが断ったときの code（PC の `PARADIS_SLASH_COMMAND_REJECTED_CODE`）。 */
@@ -1997,7 +1997,7 @@ export class MobileController {
 	private readonly staleWatchdogs = new Map<string, ReturnType<typeof setTimeout>>();
 	/** relay瞬断で制御応答だけ失われても、モデルUIを永久にbusyへ固定しない。 */
 	private readonly agentControlTimers = new Map<string, { requestId: string; rendererTarget: string; timer: ReturnType<typeof setTimeout> }>();
-	/** PC が受け付けた回答の、カードが消えたかの確かめ（`terminalKey\0interactionId` → タイマー）。{@link watchAnsweredInteraction}。 */
+	/** 送った回答の、カードが消えたかの確かめ（`terminalKey\0interactionId` → タイマー）。{@link watchAnsweredInteraction}。 */
 	private readonly answeredInteractionChecks = new Map<string, ReturnType<typeof setTimeout>[]>();
 	private readonly agentCommandCatalogTimers = new Map<string, { requestId: string; rendererTarget: string; timer: ReturnType<typeof setTimeout> }>();
 	private readonly pendingAgentActions = new Map<string, { readonly terminalKey: string; readonly rendererTarget: string; readonly resolve: (result: AgentMessageSendResult) => void; readonly timer: ReturnType<typeof setTimeout>; readonly slashText?: string }>();
@@ -3029,33 +3029,37 @@ export class MobileController {
 	}
 
 	/**
-	 * PC が受け付けた回答のカードが、しばらくしても残っていたら、会話と一覧を PC から取り直す。
+	 * 送った回答のカードが、しばらくしても残っていたら、会話と一覧を PC から取り直す。
 	 *
 	 * カードが消えるのは、PC が「回答待ちが終わった」と知らせる差分（本文の無い delta）を受けたときだけで、その 1 通を
 	 * 取りこぼすと、次の発言が届くまで手元のカードと「質問」「許可待ち」の表示が残る。取り直して PC の今の状態に合わせる
-	 * （PC でも残っていれば、カードは残る）。確かめは {@link ANSWERED_INTERACTION_RECHECK_MS} の各時点で 1 回ずつ。
+	 * （PC でも残っていれば、カードは残る）。PC の返事が来ない（受け付けたかも分からない）ときも取り直す。PC が断ったら
+	 * やめる。確かめは送ってから {@link ANSWERED_INTERACTION_RECHECK_MS} の各時点で 1 回ずつ。
 	 */
 	private watchAnsweredInteraction(terminalKey: string, interactionId: string, sending: Promise<AgentMessageSendResult>): Promise<AgentMessageSendResult> {
-		return sending.then(result => {
-			const key = `${terminalKey}\0${interactionId}`;
-			if (result.status === 'rejected' || this.answeredInteractionChecks.has(key)) {
-				return result;
+		const key = `${terminalKey}\0${interactionId}`;
+		const stop = () => {
+			this.answeredInteractionChecks.get(key)?.forEach(clearTimeout);
+			this.answeredInteractionChecks.delete(key);
+		};
+		stop();
+		this.answeredInteractionChecks.set(key, ANSWERED_INTERACTION_RECHECK_MS.map((delay, index) => setTimeout(() => {
+			if (this.state.agentChats.get(terminalKey)?.interaction?.id !== interactionId) {
+				stop();
+				return;
 			}
-			const timers = ANSWERED_INTERACTION_RECHECK_MS.map((delay, index) => setTimeout(() => {
-				if (index === ANSWERED_INTERACTION_RECHECK_MS.length - 1) {
-					this.answeredInteractionChecks.delete(key);
-				}
-				if (this.state.agentChats.get(terminalKey)?.interaction?.id !== interactionId) {
-					this.answeredInteractionChecks.get(key)?.forEach(clearTimeout);
-					this.answeredInteractionChecks.delete(key);
-					return;
-				}
-				if (this.attachedAgents.has(terminalKey)) {
-					this.sendAgentAttach(terminalKey);
-				}
-				this.requestState();
-			}, delay));
-			this.answeredInteractionChecks.set(key, timers);
+			if (index === ANSWERED_INTERACTION_RECHECK_MS.length - 1) {
+				this.answeredInteractionChecks.delete(key);
+			}
+			if (this.attachedAgents.has(terminalKey)) {
+				this.sendAgentAttach(terminalKey);
+			}
+			this.requestState();
+		}, delay)));
+		return sending.then(result => {
+			if (result.status === 'rejected') {
+				stop();
+			}
 			return result;
 		});
 	}
