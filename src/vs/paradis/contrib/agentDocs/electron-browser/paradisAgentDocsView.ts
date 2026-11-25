@@ -400,7 +400,8 @@ export class ParadisAgentDocsView extends ViewPane {
 		}
 		const grouping = paradisReadDocsGrouping(this._storageService);
 		const sessionTitles = this._sessionTitles();
-		for (const group of paradisGroupDocs(filtered, grouping, Date.now())) {
+		const groups = paradisGroupDocs(filtered, grouping, Date.now());
+		for (const group of groups) {
 			const collapsed = group.kind !== 'missing' && this._collapsed.has(group.key);
 			if (group.kind !== 'missing') {
 				this._renderGroupHeader(list, group, collapsed, sessionTitles);
@@ -410,7 +411,7 @@ export class ParadisAgentDocsView extends ViewPane {
 					this._renderRow(list, record, activeKey, grouping !== 'session');
 				}
 				if (group.missing.length > 0) {
-					this._renderMissing(list, group, activeKey, grouping !== 'session' || group.kind === 'missing');
+					this._renderMissing(list, group, activeKey, grouping !== 'session' || group.kind === 'missing', groups.length === 1);
 				}
 			}
 		}
@@ -464,7 +465,7 @@ export class ParadisAgentDocsView extends ViewPane {
 	 * 組の末尾の「見つからない資料 N 件」。畳んだ 1 行で、開くと中の資料と「まとめて外す」が出る。
 	 * 見つからない資料を 1 件ずつ並べると、ファイルのある資料が埋もれる。
 	 */
-	private _renderMissing(list: HTMLElement, group: ParadisDocsGroup, activeKey: string | undefined, showOwner: boolean): void {
+	private _renderMissing(list: HTMLElement, group: ParadisDocsGroup, activeKey: string | undefined, showOwner: boolean, alone: boolean): void {
 		const expanded = this._missingExpanded.has(group.key);
 		const fold = DOM.append(list, DOM.$('.paradis-agent-docs-missing'));
 		fold.classList.toggle('standalone', group.kind === 'missing');
@@ -474,7 +475,10 @@ export class ParadisAgentDocsView extends ViewPane {
 		this._keyed.push(toggle);
 		toggle.setAttribute('aria-expanded', String(expanded));
 		DOM.append(toggle, DOM.$(ThemeIcon.asCSSSelector(expanded ? Codicon.chevronDown : Codicon.chevronRight))).setAttribute('aria-hidden', 'true');
-		const label = localize('paradis.agentDocs.missingGroup', "見つからない資料 {0} 件", group.missing.length);
+		// 一覧の最後の組（資料の残っていない会話・日付・フォルダの分）は、すぐ上の組の行と見分けられる名前にする
+		const label = group.kind === 'missing' && !alone
+			? localize('paradis.agentDocs.missingGroup.other', "そのほかの見つからない資料 {0} 件", group.missing.length)
+			: localize('paradis.agentDocs.missingGroup', "見つからない資料 {0} 件", group.missing.length);
 		DOM.append(toggle, DOM.$('span.paradis-agent-docs-missing-label')).textContent = label;
 		toggle.title = localize('paradis.agentDocs.missingGroup.title', "{0}（消したか、スペースの外へ移したファイル。7 日たつと一覧から外れます）", label);
 		this._renderStore.add(DOM.addDisposableListener(toggle, DOM.EventType.CLICK, () => {
