@@ -22,7 +22,7 @@ import { IWorkbenchEnvironmentService } from '../../../../workbench/services/env
 import { IFileQuery, ISearchService, QueryType } from '../../../../workbench/services/search/common/search.js';
 import { IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisListSpaces } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisDocKind } from '../common/paradisAgentDocs.js';
-import { IParadisDocRelocatorHost, PARADIS_DOC_FINGERPRINT_MAX_BYTES, PARADIS_DOC_RELOCATE_EXCLUDES, PARADIS_DOC_RELOCATE_MAX_FOUND, ParadisDocRelocator } from '../common/paradisAgentDocsRelocate.js';
+import { IParadisDocRelocatorHost, PARADIS_DOC_FINGERPRINT_MAX_BYTES, PARADIS_DOC_RELOCATE_EXCLUDES, PARADIS_DOC_RELOCATE_MAX_FOUND, PARADIS_DOC_RELOCATE_RETRY_MS, ParadisDocRelocator } from '../common/paradisAgentDocsRelocate.js';
 import { IParadisDocViewRecord, PARADIS_AGENT_DOCS_VIEW_CHANNEL, PARADIS_AGENT_DOCS_VIEW_ON_DID_CHANGE, ParadisAgentDocsViewCall } from '../common/paradisAgentDocsView.js';
 import { paradisDocFolderOf } from './paradisAgentDocsChannel.js';
 import { paradisDocResource, paradisDocTargetOf, paradisIsFileNotFound, paradisWindowDocHostId } from './paradisAgentDocsView.js';
@@ -121,7 +121,15 @@ class ParadisAgentDocsRelocateContribution extends Disposable implements IWorkbe
 			},
 		};
 		const relocator = new ParadisDocRelocator(host);
-		const scheduler = this._register(new RunOnceScheduler(() => void relocator.sync(), SYNC_DELAY_MS));
+		// 探索に失敗したとき（起動の直後で探す係がまだ居ない・締め切り）は、間を置いてもう一度見直す
+		const retry = this._register(new RunOnceScheduler(() => scheduler.schedule(), PARADIS_DOC_RELOCATE_RETRY_MS));
+		const sync = async () => {
+			await relocator.sync();
+			if (relocator.needsRetry && !retry.isScheduled()) {
+				retry.schedule();
+			}
+		};
+		const scheduler: RunOnceScheduler = this._register(new RunOnceScheduler(() => void sync(), SYNC_DELAY_MS));
 		this._register(channel.listen<void>(PARADIS_AGENT_DOCS_VIEW_ON_DID_CHANGE)(() => scheduler.schedule()));
 		this._register(workspaceSwitchService.onDidSwitchScope(() => scheduler.schedule()));
 		this._register(fileService.onDidFilesChange(event => this._onFilesChanged(event, relocator, pathOf)));

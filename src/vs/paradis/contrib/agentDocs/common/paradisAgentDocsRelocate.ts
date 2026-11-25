@@ -41,6 +41,8 @@ const CONCURRENCY = 4;
 const MAX_DELETED_PER_EVENT = 200;
 /** 見直しを待つ、現れたファイルの数の上限。 */
 const MAX_PENDING_ADDED = 2_000;
+/** 探索に失敗した（探す係がまだ居ない・締め切り・つながらない）スペースを、次に探すまでの間。 */
+export const PARADIS_DOC_RELOCATE_RETRY_MS = 30_000;
 /** 後片付けで「まだ無い」と確かめられなかった資料を、次に確かめるまでの間。 */
 const PRUNE_RECHECK_MS = 60 * 60 * 1000;
 
@@ -94,6 +96,14 @@ export function paradisDocRootOf(path: string, roots: readonly string[]): string
 		}
 	}
 	return best;
+}
+
+/**
+ * 取り外しのできる記憶装置の置き場所（macOS の `/Volumes/<名前>`、Linux の `/mnt/<名前>`・`/media/<利用者>/<名前>`・
+ * `/run/media/<利用者>/<名前>`）。その上のパスでなければ undefined。
+ */
+export function paradisDocMountPoint(path: string): string | undefined {
+	return /^(?<mount>\/(?:Volumes|mnt)\/[^/]+|\/(?:run\/)?media\/[^/]+\/[^/]+)\//.exec(path)?.groups?.mount;
 }
 
 /**
@@ -153,12 +163,19 @@ export class ParadisDocRelocator {
 	private readonly _scanned = new Set<string>();
 	/** 後片付けで確かめた時刻（キー → 時刻）。 */
 	private readonly _pruneChecked = new Map<string, number>();
+	/** 探索に失敗したスペース（フォルダ → 失敗した時刻）。 */
+	private readonly _searchFailed = new Map<string, number>();
 	private _pendingAdded = new Set<string>();
 	private _pendingDeleted = new Set<string>();
 	/** 前の見直しで台帳にあった、このウィンドウの機械の資料（パス → 見つからない資料か）。知らせを選ぶのに使う。 */
 	private _known = new Map<string, boolean>();
 
 	constructor(private readonly _host: IParadisDocRelocatorHost) { }
+
+	/** 探索に失敗して、探し直しを待っている資料があるか（呼び出し側が {@link PARADIS_DOC_RELOCATE_RETRY_MS} の後にもう一度 sync する）。 */
+	get needsRetry(): boolean {
+		return this._searchFailed.size > 0;
+	}
 
 	/** 台帳を読み直して、指紋・追従・後片付けを進める。動いている間に呼ばれたら、終わってからもう 1 回だけ回る。 */
 	sync(): Promise<void> {
@@ -262,16 +279,34 @@ export class ParadisDocRelocator {
 		// 移動先を探す: 今消えたと分かった資料と、台帳で見つからないままの、まだ探していない資料
 		const relocated = new Set<string>();
 		const searching = [...gone, ...records.filter(record => record.missingSince !== undefined && !this._scanned.has(this._key(record)))];
+		// 探索に失敗したスペースの資料は「探し終えた」にせず、間を置いて探し直す
+		const unsearched = new Set<string>();
 		for (const [root, wanted] of this._byRoot(searching.filter(record => record.fingerprint !== undefined), roots)) {
-			const found = await host.findDocs(root).catch(() => undefined);
-			if (found !== undefined && found.complete) {
-				await this._relocate(wanted, found.paths, records, relocated);
+			const failedAt = this._searchFailed.get(root);
+			const found = failedAt !== undefined && host.now() - failedAt < PARADIS_DOC_RELOCATE_RETRY_MS ? undefined : await host.findDocs(root).catch(() => undefined);
+			if (found === undefined) {
+				if (failedAt === undefined || host.now() - failedAt >= PARADIS_DOC_RELOCATE_RETRY_MS) {
+					this._searchFailed.set(root, host.now());
+				}
+				wanted.forEach(record => unsearched.add(this._key(record)));
+				continue;
+			}
+			this._searchFailed.delete(root);
+			if (found.complete) {
+				await this._relocate(wanted, this._inRoot(found.paths, root, roots), records, relocated);
+			}
+		}
+		for (const root of [...this._searchFailed.keys()]) {
+			if (!roots.includes(root)) {
+				this._searchFailed.delete(root);
 			}
 		}
 		for (const record of searching) {
 			const key = this._key(record);
 			if (!relocated.has(key)) {
-				this._scanned.add(key);
+				if (!unsearched.has(key)) {
+					this._scanned.add(key);
+				}
 				if (record.missingSince === undefined) {
 					await host.setMissing(record.path, true);
 				}
@@ -288,11 +323,16 @@ export class ParadisDocRelocator {
 				}
 			}
 			for (const [root, wanted] of this._byRoot(waiting.filter(record => record.fingerprint !== undefined && !relocated.has(this._key(record))), roots)) {
-				await this._relocate(wanted, added.filter(path => paradisIsInsideFolder(path, root)), records, relocated);
+				await this._relocate(wanted, this._inRoot(added, root, roots), records, relocated);
 			}
 		}
 
 		await this._prune(records.filter(record => record.missingSince !== undefined && !relocated.has(this._key(record))));
+	}
+
+	/** そのスペースのファイルだけ（中に入れ子になった別のスペース、たとえば git のワークツリーのファイルは、同じ中身の別物）。 */
+	private _inRoot(paths: readonly string[], root: string, roots: readonly string[]): string[] {
+		return paths.filter(path => paradisDocRootOf(path, roots) === root);
 	}
 
 	private _byRoot(records: readonly IParadisDocViewRecord[], roots: readonly string[]): Map<string, IParadisDocViewRecord[]> {
@@ -412,6 +452,11 @@ export class ParadisDocRelocator {
 			this._pruneChecked.set(this._key(record), now);
 			const stat = await host.stat(record.path).catch(() => undefined);
 			if (stat === 'missing') {
+				// 外した外付けの記憶装置の上の資料は、ファイルが消えたのではない
+				const mount = paradisDocMountPoint(record.path);
+				if (mount !== undefined && await host.stat(mount).catch(() => undefined) === 'missing') {
+					return;
+				}
 				removals.push(record.path);
 			} else if (stat !== undefined) {
 				await host.setMissing(record.path, false);

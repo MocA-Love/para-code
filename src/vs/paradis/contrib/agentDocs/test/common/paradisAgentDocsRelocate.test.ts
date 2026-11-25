@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisDocKind } from '../../common/paradisAgentDocs.js';
-import { IParadisDocFileStat, IParadisDocFingerprintUpdate, IParadisDocRelocatorHost, PARADIS_DOC_FINGERPRINT_MAX_BYTES, PARADIS_DOC_MISSING_RETENTION_MS, ParadisDocRelocator, paradisDocRootOf } from '../../common/paradisAgentDocsRelocate.js';
+import { IParadisDocFileStat, IParadisDocFingerprintUpdate, IParadisDocRelocatorHost, PARADIS_DOC_FINGERPRINT_MAX_BYTES, PARADIS_DOC_MISSING_RETENTION_MS, PARADIS_DOC_RELOCATE_RETRY_MS, ParadisDocRelocator, paradisDocMountPoint, paradisDocRootOf } from '../../common/paradisAgentDocsRelocate.js';
 import { IParadisDocViewRecord } from '../../common/paradisAgentDocsView.js';
 
 interface IFakeFile {
@@ -58,7 +58,13 @@ class FakeHost implements IParadisDocRelocatorHost {
 		return this.rootList;
 	}
 
+	/** 在るフォルダ（ファイルではないので、stat は「確かめられない」を返す）。 */
+	readonly folders = new Set<string>();
+
 	async stat(path: string): Promise<IParadisDocFileStat | 'missing' | undefined> {
+		if (this.folders.has(path)) {
+			return undefined;
+		}
 		const file = this.files.get(path);
 		return file !== undefined ? { size: file.size ?? file.content.length, mtime: file.mtime } : 'missing';
 	}
@@ -69,8 +75,14 @@ class FakeHost implements IParadisDocRelocatorHost {
 		return file !== undefined ? { hash: `hash of ${file.content}`, size: file.content.length } : undefined;
 	}
 
-	async findDocs(root: string): Promise<{ paths: readonly string[]; complete: boolean }> {
+	/** 探索を失敗させる。 */
+	searchFails = false;
+
+	async findDocs(root: string): Promise<{ paths: readonly string[]; complete: boolean } | undefined> {
 		this.searches.push(root);
+		if (this.searchFails) {
+			return undefined;
+		}
 		return { paths: [...this.files.keys()].filter(path => path.startsWith(`${root}/`)), complete: this.complete };
 	}
 
@@ -251,6 +263,49 @@ suite('ParadisAgentDocsRelocate', () => {
 		assert.deepStrictEqual({ state: host.state(), log: host.log }, {
 			state: ['/repo/recent.md (missing)', '/repo/back.md'],
 			log: ['found /repo/back.md', 'remove /repo/long-gone.md /tmp/outside-gone.html'],
+		});
+	});
+
+	test('a failed search is tried again after a while, and a copy in a nested space is not a place to move to', async () => {
+		const host = new FakeHost();
+		host.rootList = ['/repo', '/repo/worktrees/a'];
+		const fingerprint = { size: 5, mtime: 10, hash: 'hash of moved', at: 900 };
+		host.doc('/repo/moved.md', undefined, { missingSince: 800, fingerprint });
+		host.doc('/repo/tracked.md', undefined, { missingSince: 800, fingerprint: { ...fingerprint, hash: 'hash of track' } });
+		host.files.set('/repo/sub/moved.md', { content: 'moved', mtime: 10 });
+		// 入れ子のワークツリーにある、同じ中身の別のファイル
+		host.files.set('/repo/worktrees/a/tracked.md', { content: 'track', mtime: 10 });
+		const relocator = new ParadisDocRelocator(host);
+		host.searchFails = true;
+		await relocator.sync();
+		await relocator.sync();
+		const failed = { state: host.state(), searches: [...host.searches], needsRetry: relocator.needsRetry };
+		host.searchFails = false;
+		host.time += PARADIS_DOC_RELOCATE_RETRY_MS;
+		await relocator.sync();
+		await relocator.filesChanged({ added: ['/repo/worktrees/a/tracked.md'], updated: [], deleted: [] });
+		assert.deepStrictEqual({ failed, state: host.state(), searches: host.searches, needsRetry: relocator.needsRetry, log: host.log }, {
+			failed: { state: ['/repo/moved.md (missing)', '/repo/tracked.md (missing)'], searches: ['/repo'], needsRetry: true },
+			state: ['/repo/sub/moved.md', '/repo/tracked.md (missing)'],
+			searches: ['/repo', '/repo'],
+			needsRetry: false,
+			log: ['relocate /repo/moved.md -> /repo/sub/moved.md'],
+		});
+	});
+
+	test('a document on a removable volume that is not mounted is not removed', async () => {
+		const host = new FakeHost();
+		host.time = PARADIS_DOC_MISSING_RETENTION_MS + 10_000;
+		host.doc('/Volumes/SSD/work/a.md', undefined, { missingSince: 5_000 });
+		host.doc('/Volumes/Mounted/work/b.md', undefined, { missingSince: 5_000 });
+		host.folders.add('/Volumes/Mounted');
+		await new ParadisDocRelocator(host).sync();
+		assert.deepStrictEqual({
+			state: host.state(),
+			mounts: ['/Volumes/SSD/a.md', '/mnt/disk/x/a.md', '/media/user/usb/a.md', '/run/media/user/usb/a.md', '/home/user/a.md', '/Volumes/a.md'].map(paradisDocMountPoint),
+		}, {
+			state: ['/Volumes/SSD/work/a.md (missing)'],
+			mounts: ['/Volumes/SSD', '/mnt/disk', '/media/user/usb', '/run/media/user/usb', undefined, undefined],
 		});
 	});
 });
