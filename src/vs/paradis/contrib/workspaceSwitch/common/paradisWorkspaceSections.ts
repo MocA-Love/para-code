@@ -125,8 +125,8 @@ export function paradisSerializeWorkspaceSections(state: IParadisWorkspaceSectio
 	return json.length <= MAX_STORAGE_LENGTH ? json : undefined;
 }
 
-/** 閉じているセクションの鍵の集合を読む。不正な値は 1 件ずつ捨てる。 */
-export function paradisParseCollapsedSections(raw: string | undefined): Set<string> {
+/** 閉じているセクションの鍵の集合を読む。不正な値は 1 件ずつ捨てる。maxCount は読む件数の上限（既定はセクションの上限 + 未分類）。 */
+export function paradisParseCollapsedSections(raw: string | undefined, maxCount = MAX_SECTIONS + 1): Set<string> {
 	const result = new Set<string>();
 	if (!raw || raw.length > MAX_STORAGE_LENGTH) {
 		return result;
@@ -135,7 +135,7 @@ export function paradisParseCollapsedSections(raw: string | undefined): Set<stri
 		const value: unknown = JSON.parse(raw);
 		if (Array.isArray(value)) {
 			for (const key of value) {
-				if (isValidId(key) && result.size < MAX_SECTIONS + 1) {
+				if (isValidId(key) && result.size < maxCount) {
 					result.add(key);
 				}
 			}

@@ -1,0 +1,140 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+/* allow-any-unicode-comment-file (Para Code: this file contains Japanese comments) */
+
+/* allow-any-unicode-next-line */
+/* スペースのセクション（リポジトリの中のスペースをまとめる見出し、Q683 案 A の「仕切りの見出し」）。
+ * 見出しは面を塗らず、細い字の名前・件数と、その右へ伸びる細い線だけで区切る。字下げは足さない:
+ * 見出しはツリーの本当の親なので本家は中の行を 1 段下げるが、中の行（paradis-space-section-member）では
+ * レンダラが矢印の margin-left でその 1 段ぶんを戻す（幅は設定 workbench.tree.indent に追従する。paradisWorkspacesView.ts の
+ * SectionMemberRowMarker）。字下げを戻すと本家の案内線は位置がずれるので、スペースのセクションが 1 つでもある一覧では消す
+ * （プロジェクトのセクションがあるときと同じ扱い） */
+.paradis-workspaces-list.paradis-workspaces-space-sectioned .monaco-tl-indent {
+	display: none;
+}
+
+.paradis-workspaces-list .paradis-space-section-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	height: 100%;
+	min-width: 0;
+	padding-right: 12px;
+	box-sizing: border-box;
+	font-size: var(--vscode-fontSize-label2);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textMuted);
+}
+
+/* allow-any-unicode-next-line */
+/* 見出しの矢印は小さく薄く（上に貼り付いた見出しにも同じ印が付く） */
+.paradis-workspaces-list .paradis-space-section-head .monaco-tl-twistie.codicon {
+	font-size: var(--vscode-codiconFontSize-compact);
+	color: var(--vscode-paradis-textFaint);
+}
+
+/* allow-any-unicode-next-line */
+/* 名前は省略記号で縮む。右に集計・要対応・「+」「…」が並んでも読める幅（全角 2 字ぶん）は残す */
+.paradis-workspaces-list .paradis-space-section-name {
+	flex: 0 1 auto;
+	min-width: 2em;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.paradis-workspaces-list .paradis-space-section-count {
+	flex: none;
+	font-weight: var(--vscode-fontWeight-regular);
+	font-variant-numeric: tabular-nums;
+	color: var(--vscode-paradis-textFaint);
+}
+
+/* allow-any-unicode-next-line */
+/* 名前の右へ伸びる線。右寄せの部品（集計・要対応・ボタン）はこの線が押しやる */
+.paradis-workspaces-list .paradis-space-section-rule {
+	flex: 1;
+	min-width: 4px;
+	height: 1px;
+	background-color: var(--vscode-paradis-lineSubtle);
+}
+
+.paradis-workspaces-list :is(.paradis-space-section-name, .paradis-space-section-count, .paradis-space-section-rule, .paradis-space-section-actions).hidden {
+	display: none;
+}
+
+/* allow-any-unicode-next-line */
+/* 閉じたときの状態ごとの数。右寄せは線が担うので、リポジトリの行の右寄せ（margin-left: auto）は使わない */
+.paradis-workspaces-list .paradis-space-section-row .paradis-workspace-summary:not(.hidden) {
+	margin-left: 0;
+}
+
+/* allow-any-unicode-next-line */
+/* 「+」「…」はポインタを重ねたときとフォーカスのときだけ（リポジトリの行と同じ） */
+.paradis-workspaces-list .paradis-space-section-actions {
+	display: none;
+	align-items: center;
+	flex: none;
+	gap: 2px;
+}
+
+.paradis-workspaces-list .monaco-tl-row:hover .paradis-space-section-actions:not(.hidden),
+.paradis-workspaces-list .monaco-list-row.focused .paradis-space-section-actions:not(.hidden) {
+	display: flex;
+}
+
+/* allow-any-unicode-next-line */
+/* ボタンが出ている間は状態ごとの数を隠す。狭い幅（260）で名前が数 px まで押しつぶされるのを防ぐ。
+ * 要対応の数は残す（見落とせない情報で、幅も小さい） */
+.paradis-workspaces-list .monaco-tl-row:hover .paradis-space-section-row .paradis-workspace-summary,
+.paradis-workspaces-list .monaco-list-row.focused .paradis-space-section-row .paradis-workspace-summary {
+	display: none;
+}
+
+.paradis-workspaces-list .paradis-space-section-button {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex: none;
+	width: 20px;
+	height: 20px;
+	border-radius: var(--vscode-cornerRadius-small);
+	color: var(--vscode-icon-foreground);
+	cursor: pointer;
+}
+
+.paradis-workspaces-list .paradis-space-section-button:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+/* allow-any-unicode-next-line */
+/* その場の名前の欄（.paradis-section-rename）は見出しの字の大きさ・太さを継がず、入力欄の字にする */
+.paradis-workspaces-list .paradis-space-section-row .paradis-section-rename {
+	height: 22px;
+	font-size: var(--vscode-fontSize-label1);
+}
+
+/* allow-any-unicode-next-line */
+/* 空のセクションの下の「ここへスペースをドラッグ、または + で作成」（ドロップ先）。字は span に包んであり、
+ * 幅が足りないときは省略記号で切れる（flex の箱が字を直に持つと、省略記号が出ずに切れる） */
+.paradis-workspaces-list .paradis-space-section-empty {
+	display: flex;
+	align-items: center;
+	height: 100%;
+	min-width: 0;
+	padding-right: 12px;
+	box-sizing: border-box;
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textFaint);
+	cursor: default;
+}
+
+.paradis-workspaces-list .paradis-space-section-empty > span {
+	min-width: 0;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}

@@ -57,6 +57,8 @@ import { ParadisSpaceNotesService } from './paradisSpaceNotesService.js';
 import { PARADIS_WORKSPACES_VIEW_ID, ParadisWorkspacesView } from './paradisWorkspacesView.js';
 import { ParadisWorkspaceSwitchService } from './paradisWorkspaceSwitchService.js';
 import { ParadisWorkspaceSectionsService } from './paradisWorkspaceSectionsService.js';
+import { ParadisSpaceSectionsService } from './paradisSpaceSectionsService.js';
+import { IParadisSpaceSectionsService } from '../common/paradisSpaceSections.js';
 import { ParadisWorktreeService } from './paradisWorktreeService.js';
 import './paradisTerminalScope.contribution.js';
 import './paradisUnattributedTerminals.contribution.js';
@@ -73,6 +75,7 @@ registerSingleton(IParadisWorktreeCreateProgressStore, ParadisWorktreeCreateProg
 registerSingleton(IParadisEditorSplitTerminalService, ParadisEditorSplitTerminalService, InstantiationType.Delayed);
 registerSingleton(IParadisSpaceNotesService, ParadisSpaceNotesService, InstantiationType.Delayed);
 registerSingleton(IParadisWorkspaceSectionsService, ParadisWorkspaceSectionsService, InstantiationType.Delayed);
+registerSingleton(IParadisSpaceSectionsService, ParadisSpaceSectionsService, InstantiationType.Delayed);
 
 class ParadisEditorScopeStarter implements IWorkbenchContribution {
 	static readonly ID = 'workbench.contrib.paradisEditorScopeStarter';
