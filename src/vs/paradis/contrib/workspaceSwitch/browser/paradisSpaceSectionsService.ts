@@ -59,6 +59,13 @@ export class ParadisSpaceSectionsService extends Disposable implements IParadisS
 			this._collapsed = paradisParseCollapsedSections(raw, PARADIS_SPACE_SECTIONS_MAX_COLLAPSED);
 			this._onDidChange.fire();
 		}));
+		// 新しく見つかった・作ったスペースは並びの最後に入るので、一覧が変わるたびに並び（worktreeOrder）を一覧の順へ揃える。
+		// モバイルへ送る順など、並びをそのまま読む所が一覧と同じ順になる。同じ順なら書かない
+		this._register(this.worktreeService.onDidChangeWorktrees(() => {
+			for (const [repositoryId, entry] of this._state) {
+				this.alignOrder(repositoryId, paradisSectionOrderedSpaceKeys(this.orderKeys(repositoryId), entry));
+			}
+		}));
 		// リポジトリを一覧から外したら、そのリポジトリの分を丸ごと消す（一覧が空のときは何もしない）
 		this._register(this.workspaceSwitchService.onDidChangeRepositories(() => {
 			const next = paradisDropRemovedRepositorySpaceSections(this._state, this.workspaceSwitchService.repositories.map(repository => repository.id));
@@ -180,6 +187,12 @@ export class ParadisSpaceSectionsService extends Disposable implements IParadisS
 		return this.worktreeService.getWorktrees(repositoryId).map(worktree => paradisWorktreeStateKey(worktree.uri));
 	}
 
+	/** 割り当てを残してよいスペース: 一覧にあるものと、既知のスペース。一覧が空なら空（刈らない）。 */
+	private liveKeys(repositoryId: string): string[] {
+		const listed = this.orderKeys(repositoryId);
+		return listed.length === 0 ? listed : [...listed, ...this.worktreeService.getKnownWorktreeStateKeys(repositoryId)];
+	}
+
 	/**
 	 * 新しい状態を保存して知らせ、aligned のリポジトリのスペースの並び（worktreeOrder）を一覧の順へ揃える。
 	 * aligned.stateKey があれば、そのスペースを target の位置へ置いてから揃える。
@@ -190,7 +203,8 @@ export class ParadisSpaceSectionsService extends Disposable implements IParadisS
 		}
 		// 一覧から消えたスペースの割り当ては、書くときに刈る（溜まると上限で新しい割り当てが断られる）。
 		// 走査が終わっていない・一覧が空のリポジトリは刈らない（SSH の切断で全部の割り当てを失わないため）
-		next = paradisPruneSpaceAssignments(next, repositoryId => this.worktreeService.isWorktreeListComplete?.(repositoryId) ? this.orderKeys(repositoryId) : undefined);
+		// 作った直後のスペースは一覧（getWorktrees）にまだ載っていないので、既知のスペース（addKnownWorktree 済み）も今あるものに数える
+		next = paradisPruneSpaceAssignments(next, repositoryId => this.worktreeService.isWorktreeListComplete?.(repositoryId) ? this.liveKeys(repositoryId) : undefined);
 		const serialized = paradisSerializeSpaceSections(next);
 		if (serialized === undefined) {
 			this.logService.warn('[ParadisSpaceSections] Refused to persist oversized space sections');

@@ -239,6 +239,7 @@ export class ParadisWorktreeCreateQueueService extends Disposable implements IPa
 				repositoryId: job.request.repositoryId,
 				...(name !== undefined ? { name } : {}),
 				...(job.stateKey !== undefined ? { stateKey: job.stateKey } : {}),
+				...(job.request.sectionId !== undefined ? { sectionId: job.request.sectionId } : {}),
 				stageLabel: stageLabel(job.stage),
 			};
 		});

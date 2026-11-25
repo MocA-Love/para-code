@@ -43,6 +43,7 @@ import {
 import { paradisRunAutoRunPresets } from '../../terminalPresets/browser/paradisTerminalPresets.contribution.js';
 import { PARADIS_WORKSPACE_PRESET_FILE } from '../../terminalPresets/common/paradisTerminalPresets.js';
 import { IParadisAgentModelCatalogService } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
+import { IParadisSpaceSectionsService } from '../common/paradisSpaceSections.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService, paradisWorktreeStateKey } from '../common/paradisWorkspaceSwitch.js';
 import {
 	IParadisAddWorktreeRequest,
@@ -136,6 +137,11 @@ export interface IParadisHeadlessWorktreeRequest {
 	readonly reference?: IParadisWorktreeNameReference;
 	/** true なら、指示に Issue・PR の URL があっても名前に使わない（ダイアログのカードを閉じた）。 */
 	readonly skipReference?: boolean;
+	/**
+	 * 作ったスペースを入れるスペースのセクションの id（一覧のセクションの「+」と、ダイアログの「セクション」の欄から）。
+	 * 省くとセクションなし。作っている間に消えたセクションなら、セクションなしのままになる。
+	 */
+	readonly sectionId?: string;
 }
 
 export interface IParadisHeadlessWorktreeResult {
@@ -771,6 +777,7 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 	const paneTokenService = accessor.get(IParadisPaneTokenService);
 	const fileService = accessor.get(IFileService);
 	const lookupReference = paradisGithubReferenceResolver(accessor);
+	const spaceSectionsService = accessor.get(IParadisSpaceSectionsService);
 
 	const repository = switchService.repositories.find(r => r.id === request.repositoryId);
 	if (!repository) {
@@ -890,6 +897,10 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 		uri: worktreeUri,
 	};
 	worktreeService.addKnownWorktree(createdWorktree);
+	if (request.sectionId !== undefined) {
+		// 一覧に実体の行が出る前に割り当てを書く（行が最初からそのセクションの中に出る）
+		spaceSectionsService.moveSpaceToSection(createdWorktree, request.sectionId);
+	}
 	callbacks?.onWorktreeCreated?.(targetStateKey);
 
 	// 後続工程が途中で失敗しても、起動済みのエージェントは返す（warning と一緒に）

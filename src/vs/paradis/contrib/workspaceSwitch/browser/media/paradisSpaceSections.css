@@ -143,3 +143,21 @@
 	overflow: hidden;
 	text-overflow: ellipsis;
 }
+
+/* allow-any-unicode-next-line */
+/* スペースの行のメタ段（PR・Issue・キャッシュ・差分・メモ）が幅に収まらないときの見せ方。
+ * 前は全部の印が同じ割合で縮み、狭い幅（260）で 4 つとも中身が切れて読めなかった（#861 が #8、-337 が - になる）。
+ * 印は縮めず、収まらない分は並びの後ろ（右寄せの項目）から丸ごと次の行へ送り、段の高さで隠す。残った印は欠けずに読める。
+ * 段の高さはいちばん背の高い印（PR: 文字 + 上下 1px、アイコン 12px + 上下 1px）に合わせた 1 行ぶん。
+ * paradisWorkspaceSwitch.css・paradisAgentInsights.css の「縮める」指定より強く当てる。 */
+.monaco-workbench .paradis-workspaces-list .monaco-list-row .paradis-worktree-meta {
+	flex-wrap: wrap;
+	row-gap: var(--vscode-spacing-size80);
+	height: calc(var(--vscode-fontSize-label2) + 3px);
+	min-height: 14px;
+	overflow: hidden;
+}
+
+.monaco-workbench .paradis-workspaces-list .monaco-list-row .paradis-worktree-meta > :not(.paradis-worktree-meta-spacer) {
+	flex-shrink: 0;
+}

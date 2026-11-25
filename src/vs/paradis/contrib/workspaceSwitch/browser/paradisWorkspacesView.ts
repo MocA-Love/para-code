@@ -2347,8 +2347,8 @@ export class ParadisWorkspacesView extends ViewPane {
 			repositoryChildren: repository => this.repositoryChildren(repository),
 			isPinned: worktree => this.worktreeService.isPinned(worktreeStateKeyFor(worktree)),
 			spaceSections: repositoryId => this.spaceSectionsService.sectionsOf(repositoryId),
-			// 「作成中」の行はセクションなしに並べる
-			spaceSectionOf: child => isWorktree(child) ? this.spaceSectionsService.sectionOf(child) : undefined,
+			// 「作成中」の行は、作るときに選んだセクションの中に出す（消えたセクションならセクションなし）
+			spaceSectionOf: child => isWorktree(child) ? this.spaceSectionsService.sectionOf(child) : child.creatingJob.sectionId,
 			isSpaceSectionCollapsed: sectionId => this.spaceSectionsService.isCollapsed(sectionId),
 			spaceSectionDraftRepositoryId: this.renamingSpaceSection?.key === SPACE_SECTION_DRAFT_KEY ? this.renamingSpaceSection.repositoryId : undefined,
 		});
@@ -2654,7 +2654,9 @@ export class ParadisWorkspacesView extends ViewPane {
 
 	/** 見出しの「+」: そのセクションを選んだ状態で「新しいスペース」を開く。コマンド実体は electron-browser 層。 */
 	private createSpaceInSection(element: ISpaceSectionHeaderElement): void {
-		this.commandService.executeCommand('paradis.workspaceSwitch.createWorktree', element.ownerRepositoryId);
+		// 2 番目の引数は IParadisHeadlessWorktreeRequest（electron-browser 層の型）。リポジトリとセクションだけを入れて渡すと、
+		// ダイアログは書きかけの下書きを戻したうえで、押した「+」のセクションを選ぶ
+		this.commandService.executeCommand('paradis.workspaceSwitch.createWorktree', element.ownerRepositoryId, { repositoryId: element.ownerRepositoryId, sectionId: element.section?.id });
 	}
 
 	/**
