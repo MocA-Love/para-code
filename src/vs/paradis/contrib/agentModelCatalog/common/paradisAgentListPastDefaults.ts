@@ -30,6 +30,12 @@ const LABEL_BYPASS = '全バイパス';
 const HINT_BYPASS = '承認もsandboxもすべて無効化します';
 // allow-any-unicode-next-line
 const HINT_FULL_AUTO_ON_REQUEST = 'sandbox内で自動実行し、必要なときだけ確認します';
+// allow-any-unicode-next-line
+const HINT_ANTIGRAVITY_ACCEPT_EDITS = 'ファイルの編集は確認せずに行い、コマンドの実行は確認します';
+// allow-any-unicode-next-line
+const HINT_ANTIGRAVITY_AUTO = 'ファイルの編集と安全なコマンドは確認せずに行い、取り消せない操作の前だけ確認します';
+// allow-any-unicode-next-line
+const HINT_ANTIGRAVITY_PLAN = '計画を立てるだけで、ファイルは変えません';
 
 /** 古い順。値は settings.json に書き写されたときの JSON と同じ形。 */
 export const PARADIS_PAST_DEFAULT_AGENT_COMMANDS: readonly (readonly object[])[] = [
@@ -583,6 +589,83 @@ export const PARADIS_PAST_DEFAULT_AGENT_COMMANDS: readonly (readonly object[])[]
 			permissions: [
 				{ id: 'default', label: LABEL_DEFAULT, flag: '' },
 				{ id: 'yolo', label: LABEL_SKIP_ALL, flag: '--yolo', danger: true, hint: HINT_SKIP_ALL },
+			],
+		},
+	],
+	// 2026-11-12〜2026-11-26（Gemini CLI を Antigravity CLI に置き換えた。Codex は codex-cli 0.159.2 の一覧で、gpt-6.2 が入る前）
+	[
+		{
+			id: 'claude',
+			label: 'Claude Code',
+			command: 'claude {prompt}',
+			models: [
+				{ id: 'fable', label: 'fable (Fable 5.2)', flag: '--model fable', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium' },
+				{ id: 'opus', label: 'opus (Opus 5.5)', flag: '--model opus', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium' },
+				{ id: 'sonnet', label: 'sonnet (Sonnet 5.5)', flag: '--model sonnet', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium' },
+				{ id: 'haiku', label: 'haiku (Haiku 5.5)', flag: '--model haiku', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium' },
+				{ id: 'opusplan', label: 'opusplan', flag: '--model opusplan', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium' },
+			],
+			efforts: [
+				{ id: 'low', flag: '--effort low' },
+				{ id: 'medium', flag: '--effort medium' },
+				{ id: 'high', flag: '--effort high' },
+				{ id: 'xhigh', flag: '--effort xhigh' },
+				{ id: 'max', flag: '--effort max' },
+			],
+			permissions: [
+				{ id: 'default', label: LABEL_DEFAULT, flag: '--permission-mode manual' },
+				{ id: 'skip-permissions', label: LABEL_SKIP_ALL, flag: '--dangerously-skip-permissions', danger: true, hint: HINT_SKIP_ALL },
+			],
+		},
+		{
+			id: 'codex',
+			label: 'Codex',
+			command: 'codex {prompt}',
+			models: [
+				{ id: 'gpt-6.1-sol', flag: '--model gpt-6.1-sol', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], defaultEffort: 'low' },
+				{ id: 'gpt-6-astra', flag: '--model gpt-6-astra', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], defaultEffort: 'medium' },
+				{ id: 'gpt-6-sol', flag: '--model gpt-6-sol', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], defaultEffort: 'medium' },
+				{ id: 'gpt-6-luna', flag: '--model gpt-6-luna', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium' },
+			],
+			efforts: [
+				{ id: 'low', flag: '-c model_reasoning_effort=low' },
+				{ id: 'medium', flag: '-c model_reasoning_effort=medium' },
+				{ id: 'high', flag: '-c model_reasoning_effort=high' },
+				{ id: 'xhigh', flag: '-c model_reasoning_effort=xhigh' },
+				{ id: 'max', flag: '-c model_reasoning_effort=max' },
+				{ id: 'ultra', flag: '-c model_reasoning_effort=ultra' },
+			],
+			permissions: [
+				{ id: 'default', label: LABEL_DEFAULT, flag: '' },
+				{ id: 'full-auto', label: 'full-auto', flag: '--sandbox workspace-write --ask-for-approval on-request', hint: HINT_FULL_AUTO_ON_REQUEST },
+				{ id: 'bypass', label: LABEL_BYPASS, flag: '--dangerously-bypass-approvals-and-sandbox', danger: true, hint: HINT_BYPASS },
+			],
+		},
+		{
+			id: 'antigravity',
+			label: 'Antigravity CLI',
+			command: 'agy {prompt}',
+			promptFlag: '-i',
+			models: [
+				{ id: 'gemini-3.8-flash-high', flag: '--model gemini-3.8-flash-high', efforts: [] },
+				{ id: 'gemini-3.8-flash-medium', flag: '--model gemini-3.8-flash-medium', efforts: [] },
+				{ id: 'gemini-3.8-flash-low', flag: '--model gemini-3.8-flash-low', efforts: [] },
+				{ id: 'claude-sonnet-4-6', flag: '--model claude-sonnet-4-6' },
+				{ id: 'claude-opus-4-6-thinking', flag: '--model claude-opus-4-6-thinking' },
+				{ id: 'gpt-oss-120b-medium', flag: '--model gpt-oss-120b-medium', efforts: [] },
+			],
+			efforts: [
+				{ id: 'low', flag: '--effort low' },
+				{ id: 'medium', flag: '--effort medium' },
+				{ id: 'high', flag: '--effort high' },
+				{ id: 'xhigh', flag: '--effort xhigh' },
+				{ id: 'max', flag: '--effort max' },
+			],
+			permissions: [
+				{ id: 'default', label: LABEL_DEFAULT, flag: '' },
+				{ id: 'accept-edits', label: 'accept-edits', flag: '--mode accept-edits', hint: HINT_ANTIGRAVITY_ACCEPT_EDITS },
+				{ id: 'auto', label: 'auto', flag: '--mode auto', hint: HINT_ANTIGRAVITY_AUTO },
+				{ id: 'plan', label: 'plan', flag: '--mode plan', hint: HINT_ANTIGRAVITY_PLAN },
 			],
 		},
 	],

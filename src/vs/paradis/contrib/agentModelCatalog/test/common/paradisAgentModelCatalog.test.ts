@@ -226,13 +226,16 @@ suite('ParadisAgentModelCatalog', () => {
 				{ userDefined: false, codex: 'gpt-6-astra' },
 				{ userDefined: false, codex: 'gpt-6-astra' },
 				{ userDefined: false, codex: 'gpt-6-astra' },
+				{ userDefined: false, codex: 'gpt-6-astra' },
 			],
 			edited: { userDefined: true, codex: 'gpt-5.6-sol,gpt-5.6-terra,gpt-5.6-luna,gpt-5.5' },
 		});
 	});
 
 	test('既定から外した Gemini CLI の行を書き写しただけなら Antigravity CLI の行に差し替え、書き換えた Gemini CLI の行は残す', () => {
-		const copied = JSON.parse(JSON.stringify(PARADIS_PAST_DEFAULT_AGENT_COMMANDS[PARADIS_PAST_DEFAULT_AGENT_COMMANDS.length - 1]));
+		// gemini 行が既定にあった最後の世代（その後の世代は Antigravity CLI の行を持つ）
+		const lastWithGemini = [...PARADIS_PAST_DEFAULT_AGENT_COMMANDS].reverse().find(generation => (generation as readonly { id: string }[]).some(agent => agent.id === 'gemini'));
+		const copied = JSON.parse(JSON.stringify(lastWithGemini));
 		const edited = JSON.parse(JSON.stringify(copied));
 		edited[2].label = 'My Gemini';
 		const withAntigravity = [...JSON.parse(JSON.stringify(copied)), { id: 'antigravity', label: 'My agy', command: 'agy {prompt}' }];
@@ -351,6 +354,6 @@ suite('ParadisAgentModelCatalog', () => {
 	test('既定の定義を変えたら、変える前の値を過去の既定値（paradisAgentListPastDefaults.ts）の末尾に足す', () => {
 		// この指紋が変わったら、変える前の PARADIS_DEFAULT_AGENT_COMMANDS を JSON の形で
 		// PARADIS_PAST_DEFAULT_AGENT_COMMANDS へ足してから、ここの値を新しい指紋に書き換える
-		assert.strictEqual(stringHash(JSON.stringify(PARADIS_DEFAULT_AGENT_COMMANDS), 0), 482011405);
+		assert.strictEqual(stringHash(JSON.stringify(PARADIS_DEFAULT_AGENT_COMMANDS), 0), -1876374505);
 	});
 });

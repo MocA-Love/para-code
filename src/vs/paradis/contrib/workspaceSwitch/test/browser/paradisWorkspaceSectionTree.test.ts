@@ -10,8 +10,9 @@ import { IObjectTreeElement, ObjectTreeElementCollapseState } from '../../../../
 import { URI } from '../../../../../base/common/uri.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisWorkspaceRepository, IParadisWorktree } from '../../common/paradisWorkspaceSwitch.js';
+import { IParadisSpaceSection } from '../../common/paradisSpaceSections.js';
 import { IParadisSectionGroup, IParadisWorkspaceSection } from '../../common/paradisWorkspaceSections.js';
-import { ICreatingSpaceElement, IParadisWorkspaceTreeSource, ISectionHeaderElement, isPinnedKeep, paradisBuildWorkspaceTree, paradisKeepBelongsTo, paradisPinnedKeepAriaLevel, paradisCollectTreeWorktrees, paradisWorkspaceDropDecision, paradisWorkspaceTreeElementId, SECTION_DRAFT_KEY, WorkspaceTreeElement } from '../../browser/paradisWorkspaceSectionTree.js';
+import { ICreatingSpaceElement, IParadisWorkspaceTreeSource, ISectionHeaderElement, ISpaceSectionHeaderElement, isPinnedKeep, isWorktree, paradisBuildWorkspaceTree, paradisKeepBelongsTo, paradisPinnedKeepAriaLevel, paradisCollectTreeWorktrees, paradisWorkspaceDropDecision, paradisWorkspaceTreeElementId, SECTION_DRAFT_KEY, SPACE_SECTION_DRAFT_KEY, WorkspaceTreeElement } from '../../browser/paradisWorkspaceSectionTree.js';
 
 function repository(id: string): IParadisWorkspaceRepository {
 	return { id, name: id, uri: URI.file(`/repos/${id}`) };
@@ -38,12 +39,18 @@ interface ISourceOptions {
 	readonly collapsedSections?: string[];
 	readonly collapsedRepositories?: string[];
 	readonly pinned?: string[];
+	/** beta のスペースのセクション */
+	readonly betaSpaceSections?: IParadisSpaceSection[];
+	/** スペースの名前 → スペースのセクションの id */
+	readonly spaceAssignments?: Record<string, string>;
+	readonly collapsedSpaceSections?: string[];
+	readonly spaceSectionDraftRepositoryId?: string;
 }
 
 function source(options: ISourceOptions): IParadisWorkspaceTreeSource {
 	const children = new Map<string, (IParadisWorktree | ICreatingSpaceElement)[]>([
 		['alpha', [mainCheckout('alpha'), worktree('alpha', 'a1')]],
-		['beta', [mainCheckout('beta'), worktree('beta', 'b1'), { creatingJob: { id: 7, repositoryId: 'beta', name: 'b2', stageLabel: 'creating' } }]],
+		['beta', [mainCheckout('beta'), worktree('beta', 'b1'), ...(options.betaSpaceSections || options.spaceSectionDraftRepositoryId ? [worktree('beta', 'b3'), worktree('beta', 'b4')] : []), { creatingJob: { id: 7, repositoryId: 'beta', name: 'b2', stageLabel: 'creating' } }]],
 		['gamma', [mainCheckout('gamma')]],
 	]);
 	return {
@@ -55,6 +62,10 @@ function source(options: ISourceOptions): IParadisWorkspaceTreeSource {
 		isRepositoryCollapsed: id => (options.collapsedRepositories ?? []).includes(id),
 		repositoryChildren: repo => children.get(repo.id) ?? [],
 		isPinned: wt => (options.pinned ?? []).includes(wt.name === 'local' ? wt.repositoryId : wt.name),
+		spaceSections: repositoryId => repositoryId === 'beta' ? options.betaSpaceSections ?? [] : [],
+		spaceSectionOf: child => isWorktree(child) ? options.spaceAssignments?.[child.name] : undefined,
+		isSpaceSectionCollapsed: id => (options.collapsedSpaceSections ?? []).includes(id),
+		spaceSectionDraftRepositoryId: options.spaceSectionDraftRepositoryId,
 	};
 }
 
@@ -69,7 +80,7 @@ function shape(entries: Iterable<IObjectTreeElement<WorkspaceTreeElement>>): unk
 	return [...entries].map(entry => {
 		let label = paradisWorkspaceTreeElementId(entry.element);
 		if (isPinnedKeep(entry.element)) {
-			label += ` +${entry.element.keepLevels}`;
+			label += ` +${entry.element.keepLevels}${entry.element.keepSpaceSectionId ? ` in ${entry.element.keepSpaceSectionId}` : ''}`;
 		}
 		if (entry.collapsed !== undefined) {
 			const collapsed = entry.collapsed === true || entry.collapsed === ObjectTreeElementCollapseState.PreserveOrCollapsed || entry.collapsed === ObjectTreeElementCollapseState.Collapsed;
@@ -278,6 +289,184 @@ suite('paradisWorkspaceSectionTree', () => {
 			['space onto main checkout', undefined],
 			['space onto space (other project)', undefined],
 			['space onto keep', undefined],
+		]);
+	});
+
+	const doing: IParadisSpaceSection = { id: 'doing', name: 'Doing' };
+	const review: IParadisSpaceSection = { id: 'review', name: 'Review' };
+	const b1 = 'worktree:worktree:file:///worktrees/beta/b1';
+	const b3 = 'worktree:worktree:file:///worktrees/beta/b3';
+	const b4 = 'worktree:worktree:file:///worktrees/beta/b4';
+
+	test('space sections: local, then unsectioned spaces, then each section with its spaces as real children', () => {
+		const built = paradisBuildWorkspaceTree(source({ betaSpaceSections: [doing, review], spaceAssignments: { b3: 'review', b1: 'doing', b4: 'gone' } }));
+		assert.deepStrictEqual({
+			sectioned: built.sectioned,
+			headers: [...built.spaceSectionHeaders.values()].map(header => [header.key, header.ownerRepositoryId, header.spaces.map(space => space.name), header.creatingCount]),
+			members: [...built.spaceSectionMemberIds],
+			beta: shape(built.elements)[1],
+		}, {
+			sectioned: false,
+			headers: [['doing', 'beta', ['b1'], 0], ['review', 'beta', ['b3'], 0]],
+			members: [b1, b3],
+			beta: {
+				'repo:beta (open)': [
+					'worktree:beta',
+					// b4 points at a section that no longer exists; the creating row has no section.
+					b4,
+					'creating:7',
+					{ 'spaceSection:doing (open)': [b1] },
+					{ 'spaceSection:review (open)': [b3] },
+				]
+			},
+		});
+	});
+
+	test('space sections: an empty section shows the drop hint, a draft is the last header of its repository', () => {
+		const built = paradisBuildWorkspaceTree(source({ betaSpaceSections: [doing], spaceSectionDraftRepositoryId: 'beta' }));
+		const alphaDraft = paradisBuildWorkspaceTree(source({ spaceSectionDraftRepositoryId: 'alpha' }));
+		assert.deepStrictEqual({
+			beta: shape(built.elements)[1],
+			members: [...built.spaceSectionMemberIds],
+			alpha: shape(alphaDraft.elements)[0],
+		}, {
+			beta: {
+				'repo:beta (open)': [
+					'worktree:beta', b1, b3, b4, 'creating:7',
+					{ 'spaceSection:doing (open)': ['spaceSectionEmpty:doing'] },
+					{ [`spaceSection:${SPACE_SECTION_DRAFT_KEY} (open)`]: [] },
+				]
+			},
+			members: ['spaceSectionEmpty:doing'],
+			alpha: {
+				'repo:alpha (open)': [
+					'worktree:alpha', 'worktree:worktree:file:///worktrees/alpha/a1',
+					{ [`spaceSection:${SPACE_SECTION_DRAFT_KEY} (open)`]: [] },
+				]
+			},
+		});
+	});
+
+	test('space sections: a closed section keeps its pins right below the header, and only while its project and project section are open', () => {
+		const options: ISourceOptions = { betaSpaceSections: [doing, review], spaceAssignments: { b1: 'doing', b3: 'doing', b4: 'review' }, collapsedSpaceSections: ['doing'], pinned: ['b3'] };
+		const open = paradisBuildWorkspaceTree(source(options));
+		const closedProject = paradisBuildWorkspaceTree(source({ ...options, collapsedRepositories: ['beta'] }));
+		const closedProjectSection = paradisBuildWorkspaceTree(sectioned({ ...options, collapsedSections: ['work'] }));
+		const ids = (built: ReturnType<typeof paradisBuildWorkspaceTree>) => (function collect(entries: Iterable<IObjectTreeElement<WorkspaceTreeElement>>): string[] {
+			return [...entries].flatMap(entry => [paradisWorkspaceTreeElementId(entry.element), ...(entry.children ? collect(entry.children) : [])]);
+		})(built.elements);
+		const duplicates = (built: ReturnType<typeof paradisBuildWorkspaceTree>) => ids(built).filter((id, index, all) => all.indexOf(id) !== index);
+		const keep = paradisCollectTreeWorktrees(open.elements).find(wt => isPinnedKeep(wt))!;
+		assert.ok(isPinnedKeep(keep));
+		assert.deepStrictEqual({
+			open: shape(open.elements)[1],
+			closedProject: shape(closedProject.elements).slice(1, 3),
+			closedProjectSection: shape(closedProjectSection.elements).slice(0, 2),
+			duplicates: [duplicates(open), duplicates(closedProject), duplicates(closedProjectSection)],
+			belongs: [
+				paradisKeepBelongsTo(keep, open.spaceSectionHeaders.get('doing')!),
+				paradisKeepBelongsTo(keep, open.spaceSectionHeaders.get('review')!),
+				paradisKeepBelongsTo(keep, beta),
+			],
+			ariaLevels: [paradisPinnedKeepAriaLevel(keep, false), paradisPinnedKeepAriaLevel(keep, true)],
+		}, {
+			open: {
+				'repo:beta (open)': [
+					'worktree:beta',
+					'creating:7',
+					{ 'spaceSection:doing (closed)': [b1, b3] },
+					'pinnedKeep:worktree:file:///worktrees/beta/b3 +0 in doing',
+					{ 'spaceSection:review (open)': [b4] },
+				]
+			},
+			closedProject: [
+				{
+					'repo:beta (closed)': [
+						'worktree:beta',
+						'creating:7',
+						{ 'spaceSection:doing (closed)': [b1, b3] },
+						{ 'spaceSection:review (open)': [b4] },
+					]
+				},
+				'pinnedKeep:worktree:file:///worktrees/beta/b3 +1',
+			],
+			closedProjectSection: [
+				{
+					'section:work (closed)': [
+						{ 'repo:alpha (open)': ['worktree:alpha', 'worktree:worktree:file:///worktrees/alpha/a1'] },
+						{
+							'repo:beta (open)': [
+								'worktree:beta',
+								'creating:7',
+								{ 'spaceSection:doing (closed)': [b1, b3] },
+								{ 'spaceSection:review (open)': [b4] },
+							]
+						},
+					]
+				},
+				'pinnedKeep:worktree:file:///worktrees/beta/b3 +2',
+			],
+			duplicates: [[], [], []],
+			belongs: [true, false, false],
+			ariaLevels: [3, 4],
+		});
+	});
+
+	test('space sections: the meta presence and the last row of a project section see the spaces inside', () => {
+		const built = paradisBuildWorkspaceTree(sectioned({ betaSpaceSections: [doing], spaceAssignments: { b4: 'doing' } }));
+		assert.deepStrictEqual({
+			worktrees: paradisCollectTreeWorktrees(built.elements).map(wt => wt.name),
+			last: [...built.sectionLastRowIds][0],
+		}, {
+			worktrees: ['local', 'a1', 'local', 'b1', 'b3', 'b4', 'local'],
+			last: b4,
+		});
+	});
+
+	test('space sections: drop decisions stay inside one repository', () => {
+		const built = paradisBuildWorkspaceTree(source({ betaSpaceSections: [doing, review], spaceAssignments: { b1: 'doing' }, spaceSectionDraftRepositoryId: 'beta' }));
+		const doingHeader = built.spaceSectionHeaders.get('doing')!;
+		const reviewHeader = built.spaceSectionHeaders.get('review')!;
+		const draft = built.spaceSectionHeaders.get(SPACE_SECTION_DRAFT_KEY)!;
+		const otherHeader: ISpaceSectionHeaderElement = { paradisSpaceSectionHeader: true, ownerRepositoryId: 'alpha', section: { id: 'other', name: 'Other' }, key: 'other', spaces: [], creatingCount: 0 };
+		const reviewEmpty = { paradisSpaceSectionEmpty: 'review', ownerRepositoryId: 'beta' };
+		const spaceB1 = worktree('beta', 'b1');
+		const spaceB3 = worktree('beta', 'b3');
+		const cases: [string, ReturnType<typeof paradisWorkspaceDropDecision>][] = [
+			['space onto header', paradisWorkspaceDropDecision(spaceB3, doingHeader, false)],
+			['space onto empty row', paradisWorkspaceDropDecision(spaceB3, reviewEmpty, true)],
+			['space onto draft header', paradisWorkspaceDropDecision(spaceB3, draft, false)],
+			['space onto header of another project', paradisWorkspaceDropDecision(spaceB3, otherHeader, false)],
+			['main checkout onto header', paradisWorkspaceDropDecision(mainCheckout('beta'), doingHeader, false)],
+			['project onto space header', paradisWorkspaceDropDecision(alpha, doingHeader, false)],
+			['sectioned space onto main checkout', paradisWorkspaceDropDecision(spaceB1, mainCheckout('beta'), false, true)],
+			['unsectioned space onto main checkout', paradisWorkspaceDropDecision(spaceB3, mainCheckout('beta'), false, false)],
+			['sectioned space onto main checkout of another project', paradisWorkspaceDropDecision(spaceB1, mainCheckout('alpha'), false, true)],
+			['space onto space in another section', paradisWorkspaceDropDecision(spaceB3, spaceB1, true)],
+			['space header onto space header', paradisWorkspaceDropDecision(doingHeader, reviewHeader, true)],
+			['space header onto itself', paradisWorkspaceDropDecision(doingHeader, doingHeader, true)],
+			['space header onto draft', paradisWorkspaceDropDecision(doingHeader, draft, false)],
+			['space header onto header of another project', paradisWorkspaceDropDecision(doingHeader, otherHeader, false)],
+			['space header onto space', paradisWorkspaceDropDecision(doingHeader, spaceB3, false)],
+			['space header onto project', paradisWorkspaceDropDecision(doingHeader, beta, false)],
+		];
+		assert.deepStrictEqual(cases, [
+			['space onto header', { kind: 'intoSpaceSection', sectionId: 'doing' }],
+			['space onto empty row', { kind: 'intoSpaceSection', sectionId: 'review' }],
+			['space onto draft header', undefined],
+			['space onto header of another project', undefined],
+			['main checkout onto header', undefined],
+			['project onto space header', undefined],
+			['sectioned space onto main checkout', { kind: 'intoSpaceSection', sectionId: undefined }],
+			['unsectioned space onto main checkout', undefined],
+			['sectioned space onto main checkout of another project', undefined],
+			['space onto space in another section', { kind: 'reorder', after: true }],
+			['space header onto space header', { kind: 'reorder', after: true }],
+			['space header onto itself', undefined],
+			['space header onto draft', undefined],
+			['space header onto header of another project', undefined],
+			['space header onto space', undefined],
+			['space header onto project', undefined],
 		]);
 	});
 });

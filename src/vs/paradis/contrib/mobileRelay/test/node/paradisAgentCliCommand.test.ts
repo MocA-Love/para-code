@@ -73,7 +73,7 @@ suite('ParadisAgentCliCommand', () => {
 			{ agent: 'claude', mode: 'new' },
 			{ agent: 'claude', mode: 'new' },
 		]);
-		for (const command of ['claude --help', 'claude -v', 'claude --version', 'claude --print test', 'claude --continue --print test', 'claude --background', 'claude agents', 'claude doctor', 'claude doctor --fork-session']) {
+		for (const command of ['claude --help', 'claude -v', 'claude --version', 'claude --print test', 'claude --continue --print test', 'claude --background', 'claude agents', 'claude doctor', 'claude doctor --fork-session', 'claude import', 'claude import --resume abc']) {
 			assert.strictEqual(paradisInteractiveAgentCommand(command), undefined, command);
 		}
 	});

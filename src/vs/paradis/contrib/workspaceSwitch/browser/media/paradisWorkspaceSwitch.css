@@ -1003,21 +1003,21 @@
 	box-shadow: 0 0 0 2px var(--vscode-menu-background), 0 0 0 3px var(--vscode-focusBorder);
 }
 
-/* 幅が足りないときに、メタ段が黙って右から切り落とされるのを防ぐ。
- * spacer(flex:1) が先に潰れたあと、チップ側が縮まないと body の overflow:hidden で
- * 右寄せのぶん (差分・メモ) が省略記号も出ずに消える。行は60pxのままなので、
- * ユーザーからは「設定したのに出ない」ようにしか見えない。 */
-.paradis-worktree-meta {
+/* スペースの行のメタ段（PR・Issue・キャッシュ・差分・メモ）が幅に収まらないときの見せ方。
+ * 前は全部の印が同じ割合で縮み、狭い幅（260）で 4 つとも中身が切れて読めなかった（#861 が #8、-337 が - になる）。
+ * 印は縮めず、収まらない分は並びの後ろ（右寄せの項目）から丸ごと次の行へ送り、段の高さで隠す。残った印は欠けずに読める。
+ * 段の高さはいちばん背の高い印（PR: アイコン 12px + 上下 1px）に合わせた 1 行ぶん。
+ * キャッシュの印（paradisAgentInsights.css）は自分で「縮める」指定を持つので、それより強く当てる。 */
+.paradis-workspaces-list .paradis-worktree-meta {
+	flex-wrap: wrap;
+	row-gap: var(--vscode-spacing-size80);
 	min-width: 0;
+	height: calc(var(--vscode-fontSize-label2) + 3px);
+	overflow: hidden;
 }
 
-.paradis-worktree-meta > .paradis-worktree-pr,
-.paradis-worktree-meta > .paradis-worktree-issue,
-.paradis-worktree-meta > .paradis-worktree-note,
-.paradis-worktree-meta > .paradis-worktree-diff {
-	min-width: 0;
-	flex-shrink: 1;
-	overflow: hidden;
+.monaco-workbench .paradis-workspaces-list .monaco-list-row .paradis-worktree-meta > :not(.paradis-worktree-meta-spacer) {
+	flex-shrink: 0;
 }
 
 /* allow-any-unicode-next-line */
@@ -1261,28 +1261,46 @@
 
 /* allow-any-unicode-next-line */
 /* 薄い帯（Q685 案 3）: 検索の行（.paradis-workspaces-nav-search）と同じ塗り（文字の色の 5%）と同じ角丸。色を固定せず文字の色から
- * 作るので、テーマと利用者の色の変更に付いて来る。一覧が数える行の高さは 32px のまま（paradisWorkspacesView.ts の
- * PARADIS_SECTION_HEADER_HEIGHT）で、行の器そのものを上下 2px ずつ縮めて 28px の帯にする（一覧は行に top と height を
- * インラインで付けるので、height は !important、位置は margin で動かす）。器ごと縮めるので、本家が器に付けるポインタの塗り・
- * 選択の塗り・フォーカスの枠・ドロップ先の塗りも同じ帯の形になる。帯と帯の間は 4px 空き、閉じた見出しが続いても 1 つの塊にならない */
-.paradis-workspaces-list .monaco-list-row.paradis-section-band {
-	height: 28px !important;
+ * 作るので、テーマと利用者の色の変更に付いて来る。行の器（.monaco-list-row）は一覧が数える 32px のまま（paradisWorkspacesView.ts の
+ * PARADIS_SECTION_HEADER_HEIGHT）にし、その内側の箱（.monaco-tl-row）を上下 2px ずつ縮めた 28px の帯として描く。器を縮めると、
+ * 帯と帯の間の 4px がどの行にも属さなくなり、そこでクリック・右クリックが当たらず、ドラッグ中は落とす先の印が消える。
+ * 帯と帯の間は見た目で 4px 空き、閉じた見出しが続いても 1 つの塊にならない。上に貼り付いた見出し（本家の sticky scroll）の行も
+ * 同じ内側の箱なので同じ帯になる（貼り付いた行の器は本家が一覧の地の色で不透明に塗るので、後ろの行は透けない） */
+.paradis-workspaces-list .paradis-section-band > .monaco-tl-row {
+	box-sizing: border-box;
+	height: calc(100% - 4px);
 	margin-top: 2px;
 	border-radius: var(--vscode-cornerRadius-medium);
 	background-color: color-mix(in srgb, var(--vscode-foreground) 5%, transparent);
 }
 
 /* allow-any-unicode-next-line */
-/* 上に貼り付いた見出し（本家の sticky scroll）も同じ帯にする。本家は貼り付いた行を一覧の地の色で不透明に塗るため、それより強く当てる。
- * 下には本家が貼り付く枠（.monaco-tree-sticky-container）に塗る不透明な地があるので、半透明の帯でも後ろの行は透けない */
-.paradis-workspaces-list .monaco-list .monaco-scrollable-element .monaco-tree-sticky-container .monaco-tree-sticky-row.paradis-section-band {
-	background-color: color-mix(in srgb, var(--vscode-foreground) 5%, transparent);
+/* 本家は器にポインタの塗り・選択の塗り・フォーカスの枠・ドロップ先の塗りを付ける。帯の行では器のものを消し、同じものを内側の箱に付ける
+ * （帯の形に合わせる）。ドロップ先の塗りは本家が !important で付けるので、それより強く当てる。並べ替えの線（drop-target-before / after の
+ * 疑似要素）は器の上下の端のままにする（行と行の境目に出る） */
+.paradis-workspaces-list .monaco-list .monaco-list-row.paradis-section-band,
+.paradis-workspaces-list .monaco-list .monaco-list-row.paradis-section-band.drop-target {
+	background-color: transparent !important;
+	outline: none !important;
+}
+
+.paradis-workspaces-list .monaco-list:not(.drop-target):not(.dragging) .monaco-list-row.paradis-section-band:hover:not(.selected):not(.focused) > .monaco-tl-row {
+	background-image: linear-gradient(var(--vscode-list-hoverBackground), var(--vscode-list-hoverBackground));
+}
+
+.paradis-workspaces-list .monaco-list .monaco-list-row.paradis-section-band.selected > .monaco-tl-row {
+	background-color: var(--vscode-list-inactiveSelectionBackground);
 }
 
 /* allow-any-unicode-next-line */
-/* 帯は四隅とも検索の行と同じ角丸（Modern UI は行の角丸を !important で付け、このビューは左の 2 隅を 0 に戻しているので、それより強く当てる） */
-.modern-ui .paradis-workspaces-list .monaco-list .monaco-list-row.paradis-section-band:not(.separator) {
-	border-radius: var(--vscode-cornerRadius-medium) !important;
+/* 一覧にフォーカスがあるときの選択の塗りとフォーカスの枠（内側の箱に付ける分）は paradisFocusRing.css にある（:focus はあのファイルだけ） */
+.context-menu-visible .paradis-workspaces-list .monaco-list.last-focused .monaco-list-row.paradis-section-band.focused > .monaco-tl-row {
+	outline: 1px solid var(--vscode-list-focusOutline);
+	outline-offset: -1px;
+}
+
+.paradis-workspaces-list .monaco-list .monaco-list-row.paradis-section-band.drop-target > .monaco-tl-row {
+	background-color: var(--vscode-list-dropBackground);
 }
 
 .paradis-workspaces-list .monaco-list-row.paradis-section-band .paradis-section-row {

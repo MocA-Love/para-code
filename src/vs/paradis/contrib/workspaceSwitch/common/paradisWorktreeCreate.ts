@@ -525,7 +525,11 @@ export const PARADIS_DEFAULT_AGENT_COMMANDS: readonly IParadisAgentCommandTempla
 		models: [
 			// codex-cli 0.159.2 の一覧（2026-09-30）のうち、今の世代（gpt-6）だけ。並びは priority の順で、先頭が既定。
 			// gpt-6.1-sol は CLI に同梱の表（`codex debug models --bundled`）から、ほかのエフォートの既定はサーバーから
-			// 届く一覧（model/list）から取った。CLI から一覧を取れたときは使わない
+			// 届く一覧（model/list）から取った。CLI から一覧を取れたときは使わない。
+			// gpt-6.2-sol（既定）・gpt-6.2-astra は codex-cli 0.171.0 で同梱の表（codex-rs/models-manager/models.json）の
+			// 先頭に入った 2 件（2026-11-26）。どちらも既定のエフォートは low
+			{ id: 'gpt-6.2-sol', flag: '--model gpt-6.2-sol', efforts: CODEX_EFFORT_IDS, defaultEffort: 'low' },
+			{ id: 'gpt-6.2-astra', flag: '--model gpt-6.2-astra', efforts: CODEX_EFFORT_IDS, defaultEffort: 'low' },
 			{ id: 'gpt-6.1-sol', flag: '--model gpt-6.1-sol', efforts: CODEX_EFFORT_IDS, defaultEffort: 'low' },
 			{ id: 'gpt-6-astra', flag: '--model gpt-6-astra', efforts: CODEX_EFFORT_IDS, defaultEffort: 'medium' },
 			{ id: 'gpt-6-sol', flag: '--model gpt-6-sol', efforts: CODEX_EFFORT_IDS, defaultEffort: 'medium' },
@@ -1064,6 +1068,8 @@ export interface IParadisWorktreeCreateJobSnapshot {
 	 * 2段目に工程ラベルを重ねる（同じ名前の行が2つ並ばないようにするため）。
 	 */
 	readonly stateKey?: string;
+	/** 作ったスペースを入れるスペースのセクションの id（「作成中」の行を最初からそのセクションの中に出す）。 */
+	readonly sectionId?: string;
 }
 
 export const IParadisWorktreeCreateProgressStore = createDecorator<IParadisWorktreeCreateProgressStore>('paradisWorktreeCreateProgressStore');
