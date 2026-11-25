@@ -110,6 +110,21 @@ export const PARADIS_SIMULATOR_FIRST_FRAME_TIMEOUT_MS = 6_000;
 /** チャネルの `frames` のイベント。 */
 export type ParadisSimulatorStreamEvent = IParadisSimulatorFrameEvent | IParadisSimulatorStreamEndEvent;
 
+/**
+ * {@link ParadisSimulatorStreamEvent} をチャネルで運ぶ形。VS Code の IPC は、オブジェクトの中の VSBuffer を JSON
+ * （バイトの数字の並び）にしてしまい、受け側では VSBuffer に戻らない（ペインが `jpeg.buffer.slice is not a function`
+ * で 1 枚も描けなかった。paracode-183〜194）。配列の要素なら VSBuffer のまま運ぶので、画像は `[見出し, 画像]` にする。
+ */
+export type ParadisSimulatorStreamWire = IParadisSimulatorStreamEndEvent | [Omit<IParadisSimulatorFrameEvent, 'jpeg'>, VSBuffer];
+
+export function paradisSimulatorStreamToWire(event: ParadisSimulatorStreamEvent): ParadisSimulatorStreamWire {
+	return event.kind === 'frame' ? [{ kind: 'frame', udid: event.udid }, event.jpeg] : event;
+}
+
+export function paradisSimulatorStreamFromWire(wire: ParadisSimulatorStreamWire): ParadisSimulatorStreamEvent {
+	return Array.isArray(wire) ? { ...wire[0], jpeg: wire[1] } : wire;
+}
+
 // --- 開閉（iPhone Duo） ---
 
 export type ParadisSimulatorPose = 'closed' | 'book' | 'open';
