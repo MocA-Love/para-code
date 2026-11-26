@@ -122,6 +122,8 @@ export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBan
 	private appliedHeight = -1;
 	/** 作ったばかりで、一覧に現れたら送って見せる Bot。 */
 	private revealBotId: string | undefined;
+	/** 作ったばかりで、一覧に現れたら送って見せるグループ。 */
+	private revealGroupId: string | undefined;
 	/** 描き直しをまたいでフォーカスを戻す行。 */
 	private focusedBotId: string | undefined;
 
@@ -285,7 +287,15 @@ export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBan
 		const groups = this.visibleGroups();
 		if (groups.length > 0) {
 			DOM.append(this.list, $('.paradis-bots-band-section')).textContent = localize('paradis.bots.band.groups', "グループ");
-			this.rowElements = [...elements, ...groups.map((group, index) => this.renderGroupRow(group, rows.length === 0 && index === 0))];
+			const groupRows = groups.map((group, index) => this.renderGroupRow(group, rows.length === 0 && index === 0));
+			this.rowElements = [...elements, ...groupRows];
+			// 作ったグループは、一覧の高さで隠れていても送って見せる
+			const revealGroup = this.revealGroupId !== undefined ? groups.findIndex(group => group.id === this.revealGroupId) : -1;
+			if (revealGroup >= 0) {
+				this.revealGroupId = undefined;
+				groupRows[revealGroup].scrollIntoView({ block: 'nearest' });
+				this.focusRow(this.rowElements, elements.length + revealGroup);
+			}
 		}
 		this.applyAndNotify();
 
@@ -523,7 +533,8 @@ export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBan
 	}
 
 	private openGroupDialog(anchor: HTMLElement): void {
-		this.instantiationService.createInstance(ParadisBotGroupDialog, anchor, undefined, () => {
+		this.instantiationService.createInstance(ParadisBotGroupDialog, anchor, undefined, (groupId: string) => {
+			this.revealGroupId = groupId;
 			if (!this.state.open) {
 				this.state = { ...this.state, open: true };
 				this.persist();
