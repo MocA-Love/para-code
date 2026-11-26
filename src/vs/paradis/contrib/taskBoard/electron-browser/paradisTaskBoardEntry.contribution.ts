@@ -32,6 +32,8 @@ import { IsSessionsWindowContext } from '../../../../workbench/common/contextkey
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { renderParadisActionButton } from '../../../browser/paradisActionButton.js';
+import { IParadisHumanAskService } from '../../humanAsk/common/paradisHumanAsk.js';
+import { paradisInboxBadgeCounts } from '../../notificationInbox/common/paradisNotificationInboxCounts.js';
 import { IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { PARADIS_TASK_BOARD_BRIDGE_CHANNEL, PARADIS_TASK_BOARD_BRIDGE_ENABLED_SETTING } from '../common/paradisTaskBoardBridge.js';
 import { IParadisTaskBoardHostService, PARADIS_TASK_BOARD_HOST_CHANNEL, ParadisTaskBoardOpenResult } from '../common/paradisTaskBoardHost.js';
@@ -255,7 +257,7 @@ class ParadisToggleTaskBoardTitleBarAction extends ToggleTitleBarConfigAction {
 
 /**
  * タイトルバーのボタン。UI キットの素のボタン（paradisActionButton.ts）で、「エージェント一覧」と同じ見た目。
- * 人の判断待ちの件数のバッジは次の段で出す（今は空のまま）。
+ * 数のバッジは台帳の「あなたの番」のうちボードの分（paradisInboxBadgeCounts の board）。
  */
 class ParadisTaskBoardTitleBarWidget extends BaseActionViewItem {
 
@@ -264,6 +266,7 @@ class ParadisTaskBoardTitleBarWidget extends BaseActionViewItem {
 		options: IBaseActionViewItemOptions | undefined,
 		@IHoverService private readonly hoverService: IHoverService,
 		@ICommandService private readonly commandService: ICommandService,
+		@IParadisHumanAskService private readonly humanAskService: IParadisHumanAskService,
 	) {
 		super(undefined, action, options);
 	}
@@ -279,8 +282,15 @@ class ParadisTaskBoardTitleBarWidget extends BaseActionViewItem {
 		container.setAttribute('role', 'button');
 		// allow-any-unicode-next-line
 		const label = localize('paradis.taskBoard.titleBarTasksLabel', "タスク");
-		renderParadisActionButton(container, { icon: 'paradis-task-board-titlebar-icon', label });
-		container.setAttribute('aria-label', label);
+		const count = renderParadisActionButton(container, { icon: 'paradis-task-board-titlebar-icon', label, count: true }).count;
+		const update = () => {
+			const { board } = paradisInboxBadgeCounts(this.humanAskService.snapshot.entries, 0, new Set());
+			count?.update(board, 'attention');
+			// allow-any-unicode-next-line
+			container.setAttribute('aria-label', board > 0 ? localize('paradis.taskBoard.titleBarTasksYourTurn', "タスク（あなたの番 {0} 件）", board) : label);
+		};
+		this._register(this.humanAskService.onDidChange(update));
+		update();
 		// allow-any-unicode-next-line
 		const hover = localize('paradis.taskBoard.titleBarTasksHover', "タスク（GitHub の Issue・PR・プロジェクト）を開く。タスクボードはこの画面から開きます");
 		this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), container, hover));

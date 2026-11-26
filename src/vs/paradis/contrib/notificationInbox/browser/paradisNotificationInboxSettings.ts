@@ -41,7 +41,7 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 			type: 'boolean',
 			default: true,
 			scope: ConfigurationScope.APPLICATION,
-			markdownDescription: localize('paradis.notifications.dockBadge', "Dock の Para Code のアイコンに、対応が必要なペインの数を表示します。Windows ではウィンドウごとに、そのウィンドウのペインの数をタスクバーに表示します。おやすみモードの間は表示しません。"),
+			markdownDescription: localize('paradis.notifications.dockBadge', "Dock の Para Code のアイコンに、あなたの番（エージェントが答えを待っている質問・許可）の数を表示します。Windows ではウィンドウごとに、そのウィンドウのペインの分をタスクバーに表示します。おやすみモードの間は表示しません。"),
 		},
 		[PARADIS_NOTIFICATION_MENU_BAR_SETTING]: {
 			type: 'boolean',
