@@ -239,6 +239,25 @@ suite('ParadisMobileCanvasModel', () => {
 		]);
 	});
 
+	// 1 つのペインに複数の端末を割り当てられる。共有ダイアログの「解除」はその 1 台だけ、ターミナルを閉じたときは全部を外す
+	test('detaches one device of a pane when a device id is given, and all of them without one', async () => {
+		const channel = new RecordingMobileCanvasChannel();
+		const model = createModel(channel);
+		channel.queueSnapshot(WITH_ATTACHMENT);
+		await model.refresh();
+		channel.calls.length = 0;
+		channel.queueSnapshot(WITH_ATTACHMENT);
+		channel.queueSnapshot(EMPTY);
+
+		await model.detach('pane-1', 'iphone');
+		await model.detach('pane-1');
+
+		assert.deepStrictEqual(channel.calls.filter(call => call.command === 'detach'), [
+			{ command: 'detach', arg: { paneToken: 'pane-1', deviceId: 'iphone' } },
+			{ command: 'detach', arg: { paneToken: 'pane-1' } },
+		]);
+	});
+
 	test('does not read the devices when a pane that was not attached closes and nobody is watching', async () => {
 		const channel = new RecordingMobileCanvasChannel();
 		const model = createModel(channel);

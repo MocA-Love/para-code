@@ -12,6 +12,7 @@ import type { ITaskBoardAddIssuesRequest, ITaskBoardArtifact, ITaskBoardFlow, IT
 import { TaskBoardError } from '@engine/paradisTaskBoard.js';
 import { TaskBoardEngine } from '@engine/paradisTaskBoardEngine.js';
 import { parseTaskBoardFlow } from '@engine/paradisTaskBoardFlow.js';
+import { AskPublisher, askLedgerId } from './asks.js';
 import { buildDemo, demoSlots } from './demo.js';
 import { loadFlows, saveActiveFlow, saveFlow } from './flows.js';
 import { GitHubClient, GitHubError, ghTokenProvider, redactGitHubSecrets } from './github.js';
@@ -46,6 +47,9 @@ const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp
 const STRING_LIMITS: Record<string, number> = { owner: 100, fieldName: 100, taskId: 200, to: 100, from: 100, stepId: 100, questionId: 100, sessionId: 200, flowId: 100, key: 20, path: 1000, title: 300, due: 10, reason: 20000, prompt: 20000, note: 20000, text: 20000, body: 20000, message: 2000 };
 
 /** RPC の引数の形を確かめる（型を偽った送信で、エンジンに想定外の値が入らないように）。 */
+/** ボードの画面で人の出番に答える操作（終わると、その 1 件が「あなたの番」から外れる）。 */
+const ANSWERING_METHODS: ReadonlySet<string> = new Set(['answer', 'approve', 'sendBack', 'retry', 'complete', 'nudge', 'move', 'markDone', 'commitAndRetry', 'restartAgent']);
+
 function validateParams(raw: unknown): Record<string, unknown> {
 	if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
 		throw new TaskBoardError('invalid-params', 'params must be an object');
@@ -407,6 +411,8 @@ async function main(restart?: IRestart): Promise<void> {
 	sim.setSpeed(Number(args.speed ?? settings.speed ?? 1) || 1);
 	const placePath = (task: ITaskBoardTask) => engine.getSlots().find(s => s.id === task.place)?.path || undefined;
 	let bridgeState: { connected: boolean; detail?: string } = { connected: false };
+	// Para Code の「人が答えるもの」の台帳へ、ボードの人の出番を写す（asks.ts）
+	let askPublisher: AskPublisher | undefined;
 	const paraAgents = paraCodeMode ? new ParaCodeAgents({
 		engine: () => engine,
 		placePath,
@@ -416,11 +422,20 @@ async function main(restart?: IRestart): Promise<void> {
 		launchApprovals: () => launchApprovals,
 		readArtifact: relay ? (place, relativePath, maxBytes) => relay!.readFile(place, relativePath, maxBytes) : undefined,
 		onRelayEvent: event => remoteRunner?.onEvent(event),
+		onAskAnswer: event => void askPublisher?.onAskAnswer(event),
 		onConnection: (connected, detail) => {
+			askPublisher?.onConnection(connected);
 			bridgeState = { connected, detail };
 			log(connected ? 'Para Code につながりました' : `Para Code: ${detail ?? '切断'}`);
 			broadcastSoon();
 		},
+	}) : undefined;
+	askPublisher = paraAgents ? new AskPublisher({
+		engine: () => engine,
+		request: (method, route, body) => paraAgents.client.request(method, route, body),
+		ledgerId: askLedgerId(store.directory),
+		terminalOf: task => paraAgents.terminalOf(task),
+		log,
 	}) : undefined;
 	const useGitHub = !demo && !args['no-github'];
 	const client = useGitHub ? new GitHubClient({ token: ghTokenProvider() }) : undefined;
@@ -559,6 +574,7 @@ async function main(restart?: IRestart): Promise<void> {
 		store.scheduleSave(() => engine.serialize());
 		sim.onEngineChange();
 		paraAgents?.onEngineChange();
+		askPublisher?.onEngineChange();
 		sync?.scheduleWriteBack();
 		broadcastSoon();
 	});
@@ -1029,7 +1045,15 @@ async function main(restart?: IRestart): Promise<void> {
 					}
 					const params = validateParams(body.params ?? {});
 					const handler = handlers[body.method] as (params: unknown) => unknown;
-					const result = await handler(params);
+					// ボードの画面で人の出番に答える操作。Para Code の台帳では「ボードで回答済み」にする（失敗したら印を外す）
+					const answering = ANSWERING_METHODS.has(body.method) && typeof params.taskId === 'string' ? askPublisher?.markAnsweredHere(params.taskId) : undefined;
+					let result: unknown;
+					try {
+						result = await handler(params);
+					} catch (err) {
+						askPublisher?.unmarkAnsweredHere(answering);
+						throw err;
+					}
 					json(res, 200, { ok: true, result: result ?? null });
 				} catch (err) {
 					const code = err instanceof TaskBoardError ? err.code : err instanceof GitHubError ? 'github' : err instanceof SyntaxError ? 'invalid-params' : 'internal';
@@ -1130,6 +1154,7 @@ async function main(restart?: IRestart): Promise<void> {
 		void sync.start();
 	}
 	paraAgents?.start();
+	askPublisher?.start();
 	// SSH のボードは、手元のリポジトリの切り替えの一覧に入れない
 	if (repoPath && !relay) {
 		void rememberRepository(repoPath, remote ? `${remote.owner}/${remote.repo}` : path.basename(repoPath)).catch(() => undefined);
@@ -1152,6 +1177,7 @@ async function main(restart?: IRestart): Promise<void> {
 		sync?.dispose();
 		sim.dispose();
 		paraAgents?.dispose();
+		askPublisher?.dispose();
 		commandRunner?.dispose();
 		await gitWorkspaces?.stop();
 		store.scheduleSave(() => engine.serialize());

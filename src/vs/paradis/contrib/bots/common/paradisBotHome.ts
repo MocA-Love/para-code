@@ -15,6 +15,7 @@
 // - 指示文は、印で囲んだ範囲だけを Para Code が書き直す。印の外に利用者が書いたものは残す。
 // - `.para-bot.json` はフォルダの持ち主（Bot の id）。別の Bot がこのフォルダを使わないための照合に使う。
 
+import { localize } from '../../../../nls.js';
 import { isRecord } from '../../../common/paradisGuards.js';
 import { PARADIS_BOT_ITEM_LIMITS } from './paradisBotItems.js';
 import { IParadisBot } from './paradisBots.js';
@@ -39,16 +40,28 @@ export const PARADIS_BOT_GENERATED_END = '<!-- PARA-CODE-BOT:END -->';
  * - 印が無い（利用者が自分で書いたファイル）: 先頭に範囲を足し、元の中身は後ろに残す
  */
 export function paradisMergeBotGeneratedFile(existing: string | undefined, body: string): string {
-	const block = `${PARADIS_BOT_GENERATED_BEGIN}\n${body.trim()}\n${PARADIS_BOT_GENERATED_END}`;
+	// 範囲に入れる値（Bot の名前など）に印の文字列があっても、範囲を途中で閉じないよう崩す。Markdown では同じ見た目になる
+	const block = `${PARADIS_BOT_GENERATED_BEGIN}\n${body.trim().replace(/<!--/g, '&lt;!--')}\n${PARADIS_BOT_GENERATED_END}`;
 	if (existing === undefined || existing.trim().length === 0) {
 		return `${block}\n`;
 	}
-	const begin = existing.indexOf(BEGIN_PREFIX);
-	const end = begin >= 0 ? existing.indexOf(PARADIS_BOT_GENERATED_END, begin) : -1;
-	if (begin < 0 || end < 0) {
+	// 印は行の頭に単独で置いた行だけを印と見なす（文の途中に書かれた印の文字列では範囲を区切らない）
+	const begin = findMarkerLine(existing, BEGIN_LINE, 0);
+	const end = begin !== undefined ? findMarkerLine(existing, END_LINE, begin.end) : undefined;
+	if (begin === undefined || end === undefined) {
 		return `${block}\n\n${existing}`;
 	}
-	return `${existing.slice(0, begin)}${block}${existing.slice(end + PARADIS_BOT_GENERATED_END.length)}`;
+	return `${existing.slice(0, begin.start)}${block}${existing.slice(end.end)}`;
+}
+
+const BEGIN_LINE = /^<!-- PARA-CODE-BOT:BEGIN\b[^\n]*-->[ \t\r]*$/gm;
+const END_LINE = /^<!-- PARA-CODE-BOT:END -->[ \t\r]*$/gm;
+
+/** `from` から後ろで、印の行を探す。行の始まりと終わり（改行の手前）を返す。 */
+function findMarkerLine(text: string, pattern: RegExp, from: number): { readonly start: number; readonly end: number } | undefined {
+	pattern.lastIndex = from;
+	const match = pattern.exec(text);
+	return match ? { start: match.index, end: match.index + match[0].length } : undefined;
 }
 
 /** `AGENTS.md` の生成の範囲（常設の指示文）。道具の名前は para-browser MCP のもの。 */
@@ -86,10 +99,30 @@ export const PARADIS_BOT_CLAUDE_BODY = `@${PARADIS_BOT_AGENTS_FILE}\n@${PARADIS_
 export function paradisBotSoulSeed(bot: Pick<IParadisBot, 'name'>, soul?: string): string {
 	return soul?.trim()
 		? `${soul.trim()}\n`
-		: [`# ${bot.name}`, '', '(Write here, in a sentence, what this bot is for.)', '', '## How I work', '', '- (Where I look, and where I report.)', ''].join('\n');
+		: [
+			`# ${bot.name}`,
+			'',
+			// 利用者が Bot の設定・ファイルのタブで開いて書き足す雛形なので、日本語にする
+			// allow-any-unicode-next-line
+			localize('paradisBots.soulSeed.purpose', "（この Bot が何をするのかを、ここに 1 文で書いてください）"),
+			'',
+			// allow-any-unicode-next-line
+			localize('paradisBots.soulSeed.howHeading', "## 仕事の進め方"),
+			'',
+			// allow-any-unicode-next-line
+			localize('paradisBots.soulSeed.how', "- （どこを見て、どこへ知らせるか）"),
+			'',
+		].join('\n');
 }
 
-export const PARADIS_BOT_MEMORY_SEED = ['# Memory', '', 'One line per fact, each starting with its date (YYYY-MM-DD). Details go in memory/<topic>.md. No secrets.', ''].join('\n');
+export const PARADIS_BOT_MEMORY_SEED = [
+	// allow-any-unicode-next-line
+	localize('paradisBots.memorySeed.heading', "# 記憶"),
+	'',
+	// allow-any-unicode-next-line
+	localize('paradisBots.memorySeed.rule', "1 行に 1 つの事実を書き、行の頭に日付（YYYY-MM-DD）を付けます。詳しいことは memory/<話題>.md に書きます。秘密は書きません。"),
+	'',
+].join('\n');
 
 /** `.para-bot.json` の中身。 */
 export function paradisBotOwnerFile(bot: Pick<IParadisBot, 'id'>): string {

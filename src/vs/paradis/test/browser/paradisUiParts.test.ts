@@ -260,12 +260,20 @@ suite('Paradis UI parts', () => {
 		const attention = read();
 		badge.update(140, 'error');
 		const error = read();
-		assert.deepStrictEqual({ hidden: badge.element.getAttribute('aria-hidden'), zero: zero.display, plain, attention, error }, {
+		// 数が 0 で点だけ: 文字なしの 6px の点。数があれば点は出さない
+		workbench.style.setProperty('--vscode-activityBarBadge-background', 'rgb(0, 120, 212)');
+		badge.update(0, 'attention', true);
+		const dot = read();
+		badge.update(1, 'attention', true);
+		const countOverDot = read();
+		assert.deepStrictEqual({ hidden: badge.element.getAttribute('aria-hidden'), zero: zero.display, plain, attention, error, dot, countOverDot }, {
 			hidden: 'true',
 			zero: 'none',
 			plain: { text: '3', display: 'inline-flex', color: 'rgb(150, 150, 150)', background: 'rgba(0, 0, 0, 0)', height: '16px' },
 			attention: { text: '2', display: 'inline-flex', color: 'rgb(23, 25, 30)', background: 'rgb(251, 194, 59)', height: '16px' },
 			error: { text: '99+', display: 'inline-flex', color: 'rgb(23, 25, 30)', background: 'rgb(244, 88, 126)', height: '16px' },
+			dot: { text: '', display: 'inline-flex', color: 'rgb(23, 25, 30)', background: 'rgb(0, 120, 212)', height: '6px' },
+			countOverDot: { text: '1', display: 'inline-flex', color: 'rgb(23, 25, 30)', background: 'rgb(251, 194, 59)', height: '16px' },
 		});
 	});
 

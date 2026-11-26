@@ -12,13 +12,14 @@
 import { homedir } from 'os';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { join } from '../../../../base/common/path.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
 import { paradisRegisterMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { onParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { paradisSharedHumanAskService } from '../../humanAsk/node/paradisHumanAskChannel.js';
-import { PARADIS_BOTS_CHANNEL } from '../common/paradisBotsApi.js';
+import { PARADIS_BOTS_CHANNEL, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
 import { ParadisBotHomes } from './paradisBotHomes.js';
 import { ParadisBotToolProvider } from './paradisBotToolProvider.js';
 import { ParadisBotsChannel } from './paradisBotsChannel.js';
@@ -35,10 +36,18 @@ export function paradisSharedBotsService(): ParadisBotsService | undefined {
 ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 	const userDataPath = accessor.get(INativeEnvironmentService).userDataPath;
 	const store = new DisposableStore();
-	const service = store.add(new ParadisBotsService(createParadisBotsFile(userDataPath), createParadisBotItemsFile(userDataPath), paradisSharedHumanAskService(), accessor.get(ILogService), { hookEvents: onParadisAgentHookEvent, panesFile: createParadisBotPanesFile(userDataPath), homes: new ParadisBotHomes(join(homedir(), '.para-code', 'bots')) }));
+	// Bot の機能は試験中の設定でオン・オフする（スキーマは画面側で登録されるので、生の値を読む）
+	const configurationService = accessor.get(IConfigurationService);
+	const enabled = () => configurationService.getValue(PARADIS_BOTS_ENABLED_SETTING) === true;
+	const service = store.add(new ParadisBotsService(createParadisBotsFile(userDataPath), createParadisBotItemsFile(userDataPath), paradisSharedHumanAskService(), accessor.get(ILogService), { hookEvents: onParadisAgentHookEvent, enabled, panesFile: createParadisBotPanesFile(userDataPath), homes: new ParadisBotHomes(join(homedir(), '.para-code', 'bots')) }));
 	server.registerChannel(PARADIS_BOTS_CHANNEL, new ParadisBotsChannel(service));
 	shared = service;
-	store.add(paradisRegisterMcpToolProvider(new ParadisBotToolProvider(service)));
+	store.add(configurationService.onDidChangeConfiguration(event => {
+		if (event.affectsConfiguration(PARADIS_BOTS_ENABLED_SETTING)) {
+			service.refresh();
+		}
+	}));
+	store.add(paradisRegisterMcpToolProvider(new ParadisBotToolProvider(service, enabled)));
 	store.add({
 		dispose: () => {
 			if (shared === service) {
