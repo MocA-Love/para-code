@@ -208,4 +208,33 @@ suite('Paradis bot homes', () => {
 			botWrites: ['not found', 'not found', 'not found', 'not found'],
 		});
 	});
+
+	test('サービス: 作成の後に他人のフォルダができていたら、別の名前を取り直す（起動できない Bot を残さない）', async () => {
+		const userData = join(root, '..', 'userData');
+		// 一覧を読んだ後に `bot` ができた（読み終えた時点では無かった）ことにする
+		class LateFolderHomes extends ParadisBotHomes {
+			override async existingFolders(): Promise<string[]> {
+				const names = await super.existingFolders();
+				await fs.mkdir(join(root, 'bot'), { recursive: true });
+				await fs.writeFile(join(root, 'bot', 'notes.txt'), '利用者のメモ');
+				return names;
+			}
+		}
+		await fs.mkdir(join(root, 'Report'), { recursive: true });
+		let ids = 0;
+		const service = store.add(new ParadisBotsService(createParadisBotsFile(userData), createParadisBotItemsFile(userData), store.add(new ParadisHumanAskService()), new NullLogService(), { homes: new LateFolderHomes(root), uuid: () => `id${++ids}` }));
+		const created = await service.createBot({ name: 'リリース係', agent: 'claude' });
+		const report = await service.createBot({ name: 'report', agent: 'codex' });
+		assert.deepStrictEqual({
+			folders: [created.ok && created.value.folder, report.ok && report.value.folder],
+			launch: (await service.requestLaunch('id1', 'chat')).ok,
+			notes: await fs.readFile(join(root, 'bot', 'notes.txt'), 'utf8'),
+			existing: (await homes.existingFolders()).sort(),
+		}, {
+			folders: ['bot-2', 'report-2'],
+			launch: true,
+			notes: '利用者のメモ',
+			existing: ['bot', 'bot-2', 'report', 'report-2'],
+		});
+	});
 });

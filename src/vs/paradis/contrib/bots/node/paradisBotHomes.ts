@@ -75,10 +75,14 @@ export class ParadisBotHomes {
 		return join(this.root, bot.folder);
 	}
 
-	/** もうあるフォルダの名前。新しい Bot のフォルダを予約するとき、これも「使用中」に数える。 */
+	/**
+	 * もうある名前（フォルダもファイルも。同じ名前のファイルがあるとフォルダを作れない）。新しい Bot のフォルダを
+	 * 予約するとき、これも「使用中」に数える。予約する名前は小文字なので小文字に揃える（macOS・Windows は大文字と
+	 * 小文字を区別しないので、`Bot` があれば `bot` も使えない）。
+	 */
 	async existingFolders(): Promise<string[]> {
 		try {
-			return (await fs.readdir(this.root, { withFileTypes: true })).filter(entry => !entry.isFile()).map(entry => entry.name);
+			return (await fs.readdir(this.root)).map(name => name.toLowerCase());
 		} catch (error) {
 			if (missing(error)) {
 				return [];

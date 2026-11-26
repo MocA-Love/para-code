@@ -54,6 +54,9 @@ import { IParadisBotsJsonFile } from './paradisBotsStore.js';
 /** 連続した変更をまとめてから知らせる間隔。 */
 const CHANGE_DELAY = 50;
 
+/** 新しい Bot のフォルダを取り直す回数の上限。 */
+const CREATE_FOLDER_ATTEMPTS = 5;
+
 /** Bot へ渡す、持ち主の書き込み 1 項目ぶん。 */
 export interface IParadisBotMail {
 	readonly uid: string;
@@ -201,18 +204,29 @@ export class ParadisBotsService extends Disposable {
 		return this.write(async () => {
 			// ディスクにもうあるフォルダは予約しない（消した Bot のフォルダを引き継がない）
 			const takenFolders = await this.homes?.existingFolders() ?? [];
-			const result = paradisBotCreate(this.bots, { ...input, id: this.uuid(), takenFolders }, this.now());
-			if (!result.ok) {
-				return result;
+			const id = this.uuid();
+			// フォルダは保存の前に整える。読んだ後に他人のフォルダができていた（not_owner）ら、その名前も使用中に
+			// 数えて取り直す（保存してから断られると、起動できない Bot が残る）
+			for (let attempt = 0; ; attempt++) {
+				const result = paradisBotCreate(this.bots, { ...input, id, takenFolders }, this.now());
+				if (!result.ok) {
+					return result;
+				}
+				try {
+					await this.homes?.ensure(result.bot, soul);
+				} catch (error) {
+					if (error instanceof ParadisBotHomeError && error.code === 'not_owner') {
+						if (attempt < CREATE_FOLDER_ATTEMPTS - 1) {
+							takenFolders.push(result.bot.folder);
+							continue;
+						}
+						return { ok: false, code: 'not_owner', message: 'Para Code could not find a free home folder for the bot.' };
+					}
+					// ほかの失敗は、起動のときにもう一度整えるので作成は通す
+					this.logService.warn('[ParadisBots] could not prepare the home folder of a new bot', error);
+				}
+				return this.saveBots(result.state, result.bot);
 			}
-			const saved = await this.saveBots(result.state, result.bot);
-			try {
-				await this.homes?.ensure(result.bot, soul);
-			} catch (error) {
-				// フォルダは起動のときにもう一度整えるので、作成は通す
-				this.logService.warn('[ParadisBots] could not prepare the home folder of a new bot', error);
-			}
-			return saved;
 		});
 	}
 
