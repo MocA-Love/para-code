@@ -214,6 +214,21 @@ suite('Paradis bots service', () => {
 		});
 	});
 
+	test('あなたの番: Bot の行の件数と「聞く・答える」の Bot の件数が一致する', async () => {
+		const h = harness(store);
+		await h.bot('A');
+		const paused = await h.bot('B');
+		await h.call('pane-A', 'bot_item_add', { title: '聞く項目' });
+		await h.call('pane-A', 'bot_item_update', ASK_ARGS);
+		const own = await h.call('pane-A', 'bot_item_add', { title: '持ち主が Needs you にする項目' });
+		await h.service.ownerSetStatus(h.service.listItems().find(item => item.number === own.number)!.uid, 'needs_you');
+		await h.call('pane-B', 'bot_item_add', { title: '止める Bot の項目' });
+		await h.call('pane-B', 'bot_item_update', { ...ASK_ARGS, number: 3 });
+		await h.service.updateBot(paused, { paused: true });
+		const rows = h.service.getSnapshot().bots.map(bot => [bot.name, bot.needsYou]);
+		assert.deepStrictEqual({ rows, ask: h.humanAsk.getSnapshot().counts.bot }, { rows: [['A', 1], ['B', 0]], ask: 1 });
+	});
+
 	test('Bot でないペイン・確かめられない接続元・ほかの Bot の項目を断る', async () => {
 		const h = harness(store);
 		await h.bot('A');
