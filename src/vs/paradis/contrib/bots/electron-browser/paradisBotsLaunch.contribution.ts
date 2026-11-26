@@ -40,7 +40,7 @@ import { IParadisLaunchedAgentTerminal, paradisLaunchAgentInWorkspace } from '..
 import { paradisBotChangeDetail } from '../browser/paradisBotChangeDetail.js';
 import { paradisRevealNotifiedPane } from '../../notifications/electron-browser/paradisNotificationReveal.js';
 import { paradisBotInstancesInWindow, paradisFindBotPane } from '../browser/paradisBotPaneHash.js';
-import { IParadisBotChangeRequest } from '../common/paradisBotManageTools.js';
+import { IParadisBotChangeRequest, paradisApplyBotChange } from '../common/paradisBotManageTools.js';
 import { IParadisBotsService, IParadisBotStopRequest, PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
 
 export const PARADIS_BOTS_OPEN_COMMAND = 'paradis.bots.open';
@@ -236,18 +236,9 @@ class ParadisBotsWindowChannel implements IServerChannel {
 		if (!confirmed) {
 			return;
 		}
-		if (Object.keys(request.patch).length > 0) {
-			const updated = await this.botsService.updateBot(request.botId, request.patch);
-			if (!updated.ok) {
-				this.logService.warn(`[paradisBots] the confirmed change was refused: ${updated.code}`);
-				return;
-			}
-		}
-		if (request.role !== undefined) {
-			const written = await this.botsService.writeHomeFile(request.botId, 'SOUL.md', request.role);
-			if (!written.ok) {
-				this.logService.warn(`[paradisBots] the new role could not be written: ${written.code}`);
-			}
+		const applied = await paradisApplyBotChange(this.botsService, request);
+		if (!applied.ok) {
+			this.logService.warn(`[paradisBots] the confirmed change was not applied: ${applied.code}`);
 		}
 	}
 

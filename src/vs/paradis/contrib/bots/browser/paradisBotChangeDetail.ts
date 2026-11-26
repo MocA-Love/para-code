@@ -9,8 +9,11 @@
 import { localize } from '../../../../nls.js';
 import { IParadisBotChangeRequest } from '../common/paradisBotManageTools.js';
 
-/** 設定の変更の確認に出す本文（何を何から何へ。役割は新しい本文の全文、権限は広がるかどうか）。 */
-export function paradisBotChangeDetail(request: Pick<IParadisBotChangeRequest, 'changes' | 'permission'>, caller: string): string {
+/**
+ * 設定の変更の確認に出す本文（何を何から何へ。役割は新しい本文の全文、権限は広がるかどうか）。
+ * @param caller 依頼したエージェントのターミナルの名前。持ち主が画面から変えるときは渡さない（依頼の行を出さない）
+ */
+export function paradisBotChangeDetail(request: Pick<IParadisBotChangeRequest, 'changes' | 'permission'>, caller?: string): string {
 	const labels: Record<string, string> = {
 		// allow-any-unicode-next-line
 		agent: localize('paradisBots.field.agent', "エージェント"),
@@ -33,7 +36,7 @@ export function paradisBotChangeDetail(request: Pick<IParadisBotChangeRequest, '
 	};
 	// allow-any-unicode-next-line
 	const unset = localize('paradisBots.field.default', "（既定）");
-	const lines: string[] = [
+	const lines: string[] = caller === undefined ? [] : [
 		// allow-any-unicode-next-line
 		localize('paradisBots.changeAgentRequest', "この変更は、あなたではなくターミナル「{0}」のエージェントからの依頼です。", caller),
 		'',
