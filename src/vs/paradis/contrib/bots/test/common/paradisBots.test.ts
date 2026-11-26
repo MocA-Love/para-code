@@ -17,6 +17,7 @@ import {
 	paradisBotHomeRelativePath,
 	paradisBotRemove,
 	paradisBotUpdate,
+	paradisBotsToStored,
 	paradisIsBotFolderName,
 	paradisParseBotsState,
 	paradisReserveBotFolder,
@@ -115,12 +116,38 @@ suite('Paradis bots', () => {
 			paradisParseBotsState([]),
 			paradisParseBotsState(null),
 		], [
-			{ version: 1, bots: [good, { ...good, id: 'b5', folder: 'e', modelId: 'm' }] },
+			// 知らないエージェントの Bot（b3）は捨てずに、読んだ値のまま別に持つ
+			{ version: 1, bots: [good, { ...good, id: 'b5', folder: 'e', modelId: 'm' }], unknown: [{ ...good, id: 'b3', folder: 'c', agent: 'grok' }] },
 			{ version: 3, bots: [good] },
 			undefined,
 			undefined,
 			undefined,
 			undefined,
 		]);
+	});
+
+	test('新しい版が足した欄・知らないエージェントの Bot は、読んだ値のまま書き戻し、その Bot は変えない', () => {
+		const good = { id: 'b1', name: 'A', folder: 'bot', agent: 'claude', paused: false, createdAt: 1, updatedAt: 2 };
+		const withNewField = { ...good, mood: 'happy' };
+		const newAgent = { ...good, id: 'b2', folder: 'bot-2', agent: 'grok', grokOnly: 1 };
+		const state = paradisParseBotsState({ version: 1, bots: [withNewField, newAgent] });
+		assert.ok(state);
+		const created = paradisBotCreate(state, { id: 'b3', name: 'リリース係', agent: 'codex' }, 5);
+		assert.ok(created.ok);
+		const code = (result: { ok: boolean; code?: string }) => result.ok ? 'ok' : result.code;
+		assert.deepStrictEqual({
+			visible: state.bots.map(bot => [bot.id, bot.preserved !== undefined]),
+			update: code(paradisBotUpdate(state, 'b1', { paused: true }, 5)),
+			// 知らないエージェントの Bot のフォルダ（bot-2）も使用中に数える
+			newFolder: created.bot.folder,
+			sameId: code(paradisBotCreate(state, { id: 'b2', name: 'B', agent: 'claude' }, 5)),
+			stored: paradisBotsToStored(created.state),
+		}, {
+			visible: [['b1', true]],
+			update: 'read_only',
+			newFolder: 'bot-3',
+			sameId: 'invalid_argument',
+			stored: { version: 1, bots: [withNewField, created.bot, newAgent] },
+		});
 	});
 });
