@@ -70,6 +70,8 @@ export class ParadisInboxAskDialog extends Disposable {
 	private sending = false;
 	private refused: string | undefined;
 	private closed = false;
+	/** 許可の中身を最後まで読んだか（中身がモーダルの枠を超えるときは、最後までスクロールするまで「許可」を押せない）。 */
+	private readToEnd = true;
 	/** 確認の途中のボタン（押す前の確認が付いたボタンを押した）。 */
 	private confirming: IParadisHumanAskAction | undefined;
 
@@ -179,7 +181,21 @@ export class ParadisInboxAskDialog extends Disposable {
 			}
 		}
 		if (entry.preface) {
-			dom.append(this.body, $(entry.kind === 'permission' ? 'pre.pniad-detail' : '.pniad-preface')).textContent = entry.preface;
+			const preface = dom.append(this.body, $(entry.kind === 'permission' ? 'pre.pniad-detail' : '.pniad-preface'));
+			preface.textContent = entry.preface;
+			if (entry.kind === 'permission') {
+				const atEnd = () => preface.scrollTop + preface.clientHeight >= preface.scrollHeight - 2;
+				this.readToEnd = atEnd();
+				this.content.add(dom.addDisposableListener(preface, dom.EventType.SCROLL, () => {
+					if (!this.readToEnd && atEnd()) {
+						this.readToEnd = true;
+						const current = this.entry();
+						if (current !== undefined && current.state === 'waiting') {
+							this.renderFoot(current);
+						}
+					}
+				}));
+			}
 		}
 		const sendsOnPick = paradisInboxAskSendsOnPick(entry);
 		entry.questions.forEach((question, index) => {
@@ -262,6 +278,8 @@ export class ParadisInboxAskDialog extends Disposable {
 		} else if (entry.failedAt !== undefined) {
 			status.classList.add('error');
 			status.textContent = localize('paradis.inbox.ask.failed', "回答を届けられませんでした。元の場所で確かめてください");
+		} else if (entry.kind === 'permission' && !this.readToEnd && entry.actions.length > 0) {
+			status.textContent = localize('paradis.inbox.ask.readToEnd', "中身を最後まで読むと「{0}」を押せます", entry.actions[0].label);
 		} else if (entry.questions.length > 1) {
 			status.textContent = entry.source === 'pane'
 				? localize('paradis.inbox.ask.progressAll', "{0} / {1} を選びました。全部に答えると送れます", paradisInboxAskAnsweredCount(entry, this.drafts), entry.questions.length)
@@ -313,7 +331,9 @@ export class ParadisInboxAskDialog extends Disposable {
 		} else {
 			entry.actions.forEach((action, index) => {
 				// 主のボタンは 1 つだけ。拒否にあたるもの（2 つ目以降）は副のボタン
-				add(`action-${index}`, index === 0 ? 'primary' : 'secondary', action.label, !delivering, () => {
+				// 許可にあたる主のボタンは、中身を最後まで読むまで押せない（拒否は読まずに押せる）
+				const unread = entry.kind === 'permission' && index === 0 && !this.readToEnd;
+				add(`action-${index}`, index === 0 ? 'primary' : 'secondary', action.label, !delivering && !unread, () => {
 					if (action.confirm !== undefined) {
 						this.confirming = action;
 						this.renderFoot(entry);

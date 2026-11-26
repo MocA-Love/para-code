@@ -79,6 +79,8 @@ interface IAskCard extends IDisposable {
 	readonly askedAt: number;
 	/** カードの中のボタン（役目の名前 → 要素）。作り直したときに、同じ役目のボタンへフォーカスを戻す。 */
 	readonly controls: Map<string, HTMLElement>;
+	/** 許可の中身が、描いた後に枠（6 行）から溢れているか（溢れていたら行の中で許可させない）。 */
+	readonly overflows?: () => boolean;
 }
 
 /**
@@ -128,6 +130,8 @@ export class ParadisNotificationInboxPopover extends Disposable {
 	/** ここから送って断られた鍵と、その理由の 1 行。 */
 	private readonly refused = new Map<string, string>();
 	private askOrder = '';
+	/** 描いた後に中身が枠から溢れていた許可（行の中の許可を出さず、モーダルへ回す）。 */
+	private readonly overflowing = new Set<string>();
 	/** 「あなたの番」を一度描いた（その後に増えた・入れ替わったカードは、最初の 1 件でも少しの間ボタンを効かせない）。 */
 	private asksRendered = false;
 	private asksEmpty: HTMLElement | undefined;
@@ -401,6 +405,7 @@ export class ParadisNotificationInboxPopover extends Disposable {
 		for (const key of [...this.askCards.keys()]) {
 			if (!keys.has(key)) {
 				this.askCards.deleteAndDispose(key);
+				this.overflowing.delete(key);
 				this.lingerTimers.deleteAndDispose(key);
 				this.sending.delete(key);
 				this.refused.delete(key);
@@ -439,7 +444,7 @@ export class ParadisNotificationInboxPopover extends Disposable {
 				}, SETTLED_LINGER);
 				this.lingerTimers.set(key, { dispose: () => clearTimeout(timer) });
 			}
-			const signature = JSON.stringify([entry, this.sending.has(entry.key), this.refused.get(entry.key)]);
+			const signature = JSON.stringify([entry, this.sending.has(entry.key), this.refused.get(entry.key), this.overflowing.has(entry.key)]);
 			let card = this.askCards.get(entry.key);
 			if (card === undefined || card.signature !== signature) {
 				// 作り直すカードの中にフォーカスがあれば、同じ役目のボタンへ戻す
@@ -462,6 +467,17 @@ export class ParadisNotificationInboxPopover extends Disposable {
 			}
 			previous = card.element;
 		}
+		// 描いた後に中身が溢れた許可（全角の多いコマンドは見積もりより多く折り返す）は、行の中の許可を外して作り直す
+		let overflowed = false;
+		for (const [key, card] of this.askCards) {
+			if (!this.overflowing.has(key) && card.overflows?.() === true) {
+				this.overflowing.add(key);
+				overflowed = true;
+			}
+		}
+		if (overflowed) {
+			this.renderAsks(focusWasInside);
+		}
 	}
 
 	private buildAskCard(entry: IParadisHumanAskEntry, signature: string): IAskCard {
@@ -469,10 +485,25 @@ export class ParadisNotificationInboxPopover extends Disposable {
 		const card = $('.pnip-ask');
 		const time = $('span.pnip-time');
 		const controls = new Map<string, HTMLElement>();
-		const built: IAskCard = { element: card, signature, time, askedAt: entry.askedAt, controls, dispose: () => { store.dispose(); card.remove(); } };
+		let command: HTMLElement | undefined;
+		const built: IAskCard = {
+			element: card, signature, time, askedAt: entry.askedAt, controls, dispose: () => { store.dispose(); card.remove(); },
+			overflows: () => {
+				if (command === undefined || !command.isConnected || command.clientHeight === 0) {
+					return false;
+				}
+				// 行数の切り詰め（line-clamp）は、切った後ろを高さに数えない。いったん外して全体の高さと比べる
+				const clamped = command.clientHeight;
+				command.style.setProperty('-webkit-line-clamp', 'none');
+				const full = command.scrollHeight;
+				command.style.removeProperty('-webkit-line-clamp');
+				return full > clamped + 1;
+			},
+		};
 		card.setAttribute('role', 'listitem');
 		card.dataset.askKey = entry.key;
-		const layout = paradisInboxAskLayout(entry);
+		const estimated = paradisInboxAskLayout(entry);
+		const layout = estimated === 'inline-actions' && this.overflowing.has(entry.key) ? 'dialog' : estimated;
 		card.classList.toggle('settled', layout === 'settled');
 
 		// 1 段目: 種類の札・出どころの札・だれから・時刻
@@ -509,7 +540,8 @@ export class ParadisNotificationInboxPopover extends Disposable {
 				}
 			}
 			if (entry.preface) {
-				dom.append(card, $('pre.pnip-ask-command')).textContent = entry.preface;
+				command = dom.append(card, $('pre.pnip-ask-command'));
+				command.textContent = entry.preface;
 			}
 		} else if (entry.preface) {
 			dom.append(card, $('.pnip-ask-preface')).textContent = entry.preface;
@@ -544,7 +576,14 @@ export class ParadisNotificationInboxPopover extends Disposable {
 			}
 		} else if (layout === 'inline-actions') {
 			entry.actions.forEach((action, index) => {
-				add(`action:${action.id}`, index === 0 ? 'primary' : 'secondary', action.label, () => this.answer(entry.key, { type: 'action', actionId: action.id }));
+				add(`action:${action.id}`, index === 0 ? 'primary' : 'secondary', action.label, () => {
+					// 押した時点でも、中身が枠に収まっているかを確かめる（収まっていなければ全文を見せるモーダルを開く）
+					if (built.overflows?.() === true) {
+						this.options.onOpenAsk?.(entry.key, false);
+						return;
+					}
+					this.answer(entry.key, { type: 'action', actionId: action.id });
+				});
 			});
 		} else if (layout === 'dialog') {
 			add('open', 'secondary', entry.questions.length > 0 ? localize('paradis.inbox.ask.openToAnswer', "開いて答える") : localize('paradis.inbox.ask.openToCheck', "中身を確かめて答える"), () => this.options.onOpenAsk?.(entry.key, false), false);

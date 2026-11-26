@@ -55,7 +55,8 @@ suite('Paradis human ask: pane asks', () => {
 			},
 			permission: {
 				source: 'pane', id: 'pane-key:e1:toolu_1', kind: 'permission', from: { title: 'api', detail: 'fix-login ／ claude ／ Claude Code' },
-				preface: 'Bash: npm run typecheck-client', questions: [],
+				// request の無い承認は中身が分からないことを先に出し、説明は後ろに添える
+				preface: '操作の中身が分かりません。ペインで確かめてから答えてください\n（説明: Bash: npm run typecheck-client）', questions: [],
 				// 「今後も許可」は載せない（ペインで答える）
 				actions: [{ id: 'yes', label: '許可' }, { id: 'no', label: '拒否' }],
 				canSkip: false, paneKey: 'pane-key', windowId: 3, stateKey: 'space-1',
