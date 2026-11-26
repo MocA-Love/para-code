@@ -543,7 +543,8 @@ const PARADIS_APPROVAL_ANSWER_ON_PC_MESSAGE = 'この操作は PC の Claude Cod
  *
  * Claude Code 2.1.332 で実測（2026-11-26）: 計画の確定（ExitPlanMode）は、mod が `allow` を返しても確認の画面が残った（Bash は
  * 「Allowed by PermissionRequest hook」で進んだ）。mod の `tool.check` はこの承認に `decider: 'person'` を付けないので、
- * `personOnly` では見分けられない。`deny` は効いた（「Denied by PermissionRequest hook」）。確認の画面の `1` は効く。
+ * `personOnly` では見分けられない。`deny` は効いた（「Denied by PermissionRequest hook」）。確認の画面の `1` は、mod が待ったままでも
+ * 効いた（3 回とも計画が確定した）。
  */
 const CLAUDE_HOOK_ALLOW_UNHEARD_TOOLS: ReadonlySet<string> = new Set(['ExitPlanMode']);
 

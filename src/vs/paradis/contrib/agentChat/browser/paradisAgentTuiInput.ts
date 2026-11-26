@@ -289,8 +289,9 @@ const BARE_NO_OPTION_LINE = /^[\s│┃|]*(?:❯\s*)?No\s*[│┃|]?\s*$/;
  * 注意が出るだけ、`1` はフォーカスを `No` へ移すだけで、どちらも答えにならないことを確かめた（その後の Enter は `No` を選ぶ）。
  * キーでは答えず、PC で選んでもらう。2.1.332 の実画面（2026-11-26）も同じ形で、文と `1` の扱いも同じ。
  *
- * 計画が 20 万字を超える・表示できない文字を含むと、承認が保留されて `Yes` の行が出ない（2.1.332 のバイナリ: 選択肢は
- * `[...fs?[Yes]:[], No]`、本文は `(the plan is too large to be shown in full, so it can only be declined)`）。`No` だけの形も当てる。
+ * 計画が 200,000 字を超えると、承認が保留されて `Yes` の行が出ない（2.1.332 のバイナリ: 選択肢は `[...fs?[Yes]:[], No]`、
+ * 本文は `(the plan is too large to be shown in full, so it can only be declined)`。保留そのものは、本会話の計画の確定で
+ * 実画面を確かめた。子エージェントの形は出せていない）。`No` だけの形も当てる。
  */
 export function paradisScreenShowsClaudeYesNoPlanPrompt(screen: string): boolean {
 	const lines = promptRegion(screen);
@@ -361,8 +362,9 @@ export const PARADIS_CLAUDE_RESUME_SCREEN_PROMPT_NAMES: Readonly<Record<ParadisC
  *
  * - `resume`: 操作説明は `Enter to confirm · Esc to resume`（使っていない間に出る型は `Esc to dismiss`）。見出しは
  *   `Resume this conversation?`（2.1.306 の実画面）。2.1.332 のバイナリでは、`Enter` は固定の文字、`Esc` は `Confirmation` の
- *   `confirm:no` の割り当てに従う（割り当てを変えると `Enter to confirm · ctrl+g to resume`）。使っていない間の型は、文を
- *   打ちかけていると先頭に `↑/↓ to pick a row first · ` が付く。取り消しのキーの名前は見ない。
+ *   `confirm:no` に割り当てたキーの名前になる（汎用の確認と同じ部品。`ctrl+g` に変えると `Enter to confirm · ctrl+g to resume` の
+ *   はずだが、この確認の実画面は出せていない）。使っていない間の型は、文を打ちかけていると先頭に
+ *   `↑/↓ to pick a row first · ` が付く。取り消しのキーの名前は見ない。
  * - `session-age`: 操作説明は汎用の `Enter to confirm · Esc to cancel`。見出し `This session is 4h 59m old and 300k tokens.` と
  *   選択肢 `Resume full session as-is` がそろうときだけ（2.1.309 の実画面）。旗 `tengu_gleaming_fair`（または要約の用意が
  *   できた `_reuse`）があり、最後の発言から 70 分以上・10 万トークン以上のときに出る。

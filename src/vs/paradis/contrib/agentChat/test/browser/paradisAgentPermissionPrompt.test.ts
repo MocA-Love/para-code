@@ -432,7 +432,7 @@ suite('Claude Code sub-agent plan approval on screen (Claude Code 2.1.326)', () 
 		'     No',
 		'   Not answered yet \u00b7 \u2191/\u2193 to choose \u00b7 Esc to decline',
 	].join('\n');
-	// 承認が保留された計画（20 万字を超える・表示できない文字を含む）: `Yes` の行が出ない（2.1.332 のバイナリの文字列から組み立てた形）
+	// 承認が保留された計画（200,000 字を超える）: `Yes` の行が出ない（2.1.332 のバイナリの文字列から組み立てた形）
 	const withheldPlan = [
 		RULE,
 		'   Ready to code? \u00b7 from the planner agent',
@@ -475,7 +475,7 @@ suite('Claude Code sub-agent plan approval on screen (Claude Code 2.1.326)', () 
 		'',
 		'   ctrl+g to edit in Vim \u00b7 ~/.claude/plans/plan-zzplanfile-smooth-snail.md',
 	].join('\n');
-	// 同じ確定で、承認が保留された計画（2.1.332 の実画面）: 選択肢は自由入力の 1 行だけで、`1` は確定にならない
+	// 同じ確定で、承認が保留された計画（200,000 字を超える計画。2.1.332 の実画面）: 選択肢は自由入力の 1 行だけで、`1` は確定にならない
 	const mainPlanWithheld332 = [
 		'   (the plan is too large to be shown in full \u2014 approval is withheld; send feedback asking for a shorter plan, or',
 		'   press Esc)',
