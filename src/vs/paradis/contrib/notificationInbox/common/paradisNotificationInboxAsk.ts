@@ -64,14 +64,26 @@ export function paradisInboxAskDangerLabels(text: string | undefined): string[] 
 	return labels;
 }
 
-/** 中身がカードの行数（{@link PARADIS_INBOX_ASK_DETAIL_LINES}）に収まらない見込みか。 */
+/** 等幅の枠での幅の見積もり（全角・CJK など 1 バイト文字でないものは半角 2 文字分と数える）。 */
+function paradisInboxAskColumns(line: string): number {
+	let columns = 0;
+	for (const char of line) {
+		columns += char.charCodeAt(0) > 0xff ? 2 : 1;
+	}
+	return columns;
+}
+
+/**
+ * 中身がカードの行数（{@link PARADIS_INBOX_ASK_DETAIL_LINES}）に収まらない見込みか（描く前の見積もり。描いた後に溢れて
+ * いれば、受信箱のカードがもう一度モーダルへ回す）。
+ */
 export function paradisInboxAskDetailIsLong(text: string | undefined): boolean {
 	if (!text) {
 		return false;
 	}
 	let lines = 0;
 	for (const line of text.split('\n')) {
-		lines += Math.max(1, Math.ceil(line.length / DETAIL_CHARS_PER_LINE));
+		lines += Math.max(1, Math.ceil(paradisInboxAskColumns(line) / DETAIL_CHARS_PER_LINE));
 		if (lines > PARADIS_INBOX_ASK_DETAIL_LINES) {
 			return true;
 		}

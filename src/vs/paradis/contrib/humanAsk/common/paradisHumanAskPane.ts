@@ -128,7 +128,10 @@ export function paradisHumanAskPaneInput(state: IParadisHumanAskPaneState, label
 	// 中継の側で中身が切られている許可は、全文を見せられないので受信箱からは答えさせない（ペインで答える）
 	const complete = request?.truncated !== true;
 	const actions = pressable && complete && allow !== undefined && deny !== undefined ? [{ id: 'yes', label: allow.label }, { id: 'no', label: deny.label }] : [];
-	const preface = (request !== undefined ? paradisHumanAskApprovalText(request) : (interaction.detail ?? interaction.title ?? '')).slice(0, PREFACE_LIMIT);
+	// request の無い承認は何をするのか分からない。そのことを先に出し、エージェントの説明は後ろに添えるだけにする
+	const unknown = [interaction.detail ?? interaction.title].filter((text): text is string => !!text).map(text => `（説明: ${text}）`);
+	// allow-any-unicode-next-line
+	const preface = (request !== undefined ? paradisHumanAskApprovalText(request) : ['操作の中身が分かりません。ペインで確かめてから答えてください', ...unknown].join('\n')).slice(0, PREFACE_LIMIT);
 	// 行の中で 1 押しで許可してよいのは、形が分かっていて全文を出せるものだけ（危険の札・長さは受信箱が前置きから決める）
 	// （request の無い承認は形が分からないので、モーダルで答える）
 	const inlineAllowed = request !== undefined && complete && actions.length > 0 && (request.kind === 'bash' || (request.kind === 'other' && PARADIS_READ_ONLY_TOOLS.has(request.tool)));

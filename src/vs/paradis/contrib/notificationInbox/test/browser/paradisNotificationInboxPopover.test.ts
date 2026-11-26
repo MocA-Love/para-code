@@ -250,6 +250,49 @@ suite('Paradis notification inbox popover', () => {
 		t.popover.dispose();
 	});
 
+	test('your turn: a permission whose text overflows the card after drawing is not allowed from the row', async () => {
+		const t = open([]);
+		t.container.classList.add('monaco-workbench');
+		t.container.querySelectorAll<HTMLElement>('.pnip-tabs button')[0].click();
+		// タブは 1 文字と数えるが、描くと 8 桁に広がる。見積もりでは 3 行、描くと 6 行を超える
+		const wide = `${'\tx'.repeat(30)}`;
+		t.ledger.set([ask('1', { kind: 'permission', preface: `Bash: ${wide}\n${wide}\n${wide}`, actions: ALLOW_DENY, inlineAllowed: true })]);
+		t.clock.now += 600;
+		const buttons = cards(t.container)[0].buttons;
+		t.press('pane:1', 'open');
+		assert.deepStrictEqual({ buttons, answers: t.ledger.answers, calls: t.calls }, {
+			buttons: ['open=中身を確かめて答える', 'reveal=ペインへ移動'],
+			answers: [],
+			calls: ['dialog:pane:1'],
+		});
+		t.popover.dispose();
+	});
+
+	test('dialog: a permission longer than the dialog cannot be allowed until it is read to the end', async () => {
+		const container = mainWindow.document.createElement('div');
+		container.classList.add('monaco-workbench');
+		mainWindow.document.body.appendChild(container);
+		store.add({ dispose: () => container.remove() });
+		const long = ask('1', { kind: 'permission', preface: `Bash: ${Array.from({ length: 200 }, (_, i) => `echo ${i}`).join(' && \\\n')}`, actions: ALLOW_DENY });
+		const ledger = store.add(humanAsk([long]));
+		const dialog = store.add(new ParadisInboxAskDialog({ container, key: long.key, onClose: () => { } }, ledger.service));
+		const view = () => ({
+			status: container.querySelector('.pniad-status')?.textContent,
+			allow: container.querySelector('.pniad-foot-action-0')?.classList.contains('disabled'),
+			deny: container.querySelector('.pniad-foot-action-1')?.classList.contains('disabled'),
+		});
+		const before = view();
+		const detail = container.querySelector<HTMLElement>('.pniad-detail')!;
+		detail.scrollTop = detail.scrollHeight;
+		detail.dispatchEvent(new mainWindow.Event('scroll'));
+		const after = view();
+		dialog.dispose();
+		assert.deepStrictEqual({ before, after }, {
+			before: { status: '中身を最後まで読むと「許可」を押せます', allow: true, deny: false },
+			after: { status: '', allow: false, deny: false },
+		});
+	});
+
 	test('dialog: a button the board confirms asks the same confirmation before it sends', async () => {
 		const container = mainWindow.document.createElement('div');
 		mainWindow.document.body.appendChild(container);
