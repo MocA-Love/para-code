@@ -540,12 +540,6 @@ export class ParadisBotsService extends Disposable {
 		this.pendingReveals.get(revealId)?.();
 	}
 
-	/** ウィンドウが閉じた（接続が切れた）。そのウィンドウが報告したペインを「まだ現れていない」に戻す。 */
-	detachWindow(windowCtx: string): void {
-		if (this.panes.detachWindow(windowCtx)) {
-			this.notify();
-		}
-	}
 
 	/** Bot を止める依頼を全ウィンドウへ出す。結び付いた・保存したペインが無ければ false。 */
 	requestStop(botId: string): boolean {
@@ -605,8 +599,8 @@ export class ParadisBotsService extends Disposable {
 	}
 
 	/** 起動したペインの報告。発行していない番号・2 回目・もう結び付いているトークンは断る（false）。 */
-	reportLaunch(launchId: string, paneToken: string, windowCtx?: string): boolean {
-		const botId = this.panes.report(launchId, paneToken, this.now(), windowCtx);
+	reportLaunch(launchId: string, paneToken: string): boolean {
+		const botId = this.panes.report(launchId, paneToken, this.now());
 		if (botId === undefined) {
 			return false;
 		}
