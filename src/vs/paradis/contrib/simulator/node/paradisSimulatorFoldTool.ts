@@ -19,6 +19,7 @@ import { IParadisMcpToolDefinition, IParadisMcpToolProvider } from '../../agentB
 import { IParadisMobileDeviceLedger } from '../node/paradisSimulatorDeviceOps.js';
 import { ParadisSimulatorFold } from '../common/paradisSimulator.js';
 import { paradisParseSimulatorFold } from '../common/paradisSimulatorFrames.js';
+import { paradisSimulatorIsFoldable } from '../common/paradisSimulatorInput.js';
 import { ParadisServeSimBackend } from './paradisServeSimBackend.js';
 import { ParadisSimulatorDeviceHub } from './paradisSimulatorDeviceHub.js';
 import { ParadisServeSimDeviceHost, paradisServeSimActiveDisplay, paradisServeSimUdidOf } from './paradisServeSimDeviceHost.js';
@@ -56,7 +57,7 @@ export class ParadisSimulatorFoldToolProvider implements IParadisMcpToolProvider
 
 	constructor(
 		private readonly _ledger: Pick<IParadisMobileDeviceLedger, 'getAttachment'>,
-		private readonly _backend: Pick<ParadisServeSimBackend, 'getScreenConfig' | 'fold'>,
+		private readonly _backend: Pick<ParadisServeSimBackend, 'getScreenConfig' | 'fold' | 'listDevices'>,
 		private readonly _host: Pick<ParadisServeSimDeviceHost, 'request' | 'forgetDisplay'>,
 		/** 開閉で画面の大きさが変わったので、ツールが覚えた大きさを捨てる。 */
 		private readonly _forgetScreenSize: (deviceId: string) => void,
@@ -99,8 +100,10 @@ export class ParadisSimulatorFoldToolProvider implements IParadisMcpToolProvider
 		if (!udid) {
 			return errorResult(`${attachment.deviceName} is not an iOS simulator, so it cannot be folded.`);
 		}
+		// 折りたたみかどうかは端末の型で見る（開き具合は、Xcode 27.2 では 1 度開閉するまで読めない）
 		const before = await this._backend.getScreenConfig(udid);
-		if (before.hingeDegrees === undefined) {
+		const device = (await this._backend.listDevices().catch(() => [])).find(candidate => candidate.udid === udid);
+		if (!paradisSimulatorIsFoldable(device, before)) {
 			return errorResult(`${attachment.deviceName} is not a foldable device (only the iPhone Duo simulator folds).`);
 		}
 		const accepted = await this._backend.fold(udid, fold);

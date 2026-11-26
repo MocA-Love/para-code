@@ -24,6 +24,7 @@ import { INotificationService, Severity } from '../../../../platform/notificatio
 import { IQuickInputService, IQuickPickItem } from '../../../../platform/quickinput/common/quickInput.js';
 import { INativeWorkbenchEnvironmentService } from '../../../../workbench/services/environment/electron-browser/environmentService.js';
 import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, IParadisSimulatorStatus, PARADIS_SIMULATOR_CHANNEL, ParadisSimulatorInput } from '../common/paradisSimulator.js';
+import { paradisSimulatorIsFoldable } from '../common/paradisSimulatorInput.js';
 
 const PARADIS_SIMULATOR_PROBE_COMMAND_ID = 'paradis.simulator.probeFoundation';
 
@@ -98,7 +99,7 @@ registerAction2(class extends Action2 {
 			await channel.call('sendInput', { udid, input: tap('begin') });
 			await channel.call('sendInput', { udid, input: tap('end') });
 		});
-		if (config?.hingeDegrees !== undefined) {
+		if (paradisSimulatorIsFoldable(picked.device, config)) {
 			await step('fold book', () => channel.call<{ ok: boolean }>('fold', { udid, fold: { pose: 'book' } }), value => String(value.ok));
 			await step('fold open', () => channel.call<{ ok: boolean }>('fold', { udid, fold: { pose: 'open' } }), value => String(value.ok));
 		} else {
