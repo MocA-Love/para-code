@@ -1623,7 +1623,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.inboxTitleBar', "タイトルバーに通知の受信箱（ベル）を表示"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.inboxTitleBarDesc', "全スペースの完了・許可待ち・質問をまとめて見られます。数字はまだ確認していないペインの数です。"),
+		description: localize('paradis.settings.inboxTitleBarDesc', "全スペースの完了・許可待ち・質問をまとめて見られます。数字はあなたの番（答えを待っている質問・許可）の数で、未読の通知は点で知らせます。"),
 		keywords: 'notification inbox bell title bar unread',
 	},
 	// --- メニューバー ---
