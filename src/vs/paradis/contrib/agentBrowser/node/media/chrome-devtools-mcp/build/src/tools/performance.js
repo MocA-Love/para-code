@@ -178,8 +178,9 @@ async function stopTracingAndAppendOutput(page, response, context, filePath) {
         }
         // PARA-PATCH: without the options the file stays the raw buffer, byte for byte. With them, a trace that
         // cannot be rewritten is not saved (its raw buffer lists the scripts of the whole application, unfiltered).
-        const paradisSave = filePath && traceEventsBuffer ? paradisPrepareTraceSave(traceEventsBuffer, paradisSaveOptions, paradisSourceMaps) : undefined;
-        for (const line of paradisSave?.lines ?? []) {
+        // The analysis below reads the same filtered trace, so that no insight is computed from those scripts.
+        const paradisSave = traceEventsBuffer ? paradisPrepareTraceSave(traceEventsBuffer, paradisSaveOptions, paradisSourceMaps) : undefined;
+        for (const line of filePath ? paradisSave?.lines ?? [] : []) {
             response.appendResponseLine(line);
         }
         if (filePath && traceEventsBuffer && paradisSave?.data) {
@@ -200,7 +201,7 @@ async function stopTracingAndAppendOutput(page, response, context, filePath) {
             const file = await context.saveFile(dataToWrite, filePath, filePath.endsWith('.gz') ? '.json.gz' : '.json');
             response.appendResponseLine(`The raw trace data was saved to ${file.filename}.`);
         }
-        const result = await parseRawTraceBuffer(traceEventsBuffer, {
+        const result = await parseRawTraceBuffer(paradisSave?.data ?? traceEventsBuffer, {
             cpuThrottling: page.cpuThrottlingRate,
             networkThrottling: page.networkConditions ?? undefined,
         });

@@ -284,7 +284,10 @@ suite('Paradis trace extras (vendored performance tools)', () => {
 			savesOnlyWhatWasPrepared: source.includes('paradisPrepareTraceSave(traceEventsBuffer, paradisSaveOptions, paradisSourceMaps)') && source.includes('if (filePath && traceEventsBuffer && paradisSave?.data) {') && !source.includes('dataToWrite = traceEventsBuffer'),
 			keepsSourceMapsWithRecording: source.includes('result.paradisSourceMaps = paradisSourceMaps;'),
 			addsOriginalPositions: source.includes('paradisOriginalLocationLines(paradisInsight, lastRecording.paradisSourceMaps)'),
+			// 分析も絞った記録を読む（アプリ全体のスクリプトから insight を作らない）
+			analyzesTheFilteredTrace: source.includes('parseRawTraceBuffer(paradisSave?.data ?? traceEventsBuffer, {'),
 		}, {
+			analyzesTheFilteredTrace: true,
 			importsExtras: true,
 			startHasOptions: true,
 			stopHasOptions: false,
