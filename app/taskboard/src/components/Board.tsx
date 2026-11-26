@@ -234,8 +234,8 @@ export function Board() {
 /* ---------------- フロー外のエージェント ---------------- */
 
 /**
- * フロー外の 1 件の答えるボタン。見本のセッションは許可・拒否、Para Code の台帳から来た 1 件は Para Code が流してきた
- * ボタン（受信箱の行で 1 押しで答えてよいものだけ）。それ以外は Para Code の受信箱で答える。
+ * フロー外の 1 件の答えるボタン。見本のセッションは許可・拒否、Para Code の台帳から来た 1 件は質問の選択肢だけ
+ * （Para Code が流してきたもの）。許可とそれ以外の質問は Para Code の受信箱で答える。
  */
 export function ManualAnswers({ session, size }: { session: ITaskBoardManualSession; size: 'xs' | 'sm' }) {
 	const app = useApp();
@@ -255,12 +255,6 @@ export function ManualAnswers({ session, size }: { session: ITaskBoardManualSess
 		return <>{failed}{ask.options.map(option => (
 			<button key={option.id} className={`btn ${size}${option.recommended ? ' primary' : ''}`} title={option.recommended ? 'おすすめ' : undefined}
 				onClick={() => void app.call('answerManual', { sessionId: session.id, optionId: option.id }, answered)}>{option.label}</button>
-		))}</>;
-	}
-	if (ask.actions?.length) {
-		return <>{failed}{ask.actions.map(action => (
-			<button key={action.id} className={`btn ${size}${action.id === 'yes' ? ' primary' : ''}`}
-				onClick={() => void app.call('answerManual', { sessionId: session.id, actionId: action.id }, answered)}>{action.label}</button>
 		))}</>;
 	}
 	return <span className="faint">Para Code の受信箱で答えてください</span>;

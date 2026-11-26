@@ -255,7 +255,7 @@ suite('ParadisTaskBoardAskBridge', () => {
 			'none',
 		]);
 	});
-	test('waits of panes outside the board reach only boards on this computer, which can answer only what the inbox row could', async () => {
+	test('waits of panes outside the board reach only boards on this computer, which can answer only a single-pick question', async () => {
 		await service.handle('POST', '/v1/launch', new URLSearchParams(), { launchId: 'L1', repoPath: '/repo', agent: 'claude', prompt: 'go' }, BOARD_A);
 		const seen: { local: ITaskBoardPaneAsk[][]; remote: number } = { local: [], remote: 0 };
 		const local = service.addEventClient(chunk => {
@@ -302,7 +302,7 @@ suite('ParadisTaskBoardAskBridge', () => {
 			remote: seen.remote,
 			// つないだ直後に空の一覧、台帳が変わったら今の一覧
 			first: seen.local[0],
-			listed: seen.local.find(asks => asks.length > 0)?.map(ask => [ask.key, ask.kind, ask.options?.map(option => option.label) ?? null, ask.actions?.map(action => action.id) ?? null]),
+			listed: seen.local.find(asks => asks.length > 0)?.map(ask => [ask.key, ask.kind, ask.options?.map(option => option.label) ?? null]),
 			busy: last.filter(ask => ask.busy).map(ask => ask.key),
 			ledger: summary().filter(entry => entry.includes('pending')),
 		}, {
@@ -315,17 +315,18 @@ suite('ParadisTaskBoardAskBridge', () => {
 				notInlinePermission: '400 {"error":"invalid","message":"Answer wit',
 				option: '200 {"ok":true}',
 				again: '200 {"ok":false,"reason":"busy"}',
-				permission: '200 {"ok":true}',
+				// 受信箱の行で 1 押しで答えてよい許可でも、ボードからは答えさせない
+				permission: '400 {"error":"invalid","message":"Answer wit',
 			},
 			remote: 0,
 			first: [],
 			listed: [
-				['pane:perm:2', 'permission', null, ['yes', 'no']],
-				['pane:perm:1', 'permission', null, null],
-				['pane:ask:1', 'question', ['残す', '消す'], null],
+				['pane:perm:2', 'permission', null],
+				['pane:perm:1', 'permission', null],
+				['pane:ask:1', 'question', ['残す', '消す']],
 			],
-			busy: ['pane:perm:2', 'pane:ask:1'],
-			ledger: ['pane:perm:2 waiting pending', 'pane:ask:1 waiting pending'],
+			busy: ['pane:ask:1'],
+			ledger: ['pane:ask:1 waiting pending'],
 		});
 	});
 });

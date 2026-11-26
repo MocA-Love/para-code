@@ -297,8 +297,8 @@ export type TaskBoardManualStatus = 'working' | 'question' | 'permission' | 'idl
 
 /**
  * ボードの外のペインの、人の答えを待っている 1 件（Para Code の「人が答えるもの」の台帳の写し。接続口が SSE で手元のボードへ流す）。
- * ボードの画面で押せるのは `options`（問い 1 つ・1 つ選ぶもの）か `actions`（受信箱の行で 1 押しで答えてよい許可）だけで、
- * どちらも無ければ Para Code の受信箱で答える。
+ * ボードの画面で押せるのは質問の `options`（問い 1 つ・1 つ選ぶもの）だけ。許可と、それ以外の質問は Para Code の受信箱で答える
+ * （ボードの接続口から許可に答えられる場所を増やさない）。
  */
 export interface ITaskBoardPaneAsk {
 	/** 台帳の鍵。答えるときに返す。 */
@@ -315,7 +315,6 @@ export interface ITaskBoardPaneAsk {
 	readonly failed: boolean;
 	readonly questionId?: string;
 	readonly options?: readonly { readonly id: string; readonly label: string; readonly recommended?: boolean }[];
-	readonly actions?: readonly { readonly id: string; readonly label: string }[];
 }
 
 /** ボードの外で手で起動したエージェント。 */
@@ -550,8 +549,8 @@ export interface ITaskBoardRpc {
 	archivedTasks: { params: Record<string, never>; result: readonly ITaskBoardArchivedTask[] };
 	/** ファイルへ移したタスクをボードの「完了」に戻す。 */
 	restoreArchivedTask: { params: { taskId: string }; result: void };
-	/** 見本のセッションは `allow`。台帳から来た 1 件は `allow`（許可・拒否のボタン）か `actionId`・`optionId`（出したボタン）。 */
-	answerManual: { params: { sessionId: string; allow?: boolean; actionId?: string; optionId?: string }; result: void };
+	/** 見本のセッションは `allow`。台帳から来た 1 件は `optionId`（出した選択肢）。 */
+	answerManual: { params: { sessionId: string; allow?: boolean; optionId?: string }; result: void };
 	adoptManual: { params: { sessionId: string; title: string }; result: { id: string } };
 	saveFlow: { params: { flow: ITaskBoardFlow; scope: 'team' | 'personal' }; result: { path: string } };
 	setActiveFlow: { params: { flowId: string }; result: void };

@@ -16,8 +16,8 @@
 //  - `POST /v1/asks/settle`: ボードが答えを届けた結果。届いたら回答済み、届かなければ待ちへ戻す
 //  - ボードの SSE が切れたら、そのボードの待ちを取り下げる（戻ってきて知らせ直せば待ちに戻る）
 //  - 逆向き: ボードの外のペインの待ち（台帳の出どころ `pane`）を、手元のボードにだけ SSE の `pane-asks` で丸ごと流す
-//    （「フロー外のエージェント」の欄）。ボードが答えられるのは、受信箱の行で 1 押しで答えてよいもの（問い 1 つ・1 つ選ぶ
-//    選択肢、許可リストに入った危なくない許可）だけで、`POST /v1/asks/pane-answer` から台帳の claim を通す（ペインへの
+//    （「フロー外のエージェント」の欄）。ボードが答えられるのは質問の選択肢（問い 1 つ・1 つ選ぶもの）だけで、許可には
+//    答えさせない（受信箱へ回す）。`POST /v1/asks/pane-answer` から台帳の claim を通す（ペインへの
 //    打鍵は台帳の持ち主が受信箱と同じ口で行う。ボードはペインにもトークンにも触れない）。SSH の窓のボードには流さない
 //
 // 真の記録はボードの台帳ファイル（state.json）のまま。ここは写しを運ぶだけで、ボードの画面も道具も変えない。
@@ -74,7 +74,6 @@ function paneAskOf(entry: IParadisHumanAskEntry): ITaskBoardPaneAsk | undefined 
 		busy: entry.pending !== undefined,
 		failed: entry.failedAt !== undefined,
 		...(layout === 'inline-options' && question !== undefined ? { questionId: question.id, options: question.options.map(option => ({ id: option.id, label: option.label, ...(option.recommended ? { recommended: true } : {}) })) } : {}),
-		...(layout === 'inline-actions' ? { actions: entry.actions.map(action => ({ id: action.id, label: action.label })) } : {}),
 	};
 }
 
@@ -161,12 +160,10 @@ export class ParadisTaskBoardAskBridge extends Disposable {
 		// 選んだ選択肢 1 つだけ（ボードの画面に文を書く欄は無い。文の付いた答えは受けない）
 		const first = answer.type === 'answers' && Array.isArray(answer.answers) && answer.answers.length === 1 && isRecord(answer.answers[0]) ? answer.answers[0] : undefined;
 		const optionIds = first !== undefined && first.questionId === ask.questionId && first.text === undefined ? first.optionIds : undefined;
-		const pickedOption = Array.isArray(optionIds) && optionIds.length === 1 && ask.options?.some(option => option.id === optionIds[0]) && answer.answers;
-		const pickedAction = answer.type === 'action' && answer.text === undefined && ask.actions?.some(action => action.id === answer.actionId);
-		if (!pickedOption && !pickedAction) {
-			return { ok: false, code: 'invalid', message: 'Answer with one of the options or buttons the board shows; answer the rest in the Para Code inbox.' };
+		if (!Array.isArray(optionIds) || optionIds.length !== 1 || !ask.options?.some(option => option.id === optionIds[0])) {
+			return { ok: false, code: 'invalid', message: 'Answer with one of the options the board shows; answer permissions and other questions in the Para Code inbox.' };
 		}
-		const result = this.ledger.answer(ask.key, pickedOption ? { type: 'answers', answers: [{ questionId: ask.questionId, optionIds }] } : { type: 'action', actionId: answer.actionId }, 'board');
+		const result = this.ledger.answer(ask.key, { type: 'answers', answers: [{ questionId: ask.questionId, optionIds }] }, 'board');
 		return { ok: true, body: result.ok ? { ok: true } : { ok: false, reason: result.reason } };
 	}
 

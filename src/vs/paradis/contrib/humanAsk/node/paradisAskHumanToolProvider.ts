@@ -53,7 +53,7 @@ import type { ParadisHumanAskService } from './paradisHumanAskChannel.js';
 /** 台帳のうち、この持ち主が使う分（本物は ParadisHumanAskService。テストでも本物を渡す）。 */
 export type IParadisAskHumanLedger = Pick<ParadisHumanAskService, 'onDidRequestAnswer' | 'get' | 'upsert' | 'resolve' | 'reject' | 'withdraw' | 'removeOwner'>;
 
-const CALLER_MESSAGE = 'ask_human only works for an agent running in a local Para Code terminal pane. Ask in the conversation instead.';
+const CALLER_MESSAGE = 'ask_human works only for an agent running directly in a terminal pane on this computer (not over SSH, and not inside tmux, screen or zellij), because the answer is typed into that pane. Ask in the conversation instead.';
 const RATE_MESSAGE = `Too many questions from this terminal (up to ${PARADIS_ASK_HUMAN_RATE_PER_MINUTE} a minute). Wait for the person's answer instead of asking again.`;
 const WINDOW_MESSAGE = 'Para Code could not identify the window and space of this terminal. Retry in a few seconds, or ask in the conversation.';
 const BUSY_MESSAGE = 'The person\'s answer to your earlier question is being delivered to this terminal right now. Wait for it instead of asking again.';

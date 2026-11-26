@@ -222,7 +222,7 @@ describe('task board asks for the Para Code ledger', () => {
 
 describe('panes outside the board', () => {
 	const question: ITaskBoardPaneAsk = { key: 'pane:ask:1', kind: 'question', from: { title: 'api', detail: 'main ／ Codex' }, text: '残しますか?', askedAt: 5, busy: false, failed: false, questionId: 'q0', options: [{ id: '0', label: '残す' }, { id: '1', label: '消す', recommended: true }] };
-	const permission: ITaskBoardPaneAsk = { key: 'pane:perm:1', kind: 'permission', from: { title: 'web' }, text: 'Bash: npm test', askedAt: 6, busy: false, failed: false, actions: [{ id: 'yes', label: '許可' }, { id: 'no', label: '拒否' }] };
+	const permission: ITaskBoardPaneAsk = { key: 'pane:perm:1', kind: 'permission', from: { title: 'web' }, text: 'Bash: npm test', askedAt: 6, busy: false, failed: false };
 	const inboxOnly: ITaskBoardPaneAsk = { key: 'pane:perm:2', kind: 'permission', from: { title: 'web' }, text: 'Bash: rm -rf build', askedAt: 7, busy: false, failed: false };
 
 	test('become rows of the column, and broken entries are dropped', () => {
@@ -232,20 +232,18 @@ describe('panes outside the board', () => {
 		]);
 	});
 
-	test('only the buttons Para Code sent can answer', () => {
+	test('only the options Para Code sent can answer; permissions are answered in the inbox', () => {
 		expect({
 			option: taskBoardPaneAskAnswer(question, { optionId: '1' }),
 			unknownOption: taskBoardPaneAskAnswer(question, { optionId: '9' }),
-			allowOnQuestion: taskBoardPaneAskAnswer(question, { allow: true }),
-			allow: taskBoardPaneAskAnswer(permission, { allow: true }),
-			deny: taskBoardPaneAskAnswer(permission, { actionId: 'no' }),
-			inboxOnly: taskBoardPaneAskAnswer(inboxOnly, { allow: true }),
+			nothing: taskBoardPaneAskAnswer(question, {}),
+			permission: taskBoardPaneAskAnswer(permission, { optionId: '0' }),
+			inboxOnly: taskBoardPaneAskAnswer(inboxOnly, { optionId: '0' }),
 		}).toEqual({
 			option: { type: 'answers', answers: [{ questionId: 'q0', optionIds: ['1'] }] },
 			unknownOption: undefined,
-			allowOnQuestion: undefined,
-			allow: { type: 'action', actionId: 'yes' },
-			deny: { type: 'action', actionId: 'no' },
+			nothing: undefined,
+			permission: undefined,
 			inboxOnly: undefined,
 		});
 	});

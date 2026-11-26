@@ -59,15 +59,11 @@ export function taskBoardPaneManualSessions(asks: readonly unknown[]): ITaskBoar
 	return sessions;
 }
 
-/** 画面のボタンから、接続口へ送る答えを作る。Para Code が流してきたボタンでなければ undefined。 */
-export function taskBoardPaneAskAnswer(ask: ITaskBoardPaneAsk, pressed: { readonly allow?: boolean; readonly actionId?: string; readonly optionId?: string }): unknown {
-	if (pressed.optionId !== undefined) {
-		return ask.questionId !== undefined && ask.options?.some(option => option.id === pressed.optionId)
-			? { type: 'answers', answers: [{ questionId: ask.questionId, optionIds: [pressed.optionId] }] }
-			: undefined;
-	}
-	const actionId = pressed.actionId ?? (pressed.allow === true ? 'yes' : pressed.allow === false ? 'no' : undefined);
-	return actionId !== undefined && ask.actions?.some(action => action.id === actionId) ? { type: 'action', actionId } : undefined;
+/** 画面の選択肢から、接続口へ送る答えを作る。Para Code が流してきた選択肢でなければ undefined（許可には答えない）。 */
+export function taskBoardPaneAskAnswer(ask: ITaskBoardPaneAsk, pressed: { readonly optionId?: string }): unknown {
+	return pressed.optionId !== undefined && ask.questionId !== undefined && ask.options?.some(option => option.id === pressed.optionId)
+		? { type: 'answers', answers: [{ questionId: ask.questionId, optionIds: [pressed.optionId] }] }
+		: undefined;
 }
 
 export interface IAskPublisherOptions {
