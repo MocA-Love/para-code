@@ -448,7 +448,8 @@ button.paradis-bot-page-link:hover {
 /* The settings tab: a key/value grid (the mock's .kv), swatches drawn with the bot face so colours come from the theme. */
 .paradis-bot-settings {
 	display: grid;
-	grid-template-columns: minmax(96px, max-content) minmax(0, 1fr);
+	/* A fixed label column, so the settings rows and the look-around rows (two grids) line up. Fits 「役割（SOUL.md）」. */
+	grid-template-columns: 112px minmax(0, 1fr);
 	align-items: center;
 	gap: var(--vscode-spacing-size120) var(--vscode-spacing-size200);
 	margin-top: var(--vscode-spacing-size160);

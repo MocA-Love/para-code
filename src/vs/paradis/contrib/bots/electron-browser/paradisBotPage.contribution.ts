@@ -20,6 +20,7 @@ import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPane
 import { paradisBotPaneTokenHashInWindow } from '../browser/paradisBotPaneHash.js';
 import { IParadisBotPaneResolver, ParadisBotPage } from '../browser/paradisBotPage.js';
 import { IParadisBotPatrolPort } from '../browser/paradisBotPatrol.js';
+import { IParadisBotPatrolInput } from '../../scheduledRuns/common/paradisScheduledRunBotPatrol.js';
 import { IParadisScheduledRunsClient } from '../../scheduledRuns/electron-browser/paradisScheduledRunsClient.js';
 import { IParadisBotsService, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
 
@@ -70,6 +71,35 @@ class ParadisBotPaneResolver extends Disposable implements IParadisBotPaneResolv
 	}
 }
 
+/**
+ * 見回りの口（定期実行の口を、Bot のページが読む形へ）。更新は定期実行と Bot の台帳の両方の知らせで読み直す。
+ * 設定がオンになってから作る（作るまで定期実行の口にも Bot のサービスにも触れない）。
+ */
+class ParadisBotPatrolPort extends Disposable implements IParadisBotPatrolPort {
+
+	readonly onDidChange: Event<void>;
+
+	constructor(
+		@IParadisScheduledRunsClient private readonly scheduledRunsClient: IParadisScheduledRunsClient,
+		@IParadisBotsService botsService: IParadisBotsService,
+	) {
+		super();
+		this.onDidChange = Event.any(this.scheduledRunsClient.onDidChange, botsService.onDidChange);
+	}
+
+	get(botId: string) {
+		return this.scheduledRunsClient.getBotPatrol(botId);
+	}
+
+	set(botId: string, input: IParadisBotPatrolInput) {
+		return this.scheduledRunsClient.setBotPatrol(botId, input);
+	}
+
+	runNow(botId: string) {
+		return this.scheduledRunsClient.runBotPatrolNow(botId);
+	}
+}
+
 /** 設定がオンの間だけ、ページを重ね合わせの口へ登録する。 */
 class ParadisBotPageContribution extends Disposable {
 
@@ -80,8 +110,6 @@ class ParadisBotPageContribution extends Disposable {
 	constructor(
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
-		@IParadisScheduledRunsClient private readonly scheduledRunsClient: IParadisScheduledRunsClient,
-		@IParadisBotsService private readonly botsService: IParadisBotsService,
 	) {
 		super();
 		this.update();
@@ -90,16 +118,6 @@ class ParadisBotPageContribution extends Disposable {
 				this.update();
 			}
 		}));
-	}
-
-	/** 見回りの口（定期実行の口を、Bot のページが読む形へ）。更新は定期実行と Bot の台帳の両方の知らせで読み直す。 */
-	private patrolPort(): IParadisBotPatrolPort {
-		return {
-			onDidChange: Event.any(this.scheduledRunsClient.onDidChange, this.botsService.onDidChange),
-			get: botId => this.scheduledRunsClient.getBotPatrol(botId),
-			set: (botId, input) => this.scheduledRunsClient.setBotPatrol(botId, input),
-			runNow: botId => this.scheduledRunsClient.runBotPatrolNow(botId),
-		};
 	}
 
 	private update(): void {
@@ -112,11 +130,12 @@ class ParadisBotPageContribution extends Disposable {
 			return;
 		}
 		const resolver = this.instantiationService.createInstance(ParadisBotPaneResolver);
-		const patrol = this.patrolPort();
+		const patrol = this.instantiationService.createInstance(ParadisBotPatrolPort);
 		const overlay = paradisRegisterEditorTerminalOverlay(container => this.instantiationService.createInstance(ParadisBotPage, container, resolver, patrol));
 		this.registration.value = {
 			dispose: () => {
 				overlay.dispose();
+				patrol.dispose();
 				resolver.dispose();
 			},
 		};
