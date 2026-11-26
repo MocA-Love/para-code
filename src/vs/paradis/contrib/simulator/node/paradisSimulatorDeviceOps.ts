@@ -13,8 +13,11 @@
 //  - mobile_rotate / mobile_gesture: 回転・スワイプ（向きの指定）・長押し・ピンチ。端末の口（serve-sim・adb）への入力
 //  - mobile_install_app / mobile_launch_app / mobile_grant_permission: `xcrun simctl` / `adb` を引数配列で呼ぶ
 //
-// どのツールも端末の ID を引数に取らず、そのペインに割り当てられた端末だけを台帳から引く
-// （既存の mobile_tap などと同じ）。要求だけは端末を名指しするが、ほかのペインが使っている端末は断る。
+// どのツールも、そのペインに割り当てられた端末だけを台帳から引く（既存の mobile_tap などと同じ）。1 つのペインに
+// 10 台まで割り当てられ、任意の引数 `device` はその中から選ぶ（省いたら最後に割り当てた端末。決まりは
+// simulator/common/paradisMobileAttachmentBook.ts）。要求だけは端末の一覧から名指しするが、ほかのペインが
+// 使っている端末は断る。要求は「足す」で、上限のときは、外す端末を利用者が承認の画面で選ぶ。
+// mobile_release_device は、エージェントが自分のペインの端末を手放す（外すだけなので承認は取らない）。
 //
 // 接続元の確認（`context.classifyCaller()`）は、要求・インストール・起動・権限の付与だけに掛ける。
 // 回転とジェスチャーは既存の mobile_tap などと同じく、利用者がその端末をそのペインへ渡した後の画面の操作
@@ -29,6 +32,7 @@
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider, ParadisMcpCallerKind } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { IParadisMobileAttachment, IParadisMobileDevice, paradisFindMobileDevice } from '../common/paradisMobileCanvas.js';
+import { IParadisMobileTarget, IParadisMobileToolResult, PARADIS_MOBILE_MAX_DEVICES_PER_PANE, ParadisMobileAttachResult, paradisStampMobileDevice, paradisWithMobileDeviceArgument } from '../common/paradisMobileAttachmentBook.js';
 import {
 	IParadisMobileDeviceRequestPrompt,
 	IParadisMobileInstallPrompt,
@@ -64,12 +68,22 @@ import { ParadisMobileDeviceCommands } from './paradisMobileDeviceCommands.js';
 
 /** 端末の割り当て台帳のうち、このプロバイダが使う部分（ParadisMobileCanvasService が満たす）。 */
 export interface IParadisMobileDeviceLedger {
-	/** そのペインの割り当て（ツールの利用として最終利用時刻も進める）。 */
-	getAttachment(paneToken: string): IParadisMobileAttachment | undefined;
+	/**
+	 * 道具が操作する端末。`device`（道具の引数。id か名前）はそのペインの割り当ての中だけで引き、省いたら今の端末
+	 * （最後に割り当てたもの）。ツールの利用として最終利用時刻も進める。決まらなければ、エージェントに返す文で throw する。
+	 */
+	resolveTarget(paneToken: string, device: unknown, signal?: AbortSignal): Promise<IParadisMobileTarget>;
+	/** そのペインの割り当て（割り当てた順。最後が今の端末）。 */
+	listPaneAttachments(paneToken: string): readonly IParadisMobileAttachment[];
 	listAttachments(): readonly IParadisMobileAttachment[];
 	listDevices(signal?: AbortSignal): Promise<IParadisMobileDevice[]>;
-	/** ほかのペインが使っていなければ割り当てる（確かめと書き込みの間に await を挟まない）。使っていれば undefined。 */
-	attachIfFree(paneToken: string, deviceId: string, stateKey: string | undefined, signal?: AbortSignal): Promise<IParadisMobileAttachment | undefined>;
+	/**
+	 * ほかのペインが使っていなければ足す（確かめと書き込みの間に await を挟まない）。`releaseDeviceId` があれば、
+	 * その端末を外してから足す。端末が無ければ undefined、断ったときはその理由。
+	 */
+	attachIfFree(paneToken: string, deviceId: string, stateKey: string | undefined, signal?: AbortSignal, releaseDeviceId?: string): Promise<ParadisMobileAttachResult | undefined>;
+	/** そのペインの割り当てを外す（`deviceId` は台帳の id）。外したものを返す。 */
+	detach(paneToken: string, deviceId?: string): readonly IParadisMobileAttachment[];
 }
 
 /** 端末の口（`/api/v1/devices/...` の道。paradisSimulatorDeviceRouter.ts が満たす。もとは Mobile Canvas ホストの REST の形）。 */
@@ -102,7 +116,6 @@ const realSleep: ParadisMobileSleep = (ms, signal) => new Promise<void>(resolve 
 	signal?.addEventListener('abort', onAbort, { once: true });
 });
 
-const NO_DEVICE_ATTACHED_MESSAGE = 'No mobile device is attached to this terminal pane. Call mobile_request_device to ask the user for one (or ask them to attach it from Para Code), then try again.';
 const CALLER_UNVERIFIED_MESSAGE = 'Para Code could not confirm that this request comes from a process inside your own terminal pane, so it does not attach devices, install or launch apps, or grant permissions for it. This happens inside tmux, screen, zellij, WSL or a container. Ask the user to do it from Para Code; screen tools such as mobile_tap keep working on a device already attached to this pane.';
 const SSH_REFUSED_MESSAGE = 'This terminal pane runs on an SSH host. Para Code does not let an agent on an SSH host install apps, launch apps or grant permissions on a device on this computer. Ask the user to do it on this computer. mobile_request_device still works: the user approves it in Para Code.';
 const REQUEST_TIMEOUT_MESSAGE = 'The user did not answer in time. Ask the user in the conversation before asking again.';
@@ -129,21 +142,37 @@ const LONG_PRESS_MAX_SECONDS = 10;
 const SWIPE_MIN_SECONDS = 0.05;
 const SWIPE_MAX_SECONDS = 10;
 
-export const PARADIS_MOBILE_DEVICE_OPS_TOOLS: readonly IParadisMcpToolDefinition[] = [
-	{
-		name: 'mobile_request_device',
-		description: 'Ask the user to attach a mobile device (iOS simulator or Android emulator on this computer) to this terminal pane. Para Code shows the user an approval dialog and attaches the device only if they approve. Call mobile_list_devices first and pass the id or the exact name of a device. You cannot request a device that another terminal pane is using (usedByAnotherPane). If this pane already has a different device, approving replaces it. If the user declines, do not ask for the same device again straight away: Para Code turns down further requests from this pane for that device for a few minutes.',
-		inputSchema: {
-			type: 'object',
-			properties: {
-				device: { type: 'string', description: 'The id or the exact name of the device, as returned by mobile_list_devices.' },
-				reason: { type: 'string', description: 'One short sentence shown to the user explaining why you need the device.' },
-			},
-			required: ['device'],
-			additionalProperties: false,
+const REQUEST_DEVICE_TOOL: IParadisMcpToolDefinition = {
+	name: 'mobile_request_device',
+	description: `Ask the user to attach a mobile device (iOS simulator or Android emulator on this computer) to this terminal pane. Para Code shows the user an approval dialog and attaches the device only if they approve. Call mobile_list_devices first and pass the id or the exact name of a device. You cannot request a device that another terminal pane is using (usedByAnotherPane). The device is added to the ones this pane already has (up to ${PARADIS_MOBILE_MAX_DEVICES_PER_PANE}; ask for one device per call) and becomes the pane's current device, the one mobile tools use when you omit "device". When the pane already has ${PARADIS_MOBILE_MAX_DEVICES_PER_PANE}, the dialog asks the user which one to detach. If the user declines, do not ask for the same device again straight away: Para Code turns down further requests from this pane for that device for a few minutes.`,
+	inputSchema: {
+		type: 'object',
+		properties: {
+			device: { type: 'string', description: 'The id or the exact name of the device, as returned by mobile_list_devices.' },
+			reason: { type: 'string', description: 'One short sentence shown to the user explaining why you need the device.' },
 		},
-		annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+		required: ['device'],
+		additionalProperties: false,
 	},
+	annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+};
+
+const RELEASE_DEVICE_TOOL: IParadisMcpToolDefinition = {
+	name: 'mobile_release_device',
+	description: 'Detach a mobile device from this terminal pane when you no longer need it. The device keeps running; you only give up access to it, and getting it back needs the user\'s approval again (mobile_request_device). If it was the current device, the one attached last among the remaining devices becomes current.',
+	inputSchema: {
+		type: 'object',
+		properties: {
+			device: { type: 'string', description: 'The id or the exact name of a device attached to this terminal pane (attachedDevices in mobile_list_devices).' },
+		},
+		required: ['device'],
+		additionalProperties: false,
+	},
+	annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+};
+
+/** 割り当てた端末を操作する道具。どれも任意の引数 `device` を受ける（下で足す）。 */
+const DEVICE_TOOLS: readonly IParadisMcpToolDefinition[] = [
 	{
 		name: 'mobile_rotate',
 		description: 'Rotate the mobile device attached to this terminal pane. Returns the new screen size in points: every coordinate you pass to input tools afterwards must use this new size.',
@@ -219,7 +248,14 @@ export const PARADIS_MOBILE_DEVICE_OPS_TOOLS: readonly IParadisMcpToolDefinition
 	},
 ];
 
+export const PARADIS_MOBILE_DEVICE_OPS_TOOLS: readonly IParadisMcpToolDefinition[] = [REQUEST_DEVICE_TOOL, ...DEVICE_TOOLS.map(paradisWithMobileDeviceArgument), RELEASE_DEVICE_TOOL];
+
 const TOOL_NAMES: ReadonlySet<string> = new Set(PARADIS_MOBILE_DEVICE_OPS_TOOLS.map(tool => tool.name));
+
+/**
+ * mobile_* の道具の決まり（MCP のサーバーの説明と `para help mobile` に出る）。複数の端末を割り当てたときの取り違えを防ぐ。
+ */
+export const PARADIS_MOBILE_INSTRUCTIONS = `Mobile tools (mobile_*) act on the iOS simulators and Android emulators the user attached to this terminal pane (up to ${PARADIS_MOBILE_MAX_DEVICES_PER_PANE}). When more than one is attached, pass device (an id or exact name from attachedDevices in mobile_list_devices) on every call; without it a tool acts on the device attached last. Every result names the device it acted on: check it. Tell each subagent which device is its own.`;
 
 /**
  * 接続元を確かめるツール（端末の割り当て・アプリの操作）。`unverified` は断る。SSH の接続先（`tunnel`）は
@@ -231,11 +267,7 @@ const CALLER_CHECKED_TOOLS: ReadonlySet<string> = new Set(['mobile_request_devic
 /** SSH の接続先のペインからも受けるツール。端末の要求は必ず Mac の窓の承認ダイアログを通る。 */
 const SSH_ALLOWED_TOOLS: ReadonlySet<string> = new Set(['mobile_request_device']);
 
-interface IToolResult {
-	content: { type: 'text'; text: string }[];
-	isError?: boolean;
-	structuredContent?: unknown;
-}
+type IToolResult = IParadisMobileToolResult;
 
 /** 割り当てられた端末を、コマンドを打てる形まで解いたもの。 */
 interface IResolvedDevice {
@@ -276,6 +308,10 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 		return PARADIS_MOBILE_DEVICE_OPS_TOOLS;
 	}
 
+	instructions(): string {
+		return PARADIS_MOBILE_INSTRUCTIONS;
+	}
+
 	/** 覚えた画面の大きさを捨てる（mobile_fold で開閉した後。simulator/node/paradisSimulatorFoldTool.ts）。 */
 	forgetScreenSize(deviceId: string): void {
 		this._screenSizes.delete(deviceId);
@@ -297,24 +333,39 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 					return errorResult(SSH_REFUSED_MESSAGE);
 				}
 			}
-			switch (name) {
-				case 'mobile_request_device':
-					return await this._requestDevice(paneToken, record, context!, signal);
-				case 'mobile_rotate':
-					return await this._rotate(paneToken, record, signal);
-				case 'mobile_gesture':
-					return await this._gesture(paneToken, record, signal);
-				case 'mobile_install_app':
-					return await this._install(paneToken, record, context!, signal);
-				case 'mobile_launch_app':
-					return await this._launch(paneToken, record, signal);
-				case 'mobile_grant_permission':
-					return await this._grant(paneToken, record, signal);
+			if (name === 'mobile_request_device') {
+				return await this._requestDevice(paneToken, record, context!, signal);
 			}
-			return errorResult(`Unhandled mobile tool: ${name}`);
+			if (name === 'mobile_release_device') {
+				return await this._releaseDevice(paneToken, record, signal);
+			}
+			// ここから先は割り当てた端末が要る。`device` はそのペインの割り当ての中だけで引く（省いたら今の端末）。
+			// 返事には、成功でも失敗でも、操作した端末の名前と id を入れる
+			const target = await this._ledger.resolveTarget(paneToken, record.device, signal);
+			try {
+				return paradisStampMobileDevice(await this._callDeviceTool(paneToken, target.attachment, name, record, context, signal), target);
+			} catch (error) {
+				return paradisStampMobileDevice(errorResult(toMessage(error)), target);
+			}
 		} catch (error) {
 			return errorResult(toMessage(error));
 		}
+	}
+
+	private async _callDeviceTool(paneToken: string, attachment: IParadisMobileAttachment, name: string, record: Record<string, unknown>, context: IParadisMcpToolCallContext | undefined, signal?: AbortSignal): Promise<IToolResult> {
+		switch (name) {
+			case 'mobile_rotate':
+				return this._rotate(attachment, record, signal);
+			case 'mobile_gesture':
+				return this._gesture(attachment, record, signal);
+			case 'mobile_install_app':
+				return this._install(paneToken, attachment, record, context!, signal);
+			case 'mobile_launch_app':
+				return this._launch(attachment, record, signal);
+			case 'mobile_grant_permission':
+				return this._grant(attachment, record, signal);
+		}
+		return errorResult(`Unhandled mobile tool: ${name}`);
 	}
 
 	// --- 端末の要求 ---
@@ -335,20 +386,25 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 		if (!device) {
 			return errorResult(`There is no device "${wanted}". Call mobile_list_devices to see the devices on this computer.`);
 		}
-		const current = this._ledger.getAttachment(paneToken);
-		if (current && paradisFindMobileDevice(devices, current.deviceId) === device) {
-			return jsonResult({ attached: true, alreadyAttached: true, device: describeDevice(device) });
+		const mine = this._ledger.listPaneAttachments(paneToken);
+		const describeMine = (attachments: readonly IParadisMobileAttachment[]) => attachments.map((attachment, index) => ({ id: attachment.deviceId, name: attachment.deviceName, current: index === attachments.length - 1 }));
+		// 起動前の AVD で割り当てた端末を、起動後の id で頼み直しても、同じ端末として扱う（二重に割り当てない）
+		if (mine.some(attachment => attachment.deviceId === device.id || paradisFindMobileDevice(devices, attachment.deviceId) === device)) {
+			return jsonResult({ attached: true, alreadyAttached: true, device: describeDevice(device), attachedDevices: describeMine(mine) });
 		}
 		if (paradisDeviceHeldByAnotherPane(paneToken, device, devices, this._ledger.listAttachments())) {
 			return errorResult(`${device.name} is being used by another terminal pane, so it cannot be requested. Pick a device that no other pane is using, or ask the user.`);
 		}
 
+		// 要求は「足す」。上限のときだけ、外す端末を利用者が承認の画面で選ぶ
+		const full = mine.length >= PARADIS_MOBILE_MAX_DEVICES_PER_PANE;
 		const prompt: IParadisMobileDeviceRequestPrompt = {
 			deviceId: device.id,
 			deviceName: device.name,
 			...(device.runtime ? { runtime: device.runtime } : {}),
 			...(reason ? { reason } : {}),
-			...(current ? { replacingDeviceName: current.deviceName } : {}),
+			attachedDevices: mine.map(attachment => ({ id: attachment.deviceId, name: attachment.deviceName })),
+			...(full ? { mustRelease: true } : {}),
 		};
 		const askedAt = Date.now();
 		const call = await context.callOwningWindow<unknown>({
@@ -369,23 +425,53 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 			this._logService?.info(`[paradis-mobile-canvas] a device request was not approved: outcome=${answer?.outcome ?? 'malformed'}, elapsedMs=${Date.now() - askedAt}`);
 			return refusal(answer?.outcome, 'The user declined to attach this device. Do not ask for it again for now, and do not switch to another device to ask again: Para Code turns down requests from this pane for this device for a few minutes, and for any device for a few seconds. Browser pages are not affected.', 'The user declined a request from this pane a short while ago (for this device in the last few minutes, or for any device in the last few seconds), so Para Code turned this one down without asking. Do not switch to another device to ask again; wait, or ask the user in the conversation.');
 		}
-		// 承認を待つ間に別のペインへ渡っていたら割り当てない（ほかのペインの端末は奪わない）。確かめと書き込みは台帳が一度に行う
-		const attachment = await this._ledger.attachIfFree(paneToken, device.id, answer.stateKey, signal);
-		if (!attachment) {
+		// 承認を待つ間に別のペインへ渡っていたら割り当てない（ほかのペインの端末は奪わない）。上限と、利用者が選んだ
+		// 「外す端末」も、台帳が書き込む直前に確かめる（外すのと足すのは一度に行う）
+		const result = await this._ledger.attachIfFree(paneToken, device.id, answer.stateKey, signal, answer.releaseDeviceId);
+		if (!result || result.refused === 'heldByAnotherPane') {
 			return errorResult(`${device.name} was given to another terminal pane (or disappeared) while the user was answering, so it was not attached.`);
 		}
-		this._logService?.info(`[paradis-mobile-canvas] the user approved attaching ${attachment.deviceName} to a terminal pane`);
-		return jsonResult({ attached: true, approved: true, device: describeDevice(device), replaced: current ? current.deviceName : undefined });
+		if (result.refused !== undefined) {
+			return errorResult(result.refused === 'full'
+				? `This terminal pane already has ${PARADIS_MOBILE_MAX_DEVICES_PER_PANE} devices attached, so ${device.name} was not attached. Detach one you no longer need with mobile_release_device, then ask again.`
+				: `The device the user chose to detach is no longer attached to this pane, so ${device.name} was not attached. Ask again.`);
+		}
+		this._logService?.info(`[paradis-mobile-canvas] the user approved attaching ${result.attachment.deviceName} to a terminal pane`);
+		const now = this._ledger.listPaneAttachments(paneToken);
+		return jsonResult({
+			attached: true,
+			approved: true,
+			device: describeDevice(device),
+			...(result.released ? { released: { id: result.released.deviceId, name: result.released.deviceName } } : {}),
+			attachedDevices: describeMine(now),
+			// 今の端末は、割り当ての一覧の最後（承認を待つ間に利用者が同じ端末を渡し、その後に別の端末も渡していると、この端末とは限らない）
+			...(now.length > 1 ? { note: `${now[now.length - 1].deviceName} is the current device of this pane: mobile tools act on it when you omit "device". Pass "device" to use one of the others.` } : {}),
+		});
+	}
+
+	/** エージェントが、自分のペインの端末を手放す。外すだけなので承認は取らない（取り戻すには、また承認が要る）。 */
+	private async _releaseDevice(paneToken: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<IToolResult> {
+		if (typeof args.device !== 'string' || !args.device.trim()) {
+			return errorResult('"device" must be the id or the exact name of a device attached to this terminal pane. Call mobile_list_devices to see them (attachedDevices).');
+		}
+		const target = await this._ledger.resolveTarget(paneToken, args.device, signal);
+		this._ledger.detach(paneToken, target.attachment.deviceId);
+		this._screenSizes.delete(target.attachment.deviceId);
+		const remaining = this._ledger.listPaneAttachments(paneToken);
+		this._logService?.info(`[paradis-mobile-canvas] an agent released a device from its terminal pane (${remaining.length} left)`);
+		return jsonResult({
+			released: { id: target.attachment.deviceId, name: target.attachment.deviceName },
+			attachedDevices: remaining.map((attachment, index) => ({ id: attachment.deviceId, name: attachment.deviceName, current: index === remaining.length - 1 })),
+		});
 	}
 
 	// --- 画面の入力（端末の口） ---
 
-	private async _rotate(paneToken: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<IToolResult> {
+	private async _rotate(attachment: IParadisMobileAttachment, args: Record<string, unknown>, signal?: AbortSignal): Promise<IToolResult> {
 		const orientation = paradisNormalizeOrientation(args.orientation);
 		if (!orientation) {
 			return errorResult('"orientation" must be one of portrait, portrait-upside-down, landscape-left, landscape-right.');
 		}
-		const attachment = this._requireAttachment(paneToken);
 		const id = encodeURIComponent(attachment.deviceId);
 		await this._host.request('POST', `/api/v1/devices/${id}/input/rotate`, { orientation }, signal);
 		// ホストは画面が回る前に応答するので、スクショの縦横が新しい向きになるまで少し待つ。
@@ -441,12 +527,11 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 		return display ? { width: display.width, height: display.height, scale: display.scale, fromScreenshot: false } : undefined;
 	}
 
-	private async _gesture(paneToken: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<IToolResult> {
+	private async _gesture(attachment: IParadisMobileAttachment, args: Record<string, unknown>, signal?: AbortSignal): Promise<IToolResult> {
 		const kind = args.kind;
 		if (kind !== 'swipe' && kind !== 'long_press' && kind !== 'pinch') {
 			return errorResult('"kind" must be one of swipe, long_press, pinch.');
 		}
-		const attachment = this._requireAttachment(paneToken);
 		const id = encodeURIComponent(attachment.deviceId);
 		let size = await this._screen(attachment.deviceId, signal);
 		const point = optionalPoint(args);
@@ -544,21 +629,21 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 
 	// --- アプリ（simctl / adb） ---
 
-	private async _install(paneToken: string, args: Record<string, unknown>, context: IParadisMcpToolCallContext, signal?: AbortSignal): Promise<IToolResult> {
+	private async _install(paneToken: string, attachment: IParadisMobileAttachment, args: Record<string, unknown>, context: IParadisMcpToolCallContext, signal?: AbortSignal): Promise<IToolResult> {
 		// 同じペインのインストールは1つずつ（断られる呼び出しを並べて、写しを同時にいくつも作らせない）
 		if (this._installsInFlight.has(paneToken)) {
 			return errorResult('Another install from this pane is still in progress or waiting for the user\'s answer.');
 		}
 		this._installsInFlight.add(paneToken);
 		try {
-			return await this._installExclusive(paneToken, args, context, signal);
+			return await this._installExclusive(paneToken, attachment, args, context, signal);
 		} finally {
 			this._installsInFlight.delete(paneToken);
 		}
 	}
 
-	private async _installExclusive(paneToken: string, args: Record<string, unknown>, context: IParadisMcpToolCallContext, signal?: AbortSignal): Promise<IToolResult> {
-		const resolved = await this._resolve(paneToken, signal);
+	private async _installExclusive(paneToken: string, attachment: IParadisMobileAttachment, args: Record<string, unknown>, context: IParadisMcpToolCallContext, signal?: AbortSignal): Promise<IToolResult> {
+		const resolved = await this._resolve(attachment, signal);
 		const target = await this._commands.resolveInstallTarget(resolved.platform, args.path);
 		// 写す前に、今頼んでもダイアログを出さずに断られる状態（3 分の自動の断り・答え待ち）でないかを確かめる。
 		// 判定は承認のときにもう一度行う
@@ -604,15 +689,14 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 			if (answer?.outcome !== 'approved') {
 				return refusal(answer?.outcome, INSTALL_DENIED_MESSAGE, INSTALL_RECENTLY_DENIED_MESSAGE);
 			}
-			// 承認を待つ間に割り当てが変わっていたら入れない（利用者が見た端末と違う端末へ入れないように）
-			if (this._ledger.getAttachment(paneToken)?.deviceId !== resolved.attachedId) {
-				return errorResult('The device attached to this pane changed while the user was answering, so nothing was installed.');
+			// 承認を待つ間にその端末が外されていたら入れない（もう渡していない端末へ入れないように）
+			if (!this._ledger.listPaneAttachments(paneToken).some(entry => entry.deviceId === resolved.attachedId)) {
+				return errorResult('The device was detached from this pane while the user was answering, so nothing was installed.');
 			}
 			await this._commands.install(resolved.platform, resolved.nativeId, staged, signal);
 			this._logService?.info(`[paradis-mobile-canvas] installed an app on ${resolved.device.name}`);
 			return jsonResult({
 				installed: true,
-				device: resolved.device.name,
 				path: target.path,
 				note: 'Para Code installed a copy it made of this path before asking the user; later changes to the path are not included.',
 				...(staged.appId ? { appId: staged.appId } : {}),
@@ -622,8 +706,8 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 		}
 	}
 
-	private async _launch(paneToken: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<IToolResult> {
-		const resolved = await this._resolve(paneToken, signal);
+	private async _launch(attachment: IParadisMobileAttachment, args: Record<string, unknown>, signal?: AbortSignal): Promise<IToolResult> {
+		const resolved = await this._resolve(attachment, signal);
 		const appId = requireAppId(resolved.platform, args.appId);
 		await this._commands.launch(resolved.platform, resolved.nativeId, appId, args.relaunch === true, signal);
 		// 前面のアプリが変わると画面の向きも変わりうるので、覚えた大きさは捨てる（次のジェスチャーで取り直す）
@@ -633,8 +717,8 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 		return textResult(`Launched ${appId} on ${resolved.device.name}.`);
 	}
 
-	private async _grant(paneToken: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<IToolResult> {
-		const resolved = await this._resolve(paneToken, signal);
+	private async _grant(attachment: IParadisMobileAttachment, args: Record<string, unknown>, signal?: AbortSignal): Promise<IToolResult> {
+		const resolved = await this._resolve(attachment, signal);
 		const appId = requireAppId(resolved.platform, args.appId);
 		const permission = paradisResolveMobilePermission(resolved.platform, args.permission);
 		if (!permission) {
@@ -654,21 +738,11 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 		return textResult(`Granted ${permission} to ${appId} on ${resolved.device.name}.${resolved.platform === 'ios' ? ' iOS may have stopped the app if it was running.' : ''}`);
 	}
 
-	/** そのペインに割り当てられた端末（画面の入力に使う）。台帳に無ければ断る（ほかの端末は触らせない）。 */
-	private _requireAttachment(paneToken: string): IParadisMobileAttachment {
-		const attachment = this._ledger.getAttachment(paneToken);
-		if (!attachment) {
-			throw new Error(NO_DEVICE_ATTACHED_MESSAGE);
-		}
-		return attachment;
-	}
-
 	/**
 	 * そのペインに割り当てられた端末を、コマンド（simctl / adb）を打てる形まで解く。
 	 * 起動中で、端末の種類と番号（UDID / シリアル）が分かる必要がある。
 	 */
-	private async _resolve(paneToken: string, signal: AbortSignal | undefined): Promise<IResolvedDevice> {
-		const attachment = this._requireAttachment(paneToken);
+	private async _resolve(attachment: IParadisMobileAttachment, signal: AbortSignal | undefined): Promise<IResolvedDevice> {
 		// 起動前の AVD で割り当てた Android は、起動すると id が serial に替わる（同じ端末として引く）
 		const device = paradisFindMobileDevice(await this._ledger.listDevices(signal), attachment.deviceId);
 		if (!device) {
