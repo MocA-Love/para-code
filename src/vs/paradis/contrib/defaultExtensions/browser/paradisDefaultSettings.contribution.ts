@@ -44,8 +44,15 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		'accessibility.dimUnfocused.enabled': true,
 		'workbench.iconTheme': 'material-icon-theme',
 		'workbench.colorTheme': 'Houston',
-		// `workbench.productIconTheme: 'bongocat'` の既定は外した（2026-11-27）。pixl-garden.BongoCat を既定では入れなくなったため。
-		// 自分で入れた人は、`workbench.productIconTheme` に `bongocat` を選ぶとステータスバーの猫が描かれる（猫の字形はそのテーマが持つ）。
+		// ステータスバーの Bongo Cat（pixl-garden.BongoCat）を表示するための必須設定。
+		// 拡張は `$(bg-leftup)` 等のアイコンで猫を描画するが、拡張本体の contributes.icons が参照する
+		// フォント（./theme/icomoon.woff）は vsix に同梱されておらず、猫が正しく描画されるのは拡張が
+		// 提供する productIconTheme「bongocat」が有効なときだけ。ここで default レイヤーへ既定値として
+		// 注入するため、ユーザーが settings.json で別の productIconTheme を選んでいる場合はそちらが優先され、
+		// 上書きは一切しない。BongoCat 拡張自体はこの contribution とは別に初回起動時にインストールされる
+		// （paradisDefaultExtensions.contribution.ts）が、colorTheme「Houston」と同様、拡張のスキーマ登録後に
+		// テーマサービスが settings 値へ合流させるため、後追いインストールでも問題なく反映される。
+		'workbench.productIconTheme': 'bongocat',
 		// macOS の stable は upstream の既定が native で、右クリック・⌄・プルダウンの一覧が OS のメニューになり、テーマの色や
 		// Para Code のメニューのアイコン・赤字・色の丸が出ない。アプリの中のメニューをテーマで描く（Q575-2）。
 		// macOS の上のメニューバーは設定に関わらず native のまま（hasNativeMenu）。反映には再起動が要る。
