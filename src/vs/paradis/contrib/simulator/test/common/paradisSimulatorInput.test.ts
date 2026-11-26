@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisSimulatorDuoPanel, paradisSimulatorDisplayGeometry, paradisSimulatorKeystrokes, paradisSimulatorStallReason, paradisSimulatorStallRetryDelay, paradisSimulatorFitSize, paradisSimulatorHidUsage, paradisSimulatorNextOrientation, paradisSimulatorPointFromClient, paradisSimulatorRawPoint, paradisSimulatorShouldSendKey, paradisSimulatorTouchEdge } from '../../common/paradisSimulatorInput.js';
+import { paradisSimulatorDuoPanel, paradisSimulatorIsFoldable, paradisSimulatorDisplayGeometry, paradisSimulatorKeystrokes, paradisSimulatorStallReason, paradisSimulatorStallRetryDelay, paradisSimulatorFitSize, paradisSimulatorHidUsage, paradisSimulatorNextOrientation, paradisSimulatorPointFromClient, paradisSimulatorRawPoint, paradisSimulatorShouldSendKey, paradisSimulatorTouchEdge } from '../../common/paradisSimulatorInput.js';
 
 suite('Paradis simulator: human input', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -99,6 +99,42 @@ suite('Paradis simulator: human input', () => {
 			paradisSimulatorDuoPanel({ width: 1000, height: 1000, hingeDegrees: 30 }),
 			paradisSimulatorDuoPanel({ width: 1206, height: 2622 }),
 		], ['inner', 'cover', 'cover', undefined]);
+	});
+
+	// 折りたたみかどうかは開き具合の有無で決めない（Xcode 27.2 では 1 度開閉するまで開き具合が読めない）。
+	// 端末の型を主にし、型が分からないときだけ映像の長い辺（2034・2853）で見る
+	test('decides whether a device folds by its device type, then by the frame size', () => {
+		const duo = { deviceTypeIdentifier: 'com.apple.CoreSimulator.SimDeviceType.iPhone-Duo' };
+		const flat = { deviceTypeIdentifier: 'com.apple.CoreSimulator.SimDeviceType.iPhone-17' };
+		assert.deepStrictEqual({
+			duoWithoutHinge: paradisSimulatorIsFoldable(duo, { width: 2007, height: 2853 }),
+			duoScaledStream: paradisSimulatorIsFoldable(duo, { width: 1000, height: 1422 }),
+			duoWithoutConfig: paradisSimulatorIsFoldable(duo, undefined),
+			flatByType: paradisSimulatorIsFoldable(flat, { width: 1206, height: 2622 }),
+			flatByTypeEvenAtDuoSize: paradisSimulatorIsFoldable(flat, { width: 2007, height: 2853 }),
+			noTypeInnerSize: paradisSimulatorIsFoldable({}, { width: 2007, height: 2853 }),
+			noTypeCoverSizeLandscape: paradisSimulatorIsFoldable(undefined, { width: 2034, height: 1398 }),
+			noTypeOtherSize: paradisSimulatorIsFoldable({}, { width: 1206, height: 2622 }),
+			noTypeNoConfig: paradisSimulatorIsFoldable(undefined, undefined),
+			hingeKnown: paradisSimulatorIsFoldable({}, { width: 1000, height: 1000, hingeDegrees: 30 }),
+			panelsWithoutHinge: [
+				paradisSimulatorDuoPanel({ width: 2007, height: 2853 }),
+				paradisSimulatorDuoPanel({ width: 1398, height: 2034 }),
+				paradisSimulatorDuoPanel({ width: 1000, height: 1422 }),
+			],
+		}, {
+			duoWithoutHinge: true,
+			duoScaledStream: true,
+			duoWithoutConfig: true,
+			flatByType: false,
+			flatByTypeEvenAtDuoSize: false,
+			noTypeInnerSize: true,
+			noTypeCoverSizeLandscape: true,
+			noTypeOtherSize: false,
+			noTypeNoConfig: false,
+			hingeKnown: true,
+			panelsWithoutHinge: ['inner', 'cover', undefined],
+		});
 	});
 
 	// 映像が届かない知らせの理由: 流れが終わった理由、ホストが起きない理由の順。どちらも無ければ汎用の文（undefined）

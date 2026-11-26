@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisDeviceHubActive, paradisParseSimctlDevices, paradisParseSimulatorKeyboardFallback, paradisParseSimulatorFold, paradisParseSimulatorHostMessage, paradisSimulatorFoldFrame, paradisSimulatorInputFrame, ParadisMjpegSplitter } from '../../common/paradisSimulatorFrames.js';
+import { paradisDeviceHubActive, paradisParseSimctlDevices, paradisParseSimulatorKeyboardFallback, paradisParseSimulatorFold, paradisParseSimulatorHostMessage, paradisSimulatorFoldFrame, paradisSimulatorInputFrame, paradisSimulatorRuntimeName, ParadisMjpegSplitter } from '../../common/paradisSimulatorFrames.js';
 
 function decode(frame: Uint8Array): [number, unknown] {
 	return [frame[0], JSON.parse(new TextDecoder().decode(frame.subarray(1)))];
@@ -171,6 +171,37 @@ suite('Paradis simulator: frames', () => {
 				{ udid: 'E0000000-0000-0000-0000-000000000000', name: 'iPhone Duo', runtime: 'iOS 27.2', state: 'ShuttingDown' },
 			],
 			hub: [true, false, false],
+		});
+	});
+
+	// Xcode 27.2 の `simctl list devices -j` の実物の形。iPhone Duo の runtime は版の後ろに端末の名前が付き、端末の型は
+	// deviceTypeIdentifier に入る（折りたたみかどうかの判定に使う）
+	test('reads the device type and a runtime key that ends with a device name', () => {
+		const stdout = JSON.stringify({
+			devices: {
+				'com.apple.CoreSimulator.SimRuntime.iOS-27-2': [
+					{ udid: 'B0000000-0000-0000-0000-000000000000', name: 'iPhone 17', state: 'Booted', isAvailable: true, deviceTypeIdentifier: 'com.apple.CoreSimulator.SimDeviceType.iPhone-17' },
+				],
+				'com.apple.CoreSimulator.SimRuntime.iOS-27-2-iPhone19-4': [
+					{ udid: 'E0000000-0000-0000-0000-000000000000', name: 'iPhone Duo', state: 'Booted', isAvailable: true, deviceTypeIdentifier: 'com.apple.CoreSimulator.SimDeviceType.iPhone-Duo' },
+				],
+			},
+		});
+		assert.deepStrictEqual({
+			devices: paradisParseSimctlDevices(stdout),
+			names: [
+				'com.apple.CoreSimulator.SimRuntime.iOS-27-2-iPhone19-4',
+				'com.apple.CoreSimulator.SimRuntime.iOS-27-1',
+				'com.apple.CoreSimulator.SimRuntime.iOS-27',
+				'com.apple.CoreSimulator.SimRuntime.xrOS-27-2',
+				'not a runtime key',
+			].map(paradisSimulatorRuntimeName),
+		}, {
+			devices: [
+				{ udid: 'B0000000-0000-0000-0000-000000000000', name: 'iPhone 17', runtime: 'iOS 27.2', state: 'Booted', deviceTypeIdentifier: 'com.apple.CoreSimulator.SimDeviceType.iPhone-17' },
+				{ udid: 'E0000000-0000-0000-0000-000000000000', name: 'iPhone Duo', runtime: 'iOS 27.2', state: 'Booted', deviceTypeIdentifier: 'com.apple.CoreSimulator.SimDeviceType.iPhone-Duo' },
+			],
+			names: ['iOS 27.2', 'iOS 27.1', 'iOS 27', 'xrOS 27.2', 'not a runtime key'],
 		});
 	});
 });
