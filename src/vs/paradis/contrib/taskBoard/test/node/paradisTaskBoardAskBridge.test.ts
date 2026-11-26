@@ -207,6 +207,16 @@ suite('ParadisTaskBoardAskBridge', () => {
 		assert.deepStrictEqual([result, entry?.state, entry?.paneKey, entry?.windowId], ['200 {"ok":true,"refused":0}', 'waiting', undefined, undefined]);
 	});
 
+	test('sending an approval back asks for confirmation, naming the step it returns to only when there is one', () => {
+		// 手前にエージェントの工程が無く、onFail も無い承認の工程（戻す先が分からない）
+		const lone: ITaskBoardFlow = { ...TASK_BOARD_DEFAULT_FLOW, steps: [{ id: 'approve', name: '承認', kind: 'human', gate: 'approve' }] };
+		const confirmOf = (flow: ITaskBoardFlow) => taskBoardAskOf(task({ status: 'approval', step: 'approve' }), flow, LEDGER)?.actions.find(action => action.id === 'sendBack')?.confirm;
+		assert.deepStrictEqual([confirmOf(TASK_BOARD_DEFAULT_FLOW), confirmOf(lone)], [
+			{ title: '差し戻す', body: '調査・計画からやり直します', ok: '差し戻す' },
+			{ title: '差し戻す', body: '前の工程からやり直します', ok: '差し戻す' },
+		]);
+	});
+
 	test('every ask the board builds from a task passes the ledger\'s checks unchanged', () => {
 		const flow: ITaskBoardFlow = TASK_BOARD_DEFAULT_FLOW;
 		const asked = { id: 'q7', text: 'どちらにしますか?', allowText: true, askedAt: 800 };
