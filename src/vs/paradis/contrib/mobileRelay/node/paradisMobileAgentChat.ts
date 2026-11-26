@@ -4517,6 +4517,17 @@ export class ParadisMobileAgentChat extends Disposable {
 	 * ペアリング済みモバイル向けのライブ質問/承認注入を切り替える。CodexのStopなし終了を
 	 * 検出するstatus用tailerはモバイル接続から独立しているため、無効化しても停止しない。
 	 */
+	/**
+	 * 「人が答えるもの」の台帳の書き手（humanAsk）が読んでいる間は、スマホ・チャット表示が見ていないペインでも、質問・承認の
+	 * hook が来たら tailer を起こして待ちを持つ（受信箱から答えられるかを、スマホの登録やチャット表示の設定で変えないため）。
+	 * 起こすのは質問・承認の hook が来たペインだけで、起こした tailer はほかの理由で起こしたものと同じくペインが終わるまで残る。
+	 */
+	private humanAskTailing = false;
+
+	setHumanAskTailing(enabled: boolean): void {
+		this.humanAskTailing = enabled;
+	}
+
 	setEagerTailing(enabled: boolean): void {
 		if (this.eagerTailing === enabled) {
 			return;
@@ -10624,7 +10635,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		// transcript へ flush しないため、PreToolUse hook の tool_input から合成質問カードを
 		// 注入する（チャット表示・回答待ちバッジ・プッシュ通知の唯一のライブな供給源）。
 		if (event.event === 'PreToolUse' && event.toolName === 'AskUserQuestion' && event.toolInput !== undefined
-			&& (this.eagerTailing || this.subscribers.has(event.token) || this.isDesktopChatWatched(event.token))) {
+			&& (this.eagerTailing || this.humanAskTailing || this.subscribers.has(event.token) || this.isDesktopChatWatched(event.token))) {
 			// デスクトップのチャット表示のためだけに入れる（モバイル向けの注入が動いていない）ときは、
 			// モバイルへの質問通知を出さない。モバイルから見た振る舞いを変えないため。
 			const mobileWants = this.eagerTailing || this.subscribers.has(event.token);
@@ -10634,7 +10645,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		// Codex の非同期の質問（request_user_input_async）。rollout の item_completed が正で、ここは早く知るための補助
 		// （tool_use_id が call_id。rollout が同じ呼び出しを書いたら同じ質問として扱う）。返信の発言は UserPromptSubmit の
 		// prompt にも来るので、rollout を待たずに答えた質問を外す。
-		if (info.agent === 'codex' && (this.eagerTailing || this.subscribers.has(event.token) || this.isDesktopChatWatched(event.token))) {
+		if (info.agent === 'codex' && (this.eagerTailing || this.humanAskTailing || this.subscribers.has(event.token) || this.isDesktopChatWatched(event.token))) {
 			if (event.event === 'PreToolUse' && event.toolName === PARADIS_CODEX_ASYNC_QUESTION_TOOL && event.toolInput !== undefined) {
 				this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).addAsyncQuestionsFromHook(event.toolUseId, event.toolInput, event.at);
 			} else if (event.event === 'PostToolUseFailure' && event.toolName === PARADIS_CODEX_ASYNC_QUESTION_TOOL && event.toolUseId !== undefined) {
@@ -10660,7 +10671,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			&& !getParadisAgentPaneActivity(event.token).pendingQuestion
 			&& !((this.tailers.get(event.token)?.pendingQuestions.size ?? 0) > 0)
 			&& (event.toolName !== undefined || event.toolInput !== undefined)
-			&& (this.eagerTailing || this.subscribers.has(event.token) || this.isDesktopChatWatched(event.token))) {
+			&& (this.eagerTailing || this.humanAskTailing || this.subscribers.has(event.token) || this.isDesktopChatWatched(event.token))) {
 			const mobileWants = this.eagerTailing || this.subscribers.has(event.token);
 			// Antigravity CLI の引数（`CommandLine` など）は、カードが読む名前に写す
 			const card = info.agent === 'antigravity' ? paradisAntigravityApprovalCardInput(event.toolName, event.toolInput) : { toolName: event.toolName, toolInput: event.toolInput };
