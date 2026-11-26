@@ -1205,7 +1205,28 @@ do {
 	check(!paradisSecureInputBlocksKeys(secureInputEnabled: true, ownerPid: 555, keyTargetPid: 100, viaFrontmost: true) && !paradisSecureInputBlocksKeys(secureInputEnabled: true, ownerPid: 555, keyTargetPid: 100, viaFrontmost: false), "another app's Secure Input (a terminal that keeps it on) does not stop keys")
 	check(paradisSecureInputBlocksKeys(secureInputEnabled: true, ownerPid: nil, keyTargetPid: 100, viaFrontmost: true), "an unknown owner stops keys sent to the app in front")
 	check(!paradisSecureInputBlocksKeys(secureInputEnabled: true, ownerPid: nil, keyTargetPid: 100, viaFrontmost: false), "an unknown owner does not stop keys sent straight to the target")
+	// 前面へ届く送り方では、持ち主が今の前面のアプリなら（頼まれた的と違っても）断る。的へ直接送るときは前面を見ない
+	check(paradisSecureInputBlocksKeys(secureInputEnabled: true, ownerPid: 555, keyTargetPid: 100, viaFrontmost: true, frontmostPid: 555), "the owner in front stops keys sent to the app in front")
+	check(!paradisSecureInputBlocksKeys(secureInputEnabled: true, ownerPid: 555, keyTargetPid: 100, viaFrontmost: false, frontmostPid: 555) && !paradisSecureInputBlocksKeys(secureInputEnabled: true, ownerPid: 555, keyTargetPid: 100, viaFrontmost: true, frontmostPid: 777), "an owner that is neither the target nor in front stops nothing")
 	check(paradisSecureInputFailure().code == "secure_input_active", "the refusal has its own code")
+	// 掛け金の鍵を持ったまま送る: 掛かっていなければ送り、掛かった後は送らずに断る
+	let gate = ParadisEmergencyStop()
+	var sent = 0
+	try? gate.sendUnlessStopped { sent += 1 }
+	gate.beginInput(at: 10)
+	gate.noteKeyDown(.escape, at: 10.1)
+	gate.noteKeyDown(.escape, at: 10.3)
+	var refused: String?
+	do {
+		try gate.sendUnlessStopped { sent += 1 }
+	} catch let error as ParadisHelperError {
+		refused = error.code
+	} catch {
+		refused = "other"
+	}
+	gate.resume()
+	try? gate.sendUnlessStopped { sent += 1 }
+	check(sent == 2 && refused == "stopped_by_user", "a press is not sent once the stop is latched, and is sent again after resume")
 }
 
 do {

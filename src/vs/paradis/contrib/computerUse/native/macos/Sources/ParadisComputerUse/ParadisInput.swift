@@ -266,8 +266,13 @@ extension ParadisDesktop {
 			}
 			if case .text(let character) = unit {
 				let utf16 = Array(character.utf16)
-				try postKey(virtualKey: 0) { event in
-					event.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
+				do {
+					try postKey(virtualKey: 0) { event in
+						event.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
+					}
+				} catch let error as ParadisHelperError where error.code == "stopped_by_user" {
+					// 押下の直前に止められた: ここまでに打てた数を添える
+					throw ParadisHelperError(code: error.code, message: "\(error.message); stopped after typing \(typed) of \(units.count) characters", progress: typed)
 				}
 			}
 			usleep(paradisInterCharacterMicroseconds)
@@ -473,7 +478,8 @@ extension ParadisDesktop {
 		}
 		let session = CGSessionCopyCurrentDictionary() as? [String: Any]
 		let owner = (session?["kCGSSessionSecureInputPID"] as? NSNumber)?.int32Value
-		return paradisSecureInputBlocksKeys(secureInputEnabled: true, ownerPid: owner, keyTargetPid: pid, viaFrontmost: viaFrontmost) ? paradisSecureInputFailure() : nil
+		let frontmost = viaFrontmost ? NSWorkspace.shared.frontmostApplication?.processIdentifier : nil
+		return paradisSecureInputBlocksKeys(secureInputEnabled: true, ownerPid: owner, keyTargetPid: pid, viaFrontmost: viaFrontmost, frontmostPid: frontmost) ? paradisSecureInputFailure() : nil
 	}
 
 	private func pointerFence(pid: Int32, point: CGPoint) throws {
@@ -563,7 +569,23 @@ extension ParadisDesktop {
 			throw ParadisHelperError(code: "input_failed", message: "the input event could not be created")
 		}
 		event.setIntegerValueField(.eventSourceUserData, value: paradisSyntheticEventMarker)
-		event.post(tap: .cghidEventTap)
+		// 押下（キー・マウスのボタン）は、緊急停止の掛け金の鍵を持ったまま送る。フェンスで停止を確かめた後、ウィンドウや
+		// フォーカスを問い合わせている間に利用者が止めても、その後の押下は送らない。離す・動かす・修飾キーの解放は
+		// 止めない（押したままのキーやボタンを残さないため）
+		let press: Bool
+		switch event.type {
+		case .keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown:
+			press = true
+		default:
+			press = false
+		}
+		if press {
+			try emergencyStop.sendUnlessStopped {
+				event.post(tap: .cghidEventTap)
+			}
+		} else {
+			event.post(tap: .cghidEventTap)
+		}
 	}
 
 	/**

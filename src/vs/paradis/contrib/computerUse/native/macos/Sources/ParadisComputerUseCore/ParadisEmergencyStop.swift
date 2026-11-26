@@ -144,6 +144,22 @@ final class ParadisEmergencyStop {
 		lock.unlock()
 	}
 
+	/**
+	 * 掛け金が掛かっていなければ `send` を実行する（押下を 1 つ送る）。鍵を持ったまま送るので、イベントタップが
+	 * 掛け金を掛ける（`noteKeyDown`）のと順序が付く: 掛かった後に押下が送られることは無い。掛かっていれば送らずに投げる。
+	 * `send` の中からこの掛け金に触れないこと（鍵は再入できない）。
+	 */
+	func sendUnlessStopped(_ send: () -> Void) throws {
+		lock.lock()
+		defer {
+			lock.unlock()
+		}
+		if stopped {
+			throw ParadisHelperError(code: "stopped_by_user", message: "the user stopped Computer Use by pressing Escape twice")
+		}
+		send()
+	}
+
 	/** 掛かっていれば、入力を断る失敗。 */
 	func failure() -> ParadisHelperError? {
 		return isStopped ? ParadisHelperError(code: "stopped_by_user", message: "the user stopped Computer Use by pressing Escape twice") : nil
@@ -156,18 +172,21 @@ final class ParadisEmergencyStop {
  * セキュア入力（パスワード欄などがキーボードを独占する macOS の仕組み）が有効なとき、キーを送らずに断るか。
  *  - 持ち主がキーの届く先のアプリなら断る（そのアプリのパスワード欄に打つことになる）
  *  - 持ち主が分からず、前面のアプリへ届く送り方（HID のタップへ送る 3 段目）なら断る
- *  - 持ち主が別のアプリなら断らない（ターミナルの「キーボード入力のセキュリティを保護」を常にオンにしている人は、
+ *  - 前面のアプリへ届く送り方で、持ち主が今の前面のアプリ（`frontmostPid`）なら断る（頼まれた的と違っていても）
+ *  - 持ち主が的でも前面でもない別のアプリなら断らない（ターミナルの「キーボード入力のセキュリティを保護」を常にオンにしている人は、
  *    セキュア入力がずっと有効なので、断ると何も送れなくなる）
  * `ownerPid` は取れないことがある（セッションの辞書に載らない）。
  */
-func paradisSecureInputBlocksKeys(secureInputEnabled: Bool, ownerPid: Int32?, keyTargetPid: Int32, viaFrontmost: Bool) -> Bool {
+func paradisSecureInputBlocksKeys(secureInputEnabled: Bool, ownerPid: Int32?, keyTargetPid: Int32, viaFrontmost: Bool, frontmostPid: Int32? = nil) -> Bool {
 	guard secureInputEnabled else {
 		return false
 	}
 	guard let ownerPid else {
 		return viaFrontmost
 	}
-	return ownerPid == keyTargetPid
+	// 前面へ届く送り方では、キーを受け取るのは今の前面のアプリ。送っている途中で前面が持ち主のアプリに替わっても
+	// 断れるよう、頼まれた的だけでなく前面のアプリとも比べる
+	return ownerPid == keyTargetPid || (viaFrontmost && frontmostPid == ownerPid)
 }
 
 /** キーを送らずに断る失敗。 */

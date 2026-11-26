@@ -131,9 +131,15 @@ ParadisSharedProcessContributions.register('computerUse', ({ server, accessor })
 		if (enabled()) {
 			helper.check().catch(error => logService.warn('[ParadisComputerUse] check failed', error));
 		} else {
-			// オフにしたら補助アプリを止め、許可も忘れる（次にオンにしたときは聞き直す）
-			helper.markDisabled();
+			// オフにしたら補助アプリを止め、許可も忘れる（次にオンにしたときは聞き直す）。許可はすぐ忘れる。
+			// 補助アプリを止めるのは、Esc の停止が掛かっているかを読んでから（掛け金は補助アプリと一緒に消えるので、
+			// 読まずに止めると、設定のオフ→オンで停止を外せてしまう）。読んでいる間にオンへ戻っていたら止めない
 			ledger.clear();
+			provider.captureStopped().finally(() => {
+				if (!enabled()) {
+					helper.markDisabled();
+				}
+			});
 		}
 	};
 	store.add(configurationService.onDidChangeConfiguration(event => {

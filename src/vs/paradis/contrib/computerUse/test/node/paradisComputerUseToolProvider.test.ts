@@ -1285,6 +1285,20 @@ suite('ParadisComputerUseToolProvider', () => {
 			},
 		});
 	});
+
+	// 利用者が Esc で止めた後、どの要求も来ないうちに設定をオフにされても、補助アプリを終わらせる前に停止を読んで覚える
+	// （掛け金は補助アプリと一緒に消える。覚えていないと、設定のオフ→オンで停止を外せてしまう）
+	test('learns that the user stopped Computer Use before the helper is shut down', async () => {
+		const { helper, ledger, provider } = setup();
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		helper.stopped = true;
+		const before = provider.stopped;
+		await provider.captureStopped();
+		// 補助アプリが起動し直して、掛け金を忘れた
+		helper.stopped = false;
+		const result = await provider.callTool('pane-a', 'computer_press_key', { app: 'Notes', key: 'tab' }, undefined, createContext('pane', []).context) as IResult;
+		assert.deepStrictEqual({ before, after: provider.stopped, refused: text(result).includes('stopped Computer Use'), inputs: helper.inputs.length }, { before: false, after: true, refused: true, inputs: 0 });
+	});
 });
 
 suite('paradisScreenDataBlock', () => {
