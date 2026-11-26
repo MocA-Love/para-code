@@ -16,6 +16,13 @@
 // 嘘を返さないよう、呼ぶ前に相手が居ることを確かめ、呼んだ後に状態を読み直す。
 // 人のメニューと同じく、名前の重複は断らない（id で区別する）。消すのは見出しだけで、リポジトリも
 // ワークツリーも消さない。中身のあるセクションを消すときだけ、利用者の確認を通す。
+//
+// 範囲の設定（actionScope）が「同じスペースだけ」のときは、create_space と同じくリポジトリ単位で範囲を決める。
+// 触れてよいのは、呼び出し元のスペースのリポジトリ（と、そのエージェントが作ったワークツリーのスペース）だけ。
+// - スペースのセクション: 作成・変更・削除は持ち主のリポジトリが範囲内のとき。移すのは動かすワークツリーが範囲内のとき
+// - プロジェクトのセクション: 作成は範囲に関係なく許す（空の見出しができるだけ）。変更・削除は中身のリポジトリが
+//   すべて範囲内（空を含む）のとき。移すのは動かすリポジトリが範囲内のとき（行き先の中身は問わない。範囲外の中身を
+//   外へ出せないので、範囲外の中身を持つセクションを空にして消す経路は無い）
 
 import { getActiveWindow } from '../../../../base/browser/dom.js';
 import { localize } from '../../../../nls.js';
@@ -25,7 +32,7 @@ import { IParadisDialogService, paradisNotifyConfirmation } from '../../confirmD
 import { IParadisSpaceSectionsService } from '../../workspaceSwitch/common/paradisSpaceSections.js';
 import { IParadisWorkspaceSectionsService, paradisNormalizeSectionName } from '../../workspaceSwitch/common/paradisWorkspaceSections.js';
 import { IParadisSpaceEntry, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisListSpaces, paradisWorktreeStateKey } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import { PARADIS_AGENT_IDE_SECTION_NONE, ParadisAgentIdeRequest, ParadisAgentIdeResult } from '../common/paradisAgentIde.js';
+import { PARADIS_AGENT_IDE_SECTION_NONE, ParadisAgentIdeRequest, ParadisAgentIdeResult, paradisAgentIdeUntrustedTitle } from '../common/paradisAgentIde.js';
 
 /** `list_spaces` の `sections` の 1 件。並びは一覧に出る順。 */
 export interface IParadisAgentIdeSectionRow {
@@ -40,12 +47,25 @@ export interface IParadisAgentIdeSectionRow {
 	readonly spaces: readonly string[];
 }
 
+/**
+ * 道具が触れてよい範囲。`'window'` は範囲の設定がウィンドウ全体のとき（制限なし）。
+ * それ以外は呼び出し元のスペースのリポジトリと、そのエージェントが作ったスペース。
+ */
+export type ParadisAgentIdeSectionScope = 'window' | {
+	/** 呼び出し元のスペースのリポジトリ。分からないときは undefined（作ったスペースのほかは何も触れない）。 */
+	readonly repository: string | undefined;
+	/** そのエージェントが create_space で作ったスペースのキー。 */
+	readonly createdSpaces: ReadonlySet<string>;
+};
+
 type Failure = { readonly ok: false; readonly error: string };
 
 function fail(error: string): Failure {
 	return { ok: false, error };
 }
 
+const OUT_OF_SCOPE = 'That section or space belongs to a repository other than the one of your own space. Agents can only change sections of the repository of their own space (the user can widen this to the whole window in Para Code settings).';
+const NO_SPACE = 'Para Code cannot tell which space your terminal belongs to (it may be the shared panel terminal or still restoring), so it only lets you change sections of spaces you created yourself.';
 const NOT_SAVED = 'Para Code could not save the change (the list of sections may be full). Nothing was changed; call list_spaces to see the current sections.';
 
 export class ParadisAgentIdeSections {
@@ -96,10 +116,13 @@ export class ParadisAgentIdeSections {
 		return rows;
 	}
 
-	create(request: Extract<ParadisAgentIdeRequest, { op: 'createSection' }>): ParadisAgentIdeResult {
+	create(request: Extract<ParadisAgentIdeRequest, { op: 'createSection' }>, scope: ParadisAgentIdeSectionScope): ParadisAgentIdeResult {
 		if (request.repository !== undefined) {
 			if (!this.workspaceSwitchService.repositories.some(repository => repository.id === request.repository)) {
 				return fail(`Unknown repository "${request.repository}". Pass a space key of kind "repository" from list_spaces.`);
+			}
+			if (!inScope(scope, request.repository)) {
+				return fail(outOfScope(scope));
 			}
 			const id = this.spaceSectionsService.createSection(request.repository, request.name);
 			return this._created(id);
@@ -116,11 +139,14 @@ export class ParadisAgentIdeSections {
 		return row ? { ok: true, data: { section: row } } : fail(NOT_SAVED);
 	}
 
-	update(request: Extract<ParadisAgentIdeRequest, { op: 'updateSection' }>): ParadisAgentIdeResult {
+	update(request: Extract<ParadisAgentIdeRequest, { op: 'updateSection' }>, scope: ParadisAgentIdeSectionScope): ParadisAgentIdeResult {
 		const rows = this.list();
 		const row = rows.find(candidate => candidate.id === request.section);
 		if (!row) {
 			return fail(this._unknownSection(request.section, rows));
+		}
+		if (!sectionInScope(scope, row)) {
+			return fail(outOfScope(scope));
 		}
 		if (request.color !== undefined && row.repository !== undefined) {
 			return fail('Sections inside a repository have no color.');
@@ -178,13 +204,21 @@ export class ParadisAgentIdeSections {
 	/**
 	 * @param requestedBy 依頼元のターミナルの名乗り（確認に出す）
 	 */
-	remove(request: Extract<ParadisAgentIdeRequest, { op: 'removeSection' }>, requestedBy: string): ParadisAgentIdeResult {
+	remove(request: Extract<ParadisAgentIdeRequest, { op: 'removeSection' }>, requestedBy: string, scope: ParadisAgentIdeSectionScope): ParadisAgentIdeResult {
 		const rows = this.list();
 		const row = rows.find(candidate => candidate.id === request.section);
 		if (!row) {
 			return fail(this._unknownSection(request.section, rows));
 		}
-		if (row.spaces.length === 0) {
+		if (!sectionInScope(scope, row)) {
+			return fail(outOfScope(scope));
+		}
+		// 一覧（row.spaces）は切り替え先にならない missing のワークツリーを載せないが、セクションには残っている。
+		// 中身として数えないと、missing だけのセクションが確認なしで消える
+		const contents = row.repository !== undefined
+			? this.spaceSectionsService.orderedWorktrees(row.repository).filter(worktree => this.spaceSectionsService.sectionOf(worktree) === row.id).length
+			: row.spaces.length;
+		if (contents === 0) {
 			this._removeNow(row);
 			return this.list().some(candidate => candidate.id === row.id) ? fail(NOT_SAVED) : { ok: true, data: { section: row.id, removed: true } };
 		}
@@ -200,9 +234,9 @@ export class ParadisAgentIdeSections {
 			destructive: true,
 			type: 'warning',
 			// allow-any-unicode-next-line
-			message: localize('paradis.agentIde.removeSectionConfirm', "セクション「{0}」を削除しますか？", row.name),
+			message: localize('paradis.agentIde.removeSectionConfirm', "セクション「{0}」を削除しますか？", paradisAgentIdeUntrustedTitle(row.name)),
 			// allow-any-unicode-next-line
-			detail: localize('paradis.agentIde.removeSectionDetail', "この削除は、あなたではなくターミナル「{0}」のエージェントからの依頼です。\n\n見出しだけを消します。中の {1} 件はセクションの外へ戻り、リポジトリとワークツリーは消えません。", requestedBy, row.spaces.length),
+			detail: localize('paradis.agentIde.removeSectionDetail', "この削除は、あなたではなくターミナル「{0}」のエージェントからの依頼です。\n\n見出しだけを消します。中の {1} 件はセクションの外へ戻り、リポジトリとワークツリーは消えません。", requestedBy, contents),
 			// allow-any-unicode-next-line
 			primaryButton: localize('paradis.agentIde.removeSectionConfirmAction', "削除"),
 		}).then(({ confirmed }) => {
@@ -222,12 +256,15 @@ export class ParadisAgentIdeSections {
 		}
 	}
 
-	move(request: Extract<ParadisAgentIdeRequest, { op: 'moveSpaceToSection' }>): ParadisAgentIdeResult {
+	move(request: Extract<ParadisAgentIdeRequest, { op: 'moveSpaceToSection' }>, scope: ParadisAgentIdeSectionScope): ParadisAgentIdeResult {
 		const spaces = paradisListSpaces(this.workspaceSwitchService.repositories, this.worktreeService);
 		const unknownSpace = (space: string) => fail(`Unknown space "${space}". Call list_spaces for the space keys.`);
 		const entry = spaces.find(candidate => candidate.space === request.space);
 		if (!entry) {
 			return unknownSpace(request.space);
+		}
+		if (!inScope(scope, entry.repositoryId, entry.kind === 'worktree' ? entry.space : undefined)) {
+			return fail(outOfScope(scope));
 		}
 		if (entry.worktree?.isMainCheckout) {
 			return fail('The main checkout of a repository cannot be put into a section inside its repository. To move the whole repository, pass its repository space key.');
@@ -285,4 +322,18 @@ export class ParadisAgentIdeSections {
 		const known = rows.map(row => `${row.id} (${JSON.stringify(row.name)}${row.repository !== undefined ? `, in repository ${row.repository}` : ''})`);
 		return `Unknown section "${id}". ${known.length > 0 ? `Sections: ${known.join('; ')}.` : 'There are no sections yet; create one with create_space_section.'}`;
 	}
+}
+
+/** リポジトリ（またはそのワークツリーのスペース）が範囲内か。作ったスペースはリポジトリが違っても範囲内。 */
+function inScope(scope: ParadisAgentIdeSectionScope, repositoryId: string, space?: string): boolean {
+	return scope === 'window' || repositoryId === scope.repository || (space !== undefined && scope.createdSpaces.has(space));
+}
+
+/** 変える・消してよいセクションか。スペースのセクションは持ち主、プロジェクトのセクションは中身のリポジトリがすべて範囲内（空を含む）。 */
+function sectionInScope(scope: ParadisAgentIdeSectionScope, row: IParadisAgentIdeSectionRow): boolean {
+	return row.repository !== undefined ? inScope(scope, row.repository) : row.spaces.every(repositoryId => inScope(scope, repositoryId));
+}
+
+function outOfScope(scope: ParadisAgentIdeSectionScope): string {
+	return scope !== 'window' && scope.repository === undefined ? NO_SPACE : OUT_OF_SCOPE;
 }

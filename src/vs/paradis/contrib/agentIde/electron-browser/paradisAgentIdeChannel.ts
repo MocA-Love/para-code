@@ -83,7 +83,7 @@ import {
 	paradisAgentIdeUntrustedTitle,
 } from '../common/paradisAgentIde.js';
 import { IParadisAgentChoiceMenu, paradisAgentChoiceMenuMessage } from '../common/paradisAgentChoiceMenu.js';
-import { ParadisAgentIdeSections } from '../browser/paradisAgentIdeSections.js';
+import { ParadisAgentIdeSections, ParadisAgentIdeSectionScope } from '../browser/paradisAgentIdeSections.js';
 import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 import { IParadisSpaceSectionsService } from '../../workspaceSwitch/common/paradisSpaceSections.js';
 import { IParadisWorkspaceSectionsService } from '../../workspaceSwitch/common/paradisWorkspaceSections.js';
@@ -278,17 +278,29 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 		}
 	}
 
-	/** セクションは窓の一覧全体のもの（どれか 1 つのスペースのものではない）なので、範囲の設定（actionScope）は見ない。 */
+	/**
+	 * セクションの作成・変更・削除・出し入れ。範囲の設定（actionScope）が「同じスペースだけ」なら、create_space と
+	 * 同じく呼び出し元のスペースのリポジトリ（と自分が作ったスペース）だけに触れる。判定はセクションの側で行う。
+	 */
 	private _runSectionOperation(callerToken: string, request: Extract<ParadisAgentIdeRequest, { op: 'createSection' | 'updateSection' | 'removeSection' | 'moveSpaceToSection' }>): ParadisAgentIdeResult {
-		if (!this._caller(callerToken)) {
+		const caller = this._caller(callerToken);
+		if (!caller) {
 			return fail(CALLER_UNKNOWN);
 		}
+		const scope: ParadisAgentIdeSectionScope = this._windowScope()
+			? 'window'
+			: { repository: this._callerRepository(caller), createdSpaces: this._createdBy(callerToken)?.spaces ?? new Set() };
 		switch (request.op) {
-			case 'createSection': return this._sections.create(request);
-			case 'updateSection': return this._sections.update(request);
-			case 'removeSection': return this._sections.remove(request, this._describeCaller(callerToken));
-			case 'moveSpaceToSection': return this._sections.move(request);
+			case 'createSection': return this._sections.create(request, scope);
+			case 'updateSection': return this._sections.update(request, scope);
+			case 'removeSection': return this._sections.remove(request, this._describeCaller(callerToken), scope);
+			case 'moveSpaceToSection': return this._sections.move(request, scope);
 		}
+	}
+
+	/** 呼び出し元のスペースのリポジトリ。スペースが分からなければ undefined。 */
+	private _callerRepository(caller: IResolvedTerminal, spaces: readonly IParadisSpaceEntry[] = this._spaces()): string | undefined {
+		return caller.space !== undefined ? spaces.find(entry => entry.space === caller.space)?.repositoryId : undefined;
 	}
 
 	// --- 設定 ----------------------------------------------------------------------------------
@@ -923,7 +935,7 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 		if (request.runSetup === true && !this._setting(PARADIS_AGENT_IDE_ALLOW_SHELL_COMMANDS_SETTING)) {
 			return fail(`run_setup=true runs the repository's setup script outside your sandbox. ${PARADIS_AGENT_IDE_SHELL_DISABLED_MESSAGE}`);
 		}
-		const callerRepository = spaces.find(entry => entry.space === caller.space)?.repositoryId;
+		const callerRepository = this._callerRepository(caller, spaces);
 		const repositoryId = request.repository ?? callerRepository;
 		if (repositoryId === undefined) {
 			return fail('Para Code cannot tell which repository your terminal belongs to. Pass "repository" (a space key of kind "repository" from list_spaces).');

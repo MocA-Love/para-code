@@ -21,8 +21,9 @@
 //   `paradis.agentIde.allowShellCommands`（既定オフ）。サンドボックスや許可設定の外で動くため
 // - 閉じる・削除は、そのエージェント自身が作ったものだけ
 // - 許可待ち・質問中・作業中のペインへは Enter を送らない。Enter を送るかは毎回明示させる
-// - 「スペース」の一覧のセクション（見出し）の作成・変更・並べ替えは、窓の一覧全体のものなので範囲の設定を見ず、
-//   利用者が作ったセクションも変えられる。消えるのは見出しだけだが、中身のあるセクションの削除は利用者の確認を通す
+// - 「スペース」の一覧のセクション（見出し）の作成・変更・並べ替えは、利用者が作ったセクションも変えられる。範囲の設定が
+//   「同じスペースだけ」なら、create_space と同じく呼び出し元のスペースのリポジトリに関わるものだけ（空のプロジェクトの
+//   セクションの作成は除く）。消えるのは見出しだけだが、中身のあるセクションの削除は利用者の確認を通す
 
 import { paradisStripTerminalControlCharacters } from '../../../common/paradisTerminalControlCharacters.js';
 import { PARADIS_WORKSPACE_COLORS } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';

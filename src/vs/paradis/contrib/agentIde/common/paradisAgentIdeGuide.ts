@@ -72,7 +72,7 @@ The user can copy a line like "${PARADIS_TAB_ID_PREFIX} terminal:t_1a2b3c4d5e6f"
 ## Sections of the sidebar list
 
 - Use these when the user asks you to tidy the list of spaces in the sidebar: list_spaces "sections" shows every section in display order with the space keys it holds. A section with "repository" sits inside that repository and holds its worktree spaces; the others group repositories.
-- create_space_section, update_space_section (name, color, collapsed, before/after another section) and move_space_to_section (section id or "none", before/after another space) work on any section of this window, also ones the user made. Change only what the user asked for.
+- create_space_section, update_space_section (name, color, collapsed, before/after another section) and move_space_to_section (section id or "none", before/after another space) work on sections the user made too. Change only what the user asked for. Unless the user widened the action scope to the whole window, you can only create, change, remove and fill sections inside the repository of your own space, change or remove sections of repositories that hold only that repository (or nothing), and move that repository and its worktree spaces; creating an empty section of repositories is always allowed.
 - Colors: red, orange, yellow, lime, green, teal, cyan, blue, indigo, purple, pink, slate; "none" removes the dot. Only sections of repositories have a color.
 - remove_space_section removes the heading only: the repositories, worktrees and branches stay, outside any section. A section that still holds spaces is removed only after the user confirms in a dialog.
 

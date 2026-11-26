@@ -26,13 +26,14 @@ import { IParadisAgentModelCatalogService } from '../../../agentModelCatalog/com
 import { IParadisDialogService } from '../../../confirmDialog/browser/paradisDialogService.js';
 import { IParadisSpaceSectionsService } from '../../../workspaceSwitch/common/paradisSpaceSections.js';
 import { IParadisWorkspaceSectionsService } from '../../../workspaceSwitch/common/paradisWorkspaceSections.js';
-import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktree, IParadisWorktreeService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { PARADIS_DEFAULT_AGENT_COMMANDS } from '../../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import {
 	PARADIS_AGENT_IDE_ACTION_SCOPE_SETTING,
 	PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING,
 	PARADIS_AGENT_IDE_ALLOW_SHELL_COMMANDS_SETTING,
 	PARADIS_AGENT_IDE_READ_OTHER_SPACES_SETTING,
+	ParadisAgentIdeRequest,
 	ParadisAgentIdeResult,
 } from '../../common/paradisAgentIde.js';
 import { ParadisAgentIdeChannel, paradisAgentIdeTerminalId } from '../../electron-browser/paradisAgentIdeChannel.js';
@@ -40,6 +41,9 @@ import { ParadisAgentIdeChannel, paradisAgentIdeTerminalId } from '../../electro
 const REPOSITORY = { id: 'repo-1', name: 'para-code', uri: URI.file('/repo') };
 const WORKTREE = { repositoryId: 'repo-1', name: 'feature', uri: URI.file('/repo-worktrees/feature') };
 const WORKTREE_KEY = `worktree:${WORKTREE.uri.toString()}`;
+const OTHER_REPOSITORY = { id: 'repo-2', name: 'other', uri: URI.file('/other') };
+const OTHER_WORKTREE = { repositoryId: 'repo-2', name: 'review', uri: URI.file('/other-worktrees/review') };
+const OTHER_WORKTREE_KEY = `worktree:${OTHER_WORKTREE.uri.toString()}`;
 const NEW_WORKTREE_URI = URI.file('/repo-worktrees/child');
 const NEW_WORKTREE_KEY = `worktree:${NEW_WORKTREE_URI.toString()}`;
 
@@ -62,7 +66,7 @@ interface IFakeTerminal {
 suite('ParadisAgentIdeChannel', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function setup(options: { actionsEnabled?: boolean; scope?: 'space' | 'window'; readOtherSpaces?: boolean; shellCommands?: boolean; storage?: InMemoryStorageService } = {}) {
+	function setup(options: { actionsEnabled?: boolean; scope?: 'space' | 'window'; readOtherSpaces?: boolean; shellCommands?: boolean; storage?: InMemoryStorageService; otherRepository?: boolean } = {}) {
 		const terminals: IFakeTerminal[] = [];
 		const instances = new Map<number, ITerminalInstance>();
 		const onDidDisposeInstance = store.add(new Emitter<ITerminalInstance>());
@@ -98,6 +102,20 @@ suite('ParadisAgentIdeChannel', () => {
 		});
 		const commands: unknown[][] = [];
 		const notifications: INotification[] = [];
+		// もう 1 つのリポジトリと、その中身だけを持つセクション（範囲の外の相手）
+		const repositories = options.otherRepository ? [REPOSITORY, OTHER_REPOSITORY] : [REPOSITORY];
+		const worktreesOf = (repositoryId: string) => repositoryId === REPOSITORY.id ? [WORKTREE] : repositoryId === OTHER_REPOSITORY.id && options.otherRepository ? [OTHER_WORKTREE] : [];
+		let projectSections = options.otherRepository ? [{ id: 'project-2', name: 'Other' }] : [];
+		let spaceSections = options.otherRepository ? [{ id: 'inside-2', name: 'Review', repositoryId: OTHER_REPOSITORY.id }] : [];
+		const repositoryMember = new Map<string, string>(options.otherRepository ? [[OTHER_REPOSITORY.id, 'project-2']] : []);
+		const worktreeMember = new Map<string, string>(options.otherRepository ? [[OTHER_WORKTREE.uri.toString(), 'inside-2']] : []);
+		const setMember = (members: Map<string, string>, key: string, sectionId: string | undefined) => {
+			if (sectionId === undefined) {
+				members.delete(key);
+			} else {
+				members.set(key, sectionId);
+			}
+		};
 		const storage = options.storage ?? store.add(new InMemoryStorageService());
 		let launches = 0;
 		const channel = store.add(new ParadisAgentIdeChannel(
@@ -119,8 +137,8 @@ suite('ParadisAgentIdeChannel', () => {
 				// 記録の無いものを今のスペースと答える本物の挙動（strict では使わない）
 				resolveScope: () => ({ kind: 'managed', stateKey: REPOSITORY.id }),
 			}),
-			upcastPartial<IParadisWorkspaceSwitchService>({ repositories: [REPOSITORY], activeStateKey: REPOSITORY.id, onDidRetireScope: Event.None }),
-			upcastPartial<IParadisWorktreeService>({ getWorktrees: () => [WORKTREE] }),
+			upcastPartial<IParadisWorkspaceSwitchService>({ repositories, activeStateKey: REPOSITORY.id, onDidRetireScope: Event.None }),
+			upcastPartial<IParadisWorktreeService>({ getWorktrees: worktreesOf }),
 			upcastPartial<IParadisAgentStatusStore>({
 				getInstanceStatus: (instanceId: number) => terminals.find(terminal => terminal.instanceId === instanceId)?.status,
 				isAgentInstance: () => false,
@@ -144,8 +162,24 @@ suite('ParadisAgentIdeChannel', () => {
 			storage,
 			upcastPartial<ILifecycleService>({ willShutdown: false }),
 			new NullLogService(),
-			upcastPartial<IParadisWorkspaceSectionsService>({ groups: () => [] }),
-			upcastPartial<IParadisSpaceSectionsService>({ sectionsOf: () => [] }),
+			upcastPartial<IParadisWorkspaceSectionsService>({
+				groups: () => projectSections.map(section => ({ section, repositories: repositories.filter(repository => repositoryMember.get(repository.id) === section.id) })),
+				isCollapsed: () => false,
+				setCollapsed: () => { },
+				sectionOf: (repositoryId: string) => repositoryMember.get(repositoryId),
+				moveRepositoryToSection: (repositoryId: string, sectionId: string | undefined) => { setMember(repositoryMember, repositoryId, sectionId); },
+				removeSection: (sectionId: string) => { projectSections = projectSections.filter(section => section.id !== sectionId); },
+			}),
+			upcastPartial<IParadisSpaceSectionsService>({
+				createSection: () => undefined,
+				sectionsOf: (repositoryId: string) => spaceSections.filter(section => section.repositoryId === repositoryId),
+				orderedWorktrees: worktreesOf,
+				isCollapsed: () => false,
+				setCollapsed: () => { },
+				sectionOf: (worktree: IParadisWorktree) => worktreeMember.get(worktree.uri.toString()),
+				moveSpaceToSection: (worktree: IParadisWorktree, sectionId: string | undefined) => { setMember(worktreeMember, worktree.uri.toString(), sectionId); },
+				removeSection: (_repositoryId: string, sectionId: string) => { spaceSections = spaceSections.filter(section => section.id !== sectionId); },
+			}),
 			upcastPartial<IParadisDialogService>({}),
 			upcastPartial<IHostService>({}),
 		));
@@ -202,6 +236,48 @@ suite('ParadisAgentIdeChannel', () => {
 			off: 'Agent actions are turned off in Para Code settings.',
 			unknownCaller: 'Para Code cannot find your own terminal in this window yet (it may still be restoring). Retry in a few seconds.',
 			unknownSection: 'Unknown section "missing". There are no sections yet; create one with create_space_section.',
+		});
+	});
+
+	test('section tools: with the default action scope, sections and spaces of another repository are refused; the whole window allows them', async () => {
+		const run = async (scope: 'space' | 'window') => {
+			const { channel, caller } = setup({ scope, otherRepository: true });
+			const steps = [
+				{ op: 'createSection', name: 'Review', repository: OTHER_REPOSITORY.id },
+				{ op: 'updateSection', section: 'inside-2', collapsed: false },
+				{ op: 'moveSpaceToSection', space: OTHER_WORKTREE_KEY, section: 'none' },
+				{ op: 'removeSection', section: 'inside-2' },
+				{ op: 'updateSection', section: 'project-2', collapsed: false },
+				{ op: 'moveSpaceToSection', space: OTHER_REPOSITORY.id, section: 'none' },
+				{ op: 'removeSection', section: 'project-2' },
+			] satisfies ParadisAgentIdeRequest[];
+			const outcomes: string[] = [];
+			for (const step of steps) {
+				outcomes.push(`${step.op}: ${outcome(await channel.run(caller.token, step))}`);
+			}
+			return outcomes;
+		};
+		const refusal = 'That section or space belongs to a repository other than the one of your own space. Agents can only change sections of the repository of their own space (the user can widen this to the whole window in Para Code settings).';
+		assert.deepStrictEqual({ space: await run('space'), window: await run('window') }, {
+			space: [
+				`createSection: ${refusal}`,
+				`updateSection: ${refusal}`,
+				`moveSpaceToSection: ${refusal}`,
+				`removeSection: ${refusal}`,
+				`updateSection: ${refusal}`,
+				`moveSpaceToSection: ${refusal}`,
+				`removeSection: ${refusal}`,
+			],
+			window: [
+				// 作成はスタブが id を返さないので保存できなかった扱い（範囲では断られていない）
+				'createSection: Para Code could not save the change (the list of sections may be full). Nothing was changed; call list_spaces to see the current sections.',
+				'updateSection: ok',
+				'moveSpaceToSection: ok',
+				'removeSection: ok',
+				'updateSection: ok',
+				'moveSpaceToSection: ok',
+				'removeSection: ok',
+			],
 		});
 	});
 

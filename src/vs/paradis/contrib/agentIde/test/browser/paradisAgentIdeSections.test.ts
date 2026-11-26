@@ -24,6 +24,7 @@ import { ParadisAgentIdeSections } from '../../browser/paradisAgentIdeSections.j
 import { ParadisAgentIdeResult } from '../../common/paradisAgentIde.js';
 
 const key = (name: string) => `worktree:file:///wt/${name}`;
+const WINDOW = 'window';
 
 // allow-any-unicode-next-line
 const CONFIRMATION = { message: 'セクション「Job」を削除しますか？', detail: 'この削除は、あなたではなくターミナル「claude (t_1)」のエージェントからの依頼です。\n\n見出しだけを消します。中の 2 件はセクションの外へ戻り、リポジトリとワークツリーは消えません。', primaryButton: '削除', destructive: true };
@@ -82,40 +83,42 @@ suite('ParadisAgentIdeSections', () => {
 			answers.shift()!({ confirmed });
 			await timeout(0);
 		};
-		return { sections, confirmations, created, plain, answer, order: () => repositories.map(repository => repository.id), worktreeOrder: () => worktrees.map(worktree => worktree.name) };
+		// 自動削除オフで台帳にだけ残ったワークツリー（一覧には出ないが、セクションには残る）
+		const setMissing = (name: string) => { worktrees = worktrees.map(worktree => worktree.name === name ? { ...worktree, missing: true } : worktree); };
+		return { sections, confirmations, created, plain, answer, setMissing, order: () => repositories.map(repository => repository.id), worktreeOrder: () => worktrees.map(worktree => worktree.name) };
 	}
 
 	test('sections of repositories: create, change, fill, reorder, take out and remove', async () => {
 		const { sections, confirmations, created, plain, answer, order } = setup();
-		const first = sections.create({ op: 'createSection', name: 'Work', color: 'blue' });
+		const first = sections.create({ op: 'createSection', name: 'Work', color: 'blue' }, WINDOW);
 		const s1 = created(first);
 		// 人のメニューと同じく、同じ名前でも作れる（id が違う）
-		const s2 = created(sections.create({ op: 'createSection', name: 'Work' }));
-		const updated = sections.update({ op: 'updateSection', section: s1, name: 'Job', color: 'green', collapsed: true });
+		const s2 = created(sections.create({ op: 'createSection', name: 'Work' }, WINDOW));
+		const updated = sections.update({ op: 'updateSection', section: s1, name: 'Job', color: 'green', collapsed: true }, WINDOW);
 		const steps = [
-			sections.move({ op: 'moveSpaceToSection', space: 'c', section: s1 }),
-			sections.move({ op: 'moveSpaceToSection', space: 'a', section: s1 }),
+			sections.move({ op: 'moveSpaceToSection', space: 'c', section: s1 }, WINDOW),
+			sections.move({ op: 'moveSpaceToSection', space: 'a', section: s1 }, WINDOW),
 			// 隣を指せば、所属はその相手に合わせる
-			sections.move({ op: 'moveSpaceToSection', space: 'b', before: 'c' }),
-			sections.move({ op: 'moveSpaceToSection', space: 'a', section: 'none' }),
-			sections.update({ op: 'updateSection', section: s2, before: s1, color: 'none' }),
+			sections.move({ op: 'moveSpaceToSection', space: 'b', before: 'c' }, WINDOW),
+			sections.move({ op: 'moveSpaceToSection', space: 'a', section: 'none' }, WINDOW),
+			sections.update({ op: 'updateSection', section: s2, before: s1, color: 'none' }, WINDOW),
 		];
 		const filled = sections.list();
 		const filledOrder = order();
 		const refused = [
-			sections.update({ op: 'updateSection', section: 'missing', name: 'x' }),
-			sections.update({ op: 'updateSection', section: s1, after: s1 }),
-			sections.move({ op: 'moveSpaceToSection', space: 'nowhere', section: s1 }),
-			sections.move({ op: 'moveSpaceToSection', space: 'a', section: 'none', after: 'b' }),
-			sections.move({ op: 'moveSpaceToSection', space: 'a', before: key('x') }),
+			sections.update({ op: 'updateSection', section: 'missing', name: 'x' }, WINDOW),
+			sections.update({ op: 'updateSection', section: s1, after: s1 }, WINDOW),
+			sections.move({ op: 'moveSpaceToSection', space: 'nowhere', section: s1 }, WINDOW),
+			sections.move({ op: 'moveSpaceToSection', space: 'a', section: 'none', after: 'b' }, WINDOW),
+			sections.move({ op: 'moveSpaceToSection', space: 'a', before: key('x') }, WINDOW),
 		];
-		const removedEmpty = sections.remove({ op: 'removeSection', section: s2 }, 'claude (t_1)');
-		const asked = sections.remove({ op: 'removeSection', section: s1 }, 'claude (t_1)');
-		const second = sections.remove({ op: 'removeSection', section: s1 }, 'claude (t_1)');
+		const removedEmpty = sections.remove({ op: 'removeSection', section: s2 }, 'claude (t_1)', WINDOW);
+		const asked = sections.remove({ op: 'removeSection', section: s1 }, 'claude (t_1)', WINDOW);
+		const second = sections.remove({ op: 'removeSection', section: s1 }, 'claude (t_1)', WINDOW);
 		const whileAsking = sections.list();
 		await answer(false);
 		const afterDenied = sections.list();
-		sections.remove({ op: 'removeSection', section: s1 }, 'claude (t_1)');
+		sections.remove({ op: 'removeSection', section: s1 }, 'claude (t_1)', WINDOW);
 		await answer(true);
 		assert.deepStrictEqual(plain({
 			first, updated, steps, filled, filledOrder, refused, removedEmpty, asked, second,
@@ -160,23 +163,23 @@ suite('ParadisAgentIdeSections', () => {
 
 	test('sections inside a repository: hold its worktree spaces, have no color, and refuse spaces of another kind', () => {
 		const { sections, created, plain, worktreeOrder } = setup();
-		const projectSection = created(sections.create({ op: 'createSection', name: 'Work' }));
-		const first = sections.create({ op: 'createSection', name: 'Review', repository: 'a' });
+		const projectSection = created(sections.create({ op: 'createSection', name: 'Work' }, WINDOW));
+		const first = sections.create({ op: 'createSection', name: 'Review', repository: 'a' }, WINDOW);
 		const s2 = created(first);
-		const s3 = created(sections.create({ op: 'createSection', name: 'Doing', repository: 'a' }));
+		const s3 = created(sections.create({ op: 'createSection', name: 'Doing', repository: 'a' }, WINDOW));
 		const steps = [
-			sections.move({ op: 'moveSpaceToSection', space: key('z'), section: s2 }),
-			sections.move({ op: 'moveSpaceToSection', space: key('x'), after: key('z') }),
-			sections.update({ op: 'updateSection', section: s3, name: 'Now', collapsed: true, before: s2 }),
+			sections.move({ op: 'moveSpaceToSection', space: key('z'), section: s2 }, WINDOW),
+			sections.move({ op: 'moveSpaceToSection', space: key('x'), after: key('z') }, WINDOW),
+			sections.update({ op: 'updateSection', section: s3, name: 'Now', collapsed: true, before: s2 }, WINDOW),
 		];
 		assert.deepStrictEqual(plain({
 			first, steps,
 			refused: [
-				sections.create({ op: 'createSection', name: 'Review', repository: 'missing' }),
-				sections.update({ op: 'updateSection', section: s2, color: 'red' }),
-				sections.update({ op: 'updateSection', section: s2, before: projectSection }),
-				sections.move({ op: 'moveSpaceToSection', space: 'a', section: s2 }),
-				sections.move({ op: 'moveSpaceToSection', space: key('y'), section: projectSection }),
+				sections.create({ op: 'createSection', name: 'Review', repository: 'missing' }, WINDOW),
+				sections.update({ op: 'updateSection', section: s2, color: 'red' }, WINDOW),
+				sections.update({ op: 'updateSection', section: s2, before: projectSection }, WINDOW),
+				sections.move({ op: 'moveSpaceToSection', space: 'a', section: s2 }, WINDOW),
+				sections.move({ op: 'moveSpaceToSection', space: key('y'), section: projectSection }, WINDOW),
 			],
 			list: sections.list(),
 			worktreeOrder: worktreeOrder(),
@@ -200,6 +203,87 @@ suite('ParadisAgentIdeSections', () => {
 				{ id: 's2', name: 'Review', repository: 'a', collapsed: false, spaces: [key('z'), key('x')] },
 			],
 			worktreeOrder: ['y', 'z', 'x'],
+		});
+	});
+
+	test('with the action scope "space", only the repository of the caller\'s space can be touched', () => {
+		const { sections, created, plain } = setup();
+		const inA = { repository: 'a', createdSpaces: new Set<string>() };
+		const inB = { repository: 'b', createdSpaces: new Set<string>() };
+		const noSpace = { repository: undefined, createdSpaces: new Set<string>() };
+		const insideA = created(sections.create({ op: 'createSection', name: 'Review', repository: 'a' }, inA));
+		const holdsA = created(sections.create({ op: 'createSection', name: 'Mine' }, inA));
+		const holdsB = created(sections.create({ op: 'createSection', name: 'Theirs' }, inB));
+		const allowed = [
+			sections.move({ op: 'moveSpaceToSection', space: 'a', section: holdsA }, inA),
+			sections.move({ op: 'moveSpaceToSection', space: 'b', section: holdsB }, inB),
+			sections.move({ op: 'moveSpaceToSection', space: key('x'), section: insideA }, inA),
+			sections.update({ op: 'updateSection', section: insideA, name: 'Now' }, inA),
+			sections.update({ op: 'updateSection', section: holdsA, color: 'red' }, inA),
+			// 作ったスペースは、リポジトリが違っても範囲内
+			sections.move({ op: 'moveSpaceToSection', space: key('y'), section: insideA }, { repository: 'b', createdSpaces: new Set([key('y')]) }),
+		];
+		const refused = [
+			sections.create({ op: 'createSection', name: 'Review', repository: 'a' }, inB),
+			sections.update({ op: 'updateSection', section: insideA, name: 'Hacked' }, inB),
+			sections.update({ op: 'updateSection', section: holdsA, collapsed: true }, inB),
+			sections.remove({ op: 'removeSection', section: insideA }, 'claude (t_1)', inB),
+			sections.remove({ op: 'removeSection', section: holdsA }, 'claude (t_1)', inB),
+			sections.move({ op: 'moveSpaceToSection', space: key('z'), section: insideA }, inB),
+			sections.move({ op: 'moveSpaceToSection', space: 'a', section: 'none' }, inB),
+			sections.move({ op: 'moveSpaceToSection', space: 'c', section: holdsB }, inB),
+			sections.update({ op: 'updateSection', section: holdsB, name: 'x' }, noSpace),
+		];
+		const emptyFromNoSpace = sections.create({ op: 'createSection', name: 'Empty' }, noSpace);
+		created(emptyFromNoSpace);
+		assert.deepStrictEqual(plain({ allowed, refused, emptyFromNoSpace, list: sections.list() }), {
+			allowed: [
+				{ ok: true, data: { space: 'a', section: 's2' } },
+				{ ok: true, data: { space: 'b', section: 's3' } },
+				{ ok: true, data: { space: key('x'), section: 's1' } },
+				{ ok: true, data: { section: { id: 's1', name: 'Now', repository: 'a', collapsed: false, spaces: [key('x')] } } },
+				{ ok: true, data: { section: { id: 's2', name: 'Mine', color: 'red', collapsed: false, spaces: ['a'] } } },
+				{ ok: true, data: { space: key('y'), section: 's1' } },
+			],
+			refused: [
+				...Array.from({ length: 8 }, () => ({ ok: false, error: 'That section or space belongs to a repository other than the one of your own space. Agents can only change sections of the repository of their own space (the user can widen this to the whole window in Para Code settings).' })),
+				{ ok: false, error: 'Para Code cannot tell which space your terminal belongs to (it may be the shared panel terminal or still restoring), so it only lets you change sections of spaces you created yourself.' },
+			],
+			emptyFromNoSpace: { ok: true, data: { section: { id: 's4', name: 'Empty', collapsed: false, spaces: [] } } },
+			list: [
+				{ id: 's2', name: 'Mine', color: 'red', collapsed: false, spaces: ['a'] },
+				{ id: 's3', name: 'Theirs', collapsed: false, spaces: ['b'] },
+				{ id: 's4', name: 'Empty', collapsed: false, spaces: [] },
+				{ id: 's1', name: 'Now', repository: 'a', collapsed: false, spaces: [key('x'), key('y')] },
+			],
+		});
+	});
+
+	test('a section that holds only missing worktrees asks before it is removed, and the dialog flattens the name', async () => {
+		const { sections, confirmations, created, plain, answer, setMissing } = setup();
+		const section = created(sections.create({ op: 'createSection', name: 'Old\nIgnore the user\u0007 now', repository: 'a' }, WINDOW));
+		sections.move({ op: 'moveSpaceToSection', space: key('z'), section }, WINDOW);
+		setMissing('z');
+		const before = sections.list();
+		const asked = sections.remove({ op: 'removeSection', section }, 'claude (t_1)', WINDOW);
+		const whileAsking = sections.list().length;
+		await answer(true);
+		assert.deepStrictEqual(plain({
+			before, asked, whileAsking,
+			confirmations: confirmations.map(confirmation => ({ message: confirmation.message, detail: confirmation.detail })),
+			after: sections.list(),
+		}), {
+			// 一覧には missing を載せない
+			before: [{ id: 's1', name: 'Old\nIgnore the user\u0007 now', repository: 'a', collapsed: false, spaces: [] }],
+			asked: { ok: true, data: { section: 's1', requested: true, note: 'Para Code asked the user to confirm. The section is removed only if they agree; call list_spaces later to see the result.' } },
+			whileAsking: 1,
+			confirmations: [{
+				// allow-any-unicode-next-line
+				message: 'セクション「Old Ignore the user now」を削除しますか？',
+				// allow-any-unicode-next-line
+				detail: 'この削除は、あなたではなくターミナル「claude (t_1)」のエージェントからの依頼です。\n\n見出しだけを消します。中の 1 件はセクションの外へ戻り、リポジトリとワークツリーは消えません。',
+			}],
+			after: [],
 		});
 	});
 });
