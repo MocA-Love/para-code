@@ -46,6 +46,7 @@ suite('Paradis bots page overlay', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
 	function setup(patrol?: IParadisBotPatrolPort) {
+		let header: { status: string; attention: boolean; busy: boolean; model: string; agent: undefined; agentName: string } | undefined;
 		const disposables = store.add(new DisposableStore());
 		const instantiation = disposables.add(new TestInstantiationService());
 		const configuration = new TestConfigurationService({ [PARADIS_BOTS_ENABLED_SETTING]: true });
@@ -75,7 +76,15 @@ suite('Paradis bots page overlay', () => {
 		instantiation.stub(IParadisDialogService, { confirm: async (confirmation: IParadisConfirmation) => { confirms.push(confirmation); return { confirmed: true }; } } as unknown as IParadisDialogService);
 		instantiation.stub(IContextViewService, {});
 		let draftTaken = false;
-		instantiation.stub(IParadisAgentChatService, { insertDraft: (id: number, text: string) => { calls.push(`draft ${id} ${text}`); return draftTaken ? 'inserted' : false; } } as unknown as IParadisAgentChatService);
+		const headerChanged = disposables.add(new Emitter<number>());
+		const headerCalls: string[] = [];
+		instantiation.stub(IParadisAgentChatService, {
+			insertDraft: (id: number, text: string) => { calls.push(`draft ${id} ${text}`); return draftTaken ? 'inserted' : false; },
+			onDidChangeHeader: headerChanged.event,
+			headerState: () => header,
+			setHeaderHidden: (id: number, hidden: boolean) => headerCalls.push(`header ${id} ${hidden}`),
+			showTerminal: (id: number) => headerCalls.push(`terminal ${id}`),
+		} as unknown as IParadisAgentChatService);
 		instantiation.stub(ITerminalService, { getInstanceFromId: (id: number) => id === 1 ? { isDisposed: false, sendText: async (text: string, execute: boolean, paste: boolean) => { calls.push(`send ${text} ${execute} ${paste}`); } } : undefined } as unknown as ITerminalService);
 		instantiation.stub(IContextMenuService, {});
 		instantiation.stub(IOpenerService, {});
@@ -86,7 +95,7 @@ suite('Paradis bots page overlay', () => {
 		const resolver: IParadisBotPaneResolver = { onDidChange: changed.event, botFor: async instanceId => panes.get(instanceId) };
 		const container = document.createElement('div');
 		const page = disposables.add(instantiation.createInstance(ParadisBotPage, container, resolver, patrol));
-		return { container, page, configuration, panes, changed, answered, disposables, calls, confirms, files, chatShown: () => { draftTaken = true; } };
+		return { container, page, configuration, panes, changed, answered, disposables, calls, confirms, files, chatShown: () => { draftTaken = true; }, headerCalls, setHeader: (value: typeof header) => { header = value; headerChanged.fire(1); } };
 	}
 
 	const settle = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -283,6 +292,32 @@ suite('Paradis bots page overlay', () => {
 			homeButtons: ['今すぐ見回る', '変える...'],
 			sections: ['見回り'],
 			patrolCalls: ['run release', 'set release {"schedule":{"everyHours":4,"fromHour":8,"toHour":20,"weekdaysOnly":true},"lookFor":"返事の無い指摘","enabled":true}'],
+		});
+	});
+
+	test('チャット表示を見ている間だけ、見出しの状態とモデルを帯に出して 1 段にする（見出しは帯を出している間だけ畳む）', async () => {
+		const { container, page, headerCalls, setHeader } = setup();
+		const strip = () => ({
+			status: container.getElementsByClassName('paradis-bot-page-status')[0]?.textContent,
+			attention: container.getElementsByClassName('paradis-bot-page-status')[0]?.classList.contains('attention'),
+			model: (container.getElementsByClassName('paradis-bot-page-model')[0] as HTMLElement | undefined)?.hidden ? '' : container.getElementsByClassName('paradis-bot-page-model')[0]?.textContent,
+			terminal: !(container.getElementsByClassName('paradis-bot-page-terminal')[0] as HTMLElement).hidden,
+		});
+		page.setInstance(1);
+		await settle();
+		setHeader({ status: '許可を待っています', attention: true, busy: false, model: 'claude-opus-4-5 · high', agent: undefined, agentName: 'Claude Code' });
+		const terminalView = strip();
+		container.classList.add('paradis-agent-chat-active');
+		await settle();
+		const chatView = strip();
+		(container.getElementsByClassName('paradis-bot-page-terminal')[0] as HTMLElement).click();
+		page.setInstance(2);
+		await settle();
+		page.dispose();
+		assert.deepStrictEqual({ terminalView, chatView, calls: headerCalls }, {
+			terminalView: { status: '1 件があなたの番', attention: false, model: '', terminal: false },
+			chatView: { status: '許可を待っています', attention: true, model: 'claude-opus-4-5 · high', terminal: true },
+			calls: ['header 1 true', 'terminal 1', 'header 1 false'],
 		});
 	});
 });

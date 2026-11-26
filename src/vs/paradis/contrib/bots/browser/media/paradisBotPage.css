@@ -86,6 +86,61 @@
 	color: var(--vscode-paradis-textMuted);
 }
 
+/* While the chat display is shown, its header is folded into the strip: the waiting-for-you state stands out in the warning color. */
+.paradis-bot-page-status.attention {
+	color: var(--vscode-paradis-warning);
+	font-weight: var(--vscode-fontWeight-semiBold);
+}
+
+.paradis-bot-page-status.attention::before {
+	content: '';
+	display: inline-block;
+	width: 6px;
+	height: 6px;
+	margin-right: var(--vscode-spacing-size60);
+	border-radius: var(--vscode-cornerRadius-circle);
+	background: var(--vscode-paradis-warning);
+	vertical-align: middle;
+}
+
+.paradis-bot-page-status.busy {
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-bot-page-model {
+	flex: 0 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textFaint);
+}
+
+.paradis-bot-page-model[hidden],
+.paradis-bot-page-terminal[hidden] {
+	display: none;
+}
+
+.paradis-bot-page-terminal {
+	display: flex;
+	flex: none;
+	align-items: center;
+	justify-content: center;
+	width: 26px;
+	height: 26px;
+	padding: 0;
+	border: none;
+	border-radius: var(--vscode-cornerRadius-medium, 6px);
+	background: transparent;
+	color: var(--vscode-icon-foreground);
+	cursor: pointer;
+}
+
+.paradis-bot-page-terminal:hover {
+	background: var(--vscode-paradis-fillHover);
+}
+
 /* Pill tabs, as in the mock: the selected one is filled with the raised surface. */
 .paradis-bot-page-tabs {
 	display: flex;

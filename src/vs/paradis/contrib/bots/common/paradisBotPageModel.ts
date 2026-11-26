@@ -10,6 +10,9 @@
 // ここに集め、単体テストで値を確かめる。
 
 import { localize } from '../../../../nls.js';
+import type { IParadisAgentChatHeaderState } from '../../agentChat/common/paradisAgentChatHeader.js';
+import type { IParadisBotSummary } from './paradisBotsApi.js';
+import { paradisBotStatusLine } from './paradisBotsBandModel.js';
 import type { ParadisHumanAskAnswer } from '../../humanAsk/common/paradisHumanAsk.js';
 import { IParadisBotItem, IParadisBotItemAsk, paradisBotItemStatus, paradisBotItemWaitsForOwner, paradisIsBotItemClosed, paradisIsBotItemSnoozed } from './paradisBotItems.js';
 
@@ -119,4 +122,22 @@ export function paradisBotAskToggle(current: readonly number[], option: number, 
 		return current.length === 1 && current[0] === option ? [] : [option];
 	}
 	return current.includes(option) ? current.filter(value => value !== option) : [...current, option].sort((a, b) => a - b);
+}
+
+/**
+ * チャット表示が、表示している間ターミナルの入れ物に付ける印。Bot の帯はこれでチャット表示かターミナル表示かを見分ける
+ * （帯の CSS もこの表示の `.paradis-agent-chat` の位置を下げている）。
+ */
+export const PARADIS_AGENT_CHAT_ACTIVE_CLASS = 'paradis-agent-chat-active';
+
+/**
+ * 帯の状態・モデル。`header` はチャット表示の見出しの値（チャット表示を見ている間だけ渡す）。見出しの状態の文があれば
+ * それ（許可待ち・質問待ちは attention）、無ければ Bot の台帳の 1 行。モデルは見出しの値だけ（台帳には実際のモデルが無い）。
+ */
+export function paradisBotStripHeader(bot: IParadisBotSummary, header: Pick<IParadisAgentChatHeaderState, 'status' | 'attention' | 'busy' | 'model'> | undefined): { readonly status: string; readonly attention: boolean; readonly busy: boolean; readonly model: string } {
+	const line = paradisBotStatusLine(bot);
+	if (header === undefined) {
+		return { status: line, attention: false, busy: false, model: '' };
+	}
+	return { status: header.status || line, attention: header.attention, busy: header.busy && !header.attention, model: header.model };
 }
