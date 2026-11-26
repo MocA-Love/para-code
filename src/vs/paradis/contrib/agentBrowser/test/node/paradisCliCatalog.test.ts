@@ -43,7 +43,7 @@ const TOOLS_BY_PROVIDER_GROUP: Readonly<Record<string, readonly string[]>> = {
 	board: ['board_complete_step', 'board_ask_human'],
 	mobile: [
 		'mobile_fold', 'mobile_gesture', 'mobile_get_attached_device', 'mobile_grant_permission', 'mobile_install_app', 'mobile_launch_app', 'mobile_list_devices', 'mobile_press_button',
-		'mobile_read_log', 'mobile_request_device', 'mobile_rotate', 'mobile_screenshot', 'mobile_swipe', 'mobile_tap', 'mobile_type_text', 'mobile_ui_find', 'mobile_ui_snapshot', 'mobile_ui_tap',
+		'mobile_read_log', 'mobile_release_device', 'mobile_request_device', 'mobile_rotate', 'mobile_screenshot', 'mobile_swipe', 'mobile_tap', 'mobile_type_text', 'mobile_ui_find', 'mobile_ui_snapshot', 'mobile_ui_tap',
 	],
 	computer: [
 		'computer_activate_app', 'computer_click', 'computer_drag', 'computer_get_app_state', 'computer_hotkey', 'computer_list_apps', 'computer_list_windows', 'computer_paste_text',

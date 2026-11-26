@@ -19,6 +19,8 @@
 // インストール）」に絞る。別の端末の要求やページ共有は止めない。ただし端末の要求を拒否された直後の 10 秒は、
 // 同じペインからの別の端末の要求も断る（端末を替えて続けてダイアログを出させない）。
 // インストールは、承認の前に shared process が写した一時フォルダの中身（ID と名前）を見せる。
+// 端末の要求は「足す」（1 つのペインに 10 台まで）。今持っている端末の一覧と、何台目になるかを見せる。上限まで
+// 持っているときは、外す 1 台を利用者が選ぶ確認（paradisMobileReleasePickDialog.ts）を出し、選んだ端末の id を返す。
 // ここは承認を取るだけで、台帳への割り当てとインストールは shared process が行う。
 
 import { CancellationToken } from '../../../../base/common/cancellation.js';
@@ -32,7 +34,12 @@ import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPane
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { PARADIS_SIMULATOR_OPEN_FOR_PANE_COMMAND_ID } from '../common/paradisSimulator.js';
 import { PARADIS_AGENT_APPROVAL_DEADLINE_MS, paradisSanitizeAgentPageRequestReason, paradisSanitizeDisplayText } from '../../agentBrowser/common/paradisAgentBrowserTabs.js';
-import { IParadisAgentApprovalRequest, IParadisAgentBrowserTabsService, ParadisApprovalDeadline } from '../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
+import { IParadisAgentApprovalPresentation, IParadisAgentApprovalRequest, IParadisAgentBrowserTabsService, ParadisApprovalDeadline } from '../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
+import { IHostService } from '../../../../workbench/services/host/browser/host.js';
+import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
+import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+import { PARADIS_MOBILE_MAX_DEVICES_PER_PANE } from '../common/paradisMobileAttachmentBook.js';
+import { IParadisMobileReleasePick, paradisShowMobileReleasePick } from './paradisMobileReleasePickDialog.js';
 import { IParadisTerminalScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import {
 	IParadisMobileDeviceRequestAnswer,
@@ -46,6 +53,8 @@ import {
 /** ダイアログに出す端末名の最大文字数（端末名はエージェントも simctl で付けられるので、長さも切る）。 */
 const DEVICE_NAME_MAX_LENGTH = 80;
 const RUNTIME_MAX_LENGTH = 40;
+/** 「今 N 台を渡しています（…）」の文に並べる端末名の最大文字数（10 台ぶん並んでも読める長さにする）。 */
+const HELD_NAME_IN_SENTENCE_MAX_LENGTH = 32;
 /** ダイアログに出すインストールするパスの最大文字数。超えたら先頭を切り、末尾（ファイル名）を残す。 */
 const PATH_MAX_LENGTH = 200;
 const APP_ID_MAX_LENGTH = 200;
@@ -54,6 +63,9 @@ const APP_ID_MAX_LENGTH = 200;
  * これが無いと端末の数だけ続けてダイアログを出せる。
  */
 export const PARADIS_MOBILE_ANY_DEVICE_DENIAL_MS = 10_000;
+
+/** 上限のときの「外す端末を選ぶ」確認を出す口（テストでは偽物を渡す）。 */
+export type ParadisMobileReleasePickPresenter = (pick: IParadisMobileReleasePick, presentation: IParadisAgentApprovalPresentation) => Promise<'approve' | 'deny' | undefined>;
 
 /** shared process から届く要求を承認ダイアログへ流すチャネル。 */
 export class ParadisMobileDeviceRequestChannel implements IServerChannel {
@@ -66,6 +78,8 @@ export class ParadisMobileDeviceRequestChannel implements IServerChannel {
 		private readonly _deadlineMs: number = PARADIS_AGENT_APPROVAL_DEADLINE_MS,
 		/** 端末の要求を承認したとき（シミュレータの作り直し ③: その端末の画面をペインのターミナルの右に開く）。 */
 		private readonly _onDidApproveDevice?: (paneToken: string, deviceId: string) => void,
+		/** 上限まで端末を持っているペインの要求で、外す端末を選ぶ確認を出す。 */
+		private readonly _showReleasePick?: ParadisMobileReleasePickPresenter,
 	) { }
 
 	/** ペイン → 端末の要求を最後に拒否された時刻。 */
@@ -108,21 +122,38 @@ export class ParadisMobileDeviceRequestChannel implements IServerChannel {
 		const deviceName = deviceNameOf(prompt);
 		const runtime = paradisSanitizeDisplayText(text(prompt, 'runtime'), RUNTIME_MAX_LENGTH);
 		const reason = paradisSanitizeAgentPageRequestReason(text(prompt, 'reason'));
-		const replacing = paradisSanitizeDisplayText(text(prompt, 'replacingDeviceName'), DEVICE_NAME_MAX_LENGTH);
+		// 今持っている端末（名前はエージェントも simctl で付けられるので、1 件ずつ無害化して長さを切る）
+		const held = attachedDevicesOf(prompt);
+		// 上限まで持っているときは、外す 1 台を利用者が選ぶ（選ぶ口が無ければふつうの確認を出し、台帳が上限で断る）
+		const pickRelease = prompt.mustRelease === true && held.length > 0 && this._showReleasePick !== undefined;
+		const heldNames = held.map(device => localize('paradis.mobileDeviceRequest.heldName', "「{0}」", paradisSanitizeDisplayText(device.name, HELD_NAME_IN_SENTENCE_MAX_LENGTH) ?? device.name)).join(localize('paradis.mobileDeviceRequest.heldSeparator', "、"));
 		const detail = [
 			reason ? localize('paradis.mobileDeviceRequest.reason', "エージェントが書いた理由: {0}", reason) : undefined,
 			runtime
 				? localize('paradis.mobileDeviceRequest.deviceWithRuntime', "使いたい端末: {0}（{1}）", deviceName, runtime)
 				: localize('paradis.mobileDeviceRequest.device', "使いたい端末: {0}", deviceName),
-			replacing ? localize('paradis.mobileDeviceRequest.replacing', "承認すると、このターミナルに渡している「{0}」は外れます。", replacing) : undefined,
+			pickRelease
+				? localize('paradis.mobileDeviceRequest.full', "このターミナルには、上限の {0} 台を渡しています。渡すには、下から外す端末を 1 台選んでください。", PARADIS_MOBILE_MAX_DEVICES_PER_PANE)
+				: held.length > 0
+					? localize('paradis.mobileDeviceRequest.adding', "このターミナルには今 {0} 台を渡しています（{1}）。承認すると {2} 台目として足されます（1 つのターミナルに {3} 台まで）。渡してある端末は外れません。", held.length, heldNames, held.length + 1, PARADIS_MOBILE_MAX_DEVICES_PER_PANE)
+					: undefined,
 			localize('paradis.mobileDeviceRequest.effect', "承認すると、このターミナルのエージェントはこの端末の画面を読み、タップ・入力・回転などの操作と、アプリの起動・権限の付与ができます。共有ダイアログの「モバイル端末」タブからいつでも外せます。"),
 			localize('paradis.mobileDeviceRequest.install', "アプリのインストールは、そのたびに確認します。エージェントが入れたアプリは Para Code の権限で動き、エージェントの作業フォルダの制限の外に出られます。"),
 		].filter((line): line is string => line !== undefined);
+		// 外す端末の初めの選択は、いちばん前に渡したもの。聞き直しでも、利用者が選んだものを保つ
+		const pick: IParadisMobileReleasePick | undefined = pickRelease ? {
+			lines: detail,
+			listLabel: localize('paradis.mobileDeviceRequest.pickLabel', "外す端末（渡した順）"),
+			devices: held,
+			approveLabel: localize('paradis.mobileDeviceRequest.approveRelease', "選んだ端末を外して渡す"),
+			selectedId: held[0].id,
+		} : undefined;
 		const answer = await this._ask(token, {
 			messageTemplate: pane => localize('paradis.mobileDeviceRequest.message', "{0} のエージェントが、モバイル端末を使いたいと求めています", pane),
 			detail,
 			approveLabel: localize('paradis.mobileDeviceRequest.approve', "この端末を渡す"),
 			cooldownKey: `mobile-device:${text(prompt, 'deviceId') ?? deviceName}`,
+			...(pick ? { present: (presentation: IParadisAgentApprovalPresentation) => this._showReleasePick!(pick, presentation) } : {}),
 		}, cancellation);
 		if (answer.outcome === 'denied' && typeof token === 'string') {
 			this._lastDeviceDenial.set(token, this._now());
@@ -131,7 +162,8 @@ export class ParadisMobileDeviceRequestChannel implements IServerChannel {
 		if (answer.outcome === 'approved' && typeof token === 'string' && deviceId) {
 			this._onDidApproveDevice?.(token, deviceId);
 		}
-		return answer;
+		// 選んだ端末は、shared process の台帳が「そのペインの割り当てか」を確かめてから外す
+		return answer.outcome === 'approved' && pick ? { ...answer, releaseDeviceId: pick.selectedId } : answer;
 	}
 
 	private _precheckInstall(token: unknown, prompt: Record<string, unknown>): ParadisMobileApprovalPrecheck {
@@ -196,6 +228,19 @@ export class ParadisMobileDeviceRequestChannel implements IServerChannel {
 	}
 }
 
+/** 要求に付いてきた「今持っている端末」。形の違うものは落とし、名前は無害化して長さを切る。上限の数までしか読まない。 */
+function attachedDevicesOf(prompt: Record<string, unknown>): { readonly id: string; readonly name: string }[] {
+	const raw = Array.isArray(prompt.attachedDevices) ? prompt.attachedDevices.slice(0, PARADIS_MOBILE_MAX_DEVICES_PER_PANE) : [];
+	const devices: { id: string; name: string }[] = [];
+	for (const entry of raw) {
+		const record = entry && typeof entry === 'object' ? entry as Record<string, unknown> : {};
+		if (typeof record.id === 'string' && record.id) {
+			devices.push({ id: record.id, name: paradisSanitizeDisplayText(typeof record.name === 'string' ? record.name : undefined, DEVICE_NAME_MAX_LENGTH) || localize('paradis.mobileDeviceRequest.unnamed', "名前のない端末") });
+		}
+	}
+	return devices;
+}
+
 function text(prompt: Record<string, unknown>, name: string): string | undefined {
 	return typeof prompt[name] === 'string' ? prompt[name] as string : undefined;
 }
@@ -227,12 +272,16 @@ class ParadisMobileDeviceRequestContribution extends Disposable implements IWork
 		@IParadisPaneTokenService paneTokens: IParadisPaneTokenService,
 		@IParadisTerminalScopeService terminalScopes: IParadisTerminalScopeService,
 		@ICommandService commandService: ICommandService,
+		@ILayoutService layoutService: ILayoutService,
+		@IKeybindingService keybindingService: IKeybindingService,
+		@IHostService hostService: IHostService,
 	) {
 		super();
 		// 承認した端末の画面を開く（simulator/electron-browser/paradisSimulator.contribution.ts）。iOS のシミュレータは
 		// 開いて起動し、動いている Android の端末は開き、起動していない Android の AVD は起動だけする
 		const openSimulator = (paneToken: string, deviceId: string) => void commandService.executeCommand(PARADIS_SIMULATOR_OPEN_FOR_PANE_COMMAND_ID, paneToken, deviceId).catch(() => undefined);
-		sharedProcessService.registerChannel(PARADIS_MOBILE_DEVICE_REQUEST_CHANNEL, new ParadisMobileDeviceRequestChannel(approvals, paneTokens, terminalScopes, Date.now, PARADIS_AGENT_APPROVAL_DEADLINE_MS, openSimulator));
+		sharedProcessService.registerChannel(PARADIS_MOBILE_DEVICE_REQUEST_CHANNEL, new ParadisMobileDeviceRequestChannel(approvals, paneTokens, terminalScopes, Date.now, PARADIS_AGENT_APPROVAL_DEADLINE_MS, openSimulator,
+			(pick, presentation) => paradisShowMobileReleasePick({ layoutService, keybindingService, hostService }, pick, presentation)));
 	}
 }
 

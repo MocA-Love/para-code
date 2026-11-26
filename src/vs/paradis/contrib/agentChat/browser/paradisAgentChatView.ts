@@ -36,7 +36,7 @@ import { DraggedEditorGroupIdentifier, DraggedEditorIdentifier } from '../../../
 import { ParadisAgentQuestionAnswer } from '../../mobileRelay/common/paradisAgentQuestionKeys.js';
 import { IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentInteraction, IParadisAgentLiveState, paradisIsCodexDaemonApprovalInteraction } from '../common/paradisAgentChat.js';
 import { paradisAgentChatImagesToLinks } from '../common/paradisAgentChatMarkdown.js';
-import { paradisAgentChatTimeLabel } from '../common/paradisAgentChatTime.js';
+import { paradisAgentChatTimeLabel, paradisAgentChatUsageCacheDetail, paradisAgentChatUsageLabel } from '../common/paradisAgentChatTime.js';
 import { paradisAppendAgentLogoSvg } from './paradisAgentChatFace.js';
 import { PARADIS_AGENT_DESCRIPTORS, paradisAgentDescriptor } from '../common/paradisAgentDescriptor.js';
 import { IParadisAgentChatState } from '../common/paradisAgentChatState.js';
@@ -45,6 +45,7 @@ import { paradisAgentChatButton } from './paradisAgentChatButton.js';
 import { IParadisAgentChatComposerHost, ParadisAgentChatComposer } from './paradisAgentChatComposer.js';
 import { IParadisAgentChatAsyncDrafts, paradisAsyncQuestionsSignature, paradisBuildAsyncReplyFromDrafts, paradisGroupAsyncQuestions, paradisNewAgentChatAsyncDrafts, paradisRenderAsyncQuestionCard, paradisRenderQuestionReplies } from './paradisAgentChatAsyncQuestions.js';
 import { ParadisAgentChatSession } from './paradisAgentChatSession.js';
+import { ParadisAgentChatDraftInsert } from '../common/paradisAgentChatComposerLogic.js';
 
 /** チャット表示が呼び出し側（electron-browser の contribution）へ求めるもの。 */
 export interface IParadisAgentChatViewHost extends IParadisAgentChatComposerHost {
@@ -419,6 +420,11 @@ export class ParadisAgentChatView extends Disposable {
 		this.composer.focus();
 	}
 
+	/** 入力欄へ下書きを入れる（送らない）。チャット表示が見えていなければ undefined。 */
+	insertDraft(text: string): ParadisAgentChatDraftInsert | undefined {
+		return this.visible ? this.composer.insertDraft(text) : undefined;
+	}
+
 	private updateBackLabel(): void {
 		const keybinding = this.host.getToggleKeybindingLabel();
 		this.backAction.tooltip = keybinding !== undefined
@@ -701,6 +707,12 @@ export class ParadisAgentChatView extends Disposable {
 				body.appendChild(rendered.element);
 				this.appendImages(column, item.message, state, store);
 				this.appendTime(column, item.message.ts);
+				if (item.message.usage !== undefined) {
+					// 費用は出さない（手元に単価の表を持たない。使用量の画面の ccusage は外のツールが値段を付ける）
+					const usage = append(column, $('span.paradis-agent-chat-usage'));
+					usage.textContent = paradisAgentChatUsageLabel(item.message.usage);
+					store.add(this.hoverService.setupDelayedHover(usage, { content: paradisAgentChatUsageCacheDetail(item.message.usage) }));
+				}
 				return element;
 			}
 			case 'thinking':

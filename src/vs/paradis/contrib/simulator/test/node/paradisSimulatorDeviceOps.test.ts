@@ -13,7 +13,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisMcpOwningWindowRequest, IParadisMcpToolCallContext, ParadisMcpCallerKind, ParadisMcpOwningWindowResult } from '../../../agentBrowser/common/paradisMcpToolProvider.js';
 import { IParadisMobileAttachment, IParadisMobileDevice } from '../../common/paradisMobileCanvas.js';
-import { paradisDeviceHeldByAnotherPane } from '../../common/paradisMobileDeviceOps.js';
+import { PARADIS_MOBILE_MAX_DEVICES_PER_PANE, ParadisMobileAttachResult, ParadisMobileAttachmentBook } from '../../common/paradisMobileAttachmentBook.js';
 import { ParadisMobileCanvasService } from '../../node/paradisDeviceLedger.js';
 import { IParadisMobileCommandResult, IParadisMobileFileProbe, IParadisMobileStagingFs, ParadisMobileDeviceCommands, paradisAdbCandidates, paradisNodeMobileFileProbe, paradisNodeMobileStagingFs } from '../../node/paradisMobileDeviceCommands.js';
 import { IParadisMobileDeviceLedger, IParadisMobileHostRequester, ParadisMobileDeviceOpsToolProvider } from '../../node/paradisSimulatorDeviceOps.js';
@@ -28,30 +28,43 @@ const PIXEL: IParadisMobileDevice = { id: 'android:pixel', udid: 'emulator-5554'
 const PIXEL_BY_SERIAL: IParadisMobileDevice = { id: 'android:serial:emulator-5554', udid: 'emulator-5554', name: 'emulator-5554', platform: 'Android', state: 'device', isRunning: true };
 const IPAD: IParadisMobileDevice = { id: 'ios:ipad', udid: 'B1B2C3D4-0000-1111-2222-333344445555', name: 'iPad Air', platform: 'iOS', state: 'Shutdown', isRunning: false };
 
+/** 偽の台帳。帳面（決まり）は本物と同じ {@link ParadisMobileAttachmentBook} を使い、端末の一覧だけを偽る。 */
 class FakeLedger implements IParadisMobileDeviceLedger {
-	readonly attachments = new Map<string, IParadisMobileAttachment>();
+	readonly book = new ParadisMobileAttachmentBook();
 	devices: IParadisMobileDevice[] = [IPHONE, PIXEL, PIXEL_BY_SERIAL, IPAD];
+	private _clock = 0;
 
+	resolveTarget(paneToken: string, device: unknown) {
+		return this.book.resolve(paneToken, device, async () => this.devices, ++this._clock);
+	}
+	/** そのペインの今の端末（最後に割り当てたもの）。 */
 	getAttachment(paneToken: string): IParadisMobileAttachment | undefined {
-		return this.attachments.get(paneToken);
+		return this.book.listPane(paneToken).at(-1);
+	}
+	listPaneAttachments(paneToken: string): readonly IParadisMobileAttachment[] {
+		return this.book.listPane(paneToken);
 	}
 	listAttachments(): readonly IParadisMobileAttachment[] {
-		return [...this.attachments.values()];
+		return this.book.list();
 	}
 	async listDevices(): Promise<IParadisMobileDevice[]> {
 		return this.devices;
 	}
-	async attachIfFree(paneToken: string, deviceId: string, stateKey: string | undefined): Promise<IParadisMobileAttachment | undefined> {
+	async attachIfFree(paneToken: string, deviceId: string, stateKey: string | undefined, _signal?: AbortSignal, releaseDeviceId?: string): Promise<ParadisMobileAttachResult | undefined> {
 		const device = this.devices.find(candidate => candidate.id === deviceId);
-		if (!device || paradisDeviceHeldByAnotherPane(paneToken, device, this.devices, this.listAttachments())) {
-			return undefined;
-		}
-		const attachment = { paneToken, deviceId, deviceName: device.name, stateKey, attachedAt: 1 };
-		this.attachments.set(paneToken, attachment);
-		return attachment;
+		return device ? this.book.attach(paneToken, device, this.devices, stateKey, 1, { onlyIfFree: true, ...(releaseDeviceId !== undefined ? { releaseDeviceId } : {}) }) : undefined;
 	}
+	detach(paneToken: string, deviceId?: string): readonly IParadisMobileAttachment[] {
+		return this.book.detach(paneToken, deviceId);
+	}
+	/** そのペインの端末を、この 1 台だけにする。 */
 	give(paneToken: string, device: IParadisMobileDevice): void {
-		this.attachments.set(paneToken, { paneToken, deviceId: device.id, deviceName: device.name, stateKey: undefined, attachedAt: 0 });
+		this.book.detach(paneToken);
+		this.add(paneToken, device);
+	}
+	/** そのペインに、端末を足す（その端末が今の端末になる）。 */
+	add(paneToken: string, device: Pick<IParadisMobileDevice, 'id' | 'name'>): void {
+		this.book.attach(paneToken, device as IParadisMobileDevice, this.devices, undefined, 0);
 	}
 }
 
@@ -246,23 +259,133 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 		assert.strictEqual(await provider.callTool(PANE, 'mobile_tap', {}), undefined);
 	});
 
-	test('request: asks the owning window, then attaches with the space it reported', async () => {
+	// 要求は「足す」: 今の端末は外れず、足した端末がそのペインの今の端末になる
+	test('request: asks the owning window, then adds the device with the space it reported and keeps the ones the pane has', async () => {
 		const { ledger, windowCalls, call } = setup();
 		ledger.give(PANE, PIXEL);
 		const result = await call('mobile_request_device', { device: 'iPhone 17', reason: 'check the login screen' });
 		assert.deepStrictEqual({
 			isError: result.isError,
+			body: JSON.parse(result.body),
 			window: windowCalls.map(request => ({ channel: request.channelName, method: request.method, args: request.args, timeoutMs: request.timeoutMs })),
-			attached: ledger.getAttachment(PANE),
+			attached: ledger.listPaneAttachments(PANE),
 		}, {
 			isError: false,
+			body: {
+				attached: true,
+				approved: true,
+				device: { id: 'ios:iphone', name: 'iPhone 17', platform: 'iOS', runtime: 'iOS 26.5', udid: IOS_UDID, running: true },
+				attachedDevices: [{ id: 'android:pixel', name: 'Pixel 9', current: false }, { id: 'ios:iphone', name: 'iPhone 17', current: true }],
+				note: 'iPhone 17 is the current device of this pane: mobile tools act on it when you omit "device". Pass "device" to use one of the others.',
+			},
 			window: [{
 				channel: 'paradisMobileDeviceRequest',
 				method: 'requestDevice',
-				args: [PANE, { deviceId: 'ios:iphone', deviceName: 'iPhone 17', runtime: 'iOS 26.5', reason: 'check the login screen', replacingDeviceName: 'Pixel 9' }],
+				args: [PANE, { deviceId: 'ios:iphone', deviceName: 'iPhone 17', runtime: 'iOS 26.5', reason: 'check the login screen', attachedDevices: [{ id: 'android:pixel', name: 'Pixel 9' }] }],
 				timeoutMs: 55_000,
 			}],
-			attached: { paneToken: PANE, deviceId: 'ios:iphone', deviceName: 'iPhone 17', stateKey: 'space-1', attachedAt: 1 },
+			attached: [
+				{ paneToken: PANE, deviceId: 'android:pixel', deviceName: 'Pixel 9', stateKey: undefined, attachedAt: 0 },
+				{ paneToken: PANE, deviceId: 'ios:iphone', deviceName: 'iPhone 17', stateKey: 'space-1', attachedAt: 1 },
+			],
+		});
+	});
+
+	// 上限（10 台）のときは、外す 1 台を利用者が承認の画面で選ぶ。外すのと足すのは台帳が一度に行う
+	test('request: a pane that holds ten devices asks the user which one to detach, and swaps only that one', async () => {
+		const ten = Array.from({ length: PARADIS_MOBILE_MAX_DEVICES_PER_PANE }, (_, index): IParadisMobileDevice => ({ id: `ios:sim-${index}`, udid: `udid-${index}`, name: `Sim ${index}`, platform: 'iOS', state: 'Shutdown', isRunning: false }));
+		const run = async (answer: object) => {
+			const { ledger, windowCalls, call } = setup({ answer });
+			ledger.devices = [...ten, IPHONE];
+			ten.forEach(device => ledger.add(PANE, device));
+			const result = await call('mobile_request_device', { device: 'iPhone 17' });
+			const prompt = windowCalls[0].args[1] as { mustRelease?: boolean; attachedDevices: unknown[] };
+			return { isError: result.isError, mustRelease: prompt.mustRelease, offered: prompt.attachedDevices.length, attached: ledger.listPaneAttachments(PANE).map(attachment => attachment.deviceId), body: result.body };
+		};
+		const swapped = await run({ outcome: 'approved', stateKey: 'space-1', releaseDeviceId: 'ios:sim-3' });
+		// 窓が外す端末を返さない（古い窓・形の違う答え）・そのペインの端末でない id を返す → 何も変えない
+		const noChoice = await run({ outcome: 'approved', stateKey: 'space-1' });
+		const foreign = await run({ outcome: 'approved', stateKey: 'space-1', releaseDeviceId: 'android:pixel' });
+		const tenIds = ten.map(device => device.id);
+		assert.deepStrictEqual({
+			swapped: [swapped.isError, swapped.mustRelease, swapped.offered, swapped.attached, JSON.parse(swapped.body).released],
+			noChoice: [noChoice.isError, noChoice.attached, noChoice.body.includes('mobile_release_device')],
+			foreign: [foreign.isError, foreign.attached],
+		}, {
+			swapped: [false, true, 10, [...tenIds.filter(id => id !== 'ios:sim-3'), 'ios:iphone'], { id: 'ios:sim-3', name: 'Sim 3' }],
+			noChoice: [true, tenIds, true],
+			foreign: [true, tenIds],
+		});
+	});
+
+	// 承認を待つ間に、利用者が同じ端末を共有ダイアログから渡し、その後に別の端末も渡していた: 今の端末は一覧の最後のもの
+	test('request: the note names the device that is really current when the pane changed while the user was answering', async () => {
+		const holder: { ledger?: FakeLedger } = {};
+		const { ledger, call } = setup({
+			onWindowCall: () => {
+				holder.ledger!.add(PANE, IPHONE);
+				holder.ledger!.add(PANE, IPAD);
+			},
+		});
+		holder.ledger = ledger;
+		ledger.give(PANE, PIXEL);
+		const body = JSON.parse((await call('mobile_request_device', { device: 'iPhone 17' })).body) as { attachedDevices: { name: string; current: boolean }[]; note: string };
+		assert.deepStrictEqual([body.attachedDevices.filter(device => device.current).map(device => device.name), body.note.startsWith('iPad Air is the current device')], [['iPad Air'], true]);
+	});
+
+	// `device` を省くと最後に割り当てた端末。`device` を付けた呼び出しでは、省いたときの端末は変わらない
+	test('several devices: tools act on the device named by "device", or on the one attached last, and say which', async () => {
+		const { ledger, host, call } = setup();
+		ledger.add(PANE, PIXEL);
+		ledger.add(PANE, IPHONE);
+		ledger.give(OTHER_PANE, IPAD);
+		const byDefault = await call('mobile_gesture', { kind: 'long_press', x: 10, y: 20 });
+		const byName = await call('mobile_gesture', { kind: 'long_press', x: 10, y: 20, device: 'Pixel 9' });
+		const byId = await call('mobile_gesture', { kind: 'long_press', x: 10, y: 20, device: 'android:pixel' });
+		const afterwards = await call('mobile_gesture', { kind: 'long_press', x: 10, y: 20 });
+		// ほかのペインの端末・無い端末は、id を知っていても動かせない
+		const foreign = await call('mobile_gesture', { kind: 'long_press', x: 10, y: 20, device: 'ios:ipad' });
+		const wrongType = await call('mobile_gesture', { kind: 'long_press', x: 10, y: 20, device: 7 });
+		assert.deepStrictEqual({
+			bodies: [byDefault, byName, byId, afterwards].map(result => result.body),
+			taps: host.inputs().map(entry => entry.path),
+			foreign: [foreign.isError, foreign.body],
+			wrongType: [wrongType.isError, wrongType.body],
+		}, {
+			bodies: [
+				'Pressed and held iPhone 17 at (10, 20) for 1 seconds.\nDevice: iPhone 17 (ios:iphone). "device" was omitted, so this used the pane\'s current device (the one attached last). 2 devices are attached to this pane: pass "device" to choose.',
+				'Pressed and held Pixel 9 at (10, 20) for 1 seconds.\nDevice: Pixel 9 (android:pixel).',
+				'Pressed and held Pixel 9 at (10, 20) for 1 seconds.\nDevice: Pixel 9 (android:pixel).',
+				'Pressed and held iPhone 17 at (10, 20) for 1 seconds.\nDevice: iPhone 17 (ios:iphone). "device" was omitted, so this used the pane\'s current device (the one attached last). 2 devices are attached to this pane: pass "device" to choose.',
+			],
+			taps: ['/api/v1/devices/ios%3Aiphone/input/tap', '/api/v1/devices/android%3Apixel/input/tap', '/api/v1/devices/android%3Apixel/input/tap', '/api/v1/devices/ios%3Aiphone/input/tap'],
+			foreign: [true, '"ios:ipad" is not attached to this terminal pane. Attached: Pixel 9 (android:pixel), iPhone 17 (ios:iphone). Pass one of these as "device" (id or exact name), or call mobile_request_device to ask the user for another device.'],
+			wrongType: [true, '"device" must be the id or the exact name of a device attached to this terminal pane.'],
+		});
+	});
+
+	// エージェントは、自分のペインの端末を手放せる（承認は要らない。接続元の確認も掛けない）
+	test('release: an agent gives a device of its own pane back, and the one attached last among the rest becomes current', async () => {
+		const { ledger, windowCalls, call } = setup({ caller: 'unverified' });
+		ledger.add(PANE, PIXEL);
+		ledger.add(PANE, IPHONE);
+		ledger.give(OTHER_PANE, IPAD);
+		const missing = await call('mobile_release_device', {}, false);
+		const foreign = await call('mobile_release_device', { device: 'iPad Air' }, false);
+		const released = await call('mobile_release_device', { device: 'iPhone 17' }, false);
+		const next = await call('mobile_gesture', { kind: 'long_press', x: 1, y: 2 }, false);
+		assert.deepStrictEqual({
+			refused: [missing.isError, foreign.isError],
+			released: [released.isError, JSON.parse(released.body)],
+			next: next.body,
+			otherPane: ledger.listPaneAttachments(OTHER_PANE).length,
+			dialogs: windowCalls.length,
+		}, {
+			refused: [true, true],
+			released: [false, { released: { id: 'ios:iphone', name: 'iPhone 17' }, attachedDevices: [{ id: 'android:pixel', name: 'Pixel 9', current: true }] }],
+			next: 'Pressed and held Pixel 9 at (1, 2) for 1 seconds.\nDevice: Pixel 9 (android:pixel).',
+			otherPane: 1,
+			dialogs: 0,
 		});
 	});
 
@@ -309,10 +432,12 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 		const without = await call('mobile_rotate', { orientation: 'landscape-left' }, false);
 		ledger.give(OTHER_PANE, PIXEL);
 		ledger.give(PANE, IPHONE);
-		// 端末を名指しする引数は受けない（スキーマにも無い）ので、渡されても割り当てられた端末だけが動く
+		// ほかのペインの端末は、`device` に id を渡しても動かせない（そのペインの割り当ての中だけで引く）
+		const foreign = await call('mobile_rotate', { orientation: 'landscape_left', device: 'android:pixel' }, false);
 		const rotated = await call('mobile_rotate', { orientation: 'landscape_left', deviceId: 'android:pixel' }, false);
 		assert.deepStrictEqual({
 			without: without.isError,
+			foreign: foreign.isError,
 			rotated: rotated.isError,
 			body: JSON.parse(rotated.body),
 			hostPaths: host.inputs().map(entry => [entry.path, entry.body]),
@@ -320,8 +445,10 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 			callerChecks: callerChecks(),
 		}, {
 			without: true,
+			foreign: true,
 			rotated: false,
-			body: { orientation: 'landscape-left', screen: { pointWidth: 800, pointHeight: 400, scale: 3 } },
+			// 返事には、操作した端末の名前と id が入る
+			body: { orientation: 'landscape-left', screen: { pointWidth: 800, pointHeight: 400, scale: 3 }, device: { id: 'ios:iphone', name: 'iPhone 17' } },
 			hostPaths: [['/api/v1/devices/ios%3Aiphone/input/rotate', { orientation: 'landscape-left' }]],
 			// 端末の向きではなく、スクショ（2400x1200 画素、scale 3）と同じ向きの大きさ
 			commands: 0,
@@ -441,7 +568,7 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 			cancelled: [cancelledResult.body, cancelled.host.inputs().map(entry => (entry.body as { phase: string }).phase)],
 		}, {
 			failed: [true, ['0:down', '0:up']],
-			cancelled: ['The gesture was cancelled.', ['down', 'down', 'up', 'up']],
+			cancelled: ['The gesture was cancelled.\nDevice: iPhone 17 (ios:iphone).', ['down', 'down', 'up', 'up']],
 		});
 	});
 
@@ -471,7 +598,7 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 				missing: true,
 				wrongType: true,
 				linkToText: true,
-				ios: { installed: true, device: 'iPhone 17', path: '/Users/example/Build/My.app', note: 'Para Code installed a copy it made of this path before asking the user; later changes to the path are not included.', appId: 'com.example.myapp' },
+				ios: { installed: true, path: '/Users/example/Build/My.app', note: 'Para Code installed a copy it made of this path before asking the user; later changes to the path are not included.', appId: 'com.example.myapp', device: { id: 'ios:iphone', name: 'iPhone 17' } },
 			},
 			android: false,
 			prechecks: [{ deviceId: 'ios:iphone', deviceName: 'iPhone 17' }, { deviceId: 'android:pixel', deviceName: 'Pixel 9' }],
@@ -516,7 +643,8 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 		const { ledger, runner, call } = setup();
 		const booted: IParadisMobileDevice = { id: 'android:serial:emulator-5556', udid: 'emulator-5556', name: 'Test', platform: 'Android', state: 'device', isRunning: true, avdId: 'android:avd:Test' };
 		ledger.devices = [IPHONE, booted];
-		ledger.attachments.set(PANE, { paneToken: PANE, deviceId: 'android:avd:Test', deviceName: 'Test', stateKey: undefined, attachedAt: 0 });
+		// 起動する前に割り当てた（台帳の id は起動前のもの）
+		ledger.add(PANE, { id: 'android:avd:Test', name: 'Test' });
 		const result = await call('mobile_install_app', { path: '/Users/example/Build/app.apk' });
 		assert.deepStrictEqual([result.isError, runner.runs.filter(run => run.args.includes('install'))], [
 			false,
@@ -704,14 +832,17 @@ suite('ParadisMobileCanvasService screen tools', () => {
 			listed: listed.devices.map(device => [device.id, device.usedByAnotherPane]),
 			sameDevice: await service.attachIfFree(OTHER_PANE, 'ios:iphone', undefined),
 			aliasOfSameDevice: await service.attachIfFree(OTHER_PANE, 'ios:alias', undefined),
-			ownPane: (await service.attachIfFree(PANE, 'ios:alias', 'space-1'))?.deviceId,
+			// 自分のペインが同じ端末を別の id で頼んでも、二重には割り当てない（今の割り当てを返す）
+			ownPane: await service.attachIfFree(PANE, 'ios:alias', 'space-1').then(result => result && result.refused === undefined ? [result.attachment.deviceId, result.added] : result),
+			attached: service.listPaneAttachments(PANE).length,
 		}, {
 			tap: false,
 			taps: 1,
 			listed: [['ios:iphone', true], ['ios:alias', true]],
-			sameDevice: undefined,
-			aliasOfSameDevice: undefined,
-			ownPane: 'ios:alias',
+			sameDevice: { refused: 'heldByAnotherPane' },
+			aliasOfSameDevice: { refused: 'heldByAnotherPane' },
+			ownPane: ['ios:iphone', false],
+			attached: 1,
 		});
 	});
 });

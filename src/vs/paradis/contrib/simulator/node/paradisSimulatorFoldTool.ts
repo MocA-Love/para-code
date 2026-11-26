@@ -9,7 +9,8 @@
 // MCP のツール mobile_fold（q.html Q582 の 4・Q585 の D5）。そのペインに割り当てた iPhone Duo を、姿勢の名前か
 // 角度で開閉する。
 //
-//  - 端末は引数に取らず、必ず台帳からそのペインの割り当てを引く（ほかのペインの端末は触れない。#801 の LOW3）
+//  - 端末は、必ず台帳からそのペインの割り当てを引く（ほかのペインの端末は触れない。#801 の LOW3）。任意の引数 `device` は、
+//    そのペインに割り当てた端末の中から選ぶだけ（省いたら最後に割り当てた端末。simulator/common/paradisMobileAttachmentBook.ts）
 //  - 画面の操作の側（mobile_rotate と同じ）なので、接続元の確認は掛けずトークンだけで動く。SSH の接続先のペインからも使える
 //  - iOS のシミュレータを使えない（macOS でない）ときは一覧に出さない
 //  - serve-sim の開閉は Device Hub が起動していないと断られる（Xcode 27.2 の Mac で実測）。断られたらその旨を返す
@@ -17,6 +18,8 @@
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisMcpToolDefinition, IParadisMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { IParadisMobileDeviceLedger } from '../node/paradisSimulatorDeviceOps.js';
+import { IParadisMobileAttachment } from '../common/paradisMobileCanvas.js';
+import { IParadisMobileToolResult, paradisStampMobileDevice, paradisWithMobileDeviceArgument } from '../common/paradisMobileAttachmentBook.js';
 import { ParadisSimulatorFold } from '../common/paradisSimulator.js';
 import { paradisParseSimulatorFold } from '../common/paradisSimulatorFrames.js';
 import { paradisSimulatorIsFoldable } from '../common/paradisSimulatorInput.js';
@@ -24,7 +27,7 @@ import { ParadisServeSimBackend } from './paradisServeSimBackend.js';
 import { ParadisSimulatorDeviceHub } from './paradisSimulatorDeviceHub.js';
 import { ParadisServeSimDeviceHost, paradisServeSimActiveDisplay, paradisServeSimUdidOf } from './paradisServeSimDeviceHost.js';
 
-export const PARADIS_SIMULATOR_FOLD_TOOL: IParadisMcpToolDefinition = {
+export const PARADIS_SIMULATOR_FOLD_TOOL: IParadisMcpToolDefinition = paradisWithMobileDeviceArgument({
 	name: 'mobile_fold',
 	description: 'Fold or unfold the foldable iOS simulator (iPhone Duo) attached to this terminal pane. Pass either pose ("closed" 0 degrees shows the cover screen, "book" 130 degrees, "open" 180 degrees is flat) or angle in degrees, not both. Returns the hinge angle, which screen is showing (cover or inner) and its size in points: every coordinate you pass to input tools afterwards must use this size. Device Hub (in Xcode) must be running for folding to work.',
 	inputSchema: {
@@ -36,13 +39,9 @@ export const PARADIS_SIMULATOR_FOLD_TOOL: IParadisMcpToolDefinition = {
 		additionalProperties: false,
 	},
 	annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
-};
+});
 
-interface IToolResult {
-	content: { type: 'text'; text: string }[];
-	isError?: boolean;
-	structuredContent?: unknown;
-}
+type IToolResult = IParadisMobileToolResult;
 
 function errorResult(text: string): IToolResult {
 	return { content: [{ type: 'text', text }], isError: true };
@@ -56,7 +55,7 @@ export class ParadisSimulatorFoldToolProvider implements IParadisMcpToolProvider
 	readonly cliGroup = 'mobile';
 
 	constructor(
-		private readonly _ledger: Pick<IParadisMobileDeviceLedger, 'getAttachment'>,
+		private readonly _ledger: Pick<IParadisMobileDeviceLedger, 'resolveTarget'>,
 		private readonly _backend: Pick<ParadisServeSimBackend, 'getScreenConfig' | 'fold' | 'listDevices'>,
 		private readonly _host: Pick<ParadisServeSimDeviceHost, 'request' | 'forgetDisplay'>,
 		/** 開閉で画面の大きさが変わったので、ツールが覚えた大きさを捨てる。 */
@@ -78,23 +77,25 @@ export class ParadisSimulatorFoldToolProvider implements IParadisMcpToolProvider
 			return errorResult('mobile_fold needs the new iOS simulator in Para Code, which is turned off.');
 		}
 		try {
-			return await this._fold(paneToken, args);
+			const record = args && typeof args === 'object' ? args as Record<string, unknown> : {};
+			// 返事には、成功でも失敗でも、操作した端末の名前と id を入れる
+			const target = await this._ledger.resolveTarget(paneToken, record.device);
+			try {
+				return paradisStampMobileDevice(await this._fold(target.attachment, record), target);
+			} catch (error) {
+				return paradisStampMobileDevice(errorResult(message(error)), target);
+			}
 		} catch (error) {
 			return errorResult(message(error));
 		}
 	}
 
-	private async _fold(paneToken: string, args: unknown): Promise<IToolResult> {
-		const record = args && typeof args === 'object' ? args as Record<string, unknown> : {};
+	private async _fold(attachment: IParadisMobileAttachment, record: Record<string, unknown>): Promise<IToolResult> {
 		let fold: ParadisSimulatorFold;
 		try {
 			fold = paradisParseSimulatorFold({ pose: record.pose, hinge: record.angle });
 		} catch {
 			return errorResult('Pass exactly one of "pose" (closed, book or open) or "angle" (0 to 180 degrees).');
-		}
-		const attachment = this._ledger.getAttachment(paneToken);
-		if (!attachment) {
-			return errorResult('No mobile device is attached to this terminal pane. Call mobile_request_device to ask the user for one, then try again.');
 		}
 		const udid = paradisServeSimUdidOf(attachment.deviceId);
 		if (!udid) {
