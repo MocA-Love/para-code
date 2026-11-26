@@ -199,7 +199,7 @@ suite('ParadisAgentChatView', () => {
 				{ rev: 2, role: 'tool', kind: 'tool_result', toolUseId: 't1', text: 'ok' },
 				{ rev: 3, role: 'assistant', kind: 'tool_use', tool: 'Bash', toolUseId: 't2', text: JSON.stringify({ command: 'npm test' }) },
 				{ rev: 4, role: 'tool', kind: 'tool_result', toolUseId: 't2', text: 'ok' },
-				{ rev: 5, role: 'assistant', kind: 'text', text: '通りました', ts, usage: { model: 'gpt-5.5', inputTokens: 1200, outputTokens: 34 } },
+				{ rev: 5, role: 'assistant', kind: 'text', text: '通りました', ts, usage: { model: 'gpt-5.5', inputTokens: 1200, cacheReadTokens: 3000, cacheCreationTokens: 0, outputTokens: 34 } },
 			],
 		}]);
 		const list = container.querySelector<HTMLElement>('.paradis-agent-chat-list')!;
@@ -209,7 +209,7 @@ suite('ParadisAgentChatView', () => {
 		assert.deepStrictEqual([...list.children].filter(child => !child.classList.contains('paradis-agent-chat-notice')).map(shape), [
 			'bubble:テストして time:10:02',
 			'group:2 手順Bash',
-			'face:codex bubble:通りました time:10:02 usage:gpt-5.5 / 入力 1,200 出力 34',
+			'face:codex bubble:通りました time:10:02 usage:gpt-5.5 / 入力 1,200 · キャッシュ 3,000 · 出力 34',
 		]);
 	});
 

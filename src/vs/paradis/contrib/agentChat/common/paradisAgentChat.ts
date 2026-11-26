@@ -93,12 +93,16 @@ export const PARADIS_ADVISOR_TOOL = 'Advisor';
 
 /**
  * エージェントの発言を書いたリクエスト 1 回の使用量（Claude Code の transcript の assistant の行の `message.usage`）。
- * 入力はキャッシュから読んだ分・書いた分を含めた合計。同じ応答を複数の行に分けて書くので、出力はその行を書いた
- * 時点の数（同じ応答の後ろの行ほど大きい）。
+ * Claude Code は 1 回の応答を内容ごとに複数の行へ分けて書くが、どの行にも同じ usage（応答全体の数）を書く。
  */
 export interface IParadisAgentMessageUsage {
 	readonly model?: string;
+	/** キャッシュを通らなかった入力（`input_tokens`）。 */
 	readonly inputTokens: number;
+	/** キャッシュから読んだ入力（`cache_read_input_tokens`）。 */
+	readonly cacheReadTokens: number;
+	/** キャッシュへ書いた入力（`cache_creation_input_tokens`）。 */
+	readonly cacheCreationTokens: number;
 	readonly outputTokens: number;
 }
 
