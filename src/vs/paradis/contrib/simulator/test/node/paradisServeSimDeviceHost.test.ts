@@ -17,6 +17,7 @@ import { IParadisMobileAttachment } from '../../common/paradisMobileCanvas.js';
 import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, ParadisSimulatorFold } from '../../common/paradisSimulator.js';
 import { ParadisSimulatorDeviceRouter } from '../../node/paradisSimulatorDeviceRouter.js';
 import { ParadisServeSimBackend } from '../../node/paradisServeSimBackend.js';
+import { PARADIS_MOBILE_DEVICE_ARGUMENT, PARADIS_MOBILE_NO_DEVICE_MESSAGE } from '../../common/paradisMobileAttachmentBook.js';
 import { PARADIS_SIMULATOR_KEYS_MAY_BE_LOST, ParadisServeSimDeviceHost, paradisRealSimulatorScreenshot } from '../../node/paradisServeSimDeviceHost.js';
 import { PARADIS_SIMULATOR_FOLD_TOOL, ParadisSimulatorFoldToolProvider } from '../../node/paradisSimulatorFoldTool.js';
 
@@ -315,6 +316,8 @@ suite('Paradis simulator: mobile_fold', () => {
 				properties: {
 					pose: { type: 'string', enum: ['closed', 'book', 'open'] },
 					angle: { type: 'number', description: 'Hinge angle in degrees, 0 (closed) to 180 (flat open).' },
+					// 1 ペインに複数の端末を割り当てられるようにしたときに足した、任意の引数（省けば今の端末）
+					device: PARADIS_MOBILE_DEVICE_ARGUMENT,
 				},
 				additionalProperties: false,
 			},
@@ -324,7 +327,14 @@ suite('Paradis simulator: mobile_fold', () => {
 	function provider(attachment: IParadisMobileAttachment | undefined, enabled = true, deviceHubRunning = true) {
 		const { host, backend } = setup();
 		const forgotten: string[] = [];
-		const fold = new ParadisSimulatorFoldToolProvider({ getAttachment: () => attachment }, backend as unknown as ParadisServeSimBackend, host, id => forgotten.push(id), () => enabled, undefined, { isRunning: async () => deviceHubRunning });
+		const fold = new ParadisSimulatorFoldToolProvider({
+			resolveTarget: async () => {
+				if (!attachment) {
+					throw new Error(PARADIS_MOBILE_NO_DEVICE_MESSAGE);
+				}
+				return { attachment, byDefault: true, attachedCount: 1 };
+			},
+		}, backend as unknown as ParadisServeSimBackend, host, id => forgotten.push(id), () => enabled, undefined, { isRunning: async () => deviceHubRunning });
 		return { fold, backend, forgotten, host };
 	}
 	const attachment: IParadisMobileAttachment = { paneToken: 'pane-a', deviceId: ID, deviceName: 'iPhone Duo', stateKey: undefined, attachedAt: 0 };
@@ -360,7 +370,8 @@ suite('Paradis simulator: mobile_fold', () => {
 			otherTool: await duo.fold.callTool('pane-a', 'mobile_tap', {}),
 		}, {
 			// iOS 27.2 では閉じても内の画面のまま映る（映像の大きさで決める）。そのときはその旨を添える
-			closed: { hingeDegrees: 0, activeDisplay: 'inner', screen: { pointWidth: 402, pointHeight: 874, scale: 3 }, note: 'The hinge moved, but the simulator still shows the inner screen. Coordinates follow the screen that is showing.' },
+			// 返事には、開閉した端末の名前と id が入る
+			closed: { hingeDegrees: 0, activeDisplay: 'inner', screen: { pointWidth: 402, pointHeight: 874, scale: 3 }, note: 'The hinge moved, but the simulator still shows the inner screen. Coordinates follow the screen that is showing.', device: { id: ID, name: 'iPhone Duo' } },
 			forgotten: [ID],
 			both: true,
 			notFoldable: [true, true],
@@ -394,9 +405,9 @@ suite('Paradis simulator: mobile_fold', () => {
 			flatDescribed: (await flat.host.request('GET', PATH, undefined) as { foldable?: boolean }).foldable,
 		}, {
 			before: { foldable: true, hasHinge: false, activeDisplay: 'inner' },
-			opened: [undefined, { hingeDegrees: 180, activeDisplay: 'inner', screen: { pointWidth: 402, pointHeight: 874, scale: 3 } }],
+			opened: [undefined, { hingeDegrees: 180, activeDisplay: 'inner', screen: { pointWidth: 402, pointHeight: 874, scale: 3 }, device: { id: ID, name: 'iPhone Duo' } }],
 			after: { foldable: true, hingeDegrees: 180, activeDisplay: 'inner' },
-			notFoldable: [true, 'iPhone Duo is not a foldable device (only the iPhone Duo simulator folds).'],
+			notFoldable: [true, `iPhone Duo is not a foldable device (only the iPhone Duo simulator folds).\nDevice: iPhone Duo (${ID}).`],
 			flatDescribed: false,
 		});
 	});
