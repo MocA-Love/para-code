@@ -1244,8 +1244,10 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 					if (shownAt !== undefined) {
 						return 'denied';
 					}
-					// 画面に一度も出ないまま閉じた（出る前に、ほかへ打っていた Enter・Esc が当たったなど）。利用者は
-					// 確認を見ていないので、拒否としては扱わない（3 分の自動の断りも始めない）。下で聞き直す
+					// 画面に出たのを一度も見届けないまま閉じた（出る前に、ほかへ打っていた Enter・Esc が当たったなど）。利用者は
+					// 確認を見ていないので、拒否としては扱わない（3 分の自動の断りも始めない）。下で聞き直す。
+					// 出たかは DIALOG_SHOWN_POLL_MS（50 ミリ秒）おきに見ているので、出てから 50 ミリ秒未満で閉じたものも
+					// ここに入る。人が読んで断れる長さではないので、同じく聞き直す（聞き直した確認を断れば、拒否になる）
 					notice = localize('paradis.agentTabs.approval.closedBeforeShown', "前の確認は、画面に出る前に閉じられました。もう一度確認しています。ボタンをクリックして答えてください。");
 				} else {
 					const elapsed = Date.now() - (shownAt ?? calledAt);
