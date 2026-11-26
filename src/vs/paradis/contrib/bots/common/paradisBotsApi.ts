@@ -93,9 +93,15 @@ export interface IParadisBotLaunch {
 	readonly permissionId?: string;
 	/**
 	 * 起動のコマンドに足す引数（Codex だけ。Bot の道具の前もっての許可）。利用者の設定ファイルには書かず、この起動に
-	 * だけ渡す。起動する側（後の PR）が `paradisLaunchAgentInWorkspace` の `extraFlags` へ渡す。
+	 * だけ渡す。起動する側（paradisBotsLaunch.contribution.ts）が `paradisLaunchAgentInWorkspace` の `extraFlags` へ渡す。
 	 */
 	readonly extraFlags?: string;
+}
+
+/** Bot を止める依頼。トークンの値は出さず、ハッシュで渡す。 */
+export interface IParadisBotStopRequest {
+	readonly botId: string;
+	readonly paneHashes: readonly string[];
 }
 
 // ---- ウィンドウ側のサービス ---------------------------------------------------------------------
@@ -117,8 +123,11 @@ export interface IParadisBotsService {
 	/** 今の一覧（Bot ごとの「あなたの番」の件数・様子・最後に動いた時刻）。 */
 	readonly snapshot: IParadisBotsSnapshot;
 	readonly onDidChange: Event<void>;
-	/** Bot を止めてほしい（どのウィンドウからの依頼も全ウィンドウへ届く）。そのターミナルを持つウィンドウが閉じる。 */
-	readonly onDidRequestStop: Event<{ readonly botId: string }>;
+	/**
+	 * Bot を止めてほしい（どのウィンドウからの依頼も全ウィンドウへ届く）。`paneHashes` はその Bot のペインのトークンの
+	 * SHA-256（16 進）。自分の生きたペインのトークンをハッシュにして照らし、合ったターミナルを閉じる。
+	 */
+	readonly onDidRequestStop: Event<IParadisBotStopRequest>;
 
 	createBot(input: { readonly name: string; readonly agent: ParadisAgentKind; readonly modelId?: string; readonly effortId?: string; readonly permissionId?: string }, soul?: string): Promise<ParadisBotsServiceResult<IParadisBot>>;
 	updateBot(botId: string, patch: IParadisBotPatch): Promise<ParadisBotsServiceResult<IParadisBot>>;
@@ -137,6 +146,8 @@ export interface IParadisBotsService {
 	/** 起動できなかった。 */
 	cancelLaunch(launchId: string): Promise<void>;
 	requestStop(botId: string): Promise<boolean>;
+	/** その Bot のペインのトークンの SHA-256（16 進）。開くときに、このウィンドウにもうあるかを照らす。 */
+	paneHashesOf(botId: string): Promise<readonly string[]>;
 
 	readHomeFile(botId: string, relativePath: string): Promise<ParadisBotsServiceResult<string | undefined>>;
 	writeHomeFile(botId: string, relativePath: string, text: string): Promise<ParadisBotsServiceResult<void>>;

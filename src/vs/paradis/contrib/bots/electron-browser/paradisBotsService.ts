@@ -19,7 +19,7 @@ import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPane
 import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 import { IParadisBotItem, IParadisBotItemOwnerComment, ParadisBotItemStatus } from '../common/paradisBotItems.js';
 import { IParadisBot, IParadisBotPatch } from '../common/paradisBots.js';
-import { EMPTY_PARADIS_BOTS_SNAPSHOT, IParadisBotLaunch, IParadisBotsService, IParadisBotsSnapshot, PARADIS_BOTS_CHANNEL, ParadisBotPanePurpose, ParadisBotsServiceResult } from '../common/paradisBotsApi.js';
+import { EMPTY_PARADIS_BOTS_SNAPSHOT, IParadisBotLaunch, IParadisBotsService, IParadisBotsSnapshot, IParadisBotStopRequest, PARADIS_BOTS_CHANNEL, ParadisBotPanePurpose, ParadisBotsServiceResult } from '../common/paradisBotsApi.js';
 
 const UNAVAILABLE: ParadisBotsServiceResult<never> = { ok: false, code: 'unavailable', message: 'Para Code could not reach the bot service.' };
 
@@ -32,7 +32,7 @@ export class ParadisBotsClient extends Disposable implements IParadisBotsService
 	private readonly _onDidChange = this._register(new Emitter<void>());
 	readonly onDidChange: Event<void> = this._onDidChange.event;
 
-	readonly onDidRequestStop: Event<{ readonly botId: string }>;
+	readonly onDidRequestStop: Event<IParadisBotStopRequest>;
 
 	private _snapshot: IParadisBotsSnapshot = EMPTY_PARADIS_BOTS_SNAPSHOT;
 
@@ -43,7 +43,7 @@ export class ParadisBotsClient extends Disposable implements IParadisBotsService
 	) {
 		super();
 		this.channel = sharedProcessService.getChannel(PARADIS_BOTS_CHANNEL);
-		this.onDidRequestStop = this.channel.listen<{ readonly botId: string }>('onDidRequestStop');
+		this.onDidRequestStop = this.channel.listen<IParadisBotStopRequest>('onDidRequestStop');
 		this._register(this.channel.listen<IParadisBotsSnapshot>('onDidChange')(snapshot => this.apply(snapshot)));
 		this.channel.call<IParadisBotsSnapshot>('getSnapshot').then(
 			snapshot => this.apply(snapshot),
@@ -110,6 +110,10 @@ export class ParadisBotsClient extends Disposable implements IParadisBotsService
 
 	requestStop(botId: string): Promise<boolean> {
 		return this.value('requestStop', [botId], false);
+	}
+
+	paneHashesOf(botId: string): Promise<readonly string[]> {
+		return this.value<readonly string[]>('paneHashesOf', [botId], []);
 	}
 
 	readHomeFile(botId: string, relativePath: string): Promise<ParadisBotsServiceResult<string | undefined>> {

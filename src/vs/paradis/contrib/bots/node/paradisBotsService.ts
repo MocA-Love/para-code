@@ -45,10 +45,10 @@ import {
 	paradisIsBotItemSnoozed,
 } from '../common/paradisBotItems.js';
 import { EMPTY_PARADIS_BOTS_STATE, IParadisBot, IParadisBotCreateInput, IParadisBotPatch, IParadisBotsState, PARADIS_BOTS_VERSION, paradisBotCreate, paradisBotRemove, paradisBotUpdate } from '../common/paradisBots.js';
-import { IParadisBotLaunch, IParadisBotsSnapshot, ParadisBotPanePurpose, ParadisBotsServiceResult, paradisBotSummary } from '../common/paradisBotsApi.js';
+import { IParadisBotLaunch, IParadisBotsSnapshot, IParadisBotStopRequest, ParadisBotPanePurpose, ParadisBotsServiceResult, paradisBotSummary } from '../common/paradisBotsApi.js';
 import { IParadisBotItemAddArgs, paradisBotLaunchApprovalFlags } from '../common/paradisBotTools.js';
 import { ParadisBotHomeError, ParadisBotHomes } from './paradisBotHomes.js';
-import { IParadisBotPanesState, PARADIS_BOT_PANES_VERSION, ParadisBotPanes } from './paradisBotPanes.js';
+import { IParadisBotPanesState, PARADIS_BOT_PANES_VERSION, ParadisBotPanes, paradisBotPaneTokenHash } from './paradisBotPanes.js';
 import { IParadisBotsJsonFile, IParadisBotsLoaded } from './paradisBotsStore.js';
 
 /** 連続した変更をまとめてから知らせる間隔。 */
@@ -105,9 +105,9 @@ export class ParadisBotsService extends Disposable {
 	/** 持ち主が項目に書いた。Bot へ届ける役（後の PR）が {@link pendingMail} を読んで届ける。 */
 	readonly onDidQueueMail: Event<{ readonly botId: string; readonly uid: string }> = this._onDidQueueMail.event;
 
-	private readonly _onDidRequestStop = this._register(new Emitter<{ readonly botId: string }>());
+	private readonly _onDidRequestStop = this._register(new Emitter<IParadisBotStopRequest>());
 	/** Bot を止めてほしい。そのターミナルを持つウィンドウが閉じる（閉じると結び付けが外れる）。 */
-	readonly onDidRequestStop: Event<{ readonly botId: string }> = this._onDidRequestStop.event;
+	readonly onDidRequestStop: Event<IParadisBotStopRequest> = this._onDidRequestStop.event;
 
 	private readonly changeScheduler = this._register(new RunOnceScheduler(() => this._onDidChange.fire(this.getSnapshot()), CHANGE_DELAY));
 	/** 後回しの期限が来たら、件数と「あなたの番」を数え直す。 */
@@ -290,7 +290,7 @@ export class ParadisBotsService extends Disposable {
 			// Bot を先に消す（項目を先に消すと、Bot の保存に失敗したときに項目だけが消える）。項目の保存に失敗しても、
 			// 持ち主のいない項目は一覧にも「あなたの番」にも出ない
 			const removed = await this.saveBots(result.state, result.bot);
-			this._onDidRequestStop.fire({ botId });
+			this._onDidRequestStop.fire({ botId, paneHashes: this.paneHashesOf(botId) });
 			this.panes.releaseBot(botId);
 			await this.saveItems(paradisBotItemsRemoveBot(this.items, botId), undefined);
 			return removed;
@@ -400,13 +400,20 @@ export class ParadisBotsService extends Disposable {
 		});
 	}
 
-	/** Bot を止める依頼を全ウィンドウへ出す。動いているペインが無ければ false。 */
+	/** Bot を止める依頼を全ウィンドウへ出す。結び付いた・保存したペインが無ければ false。 */
 	requestStop(botId: string): boolean {
-		if (this.panes.statesOf(botId).length === 0) {
+		// 起動し直した後でまだ現れていないペインも止める（保存した結び付けのハッシュも渡す）
+		const paneHashes = this.paneHashesOf(botId);
+		if (paneHashes.length === 0) {
 			return false;
 		}
-		this._onDidRequestStop.fire({ botId });
+		this._onDidRequestStop.fire({ botId, paneHashes });
 		return true;
+	}
+
+	/** その Bot のペインのトークンの SHA-256（結び付いているものと、保存してまだ現れていないもの）。 */
+	paneHashesOf(botId: string): string[] {
+		return [...new Set([...this.panes.tokensOf(botId).map(paradisBotPaneTokenHash), ...this.panes.rememberedPanes().filter(record => record.botId === botId).map(record => record.hash)])];
 	}
 
 	/** 専用フォルダの中のファイルを読む（人格メモ・記憶など。相対パスだけ）。無ければ `value` は undefined。 */

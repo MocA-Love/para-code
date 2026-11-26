@@ -227,6 +227,10 @@ suite('Paradis bots service', () => {
 		await second.service.ready;
 		// 現れるまでは動いているものに数えない
 		const beforeSeen = second.service.getSnapshot().bots.map(bot => bot.activity);
+		// 止める依頼は、まだ現れていないペインのハッシュも載せる（ウィンドウが自分のペインと照らして閉じる）
+		const stops: unknown[] = [];
+		store.add(second.service.onDidRequestStop(request => stops.push(request)));
+		const stopped = second.service.requestStop(second.service.getSnapshot().bots[1].id);
 		// 保存した結び付けで B のものになっているトークンを、A の起動として報告しても通らない
 		const launchId = second.service.issueLaunch(a, 'chat');
 		const stolen = launchId !== undefined && second.service.reportLaunch(launchId, 'pane-B');
@@ -241,6 +245,7 @@ suite('Paradis bots service', () => {
 			tokenNotSaved: JSON.stringify(saved).includes('pane-'),
 			beforeSeen,
 			stolen,
+			stopped: [stopped, stops],
 			listed: (listed.items as { title: string }[]).map(item => item.title),
 			afterSeen,
 			left: second.panesFile.state.panes,
@@ -252,6 +257,11 @@ suite('Paradis bots service', () => {
 			tokenNotSaved: false,
 			beforeSeen: ['stopped', 'stopped'],
 			stolen: false,
+			// 2 件目は Bot を消したときの止める依頼
+			stopped: [true, [
+				{ botId: 'id3', paneHashes: ['595738e51f96f4da3b0bd4c0fa10ee3a1519a6d53e5632f5419c215b3d1740c4'] },
+				{ botId: 'id3', paneHashes: ['595738e51f96f4da3b0bd4c0fa10ee3a1519a6d53e5632f5419c215b3d1740c4'] },
+			]],
 			listed: ['A の項目'],
 			afterSeen: [['A', 'idle'], ['B', 'working']],
 			left: [],

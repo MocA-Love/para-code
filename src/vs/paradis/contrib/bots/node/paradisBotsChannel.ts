@@ -99,6 +99,7 @@ export class ParadisBotsChannel implements IServerChannel<string> {
 				return undefined;
 			}
 			case 'requestStop': return id !== undefined && service.requestStop(id);
+			case 'paneHashesOf': return id !== undefined ? service.paneHashesOf(id) : [];
 
 			case 'readHomeFile': return id !== undefined ? service.readHomeFile(id, args.at(1)) : INVALID;
 			case 'writeHomeFile': {
