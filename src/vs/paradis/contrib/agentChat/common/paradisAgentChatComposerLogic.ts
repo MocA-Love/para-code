@@ -71,3 +71,17 @@ export function paradisDuplicateAgentChatCommandNames(commands: readonly IParadi
 	}
 	return duplicates;
 }
+
+/** 外から入れた下書きの結果。`inserted` は空の入力欄へ入れた、`appended` は書きかけの文の後ろへ足した。 */
+export type ParadisAgentChatDraftInsert = 'inserted' | 'appended';
+
+/**
+ * 入力欄へ外から下書きを入れたときの文（Bot のホームの提案の「始める」など）。書きかけの文は消さずに残し、空行を挟んで
+ * 後ろへ足す。
+ */
+export function paradisAppendAgentChatDraft(current: string, text: string): { readonly value: string; readonly result: ParadisAgentChatDraftInsert } {
+	if (current.trim().length === 0) {
+		return { value: text, result: 'inserted' };
+	}
+	return { value: `${current.replace(/\s+$/, '')}\n\n${text}`, result: 'appended' };
+}

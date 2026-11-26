@@ -45,6 +45,7 @@ import { paradisAgentChatButton } from './paradisAgentChatButton.js';
 import { IParadisAgentChatComposerHost, ParadisAgentChatComposer } from './paradisAgentChatComposer.js';
 import { IParadisAgentChatAsyncDrafts, paradisAsyncQuestionsSignature, paradisBuildAsyncReplyFromDrafts, paradisGroupAsyncQuestions, paradisNewAgentChatAsyncDrafts, paradisRenderAsyncQuestionCard, paradisRenderQuestionReplies } from './paradisAgentChatAsyncQuestions.js';
 import { ParadisAgentChatSession } from './paradisAgentChatSession.js';
+import { ParadisAgentChatDraftInsert } from '../common/paradisAgentChatComposerLogic.js';
 
 /** チャット表示が呼び出し側（electron-browser の contribution）へ求めるもの。 */
 export interface IParadisAgentChatViewHost extends IParadisAgentChatComposerHost {
@@ -417,6 +418,11 @@ export class ParadisAgentChatView extends Disposable {
 
 	focusInput(): void {
 		this.composer.focus();
+	}
+
+	/** 入力欄へ下書きを入れる（送らない）。チャット表示が見えていなければ undefined。 */
+	insertDraft(text: string): ParadisAgentChatDraftInsert | undefined {
+		return this.visible ? this.composer.insertDraft(text) : undefined;
 	}
 
 	private updateBackLabel(): void {

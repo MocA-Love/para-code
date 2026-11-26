@@ -23,7 +23,7 @@ import { isMacintosh } from '../../../../base/common/platform.js';
 import { localize } from '../../../../nls.js';
 import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { IParadisAgentChatCommand } from '../common/paradisAgentChat.js';
-import { paradisDuplicateAgentChatCommandNames, paradisFilterAgentChatCommands, paradisAgentChatSlashQuery } from '../common/paradisAgentChatComposerLogic.js';
+import { paradisAppendAgentChatDraft, ParadisAgentChatDraftInsert, paradisDuplicateAgentChatCommandNames, paradisFilterAgentChatCommands, paradisAgentChatSlashQuery } from '../common/paradisAgentChatComposerLogic.js';
 
 /** 候補の一覧の id の通し番号（入力欄ごとに id を分ける）。 */
 let slashMenuIdCounter = 0;
@@ -216,6 +216,15 @@ export class ParadisAgentChatComposer extends Disposable {
 			// ドロップと同じく、空白を含むパスは引用符で囲む
 			this.insertText(paths.map(path => /\s/.test(path) ? `"${path}"` : path).join(' '));
 		}
+	}
+
+	/** 外から下書きを入れる（送らない）。書きかけの文があれば後ろへ足す。入力欄へフォーカスし、カーソルを末尾へ置く。 */
+	insertDraft(text: string): ParadisAgentChatDraftInsert {
+		const { value, result } = paradisAppendAgentChatDraft(this.textarea.value, text);
+		this.textarea.value = value;
+		this.onInput();
+		this.focus();
+		return result;
 	}
 
 	/** 入力欄のカーソル位置へ文字を差し込む（ファイルのドロップなど）。 */

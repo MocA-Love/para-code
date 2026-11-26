@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisAgentChatSlashQuery, paradisFilterAgentChatCommands, paradisPushAgentChatHistory } from '../../common/paradisAgentChatComposerLogic.js';
+import { paradisAgentChatSlashQuery, paradisAppendAgentChatDraft, paradisFilterAgentChatCommands, paradisPushAgentChatHistory } from '../../common/paradisAgentChatComposerLogic.js';
 
 suite('paradisAgentChatComposerLogic', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -32,5 +32,17 @@ suite('paradisAgentChatComposerLogic', () => {
 			history: ['b', 'c'],
 			blank: ['a'],
 		});
+	});
+
+	test('puts a draft into an empty input and appends it after a blank line to what the user is writing', () => {
+		assert.deepStrictEqual([
+			paradisAppendAgentChatDraft('', 'リリースをまとめて'),
+			paradisAppendAgentChatDraft('  \n', 'リリースをまとめて'),
+			paradisAppendAgentChatDraft('書きかけ\n', 'リリースをまとめて'),
+		], [
+			{ value: 'リリースをまとめて', result: 'inserted' },
+			{ value: 'リリースをまとめて', result: 'inserted' },
+			{ value: '書きかけ\n\nリリースをまとめて', result: 'appended' },
+		]);
 	});
 });
