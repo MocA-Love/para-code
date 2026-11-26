@@ -631,18 +631,48 @@ export class McpResponse {
             response.push(`Emulating color scheme: ${colorScheme}`);
             structuredContent.colorScheme = colorScheme;
         }
-        const dialog = this.#page?.getDialog();
+        // PARA-PATCH (Para Code): list_pages is not bound to a page, so it never reported the open dialog. Para Code asks
+        // list_pages whether a dialog is open (it must not ask the page: a page with an open dialog does not answer),
+        // so report the dialog of the selected page there too. See NOTES.md "vendored chrome-devtools-mcp への変更".
+        let paraCodeDialogPage = this.#page;
+        if (!paraCodeDialogPage && this.#includePages) {
+            try {
+                paraCodeDialogPage = context.getSelectedMcpPage();
+            }
+            catch {
+                paraCodeDialogPage = undefined;
+            }
+        }
+        const dialog = paraCodeDialogPage?.getDialog();
         if (dialog) {
-            const defaultValueIfNeeded = dialog.type() === 'prompt'
-                ? ` (default value: "${dialog.defaultValue()}")`
+            // PARA-PATCH (Para Code): the built-in browser shows window.prompt() as a confirm that stands in for it
+            // (Electron has no prompt); its text ends with a marker line that carries the default value. Report it as
+            // the prompt it is, so that the caller answers with a text. Keep the expression in sync with
+            // paradisParsePromptStandIn (src/vs/platform/browserView/common/paradisBrowserViewPrompt.ts).
+            let paraCodeType = dialog.type();
+            let paraCodeMessage = dialog.message();
+            let paraCodeDefault = dialog.defaultValue();
+            const paraCodeStandIn = paraCodeType === 'confirm' ? /^([\s\S]*)\n\n\[prompt\(\) default: ("(?:[^"\\]|\\.)*")\] [^\n]*$/.exec(paraCodeMessage) : null;
+            if (paraCodeStandIn) {
+                try {
+                    paraCodeDefault = String(JSON.parse(paraCodeStandIn[2]));
+                    paraCodeMessage = paraCodeStandIn[1];
+                    paraCodeType = 'prompt';
+                }
+                catch {
+                    // not a stand-in after all
+                }
+            }
+            const defaultValueIfNeeded = paraCodeType === 'prompt'
+                ? ` (default value: "${paraCodeDefault}")`
                 : '';
             response.push(`# Open dialog
-${dialog.type()}: ${dialog.message()}${defaultValueIfNeeded}.
+${paraCodeType}: ${paraCodeMessage}${defaultValueIfNeeded}.
 Call ${handleDialog.name} to handle it before continuing.`);
             structuredContent.dialog = {
-                type: dialog.type(),
-                message: dialog.message(),
-                defaultValue: dialog.defaultValue(),
+                type: paraCodeType,
+                message: paraCodeMessage,
+                defaultValue: paraCodeDefault,
             };
         }
         if (this.#includePages) {
