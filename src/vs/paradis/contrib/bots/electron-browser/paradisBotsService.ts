@@ -115,6 +115,10 @@ export class ParadisBotsClient extends Disposable implements IParadisBotsService
 		return this.value('requestReveal', [botId], false);
 	}
 
+	async ackReveal(revealId: string): Promise<void> {
+		await this.value('ackReveal', [revealId], undefined);
+	}
+
 	requestStop(botId: string): Promise<boolean> {
 		return this.value('requestStop', [botId], false);
 	}
