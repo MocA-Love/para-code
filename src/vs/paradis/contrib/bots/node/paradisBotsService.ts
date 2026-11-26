@@ -91,6 +91,9 @@ const ITEMS_FULL_MESSAGE = 'Para Code\'s list of bot items is full. Close the it
 
 type Result<T> = ParadisBotsServiceResult<T>;
 
+/** Bot の機能（`paradis.bots.enabled`）がオフの間に、フォルダを作る・書く・起動する口を断る結果。道具と画面にそのまま出せる。 */
+const BOTS_DISABLED = { ok: false, code: 'disabled', message: 'Para Code bots are turned off. Turn on the bot setting (paradis.bots.enabled) first.' } as const;
+
 export class ParadisBotsService extends Disposable {
 
 	private bots: IParadisBotsState = EMPTY_PARADIS_BOTS_STATE;
@@ -271,6 +274,10 @@ export class ParadisBotsService extends Disposable {
 	/** @param soul 人格メモの種（テンプレートから作るとき）。 */
 	createBot(input: Omit<IParadisBotCreateInput, 'id' | 'takenFolders'>, soul?: string): Promise<Result<IParadisBot>> {
 		return this.write(async () => {
+			// Bot の機能がオフの間は、専用フォルダも作らない
+			if (!this.enabled()) {
+				return BOTS_DISABLED;
+			}
 			// ディスクにもうあるフォルダは予約しない（消した Bot のフォルダを引き継がない）
 			const takenFolders = await this.homes?.existingFolders() ?? [];
 			const id = this.uuid();
@@ -407,6 +414,10 @@ export class ParadisBotsService extends Disposable {
 	 */
 	requestLaunch(botId: string, purpose: ParadisBotPanePurpose): Promise<Result<IParadisBotLaunch>> {
 		return this.write(async () => {
+			// Bot の機能がオフの間は、フォルダを整えず、起動の番号も出さない
+			if (!this.enabled()) {
+				return BOTS_DISABLED;
+			}
 			const bot = this.getBot(botId);
 			if (bot === undefined || bot.paused) {
 				return { ok: false, code: bot === undefined ? 'not_found' : 'paused', message: bot === undefined ? 'There is no such bot.' : 'The bot is paused.' };
@@ -459,6 +470,9 @@ export class ParadisBotsService extends Disposable {
 
 	/** 専用フォルダの中のファイルを書く（相対パスだけ。フォルダの外・持ち主の印は断る）。 */
 	writeHomeFile(botId: string, relative: unknown, text: string): Promise<Result<void>> {
+		if (!this.enabled()) {
+			return Promise.resolve(BOTS_DISABLED);
+		}
 		return this.homeFile(botId, (homes, bot) => homes.write(bot, relative, text));
 	}
 
