@@ -7,11 +7,12 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { timeout } from '../../../../../base/common/async.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisHumanAskSnapshot, paradisSanitizeHumanAskInput } from '../../../humanAsk/common/paradisHumanAsk.js';
 import { ParadisHumanAskLedger } from '../../../humanAsk/common/paradisHumanAskLedger.js';
 import { ParadisHumanAskService } from '../../../humanAsk/node/paradisHumanAskChannel.js';
-import { ITaskBoardFlow, ITaskBoardTask } from '../../common/paradisTaskBoard.js';
+import { ITaskBoardFlow, ITaskBoardPaneAsk, ITaskBoardTask } from '../../common/paradisTaskBoard.js';
 import { taskBoardAskOf } from '../../common/paradisTaskBoardAsks.js';
 import { IParadisTaskBoardWindowDescription, ParadisTaskBoardWindowMethod } from '../../common/paradisTaskBoardBridge.js';
 import { TASK_BOARD_DEFAULT_FLOW } from '../../common/paradisTaskBoardFlow.js';
@@ -253,5 +254,71 @@ suite('ParadisTaskBoardAskBridge', () => {
 			'none',
 			'none',
 		]);
+	});
+	test('waits of panes outside the board reach only boards on this computer, which can answer only what the inbox row could', async () => {
+		await service.handle('POST', '/v1/launch', new URLSearchParams(), { launchId: 'L1', repoPath: '/repo', agent: 'claude', prompt: 'go' }, BOARD_A);
+		const seen: { local: ITaskBoardPaneAsk[][]; remote: number } = { local: [], remote: 0 };
+		const local = service.addEventClient(chunk => {
+			const event = JSON.parse(chunk.slice('data: '.length));
+			if (event.type === 'pane-asks') {
+				seen.local.push(event.asks);
+			}
+		}, { keyHash: BOARD_A })!;
+		const remote = service.addEventClient(chunk => {
+			seen.remote += chunk.includes('pane-asks') ? 1 : 0;
+		}, { keyHash: BOARD_B, remote: true })!;
+		const pane = (id: string, paneKey: string, extra: object) => ({ source: 'pane', id, paneKey, windowId: 3, from: { title: 'api', detail: 'main ／ Codex' }, canSkip: false, askedAt: 700, questions: [], actions: [], ...extra });
+		const yesNo = [{ id: 'yes', label: '許可' }, { id: 'no', label: '拒否' }];
+		ledger.upsert('askHuman', pane('ask:1', 'c'.repeat(40), { kind: 'question', questions: [{ id: 'q0', text: '残しますか?', options: [{ id: '0', label: '残す' }, { id: '1', label: '消す', recommended: true }], allowText: true }] }));
+		// ボードが起動したターミナルの待ちは、ボードのタスクの側に出る
+		ledger.upsert('askHuman', pane('ask:2', PANE_KEY, { kind: 'question', questions: [{ id: 'q0', text: 'ボードの?', options: [], allowText: true }] }));
+		ledger.upsert('panes', pane('perm:1', 'd'.repeat(40), { kind: 'permission', preface: 'Bash: rm -rf build', actions: yesNo }));
+		ledger.upsert('panes', pane('perm:2', 'e'.repeat(40), { kind: 'permission', preface: 'Bash: npm test', actions: yesNo, inlineAllowed: true }));
+		await timeout(80);
+		const answer = (key: string, body: object, keyHash = BOARD_A, isRemote = false) => service.handle('POST', '/v1/asks/pane-answer', new URLSearchParams(), { key, answer: body }, keyHash, isRemote).then(response => `${response.status} ${JSON.stringify(response.body).slice(0, 40)}`);
+		const pick = (optionId: string, extra: object = {}) => ({ type: 'answers', answers: [{ questionId: 'q0', optionIds: [optionId], ...extra }] });
+		const responses = {
+			fromRemote: await answer('pane:ask:1', pick('1'), BOARD_B, true),
+			notAnOption: await answer('pane:ask:1', pick('7')),
+			withText: await answer('pane:ask:1', pick('1', { text: 'rm -rf ~' })),
+			boardTerminal: await answer('pane:ask:2', { type: 'answers', answers: [{ questionId: 'q0', text: 'x' }] }),
+			notInlinePermission: await answer('pane:perm:1', { type: 'action', actionId: 'yes' }),
+			option: await answer('pane:ask:1', pick('1')),
+			again: await answer('pane:ask:1', pick('0')),
+			permission: await answer('pane:perm:2', { type: 'action', actionId: 'yes' }),
+		};
+		await timeout(80);
+		const last = seen.local.at(-1) ?? [];
+		local.dispose();
+		remote.dispose();
+		assert.deepStrictEqual({
+			responses,
+			remote: seen.remote,
+			// つないだ直後に空の一覧、台帳が変わったら今の一覧
+			first: seen.local[0],
+			listed: seen.local.find(asks => asks.length > 0)?.map(ask => [ask.key, ask.kind, ask.options?.map(option => option.label) ?? null, ask.actions?.map(action => action.id) ?? null]),
+			busy: last.filter(ask => ask.busy).map(ask => ask.key),
+			ledger: summary().filter(entry => entry.includes('pending')),
+		}, {
+			responses: {
+				fromRemote: '403 {"error":"forbidden","message":"A task b',
+				notAnOption: '400 {"error":"invalid","message":"Answer wit',
+				withText: '400 {"error":"invalid","message":"Answer wit',
+				boardTerminal: '404 {"error":"not-found","message":"That que',
+				notInlinePermission: '400 {"error":"invalid","message":"Answer wit',
+				option: '200 {"ok":true}',
+				again: '200 {"ok":false,"reason":"busy"}',
+				permission: '200 {"ok":true}',
+			},
+			remote: 0,
+			first: [],
+			listed: [
+				['pane:perm:2', 'permission', null, ['yes', 'no']],
+				['pane:perm:1', 'permission', null, null],
+				['pane:ask:1', 'question', ['残す', '消す'], null],
+			],
+			busy: ['pane:perm:2', 'pane:ask:1'],
+			ledger: ['pane:perm:2 waiting pending', 'pane:ask:1 waiting pending'],
+		});
 	});
 });

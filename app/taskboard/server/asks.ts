@@ -1,7 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { createHash } from 'node:crypto';
-import type { ITaskBoardTask } from '@engine/paradisTaskBoard.js';
+import type { ITaskBoardManualSession, ITaskBoardPaneAsk, ITaskBoardTask } from '@engine/paradisTaskBoard.js';
 import type { TaskBoardEngine } from '@engine/paradisTaskBoardEngine.js';
 import { TASK_BOARD_ASKS_ROUTE, TASK_BOARD_ASKS_SETTLE_ROUTE, taskBoardApplyAskAnswer, taskBoardAskOf, taskBoardAsks, type ITaskBoardAskAnswerEvent } from '@engine/paradisTaskBoardAsks.js';
 
@@ -27,6 +27,47 @@ const ANSWERED_HERE_TTL_MS = 60_000;
 /** 台帳の名前（リポジトリごとの保存先から作る 16 桁）。別のリポジトリの同じ番号のタスクと id が重ならないようにする。 */
 export function askLedgerId(directory: string): string {
 	return createHash('sha256').update(directory).digest('hex').slice(0, 16);
+}
+
+/** 一覧に出すボードの外のペインの待ちの数の上限（画面の Dock と「あなたの番」に並べる分）。 */
+const PANE_ASKS_SHOWN = 50;
+
+/**
+ * Para Code が流してきたボードの外のペインの待ちを、「フロー外のエージェント」の欄の 1 件にする。形の合わない 1 件は捨てる
+ * （接続口が作ったものだけが来る前提だが、画面に出す前に型だけは確かめる）。
+ */
+export function taskBoardPaneManualSessions(asks: readonly unknown[]): ITaskBoardManualSession[] {
+	const sessions: ITaskBoardManualSession[] = [];
+	for (const value of asks) {
+		const ask = value as ITaskBoardPaneAsk;
+		if (!ask || typeof ask.key !== 'string' || (ask.kind !== 'question' && ask.kind !== 'permission') || typeof ask.from?.title !== 'string' || typeof ask.text !== 'string' || typeof ask.askedAt !== 'number') {
+			continue;
+		}
+		sessions.push({
+			id: ask.key,
+			name: ask.from.title,
+			...(typeof ask.from.detail === 'string' ? { branch: ask.from.detail } : {}),
+			status: ask.kind,
+			text: ask.text,
+			since: ask.askedAt,
+			ask,
+		});
+		if (sessions.length >= PANE_ASKS_SHOWN) {
+			break;
+		}
+	}
+	return sessions;
+}
+
+/** 画面のボタンから、接続口へ送る答えを作る。Para Code が流してきたボタンでなければ undefined。 */
+export function taskBoardPaneAskAnswer(ask: ITaskBoardPaneAsk, pressed: { readonly allow?: boolean; readonly actionId?: string; readonly optionId?: string }): unknown {
+	if (pressed.optionId !== undefined) {
+		return ask.questionId !== undefined && ask.options?.some(option => option.id === pressed.optionId)
+			? { type: 'answers', answers: [{ questionId: ask.questionId, optionIds: [pressed.optionId] }] }
+			: undefined;
+	}
+	const actionId = pressed.actionId ?? (pressed.allow === true ? 'yes' : pressed.allow === false ? 'no' : undefined);
+	return actionId !== undefined && ask.actions?.some(action => action.id === actionId) ? { type: 'action', actionId } : undefined;
 }
 
 export interface IAskPublisherOptions {

@@ -8,11 +8,12 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { WebSocket, WebSocketServer } from 'ws';
-import type { ITaskBoardAddIssuesRequest, ITaskBoardArtifact, ITaskBoardFlow, ITaskBoardPrRef, ITaskBoardPullDetail, ITaskBoardRpc, ITaskBoardSnapshot, ITaskBoardTask, TaskBoardAddIssuesResult, TaskBoardRpcMethod, TaskBoardServerMessage } from '@engine/paradisTaskBoard.js';
+import type { ITaskBoardAddIssuesRequest, ITaskBoardArtifact, ITaskBoardFlow, ITaskBoardManualSession, ITaskBoardPrRef, ITaskBoardPullDetail, ITaskBoardRpc, ITaskBoardSnapshot, ITaskBoardTask, TaskBoardAddIssuesResult, TaskBoardRpcMethod, TaskBoardServerMessage } from '@engine/paradisTaskBoard.js';
 import { TaskBoardError } from '@engine/paradisTaskBoard.js';
 import { TaskBoardEngine } from '@engine/paradisTaskBoardEngine.js';
 import { parseTaskBoardFlow } from '@engine/paradisTaskBoardFlow.js';
-import { AskPublisher, askLedgerId } from './asks.js';
+import { TASK_BOARD_PANE_ASK_ANSWER_ROUTE } from '@engine/paradisTaskBoardAsks.js';
+import { AskPublisher, askLedgerId, taskBoardPaneAskAnswer, taskBoardPaneManualSessions } from './asks.js';
 import { buildDemo, demoSlots } from './demo.js';
 import { loadFlows, saveActiveFlow, saveFlow } from './flows.js';
 import { GitHubClient, GitHubError, ghTokenProvider, redactGitHubSecrets } from './github.js';
@@ -413,6 +414,8 @@ async function main(restart?: IRestart): Promise<void> {
 	let bridgeState: { connected: boolean; detail?: string } = { connected: false };
 	// Para Code の「人が答えるもの」の台帳へ、ボードの人の出番を写す（asks.ts）
 	let askPublisher: AskPublisher | undefined;
+	// ボードの外のペインの、人の答えを待っている 1 件（「フロー外のエージェント」の欄。Para Code の台帳の写し）
+	let paneManual: ITaskBoardManualSession[] = [];
 	const paraAgents = paraCodeMode ? new ParaCodeAgents({
 		engine: () => engine,
 		placePath,
@@ -423,8 +426,15 @@ async function main(restart?: IRestart): Promise<void> {
 		readArtifact: relay ? (place, relativePath, maxBytes) => relay!.readFile(place, relativePath, maxBytes) : undefined,
 		onRelayEvent: event => remoteRunner?.onEvent(event),
 		onAskAnswer: event => void askPublisher?.onAskAnswer(event),
+		onPaneAsks: asks => {
+			paneManual = taskBoardPaneManualSessions(asks);
+			broadcastSoon();
+		},
 		onConnection: (connected, detail) => {
 			askPublisher?.onConnection(connected);
+			if (!connected) {
+				paneManual = [];
+			}
 			bridgeState = { connected, detail };
 			log(connected ? 'Para Code につながりました' : `Para Code: ${detail ?? '切断'}`);
 			broadcastSoon();
@@ -536,7 +546,7 @@ async function main(restart?: IRestart): Promise<void> {
 		flows: [...engine.getFlows()],
 		activeFlowId: engine.getActiveFlowId(),
 		slots: engine.getSlots(),
-		manual: [...sim.manual],
+		manual: paraAgents ? [...paneManual] : [...sim.manual],
 		github: sync ? sync.getState() : { mode: 'off' },
 		runtime: runtime(),
 		...(archivedCount !== undefined ? { archivedCount } : {}),
@@ -676,10 +686,25 @@ async function main(restart?: IRestart): Promise<void> {
 			await restoreFromArchive(engine, archiveFile(store.directory), p.taskId);
 			await recountArchived();
 		},
-		answerManual: p => { sim.answerManual(p.sessionId, p.allow); },
+		answerManual: async p => {
+			const session = paneManual.find(m => m.id === p.sessionId);
+			if (!paraAgents || !session?.ask) {
+				sim.answerManual(p.sessionId, p.allow === true);
+				return;
+			}
+			// 押せるのは、Para Code が流してきたボタンだけ（Para Code の側でもう一度確かめる）
+			const answer = taskBoardPaneAskAnswer(session.ask, p);
+			if (!answer) {
+				throw new TaskBoardError('invalid-params', 'このボタンでは答えられません。Para Code の受信箱で答えてください');
+			}
+			const result = await paraAgents.client.request('POST', TASK_BOARD_PANE_ASK_ANSWER_ROUTE, { key: session.ask.key, answer }) as { readonly ok?: boolean; readonly reason?: string } | undefined;
+			if (result?.ok !== true) {
+				throw new TaskBoardError('invalid-state', result?.reason === 'busy' ? 'ほかの場所で答えて届けている最中です' : 'もう待っていないか、答えを届けられませんでした');
+			}
+		},
 		adoptManual: p => {
 			const session = sim.manual.find(m => m.id === p.sessionId);
-			if (!session) {
+			if (!session?.agent) {
 				throw new TaskBoardError('not-found', 'session not found');
 			}
 			const id = engine.adopt({ sessionId: session.id, title: p.title || session.name, agent: session.agent, branch: session.branch, place: session.name });

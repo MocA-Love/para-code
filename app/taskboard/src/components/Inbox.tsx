@@ -8,6 +8,7 @@ import { dueInfo, errorText, needs, STATUS, stepName, taskActivity } from '../fo
 import { useNow } from '../hooks.js';
 import { Icon } from '../icons.js';
 import { activateOnKey, AgentTag, DueChip, Elapsed, LabelChip, PrChip, Status, tone } from './atoms.js';
+import { ManualAnswers } from './Board.js';
 
 const GROUPS: { status: TaskBoardStatus[]; label: string }[] = [
 	{ status: ['question', 'permission'], label: '回答待ち' },
@@ -107,13 +108,12 @@ export function Inbox() {
 				))}
 				{manualWaiting.length > 0 && (
 					<section>
-						<h2><span className="status" style={tone('red')}>フロー外の許可待ち</span><span className="badge soft">{manualWaiting.length}</span></h2>
+						<h2><span className="status" style={tone('red')}>フロー外の許可待ち・質問</span><span className="badge soft">{manualWaiting.length}</span></h2>
 						{manualWaiting.map(m => (
 							<div key={m.id} className="irow">
-								<div><div className="card-ref"><AgentTag agent={m.agent} />{m.name}　{m.branch}</div><div className="t">{m.text}</div></div>
+								<div><div className="card-ref"><AgentTag agent={m.agent} /><span className="status" style={tone(STATUS[m.status === 'permission' ? 'permission' : 'question'].tone)}>{STATUS[m.status === 'permission' ? 'permission' : 'question'].label}</span>{m.name}　{m.branch}</div><div className="t">{m.text}</div></div>
 								<div className="acts">
-									<button className="btn sm primary" onClick={() => void app.call('answerManual', { sessionId: m.id, allow: true })}>許可</button>
-									<button className="btn sm" onClick={() => void app.call('answerManual', { sessionId: m.id, allow: false })}>拒否</button>
+									<ManualAnswers session={m} size="sm" />
 								</div>
 							</div>
 						))}

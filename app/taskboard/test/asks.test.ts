@@ -1,11 +1,11 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { describe, expect, test } from 'vitest';
-import type { ITaskBoardQuestion, ITaskBoardSlot, ITaskBoardStep, ITaskBoardTask } from '@engine/paradisTaskBoard.js';
+import type { ITaskBoardPaneAsk, ITaskBoardQuestion, ITaskBoardSlot, ITaskBoardStep, ITaskBoardTask } from '@engine/paradisTaskBoard.js';
 import { TaskBoardEngine, type ITaskBoardAgentPort, type ITaskBoardRunPort, type ITaskBoardWorkspacePort } from '@engine/paradisTaskBoardEngine.js';
 import { TASK_BOARD_DEFAULT_FLOW } from '@engine/paradisTaskBoardFlow.js';
 import { taskBoardAskOf, type ITaskBoardAsk, type TaskBoardAskAnswer } from '@engine/paradisTaskBoardAsks.js';
-import { AskPublisher, askLedgerId } from '../server/asks.js';
+import { AskPublisher, askLedgerId, taskBoardPaneAskAnswer, taskBoardPaneManualSessions } from '../server/asks.js';
 
 class FakePorts implements ITaskBoardAgentPort, ITaskBoardRunPort, ITaskBoardWorkspacePort {
 	readonly calls: string[] = [];
@@ -217,5 +217,36 @@ describe('task board asks for the Para Code ledger', () => {
 
 	test('the ledger id differs per repository', () => {
 		expect([askLedgerId('/a'), askLedgerId('/a') === askLedgerId('/b')]).toEqual([expect.stringMatching(/^[0-9a-f]{16}$/), false]);
+	});
+});
+
+describe('panes outside the board', () => {
+	const question: ITaskBoardPaneAsk = { key: 'pane:ask:1', kind: 'question', from: { title: 'api', detail: 'main ／ Codex' }, text: '残しますか?', askedAt: 5, busy: false, failed: false, questionId: 'q0', options: [{ id: '0', label: '残す' }, { id: '1', label: '消す', recommended: true }] };
+	const permission: ITaskBoardPaneAsk = { key: 'pane:perm:1', kind: 'permission', from: { title: 'web' }, text: 'Bash: npm test', askedAt: 6, busy: false, failed: false, actions: [{ id: 'yes', label: '許可' }, { id: 'no', label: '拒否' }] };
+	const inboxOnly: ITaskBoardPaneAsk = { key: 'pane:perm:2', kind: 'permission', from: { title: 'web' }, text: 'Bash: rm -rf build', askedAt: 7, busy: false, failed: false };
+
+	test('become rows of the column, and broken entries are dropped', () => {
+		expect(taskBoardPaneManualSessions([question, { key: 1 }, { ...permission, kind: 'approval' }, inboxOnly]).map(session => [session.id, session.name, session.branch, session.status, session.text, session.agent])).toEqual([
+			['pane:ask:1', 'api', 'main ／ Codex', 'question', '残しますか?', undefined],
+			['pane:perm:2', 'web', undefined, 'permission', 'Bash: rm -rf build', undefined],
+		]);
+	});
+
+	test('only the buttons Para Code sent can answer', () => {
+		expect({
+			option: taskBoardPaneAskAnswer(question, { optionId: '1' }),
+			unknownOption: taskBoardPaneAskAnswer(question, { optionId: '9' }),
+			allowOnQuestion: taskBoardPaneAskAnswer(question, { allow: true }),
+			allow: taskBoardPaneAskAnswer(permission, { allow: true }),
+			deny: taskBoardPaneAskAnswer(permission, { actionId: 'no' }),
+			inboxOnly: taskBoardPaneAskAnswer(inboxOnly, { allow: true }),
+		}).toEqual({
+			option: { type: 'answers', answers: [{ questionId: 'q0', optionIds: ['1'] }] },
+			unknownOption: undefined,
+			allowOnQuestion: undefined,
+			allow: { type: 'action', actionId: 'yes' },
+			deny: { type: 'action', actionId: 'no' },
+			inboxOnly: undefined,
+		});
 	});
 });
