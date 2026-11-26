@@ -158,6 +158,12 @@ export class McpContext {
     }
     async ensureExtension(filePath, extension) {
         const resolvedPath = path.resolve(filePath);
+        // PARA-PATCH (Para Code): keep a path that already ends with the wanted extension. path.extname() only
+        // sees the last part (".gz" of "trace.json.gz"), so the upstream code saved "trace.json.json.gz".
+        if (resolvedPath.toLowerCase().endsWith(extension.toLowerCase())) {
+            await this.validatePath(resolvedPath);
+            return resolvedPath;
+        }
         const currentExtension = path.extname(resolvedPath);
         const outputPath = `${resolvedPath.slice(0, resolvedPath.length - currentExtension.length)}${extension}`;
         await this.validatePath(outputPath);

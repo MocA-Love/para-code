@@ -190,6 +190,10 @@ export function paradisNormalizeRemoteFilePath(path: unknown): string | undefine
  * 手元の一時ファイルの保存先が拡張子を変えられたとき、接続先へも同じ名前で書くために使う。
  */
 export function paradisReplaceRemoteFileExtension(remotePath: string, extension: string): string {
+	// 既にその拡張子で終わっていれば変えない（`.json.gz` を extname の `.gz` だけで見て `.json.json.gz` にしない）
+	if (remotePath.toLowerCase().endsWith(extension.toLowerCase())) {
+		return remotePath;
+	}
 	const current = posix.extname(remotePath);
 	return `${remotePath.slice(0, remotePath.length - current.length)}${extension}`;
 }

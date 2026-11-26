@@ -269,7 +269,9 @@ export const navigatePage = definePageTool(args => {
                         void dialog.accept();
                     }
                     else {
-                        response.appendResponseLine(`Declined a beforeunload dialog.`);
+                        // PARA-PATCH (Para Code): Para Code answers beforeunload itself (the page always leaves), so
+                        // "decline" cannot keep the page. Say so instead of "Declined a beforeunload dialog."
+                        response.appendResponseLine(`The page asked to confirm leaving (beforeunload). Para Code always lets the page leave, so "decline" could not stop this navigation.`);
                         void dialog.dismiss();
                     }
                     // We are not going to report the dialog like regular dialogs.

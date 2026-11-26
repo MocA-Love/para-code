@@ -549,6 +549,8 @@ const EMBEDDED_DEVTOOLS_WS_ID = 'paradis-embedded';
  * get_cdp_endpoint 応答に添える、CDPゲートウェイの制約ガイダンス（LLM向け・英語）。
  * chrome-devtools-mcp のツールが「なぜ失敗するか」を接続前に伝えるためのもの。
  */
+/** get_shared_page が今の URL と題名を窓に尋ねる時間の上限。過ぎたら共有した時点の値を返す。 */
+const LIVE_TAB_INFO_TIMEOUT_MS = 3_000;
 const CDP_LIMITATIONS_NOTE = 'One gateway connection exposes one page: httpBase shows the page shared with this terminal pane, and tabWebSocketDebuggerUrl (present when a tab is resolved) shows only that tab. A browser-level connection also sees the pages that page opened with a target=_blank link or window.open. new_page (Target.createTarget) and close_page (Target.closeTarget) are not supported - use the open_browser_tab / close_browser_tab tools of this server and the tab_id argument of the browser tools instead (you can only close tabs you opened). list_pages / select_page see only that page and the pages it opened with a target=_blank link or window.open; list_browser_tabs shows every tab you can use, including tabs your tabs opened (openedFrom), which you can pass as tab_id. Browser.setDownloadBehavior on the browser root is answered but not applied: downloads keep going to the Para Code download folder (download_by_click, read_download), so a Playwright client gets no download events. resize_page is not supported because the embedded browser is laid out by the workbench - use the set_viewport tool (or the emulate tool) instead. Clearing cookies/storage/cache over CDP is blocked because the browser partition is shared across Para Code.';
 
 /** DevTools proxyのtoken別generationと、最終retireを待つactive operationを調停する。 */
@@ -6223,6 +6225,23 @@ export class ParadisAgentBrowserService extends Disposable {
 		return new Map(call.value.tabs.filter(tab => typeof tab.url === 'string' && this._scopeBinding(token, tab.tabId) !== undefined).map(tab => [tab.tabId, tab.url]));
 	}
 
+	/** そのタブの今の URL と題名（list_browser_tabs と同じ一覧を窓から読む）。読めない・一覧に無ければ undefined。 */
+	private async _liveTabInfo(ingressLease: IParadisAgentBrowserIngressLease, tabId: string, signal?: AbortSignal): Promise<{ readonly url: string; readonly title: string } | undefined> {
+		const call = await this._callOwningWindow<IParadisListAgentTabsResult>(ingressLease, {
+			channelName: PARADIS_AGENT_BROWSER_TABS_CHANNEL,
+			method: ParadisAgentTabMethod.List,
+			args: [ingressLease.token],
+			failureLabel: 'get_shared_page',
+			failureMessage: 'Failed to list the browser tabs in Para Code.',
+			timeoutMs: LIVE_TAB_INFO_TIMEOUT_MS,
+		}, signal).catch(() => undefined);
+		if (!call?.ok || !call.value.ok) {
+			return undefined;
+		}
+		const tab = call.value.tabs.find(candidate => candidate.tabId === tabId);
+		return tab && typeof tab.url === 'string' && typeof tab.title === 'string' ? { url: tab.url, title: tab.title } : undefined;
+	}
+
 	/** 操作の道具の結果を数え、詰まった後にうまくいったら、メモや手順に残せると 1 行添える（paradisBrowserSiteNudge.ts）。 */
 	private _withSiteNudge(ingressLease: IParadisAgentBrowserIngressLease, name: string, args: unknown, result: unknown, kinds: { readonly notes: boolean; readonly recipes: boolean }): unknown {
 		if (typeof result !== 'object' || result === null || !Array.isArray((result as { content?: unknown }).content)) {
@@ -7072,8 +7091,12 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 
 		switch (name) {
-			case 'get_shared_page':
-				return this._toolText(JSON.stringify({ url: binding.pageInfo.url, title: binding.pageInfo.title, pageId: binding.pageId, shared: this._isUserSharedPage(token, binding.pageId) }, null, 2));
+			case 'get_shared_page': {
+				// binding の pageInfo は共有・許可した時点の値（開いた直後は空で、タブの中の移動でも変わらない）なので、
+				// 今の URL と題名を窓から読む。読めなければ pageInfo のまま返す
+				const live = await this._liveTabInfo(ingressLease, binding.pageId, signal);
+				return this._toolText(JSON.stringify({ url: live?.url ?? binding.pageInfo.url, title: live?.title ?? binding.pageInfo.title, pageId: binding.pageId, shared: this._isUserSharedPage(token, binding.pageId) }, null, 2));
+			}
 			case 'upload_file_to_drop_zone':
 				return this._uploadFileToDropZone(pageLease, binding, toolArguments, signal);
 			default:
@@ -8239,7 +8262,8 @@ export class ParadisAgentBrowserService extends Disposable {
 			case 'notAgentTab':
 				return 'Only tabs you opened (with open_browser_tab or open_browser_profile) can be switched to another profile, and the given tab (or the page currently shared with this terminal pane) is not one of them. Call list_browser_tabs to see your tabs.';
 			case 'switchFailed':
-				return 'PARA_BROWSER_RETRYABLE: Para Code could not reopen the tab in that profile. Retry once.';
+				// 画面に出ていないスペースのタブはエディタのグループに居ないので作り直せず、やり直しても同じ結果になる
+				return 'PARA_BROWSER_RETRYABLE: Para Code could not reopen the tab in that profile. Retry once. If it fails again, the tab is probably in a space that is not on screen (a tab opened while the user was looking at another space cannot be switched): open the profile in a new tab with open_browser_profile instead.';
 			case 'denied':
 				return `The user declined to let you use the "${requestedProfile}" browser profile. Do not ask again; continue without it.`;
 			case 'approvalTimedOut':
