@@ -59,7 +59,7 @@ export interface IParadisBotsState {
 }
 
 /** この版が知っている Bot の欄。ほかの欄があれば、その Bot は読み取り専用。 */
-const KNOWN_BOT_KEYS: ReadonlySet<string> = new Set(['id', 'name', 'folder', 'agent', 'modelId', 'effortId', 'permissionId', 'paused', 'createdAt', 'updatedAt']);
+export const PARADIS_BOT_KNOWN_KEYS: ReadonlySet<string> = new Set(['id', 'name', 'folder', 'agent', 'modelId', 'effortId', 'permissionId', 'paused', 'createdAt', 'updatedAt']);
 
 function unknownFolders(state: IParadisBotsState): string[] {
 	return (state.unknown ?? []).map(value => value.folder).filter((folder): folder is string => typeof folder === 'string');
@@ -291,7 +291,7 @@ function storedBot(value: unknown): { readonly kind: 'bot'; readonly bot: IParad
 	if (bot === undefined) {
 		return undefined;
 	}
-	return { kind: 'bot', bot: Object.keys(value).some(key => !KNOWN_BOT_KEYS.has(key)) ? { ...bot, preserved: value } : bot };
+	return { kind: 'bot', bot: Object.keys(value).some(key => !PARADIS_BOT_KNOWN_KEYS.has(key)) ? { ...bot, preserved: value } : bot };
 }
 
 /** 書き出す形。知らない欄を持っていた Bot と知らないエージェントの Bot は、読んだ値をそのまま書く。 */
