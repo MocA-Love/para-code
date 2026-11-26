@@ -1,0 +1,450 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments)
+
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+// Bot の台帳のサービス（shared process）。Bot の一覧と作業項目を持ち、保存し、変わったら知らせる。
+//
+// - Bot の書き込み（bot_item_* の道具）と持ち主の書き込み（画面）の両方がここを通る。書き込みは 1 つずつ順に
+//   行い、保存できなかったら元の中身へ戻して断る。
+// - 「Needs you」の項目は、「聞く・答える」の台帳（humanAsk）へ丸ごと知らせ直す（{@link syncAsks}）。
+//   あちらはメモリだけの索引なので、起動時と変更のたびに今の待ちを全部送る。答えが来たら持ち主のコメント
+//   として項目に書き、作業中へ戻す。
+// - どのペインがどの Bot かは {@link ParadisBotPanes} が持つ。
+
+import { RunOnceScheduler } from '../../../../base/common/async.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
+import { Disposable } from '../../../../base/common/lifecycle.js';
+import { generateUuid } from '../../../../base/common/uuid.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
+import { IParadisHumanAskAnswerRequest, paradisHumanAskKey, paradisSanitizeHumanAskInput } from '../../humanAsk/common/paradisHumanAsk.js';
+import { ParadisHumanAskService } from '../../humanAsk/node/paradisHumanAskChannel.js';
+import { PARADIS_BOTS_ASK_OWNER, paradisBotAnswerComment, paradisBotAskId, paradisBotAskInput, paradisBotItemMailText, paradisParseBotAskId } from '../common/paradisBotAsk.js';
+import {
+	EMPTY_PARADIS_BOT_ITEMS_STATE,
+	IParadisBotItem,
+	IParadisBotItemChanges,
+	IParadisBotItemOwnerComment,
+	IParadisBotItemsState,
+	PARADIS_BOT_ITEMS_VERSION,
+	ParadisBotItemsResult,
+	ParadisBotItemStatus,
+	paradisBotItemAdd,
+	paradisBotItemOwnerComment,
+	paradisBotItemOwnerSnooze,
+	paradisBotItemOwnerStatus,
+	paradisBotItemsMarkDelivered,
+	paradisBotItemsOf,
+	paradisBotItemsPendingMail,
+	paradisBotItemsRemoveBot,
+	paradisBotItemUpdate,
+	paradisIsBotItemSnoozed,
+} from '../common/paradisBotItems.js';
+import { EMPTY_PARADIS_BOTS_STATE, IParadisBot, IParadisBotCreateInput, IParadisBotPatch, IParadisBotsState, PARADIS_BOTS_VERSION, paradisBotCreate, paradisBotRemove, paradisBotUpdate } from '../common/paradisBots.js';
+import { IParadisBotsSnapshot, ParadisBotPanePurpose, ParadisBotsServiceResult, paradisBotSummary } from '../common/paradisBotsApi.js';
+import { IParadisBotItemAddArgs } from '../common/paradisBotTools.js';
+import { ParadisBotPanes } from './paradisBotPanes.js';
+import { IParadisBotsJsonFile } from './paradisBotsStore.js';
+
+/** 連続した変更をまとめてから知らせる間隔。 */
+const CHANGE_DELAY = 50;
+
+/** Bot へ渡す、持ち主の書き込み 1 項目ぶん。 */
+export interface IParadisBotMail {
+	readonly uid: string;
+	readonly number: number;
+	readonly eventIds: readonly number[];
+	/** ペインへ送る文（持ち主の言葉は囲いの中）。 */
+	readonly text: string;
+}
+
+export interface IParadisBotsServiceOptions {
+	readonly now?: () => number;
+	readonly uuid?: () => string;
+	/** shared process の hook のバス。Bot のペインの様子（動いている・待っている）を追う。 */
+	readonly hookEvents?: Event<{ readonly token: string; readonly event: string }>;
+}
+
+type Result<T> = ParadisBotsServiceResult<T>;
+
+export class ParadisBotsService extends Disposable {
+
+	private bots: IParadisBotsState = EMPTY_PARADIS_BOTS_STATE;
+	private items: IParadisBotItemsState = EMPTY_PARADIS_BOT_ITEMS_STATE;
+	private revision = 0;
+	private loaded = false;
+
+	protected readonly panes = new ParadisBotPanes();
+	private readonly now: () => number;
+	private readonly uuid: () => string;
+
+	/** 読み込みが終わった（壊れたファイルの退避も済んだ）。 */
+	readonly ready: Promise<void>;
+	private queue: Promise<unknown> = Promise.resolve();
+
+	private readonly _onDidChange = this._register(new Emitter<IParadisBotsSnapshot>());
+	/** Bot・項目・Bot の様子のどれかが変わった（少しまとめてから出す）。 */
+	readonly onDidChange: Event<IParadisBotsSnapshot> = this._onDidChange.event;
+
+	private readonly _onDidQueueMail = this._register(new Emitter<{ readonly botId: string; readonly uid: string }>());
+	/** 持ち主が項目に書いた。Bot へ届ける役（後の PR）が {@link pendingMail} を読んで届ける。 */
+	readonly onDidQueueMail: Event<{ readonly botId: string; readonly uid: string }> = this._onDidQueueMail.event;
+
+	private readonly changeScheduler = this._register(new RunOnceScheduler(() => this._onDidChange.fire(this.getSnapshot()), CHANGE_DELAY));
+	/** 後回しの期限が来たら、件数と「あなたの番」を数え直す。 */
+	private readonly wakeScheduler = this._register(new RunOnceScheduler(() => this.changed(), 0));
+
+	constructor(
+		private readonly botsFile: IParadisBotsJsonFile<IParadisBotsState>,
+		private readonly itemsFile: IParadisBotsJsonFile<IParadisBotItemsState>,
+		private readonly humanAsk: ParadisHumanAskService,
+		private readonly logService: ILogService,
+		options: IParadisBotsServiceOptions = {},
+	) {
+		super();
+		this.now = options.now ?? Date.now;
+		this.uuid = options.uuid ?? generateUuid;
+		this._register(this.humanAsk.onDidRequestAnswer(request => this.onAnswerRequest(request)));
+		if (options.hookEvents) {
+			this._register(options.hookEvents(event => {
+				// ペインのシェルが終わった（ウィンドウが shared process へ知らせ、hook のバスに流れる）。結び付けを外す
+				if (event.event === 'TerminalExit') {
+					this.releasePane(event.token);
+				} else if (this.panes.noteHook(event.token, event.event, this.now())?.changed) {
+					this.notify();
+				}
+			}));
+		}
+		this.ready = this.load();
+	}
+
+	private async load(): Promise<void> {
+		try {
+			const [bots, items] = await Promise.all([this.botsFile.read(), this.itemsFile.read()]);
+			for (const quarantined of [bots.quarantined, items.quarantined]) {
+				if (quarantined !== undefined) {
+					this.logService.error(`[ParadisBots] a saved file could not be read; it was moved to ${quarantined} and the list starts empty`);
+				}
+			}
+			this.bots = bots.state;
+			this.items = items.state;
+		} catch (error) {
+			// 読めなかったときは空で動かすが、上書きはしない（次の起動で読めるかもしれない）
+			this.logService.error('[ParadisBots] could not read the saved bots; they are read-only until the next start', error);
+			this.bots = { ...EMPTY_PARADIS_BOTS_STATE, version: PARADIS_BOTS_VERSION + 1 };
+			this.items = { ...EMPTY_PARADIS_BOT_ITEMS_STATE, version: PARADIS_BOT_ITEMS_VERSION + 1 };
+		}
+		this.loaded = true;
+		if (!this._store.isDisposed) {
+			this.changed();
+		}
+	}
+
+	// ---- 読む -----------------------------------------------------------------------------------
+
+	getSnapshot(): IParadisBotsSnapshot {
+		const now = this.now();
+		return {
+			revision: this.revision,
+			readOnly: this.bots.version !== PARADIS_BOTS_VERSION || this.items.version !== PARADIS_BOT_ITEMS_VERSION,
+			bots: this.bots.bots.map(bot => paradisBotSummary(bot, this.items, this.panes.statesOf(bot.id), now)),
+		};
+	}
+
+	getBot(botId: string): IParadisBot | undefined {
+		return this.bots.bots.find(bot => bot.id === botId);
+	}
+
+	listItems(filter: { readonly botId?: string; readonly open?: boolean } = {}): IParadisBotItem[] {
+		return paradisBotItemsOf(this.items, filter);
+	}
+
+	getItem(uid: string): IParadisBotItem | undefined {
+		return this.items.items.find(item => item.uid === uid);
+	}
+
+	/** そのペインの Bot（Bot のペインでなければ undefined）。 */
+	botOfPane(paneToken: string): IParadisBot | undefined {
+		const botId = this.panes.botOf(paneToken);
+		return botId !== undefined ? this.getBot(botId) : undefined;
+	}
+
+	/** Bot へまだ届けていない、持ち主の書き込み。 */
+	pendingMail(botId: string): IParadisBotMail[] {
+		const mail: IParadisBotMail[] = [];
+		for (const { item, events } of paradisBotItemsPendingMail(this.items, botId)) {
+			const text = paradisBotItemMailText(item, events);
+			if (text !== undefined) {
+				mail.push({ uid: item.uid, number: item.number, eventIds: events.map(event => event.id), text });
+			}
+		}
+		return mail;
+	}
+
+	// ---- Bot の一覧（持ち主が書く） --------------------------------------------------------------
+
+	createBot(input: Omit<IParadisBotCreateInput, 'id'>): Promise<Result<IParadisBot>> {
+		return this.write(async () => {
+			const result = paradisBotCreate(this.bots, { ...input, id: this.uuid() }, this.now());
+			return result.ok ? this.saveBots(result.state, result.bot) : result;
+		});
+	}
+
+	updateBot(botId: string, patch: IParadisBotPatch): Promise<Result<IParadisBot>> {
+		return this.write(async () => {
+			const result = paradisBotUpdate(this.bots, botId, patch, this.now());
+			return result.ok ? this.saveBots(result.state, result.bot) : result;
+		});
+	}
+
+	/** 台帳から外し、その項目と結び付けも外す。専用フォルダは消さない。 */
+	removeBot(botId: string): Promise<Result<IParadisBot>> {
+		return this.write(async () => {
+			const result = paradisBotRemove(this.bots, botId);
+			if (!result.ok) {
+				return result;
+			}
+			// Bot を先に消す（項目を先に消すと、Bot の保存に失敗したときに項目だけが消える）。項目の保存に失敗しても、
+			// 持ち主のいない項目は一覧にも「あなたの番」にも出ない
+			const removed = await this.saveBots(result.state, result.bot);
+			this.panes.releaseBot(botId);
+			await this.saveItems(paradisBotItemsRemoveBot(this.items, botId), undefined);
+			return removed;
+		});
+	}
+
+	// ---- 項目（持ち主が書く） --------------------------------------------------------------------
+
+	/** Bot のページからのコメント。待っている問いへの答えになったら、「聞く・答える」の台帳でも回答済みにする。 */
+	ownerComment(uid: string, input: IParadisBotItemOwnerComment): Promise<Result<IParadisBotItem>> {
+		return this.write(() => {
+			const before = this.getItem(uid);
+			const result = paradisBotItemOwnerComment(this.items, uid, input, this.now());
+			const answered = result.ok && before?.ask !== undefined && result.item.ask === undefined ? paradisHumanAskKey('bot', paradisBotAskId(uid, before.ask.eventId)) : undefined;
+			// 待ちの一覧の知らせ直しより先に回答済みにする（後だと「取り下げ」と出る）
+			return this.applyOwner(result, answered !== undefined ? () => this.humanAsk.resolve(PARADIS_BOTS_ASK_OWNER, answered, { surface: 'bot', ...(input.text.trim() ? { summary: input.text } : {}) }) : undefined);
+		});
+	}
+
+	ownerSetStatus(uid: string, to: ParadisBotItemStatus, note?: string): Promise<Result<IParadisBotItem>> {
+		return this.write(() => this.applyOwner(paradisBotItemOwnerStatus(this.items, uid, to, note, this.now())));
+	}
+
+	/** 後回しにする・解く（`until` が undefined）。Bot には知らせない。 */
+	ownerSnooze(uid: string, until: number | undefined): Promise<Result<IParadisBotItem>> {
+		return this.write(() => this.apply(paradisBotItemOwnerSnooze(this.items, uid, until, this.now())));
+	}
+
+	/** Bot へ届けた分の印を外す。 */
+	markMailDelivered(uid: string, eventIds: readonly number[]): Promise<Result<void>> {
+		return this.write(() => this.saveItems(paradisBotItemsMarkDelivered(this.items, uid, eventIds), undefined));
+	}
+
+	// ---- 項目（Bot が書く。道具の提供元だけが呼ぶ） ------------------------------------------------
+
+	botAddItem(botId: string, input: IParadisBotItemAddArgs): Promise<Result<IParadisBotItem>> {
+		return this.write(() => this.apply(paradisBotItemAdd(this.items, { ...input, uid: this.uuid(), botId }, this.now())));
+	}
+
+	botUpdateItem(botId: string, number: number, changes: IParadisBotItemChanges): Promise<Result<IParadisBotItem>> {
+		return this.write(async () => {
+			const result = paradisBotItemUpdate(this.items, botId, number, changes, this.now());
+			const bot = this.getBot(botId);
+			// 問いは「聞く・答える」の台帳の形でも通るかを、確定する前に確かめる。あちらは上限を超えた 1 件を
+			// 断るので、確かめずに書くと「Needs you なのにどこにも出ない」項目ができる
+			if (result.ok && bot !== undefined && result.item.ask !== undefined && paradisSanitizeHumanAskInput(paradisBotAskInput(bot, result.item)) === undefined) {
+				return { ok: false, code: 'invalid_argument', message: 'Para Code could not show this question to your owner. Shorten the questions and the options, then set "needs_you" again.' };
+			}
+			return this.apply(result);
+		});
+	}
+
+	/** Bot が自分の項目を読んだ。読んだ分は届いたものとして印を外す（ペインへ届ける前に自分で読むこともあるため）。 */
+	botReadItem(botId: string, number: number): Promise<Result<IParadisBotItem>> {
+		return this.write(async () => {
+			const item = this.items.items.find(candidate => candidate.number === number);
+			if (item === undefined || item.botId !== botId) {
+				return { ok: false, code: item === undefined ? 'not_found' : 'not_owner', message: item === undefined ? `There is no item #${number}.` : `Item #${number} belongs to another bot.` };
+			}
+			const pending = item.events.filter(event => event.toBot === true).map(event => event.id);
+			if (pending.length > 0) {
+				// 印を外せなくても読むことは通す（次に読んだときにもう一度出るだけ）
+				await this.saveItems(paradisBotItemsMarkDelivered(this.items, item.uid, pending), undefined);
+			}
+			return { ok: true, value: item };
+		});
+	}
+
+	// ---- ペインとの結び付け ----------------------------------------------------------------------
+
+	/** 起動の番号を発行する。ウィンドウはこの番号を付けて {@link reportLaunch} する。 */
+	issueLaunch(botId: string, purpose: ParadisBotPanePurpose): string | undefined {
+		const bot = this.getBot(botId);
+		if (bot === undefined || bot.paused) {
+			return undefined;
+		}
+		const launchId = this.uuid();
+		this.panes.issue(launchId, botId, purpose, this.now());
+		return launchId;
+	}
+
+	/** 起動したペインの報告。発行していない番号・2 回目・もう結び付いているトークンは断る（false）。 */
+	reportLaunch(launchId: string, paneToken: string): boolean {
+		const botId = this.panes.report(launchId, paneToken, this.now());
+		if (botId === undefined) {
+			return false;
+		}
+		this.notify();
+		return true;
+	}
+
+	/** 起動に失敗した番号を捨てる。 */
+	cancelLaunch(launchId: string): void {
+		this.panes.cancel(launchId);
+	}
+
+	/** ペインが閉じた。 */
+	releasePane(paneToken: string): void {
+		if (this.panes.release(paneToken) !== undefined) {
+			this.notify();
+		}
+	}
+
+	// ---- 中身 -----------------------------------------------------------------------------------
+
+	/** 書き込みを 1 つずつ順に行う（読み込みが終わってから）。 */
+	private write<T>(operation: () => Promise<Result<T>>): Promise<Result<T>> {
+		const run = async (): Promise<Result<T>> => {
+			await this.ready;
+			try {
+				return await operation();
+			} catch (error) {
+				this.logService.error('[ParadisBots] a write failed', error);
+				return { ok: false, code: 'storage', message: 'Para Code could not save the change.' };
+			}
+		};
+		const next = this.queue.then(run, run);
+		this.queue = next;
+		return next;
+	}
+
+	private async saveBots(next: IParadisBotsState, bot: IParadisBot): Promise<Result<IParadisBot>> {
+		const previous = this.bots;
+		this.bots = next;
+		try {
+			await this.botsFile.write(next);
+		} catch (error) {
+			this.bots = previous;
+			throw error;
+		}
+		this.changed();
+		return { ok: true, value: bot };
+	}
+
+	/** @param saved 保存できた直後、知らせる前に呼ぶ（回答済みの知らせを、待ちの一覧の知らせ直しより先にするため）。 */
+	private async saveItems<T>(next: IParadisBotItemsState, value: T, saved?: () => void): Promise<Result<T>> {
+		if (next === this.items) {
+			return { ok: true, value };
+		}
+		const previous = this.items;
+		this.items = next;
+		try {
+			await this.itemsFile.write(next);
+		} catch (error) {
+			this.items = previous;
+			throw error;
+		}
+		saved?.();
+		this.changed();
+		return { ok: true, value };
+	}
+
+	private apply(result: ParadisBotItemsResult, saved?: () => void): Promise<Result<IParadisBotItem>> {
+		return result.ok ? this.saveItems(result.state, result.item, saved) : Promise.resolve(result);
+	}
+
+	private async applyOwner(result: ParadisBotItemsResult, saved?: () => void): Promise<Result<IParadisBotItem>> {
+		const applied = await this.apply(result, saved);
+		if (applied.ok && result.ok && !result.unchanged) {
+			this._onDidQueueMail.fire({ botId: applied.value.botId, uid: applied.value.uid });
+		}
+		return applied;
+	}
+
+	/** 台帳が変わった。「聞く・答える」の台帳へ知らせ直し、画面へ知らせる。 */
+	private changed(): void {
+		if (!this.loaded) {
+			return;
+		}
+		this.syncAsks();
+		this.notify();
+	}
+
+	private notify(): void {
+		this.revision++;
+		this.changeScheduler.schedule();
+	}
+
+	/**
+	 * 今待っている問いを丸ごと知らせる。一時停止中の Bot と後回し中の項目は出さない（答えても Bot が動かない・
+	 * 利用者が後で見ると決めたもの）。後回しの期限が来たら数え直す。
+	 */
+	private syncAsks(): void {
+		const now = this.now();
+		const asks: unknown[] = [];
+		let wakeAt: number | undefined;
+		for (const item of this.items.items) {
+			const bot = this.getBot(item.botId);
+			if (bot === undefined || bot.paused || item.status !== 'needs_you') {
+				continue;
+			}
+			if (paradisIsBotItemSnoozed(item, now)) {
+				wakeAt = Math.min(wakeAt ?? Infinity, item.snoozedUntil ?? Infinity);
+				continue;
+			}
+			const input = paradisBotAskInput(bot, item);
+			if (input !== undefined) {
+				asks.push(input);
+			}
+		}
+		const refused = this.humanAsk.sync(PARADIS_BOTS_ASK_OWNER, asks);
+		if (refused > 0) {
+			this.logService.warn(`[ParadisBots] ${refused} waiting question(s) did not fit the ask ledger`);
+		}
+		this.wakeScheduler.cancel();
+		if (wakeAt !== undefined && Number.isFinite(wakeAt)) {
+			// setTimeout の上限（約 24.8 日）を超える待ちは、上限で一度起きて数え直す
+			this.wakeScheduler.schedule(Math.min(Math.max(wakeAt - now, 0) + 1, 2 ** 31 - 1));
+		}
+	}
+
+	/** 「聞く・答える」の台帳から来た答えを、持ち主のコメントとして項目に書く。 */
+	private onAnswerRequest(request: IParadisHumanAskAnswerRequest): void {
+		if (request.owner !== PARADIS_BOTS_ASK_OWNER) {
+			return;
+		}
+		void this.write(async () => {
+			const id = paradisParseBotAskId(request.id);
+			const item = id !== undefined ? this.getItem(id.uid) : undefined;
+			const ask = item?.status === 'needs_you' ? item.ask : undefined;
+			const comment = ask !== undefined && ask.eventId === id?.askEventId ? paradisBotAnswerComment(ask, request.answer) : undefined;
+			if (item === undefined || ask === undefined || comment === undefined) {
+				return { ok: false, code: 'item_changed', message: 'The question no longer waits.' };
+			}
+			// 順番は 保存 → 回答済みの知らせ → 待ちの一覧の知らせ直し。項目の台帳に書けた時点で回答済みにする
+			// （Bot のペインへ届くのは待たない。待つと「聞く・答える」の台帳の時間切れに当たる）
+			return this.applyOwner(paradisBotItemOwnerComment(this.items, item.uid, { text: comment.text, askEventId: ask.eventId, skipped: comment.skipped }, this.now()), () => {
+				// 何も渡さなければ、台帳が依頼した場所と答えの要約を使う
+				this.humanAsk.resolve(PARADIS_BOTS_ASK_OWNER, request.key);
+			});
+		}).then(result => {
+			// 届かなかった。台帳は、まだ待っていれば待ちへ戻す
+			if (!result.ok && !this._store.isDisposed) {
+				this.humanAsk.reject(PARADIS_BOTS_ASK_OWNER, request.key, request.claim);
+			}
+		});
+	}
+}
