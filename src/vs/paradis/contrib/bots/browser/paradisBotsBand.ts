@@ -40,6 +40,9 @@ import { IParadisWorkspacesBand } from '../../workspaceSwitch/browser/paradisWor
 import { IParadisBotSummary, IParadisBotsService, ParadisBotsServiceResult, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
 import { IParadisBotsBandState, PARADIS_BOTS_BAND_SIZES, PARADIS_BOTS_BAND_STORAGE_KEY, PARADIS_BOTS_OPEN_COMMAND, paradisBotFace, paradisBotNameProblemMessage, paradisBotRowMenu, ParadisBotRowMenuItem, paradisBotsBandDraggedHeight, paradisBotsBandListHeight, paradisBotsBandRows, paradisBotStatusLine, paradisBotsNeedsYouTotal, paradisParseBotsBandState, paradisSerializeBotsBandState, paradisValidateBotName } from '../common/paradisBotsBandModel.js';
 import { ParadisBotCreateDialog } from './paradisBotCreateDialog.js';
+import { ParadisBotGroupDialog } from './paradisBotGroupDialog.js';
+import { IParadisBotGroup, paradisBotGroupMembers } from '../common/paradisBotGroups.js';
+import { IParadisBotGroupsService, PARADIS_BOTS_OPEN_GROUP_COMMAND } from '../common/paradisBotGroupsApi.js';
 import { renderParadisBotFace } from './paradisBotFace.js';
 
 const $ = DOM.$;
@@ -133,6 +136,7 @@ export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBan
 		@IQuickInputService private readonly quickInputService: IQuickInputService,
 		@IParadisDialogService private readonly paradisDialogService: IParadisDialogService,
 		@INotificationService private readonly notificationService: INotificationService,
+		@IParadisBotGroupsService private readonly groupsService: IParadisBotGroupsService,
 	) {
 		super();
 		this.state = paradisParseBotsBandState(this.storageService.get(PARADIS_BOTS_BAND_STORAGE_KEY, StorageScope.APPLICATION));
@@ -158,7 +162,7 @@ export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBan
 		}));
 
 		const add = DOM.append(header, $('.paradis-bots-band-add.paradis-focus-ring-inset'));
-		const addLabel = localize('paradis.bots.band.create', "新しい Bot...");
+		const addLabel = localize('paradis.bots.band.add', "Bot かグループを作る");
 		add.tabIndex = 0;
 		add.setAttribute('role', 'button');
 		add.setAttribute('aria-label', addLabel);
@@ -166,13 +170,13 @@ export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBan
 		this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), add, addLabel));
 		this._register(DOM.addDisposableListener(add, DOM.EventType.CLICK, e => {
 			DOM.EventHelper.stop(e, true);
-			this.openCreateDialog(add);
+			this.showAddMenu(add);
 		}));
 		this._register(DOM.addDisposableListener(add, DOM.EventType.KEY_DOWN, e => {
 			const event = new StandardKeyboardEvent(e);
 			if (event.equals(KeyCode.Enter) || event.equals(KeyCode.Space)) {
 				DOM.EventHelper.stop(e, true);
-				this.openCreateDialog(add);
+				this.showAddMenu(add);
 			}
 		}));
 
@@ -197,6 +201,7 @@ export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBan
 		}));
 
 		this._register(this.botsService.onDidChange(() => this.render()));
+		this._register(this.groupsService.onDidChange(() => this.render()));
 		this._register(this.storageService.onDidChangeValue(StorageScope.APPLICATION, PARADIS_BOTS_BAND_STORAGE_KEY, this._store)(() => {
 			// ほかの窓で開閉・高さを変えた
 			const next = paradisParseBotsBandState(this.storageService.get(PARADIS_BOTS_BAND_STORAGE_KEY, StorageScope.APPLICATION));
@@ -225,7 +230,7 @@ export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBan
 
 	/** 一覧の高さを入れる。帯の高さが変わったら true。 */
 	private applyHeight(): boolean {
-		const rows = paradisBotsBandRows(this.bots, this.state.open).length;
+		const rows = paradisBotsBandRows(this.bots, this.state.open).length + this.groupRowCount();
 		const listHeight = paradisBotsBandListHeight(this.state, rows, this.viewHeight);
 		this.list.style.height = `${listHeight}px`;
 		this.list.classList.toggle('hidden', listHeight === 0);
@@ -273,10 +278,15 @@ export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBan
 		this.rowDisposables.clear();
 		DOM.clearNode(this.list);
 		const rows = paradisBotsBandRows(bots, open);
-		if (rows.length === 0 && open) {
+		if (rows.length === 0 && open && this.visibleGroups().length === 0) {
 			DOM.append(this.list, $('.paradis-bots-band-empty')).textContent = localize('paradis.bots.band.empty', "Bot はまだいません。＋ から作れます");
 		}
 		const elements = this.rowElements = rows.map((bot, index) => this.renderRow(bot, index === 0));
+		const groups = this.visibleGroups();
+		if (groups.length > 0) {
+			DOM.append(this.list, $('.paradis-bots-band-section')).textContent = localize('paradis.bots.band.groups', "グループ");
+			this.rowElements = [...elements, ...groups.map((group, index) => this.renderGroupRow(group, rows.length === 0 && index === 0))];
+		}
 		this.applyAndNotify();
 
 		const reveal = this.revealBotId !== undefined ? rows.findIndex(bot => bot.id === this.revealBotId) : -1;
@@ -344,19 +354,25 @@ export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBan
 				this.open(bot);
 				return;
 			}
-			const rows = this.rowElements;
-			const index = rows.indexOf(row);
-			const next = event.equals(KeyCode.DownArrow) ? Math.min(rows.length - 1, index + 1)
-				: event.equals(KeyCode.UpArrow) ? Math.max(0, index - 1)
-					: event.equals(KeyCode.Home) ? 0
-						: event.equals(KeyCode.End) ? rows.length - 1
-							: -1;
-			if (next >= 0) {
-				DOM.EventHelper.stop(e, true);
-				this.focusRow(rows, next);
-			}
+			this.moveFocus(e, row);
 		}));
 		return row;
+	}
+
+	/** 上下の矢印・Home・End で、Bot とグループの行をまたいで動く。 */
+	private moveFocus(e: KeyboardEvent, row: HTMLElement): void {
+		const event = new StandardKeyboardEvent(e);
+		const rows = this.rowElements;
+		const index = rows.indexOf(row);
+		const next = event.equals(KeyCode.DownArrow) ? Math.min(rows.length - 1, index + 1)
+			: event.equals(KeyCode.UpArrow) ? Math.max(0, index - 1)
+				: event.equals(KeyCode.Home) ? 0
+					: event.equals(KeyCode.End) ? rows.length - 1
+						: -1;
+		if (next >= 0) {
+			DOM.EventHelper.stop(e, true);
+			this.focusRow(rows, next);
+		}
 	}
 
 	private open(bot: IParadisBotSummary): void {
@@ -428,6 +444,92 @@ export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBan
 			this.notificationService.error(localize('paradis.bots.failed', "Bot を変更できませんでした: {0}", result.message));
 		}
 		return result.ok;
+	}
+
+	/** 開いているときだけ出すグループ（ピン留めは無い）。 */
+	private visibleGroups(): readonly IParadisBotGroup[] {
+		return this.state.open ? this.groupsService.snapshot.groups : [];
+	}
+
+	/** グループの行と、その上の見出しの行の数。 */
+	private groupRowCount(): number {
+		const count = this.visibleGroups().length;
+		return count > 0 ? count + 1 : 0;
+	}
+
+	private renderGroupRow(group: IParadisBotGroup, first: boolean): HTMLElement {
+		const bots = this.bots;
+		const members = paradisBotGroupMembers(group, new Set(bots.map(bot => bot.id))).map(id => bots.find(bot => bot.id === id)!);
+		const row = DOM.append(this.list, $('.paradis-bots-row.paradis-bots-group-row.paradis-focus-ring-inset'));
+		row.setAttribute('role', 'listitem');
+		row.tabIndex = first ? 0 : -1;
+		row.dataset.groupId = group.id;
+		const faces = DOM.append(row, $('span.paradis-bots-group-faces'));
+		for (const bot of members.slice(0, 3)) {
+			renderParadisBotFace(faces, paradisBotFace(bot));
+		}
+		const names = members.map(bot => bot.name).join('・');
+		DOM.append(row, $('span.paradis-bots-row-name')).textContent = group.name;
+		DOM.append(row, $('span.paradis-bots-row-status')).textContent = names;
+		row.setAttribute('aria-label', localize('paradis.bots.groupRow.ariaLabel', "グループ {0}、{1}", group.name, names));
+		const open = () => void this.commandService.executeCommand(PARADIS_BOTS_OPEN_GROUP_COMMAND, group.id);
+		this.rowDisposables.add(DOM.addDisposableListener(row, DOM.EventType.CLICK, open));
+		this.rowDisposables.add(DOM.addDisposableListener(row, DOM.EventType.CONTEXT_MENU, e => {
+			DOM.EventHelper.stop(e, true);
+			const event = new StandardMouseEvent(DOM.getWindow(row), e);
+			this.contextMenuService.showContextMenu({ getAnchor: () => event, getActions: () => this.groupActions(group, row) });
+		}));
+		this.rowDisposables.add(DOM.addDisposableListener(row, DOM.EventType.KEY_DOWN, e => {
+			const event = new StandardKeyboardEvent(e);
+			if (event.equals(KeyCode.Enter) || event.equals(KeyCode.Space)) {
+				DOM.EventHelper.stop(e, true);
+				open();
+				return;
+			}
+			this.moveFocus(e, row);
+		}));
+		return row;
+	}
+
+	private groupActions(group: IParadisBotGroup, row: HTMLElement): IAction[] {
+		return [
+			new Action('paradis.bots.group.open', localize('paradis.bots.group.open', "開く"), `paradis-menu-icon ${ThemeIcon.asClassName(Codicon.commentDiscussion)}`, true, () => this.commandService.executeCommand(PARADIS_BOTS_OPEN_GROUP_COMMAND, group.id)),
+			new Separator(),
+			new Action('paradis.bots.group.edit', localize('paradis.bots.group.edit', "グループを変える..."), `paradis-menu-icon ${ThemeIcon.asClassName(Codicon.edit)}`, true, async () => this.instantiationService.createInstance(ParadisBotGroupDialog, row, group, () => undefined)),
+			new Action('paradis.bots.group.remove', localize('paradis.bots.group.remove', "グループを削除..."), `paradis-menu-icon ${ThemeIcon.asClassName(Codicon.trash)}`, true, () => this.removeGroup(group)),
+		];
+	}
+
+	private async removeGroup(group: IParadisBotGroup): Promise<void> {
+		const { confirmed } = await this.paradisDialogService.confirm({
+			message: localize('paradis.bots.group.removeMessage', "グループ「{0}」を削除しますか?", group.name),
+			detail: localize('paradis.bots.group.removeDetail', "グループとその記録を消します。メンバーの Bot と項目は残ります。"),
+			primaryButton: localize('paradis.bots.group.removeConfirm', "削除"),
+			destructive: true,
+		});
+		if (confirmed) {
+			this.report(await this.groupsService.removeGroup(group.id));
+		}
+	}
+
+	private showAddMenu(anchor: HTMLElement): void {
+		this.contextMenuService.showContextMenu({
+			getAnchor: () => anchor,
+			getActions: () => [
+				new Action('paradis.bots.add.bot', localize('paradis.bots.band.create', "新しい Bot..."), `paradis-menu-icon ${ThemeIcon.asClassName(Codicon.add)}`, true, async () => this.openCreateDialog(anchor)),
+				new Action('paradis.bots.add.group', localize('paradis.bots.band.createGroup', "新しいグループ..."), `paradis-menu-icon ${ThemeIcon.asClassName(Codicon.commentDiscussion)}`, this.bots.length >= 2, async () => this.openGroupDialog(anchor)),
+			],
+		});
+	}
+
+	private openGroupDialog(anchor: HTMLElement): void {
+		this.instantiationService.createInstance(ParadisBotGroupDialog, anchor, undefined, () => {
+			if (!this.state.open) {
+				this.state = { ...this.state, open: true };
+				this.persist();
+			}
+			this.render();
+		});
 	}
 
 	private openCreateDialog(anchor: HTMLElement): void {

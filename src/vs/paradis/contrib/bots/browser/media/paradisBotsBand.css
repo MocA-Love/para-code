@@ -359,3 +359,29 @@
 .paradis-bot-create .pbcd-note.error {
 	color: var(--vscode-paradis-danger);
 }
+
+/* --- Groups (paradisBotGroupDialog.ts): a small heading row, then one 28px row per group with up to three faces overlapped. --- */
+
+.paradis-bots-band-section {
+	display: flex;
+	align-items: center;
+	height: 28px;
+	padding: 0 8px;
+	font-size: var(--vscode-fontSize-label2);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-bots-group-faces {
+	display: flex;
+	flex: none;
+}
+
+.paradis-bots-group-faces > .paradis-bot-face {
+	width: 14px;
+	height: 14px;
+}
+
+.paradis-bots-group-faces > .paradis-bot-face + .paradis-bot-face {
+	margin-left: -5px;
+}
