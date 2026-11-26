@@ -25,6 +25,7 @@ import { PARADIS_BOTS_CHANNEL, PARADIS_BOTS_ENABLED_SETTING } from '../common/pa
 import { ParadisBotHomes } from './paradisBotHomes.js';
 import { ParadisBotManageToolProvider } from './paradisBotManageToolProvider.js';
 import { ParadisBotToolProvider } from './paradisBotToolProvider.js';
+import { ParadisBotMessageToolProvider } from './paradisBotMessageToolProvider.js';
 import { ParadisBotsChannel } from './paradisBotsChannel.js';
 import { ParadisBotsService } from './paradisBotsService.js';
 import { ParadisBotMemorySnapshots } from './paradisBotMemorySnapshots.js';
@@ -74,6 +75,8 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 		}));
 	}
 	store.add(paradisRegisterMcpToolProvider(new ParadisBotToolProvider(service, enabled)));
+	// Bot 同士の伝言（宛先とグループの記録はグループの機能が差し込む口から引く）
+	store.add(paradisRegisterMcpToolProvider(new ParadisBotMessageToolProvider(service, enabled)));
 	// 管理の道具の書く側は、IDE 系の書く道具と同じ設定の下（スキーマは画面側でしか登録されないので生の値を読む）
 	store.add(paradisRegisterMcpToolProvider(new ParadisBotManageToolProvider(service, {
 		actionsEnabled: () => paradisAgentIdeActionsAllowed(configurationService.getValue(PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING)),
