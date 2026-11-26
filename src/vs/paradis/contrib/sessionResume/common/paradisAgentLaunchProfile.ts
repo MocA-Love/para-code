@@ -494,7 +494,7 @@ export interface IParadisAgentLaunchCaptureOrigins {
 	 * 最初から居たか。スナップショットは数秒おきなので、前の起動が数秒で終わり、その会話を初めて見たのが次の起動の実行中だった
 	 * ときは取り違える（【要確認】そこまでは塞いでいない）。
 	 */
-	readonly sessions: Map<string, { readonly commandId: string | undefined; readonly preexisting: boolean }>;
+	readonly sessions: Map<string, { readonly commandId: string | undefined; readonly preexisting: boolean; /** ターミナルの様子が分かって、`commandId` を決めたか。 */ readonly decided: boolean }>;
 }
 
 export function paradisCreateAgentLaunchCaptureOrigins(): IParadisAgentLaunchCaptureOrigins {
@@ -509,8 +509,9 @@ export function paradisCreateAgentLaunchCaptureOrigins(): IParadisAgentLaunchCap
  * `origins` を渡すと、会話を初めて見たときのコマンドと今のコマンドを比べる（{@link IParadisAgentLaunchCaptureOrigins}）:
  * - 別のコマンドの間に現れた会話（前の起動の会話がペインに残っているだけ）は、知らせない。今の起動の会話が届けば、それを知らせる。
  *   今のコマンド行がその会話の ID を名指ししているとき（残っていた会話そのものの再開）は、前からある会話として知らせる
- * - 最初のスナップショットに既にあった会話と、初めて見たときにコマンドが分からなかった会話は、今の起動が作ったと示せない。
- *   `startSource` を外して知らせる（前からある会話として扱われ、権限を広げるものは控えられない）
+ * - 最初のスナップショットに既にあった会話と、ターミナルの様子が初めて分かったときに実行中のコマンドが無かった会話は、
+ *   今の起動が作ったと示せない。`startSource` を外して知らせる（前からある会話として扱われ、権限を広げるものは控えられない）
+ * - ターミナルの様子がまだ分からない会話（表示していないスペースで起動したペイン）は、分かるまで決めずに持ち越す
  */
 export function paradisAgentLaunchesToRecord(
 	sessions: readonly IParadisAgentPaneSession[],
@@ -532,10 +533,15 @@ export function paradisAgentLaunchesToRecord(
 		}
 		const terminal = terminalFor(session.token);
 		let origin = origins?.sessions.get(key);
-		if (origins !== undefined && origin === undefined) {
-			// コマンドが実行中でないとき（プロンプトで待っている）に初めて見た会話は、どのコマンドの間に現れたか分からない
-			// （シェル統合の「今のコマンド」は、次に打つコマンドと同じもの。前の起動の会話を、次の起動のものと取り違える）
-			origin = { commandId: terminal?.commandLine !== undefined ? terminal.commandId : undefined, preexisting: !origins.primed };
+		if (origins !== undefined) {
+			origin ??= { commandId: undefined, preexisting: !origins.primed, decided: false };
+			if (!origin.decided && terminal?.commandId !== undefined) {
+				// ターミナルの様子が分かった最初のスナップショットで決める（表示していないスペースで起動したペインは、開くまで
+				// シェル統合の様子が分からない。その間は決めずに持ち越す）。
+				// コマンドが実行中でないとき（プロンプトで待っている）に見た会話は、どのコマンドの間に現れたか分からない
+				// （シェル統合の「今のコマンド」は、次に打つコマンドと同じもの。前の起動の会話を、次の起動のものと取り違える）
+				origin = { commandId: terminal.commandLine !== undefined ? terminal.commandId : undefined, preexisting: origin.preexisting, decided: true };
+			}
 			origins.sessions.set(key, origin);
 		}
 		if (terminal?.commandLine === undefined || paradisAgentLaunchFromCommandLine(terminal.commandLine)?.agent !== agent) {
