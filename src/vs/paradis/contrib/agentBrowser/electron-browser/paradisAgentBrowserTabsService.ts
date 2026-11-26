@@ -90,6 +90,7 @@ import {
 	paradisSanitizeDisplayText,
 	paradisUrlOrigin,
 } from '../common/paradisAgentBrowserTabs.js';
+import { paradisComputerUseCommandInputNear } from '../../computerUse/common/paradisComputerUseInputClock.js';
 import { IParadisAgentTabGroupInfo, PARADIS_AGENT_TAB_MIN_SPLIT_WIDTH_SETTING, ParadisEditorSplitSizing, paradisChooseAgentTabPlacement, paradisEstimateHiddenAgentTabSize, paradisPredictSplitWidth } from '../common/paradisAgentTabPlacement.js';
 import { IParadisAgentBrowserBindingModel } from './paradisAgentBrowserBindingModel.js';
 import { IParadisBrowserExtensionsService } from '../../browserExtensions/electron-browser/paradisBrowserExtensionsService.js';
@@ -1204,6 +1205,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 			const watch = new DisposableStore();
 			let shownAt: number | undefined;
 			let shortcutUsed = false;
+			let duringCommandInput = false;
 			try {
 				// 1秒の猶予は、ダイアログが実際に画面に出た時刻から数える（upstream はダイアログを1つずつ
 				// 出すので、前のダイアログの後ろで待っていた間を数えない）。
@@ -1243,11 +1245,19 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 					return 'denied';
 				}
 				const elapsed = Date.now() - (shownAt ?? calledAt);
-				if (!shortcutUsed && elapsed >= PARADIS_AGENT_APPROVAL_GUARD_MS) {
+				// Computer Use がターミナル類へ入力を送っている最中と直後の承認は、そこで走らせたスクリプトが押した可能性が
+				// ある（Computer Use は Para Code を直接は操作できないが、ターミナルの osascript は押せる）。確定させずに聞き直す
+				duringCommandInput = paradisComputerUseCommandInputNear(calledAt);
+				if (!shortcutUsed && elapsed >= PARADIS_AGENT_APPROVAL_GUARD_MS && !duringCommandInput) {
 					return result;
 				}
 			} finally {
 				watch.dispose();
+			}
+			if (duringCommandInput) {
+				notice = localize('paradis.agentTabs.approval.duringComputerUse', "エージェントが Computer Use でターミナルなどを操作している最中、または直後に押されたため、もう一度確認しています。操作が止まってから、ボタンをクリックして答えてください。");
+				detail = [notice, ...request.detail];
+				continue;
 			}
 			// 表示直後の承認や ⌘D での承認は、ほかの場所へ打っていたキーが当たった可能性が高い。もう一度聞く。
 			notice = localize('paradis.agentTabs.approval.tooFast', "表示された直後、またはキーボードのショートカットで押されたため、もう一度確認しています。ボタンをクリックして答えてください。");

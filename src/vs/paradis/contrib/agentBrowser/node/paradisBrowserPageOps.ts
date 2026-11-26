@@ -26,7 +26,9 @@ import {
 	IParadisPageOverridesResult,
 	IParadisPageStorageDescription,
 	IParadisPdfResult,
+	IParadisPermissionAnswer,
 	PARADIS_PAGE_OPS_DEFAULT_HIGHLIGHT_MS,
+	PARADIS_PERMISSION_NAMES,
 	PARADIS_PAGE_OPS_MAX_HIGHLIGHT_MS,
 	ParadisPageOpsFailure,
 	paradisParseHeaderMap,
@@ -34,6 +36,7 @@ import {
 	paradisParseHttpCredentials,
 	paradisParseInitScriptRequest,
 	paradisParsePdfOptions,
+	paradisParsePermissionName,
 	paradisParseRequestRules,
 } from '../common/paradisBrowserPageOps.js';
 import { PARADIS_PAGE_OPS_TOOL_NAMES } from './paradisBrowserPageOpsTools.js';
@@ -65,6 +68,12 @@ export interface IParadisPageOpsCall {
 	 * 利用者がまだ使っておらず、開いているタブがすべてそのペインのもの）。
 	 */
 	confirmPaneProfile(profileId: string): Promise<boolean>;
+	/**
+	 * このペインが open_browser_tab で自分で開いたタブなら false。利用者が共有したタブと、タブが開いた子のページ
+	 * （target=_blank・window.open）は true。分からなければ省く（自分のタブではないものとして扱う）。
+	 * 許可の求めを許可できるのは、自分で開いたタブだけ。
+	 */
+	readonly userSharedTab?: boolean;
 	/** uid の要素の中心座標などを内蔵 chrome-devtools-mcp の evaluate_script で求める。失敗は MCP のツールの結果（エラー）で返す。 */
 	resolveElement(uid: string): Promise<{ readonly ok: true; readonly target: IParadisResolvedDropTarget } | { readonly ok: false; readonly result: unknown }>;
 	/**
@@ -266,7 +275,7 @@ export class ParadisBrowserPageOps {
 		} catch (failure) {
 			if (failure instanceof ParadisPageOpsMainTimeoutError) {
 				// 期限の後に main で済んでいることがある。どう確かめるかを添える
-				const check = name.endsWith('init_script') || name === 'list_init_scripts' ? 'list_init_scripts' : name === 'highlight_element' ? undefined : 'get_page_network_overrides';
+				const check = name.endsWith('init_script') || name === 'list_init_scripts' ? 'list_init_scripts' : name === 'highlight_element' || name === 'handle_permission_request' ? undefined : 'get_page_network_overrides';
 				return error(`${name}: Para Code did not get an answer from the page in time (the page may be busy).${check ? ` The change may still have been applied; check with ${check} before retrying.` : ''}`);
 			}
 			throw failure;
@@ -288,6 +297,7 @@ export class ParadisBrowserPageOps {
 			case 'get_page_network_overrides': return this.getOverrides(call, binding);
 			case 'download_by_click': return this.downloadByClick(call, binding, args);
 			case 'highlight_element': return this.highlight(call, binding, args);
+			case 'handle_permission_request': return this.handlePermissionRequest(call, binding, args);
 			case 'add_init_script': return this.addInitScript(call, binding, args);
 			case 'remove_init_script': return this.removeInitScript(call, binding, args);
 			case 'list_init_scripts': return this.listInitScripts(call, binding);
@@ -582,8 +592,8 @@ export class ParadisBrowserPageOps {
 		}
 		const sentTo = applied.summary.extraHeaderOrigins ?? [];
 		return text(names.length > 0
-			? `Requests of the shared tab to ${sentTo.join(', ')} now carry these extra headers: ${names.join(', ')}. Requests to any other host (CDNs, analytics, other sites) do not. The browser cache and service workers are bypassed for that tab while overrides are set.`
-			: 'Removed the extra headers of the shared tab.');
+			? `Requests of this tab to ${sentTo.join(', ')} now carry these extra headers: ${names.join(', ')}. Requests to any other host (CDNs, analytics, other sites) do not. The browser cache and service workers are bypassed for that tab while overrides are set.`
+			: 'Removed the extra headers of this tab.');
 	}
 
 	private async setCredentials(call: IParadisPageOpsCall, binding: IParadisPageOpsBinding, args: Record<string, unknown>): Promise<ToolResult> {
@@ -603,7 +613,7 @@ export class ParadisBrowserPageOps {
 		}
 		return text(request.credentials
 			? `The shared tab now answers HTTP authentication prompts from ${request.credentials.origin} with the given user name and password (at most twice per realm and minute, so a wrong password does not loop). Reload or navigate the page to use them.`
-			: 'Removed the HTTP credentials of the shared tab.');
+			: 'Removed the HTTP credentials of this tab.');
 	}
 
 	private async setRules(call: IParadisPageOpsCall, binding: IParadisPageOpsBinding, args: Record<string, unknown>): Promise<ToolResult> {
@@ -625,8 +635,8 @@ export class ParadisBrowserPageOps {
 			return applied;
 		}
 		return text(rules.value.length > 0
-			? `Set ${rules.value.length} request rule(s) on the shared tab. They apply to requests made from now on (reload the page to apply them to its resources). Use get_page_network_overrides to see how many requests each rule matched.`
-			: 'Removed the request rules of the shared tab.');
+			? `Set ${rules.value.length} request rule(s) on this tab. They apply to requests made from now on (reload the page to apply them to its resources). Use get_page_network_overrides to see how many requests each rule matched.`
+			: 'Removed the request rules of this tab.');
 	}
 
 	private async getOverrides(call: IParadisPageOpsCall, binding: IParadisPageOpsBinding): Promise<ToolResult> {
@@ -749,7 +759,48 @@ export class ParadisBrowserPageOps {
 		}
 		return shown
 			? text(`Highlighted (${Math.round(rect.x)}, ${Math.round(rect.y)}, ${Math.round(rect.width)}x${Math.round(rect.height)}) for ${duration} seconds.`)
-			: error('Para Code could not draw the highlight on the shared page. Retry once; the page may have been navigating.');
+			: error('Para Code could not draw the highlight on this tab. Retry once; the page may have been navigating.');
+	}
+
+	/**
+	 * ページの許可の求め（位置情報・通知など）に答える。断るのはどのタブでもできる。許可できるのは自分で開いたタブだけで、
+	 * カメラ・マイク・機器は利用者だけ（main の側でも同じ判定をする）。
+	 */
+	private async handlePermissionRequest(call: IParadisPageOpsCall, binding: IParadisPageOpsBinding, args: Record<string, unknown>): Promise<ToolResult> {
+		const action = args.action;
+		if (action !== 'allow' && action !== 'deny') {
+			return error('"action" must be "allow" or "deny".');
+		}
+		const permission = args.permission === undefined ? null : paradisParsePermissionName(args.permission);
+		if (args.permission !== undefined && permission === null) {
+			return error(`"permission" must be one of ${PARADIS_PERMISSION_NAMES.join(', ')}.`);
+		}
+		const allow = action === 'allow';
+		if (allow && call.userSharedTab !== false) {
+			return error('handle_permission_request: "allow" works only on tabs you opened yourself with open_browser_tab, and this tab is a page the user shared or a page that another tab opened. Deny it with action "deny", or tell the user that the page asks for a permission so they can answer in Para Code.');
+		}
+		const answer = await this.callMainBounded<IParadisPermissionAnswer>(call, 'answerExactViewPermissionRequest', [binding.exactView, permission, allow, call.userSharedTab === false]);
+		if (!this.isCurrent(call, binding)) {
+			return error(BINDING_CHANGED);
+		}
+		const list = (items: readonly { readonly origin: string; readonly permission: string }[]) => items.map(item => `"${item.permission}" for ${item.origin}`).join(', ');
+		if (answer.ok) {
+			return text(allow
+				? `Allowed ${list(answer.answered)} for this tab. It lasts until the tab is closed and is not saved in the browser profile.`
+				: `Denied ${list(answer.answered)}. Nothing was saved, so the page can ask again.`);
+		}
+		switch (answer.reason) {
+			case 'none':
+				return error(`handle_permission_request: no ${permission !== null ? `"${permission}" ` : ''}permission prompt waits on this tab${answer.pending.length > 0 ? ` (waiting: ${list(answer.pending)})` : ''}. A prompt waits for about 30 seconds after the page asks; it may already have been answered or denied.`);
+			case 'ambiguous':
+				return error(`handle_permission_request: several kinds of prompts wait on this tab (${list(answer.pending)}). Say which one with "permission".`);
+			case 'notAllowed':
+				return error(`handle_permission_request: only the user can allow camera, microphone and devices (waiting: ${list(answer.pending)}). Deny it with action "deny", or tell the user to answer in Para Code.`);
+			case 'invalid':
+				return error(`"permission" must be one of ${PARADIS_PERMISSION_NAMES.join(', ')}.`);
+			default:
+				return error('handle_permission_request: Para Code could not reach this tab. Retry once; the tab may have been closed.');
+		}
 	}
 
 	private async addInitScript(call: IParadisPageOpsCall, binding: IParadisPageOpsBinding, args: Record<string, unknown>): Promise<ToolResult> {

@@ -30,6 +30,8 @@ export class McpPage {
     // Dialog
     #dialog;
     #dialogHandler;
+    #paraCodeDialogClosedHandler;
+    #paraCodeClient;
     thirdPartyDeveloperTools = [];
     constructor(page, id) {
         this.pptrPage = page;
@@ -38,6 +40,20 @@ export class McpPage {
             this.#dialog = dialog;
         };
         page.on('dialog', this.#dialogHandler);
+        // PARA-PATCH (Para Code): forget the dialog when the browser reports it closed. Upstream only records the
+        // opening, so a dialog answered by evaluate_script "dialogAction", by the page's own flow or by the user stayed
+        // in every later response as "# Open dialog" (and blocked the tools that refuse to run while one is open).
+        // See NOTES.md "vendored chrome-devtools-mcp への変更".
+        this.#paraCodeDialogClosedHandler = () => {
+            this.#dialog = undefined;
+        };
+        try {
+            this.#paraCodeClient = page._client();
+            this.#paraCodeClient.on('Page.javascriptDialogClosed', this.#paraCodeDialogClosedHandler);
+        }
+        catch {
+            this.#paraCodeClient = undefined;
+        }
     }
     get dialog() {
         return this.#dialog;
@@ -87,6 +103,7 @@ export class McpPage {
     }
     dispose() {
         this.pptrPage.off('dialog', this.#dialogHandler);
+        this.#paraCodeClient?.off('Page.javascriptDialogClosed', this.#paraCodeDialogClosedHandler);
     }
     async executeThirdPartyDeveloperTool(toolName, params, response) {
         // Creates array of ElementHandles from the UIDs in the params.
