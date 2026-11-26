@@ -56,7 +56,7 @@ interface IHarness {
 	bot(name: string): Promise<string>;
 }
 
-function harness(store: Pick<DisposableStore, 'add'>, files?: { botsFile: MemoryFile<IParadisBotsState>; itemsFile: MemoryFile<IParadisBotItemsState>; panesFile?: MemoryFile<IParadisBotPanesState> }): IHarness {
+function harness(store: Pick<DisposableStore, 'add'>, files?: { botsFile: MemoryFile<IParadisBotsState>; itemsFile: MemoryFile<IParadisBotItemsState>; panesFile?: MemoryFile<IParadisBotPanesState> }, itemsByteLimit?: number): IHarness {
 	const clock = { now: 1_000 };
 	const botsFile = files?.botsFile ?? new MemoryFile(EMPTY_PARADIS_BOTS_STATE);
 	const itemsFile = files?.itemsFile ?? new MemoryFile(EMPTY_PARADIS_BOT_ITEMS_STATE);
@@ -64,7 +64,7 @@ function harness(store: Pick<DisposableStore, 'add'>, files?: { botsFile: Memory
 	const humanAsk = store.add(new ParadisHumanAskService(new ParadisHumanAskLedger(() => clock.now)));
 	const hooks = store.add(new Emitter<{ token: string; event: string }>());
 	let ids = 0;
-	const service = store.add(new ParadisBotsService(botsFile, itemsFile, humanAsk, new NullLogService(), { now: () => clock.now, uuid: () => `id${++ids}`, hookEvents: hooks.event, panesFile }));
+	const service = store.add(new ParadisBotsService(botsFile, itemsFile, humanAsk, new NullLogService(), { now: () => clock.now, uuid: () => `id${++ids}`, hookEvents: hooks.event, panesFile, ...(itemsByteLimit !== undefined ? { itemsByteLimit } : {}) }));
 	const tools = new ParadisBotToolProvider(service);
 	const context = (caller: ParadisMcpCallerKind): IParadisMcpToolCallContext => ({
 		callOwningWindow: async () => ({ ok: false, error: 'unused' }),
@@ -281,6 +281,26 @@ suite('Paradis bots service', () => {
 		await h.service.updateBot(paused, { paused: true });
 		const rows = h.service.getSnapshot().bots.map(bot => [bot.name, bot.needsYou]);
 		assert.deepStrictEqual({ rows, ask: h.humanAsk.getSnapshot().counts.bot }, { rows: [['A', 1], ['B', 0]], ask: 1 });
+	});
+
+	test('項目の台帳の大きさの上限: Bot の書き込みは断り、持ち主の操作と Bot が閉じる書き込みは通す。超えても読める', async () => {
+		const h = harness(store, undefined, 3000);
+		await h.bot('A');
+		const first = await h.call('pane-A', 'bot_item_add', { title: '小さい項目' });
+		const big = await h.call('pane-A', 'bot_item_add', { title: '大きい項目', description: 'x'.repeat(3000) });
+		const owner = await h.service.ownerComment('id3', { text: 'y'.repeat(3000) });
+		const comment = await h.call('pane-A', 'bot_item_update', { number: 1, comment: '少しだけ' });
+		const close = await h.call('pane-A', 'bot_item_update', { number: 1, status: 'done' });
+		const reread = harness(store, h);
+		await reread.service.ready;
+		assert.deepStrictEqual({ first, big: String(big.error).slice(0, 44), owner: owner.ok, comment: String(comment.error).slice(0, 44), close, reread: reread.service.listItems().map(item => item.status) }, {
+			first: { number: 1, status: 'working', last_event: 1 },
+			big: 'Para Code\'s list of bot items is full. Close',
+			owner: true,
+			comment: 'Para Code\'s list of bot items is full. Close',
+			close: { number: 1, status: 'done', last_event: 3 },
+			reread: ['done'],
+		});
 	});
 
 	test('Bot でないペイン・確かめられない接続元・ほかの Bot の項目を断る', async () => {
