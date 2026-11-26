@@ -226,6 +226,10 @@ suite('ParadisTaskBoardBridgeService', () => {
 		const completed: unknown[] = [];
 		const listener = service.onDidCompleteStep(event => completed.push(event));
 		const result = await service.callTool(PANE_TOKEN, 'board_complete_step', { summary: 'Planned' }, undefined, context());
+		// 次の工程の指示は同じターミナルへ送られ、印が付け直される。報告はその印で知らせる
+		router.answers.send = { ok: true, value: true };
+		await service.handle('POST', '/v1/send', new URLSearchParams(), { terminal: TERMINAL, text: 'build it', tag: 'T:2' });
+		await service.callTool(PANE_TOKEN, 'board_complete_step', { summary: 'Built' }, undefined, context());
 		accept = false;
 		const declined = await service.callTool(PANE_TOKEN, 'board_complete_step', { summary: 'Again' }, undefined, context());
 		const refused = await service.callTool('other-pane', 'board_complete_step', { summary: 'Planned' }, undefined, context());
@@ -235,7 +239,7 @@ suite('ParadisTaskBoardBridgeService', () => {
 		assert.deepStrictEqual({ result, declined, completed, refused, notMine, report: parseEvents(chunks).filter(event => (event as { type: string }).type === 'report').slice(0, 1) }, {
 			result: { content: [{ type: 'text', text: 'Next: open a PR' }] },
 			declined: { content: [{ type: 'text', text: 'Not now' }], isError: true },
-			completed: [{ launchId: 'L1', summary: 'Planned' }],
+			completed: [{ launchId: 'L1', summary: 'Planned' }, { launchId: 'T:2', summary: 'Built' }],
 			refused: { content: [{ type: 'text', text: 'このペインはタスクボードのタスクではありません' }], isError: true },
 			notMine: undefined,
 			report: [{ type: 'report', terminal: TERMINAL, replyId: 'reply-1', tool: 'complete_step', args: { summary: 'Planned' } }],

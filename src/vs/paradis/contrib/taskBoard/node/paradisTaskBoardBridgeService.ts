@@ -159,7 +159,7 @@ function toolText(text: string): unknown {
 	return { content: [{ type: 'text', text }] };
 }
 
-/** ボードが受け付けた工程の終わりの報告。`launchId` はボードの `<タスクの id>:<試行番号>`。 */
+/** ボードが受け付けた工程の終わりの報告。`launchId` はボードの `<タスクの id>:<試行番号>`（最後に送った指示の印、無ければ起動の id）。 */
 export interface IParadisTaskBoardStepCompleted {
 	readonly launchId: string;
 	/** エージェントの書いた要約（別のエージェントの言葉。データとして扱う）。 */
@@ -746,7 +746,10 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 			if (!parsed.ok) {
 				return toolError(parsed.message);
 			}
-			const launchId = this.terminals.get(terminal)?.launchId;
+			// ボードは同じターミナルを次の工程にも使い、送るたびに `<タスクの id>:<試行番号>` の印を付け直す。起動の id ではなく
+			// その印で知らせる（起動の id のままだと、2 つ目からの工程の報告が最初の工程と同じに見える）
+			const entry = this.terminals.get(terminal);
+			const launchId = entry ? entry.tag ?? entry.launchId : undefined;
 			const reply = await this.report(terminal, 'complete_step', parsed.value, signal);
 			if (reply?.ok && launchId !== undefined) {
 				this._onDidCompleteStep.fire({ launchId, summary: parsed.value.summary });

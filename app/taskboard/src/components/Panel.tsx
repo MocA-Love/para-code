@@ -73,7 +73,7 @@ function Side({ task, flow }: { task: ITaskBoardTask; flow: ITaskBoardFlow }) {
 			{task.origin && (
 				<div className="side-sec">
 					<div className="side-h"><Icon name="person" size={13} />出どころ</div>
-					<div className="side-row"><span className="ellipsis" title={botOriginLabel(task.origin)}>{botOriginLabel(task.origin)}</span></div>
+					<div className="side-origin">{botOriginLabel(task.origin)}</div>
 				</div>
 			)}
 			<div className="side-sec">

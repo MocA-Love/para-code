@@ -45,7 +45,7 @@ export const Card = memo(function Card({ task, flow, selected }: { task: ITaskBo
 	const step = flow.steps[index];
 	const place = task.place ? (task.place.startsWith('manual:') ? task.place.slice(7) : app.snapshot.slots.find(s => s.id === task.place)?.name ?? task.place) : undefined;
 	const activity = taskActivity(task, flow);
-	const ref = task.issue ? `${task.issue.repo} #${task.issue.number}` : task.origin ? botOriginLabel(task.origin) : task.source === 'adopted' ? '取り込んだタスク' : 'ボードのタスク';
+	const ref = task.issue ? `${task.issue.repo} #${task.issue.number}` : task.source === 'adopted' ? '取り込んだタスク' : 'ボードのタスク';
 	return (
 		<div
 			className={`card ${needs(task) ? `need ${status.tone === 'amber' ? 'amber' : ''}` : ''} ${selected ? 'sel' : ''}`}
@@ -61,7 +61,10 @@ export const Card = memo(function Card({ task, flow, selected }: { task: ITaskBo
 		>
 			<div className="card-ref">
 				<Icon name={task.status === 'done' ? 'issueClosed' : 'issue'} size={13} />
-				<span className="ellipsis">{ref}</span>
+				{task.origin
+					// Bot の名前が長くても項目の番号は切らない（名前だけを省略し、全体はツールチップで読める）
+					? <><span className="ellipsis" title={botOriginLabel(task.origin)}>Bot: {task.origin.botName}</span><span className="nowrap">· 項目 #{task.origin.itemNumber}</span></>
+					: <span className="ellipsis">{ref}</span>}
 				<Menu label="タスクの操作" items={actions.menuItems(task)} trigger={(open, toggle) => (
 					<button className="btn ghost icon sm menu-btn" aria-label="タスクの操作" aria-expanded={open} onClick={e => { e.stopPropagation(); toggle(); }}><Icon name="dots" /></button>
 				)} />

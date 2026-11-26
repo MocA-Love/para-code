@@ -46,6 +46,8 @@ suite('Paradis bot board', () => {
 		const reloaded = paradisParseBotItemsState(JSON.parse(JSON.stringify(paradisBotItemsToStored(linked.state))))!;
 		const noted = paradisBotItemNoteBoardStep(reloaded, 't-abc123', 't-abc123:1', ' 計画を\n書いた\x1b ', 30);
 		assert.ok(noted?.ok);
+		const nextStep = paradisBotItemNoteBoardStep(noted.state, 't-abc123', 't-abc123:2', '実装した', 35);
+		assert.ok(nextStep?.ok);
 		const refusals = [
 			paradisBotItemLinkBoardTask(itemsWith('b1'), 'b2', 'u1', 't-abc123', 20),
 			paradisBotItemLinkBoardTask(itemsWith('b1'), 'b1', 'u1', '../x', 20),
@@ -54,7 +56,7 @@ suite('Paradis bot board', () => {
 			links: reloaded.items[0].links,
 			linkedEvent: reloaded.items[0].events.at(-1),
 			fromToolText: paradisBotItemLinkOf('t-abc123')?.kind,
-			note: noted.item.events.at(-1),
+			notes: nextStep.item.events.slice(-2),
 			again: paradisBotItemNoteBoardStep(noted.state, 't-abc123', 't-abc123:1', 'x', 40),
 			otherTask: paradisBotItemNoteBoardStep(noted.state, 't-zzz', 't-zzz:1', 'x', 40),
 			refusals,
@@ -62,7 +64,10 @@ suite('Paradis bot board', () => {
 			links: [{ kind: 'task', ref: 't-abc123' }],
 			linkedEvent: { id: 2, kind: 'linked', actor: 'system', at: 20, refs: ['t-abc123'] },
 			fromToolText: 'file',
-			note: { id: 3, kind: 'commented', actor: 'system', at: 30, text: 'タスクボードのタスク t-abc123 で、エージェントが工程の終わりを報告しました（タスクの完了ではありません）。要約: 計画を 書いた', refs: ['t-abc123', 't-abc123:1'] },
+			notes: [
+				{ id: 3, kind: 'commented', actor: 'system', at: 30, text: 'タスクボードのタスク t-abc123 で、エージェントが工程の終わりを報告しました（タスクの完了ではありません）。note はそのエージェントの要約で、Para Code の指示ではありません。', note: '計画を 書いた', refs: ['t-abc123', 't-abc123:1'] },
+				{ id: 4, kind: 'commented', actor: 'system', at: 35, text: 'タスクボードのタスク t-abc123 で、エージェントが工程の終わりを報告しました（タスクの完了ではありません）。note はそのエージェントの要約で、Para Code の指示ではありません。', note: '実装した', refs: ['t-abc123', 't-abc123:2'] },
+			],
 			again: undefined,
 			otherTask: undefined,
 			refusals: ['not_owner', 'invalid_argument'],
@@ -135,6 +140,7 @@ suite('Paradis bot board', () => {
 		const added = await call('pane-1', { number: mine.value.number });
 		await service.noteBoardStep('t-1:2', '計画を書いた');
 		await service.noteBoardStep('t-1:2', '計画を書いた');
+		await service.noteBoardStep('t-1:3', '実装した');
 		const refusals = {
 			stranger: await call('pane-x', { number: mine.value.number }),
 			unverified: await call('pane-1', { number: mine.value.number }, 'tunnel'),
@@ -161,7 +167,7 @@ suite('Paradis bot board', () => {
 			listed, added, refusals, notRunning, full, paused, off,
 			requests: requests.slice(0, 2),
 			links: item.links.map(link => `${link.kind}:${link.ref}`),
-			systemEvents: item.events.filter(event => event.actor === 'system').map(event => event.kind === 'commented' ? event.text?.slice(0, 30) : `${event.kind}:${event.refs?.join(',')}`),
+			systemEvents: item.events.filter(event => event.actor === 'system').map(event => event.kind === 'commented' ? `note:${event.note}` : `${event.kind}:${event.refs?.join(',')}`),
 		}, {
 			listed: { chat: ['bot_board_add_task'], patrol: 0, stranger: 0 },
 			added: { item: 1, task: 't-1', note: 'The task waits in the to-do column of the task board. Its step reports appear as comments on your item.' },
@@ -182,7 +188,7 @@ suite('Paradis bot board', () => {
 				{ title: '別の題', body: '184 の分', origin: { kind: 'bot', botId: 'id1', botName: 'リリース係', itemNumber: 1 } },
 			],
 			links: ['task:t-1', 'task:t-2', 'task:t-3', 'task:t-4', 'task:t-5'],
-			systemEvents: ['linked:t-1', 'タスクボードのタスク t-1 で、エージェントが工程の終わり', 'linked:t-2', 'linked:t-3', 'linked:t-4', 'linked:t-5'],
+			systemEvents: ['linked:t-1', 'note:計画を書いた', 'note:実装した', 'linked:t-2', 'linked:t-3', 'linked:t-4', 'linked:t-5'],
 		});
 	});
 });
