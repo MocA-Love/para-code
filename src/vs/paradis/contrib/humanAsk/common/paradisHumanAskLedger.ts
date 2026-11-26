@@ -60,6 +60,8 @@ interface IMutableEntry {
 	askedAt: number;
 	state: IParadisHumanAskEntry['state'];
 	pending?: IPending;
+	/** 届けている最中に持ち主の一覧から消えた（答えが届いたかは、持ち主の知らせか時間切れで決める）。 */
+	unlisted?: boolean;
 	failedAt?: number;
 	resolution?: IParadisHumanAskResolution;
 }
@@ -73,8 +75,8 @@ interface IMutableEntry {
  *   知らせは作った順に 1 つずつ送る（順序が入れ替わると、古い一覧が新しい一覧を上書きする）
  * - 元の場所（ターミナル・ボードの窓）で答えられたら {@link resolve}、エージェントが先へ進んだら {@link withdraw}
  * - {@link claim} が返した依頼を受け取ったら、答えを届け、届いたら {@link resolve}、届かなかったら {@link reject}。
- *   どちらも呼べないときは、次の {@link sync} で決まる（一覧から消えていれば回答済み、時間切れの後も
- *   残っていれば待ちへ戻す）。**依頼を受けたまま何も知らせないと、その 1 件はどこからも答えられないまま残る**
+ *   どちらも呼べないときは、時間切れの後の {@link sync} で決まる（一覧から消えていれば回答済み、残っていれば
+ *   待ちへ戻す）。時間切れの前に一覧から消えても回答済みとは決めず、持ち主の知らせを待つ（{@link reject} なら取り下げ）。**依頼を受けたまま何も知らせないと、その 1 件はどこからも答えられないまま残る**
  *
  * 答えは早い者勝ち。届けている最中の 1 件は {@link claim} が `busy` で断る。時間切れだけでは待ちへ
  * 戻さない: キー操作は届いたのに結果の知らせだけ落ちた場合に、二度目の答えが別のプロンプトへ入るため。
@@ -97,7 +99,7 @@ export class ParadisHumanAskLedger {
 
 	// ---- 持ち主が呼ぶ ---------------------------------------------------------------------------
 
-	/** 持ち主の待ちを丸ごと置き換える。一覧に無い待ちは取り下げ（届けている最中だったものは回答済み）にする。 */
+	/** 持ち主の待ちを丸ごと置き換える。一覧に無い待ちは取り下げ（届けている最中だったものは、持ち主の知らせか時間切れまで待つ）にする。 */
 	sync(owner: string, inputs: readonly IParadisHumanAskInput[]): boolean {
 		const listed = new Set<string>();
 		let changed = false;
@@ -110,10 +112,17 @@ export class ParadisHumanAskLedger {
 			if (entry.owner !== owner || entry.state !== 'waiting' || listed.has(entry.key)) {
 				continue;
 			}
-			if (entry.pending) {
-				// 届けている最中に持ち主の一覧から消えた。答えが届いて先へ進んだ
+			if (entry.pending && at - entry.pending.at < this.options.claimTimeoutMs) {
+				// 届けている最中に持ち主の一覧から消えた。答えが届いたかは、持ち主の resolve / reject を待って決める
+				// （印は見た目を変えないので、変わったことにしない）
+				entry.unlisted = true;
+				continue;
+			}
+			if (entry.pending && entry.unlisted) {
+				// 届けている最中に消え、時間切れまで持ち主から何も来なかった。答えが届いて先へ進んだとみなす
 				this.settle(entry, 'answered', { at, surface: entry.pending.surface, ...(entry.pending.summary !== undefined ? { summary: entry.pending.summary } : {}) });
 			} else {
+				// 待ちのまま消えた・時間切れの後に消えた（答えが届いたからとは言えない）
 				this.settle(entry, 'withdrawn', { at });
 			}
 			changed = true;
@@ -148,6 +157,12 @@ export class ParadisHumanAskLedger {
 		const entry = this.waitingOf(owner, key);
 		if (entry === undefined || entry.pending?.claim !== claim) {
 			return false;
+		}
+		if (entry.unlisted) {
+			// 答えは届かず、待ちも持ち主の一覧から消えている（ほかの所で答えられた・先へ進んだ）
+			this.settle(entry, 'withdrawn', { at: this.now() });
+			this.prune();
+			return true;
 		}
 		entry.pending = undefined;
 		entry.failedAt = this.now();
@@ -259,9 +274,14 @@ export class ParadisHumanAskLedger {
 		if (existing.state === 'waiting') {
 			if (existing.owner !== owner) {
 				// 鍵は出どころの中で一意。別の持ち主が同じ鍵を名乗っても、先に待っている 1 件を書き換えさせない
+				// （つなぎ直したボードは、古い接続が切れて取り下げになった後に、同じ鍵で待ちへ戻る）
 				return false;
 			}
 			let changed = false;
+			if (existing.unlisted) {
+				// 一覧に戻ってきた。届けている最中のまま、ふつうの待ちとして扱う
+				existing.unlisted = undefined;
+			}
 			if (existing.pending && at - existing.pending.at >= this.options.claimTimeoutMs) {
 				// 時間切れの後も持ち主の一覧に残っている。答えは届かなかった
 				existing.pending = undefined;
@@ -295,6 +315,7 @@ export class ParadisHumanAskLedger {
 		entry.state = state;
 		entry.resolution = resolution;
 		entry.pending = undefined;
+		entry.unlisted = undefined;
 		entry.failedAt = undefined;
 	}
 
@@ -311,10 +332,19 @@ export class ParadisHumanAskLedger {
 	/** 残しておく時間を過ぎた・上限を超えた回答済み・取り下げを捨てる。 */
 	private prune(): boolean {
 		const at = this.now();
+		let expired = false;
+		for (const entry of this.entries.values()) {
+			// 届けている最中に消え、持ち主から何も来ないまま時間切れを過ぎた（持ち主が二度と一覧を知らせなくても、台帳の
+			// どこかが変わるたびにここで決める。ボードは出番が変わらないと一覧を知らせない）
+			if (entry.state === 'waiting' && entry.unlisted && entry.pending && at - entry.pending.at >= this.options.claimTimeoutMs) {
+				this.settle(entry, 'answered', { at, surface: entry.pending.surface, ...(entry.pending.summary !== undefined ? { summary: entry.pending.summary } : {}) });
+				expired = true;
+			}
+		}
 		const settled = [...this.entries.values()]
 			.filter(entry => entry.state !== 'waiting')
 			.sort((a, b) => (b.resolution?.at ?? 0) - (a.resolution?.at ?? 0) || b.order - a.order);
-		let changed = false;
+		let changed = expired;
 		settled.forEach((entry, index) => {
 			if (index >= this.options.recentLimit || at - (entry.resolution?.at ?? 0) >= this.options.recentTtlMs) {
 				this.entries.delete(entry.key);

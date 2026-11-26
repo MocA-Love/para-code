@@ -2023,6 +2023,9 @@ export default defineConfig(
 						// PARA-PATCH: editorParts.ts がスペース切り替えで外したエディタを握る参照カウント
 						// (ParadisRetainedEditors) を使うための逆方向 import。この 1 ファイルだけを許可する
 						'vs/paradis/contrib/workspaceSwitch/browser/paradisRetainedEditors.js',
+						// PARA-PATCH: sidebarPart.ts がスペースのビューの上の題の行を隠す判定 (ParadisSidebarTitle) を
+						// 読むための逆方向 import。この 1 ファイルだけを許可する
+						'vs/paradis/contrib/workspaceSwitch/browser/paradisSidebarTitle.js',
 						'assert',
 						{
 							'when': 'test',

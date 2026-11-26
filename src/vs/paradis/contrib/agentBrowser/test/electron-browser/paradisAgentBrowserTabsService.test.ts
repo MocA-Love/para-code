@@ -31,6 +31,7 @@ import { IParadisAuxiliaryWindowScopeService, IParadisBrowserScopeService, IPara
 import { IParadisPaneTokenService } from '../../browser/paradisPaneTokenService.js';
 import { IParadisAgentBrowserBindingModel } from '../../electron-browser/paradisAgentBrowserBindingModel.js';
 import { IParadisAgentApprovalRequest, ParadisAgentBrowserTabsService, ParadisApprovalDeadline } from '../../electron-browser/paradisAgentBrowserTabsService.js';
+import { paradisNoteComputerUseCommandInput, paradisResetComputerUseCommandInput } from '../../../computerUse/common/paradisComputerUseInputClock.js';
 import { IParadisBrowserExtensionsService } from '../../../browserExtensions/electron-browser/paradisBrowserExtensionsService.js';
 
 interface IShownPrompt {
@@ -182,6 +183,21 @@ suite('ParadisAgentBrowserTabsService approval', () => {
 		], ['approve', 2, true, 'unanswered', 3]);
 	}));
 
+	// Computer Use は Para Code を直接は押せないが、操作を許したターミナルの osascript は押せる（NOTES.md「Computer Use の間接の経路」）
+	test('asks again when the approval comes during or right after Computer Use input to an app that can run commands', () => runWithFakedTimers(fakedTimers, async () => {
+		// 1 回目は入力の 2 秒後の承認、2 回目は入力から 11 秒後の承認
+		const { service, shown } = createService([{ button: 1, afterMs: 2000 }, { button: 1, afterMs: 9000 }]);
+		store.add(service);
+		const cts = store.add(new CancellationTokenSource());
+		paradisNoteComputerUseCommandInput();
+		try {
+			const outcome = await service.askApproval('pane-token', request, cts.token);
+			assert.deepStrictEqual([outcome, shown.length, shown[1].detail?.includes('Computer Use'), shown[1].detail?.endsWith('detail')], ['approve', 2, true, true]);
+		} finally {
+			paradisResetComputerUseCommandInput();
+		}
+	}));
+
 	test('treats Deny and Escape as a refusal, and refuses the same pane for a while afterwards', () => runWithFakedTimers(fakedTimers, async () => {
 		const denied = createService([{ button: 0, afterMs: 1500 }, { button: 1, afterMs: 1500 }]);
 		const escaped = createService([{ button: undefined, afterMs: 1500 }]);
@@ -194,6 +210,25 @@ suite('ParadisAgentBrowserTabsService approval', () => {
 			denied.shown.length,
 			await escaped.service.askApproval('pane-token', request, cts.token),
 		], ['denied', 'recentlyDenied', 1, 'denied']);
+	}));
+
+	// 画面に出る前に閉じたダイアログ（出る前に、ほかへ打っていた Enter・Esc が当たった）は、利用者が見ていないので拒否に数えない
+	test('a dialog that closed before it appeared is asked again and never counts as a refusal', () => runWithFakedTimers(fakedTimers, async () => {
+		const unseen = { button: undefined, afterMs: 0 };
+		const once = createService([unseen, { button: 0, afterMs: 1500 }]);
+		const always = createService([unseen, { button: 0, afterMs: 0 }, unseen, { button: 1, afterMs: 1500 }]);
+		store.add(once.service);
+		store.add(always.service);
+		const cts = store.add(new CancellationTokenSource());
+		assert.deepStrictEqual([
+			await once.service.askApproval('pane-token', request, cts.token),
+			once.shown.length,
+			once.shown[1].detail?.endsWith('detail'),
+			await always.service.askApproval('pane-token', request, cts.token),
+			// 拒否ではないので、次の求めはダイアログを出して聞く
+			await always.service.askApproval('pane-token', request, cts.token),
+			always.shown.length,
+		], ['denied', 2, true, 'unanswered', 'approve', 4]);
 	}));
 
 	test('a denial with a cooldown key only refuses that key for that pane', () => runWithFakedTimers(fakedTimers, async () => {

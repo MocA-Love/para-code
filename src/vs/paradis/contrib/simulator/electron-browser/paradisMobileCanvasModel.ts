@@ -42,8 +42,10 @@ export interface IParadisMobileCanvasModel {
 	/** UIが開いている間の定期取得を始める。戻り値をdisposeすると止まる。 */
 	beginPolling(): IDisposable;
 
+	/** ペインへ端末を足す（1 つのペインに 10 台まで）。 */
 	attach(paneToken: string, deviceId: string, stateKey: string | undefined): Promise<void>;
-	detach(paneToken: string): Promise<void>;
+	/** ペインの端末を外す。`deviceId`（割り当ての id）を省くと、そのペインの全部を外す（ターミナルを閉じたとき）。 */
+	detach(paneToken: string, deviceId?: string): Promise<void>;
 }
 
 const POLL_INTERVAL_MS = 4000;
@@ -146,12 +148,12 @@ export class ParadisMobileCanvasModel extends Disposable implements IParadisMobi
 		await this.refresh();
 	}
 
-	async detach(paneToken: string): Promise<void> {
+	async detach(paneToken: string, deviceId?: string): Promise<void> {
 		// 写しているかを知っているのは shared process の台帳なので、外すのは毎回頼む。読み直す（端末の一覧を取りに
 		// 行き、ホストを起動しうる）のは、画面が見ているか、そのペインがアタッチされていたときだけ
 		// （シミュレータを使っていないときに、ターミナルを閉じるたびにホストを起こさない）
 		const wasAttached = this.snapshot.attachments.some(attachment => attachment.paneToken === paneToken);
-		await this.sharedProcessService.getChannel(PARADIS_MOBILE_CANVAS_CHANNEL).call<void>('detach', { paneToken });
+		await this.sharedProcessService.getChannel(PARADIS_MOBILE_CANVAS_CHANNEL).call<void>('detach', deviceId === undefined ? { paneToken } : { paneToken, deviceId });
 		if (wasAttached || this._pollers > 0) {
 			await this.refresh();
 		}

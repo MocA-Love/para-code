@@ -893,6 +893,65 @@ export function paradisIsPageOpsOwnerKey(value: unknown): value is string {
 	return typeof value === 'string' && /^[0-9a-f]{16,64}$/.test(value);
 }
 
+// --- 許可の求め（位置情報・通知など） ----------------------------------------------------------------
+
+/** 許可の種類（platform の PermissionCategory と同じ値）。 */
+export const PARADIS_PERMISSION_NAMES = ['location', 'camera', 'microphone', 'notifications', 'sensors', 'clipboard', 'devices'] as const;
+export type ParadisPermissionName = typeof PARADIS_PERMISSION_NAMES[number];
+
+/**
+ * エージェントが許可できない種類。カメラ・マイクは利用者の周りを写し・聞き、機器は選ぶ画面が別にあるので、
+ * 利用者だけが許可する。
+ */
+export const PARADIS_USER_ONLY_PERMISSION_NAMES: ReadonlySet<string> = new Set(['camera', 'microphone', 'devices']);
+
+/** 許可の種類として読む。違えば null。 */
+export function paradisParsePermissionName<T extends string = ParadisPermissionName>(value: unknown): T | null {
+	return typeof value === 'string' && (PARADIS_PERMISSION_NAMES as readonly string[]).includes(value) ? value as T : null;
+}
+
+/** エージェントが許可してよい種類か。 */
+export function paradisAgentMayAllowPermission(permission: string): boolean {
+	return (PARADIS_PERMISSION_NAMES as readonly string[]).includes(permission) && !PARADIS_USER_ONLY_PERMISSION_NAMES.has(permission);
+}
+
+/** 許可の求めの 1 件（道具の返事に添える）。 */
+export interface IParadisPermissionNote {
+	readonly origin: string;
+	readonly permission: string;
+	/** `pending` は待っている最中。ほかは終わり方。 */
+	readonly state: 'pending' | 'allowedByAgent' | 'deniedByAgent' | 'allowedByUser' | 'deniedByUser' | 'unanswered';
+	/** 自動で断られるまでの秒数（`pending` のときだけ）。 */
+	readonly secondsLeft?: number;
+}
+
+export type IParadisPermissionAnswer =
+	| { readonly ok: true; readonly answered: readonly { readonly origin: string; readonly permission: string }[] }
+	| { readonly ok: false; readonly reason: 'unavailable' | 'invalid' | 'none' | 'ambiguous' | 'notAllowed'; readonly pending: readonly { readonly origin: string; readonly permission: string }[] };
+
+/** 道具の返事に添える文（待っているもの・終わったもの）。添えるものが無ければ undefined。 */
+export function paradisPermissionNotesText(notes: readonly IParadisPermissionNote[]): string | undefined {
+	const lines: string[] = [];
+	for (const note of notes) {
+		const what = `"${note.permission}" for ${note.origin}`;
+		switch (note.state) {
+			case 'pending':
+				lines.push(`Permission request: this page asks for ${what}, and the page waits for the answer. Answer it with handle_permission_request (action "allow" or "deny")${PARADIS_USER_ONLY_PERMISSION_NAMES.has(note.permission) ? '; only the user can allow this kind, so deny it or ask the user to answer in Para Code' : ''}. Without an answer Para Code denies it in about ${note.secondsLeft ?? 0} s.`);
+				break;
+			case 'unanswered':
+				lines.push(`Permission request: this page asked for ${what} and nobody answered in time, so it was denied (not saved; the page can ask again). To answer the next one, call handle_permission_request right after the action that makes the page ask.`);
+				break;
+			case 'allowedByUser':
+				lines.push(`Permission request: the user allowed ${what}.`);
+				break;
+			case 'deniedByUser':
+				lines.push(`Permission request: the user blocked ${what}.`);
+				break;
+		}
+	}
+	return lines.length > 0 ? lines.join('\n') : undefined;
+}
+
 // --- electron-main の口 ------------------------------------------------------------------------
 
 /**
@@ -926,6 +985,14 @@ export interface IParadisCdpPageOpsService {
 	cancelExactViewDownload(expectationId: unknown): Promise<void>;
 	/** ハイライトを出す（`rect` が null なら消す）。 */
 	highlightExactView(descriptor: unknown, rect: unknown, durationMs: unknown): Promise<boolean>;
+	/** このタブの次の beforeunload でページを残す（1 回の移動だけ、`ttlMs` まで）。タブが無ければ false。 */
+	armExactViewKeepPage(descriptor: unknown, ttlMs: unknown): Promise<boolean>;
+	/** {@link armExactViewKeepPage} を終える。ページを残したなら true。 */
+	disarmExactViewKeepPage(descriptor: unknown): Promise<boolean>;
+	/** このタブで待っている許可の求めと、利用者の答え・答えなしで終わったもの（終わったものは 1 回だけ）。 */
+	takeExactViewPermissionNotes(descriptor: unknown): Promise<IParadisPermissionNote[]>;
+	/** このタブで待っている許可の求めに答える。`mayAllow` が true のときだけ許可できる。 */
+	answerExactViewPermissionRequest(descriptor: unknown, permission: unknown, allow: unknown, mayAllow: unknown): Promise<IParadisPermissionAnswer>;
 	/**
 	 * 遷移・再読み込みの後も動くスクリプトをタブに置く。`requestJson` は {@link IParadisInitScriptRequest}。
 	 * 持ち主の共有が入れ替わる・タブを手放す・タブが閉じると外れる。

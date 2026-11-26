@@ -1091,6 +1091,11 @@ do {
 
 do {
 	check(paradisBlockReason(bundleId: "org.keepassxc.keepassxc") == .passwordManager, "blocks KeePassXC")
+	// 前面へ届く押下の直前の確かめ: 常に断るアプリが前面に来ていたら送らない（Para Code の承認の画面を押させない）
+	check(paradisPressBlockedByFrontmost(frontmostBundleId: "ltd.paradis.paracode")?.code == "window_not_focused", "does not press while Para Code is in front")
+	check(paradisPressBlockedByFrontmost(frontmostBundleId: "ltd.paradis.paracode.helper")?.code == "window_not_focused", "does not press while a Para Code helper is in front")
+	check(paradisPressBlockedByFrontmost(frontmostBundleId: "com.apple.SecurityAgent") != nil, "does not press while an authentication dialog is in front")
+	check(paradisPressBlockedByFrontmost(frontmostBundleId: "com.apple.TextEdit") == nil && paradisPressBlockedByFrontmost(frontmostBundleId: nil) == nil, "presses in an ordinary app, and when the front app is unknown")
 	check(paradisBlockReason(bundleId: "COM.1PASSWORD.1PASSWORD") == .passwordManager, "matches case-insensitively")
 	check(paradisBlockReason(bundleId: "com.apple.keychainaccess") == .keychain, "blocks Keychain Access")
 	check(paradisBlockReason(bundleId: "me.proton.authenticator") == .authenticator, "blocks Proton Authenticator")

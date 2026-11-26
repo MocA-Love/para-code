@@ -12,12 +12,11 @@ import { language } from '../../../../base/common/platform.js';
 import { localize } from '../../../../nls.js';
 import { EXTENSION_INSTALL_SKIP_PUBLISHER_TRUST_CONTEXT, IExtensionGalleryService, InstallExtensionInfo } from '../../../../platform/extensionManagement/common/extensionManagement.js';
 import { areSameExtensions } from '../../../../platform/extensionManagement/common/extensionManagementUtil.js';
-import { IFileService } from '../../../../platform/files/common/files.js';
 import { ILanguagePackService } from '../../../../platform/languagePacks/common/languagePacks.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
 import { IProgressService, ProgressLocation } from '../../../../platform/progress/common/progress.js';
-import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
+import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { paradisWithSettledProgress } from '../../../common/paradisSettledProgress.js';
 import { reportParadisDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
@@ -25,61 +24,9 @@ import { INativeWorkbenchEnvironmentService } from '../../../../workbench/servic
 import { IExtensionManagementServerService, IWorkbenchExtensionManagementService } from '../../../../workbench/services/extensionManagement/common/extensionManagement.js';
 import { IExtensionManifestPropertiesService } from '../../../../workbench/services/extensions/common/extensionManifestPropertiesService.js';
 import { ILocaleService } from '../../../../workbench/services/localization/common/locale.js';
-import { BUNDLED_VSIX_FILES, INSTALLED_VSIX_STORAGE_KEY, ParadisBundledVsixInstaller } from '../common/paradisBundledVsixInstaller.js';
+import { PARADIS_DEFAULT_EXTENSION_IDS, PARADIS_DEFAULT_EXTENSIONS_LEDGER_KEY, paradisPendingDefaultExtensions, paradisReadDefaultExtensionsLedger, paradisStoreDefaultExtensionsLedger } from '../common/paradisDefaultExtensionIds.js';
 import { paradisInstalledForThisWindow } from '../common/paradisDefaultExtensionsTarget.js';
 
-/**
- * Para Code が全ユーザーへデフォルト導入する拡張機能のID一覧（ギャラリー = Open VSX）。
- * ここに列挙するIDは Open VSX 上に実在することを確認済みのもののみとする。
- * （Open VSX 未公開のため見送り: mosapride.zenkaku / AntiAntiSepticeye.vscode-color-picker /
- * netcorext.uuid-generator / evondev.indent-rainbow-palettes / jeff-hykin.polacode-2019 /
- * yudai1204.polacode-button。これらは VSIX 同梱で入れる（BUNDLED_VSIX_FILES）。
- * cweijan.vscode-postgresql-client2 は同作者の上位版 cweijan.vscode-database-client2 で代替。）
- *
- * 起動時の重さと配布物の大きさを減らすため、新しく入れる人の一覧から外したもの（2026-11-01）:
- * eamodio.gitlens / bradlc.vscode-tailwindcss / Anthropic.claude-code / openai.chatgpt。
- * VSIX 同梱だった VisualStudioExptTeam.vscodeintellicode / intellicode-api-usage-examples /
- * ms-vsliveshare.vsliveshare も同時に外した。既に入れた人からはアンインストールしない。
- */
-const DEFAULT_EXTENSION_IDS: readonly string[] = [
-	// Git / GitHub
-	'mhutchie.git-graph',
-	'GitHub.vscode-pull-request-github',
-	'github.vscode-github-actions',
-	'wdhongtw.gpg-indicator',
-	// 汎用生産性
-	'mechatroner.rainbow-csv',
-	'PKief.material-icon-theme',
-	'shardulm94.trailing-spaces',
-	'fill-labs.dependi',
-	// 装飾
-	'oderwat.indent-rainbow',
-	// 趣味・ビューア
-	'pixl-garden.BongoCat',
-	'ngtystr.ppm-pgm-viewer-for-vscode',
-	// データベース
-	'alexcvzz.vscode-sqlite',
-	'cweijan.vscode-database-client2',
-	'cweijan.dbclient-jdbc',
-	// コンテナ
-	'docker.docker',
-	'ms-azuretools.vscode-docker',
-	// Web / フロントエンド
-	'denoland.vscode-deno',
-	'astro-build.houston',
-	'Vue.volar',
-	'jock.svg',
-	// 言語ツールチェイン
-	'ms-python.python',
-	'rust-lang.rust-analyzer',
-	'golang.go',
-	'Dart-Code.dart-code',
-	'Dart-Code.flutter',
-	// 日本語言語パック（導入後、下の再起動通知で表示言語へ反映する）
-	'MS-CEINTL.vscode-language-pack-ja'
-];
-
-const INSTALLED_IDS_STORAGE_KEY = 'paradis.defaultExtensions.installedIds';
 const JA_LANGUAGE_ID = 'ja';
 
 /**
@@ -102,7 +49,6 @@ function storageKeyForRemote(baseKey: string, remoteAuthority: string | undefine
 class ParadisDefaultExtensionsContribution extends Disposable implements IWorkbenchContribution {
 
 	static readonly ID = 'workbench.contrib.paradisDefaultExtensions';
-	private readonly bundledVsixInstaller: ParadisBundledVsixInstaller;
 	private readonly installedIdsStorageKey: string;
 
 	constructor(
@@ -113,26 +59,13 @@ class ParadisDefaultExtensionsContribution extends Disposable implements IWorkbe
 		@INotificationService private readonly notificationService: INotificationService,
 		@IStorageService private readonly storageService: IStorageService,
 		@ILogService private readonly logService: ILogService,
-		@IFileService private readonly fileService: IFileService,
 		@INativeWorkbenchEnvironmentService private readonly environmentService: INativeWorkbenchEnvironmentService,
 		@IProgressService private readonly progressService: IProgressService,
 		@IExtensionManagementServerService private readonly extensionManagementServerService: IExtensionManagementServerService,
 		@IExtensionManifestPropertiesService private readonly extensionManifestPropertiesService: IExtensionManifestPropertiesService,
 	) {
 		super();
-		const remoteAuthority = this.environmentService.remoteAuthority;
-		this.installedIdsStorageKey = storageKeyForRemote(INSTALLED_IDS_STORAGE_KEY, remoteAuthority);
-		this.bundledVsixInstaller = new ParadisBundledVsixInstaller({
-			files: BUNDLED_VSIX_FILES,
-			appRoot: this.environmentService.appRoot,
-			storageService: this.storageService,
-			storageKey: storageKeyForRemote(INSTALLED_VSIX_STORAGE_KEY, remoteAuthority),
-			exists: location => this.fileService.exists(location),
-			install: location => this.extensionManagementService.install(location, { installGivenVersion: true }).then(() => undefined),
-			warn: (message, error) => this.logService.warn(message, error),
-			info: message => this.logService.info(message),
-		});
-
+		this.installedIdsStorageKey = storageKeyForRemote(PARADIS_DEFAULT_EXTENSIONS_LEDGER_KEY, this.environmentService.remoteAuthority);
 		this.run();
 	}
 
@@ -146,11 +79,6 @@ class ParadisDefaultExtensionsContribution extends Disposable implements IWorkbe
 				await this.installDefaultExtensions();
 			} catch (error) {
 				this.logService.error('[ParadisDefaultExtensions] failed to install default extensions', error);
-			}
-			try {
-				await this.installBundledVsixExtensions();
-			} catch (error) {
-				this.logService.error('[ParadisDefaultExtensions] failed to install bundled vsix extensions', error);
 			}
 		};
 
@@ -173,29 +101,20 @@ class ParadisDefaultExtensionsContribution extends Disposable implements IWorkbe
 	}
 
 	private hasPendingInstalls(): boolean {
-		const doneGallery = this.readDoneIds();
-		if (DEFAULT_EXTENSION_IDS.some(id => !doneGallery.has(id.toLowerCase()))) {
-			return true;
-		}
-		return this.bundledVsixInstaller.hasPendingInstalls();
+		return paradisPendingDefaultExtensions(PARADIS_DEFAULT_EXTENSION_IDS, this.readDoneIds()).length > 0;
 	}
 
 	private readDoneIds(): Set<string> {
-		try {
-			const raw = this.storageService.get(this.installedIdsStorageKey, StorageScope.APPLICATION, '[]');
-			return new Set<string>(JSON.parse(raw));
-		} catch {
-			return new Set<string>();
-		}
+		return paradisReadDefaultExtensionsLedger(this.storageService, this.installedIdsStorageKey);
 	}
 
 	private storeDoneIds(ids: Set<string>): void {
-		this.storageService.store(this.installedIdsStorageKey, JSON.stringify([...ids]), StorageScope.APPLICATION, StorageTarget.MACHINE);
+		paradisStoreDefaultExtensionsLedger(this.storageService, this.installedIdsStorageKey, ids);
 	}
 
 	private async installDefaultExtensions(): Promise<void> {
 		const doneIds = this.readDoneIds();
-		let remaining = DEFAULT_EXTENSION_IDS.filter(id => !doneIds.has(id.toLowerCase()));
+		let remaining = paradisPendingDefaultExtensions(PARADIS_DEFAULT_EXTENSION_IDS, doneIds);
 		if (remaining.length === 0) {
 			return;
 		}
@@ -219,7 +138,7 @@ class ParadisDefaultExtensionsContribution extends Disposable implements IWorkbe
 				doneIds.add(id.toLowerCase());
 			}
 		}
-		remaining = remaining.filter(id => !doneIds.has(id.toLowerCase()));
+		remaining = paradisPendingDefaultExtensions(remaining, doneIds);
 		if (remaining.length === 0) {
 			this.storeDoneIds(doneIds);
 			return;
@@ -269,10 +188,6 @@ class ParadisDefaultExtensionsContribution extends Disposable implements IWorkbe
 		}
 		this.storeDoneIds(doneIds);
 		this.logService.info(`[ParadisDefaultExtensions] finished (${results.filter(r => !r.error).length}/${toInstall.length} succeeded)`);
-	}
-
-	private async installBundledVsixExtensions(): Promise<void> {
-		await this.bundledVsixInstaller.install();
 	}
 
 	private async promptRestartForJapaneseLocale(): Promise<void> {
