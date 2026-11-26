@@ -55,7 +55,7 @@ suite('Paradis human ask: ask_human provider', () => {
 			classifyCaller: async () => caller,
 			getCursorIdentity: () => ({ cli: 'codex' }),
 		});
-		const hook = (event: string, prompt?: string): IParadisAgentHookEvent => ({ token: TOKEN, event, sessionId: 's', transcriptPath: undefined, cwd: undefined, at: now, ...(prompt !== undefined ? { payload: { prompt } } : {}) });
+		const hook = (event: string, prompt?: string, extra: Partial<IParadisAgentHookEvent> = {}): IParadisAgentHookEvent => ({ token: TOKEN, event, sessionId: 's', transcriptPath: undefined, cwd: undefined, at: now, ...(prompt !== undefined ? { payload: { prompt } } : {}), ...extra });
 		const entries = () => service.getSnapshot().entries.map(entry => `${entry.state}${entry.pending ? ' pending' : ''}${entry.failedAt !== undefined ? ' failed' : ''}${entry.resolution?.surface ? ` by ${entry.resolution.surface}` : ''}`);
 		return { service, provider, channel, context, hook, entries, windowCalls, toOwnerWindow, toOtherWindow, advance: (ms: number) => { now += ms; } };
 	}
@@ -111,16 +111,25 @@ suite('Paradis human ask: ask_human provider', () => {
 		});
 	});
 
-	test('withdrawn when the person types in the pane, the conversation ends or the terminal closes; harness notices do not count', async () => {
+	test('withdrawn when the person types in the pane, the conversation ends or the terminal closes; notices, /model and unverified hooks do not count', async () => {
 		const t = setup();
-		const states: string[][] = [];
-		for (const [event, prompt] of [['UserPromptSubmit', '<task-notification>done</task-notification>'], ['UserPromptSubmit', 'やっぱり B で'], ['SessionEnd', undefined], ['TerminalExit', undefined]] as const) {
+		const cases: [string, string | undefined, Partial<IParadisAgentHookEvent>][] = [
+			['UserPromptSubmit', '<task-notification>done</task-notification>', {}],
+			['UserPromptSubmit', '/model gpt-5', {}],
+			['UserPromptSubmit', 'サブエージェントへ', { payload: { prompt: 'x', agent_id: 'a1' } }],
+			['UserPromptSubmit', 'やっぱり B で', { ownerUnverified: true }],
+			['UserPromptSubmit', 'やっぱり B で', {}],
+			['SessionEnd', undefined, {}],
+			['TerminalExit', undefined, {}],
+		];
+		const states: boolean[] = [];
+		for (const [event, prompt, extra] of cases) {
 			await t.provider.callTool(TOKEN, 'ask_human', ASK, undefined, t.context());
-			t.provider.onHookEvent(t.hook(event, prompt));
-			states.push(t.entries().filter(entry => entry === 'waiting'));
+			t.provider.onHookEvent(t.hook(event, prompt, extra));
+			states.push(t.entries().includes('waiting'));
 			t.advance(20_000);
 		}
-		assert.deepStrictEqual(states, [['waiting'], [], [], []]);
+		assert.deepStrictEqual(states, [true, true, true, true, false, false, false]);
 	});
 
 	test('an answer goes only to the window that owns the pane, as the next message; only that window can settle it', async () => {

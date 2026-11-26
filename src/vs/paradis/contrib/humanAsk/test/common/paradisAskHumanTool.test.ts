@@ -144,9 +144,11 @@ suite('Paradis human ask: ask_human tool', () => {
 		assert.deepStrictEqual({
 			both: paradisAskHumanAnswerMessage(input, { type: 'answers', answers: [{ questionId: 'q0', optionIds: ['0', '2'] }, { questionId: 'q1', text: ' because\nof X ' }] }),
 			skip: paradisAskHumanAnswerMessage(input, { type: 'skip' }),
+			oneLine: paradisAskHumanAnswerMessage(input, { type: 'answers', answers: [{ questionId: 'q1', text: ' because\nof X ' }] }, true),
 		}, {
 			both: 'The person answered your ask_human question in Para Code:\nQ: Which?\nA: A, C\nQ: Why?\nA: because\nof X',
 			skip: undefined,
+			oneLine: 'The person answered your ask_human question in Para Code: Q: Why? A: because of X',
 		});
 	});
 });

@@ -273,10 +273,10 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 		return { ...(entry.paneKey !== undefined ? { paneKey: entry.paneKey } : {}), ...(windowId !== undefined ? { windowId: Number(windowId) } : {}) };
 	}
 
-	/** 手元のボード（SSH の窓のボードを除く）の SSE の受け手の全部に書く。 */
+	/** 手元のボード（鍵を確かめたもの。SSH の窓のボードを除く）の SSE の受け手の全部に書く。 */
 	private writeToLocalBoards(chunk: string): void {
 		for (const [write, viewer] of [...this.clients]) {
-			if (!viewer.remote) {
+			if (!viewer.remote && viewer.keyHash !== undefined) {
 				this.write(write, chunk);
 			}
 		}

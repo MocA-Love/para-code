@@ -45,7 +45,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
 const MAX_BODY = 6 * 1024 * 1024;
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/svg+xml']);
-const STRING_LIMITS: Record<string, number> = { owner: 100, fieldName: 100, taskId: 200, to: 100, from: 100, stepId: 100, questionId: 100, sessionId: 200, flowId: 100, key: 20, path: 1000, title: 300, due: 10, reason: 20000, prompt: 20000, note: 20000, text: 20000, body: 20000, message: 2000 };
+const STRING_LIMITS: Record<string, number> = { owner: 100, fieldName: 100, taskId: 200, to: 100, from: 100, stepId: 100, questionId: 100, sessionId: 420, actionId: 400, optionId: 400, flowId: 100, key: 20, path: 1000, title: 300, due: 10, reason: 20000, prompt: 20000, note: 20000, text: 20000, body: 20000, message: 2000 };
 
 /** RPC の引数の形を確かめる（型を偽った送信で、エンジンに想定外の値が入らないように）。 */
 /** ボードの画面で人の出番に答える操作（終わると、その 1 件が「あなたの番」から外れる）。 */

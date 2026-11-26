@@ -1096,8 +1096,10 @@ export class ParadisMcpSetupController {
 					throw new ParadisCodexConfigError('ambiguous', 'Ambiguous Codex MCP configuration');
 				}
 				const upserted = paradisUpsertCodexMcpToml(original.text, gatewayPort);
-				// 人に聞く道具（ask_human）だけは Codex の許可のメニューを出さない（既にその道具の表があれば触らない）
-				const content = paradisAddCodexToolApproval(upserted, gatewayPort, PARADIS_ASK_HUMAN_TOOL) ?? upserted;
+				// 人に聞く道具（ask_human）だけは Codex の許可のメニューを出さない（既にその道具の表があれば触らない）。足すのは
+				// 利用者がボタンで頼んだ既定のホームだけ。裏で動く切り替え先のホームへの反映（アカウントの追加・ログインのたび）
+				// では足さず、起動時の入れ直し（upgradeToolTimeouts、ホームごとに 1 回だけ）に任せる（利用者が消した表を足し直さない）
+				const content = home === 'primary' ? paradisAddCodexToolApproval(upserted, gatewayPort, PARADIS_ASK_HUMAN_TOOL) ?? upserted : upserted;
 				if (content === original.text) {
 					return { cli: 'codex', cliAvailable: true, target: configPath, servers: [{ server: 'para-browser', outcome: 'already' }] };
 				}

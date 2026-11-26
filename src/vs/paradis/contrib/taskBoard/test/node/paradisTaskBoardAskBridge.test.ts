@@ -267,6 +267,10 @@ suite('ParadisTaskBoardAskBridge', () => {
 		const remote = service.addEventClient(chunk => {
 			seen.remote += chunk.includes('pane-asks') ? 1 : 0;
 		}, { keyHash: BOARD_B, remote: true })!;
+		// 鍵の無い受け手（接続口の受け口は鍵を確かめてからつなぐので、本物には無い）にも流さない
+		const keyless = service.addEventClient(chunk => {
+			seen.remote += chunk.includes('pane-asks') ? 1 : 0;
+		}, {})!;
 		const pane = (id: string, paneKey: string, extra: object) => ({ source: 'pane', id, paneKey, windowId: 3, from: { title: 'api', detail: 'main ／ Codex' }, canSkip: false, askedAt: 700, questions: [], actions: [], ...extra });
 		const yesNo = [{ id: 'yes', label: '許可' }, { id: 'no', label: '拒否' }];
 		ledger.upsert('askHuman', pane('ask:1', 'c'.repeat(40), { kind: 'question', questions: [{ id: 'q0', text: '残しますか?', options: [{ id: '0', label: '残す' }, { id: '1', label: '消す', recommended: true }], allowText: true }] }));
@@ -279,6 +283,7 @@ suite('ParadisTaskBoardAskBridge', () => {
 		const pick = (optionId: string, extra: object = {}) => ({ type: 'answers', answers: [{ questionId: 'q0', optionIds: [optionId], ...extra }] });
 		const responses = {
 			fromRemote: await answer('pane:ask:1', pick('1'), BOARD_B, true),
+			keyless: await service.handle('POST', '/v1/asks/pane-answer', new URLSearchParams(), { key: 'pane:ask:1', answer: pick('1') }, undefined, false).then(response => response.status),
 			notAnOption: await answer('pane:ask:1', pick('7')),
 			withText: await answer('pane:ask:1', pick('1', { text: 'rm -rf ~' })),
 			boardTerminal: await answer('pane:ask:2', { type: 'answers', answers: [{ questionId: 'q0', text: 'x' }] }),
@@ -291,6 +296,7 @@ suite('ParadisTaskBoardAskBridge', () => {
 		const last = seen.local.at(-1) ?? [];
 		local.dispose();
 		remote.dispose();
+		keyless.dispose();
 		assert.deepStrictEqual({
 			responses,
 			remote: seen.remote,
@@ -302,6 +308,7 @@ suite('ParadisTaskBoardAskBridge', () => {
 		}, {
 			responses: {
 				fromRemote: '403 {"error":"forbidden","message":"A task b',
+				keyless: 503,
 				notAnOption: '400 {"error":"invalid","message":"Answer wit',
 				withText: '400 {"error":"invalid","message":"Answer wit',
 				boardTerminal: '404 {"error":"not-found","message":"That que',

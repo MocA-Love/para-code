@@ -309,9 +309,10 @@ export function paradisAskHumanLedgerInput(id: string, paneKey: string, label: I
 
 /**
  * 台帳の答えを、エージェントへ送る次の発言にする。問いと答えを 1 組ずつ並べる。答えの文は人が書いたもので、
- * そのまま渡す（送る口が制御文字を落とす）。答えが 1 つも無ければ undefined。
+ * そのまま渡す（送る口が制御文字を落とす）。`oneLine` なら改行を空白にして 1 行にする（複数行の文を受けない CLI）。
+ * 答えが 1 つも無ければ undefined。
  */
-export function paradisAskHumanAnswerMessage(entry: Pick<IParadisHumanAskInput, 'questions'>, answer: ParadisHumanAskAnswer): string | undefined {
+export function paradisAskHumanAnswerMessage(entry: Pick<IParadisHumanAskInput, 'questions'>, answer: ParadisHumanAskAnswer, oneLine = false): string | undefined {
 	if (answer.type !== 'answers') {
 		return undefined;
 	}
@@ -328,5 +329,9 @@ export function paradisAskHumanAnswerMessage(entry: Pick<IParadisHumanAskInput, 
 		}
 		lines.push(`Q: ${question.text}`, `A: ${parts.join(', ')}`);
 	}
-	return lines.length > 0 ? [`The person answered your ${PARADIS_ASK_HUMAN_TOOL} question in Para Code:`, ...lines].join('\n') : undefined;
+	if (lines.length === 0) {
+		return undefined;
+	}
+	const message = [`The person answered your ${PARADIS_ASK_HUMAN_TOOL} question in Para Code:`, ...lines];
+	return oneLine ? message.join(' ').replace(/\s+/g, ' ').trim() : message.join('\n');
 }

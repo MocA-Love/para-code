@@ -28,9 +28,9 @@ import { Disposable, DisposableMap, toDisposable } from '../../../../base/common
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider, paradisMcpToolError as toolError } from '../../agentBrowser/common/paradisMcpToolProvider.js';
-import { paradisIsHarnessNotificationPrompt } from '../../agentBrowser/common/paradisAgentStatusStale.js';
 import type { IParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { paradisAgentDescriptor } from '../../agentChat/common/paradisAgentDescriptor.js';
+import { paradisNotifyAnswerFromHook } from '../../mobileRelay/common/paradisNotifyDismissLedger.js';
 import { paradisInboxPaneKey } from '../../notificationInbox/common/paradisNotificationInbox.js';
 import { IParadisHumanAskAnswerRequest, paradisHumanAskKey } from '../common/paradisHumanAsk.js';
 import { PARADIS_HUMAN_ASK_LEDGER_DEFAULTS } from '../common/paradisHumanAskLedger.js';
@@ -61,6 +61,8 @@ const FULL_MESSAGE = 'Para Code could not add the question (too many questions a
 
 interface IPaneAsk {
 	readonly key: string;
+	/** 答えを 1 行で送るか（Antigravity CLI は複数行の文を受けない）。 */
+	readonly oneLine: boolean;
 	/** 届けている最中の依頼（依頼の番号と時間切れのタイマー）と、その間にそのペインで発言が送られたか。 */
 	delivering?: { readonly claim: string; readonly windowId: number; prompted: boolean };
 }
@@ -138,13 +140,14 @@ export class ParadisAskHumanToolProvider extends Disposable implements IParadisM
 			return toolError(BUSY_MESSAGE);
 		}
 		this.withdrawPane(paneKey);
-		const agent = paradisAgentDescriptor(context.getCursorIdentity?.(paneToken).cli)?.displayName;
+		const cli = context.getCursorIdentity?.(paneToken).cli;
+		const agent = paradisAgentDescriptor(cli)?.displayName;
 		const id = `ask:${paneKey}:${this.newId()}`;
 		const input = paradisAskHumanLedgerInput(id, paneKey, label, agent, parsed.value, this.now());
 		if (!this.ledger.upsert(PARADIS_ASK_HUMAN_OWNER, input)) {
 			return toolError(FULL_MESSAGE);
 		}
-		this.asks.set(paneKey, { key: paradisHumanAskKey('pane', id) });
+		this.asks.set(paneKey, { key: paradisHumanAskKey('pane', id), oneLine: cli === 'antigravity' });
 		const advice = paradisAskHumanAdvice(parsed.value);
 		return {
 			content: [{
@@ -191,11 +194,18 @@ export class ParadisAskHumanToolProvider extends Disposable implements IParadisM
 		if (ask === undefined) {
 			return;
 		}
-		if (event.event === 'TerminalExit' || event.event === 'SessionEnd') {
+		if (event.event === 'TerminalExit') {
 			this.withdrawPane(paneKey);
 			return;
 		}
-		if (event.event !== 'UserPromptSubmit' || paradisIsHarnessNotificationPrompt(event.payload?.prompt)) {
+		// 受信箱の片付けと同じ規則で、本会話の区切りだけを見る（バックグラウンドの完了の知らせ・`/model`・`/effort`・
+		// サブエージェントの発言・発信元を確かめられなかった hook では取り下げない）
+		if ((event.event !== 'UserPromptSubmit' && event.event !== 'SessionEnd')
+			|| paradisNotifyAnswerFromHook(event.event, undefined, { ...(event.ownerUnverified ? { ownerUnverified: true } : {}), ...(event.payload !== undefined ? { payload: event.payload } : {}), ...(event.sessionId !== undefined ? { sessionId: event.sessionId } : {}) }) === undefined) {
+			return;
+		}
+		if (event.event === 'SessionEnd') {
+			this.withdrawPane(paneKey);
 			return;
 		}
 		if (ask.delivering !== undefined) {
@@ -214,7 +224,7 @@ export class ParadisAskHumanToolProvider extends Disposable implements IParadisM
 		const paneKey = request.paneKey;
 		const ask = paneKey !== undefined ? this.asks.get(paneKey) : undefined;
 		const entry = this.ledger.get(request.key);
-		const text = entry !== undefined ? paradisAskHumanAnswerMessage(entry, request.answer) : undefined;
+		const text = entry !== undefined ? paradisAskHumanAnswerMessage(entry, request.answer, ask?.oneLine === true) : undefined;
 		if (paneKey === undefined || request.windowId === undefined || ask === undefined || ask.key !== request.key || text === undefined) {
 			this.ledger.reject(PARADIS_ASK_HUMAN_OWNER, request.key, request.claim);
 			return;
