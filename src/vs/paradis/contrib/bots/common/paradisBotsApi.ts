@@ -170,8 +170,8 @@ export interface IParadisBotsService {
 	/** 起動できなかった。 */
 	cancelLaunch(launchId: string): Promise<void>;
 	requestStop(botId: string): Promise<boolean>;
-	/** その Bot のペインのトークンの SHA-256（16 進）。開くときに、このウィンドウにもうあるかを照らす。 */
-	paneHashesOf(botId: string): Promise<readonly string[]>;
+	/** その Bot のペインのトークンの SHA-256（16 進）。開くときに、このウィンドウにもうあるかを照らす。`purpose` を渡せばその用途だけ。 */
+	paneHashesOf(botId: string, purpose?: ParadisBotPanePurpose): Promise<readonly string[]>;
 
 	/** その Bot のまだ決めていない提案（新しい順）。Bot のホームの節にだけ出す。 */
 	listSuggestions(botId: string): Promise<readonly IParadisBotSuggestion[]>;

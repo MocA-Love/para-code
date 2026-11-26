@@ -24,6 +24,7 @@ const REASONS: ReadonlySet<string> = new Set<ParadisScheduledRunReason>([
 	'dailyLimit', 'overlap', 'globalConcurrency', 'globalDailyLimit', 'tooSoon', 'missedTooOld', 'noWindowTooOld', 'disabled', 'deleted', 'appRestarted',
 	'timeoutWhileWaiting', 'timeoutNoStatus', 'timeout', 'terminalClosed', 'windowClosed', 'userStopped',
 	'repositoryMissing', 'launchFailed', 'heartbeatLost', 'precheckFailed', 'precheckUntrusted',
+	'botsOff', 'botPaused', 'botUnsupported', 'botMissed', 'botNoWindow', 'botBusy',
 ]);
 
 /** 記録に残す詳細文の上限。 */
@@ -38,11 +39,19 @@ function optionalString(value: unknown, max = MAX_ID_LENGTH): string | undefined
 	return typeof value === 'string' && value.length <= max ? value : false;
 }
 
-function sanitizeTarget(value: unknown): IParadisScheduledRunTarget | undefined {
+function sanitizeTarget(value: unknown, allowBot: boolean): IParadisScheduledRunTarget | undefined {
 	if (!isRecord(value)) {
 		return undefined;
 	}
 	const { kind, repositoryUri, repositoryName } = value;
+	if (kind === 'bot') {
+		// Bot の見回りは保存したファイルから読むときだけ通す（画面の汎用の保存・エージェントの道具からは作らせない）
+		const botId = optionalString(value.botId);
+		if (!allowBot || typeof botId !== 'string' || repositoryUri !== '' || typeof repositoryName !== 'string' || repositoryName.length > 200 || value.baseRef !== undefined) {
+			return undefined;
+		}
+		return { kind, repositoryUri, repositoryName, botId };
+	}
 	const baseRef = optionalString(value.baseRef);
 	if ((kind !== 'repository' && kind !== 'newSpace')
 		|| typeof repositoryUri !== 'string' || repositoryUri.length === 0 || repositoryUri.length > 2000
@@ -64,8 +73,11 @@ export function paradisSanitizeScheduledRunPrecheckShape(value: unknown): IParad
 	return { command: value.command, timeoutSeconds: value.timeoutSeconds };
 }
 
-/** 画面から届いた下書き。形が違えば undefined（中身の妥当性は `paradisValidateScheduledRunDraft` で見る）。 */
-export function paradisSanitizeScheduledRunDraft(value: unknown): IParadisScheduledRunDraft | undefined {
+/**
+ * 画面から届いた下書き。形が違えば undefined（中身の妥当性は `paradisValidateScheduledRunDraft` で見る）。
+ * @param options.allowBot Bot の見回り（`target.kind === 'bot'`）も通す。保存したファイルを読むときと、Bot のページの口だけ
+ */
+export function paradisSanitizeScheduledRunDraft(value: unknown, options: { readonly allowBot?: boolean } = {}): IParadisScheduledRunDraft | undefined {
 	if (!isRecord(value)) {
 		return undefined;
 	}
@@ -74,7 +86,7 @@ export function paradisSanitizeScheduledRunDraft(value: unknown): IParadisSchedu
 	const modelId = optionalString(value.modelId);
 	const effortId = optionalString(value.effortId);
 	const permissionId = optionalString(value.permissionId);
-	const target = sanitizeTarget(value.target);
+	const target = sanitizeTarget(value.target, options.allowBot === true);
 	const precheck = paradisSanitizeScheduledRunPrecheckShape(value.precheck);
 	const createdByAgent = value.createdByAgent;
 	if (typeof name !== 'string' || name.length > MAX_TEXT_LENGTH
