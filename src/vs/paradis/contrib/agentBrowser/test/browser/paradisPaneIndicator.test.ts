@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
-import { Event } from '../../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
 	createParadisEditorTerminalIndicator,
@@ -15,6 +15,7 @@ import {
 	IParadisPaneIndicatorBoundPage,
 	IParadisPaneIndicatorHost,
 	ParadisPaneIndicatorState,
+	paradisRegisterEditorTerminalOverlay,
 	setParadisHoveredPaneInstanceId,
 	setParadisPaneIndicatorHost,
 } from '../../browser/paradisPaneIndicator.js';
@@ -123,5 +124,24 @@ suite('ParadisEditorTerminalIndicator', () => {
 		controller.dispose();
 
 		assert.strictEqual(container.querySelectorAll('.paradis-pane-indicator').length, 0);
+	});
+	test('topInset is the largest inset of the overlays, and changes are forwarded', () => {
+		setParadisPaneIndicatorHost(new TestHost());
+		const changed = new Emitter<void>();
+		let inset = 0;
+		const registration = paradisRegisterEditorTerminalOverlay(() => ({ setInstance: () => { }, topInset: () => inset, onDidChangeTopInset: changed.event, dispose: () => { } }));
+		const other = paradisRegisterEditorTerminalOverlay(() => ({ setInstance: () => { }, dispose: () => { } }));
+		const controller = createParadisEditorTerminalIndicator(document.createElement('div'));
+		let fired = 0;
+		const listener = controller.onDidChangeTopInset(() => fired++);
+		const before = controller.topInset();
+		inset = 40;
+		changed.fire();
+		assert.deepStrictEqual([before, controller.topInset(), fired], [0, 40, 1]);
+		listener.dispose();
+		controller.dispose();
+		registration.dispose();
+		other.dispose();
+		changed.dispose();
 	});
 });

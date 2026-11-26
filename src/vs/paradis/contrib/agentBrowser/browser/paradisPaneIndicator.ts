@@ -173,6 +173,10 @@ export function createParadisPaneIndicator(instanceId: number): { readonly eleme
 export interface IParadisEditorTerminalIndicatorController extends IDisposable {
 	/** インジケータの対象ペインを差し替える。`undefined` なら非表示にする。 */
 	setInstance(instanceId: number | undefined): void;
+	/** 重ねた部品がターミナルの上端に取っている高さ（px、一番大きいもの）。エディタはその分ターミナルを縮めて下げる。 */
+	topInset(): number;
+	/** {@link topInset} が変わった。 */
+	readonly onDidChangeTopInset: Event<void>;
 }
 
 /**
@@ -188,11 +192,15 @@ export function createParadisEditorTerminalIndicator(container: HTMLElement): IP
 	// いるので、後から来た登録にも今の対象ペインを渡す。
 	const overlays = new DisposableStore();
 	const overlayInstances: IParadisEditorTerminalOverlay[] = [];
+	const onDidChangeTopInset = overlays.add(new Emitter<void>());
 	let currentInstanceId: number | undefined;
 	const attachOverlay = (factory: ParadisEditorTerminalOverlayFactory): void => {
 		const overlay = factory(container);
 		overlays.add(overlay);
 		overlayInstances.push(overlay);
+		if (overlay.onDidChangeTopInset) {
+			overlays.add(overlay.onDidChangeTopInset(() => onDidChangeTopInset.fire()));
+		}
 		overlay.setInstance(currentInstanceId);
 	};
 	for (const factory of editorTerminalOverlayFactories) {
@@ -210,6 +218,8 @@ export function createParadisEditorTerminalIndicator(container: HTMLElement): IP
 				overlay.setInstance(instanceId);
 			}
 		},
+		topInset: () => Math.max(0, ...overlayInstances.map(overlay => overlay.topInset?.() ?? 0)),
+		onDidChangeTopInset: onDidChangeTopInset.event,
 		dispose: () => {
 			current.dispose();
 			overlays.dispose();
@@ -220,6 +230,12 @@ export function createParadisEditorTerminalIndicator(container: HTMLElement): IP
 /** エディタタブのターミナルの上に重ねる部品。対象ペインはタブの切り替えのたびに差し替わる。 */
 export interface IParadisEditorTerminalOverlay extends IDisposable {
 	setInstance(instanceId: number | undefined): void;
+	/**
+	 * ターミナルの上端に取る高さ（px。帯などを上に置く部品）。エディタはこの分ターミナルの描画の高さを縮めて下げるので、
+	 * 部品はターミナルの行を隠さない。省くと 0。
+	 */
+	topInset?(): number;
+	readonly onDidChangeTopInset?: Event<void>;
 }
 
 export type ParadisEditorTerminalOverlayFactory = (container: HTMLElement) => IParadisEditorTerminalOverlay;

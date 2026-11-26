@@ -73,7 +73,7 @@ suite('Paradis bots page overlay', () => {
 
 	const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 
-	function state(container: HTMLElement) {
+	function state(container: HTMLElement, page?: ParadisBotPage) {
 		const strip = container.getElementsByClassName('paradis-bot-page-strip')[0] as HTMLElement | undefined;
 		const panel = container.getElementsByClassName('paradis-bot-page-panel')[0] as HTMLElement | undefined;
 		return {
@@ -81,6 +81,7 @@ suite('Paradis bots page overlay', () => {
 			panel: panel ? !panel.hidden : false,
 			active: container.classList.contains('paradis-bot-page-active'),
 			items: container.classList.contains('paradis-bot-page-items'),
+			...(page ? { inset: page.topInset() } : {}),
 		};
 	}
 
@@ -89,25 +90,25 @@ suite('Paradis bots page overlay', () => {
 		const seen = [];
 		page.setInstance(1);
 		await settle();
-		seen.push(state(container));
+		seen.push(state(container, page));
 		page.setInstance(2);
 		await settle();
-		seen.push(state(container));
+		seen.push(state(container, page));
 		page.setInstance(1);
 		await settle();
 		panes.delete(1);
 		changed.fire();
 		await settle();
-		seen.push(state(container));
+		seen.push(state(container, page));
 		panes.set(1, 'release');
 		changed.fire();
 		await settle();
 		configuration.setUserConfiguration(PARADIS_BOTS_ENABLED_SETTING, false);
 		configuration.onDidChangeConfigurationEmitter.fire({ affectsConfiguration: (key: string) => key === PARADIS_BOTS_ENABLED_SETTING } as unknown as IConfigurationChangeEvent);
 		await settle();
-		seen.push(state(container));
-		const off = { strip: false, panel: false, active: false, items: false };
-		assert.deepStrictEqual(seen, [{ strip: true, panel: false, active: true, items: false }, off, off, off]);
+		seen.push(state(container, page));
+		const off = { strip: false, panel: false, active: false, items: false, inset: 0 };
+		assert.deepStrictEqual(seen, [{ strip: true, panel: false, active: true, items: false, inset: 40 }, off, off, off]);
 	});
 
 	test('項目のタブで一覧と問いのカードを出し、答えは「聞く・答える」の台帳へ送る', async () => {

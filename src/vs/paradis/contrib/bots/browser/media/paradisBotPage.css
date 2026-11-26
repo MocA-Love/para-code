@@ -32,15 +32,7 @@
 	display: none;
 }
 
-/*
-	In terminal mode the strip covers the terminal's top rows (the scrollback, not the prompt). The terminal's own layers
-	stack above a low z-index, so its top is clipped instead; clip-path also keeps clicks there for the strip.
-*/
-.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-active > .terminal-wrapper {
-	clip-path: inset(40px 0 0 0);
-}
-
-/* The chat display starts below the strip. */
+/* The terminal itself is laid out 40px shorter and pushed down by the editor (topInset); the chat display starts below the strip. */
 .monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-active > .paradis-agent-chat {
 	top: 40px;
 }

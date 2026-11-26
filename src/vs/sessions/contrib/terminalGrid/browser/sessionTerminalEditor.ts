@@ -17,6 +17,7 @@
 // 入れない。差し替えは terminal.contribution.ts の EditorPaneDescriptor.create() 呼び出し
 // 1箇所のみ。
 
+import { Dimension } from '../../../../base/browser/dom.js';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { createParadisEditorTerminalIndicator, IParadisEditorTerminalIndicatorController } from '../../../../paradis/contrib/agentBrowser/browser/paradisPaneIndicator.js';
@@ -35,6 +36,11 @@ export class SessionTerminalEditor extends TerminalEditor {
 	private _paradisIndicator: IParadisEditorTerminalIndicatorController | undefined;
 	/** 共有ドットの左に出すプロンプトキャッシュの残り時間（agentInsights）。 */
 	private _paradisPromptCacheBadge: IParadisPromptCacheBadgeController | undefined;
+	private _paradisOverflowGuard: HTMLElement | undefined;
+	/** 直近の layout の大きさ（重ねた部品の上端の高さが変わったら、これで layout し直す）。 */
+	private _paradisLastDimension: Dimension | undefined;
+	/** 縮めて親へ渡した大きさ。親は自分の控えでもう一度 layout を呼ぶので、そのときは元の大きさに戻して二重に縮めない。 */
+	private _paradisPassedDimension: Dimension | undefined;
 
 	protected override createEditor(parent: HTMLElement): void {
 		super.createEditor(parent);
@@ -43,9 +49,32 @@ export class SessionTerminalEditor extends TerminalEditor {
 		// eslint-disable-next-line no-restricted-syntax
 		const overflowGuard = parent.querySelector<HTMLElement>('.terminal-overflow-guard.terminal-editor');
 		if (overflowGuard) {
+			this._paradisOverflowGuard = overflowGuard;
 			this._paradisIndicator = this._register(createParadisEditorTerminalIndicator(overflowGuard));
 			this._paradisPromptCacheBadge = this._register(createParadisPromptCacheBadge(overflowGuard));
+			this._register(this._paradisIndicator.onDidChangeTopInset(() => {
+				if (this._paradisLastDimension) {
+					this.layout(this._paradisLastDimension);
+				}
+			}));
 		}
+	}
+
+	/**
+	 * 重ねた部品が上端に帯を置いているとき（Bot のページなど）、その分ターミナルの描画の高さを縮め、入れ物の上の余白で
+	 * 下げる。xterm は渡した高さで行数を測り直すので、帯がターミナルの行を隠さない。
+	 */
+	override layout(dimension: Dimension): void {
+		const original = dimension === this._paradisPassedDimension && this._paradisLastDimension ? this._paradisLastDimension : dimension;
+		this._paradisLastDimension = original;
+		const inset = Math.min(this._paradisIndicator?.topInset() ?? 0, Math.max(0, original.height - 1));
+		if (this._paradisOverflowGuard) {
+			this._paradisOverflowGuard.style.paddingTop = inset > 0 ? `${inset}px` : '';
+			this._paradisOverflowGuard.style.boxSizing = inset > 0 ? 'border-box' : '';
+		}
+		const passed = inset > 0 ? new Dimension(original.width, original.height - inset) : original;
+		this._paradisPassedDimension = passed;
+		super.layout(passed);
 	}
 
 	override async setInput(newInput: TerminalEditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {

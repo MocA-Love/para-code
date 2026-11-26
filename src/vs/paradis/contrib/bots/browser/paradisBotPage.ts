@@ -24,7 +24,7 @@ import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js
 import { Action, IAction } from '../../../../base/common/actions.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { fromNow } from '../../../../base/common/date.js';
-import { Event } from '../../../../base/common/event.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
@@ -81,7 +81,13 @@ function linkTarget(link: IParadisBotItemLink): URI | undefined {
 	return pr?.groups ? URI.parse(`https://github.com/${pr.groups.repo}/pull/${pr.groups.number}`) : undefined;
 }
 
+/** 帯の高さ（CSS の `.paradis-bot-page-strip` と同じ）。ターミナルはこの分縮めて下げる。 */
+const STRIP_HEIGHT = 40;
+
 export class ParadisBotPage extends Disposable implements IParadisEditorTerminalOverlay {
+
+	private readonly _onDidChangeTopInset = this._register(new Emitter<void>());
+	readonly onDidChangeTopInset: Event<void> = this._onDidChangeTopInset.event;
 
 	private readonly strip: HTMLElement;
 	private readonly stripFace: HTMLElement;
@@ -201,9 +207,17 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		return this.botsService.snapshot.bots.find(bot => bot.id === botId);
 	}
 
+	topInset(): number {
+		return this.botId !== undefined ? STRIP_HEIGHT : 0;
+	}
+
 	private setBot(botId: string | undefined): void {
 		const changed = this.botId !== botId;
+		const wasShown = this.botId !== undefined;
 		this.botId = botId;
+		if (wasShown !== (botId !== undefined)) {
+			this._onDidChangeTopInset.fire();
+		}
 		this.strip.hidden = botId === undefined;
 		this.container.classList.toggle(ACTIVE_CLASS, botId !== undefined);
 		if (botId === undefined) {
