@@ -107,7 +107,10 @@ suite('Paradis human ask: pane source (relay)', () => {
 			fireParadisAgentHookEvent({ ...base, event: 'PermissionRequest', at: Date.now(), toolName: 'Bash', toolInput: { command: 'npm run build' } });
 			await until(chat, () => chat.humanAskPanes().length > 0);
 			const listed = chat.humanAskPanes().map(pane => ({ id: pane.interaction.id, detail: pane.interaction.kind === 'approval' ? pane.interaction.detail : undefined }));
-			assert.deepStrictEqual({ before, listed }, { before: 0, listed: [{ id: 'toolu_2', detail: 'Bash: npm run build' }] });
+			// 受信箱からの回答がウィンドウで取る claim も、見られていないペインで取れる（PC のチャット・スマホと同じ口）
+			const claimed = chat.claimDesktopInteraction(token, 'approval', 'toolu_2');
+			chat.releaseDesktopInteraction(token, 'approval', 'toolu_2', false);
+			assert.deepStrictEqual({ before, listed, claimed }, { before: 0, listed: [{ id: 'toolu_2', detail: 'Bash: npm run build' }], claimed: true });
 		} finally {
 			chat.setHumanAskTailing(false);
 			chat.dispose();
