@@ -141,12 +141,25 @@
 	margin-top: var(--vscode-spacing-size80);
 }
 
-/* Codex の非同期の質問のカード（呼び出しごとに 1 枚）と、その返信の発言 */
+/* Codex の非同期の質問のカード（呼び出しごとに 1 枚）と、その返信の発言。台帳（ボード・Bot）の問いのカードも同じ並べ方 */
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-ledger:not(:empty),
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-async:not(:empty) {
 	display: flex;
 	flex-direction: column;
 	gap: var(--vscode-spacing-size80);
 	margin-top: var(--vscode-spacing-size80);
+}
+
+/* 台帳の問いのカードの見出し: 種類の札の後ろに、だれから（Bot・ボードの名前と出どころ）を細字で。 */
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-ledger-from {
+	min-width: 0;
+	overflow-wrap: anywhere;
+	color: var(--vscode-descriptionForeground);
+	font-weight: var(--vscode-fontWeight-regular);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-ledger-preface {
+	color: var(--vscode-descriptionForeground);
 }
 
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-card.async .paradis-agent-chat-card-title > .paradis-agent-chat-question-header {

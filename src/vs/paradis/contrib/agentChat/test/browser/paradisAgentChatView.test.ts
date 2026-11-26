@@ -25,8 +25,11 @@ import { IParadisAgentChatImageData, IParadisAgentChatSource, IParadisAgentChatV
 import { ParadisAgentChatSendKey } from '../../browser/paradisAgentChatComposer.js';
 import { ParadisAgentChatSession } from '../../browser/paradisAgentChatSession.js';
 import { IParadisAgentChatCardStates, IParadisAgentChatViewHost, ParadisAgentChatView } from '../../browser/paradisAgentChatView.js';
+import { IParadisHumanAskEntry, IParadisHumanAskService, ParadisHumanAskAnswer, paradisHumanAskCounts } from '../../../humanAsk/common/paradisHumanAsk.js';
+import { paradisInboxPaneKey } from '../../../notificationInbox/common/paradisNotificationInbox.js';
 
 class TestHost implements IParadisAgentChatViewHost {
+	humanAsk: IParadisHumanAskService | undefined;
 	readonly answers: { group: string; answers: readonly ParadisAgentQuestionAnswer[] }[] = [];
 	readonly approvals: { id: string; choice: string }[] = [];
 	readonly sent: string[] = [];
@@ -80,7 +83,7 @@ function sourceReturning(views: IParadisAgentChatView[]): IParadisAgentChatSourc
 suite('ParadisAgentChatView', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	async function createView(views: IParadisAgentChatView[]): Promise<{ view: ParadisAgentChatView; host: TestHost; container: HTMLElement; disposables: DisposableStore; session: ParadisAgentChatSession }> {
+	async function createView(views: IParadisAgentChatView[], humanAsk?: IParadisHumanAskService): Promise<{ view: ParadisAgentChatView; host: TestHost; container: HTMLElement; disposables: DisposableStore; session: ParadisAgentChatSession }> {
 		const disposables = store.add(new DisposableStore());
 		const container = mainWindow.document.createElement('div');
 		container.className = 'terminal-overflow-guard terminal-editor';
@@ -92,6 +95,7 @@ suite('ParadisAgentChatView', () => {
 		instantiationService.set(IMarkdownRendererService, instantiationService.createInstance(MarkdownRendererService));
 		const session = disposables.add(new ParadisAgentChatSession('pane', sourceReturning(views), new NullLogService()));
 		const host = new TestHost(session);
+		host.humanAsk = humanAsk;
 		disposables.add(host);
 		const view = disposables.add(instantiationService.createInstance(ParadisAgentChatView, container, host));
 		view.setTarget(1, 'pane');
@@ -209,6 +213,42 @@ suite('ParadisAgentChatView', () => {
 			'group:2 手順Bash',
 			'face:codex bubble:通りました time:10:02 usage:gpt-5.5 / 入力 1,200 · キャッシュ 3,000 · 出力 34',
 		]);
+	});
+
+	test('shows the board and Bot questions of the ledger for this pane as cards, answers them through the ledger, and drops them once answered anywhere', async () => {
+		const paneKey = paradisInboxPaneKey('pane');
+		const ask = (id: string, extra: Partial<IParadisHumanAskEntry>): IParadisHumanAskEntry => ({
+			key: `bot:${id}`, owner: 'bots', source: 'bot', id, kind: 'question', from: { title: 'リリース係' }, questions: [], actions: [], canSkip: false,
+			askedAt: 1, state: 'waiting', paneKey, ...extra,
+		});
+		let entries: IParadisHumanAskEntry[] = [
+			ask('q1', { questions: [{ id: '0', text: 'Windows 版も出しますか', options: [{ id: 'y', label: '出す', recommended: true }, { id: 'n', label: '出さない' }], allowText: false }] }),
+			ask('p1', { kind: 'permission', preface: 'Bash: npm test', actions: [{ id: 'yes', label: '許可' }] }),
+			ask('other', { paneKey: 'another-pane', questions: [{ id: '0', text: '別のペイン', options: [], allowText: true }] }),
+		];
+		const onDidChange = new Emitter<void>();
+		const answered: { key: string; answer: ParadisHumanAskAnswer }[] = [];
+		const humanAsk: IParadisHumanAskService = {
+			_serviceBrand: undefined,
+			onDidChange: onDidChange.event,
+			get snapshot() { return { entries, counts: paradisHumanAskCounts(entries), revision: 1 }; },
+			answer: async (key, answer) => { answered.push({ key, answer }); return { ok: true }; },
+		};
+		const { container, disposables } = await createView([{ token: 'pane', agent: 'claude', epoch: 'e', rev: 0, reset: true, busy: false, live: null, interaction: null, messages: [] }], humanAsk);
+		disposables.add(onDidChange);
+		const cards = () => [...container.querySelectorAll<HTMLElement>('.paradis-agent-chat-card.ledger')].map(card => card.textContent);
+		const shown = cards();
+		container.querySelector<HTMLElement>('.paradis-agent-chat-card.ledger .monaco-button')!.click();
+		await new Promise(resolve => setTimeout(resolve, 0));
+		// 受信箱など、ほかの場所で答えられた
+		entries = entries.map(entry => entry.id === 'q1' ? { ...entry, state: 'answered' as const } : entry);
+		onDidChange.fire();
+		await new Promise(resolve => setTimeout(resolve, 0));
+		assert.deepStrictEqual({ shown, answered, after: cards() }, {
+			shown: ['質問リリース係（Bot）Windows 版も出しますか出す（おすすめ）出さない'],
+			answered: [{ key: 'bot:q1', answer: { type: 'answers', answers: [{ questionId: '0', optionIds: ['y'] }] } }],
+			after: [],
+		});
 	});
 
 	test('shows the full output of a truncated tool result after loading it', async () => {

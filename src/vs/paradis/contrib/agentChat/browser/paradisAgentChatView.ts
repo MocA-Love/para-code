@@ -46,6 +46,11 @@ import { IParadisAgentChatComposerHost, ParadisAgentChatComposer } from './parad
 import { IParadisAgentChatAsyncDrafts, paradisAsyncQuestionsSignature, paradisBuildAsyncReplyFromDrafts, paradisGroupAsyncQuestions, paradisNewAgentChatAsyncDrafts, paradisRenderAsyncQuestionCard, paradisRenderQuestionReplies } from './paradisAgentChatAsyncQuestions.js';
 import { ParadisAgentChatSession } from './paradisAgentChatSession.js';
 import { ParadisAgentChatDraftInsert } from '../common/paradisAgentChatComposerLogic.js';
+import { IParadisHumanAskService } from '../../humanAsk/common/paradisHumanAsk.js';
+import { ParadisInboxAskDialog } from '../../notificationInbox/browser/paradisNotificationInboxAskDialog.js';
+import { paradisInboxAskRefusedText } from '../../notificationInbox/common/paradisNotificationInboxAsk.js';
+import { paradisAgentChatLedgerAsks } from '../common/paradisAgentChatLedgerAsks.js';
+import { IParadisAgentChatLedgerAskCardHost, IParadisAgentChatLedgerAskCardState, paradisRenderAgentChatLedgerAskCard } from './paradisAgentChatLedgerAskCard.js';
 
 /** チャット表示が呼び出し側（electron-browser の contribution）へ求めるもの。 */
 export interface IParadisAgentChatViewHost extends IParadisAgentChatComposerHost {
@@ -61,6 +66,8 @@ export interface IParadisAgentChatViewHost extends IParadisAgentChatComposerHost
 	getToggleKeybindingLabel(): string | undefined;
 	/** ペインごとのカードの状態（同じペインなら同じものを返す）。 */
 	cardStates(token: string): IParadisAgentChatCardStates;
+	/** 「聞く・答える」の台帳。あれば、そのペインのボード・Bot の問いを会話の流れにカードで出す。 */
+	readonly humanAsk?: IParadisHumanAskService;
 	readonly onDidChangeSettings: Event<void>;
 }
 
@@ -136,6 +143,11 @@ export class ParadisAgentChatView extends Disposable {
 	private readonly fallbackCard: HTMLElement;
 	/** Codex の非同期の質問のカード（承認・質問の枠とは別に、答えるまで残る）。 */
 	private readonly asyncCard: HTMLElement;
+	/** 台帳（humanAsk）のボード・Bot の問いのカード。 */
+	private readonly ledgerCard: HTMLElement;
+	private readonly ledgerStore = this._register(new DisposableStore());
+	private readonly ledgerStates = new Map<string, IParadisAgentChatLedgerAskCardState>();
+	private readonly ledgerDialog = this._register(new MutableDisposable<ParadisInboxAskDialog>());
 	private readonly jumpButton: HTMLButtonElement;
 	private readonly composer: ParadisAgentChatComposer;
 
@@ -246,6 +258,10 @@ export class ParadisAgentChatView extends Disposable {
 		this.notice = append(this.list, $('.paradis-agent-chat-notice'));
 		this.fallbackCard = append(this.scroller, $('.paradis-agent-chat-list.paradis-agent-chat-fallback'));
 		this.asyncCard = append(this.scroller, $('.paradis-agent-chat-list.paradis-agent-chat-async'));
+		this.ledgerCard = append(this.scroller, $('.paradis-agent-chat-list.paradis-agent-chat-ledger'));
+		if (host.humanAsk !== undefined) {
+			this._register(host.humanAsk.onDidChange(() => this.renderScheduler.schedule()));
+		}
 		this.liveElement = append(this.scroller, $('.paradis-agent-chat-list.paradis-agent-chat-live-holder'));
 		this.jumpButton = append(body, $('button.paradis-agent-chat-jump')) as HTMLButtonElement;
 		this.jumpButton.type = 'button';
@@ -486,6 +502,7 @@ export class ParadisAgentChatView extends Disposable {
 		this.renderLive(state);
 		this.renderFallbackApproval(state);
 		this.renderAsyncQuestions(state);
+		this.renderLedgerAsks(state);
 		this.composer.setBusy(state?.busy === true);
 		// この画面から答え終えた質問・承認は、中継が消すのを待たずに送れるようにする
 		// （tool_use_id の無い承認は、ターンが終わるまで中継に残るため）。
@@ -1457,6 +1474,57 @@ export class ParadisAgentChatView extends Disposable {
 	}
 
 	/** Codex の非同期の質問のカード（まだ答えていない問い。呼び出しごとに 1 枚）。 */
+	/** 台帳のボード・Bot の問いを、会話の最後（生成中の行の上）にカードで出す。答えは台帳へ送る。 */
+	private renderLedgerAsks(state: IParadisAgentChatState | undefined): void {
+		const humanAsk = this.host.humanAsk;
+		const token = this.token;
+		const entries = humanAsk !== undefined && token !== undefined && state !== undefined
+			? paradisAgentChatLedgerAsks(humanAsk.snapshot.entries, token, state.interaction?.kind === 'question')
+			: [];
+		for (const key of [...this.ledgerStates.keys()]) {
+			if (!entries.some(entry => entry.key === key)) {
+				this.ledgerStates.delete(key);
+			}
+		}
+		const signature = JSON.stringify(entries.map(entry => [entry, this.ledgerStates.get(entry.key)]));
+		if (this.ledgerCard.dataset.signature === signature) {
+			return;
+		}
+		this.ledgerCard.dataset.signature = signature;
+		this.ledgerStore.clear();
+		clearNode(this.ledgerCard);
+		if (humanAsk === undefined) {
+			return;
+		}
+		const cardHost: IParadisAgentChatLedgerAskCardHost = {
+			answer: (key, answer) => {
+				if (this.ledgerStates.get(key)?.sending) {
+					return;
+				}
+				this.ledgerStates.set(key, { sending: true });
+				this.render();
+				void humanAsk.answer(key, answer).then(result => {
+					if (this._store.isDisposed) {
+						return;
+					}
+					if (result.ok) {
+						this.ledgerStates.delete(key);
+					} else {
+						this.ledgerStates.set(key, { sending: false, refused: paradisInboxAskRefusedText(result.reason) });
+					}
+					this.render();
+				});
+			},
+			openDialog: (key, focusText) => {
+				const container = this.element.closest<HTMLElement>('.monaco-workbench') ?? this.element.ownerDocument.body;
+				this.ledgerDialog.value = new ParadisInboxAskDialog({ container, key, focusText, onClose: () => this.ledgerDialog.clear() }, humanAsk);
+			},
+		};
+		for (const entry of entries) {
+			this.ledgerCard.appendChild(paradisRenderAgentChatLedgerAskCard(entry, this.ledgerStates.get(entry.key) ?? { sending: false }, cardHost, this.ledgerStore));
+		}
+	}
+
 	private renderAsyncQuestions(state: IParadisAgentChatState | undefined): void {
 		const questions = state?.asyncQuestions ?? [];
 		const drafts = this.asyncDrafts;
