@@ -301,7 +301,7 @@ suite('Paradis simulator: mobile_fold', () => {
 		const { host, backend } = setup();
 		const forgotten: string[] = [];
 		const fold = new ParadisSimulatorFoldToolProvider({ getAttachment: () => attachment }, backend as unknown as ParadisServeSimBackend, host, id => forgotten.push(id), () => enabled, undefined, { isRunning: async () => deviceHubRunning });
-		return { fold, backend, forgotten };
+		return { fold, backend, forgotten, host };
 	}
 	const attachment: IParadisMobileAttachment = { paneToken: 'pane-a', deviceId: ID, deviceName: 'iPhone Duo', stateKey: undefined, attachedAt: 0 };
 	const textOf = (result: unknown) => (result as { content: { text: string }[]; isError?: boolean });
@@ -345,6 +345,35 @@ suite('Paradis simulator: mobile_fold', () => {
 			none: [true, true],
 			hiddenWhenOff: 0,
 			otherTool: undefined,
+		});
+	});
+
+	// Xcode 27.2 では、1 度開閉するまで serve-sim が開き具合を返さない。折りたたみかどうかは端末の型で見るので、
+	// 開き具合が無くても断らない。端末の様子の返事は、分からない hingeDegrees を省く
+	test('folds a Duo whose hinge angle is not known yet', async () => {
+		const duo = provider(attachment);
+		duo.backend.devices = [{ udid: UDID, name: 'iPhone Duo', runtime: 'iOS 27.2', state: 'Booted', deviceTypeIdentifier: 'com.apple.CoreSimulator.SimDeviceType.iPhone-Duo' }];
+		duo.backend.config = { width: 2007, height: 2853, orientation: 'portrait' };
+		const before = await duo.host.request('GET', PATH, undefined) as { foldable?: boolean; hingeDegrees?: number; activeDisplay?: string };
+		const opened = textOf(await duo.fold.callTool('pane-a', 'mobile_fold', { pose: 'open' }));
+		const after = await duo.host.request('GET', PATH, undefined) as { foldable?: boolean; hingeDegrees?: number; activeDisplay?: string };
+		// 端末の型が iPhone Duo でなければ、映像の大きさが Duo と同じでも断る
+		const flat = provider(attachment);
+		flat.backend.devices = [{ udid: UDID, name: 'iPhone 17', runtime: 'iOS 27.2', state: 'Booted', deviceTypeIdentifier: 'com.apple.CoreSimulator.SimDeviceType.iPhone-17' }];
+		flat.backend.config = { width: 2007, height: 2853, orientation: 'portrait' };
+		const notFoldable = textOf(await flat.fold.callTool('pane-a', 'mobile_fold', { pose: 'open' }));
+		assert.deepStrictEqual({
+			before: { foldable: before.foldable, hasHinge: Object.keys(before).includes('hingeDegrees'), activeDisplay: before.activeDisplay },
+			opened: [opened.isError, JSON.parse(opened.content[0].text)],
+			after: { foldable: after.foldable, hingeDegrees: after.hingeDegrees, activeDisplay: after.activeDisplay },
+			notFoldable: [notFoldable.isError, notFoldable.content[0].text],
+			flatDescribed: (await flat.host.request('GET', PATH, undefined) as { foldable?: boolean }).foldable,
+		}, {
+			before: { foldable: true, hasHinge: false, activeDisplay: 'inner' },
+			opened: [undefined, { hingeDegrees: 180, activeDisplay: 'inner', screen: { pointWidth: 402, pointHeight: 874, scale: 3 } }],
+			after: { foldable: true, hingeDegrees: 180, activeDisplay: 'inner' },
+			notFoldable: [true, 'iPhone Duo is not a foldable device (only the iPhone Duo simulator folds).'],
+			flatDescribed: false,
 		});
 	});
 });

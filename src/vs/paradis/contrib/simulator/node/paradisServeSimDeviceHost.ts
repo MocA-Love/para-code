@@ -25,7 +25,7 @@ import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, PARADIS_SIMULAT
 import { paradisFindSimulatorAx, paradisMarkTypedSimulatorField, paradisNormalizeSimulatorAx, paradisPickSimulatorAxTarget, paradisSimulatorFieldValues, IParadisSimulatorAxSnapshot, paradisSimulatorAxQueryOf } from '../common/paradisSimulatorAx.js';
 import { paradisPngSize, paradisRequireNumber } from '../common/paradisMobileDeviceOps.js';
 import { paradisSimulatorButtonFrame, paradisSimulatorKeyFrame, paradisSimulatorMultiTouchFrame, paradisSimulatorRotateFrame, paradisSimulatorTouchFrame } from '../common/paradisSimulatorFrames.js';
-import { paradisSimulatorDisplayGeometry, paradisSimulatorDuoPanel, paradisSimulatorKeystrokes, paradisSimulatorRawPoint } from '../common/paradisSimulatorInput.js';
+import { paradisSimulatorDisplayGeometry, paradisSimulatorDuoPanel, paradisSimulatorIsFoldable, paradisSimulatorKeystrokes, paradisSimulatorRawPoint } from '../common/paradisSimulatorInput.js';
 import { ParadisServeSimBackend } from './paradisServeSimBackend.js';
 
 export const PARADIS_SERVE_SIM_DEVICE_PREFIX = PARADIS_SIMULATOR_DEVICE_ID_PREFIX;
@@ -243,12 +243,15 @@ export class ParadisServeSimDeviceHost {
 		// 折りたたみの端末なら、開き具合と映している画面も返す（mobile_fold の前に様子が分かるように）
 		const config = await this._backend.getScreenConfig(udid).catch(() => undefined);
 		const display = await this._display(deviceId, udid, false).catch(() => undefined);
-		const foldable = config?.hingeDegrees !== undefined;
+		// 開き具合が読めない間（Xcode 27.2 では 1 度開閉するまで）は hingeDegrees を省く。映している画面も、決まらなければ省く
+		const foldable = paradisSimulatorIsFoldable(device, config);
+		const activeDisplay = foldable && config ? paradisSimulatorDuoPanel(config) : undefined;
 		return {
 			...this._describe(device),
 			...(display ? { display } : {}),
 			foldable,
-			...(foldable ? { hingeDegrees: config!.hingeDegrees, activeDisplay: paradisSimulatorDuoPanel(config!) } : {}),
+			...(foldable && config?.hingeDegrees !== undefined ? { hingeDegrees: config.hingeDegrees } : {}),
+			...(activeDisplay ? { activeDisplay } : {}),
 		};
 	}
 
@@ -440,7 +443,7 @@ export class ParadisServeSimDeviceHost {
 	}
 }
 
-/** 映している画面（外 cover / 内 inner）。折りたたみでなければ undefined。 */
+/** 映している画面（外 cover / 内 inner）。映像の大きさでも開き具合でも決まらなければ undefined。 */
 export function paradisServeSimActiveDisplay(config: IParadisSimulatorScreenConfig): 'cover' | 'inner' | undefined {
 	return paradisSimulatorDuoPanel(config);
 }

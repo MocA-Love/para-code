@@ -82,4 +82,48 @@ suite('Paradis simulator: fold bar', () => {
 			noted: notes().length === 1 && notes()[0].includes('iOS 27.2'),
 		}, { mismatch: [true, false, false], noted: true });
 	});
+
+	// Xcode 27.2 では、1 度開閉するまで開き具合が読めない。その間は「開き具合は不明」と出し、姿勢の組だけを出す
+	// （どれも選ばない・角度のスライダーは出さない）。姿勢を押すと最初の開閉を送り、値が返ればいつもの表示に戻る
+	test('offers the poses while the hinge angle is unknown', () => {
+		const { bar, requests, notes, buttons } = setup();
+		const look = () => ({
+			status: bar.element.querySelector('.paradis-simulator-fold-status')?.textContent,
+			poses: buttons().slice(0, 3).map(button => `${button.textContent}:${button.getAttribute('aria-pressed')}:${button.getAttribute('aria-disabled') === 'true' ? 'off' : 'on'}`),
+			angleButton: buttons().find(button => button.textContent === '角度')?.style.display,
+			slider: bar.element.querySelector<HTMLElement>('.paradis-simulator-fold-slider')?.style.display,
+			notes: notes(),
+		});
+		bar.update({ hingeDegrees: undefined, activeDisplay: 'inner', deviceHubRunning: true, busy: false });
+		const unknown = look();
+		buttons()[2].click();
+		bar.update({ hingeDegrees: undefined, activeDisplay: undefined, deviceHubRunning: false, busy: false, error: '開閉できませんでした。' });
+		const refused = look();
+		bar.update({ hingeDegrees: 180, activeDisplay: 'inner', deviceHubRunning: true, busy: false });
+		assert.deepStrictEqual({ unknown, refused, known: look(), requests, mismatch: paradisSimulatorPanelMismatch({ hingeDegrees: undefined, activeDisplay: 'inner' }) }, {
+			unknown: {
+				status: '開き具合は不明 · 内の画面',
+				poses: ['閉じた 0°:false:on', '本 130°:false:on', '開いた 180°:false:on'],
+				angleButton: 'none',
+				slider: 'none',
+				notes: ['この Xcode では今の開き具合を読み取れません。姿勢を選ぶと、その姿勢に動かして表示を合わせます。'],
+			},
+			refused: {
+				status: '開き具合は不明',
+				poses: ['閉じた 0°:false:on', '本 130°:false:on', '開いた 180°:false:on'],
+				angleButton: 'none',
+				slider: 'none',
+				notes: ['開閉できませんでした。', '開閉には Xcode の Device Hub が起動している必要があります。Device Hub を起動'],
+			},
+			known: {
+				status: '180° · 内の画面',
+				poses: ['閉じた 0°:false:on', '本 130°:false:on', '開いた 180°:true:on'],
+				angleButton: '',
+				slider: 'none',
+				notes: [],
+			},
+			requests: [{ kind: 'pose', pose: 'open' }],
+			mismatch: false,
+		});
+	});
 });
