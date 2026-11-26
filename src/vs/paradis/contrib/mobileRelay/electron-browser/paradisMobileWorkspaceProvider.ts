@@ -1929,9 +1929,9 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 							// 許可にあたる `Yes` の行が読めるまで待つ（出なければ待ちの上限の後、直前の確かめで断る）
 							? (screen: string) => claudeAllowKeyOn(screen) !== undefined
 							: codexApprovalKey !== undefined && approvalPiece !== undefined
-							// どの承認の確認かを確かめる一片が見えるまで待つ（出なければ待ちの上限の後、そのときの画面でキーを決める）
-							? (screen: string) => paradisScreenShowsPermissionPrompt(screen) && paradisPromptRegionShows(screen, approvalPiece)
-							: msg.readyMarker,
+								// どの承認の確認かを確かめる一片が見えるまで待つ（出なければ待ちの上限の後、そのときの画面でキーを決める）
+								? (screen: string) => paradisScreenShowsPermissionPrompt(screen) && paradisPromptRegionShows(screen, approvalPiece)
+								: msg.readyMarker,
 					strict: false,
 					source: 'mobile',
 				}, async () => {
