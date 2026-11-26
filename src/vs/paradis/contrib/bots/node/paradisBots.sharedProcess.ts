@@ -28,6 +28,7 @@ import { ParadisBotsChannel } from './paradisBotsChannel.js';
 import { ParadisBotsService } from './paradisBotsService.js';
 import { ParadisBotMemorySnapshots } from './paradisBotMemorySnapshots.js';
 import { createParadisBotItemsFile, createParadisBotPanesFile, createParadisBotsFile, createParadisBotSuggestionsFile, paradisBotsDataFolder } from './paradisBotsStore.js';
+import { ParadisBotsMobileFeed } from './paradisBotsMobileFeed.js';
 
 let shared: ParadisBotsService | undefined;
 
@@ -57,6 +58,8 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 		actionsEnabled: () => paradisAgentIdeActionsAllowed(configurationService.getValue(PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING)),
 		botsEnabled: () => configurationService.getValue(PARADIS_BOTS_ENABLED_SETTING) === true,
 	})));
+	// スマホへ送る Bot の一覧（PR 16、bots.page.v1）
+	store.add(new ParadisBotsMobileFeed(service, configurationService));
 	store.add({
 		dispose: () => {
 			if (shared === service) {

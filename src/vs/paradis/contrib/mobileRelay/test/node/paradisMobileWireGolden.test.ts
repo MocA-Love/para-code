@@ -119,6 +119,11 @@ suite('ParadisMobileWireGolden', () => {
 		registry.setPcName('MacBook-Pro');
 		registry.setMachineIdHash('b'.repeat(64));
 		registry.setDoNotDisturb({ enabled: true, until: 1_800_000_000_000 });
+		registry.setBots({
+			bots: [{ id: 'bot-1', name: 'リリース係', agent: 'claude', modelId: 'opus', effortId: 'high', permissionId: 'default', faceColor: 'blue', faceShape: 'drop', paused: false, pinned: true, needsYou: 1, openItems: 3, openSuggestions: 2, activity: 'idle', lastActivityAt: 1_800_000_000_000 }],
+			botOfToken: token => token === 'agent-token-1' ? 'bot-1' : undefined,
+			panesKey: 'agent-token-1',
+		});
 		const built = JSON.parse(JSON.stringify(registry.desktopState()));
 		// 版・互換の窓・機能の広告・既存の能力の印は、形だけでなく値まで一致させる
 		// （PC がこれらを変えたら、アプリの判定が変わるのでゴールデンも同じ変更で直す）。
