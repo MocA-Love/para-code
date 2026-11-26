@@ -118,7 +118,7 @@ ParadisSharedProcessContributions.register('computerUse', ({ server, accessor })
 		showCursor: () => paradisComputerUseShowCursor(configurationService.getValue(PARADIS_COMPUTER_USE_SHOW_CURSOR_SETTING)),
 		allowOperatingReadOnlyApps: () => paradisComputerUseAllowOperatingReadOnlyApps(configurationService.getValue(PARADIS_COMPUTER_USE_ALLOW_OPERATING_READ_ONLY_APPS_SETTING)),
 		onDidChangeStopped: stopped => onDidChangeActivity.fire({ stopped, input: false }),
-		onDidSendInput: () => onDidChangeActivity.fire({ stopped: provider.stopped, input: true }),
+		onDidSendInput: commandApp => onDidChangeActivity.fire({ stopped: provider.stopped, input: true, ...(commandApp ? { commandApp: true } : {}) }),
 	}, logService);
 	store.add(paradisRegisterMcpToolProvider(provider));
 	server.registerChannel(PARADIS_COMPUTER_USE_STATUS_CHANNEL, new ParadisComputerUseStatusChannel(helper, enabled, {
