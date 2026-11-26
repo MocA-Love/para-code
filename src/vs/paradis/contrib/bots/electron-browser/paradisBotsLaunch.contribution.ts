@@ -37,7 +37,9 @@ import { IParadisDialogService, paradisNotifyConfirmation } from '../../confirmD
 import { paradisCollectAllTerminalInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisLaunchedAgentTerminal, paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
+import { paradisBotChangeDetail } from '../browser/paradisBotChangeDetail.js';
 import { paradisBotInstancesInWindow } from '../browser/paradisBotPaneHash.js';
+import { IParadisBotChangeRequest } from '../common/paradisBotManageTools.js';
 import { IParadisBotsService, IParadisBotStopRequest, PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
 
 export const PARADIS_BOTS_OPEN_COMMAND = 'paradis.bots.open';
@@ -145,8 +147,8 @@ registerAction2(class extends Action2 {
 /** エージェントの管理の道具から呼ばれる、このウィンドウの窓口。引数は `[呼び出し元のペイントークン, Bot の id, …]`。 */
 class ParadisBotsWindowChannel implements IServerChannel {
 
-	/** 削除の確認を出している間は、次の依頼を断る（確認を重ねない）。 */
-	private pendingRemoval = false;
+	/** 削除・設定の変更の確認を出している間は、次の依頼を断る（確認を重ねない）。 */
+	private pendingConfirmation = false;
 
 	constructor(
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
@@ -170,6 +172,7 @@ class ParadisBotsWindowChannel implements IServerChannel {
 		switch (command) {
 			case 'start': return await this.start(botId) as T;
 			case 'confirmRemove': return this.confirmRemove(callerToken, botId, typeof args[2] === 'string' ? args[2] : '') as T;
+			case 'confirmChange': return this.confirmChange(callerToken, args[1]) as T;
 		}
 		throw new Error(`unknown command ${command}`);
 	}
@@ -182,18 +185,63 @@ class ParadisBotsWindowChannel implements IServerChannel {
 		return { ok: true, data: { state: result.state } };
 	}
 
-	private confirmRemove(callerToken: string, botId: string, botName: string): ParadisBotsWindowResult {
-		if (this.pendingRemoval) {
-			return { ok: false, error: 'Para Code is already asking the user about another removal. Wait until they answer.' };
-		}
+	private callerTitle(callerToken: string): string {
 		const instanceId = this.paneTokenService.getInstanceForToken(callerToken);
-		const caller = instanceId !== undefined ? findInstance(this.terminalService, this.terminalGroupService, instanceId)?.title : undefined;
-		// 確認を待つと道具の呼び出しが時間切れになるので、出したところで返す（remove_space と同じ）
-		this.pendingRemoval = true;
-		this.askAndRemove(botId, botName, caller ?? '')
-			.catch(error => this.logService.warn('[paradisBots] removing a bot failed', error))
-			.finally(() => { this.pendingRemoval = false; });
+		return (instanceId !== undefined ? findInstance(this.terminalService, this.terminalGroupService, instanceId)?.title : undefined) ?? '';
+	}
+
+	/** 確認を待つと道具の呼び出しが時間切れになるので、出したところで返す（remove_space と同じ）。 */
+	private ask(work: () => Promise<void>): ParadisBotsWindowResult {
+		if (this.pendingConfirmation) {
+			return { ok: false, error: 'Para Code is already asking the user about another bot change or removal. Wait until they answer.' };
+		}
+		this.pendingConfirmation = true;
+		work()
+			.catch(error => this.logService.warn('[paradisBots] a confirmed bot change failed', error))
+			.finally(() => { this.pendingConfirmation = false; });
 		return { ok: true, data: { requested: true } };
+	}
+
+	private confirmRemove(callerToken: string, botId: string, botName: string): ParadisBotsWindowResult {
+		const caller = this.callerTitle(callerToken);
+		return this.ask(() => this.askAndRemove(botId, botName, caller));
+	}
+
+	private confirmChange(callerToken: string, value: unknown): ParadisBotsWindowResult {
+		const request = value as IParadisBotChangeRequest | undefined;
+		if (!request || typeof request !== 'object' || typeof request.botId !== 'string' || typeof request.botName !== 'string' || !Array.isArray(request.changes) || typeof request.patch !== 'object') {
+			return { ok: false, error: 'Para Code could not read the change.' };
+		}
+		const caller = this.callerTitle(callerToken);
+		return this.ask(() => this.askAndChange(request, caller));
+	}
+
+	private async askAndChange(request: IParadisBotChangeRequest, caller: string): Promise<void> {
+		paradisNotifyConfirmation(this.hostService, getActiveWindow());
+		const { confirmed } = await this.paradisDialogService.confirm({
+			type: 'warning',
+			// allow-any-unicode-next-line
+			message: localize('paradisBots.changeConfirm', "Bot「{0}」の設定を変えますか？", request.botName),
+			detail: paradisBotChangeDetail(request, caller),
+			// allow-any-unicode-next-line
+			primaryButton: localize('paradisBots.changeAction', "変える"),
+		});
+		if (!confirmed) {
+			return;
+		}
+		if (Object.keys(request.patch).length > 0) {
+			const updated = await this.botsService.updateBot(request.botId, request.patch);
+			if (!updated.ok) {
+				this.logService.warn(`[paradisBots] the confirmed change was refused: ${updated.code}`);
+				return;
+			}
+		}
+		if (request.role !== undefined) {
+			const written = await this.botsService.writeHomeFile(request.botId, 'SOUL.md', request.role);
+			if (!written.ok) {
+				this.logService.warn(`[paradisBots] the new role could not be written: ${written.code}`);
+			}
+		}
 	}
 
 	private async askAndRemove(botId: string, botName: string, caller: string): Promise<void> {

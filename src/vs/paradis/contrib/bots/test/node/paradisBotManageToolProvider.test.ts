@@ -37,9 +37,11 @@ suite('Paradis bot manage tools', () => {
 		const settings = { allow: true };
 		const provider = new ParadisBotManageToolProvider(service, { actionsEnabled: () => settings.allow });
 		const windowCalls: string[] = [];
+		const windowArgs: unknown[][] = [];
 		const context = (caller: ParadisMcpCallerKind): IParadisMcpToolCallContext => ({
 			callOwningWindow: async <T>(request: IParadisMcpOwningWindowRequest) => {
 				windowCalls.push(`${request.channelName}.${request.method} ${JSON.stringify(request.args)}`);
+				windowArgs.push(request.args);
 				return { ok: true, value: (request.method === 'start' ? { ok: true, data: { state: 'started' } } : { ok: true, data: { requested: true } }) as T };
 			},
 			getPaneAgentStatus: () => undefined,
@@ -51,7 +53,7 @@ suite('Paradis bot manage tools', () => {
 			const result = await provider.callTool(pane, name, args, undefined, context(caller)) as { content: { text: string }[]; isError?: boolean };
 			return result.isError ? { error: result.content[0].text.slice(0, 60) } : JSON.parse(result.content[0].text);
 		};
-		return { service, settings, call, windowCalls };
+		return { service, settings, call, windowCalls, windowArgs };
 	}
 
 	test('作る・変える・止める・起動と削除はウィンドウへ。顔は選べる名前だけ、権限とエージェントは受けない', async () => {
@@ -62,7 +64,7 @@ suite('Paradis bot manage tools', () => {
 			created,
 			withPermission: await h.call('create_bot', { name: 'B', agent: 'claude', permission: 'skip-permissions' }),
 			badFace: await h.call('create_bot', { name: 'B', agent: 'claude', face_shape: 'star' }),
-			changeAgent: await h.call('update_bot', { bot: id, agent: 'claude' }),
+			withRole: await h.call('update_bot', { bot: id, unknown: 1 }),
 			updated: await h.call('update_bot', { bot: id, name: 'Reviewer', face_shape: 'hex', model: null, paused: true }),
 			listed: await h.call('list_bots'),
 			stopped: await h.call('stop_bot', { bot: id }),
@@ -76,7 +78,7 @@ suite('Paradis bot manage tools', () => {
 			created: { id: 'id1', name: 'レビュー係', agent: 'codex', model: 'gpt-6.2-sol', face_color: 'violet', face_shape: 'blob', paused: false, pinned: true, activity: 'stopped', needs_user: 0, open_items: 0 },
 			withPermission: { error: 'create_bot takes only these arguments: name, role, agent, mo' },
 			badFace: { error: 'create_bot needs "name" (up to 64 characters) and "agent" (c' },
-			changeAgent: { error: 'update_bot takes only these arguments: bot, name, model, eff' },
+			withRole: { error: 'update_bot takes only these arguments: bot, name, model, eff' },
 			updated: { id: 'id1', name: 'Reviewer', agent: 'codex', face_color: 'violet', face_shape: 'hex', paused: true, pinned: true, activity: 'stopped', needs_user: 0, open_items: 0 },
 			listed: { bots: [{ id: 'id1', name: 'Reviewer', agent: 'codex', face_color: 'violet', face_shape: 'hex', paused: true, pinned: true, activity: 'stopped', needs_user: 0, open_items: 0 }] },
 			stopped: { bot: 'id1', stopped: false },
@@ -109,6 +111,34 @@ suite('Paradis bot manage tools', () => {
 			off: { error: 'Para Code does not allow agents to send input to terminals o' },
 			readWhileOff: true,
 			pinned: false,
+		});
+	});
+
+	test('エージェント・権限・役割の変更は利用者の確認を通す。ダイアログに出す前後と、権限が広がるか', async () => {
+		const h = harness();
+		await h.call('create_bot', { name: 'A', agent: 'codex' });
+		const asked = await h.call('update_bot', { bot: 'id1', permission: 'bypass', role: '# A\n\nリリースを見張る。', pinned: true });
+		const agentToo = await h.call('update_bot', { bot: 'id1', agent: 'claude', permission: 'skip-permissions' });
+		assert.deepStrictEqual({
+			asked,
+			request: h.windowArgs[0][1],
+			agentToo: (h.windowArgs[1][1] as { permission: string }).permission,
+			calls: h.windowCalls.map(call => call.split(' ')[0]),
+			// 確認の前は何も変わらない
+			unchanged: [h.service.getBot('id1')?.permissionId, h.service.getBot('id1')?.pinned],
+		}, {
+			asked: { bot: 'id1', requested: true, note: 'Para Code asked the user to confirm the change. It is applied only if they agree; call list_bots later to see the result.' },
+			request: {
+				botId: 'id1',
+				botName: 'A',
+				changes: [{ field: 'permission', to: 'bypass' }, { field: 'pinned', from: 'false', to: 'true' }, { field: 'role', to: '# A\n\nリリースを見張る。' }],
+				permission: 'wider',
+				patch: { permissionId: 'bypass', pinned: true },
+				role: '# A\n\nリリースを見張る。',
+			},
+			agentToo: 'unknown',
+			calls: ['paradisBotsWindow.confirmChange', 'paradisBotsWindow.confirmChange'],
+			unchanged: [undefined, false],
 		});
 	});
 });

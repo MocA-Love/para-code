@@ -20,6 +20,7 @@ import {
 	PARADIS_BOT_REMOVE_TOOL,
 	PARADIS_BOT_START_TOOL,
 	PARADIS_BOT_STOP_TOOL,
+	paradisBotChangeRequest,
 	paradisBotManageRow,
 	paradisParseBotCreateArgs,
 	paradisParseBotRefArgs,
@@ -100,7 +101,19 @@ export class ParadisBotManageToolProvider implements IParadisMcpToolProvider {
 			if (!parsed.ok) {
 				return toolError(parsed.message);
 			}
-			return this.bot(await this.service.updateBot(parsed.value.botId, parsed.value.patch));
+			if (!parsed.value.needsConfirmation) {
+				return this.bot(await this.service.updateBot(parsed.value.botId, parsed.value.patch));
+			}
+			// エージェント・権限・役割の変更は、利用者の確認を通す（確認されたらウィンドウが呼び出し全体を当てる）
+			const target = this.service.getBot(parsed.value.botId);
+			if (target === undefined) {
+				return toolError(UNKNOWN_BOT_MESSAGE);
+			}
+			if (!context) {
+				return toolError('This Para Code build cannot route bot tools to its window. Update Para Code.');
+			}
+			return this.askWindow(name, 'confirmChange', [paneToken, paradisBotChangeRequest(target, parsed.value)], context, signal, { bot: target.id },
+				'Para Code asked the user to confirm the change. It is applied only if they agree; call list_bots later to see the result.');
 		}
 		const ref = paradisParseBotRefArgs(name, args);
 		if (!ref.ok) {
@@ -116,11 +129,18 @@ export class ParadisBotManageToolProvider implements IParadisMcpToolProvider {
 		if (!context) {
 			return toolError('This Para Code build cannot route bot tools to its window. Update Para Code.');
 		}
-		const start = name === PARADIS_BOT_START_TOOL;
+		return name === PARADIS_BOT_START_TOOL
+			? this.askWindow(name, 'start', [paneToken, bot.id], context, signal, { bot: bot.id })
+			: this.askWindow(name, 'confirmRemove', [paneToken, bot.id, bot.name], context, signal, { bot: bot.id },
+				'Para Code asked the user to confirm the removal. The bot is removed only if they agree; call list_bots later to see the result.');
+	}
+
+	private async askWindow(name: string, method: 'start' | 'confirmRemove' | 'confirmChange', args: unknown[], context: IParadisMcpToolCallContext, signal: AbortSignal | undefined, head: object, note?: string): Promise<unknown> {
+		const start = method === 'start';
 		const call = await context.callOwningWindow<ParadisBotsWindowResult>({
 			channelName: PARADIS_BOTS_WINDOW_CHANNEL,
-			method: start ? 'start' : 'confirmRemove',
-			args: start ? [paneToken, bot.id] : [paneToken, bot.id, bot.name],
+			method,
+			args,
 			failureLabel: name,
 			failureMessage: start
 				? 'Para Code did not finish starting the bot in time, or failed. Call list_bots before trying again, so that you do not start it twice.'
@@ -137,9 +157,7 @@ export class ParadisBotManageToolProvider implements IParadisMcpToolProvider {
 		if (!value.ok) {
 			return toolError(value.error);
 		}
-		return toolJson(start
-			? { bot: bot.id, ...value.data }
-			: { bot: bot.id, ...value.data, note: 'Para Code asked the user to confirm the removal. The bot is removed only if they agree; call list_bots later to see the result.' });
+		return toolJson({ ...head, ...value.data, ...(note !== undefined ? { note } : {}) });
 	}
 
 	private bot(result: ParadisBotsServiceResult<IParadisBot>): unknown {

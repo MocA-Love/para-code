@@ -14,9 +14,10 @@
 // - 書く道具は、IDE 系の書く道具と同じ設定 `paradis.agentIde.allowActions` がオンで、接続元がそのペインの中の
 //   プロセスのときだけ
 // - Bot のペインからは、書く道具を全部断る（Bot が自分や他の Bot を作り変え、権限を広げる穴を塞ぐ）
-// - 権限（permission）は受けない。作った Bot は利用者の既定の権限で動く（launch_agent と同じ上限）。エージェントの
-//   種類と役割（SOUL.md）の書き換えも受けない。どれも利用者が Bot の設定・ファイルのタブで変える
-// - 削除は、利用者の確認のダイアログを通す（remove_space と同じ）
+// - 作るときは権限（permission）を受けない。作った Bot は利用者の既定の権限で動く（launch_agent と同じ上限）
+// - 変えるときのエージェントの種類・権限・役割（SOUL.md）と、削除は、利用者の確認のダイアログを通す。ダイアログには
+//   どの Bot の何を何から何へ変えるか（役割は新しい本文の全文、権限は広がるかどうか）を出す。確認は同時に 1 件で、
+//   確認を待たずに返す（remove_space と同じ）
 // - 顔の色と形は、選べる名前だけ
 
 import { isPlainRecord } from '../../../common/paradisGuards.js';
@@ -77,7 +78,7 @@ export const PARADIS_BOT_MANAGE_TOOLS: readonly IParadisMcpToolDefinition[] = [
 	},
 	{
 		name: PARADIS_BOT_UPDATE_TOOL,
-		description: `Change a bot: its name, model, effort, face, pin, or pause it (a paused bot does not start and its questions leave the user's turn). The agent, the permission mode and the role (SOUL.md) are changed only by the user in the bot's page. ${ACTIONS_NOTE}`,
+		description: `Change a bot: its name, model, effort, face, pin, or pause it (a paused bot does not start and its questions leave the user's turn). Changing the agent, the permission mode or the role (SOUL.md) asks the user first: Para Code shows them the change in a dialog and applies the whole call only if they agree, so such a call returns before anything changes (one request at a time). ${ACTIONS_NOTE}`,
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -85,6 +86,9 @@ export const PARADIS_BOT_MANAGE_TOOLS: readonly IParadisMcpToolDefinition[] = [
 				name: { type: 'string', maxLength: PARADIS_BOT_LIMITS.name },
 				model: { type: ['string', 'null'], description: 'Model id, or null for the user\'s default.' },
 				effort: { type: ['string', 'null'], description: 'Effort id, or null for the default.' },
+				agent: { type: 'string', enum: [...PARADIS_AGENT_KINDS], description: 'Agent CLI the bot runs. Asks the user first.' },
+				permission: { type: ['string', 'null'], description: 'Permission mode id of the agent (as in the agent picker, e.g. "default", "full-auto"), or null for the user\'s default. Asks the user first.' },
+				role: { type: 'string', maxLength: PARADIS_BOT_ROLE_LIMIT, description: 'New full text of the bot\'s SOUL.md (replaces it). Asks the user first.' },
 				...FACE_PROPERTIES,
 				pinned: { type: 'boolean' },
 				paused: { type: 'boolean' },
@@ -117,7 +121,7 @@ export const PARADIS_BOT_MANAGE_TOOLS: readonly IParadisMcpToolDefinition[] = [
 export const PARADIS_BOT_MANAGE_TOOL_NAMES: ReadonlySet<string> = new Set(PARADIS_BOT_MANAGE_TOOLS.map(tool => tool.name));
 
 /** MCP の `initialize` の説明と `para help ide` の手引きに足す 1 段。 */
-export const PARADIS_BOT_MANAGE_INSTRUCTIONS = 'Bot management tools (list_bots, create_bot, update_bot, start_bot, stop_bot, remove_bot): manage the user\'s Para Code bots when the user asks you to. Changing anything needs the same user setting as the other IDE actions (paradis.agentIde.allowActions); a bot\'s own terminal cannot use them. Bots run with the user\'s default permission mode; only the user changes a bot\'s agent, permission mode or role. remove_bot only asks the user, who confirms it in a dialog.';
+export const PARADIS_BOT_MANAGE_INSTRUCTIONS = 'Bot management tools (list_bots, create_bot, update_bot, start_bot, stop_bot, remove_bot): manage the user\'s Para Code bots when the user asks you to. Changing anything needs the same user setting as the other IDE actions (paradis.agentIde.allowActions); a bot\'s own terminal cannot use them. A new bot runs with the user\'s default permission mode. Changing a bot\'s agent, permission mode or role, and remove_bot, only ask the user, who confirms in a dialog.';
 
 export type ParadisBotManageArgs<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly message: string };
 
@@ -202,15 +206,24 @@ export function paradisParseBotCreateArgs(value: unknown): ParadisBotManageArgs<
 	};
 }
 
-const UPDATE_KEYS = ['bot', 'name', 'model', 'effort', 'face_color', 'face_shape', 'pinned', 'paused'];
+const UPDATE_KEYS = ['bot', 'name', 'model', 'effort', 'agent', 'permission', 'role', 'face_color', 'face_shape', 'pinned', 'paused'];
+
+export interface IParadisBotUpdateArgs {
+	readonly botId: string;
+	readonly patch: IParadisBotPatch;
+	/** 人格メモ（SOUL.md）の新しい全文。 */
+	readonly role?: string;
+	/** 利用者の確認が要る変更（エージェント・権限・役割）を含む。 */
+	readonly needsConfirmation: boolean;
+}
 
 /** update_bot の引数。台帳の変更（{@link IParadisBotPatch}）にして返す。 */
-export function paradisParseBotUpdateArgs(value: unknown): ParadisBotManageArgs<{ readonly botId: string; readonly patch: IParadisBotPatch }> {
+export function paradisParseBotUpdateArgs(value: unknown): ParadisBotManageArgs<IParadisBotUpdateArgs> {
 	if (!isPlainRecord(value)) {
 		return refuse('The arguments must be an object.');
 	}
 	if (onlyKeys(value, UPDATE_KEYS) !== undefined) {
-		return refuse(`${UNKNOWN_ARGUMENT(PARADIS_BOT_UPDATE_TOOL, UPDATE_KEYS)} The agent, the permission mode and the role are changed only by the user in the bot's page.`);
+		return refuse(UNKNOWN_ARGUMENT(PARADIS_BOT_UPDATE_TOOL, UPDATE_KEYS));
 	}
 	if (typeof value.bot !== 'string' || value.bot.length === 0) {
 		return refuse('Pass the bot id from list_bots as "bot".');
@@ -219,7 +232,14 @@ export function paradisParseBotUpdateArgs(value: unknown): ParadisBotManageArgs<
 	if (looks === false) {
 		return refuse(`The face takes only these colours: ${PARADIS_BOT_FACE_COLORS.join(', ')}; and these shapes: ${PARADIS_BOT_FACE_SHAPES.join(', ')}.`);
 	}
+	const agent = PARADIS_AGENT_KINDS.find(kind => kind === value.agent);
+	const role = optionalText(value.role, PARADIS_BOT_ROLE_LIMIT);
+	if ((value.agent !== undefined && agent === undefined) || role === false || (value.permission !== undefined && value.permission !== null && typeof value.permission !== 'string')) {
+		return refuse(`"agent" is one of ${PARADIS_AGENT_KINDS.join(', ')}; "permission" is a permission mode id or null; "role" is up to ${PARADIS_BOT_ROLE_LIMIT} characters.`);
+	}
 	const patch: IParadisBotPatch = {
+		...(agent !== undefined ? { agent } : {}),
+		...(value.permission !== undefined ? { permissionId: value.permission } : {}),
 		...(value.name !== undefined ? { name: value.name } : {}),
 		...(value.model !== undefined ? { modelId: value.model } : {}),
 		...(value.effort !== undefined ? { effortId: value.effort } : {}),
@@ -227,10 +247,69 @@ export function paradisParseBotUpdateArgs(value: unknown): ParadisBotManageArgs<
 		...(value.pinned !== undefined ? { pinned: value.pinned } : {}),
 		...(value.paused !== undefined ? { paused: value.paused } : {}),
 	};
-	if (Object.keys(patch).length === 0) {
+	if (Object.keys(patch).length === 0 && role === undefined) {
 		return refuse('update_bot needs at least one change.');
 	}
-	return { ok: true, value: { botId: value.bot, patch } };
+	return { ok: true, value: { botId: value.bot, patch, ...(role !== undefined ? { role } : {}), needsConfirmation: agent !== undefined || value.permission !== undefined || role !== undefined } };
+}
+
+/** 権限の広さの順（同じ種類のエージェントの中で）。知らない id は undefined。 */
+const PERMISSION_RANK: Readonly<Record<string, number>> = { default: 0, 'full-auto': 1, 'skip-permissions': 2, bypass: 2 };
+
+/** 権限を変えると広がるか。`unknown` は知らない id、またはエージェントの種類も変わるとき（比べられない）。 */
+export function paradisBotPermissionDirection(from: string | undefined, to: string | undefined, agentChanges: boolean): 'wider' | 'narrower' | 'same' | 'unknown' {
+	const before = PERMISSION_RANK[from ?? 'default'];
+	const after = PERMISSION_RANK[to ?? 'default'];
+	if (agentChanges || before === undefined || after === undefined) {
+		return 'unknown';
+	}
+	return after > before ? 'wider' : after < before ? 'narrower' : 'same';
+}
+
+/** 利用者に確かめる変更（ウィンドウがダイアログに出し、確認されたら当てる）。 */
+export interface IParadisBotChangeRequest {
+	readonly botId: string;
+	readonly botName: string;
+	/** 変える欄ごとの前と後（`role` の後は新しい本文の全文。前は出さない）。 */
+	readonly changes: readonly { readonly field: string; readonly from?: string; readonly to?: string }[];
+	/** 権限を変えるときだけ。 */
+	readonly permission?: 'wider' | 'narrower' | 'same' | 'unknown';
+	readonly patch: IParadisBotPatch;
+	readonly role?: string;
+}
+
+/** 確かめる変更を組み立てる。 */
+export function paradisBotChangeRequest(bot: { readonly id: string; readonly name: string; readonly agent: string; readonly modelId?: string; readonly effortId?: string; readonly permissionId?: string; readonly faceColor: string; readonly faceShape: string; readonly pinned: boolean; readonly paused: boolean }, args: IParadisBotUpdateArgs): IParadisBotChangeRequest {
+	const text = (value: unknown) => value === undefined || value === null ? undefined : String(value);
+	const fields: [string, unknown, unknown][] = [
+		['agent', bot.agent, args.patch.agent],
+		['permission', bot.permissionId, args.patch.permissionId],
+		['name', bot.name, args.patch.name],
+		['model', bot.modelId, args.patch.modelId],
+		['effort', bot.effortId, args.patch.effortId],
+		['face_color', bot.faceColor, args.patch.faceColor],
+		['face_shape', bot.faceShape, args.patch.faceShape],
+		['pinned', bot.pinned, args.patch.pinned],
+		['paused', bot.paused, args.patch.paused],
+	];
+	const changes: { field: string; from?: string; to?: string }[] = [];
+	for (const [field, from, to] of fields) {
+		if (Object.prototype.hasOwnProperty.call(args.patch, field === 'permission' ? 'permissionId' : field === 'model' ? 'modelId' : field === 'effort' ? 'effortId' : field)) {
+			changes.push({ field, ...(text(from) !== undefined ? { from: text(from) } : {}), ...(text(to) !== undefined ? { to: text(to) } : {}) });
+		}
+	}
+	if (args.role !== undefined) {
+		changes.push({ field: 'role', to: args.role });
+	}
+	const permissionChanges = Object.prototype.hasOwnProperty.call(args.patch, 'permissionId');
+	return {
+		botId: bot.id,
+		botName: bot.name,
+		changes,
+		...(permissionChanges ? { permission: paradisBotPermissionDirection(bot.permissionId, text(args.patch.permissionId), args.patch.agent !== undefined && args.patch.agent !== bot.agent) } : {}),
+		patch: args.patch,
+		...(args.role !== undefined ? { role: args.role } : {}),
+	};
 }
 
 /** list_bots の 1 行。 */
