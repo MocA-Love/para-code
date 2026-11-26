@@ -15,7 +15,7 @@ import { TestConfigurationService } from '../../../../../platform/configuration/
 import { IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
 import { NullHoverService } from '../../../../../platform/hover/test/browser/nullHoverService.js';
 import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
-import { ParadisNotificationInboxPopover, paradisInboxPopoverPlacement } from '../../browser/paradisNotificationInboxPopover.js';
+import { IParadisInboxClampSize, ParadisNotificationInboxPopover, measureParadisInboxClamp, paradisInboxClampOverflows, paradisInboxPopoverPlacement } from '../../browser/paradisNotificationInboxPopover.js';
 import { EMPTY_PARADIS_INBOX_SNAPSHOT, IParadisInboxEntry, IParadisInboxSnapshot, IParadisNotificationInboxService } from '../../common/paradisNotificationInbox.js';
 import { IParadisHumanAskEntry, IParadisHumanAskService, ParadisHumanAskAnswer, ParadisHumanAskClientResult, paradisHumanAskCounts } from '../../../humanAsk/common/paradisHumanAsk.js';
 import { ParadisInboxAskDialog } from '../../browser/paradisNotificationInboxAskDialog.js';
@@ -60,7 +60,7 @@ function cards(container: HTMLElement) {
 suite('Paradis notification inbox popover', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function open(entries: IParadisHumanAskEntry[], result?: ParadisHumanAskClientResult) {
+	function open(entries: IParadisHumanAskEntry[], result?: ParadisHumanAskClientResult, measureClamp?: (element: HTMLElement) => IParadisInboxClampSize | undefined) {
 		const container = mainWindow.document.createElement('div');
 		mainWindow.document.body.appendChild(container);
 		store.add({ dispose: () => container.remove() });
@@ -73,7 +73,7 @@ suite('Paradis notification inbox popover', () => {
 			revealPane: async (pane: { paneKey: string }) => { calls.push(`reveal:${pane.paneKey}`); },
 		} as unknown as IParadisNotificationInboxService;
 		const popover = store.add(new ParadisNotificationInboxPopover(
-			{ anchor: undefined, onClose: () => calls.push('close'), onOpenAsk: (key, focusText) => calls.push(`dialog:${key}${focusText ? ':text' : ''}`), now: () => clock.now },
+			{ anchor: undefined, onClose: () => calls.push('close'), onOpenAsk: (key, focusText) => calls.push(`dialog:${key}${focusText ? ':text' : ''}`), now: () => clock.now, measureClamp },
 			{ activeContainer: container } as unknown as ILayoutService,
 			inboxService,
 			{} as IContextMenuService,
@@ -251,21 +251,59 @@ suite('Paradis notification inbox popover', () => {
 	});
 
 	test('your turn: a permission whose text overflows the card after drawing is not allowed from the row', async () => {
-		const t = open([]);
-		t.container.classList.add('monaco-workbench');
+		// 描いた高さは窓の大きさやフォントで変わるので、測った結果を渡して判定だけを試す（短い中身でも「溢れた」と測らせる）
+		const measured: string[] = [];
+		const t = open([], undefined, element => {
+			measured.push(element.className);
+			return { shown: 108, full: 162 };
+		});
 		t.container.querySelectorAll<HTMLElement>('.pnip-tabs button')[0].click();
-		// タブは 1 文字と数えるが、描くと 8 桁に広がる。見積もりでは 3 行、描くと 6 行を超える
-		const wide = `${'\tx'.repeat(30)}`;
-		t.ledger.set([ask('1', { kind: 'permission', preface: `Bash: ${wide}\n${wide}\n${wide}`, actions: ALLOW_DENY, inlineAllowed: true })]);
+		t.ledger.set([ask('1', { kind: 'permission', preface: 'Bash: ls', actions: ALLOW_DENY, inlineAllowed: true })]);
 		t.clock.now += 600;
 		const buttons = cards(t.container)[0].buttons;
 		t.press('pane:1', 'open');
-		assert.deepStrictEqual({ buttons, answers: t.ledger.answers, calls: t.calls }, {
+		assert.deepStrictEqual({ buttons, measured: [...new Set(measured)], answers: t.ledger.answers, calls: t.calls }, {
 			buttons: ['open=中身を確かめて答える', 'reveal=ペインへ移動'],
+			measured: ['pnip-ask-command'],
 			answers: [],
 			calls: ['dialog:pane:1'],
 		});
 		t.popover.dispose();
+	});
+
+	test('your turn: whether a clamped text overflows compares the full height with the shown height, allowing 1px of rounding', () => {
+		assert.deepStrictEqual([
+			paradisInboxClampOverflows(undefined),
+			paradisInboxClampOverflows({ shown: 108, full: 108 }),
+			paradisInboxClampOverflows({ shown: 108, full: 109 }),
+			paradisInboxClampOverflows({ shown: 108, full: 110 }),
+		], [false, false, false, true]);
+	});
+
+	test('your turn: measuring a drawn clamped text finds a text far longer than its lines overflowing, and leaves the clamp in place', () => {
+		// 行数の切り詰めは、カードと同じ書き方（-webkit-line-clamp）をクラスの規則で当てる。寸法の値には頼らず、溢れるかどうかだけを見る
+		const style = mainWindow.document.createElement('style');
+		style.textContent = '.pnip-clamp-probe { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; width: 200px; margin: 0; }';
+		mainWindow.document.head.appendChild(style);
+		store.add({ dispose: () => style.remove() });
+		const draw = (text: string) => {
+			const element = mainWindow.document.createElement('pre');
+			element.className = 'pnip-clamp-probe';
+			element.textContent = text;
+			mainWindow.document.body.appendChild(element);
+			store.add({ dispose: () => element.remove() });
+			return element;
+		};
+		const long = draw(Array.from({ length: 60 }, (_, index) => `echo ${index}`).join('\n'));
+		const short = draw('ls');
+		const shownBefore = long.clientHeight;
+		const result = {
+			long: paradisInboxClampOverflows(measureParadisInboxClamp(long)),
+			short: paradisInboxClampOverflows(measureParadisInboxClamp(short)),
+			detached: measureParadisInboxClamp(mainWindow.document.createElement('pre')),
+			clampKept: long.clientHeight === shownBefore,
+		};
+		assert.deepStrictEqual(result, { long: true, short: false, detached: undefined, clampKept: true });
 	});
 
 	test('dialog: a permission longer than the dialog cannot be allowed until it is read to the end', async () => {

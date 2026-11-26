@@ -69,6 +69,18 @@
 	background-color: var(--vscode-paradis-fillNeutral);
 }
 
+/* No number, only "there is something new": a 6px dot in the badge color (paradisBadges.ts `update(0, tone, true)`). */
+.monaco-workbench .paradis-count.dot,
+.monaco-workbench .paradis-count.paradis-count-overlay.dot {
+	top: 0;
+	right: -1px;
+	min-width: 6px;
+	width: 6px;
+	height: 6px;
+	padding: 0;
+	background-color: var(--vscode-activityBarBadge-background);
+}
+
 .monaco-workbench.hc-black .paradis-count,
 .monaco-workbench.hc-light .paradis-count {
 	border: 1px solid var(--vscode-contrastBorder);

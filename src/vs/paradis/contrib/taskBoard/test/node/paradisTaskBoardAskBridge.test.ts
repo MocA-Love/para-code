@@ -13,7 +13,7 @@ import { IParadisHumanAskSnapshot, paradisSanitizeHumanAskInput } from '../../..
 import { ParadisHumanAskLedger } from '../../../humanAsk/common/paradisHumanAskLedger.js';
 import { ParadisHumanAskService } from '../../../humanAsk/node/paradisHumanAskChannel.js';
 import { ITaskBoardFlow, ITaskBoardPaneAsk, ITaskBoardTask } from '../../common/paradisTaskBoard.js';
-import { taskBoardAskOf } from '../../common/paradisTaskBoardAsks.js';
+import { TASK_BOARD_ASKS_LIMIT, taskBoardAskOf } from '../../common/paradisTaskBoardAsks.js';
 import { IParadisTaskBoardWindowDescription, ParadisTaskBoardWindowMethod } from '../../common/paradisTaskBoardBridge.js';
 import { TASK_BOARD_DEFAULT_FLOW } from '../../common/paradisTaskBoardFlow.js';
 import { IParadisTaskBoardWindowRouter, ParadisTaskBoardBridgeService } from '../../node/paradisTaskBoardBridgeService.js';
@@ -160,6 +160,45 @@ suite('ParadisTaskBoardAskBridge', () => {
 		});
 	});
 
+	test('a board cannot report the asks of another repository while that board is connected, and a reopened board with a new key gets its asks back', async () => {
+		const BOARD_A2 = 'c'.repeat(64);
+		const a = connect(BOARD_A);
+		const b = connect(BOARD_B);
+		await put(BOARD_A, { asks: [question('L:t1:q1')] });
+		// 別の鍵のボードが、つながっているボードの頭（L）を名乗る: 断る。持ち主も中身も替わらない
+		const stolen = await put(BOARD_B, { asks: [question('L:t1:q1'), question('M:t9:q9')] });
+		const whileConnected = ledger.getSnapshot().entries.map(entry => `${entry.key} ${entry.state} ${entry.owner}`).sort();
+		// 同じリポジトリのボードを閉じて開き直した（鍵は起動ごとに変わる）: 元の接続が切れて取り下げた後なら、新しい鍵で載る
+		a.client.dispose();
+		const reopened = connect(BOARD_A2);
+		const afterReopen = await put(BOARD_A2, { asks: [question('L:t1:q1')] });
+		const entries = ledger.getSnapshot().entries.filter(entry => entry.state === 'waiting').map(entry => entry.key).sort();
+		reopened.client.dispose();
+		b.client.dispose();
+		assert.deepStrictEqual({ stolen, whileConnected, afterReopen, entries }, {
+			stolen: '200 {"ok":true,"refused":1}',
+			whileConnected: ['board:L:t1:q1 waiting board:1', 'board:M:t9:q9 waiting board:2'],
+			afterReopen: '200 {"ok":true,"refused":0}',
+			entries: ['board:L:t1:q1', 'board:M:t9:q9'],
+		});
+	});
+
+	test('the id heads a board named are forgotten when it disconnects, so a board that named the most heads does not lock out new ones', async () => {
+		const a = connect(BOARD_A);
+		await put(BOARD_A, { asks: Array.from({ length: TASK_BOARD_ASKS_LIMIT }, (_, index) => question(`P${index}:t1:q1`)) });
+		const b = connect(BOARD_B);
+		const whileFull = await put(BOARD_B, { asks: [question('Z:t1:q1')] });
+		a.client.dispose();
+		const afterDisconnect = await put(BOARD_B, { asks: [question('Z:t1:q1')] });
+		const entries = ledger.getSnapshot().entries.filter(entry => entry.state === 'waiting').map(entry => entry.key);
+		b.client.dispose();
+		assert.deepStrictEqual({ whileFull, afterDisconnect, entries }, {
+			whileFull: '200 {"ok":true,"refused":1}',
+			afterDisconnect: '200 {"ok":true,"refused":0}',
+			entries: ['board:Z:t1:q1'],
+		});
+	});
+
 	test('a turn answered on the board leaves the ledger as answered, one that just goes away as withdrawn, and a board that stops withdraws all of its turns', async () => {
 		const a = connect(BOARD_A);
 		const b = connect(BOARD_B);
@@ -169,9 +208,11 @@ suite('ParadisTaskBoardAskBridge', () => {
 		await put(BOARD_B, { asks: [question('M:t9:q9')], answered: ['L:t3:q3'] });
 		await put(BOARD_A, { asks: [question('L:t3:q3')], answered: ['L:t1:q1'] });
 		const afterBoardAnswer = summary().sort();
-		// 届けている最中に一覧から消えたら、答えが届いて先へ進んだとみなす（結果の知らせが落ちても回答済みになる）
+		// 届けている最中に一覧から消えても、まだ回答済みにしない。ボードが届いたと知らせたら回答済み
 		ledger.answer('board:L:t3:q3', { type: 'answers', answers: [{ questionId: 'q1', optionIds: ['0'] }] }, 'mobile');
 		await put(BOARD_A, { asks: [] });
+		const whileDelivering = summary().filter(line => line.startsWith('board:L:t3:q3'));
+		await settle(BOARD_A, { claim: a.events[a.events.length - 1].claim, ok: true });
 		const afterDelivered = summary().sort();
 		// 「報告を促す」の後にまた止まった等、同じ id で出直した問いは、回答済みの守りが明けた後の一覧で待ちに戻る
 		const guarded = await put(BOARD_A, { asks: [question('L:t3:q3')] }).then(() => summary().filter(line => line.startsWith('board:L:t3:q3')));
@@ -188,8 +229,9 @@ suite('ParadisTaskBoardAskBridge', () => {
 		const afterReturn = summary().filter(line => line.startsWith('board:L:t3:q3'));
 		back.client.dispose();
 		b.client.dispose();
-		assert.deepStrictEqual({ afterBoardAnswer, afterDelivered, guarded, revived, whileReconnecting, afterStop, afterReturn }, {
+		assert.deepStrictEqual({ afterBoardAnswer, whileDelivering, afterDelivered, guarded, revived, whileReconnecting, afterStop, afterReturn }, {
 			afterBoardAnswer: ['board:L:t1:q1 answered by board', 'board:L:t2:approval:1 withdrawn', 'board:L:t3:q3 waiting', 'board:M:t9:q9 waiting'],
+			whileDelivering: ['board:L:t3:q3 waiting pending'],
 			afterDelivered: ['board:L:t1:q1 answered by board', 'board:L:t2:approval:1 withdrawn', 'board:L:t3:q3 answered by mobile', 'board:M:t9:q9 waiting'],
 			guarded: ['board:L:t3:q3 answered by mobile'],
 			revived: ['board:L:t3:q3 waiting'],
@@ -206,6 +248,16 @@ suite('ParadisTaskBoardAskBridge', () => {
 		const entry = ledger.get('board:R:t1:q1');
 		remote.client.dispose();
 		assert.deepStrictEqual([result, entry?.state, entry?.paneKey, entry?.windowId], ['200 {"ok":true,"refused":0}', 'waiting', undefined, undefined]);
+	});
+
+	test('an approval offers sending back, with a confirmation naming the step, only when there is a step to return to', () => {
+		// 手前にエージェントの工程が無く、onFail も無い承認の工程（戻す先が無く、エンジンが断る）
+		const lone: ITaskBoardFlow = { ...TASK_BOARD_DEFAULT_FLOW, steps: [{ id: 'approve', name: '承認', kind: 'human', gate: 'approve' }] };
+		const actionsOf = (flow: ITaskBoardFlow) => taskBoardAskOf(task({ status: 'approval', step: 'approve' }), flow, LEDGER)?.actions.map(action => ({ id: action.id, confirm: action.confirm }));
+		assert.deepStrictEqual([actionsOf(TASK_BOARD_DEFAULT_FLOW), actionsOf(lone)], [
+			[{ id: 'approve', confirm: undefined }, { id: 'sendBack', confirm: { title: '差し戻す', body: '調査・計画からやり直します', ok: '差し戻す' } }],
+			[{ id: 'approve', confirm: undefined }],
+		]);
 	});
 
 	test('every ask the board builds from a task passes the ledger\'s checks unchanged', () => {
