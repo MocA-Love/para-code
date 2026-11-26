@@ -335,6 +335,19 @@ suite('Paradis bots service', () => {
 		}, { add: 'This is a look-around, which o', update: 'This is a look-around, which o', list: 1 });
 	});
 
+	test('設定がオフの間は、Bot を作る・起動する・フォルダへ書く口を断る', async () => {
+		const h = harness(store);
+		await h.bot('A');
+		h.settings.enabled = false;
+		const code = (result: { readonly ok: boolean; readonly code?: string }) => result.ok ? 'ok' : result.code;
+		assert.deepStrictEqual([
+			code(await h.service.createBot({ name: 'B', agent: 'claude' })),
+			code(await h.service.requestLaunch('id1', 'chat')),
+			code(await h.service.writeHomeFile('id1', 'MEMORY.md', 'x')),
+			h.service.getSnapshot().bots.length,
+		], ['disabled', 'disabled', 'disabled', 1]);
+	});
+
 	test('Bot でないペイン・確かめられない接続元・ほかの Bot の項目を断る', async () => {
 		const h = harness(store);
 		await h.bot('A');
