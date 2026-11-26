@@ -20,6 +20,7 @@ import {
 	ITaskBoardSlot,
 	ITaskBoardStep,
 	ITaskBoardTask,
+	ITaskBoardTaskOrigin,
 	TASK_BOARD_DONE,
 	TASK_BOARD_TODO,
 	TaskBoardActivityKind,
@@ -486,7 +487,10 @@ export class TaskBoardEngine {
 		return task;
 	}
 
-	addTask(input: { title: string; due?: string; body?: string; labels?: readonly string[] }): string {
+	/**
+	 * 手で足すタスク。`origin` は Para Code の Bot が IPC で載せたときだけ渡す（ボードの画面の RPC からは渡らない）。
+	 */
+	addTask(input: { title: string; due?: string; body?: string; labels?: readonly string[] }, origin?: ITaskBoardTaskOrigin): string {
 		const title = input.title?.trim();
 		if (!title) {
 			throw new TaskBoardError('invalid-params', 'title is required');
@@ -499,6 +503,7 @@ export class TaskBoardEngine {
 			due: input.due || undefined,
 			body: input.body ? clip(input.body) : undefined,
 			labels: (input.labels ?? []).filter(Boolean).map(name => ({ name })),
+			...(origin ? { origin } : {}),
 		});
 		this.changed();
 		return id;
