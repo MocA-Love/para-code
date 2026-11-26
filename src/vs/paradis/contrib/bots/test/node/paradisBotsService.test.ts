@@ -19,7 +19,7 @@ import { ParadisHumanAskService } from '../../../humanAsk/node/paradisHumanAskCh
 import { EMPTY_PARADIS_BOT_ITEMS_STATE, IParadisBotItemsState } from '../../common/paradisBotItems.js';
 import { EMPTY_PARADIS_BOTS_STATE, IParadisBotsState } from '../../common/paradisBots.js';
 import { IParadisBotsSnapshot } from '../../common/paradisBotsApi.js';
-import { PARADIS_BOT_LAUNCH_TTL_MS } from '../../node/paradisBotPanes.js';
+import { EMPTY_PARADIS_BOT_PANES_STATE, IParadisBotPanesState, PARADIS_BOT_LAUNCH_TTL_MS } from '../../node/paradisBotPanes.js';
 import { ParadisBotToolProvider } from '../../node/paradisBotToolProvider.js';
 import { ParadisBotsService } from '../../node/paradisBotsService.js';
 import { IParadisBotsJsonFile } from '../../node/paradisBotsStore.js';
@@ -47,6 +47,7 @@ interface IHarness {
 	readonly tools: ParadisBotToolProvider;
 	readonly botsFile: MemoryFile<IParadisBotsState>;
 	readonly itemsFile: MemoryFile<IParadisBotItemsState>;
+	readonly panesFile: MemoryFile<IParadisBotPanesState>;
 	readonly hooks: Emitter<{ token: string; event: string }>;
 	readonly clock: { now: number };
 	/** Bot の機能（試験中の設定）。 */
@@ -57,15 +58,16 @@ interface IHarness {
 	bot(name: string): Promise<string>;
 }
 
-function harness(store: Pick<DisposableStore, 'add'>, files?: { botsFile: MemoryFile<IParadisBotsState>; itemsFile: MemoryFile<IParadisBotItemsState> }, itemsByteLimit?: number): IHarness {
+function harness(store: Pick<DisposableStore, 'add'>, files?: { botsFile: MemoryFile<IParadisBotsState>; itemsFile: MemoryFile<IParadisBotItemsState>; panesFile?: MemoryFile<IParadisBotPanesState> }, itemsByteLimit?: number): IHarness {
 	const clock = { now: 1_000 };
 	const botsFile = files?.botsFile ?? new MemoryFile(EMPTY_PARADIS_BOTS_STATE);
 	const itemsFile = files?.itemsFile ?? new MemoryFile(EMPTY_PARADIS_BOT_ITEMS_STATE);
+	const panesFile = files?.panesFile ?? new MemoryFile(EMPTY_PARADIS_BOT_PANES_STATE);
 	const humanAsk = store.add(new ParadisHumanAskService(new ParadisHumanAskLedger(() => clock.now)));
 	const hooks = store.add(new Emitter<{ token: string; event: string }>());
 	const settings = { enabled: true };
 	let ids = 0;
-	const service = store.add(new ParadisBotsService(botsFile, itemsFile, humanAsk, new NullLogService(), { now: () => clock.now, uuid: () => `id${++ids}`, hookEvents: hooks.event, enabled: () => settings.enabled, ...(itemsByteLimit !== undefined ? { itemsByteLimit } : {}) }));
+	const service = store.add(new ParadisBotsService(botsFile, itemsFile, humanAsk, new NullLogService(), { now: () => clock.now, uuid: () => `id${++ids}`, hookEvents: hooks.event, panesFile, enabled: () => settings.enabled, ...(itemsByteLimit !== undefined ? { itemsByteLimit } : {}) }));
 	const tools = new ParadisBotToolProvider(service, () => settings.enabled);
 	const context = (caller: ParadisMcpCallerKind): IParadisMcpToolCallContext => ({
 		callOwningWindow: async () => ({ ok: false, error: 'unused' }),
@@ -75,7 +77,7 @@ function harness(store: Pick<DisposableStore, 'add'>, files?: { botsFile: Memory
 		classifyCaller: async () => caller,
 	});
 	return {
-		service, humanAsk, tools, botsFile, itemsFile, hooks, clock, settings,
+		service, humanAsk, tools, botsFile, itemsFile, panesFile, hooks, clock, settings,
 		async call(paneToken, name, args, caller = 'pane') {
 			const result = await tools.callTool(paneToken, name, args, undefined, caller === 'none' ? undefined : context(caller)) as { content: { text: string }[]; isError?: boolean };
 			return result.isError ? { error: result.content[0].text } : JSON.parse(result.content[0].text);
@@ -104,7 +106,8 @@ suite('Paradis bots service', () => {
 		await first.call('pane-リリース係', 'bot_item_add', { title: 'ログインの不具合を直す', done_means: 'テストが通る' });
 		await first.call('pane-リリース係', 'bot_item_update', { number: 1, comment: '原因が分かった' });
 
-		const second = harness(store, first);
+		// ペインとの結び付けの保存（panes.json）が無ければ、前のペインはもう Bot ではない
+		const second = harness(store, { botsFile: first.botsFile, itemsFile: first.itemsFile });
 		await second.service.ready;
 		const reopened = await second.call('pane-リリース係', 'bot_item_list');
 		const launchId = second.service.issueLaunch(botId, 'chat');
@@ -113,7 +116,6 @@ suite('Paradis bots service', () => {
 		const shown = await second.call('pane-new', 'bot_item_show', { number: 1 });
 		assert.deepStrictEqual({
 			bots: second.service.getSnapshot().bots.map(bot => [bot.id, bot.name, bot.folder, bot.openItems]),
-			// shared process を起動し直すと、前のペインはもう Bot ではない（トークンは保存しない）
 			reopened,
 			added,
 			shown: { title: shown.title, done_means: shown.done_means, events: (shown.events as { kind: string; text?: string }[]).map(event => `${event.kind}${event.text ? `: ${event.text}` : ''}`) },
@@ -217,6 +219,48 @@ suite('Paradis bots service', () => {
 		});
 	});
 
+	test('起動し直し: 保存したトークンのハッシュで、同じペインが現れたら結び付けを戻す', async () => {
+		const first = harness(store);
+		const a = await first.bot('A');
+		await first.bot('B');
+		await first.call('pane-A', 'bot_item_add', { title: 'A の項目' });
+		const saved = first.panesFile.state;
+
+		const second = harness(store, first);
+		await second.service.ready;
+		// 現れるまでは動いているものに数えない
+		const beforeSeen = second.service.getSnapshot().bots.map(bot => bot.activity);
+		// 保存した結び付けで B のものになっているトークンを、A の起動として報告しても通らない
+		const launchId = second.service.issueLaunch(a, 'chat');
+		const stolen = launchId !== undefined && second.service.reportLaunch(launchId, 'pane-B');
+		const listed = await second.call('pane-A', 'bot_item_list');
+		second.hooks.fire({ token: 'pane-B', event: 'UserPromptSubmit' });
+		const afterSeen = second.service.getSnapshot().bots.map(bot => [bot.name, bot.activity]);
+		// 現れないまま閉じたペイン（TerminalExit）と、消した Bot の分は保存から消える
+		second.hooks.fire({ token: 'pane-A', event: 'TerminalExit' });
+		await second.service.removeBot(second.service.botOfPane('pane-B')!.id);
+		assert.deepStrictEqual({
+			saved: [saved.version, saved.panes.map(pane => [pane.hash, pane.purpose])],
+			tokenNotSaved: JSON.stringify(saved).includes('pane-'),
+			beforeSeen,
+			stolen,
+			listed: (listed.items as { title: string }[]).map(item => item.title),
+			afterSeen,
+			left: second.panesFile.state.panes,
+		}, {
+			saved: [1, [
+				['1b780c2005e24c7adab28a00c48fd437c37580c140f7b9585d87f54e78b59cff', 'chat'],
+				['595738e51f96f4da3b0bd4c0fa10ee3a1519a6d53e5632f5419c215b3d1740c4', 'chat'],
+			]],
+			tokenNotSaved: false,
+			beforeSeen: ['stopped', 'stopped'],
+			stolen: false,
+			listed: ['A の項目'],
+			afterSeen: [['A', 'idle'], ['B', 'working']],
+			left: [],
+		});
+	});
+
 	test('あなたの番: Bot の行の件数と「聞く・答える」の Bot の件数が一致する', async () => {
 		const h = harness(store);
 		await h.bot('A');
@@ -266,6 +310,19 @@ suite('Paradis bots service', () => {
 			on: { bot: [4, true], other: [0, false], unknown: [0, false], asks: 1 },
 			off: { bot: [0, false], asks: 0, call: 'Para Code bots are turned off in this Pa' },
 		});
+	});
+
+	test('設定がオフの間は、Bot を作る・起動する・フォルダへ書く口を断る', async () => {
+		const h = harness(store);
+		await h.bot('A');
+		h.settings.enabled = false;
+		const code = (result: { readonly ok: boolean; readonly code?: string }) => result.ok ? 'ok' : result.code;
+		assert.deepStrictEqual([
+			code(await h.service.createBot({ name: 'B', agent: 'claude' })),
+			code(await h.service.requestLaunch('id1', 'chat')),
+			code(await h.service.writeHomeFile('id1', 'MEMORY.md', 'x')),
+			h.service.getSnapshot().bots.length,
+		], ['disabled', 'disabled', 'disabled', 1]);
 	});
 
 	test('Bot でないペイン・確かめられない接続元・ほかの Bot の項目を断る', async () => {
