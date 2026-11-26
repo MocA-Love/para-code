@@ -6225,6 +6225,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		return new Map(call.value.tabs.filter(tab => typeof tab.url === 'string' && this._scopeBinding(token, tab.tabId) !== undefined).map(tab => [tab.tabId, tab.url]));
 	}
 
+	/** get_shared_page が窓の一覧から受け取った「閉じた子ページの数」（ペインのトークン → 数）。次の list_browser_tabs で知らせて消す。 */
+	private readonly _heldClosedWaitingPages = new Map<string, number>();
+
 	/** そのタブの今の URL と題名（list_browser_tabs と同じ一覧を窓から読む）。読めない・一覧に無ければ undefined。 */
 	private async _liveTabInfo(ingressLease: IParadisAgentBrowserIngressLease, tabId: string, signal?: AbortSignal): Promise<{ readonly url: string; readonly title: string } | undefined> {
 		const call = await this._callOwningWindow<IParadisListAgentTabsResult>(ingressLease, {
@@ -6237,6 +6240,10 @@ export class ParadisAgentBrowserService extends Disposable {
 		}, signal).catch(() => undefined);
 		if (!call?.ok || !call.value.ok) {
 			return undefined;
+		}
+		// 窓の一覧は「閉じた子ページの数」を返すと同時に忘れる。ここで受け取った分は覚えておき、次の list_browser_tabs で知らせる
+		if (call.value.closedWaitingPages) {
+			this._heldClosedWaitingPages.set(ingressLease.token, (this._heldClosedWaitingPages.get(ingressLease.token) ?? 0) + call.value.closedWaitingPages);
 		}
 		const tab = call.value.tabs.find(candidate => candidate.tabId === tabId);
 		return tab && typeof tab.url === 'string' && typeof tab.title === 'string' ? { url: tab.url, title: tab.title } : undefined;
@@ -7958,6 +7965,9 @@ export class ParadisAgentBrowserService extends Disposable {
 					return this._toolError(this._agentTabFailureMessage(call.value.reason));
 				}
 				const currentTabId = this._defaultTabId(token);
+				// get_shared_page が先に受け取っていた分も合わせて知らせる
+				const closedWaitingPages = (call.value.closedWaitingPages ?? 0) + (this._heldClosedWaitingPages.get(token) ?? 0);
+				this._heldClosedWaitingPages.delete(token);
 				const tabs = call.value.tabs.map(tab => ({
 					tabId: tab.tabId,
 					url: tab.url,
@@ -7981,11 +7991,11 @@ export class ParadisAgentBrowserService extends Disposable {
 					openedFromTabs: this._openedTabGrantCount(token),
 					openedFromTabsLimit: PARADIS_OPENED_TAB_LIMIT,
 					...(notShared.length > 0 ? { notSharedOpenedTabs: notShared } : {}),
-					...(call.value.closedWaitingPages ? { closedWaitingPages: call.value.closedWaitingPages } : {}),
+					...(closedWaitingPages ? { closedWaitingPages } : {}),
 					hint: 'Pass a usable tabId as tab_id to any browser tool to act on that tab; give each subagent its own tab_id. The user can share several pages with this pane (shared: true); each of them is usable by its tabId, and the one shared most recently is the current tab unless you open or select another.'
 						+ ` A tab or window that one of your usable tabs opens (a target=_blank link, window.open, a Ctrl/Cmd/middle click or "Open Link in New Tab") is shared with this pane automatically and shows openedFrom; up to ${PARADIS_OPENED_TAB_LIMIT} such tabs, apart from your own tabs, and at most ${PARADIS_OPENED_TAB_BURST_LIMIT} within ${PARADIS_OPENED_TAB_BURST_WINDOW_MS / 1000} seconds. It stops being usable when the tab that opened it is no longer usable.`
 						+ (notShared.length > 0 ? ` notSharedOpenedTabs lists tabs your tabs opened that were not shared because that limit was reached or too many opened at once; they are not usable. Tabs that opened too many at once are shared again automatically when the ${PARADIS_OPENED_TAB_BURST_WINDOW_MS / 1000} seconds have passed (up to ${PARADIS_OPENED_TAB_BURST_RETRIES} tries), so call list_browser_tabs again a little later. For a tab that stays here, ask the user to share it with request_browser_page (pass part of its URL as url), or ask them to close tabs you do not need.` : '')
-						+ (call.value.closedWaitingPages ? ` closedWaitingPages is how many new tabs or windows your tabs opened while their space was not on screen were closed right away, because at most ${PARADIS_MAX_WAITING_CHILDREN_PER_TAB} such pages per tab (and ${PARADIS_MAX_WAITING_CHILDREN} in total) are kept until the user switches back; open the page with navigate_page instead if you need it.` : ''),
+						+ (closedWaitingPages ? ` closedWaitingPages is how many new tabs or windows your tabs opened while their space was not on screen were closed right away, because at most ${PARADIS_MAX_WAITING_CHILDREN_PER_TAB} such pages per tab (and ${PARADIS_MAX_WAITING_CHILDREN} in total) are kept until the user switches back; open the page with navigate_page instead if you need it.` : ''),
 				}, null, 2));
 			}
 			case 'select_browser_tab':

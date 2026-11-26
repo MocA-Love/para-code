@@ -238,18 +238,20 @@ suite('paradisCliCore', () => {
 	});
 
 	test('relative file arguments are resolved from the folder para was run in', () => {
-		const parse = (...argv: string[]) => paradisCliParseFlags(argv, camelCaseCommand('take_snapshot'), '/work/repo').args;
+		// Windows でも通るよう、期待する値は同じ path の関数で作る
+		const cwd = join(root, 'repo');
+		const parse = (...argv: string[]) => paradisCliParseFlags(argv, camelCaseCommand('take_snapshot'), cwd).args;
 		assert.deepStrictEqual({
 			relative: parse('--file-path', 'out/snap.txt', '--save-to', '../shot.png'),
-			absolute: parse('--file-path', '/tmp/snap.txt'),
+			absolute: parse('--file-path', join(root, 'snap.txt')),
 			json: parse('--json', '{"filePath":"snap.txt"}'),
 			// read_download の path のように、道具が返した絶対パスだけを受ける引数は変えない
 			otherArguments: parse('--path', 'sample.csv'),
 			withoutCwd: paradisCliParseFlags(['--file-path', 'snap.txt'], camelCaseCommand('take_snapshot')).args,
 		}, {
-			relative: { filePath: '/work/repo/out/snap.txt', saveTo: '/work/shot.png' },
-			absolute: { filePath: '/tmp/snap.txt' },
-			json: { filePath: '/work/repo/snap.txt' },
+			relative: { filePath: join(cwd, 'out', 'snap.txt'), saveTo: join(root, 'shot.png') },
+			absolute: { filePath: join(root, 'snap.txt') },
+			json: { filePath: join(cwd, 'snap.txt') },
 			otherArguments: { path: 'sample.csv' },
 			withoutCwd: { filePath: 'snap.txt' },
 		});
