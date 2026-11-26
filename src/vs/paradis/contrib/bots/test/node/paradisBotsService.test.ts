@@ -333,6 +333,7 @@ suite('Paradis bots service', () => {
 		};
 		// フォルダの口が無いこの試験では、断られなければ 'unavailable' まで進む
 		const open = [await code(a, 'chat'), await code(a, 'patrol')];
+		const revealed = first.service.requestReveal(a);
 		const created = await first.service.createBot({ name: 'B', agent: 'claude' });
 		assert.ok(created.ok);
 		const b = created.value.id;
@@ -351,8 +352,10 @@ suite('Paradis bots service', () => {
 		const appeared = await code(a, 'chat', second.service);
 		second.hooks.fire({ token: 'pane-A', event: 'TerminalExit' });
 		const closed = await code(a, 'chat', second.service);
-		assert.deepStrictEqual({ open, reveals, concurrent, afterLaunchingTtl, notAppeared, appeared, closed }, {
+		assert.deepStrictEqual({ open, revealed, reveals, notOpenReveal: second.service.requestReveal(a), concurrent, afterLaunchingTtl, notAppeared, appeared, closed }, {
 			open: ['already_open', 'unavailable'],
+			revealed: true,
+			notOpenReveal: false,
 			reveals: [{ botId: a, paneHashes: ['1b780c2005e24c7adab28a00c48fd437c37580c140f7b9585d87f54e78b59cff'] }],
 			concurrent: ['launching', 'launching'],
 			afterLaunchingTtl: 'unavailable',

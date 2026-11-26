@@ -110,6 +110,10 @@ export class ParadisBotsClient extends Disposable implements IParadisBotsService
 		await this.value('cancelLaunch', [launchId], undefined);
 	}
 
+	requestReveal(botId: string): Promise<boolean> {
+		return this.value('requestReveal', [botId], false);
+	}
+
 	requestStop(botId: string): Promise<boolean> {
 		return this.value('requestStop', [botId], false);
 	}

@@ -105,6 +105,7 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string):
 		const launch = await botsService.requestLaunch(botId, 'chat');
 		// 会話は 1 つの Bot に 1 つだけ。別のウィンドウで開いている（そのウィンドウが前に出る）・起動している途中
 		if (!launch.ok && launch.code === 'already_open') {
+			await botsService.requestReveal(botId);
 			notificationService.info(localize('paradisBots.alreadyOpen', "This bot is already open in another window. That window shows it now."));
 			return;
 		}

@@ -436,7 +436,6 @@ export class ParadisBotsService extends Disposable {
 			if (purpose === 'chat') {
 				const inUse = this.panes.chatInUse(botId, this.now());
 				if (inUse?.state === 'open') {
-					this._onDidRequestReveal.fire({ botId, paneHashes: inUse.tokens.map(paradisBotPaneTokenHash) });
 					return { ok: false, code: 'already_open', message: 'This bot is already open in another window.' };
 				}
 				if (inUse?.state === 'launching') {
@@ -469,6 +468,20 @@ export class ParadisBotsService extends Disposable {
 				},
 			};
 		});
+	}
+
+	/**
+	 * 会話のペインを持つウィンドウへ、前に出してほしいと頼む（別のウィンドウから開こうとして `already_open` で断られた
+	 * ときに、利用者の操作からだけ呼ぶ。エージェントの道具からの起動では呼ばない＝フォーカスを奪わない）。
+	 * 現れた会話のペインが無ければ false。
+	 */
+	requestReveal(botId: string): boolean {
+		const inUse = this.panes.chatInUse(botId, this.now());
+		if (inUse?.state !== 'open') {
+			return false;
+		}
+		this._onDidRequestReveal.fire({ botId, paneHashes: inUse.tokens.map(paradisBotPaneTokenHash) });
+		return true;
 	}
 
 	/** Bot を止める依頼を全ウィンドウへ出す。結び付いた・保存したペインが無ければ false。 */

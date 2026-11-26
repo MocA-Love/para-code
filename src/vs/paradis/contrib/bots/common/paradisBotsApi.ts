@@ -168,6 +168,8 @@ export interface IParadisBotsService {
 	/** 起動できなかった。 */
 	cancelLaunch(launchId: string): Promise<void>;
 	requestStop(botId: string): Promise<boolean>;
+	/** 別のウィンドウで開いている会話のペインを前に出してもらう（利用者の操作からだけ）。 */
+	requestReveal(botId: string): Promise<boolean>;
 	/** その Bot のペインのトークンの SHA-256（16 進）。開くときに、このウィンドウにもうあるかを照らす。 */
 	paneHashesOf(botId: string): Promise<readonly string[]>;
 
