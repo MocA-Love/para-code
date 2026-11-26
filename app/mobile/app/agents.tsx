@@ -12,6 +12,8 @@ import {
 	type AgentsAcrossLiveSection, type AgentsAcrossState, type AgentsAcrossUnconnectedSection,
 } from '../src/features/home/agentsAcrossPcs.js';
 import { useLastSession } from '../src/features/home/lastSessionStore.js';
+import { HumanAskCard } from '../src/features/humanAsks/humanAskCard.js';
+import { useHumanAsks, useHumanAskSync } from '../src/features/humanAsks/humanAskStore.js';
 import { AgentListRow, RowSeparator } from '../src/features/pc/agentListRow.js';
 import { openSession } from '../src/features/pc/openSession.js';
 import { spaceColor } from '../src/features/pc/spaceColor.js';
@@ -57,8 +59,16 @@ export default function AgentsScreen() {
 	// 段は PC ごとに使い回す（変わっていない PC の段は同じオブジェクトになり、LiveSection の memo が効く）。
 	const build = useMemo(() => createAgentsAcrossBuilder<SourceTerminal>(), []);
 	const list = useMemo(() => build({ pcs, sources, activePcId, state }), [build, pcs, sources, activePcId, state]);
-	const hasRows = list.sections.some(section => section.kind === 'live');
-	const segments = AGENTS_ACROSS_STATES.map(key => ({ key, label: `${agentsAcrossStateLabel(key)} ${list.counts[key]}` }));
+	// 台帳の 1 件（ボードの質問・承認、Bot、ask_human）。要対応の段の上に PC ごとに並べる（human-ask.v1 の PC だけ）
+	useHumanAskSync(pcs);
+	const askLists = useHumanAsks(s => s.byPc);
+	const askSections = pcs.flatMap(pc => {
+		const asks = pc.humanAskSupported === true && pc.humanAsks !== undefined ? askLists[pc.id]?.asks ?? [] : [];
+		return asks.length > 0 ? [{ pcId: pc.id, name: pc.name, asks }] : [];
+	});
+	const askCount = askSections.reduce((sum, section) => sum + section.asks.length, 0);
+	const hasRows = list.sections.some(section => section.kind === 'live') || (state === 'waiting' && askCount > 0);
+	const segments = AGENTS_ACROSS_STATES.map(key => ({ key, label: `${agentsAcrossStateLabel(key)} ${list.counts[key] + (key === 'waiting' ? askCount : 0)}` }));
 
 	return (
 		<Screen>
@@ -77,6 +87,16 @@ export default function AgentsScreen() {
 						style={styles.empty}
 					/>
 				)}
+				{state === 'waiting' ? askSections.map(section => (
+					<View key={`asks-${section.pcId}`}>
+						<View style={styles.header} accessible accessibilityRole="header" accessibilityLabel={`${section.name} 質問と承認 ${section.asks.length}件`}>
+							<View style={[styles.dot, { backgroundColor: connectionColor('connected') }]} />
+							<Text style={styles.headerTitle} numberOfLines={1}>{`${section.name} · 質問と承認`}</Text>
+							<Text style={styles.headerCount}>{section.asks.length}</Text>
+						</View>
+						{section.asks.map(ask => <HumanAskCard key={ask.key} pcId={section.pcId} ask={ask} now={now} />)}
+					</View>
+				)) : null}
 				{list.sections.map(section => (section.kind === 'live' ? (
 					<LiveSection
 						key={section.pcId}
