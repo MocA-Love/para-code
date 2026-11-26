@@ -22,7 +22,11 @@ import { paradisBotHomeRelativePath } from './paradisBots.js';
 
 export const PARADIS_BOT_ITEMS_VERSION = 1;
 
-export const PARADIS_BOT_ITEM_STATUSES = ['planned', 'working', 'needs_you', 'done', 'canceled'] as const;
+/**
+ * 項目の状態。`waiting` は外の何か（CI・レビュー・相手の返事）を待っている状態で、人を待つ `needs_you` と違い
+ * 「あなたの番」に数えない。待っているものは見回り（定期実行）が見に行く。
+ */
+export const PARADIS_BOT_ITEM_STATUSES = ['planned', 'working', 'waiting', 'needs_you', 'done', 'canceled'] as const;
 export type ParadisBotItemStatus = typeof PARADIS_BOT_ITEM_STATUSES[number];
 
 /** 長い文は断る（切らない）。詳しい報告はファイルかリンクに置かせる。 */

@@ -58,6 +58,7 @@ function at(status: ParadisBotItemStatus): IParadisBotItemsState {
 	switch (status) {
 		case 'planned': return one('planned');
 		case 'working': return one();
+		case 'waiting': return update(one(), { status: 'waiting' });
 		case 'needs_you': return update(one(), { status: 'needs_you', questions: [{ prompt: '残しますか?', options: [{ label: '残す' }, { label: '消す' }] }] });
 		case 'done': return update(one(), { status: 'done' });
 		case 'canceled': return update(one(), { status: 'canceled', reason: '不要になった' });
@@ -91,33 +92,35 @@ suite('Paradis bot items', () => {
 		});
 	});
 
-	test('Bot の状態の遷移（5 × 5 の全部）', () => {
+	test('Bot の状態の遷移（6 × 6 の全部）', () => {
 		const table: Record<string, string[]> = {};
 		for (const from of PARADIS_BOT_ITEM_STATUSES) {
 			table[from] = PARADIS_BOT_ITEM_STATUSES.map(to => code(paradisBotItemUpdate(at(from), 'b1', 1, { status: to, ...(to === 'canceled' ? { reason: 'やめた' } : {}) }, 3000)));
 		}
 		assert.deepStrictEqual(table, {
-			//           planned      working      needs_you    done           canceled
-			planned: ['unchanged', 'ok', 'ok', 'ok', 'ok'],
-			working: ['ok', 'unchanged', 'ok', 'ok', 'ok'],
-			needs_you: ['ok', 'ok', 'unchanged', 'ok', 'ok'],
+			//           planned      working      waiting      needs_you    done           canceled
+			planned: ['unchanged', 'ok', 'ok', 'ok', 'ok', 'ok'],
+			working: ['ok', 'unchanged', 'ok', 'ok', 'ok', 'ok'],
+			waiting: ['ok', 'ok', 'unchanged', 'ok', 'ok', 'ok'],
+			needs_you: ['ok', 'ok', 'ok', 'unchanged', 'ok', 'ok'],
 			// 閉じた項目は、開いている状態へ戻すときだけ書ける
-			done: ['ok', 'ok', 'ok', 'unchanged', 'item_closed'],
-			canceled: ['ok', 'ok', 'ok', 'item_closed', 'item_closed'],
+			done: ['ok', 'ok', 'ok', 'ok', 'unchanged', 'item_closed'],
+			canceled: ['ok', 'ok', 'ok', 'ok', 'item_closed', 'item_closed'],
 		});
 	});
 
-	test('持ち主の状態の遷移（5 × 5 の全部）', () => {
+	test('持ち主の状態の遷移（6 × 6 の全部）', () => {
 		const table: Record<string, string[]> = {};
 		for (const from of PARADIS_BOT_ITEM_STATUSES) {
 			table[from] = PARADIS_BOT_ITEM_STATUSES.map(to => code(paradisBotItemOwnerStatus(at(from), 'u1', to, undefined, 3000)));
 		}
 		assert.deepStrictEqual(table, {
-			planned: ['unchanged', 'ok', 'ok', 'ok', 'ok'],
-			working: ['ok', 'unchanged', 'ok', 'ok', 'ok'],
-			needs_you: ['ok', 'ok', 'unchanged', 'ok', 'ok'],
-			done: ['ok', 'ok', 'ok', 'unchanged', 'ok'],
-			canceled: ['ok', 'ok', 'ok', 'ok', 'unchanged'],
+			planned: ['unchanged', 'ok', 'ok', 'ok', 'ok', 'ok'],
+			working: ['ok', 'unchanged', 'ok', 'ok', 'ok', 'ok'],
+			waiting: ['ok', 'ok', 'unchanged', 'ok', 'ok', 'ok'],
+			needs_you: ['ok', 'ok', 'ok', 'unchanged', 'ok', 'ok'],
+			done: ['ok', 'ok', 'ok', 'ok', 'unchanged', 'ok'],
+			canceled: ['ok', 'ok', 'ok', 'ok', 'ok', 'unchanged'],
 		});
 	});
 
@@ -415,9 +418,9 @@ suite('Paradis bot items', () => {
 
 	test('読み込み: 知らない状態の項目は壊さず、その項目だけ読み取り専用にする', () => {
 		const base = JSON.parse(JSON.stringify(paradisBotItemsToStored(one())));
-		// PR 12 で足す予定の `waiting` を、新しい Para Code が書いた形（知らない欄 `wait` 付き）
-		const waiting = { ...base.items[0], uid: 'u2', number: 2, status: 'waiting', wait: { text: 'CI の完了', at: 5 } };
-		const stored = { version: 1, nextNumber: 3, items: [base.items[0], waiting] };
+		// この版の知らない状態 `blocked` を、新しい Para Code が書いた形（知らない欄 `block` 付き）
+		const blocked = { ...base.items[0], uid: 'u2', number: 2, status: 'blocked', block: { text: 'CI の完了', at: 5 } };
+		const stored = { version: 1, nextNumber: 3, items: [base.items[0], blocked] };
 		const state = paradisParseBotItemsState(stored);
 		assert.ok(state);
 		const added = ok(paradisBotItemAdd(state, { uid: 'u3', botId: 'b1', title: '三つ目' }, 4000)).state;
@@ -441,7 +444,7 @@ suite('Paradis bot items', () => {
 			ownerSnooze: 'read_only',
 			delivered: true,
 			counts: { open: 2, needsYou: 0, lastActivityAt: 1000 },
-			roundTrip: waiting,
+			roundTrip: blocked,
 		});
 	});
 
