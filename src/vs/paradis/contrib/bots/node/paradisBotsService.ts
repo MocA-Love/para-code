@@ -93,7 +93,12 @@ export interface IParadisBotsServiceOptions {
 	readonly enabled?: () => boolean;
 	/** 項目の台帳の大きさの上限（テストで小さくする）。既定は {@link PARADIS_BOT_ITEMS_BYTE_LIMIT}。 */
 	readonly itemsByteLimit?: number;
+	/** 前に出す依頼にウィンドウが応えるのを待つ時間。既定は {@link PARADIS_BOT_REVEAL_TIMEOUT_MS}。 */
+	readonly revealTimeoutMs?: number;
 }
+
+/** 前に出す依頼にウィンドウが応えるのを待つ時間。 */
+export const PARADIS_BOT_REVEAL_TIMEOUT_MS = 2_000;
 
 const ITEMS_FULL_MESSAGE = 'Para Code\'s list of bot items is full. Close the items you no longer need (status "done" or "canceled"), or ask your owner to close or remove some items; then you can write again.';
 
@@ -119,6 +124,9 @@ export class ParadisBotsService extends Disposable {
 	private readonly memorySnapshots: ParadisBotMemorySnapshots | undefined;
 	private suggestions: IParadisBotSuggestionsState = EMPTY_PARADIS_BOT_SUGGESTIONS_STATE;
 	private readonly itemsByteLimit: number;
+	private readonly revealTimeoutMs: number;
+	/** 前に出す依頼の番号 → ウィンドウが応えたときに呼ぶもの。 */
+	private readonly pendingReveals = new Map<string, () => void>();
 	private readonly enabled: () => boolean;
 
 	/** 読み込みが終わった（壊れたファイルの退避も済んだ）。 */
@@ -164,6 +172,7 @@ export class ParadisBotsService extends Disposable {
 		this.suggestionsFile = options.suggestionsFile;
 		this.memorySnapshots = options.memorySnapshots;
 		this.itemsByteLimit = options.itemsByteLimit ?? PARADIS_BOT_ITEMS_BYTE_LIMIT;
+		this.revealTimeoutMs = options.revealTimeoutMs ?? PARADIS_BOT_REVEAL_TIMEOUT_MS;
 		this.enabled = options.enabled ?? (() => true);
 		this._register(this.humanAsk.onDidRequestAnswer(request => this.onAnswerRequest(request)));
 		if (options.hookEvents) {
@@ -506,13 +515,42 @@ export class ParadisBotsService extends Disposable {
 	 * ときに、利用者の操作からだけ呼ぶ。エージェントの道具からの起動では呼ばない＝フォーカスを奪わない）。
 	 * 現れた会話のペインが無ければ false。
 	 */
-	requestReveal(botId: string): boolean {
+	async requestReveal(botId: string): Promise<boolean> {
 		const inUse = this.panes.chatInUse(botId, this.now());
 		if (inUse?.state !== 'open') {
 			return false;
 		}
-		this._onDidRequestReveal.fire({ botId, paneHashes: inUse.tokens.map(paradisBotPaneTokenHash) });
-		return true;
+		const revealId = this.uuid();
+		const answered = await new Promise<boolean>(resolve => {
+			const timer = setTimeout(() => {
+				this.pendingReveals.delete(revealId);
+				resolve(false);
+			}, this.revealTimeoutMs);
+			this.pendingReveals.set(revealId, () => {
+				clearTimeout(timer);
+				this.pendingReveals.delete(revealId);
+				resolve(true);
+			});
+			this._onDidRequestReveal.fire({ revealId, botId, paneHashes: inUse.tokens.map(paradisBotPaneTokenHash) });
+		});
+		// どのウィンドウもそのペインを持っていなかった（閉じたことが伝わらなかった）。会話のペインを「まだ現れていない」に
+		// 戻し、呼んだ側が起動へ進めるようにする（本当に生きていれば、hook か道具の呼び出しで現れたときに戻る）
+		if (!answered && this.panes.detachChat(botId)) {
+			this.notify();
+		}
+		return answered;
+	}
+
+	/** 前に出す依頼に、そのペインを持つウィンドウが応えた。 */
+	ackReveal(revealId: string): void {
+		this.pendingReveals.get(revealId)?.();
+	}
+
+	/** ウィンドウが閉じた（接続が切れた）。そのウィンドウが報告したペインを「まだ現れていない」に戻す。 */
+	detachWindow(windowCtx: string): void {
+		if (this.panes.detachWindow(windowCtx)) {
+			this.notify();
+		}
 	}
 
 	/** Bot を止める依頼を全ウィンドウへ出す。結び付いた・保存したペインが無ければ false。 */
@@ -615,8 +653,8 @@ export class ParadisBotsService extends Disposable {
 	}
 
 	/** 起動したペインの報告。発行していない番号・2 回目・もう結び付いているトークンは断る（false）。 */
-	reportLaunch(launchId: string, paneToken: string): boolean {
-		const botId = this.panes.report(launchId, paneToken, this.now());
+	reportLaunch(launchId: string, paneToken: string, windowCtx?: string): boolean {
+		const botId = this.panes.report(launchId, paneToken, this.now(), windowCtx);
 		if (botId === undefined) {
 			return false;
 		}
