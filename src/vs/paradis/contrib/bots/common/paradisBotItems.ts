@@ -193,7 +193,16 @@ export function paradisBotItemsOf(state: IParadisBotItemsState, filter: { readon
 		.sort((a, b) => b.lastActivityAt - a.lastActivityAt || b.number - a.number);
 }
 
-/** Bot ごとの数。`needsYou` は後回し中を除く（「あなたの番」の件数）。 */
+/**
+ * 「あなたの番」に数えるか。Needs you で問いがあり、後回し中でないもの。「聞く・答える」の台帳へ出すものと
+ * 同じ式（持ち主が自分で Needs you にした項目は問いが無いので、どちらにも出さない）。一時停止中の Bot は
+ * 呼ぶ側が外す。
+ */
+export function paradisBotItemWaitsForOwner(item: Pick<IParadisBotItem, 'status' | 'ask' | 'snoozedUntil'>, now: number): boolean {
+	return item.status === 'needs_you' && item.ask !== undefined && !paradisIsBotItemSnoozed(item, now);
+}
+
+/** Bot ごとの数。`needsYou` は {@link paradisBotItemWaitsForOwner} の数（「あなたの番」の件数）。 */
 export interface IParadisBotItemCounts {
 	readonly open: number;
 	readonly needsYou: number;
@@ -212,7 +221,7 @@ export function paradisBotItemCounts(state: IParadisBotItemsState, botId: string
 		lastActivityAt = Math.max(lastActivityAt, item.lastActivityAt);
 		if (!paradisIsBotItemClosed(item)) {
 			open++;
-			if (item.status === 'needs_you' && !paradisIsBotItemSnoozed(item, now)) {
+			if (paradisBotItemWaitsForOwner(item, now)) {
 				needsYou++;
 			}
 		}

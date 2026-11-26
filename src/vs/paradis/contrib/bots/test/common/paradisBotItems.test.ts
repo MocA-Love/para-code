@@ -28,6 +28,7 @@ import {
 	paradisBotItemsRemoveBot,
 	paradisBotItemsToStored,
 	paradisBotItemUpdate,
+	paradisBotItemWaitsForOwner,
 	paradisIsBotItemLocked,
 	paradisParseBotItemsState,
 	paradisSanitizeBotItemLink,
@@ -299,6 +300,18 @@ suite('Paradis bot items', () => {
 			past: 'invalid_argument',
 			closed: 'item_closed',
 			clearUnchanged: 'unchanged',
+		});
+	});
+
+	test('あなたの番: 持ち主が自分で Needs you にした項目（問いなし）は数えない', () => {
+		const ownerSet = ok(paradisBotItemOwnerStatus(one(), 'u1', 'needs_you', undefined, 2000));
+		const botAsked = ok(paradisBotItemUpdate(one(), 'b1', 1, { status: 'needs_you' }, 2000));
+		assert.deepStrictEqual({
+			ownerSet: [ownerSet.item.status, ownerSet.item.ask, paradisBotItemWaitsForOwner(ownerSet.item, 3000), paradisBotItemCounts(ownerSet.state, 'b1', 3000).needsYou],
+			botAsked: [botAsked.item.status, botAsked.item.ask?.eventId, paradisBotItemWaitsForOwner(botAsked.item, 3000), paradisBotItemCounts(botAsked.state, 'b1', 3000).needsYou],
+		}, {
+			ownerSet: ['needs_you', undefined, false, 0],
+			botAsked: ['needs_you', 2, true, 1],
 		});
 	});
 
