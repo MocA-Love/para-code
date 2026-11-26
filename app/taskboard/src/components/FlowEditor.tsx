@@ -341,10 +341,10 @@ export function FlowEditor() {
 						<label>方式</label>
 						<div className="seg">
 							{/* クローンが 0 個のまま選ぶと、どのタスクも空き待ちから進まない。既に選んでいるフローは他の欄を直せるよう、外すことだけはできる */}
-							<button className={draft.workspace.kind === 'clone-pool' ? 'on' : ''} disabled={noClones && draft.workspace.kind !== 'clone-pool'} onClick={() => setWorkspace({ kind: 'clone-pool' })}>クローンを使い回す</button>
+							<button className={draft.workspace.kind === 'clone-pool' ? 'on' : ''} disabled={noClones && draft.workspace.kind !== 'clone-pool'} title={noClones ? 'クローンが 0 個のうちは選べません' : undefined} onClick={() => setWorkspace({ kind: 'clone-pool' })}>クローンを使い回す</button>
 							<button className={draft.workspace.kind === 'worktree' ? 'on' : ''} onClick={() => setWorkspace({ kind: 'worktree' })}>ワークツリー</button>
 						</div>
-						{(draft.workspace.kind === 'clone-pool' || snapshot.runtime.canAddClone || noClones) && <>
+						{(draft.workspace.kind === 'clone-pool' || snapshot.runtime.canAddClone) && <>
 							<label>クローン</label>
 							<div className="clone-row">
 								<span className="muted" style={{ fontSize: 'var(--fs-sm)' }}>{clones.length ? `${clones.length} 個（${clones.map(c => c.name).join('、')}）` : snapshot.runtime.canAddClone ? '0 個' : '未設定'}</span>
