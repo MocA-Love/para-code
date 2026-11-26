@@ -1102,6 +1102,133 @@ do {
 	check(paradisBlockReason(bundleId: "com.apple.finder") == nil && paradisBlockReason(bundleId: "ltd.paradis.paracodex") == nil, "allows other apps")
 }
 
+// MARK: - 読むだけにするアプリ（ブラウザ・リモートデスクトップ・取引アプリ）
+
+do {
+	check(paradisReadOnlyReason(bundleId: "com.apple.Safari") == .browser && paradisReadOnlyReason(bundleId: "com.apple.SafariTechnologyPreview") == .browser, "Safari is read-only")
+	check(paradisReadOnlyReason(bundleId: "com.google.Chrome") == .browser && paradisReadOnlyReason(bundleId: "com.google.Chrome.canary") == .browser && paradisReadOnlyReason(bundleId: "COM.GOOGLE.CHROME.app.abcdef") == .browser, "Chrome, its channels and its web apps are read-only")
+	check(paradisReadOnlyReason(bundleId: "org.mozilla.firefox") == .browser && paradisReadOnlyReason(bundleId: "com.microsoft.edgemac.Beta") == .browser && paradisReadOnlyReason(bundleId: "company.thebrowser.Browser") == .browser, "Firefox, Edge and Arc are read-only")
+	check(paradisReadOnlyReason(bundleId: "com.apple.ScreenSharing") == .remoteDesktop && paradisReadOnlyReason(bundleId: "com.microsoft.rdc.macos") == .remoteDesktop && paradisReadOnlyReason(bundleId: "com.teamviewer.TeamViewer") == .remoteDesktop, "remote desktop apps are read-only")
+	check(paradisReadOnlyReason(bundleId: "com.tradingview.tradingviewapp.desktop") == .trading && paradisReadOnlyReason(bundleId: "com.example.Binance") == .trading && paradisReadOnlyReason(bundleId: "com.ledger.live") == .trading, "trading apps and wallets are read-only")
+	check(paradisReadOnlyReason(bundleId: "com.apple.finder") == nil && paradisReadOnlyReason(bundleId: "com.apple.Notes") == nil && paradisReadOnlyReason(bundleId: "com.axosoft.gitkraken") == nil, "other apps can be operated")
+
+	let desktop = FakeDesktop()
+	desktop.bundles[700] = "com.apple.Safari"
+	let handler = ParadisRequestHandler(backend: desktop, expectedToken: goodToken, selfPid: 42)
+	_ = handler.handle(line: Data(#"{"id":1,"method":"handshake","params":{"token":"\#(goodToken)"}}"#.utf8))
+	func code(_ json: String) -> String? {
+		let result = reply(handler.handle(line: Data(json.utf8)))
+		return result?["ok"] as? Bool == true ? "ok" : (result?["error"] as? [String: Any])?["code"] as? String
+	}
+	check(code(#"{"id":2,"method":"click","params":{"pid":700,"bundleId":"com.apple.Safari","windowId":7,"x":1,"y":1}}"#) == "read_only_app", "the helper refuses to click in a browser")
+	check(code(#"{"id":3,"method":"typeText","params":{"pid":700,"bundleId":"com.apple.Safari","text":"a"}}"#) == "read_only_app", "the helper refuses to type in a browser")
+	check(code(#"{"id":4,"method":"activateApp","params":{"pid":700,"bundleId":"com.apple.Safari","allowOperatingReadOnlyApps":false}}"#) == "read_only_app", "the helper refuses to bring a browser forward")
+	check(code(#"{"id":5,"method":"click","params":{"pid":700,"bundleId":"com.apple.Safari","windowId":7,"x":1,"y":1,"allowOperatingReadOnlyApps":"yes"}}"#) == "invalid_argument", "allowOperatingReadOnlyApps must be a boolean")
+	check(desktop.inputCalls.isEmpty, "nothing reaches the desktop for a read-only app")
+	check(code(#"{"id":6,"method":"listWindows","params":{"pid":700,"bundleId":"com.apple.Safari"}}"#) == "ok" && code(#"{"id":7,"method":"screenshotWindow","params":{"pid":700,"bundleId":"com.apple.Safari","windowId":7}}"#) == "ok", "a read-only app can still be read")
+	check(code(#"{"id":8,"method":"click","params":{"pid":700,"bundleId":"com.apple.Safari","windowId":7,"x":1,"y":1,"allowOperatingReadOnlyApps":true}}"#) == "ok" && desktop.inputCalls.count == 1, "the user's setting lets the helper operate a read-only app")
+	check(code(#"{"id":9,"method":"click","params":{"pid":300,"bundleId":"com.1password.1password","windowId":7,"x":1,"y":1,"allowOperatingReadOnlyApps":true}}"#) == "app_blocked", "the setting does not open blocked apps")
+}
+
+// MARK: - 緊急停止（Esc の 2 回押し）
+
+do {
+	check(paradisEmergencyStopTriggered(previousEscapeAt: 10, escapeAt: 10.5, lastInputAt: 2), "two Escapes within 0.6 s after recent input stop")
+	check(!paradisEmergencyStopTriggered(previousEscapeAt: 10, escapeAt: 10.7, lastInputAt: 2), "two Escapes 0.7 s apart do not stop")
+	check(!paradisEmergencyStopTriggered(previousEscapeAt: nil, escapeAt: 10.5, lastInputAt: 2), "one Escape does not stop")
+	check(!paradisEmergencyStopTriggered(previousEscapeAt: 10, escapeAt: 10.5, lastInputAt: nil), "Escapes do not stop when Computer Use sent nothing")
+	check(!paradisEmergencyStopTriggered(previousEscapeAt: 40, escapeAt: 40.5, lastInputAt: 10) && paradisEmergencyStopTriggered(previousEscapeAt: 39.6, escapeAt: 40, lastInputAt: 10), "Escapes stop only within 30 s of the last input")
+	check(paradisEmergencyKey(keyCode: 53, autorepeat: false, ours: false, hasCommandControlOrOption: false) == .escape, "a physical Escape counts")
+	check(paradisEmergencyKey(keyCode: 53, autorepeat: true, ours: false, hasCommandControlOrOption: false) == .ignored, "a repeating Escape is ignored")
+	check(paradisEmergencyKey(keyCode: 53, autorepeat: false, ours: true, hasCommandControlOrOption: false) == .ignored && paradisEmergencyKey(keyCode: 0, autorepeat: false, ours: true, hasCommandControlOrOption: false) == .ignored, "the agent's own keys are ignored")
+	check(paradisEmergencyKey(keyCode: 53, autorepeat: false, ours: false, hasCommandControlOrOption: true) == .other && paradisEmergencyKey(keyCode: 36, autorepeat: false, ours: false, hasCommandControlOrOption: false) == .other, "Force Quit and other keys start over")
+
+	let latch = ParadisEmergencyStop()
+	check(!latch.noteKeyDown(.escape, at: 1) && !latch.noteKeyDown(.escape, at: 1.2) && !latch.isStopped && latch.failure() == nil, "the latch stays open while Computer Use is idle")
+	latch.beginInput(at: 5)
+	latch.endInput(at: 5)
+	check(!latch.noteKeyDown(.escape, at: 6) && !latch.noteKeyDown(.other, at: 6.1) && !latch.noteKeyDown(.escape, at: 6.2), "another key between the Escapes starts over")
+	// 1 回目を少し長く押して自動リピートが始まっても、2 回目で止まる（エージェントの送ったキーが挟まっても同じ）
+	check(!latch.noteKeyDown(.ignored, at: 6.3) && latch.noteKeyDown(.escape, at: 6.5) && latch.isStopped && latch.failure()?.code == "stopped_by_user", "the second Escape closes the latch, across ignored keys")
+	check(!latch.noteKeyDown(.escape, at: 6.6) && latch.isStopped, "more Escapes keep it closed and do not report again")
+	latch.resume()
+	check(!latch.isStopped && !latch.noteKeyDown(.escape, at: 6.9), "resume opens the latch and forgets the earlier Escape")
+	// 1 つの要求が 30 秒を超えても、処理している間は止められる。終えてから 30 秒を過ぎたら止めない
+	let long = ParadisEmergencyStop()
+	long.beginInput(at: 100)
+	check(!long.noteKeyDown(.escape, at: 150) && long.noteKeyDown(.escape, at: 150.3), "a request that runs longer than 30 s can still be stopped")
+	long.resume()
+	long.endInput(at: 160)
+	check(!long.noteKeyDown(.escape, at: 195) && !long.noteKeyDown(.escape, at: 195.3) && !long.isStopped, "30 s after the request ended, Escapes no longer stop")
+
+	let desktop = FakeDesktop()
+	var clock = 100.0
+	let handler = ParadisRequestHandler(backend: desktop, expectedToken: goodToken, selfPid: 42, now: { clock })
+	_ = handler.handle(line: Data(#"{"id":1,"method":"handshake","params":{"token":"\#(goodToken)"}}"#.utf8))
+	func call(_ json: String) -> [String: Any]? {
+		return reply(handler.handle(line: Data(json.utf8)))
+	}
+	func code(_ json: String) -> String? {
+		let result = call(json)
+		return result?["ok"] as? Bool == true ? "ok" : (result?["error"] as? [String: Any])?["code"] as? String
+	}
+	let click = #"{"id":2,"method":"click","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"x":1,"y":1}}"#
+	// 読むだけの要求は「入力を送った」に数えない
+	check(code(#"{"id":2,"method":"listWindows","params":{"pid":100,"bundleId":"com.apple.finder"}}"#) == "ok" && !handler.emergencyStop.noteKeyDown(.escape, at: 100.1) && !handler.emergencyStop.noteKeyDown(.escape, at: 100.2), "reading does not arm the emergency stop")
+	check(code(click) == "ok", "input is sent before the stop")
+	clock = 120
+	check(!handler.emergencyStop.noteKeyDown(.escape, at: 120) && handler.emergencyStop.noteKeyDown(.escape, at: 120.3), "two Escapes after an input request stop the helper")
+	let methods = [
+		#"{"id":3,"method":"activateApp","params":{"pid":100,"bundleId":"com.apple.finder"}}"#,
+		click,
+		#"{"id":3,"method":"drag","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"from":{"x":1,"y":2},"to":{"x":3,"y":4}}}"#,
+		#"{"id":3,"method":"scroll","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"direction":"down"}}"#,
+		#"{"id":3,"method":"typeText","params":{"pid":100,"bundleId":"com.apple.finder","text":"a"}}"#,
+		#"{"id":3,"method":"pasteText","params":{"pid":100,"bundleId":"com.apple.finder","text":"a"}}"#,
+		#"{"id":3,"method":"pressKey","params":{"pid":100,"bundleId":"com.apple.finder","key":"return"}}"#,
+		#"{"id":3,"method":"hotkey","params":{"pid":100,"bundleId":"com.apple.finder","keys":["cmd","s"]}}"#,
+		#"{"id":3,"method":"setValue","params":{"pid":100,"bundleId":"com.apple.finder","windowId":7,"x":1,"y":1,"value":"a"}}"#,
+	]
+	check(methods.map(code) == Array(repeating: "stopped_by_user", count: 9) && desktop.inputCalls.count == 1, "every input request is refused while stopped, before reaching the desktop")
+	check(Set(methods.compactMap { try? paradisParseRequest(Data($0.utf8)).get().method }) == paradisInputMethods, "the stop covers every input method")
+	check(code(#"{"id":4,"method":"listWindows","params":{"pid":100,"bundleId":"com.apple.finder"}}"#) == "ok" && code(#"{"id":5,"method":"listApps"}"#) == "ok", "reading still works while stopped")
+	check((call(#"{"id":6,"method":"permissions"}"#)?["result"] as? [String: Any])?["stopped"] as? Bool == true, "permissions reports the stop")
+	check(((call(#"{"id":7,"method":"resume"}"#)?["result"] as? [String: Any])?["stopped"] as? Bool) == false && !handler.emergencyStop.isStopped, "resume opens the latch")
+	check((call(#"{"id":8,"method":"permissions"}"#)?["result"] as? [String: Any])?["stopped"] == nil && code(click) == "ok" && desktop.inputCalls.count == 2, "input works again after resume")
+}
+
+// MARK: - セキュア入力中はキーを送らない
+
+do {
+	check(!paradisSecureInputBlocksKeys(secureInputEnabled: false, ownerPid: 100, keyTargetPid: 100, viaFrontmost: true), "keys go through while Secure Input is off")
+	check(paradisSecureInputBlocksKeys(secureInputEnabled: true, ownerPid: 100, keyTargetPid: 100, viaFrontmost: true) && paradisSecureInputBlocksKeys(secureInputEnabled: true, ownerPid: 100, keyTargetPid: 100, viaFrontmost: false), "no keys for the app that owns Secure Input")
+	check(!paradisSecureInputBlocksKeys(secureInputEnabled: true, ownerPid: 555, keyTargetPid: 100, viaFrontmost: true) && !paradisSecureInputBlocksKeys(secureInputEnabled: true, ownerPid: 555, keyTargetPid: 100, viaFrontmost: false), "another app's Secure Input (a terminal that keeps it on) does not stop keys")
+	check(paradisSecureInputBlocksKeys(secureInputEnabled: true, ownerPid: nil, keyTargetPid: 100, viaFrontmost: true), "an unknown owner stops keys sent to the app in front")
+	check(!paradisSecureInputBlocksKeys(secureInputEnabled: true, ownerPid: nil, keyTargetPid: 100, viaFrontmost: false), "an unknown owner does not stop keys sent straight to the target")
+	// 前面へ届く送り方では、持ち主が今の前面のアプリなら（頼まれた的と違っても）断る。的へ直接送るときは前面を見ない
+	check(paradisSecureInputBlocksKeys(secureInputEnabled: true, ownerPid: 555, keyTargetPid: 100, viaFrontmost: true, frontmostPid: 555), "the owner in front stops keys sent to the app in front")
+	check(!paradisSecureInputBlocksKeys(secureInputEnabled: true, ownerPid: 555, keyTargetPid: 100, viaFrontmost: false, frontmostPid: 555) && !paradisSecureInputBlocksKeys(secureInputEnabled: true, ownerPid: 555, keyTargetPid: 100, viaFrontmost: true, frontmostPid: 777), "an owner that is neither the target nor in front stops nothing")
+	check(paradisSecureInputFailure().code == "secure_input_active", "the refusal has its own code")
+	// 掛け金の鍵を持ったまま送る: 掛かっていなければ送り、掛かった後は送らずに断る
+	let gate = ParadisEmergencyStop()
+	var sent = 0
+	try? gate.sendUnlessStopped { sent += 1 }
+	gate.beginInput(at: 10)
+	gate.noteKeyDown(.escape, at: 10.1)
+	gate.noteKeyDown(.escape, at: 10.3)
+	var refused: String?
+	do {
+		try gate.sendUnlessStopped { sent += 1 }
+	} catch let error as ParadisHelperError {
+		refused = error.code
+	} catch {
+		refused = "other"
+	}
+	gate.resume()
+	try? gate.sendUnlessStopped { sent += 1 }
+	check(sent == 2 && refused == "stopped_by_user", "a press is not sent once the stop is latched, and is sent again after resume")
+}
+
 do {
 	check(paradisClassifyResponsibility(selfPid: 10, responsiblePid: 10) == .selfProcess, "responsible is self")
 	check(paradisClassifyResponsibility(selfPid: 10, responsiblePid: 3) == .other, "responsible is another process")

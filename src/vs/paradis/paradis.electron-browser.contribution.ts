@@ -138,6 +138,7 @@ import './contrib/agentChat/electron-browser/paradisApprovalScreenSettle.contrib
 import './contrib/claudeMod/electron-browser/paradisClaudeModConfigDir.contribution.js';
 import './contrib/computerUse/electron-browser/paradisComputerUseApproval.contribution.js';
 import './contrib/computerUse/electron-browser/paradisComputerUseStatus.contribution.js';
+import './contrib/computerUse/electron-browser/paradisComputerUseActivity.contribution.js';
 import './contrib/agentTabTitle/electron-browser/paradisClaudeTabTitlePin.contribution.js';
 import './contrib/editorDownload/electron-browser/paradisEditorDownload.contribution.js';
 import './contrib/tabId/electron-browser/paradisTabId.contribution.js';

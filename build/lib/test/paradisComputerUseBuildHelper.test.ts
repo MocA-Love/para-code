@@ -39,6 +39,10 @@ test('the Swift helper and the TypeScript client block the same apps', () => {
 		['paradisBlockedKeychainApps', 'PARADIS_COMPUTER_USE_KEYCHAIN_APPS'],
 		['paradisBlockedParaCodeApps', 'PARADIS_COMPUTER_USE_PARA_CODE_APPS'],
 		['paradisBlockedSystemSurfaces', 'PARADIS_COMPUTER_USE_SYSTEM_SURFACES'],
+		// 読むだけにするアプリ（操作は断るが、読むのは許す）
+		['paradisReadOnlyRemoteDesktopApps', 'PARADIS_COMPUTER_USE_READ_ONLY_REMOTE_DESKTOP_APPS'],
+		['paradisReadOnlyBrowsers', 'PARADIS_COMPUTER_USE_READ_ONLY_BROWSERS'],
+		['paradisReadOnlyTradingApps', 'PARADIS_COMPUTER_USE_READ_ONLY_TRADING_APPS'],
 	];
 	for (const [swiftName, tsName] of pairs) {
 		const fromSwift = swiftList(swiftName);

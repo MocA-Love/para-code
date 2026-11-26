@@ -192,6 +192,30 @@ class ParadisShowComputerUseStatusAction extends Action2 {
 
 registerAction2(ParadisShowComputerUseStatusAction);
 
+/**
+ * このウィンドウが、Computer Use の知らせ（オンになった・利用者が止めた）を出すウィンドウか。どのウィンドウも同じ知らせを
+ * 受けるので、通常ウィンドウ 1 つだけが出す。最後にフォーカスのあったウィンドウが Agents ウィンドウでも、通常ウィンドウの
+ * どれか 1 つには出す（{@link paradisComputerUseNoticeWindowId}）。一覧を読めなければ出さない。
+ */
+export async function paradisComputerUseIsNoticeWindow(nativeHostService: INativeHostService, environmentService: IEnvironmentService, logService: ILogService): Promise<boolean> {
+	let activeWindowId: number | undefined;
+	let windows: IOpenedMainWindow[];
+	try {
+		[activeWindowId, windows] = await Promise.all([
+			nativeHostService.getActiveWindowId(),
+			nativeHostService.getWindows({ includeAuxiliaryWindows: false }),
+		]);
+	} catch (error) {
+		logService.warn('[ParadisComputerUse] could not list windows for a notice', error);
+		return false;
+	}
+	const agentSessionsWorkspace = environmentService.agentSessionsWorkspace;
+	const normalWindowIds = windows
+		.filter(window => !(isWorkspaceIdentifier(window.workspace) && isEqual(URI.revive(window.workspace.configPath), agentSessionsWorkspace)))
+		.map(window => window.id);
+	return paradisComputerUseNoticeWindowId(activeWindowId, normalWindowIds) === nativeHostService.windowId;
+}
+
 /** 設定がオフからオンに変わったら 1 回知らせる。 */
 class ParadisComputerUseEnabledNotice extends Disposable implements IWorkbenchContribution {
 	static readonly ID = 'workbench.contrib.paradisComputerUseEnabledNotice';
@@ -218,27 +242,9 @@ class ParadisComputerUseEnabledNotice extends Disposable implements IWorkbenchCo
 		}));
 	}
 
-	/**
-	 * 通常ウィンドウ 1 つでだけ知らせる。最後にフォーカスのあったウィンドウが Agents ウィンドウでも、
-	 * 通常ウィンドウのどれか 1 つには出す（{@link paradisComputerUseNoticeWindowId}）。
-	 */
+	/** 通常ウィンドウ 1 つでだけ知らせる（{@link paradisComputerUseIsNoticeWindow}）。 */
 	private async notifyIfLastFocused(): Promise<void> {
-		let activeWindowId: number | undefined;
-		let windows: IOpenedMainWindow[];
-		try {
-			[activeWindowId, windows] = await Promise.all([
-				this.nativeHostService.getActiveWindowId(),
-				this.nativeHostService.getWindows({ includeAuxiliaryWindows: false }),
-			]);
-		} catch (error) {
-			this.logService.warn('[ParadisComputerUse] could not list windows for the enabled notice', error);
-			return;
-		}
-		const agentSessionsWorkspace = this.environmentService.agentSessionsWorkspace;
-		const normalWindowIds = windows
-			.filter(window => !(isWorkspaceIdentifier(window.workspace) && isEqual(URI.revive(window.workspace.configPath), agentSessionsWorkspace)))
-			.map(window => window.id);
-		if (paradisComputerUseNoticeWindowId(activeWindowId, normalWindowIds) !== this.nativeHostService.windowId) {
+		if (!await paradisComputerUseIsNoticeWindow(this.nativeHostService, this.environmentService, this.logService)) {
 			return;
 		}
 		// ボタンがあると通知は開いた状態で出るので、本文が全部読める

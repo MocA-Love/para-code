@@ -80,6 +80,47 @@ suite('ParadisComputerUseApprovalChannel', () => {
 		});
 	});
 
+	test('offers only reading for browsers, remote desktop apps and trading apps, and never asks to operate them unless the setting allows it', async () => {
+		const browser = setup('approve');
+		const prompt = { appName: 'Safari', bundleId: 'com.apple.Safari', requested: 'read', upgrade: false, offerOperate: true };
+		const read = await browser.call('pane-a', prompt);
+		// 操作の求めと前面の確認は、shared process が先に断る。来ても聞かず、拒否としても記録させない
+		const operate = await browser.call('pane-a', { ...prompt, requested: 'operate' });
+		const upgrade = await browser.call('pane-a', { ...prompt, requested: 'operate', upgrade: true });
+		const foreground = await browser.callForeground('pane-a', { appName: 'Safari', bundleId: 'com.apple.Safari', action: 'click' });
+		// 設定で操作を許しているときは、ほかのアプリと同じ承認になる
+		const asked: IParadisAgentApprovalRequest[] = [];
+		const allowed = new ParadisComputerUseApprovalChannel(
+			{ askApproval: async (_token: string, request: IParadisAgentApprovalRequest) => { asked.push(request); return 'approve'; } },
+			{ getInstanceForToken: () => 7 },
+			undefined,
+			() => true,
+		);
+		const allowedOutcome = (await allowed.call<{ outcome: ParadisComputerUseApprovalOutcome }>(undefined, 'requestAccess', ['pane-a', { ...prompt, requested: 'operate' }])).outcome;
+		const readOnlyLine = 'このアプリで許可できるのは読み取りだけです。ブラウザ・リモートデスクトップ・取引アプリは、エージェントに操作させません。';
+		assert.deepStrictEqual({
+			read,
+			refused: [operate, upgrade, foreground],
+			asked: browser.asked.length,
+			buttons: [browser.asked[0].alternative, browser.asked[0].approve],
+			readOnlyLine: browser.asked[0].detail.includes(readOnlyLine),
+			operateLine: browser.asked[0].detail.some(line => line.startsWith('操作:')),
+			allowedOutcome,
+			allowedButtons: [asked[0].alternativeLabel, asked[0].approveLabel],
+			allowedReadOnlyLine: asked[0].detail.includes(readOnlyLine),
+		}, {
+			read: 'read',
+			refused: ['cancelled', 'cancelled', 'cancelled'],
+			asked: 1,
+			buttons: [undefined, '読み取りを許可'],
+			readOnlyLine: true,
+			operateLine: false,
+			allowedOutcome: 'operate',
+			allowedButtons: ['読み取りのみ許可', '操作も許可'],
+			allowedReadOnlyLine: false,
+		});
+	});
+
 	test('warns that operating a terminal can run commands, and always says Computer Use runs outside the agent\'s limits', async () => {
 		const terminal = setup('approve');
 		await terminal.call('pane-a', { appName: 'Terminal', bundleId: 'com.apple.Terminal', requested: 'operate', upgrade: false, offerOperate: true });

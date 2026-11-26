@@ -19,6 +19,11 @@
 //      ウィンドウ（Dock と WindowServer の画面全体の層は除く。レビュー N3）の持ち主が目的の pid か。キーは、OS に聞いた
 //      フォーカスのあるアプリと要素の持ち主が目的の pid か（重なるだけのパネルでは止めない。レビュー N4）
 //    - 認証・同意のダイアログが出ていれば止める（レビュー M3）
+//    - 利用者が Esc の 2 回押しで止めていれば、`stopped_by_user` で止める（ParadisEmergencyStop.swift）。利用者の入力を
+//      見るのと同じ場所で見るので、どの段でも、長い入力の途中でも止まる
+//    - キーを送る前（1 打ごと）に、セキュア入力が有効でその持ち主がキーの届く先なら `secure_input_active` で止める
+//      （`secureInputFailure`）。クリック・スクロール・ドラッグは止めない。AX で値や文字を入れる経路（setValue、
+//      1 段目の文字入力）は、パスワード欄を `paradisIsSecureLike` で断っているのでここでは見ない
 //    - 長い入力では、利用者の入力は毎回、画面とフォーカスは 10 文字か 50 ms ごとに確かめる（レビュー N5）
 //  - 修飾キーはイベントのフラグで付け、修飾キーそのものの押下は送らない。押す・離すのイベントは組み合わせの修飾キー付きで
 //    送り、離した直後に修飾キーの解放の flagsChanged を 1 つ送って、OS に ⌘ などが押されたままの状態を残さない
@@ -253,7 +258,7 @@ extension ParadisDesktop {
 		var lastFullFence: Date?
 		for (typed, unit) in units.enumerated() {
 			let full = paradisNeedsFullFence(unitIndex: typed, secondsSinceLastFullFence: lastFullFence.map { Date().timeIntervalSince($0) })
-			if let failure = keyFenceFailure(pid: pid, full: full) {
+			if let failure = keyFenceFailure(pid: pid, full: full) ?? secureInputFailure(pid: pid, viaFrontmost: true) {
 				throw ParadisHelperError(code: failure.code, message: "\(failure.message); stopped after typing \(typed) of \(units.count) characters", progress: typed)
 			}
 			if full {
@@ -261,8 +266,13 @@ extension ParadisDesktop {
 			}
 			if case .text(let character) = unit {
 				let utf16 = Array(character.utf16)
-				try postKey(virtualKey: 0) { event in
-					event.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
+				do {
+					try postKey(virtualKey: 0) { event in
+						event.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
+					}
+				} catch let error as ParadisHelperError where error.code == "stopped_by_user" {
+					// 押下の直前に止められた: ここまでに打てた数を添える
+					throw ParadisHelperError(code: error.code, message: "\(error.message); stopped after typing \(typed) of \(units.count) characters", progress: typed)
 				}
 			}
 			usleep(paradisInterCharacterMicroseconds)
@@ -311,6 +321,9 @@ extension ParadisDesktop {
 	private func pasteAndCheck(pid: Int32, text: String) throws -> (ParadisClipboardPlan, ParadisTypingCheck) {
 		// クリップボードに触る前に確かめる（送れないなら書き換えもしない）
 		try keyFence(pid: pid)
+		if let failure = secureInputFailure(pid: pid, viaFrontmost: true) {
+			throw failure
+		}
 		let pasteboard = NSPasteboard.general
 		let saved = paradisOnMain { paradisSavePasteboard(pasteboard) }
 		let target = paradisFocusedTextTarget(pid: pid)
@@ -372,6 +385,9 @@ extension ParadisDesktop {
 			throw ParadisHelperError(code: "key_blocked", message: reason)
 		}
 		try keyFence(pid: pid)
+		if let failure = secureInputFailure(pid: pid, viaFrontmost: true) {
+			throw failure
+		}
 		// 実際のキーボードと同じく、キーを修飾キー付きで押して離し、その後に修飾キーの解放を送る。解放を送らないと、
 		// OS の修飾キーの状態が押されたままで残る（実機の報告）
 		let systemBefore = CGEventSource.flagsState(.hidSystemState)
@@ -400,6 +416,9 @@ extension ParadisDesktop {
 	// MARK: - 確かめ
 
 	func requireInputPermission() throws {
+		if let failure = emergencyStop.failure() {
+			throw failure
+		}
 		try ParadisRequestCancellation.check()
 		guard AXIsProcessTrusted() else {
 			throw ParadisHelperError(code: "accessibility_not_granted", message: "Accessibility permission is not granted to Para Code Computer Use")
@@ -408,7 +427,8 @@ extension ParadisDesktop {
 	}
 
 	func userActivityFailure() -> ParadisHelperError? {
-		if let failure = ParadisRequestCancellation.failure() { return failure }
+		// Esc の 2 回押しは、それ自体が利用者の入力なので、`user_active`（少し待って送り直せる）より先に見る
+		if let failure = emergencyStop.failure() ?? ParadisRequestCancellation.failure() { return failure }
 		if paradisUserIsActive(secondsSincePhysicalInput: inputMonitor.secondsSincePhysicalInput()) {
 			return ParadisHelperError(code: "user_active", message: "the user is using the keyboard or mouse")
 		}
@@ -439,11 +459,27 @@ extension ParadisDesktop {
 
 	/** 利用者が打鍵中か（1 段目の確かめ。マウスの動きでは止めない）。 */
 	func keyboardActivityFailure() -> ParadisHelperError? {
-		if let failure = ParadisRequestCancellation.failure() { return failure }
+		if let failure = emergencyStop.failure() ?? ParadisRequestCancellation.failure() { return failure }
 		if paradisUserIsActive(secondsSincePhysicalInput: inputMonitor.secondsSincePhysicalKeyboardInput()) {
 			return ParadisHelperError(code: "user_active", message: "the user is typing")
 		}
 		return nil
+	}
+
+	/**
+	 * セキュア入力（パスワード欄などがキーボードを独占している状態）で、キーを送らずに断るか。`viaFrontmost` は、前面の
+	 * アプリへ届く送り方（HID のタップへ送る 3 段目）か。判定は `paradisSecureInputBlocksKeys`。
+	 * 持ち主の pid はセッションの辞書の `kCGSSessionSecureInputPID` から読む（【要確認】有効な間だけ載るキーで、
+	 * 実機では確かめていない。載らなければ「分からない」として扱う）。
+	 */
+	func secureInputFailure(pid: Int32, viaFrontmost: Bool) -> ParadisHelperError? {
+		guard IsSecureEventInputEnabled() else {
+			return nil
+		}
+		let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+		let owner = (session?["kCGSSessionSecureInputPID"] as? NSNumber)?.int32Value
+		let frontmost = viaFrontmost ? NSWorkspace.shared.frontmostApplication?.processIdentifier : nil
+		return paradisSecureInputBlocksKeys(secureInputEnabled: true, ownerPid: owner, keyTargetPid: pid, viaFrontmost: viaFrontmost, frontmostPid: frontmost) ? paradisSecureInputFailure() : nil
 	}
 
 	private func pointerFence(pid: Int32, point: CGPoint) throws {
@@ -533,7 +569,23 @@ extension ParadisDesktop {
 			throw ParadisHelperError(code: "input_failed", message: "the input event could not be created")
 		}
 		event.setIntegerValueField(.eventSourceUserData, value: paradisSyntheticEventMarker)
-		event.post(tap: .cghidEventTap)
+		// 押下（キー・マウスのボタン）は、緊急停止の掛け金の鍵を持ったまま送る。フェンスで停止を確かめた後、ウィンドウや
+		// フォーカスを問い合わせている間に利用者が止めても、その後の押下は送らない。離す・動かす・修飾キーの解放は
+		// 止めない（押したままのキーやボタンを残さないため）
+		let press: Bool
+		switch event.type {
+		case .keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown:
+			press = true
+		default:
+			press = false
+		}
+		if press {
+			try emergencyStop.sendUnlessStopped {
+				event.post(tap: .cghidEventTap)
+			}
+		} else {
+			event.post(tap: .cghidEventTap)
+		}
 	}
 
 	/**
@@ -573,6 +625,8 @@ final class ParadisInputMonitor {
 	private var startedAt: Date?
 	private var tap: CFMachPort?
 	private var attempted = false
+	/** 緊急停止の掛け金（ParadisDesktop が渡す）。目印の無いキーの押下を知らせる。 */
+	var emergencyStop: ParadisEmergencyStop?
 
 	/** 見張りを始める（アクセシビリティの許可が要る。無ければ何もしない）。 */
 	func ensureStarted() {
@@ -706,6 +760,19 @@ private let paradisInputTapCallback: CGEventTapCallBack = { _, type, event, user
 	} else {
 		let ours = paradisIsOurEvent(userData: event.getIntegerValueField(.eventSourceUserData), sourcePid: event.getIntegerValueField(.eventSourceUnixProcessID), selfPid: getpid())
 		monitor.record(type: type, ours: ours)
+		// Esc の 2 回押しで止める（ParadisEmergencyStop.swift）。自分の送ったキーと Esc の自動リピートは数えず、
+		// ほかのキーを挟んだら数え直す
+		if type == .keyDown {
+			let key = paradisEmergencyKey(
+				keyCode: event.getIntegerValueField(.keyboardEventKeycode),
+				autorepeat: event.getIntegerValueField(.keyboardEventAutorepeat) != 0,
+				ours: ours,
+				hasCommandControlOrOption: !event.flags.intersection([.maskCommand, .maskControl, .maskAlternate]).isEmpty
+			)
+			if monitor.emergencyStop?.noteKeyDown(key, at: ProcessInfo.processInfo.systemUptime) == true {
+				fputs("[paradis-computer-use] stopped by the user (Escape pressed twice)\n", stderr)
+			}
+		}
 	}
 	return Unmanaged.passUnretained(event)
 }
