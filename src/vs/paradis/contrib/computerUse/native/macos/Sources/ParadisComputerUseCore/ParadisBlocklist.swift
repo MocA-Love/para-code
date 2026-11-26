@@ -87,6 +87,105 @@ let paradisBlockedSystemSurfaces: [String] = [
 	"com.apple.universalaccessAuthWarn",
 ]
 
+// MARK: - 読むだけにするアプリ
+//
+// 画面を読むのは許すが、入力は送らないアプリ。常に断るアプリ（上）と違い、利用者が設定
+// `paradis.computerUse.allowOperatingReadOnlyApps` をオンにすれば操作も許せる（shared process が要求ごとに
+// `allowOperatingReadOnlyApps` を渡す。渡されなければ読むだけ）。一覧は TS 側と同じにする（突き合わせテストが見る）。
+// 一覧は公開されている bundle id の知識から作った。【要確認】は実機で実在を確かめていないもの。
+
+/**
+ * リモートデスクトップ・画面共有。遠隔先の画面の中では、常に断るアプリの一覧もアプリごとの承認も効かない。
+ * 【要確認】com.apple.ScreenSharing・com.apple.RemoteDesktop・com.microsoft.rdc.macos・com.teamviewer.TeamViewer 以外の各 id の実在。
+ */
+let paradisReadOnlyRemoteDesktopApps: [String] = [
+	"com.apple.ScreenSharing",
+	"com.apple.RemoteDesktop",
+	"com.microsoft.rdc.macos",
+	"com.teamviewer.TeamViewer",
+	"com.philandro.anydesk",
+	"com.realvnc.vncviewer",
+	"tv.parsec.www",
+	"com.p5sys.jump.mac.viewer",
+	"com.edovia.screens*",
+	"com.citrix.receiver.*",
+	"com.vmware.horizon",
+	"com.omnissa.horizon.client.mac",
+	"com.carriez.rustdesk",
+	"com.nomachine.nxplayer",
+	"com.splashtop.*",
+	"*chromeremotedesktop*",
+]
+
+/**
+ * ブラウザ。ログイン中のサイトを利用者として操作できる。Para Code には内蔵ブラウザの道具があるので、そちらを使わせる。
+ * 末尾が `*` のものは、派生の版（Beta・Dev・Canary）とブラウザが作るウェブアプリも含む。
+ * 【要確認】company.thebrowser.dia・com.kagi.kagimacOS・app.zen-browser.zen・ai.perplexity.comet・com.openai.atlas の実在。
+ */
+let paradisReadOnlyBrowsers: [String] = [
+	"com.apple.Safari*",
+	"com.google.Chrome*",
+	"org.chromium.Chromium",
+	"org.mozilla.firefox*",
+	"org.mozilla.nightly",
+	"com.microsoft.edgemac*",
+	"com.brave.Browser*",
+	"company.thebrowser.Browser",
+	"company.thebrowser.dia",
+	"com.operasoftware.Opera*",
+	"com.vivaldi.Vivaldi*",
+	"com.duckduckgo.macos.browser",
+	"org.torproject.torbrowser",
+	"com.kagi.kagimacOS*",
+	"app.zen-browser.zen",
+	"ai.perplexity.comet",
+	"com.openai.atlas",
+]
+
+/**
+ * 証券・暗号資産の取引アプリとウォレット。注文と送金は取り消せない。
+ * 【要確認】どの id も実機で確かめていない（名前を含むものに広く当てている）。
+ */
+let paradisReadOnlyTradingApps: [String] = [
+	"com.tradingview.tradingviewapp.desktop",
+	"*tradingview*",
+	"*metatrader*",
+	"*thinkorswim*",
+	"*interactivebrokers*",
+	"*webull*",
+	"*moomoo*",
+	"*binance*",
+	"*coinbase*",
+	"*bitflyer*",
+	"*coincheck*",
+	"com.kraken.desktop",
+	"com.ledger.live",
+	"io.trezor.TrezorSuite",
+	"io.exodus.exodus",
+	"*marketspeed*",
+	"*hypersbi*",
+]
+
+enum ParadisReadOnlyReason: String {
+	case remoteDesktop = "remote-desktop"
+	case browser = "browser"
+	case trading = "trading"
+}
+
+/** そのアプリを読むだけにするなら理由を返す（常に断るアプリかどうかは `paradisBlockReason` が先に見る）。 */
+func paradisReadOnlyReason(bundleId: String) -> ParadisReadOnlyReason? {
+	if paradisMatches(bundleId, paradisReadOnlyRemoteDesktopApps) {
+		return .remoteDesktop
+	}
+	if paradisMatches(bundleId, paradisReadOnlyBrowsers) {
+		return .browser
+	}
+	if paradisMatches(bundleId, paradisReadOnlyTradingApps) {
+		return .trading
+	}
+	return nil
+}
+
 enum ParadisBlockReason: String {
 	case passwordManager = "password-manager"
 	case authenticator = "authenticator"

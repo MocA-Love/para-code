@@ -375,6 +375,14 @@ suite('paradisAgentIde (common)', () => {
 		assert.deepStrictEqual([trust, mcp, idle].map(screen => paradisAgentIdeScreenShowsPrompt(screen)), [true, true, false]);
 	});
 
+	test('prompt detection does not depend on the key names in the footers of Claude Code (keybindings.json, 2.1.332)', () => {
+		const question = 'Which fruit do you want?\n\n\u276f 1. Apple\n  2. Banana\n\nctrl+y to select \u00b7 Tab/Arrow keys to navigate \u00b7 Esc to cancel';
+		const confirm = '  Switch model?\n\n  \u276f 1. Yes, switch to Sonnet 5.5\n    2. No, go back\n\n  ctrl+y to confirm \u00b7 ctrl+g to cancel';
+		const idle = '\u256d\u2500\u2500\u2500\u256e\n\u2502 > \u2502\n\u2570\u2500\u2500\u2500\u256f\n  ? for shortcuts';
+		const resume = '  Resume this conversation?\n\n  \u276f 1. Resume\n    2. Start a new conversation\n\n  Enter to confirm \u00b7 ctrl+g to resume';
+		assert.deepStrictEqual([question, confirm, resume, idle].map(screen => paradisAgentIdeScreenShowsPrompt(screen)), [true, true, true, false]);
+	});
+
 	test('status labels, key sequences, tail lines, titles and the agent marker', () => {
 		assert.deepStrictEqual({
 			labels: [paradisAgentIdeStatusLabel('working'), paradisAgentIdeStatusLabel('permission'), paradisAgentIdeStatusLabel('question'), paradisAgentIdeStatusLabel('review'), paradisAgentIdeStatusLabel(undefined)],

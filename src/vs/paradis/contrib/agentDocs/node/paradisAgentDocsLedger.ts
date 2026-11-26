@@ -13,6 +13,7 @@ import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import {
+	IParadisDocFingerprint,
 	IParadisDocOwner,
 	IParadisDocRecord,
 	IParadisDocRemoval,
@@ -238,19 +239,73 @@ export class ParadisAgentDocsLedger extends Disposable {
 		}
 	}
 
+	/**
+	 * ウィンドウが取った指紋を預かる。台帳に無い資料の分は捨てる。最後に動いた時刻と並びは変えない。
+	 * @returns 変えた件数
+	 */
+	setFingerprints(hostId: string, updates: readonly { readonly path: string; readonly fingerprint: IParadisDocFingerprint }[]): number {
+		let changed = 0;
+		for (const update of updates) {
+			const key = paradisDocKey(hostId, update.path);
+			const record = this._records.get(key);
+			const previous = record?.fingerprint;
+			if (record === undefined || (previous !== undefined && previous.hash === update.fingerprint.hash && previous.size === update.fingerprint.size && previous.mtime === update.fingerprint.mtime && previous.at === update.fingerprint.at)) {
+				continue;
+			}
+			this._records.set(key, { ...record, fingerprint: update.fingerprint });
+			changed++;
+		}
+		if (changed > 0) {
+			this._saver.schedule();
+			this._onDidChange.fire();
+		}
+		return changed;
+	}
+
+	/**
+	 * 見つからなくなった資料の記録の場所を、移動先へ書き換える（持ち主・書き込みの記録・指紋はそのまま移る）。
+	 * `hash` はウィンドウが移動先のファイルで確かめた中身のハッシュで、台帳の指紋と同じときだけ書き換える（指紋の無い
+	 * 資料・別の中身を確かめた頼みは断る）。移動先が既に載っているときは、見張りが拾っただけ・利用者が開いただけで、
+	 * 書き込みの記録が無い記録（移ってきたファイルを先に載せたもの）だけを置き換える。ほかの資料として載っていれば断る。
+	 * 元の場所は「外した資料」に控える（会話の記録の読み直しで、移す前の書き込みから載せ直さない）。
+	 * @returns 書き換えたか
+	 */
+	relocate(hostId: string, from: string, to: string, hash: string): boolean {
+		const fromKey = paradisDocKey(hostId, from);
+		const toKey = paradisDocKey(hostId, to);
+		const record = this._records.get(fromKey);
+		const kind = paradisDocKind(to);
+		if (record === undefined || fromKey === toKey || kind !== record.kind || record.fingerprint === undefined || record.fingerprint.hash !== hash) {
+			return false;
+		}
+		const existing = this._records.get(toKey);
+		if (existing !== undefined && (existing.writes.length > 0 || (existing.owner !== undefined && existing.owner.via !== 'watch') || (existing.registeredBy !== 'watch' && existing.registeredBy !== 'user_opened'))) {
+			return false;
+		}
+		const { missingSince: _missingSince, ...present } = record;
+		this._records.delete(fromKey);
+		this._rememberRemoval(fromKey, hostId, from);
+		this._set({ ...present, path: to });
+		return true;
+	}
+
+	private _rememberRemoval(key: string, hostId: string, path: string): void {
+		this._removed.delete(key);
+		this._removed.set(key, { hostId, path, at: this._now() });
+		if (this._removed.size > PARADIS_DOC_MAX_REMOVALS) {
+			const oldest = this._removed.keys().next();
+			if (oldest.done !== true) {
+				this._removed.delete(oldest.value);
+			}
+		}
+	}
+
 	/** 一覧から外す（ファイルには触らない）。 */
 	remove(hostId: string, path: string): boolean {
 		const key = paradisDocKey(hostId, path);
 		const removed = this._records.delete(key);
 		if (removed) {
-			this._removed.delete(key);
-			this._removed.set(key, { hostId, path, at: this._now() });
-			if (this._removed.size > PARADIS_DOC_MAX_REMOVALS) {
-				const oldest = this._removed.keys().next();
-				if (oldest.done !== true) {
-					this._removed.delete(oldest.value);
-				}
-			}
+			this._rememberRemoval(key, hostId, path);
 			this._saver.schedule();
 			this._onDidChange.fire();
 		}

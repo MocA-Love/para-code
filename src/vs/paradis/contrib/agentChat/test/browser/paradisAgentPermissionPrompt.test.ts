@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { ITerminalInstance } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
-import { paradisClaudeResumeScreenPrompt, paradisPermissionPromptHash, paradisPermissionPromptParts, paradisPromptRegionShows, paradisScreenShowsAgentPrompt, paradisScreenShowsClaudeResumePrompt, paradisScreenShowsClaudeYesNoPlanPrompt, paradisScreenShowsPermissionPrompt, paradisVisibleTerminalLogicalText } from '../../browser/paradisAgentTuiInput.js';
+import { paradisClaudeResumeScreenPrompt, paradisPermissionPromptHash, paradisPermissionPromptParts, paradisPromptRegionShows, paradisScreenShowsAgentPrompt, paradisScreenShowsClaudeResumePrompt, paradisScreenShowsClaudeYesNoPlanPrompt, paradisScreenShowsPermissionPrompt, paradisScreenShowsQuestionPrompt, paradisVisibleTerminalLogicalText } from '../../browser/paradisAgentTuiInput.js';
 import { paradisApprovalScreenPiece, paradisCodexApprovalFormShown, paradisCodexApprovalFormShows, paradisParseApprovalOptions, paradisParsePermissionWarning } from '../../../mobileRelay/common/paradisAgentApprovalOptions.js';
 import { CODEX_EXEC_APPROVAL_DETAIL, CODEX_EXEC_APPROVAL_SCREEN, CODEX_MCP_APPROVAL_DETAIL, CODEX_MCP_APPROVAL_SCREEN, CODEX_WORKING_SCREEN } from './paradisCodexPromptScreens.js';
 
@@ -269,6 +269,42 @@ suite('Claude Code resume prompt on screen (Claude Code 2.1.306)', () => {
 		});
 	});
 
+	test('finds the resume prompt when keybindings.json renames the cancel key, and the idle form with an unsent message (Claude Code 2.1.332)', () => {
+		// 2.1.332 のバイナリから組んだ形（実画面は出せていない）: `Enter` は固定、取り消しのキーは `Confirmation` の `confirm:no` の割り当て
+		const rebound = resumePrompt.replace('Enter to confirm · Esc to resume', 'Enter to confirm · ctrl+g to resume');
+		// 使っていない間に出る型: 番号が無く、文を打ちかけていると操作説明の先頭に 1 つ足される
+		const idle = [
+			RULE,
+			'  Resume this conversation?',
+			'',
+			'  This conversation has been inactive for 6h and is 300k tokens long. Resuming it will use about 21% of your 5-hour',
+			'  usage limit.',
+			'  Your unsent message will still be there after you answer.',
+			'',
+			'  ❯ Resume',
+			'    Start a new conversation',
+			'',
+			'  ↑/↓ to pick a row first · Enter to confirm · Esc to dismiss',
+		].join('\n');
+		// 2.1.332 の古いセッションの確認（バイナリの文字列。本文と選択肢の文言が 2.1.309 から変わった）
+		const sessionAge332 = [
+			RULE,
+			'  This session is 2d 3h old and 412.3k tokens.',
+			'',
+			'  Resuming the full session uses a lot of your usage limits. Resuming from a summary uses less.',
+			'',
+			'  ❯ 1. Resume from summary (instant, recommended)',
+			'    2. Resume full session as-is',
+			'    3. Don\'t ask again',
+			'',
+			'  Enter to confirm · Esc to cancel',
+		].join('\n');
+		assert.deepStrictEqual(
+			[rebound, idle, sessionAge332].map(screen => [paradisClaudeResumeScreenPrompt(screen), paradisScreenShowsAgentPrompt(screen, 'claude')]),
+			[['resume', true], ['resume', true], ['session-age', true]],
+		);
+	});
+
 	// 2.1.309 の実画面（`--resume` で 5 時間使っていない会話を開いた直後。旗 tengu_gleaming_fair のとき）
 	const sessionAge = [
 		'❯ Say hi in one word.',
@@ -317,6 +353,34 @@ suite('Claude Code resume prompt on screen (Claude Code 2.1.306)', () => {
 			agent: [true, false, true, false],
 		});
 	});
+
+	test('still finds the prompts when keybindings.json renames the keys in the footer (Claude Code 2.1.332)', () => {
+		const rebound = (screen: string) => screen.replace('Enter to confirm \u00b7 Esc to cancel', 'ctrl+y to confirm \u00b7 ctrl+g to cancel');
+		// 2.1.332 の実画面（`Select` の `enter` を外し、`ctrl+y` に `select:accept` を割り当てたときの質問）
+		const question = [
+			RULE,
+			'\u2190  \u2610 Fruit  \u2610 Color  \u2714 Submit  \u2192',
+			'',
+			'Which fruit do you want?',
+			'',
+			'\u276f 1. Apple',
+			'     desc Apple',
+			'  2. Banana',
+			'     desc Banana',
+			'  3. Type something.',
+			RULE,
+			'  4. Chat about this',
+			'',
+			'ctrl+y to select \u00b7 Tab/Arrow keys to navigate \u00b7 Esc to cancel',
+		].join('\n');
+		assert.deepStrictEqual({
+			kinds: [sessionAge, newerModel, otherDialog].map(screen => paradisClaudeResumeScreenPrompt(rebound(screen))),
+			question: [paradisScreenShowsQuestionPrompt(question), paradisScreenShowsAgentPrompt(question, 'claude'), paradisScreenShowsQuestionPrompt(answered)],
+		}, {
+			kinds: ['session-age', 'newer-model', undefined],
+			question: [true, true, false],
+		});
+	});
 });
 
 suite('Claude Code sub-agent plan approval on screen (Claude Code 2.1.326)', () => {
@@ -349,6 +413,36 @@ suite('Claude Code sub-agent plan approval on screen (Claude Code 2.1.326)', () 
 		'    \u276f Yes, and switch to default (ask each time) for this session',
 		'      No',
 	].join('\n');
+	// 2.1.332 の実画面（計画が空の子エージェント。上端に入力欄との境の線が付く。文と Enter を捨てた後の注意の行まで 2.1.326 と同じ）
+	const emptyPlan332 = [
+		'⏺ planner(plan hello)',
+		'  \u23bf  Backgrounded agent (\u2193 to manage \u00b7 ctrl+o to expand)',
+		'',
+		'⏺ MOCKDONE after tool',
+		'',
+		'✻ Waiting for 1 background agent to finish',
+		'',
+		'\u2594'.repeat(120),
+		'  ' + '\u2500'.repeat(116),
+		'   Exit plan mode? \u00b7 from the planner agent',
+		'',
+		'   Claude wants to exit plan mode',
+		'',
+		'   \u276f Yes, and switch to default (ask each time) for this session',
+		'     No',
+		'   Not answered yet \u00b7 \u2191/\u2193 to choose \u00b7 Esc to decline',
+	].join('\n');
+	// 承認が保留された計画（200,000 字を超える）: `Yes` の行が出ない（2.1.332 のバイナリの文字列から組み立てた形）
+	const withheldPlan = [
+		RULE,
+		'   Ready to code? \u00b7 from the planner agent',
+		'   Here is Claude\'s plan:',
+		'   (the plan is too large to be shown in full, so it can only be declined)',
+		RULE,
+		'   Claude has written up a plan and is ready to execute. Would you like to proceed?',
+		'',
+		'   \u276f No',
+	].join('\n');
 	// 本会話の計画の確定（番号付き。従来の許可の確認として見つかる）
 	const mainPlan = [
 		RULE,
@@ -359,6 +453,40 @@ suite('Claude Code sub-agent plan approval on screen (Claude Code 2.1.326)', () 
 	].join('\n');
 	// 承認が済んで入力欄に戻った後（会話の本文に同じ文が残っている）
 	const answered = `${emptyPlan}\n${RULE}\n\u276f \n${RULE}`;
+	// 2.1.332 の実画面（計画ファイルのある本会話の計画の確定。auto mode が使える環境では 1 番が auto mode になる）
+	const mainPlan332 = [
+		'  ' + '\u2500'.repeat(116),
+		'   Ready to code?',
+		'',
+		'   Here is Claude\'s plan:',
+		'  ' + '\u254c'.repeat(116),
+		'   Plan',
+		'',
+		'   1. Do the first thing',
+		'   2. Do the second thing',
+		'  ' + '\u254c'.repeat(116),
+		'  ' + '\u2500'.repeat(116),
+		'   Claude has written up a plan and is ready to execute. Would you like to proceed?',
+		'',
+		'   \u276f 1. Yes, and use auto mode',
+		'     2. Yes, manually approve edits',
+		'     3. Tell Claude what to change',
+		'        shift+tab to approve with this feedback',
+		'',
+		'   ctrl+g to edit in Vim \u00b7 ~/.claude/plans/plan-zzplanfile-smooth-snail.md',
+	].join('\n');
+	// 同じ確定で、承認が保留された計画（200,000 字を超える計画。2.1.332 の実画面）: 選択肢は自由入力の 1 行だけで、`1` は確定にならない
+	const mainPlanWithheld332 = [
+		'   (the plan is too large to be shown in full \u2014 approval is withheld; send feedback asking for a shorter plan, or',
+		'   press Esc)',
+		'  ' + '\u254c'.repeat(116),
+		'  ' + '\u2500'.repeat(116),
+		'   Claude has written up a plan and is ready to execute. Would you like to proceed?',
+		'',
+		'   \u276f 1. Tell Claude what to change',
+		'',
+		'   ctrl+g to edit in Vim \u00b7 ~/.claude/plans/plan-zzplanwh-valiant-abelson.md',
+	].join('\n');
 
 	test('finds the yes/no-only plan approval, also when the heading wraps, and refuses chat sends while it is shown', () => {
 		assert.deepStrictEqual({
@@ -369,6 +497,20 @@ suite('Claude Code sub-agent plan approval on screen (Claude Code 2.1.326)', () 
 			yesNo: [true, true, true, false, false],
 			permission: [false, false],
 			agent: [true, true, false, false],
+		});
+	});
+
+	test('Claude Code 2.1.332: the same sub-agent approval, a withheld plan with only "No", and the numbered plan approval of the main session', () => {
+		assert.deepStrictEqual({
+			yesNo: [emptyPlan332, withheldPlan, mainPlan332, mainPlanWithheld332, `${withheldPlan}\n${RULE}\n\u276f \n${RULE}`].map(paradisScreenShowsClaudeYesNoPlanPrompt),
+			agent: [emptyPlan332, withheldPlan, mainPlan332, mainPlanWithheld332].map(screen => paradisScreenShowsAgentPrompt(screen, 'claude')),
+			permission: [mainPlan332, mainPlanWithheld332].map(paradisScreenShowsPermissionPrompt),
+			options: paradisParseApprovalOptions(paradisPermissionPromptParts(mainPlan332)?.options ?? '')?.map(option => `${option.n}. ${option.label}`),
+		}, {
+			yesNo: [true, true, false, false, false],
+			agent: [true, true, true, true],
+			permission: [true, true],
+			options: ['1. Yes, and use auto mode', '2. Yes, manually approve edits', '3. Tell Claude what to change shift+tab to approve with this feedback'],
 		});
 	});
 });

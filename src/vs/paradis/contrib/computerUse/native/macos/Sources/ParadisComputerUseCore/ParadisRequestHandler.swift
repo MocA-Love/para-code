@@ -14,6 +14,8 @@
 // shared process・補助アプリ自身は、ここでも断る（レビュー M1。shared process の判定と二重にする）。
 // pid を取る命令は、shared process が解いたときの bundle id も受け取り、今のその pid の bundle id と比べる
 // （pid の使い回しで別のアプリへ届かないように）。
+// 入力を送る命令は、その前に 2 つを見る: 利用者が Esc の 2 回押しで止めていないか（ParadisEmergencyStop.swift）、
+// 的が読むだけにするアプリ（ブラウザ・リモートデスクトップ・取引アプリ）でないか。どちらも shared process と二重にする。
 
 import Foundation
 
@@ -105,7 +107,8 @@ protocol ParadisDesktopBackend: AnyObject {
 	func listWindows(pid: Int32) throws -> [[String: Any]]
 	func screenshotWindow(pid: Int32, windowId: UInt32, maxLongEdge: Int) throws -> [String: Any]
 	/** `enableManualAccessibility` は操作の許可があるときだけ true（Electron 製のアプリに AXManualAccessibility を立ててよい）。 */
-	func accessibilityTree(pid: Int32, windowId: UInt32?, maxNodes: Int, maxDepth: Int, enableManualAccessibility: Bool) throws -> [String: Any]
+	/** `prune` なら、名前も操作も無い入れ物を文から外す（番号は変えない）。 */
+	func accessibilityTree(pid: Int32, windowId: UInt32?, maxNodes: Int, maxDepth: Int, enableManualAccessibility: Bool, prune: Bool) throws -> [String: Any]
 	/**
 	 * 入力を送る（前面に出す・クリック・ドラッグ・スクロール・文字入力・貼り付け・キー・値の変更）。
 	 * 送り方の段（ParadisInputRoute.swift）を順に試し、結果の `route` に送った段を書く。
@@ -162,18 +165,26 @@ let paradisMaxAXMaxNodes = 2_000
 let paradisDefaultAXMaxDepth = 30
 let paradisMaxAXMaxDepth = 60
 
+/** 入力を送る命令（緊急停止と、読むだけにするアプリの確かめの対象）。 */
+let paradisInputMethods: Set<String> = ["activateApp", "click", "drag", "scroll", "typeText", "pasteText", "pressKey", "hotkey", "setValue"]
+
 final class ParadisRequestHandler {
 	private let backend: ParadisDesktopBackend
 	private let expectedToken: String
 	private let selfPid: Int32
+	/** 緊急停止の掛け金。入力の見張りと同じものを渡す（main.swift）。 */
+	let emergencyStop: ParadisEmergencyStop
+	private let now: () -> Double
 	private(set) var authenticated = false
 	/** 的にしてはいけない pid（接続相手の shared process と、その親の Para Code の main）。受け入れた後に入れる。 */
 	var protectedPids: Set<Int32> = []
 
-	init(backend: ParadisDesktopBackend, expectedToken: String, selfPid: Int32) {
+	init(backend: ParadisDesktopBackend, expectedToken: String, selfPid: Int32, emergencyStop: ParadisEmergencyStop = ParadisEmergencyStop(), now: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime }) {
 		self.backend = backend
 		self.expectedToken = expectedToken
 		self.selfPid = selfPid
+		self.emergencyStop = emergencyStop
+		self.now = now
 	}
 
 	func handle(line: Data) -> ParadisHandlerOutcome {
@@ -217,12 +228,56 @@ final class ParadisRequestHandler {
 	}
 
 	private func dispatch(_ request: ParadisRequest) throws -> Any {
+		guard paradisInputMethods.contains(request.method) else {
+			return try dispatchMethod(request)
+		}
+		// 利用者が止めていたら、引数を読む前に断る（何も送らない）
+		if let failure = emergencyStop.failure() {
+			throw failure
+		}
+		try requireOperableApp(request.params)
+		// Esc の 2 回押しで止められるのは、入力の要求を処理している間と、終えてから 30 秒の間
+		emergencyStop.beginInput(at: now())
+		defer {
+			emergencyStop.endInput(at: now())
+		}
+		return try dispatchMethod(request)
+	}
+
+	/**
+	 * 的が読むだけにするアプリなら、入力を断る。shared process が利用者の設定
+	 * （`paradis.computerUse.allowOperatingReadOnlyApps`）を `allowOperatingReadOnlyApps: true` で渡したときだけ通す。
+	 */
+	private func requireOperableApp(_ params: [String: Any]) throws {
+		let pid = try pidParam(params)
+		var allowed = false
+		if let raw = params["allowOperatingReadOnlyApps"] {
+			guard let number = raw as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else {
+				throw ParadisHelperError.invalidArgument("\"allowOperatingReadOnlyApps\" must be true or false")
+			}
+			allowed = number.boolValue
+		}
+		if !allowed, let bundleId = backend.bundleIdentifier(pid: pid), let reason = paradisReadOnlyReason(bundleId: bundleId) {
+			throw ParadisHelperError(code: "read_only_app", message: "Computer Use only reads this application (\(reason.rawValue))")
+		}
+	}
+
+	private func dispatchMethod(_ request: ParadisRequest) throws -> Any {
 		let params = request.params
 		switch request.method {
 		case "status":
 			return statusResult()
 		case "permissions":
-			return backend.permissions().json
+			// 止まっていることは、読むだけの要求の答えでも shared process へ伝える（次の入力を待たずに利用者へ知らせるため）
+			var result = backend.permissions().json
+			if emergencyStop.isStopped {
+				result["stopped"] = true
+			}
+			return result
+		case "resume":
+			// 掛け金を外す。shared process は、Para Code の画面での人の操作からしか送らない
+			emergencyStop.resume()
+			return ["stopped": false]
 		case "listApps":
 			return ["apps": backend.listApps()]
 		case "listWindows":
@@ -289,7 +344,8 @@ final class ParadisRequestHandler {
 			let maxNodes = try optionalIntParam(params, "maxNodes", minimum: 1, maximum: paradisMaxAXMaxNodes) ?? paradisDefaultAXMaxNodes
 			let maxDepth = try optionalIntParam(params, "maxDepth", minimum: 1, maximum: paradisMaxAXMaxDepth) ?? paradisDefaultAXMaxDepth
 			let enableManualAccessibility = (params["enableManualAccessibility"] as? NSNumber).map { CFGetTypeID($0) == CFBooleanGetTypeID() && $0.boolValue } ?? false
-			return try backend.accessibilityTree(pid: try pidParam(params), windowId: try windowIdParam(params, required: false), maxNodes: maxNodes, maxDepth: maxDepth, enableManualAccessibility: enableManualAccessibility)
+			let prune = (params["prune"] as? NSNumber).map { CFGetTypeID($0) == CFBooleanGetTypeID() && $0.boolValue } ?? false
+			return try backend.accessibilityTree(pid: try pidParam(params), windowId: try windowIdParam(params, required: false), maxNodes: maxNodes, maxDepth: maxDepth, enableManualAccessibility: enableManualAccessibility, prune: prune)
 		default:
 			throw ParadisHelperError(code: "unknown_method", message: "unknown method: \(request.method)")
 		}

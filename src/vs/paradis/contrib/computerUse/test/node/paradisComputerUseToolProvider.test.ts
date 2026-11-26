@@ -22,6 +22,14 @@ interface IResult {
 
 const FINDER = { pid: 100, name: 'Finder', bundleId: 'com.apple.finder', active: false, hidden: false };
 const NOTES = { pid: 200, name: 'Notes', bundleId: 'com.apple.Notes', active: true, hidden: false };
+const SAFARI = { pid: 700, name: 'Safari', bundleId: 'com.apple.Safari', active: false, hidden: false };
+
+/** 長い入力の途中で止めた補助アプリの失敗（送り終えた数つき）。 */
+function stoppedMidway(code: string, message: string, progress: number): ParadisComputerUseHelperError {
+	const error = new ParadisComputerUseHelperError(code, message);
+	error.progress = progress;
+	return error;
+}
 
 const INPUT_METHODS = new Set(['activateApp', 'click', 'drag', 'scroll', 'typeText', 'pasteText', 'pressKey', 'hotkey', 'setValue']);
 
@@ -38,14 +46,32 @@ class FakeHelper implements IParadisComputerUseHelper {
 	failTree: string | undefined;
 	/** 設定するとツリーの答えに snapshotId を付け、読むたびに 1 つ進める。 */
 	nextSnapshotId: number | undefined;
+	/** 設定すると、ツリーを読むたびに先頭から 1 つずつ返す（最後の 1 つは返し続ける）。関数なら読んだ回数から作る。 */
+	trees: string[] | ((read: number) => string) | undefined;
+	private _treeReads = 0;
 	/** ツリーを読んだときの引数。 */
 	readonly treeParams: Record<string, unknown>[] = [];
 	/** 入力の命令の答え（既定は成功）。 */
 	onInput: (method: string, params: Record<string, unknown>) => Promise<unknown> = async () => ({ ok: true });
+	/** 利用者が Esc の 2 回押しで止めた状態（本物と同じく、入力を断り、`permissions` で知らせ、`resume` で戻る）。 */
+	stopped = false;
+	/** 設定すると、`resume` がこの失敗で返る。 */
+	failResume: ParadisComputerUseHelperError | undefined;
+
+	private _nextTree(): string {
+		const read = this._treeReads++;
+		if (typeof this.trees === 'function') {
+			return this.trees(read);
+		}
+		return this.trees ? this.trees[Math.min(read, this.trees.length - 1)] : '[0] AXWindow "Desktop"';
+	}
 
 	async request(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
 		this.calls.push(params.pid !== undefined ? `${method}:${params.pid}${params.windowId !== undefined ? `/${params.windowId}` : ''}` : method);
 		if (INPUT_METHODS.has(method)) {
+			if (this.stopped) {
+				throw new ParadisComputerUseHelperError('stopped_by_user', 'the user stopped Computer Use by pressing Escape twice');
+			}
 			this.inputs.push({ method, params });
 			return this.onInput(method, params);
 		}
@@ -53,7 +79,13 @@ class FakeHelper implements IParadisComputerUseHelper {
 			case 'listApps':
 				return { apps: this.apps };
 			case 'permissions':
-				return this.permissions;
+				return this.stopped ? { ...this.permissions, stopped: true } : this.permissions;
+			case 'resume':
+				if (this.failResume) {
+					throw this.failResume;
+				}
+				this.stopped = false;
+				return { stopped: false };
 			case 'listWindows':
 				return { windows: [{ windowId: 71, index: 0, title: 'Hidden', bounds: { x: 0, y: 0, width: 10, height: 10 }, onScreen: false }, { windowId: 72, index: 1, title: 'Desktop', bounds: { x: 5, y: 6, width: 800, height: 600 }, onScreen: true }] };
 			case 'accessibilityTree':
@@ -61,7 +93,7 @@ class FakeHelper implements IParadisComputerUseHelper {
 				if (this.failTree) {
 					throw new ParadisComputerUseHelperError(this.failTree, 'no');
 				}
-				return { text: '[0] AXWindow "Desktop"', nodeCount: 1, truncated: false, ...(this.nextSnapshotId !== undefined ? { snapshotId: this.nextSnapshotId++ } : {}) };
+				return { text: this._nextTree(), nodeCount: 1, truncated: false, ...(this.nextSnapshotId !== undefined ? { snapshotId: this.nextSnapshotId++ } : {}) };
 			case 'screenshotWindow':
 				return { mimeType: 'image/png', data: 'UE5H', width: 1600, height: 1200, scale: 2 };
 		}
@@ -102,10 +134,12 @@ function text(result: unknown): string {
 suite('ParadisComputerUseToolProvider', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	function setup(options: { enabled?: boolean; blockSystemSurfaces?: boolean; confirmForeground?: boolean; showCursor?: boolean } = {}) {
+	function setup(options: { enabled?: boolean; blockSystemSurfaces?: boolean; confirmForeground?: boolean; showCursor?: boolean; settleMaxMs?: number; allowOperatingReadOnlyApps?: boolean } = {}) {
 		const helper = new FakeHelper();
 		const ledger = new ParadisComputerUseGrantLedger();
-		const state = { enabled: options.enabled ?? true, confirmForeground: options.confirmForeground, showCursor: options.showCursor };
+		const state = { enabled: options.enabled ?? true, confirmForeground: options.confirmForeground, showCursor: options.showCursor, allowOperatingReadOnlyApps: options.allowOperatingReadOnlyApps };
+		/** 止まった・再開した知らせと、入力を送った知らせ（ウィンドウへ届くもの）。 */
+		const activity: string[] = [];
 		const blockOptions = options.blockSystemSurfaces === undefined ? undefined : { blockSystemSurfaces: options.blockSystemSurfaces };
 		const recorded: ParadisSpanAttributes[] = [];
 		const clock = { time: 0 };
@@ -115,10 +149,14 @@ suite('ParadisComputerUseToolProvider', () => {
 			...(options.showCursor !== undefined ? { showCursor: () => state.showCursor === true } : {}),
 			blockOptions,
 			settleMs: 0,
+			...(options.settleMaxMs !== undefined ? { settleMaxMs: options.settleMaxMs, settlePollMs: 0 } : {}),
 			recordCall: attributes => recorded.push(attributes),
 			now: () => clock.time,
+			...(options.allowOperatingReadOnlyApps !== undefined ? { allowOperatingReadOnlyApps: () => state.allowOperatingReadOnlyApps === true } : {}),
+			onDidChangeStopped: stopped => activity.push(stopped ? 'stopped' : 'resumed'),
+			onDidSendInput: () => activity.push('input'),
 		}, undefined);
-		return { helper, ledger, state, provider, recorded, clock };
+		return { helper, ledger, state, provider, recorded, clock, activity };
 	}
 
 	test('shows the tools only while the setting is on and the helper is ready', () => {
@@ -491,6 +529,207 @@ suite('ParadisComputerUseToolProvider', () => {
 			{ ...base, safe_tool: 'computer_click', safe_outcome: 'ok', safe_route: 'accessibility' },
 			{ ...base, safe_tool: 'computer_list_windows', safe_outcome: 'refused', safe_failure: 'blocked_vault_app' },
 		]);
+	});
+
+	test('refuses every pane after the user stops Computer Use with Esc twice, until the user resumes it', async () => {
+		const { helper, ledger, state, provider, activity, recorded } = setup();
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		ledger.set('pane-b', 'com.apple.finder', 'operate');
+		const { context, prompts } = createContext('pane', []);
+		const click = (pane: string, app: string) => provider.callTool(pane, 'computer_click', { app, x: 1, y: 1, includeState: false }, undefined, context);
+		const before = await click('pane-a', 'Notes');
+		// 補助アプリが止まった: 次の操作が stopped_by_user で返る
+		helper.stopped = true;
+		const stopping = await click('pane-a', 'Notes');
+		const otherPane = await click('pane-b', 'Finder');
+		// 承認の無いアプリでも、止まっている間は承認ダイアログを出さない
+		const unapproved = await provider.callTool('pane-b', 'computer_type_text', { app: 'Notes', text: 'a' }, undefined, context);
+		// 設定をオフ→オンにしても（エージェントは settings.json を書き換えられる）、補助アプリが起動し直して掛け金を忘れても、断り続ける
+		state.enabled = false;
+		state.enabled = true;
+		helper.stopped = false;
+		const afterToggle = await click('pane-a', 'Notes');
+		const inputsWhileStopped = helper.inputs.length;
+		const status = JSON.parse(text(await provider.callTool('pane-a', 'computer_status', {}, undefined, context)));
+		const reading = await provider.callTool('pane-a', 'computer_get_app_state', { app: 'Notes', screenshot: false }, undefined, context) as IResult;
+		const activityWhileStopped = [...activity];
+		await provider.resume();
+		const resumed = await click('pane-a', 'Notes');
+		assert.deepStrictEqual({
+			before: (before as IResult).isError,
+			refusals: [stopping, otherPane, unapproved, afterToggle].map(result => ({ error: (result as IResult).isError, text: text(result) })),
+			inputsWhileStopped,
+			stopped: [status.stopped, typeof status.howToResume],
+			reading: reading.isError,
+			prompts: prompts.length,
+			activityWhileStopped,
+			providerStopped: provider.stopped,
+			resumed: (resumed as IResult).isError,
+			resumeCalls: helper.calls.filter(call => call === 'resume').length,
+			activity: activity.slice(activityWhileStopped.length),
+			failures: recorded.map(attributes => attributes.safe_failure).filter(failure => failure !== undefined),
+		}, {
+			before: undefined,
+			refusals: [
+				{ error: true, text: 'The user stopped Computer Use by pressing Esc twice. Do not retry; tell the user and wait until they resume it in Para Code.' },
+				{ error: true, text: 'The user stopped Computer Use by pressing Esc twice. Do not retry; tell the user and wait until they resume it in Para Code.' },
+				{ error: true, text: 'The user stopped Computer Use by pressing Esc twice. Do not retry; tell the user and wait until they resume it in Para Code.' },
+				{ error: true, text: 'The user stopped Computer Use by pressing Esc twice. Do not retry; tell the user and wait until they resume it in Para Code.' },
+			],
+			// 止まった後に補助アプリへ届いた入力は無い（最初の 1 回だけ）
+			inputsWhileStopped: 1,
+			stopped: [true, 'string'],
+			reading: undefined,
+			prompts: 0,
+			// 止まった知らせは 1 回だけ。input は、通ったクリックと、補助アプリが断ったクリックの、送り始めと答えのとき
+			activityWhileStopped: ['input', 'input', 'input', 'stopped', 'input'],
+			providerStopped: false,
+			resumed: undefined,
+			resumeCalls: 1,
+			activity: ['resumed', 'input', 'input'],
+			failures: ['stopped_by_user', 'stopped_by_user', 'stopped_by_user', 'stopped_by_user'],
+		});
+	});
+
+	test('learns about the stop from a read, keeps it when the helper cannot resume, and says how much of a long text went in', async () => {
+		const { helper, ledger, provider, activity } = setup();
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		const context = createContext('pane', []).context;
+		// 長い文字入力の 2 つ目の塊で止まる（補助アプリは次の 1 打の前に止め、どこまで打ったかを返す）
+		helper.onInput = async (_method, params) => {
+			if (helper.inputs.length === 2) {
+				helper.stopped = true;
+				throw stoppedMidway('stopped_by_user', 'the user stopped Computer Use by pressing Escape twice; stopped after typing 5 of 400 characters', 5);
+			}
+			return { verified: true, inserted: (params.text as string).length, method: 'keys', route: 'foreground' };
+		};
+		const typing = await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: 'x'.repeat(900), includeState: false }, undefined, context);
+		const typedChunks = helper.inputs.length;
+		await provider.resume();
+		// 読むだけの要求の答えからも止まったことを知る（次の操作を待たずに利用者へ知らせる）
+		helper.stopped = true;
+		await provider.callTool('pane-a', 'computer_get_app_state', { app: 'Notes', screenshot: false }, undefined, context);
+		const stoppedByRead = provider.stopped;
+		// 補助アプリが再開に失敗したら、止めたままにする
+		helper.failResume = new ParadisComputerUseHelperError('timeout', 'no answer');
+		const failedResume = await provider.resume().then(() => 'resumed', () => 'failed');
+		const stillStopped = provider.stopped;
+		// 補助アプリが居ない（起動できない・切れた）なら掛け金も無いので、こちらの状態だけ下ろす
+		helper.failResume = new ParadisComputerUseHelperError('helper_disconnected', 'The Computer Use helper is not connected.');
+		const goneResume = await provider.resume().then(() => 'resumed', () => 'failed');
+		// 塊の間で止まった（進み具合なし）ときは、その塊は 1 文字も送っていないと伝える
+		helper.failResume = undefined;
+		helper.stopped = false;
+		helper.onInput = async () => {
+			if (helper.inputs.length === 4) {
+				throw new ParadisComputerUseHelperError('stopped_by_user', 'the user stopped Computer Use by pressing Escape twice');
+			}
+			return { verified: true, method: 'keys', route: 'foreground' };
+		};
+		const betweenChunks = await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: 'x'.repeat(900), includeState: false }, undefined, context);
+		assert.deepStrictEqual({ typing: text(typing), typedChunks, stoppedByRead, failedResume, stillStopped, goneResume, betweenChunks: text(betweenChunks), changes: activity.filter(entry => entry !== 'input') }, {
+			typing: 'The user stopped Computer Use by pressing Esc twice. Do not retry; tell the user and wait until they resume it in Para Code. Para Code typed the first 405 of 900 characters before it stopped. They are already in the app: if you continue, send only the remaining 495 characters (from character 406) and do not retype the first part.',
+			typedChunks: 2,
+			stoppedByRead: true,
+			failedResume: 'failed',
+			stillStopped: true,
+			goneResume: 'resumed',
+			betweenChunks: 'The user stopped Computer Use by pressing Esc twice. Do not retry; tell the user and wait until they resume it in Para Code. No input was sent for the current chunk. The first 400 characters had arrived. Continue from character 401; do not resend the earlier chunks.',
+			changes: ['stopped', 'resumed', 'stopped', 'resumed', 'stopped'],
+		});
+	});
+
+	test('only reads browsers, remote desktop apps and trading apps, even for a pane that was allowed to operate them', async () => {
+		const { helper, ledger, provider } = setup();
+		helper.apps = [NOTES, SAFARI, { pid: 701, name: 'Screen Sharing', bundleId: 'com.apple.ScreenSharing', active: false, hidden: false }, { pid: 702, name: 'TradingView', bundleId: 'com.tradingview.tradingviewapp.desktop', active: false, hidden: false }];
+		// 前に操作を許されていても（設定がオンだった間の承認など）、使うたびに断る
+		ledger.set('pane-a', 'com.apple.Safari', 'operate');
+		const { context, prompts } = createContext('pane', ['operate', 'read']);
+		const click = await provider.callTool('pane-a', 'computer_click', { app: 'Safari', x: 1, y: 1 }, undefined, context);
+		const type = await provider.callTool('pane-a', 'computer_type_text', { app: 'Screen Sharing', text: 'a' }, undefined, context);
+		const activate = await provider.callTool('pane-a', 'computer_activate_app', { app: 'TradingView' }, undefined, context);
+		// 読むのは通す。承認には「操作」を出さず、「操作」の答えが来ても読み取りとして覚える
+		const read = await provider.callTool('pane-b', 'computer_list_windows', { app: 'Safari' }, undefined, context);
+		const readAgain = await provider.callTool('pane-a', 'computer_get_app_state', { app: 'Safari', screenshot: false }, undefined, context);
+		const apps = JSON.parse(text(await provider.callTool('pane-a', 'computer_list_apps', {}, undefined, context))).apps.map((app: { name: string; readOnly?: string; access: string }) => [app.name, app.readOnly ?? '', app.access]);
+		// 補助アプリが断ったとき（設定が列で待つ間に戻った・判定がずれた）の英文
+		helper.onInput = async () => { throw new ParadisComputerUseHelperError('read_only_app', 'Computer Use only reads this application (browser)'); };
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		const helperRefusal = await provider.callTool('pane-a', 'computer_click', { app: 'Notes', x: 1, y: 1, includeState: false }, undefined, context);
+		assert.deepStrictEqual({
+			refusals: [click, type, activate].map(result => ({ error: (result as IResult).isError, text: text(result) })),
+			read: [(read as IResult).isError, (readAgain as IResult).isError],
+			prompts: prompts.map(entry => [entry.token, entry.prompt.bundleId, entry.prompt.requested, entry.prompt.offerOperate]),
+			grants: ledger.listForPane('pane-b'),
+			apps,
+			manualAccessibility: helper.treeParams.map(params => params.enableManualAccessibility),
+			inputs: helper.inputs.map(input => input.params.bundleId),
+			helperRefusal: text(helperRefusal),
+		}, {
+			refusals: [
+				{ error: true, text: 'Safari (com.apple.Safari) is a web browser. Computer Use only reads it and sends it no input, because input there would act on the websites the user is signed in to. Use Para Code\'s built-in browser tools instead (open_browser_tab, click_by, fill_by), or ask the user to do it. If the user wants you to operate it, they can allow that in Para Code settings (Computer Use); do not change the setting yourself.' },
+				{ error: true, text: 'Screen Sharing (com.apple.ScreenSharing) is a remote desktop or screen sharing app. Computer Use only reads it and sends it no input, because input there would act on another computer. Ask the user to do it. If the user wants you to operate it, they can allow that in Para Code settings (Computer Use); do not change the setting yourself.' },
+				{ error: true, text: 'TradingView (com.tradingview.tradingviewapp.desktop) is a trading or wallet app. Computer Use only reads it and sends it no input, because orders and transfers cannot be undone. Ask the user to do it. If the user wants you to operate it, they can allow that in Para Code settings (Computer Use); do not change the setting yourself.' },
+			],
+			read: [undefined, undefined],
+			// 操作の求めでは聞かない。読む求めだけを、「操作」の選択肢なしで聞く
+			prompts: [['pane-b', 'com.apple.Safari', 'read', false]],
+			grants: [{ bundleId: 'com.apple.Safari', grant: 'read' }],
+			apps: [['Notes', '', 'none'], ['Safari', 'browser', 'read'], ['Screen Sharing', 'remote-desktop', 'none'], ['TradingView', 'trading', 'none']],
+			manualAccessibility: [undefined],
+			// 読むだけにするアプリへは、入力が 1 つも補助アプリへ届かない
+			inputs: ['com.apple.Notes'],
+			helperRefusal: 'Computer Use only reads this app (a web browser, a remote desktop app, or a trading or wallet app) and sends it no input. For websites use Para Code\'s built-in browser tools instead; otherwise ask the user to do it. If the user wants you to operate it, they can allow that in Para Code settings (Computer Use); do not change the setting yourself.',
+		});
+	});
+
+	test('still asks the user to approve operating a browser when the setting allows read-only apps, and stops again when it is turned off', async () => {
+		const { helper, ledger, state, provider } = setup({ allowOperatingReadOnlyApps: true });
+		helper.apps = [SAFARI];
+		const { context, prompts } = createContext('pane', ['read', 'operate']);
+		// 設定がオンでも、承認の無いペインは操作できない: 承認ダイアログを通る
+		const declined = await provider.callTool('pane-a', 'computer_click', { app: 'Safari', x: 1, y: 1, includeState: false }, undefined, context);
+		const inputsAfterDecline = helper.inputs.length;
+		const approved = await provider.callTool('pane-b', 'computer_click', { app: 'Safari', x: 1, y: 1, includeState: false }, undefined, context);
+		const apps = JSON.parse(text(await provider.callTool('pane-b', 'computer_list_apps', {}, undefined, context))).apps;
+		// 設定がオフに戻ったら、承認済みのペインでも断る
+		state.allowOperatingReadOnlyApps = false;
+		const off = await provider.callTool('pane-b', 'computer_click', { app: 'Safari', x: 1, y: 1, includeState: false }, undefined, context);
+		assert.deepStrictEqual({
+			declined: text(declined),
+			inputsAfterDecline,
+			approved: (approved as IResult).isError,
+			prompts: prompts.map(entry => [entry.token, entry.prompt.requested, entry.prompt.offerOperate]),
+			grants: [ledger.get('pane-a', 'com.apple.Safari'), ledger.get('pane-b', 'com.apple.Safari')],
+			apps,
+			inputs: helper.inputs,
+			off: text(off).split('.')[0],
+		}, {
+			declined: 'The user allowed this terminal pane only to read Safari, so Para Code does not send it any input. Do not ask again; ask the user in the conversation if you need to operate it.',
+			inputsAfterDecline: 0,
+			approved: undefined,
+			prompts: [['pane-a', 'operate', true], ['pane-b', 'operate', true]],
+			grants: ['read', 'operate'],
+			apps: [{ name: 'Safari', bundleId: 'com.apple.Safari', pid: 700, active: false, access: 'operate' }],
+			// 補助アプリへは、利用者の設定を要求ごとに渡す
+			inputs: [{ method: 'click', params: { x: 1, y: 1, pid: 700, bundleId: 'com.apple.Safari', windowId: 72, allowOperatingReadOnlyApps: true } }],
+			off: 'Safari (com',
+		});
+	});
+
+	test('explains that no keys were sent while a password field has the keyboard', async () => {
+		const { helper, ledger, provider } = setup();
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		const context = createContext('pane', []).context;
+		helper.onInput = async () => { throw new ParadisComputerUseHelperError('secure_input_active', 'macOS Secure Input is on for the application that would receive the keys'); };
+		const key = await provider.callTool('pane-a', 'computer_press_key', { app: 'Notes', key: 'return', includeState: false }, undefined, context);
+		helper.onInput = async () => { throw stoppedMidway('secure_input_active', 'macOS Secure Input is on for the application that would receive the keys; stopped after typing 3 of 10 characters', 3); };
+		const typing = await provider.callTool('pane-a', 'computer_type_text', { app: 'Notes', text: 'abcdefghij', includeState: false }, undefined, context);
+		assert.deepStrictEqual({ key: text(key), typing: text(typing), stopped: provider.stopped }, {
+			key: 'A password field is taking keyboard input in this app or the app in front (macOS Secure Input), so Para Code did not send keys. Ask the user to type it themselves; do not try another way to enter it.',
+			typing: 'A password field is taking keyboard input in this app or the app in front (macOS Secure Input), so Para Code stopped sending keys. Ask the user to type it themselves; do not try another way to enter it. Para Code typed the first 3 of 10 characters before it stopped. They are already in the app: if you continue, send only the remaining 7 characters (from character 4) and do not retype the first part.',
+			stopped: false,
+		});
 	});
 
 	test('keeps the tool list in sync with the handler', () => {
@@ -971,6 +1210,94 @@ suite('ParadisComputerUseToolProvider', () => {
 			parts: ['text', 'text', 'text', 'image'],
 			calls: ['listApps', 'listWindows:200', 'pasteText:200', 'permissions', 'accessibilityTree:200/72', 'screenshotWindow:200/72'],
 		});
+	});
+
+	// 操作の後のツリーは、このペインへ前に返したツリーとの差分にする。最初の読み取り（基準が無い）と computer_get_app_state は全文
+	test('returns only what changed in the tree after an action, and the whole tree from computer_get_app_state', async () => {
+		const { helper, ledger, provider } = setup();
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		const base = ['[0] AXWindow "Desktop"', ...Array.from({ length: 20 }, (_value, index) => `  [${index + 1}] AXButton "Item ${index + 1}"`)];
+		const edited = base.map(line => line === '  [3] AXButton "Item 3"' ? '  [3] AXButton "Item 3" focused' : line);
+		helper.trees = [base.join('\n'), edited.join('\n'), edited.join('\n'), edited.join('\n')];
+		const call = (name: string, args: object) => provider.callTool('pane-a', name, { app: 'Notes', ...args }, undefined, createContext('pane', []).context) as Promise<IResult>;
+		const state = (result: IResult, first: number) => ({
+			notes: JSON.parse((result.content[first] as { text: string }).text).notes,
+			screen: screenData(result.content[first + 1]),
+		});
+		const first = state(await call('computer_get_app_state', {}), 0);
+		const changed = state(await call('computer_press_key', { key: 'tab' }), 1);
+		const unchanged = state(await call('computer_press_key', { key: 'tab' }), 1);
+		const whole = state(await call('computer_get_app_state', { allElements: true }), 0);
+		assert.deepStrictEqual({ first, changed, unchanged, whole, prune: helper.treeParams.map(params => params.prune) }, {
+			first: { notes: undefined, screen: ['window title: Desktop', ...base] },
+			changed: {
+				notes: ['The accessibility tree below lists only what changed since the tree you last received for this window: "~" changed, "+" new, "-" gone. The other 20 elements keep their numbers and content. Call computer_get_app_state for the whole tree.'],
+				screen: ['window title: Desktop', '~   [3] AXButton "Item 3" focused'],
+			},
+			unchanged: {
+				notes: ['The accessibility tree did not change (21 elements, same numbers as the tree you last received for this window).'],
+				screen: ['window title: Desktop'],
+			},
+			whole: { notes: undefined, screen: ['window title: Desktop', ...edited] },
+			// 名前も操作も無い入れ物は既定で外す。allElements のときだけ全部出す
+			prune: [true, true, true, undefined],
+		});
+	});
+
+	// 別のペインが同じウィンドウを読んでも、このペインの差分の基準は変わらない（差分はペインごと）
+	test('keeps the baseline of the tree changes per pane', async () => {
+		const { helper, ledger, provider } = setup();
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		ledger.set('pane-b', 'com.apple.Notes', 'operate');
+		const base = ['[0] AXWindow "Desktop"', ...Array.from({ length: 20 }, (_value, index) => `  [${index + 1}] AXButton "Item ${index + 1}"`)].join('\n');
+		helper.trees = [base, `${base}\n  [21] AXStaticText "Saved"`];
+		const call = (pane: string, name: string, args: object = {}) => provider.callTool(pane, name, { app: 'Notes', ...args }, undefined, createContext('pane', []).context) as Promise<IResult>;
+		await call('pane-a', 'computer_get_app_state');
+		const other = await call('pane-b', 'computer_press_key', { key: 'tab' });
+		const mine = await call('pane-a', 'computer_press_key', { key: 'tab' });
+		assert.deepStrictEqual({ otherLines: screenData(other.content[2]).length, mine: screenData(mine.content[2]) }, {
+			// pane-b は初めて読むので全文（題 1 行 + 22 行）
+			otherLines: 23,
+			mine: ['window title: Desktop', '+   [21] AXStaticText "Saved"'],
+		});
+	});
+
+	// 操作の後は、ツリーが 2 回続けて同じになるまで読み直す。上限まで変わり続けたら、最後に読んだものを返してその旨を添える
+	test('waits until the tree stops changing after an action, up to a limit', async () => {
+		const settling = setup({ settleMaxMs: 1000 });
+		settling.ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		settling.helper.trees = ['[0] AXWindow "Loading"', '[0] AXWindow "Half"', '[0] AXWindow "Done"', '[0] AXWindow "Done"', '[0] AXWindow "Later"'];
+		const settled = await settling.provider.callTool('pane-a', 'computer_press_key', { app: 'Notes', key: 'tab' }, undefined, createContext('pane', []).context) as IResult;
+		const moving = setup({ settleMaxMs: 1000 });
+		moving.ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		moving.helper.trees = read => `[0] AXWindow "Frame ${read}"`;
+		const restless = await moving.provider.callTool('pane-a', 'computer_press_key', { app: 'Notes', key: 'tab' }, undefined, createContext('pane', []).context) as IResult;
+		const treeReads = (helper: FakeHelper) => helper.calls.filter(call => call.startsWith('accessibilityTree')).length;
+		assert.deepStrictEqual({
+			settled: { screen: screenData(settled.content[2]), notes: JSON.parse((settled.content[1] as { text: string }).text).notes, reads: treeReads(settling.helper) },
+			restless: { screen: screenData(restless.content[2]), notes: JSON.parse((restless.content[1] as { text: string }).text).notes, reads: treeReads(moving.helper) },
+		}, {
+			settled: { screen: ['window title: Desktop', '[0] AXWindow "Done"'], notes: undefined, reads: 4 },
+			restless: {
+				screen: ['window title: Desktop', '[0] AXWindow "Frame 8"'],
+				notes: ['The window was still changing 1.5 s after the action, so this state may already be out of date. Read it again with computer_get_app_state before you rely on it.'],
+				reads: 9,
+			},
+		});
+	});
+
+	// 利用者が Esc で止めた後、どの要求も来ないうちに設定をオフにされても、補助アプリを終わらせる前に停止を読んで覚える
+	// （掛け金は補助アプリと一緒に消える。覚えていないと、設定のオフ→オンで停止を外せてしまう）
+	test('learns that the user stopped Computer Use before the helper is shut down', async () => {
+		const { helper, ledger, provider } = setup();
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		helper.stopped = true;
+		const before = provider.stopped;
+		await provider.captureStopped();
+		// 補助アプリが起動し直して、掛け金を忘れた
+		helper.stopped = false;
+		const result = await provider.callTool('pane-a', 'computer_press_key', { app: 'Notes', key: 'tab' }, undefined, createContext('pane', []).context) as IResult;
+		assert.deepStrictEqual({ before, after: provider.stopped, refused: text(result).includes('stopped Computer Use'), inputs: helper.inputs.length }, { before: false, after: true, refused: true, inputs: 0 });
 	});
 });
 

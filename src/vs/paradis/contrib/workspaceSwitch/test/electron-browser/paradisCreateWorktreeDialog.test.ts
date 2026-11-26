@@ -24,7 +24,8 @@ import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { InMemoryStorageService } from '../../../../../platform/storage/common/storage.js';
 import { IParadisAgentModelCatalogService } from '../../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import { IParadisWorkspaceRepository, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../common/paradisWorkspaceSwitch.js';
-import { ParadisCreateWorktreeDialog } from '../../electron-browser/paradisCreateWorktreeDialog.js';
+import { IParadisSpaceSection } from '../../common/paradisSpaceSections.js';
+import { ParadisCreateWorktreeDialog, paradisResolveCreateWorktreeForm } from '../../electron-browser/paradisCreateWorktreeDialog.js';
 import { IParadisWorktreeGitHost, ParadisGithubReferenceResult } from '../../electron-browser/paradisWorktreeGitChannelClient.js';
 import { IParadisGithubReferenceInfo } from '../../../../common/paradisIssueDetection.js';
 import { IParadisWorktreeCreateQueueService } from '../../electron-browser/paradisWorktreeCreateQueue.js';
@@ -139,7 +140,7 @@ suite('create worktree dialog: closing and drafts', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
 	/** ダイアログを開く。git は名前ごとに決まった答えを返し、一覧（プルダウン）はその場の箱に描く。 */
-	function open(container: HTMLElement, prefill?: IParadisHeadlessWorktreeRequest) {
+	function open(container: HTMLElement, prefill?: IParadisHeadlessWorktreeRequest, sections: readonly IParadisSpaceSection[] = []) {
 		const fileService = store.add(new FileService(new NullLogService()));
 		store.add(fileService.registerProvider('file', store.add(new InMemoryFileSystemProvider())));
 		const repository = { id: 'repo', name: 'repo', uri: URI.file('/repo') } satisfies IParadisWorkspaceRepository;
@@ -176,6 +177,9 @@ suite('create worktree dialog: closing and drafts', () => {
 			NullHoverService,
 			prefill ? undefined : 'repo',
 			prefill,
+			undefined,
+			undefined,
+			{ sectionsOf: repositoryId => repositoryId === 'repo' ? sections : [] },
 		);
 		const modal = container.querySelector<HTMLElement>('.paradis-create-worktree-dialog')!;
 		return { dialog, modal, enqueued, isOpen: () => container.querySelector('.paradis-create-worktree-dialog') !== null };
@@ -248,6 +252,76 @@ suite('create worktree dialog: closing and drafts', () => {
 			discardDrafts(container);
 			container.remove();
 		}
+	});
+
+	test('the + of a section opens with that section chosen, keeps the draft, and the request carries the section', async () => {
+		const container = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(container);
+		const sections: IParadisSpaceSection[] = [{ id: 'doing', name: 'Doing' }, { id: 'review', name: 'Review' }];
+		const sectionRowShown = (modal: HTMLElement) => !modal.querySelector('.pcw-section-row')!.classList.contains('hidden');
+		const subtitle = (modal: HTMLElement) => modal.querySelector('.pcw-d-subtitle')!.textContent;
+		try {
+			// The + of "Doing": the section is chosen and named in the subtitle. Write something and leave with Escape.
+			const first = open(container, { repositoryId: 'repo', sectionId: 'doing' }, sections);
+			const fromDoing = { row: sectionRowShown(first.modal), subtitle: subtitle(first.modal), note: first.modal.querySelector('.pcw-d-restored') !== null };
+			const textarea = first.modal.querySelector<HTMLTextAreaElement>('textarea')!;
+			textarea.value = 'fix the login error';
+			escape(textarea);
+
+			// The + of "Review": the draft comes back, but the section is the one of the + that was pressed.
+			const second = open(container, { repositoryId: 'repo', sectionId: 'review' }, sections);
+			const fromReview = { prompt: second.modal.querySelector<HTMLTextAreaElement>('textarea')!.value, subtitle: subtitle(second.modal), note: second.modal.querySelector('.pcw-d-restored') !== null };
+			await timeout(0);
+			await timeout(0);
+			second.modal.querySelector<HTMLButtonElement>('.pcw-create')!.click();
+
+			// A section that is gone, and a repository without sections: no section, and the row is hidden without sections.
+			const third = open(container, { repositoryId: 'repo', sectionId: 'gone' }, sections);
+			const goneSection = { row: sectionRowShown(third.modal), subtitle: subtitle(third.modal) };
+			cancelButton(third.modal).click();
+			const fourth = open(container);
+			const withoutSections = sectionRowShown(fourth.modal);
+			await timeout(0);
+			await timeout(0);
+			fourth.modal.querySelector<HTMLButtonElement>('.pcw-create')!.click();
+
+			assert.deepStrictEqual({
+				fromDoing, fromReview, goneSection, withoutSections,
+				enqueued: [second.enqueued.map(request => [request.prompt, request.sectionId]), fourth.enqueued.map(request => Object.keys(request).includes('sectionId'))],
+			}, {
+				fromDoing: { row: true, subtitle: 'repo に新しい worktree を作ります · セクション「Doing」に入れます', note: false },
+				fromReview: { prompt: 'fix the login error', subtitle: 'repo に新しい worktree を作ります · セクション「Review」に入れます', note: true },
+				goneSection: { row: true, subtitle: 'repo に新しい worktree を作ります' },
+				withoutSections: false,
+				enqueued: [[['fix the login error', 'review']], [false]],
+			});
+		} finally {
+			discardDrafts(container);
+			container.remove();
+		}
+	});
+
+	test('the form comes from a full prefill, or from the draft with the section of the + that was pressed', () => {
+		const draft: IParadisHeadlessWorktreeRequest = { repositoryId: 'repo', prompt: 'draft', sectionId: 'doing' };
+		const retry: IParadisHeadlessWorktreeRequest = { repositoryId: 'repo', prompt: 'retry', sectionId: 'review' };
+		let taken = 0;
+		const take = () => { taken++; return draft; };
+		assert.deepStrictEqual({
+			// Reopened after a failed creation: the draft is not even looked at.
+			retry: paradisResolveCreateWorktreeForm(retry, take),
+			takenAfterRetry: taken,
+			repositoryPlus: paradisResolveCreateWorktreeForm(undefined, take),
+			sectionPlus: paradisResolveCreateWorktreeForm({ repositoryId: 'repo', sectionId: 'review' }, take),
+			sectionPlusNoDraft: paradisResolveCreateWorktreeForm({ repositoryId: 'repo', sectionId: 'review' }, () => undefined),
+			nothing: paradisResolveCreateWorktreeForm(undefined, () => undefined),
+		}, {
+			retry: { form: retry, restored: false },
+			takenAfterRetry: 0,
+			repositoryPlus: { form: draft, restored: true },
+			sectionPlus: { form: { repositoryId: 'repo', prompt: 'draft', sectionId: 'review' }, restored: true },
+			sectionPlusNoDraft: { form: { repositoryId: 'repo', sectionId: 'review' }, restored: false },
+			nothing: { form: undefined, restored: false },
+		});
 	});
 
 	test('Escape with the branch list open closes only the list', async () => {

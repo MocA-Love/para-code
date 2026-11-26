@@ -10,7 +10,7 @@
 // 一覧の絞り込み・検索・まとめ方の純関数。台帳を書くのは shared process の資料のサービスだけで、ウィンドウはチャネルで頼む。
 
 import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
-import { IParadisDocFolder, IParadisDocRecord, ParadisDocKind, ParadisDocOwnerLiveness, ParadisDocOwnerVia, ParadisDocRegisteredBy, paradisDocBelongsToFolder, paradisDocLastActivity } from './paradisAgentDocs.js';
+import { IParadisDocFingerprint, IParadisDocFolder, IParadisDocRecord, ParadisDocKind, ParadisDocOwnerLiveness, ParadisDocOwnerVia, ParadisDocRegisteredBy, paradisDocBelongsToFolder, paradisDocLastActivity } from './paradisAgentDocs.js';
 
 /** ウィンドウから shared process の台帳へ頼むチャネル（向きは paradisAgentDocs と逆）。 */
 export const PARADIS_AGENT_DOCS_VIEW_CHANNEL = 'paradisAgentDocsView';
@@ -25,6 +25,15 @@ export const ParadisAgentDocsViewCall = {
 	RegisterOpened: 'registerOpened',
 	/** 一覧から外す。引数は `[hostId, path]`。 */
 	Remove: 'remove',
+	/** まとめて一覧から外す。引数は `[hostId, paths]`。 */
+	RemoveMany: 'removeMany',
+	/** ウィンドウが取った指紋を預ける。引数は `[hostId, IParadisDocFingerprintUpdate[]]`。 */
+	SetFingerprints: 'setFingerprints',
+	/**
+	 * 見つからなくなった資料の記録の場所を、移動先へ書き換える。引数は `[hostId, from, to, hash]`（hash はウィンドウが
+	 * 移動先で確かめた中身のハッシュ。台帳の指紋と同じときだけ書き換える）。答えは書き換えたか。
+	 */
+	Relocate: 'relocate',
 	/** ファイルの有無を記録する。引数は `[hostId, path, missing]`。 */
 	SetMissing: 'setMissing',
 	/** 持ち主のいない資料をペインの会話の資料にする。引数は `[hostId, path, token]`、答えは {@link ParadisDocAssignResult}。 */
@@ -56,6 +65,8 @@ export interface IParadisDocViewRecord {
 	/** 最後に動いた時刻（書き込み・持ち主の交代・初めて載った時刻の新しい方）。 */
 	readonly lastActivity: number;
 	readonly missingSince?: number;
+	/** 最後に取った指紋（移動先の追従に使う）。 */
+	readonly fingerprint?: IParadisDocFingerprint;
 	/** 未回答のコメントの数（0 なら無い）。 */
 	readonly openComments?: number;
 }
@@ -83,6 +94,7 @@ export function paradisDocViewRecord(record: IParadisDocRecord, liveness: Paradi
 		registeredBy: record.registeredBy,
 		lastActivity: paradisDocLastActivity(record),
 		...(record.missingSince !== undefined ? { missingSince: record.missingSince } : {}),
+		...(record.fingerprint !== undefined ? { fingerprint: record.fingerprint } : {}),
 		...(openComments > 0 ? { openComments } : {}),
 	};
 }
@@ -191,56 +203,78 @@ export function paradisDocDateBucket(time: number, now: number): ParadisDocDateB
 	return time >= start - 6 * DAY_MS ? 'week' : 'older';
 }
 
-/** 組の 1 つ。 */
-export type ParadisDocsGroup =
-	| { readonly kind: 'session'; readonly key: string; readonly agent: ParadisAgentKind; readonly session: string; readonly status: ParadisDocOwnerStatus; readonly cwd?: string; readonly records: readonly IParadisDocViewRecord[] }
-	| { readonly kind: 'unowned'; readonly key: string; readonly records: readonly IParadisDocViewRecord[] }
-	| { readonly kind: 'date'; readonly key: string; readonly bucket: ParadisDocDateBucket; readonly records: readonly IParadisDocViewRecord[] }
-	| { readonly kind: 'folder'; readonly key: string; readonly folder: string; readonly records: readonly IParadisDocViewRecord[] };
+/**
+ * 組の 1 つ。`records` はファイルのある資料、`missing` は見つからない資料（組の末尾に畳んだ 1 行で出す）。
+ * kind が missing の組は、ファイルのある資料が 1 つも無い組の見つからない資料を集めたもの（見出しは出さず、一覧の最後に置く）。
+ */
+export type ParadisDocsGroup = (
+	| { readonly kind: 'session'; readonly agent: ParadisAgentKind; readonly session: string; readonly status: ParadisDocOwnerStatus; readonly cwd?: string }
+	| { readonly kind: 'unowned' }
+	| { readonly kind: 'date'; readonly bucket: ParadisDocDateBucket }
+	| { readonly kind: 'folder'; readonly folder: string }
+	| { readonly kind: 'missing' }
+) & { readonly key: string; readonly records: readonly IParadisDocViewRecord[]; readonly missing: readonly IParadisDocViewRecord[] };
 
 const DATE_ORDER: readonly ParadisDocDateBucket[] = ['today', 'yesterday', 'week', 'older'];
+
+/** 一覧の最後に置く、見つからない資料だけの組のキー。 */
+export const PARADIS_DOCS_MISSING_GROUP_KEY = 'missing';
+
+function groupKeyOf(record: IParadisDocViewRecord, grouping: ParadisDocsGrouping, now: number): string {
+	if (grouping === 'session') {
+		return record.owner !== undefined ? `session:${record.owner.session}` : 'unowned';
+	}
+	return grouping === 'date' ? `date:${paradisDocDateBucket(record.lastActivity, now)}` : `folder:${paradisDocParentPath(record.path)}`;
+}
 
 /**
  * 絞り込んだ一覧（新しい順）をまとめる。
  * - session: 会話ごと。会話の並びはいちばん新しく動いた資料の順。持ち主のいない資料は最後の「作成元が分からない」の組
  * - date: 今日・昨日・今週・それより前
  * - folder: 親のフォルダごと（フォルダのパスの順）
- * 組の中は渡された順（新しい順）のまま。
+ * 組の中は渡された順（新しい順）のまま。組の並びと数は、ファイルのある資料だけで決める。見つからない資料は、同じ組に
+ * ファイルのある資料があればその組の `missing` に、無ければ最後の missing の組に入れる（資料が 1 つも残っていない
+ * 会話・日付・フォルダの見出しは出さない）。
  */
 export function paradisGroupDocs(records: readonly IParadisDocViewRecord[], grouping: ParadisDocsGrouping, now: number): ParadisDocsGroup[] {
-	if (grouping === 'session') {
-		const sessions = new Map<string, IParadisDocViewRecord[]>();
-		const unowned: IParadisDocViewRecord[] = [];
-		for (const record of records) {
-			if (record.owner === undefined) {
-				unowned.push(record);
-				continue;
-			}
-			const list = sessions.get(record.owner.session) ?? [];
-			list.push(record);
-			sessions.set(record.owner.session, list);
-		}
-		const groups: ParadisDocsGroup[] = [...sessions.entries()].map(([session, list]) => {
-			const owner = list[0].owner!;
-			return { kind: 'session', key: `session:${session}`, agent: owner.agent, session, status: paradisDocOwnerStatus(list[0]), ...(owner.cwd !== undefined ? { cwd: owner.cwd } : {}), records: list };
-		});
-		if (unowned.length > 0) {
-			groups.push({ kind: 'unowned', key: 'unowned', records: unowned });
-		}
-		return groups;
+	const present = records.filter(record => record.missingSince === undefined);
+	const lists = new Map<string, IParadisDocViewRecord[]>();
+	for (const record of present) {
+		const key = groupKeyOf(record, grouping, now);
+		const list = lists.get(key) ?? [];
+		list.push(record);
+		lists.set(key, list);
 	}
-	if (grouping === 'date') {
-		const buckets = new Map<ParadisDocDateBucket, IParadisDocViewRecord[]>();
-		for (const record of records) {
-			const bucket = paradisDocDateBucket(record.lastActivity, now);
-			buckets.set(bucket, [...(buckets.get(bucket) ?? []), record]);
-		}
-		return DATE_ORDER.filter(bucket => buckets.has(bucket)).map(bucket => ({ kind: 'date', key: `date:${bucket}`, bucket, records: buckets.get(bucket)! }));
-	}
-	const folders = new Map<string, IParadisDocViewRecord[]>();
+	const missing = new Map<string, IParadisDocViewRecord[]>();
+	const orphaned: IParadisDocViewRecord[] = [];
 	for (const record of records) {
-		const folder = paradisDocParentPath(record.path);
-		folders.set(folder, [...(folders.get(folder) ?? []), record]);
+		if (record.missingSince !== undefined) {
+			const key = groupKeyOf(record, grouping, now);
+			if (lists.has(key)) {
+				missing.set(key, [...(missing.get(key) ?? []), record]);
+			} else {
+				orphaned.push(record);
+			}
+		}
 	}
-	return [...folders.keys()].sort((a, b) => a.localeCompare(b)).map(folder => ({ kind: 'folder', key: `folder:${folder}`, folder, records: folders.get(folder)! }));
+	const rest = (key: string) => ({ key, records: lists.get(key)!, missing: missing.get(key) ?? [] });
+	let groups: ParadisDocsGroup[];
+	if (grouping === 'session') {
+		groups = [...lists.keys()].filter(key => key !== 'unowned').map(key => {
+			const first = lists.get(key)![0];
+			const owner = first.owner!;
+			return { kind: 'session', agent: owner.agent, session: owner.session, status: paradisDocOwnerStatus(first), ...(owner.cwd !== undefined ? { cwd: owner.cwd } : {}), ...rest(key) };
+		});
+		if (lists.has('unowned')) {
+			groups.push({ kind: 'unowned', ...rest('unowned') });
+		}
+	} else if (grouping === 'date') {
+		groups = DATE_ORDER.filter(bucket => lists.has(`date:${bucket}`)).map(bucket => ({ kind: 'date', bucket, ...rest(`date:${bucket}`) }));
+	} else {
+		groups = [...lists.keys()].map(key => key.slice('folder:'.length)).sort((a, b) => a.localeCompare(b)).map(folder => ({ kind: 'folder', folder, ...rest(`folder:${folder}`) }));
+	}
+	if (orphaned.length > 0) {
+		groups.push({ kind: 'missing', key: PARADIS_DOCS_MISSING_GROUP_KEY, records: [], missing: orphaned });
+	}
+	return groups;
 }

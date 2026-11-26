@@ -251,3 +251,4 @@ src/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build/src/uti
 src/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build/src/utils/string.js
 src/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build/src/utils/types.js
 src/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/build/src/version.js
+src/vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp/paradis/paradisTraceExtras.js

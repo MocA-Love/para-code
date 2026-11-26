@@ -1068,6 +1068,8 @@ export interface IParadisWorktreeCreateJobSnapshot {
 	 * 2段目に工程ラベルを重ねる（同じ名前の行が2つ並ばないようにするため）。
 	 */
 	readonly stateKey?: string;
+	/** 作ったスペースを入れるスペースのセクションの id（「作成中」の行を最初からそのセクションの中に出す）。 */
+	readonly sectionId?: string;
 }
 
 export const IParadisWorktreeCreateProgressStore = createDecorator<IParadisWorktreeCreateProgressStore>('paradisWorktreeCreateProgressStore');

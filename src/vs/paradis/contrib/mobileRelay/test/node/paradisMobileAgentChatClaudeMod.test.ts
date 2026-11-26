@@ -537,6 +537,32 @@ suite('ParadisMobileAgentChat with the Claude Code mod', () => {
 		});
 	}));
 
+	test('allows a plan (ExitPlanMode) by keys while the mod waits, because Claude Code ignores an allow from the hook, and still denies through the mod', () => withHarness(async harness => {
+		// Claude Code 2.1.332 の実測: 計画の確定は mod の `allow` では閉じず（`personOnly` も付かない）、`deny` は効く
+		harness.hook('PreToolUse', { toolName: 'ExitPlanMode', toolUseId: 'toolu_plan', toolInput: {} });
+		harness.hook('PermissionRequest', { toolName: 'ExitPlanMode', toolInput: {} });
+		await waitFor(() => harness.tailer()?.currentInteraction()?.kind === 'approval', 'the approval card was not shown');
+		const registered = await harness.mod('permission', { toolUseId: 'toolu_plan', toolName: 'ExitPlanMode', toolInput: {}, suggestions: [], denyMessage: true });
+		await waitFor(() => (harness.tailer()?.currentInteraction() as { readonly answerVia?: string } | null | undefined)?.answerVia === 'mod', 'the approval was not tied to the mod');
+		const keys = () => harness.actions.filter(action => action.t === 'action/interaction').map(action => action.parts);
+		harness.inbound({ t: 'action/answerApproval', requestId: 'plan-yes', epoch: harness.tailer()!.epoch, interactionId: 'toolu_plan', choice: 'yes' });
+		await waitFor(() => keys().length === 1, 'the allow did not go to the window as keys');
+		const pendingAfterAllow = harness.bridge.pendingPermissions(harness.token, SESSION).map(permission => permission.id);
+		const waiting = harness.mod('wait', { id: registered.id });
+		harness.inbound({ t: 'action/answerApproval', requestId: 'plan-no', epoch: harness.tailer()!.epoch, interactionId: 'toolu_plan', choice: 'no' });
+		assert.deepStrictEqual({
+			waited: registered.wait,
+			pendingAfterAllow,
+			reply: await waiting,
+			keys: keys(),
+		}, {
+			waited: true,
+			pendingAfterAllow: [registered.id],
+			reply: { state: 'answer', decision: 'deny' },
+			keys: [['1']],
+		});
+	}));
+
 	test('an approval only the terminal can allow is refused from the phone even when the mod did not wait, and before the card is marked', () => withHarness(async harness => {
 		type Card = { readonly answerOn?: string; readonly choices?: readonly { readonly id: string }[] };
 		const card = () => harness.tailer()?.currentInteraction() as Card | null | undefined;

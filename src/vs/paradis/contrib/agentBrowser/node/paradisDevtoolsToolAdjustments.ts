@@ -114,6 +114,9 @@ const PARADIS_DEVTOOLS_TOOL_DESCRIPTIONS: ReadonlyMap<string, string> = new Map(
 	['hover', 'Hover over an element by its uid from a snapshot.'],
 	['drag', 'Drag an element onto another element (HTML drag and drop, by uids from a snapshot). For sliders or canvas, use mouse_action.'],
 	['get_network_request', 'Get one network request of this pane\'s current tab (or tab_id) by its reqid from list_network_requests.'],
+	// vendored の performance.js の PARA-PATCH（保存物にスクリプトの中身とソースマップを入れる引数、insight の元のソースの位置）を LLM にも伝える
+	['performance_start_trace', 'Start a performance trace on this pane\'s current tab (or tab_id). Use it to find frontend performance issues and Core Web Vitals (LCP, INP, CLS), and to improve page load speed. Pass includeScriptContent or includeSourceMaps with filePath only when the saved file will be opened in Chrome DevTools later or must stay readable after the page changes; the summary and performance_analyze_insight do not need them.'],
+	['performance_analyze_insight', 'Get the details of one Performance Insight of an insight set listed in the results of a trace recording. When the page has source maps, the call frames the insight names are also given in original source positions.'],
 	// vendored の lighthouse.js の PARA-PATCH（ストレージを消さない・Cookie 付きで取る監査を飛ばす）を LLM にも伝える
 	['lighthouse_audit', 'Get Lighthouse scores and reports for accessibility, SEO, best practices and agentic browsing of this pane\'s current tab (or tab_id). Performance is not included; for performance, use performance_start_trace. Para Code shares the browser storage and cache with the user, so the audit does not clear the page\'s storage or cache first (results can reflect what is already stored), and it skips the robots.txt, llms.txt and source map audits, which would need to fetch with the page\'s cookies.'],
 ]);

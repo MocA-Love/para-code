@@ -70,6 +70,12 @@ function realScreenshot(simctl: ParadisServeSimSimctl): ParadisServeSimScreensho
 
 export type ParadisServeSimSleep = (ms: number, signal?: AbortSignal) => Promise<void>;
 
+/** キーを送った後、ホストの「旧来の HID で送った」の出力が届くのを待つ時間。 */
+const KEYBOARD_FALLBACK_WAIT_MS = 80;
+
+/** mobile_type_text の結果に添える知らせ（キーが届いていないことがある）。 */
+export const PARADIS_SIMULATOR_KEYS_MAY_BE_LOST = 'Device Hub is running and Para Code could not send keys through it, so they were sent the older way and may not have reached the simulator (taps and the home button still work). Check the field with mobile_ui_snapshot. If the text is missing, ask the user to close Device Hub and try again.';
+
 const realSleep: ParadisServeSimSleep = (ms, signal) => new Promise<void>(resolve => {
 	const timer = setTimeout(resolve, ms);
 	signal?.addEventListener('abort', () => {
@@ -353,14 +359,25 @@ export class ParadisServeSimDeviceHost {
 					await this._backend.send(udid, paradisSimulatorKeyFrame('up', USAGE_SHIFT));
 				}
 			}
-			return { method: 'keys' };
+			return { method: 'keys', ...await this._keysNote(udid) };
 		}
 		await this._simctl(['pbcopy', udid], { timeoutMs: 10_000, input: text });
 		await this._backend.send(udid, paradisSimulatorKeyFrame('down', USAGE_COMMAND));
 		await this._backend.send(udid, paradisSimulatorKeyFrame('down', USAGE_V));
 		await this._backend.send(udid, paradisSimulatorKeyFrame('up', USAGE_V));
 		await this._backend.send(udid, paradisSimulatorKeyFrame('up', USAGE_COMMAND));
-		return { method: 'paste' };
+		return { method: 'paste', ...await this._keysNote(udid) };
+	}
+
+	/**
+	 * キーを送った後に添える知らせ。Device Hub の経路を使えず旧来の HID で送ったとき（ホストがそう出したとき）だけ返す。
+	 * ホストの出力は少し遅れて届くので、まだ出ていなければ少し待ってから見る。
+	 */
+	private async _keysNote(udid: string): Promise<{ note?: string }> {
+		if (!this._backend.keyboardFallback(udid)) {
+			await this._sleep(KEYBOARD_FALLBACK_WAIT_MS);
+		}
+		return this._backend.keyboardFallback(udid) ? { note: PARADIS_SIMULATOR_KEYS_MAY_BE_LOST } : {};
 	}
 
 	private async _pressButton(udid: string, raw: unknown): Promise<unknown> {

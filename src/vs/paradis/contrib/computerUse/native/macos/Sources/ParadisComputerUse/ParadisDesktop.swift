@@ -40,12 +40,15 @@ final class ParadisDesktop: ParadisDesktopBackend {
 	private var nextSnapshotId = 1
 	/** 利用者の物理的な入力の見張り（入力の命令を初めて受けたときに作る）。 */
 	let inputMonitor = ParadisInputMonitor()
+	/** 緊急停止の掛け金（Esc の 2 回押し）。入力の見張りが掛け、要求の処理（ParadisRequestHandler）と入力のフェンスが読む。 */
+	let emergencyStop = ParadisEmergencyStop()
 	/** 2 段目（背面への入力）。未送信で対応できない操作は前面経路へ譲る（ParadisInputRoutes.swift）。 */
 	lazy var backgroundRoute: ParadisInputRoute = paradisMakeBackgroundRoute(desktop: self)
 
 	init() {
 		// AX の問い合わせ全体に上限を付ける。固まったアプリで補助アプリが長く止まり、切断に気づかず残らないように（レビュー L5）
 		AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 1.0)
+		inputMonitor.emergencyStop = emergencyStop
 	}
 
 	func bundleIdentifier(pid: Int32) -> String? {
@@ -154,7 +157,7 @@ final class ParadisDesktop: ParadisDesktopBackend {
 
 	// MARK: - アクセシビリティのツリー
 
-	func accessibilityTree(pid: Int32, windowId: UInt32?, maxNodes: Int, maxDepth: Int, enableManualAccessibility: Bool) throws -> [String: Any] {
+	func accessibilityTree(pid: Int32, windowId: UInt32?, maxNodes: Int, maxDepth: Int, enableManualAccessibility: Bool, prune: Bool) throws -> [String: Any] {
 		guard AXIsProcessTrusted() else {
 			throw ParadisHelperError(code: "accessibility_not_granted", message: "Accessibility permission is not granted to Para Code Computer Use")
 		}
@@ -223,7 +226,7 @@ final class ParadisDesktop: ParadisDesktopBackend {
 		lastSnapshot = ParadisElementSnapshot(id: snapshotId, pid: pid, windowId: windowId, elements: elements)
 		var result: [String: Any] = [
 			"snapshotId": snapshotId,
-			"text": paradisRenderAXTree(nodes, truncated: truncated),
+			"text": paradisRenderAXTree(nodes, truncated: truncated, prune: prune),
 			"nodeCount": nodes.count,
 			"truncated": truncated,
 			"window": paradisRectJson(windowFrame),

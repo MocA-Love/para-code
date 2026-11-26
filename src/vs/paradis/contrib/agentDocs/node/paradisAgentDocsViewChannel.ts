@@ -14,7 +14,7 @@ import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
-import { paradisDocKind, paradisIsVcsInternalPath, paradisIsWatchableDocPath, paradisNormalizeDocPath } from '../common/paradisAgentDocs.js';
+import { PARADIS_DOC_MAX_RECORDS, paradisDocKind, paradisIsVcsInternalPath, paradisParseDocFingerprint, paradisIsWatchableDocPath, paradisNormalizeDocPath } from '../common/paradisAgentDocs.js';
 import { IParadisDocPaneSessionInfo, IParadisDocViewRecord, PARADIS_AGENT_DOCS_VIEW_ON_DID_CHANGE, ParadisAgentDocsViewCall, ParadisDocAssignResult, paradisDocViewRecord } from '../common/paradisAgentDocsView.js';
 import { paradisCountOpenDocComments } from '../common/paradisDocComments.js';
 import { ParadisAgentDocsService } from './paradisAgentDocsService.js';
@@ -74,6 +74,33 @@ export class ParadisAgentDocsViewChannel extends Disposable implements IServerCh
 				const target = docTarget(args[0], args[1]);
 				return (target !== undefined && this._service.ledger.remove(target.hostId, target.path)) as T;
 			}
+			case ParadisAgentDocsViewCall.RemoveMany: {
+				let removed = 0;
+				for (const rawPath of Array.isArray(args[1]) ? args[1].slice(0, PARADIS_DOC_MAX_RECORDS) : []) {
+					const target = docTarget(args[0], rawPath);
+					if (target !== undefined && this._service.ledger.remove(target.hostId, target.path)) {
+						removed++;
+					}
+				}
+				return removed as T;
+			}
+			case ParadisAgentDocsViewCall.SetFingerprints: {
+				const updates = [];
+				for (const raw of Array.isArray(args[1]) ? args[1].slice(0, PARADIS_DOC_MAX_RECORDS) : []) {
+					const item = typeof raw === 'object' && raw !== null ? raw as { path?: unknown; fingerprint?: unknown } : {};
+					const target = docTarget(args[0], item.path);
+					const fingerprint = paradisParseDocFingerprint(item.fingerprint);
+					if (target !== undefined && fingerprint !== undefined) {
+						updates.push({ path: target.path, fingerprint });
+					}
+				}
+				if (updates.length > 0 && typeof args[0] === 'string') {
+					this._service.ledger.setFingerprints(args[0], updates);
+				}
+				return undefined as T;
+			}
+			case ParadisAgentDocsViewCall.Relocate:
+				return this.relocate(args[0], args[1], args[2], args[3]) as T;
 			case ParadisAgentDocsViewCall.SetMissing: {
 				const target = docTarget(args[0], args[1]);
 				if (target !== undefined && typeof args[2] === 'boolean') {
@@ -114,6 +141,18 @@ export class ParadisAgentDocsViewChannel extends Disposable implements IServerCh
 			}
 		}
 		return sessions;
+	}
+
+	/** 記録の場所を移動先へ書き換え、コメントも移す。移動先は見張りが拾うパス（依存・バージョン管理の中でない）だけ。 */
+	relocate(rawHostId: unknown, rawFrom: unknown, rawTo: unknown, rawHash: unknown): boolean {
+		const from = docTarget(rawHostId, rawFrom);
+		const to = docTarget(rawHostId, rawTo);
+		if (from === undefined || to === undefined || typeof rawHash !== 'string' || !paradisIsWatchableDocPath(to.path) || !this._service.ledger.relocate(from.hostId, from.path, to.path, rawHash)) {
+			return false;
+		}
+		// 失敗は保存係が自分で知らせる
+		this._comments.move(from.hostId, from.path, to.path).catch(() => undefined);
+		return true;
 	}
 
 	assign(rawHostId: unknown, rawPath: unknown, rawToken: unknown): ParadisDocAssignResult {
