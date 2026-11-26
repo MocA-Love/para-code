@@ -103,6 +103,11 @@
 	flex: 1;
 }
 
+/* 見出しを畳んだ（Bot のタブの帯が同じ知らせを出す）。 */
+.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-agent-chat.header-hidden > .paradis-agent-chat-header {
+	display: none;
+}
+
 /* ターミナルへ戻るのは本家の ActionBar（アイコン 16・押せる範囲 22×22）。見出しの行の高さの中で中央に置く。 */
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-back {
 	flex: none;
