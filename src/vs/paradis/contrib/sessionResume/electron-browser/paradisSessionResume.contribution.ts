@@ -6,13 +6,10 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { Codicon } from '../../../../base/common/codicons.js';
 import { localize2 } from '../../../../nls.js';
 import { Categories } from '../../../../platform/action/common/actionCommonCategories.js';
-import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
-import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
+import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
-import { PARADIS_WORKSPACES_VIEW_ID } from '../../workspaceSwitch/browser/paradisWorkspacesView.js';
 import { paradisOpenSessionResumeDialog } from './paradisSessionResumeDialog.js';
 
 export const PARADIS_SHOW_SESSION_RESUME_COMMAND_ID = 'paradis.sessionResume.show';
@@ -35,14 +32,4 @@ registerAction2(class ShowParadisSessionResumeAction extends Action2 {
 	}
 });
 
-// 採用した入口: Workspaces 見出し。space行を汚さず、どのspaceの履歴も横断する機能だと伝わる。
-MenuRegistry.appendMenuItem(MenuId.ViewTitle, {
-	command: {
-		id: PARADIS_SHOW_SESSION_RESUME_COMMAND_ID,
-		title: localize2('paradis.sessionResume.viewTitle', "セッション履歴を開く"),
-		icon: Codicon.history,
-	},
-	when: ContextKeyExpr.equals('view', PARADIS_WORKSPACES_VIEW_ID),
-	group: 'navigation',
-	order: -1,
-});
+// 入口はスペースのビューの「プロジェクト」の見出しのボタン（paradisWorkspacesNav.ts）とコマンドパレット。
