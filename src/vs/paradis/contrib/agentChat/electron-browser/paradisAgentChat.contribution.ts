@@ -56,6 +56,7 @@ import { IParadisAgentChatService } from '../browser/paradisAgentChatService.js'
 import { ParadisAgentChatSession } from '../browser/paradisAgentChatSession.js';
 import { IParadisAgentChatCardStates, IParadisAgentChatViewHost, ParadisAgentChatView } from '../browser/paradisAgentChatView.js';
 import { paradisVisibleTerminalText } from '../browser/paradisAgentTuiInput.js';
+import { IParadisAgentChoiceMenu, paradisAgentChoiceMenu } from '../../agentIde/common/paradisAgentChoiceMenu.js';
 import { IParadisAgentChatCommand, IParadisAgentChatImageData, IParadisAgentChatSource, PARADIS_AGENT_CHAT_ENABLED_SETTING, PARADIS_AGENT_CHAT_SEND_KEY_SETTING } from '../common/paradisAgentChat.js';
 import { paradisPushAgentChatHistory } from '../common/paradisAgentChatComposerLogic.js';
 import { paradisAgentChatAttachDialogOptions, paradisAgentChatAttachPaths } from '../common/paradisAgentChatAttach.js';
@@ -558,6 +559,11 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 
 	showTerminal(instanceId: number): void {
 		this.setChatMode(instanceId, false, true);
+	}
+
+	readChoiceMenu(instanceId: number): IParadisAgentChoiceMenu | undefined {
+		const instance = this.terminalService.getInstanceFromId(instanceId);
+		return instance === undefined || instance.isDisposed ? undefined : paradisAgentChoiceMenu(paradisVisibleTerminalText(instance));
 	}
 
 	// ---- ターミナルへの入力（ParadisAgentChatInput） ---------------------------------------------

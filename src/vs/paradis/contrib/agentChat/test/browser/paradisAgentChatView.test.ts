@@ -25,6 +25,7 @@ import { IParadisAgentChatImageData, IParadisAgentChatSource, IParadisAgentChatV
 import { ParadisAgentChatSendKey } from '../../browser/paradisAgentChatComposer.js';
 import { ParadisAgentChatSession } from '../../browser/paradisAgentChatSession.js';
 import { IParadisAgentChatCardStates, IParadisAgentChatViewHost, ParadisAgentChatView } from '../../browser/paradisAgentChatView.js';
+import { IParadisAgentChoiceMenu } from '../../../agentIde/common/paradisAgentChoiceMenu.js';
 
 class TestHost implements IParadisAgentChatViewHost {
 	readonly answers: { group: string; answers: readonly ParadisAgentQuestionAnswer[] }[] = [];
@@ -46,6 +47,7 @@ class TestHost implements IParadisAgentChatViewHost {
 	async getFullText(): Promise<string | undefined> { return undefined; }
 	async getImage(): Promise<IParadisAgentChatImageData | undefined> { return { mediaType: 'image/png', data: 'AAAA' }; }
 	getToggleKeybindingLabel(): string | undefined { return '⌘⇧J'; }
+	readChoiceMenu: ((instanceId: number) => IParadisAgentChoiceMenu | undefined) | undefined;
 	private readonly states = new Map<string, IParadisAgentChatCardStates>();
 	cardStates(token: string): IParadisAgentChatCardStates {
 		let states = this.states.get(token);
@@ -210,6 +212,27 @@ suite('ParadisAgentChatView', () => {
 			'face:codex bubble:通りました time:10:02 usage:gpt-5.5 / 入力 1,200 出力 34',
 		]);
 	});
+
+	test('shows the terminal band while Codex shows its choice menu, keeps the same button across ticks, and stops sending until it closes', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const { host, container, disposables } = await createView([{ token: 'pane', agent: 'codex', epoch: 'e', rev: 0, reset: true, busy: false, live: null, interaction: null, messages: [] }]);
+		let menu: IParadisAgentChoiceMenu | undefined = { kind: 'plan_implement', title: 'Implement this plan?', options: [], enterWould: '' };
+		host.readChoiceMenu = () => menu;
+		await new Promise(resolve => setTimeout(resolve, 1000));
+		const band = container.querySelector<HTMLElement>('.paradis-agent-chat-terminal-band')!;
+		const button = band.querySelector('.monaco-button');
+		const shown = { visible: band.style.display !== 'none', text: band.textContent, notice: container.querySelector('.paradis-agent-chat-composer-notice.visible')?.textContent };
+		await new Promise(resolve => setTimeout(resolve, 1000));
+		const sameButton = band.querySelector('.monaco-button') === button;
+		menu = undefined;
+		await new Promise(resolve => setTimeout(resolve, 1000));
+		const closed = { visible: band.style.display !== 'none', notice: container.querySelector('.paradis-agent-chat-composer-notice.visible')?.textContent ?? null };
+		disposables.dispose();
+		assert.deepStrictEqual({ shown, sameButton, closed }, {
+			shown: { visible: true, text: 'この操作はターミナルで続けますImplement this plan?ターミナルを開く', notice: 'ターミナルで選んでから送ってください' },
+			sameButton: true,
+			closed: { visible: false, notice: null },
+		});
+	}));
 
 	test('shows the full output of a truncated tool result after loading it', async () => {
 		const { host, container } = await createView([{
