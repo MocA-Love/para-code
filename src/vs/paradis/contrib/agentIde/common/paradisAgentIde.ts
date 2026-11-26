@@ -335,6 +335,8 @@ const PROMPT_PATTERNS: readonly RegExp[] = [
 	// `ctrl+y to confirm · ctrl+g to cancel`）。キーの名前は見ない
 	/toselect\u00b7.{1,40}tonavigate/i,
 	/toconfirm\u00b7.{1,20}tocancel/i,
+	// 会話を開き直した直後の「Resume this conversation?」（2.1.332 のバイナリ: `Enter to confirm · <confirm:no のキー> to resume`。使っていない間は `to dismiss`）
+	/toconfirm\u00b7.{1,20}to(?:resume|dismiss)/i,
 	/\(y\/n\)/i,
 ];
 
