@@ -46,7 +46,7 @@ import {
 } from '../common/paradisBotItems.js';
 import { EMPTY_PARADIS_BOTS_STATE, IParadisBot, IParadisBotCreateInput, IParadisBotPatch, IParadisBotsState, PARADIS_BOTS_VERSION, paradisBotCreate, paradisBotRemove, paradisBotUpdate } from '../common/paradisBots.js';
 import { IParadisBotLaunch, IParadisBotsSnapshot, ParadisBotPanePurpose, ParadisBotsServiceResult, paradisBotSummary } from '../common/paradisBotsApi.js';
-import { IParadisBotItemAddArgs } from '../common/paradisBotTools.js';
+import { IParadisBotItemAddArgs, paradisBotLaunchApprovalFlags } from '../common/paradisBotTools.js';
 import { ParadisBotHomeError, ParadisBotHomes } from './paradisBotHomes.js';
 import { ParadisBotPanes } from './paradisBotPanes.js';
 import { IParadisBotsJsonFile } from './paradisBotsStore.js';
@@ -340,6 +340,7 @@ export class ParadisBotsService extends Disposable {
 				return { ok: false, code: error instanceof ParadisBotHomeError ? error.code : 'storage', message: error instanceof ParadisBotHomeError ? error.message : 'Para Code could not prepare the bot\'s home folder.' };
 			}
 			const launchId = this.issueLaunch(botId, purpose);
+			const extraFlags = paradisBotLaunchApprovalFlags(bot.agent);
 			if (launchId === undefined) {
 				return { ok: false, code: 'not_found', message: 'There is no such bot.' };
 			}
@@ -350,6 +351,7 @@ export class ParadisBotsService extends Disposable {
 					...(bot.modelId !== undefined ? { modelId: bot.modelId } : {}),
 					...(bot.effortId !== undefined ? { effortId: bot.effortId } : {}),
 					...(bot.permissionId !== undefined ? { permissionId: bot.permissionId } : {}),
+					...(extraFlags !== undefined ? { extraFlags } : {}),
 				},
 			};
 		});

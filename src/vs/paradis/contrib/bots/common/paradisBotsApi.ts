@@ -91,6 +91,11 @@ export interface IParadisBotLaunch {
 	readonly modelId?: string;
 	readonly effortId?: string;
 	readonly permissionId?: string;
+	/**
+	 * 起動のコマンドに足す引数（Codex だけ。Bot の道具の前もっての許可）。利用者の設定ファイルには書かず、この起動に
+	 * だけ渡す。起動する側（後の PR）が `paradisLaunchAgentInWorkspace` の `extraFlags` へ渡す。
+	 */
+	readonly extraFlags?: string;
 }
 
 // ---- ウィンドウ側のサービス ---------------------------------------------------------------------

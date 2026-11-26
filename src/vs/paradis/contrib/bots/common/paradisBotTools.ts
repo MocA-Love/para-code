@@ -123,6 +123,19 @@ export const PARADIS_BOT_TOOLS: readonly IParadisMcpToolDefinition[] = [
 /** MCP の `initialize` の説明と `para help ide` の手引きに足す 1 段。 */
 export const PARADIS_BOT_SERVER_INSTRUCTIONS = 'Bot tools (bot_item_list, bot_item_show, bot_item_add, bot_item_update): use them only when this terminal is a Para Code bot (the AGENTS.md or CLAUDE.md of your home folder says so). Keep one item per deliverable; when your owner has to decide, set the item to "needs_you" with your questions, then end your turn.';
 
+/**
+ * Bot のペインを Codex で起動するときにだけ渡す、Bot の道具の前もっての許可（`-c` の引数。シェルの 1 行に足す形）。
+ * 利用者の `config.toml` には書かず、その起動にだけ効かせる。どれも英数字と `_.=-` だけの固定の文字列を単一引用符で
+ * 囲むので、POSIX・fish・PowerShell のどれでも 1 つの引数になる。Codex 以外は undefined（Claude Code は MCP の
+ * 道具を許可の一覧に足さなくても、起動の権限の設定に従う）。
+ */
+export function paradisBotLaunchApprovalFlags(agent: string): string | undefined {
+	if (agent !== 'codex') {
+		return undefined;
+	}
+	return [...PARADIS_BOT_TOOL_NAMES].map(tool => `-c 'mcp_servers.para-browser.tools.${tool}.approval_mode=approve'`).join(' ');
+}
+
 export type ParadisBotToolArgs<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly message: string };
 
 function bad(message: string): { readonly ok: false; readonly message: string } {
