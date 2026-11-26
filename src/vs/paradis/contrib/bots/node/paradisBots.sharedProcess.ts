@@ -12,14 +12,17 @@
 import { homedir } from 'os';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { join } from '../../../../base/common/path.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
 import { paradisRegisterMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { onParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHookBus.js';
+import { PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING, paradisAgentIdeActionsAllowed } from '../../agentIde/common/paradisAgentIde.js';
 import { paradisSharedHumanAskService } from '../../humanAsk/node/paradisHumanAskChannel.js';
 import { PARADIS_BOTS_CHANNEL } from '../common/paradisBotsApi.js';
 import { ParadisBotHomes } from './paradisBotHomes.js';
+import { ParadisBotManageToolProvider } from './paradisBotManageToolProvider.js';
 import { ParadisBotToolProvider } from './paradisBotToolProvider.js';
 import { ParadisBotsChannel } from './paradisBotsChannel.js';
 import { ParadisBotsService } from './paradisBotsService.js';
@@ -39,6 +42,11 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 	server.registerChannel(PARADIS_BOTS_CHANNEL, new ParadisBotsChannel(service));
 	shared = service;
 	store.add(paradisRegisterMcpToolProvider(new ParadisBotToolProvider(service)));
+	// 管理の道具の書く側は、IDE 系の書く道具と同じ設定の下（スキーマは画面側でしか登録されないので生の値を読む）
+	const configurationService = accessor.get(IConfigurationService);
+	store.add(paradisRegisterMcpToolProvider(new ParadisBotManageToolProvider(service, {
+		actionsEnabled: () => paradisAgentIdeActionsAllowed(configurationService.getValue(PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING)),
+	})));
 	store.add({
 		dispose: () => {
 			if (shared === service) {
