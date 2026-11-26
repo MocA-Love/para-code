@@ -67,16 +67,6 @@ interface IMutableEntry {
 }
 
 /**
- * つなぎ直した持ち主か。持ち主の名前が `<種類>:<番号>`（ボードの接続ごとの名前など）で、同じ種類の番号が大きい方を
- * 新しい接続とみなす。古い接続が切れる前に新しい接続が同じ鍵を知らせたら、新しい方へ持ち主を移す。
- */
-function supersedes(owner: string, previous: string): boolean {
-	const now = /^(?<family>.+):(?<n>\d+)$/.exec(owner)?.groups;
-	const before = /^(?<family>.+):(?<n>\d+)$/.exec(previous)?.groups;
-	return now !== undefined && before !== undefined && now.family === before.family && Number(now.n) > Number(before.n);
-}
-
-/**
  * 「人が答えるもの」の台帳本体（shared process で 1 つだけ動く）。I/O もタイマーも持たない純粋なクラスで、
  * 変更系のメソッドは「中身が変わったか」を返す。変わったときだけ呼び出し側が知らせを出す。
  *
@@ -124,11 +114,15 @@ export class ParadisHumanAskLedger {
 			}
 			if (entry.pending && at - entry.pending.at < this.options.claimTimeoutMs) {
 				// 届けている最中に持ち主の一覧から消えた。答えが届いたかは、持ち主の resolve / reject を待って決める
+				// （印は見た目を変えないので、変わったことにしない）
 				entry.unlisted = true;
-			} else if (entry.pending) {
-				// 時間切れまで持ち主から何も来なかった。一覧から消えているので、答えが届いて先へ進んだとみなす
+				continue;
+			}
+			if (entry.pending && entry.unlisted) {
+				// 届けている最中に消え、時間切れまで持ち主から何も来なかった。答えが届いて先へ進んだとみなす
 				this.settle(entry, 'answered', { at, surface: entry.pending.surface, ...(entry.pending.summary !== undefined ? { summary: entry.pending.summary } : {}) });
 			} else {
+				// 待ちのまま消えた・時間切れの後に消えた（答えが届いたからとは言えない）
 				this.settle(entry, 'withdrawn', { at });
 			}
 			changed = true;
@@ -279,15 +273,9 @@ export class ParadisHumanAskLedger {
 		}
 		if (existing.state === 'waiting') {
 			if (existing.owner !== owner) {
-				// 鍵は出どころの中で一意。別の持ち主が同じ鍵を名乗っても、先に待っている 1 件を書き換えさせない。
-				// ただし同じ種類のつなぎ直した持ち主（同じリポジトリのボードの新しい接続）には、届けている最中でなければ移す
-				if (existing.pending || !supersedes(owner, existing.owner)) {
-					return false;
-				}
-				existing.owner = owner;
-				existing.input = input;
-				existing.unlisted = undefined;
-				return true;
+				// 鍵は出どころの中で一意。別の持ち主が同じ鍵を名乗っても、先に待っている 1 件を書き換えさせない
+				// （つなぎ直したボードは、古い接続が切れて取り下げになった後に、同じ鍵で待ちへ戻る）
+				return false;
 			}
 			let changed = false;
 			if (existing.unlisted) {

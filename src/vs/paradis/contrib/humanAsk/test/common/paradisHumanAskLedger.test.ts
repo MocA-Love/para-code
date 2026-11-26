@@ -136,10 +136,10 @@ suite('Paradis human ask ledger', () => {
 		// 時間切れだけでは戻さない（キーは届いたのに結果の知らせだけ落ちたのかもしれない）
 		assert.deepStrictEqual(ledger.claim('pane:kept', { type: 'action', actionId: 'deny' }, 'mobile'), { ok: false, reason: 'busy' });
 
-		// 持ち主の次の一覧で決まる: まだ出ていれば届かなかった、消えていれば答えが届いた
+		// 持ち主の次の一覧で決まる: まだ出ていれば届かなかった。時間切れの後に消えたものは、答えが届いたからとは言えないので取り下げ
 		ledger.sync('panes', [permission('pane', 'kept')]);
 		assert.deepStrictEqual(view(ledger), {
-			entries: ['pane:kept waiting failed', 'pane:moved-on answered by mobile 許可'],
+			entries: ['pane:kept waiting failed', 'pane:moved-on withdrawn'],
 			counts: { total: 1, pane: 1, board: 0, bot: 0 },
 		});
 	});
@@ -250,17 +250,29 @@ suite('Paradis human ask ledger', () => {
 		});
 	});
 
-	test('a newer connection of the same board takes over its keys, and an older one cannot take them back', () => {
-		const ledger = new ParadisHumanAskLedger(clock().now);
-		ledger.sync('board:1', [ask('board', 'L:t1:q1')]);
-		// 同じリポジトリのボードがつなぎ直した（古い接続はまだ切れていない）: 新しい方の同じ id がすぐ載る
-		ledger.sync('board:2', [ask('board', 'L:t1:q1', { from: { title: '新しい接続' } })]);
-		// 古い方の一覧からは消えても、新しい方の 1 件は取り下げない。古い方は取り返せない
-		ledger.sync('board:1', []);
-		const back = ledger.upsert('board:1', ask('board', 'L:t1:q1', { from: { title: '古い接続' } }));
-		assert.deepStrictEqual({ back, entries: ledger.snapshot().entries.map(entry => `${entry.key} ${entry.state} ${entry.owner} ${entry.from.title}`) }, {
-			back: false,
-			entries: ['board:L:t1:q1 waiting board:2 新しい接続'],
+	test('the mark of an answer on the way does not count as a change, an entry that comes back can still fail, and one that left after the timeout is withdrawn', () => {
+		const time = clock();
+		const ledger = new ParadisHumanAskLedger(time.now, { claimTimeoutMs: 20_000 });
+		ledger.sync('panes', [permission('pane', 'back'), permission('pane', 'late')]);
+		const back = ledger.claim('pane:back', { type: 'action', actionId: 'allow' }, 'inbox');
+		assert.ok(back.ok);
+		assert.ok(ledger.claim('pane:late', { type: 'action', actionId: 'allow' }, 'inbox').ok);
+		// 2 件とも届けている最中に消えた: 印だけなので、何度知らせても変わったことにしない
+		const marks = [ledger.sync('panes', []), ledger.sync('panes', [])];
+		// 1 件目が一覧に戻ってから届かなかった: 待ちへ戻す
+		ledger.sync('panes', [permission('pane', 'back')]);
+		ledger.reject('panes', 'pane:back', back.request.claim);
+		// 2 件目は印のまま時間切れ: 届けている最中に消えたので回答済み
+		time.advance(21_000);
+		ledger.sync('panes', [permission('pane', 'back')]);
+		// 3 件目: 時間切れになってから消えた（届けている最中に消えたのではない）: 取り下げ
+		ledger.upsert('panes', permission('pane', 'stale'));
+		assert.ok(ledger.claim('pane:stale', { type: 'action', actionId: 'allow' }, 'inbox').ok);
+		time.advance(21_000);
+		ledger.sync('panes', [permission('pane', 'back')]);
+		assert.deepStrictEqual({ marks, entries: view(ledger).entries }, {
+			marks: [false, false],
+			entries: ['pane:back waiting failed', 'pane:stale withdrawn', 'pane:late answered by inbox 許可'],
 		});
 	});
 

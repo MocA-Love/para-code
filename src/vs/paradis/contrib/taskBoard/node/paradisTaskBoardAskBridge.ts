@@ -62,6 +62,12 @@ export class ParadisTaskBoardAskBridge extends Disposable {
 	/** ボード（鍵の hash）ごとの、つながっている SSE の数と、台帳での持ち主の名前。 */
 	private readonly boards = new Map<string, { connections: number; readonly owner: string }>();
 	private boardSequence = 0;
+	/**
+	 * id の頭（ボードの台帳の名前。リポジトリごとに違う）と、それを最初に使ったボードの鍵（の hash）。頭はボードが自分で
+	 * 名乗るので、別の鍵のボードが同じ頭を名乗ったら断る（別のリポジトリの待ちに成り代わって答えを受け取らせない）。
+	 * 接続が切れても忘れない（同じリポジトリのボードは同じ鍵でつなぎ直す）。
+	 */
+	private readonly prefixOwners = new Map<string, string>();
 	/** 届けてもらっている最中の依頼（依頼の番号 → 持ち主と鍵）。 */
 	private readonly claims = new Map<string, IClaim>();
 
@@ -120,8 +126,25 @@ export class ParadisTaskBoardAskBridge extends Disposable {
 				this.ledger.resolve(owner, paradisHumanAskKey('board', id), { surface: 'board' });
 			}
 		}
-		const refused = this.ledger.sync(owner, body.asks.map(ask => this.toInput(ask, remoteBoard)));
+		const mine = body.asks.filter(ask => this.ownsPrefix(ask, keyHash!));
+		const refused = this.ledger.sync(owner, mine.map(ask => this.toInput(ask, remoteBoard))) + (body.asks.length - mine.length);
 		return { ok: true, body: { ok: true, refused } };
+	}
+
+	/** id の頭がこのボードのものか。まだ誰も使っていない頭なら、このボードの頭として覚える。 */
+	private ownsPrefix(ask: unknown, keyHash: string): boolean {
+		const id = isRecord(ask) && typeof ask.id === 'string' ? ask.id : undefined;
+		const separator = id?.indexOf(':') ?? -1;
+		if (id === undefined || separator <= 0) {
+			return false;
+		}
+		const prefix = id.slice(0, separator);
+		const holder = this.prefixOwners.get(prefix);
+		if (holder === undefined && this.prefixOwners.size < TASK_BOARD_ASKS_LIMIT) {
+			this.prefixOwners.set(prefix, keyHash);
+			return true;
+		}
+		return holder === keyHash;
 	}
 
 	/** ボードの 1 件を台帳の入力にする。出どころは `board` に固定し、ターミナルの id をペインの鍵と窓に引き直す。 */

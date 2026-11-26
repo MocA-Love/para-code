@@ -159,6 +159,27 @@ suite('ParadisTaskBoardAskBridge', () => {
 		});
 	});
 
+	test('a board cannot report the asks of another repository, even after that board is gone, and the same board gets its asks back after reconnecting', async () => {
+		const a = connect(BOARD_A);
+		const b = connect(BOARD_B);
+		await put(BOARD_A, { asks: [question('L:t1:q1')] });
+		// 別の鍵のボードが同じ頭（L）を名乗る: 断る。持ち主も中身も替わらない
+		const stolen = await put(BOARD_B, { asks: [question('L:t1:q1'), question('M:t9:q9')] });
+		a.client.dispose();
+		const afterGone = await put(BOARD_B, { asks: [question('L:t1:q1'), question('M:t9:q9')] });
+		// 同じ鍵でつなぎ直したボードは、同じ頭の待ちを出し直せる
+		const back = connect(BOARD_A);
+		await put(BOARD_A, { asks: [question('L:t1:q1')] });
+		const entries = ledger.getSnapshot().entries.map(entry => `${entry.key} ${entry.state}`).sort();
+		back.client.dispose();
+		b.client.dispose();
+		assert.deepStrictEqual({ stolen, afterGone, entries }, {
+			stolen: '200 {"ok":true,"refused":1}',
+			afterGone: '200 {"ok":true,"refused":1}',
+			entries: ['board:L:t1:q1 waiting', 'board:M:t9:q9 waiting'],
+		});
+	});
+
 	test('a turn answered on the board leaves the ledger as answered, one that just goes away as withdrawn, and a board that stops withdraws all of its turns', async () => {
 		const a = connect(BOARD_A);
 		const b = connect(BOARD_B);
