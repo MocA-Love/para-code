@@ -50,6 +50,15 @@ export function paradisFindMobileDevice<T extends { readonly id: string; readonl
 	return devices.find(candidate => candidate.id === deviceId) ?? devices.find(candidate => candidate.avdId !== undefined && candidate.avdId === deviceId);
 }
 
+/**
+ * 割り当ての `deviceId`（{@link attachedDeviceId}）が、一覧のその端末（{@link deviceId}）を指すか。
+ * 起動前の AVD で割り当てた Android は、起動すると一覧の id が替わるので、id の一致だけでは見ない
+ * （共有ダイアログとタブの名前が、起動後の端末を「未割り当て」と出さないように）。
+ */
+export function paradisMobileAttachmentIsFor(devices: readonly { readonly id: string; readonly avdId?: string }[], attachedDeviceId: string, deviceId: string): boolean {
+	return attachedDeviceId === deviceId || paradisFindMobileDevice(devices, attachedDeviceId)?.id === deviceId;
+}
+
 /** 端末画面の寸法。ピクセル空間とポイント空間の対応を表す。 */
 export interface IParadisMobileDisplay {
 	readonly pixelWidth: number;
@@ -61,7 +70,7 @@ export interface IParadisMobileDisplay {
 	readonly orientation?: string;
 }
 
-/** 1ペイン分のアタッチ状態。 */
+/** 1ペインに割り当てた端末 1 台分（1 つのペインに 10 台まで割り当てられる。simulator/common/paradisMobileAttachmentBook.ts）。 */
 export interface IParadisMobileAttachment {
 	/** アタッチ元のターミナルペインを表すトークン。 */
 	readonly paneToken: string;
@@ -76,6 +85,11 @@ export interface IParadisMobileAttachment {
 	 */
 	readonly stateKey: string | undefined;
 	readonly attachedAt: number;
+	/**
+	 * そのペインの「今の端末」（最後に割り当てた端末）。mobile_* の道具が `device` を省いたときに当たる。
+	 * 一覧（`listAttachments`・スナップショット）で付く。
+	 */
+	readonly current?: boolean;
 }
 
 /** renderer 側のアタッチUIが1回のポーリングで受け取る内容。 */

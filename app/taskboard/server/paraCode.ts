@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { ITaskBoardQuestion, ITaskBoardStep, ITaskBoardTask, TaskBoardAgentKind } from '@engine/paradisTaskBoard.js';
 import type { ITaskBoardAgentPort, ITaskBoardArtifactInput, TaskBoardEngine } from '@engine/paradisTaskBoardEngine.js';
+import { TASK_BOARD_ASK_ANSWER_EVENT, type ITaskBoardAskAnswerEvent } from '@engine/paradisTaskBoardAsks.js';
 import type { TaskBoardArtifactKind } from '@engine/paradisTaskBoard.js';
 import type { IWorktreeIncludePort } from './workspaces.js';
 
@@ -150,7 +151,7 @@ export class ParaCodeBridgeClient {
 		return { authorization: `Bearer ${info.token}`, ...(this.options.boardKey !== undefined ? { 'x-para-board-key': this.options.boardKey } : {}) };
 	}
 
-	async request<T>(method: 'GET' | 'POST', route: string, body?: unknown, timeoutMs = 30000): Promise<T> {
+	async request<T>(method: 'GET' | 'POST' | 'PUT', route: string, body?: unknown, timeoutMs = 30000): Promise<T> {
 		if (this.disposed) {
 			throw new ParaCodeBridgeError(0, 'disposed', 'タスクボードは止まっています');
 		}
@@ -361,6 +362,8 @@ export interface IParaCodeAgentsOptions {
 	readonly readArtifact?: (place: string, relativePath: string, maxBytes: number) => Promise<Buffer | undefined>;
 	/** SSH の中継の工程のコマンドの出力と終わり（relay.ts の RemoteCommandRunner へ渡す）。 */
 	readonly onRelayEvent?: (event: ParaCodeRelayEvent) => void;
+	/** Para Code の台帳の側（受信箱など）で答えられたので、届けてほしいという依頼（asks.ts の AskPublisher へ渡す）。 */
+	readonly onAskAnswer?: (event: ITaskBoardAskAnswerEvent) => void;
 	readonly onConnection?: (connected: boolean, detail?: string) => void;
 	readonly fetchImpl?: typeof fetch;
 	readonly timeouts?: { readonly connect?: number; readonly idle?: number; readonly retry?: number; readonly reconcile?: number; readonly stall?: number };
@@ -401,6 +404,11 @@ export class ParaCodeAgents implements ITaskBoardAgentPort {
 				const relayEvent = event as unknown as ParaCodeRelayEvent;
 				if (relayEvent.type === 'relay-output' || relayEvent.type === 'relay-exit') {
 					options.onRelayEvent?.(relayEvent);
+					return;
+				}
+				const askEvent = event as unknown as ITaskBoardAskAnswerEvent;
+				if (askEvent.type === TASK_BOARD_ASK_ANSWER_EVENT) {
+					options.onAskAnswer?.(askEvent);
 					return;
 				}
 				this.onEvent(event);
@@ -471,6 +479,12 @@ export class ParaCodeAgents implements ITaskBoardAgentPort {
 
 	private get engine(): TaskBoardEngine {
 		return this.options.engine();
+	}
+
+	/** そのタスクのエージェントが動いているターミナルの id（起動を待っている間・無いときは undefined）。 */
+	terminalOf(task: ITaskBoardTask): string | undefined {
+		const link = this.linkOf(task);
+		return link && !link.launching ? link.terminal : undefined;
 	}
 
 	private linkOf(task: ITaskBoardTask): ITerminalLink | undefined {

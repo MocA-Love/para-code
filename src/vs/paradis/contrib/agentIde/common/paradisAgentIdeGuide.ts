@@ -24,7 +24,7 @@ export const PARADIS_AGENT_IDE_SERVER_INSTRUCTIONS = `IDE tools let you list spa
 export function paradisAgentIdeGuide(state: { readonly actionsEnabled: boolean; readonly actionScope: 'space' | 'window'; readonly readOtherSpaces: boolean; readonly shellCommands: boolean }): string {
 	const actions = state.actionsEnabled
 		? `Actions are ON (scope: ${state.actionScope === 'window' ? 'every terminal in this window' : 'terminals in your own space'}). Shell commands (Enter in a plain shell) are ${state.shellCommands ? 'ON' : 'OFF'}.`
-		: `Actions are OFF right now: send_terminal_input, send_terminal_key, launch_agent, create_terminal, create_space, close_terminal and remove_space will be refused. ${PARADIS_AGENT_IDE_ACTIONS_DISABLED_MESSAGE}`;
+		: `Actions are OFF right now: send_terminal_input, send_terminal_key, launch_agent, create_terminal, create_space, close_terminal, remove_space and the section tools (create_space_section, update_space_section, remove_space_section, move_space_to_section) will be refused. ${PARADIS_AGENT_IDE_ACTIONS_DISABLED_MESSAGE}`;
 	const reading = state.readOtherSpaces ? 'You may also read terminals in other spaces of this window (the user allowed it).' : 'You can only read terminals in your own space and terminals you created.';
 	return `# Para Code IDE tools
 
@@ -58,7 +58,7 @@ The user can copy a line like "${PARADIS_TAB_ID_PREFIX} terminal:t_1a2b3c4d5e6f"
 
 - terminal:<id> - the terminal "id" for read_terminal, wait_for_terminal, send_terminal_input and send_terminal_key. If list_terminals does not show it, it is outside what you may read.
 - browser:<tabId> - pass it as tab_id to the browser tools (tabId for select_browser_tab). It works only for tabs list_browser_tabs shows (shared with this pane or opened by you); for another user tab, call request_browser_page and let the user share it.
-- simulator:<device id> - the device id from mobile_list_devices. If mobile_get_attached_device does not show it, call mobile_request_device with that id; the user approves.
+- simulator:<device id> - the device id from mobile_list_devices. If attachedDevices there does not show it, call mobile_request_device with that id; the user approves, and it is added to the devices of this pane. Pass it as device to the mobile tools.
 - file:<path> - the absolute path of the file (in an SSH window, the path on the SSH host). Read it with your own tools, or pass it to preview_file.
 
 ## Hand a task to a new agent
@@ -68,6 +68,13 @@ The user can copy a line like "${PARADIS_TAB_ID_PREFIX} terminal:t_1a2b3c4d5e6f"
 3. wait_for_terminal on the returned terminal id with until="agent_stopped". For a terminal you just launched it waits up to 90 seconds for the agent to start. It returns "met": false with "timed_out": true after timeout_seconds; call it again to keep waiting. "reason": "no_agent_status" means the agent never reported that it started working - read_terminal to see what is on screen, it did not necessarily finish. An agent launched without a prompt returns "reason": "ready" once its input box shows. "blocked_by": "trust_dialog" means it stopped at its startup folder-trust dialog: tell the user, only they can answer it.
 4. read_terminal to see what the agent did. If "status" is waiting_for_permission, asking_question or waiting_for_choice, tell the user.
 5. Follow up with send_terminal_input (press_enter=true) and wait again.
+
+## Sections of the sidebar list
+
+- Use these when the user asks you to tidy the list of spaces in the sidebar: list_spaces "sections" shows every section in display order with the space keys it holds. A section with "repository" sits inside that repository and holds its worktree spaces; the others group repositories.
+- create_space_section, update_space_section (name, color, collapsed, before/after another section) and move_space_to_section (section id or "none", before/after another space) work on sections the user made too. Change only what the user asked for. Unless the user widened the action scope to the whole window, you can only create, change, remove and fill sections inside the repository of your own space, change or remove sections of repositories that hold only that repository (or nothing), and move that repository and its worktree spaces; creating an empty section of repositories is always allowed.
+- Colors: red, orange, yellow, lime, green, teal, cyan, blue, indigo, purple, pink, slate; "none" removes the dot. Only sections of repositories have a color.
+- remove_space_section removes the heading only: the repositories, worktrees and branches stay, outside any section. A section that still holds spaces is removed only after the user confirms in a dialog.
 
 ## Send input to an existing terminal
 

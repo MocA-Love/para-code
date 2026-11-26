@@ -20,6 +20,7 @@ import { IParadisCdpFrameSubscription, IParadisSharedPageBindings, PARADIS_CDP_T
 import { PARADIS_MOBILE_RELAY_CHANNEL } from '../common/paradisMobileRelay.js';
 import { PARADIS_MOBILE_WINDOW_LEASE_CHANNEL, ParadisMobileWindowLeaseClient } from '../common/paradisMobileWindowLease.js';
 import { ParadisMobileVoiceEvent } from '../common/paradisMobileVoiceStream.js';
+import type { IParadisHumanAskPaneSource } from '../../humanAsk/common/paradisHumanAskPane.js';
 import { ParadisMobileRelayService } from './paradisMobileRelayService.js';
 
 /**
@@ -33,8 +34,9 @@ import { ParadisMobileRelayService } from './paradisMobileRelayService.js';
  * voiceClips は同一 shared process の通知サービスが発火する音声通知（流れの開始・断片・終わりと、
  * 1 本まるごとの MP3）で、音声通知を開始しているモバイルへ配るために注入する。
  * OS のスリープ復帰は main の 'nativeHost' チャネルから受け、リレーの接続を即座に確かめさせる。
+ * humanAskPanes は「人が答えるもの」の台帳の書き手の登録口（同じ shared process の中だけ）。
  */
-export function registerParadisMobileRelay(server: IPCServer, userDataPath: string, mainProcessService: IMainProcessService, logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs, sharedPageBindings?: IParadisSharedPageBindings, voiceClips?: Event<ParadisMobileVoiceEvent>, voiceListenerProbe?: (probe: () => number) => IDisposable): IDisposable {
+export function registerParadisMobileRelay(server: IPCServer, userDataPath: string, mainProcessService: IMainProcessService, logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs, sharedPageBindings?: IParadisSharedPageBindings, voiceClips?: Event<ParadisMobileVoiceEvent>, voiceListenerProbe?: (probe: () => number) => IDisposable, humanAskPanes?: (source: IParadisHumanAskPaneSource) => IDisposable): IDisposable {
 	const store = new DisposableStore();
 	const encryptionService = ProxyChannel.toService<IEncryptionService>(mainProcessService.getChannel('encryption'));
 	// ブラウザミラーの再描画プッシュ購読（electron-main の beginFrameSubscription を中継）
@@ -51,6 +53,10 @@ export function registerParadisMobileRelay(server: IPCServer, userDataPath: stri
 	store.add(nativeHostService.onDidResumeOS(() => {
 		service.handleSystemResume().catch(error => logService.warn('[paradisMobileRelay] resume probe failed', error));
 	}));
+	// ペインの質問・許可を「人が答えるもの」の台帳へ載せる書き手（humanAsk）へ、今の待ちの読むだけの口を渡す
+	if (humanAskPanes !== undefined) {
+		store.add(humanAskPanes(service.humanAskPaneSource()));
+	}
 	server.registerChannel(PARADIS_MOBILE_RELAY_CHANNEL, ProxyChannel.fromService(service, store));
 	return store;
 }

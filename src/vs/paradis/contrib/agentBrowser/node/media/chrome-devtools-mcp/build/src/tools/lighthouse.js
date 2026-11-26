@@ -124,7 +124,8 @@ export const lighthouseAudit = definePageTool({
             summary: {
                 mode,
                 device,
-                url: lhr.mainDocumentUrl,
+                // PARA-PATCH (Para Code): a snapshot audit has no main document URL ("URL: undefined"); use the audited page's.
+                url: lhr.mainDocumentUrl ?? lhr.finalDisplayedUrl ?? page.pptrPage.url(),
                 scores: categoryScores,
                 audits: {
                     failed: failedAudits,
