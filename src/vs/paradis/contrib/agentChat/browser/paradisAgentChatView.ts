@@ -1545,6 +1545,7 @@ export class ParadisAgentChatView extends Disposable {
 		bubble.dataset.phase = live.phase;
 		if (live.phase === 'message' && live.text !== undefined && live.text.length > 0) {
 			const message = this.renderAgentMessage(state);
+			bubble.classList.add('with-face');
 			bubble.appendChild(message.element);
 			const body = append(message.bubble, $('.paradis-agent-chat-markdown'));
 			const rendered = this.renderMarkdown(live.text, true);

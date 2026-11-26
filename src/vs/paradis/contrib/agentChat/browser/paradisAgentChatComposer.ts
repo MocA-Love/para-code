@@ -115,7 +115,7 @@ export class ParadisAgentChatComposer extends Disposable {
 		// ＋・入力の丸い欄・丸い送信を 1 行に並べる（ParaDot の入力欄の形）。
 		const row = append(this.element, $('.paradis-agent-chat-composer-row'));
 		if (host.pickFiles) {
-			const attach = append(row, $('button.paradis-agent-chat-attach.paradis-focus-ring')) as HTMLButtonElement;
+			const attach = append(row, $('button.paradis-agent-chat-attach.paradis-focus-ring-inset')) as HTMLButtonElement;
 			attach.type = 'button';
 			attach.setAttribute('aria-label', localize('paradisAgentChat.attach', "ファイルを添える"));
 			attach.title = localize('paradisAgentChat.attach', "ファイルを添える");

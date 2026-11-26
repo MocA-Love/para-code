@@ -266,8 +266,8 @@
 }
 
 /* 顔の無い行（手順・考えた内容・カード・知らせ・生成中の行）は、吹き出しの左端（顔 24 と間 8 の右）にそろえる。 */
-.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-list > :not(.paradis-agent-chat-message.user):not(.paradis-agent-chat-message.assistant):not(.paradis-agent-chat-notice):not(.paradis-agent-chat-live),
-.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-live-holder > .paradis-agent-chat-live:not([data-phase='message']) {
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-list > :not(.paradis-agent-chat-message.user):not(.paradis-agent-chat-message.assistant):not(.paradis-agent-chat-notice):not(.paradis-agent-chat-live):not(.paradis-agent-chat-grouped),
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-live-holder > .paradis-agent-chat-live:not(.with-face) {
 	margin-left: calc(var(--vscode-spacing-size240) + var(--vscode-spacing-size80));
 }
 

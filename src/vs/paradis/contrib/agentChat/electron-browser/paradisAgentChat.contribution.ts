@@ -506,8 +506,9 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 	async pickFiles(): Promise<readonly string[] | undefined> {
 		const uris = await this.fileDialogService.showOpenDialog({
 			title: localize('paradisAgentChat.attachTitle', "エージェントに添えるファイル"),
+			// Windows と Linux はファイルとフォルダを同じ画面で選べない（両方を許すとフォルダだけの画面になる）ので、ファイルだけにする
 			canSelectFiles: true,
-			canSelectFolders: true,
+			canSelectFolders: false,
 			canSelectMany: true,
 		});
 		// SSH の窓では接続先のファイルを選ぶ。エージェントも接続先で動くので、接続先のパスを渡す
