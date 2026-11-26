@@ -36,6 +36,7 @@ import {
 } from '../common/paradisTaskBoardBridge.js';
 import { paradisPeerIsOneOf } from '../../agentBrowser/node/paradisCdpPeerResolver.js';
 import { paradisParseTaskBoardBoardRegistration } from '../common/paradisTaskBoardRelay.js';
+import { paradisSharedHumanAskService } from '../../humanAsk/node/paradisHumanAskChannel.js';
 import { ParadisTaskBoardAuditLog } from './paradisTaskBoardAuditLog.js';
 import { ParadisTaskBoardBoardAuth } from './paradisTaskBoardBoardAuth.js';
 import { ParadisTaskBoardBridgeServer } from './paradisTaskBoardBridgeServer.js';
@@ -134,6 +135,8 @@ ParadisSharedProcessContributions.register('taskBoard', ({ server, accessor }) =
 		relaySessionWindow: (sessionId, keyHash) => relay.windowOf(sessionId, keyHash),
 		onRelayLaunch: (request, outcome, reason) => relay.auditLaunch(request.relaySessionId ?? '', request.agent, request.repoPath, outcome, reason),
 		worktreeIncludes: paradisTaskBoardWorktreeIncludes(worktreeGit, logService),
+		// ボードの質問と承認を「人が答えるもの」の台帳へ載せる（受信箱・スマホが同じ 1 件を出せるように）
+		asks: paradisSharedHumanAskService(),
 	}, logService));
 	// ボード用のツールは、設定がオンのときだけ para-browser に出す（使わない人のエージェントに説明を載せない）
 	const toolProvider = store.add(new MutableDisposable());

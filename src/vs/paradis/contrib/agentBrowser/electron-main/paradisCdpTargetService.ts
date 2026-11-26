@@ -24,6 +24,9 @@ import { ParadisAgentEmulationLedger, paradisEffectiveTouchEmulation, paradisEmu
 import type { IBrowserViewMainService } from '../../../../platform/browserView/electron-main/browserViewMainService.js';
 import { paraSetBrowserViewOpener } from '../../../../platform/browserView/electron-main/paraBrowserViewLoadWatchdog.js';
 import { paraBrowserViewZoomShrink } from '../../../../platform/browserView/electron-main/paraBrowserViewZoom.js';
+import type { PermissionCategory } from '../../../../platform/browserView/common/browserPermissions.js';
+import { PARADIS_KEEP_PAGE_MAX_MS, paradisArmKeepPage, paradisDisarmKeepPage } from '../../../../platform/browserView/electron-main/paradisBrowserViewDialogs.js';
+import { paradisAnswerPermissionRequest, paradisTakePermissionNotes } from '../../../../platform/browserView/electron-main/paradisBrowserPermissionRequests.js';
 import { browserViewAutomationKeySignatureFromCdp, type BrowserViewAutomationKeyFailureReason, type IBrowserViewAutomationKeyFailureDetail } from '../../../../platform/browserView/common/paraBrowserViewAutomationInput.js';
 import {
 	IParadisCdpExactViewService,
@@ -65,7 +68,11 @@ import {
 	IParadisPageOverridesResult,
 	IParadisPageStorageDescription,
 	IParadisPdfResult,
+	IParadisPermissionAnswer,
+	IParadisPermissionNote,
 	PARADIS_PAGE_OPS_MAX_HIGHLIGHT_MS,
+	paradisAgentMayAllowPermission,
+	paradisParsePermissionName,
 	paradisPaneStorageAffinity,
 	paradisIsPageOpsOwnerKey,
 	paradisParseHighlightRect,
@@ -1816,6 +1823,56 @@ export class ParadisCdpTargetService implements IParadisCdpExactViewService, IPa
 		if (typeof expectationIdValue === 'string' && expectationIdValue.length <= 64) {
 			paradisCancelAgentDownloadExpectation(expectationIdValue);
 		}
+	}
+
+	/**
+	 * このタブの次の beforeunload（「このサイトを離れますか」）で、ページを残す（navigate_page の handleBeforeUnload "decline"）。
+	 * 1 回の移動にだけ効き、`ttlMs` を過ぎると消える。タブが無ければ false。
+	 */
+	async armExactViewKeepPage(descriptorValue: unknown, ttlMsValue: unknown): Promise<boolean> {
+		const target = this.resolvePageOpsTarget(descriptorValue);
+		if (!target || target.webContents.isDestroyed() || typeof ttlMsValue !== 'number' || !Number.isFinite(ttlMsValue)) {
+			return false;
+		}
+		paradisArmKeepPage(target.webContents, Math.max(0, Math.min(PARADIS_KEEP_PAGE_MAX_MS, ttlMsValue)));
+		return true;
+	}
+
+	/** {@link armExactViewKeepPage} を終える。ページを残したなら true。 */
+	async disarmExactViewKeepPage(descriptorValue: unknown): Promise<boolean> {
+		const target = this.resolvePageOpsTarget(descriptorValue);
+		return target ? paradisDisarmKeepPage(target.webContents) : false;
+	}
+
+	/**
+	 * このタブで待っている許可の求め（位置情報・通知など）と、前に尋ねてから利用者の答え・答えなしで終わったもの
+	 * （1 回だけ返す）。拡張機能の画面を出しているタブでは返さない。
+	 */
+	async takeExactViewPermissionNotes(descriptorValue: unknown): Promise<IParadisPermissionNote[]> {
+		const target = this.resolvePageOpsTarget(descriptorValue);
+		if (!target || target.webContents.isDestroyed() || paradisShowsExtensionPage(target.webContents)) {
+			return [];
+		}
+		return paradisTakePermissionNotes(target.webContents).map(note => ({ origin: note.origin, permission: note.category, state: note.state, ...(note.secondsLeft !== undefined ? { secondsLeft: note.secondsLeft } : {}) }));
+	}
+
+	/**
+	 * このタブで待っている許可の求めに答える。`allow` は `mayAllow` のときだけ（自分で開いたタブ。呼ぶ側が決める）で、
+	 * カメラ・マイク・機器は利用者だけが許可できる。答えはプロファイルへ保存しない（platform の
+	 * paradisBrowserPermissionRequests.ts）。
+	 */
+	async answerExactViewPermissionRequest(descriptorValue: unknown, permissionValue: unknown, allowValue: unknown, mayAllowValue: unknown): Promise<IParadisPermissionAnswer> {
+		const target = this.resolvePageOpsTarget(descriptorValue);
+		if (!target || target.webContents.isDestroyed() || typeof allowValue !== 'boolean' || paradisShowsExtensionPage(target.webContents)) {
+			return { ok: false, reason: 'unavailable', pending: [] };
+		}
+		const permission = permissionValue === null || permissionValue === undefined ? undefined : paradisParsePermissionName<PermissionCategory>(permissionValue);
+		if (permission === null) {
+			return { ok: false, reason: 'invalid', pending: [] };
+		}
+		const result = paradisAnswerPermissionRequest(target.webContents, permission, allowValue, category => mayAllowValue === true && paradisAgentMayAllowPermission(category));
+		const describe = (items: readonly { readonly origin: string; readonly category: PermissionCategory }[]) => items.map(item => ({ origin: item.origin, permission: item.category as string }));
+		return result.ok ? { ok: true, answered: describe(result.answered) } : { ok: false, reason: result.reason, pending: describe(result.pending) };
 	}
 
 	async highlightExactView(descriptorValue: unknown, rectValue: unknown, durationMsValue: unknown): Promise<boolean> {
