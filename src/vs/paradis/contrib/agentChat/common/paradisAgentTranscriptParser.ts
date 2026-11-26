@@ -14,7 +14,7 @@
 // 中継の TranscriptTailer に残し、ここは Node の API を使わない。**正規化の結果はそのままモバイルへ
 // 送られる**ので、出力の形を変えるときはモバイル側の表示も確かめること。
 
-import { IParadisAgentAdvisorInfo, IParadisAgentChatImage, IParadisAgentChatMessage, IParadisAgentCompactionInfo, IParadisAgentQuestionOption, IParadisAgentQuestionReply, PARADIS_ADVISOR_TOOL, PARADIS_AGENT_QUESTION_PREVIEW_LIMIT } from './paradisAgentChat.js';
+import { IParadisAgentAdvisorInfo, IParadisAgentChatImage, IParadisAgentChatMessage, IParadisAgentCompactionInfo, IParadisAgentMessageUsage, IParadisAgentQuestionOption, IParadisAgentQuestionReply, PARADIS_ADVISOR_TOOL, PARADIS_AGENT_QUESTION_PREVIEW_LIMIT } from './paradisAgentChat.js';
 import { IParadisCodexAsyncQuestion, paradisCodexAsyncQuestionsFromItem, paradisParseCodexAsyncReply } from '../../mobileRelay/common/paradisCodexAsyncQuestions.js';
 import { paradisRedactToolArgumentsText, paradisRedactToolInputSecrets } from '../../agentBrowser/common/paradisBrowserPageOps.js';
 import { paradisExpandPastedContent } from '../../../common/paradisPastedContent.js';
@@ -143,6 +143,8 @@ export interface IRawMessage {
 	readonly compaction?: IParadisAgentCompactionInfo;
 	/** {@link IParadisAgentChatMessage.questionReplies} */
 	readonly questionReplies?: readonly IParadisAgentQuestionReply[];
+	/** {@link IParadisAgentChatMessage.usage} */
+	readonly usage?: IParadisAgentMessageUsage;
 	/** 切り詰め前の全文。モバイルへは送らず tailer が 'tool-full' 用に保持する。 */
 	readonly fullText?: string;
 	/** 画像の実体。モバイルへは送らず tailer が 'tool-image' 用に保持する。 */
@@ -1327,6 +1329,7 @@ export function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSig
 	if (model !== undefined) {
 		signals.model = model;
 	}
+	const usage = paradisClaudeMessageUsage(message, model);
 	if (Array.isArray(content)) {
 		for (const block of content) {
 			const b = rec(block);
@@ -1336,7 +1339,7 @@ export function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSig
 			if (b.type === 'text') {
 				const text = str(b.text) ?? '';
 				if (text.trim().length > 0) {
-					out.push({ role: 'assistant', kind: 'text', text: truncateText(text, TEXT_LIMIT), ts });
+					out.push({ role: 'assistant', kind: 'text', text: truncateText(text, TEXT_LIMIT), ts, ...(usage !== undefined ? { usage } : {}) });
 				}
 			} else if (b.type === 'thinking') {
 				const text = str(b.thinking) ?? '';
@@ -1407,6 +1410,24 @@ export function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSig
 		}
 	}
 	return out;
+}
+
+/**
+ * Claude の assistant の行の usage（入力はキャッシュの読み書きを含めた合計）。中断・エラーで Claude Code が作る行
+ * （モデルが `<synthetic>`、API を呼んでいない）と、数の無い行は undefined。
+ */
+function paradisClaudeMessageUsage(message: Record<string, unknown>, model: string | undefined): IParadisAgentMessageUsage | undefined {
+	const usage = rec(message.usage);
+	if (usage === undefined || model === undefined) {
+		return undefined;
+	}
+	const tokens = (value: unknown) => {
+		const count = num(value);
+		return count !== undefined && Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+	};
+	const inputTokens = tokens(usage.input_tokens) + tokens(usage.cache_read_input_tokens) + tokens(usage.cache_creation_input_tokens);
+	const outputTokens = tokens(usage.output_tokens);
+	return inputTokens + outputTokens > 0 ? { model, inputTokens, outputTokens } : undefined;
 }
 
 /** Advisor の暗号化された返答の説明（モバイル・デスクトップ・古いアプリで同じ文を出す）。 */

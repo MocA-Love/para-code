@@ -91,6 +91,17 @@ export interface IParadisAgentAdvisorInfo {
 /** Advisor の呼び出しを表す tool_use のツール名。 */
 export const PARADIS_ADVISOR_TOOL = 'Advisor';
 
+/**
+ * エージェントの発言を書いたリクエスト 1 回の使用量（Claude Code の transcript の assistant の行の `message.usage`）。
+ * 入力はキャッシュから読んだ分・書いた分を含めた合計。同じ応答を複数の行に分けて書くので、出力はその行を書いた
+ * 時点の数（同じ応答の後ろの行ほど大きい）。
+ */
+export interface IParadisAgentMessageUsage {
+	readonly model?: string;
+	readonly inputTokens: number;
+	readonly outputTokens: number;
+}
+
 /** モバイルへ送る正規化済みチャットメッセージ1件。 */
 export interface IParadisAgentChatMessage {
 	/** epoch内で単調増加する連番 (差分同期用)。 */
@@ -164,6 +175,8 @@ export interface IParadisAgentChatMessage {
 	 * `text` は元の発言のまま（送った発言との突き合わせに使うため）。古いアプリは知らない項目として無視し、元の発言を出す。
 	 */
 	readonly questionReplies?: readonly IParadisAgentQuestionReply[];
+	/** kind==='text' のエージェントの発言: そのリクエストのモデルと使用量（取れた場合のみ。今は Claude Code だけ）。 */
+	readonly usage?: IParadisAgentMessageUsage;
 }
 
 /** Codex の非同期の質問への返信 1 件（答えた質問と答え）。 */
