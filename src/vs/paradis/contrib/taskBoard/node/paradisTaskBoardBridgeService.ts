@@ -16,6 +16,7 @@
 //  - 起動先のウィンドウ選び（そのリポジトリを開いているウィンドウ → フォーカス中 → 最初のウィンドウ）
 //  - SSE で流すイベント（状態・ツール・報告）と、報告への返事の待ち合わせ
 //  - para-browser MCP の `board_complete_step` / `board_ask_human`
+//  - ボードの人の出番を「人が答えるもの」の台帳へ載せる口（`/v1/asks`。中身は paradisTaskBoardAskBridge.ts）
 //
 // ペイントークンはボードへ出さない（ID はトークンのハッシュ）。
 
@@ -61,6 +62,8 @@ import {
 	paradisTaskBoardTerminalId,
 	paradisTaskBoardToolDetail,
 } from '../common/paradisTaskBoardBridge.js';
+import { TASK_BOARD_ASKS_ROUTE, TASK_BOARD_ASKS_SETTLE_ROUTE } from '../common/paradisTaskBoardAsks.js';
+import { IParadisTaskBoardAskLedger, ParadisTaskBoardAskBridge, ParadisTaskBoardAskResponse } from './paradisTaskBoardAskBridge.js';
 import type { IParadisTaskBoardWorktreeIncludes } from './paradisTaskBoardWorktreeIncludes.js';
 
 /** ウィンドウへの振り分け（shared process の IPCServer を包む。テストでは差し替える）。 */
@@ -88,6 +91,8 @@ export interface IParadisTaskBoardBridgeOptions {
 	readonly disconnectGraceMs?: number;
 	/** 手元のボードが作ったワークツリーへの持ち込みと返却（762-RES）。無ければ口を出さない。 */
 	readonly worktreeIncludes?: IParadisTaskBoardWorktreeIncludes;
+	/** 「人が答えるもの」の台帳。渡すと、ボードの人の出番を載せる口（`/v1/asks`）を出す。 */
+	readonly asks?: IParadisTaskBoardAskLedger;
 }
 
 /** SSE の受け手のボード。 */
@@ -109,6 +114,8 @@ interface ITerminalEntry {
 	readonly ctx: string;
 	/** SSH の中継で起動したターミナルなら、そのセッション。SSH のボードが触れるのはこれだけ。 */
 	readonly relaySessionId?: string;
+	/** ペインの鍵（通知の台帳・「人が答えるもの」の台帳と同じ値）。窓が起動の返事に添えたときだけ。 */
+	readonly paneKey?: string;
 	/** ボードが最後の送信に付けた印（無ければ launchId）。 */
 	tag?: string;
 	status: ParadisTaskBoardTerminalStatus;
@@ -164,6 +171,8 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 	private readonly disconnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	/** ペイントークン → ターミナル ID（hook のたびにハッシュを取り直さない）。 */
 	private readonly idCache = new Map<string, string>();
+	/** ボードの人の出番を「人が答えるもの」の台帳へ載せる取り込み役（台帳を渡されたときだけ）。 */
+	private readonly asks: ParadisTaskBoardAskBridge | undefined;
 
 	constructor(
 		private readonly router: IParadisTaskBoardWindowRouter,
@@ -171,6 +180,10 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 		private readonly logService: ILogService | undefined,
 	) {
 		super();
+		this.asks = options.asks ? this._register(new ParadisTaskBoardAskBridge(options.asks, {
+			writeToBoard: (keyHash, chunk) => this.writeToBoard(keyHash, chunk),
+			terminalPane: (terminal, remoteBoard) => this.terminalPane(terminal, remoteBoard),
+		})) : undefined;
 		this._register(toDisposable(() => {
 			for (const timer of this.disconnectTimers.values()) {
 				clearTimeout(timer);
@@ -231,8 +244,41 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 			case 'POST /v1/worktree-includes': return this.worktreeIncludes(body, 'copy');
 			case 'POST /v1/worktree-release': return this.worktreeIncludes(body, 'release');
 		}
-		const known = ['/v1/health', '/v1/terminals', '/v1/screen', '/v1/events', '/v1/launch', '/v1/send', '/v1/key', '/v1/answer', '/v1/close', '/v1/reply', '/v1/worktree-includes', '/v1/worktree-release'];
+		if (this.asks) {
+			// ボードの人の出番を「人が答えるもの」の台帳へ（SSH の窓のボードの分も載せる。手元のターミナルには触れない口）
+			switch (route) {
+				case `PUT ${TASK_BOARD_ASKS_ROUTE}`: return this.askResponse(this.asks.put(body, keyHash, remoteBoard));
+				case `POST ${TASK_BOARD_ASKS_SETTLE_ROUTE}`: return this.askResponse(this.asks.settle(body, keyHash));
+			}
+		}
+		const known = ['/v1/health', '/v1/terminals', '/v1/screen', '/v1/events', '/v1/launch', '/v1/send', '/v1/key', '/v1/answer', '/v1/close', '/v1/reply', '/v1/worktree-includes', '/v1/worktree-release', ...(this.asks ? [TASK_BOARD_ASKS_ROUTE, TASK_BOARD_ASKS_SETTLE_ROUTE] : [])];
 		return known.includes(pathname) ? { status: 405, body: { error: 'method-not-allowed' } } : error('not-found');
+	}
+
+	private askResponse(response: ParadisTaskBoardAskResponse): IParadisTaskBoardHttpResponse {
+		return response.ok ? ok(response.body) : error(response.code, response.message);
+	}
+
+	/** ボードが起動したターミナルの、ペインの鍵と窓の番号。SSH の窓のボードには、中継で起動したものだけ。 */
+	private terminalPane(terminal: string, remoteBoard: boolean): { readonly paneKey?: string; readonly windowId?: number } | undefined {
+		const entry = this.terminals.get(terminal);
+		if (!entry || (remoteBoard && entry.relaySessionId === undefined)) {
+			return undefined;
+		}
+		const windowId = /^window:(?<id>\d+)$/.exec(entry.ctx)?.groups?.id;
+		return { ...(entry.paneKey !== undefined ? { paneKey: entry.paneKey } : {}), ...(windowId !== undefined ? { windowId: Number(windowId) } : {}) };
+	}
+
+	/** そのボード（鍵の hash）の SSE の受け手にだけ書く。受け手が無ければ false。 */
+	private writeToBoard(keyHash: string, chunk: string): boolean {
+		let delivered = false;
+		for (const [write, viewer] of [...this.clients]) {
+			if (viewer.keyHash === keyHash) {
+				this.write(write, chunk);
+				delivered = delivered || this.clients.has(write);
+			}
+		}
+		return delivered;
 	}
 
 	private async describeWindows(): Promise<{ readonly ctx: string; readonly description: IParadisTaskBoardWindowDescription }[]> {
@@ -373,9 +419,9 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 
 	private async launchIn(ctx: string, request: IParadisTaskBoardLaunchRequest): Promise<IParadisTaskBoardHttpResponse> {
 		const target = { ctx };
-		let result: ParadisTaskBoardResult<{ readonly terminal: string }>;
+		let result: ParadisTaskBoardResult<{ readonly terminal: string; readonly paneKey?: unknown }>;
 		try {
-			result = await this.router.call<ParadisTaskBoardResult<{ readonly terminal: string }>>(target.ctx, 'launch', request, LAUNCH_TIMEOUT_MS);
+			result = await this.router.call<ParadisTaskBoardResult<{ readonly terminal: string; readonly paneKey?: unknown }>>(target.ctx, 'launch', request, LAUNCH_TIMEOUT_MS);
 		} catch (err) {
 			this.logService?.warn('[ParadisTaskBoardBridge] launch failed', String(err));
 			return error('unavailable', 'The Para Code window did not answer.');
@@ -387,8 +433,10 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 		if (!paradisIsTaskBoardTerminalId(terminal)) {
 			return error('failed', 'The Para Code window returned an invalid terminal id.');
 		}
+		const paneKey = result.value.paneKey;
 		const entry: ITerminalEntry = {
 			terminal,
+			...(typeof paneKey === 'string' && /^[0-9a-f]{40}$/.test(paneKey) ? { paneKey } : {}),
 			launchId: request.launchId,
 			repoPath: request.repoPath,
 			agent: request.agent,
@@ -487,7 +535,21 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 			}
 		}
 		this.clients.set(write, viewer);
-		return toDisposable(() => this.clients.delete(write));
+		const keyHash = viewer.keyHash;
+		if (keyHash !== undefined) {
+			this.asks?.boardConnected(keyHash);
+		}
+		let removed = false;
+		return toDisposable(() => {
+			if (removed) {
+				return;
+			}
+			removed = true;
+			this.clients.delete(write);
+			if (keyHash !== undefined) {
+				this.asks?.boardDisconnected(keyHash);
+			}
+		});
 	}
 
 	/**

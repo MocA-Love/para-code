@@ -8,7 +8,8 @@ import * as path from 'node:path';
 import { afterEach, describe, expect, test } from 'vitest';
 import type { ITaskBoardFlow, ITaskBoardSlot, ITaskBoardTask } from '@engine/paradisTaskBoard.js';
 import { TaskBoardEngine, type ITaskBoardRunPort, type ITaskBoardWorkspacePort } from '@engine/paradisTaskBoardEngine.js';
-import { launchErrorText, ParaCodeAgents, readablePromptText, type ParaCodeBridgeEvent } from '../server/paraCode.js';
+import { launchErrorText, ParaCodeAgents, readablePromptText, type IParaCodeAgentsOptions, type ParaCodeBridgeEvent } from '../server/paraCode.js';
+import type { ITaskBoardAskAnswerEvent } from '@engine/paradisTaskBoardAsks.js';
 import { CommandRunner } from '../server/runner.js';
 import { GitHubError } from '../server/github.js';
 
@@ -170,7 +171,7 @@ afterEach(() => {
 	}
 });
 
-async function setup(useRunner = false, hangEvents = 0, boardKey?: string, relay?: { relaySessionId: () => string | undefined; readArtifact: (place: string, relativePath: string, maxBytes: number) => Promise<Buffer | undefined> }) {
+async function setup(useRunner = false, hangEvents = 0, boardKey?: string, relay?: { relaySessionId: () => string | undefined; readArtifact: (place: string, relativePath: string, maxBytes: number) => Promise<Buffer | undefined> }, extra: Partial<IParaCodeAgentsOptions> = {}) {
 	const dir = mkdtempSync(path.join(os.tmpdir(), 'tb-bridge-'));
 	const place = path.join(dir, 'clone');
 	mkdirSync(place);
@@ -180,7 +181,7 @@ async function setup(useRunner = false, hangEvents = 0, boardKey?: string, relay
 	bridge.hangEvents = hangEvents;
 	let engine!: TaskBoardEngine;
 	const placePath = (task: ITaskBoardTask) => engine.getSlots().find(s => s.id === task.place)?.path;
-	const agents = new ParaCodeAgents({ engine: () => engine, placePath, bridgeFile: bridge.file, boardKey, ...relay, timeouts: { connect: 300, idle: 2000, retry: 100, reconcile: 100, stall: 50 } });
+	const agents = new ParaCodeAgents({ engine: () => engine, placePath, bridgeFile: bridge.file, boardKey, ...relay, ...extra, timeouts: { connect: 300, idle: 2000, retry: 100, reconcile: 100, stall: 50 } });
 	const noop = new NoopPorts();
 	const runner = useRunner ? new CommandRunner({ engine: () => engine, placePath, repoPath: place, repo: undefined }) : noop;
 	let seq = 0;
@@ -200,6 +201,19 @@ async function setup(useRunner = false, hangEvents = 0, boardKey?: string, relay
 }
 
 describe('ParaCodeAgents', () => {
+	// Para Code の台帳の側（受信箱など）で答えられた依頼は、ターミナルのイベントとしてではなく、発行役（asks.ts）へ渡す
+	test('an ask-answer event from Para Code goes to the ask handler, and the terminal the task runs in is exposed for the ledger', async () => {
+		const asked: ITaskBoardAskAnswerEvent[] = [];
+		const { engine, bridge, id, agents } = await setup(false, 0, undefined, undefined, { onAskAnswer: event => asked.push(event) });
+		const event: ITaskBoardAskAnswerEvent = { type: 'ask-answer', claim: 'c1', id: 'L:t1:q1', answer: { type: 'action', actionId: 'approve' } };
+		bridge.emit(event as unknown as ParaCodeBridgeEvent);
+		await until(() => asked.length === 1);
+		const before = agents.terminalOf(engine.getTask(id)!);
+		engine.start(id, { agent: 'claude' });
+		await until(() => agents.terminalOf(engine.getTask(id)!) !== undefined);
+		expect({ asked, before, terminal: agents.terminalOf(engine.getTask(id)!) }).toEqual({ asked: [event], before: undefined, terminal: expect.stringMatching(/^t_/) });
+	});
+
 	test('launches in the workspace, carries the next agent step into the same terminal, and reads artifacts from files', async () => {
 		const { engine, bridge, id, place } = await setup();
 		engine.start(id, { agent: 'claude' });

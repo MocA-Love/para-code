@@ -21,6 +21,7 @@ import { IOpenerService } from '../../../../../platform/opener/common/opener.js'
 import { IParadisConfirmation, IParadisDialogService } from '../../../confirmDialog/browser/paradisDialogService.js';
 import { IParadisHumanAskService, ParadisHumanAskAnswer } from '../../../humanAsk/common/paradisHumanAsk.js';
 import { ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
+import { IParadisAgentChatService } from '../../../agentChat/browser/paradisAgentChatService.js';
 import { IParadisBotPaneResolver, ParadisBotPage } from '../../browser/paradisBotPage.js';
 import { IParadisBotItem } from '../../common/paradisBotItems.js';
 import { IParadisBotSummary, IParadisBotsService, PARADIS_BOTS_ENABLED_SETTING } from '../../common/paradisBotsApi.js';
@@ -72,6 +73,8 @@ suite('Paradis bots page overlay', () => {
 		} as Partial<IParadisHumanAskService> as IParadisHumanAskService);
 		instantiation.stub(IParadisDialogService, { confirm: async (confirmation: IParadisConfirmation) => { confirms.push(confirmation); return { confirmed: true }; } } as unknown as IParadisDialogService);
 		instantiation.stub(IContextViewService, {});
+		let draftTaken = false;
+		instantiation.stub(IParadisAgentChatService, { insertDraft: (id: number, text: string) => { calls.push(`draft ${id} ${text}`); return draftTaken ? 'inserted' : false; } } as unknown as IParadisAgentChatService);
 		instantiation.stub(ITerminalService, { getInstanceFromId: (id: number) => id === 1 ? { isDisposed: false, sendText: async (text: string, execute: boolean, paste: boolean) => { calls.push(`send ${text} ${execute} ${paste}`); } } : undefined } as unknown as ITerminalService);
 		instantiation.stub(IContextMenuService, {});
 		instantiation.stub(IOpenerService, {});
@@ -82,7 +85,7 @@ suite('Paradis bots page overlay', () => {
 		const resolver: IParadisBotPaneResolver = { onDidChange: changed.event, botFor: async instanceId => panes.get(instanceId) };
 		const container = document.createElement('div');
 		const page = disposables.add(instantiation.createInstance(ParadisBotPage, container, resolver));
-		return { container, page, configuration, panes, changed, answered, disposables, calls, confirms, files };
+		return { container, page, configuration, panes, changed, answered, disposables, calls, confirms, files, chatShown: () => { draftTaken = true; } };
 	}
 
 	const settle = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -207,8 +210,8 @@ suite('Paradis bots page overlay', () => {
 		assert.deepStrictEqual([calls, files.get('MEMORY.md')], [[], '# Memory\n- Bot が足した行\n']);
 	});
 
-	test('提案: 「始める」は依頼の文を送らずに入れて会話へ戻し、「見送る」は台帳へ知らせる', async () => {
-		const { container, page, calls } = setup();
+	test('提案: 「始める」はチャット表示の入力欄へ下書きを入れ（無ければターミナルへ貼り付け）、会話へ戻す。「見送る」は台帳へ知らせる', async () => {
+		const { container, page, calls, chatShown } = setup();
 		page.setInstance(1);
 		await settle();
 		tab(container, 1);
@@ -219,10 +222,16 @@ suite('Paradis bots page overlay', () => {
 		(container.querySelector('.paradis-bot-page-suggestion .paradis-button-primary') as HTMLElement).click();
 		await settle();
 		await settle();
+		chatShown();
+		tab(container, 1);
+		await settle();
+		(container.querySelector('.paradis-bot-page-suggestion .paradis-button-primary') as HTMLElement).click();
+		await settle();
+		await settle();
 		const selected = Array.from(container.getElementsByClassName('paradis-bot-page-tab')).map(element => element.getAttribute('aria-selected'));
 		assert.deepStrictEqual([titles, calls, selected], [
 			['PR #1108 のレビューの指摘 2 件に返事が無い'],
-			['dismiss s1', 'start s1', 'send #1108 の指摘を読んで、直すか理由を返すか決めて false true'],
+			['dismiss s1', 'start s1', 'draft 1 #1108 の指摘を読んで、直すか理由を返すか決めて', 'send #1108 の指摘を読んで、直すか理由を返すか決めて false true', 'start s1', 'draft 1 #1108 の指摘を読んで、直すか理由を返すか決めて'],
 			['true', 'false', 'false', 'false'],
 		]);
 	});

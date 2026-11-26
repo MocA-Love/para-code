@@ -38,6 +38,7 @@ import { ITerminalService } from '../../../../workbench/contrib/terminal/browser
 import { createParadisChip } from '../../../browser/paradisBadges.js';
 import { ParadisButton } from '../../../browser/paradisButton.js';
 import { IParadisEditorTerminalOverlay } from '../../agentBrowser/browser/paradisPaneIndicator.js';
+import { IParadisAgentChatService } from '../../agentChat/browser/paradisAgentChatService.js';
 import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 import { IParadisHumanAskService, paradisHumanAskKey } from '../../humanAsk/common/paradisHumanAsk.js';
 import { paradisBotAskId } from '../common/paradisBotAsk.js';
@@ -130,6 +131,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IContextViewService private readonly contextViewService: IContextViewService,
 		@ITerminalService private readonly terminalService: ITerminalService,
+		@IParadisAgentChatService private readonly agentChatService: IParadisAgentChatService,
 	) {
 		super();
 		this.strip = DOM.append(container, $('.paradis-bot-page-strip'));
@@ -439,8 +441,9 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 	}
 
 	/**
-	 * 「始める」: 依頼の文を Bot のターミナルの入力へ、送らずに入れて会話のタブへ戻す（持ち主が読んで直してから送る）。
-	 * 貼り付けとして入れるので、改行のある文も途中で送られない。
+	 * 「始める」: 依頼の文を、送らずに Bot の会話の入力欄へ入れて会話のタブへ戻す（持ち主が読んで直してから送る）。
+	 * チャット表示の入力欄へ下書きとして入れ（書きかけは消さずに後ろへ足す）、チャット表示でないペインでは
+	 * ターミナルの入力へ貼り付けとして入れる（改行のある文も途中で送られない）。
 	 */
 	private async startSuggestion(suggestion: IParadisBotSuggestion): Promise<void> {
 		const result = await this.botsService.startSuggestion(suggestion.id);
@@ -449,11 +452,13 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 			void this.loadItems();
 			return;
 		}
-		const instance = this.instanceId !== undefined ? this.terminalService.getInstanceFromId(this.instanceId) : undefined;
+		// 先に会話のタブへ戻す（チャット表示が見えていれば、入れた下書きへフォーカスが移る）
+		this.setTab('chat');
+		const inserted = this.instanceId !== undefined && this.agentChatService.insertDraft(this.instanceId, result.value.request) !== false;
+		const instance = !inserted && this.instanceId !== undefined ? this.terminalService.getInstanceFromId(this.instanceId) : undefined;
 		if (instance !== undefined && !instance.isDisposed) {
 			await instance.sendText(result.value.request, false, true);
 		}
-		this.setTab('chat');
 		void this.loadItems();
 	}
 
