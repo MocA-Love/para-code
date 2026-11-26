@@ -312,16 +312,22 @@ suite('ParadisAgentLaunchProfile', () => {
 		const stale = step([session('old', 'p1', 'startup'), session('a', 'x1', 'startup')]);
 		// その起動が作った会話が届く
 		const fresh = step([session('old', 'p1', 'startup'), session('a', 'y1', 'startup')]);
+		// ペインに残っていた会話そのものを、ID を名指しして再開する: 前からある会話として知らせる（確認の省略は控えられない）
+		terminals.set('c', { commandLine: 'cx', commandId: 'c4', shellPid: undefined, remote: false });
+		step([session('c', 'r1', 'startup')]);
+		terminals.set('c', { commandLine: 'codex resume --yolo r1', commandId: 'c5', shellPid: undefined, remote: false });
+		const resumedById = step([session('c', 'r1', 'startup')]);
 		// コマンドの見分けが付かないターミナル（シェル統合がまだ無い）で初めて見た会話は、作った起動を示せない
 		terminals.set('b', { commandLine: undefined, shellPid: undefined, remote: false });
 		const unknownFirst = step([session('b', 'z1', 'startup')]);
 		terminals.set('b', { commandLine: 'codex --yolo', commandId: 'c3', shellPid: undefined, remote: false });
 		const unknownLater = step([session('b', 'z1', 'startup')]);
-		assert.deepStrictEqual({ preexisting, alias, stale, fresh, unknownFirst, unknownLater, sent: [...sent], origins: [...origins.sessions.keys()] }, {
+		assert.deepStrictEqual({ preexisting, alias, stale, fresh, resumedById, unknownFirst, unknownLater, sent: [...sent], origins: [...origins.sessions.keys()] }, {
 			preexisting: ['p1:codex --yolo:-'],
 			alias: [],
 			stale: [],
 			fresh: ['y1:codex --yolo:startup'],
+			resumedById: ['r1:codex resume --yolo r1:-'],
 			unknownFirst: [],
 			unknownLater: ['z1:codex --yolo:-'],
 			sent: ['b\nz1'],

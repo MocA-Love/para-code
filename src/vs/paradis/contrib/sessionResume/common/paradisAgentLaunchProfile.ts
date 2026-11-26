@@ -503,7 +503,8 @@ export function paradisCreateAgentLaunchCaptureOrigins(): IParadisAgentLaunchCap
  * ペインは次のスナップショットで見直すので、`sent` に入れない。`sent` からは、消えたペインの分を外す。
  *
  * `origins` を渡すと、会話を初めて見たときのコマンドと今のコマンドを比べる（{@link IParadisAgentLaunchCaptureOrigins}）:
- * - 別のコマンドの間に現れた会話（前の起動の会話がペインに残っているだけ）は、知らせない。今の起動の会話が届けば、それを知らせる
+ * - 別のコマンドの間に現れた会話（前の起動の会話がペインに残っているだけ）は、知らせない。今の起動の会話が届けば、それを知らせる。
+ *   今のコマンド行がその会話の ID を名指ししているとき（残っていた会話そのものの再開）は、前からある会話として知らせる
  * - 最初のスナップショットに既にあった会話と、初めて見たときにコマンドが分からなかった会話は、今の起動が作ったと示せない。
  *   `startSource` を外して知らせる（前からある会話として扱われ、権限を広げるものは控えられない）
  */
@@ -534,11 +535,13 @@ export function paradisAgentLaunchesToRecord(
 		if (terminal?.commandLine === undefined || paradisAgentLaunchFromCommandLine(terminal.commandLine)?.agent !== agent) {
 			continue;
 		}
-		if (origin !== undefined && origin.commandId !== undefined && terminal.commandId !== undefined && origin.commandId !== terminal.commandId) {
-			// 前のコマンドの間に現れた会話。今のコマンド行はこの会話の起動ではない
+		const fromEarlierCommand = origin !== undefined && origin.commandId !== undefined && terminal.commandId !== undefined && origin.commandId !== terminal.commandId;
+		if (fromEarlierCommand && !terminal.commandLine.includes(session.sessionId)) {
+			// 前のコマンドの間に現れた会話。今のコマンド行はこの会話の起動ではない（会話 ID を名指しした再開だけは、
+			// 前からある会話の再開として下で知らせる）
 			continue;
 		}
-		const createdByThisCommand = origin === undefined || (!origin.preexisting && origin.commandId !== undefined && origin.commandId === terminal.commandId);
+		const createdByThisCommand = origin === undefined || (!fromEarlierCommand && !origin.preexisting && origin.commandId !== undefined);
 		sent.add(key);
 		result.push({ agent, sessionId: session.sessionId, commandLine: terminal.commandLine, ...(terminal.shellPid !== undefined ? { shellPid: terminal.shellPid } : {}), ...(session.startSource !== undefined && createdByThisCommand ? { startSource: session.startSource } : {}), remote: terminal.remote });
 	}
