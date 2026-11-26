@@ -803,6 +803,9 @@ function storedAsk(value: unknown): IParadisBotItemAsk | undefined {
 	return typeof questions === 'string' ? undefined : { eventId: value.eventId, ...(context !== undefined ? { context } : {}), questions };
 }
 
+/** この版が知っている項目の欄。 */
+const KNOWN_ITEM_KEYS: ReadonlySet<string> = new Set(['uid', 'number', 'botId', 'title', 'description', 'doneMeans', 'status', 'ask', 'closeNote', 'links', 'events', 'lastEventId', 'snoozedUntil', 'lastActivityAt', 'createdAt', 'updatedAt', 'closedAt']);
+
 function storedItem(value: unknown): IParadisBotItem | undefined {
 	if (!isRecord(value)) {
 		return undefined;
@@ -827,7 +830,8 @@ function storedItem(value: unknown): IParadisBotItem | undefined {
 	const ask = status === 'needs_you' ? storedAsk(value.ask) : undefined;
 	const snoozedUntil = time(value.snoozedUntil);
 	const closedAt = time(value.closedAt);
-	const known = PARADIS_BOT_ITEM_STATUSES.some(candidate => candidate === status);
+	// 知らない状態か、新しい版が足した欄があれば、読んだ値をそのまま持って読み取り専用にする（書き戻しで消さない）
+	const known = PARADIS_BOT_ITEM_STATUSES.some(candidate => candidate === status) && Object.keys(value).every(key => KNOWN_ITEM_KEYS.has(key));
 	return {
 		uid, number: value.number, botId, title,
 		...(description !== undefined ? { description } : {}),
@@ -840,7 +844,6 @@ function storedItem(value: unknown): IParadisBotItem | undefined {
 		...(snoozedUntil !== undefined ? { snoozedUntil } : {}),
 		lastActivityAt, createdAt, updatedAt,
 		...(closedAt !== undefined ? { closedAt } : {}),
-		// 知らない状態の項目は、読んだ値をそのまま持って読み取り専用にする
 		...(known ? {} : { preserved: value }),
 	};
 }
