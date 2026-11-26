@@ -250,6 +250,75 @@ import { ParadisWorktreeGitService } from '../../node/paradisWorktreeGitChannel.
 		});
 	});
 
+	test('does not pre-trust the worktree of a pull request from a fork, nor of the branches that come from it', async function () {
+		this.timeout(30_000);
+		// 信頼の書き込み先を一時フォルダにする（本物の ~/.claude.json・~/.codex を読み書きしない）
+		const claudeDir = join(root, 'claude-config');
+		const codexHome = join(root, 'codex-home');
+		await fs.mkdir(claudeDir, { recursive: true });
+		await fs.mkdir(codexHome, { recursive: true });
+		// Claude Code の設定ファイルは、あるときだけ書き足す（無ければ Claude Code を使っていない）
+		await fs.writeFile(join(claudeDir, '.claude.json'), '{}');
+		const trusting = new ParadisWorktreeGitService(new NullLogService(), undefined, undefined, cp.execFile, async () => ({ ...process.env, CLAUDE_CONFIG_DIR: claudeDir }),
+			undefined, undefined, undefined, undefined, undefined, () => [codexHome]);
+		const trusted = async (name: string) => {
+			const real = await fs.realpath(wt(name));
+			const claude = JSON.parse(await fs.readFile(join(claudeDir, '.claude.json'), 'utf8').catch(() => '{}')) as { projects?: Record<string, { hasTrustDialogAccepted?: boolean }> };
+			const codex = await fs.readFile(join(codexHome, 'config.toml'), 'utf8').catch(() => '');
+			return {
+				claude: Object.entries(claude.projects ?? {}).some(([key, value]) => (key === real || key === wt(name)) && value.hasTrustDialogAccepted === true),
+				codex: codex.includes(real) || codex.includes(wt(name)),
+			};
+		};
+		git(other, 'switch', '-q', '-c', 'fork-work', 'origin/main');
+		await commit(other, 'from the fork');
+		git(other, 'push', '-q', 'origin', 'HEAD:refs/pull/7/head');
+		git(other, 'switch', '-q', 'main');
+		await pushFromOther('feature/ours', 1);
+		git(repo, 'fetch', '-q', 'origin');
+
+		// 対照: 同じリポジトリのブランチと、main から切った新しいブランチには信頼を書く
+		await trusting.addWorktreeFromBranch({ repoPath: repo, worktreePath: wt('ours'), branch: 'feature/ours', source: 'origin', trustClaudeFolder: true });
+		await trusting.addWorktree({ repoPath: repo, worktreePath: wt('new'), newBranch: 'new-from-main', baseRef: 'origin/main', trustClaudeFolder: true });
+		// fork の PR: 取って開く。信頼は頼まれても書かない
+		await trusting.addWorktreeFromBranch({ repoPath: repo, worktreePath: wt('pr'), branch: 'pr-7-main', source: 'local', pullRequestNumber: 7, trustClaudeFolder: true });
+		const pr = await trusted('pr');
+		// 取ったブランチを、PR のカードなしで「既存のブランチ」から開き直す・ベースブランチにして新しいブランチを切る
+		git(repo, 'worktree', 'remove', wt('pr'));
+		await trusting.addWorktreeFromBranch({ repoPath: repo, worktreePath: wt('pr-reopened'), branch: 'pr-7-main', source: 'local', trustClaudeFolder: true });
+		await trusting.addWorktree({ repoPath: repo, worktreePath: wt('pr-child'), newBranch: 'on-top-of-pr', baseRef: 'pr-7-main', trustClaudeFolder: true });
+		await trusting.addWorktree({ repoPath: repo, worktreePath: wt('pr-grandchild'), newBranch: 'on-top-of-child', baseRef: 'refs/heads/on-top-of-pr', trustClaudeFolder: true });
+
+		// 取れなかった PR（番号が無い）には、ブランチも印も残さない
+		const unfetched = await trusting.addWorktreeFromBranch({ repoPath: repo, worktreePath: wt('pr-none'), branch: 'pr-8-x', source: 'local', pullRequestNumber: 8, trustClaudeFolder: true }).then(() => 'opened', () => 'refused');
+
+		assert.deepStrictEqual({
+			unfetched,
+			ours: await trusted('ours'),
+			new: await trusted('new'),
+			pr,
+			reopened: await trusted('pr-reopened'),
+			child: await trusted('pr-child'),
+			grandchild: await trusted('pr-grandchild'),
+			marks: ['pr-7-main', 'on-top-of-pr', 'on-top-of-child', 'feature/ours', 'pr-8-x'].map(branch => {
+				try {
+					return git(repo, 'config', '--get', `branch.${branch}.paradisForkPullRequest`);
+				} catch {
+					return undefined;
+				}
+			}),
+		}, {
+			unfetched: 'refused',
+			ours: { claude: true, codex: true },
+			new: { claude: true, codex: true },
+			pr: { claude: false, codex: false },
+			reopened: { claude: false, codex: false },
+			child: { claude: false, codex: false },
+			grandchild: { claude: false, codex: false },
+			marks: ['7', '7', '7', undefined, undefined],
+		});
+	});
+
 	test('tells which github.com repository origin is, and nothing for other remotes', async () => {
 		const local = await service.getOriginRepository(repo);
 		git(repo, 'remote', 'set-url', 'origin', 'git@github.com:Acme/App.git');

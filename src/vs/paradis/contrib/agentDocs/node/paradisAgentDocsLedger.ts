@@ -107,7 +107,7 @@ export class ParadisAgentDocsLedger extends Disposable {
 		if (record === undefined || (write.toolUseId !== undefined && record.writes.some(known => known.toolUseId === write.toolUseId && known.session === owner.session))) {
 			return;
 		}
-		const { missingSince: _missingSince, ...present } = record;
+		const { missingSince: _missingSince, missingCountedFrom: _missingCountedFrom, ...present } = record;
 		// 見張りで付いた持ち主が、書いたと分かった会話と同じなら、経路を書き込みに直す
 		const base = present.owner !== undefined && present.owner.session === owner.session && present.owner.via === 'watch' ? { ...present, owner: { ...present.owner, via: 'write' as const } } : present;
 		this._set(paradisWithDocWrite(paradisWithDocOwner(base, this._owner(owner, 'write')), { ...write, session: owner.session }));
@@ -128,7 +128,7 @@ export class ParadisAgentDocsLedger extends Disposable {
 		if (record === undefined) {
 			return undefined;
 		}
-		const { missingSince: _missingSince, ...present } = record;
+		const { missingSince: _missingSince, missingCountedFrom: _missingCountedFrom, ...present } = record;
 		this._set(owner !== undefined ? paradisWithDocOwner(present, this._owner(owner, 'watch')) : present);
 		return owner !== undefined ? 'owned' : 'listed';
 	}
@@ -225,16 +225,28 @@ export class ParadisAgentDocsLedger extends Disposable {
 		return 'assigned';
 	}
 
-	/** ファイルが見つからない・また見つかったのを記録する。変わらなければ何もしない。 */
+	/**
+	 * ファイルが見つからない・また見つかったのを記録する。変わらなければ何もしない。
+	 * 見つからないと記録するときは、自動で外すまでの日数の数え始め（`missingCountedFrom`）も入れる。既に見つからない記録で
+	 * 数え始めが無いもの（この項目を書かない版が記録したもの）に「見つからない」が届いたら、数え始めだけを今にする。
+	 */
 	setMissing(hostId: string, path: string, missing: boolean): void {
 		const record = this.get(hostId, path);
-		if (record === undefined || (record.missingSince !== undefined) === missing) {
+		if (record === undefined) {
+			return;
+		}
+		if (missing && record.missingSince !== undefined && record.missingCountedFrom === undefined) {
+			this._set({ ...record, missingCountedFrom: this._now() });
+			return;
+		}
+		if ((record.missingSince !== undefined) === missing) {
 			return;
 		}
 		if (missing) {
-			this._set({ ...record, missingSince: this._now() });
+			const now = this._now();
+			this._set({ ...record, missingSince: now, missingCountedFrom: now });
 		} else {
-			const { missingSince: _missingSince, ...present } = record;
+			const { missingSince: _missingSince, missingCountedFrom: _missingCountedFrom, ...present } = record;
 			this._set(present);
 		}
 	}
@@ -282,7 +294,7 @@ export class ParadisAgentDocsLedger extends Disposable {
 		if (existing !== undefined && (existing.writes.length > 0 || (existing.owner !== undefined && existing.owner.via !== 'watch') || (existing.registeredBy !== 'watch' && existing.registeredBy !== 'user_opened'))) {
 			return false;
 		}
-		const { missingSince: _missingSince, ...present } = record;
+		const { missingSince: _missingSince, missingCountedFrom: _missingCountedFrom, ...present } = record;
 		this._records.delete(fromKey);
 		this._rememberRemoval(fromKey, hostId, from);
 		this._set({ ...present, path: to });

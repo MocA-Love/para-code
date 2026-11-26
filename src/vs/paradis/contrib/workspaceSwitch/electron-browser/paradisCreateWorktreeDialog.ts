@@ -1663,6 +1663,8 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 			line(localize('paradis.createWorktree.note.forkPullRequest', "fork から来たプルリクエスト #{0} です。作るときに origin から取得し、ローカルブランチ {1} を作って開きます。", String(choice.pullRequestNumber), '{0}'), b);
 			// allow-any-unicode-next-line
 			sub(localize('paradis.createWorktree.note.forkPullRequestSub', "push しても、fork の元のブランチには載りません。"));
+			// allow-any-unicode-next-line
+			sub(localize('paradis.createWorktree.note.forkPullRequestTrust', "ほかの人のコードなので、エージェントのフォルダの信頼は Para Code からは書きません。"));
 			return;
 		}
 		icon.className = ThemeIcon.asClassName(plan.kind === 'behind' || plan.kind === 'diverged' || plan.kind === 'missing' ? Codicon.warning : Codicon.info);

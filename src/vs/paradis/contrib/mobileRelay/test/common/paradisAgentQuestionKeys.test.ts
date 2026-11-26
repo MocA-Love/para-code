@@ -143,6 +143,11 @@ suite('paradisAgentQuestionKeySequence', () => {
 			codexYes: paradisAgentApprovalKeySequence('codex', 'yes', { screen: codex0155 }),
 			claudeDesktop: paradisAgentApprovalKeySequence('claude', 'yes', { confirmWithEnter: false }),
 			claudeMobile: paradisAgentApprovalKeySequence('claude', 'yes'),
+			// 画面が渡されたら、許可の番号は画面の選択肢から決める（1 番が auto mode の行なら次の Yes、読めなければ送らない）
+			claudeOnScreen: paradisAgentApprovalKeySequence('claude', 'yes', { screen: 'Do you want to proceed?\n\u276f 1. Yes\n  2. No, and tell Claude what to do differently (esc)' }),
+			claudeAutoModeFirst: paradisAgentApprovalKeySequence('claude', 'yes', { screen: 'Would you like to proceed?\n\n\u276f 1. Yes, and use auto mode\n  2. Yes, manually approve edits\n  3. Tell Claude what to change' }),
+			claudeUnreadable: paradisAgentApprovalKeySequence('claude', 'yes', { screen: 'Would you like to proceed?\n\n\u276f 1. Tell Claude what to change' }),
+			claudeNoOnAnyScreen: paradisAgentApprovalKeySequence('claude', 'no', { screen: '' }),
 		}, {
 			codex0155: ['\u001b'],
 			older: 'd',
@@ -150,6 +155,10 @@ suite('paradisAgentQuestionKeySequence', () => {
 			codexYes: ['y'],
 			claudeDesktop: ['1'],
 			claudeMobile: ['1'],
+			claudeOnScreen: ['1'],
+			claudeAutoModeFirst: ['2'],
+			claudeUnreadable: [],
+			claudeNoOnAnyScreen: ['\u001b'],
 		});
 	});
 

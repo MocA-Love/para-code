@@ -92,7 +92,7 @@ import { PARADIS_MOBILE_DIFF_UNTRACKED_READ_BYTES, paradisIsRunGitOutputTruncate
 import { paradisRedactMobileReplyError } from '../common/paradisMobileOutputRedaction.js';
 import { PARADIS_MOBILE_FILE_READ_DEADLINE_MS, PARADIS_MOBILE_HOST_NO_RESPONSE_CODE, PARADIS_MOBILE_READ_DEADLINE_MS, PARADIS_MOBILE_STATUS_OPTIONAL_GRACE_MS, PARADIS_MOBILE_USAGE_DEADLINE_MS, paradisIsMobileHostNoResponse, paradisMobileHostErrorReply, paradisMobileUsageErrorReply, paradisSettleWithin, paradisWithCancellableHostDeadline, paradisWithHostDeadline } from '../common/paradisMobileHostDeadline.js';
 import { IParadisAgentQuestionKeyCheck, paradisCodexMobileApprovalKeys, paradisConfirmQuestionChecks, paradisReadQuestionKeyChecks } from '../common/paradisAgentQuestionKeys.js';
-import { IParadisAgentApprovalOption, PARADIS_APPROVAL_OPTIONS_WAIT_MS, paradisApprovalOptionsForMobile, paradisCodexApprovalFormShown, paradisMobileApprovalOptionKey, paradisParseApprovalOptions, paradisParsePermissionWarning, paradisReadExpectedApprovalOption } from '../common/paradisAgentApprovalOptions.js';
+import { IParadisAgentApprovalOption, PARADIS_APPROVAL_OPTIONS_WAIT_MS, paradisApprovalOptionsForMobile, paradisClaudeApprovalAllowKey, paradisCodexApprovalFormShown, paradisMobileApprovalOptionKey, paradisParseApprovalOptions, paradisParsePermissionWarning, paradisReadExpectedApprovalOption } from '../common/paradisAgentApprovalOptions.js';
 import { PARADIS_ANTIGRAVITY_ANSWER_ON_PC_MESSAGE, PARADIS_ANTIGRAVITY_OTHER_CONVERSATION_MESSAGE, PARADIS_ANTIGRAVITY_SEND_BLOCK_MESSAGES, paradisAntigravityPaneStatus, paradisAntigravitySendBlock } from '../../agentChat/common/paradisAgentChatActionSupport.js';
 import { paradisLatestProgramStatus } from '../../agentBrowser/browser/paradisLatestProgramStatus.js';
 import { IParadisAntigravityPaneSession, paradisAntigravityPaneHoldsConversation } from '../common/paradisMobileAgentResume.js';
@@ -118,6 +118,9 @@ const CODEX_COMPOSER_RESIDUE_MAX_MS = 10 * 60_000;
  */
 const CLAUDE_RESUME_PROMPT_CODE = 'resume-prompt';
 // 子エージェントの計画の承認（番号の無い Yes / No。paradisScreenShowsClaudeYesNoPlanPrompt）は、キーでは答えられない
+/** Claude Code の「許可」で、画面の選択肢から許可にあたる行を読めなかったときの断り。 */
+const CLAUDE_ALLOW_ON_PC_CODE = 'approval-on-pc';
+const CLAUDE_ALLOW_ON_PC_MESSAGE = 'PC の画面で、許可にあたる選択肢を確かめられなかったため送りませんでした。PC のターミナルで選んでください';
 const CLAUDE_PLAN_APPROVAL_ON_PC_CODE = 'plan-approval-on-pc';
 const CLAUDE_PLAN_APPROVAL_ON_PC_MESSAGE = 'PC のターミナルに子エージェントの計画の承認が出ています。PC で選んでください';
 function claudeResumePromptMessage(kind: ParadisClaudeResumeScreenPrompt): string {
@@ -1874,6 +1877,13 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				const approvalPiece = typeof msg.approvalPiece === 'string' && msg.approvalPiece.length <= 500 ? msg.approvalPiece : undefined;
 				const codexApprovalKey = interactionKind === 'approval' && expectOption === undefined && optionAgent === 'codex' && parts.length === 1
 					&& (parts[0] === 'd' || parts[0] === 'y') ? parts[0] : undefined;
+				// Claude Code の「許可」（番号の選択肢でない yes。中継は画面を見られないので `1` を送ってくる）は、送る直前の画面の
+				// 選択肢から番号を決める（{@link paradisClaudeApprovalAllowKey}）。2.1.332 の計画の確定は 1 番が auto mode に入る行で、
+				// 承認が保留された計画は 1 番が自由入力の行。読めなければ打たずに、PC で確かめてもらう
+				const claudeAllow = interactionKind === 'approval' && expectOption === undefined && optionAgent === 'claude' && parts.length === 1 && parts[0] === '1';
+				// 選択肢は、許可の確認の見出しより後の行から読む（上に残った本文の番号付きの箇条書きを拾わない）。見出しを知らない形の
+				// 確認は、画面の下端の並びから読む（今まで `1` で通っていた確認を断らない）
+				const claudeAllowKeyOn = (screen: string): string | undefined => paradisClaudeApprovalAllowKey(paradisPermissionPromptParts(screen)?.options ?? screen);
 				// 画面の番号付きの選択肢で答えたとき（W2-21）は、送る直前に画面を読み直し、その番号が同じ文言のままかを
 				// 確かめる。違えば送らない（押したものと違う選択肢を確定させないため）。キーもここで画面から決める。
 				let optionCheckPending = expectOption !== undefined;
@@ -1902,23 +1912,26 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 				// 複数選択の問いは、送信ボタンへ降りる前にチェックを画面で確かめる（paradisAgentQuestionKeyPlan）
 				const questionChecks = interactionKind === 'question' ? paradisReadQuestionKeyChecks(msg.questionChecks, parts.length) : [];
 				let keyIndex = -1;
-				const sendTarget = expectOption === undefined && codexApprovalKey === undefined ? instance : {
+				const sendTarget = expectOption === undefined && codexApprovalKey === undefined && !claudeAllow ? instance : {
 					// 送る直前に確かめたキー（Codex は行末の近道・フォームの番号）へ差し替えて送る。
 					sendText: (_text: string, shouldExecute: boolean) => instance.sendText(parts[0], shouldExecute),
 				};
 				const sent = await paradisSendAgentInteractionKeys(sendTarget, parts, msg.delayMs, {
 					// 番号の選択肢で答えるときは、折り返しをつないだ画面で見る（選択肢の読み取りと同じ画面）
-					readScreen: () => expectOption !== undefined ? paradisVisibleTerminalLogicalText(instance) : paradisVisibleTerminalText(instance),
+					readScreen: () => expectOption !== undefined || claudeAllow ? paradisVisibleTerminalLogicalText(instance) : paradisVisibleTerminalText(instance),
 					// 選択肢が画面に出るまで待つ（出なければ待ちの上限の後、直前の確かめで断る）。
 					ready: expectOption !== undefined
 						? (screen: string) => {
 							const prompt = paradisPermissionPromptParts(screen);
 							return prompt !== undefined && paradisParseApprovalOptions(prompt.options)?.some(candidate => candidate.n === expectOption.n) === true;
 						}
-						: codexApprovalKey !== undefined && approvalPiece !== undefined
-							// どの承認の確認かを確かめる一片が見えるまで待つ（出なければ待ちの上限の後、そのときの画面でキーを決める）
-							? (screen: string) => paradisScreenShowsPermissionPrompt(screen) && paradisPromptRegionShows(screen, approvalPiece)
-							: msg.readyMarker,
+						: claudeAllow
+							// 許可にあたる `Yes` の行が読めるまで待つ（出なければ待ちの上限の後、直前の確かめで断る）
+							? (screen: string) => claudeAllowKeyOn(screen) !== undefined
+							: codexApprovalKey !== undefined && approvalPiece !== undefined
+								// どの承認の確認かを確かめる一片が見えるまで待つ（出なければ待ちの上限の後、そのときの画面でキーを決める）
+								? (screen: string) => paradisScreenShowsPermissionPrompt(screen) && paradisPromptRegionShows(screen, approvalPiece)
+								: msg.readyMarker,
 					strict: false,
 					source: 'mobile',
 				}, async () => {
@@ -1940,6 +1953,14 @@ export class ParadisMobileWorkspaceProvider extends Disposable {
 					if (!checkExpectedOption()) {
 						stopped.reason = { code: 'options-changed', message: 'PC の選択肢が変わっていたため送りませんでした。選択肢を確かめてから選び直してください' };
 						return false;
+					}
+					if (claudeAllow) {
+						const key = claudeAllowKeyOn(paradisVisibleTerminalLogicalText(instance));
+						if (key === undefined) {
+							stopped.reason = { code: CLAUDE_ALLOW_ON_PC_CODE, message: CLAUDE_ALLOW_ON_PC_MESSAGE };
+							return false;
+						}
+						parts = [key];
 					}
 					if (codexApprovalKey !== undefined) {
 						const screen = paradisVisibleTerminalText(instance);

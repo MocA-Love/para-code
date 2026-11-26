@@ -282,6 +282,58 @@ suite('ParadisAgentChatInput', () => {
 		});
 	});
 
+	test('the "yes" of a Claude Code plan approval picks the row that is not auto mode, and is not sent when no row allows it', async () => {
+		// Claude Code 2.1.332 の実画面（1 番が auto mode に入る行）
+		const plan332 = [
+			'  ' + '─'.repeat(116),
+			'   Ready to code?',
+			'',
+			'   Here is Claude\'s plan:',
+			'  ' + '╌'.repeat(116),
+			'   Plan',
+			'',
+			'   1. Do the first thing',
+			'   2. Do the second thing',
+			'  ' + '╌'.repeat(116),
+			'  ' + '─'.repeat(116),
+			'   Claude has written up a plan and is ready to execute. Would you like to proceed?',
+			'',
+			'   ❯ 1. Yes, and use auto mode',
+			'     2. Yes, manually approve edits',
+			'     3. Tell Claude what to change',
+			'        shift+tab to approve with this feedback',
+			'',
+			'   ctrl+g to edit in Vim · ~/.claude/plans/plan-zzplanfile-smooth-snail.md',
+		].join('\n');
+		// 承認が保留された計画（1 番は自由入力の行で、`1` は確定にならない）
+		const withheld332 = [
+			'   (the plan is too large to be shown in full — approval is withheld; send feedback asking for a shorter plan, or',
+			'   press Esc)',
+			'  ' + '╌'.repeat(116),
+			'  ' + '─'.repeat(116),
+			'   Claude has written up a plan and is ready to execute. Would you like to proceed?',
+			'',
+			'   ❯ 1. Tell Claude what to change',
+			'',
+			'   ctrl+g to edit in Vim · ~/.claude/plans/plan-zzplanwh-valiant-abelson.md',
+		].join('\n');
+		const approval = { kind: 'approval' as const, id: 'approval:e:9', choices: [{ id: 'yes', label: '許可', tone: 'approve' as const }] };
+		const { input, terminal, claims } = setup({ interaction: approval });
+		terminal.screen = withheld332;
+		const withheld = await input.answerApproval(1, 't', approval.id, 'yes');
+		const sentWhileWithheld = [...terminal.sent];
+		terminal.screen = plan332;
+		terminal.onKey = () => { terminal.screen = '\u23fa Working\u2026'; };
+		const approved = await input.answerApproval(1, 't', approval.id, 'yes');
+		assert.deepStrictEqual({ withheldRefused: withheld !== undefined, sentWhileWithheld, approved, sent: terminal.sent, claims }, {
+			withheldRefused: true,
+			sentWhileWithheld: [],
+			approved: undefined,
+			sent: ['"2"'],
+			claims: ['claim:approval:approval:e:9', 'release:approval:approval:e:9:false', 'claim:approval:approval:e:9', 'release:approval:approval:e:9:true'],
+		});
+	});
+
 	test('answers a tall Codex command approval with y and a Codex tool approval form with 1 or Esc, only for its own tool', async () => {
 		const exec = { kind: 'approval' as const, id: 'approval:e:2', detail: CODEX_EXEC_APPROVAL_DETAIL };
 		const { input, terminal, setView } = setup({ agent: 'codex', interaction: exec });

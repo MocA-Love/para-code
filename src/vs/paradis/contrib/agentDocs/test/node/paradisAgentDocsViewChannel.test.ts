@@ -35,10 +35,10 @@ suite('ParadisAgentDocsViewChannel', () => {
 
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function setup(now = () => 500) {
+	function setup(now = () => 500, stored?: string) {
 		const disposables = store.add(new DisposableStore());
 		const hooks = disposables.add(new Emitter<IParadisAgentHookEvent>());
-		const storage = new MemoryStorage();
+		const storage = new MemoryStorage(stored);
 		const sidecars = new Map<string, string>();
 		const ledger = disposables.add(new ParadisAgentDocsLedger(storage, error => { throw error; }, now));
 		const service = disposables.add(new ParadisAgentDocsService(ledger, hooks.event));
@@ -130,6 +130,38 @@ suite('ParadisAgentDocsViewChannel', () => {
 			cleared: [undefined, undefined],
 			removed: [true, false],
 			left: ['/repo/b.md'],
+		});
+	});
+
+	test('the days until a missing document is dropped count from when this version first recorded it missing, not from an older record', async () => {
+		let now = 9_000;
+		// 数え始めを書かない版が残した記録（見つからなくなった時刻だけがある）
+		const legacy = JSON.stringify({ docs: [{ hostId: '', path: '/repo/legacy.md', kind: 'md', previousOwners: [], writes: [], registeredBy: 'user_opened', firstSeen: 5, missingSince: 10 }] });
+		const { channel, ledger } = setup(() => now, legacy);
+		await ledger.ready;
+		const counts = () => {
+			const record = ledger.get('', '/repo/legacy.md');
+			return [record?.missingSince, record?.missingCountedFrom];
+		};
+		const loaded = counts();
+		await call(channel, ParadisAgentDocsViewCall.SetMissing, '', '/repo/legacy.md', true);
+		const counted = counts();
+		now = 9_500;
+		await call(channel, ParadisAgentDocsViewCall.SetMissing, '', '/repo/legacy.md', true);
+		const countedOnce = counts();
+		const viewed = (await call<IParadisDocViewRecord[]>(channel, ParadisAgentDocsViewCall.List)).map(record => [record.missingSince, record.missingCountedFrom]);
+		// 見つかれば両方外れ、また見つからなくなれば両方がその時刻になる
+		await call(channel, ParadisAgentDocsViewCall.SetMissing, '', '/repo/legacy.md', false);
+		const found = counts();
+		now = 9_900;
+		await call(channel, ParadisAgentDocsViewCall.SetMissing, '', '/repo/legacy.md', true);
+		assert.deepStrictEqual({ loaded, counted, countedOnce, viewed, found, missingAgain: counts() }, {
+			loaded: [10, undefined],
+			counted: [10, 9_000],
+			countedOnce: [10, 9_000],
+			viewed: [[10, 9_000]],
+			found: [undefined, undefined],
+			missingAgain: [9_900, 9_900],
 		});
 	});
 

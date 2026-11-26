@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisApprovalOptionKey, paradisApprovalOptionLabelsMatch, paradisApprovalOptionShownAs, paradisApprovalOptionsForMobile, paradisApprovalScreenPiece, paradisApprovalSuggestionLabels, paradisMobileApprovalOptionKey, paradisParseApprovalOptionChoice, paradisParseApprovalOptions, paradisReadExpectedApprovalOption, paradisSplitCodexFormOption } from '../../common/paradisAgentApprovalOptions.js';
+import { paradisApprovalOptionKey, paradisApprovalOptionLabelsMatch, paradisApprovalOptionShownAs, paradisApprovalOptionsForMobile, paradisApprovalScreenPiece, paradisApprovalSuggestionLabels, paradisClaudeApprovalAllowKey, paradisMobileApprovalOptionKey, paradisParseApprovalOptionChoice, paradisParseApprovalOptions, paradisReadExpectedApprovalOption, paradisSplitCodexFormOption } from '../../common/paradisAgentApprovalOptions.js';
 
 suite('paradisAgentApprovalOptions (W2-21)', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -226,6 +226,66 @@ suite('paradisAgentApprovalOptions (W2-21)', () => {
 		}, {
 			rules: ['Bash(npm test:*)', 'WebFetch', 'mode: acceptEdits', '/Users/example/projects/demo'],
 			none: undefined,
+			empty: undefined,
+		});
+	});
+
+	test('picks the option that allows once for Claude Code from the screen: never the auto mode row, and nothing when no "Yes" row can be read', () => {
+		// Claude Code 2.1.332 の実画面（本会話の計画の確定。auto mode が使える環境では 1 番が auto mode になる）
+		const plan332 = [
+			'  ' + '─'.repeat(116),
+			'   Ready to code?',
+			'',
+			'   Here is Claude\'s plan:',
+			'  ' + '╌'.repeat(116),
+			'   Plan',
+			'',
+			'   1. Do the first thing',
+			'   2. Do the second thing',
+			'  ' + '╌'.repeat(116),
+			'  ' + '─'.repeat(116),
+			'   Claude has written up a plan and is ready to execute. Would you like to proceed?',
+			'',
+			'   ❯ 1. Yes, and use auto mode',
+			'     2. Yes, manually approve edits',
+			'     3. Tell Claude what to change',
+			'        shift+tab to approve with this feedback',
+			'',
+			'   ctrl+g to edit in Vim · ~/.claude/plans/plan-zzplanfile-smooth-snail.md',
+		].join('\n');
+		// 同じ確定で、承認が保留された計画（200,000 字超。選択肢は自由入力の 1 行だけ）
+		const withheld332 = [
+			'   (the plan is too large to be shown in full — approval is withheld; send feedback asking for a shorter plan, or',
+			'   press Esc)',
+			'  ' + '╌'.repeat(116),
+			'  ' + '─'.repeat(116),
+			'   Claude has written up a plan and is ready to execute. Would you like to proceed?',
+			'',
+			'   ❯ 1. Tell Claude what to change',
+			'',
+			'   ctrl+g to edit in Vim · ~/.claude/plans/plan-zzplanwh-valiant-abelson.md',
+		].join('\n');
+		const options = (...labels: string[]) => ['Do you want to proceed?', ...labels.map((label, index) => `${index === 0 ? '\u276f' : ' '} ${index + 1}. ${label}`)].join('\n');
+		assert.deepStrictEqual({
+			plan332: paradisClaudeApprovalAllowKey(plan332),
+			withheld332: paradisClaudeApprovalAllowKey(withheld332),
+			// ふつうの許可: 1 番が 1 回だけの許可
+			command: paradisClaudeApprovalAllowKey(options('Yes', 'Yes, and don\'t ask again for npm test commands in /repo', 'No, and tell Claude what to do differently (esc)')),
+			// auto mode の無い計画の確定: 今までどおり最初の Yes
+			planWithoutAutoMode: paradisClaudeApprovalAllowKey(options('Yes, and auto-accept edits', 'Yes, manually approve edits', 'No, keep planning')),
+			// Yes の行が auto mode だけ・Yes の行が無い・選択肢が無い
+			onlyAutoMode: paradisClaudeApprovalAllowKey(options('Yes, and use auto mode', 'Tell Claude what to change')),
+			noYes: paradisClaudeApprovalAllowKey(options('Tell Claude what to change', 'No')),
+			idle: paradisClaudeApprovalAllowKey('\u23fa Done.\n\n\u276f \n  ? for shortcuts'),
+			empty: paradisClaudeApprovalAllowKey(''),
+		}, {
+			plan332: '2',
+			withheld332: undefined,
+			command: '1',
+			planWithoutAutoMode: '1',
+			onlyAutoMode: undefined,
+			noYes: undefined,
+			idle: undefined,
 			empty: undefined,
 		});
 	});
