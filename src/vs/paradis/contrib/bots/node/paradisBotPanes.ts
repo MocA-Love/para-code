@@ -175,6 +175,11 @@ export class ParadisBotPanes {
 		return this.panes.get(paneToken)?.botId;
 	}
 
+	/** そのペインの用途（会話か見回りか）。Bot のペインでなければ undefined。 */
+	purposeOf(paneToken: string): ParadisBotPanePurpose | undefined {
+		return this.panes.get(paneToken)?.purpose;
+	}
+
 	statesOf(botId: string): IParadisBotPaneState[] {
 		return [...this.panes.values()].filter(pane => pane.botId === botId).map(pane => ({ purpose: pane.purpose, working: pane.working, lastSeenAt: pane.lastSeenAt }));
 	}

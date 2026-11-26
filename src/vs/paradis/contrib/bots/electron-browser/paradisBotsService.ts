@@ -18,6 +18,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 import { IParadisBotItem, IParadisBotItemOwnerComment, ParadisBotItemStatus } from '../common/paradisBotItems.js';
+import { IParadisBotSuggestion } from '../common/paradisBotSuggestions.js';
 import { IParadisBot, IParadisBotPatch, ParadisBotFaceColor, ParadisBotFaceShape } from '../common/paradisBots.js';
 import { EMPTY_PARADIS_BOTS_SNAPSHOT, IParadisBotLaunch, IParadisBotsService, IParadisBotsSnapshot, IParadisBotStopRequest, PARADIS_BOTS_CHANNEL, ParadisBotPanePurpose, ParadisBotsServiceResult } from '../common/paradisBotsApi.js';
 
@@ -114,6 +115,26 @@ export class ParadisBotsClient extends Disposable implements IParadisBotsService
 
 	paneHashesOf(botId: string): Promise<readonly string[]> {
 		return this.value<readonly string[]>('paneHashesOf', [botId], []);
+	}
+
+	listSuggestions(botId: string): Promise<readonly IParadisBotSuggestion[]> {
+		return this.value<readonly IParadisBotSuggestion[]>('listSuggestions', [botId], []);
+	}
+
+	startSuggestion(id: string): Promise<ParadisBotsServiceResult<IParadisBotSuggestion>> {
+		return this.result('startSuggestion', [id]);
+	}
+
+	dismissSuggestion(id: string): Promise<ParadisBotsServiceResult<IParadisBotSuggestion>> {
+		return this.result('dismissSuggestion', [id]);
+	}
+
+	snapshotMemory(botId: string): Promise<ParadisBotsServiceResult<{ readonly takenAt: number; readonly files: number }>> {
+		return this.result('snapshotMemory', [botId]);
+	}
+
+	undoMemoryTidy(botId: string): Promise<ParadisBotsServiceResult<{ readonly restored: readonly string[]; readonly added: readonly string[]; readonly takenAt: number }>> {
+		return this.result('undoMemoryTidy', [botId]);
 	}
 
 	readHomeFile(botId: string, relativePath: string): Promise<ParadisBotsServiceResult<string | undefined>> {

@@ -23,6 +23,7 @@ import {
 	PARADIS_BOT_ITEM_SHOW_TOOL,
 	PARADIS_BOT_READ_TOOLS,
 	PARADIS_BOT_SERVER_INSTRUCTIONS,
+	PARADIS_BOT_SUGGEST_TOOL,
 	PARADIS_BOT_TOOL_NAMES,
 	PARADIS_BOT_TOOLS,
 	paradisBotItemListRow,
@@ -31,6 +32,7 @@ import {
 	paradisParseBotItemListArgs,
 	paradisParseBotItemShowArgs,
 	paradisParseBotItemUpdateArgs,
+	paradisParseBotSuggestArgs,
 } from '../common/paradisBotTools.js';
 import { ParadisBotsService } from './paradisBotsService.js';
 
@@ -88,6 +90,14 @@ export class ParadisBotToolProvider implements IParadisMcpToolProvider {
 				}
 				const result = await this.service.botReadItem(bot.id, parsed.value.number);
 				return result.ok ? toolJson(paradisBotItemView(result.value, parsed.value.after)) : failure(result);
+			}
+			case PARADIS_BOT_SUGGEST_TOOL: {
+				const parsed = paradisParseBotSuggestArgs(args);
+				if (!parsed.ok) {
+					return toolError(parsed.message);
+				}
+				const result = await this.service.botSuggest(bot.id, paneToken, parsed.value.title, parsed.value.request);
+				return result.ok ? toolJson({ suggested: result.value.title }) : failure(result);
 			}
 			case PARADIS_BOT_ITEM_ADD_TOOL: {
 				const parsed = paradisParseBotItemAddArgs(args);

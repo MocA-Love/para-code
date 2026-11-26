@@ -18,7 +18,8 @@ import { IParadisBotLaunch } from '../../common/paradisBotsApi.js';
 import { ParadisBotHomeError, ParadisBotHomes, PARADIS_BOT_HOME_FILE_LIMIT } from '../../node/paradisBotHomes.js';
 import { ParadisBotsChannel } from '../../node/paradisBotsChannel.js';
 import { ParadisBotsService } from '../../node/paradisBotsService.js';
-import { createParadisBotItemsFile, createParadisBotsFile } from '../../node/paradisBotsStore.js';
+import { ParadisBotMemorySnapshots } from '../../node/paradisBotMemorySnapshots.js';
+import { createParadisBotItemsFile, createParadisBotsFile, createParadisBotSuggestionsFile } from '../../node/paradisBotsStore.js';
 
 const BOT = { id: 'b1', name: 'リリース係', folder: 'bot' };
 const block = (body: string) => `${PARADIS_BOT_GENERATED_BEGIN}\n${body}\n${PARADIS_BOT_GENERATED_END}`;
@@ -196,7 +197,7 @@ suite('Paradis bot homes', () => {
 			// ピン留めと顔はチャネルから変えられ、一覧の値に載る（色は選べる名前だけ）
 			pinned: [service.getSnapshot().bots.map(bot => [bot.pinned, bot.faceColor, bot.faceShape]), badPin, badFace],
 			outside: await channel.call('window:1', 'writeHomeFile', [second.value.id, '../../escape.md', 'x']),
-			badArgs: [await channel.call('window:1', 'requestLaunch', [second.value.id, 'root']), await channel.call('window:1', 'ownerSetStatus', ['uid', 'waiting']), await channel.call('window:1', 'createBot', ['x'])],
+			badArgs: [await channel.call('window:1', 'requestLaunch', [second.value.id, 'root']), await channel.call('window:1', 'ownerSetStatus', ['uid', 'blocked']), await channel.call('window:1', 'createBot', ['x'])],
 			// Bot の名義の書き込みは、チャネルには無い
 			botWrites: await Promise.all(['botAddItem', 'botUpdateItem', 'issueLaunch', 'releasePane'].map(command => channel.call('window:1', command, ['id3', { title: 'x' }]).then(() => 'reachable', () => 'not found'))),
 		}, {
@@ -206,7 +207,7 @@ suite('Paradis bot homes', () => {
 			launch: {
 				launchId: 'string', botId: 'id2', purpose: 'chat', cwd: join(root, 'bot-2'), name: 'レビュー係', agent: 'codex',
 				// Codex の Bot だけ、道具の許可をこの起動の引数で渡す（利用者の config.toml には書かない）
-				extraFlags: '-c \'mcp_servers.para-browser.tools.bot_item_list.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_item_show.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_item_add.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_item_update.approval_mode=approve\'',
+				extraFlags: '-c \'mcp_servers.para-browser.tools.bot_item_list.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_item_show.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_item_add.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_item_update.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_suggest.approval_mode=approve\'',
 			},
 			bound: [false, true, false, 'レビュー係', undefined, 'idle'],
 			stops: [true, ['id1', 'id2']],
@@ -244,6 +245,56 @@ suite('Paradis bot homes', () => {
 			launch: true,
 			notes: '利用者のメモ',
 			existing: ['bot', 'bot-2', 'report', 'report-2'],
+		});
+	});
+
+	test('サービス: 提案は見回りのペインだけが出せ、記憶の整理は写しから取り消せる（写しは専用フォルダの外）', async () => {
+		const userData = join(root, '..', 'userData');
+		let ids = 0;
+		const service = store.add(new ParadisBotsService(createParadisBotsFile(userData), createParadisBotItemsFile(userData), store.add(new ParadisHumanAskService()), new NullLogService(), {
+			homes,
+			uuid: () => `id${++ids}`,
+			suggestionsFile: createParadisBotSuggestionsFile(userData),
+			memorySnapshots: new ParadisBotMemorySnapshots(join(userData, 'snapshots'), homes, () => 5000),
+		}));
+		const created = await service.createBot({ name: 'リリース係', agent: 'claude' });
+		assert.ok(created.ok);
+		const botId = created.value.id;
+		const patrol = service.issueLaunch(botId, 'patrol');
+		const chat = service.issueLaunch(botId, 'chat');
+		assert.ok(patrol !== undefined && chat !== undefined && service.reportLaunch(patrol, 'pane-p') && service.reportLaunch(chat, 'pane-c'));
+		const fromChat = await service.botSuggest(botId, 'pane-c', 'PR の返事', '返事を書いて');
+		const fromPatrol = await service.botSuggest(botId, 'pane-p', 'PR の返事', '返事を書いて');
+		const open = service.getSnapshot().bots[0].openSuggestions;
+		const started = await service.startSuggestion(service.listSuggestions(botId)[0].id);
+		service.releasePane('pane-p');
+
+		await service.writeHomeFile(botId, 'MEMORY.md', '- 2026-11-27 古い記憶\n');
+		const taken = await service.snapshotMemory(botId);
+		await service.writeHomeFile(botId, 'MEMORY.md', '- 整理した記憶\n');
+		await service.writeHomeFile(botId, 'memory/release.md', '細かい話\n');
+		const undone = await service.undoMemoryTidy(botId);
+		assert.deepStrictEqual({
+			fromChat: fromChat.ok ? 'ok' : fromChat.code,
+			fromPatrol: fromPatrol.ok ? fromPatrol.value.title : fromPatrol.code,
+			open,
+			started: started.ok ? [started.value.state, started.value.request] : started.code,
+			afterStart: service.getSnapshot().bots[0].openSuggestions,
+			taken,
+			undone,
+			memory: await service.readHomeFile(botId, 'MEMORY.md'),
+			// 写しは専用フォルダの中に無い
+			homeFiles: (await fs.readdir(join(root, created.value.folder))).filter(name => name.endsWith('.json')),
+		}, {
+			fromChat: 'not_patrol',
+			fromPatrol: 'PR の返事',
+			open: 1,
+			started: ['started', '返事を書いて'],
+			afterStart: 0,
+			taken: { ok: true, value: { takenAt: 5000, files: 1 } },
+			undone: { ok: true, value: { restored: ['MEMORY.md'], added: ['memory/release.md'], takenAt: 5000 } },
+			memory: { ok: true, value: '- 2026-11-27 古い記憶\n' },
+			homeFiles: ['.para-bot.json'],
 		});
 	});
 });
