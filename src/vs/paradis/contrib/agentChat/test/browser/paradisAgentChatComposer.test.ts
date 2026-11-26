@@ -78,6 +78,24 @@ suite('ParadisAgentChatComposer', () => {
 		});
 	});
 
+	test('shows the + button only when files can be picked, and puts the picked paths into the input', async () => {
+		const without = store.add(new ParadisAgentChatComposer(container, new TestComposerHost()));
+		const plain = container.querySelectorAll('.paradis-agent-chat-attach').length;
+		without.dispose();
+		container.textContent = '';
+		const host = new TestComposerHost() as TestComposerHost & { pickFiles(): Promise<readonly string[] | undefined> };
+		host.pickFiles = async () => ['/repo/a.ts', '/repo/my notes.md'];
+		const composer = store.add(new ParadisAgentChatComposer(container, host));
+		composer.setToken('pane-1');
+		container.querySelector<HTMLButtonElement>('.paradis-agent-chat-attach')!.click();
+		await new Promise(resolve => setTimeout(resolve, 0));
+		assert.deepStrictEqual({ plain, input: container.querySelector('textarea')!.value, draft: host.drafts.get('pane-1') }, {
+			plain: 0,
+			input: '/repo/a.ts "/repo/my notes.md"',
+			draft: '/repo/a.ts "/repo/my notes.md"',
+		});
+	});
+
 	test('keeps a draft per pane, recalls sent messages with the up arrow, and blocks sending while the agent waits for an answer', () => {
 		const host = new TestComposerHost();
 		host.history = ['first', 'second'];
