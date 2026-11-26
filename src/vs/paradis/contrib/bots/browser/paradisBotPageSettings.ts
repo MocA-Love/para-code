@@ -77,8 +77,10 @@ export class ParadisBotSettingsPanel {
 		}
 		const draft = this.draft ??= { name: bot.name, agent: bot.agent, permissionId: bot.permissionId, role: this.role };
 		const grid = DOM.append(body, $('.paradis-bot-settings'));
-		const row = (label: string): HTMLElement => {
-			DOM.append(grid, $('span.paradis-bot-settings-key')).textContent = label;
+		const row = (label: string, top?: boolean): HTMLElement => {
+			const key = DOM.append(grid, $('span.paradis-bot-settings-key'));
+			key.textContent = label;
+			key.classList.toggle('top', top === true);
 			return DOM.append(grid, $('.paradis-bot-settings-value'));
 		};
 
@@ -130,7 +132,7 @@ export class ParadisBotSettingsPanel {
 		if (hint) {
 			DOM.append(permissionValue, $('.paradis-bot-settings-help')).textContent = hint;
 		}
-		const roleValue = row(localize('paradis.botPage.settings.role', "役割（SOUL.md）"));
+		const roleValue = row(localize('paradis.botPage.settings.role', "役割（SOUL.md）"), true);
 		const roleFrame = DOM.append(roleValue, $('.paradis-field.paradis-field-area.paradis-focus-subtle-within.paradis-bot-settings-role'));
 		const role = DOM.append(roleFrame, $('textarea')) as HTMLTextAreaElement;
 		role.rows = 6;

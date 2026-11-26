@@ -459,6 +459,12 @@ button.paradis-bot-page-link:hover {
 	color: var(--vscode-paradis-textMuted);
 }
 
+/* Next to a tall field, the label sits on the field's first line. */
+.paradis-bot-settings-key.top {
+	align-self: start;
+	padding-top: var(--vscode-spacing-size100);
+}
+
 .paradis-bot-settings-value {
 	display: flex;
 	flex-direction: column;
@@ -543,7 +549,8 @@ button.paradis-bot-page-link:hover {
 }
 
 .paradis-bot-page-row.selected {
-	background: var(--vscode-list-inactiveSelectionBackground, var(--vscode-list-hoverBackground));
+	background: var(--vscode-paradis-raised);
+	color: var(--vscode-paradis-textStrong);
 }
 
 .paradis-bot-settings-help {
