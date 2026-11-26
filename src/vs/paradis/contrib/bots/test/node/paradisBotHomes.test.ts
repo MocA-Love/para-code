@@ -15,6 +15,8 @@ import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ParadisHumanAskService } from '../../../humanAsk/node/paradisHumanAskChannel.js';
 import { PARADIS_BOT_CLAUDE_BODY, PARADIS_BOT_GENERATED_BEGIN, PARADIS_BOT_GENERATED_END, paradisBotInstructions, paradisBotOwnerFile, paradisMergeBotGeneratedFile, paradisParseBotOwnerFile } from '../../common/paradisBotHome.js';
 import { IParadisBotLaunch } from '../../common/paradisBotsApi.js';
+import { PARADIS_READ_ONLY_MCP_TOOL_NAMES } from '../../../agentBrowser/common/paradisMcpReadOnlyTools.js';
+import { paradisBotPatrolLaunchFlags } from '../../common/paradisBotTools.js';
 import { ParadisBotHomeError, ParadisBotHomes, PARADIS_BOT_HOME_FILE_LIMIT } from '../../node/paradisBotHomes.js';
 import { ParadisBotsChannel } from '../../node/paradisBotsChannel.js';
 import { ParadisBotsService } from '../../node/paradisBotsService.js';
@@ -301,5 +303,26 @@ suite('Paradis bot homes', () => {
 	test('人格メモの雛形は日本語（利用者が開いて書き足す）', async () => {
 		await homes.ensure(BOT);
 		assert.strictEqual(await homes.read(BOT, 'SOUL.md'), '# リリース係\n\n（この Bot が何をするのかを、ここに 1 文で書いてください）\n\n## 仕事の進め方\n\n- （どこを見て、どこへ知らせるか）\n');
+	});
+
+	test('見回りの起動: 読むだけの引数で、Bot の権限の設定を使わない。設定がオフ・制限できないエージェントは断る', async () => {
+		const userData = join(root, '..', 'userData');
+		const settings = { enabled: true };
+		let ids = 0;
+		const service = store.add(new ParadisBotsService(createParadisBotsFile(userData), createParadisBotItemsFile(userData), store.add(new ParadisHumanAskService()), new NullLogService(), { homes, uuid: () => `id${++ids}`, enabled: () => settings.enabled }));
+		const claude = await service.createBot({ name: 'リリース係', agent: 'claude', permissionId: 'skip-permissions' });
+		const other = await service.createBot({ name: 'B', agent: 'opencode' });
+		assert.ok(claude.ok && other.ok);
+		const patrol = await service.requestLaunch(claude.value.id, 'patrol');
+		const chat = await service.requestLaunch(claude.value.id, 'chat');
+		const unsupported = await service.requestLaunch(other.value.id, 'patrol');
+		settings.enabled = false;
+		const off = await service.requestLaunch(claude.value.id, 'patrol');
+		assert.deepStrictEqual({
+			patrol: patrol.ok && [patrol.value.permissionId, patrol.value.extraFlags === paradisBotPatrolLaunchFlags('claude', PARADIS_READ_ONLY_MCP_TOOL_NAMES)],
+			chat: chat.ok && chat.value.permissionId,
+			unsupported: !unsupported.ok && unsupported.code,
+			off: !off.ok && off.code,
+		}, { patrol: [undefined, true], chat: 'skip-permissions', unsupported: 'unsupported', off: 'disabled' });
 	});
 });

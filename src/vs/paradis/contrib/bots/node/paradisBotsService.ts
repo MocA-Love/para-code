@@ -49,7 +49,8 @@ import {
 } from '../common/paradisBotItems.js';
 import { EMPTY_PARADIS_BOTS_STATE, IParadisBot, IParadisBotCreateInput, IParadisBotPatch, IParadisBotsState, PARADIS_BOTS_VERSION, paradisBotCreate, paradisBotRemove, paradisBotUpdate } from '../common/paradisBots.js';
 import { IParadisBotLaunch, IParadisBotsSnapshot, IParadisBotStopRequest, ParadisBotPanePurpose, ParadisBotsServiceResult, paradisBotSummary } from '../common/paradisBotsApi.js';
-import { IParadisBotItemAddArgs, paradisBotLaunchApprovalFlags } from '../common/paradisBotTools.js';
+import { IParadisBotItemAddArgs, paradisBotLaunchApprovalFlags, paradisBotPatrolLaunchFlags } from '../common/paradisBotTools.js';
+import { PARADIS_READ_ONLY_MCP_TOOL_NAMES } from '../../agentBrowser/common/paradisMcpReadOnlyTools.js';
 import { EMPTY_PARADIS_BOT_SUGGESTIONS_STATE, IParadisBotSuggestion, IParadisBotSuggestionsState, paradisBotOpenSuggestions, paradisBotSuggestionAdd, paradisBotSuggestionDismiss, paradisBotSuggestionsRemoveBot, paradisBotSuggestionsRunEnded, paradisBotSuggestionStart } from '../common/paradisBotSuggestions.js';
 import { ParadisBotHomeError, ParadisBotHomes } from './paradisBotHomes.js';
 import { IParadisBotMemoryUndo, ParadisBotMemorySnapshots } from './paradisBotMemorySnapshots.js';
@@ -217,6 +218,11 @@ export class ParadisBotsService extends Disposable {
 
 	getItem(uid: string): IParadisBotItem | undefined {
 		return this.items.items.find(item => item.uid === uid);
+	}
+
+	/** そのペインの用途（会話か見回りか）。Bot のペインでなければ undefined。 */
+	purposeOfPane(paneToken: string): ParadisBotPanePurpose | undefined {
+		return this.panes.purposeOf(paneToken);
 	}
 
 	/** そのペインの Bot（Bot のペインでなければ undefined）。起動し直した後に初めて現れたペインは、保存した結び付けを戻す。 */
@@ -431,6 +437,14 @@ export class ParadisBotsService extends Disposable {
 			if (this.homes === undefined) {
 				return { ok: false, code: 'unavailable', message: 'Bot home folders are not available.' };
 			}
+			// 見回りは、Bot の機能がオンで、読むだけに制限できるエージェントのときだけ起動する
+			const patrolFlags = purpose === 'patrol' ? paradisBotPatrolLaunchFlags(bot.agent, PARADIS_READ_ONLY_MCP_TOOL_NAMES) : undefined;
+			if (purpose === 'patrol' && !this.enabled()) {
+				return { ok: false, code: 'disabled', message: 'Para Code bots are turned off.' };
+			}
+			if (purpose === 'patrol' && patrolFlags === undefined) {
+				return { ok: false, code: 'unsupported', message: 'Para Code cannot limit this agent to reading, so it does not start a look-around with it.' };
+			}
 			let cwd: string;
 			try {
 				cwd = await this.homes.ensure(bot);
@@ -439,7 +453,7 @@ export class ParadisBotsService extends Disposable {
 				return { ok: false, code: error instanceof ParadisBotHomeError ? error.code : 'storage', message: error instanceof ParadisBotHomeError ? error.message : 'Para Code could not prepare the bot\'s home folder.' };
 			}
 			const launchId = this.issueLaunch(botId, purpose);
-			const extraFlags = paradisBotLaunchApprovalFlags(bot.agent);
+			const extraFlags = purpose === 'patrol' ? patrolFlags : paradisBotLaunchApprovalFlags(bot.agent);
 			if (launchId === undefined) {
 				return { ok: false, code: 'not_found', message: 'There is no such bot.' };
 			}
@@ -449,7 +463,8 @@ export class ParadisBotsService extends Disposable {
 					launchId, botId, purpose, cwd, name: bot.name, agent: bot.agent,
 					...(bot.modelId !== undefined ? { modelId: bot.modelId } : {}),
 					...(bot.effortId !== undefined ? { effortId: bot.effortId } : {}),
-					...(bot.permissionId !== undefined ? { permissionId: bot.permissionId } : {}),
+					// 見回りは Bot の権限の設定を使わない（読むだけの引数だけで起動する）
+					...(bot.permissionId !== undefined && purpose !== 'patrol' ? { permissionId: bot.permissionId } : {}),
 					...(extraFlags !== undefined ? { extraFlags } : {}),
 				},
 			};

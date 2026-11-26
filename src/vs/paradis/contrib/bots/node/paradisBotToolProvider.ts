@@ -21,6 +21,7 @@ import {
 	PARADIS_BOT_ITEM_LIST_PAGE,
 	PARADIS_BOT_ITEM_LIST_TOOL,
 	PARADIS_BOT_ITEM_SHOW_TOOL,
+	PARADIS_BOT_PATROL_TOOLS,
 	PARADIS_BOT_READ_TOOLS,
 	PARADIS_BOT_SERVER_INSTRUCTIONS,
 	PARADIS_BOT_SUGGEST_TOOL,
@@ -39,6 +40,7 @@ import { ParadisBotsService } from './paradisBotsService.js';
 const NOT_A_BOT_MESSAGE = 'This terminal is not a Para Code bot, so the bot item tools do nothing here. Only a terminal that Para Code started for a bot can use them.';
 const CALLER_UNVERIFIED_MESSAGE = 'Para Code could not confirm that this request comes from a process inside the bot\'s own terminal pane, so it does not read or change the bot\'s items. This happens inside tmux, screen, zellij, WSL or a container.';
 const BOTS_DISABLED_MESSAGE = 'Para Code bots are turned off in this Para Code (the setting paradis.bots.enabled), so the bot item tools do nothing. Tell your owner in your reply.';
+const PATROL_READ_ONLY_MESSAGE = 'This is a look-around, which only reads. Do not change items here; offer what is worth doing with bot_suggest, and your owner starts it.';
 const PAUSED_MESSAGE = 'Your owner paused this bot, so Para Code does not change its items. Tell your owner in your reply and end your turn.';
 
 function failure(result: { readonly code: string; readonly message: string }): unknown {
@@ -87,6 +89,10 @@ export class ParadisBotToolProvider implements IParadisMcpToolProvider {
 		const bot = this.service.botOfPane(paneToken);
 		if (bot === undefined) {
 			return toolError(NOT_A_BOT_MESSAGE);
+		}
+		// 見回りのペインは読むだけ（項目は書かず、提案だけ出せる）
+		if (this.service.purposeOfPane(paneToken) === 'patrol' && !PARADIS_BOT_PATROL_TOOLS.has(name)) {
+			return toolError(PATROL_READ_ONLY_MESSAGE);
 		}
 		if (bot.paused && !PARADIS_BOT_READ_TOOLS.has(name)) {
 			return toolError(PAUSED_MESSAGE);

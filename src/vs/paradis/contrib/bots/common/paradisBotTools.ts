@@ -152,6 +152,36 @@ export function paradisBotLaunchApprovalFlags(agent: string): string | undefined
 	return [...PARADIS_BOT_TOOL_NAMES].map(tool => `-c 'mcp_servers.para-browser.tools.${tool}.approval_mode=approve'`).join(' ');
 }
 
+/** 見回りのペインで使える Bot の道具（読む道具と提案だけ。項目は書かない）。 */
+export const PARADIS_BOT_PATROL_TOOLS: ReadonlySet<string> = new Set([PARADIS_BOT_ITEM_LIST_TOOL, PARADIS_BOT_ITEM_SHOW_TOOL, PARADIS_BOT_SUGGEST_TOOL]);
+
+/**
+ * 見回り（読むだけ）のペインを起動する引数。確認のプロンプトを出さずに、書く道具を呼び出しの段階で断る形にする
+ * （見回りは誰も見ていない時間に走るので、プロンプトが出るとそのまま打ち切りまで止まる）。シェルの 1 行に足す形で、
+ * どれも単一引用符で囲む。Bot の権限の設定（permissionId）は見回りでは使わない。
+ *
+ * - Claude Code: `--permission-mode dontAsk`（許可していない道具はプロンプトにせず断る）、`--tools`（組み込みの道具を
+ *   読むものだけにする）、`--allowedTools`（para-browser の読む道具と見回りの Bot の道具だけを許可する）
+ * - Codex: `-s read-only -a never`（シェルとファイルの書き込みは失敗としてモデルへ返る）、para-browser の道具を
+ *   `enabled_tools` で読む道具と見回りの Bot の道具だけにする（MCP は sandbox の外で動き、`approval_mode` に拒否が無いため）
+ *
+ * 残る穴: 利用者の設定で許可している道具（Claude Code の `~/.claude/settings.json` の allow、Codex の para-browser 以外の
+ * MCP サーバー）は、この引数だけでは塞げない。ほかのエージェントは見回りに対応しない（undefined）。
+ *
+ * @param readOnlyBrowserTools para-browser の読むだけの道具（`PARADIS_READ_ONLY_MCP_TOOL_NAMES`）
+ */
+export function paradisBotPatrolLaunchFlags(agent: string, readOnlyBrowserTools: ReadonlySet<string>): string | undefined {
+	const allowed = [...PARADIS_BOT_PATROL_TOOLS, ...readOnlyBrowserTools];
+	if (agent === 'claude') {
+		return `--permission-mode dontAsk --tools 'Read,Grep,Glob' '--allowedTools=${allowed.map(tool => `mcp__para-browser__${tool}`).join(',')}'`;
+	}
+	if (agent === 'codex') {
+		const approve = [...PARADIS_BOT_PATROL_TOOLS].map(tool => `-c 'mcp_servers.para-browser.tools.${tool}.approval_mode=approve'`).join(' ');
+		return `-s read-only -a never -c 'mcp_servers.para-browser.enabled_tools=[${allowed.map(tool => `"${tool}"`).join(',')}]' ${approve}`;
+	}
+	return undefined;
+}
+
 export type ParadisBotToolArgs<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly message: string };
 
 function bad(message: string): { readonly ok: false; readonly message: string } {

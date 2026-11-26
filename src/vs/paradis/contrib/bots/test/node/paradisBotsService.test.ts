@@ -322,6 +322,19 @@ suite('Paradis bots service', () => {
 		});
 	});
 
+	test('見回りのペインは読むだけ: 項目は書けず、読む道具と提案は通る', async () => {
+		const h = harness(store);
+		const botId = await h.bot('A');
+		await h.call('pane-A', 'bot_item_add', { title: '項目' });
+		const launchId = h.service.issueLaunch(botId, 'patrol');
+		assert.ok(launchId !== undefined && h.service.reportLaunch(launchId, 'pane-patrol'));
+		assert.deepStrictEqual({
+			add: String((await h.call('pane-patrol', 'bot_item_add', { title: '見回りの項目' })).error).slice(0, 30),
+			update: String((await h.call('pane-patrol', 'bot_item_update', { number: 1, comment: 'x' })).error).slice(0, 30),
+			list: ((await h.call('pane-patrol', 'bot_item_list')).items as unknown[]).length,
+		}, { add: 'This is a look-around, which o', update: 'This is a look-around, which o', list: 1 });
+	});
+
 	test('Bot でないペイン・確かめられない接続元・ほかの Bot の項目を断る', async () => {
 		const h = harness(store);
 		await h.bot('A');
