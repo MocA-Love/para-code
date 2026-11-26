@@ -48,8 +48,8 @@ import { EMPTY_PARADIS_BOTS_STATE, IParadisBot, IParadisBotCreateInput, IParadis
 import { IParadisBotLaunch, IParadisBotsSnapshot, ParadisBotPanePurpose, ParadisBotsServiceResult, paradisBotSummary } from '../common/paradisBotsApi.js';
 import { IParadisBotItemAddArgs, paradisBotLaunchApprovalFlags } from '../common/paradisBotTools.js';
 import { ParadisBotHomeError, ParadisBotHomes } from './paradisBotHomes.js';
-import { ParadisBotPanes } from './paradisBotPanes.js';
-import { IParadisBotsJsonFile } from './paradisBotsStore.js';
+import { IParadisBotPanesState, PARADIS_BOT_PANES_VERSION, ParadisBotPanes } from './paradisBotPanes.js';
+import { IParadisBotsJsonFile, IParadisBotsLoaded } from './paradisBotsStore.js';
 
 /** 連続した変更をまとめてから知らせる間隔。 */
 const CHANGE_DELAY = 50;
@@ -71,6 +71,8 @@ export interface IParadisBotsServiceOptions {
 	readonly uuid?: () => string;
 	/** shared process の hook のバス。Bot のペインの様子（動いている・待っている）を追う。 */
 	readonly hookEvents?: Event<{ readonly token: string; readonly event: string }>;
+	/** ペインとの結び付けの保存先（トークンのハッシュだけ）。渡さなければ結び付けはメモリだけ。 */
+	readonly panesFile?: IParadisBotsJsonFile<IParadisBotPanesState>;
 	/** 専用フォルダの読み書き。渡さなければフォルダを作らず、起動の依頼とファイルの口は `unavailable` で断る。 */
 	readonly homes?: ParadisBotHomes;
 }
@@ -83,11 +85,13 @@ export class ParadisBotsService extends Disposable {
 	private items: IParadisBotItemsState = EMPTY_PARADIS_BOT_ITEMS_STATE;
 	private revision = 0;
 	private loaded = false;
+	private panesVersion = PARADIS_BOT_PANES_VERSION;
 
-	protected readonly panes = new ParadisBotPanes();
+	protected readonly panes = new ParadisBotPanes(() => this.savePanes());
 	private readonly now: () => number;
 	private readonly uuid: () => string;
 	private readonly homes: ParadisBotHomes | undefined;
+	private readonly panesFile: IParadisBotsJsonFile<IParadisBotPanesState> | undefined;
 
 	/** 読み込みが終わった（壊れたファイルの退避も済んだ）。 */
 	readonly ready: Promise<void>;
@@ -120,13 +124,18 @@ export class ParadisBotsService extends Disposable {
 		this.now = options.now ?? Date.now;
 		this.uuid = options.uuid ?? generateUuid;
 		this.homes = options.homes;
+		this.panesFile = options.panesFile;
 		this._register(this.humanAsk.onDidRequestAnswer(request => this.onAnswerRequest(request)));
 		if (options.hookEvents) {
 			this._register(options.hookEvents(event => {
 				// ペインのシェルが終わった（ウィンドウが shared process へ知らせ、hook のバスに流れる）。結び付けを外す
 				if (event.event === 'TerminalExit') {
 					this.releasePane(event.token);
-				} else if (this.panes.noteHook(event.token, event.event, this.now())?.changed) {
+					return;
+				}
+				// 起動し直した後に現れた Bot のペインなら、保存した結び付けを戻す
+				const restored = this.restorePane(event.token);
+				if (this.panes.noteHook(event.token, event.event, this.now())?.changed || restored) {
 					this.notify();
 				}
 			}));
@@ -136,14 +145,17 @@ export class ParadisBotsService extends Disposable {
 
 	private async load(): Promise<void> {
 		try {
-			const [bots, items] = await Promise.all([this.botsFile.read(), this.itemsFile.read()]);
-			for (const quarantined of [bots.quarantined, items.quarantined]) {
+			const [bots, items, panes] = await Promise.all([this.botsFile.read(), this.itemsFile.read(), this.readPanes()]);
+			for (const quarantined of [bots.quarantined, items.quarantined, panes?.quarantined]) {
 				if (quarantined !== undefined) {
 					this.logService.error(`[ParadisBots] a saved file could not be read; it was moved to ${quarantined} and the list starts empty`);
 				}
 			}
 			this.bots = bots.state;
 			this.items = items.state;
+			// 消した Bot の結び付けは戻さない
+			this.panes.loadRemembered((panes?.state.panes ?? []).filter(record => this.getBot(record.botId) !== undefined));
+			this.panesVersion = panes?.state.version ?? PARADIS_BOT_PANES_VERSION;
 		} catch (error) {
 			// 読めなかったときは空で動かすが、上書きはしない（次の起動で読めるかもしれない）
 			this.logService.error('[ParadisBots] could not read the saved bots; they are read-only until the next start', error);
@@ -179,10 +191,41 @@ export class ParadisBotsService extends Disposable {
 		return this.items.items.find(item => item.uid === uid);
 	}
 
-	/** そのペインの Bot（Bot のペインでなければ undefined）。 */
+	/** そのペインの Bot（Bot のペインでなければ undefined）。起動し直した後に初めて現れたペインは、保存した結び付けを戻す。 */
 	botOfPane(paneToken: string): IParadisBot | undefined {
+		if (this.restorePane(paneToken)) {
+			this.notify();
+		}
 		const botId = this.panes.botOf(paneToken);
 		return botId !== undefined ? this.getBot(botId) : undefined;
+	}
+
+	/** 保存した結び付けを戻した（このペインが今 Bot になった）か。 */
+	private restorePane(paneToken: string): boolean {
+		if (!this.loaded || this.panes.botOf(paneToken) !== undefined) {
+			return false;
+		}
+		return this.panes.restore(paneToken, botId => this.getBot(botId) !== undefined, this.now()) !== undefined;
+	}
+
+	private async readPanes(): Promise<IParadisBotsLoaded<IParadisBotPanesState> | undefined> {
+		try {
+			return await this.panesFile?.read();
+		} catch (error) {
+			// 結び付けが戻らないだけなので、Bot と項目の読み込みは止めない
+			this.logService.warn('[ParadisBots] could not read the saved bot panes', error);
+			return undefined;
+		}
+	}
+
+	/** 保存する結び付け（トークンのハッシュ）を書き直す。書けなくても結び付けはメモリにあるので、記録だけする。 */
+	private savePanes(): void {
+		if (!this.loaded || this.panesFile === undefined || this.panesVersion !== PARADIS_BOT_PANES_VERSION) {
+			return;
+		}
+		this.panesFile.write({ version: PARADIS_BOT_PANES_VERSION, panes: this.panes.rememberedPanes() }).catch(error => {
+			this.logService.warn('[ParadisBots] could not save the bot panes', error);
+		});
 	}
 
 	/** Bot へまだ届けていない、持ち主の書き込み。 */

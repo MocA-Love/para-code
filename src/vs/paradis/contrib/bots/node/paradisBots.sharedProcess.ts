@@ -23,7 +23,7 @@ import { ParadisBotHomes } from './paradisBotHomes.js';
 import { ParadisBotToolProvider } from './paradisBotToolProvider.js';
 import { ParadisBotsChannel } from './paradisBotsChannel.js';
 import { ParadisBotsService } from './paradisBotsService.js';
-import { createParadisBotItemsFile, createParadisBotsFile } from './paradisBotsStore.js';
+import { createParadisBotItemsFile, createParadisBotPanesFile, createParadisBotsFile } from './paradisBotsStore.js';
 
 let shared: ParadisBotsService | undefined;
 
@@ -35,7 +35,7 @@ export function paradisSharedBotsService(): ParadisBotsService | undefined {
 ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 	const userDataPath = accessor.get(INativeEnvironmentService).userDataPath;
 	const store = new DisposableStore();
-	const service = store.add(new ParadisBotsService(createParadisBotsFile(userDataPath), createParadisBotItemsFile(userDataPath), paradisSharedHumanAskService(), accessor.get(ILogService), { hookEvents: onParadisAgentHookEvent, homes: new ParadisBotHomes(join(homedir(), '.para-code', 'bots')) }));
+	const service = store.add(new ParadisBotsService(createParadisBotsFile(userDataPath), createParadisBotItemsFile(userDataPath), paradisSharedHumanAskService(), accessor.get(ILogService), { hookEvents: onParadisAgentHookEvent, panesFile: createParadisBotPanesFile(userDataPath), homes: new ParadisBotHomes(join(homedir(), '.para-code', 'bots')) }));
 	server.registerChannel(PARADIS_BOTS_CHANNEL, new ParadisBotsChannel(service));
 	shared = service;
 	store.add(paradisRegisterMcpToolProvider(new ParadisBotToolProvider(service)));
