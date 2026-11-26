@@ -187,6 +187,30 @@ suite('ParadisAgentChatView', () => {
 		});
 	});
 
+	test('draws the user on the right with the time and the agent as a face beside a bubble, keeping tool rows apart from the bubbles', async () => {
+		const ts = new Date().setHours(10, 2, 0, 0);
+		const { container } = await createView([{
+			token: 'pane', agent: 'codex', epoch: 'e', rev: 6, reset: true, busy: false, live: null, interaction: null,
+			messages: [
+				{ rev: 0, role: 'user', kind: 'text', text: 'テストして', ts },
+				{ rev: 1, role: 'assistant', kind: 'tool_use', tool: 'Bash', toolUseId: 't1', text: JSON.stringify({ command: 'npm ci' }) },
+				{ rev: 2, role: 'tool', kind: 'tool_result', toolUseId: 't1', text: 'ok' },
+				{ rev: 3, role: 'assistant', kind: 'tool_use', tool: 'Bash', toolUseId: 't2', text: JSON.stringify({ command: 'npm test' }) },
+				{ rev: 4, role: 'tool', kind: 'tool_result', toolUseId: 't2', text: 'ok' },
+				{ rev: 5, role: 'assistant', kind: 'text', text: '通りました', ts, usage: { model: 'gpt-5.5', inputTokens: 1200, cacheReadTokens: 3000, cacheCreationTokens: 0, outputTokens: 34 } },
+			],
+		}]);
+		const list = container.querySelector<HTMLElement>('.paradis-agent-chat-list')!;
+		const shape = (element: Element): string => element.classList.contains('paradis-agent-chat-message')
+			? [...element.querySelectorAll(':scope > *, :scope > .paradis-agent-chat-message-column > *')].filter(child => !child.classList.contains('paradis-agent-chat-message-column')).map(child => child.classList.contains('paradis-agent-chat-face') ? `face:${[...child.classList].filter(name => name !== 'paradis-agent-chat-face').join('')}` : child.classList.contains('paradis-agent-chat-time') ? `time:${child.textContent}` : child.classList.contains('paradis-agent-chat-usage') ? `usage:${child.textContent}` : `bubble:${child.textContent}`).join(' ')
+			: `group:${element.textContent}`;
+		assert.deepStrictEqual([...list.children].filter(child => !child.classList.contains('paradis-agent-chat-notice')).map(shape), [
+			'bubble:テストして time:10:02',
+			'group:2 手順Bash',
+			'face:codex bubble:通りました time:10:02 usage:gpt-5.5 / 入力 1,200 · キャッシュ 3,000 · 出力 34',
+		]);
+	});
+
 	test('shows the full output of a truncated tool result after loading it', async () => {
 		const { host, container } = await createView([{
 			token: 'pane', agent: 'claude', epoch: 'e', rev: 3, reset: true, busy: false, live: null,
@@ -311,9 +335,9 @@ suite('ParadisAgentChatView', () => {
 		view.setTarget(1, 'pane');
 		const restored = snapshot();
 		assert.deepStrictEqual({ closed, opened, restored }, {
-			closed: { group: ['3×考えた内容, Bash'], expanded: 'false', steps: ['npm test'] },
-			opened: { group: ['3×考えた内容, Bash'], expanded: 'true', steps: ['考える', 'npm ci', 'npm test'], focused: true },
-			restored: { group: ['3×考えた内容, Bash'], expanded: 'true', steps: ['考える', 'npm ci', 'npm test'] },
+			closed: { group: ['3 手順考えた内容, Bash'], expanded: 'false', steps: ['npm test'] },
+			opened: { group: ['3 手順考えた内容, Bash'], expanded: 'true', steps: ['考える', 'npm ci', 'npm test'], focused: true },
+			restored: { group: ['3 手順考えた内容, Bash'], expanded: 'true', steps: ['考える', 'npm ci', 'npm test'] },
 		});
 	});
 
@@ -337,7 +361,7 @@ suite('ParadisAgentChatView', () => {
 			visibleArgs: text('.paradis-agent-chat-grouped .paradis-agent-chat-step-arg'),
 			openedOutput: text('.paradis-agent-chat-grouped .paradis-agent-chat-step-detail'),
 		}, {
-			group: ['2×Bash失敗 1 件'],
+			group: ['2 手順Bash失敗 1 件'],
 			visibleArgs: ['npm run build', 'npm run lint'],
 			openedOutput: ['{"command":"npm run build"}', 'error TS2304: Cannot find name'],
 		});
@@ -361,9 +385,9 @@ suite('ParadisAgentChatView', () => {
 		assert.deepStrictEqual([...list.children].filter(child => !child.classList.contains('paradis-agent-chat-notice')).map(child => child.classList.contains('paradis-agent-chat-group')
 			? `group:${child.textContent}`
 			: `card:${[...child.querySelectorAll('.monaco-button')].map(button => button.textContent).join('/')}`), [
-			'group:2×Bash',
+			'group:2 手順Bash',
 			'card:許可/拒否',
-			'group:2×Bash',
+			'group:2 手順Bash',
 		]);
 	});
 

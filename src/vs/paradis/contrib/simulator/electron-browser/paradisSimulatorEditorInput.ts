@@ -17,7 +17,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { EditorInputCapabilities, IEditorSerializer, IUntypedEditorInput } from '../../../../workbench/common/editor.js';
 import { EditorInput } from '../../../../workbench/common/editor/editorInput.js';
-import { IParadisMobileAttachment } from '../common/paradisMobileCanvas.js';
+import { IParadisMobileAttachment, IParadisMobileDevice, paradisMobileAttachmentIsFor } from '../common/paradisMobileCanvas.js';
 import { PARADIS_SIMULATOR_DEVICE_ID_PREFIX, paradisIsSimulatorUdid } from '../common/paradisSimulator.js';
 
 export const PARADIS_SIMULATOR_EDITOR_ID = 'paradis.editor.simulator';
@@ -125,8 +125,9 @@ export class ParadisSimulatorEditorInput extends ParadisDeviceEditorInput {
 }
 
 /** その端末（mobile_* のツールでの id）を割り当てたペインのターミナルの名前（台帳の順。名前が分からないペインは落とす）。 */
-export function paradisDeviceAssignedTerminals(deviceId: string, attachments: readonly IParadisMobileAttachment[], terminalName: (paneToken: string) => string | undefined): string[] {
-	return attachments.filter(attachment => attachment.deviceId === deviceId).map(attachment => terminalName(attachment.paneToken)).filter((name): name is string => !!name);
+export function paradisDeviceAssignedTerminals(deviceId: string, attachments: readonly IParadisMobileAttachment[], terminalName: (paneToken: string) => string | undefined, devices: readonly IParadisMobileDevice[] = []): string[] {
+	// 起動前の AVD で割り当てた Android は、起動すると id が替わる（`devices` で同じ端末として引く）
+	return attachments.filter(attachment => paradisMobileAttachmentIsFor(devices, attachment.deviceId, deviceId)).map(attachment => terminalName(attachment.paneToken)).filter((name): name is string => !!name);
 }
 
 /** iOS のシミュレータ（udid）を割り当てたペインのターミナルの名前。 */

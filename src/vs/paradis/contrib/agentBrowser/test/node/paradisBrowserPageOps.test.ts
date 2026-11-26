@@ -11,7 +11,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { createHash } from 'crypto';
 import { URI } from '../../../../../base/common/uri.js';
 import { IParadisAgentPageScriptOwner, IParadisCdpInputDispatchResult, paradisAgentPageScriptUri, paradisPaneFingerprint, paradisParseAgentPageScriptUri, paradisParsePageScriptOwner } from '../../common/paradisAgentBrowser.js';
-import { paradisParseInitScriptRequest } from '../../common/paradisBrowserPageOps.js';
+import { paradisAgentMayAllowPermission, paradisParseInitScriptRequest, paradisPermissionNotesText } from '../../common/paradisBrowserPageOps.js';
 import { IParadisPageOpsBinding, IParadisPageOpsCall, IParadisPageOpsHost, ParadisBrowserPageOps, paradisBuildMouseCommands, paradisPageOpsOwnerKey } from '../../node/paradisBrowserPageOps.js';
 import { IParadisResolvedDropTarget } from '../../node/paradisFileDropUpload.js';
 import { PARADIS_MCP_PAGE_OPS_TOOLS, PARADIS_PAGE_OPS_TOOL_NAMES } from '../../node/paradisBrowserPageOpsTools.js';
@@ -269,6 +269,65 @@ suite('paradisBrowserPageOps (shared process)', () => {
 		const result = await ops.call(createCall(visibleElement), 'highlight_element', { uid: 'e1', duration_seconds: 2 });
 		assert.strictEqual(isError(result), false);
 		assert.deepStrictEqual(host.mainCalls[0].args.slice(1), [{ x: 40, y: 55, width: 20, height: 10 }, 2000]);
+	});
+
+	// 許可の求め（位置情報・通知など）: 断るのはどのタブでも、許可は自分で開いたタブだけ
+	test('handle_permission_request denies on any tab, allows only on a tab the pane opened, and never asks electron-main to allow on a shared page', async () => {
+		const run = async (userSharedTab: boolean | undefined, args: Record<string, unknown>, answer: unknown) => {
+			const host = new FakeHost();
+			host.mainResults.set('answerExactViewPermissionRequest', answer);
+			const result = await new ParadisBrowserPageOps(host).call({ ...createCall(), ...(userSharedTab !== undefined ? { userSharedTab } : {}) }, 'handle_permission_request', args);
+			return { error: isError(result), text: textOf(result).split('. ')[0], main: host.mainCalls.map(call => call.args.slice(1)) };
+		};
+		const answered = { ok: true, answered: [{ origin: 'https://example.com', permission: 'notifications' }] };
+		assert.deepStrictEqual([
+			await run(false, { action: 'allow' }, answered),
+			await run(true, { action: 'deny', permission: 'notifications' }, answered),
+			// 利用者が共有したページ・どちらか分からないタブでは、許可を main へ頼まない
+			await run(true, { action: 'allow' }, answered),
+			await run(undefined, { action: 'allow' }, answered),
+			await run(false, { action: 'allow' }, { ok: false, reason: 'notAllowed', pending: [{ origin: 'https://example.com', permission: 'camera' }] }),
+			await run(false, { action: 'deny' }, { ok: false, reason: 'none', pending: [] }),
+			await run(false, { action: 'deny' }, { ok: false, reason: 'ambiguous', pending: [{ origin: 'https://a.test', permission: 'location' }, { origin: 'https://a.test', permission: 'notifications' }] }),
+			await run(false, { action: 'grant' }, answered),
+			await run(false, { action: 'deny', permission: 'usb' }, answered),
+		], [
+			{ error: false, text: 'Allowed "notifications" for https://example.com for this tab', main: [[null, true, true]] },
+			{ error: false, text: 'Denied "notifications" for https://example.com', main: [['notifications', false, false]] },
+			{ error: true, text: 'handle_permission_request: "allow" works only on tabs you opened yourself with open_browser_tab, and this tab is a page the user shared or a page that another tab opened', main: [] },
+			{ error: true, text: 'handle_permission_request: "allow" works only on tabs you opened yourself with open_browser_tab, and this tab is a page the user shared or a page that another tab opened', main: [] },
+			{ error: true, text: 'handle_permission_request: only the user can allow camera, microphone and devices (waiting: "camera" for https://example.com)', main: [[null, true, true]] },
+			{ error: true, text: 'handle_permission_request: no permission prompt waits on this tab', main: [[null, false, true]] },
+			{ error: true, text: 'handle_permission_request: several kinds of prompts wait on this tab ("location" for https://a.test, "notifications" for https://a.test)', main: [[null, false, true]] },
+			{ error: true, text: '"action" must be "allow" or "deny".', main: [] },
+			{ error: true, text: '"permission" must be one of location, camera, microphone, notifications, sensors, clipboard, devices.', main: [] },
+		]);
+	});
+
+	test('the note about permission prompts says what waits, how to answer and what ended without an answer', () => {
+		assert.deepStrictEqual({
+			none: paradisPermissionNotesText([]),
+			agentAnswersAreNotRepeated: paradisPermissionNotesText([{ origin: 'https://a.test', permission: 'location', state: 'allowedByAgent' }, { origin: 'https://a.test', permission: 'location', state: 'deniedByAgent' }]),
+			lines: paradisPermissionNotesText([
+				{ origin: 'https://a.test', permission: 'notifications', state: 'pending', secondsLeft: 27 },
+				{ origin: 'https://a.test', permission: 'camera', state: 'pending', secondsLeft: 3 },
+				{ origin: 'https://a.test', permission: 'location', state: 'unanswered' },
+				{ origin: 'https://a.test', permission: 'clipboard', state: 'allowedByUser' },
+				{ origin: 'https://a.test', permission: 'sensors', state: 'deniedByUser' },
+			])?.split('\n'),
+			mayAllow: ['location', 'notifications', 'clipboard', 'sensors', 'camera', 'microphone', 'devices', 'usb'].filter(paradisAgentMayAllowPermission),
+		}, {
+			none: undefined,
+			agentAnswersAreNotRepeated: undefined,
+			lines: [
+				'Permission request: this page asks for "notifications" for https://a.test, and the page waits for the answer. Answer it with handle_permission_request (action "allow" or "deny"). Without an answer Para Code denies it in about 27 s.',
+				'Permission request: this page asks for "camera" for https://a.test, and the page waits for the answer. Answer it with handle_permission_request (action "allow" or "deny"); only the user can allow this kind, so deny it or ask the user to answer in Para Code. Without an answer Para Code denies it in about 3 s.',
+				'Permission request: this page asked for "location" for https://a.test and nobody answered in time, so it was denied (not saved; the page can ask again). To answer the next one, call handle_permission_request right after the action that makes the page ask.',
+				'Permission request: the user allowed "clipboard" for https://a.test.',
+				'Permission request: the user blocked "sensors" for https://a.test.',
+			],
+			mayAllow: ['location', 'notifications', 'clipboard', 'sensors'],
+		});
 	});
 
 	test('stops waiting for electron-main when the request is cancelled, so the tab is not held', async () => {
