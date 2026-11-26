@@ -9,7 +9,7 @@ import assert from 'assert';
 import { readFileSync } from 'fs';
 import { FileAccess } from '../../../../../base/common/network.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisAdjustDevtoolsToolDescriptor } from '../../node/paradisDevtoolsToolAdjustments.js';
+import { paradisAdjustDevtoolsToolDescriptor, paradisPrepareDevtoolsToolCall } from '../../node/paradisDevtoolsToolAdjustments.js';
 
 const VENDORED = 'vs/paradis/contrib/agentBrowser/node/media/chrome-devtools-mcp';
 
@@ -52,6 +52,7 @@ interface ITraceExtras {
 	paradisExtraTraceCategories(options: ISaveOptions): string[];
 	paradisCollectSourceMaps(debuggerModel: unknown, waitMs?: number): Promise<ISourceMaps>;
 	paradisRewriteTraceForSave(buffer: Uint8Array, options: ISaveOptions, sourceMaps: ISourceMaps | undefined): { data: Uint8Array; sourceMapCount: number; scriptSourceCount: number };
+	paradisPrepareTraceSave(buffer: Uint8Array, options: ISaveOptions, sourceMaps: ISourceMaps | undefined): { data: Uint8Array | undefined; lines: string[] };
 	paradisOriginalLocationLines(insight: unknown, sourceMaps: ISourceMaps | undefined): string[];
 }
 
@@ -206,6 +207,33 @@ suite('Paradis trace extras (vendored performance tools)', () => {
 		});
 	});
 
+	test('without the options the file is the raw buffer itself, and a trace that cannot be rewritten is not saved at all', () => {
+		const listed = { cat: 'disabled-by-default-devtools.v8-source-rundown', name: 'ScriptCatchup', args: { data: { isolate: 'page', scriptId: 13, url: 'https://example.test/app.min.js' } } };
+		const source = { cat: 'disabled-by-default-devtools.v8-source-rundown-sources', name: 'ScriptCatchup', args: { data: { isolate: 'page', scriptId: 13, sourceText: 'x()' } } };
+		const buffer = new TextEncoder().encode(JSON.stringify({ traceEvents: [listed, source], metadata: {} }));
+		// 途中で切れた記録（生のままだと、アプリ全体のスクリプトの一覧と本文が絞られずに載っている）
+		const broken = buffer.slice(0, buffer.length - 5);
+		const sourceMaps: ISourceMaps = { byScriptId: new Map(), byUrl: new Map(), saved: [], visibleScripts: new Map([['13', 'https://example.test/app.min.js']]) };
+		const off = extras.paradisPrepareTraceSave(broken, { includeScriptContent: false, includeSourceMaps: false }, sourceMaps);
+		const on = extras.paradisPrepareTraceSave(buffer, { includeScriptContent: true, includeSourceMaps: true }, sourceMaps);
+		const failed = extras.paradisPrepareTraceSave(broken, { includeScriptContent: true, includeSourceMaps: false }, sourceMaps);
+		assert.deepStrictEqual({
+			offIsTheSameBuffer: off.data === broken,
+			offLines: off.lines,
+			onLines: on.lines,
+			onKeepsText: new TextDecoder().decode(on.data).includes('"sourceText":"x()"'),
+			failedData: failed.data,
+			failedLine: failed.lines.map(line => line.replace(/\(.*\)/, '(…)')),
+		}, {
+			offIsTheSameBuffer: true,
+			offLines: [],
+			onLines: ['The saved trace includes the text of 1 script(s) of the page as it is now (scripts of earlier documents and of other frames are not included) and 0 source map(s). It can hold anything those contain; do not share it more widely than the page source.'],
+			onKeepsText: true,
+			failedData: undefined,
+			failedLine: ['The trace was not saved: the script content and source maps could not be added (…). Record again without includeScriptContent and includeSourceMaps to save the raw trace.'],
+		});
+	});
+
 	test('the forced reflow call frames get their original position: 1-based event payloads, 0-based profile frames, and the function name only at a function start', () => {
 		const sourceMaps: ISourceMaps = { byScriptId: new Map([['7', appMap()]]), byUrl: new Map([['https://example.test/app.min.js', appMap()]]), saved: [], visibleScripts: new Map() };
 		const header = 'Original source positions of the call frames below, from the source maps of the page (generated -> original, original as line:column counted from 1):';
@@ -252,7 +280,8 @@ suite('Paradis trace extras (vendored performance tools)', () => {
 			startHasOptions: /includeScriptContent: zod\s+\.boolean\(\)\s+\.optional\(\)/.test(source) && /includeSourceMaps: zod\s+\.boolean\(\)\s+\.optional\(\)/.test(source),
 			stopHasOptions: stopTool.includes('includeScriptContent') || stopTool.includes('includeSourceMaps'),
 			addsCategories: source.includes('categories.push(...paradisExtraTraceCategories(paradisRunningSaveOptions));'),
-			rewritesOnlyWhenAsked: source.includes('if (paradisWantsExtras) {') && source.includes('let dataToWrite = traceEventsBuffer;'),
+			// 保存するのは paradisPrepareTraceSave が返したものだけ（生のバッファへ落とす経路を残さない）
+			savesOnlyWhatWasPrepared: source.includes('paradisPrepareTraceSave(traceEventsBuffer, paradisSaveOptions, paradisSourceMaps)') && source.includes('if (filePath && traceEventsBuffer && paradisSave?.data) {') && !source.includes('dataToWrite = traceEventsBuffer'),
 			keepsSourceMapsWithRecording: source.includes('result.paradisSourceMaps = paradisSourceMaps;'),
 			addsOriginalPositions: source.includes('paradisOriginalLocationLines(paradisInsight, lastRecording.paradisSourceMaps)'),
 		}, {
@@ -260,17 +289,27 @@ suite('Paradis trace extras (vendored performance tools)', () => {
 			startHasOptions: true,
 			stopHasOptions: false,
 			addsCategories: true,
-			rewritesOnlyWhenAsked: true,
+			savesOnlyWhatWasPrepared: true,
 			keepsSourceMapsWithRecording: true,
 			addsOriginalPositions: true,
 		});
 	});
 
-	test('the tool descriptions say when to use the save options and that insights give original positions', () => {
-		const described = (name: string) => paradisAdjustDevtoolsToolDescriptor({ name, description: 'upstream', inputSchema: { type: 'object', properties: {} } }).description ?? '';
+	test('Para Code passes the save options through to the vendored tool, and the descriptions say when to use them', () => {
+		const properties = { reload: { type: 'boolean' }, filePath: { type: 'string' }, includeScriptContent: { type: 'boolean' }, includeSourceMaps: { type: 'boolean' } };
+		const adjusted = (name: string) => paradisAdjustDevtoolsToolDescriptor({ name, description: 'upstream', inputSchema: { type: 'object', properties } });
+		const args = { reload: true, filePath: '/tmp/trace.json.gz', includeScriptContent: true, includeSourceMaps: true };
 		assert.deepStrictEqual({
-			start: described('performance_start_trace').includes('Pass includeScriptContent or includeSourceMaps with filePath only when the saved file will be opened in Chrome DevTools later or must stay readable after the page changes'),
-			insight: described('performance_analyze_insight').includes('original source positions'),
-		}, { start: true, insight: true });
+			// tools/list（MCP と para CLI の引数の元）に 2 つの引数が残る
+			listed: Object.keys((adjusted('performance_start_trace').inputSchema as { properties: object }).properties),
+			called: paradisPrepareDevtoolsToolCall('performance_start_trace', args),
+			start: (adjusted('performance_start_trace').description ?? '').includes('Pass includeScriptContent or includeSourceMaps with filePath only when the saved file will be opened in Chrome DevTools later or must stay readable after the page changes'),
+			insight: (adjusted('performance_analyze_insight').description ?? '').includes('original source positions'),
+		}, {
+			listed: ['reload', 'filePath', 'includeScriptContent', 'includeSourceMaps'],
+			called: { args },
+			start: true,
+			insight: true,
+		});
 	});
 });

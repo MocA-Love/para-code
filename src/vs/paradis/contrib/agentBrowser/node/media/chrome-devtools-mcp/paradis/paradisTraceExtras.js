@@ -198,6 +198,35 @@ export function paradisRewriteTraceForSave(buffer, options, sourceMaps) {
 }
 
 /**
+ * What to write to the file, and what to tell the agent about it. Without the options the file is the raw buffer,
+ * byte for byte. With them, a recording that cannot be rewritten is not saved at all: its raw buffer lists the
+ * scripts of the whole application (and their text with `includeScriptContent`), unfiltered.
+ * @param {Uint8Array} buffer
+ * @param {{ includeScriptContent: boolean, includeSourceMaps: boolean }} options
+ * @param {ParadisSourceMaps | undefined} sourceMaps
+ * @returns {{ data: Uint8Array | undefined, lines: string[] }}
+ */
+export function paradisPrepareTraceSave(buffer, options, sourceMaps) {
+	if (!options.includeScriptContent && !options.includeSourceMaps) {
+		return { data: buffer, lines: [] };
+	}
+	try {
+		const rewritten = paradisRewriteTraceForSave(buffer, options, sourceMaps);
+		const parts = [];
+		if (options.includeScriptContent) {
+			parts.push(`the text of ${rewritten.scriptSourceCount} script(s) of the page as it is now (scripts of earlier documents and of other frames are not included)`);
+		}
+		if (options.includeSourceMaps) {
+			parts.push(`${rewritten.sourceMapCount} source map(s)`);
+		}
+		return { data: rewritten.data, lines: [`The saved trace includes ${parts.join(' and ')}. It can hold anything those contain; do not share it more widely than the page source.`] };
+	}
+	catch (error) {
+		return { data: undefined, lines: [`The trace was not saved: the script content and source maps could not be added (${error instanceof Error ? error.message : error}). Record again without includeScriptContent and includeSourceMaps to save the raw trace.`] };
+	}
+}
+
+/**
  * @typedef {{ functionName?: string, url?: string, scriptId?: string | number, lineNumber?: number, columnNumber?: number }} ParadisCallFrame
  */
 

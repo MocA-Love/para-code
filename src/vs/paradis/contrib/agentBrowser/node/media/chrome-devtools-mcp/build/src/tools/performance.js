@@ -11,7 +11,7 @@ import { ToolCategory } from './categories.js';
 import { definePageTool } from './ToolDefinition.js';
 // PARA-PATCH: saving the script content and the source maps with the trace, and the original source positions of
 // the call frames an insight prints. The logic is in a fork-owned file outside build/ (see NOTES.md).
-import { paradisCollectSourceMaps, paradisExtraTraceCategories, paradisOriginalLocationLines, paradisRewriteTraceForSave, paradisTraceSaveOptions, } from '../../../paradis/paradisTraceExtras.js';
+import { paradisCollectSourceMaps, paradisExtraTraceCategories, paradisOriginalLocationLines, paradisPrepareTraceSave, paradisTraceSaveOptions, } from '../../../paradis/paradisTraceExtras.js';
 // PARA-PATCH: the save options of the running trace. The trace categories are fixed at the start, so
 // performance_stop_trace saves with what performance_start_trace asked for.
 let paradisRunningSaveOptions = paradisTraceSaveOptions(undefined);
@@ -176,27 +176,15 @@ async function stopTracingAndAppendOutput(page, response, context, filePath) {
         if (paradisWantsExtras && !filePath) {
             response.appendResponseLine('includeScriptContent and includeSourceMaps only change the saved file; no filePath was given, so nothing was saved.');
         }
-        if (filePath && traceEventsBuffer) {
-            let dataToWrite = traceEventsBuffer;
-            // PARA-PATCH: without the options the file stays the raw buffer, byte for byte.
-            if (paradisWantsExtras) {
-                try {
-                    const rewritten = paradisRewriteTraceForSave(traceEventsBuffer, paradisSaveOptions, paradisSourceMaps);
-                    dataToWrite = rewritten.data;
-                    const parts = [];
-                    if (paradisSaveOptions.includeScriptContent) {
-                        parts.push(`the text of ${rewritten.scriptSourceCount} script(s) of the page as it is now (scripts of earlier documents and of other frames are not included)`);
-                    }
-                    if (paradisSaveOptions.includeSourceMaps) {
-                        parts.push(`${rewritten.sourceMapCount} source map(s)`);
-                    }
-                    response.appendResponseLine(`The saved trace includes ${parts.join(' and ')}. It can hold anything those contain; do not share it more widely than the page source.`);
-                }
-                catch (error) {
-                    response.appendResponseLine(`The script content and source maps could not be added (${error instanceof Error ? error.message : error}); the raw trace was saved without them.`);
-                }
-            }
-            const paradisBufferToCompress = dataToWrite;
+        // PARA-PATCH: without the options the file stays the raw buffer, byte for byte. With them, a trace that
+        // cannot be rewritten is not saved (its raw buffer lists the scripts of the whole application, unfiltered).
+        const paradisSave = filePath && traceEventsBuffer ? paradisPrepareTraceSave(traceEventsBuffer, paradisSaveOptions, paradisSourceMaps) : undefined;
+        for (const line of paradisSave?.lines ?? []) {
+            response.appendResponseLine(line);
+        }
+        if (filePath && traceEventsBuffer && paradisSave?.data) {
+            const paradisBufferToCompress = paradisSave.data;
+            let dataToWrite = paradisBufferToCompress;
             if (filePath.endsWith('.gz')) {
                 dataToWrite = await new Promise((resolve, reject) => {
                     zlib.gzip(paradisBufferToCompress, (error, result) => {
