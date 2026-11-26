@@ -1600,7 +1600,7 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 	 * IPC には載らない）。新しい購読・読み取りは始めない。
 	 */
 	humanAskPaneSource(): IParadisHumanAskPaneSource {
-		return { onDidChange: listener => this.agentChat.onDidChangeDesktopPaneInsights(listener), read: () => this.agentChat.humanAskPanes() };
+		return { onDidChange: listener => this.agentChat.onDidCheckDesktopPanes(listener), read: () => this.agentChat.humanAskPanes() };
 	}
 
 	/** デスクトップ UI 向けの読み取り口。モバイル連携が無効でも動く（送信は一切しない）。 */

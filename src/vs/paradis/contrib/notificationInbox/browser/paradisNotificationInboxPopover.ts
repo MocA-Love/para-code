@@ -116,6 +116,8 @@ export class ParadisNotificationInboxPopover extends Disposable {
 	private readonly tabs: ParadisSegmented<ParadisInboxTab>;
 	private readonly headerActions: HTMLElement;
 	private tab: ParadisInboxTab;
+	/** 利用者が切り替えを押した（押した後は、待ちが届いても勝手に切り替えない）。 */
+	private tabChosen = false;
 	/** 「あなたの番」のカード（鍵 → カード）。台帳が変わっても、中身の変わらないカードは作り直さない（フォーカスを残す）。 */
 	private readonly askCards = this._register(new DisposableMap<string, IAskCard>());
 	/** この小窓に「待ち」として出したことのある鍵。開いている間に回答済みになったものだけ、答えを 1 行出して残す。 */
@@ -169,6 +171,7 @@ export class ParadisNotificationInboxPopover extends Disposable {
 		this.tabs.element.classList.add('pnip-tabs');
 		this._register(this.tabs.onDidChange(tab => {
 			this.tab = tab;
+			this.tabChosen = true;
 			this.render();
 		}));
 		dom.append(this.header, $('span.pnip-grow'));
@@ -191,7 +194,15 @@ export class ParadisNotificationInboxPopover extends Disposable {
 		this.element.focus();
 
 		this._register(this.inboxService.onDidChange(() => this.render()));
-		this._register(this.humanAskService.onDidChange(() => this.render()));
+		this._register(this.humanAskService.onDidChange(() => {
+			// 起動して最初に開いたときは、台帳の写しがまだ届いていない。利用者が切り替える前に待ちが届いたら「あなたの番」へ移す
+			if (!this.tabChosen && this.tab === 'notifications' && this.visibleAsks().length > 0) {
+				this.tab = 'asks';
+				this.tabs.value = 'asks';
+				this.tabChosen = true;
+			}
+			this.render();
+		}));
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration(PARADIS_NOTIFICATION_MENU_BAR_SETTING)) {
 				this.render();
@@ -402,8 +413,9 @@ export class ParadisNotificationInboxPopover extends Disposable {
 				this.refused.delete(key);
 			}
 		}
-		// 行が増減・入れ替わったら、少しの間ボタンを効かせない
-		const order = entries.map(entry => entry.key).join('\n');
+		// 行が増減・入れ替わったり、カードの高さが変わったり（回答済みになってボタンが消える・注記の行が増える）したら、
+		// 少しの間ボタンを効かせない。ここから送った分の「届けています」は、押した本人の操作なので数えない
+		const order = entries.map(entry => `${entry.key} ${entry.state} ${entry.failedAt ?? ''} ${entry.questions.length} ${entry.actions.length}`).join('\n');
 		if (order !== this.askOrder) {
 			if (this.askOrder.length > 0) {
 				this.guardUntil = (this.options.now ?? Date.now)() + SHIFT_GUARD;

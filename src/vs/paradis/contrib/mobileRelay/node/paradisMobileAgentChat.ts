@@ -82,6 +82,7 @@ import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.j
 import type { IParadisNotifyPaneContent } from './paradisNotifyContentSource.js';
 import { IParadisAgentPaneInsight, IParadisAgentPaneInteraction, IParadisAgentPromptCache, PARADIS_PROMPT_CACHE_TTL_5M, paradisOneLine, paradisReadClaudePromptCacheUsage, paradisReadClaudeRequestStart, paradisSelectInsightSubagents, paradisSummarizePermissionInput, paradisSummarizeQuestionInput } from '../../agentInsights/common/paradisAgentInsights.js';
 import type { IParadisHumanAskPaneState } from '../../humanAsk/common/paradisHumanAskPane.js';
+import { paradisInboxPaneKey } from '../../notificationInbox/common/paradisNotificationInbox.js';
 import { IParadisAgentApprovalChoice, IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentChatView, IParadisAgentInteraction, IParadisAgentLiveState, IParadisAgentPanel, IParadisAgentSessionInfo, PARADIS_ADVISOR_TOOL, ParadisAgentKind, ParadisOpenCodeDesktopActionResult, paradisAgentQuestionHasPreview, paradisIsCodexDaemonApprovalInteraction, paradisPickCurrentInteraction } from '../../agentChat/common/paradisAgentChat.js';
 import { newParadisAntigravityParseState, paradisAntigravityQuestionInput, parseAntigravityLine } from '../../agentChat/common/paradisAntigravityTranscript.js';
 import { PARADIS_AGENT_SETTINGS_ON_PC_MESSAGE, PARADIS_ANTIGRAVITY_ANSWER_ON_PC_MESSAGE, PARADIS_ANTIGRAVITY_APPROVAL_ON_PC_MESSAGE, PARADIS_ANTIGRAVITY_SEND_BLOCK_MESSAGES, paradisAgentChatActionSupport } from '../../agentChat/common/paradisAgentChatActionSupport.js';
@@ -8611,12 +8612,21 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (changed) {
 			this._onDidChangeDesktopPaneInsights.fire();
 		}
+		this._onDidCheckDesktopPanes.fire();
 	}
+
+	private readonly _onDidCheckDesktopPanes = this._register(new Emitter<void>());
+	/**
+	 * ペインの様子を確かめ直した（変わっていないこともある）。上の「変わった」の知らせは hook から覚えた内容の指紋で
+	 * 決まるので、hook を通らずに tailer の待ちが変わったとき（Esc での拒否・答え終えた印・保留明けのカード）には鳴らない。
+	 * 待ちの一覧（{@link humanAskPanes}）を読む側はこちらを聞く。新しいタイマーは持たない（既にある確かめ直しの後に鳴らすだけ）。
+	 */
+	readonly onDidCheckDesktopPanes = this._onDidCheckDesktopPanes.event;
 
 	/**
 	 * 人の答えを待っている質問・承認（いま tailer が持っているものだけ。読むために tailer を起こさない）。
 	 * 「人が答えるもの」の台帳の書き手（humanAsk/node/paradisHumanAskPaneOwner.ts）が shared process の中で読む。
-	 * モバイルへは何も送らない。
+	 * モバイルへは何も送らない。ペインのトークンは返さない（通知の台帳と同じ、トークンのハッシュの鍵で返す）。
 	 */
 	humanAskPanes(): IParadisHumanAskPaneState[] {
 		const panes: IParadisHumanAskPaneState[] = [];
@@ -8627,7 +8637,7 @@ export class ParadisMobileAgentChat extends Disposable {
 				continue;
 			}
 			panes.push({
-				token,
+				paneKey: paradisInboxPaneKey(token),
 				agent: session.agent,
 				epoch: tailer.epoch,
 				interaction,

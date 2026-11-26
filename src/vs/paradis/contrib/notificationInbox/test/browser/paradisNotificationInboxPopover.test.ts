@@ -168,6 +168,7 @@ suite('Paradis notification inbox popover', () => {
 		const refused = cards(t.container)[0].note;
 		t.ledger.set([{ ...entry, failedAt: 5 }]);
 		// 断られた理由は、次に押すまで残す
+		t.clock.now += 1_000;
 		t.press('pane:1', 'action:no');
 		const sending = cards(t.container)[0].note;
 		assert.deepStrictEqual({ refused, sending }, { refused: 'ほかの場所からの回答を届けています', sending: '回答を届けています…' });

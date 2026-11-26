@@ -26,7 +26,7 @@ function question(text: string, options: readonly string[]): IParadisAgentChatMe
 
 function permission(id: string, detail: string, extra: Partial<IParadisHumanAskPaneState> = {}): IParadisHumanAskPaneState {
 	return {
-		token: TOKEN, agent: 'claude', epoch: 'e1', questions: [], personOnly: false,
+		paneKey: PANE_KEY, agent: 'claude', epoch: 'e1', questions: [], personOnly: false,
 		interaction: { kind: 'approval', id, detail, choices: [{ id: 'yes', label: '許可', tone: 'approve' }, { id: 'no', label: '拒否', tone: 'deny' }] },
 		...extra,
 	};
@@ -75,7 +75,6 @@ suite('Paradis human ask: pane owner', () => {
 		await t.changePanes([]);
 		assert.deepStrictEqual({ withoutLabel, listed, after: t.entries(), counts: t.service.getSnapshot().counts.total }, {
 			withoutLabel: [],
-			// トークンは載らない（鍵はハッシュ）
 			listed: [{ id: `${PANE_KEY}:e1:toolu_1`, from: { title: 'api', detail: 'claude ／ Claude Code' }, windowId: 7, actions: ['yes', 'no'] }],
 			after: ['permission withdrawn'],
 			counts: 0,
@@ -109,7 +108,7 @@ suite('Paradis human ask: pane owner', () => {
 
 	test('an answer to an ask that changed or can no longer be allowed here is not delivered', async () => {
 		const t = setup();
-		const asked = (options: readonly string[]): IParadisHumanAskPaneState => ({ token: TOKEN, agent: 'claude', epoch: 'e1', personOnly: false, interaction: { kind: 'question', id: 'g1' }, questions: [question('どちら?', options)] });
+		const asked = (options: readonly string[]): IParadisHumanAskPaneState => ({ paneKey: PANE_KEY, agent: 'claude', epoch: 'e1', personOnly: false, interaction: { kind: 'question', id: 'g1' }, questions: [question('どちら?', options)] });
 		await t.changePanes([asked(['残す', 'ログアウト'])]);
 		const key = t.key();
 		// 受信箱が古い一覧を見ている間に、同じ id のまま選択肢の並びが変わった（台帳へはまだ知らせが届いていない）

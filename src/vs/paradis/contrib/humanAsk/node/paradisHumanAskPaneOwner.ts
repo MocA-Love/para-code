@@ -22,7 +22,6 @@ import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableMap, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IPCServer, IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
-import { paradisInboxPaneKey } from '../../notificationInbox/common/paradisNotificationInbox.js';
 import { paradisSharedNotificationInboxService } from '../../notificationInbox/node/paradisNotificationInboxChannel.js';
 import { IParadisHumanAskAnswerRequest, IParadisHumanAskInput, paradisHumanAskKey } from '../common/paradisHumanAsk.js';
 import { PARADIS_HUMAN_ASK_LEDGER_DEFAULTS } from '../common/paradisHumanAskLedger.js';
@@ -81,9 +80,8 @@ export class ParadisHumanAskPaneOwner extends Disposable {
 	private read(): Map<string, IListed> {
 		const listed = new Map<string, IListed>();
 		for (const state of this.source.read()) {
-			const paneKey = paradisInboxPaneKey(state.token);
-			const label = this.labels.get(paneKey);
-			const input = label !== undefined ? paradisHumanAskPaneInput(state, paneKey, label) : undefined;
+			const label = this.labels.get(state.paneKey);
+			const input = label !== undefined ? paradisHumanAskPaneInput(state, label) : undefined;
 			if (input !== undefined) {
 				listed.set(paradisHumanAskKey(input.source, input.id), { interactionId: state.interaction.id, input });
 			}

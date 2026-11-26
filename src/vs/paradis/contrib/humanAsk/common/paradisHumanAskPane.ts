@@ -24,9 +24,10 @@ export const PARADIS_HUMAN_ASK_PANES_CHANNEL = 'paradisHumanAskPanes';
 /** 台帳の持ち主の名前（ペインの分）。 */
 export const PARADIS_HUMAN_ASK_PANE_OWNER = 'panes';
 
-/** 中継（shared process）が持っている、あるペインの今の待ち。トークンは shared process の外へ出さない。 */
+/** 中継（shared process）が持っている、あるペインの今の待ち。ペインのトークンは載せない。 */
 export interface IParadisHumanAskPaneState {
-	readonly token: string;
+	/** ペインの鍵（通知の台帳の paradisInboxPaneKey と同じ、トークンのハッシュ）。 */
+	readonly paneKey: string;
 	readonly agent: string;
 	/** 会話の読み取りの世代（中継の tailer の epoch）。 */
 	readonly epoch: string;
@@ -39,7 +40,7 @@ export interface IParadisHumanAskPaneState {
 
 /** 中継の読むだけの口。 */
 export interface IParadisHumanAskPaneSource {
-	/** どれかのペインの様子が変わった。 */
+	/** ペインの様子を確かめ直した（変わっていないこともある）。 */
 	readonly onDidChange: (listener: () => void) => { dispose(): void };
 	read(): readonly IParadisHumanAskPaneState[];
 }
@@ -82,9 +83,10 @@ const PREFACE_LIMIT = 4000;
  * ペインの今の待ちを、台帳へ知らせる 1 件にする。形が台帳の上限に収まらない問い（6 問以上・選択肢 9 つ以上）は、
  * 問いを空にして「ペインへ移動」だけの 1 件にする。
  */
-export function paradisHumanAskPaneInput(state: Omit<IParadisHumanAskPaneState, 'token'>, paneKey: string, label: IParadisHumanAskPaneLabel): IParadisHumanAskInput | undefined {
+export function paradisHumanAskPaneInput(state: IParadisHumanAskPaneState, label: IParadisHumanAskPaneLabel): IParadisHumanAskInput | undefined {
 	const descriptor = paradisAgentDescriptor(state.agent);
 	const interaction = state.interaction;
+	const paneKey = state.paneKey;
 	// allow-any-unicode-next-line
 	const detail = [label.worktree !== undefined && label.worktree !== label.space ? label.worktree : undefined, label.tab, descriptor?.displayName].filter((part): part is string => !!part).join(' ／ ');
 	const base = {

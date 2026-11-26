@@ -18,8 +18,8 @@ function question(index: number, text: string, options: readonly string[], extra
 	return { rev: index, role: 'assistant', kind: 'question', text, options: options.map(label => ({ label })), toolUseId: `q${index}`, questionGroup: 'g1', questionIndex: index, ...extra };
 }
 
-function state(interaction: IParadisAgentInteraction, extra: Partial<IParadisHumanAskPaneState> = {}): Omit<IParadisHumanAskPaneState, 'token'> {
-	return { agent: 'claude', epoch: 'e1', interaction, questions: [], personOnly: false, ...extra };
+function state(interaction: IParadisAgentInteraction, extra: Partial<IParadisHumanAskPaneState> = {}): IParadisHumanAskPaneState {
+	return { paneKey: 'pane-key', agent: 'claude', epoch: 'e1', interaction, questions: [], personOnly: false, ...extra };
 }
 
 const APPROVAL: IParadisAgentInteraction = {
@@ -38,8 +38,8 @@ suite('Paradis human ask: pane asks', () => {
 	test('a pane question becomes one entry with its questions, and a permission offers allow and deny only', () => {
 		const asked = paradisHumanAskPaneInput(state({ kind: 'question', id: 'g1' }, {
 			questions: [question(0, 'どちらにしますか?', ['残す', 'ログアウトさせる']), question(1, '対象は?', ['A', 'B', 'C'], { multiSelect: true })],
-		}), 'pane-key', LABEL);
-		const permission = paradisHumanAskPaneInput(state(APPROVAL), 'pane-key', LABEL);
+		}), LABEL);
+		const permission = paradisHumanAskPaneInput(state(APPROVAL), LABEL);
 		assert.deepStrictEqual({
 			asked: asked && { ...asked, questions: asked.questions.map(item => ({ ...item, options: item.options.map(option => option.label) })) },
 			permission,
@@ -66,21 +66,21 @@ suite('Paradis human ask: pane asks', () => {
 		const mcp = { tool: 'mcp__db__run', kind: 'mcp', mcpServer: 'db', mcpTool: 'run' } as NonNullable<Extract<IParadisAgentInteraction, { kind: 'approval' }>['request']>;
 		assert.deepStrictEqual([
 			// 端末の確認の画面でしか許可できない（カードの印・印が付く前の mod の知らせ）
-			pressable(paradisHumanAskPaneInput(state({ ...APPROVAL, answerOn: 'pc', choices: [{ id: 'no', label: '拒否', tone: 'deny' }] }), 'k', LABEL)),
-			pressable(paradisHumanAskPaneInput(state(APPROVAL, { personOnly: true }), 'k', LABEL)),
+			pressable(paradisHumanAskPaneInput(state({ ...APPROVAL, answerOn: 'pc', choices: [{ id: 'no', label: '拒否', tone: 'deny' }] }), LABEL)),
+			pressable(paradisHumanAskPaneInput(state(APPROVAL, { personOnly: true }), LABEL)),
 			// 読むだけの印・時間切れ
-			pressable(paradisHumanAskPaneInput(state({ ...APPROVAL, readOnly: true }), 'k', LABEL)),
-			pressable(paradisHumanAskPaneInput(state({ ...APPROVAL, expired: true, choices: [] }), 'k', LABEL)),
+			pressable(paradisHumanAskPaneInput(state({ ...APPROVAL, readOnly: true }), LABEL)),
+			pressable(paradisHumanAskPaneInput(state({ ...APPROVAL, expired: true, choices: [] }), LABEL)),
 			// Codex の MCP のツールの許可（4 択のフォーム）。同じ MCP の許可でも Claude Code は押せる
-			pressable(paradisHumanAskPaneInput(state({ ...APPROVAL, request: mcp }, { agent: 'codex' }), 'k', LABEL)),
-			pressable(paradisHumanAskPaneInput(state({ ...APPROVAL, request: mcp }), 'k', LABEL)),
+			pressable(paradisHumanAskPaneInput(state({ ...APPROVAL, request: mcp }, { agent: 'codex' }), LABEL)),
+			pressable(paradisHumanAskPaneInput(state({ ...APPROVAL, request: mcp }), LABEL)),
 			// キーで答えられない種類（OpenCode・Antigravity CLI）
-			pressable(paradisHumanAskPaneInput(state(APPROVAL, { agent: 'opencode' }), 'k', LABEL)),
-			pressable(paradisHumanAskPaneInput(state({ kind: 'question', id: 'g1' }, { agent: 'antigravity', questions: [question(0, 'どれ?', ['A', 'B'])] }), 'k', LABEL)),
+			pressable(paradisHumanAskPaneInput(state(APPROVAL, { agent: 'opencode' }), LABEL)),
+			pressable(paradisHumanAskPaneInput(state({ kind: 'question', id: 'g1' }, { agent: 'antigravity', questions: [question(0, 'どれ?', ['A', 'B'])] }), LABEL)),
 			// 台帳の上限（選択肢 8 つ）を超える質問は、切らずに「ペインへ移動」だけにする
-			pressable(paradisHumanAskPaneInput(state({ kind: 'question', id: 'g1' }, { questions: [question(0, 'どれ?', ['1', '2', '3', '4', '5', '6', '7', '8', '9'])] }), 'k', LABEL)),
+			pressable(paradisHumanAskPaneInput(state({ kind: 'question', id: 'g1' }, { questions: [question(0, 'どれ?', ['1', '2', '3', '4', '5', '6', '7', '8', '9'])] }), LABEL)),
 			// preview のある質問は自分で書けない
-			pressable(paradisHumanAskPaneInput(state({ kind: 'question', id: 'g1' }, { questions: [question(0, 'どれ?', ['A', 'B'], { options: [{ label: 'A', preview: '# A' }, { label: 'B' }] })] }), 'k', LABEL)),
+			pressable(paradisHumanAskPaneInput(state({ kind: 'question', id: 'g1' }, { questions: [question(0, 'どれ?', ['A', 'B'], { options: [{ label: 'A', preview: '# A' }, { label: 'B' }] })] }), LABEL)),
 		], [
 			'permission questions=[] actions=[]',
 			'permission questions=[] actions=[]',
@@ -98,8 +98,8 @@ suite('Paradis human ask: pane asks', () => {
 	test('an answer is turned into the terminal answer only when every question is answered one way', () => {
 		const asked = paradisHumanAskPaneInput(state({ kind: 'question', id: 'g1' }, {
 			questions: [question(0, 'どちら?', ['残す', 'ログアウト']), question(1, '対象は?', ['A', 'B', 'C'], { multiSelect: true }), question(2, 'ほかには?', [])],
-		}), 'k', LABEL)!;
-		const permission = paradisHumanAskPaneInput(state(APPROVAL), 'k', LABEL)!;
+		}), LABEL)!;
+		const permission = paradisHumanAskPaneInput(state(APPROVAL), LABEL)!;
 		assert.deepStrictEqual([
 			paradisHumanAskPaneDelivery(asked, { type: 'answers', answers: [{ questionId: '0', optionIds: ['1'] }, { questionId: '1', optionIds: ['0', '2'] }, { questionId: '2', text: 'なし' }] }),
 			// 1 問だけ・選択と自由入力の両方・飛ばす は届けない
