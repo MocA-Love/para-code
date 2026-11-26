@@ -31,7 +31,7 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
+import { IContextMenuService, IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
 import { createParadisChip } from '../../../browser/paradisBadges.js';
@@ -43,7 +43,8 @@ import { paradisBotAskId } from '../common/paradisBotAsk.js';
 import { IParadisBotItem, IParadisBotItemLink, paradisBotItemWaitsForOwner, paradisIsBotItemClosed, paradisIsBotItemLocked, paradisIsBotItemSnoozed } from '../common/paradisBotItems.js';
 import { IParadisBotSummary, IParadisBotsService, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
 import { paradisBotFace, paradisBotStatusLine } from '../common/paradisBotsBandModel.js';
-import { IParadisBotAskSelection, paradisBotAskAnswer, paradisBotAskToggle, paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel, ParadisBotPageTab } from '../common/paradisBotPageModel.js';
+import { IParadisBotAskSelection, paradisBotAskAnswer, paradisBotAskToggle, paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel, PARADIS_BOT_PAGE_TABS, ParadisBotPageTab } from '../common/paradisBotPageModel.js';
+import { ParadisBotSettingsPanel } from './paradisBotPageSettings.js';
 import { renderParadisBotFace } from './paradisBotFace.js';
 
 const $ = DOM.$;
@@ -93,8 +94,10 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 	private readonly stripFace: HTMLElement;
 	private readonly stripName: HTMLElement;
 	private readonly stripStatus: HTMLElement;
-	private readonly chatTab: HTMLElement;
+	private readonly tabElements = new Map<ParadisBotPageTab, HTMLElement>();
 	private readonly itemsTab: HTMLElement;
+	/** Bot ごとの設定・ファイルのタブ（入力中の値を描き直しの間も持つ）。 */
+	private readonly settingsPanels = new Map<string, ParadisBotSettingsPanel>();
 	private readonly itemsCount: HTMLElement;
 	private readonly panel: HTMLElement;
 	private readonly panelStore = this._register(new DisposableStore());
@@ -122,6 +125,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		@INotificationService private readonly notificationService: INotificationService,
 		@IOpenerService private readonly openerService: IOpenerService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IContextViewService private readonly contextViewService: IContextViewService,
 	) {
 		super();
 		this.strip = DOM.append(container, $('.paradis-bot-page-strip'));
@@ -133,16 +137,19 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		const tabs = DOM.append(this.strip, $('.paradis-bot-page-tabs'));
 		tabs.setAttribute('role', 'tablist');
 		tabs.setAttribute('aria-label', localize('paradis.botPage.tabs', "Bot のページ"));
-		this.chatTab = this.tab(tabs, 'chat', localize('paradis.botPage.tab.chat', "会話"));
+		this.tab(tabs, 'chat', localize('paradis.botPage.tab.chat', "会話"));
 		this.itemsTab = this.tab(tabs, 'items', localize('paradis.botPage.tab.items', "項目"));
+		this.tab(tabs, 'files', localize('paradis.botPage.tab.files', "ファイル"));
+		this.tab(tabs, 'settings', localize('paradis.botPage.tab.settings', "設定"));
 		this.itemsCount = DOM.append(this.itemsTab, $('span.paradis-bot-page-tab-count'));
 		this._register(DOM.addDisposableListener(tabs, DOM.EventType.KEY_DOWN, e => {
 			const event = new StandardKeyboardEvent(e);
 			if (event.equals(KeyCode.LeftArrow) || event.equals(KeyCode.RightArrow)) {
 				DOM.EventHelper.stop(e, true);
-				const next = this.currentTab() === 'chat' ? 'items' : 'chat';
+				const index = PARADIS_BOT_PAGE_TABS.indexOf(this.currentTab());
+				const next = PARADIS_BOT_PAGE_TABS[(index + (event.equals(KeyCode.RightArrow) ? 1 : PARADIS_BOT_PAGE_TABS.length - 1)) % PARADIS_BOT_PAGE_TABS.length];
 				this.setTab(next);
-				(next === 'chat' ? this.chatTab : this.itemsTab).focus();
+				this.tabElements.get(next)?.focus();
 			}
 		}));
 
@@ -161,6 +168,9 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 			this.renderStrip();
 			if (this.botId !== undefined && this.currentTab() === 'items') {
 				void this.loadItems();
+			} else if (this.botId !== undefined && this.currentTab() === 'settings') {
+				// 動かす・ピン留め・顔は台帳の値で描き直す（入力中の値はパネルが持つ）
+				this.renderPanel();
 			}
 		}));
 		this._register(this.humanAskService.onDidChange(() => {
@@ -241,6 +251,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		element.setAttribute('role', 'tab');
 		DOM.append(element, $('span')).textContent = label;
 		this._register(DOM.addDisposableListener(element, DOM.EventType.CLICK, () => this.setTab(tab)));
+		this.tabElements.set(tab, element);
 		return element;
 	}
 
@@ -258,7 +269,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 
 	private applyTab(): void {
 		const tab = this.currentTab();
-		for (const [element, value] of [[this.chatTab, 'chat'], [this.itemsTab, 'items']] as const) {
+		for (const [value, element] of this.tabElements) {
 			element.classList.toggle('selected', tab === value);
 			element.setAttribute('aria-selected', String(tab === value));
 			element.tabIndex = tab === value ? 0 : -1;
@@ -268,6 +279,8 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		if (tab === 'items') {
 			this.renderPanel();
 			void this.loadItems();
+		} else if (tab !== 'chat') {
+			this.renderPanel();
 		} else {
 			this.panelStore.clear();
 			DOM.clearNode(this.panel);
@@ -322,6 +335,20 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		this.panelStore.clear();
 		DOM.clearNode(this.panel);
 		const body = DOM.append(this.panel, $('.paradis-bot-page-body'));
+		const tab = this.currentTab();
+		if (tab === 'files' || tab === 'settings') {
+			const bot = this.bot(this.botId);
+			if (bot !== undefined) {
+				const panel = this.settingsPanel(bot.id);
+				if (tab === 'files') {
+					panel.renderFiles(body, bot, this.panelStore);
+				} else {
+					panel.renderSettings(body, bot, this.panelStore);
+				}
+			}
+			this.panel.scrollTop = scrollTop;
+			return;
+		}
 		const uid = this.openItems.get(this.botId);
 		const item = uid !== undefined ? this.items.find(candidate => candidate.uid === uid) : undefined;
 		if (item !== undefined) {
@@ -333,6 +360,25 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		if (hadFocus) {
 			this.panel.focus();
 		}
+	}
+
+	private settingsPanel(botId: string): ParadisBotSettingsPanel {
+		let panel = this.settingsPanels.get(botId);
+		if (panel === undefined) {
+			panel = new ParadisBotSettingsPanel(botId, {
+				botsService: this.botsService,
+				paradisDialogService: this.paradisDialogService,
+				notificationService: this.notificationService,
+				contextViewService: this.contextViewService,
+				configurationService: this.configurationService,
+			}, () => {
+				if (!this._store.isDisposed && this.botId === botId) {
+					this.renderPanel();
+				}
+			});
+			this.settingsPanels.set(botId, panel);
+		}
+		return panel;
 	}
 
 	private renderList(body: HTMLElement): void {

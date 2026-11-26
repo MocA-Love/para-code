@@ -14,7 +14,9 @@ import type { ParadisHumanAskAnswer } from '../../humanAsk/common/paradisHumanAs
 import { IParadisBotItem, IParadisBotItemAsk, paradisBotItemStatus, paradisBotItemWaitsForOwner, paradisIsBotItemClosed, paradisIsBotItemSnoozed } from './paradisBotItems.js';
 
 /** ページの上のタブ。`chat` は下にある会話（チャット表示かターミナル）をそのまま見せる。 */
-export type ParadisBotPageTab = 'chat' | 'items';
+export type ParadisBotPageTab = 'chat' | 'items' | 'files' | 'settings';
+
+export const PARADIS_BOT_PAGE_TABS: readonly ParadisBotPageTab[] = ['chat', 'items', 'files', 'settings'];
 
 /** 項目の一覧の群（上から順に並べる）。 */
 export interface IParadisBotItemGroups {

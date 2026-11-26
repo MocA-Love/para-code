@@ -27,7 +27,7 @@ import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
-import { paradisBotChangeRequest } from '../common/paradisBotManageTools.js';
+import { paradisApplyBotChange, paradisBotChangeRequest } from '../common/paradisBotManageTools.js';
 import { IParadisBotPatch, PARADIS_BOT_FACE_COLORS, PARADIS_BOT_FACE_SHAPES } from '../common/paradisBots.js';
 import { IParadisBotSummary, IParadisBotsService } from '../common/paradisBotsApi.js';
 import { paradisBotNameProblemMessage, paradisValidateBotName } from '../common/paradisBotsBandModel.js';
@@ -94,7 +94,7 @@ export class ParadisBotSettingsPanel {
 		for (const color of PARADIS_BOT_FACE_COLORS) {
 			const button = DOM.append(colors, $('button.paradis-bot-settings-swatch.paradis-focus-ring')) as HTMLButtonElement;
 			button.type = 'button';
-			button.dataset.color = color;
+			renderParadisBotFace(button, { shape: 'circle', color });
 			button.setAttribute('role', 'radio');
 			button.setAttribute('aria-checked', String(bot.faceColor === color));
 			button.setAttribute('aria-label', color);
@@ -193,8 +193,8 @@ export class ParadisBotSettingsPanel {
 		}
 		if (change.needsConfirmation) {
 			const request = paradisBotChangeRequest(bot, change);
-			// 確かめる本文は管理の道具と同じ。持ち主が自分で変えるので、「エージェントからの依頼」の行は外す
-			const detail = paradisBotChangeDetail(request, '').split('\n').slice(2).join('\n');
+			// 確かめる本文は管理の道具と同じ。持ち主が自分で変えるので、依頼元（caller）は渡さない
+			const detail = paradisBotChangeDetail(request);
 			const { confirmed } = await this.services.paradisDialogService.confirm({
 				message: localize('paradis.botPage.settings.confirm', "Bot「{0}」の設定を変えますか?", bot.name),
 				detail,
@@ -208,19 +208,13 @@ export class ParadisBotSettingsPanel {
 		this.saving = true;
 		this.rerender();
 		try {
-			if (Object.keys(change.patch).length > 0) {
-				const updated = await this.services.botsService.updateBot(bot.id, change.patch);
-				if (!updated.ok) {
-					this.services.notificationService.warn(localize('paradis.botPage.settings.failed', "Bot を変えられませんでした: {0}", updated.message));
-					return;
-				}
+			// 当て方も管理の道具と同じ（台帳の変更が通ってから SOUL.md を書く）
+			const applied = await paradisApplyBotChange(this.services.botsService, { botId: bot.id, patch: change.patch, ...(change.role !== undefined ? { role: change.role } : {}) });
+			if (!applied.ok) {
+				this.services.notificationService.warn(localize('paradis.botPage.settings.failed', "Bot を変えられませんでした: {0}", applied.message));
+				return;
 			}
 			if (change.role !== undefined) {
-				const written = await this.services.botsService.writeHomeFile(bot.id, 'SOUL.md', change.role);
-				if (!written.ok) {
-					this.services.notificationService.warn(localize('paradis.botPage.settings.roleFailed', "役割を書けませんでした: {0}", written.message));
-					return;
-				}
 				this.role = change.role;
 				this.files.set('SOUL.md', change.role);
 			}
