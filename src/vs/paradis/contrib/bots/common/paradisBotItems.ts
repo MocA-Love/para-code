@@ -26,6 +26,13 @@ export const PARADIS_BOT_ITEM_STATUSES = ['planned', 'working', 'needs_you', 'do
 export type ParadisBotItemStatus = typeof PARADIS_BOT_ITEM_STATUSES[number];
 
 /** 長い文は断る（切らない）。詳しい報告はファイルかリンクに置かせる。 */
+/**
+ * 項目の台帳（`items.json`）の大きさの上限（バイト）。超える Bot の書き込みは断る。持ち主の操作（閉じる・コメントなど）
+ * と Bot が項目を閉じる書き込みは通す。読み込みは上限を超えたファイルも読む（壊さない）。件数の上限の掛け算だけでは
+ * 最悪で数 GB になるため。
+ */
+export const PARADIS_BOT_ITEMS_BYTE_LIMIT = 32 * 1024 * 1024;
+
 export const PARADIS_BOT_ITEM_LIMITS = Object.freeze({
 	title: 200,
 	description: 20_000,
