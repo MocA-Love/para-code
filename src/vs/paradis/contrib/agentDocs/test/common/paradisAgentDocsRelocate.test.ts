@@ -281,6 +281,8 @@ suite('ParadisAgentDocsRelocate', () => {
 		// 前の版の間に、7 日より前から見つからない資料（数え始めの記録が無い）
 		host.time = 3 * PARADIS_DOC_MISSING_RETENTION_MS;
 		host.doc('/repo/old-record.md', undefined, { missingSince: 5_000 });
+		// 閉じている間に置き直されていた資料は、数え始めを入れずに印を外す
+		host.doc('/repo/old-record-back.md', 'back again', { missingSince: 5_000 });
 		await new ParadisDocRelocator(host).sync();
 		const first = { state: host.state(), countedFrom: host.records[0].missingCountedFrom, since: host.records[0].missingSince };
 		// 開き直しても（追従を作り直しても）、数え始めは台帳に残っていて進まない
@@ -290,10 +292,10 @@ suite('ParadisAgentDocsRelocate', () => {
 		host.time += 1;
 		await new ParadisDocRelocator(host).sync();
 		assert.deepStrictEqual({ first, beforeDue, state: host.state(), log: host.log }, {
-			first: { state: ['/repo/old-record.md (missing)'], countedFrom: 3 * PARADIS_DOC_MISSING_RETENTION_MS, since: 5_000 },
-			beforeDue: { state: ['/repo/old-record.md (missing)'], countedFrom: 3 * PARADIS_DOC_MISSING_RETENTION_MS },
-			state: [],
-			log: ['missing /repo/old-record.md', 'remove /repo/old-record.md'],
+			first: { state: ['/repo/old-record.md (missing)', '/repo/old-record-back.md'], countedFrom: 3 * PARADIS_DOC_MISSING_RETENTION_MS, since: 5_000 },
+			beforeDue: { state: ['/repo/old-record.md (missing)', '/repo/old-record-back.md'], countedFrom: 3 * PARADIS_DOC_MISSING_RETENTION_MS },
+			state: ['/repo/old-record-back.md'],
+			log: ['missing /repo/old-record.md', 'found /repo/old-record-back.md', 'remove /repo/old-record.md'],
 		});
 	});
 

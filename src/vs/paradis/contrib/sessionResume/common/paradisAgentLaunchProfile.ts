@@ -489,7 +489,11 @@ export interface IParadisAgentLaunchToRecord {
 export interface IParadisAgentLaunchCaptureOrigins {
 	/** 最初のスナップショットを見終えたか。その時点で既にあった会話は、どのコマンドの間に現れたか分からない。 */
 	primed: boolean;
-	/** `ペイントークン\n会話 ID` → 初めて見たときに実行中だったコマンドの ID（分からなければ undefined）と、最初から居たか。 */
+	/**
+	 * `ペイントークン\n会話 ID` → 初めて見たときに実行中だったコマンドの ID（実行中のコマンドが無い・分からなければ undefined）と、
+	 * 最初から居たか。スナップショットは数秒おきなので、前の起動が数秒で終わり、その会話を初めて見たのが次の起動の実行中だった
+	 * ときは取り違える（【要確認】そこまでは塞いでいない）。
+	 */
 	readonly sessions: Map<string, { readonly commandId: string | undefined; readonly preexisting: boolean }>;
 }
 
@@ -529,7 +533,9 @@ export function paradisAgentLaunchesToRecord(
 		const terminal = terminalFor(session.token);
 		let origin = origins?.sessions.get(key);
 		if (origins !== undefined && origin === undefined) {
-			origin = { commandId: terminal?.commandId, preexisting: !origins.primed };
+			// コマンドが実行中でないとき（プロンプトで待っている）に初めて見た会話は、どのコマンドの間に現れたか分からない
+			// （シェル統合の「今のコマンド」は、次に打つコマンドと同じもの。前の起動の会話を、次の起動のものと取り違える）
+			origin = { commandId: terminal?.commandLine !== undefined ? terminal.commandId : undefined, preexisting: !origins.primed };
 			origins.sessions.set(key, origin);
 		}
 		if (terminal?.commandLine === undefined || paradisAgentLaunchFromCommandLine(terminal.commandLine)?.agent !== agent) {

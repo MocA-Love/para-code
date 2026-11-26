@@ -129,6 +129,8 @@ const PARADIS_GITHUB_STATUS_CACHE_MAX_ENTRIES = 1000;
  * 付いているブランチのワークツリーには、エージェントのフォルダの信頼を書かない。
  */
 const PARADIS_FORK_PULL_REQUEST_BRANCH_KEY = 'paradisForkPullRequest';
+/** 印を読めなかったとき（fork のものとして扱う）の値。子のブランチへもこの値で引き継ぐ。 */
+const FORK_PULL_REQUEST_UNKNOWN = 'unknown';
 
 /**
  * git 実行の上限時間。WSL へ振り分けるようになって初めて必要になった。停止中のディストロへ
@@ -1081,11 +1083,21 @@ export class ParadisWorktreeGitService {
 			// prune の失敗は致命的ではない
 		}
 		const checkoutWorkers = await this.checkoutWorkersArgs(request.repoPath);
-		await this.exec(['-C', paradisWslPathArg(request.repoPath), ...checkoutWorkers, 'worktree', 'add', '--no-track', '-b', request.newBranch, paradisWslPathArg(request.worktreePath), request.baseRef]);
-		// fork から来た PR のブランチを元に切ったブランチも、他人のコードを含む。印を引き継ぎ、信頼は書かない
+		// fork から来た PR のブランチを元に切ったブランチも、他人のコードを含む。印を引き継ぎ、信頼は書かない。印はブランチを
+		// 作る前に付ける（付けられなければ作らない。作った後に付け損なうと、後でそのブランチを開いたときに信頼が書かれる）
 		const foreign = await this.forkPullRequestOfBranch(request.repoPath, request.baseRef.replace(/^refs\/heads\//, ''));
-		if (foreign !== undefined && /^\d+$/.test(foreign)) {
-			await this.markForkPullRequestBranch(request.repoPath, request.newBranch, foreign);
+		if (foreign !== undefined) {
+			// 親の印を読めなかっただけのとき（`unknown`）は、付けられなくても作る（信頼は書かない）
+			await this.markForkPullRequestBranch(request.repoPath, request.newBranch, foreign, foreign !== FORK_PULL_REQUEST_UNKNOWN);
+		}
+		try {
+			await this.exec(['-C', paradisWslPathArg(request.repoPath), ...checkoutWorkers, 'worktree', 'add', '--no-track', '-b', request.newBranch, paradisWslPathArg(request.worktreePath), request.baseRef]);
+		} catch (error) {
+			if (foreign !== undefined) {
+				// 作れなかったブランチに印だけを残さない（`-b` は既にある名前では失敗するので、ここで消すのは今付けた印）
+				await this.exec(['-C', paradisWslPathArg(request.repoPath), 'config', '--unset', `branch.${request.newBranch}.${PARADIS_FORK_PULL_REQUEST_BRANCH_KEY}`], undefined, { quiet: true }).catch(() => undefined);
+			}
+			throw error;
 		}
 		if (request.trustClaudeFolder === true && foreign === undefined) {
 			await this.grantClaudeTrust(request.worktreePath);
@@ -1109,16 +1121,25 @@ export class ParadisWorktreeGitService {
 			const value = (await this.exec(['-C', paradisWslPathArg(repoPath), 'config', '--get', `branch.${branch}.${PARADIS_FORK_PULL_REQUEST_BRANCH_KEY}`], undefined, { quiet: true })).trim();
 			return value.length > 0 ? value : undefined;
 		} catch (error) {
-			return error instanceof ParadisGitExecError && error.exitCode === 1 ? undefined : 'unknown';
+			return error instanceof ParadisGitExecError && error.exitCode === 1 ? undefined : FORK_PULL_REQUEST_UNKNOWN;
 		}
 	}
 
-	/** {@link forkPullRequestOfBranch} の印を付ける。失敗しても作成は止めない（この作成では、印に頼らず信頼を書かない）。 */
-	private async markForkPullRequestBranch(repoPath: string, branch: string, pullRequest: string): Promise<void> {
+	/**
+	 * {@link forkPullRequestOfBranch} の印を付ける。ブランチを作る・取る前に呼ぶ（git の設定は、まだ無いブランチの名前にも書ける）。
+	 * 付けられなければ例外にして、作成を止める: 印の無い fork のブランチが残ると、後で PR のカードなしに開いたときや、
+	 * 並行する別の作成がベースブランチにしたときに、信頼が書かれる。
+	 */
+	private async markForkPullRequestBranch(repoPath: string, branch: string, pullRequest: string, strict = true): Promise<void> {
 		try {
 			await this.exec(['-C', paradisWslPathArg(repoPath), 'config', `branch.${branch}.${PARADIS_FORK_PULL_REQUEST_BRANCH_KEY}`, pullRequest], undefined, { quiet: true });
 		} catch (error) {
-			this.logService.warn('[ParadisWorktreeGit] could not mark the branch as fetched from a fork pull request', String(error));
+			if (!strict) {
+				this.logService.warn('[ParadisWorktreeGit] could not mark the branch as coming from a fork pull request', String(error));
+				return;
+			}
+			// allow-any-unicode-next-line
+			throw new Error(localize('paradis.worktree.forkPullRequestMarkFailed', "ブランチ「{0}」に、fork から来たプルリクエストの印を付けられなかったため、作りませんでした。{1}", branch, error instanceof Error ? error.message : String(error)));
 		}
 	}
 
@@ -1228,6 +1249,9 @@ export class ParadisWorktreeGitService {
 		// 早送りできなければ git が断り、ローカルをそのまま開く。別のワークツリーで開いていれば下の判定が使用中として止める）
 		let pullRequestFetchError: string | undefined;
 		if (pullRequestNumber !== undefined) {
+			// 印は取る前に付ける（取ってから付けるまでの間に、並行する別の作成がこのブランチをベースにして信頼を書かないように）。
+			// 後で PR のカードなしに「既存のブランチ」やベースブランチとして選んでも、fork のコードだと分かる
+			await this.markForkPullRequestBranch(request.repoPath, request.branch, String(pullRequestNumber));
 			try {
 				await this.exec(['-C', repo, '-c', 'credential.interactive=false', 'fetch', '--no-tags', '--quiet', 'origin', `refs/pull/${pullRequestNumber}/head:refs/heads/${request.branch}`], undefined, { quiet: true, timeout: this.gitTimeouts.long });
 			} catch (error) {
@@ -1235,13 +1259,11 @@ export class ParadisWorktreeGitService {
 			}
 		}
 		const state = await this.inspectExistingBranch(request.repoPath, request.branch);
-		if (pullRequestNumber !== undefined && state.localSha !== undefined) {
-			// 後で PR のカードなしに「既存のブランチ」やベースブランチとして選んでも、fork のコードだと分かるようにする
-			await this.markForkPullRequestBranch(request.repoPath, request.branch, String(pullRequestNumber));
-		}
 		const source = request.source === 'auto' ? (state.localSha !== undefined ? 'local' : 'origin') : request.source;
 		const plan = paradisPlanExistingBranch(source, state);
 		if (plan.kind === 'missing' && pullRequestNumber !== undefined) {
+			// 取れなかった（ブランチが無い）ので、先に付けた印を残さない
+			await this.exec(['-C', repo, 'config', '--unset', `branch.${request.branch}.${PARADIS_FORK_PULL_REQUEST_BRANCH_KEY}`], undefined, { quiet: true }).catch(() => undefined);
 			// allow-any-unicode-next-line
 			throw new Error(localize('paradis.worktree.existingBranch.pullRequestFetchFailed', "プルリクエスト #{0} のブランチを origin から取得できませんでした。{1}", pullRequestNumber, pullRequestFetchError ?? ''));
 		}

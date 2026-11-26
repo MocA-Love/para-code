@@ -99,17 +99,17 @@ suite('ParadisWorktreeGitService', () => {
 		});
 
 		// 偽の git は `config --get` にも成功で答える（＝利用者が checkout.workers を決めている）ので、-c は足さない
-		// 最後は、ベースブランチが fork から来た PR のものか（エージェントの信頼を先に書いてよいか）の確かめ
+		// 3 本目は、ベースブランチが fork から来た PR のものか（エージェントの信頼を先に書いてよいか）の確かめ
 		assert.deepStrictEqual(calls.map(call => call.command), ['git', 'git', 'git', 'git']);
 		assert.deepStrictEqual(calls.map(call => call.args), [
 			['-C', '/repo', 'worktree', 'prune'],
 			['-C', '/repo', 'config', '--get', 'checkout.workers'],
-			['-C', '/repo', 'worktree', 'add', '--no-track', '-b', 'feature-lfs', '/repo-worktrees/feature-lfs', 'main'],
 			['-C', '/repo', 'config', '--get', 'branch.main.paradisForkPullRequest'],
+			['-C', '/repo', 'worktree', 'add', '--no-track', '-b', 'feature-lfs', '/repo-worktrees/feature-lfs', 'main'],
 		]);
 		assert.strictEqual(calls[0].env?.PATH, '/opt/homebrew/bin:/usr/bin');
-		assert.strictEqual(calls[2].env?.PATH, '/opt/homebrew/bin:/usr/bin');
-		assert.strictEqual(calls[2].env?.PARADIS_TEST_ENV, 'shell');
+		assert.strictEqual(calls[3].env?.PATH, '/opt/homebrew/bin:/usr/bin');
+		assert.strictEqual(calls[3].env?.PARADIS_TEST_ENV, 'shell');
 	});
 
 	test('checks out a new worktree with one worker per core only when checkout.workers is unset', async () => {

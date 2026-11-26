@@ -289,14 +289,18 @@ import { ParadisWorktreeGitService } from '../../node/paradisWorktreeGitChannel.
 		await trusting.addWorktree({ repoPath: repo, worktreePath: wt('pr-child'), newBranch: 'on-top-of-pr', baseRef: 'pr-7-main', trustClaudeFolder: true });
 		await trusting.addWorktree({ repoPath: repo, worktreePath: wt('pr-grandchild'), newBranch: 'on-top-of-child', baseRef: 'refs/heads/on-top-of-pr', trustClaudeFolder: true });
 
+		// 取れなかった PR（番号が無い）には、ブランチも印も残さない
+		const unfetched = await trusting.addWorktreeFromBranch({ repoPath: repo, worktreePath: wt('pr-none'), branch: 'pr-8-x', source: 'local', pullRequestNumber: 8, trustClaudeFolder: true }).then(() => 'opened', () => 'refused');
+
 		assert.deepStrictEqual({
+			unfetched,
 			ours: await trusted('ours'),
 			new: await trusted('new'),
 			pr,
 			reopened: await trusted('pr-reopened'),
 			child: await trusted('pr-child'),
 			grandchild: await trusted('pr-grandchild'),
-			marks: ['pr-7-main', 'on-top-of-pr', 'on-top-of-child', 'feature/ours'].map(branch => {
+			marks: ['pr-7-main', 'on-top-of-pr', 'on-top-of-child', 'feature/ours', 'pr-8-x'].map(branch => {
 				try {
 					return git(repo, 'config', '--get', `branch.${branch}.paradisForkPullRequest`);
 				} catch {
@@ -304,13 +308,14 @@ import { ParadisWorktreeGitService } from '../../node/paradisWorktreeGitChannel.
 				}
 			}),
 		}, {
+			unfetched: 'refused',
 			ours: { claude: true, codex: true },
 			new: { claude: true, codex: true },
 			pr: { claude: false, codex: false },
 			reopened: { claude: false, codex: false },
 			child: { claude: false, codex: false },
 			grandchild: { claude: false, codex: false },
-			marks: ['7', '7', '7', undefined],
+			marks: ['7', '7', '7', undefined, undefined],
 		});
 	});
 

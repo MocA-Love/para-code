@@ -402,7 +402,8 @@ export class ParadisAgentChatInput {
 					return false;
 				}
 				if (keysSent === 0 && rekey !== undefined) {
-					const next = rekey(screen);
+					// 上の回答待ちの確かめの間に画面が変わることがあるので、キーは打つ直前の画面で決める
+					const next = rekey(terminal.readScreen());
 					if (next.length !== keys.length) {
 						stopReason = localize('paradisAgentChat.errorScreenChanged', "ターミナルの画面が変わったため、残りのキーを送りませんでした。ターミナルで確かめてください");
 						return false;

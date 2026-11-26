@@ -452,9 +452,15 @@ export class ParadisDocRelocator {
 		// 数え始めの無い記録（数え始めを書かない版が「見つからない」と記録したもの）は、ここから数える。台帳に書いてもらう
 		// （メモリに持つと、開き直すたびに数え直しになる）。古い `missingSince` からは数えない: 更新した直後の最初の見直しで、
 		// 前の版の間に 7 日を過ぎていた資料がまとめて外れるため
+		// 戻っていた資料（閉じている間に置き直された）は、数え始めを入れずに印を外す。頼めなかった分は次の見直しで頼み直す
 		await forEachLimited(missing.filter(record => record.missingCountedFrom === undefined && !this._countRequested.has(this._key(record))), async record => {
-			this._countRequested.add(this._key(record));
+			const stat = await host.stat(record.path).catch(() => undefined);
+			if (stat !== undefined && stat !== 'missing') {
+				await host.setMissing(record.path, false);
+				return;
+			}
 			await host.setMissing(record.path, true);
+			this._countRequested.add(this._key(record));
 		});
 		const due = missing.filter(record => record.missingCountedFrom !== undefined && now - record.missingCountedFrom >= PARADIS_DOC_MISSING_RETENTION_MS && now - (this._pruneChecked.get(this._key(record)) ?? Number.NEGATIVE_INFINITY) >= PRUNE_RECHECK_MS);
 		const removals: string[] = [];
