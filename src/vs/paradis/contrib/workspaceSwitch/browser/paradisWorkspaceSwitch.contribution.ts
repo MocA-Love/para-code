@@ -55,6 +55,7 @@ import { ParadisEditorSplitTerminalService } from './paradisEditorSplitTerminalS
 import { ParadisEditorScopeService } from './paradisEditorScopeService.js';
 import { ParadisSpaceNotesService } from './paradisSpaceNotesService.js';
 import { PARADIS_WORKSPACES_VIEW_ID, ParadisWorkspacesView } from './paradisWorkspacesView.js';
+import { PARADIS_SPACES_VIEW_CONTAINER_ID } from './paradisSidebarTitle.js';
 import { ParadisWorkspaceSwitchService } from './paradisWorkspaceSwitchService.js';
 import { ParadisWorkspaceSectionsService } from './paradisWorkspaceSectionsService.js';
 import { ParadisSpaceSectionsService } from './paradisSpaceSectionsService.js';
@@ -470,7 +471,8 @@ registerAction2(class extends Action2 {
 
 const paradisWorkspacesViewIcon = registerIcon('paradis-workspaces-view-icon', Codicon.folderLibrary, localize('paradisWorkspacesViewIcon', 'Para Code ワークスペースビューのアイコン。'));
 
-const PARADIS_WORKSPACES_CONTAINER_ID = 'workbench.view.paradisWorkspaces';
+// 題の行を隠す判定（paradisSidebarTitle.ts）と同じ id を使う
+const PARADIS_WORKSPACES_CONTAINER_ID = PARADIS_SPACES_VIEW_CONTAINER_ID;
 
 const paradisWorkspacesViewContainer: ViewContainer = Registry.as<IViewContainersRegistry>(ViewExtensions.ViewContainersRegistry).registerViewContainer({
 	id: PARADIS_WORKSPACES_CONTAINER_ID,

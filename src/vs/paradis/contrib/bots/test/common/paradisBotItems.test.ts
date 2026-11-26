@@ -14,6 +14,7 @@ import {
 	IParadisBotItemChanges,
 	IParadisBotItemsState,
 	PARADIS_BOT_ITEM_LIMITS,
+	PARADIS_BOT_ITEM_KNOWN_KEYS,
 	PARADIS_BOT_ITEM_STATUSES,
 	ParadisBotItemsResult,
 	ParadisBotItemStatus,
@@ -479,5 +480,13 @@ suite('Paradis bot items', () => {
 			code(paradisBotItemOwnerSnooze(state, 'u1', 9000, 2000)),
 			paradisBotItemsRemoveBot(state, 'b1') === state,
 		], [['ログインの不具合を直す'], 'read_only', 'read_only', 'read_only', 'read_only', 'read_only', true]);
+	});
+
+	test('知っている欄の一覧が項目の型の欄と一致する（足し忘れると自分の項目が読み取り専用になる）', () => {
+		const sample: { [K in keyof Required<Omit<IParadisBotItem, 'preserved'>>]: true } = {
+			uid: true, number: true, botId: true, title: true, description: true, doneMeans: true, status: true, ask: true, closeNote: true, links: true, events: true,
+			lastEventId: true, snoozedUntil: true, lastActivityAt: true, createdAt: true, updatedAt: true, closedAt: true,
+		};
+		assert.deepStrictEqual([...PARADIS_BOT_ITEM_KNOWN_KEYS].sort(), Object.keys(sample).sort());
 	});
 });

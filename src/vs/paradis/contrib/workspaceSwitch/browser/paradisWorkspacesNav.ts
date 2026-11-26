@@ -45,6 +45,8 @@ const NAV_ITEMS: readonly IParadisWorkspacesNavItem[] = [
 const ADD_REPOSITORY_COMMAND = 'paradis.workspaceSwitch.addRepository';
 const CREATE_WORKTREE_COMMAND = 'paradis.workspaceSwitch.createWorktree';
 const OPEN_AGENT_LIST_COMMAND = 'paradis.agentLiveWindow.open';
+/** エージェントのセッション履歴（デスクトップだけにある。sessionResume） */
+const SESSION_HISTORY_COMMAND = 'paradis.sessionResume.show';
 /** 検索の行で開く、エージェント・今のスペースのタブ・スペースをまとめて探すパレット（Q593。デスクトップだけにある） */
 const CROSS_JUMP_COMMAND = 'paradis.crossJump.open';
 
@@ -61,7 +63,7 @@ export interface IParadisWorkspacesNavDelegate {
 
 /**
  * スペースの一覧（Workspaces ビュー）の上に置く、Orca 風のナビ（検索・タスク・定期実行・モバイル）と
- * 「プロジェクト」の見出し（ベル・表示のオプション・リポジトリを追加・新しいワークツリースペース）。
+ * 「プロジェクト」の見出し（セッション履歴・ベル・表示のオプション・リポジトリを追加・新しいワークツリースペース）。
  * ナビの各行は元の場所（タイトルバー・歯車のメニュー・ステータスバー）にも残したまま、右クリックで隠せる。
  */
 export class ParadisWorkspacesNav extends Disposable {
@@ -94,6 +96,8 @@ export class ParadisWorkspacesNav extends Disposable {
 		this._register(DOM.addDisposableListener(heading, DOM.EventType.CONTEXT_MENU, e => this.showNavMenu(e)));
 		const actions = DOM.append(heading, DOM.$('.paradis-workspaces-heading-actions'));
 
+		const history = this.headingButton(actions, Codicon.history, localize('paradis.workspacesNav.sessionHistory', "セッション履歴を開く"), () => this.runIfRegistered(SESSION_HISTORY_COMMAND));
+		history.style.display = CommandsRegistry.getCommand(SESSION_HISTORY_COMMAND) ? '' : 'none';
 		this.bellButton = this.headingButton(actions, Codicon.bell, localize('paradis.workspacesNav.agents', "エージェントの一覧を開く"), () => this.runIfRegistered(OPEN_AGENT_LIST_COMMAND));
 		this.bellButton.classList.add('paradis-workspaces-heading-bell');
 		this.bellIcon = this.bellButton.firstElementChild as HTMLElement;

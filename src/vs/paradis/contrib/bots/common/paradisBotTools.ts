@@ -357,8 +357,9 @@ function eventView(event: IParadisBotItemEvent): object {
 }
 
 /** 一覧の 1 行。 */
-export function paradisBotItemListRow(item: IParadisBotItem): object {
-	const unread = paradisBotItemUndelivered(item).length;
+export function paradisBotItemListRow(item: IParadisBotItem, deliverable = true): object {
+	// 台帳が新しい版で書けないときは、印を外せないので未配達を出さない（毎回同じものが出続けないように）
+	const unread = deliverable ? paradisBotItemUndelivered(item).length : 0;
 	return {
 		number: item.number,
 		title: item.title,
@@ -370,7 +371,7 @@ export function paradisBotItemListRow(item: IParadisBotItem): object {
 }
 
 /** 1 項目の全体。`after` より後のイベントだけを載せる。持ち主のまだ読んでいない書き込みは `owner_updates` に分ける。 */
-export function paradisBotItemView(item: IParadisBotItem, after = 0): object {
+export function paradisBotItemView(item: IParadisBotItem, after = 0, deliverable = true): object {
 	return {
 		number: item.number,
 		title: item.title,
@@ -381,7 +382,7 @@ export function paradisBotItemView(item: IParadisBotItem, after = 0): object {
 		...(item.closeNote !== undefined ? { close_note: item.closeNote } : {}),
 		links: item.links.map(link => link.ref),
 		last_event: item.lastEventId,
-		owner_updates: paradisBotItemUndelivered(item).map(eventView),
+		owner_updates: deliverable ? paradisBotItemUndelivered(item).map(eventView) : [],
 		events: item.events.filter(event => event.id > after).map(eventView),
 	};
 }

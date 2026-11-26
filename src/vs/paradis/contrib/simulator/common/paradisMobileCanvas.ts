@@ -70,7 +70,7 @@ export interface IParadisMobileDisplay {
 	readonly orientation?: string;
 }
 
-/** 1ペイン分のアタッチ状態。 */
+/** 1ペインに割り当てた端末 1 台分（1 つのペインに 10 台まで割り当てられる。simulator/common/paradisMobileAttachmentBook.ts）。 */
 export interface IParadisMobileAttachment {
 	/** アタッチ元のターミナルペインを表すトークン。 */
 	readonly paneToken: string;
@@ -85,6 +85,11 @@ export interface IParadisMobileAttachment {
 	 */
 	readonly stateKey: string | undefined;
 	readonly attachedAt: number;
+	/**
+	 * そのペインの「今の端末」（最後に割り当てた端末）。mobile_* の道具が `device` を省いたときに当たる。
+	 * 一覧（`listAttachments`・スナップショット）で付く。
+	 */
+	readonly current?: boolean;
 }
 
 /** renderer 側のアタッチUIが1回のポーリングで受け取る内容。 */

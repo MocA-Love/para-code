@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisAgentChatSlashQuery, paradisAppendAgentChatDraft, paradisInsertAgentChatDraft, paradisFilterAgentChatCommands, paradisPushAgentChatHistory } from '../../common/paradisAgentChatComposerLogic.js';
+import { paradisAgentChatSlashQuery, paradisAppendAgentChatDraft, paradisInsertAgentChatDraft, paradisSendToAgentPane, paradisFilterAgentChatCommands, paradisPushAgentChatHistory } from '../../common/paradisAgentChatComposerLogic.js';
 
 suite('paradisAgentChatComposerLogic', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -68,6 +68,24 @@ suite('paradisAgentChatComposerLogic', () => {
 			background: { result: 'appended', calls: ['input:始めて', 'draft:書きかけ\n\n始めて'] },
 			notChat: { result: false, calls: [] },
 			blank: { result: false, calls: [] },
+		});
+	});
+
+	test('sends to the pane through the chat input rules, and refuses a pane without an agent or a blank text before sending', async () => {
+		const sent: string[] = [];
+		const send = async (token: string, text: string) => { sent.push(`${token}:${text}`); return text === '許可待ち' ? 'エージェントが回答を待っています' : undefined; };
+		assert.deepStrictEqual({
+			sent: await paradisSendToAgentPane('pane', '続けて', send),
+			refusedByInput: await paradisSendToAgentPane('pane', '許可待ち', send),
+			noAgent: await paradisSendToAgentPane(undefined, '続けて', send),
+			blank: await paradisSendToAgentPane('pane', ' \n ', send),
+			calls: sent,
+		}, {
+			sent: undefined,
+			refusedByInput: 'エージェントが回答を待っています',
+			noAgent: 'このターミナルにはエージェントの会話がありません',
+			blank: '送る文がありません',
+			calls: ['pane:続けて', 'pane:許可待ち'],
 		});
 	});
 });
