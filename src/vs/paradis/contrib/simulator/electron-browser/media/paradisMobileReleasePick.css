@@ -74,11 +74,7 @@
 	color: var(--vscode-paradis-textStrong) !important;
 }
 
-/* The focus ring is drawn inside the row so that it is not clipped by the scrolling list. */
-.monaco-dialog-box.paradis-mobile-release-pick .pmrp-option:focus-visible {
-	outline: 1px solid var(--vscode-focusBorder);
-	outline-offset: -1px;
-}
+/* The focus ring of a row comes from paradisFocusRing.css (the row carries paradis-focus-subtle: gray, drawn inside the row). */
 
 .monaco-dialog-box.paradis-mobile-release-pick .pmrp-radio {
 	flex: 0 0 auto;

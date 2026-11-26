@@ -82,7 +82,7 @@ export function paradisRenderMobileReleasePickBody(container: HTMLElement, pick:
 		}
 	};
 	for (const device of pick.devices) {
-		const row = append(list, $<HTMLAnchorElement>('a.pmrp-option', { role: 'radio', tabindex: '0' }));
+		const row = append(list, $<HTMLAnchorElement>('a.pmrp-option.paradis-focus-subtle', { role: 'radio', tabindex: '0' }));
 		const icon = append(row, $('span.pmrp-radio'));
 		append(row, $('span.pmrp-name', undefined, device.name));
 		options.push({ id: device.id, row, icon });
