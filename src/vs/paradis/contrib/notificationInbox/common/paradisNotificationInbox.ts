@@ -167,6 +167,8 @@ export interface IParadisNotificationInboxService {
 	remove(id: string): Promise<void>;
 	/** 行を押したときの移動。ペインを持っているウィンドウが受け取って移動する。 */
 	reveal(entry: IParadisInboxEntry): Promise<void>;
+	/** 「あなたの番」のカードからの移動。通知の記録が無いペインにも、ペインの鍵で移れる。 */
+	revealPane(pane: { readonly paneKey: string; readonly windowId: number; readonly stateKey?: string }): Promise<void>;
 	/** 受信箱を開くよう、このウィンドウの UI（ベル）へ伝える。 */
 	requestOpenInbox(): void;
 	/** このウィンドウのペインの今の状態を知らせる（状態が通知の種類から変わった未読を既読にする）。 */

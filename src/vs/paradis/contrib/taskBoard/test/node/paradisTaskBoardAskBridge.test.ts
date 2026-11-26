@@ -12,7 +12,7 @@ import { IParadisHumanAskSnapshot, paradisSanitizeHumanAskInput } from '../../..
 import { ParadisHumanAskLedger } from '../../../humanAsk/common/paradisHumanAskLedger.js';
 import { ParadisHumanAskService } from '../../../humanAsk/node/paradisHumanAskChannel.js';
 import { ITaskBoardFlow, ITaskBoardTask } from '../../common/paradisTaskBoard.js';
-import { taskBoardAskOf } from '../../common/paradisTaskBoardAsks.js';
+import { TASK_BOARD_ASKS_LIMIT, taskBoardAskOf } from '../../common/paradisTaskBoardAsks.js';
 import { IParadisTaskBoardWindowDescription, ParadisTaskBoardWindowMethod } from '../../common/paradisTaskBoardBridge.js';
 import { TASK_BOARD_DEFAULT_FLOW } from '../../common/paradisTaskBoardFlow.js';
 import { IParadisTaskBoardWindowRouter, ParadisTaskBoardBridgeService } from '../../node/paradisTaskBoardBridgeService.js';
@@ -182,6 +182,22 @@ suite('ParadisTaskBoardAskBridge', () => {
 		});
 	});
 
+	test('the id heads a board named are forgotten when it disconnects, so a board that named the most heads does not lock out new ones', async () => {
+		const a = connect(BOARD_A);
+		await put(BOARD_A, { asks: Array.from({ length: TASK_BOARD_ASKS_LIMIT }, (_, index) => question(`P${index}:t1:q1`)) });
+		const b = connect(BOARD_B);
+		const whileFull = await put(BOARD_B, { asks: [question('Z:t1:q1')] });
+		a.client.dispose();
+		const afterDisconnect = await put(BOARD_B, { asks: [question('Z:t1:q1')] });
+		const entries = ledger.getSnapshot().entries.filter(entry => entry.state === 'waiting').map(entry => entry.key);
+		b.client.dispose();
+		assert.deepStrictEqual({ whileFull, afterDisconnect, entries }, {
+			whileFull: '200 {"ok":true,"refused":1}',
+			afterDisconnect: '200 {"ok":true,"refused":0}',
+			entries: ['board:Z:t1:q1'],
+		});
+	});
+
 	test('a turn answered on the board leaves the ledger as answered, one that just goes away as withdrawn, and a board that stops withdraws all of its turns', async () => {
 		const a = connect(BOARD_A);
 		const b = connect(BOARD_B);
@@ -231,6 +247,16 @@ suite('ParadisTaskBoardAskBridge', () => {
 		const entry = ledger.get('board:R:t1:q1');
 		remote.client.dispose();
 		assert.deepStrictEqual([result, entry?.state, entry?.paneKey, entry?.windowId], ['200 {"ok":true,"refused":0}', 'waiting', undefined, undefined]);
+	});
+
+	test('an approval offers sending back, with a confirmation naming the step, only when there is a step to return to', () => {
+		// 手前にエージェントの工程が無く、onFail も無い承認の工程（戻す先が無く、エンジンが断る）
+		const lone: ITaskBoardFlow = { ...TASK_BOARD_DEFAULT_FLOW, steps: [{ id: 'approve', name: '承認', kind: 'human', gate: 'approve' }] };
+		const actionsOf = (flow: ITaskBoardFlow) => taskBoardAskOf(task({ status: 'approval', step: 'approve' }), flow, LEDGER)?.actions.map(action => ({ id: action.id, confirm: action.confirm }));
+		assert.deepStrictEqual([actionsOf(TASK_BOARD_DEFAULT_FLOW), actionsOf(lone)], [
+			[{ id: 'approve', confirm: undefined }, { id: 'sendBack', confirm: { title: '差し戻す', body: '調査・計画からやり直します', ok: '差し戻す' } }],
+			[{ id: 'approve', confirm: undefined }],
+		]);
 	});
 
 	test('every ask the board builds from a task passes the ledger\'s checks unchanged', () => {
