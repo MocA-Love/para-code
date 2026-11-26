@@ -23,8 +23,8 @@ import { IQuickInputService } from '../../../../../platform/quickinput/common/qu
 import { InMemoryStorageService, IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { IParadisDialogService } from '../../../confirmDialog/browser/paradisDialogService.js';
 import { ParadisBotsBandSlot } from '../../browser/paradisBotsBand.js';
-import { IParadisBotSummary, IParadisBotsService, IParadisBotsSnapshot } from '../../common/paradisBotsApi.js';
-import { PARADIS_BOTS_BAND_STORAGE_KEY, PARADIS_BOTS_ENABLED_SETTING } from '../../common/paradisBotsBandModel.js';
+import { IParadisBotSummary, IParadisBotsService, IParadisBotsSnapshot, PARADIS_BOTS_ENABLED_SETTING } from '../../common/paradisBotsApi.js';
+import { PARADIS_BOTS_BAND_STORAGE_KEY } from '../../common/paradisBotsBandModel.js';
 
 function bot(id: string, name: string, patch: Partial<IParadisBotSummary> = {}): IParadisBotSummary {
 	return {

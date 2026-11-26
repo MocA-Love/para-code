@@ -54,7 +54,7 @@ import { PARADIS_PRESET_FOLDERS_SETTING } from '../../terminalPresets/common/par
 import { PARADIS_BROWSER_HOME_PAGE_SETTING, PARADIS_BROWSER_IMPORT_LOGINS_COMMAND_ID, PARADIS_BROWSER_SITE_PERMISSIONS_COMMAND_ID } from '../../browserSettings/common/paradisBrowserSettings.js';
 import { paradisResourceTitleBarFormatTitle, paradisResourceTitleBarItemLabel } from '../../resourceMonitor/common/paradisResourceTitleBar.js';
 import { PARADIS_TRANSPARENCY_ENABLED_KEY, paradisTransparencyRestartPending } from '../../windowTransparency/common/paradisTransparency.js';
-import { PARADIS_BOTS_ENABLED_SETTING } from '../../bots/common/paradisBotsBandModel.js';
+import { PARADIS_BOTS_ENABLED_SETTING } from '../../bots/common/paradisBotsApi.js';
 import { PARADIS_AGENT_HIBERNATION_ENABLED_SETTING, PARADIS_AGENT_HIBERNATION_IDLE_MINUTES_SETTING } from '../../agentHibernation/common/paradisAgentHibernation.js';
 import {
 	PARADIS_MENU_BAR_INCLUDE_REMOTE_SETTING,

@@ -37,8 +37,8 @@ import { IQuickInputService } from '../../../../platform/quickinput/common/quick
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 import { IParadisWorkspacesBand } from '../../workspaceSwitch/browser/paradisWorkspacesBands.js';
-import { IParadisBotSummary, IParadisBotsService, ParadisBotsServiceResult } from '../common/paradisBotsApi.js';
-import { IParadisBotsBandState, PARADIS_BOTS_BAND_SIZES, PARADIS_BOTS_ENABLED_SETTING, PARADIS_BOTS_BAND_STORAGE_KEY, PARADIS_BOTS_OPEN_COMMAND, paradisBotFace, paradisBotNameProblemMessage, paradisBotRowMenu, ParadisBotRowMenuItem, paradisBotsBandDraggedHeight, paradisBotsBandListHeight, paradisBotsBandRows, paradisBotStatusLine, paradisBotsNeedsYouTotal, paradisParseBotsBandState, paradisSerializeBotsBandState, paradisValidateBotName } from '../common/paradisBotsBandModel.js';
+import { IParadisBotSummary, IParadisBotsService, ParadisBotsServiceResult, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
+import { IParadisBotsBandState, PARADIS_BOTS_BAND_SIZES, PARADIS_BOTS_BAND_STORAGE_KEY, PARADIS_BOTS_OPEN_COMMAND, paradisBotFace, paradisBotNameProblemMessage, paradisBotRowMenu, ParadisBotRowMenuItem, paradisBotsBandDraggedHeight, paradisBotsBandListHeight, paradisBotsBandRows, paradisBotStatusLine, paradisBotsNeedsYouTotal, paradisParseBotsBandState, paradisSerializeBotsBandState, paradisValidateBotName } from '../common/paradisBotsBandModel.js';
 import { ParadisBotCreateDialog } from './paradisBotCreateDialog.js';
 import { renderParadisBotFace } from './paradisBotFace.js';
 
