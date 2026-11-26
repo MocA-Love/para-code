@@ -103,6 +103,35 @@ export interface IParadisNotificationInboxPopoverOptions {
 	readonly onOpenAsk?: (key: string, focusText: boolean) => void;
 	/** 今の時刻（行が動いた直後の押し間違いの守り。テストで差し替える）。 */
 	readonly now?: () => number;
+	/** 行数を切り詰めた欄の、見えている高さと全体の高さ（描いた後の溢れの判定。テストで差し替える。既定は実物の DOM を測る）。 */
+	readonly measureClamp?: (element: HTMLElement) => IParadisInboxClampSize | undefined;
+}
+
+/** 行数を切り詰めた欄の高さ（px）。`shown` は見えている高さ、`full` は切り詰めを外したときの高さ。 */
+export interface IParadisInboxClampSize {
+	readonly shown: number;
+	readonly full: number;
+}
+
+/**
+ * 切り詰めた欄が溢れているか（全体の高さが見えている高さより 1px を超えて高い）。
+ * 端数の丸めで 1px ずれることがあるので、1px までは溢れと見なさない。
+ */
+export function paradisInboxClampOverflows(size: IParadisInboxClampSize | undefined): boolean {
+	return size !== undefined && size.full > size.shown + 1;
+}
+
+/** 実物の DOM で、切り詰めた欄の高さを測る。描かれていない（つながっていない・高さ 0）なら測らない。 */
+function measureParadisInboxClamp(element: HTMLElement): IParadisInboxClampSize | undefined {
+	if (!element.isConnected || element.clientHeight === 0) {
+		return undefined;
+	}
+	// 行数の切り詰め（line-clamp）は、切った後ろを高さに数えない。いったん外して全体の高さと比べる
+	const shown = element.clientHeight;
+	element.style.setProperty('-webkit-line-clamp', 'none');
+	const full = element.scrollHeight;
+	element.style.removeProperty('-webkit-line-clamp');
+	return { shown, full };
 }
 
 /**
@@ -488,17 +517,7 @@ export class ParadisNotificationInboxPopover extends Disposable {
 		let command: HTMLElement | undefined;
 		const built: IAskCard = {
 			element: card, signature, time, askedAt: entry.askedAt, controls, dispose: () => { store.dispose(); card.remove(); },
-			overflows: () => {
-				if (command === undefined || !command.isConnected || command.clientHeight === 0) {
-					return false;
-				}
-				// 行数の切り詰め（line-clamp）は、切った後ろを高さに数えない。いったん外して全体の高さと比べる
-				const clamped = command.clientHeight;
-				command.style.setProperty('-webkit-line-clamp', 'none');
-				const full = command.scrollHeight;
-				command.style.removeProperty('-webkit-line-clamp');
-				return full > clamped + 1;
-			},
+			overflows: () => command !== undefined && paradisInboxClampOverflows((this.options.measureClamp ?? measureParadisInboxClamp)(command)),
 		};
 		card.setAttribute('role', 'listitem');
 		card.dataset.askKey = entry.key;
