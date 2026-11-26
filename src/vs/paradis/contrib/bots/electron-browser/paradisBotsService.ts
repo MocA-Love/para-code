@@ -15,6 +15,7 @@ import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 import { IParadisBotItem, IParadisBotItemOwnerComment, ParadisBotItemStatus } from '../common/paradisBotItems.js';
 import { IParadisBot, IParadisBotPatch } from '../common/paradisBots.js';
@@ -38,6 +39,7 @@ export class ParadisBotsClient extends Disposable implements IParadisBotsService
 	constructor(
 		@ISharedProcessService sharedProcessService: ISharedProcessService,
 		@ILogService private readonly logService: ILogService,
+		@IParadisPaneTokenService private readonly paneTokenService: IParadisPaneTokenService,
 	) {
 		super();
 		this.channel = sharedProcessService.getChannel(PARADIS_BOTS_CHANNEL);
@@ -89,7 +91,16 @@ export class ParadisBotsClient extends Disposable implements IParadisBotsService
 		return this.result('requestLaunch', [botId, purpose]);
 	}
 
-	reportLaunch(launchId: string, paneToken: string): Promise<boolean> {
+	/**
+	 * 起動したペインを知らせる。このウィンドウの生きたペインのトークンでなければ知らせず、起動の番号を捨てる
+	 * （shared process はトークンがどのウィンドウのものかを知らないので、ここで確かめる）。
+	 */
+	async reportLaunch(launchId: string, paneToken: string): Promise<boolean> {
+		if (this.paneTokenService.getInstanceForToken(paneToken) === undefined) {
+			this.logService.warn('[paradisBots] a launch was reported with a token that is not a live pane of this window');
+			await this.cancelLaunch(launchId);
+			return false;
+		}
 		return this.value('reportLaunch', [launchId, paneToken], false);
 	}
 
