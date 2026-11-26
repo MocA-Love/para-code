@@ -42,7 +42,8 @@ const ID_LIMIT = 400;
 const TITLE_LIMIT = 200;
 const LABEL_LIMIT = 400;
 const QUESTION_TEXT_LIMIT = 2000;
-const PREFACE_LIMIT = 4000;
+/** 前置きの上限（許可のコマンドの上限と同じ。paradisAgentApprovalRequest.ts の COMMAND_LIMIT）。 */
+const PREFACE_LIMIT = 10_000;
 /** 自由入力の答えの長さの上限。 */
 export const PARADIS_HUMAN_ASK_ANSWER_TEXT_LIMIT = 8000;
 /** 「どこで・何と答えたか」の要約の長さ。 */
@@ -138,8 +139,13 @@ export interface IParadisHumanAskInput {
 	readonly id: string;
 	readonly kind: ParadisHumanAskKind;
 	readonly from: IParadisHumanAskFrom;
-	/** なぜ聞くかの前置き（短い 5 行までを勧める）。 */
+	/** なぜ聞くかの前置き（短い 5 行までを勧める）。許可では操作の全文（コマンド・引数）を入れる。 */
 	readonly preface?: string;
+	/**
+	 * 答える前に前置きの全文を見せる（行の中のボタンで 1 押しでは答えさせない）。MCP の道具・形を知らない道具の許可など、
+	 * 何を書き込むのかを文字の規則では見分けられないものに付ける。
+	 */
+	readonly fullTextFirst?: boolean;
 	readonly questions: readonly IParadisHumanAskQuestion[];
 	readonly actions: readonly IParadisHumanAskAction[];
 	/** 「飛ばす」を出すか（Bot の項目）。 */
@@ -492,6 +498,7 @@ export function paradisSanitizeHumanAskInput(value: unknown): IParadisHumanAskIn
 		kind,
 		from: { title, ...(detail !== undefined ? { detail } : {}) },
 		...(preface !== undefined ? { preface } : {}),
+		...(input.fullTextFirst === true ? { fullTextFirst: true } : {}),
 		questions,
 		actions,
 		canSkip: input.canSkip === true,

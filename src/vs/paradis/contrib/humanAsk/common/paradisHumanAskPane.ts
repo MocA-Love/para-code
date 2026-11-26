@@ -17,6 +17,7 @@
 
 import { IParadisAgentChatMessage, IParadisAgentInteraction, paradisAgentQuestionHasPreview, paradisIsCodexDaemonApprovalInteraction } from '../../agentChat/common/paradisAgentChat.js';
 import { paradisAgentDescriptor } from '../../agentChat/common/paradisAgentDescriptor.js';
+import type { IParadisAgentApprovalRequest } from '../../mobileRelay/common/paradisAgentApprovalRequest.js';
 import type { ParadisAgentQuestionAnswer } from '../../mobileRelay/common/paradisAgentQuestionKeys.js';
 import { IParadisHumanAskInput, ParadisHumanAskAnswer, paradisSanitizeHumanAskInput } from './paradisHumanAsk.js';
 
@@ -77,7 +78,7 @@ function routeHasKeys(routes: readonly string[] | undefined): boolean {
 	return routes?.includes('keys') === true;
 }
 
-const PREFACE_LIMIT = 4000;
+const PREFACE_LIMIT = 10_000;
 
 /**
  * ペインの今の待ちを、台帳へ知らせる 1 件にする。形が台帳の上限に収まらない問い（6 問以上・選択肢 9 つ以上）は、
@@ -124,8 +125,39 @@ export function paradisHumanAskPaneInput(state: IParadisHumanAskPaneState, label
 	const allow = interaction.choices?.find(choice => choice.id === 'yes');
 	const deny = interaction.choices?.find(choice => choice.id === 'no');
 	const actions = pressable && allow !== undefined && deny !== undefined ? [{ id: 'yes', label: allow.label }, { id: 'no', label: deny.label }] : [];
-	const preface = (interaction.detail ?? interaction.title ?? '').slice(0, PREFACE_LIMIT);
-	return paradisSanitizeHumanAskInput({ ...base, kind: 'permission', questions: [], actions, ...(preface.length > 0 ? { preface } : {}) });
+	const request = interaction.request;
+	const preface = (request !== undefined ? paradisHumanAskApprovalText(request) : (interaction.detail ?? interaction.title ?? '')).slice(0, PREFACE_LIMIT);
+	// MCP の道具・形を知らない道具は、何を書き込むかを文字の規則で見分けられない。全文を見てから答えさせる
+	const fullTextFirst = request !== undefined && (request.kind === 'mcp' || request.kind === 'other' || request.truncated === true);
+	return paradisSanitizeHumanAskInput({ ...base, kind: 'permission', questions: [], actions, ...(preface.length > 0 ? { preface } : {}), ...(fullTextFirst ? { fullTextFirst: true } : {}) });
+}
+
+/**
+ * 許可の前置き。操作そのもの（コマンドの全文・MCP の引数の全部）を入れる。説明（`description`）はエージェントが書いた
+ * 文で、操作と食い違っても見分けられないので、操作の後ろに添えるだけにする（危険の札は前置きの全文から決める）。
+ * スマホの許可カードが見ているのと同じ項目だけを使う（app/mobile/src/approvalDetail.ts）。
+ */
+function paradisHumanAskApprovalText(request: IParadisAgentApprovalRequest): string {
+	const lines: string[] = [];
+	switch (request.kind) {
+		case 'bash':
+			lines.push(`${request.tool}: ${request.command ?? ''}`);
+			break;
+		case 'edit':
+		case 'write':
+			lines.push(`${request.tool}: ${request.path ?? ''}`);
+			break;
+		case 'fetch':
+			lines.push(`${request.tool}: ${request.url ?? ''}`);
+			break;
+		default:
+			lines.push(request.tool, ...(request.args ?? []).map(arg => `${arg.key}: ${arg.value}`));
+	}
+	if (request.description) {
+		// allow-any-unicode-next-line
+		lines.push(`（説明: ${request.description}）`);
+	}
+	return lines.join('\n');
 }
 
 /**

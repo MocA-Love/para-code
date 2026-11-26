@@ -9,6 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { IParadisAgentChatMessage, IParadisAgentInteraction } from '../../../agentChat/common/paradisAgentChat.js';
+import { paradisInboxAskDangerLabels, paradisInboxAskLayout } from '../../../notificationInbox/common/paradisNotificationInboxAsk.js';
 import { IParadisHumanAskInput } from '../../common/paradisHumanAsk.js';
 import { IParadisHumanAskPaneLabel, IParadisHumanAskPaneState, paradisHumanAskPaneDelivery, paradisHumanAskPaneInput } from '../../common/paradisHumanAskPane.js';
 
@@ -59,6 +60,26 @@ suite('Paradis human ask: pane asks', () => {
 				actions: [{ id: 'yes', label: '許可' }, { id: 'no', label: '拒否' }],
 				canSkip: false, paneKey: 'pane-key', windowId: 3, stateKey: 'space-1',
 			},
+		});
+	});
+
+	test('a permission shows the operation itself, not the agent\'s own description, and decides the danger labels and the full-text step from it', () => {
+		type Request = NonNullable<Extract<IParadisAgentInteraction, { kind: 'approval' }>['request']>;
+		const approval = (request: Request) => paradisHumanAskPaneInput(state({ ...APPROVAL, detail: `${request.tool}: ${request.description ?? ''}`, request }), LABEL);
+		const shape = (input: IParadisHumanAskInput | undefined) => input === undefined ? undefined : {
+			preface: input.preface, fullTextFirst: input.fullTextFirst === true,
+			dangers: paradisInboxAskDangerLabels(input.preface), layout: paradisInboxAskLayout({ ...input, state: 'waiting' }),
+		};
+		// 説明が「Clean junk」でもコマンドは rm -rf。説明で操作を隠せない
+		const hidden = approval({ tool: 'Bash', kind: 'bash', description: 'Clean junk', command: 'rm -rf ./junk' });
+		// 1500 字より後ろの危ない操作も見る
+		const late = approval({ tool: 'Bash', kind: 'bash', description: 'Long build', command: `echo ${'a'.repeat(1600)} && git push --force origin main` });
+		// MCP の引数は全部前置きに入れ、全文を見てから答えさせる
+		const mcp = approval({ tool: 'mcp__db__run_query', kind: 'mcp', mcpServer: 'db', mcpTool: 'run_query', args: [{ key: 'sql', value: 'DROP TABLE users' }, { key: 'database', value: 'prod' }] });
+		assert.deepStrictEqual({ hidden: shape(hidden), late: { ...shape(late), preface: shape(late)?.preface?.length }, mcp: shape(mcp) }, {
+			hidden: { preface: 'Bash: rm -rf ./junk\n（説明: Clean junk）', fullTextFirst: false, dangers: ['削除を含む'], layout: 'dialog' },
+			late: { preface: 1660, fullTextFirst: false, dangers: ['強制 push'], layout: 'dialog' },
+			mcp: { preface: 'mcp__db__run_query\nsql: DROP TABLE users\ndatabase: prod', fullTextFirst: true, dangers: ['DB を削除'], layout: 'dialog' },
 		});
 	});
 
