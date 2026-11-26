@@ -56,6 +56,9 @@ const realLaunch: ParadisAdbLaunch = (file, args) => {
 	child.unref();
 };
 
+/** AVD の名前に使える文字（`emulator -list-avds` が返す形）。コンソールが返すエラーの文（`KO: ...`）を名前と取り違えない。 */
+const AVD_NAME = /^[A-Za-z0-9._-]+$/;
+
 export const PARADIS_ADB_NOT_FOUND = 'Para Code could not find adb. Install the Android SDK platform-tools (Android Studio installs them), or set ANDROID_HOME for Para Code, and try again.';
 
 interface IAndroidDisplay {
@@ -163,7 +166,7 @@ export class ParadisAdbDeviceHost {
 		const [release, avd] = online
 			? await Promise.all([
 				this._shell(device.serial, ['getprop', 'ro.build.version.release'], 5000).then(value => value.trim(), () => ''),
-				device.serial.startsWith('emulator-') ? this._adb(['-s', device.serial, 'emu', 'avd', 'name'], 5000).then(value => value.split('\n')[0].trim(), () => '') : Promise.resolve(''),
+				device.serial.startsWith('emulator-') ? this._avdNameOf(device.serial) : Promise.resolve(''),
 			])
 			: ['', ''];
 		return {
@@ -181,6 +184,22 @@ export class ParadisAdbDeviceHost {
 		};
 	}
 
+	/**
+	 * 動いているエミュレータの AVD の名前。無ければ空文字。
+	 * `adb emu avd name` はエミュレータのコンソールに認証して尋ねる（`~/.emulator_console_auth_token` を読む）ので、
+	 * Para Code の HOME がエミュレータを起動した利用者のものと違う・トークンを読めないと、名前が取れない。そのときは
+	 * 端末の中の値（`ro.boot.qemu.avd_name`、認証なしで読める）で代える。名前が取れないと、起動前の AVD で割り当てた端末を
+	 * 起動後に引き当てられず、一覧にも同じ端末が「停止中」と「起動中」の 2 行で出る。
+	 */
+	private async _avdNameOf(serial: string): Promise<string> {
+		const fromConsole = await this._adb(['-s', serial, 'emu', 'avd', 'name'], 5000).then(value => value.split('\n')[0].trim(), () => '');
+		if (AVD_NAME.test(fromConsole)) {
+			return fromConsole;
+		}
+		const fromProperty = await this._shell(serial, ['getprop', 'ro.boot.qemu.avd_name'], 5000).then(value => value.trim(), () => '');
+		return AVD_NAME.test(fromProperty) ? fromProperty : '';
+	}
+
 	/** 端末の id から、今動いている serial。AVD の id なら、そのエミュレータが動いていればその serial。 */
 	private async _serialOf(deviceId: string): Promise<string> {
 		const serial = paradisAndroidSerialOf(deviceId);
@@ -193,7 +212,7 @@ export class ParadisAdbDeviceHost {
 		}
 		for (const device of paradisParseAdbDevices(await this._adb(['devices', '-l'], 10_000))) {
 			if (device.state === 'device' && device.serial.startsWith('emulator-')) {
-				const name = await this._adb(['-s', device.serial, 'emu', 'avd', 'name'], 5000).then(value => value.split('\n')[0].trim(), () => '');
+				const name = await this._avdNameOf(device.serial);
 				if (name === avd) {
 					return device.serial;
 				}

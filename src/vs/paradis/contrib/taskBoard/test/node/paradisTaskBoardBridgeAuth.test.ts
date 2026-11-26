@@ -16,6 +16,7 @@ import { ParadisTaskBoardWindowMethod } from '../../common/paradisTaskBoardBridg
 import { IParadisTaskBoardAuditEntry } from '../../common/paradisTaskBoardRelay.js';
 import { ParadisTaskBoardBoardAuth } from '../../node/paradisTaskBoardBoardAuth.js';
 import { ParadisTaskBoardBridgeServer } from '../../node/paradisTaskBoardBridgeServer.js';
+import { ParadisHumanAskService } from '../../../humanAsk/node/paradisHumanAskChannel.js';
 import { IParadisTaskBoardWindowRouter, ParadisTaskBoardBridgeService } from '../../node/paradisTaskBoardBridgeService.js';
 import { ParadisTaskBoardRelayRouter } from '../../node/paradisTaskBoardRelayRouter.js';
 
@@ -60,7 +61,7 @@ suite('Paradis task board bridge - board key and caller', function () {
 		peerIsBoard = true;
 		audit = [];
 		const log = new NullLogService();
-		const service = store.add(new ParadisTaskBoardBridgeService(router, { directoryExists: async () => true, ignorePathCase: false, newId: () => 'id' }, log));
+		const service = store.add(new ParadisTaskBoardBridgeService(router, { directoryExists: async () => true, ignorePathCase: false, newId: () => 'id', asks: store.add(new ParadisHumanAskService()) }, log));
 		// pid の照合は lsof / ss を起こさず差し替える（このテストのプロセス自身が pid 4242 のボードのふりをする）
 		auth = new ParadisTaskBoardBoardAuth(async () => peerIsBoard, pid => pid === 4242);
 		relay = new ParadisTaskBoardRelayRouter(router, { append: entry => audit.push(entry) }, log);
@@ -76,7 +77,7 @@ suite('Paradis task board bridge - board key and caller', function () {
 		await fsp.rm(dir, { recursive: true, force: true });
 	});
 
-	async function request(route: string, method: 'GET' | 'POST', key: string | undefined, body?: unknown): Promise<number> {
+	async function request(route: string, method: 'GET' | 'POST' | 'PUT', key: string | undefined, body?: unknown): Promise<number> {
 		const abort = new AbortController();
 		const res = await fetch(`http://127.0.0.1:${port}${route}`, {
 			method,
@@ -89,10 +90,11 @@ suite('Paradis task board bridge - board key and caller', function () {
 		return res.status;
 	}
 
-	const ROUTES: readonly [string, 'GET' | 'POST', unknown?][] = [
+	const ROUTES: readonly [string, 'GET' | 'POST' | 'PUT', unknown?][] = [
 		['/v1/health', 'GET'], ['/v1/terminals', 'GET'], ['/v1/screen?terminal=t_x', 'GET'], ['/v1/events', 'GET'],
 		['/v1/launch', 'POST', {}], ['/v1/send', 'POST', {}], ['/v1/key', 'POST', {}], ['/v1/answer', 'POST', {}], ['/v1/close', 'POST', {}], ['/v1/reply', 'POST', {}],
 		['/v1/relay', 'POST', { sessionId: SESSION, op: { kind: 'git', git: { kind: 'status' } } }],
+		['/v1/asks', 'PUT', { asks: [] }], ['/v1/asks/settle', 'POST', { claim: 'c', ok: true }],
 	];
 
 	test('every route refuses the discovery token alone, a wrong board key, and a process that is not the board', async () => {
@@ -114,6 +116,11 @@ suite('Paradis task board bridge - board key and caller', function () {
 	test('the body of a request is not read before the board is verified', async () => {
 		// 1 MiB を超える本文でも、鍵が無ければ本文を読まずに 403（読んでいれば 413）
 		assert.strictEqual(await request('/v1/launch', 'POST', undefined, { prompt: 'x'.repeat(2 * 1024 * 1024) }), 403);
+	});
+
+	test('the body of a PUT is read: the list of asks is parsed, and refused only because the board has no event stream yet', async () => {
+		// 本文を読めていなければ 400（asks が配列でない）、読めていれば 503（SSE をつなぐ前）
+		assert.deepStrictEqual([await request('/v1/asks', 'PUT', KEY_A, { asks: [] }), await request('/v1/asks', 'PUT', KEY_A, { asks: 'no' }), await request('/v1/asks', 'GET', KEY_A)], [503, 400, 405]);
 	});
 
 	test('command output and ends from a window reach only the board of that window\'s session', () => {

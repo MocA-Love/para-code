@@ -15,6 +15,7 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
 import {
+	IParadisInboxEntry,
 	IParadisInboxPaneStatus,
 	IParadisInboxRecordInput,
 	IParadisInboxRevealRequest,
@@ -166,6 +167,26 @@ export class ParadisNotificationInboxService extends Disposable {
 		});
 	}
 
+	/**
+	 * 「あなたの番」のカードの「ペインへ移動」。通知の記録が無いペインにも移れるよう、ペインの鍵で頼む。
+	 * そのペインの未読も既読にする。
+	 */
+	requestRevealPane(value: unknown): void {
+		const input = value !== null && typeof value === 'object' ? value as Record<string, unknown> : {};
+		const paneKey = text(input.paneKey);
+		if (paneKey === undefined || typeof input.windowId !== 'number') {
+			return;
+		}
+		const stateKey = text(input.stateKey);
+		this.changed(this.ledger.markPanesRead([paneKey]));
+		this._onDidRequestReveal.fire({ entryId: '', paneKey, windowId: input.windowId, ...(stateKey !== undefined ? { stateKey } : {}) });
+	}
+
+	/** そのペインのいちばん新しい記録（「人が答えるもの」の台帳の書き手が、ペインの名札と持っているウィンドウを引く）。 */
+	latestOfPane(paneKey: string): IParadisInboxEntry | undefined {
+		return this.ledger.snapshot().entries.find(entry => entry.paneKey === paneKey);
+	}
+
 	private changed(changed: boolean): void {
 		if (changed) {
 			this.ledger.bumpRevision();
@@ -200,13 +221,25 @@ export class ParadisNotificationInboxChannel implements IServerChannel<string> {
 			// 開いているペインは接続（ウィンドウ）ごとに持つ。接続が切れたら外す（下の登録を参照）。
 			case 'setLivePanes': this.service.setLivePanes(ctx, args[0]); return undefined as T;
 			case 'requestReveal': this.service.requestReveal(args[0]); return undefined as T;
+			case 'requestRevealPane': this.service.requestRevealPane(args[0]); return undefined as T;
 			default: throw new Error(`Method not found: ${command}`);
 		}
 	}
 }
 
+let shared: ParadisNotificationInboxService | undefined;
+
+/**
+ * shared process に 1 つだけの通知の台帳。同じ shared process の中の読み手（「人が答えるもの」の台帳の書き手）は
+ * ここから取る。登録の順番に左右されないよう、最初に呼ばれたときに作る。
+ */
+export function paradisSharedNotificationInboxService(): ParadisNotificationInboxService {
+	shared ??= new ParadisNotificationInboxService();
+	return shared;
+}
+
 ParadisSharedProcessContributions.register(PARADIS_NOTIFICATION_INBOX_CHANNEL, ({ server }) => {
-	const service = new ParadisNotificationInboxService();
+	const service = paradisSharedNotificationInboxService();
 	server.registerChannel(PARADIS_NOTIFICATION_INBOX_CHANNEL, new ParadisNotificationInboxChannel(service));
 	// ウィンドウを閉じた（再読み込みした）ら、そのウィンドウのペインを「開いている」から外す。
 	// 再読み込みなら、新しい接続がすぐに同じペインを知らせ直す。
@@ -221,6 +254,9 @@ ParadisSharedProcessContributions.register(PARADIS_NOTIFICATION_INBOX_CHANNEL, (
 		dispose: () => {
 			listener.dispose();
 			service.dispose();
+			if (shared === service) {
+				shared = undefined;
+			}
 		},
 	};
 });

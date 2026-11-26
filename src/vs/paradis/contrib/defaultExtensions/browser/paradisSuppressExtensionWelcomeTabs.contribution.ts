@@ -6,7 +6,9 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 既定拡張の初回アクティベーション時に自動で開く「Welcome」webview タブを、一度だけ自動で閉じる。
+// 拡張機能の初回アクティベーション時に自動で開く「Welcome」webview タブを、一度だけ自動で閉じる。
+// 対象の 2 つは既定では入れなくなった（2026-11-27）。自分で入れた人のために残している。入れていない人では
+// 該当するタブが開かないので、何も閉じない。
 //
 // 対象は「無効化する設定が拡張側に存在しない」もののみ（設定があるものは
 // paradisDefaultSettings.contribution.ts の既定値で抑止している）:

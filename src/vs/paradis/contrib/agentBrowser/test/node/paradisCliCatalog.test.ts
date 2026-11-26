@@ -35,6 +35,7 @@ const TOOLS_BY_PROVIDER_GROUP: Readonly<Record<string, readonly string[]>> = {
 	],
 	ide: [
 		'read_para_code_guide', 'list_spaces', 'create_space', 'remove_space', 'launch_agent', 'create_scheduled_run',
+		'create_space_section', 'update_space_section', 'remove_space_section', 'move_space_to_section',
 		'list_terminals', 'read_terminal', 'wait_for_terminal', 'send_terminal_input', 'send_terminal_key', 'create_terminal', 'close_terminal',
 		'bot_item_list', 'bot_item_show', 'bot_item_add', 'bot_item_update', 'bot_suggest',
 		'list_bots', 'create_bot', 'update_bot', 'start_bot', 'stop_bot', 'remove_bot',
@@ -44,7 +45,7 @@ const TOOLS_BY_PROVIDER_GROUP: Readonly<Record<string, readonly string[]>> = {
 	board: ['board_complete_step', 'board_ask_human'],
 	mobile: [
 		'mobile_fold', 'mobile_gesture', 'mobile_get_attached_device', 'mobile_grant_permission', 'mobile_install_app', 'mobile_launch_app', 'mobile_list_devices', 'mobile_press_button',
-		'mobile_read_log', 'mobile_request_device', 'mobile_rotate', 'mobile_screenshot', 'mobile_swipe', 'mobile_tap', 'mobile_type_text', 'mobile_ui_find', 'mobile_ui_snapshot', 'mobile_ui_tap',
+		'mobile_read_log', 'mobile_release_device', 'mobile_request_device', 'mobile_rotate', 'mobile_screenshot', 'mobile_swipe', 'mobile_tap', 'mobile_type_text', 'mobile_ui_find', 'mobile_ui_snapshot', 'mobile_ui_tap',
 	],
 	computer: [
 		'computer_activate_app', 'computer_click', 'computer_drag', 'computer_get_app_state', 'computer_hotkey', 'computer_list_apps', 'computer_list_windows', 'computer_paste_text',
@@ -112,6 +113,7 @@ suite('paradisCliCatalog', () => {
 			port: ['list-port-forwards (list)', 'forward-port', 'stop-port-forward', 'reforward-port', 'clean-up-port-forwards'],
 			ide: [
 				'preview-file', 'read-para-code-guide', 'list-spaces', 'create-space', 'remove-space', 'launch-agent', 'create-scheduled-run',
+				'create-space-section', 'update-space-section', 'remove-space-section', 'move-space-to-section',
 				'bot-item-list', 'bot-item-show', 'bot-item-add', 'bot-item-update', 'bot-suggest', 'list-bots', 'create-bot', 'update-bot', 'start-bot', 'stop-bot', 'remove-bot',
 			],
 			doc: ['list-docs', 'adopt-doc', 'read-doc-comments', 'reply-doc-comment'],

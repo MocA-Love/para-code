@@ -69,7 +69,7 @@ Para Code は `microsoft/vscode` を upstream として fetch し続けている
 
 ## 同梱拡張機能
 
-[extensions](extensions) フォルダには、多言語対応の文法・スニペットなどを提供する組み込み拡張機能が含まれます（本家由来）。加えて Para Code では、Open VSX に未公開のいくつかのサードパーティ拡張機能を VSIX として同梱し、起動時に自動インストールする仕組みを備えています。拡張機能の取得元は Open VSX Registry です。
+[extensions](extensions) フォルダには、多言語対応の文法・スニペットなどを提供する組み込み拡張機能が含まれます（本家由来）。加えて Para Code では、初回起動時に日本語言語パック・配色（Houston）・ファイルアイコン（Material Icon Theme）の 3 つを Open VSX Registry から自動でインストールします。拡張機能の取得元は Open VSX Registry です。
 
 ## 開発コンテナ
 
