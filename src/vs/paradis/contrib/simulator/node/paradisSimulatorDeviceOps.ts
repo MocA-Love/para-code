@@ -710,7 +710,9 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 		const appId = requireAppId(resolved.platform, args.appId);
 		await this._commands.launch(resolved.platform, resolved.nativeId, appId, args.relaunch === true, signal);
 		// 前面のアプリが変わると画面の向きも変わりうるので、覚えた大きさは捨てる（次のジェスチャーで取り直す）
+		// 台帳の id と一覧の今の id の両方（同じ端末を、起動前の id で持つペインと起動後の id で持つペインがありうる）
 		this._screenSizes.delete(resolved.attachedId);
+		this._screenSizes.delete(resolved.device.id);
 		return textResult(`Launched ${appId} on ${resolved.device.name}.`);
 	}
 
