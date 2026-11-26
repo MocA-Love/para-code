@@ -6,14 +6,14 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// Dock（macOS）・ランチャー（Linux）・タスクバー（Windows）のアイコンの件数。数えるのは確認が必要な
-// ペインの数。メニューバー（通知領域）のアイコンへの中身の受け渡しは menuBar/ に移した。
+// Dock（macOS）・ランチャー（Linux）・タスクバー（Windows）のアイコンの件数。数えるのはベルと同じ
+// 「あなたの番」（台帳の待ちと、台帳に載っていないペインの許可待ち・質問）の数で、完了の未読は数えない。メニューバー（通知領域）のアイコンへの中身の受け渡しは menuBar/ に移した。
 //
 // 件数は upstream の `INativeHostService.setApplicationBadge` で出す。main の DockBadgeManager
 // （windowImpl.ts）がウィンドウごとの数を足し合わせ、ウィンドウが閉じたらその分を外し、
 // 「注意を引く」赤い点（FocusMode.Notify）より数を優先する。そこで各ウィンドウは
 // **自分が持っているペインの分だけ**を出す。全体の数を各ウィンドウから出すと、ウィンドウの数だけ
-// 掛け算になる。`app.setBadgeCount` を直接呼ぶと DockBadgeManager と取り合うので呼ばない。
+// 掛け算になる。ペインを持たない 1 件（Bot の項目など）はどのウィンドウの分にもしない。`app.setBadgeCount` を直接呼ぶと DockBadgeManager と取り合うので呼ばない。
 
 import { mainWindow } from '../../../../base/browser/window.js';
 import { disposableTimeout } from '../../../../base/common/async.js';
@@ -29,7 +29,9 @@ import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase 
 import { ACTIVITY_BAR_BADGE_BACKGROUND, ACTIVITY_BAR_BADGE_FOREGROUND } from '../../../../workbench/common/theme.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisNotificationsSettingsService } from '../../notifications/browser/paradisNotificationsSettings.js';
-import { IParadisNotificationInboxService, PARADIS_NOTIFICATION_DOCK_BADGE_SETTING, paradisInboxAttentionPaneCount, paradisInboxPaneKey } from '../common/paradisNotificationInbox.js';
+import { IParadisHumanAskService } from '../../humanAsk/common/paradisHumanAsk.js';
+import { IParadisNotificationInboxService, PARADIS_NOTIFICATION_DOCK_BADGE_SETTING, paradisInboxPaneKey } from '../common/paradisNotificationInbox.js';
+import { paradisInboxBadgeCounts } from '../common/paradisNotificationInboxCounts.js';
 
 /** Windows のタスクバーの重ね絵は小さく描かれるので、2倍で描く。 */
 const WINDOWS_ICON_SIZE = 32;
@@ -44,16 +46,18 @@ class ParadisNotificationInboxBadge extends Disposable implements IWorkbenchCont
 	private readonly doNotDisturbExpiry = this._register(new MutableDisposable());
 
 	constructor(
-		@IParadisNotificationInboxService private readonly inboxService: IParadisNotificationInboxService,
 		@IParadisPaneTokenService private readonly paneTokenService: IParadisPaneTokenService,
 		@INativeHostService private readonly nativeHostService: INativeHostService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IThemeService private readonly themeService: IThemeService,
 		@ILogService private readonly logService: ILogService,
 		@IParadisNotificationsSettingsService private readonly notificationsSettingsService: IParadisNotificationsSettingsService,
+		@IParadisHumanAskService private readonly humanAskService: IParadisHumanAskService,
+		@IParadisNotificationInboxService private readonly inboxService: IParadisNotificationInboxService,
 	) {
 		super();
 		const update = () => this.updateBadge();
+		this._register(this.humanAskService.onDidChange(update));
 		this._register(this.inboxService.onDidChange(update));
 		this._register(this.paneTokenService.onDidChange(update));
 		this._register(this.notificationsSettingsService.onDidChangeDoNotDisturb(update));
@@ -80,7 +84,7 @@ class ParadisNotificationInboxBadge extends Disposable implements IWorkbenchCont
 			: undefined;
 		const enabled = !doNotDisturb.enabled && this.configurationService.getValue<boolean>(PARADIS_NOTIFICATION_DOCK_BADGE_SETTING) !== false;
 		const owned = new Set(this.paneTokenService.listPaneTokens().map(entry => paradisInboxPaneKey(entry.token)));
-		this.setBadge(enabled ? paradisInboxAttentionPaneCount(this.inboxService.snapshot, owned) : 0);
+		this.setBadge(enabled ? paradisInboxBadgeCounts(this.humanAskService.snapshot.entries, this.inboxService.snapshot, owned).dock : 0);
 	}
 
 	private setBadge(count: number, force = false): void {
@@ -90,7 +94,7 @@ class ParadisNotificationInboxBadge extends Disposable implements IWorkbenchCont
 		this.lastCount = count;
 		let badge: IApplicationBadge | undefined;
 		if (count > 0) {
-			const description = localize('paradis.inbox.badge', "対応が必要なペイン {0} 件", count);
+			const description = localize('paradis.inbox.badgeYourTurn', "あなたの番 {0} 件", count);
 			// iconDataURL は undefined を入れず省く（IPC の JSON 化で消え、main で別物に見えるため）
 			const iconDataURL = isWindows ? this.renderIcon(count) : undefined;
 			badge = iconDataURL ? { count, description, iconDataURL } : { count, description };
