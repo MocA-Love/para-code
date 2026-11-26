@@ -4,7 +4,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { ITaskBoardFlow, ITaskBoardManualSession, ITaskBoardTask, TaskBoardStepKind } from '@engine/paradisTaskBoard.js';
 import { useTaskActions } from '../actions.js';
 import { useApp } from '../context.js';
-import { KIND, needs, stageMismatch, STATUS, taskActivity } from '../format.js';
+import { botOriginLabel, KIND, needs, stageMismatch, STATUS, taskActivity } from '../format.js';
 import { usePhone, useStored } from '../hooks.js';
 import { Icon } from '../icons.js';
 import { activateOnKey, AgentTag, DueChip, Elapsed, LabelChip, Menu, PrChip, Status, tone } from './atoms.js';
@@ -45,7 +45,7 @@ export const Card = memo(function Card({ task, flow, selected }: { task: ITaskBo
 	const step = flow.steps[index];
 	const place = task.place ? (task.place.startsWith('manual:') ? task.place.slice(7) : app.snapshot.slots.find(s => s.id === task.place)?.name ?? task.place) : undefined;
 	const activity = taskActivity(task, flow);
-	const ref = task.issue ? `${task.issue.repo} #${task.issue.number}` : task.source === 'adopted' ? '取り込んだタスク' : 'ボードのタスク';
+	const ref = task.issue ? `${task.issue.repo} #${task.issue.number}` : task.origin ? botOriginLabel(task.origin) : task.source === 'adopted' ? '取り込んだタスク' : 'ボードのタスク';
 	return (
 		<div
 			className={`card ${needs(task) ? `need ${status.tone === 'amber' ? 'amber' : ''}` : ''} ${selected ? 'sel' : ''}`}

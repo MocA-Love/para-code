@@ -666,7 +666,6 @@ export const TASK_BOARD_ADD_TASK_LIMITS = Object.freeze({ title: 300, body: 20_0
 
 /** 制御文字を空白にし、続く空白を 1 つにして、前後の空白を落とす。 */
 function oneLine(value: string): string {
-	// eslint-disable-next-line no-control-regex
 	return value.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 

@@ -215,18 +215,27 @@ suite('ParadisTaskBoardBridgeService', () => {
 		const service = create(router);
 		await launch(service);
 		const chunks: string[] = [];
+		let accept = true;
 		const client = service.addEventClient(chunk => {
 			chunks.push(chunk);
 			if (chunk.includes('"type":"report"')) {
-				queueMicrotask(() => service.handle('POST', '/v1/reply', new URLSearchParams(), { replyId: 'reply-1', ok: true, message: 'Next: open a PR' }));
+				queueMicrotask(() => service.handle('POST', '/v1/reply', new URLSearchParams(), { replyId: 'reply-1', ok: accept, message: accept ? 'Next: open a PR' : 'Not now' }));
 			}
 		})!;
+		// ボードが受け付けた報告だけを、Bot の項目へ写すために流す（断られた報告は流さない）
+		const completed: unknown[] = [];
+		const listener = service.onDidCompleteStep(event => completed.push(event));
 		const result = await service.callTool(PANE_TOKEN, 'board_complete_step', { summary: 'Planned' }, undefined, context());
+		accept = false;
+		const declined = await service.callTool(PANE_TOKEN, 'board_complete_step', { summary: 'Again' }, undefined, context());
 		const refused = await service.callTool('other-pane', 'board_complete_step', { summary: 'Planned' }, undefined, context());
 		const notMine = await service.callTool(PANE_TOKEN, 'take_screenshot', {}, undefined, context());
+		listener.dispose();
 		client.dispose();
-		assert.deepStrictEqual({ result, refused, notMine, report: parseEvents(chunks).filter(event => (event as { type: string }).type === 'report') }, {
+		assert.deepStrictEqual({ result, declined, completed, refused, notMine, report: parseEvents(chunks).filter(event => (event as { type: string }).type === 'report').slice(0, 1) }, {
 			result: { content: [{ type: 'text', text: 'Next: open a PR' }] },
+			declined: { content: [{ type: 'text', text: 'Not now' }], isError: true },
+			completed: [{ launchId: 'L1', summary: 'Planned' }],
 			refused: { content: [{ type: 'text', text: 'このペインはタスクボードのタスクではありません' }], isError: true },
 			notMine: undefined,
 			report: [{ type: 'report', terminal: TERMINAL, replyId: 'reply-1', tool: 'complete_step', args: { summary: 'Planned' } }],

@@ -21,6 +21,7 @@
 // ペイントークンはボードへ出さない（ID はトークンのハッシュ）。
 
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
+import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { isAbsolute } from '../../../../base/common/path.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
@@ -158,6 +159,13 @@ function toolText(text: string): unknown {
 	return { content: [{ type: 'text', text }] };
 }
 
+/** ボードが受け付けた工程の終わりの報告。`launchId` はボードの `<タスクの id>:<試行番号>`。 */
+export interface IParadisTaskBoardStepCompleted {
+	readonly launchId: string;
+	/** エージェントの書いた要約（別のエージェントの言葉。データとして扱う）。 */
+	readonly summary: string;
+}
+
 export class ParadisTaskBoardBridgeService extends Disposable implements IParadisMcpToolProvider {
 	readonly cliGroup = 'board';
 
@@ -173,6 +181,12 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 	private readonly idCache = new Map<string, string>();
 	/** ボードの人の出番を「人が答えるもの」の台帳へ載せる取り込み役（台帳を渡されたときだけ）。 */
 	private readonly asks: ParadisTaskBoardAskBridge | undefined;
+	private readonly _onDidCompleteStep = this._register(new Emitter<IParadisTaskBoardStepCompleted>());
+	/**
+	 * ボードのエージェントが `board_complete_step` で工程の終わりを報告し、ボードが受け付けた（Bot の項目へ記録するため）。
+	 * 工程 1 つの報告で、タスクの完了ではない。時間切れで返事の来なかった報告は流さない。
+	 */
+	readonly onDidCompleteStep: Event<IParadisTaskBoardStepCompleted> = this._onDidCompleteStep.event;
 
 	constructor(
 		private readonly router: IParadisTaskBoardWindowRouter,
@@ -732,7 +746,11 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 			if (!parsed.ok) {
 				return toolError(parsed.message);
 			}
+			const launchId = this.terminals.get(terminal)?.launchId;
 			const reply = await this.report(terminal, 'complete_step', parsed.value, signal);
+			if (reply?.ok && launchId !== undefined) {
+				this._onDidCompleteStep.fire({ launchId, summary: parsed.value.summary });
+			}
 			if (reply === undefined) {
 				return toolText(DELIVERED_MESSAGE);
 			}
