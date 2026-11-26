@@ -538,6 +538,14 @@ const MOD_ROW_HOLD_MS = 300;
 
 /** 端末の確認の画面でしか許可できない承認に、モバイルから許可を送ったときの断り。 */
 const PARADIS_APPROVAL_ANSWER_ON_PC_MESSAGE = 'この操作は PC の Claude Code の確認画面でしか許可できません。PC で答えてください';
+/**
+ * mod（PermissionRequest の hook）から許可を返しても Claude Code が受け付けないツール。許可はキーの経路で送る（拒否は mod から効く）。
+ *
+ * Claude Code 2.1.332 で実測（2026-11-26）: 計画の確定（ExitPlanMode）は、mod が `allow` を返しても確認の画面が残った（Bash は
+ * 「Allowed by PermissionRequest hook」で進んだ）。mod の `tool.check` はこの承認に `decider: 'person'` を付けないので、
+ * `personOnly` では見分けられない。`deny` は効いた（「Denied by PermissionRequest hook」）。確認の画面の `1` は効く。
+ */
+const CLAUDE_HOOK_ALLOW_UNHEARD_TOOLS: ReadonlySet<string> = new Set(['ExitPlanMode']);
 
 /**
  * モバイルの承認の回答が許可か（`yes`・`always`、画面の番号の選択肢で文言が Yes で始まるもの）。文言の無い番号の選択肢は
@@ -8114,6 +8122,10 @@ export class ParadisMobileAgentChat extends Disposable {
 		}
 		if (permission === undefined || (decision.always && !permission.hasSuggestions)
 			|| (denyMessage !== undefined && (decision.allow || !permission.acceptsDenyMessage))) {
+			return 'none';
+		}
+		if (decision.allow && CLAUDE_HOOK_ALLOW_UNHEARD_TOOLS.has(permission.toolName)) {
+			// mod から許可を返しても確認が閉じない（答えた印だけが付いて、計画の確定が止まったままになる）。キーの経路へ
 			return 'none';
 		}
 		if (this.isModAnswerLocked(lockKey)) {
