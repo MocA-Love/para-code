@@ -26,6 +26,13 @@ export const PARADIS_BOT_ITEM_STATUSES = ['planned', 'working', 'needs_you', 'do
 export type ParadisBotItemStatus = typeof PARADIS_BOT_ITEM_STATUSES[number];
 
 /** 長い文は断る（切らない）。詳しい報告はファイルかリンクに置かせる。 */
+/**
+ * 項目の台帳（`items.json`）の大きさの上限（バイト）。超える Bot の書き込みは断る。持ち主の操作（閉じる・コメントなど）
+ * と Bot が項目を閉じる書き込みは通す。読み込みは上限を超えたファイルも読む（壊さない）。件数の上限の掛け算だけでは
+ * 最悪で数 GB になるため。
+ */
+export const PARADIS_BOT_ITEMS_BYTE_LIMIT = 32 * 1024 * 1024;
+
 export const PARADIS_BOT_ITEM_LIMITS = Object.freeze({
 	title: 200,
 	description: 20_000,
@@ -229,11 +236,22 @@ export function paradisBotItemCounts(state: IParadisBotItemsState, botId: string
 	return { open, needsYou, lastActivityAt };
 }
 
-/** Bot へまだ届けていないイベントのある項目と、そのイベント。 */
+/**
+ * Bot へまだ届けていないイベント。読み取り専用の項目（知らない状態）は印を外せないので、数えも配りもしない
+ * （出すと、新しい版が書いた項目が古い版で開くたびに「未配達」に出続ける）。
+ */
+export function paradisBotItemUndelivered(item: IParadisBotItem): IParadisBotItemEvent[] {
+	return paradisIsBotItemLocked(item) ? [] : item.events.filter(event => event.toBot === true);
+}
+
+/** Bot へまだ届けていないイベントのある項目と、そのイベント。新しい版の台帳（書けない）では何も出さない。 */
 export function paradisBotItemsPendingMail(state: IParadisBotItemsState, botId: string): { readonly item: IParadisBotItem; readonly events: readonly IParadisBotItemEvent[] }[] {
 	const pending: { item: IParadisBotItem; events: IParadisBotItemEvent[] }[] = [];
+	if (state.version !== PARADIS_BOT_ITEMS_VERSION) {
+		return pending;
+	}
 	for (const item of state.items) {
-		const events = item.botId === botId ? item.events.filter(event => event.toBot === true) : [];
+		const events = item.botId === botId ? paradisBotItemUndelivered(item) : [];
 		if (events.length > 0) {
 			pending.push({ item, events });
 		}
@@ -781,6 +799,9 @@ function storedAsk(value: unknown): IParadisBotItemAsk | undefined {
 	return typeof questions === 'string' ? undefined : { eventId: value.eventId, ...(context !== undefined ? { context } : {}), questions };
 }
 
+/** この版が知っている項目の欄。 */
+const KNOWN_ITEM_KEYS: ReadonlySet<string> = new Set(['uid', 'number', 'botId', 'title', 'description', 'doneMeans', 'status', 'ask', 'closeNote', 'links', 'events', 'lastEventId', 'snoozedUntil', 'lastActivityAt', 'createdAt', 'updatedAt', 'closedAt']);
+
 function storedItem(value: unknown): IParadisBotItem | undefined {
 	if (!isRecord(value)) {
 		return undefined;
@@ -805,7 +826,8 @@ function storedItem(value: unknown): IParadisBotItem | undefined {
 	const ask = status === 'needs_you' ? storedAsk(value.ask) : undefined;
 	const snoozedUntil = time(value.snoozedUntil);
 	const closedAt = time(value.closedAt);
-	const known = PARADIS_BOT_ITEM_STATUSES.some(candidate => candidate === status);
+	// 知らない状態か、新しい版が足した欄があれば、読んだ値をそのまま持って読み取り専用にする（書き戻しで消さない）
+	const known = PARADIS_BOT_ITEM_STATUSES.some(candidate => candidate === status) && Object.keys(value).every(key => KNOWN_ITEM_KEYS.has(key));
 	return {
 		uid, number: value.number, botId, title,
 		...(description !== undefined ? { description } : {}),
@@ -818,7 +840,6 @@ function storedItem(value: unknown): IParadisBotItem | undefined {
 		...(snoozedUntil !== undefined ? { snoozedUntil } : {}),
 		lastActivityAt, createdAt, updatedAt,
 		...(closedAt !== undefined ? { closedAt } : {}),
-		// 知らない状態の項目は、読んだ値をそのまま持って読み取り専用にする
 		...(known ? {} : { preserved: value }),
 	};
 }

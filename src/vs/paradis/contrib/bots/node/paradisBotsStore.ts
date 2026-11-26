@@ -18,7 +18,7 @@ import { promises as fs } from 'fs';
 import { dirname, join } from '../../../../base/common/path.js';
 import { ParadisJsonStateWriter } from '../../../node/paradisJsonStateWriter.js';
 import { EMPTY_PARADIS_BOT_ITEMS_STATE, IParadisBotItemsState, PARADIS_BOT_ITEMS_VERSION, paradisBotItemsToStored, paradisParseBotItemsState } from '../common/paradisBotItems.js';
-import { EMPTY_PARADIS_BOTS_STATE, IParadisBotsState, PARADIS_BOTS_VERSION, paradisParseBotsState } from '../common/paradisBots.js';
+import { EMPTY_PARADIS_BOTS_STATE, IParadisBotsState, PARADIS_BOTS_VERSION, paradisBotsToStored, paradisParseBotsState } from '../common/paradisBots.js';
 import { EMPTY_PARADIS_BOT_PANES_STATE, IParadisBotPanesState, PARADIS_BOT_PANES_VERSION, paradisParseBotPanesState } from './paradisBotPanes.js';
 
 export interface IParadisBotsLoaded<T> {
@@ -72,7 +72,11 @@ function jsonFile<T extends { readonly version: number }>(path: string, format: 
 			if (state.version !== format.version) {
 				throw new Error(`refusing to write ${path}: it was written by a newer Para Code (version ${state.version})`);
 			}
-			prepared ??= fs.mkdir(dirname(path), { recursive: true, mode: 0o700 });
+			// フォルダを作れなかったときは覚えず、次の書き込みでやり直す（1 回の失敗で再起動まで書けなくならない）
+			prepared ??= fs.mkdir(dirname(path), { recursive: true, mode: 0o700 }).catch(error => {
+				prepared = undefined;
+				throw error;
+			});
 			await prepared;
 			await writer.write(JSON.stringify(format.stored(state), undefined, '\t'));
 		},
@@ -85,7 +89,7 @@ export function paradisBotsDataFolder(userDataPath: string): string {
 }
 
 export function createParadisBotsFile(userDataPath: string, now: () => number = Date.now): IParadisBotsJsonFile<IParadisBotsState> {
-	return jsonFile(join(paradisBotsDataFolder(userDataPath), 'bots.json'), { empty: EMPTY_PARADIS_BOTS_STATE, version: PARADIS_BOTS_VERSION, parse: paradisParseBotsState, stored: state => state }, now);
+	return jsonFile(join(paradisBotsDataFolder(userDataPath), 'bots.json'), { empty: EMPTY_PARADIS_BOTS_STATE, version: PARADIS_BOTS_VERSION, parse: paradisParseBotsState, stored: paradisBotsToStored }, now);
 }
 
 export function createParadisBotItemsFile(userDataPath: string, now: () => number = Date.now): IParadisBotsJsonFile<IParadisBotItemsState> {

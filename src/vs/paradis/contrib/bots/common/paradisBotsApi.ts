@@ -37,7 +37,9 @@ export interface IParadisBotPaneState {
 }
 
 /** 一覧の 1 行に要る値。最後の発言の本文は会話の記録の側（agentChat）から取るので、ここには持たない。 */
-export interface IParadisBotSummary extends IParadisBot {
+export interface IParadisBotSummary extends Omit<IParadisBot, 'preserved'> {
+	/** 新しい Para Code が足した欄を持っていて、この版からは変えられない。 */
+	readonly readOnly?: true;
 	/** 「あなたの番」の件数（Needs you の項目。後回し中と、一時停止中の Bot の分は数えない）。 */
 	readonly needsYou: number;
 	readonly openItems: number;
@@ -66,8 +68,11 @@ export function paradisBotActivity(bot: Pick<IParadisBot, 'paused'>, panes: read
 
 export function paradisBotSummary(bot: IParadisBot, items: IParadisBotItemsState, panes: readonly IParadisBotPaneState[], now: number): IParadisBotSummary {
 	const counts = paradisBotItemCounts(items, bot.id, now);
+	// 読んだ値（知らない欄）は画面へ送らず、読み取り専用の印だけにする
+	const { preserved, ...known } = bot;
 	return {
-		...bot,
+		...known,
+		...(preserved !== undefined ? { readOnly: true } : {}),
 		needsYou: bot.paused ? 0 : counts.needsYou,
 		openItems: counts.open,
 		activity: paradisBotActivity(bot, panes),
@@ -107,6 +112,15 @@ export interface IParadisBotStopRequest {
 // ---- ウィンドウ側のサービス ---------------------------------------------------------------------
 
 export const PARADIS_BOTS_CHANNEL = 'paradisBots';
+
+/**
+ * ウィンドウが shared process へ登録する窓口（エージェントの管理の道具が `callOwningWindow` で呼ぶ）。
+ * 引数は `[呼び出し元のペイントークン, …]`。`start`（Bot のターミナルを裏で起動）、`confirmRemove`（利用者に削除を
+ * 確かめる）、`confirmChange`（エージェント・権限・役割の変更を確かめる）。確かめるものは確かめる前に返る。
+ */
+export const PARADIS_BOTS_WINDOW_CHANNEL = 'paradisBotsWindow';
+
+export type ParadisBotsWindowResult = { readonly ok: true; readonly data: object } | { readonly ok: false; readonly error: string };
 
 /**
  * Bot の機能を使えるようにするか（試験中、既定 false）。設定の登録は Bot の一覧の帯の側にあり、ここは id だけを

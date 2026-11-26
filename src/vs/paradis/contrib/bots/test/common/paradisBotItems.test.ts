@@ -416,7 +416,8 @@ suite('Paradis bot items', () => {
 	test('読み込み: 知らない状態の項目は壊さず、その項目だけ読み取り専用にする', () => {
 		const base = JSON.parse(JSON.stringify(paradisBotItemsToStored(one())));
 		// PR 12 で足す予定の `waiting` を、新しい Para Code が書いた形（知らない欄 `wait` 付き）
-		const waiting = { ...base.items[0], uid: 'u2', number: 2, status: 'waiting', wait: { text: 'CI の完了', at: 5 } };
+		// 新しい版で持ち主がコメントした（Bot へ届ける印 toBot が付いた）まま
+		const waiting = { ...base.items[0], uid: 'u2', number: 2, status: 'waiting', wait: { text: 'CI の完了', at: 5 }, events: [...base.items[0].events, { id: 2, kind: 'commented', actor: 'owner', at: 3, text: '見て', toBot: true }], lastEventId: 2 };
 		const stored = { version: 1, nextNumber: 3, items: [base.items[0], waiting] };
 		const state = paradisParseBotItemsState(stored);
 		assert.ok(state);
@@ -428,7 +429,10 @@ suite('Paradis bot items', () => {
 			ownerComment: code(paradisBotItemOwnerComment(state, 'u2', { text: 'x' }, 4000)),
 			ownerStatus: code(paradisBotItemOwnerStatus(state, 'u2', 'done', undefined, 4000)),
 			ownerSnooze: code(paradisBotItemOwnerSnooze(state, 'u2', 9000, 4000)),
-			delivered: paradisBotItemsMarkDelivered(state, 'u2', [1]) === state,
+			delivered: paradisBotItemsMarkDelivered(state, 'u2', [2]) === state,
+			// 読み取り専用の項目は印を外せないので、未配達にも数えない（古い版で開くたびに出続けないように）
+			pending: paradisBotItemsPendingMail(state, 'b1'),
+			pendingInNewerLedger: paradisBotItemsPendingMail({ ...state, version: 2 }, 'b1'),
 			counts: paradisBotItemCounts(state, 'b1', 4000),
 			// 書き戻しても、読んだ値（知らない欄を含む）がそのまま残る
 			roundTrip: JSON.parse(JSON.stringify(paradisBotItemsToStored(added))).items[1],
@@ -440,9 +444,23 @@ suite('Paradis bot items', () => {
 			ownerStatus: 'read_only',
 			ownerSnooze: 'read_only',
 			delivered: true,
+			pending: [],
+			pendingInNewerLedger: [],
 			counts: { open: 2, needsYou: 0, lastActivityAt: 1000 },
 			roundTrip: waiting,
 		});
+	});
+
+	test('読み込み: 知っている状態でも新しい版が足した欄のある項目は、その項目だけ読み取り専用にして欄を残す', () => {
+		const base = JSON.parse(JSON.stringify(paradisBotItemsToStored(one())));
+		const extended = { ...base.items[0], priority: 'high' };
+		const state = paradisParseBotItemsState({ version: 1, nextNumber: 2, items: [extended] });
+		assert.ok(state);
+		assert.deepStrictEqual({
+			locked: state.items.map(paradisIsBotItemLocked),
+			botWrite: code(paradisBotItemUpdate(state, 'b1', 1, { comment: 'x' }, 4000)),
+			roundTrip: JSON.parse(JSON.stringify(paradisBotItemsToStored(state))).items[0],
+		}, { locked: [true], botWrite: 'read_only', roundTrip: extended });
 	});
 
 	test('読み込み: 新しい版の台帳は中身を読めるが、どの書き込みも断る', () => {
