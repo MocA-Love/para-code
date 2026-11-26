@@ -78,14 +78,24 @@ suite('ParadisAgentLaunchLedger', () => {
 		const ledger = new ParadisAgentLaunchLedger(root, new NullLogService(), async (shellPid, agent) => { asked.push([shellPid, agent]); return environment; }, () => now);
 		const file = join(root, PARADIS_AGENT_LAUNCH_LEDGER_FILE);
 
-		await ledger.record({ agent: 'claude', sessionId: id, commandLine: 'CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS=1 ANTHROPIC_API_KEY=sk-typed claude --dangerously-skip-permissions --model opus', shellPid: 4242 });
+		await ledger.record({ agent: 'claude', sessionId: id, commandLine: 'CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS=1 ANTHROPIC_API_KEY=sk-typed claude --dangerously-skip-permissions --model opus', shellPid: 4242, startSource: 'startup' });
 		const started = await ledger.profile('claude', id);
 		const written = await fs.readFile(file, 'utf8');
+		const ownerOnly = process.platform === 'win32' || ((await fs.stat(file)).mode & 0o777) === 0o600;
 		// Para Code が「確認あり」で再開した起動（プロセスの環境は読めなかったとする）
 		delete environment.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
 		await ledger.record({ agent: 'claude', sessionId: id, commandLine: `claude --permission-mode manual --model sonnet --resume ${id}` });
+		// 同じ起動をもう一度知らせても（窓の再読み込み）、控えのある会話は変えず、プロセスの環境も読みに行かない
+		await ledger.record({ agent: 'claude', sessionId: id, commandLine: 'claude --model haiku', shellPid: 4242, startSource: 'startup' });
 		const resumed = await ledger.profile('claude', id);
-		// 分岐の起動が元の会話の ID で届いても、元の会話の控えを置き換えない。分岐先の ID なら控える
+		// 確認なしで起動した `claude` の中の `/resume` で前からある会話へ移った・SessionStart を見ていない会話には、
+		// 権限を広げるものを控えない
+		await ledger.record({ agent: 'claude', sessionId: 'x1', commandLine: 'CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS=1 claude --dangerously-skip-permissions --model opus', startSource: 'resume' });
+		await ledger.record({ agent: 'codex', sessionId: 'x2', commandLine: 'codex --yolo -m gpt-6.2-sol' });
+		const notCreatedHere = [await ledger.profile('claude', 'x1'), await ledger.profile('codex', 'x2')];
+		// 分岐の起動が元の会話の ID で届いても、元の会話の控えを置き換えない。分岐先の ID なら控える。元の会話を名指ししない
+		// 分岐は、届いた ID が元か分岐先か分からないので控えない
+		await ledger.record({ agent: 'claude', sessionId: 'f2', commandLine: 'claude --dangerously-skip-permissions --continue --fork-session', startSource: 'resume' });
 		await ledger.record({ agent: 'claude', sessionId: id, commandLine: `claude --permission-mode manual --resume ${id} --fork-session` });
 		await ledger.record({ agent: 'claude', sessionId: 'f1', commandLine: `claude --dangerously-skip-permissions --resume ${id} --fork-session` });
 		const forkOfSameId = [await ledger.profile('claude', id), await ledger.profile('claude', 'f1')];
@@ -93,7 +103,7 @@ suite('ParadisAgentLaunchLedger', () => {
 		await ledger.record({ agent: 'codex', sessionId: 'c1', commandLine: 'claude --model opus' });
 		await ledger.record({ agent: 'claude', sessionId: 'p1', commandLine: 'claude -p hi --model opus' });
 		await ledger.record({ agent: 'claude', sessionId: '-bad', commandLine: 'claude --model opus' });
-		await ledger.record({ agent: 'codex', sessionId: 'c2', commandLine: 'codex --yolo -m gpt-6.2-sol' });
+		await ledger.record({ agent: 'codex', sessionId: 'c2', commandLine: 'codex --yolo -m gpt-6.2-sol', startSource: 'startup' });
 		const codex = await ledger.profile('codex', 'c2');
 		// 手で書き換えられた台帳も、読むたびに許可リストで絞る
 		const tampered = JSON.parse(await fs.readFile(file, 'utf8'));
@@ -102,7 +112,7 @@ suite('ParadisAgentLaunchLedger', () => {
 		tampered.entries['opencode:t3'] = { env: {}, flags: { '--model': 'x' }, at: now };
 		await fs.writeFile(file, JSON.stringify(tampered));
 		const sanitized = [await ledger.profile('claude', 't1'), await ledger.profile('claude', 't2'), await ledger.profile('opencode', 't3')];
-		// 古い会話の控えは、次に書くときに消える。控えるものの無くなった会話も消える
+		// 古い会話の控えは、次に書くときに消える
 		now += PARADIS_AGENT_LAUNCH_LEDGER_MAX_AGE_MS + 1;
 		await ledger.record({ agent: 'claude', sessionId: 'n1', commandLine: 'claude --effort high' });
 		await ledger.record({ agent: 'claude', sessionId: 'n2', commandLine: 'claude --effort high' });
@@ -113,30 +123,34 @@ suite('ParadisAgentLaunchLedger', () => {
 		await channel.call('test', 'recordAgentLaunch', ['garbage']);
 
 		assert.deepStrictEqual({
-			asked: asked[0],
+			asked,
 			started,
+			ownerOnly,
 			secretWritten: /sk-secret|sk-typed|ANTHROPIC|has space/.test(written),
 			resumed,
+			notCreatedHere,
 			forkOfSameId,
 			codex,
-			skipped: [await ledger.profile('codex', 'c1'), await ledger.profile('claude', 'p1'), await ledger.profile('claude', '-bad'), await ledger.profile(undefined, 3)],
+			skipped: [await ledger.profile('claude', 'f2'), await ledger.profile('codex', 'c1'), await ledger.profile('claude', 'p1'), await ledger.profile('claude', '-bad'), await ledger.profile(undefined, 3)],
 			sanitized,
 			keys,
 			viaChannel: [await channel.call('test', 'agentLaunchProfile', ['codex', 'c3']), await channel.call('test', 'agentLaunchProfile', ['codex', 'missing']), await channel.call('test', 'agentLaunchProfile', [])],
 			leftovers: (await fs.readdir(root)).filter(name => name.endsWith('.tmp')),
 		}, {
-			asked: [4242, 'claude'],
+			asked: [[4242, 'claude']],
 			started: { env: { CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS: '1', CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' }, flags: { '--dangerously-skip-permissions': true, '--model': 'opus' } },
+			ownerOnly: true,
 			secretWritten: false,
 			resumed: { env: { CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS: '1', CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' }, flags: { '--dangerously-skip-permissions': true, '--model': 'opus' } },
+			notCreatedHere: [{ env: {}, flags: { '--model': 'opus' } }, { env: {}, flags: { '--model': 'gpt-6.2-sol' } }],
 			forkOfSameId: [
 				{ env: { CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS: '1', CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' }, flags: { '--dangerously-skip-permissions': true, '--model': 'opus' } },
 				{ env: {}, flags: { '--dangerously-skip-permissions': true } },
 			],
 			codex: { env: {}, flags: { '--dangerously-bypass-approvals-and-sandbox': true, '--model': 'gpt-6.2-sol' } },
-			skipped: [undefined, undefined, undefined, undefined],
+			skipped: [undefined, undefined, undefined, undefined, undefined],
 			sanitized: [{ env: { CLAUDE_CODE_SIMPLE: '1' }, flags: {} }, undefined, undefined],
-			keys: ['claude:n1'],
+			keys: ['claude:n1', 'claude:n2'],
 			viaChannel: [{ env: {}, flags: { '--profile': 'work' } }, undefined, undefined],
 			leftovers: [],
 		});

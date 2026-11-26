@@ -15,7 +15,7 @@
 // 控えるのは名前を 1 つずつ挙げた許可リストだけ。鍵・トークン・URL・パスは控えない。値は引用の要らない文字だけを
 // 受け、台帳や接続先から来た値は組み立ての直前にもここで確かめ直す。
 
-import { IParadisAgentPaneSession } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import { IParadisAgentPaneSession, ParadisAgentSessionStartSource } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { paradisAgentOptionTakesValue, paradisInteractiveAgentCommand, paradisShellWords } from '../../mobileRelay/common/paradisAgentCliCommand.js';
 
 /** 控える対象のエージェント。 */
@@ -252,19 +252,67 @@ export function paradisAgentLaunchFromCommandLine(commandLine: string): IParadis
 	return { agent: command.agent, mode: command.mode, profile: paradisSanitizeAgentLaunchProfile(command.agent, { env, flags }) };
 }
 
-/**
- * 起動を台帳に入れるときの控え。会話を始めた起動（新規・分岐）は読めたものをそのまま控える。再開の起動は:
- * - 控えのある会話では、控えを変えない。再開は素のコマンドになることがあり（問い合わせの時間切れ、環境変数を
- *   付け直せない PowerShell・csh）、その起動で会話を始めたときの控えを消さないため
- * - 控えの無い会話（この機能より前に始めた会話など）では、権限を広げるもの（確認を省くフラグと環境変数）以外を控える。
- *   「権限確認なしで再開」を一度選んだだけで、その後の普通の再開まで確認なしにしないため
- */
-export function paradisMergeAgentLaunchProfile(existing: IParadisAgentLaunchProfile | undefined, captured: IParadisAgentLaunchProfile, mode: 'new' | 'resume' | 'fork'): IParadisAgentLaunchProfile {
-	if (mode !== 'resume') {
-		return captured;
+/** 会話 ID の形（Claude Code も Codex も UUID）。コマンド行の `--resume <値>` が、検索の語でなく会話 ID かを見分ける。 */
+const CONVERSATION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** 分岐の起動のコマンド行が名指しした元の会話の ID（`codex fork <id>`、`claude --resume <id> --fork-session`）。無ければ undefined。 */
+function forkSourceId(commandLine: string, command: { readonly agent: ParadisLaunchAgent; readonly forkedFromId?: string }): string | undefined {
+	if (command.agent === 'codex') {
+		return command.forkedFromId !== undefined && CONVERSATION_ID_PATTERN.test(command.forkedFromId) ? command.forkedFromId : undefined;
 	}
+	const words = paradisShellWords(commandLine);
+	for (let index = 0; index < words.length && words[index] !== '--'; index++) {
+		const word = words[index];
+		const value = word.startsWith('--resume=') ? word.slice('--resume='.length) : word === '--resume' || word === '-r' ? words[index + 1] : undefined;
+		if (value !== undefined && CONVERSATION_ID_PATTERN.test(value)) {
+			return value;
+		}
+	}
+	return undefined;
+}
+
+/**
+ * その起動を、会話 `sessionId` にどう控えるか。コマンド行は「ペインで動いているプロセスがどう起動されたか」で、
+ * hook が報告した会話がその起動で作られたとは限らない（`claude` の中の `/resume` で前からある会話へ移る、分岐の
+ * 直後に元の会話の ID が届く）。起動が作った会話と示せるときだけ `new` を返す:
+ *
+ * - 新規の起動: その会話の最初の SessionStart の `source` が `startup`・`clear` のとき。`resume` や、SessionStart を
+ *   見ていない会話は `resume`（前からある会話として扱い、権限を広げるものを控えない）
+ * - 分岐の起動: コマンド行が元の会話の ID を名指ししていて、届いた ID がそれと違うとき。元の ID で届いたものと、
+ *   元の会話を名指ししない分岐（`--continue --fork-session`・`codex fork --last`。届いた ID が元か分岐先か分からない）は
+ *   控えない（undefined）
+ * - 再開の起動: `resume`
+ */
+export function paradisAgentLaunchRecordMode(commandLine: string, sessionId: string, startSource: ParadisAgentSessionStartSource | undefined): 'new' | 'resume' | undefined {
+	const command = paradisInteractiveAgentCommand(commandLine);
+	if (command === undefined || command.mode === 'attach') {
+		return undefined;
+	}
+	if (command.mode === 'resume') {
+		return 'resume';
+	}
+	if (command.mode === 'fork') {
+		const source = forkSourceId(commandLine, command);
+		return source !== undefined && source.toLowerCase() !== sessionId.toLowerCase() && !commandLine.includes(sessionId) ? 'new' : undefined;
+	}
+	return startSource === 'startup' || startSource === 'clear' ? 'new' : 'resume';
+}
+
+/**
+ * 起動を台帳に入れるときの控え。控えのある会話では、控えを変えない: 会話 ID はその会話を作った起動でしか新しく
+ * 現れないので、控えがあるなら、それが会話を始めたときのもの（窓の再読み込みで同じ起動をもう一度知らせたときに、
+ * 環境を読めなかった回で消さない。再開は素のコマンドになることがあり、その起動でも消さない）。控えの無い会話は:
+ * - その起動が作った会話（`new`。{@link paradisAgentLaunchRecordMode}）は、読めたものをそのまま控える
+ * - 前からある会話（`resume`。この機能より前に始めた会話など）は、権限を広げるもの（確認を省くフラグと環境変数）
+ *   以外を控える。「権限確認なしで再開」を一度選んだり、確認なしで起動した CLI の中でその会話へ移ったりしただけで、
+ *   その後の普通の再開まで確認なしにしないため
+ */
+export function paradisMergeAgentLaunchProfile(existing: IParadisAgentLaunchProfile | undefined, captured: IParadisAgentLaunchProfile, mode: 'new' | 'resume'): IParadisAgentLaunchProfile {
 	if (existing !== undefined && !paradisIsEmptyLaunchProfile(existing)) {
 		return existing;
+	}
+	if (mode === 'new') {
+		return captured;
 	}
 	return {
 		env: Object.fromEntries(Object.entries(captured.env).filter(([name]) => !PERMISSION_WIDENING_ENV.has(name))),
@@ -411,6 +459,8 @@ export interface IParadisAgentLaunchToRecord {
 	readonly sessionId: string;
 	readonly commandLine: string;
 	readonly shellPid?: number;
+	/** その会話の最初の SessionStart の `source`（{@link IParadisAgentPaneSession.startSource}）。 */
+	readonly startSource?: ParadisAgentSessionStartSource;
 	readonly remote: boolean;
 }
 
@@ -441,7 +491,7 @@ export function paradisAgentLaunchesToRecord(
 			continue;
 		}
 		sent.add(key);
-		result.push({ agent, sessionId: session.sessionId, commandLine: terminal.commandLine, ...(terminal.shellPid !== undefined ? { shellPid: terminal.shellPid } : {}), remote: terminal.remote });
+		result.push({ agent, sessionId: session.sessionId, commandLine: terminal.commandLine, ...(terminal.shellPid !== undefined ? { shellPid: terminal.shellPid } : {}), ...(session.startSource !== undefined ? { startSource: session.startSource } : {}), remote: terminal.remote });
 	}
 	for (const key of sent) {
 		if (!live.has(key)) { sent.delete(key); }

@@ -20,6 +20,7 @@ import {
 	ParadisLaunchAgent,
 	paradisAgentLaunchFromCommandLine,
 	paradisAgentLaunchLedgerKey,
+	paradisAgentLaunchRecordMode,
 	paradisIsAllowedLaunchEnvName,
 	paradisIsEmptyLaunchProfile,
 	paradisIsLaunchAgent,
@@ -27,6 +28,7 @@ import {
 	paradisPruneAgentLaunchLedger,
 	paradisSanitizeAgentLaunchProfile,
 } from '../common/paradisAgentLaunchProfile.js';
+import { ParadisAgentSessionStartSource } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { PARADIS_RESUME_SESSION_ID_PATTERN } from '../common/paradisSessionResume.js';
 
 export const PARADIS_AGENT_LAUNCH_LEDGER_FILE = 'agent-launch-profiles.json';
@@ -47,6 +49,8 @@ export interface IParadisAgentLaunchRecordRequest {
 	readonly commandLine: string;
 	/** ペインのシェルの pid（このマシンの上のもの）。子のエージェントのプロセスの環境を読む。分からなければ省く。 */
 	readonly shellPid?: number;
+	/** その会話の最初の SessionStart の `source`。無ければ、前からある会話として扱う（権限を広げるものを控えない）。 */
+	readonly startSource?: ParadisAgentSessionStartSource;
 }
 
 function runPs(args: readonly string[]): Promise<string> {
@@ -217,8 +221,8 @@ export class ParadisAgentLaunchLedger {
 
 	/**
 	 * ペインでの起動を控える。コマンド行のフラグと先頭の `名前=値`、プロセスの環境（読めるとき）を合わせ、
-	 * 許可リストで絞って台帳に入れる。会話を始めた起動は上書きし、再開の起動は控えのある会話を変えない
-	 * （{@link paradisMergeAgentLaunchProfile}）。控えるものが無くなった会話は台帳から消す。
+	 * 許可リストで絞って台帳に入れる。控えのある会話は変えない。控えの無い会話は、その起動が作った会話と示せるときだけ
+	 * 権限を広げるものまで控える（{@link paradisAgentLaunchRecordMode}・{@link paradisMergeAgentLaunchProfile}）。
 	 */
 	record(request: IParadisAgentLaunchRecordRequest): Promise<void> {
 		return this.queue.queue(async () => {
@@ -230,9 +234,15 @@ export class ParadisAgentLaunchLedger {
 			if (launch === undefined || launch.agent !== request.agent) {
 				return;
 			}
-			// 分岐の起動のコマンド行にある ID は、元の会話のもの。分岐した直後に hook が元の ID を報告しても、
-			// 分岐の起動（確認なしを選んだかもしれない）で元の会話の控えを置き換えない
-			if (launch.mode === 'fork' && request.commandLine.includes(request.sessionId)) {
+			// コマンド行はペインのプロセスの起動で、届いた会話がその起動で作られたとは限らない（CLI の中の `/resume`、分岐の
+			// 直後に届く元の会話の ID）。作った会話と示せないときは、前からある会話として扱うか、控えない
+			const mode = paradisAgentLaunchRecordMode(request.commandLine, request.sessionId, typeof request.startSource === 'string' ? request.startSource : undefined);
+			if (mode === undefined) {
+				return;
+			}
+			const key = paradisAgentLaunchLedgerKey(request.agent, request.sessionId);
+			// 控えのある会話は変えないので、プロセスの環境を読みに行かない
+			if ((await this.read())[key] !== undefined) {
 				return;
 			}
 			let processEnvironment: Record<string, string> = {};
@@ -244,20 +254,12 @@ export class ParadisAgentLaunchLedger {
 				}
 			}
 			const captured = paradisSanitizeAgentLaunchProfile(request.agent, { env: { ...launch.profile.env, ...processEnvironment }, flags: launch.profile.flags });
-			const key = paradisAgentLaunchLedgerKey(request.agent, request.sessionId);
 			const entries = await this.read();
-			const merged = paradisMergeAgentLaunchProfile(entries[key], captured, launch.mode);
-			if (merged === entries[key]) {
+			const merged = paradisMergeAgentLaunchProfile(entries[key], captured, mode);
+			if (merged === entries[key] || paradisIsEmptyLaunchProfile(merged)) {
 				return;
 			}
-			if (paradisIsEmptyLaunchProfile(merged)) {
-				if (entries[key] === undefined) {
-					return;
-				}
-				delete entries[key];
-			} else {
-				entries[key] = { ...merged, at: this.now() };
-			}
+			entries[key] = { ...merged, at: this.now() };
 			try {
 				await this.write(paradisPruneAgentLaunchLedger(entries, this.now()));
 			} catch (error) {

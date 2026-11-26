@@ -1799,7 +1799,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				continue;
 			}
 			accepted.push(record);
-			this._recordPaneSession(token, record.event, field('session_id'), transcriptPath, field('cwd'), this._paneShells.get(token)?.remoteAuthority !== undefined);
+			this._recordPaneSession(token, record.event, field('session_id'), transcriptPath, field('cwd'), this._paneShells.get(token)?.remoteAuthority !== undefined, undefined, undefined, field('source'));
 		}
 		if (accepted.length === 0) {
 			return;
@@ -2308,7 +2308,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * hook から、そのペインで動いている会話を控える（`_paneSessions`）。
 	 * @param remote 接続先から届いた hook か（`host=` 付き、または接続先のペイン）。
 	 */
-	private _recordPaneSession(token: string, eventType: string, sessionId: string | undefined, transcriptPath: string | undefined, cwd: string | undefined, remote: boolean, agentKind?: ParadisHookAgentKind, cli?: string | null): void {
+	private _recordPaneSession(token: string, eventType: string, sessionId: string | undefined, transcriptPath: string | undefined, cwd: string | undefined, remote: boolean, agentKind?: ParadisHookAgentKind, cli?: string | null, source?: string): void {
 		if (eventType === 'SessionEnd' || eventType === 'TerminalExit') {
 			this._paneSessions.delete(token);
 			this._paneCursorAgents.delete(token);
@@ -2340,7 +2340,11 @@ export class ParadisAgentBrowserService extends Disposable {
 		// 会話の記録の場所（引き継ぎに使う。スナップショットには載せない）。同じ会話の間は、後の hook が持っていなければ前の値を使う。
 		// OpenCode は記録ではなくデータベースの場所なので控えない
 		const nextTranscriptPath = agent === 'opencode' ? undefined : transcriptPath ?? (previous?.sessionId === sessionId ? previous.transcriptPath : undefined);
-		this._paneSessions.set(token, { agent, sessionId, ...(agent === 'opencode' ? (resumeCli === null ? { resumable: false as const } : { cli: resumeCli }) : {}), at: Date.now(), ...(nextCwd !== undefined ? { cwd: nextCwd } : {}), ...(nextTranscriptPath !== undefined ? { transcriptPath: nextTranscriptPath } : {}), ...(remote ? { remote: true } : {}) });
+		// 会話の最初の SessionStart の source（起動の控えが、この起動で作った会話かを見分ける）。同じ会話の間は最初の値を保つ
+		// （後から届く `compact` で `startup` を上書きしない）
+		const nextStartSource = previous?.sessionId === sessionId && previous.startSource !== undefined ? previous.startSource
+			: eventType === 'SessionStart' && (source === 'startup' || source === 'resume' || source === 'clear' || source === 'compact' || source === 'fork') ? source : undefined;
+		this._paneSessions.set(token, { agent, sessionId, ...(agent === 'opencode' ? (resumeCli === null ? { resumable: false as const } : { cli: resumeCli }) : {}), at: Date.now(), ...(nextCwd !== undefined ? { cwd: nextCwd } : {}), ...(nextTranscriptPath !== undefined ? { transcriptPath: nextTranscriptPath } : {}), ...(remote ? { remote: true } : {}), ...(nextStartSource !== undefined ? { startSource: nextStartSource } : {}) });
 	}
 
 	/**
@@ -5191,7 +5195,7 @@ export class ParadisAgentBrowserService extends Disposable {
 					});
 				}
 				if (eventType === 'SessionEnd' || eventType === 'TerminalExit') { paradisOpenCodeBridge.unregister(token); }
-				this._recordPaneSession(token, eventType, sessionId, transcriptPath, cwd, remoteHostId !== undefined || this._paneShells.get(token)?.remoteAuthority !== undefined, agentKind, agentKind === 'opencode' ? (resumeCli() ?? null) : undefined);
+				this._recordPaneSession(token, eventType, sessionId, transcriptPath, cwd, remoteHostId !== undefined || this._paneShells.get(token)?.remoteAuthority !== undefined, agentKind, agentKind === 'opencode' ? (resumeCli() ?? null) : undefined, stringField('source'));
 				fireParadisAgentHookEvent({
 					token, event: eventType, sessionId, transcriptPath, cwd, toolName, toolInput, agentKind, ...(agentKind === 'opencode' ? (resumeCli() !== undefined ? { cli: resumeCli() } : { resumable: false as const }) : {}),
 					toolUseId, messageId, messageDelta, messageIndex, messageFinal, payload: hookPayload,

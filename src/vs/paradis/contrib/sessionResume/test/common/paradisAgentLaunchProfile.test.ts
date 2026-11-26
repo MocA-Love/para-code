@@ -15,6 +15,7 @@ import {
 	PARADIS_AGENT_LAUNCH_LEDGER_MAX_AGE_MS,
 	PARADIS_AGENT_LAUNCH_LEDGER_MAX_ENTRIES,
 	paradisAgentLaunchFromCommandLine,
+	paradisAgentLaunchRecordMode,
 	paradisAgentLaunchesToRecord,
 	paradisLaunchAllowList,
 	paradisMergeAgentLaunchProfile,
@@ -117,21 +118,65 @@ suite('ParadisAgentLaunchProfile', () => {
 		});
 	});
 
-	test('a launch that starts a conversation replaces the record; a resume keeps an existing record and never adds what widens permissions', () => {
+	test('a launch counts as the start of a conversation only when it can be shown to have created it', () => {
+		const other = '9a1b2c3d-0000-4000-8000-123456789abc';
+		assert.deepStrictEqual({
+			startup: paradisAgentLaunchRecordMode('claude --dangerously-skip-permissions', id, 'startup'),
+			clear: paradisAgentLaunchRecordMode('codex --yolo', id, 'clear'),
+			// `claude` の中の `/resume` で前からある会話へ移った・SessionStart を見ていない・圧縮や分岐の後に初めて見た
+			resumedInside: paradisAgentLaunchRecordMode('claude --dangerously-skip-permissions', id, 'resume'),
+			unknownSource: paradisAgentLaunchRecordMode('claude --dangerously-skip-permissions', id, undefined),
+			compacted: paradisAgentLaunchRecordMode('claude --dangerously-skip-permissions', id, 'compact'),
+			forkedInside: paradisAgentLaunchRecordMode('codex --yolo', id, 'fork'),
+			resume: paradisAgentLaunchRecordMode(`claude --resume ${other}`, id, 'startup'),
+			// 分岐は、名指しした元の ID と違う ID で届いたときだけ
+			fork: paradisAgentLaunchRecordMode(`claude --dangerously-skip-permissions --resume ${other} --fork-session`, id, 'resume'),
+			forkEquals: paradisAgentLaunchRecordMode(`claude -r=${other} --resume=${other} --fork-session`, id, undefined),
+			forkReportedAsSource: paradisAgentLaunchRecordMode(`claude --resume ${id.toUpperCase()} --fork-session`, id, 'resume'),
+			forkOfLast: paradisAgentLaunchRecordMode('claude --dangerously-skip-permissions --continue --fork-session', id, 'resume'),
+			forkBySearch: paradisAgentLaunchRecordMode('claude --resume auth-bug --fork-session', id, 'resume'),
+			forkIdInPrompt: paradisAgentLaunchRecordMode(`claude --continue --fork-session -- --resume ${other}`, id, 'resume'),
+			codexFork: paradisAgentLaunchRecordMode(`codex fork --yolo ${other}`, id, undefined),
+			codexForkReportedAsSource: paradisAgentLaunchRecordMode(`codex fork ${id}`, id, undefined),
+			codexForkOfLast: paradisAgentLaunchRecordMode('codex fork --last', id, 'startup'),
+			notInteractive: paradisAgentLaunchRecordMode('claude -p hi', id, 'startup'),
+		}, {
+			startup: 'new',
+			clear: 'new',
+			resumedInside: 'resume',
+			unknownSource: 'resume',
+			compacted: 'resume',
+			forkedInside: 'resume',
+			resume: 'resume',
+			fork: 'new',
+			forkEquals: 'new',
+			forkReportedAsSource: undefined,
+			forkOfLast: undefined,
+			forkBySearch: undefined,
+			forkIdInPrompt: undefined,
+			codexFork: 'new',
+			codexForkReportedAsSource: undefined,
+			codexForkOfLast: undefined,
+			notInteractive: undefined,
+		});
+	});
+
+	test('a conversation with a record keeps it; one without takes what widens permissions only from the launch that created it', () => {
 		const started = profile({ CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS: '1', CLAUDE_CODE_SIMPLE: '1' }, { '--dangerously-skip-permissions': true, '--model': 'opus' });
 		const confirmed = profile({ CLAUDE_CODE_NO_FLICKER: '1' }, { '--model': 'sonnet' });
 		const bypassed = profile({ CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS: '1' }, { '--dangerously-skip-permissions': true, '--allow-dangerously-skip-permissions': true, '--effort': 'high' });
 		assert.deepStrictEqual({
-			newReplaces: paradisMergeAgentLaunchProfile(started, confirmed, 'new'),
-			forkReplaces: paradisMergeAgentLaunchProfile(undefined, bypassed, 'fork'),
+			// 控えのある会話は、どの起動でも変えない（窓の再読み込みで同じ起動をもう一度知らせても、読めなかった分を消さない）
+			newKeeps: paradisMergeAgentLaunchProfile(started, confirmed, 'new'),
+			newWithoutRecord: paradisMergeAgentLaunchProfile(undefined, bypassed, 'new'),
 			// 再開の起動は、会話を始めたときの控えを変えない（素のコマンドで再開しても消えない）
 			resumeKeepsBypass: paradisMergeAgentLaunchProfile(started, confirmed, 'resume'),
 			// 「権限確認なしで再開」を選んだだけでは、確認ありで始めた会話を確認なしにしない
 			resumeDoesNotAddBypass: paradisMergeAgentLaunchProfile(confirmed, bypassed, 'resume'),
 			resumeWithoutRecord: paradisMergeAgentLaunchProfile(undefined, bypassed, 'resume'),
 		}, {
-			newReplaces: confirmed,
-			forkReplaces: bypassed,
+			newKeeps: started,
+			newWithoutRecord: bypassed,
 			resumeKeepsBypass: started,
 			resumeDoesNotAddBypass: confirmed,
 			resumeWithoutRecord: profile({}, { '--effort': 'high' }),
@@ -235,12 +280,12 @@ suite('ParadisAgentLaunchProfile', () => {
 		const first = step([session('a', 'claude', 's1'), session('b', 'codex', 't1'), session('c', 'claude', 'u1'), session('d', 'claude', 'v1'), session('e', 'opencode', 'w1')]);
 		terminals.set('a', { commandLine: 'claude --model opus', shellPid: 10, remote: false });
 		const second = step([session('a', 'claude', 's1'), session('b', 'codex', 't1')]);
-		const third = step([session('a', 'claude', 's2'), session('b', 'codex', 't1')]);
+		const third = step([{ ...session('a', 'claude', 's2'), startSource: 'clear' }, session('b', 'codex', 't1')]);
 		const fourth = step([session('b', 'codex', 't1')]);
 		assert.deepStrictEqual({ first, second, third, fourth, sent: [...sent] }, {
 			first: [{ agent: 'codex', sessionId: 't1', commandLine: 'codex --yolo', remote: true }],
 			second: [{ agent: 'claude', sessionId: 's1', commandLine: 'claude --model opus', shellPid: 10, remote: false }],
-			third: [{ agent: 'claude', sessionId: 's2', commandLine: 'claude --model opus', shellPid: 10, remote: false }],
+			third: [{ agent: 'claude', sessionId: 's2', commandLine: 'claude --model opus', shellPid: 10, startSource: 'clear', remote: false }],
 			fourth: [],
 			sent: ['b\nt1'],
 		});
