@@ -148,6 +148,16 @@ suite('ParadisAgentChatInput', () => {
 		});
 	});
 
+	test('does not type into Claude Code while the mod says a screen like /model is open', async () => {
+		const fixture = setup({ agent: 'claude' });
+		let open: boolean | undefined = true;
+		fixture.source.isAgentChatDialogOpen = async () => open;
+		const refused = await fixture.input.sendMessage(1, 't', '続けて');
+		open = undefined;
+		const sent = await fixture.input.sendMessage(1, 't', '続けて');
+		assert.deepStrictEqual({ refused, sent }, { refused: 'ターミナルで画面が開いています。閉じてから送ってください', sent: undefined });
+	});
+
 	test('does not type into Codex while its choice menu is on the screen, since Enter would pick the default choice', async () => {
 		const fixture = setup({ agent: 'codex' });
 		fixture.terminal.screen = CODEX_PLAN_MENU_SCREEN;

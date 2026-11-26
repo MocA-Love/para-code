@@ -8761,6 +8761,21 @@ export class ParadisMobileAgentChat extends Disposable {
 		};
 	}
 
+	/**
+	 * デスクトップのチャット表示が聞く: PC の Claude Code で承認・質問以外の画面が開いているか。モバイルの帯（agent.panel.v1）と
+	 * 同じく mod に聞く。聞けない（mod が無い・古い）・入力待ちでない（作業中・承認や質問の待ち・圧縮中）ときは undefined。
+	 */
+	async isDesktopDialogOpen(token: string): Promise<boolean | undefined> {
+		const session = this.paneSessions.get(token);
+		const sessionId = session?.sessionId;
+		const tailer = this.tailers.get(token);
+		if (session === undefined || sessionId === undefined || tailer === undefined || !this.isLiveToken(token) || paradisAgentDescriptor(session.agent)?.features.panel !== true
+			|| !this.isAgentPrompt(token, tailer) || this.isCompacting(token) || !this.claudeModBridge.supports(token, sessionId, 'prompt.dialog')) {
+			return undefined;
+		}
+		return this.claudeModBridge.isDialogOpen(token, sessionId).catch(() => undefined);
+	}
+
 	/** 切り詰めて渡したメッセージの全文（tailer が退避しておいた分だけ。読み直さない）。 */
 	getDesktopChatFullText(token: string, epoch: string, rev: number): string | undefined {
 		const tailer = this.isLiveToken(token) ? this.tailers.get(token) : undefined;
