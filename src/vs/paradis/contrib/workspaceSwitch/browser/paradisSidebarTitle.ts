@@ -15,6 +15,9 @@ import { IPaneComposite } from '../../../../workbench/common/panecomposite.js';
 /** 「スペース」の入れ物（Workspaces ビューの入れ物）の id。 */
 export const PARADIS_SPACES_VIEW_CONTAINER_ID = 'workbench.view.paradisWorkspaces';
 
+/** 入れ物の中の「リポジトリ」のビュー（paradisWorkspacesView.ts の `PARADIS_WORKSPACES_VIEW_ID` と同じ値）。 */
+const PARADIS_SPACES_REPOSITORIES_VIEW_ID = 'workbench.view.paradisWorkspaces.repositories';
+
 /** 題の行を隠している間、サイドバーの Part に付ける印（CSS が題の行を消す）。 */
 export const PARADIS_SIDEBAR_TITLE_HIDDEN_CLASS = 'paradis-sidebar-title-hidden';
 
@@ -22,13 +25,14 @@ export const PARADIS_SIDEBAR_TITLE_HIDDEN_CLASS = 'paradis-sidebar-title-hidden'
  * サイドバーの題の行（「スペース: リポジトリ」と右のボタン）を隠すか。
  *
  * 隠すのは、アイコンの並びがサイドバーの上に出ていて（`workbench.activityBar.location: top`）、
- * 開いているのが「スペース」の入れ物で、その中のビューが 1 つだけ（題が「スペース: リポジトリ」になる）のとき。
+ * 開いているのが「スペース」の入れ物で、その中のビューが「リポジトリ」1 つだけ（題が「スペース: リポジトリ」になる）のとき。
  * このときは入れ物の切り替え・ドラッグ・右クリックのメニューが真上のアイコンの並びにあり、題の行で失う操作が無い。
  * 縦の列（default）・下（bottom）・非表示（hidden）では題の行がドラッグや右クリックの置き場なので残す。
  * 別のビューを同じ入れ物へ入れたときは、入れ物の題「スペース」と各ビューの見出しが要るので残す。
+ * 「リポジトリ」を別の入れ物へ動かし、ほかのビューだけが残ったときも、そのビューのボタンと「…」が題の行に載るので残す。
  */
-export function paradisShouldHideSidebarTitle(activeContainerId: string | undefined, viewCount: number, compositeBarOnTop: boolean): boolean {
-	return compositeBarOnTop && activeContainerId === PARADIS_SPACES_VIEW_CONTAINER_ID && viewCount === 1;
+export function paradisShouldHideSidebarTitle(activeContainerId: string | undefined, viewIds: readonly string[], compositeBarOnTop: boolean): boolean {
+	return compositeBarOnTop && activeContainerId === PARADIS_SPACES_VIEW_CONTAINER_ID && viewIds.length === 1 && viewIds[0] === PARADIS_SPACES_REPOSITORIES_VIEW_ID;
 }
 
 /** サイドバーの Part のうち、題の行の出し入れに使うもの。 */
@@ -72,7 +76,7 @@ export class ParadisSidebarTitle extends Disposable {
 
 	private shouldHide(): boolean {
 		const composite = this.host.getActivePaneComposite();
-		return paradisShouldHideSidebarTitle(composite?.getId(), composite?.getViewPaneContainer()?.views.length ?? 0, this.compositeBarOnTop());
+		return paradisShouldHideSidebarTitle(composite?.getId(), composite?.getViewPaneContainer()?.views.map(view => view.id) ?? [], this.compositeBarOnTop());
 	}
 
 	/** 隠すときは 0、それ以外は既定の高さ（`undefined`）。DOM の印もここで合わせる。 */

@@ -13,25 +13,30 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { IPaneComposite } from '../../../../../workbench/common/panecomposite.js';
 import { IView, IViewPaneContainer } from '../../../../../workbench/common/views.js';
 import { ParadisSidebarTitle, paradisShouldHideSidebarTitle } from '../../browser/paradisSidebarTitle.js';
+import { PARADIS_WORKSPACES_VIEW_ID } from '../../browser/paradisWorkspacesView.js';
 
 suite('ParadisSidebarTitle', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
 	test('hides the title row only for the spaces view alone under a top activity bar', () => {
+		const repositories = 'workbench.view.paradisWorkspaces.repositories';
 		assert.deepStrictEqual([
-			paradisShouldHideSidebarTitle('workbench.view.paradisWorkspaces', 1, true),
-			paradisShouldHideSidebarTitle('workbench.view.paradisWorkspaces', 1, false), // default・bottom・hidden
-			paradisShouldHideSidebarTitle('workbench.view.paradisWorkspaces', 2, true), // 別のビューを同じ入れ物へ入れた
-			paradisShouldHideSidebarTitle('workbench.view.explorer', 1, true),
-			paradisShouldHideSidebarTitle(undefined, 0, true),
-		], [true, false, false, false, false]);
+			paradisShouldHideSidebarTitle('workbench.view.paradisWorkspaces', [repositories], true),
+			paradisShouldHideSidebarTitle('workbench.view.paradisWorkspaces', [repositories], false), // default・bottom・hidden
+			paradisShouldHideSidebarTitle('workbench.view.paradisWorkspaces', [repositories, 'outline'], true), // 別のビューを同じ入れ物へ入れた
+			paradisShouldHideSidebarTitle('workbench.view.paradisWorkspaces', ['outline'], true), // リポジトリを出し、ほかのビューだけが残った
+			paradisShouldHideSidebarTitle('workbench.view.explorer', [repositories], true),
+			paradisShouldHideSidebarTitle(undefined, [], true),
+		], [true, false, false, false, false, false]);
+		// 判定に使う id が実際のビューの id と食い違っていないこと
+		assert.strictEqual(PARADIS_WORKSPACES_VIEW_ID, repositories);
 	});
 
 	test('gives a zero title height, marks the part and relayouts when the active container or its views change', () => {
 		const onDidOpen = store.add(new Emitter<IPaneComposite>());
 		const onDidAddViews = store.add(new Emitter<IView[]>());
 		const element = mainWindow.document.createElement('div');
-		const views: IView[] = [{} as IView];
+		const views: IView[] = [{ id: 'workbench.view.paradisWorkspaces.repositories' } as IView];
 		const container = { views, onDidAddViews: onDidAddViews.event, onDidRemoveViews: store.add(new Emitter<IView[]>()).event } as Partial<IViewPaneContainer> as IViewPaneContainer;
 		const composite = (id: string) => ({ getId: () => id, getViewPaneContainer: () => container }) as Partial<IPaneComposite> as IPaneComposite;
 		let active = composite('workbench.view.explorer');
@@ -44,7 +49,7 @@ suite('ParadisSidebarTitle', () => {
 		active = composite('workbench.view.paradisWorkspaces');
 		onDidOpen.fire(active);
 		const spaces = snapshot();
-		views.push({} as IView);
+		views.push({ id: 'outline' } as IView);
 		onDidAddViews.fire([]);
 		const twoViews = snapshot();
 
