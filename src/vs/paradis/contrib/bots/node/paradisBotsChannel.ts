@@ -31,6 +31,7 @@ export class ParadisBotsChannel implements IServerChannel<string> {
 		switch (event) {
 			case 'onDidChange': return this.service.onDidChange as Event<T>;
 			case 'onDidRequestStop': return this.service.onDidRequestStop as Event<T>;
+			case 'onDidRequestReveal': return this.service.onDidRequestReveal as Event<T>;
 			default: throw new Error(`Event not found: ${event}`);
 		}
 	}
@@ -99,6 +100,7 @@ export class ParadisBotsChannel implements IServerChannel<string> {
 				return undefined;
 			}
 			case 'requestStop': return id !== undefined && service.requestStop(id);
+			case 'requestReveal': return id !== undefined && service.requestReveal(id);
 			case 'paneHashesOf': {
 				const purpose = args.at(1) === undefined ? undefined : PARADIS_BOT_PANE_PURPOSES.find(candidate => candidate === args.at(1));
 				return id !== undefined && (args.at(1) === undefined || purpose !== undefined) ? service.paneHashesOf(id, purpose) : [];
