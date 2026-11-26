@@ -12,7 +12,7 @@
 import { localize } from '../../../../nls.js';
 import { ConfigurationScope, Extensions as ConfigurationExtensions, IConfigurationNode, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
-import { PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsBandModel.js';
+import { PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
 
 const paradisConfigurationNodeBase = Object.freeze<IConfigurationNode>({
 	id: 'paradis',
