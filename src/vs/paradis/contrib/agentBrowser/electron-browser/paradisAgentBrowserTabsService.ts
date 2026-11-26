@@ -1131,6 +1131,7 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 			return 'busy';
 		}
 		this._pendingApprovals.add(token);
+		const askedAt = Date.now();
 		try {
 			// ほかのペインの承認が出ている間は順番を待つ（待っている間も締め切りは進む）。
 			const { outcome, shown } = await this._approvalQueue.queue(() => cancellation.isCancellationRequested
@@ -1157,6 +1158,9 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 			} else if (outcome !== 'cancelled' && outcome !== 'unanswered') {
 				this._unansweredStreak.delete(cooldownKey);
 			}
+			// 承認以外の結果も残す（「画面を見ていないのに断られた」を後から追えるように。表示から 1 秒未満の拒否は、
+			// ほかへ打っていた Enter・Esc が当たった可能性が高い）。文言・ペインの名前・理由は出さない
+			this._logService.info(`[ParadisAgentBrowserTabs] approval dialog: outcome=${outcome}, shown=${shown}, elapsedMs=${Date.now() - askedAt}${request.cooldownKey !== undefined ? `, kind=${request.cooldownKey.split(':')[0]}` : ''}`);
 			return outcome;
 		} finally {
 			this._pendingApprovals.delete(token);

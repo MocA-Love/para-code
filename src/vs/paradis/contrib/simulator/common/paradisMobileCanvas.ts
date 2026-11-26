@@ -32,6 +32,22 @@ export interface IParadisMobileDevice {
 	/** 例: `booted` / `shutdown`。ホストの表記をそのまま通す。 */
 	readonly state: string;
 	readonly isRunning: boolean;
+	/**
+	 * 動いている Android のエミュレータだけ: 起動する前の id（`android:avd:<name>`）。起動すると一覧の id は
+	 * `android:serial:<serial>` に替わるので、起動前に割り当てた端末を引き当てるのに使う。
+	 */
+	readonly avdId?: string;
+}
+
+/**
+ * 割り当ての `deviceId` が指す端末を一覧から引く。id が同じもの、無ければ、起動して id が替わった Android の
+ * エミュレータ（`avdId` が同じもの）。台帳に残る id は書き換えない。
+ */
+export function paradisFindMobileDevice<T extends { readonly id: string; readonly avdId?: string }>(devices: readonly T[], deviceId: string | undefined): T | undefined {
+	if (deviceId === undefined) {
+		return undefined;
+	}
+	return devices.find(candidate => candidate.id === deviceId) ?? devices.find(candidate => candidate.avdId !== undefined && candidate.avdId === deviceId);
 }
 
 /** 端末画面の寸法。ピクセル空間とポイント空間の対応を表す。 */

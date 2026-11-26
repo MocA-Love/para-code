@@ -10,13 +10,14 @@
 // 端末ごとの振り分け、mobile_fold。
 
 import assert from 'assert';
+import * as fs from 'fs';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisMobileAttachment } from '../../common/paradisMobileCanvas.js';
 import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, ParadisSimulatorFold } from '../../common/paradisSimulator.js';
 import { ParadisSimulatorDeviceRouter } from '../../node/paradisSimulatorDeviceRouter.js';
 import { ParadisServeSimBackend } from '../../node/paradisServeSimBackend.js';
-import { PARADIS_SIMULATOR_KEYS_MAY_BE_LOST, ParadisServeSimDeviceHost } from '../../node/paradisServeSimDeviceHost.js';
+import { PARADIS_SIMULATOR_KEYS_MAY_BE_LOST, ParadisServeSimDeviceHost, paradisRealSimulatorScreenshot } from '../../node/paradisServeSimDeviceHost.js';
 import { PARADIS_SIMULATOR_FOLD_TOOL, ParadisSimulatorFoldToolProvider } from '../../node/paradisSimulatorFoldTool.js';
 
 const UDID = 'CA66CB4A-B18A-410E-AECB-D50C73A15A51';
@@ -174,6 +175,23 @@ suite('Paradis simulator: serve-sim answers the Mobile Canvas REST for iOS', () 
 		});
 	});
 
+	// iPhone Duo は画面が 2 つあり、simctl は --display を付けないと撮らない（mobile_screenshot・タップ・スワイプが落ちていた）
+	test('takes the screenshot again with --display when simctl cannot choose between two screens', async () => {
+		const calls: (readonly string[])[] = [];
+		const screenshot = paradisRealSimulatorScreenshot(async args => {
+			calls.push(args.slice(0, -1));
+			if (!args.some(arg => arg.startsWith('--display='))) {
+				throw new Error('xcrun simctl io failed: Cannot choose between 2 displays. Specify one with --display:\n    --display=3  LCD-1 (primary-1) 2007x2853\n    --display=1  LCD (primary) 1398x2034\nInvalid argument');
+			}
+			await fs.promises.writeFile(args[args.length - 1], new Uint8Array([1, 2, 3]));
+			return '';
+		}, async () => ({ width: 2007, height: 2853 }));
+		assert.deepStrictEqual({ png: [...await screenshot(UDID)], calls }, {
+			png: [1, 2, 3],
+			calls: [['io', UDID, 'screenshot', '--type=png'], ['io', UDID, 'screenshot', '--type=png', '--display=3']],
+		});
+	});
+
 	// mobile_screenshot はこの後の一覧から画面の大きさを読む。同じ 1 枚から scale を出しておく
 	test('measures the display from the screenshot it returns and refuses paths it does not know', async () => {
 		const { host, screenshots } = setup();
@@ -311,8 +329,10 @@ suite('Paradis simulator: mobile_fold', () => {
 		duo.backend.config = { width: 2007, height: 2853, orientation: 'portrait', hingeDegrees: 180 };
 		const closed = textOf(await duo.fold.callTool('pane-a', 'mobile_fold', { pose: 'closed' }));
 		const both = textOf(await duo.fold.callTool('pane-a', 'mobile_fold', { pose: 'open', angle: 90 }));
-		const flat = provider(attachment);
+		const flat = provider({ ...attachment, deviceName: 'iPhone 17' });
 		const notFoldable = textOf(await flat.fold.callTool('pane-a', 'mobile_fold', { angle: 90 }));
+		// iPhone Duo なのにホストが開き具合を返さないとき（Mac の iOS 27.2 で実測）は、「Duo しか折れない」とは返さない
+		const duoWithoutHinge = textOf(await provider(attachment).fold.callTool('pane-a', 'mobile_fold', { angle: 90 }));
 		const refusedDuo = provider(attachment);
 		refusedDuo.backend.config = { width: 2007, height: 2853, orientation: 'portrait', hingeDegrees: 180 };
 		refusedDuo.backend.foldAccepted = false;
@@ -329,6 +349,7 @@ suite('Paradis simulator: mobile_fold', () => {
 			forgotten: duo.forgotten,
 			both: both.isError,
 			notFoldable: [notFoldable.isError, notFoldable.content[0].text.includes('not a foldable')],
+			duoWithoutHinge: [duoWithoutHinge.isError, duoWithoutHinge.content[0].text.includes('did not report a hinge angle')],
 			refused: [refused.isError, refused.content[0].text.includes('Device Hub')],
 			noHub: [noHub.isError, noHub.content[0].text.startsWith('Device Hub is not running')],
 			none: [none.isError, none.content[0].text.includes('No mobile device is attached')],
@@ -340,6 +361,7 @@ suite('Paradis simulator: mobile_fold', () => {
 			forgotten: [ID],
 			both: true,
 			notFoldable: [true, true],
+			duoWithoutHinge: [true, true],
 			refused: [true, true],
 			noHub: [true, true],
 			none: [true, true],

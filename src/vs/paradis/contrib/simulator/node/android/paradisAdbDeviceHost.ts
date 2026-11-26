@@ -28,6 +28,7 @@ import { PARADIS_SCRCPY_AGENT_POINTER_BASE, ParadisScrcpyTouchAction, paradisScr
 import { ParadisScrcpySession } from './paradisScrcpySession.js';
 import { ParadisScrcpySessions } from './paradisScrcpySessions.js';
 import { IParadisAdbDevice, PARADIS_ANDROID_AVD_PREFIX, PARADIS_ANDROID_SERIAL_PREFIX, paradisAdbInputText, paradisAndroidAvdOf, paradisAndroidButtonNames, paradisAndroidKeycode, paradisAndroidOrientationName, paradisAndroidRotation, paradisAndroidSerialOf, paradisFilterLogcat, paradisNormalizeUiautomator, paradisParseAdbDevices, paradisParseAvdList, paradisDefaultDisplayDump, paradisParseDisplayRotation, paradisParseWmDensity, paradisParseWmSize } from '../../common/paradisAndroid.js';
+import { paradisFindMobileDevice } from '../../common/paradisMobileCanvas.js';
 
 /** adb・emulator を呼ぶ口（テストで差し替える）。`binary` なら stdout を bytes で返す。 */
 export type ParadisAdbExec = (file: string, args: readonly string[], options: { readonly timeoutMs: number; readonly binary?: boolean }) => Promise<string | Uint8Array>;
@@ -173,6 +174,8 @@ export class ParadisAdbDeviceHost {
 				platform: 'android',
 				...(release ? { runtimeName: `Android ${release}` } : {}),
 				state: device.state,
+				// 起動前に `android:avd:<name>` で割り当てたペインが、起動後のこの行を引き当てられるようにする
+				...(avd ? { avdId: `${PARADIS_ANDROID_AVD_PREFIX}${avd}` } : {}),
 			},
 			...(avd ? { avd } : {}),
 		};
@@ -232,7 +235,8 @@ export class ParadisAdbDeviceHost {
 		const { deviceId, rest, query } = this._parse(path);
 		const args = body && typeof body === 'object' ? body as Record<string, unknown> : {};
 		if (method === 'GET' && rest === '') {
-			const entry = (await this.listDevices()).find(candidate => (candidate as { id?: string }).id === deviceId);
+			// 起動前の AVD の id で頼まれても、起動後の行（id は serial）を返す
+			const entry = paradisFindMobileDevice(await this.listDevices() as { id: string; avdId?: string }[], deviceId);
 			if (!entry) {
 				throw new Error(`Unknown mobile device: ${deviceId}`);
 			}

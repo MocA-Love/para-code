@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisMobileDevice } from '../../common/paradisMobileCanvas.js';
+import { IParadisMobileDevice, paradisFindMobileDevice } from '../../common/paradisMobileCanvas.js';
 import {
 	paradisDeviceHeldByAnotherPane,
 	paradisIsValidAppId,
@@ -22,6 +22,7 @@ import {
 	paradisPinchFrames,
 	paradisResolveMobilePermission,
 	paradisSwipeEndpoints,
+	paradisTypedTextWasConverted,
 } from '../../common/paradisMobileDeviceOps.js';
 
 suite('ParadisMobileDeviceOps', () => {
@@ -144,6 +145,36 @@ suite('ParadisMobileDeviceOps', () => {
 			devices.map(entry => [paradisDeviceHeldByAnotherPane('pane-a', entry, devices, attachments), paradisDeviceHeldByAnotherPane('pane-b', entry, devices, attachments)]),
 			[[true, false], [true, false], [false, false]],
 		);
+	});
+
+	test('an attachment made before an Android emulator booted still finds it under its new id', () => {
+		const device = (id: string, avdId?: string): IParadisMobileDevice => ({ id, udid: id, name: id, platform: 'android', state: 'device', isRunning: true, ...(avdId ? { avdId } : {}) });
+		const running = device('android:serial:emulator-5556', 'android:avd:Test');
+		const devices = [device('android:serial:emulator-5554', 'android:avd:Other'), running, device('ios:core-simulator:A')];
+		const attachments = [{ paneToken: 'pane-b', deviceId: 'android:avd:Test', deviceName: 'Test', stateKey: undefined, attachedAt: 0 }];
+		assert.deepStrictEqual({
+			byOldId: paradisFindMobileDevice(devices, 'android:avd:Test')?.id,
+			byNewId: paradisFindMobileDevice(devices, 'android:serial:emulator-5556')?.id,
+			unknown: [paradisFindMobileDevice(devices, 'android:avd:Gone'), paradisFindMobileDevice(devices, undefined)],
+			heldByAnotherPane: devices.map(entry => paradisDeviceHeldByAnotherPane('pane-a', entry, devices, attachments)),
+		}, {
+			byOldId: 'android:serial:emulator-5556',
+			byNewId: 'android:serial:emulator-5556',
+			unknown: [undefined, undefined],
+			heldByAnotherPane: [false, true, false],
+		});
+	});
+
+	test('typed ASCII that the keyboard language turned into other characters is reported', () => {
+		assert.deepStrictEqual([
+			paradisTypedTextWasConverted('wifi', 'うぃふぃ'),
+			paradisTypedTextWasConverted('a.b-c', 'あ。bーc'),
+			paradisTypedTextWasConverted('wifi', 'wifi'),
+			// 欄に前からあった文字の後ろへ足しただけ
+			paradisTypedTextWasConverted('wifi', '検索 wifi'),
+			paradisTypedTextWasConverted('日本語', 'にほんご'),
+			paradisTypedTextWasConverted('123', ''),
+		], [true, true, false, false, false, false]);
 	});
 
 	test('request answers: anything malformed is not an approval', () => {

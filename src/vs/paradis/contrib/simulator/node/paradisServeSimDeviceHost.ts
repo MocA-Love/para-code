@@ -25,7 +25,7 @@ import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, PARADIS_SIMULAT
 import { paradisFindSimulatorAx, paradisMarkTypedSimulatorField, paradisNormalizeSimulatorAx, paradisPickSimulatorAxTarget, paradisSimulatorFieldValues, IParadisSimulatorAxSnapshot, paradisSimulatorAxQueryOf } from '../common/paradisSimulatorAx.js';
 import { paradisPngSize, paradisRequireNumber } from '../common/paradisMobileDeviceOps.js';
 import { paradisSimulatorButtonFrame, paradisSimulatorKeyFrame, paradisSimulatorMultiTouchFrame, paradisSimulatorRotateFrame, paradisSimulatorTouchFrame } from '../common/paradisSimulatorFrames.js';
-import { paradisSimulatorDisplayGeometry, paradisSimulatorDuoPanel, paradisSimulatorKeystrokes, paradisSimulatorRawPoint } from '../common/paradisSimulatorInput.js';
+import { paradisPickSimctlDisplay, paradisSimulatorDisplayGeometry, paradisSimulatorDuoPanel, paradisSimulatorKeystrokes, paradisSimulatorRawPoint } from '../common/paradisSimulatorInput.js';
 import { ParadisServeSimBackend } from './paradisServeSimBackend.js';
 
 export const PARADIS_SERVE_SIM_DEVICE_PREFIX = PARADIS_SIMULATOR_DEVICE_ID_PREFIX;
@@ -37,7 +37,9 @@ export const paradisServeSimUdidOf = paradisSimulatorUdidOfDeviceId;
 export type ParadisServeSimSimctl = (args: readonly string[], options: { readonly timeoutMs: number; readonly input?: string; readonly binary?: boolean }) => Promise<string | Uint8Array>;
 
 const realSimctl: ParadisServeSimSimctl = (args, options) => new Promise((resolve, reject) => {
-	const child = execFile('xcrun', ['simctl', ...args], { timeout: options.timeoutMs, maxBuffer: 64 * 1024 * 1024, encoding: options.binary ? 'buffer' : 'utf8' }, (error, stdout, stderr) => {
+	// ロケールを UTF-8 にする。`simctl pbcopy` は stdin をロケールの文字コードで読むので、shared process のように
+	// LANG の無い環境では日本語が「The file couldn't be opened using the specified text encoding」で落ちる（Mac で実測）
+	const child = execFile('xcrun', ['simctl', ...args], { timeout: options.timeoutMs, maxBuffer: 64 * 1024 * 1024, encoding: options.binary ? 'buffer' : 'utf8', env: { ...process.env, LC_ALL: 'en_US.UTF-8' } }, (error, stdout, stderr) => {
 		if (error) {
 			reject(new Error(`xcrun simctl ${args[0]} failed: ${String(stderr).trim() || error.message}`));
 		} else {
@@ -55,12 +57,25 @@ const realSimctl: ParadisServeSimSimctl = (args, options) => new Promise((resolv
  */
 export type ParadisServeSimScreenshot = (udid: string) => Promise<Uint8Array>;
 
-function realScreenshot(simctl: ParadisServeSimSimctl): ParadisServeSimScreenshot {
+/** 映している画面の画素数（serve-sim の `/config`）。画面が 2 つある端末で、どちらを撮るか選ぶのに使う。 */
+export type ParadisServeSimShownSize = (udid: string) => Promise<{ readonly width: number; readonly height: number } | undefined>;
+
+export function paradisRealSimulatorScreenshot(simctl: ParadisServeSimSimctl, shownSize?: ParadisServeSimShownSize): ParadisServeSimScreenshot {
 	return async udid => {
 		const dir = await fs.mkdtemp(join(tmpdir(), 'paradis-simulator-shot-'));
 		try {
 			const file = join(dir, 'screen.png');
-			await simctl(['io', udid, 'screenshot', '--type=png', file], { timeoutMs: 30_000 });
+			try {
+				await simctl(['io', udid, 'screenshot', '--type=png', file], { timeoutMs: 30_000 });
+			} catch (error) {
+				// 画面が 2 つある端末（iPhone Duo）は、simctl が「Cannot choose between 2 displays」で断る。
+				// serve-sim が映している画面と同じ大きさのものを選んで撮り直す
+				const display = paradisPickSimctlDisplay(error instanceof Error ? error.message : String(error), await shownSize?.(udid).catch(() => undefined));
+				if (display === undefined) {
+					throw error;
+				}
+				await simctl(['io', udid, 'screenshot', '--type=png', `--display=${display}`, file], { timeoutMs: 30_000 });
+			}
 			return new Uint8Array(await fs.readFile(file));
 		} finally {
 			await fs.rm(dir, { recursive: true, force: true });
@@ -137,7 +152,7 @@ export class ParadisServeSimDeviceHost {
 		private readonly _sleep: ParadisServeSimSleep = realSleep,
 		screenshot?: ParadisServeSimScreenshot,
 	) {
-		this._screenshot = screenshot ?? realScreenshot(this._simctl);
+		this._screenshot = screenshot ?? paradisRealSimulatorScreenshot(this._simctl, udid => this._backend.getScreenConfig(udid));
 	}
 
 	/** この端末の id をこちらで受け持つか。 */

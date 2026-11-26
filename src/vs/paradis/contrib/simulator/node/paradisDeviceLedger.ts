@@ -25,8 +25,8 @@
 import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisMcpToolDefinition, IParadisMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
-import { IParadisMobileAttachment, IParadisMobileCanvasSnapshot, IParadisMobileDevice, IParadisMobileDisplay } from '../common/paradisMobileCanvas.js';
-import { PARADIS_MOBILE_SWIPE_DEFAULT_SECONDS, paradisDeviceHeldByAnotherPane } from '../common/paradisMobileDeviceOps.js';
+import { IParadisMobileAttachment, IParadisMobileCanvasSnapshot, IParadisMobileDevice, IParadisMobileDisplay, paradisFindMobileDevice } from '../common/paradisMobileCanvas.js';
+import { PARADIS_MOBILE_SWIPE_DEFAULT_SECONDS, paradisDeviceHeldByAnotherPane, paradisTypedTextWasConverted } from '../common/paradisMobileDeviceOps.js';
 import { IParadisMobileDeviceLedger, IParadisMobileHostRequester } from './paradisSimulatorDeviceOps.js';
 
 /** MCPツールが返す標準形。`isError` を立てるとエージェント側で失敗として扱われる。 */
@@ -322,12 +322,14 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 			const devices = await this._listDevices(signal);
 			const attached = this._attachments.get(paneToken)?.attachment;
 			const notice = this._listNotice?.();
+			// 起動前の AVD で割り当てた端末は、起動すると id が serial に替わる。同じ端末として印を付ける
+			const attachedDevice = paradisFindMobileDevice(devices, attached?.deviceId);
 			this._touchLedgerEntry(paneToken);
 			return jsonResult({
 				// ほかのペインが使っている端末は mobile_request_device で要求できないので、選ぶ前に分かるようにする
 				devices: devices.map(device => ({
 					...device,
-					attachedToThisPane: device.id === attached?.deviceId,
+					attachedToThisPane: device === attachedDevice,
 					usedByAnotherPane: paradisDeviceHeldByAnotherPane(paneToken, device, devices, this.listAttachments()),
 				})),
 				attachedToThisPane: attached ? { deviceId: attached.deviceId, name: attached.deviceName } : null,
@@ -351,7 +353,9 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 				const png = await this._hostClient.requestBinary(`/api/v1/devices/${id}/screenshot`, signal);
 				// 画像だけ返すと「見えた座標」でタップして必ず外す。ピクセルとポイントの
 				// 対応をその場で添えて、変換を忘れられないようにする。
-				const display = (await this._listDevices(signal)).find(candidate => candidate.id === attachment.deviceId)?.display;
+				// 一覧に画面の大きさが無い端末（Android は一覧に載せない）は、端末に直接尋ねる
+				const display = paradisFindMobileDevice(await this._listDevices(signal), attachment.deviceId)?.display
+					?? normalizeDisplay(await this._hostClient.request('GET', `/api/v1/devices/${id}/display`, undefined, signal).catch(() => undefined));
 				const geometry = display
 					? `Screenshot is ${display.pixelWidth}x${display.pixelHeight} pixels. Input tools take points: the screen is ${display.pointWidth}x${display.pointHeight} points at scale ${display.scale} (points = pixels / ${display.scale}).`
 					: 'Screen geometry is unavailable, so treat coordinates read off this image with care: input tools take points, not pixels.';
@@ -401,6 +405,7 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 					fieldLabel: focused.label,
 					matchesWhatWasTyped: focused.value === text,
 					...(typedNote ? { note: typedNote } : {}),
+					...(paradisTypedTextWasConverted(text, focused.value) ? { converted: TYPED_TEXT_CONVERTED_NOTE } : {}),
 				});
 			}
 			case 'mobile_press_button': {
@@ -484,6 +489,9 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 	}
 }
 
+/** mobile_type_text の結果に添える知らせ（打った英数字が、端末のキーボードの言語で別の文字に変わった）。 */
+const TYPED_TEXT_CONVERTED_NOTE = 'The field holds other characters than the ones typed: the keyboard language of the device (for example Japanese) converted the keys. Clear the field, ask the user to switch the device keyboard to English (or add an English keyboard in the device settings), then type again.';
+
 function normalizeDevice(raw: unknown): IParadisMobileDevice | undefined {
 	if (!raw || typeof raw !== 'object') {
 		return undefined;
@@ -506,6 +514,7 @@ function normalizeDevice(raw: unknown): IParadisMobileDevice | undefined {
 		// ホストは iOS を `Booted`、Android を `device` のように別表記で返すため、
 		// 「起動中か」の判定はここで1箇所に寄せる。
 		isRunning: /^(booted|running|device|online)$/i.test(state),
+		...(typeof record.avdId === 'string' && record.avdId ? { avdId: record.avdId } : {}),
 	};
 }
 

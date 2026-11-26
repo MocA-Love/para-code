@@ -75,7 +75,7 @@ suite('Paradis simulator: adb answers the Mobile Canvas REST for Android', () =>
 	test('lists running devices and the AVDs that are not running', async () => {
 		const { host } = setup();
 		assert.deepStrictEqual(await host.listDevices(), [
-			{ id: 'android:serial:emulator-5554', udid: 'emulator-5554', name: 'Pixel 9 API 36', platform: 'android', runtimeName: 'Android 16', state: 'device' },
+			{ id: 'android:serial:emulator-5554', udid: 'emulator-5554', name: 'Pixel 9 API 36', platform: 'android', runtimeName: 'Android 16', state: 'device', avdId: 'android:avd:Pixel_9_API_36' },
 			{ id: 'android:avd:Medium_Phone', name: 'Medium Phone', platform: 'android', state: 'shutdown' },
 		]);
 	});
@@ -133,6 +133,13 @@ suite('Paradis simulator: adb answers the Mobile Canvas REST for Android', () =>
 			orientations: ['landscape-left', 'landscape-left'],
 			dumps: ['dumpsys input', 'dumpsys input', 'dumpsys window displays'],
 		});
+	});
+
+	// 起動前の AVD で割り当てたペインは、起動後も同じ id で尋ねてくる（mobile_get_attached_device が「Unknown mobile device」を返していた）
+	test('describes the running emulator when asked by the id the AVD had before it booted', async () => {
+		const { host } = setup();
+		const described = await host.request('GET', '/api/v1/devices/android%3Aavd%3APixel_9_API_36', undefined) as { id: string; avdId?: string; display?: object };
+		assert.deepStrictEqual({ id: described.id, avdId: described.avdId, hasDisplay: described.display !== undefined }, { id: 'android:serial:emulator-5554', avdId: 'android:avd:Pixel_9_API_36', hasDisplay: true });
 	});
 
 	test('resolves an AVD id to its running emulator and boots it when it is not running', async () => {

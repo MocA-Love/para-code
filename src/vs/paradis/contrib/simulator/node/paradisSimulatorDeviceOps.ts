@@ -28,7 +28,7 @@
 
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider, ParadisMcpCallerKind } from '../../agentBrowser/common/paradisMcpToolProvider.js';
-import { IParadisMobileAttachment, IParadisMobileDevice } from '../common/paradisMobileCanvas.js';
+import { IParadisMobileAttachment, IParadisMobileDevice, paradisFindMobileDevice } from '../common/paradisMobileCanvas.js';
 import {
 	IParadisMobileDeviceRequestPrompt,
 	IParadisMobileInstallPrompt,
@@ -331,7 +331,7 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 			return errorResult(`There is no device "${wanted}". Call mobile_list_devices to see the devices on this computer.`);
 		}
 		const current = this._ledger.getAttachment(paneToken);
-		if (current?.deviceId === device.id) {
+		if (current && paradisFindMobileDevice(devices, current.deviceId) === device) {
 			return jsonResult({ attached: true, alreadyAttached: true, device: describeDevice(device) });
 		}
 		if (paradisDeviceHeldByAnotherPane(paneToken, device, devices, this._ledger.listAttachments())) {
@@ -659,7 +659,8 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 	 */
 	private async _resolve(paneToken: string, signal: AbortSignal | undefined): Promise<IResolvedDevice> {
 		const attachment = this._requireAttachment(paneToken);
-		const device = (await this._ledger.listDevices(signal)).find(candidate => candidate.id === attachment.deviceId);
+		// 起動前の AVD で割り当てた Android は、起動すると id が serial に替わる（同じ端末として引く）
+		const device = paradisFindMobileDevice(await this._ledger.listDevices(signal), attachment.deviceId);
 		if (!device) {
 			throw new Error(`${attachment.deviceName} is attached to this pane but Para Code cannot find it any more (it may have been deleted). Ask the user.`);
 		}

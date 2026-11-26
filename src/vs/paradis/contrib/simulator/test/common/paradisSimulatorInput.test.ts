@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisSimulatorDuoPanel, paradisSimulatorDisplayGeometry, paradisSimulatorKeystrokes, paradisSimulatorStallReason, paradisSimulatorStallRetryDelay, paradisSimulatorFitSize, paradisSimulatorHidUsage, paradisSimulatorNextOrientation, paradisSimulatorPointFromClient, paradisSimulatorRawPoint, paradisSimulatorShouldSendKey, paradisSimulatorTouchEdge } from '../../common/paradisSimulatorInput.js';
+import { paradisPickSimctlDisplay, paradisSimulatorDuoPanel, paradisSimulatorDisplayGeometry, paradisSimulatorKeystrokes, paradisSimulatorStallReason, paradisSimulatorStallRetryDelay, paradisSimulatorFitSize, paradisSimulatorHidUsage, paradisSimulatorNextOrientation, paradisSimulatorPointFromClient, paradisSimulatorRawPoint, paradisSimulatorShouldSendKey, paradisSimulatorTouchEdge } from '../../common/paradisSimulatorInput.js';
 
 suite('Paradis simulator: human input', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -114,5 +114,16 @@ suite('Paradis simulator: human input', () => {
 			undefined,
 			undefined,
 		]);
+	});
+	// 文は Xcode 27.2 の iPhone Duo で実測したもの
+	test('picks the display simctl must be told to capture on a device with two screens', () => {
+		const refusal = 'xcrun simctl io failed: An error was encountered processing the command (domain=NSPOSIXErrorDomain, code=22):\nCannot choose between 2 displays. Specify one with --display:\n    --display=3  LCD-1 (primary-1) 2007x2853\n    --display=1  LCD (primary) 1398x2034\nInvalid argument';
+		assert.deepStrictEqual([
+			paradisPickSimctlDisplay(refusal, { width: 2007, height: 2853 }),
+			paradisPickSimctlDisplay(refusal, { width: 2034, height: 1398 }),
+			paradisPickSimctlDisplay(refusal, { width: 10, height: 10 }),
+			paradisPickSimctlDisplay(refusal),
+			paradisPickSimctlDisplay('xcrun simctl io failed: Invalid device'),
+		], ['3', '1', '1', '1', undefined]);
 	});
 });
