@@ -36,6 +36,8 @@ import { DraggedEditorGroupIdentifier, DraggedEditorIdentifier } from '../../../
 import { ParadisAgentQuestionAnswer } from '../../mobileRelay/common/paradisAgentQuestionKeys.js';
 import { IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentInteraction, IParadisAgentLiveState, paradisIsCodexDaemonApprovalInteraction } from '../common/paradisAgentChat.js';
 import { paradisAgentChatImagesToLinks } from '../common/paradisAgentChatMarkdown.js';
+import { paradisAgentChatTimeLabel } from '../common/paradisAgentChatTime.js';
+import { paradisAppendAgentLogoSvg } from './paradisAgentChatFace.js';
 import { PARADIS_AGENT_DESCRIPTORS, paradisAgentDescriptor } from '../common/paradisAgentDescriptor.js';
 import { IParadisAgentChatState } from '../common/paradisAgentChatState.js';
 import { IParadisAgentChatEditDiff, paradisAgentChatEditDiff, paradisBuildAgentChatItems, paradisPendingCodexQuestion, paradisDescribeAgentChatTool, paradisGroupAgentChatItems, paradisIsFileWriteTool, paradisIsPendingApprovalItem, paradisIsPendingQuestionItem, paradisPathBasename, paradisSummarizeAgentChatGroup, ParadisAgentChatEntry, ParadisAgentChatItem } from '../common/paradisAgentChatTimeline.js';
@@ -673,6 +675,7 @@ export class ParadisAgentChatView extends Disposable {
 					append(bubble, $('.paradis-agent-chat-plain')).textContent = item.message.text;
 				}
 				this.appendImages(bubble, item.message, state, store);
+				this.appendTime(element, item.message.ts);
 				return element;
 			}
 			case 'assistant': {
@@ -693,11 +696,12 @@ export class ParadisAgentChatView extends Disposable {
 					append(notice, $('span.paradis-agent-chat-system-text')).textContent = item.message.noticeSource === 'compact-summary' ? `${text}\n${item.message.text}` : text;
 					return notice;
 				}
-				const element = $('.paradis-agent-chat-message.assistant');
-				const body = append(element, $('.paradis-agent-chat-markdown'));
+				const { element, column, bubble } = this.renderAgentMessage(state);
+				const body = append(bubble, $('.paradis-agent-chat-markdown'));
 				const rendered = store.add(this.renderMarkdown(item.message.text, false));
 				body.appendChild(rendered.element);
-				this.appendImages(element, item.message, state, store);
+				this.appendImages(column, item.message, state, store);
+				this.appendTime(column, item.message.ts);
 				return element;
 			}
 			case 'thinking':
@@ -717,6 +721,37 @@ export class ParadisAgentChatView extends Disposable {
 			case 'approval':
 				return this.renderApproval(item.message, state, store);
 		}
+	}
+
+	/**
+	 * エージェントの発言の形（左に小さい丸い顔、右に吹き出し）。吹き出しの下（column）に画像と時刻を足す。
+	 * 生成中の返答も同じ形で描き、確定したときに形が跳ねないようにする。
+	 */
+	private renderAgentMessage(state: IParadisAgentChatState | undefined): { element: HTMLElement; column: HTMLElement; bubble: HTMLElement } {
+		const element = $('.paradis-agent-chat-message.assistant');
+		const face = append(element, $('.paradis-agent-chat-face'));
+		face.setAttribute('aria-hidden', 'true');
+		// 顔は種類のロゴ（ターミナルのタブ・起動の一覧と同じ）。ドットの顔は Bot のもので、エージェントの CLI には使わない
+		const logo = state === undefined ? undefined : paradisAgentDescriptor(state.agent)?.logo;
+		if (logo !== undefined) {
+			face.classList.add(logo);
+			paradisAppendAgentLogoSvg(face, logo);
+		} else {
+			face.appendChild(renderIcon(Codicon.robot));
+		}
+		const column = append(element, $('.paradis-agent-chat-message-column'));
+		const bubble = append(column, $('.paradis-agent-chat-bubble'));
+		return { element, column, bubble };
+	}
+
+	/** 発言の下の小さい時刻（記録に時刻があるときだけ）。 */
+	private appendTime(parent: HTMLElement, ts: number | undefined): void {
+		if (ts === undefined) {
+			return;
+		}
+		const time = append(parent, $('time.paradis-agent-chat-time')) as HTMLTimeElement;
+		time.dateTime = new Date(ts).toISOString();
+		time.textContent = paradisAgentChatTimeLabel(ts, Date.now());
 	}
 
 	/**
@@ -788,7 +823,7 @@ export class ParadisAgentChatView extends Disposable {
 		}
 		row.setAttribute('aria-label', aria.join(localize('paradisAgentChat.groupAriaSeparator', "、")));
 		row.append(renderIcon(open ? Codicon.chevronDown : Codicon.chevronRight));
-		append(row, $('span.paradis-agent-chat-group-count')).textContent = localize('paradisAgentChat.groupCount', "{0}×", summary.count);
+		append(row, $('span.paradis-agent-chat-group-count')).textContent = localize('paradisAgentChat.groupSteps', "{0} 手順", summary.count);
 		append(row, $('span.paradis-agent-chat-group-names')).textContent = summary.names.join(', ');
 		if (summary.files.length > 0) {
 			// ファイル名は3件まで出し、それより多ければ2件と残りの件数にする。すべてのパスはホバーで見せる。
@@ -1510,7 +1545,10 @@ export class ParadisAgentChatView extends Disposable {
 		const bubble = append(this.liveElement, $('.paradis-agent-chat-live'));
 		bubble.dataset.phase = live.phase;
 		if (live.phase === 'message' && live.text !== undefined && live.text.length > 0) {
-			const body = append(bubble, $('.paradis-agent-chat-markdown'));
+			const message = this.renderAgentMessage(state);
+			bubble.classList.add('with-face');
+			bubble.appendChild(message.element);
+			const body = append(message.bubble, $('.paradis-agent-chat-markdown'));
 			const rendered = this.renderMarkdown(live.text, true);
 			this.liveMarkdown.value = rendered;
 			this.liveTextRenderedAt = Date.now();

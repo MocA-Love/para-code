@@ -136,10 +136,10 @@ suite('Paradis human ask ledger', () => {
 		// 時間切れだけでは戻さない（キーは届いたのに結果の知らせだけ落ちたのかもしれない）
 		assert.deepStrictEqual(ledger.claim('pane:kept', { type: 'action', actionId: 'deny' }, 'mobile'), { ok: false, reason: 'busy' });
 
-		// 持ち主の次の一覧で決まる: まだ出ていれば届かなかった、消えていれば答えが届いた
+		// 持ち主の次の一覧で決まる: まだ出ていれば届かなかった。時間切れの後に消えたものは、答えが届いたからとは言えないので取り下げ
 		ledger.sync('panes', [permission('pane', 'kept')]);
 		assert.deepStrictEqual(view(ledger), {
-			entries: ['pane:kept waiting failed', 'pane:moved-on answered by mobile 許可'],
+			entries: ['pane:kept waiting failed', 'pane:moved-on withdrawn'],
 			counts: { total: 1, pane: 1, board: 0, bot: 0 },
 		});
 	});
@@ -225,6 +225,68 @@ suite('Paradis human ask ledger', () => {
 		// 寄せ先が先に消えたら、ペインの 1 件がそのまま出てくる
 		ledger.withdraw('board', 'board:t1:permission');
 		assert.deepStrictEqual(view(ledger).counts, { total: 4, pane: 2, board: 1, bot: 1 });
+	});
+
+	test('an entry that leaves the list while its answer is on the way waits for the owner, and a refused delivery withdraws it', () => {
+		const time = clock();
+		const ledger = new ParadisHumanAskLedger(time.now, { claimTimeoutMs: 20_000 });
+		ledger.sync('panes', [permission('pane', 'refused'), permission('pane', 'delivered'), permission('pane', 'silent')]);
+		const refused = ledger.claim('pane:refused', { type: 'action', actionId: 'allow' }, 'inbox');
+		assert.ok(refused.ok);
+		assert.ok(ledger.claim('pane:delivered', { type: 'action', actionId: 'allow' }, 'inbox').ok);
+		assert.ok(ledger.claim('pane:silent', { type: 'action', actionId: 'deny' }, 'mobile').ok);
+		// 3 件とも届けている最中に一覧から消えた（ターミナルで先に答えられたのかもしれない）。まだ回答済みにしない
+		time.advance(1_000);
+		ledger.sync('panes', []);
+		const unlisted = view(ledger).entries;
+		// 持ち主の知らせで決まる: 届かなかった → 取り下げ、届いた → 回答済み。何も来なければ時間切れの後の一覧で回答済み
+		ledger.reject('panes', 'pane:refused', refused.request.claim);
+		ledger.resolve('panes', 'pane:delivered');
+		time.advance(20_000);
+		ledger.sync('panes', []);
+		assert.deepStrictEqual({ unlisted, after: view(ledger).entries }, {
+			unlisted: ['pane:silent waiting pending@mobile', 'pane:delivered waiting pending@inbox', 'pane:refused waiting pending@inbox'],
+			after: ['pane:silent answered by mobile 拒否', 'pane:delivered answered by inbox 許可', 'pane:refused withdrawn'],
+		});
+	});
+
+	test('the mark of an answer on the way does not count as a change, an entry that comes back can still fail, and one that left after the timeout is withdrawn', () => {
+		const time = clock();
+		const ledger = new ParadisHumanAskLedger(time.now, { claimTimeoutMs: 20_000 });
+		ledger.sync('panes', [permission('pane', 'back'), permission('pane', 'late')]);
+		const back = ledger.claim('pane:back', { type: 'action', actionId: 'allow' }, 'inbox');
+		assert.ok(back.ok);
+		assert.ok(ledger.claim('pane:late', { type: 'action', actionId: 'allow' }, 'inbox').ok);
+		// 2 件とも届けている最中に消えた: 印だけなので、何度知らせても変わったことにしない
+		const marks = [ledger.sync('panes', []), ledger.sync('panes', [])];
+		// 1 件目が一覧に戻ってから届かなかった: 待ちへ戻す
+		ledger.sync('panes', [permission('pane', 'back')]);
+		ledger.reject('panes', 'pane:back', back.request.claim);
+		// 2 件目は印のまま時間切れ: 届けている最中に消えたので回答済み
+		time.advance(21_000);
+		ledger.sync('panes', [permission('pane', 'back')]);
+		// 3 件目: 時間切れになってから消えた（届けている最中に消えたのではない）: 取り下げ
+		ledger.upsert('panes', permission('pane', 'stale'));
+		assert.ok(ledger.claim('pane:stale', { type: 'action', actionId: 'allow' }, 'inbox').ok);
+		time.advance(21_000);
+		ledger.sync('panes', [permission('pane', 'back')]);
+		assert.deepStrictEqual({ marks, entries: view(ledger).entries }, {
+			marks: [false, false],
+			entries: ['pane:back waiting failed', 'pane:stale withdrawn', 'pane:late answered by inbox 許可'],
+		});
+	});
+
+	test('an answer on the way whose owner never speaks again is settled by the next change from anyone after the timeout', () => {
+		const time = clock();
+		const ledger = new ParadisHumanAskLedger(time.now, { claimTimeoutMs: 20_000 });
+		ledger.sync('board:1', [ask('board', 'L:t1:q1')]);
+		assert.ok(ledger.claim('board:L:t1:q1', pick('a'), 'mobile').ok);
+		// ボードは一覧から外したきり、届いたとも届かなかったとも言わず、次の一覧も送らない
+		ledger.sync('board:1', []);
+		time.advance(21_000);
+		// ほかの持ち主（ペイン）の知らせで台帳が動いたときに決まる
+		ledger.sync('panes', [permission('pane', 'p1')]);
+		assert.deepStrictEqual(view(ledger).entries, ['pane:p1 waiting', 'board:L:t1:q1 answered by mobile 残す']);
 	});
 
 	test('does not let another owner take over a waiting key, and stops taking entries at the limit', () => {

@@ -1,0 +1,14 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+ * Hide the side bar title row ("Spaces: Repositories") while paradisSidebarTitle.ts marks the part.
+ * The part lays out its content with a zero title height at the same time, so no gap is left.
+ */
+.monaco-workbench .part.sidebar.paradis-sidebar-title-hidden > .composite.title {
+	display: none;
+}
