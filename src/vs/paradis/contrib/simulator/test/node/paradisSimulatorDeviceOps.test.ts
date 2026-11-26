@@ -276,7 +276,7 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 				approved: true,
 				device: { id: 'ios:iphone', name: 'iPhone 17', platform: 'iOS', runtime: 'iOS 26.5', udid: IOS_UDID, running: true },
 				attachedDevices: [{ id: 'android:pixel', name: 'Pixel 9', current: false }, { id: 'ios:iphone', name: 'iPhone 17', current: true }],
-				note: 'iPhone 17 is now the current device of this pane: mobile tools act on it when you omit "device". Pass "device" to use one of the others.',
+				note: 'iPhone 17 is the current device of this pane: mobile tools act on it when you omit "device". Pass "device" to use one of the others.',
 			},
 			window: [{
 				channel: 'paradisMobileDeviceRequest',
@@ -316,6 +316,21 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 			noChoice: [true, tenIds, true],
 			foreign: [true, tenIds],
 		});
+	});
+
+	// 承認を待つ間に、利用者が同じ端末を共有ダイアログから渡し、その後に別の端末も渡していた: 今の端末は一覧の最後のもの
+	test('request: the note names the device that is really current when the pane changed while the user was answering', async () => {
+		const holder: { ledger?: FakeLedger } = {};
+		const { ledger, call } = setup({
+			onWindowCall: () => {
+				holder.ledger!.add(PANE, IPHONE);
+				holder.ledger!.add(PANE, IPAD);
+			},
+		});
+		holder.ledger = ledger;
+		ledger.give(PANE, PIXEL);
+		const body = JSON.parse((await call('mobile_request_device', { device: 'iPhone 17' })).body) as { attachedDevices: { name: string; current: boolean }[]; note: string };
+		assert.deepStrictEqual([body.attachedDevices.filter(device => device.current).map(device => device.name), body.note.startsWith('iPad Air is the current device')], [['iPad Air'], true]);
 	});
 
 	// `device` を省くと最後に割り当てた端末。`device` を付けた呼び出しでは、省いたときの端末は変わらない

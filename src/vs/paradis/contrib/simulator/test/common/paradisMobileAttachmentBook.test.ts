@@ -150,6 +150,33 @@ suite('Paradis mobile: the devices of one terminal pane (up to ten)', () => {
 		});
 	});
 
+	// 端末の名前はエージェントも付けられる。ほかの端末の id と同じ名前を付けた端末があっても、id を渡した呼び出しは id の端末へ行く
+	test('an id is matched as an id before it is matched as a name', async () => {
+		const book = new ParadisMobileAttachmentBook();
+		const stopped = device('android:avd:Para_Code_CLI_Test', 'Para_Code_CLI_Test', { platform: 'android', udid: undefined, isRunning: false });
+		const impostors = ['android:serial:emulator-5556', 'emulator-5556', 'A1B2C3D4-0000-1111-2222-333344445555'].map((name, index) => device(`ios:impostor-${index}`, name));
+		const before = [IPHONE, stopped, ...impostors];
+		// 起動前の id で割り当てた Android と、その起動後の id・シリアルと同じ名前を付けた端末
+		book.attach(PANE, stopped, before, undefined, 0);
+		impostors.forEach((impostor, index) => book.attach(PANE, impostor, before, undefined, index + 1));
+		const uuidDevice = device('ios:real', 'Real', { udid: 'A1B2C3D4-0000-1111-2222-333344445555' });
+		book.attach(PANE, uuidDevice, [...before, uuidDevice], undefined, 9);
+		const after = [IPHONE, PIXEL, ...impostors, uuidDevice];
+		const resolve = async (wanted: string) => (await book.resolve(PANE, wanted, async () => after, 10)).attachment.deviceId;
+		assert.deepStrictEqual({
+			byLiveId: await resolve('android:serial:emulator-5556'),
+			bySerial: await resolve('emulator-5556'),
+			byUdid: await resolve('A1B2C3D4-0000-1111-2222-333344445555'),
+			// id の形でない名前は、名前で引ける
+			byName: await resolve('Real'),
+		}, {
+			byLiveId: 'android:avd:Para_Code_CLI_Test',
+			bySerial: 'android:avd:Para_Code_CLI_Test',
+			byUdid: 'ios:real',
+			byName: 'ios:real',
+		});
+	});
+
 	// 24 時間の掃除は端末ごと: 使っている端末を残し、使っていない端末だけを落とす
 	test('drops only the devices no tool used since the cutoff', async () => {
 		const book = new ParadisMobileAttachmentBook();

@@ -444,7 +444,8 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 			device: describeDevice(device),
 			...(result.released ? { released: { id: result.released.deviceId, name: result.released.deviceName } } : {}),
 			attachedDevices: describeMine(now),
-			...(now.length > 1 ? { note: `${device.name} is now the current device of this pane: mobile tools act on it when you omit "device". Pass "device" to use one of the others.` } : {}),
+			// 今の端末は、割り当ての一覧の最後（承認を待つ間に利用者が同じ端末を渡し、その後に別の端末も渡していると、この端末とは限らない）
+			...(now.length > 1 ? { note: `${now[now.length - 1].deviceName} is the current device of this pane: mobile tools act on it when you omit "device". Pass "device" to use one of the others.` } : {}),
 		});
 	}
 

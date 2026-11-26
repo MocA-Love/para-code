@@ -57,6 +57,12 @@ interface IBookEntry {
 	lastActiveAt: number;
 }
 
+/**
+ * 端末の id・番号（UDID・シリアル）の形をした文字列。`ios:…`・`android:…`、UUID、`emulator-5554`、`host:port`。
+ * この形のものは、名前としてより先に id として引く。
+ */
+const LOOKS_LIKE_DEVICE_ID = /^(?:(?:ios|android):.+|[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}|emulator-\d+|[^\s:]+:\d+)$/;
+
 /** 道具の `device` に渡された文字列を、エラー文に出せる長さにする。 */
 function quoted(value: string): string {
 	return value.length > 120 ? `${value.slice(0, 120)}…` : value;
@@ -179,13 +185,19 @@ export class ParadisMobileAttachmentBook {
 		if (!wanted) {
 			found = entries[entries.length - 1];
 		} else {
-			found = entries.find(entry => entry.attachment.deviceId === wanted) ?? onlyOne(entries.filter(entry => entry.attachment.deviceName === wanted), wanted);
+			// id は名前より先に照合する。端末の名前はエージェントも付けられる（simctl rename）ので、ほかの端末の id と同じ名前の
+			// 端末があっても、id を渡した呼び出しがその端末へ行かないようにする。id の形の文字列は、台帳の名前で決めずに
+			// 一覧の今の id まで見る（ふつうの名前のときは、端末の一覧を取りに行かずに決める）
+			found = entries.find(entry => entry.attachment.deviceId === wanted);
+			if (!found && !LOOKS_LIKE_DEVICE_ID.test(wanted)) {
+				found = onlyOne(entries.filter(entry => entry.attachment.deviceName === wanted), wanted);
+			}
 			if (!found) {
 				// 一覧の今の id・番号（UDID / シリアル）・名前でも引く（起動して id が替わった Android、名前を変えた端末）
 				const devices = await listDevices().catch(() => []);
 				const live = (this._panes.get(paneToken) ?? []).map(entry => ({ entry, device: paradisFindMobileDevice(devices, entry.attachment.deviceId) }));
 				const byId = live.filter(candidate => candidate.device !== undefined && (candidate.device.id === wanted || candidate.device.udid === wanted || candidate.device.avdId === wanted));
-				found = onlyOne((byId.length ? byId : live.filter(candidate => candidate.device?.name === wanted)).map(candidate => candidate.entry), wanted);
+				found = onlyOne((byId.length ? byId : live.filter(candidate => candidate.entry.attachment.deviceName === wanted || candidate.device?.name === wanted)).map(candidate => candidate.entry), wanted);
 			}
 		}
 		// 一覧を待つ間に外されていたら使わない
