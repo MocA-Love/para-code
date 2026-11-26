@@ -58,7 +58,7 @@ interface IHarness {
 	bot(name: string): Promise<string>;
 }
 
-function harness(store: Pick<DisposableStore, 'add'>, files?: { botsFile: MemoryFile<IParadisBotsState>; itemsFile: MemoryFile<IParadisBotItemsState>; panesFile?: MemoryFile<IParadisBotPanesState> }, itemsByteLimit?: number): IHarness {
+function harness(store: Pick<DisposableStore, 'add'>, files?: { botsFile: MemoryFile<IParadisBotsState>; itemsFile: MemoryFile<IParadisBotItemsState>; panesFile?: MemoryFile<IParadisBotPanesState> }, itemsByteLimit?: number, revealTimeoutMs?: number): IHarness {
 	const clock = { now: 1_000 };
 	const botsFile = files?.botsFile ?? new MemoryFile(EMPTY_PARADIS_BOTS_STATE);
 	const itemsFile = files?.itemsFile ?? new MemoryFile(EMPTY_PARADIS_BOT_ITEMS_STATE);
@@ -67,7 +67,7 @@ function harness(store: Pick<DisposableStore, 'add'>, files?: { botsFile: Memory
 	const hooks = store.add(new Emitter<{ token: string; event: string }>());
 	const settings = { enabled: true };
 	let ids = 0;
-	const service = store.add(new ParadisBotsService(botsFile, itemsFile, humanAsk, new NullLogService(), { now: () => clock.now, uuid: () => `id${++ids}`, hookEvents: hooks.event, panesFile, enabled: () => settings.enabled, ...(itemsByteLimit !== undefined ? { itemsByteLimit } : {}) }));
+	const service = store.add(new ParadisBotsService(botsFile, itemsFile, humanAsk, new NullLogService(), { now: () => clock.now, uuid: () => `id${++ids}`, hookEvents: hooks.event, panesFile, enabled: () => settings.enabled, ...(itemsByteLimit !== undefined ? { itemsByteLimit } : {}), ...(revealTimeoutMs !== undefined ? { revealTimeoutMs } : {}) }));
 	const tools = new ParadisBotToolProvider(service, () => settings.enabled);
 	const context = (caller: ParadisMcpCallerKind): IParadisMcpToolCallContext => ({
 		callOwningWindow: async () => ({ ok: false, error: 'unused' }),
@@ -335,27 +335,27 @@ suite('Paradis bots service', () => {
 		}, { add: 'This is a look-around, which o', update: 'This is a look-around, which o', list: 1 });
 	});
 
-	test('会話は 1 つの Bot に 1 つだけ: 現れたペインと起動中の番号で断り、前に出す依頼を出す。見回りと、まだ現れていない保存したペインでは断らない', async () => {
+	test('会話は 1 つの Bot に 1 つだけ: 現れたペインと起動中の番号で断る。見回りと、まだ現れていない保存したペインでは断らない', async () => {
 		const first = harness(store);
 		const a = await first.bot('A');
-		const reveals: unknown[] = [];
-		store.add(first.service.onDidRequestReveal(request => reveals.push(request)));
 		const code = async (botId: string, purpose: 'chat' | 'patrol', service = first.service) => {
 			const result = await service.requestLaunch(botId, purpose);
 			return result.ok ? 'ok' : result.code;
 		};
 		// フォルダの口が無いこの試験では、断られなければ 'unavailable' まで進む
 		const open = [await code(a, 'chat'), await code(a, 'patrol')];
-		const revealed = first.service.requestReveal(a);
 		const created = await first.service.createBot({ name: 'B', agent: 'claude' });
 		assert.ok(created.ok);
 		const b = created.value.id;
 		// 2 つのウィンドウから同時に開いた: 先に発行した番号が報告前でも「起動中」
-		const issued = first.service.issueLaunch(b, 'chat');
+		const late = first.service.issueLaunch(b, 'chat');
 		const concurrent = await Promise.all([code(b, 'chat'), code(b, 'chat')]);
 		first.clock.now += 2 * 60_000 + 1;
 		const afterLaunchingTtl = await code(b, 'chat');
-		first.service.cancelLaunch(issued!);
+		// 「起動中」の期限を過ぎた後に別のウィンドウで開いた会話があれば、遅れて届いた報告は断る
+		const other = first.service.issueLaunch(b, 'chat');
+		const otherReported = first.service.reportLaunch(other!, 'pane-B2', 'window:2');
+		const lateReported = first.service.reportLaunch(late!, 'pane-B1', 'window:1');
 
 		// 起動し直した後: 保存したハッシュはあるがまだ現れていないペインは数えない。現れたら数える。閉じたら外れる
 		const second = harness(store, first);
@@ -365,16 +365,62 @@ suite('Paradis bots service', () => {
 		const appeared = await code(a, 'chat', second.service);
 		second.hooks.fire({ token: 'pane-A', event: 'TerminalExit' });
 		const closed = await code(a, 'chat', second.service);
-		assert.deepStrictEqual({ open, revealed, reveals, notOpenReveal: second.service.requestReveal(a), concurrent, afterLaunchingTtl, notAppeared, appeared, closed }, {
+		assert.deepStrictEqual({ open, concurrent, afterLaunchingTtl, otherReported, lateReported, notAppeared, appeared, closed }, {
 			open: ['already_open', 'unavailable'],
-			revealed: true,
-			notOpenReveal: false,
-			reveals: [{ botId: a, paneHashes: ['1b780c2005e24c7adab28a00c48fd437c37580c140f7b9585d87f54e78b59cff'] }],
 			concurrent: ['launching', 'launching'],
 			afterLaunchingTtl: 'unavailable',
+			otherReported: true,
+			lateReported: false,
 			notAppeared: 'unavailable',
 			appeared: 'already_open',
 			closed: 'unavailable',
+		});
+	});
+
+	test('ウィンドウを閉じた後は別のウィンドウから開ける。前に出す依頼に応えるウィンドウが無ければ、結び付けを外して起動へ進める', async () => {
+		const h = harness(store, undefined, undefined, 20);
+		const created = await h.service.createBot({ name: 'A', agent: 'claude' });
+		assert.ok(created.ok);
+		const a = created.value.id;
+		const code = async () => {
+			const result = await h.service.requestLaunch(a, 'chat');
+			return result.ok ? 'ok' : result.code;
+		};
+		const bind = (token: string, windowCtx: string) => {
+			const launchId = h.service.issueLaunch(a, 'chat');
+			assert.ok(launchId !== undefined && h.service.reportLaunch(launchId, token, windowCtx));
+		};
+		// ウィンドウ 1 を閉じた（ペインは終了を知らせない）。接続が切れたので「まだ現れていない」に戻る
+		bind('pane-1', 'window:1');
+		const beforeClose = await code();
+		h.service.detachWindow('window:2');
+		const otherWindowClosed = await code();
+		h.service.detachWindow('window:1');
+		const afterClose = await code();
+
+		// 応えたウィンドウがあれば、結び付けは残る
+		bind('pane-2', 'window:2');
+		const reveals: string[] = [];
+		const listener = h.service.onDidRequestReveal(request => {
+			reveals.push(request.paneHashes.length === 1 ? 'one pane' : 'other');
+			h.service.ackReveal(request.revealId);
+		});
+		const answered = await h.service.requestReveal(a);
+		const afterAnswer = await code();
+		listener.dispose();
+		// どのウィンドウも応えない（閉じたことが伝わらなかった）: 待ってから外し、起動へ進める
+		const unanswered = await h.service.requestReveal(a);
+		const afterTimeout = await code();
+		assert.deepStrictEqual({ beforeClose, otherWindowClosed, afterClose, reveals, answered, afterAnswer, unanswered, afterTimeout, nothingToReveal: await h.service.requestReveal(a) }, {
+			beforeClose: 'already_open',
+			otherWindowClosed: 'already_open',
+			afterClose: 'unavailable',
+			reveals: ['one pane'],
+			answered: true,
+			afterAnswer: 'already_open',
+			unanswered: false,
+			afterTimeout: 'unavailable',
+			nothingToReveal: false,
 		});
 	});
 

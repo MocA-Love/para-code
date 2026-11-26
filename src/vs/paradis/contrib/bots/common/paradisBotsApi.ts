@@ -121,6 +121,8 @@ export interface IParadisBotStopRequest {
 
 /** 開いている Bot のペインを前に出してほしい（別のウィンドウから開こうとした）。ハッシュで渡す。 */
 export interface IParadisBotRevealRequest {
+	/** 応えるときに {@link IParadisBotsService.ackReveal} へ返す番号。 */
+	readonly revealId: string;
 	readonly botId: string;
 	readonly paneHashes: readonly string[];
 }
@@ -181,8 +183,13 @@ export interface IParadisBotsService {
 	/** 起動できなかった。 */
 	cancelLaunch(launchId: string): Promise<void>;
 	requestStop(botId: string): Promise<boolean>;
-	/** 別のウィンドウで開いている会話のペインを前に出してもらう（利用者の操作からだけ）。 */
+	/**
+	 * 別のウィンドウで開いている会話のペインを前に出してもらう（利用者の操作からだけ）。どのウィンドウも 2 秒以内に
+	 * 応えなければ、その会話のペインを「まだ現れていない」に戻して false（呼んだ側は起動へ進める）。
+	 */
 	requestReveal(botId: string): Promise<boolean>;
+	/** 前に出す依頼に、そのペインを持つウィンドウが応える。 */
+	ackReveal(revealId: string): Promise<void>;
 	/** その Bot のペインのトークンの SHA-256（16 進）。開くときに、このウィンドウにもうあるかを照らす。 */
 	paneHashesOf(botId: string): Promise<readonly string[]>;
 
