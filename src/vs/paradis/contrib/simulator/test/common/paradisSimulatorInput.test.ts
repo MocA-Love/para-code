@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisPickSimctlDisplay, paradisSimulatorDuoPanel, paradisSimulatorDisplayGeometry, paradisSimulatorKeystrokes, paradisSimulatorStallReason, paradisSimulatorStallRetryDelay, paradisSimulatorFitSize, paradisSimulatorHidUsage, paradisSimulatorNextOrientation, paradisSimulatorPointFromClient, paradisSimulatorRawPoint, paradisSimulatorShouldSendKey, paradisSimulatorTouchEdge } from '../../common/paradisSimulatorInput.js';
+import { paradisPickSimctlDisplay, paradisSimulatorTextPlan, paradisSimulatorDuoPanel, paradisSimulatorDisplayGeometry, paradisSimulatorKeystrokes, paradisSimulatorStallReason, paradisSimulatorStallRetryDelay, paradisSimulatorFitSize, paradisSimulatorHidUsage, paradisSimulatorNextOrientation, paradisSimulatorPointFromClient, paradisSimulatorRawPoint, paradisSimulatorShouldSendKey, paradisSimulatorTouchEdge } from '../../common/paradisSimulatorInput.js';
 
 suite('Paradis simulator: human input', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -85,6 +85,23 @@ suite('Paradis simulator: human input', () => {
 			ascii: [{ usage: 0x04, shift: false }, { usage: 0x1d, shift: true }, { usage: 0x1e, shift: false }, { usage: 0x1e, shift: true }],
 			japanese: undefined,
 		});
+	});
+
+	test('plans digits and line breaks as keys and every other run of text as a paste', () => {
+		const enter = { usage: 0x28, shift: false };
+		assert.deepStrictEqual([
+			paradisSimulatorTextPlan('42'),
+			paradisSimulatorTextPlan('wifi'),
+			paradisSimulatorTextPlan('a 1\nb\r\n'),
+			paradisSimulatorTextPlan('\n'),
+			paradisSimulatorTextPlan(''),
+		], [
+			[{ kind: 'keys', strokes: [{ usage: 0x21, shift: false }, { usage: 0x1f, shift: false }] }],
+			[{ kind: 'paste', text: 'wifi' }],
+			[{ kind: 'paste', text: 'a 1' }, { kind: 'keys', strokes: [enter] }, { kind: 'paste', text: 'b' }, { kind: 'keys', strokes: [enter] }],
+			[{ kind: 'keys', strokes: [enter] }],
+			[],
+		]);
 	});
 
 	// 途切れたら 5・10・20・40 秒待って読み直し、使い切ったら止める（止める・始めるを繰り返さない）

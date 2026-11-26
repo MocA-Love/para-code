@@ -132,18 +132,24 @@ suite('Paradis simulator: serve-sim answers the Mobile Canvas REST for iOS', () 
 		});
 	});
 
-	// 日本語はキーで打てないので、シミュレータのクリップボードへ写して Command+V で貼る
-	test('types ASCII as keys and pastes other text', async () => {
+	// HID のキーは端末のキーボードの言語を通る（日本語のシミュレータで wifi が「うぃふぃ」になった）。文字は貼り付け、
+	// 数字・改行・タブだけキーで打つ
+	test('types digits and Enter as keys and pastes every other text', async () => {
 		const { host, backend, simctl } = setup();
-		const keys = await host.request('POST', `${PATH}/input/text`, { text: 'A' });
+		const keys = await host.request('POST', `${PATH}/input/text`, { text: '4\n' });
 		const keyFrames = backend.frames.splice(0);
 		const paste = await host.request('POST', `${PATH}/input/text`, { text: 'こんにちは' });
-		assert.deepStrictEqual({ keys, keyFrames, paste, pasteFrames: backend.frames.map(([, body]) => body), simctl }, {
+		const pasteFrames = backend.frames.splice(0).map(([, body]) => body);
+		const mixed = await host.request('POST', `${PATH}/input/text`, { text: 'wifi 42\r\nB' });
+		const pasteKeys = [{ type: 'down', usage: 0xe3 }, { type: 'down', usage: 0x19 }, { type: 'up', usage: 0x19 }, { type: 'up', usage: 0xe3 }];
+		assert.deepStrictEqual({ keys, keyFrames, paste, pasteFrames, mixed, mixedFrames: backend.frames.map(([, body]) => body), simctl }, {
 			keys: { method: 'keys' },
-			keyFrames: [[0x06, { type: 'down', usage: 0xe1 }], [0x06, { type: 'down', usage: 0x04 }], [0x06, { type: 'up', usage: 0x04 }], [0x06, { type: 'up', usage: 0xe1 }]],
+			keyFrames: [[0x06, { type: 'down', usage: 0x21 }], [0x06, { type: 'up', usage: 0x21 }], [0x06, { type: 'down', usage: 0x28 }], [0x06, { type: 'up', usage: 0x28 }]],
 			paste: { method: 'paste' },
-			pasteFrames: [{ type: 'down', usage: 0xe3 }, { type: 'down', usage: 0x19 }, { type: 'up', usage: 0x19 }, { type: 'up', usage: 0xe3 }],
-			simctl: [{ args: ['pbcopy', UDID], input: 'こんにちは' }],
+			pasteFrames: pasteKeys,
+			mixed: { method: 'paste' },
+			mixedFrames: [...pasteKeys, { type: 'down', usage: 0x28 }, { type: 'up', usage: 0x28 }, ...pasteKeys],
+			simctl: [{ args: ['pbcopy', UDID], input: 'こんにちは' }, { args: ['pbcopy', UDID], input: 'wifi 42' }, { args: ['pbcopy', UDID], input: 'B' }],
 		});
 	});
 
@@ -151,9 +157,9 @@ suite('Paradis simulator: serve-sim answers the Mobile Canvas REST for iOS', () 
 	// 次にすることを結果に添える（直す前は、届かなくても何も言わずに成功を返していた）
 	test('says when keys may not have reached the simulator because Device Hub is running', async () => {
 		const { host, backend } = setup();
-		const before = await host.request('POST', `${PATH}/input/text`, { text: 'a' });
+		const before = await host.request('POST', `${PATH}/input/text`, { text: '1' });
 		backend.keysFellBack = true;
-		const keys = await host.request('POST', `${PATH}/input/text`, { text: 'a' });
+		const keys = await host.request('POST', `${PATH}/input/text`, { text: '1' });
 		const paste = await host.request('POST', `${PATH}/input/text`, { text: 'あ' });
 		assert.deepStrictEqual({ before, keys, paste }, {
 			before: { method: 'keys' },

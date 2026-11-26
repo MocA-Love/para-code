@@ -1123,11 +1123,14 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 		const deniedUntil = this._deniedUntil.get(cooldownKey);
 		if (deniedUntil !== undefined) {
 			if (Date.now() < deniedUntil) {
+				// 画面を出さずに断る経路もログに残す（「確認の画面が出ないまま断られた」を後から追えるように）
+				this._logService.info('[ParadisAgentBrowserTabs] approval dialog: outcome=recentlyDenied, shown=false, elapsedMs=0');
 				return 'recentlyDenied';
 			}
 			this._deniedUntil.delete(cooldownKey);
 		}
 		if (this._pendingApprovals.has(token)) {
+			this._logService.info('[ParadisAgentBrowserTabs] approval dialog: outcome=busy, shown=false, elapsedMs=0');
 			return 'busy';
 		}
 		this._pendingApprovals.add(token);

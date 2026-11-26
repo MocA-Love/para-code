@@ -345,6 +345,7 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 			...(reason ? { reason } : {}),
 			...(current ? { replacingDeviceName: current.deviceName } : {}),
 		};
+		const askedAt = Date.now();
 		const call = await context.callOwningWindow<unknown>({
 			channelName: PARADIS_MOBILE_DEVICE_REQUEST_CHANNEL,
 			method: PARADIS_MOBILE_DEVICE_REQUEST_METHOD,
@@ -359,6 +360,8 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 		}
 		const answer = paradisParseMobileDeviceRequestAnswer(call.value);
 		if (answer?.outcome !== 'approved') {
+			// 画面を出さずに返る経路（paneUnresolved・recentlyDenied・busy）も含めて、承認されなかった結果を残す
+			this._logService?.info(`[paradis-mobile-canvas] a device request was not approved: outcome=${answer?.outcome ?? 'malformed'}, elapsedMs=${Date.now() - askedAt}`);
 			return refusal(answer?.outcome, 'The user declined to attach this device. Do not ask for it again for now, and do not switch to another device to ask again: Para Code turns down requests from this pane for this device for a few minutes, and for any device for a few seconds. Browser pages are not affected.', 'The user declined a request from this pane a short while ago (for this device in the last few minutes, or for any device in the last few seconds), so Para Code turned this one down without asking. Do not switch to another device to ask again; wait, or ask the user in the conversation.');
 		}
 		// 承認を待つ間に別のペインへ渡っていたら割り当てない（ほかのペインの端末は奪わない）。確かめと書き込みは台帳が一度に行う
