@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisAgentChatTimeLabel, paradisAgentChatUsageLabel } from '../../common/paradisAgentChatTime.js';
+import { paradisAgentChatTimeLabel, paradisAgentChatUsageCacheDetail, paradisAgentChatUsageLabel } from '../../common/paradisAgentChatTime.js';
 
 suite('paradisAgentChatTimeLabel', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -22,10 +22,12 @@ suite('paradisAgentChatTimeLabel', () => {
 		], ['9:05', '11/26 23:21', '2025/12/31 0:00']);
 	});
 
-	test('writes the usage line with grouped digits, with the model when known', () => {
+	test('writes the usage line with the cache apart from the input, grouped digits, the model when known, and the cache detail', () => {
+		const usage = { model: 'claude-opus-4-5', inputTokens: 2, cacheReadTokens: 143_745, cacheCreationTokens: 2_610, outputTokens: 581 };
 		assert.deepStrictEqual([
-			paradisAgentChatUsageLabel({ model: 'claude-opus-4-5', inputTokens: 19_659, outputTokens: 581 }),
-			paradisAgentChatUsageLabel({ inputTokens: 1_234_567, outputTokens: 0 }),
-		], ['claude-opus-4-5 / 入力 19,659 出力 581', '入力 1,234,567 出力 0']);
+			paradisAgentChatUsageLabel(usage),
+			paradisAgentChatUsageLabel({ inputTokens: 1_234_567, cacheReadTokens: 0, cacheCreationTokens: 0, outputTokens: 0 }),
+			paradisAgentChatUsageCacheDetail(usage),
+		], ['claude-opus-4-5 / 入力 2 · キャッシュ 146,355 · 出力 581', '入力 1,234,567 · キャッシュ 0 · 出力 0', 'キャッシュから読んだ入力 143,745\nキャッシュへ書いた入力 2,610']);
 	});
 });

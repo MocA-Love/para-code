@@ -30,10 +30,18 @@ function groupDigits(value: number): string {
 	return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
-/** 発言の下の小さい行の使用量（「claude-opus-4-5 / 入力 19,659 出力 581」）。モデルが分からなければ数だけ。 */
+/**
+ * 発言の下の小さい行の使用量（「claude-opus-4-5 / 入力 2 · キャッシュ 146,355 · 出力 581」）。キャッシュは読みと書きの和で、
+ * 内訳は {@link paradisAgentChatUsageCacheDetail}。モデルが分からなければ数だけ。
+ */
 export function paradisAgentChatUsageLabel(usage: IParadisAgentMessageUsage): string {
-	const tokens = localize('paradisAgentChat.usageTokens', "入力 {0} 出力 {1}", groupDigits(usage.inputTokens), groupDigits(usage.outputTokens));
+	const tokens = localize('paradisAgentChat.usageTokensWithCache', "入力 {0} · キャッシュ {1} · 出力 {2}", groupDigits(usage.inputTokens), groupDigits(usage.cacheReadTokens + usage.cacheCreationTokens), groupDigits(usage.outputTokens));
 	return usage.model !== undefined && usage.model.length > 0
 		? localize('paradisAgentChat.usageWithModel', "{0} / {1}", usage.model, tokens)
 		: tokens;
+}
+
+/** 使用量の行に重ねたときのキャッシュの内訳。 */
+export function paradisAgentChatUsageCacheDetail(usage: IParadisAgentMessageUsage): string {
+	return localize('paradisAgentChat.usageCacheDetail', "キャッシュから読んだ入力 {0}\nキャッシュへ書いた入力 {1}", groupDigits(usage.cacheReadTokens), groupDigits(usage.cacheCreationTokens));
 }
