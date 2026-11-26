@@ -301,6 +301,16 @@ export class ParadisBotGroupRelayLimiter {
 	}
 }
 
+/**
+ * Bot 同士の伝言の文の先頭（空白を除いた最初の文字）が `/` か `!` なら全角（`／`・`！`）に替える。エージェントの入力欄では
+ * 先頭の `/` がスラッシュコマンド（`/model` など）、`!` がシェルの実行になるので、ほかの Bot の言葉でそれを動かさない。
+ * 伝言の道具は頭に出どころを付けるので先頭はふつう `[` だが、届ける側でも重ねて守る。部屋の入力欄から利用者が送る文には
+ * 使わない（利用者が打った `/` は利用者の意図）。
+ */
+export function paradisBotGroupNeutralizeCommand(text: string): string {
+	return text.replace(/^(?<space>\s*)(?<mark>[/!])/u, (_match, space: string, mark: string) => `${space}${mark === '/' ? '\uFF0F' : '\uFF01'}`);
+}
+
 /** 伝言を断る理由。`busy` と `rate_limited` は「後で」送り直せる。 */
 export type ParadisBotGroupDeliverRefusal = 'not_a_member' | 'self' | 'not_running' | 'busy' | 'rate_limited';
 

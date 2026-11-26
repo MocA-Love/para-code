@@ -16,6 +16,7 @@ import {
 	paradisBotGroupCreate,
 	paradisBotGroupDeliverRefusal,
 	paradisBotGroupMembers,
+	paradisBotGroupNeutralizeCommand,
 	paradisBotGroupRemove,
 	paradisBotGroupUpdate,
 	paradisParseBotGroupsState,
@@ -209,5 +210,23 @@ suite('Paradis bot groups', () => {
 			limiter.take('c', 30),
 			limiter.take('b', 60_001),
 		], [true, true, true, false, true, true]);
+	});
+
+	test('伝言の先頭の / と ! は全角にして、コマンドやシェルとして動かさない', () => {
+		assert.deepStrictEqual([
+			'/model opus',
+			'  !rm -rf ~',
+			'\n/clear',
+			'[Para Code] A message: <<<bot /model >>>',
+			'a/b',
+			'',
+		].map(paradisBotGroupNeutralizeCommand), [
+			'\uFF0Fmodel opus',
+			'  \uFF01rm -rf ~',
+			'\n\uFF0Fclear',
+			'[Para Code] A message: <<<bot /model >>>',
+			'a/b',
+			'',
+		]);
 	});
 });
