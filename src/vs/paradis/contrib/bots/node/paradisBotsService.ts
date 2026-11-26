@@ -29,6 +29,7 @@ import {
 	IParadisBotItemChanges,
 	IParadisBotItemOwnerComment,
 	IParadisBotItemsState,
+	PARADIS_BOT_ITEMS_BYTE_LIMIT,
 	PARADIS_BOT_ITEMS_VERSION,
 	ParadisBotItemsResult,
 	ParadisBotItemStatus,
@@ -39,6 +40,7 @@ import {
 	paradisBotItemsMarkDelivered,
 	paradisBotItemsOf,
 	paradisBotItemsPendingMail,
+	paradisBotItemsToStored,
 	paradisBotItemsRemoveBot,
 	paradisBotItemUndelivered,
 	paradisBotItemUpdate,
@@ -76,7 +78,11 @@ export interface IParadisBotsServiceOptions {
 	readonly panesFile?: IParadisBotsJsonFile<IParadisBotPanesState>;
 	/** 専用フォルダの読み書き。渡さなければフォルダを作らず、起動の依頼とファイルの口は `unavailable` で断る。 */
 	readonly homes?: ParadisBotHomes;
+	/** 項目の台帳の大きさの上限（テストで小さくする）。既定は {@link PARADIS_BOT_ITEMS_BYTE_LIMIT}。 */
+	readonly itemsByteLimit?: number;
 }
+
+const ITEMS_FULL_MESSAGE = 'Para Code\'s list of bot items is full. Close the items you no longer need (status "done" or "canceled"), or ask your owner to close or remove some items; then you can write again.';
 
 type Result<T> = ParadisBotsServiceResult<T>;
 
@@ -93,6 +99,7 @@ export class ParadisBotsService extends Disposable {
 	private readonly uuid: () => string;
 	private readonly homes: ParadisBotHomes | undefined;
 	private readonly panesFile: IParadisBotsJsonFile<IParadisBotPanesState> | undefined;
+	private readonly itemsByteLimit: number;
 
 	/** 読み込みが終わった（壊れたファイルの退避も済んだ）。 */
 	readonly ready: Promise<void>;
@@ -126,6 +133,7 @@ export class ParadisBotsService extends Disposable {
 		this.uuid = options.uuid ?? generateUuid;
 		this.homes = options.homes;
 		this.panesFile = options.panesFile;
+		this.itemsByteLimit = options.itemsByteLimit ?? PARADIS_BOT_ITEMS_BYTE_LIMIT;
 		this._register(this.humanAsk.onDidRequestAnswer(request => this.onAnswerRequest(request)));
 		if (options.hookEvents) {
 			this._register(options.hookEvents(event => {
@@ -328,7 +336,15 @@ export class ParadisBotsService extends Disposable {
 	// ---- 項目（Bot が書く。道具の提供元だけが呼ぶ） ------------------------------------------------
 
 	botAddItem(botId: string, input: IParadisBotItemAddArgs): Promise<Result<IParadisBotItem>> {
-		return this.write(() => this.apply(paradisBotItemAdd(this.items, { ...input, uid: this.uuid(), botId }, this.now())));
+		return this.write(async () => {
+			const result = paradisBotItemAdd(this.items, { ...input, uid: this.uuid(), botId }, this.now());
+			return result.ok && this.tooLarge(result.state) ? { ok: false, code: 'limit', message: ITEMS_FULL_MESSAGE } : this.apply(result);
+		});
+	}
+
+	/** 台帳が大きさの上限を超えるか（保存と同じ形で数える）。 */
+	private tooLarge(state: IParadisBotItemsState): boolean {
+		return Buffer.byteLength(JSON.stringify(paradisBotItemsToStored(state), undefined, '\t'), 'utf8') > this.itemsByteLimit;
 	}
 
 	botUpdateItem(botId: string, number: number, changes: IParadisBotItemChanges): Promise<Result<IParadisBotItem>> {
@@ -339,6 +355,11 @@ export class ParadisBotsService extends Disposable {
 			// 断るので、確かめずに書くと「Needs you なのにどこにも出ない」項目ができる
 			if (result.ok && bot !== undefined && result.item.ask !== undefined && paradisSanitizeHumanAskInput(paradisBotAskInput(bot, result.item)) === undefined) {
 				return { ok: false, code: 'invalid_argument', message: 'Para Code could not show this question to your owner. Shorten the questions and the options, then set "needs_you" again.' };
+			}
+			// 上限を超えても、項目を閉じる書き込みは通す（閉じないと減らす手が無い）
+			const closing = changes.status === 'done' || changes.status === 'canceled';
+			if (result.ok && !closing && this.tooLarge(result.state)) {
+				return { ok: false, code: 'limit', message: ITEMS_FULL_MESSAGE };
 			}
 			return this.apply(result);
 		});
