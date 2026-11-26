@@ -12,7 +12,7 @@ import { Event } from '../../../../base/common/event.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 import { IParadisBotItem, IParadisBotItemOwnerComment, IParadisBotItemsState, ParadisBotItemStatus, paradisBotItemCounts } from './paradisBotItems.js';
-import { IParadisBot, IParadisBotPatch } from './paradisBots.js';
+import { IParadisBot, IParadisBotPatch, ParadisBotFaceColor, ParadisBotFaceShape } from './paradisBots.js';
 
 /**
  * Bot の今の様子。
@@ -120,7 +120,7 @@ export interface IParadisBotsService {
 	/** Bot を止めてほしい（どのウィンドウからの依頼も全ウィンドウへ届く）。そのターミナルを持つウィンドウが閉じる。 */
 	readonly onDidRequestStop: Event<{ readonly botId: string }>;
 
-	createBot(input: { readonly name: string; readonly agent: ParadisAgentKind; readonly modelId?: string; readonly effortId?: string; readonly permissionId?: string }, soul?: string): Promise<ParadisBotsServiceResult<IParadisBot>>;
+	createBot(input: { readonly name: string; readonly agent: ParadisAgentKind; readonly modelId?: string; readonly effortId?: string; readonly permissionId?: string; readonly faceColor?: ParadisBotFaceColor; readonly faceShape?: ParadisBotFaceShape }, soul?: string): Promise<ParadisBotsServiceResult<IParadisBot>>;
 	updateBot(botId: string, patch: IParadisBotPatch): Promise<ParadisBotsServiceResult<IParadisBot>>;
 	removeBot(botId: string): Promise<ParadisBotsServiceResult<IParadisBot>>;
 

@@ -28,6 +28,34 @@ export const PARADIS_BOT_LIMITS = Object.freeze({
 	id: 200,
 });
 
+/** 顔の色（8 色。画面が色の値へ引き直す。保存するのは名前だけ）。 */
+export const PARADIS_BOT_FACE_COLORS = ['blue', 'teal', 'green', 'amber', 'pink', 'violet', 'red', 'orange'] as const;
+export type ParadisBotFaceColor = typeof PARADIS_BOT_FACE_COLORS[number];
+/** 顔の形（6 種）。 */
+export const PARADIS_BOT_FACE_SHAPES = ['circle', 'squircle', 'hex', 'blob', 'drop', 'penta'] as const;
+export type ParadisBotFaceShape = typeof PARADIS_BOT_FACE_SHAPES[number];
+
+function faceColor(value: unknown): ParadisBotFaceColor | undefined {
+	return PARADIS_BOT_FACE_COLORS.find(color => color === value);
+}
+
+function faceShape(value: unknown): ParadisBotFaceShape | undefined {
+	return PARADIS_BOT_FACE_SHAPES.find(shape => shape === value);
+}
+
+/** 選んでいないときの顔。名前から決まる（同じ名前なら毎回同じ）。 */
+export function paradisBotDefaultFace(name: string): { readonly faceColor: ParadisBotFaceColor; readonly faceShape: ParadisBotFaceShape } {
+	// FNV-1a（32 ビット）。色と形で別の桁を使い、同じ色の Bot が同じ形に揃わないようにする
+	let hash = 0x811c9dc5;
+	for (let index = 0; index < name.length; index++) {
+		hash = Math.imul(hash ^ name.charCodeAt(index), 0x01000193) >>> 0;
+	}
+	return {
+		faceColor: PARADIS_BOT_FACE_COLORS[hash % PARADIS_BOT_FACE_COLORS.length],
+		faceShape: PARADIS_BOT_FACE_SHAPES[Math.floor(hash / PARADIS_BOT_FACE_COLORS.length) % PARADIS_BOT_FACE_SHAPES.length],
+	};
+}
+
 export interface IParadisBot {
 	readonly id: string;
 	readonly name: string;
@@ -41,6 +69,9 @@ export interface IParadisBot {
 	readonly paused: boolean;
 	/** ピン留め。Bot の帯を閉じていても見える（どのウィンドウ・スマホでも同じ）。古い保存は false として読む。 */
 	readonly pinned: boolean;
+	/** 顔の色と形。古い保存・選んでいない Bot は名前から決まる既定（{@link paradisBotDefaultFace}）。 */
+	readonly faceColor: ParadisBotFaceColor;
+	readonly faceShape: ParadisBotFaceShape;
 	readonly createdAt: number;
 	readonly updatedAt: number;
 }
@@ -141,6 +172,9 @@ export interface IParadisBotCreateInput {
 	readonly modelId?: unknown;
 	readonly effortId?: unknown;
 	readonly permissionId?: unknown;
+	/** 顔。渡さなければ名前から決まる既定。 */
+	readonly faceColor?: unknown;
+	readonly faceShape?: unknown;
 	/**
 	 * 台帳に無くても「使用中」に数えるフォルダ名（ディスクにもうあるフォルダ）。Bot を消してもフォルダは残るので、
 	 * 数えないと、消した Bot の人格と記憶のフォルダを新しい Bot が引き継いでしまう。
@@ -157,6 +191,8 @@ export interface IParadisBotPatch {
 	readonly permissionId?: unknown;
 	readonly paused?: unknown;
 	readonly pinned?: unknown;
+	readonly faceColor?: unknown;
+	readonly faceShape?: unknown;
 }
 
 function agentKind(value: unknown): ParadisAgentKind | undefined {
@@ -197,7 +233,8 @@ export function paradisBotCreate(state: IParadisBotsState, input: IParadisBotCre
 	}
 	const name = paradisSanitizeBotName(input.name);
 	const agent = agentKind(input.agent);
-	if (name === undefined || agent === undefined || input.id.length === 0 || state.bots.some(bot => bot.id === input.id)) {
+	if (name === undefined || agent === undefined || input.id.length === 0 || state.bots.some(bot => bot.id === input.id)
+		|| (input.faceColor !== undefined && faceColor(input.faceColor) === undefined) || (input.faceShape !== undefined && faceShape(input.faceShape) === undefined)) {
 		return refuse('invalid_argument', `A bot needs a name of up to ${PARADIS_BOT_LIMITS.name} characters and one of these agents: ${PARADIS_AGENT_KINDS.join(', ')}.`);
 	}
 	if (state.bots.length >= PARADIS_BOT_LIMITS.bots) {
@@ -210,6 +247,8 @@ export function paradisBotCreate(state: IParadisBotsState, input: IParadisBotCre
 		agent,
 		paused: false,
 		pinned: false,
+		faceColor: faceColor(input.faceColor) ?? paradisBotDefaultFace(name).faceColor,
+		faceShape: faceShape(input.faceShape) ?? paradisBotDefaultFace(name).faceShape,
 		createdAt: now,
 		updatedAt: now,
 	}, input);
@@ -230,10 +269,20 @@ export function paradisBotUpdate(state: IParadisBotsState, id: string, patch: IP
 	const name = patch.name === undefined ? current.name : paradisSanitizeBotName(patch.name);
 	const agent = patch.agent === undefined ? current.agent : agentKind(patch.agent);
 	const next = withOptionalIds(current, patch);
-	if (name === undefined || agent === undefined || next === undefined || (patch.paused !== undefined && typeof patch.paused !== 'boolean') || (patch.pinned !== undefined && typeof patch.pinned !== 'boolean')) {
+	if (name === undefined || agent === undefined || next === undefined || (patch.paused !== undefined && typeof patch.paused !== 'boolean') || (patch.pinned !== undefined && typeof patch.pinned !== 'boolean')
+		|| (patch.faceColor !== undefined && faceColor(patch.faceColor) === undefined) || (patch.faceShape !== undefined && faceShape(patch.faceShape) === undefined)) {
 		return refuse('invalid_argument', 'The change to the bot is not valid.');
 	}
-	const bot: IParadisBot = { ...next, name, agent, paused: typeof patch.paused === 'boolean' ? patch.paused : current.paused, pinned: typeof patch.pinned === 'boolean' ? patch.pinned : current.pinned, updatedAt: now };
+	const bot: IParadisBot = {
+		...next,
+		name,
+		agent,
+		paused: typeof patch.paused === 'boolean' ? patch.paused : current.paused,
+		pinned: typeof patch.pinned === 'boolean' ? patch.pinned : current.pinned,
+		faceColor: faceColor(patch.faceColor) ?? current.faceColor,
+		faceShape: faceShape(patch.faceShape) ?? current.faceShape,
+		updatedAt: now,
+	};
 	return { ok: true, state: { ...state, bots: state.bots.map(existing => existing.id === id ? bot : existing) }, bot };
 }
 
@@ -265,7 +314,20 @@ function storedBot(value: unknown): IParadisBot | undefined {
 		return undefined;
 	}
 	// ピン留めは後から足した欄なので、無い（古い保存）・形の違う値は false として読む
-	return withOptionalIds({ id: value.id, name, folder: value.folder, agent, paused: value.paused, pinned: value.pinned === true, createdAt, updatedAt }, {
+	// 顔も後から足した欄なので、無い・選べる値でないときは名前から決まる既定として読む
+	const face = paradisBotDefaultFace(name);
+	return withOptionalIds({
+		id: value.id,
+		name,
+		folder: value.folder,
+		agent,
+		paused: value.paused,
+		pinned: value.pinned === true,
+		faceColor: faceColor(value.faceColor) ?? face.faceColor,
+		faceShape: faceShape(value.faceShape) ?? face.faceShape,
+		createdAt,
+		updatedAt,
+	}, {
 		modelId: value.modelId ?? undefined,
 		effortId: value.effortId ?? undefined,
 		permissionId: value.permissionId ?? undefined,
