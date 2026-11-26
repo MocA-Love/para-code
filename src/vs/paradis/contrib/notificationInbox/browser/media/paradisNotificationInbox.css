@@ -279,6 +279,11 @@
 	font-weight: var(--vscode-fontWeight-semiBold);
 }
 
+/* The source chip keeps its width; a long title is the one cut with an ellipsis. */
+.monaco-workbench .paradis-notification-inbox-popover .pnip-ask .pnip-row-top > .paradis-chip {
+	flex: none;
+}
+
 .monaco-workbench .paradis-notification-inbox-popover .pnip-ask .pnip-detail {
 	margin-left: 0;
 }
