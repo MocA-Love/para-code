@@ -48,6 +48,7 @@ import { paradisBotFace, paradisBotStatusLine } from '../common/paradisBotsBandM
 import { IParadisBotAskSelection, paradisBotAskAnswer, paradisBotAskToggle, paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel, PARADIS_BOT_PAGE_TABS, ParadisBotPageTab } from '../common/paradisBotPageModel.js';
 import { ParadisBotSettingsPanel } from './paradisBotPageSettings.js';
 import { renderParadisBotFace } from './paradisBotFace.js';
+import { IParadisBotPatrolPort, ParadisBotPatrolSection } from './paradisBotPatrol.js';
 import type { IParadisBotSuggestion } from '../common/paradisBotSuggestions.js';
 
 const $ = DOM.$;
@@ -101,6 +102,8 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 	private readonly itemsTab: HTMLElement;
 	/** Bot ごとの設定・ファイルのタブ（入力中の値を描き直しの間も持つ）。 */
 	private readonly settingsPanels = new Map<string, ParadisBotSettingsPanel>();
+	/** Bot ごとの見回りの表示（書きかけの値を描き直しの間も持つ）。 */
+	private readonly patrolSections = new Map<string, ParadisBotPatrolSection>();
 	private readonly itemsCount: HTMLElement;
 	private readonly panel: HTMLElement;
 	private readonly panelStore = this._register(new DisposableStore());
@@ -122,6 +125,8 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 	constructor(
 		private readonly container: HTMLElement,
 		private readonly resolver: IParadisBotPaneResolver,
+		/** 見回りの口（定期実行の側）。無ければ「定期実行」の節と見回りの欄を出さない。 */
+		private readonly patrolPort: IParadisBotPatrolPort | undefined,
 		@IParadisBotsService private readonly botsService: IParadisBotsService,
 		@IParadisHumanAskService private readonly humanAskService: IParadisHumanAskService,
 		@IParadisDialogService private readonly paradisDialogService: IParadisDialogService,
@@ -179,6 +184,13 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 				this.renderPanel();
 			}
 		}));
+		if (this.patrolPort !== undefined) {
+			this._register(this.patrolPort.onDidChange(() => {
+				if (this.botId !== undefined) {
+					this.patrolSections.get(this.botId)?.invalidate();
+				}
+			}));
+		}
 		this._register(this.humanAskService.onDidChange(() => {
 			if (this.botId !== undefined && this.currentTab() === 'items') {
 				this.renderPanel();
@@ -352,6 +364,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 					panel.renderFiles(body, bot, this.panelStore);
 				} else {
 					panel.renderSettings(body, bot, this.panelStore);
+					this.patrolSection(bot.id)?.renderSettings(body, this.panelStore);
 				}
 			}
 			this.panel.scrollTop = scrollTop;
@@ -389,6 +402,30 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		return panel;
 	}
 
+	private patrolSection(botId: string): ParadisBotPatrolSection | undefined {
+		if (this.patrolPort === undefined) {
+			return undefined;
+		}
+		let section = this.patrolSections.get(botId);
+		if (section === undefined) {
+			section = new ParadisBotPatrolSection(botId, this.patrolPort, {
+				notificationService: this.notificationService,
+				contextViewService: this.contextViewService,
+				configurationService: this.configurationService,
+			}, () => {
+				if (!this._store.isDisposed && this.botId === botId && (this.currentTab() === 'items' || this.currentTab() === 'settings')) {
+					this.renderPanel();
+				}
+			}, () => {
+				if (this.botId === botId) {
+					this.setTab('settings');
+				}
+			});
+			this.patrolSections.set(botId, section);
+		}
+		return section;
+	}
+
 	private renderList(body: HTMLElement): void {
 		const groups = paradisBotItemGroups(this.items, Date.now());
 		const section = (label: string, items: readonly IParadisBotItem[], options: { readonly empty?: string; readonly collapsed?: boolean } = {}) => {
@@ -418,6 +455,9 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		section(localize('paradis.botPage.group.closed', "終了"), groups.closed, { collapsed: true });
 		if (this.items.length === 0) {
 			DOM.append(body, $('.paradis-bot-page-hint')).textContent = localize('paradis.botPage.noItems', "Bot が作業を項目にすると、ここに並びます。");
+		}
+		if (this.botId !== undefined) {
+			this.patrolSection(this.botId)?.renderHome(body, this.panelStore);
 		}
 		this.renderSuggestions(body);
 	}

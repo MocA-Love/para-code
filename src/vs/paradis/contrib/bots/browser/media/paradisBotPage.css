@@ -606,3 +606,31 @@ button.paradis-bot-page-link:hover {
 	-webkit-box-orient: vertical;
 	overflow: hidden;
 }
+
+/* The look-around (paradisBotPatrol.ts): a card in the home like the suggestions, and the hour range in the settings tab. */
+.paradis-bot-patrol {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size120) var(--vscode-spacing-size160);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner, 8px);
+	background: var(--vscode-paradis-raised);
+}
+
+.paradis-bot-patrol-line {
+	color: var(--vscode-paradis-textStrong);
+	overflow-wrap: anywhere;
+}
+
+.paradis-bot-patrol-last {
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+	overflow-wrap: anywhere;
+}
+
+.paradis-bot-patrol-range {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+}

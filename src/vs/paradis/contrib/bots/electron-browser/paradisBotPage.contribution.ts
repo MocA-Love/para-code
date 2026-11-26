@@ -19,6 +19,8 @@ import { paradisRegisterEditorTerminalOverlay } from '../../agentBrowser/browser
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { paradisBotPaneTokenHashInWindow } from '../browser/paradisBotPaneHash.js';
 import { IParadisBotPaneResolver, ParadisBotPage } from '../browser/paradisBotPage.js';
+import { IParadisBotPatrolPort } from '../browser/paradisBotPatrol.js';
+import { IParadisScheduledRunsClient } from '../../scheduledRuns/electron-browser/paradisScheduledRunsClient.js';
 import { IParadisBotsService, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
 
 /** どのペインが Bot のものかを、ペインのトークンのハッシュで照らす。Bot ごとのハッシュは台帳が変わるまで使い回す。 */
@@ -78,6 +80,8 @@ class ParadisBotPageContribution extends Disposable {
 	constructor(
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
+		@IParadisScheduledRunsClient private readonly scheduledRunsClient: IParadisScheduledRunsClient,
+		@IParadisBotsService private readonly botsService: IParadisBotsService,
 	) {
 		super();
 		this.update();
@@ -86,6 +90,16 @@ class ParadisBotPageContribution extends Disposable {
 				this.update();
 			}
 		}));
+	}
+
+	/** 見回りの口（定期実行の口を、Bot のページが読む形へ）。更新は定期実行と Bot の台帳の両方の知らせで読み直す。 */
+	private patrolPort(): IParadisBotPatrolPort {
+		return {
+			onDidChange: Event.any(this.scheduledRunsClient.onDidChange, this.botsService.onDidChange),
+			get: botId => this.scheduledRunsClient.getBotPatrol(botId),
+			set: (botId, input) => this.scheduledRunsClient.setBotPatrol(botId, input),
+			runNow: botId => this.scheduledRunsClient.runBotPatrolNow(botId),
+		};
 	}
 
 	private update(): void {
@@ -98,7 +112,8 @@ class ParadisBotPageContribution extends Disposable {
 			return;
 		}
 		const resolver = this.instantiationService.createInstance(ParadisBotPaneResolver);
-		const overlay = paradisRegisterEditorTerminalOverlay(container => this.instantiationService.createInstance(ParadisBotPage, container, resolver));
+		const patrol = this.patrolPort();
+		const overlay = paradisRegisterEditorTerminalOverlay(container => this.instantiationService.createInstance(ParadisBotPage, container, resolver, patrol));
 		this.registration.value = {
 			dispose: () => {
 				overlay.dispose();
