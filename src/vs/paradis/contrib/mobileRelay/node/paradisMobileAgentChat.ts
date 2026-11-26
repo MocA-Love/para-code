@@ -81,6 +81,8 @@ import { paradisClaudeDraftState, paradisIsDisplayOnlyModRow } from '../../claud
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import type { IParadisNotifyPaneContent } from './paradisNotifyContentSource.js';
 import { IParadisAgentPaneInsight, IParadisAgentPaneInteraction, IParadisAgentPromptCache, PARADIS_PROMPT_CACHE_TTL_5M, paradisOneLine, paradisReadClaudePromptCacheUsage, paradisReadClaudeRequestStart, paradisSelectInsightSubagents, paradisSummarizePermissionInput, paradisSummarizeQuestionInput } from '../../agentInsights/common/paradisAgentInsights.js';
+import type { IParadisHumanAskPaneState } from '../../humanAsk/common/paradisHumanAskPane.js';
+import { paradisInboxPaneKey } from '../../notificationInbox/common/paradisNotificationInbox.js';
 import { IParadisAgentApprovalChoice, IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentChatView, IParadisAgentInteraction, IParadisAgentLiveState, IParadisAgentPanel, IParadisAgentSessionInfo, PARADIS_ADVISOR_TOOL, ParadisAgentKind, ParadisOpenCodeDesktopActionResult, paradisAgentQuestionHasPreview, paradisIsCodexDaemonApprovalInteraction, paradisPickCurrentInteraction } from '../../agentChat/common/paradisAgentChat.js';
 import { newParadisAntigravityParseState, paradisAntigravityQuestionInput, parseAntigravityLine } from '../../agentChat/common/paradisAntigravityTranscript.js';
 import { PARADIS_AGENT_SETTINGS_ON_PC_MESSAGE, PARADIS_ANTIGRAVITY_ANSWER_ON_PC_MESSAGE, PARADIS_ANTIGRAVITY_APPROVAL_ON_PC_MESSAGE, PARADIS_ANTIGRAVITY_SEND_BLOCK_MESSAGES, paradisAgentChatActionSupport } from '../../agentChat/common/paradisAgentChatActionSupport.js';
@@ -8610,6 +8612,40 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (changed) {
 			this._onDidChangeDesktopPaneInsights.fire();
 		}
+		this._onDidCheckDesktopPanes.fire();
+	}
+
+	private readonly _onDidCheckDesktopPanes = this._register(new Emitter<void>());
+	/**
+	 * ペインの様子を確かめ直した（変わっていないこともある）。上の「変わった」の知らせは hook から覚えた内容の指紋で
+	 * 決まるので、hook を通らずに tailer の待ちが変わったとき（Esc での拒否・答え終えた印・保留明けのカード）には鳴らない。
+	 * 待ちの一覧（{@link humanAskPanes}）を読む側はこちらを聞く。新しいタイマーは持たない（既にある確かめ直しの後に鳴らすだけ）。
+	 */
+	readonly onDidCheckDesktopPanes = this._onDidCheckDesktopPanes.event;
+
+	/**
+	 * 人の答えを待っている質問・承認（いま tailer が持っているものだけ。読むために tailer を起こさない）。
+	 * 「人が答えるもの」の台帳の書き手（humanAsk/node/paradisHumanAskPaneOwner.ts）が shared process の中で読む。
+	 * モバイルへは何も送らない。ペインのトークンは返さない（通知の台帳と同じ、トークンのハッシュの鍵で返す）。
+	 */
+	humanAskPanes(): IParadisHumanAskPaneState[] {
+		const panes: IParadisHumanAskPaneState[] = [];
+		for (const [token, session] of this.paneSessions) {
+			const tailer = this.tailers.get(token);
+			const interaction = tailer?.currentInteraction() ?? null;
+			if (tailer === undefined || interaction === null || this.isPaneStopped(token)) {
+				continue;
+			}
+			panes.push({
+				paneKey: paradisInboxPaneKey(token),
+				agent: session.agent,
+				epoch: tailer.epoch,
+				interaction,
+				questions: interaction.kind === 'question' ? tailer.pendingQuestionMessages(interaction.id) : [],
+				personOnly: interaction.kind === 'approval' && this.isPersonOnlyApproval(token, interaction.id),
+			});
+		}
+		return panes;
 	}
 
 	// ---- デスクトップのチャット表示向けの読み取り口（agentChat） ------------------------------------
@@ -8723,6 +8759,21 @@ export class ParadisMobileAgentChat extends Disposable {
 			busy: this.activeTurnTokens.has(token) || this.liveStates.has(token),
 			...(this.sessionEndedAt.has(token) ? { agentExited: true } : {}),
 		};
+	}
+
+	/**
+	 * デスクトップのチャット表示が聞く: PC の Claude Code で承認・質問以外の画面が開いているか。モバイルの帯（agent.panel.v1）と
+	 * 同じく mod に聞く。聞けない（mod が無い・古い）・入力待ちでない（作業中・承認や質問の待ち・圧縮中）ときは undefined。
+	 */
+	async isDesktopDialogOpen(token: string): Promise<boolean | undefined> {
+		const session = this.paneSessions.get(token);
+		const sessionId = session?.sessionId;
+		const tailer = this.tailers.get(token);
+		if (session === undefined || sessionId === undefined || tailer === undefined || !this.isLiveToken(token) || paradisAgentDescriptor(session.agent)?.features.panel !== true
+			|| !this.isAgentPrompt(token, tailer) || this.isCompacting(token) || !this.claudeModBridge.supports(token, sessionId, 'prompt.dialog')) {
+			return undefined;
+		}
+		return this.claudeModBridge.isDialogOpen(token, sessionId).catch(() => undefined);
 	}
 
 	/** 切り詰めて渡したメッセージの全文（tailer が退避しておいた分だけ。読み直さない）。 */
