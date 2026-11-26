@@ -168,9 +168,11 @@ suite('ParadisTaskBoardAskBridge', () => {
 		await put(BOARD_B, { asks: [question('M:t9:q9')], answered: ['L:t3:q3'] });
 		await put(BOARD_A, { asks: [question('L:t3:q3')], answered: ['L:t1:q1'] });
 		const afterBoardAnswer = summary().sort();
-		// 届けている最中に一覧から消えたら、答えが届いて先へ進んだとみなす（結果の知らせが落ちても回答済みになる）
+		// 届けている最中に一覧から消えても、まだ回答済みにしない。ボードが届いたと知らせたら回答済み
 		ledger.answer('board:L:t3:q3', { type: 'answers', answers: [{ questionId: 'q1', optionIds: ['0'] }] }, 'mobile');
 		await put(BOARD_A, { asks: [] });
+		const whileDelivering = summary().filter(line => line.startsWith('board:L:t3:q3'));
+		await settle(BOARD_A, { claim: a.events[a.events.length - 1].claim, ok: true });
 		const afterDelivered = summary().sort();
 		// 「報告を促す」の後にまた止まった等、同じ id で出直した問いは、回答済みの守りが明けた後の一覧で待ちに戻る
 		const guarded = await put(BOARD_A, { asks: [question('L:t3:q3')] }).then(() => summary().filter(line => line.startsWith('board:L:t3:q3')));
@@ -187,8 +189,9 @@ suite('ParadisTaskBoardAskBridge', () => {
 		const afterReturn = summary().filter(line => line.startsWith('board:L:t3:q3'));
 		back.client.dispose();
 		b.client.dispose();
-		assert.deepStrictEqual({ afterBoardAnswer, afterDelivered, guarded, revived, whileReconnecting, afterStop, afterReturn }, {
+		assert.deepStrictEqual({ afterBoardAnswer, whileDelivering, afterDelivered, guarded, revived, whileReconnecting, afterStop, afterReturn }, {
 			afterBoardAnswer: ['board:L:t1:q1 answered by board', 'board:L:t2:approval:1 withdrawn', 'board:L:t3:q3 waiting', 'board:M:t9:q9 waiting'],
+			whileDelivering: ['board:L:t3:q3 waiting pending'],
 			afterDelivered: ['board:L:t1:q1 answered by board', 'board:L:t2:approval:1 withdrawn', 'board:L:t3:q3 answered by mobile', 'board:M:t9:q9 waiting'],
 			guarded: ['board:L:t3:q3 answered by mobile'],
 			revived: ['board:L:t3:q3 waiting'],

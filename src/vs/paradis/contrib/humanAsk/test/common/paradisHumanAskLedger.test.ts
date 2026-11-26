@@ -227,6 +227,43 @@ suite('Paradis human ask ledger', () => {
 		assert.deepStrictEqual(view(ledger).counts, { total: 4, pane: 2, board: 1, bot: 1 });
 	});
 
+	test('an entry that leaves the list while its answer is on the way waits for the owner, and a refused delivery withdraws it', () => {
+		const time = clock();
+		const ledger = new ParadisHumanAskLedger(time.now, { claimTimeoutMs: 20_000 });
+		ledger.sync('panes', [permission('pane', 'refused'), permission('pane', 'delivered'), permission('pane', 'silent')]);
+		const refused = ledger.claim('pane:refused', { type: 'action', actionId: 'allow' }, 'inbox');
+		assert.ok(refused.ok);
+		assert.ok(ledger.claim('pane:delivered', { type: 'action', actionId: 'allow' }, 'inbox').ok);
+		assert.ok(ledger.claim('pane:silent', { type: 'action', actionId: 'deny' }, 'mobile').ok);
+		// 3 件とも届けている最中に一覧から消えた（ターミナルで先に答えられたのかもしれない）。まだ回答済みにしない
+		time.advance(1_000);
+		ledger.sync('panes', []);
+		const unlisted = view(ledger).entries;
+		// 持ち主の知らせで決まる: 届かなかった → 取り下げ、届いた → 回答済み。何も来なければ時間切れの後の一覧で回答済み
+		ledger.reject('panes', 'pane:refused', refused.request.claim);
+		ledger.resolve('panes', 'pane:delivered');
+		time.advance(20_000);
+		ledger.sync('panes', []);
+		assert.deepStrictEqual({ unlisted, after: view(ledger).entries }, {
+			unlisted: ['pane:silent waiting pending@mobile', 'pane:delivered waiting pending@inbox', 'pane:refused waiting pending@inbox'],
+			after: ['pane:silent answered by mobile 拒否', 'pane:delivered answered by inbox 許可', 'pane:refused withdrawn'],
+		});
+	});
+
+	test('a newer connection of the same board takes over its keys, and an older one cannot take them back', () => {
+		const ledger = new ParadisHumanAskLedger(clock().now);
+		ledger.sync('board:1', [ask('board', 'L:t1:q1')]);
+		// 同じリポジトリのボードがつなぎ直した（古い接続はまだ切れていない）: 新しい方の同じ id がすぐ載る
+		ledger.sync('board:2', [ask('board', 'L:t1:q1', { from: { title: '新しい接続' } })]);
+		// 古い方の一覧からは消えても、新しい方の 1 件は取り下げない。古い方は取り返せない
+		ledger.sync('board:1', []);
+		const back = ledger.upsert('board:1', ask('board', 'L:t1:q1', { from: { title: '古い接続' } }));
+		assert.deepStrictEqual({ back, entries: ledger.snapshot().entries.map(entry => `${entry.key} ${entry.state} ${entry.owner} ${entry.from.title}`) }, {
+			back: false,
+			entries: ['board:L:t1:q1 waiting board:2 新しい接続'],
+		});
+	});
+
 	test('does not let another owner take over a waiting key, and stops taking entries at the limit', () => {
 		const ledger = new ParadisHumanAskLedger(clock().now, { waitingLimit: 2 });
 		ledger.sync('board', [ask('board', 't1:q1')]);

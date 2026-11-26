@@ -60,8 +60,20 @@ interface IMutableEntry {
 	askedAt: number;
 	state: IParadisHumanAskEntry['state'];
 	pending?: IPending;
+	/** 届けている最中に持ち主の一覧から消えた（答えが届いたかは、持ち主の知らせか時間切れで決める）。 */
+	unlisted?: boolean;
 	failedAt?: number;
 	resolution?: IParadisHumanAskResolution;
+}
+
+/**
+ * つなぎ直した持ち主か。持ち主の名前が `<種類>:<番号>`（ボードの接続ごとの名前など）で、同じ種類の番号が大きい方を
+ * 新しい接続とみなす。古い接続が切れる前に新しい接続が同じ鍵を知らせたら、新しい方へ持ち主を移す。
+ */
+function supersedes(owner: string, previous: string): boolean {
+	const now = /^(?<family>.+):(?<n>\d+)$/.exec(owner)?.groups;
+	const before = /^(?<family>.+):(?<n>\d+)$/.exec(previous)?.groups;
+	return now !== undefined && before !== undefined && now.family === before.family && Number(now.n) > Number(before.n);
 }
 
 /**
@@ -73,8 +85,8 @@ interface IMutableEntry {
  *   知らせは作った順に 1 つずつ送る（順序が入れ替わると、古い一覧が新しい一覧を上書きする）
  * - 元の場所（ターミナル・ボードの窓）で答えられたら {@link resolve}、エージェントが先へ進んだら {@link withdraw}
  * - {@link claim} が返した依頼を受け取ったら、答えを届け、届いたら {@link resolve}、届かなかったら {@link reject}。
- *   どちらも呼べないときは、次の {@link sync} で決まる（一覧から消えていれば回答済み、時間切れの後も
- *   残っていれば待ちへ戻す）。**依頼を受けたまま何も知らせないと、その 1 件はどこからも答えられないまま残る**
+ *   どちらも呼べないときは、時間切れの後の {@link sync} で決まる（一覧から消えていれば回答済み、残っていれば
+ *   待ちへ戻す）。時間切れの前に一覧から消えても回答済みとは決めず、持ち主の知らせを待つ（{@link reject} なら取り下げ）。**依頼を受けたまま何も知らせないと、その 1 件はどこからも答えられないまま残る**
  *
  * 答えは早い者勝ち。届けている最中の 1 件は {@link claim} が `busy` で断る。時間切れだけでは待ちへ
  * 戻さない: キー操作は届いたのに結果の知らせだけ落ちた場合に、二度目の答えが別のプロンプトへ入るため。
@@ -97,7 +109,7 @@ export class ParadisHumanAskLedger {
 
 	// ---- 持ち主が呼ぶ ---------------------------------------------------------------------------
 
-	/** 持ち主の待ちを丸ごと置き換える。一覧に無い待ちは取り下げ（届けている最中だったものは回答済み）にする。 */
+	/** 持ち主の待ちを丸ごと置き換える。一覧に無い待ちは取り下げ（届けている最中だったものは、持ち主の知らせか時間切れまで待つ）にする。 */
 	sync(owner: string, inputs: readonly IParadisHumanAskInput[]): boolean {
 		const listed = new Set<string>();
 		let changed = false;
@@ -110,8 +122,11 @@ export class ParadisHumanAskLedger {
 			if (entry.owner !== owner || entry.state !== 'waiting' || listed.has(entry.key)) {
 				continue;
 			}
-			if (entry.pending) {
-				// 届けている最中に持ち主の一覧から消えた。答えが届いて先へ進んだ
+			if (entry.pending && at - entry.pending.at < this.options.claimTimeoutMs) {
+				// 届けている最中に持ち主の一覧から消えた。答えが届いたかは、持ち主の resolve / reject を待って決める
+				entry.unlisted = true;
+			} else if (entry.pending) {
+				// 時間切れまで持ち主から何も来なかった。一覧から消えているので、答えが届いて先へ進んだとみなす
 				this.settle(entry, 'answered', { at, surface: entry.pending.surface, ...(entry.pending.summary !== undefined ? { summary: entry.pending.summary } : {}) });
 			} else {
 				this.settle(entry, 'withdrawn', { at });
@@ -148,6 +163,12 @@ export class ParadisHumanAskLedger {
 		const entry = this.waitingOf(owner, key);
 		if (entry === undefined || entry.pending?.claim !== claim) {
 			return false;
+		}
+		if (entry.unlisted) {
+			// 答えは届かず、待ちも持ち主の一覧から消えている（ほかの所で答えられた・先へ進んだ）
+			this.settle(entry, 'withdrawn', { at: this.now() });
+			this.prune();
+			return true;
 		}
 		entry.pending = undefined;
 		entry.failedAt = this.now();
@@ -258,10 +279,21 @@ export class ParadisHumanAskLedger {
 		}
 		if (existing.state === 'waiting') {
 			if (existing.owner !== owner) {
-				// 鍵は出どころの中で一意。別の持ち主が同じ鍵を名乗っても、先に待っている 1 件を書き換えさせない
-				return false;
+				// 鍵は出どころの中で一意。別の持ち主が同じ鍵を名乗っても、先に待っている 1 件を書き換えさせない。
+				// ただし同じ種類のつなぎ直した持ち主（同じリポジトリのボードの新しい接続）には、届けている最中でなければ移す
+				if (existing.pending || !supersedes(owner, existing.owner)) {
+					return false;
+				}
+				existing.owner = owner;
+				existing.input = input;
+				existing.unlisted = undefined;
+				return true;
 			}
 			let changed = false;
+			if (existing.unlisted) {
+				// 一覧に戻ってきた。届けている最中のまま、ふつうの待ちとして扱う
+				existing.unlisted = undefined;
+			}
 			if (existing.pending && at - existing.pending.at >= this.options.claimTimeoutMs) {
 				// 時間切れの後も持ち主の一覧に残っている。答えは届かなかった
 				existing.pending = undefined;
@@ -295,6 +327,7 @@ export class ParadisHumanAskLedger {
 		entry.state = state;
 		entry.resolution = resolution;
 		entry.pending = undefined;
+		entry.unlisted = undefined;
 		entry.failedAt = undefined;
 	}
 
