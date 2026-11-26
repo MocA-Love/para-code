@@ -13,6 +13,10 @@ import { URI } from '../../../../../base/common/uri.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
+import { IChannel } from '../../../../../base/parts/ipc/common/ipc.js';
+import { ISharedProcessService } from '../../../../../platform/ipc/electron-browser/services.js';
+import { ILogService, NullLogService } from '../../../../../platform/log/common/log.js';
+import { PosixShellType } from '../../../../../platform/terminal/common/terminal.js';
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { ITerminalEditorService, ITerminalInstance, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisPaneTokenService } from '../../../agentBrowser/browser/paradisPaneTokenService.js';
@@ -25,7 +29,7 @@ import { paradisParkTerminalEditorInstance, paradisTakeParkedTerminalEditorInsta
 suite('paradisLaunchAgentInWorkspace', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function setup(activeStateKey: string) {
+	function setup(activeStateKey: string, launchProfile?: { readonly env: Record<string, string>; readonly flags: Record<string, string | true> }) {
 		const sent: string[] = [];
 		const calls: string[] = [];
 		const instance = upcastPartial<ITerminalInstance>({
@@ -33,7 +37,7 @@ suite('paradisLaunchAgentInWorkspace', () => {
 			isDisposed: false,
 			onDisposed: Event.None,
 			processReady: Promise.resolve(),
-			shellType: undefined,
+			shellType: launchProfile === undefined ? undefined : PosixShellType.Zsh,
 			sendText: async (text: string) => { sent.push(text); },
 		});
 		const instantiationService = store.add(new TestInstantiationService());
@@ -46,8 +50,20 @@ suite('paradisLaunchAgentInWorkspace', () => {
 		instantiationService.stub(IParadisTerminalScopeService, { assignInstanceScope: (_id: number, stateKey: string) => { calls.push(`assign:${stateKey}`); } });
 		instantiationService.stub(IParadisWorkspaceSwitchService, { activeStateKey });
 		instantiationService.stub(IParadisPaneTokenService, { getTokenForInstance: (instanceId: number) => instanceId === 7 ? 'pane-token-7' : undefined });
+		// 会話のあるマシンのセッション履歴のチャネル。控えが無ければ、問い合わせ口の無い古い相手として振る舞う
+		const asked: unknown[] = [];
+		instantiationService.stub(ISharedProcessService, upcastPartial<ISharedProcessService>({
+			getChannel: () => upcastPartial<IChannel>({
+				call: async <T>(command: string, arg?: unknown): Promise<T> => {
+					asked.push([command, arg]);
+					if (command !== 'agentLaunchProfile' || launchProfile === undefined) { throw new Error(`Method not found: ${command}`); }
+					return launchProfile as T;
+				},
+			}),
+		}));
+		instantiationService.stub(ILogService, new NullLogService());
 		instantiationService.stub(IParadisAgentModelCatalogService, { getAgentTemplates: () => PARADIS_DEFAULT_AGENT_COMMANDS });
-		return { instantiationService, sent, calls };
+		return { instantiationService, sent, calls, asked };
 	}
 
 	test('起動したターミナルのインスタンス ID とペイントークンを返す', async () => {
@@ -162,6 +178,23 @@ suite('paradisLaunchAgentInWorkspace', () => {
 		assert.deepStrictEqual({ launched, sent }, {
 			launched: { instanceId: 7, paneToken: 'pane-token-7' },
 			sent: ['codex resume --sandbox workspace-write --ask-for-approval on-request 0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b'],
+		});
+	});
+
+	test('resume は会話を始めたときの控え（許可リストの環境変数とフラグ）を付け直す', async () => {
+		const { instantiationService, sent, asked } = setup('another-space', {
+			env: { CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS: '1', OPENAI_API_KEY: 'sk-x' },
+			flags: { '--dangerously-bypass-approvals-and-sandbox': true, '--model': 'gpt-6.2-sol', '--config': 'x=y' },
+		});
+		await instantiationService.invokeFunction(paradisResumeAgentInWorkspace, {
+			rootUri: URI.file('/tmp/repo'),
+			stateKey: 'repo-1',
+			agent: 'codex',
+			sessionId: '0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b',
+		});
+		assert.deepStrictEqual({ sent, asked }, {
+			sent: ['CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS=1 codex resume --dangerously-bypass-approvals-and-sandbox --model gpt-6.2-sol 0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b'],
+			asked: [['agentLaunchProfile', ['codex', '0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b']]],
 		});
 	});
 });

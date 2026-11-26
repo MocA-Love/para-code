@@ -10,6 +10,7 @@ import { PARADIS_OPENCODE_COMMAND, paradisIsOpenCodeResumeCli } from '../../../.
 import { ParadisHostPath } from '../../../common/paradisHostPath.js';
 import { PARADIS_AGENT_DESCRIPTORS, paradisAgentDescriptor, type ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 import { paradisClaudeModelDisplayName } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
+import { IParadisAgentLaunchResume, paradisAgentLaunchBypassedPermissions, paradisAgentLaunchEnvPrefix, paradisAgentLaunchFlagArguments } from './paradisAgentLaunchProfile.js';
 import { PARADIS_CLAUDE_DEFAULT_PERMISSION_FLAG, PARADIS_CODEX_FULL_AUTO_FLAGS } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 
 export const PARADIS_SESSION_RESUME_CHANNEL = 'paradisSessionResume';
@@ -278,7 +279,7 @@ export const PARADIS_RESUME_SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,
  * ID はホワイトリスト（先頭に `-` を許さない）を通ったものだけを使い、シェルの特殊文字を含まない。
  * 通らなければ undefined。
  */
-export function paradisAgentResumeCommandLine(agent: ParadisResumeAgent, sessionId: string, mode: 'resume' | 'fork', options?: { readonly dangerouslyBypassPermissions?: boolean; readonly cli?: ParadisResumeCli; readonly claudeCodeMode?: IParadisClaudeCodeModeShell }): string | undefined {
+export function paradisAgentResumeCommandLine(agent: ParadisResumeAgent, sessionId: string, mode: 'resume' | 'fork', options?: { readonly dangerouslyBypassPermissions?: boolean; readonly cli?: ParadisResumeCli; readonly claudeCodeMode?: IParadisClaudeCodeModeShell; readonly launch?: IParadisAgentLaunchResume }): string | undefined {
 	if (!PARADIS_RESUME_SESSION_ID_PATTERN.test(sessionId)) {
 		return undefined;
 	}
@@ -296,7 +297,13 @@ export function paradisAgentResumeCommandLine(agent: ParadisResumeAgent, session
 		if (!paradisIsOpenCodeResumeCli(cli)) { return undefined; }
 		return `${cli} --session ${sessionId}${mode === 'fork' ? ' --fork' : ''}`;
 	}
-	const bypass = options?.dangerouslyBypassPermissions === true;
+	// 会話を始めた起動の控え（`paradisAgentLaunchProfile.ts`）。許可リストの環境変数をコマンドの前に、フラグを権限の指定の
+	// 後ろに付け直す。確認を省くフラグが元の起動に付いていた会話は、普通の再開・分岐でも確認を省く（文字列を足さず、
+	// 下の権限の指定に写す。確認ありの指定と並べない）
+	const launch = options?.launch;
+	const bypass = options?.dangerouslyBypassPermissions === true || paradisAgentLaunchBypassedPermissions(agent, launch);
+	const envPrefix = paradisAgentLaunchEnvPrefix(agent, launch);
+	const launchFlags = paradisAgentLaunchFlagArguments(agent, launch);
 	if (agent === 'claude') {
 		// 権限の確認を省かない再開は、確認を出すモードを明示する（Claude Code 2.1.284 から、指定しないと auto mode になる）。
 		// 省くときは `--permission-mode` を付けない（`--dangerously-skip-permissions` は `--permission-mode bypassPermissions` と同じ意味で、
@@ -304,12 +311,12 @@ export function paradisAgentResumeCommandLine(agent: ParadisResumeAgent, session
 		// Code Mode で始めた会話は、Code Mode をオンにし OpenTelemetry のトレースを切った設定を足さないと再開を断られる
 		// （{@link PARADIS_CLAUDE_CODE_MODE_RESUME_SETTINGS}）。シェルに合わせて引用できないときは足さない（従来のコマンド）
 		const settings = options?.claudeCodeMode === undefined ? undefined : paradisClaudeCodeModeSettingsArgument(options.claudeCodeMode);
-		return `claude ${bypass ? '--dangerously-skip-permissions' : PARADIS_CLAUDE_DEFAULT_PERMISSION_FLAG}${settings !== undefined ? ` --settings ${settings}` : ''} --resume ${sessionId}${mode === 'fork' ? ' --fork-session' : ''}`;
+		return `${envPrefix}claude ${bypass ? '--dangerously-skip-permissions' : PARADIS_CLAUDE_DEFAULT_PERMISSION_FLAG}${launchFlags}${settings !== undefined ? ` --settings ${settings}` : ''} --resume ${sessionId}${mode === 'fork' ? ' --fork-session' : ''}`;
 	}
 	// 権限の確認を省かない再開は、確認ありの権限を明示する。0.163.0 から cold resume は会話を始めたときの権限を戻すので、
 	// 何も付けないと確認を省いて始めた会話が確認なしのまま動く（2026-10-16 に `/status` で実測。0.162.1 は設定の既定に
 	// 戻っていた。0.163.0 の `fork` は戻らなかったが、同じ扱いにそろえる）。0.162.1 も `resume`・`fork` の後ろで受け付ける（`--help` で確認）。
 	// 版によらず付けるので、`config.toml` で普段から確認を省いている人も、普通の再開・分岐では確認ありになる（省くなら bypass の再開を選ぶ）。
 	// `codex resume --help`・`codex fork --help` に載っている位置（サブコマンドの後ろ）に置く
-	return `codex ${mode === 'fork' ? 'fork' : 'resume'} ${bypass ? '--dangerously-bypass-approvals-and-sandbox' : PARADIS_CODEX_FULL_AUTO_FLAGS} ${sessionId}`;
+	return `${envPrefix}codex ${mode === 'fork' ? 'fork' : 'resume'} ${bypass ? '--dangerously-bypass-approvals-and-sandbox' : PARADIS_CODEX_FULL_AUTO_FLAGS}${launchFlags} ${sessionId}`;
 }

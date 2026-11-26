@@ -14,6 +14,7 @@ import { ISharedProcessService } from '../../../../platform/ipc/electron-browser
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ITerminalInstance } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IRemoteAgentService } from '../../../../workbench/services/remote/common/remoteAgentService.js';
+import { paradisIsEmptyLaunchProfile, paradisIsLaunchAgent, paradisSanitizeAgentLaunchProfile } from '../common/paradisAgentLaunchProfile.js';
 import { IParadisClaudeCodeModeShell, IParadisClaudeResumeProfile, PARADIS_SESSION_RESUME_CHANNEL, ParadisResumeAgent, ParadisResumeCli, paradisAgentResumeCommandLine, paradisClaudeCodeModeNeedsSettingsFile } from '../common/paradisSessionResume.js';
 
 /** 会話のあるマシンへの問い合わせを待つ上限。過ぎたら従来どおりのコマンドで再開する。 */
@@ -45,26 +46,37 @@ export interface IParadisTerminalResumeCommandServices {
  * 合わせた引用で足す（`paradisClaudeCodeModeSettingsArgument`）。聞けない・時間切れ・引用できないときは、従来どおりの
  * コマンドを返す。ほかのエージェントは {@link paradisAgentResumeCommandLine} のまま。ID が検証に通らなければ undefined。
  *
+ * Claude Code と Codex の会話は、会話を始めたときの環境変数とフラグの控え（`paradisAgentLaunchProfile.ts`）も同じマシンに聞き、
+ * あれば付け直す。
+ *
  * 問い合わせはここで始める。ターミナルを開く前に呼べば、開いている間に答えが届き、開いたターミナルへコマンドを送るまでの
  * 待ちが増えない（待っている間に利用者が打った文字の後ろへ、コマンドと Enter をつなげないため）。
  */
 export function paradisPrepareAgentResumeCommand(services: IParadisTerminalResumeCommandServices, remote: boolean, request: IParadisTerminalResumeCommandRequest): (instance: ITerminalInstance) => Promise<string | undefined> {
 	const options = { dangerouslyBypassPermissions: request.dangerouslyBypassPermissions, cli: request.cli };
 	const plain = paradisAgentResumeCommandLine(request.agent, request.sessionId, request.mode, options);
-	const channel = plain === undefined || request.agent !== 'claude' ? undefined : paradisResumeChannel(services, remote);
-	if (channel === undefined) {
+	const agent = request.agent;
+	const channel = plain === undefined || !paradisIsLaunchAgent(agent) ? undefined : paradisResumeChannel(services, remote);
+	if (channel === undefined || !paradisIsLaunchAgent(agent)) {
 		return async () => plain;
 	}
-	const lookup = (wantSettingsFile: boolean): Promise<IParadisClaudeResumeProfile | undefined> => raceTimeout(
-		channel.call<IParadisClaudeResumeProfile>('claudeResumeProfile', [request.sessionId, request.cwd, wantSettingsFile]).catch(error => {
+	const ask = <T>(command: string, args: unknown[]): Promise<T | undefined> => raceTimeout(
+		channel.call<T>(command, args).catch(error => {
 			// 古い REH サーバーにはこの問い合わせ口が無い。従来どおりのコマンドで再開する
-			services.logService.debug('[ParadisSessionResume] could not ask how to resume the Claude session', error);
+			services.logService.debug('[ParadisSessionResume] could not ask how to resume the agent session', error);
 			return undefined;
 		}),
 		PROFILE_LOOKUP_TIMEOUT_MS);
-	const profile = lookup(false);
+	const lookup = (wantSettingsFile: boolean) => ask<IParadisClaudeResumeProfile>('claudeResumeProfile', [request.sessionId, request.cwd, wantSettingsFile]);
+	const profile = agent === 'claude' ? lookup(false) : Promise.resolve(undefined);
+	// 会話を始めたときの環境変数とフラグの控え。別のマシンから来た値なので、ここで許可リストと文字種を確かめ直す
+	const launchProfile = ask<unknown>('agentLaunchProfile', [agent, request.sessionId]).then(raw => {
+		const sanitized = paradisSanitizeAgentLaunchProfile(agent, raw);
+		return paradisIsEmptyLaunchProfile(sanitized) ? undefined : sanitized;
+	});
 	return async instance => {
-		if ((await profile)?.codeMode !== true) {
+		const [codeMode, launched] = await Promise.all([profile.then(answer => answer?.codeMode === true), launchProfile]);
+		if (!codeMode && launched === undefined) {
 			return plain;
 		}
 		if (instance.shellType === undefined) {
@@ -72,9 +84,14 @@ export function paradisPrepareAgentResumeCommand(services: IParadisTerminalResum
 			await raceTimeout(arrived, SHELL_TYPE_WAIT_MS, () => arrived.cancel());
 		}
 		const shellType = instance.shellType;
-		const settingsFile = paradisClaudeCodeModeNeedsSettingsFile(shellType) ? (await lookup(true))?.settingsFile : undefined;
-		const claudeCodeMode: IParadisClaudeCodeModeShell = { shellType, windows: paradisTerminalRunsOnWindows(instance), ...(settingsFile !== undefined ? { settingsFile } : {}) };
-		return paradisAgentResumeCommandLine(request.agent, request.sessionId, request.mode, { ...options, claudeCodeMode }) ?? plain;
+		const windows = paradisTerminalRunsOnWindows(instance);
+		const settingsFile = codeMode && paradisClaudeCodeModeNeedsSettingsFile(shellType) ? (await lookup(true))?.settingsFile : undefined;
+		const claudeCodeMode: IParadisClaudeCodeModeShell | undefined = codeMode ? { shellType, windows, ...(settingsFile !== undefined ? { settingsFile } : {}) } : undefined;
+		return paradisAgentResumeCommandLine(agent, request.sessionId, request.mode, {
+			...options,
+			...(claudeCodeMode !== undefined ? { claudeCodeMode } : {}),
+			...(launched !== undefined ? { launch: { profile: launched, shellType, windows } } : {}),
+		}) ?? plain;
 	};
 }
 

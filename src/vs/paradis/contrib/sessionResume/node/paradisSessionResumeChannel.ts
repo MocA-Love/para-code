@@ -30,6 +30,7 @@ import { paradisOpenCodeCliRegistry, paradisVerifyOpenCodeCliOnThisHost } from '
 import { paradisIsOpenCodeResumeCli, paradisNormalizeOpenCodeCliLabel } from '../../../../platform/terminal/common/paradisOpenCodeCompatibleCli.js';
 import { IParadisOpenCodeDatabase, IParadisOpenCodeSession, listOpenCodeSessions, paradisOpenCodeDatabasePaths, paradisWithOpenCodeDatabase, readOpenCodeMessages, readOpenCodeMessagesIn } from './paradisOpenCodeHistory.js';
 import { ParadisSessionSearchTextCache } from './paradisSessionSearchTextCache.js';
+import { IParadisAgentLaunchRecordRequest, ParadisAgentLaunchLedger } from './paradisAgentLaunchLedger.js';
 import { IParadisAntigravityConversationSummary, paradisAntigravityBrainRoot, paradisAntigravityCliHome, paradisAntigravitySummariesDatabasePath, paradisAntigravityTranscriptPath, paradisListAntigravityConversations } from './paradisAntigravityHistory.js';
 import {
 	paradisIsCodexRootSource as isCodexRootSource,
@@ -419,6 +420,8 @@ export class ParadisSessionResumeService {
 	private readonly beforeTranscriptRead: ((filePath: string) => Promise<void>) | undefined;
 	private readonly antigravityHome: string;
 	private readonly paraCodeDirectory: string;
+	/** エージェントを起動したときの環境変数とフラグの控え（会話ごと。このマシンの `~/.para-code` に置く）。 */
+	readonly launchLedger: ParadisAgentLaunchLedger;
 
 	constructor(
 		dependencies: {
@@ -443,6 +446,7 @@ export class ParadisSessionResumeService {
 		this.beforeTranscriptRead = dependencies?.beforeTranscriptRead;
 		this.antigravityHome = dependencies?.antigravityHome ?? homedir();
 		this.paraCodeDirectory = dependencies?.paraCodeDirectory ?? join(homedir(), '.para-code');
+		this.launchLedger = new ParadisAgentLaunchLedger(this.paraCodeDirectory, this.logService);
 		this.searchTextCache = new ParadisSessionSearchTextCache(dependencies?.searchCacheMaxBytes ?? DEFAULT_SEARCH_TEXT_CACHE_BYTES);
 	}
 
@@ -1429,6 +1433,9 @@ export class ParadisSessionResumeChannel<TContext = string> implements IServerCh
 			case 'list': return this.service.list((args[0] ?? {}) as IParadisResumeListRequest<string>) as Promise<T>;
 			case 'details': return this.service.details(typeof args[0] === 'string' ? args[0] : '') as Promise<T>;
 			case 'claudeResumeProfile': return this.service.claudeResumeProfile(typeof args[0] === 'string' ? args[0] : '', typeof args[1] === 'string' ? args[1] : undefined, args[2] === true) as Promise<T>;
+			// ペインでの起動の控え（renderer が知らせる）と、再開のときの読み出し。古いサーバーには無い（呼ぶ側が従来のコマンドへ落とす）
+			case 'recordAgentLaunch': return this.service.launchLedger.record((args[0] ?? {}) as IParadisAgentLaunchRecordRequest) as Promise<T>;
+			case 'agentLaunchProfile': return this.service.launchLedger.profile(args[0], args[1]) as Promise<T>;
 			case 'linkCodexSession': return this.service.linkCodexSession(typeof args[0] === 'string' ? args[0] : '', typeof args[1] === 'string' ? args[1] : undefined) as Promise<T>;
 			case 'preview': return this.service.preview(typeof args[0] === 'string' ? args[0] : '', typeof args[1] === 'string' ? args[1] : undefined) as Promise<T>;
 			case 'search': return this.service.search(clientIdFrom(ctx), typeof args[0] === 'string' ? args[0] : '', Array.isArray(args[1]) ? args[1].filter((value): value is string => typeof value === 'string') : []) as Promise<T>;

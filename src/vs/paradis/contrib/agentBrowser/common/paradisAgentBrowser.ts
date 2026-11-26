@@ -1091,7 +1091,16 @@ export interface IParadisAgentPaneSession {
 	readonly at: number;
 	/** 接続先（SSH 先など）で動いている会話。手元の会話には付かない。 */
 	readonly remote?: true;
+	/**
+	 * この会話の最初の `SessionStart` の `source`（`startup`・`clear` は、このペインの起動が作った会話。`resume` は
+	 * 前からある会話へ移った）。SessionStart を見ていない会話には付かない。起動の控え（`paradisAgentLaunchProfile.ts`）が、
+	 * 起動時のフラグをその会話のものとして控えてよいかの判定に使う。
+	 */
+	readonly startSource?: ParadisAgentSessionStartSource;
 }
+
+/** {@link IParadisAgentPaneSession.startSource} に載せる `SessionStart` の `source`。 */
+export type ParadisAgentSessionStartSource = 'startup' | 'resume' | 'clear' | 'compact' | 'fork';
 
 /** 1回のowner解決とstale sweepから作る、renderer-local status producer向けsnapshot。 */
 export interface IParadisAgentStatusSnapshot {
