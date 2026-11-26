@@ -35,7 +35,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { isAbsolute, join, resolve, sep } from '../../../../base/common/path.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { disposableTimeout } from '../../../../base/common/async.js';
-import { Disposable, DisposableMap, toDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService, LogLevel } from '../../../../platform/log/common/log.js';
 import { BACKGROUND_TASK_ID_MAX_LENGTH, BACKGROUND_TASK_MAX_ENTRIES, fireParadisAgentAwaitingUser, fireParadisAgentTurnEnded, fireParadisAgentTurnStarted, getParadisAgentPaneActivity, IParadisAgentHookEvent, IParadisAgentNestedHookEvent, onParadisAgentHookEvent, onParadisAgentNestedHookEvent, setParadisAgentPaneActivity, setParadisAgentPaneIssueUrls } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { IParadisAgentHomes, paradisClaudeConfigDir, paradisCodexHomes, paradisEachCodexHome, paradisIsWithinCodexHome, paradisLocalAgentPath, paradisResolveAgentHomes } from '../../agentBrowser/node/paradisAgentHome.js';
@@ -4514,20 +4514,30 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	/**
+	 * 「人が答えるもの」の台帳を読んでいる側の数（{@link retainHumanAskTailing}）。1 つ以上いる間は、スマホ・チャット表示が
+	 * 見ていないペインでも、質問・承認の hook の中身を tailer へ入れて待ちを持つ（受信箱から答えられるかを、スマホの登録や
+	 * チャット表示の設定で変えないため）。tailer そのものはセッションが確定した生きているペインに常駐している（status 用。
+	 * {@link stopTailerIfUnsubscribed}）ので、ここで増えるのは hook のカードを入れることだけで、読み手の数は増えない。
+	 */
+	private humanAskReaders = 0;
+
+	/** 台帳を読み始める。返り値を dispose すると読むのをやめる（読む側が複数いても、全員がやめるまで続く）。 */
+	retainHumanAskTailing(): IDisposable {
+		this.humanAskReaders++;
+		return toDisposable(() => {
+			this.humanAskReaders--;
+		});
+	}
+
+	/** 台帳を読んでいる側がいるか。 */
+	private get humanAskTailing(): boolean {
+		return this.humanAskReaders > 0;
+	}
+
+	/**
 	 * ペアリング済みモバイル向けのライブ質問/承認注入を切り替える。CodexのStopなし終了を
 	 * 検出するstatus用tailerはモバイル接続から独立しているため、無効化しても停止しない。
 	 */
-	/**
-	 * 「人が答えるもの」の台帳の書き手（humanAsk）が読んでいる間は、スマホ・チャット表示が見ていないペインでも、質問・承認の
-	 * hook が来たら tailer を起こして待ちを持つ（受信箱から答えられるかを、スマホの登録やチャット表示の設定で変えないため）。
-	 * 起こすのは質問・承認の hook が来たペインだけで、起こした tailer はほかの理由で起こしたものと同じくペインが終わるまで残る。
-	 */
-	private humanAskTailing = false;
-
-	setHumanAskTailing(enabled: boolean): void {
-		this.humanAskTailing = enabled;
-	}
-
 	setEagerTailing(enabled: boolean): void {
 		if (this.eagerTailing === enabled) {
 			return;
