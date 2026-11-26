@@ -8,6 +8,7 @@
 
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { Event } from '../../../../base/common/event.js';
+import { IDisposable } from '../../../../base/common/lifecycle.js';
 import { ParadisAgentChatDraftInsert } from '../common/paradisAgentChatComposerLogic.js';
 import { IParadisAgentChatHeaderState } from '../common/paradisAgentChatHeader.js';
 
@@ -45,10 +46,12 @@ export interface IParadisAgentChatService {
 	/** そのターミナルを「ターミナルに戻る」と同じくターミナル表示へ戻し、ターミナルへフォーカスする。 */
 	showTerminal(instanceId: number): void;
 	/**
-	 * そのターミナルのチャット表示の見出しを畳む（既定は畳まない）。畳んだ側は、見出しが出していた知らせ（許可待ちなど）を
+	 * そのターミナルのチャット表示の見出しを畳む（既定は畳まない）。返り値を dispose すると戻る（ほかに畳んでいる側が
+	 * いなければ）。ペインが閉じた・チャット表示が閉じた・別の会話に替わったときは、dispose を待たずに戻る（その後の
+	 * dispose は何もしない。また畳みたければ呼び直す）。畳んだ側は、見出しが出していた知らせ（許可待ちなど）を
 	 * {@link headerState} から自分で出す。ターミナルへ戻る口も見出しと一緒に消えるので、{@link showTerminal} を呼べる所を置く。
 	 */
-	setHeaderHidden(instanceId: number, hidden: boolean): void;
+	setHeaderHidden(instanceId: number): IDisposable;
 	/**
 	 * そのターミナルのエージェントへ発言を送る（チャット表示の入力欄から送るのと同じ確認を通る: 許可・質問の画面が出ている間・
 	 * エージェントが前面にいない・空白だけの文は送らない。作業中なら TUI の待ち行列に入る）。送れたら undefined、送れなければ
