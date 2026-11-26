@@ -65,7 +65,7 @@ suite('ParadisScheduledRunsService: bot look-arounds', () => {
 			definition: {
 				name: 'リリース係 の見回り', schedule: '0 8-20/4 * * 1-5',
 				target: { kind: 'bot', repositoryUri: '', repositoryName: 'リリース係', botId: 'b1' },
-				agentId: '', prompt: '失敗した CI', dailyLimit: 4, enabled: true,
+				agentId: '', prompt: '失敗した CI', dailyLimit: 24, enabled: true,
 			},
 			listed: 0,
 			view: {
@@ -80,10 +80,13 @@ suite('ParadisScheduledRunsService: bot look-arounds', () => {
 		});
 	});
 
-	test('時刻どおりに開始待ちを作り、窓が受け持つ前に前の回のペインを閉じてもらう。20 時の回も 1 日の上限で落ちない', async () => {
+	test('時刻どおりに開始待ちを作り、窓が受け持つ前に前の回のペインを閉じてもらう。朝に手動で見回っても 20 時の回は落ちない', async () => {
 		const { state, gate, service, requests, statuses } = setup(at(2026, 11, 27, 7, 0));
 		await service.whenReady();
 		await service.setBotPatrol('b1', PATROL);
+		const manual = await service.runBotPatrolNow('b1');
+		await service.claim('window:1', manual.run!.id);
+		await service.report('window:1', { runId: manual.run!.id, status: 'completed' });
 		const claims: boolean[] = [];
 		for (const hour of [8, 12, 16, 20]) {
 			state.now = at(2026, 11, 27, hour, 0) + 20_000;
@@ -94,15 +97,22 @@ suite('ParadisScheduledRunsService: bot look-arounds', () => {
 		}
 		assert.deepStrictEqual({ claims, closed: gate.closed, runs: await statuses() }, {
 			claims: [true, true, true, true],
-			closed: ['b1', 'b1', 'b1', 'b1'],
-			runs: [['completed', '', 'schedule'], ['completed', '', 'schedule'], ['completed', '', 'schedule'], ['completed', '', 'schedule']],
+			closed: ['b1', 'b1', 'b1', 'b1', 'b1'],
+			runs: [['completed', '', 'manual'], ['completed', '', 'schedule'], ['completed', '', 'schedule'], ['completed', '', 'schedule'], ['completed', '', 'schedule']],
 		});
 	});
 
-	test('設定がオフの間は何も記録せず、オンにしても逃した回を走らせない。一時停止・前の見回りが動いている間は見送る', async () => {
+	test('設定がオフの間は何も記録せず、作る・有効にするも断る。オンにしても逃した回を走らせない。一時停止・前の見回りが動いている間は見送る', async () => {
 		const { state, gate, service, requests, statuses } = setup(at(2026, 11, 27, 7, 0));
 		await service.whenReady();
-		await service.setBotPatrol('b1', PATROL);
+		gate.state = 'off';
+		const createWhileOff = await service.setBotPatrol('b1', PATROL);
+		gate.state = 'ok';
+		const created = await service.setBotPatrol('b1', { ...PATROL, enabled: false });
+		gate.state = 'off';
+		const enableWhileOff = await service.setEnabled(created.definition!.id, true);
+		gate.state = 'ok';
+		await service.setEnabled(created.definition!.id, true);
 		gate.state = 'off';
 		state.now = at(2026, 11, 27, 8, 0) + 20_000;
 		service.tick();
@@ -117,7 +127,8 @@ suite('ParadisScheduledRunsService: bot look-arounds', () => {
 		gate.state = 'busy';
 		state.now = at(2026, 11, 27, 16, 0) + 20_000;
 		service.tick();
-		assert.deepStrictEqual({ whileOff, afterOn, runs: await statuses(), requests: requests.length }, {
+		assert.deepStrictEqual({ refused: [createWhileOff, enableWhileOff], whileOff, afterOn, runs: await statuses(), requests: requests.length }, {
+			refused: [{ ok: false, error: 'Bot の機能がオフの間は、見回りを設定・有効にできません。' }, { ok: false, error: 'Bot の機能がオフの間は、見回りを設定・有効にできません。' }],
 			whileOff: { requests: 0, runs: 0 },
 			afterOn: { requests: 0, runs: 0 },
 			runs: [['skipped', 'botPaused', 'schedule'], ['skipped', 'botBusy', 'schedule']],

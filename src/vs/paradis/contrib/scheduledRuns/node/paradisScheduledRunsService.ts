@@ -48,6 +48,7 @@ import {
 	PARADIS_SCHEDULED_RUN_MAX_CONCURRENT,
 	paradisCountRunningRuns,
 	PARADIS_SCHEDULED_RUN_MIN_PENDING_MS,
+	PARADIS_SCHEDULED_RUN_MAX_DAILY_LIMIT,
 	PARADIS_SCHEDULED_RUN_MAX_DEFINITIONS,
 	PARADIS_SCHEDULED_RUN_TIMEOUT_MS,
 	paradisRevalidateStoredDefinition,
@@ -65,7 +66,6 @@ import {
 	IParadisBotPatrolView,
 	ParadisBotPatrolGateState,
 	paradisBotPatrolCron,
-	paradisBotPatrolDailyLimit,
 	paradisBotPatrolDue,
 	paradisBotPatrolGateReason,
 	paradisBotPatrolName,
@@ -77,6 +77,7 @@ import {
 import { paradisSanitizeScheduledRunDraft, paradisSanitizeScheduledRunPrecheckShape, paradisSanitizeScheduledRunReport, paradisSanitizeScheduledRunSpace } from '../common/paradisScheduledRunsSanitize.js';
 import { ParadisScheduledRunPrecheckRunner } from './paradisScheduledRunPrecheck.js';
 
+const STR_BOTS_OFF = localize('paradis.scheduledRuns.error.botsOff', "Bot の機能がオフの間は、見回りを設定・有効にできません。");
 const STR_SAVE_FAILED = localize('paradis.scheduledRuns.error.saveFailed', "変更を保存できませんでした。ディスクの空きと権限を確かめてから、もう一度やり直してください。");
 
 /** transcript の置き場所からエージェントを見分ける（Claude は `projects/`、Codex は `sessions/` の rollout）。 */
@@ -291,6 +292,9 @@ export class ParadisScheduledRunsService extends Disposable {
 			return { ok: false, error: localize('paradis.scheduledRuns.error.badPatrol', "見回りの設定を読めませんでした。") };
 		}
 		const botName = this.botGate?.botName(botId);
+		if (this.botGate?.check(botId) === 'off') {
+			return { ok: false, error: STR_BOTS_OFF };
+		}
 		if (botName === undefined) {
 			return { ok: false, error: localize('paradis.scheduledRuns.error.noBot', "この Bot は見つかりません。") };
 		}
@@ -306,7 +310,9 @@ export class ParadisScheduledRunsService extends Disposable {
 			target: { kind: 'bot' as const, repositoryUri: '', repositoryName: botName.slice(0, 200), botId },
 			agentId: '',
 			prompt: lookFor,
-			dailyLimit: paradisBotPatrolDailyLimit(schedule),
+			// 時刻の回の数は式が決める（後から走らせる回も無い）。手動の「今すぐ見回る」も 1 日の回数に数えるので、
+			// 式の回数ちょうどにすると、朝に手動で 1 回見回っただけで 20 時の回が落ちる。上限いっぱいにしておく
+			dailyLimit: PARADIS_SCHEDULED_RUN_MAX_DAILY_LIMIT,
 		};
 		const problem = paradisValidateScheduledRunDraft(fields);
 		if (problem !== undefined) {
@@ -427,6 +433,9 @@ export class ParadisScheduledRunsService extends Disposable {
 			return { ok: false, error: localize('paradis.scheduledRuns.error.notFound', "この定期実行は削除されています。") };
 		}
 		const now = this.clock.now();
+		if (enabled && paradisIsBotPatrolDefinition(existing) && this.botGateState(existing) === 'off') {
+			return { ok: false, error: STR_BOTS_OFF };
+		}
 		if (existing.enabled === enabled) {
 			// 押し直しでは判定の起点を動かさない（直前の時刻を黙って逃さないように）
 			return { ok: true, definition: existing };

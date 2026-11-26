@@ -9,6 +9,7 @@
 import assert from 'assert';
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
+import { Emitter } from '../../../../../base/common/event.js';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
@@ -19,6 +20,7 @@ import { PARADIS_READ_ONLY_MCP_TOOL_NAMES } from '../../../agentBrowser/common/p
 import { paradisBotPatrolLaunchFlags } from '../../common/paradisBotTools.js';
 import { ParadisBotHomeError, ParadisBotHomes, PARADIS_BOT_HOME_FILE_LIMIT } from '../../node/paradisBotHomes.js';
 import { ParadisBotsChannel } from '../../node/paradisBotsChannel.js';
+import { paradisBotPaneTokenHash } from '../../node/paradisBotPanes.js';
 import { ParadisBotsService } from '../../node/paradisBotsService.js';
 import { ParadisBotMemorySnapshots } from '../../node/paradisBotMemorySnapshots.js';
 import { createParadisBotItemsFile, createParadisBotsFile, createParadisBotSuggestionsFile } from '../../node/paradisBotsStore.js';
@@ -318,6 +320,54 @@ suite('Paradis bot homes', () => {
 			undone: { ok: true, value: { restored: ['MEMORY.md'], added: ['memory/release.md'], takenAt: 5000 } },
 			memory: { ok: true, value: '- 2026-11-27 古い記憶\n' },
 			homeFiles: ['.para-bot.json'],
+		});
+	});
+
+	test('サービス: 定期実行の見回りの門と、前の回の見回りのペインだけを閉じる依頼', async () => {
+		const userData = join(root, '..', 'userData');
+		const settings = { enabled: true };
+		const hooks = store.add(new Emitter<{ token: string; event: string }>());
+		let ids = 0;
+		const service = store.add(new ParadisBotsService(createParadisBotsFile(userData), createParadisBotItemsFile(userData), store.add(new ParadisHumanAskService()), new NullLogService(), { homes, uuid: () => `id${++ids}`, enabled: () => settings.enabled, hookEvents: hooks.event }));
+		const beforeLoad = service.patrolGateState('id1');
+		const claude = await service.createBot({ name: 'リリース係', agent: 'claude' });
+		const opencode = await service.createBot({ name: '制限できない係', agent: 'opencode' });
+		assert.ok(claude.ok && opencode.ok);
+		const bind = (purpose: 'chat' | 'patrol', token: string) => {
+			const launchId = service.issueLaunch('id1', purpose);
+			assert.ok(launchId !== undefined && service.reportLaunch(launchId, token));
+		};
+		bind('chat', 'pane-chat');
+		bind('patrol', 'pane-old');
+		const idle = service.patrolGateState('id1');
+		bind('patrol', 'pane-busy');
+		hooks.fire({ token: 'pane-busy', event: 'UserPromptSubmit' });
+		hooks.fire({ token: 'pane-chat', event: 'UserPromptSubmit' });
+		const busy = service.patrolGateState('id1');
+		const stops: (readonly string[])[] = [];
+		store.add(service.onDidRequestStop(request => stops.push(request.paneHashes)));
+		const removed: string[] = [];
+		store.add(service.onDidRemoveBot(botId => removed.push(botId)));
+		service.closeIdlePatrolPanes('id1');
+		const chatHashes = await service.paneHashesOf('id1', 'chat');
+		await service.updateBot('id1', { paused: true });
+		const paused = service.patrolGateState('id1');
+		settings.enabled = false;
+		const off = service.patrolGateState('id1');
+		settings.enabled = true;
+		const unsupported = service.patrolGateState('id2');
+		await service.removeBot('id2');
+		assert.deepStrictEqual({
+			gates: [beforeLoad, idle, busy, paused, off, unsupported, service.patrolGateState('id2'), service.patrolGateState('nobody')],
+			// 閉じるのは動いていない見回りのペインだけ（会話と、動いている見回りは閉じない）
+			stops: stops.slice(0, 1),
+			chatHashes,
+			removed,
+		}, {
+			gates: [undefined, 'ok', 'busy', 'paused', 'off', 'unsupported', 'missing', 'missing'],
+			stops: [[paradisBotPaneTokenHash('pane-old')]],
+			chatHashes: [paradisBotPaneTokenHash('pane-chat')],
+			removed: ['id2'],
 		});
 	});
 

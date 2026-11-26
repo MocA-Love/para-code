@@ -530,9 +530,14 @@ export class ParadisBotsService extends Disposable {
 		return this.panes.statesOf(botId).some(pane => pane.purpose === 'patrol' && pane.working) ? 'busy' : 'ok';
 	}
 
-	/** 前の回の見回りのペインのうち、もう動いていないものを閉じる依頼を全ウィンドウへ出す（会話のペインは閉じない）。 */
+	/**
+	 * 前の回の見回りのペインのうち、もう動いていないものを閉じる依頼を全ウィンドウへ出す（会話のペインは閉じない）。
+	 * 起動し直した後でまだ結び付いていない（hook が来ていない）見回りのペインも、保存したハッシュで閉じる。
+	 */
 	closeIdlePatrolPanes(botId: string): void {
-		const paneHashes = this.panes.tokensOf(botId, { purpose: 'patrol', idle: true }).map(paradisBotPaneTokenHash);
+		const idle = new Set(this.panes.tokensOf(botId, { purpose: 'patrol', idle: true }));
+		const working = new Set(this.panes.tokensOf(botId, { purpose: 'patrol' }).filter(token => !idle.has(token)).map(paradisBotPaneTokenHash));
+		const paneHashes = this.paneHashesOf(botId, 'patrol').filter(hash => !working.has(hash));
 		if (paneHashes.length > 0) {
 			this._onDidRequestStop.fire({ botId, paneHashes });
 		}

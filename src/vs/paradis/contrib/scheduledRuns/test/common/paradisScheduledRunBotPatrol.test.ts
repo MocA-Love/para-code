@@ -11,7 +11,6 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { IParadisScheduledRunDefinition, IParadisScheduledRunRecord, paradisValidateScheduledRunDraft } from '../../common/paradisScheduledRuns.js';
 import {
 	paradisBotPatrolCron,
-	paradisBotPatrolDailyLimit,
 	paradisBotPatrolDue,
 	paradisBotPatrolPrompt,
 	paradisBotPatrolScheduleFromCron,
@@ -41,7 +40,7 @@ const DEFINITION: IParadisScheduledRunDefinition = {
 suite('Paradis bot patrol schedule', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('時刻の形と cron 式の行き来、1 日の回数', () => {
+	test('時刻の形と cron 式の行き来', () => {
 		const shapes = [
 			PARADIS_BOT_PATROL_DEFAULT_SCHEDULE,
 			{ everyHours: 3, fromHour: 9, toHour: 18, weekdaysOnly: false },
@@ -50,7 +49,6 @@ suite('Paradis bot patrol schedule', () => {
 		assert.deepStrictEqual({
 			cron: shapes.map(paradisBotPatrolCron),
 			back: shapes.map(shape => paradisBotPatrolScheduleFromCron(paradisBotPatrolCron(shape))),
-			limit: shapes.map(paradisBotPatrolDailyLimit),
 			foreign: [paradisBotPatrolScheduleFromCron('*/30 * * * *'), paradisBotPatrolScheduleFromCron('0 8-20/5 * * 1-5')],
 			bad: [
 				paradisSanitizeBotPatrolSchedule({ everyHours: 5, fromHour: 8, toHour: 20, weekdaysOnly: true }),
@@ -66,8 +64,6 @@ suite('Paradis bot patrol schedule', () => {
 				{ everyHours: 3, fromHour: 9, toHour: 18, weekdaysOnly: false },
 				{ everyHours: 4, fromHour: 9, toHour: 9, weekdaysOnly: true },
 			],
-			// 8・12・16・20 時の 4 回（既定の 3 回だと 20 時が毎日落ちる）
-			limit: [4, 4, 1],
 			foreign: [undefined, undefined],
 			bad: [undefined, undefined, undefined, undefined, undefined],
 		});

@@ -25,7 +25,6 @@ import {
 	ParadisScheduledRunStatus,
 	ParadisScheduledRunTrigger,
 	PARADIS_BOT_PATROL_MAX_LOOK_FOR_LENGTH,
-	PARADIS_SCHEDULED_RUN_MAX_DAILY_LIMIT,
 	paradisIsActiveRunStatus,
 	paradisSanitizeScheduledRunPrompt,
 	paradisScheduledRunLaunchPrompt,
@@ -124,11 +123,6 @@ export function paradisBotPatrolScheduleFromCron(expression: string): IParadisBo
 	const toHour = match.groups.to !== undefined ? Number(match.groups.to) : fromHour;
 	const everyHours = match.groups.every !== undefined ? Number(match.groups.every) : PARADIS_BOT_PATROL_DEFAULT_SCHEDULE.everyHours;
 	return paradisSanitizeBotPatrolSchedule({ everyHours, fromHour, toHour, weekdaysOnly: match.groups.days === '1-5' });
-}
-
-/** 1 日の回数の上限（その時刻の形で 1 日に来る回数。既定の 3 回だと「8・12・16・20 時」の 20 時が毎日落ちる）。 */
-export function paradisBotPatrolDailyLimit(schedule: IParadisBotPatrolSchedule): number {
-	return Math.min(PARADIS_SCHEDULED_RUN_MAX_DAILY_LIMIT, Math.floor((schedule.toHour - schedule.fromHour) / schedule.everyHours) + 1);
 }
 
 /** 「探すもの」を保存する形にする（制御文字を落とし、前後の空白を除く）。長すぎれば undefined。 */
