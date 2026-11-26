@@ -14,6 +14,7 @@ import { IChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
+import { IParadisBotPatrolInput, IParadisBotPatrolView } from '../common/paradisScheduledRunBotPatrol.js';
 import {
 	IParadisScheduledRunDraft,
 	IParadisScheduledRunPrecheck,
@@ -54,6 +55,12 @@ export interface IParadisScheduledRunsClient {
 	runPrecheck(runId: string, trusted: boolean): Promise<boolean>;
 	/** 保存する前に事前確認を 1 回だけ試す（記録には残さない）。`token` を取り消すとコマンドを止める。 */
 	testPrecheck(precheck: IParadisScheduledRunPrecheck, repositoryUri: string, token?: CancellationToken): Promise<{ readonly result?: IParadisScheduledRunPrecheckResult; readonly error?: string }>;
+	/** Bot の見回りの次の時刻・最後の結果（Bot のページの「定期実行」の節）。 */
+	getBotPatrol(botId: string): Promise<IParadisBotPatrolView>;
+	/** Bot の見回りを作る・変える（1 つの Bot に 1 つ）。 */
+	setBotPatrol(botId: string, input: IParadisBotPatrolInput): Promise<IParadisScheduledRunsResult>;
+	/** 「今すぐ見回る」。 */
+	runBotPatrolNow(botId: string): Promise<IParadisScheduledRunsResult>;
 }
 
 class ParadisScheduledRunsClient implements IParadisScheduledRunsClient {
@@ -86,6 +93,9 @@ class ParadisScheduledRunsClient implements IParadisScheduledRunsClient {
 	heartbeat(runIds: readonly string[]): Promise<string[]> { return this.channel.call('heartbeat', [runIds]); }
 	runPrecheck(runId: string, trusted: boolean): Promise<boolean> { return this.channel.call('runPrecheck', [runId, trusted]); }
 	testPrecheck(precheck: IParadisScheduledRunPrecheck, repositoryUri: string, token?: CancellationToken): Promise<{ readonly result?: IParadisScheduledRunPrecheckResult; readonly error?: string }> { return this.channel.call('testPrecheck', [precheck, repositoryUri], token); }
+	getBotPatrol(botId: string): Promise<IParadisBotPatrolView> { return this.channel.call('getBotPatrol', [botId]); }
+	setBotPatrol(botId: string, input: IParadisBotPatrolInput): Promise<IParadisScheduledRunsResult> { return this.channel.call('setBotPatrol', [botId, input]); }
+	runBotPatrolNow(botId: string): Promise<IParadisScheduledRunsResult> { return this.channel.call('runBotPatrolNow', [botId]); }
 }
 
 registerSingleton(IParadisScheduledRunsClient, ParadisScheduledRunsClient, InstantiationType.Delayed);

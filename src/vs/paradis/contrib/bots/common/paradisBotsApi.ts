@@ -23,6 +23,12 @@ import { IParadisBot, IParadisBotPatch, ParadisBotFaceColor, ParadisBotFaceShape
  * - `working`: 会話のペインでエージェントが動いている
  * - `patrolling`: 見回り（定期実行）のペインでエージェントが動いている
  */
+/**
+ * Bot の機能を使えるようにするか（試験中、既定 false）。設定の登録は Bot の一覧の帯の側にあり、ここは id だけを
+ * 持つ（帯・Bot の道具・管理の道具が同じ id を読む）。
+ */
+export const PARADIS_BOTS_ENABLED_SETTING = 'paradis.bots.enabled';
+
 export type ParadisBotActivity = 'stopped' | 'idle' | 'working' | 'patrolling';
 
 /** ペインを起動した目的。`chat` は Bot の会話、`patrol` は見回り（PR 12 が使う）。 */
@@ -126,12 +132,6 @@ export const PARADIS_BOTS_WINDOW_CHANNEL = 'paradisBotsWindow';
 
 export type ParadisBotsWindowResult = { readonly ok: true; readonly data: object } | { readonly ok: false; readonly error: string };
 
-/**
- * Bot の機能を使えるようにするか（試験中、既定 false）。設定の登録は Bot の一覧の帯の側にあり、ここは id だけを
- * 持つ（帯・管理の道具が同じ id を読む）。
- */
-export const PARADIS_BOTS_ENABLED_SETTING = 'paradis.bots.enabled';
-
 export const EMPTY_PARADIS_BOTS_SNAPSHOT: IParadisBotsSnapshot = Object.freeze({ revision: 0, readOnly: false, bots: Object.freeze([]) });
 
 export const IParadisBotsService = createDecorator<IParadisBotsService>('paradisBotsService');
@@ -170,8 +170,8 @@ export interface IParadisBotsService {
 	/** 起動できなかった。 */
 	cancelLaunch(launchId: string): Promise<void>;
 	requestStop(botId: string): Promise<boolean>;
-	/** その Bot のペインのトークンの SHA-256（16 進）。開くときに、このウィンドウにもうあるかを照らす。 */
-	paneHashesOf(botId: string): Promise<readonly string[]>;
+	/** その Bot のペインのトークンの SHA-256（16 進）。開くときに、このウィンドウにもうあるかを照らす。`purpose` を渡せばその用途だけ。 */
+	paneHashesOf(botId: string, purpose?: ParadisBotPanePurpose): Promise<readonly string[]>;
 
 	/** その Bot のまだ決めていない提案（新しい順）。Bot のホームの節にだけ出す。 */
 	listSuggestions(botId: string): Promise<readonly IParadisBotSuggestion[]>;

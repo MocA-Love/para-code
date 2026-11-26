@@ -20,10 +20,12 @@ import { paradisRegisterMcpToolProvider } from '../../agentBrowser/common/paradi
 import { onParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING, paradisAgentIdeActionsAllowed } from '../../agentIde/common/paradisAgentIde.js';
 import { paradisSharedHumanAskService } from '../../humanAsk/node/paradisHumanAskChannel.js';
+import { paradisSharedScheduledRunsService } from '../../scheduledRuns/node/paradisScheduledRunsChannel.js';
 import { PARADIS_BOTS_CHANNEL, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
 import { ParadisBotHomes } from './paradisBotHomes.js';
 import { ParadisBotManageToolProvider } from './paradisBotManageToolProvider.js';
 import { ParadisBotToolProvider } from './paradisBotToolProvider.js';
+import { ParadisBotMessageToolProvider } from './paradisBotMessageToolProvider.js';
 import { ParadisBotsChannel } from './paradisBotsChannel.js';
 import { ParadisBotsService } from './paradisBotsService.js';
 import { ParadisBotMemorySnapshots } from './paradisBotMemorySnapshots.js';
@@ -40,9 +42,13 @@ export function paradisSharedBotsService(): ParadisBotsService | undefined {
 ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 	const userDataPath = accessor.get(INativeEnvironmentService).userDataPath;
 	const store = new DisposableStore();
+	// Bot の機能は試験中の設定でオン・オフする（スキーマは画面側で登録されるので、生の値を読む）
+	const configurationService = accessor.get(IConfigurationService);
+	const enabled = () => configurationService.getValue(PARADIS_BOTS_ENABLED_SETTING) === true;
 	const homes = new ParadisBotHomes(join(homedir(), '.para-code', 'bots'));
 	const service = store.add(new ParadisBotsService(createParadisBotsFile(userDataPath), createParadisBotItemsFile(userDataPath), paradisSharedHumanAskService(), accessor.get(ILogService), {
 		hookEvents: onParadisAgentHookEvent,
+		enabled,
 		panesFile: createParadisBotPanesFile(userDataPath),
 		suggestionsFile: createParadisBotSuggestionsFile(userDataPath),
 		// 記憶の写しは専用フォルダ（Bot が書ける）の外に置く
@@ -51,12 +57,31 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 	}));
 	server.registerChannel(PARADIS_BOTS_CHANNEL, new ParadisBotsChannel(service));
 	shared = service;
-	store.add(paradisRegisterMcpToolProvider(new ParadisBotToolProvider(service)));
+	store.add(configurationService.onDidChangeConfiguration(event => {
+		if (event.affectsConfiguration(PARADIS_BOTS_ENABLED_SETTING)) {
+			service.refresh();
+		}
+	}));
+	// 見回りは定期実行の台帳に載せる。走らせる前の門（機能のオン・一時停止など）をこちらが答え、Bot を消したら定義も消す
+	const scheduledRuns = paradisSharedScheduledRunsService();
+	const logService = accessor.get(ILogService);
+	if (scheduledRuns !== undefined) {
+		store.add(scheduledRuns.setBotPatrolGate({
+			check: botId => service.patrolGateState(botId),
+			botName: botId => service.getBot(botId)?.name,
+			closeIdlePatrolPanes: botId => service.closeIdlePatrolPanes(botId),
+		}));
+		store.add(service.onDidRemoveBot(botId => {
+			scheduledRuns.deleteBotPatrols(botId).catch(error => logService.warn('[ParadisBots] could not remove the look-around schedule of a removed bot', error));
+		}));
+	}
+	store.add(paradisRegisterMcpToolProvider(new ParadisBotToolProvider(service, enabled)));
+	// Bot 同士の伝言（宛先とグループの記録はグループの機能が差し込む口から引く）
+	store.add(paradisRegisterMcpToolProvider(new ParadisBotMessageToolProvider(service, enabled)));
 	// 管理の道具の書く側は、IDE 系の書く道具と同じ設定の下（スキーマは画面側でしか登録されないので生の値を読む）
-	const configurationService = accessor.get(IConfigurationService);
 	store.add(paradisRegisterMcpToolProvider(new ParadisBotManageToolProvider(service, {
 		actionsEnabled: () => paradisAgentIdeActionsAllowed(configurationService.getValue(PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING)),
-		botsEnabled: () => configurationService.getValue(PARADIS_BOTS_ENABLED_SETTING) === true,
+		botsEnabled: enabled,
 	})));
 	// スマホへ送る Bot の一覧（PR 16、bots.page.v1）
 	store.add(new ParadisBotsMobileFeed(service, configurationService));

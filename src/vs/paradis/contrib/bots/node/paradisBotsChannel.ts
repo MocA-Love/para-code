@@ -99,7 +99,10 @@ export class ParadisBotsChannel implements IServerChannel<string> {
 				return undefined;
 			}
 			case 'requestStop': return id !== undefined && service.requestStop(id);
-			case 'paneHashesOf': return id !== undefined ? service.paneHashesOf(id) : [];
+			case 'paneHashesOf': {
+				const purpose = args.at(1) === undefined ? undefined : PARADIS_BOT_PANE_PURPOSES.find(candidate => candidate === args.at(1));
+				return id !== undefined && (args.at(1) === undefined || purpose !== undefined) ? service.paneHashesOf(id, purpose) : [];
+			}
 			case 'listSuggestions': return id !== undefined ? service.listSuggestions(id) : [];
 			case 'startSuggestion': return id !== undefined ? service.startSuggestion(id) : INVALID;
 			case 'dismissSuggestion': return id !== undefined ? service.dismissSuggestion(id) : INVALID;

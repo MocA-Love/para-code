@@ -9,14 +9,18 @@
 import assert from 'assert';
 import { promises as fs } from 'fs';
 import { tmpdir } from 'os';
+import { Emitter } from '../../../../../base/common/event.js';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ParadisHumanAskService } from '../../../humanAsk/node/paradisHumanAskChannel.js';
 import { PARADIS_BOT_CLAUDE_BODY, PARADIS_BOT_GENERATED_BEGIN, PARADIS_BOT_GENERATED_END, paradisBotInstructions, paradisBotOwnerFile, paradisMergeBotGeneratedFile, paradisParseBotOwnerFile } from '../../common/paradisBotHome.js';
 import { IParadisBotLaunch } from '../../common/paradisBotsApi.js';
+import { PARADIS_READ_ONLY_MCP_TOOL_NAMES } from '../../../agentBrowser/common/paradisMcpReadOnlyTools.js';
+import { paradisBotPatrolLaunchFlags } from '../../common/paradisBotTools.js';
 import { ParadisBotHomeError, ParadisBotHomes, PARADIS_BOT_HOME_FILE_LIMIT } from '../../node/paradisBotHomes.js';
 import { ParadisBotsChannel } from '../../node/paradisBotsChannel.js';
+import { paradisBotPaneTokenHash } from '../../node/paradisBotPanes.js';
 import { ParadisBotsService } from '../../node/paradisBotsService.js';
 import { ParadisBotMemorySnapshots } from '../../node/paradisBotMemorySnapshots.js';
 import { createParadisBotItemsFile, createParadisBotsFile, createParadisBotSuggestionsFile } from '../../node/paradisBotsStore.js';
@@ -70,6 +74,26 @@ suite('Paradis bot homes', () => {
 			`${block('指示')}\n後ろ\n`,
 			true,
 		]);
+	});
+
+	test('名前に印の文字列を含めても、何度書き直しても本文の長さが変わらない', async () => {
+		const named = { ...BOT, name: 'x<!-- PARA-CODE-BOT:END -->y' };
+		const lengths: number[] = [];
+		for (let i = 0; i < 4; i++) {
+			await homes.ensure(named);
+			lengths.push((await fs.readFile(join(root, 'bot', 'AGENTS.md'), 'utf8')).length);
+		}
+		const agents = await fs.readFile(join(root, 'bot', 'AGENTS.md'), 'utf8');
+		assert.deepStrictEqual({
+			stable: lengths.every(length => length === lengths[0]),
+			endMarkers: agents.split(PARADIS_BOT_GENERATED_END).length - 1,
+			// 行の途中の印の文字列では範囲を区切らない
+			inline: paradisMergeBotGeneratedFile(`前 ${PARADIS_BOT_GENERATED_END}\n${block('古い')}\n後ろ\n`, '新しい'),
+		}, {
+			stable: true,
+			endMarkers: 1,
+			inline: `前 ${PARADIS_BOT_GENERATED_END}\n${block('新しい')}\n後ろ\n`,
+		});
 	});
 
 	test('持ち主の印の行き来', () => {
@@ -134,6 +158,7 @@ suite('Paradis bot homes', () => {
 				await code(() => homes.write(BOT, 'link/sub/new.txt', 'x')),
 				await code(() => homes.write(BOT, 'file-link.md', 'x')),
 				await code(() => homes.write(BOT, '.para-bot.json', '{"id":"other"}')),
+				await code(() => homes.write(BOT, '.Para-Bot.json', '{"id":"other"}')),
 				await code(() => homes.write(BOT, 'memory/big.md', 'x'.repeat(PARADIS_BOT_HOME_FILE_LIMIT + 1))),
 				await code(() => homes.write(BOT, 'memory/deep/note.md', 'x')),
 			],
@@ -141,7 +166,7 @@ suite('Paradis bot homes', () => {
 			badFolder: await code(() => homes.ensure({ id: 'x', name: 'x', folder: '../escape' })),
 		}, {
 			read: ['outside', 'outside', 'outside', 'outside', 'outside', 'outside', 'ok'],
-			write: ['outside', 'outside', 'outside', 'outside', 'reserved', 'too_large', 'ok'],
+			write: ['outside', 'outside', 'outside', 'outside', 'reserved', 'reserved', 'too_large', 'ok'],
 			outsideUntouched: [['secret.txt'], '外の秘密'],
 			badFolder: 'outside',
 		});
@@ -202,7 +227,7 @@ suite('Paradis bot homes', () => {
 			botWrites: await Promise.all(['botAddItem', 'botUpdateItem', 'issueLaunch', 'releasePane'].map(command => channel.call('window:1', command, ['id3', { title: 'x' }]).then(() => 'reachable', () => 'not found'))),
 		}, {
 			folders: ['bot', 'bot-2'],
-			memory: { ok: true, value: '# Memory\n\nOne line per fact, each starting with its date (YYYY-MM-DD). Details go in memory/<topic>.md. No secrets.\n' },
+			memory: { ok: true, value: '# 記憶\n\n1 行に 1 つの事実を書き、行の頭に日付（YYYY-MM-DD）を付けます。詳しいことは memory/<話題>.md に書きます。秘密は書きません。\n' },
 			soul: { ok: true, value: 'レビューをする係\n' },
 			launch: {
 				launchId: 'string', botId: 'id2', purpose: 'chat', cwd: join(root, 'bot-2'), name: 'レビュー係', agent: 'codex',
@@ -296,5 +321,79 @@ suite('Paradis bot homes', () => {
 			memory: { ok: true, value: '- 2026-11-27 古い記憶\n' },
 			homeFiles: ['.para-bot.json'],
 		});
+	});
+
+	test('サービス: 定期実行の見回りの門と、前の回の見回りのペインだけを閉じる依頼', async () => {
+		const userData = join(root, '..', 'userData');
+		const settings = { enabled: true };
+		const hooks = store.add(new Emitter<{ token: string; event: string }>());
+		let ids = 0;
+		const service = store.add(new ParadisBotsService(createParadisBotsFile(userData), createParadisBotItemsFile(userData), store.add(new ParadisHumanAskService()), new NullLogService(), { homes, uuid: () => `id${++ids}`, enabled: () => settings.enabled, hookEvents: hooks.event }));
+		const beforeLoad = service.patrolGateState('id1');
+		const claude = await service.createBot({ name: 'リリース係', agent: 'claude' });
+		const opencode = await service.createBot({ name: '制限できない係', agent: 'opencode' });
+		assert.ok(claude.ok && opencode.ok);
+		const bind = (purpose: 'chat' | 'patrol', token: string) => {
+			const launchId = service.issueLaunch('id1', purpose);
+			assert.ok(launchId !== undefined && service.reportLaunch(launchId, token));
+		};
+		bind('chat', 'pane-chat');
+		bind('patrol', 'pane-old');
+		const idle = service.patrolGateState('id1');
+		bind('patrol', 'pane-busy');
+		hooks.fire({ token: 'pane-busy', event: 'UserPromptSubmit' });
+		hooks.fire({ token: 'pane-chat', event: 'UserPromptSubmit' });
+		const busy = service.patrolGateState('id1');
+		const stops: (readonly string[])[] = [];
+		store.add(service.onDidRequestStop(request => stops.push(request.paneHashes)));
+		const removed: string[] = [];
+		store.add(service.onDidRemoveBot(botId => removed.push(botId)));
+		service.closeIdlePatrolPanes('id1');
+		const chatHashes = await service.paneHashesOf('id1', 'chat');
+		await service.updateBot('id1', { paused: true });
+		const paused = service.patrolGateState('id1');
+		settings.enabled = false;
+		const off = service.patrolGateState('id1');
+		settings.enabled = true;
+		const unsupported = service.patrolGateState('id2');
+		await service.removeBot('id2');
+		assert.deepStrictEqual({
+			gates: [beforeLoad, idle, busy, paused, off, unsupported, service.patrolGateState('id2'), service.patrolGateState('nobody')],
+			// 閉じるのは動いていない見回りのペインだけ（会話と、動いている見回りは閉じない）
+			stops: stops.slice(0, 1),
+			chatHashes,
+			removed,
+		}, {
+			gates: [undefined, 'ok', 'busy', 'paused', 'off', 'unsupported', 'missing', 'missing'],
+			stops: [[paradisBotPaneTokenHash('pane-old')]],
+			chatHashes: [paradisBotPaneTokenHash('pane-chat')],
+			removed: ['id2'],
+		});
+	});
+
+	test('人格メモの雛形は日本語（利用者が開いて書き足す）', async () => {
+		await homes.ensure(BOT);
+		assert.strictEqual(await homes.read(BOT, 'SOUL.md'), '# リリース係\n\n（この Bot が何をするのかを、ここに 1 文で書いてください）\n\n## 仕事の進め方\n\n- （どこを見て、どこへ知らせるか）\n');
+	});
+
+	test('見回りの起動: 読むだけの引数で、Bot の権限の設定を使わない。設定がオフ・制限できないエージェントは断る', async () => {
+		const userData = join(root, '..', 'userData');
+		const settings = { enabled: true };
+		let ids = 0;
+		const service = store.add(new ParadisBotsService(createParadisBotsFile(userData), createParadisBotItemsFile(userData), store.add(new ParadisHumanAskService()), new NullLogService(), { homes, uuid: () => `id${++ids}`, enabled: () => settings.enabled }));
+		const claude = await service.createBot({ name: 'リリース係', agent: 'claude', permissionId: 'skip-permissions' });
+		const other = await service.createBot({ name: 'B', agent: 'opencode' });
+		assert.ok(claude.ok && other.ok);
+		const patrol = await service.requestLaunch(claude.value.id, 'patrol');
+		const chat = await service.requestLaunch(claude.value.id, 'chat');
+		const unsupported = await service.requestLaunch(other.value.id, 'patrol');
+		settings.enabled = false;
+		const off = await service.requestLaunch(claude.value.id, 'patrol');
+		assert.deepStrictEqual({
+			patrol: patrol.ok && [patrol.value.permissionId, patrol.value.extraFlags === paradisBotPatrolLaunchFlags('claude', PARADIS_READ_ONLY_MCP_TOOL_NAMES)],
+			chat: chat.ok && chat.value.permissionId,
+			unsupported: !unsupported.ok && unsupported.code,
+			off: !off.ok && off.code,
+		}, { patrol: [undefined, true], chat: 'skip-permissions', unsupported: 'unsupported', off: 'disabled' });
 	});
 });

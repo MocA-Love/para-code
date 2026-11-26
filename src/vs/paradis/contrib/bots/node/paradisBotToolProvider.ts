@@ -21,6 +21,7 @@ import {
 	PARADIS_BOT_ITEM_LIST_PAGE,
 	PARADIS_BOT_ITEM_LIST_TOOL,
 	PARADIS_BOT_ITEM_SHOW_TOOL,
+	PARADIS_BOT_PATROL_TOOLS,
 	PARADIS_BOT_READ_TOOLS,
 	PARADIS_BOT_SERVER_INSTRUCTIONS,
 	PARADIS_BOT_SUGGEST_TOOL,
@@ -38,6 +39,8 @@ import { ParadisBotsService } from './paradisBotsService.js';
 
 const NOT_A_BOT_MESSAGE = 'This terminal is not a Para Code bot, so the bot item tools do nothing here. Only a terminal that Para Code started for a bot can use them.';
 const CALLER_UNVERIFIED_MESSAGE = 'Para Code could not confirm that this request comes from a process inside the bot\'s own terminal pane, so it does not read or change the bot\'s items. This happens inside tmux, screen, zellij, WSL or a container.';
+const BOTS_DISABLED_MESSAGE = 'Para Code bots are turned off in this Para Code (the setting paradis.bots.enabled), so the bot item tools do nothing. Tell your owner in your reply.';
+const PATROL_READ_ONLY_MESSAGE = 'This is a look-around, which only reads. Do not change items here; offer what is worth doing with bot_suggest, and your owner starts it.';
 const PAUSED_MESSAGE = 'Your owner paused this bot, so Para Code does not change its items. Tell your owner in your reply and end your turn.';
 
 function failure(result: { readonly code: string; readonly message: string }): unknown {
@@ -47,27 +50,49 @@ function failure(result: { readonly code: string; readonly message: string }): u
 export class ParadisBotToolProvider implements IParadisMcpToolProvider {
 	readonly cliGroup = 'ide';
 
-	constructor(private readonly service: ParadisBotsService) { }
+	/**
+	 * @param enabled Bot の機能（試験中の設定 `paradis.bots.enabled`）がオンか。オフなら道具も説明も出さない
+	 */
+	constructor(
+		private readonly service: ParadisBotsService,
+		private readonly enabled: () => boolean = () => true,
+	) { }
 
-	listTools(): readonly IParadisMcpToolDefinition[] {
-		return PARADIS_BOT_TOOLS;
+	/** Bot として起動されたペインにだけ出す（ほかのペインの道具の一覧と説明を Bot の道具で埋めない）。 */
+	private shownTo(paneToken: string | undefined): boolean {
+		return this.enabled() && paneToken !== undefined && paneToken.length > 0 && this.service.botOfPane(paneToken) !== undefined;
 	}
 
-	instructions(): string {
-		return PARADIS_BOT_SERVER_INSTRUCTIONS;
+	listTools(paneToken?: string): readonly IParadisMcpToolDefinition[] {
+		return this.shownTo(paneToken) ? PARADIS_BOT_TOOLS : [];
+	}
+
+	instructions(paneToken?: string): string | undefined {
+		return this.shownTo(paneToken) ? PARADIS_BOT_SERVER_INSTRUCTIONS : undefined;
 	}
 
 	async callTool(paneToken: string, name: string, args: unknown, _signal?: AbortSignal, context?: IParadisMcpToolCallContext): Promise<unknown | undefined> {
 		if (!PARADIS_BOT_TOOL_NAMES.has(name)) {
 			return undefined;
 		}
+		if (!this.enabled()) {
+			return toolError(BOTS_DISABLED_MESSAGE);
+		}
 		await this.service.ready;
-		const bot = this.service.botOfPane(paneToken);
-		if (bot === undefined) {
+		if (this.service.botOfPane(paneToken) === undefined) {
 			return toolError(NOT_A_BOT_MESSAGE);
 		}
 		if (!context || await context.classifyCaller() !== 'pane') {
 			return toolError(CALLER_UNVERIFIED_MESSAGE);
+		}
+		// 接続元を確かめている間に、Bot を消した・止めた・結び付けが外れたかもしれないので引き直す
+		const bot = this.service.botOfPane(paneToken);
+		if (bot === undefined) {
+			return toolError(NOT_A_BOT_MESSAGE);
+		}
+		// 見回りのペインは読むだけ（項目は書かず、提案だけ出せる）
+		if (this.service.purposeOfPane(paneToken) === 'patrol' && !PARADIS_BOT_PATROL_TOOLS.has(name)) {
+			return toolError(PATROL_READ_ONLY_MESSAGE);
 		}
 		if (bot.paused && !PARADIS_BOT_READ_TOOLS.has(name)) {
 			return toolError(PAUSED_MESSAGE);
@@ -81,7 +106,8 @@ export class ParadisBotToolProvider implements IParadisMcpToolProvider {
 				const all = this.service.listItems({ botId: bot.id, ...(parsed.value.all ? {} : { open: true }) });
 				const page = all.slice(parsed.value.cursor, parsed.value.cursor + PARADIS_BOT_ITEM_LIST_PAGE);
 				const next = parsed.value.cursor + page.length;
-				return toolJson({ bot: bot.name, items: page.map(paradisBotItemListRow), ...(next < all.length ? { next_cursor: next } : {}) });
+				const deliverable = this.service.itemsWritable();
+				return toolJson({ bot: bot.name, items: page.map(item => paradisBotItemListRow(item, deliverable)), ...(next < all.length ? { next_cursor: next } : {}) });
 			}
 			case PARADIS_BOT_ITEM_SHOW_TOOL: {
 				const parsed = paradisParseBotItemShowArgs(args);
@@ -89,7 +115,7 @@ export class ParadisBotToolProvider implements IParadisMcpToolProvider {
 					return toolError(parsed.message);
 				}
 				const result = await this.service.botReadItem(bot.id, parsed.value.number);
-				return result.ok ? toolJson(paradisBotItemView(result.value, parsed.value.after)) : failure(result);
+				return result.ok ? toolJson(paradisBotItemView(result.value, parsed.value.after, this.service.itemsWritable())) : failure(result);
 			}
 			case PARADIS_BOT_SUGGEST_TOOL: {
 				const parsed = paradisParseBotSuggestArgs(args);

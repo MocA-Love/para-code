@@ -184,8 +184,11 @@ export class ParadisBotPanes {
 		return [...this.panes.values()].filter(pane => pane.botId === botId).map(pane => ({ purpose: pane.purpose, working: pane.working, lastSeenAt: pane.lastSeenAt }));
 	}
 
-	tokensOf(botId: string): string[] {
-		return [...this.panes].filter(([, pane]) => pane.botId === botId).map(([token]) => token);
+	/** その Bot のペインのトークン。`purpose` を渡せばその用途だけ、`idle` が true なら動いていないものだけ。 */
+	tokensOf(botId: string, filter: { readonly purpose?: ParadisBotPanePurpose; readonly idle?: boolean } = {}): string[] {
+		return [...this.panes]
+			.filter(([, pane]) => pane.botId === botId && (filter.purpose === undefined || pane.purpose === filter.purpose) && (filter.idle !== true || !pane.working))
+			.map(([token]) => token);
 	}
 
 	/** ペインが閉じた。結び付けがあれば Bot の id。まだ現れていない（戻していない）保存した結び付けも忘れる。 */

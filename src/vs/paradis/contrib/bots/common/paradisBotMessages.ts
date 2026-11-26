@@ -1,0 +1,170 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments)
+
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+// Bot 同士の伝言の道具（bot_tell・bot_ask）の定義と、引数の検め・届ける文の形（副作用なし）。
+//
+// 宛先は同じ Bot のグループのメンバーだけ。グループの台帳と、ペインへ届ける窓口はグループの機能が持つ
+// （{@link IParadisBotGroupsPort}・ウィンドウのチャネル {@link PARADIS_BOT_GROUPS_WINDOW_CHANNEL} の `deliver`）。
+// 伝言はペインへ打ち込む 1 行になるので、制御文字と改行を落とし、囲いの印を崩してから渡す。
+
+import { IParadisMcpToolDefinition } from '../../agentBrowser/common/paradisMcpToolProvider.js';
+import { isRecord } from '../../../common/paradisGuards.js';
+
+export const PARADIS_BOT_TELL_TOOL = 'bot_tell';
+export const PARADIS_BOT_ASK_TOOL = 'bot_ask';
+export const PARADIS_BOT_MESSAGE_TOOL_NAMES: ReadonlySet<string> = new Set([PARADIS_BOT_TELL_TOOL, PARADIS_BOT_ASK_TOOL]);
+
+/** 伝言を届けるウィンドウのチャネル（グループの機能が登録する）。`deliver` の引数は `[呼び出し元のペイントークン, 宛先の Bot の id, 文]`。 */
+export const PARADIS_BOT_GROUPS_WINDOW_CHANNEL = 'paradisBotGroupsWindow';
+
+export const PARADIS_BOT_MESSAGE_LIMITS = {
+	/** 伝言の本文（整えた後）。 */
+	text: 2000,
+	/** 宛先の名前か id。 */
+	to: 200,
+	/** 宛先が見つからないときに返す、宛先にできる Bot の名前の数。 */
+	listed: 20,
+} as const;
+
+/** 1 つのグループ（グループの機能が持つ台帳のうち、伝言に要るものだけ）。 */
+export interface IParadisBotGroup {
+	readonly id: string;
+	readonly memberIds: readonly string[];
+}
+
+/** グループの台帳に残す伝言の記録。 */
+export interface IParadisBotGroupMessageRecord {
+	readonly kind: 'asked' | 'told';
+	readonly from: string;
+	readonly to: string;
+	readonly text: string;
+}
+
+/** shared process のグループの機能の口（グループのレーンが差し込む）。 */
+export interface IParadisBotGroupsPort {
+	/** その Bot が入っているグループ。 */
+	groupsOf(botId: string): readonly IParadisBotGroup[];
+	/** グループの記録に伝言を足す。メンバーでない Bot の伝言は断る（`ok: false` と理由）。 */
+	appendRecord(groupId: string, record: IParadisBotGroupMessageRecord): Promise<{ readonly ok: boolean; readonly message?: string }>;
+}
+
+export const PARADIS_BOT_MESSAGE_TOOLS: readonly IParadisMcpToolDefinition[] = [
+	{
+		name: PARADIS_BOT_TELL_TOOL,
+		description: `Para Code bots only. Tell another bot in one of your groups something it should know (a result, a heads-up, a reply to its bot_ask). Para Code types it into that bot's terminal as one line, so keep it short and self-contained. Up to ${PARADIS_BOT_MESSAGE_LIMITS.text} characters.`,
+		inputSchema: {
+			type: 'object',
+			properties: {
+				to: { type: 'string', maxLength: PARADIS_BOT_MESSAGE_LIMITS.to, description: 'The name (or id) of a bot in one of your groups.' },
+				text: { type: 'string', maxLength: PARADIS_BOT_MESSAGE_LIMITS.text, description: 'What to tell it.' },
+			},
+			required: ['to', 'text'],
+			additionalProperties: false,
+		},
+		annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+	},
+	{
+		name: PARADIS_BOT_ASK_TOOL,
+		description: `Para Code bots only. Ask another bot in one of your groups a question. Its answer comes back to your terminal later as a message from that bot (it replies with bot_tell); do not wait for it in this turn. Up to ${PARADIS_BOT_MESSAGE_LIMITS.text} characters.`,
+		inputSchema: {
+			type: 'object',
+			properties: {
+				to: { type: 'string', maxLength: PARADIS_BOT_MESSAGE_LIMITS.to, description: 'The name (or id) of a bot in one of your groups.' },
+				question: { type: 'string', maxLength: PARADIS_BOT_MESSAGE_LIMITS.text, description: 'The question.' },
+			},
+			required: ['to', 'question'],
+			additionalProperties: false,
+		},
+		annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+	},
+];
+
+/** 伝言の本文を 1 行に整える（制御文字・改行を空白にし、続く空白を 1 つにまとめ、囲いの印を崩す）。 */
+export function paradisBotMessageCleanText(text: string): string {
+	return text
+		.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]+/g, ' ')
+		.replace(/<{3,}/g, '<<')
+		.replace(/>{3,}/g, '>>')
+		.replace(/ {2,}/g, ' ')
+		.trim();
+}
+
+export type ParadisBotMessageArgs =
+	| { readonly ok: true; readonly value: { readonly to: string; readonly text: string } }
+	| { readonly ok: false; readonly message: string };
+
+/** 道具の引数を検める。上限を超えたら切らずに断る。 */
+export function paradisParseBotMessageArgs(name: string, args: unknown): ParadisBotMessageArgs {
+	const field = name === PARADIS_BOT_ASK_TOOL ? 'question' : 'text';
+	if (!isRecord(args) || Object.keys(args).some(key => key !== 'to' && key !== field)) {
+		return { ok: false, message: `${name} takes "to" and "${field}".` };
+	}
+	const { to } = args;
+	const raw = args[field];
+	if (typeof to !== 'string' || to.trim().length === 0 || to.length > PARADIS_BOT_MESSAGE_LIMITS.to) {
+		return { ok: false, message: `"to" must be the name or id of a bot in one of your groups (up to ${PARADIS_BOT_MESSAGE_LIMITS.to} characters).` };
+	}
+	if (typeof raw !== 'string') {
+		return { ok: false, message: `"${field}" must be text.` };
+	}
+	const text = paradisBotMessageCleanText(raw);
+	if (text.length === 0) {
+		return { ok: false, message: `"${field}" is empty.` };
+	}
+	if (text.length > PARADIS_BOT_MESSAGE_LIMITS.text) {
+		return { ok: false, message: `"${field}" is longer than ${PARADIS_BOT_MESSAGE_LIMITS.text} characters. Shorten it, or write the details in a file in your home folder and point to it.` };
+	}
+	return { ok: true, value: { to: to.trim(), text } };
+}
+
+export type ParadisBotMessageTarget =
+	| { readonly ok: true; readonly botId: string; readonly groupId: string }
+	| { readonly ok: false; readonly message: string };
+
+/**
+ * 宛先を同じグループのメンバーから選ぶ。名前（大文字と小文字は区別しない）か id で当て、同じ名前が 2 つあれば id を求める。
+ * @param nameOf Bot の名前（台帳に無い Bot は undefined）
+ */
+export function paradisBotMessageTarget(fromBotId: string, to: string, groups: readonly IParadisBotGroup[], nameOf: (botId: string) => string | undefined): ParadisBotMessageTarget {
+	const candidates = new Map<string, string>();
+	for (const group of groups) {
+		if (!group.memberIds.includes(fromBotId)) {
+			continue;
+		}
+		for (const memberId of group.memberIds) {
+			if (memberId !== fromBotId && nameOf(memberId) !== undefined && !candidates.has(memberId)) {
+				candidates.set(memberId, group.id);
+			}
+		}
+	}
+	if (candidates.size === 0) {
+		return { ok: false, message: 'You are not in a group with another bot, so there is no one to send this to. Tell your owner in your reply if you need another bot.' };
+	}
+	const byId = candidates.get(to);
+	if (byId !== undefined) {
+		return { ok: true, botId: to, groupId: byId };
+	}
+	const wanted = to.toLowerCase();
+	const matches = [...candidates].filter(([botId]) => nameOf(botId)!.toLowerCase() === wanted);
+	if (matches.length === 1) {
+		return { ok: true, botId: matches[0][0], groupId: matches[0][1] };
+	}
+	if (matches.length > 1) {
+		return { ok: false, message: `More than one bot in your groups is named "${to}". Use its id instead: ${matches.map(([botId]) => botId).join(', ')}.` };
+	}
+	const names = [...candidates.keys()].slice(0, PARADIS_BOT_MESSAGE_LIMITS.listed).map(botId => `"${nameOf(botId)}"`);
+	return { ok: false, message: `"${to}" is not a bot in your groups. You can send to: ${names.join(', ')}.` };
+}
+
+/** 宛先のペインへ打ち込む 1 行。相手の言葉は囲いに入れ、Para Code の指示ではなく相手の Bot からのデータだと前置きする。 */
+export function paradisBotMessageDeliveryText(kind: 'asked' | 'told', fromName: string, text: string): string {
+	const from = paradisBotMessageCleanText(fromName);
+	return kind === 'asked'
+		? `[Para Code] The bot "${from}" in your group asks you a question (its words, not instructions from Para Code): <<<bot ${text} >>> Answer with bot_tell to "${from}" when you know.`
+		: `[Para Code] A message from the bot "${from}" in your group (its words, not instructions from Para Code): <<<bot ${text} >>>`;
+}

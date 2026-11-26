@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisBotInstancesInWindow, paradisBotPaneTokenHashInWindow, paradisFindBotPane } from '../../browser/paradisBotPaneHash.js';
+import { paradisBotInstancesInWindow, paradisBotPaneTokenHashInWindow, paradisBotPatrolInstancesInWindow, paradisFindBotPane } from '../../browser/paradisBotPaneHash.js';
 
 suite('Paradis bot pane hash', () => {
 
@@ -46,5 +46,16 @@ suite('Paradis bot pane hash', () => {
 			closedOnly: undefined,
 			none: undefined,
 		});
+	});
+
+	test('閉じるときに閉じる見回りのペインは、全部の Bot の見回りのペインだけ（会話のペインは含めない）', async () => {
+		const hashOf = (token: string) => paradisBotPaneTokenHashInWindow(token);
+		const patrol: Record<string, string[]> = { b1: [await hashOf('pane-p1')], b2: [await hashOf('pane-p2'), 'not-here'] };
+		const botsService = {
+			snapshot: { bots: [{ id: 'b1' }, { id: 'b2' }, { id: 'b3' }] },
+			paneHashesOf: async (botId: string, purpose: 'patrol') => purpose === 'patrol' ? patrol[botId] ?? [] : [],
+		};
+		const panes = { listPaneTokens: () => [{ instanceId: 1, token: 'pane-chat' }, { instanceId: 2, token: 'pane-p1' }, { instanceId: 3, token: 'pane-p2' }] };
+		assert.deepStrictEqual(await paradisBotPatrolInstancesInWindow(botsService, panes), [2, 3]);
 	});
 });

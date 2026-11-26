@@ -54,3 +54,18 @@ export async function paradisFindBotPane<T extends { readonly isDisposed: boolea
 	}
 	return undefined;
 }
+
+/**
+ * このウィンドウにある見回りのペイン（全部の Bot）。ウィンドウを閉じるときに閉じて、次の起動で見回りの残骸を
+ * 復元しないために使う。
+ */
+export async function paradisBotPatrolInstancesInWindow(
+	botsService: { readonly snapshot: { readonly bots: readonly { readonly id: string }[] }; paneHashesOf(botId: string, purpose: 'patrol'): Promise<readonly string[]> },
+	paneTokenService: Pick<IParadisPaneTokenService, 'listPaneTokens'>,
+): Promise<number[]> {
+	const hashes: string[] = [];
+	for (const bot of botsService.snapshot.bots) {
+		hashes.push(...await botsService.paneHashesOf(bot.id, 'patrol'));
+	}
+	return paradisBotInstancesInWindow(paneTokenService, hashes);
+}

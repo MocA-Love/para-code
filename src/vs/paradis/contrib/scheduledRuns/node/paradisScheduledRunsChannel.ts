@@ -16,6 +16,7 @@ import { createHash } from 'crypto';
 import { promises as fs } from 'fs';
 import { CancellationToken } from '../../../../base/common/cancellation.js';
 import { Event } from '../../../../base/common/event.js';
+import { toDisposable } from '../../../../base/common/lifecycle.js';
 import { join } from '../../../../base/common/path.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -88,6 +89,10 @@ export class ParadisScheduledRunsChannel implements IServerChannel<string> {
 				return this.service.runPrecheck(ctx, text(0), args[1]) as Promise<T>;
 			}
 			case 'testPrecheck': return this.service.testPrecheck(args[0], args[1], cancellationToken) as Promise<T>;
+			// Bot の見回り（Bot のページから）
+			case 'getBotPatrol': return this.service.getBotPatrol(text(0)) as Promise<T>;
+			case 'setBotPatrol': return this.service.setBotPatrol(text(0), args[1]) as Promise<T>;
+			case 'runBotPatrolNow': return this.service.runBotPatrolNow(text(0)) as Promise<T>;
 		}
 		throw new Error(`Call not found: ${command}`);
 	}
@@ -101,7 +106,7 @@ function isStoredDefinition(value: unknown): value is IParadisScheduledRunDefini
 		&& typeof value.enabled === 'boolean'
 		&& typeof value.createdAt === 'number'
 		&& typeof value.updatedAt === 'number'
-		&& paradisSanitizeScheduledRunDraft(value) !== undefined;
+		&& paradisSanitizeScheduledRunDraft(value, { allowBot: true }) !== undefined;
 }
 
 const RUN_STATUSES: ReadonlySet<string> = new Set(['pending', 'starting', 'running', 'needsAttention', 'completed', 'timedOut', 'failed', 'skipped', 'cancelled', 'lost']);
@@ -150,6 +155,10 @@ export function paradisScheduledRunDefinitionDigest(definition: IParadisSchedule
 	// 前と同じ指紋のまま（足す前から有効だった定義を、更新しただけで無効に戻さないため）
 	if (precheck) {
 		fields.push('precheck', precheck.command, precheck.timeoutSeconds);
+	}
+	// Bot の見回りは、どの Bot かも見分ける（ほかの kind の指紋は前と同じまま）
+	if (target.kind === 'bot') {
+		fields.push('bot', target.botId ?? '');
 	}
 	return createHash('sha256').update(JSON.stringify(fields)).digest('hex');
 }
@@ -234,6 +243,13 @@ export function createParadisScheduledRunsFileStore(userDataPath: string, writeF
 	};
 }
 
+let shared: ParadisScheduledRunsService | undefined;
+
+/** shared process に 1 つだけの定期実行のサービス。登録の前は undefined。Bot のサービスが見回りの門を差し込むのに使う。 */
+export function paradisSharedScheduledRunsService(): ParadisScheduledRunsService | undefined {
+	return shared;
+}
+
 ParadisSharedProcessContributions.register('scheduledRuns', ({ server, accessor }) => {
 	const logService = accessor.get(ILogService);
 	const environmentService = accessor.get(INativeEnvironmentService);
@@ -242,7 +258,13 @@ ParadisSharedProcessContributions.register('scheduledRuns', ({ server, accessor 
 	const precheckRunner = createParadisScheduledRunPrecheckRunner(() => shellEnv.getEnv(), error => logService.trace('[ParadisScheduledRuns] failed to stop the precheck: ' + error));
 	const service = new ParadisScheduledRunsService(createParadisScheduledRunsFileStore(environmentService.userDataPath), { now: () => Date.now() }, logService, { hookEvents: onParadisAgentHookEvent, precheckRunner });
 	server.registerChannel(PARADIS_SCHEDULED_RUNS_CHANNEL, new ParadisScheduledRunsChannel(service));
-	return service;
+	shared = service;
+	return toDisposable(() => {
+		if (shared === service) {
+			shared = undefined;
+		}
+		service.dispose();
+	});
 });
 
 // para-browser MCP の create_scheduled_run（作るのは無効の定期実行だけ）

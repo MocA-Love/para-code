@@ -64,6 +64,13 @@ export const PARADIS_SCHEDULED_RUN_PRECHECK_TIMEOUT_CHOICES: readonly number[] =
 export const PARADIS_SCHEDULED_RUN_PRECHECK_MAX_COMMAND_LENGTH = 2000;
 /** 事前確認の出力として記録に残す長さ（末尾だけ）。 */
 export const PARADIS_SCHEDULED_RUN_PRECHECK_OUTPUT_LENGTH = 1000;
+/** Bot の見回りの「探すもの」の長さの上限。 */
+export const PARADIS_BOT_PATROL_MAX_LOOK_FOR_LENGTH = 1000;
+/**
+ * Bot の見回りの開始待ちを残す時間。見回りは時間帯（8〜20 時など）を決めて走らせるので、利用者の定期実行のように
+ * 12 時間待って夜に開いたウィンドウで走らせない。これを過ぎたら「起動できるウィンドウが無かった」と見送る。
+ */
+export const PARADIS_BOT_PATROL_PENDING_MS = 10 * PARADIS_MINUTE_MS;
 
 // ---------- 定義 ----------
 
@@ -72,7 +79,13 @@ export type ParadisScheduledRunTargetKind =
 	/** リポジトリ本体（メインのチェックアウト）のスペースで起動する。 */
 	| 'repository'
 	/** 毎回新しいスペース（worktree）を作って起動する。 */
-	| 'newSpace';
+	| 'newSpace'
+	/**
+	 * Bot の見回り（読むだけ）。Bot の専用フォルダで起動する。エージェント・モデル・引数は定義に持たず、起動のたびに
+	 * Bot の台帳から取る（`requestLaunch(botId, 'patrol')`）。画面の汎用の保存（`save`）とエージェントの道具からは作れず、
+	 * Bot のページの口（`setBotPatrol`）だけが作る。
+	 */
+	| 'bot';
 
 /**
  * 事前確認（Orca の automation precheck と同じ考え方）。時刻で起動する回だけ、エージェントを起動する前に
@@ -136,6 +149,8 @@ export interface IParadisScheduledRunTarget {
 	readonly repositoryName: string;
 	/** 新しいスペースを作るときの元のブランチ。空ならメインのチェックアウトの今のブランチ。 */
 	readonly baseRef?: string;
+	/** 見回りの Bot（`kind` が `'bot'` のときだけ）。`repositoryUri` は空、`repositoryName` は Bot の名前（表示用）。 */
+	readonly botId?: string;
 }
 
 /** 1 つの定期実行の定義（利用者が作るもの）。 */
@@ -236,7 +251,19 @@ export type ParadisScheduledRunReason =
 	/** 事前確認が 0 以外で終わった・時間切れ・実行できなかった。 */
 	| 'precheckFailed'
 	/** リポジトリを信頼していないので、事前確認のコマンドを走らせなかった。 */
-	| 'precheckUntrusted';
+	| 'precheckUntrusted'
+	/** Bot の見回り: Bot の機能（`paradis.bots.enabled`）がオフ。 */
+	| 'botsOff'
+	/** Bot の見回り: Bot を一時停止している。 */
+	| 'botPaused'
+	/** Bot の見回り: 読むだけに制限できないエージェント（または新しい版が変えた Bot）。 */
+	| 'botUnsupported'
+	/** Bot の見回り: スリープ中・終了中に時刻が過ぎた（見回りは後から走らせない）。 */
+	| 'botMissed'
+	/** Bot の見回り: 起動できるウィンドウ（この PC のウィンドウ）がしばらく無かった。 */
+	| 'botNoWindow'
+	/** Bot の見回り: 前の見回りのエージェントがまだ動いている。 */
+	| 'botBusy';
 
 /** 毎回新しいスペースを作ったときの、そのスペース。 */
 export interface IParadisScheduledRunSpace {
@@ -370,6 +397,9 @@ export function paradisValidateScheduledRunDraft(draft: IParadisScheduledRunDraf
 	if (paradisCronMinimumGapMinutes(parsed.schedule) < PARADIS_SCHEDULED_RUN_MIN_INTERVAL_MINUTES) {
 		return localize('paradis.scheduledRuns.validate.interval', "実行の間隔は {0} 分以上あけてください。", PARADIS_SCHEDULED_RUN_MIN_INTERVAL_MINUTES);
 	}
+	if (draft.target.kind === 'bot') {
+		return validateBotPatrolDraft(draft);
+	}
 	if (draft.prompt.trim().length === 0) {
 		return localize('paradis.scheduledRuns.validate.prompt', "エージェントへの指示を入れてください。");
 	}
@@ -390,6 +420,23 @@ export function paradisValidateScheduledRunDraft(draft: IParadisScheduledRunDraf
 	}
 	if (draft.precheck) {
 		return paradisValidateScheduledRunPrecheck(draft.precheck, draft.target.repositoryUri);
+	}
+	return undefined;
+}
+
+/** Bot の見回りの定義の検証（指示・エージェント・リポジトリは定義に持たないので見ない）。 */
+function validateBotPatrolDraft(draft: IParadisScheduledRunDraft): string | undefined {
+	if (typeof draft.target.botId !== 'string' || draft.target.botId.length === 0 || draft.target.repositoryUri !== '') {
+		return localize('paradis.scheduledRuns.validate.bot', "見回りの Bot が分かりません。");
+	}
+	if (draft.prompt.length > PARADIS_BOT_PATROL_MAX_LOOK_FOR_LENGTH) {
+		return localize('paradis.scheduledRuns.validate.lookForLong', "探すものは {0} 文字以内にしてください。", PARADIS_BOT_PATROL_MAX_LOOK_FOR_LENGTH);
+	}
+	if (draft.precheck !== undefined) {
+		return localize('paradis.scheduledRuns.validate.botPrecheck', "見回りには事前確認を付けられません。");
+	}
+	if (!Number.isInteger(draft.dailyLimit) || draft.dailyLimit < 1 || draft.dailyLimit > PARADIS_SCHEDULED_RUN_MAX_DAILY_LIMIT) {
+		return localize('paradis.scheduledRuns.validate.limit', "1 日の回数は 1〜{0} 回で指定してください。", PARADIS_SCHEDULED_RUN_MAX_DAILY_LIMIT);
 	}
 	return undefined;
 }
@@ -651,5 +698,11 @@ export function paradisScheduledRunReasonLabel(reason: ParadisScheduledRunReason
 		case 'heartbeatLost': return localize('paradis.scheduledRuns.reason.heartbeatLost', "実行していたウィンドウから報告が途絶えました");
 		case 'precheckFailed': return localize('paradis.scheduledRuns.reason.precheckFailed', "事前確認が通らなかったため、エージェントを起動しませんでした");
 		case 'precheckUntrusted': return localize('paradis.scheduledRuns.reason.precheckUntrusted', "リポジトリを信頼していないため、事前確認のコマンドを実行せずに見送りました");
+		case 'botsOff': return localize('paradis.scheduledRuns.reason.botsOff', "Bot の機能がオフのため見回りませんでした");
+		case 'botPaused': return localize('paradis.scheduledRuns.reason.botPaused', "Bot を一時停止しているため見回りませんでした");
+		case 'botUnsupported': return localize('paradis.scheduledRuns.reason.botUnsupported', "この Bot のエージェントは読むだけに制限できないため見回りませんでした");
+		case 'botMissed': return localize('paradis.scheduledRuns.reason.botMissed', "スリープ中・終了中に過ぎた見回り {0} 回分は実行しませんでした（次の時刻から見回ります）", run?.skippedCount ?? 1);
+		case 'botNoWindow': return localize('paradis.scheduledRuns.reason.botNoWindow', "見回りを起動できるウィンドウ（この PC のウィンドウ）が開いていませんでした");
+		case 'botBusy': return localize('paradis.scheduledRuns.reason.botBusy', "前の見回りがまだ動いていたため見回りませんでした");
 	}
 }
