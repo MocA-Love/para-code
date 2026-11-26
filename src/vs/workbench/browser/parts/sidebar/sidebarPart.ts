@@ -36,6 +36,7 @@ import { localize2 } from '../../../../nls.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { VisibleViewContainersTracker } from '../visibleViewContainersTracker.js';
 import { Extensions } from '../../panecomposite.js';
+import { ParadisSidebarTitle } from '../../../../paradis/contrib/workspaceSwitch/browser/paradisSidebarTitle.js'; // PARA-PATCH: hide the title row above the Para Code spaces view
 
 const PRIMARY_SIDE_BAR_SASH_CLASS = 'primary-sidebar-sash';
 
@@ -118,6 +119,14 @@ export class SidebarPart extends AbstractPaneCompositePart {
 			menuService,
 			configurationService,
 		);
+
+		// PARA-PATCH: hide the title row while the Para Code spaces view is shown alone under a top activity bar (see paradisSidebarTitle.ts)
+		this.options = this._register(new ParadisSidebarTitle(this, () => this.shouldShowCompositeBar() && this.getCompositeBarPosition() === CompositeBarPosition.TOP, () => {
+			const dimension = this.getRelayoutDimension();
+			if (dimension && this.contentPosition) {
+				this.layout(dimension.width, dimension.height, this.contentPosition.top, this.contentPosition.left);
+			}
+		})).withTitleHeight(this.options);
 
 		// Track visible view containers for auto-hide
 		this.visibleViewContainersTracker = this._register(instantiationService.createInstance(VisibleViewContainersTracker, ViewContainerLocation.Sidebar));

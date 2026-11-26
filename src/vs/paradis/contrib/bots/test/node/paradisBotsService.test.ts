@@ -50,6 +50,8 @@ interface IHarness {
 	readonly panesFile: MemoryFile<IParadisBotPanesState>;
 	readonly hooks: Emitter<{ token: string; event: string }>;
 	readonly clock: { now: number };
+	/** Bot の機能（試験中の設定）。 */
+	readonly settings: { enabled: boolean };
 	/** 道具を呼び、結果の JSON（失敗なら `error: 文`）を返す。 */
 	call(paneToken: string, name: string, args?: unknown, caller?: ParadisMcpCallerKind | 'none'): Promise<Record<string, unknown>>;
 	/** Bot を作り、ペイン `pane-<名前>` を結び付ける。Bot の id を返す。 */
@@ -63,9 +65,10 @@ function harness(store: Pick<DisposableStore, 'add'>, files?: { botsFile: Memory
 	const panesFile = files?.panesFile ?? new MemoryFile(EMPTY_PARADIS_BOT_PANES_STATE);
 	const humanAsk = store.add(new ParadisHumanAskService(new ParadisHumanAskLedger(() => clock.now)));
 	const hooks = store.add(new Emitter<{ token: string; event: string }>());
+	const settings = { enabled: true };
 	let ids = 0;
-	const service = store.add(new ParadisBotsService(botsFile, itemsFile, humanAsk, new NullLogService(), { now: () => clock.now, uuid: () => `id${++ids}`, hookEvents: hooks.event, panesFile, ...(itemsByteLimit !== undefined ? { itemsByteLimit } : {}) }));
-	const tools = new ParadisBotToolProvider(service);
+	const service = store.add(new ParadisBotsService(botsFile, itemsFile, humanAsk, new NullLogService(), { now: () => clock.now, uuid: () => `id${++ids}`, hookEvents: hooks.event, panesFile, enabled: () => settings.enabled, ...(itemsByteLimit !== undefined ? { itemsByteLimit } : {}) }));
+	const tools = new ParadisBotToolProvider(service, () => settings.enabled);
 	const context = (caller: ParadisMcpCallerKind): IParadisMcpToolCallContext => ({
 		callOwningWindow: async () => ({ ok: false, error: 'unused' }),
 		getPaneAgentStatus: () => undefined,
@@ -74,7 +77,7 @@ function harness(store: Pick<DisposableStore, 'add'>, files?: { botsFile: Memory
 		classifyCaller: async () => caller,
 	});
 	return {
-		service, humanAsk, tools, botsFile, itemsFile, panesFile, hooks, clock,
+		service, humanAsk, tools, botsFile, itemsFile, panesFile, hooks, clock, settings,
 		async call(paneToken, name, args, caller = 'pane') {
 			const result = await tools.callTool(paneToken, name, args, undefined, caller === 'none' ? undefined : context(caller)) as { content: { text: string }[]; isError?: boolean };
 			return result.isError ? { error: result.content[0].text } : JSON.parse(result.content[0].text);
@@ -301,6 +304,35 @@ suite('Paradis bots service', () => {
 			close: { number: 1, status: 'done', last_event: 3 },
 			reread: ['done'],
 		});
+	});
+
+	test('Bot の道具と説明は、設定がオンで Bot として起動されたペインにだけ出る。オフなら問いも取り下げる', async () => {
+		const h = harness(store);
+		await h.bot('A');
+		await h.call('pane-A', 'bot_item_add', { title: '聞く項目' });
+		await h.call('pane-A', 'bot_item_update', ASK_ARGS);
+		const shown = (pane?: string) => [h.tools.listTools(pane).map(tool => tool.name).length, h.tools.instructions(pane) !== undefined];
+		const on = { bot: shown('pane-A'), other: shown('pane-other'), unknown: shown(undefined), asks: h.humanAsk.getSnapshot().counts.bot };
+		h.settings.enabled = false;
+		h.service.refresh();
+		const off = { bot: shown('pane-A'), asks: h.humanAsk.getSnapshot().counts.bot, call: String((await h.call('pane-A', 'bot_item_list')).error).slice(0, 40) };
+		assert.deepStrictEqual({ on, off }, {
+			on: { bot: [4, true], other: [0, false], unknown: [0, false], asks: 1 },
+			off: { bot: [0, false], asks: 0, call: 'Para Code bots are turned off in this Pa' },
+		});
+	});
+
+	test('設定がオフの間は、Bot を作る・起動する・フォルダへ書く口を断る', async () => {
+		const h = harness(store);
+		await h.bot('A');
+		h.settings.enabled = false;
+		const code = (result: { readonly ok: boolean; readonly code?: string }) => result.ok ? 'ok' : result.code;
+		assert.deepStrictEqual([
+			code(await h.service.createBot({ name: 'B', agent: 'claude' })),
+			code(await h.service.requestLaunch('id1', 'chat')),
+			code(await h.service.writeHomeFile('id1', 'MEMORY.md', 'x')),
+			h.service.getSnapshot().bots.length,
+		], ['disabled', 'disabled', 'disabled', 1]);
 	});
 
 	test('Bot でないペイン・確かめられない接続元・ほかの Bot の項目を断る', async () => {

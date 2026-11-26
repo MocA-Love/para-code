@@ -32,7 +32,8 @@ import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultS
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { appendParadisAgentLogoSvg } from '../../limitsMonitor/electron-browser/paradisLimitsLogos.js';
 import { IParadisBrowserExtensionsService } from '../../browserExtensions/electron-browser/paradisBrowserExtensionsService.js';
-import { IParadisMobileAttachment } from '../../simulator/common/paradisMobileCanvas.js';
+import { IParadisMobileAttachment, IParadisMobileDevice, paradisMobileAttachmentIsFor } from '../../simulator/common/paradisMobileCanvas.js';
+import { PARADIS_MOBILE_MAX_DEVICES_PER_PANE } from '../../simulator/common/paradisMobileAttachmentBook.js';
 import { IParadisMobileCanvasModel } from '../../simulator/electron-browser/paradisMobileCanvasModel.js';
 import { IParadisTerminalScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { setParadisHoveredPaneInstanceId } from '../browser/paradisPaneIndicator.js';
@@ -208,7 +209,13 @@ const STR_DEVICE_UNATTACHED = localize('paradis.bindingDialog.deviceUnattached',
 // allow-any-unicode-next-line
 const strDeviceAttachedTo = (panes: string) => localize('paradis.bindingDialog.deviceAttachedTo', "アタッチ中 · {0}", panes);
 // allow-any-unicode-next-line
-const strPaneHoldsOtherDevice = (device: string) => localize('paradis.bindingDialog.paneHoldsOtherDevice', "{0} をアタッチ中 — 渡すと入れ替わります", device);
+const strPaneHoldsOtherDevices = (count: number, devices: string) => localize('paradis.bindingDialog.paneHoldsOtherDevices', "ほかに {0} 台をアタッチ中（{1}）— 渡すと足されます", count, devices);
+// allow-any-unicode-next-line
+const strPaneAlsoHolds = (count: number) => localize('paradis.bindingDialog.paneAlsoHolds', "ほかに {0} 台をアタッチ中", count);
+// allow-any-unicode-next-line
+const strPaneDefaultDevice = (count: number) => localize('paradis.bindingDialog.paneDefaultDevice', "エージェントが端末を指定しないときに使う端末 · ほかに {0} 台をアタッチ中", count);
+// allow-any-unicode-next-line
+const strPaneDevicesFull = (max: number) => localize('paradis.bindingDialog.paneDevicesFull', "上限の {0} 台をアタッチ中 — 先にどれかを解除してください", max);
 // allow-any-unicode-next-line
 const STR_BTN_CHOOSE_PANES = localize('paradis.bindingDialog.btnChoosePanes', "ペインを選ぶ");
 // allow-any-unicode-next-line
@@ -216,11 +223,11 @@ const STR_BTN_CLOSE_PANES = localize('paradis.bindingDialog.btnClosePanes', "閉
 // allow-any-unicode-next-line
 const STR_BTN_OPEN_SIMULATOR = localize('paradis.bindingDialog.btnOpenSimulator', "画面を開く");
 // allow-any-unicode-next-line
-const STR_DEVICES_PICK_PANE = localize('paradis.bindingDialog.devicesPickPane', "この端末を渡すターミナルペインを選んでください（同じ端末を複数のペインへ同時に渡せます）");
+const strDevicesPickPane = (max: number) => localize('paradis.bindingDialog.devicesPickPane2', "この端末を渡すターミナルペインを選んでください（同じ端末を複数のペインへ同時に渡せます。1 つのペインに {0} 台まで）", max);
 // allow-any-unicode-next-line
 const STR_DEVICES_NO_PANE = localize('paradis.bindingDialog.devicesNoPane', "アタッチできるターミナルペインがありません。新しいターミナルでエージェントCLIを起動してください。");
 // allow-any-unicode-next-line
-const STR_DEVICES_FOOTER_HINT = localize('paradis.bindingDialog.devicesFooterHint', "エージェントはアタッチしたこの端末だけを操作できます");
+const STR_DEVICES_FOOTER_HINT = localize('paradis.bindingDialog.devicesFooterHint2', "エージェントは、そのペインにアタッチした端末だけを操作できます");
 // allow-any-unicode-next-line
 const strAttachFailed = (detail: string) => localize('paradis.bindingDialog.attachFailed', "アタッチに失敗しました: {0}", detail);
 
@@ -1176,9 +1183,10 @@ export class ParadisBindingDialog extends Disposable {
 
 		const panes = this.bindingModel.getPanes();
 		for (const device of snapshot.devices) {
-			// 1台の端末を複数のペインへ同時にアタッチできる（1ペイン1台だけを守る）ので、
+			// 1台の端末を複数のペインへ同時にアタッチできる（1つのペインにも 10 台までアタッチできる）ので、
 			// ここは配列で受ける。
-			const attached = snapshot.attachments.filter(entry => entry.deviceId === device.id);
+			// 起動前の AVD で割り当てた Android は、起動すると id が替わる（同じ端末として引く）
+			const attached = snapshot.attachments.filter(entry => paradisMobileAttachmentIsFor(snapshot.devices, entry.deviceId, device.id));
 
 			const row = dom.append(list, $('.pbd-pane-row.paradis-focus-subtle'));
 			const main = dom.append(row, $('.pbd-row-main'));
@@ -1215,7 +1223,7 @@ export class ParadisBindingDialog extends Disposable {
 			}));
 
 			if (this._attachTargetDeviceId === device.id) {
-				this._renderAttachTargets(list, device.id, panes, snapshot.attachments);
+				this._renderAttachTargets(list, device.id, panes, snapshot.attachments, snapshot.devices);
 			}
 		}
 	}
@@ -1235,23 +1243,33 @@ export class ParadisBindingDialog extends Disposable {
 		deviceId: string,
 		panes: readonly IParadisPaneDescriptor[],
 		attachments: readonly IParadisMobileAttachment[],
+		devices: readonly IParadisMobileDevice[],
 	): void {
 		if (panes.length === 0) {
 			dom.append(list, $('.pbd-empty')).textContent = STR_DEVICES_NO_PANE;
 			return;
 		}
-		dom.append(list, $('.pbd-scope-note')).textContent = STR_DEVICES_PICK_PANE;
+		dom.append(list, $('.pbd-scope-note')).textContent = strDevicesPickPane(PARADIS_MOBILE_MAX_DEVICES_PER_PANE);
 		for (const pane of panes) {
-			const current = attachments.find(entry => entry.paneToken === pane.token);
-			const holdsThisDevice = current?.deviceId === deviceId;
+			// 1 つのペインに 10 台までアタッチできる。この端末の割り当てと、ほかの端末の割り当てを分けて見る
+			const held = attachments.filter(entry => entry.paneToken === pane.token);
+			const thisDevice = held.find(entry => paradisMobileAttachmentIsFor(devices, entry.deviceId, deviceId));
+			const holdsThisDevice = thisDevice !== undefined;
+			const others = held.filter(entry => entry !== thisDevice);
+			const full = !holdsThisDevice && held.length >= PARADIS_MOBILE_MAX_DEVICES_PER_PANE;
 
 			const row = dom.append(list, $('.pbd-pane-row.paradis-focus-subtle'));
 			const main = dom.append(row, $('.pbd-row-main'));
 			dom.append(main, $('.pbd-row-title')).textContent = this._paneDisplayName(pane);
-			// 1ペイン1台なので、別の端末を持っているペインへ渡すと入れ替わる。何が外れるかを先に見せる。
-			const sub = current && !holdsThisDevice
-				? strPaneHoldsOtherDevice(current.deviceName)
-				: (this._paneMcpConnected(pane) ? STR_SUB_READY : STR_SUB_NEEDS_MCP);
+			// ほかの端末を持っているペインへ渡すと足される（入れ替わらない）。何を持っているかを先に見せる。
+			const sub = full
+				? strPaneDevicesFull(PARADIS_MOBILE_MAX_DEVICES_PER_PANE)
+				: others.length > 0
+					? holdsThisDevice
+						// 複数台を持つペインでは、エージェントが端末を指定しないときにどれが使われるかも見せる
+						? (thisDevice.current ? strPaneDefaultDevice(others.length) : strPaneAlsoHolds(others.length))
+						: strPaneHoldsOtherDevices(others.length, others.map(entry => entry.deviceName).join('、'))
+					: (this._paneMcpConnected(pane) ? STR_SUB_READY : STR_SUB_NEEDS_MCP);
 			dom.append(main, $('.pbd-row-sub')).textContent = sub;
 
 			const button = this._renderDisposables.add(new Button(row, { ...defaultButtonStyles, secondary: holdsThisDevice }));
@@ -1259,10 +1277,13 @@ export class ParadisBindingDialog extends Disposable {
 			if (holdsThisDevice) {
 				button.label = STR_BTN_DETACH;
 				this._renderDisposables.add(button.onDidClick(() => {
-					void this._runDeviceAction(() => this.mobileCanvasModel.detach(pane.token));
+					// このペインの、この端末だけを外す（ほかの端末の割り当ては残す）
+					void this._runDeviceAction(() => this.mobileCanvasModel.detach(pane.token, thisDevice.deviceId));
 				}));
 			} else {
 				button.label = STR_BTN_ATTACH;
+				// 上限まで持っているペインには足せない
+				button.enabled = !full;
 				this._renderDisposables.add(button.onDidClick(() => {
 					// どのスペースのペインへ渡したかを残しておく（表示と将来の後始末のため）。
 					const stateKey = this.terminalScopeService.getStateKeyForInstance(pane.instanceId);

@@ -46,10 +46,13 @@ export class ParadisCountBadge {
 		this.update(0, 'plain');
 	}
 
-	update(count: number, tone: ParadisCountTone): void {
+	/** `dot` は数が 0 のときだけ、数の代わりに小さな点を出す（数えない知らせがあることだけを伝える）。 */
+	update(count: number, tone: ParadisCountTone, dot = false): void {
 		const label = paradisCountLabel(count, this.placement);
 		this.element.textContent = label ?? '';
-		this.element.classList.toggle('hidden', label === undefined);
+		const showDot = label === undefined && dot;
+		this.element.classList.toggle('dot', showDot);
+		this.element.classList.toggle('hidden', label === undefined && !showDot);
 		this.element.classList.toggle('attention', tone === 'attention');
 		this.element.classList.toggle('error', tone === 'error');
 	}

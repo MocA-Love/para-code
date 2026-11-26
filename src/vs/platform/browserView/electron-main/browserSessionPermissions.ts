@@ -27,6 +27,7 @@ import { IBrowserViewPermissionRequestEvent, IBrowserViewStorageKeys, isInMemory
 import type { BrowserSession } from './browserSession.js';
 import { paradisIsDisplayMediaRequest } from '../common/paradisExtensionDisplayMediaGuard.js'; // PARA-PATCH: no built-in browser page captures the screen
 import { paradisInstallWebAuthnAccountChooser } from '../../../paradis/contrib/browserWebAuthn/electron-main/paradisBrowserWebAuthn.js'; // PARA-PATCH: passkey account chooser
+import { paradisNotePermissionPrompt, paradisPermissionAllowed } from './paradisBrowserPermissionRequests.js'; // PARA-PATCH: let an agent that drives the tab see and answer permission prompts
 
 /** Time the main process waits for a prompt answer before a non-persisted deny. */
 const PROMPT_TIMEOUT_MS = 30_000;
@@ -201,7 +202,7 @@ export class BrowserSessionPermissions extends Disposable implements IBrowserSes
 			// Categories with no recorded decision fall back to their
 			// `defaultState` (e.g. Location / Camera are deny-by-default until
 			// granted, while others may allow by default).
-			return categories.every(category => this._permissionStore.isAllowed(origin, category));
+			return categories.every(category => paradisPermissionAllowed(this._permissionStore, _webContents, origin, category)); // PARA-PATCH: also honor what the agent allowed for this tab (a recorded deny still wins)
 		});
 
 		// Hardware-device choosers. USB / Serial / HID are gated by the handlers
@@ -484,7 +485,7 @@ export class BrowserSessionPermissions extends Disposable implements IBrowserSes
 		// category -- is granted silently. This keeps the async request handler
 		// consistent with the synchronous check handler (both use `isAllowed`).
 		// An explicit 'deny' short-circuits without prompting.
-		if (categories.every(category => this._permissionStore.isAllowed(origin, category))) {
+		if (categories.every(category => paradisPermissionAllowed(this._permissionStore, webContents, origin, category))) { // PARA-PATCH: also honor what the agent allowed for this tab (a recorded deny still wins)
 			return true;
 		}
 		if (categories.some(category => this._permissionStore.getDecision(origin, category) === 'deny')) {
@@ -500,7 +501,7 @@ export class BrowserSessionPermissions extends Disposable implements IBrowserSes
 			}
 		}
 
-		return categories.every(category => this._permissionStore.isAllowed(origin, category));
+		return categories.every(category => paradisPermissionAllowed(this._permissionStore, webContents, origin, category)); // PARA-PATCH: also honor what the agent allowed for this tab (a recorded deny still wins)
 	}
 
 	private _prompt(webContents: Electron.WebContents | null, origin: string, category: PermissionCategory): Promise<void> {
@@ -522,6 +523,8 @@ export class BrowserSessionPermissions extends Disposable implements IBrowserSes
 
 		const pending: IPendingRequest = { origin, category, deferred: new DeferredPromise<void>() };
 		this._pending.add(pending);
+		// PARA-PATCH: record the waiting prompt so an agent that drives the tab is told about it and can answer it (paradisBrowserPermissionRequests.ts)
+		paradisNotePermissionPrompt(webContents, origin, category, PROMPT_TIMEOUT_MS, pending.deferred.p, () => pending.deferred.complete(), () => this._permissionStore.getDecision(origin, category));
 
 		const timer = setTimeout(() => pending.deferred.complete(), PROMPT_TIMEOUT_MS);
 		return pending.deferred.p.finally(() => {

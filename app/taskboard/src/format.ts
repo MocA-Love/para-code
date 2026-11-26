@@ -1,6 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import type { ITaskBoardFlow, ITaskBoardNotice, ITaskBoardSnapshot, ITaskBoardStep, ITaskBoardTask, TaskBoardErrorCode, TaskBoardStatus, TaskBoardStepKind } from '@engine/paradisTaskBoard.js';
+import { taskBoardActivityText, taskBoardErrorText as errorText } from '@engine/paradisTaskBoardAsks.js';
 
 /* 画面の文言はここに集める。 */
 
@@ -72,35 +73,8 @@ export function completionRule(step: ITaskBoardStep): string {
 	return step.wait === 'checks' ? 'チェックがすべて通ったとき' : 'レビューが付いたとき（変更を求められたら失敗）';
 }
 
-export function taskActivity(task: ITaskBoardTask, flow: ITaskBoardFlow | undefined): string {
-	if (task.error && (task.status === 'failed' || task.status === 'stalled')) {
-		return errorText(task.error);
-	}
-	if (task.activity) {
-		return task.activity;
-	}
-	const step = flow?.steps.find(s => s.id === task.step);
-	switch (task.status) {
-		case 'queued': return '作業場所の空きを待っています';
-		case 'preparing': return '作業場所を準備しています';
-		case 'working': return step ? `${step.name}をしています` : '作業しています';
-		case 'stalled': return 'board_complete_step の報告がないまま止まりました';
-		case 'waiting': return step?.wait === 'checks' ? 'チェックの結果を待っています' : 'レビューを待っています';
-		case 'ready': return task.pr ? `PR #${task.pr.number} のマージを待っています` : 'マージを待っています';
-		case 'approval': return '承認を待っています';
-		default: return '';
-	}
-}
-
-export function errorText(error: string): string {
-	switch (error) {
-		case 'restarted': return 'サーバーの再起動でエージェントとの接続が切れました';
-		case 'changes-requested': return 'レビューで変更を求められました';
-		case 'checks-failed': return 'チェックが失敗しました';
-		case 'dirty': return '作業場所に未コミットの変更があります';
-		default: return error;
-	}
-}
+// 文はエンジンの側に置く（Para Code の台帳へ写す前置きと同じ文を使うため）
+export { taskBoardActivityText as taskActivity, errorText };
 
 export function rpcErrorText(code: TaskBoardErrorCode | 'network', message: string): string {
 	switch (code) {
