@@ -43,6 +43,13 @@ export interface IParadisAgentChatService {
 	headerState(instanceId: number): IParadisAgentChatHeaderState | undefined;
 	/** 見出しに出すものが変わったペイン（ターミナルのインスタンスの ID）。 */
 	readonly onDidChangeHeader: Event<number>;
+	/**
+	 * そのターミナルが今チャット表示で見えているか（チャット表示に切り替えていて、エージェントの会話がある）。エディタの
+	 * ターミナルの入れ物に `paradis-agent-chat-active` を付けるのと同じ判定。変化は {@link onDidChangeChatActive} で知らせる。
+	 */
+	isChatActive(instanceId: number): boolean;
+	/** {@link isChatActive} が変わったペイン（ターミナルのインスタンスの ID）。 */
+	readonly onDidChangeChatActive: Event<number>;
 	/** そのターミナルを「ターミナルに戻る」と同じくターミナル表示へ戻し、ターミナルへフォーカスする。 */
 	showTerminal(instanceId: number): void;
 	/**
