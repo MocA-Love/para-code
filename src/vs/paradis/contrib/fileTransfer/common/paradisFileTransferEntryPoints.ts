@@ -13,7 +13,7 @@
 import { Schemas } from '../../../../base/common/network.js';
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
 
-/** `workbench.activityBar.location` の文脈キー（設定の既定値が入るので、未設定でも `default`）。 */
+/** `workbench.activityBar.location` の文脈キー（設定の既定値が入るので、未設定なら Para Code の既定の `top`）。 */
 const ACTIVITY_BAR_LOCATION_KEY = 'config.workbench.activityBar.location';
 /** エクスプローラーで右クリックした項目がフォルダーか（upstream の ExplorerFolderContext と同じキー）。 */
 const EXPLORER_FOLDER_KEY = 'explorerResourceIsFolder';
