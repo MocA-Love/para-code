@@ -75,7 +75,8 @@ export interface IParadisBotGithubPullRequest {
 export type ParadisBotGithubStatus =
 	/** 設定がオフ、または見張る Bot がいない。gh を呼ばない。 */
 	| { readonly state: 'off' }
-	| { readonly state: 'ok'; readonly checkedAt: number }
+	/** 読めている（読んだ時刻は持たない。読むたびに画面へ知らせ直さないため）。 */
+	| { readonly state: 'ok' }
 	/** gh が無い。Bot の入り切りか設定を変えるか、再起動するまで止める。 */
 	| { readonly state: 'no-gh' }
 	/** gh にログインしていない。同上。 */
@@ -170,7 +171,7 @@ function searchNodes(value: unknown, reason: ParadisBotGithubReason): IParadisBo
 
 /** 題を 1 行にして、囲いの印を崩し、切る。 */
 export function paradisBotGithubCleanTitle(title: string): string {
-	const line = title.replace(/[\u0000-\u001f\u007f-\u009f  ]+/g, ' ').replace(/\s+/g, ' ').trim().replace(/<{3,}|>{3,}/g, match => match.slice(0, 2));
+	const line = title.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim().replace(/<{3,}|>{3,}/g, match => match.slice(0, 2));
 	return line.length > PARADIS_BOT_GITHUB_LIMITS.title ? `${line.slice(0, PARADIS_BOT_GITHUB_LIMITS.title - 1)}…` : line;
 }
 

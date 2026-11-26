@@ -290,7 +290,7 @@ export class ParadisBotGithubWatcher extends Disposable {
 		this.baseline = false;
 		this.failures = 0;
 		this.notices = [...this.notices, ...fresh].filter(notice => now - notice.at <= PARADIS_BOT_GITHUB_LIMITS.noticeMs).slice(-PARADIS_BOT_GITHUB_LIMITS.notices);
-		this.setStatus({ state: 'ok', checkedAt: now }, parsed.pullRequests);
+		this.setStatus({ state: 'ok' }, parsed.pullRequests);
 		this.schedule(PARADIS_BOT_GITHUB_POLL_MS);
 		if (fresh.length > 0) {
 			await this.wakeWatchers(now);

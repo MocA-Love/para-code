@@ -54,7 +54,7 @@ export class ParadisBotsChannel implements IServerChannel<string> {
 			}
 			case 'updateBot': {
 				const patch = asRecord(args.at(1));
-				return id !== undefined && patch ? service.updateBot(id, { name: patch.name, agent: patch.agent, modelId: patch.modelId, effortId: patch.effortId, permissionId: patch.permissionId, paused: patch.paused, pinned: patch.pinned, faceColor: patch.faceColor, faceShape: patch.faceShape }) : INVALID;
+				return id !== undefined && patch ? service.updateBot(id, { name: patch.name, agent: patch.agent, modelId: patch.modelId, effortId: patch.effortId, permissionId: patch.permissionId, paused: patch.paused, pinned: patch.pinned, faceColor: patch.faceColor, faceShape: patch.faceShape, watchGithub: patch.watchGithub }) : INVALID;
 			}
 			case 'removeBot': return id !== undefined ? service.removeBot(id) : INVALID;
 

@@ -169,10 +169,31 @@ suite('Paradis bots', () => {
 		});
 	});
 
+	test('GitHub の見張りは Bot ごとに入り切りでき、オフのときは欄を書かない（古い版で読み取り専用にしない）', () => {
+		const created = paradisBotCreate(EMPTY_PARADIS_BOTS_STATE, { id: 'b1', name: 'リリース係', agent: 'claude' }, 10);
+		assert.ok(created.ok);
+		const on = paradisBotUpdate(created.state, 'b1', { watchGithub: true }, 20);
+		assert.ok(on.ok);
+		const renamed = paradisBotUpdate(on.state, 'b1', { name: '係' }, 30);
+		assert.ok(renamed.ok);
+		const off = paradisBotUpdate(renamed.state, 'b1', { watchGithub: false }, 40);
+		assert.ok(off.ok);
+		const bad = paradisBotUpdate(off.state, 'b1', { watchGithub: 'yes' }, 50);
+		const reread = paradisParseBotsState(JSON.parse(JSON.stringify(paradisBotsToStored(renamed.state))))!;
+		assert.deepStrictEqual({
+			created: Object.keys(created.bot).includes('watchGithub'),
+			on: on.bot.watchGithub,
+			keptOnRename: renamed.bot.watchGithub,
+			off: Object.keys(off.bot).includes('watchGithub'),
+			bad: bad.ok ? 'ok' : bad.code,
+			reread: [reread.bots[0].watchGithub, reread.bots[0].preserved],
+		}, { created: false, on: true, keptOnRename: true, off: false, bad: 'invalid_argument', reread: [true, undefined] });
+	});
+
 	test('知っている欄の一覧が Bot の型の欄と一致する（足し忘れると自分の Bot が読み取り専用になる）', () => {
 		// 型の欄を全部持つ見本。IParadisBot に欄を足すと、ここが型の検査で落ちる
 		const sample: { [K in keyof Required<Omit<IParadisBot, 'preserved'>>]: true } = {
-			id: true, name: true, folder: true, agent: true, modelId: true, effortId: true, permissionId: true, paused: true, pinned: true, faceColor: true, faceShape: true, createdAt: true, updatedAt: true,
+			id: true, name: true, folder: true, agent: true, modelId: true, effortId: true, permissionId: true, paused: true, pinned: true, faceColor: true, faceShape: true, watchGithub: true, createdAt: true, updatedAt: true,
 		};
 		assert.deepStrictEqual([...PARADIS_BOT_KNOWN_KEYS].sort(), Object.keys(sample).sort());
 	});
