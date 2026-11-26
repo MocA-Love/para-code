@@ -68,6 +68,8 @@ export class ParadisWorkspacesNav extends Disposable {
 
 	readonly element: HTMLElement;
 	private readonly navContainer: HTMLElement;
+	/** 「プロジェクト」の見出しの上に差し込む帯（Bot の帯など。paradisWorkspacesBands.ts）の入れ物 */
+	readonly bandsContainer: HTMLElement;
 	private readonly rowDisposables = this._register(new DisposableStore());
 	private readonly bellCount: HTMLElement;
 	private readonly bellButton: HTMLElement;
@@ -85,6 +87,7 @@ export class ParadisWorkspacesNav extends Disposable {
 		super();
 		this.element = DOM.append(container, DOM.$('.paradis-workspaces-nav'));
 		this.navContainer = DOM.append(this.element, DOM.$('.paradis-workspaces-nav-items'));
+		this.bandsContainer = DOM.append(this.element, DOM.$('.paradis-workspaces-bands'));
 
 		const heading = DOM.append(this.element, DOM.$('.paradis-workspaces-heading'));
 		DOM.append(heading, DOM.$('span.paradis-workspaces-heading-label')).textContent = localize('paradis.workspacesNav.projects', "プロジェクト");

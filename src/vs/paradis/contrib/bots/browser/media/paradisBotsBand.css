@@ -1,0 +1,315 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+	The bots band (paradisBotsBand.ts) above the Projects heading in the Spaces view, built like the notes band:
+	a 22px header (twistie, title, count, needs-you badge, add button), 28px rows that scroll inside the band,
+	and a sash on the bottom line. The create dialog (paradisBotCreateDialog.ts) is the kit's S box.
+*/
+
+/* The nav has 8px side padding; the band runs edge to edge like the notes band. */
+.paradis-bots-band {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	flex-shrink: 0;
+	margin: 4px -8px 0;
+	border-top: 1px solid var(--vscode-panel-border, transparent);
+	border-bottom: 1px solid var(--vscode-panel-border, transparent);
+}
+
+.paradis-bots-band-header {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	height: 22px;
+	flex-shrink: 0;
+	padding: 0 var(--vscode-spacing-size60) 0 var(--vscode-spacing-size40);
+	user-select: none;
+	-webkit-user-select: none;
+}
+
+.paradis-bots-band-header:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.paradis-bots-band-toggle {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	flex: 1;
+	min-width: 0;
+	height: 100%;
+	cursor: pointer;
+}
+
+.paradis-bots-band-title {
+	flex-shrink: 0;
+	font-size: 11px;
+	font-weight: 700;
+	text-transform: uppercase;
+}
+
+.paradis-bots-band-count {
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+
+/* The same 18px circle as the notes badge (CountBadge). */
+.paradis-bots-band-badge {
+	margin-left: auto;
+	flex-shrink: 0;
+	box-sizing: border-box;
+	min-width: 18px;
+	height: 18px;
+	padding: 0 var(--vscode-spacing-size40);
+	border-radius: var(--vscode-cornerRadius-circle);
+	font-size: var(--vscode-fontSize-label2);
+	line-height: 18px;
+	text-align: center;
+	font-variant-numeric: tabular-nums;
+	background-color: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+}
+
+.paradis-bots-band-badge.hidden {
+	display: none;
+}
+
+.paradis-bots-band-add {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	width: 20px;
+	height: 20px;
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	cursor: pointer;
+	color: var(--vscode-icon-foreground);
+}
+
+.paradis-bots-band-add:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.paradis-bots-band-list {
+	box-sizing: border-box;
+	min-height: 0;
+	overflow-y: auto;
+	padding: 2px 8px;
+}
+
+.paradis-bots-band-list.hidden {
+	display: none;
+}
+
+.paradis-bots-band-empty {
+	display: flex;
+	align-items: center;
+	height: 28px;
+	padding: 0 8px;
+	font-size: var(--vscode-fontSize-label1, 12px);
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* Closed with pinned bots: no bottom line under the kept rows is needed beyond the band's own. */
+.paradis-bots-band:not(.open) .paradis-bots-band-list {
+	padding-bottom: 2px;
+}
+
+.paradis-bots-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	height: 28px;
+	padding: 0 8px;
+	border-radius: var(--vscode-cornerRadius-medium, 6px);
+	color: var(--vscode-sideBar-foreground, var(--vscode-foreground));
+	cursor: pointer;
+	outline-offset: -1px;
+}
+
+.paradis-bots-row:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.paradis-bots-row-name {
+	flex: none;
+	max-width: 55%;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+	font-size: 13px;
+}
+
+.paradis-bots-row-status {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+	font-size: 11.5px;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-bots-row.paused .paradis-bots-row-name,
+.paradis-bots-row.paused .paradis-bots-row-status {
+	opacity: 0.6;
+}
+
+.paradis-bots-row-count {
+	flex-shrink: 0;
+	box-sizing: border-box;
+	min-width: 16px;
+	height: 16px;
+	padding: 0 4px;
+	border-radius: var(--vscode-cornerRadius-circle);
+	font-size: var(--vscode-fontSize-label2);
+	line-height: 16px;
+	text-align: center;
+	font-variant-numeric: tabular-nums;
+	background-color: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+}
+
+/* The pin looks like the space row's pin (.paradis-worktree-pin): hidden until hover, blue when pinned. */
+.paradis-bots-row-pin {
+	display: flex;
+	align-items: center;
+	flex-shrink: 0;
+	opacity: 0;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-bots-row:hover .paradis-bots-row-pin {
+	opacity: 0.85;
+}
+
+.paradis-bots-row-pin.pinned {
+	opacity: 1;
+	color: var(--vscode-charts-blue);
+}
+
+.monaco-workbench .paradis-bots-row-pin > .codicon {
+	font-size: var(--vscode-codiconFontSize-compact);
+}
+
+/* The dot face (ParaDot-like): a body in the bot's color (set as `color` from the space palette) with two eyes in the sidebar color. */
+.paradis-bot-face {
+	display: inline-block;
+	flex: none;
+	width: 18px;
+	height: 18px;
+}
+
+.paradis-bot-face svg {
+	display: block;
+	width: 100%;
+	height: 100%;
+	overflow: visible;
+}
+
+.paradis-bot-face-body {
+	fill: currentColor;
+	stroke: currentColor;
+	stroke-linejoin: round;
+	transform-box: fill-box;
+	transform-origin: 50% 100%;
+}
+
+.paradis-bot-face-eye {
+	fill: var(--vscode-sideBar-background, var(--vscode-editor-background));
+	transform-box: fill-box;
+	transform-origin: center;
+	animation: paradis-bot-face-blink 4.6s infinite;
+}
+
+.paradis-bot-face[data-state="work"] .paradis-bot-face-body {
+	animation: paradis-bot-face-wiggle 0.45s ease-in-out infinite;
+}
+
+.paradis-bot-face[data-state="ask"] .paradis-bot-face-body {
+	animation: paradis-bot-face-hop 1s ease-in-out infinite;
+}
+
+.paradis-bot-face[data-state="paused"] .paradis-bot-face-body {
+	opacity: 0.5;
+}
+
+.paradis-bot-face[data-state="paused"] .paradis-bot-face-eye {
+	animation: none;
+}
+
+@keyframes paradis-bot-face-wiggle {
+	0%, 100% { transform: translateX(-3%) rotate(-4deg); }
+	50% { transform: translateX(3%) rotate(4deg); }
+}
+
+@keyframes paradis-bot-face-hop {
+	0%, 100% { transform: translateY(0) scale(1.05, 0.92); }
+	40% { transform: translateY(-16%) scale(0.96, 1.06); }
+}
+
+@keyframes paradis-bot-face-blink {
+	0%, 92%, 100% { transform: scaleY(1); }
+	96% { transform: scaleY(0.08); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.paradis-bot-face-body,
+	.paradis-bot-face-eye {
+		animation: none !important;
+	}
+}
+
+/* --- The create dialog (S box) --- */
+
+.paradis-bot-create-backdrop {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: var(--vscode-paradis-scrim);
+}
+
+.paradis-bot-create .pbcd-label {
+	display: block;
+	margin: var(--vscode-spacing-size160) 0 var(--vscode-spacing-size60);
+	font-size: var(--vscode-fontSize-label1);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-bot-create .pbcd-label:first-child {
+	margin-top: var(--vscode-spacing-size80);
+}
+
+.paradis-bot-create .pbcd-role textarea {
+	resize: vertical;
+}
+
+.paradis-bot-create .pbcd-help {
+	margin: var(--vscode-spacing-size160) 0 var(--vscode-spacing-size80);
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+	overflow-wrap: anywhere;
+}
+
+.paradis-bot-create .pbcd-note {
+	flex: 1;
+	min-width: 0;
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+}
+
+.paradis-bot-create .pbcd-note.error {
+	color: var(--vscode-paradis-danger);
+}
