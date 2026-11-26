@@ -132,6 +132,7 @@ import { paradisClaudeModBridge } from '../../claudeMod/node/paradisClaudeModBri
 import { paradisAntigravityApprovalHold } from '../../agentBrowser/node/paradisAntigravityApprovalHold.js';
 import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 import { onDidChangeParadisMobileBots, paradisMobileBotsFeed } from './paradisMobileBotsFeed.js';
+import type { IParadisHumanAskPaneSource } from '../../humanAsk/common/paradisHumanAskPane.js';
 
 /** 重なった Codex の承認の通知を待ち直す回数の上限（超えたら出す）。 */
 const HELD_APPROVAL_NOTIFY_MAX_ROUNDS = 5;
@@ -1600,6 +1601,14 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 
 	async getConfirmedAgentPanes(): Promise<IParadisConfirmedAgentPanes> {
 		return this.confirmedAgentPanes;
+	}
+
+	/**
+	 * 「人が答えるもの」の台帳の書き手へ渡す、ペインの今の待ちの読むだけの口（shared process の中だけ。中身は関数なので
+	 * IPC には載らない）。新しい購読・読み取りは始めない。
+	 */
+	humanAskPaneSource(): IParadisHumanAskPaneSource {
+		return { onDidChange: listener => this.agentChat.onDidCheckDesktopPanes(listener), read: () => this.agentChat.humanAskPanes() };
 	}
 
 	/** デスクトップ UI 向けの読み取り口。モバイル連携が無効でも動く（送信は一切しない）。 */

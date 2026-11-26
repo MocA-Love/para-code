@@ -25,6 +25,7 @@ import { IParadisAgentChatImageData, IParadisAgentChatSource, IParadisAgentChatV
 import { ParadisAgentChatSendKey } from '../../browser/paradisAgentChatComposer.js';
 import { ParadisAgentChatSession } from '../../browser/paradisAgentChatSession.js';
 import { IParadisAgentChatCardStates, IParadisAgentChatViewHost, ParadisAgentChatView } from '../../browser/paradisAgentChatView.js';
+import { IParadisAgentChoiceMenu } from '../../../agentIde/common/paradisAgentChoiceMenu.js';
 
 class TestHost implements IParadisAgentChatViewHost {
 	readonly answers: { group: string; answers: readonly ParadisAgentQuestionAnswer[] }[] = [];
@@ -46,6 +47,7 @@ class TestHost implements IParadisAgentChatViewHost {
 	async getFullText(): Promise<string | undefined> { return undefined; }
 	async getImage(): Promise<IParadisAgentChatImageData | undefined> { return { mediaType: 'image/png', data: 'AAAA' }; }
 	getToggleKeybindingLabel(): string | undefined { return '⌘⇧J'; }
+	readChoiceMenu: ((instanceId: number) => IParadisAgentChoiceMenu | undefined) | undefined;
 	private readonly states = new Map<string, IParadisAgentChatCardStates>();
 	cardStates(token: string): IParadisAgentChatCardStates {
 		let states = this.states.get(token);
@@ -197,18 +199,54 @@ suite('ParadisAgentChatView', () => {
 				{ rev: 2, role: 'tool', kind: 'tool_result', toolUseId: 't1', text: 'ok' },
 				{ rev: 3, role: 'assistant', kind: 'tool_use', tool: 'Bash', toolUseId: 't2', text: JSON.stringify({ command: 'npm test' }) },
 				{ rev: 4, role: 'tool', kind: 'tool_result', toolUseId: 't2', text: 'ok' },
-				{ rev: 5, role: 'assistant', kind: 'text', text: '通りました', ts },
+				{ rev: 5, role: 'assistant', kind: 'text', text: '通りました', ts, usage: { model: 'gpt-5.5', inputTokens: 1200, cacheReadTokens: 3000, cacheCreationTokens: 0, outputTokens: 34 } },
 			],
 		}]);
 		const list = container.querySelector<HTMLElement>('.paradis-agent-chat-list')!;
 		const shape = (element: Element): string => element.classList.contains('paradis-agent-chat-message')
-			? [...element.querySelectorAll(':scope > *, :scope > .paradis-agent-chat-message-column > *')].filter(child => !child.classList.contains('paradis-agent-chat-message-column')).map(child => child.classList.contains('paradis-agent-chat-face') ? `face:${[...child.classList].filter(name => name !== 'paradis-agent-chat-face').join('')}` : child.classList.contains('paradis-agent-chat-time') ? `time:${child.textContent}` : `bubble:${child.textContent}`).join(' ')
+			? [...element.querySelectorAll(':scope > *, :scope > .paradis-agent-chat-message-column > *')].filter(child => !child.classList.contains('paradis-agent-chat-message-column')).map(child => child.classList.contains('paradis-agent-chat-face') ? `face:${[...child.classList].filter(name => name !== 'paradis-agent-chat-face').join('')}` : child.classList.contains('paradis-agent-chat-time') ? `time:${child.textContent}` : child.classList.contains('paradis-agent-chat-usage') ? `usage:${child.textContent}` : `bubble:${child.textContent}`).join(' ')
 			: `group:${element.textContent}`;
 		assert.deepStrictEqual([...list.children].filter(child => !child.classList.contains('paradis-agent-chat-notice')).map(shape), [
 			'bubble:テストして time:10:02',
 			'group:2 手順Bash',
-			'face:codex bubble:通りました time:10:02',
+			'face:codex bubble:通りました time:10:02 usage:gpt-5.5 / 入力 1,200 · キャッシュ 3,000 · 出力 34',
 		]);
+	});
+
+	test('shows the terminal band while Codex shows its choice menu, keeps the same button across ticks, and stops sending until it closes', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const { view, host, container, disposables } = await createView([{ token: 'pane', agent: 'codex', epoch: 'e', rev: 0, reset: true, busy: false, live: null, interaction: null, messages: [] }]);
+		const requests: string[] = [];
+		disposables.add(view.onDidRequestTerminal(() => requests.push('terminal')));
+		disposables.add(view.onDidRequestTerminalForChoice(() => requests.push('choice')));
+		let menu: IParadisAgentChoiceMenu | undefined = { kind: 'plan_implement', title: 'Implement this plan?', options: [], enterWould: '' };
+		host.readChoiceMenu = () => menu;
+		await new Promise(resolve => setTimeout(resolve, 1000));
+		const band = container.querySelector<HTMLElement>('.paradis-agent-chat-terminal-band')!;
+		const button = band.querySelector('.monaco-button');
+		const shown = { visible: band.style.display !== 'none', text: band.textContent, notice: container.querySelector('.paradis-agent-chat-composer-notice.visible')?.textContent };
+		await new Promise(resolve => setTimeout(resolve, 1000));
+		const sameButton = band.querySelector('.monaco-button') === button;
+		(button as HTMLElement).click();
+		menu = undefined;
+		await new Promise(resolve => setTimeout(resolve, 1000));
+		const closed = { visible: band.style.display !== 'none', notice: container.querySelector('.paradis-agent-chat-composer-notice.visible')?.textContent ?? null };
+		disposables.dispose();
+		assert.deepStrictEqual({ shown, sameButton, requests, closed }, {
+			shown: { visible: true, text: 'この操作はターミナルで続けますImplement this plan?ターミナルを開く', notice: 'ターミナルで選んでから送ってください' },
+			sameButton: true,
+			// 帯から開いたときだけ、選択画面が消えたらチャットへ戻してよい印の方を知らせる
+			requests: ['choice'],
+			closed: { visible: false, notice: null },
+		});
+	}));
+
+	test('folds the header when asked, keeping the conversation and the input', async () => {
+		const { view, container } = await createView([{ token: 'pane', agent: 'claude', epoch: 'e', rev: 0, reset: true, busy: false, live: null, interaction: null, messages: [] }]);
+		const chat = container.querySelector<HTMLElement>('.paradis-agent-chat')!;
+		view.setHeaderHidden(true);
+		const hidden = chat.classList.contains('header-hidden');
+		view.setHeaderHidden(false);
+		assert.deepStrictEqual({ hidden, shownAgain: !chat.classList.contains('header-hidden'), header: container.querySelector('.paradis-agent-chat-header-agent')?.textContent }, { hidden: true, shownAgain: true, header: 'Claude Code' });
 	});
 
 	test('shows the full output of a truncated tool result after loading it', async () => {

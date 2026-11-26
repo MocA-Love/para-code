@@ -1,0 +1,93 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+	The body of the "pick a device to detach" confirmation (paradisMobileReleasePickDialog.ts), inside the UI kit's
+	confirmation dialog (paradisConfirmDialog.css). Shown when an agent asks for a device and its terminal pane already
+	holds the maximum number of devices. The heading never shrinks (same reason as paradisPortReforwardConfirm.css):
+	every child keeps its height and the message container scrolls; the list of devices scrolls inside its own box.
+*/
+
+.monaco-dialog-box.paradis-mobile-release-pick .dialog-message-row .dialog-message-container > * {
+	flex-shrink: 0;
+}
+
+.monaco-dialog-box.paradis-mobile-release-pick .pmrp-body {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size100);
+	padding-top: var(--vscode-spacing-size80);
+	font-size: var(--vscode-fontSize-body1);
+	line-height: 20px;
+	color: var(--vscode-paradis-text);
+}
+
+.monaco-dialog-box.paradis-mobile-release-pick .pmrp-body p {
+	margin: 0;
+	overflow-wrap: anywhere;
+}
+
+.monaco-dialog-box.paradis-mobile-release-pick .pmrp-body p.pmrp-list-label {
+	font-size: var(--vscode-fontSize-label1);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	line-height: 18px;
+	color: var(--vscode-paradis-textStrong);
+}
+
+.monaco-dialog-box.paradis-mobile-release-pick .pmrp-list {
+	display: flex;
+	flex-direction: column;
+	max-height: 220px;
+	overflow-y: auto;
+	padding: var(--vscode-spacing-size40);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner);
+	background-color: var(--vscode-paradis-sunken);
+}
+
+/*
+	The rows are <a role="radio"> (upstream's dialog only puts the <a> of the message into its Tab order), and upstream's
+	dialog styles every <a> of the message inline as a link (link color, underlined). A row is a choice, not a link, so
+	the two declarations below override those inline styles; nothing but !important wins over an inline style.
+*/
+.monaco-dialog-box.paradis-mobile-release-pick .pmrp-option {
+	display: flex;
+	align-items: flex-start;
+	gap: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size80);
+	border-radius: var(--paradis-radius-inner);
+	color: var(--vscode-paradis-text) !important;
+	text-decoration: none !important;
+	cursor: pointer;
+}
+
+.monaco-dialog-box.paradis-mobile-release-pick .pmrp-option:hover {
+	background-color: var(--vscode-paradis-fillHover);
+}
+
+.monaco-dialog-box.paradis-mobile-release-pick .pmrp-option.checked {
+	background-color: var(--vscode-paradis-fillSelected);
+	color: var(--vscode-paradis-textStrong) !important;
+}
+
+/* The focus ring of a row comes from paradisFocusRing.css (the row carries paradis-focus-subtle: gray, drawn inside the row). */
+
+.monaco-dialog-box.paradis-mobile-release-pick .pmrp-radio {
+	flex: 0 0 auto;
+	/* Center the 16px icon on the first 20px line. */
+	margin-top: 2px;
+	color: var(--vscode-paradis-textMuted);
+}
+
+.monaco-dialog-box.paradis-mobile-release-pick .pmrp-option.checked > .pmrp-radio {
+	color: var(--vscode-paradis-accent);
+}
+
+.monaco-dialog-box.paradis-mobile-release-pick .pmrp-name {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
