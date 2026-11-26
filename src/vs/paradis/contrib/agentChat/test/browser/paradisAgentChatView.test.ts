@@ -27,6 +27,7 @@ import { ParadisAgentChatSession } from '../../browser/paradisAgentChatSession.j
 import { IParadisAgentChatCardStates, IParadisAgentChatViewHost, ParadisAgentChatView } from '../../browser/paradisAgentChatView.js';
 import { IParadisHumanAskEntry, IParadisHumanAskService, ParadisHumanAskAnswer, paradisHumanAskCounts } from '../../../humanAsk/common/paradisHumanAsk.js';
 import { paradisInboxPaneKey } from '../../../notificationInbox/common/paradisNotificationInbox.js';
+import { fromNow } from '../../../../../base/common/date.js';
 
 class TestHost implements IParadisAgentChatViewHost {
 	humanAsk: IParadisHumanAskService | undefined;
@@ -238,14 +239,15 @@ suite('ParadisAgentChatView', () => {
 		disposables.add(onDidChange);
 		const cards = () => [...container.querySelectorAll<HTMLElement>('.paradis-agent-chat-card.ledger')].map(card => card.textContent);
 		const shown = cards();
-		container.querySelector<HTMLElement>('.paradis-agent-chat-card.ledger .monaco-button')!.click();
+		container.querySelector<HTMLElement>('.paradis-agent-chat-card.ledger [data-ask-control="option:y"]')!.click();
 		await new Promise(resolve => setTimeout(resolve, 0));
 		// 受信箱など、ほかの場所で答えられた
 		entries = entries.map(entry => entry.id === 'q1' ? { ...entry, state: 'answered' as const } : entry);
 		onDidChange.fire();
 		await new Promise(resolve => setTimeout(resolve, 0));
 		assert.deepStrictEqual({ shown, answered, after: cards() }, {
-			shown: ['質問リリース係（Bot）Windows 版も出しますか出す（おすすめ）出さない'],
+			// 受信箱と同じカード（種類・出どころ・だれから・時刻・問い・選択肢）。会話の中なので「ペインへ移動」は無い
+			shown: [`質問Botリリース係${fromNow(1, true)}Windows 版も出しますか出す（おすすめ）出さない`],
 			answered: [{ key: 'bot:q1', answer: { type: 'answers', answers: [{ questionId: '0', optionIds: ['y'] }] } }],
 			after: [],
 		});

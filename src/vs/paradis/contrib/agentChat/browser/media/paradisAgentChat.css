@@ -150,16 +150,10 @@
 	margin-top: var(--vscode-spacing-size80);
 }
 
-/* 台帳の問いのカードの見出し: 種類の札の後ろに、だれから（Bot・ボードの名前と出どころ）を細字で。 */
-.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-ledger-from {
-	min-width: 0;
-	overflow-wrap: anywhere;
-	color: var(--vscode-descriptionForeground);
-	font-weight: var(--vscode-fontWeight-regular);
-}
-
-.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-ledger-preface {
-	color: var(--vscode-descriptionForeground);
+/* 台帳の問いのカード: 中身は受信箱のカード（.pnip-ask。自分の余白を持つ）なので、会話のカードの枠の余白は詰め、文字の大きさを受信箱にそろえる。 */
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-card.ledger {
+	padding: var(--vscode-spacing-size40);
+	font-size: var(--vscode-fontSize-label1);
 }
 
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-card.async .paradis-agent-chat-card-title > .paradis-agent-chat-question-header {

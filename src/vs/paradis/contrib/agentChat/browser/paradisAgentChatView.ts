@@ -1501,7 +1501,7 @@ export class ParadisAgentChatView extends Disposable {
 				if (this.ledgerStates.get(key)?.sending) {
 					return;
 				}
-				this.ledgerStates.set(key, { sending: true });
+				this.ledgerStates.set(key, { ...this.ledgerStates.get(key), sending: true });
 				this.render();
 				void humanAsk.answer(key, answer).then(result => {
 					if (this._store.isDisposed) {
@@ -1510,7 +1510,7 @@ export class ParadisAgentChatView extends Disposable {
 					if (result.ok) {
 						this.ledgerStates.delete(key);
 					} else {
-						this.ledgerStates.set(key, { sending: false, refused: paradisInboxAskRefusedText(result.reason) });
+						this.ledgerStates.set(key, { ...this.ledgerStates.get(key), sending: false, refused: paradisInboxAskRefusedText(result.reason) });
 					}
 					this.render();
 				});
@@ -1520,8 +1520,19 @@ export class ParadisAgentChatView extends Disposable {
 				this.ledgerDialog.value = new ParadisInboxAskDialog({ container, key, focusText, onClose: () => this.ledgerDialog.clear() }, humanAsk);
 			},
 		};
+		let overflowed = false;
 		for (const entry of entries) {
-			this.ledgerCard.appendChild(paradisRenderAgentChatLedgerAskCard(entry, this.ledgerStates.get(entry.key) ?? { sending: false }, cardHost, this.ledgerStore));
+			const cardState = this.ledgerStates.get(entry.key) ?? { sending: false };
+			const { element, card } = paradisRenderAgentChatLedgerAskCard(entry, cardState, cardHost, this.hoverService, this.ledgerStore);
+			this.ledgerCard.appendChild(element);
+			// 受信箱と同じく、描いた後に中身が枠から溢れたら、行の中で答えさせずモーダルへ回す
+			if (cardState.overflowing !== true && card.overflows?.() === true) {
+				this.ledgerStates.set(entry.key, { ...cardState, overflowing: true });
+				overflowed = true;
+			}
+		}
+		if (overflowed) {
+			this.renderLedgerAsks(state);
 		}
 	}
 
