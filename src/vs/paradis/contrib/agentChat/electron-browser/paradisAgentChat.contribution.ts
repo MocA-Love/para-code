@@ -21,11 +21,13 @@ import { Emitter } from '../../../../base/common/event.js';
 import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableMap, DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
+import { Schemas } from '../../../../base/common/network.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ContextKeyExpr, IContextKey, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
+import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
@@ -177,6 +179,7 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@IEditorService private readonly editorService: IEditorService,
 		@IParadisAgentStatusStore private readonly agentStatusStore: IParadisAgentStatusStore,
+		@IFileDialogService private readonly fileDialogService: IFileDialogService,
 	) {
 		super();
 		this.source = ProxyChannel.toService<IParadisAgentChatSource>(sharedProcessService.getChannel(PARADIS_MOBILE_RELAY_CHANNEL));
@@ -498,6 +501,17 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 
 	createDictation(target: IParadisAgentChatDictationTarget): IParadisAgentChatDictation {
 		return this.instantiationService.createInstance(ParadisAgentChatDictation, target);
+	}
+
+	async pickFiles(): Promise<readonly string[] | undefined> {
+		const uris = await this.fileDialogService.showOpenDialog({
+			title: localize('paradisAgentChat.attachTitle', "エージェントに添えるファイル"),
+			canSelectFiles: true,
+			canSelectFolders: true,
+			canSelectMany: true,
+		});
+		// SSH の窓では接続先のファイルを選ぶ。エージェントも接続先で動くので、接続先のパスを渡す
+		return uris?.map(uri => uri.scheme === Schemas.file ? uri.fsPath : uri.scheme === Schemas.vscodeRemote ? uri.path : uri.toString());
 	}
 
 	getCommands(token: string): Promise<readonly IParadisAgentChatCommand[]> {

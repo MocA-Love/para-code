@@ -180,18 +180,95 @@
 	text-align: center;
 }
 
+/*
+ * 発言は吹き出し（ParaDot の形。色はテーマのまま）。利用者は右寄せのボタンの色の吹き出し、エージェントは左に
+ * 小さい丸い顔と吹き出し。吹き出しの角は顔の側（エージェントは左上、利用者は右下）だけ小さくする。
+ */
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-message.user {
 	display: flex;
 	flex-direction: column;
 	align-items: flex-end;
+	gap: var(--vscode-spacing-size20);
 }
 
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-bubble {
 	max-width: min(80%, 640px);
+	min-width: 0;
+	box-sizing: border-box;
 	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size120);
-	border-radius: var(--vscode-cornerRadius-large);
-	background-color: var(--vscode-chat-requestBubbleBackground, var(--vscode-editorWidget-background));
+	border-radius: var(--vscode-cornerRadius-xLarge);
 	overflow-wrap: anywhere;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-message.user > .paradis-agent-chat-bubble {
+	color: var(--vscode-button-foreground);
+	background-color: var(--vscode-button-background);
+	border-bottom-right-radius: var(--vscode-cornerRadius-small);
+}
+
+/* 質問への返信（質問と答え）は吹き出しの文字の色のまま出す（説明の灰色はボタンの色の上で読めない）。 */
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-message.user > .paradis-agent-chat-bubble .paradis-agent-chat-question-reply-question {
+	color: inherit;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-message.assistant {
+	display: flex;
+	align-items: flex-start;
+	gap: var(--vscode-spacing-size80);
+	min-width: 0;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-face {
+	flex: none;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: var(--vscode-spacing-size240);
+	height: var(--vscode-spacing-size240);
+	box-sizing: border-box;
+	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, var(--vscode-panel-border, transparent));
+	border-radius: var(--vscode-cornerRadius-circle);
+	color: var(--vscode-foreground);
+	background-color: var(--vscode-editorWidget-background);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-face > svg {
+	width: calc(var(--vscode-spacing-size120) + var(--vscode-spacing-size20));
+	height: calc(var(--vscode-spacing-size120) + var(--vscode-spacing-size20));
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-face > .codicon {
+	font-size: var(--vscode-codiconFontSize-compact);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-message-column {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: var(--vscode-spacing-size20);
+	flex: 1;
+	min-width: 0;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-message.assistant .paradis-agent-chat-bubble {
+	max-width: 100%;
+	color: var(--vscode-foreground);
+	background-color: var(--vscode-editorWidget-background);
+	border: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
+	border-top-left-radius: var(--vscode-cornerRadius-small);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-time {
+	padding: 0 var(--vscode-spacing-size20);
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label2);
+	font-variant-numeric: tabular-nums;
+}
+
+/* 顔の無い行（手順・考えた内容・カード・知らせ・生成中の行）は、吹き出しの左端（顔 24 と間 8 の右）にそろえる。 */
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-list > :not(.paradis-agent-chat-message.user):not(.paradis-agent-chat-message.assistant):not(.paradis-agent-chat-notice):not(.paradis-agent-chat-live),
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-live-holder > .paradis-agent-chat-live:not([data-phase='message']) {
+	margin-left: calc(var(--vscode-spacing-size240) + var(--vscode-spacing-size80));
 }
 
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-plain {
@@ -262,9 +339,39 @@
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-markdown pre {
 	margin: 0 0 var(--vscode-spacing-size80);
 	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size120);
+	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, var(--vscode-panel-border, transparent));
 	border-radius: var(--vscode-cornerRadius-medium);
 	background-color: var(--vscode-textCodeBlock-background);
 	overflow-x: auto;
+}
+
+/* 広い表は吹き出しからはみ出さず、表だけ横へスクロールする。 */
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-markdown table {
+	display: block;
+	max-width: 100%;
+	overflow-x: auto;
+}
+
+/*
+ * コードブロックは本家のチャットと同じく div.code の中の .monaco-tokenized-source（行は <br>）で届く。pre では
+ * ないので、空白と字下げを保ち、長い行は折り返さずに横へスクロールする。吹き出しと同じ色になるテーマでも
+ * 区切れるよう枠を付ける。
+ */
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-markdown .monaco-tokenized-source {
+	margin: 0 0 var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size120);
+	overflow-x: auto;
+	white-space: pre;
+	tab-size: 4;
+	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, var(--vscode-panel-border, transparent));
+	border-radius: var(--vscode-cornerRadius-medium);
+	background-color: var(--vscode-textCodeBlock-background);
+	font-family: var(--monaco-monospace-font);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-markdown div.code:last-child .monaco-tokenized-source {
+	margin-bottom: 0;
 }
 
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-markdown pre code {
@@ -402,10 +509,10 @@
 	min-width: 0;
 }
 
+/* 「N 手順」。中の道具の名前は続けて薄く出す。 */
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-group-count {
 	flex: none;
 	color: var(--vscode-foreground);
-	font-family: var(--monaco-monospace-font);
 	font-weight: var(--vscode-fontWeight-semiBold);
 	font-variant-numeric: tabular-nums;
 }
@@ -435,8 +542,8 @@
 }
 
 /* まとまりの中の行は、見出しより一段下げる。 */
-.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-grouped {
-	margin-left: var(--vscode-spacing-size200);
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-list > .paradis-agent-chat-grouped {
+	margin-left: calc(var(--vscode-spacing-size240) + var(--vscode-spacing-size80) + var(--vscode-spacing-size200));
 }
 
 .monaco-workbench.hc-black .terminal-overflow-guard.terminal-editor button.paradis-agent-chat-step-row:hover:not(:focus-visible),
@@ -584,7 +691,7 @@
 	color: var(--vscode-foreground);
 	background-color: var(--vscode-editorWidget-background);
 	border: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
-	border-radius: var(--vscode-cornerRadius-large);
+	border-radius: var(--vscode-cornerRadius-xLarge);
 }
 
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-card-title {
@@ -638,10 +745,12 @@
 }
 
 /* 許可・回答・送信のボタンは本家の Button（.monaco-text-button）。本家は横幅いっぱいに伸ばすので、内容の幅に戻す。 */
-.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-card-footer > .monaco-text-button,
-.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-composer-footer > .monaco-text-button {
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-card-footer > .monaco-text-button {
 	flex: none;
 	width: auto;
+	/* ParaDot の丸薬形のボタン。 */
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size120);
+	border-radius: var(--vscode-cornerRadius-circle);
 }
 
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-question {
@@ -719,7 +828,7 @@
 	color: var(--vscode-foreground);
 	background: none;
 	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, var(--vscode-input-border, transparent));
-	border-radius: var(--vscode-cornerRadius-medium);
+	border-radius: var(--vscode-cornerRadius-large);
 	font: inherit;
 	text-align: left;
 	cursor: pointer;
@@ -757,7 +866,7 @@
 	color: var(--vscode-input-foreground);
 	background-color: var(--vscode-input-background);
 	border: var(--vscode-strokeThickness) solid var(--vscode-input-border, transparent);
-	border-radius: var(--vscode-cornerRadius-small);
+	border-radius: var(--vscode-cornerRadius-large);
 	font: inherit;
 }
 
@@ -849,22 +958,59 @@
 	display: block;
 }
 
-.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-composer-box {
+/* ＋・入力の丸い欄・丸い送信の 1 行（ParaDot の入力欄の形）。高さは 36、欄は複数行に伸びる。 */
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-composer-row {
 	display: flex;
-	flex-direction: column;
-	gap: var(--vscode-spacing-size40);
+	align-items: flex-end;
+	gap: var(--vscode-spacing-size80);
 	max-width: 880px;
 	width: 100%;
 	margin: 0 auto;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-composer-box {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	align-items: flex-end;
+	gap: var(--vscode-spacing-size40);
+	min-height: var(--vscode-spacing-size360);
 	box-sizing: border-box;
-	padding: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size60) var(--vscode-spacing-size60) var(--vscode-spacing-size160);
 	background-color: var(--vscode-input-background);
 	border: var(--vscode-strokeThickness) solid var(--vscode-input-border, var(--vscode-widget-border, transparent));
-	border-radius: var(--vscode-cornerRadius-large);
+	/* 複数行に伸びるので丸薬（circle）ではなく大きい角にする。 */
+	border-radius: var(--vscode-cornerRadius-xLarge);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-attach,
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-composer-row > .monaco-text-button.paradis-agent-chat-send {
+	flex: none;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: var(--vscode-spacing-size360);
+	height: var(--vscode-spacing-size360);
+	box-sizing: border-box;
+	padding: 0;
+	border-radius: var(--vscode-cornerRadius-circle);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-attach {
+	color: var(--vscode-icon-foreground);
+	background-color: var(--vscode-editorWidget-background);
+	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, var(--vscode-input-border, transparent));
+	cursor: pointer;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-attach:hover {
+	background-color: var(--vscode-toolbar-hoverBackground);
 }
 
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-input {
-	width: 100%;
+	flex: 1;
+	min-width: 0;
+	align-self: center;
 	min-height: 20px;
 	padding: 0;
 	resize: none;
@@ -880,20 +1026,20 @@
 	color: var(--vscode-input-placeholderForeground);
 }
 
-.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-composer-footer {
-	display: flex;
-	align-items: center;
-	gap: var(--vscode-spacing-size80);
-}
-
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-composer-busy {
-	flex: 1;
-	min-width: 0;
+	display: block;
+	max-width: 880px;
+	width: 100%;
+	margin: 0 auto;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 	color: var(--vscode-descriptionForeground);
 	font-size: var(--vscode-fontSize-label2);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-composer-busy:empty {
+	display: none;
 }
 
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-dictation {
