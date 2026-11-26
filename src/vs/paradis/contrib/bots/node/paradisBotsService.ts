@@ -48,13 +48,17 @@ import {
 	paradisIsBotItemSnoozed,
 } from '../common/paradisBotItems.js';
 import { EMPTY_PARADIS_BOTS_STATE, IParadisBot, IParadisBotCreateInput, IParadisBotPatch, IParadisBotsState, PARADIS_BOTS_VERSION, paradisBotCreate, paradisBotRemove, paradisBotUpdate } from '../common/paradisBots.js';
-import { IParadisBotsSnapshot, ParadisBotPanePurpose, ParadisBotsServiceResult, paradisBotSummary } from '../common/paradisBotsApi.js';
-import { IParadisBotItemAddArgs } from '../common/paradisBotTools.js';
-import { ParadisBotPanes } from './paradisBotPanes.js';
-import { IParadisBotsJsonFile } from './paradisBotsStore.js';
+import { IParadisBotLaunch, IParadisBotsSnapshot, ParadisBotPanePurpose, ParadisBotsServiceResult, paradisBotSummary } from '../common/paradisBotsApi.js';
+import { IParadisBotItemAddArgs, paradisBotLaunchApprovalFlags } from '../common/paradisBotTools.js';
+import { ParadisBotHomeError, ParadisBotHomes } from './paradisBotHomes.js';
+import { IParadisBotPanesState, PARADIS_BOT_PANES_VERSION, ParadisBotPanes } from './paradisBotPanes.js';
+import { IParadisBotsJsonFile, IParadisBotsLoaded } from './paradisBotsStore.js';
 
 /** 連続した変更をまとめてから知らせる間隔。 */
 const CHANGE_DELAY = 50;
+
+/** 新しい Bot のフォルダを取り直す回数の上限。 */
+const CREATE_FOLDER_ATTEMPTS = 5;
 
 /** Bot へ渡す、持ち主の書き込み 1 項目ぶん。 */
 export interface IParadisBotMail {
@@ -70,6 +74,10 @@ export interface IParadisBotsServiceOptions {
 	readonly uuid?: () => string;
 	/** shared process の hook のバス。Bot のペインの様子（動いている・待っている）を追う。 */
 	readonly hookEvents?: Event<{ readonly token: string; readonly event: string }>;
+	/** ペインとの結び付けの保存先（トークンのハッシュだけ）。渡さなければ結び付けはメモリだけ。 */
+	readonly panesFile?: IParadisBotsJsonFile<IParadisBotPanesState>;
+	/** 専用フォルダの読み書き。渡さなければフォルダを作らず、起動の依頼とファイルの口は `unavailable` で断る。 */
+	readonly homes?: ParadisBotHomes;
 	/**
 	 * Bot の機能（試験中の設定 `paradis.bots.enabled`）がオンか。オフのあいだは「聞く・答える」の台帳へ問いを
 	 * 出さない（出していた分は取り下げる）。変わったら {@link ParadisBotsService.refresh} を呼ぶ。既定はオン。
@@ -83,16 +91,22 @@ const ITEMS_FULL_MESSAGE = 'Para Code\'s list of bot items is full. Close the it
 
 type Result<T> = ParadisBotsServiceResult<T>;
 
+/** Bot の機能（`paradis.bots.enabled`）がオフの間に、フォルダを作る・書く・起動する口を断る結果。道具と画面にそのまま出せる。 */
+const BOTS_DISABLED = { ok: false, code: 'disabled', message: 'Para Code bots are turned off. Turn on the bot setting (paradis.bots.enabled) first.' } as const;
+
 export class ParadisBotsService extends Disposable {
 
 	private bots: IParadisBotsState = EMPTY_PARADIS_BOTS_STATE;
 	private items: IParadisBotItemsState = EMPTY_PARADIS_BOT_ITEMS_STATE;
 	private revision = 0;
 	private loaded = false;
+	private panesVersion = PARADIS_BOT_PANES_VERSION;
 
-	protected readonly panes = new ParadisBotPanes();
+	protected readonly panes = new ParadisBotPanes(() => this.savePanes());
 	private readonly now: () => number;
 	private readonly uuid: () => string;
+	private readonly homes: ParadisBotHomes | undefined;
+	private readonly panesFile: IParadisBotsJsonFile<IParadisBotPanesState> | undefined;
 	private readonly itemsByteLimit: number;
 	private readonly enabled: () => boolean;
 
@@ -108,6 +122,10 @@ export class ParadisBotsService extends Disposable {
 	/** 持ち主が項目に書いた。Bot へ届ける役（後の PR）が {@link pendingMail} を読んで届ける。 */
 	readonly onDidQueueMail: Event<{ readonly botId: string; readonly uid: string }> = this._onDidQueueMail.event;
 
+	private readonly _onDidRequestStop = this._register(new Emitter<{ readonly botId: string }>());
+	/** Bot を止めてほしい。そのターミナルを持つウィンドウが閉じる（閉じると結び付けが外れる）。 */
+	readonly onDidRequestStop: Event<{ readonly botId: string }> = this._onDidRequestStop.event;
+
 	private readonly changeScheduler = this._register(new RunOnceScheduler(() => this._onDidChange.fire(this.getSnapshot()), CHANGE_DELAY));
 	/** 後回しの期限が来たら、件数と「あなたの番」を数え直す。 */
 	private readonly wakeScheduler = this._register(new RunOnceScheduler(() => this.changed(), 0));
@@ -122,6 +140,8 @@ export class ParadisBotsService extends Disposable {
 		super();
 		this.now = options.now ?? Date.now;
 		this.uuid = options.uuid ?? generateUuid;
+		this.homes = options.homes;
+		this.panesFile = options.panesFile;
 		this.itemsByteLimit = options.itemsByteLimit ?? PARADIS_BOT_ITEMS_BYTE_LIMIT;
 		this.enabled = options.enabled ?? (() => true);
 		this._register(this.humanAsk.onDidRequestAnswer(request => this.onAnswerRequest(request)));
@@ -130,7 +150,11 @@ export class ParadisBotsService extends Disposable {
 				// ペインのシェルが終わった（ウィンドウが shared process へ知らせ、hook のバスに流れる）。結び付けを外す
 				if (event.event === 'TerminalExit') {
 					this.releasePane(event.token);
-				} else if (this.panes.noteHook(event.token, event.event, this.now())?.changed) {
+					return;
+				}
+				// 起動し直した後に現れた Bot のペインなら、保存した結び付けを戻す
+				const restored = this.restorePane(event.token);
+				if (this.panes.noteHook(event.token, event.event, this.now())?.changed || restored) {
 					this.notify();
 				}
 			}));
@@ -140,14 +164,17 @@ export class ParadisBotsService extends Disposable {
 
 	private async load(): Promise<void> {
 		try {
-			const [bots, items] = await Promise.all([this.botsFile.read(), this.itemsFile.read()]);
-			for (const quarantined of [bots.quarantined, items.quarantined]) {
+			const [bots, items, panes] = await Promise.all([this.botsFile.read(), this.itemsFile.read(), this.readPanes()]);
+			for (const quarantined of [bots.quarantined, items.quarantined, panes?.quarantined]) {
 				if (quarantined !== undefined) {
 					this.logService.error(`[ParadisBots] a saved file could not be read; it was moved to ${quarantined} and the list starts empty`);
 				}
 			}
 			this.bots = bots.state;
 			this.items = items.state;
+			// 消した Bot の結び付けは戻さない
+			this.panes.loadRemembered((panes?.state.panes ?? []).filter(record => this.getBot(record.botId) !== undefined));
+			this.panesVersion = panes?.state.version ?? PARADIS_BOT_PANES_VERSION;
 		} catch (error) {
 			// 読めなかったときは空で動かすが、上書きはしない（次の起動で読めるかもしれない）
 			this.logService.error('[ParadisBots] could not read the saved bots; they are read-only until the next start', error);
@@ -183,10 +210,41 @@ export class ParadisBotsService extends Disposable {
 		return this.items.items.find(item => item.uid === uid);
 	}
 
-	/** そのペインの Bot（Bot のペインでなければ undefined）。 */
+	/** そのペインの Bot（Bot のペインでなければ undefined）。起動し直した後に初めて現れたペインは、保存した結び付けを戻す。 */
 	botOfPane(paneToken: string): IParadisBot | undefined {
+		if (this.restorePane(paneToken)) {
+			this.notify();
+		}
 		const botId = this.panes.botOf(paneToken);
 		return botId !== undefined ? this.getBot(botId) : undefined;
+	}
+
+	/** 保存した結び付けを戻した（このペインが今 Bot になった）か。 */
+	private restorePane(paneToken: string): boolean {
+		if (!this.loaded || this.panes.botOf(paneToken) !== undefined) {
+			return false;
+		}
+		return this.panes.restore(paneToken, botId => this.getBot(botId) !== undefined, this.now()) !== undefined;
+	}
+
+	private async readPanes(): Promise<IParadisBotsLoaded<IParadisBotPanesState> | undefined> {
+		try {
+			return await this.panesFile?.read();
+		} catch (error) {
+			// 結び付けが戻らないだけなので、Bot と項目の読み込みは止めない
+			this.logService.warn('[ParadisBots] could not read the saved bot panes', error);
+			return undefined;
+		}
+	}
+
+	/** 保存する結び付け（トークンのハッシュ）を書き直す。書けなくても結び付けはメモリにあるので、記録だけする。 */
+	private savePanes(): void {
+		if (!this.loaded || this.panesFile === undefined || this.panesVersion !== PARADIS_BOT_PANES_VERSION) {
+			return;
+		}
+		this.panesFile.write({ version: PARADIS_BOT_PANES_VERSION, panes: this.panes.rememberedPanes() }).catch(error => {
+			this.logService.warn('[ParadisBots] could not save the bot panes', error);
+		});
 	}
 
 	/** 項目の台帳に書けるか（新しい版の台帳なら false。届けた印も外せない）。 */
@@ -213,10 +271,38 @@ export class ParadisBotsService extends Disposable {
 
 	// ---- Bot の一覧（持ち主が書く） --------------------------------------------------------------
 
-	createBot(input: Omit<IParadisBotCreateInput, 'id'>): Promise<Result<IParadisBot>> {
+	/** @param soul 人格メモの種（テンプレートから作るとき）。 */
+	createBot(input: Omit<IParadisBotCreateInput, 'id' | 'takenFolders'>, soul?: string): Promise<Result<IParadisBot>> {
 		return this.write(async () => {
-			const result = paradisBotCreate(this.bots, { ...input, id: this.uuid() }, this.now());
-			return result.ok ? this.saveBots(result.state, result.bot) : result;
+			// Bot の機能がオフの間は、専用フォルダも作らない
+			if (!this.enabled()) {
+				return BOTS_DISABLED;
+			}
+			// ディスクにもうあるフォルダは予約しない（消した Bot のフォルダを引き継がない）
+			const takenFolders = await this.homes?.existingFolders() ?? [];
+			const id = this.uuid();
+			// フォルダは保存の前に整える。読んだ後に他人のフォルダができていた（not_owner）ら、その名前も使用中に
+			// 数えて取り直す（保存してから断られると、起動できない Bot が残る）
+			for (let attempt = 0; ; attempt++) {
+				const result = paradisBotCreate(this.bots, { ...input, id, takenFolders }, this.now());
+				if (!result.ok) {
+					return result;
+				}
+				try {
+					await this.homes?.ensure(result.bot, soul);
+				} catch (error) {
+					if (error instanceof ParadisBotHomeError && error.code === 'not_owner') {
+						if (attempt < CREATE_FOLDER_ATTEMPTS - 1) {
+							takenFolders.push(result.bot.folder);
+							continue;
+						}
+						return { ok: false, code: 'not_owner', message: 'Para Code could not find a free home folder for the bot.' };
+					}
+					// ほかの失敗は、起動のときにもう一度整えるので作成は通す
+					this.logService.warn('[ParadisBots] could not prepare the home folder of a new bot', error);
+				}
+				return this.saveBots(result.state, result.bot);
+			}
 		});
 	}
 
@@ -227,7 +313,7 @@ export class ParadisBotsService extends Disposable {
 		});
 	}
 
-	/** 台帳から外し、その項目と結び付けも外す。専用フォルダは消さない。 */
+	/** 台帳から外し、その項目と結び付けも外す。専用フォルダは消さない。動いているペインには止める依頼を出す。 */
 	removeBot(botId: string): Promise<Result<IParadisBot>> {
 		return this.write(async () => {
 			const result = paradisBotRemove(this.bots, botId);
@@ -237,6 +323,7 @@ export class ParadisBotsService extends Disposable {
 			// Bot を先に消す（項目を先に消すと、Bot の保存に失敗したときに項目だけが消える）。項目の保存に失敗しても、
 			// 持ち主のいない項目は一覧にも「あなたの番」にも出ない
 			const removed = await this.saveBots(result.state, result.bot);
+			this._onDidRequestStop.fire({ botId });
 			this.panes.releaseBot(botId);
 			await this.saveItems(paradisBotItemsRemoveBot(this.items, botId), undefined);
 			return removed;
@@ -319,6 +406,92 @@ export class ParadisBotsService extends Disposable {
 	}
 
 	// ---- ペインとの結び付け ----------------------------------------------------------------------
+
+	/**
+	 * 起動の依頼。専用フォルダを整え（指示文の生成の範囲を今の版にする）、起動の番号を発行して、ターミナルを
+	 * 起動するのに要るものを返す。呼んだウィンドウがそのフォルダを cwd にエージェントを起動し、
+	 * {@link reportLaunch} でペインを知らせる（起動できなければ {@link cancelLaunch}）。
+	 */
+	requestLaunch(botId: string, purpose: ParadisBotPanePurpose): Promise<Result<IParadisBotLaunch>> {
+		return this.write(async () => {
+			// Bot の機能がオフの間は、フォルダを整えず、起動の番号も出さない
+			if (!this.enabled()) {
+				return BOTS_DISABLED;
+			}
+			const bot = this.getBot(botId);
+			if (bot === undefined || bot.paused) {
+				return { ok: false, code: bot === undefined ? 'not_found' : 'paused', message: bot === undefined ? 'There is no such bot.' : 'The bot is paused.' };
+			}
+			if (bot.preserved !== undefined) {
+				// 新しい版が足した設定（権限など）を、この版は分からないまま起動しない
+				return { ok: false, code: 'read_only', message: 'This bot was changed by a newer Para Code, so this version does not start it.' };
+			}
+			if (this.homes === undefined) {
+				return { ok: false, code: 'unavailable', message: 'Bot home folders are not available.' };
+			}
+			let cwd: string;
+			try {
+				cwd = await this.homes.ensure(bot);
+			} catch (error) {
+				this.logService.warn('[ParadisBots] could not prepare the home folder', error);
+				return { ok: false, code: error instanceof ParadisBotHomeError ? error.code : 'storage', message: error instanceof ParadisBotHomeError ? error.message : 'Para Code could not prepare the bot\'s home folder.' };
+			}
+			const launchId = this.issueLaunch(botId, purpose);
+			const extraFlags = paradisBotLaunchApprovalFlags(bot.agent);
+			if (launchId === undefined) {
+				return { ok: false, code: 'not_found', message: 'There is no such bot.' };
+			}
+			return {
+				ok: true,
+				value: {
+					launchId, botId, purpose, cwd, name: bot.name, agent: bot.agent,
+					...(bot.modelId !== undefined ? { modelId: bot.modelId } : {}),
+					...(bot.effortId !== undefined ? { effortId: bot.effortId } : {}),
+					...(bot.permissionId !== undefined ? { permissionId: bot.permissionId } : {}),
+					...(extraFlags !== undefined ? { extraFlags } : {}),
+				},
+			};
+		});
+	}
+
+	/** Bot を止める依頼を全ウィンドウへ出す。動いているペインが無ければ false。 */
+	requestStop(botId: string): boolean {
+		if (this.panes.statesOf(botId).length === 0) {
+			return false;
+		}
+		this._onDidRequestStop.fire({ botId });
+		return true;
+	}
+
+	/** 専用フォルダの中のファイルを読む（人格メモ・記憶など。相対パスだけ）。無ければ `value` は undefined。 */
+	readHomeFile(botId: string, relative: unknown): Promise<Result<string | undefined>> {
+		return this.homeFile(botId, (homes, bot) => homes.read(bot, relative));
+	}
+
+	/** 専用フォルダの中のファイルを書く（相対パスだけ。フォルダの外・持ち主の印は断る）。 */
+	writeHomeFile(botId: string, relative: unknown, text: string): Promise<Result<void>> {
+		if (!this.enabled()) {
+			return Promise.resolve(BOTS_DISABLED);
+		}
+		return this.homeFile(botId, (homes, bot) => homes.write(bot, relative, text));
+	}
+
+	private async homeFile<T>(botId: string, operation: (homes: ParadisBotHomes, bot: IParadisBot) => Promise<T>): Promise<Result<T>> {
+		await this.ready;
+		const bot = this.getBot(botId);
+		if (bot === undefined || this.homes === undefined) {
+			return { ok: false, code: bot === undefined ? 'not_found' : 'unavailable', message: bot === undefined ? 'There is no such bot.' : 'Bot home folders are not available.' };
+		}
+		try {
+			return { ok: true, value: await operation(this.homes, bot) };
+		} catch (error) {
+			if (error instanceof ParadisBotHomeError) {
+				return { ok: false, code: error.code, message: error.message };
+			}
+			this.logService.warn('[ParadisBots] a home file could not be read or written', error);
+			return { ok: false, code: 'storage', message: 'Para Code could not read or write the file.' };
+		}
+	}
 
 	/** 起動の番号を発行する。ウィンドウはこの番号を付けて {@link reportLaunch} する。 */
 	issueLaunch(botId: string, purpose: ParadisBotPanePurpose): string | undefined {

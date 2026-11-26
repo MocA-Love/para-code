@@ -1666,6 +1666,11 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		return paradisIsAgentChatToken(token) ? this.agentChat.getDesktopChatCommands(token) : [];
 	}
 
+	/** デスクトップのチャット表示の「ターミナルで続けます」の帯が聞く（PC の Claude Code で画面が開いているか）。 */
+	async isAgentChatDialogOpen(token: string): Promise<boolean | undefined> {
+		return paradisIsAgentChatToken(token) ? this.agentChat.isDesktopDialogOpen(token) : undefined;
+	}
+
 	async claimAgentChatInteraction(token: string, kind: 'question' | 'approval', id: string): Promise<boolean> {
 		return paradisIsAgentChatToken(token) && (kind === 'question' || kind === 'approval') && typeof id === 'string' && id.length <= 500
 			? this.agentChat.claimDesktopInteraction(token, kind, id)
