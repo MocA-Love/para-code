@@ -49,11 +49,11 @@ export class ParadisBotsChannel implements IServerChannel<string> {
 			case 'createBot': {
 				const input = asRecord(args.at(0));
 				const soul = args.string(1);
-				return input ? service.createBot({ name: input.name, agent: input.agent, modelId: input.modelId, effortId: input.effortId, permissionId: input.permissionId }, soul) : INVALID;
+				return input ? service.createBot({ name: input.name, agent: input.agent, modelId: input.modelId, effortId: input.effortId, permissionId: input.permissionId, faceColor: input.faceColor, faceShape: input.faceShape }, soul) : INVALID;
 			}
 			case 'updateBot': {
 				const patch = asRecord(args.at(1));
-				return id !== undefined && patch ? service.updateBot(id, { name: patch.name, agent: patch.agent, modelId: patch.modelId, effortId: patch.effortId, permissionId: patch.permissionId, paused: patch.paused, pinned: patch.pinned }) : INVALID;
+				return id !== undefined && patch ? service.updateBot(id, { name: patch.name, agent: patch.agent, modelId: patch.modelId, effortId: patch.effortId, permissionId: patch.permissionId, paused: patch.paused, pinned: patch.pinned, faceColor: patch.faceColor, faceShape: patch.faceShape }) : INVALID;
 			}
 			case 'removeBot': return id !== undefined ? service.removeBot(id) : INVALID;
 
