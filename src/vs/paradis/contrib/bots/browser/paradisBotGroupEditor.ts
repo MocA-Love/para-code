@@ -139,7 +139,8 @@ export class ParadisBotGroupEditor extends EditorPane {
 	private whereRequest = 0;
 	private records!: HTMLElement;
 	private items!: HTMLElement;
-	private readonly renderDisposables = this._register(new DisposableStore());
+	/** 項目の行のリスナー（項目を描き直すたびに捨てる。記録の描き直しでは捨てない）。 */
+	private readonly itemDisposables = this._register(new DisposableStore());
 	private sending = false;
 	/** 項目の取り直しの番号（古い結果で上書きしない）。 */
 	private itemsRequest = 0;
@@ -283,7 +284,6 @@ export class ParadisBotGroupEditor extends EditorPane {
 		if (!this.root) {
 			return;
 		}
-		this.renderDisposables.clear();
 		const group = this.botGroup;
 		const members = this.members;
 		this.root.classList.toggle('missing', group === undefined);
@@ -329,6 +329,7 @@ export class ParadisBotGroupEditor extends EditorPane {
 		if (request !== this.itemsRequest || !this.items) {
 			return;
 		}
+		this.itemDisposables.clear();
 		dom.clearNode(this.items);
 		const groups = paradisBotItemGroups(items, Date.now());
 		const shown = [...groups.you, ...groups.working];
@@ -358,8 +359,8 @@ export class ParadisBotGroupEditor extends EditorPane {
 		}
 		// 項目は Bot のページで読む（その Bot を開く）
 		const open = () => void this.commandService.executeCommand(PARADIS_BOTS_OPEN_COMMAND, item.botId);
-		this.renderDisposables.add(dom.addDisposableListener(row, dom.EventType.CLICK, open));
-		this.renderDisposables.add(dom.addDisposableListener(row, dom.EventType.KEY_DOWN, e => {
+		this.itemDisposables.add(dom.addDisposableListener(row, dom.EventType.CLICK, open));
+		this.itemDisposables.add(dom.addDisposableListener(row, dom.EventType.KEY_DOWN, e => {
 			const event = new StandardKeyboardEvent(e);
 			if (event.equals(KeyCode.Enter) || event.equals(KeyCode.Space)) {
 				dom.EventHelper.stop(e, true);
