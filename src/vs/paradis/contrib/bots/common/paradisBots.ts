@@ -39,6 +39,8 @@ export interface IParadisBot {
 	readonly permissionId?: string;
 	/** 一時停止。止めている間は起動せず、問いも「あなたの番」に出さない。 */
 	readonly paused: boolean;
+	/** ピン留め。Bot の帯を閉じていても見える（どのウィンドウ・スマホでも同じ）。古い保存は false として読む。 */
+	readonly pinned: boolean;
 	readonly createdAt: number;
 	readonly updatedAt: number;
 }
@@ -154,6 +156,7 @@ export interface IParadisBotPatch {
 	readonly effortId?: unknown;
 	readonly permissionId?: unknown;
 	readonly paused?: unknown;
+	readonly pinned?: unknown;
 }
 
 function agentKind(value: unknown): ParadisAgentKind | undefined {
@@ -206,6 +209,7 @@ export function paradisBotCreate(state: IParadisBotsState, input: IParadisBotCre
 		folder: paradisReserveBotFolder(name, [...state.bots.map(existing => existing.folder), ...(input.takenFolders ?? [])]),
 		agent,
 		paused: false,
+		pinned: false,
 		createdAt: now,
 		updatedAt: now,
 	}, input);
@@ -226,10 +230,10 @@ export function paradisBotUpdate(state: IParadisBotsState, id: string, patch: IP
 	const name = patch.name === undefined ? current.name : paradisSanitizeBotName(patch.name);
 	const agent = patch.agent === undefined ? current.agent : agentKind(patch.agent);
 	const next = withOptionalIds(current, patch);
-	if (name === undefined || agent === undefined || next === undefined || (patch.paused !== undefined && typeof patch.paused !== 'boolean')) {
+	if (name === undefined || agent === undefined || next === undefined || (patch.paused !== undefined && typeof patch.paused !== 'boolean') || (patch.pinned !== undefined && typeof patch.pinned !== 'boolean')) {
 		return refuse('invalid_argument', 'The change to the bot is not valid.');
 	}
-	const bot: IParadisBot = { ...next, name, agent, paused: typeof patch.paused === 'boolean' ? patch.paused : current.paused, updatedAt: now };
+	const bot: IParadisBot = { ...next, name, agent, paused: typeof patch.paused === 'boolean' ? patch.paused : current.paused, pinned: typeof patch.pinned === 'boolean' ? patch.pinned : current.pinned, updatedAt: now };
 	return { ok: true, state: { ...state, bots: state.bots.map(existing => existing.id === id ? bot : existing) }, bot };
 }
 
@@ -260,7 +264,8 @@ function storedBot(value: unknown): IParadisBot | undefined {
 		|| !paradisIsBotFolderName(value.folder) || typeof value.paused !== 'boolean' || createdAt === undefined || updatedAt === undefined) {
 		return undefined;
 	}
-	return withOptionalIds({ id: value.id, name, folder: value.folder, agent, paused: value.paused, createdAt, updatedAt }, {
+	// ピン留めは後から足した欄なので、無い（古い保存）・形の違う値は false として読む
+	return withOptionalIds({ id: value.id, name, folder: value.folder, agent, paused: value.paused, pinned: value.pinned === true, createdAt, updatedAt }, {
 		modelId: value.modelId ?? undefined,
 		effortId: value.effortId ?? undefined,
 		permissionId: value.permissionId ?? undefined,

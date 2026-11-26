@@ -66,7 +66,7 @@ suite('Paradis bots', () => {
 	test('作成・更新・削除', () => {
 		let state = created(EMPTY_PARADIS_BOTS_STATE, 'b1', 'リリース係');
 		state = created(state, 'b2', 'レビュー係', 2000);
-		const renamed = paradisBotUpdate(state, 'b2', { name: 'Reviewer', agent: 'codex', modelId: 'gpt', paused: true }, 3000);
+		const renamed = paradisBotUpdate(state, 'b2', { name: 'Reviewer', agent: 'codex', modelId: 'gpt', paused: true, pinned: true }, 3000);
 		assert.ok(renamed.ok);
 		const cleared = paradisBotUpdate(renamed.state, 'b2', { modelId: null }, 4000);
 		assert.ok(cleared.ok);
@@ -74,12 +74,12 @@ suite('Paradis bots', () => {
 		assert.ok(removed.ok);
 		assert.deepStrictEqual({ afterCreate: state.bots, renamed: renamed.bot, afterRemove: removed.state.bots }, {
 			afterCreate: [
-				{ id: 'b1', name: 'リリース係', folder: 'bot', agent: 'claude', paused: false, createdAt: 1000, updatedAt: 1000 },
-				{ id: 'b2', name: 'レビュー係', folder: 'bot-2', agent: 'claude', paused: false, createdAt: 2000, updatedAt: 2000 },
+				{ id: 'b1', name: 'リリース係', folder: 'bot', agent: 'claude', paused: false, pinned: false, createdAt: 1000, updatedAt: 1000 },
+				{ id: 'b2', name: 'レビュー係', folder: 'bot-2', agent: 'claude', paused: false, pinned: false, createdAt: 2000, updatedAt: 2000 },
 			],
 			// 名前を変えてもフォルダは変えない
-			renamed: { id: 'b2', name: 'Reviewer', folder: 'bot-2', agent: 'codex', modelId: 'gpt', paused: true, createdAt: 2000, updatedAt: 3000 },
-			afterRemove: [{ id: 'b2', name: 'Reviewer', folder: 'bot-2', agent: 'codex', paused: true, createdAt: 2000, updatedAt: 4000 }],
+			renamed: { id: 'b2', name: 'Reviewer', folder: 'bot-2', agent: 'codex', modelId: 'gpt', paused: true, pinned: true, createdAt: 2000, updatedAt: 3000 },
+			afterRemove: [{ id: 'b2', name: 'Reviewer', folder: 'bot-2', agent: 'codex', paused: true, pinned: true, createdAt: 2000, updatedAt: 4000 }],
 		});
 	});
 
@@ -98,25 +98,28 @@ suite('Paradis bots', () => {
 			code(paradisBotCreate(full, { id: 'new', name: 'B', agent: 'claude' }, 1)),
 			code(paradisBotUpdate(state, 'none', { name: 'B' }, 1)),
 			code(paradisBotUpdate(state, 'b1', { paused: 'yes' }, 1)),
+			code(paradisBotUpdate(state, 'b1', { pinned: 1 }, 1)),
 			code(paradisBotRemove(state, 'none')),
 			code(paradisBotCreate({ ...state, version: 2 }, { id: 'b2', name: 'B', agent: 'claude' }, 1)),
 			code(paradisBotUpdate({ ...state, version: 2 }, 'b1', { name: 'B' }, 1)),
 			code(paradisBotRemove({ ...state, version: 2 }, 'b1')),
-		], ['invalid_argument', 'invalid_argument', 'invalid_argument', 'invalid_argument', 'limit', 'not_found', 'invalid_argument', 'not_found', 'read_only', 'read_only', 'read_only']);
+		], ['invalid_argument', 'invalid_argument', 'invalid_argument', 'invalid_argument', 'limit', 'not_found', 'invalid_argument', 'invalid_argument', 'not_found', 'read_only', 'read_only', 'read_only']);
 	});
 
 	test('保存した値の読み込み: 形の違う 1 件だけを捨てる', () => {
+		// ピン留めの欄の無い古い保存
 		const good = { id: 'b1', name: 'A', folder: 'a', agent: 'claude', paused: false, createdAt: 1, updatedAt: 2 };
+		const read = { ...good, pinned: false };
 		assert.deepStrictEqual([
-			paradisParseBotsState({ version: 1, bots: [good, { ...good, id: 'b2', folder: '../x' }, { ...good, id: 'b3', folder: 'c', agent: 'grok' }, { ...good, id: 'b1', folder: 'd' }, { ...good, id: 'b4' }, 'x', { ...good, id: 'b5', folder: 'e', modelId: 'm' }] }),
+			paradisParseBotsState({ version: 1, bots: [good, { ...good, id: 'b2', folder: '../x' }, { ...good, id: 'b3', folder: 'c', agent: 'grok' }, { ...good, id: 'b1', folder: 'd' }, { ...good, id: 'b4' }, 'x', { ...good, id: 'b5', folder: 'e', modelId: 'm' }, { ...good, id: 'b6', folder: 'f', pinned: true }, { ...good, id: 'b7', folder: 'g', pinned: 'yes' }] }),
 			paradisParseBotsState({ version: 3, bots: [good] }),
 			paradisParseBotsState({ version: 1 }),
 			paradisParseBotsState({ bots: [] }),
 			paradisParseBotsState([]),
 			paradisParseBotsState(null),
 		], [
-			{ version: 1, bots: [good, { ...good, id: 'b5', folder: 'e', modelId: 'm' }] },
-			{ version: 3, bots: [good] },
+			{ version: 1, bots: [read, { ...read, id: 'b5', folder: 'e', modelId: 'm' }, { ...read, id: 'b6', folder: 'f', pinned: true }, { ...read, id: 'b7', folder: 'g' }] },
+			{ version: 3, bots: [read] },
 			undefined,
 			undefined,
 			undefined,
