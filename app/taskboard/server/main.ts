@@ -48,7 +48,7 @@ const STRING_LIMITS: Record<string, number> = { owner: 100, fieldName: 100, task
 
 /** RPC の引数の形を確かめる（型を偽った送信で、エンジンに想定外の値が入らないように）。 */
 /** ボードの画面で人の出番に答える操作（終わると、その 1 件が「あなたの番」から外れる）。 */
-const ANSWERING_METHODS: ReadonlySet<string> = new Set(['answer', 'approve', 'sendBack', 'retry', 'complete', 'nudge', 'move', 'markDone']);
+const ANSWERING_METHODS: ReadonlySet<string> = new Set(['answer', 'approve', 'sendBack', 'retry', 'complete', 'nudge', 'move', 'markDone', 'commitAndRetry', 'restartAgent']);
 
 function validateParams(raw: unknown): Record<string, unknown> {
 	if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
@@ -1045,11 +1045,15 @@ async function main(restart?: IRestart): Promise<void> {
 					}
 					const params = validateParams(body.params ?? {});
 					const handler = handlers[body.method] as (params: unknown) => unknown;
-					if (ANSWERING_METHODS.has(body.method) && typeof params.taskId === 'string') {
-						// ボードの画面で人の出番に答える操作。Para Code の台帳では「ボードで回答済み」にする
-						askPublisher?.markAnsweredHere(params.taskId);
+					// ボードの画面で人の出番に答える操作。Para Code の台帳では「ボードで回答済み」にする（失敗したら印を外す）
+					const answering = ANSWERING_METHODS.has(body.method) && typeof params.taskId === 'string' ? askPublisher?.markAnsweredHere(params.taskId) : undefined;
+					let result: unknown;
+					try {
+						result = await handler(params);
+					} catch (err) {
+						askPublisher?.unmarkAnsweredHere(answering);
+						throw err;
 					}
-					const result = await handler(params);
 					json(res, 200, { ok: true, result: result ?? null });
 				} catch (err) {
 					const code = err instanceof TaskBoardError ? err.code : err instanceof GitHubError ? 'github' : err instanceof SyntaxError ? 'invalid-params' : 'internal';

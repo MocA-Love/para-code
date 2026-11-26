@@ -8,7 +8,8 @@
 
 // ボードの「あなたの番」を「人が答えるもの」の台帳（humanAsk）へ載せる取り込み役（shared process）。
 //
-//  - `PUT /v1/asks`: ボードが今の人の出番を丸ごと知らせる。台帳の持ち主は「そのボード」（鍵の hash ごと）で、
+//  - `PUT /v1/asks`: ボードが今の人の出番を丸ごと知らせる。台帳の持ち主は「そのボード」（つながるたびに振る
+//    `board:<連番>`。台帳は全ウィンドウへ配られるので、ボードの鍵やその hash は持ち主の名前に使わない）で、
 //    出どころは必ず `board` にする（ボードにペインや Bot の待ちを名乗らせない）
 //  - 台帳の側（受信箱・スマホ）で答えられたら、SSE の `ask-answer` を**そのボードにだけ**流す。答えの本文は
 //    伏せ字を掛けていないので、ほかのボードへは流さない
@@ -58,8 +59,9 @@ interface IClaim {
 
 export class ParadisTaskBoardAskBridge extends Disposable {
 
-	/** ボード（鍵の hash）ごとの、つながっている SSE の数。 */
-	private readonly connections = new Map<string, number>();
+	/** ボード（鍵の hash）ごとの、つながっている SSE の数と、台帳での持ち主の名前。 */
+	private readonly boards = new Map<string, { connections: number; readonly owner: string }>();
+	private boardSequence = 0;
 	/** 届けてもらっている最中の依頼（依頼の番号 → 持ち主と鍵）。 */
 	private readonly claims = new Map<string, IClaim>();
 
@@ -71,13 +73,14 @@ export class ParadisTaskBoardAskBridge extends Disposable {
 		this._register(ledger.onDidRequestAnswer(request => this.onAnswerRequest(request)));
 	}
 
-	private owner(keyHash: string): string {
-		return `${OWNER_PREFIX}${keyHash}`;
-	}
-
 	/** ボードの SSE がつながった。 */
 	boardConnected(keyHash: string): void {
-		this.connections.set(keyHash, (this.connections.get(keyHash) ?? 0) + 1);
+		const board = this.boards.get(keyHash);
+		if (board) {
+			board.connections++;
+		} else {
+			this.boards.set(keyHash, { connections: 1, owner: `${OWNER_PREFIX}${++this.boardSequence}` });
+		}
 	}
 
 	/** ボードの SSE が切れた。最後の 1 本なら、そのボードの待ちを取り下げる（止まったボードの問いを残さない）。 */
@@ -85,13 +88,12 @@ export class ParadisTaskBoardAskBridge extends Disposable {
 		if (this._store.isDisposed) {
 			return;
 		}
-		const left = (this.connections.get(keyHash) ?? 0) - 1;
-		if (left > 0) {
-			this.connections.set(keyHash, left);
+		const board = this.boards.get(keyHash);
+		if (!board || --board.connections > 0) {
 			return;
 		}
-		this.connections.delete(keyHash);
-		const owner = this.owner(keyHash);
+		this.boards.delete(keyHash);
+		const owner = board.owner;
 		for (const [claim, entry] of [...this.claims]) {
 			if (entry.owner === owner) {
 				this.claims.delete(claim);
@@ -105,17 +107,14 @@ export class ParadisTaskBoardAskBridge extends Disposable {
 	 * （回答済みにする。書かずに外れたものは取り下げになる）。
 	 */
 	put(body: unknown, keyHash: string | undefined, remoteBoard: boolean): ParadisTaskBoardAskResponse {
-		if (keyHash === undefined) {
-			return { ok: false, code: 'unavailable', message: 'The task board is not identified.' };
-		}
 		if (!isRecord(body) || !Array.isArray(body.asks) || body.asks.length > TASK_BOARD_ASKS_LIMIT || (body.answered !== undefined && (!Array.isArray(body.answered) || body.answered.length > TASK_BOARD_ASKS_LIMIT))) {
 			return { ok: false, code: 'invalid', message: `asks must be an array of up to ${TASK_BOARD_ASKS_LIMIT} entries.` };
 		}
 		// SSE がつながっていないボードの待ちは受けない: 答えを届ける先が無く、止まったときに取り下げる契機も無い
-		if (!this.connections.has(keyHash)) {
+		const owner = keyHash !== undefined ? this.boards.get(keyHash)?.owner : undefined;
+		if (owner === undefined) {
 			return { ok: false, code: 'unavailable', message: 'Connect to /v1/events before reporting asks.' };
 		}
-		const owner = this.owner(keyHash);
 		for (const id of Array.isArray(body.answered) ? body.answered : []) {
 			if (typeof id === 'string') {
 				this.ledger.resolve(owner, paradisHumanAskKey('board', id), { surface: 'board' });
@@ -147,7 +146,7 @@ export class ParadisTaskBoardAskBridge extends Disposable {
 			return { ok: false, code: 'invalid', message: 'claim must be a string and ok must be a boolean.' };
 		}
 		const entry = this.claims.get(body.claim);
-		if (entry === undefined || keyHash === undefined || entry.owner !== this.owner(keyHash)) {
+		if (entry === undefined || keyHash === undefined || entry.owner !== this.boards.get(keyHash)?.owner) {
 			return { ok: false, code: 'not-found', message: 'No answer is waiting for that claim.' };
 		}
 		this.claims.delete(body.claim);
@@ -161,10 +160,15 @@ export class ParadisTaskBoardAskBridge extends Disposable {
 
 	/** 台帳の側で答えられた。持ち主のボードへ流し、流せなければその場で待ちへ戻す。 */
 	private onAnswerRequest(request: IParadisHumanAskAnswerRequest): void {
-		if (request.source !== 'board' || !request.owner.startsWith(OWNER_PREFIX)) {
+		let keyHash: string | undefined;
+		for (const [candidate, board] of this.boards) {
+			if (board.owner === request.owner) {
+				keyHash = candidate;
+			}
+		}
+		if (request.source !== 'board' || keyHash === undefined) {
 			return;
 		}
-		const keyHash = request.owner.slice(OWNER_PREFIX.length);
 		if (this.claims.size >= MAX_CLAIMS) {
 			const oldest = this.claims.keys().next();
 			if (!oldest.done) {

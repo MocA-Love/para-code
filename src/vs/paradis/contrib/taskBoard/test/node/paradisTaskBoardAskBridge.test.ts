@@ -95,17 +95,17 @@ suite('ParadisTaskBoardAskBridge', () => {
 			// 出どころ・ペインの鍵・窓は、ボードの言い分を使わない（ペインや Bot の待ちを名乗らせない）
 			await put(BOARD_A, { asks: [question('L:t1:q1', { source: 'pane', terminal: TERMINAL, paneKey: 'f'.repeat(40), windowId: 99, canSkip: true }), approval('L:t2:approval:1'), { id: 'broken' }] }),
 			await put(BOARD_A, { asks: 'no' }),
-			await put(undefined, { asks: [] }),
 		];
 		const entries = ledger.getSnapshot().entries.map(entry => ({ key: entry.key, owner: entry.owner, source: entry.source, kind: entry.kind, paneKey: entry.paneKey, windowId: entry.windowId, canSkip: entry.canSkip }));
 		const counts = ledger.getSnapshot().counts;
 		board.client.dispose();
 		assert.deepStrictEqual({ withoutEvents, results, entries, counts }, {
 			withoutEvents: '503 {"error":"unavailable","message":"Connect to /v1/events before reporting asks."}',
-			results: ['200 {"ok":true,"refused":1}', `400 {"error":"invalid","message":"asks must be an array of up to 500 entries."}`, '503 {"error":"unavailable","message":"The task board is not identified."}'],
+			results: ['200 {"ok":true,"refused":1}', `400 {"error":"invalid","message":"asks must be an array of up to 500 entries."}`],
 			entries: [
-				{ key: 'board:L:t2:approval:1', owner: `board:${BOARD_A}`, source: 'board', kind: 'approval', paneKey: undefined, windowId: undefined, canSkip: false },
-				{ key: 'board:L:t1:q1', owner: `board:${BOARD_A}`, source: 'board', kind: 'question', paneKey: PANE_KEY, windowId: 3, canSkip: false },
+				// 持ち主の名前にボードの鍵（の hash）は出ない
+				{ key: 'board:L:t2:approval:1', owner: 'board:1', source: 'board', kind: 'approval', paneKey: undefined, windowId: undefined, canSkip: false },
+				{ key: 'board:L:t1:q1', owner: 'board:1', source: 'board', kind: 'question', paneKey: PANE_KEY, windowId: 3, canSkip: false },
 			],
 			counts: { total: 2, pane: 0, board: 2, bot: 0 },
 		});

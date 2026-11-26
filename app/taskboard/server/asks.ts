@@ -92,12 +92,20 @@ export class AskPublisher {
 	 * ボードの画面の操作（回答・承認・差し戻し・やり直し など）の前に呼ぶ。そのタスクの今の 1 件が操作の後に一覧から
 	 * 外れたら、Para Code の台帳では「ボードで回答済み」になる（印が無ければ取り下げ）。
 	 */
-	markAnsweredHere(taskId: string): void {
+	markAnsweredHere(taskId: string): string | undefined {
 		const engine = this.options.engine();
 		const task = engine.getTask(taskId);
 		const ask = task ? taskBoardAskOf(task, engine.flowOf(task), this.options.ledgerId) : undefined;
 		if (ask) {
 			this.answeredHere.set(ask.id, this.now());
+		}
+		return ask?.id;
+	}
+
+	/** 操作が失敗した。印を外す（その後にターミナルで答えられても「ボードで回答済み」としない）。 */
+	unmarkAnsweredHere(id: string | undefined): void {
+		if (id !== undefined) {
+			this.answeredHere.delete(id);
 		}
 	}
 

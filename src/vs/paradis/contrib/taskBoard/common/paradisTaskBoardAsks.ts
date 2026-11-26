@@ -203,9 +203,10 @@ export function taskBoardApplyAskAnswer(engine: AskEngine, task: ITaskBoardTask,
 		if (chosen.length > 0 && !option) {
 			throw invalid();
 		}
-		// 選択肢に文を添えた答えは、選んだ名前を頭に付けた文として送る（エンジンの回答は選択肢か文のどちらか）
+		// 選択肢に文を添えた答えは、選んだ名前を頭に付けた文として送る（エンジンの回答は選択肢か文のどちらか）。
+		// 画面の質問への文はターミナルへ打ち込むので、途中で確定しないよう改行でつながない
 		if (text) {
-			engine.answer(task.id, task.question.id, { text: option ? `${option.label}\n${text}` : text });
+			engine.answer(task.id, task.question.id, { text: option ? `${option.label}: ${text}` : text });
 		} else if (option) {
 			engine.answer(task.id, task.question.id, { optionIndex: Number(option.id) });
 		} else {

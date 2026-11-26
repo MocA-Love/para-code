@@ -162,7 +162,7 @@ describe('task board asks for the Para Code ledger', () => {
 		expect({ steps, settled: settled(), agent: ports.calls.filter(call => call.startsWith('answer:') || call.startsWith('input:')) }).toEqual({
 			steps: ['plan/working', 'plan/working', 'plan/working', 'plan/working', 'approve/approval', 'plan/working', 'approve/approval', 'build/working'],
 			settled: ['c1 true', 'c2 true', 'c3 true', 'c4 true', 'c5 true', 'c6 true', 'c7 false', 'c8 false', 'c9 false', 'c10 true'],
-			agent: ['answer:B', 'answer:A\nbut smaller', 'answer:拒否する', expect.stringMatching(/^input:/)],
+			agent: ['answer:B', 'answer:A: but smaller', 'answer:拒否する', expect.stringMatching(/^input:/)],
 		});
 	});
 
