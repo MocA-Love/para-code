@@ -46,7 +46,7 @@ import './paradisBotGroupsService.js';
 import '../browser/paradisBotGroupEditor.contribution.js';
 
 /** 部屋の高さ（入力欄 1 行と、記録の数行）。 */
-const ROOM_HEIGHT = 168;
+const ROOM_HEIGHT = 220;
 
 /** このウィンドウでの、Bot のペインの居場所。 */
 type ParadisBotPaneWhere =

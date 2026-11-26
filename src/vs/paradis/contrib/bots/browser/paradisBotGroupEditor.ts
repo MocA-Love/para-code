@@ -412,5 +412,7 @@ export class ParadisBotGroupEditor extends EditorPane {
 	private setStatus(text: string, error: boolean): void {
 		this.status.textContent = text;
 		this.status.classList.toggle('error', error);
+		// 幅が足りないときは切れるので、全文はホバーで読めるようにする
+		this.status.title = text;
 	}
 }
