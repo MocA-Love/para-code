@@ -137,6 +137,10 @@ export class ParadisAgentChatInput {
 		if (state.agent === 'codex' && paradisPendingCodexQuestion(state.messages) !== undefined) {
 			return localize('paradisAgentChat.errorCodexQuestion', "Codex が質問しています。ターミナルで答えてください");
 		}
+		// PC の Claude Code で /model などの画面が開いていると、貼った文と Enter が画面の操作になる。mod に聞けるときだけ確かめる
+		if (state.agent === 'claude' && await this.dependencies.source.isAgentChatDialogOpen?.(token).catch(() => undefined) === true) {
+			return localize('paradisAgentChat.errorPanel', "ターミナルで画面が開いています。閉じてから送ってください");
+		}
 		// Codex の選択画面（「Implement this plan?」など）は Enter で既定の選択肢（実装に進む・今すぐ更新する）を選ぶ。
 		// hook も会話の記録も知らせないので、画面で見て打たない
 		if (state.agent === 'codex' && paradisAgentChoiceMenu(terminal.readScreen()) !== undefined) {

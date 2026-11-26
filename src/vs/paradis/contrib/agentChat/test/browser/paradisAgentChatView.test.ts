@@ -48,6 +48,7 @@ class TestHost implements IParadisAgentChatViewHost {
 	async getImage(): Promise<IParadisAgentChatImageData | undefined> { return { mediaType: 'image/png', data: 'AAAA' }; }
 	getToggleKeybindingLabel(): string | undefined { return '⌘⇧J'; }
 	readChoiceMenu: ((instanceId: number) => IParadisAgentChoiceMenu | undefined) | undefined;
+	isDialogOpen: ((token: string) => Promise<boolean | undefined>) | undefined;
 	private readonly states = new Map<string, IParadisAgentChatCardStates>();
 	cardStates(token: string): IParadisAgentChatCardStates {
 		let states = this.states.get(token);
@@ -237,6 +238,43 @@ suite('ParadisAgentChatView', () => {
 			// 帯から開いたときだけ、選択画面が消えたらチャットへ戻してよい印の方を知らせる
 			requests: ['choice'],
 			closed: { visible: false, notice: null },
+		});
+	}));
+
+	test('asks Claude Code whether a screen like /model is open, shows the band while it is, and shows nothing when the mod cannot tell', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		let open: boolean | undefined = true;
+		const asked: string[] = [];
+		const states = [{ token: 'pane', agent: 'claude' as const, epoch: 'e', rev: 0, reset: true, busy: false, live: null, interaction: null, messages: [] }];
+		const { view, host, container, disposables } = await createView(states);
+		host.isDialogOpen = async token => { asked.push(token); return open; };
+		const requests: string[] = [];
+		disposables.add(view.onDidRequestTerminal(() => requests.push('terminal')));
+		disposables.add(view.onDidRequestTerminalForChoice(() => requests.push('choice')));
+		// チャットを開き直すと聞く
+		view.setTarget(undefined, undefined);
+		view.setTarget(1, 'pane');
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const band = container.querySelector<HTMLElement>('.paradis-agent-chat-terminal-band')!;
+		const shown = { visible: band.style.display !== 'none', notice: container.querySelector('.paradis-agent-chat-composer-notice.visible')?.textContent };
+		band.querySelector<HTMLElement>('.monaco-button')!.click();
+		// 閉じた。帯を出している間は 3 秒ごとに聞き直す
+		open = false;
+		await new Promise(resolve => setTimeout(resolve, 3500));
+		const closed = band.style.display !== 'none';
+		// mod が答えられない（undefined）なら帯を出さない
+		open = undefined;
+		view.setTarget(undefined, undefined);
+		view.setTarget(1, 'pane');
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const unknown = band.style.display !== 'none';
+		disposables.dispose();
+		assert.deepStrictEqual({ shown, requests, closed, unknown, asked: asked.length }, {
+			shown: { visible: true, notice: 'ターミナルで開いている画面を閉じてから送ってください' },
+			// Claude Code の画面は消えたのを画面で見られないので、選び終えたら戻す方の知らせにはしない
+			requests: ['terminal'],
+			closed: false,
+			unknown: false,
+			asked: 3,
 		});
 	}));
 

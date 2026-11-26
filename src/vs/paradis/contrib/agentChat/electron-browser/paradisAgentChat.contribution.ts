@@ -581,6 +581,10 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 		this.setChatMode(instanceId, false, true);
 	}
 
+	isDialogOpen(token: string): Promise<boolean | undefined> {
+		return this.source.isAgentChatDialogOpen?.(token) ?? Promise.resolve(undefined);
+	}
+
 	readChoiceMenu(instanceId: number): IParadisAgentChoiceMenu | undefined {
 		const instance = this.terminalService.getInstanceFromId(instanceId);
 		return instance === undefined || instance.isDisposed ? undefined : paradisAgentChoiceMenu(paradisVisibleTerminalText(instance));
