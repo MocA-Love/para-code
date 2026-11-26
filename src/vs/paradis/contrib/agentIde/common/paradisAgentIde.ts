@@ -331,6 +331,10 @@ const PROMPT_PATTERNS: readonly RegExp[] = [
 	/Yes,(?:proceed|anddon't?askagain|allow)/i,
 	/Pressentertoconfirm/i,
 	/Entertoselect/i,
+	// Claude Code 2.1.329 から操作説明は keybindings.json に従う（2.1.332 の実画面: `ctrl+y to select · Tab/Arrow keys to navigate`、
+	// `ctrl+y to confirm · ctrl+g to cancel`）。キーの名前は見ない
+	/toselect\u00b7.{1,40}tonavigate/i,
+	/toconfirm\u00b7.{1,20}tocancel/i,
 	/\(y\/n\)/i,
 ];
 

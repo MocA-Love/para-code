@@ -37,10 +37,18 @@ suite('ParadisAgentDocsView', () => {
 
 	test('the ledger keeps documents the user opened and the missing mark across a reload', () => {
 		const records: IParadisDocRecord[] = [
-			{ hostId: '', path: '/repo/old.md', kind: 'md', previousOwners: [], writes: [], registeredBy: 'user_opened', firstSeen: 5, missingSince: 9 },
+			{ hostId: '', path: '/repo/old.md', kind: 'md', previousOwners: [], writes: [], registeredBy: 'user_opened', firstSeen: 5, missingSince: 9, fingerprint: { size: 12, mtime: 3, hash: 'ab'.repeat(32), at: 4 } },
 			{ hostId: '', path: '/repo/given.html', kind: 'html', owner: { agent: 'claude', session: 's1', via: 'user', since: 7 }, previousOwners: [], writes: [], registeredBy: 'user_opened', firstSeen: 6 },
 		];
 		assert.deepStrictEqual(paradisParseDocLedger(paradisSerializeDocLedger(records)), records);
+	});
+
+	test('a fingerprint that is not a size, a time and a SHA-256 is dropped when the ledger is read', () => {
+		const record = { hostId: '', path: '/repo/a.md', kind: 'md', previousOwners: [], writes: [], registeredBy: 'write', firstSeen: 5 };
+		const fingerprints = [{ size: 1, mtime: 2, hash: 'short', at: 3 }, { size: -1, mtime: 2, hash: 'ab'.repeat(32), at: 3 }, { size: 1, mtime: 2, hash: 'AB'.repeat(32), at: 3 }, 'text', { size: 1, mtime: 2, hash: 'cd'.repeat(32), at: 3, extra: true }];
+		assert.deepStrictEqual(fingerprints.map(fingerprint => paradisParseDocLedger(JSON.stringify({ docs: [{ ...record, fingerprint }] }))[0].fingerprint), [
+			undefined, undefined, undefined, undefined, { size: 1, mtime: 2, hash: 'cd'.repeat(32), at: 3 },
+		]);
 	});
 
 	test('the view record carries the owner, liveness and last activity, not the write log', () => {
@@ -129,6 +137,39 @@ suite('ParadisAgentDocsView', () => {
 				{ key: 'folder:/repo/docs', paths: ['/repo/docs/a.md', '/repo/docs/c.html'] },
 				{ key: 'folder:/repo/mock', paths: ['/repo/mock/b.html'] },
 			],
+		});
+	});
+
+	test('missing documents fold under their group; a group with nothing left gives up its header', () => {
+		const now = new Date(2026, 5, 10, 12).getTime();
+		const gone = { missingSince: now - 1000 };
+		const records = paradisFilterDocs([
+			doc('/repo/docs/gone-newest.md', now - 1, { ...owned('s1'), ...gone }),
+			doc('/repo/docs/a.md', now - 1000, owned('s1')),
+			doc('/repo/mock/b.html', now - 2000, owned('s2')),
+			doc('/repo/docs/gone.html', now - 3000, { ...owned('s2'), ...gone }),
+			doc('/repo/dead/x.md', now - 4000, { ...owned('s3', '/repo', 'ended'), ...gone }),
+			doc('/repo/dead/y.md', now - 3 * 24 * 3600 * 1000, { ...owned('s3', '/repo', 'ended'), ...gone }),
+			doc('/repo/lost.md', now - 5000, gone),
+		], FILTER);
+		const summary = (grouping: 'session' | 'date' | 'folder') => paradisGroupDocs(records, grouping, now).map(group => ({ key: group.key, paths: paths(group.records), missing: paths(group.missing) }));
+		assert.deepStrictEqual({ session: summary('session'), date: summary('date'), folder: summary('folder'), onlyMissing: paradisGroupDocs(records.filter(record => record.missingSince !== undefined), 'session', now).map(group => group.kind) }, {
+			session: [
+				// 会話の並びは、ファイルのある資料の新しい順（見つからない資料の時刻では決めない）
+				{ key: 'session:s1', paths: ['/repo/docs/a.md'], missing: ['/repo/docs/gone-newest.md'] },
+				{ key: 'session:s2', paths: ['/repo/mock/b.html'], missing: ['/repo/docs/gone.html'] },
+				{ key: 'missing', paths: [], missing: ['/repo/dead/x.md', '/repo/lost.md', '/repo/dead/y.md'] },
+			],
+			date: [
+				{ key: 'date:today', paths: ['/repo/docs/a.md', '/repo/mock/b.html'], missing: ['/repo/docs/gone-newest.md', '/repo/docs/gone.html', '/repo/dead/x.md', '/repo/lost.md'] },
+				{ key: 'missing', paths: [], missing: ['/repo/dead/y.md'] },
+			],
+			folder: [
+				{ key: 'folder:/repo/docs', paths: ['/repo/docs/a.md'], missing: ['/repo/docs/gone-newest.md', '/repo/docs/gone.html'] },
+				{ key: 'folder:/repo/mock', paths: ['/repo/mock/b.html'], missing: [] },
+				{ key: 'missing', paths: [], missing: ['/repo/dead/x.md', '/repo/lost.md', '/repo/dead/y.md'] },
+			],
+			onlyMissing: ['missing'],
 		});
 	});
 });

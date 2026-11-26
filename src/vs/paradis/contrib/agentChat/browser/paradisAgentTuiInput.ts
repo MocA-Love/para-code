@@ -25,7 +25,10 @@ import type { ParadisAgentKind } from '../common/paradisAgentDescriptor.js';
  * 送った1打鍵は入力欄へ吸われて消え、3秒待った同じ打鍵は通った。上限はその実測より少し広く取る。
  */
 const INTERACTION_READY_TIMEOUT_MS = 5_000;
-/** 選択肢が見えてから打鍵するまでの一拍（描画とフォーカス移動の隙間ぶん）。 */
+/**
+ * 選択肢が見えてから打鍵するまでの一拍（描画とフォーカス移動の隙間ぶん）。Claude Code 2.1.326 と 2.1.332 の実測では、質問と
+ * 許可の確認は描かれてから 150ms 未満の番号を捨てる（150ms 以降は通る）。
+ */
 const INTERACTION_READY_SETTLE_MS = 400;
 /** 画面を見に行く間隔。 */
 const INTERACTION_READY_POLL_MS = 150;
@@ -305,10 +308,20 @@ export function paradisScreenShowsClaudeYesNoPlanPrompt(screen: string): boolean
 	return false;
 }
 
+/**
+ * Claude Code の選択の画面の操作説明（空白を除いた小文字）。確定のキーの名前は見ない。
+ *
+ * Claude Code 2.1.329 から、操作説明は利用者の `keybindings.json` に従う。2.1.332 の実画面で、`Select` の `enter` を外して
+ * `ctrl+y` に `select:accept` を割り当てると、質問の操作説明が `ctrl+y to select · Tab/Arrow keys to navigate · Esc to cancel` に
+ * なり、`entertoselect` では見落とした（見落とすと、チャットの文を質問のメニューへ流し、チャット表示からの回答は選択肢を確かめられずに断る）。
+ * 番号のキーは割り当てを変えても効く（同じ画面で `1`・`2` が次の質問へ進んだ）。
+ */
+const CLAUDE_SELECT_FOOTER = /toselect\u00b7.{1,40}tonavigate/;
+
 /** 画面の下端に、質問の選択の画面（操作説明か回答の確認）が出ているか。 */
 export function paradisScreenShowsQuestionPrompt(screen: string): boolean {
 	const region = compact(promptRegion(screen).join('\n'));
-	return QUESTION_PROMPT_MARKERS.some(marker => region.includes(marker)) || CODEX_QUESTION_HEADING.test(region);
+	return QUESTION_PROMPT_MARKERS.some(marker => region.includes(marker)) || CLAUDE_SELECT_FOOTER.test(region) || CODEX_QUESTION_HEADING.test(region);
 }
 
 /**
@@ -352,10 +365,18 @@ export const PARADIS_CLAUDE_RESUME_SCREEN_PROMPT_NAMES: Readonly<Record<ParadisC
  *   `You’re resuming an Opus 5 session. Continue with Opus 5.5?`、選択肢は `Keep …` と `Continue with …`（2.1.309 の
  *   バイナリの文字列。旗 `tengu_hidden_volcano` が `form: "dialog"` のときだけ出るので、実画面は出せていない）。
  */
+/**
+ * 汎用の確認の部品の操作説明（既定は `Enter to confirm · Esc to cancel`）。キーの名前は見ない: Claude Code 2.1.332 の実画面で、
+ * `Confirmation` の `enter`・`escape` を `ctrl+y`・`ctrl+g` に割り当て直すと、同じ部品で描く「Switch model?」の操作説明が
+ * `ctrl+y to confirm · ctrl+g to cancel` になった（古いセッション・新しいモデルの確認そのものは、ログインが要るので出せていない）。
+ * 見出しと選択肢（`body`）がそろうときだけ当たるので、ほかの確認とは取り違えない。
+ */
+const GENERIC_CONFIRM_FOOTER = /toconfirm\u00b7.{1,20}tocancel/;
+
 const CLAUDE_RESUME_SCREEN_PROMPTS: readonly { readonly kind: ParadisClaudeResumeScreenPrompt; readonly footer: RegExp; readonly body: readonly RegExp[] }[] = [
 	{ kind: 'resume', footer: /entertoconfirm\u00b7escto(?:resume|dismiss)/, body: [/resumethisconversation\?/] },
-	{ kind: 'session-age', footer: /entertoconfirm\u00b7esctocancel/, body: [/thissessionis.{1,40}oldand.{1,20}tokens\./, /resumefullsessionas-is/] },
-	{ kind: 'newer-model', footer: /entertoconfirm\u00b7esctocancel/, body: [/you[\u2019']reresuminga.{1,60}session\.continuewith.{1,60}\?/, /keep.{1,60}continuewith/] },
+	{ kind: 'session-age', footer: GENERIC_CONFIRM_FOOTER, body: [/thissessionis.{1,40}oldand.{1,20}tokens\./, /resumefullsessionas-is/] },
+	{ kind: 'newer-model', footer: GENERIC_CONFIRM_FOOTER, body: [/you[\u2019']reresuminga.{1,60}session\.continuewith.{1,60}\?/, /keep.{1,60}continuewith/] },
 ];
 
 /**

@@ -30,7 +30,7 @@ import { Disposable, IDisposable, toDisposable } from '../../../../base/common/l
 import { join } from '../../../../base/common/path.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, PARADIS_SIMULATOR_CAPTURE_START_TIMEOUT_MS, PARADIS_SIMULATOR_FIRST_FRAME_TIMEOUT_MS, paradisIsSimulatorUdid, ParadisSimulatorFold } from '../common/paradisSimulator.js';
-import { paradisDeviceHubActive, paradisParseSimctlDevices, paradisParseSimulatorHostMessage, paradisParseSimulatorScreenConfig, paradisSimulatorFoldFrame, ParadisMjpegSplitter } from '../common/paradisSimulatorFrames.js';
+import { paradisDeviceHubActive, paradisParseSimctlDevices, paradisParseSimulatorHostMessage, paradisParseSimulatorKeyboardFallback, paradisParseSimulatorScreenConfig, paradisSimulatorFoldFrame, ParadisMjpegSplitter } from '../common/paradisSimulatorFrames.js';
 import { IParadisSimulatorHostConnection, IParadisSimulatorHostProvider } from './paradisSimulatorHostProcess.js';
 
 /** `xcrun` を呼ぶ口（テストで差し替える）。 */
@@ -111,6 +111,8 @@ export class ParadisServeSimBackend extends Disposable {
 	private readonly _inputs = new Map<string, IInputSocket>();
 	/** いまのホストがセッションを開いた端末 → そのときの起動の識別。 */
 	private readonly _sessions = new Map<string, string>();
+	/** いまのホストが「キーを旧来の HID で送った」と出した端末（UDID の頭 8 桁、大文字）。 */
+	private readonly _keyboardFallbacks = new Set<string>();
 	private _sessionsOf: IParadisSimulatorHostConnection | undefined;
 	/** 見比べと起こし直しを 1 つずつ進めるための列。 */
 	private _gate: Promise<unknown> = Promise.resolve();
@@ -161,6 +163,22 @@ export class ParadisServeSimBackend extends Disposable {
 		await this._simctl(['shutdown', udid], 60_000);
 	}
 
+	/** ホストの stdout の 1 行を受ける（キーを旧来の HID で送った、の行を覚える）。 */
+	noteHostOutput(line: string): void {
+		const udid = paradisParseSimulatorKeyboardFallback(line);
+		if (udid) {
+			this._keyboardFallbacks.add(udid);
+		}
+	}
+
+	/**
+	 * この端末へのキーが、Device Hub の経路を使えず旧来の HID で送られたか（届いていないことがある）。
+	 * ホストはセッションごとに 1 回しか出さないので、ホストを起こし直すまで true のまま。
+	 */
+	keyboardFallback(udid: string): boolean {
+		return this._keyboardFallbacks.has(requireUdid(udid).slice(0, 8).toUpperCase());
+	}
+
 	/** Device Hub が入力を奪っているか。 */
 	async deviceHubActive(udid: string): Promise<boolean> {
 		requireUdid(udid);
@@ -182,6 +200,7 @@ export class ParadisServeSimBackend extends Disposable {
 		}
 		this._generation++;
 		this._sessions.clear();
+		this._keyboardFallbacks.clear();
 		this._sessionsOf = undefined;
 		this._logService.warn(`[paradis-simulator] ${reason}; restarting the simulator host to drop its device sessions`);
 		await this._host.recycle(reason);
@@ -206,6 +225,7 @@ export class ParadisServeSimBackend extends Disposable {
 			if (connection !== this._sessionsOf) {
 				// ホストが替わった（落ちて起き直した）: 前のホストのセッションはもう無い
 				this._sessions.clear();
+				this._keyboardFallbacks.clear();
 				this._sessionsOf = connection;
 			}
 			const bootId = await this._readBootId(udid).catch(() => undefined);

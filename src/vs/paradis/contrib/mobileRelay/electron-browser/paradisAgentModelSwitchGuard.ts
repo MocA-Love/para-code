@@ -31,6 +31,8 @@ const MODEL_SWITCH_COMMAND = /^\/(?:model|effort)\s+\S/;
 const CONFIRM_TITLE = /switch model\?|change effort level\?/i;
 // 確認が描かれてから Enter を送るまでの待ち。Claude Code 2.1.326 の選択肢の一覧は、最初の描画から 150ms 未満に
 // 押し始めたキーを打ち間違いとして捨てる（バイナリの判定式。実機の 2 回の切り替えでは捨てられなかった）。
+// 2026-11-26 に 2.1.326 と 2.1.332 で測り直した（代役の API、各 5 回）: 「Switch model?」は描画から 0・50・100・150・200ms の
+// Enter をどれも受け付け、この待ちでも 1 回で閉じた。待ちは害が無いので残す（確認は送信の Enter から 30ms ほどで描かれる）。
 const CONFIRM_SETTLE_MS = 200;
 // 直前の Enter（コマンドの送信）から次の Enter までの間。2.1.326 は同じキーを 700ms 以内に続けると、前の打鍵の続きとして
 // 押し始めを前の時刻に揃えるので、上の 150ms の判定に当たる。

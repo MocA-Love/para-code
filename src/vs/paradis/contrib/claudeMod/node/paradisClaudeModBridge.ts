@@ -38,8 +38,12 @@ const LONG_POLL_MS = 25_000;
 const ALIVE_MS = 75_000;
 /** 待ちの項目に長いポーリングが来なくなったら捨てるまで（mod の hook が外れた・Esc 等）。 */
 const ORPHAN_MS = 60_000;
-/** 質問の待ちの上限（PC の TUI と並んでいるので長くてよい）。 */
-const QUESTION_TTL_MS = 60 * 60_000;
+/**
+ * 質問の待ちの上限（PC の TUI と並んでいるので長くてよい）。過ぎるとモバイルの回答はキーの経路へ回る。席を外している間の
+ * 質問に 1 時間より後で答えることは普通にあり（Sentry のキーの経路の回答 2 件は、質問から 65 分・89 分後だった）、
+ * そのたびに確かさの低いキーへ回していたので 1 日にした。mod が去った待ちは {@link ORPHAN_MS} で先に捨てる。
+ */
+const QUESTION_TTL_MS = 24 * 60 * 60_000;
 /** 待たなかった承認の性質（{@link ParadisClaudeModBridge.permissionTraits}）を覚えておく上限。結果が書かれた・ターンが終わったら先に消す。 */
 const PERMISSION_TRAITS_TTL_MS = 30 * 60_000;
 /** モバイルが繋がっていない状態が続いたら承認の待ちを打ち切るまで（一時的な切断は待つ）。 */
@@ -156,6 +160,12 @@ export type ParadisClaudeModEvent = { readonly token: string; readonly sessionId
 	| { readonly type: 'context'; readonly breakdown: IParadisClaudeContextBreakdown }
 	/** 質問・承認の待ちが増えた・終わった（ParadisMobileAgentChat がカードの選択肢を直す）。 */
 	| { readonly type: 'pending-changed'; readonly kind: 'question' | 'permission' }
+	/**
+	 * モバイルの答え（質問の回答・取り下げ、承認の許可・拒否）を mod が受け取った。mod は受け取った答えをそのまま Claude Code へ
+	 * 返すので、その質問・承認はここで決着している（`id` は {@link IParadisClaudeModPendingQuestion.id} などの待ちの id）。
+	 * 答えを預けただけ（長いポーリングの切れ目）では出ない。受け取られずに捨てた答えでも出ない。
+	 */
+	| { readonly type: 'answer-taken'; readonly kind: 'question' | 'permission'; readonly id: string }
 	/** {@link ParadisClaudeModBridge.isAlive} の答えが変わった（来た・途絶えた・ペインが消えた）。停止の可否を送り直すのに使う。 */
 	| { readonly type: 'alive-changed'; readonly alive: boolean }
 	/** PC の Claude Code の入力欄の文（入力欄の mod。Claude Code 2.1.300 以降）。{@link ParadisClaudeModBridge.draftOf} と同じもの。 */
@@ -788,6 +798,7 @@ export class ParadisClaudeModBridge {
 		item.lastPollAt = this.now();
 		if (item.outcome !== undefined) {
 			this.pending.delete(item.id);
+			this.fireAnswerTaken(item, item.outcome);
 			return { status: 200, body: { ...item.outcome } };
 		}
 		if (signal.aborted) {
@@ -820,9 +831,17 @@ export class ParadisClaudeModBridge {
 				return { status: 200, body: { state: 'pending' } };
 			}
 			this.pending.delete(item.id);
+			this.fireAnswerTaken(item, outcome);
 			return { status: 200, body: { ...outcome } };
 		} finally {
 			release();
+		}
+	}
+
+	/** 答え（回答・取り下げ・許可・拒否）を mod へ返すところで知らせる。決着済み・時間切れの返事では知らせない。 */
+	private fireAnswerTaken(item: IPendingItem, outcome: WaitOutcome): void {
+		if (outcome.state === 'answer' || outcome.state === 'clarify') {
+			this.fire({ token: item.token, sessionId: item.sessionId, at: this.now(), type: 'answer-taken', kind: item.kind, id: item.id });
 		}
 	}
 

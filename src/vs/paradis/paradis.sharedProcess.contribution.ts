@@ -62,6 +62,7 @@ import './contrib/agentHookTrust/node/paradisCodexHookTrust.js';
 import './contrib/agentModelCatalog/node/paradisAgentModelCatalog.sharedProcess.js';
 import './contrib/agentActivity/node/paradisAgentActivityChannel.js';
 import './contrib/notificationInbox/node/paradisNotificationInboxChannel.js';
+import './contrib/humanAsk/node/paradisHumanAskChannel.js';
 import './contrib/agentIde/node/paradisAgentIde.sharedProcess.js';
 import './contrib/scheduledRuns/node/paradisScheduledRunsChannel.js';
 import './contrib/taskBoard/node/paradisTaskBoardBridge.sharedProcess.js';
