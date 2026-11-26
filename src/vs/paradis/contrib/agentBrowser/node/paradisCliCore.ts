@@ -463,6 +463,9 @@ export function paradisCliParseFlags(argv: readonly string[], command: IParadisC
 		byFlag.set(kebab(name), name);
 		// 引数の名前が camelCase の道具（close_browser_tab の tabId など）でも、ほかの道具と同じ `--tab_id` で渡せるようにする
 		byFlag.set(kebab(name).replace(/-/g, '_'), name);
+	}
+	// 引数そのものの名前は、別の引数の別名より強い（tab_id と tabId の両方を持つ道具でも取り違えない）
+	for (const name of Object.keys(properties)) {
 		byFlag.set(name, name);
 	}
 	const args: Record<string, unknown> = {};
