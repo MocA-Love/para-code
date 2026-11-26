@@ -102,10 +102,13 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string):
 			notificationService.info(localize('paradisBots.openRemote', "Open the bot from a local window. Its home folder is on this computer."));
 			return;
 		}
-		const launch = await botsService.requestLaunch(botId, 'chat');
-		// 会話は 1 つの Bot に 1 つだけ。別のウィンドウで開いている（そのウィンドウが前に出る）・起動している途中
+		let launch = await botsService.requestLaunch(botId, 'chat');
+		// 会話は 1 つの Bot に 1 つだけ。別のウィンドウで開いていれば、そのウィンドウに前へ出してもらう。どのウィンドウも
+		// 応えなければ（閉じたことが伝わらなかったペイン）、shared process がその結び付けを外すので、起動し直す
+		if (!launch.ok && launch.code === 'already_open' && !await botsService.requestReveal(botId)) {
+			launch = await botsService.requestLaunch(botId, 'chat');
+		}
 		if (!launch.ok && launch.code === 'already_open') {
-			await botsService.requestReveal(botId);
 			notificationService.info(localize('paradisBots.alreadyOpen', "This bot is already open in another window. That window shows it now."));
 			return;
 		}
@@ -218,6 +221,8 @@ class ParadisBotsWindowWorker extends Disposable {
 			stateKeyOf: instanceId => this.terminalScopeService.getStateKeyForInstance(instanceId),
 		}, request.paneHashes);
 		if (existing !== undefined) {
+			// 持っていると先に応える（応えるウィンドウが無ければ、shared process はその結び付けを外して起動へ進める）
+			await this.botsService.ackReveal(request.revealId);
 			await paradisRevealNotifiedPane({ hostService: this.hostService, terminalService: this.terminalService, workspaceSwitchService: this.switchService }, existing.stateKey, existing.instanceId);
 		}
 	}
