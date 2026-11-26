@@ -17,11 +17,15 @@ import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { INotification, INotificationService } from '../../../../../platform/notification/common/notification.js';
 import { InMemoryStorageService } from '../../../../../platform/storage/common/storage.js';
 import { TerminalCapability } from '../../../../../platform/terminal/common/capabilities/capabilities.js';
+import { IHostService } from '../../../../../workbench/services/host/browser/host.js';
 import { ILifecycleService } from '../../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { ITerminalEditorService, ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { ParadisAgentStatus } from '../../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisPaneTokenService } from '../../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisAgentModelCatalogService } from '../../../agentModelCatalog/common/paradisAgentModelCatalog.js';
+import { IParadisDialogService } from '../../../confirmDialog/browser/paradisDialogService.js';
+import { IParadisSpaceSectionsService } from '../../../workspaceSwitch/common/paradisSpaceSections.js';
+import { IParadisWorkspaceSectionsService } from '../../../workspaceSwitch/common/paradisWorkspaceSections.js';
 import { IParadisAgentStatusStore, IParadisTerminalScopeService, IParadisWorkspaceSwitchService, IParadisWorktreeService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { PARADIS_DEFAULT_AGENT_COMMANDS } from '../../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import {
@@ -140,6 +144,10 @@ suite('ParadisAgentIdeChannel', () => {
 			storage,
 			upcastPartial<ILifecycleService>({ willShutdown: false }),
 			new NullLogService(),
+			upcastPartial<IParadisWorkspaceSectionsService>({ groups: () => [] }),
+			upcastPartial<IParadisSpaceSectionsService>({ sectionsOf: () => [] }),
+			upcastPartial<IParadisDialogService>({}),
+			upcastPartial<IHostService>({}),
 		));
 		const caller = add(1, REPOSITORY.id);
 		const sameSpace = add(2, REPOSITORY.id);
@@ -177,6 +185,23 @@ suite('ParadisAgentIdeChannel', () => {
 			probeOther: false,
 			wideRead: true,
 			leaks: false,
+		});
+	});
+
+	test('section tools: list_spaces carries the sections, and writing needs the setting and a known caller', async () => {
+		const on = setup();
+		const off = setup({ actionsEnabled: false });
+		const listed = await on.channel.run(on.caller.token, { op: 'listSpaces' });
+		assert.deepStrictEqual({
+			sections: listed.ok ? (listed.data as { sections?: unknown }).sections : undefined,
+			off: outcome(await off.channel.run(off.caller.token, { op: 'createSection', name: 'Work' })),
+			unknownCaller: outcome(await on.channel.run('token-of-nobody', { op: 'createSection', name: 'Work' })),
+			unknownSection: outcome(await on.channel.run(on.caller.token, { op: 'removeSection', section: 'missing' })),
+		}, {
+			sections: [],
+			off: 'Agent actions are turned off in Para Code settings.',
+			unknownCaller: 'Para Code cannot find your own terminal in this window yet (it may still be restoring). Retry in a few seconds.',
+			unknownSection: 'Unknown section "missing". There are no sections yet; create one with create_space_section.',
 		});
 	});
 

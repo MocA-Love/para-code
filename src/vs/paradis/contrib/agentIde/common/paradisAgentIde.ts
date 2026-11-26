@@ -21,8 +21,11 @@
 //   `paradis.agentIde.allowShellCommands`（既定オフ）。サンドボックスや許可設定の外で動くため
 // - 閉じる・削除は、そのエージェント自身が作ったものだけ
 // - 許可待ち・質問中・作業中のペインへは Enter を送らない。Enter を送るかは毎回明示させる
+// - 「スペース」の一覧のセクション（見出し）の作成・変更・並べ替えは、窓の一覧全体のものなので範囲の設定を見ず、
+//   利用者が作ったセクションも変えられる。消えるのは見出しだけだが、中身のあるセクションの削除は利用者の確認を通す
 
 import { paradisStripTerminalControlCharacters } from '../../../common/paradisTerminalControlCharacters.js';
+import { PARADIS_WORKSPACE_COLORS } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisAgentChoiceMenu, paradisAgentChoiceMenu } from './paradisAgentChoiceMenu.js';
 import type { ParadisAgentStartupScreenState } from './paradisAgentStartupScreen.js';
 import { PARADIS_SUBAGENT_WAIT_MAX_SECONDS } from '../../agentBrowser/common/paradisSubagentToolCalls.js';
@@ -105,6 +108,13 @@ export const PARADIS_AGENT_IDE_MAX_CREATED_PER_WINDOW = 12;
 /** 1つの呼び出し元が作れるスペースの数（今も残っているもの）。 */
 export const PARADIS_AGENT_IDE_MAX_SPACES_PER_CALLER = 3;
 
+/** セクションの色に渡せる値（人のメニューの 12 色）。色を外すときは {@link PARADIS_AGENT_IDE_SECTION_NONE}。 */
+export const PARADIS_AGENT_IDE_SECTION_COLORS: readonly string[] = PARADIS_WORKSPACE_COLORS.map(color => color.id);
+/** 「色なし」「セクションの外」を表す値。セクションの id（UUID）とは重ならない。 */
+export const PARADIS_AGENT_IDE_SECTION_NONE = 'none';
+/** セクションの名前の長さの上限（台帳の上限と同じ。人の入力はここで切られるが、道具は断る）。 */
+export const PARADIS_AGENT_IDE_MAX_SECTION_NAME_LENGTH = 200;
+
 /** 待機の同時数（ペインごと・全体）。待機は MCP の受付枠を長く占めるので絞る。 */
 export const PARADIS_AGENT_IDE_MAX_WAITS_PER_PANE = 2;
 export const PARADIS_AGENT_IDE_MAX_WAITS_TOTAL = 16;
@@ -137,7 +147,14 @@ export type ParadisAgentIdeRequest =
 	| { readonly op: 'createTerminal'; readonly space?: string }
 	| { readonly op: 'createSpace'; readonly repository?: string; readonly name?: string; readonly branch?: string; readonly baseBranch?: string; readonly existingBranch?: string; readonly prompt?: string; readonly agent?: string; readonly model?: string; readonly effort?: string; readonly runSetup?: boolean }
 	| { readonly op: 'closeTerminal'; readonly terminal: string }
-	| { readonly op: 'removeSpace'; readonly space: string };
+	| { readonly op: 'removeSpace'; readonly space: string }
+	/** `repository` があれば、そのリポジトリの中のスペースをまとめるセクション（色は持たない）。 */
+	| { readonly op: 'createSection'; readonly name: string; readonly color?: string; readonly repository?: string }
+	/** `color` は色の id か {@link PARADIS_AGENT_IDE_SECTION_NONE}。`before` / `after` は同じ並びの別のセクションの id。 */
+	| { readonly op: 'updateSection'; readonly section: string; readonly name?: string; readonly color?: string; readonly collapsed?: boolean; readonly before?: string; readonly after?: string }
+	| { readonly op: 'removeSection'; readonly section: string }
+	/** `section` はセクションの id か {@link PARADIS_AGENT_IDE_SECTION_NONE}。`before` / `after` は移した先で隣に置くスペースのキー。 */
+	| { readonly op: 'moveSpaceToSection'; readonly space: string; readonly section?: string; readonly before?: string; readonly after?: string };
 
 export type ParadisAgentIdeOperation = ParadisAgentIdeRequest['op'];
 
@@ -378,6 +395,10 @@ export const PARADIS_AGENT_IDE_ACTION_TOOLS: ReadonlySet<string> = new Set([
 	'create_space',
 	'close_terminal',
 	'remove_space',
+	'create_space_section',
+	'update_space_section',
+	'remove_space_section',
+	'move_space_to_section',
 ]);
 
 const TERMINAL_ARGUMENT = {
@@ -385,12 +406,17 @@ const TERMINAL_ARGUMENT = {
 	description: 'Terminal id from list_terminals (looks like "t_1a2b3c4d5e6f"). Ids are not secret and stay the same across window reloads.',
 } as const;
 
+const SECTION_ARGUMENT = {
+	type: 'string',
+	description: 'Section id from list_spaces "sections".',
+} as const;
+
 const SPACE_ARGUMENT = {
 	type: 'string',
 	description: 'Space key from list_spaces (a repository id or "worktree:<uri>"). Omit to use the space this terminal pane belongs to.',
 } as const;
 
-/** 7 つの道具に付くので短くする。設定の場所（画面の文言）は、断るときのエラー（{@link PARADIS_AGENT_IDE_ACTIONS_DISABLED_MESSAGE}）が伝える。 */
+/** 操作の道具すべてに付くので短くする。設定の場所（画面の文言）は、断るときのエラー（{@link PARADIS_AGENT_IDE_ACTIONS_DISABLED_MESSAGE}）が伝える。 */
 const ACTIONS_OFF_NOTE = `Needs the user's setting ${PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING} (off by default; when it is off, the error says where the user turns it on).`;
 
 /** MCP のツール注釈。読み取り系は確認なしで使ってよいこと、操作系は外へ影響することをクライアントへ伝える。 */
@@ -413,7 +439,7 @@ export const PARADIS_AGENT_IDE_TOOLS: readonly IParadisAgentIdeToolDefinition[] 
 	},
 	{
 		name: 'list_spaces',
-		description: 'List the spaces (repositories and their git worktrees) in the Para Code window that owns this terminal pane, the agents you can launch (with model/effort ids), and which actions are enabled. The space of this pane has "current": true; the one on screen has "on_screen": true.',
+		description: 'List the spaces (repositories and their git worktrees) in the Para Code window that owns this terminal pane, the agents you can launch (with model/effort ids), and which actions are enabled. The space of this pane has "current": true; the one on screen has "on_screen": true. "sections" lists the sidebar sections in display order with the space keys they hold: sections of repositories (with a color), and sections inside one repository that hold its worktree spaces (those have "repository").',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 		annotations: READ_ONLY_ANNOTATIONS,
 	},
@@ -542,6 +568,61 @@ export const PARADIS_AGENT_IDE_TOOLS: readonly IParadisAgentIdeToolDefinition[] 
 		inputSchema: { type: 'object', properties: { space: { type: 'string', description: 'Space key returned by create_space.' } }, required: ['space'], additionalProperties: false },
 		annotations: ACTION_ANNOTATIONS,
 	},
+	{
+		name: 'create_space_section',
+		description: `Create a section (a named heading that groups spaces) at the end of the Para Code sidebar list. Without "repository" it groups repositories; with "repository" it is a section inside that repository and groups its worktree spaces. Names may repeat. Fill it with move_space_to_section. Sections are saved for the Para Code window that owns this terminal (other windows on the same workspace follow). ${ACTIONS_OFF_NOTE}`,
+		inputSchema: {
+			type: 'object',
+			properties: {
+				name: { type: 'string', maxLength: PARADIS_AGENT_IDE_MAX_SECTION_NAME_LENGTH },
+				color: { type: 'string', enum: [...PARADIS_AGENT_IDE_SECTION_COLORS], description: 'Color of the dot before the name. Only for sections of repositories. Omit for no dot.' },
+				repository: { type: 'string', description: 'Repository space key (kind "repository" in list_spaces): create the section inside this repository.' },
+			},
+			required: ['name'],
+			additionalProperties: false,
+		},
+		annotations: ACTION_ANNOTATIONS,
+	},
+	{
+		name: 'update_space_section',
+		description: `Change a section: its name, its color, whether it is collapsed, and its place among the other sections. Pass only what should change. ${ACTIONS_OFF_NOTE}`,
+		inputSchema: {
+			type: 'object',
+			properties: {
+				section: SECTION_ARGUMENT,
+				name: { type: 'string', maxLength: PARADIS_AGENT_IDE_MAX_SECTION_NAME_LENGTH },
+				color: { type: 'string', enum: [...PARADIS_AGENT_IDE_SECTION_COLORS, PARADIS_AGENT_IDE_SECTION_NONE], description: `"${PARADIS_AGENT_IDE_SECTION_NONE}" removes the dot. Only for sections of repositories.` },
+				collapsed: { type: 'boolean' },
+				before: { type: 'string', description: 'Id of another section of the same list: place this section just before it.' },
+				after: { type: 'string', description: 'Id of another section of the same list: place this section just after it. Cannot be combined with "before".' },
+			},
+			required: ['section'],
+			additionalProperties: false,
+		},
+		annotations: ACTION_ANNOTATIONS,
+	},
+	{
+		name: 'remove_space_section',
+		description: `Remove a section. Only the heading goes away: its spaces stay in the list outside any section, and no repository, worktree or branch is deleted. An empty section is removed at once. For a section that holds spaces, Para Code shows the user a confirmation dialog saying an agent asked for it and removes it only if they agree, so this returns before anything is removed. Only one request can be pending at a time. ${ACTIONS_OFF_NOTE}`,
+		inputSchema: { type: 'object', properties: { section: SECTION_ARGUMENT }, required: ['section'], additionalProperties: false },
+		annotations: ACTION_ANNOTATIONS,
+	},
+	{
+		name: 'move_space_to_section',
+		description: `Put a space into a section, take it out, or reorder it. A repository (kind "repository") goes into a section of repositories; a worktree space goes into a section of its own repository. "section" is a section id, or "${PARADIS_AGENT_IDE_SECTION_NONE}" to take the space out of its section; without "before"/"after" the space goes to the end. "before"/"after" name a space of the same kind to place it next to; the space then joins that space's section, so "section" may be omitted. ${ACTIONS_OFF_NOTE}`,
+		inputSchema: {
+			type: 'object',
+			properties: {
+				space: { type: 'string', description: 'Space key from list_spaces.' },
+				section: { type: 'string', description: `Section id from list_spaces "sections", or "${PARADIS_AGENT_IDE_SECTION_NONE}".` },
+				before: { type: 'string', description: 'Space key: place the space just before this one.' },
+				after: { type: 'string', description: 'Space key: place the space just after this one. Cannot be combined with "before".' },
+			},
+			required: ['space'],
+			additionalProperties: false,
+		},
+		annotations: ACTION_ANNOTATIONS,
+	},
 ];
 
 export const PARADIS_AGENT_IDE_TOOL_NAMES: ReadonlySet<string> = new Set(PARADIS_AGENT_IDE_TOOLS.map(tool => tool.name));
@@ -589,6 +670,36 @@ function optionalInteger(args: Args, key: string, min: number, max: number, fall
 		return new Error(`"${key}" must be an integer.`);
 	}
 	return Math.min(max, Math.max(min, value));
+}
+
+/** セクションの id の長さの上限（台帳の上限と同じ）。 */
+const MAX_SECTION_ID_LENGTH = 512;
+
+const SECTION_COLOR_ONLY_FOR_REPOSITORIES = 'Sections inside a repository have no color. Omit "color", or omit "repository" to create a section of repositories.';
+
+/** 色の引数。人のメニューで選べる色だけを受ける。`allowNone` なら「色なし」も受ける。 */
+function sectionColor(args: Args, allowNone: boolean): string | undefined | Error {
+	const value = args.color;
+	if (value === undefined || value === null) {
+		return undefined;
+	}
+	const allowed = allowNone ? [...PARADIS_AGENT_IDE_SECTION_COLORS, PARADIS_AGENT_IDE_SECTION_NONE] : PARADIS_AGENT_IDE_SECTION_COLORS;
+	if (typeof value !== 'string' || !allowed.includes(value)) {
+		return new Error(`"color" must be one of ${allowed.join(', ')}.`);
+	}
+	return value;
+}
+
+/** `before` / `after`（隣に置く相手）。両方は受けない。 */
+function neighbor(args: Args, maxLength: number): { readonly before?: string; readonly after?: string } | Error {
+	const before = optionalString(args, 'before', maxLength);
+	if (before instanceof Error) { return before; }
+	const after = optionalString(args, 'after', maxLength);
+	if (after instanceof Error) { return after; }
+	if (before !== undefined && after !== undefined) {
+		return new Error('"before" and "after" cannot be combined.');
+	}
+	return { ...(before !== undefined ? { before } : {}), ...(after !== undefined ? { after } : {}) };
 }
 
 /**
@@ -743,6 +854,56 @@ export function paradisParseAgentIdeCall(name: string, rawArgs: unknown, options
 			const space = requiredString(args, 'space', 4096);
 			if (space instanceof Error) { return fail(space); }
 			return { kind: 'window', action: true, request: { op: 'removeSpace', space } };
+		}
+		case 'create_space_section': {
+			const sectionName = requiredString(args, 'name', PARADIS_AGENT_IDE_MAX_SECTION_NAME_LENGTH);
+			if (sectionName instanceof Error) { return fail(sectionName); }
+			const color = sectionColor(args, false);
+			if (color instanceof Error) { return fail(color); }
+			const repository = optionalString(args, 'repository', 4096);
+			if (repository instanceof Error) { return fail(repository); }
+			if (color !== undefined && repository !== undefined) {
+				return { kind: 'error', error: SECTION_COLOR_ONLY_FOR_REPOSITORIES };
+			}
+			return { kind: 'window', action: true, request: { op: 'createSection', name: sectionName, ...(color !== undefined ? { color } : {}), ...(repository !== undefined ? { repository } : {}) } };
+		}
+		case 'update_space_section': {
+			const section = requiredString(args, 'section', MAX_SECTION_ID_LENGTH);
+			if (section instanceof Error) { return fail(section); }
+			const sectionName = optionalString(args, 'name', PARADIS_AGENT_IDE_MAX_SECTION_NAME_LENGTH);
+			if (sectionName instanceof Error) { return fail(sectionName); }
+			if (typeof args.name === 'string' && sectionName === undefined) {
+				return { kind: 'error', error: '"name" must not be empty.' };
+			}
+			const color = sectionColor(args, true);
+			if (color instanceof Error) { return fail(color); }
+			if (args.collapsed !== undefined && args.collapsed !== null && typeof args.collapsed !== 'boolean') {
+				return { kind: 'error', error: '"collapsed" must be a boolean.' };
+			}
+			const collapsed = typeof args.collapsed === 'boolean' ? args.collapsed : undefined;
+			const place = neighbor(args, MAX_SECTION_ID_LENGTH);
+			if (place instanceof Error) { return fail(place); }
+			if (sectionName === undefined && color === undefined && collapsed === undefined && place.before === undefined && place.after === undefined) {
+				return { kind: 'error', error: 'Nothing to change: pass at least one of "name", "color", "collapsed", "before", "after".' };
+			}
+			return { kind: 'window', action: true, request: { op: 'updateSection', section, ...(sectionName !== undefined ? { name: sectionName } : {}), ...(color !== undefined ? { color } : {}), ...(collapsed !== undefined ? { collapsed } : {}), ...place } };
+		}
+		case 'remove_space_section': {
+			const section = requiredString(args, 'section', MAX_SECTION_ID_LENGTH);
+			if (section instanceof Error) { return fail(section); }
+			return { kind: 'window', action: true, request: { op: 'removeSection', section } };
+		}
+		case 'move_space_to_section': {
+			const space = requiredString(args, 'space', 4096);
+			if (space instanceof Error) { return fail(space); }
+			const section = optionalString(args, 'section', MAX_SECTION_ID_LENGTH);
+			if (section instanceof Error) { return fail(section); }
+			const place = neighbor(args, 4096);
+			if (place instanceof Error) { return fail(place); }
+			if (section === undefined && place.before === undefined && place.after === undefined) {
+				return { kind: 'error', error: `Pass "section" (a section id, or "${PARADIS_AGENT_IDE_SECTION_NONE}" to take the space out of its section), or "before" / "after" to place it next to another space.` };
+			}
+			return { kind: 'window', action: true, request: { op: 'moveSpaceToSection', space, ...(section !== undefined ? { section } : {}), ...place } };
 		}
 		default:
 			return { kind: 'error', error: `Unknown tool: ${name}` };
