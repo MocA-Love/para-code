@@ -89,4 +89,16 @@ suite('Paradis bots store', () => {
 		const written = JSON.parse(await fs.readFile(join(folder, 'items.json'), 'utf8'));
 		assert.deepStrictEqual([written.nextNumber, written.items[0], written.items[1].number], [3, waiting, 2]);
 	});
+
+	test('フォルダを作れなかった書き込みの後も、次の書き込みでやり直す', async () => {
+		// 台帳のフォルダの親（paradis）の場所にファイルがあると、フォルダを作れない
+		await fs.writeFile(join(userData, 'paradis'), 'x');
+		const bots = createParadisBotsFile(userData);
+		const created = paradisBotCreate(EMPTY_PARADIS_BOTS_STATE, { id: 'b1', name: 'A', agent: 'claude' }, 1000);
+		assert.ok(created.ok);
+		const first = await bots.write(created.state).then(() => 'written', () => 'failed');
+		await fs.rm(join(userData, 'paradis'));
+		const second = await bots.write(created.state).then(() => 'written', () => 'failed');
+		assert.deepStrictEqual({ first, second, read: (await bots.read()).state.bots.map(bot => bot.id) }, { first: 'failed', second: 'written', read: ['b1'] });
+	});
 });

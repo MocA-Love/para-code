@@ -122,7 +122,7 @@ export function paradisInboxClampOverflows(size: IParadisInboxClampSize | undefi
 }
 
 /** 実物の DOM で、切り詰めた欄の高さを測る。描かれていない（つながっていない・高さ 0）なら測らない。 */
-function measureParadisInboxClamp(element: HTMLElement): IParadisInboxClampSize | undefined {
+export function measureParadisInboxClamp(element: HTMLElement): IParadisInboxClampSize | undefined {
 	if (!element.isConnected || element.clientHeight === 0) {
 		return undefined;
 	}
