@@ -12,7 +12,7 @@ import { IParadisHumanAskSnapshot, paradisSanitizeHumanAskInput } from '../../..
 import { ParadisHumanAskLedger } from '../../../humanAsk/common/paradisHumanAskLedger.js';
 import { ParadisHumanAskService } from '../../../humanAsk/node/paradisHumanAskChannel.js';
 import { ITaskBoardFlow, ITaskBoardTask } from '../../common/paradisTaskBoard.js';
-import { taskBoardAskOf } from '../../common/paradisTaskBoardAsks.js';
+import { TASK_BOARD_ASKS_LIMIT, taskBoardAskOf } from '../../common/paradisTaskBoardAsks.js';
 import { IParadisTaskBoardWindowDescription, ParadisTaskBoardWindowMethod } from '../../common/paradisTaskBoardBridge.js';
 import { TASK_BOARD_DEFAULT_FLOW } from '../../common/paradisTaskBoardFlow.js';
 import { IParadisTaskBoardWindowRouter, ParadisTaskBoardBridgeService } from '../../node/paradisTaskBoardBridgeService.js';
@@ -179,6 +179,22 @@ suite('ParadisTaskBoardAskBridge', () => {
 			whileConnected: ['board:L:t1:q1 waiting board:1', 'board:M:t9:q9 waiting board:2'],
 			afterReopen: '200 {"ok":true,"refused":0}',
 			entries: ['board:L:t1:q1', 'board:M:t9:q9'],
+		});
+	});
+
+	test('the id heads a board named are forgotten when it disconnects, so a board that named the most heads does not lock out new ones', async () => {
+		const a = connect(BOARD_A);
+		await put(BOARD_A, { asks: Array.from({ length: TASK_BOARD_ASKS_LIMIT }, (_, index) => question(`P${index}:t1:q1`)) });
+		const b = connect(BOARD_B);
+		const whileFull = await put(BOARD_B, { asks: [question('Z:t1:q1')] });
+		a.client.dispose();
+		const afterDisconnect = await put(BOARD_B, { asks: [question('Z:t1:q1')] });
+		const entries = ledger.getSnapshot().entries.filter(entry => entry.state === 'waiting').map(entry => entry.key);
+		b.client.dispose();
+		assert.deepStrictEqual({ whileFull, afterDisconnect, entries }, {
+			whileFull: '200 {"ok":true,"refused":1}',
+			afterDisconnect: '200 {"ok":true,"refused":0}',
+			entries: ['board:Z:t1:q1'],
 		});
 	});
 

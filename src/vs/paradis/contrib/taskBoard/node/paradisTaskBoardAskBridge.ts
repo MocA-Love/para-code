@@ -65,8 +65,8 @@ export class ParadisTaskBoardAskBridge extends Disposable {
 	/**
 	 * id の頭（ボードの台帳の名前。リポジトリごとに違う）と、それを使っているボードの鍵（の hash）。頭はボードが自分で
 	 * 名乗るので、その頭を使っているボードがつながっている間は、別の鍵のボードが同じ頭を名乗っても断る（別のリポジトリの
-	 * 待ちに成り代わって答えを受け取らせない）。ボードの鍵は起動ごとに変わるので、使っていたボードの接続が全部切れた後
-	 * （その待ちはもう取り下げてある）なら、開き直したボードの新しい鍵に結び付け直す。
+	 * 待ちに成り代わって答えを受け取らせない）。ボードの鍵は起動ごとに変わるので、使っていたボードの接続が全部切れたら
+	 * （その待ちは取り下げる）その頭を表から外し、開き直したボードの新しい鍵が名乗れるようにする。
 	 */
 	private readonly prefixOwners = new Map<string, string>();
 	/** 届けてもらっている最中の依頼（依頼の番号 → 持ち主と鍵）。 */
@@ -100,6 +100,12 @@ export class ParadisTaskBoardAskBridge extends Disposable {
 			return;
 		}
 		this.boards.delete(keyHash);
+		// このボードが名乗っていた頭を表から外す（待ちはこの後すべて取り下げる。残すと頭の上限が埋まったまま減らない）
+		for (const [prefix, holder] of [...this.prefixOwners]) {
+			if (holder === keyHash) {
+				this.prefixOwners.delete(prefix);
+			}
+		}
 		const owner = board.owner;
 		for (const [claim, entry] of [...this.claims]) {
 			if (entry.owner === owner) {
