@@ -1,0 +1,87 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments)
+
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+// Bot のサービスが画面（一覧・ページ・スマホ）へ見せる形。台帳そのものではなく、Bot ごとにまとめた値。
+
+import { IParadisBotItemsState, paradisBotItemCounts } from './paradisBotItems.js';
+import { IParadisBot } from './paradisBots.js';
+
+/**
+ * Bot の今の様子。
+ *
+ * - `stopped`: ペインが無い（起動していない・一時停止中）
+ * - `idle`: ペインはあるが、エージェントは待っている
+ * - `working`: 会話のペインでエージェントが動いている
+ * - `patrolling`: 見回り（定期実行）のペインでエージェントが動いている
+ */
+/**
+ * Bot の機能を使えるようにするか（試験中、既定 false）。設定の登録は Bot の一覧の帯の側にあり、ここは id だけを
+ * 持つ（帯・Bot の道具・管理の道具が同じ id を読む）。
+ */
+export const PARADIS_BOTS_ENABLED_SETTING = 'paradis.bots.enabled';
+
+export type ParadisBotActivity = 'stopped' | 'idle' | 'working' | 'patrolling';
+
+/** ペインを起動した目的。`chat` は Bot の会話、`patrol` は見回り（PR 12 が使う）。 */
+export type ParadisBotPanePurpose = 'chat' | 'patrol';
+export const PARADIS_BOT_PANE_PURPOSES: readonly ParadisBotPanePurpose[] = ['chat', 'patrol'];
+
+/** Bot のペイン 1 つの様子（shared process のメモリだけに持つ。ペイントークンは外へ出さない）。 */
+export interface IParadisBotPaneState {
+	readonly purpose: ParadisBotPanePurpose;
+	readonly working: boolean;
+	/** そのペインのエージェントが最後に動いた時刻（hook が届いた時刻）。 */
+	readonly lastSeenAt: number;
+}
+
+/** 一覧の 1 行に要る値。最後の発言の本文は会話の記録の側（agentChat）から取るので、ここには持たない。 */
+export interface IParadisBotSummary extends Omit<IParadisBot, 'preserved'> {
+	/** 新しい Para Code が足した欄を持っていて、この版からは変えられない。 */
+	readonly readOnly?: true;
+	/** 「あなたの番」の件数（Needs you の項目。後回し中と、一時停止中の Bot の分は数えない）。 */
+	readonly needsYou: number;
+	readonly openItems: number;
+	readonly activity: ParadisBotActivity;
+	/** 最後に動いた時刻（項目の動き・ペインのエージェントの動き・Bot の作成のうち一番新しいもの）。 */
+	readonly lastActivityAt: number;
+}
+
+export interface IParadisBotsSnapshot {
+	/** Bot・項目・様子のどれかが変わるたびに増える番号。 */
+	readonly revision: number;
+	/** 台帳が新しい版で書かれていて、この版からは変えられない。 */
+	readonly readOnly: boolean;
+	readonly bots: readonly IParadisBotSummary[];
+}
+
+export function paradisBotActivity(bot: Pick<IParadisBot, 'paused'>, panes: readonly IParadisBotPaneState[]): ParadisBotActivity {
+	if (bot.paused || panes.length === 0) {
+		return 'stopped';
+	}
+	if (panes.some(pane => pane.working && pane.purpose === 'chat')) {
+		return 'working';
+	}
+	return panes.some(pane => pane.working) ? 'patrolling' : 'idle';
+}
+
+export function paradisBotSummary(bot: IParadisBot, items: IParadisBotItemsState, panes: readonly IParadisBotPaneState[], now: number): IParadisBotSummary {
+	const counts = paradisBotItemCounts(items, bot.id, now);
+	// 読んだ値（知らない欄）は画面へ送らず、読み取り専用の印だけにする
+	const { preserved, ...known } = bot;
+	return {
+		...known,
+		...(preserved !== undefined ? { readOnly: true } : {}),
+		needsYou: bot.paused ? 0 : counts.needsYou,
+		openItems: counts.open,
+		activity: paradisBotActivity(bot, panes),
+		lastActivityAt: Math.max(bot.createdAt, counts.lastActivityAt, ...panes.map(pane => pane.lastSeenAt)),
+	};
+}
+
+/** サービスの結果。断った理由は `code`（台帳の関数の code、または `storage`・`not_a_bot`）と英文。 */
+export type ParadisBotsServiceResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly code: string; readonly message: string };

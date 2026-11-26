@@ -13,6 +13,8 @@
 import { $, addDisposableListener, append, clearNode, EventType } from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { Button } from '../../../../base/browser/ui/button/button.js';
+import { renderIcon } from '../../../../base/browser/ui/iconLabel/iconLabels.js';
+import { Codicon } from '../../../../base/common/codicons.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
@@ -38,6 +40,8 @@ export interface IParadisAgentChatComposerHost {
 	getCommands(token: string): Promise<readonly IParadisAgentChatCommand[]>;
 	/** 音声入力のマイクを入力欄に付ける（デスクトップだけ。無ければマイクを出さない）。 */
 	createDictation?(target: IParadisAgentChatDictationTarget): IParadisAgentChatDictation;
+	/** 入力欄の左の ＋ で添えるファイルを選ぶ（選んだパス。やめたら undefined）。無ければ ＋ を出さない。 */
+	pickFiles?(): Promise<readonly string[] | undefined>;
 }
 
 /** 音声入力のマイクが入力欄に求めるもの。 */
@@ -107,7 +111,18 @@ export class ParadisAgentChatComposer extends Disposable {
 		this.slashMenu.style.display = 'none';
 		this.notice = append(this.element, $('.paradis-agent-chat-composer-notice'));
 		this.notice.setAttribute('aria-live', 'polite');
-		const box = append(this.element, $('.paradis-agent-chat-composer-box.paradis-focus-subtle-within'));
+		this.busyNote = append(this.element, $('span.paradis-agent-chat-composer-busy'));
+		// ＋・入力の丸い欄・丸い送信を 1 行に並べる（ParaDot の入力欄の形）。
+		const row = append(this.element, $('.paradis-agent-chat-composer-row'));
+		if (host.pickFiles) {
+			const attach = append(row, $('button.paradis-agent-chat-attach.paradis-focus-ring-inset')) as HTMLButtonElement;
+			attach.type = 'button';
+			attach.setAttribute('aria-label', localize('paradisAgentChat.attach', "ファイルを添える"));
+			attach.title = localize('paradisAgentChat.attach', "ファイルを添える");
+			attach.appendChild(renderIcon(Codicon.add));
+			this._register(addDisposableListener(attach, EventType.CLICK, () => this.attachFiles()));
+		}
+		const box = append(row, $('.paradis-agent-chat-composer-box.paradis-focus-subtle-within'));
 		this.textarea = append(box, $('textarea.paradis-agent-chat-input')) as HTMLTextAreaElement;
 		this.textarea.rows = 1;
 		this.textarea.spellcheck = false;
@@ -115,12 +130,10 @@ export class ParadisAgentChatComposer extends Disposable {
 		// フォーカスは入力欄のまま候補を ↑↓ で選ぶので、選んでいる候補を aria-activedescendant で読み上げに伝える。
 		// 複数行の入力欄として読ませるため role は textbox のままにし、候補の関係は候補を出している間だけ付ける
 		this.textarea.setAttribute('aria-autocomplete', 'list');
-		const footer = append(box, $('.paradis-agent-chat-composer-footer'));
-		this.busyNote = append(footer, $('span.paradis-agent-chat-composer-busy'));
-		const dictationSlot = append(footer, $('span.paradis-agent-chat-dictation'));
-		this.sendButton = this._register(new Button(footer, { ...defaultButtonStyles }));
+		const dictationSlot = append(box, $('span.paradis-agent-chat-dictation'));
+		this.sendButton = this._register(new Button(row, { ...defaultButtonStyles, supportIcons: true, ariaLabel: localize('paradisAgentChat.send', "送信"), title: localize('paradisAgentChat.send', "送信") }));
 		this.sendButton.element.classList.add('paradis-agent-chat-send');
-		this.sendButton.label = localize('paradisAgentChat.send', "送信");
+		this.sendButton.label = `$(${Codicon.arrowUp.id})`;
 
 		this._register(addDisposableListener(this.textarea, 'compositionstart', () => { this.composing = true; }));
 		this._register(addDisposableListener(this.textarea, 'compositionend', () => {
@@ -197,6 +210,14 @@ export class ParadisAgentChatComposer extends Disposable {
 		this.notice.classList.toggle('visible', message !== undefined && message.length > 0);
 	}
 
+	private async attachFiles(): Promise<void> {
+		const paths = await this.host.pickFiles?.();
+		if (paths !== undefined && paths.length > 0 && !this._store.isDisposed) {
+			// ドロップと同じく、空白を含むパスは引用符で囲む
+			this.insertText(paths.map(path => /\s/.test(path) ? `"${path}"` : path).join(' '));
+		}
+	}
+
 	/** 入力欄のカーソル位置へ文字を差し込む（ファイルのドロップなど）。 */
 	insertText(text: string): void {
 		const start = this.textarea.selectionStart;
@@ -244,9 +265,10 @@ export class ParadisAgentChatComposer extends Disposable {
 	 */
 	private updateHint(): void {
 		const modifier = isMacintosh ? '⌘' : 'Ctrl+';
+		// 狭い幅でも 1 行に収まるよう、送るキーだけを書く（改行はもう片方のキー）。
 		this.textarea.placeholder = this.host.getSendKey() === 'modEnter'
-			? localize('paradisAgentChat.placeholderModEnter', "メッセージ（{0}Enter で送信 · Enter で改行）", modifier)
-			: localize('paradisAgentChat.placeholder', "メッセージ（Enter で送信 · Shift+Enter で改行）");
+			? localize('paradisAgentChat.placeholderModEnterShort', "メッセージ（{0}Enter で送信）", modifier)
+			: localize('paradisAgentChat.placeholderShort', "メッセージ（Enter で送信）");
 		this.busyNote.textContent = this.busy ? localize('paradisAgentChat.busyNote', "作業中です。送ると終わってから読まれます") : '';
 	}
 
