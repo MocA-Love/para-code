@@ -10,6 +10,7 @@ import { isMacintosh, isNative } from '../../../../base/common/platform.js';
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { Extensions as ConfigurationExtensions, IConfigurationRegistry } from '../../../../platform/configuration/common/configurationRegistry.js';
 import { MenuSettings, MenuStyleConfiguration } from '../../../../platform/window/common/window.js';
+import { ActivityBarPosition, LayoutSettings } from '../../../../workbench/services/layout/browser/layoutService.js';
 
 /** macOS（デスクトップ）のウィンドウのタイトル。upstream の既定から先頭のエディタの名前を外したもの。 */
 export const PARADIS_WINDOW_TITLE_MAC = '${rootName}${separator}${profileName}';
@@ -30,6 +31,11 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		// upstream 1.139 で Modern UI のタブ既定が connected（アクティブタブがエディタ面とつながる形）に変わった。
 		// connected はタブ帯に不透明な背景を敷くため、ウィンドウ透過中にタブ帯だけ透けなくなる。1.134 までと同じ pill を既定に戻す。
 		'workbench.experimental.modernUIEditorTabStyle': 'pill',
+		// 左右のサイドバーのアイコンを、縦の列ではなくサイドバーの上に並べる配置を既定にする。縦の列（左のアクティビティバーと
+		// fork の右端の列）は出なくなり、アカウントと歯車はタイトルバーの右へ移る（upstream の top の動き）。
+		// 左下の「ファイル転送」のボタンは、タイトルバーのボタン（paradisFileTransferEntryPoints.ts）が代わりに出る。
+		// 縦の列へ戻すには settings.json で default を選ぶ（「設定 (Para Code)」の「アイコンの位置」でも選べる）。
+		[LayoutSettings.ACTIVITY_BAR_LOCATION]: ActivityBarPosition.TOP,
 		// エディタを分割してターミナルを並べたとき、いま入力が入る列を見分けやすくするため、
 		// フォーカスの無いエディタ/ターミナルの中身を薄くする upstream の減光を既定でオンにする（Q42 A / TM7）。
 		// 薄くする度合い（accessibility.dimUnfocused.opacity）は upstream の既定のまま。

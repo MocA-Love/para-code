@@ -1903,6 +1903,27 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 	},
 	{
 		sectionId: 'psd-sec-window',
+		group: GROUP_WINDOW_LOOK,
+		// 本家の設定をそのまま書き換える（同じ意味の fork の設定は作らない）
+		key: 'workbench.activityBar.location',
+		// allow-any-unicode-next-line
+		label: localize('paradis.settings.activityBarLocation', "アイコンの位置"),
+		// allow-any-unicode-next-line
+		description: localize('paradis.settings.activityBarLocationDesc', "左右のサイドバーを切り替えるアイコン（エクスプローラー・検索など）を置く場所です。「上」「下」ではサイドバーの中に横に並び、アカウントと歯車はタイトルバーの右へ移ります。「縦の列」では窓の左右の端に縦に並びます。「隠す」ではアイコンを出しません。"),
+		keywords: 'activity bar icons position location top bottom side hidden sidebar activityBar',
+		choiceLabels: {
+			// allow-any-unicode-next-line
+			default: localize('paradis.settings.activityBarLocationDefault', "縦の列"),
+			// allow-any-unicode-next-line
+			top: localize('paradis.settings.activityBarLocationTop', "上（既定）"),
+			// allow-any-unicode-next-line
+			bottom: localize('paradis.settings.activityBarLocationBottom', "下"),
+			// allow-any-unicode-next-line
+			hidden: localize('paradis.settings.activityBarLocationHidden', "隠す"),
+		},
+	},
+	{
+		sectionId: 'psd-sec-window',
 		group: GROUP_WINDOW_BEHAVIOR,
 		key: 'paradis.editor.openTerminalOnSplit',
 		// allow-any-unicode-next-line
