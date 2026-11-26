@@ -147,6 +147,24 @@ suite('Paradis bot manage tools', () => {
 		});
 	});
 
+	test('GitHub の見張りの入り切りも利用者の確認を通す（確認の前は変わらない）', async () => {
+		const h = harness();
+		await h.call('create_bot', { name: 'A', agent: 'claude' });
+		const asked = await h.call('update_bot', { bot: 'id1', watch_github: true });
+		const wrongType = await h.call('update_bot', { bot: 'id1', watch_github: 'yes' });
+		assert.deepStrictEqual({
+			asked,
+			request: h.windowArgs[0][1],
+			wrongType,
+			unchanged: h.service.getBot('id1')?.watchGithub,
+		}, {
+			asked: { bot: 'id1', requested: true, note: 'Para Code asked the user to confirm the change. It is applied only if they agree; call list_bots later to see the result.' },
+			request: { botId: 'id1', botName: 'A', changes: [{ field: 'watch_github', from: 'false', to: 'true' }], patch: { watchGithub: true } },
+			wrongType: { error: '"watch_github" is true or false.' },
+			unchanged: undefined,
+		});
+	});
+
 	test('確かめた変更を当てる: 台帳の変更の後に役割を書く。台帳に断られたら役割は書かない', async () => {
 		const calls: string[] = [];
 		const service = {

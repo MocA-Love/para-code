@@ -92,6 +92,7 @@ export const PARADIS_BOT_MANAGE_TOOLS: readonly IParadisMcpToolDefinition[] = [
 				...FACE_PROPERTIES,
 				pinned: { type: 'boolean' },
 				paused: { type: 'boolean' },
+				watch_github: { type: 'boolean', description: 'Let the bot watch GitHub: Para Code checks the user\'s review requests and assignments with gh every 5 minutes and starts the bot\'s look-around on new ones. Asks the user first.' },
 			},
 			required: ['bot'],
 			additionalProperties: false,
@@ -206,7 +207,7 @@ export function paradisParseBotCreateArgs(value: unknown): ParadisBotManageArgs<
 	};
 }
 
-const UPDATE_KEYS = ['bot', 'name', 'model', 'effort', 'agent', 'permission', 'role', 'face_color', 'face_shape', 'pinned', 'paused'];
+const UPDATE_KEYS = ['bot', 'name', 'model', 'effort', 'agent', 'permission', 'role', 'face_color', 'face_shape', 'pinned', 'paused', 'watch_github'];
 
 export interface IParadisBotUpdateArgs {
 	readonly botId: string;
@@ -237,6 +238,9 @@ export function paradisParseBotUpdateArgs(value: unknown): ParadisBotManageArgs<
 	if ((value.agent !== undefined && agent === undefined) || role === false || (value.permission !== undefined && value.permission !== null && typeof value.permission !== 'string')) {
 		return refuse(`"agent" is one of ${PARADIS_AGENT_KINDS.join(', ')}; "permission" is a permission mode id or null; "role" is up to ${PARADIS_BOT_ROLE_LIMIT} characters.`);
 	}
+	if (value.watch_github !== undefined && typeof value.watch_github !== 'boolean') {
+		return refuse('"watch_github" is true or false.');
+	}
 	const patch: IParadisBotPatch = {
 		...(agent !== undefined ? { agent } : {}),
 		...(value.permission !== undefined ? { permissionId: value.permission } : {}),
@@ -246,11 +250,12 @@ export function paradisParseBotUpdateArgs(value: unknown): ParadisBotManageArgs<
 		...looks,
 		...(value.pinned !== undefined ? { pinned: value.pinned } : {}),
 		...(value.paused !== undefined ? { paused: value.paused } : {}),
+		...(value.watch_github !== undefined ? { watchGithub: value.watch_github } : {}),
 	};
 	if (Object.keys(patch).length === 0 && role === undefined) {
 		return refuse('update_bot needs at least one change.');
 	}
-	return { ok: true, value: { botId: value.bot, patch, ...(role !== undefined ? { role } : {}), needsConfirmation: agent !== undefined || value.permission !== undefined || role !== undefined } };
+	return { ok: true, value: { botId: value.bot, patch, ...(role !== undefined ? { role } : {}), needsConfirmation: agent !== undefined || value.permission !== undefined || role !== undefined || value.watch_github !== undefined } };
 }
 
 /** 権限の広さの順（同じ種類のエージェントの中で）。知らない id は undefined。 */
@@ -279,7 +284,7 @@ export interface IParadisBotChangeRequest {
 }
 
 /** 確かめる変更を組み立てる。 */
-export function paradisBotChangeRequest(bot: { readonly id: string; readonly name: string; readonly agent: string; readonly modelId?: string; readonly effortId?: string; readonly permissionId?: string; readonly faceColor: string; readonly faceShape: string; readonly pinned: boolean; readonly paused: boolean }, args: IParadisBotUpdateArgs): IParadisBotChangeRequest {
+export function paradisBotChangeRequest(bot: { readonly id: string; readonly name: string; readonly agent: string; readonly modelId?: string; readonly effortId?: string; readonly permissionId?: string; readonly faceColor: string; readonly faceShape: string; readonly pinned: boolean; readonly paused: boolean; readonly watchGithub?: boolean }, args: IParadisBotUpdateArgs): IParadisBotChangeRequest {
 	const text = (value: unknown) => value === undefined || value === null ? undefined : String(value);
 	const fields: [string, unknown, unknown][] = [
 		['agent', bot.agent, args.patch.agent],
@@ -291,10 +296,11 @@ export function paradisBotChangeRequest(bot: { readonly id: string; readonly nam
 		['face_shape', bot.faceShape, args.patch.faceShape],
 		['pinned', bot.pinned, args.patch.pinned],
 		['paused', bot.paused, args.patch.paused],
+		['watch_github', bot.watchGithub === true, args.patch.watchGithub],
 	];
 	const changes: { field: string; from?: string; to?: string }[] = [];
 	for (const [field, from, to] of fields) {
-		if (Object.prototype.hasOwnProperty.call(args.patch, field === 'permission' ? 'permissionId' : field === 'model' ? 'modelId' : field === 'effort' ? 'effortId' : field)) {
+		if (Object.prototype.hasOwnProperty.call(args.patch, field === 'permission' ? 'permissionId' : field === 'model' ? 'modelId' : field === 'effort' ? 'effortId' : field === 'watch_github' ? 'watchGithub' : field)) {
 			changes.push({ field, ...(text(from) !== undefined ? { from: text(from) } : {}), ...(text(to) !== undefined ? { to: text(to) } : {}) });
 		}
 	}

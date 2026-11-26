@@ -279,8 +279,8 @@ suite('Paradis bot GitHub watch', () => {
 		const read = await call('pane-1p');
 		const refusals = [await call('pane-2'), await call('pane-1', {}, 'tunnel'), await call('pane-1', { repo: 'x' }), await call('pane-x')];
 		settings.enabled = false;
-		// エージェントの管理の道具（update_bot）からは見張りを入り切りできない（持ち主が画面で決める）
-		const fromTool = [paradisParseBotUpdateArgs({ bot: 'id2', watch_github: true }), paradisParseBotUpdateArgs({ bot: 'id2', watchGithub: true })].map(result => result.ok);
+		// エージェントの管理の道具（update_bot）からは、利用者の確認を通して入り切りする（引数の名前は watch_github だけ）
+		const fromTool = [paradisParseBotUpdateArgs({ bot: 'id2', watch_github: true }), paradisParseBotUpdateArgs({ bot: 'id2', watchGithub: true })].map(result => result.ok ? result.value.needsConfirmation : result.ok);
 		assert.deepStrictEqual({ listed, read, refusals, off: [tools.listTools('pane-1').length, await call('pane-1')], patrolAllows: PARADIS_BOT_PATROL_TOOLS.has('bot_github_news'), fromTool }, {
 			listed: [1, 1, 0, 0],
 			read: {
@@ -295,7 +295,7 @@ suite('Paradis bot GitHub watch', () => {
 			],
 			off: [0, 'error: Para Code bots are turned off in this Pa'],
 			patrolAllows: true,
-			fromTool: [false, false],
+			fromTool: [true, false],
 		});
 	});
 });
