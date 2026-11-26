@@ -140,6 +140,8 @@ suite('ParadisComputerUseToolProvider', () => {
 		const state = { enabled: options.enabled ?? true, confirmForeground: options.confirmForeground, showCursor: options.showCursor, allowOperatingReadOnlyApps: options.allowOperatingReadOnlyApps };
 		/** 止まった・再開した知らせと、入力を送った知らせ（ウィンドウへ届くもの）。 */
 		const activity: string[] = [];
+		/** 入力の知らせごとに、的がコマンドを打てるアプリ（ターミナル類・Finder など）だったか。 */
+		const commandInputs: boolean[] = [];
 		const blockOptions = options.blockSystemSurfaces === undefined ? undefined : { blockSystemSurfaces: options.blockSystemSurfaces };
 		const recorded: ParadisSpanAttributes[] = [];
 		const clock = { time: 0 };
@@ -154,9 +156,9 @@ suite('ParadisComputerUseToolProvider', () => {
 			now: () => clock.time,
 			...(options.allowOperatingReadOnlyApps !== undefined ? { allowOperatingReadOnlyApps: () => state.allowOperatingReadOnlyApps === true } : {}),
 			onDidChangeStopped: stopped => activity.push(stopped ? 'stopped' : 'resumed'),
-			onDidSendInput: () => activity.push('input'),
+			onDidSendInput: commandApp => { activity.push('input'); commandInputs.push(commandApp); },
 		}, undefined);
-		return { helper, ledger, state, provider, recorded, clock, activity };
+		return { helper, ledger, state, provider, recorded, clock, activity, commandInputs };
 	}
 
 	test('shows the tools only while the setting is on and the helper is ready', () => {
@@ -529,6 +531,18 @@ suite('ParadisComputerUseToolProvider', () => {
 			{ ...base, safe_tool: 'computer_click', safe_outcome: 'ok', safe_route: 'accessibility' },
 			{ ...base, safe_tool: 'computer_list_windows', safe_outcome: 'refused', safe_failure: 'blocked_vault_app' },
 		]);
+	});
+
+	// 承認の画面が、ターミナル類への入力の最中と直後の承認を聞き直すのに使う（paradisComputerUseInputClock.ts）
+	test('says with every input whether its target is an app that can run commands', async () => {
+		const { ledger, provider, commandInputs } = setup();
+		ledger.set('pane-a', 'com.apple.Notes', 'operate');
+		ledger.set('pane-a', 'com.apple.finder', 'operate');
+		const { context } = createContext('pane', []);
+		const click = (app: string) => provider.callTool('pane-a', 'computer_click', { app, x: 1, y: 1, includeState: false }, undefined, context);
+		const results = [await click('Notes'), await click('Finder')].map(result => (result as IResult).isError === true);
+		// 知らせは、送ったときと答えが返ったときの 2 回ずつ
+		assert.deepStrictEqual({ results, commandInputs }, { results: [false, false], commandInputs: [false, false, true, true] });
 	});
 
 	test('refuses every pane after the user stops Computer Use with Esc twice, until the user resumes it', async () => {

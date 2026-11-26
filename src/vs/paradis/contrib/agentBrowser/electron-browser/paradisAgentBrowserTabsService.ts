@@ -90,6 +90,7 @@ import {
 	paradisSanitizeDisplayText,
 	paradisUrlOrigin,
 } from '../common/paradisAgentBrowserTabs.js';
+import { paradisComputerUseCommandInputNear } from '../../computerUse/common/paradisComputerUseInputClock.js';
 import { IParadisAgentTabGroupInfo, PARADIS_AGENT_TAB_MIN_SPLIT_WIDTH_SETTING, ParadisEditorSplitSizing, paradisChooseAgentTabPlacement, paradisEstimateHiddenAgentTabSize, paradisPredictSplitWidth } from '../common/paradisAgentTabPlacement.js';
 import { IParadisAgentBrowserBindingModel } from './paradisAgentBrowserBindingModel.js';
 import { IParadisBrowserExtensionsService } from '../../browserExtensions/electron-browser/paradisBrowserExtensionsService.js';
@@ -179,7 +180,8 @@ export type ParadisAgentApprovalChoice = 'approve' | 'alternative';
 
 /**
  * 承認の結果。承認以外は次のとおり:
- *  - denied: ユーザーが拒否した（拒否・Esc・閉じる）。しばらくは同じペインからの求めを自動で断る
+ *  - denied: ユーザーが拒否した（拒否・Esc・閉じる）。しばらくは同じペインからの求めを自動で断る。
+ *    ダイアログが画面に出る前に閉じたものは拒否に数えず、聞き直す（続けば unanswered）
  *  - cancelled: 呼び出し側が取り消した（締め切り・MCP の取り消し）
  *  - unanswered: 表示直後やショートカットでの承認が続き、確かな答えが得られなかった。拒否としては数えない
  *  （続けて出したダイアログへの連続クリックで起きるので、後の求めを黙って断る理由にしない）
@@ -1240,17 +1242,30 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 					return 'cancelled';
 				}
 				if (result === undefined || result === 'deny') {
-					return 'denied';
-				}
-				const elapsed = Date.now() - (shownAt ?? calledAt);
-				if (!shortcutUsed && elapsed >= PARADIS_AGENT_APPROVAL_GUARD_MS) {
-					return result;
+					if (shownAt !== undefined) {
+						return 'denied';
+					}
+					// 画面に出たのを一度も見届けないまま閉じた（出る前に、ほかへ打っていた Enter・Esc が当たったなど）。利用者は
+					// 確認を見ていないので、拒否としては扱わない（3 分の自動の断りも始めない）。下で聞き直す。
+					// 出たかは DIALOG_SHOWN_POLL_MS（50 ミリ秒）おきに見ているので、出てから 50 ミリ秒未満で閉じたものも
+					// ここに入る。人が読んで断れる長さではないので、同じく聞き直す（聞き直した確認を断れば、拒否になる）
+					notice = localize('paradis.agentTabs.approval.closedBeforeShown', "前の確認は、画面に出る前に閉じられました。もう一度確認しています。ボタンをクリックして答えてください。");
+				} else {
+					const elapsed = Date.now() - (shownAt ?? calledAt);
+					// Computer Use がターミナル類へ入力を送っている最中と直後の承認は、そこで走らせたスクリプトが押した可能性が
+					// ある（Computer Use は Para Code を直接は操作できないが、ターミナルの osascript は押せる）。確定させずに聞き直す
+					const duringCommandInput = paradisComputerUseCommandInputNear(calledAt);
+					if (!shortcutUsed && elapsed >= PARADIS_AGENT_APPROVAL_GUARD_MS && !duringCommandInput) {
+						return result;
+					}
+					// 表示直後の承認や ⌘D での承認は、ほかの場所へ打っていたキーが当たった可能性が高い。もう一度聞く。
+					notice = duringCommandInput
+						? localize('paradis.agentTabs.approval.duringComputerUse', "エージェントが Computer Use でターミナルなどを操作している最中、または直後に押されたため、もう一度確認しています。操作が止まってから、ボタンをクリックして答えてください。")
+						: localize('paradis.agentTabs.approval.tooFast', "表示された直後、またはキーボードのショートカットで押されたため、もう一度確認しています。ボタンをクリックして答えてください。");
 				}
 			} finally {
 				watch.dispose();
 			}
-			// 表示直後の承認や ⌘D での承認は、ほかの場所へ打っていたキーが当たった可能性が高い。もう一度聞く。
-			notice = localize('paradis.agentTabs.approval.tooFast', "表示された直後、またはキーボードのショートカットで押されたため、もう一度確認しています。ボタンをクリックして答えてください。");
 			detail = [notice, ...request.detail];
 		}
 		return 'unanswered';

@@ -274,6 +274,20 @@ func paradisFenceFailure(targetPid: Int32, frontmostPid: Int32?, ownerAtTarget: 
 	return nil
 }
 
+/**
+ * 前面へ届く押下（キー・マウスのボタン）を送る直前の確かめ。フェンス（上）は送る前に前面のアプリを確かめるが、
+ * 文字入力では毎回の確かめを 10 文字か 50 ms に 1 回へ間引いている。その隙に、常に断るアプリ（Para Code 自身・
+ * パスワード管理・システムの認証の画面）が前面へ来ると、押下がそこへ届く。たとえば Para Code の承認の画面が
+ * 出た瞬間の Return が「承認」になる。前面のアプリの bundle id が常に断る一覧にあれば、送らずに止める。
+ * 前面のアプリを読めないとき（nil）は、フェンスの判断に任せて通す。
+ */
+func paradisPressBlockedByFrontmost(frontmostBundleId: String?) -> ParadisHelperError? {
+	guard let frontmostBundleId, let reason = paradisBlockReason(bundleId: frontmostBundleId) else {
+		return nil
+	}
+	return ParadisHelperError(code: "window_not_focused", message: "an app that Computer Use never operates (\(reason.rawValue)) came to the front, so the input was not sent")
+}
+
 // MARK: - キーの前の確かめ（レビュー M3）
 
 /** 画面に出ているウィンドウ 1 つ。 */

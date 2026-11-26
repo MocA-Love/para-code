@@ -224,7 +224,8 @@ export class ParadisTaskBoardBridgeServer extends Disposable {
 			return this.openEvents(request, response, { keyHash: verdict.keyHash, remote: verdict.remote });
 		}
 		let body: unknown;
-		if (method === 'POST') {
+		// 本文を持つのは POST と、ボードの人の出番の一覧（PUT /v1/asks）
+		if (method === 'POST' || method === 'PUT') {
 			try {
 				body = await this.readJson(request);
 			} catch (err) {

@@ -21,11 +21,14 @@ import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/c
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { ToggleTitleBarConfigAction } from '../../../../workbench/browser/parts/titlebar/titlebarActions.js';
 import { IsSessionsWindowContext } from '../../../../workbench/common/contextkeys.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { renderParadisActionButton } from '../../../browser/paradisActionButton.js';
 import { ParadisCountBadge } from '../../../browser/paradisBadges.js';
+import { IParadisHumanAskService } from '../../humanAsk/common/paradisHumanAsk.js';
+import { ParadisInboxAskDialog } from '../browser/paradisNotificationInboxAskDialog.js';
 import { ParadisNotificationInboxPopover } from '../browser/paradisNotificationInboxPopover.js';
 import { IParadisNotificationInboxService, PARADIS_NOTIFICATION_INBOX_TITLE_BAR_SETTING } from '../common/paradisNotificationInbox.js';
 
@@ -75,11 +78,17 @@ class ParadisToggleNotificationInboxTitleBarAction extends ToggleTitleBarConfigA
 class ParadisNotificationInboxPopoverController extends Disposable {
 
 	private readonly popover = this._register(new MutableDisposable<ParadisNotificationInboxPopover>());
+	/** 大きい問いに答えるモーダル。小窓はモーダルが開くと閉じるので、ここで持つ。 */
+	private readonly askDialog = this._register(new MutableDisposable<ParadisInboxAskDialog>());
 	/** 描かれているベル。補助ウィンドウのタイトルバーにも同じボタンが出るので複数ある。 */
 	private readonly anchors = new Set<HTMLElement>();
 	private openAnchor: HTMLElement | undefined;
 
-	constructor(@IInstantiationService private readonly instantiationService: IInstantiationService) {
+	constructor(
+		@IInstantiationService private readonly instantiationService: IInstantiationService,
+		@ILayoutService private readonly layoutService: ILayoutService,
+		@IParadisHumanAskService private readonly humanAskService: IParadisHumanAskService,
+	) {
 		super();
 	}
 
@@ -131,7 +140,14 @@ class ParadisNotificationInboxPopoverController extends Disposable {
 		this.popover.value = this.instantiationService.createInstance(ParadisNotificationInboxPopover, {
 			anchor,
 			onClose: () => this.close(),
+			onOpenAsk: (key, focusText) => this.openAsk(key, focusText, anchor),
 		});
+	}
+
+	/** 「開いて答える」。押されたベルのあるウィンドウにモーダルを開く（小窓はモーダルが開くと自分で閉じる）。 */
+	private openAsk(key: string, focusText: boolean, anchor: HTMLElement | undefined): void {
+		const container = anchor?.isConnected ? this.layoutService.getContainer(getWindow(anchor)) : this.layoutService.activeContainer;
+		this.askDialog.value = new ParadisInboxAskDialog({ container, key, focusText, onClose: () => this.askDialog.clear() }, this.humanAskService);
 	}
 
 	close(): void {

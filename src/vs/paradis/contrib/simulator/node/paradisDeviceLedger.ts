@@ -10,9 +10,10 @@
 //
 // 設計の要点（ブラウザページ共有 ParadisAgentBrowserService と同じ思想）:
 //
-//   1. 端末を指すIDを **エージェントに一切渡さない**。操作系ツールは deviceId 引数を持たず、
-//      サーバー側がそのペインにアタッチされている端末を注入する。これにより「他ペインの端末IDを
-//      推測して叩く」という攻撃面が原理的に消える（引数を検証して弾く方式より強い）。
+//   1. 操作系ツールが触れるのは、**そのペインに割り当てた端末だけ**。1 つのペインに 10 台まで割り当てられ、
+//      任意の引数 `device`（id か名前）はその中から 1 台を選ぶためだけに使う。`device` は端末の一覧からは引かず、
+//      ペインの割り当ての中だけで引くので、「他ペインの端末IDを推測して叩く」ことはできない
+//      （決まりと帳面は simulator/common/paradisMobileAttachmentBook.ts）。省いたら、最後に割り当てた端末に当てる。
 //   2. アタッチはユーザーの操作（アタッチUI、またはエージェントの要求を承認ダイアログで認める）でのみ行う。
 //      エージェントは要求できるだけで、自分で割り当てを変えられない（要求は paradisMobileDeviceOpsToolProvider.ts）。
 //   3. アタッチはターミナルが終わったら自動で外れる。スペースを切り替えても維持する
@@ -26,25 +27,24 @@ import { Disposable, IDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisMcpToolDefinition, IParadisMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { IParadisMobileAttachment, IParadisMobileCanvasSnapshot, IParadisMobileDevice, IParadisMobileDisplay, paradisFindMobileDevice } from '../common/paradisMobileCanvas.js';
+import { IParadisMobileToolResult, IParadisMobileTarget, PARADIS_MOBILE_MAX_DEVICES_PER_PANE, ParadisMobileAttachResult, ParadisMobileAttachmentBook, paradisStampMobileDevice, paradisWithMobileDeviceArgument } from '../common/paradisMobileAttachmentBook.js';
 import { PARADIS_MOBILE_SWIPE_DEFAULT_SECONDS, paradisDeviceHeldByAnotherPane, paradisTypedTextWasConverted } from '../common/paradisMobileDeviceOps.js';
 import { IParadisMobileDeviceLedger, IParadisMobileHostRequester } from './paradisSimulatorDeviceOps.js';
 
 /** MCPツールが返す標準形。`isError` を立てるとエージェント側で失敗として扱われる。 */
-interface IToolResult {
-	content: ({ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string })[];
-	isError?: boolean;
-	structuredContent?: unknown;
-}
+type IToolResult = IParadisMobileToolResult;
 
-const TOOLS: IParadisMcpToolDefinition[] = [
-	{
-		name: 'mobile_list_devices',
-		description: 'List the local iOS simulators and Android emulators known to Para Code, and show which one (if any) is attached to this terminal pane. To use a device that is not attached yet, call mobile_request_device: the user approves it in Para Code.',
-		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-	},
+const LIST_DEVICES_TOOL: IParadisMcpToolDefinition = {
+	name: 'mobile_list_devices',
+	description: `List the local iOS simulators and Android emulators known to Para Code, and show which ones are attached to this terminal pane (attachedDevices; a pane can hold up to ${PARADIS_MOBILE_MAX_DEVICES_PER_PANE}). The one marked current is used by every mobile tool when you omit "device". To use a device that is not attached yet, call mobile_request_device: the user approves it in Para Code.`,
+	inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+};
+
+/** 割り当てた端末を操作する道具。どれも任意の引数 `device` を受ける（下で足す）。 */
+const DEVICE_TOOLS: IParadisMcpToolDefinition[] = [
 	{
 		name: 'mobile_get_attached_device',
-		description: 'Get the mobile device attached to this terminal pane, including the native UDID/serial you need for deploy commands (for example "xcrun simctl install <udid> App.app" or "adb -s <serial> install app.apk"). Returns an error if the user has not attached a device to this pane yet.',
+		description: 'Get a mobile device attached to this terminal pane, including the native UDID/serial you need for deploy commands (for example "xcrun simctl install <udid> App.app" or "adb -s <serial> install app.apk"), and the list of every device attached to this pane (attachedDevices). Returns an error if the user has not attached a device to this pane yet.',
 		inputSchema: { type: 'object', properties: {}, additionalProperties: false },
 	},
 	{
@@ -151,24 +151,20 @@ const TOOLS: IParadisMcpToolDefinition[] = [
 	},
 ];
 
+const TOOLS: IParadisMcpToolDefinition[] = [LIST_DEVICES_TOOL, ...DEVICE_TOOLS.map(paradisWithMobileDeviceArgument)];
+
 /** アタッチがアイドル扱いになるまでの時間。ウィンドウを閉じたペインの幽霊行を掃除するためのもの。 */
 const PARADIS_MOBILE_ATTACHMENT_IDLE_TTL_MS = 24 * 60 * 60 * 1000;
 /** アイドルアタッチの掃除周期。 */
 const PARADIS_MOBILE_ATTACHMENT_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 
-/**
- * 台帳1件分。attachment に加えて最終利用時刻を持ち、MCPツール経由の実利用でのみ更新される
- * （snapshot/list のUI表示では更新しない: 表示しているだけで使っていないペインは掃除対象にする）。
- */
-interface ILedgerEntry {
-	readonly attachment: IParadisMobileAttachment;
-	lastActiveAt: number;
-}
-
 export class ParadisMobileCanvasService extends Disposable implements IParadisMcpToolProvider, IParadisMobileDeviceLedger {
 
-	/** ペイントークン → アタッチ内容。1ペインにつき同時に1台まで。 */
-	private readonly _attachments = new Map<string, ILedgerEntry>();
+	/**
+	 * ペイン → 割り当てた端末（1 ペインに 10 台まで）。最終利用時刻は端末ごとに持ち、MCPツール経由の実利用でのみ
+	 * 進める（snapshot/list のUI表示では進めない: 表示しているだけで使っていない割り当ては掃除対象にする）。
+	 */
+	private readonly _book = new ParadisMobileAttachmentBook();
 
 	constructor(
 		// シミュレータの作り直し（③）で、iOS を serve-sim へ回す振り分け（simulator/node/paradisMobileHostRouter.ts）も受ける
@@ -189,12 +185,8 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 	}
 
 	private _sweepIdleAttachments(): void {
-		const cutoff = Date.now() - PARADIS_MOBILE_ATTACHMENT_IDLE_TTL_MS;
-		for (const [paneToken, entry] of [...this._attachments]) {
-			if (entry.lastActiveAt < cutoff) {
-				this._attachments.delete(paneToken);
-				this._logService.info(`[paradis-mobile-canvas] dropped an idle attachment (idle since ${new Date(entry.lastActiveAt).toISOString()})`);
-			}
+		for (const dropped of this._book.sweep(Date.now() - PARADIS_MOBILE_ATTACHMENT_IDLE_TTL_MS)) {
+			this._logService.info(`[paradis-mobile-canvas] dropped an idle attachment (idle since ${new Date(dropped.lastActiveAt).toISOString()})`);
 		}
 	}
 
@@ -205,76 +197,88 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 	 * 例外にせず `unavailableReason` を載せて返し、UIが理由を出せるようにする。
 	 */
 	async getSnapshot(signal?: AbortSignal): Promise<IParadisMobileCanvasSnapshot> {
-		const attachments = [...this._attachments.values()].map(entry => entry.attachment);
 		try {
 			const devices = await this._listDevices(signal);
 			const notice = this._listNotice?.();
-			return { devices, attachments, ...(notice ? { notice } : {}) };
+			return { devices, attachments: this._book.list(), ...(notice ? { notice } : {}) };
 		} catch (error) {
-			return { devices: [], attachments, unavailableReason: toMessage(error) };
+			return { devices: [], attachments: this._book.list(), unavailableReason: toMessage(error) };
 		}
 	}
 
 	/**
-	 * ペインへ端末をアタッチする。同じペインの既存のアタッチは置き換える。
+	 * ペインへ端末を足す（利用者が共有ダイアログから渡すとき）。1 つのペインに 10 台まで。既に持っている端末なら
+	 * そのまま返す。足した端末が、そのペインの今の端末（`device` を省いた道具が当たる端末）になる。
 	 *
-	 * 対応は「1ペインにつき1台」だけを守り、**1台の端末を複数のペインへ同時にアタッチするのは許す**。
-	 * ツールが端末IDを取らない以上ペイン側は一意である必要があるが、逆向き（同じ端末を複数の
-	 * エージェントで見る／触る）は実際に有用な使い方で、禁じる理由がないため。
+	 * **1台の端末を複数のペインへ同時にアタッチするのは許す**（同じ端末を複数のエージェントで見る／触るのは
+	 * 実際に有用な使い方で、禁じる理由がないため）。エージェントの要求（{@link attachIfFree}）では断る。
 	 *
 	 * @param stateKey ペインが属するスペースの識別子。スペース管理下でなければ `undefined`。
 	 */
 	async attach(paneToken: string, deviceId: string, stateKey: string | undefined, signal?: AbortSignal): Promise<IParadisMobileAttachment> {
-		const device = (await this._listDevices(signal)).find(candidate => candidate.id === deviceId);
+		const devices = await this._listDevices(signal);
+		const device = devices.find(candidate => candidate.id === deviceId);
 		if (!device) {
 			throw new Error(`Unknown mobile device: ${deviceId}`);
 		}
-		const attachment: IParadisMobileAttachment = {
-			paneToken,
-			deviceId: device.id,
-			deviceName: device.name,
-			stateKey,
-			attachedAt: Date.now(),
-		};
-		this._attachments.set(paneToken, { attachment, lastActiveAt: attachment.attachedAt });
-		this._logService.info(`[paradis-mobile-canvas] attached ${device.name} to a terminal pane`);
-		return attachment;
+		const result = this._book.attach(paneToken, device, devices, stateKey, Date.now());
+		if (result.refused !== undefined) {
+			throw new Error(`This terminal pane already has ${PARADIS_MOBILE_MAX_DEVICES_PER_PANE} devices attached. Detach one first.`);
+		}
+		if (result.added) {
+			this._logService.info(`[paradis-mobile-canvas] attached ${device.name} to a terminal pane (${this._book.listPane(paneToken).length} attached)`);
+		}
+		return result.attachment;
 	}
 
 	/**
 	 * エージェントの要求を利用者が承認したときの割り当て。端末一覧を待ち終えた後、書き込む直前に
-	 * 同期的に「ほかのペインが使っていないか」を確かめる（確かめてから書き込むまでの間に await を挟まない。
-	 * 別のウィンドウの2つのペインが同じ端末をほぼ同時に承認されても、二重に割り当てないように）。
-	 * @returns 割り当てたもの。端末が無い・ほかのペインが使っているときは undefined
+	 * 同期的に「ほかのペインが使っていないか」「上限を超えないか」を確かめる（確かめてから書き込むまでの間に
+	 * await を挟まない。別のウィンドウの2つのペインが同じ端末をほぼ同時に承認されても、二重に割り当てないように）。
+	 * `releaseDeviceId` は、上限のときに利用者が選んだ「外す端末」。外すのと足すのを一度に行う。
+	 * @returns 割り当てたもの。端末が無いときは undefined、断ったときはその理由
 	 */
-	async attachIfFree(paneToken: string, deviceId: string, stateKey: string | undefined, signal?: AbortSignal): Promise<IParadisMobileAttachment | undefined> {
+	async attachIfFree(paneToken: string, deviceId: string, stateKey: string | undefined, signal?: AbortSignal, releaseDeviceId?: string): Promise<ParadisMobileAttachResult | undefined> {
 		const devices = await this._listDevices(signal);
 		const device = devices.find(candidate => candidate.id === deviceId);
-		if (!device || paradisDeviceHeldByAnotherPane(paneToken, device, devices, this.listAttachments())) {
+		if (!device) {
 			return undefined;
 		}
-		const attachment: IParadisMobileAttachment = { paneToken, deviceId: device.id, deviceName: device.name, stateKey, attachedAt: Date.now() };
-		this._attachments.set(paneToken, { attachment, lastActiveAt: attachment.attachedAt });
-		this._logService.info(`[paradis-mobile-canvas] attached ${device.name} to a terminal pane after the user approved the request`);
-		return attachment;
-	}
-
-	/** ペインのアタッチを解除する。アタッチが無ければ何もしない。 */
-	detach(paneToken: string): void {
-		if (this._attachments.delete(paneToken)) {
-			this._logService.info('[paradis-mobile-canvas] detached a terminal pane');
+		const result = this._book.attach(paneToken, device, devices, stateKey, Date.now(), { onlyIfFree: true, ...(releaseDeviceId !== undefined ? { releaseDeviceId } : {}) });
+		if (result.refused === undefined && result.added) {
+			this._logService.info(`[paradis-mobile-canvas] attached ${device.name} to a terminal pane after the user approved the request (${this._book.listPane(paneToken).length} attached${result.released ? ', one detached to make room' : ''})`);
 		}
+		return result;
 	}
 
-	/** 現在のアタッチ一覧（UIの表示用）。 */
+	/**
+	 * ペインのアタッチを解除する。`deviceId`（台帳の id）を省くと、そのペインの全部を外す（ターミナルを閉じたとき）。
+	 * アタッチが無ければ何もしない。
+	 */
+	detach(paneToken: string, deviceId?: string): readonly IParadisMobileAttachment[] {
+		const removed = this._book.detach(paneToken, deviceId);
+		if (removed.length) {
+			this._logService.info(`[paradis-mobile-canvas] detached ${removed.length} device(s) from a terminal pane`);
+		}
+		return removed;
+	}
+
+	/** 現在のアタッチ一覧（UIの表示用）。各ペインの今の端末に `current` が付く。 */
 	listAttachments(): readonly IParadisMobileAttachment[] {
-		return [...this._attachments.values()].map(entry => entry.attachment);
+		return this._book.list();
 	}
 
-	/** そのペインのアタッチ。MCP ツールからの利用として最終利用時刻を進める。 */
-	getAttachment(paneToken: string): IParadisMobileAttachment | undefined {
-		this._touchLedgerEntry(paneToken);
-		return this._attachments.get(paneToken)?.attachment;
+	/** そのペインのアタッチ（割り当てた順。最後が今の端末）。 */
+	listPaneAttachments(paneToken: string): readonly IParadisMobileAttachment[] {
+		return this._book.listPane(paneToken);
+	}
+
+	/**
+	 * 道具が操作する端末。`device`（道具の引数）はそのペインの割り当ての中だけで引き、省いたら今の端末。
+	 * MCP ツールからの利用として、その端末の最終利用時刻を進める。決まらなければ、エージェントに返す文で throw する。
+	 */
+	resolveTarget(paneToken: string, device: unknown, signal?: AbortSignal): Promise<IParadisMobileTarget> {
+		return this._book.resolve(paneToken, device, () => this._listDevices(signal), Date.now());
 	}
 
 	listDevices(signal?: AbortSignal): Promise<IParadisMobileDevice[]> {
@@ -320,34 +324,54 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 	private async _callTool(paneToken: string, name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<IToolResult> {
 		if (name === 'mobile_list_devices') {
 			const devices = await this._listDevices(signal);
-			const attached = this._attachments.get(paneToken)?.attachment;
+			const attached = this._book.listPane(paneToken);
+			const current = attached[attached.length - 1];
 			const notice = this._listNotice?.();
 			// 起動前の AVD で割り当てた端末は、起動すると id が serial に替わる。同じ端末として印を付ける
-			const attachedDevice = paradisFindMobileDevice(devices, attached?.deviceId);
-			this._touchLedgerEntry(paneToken);
+			const attachedDevices = new Set(attached.map(attachment => paradisFindMobileDevice(devices, attachment.deviceId)));
+			const currentDevice = paradisFindMobileDevice(devices, current?.deviceId);
+			this._book.touchPane(paneToken, Date.now());
 			return jsonResult({
 				// ほかのペインが使っている端末は mobile_request_device で要求できないので、選ぶ前に分かるようにする
 				devices: devices.map(device => ({
 					...device,
-					attachedToThisPane: device === attachedDevice,
+					attachedToThisPane: attachedDevices.has(device),
+					...(attached.length > 1 ? { currentForThisPane: device === currentDevice } : {}),
 					usedByAnotherPane: paradisDeviceHeldByAnotherPane(paneToken, device, devices, this.listAttachments()),
 				})),
-				attachedToThisPane: attached ? { deviceId: attached.deviceId, name: attached.deviceName } : null,
-				hint: attached
-					? undefined
+				// 今の端末（`device` を省いた道具が当たる端末。最後に割り当てたもの）。1 台だけのときは、その 1 台
+				attachedToThisPane: current ? { deviceId: current.deviceId, name: current.deviceName } : null,
+				// このペインに割り当てている端末の全部（割り当てた順）。道具の `device` にはこの id か name を渡す
+				attachedDevices: attached.map(attachment => ({ id: attachment.deviceId, name: attachment.deviceName, current: attachment === current })),
+				maxAttachedDevices: PARADIS_MOBILE_MAX_DEVICES_PER_PANE,
+				hint: current
+					? attached.length > 1 ? `${attached.length} devices are attached to this terminal pane. Pass "device" (an id or name from attachedDevices) to every mobile tool; without it they act on the current one, ${current.deviceName}.` : undefined
 					: 'No device is attached to this terminal pane. Call mobile_request_device with the id or name of a device no other pane is using: the user approves it in Para Code. The user can also attach one from the "Mobile Devices" tab of the sharing dialog.',
 				...(notice ? { notice } : {}),
 			});
 		}
 
-		// ここから先はアタッチされた端末が要る。deviceId は引数から取らず、必ず台帳から解決する。
-		const attachment = this._requireAttachment(paneToken);
+		// ここから先は割り当てた端末が要る。`device` はそのペインの割り当ての中だけで引く（省いたら今の端末）。
+		// 返事には、成功でも失敗でも、操作した端末の名前と id を入れる
+		const target = await this.resolveTarget(paneToken, args.device, signal);
+		try {
+			return paradisStampMobileDevice(await this._callDeviceTool(paneToken, target.attachment, name, args, signal), target);
+		} catch (error) {
+			return paradisStampMobileDevice(errorResult(toMessage(error)), target);
+		}
+	}
+
+	private async _callDeviceTool(paneToken: string, attachment: IParadisMobileAttachment, name: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<IToolResult> {
 		const id = encodeURIComponent(attachment.deviceId);
 
 		switch (name) {
 			case 'mobile_get_attached_device': {
 				const device = await this._hostClient.request('GET', `/api/v1/devices/${id}`, undefined, signal);
-				return jsonResult(device);
+				// mobile_list_devices は OS の版を `runtime` で返す。ここでも同じ名前で読めるようにする（ホストの `runtimeName` も残す）
+				const runtime = device && typeof device === 'object' ? firstString((device as Record<string, unknown>).runtimeName, (device as Record<string, unknown>).osVersion) : undefined;
+				const attached = this._book.listPane(paneToken);
+				const attachedDevices = attached.map((entry, index) => ({ id: entry.deviceId, name: entry.deviceName, current: index === attached.length - 1 }));
+				return jsonResult(device && typeof device === 'object' && !Array.isArray(device) ? { ...device, ...(runtime !== undefined ? { runtime } : {}), attachedDevices } : device);
 			}
 			case 'mobile_screenshot': {
 				const png = await this._hostClient.requestBinary(`/api/v1/devices/${id}/screenshot`, signal);
@@ -411,7 +435,8 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 			case 'mobile_press_button': {
 				const button = requireString(args, 'button');
 				await this._hostClient.request('POST', `/api/v1/devices/${id}/input/button`, { button }, signal);
-				return textResult(`Pressed "${button}" on ${attachment.deviceName}.`);
+				// ホームなどで画面が切り替わる間は、アクセシビリティの木が前のアプリのままのことがある（iOS で実測）
+				return textResult(`Pressed "${button}" on ${attachment.deviceName}. If the screen changes, mobile_ui_snapshot may show the previous screen for a moment: read it again if it does.`);
 			}
 			case 'mobile_ui_find': {
 				const result = await this._hostClient.request('POST', `/api/v1/devices/${id}/ui/find`, buildUiQuery(args), signal);
@@ -460,23 +485,6 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 		} catch {
 			// 読み返しはおまけ。取れなくても入力自体は済んでいるので失敗させない。
 			return undefined;
-		}
-	}
-
-	private _requireAttachment(paneToken: string): IParadisMobileAttachment {
-		this._touchLedgerEntry(paneToken);
-		const entry = this._attachments.get(paneToken);
-		if (!entry) {
-			throw new Error('No mobile device is attached to this terminal pane. Call mobile_request_device to ask the user for one (or ask them to attach it from the "Mobile Devices" tab of the sharing dialog), then try again.');
-		}
-		return entry.attachment;
-	}
-
-	/** MCPツール経由の実利用として台帳の最終利用時刻を更新する（idle TTL の起算点）。 */
-	private _touchLedgerEntry(paneToken: string): void {
-		const entry = this._attachments.get(paneToken);
-		if (entry) {
-			entry.lastActiveAt = Date.now();
 		}
 	}
 

@@ -42,6 +42,27 @@ export interface IParadisBrowserActCall {
 	isCurrent(): boolean;
 	/** エージェントのカーソルの名札に道具の結果（押せなかった・選んだ など）を出す。演出なので待たない。 */
 	noteCursor?(note: IParadisCursorStatusNote): void;
+	/**
+	 * そのタブで今開いている JavaScript のダイアログ（`confirm: 本当に消しますか` の形）。開いていなければ undefined。
+	 * ページには尋ねない（ダイアログが開いている間、ページは答えない）。
+	 */
+	openDialog?(): Promise<string | undefined>;
+}
+
+/** 離しの返事をこれだけ待ってから、ダイアログが開いていないかを見始める。 */
+export const PARADIS_ACT_DIALOG_CHECK_AFTER_MS = 300;
+/** その後、ダイアログを見に行く間隔。 */
+export const PARADIS_ACT_DIALOG_CHECK_EVERY_MS = 400;
+
+/** 押した結果。`dialog` は、押したことでダイアログが開いて離しの返事が来なくなったとき。 */
+interface IClickOutcome {
+	readonly failure?: string;
+	readonly dialog?: string;
+}
+
+/** ダイアログを開いたクリックの結果に添える文。 */
+function dialogOpenedLine(dialog: string): string {
+	return `The click opened a JavaScript dialog (${dialog}), so the page waits for an answer. Answer it with handle_dialog (action "accept" or "dismiss"; for a prompt also promptText) before anything else on this page.`;
 }
 
 /** 見つけた要素の中心（画面の中にあるときだけ）。 */
@@ -223,28 +244,80 @@ export class ParadisBrowserActBy {
 		return result.status === 'success' ? undefined : result.message;
 	}
 
-	/** 押して離す。押せたのに離せなかったら、もう一度だけ離しに行く。 */
-	private async click(call: IParadisBrowserActCall, x: number, y: number, button: string, clickCount: number, modifiers: number): Promise<string | undefined> {
+	/**
+	 * 押して離す。押せたのに離せなかったら、もう一度だけ離しに行く。
+	 *
+	 * 押したことで alert・confirm・prompt が開くと、ページがダイアログで止まり、離しの返事が来ない（入力の列が
+	 * 10 秒で打ち切り、道具は 11 秒待って失敗に見えていた。ダイアログは開いている）。離しの返事を待つ間に
+	 * ダイアログが開いたと分かったら、そこで返す。離しはページに届いている（click のイベントが出たから
+	 * ダイアログが開いた）ので、送り直さない。返事は、ダイアログに答えた後で遅れて届く。
+	 */
+	private async click(call: IParadisBrowserActCall, x: number, y: number, button: string, clickCount: number, modifiers: number): Promise<IClickOutcome> {
 		const base = { x, y, ...(modifiers !== 0 ? { modifiers } : {}) };
 		const moved = await this.begin(call, 'Input.dispatchMouseEvent', { ...base, type: 'mouseMoved', button: 'none', buttons: 0 });
 		if (moved !== undefined) {
-			return moved;
+			return { failure: moved };
 		}
 		for (let count = 1; count <= clickCount; count++) {
 			const pressed = await this.begin(call, 'Input.dispatchMouseEvent', { ...base, type: 'mousePressed', button, buttons: BUTTON_BITS[button], clickCount: count });
 			if (pressed !== undefined) {
-				return pressed;
+				return { failure: pressed };
 			}
 			const release = { ...base, type: 'mouseReleased', button, buttons: 0, clickCount: count };
-			const released = await this.send(call, 'Input.dispatchMouseEvent', release);
-			if (released !== undefined) {
-				const again = call.isCurrent() ? await this.send(call, 'Input.dispatchMouseEvent', release) : released;
+			const released = await this.releaseOrDialog(call, this.send(call, 'Input.dispatchMouseEvent', release));
+			if (released.dialog !== undefined) {
+				return released;
+			}
+			if (released.failure !== undefined) {
+				// 返事が来ないまま打ち切られた離しでも、その間にダイアログが開いていたら、失敗ではない
+				const dialog = await this.openDialog(call);
+				if (dialog !== undefined) {
+					return { dialog };
+				}
+				const again = call.isCurrent() ? await this.send(call, 'Input.dispatchMouseEvent', release) : released.failure;
 				if (again !== undefined) {
-					return `the button was pressed but could not be released (${released})`;
+					return { failure: `the button was pressed but could not be released (${released.failure})` };
 				}
 			}
 		}
-		return undefined;
+		return {};
+	}
+
+	private async openDialog(call: IParadisBrowserActCall): Promise<string | undefined> {
+		if (call.openDialog === undefined || call.signal?.aborted) {
+			return undefined;
+		}
+		try {
+			return await call.openDialog();
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** 離しの返事を待つ。待つ間にダイアログが開いたら、返事を待たずに返す（遅れて届く返事は捨てる）。 */
+	private async releaseOrDialog(call: IParadisBrowserActCall, releasing: Promise<string | undefined>): Promise<IClickOutcome> {
+		if (call.openDialog === undefined) {
+			return { failure: await releasing };
+		}
+		let settled = false;
+		const result = releasing.then(failure => { settled = true; return { failure }; }, () => { settled = true; return { failure: 'the input could not be sent' }; });
+		let wait = PARADIS_ACT_DIALOG_CHECK_AFTER_MS;
+		while (true) {
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			const first = await Promise.race([result, new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), wait); })]);
+			clearTimeout(timer);
+			if (first !== undefined) {
+				return first;
+			}
+			const dialog = await this.openDialog(call);
+			if (settled) {
+				return result;
+			}
+			if (dialog !== undefined) {
+				return { dialog };
+			}
+			wait = PARADIS_ACT_DIALOG_CHECK_EVERY_MS;
+		}
 	}
 
 	private async clickBy(call: IParadisBrowserActCall, args: Record<string, unknown>): Promise<ToolResult> {
@@ -272,12 +345,13 @@ export class ParadisBrowserActBy {
 			call.noteCursor?.({ status: 'failed', point: locatedPoint(located) });
 			return error(problem);
 		}
-		const failure = await this.click(call, located.x!, located.y!, button, args.double === true ? 2 : 1, modifiers);
-		if (failure !== undefined) {
-			return error(`click_by found the element but the click was not completed: ${failure}`);
+		const clicked = await this.click(call, located.x!, located.y!, button, args.double === true ? 2 : 1, modifiers);
+		if (clicked.failure !== undefined) {
+			return error(`click_by found the element but the click was not completed: ${clicked.failure}`);
 		}
 		const which = located.matched > 1 ? ` (${located.matched} elements matched${args.index === undefined ? '; used the first visible, enabled one' : `; used index ${args.index}`})` : '';
-		return text(`${args.double === true ? 'Double-clicked' : button === 'left' ? 'Clicked' : `${button === 'right' ? 'Right' : 'Middle'}-clicked`} at (${Math.round(located.x!)}, ${Math.round(located.y!)})${which}.\nElement: ${JSON.stringify(located.element)}${located.receivedBy !== undefined ? `\nThe click went to the link or button that holds the element: ${JSON.stringify(located.receivedBy)}` : ''}`);
+		const message = `${args.double === true ? 'Double-clicked' : button === 'left' ? 'Clicked' : `${button === 'right' ? 'Right' : 'Middle'}-clicked`} at (${Math.round(located.x!)}, ${Math.round(located.y!)})${which}.\nElement: ${JSON.stringify(located.element)}${located.receivedBy !== undefined ? `\nThe click went to the link or button that holds the element: ${JSON.stringify(located.receivedBy)}` : ''}`;
+		return text(clicked.dialog !== undefined ? `${message}\n${dialogOpenedLine(clicked.dialog)}` : message);
 	}
 
 	private async fillBy(call: IParadisBrowserActCall, args: Record<string, unknown>): Promise<ToolResult> {
@@ -313,9 +387,12 @@ export class ParadisBrowserActBy {
 					return error('fill_by: a radio button cannot be turned off by itself; choose another radio button of the group instead.');
 				}
 				if (located.value !== wanted) {
-					const failure = await this.click(call, located.x!, located.y!, 'left', 1, 0);
-					if (failure !== undefined) {
-						return error(`fill_by found the ${kind} but the click was not completed: ${failure}`);
+					const clicked = await this.click(call, located.x!, located.y!, 'left', 1, 0);
+					if (clicked.failure !== undefined) {
+						return error(`fill_by found the ${kind} but the click was not completed: ${clicked.failure}`);
+					}
+					if (clicked.dialog !== undefined) {
+						return text(`Clicked the ${kind}${which}.\n${dialogOpenedLine(clicked.dialog)}`);
 					}
 				}
 				outcome = located.value === wanted ? `The ${kind} was already ${wanted === 'true' ? 'checked' : 'unchecked'}; nothing was sent` : `Clicked the ${kind}`;
@@ -365,9 +442,12 @@ export class ParadisBrowserActBy {
 				}
 				if (focus.value.focused !== true && focus.value.lost !== true && !paradisActProblem('fill_by', located, true)) {
 					// focus() was not enough (a widget that takes focus only on a pointer press): click it once.
-					const failure = await this.click(call, located.x!, located.y!, 'left', 1, 0);
-					if (failure !== undefined) {
-						return error(`fill_by could not focus the field: ${failure}`);
+					const clicked = await this.click(call, located.x!, located.y!, 'left', 1, 0);
+					if (clicked.failure !== undefined) {
+						return error(`fill_by could not focus the field: ${clicked.failure}`);
+					}
+					if (clicked.dialog !== undefined) {
+						return error(`fill_by: nothing was typed. ${dialogOpenedLine(clicked.dialog).replace('The click opened', 'Clicking the field opened')}`);
 					}
 					focus = await this.run(call, { mode: 'focusField', ref }, []);
 					if (!focus.ok) {

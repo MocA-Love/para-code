@@ -126,7 +126,50 @@ suite('paradisAgentIde (common)', () => {
 			count: annotations.length,
 			actionsDestructive: annotations.filter(tool => PARADIS_AGENT_IDE_ACTION_TOOLS.has(tool.name)).every(tool => tool.destructive && !tool.readOnly),
 			othersReadOnly: annotations.filter(tool => !PARADIS_AGENT_IDE_ACTION_TOOLS.has(tool.name)).every(tool => tool.readOnly && !tool.destructive),
-		}, { count: 12, actionsDestructive: true, othersReadOnly: true });
+		}, { count: 16, actionsDestructive: true, othersReadOnly: true });
+	});
+
+	test('section tools: arguments become window requests, and only the menu colors are accepted', () => {
+		const colors = 'red, orange, yellow, lime, green, teal, cyan, blue, indigo, purple, pink, slate';
+		assert.deepStrictEqual([
+			paradisParseAgentIdeCall('create_space_section', { name: '  Work  ', color: 'blue' }),
+			paradisParseAgentIdeCall('create_space_section', { name: 'Review', repository: 'repo-1' }),
+			paradisParseAgentIdeCall('create_space_section', { name: '   ' }),
+			paradisParseAgentIdeCall('create_space_section', { name: 'x'.repeat(201) }),
+			paradisParseAgentIdeCall('create_space_section', { name: 'Work', color: '#ff0000' }),
+			paradisParseAgentIdeCall('create_space_section', { name: 'Work', color: 'none' }),
+			paradisParseAgentIdeCall('create_space_section', { name: 'Review', color: 'red', repository: 'repo-1' }),
+			paradisParseAgentIdeCall('update_space_section', { section: 's1', name: 'Job', color: 'none', collapsed: true, after: 's2' }),
+			paradisParseAgentIdeCall('update_space_section', { section: 's1' }),
+			paradisParseAgentIdeCall('update_space_section', { section: 's1', name: ' ' }),
+			paradisParseAgentIdeCall('update_space_section', { section: 's1', color: 'magenta' }),
+			paradisParseAgentIdeCall('update_space_section', { section: 's1', collapsed: 'yes' }),
+			paradisParseAgentIdeCall('update_space_section', { section: 's1', before: 's2', after: 's3' }),
+			paradisParseAgentIdeCall('remove_space_section', {}),
+			paradisParseAgentIdeCall('remove_space_section', { section: 's1' }),
+			paradisParseAgentIdeCall('move_space_to_section', { space: 'repo-1', section: 'none' }),
+			paradisParseAgentIdeCall('move_space_to_section', { space: 'repo-1', before: 'repo-2' }),
+			paradisParseAgentIdeCall('move_space_to_section', { space: 'repo-1' }),
+		], [
+			{ kind: 'window', action: true, request: { op: 'createSection', name: 'Work', color: 'blue' } },
+			{ kind: 'window', action: true, request: { op: 'createSection', name: 'Review', repository: 'repo-1' } },
+			{ kind: 'error', error: '"name" is required.' },
+			{ kind: 'error', error: '"name" is too long (limit: 200 characters, got: 201).' },
+			{ kind: 'error', error: `"color" must be one of ${colors}.` },
+			{ kind: 'error', error: `"color" must be one of ${colors}.` },
+			{ kind: 'error', error: 'Sections inside a repository have no color. Omit "color", or omit "repository" to create a section of repositories.' },
+			{ kind: 'window', action: true, request: { op: 'updateSection', section: 's1', name: 'Job', color: 'none', collapsed: true, after: 's2' } },
+			{ kind: 'error', error: 'Nothing to change: pass at least one of "name", "color", "collapsed", "before", "after".' },
+			{ kind: 'error', error: '"name" must not be empty.' },
+			{ kind: 'error', error: `"color" must be one of ${colors}, none.` },
+			{ kind: 'error', error: '"collapsed" must be a boolean.' },
+			{ kind: 'error', error: '"before" and "after" cannot be combined.' },
+			{ kind: 'error', error: '"section" is required.' },
+			{ kind: 'window', action: true, request: { op: 'removeSection', section: 's1' } },
+			{ kind: 'window', action: true, request: { op: 'moveSpaceToSection', space: 'repo-1', section: 'none' } },
+			{ kind: 'window', action: true, request: { op: 'moveSpaceToSection', space: 'repo-1', before: 'repo-2' } },
+			{ kind: 'error', error: 'Pass "section" (a section id, or "none" to take the space out of its section), or "before" / "after" to place it next to another space.' },
+		]);
 	});
 
 	test('send_terminal_input requires an explicit press_enter', () => {
