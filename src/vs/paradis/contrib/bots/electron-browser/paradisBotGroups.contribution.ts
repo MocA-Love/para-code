@@ -38,7 +38,7 @@ import { paradisCollectAllTerminalInstances } from '../../workspaceSwitch/browse
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisBotGroupSender, ParadisBotGroupEditorInput } from '../browser/paradisBotGroupEditor.js';
 import { paradisBotPaneTokenHashInWindow, paradisFindBotPane } from '../browser/paradisBotPaneHash.js';
-import { ParadisBotGroupRelayLimiter, paradisBotGroupDeliverRefusal, paradisBotGroupDeliverRefusalMessage, paradisBotGroupMembers } from '../common/paradisBotGroups.js';
+import { ParadisBotGroupRelayLimiter, paradisBotGroupDeliverRefusal, paradisBotGroupDeliverRefusalMessage, paradisBotGroupMembers, paradisBotGroupNeutralizeCommand } from '../common/paradisBotGroups.js';
 import { PARADIS_BOT_GROUPS_WINDOW_CHANNEL } from '../common/paradisBotMessages.js';
 import { IParadisBotGroupsService, PARADIS_BOTS_OPEN_GROUP_COMMAND } from '../common/paradisBotGroupsApi.js';
 import { IParadisBotsService, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
@@ -254,7 +254,8 @@ class ParadisBotGroupsDeliverer {
 		if (refusal !== undefined) {
 			return paradisBotGroupDeliverRefusalMessage(refusal);
 		}
-		const error = await this.sender.send(to, text);
+		// 先頭の / と ! はコマンド・シェルとして動くので崩してから届ける（利用者が部屋から送る文はそのまま）
+		const error = await this.sender.send(to, paradisBotGroupNeutralizeCommand(text));
 		// 許可・質問の画面が出ている・エージェントが前面にいないなど。割り込まずに断る
 		return error === undefined ? undefined : `That bot cannot take a message now (${error}). Try again later.`;
 	}
