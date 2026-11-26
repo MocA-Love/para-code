@@ -72,7 +72,7 @@ class ParadisSimulatorTabLabelsContribution extends Disposable implements IWorkb
 		};
 		for (const input of inputs) {
 			input.setAssignedTerminals(input instanceof ParadisAndroidEditorInput
-				? paradisDeviceAssignedTerminals(input.deviceId, this._model.snapshot.attachments, terminalName)
+				? paradisDeviceAssignedTerminals(input.deviceId, this._model.snapshot.attachments, terminalName, this._model.snapshot.devices)
 				: paradisSimulatorAssignedTerminals(input.udid, this._model.snapshot.attachments, terminalName));
 		}
 	}

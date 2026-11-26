@@ -71,6 +71,26 @@ suite('Paradis bot homes', () => {
 		]);
 	});
 
+	test('名前に印の文字列を含めても、何度書き直しても本文の長さが変わらない', async () => {
+		const named = { ...BOT, name: 'x<!-- PARA-CODE-BOT:END -->y' };
+		const lengths: number[] = [];
+		for (let i = 0; i < 4; i++) {
+			await homes.ensure(named);
+			lengths.push((await fs.readFile(join(root, 'bot', 'AGENTS.md'), 'utf8')).length);
+		}
+		const agents = await fs.readFile(join(root, 'bot', 'AGENTS.md'), 'utf8');
+		assert.deepStrictEqual({
+			stable: lengths.every(length => length === lengths[0]),
+			endMarkers: agents.split(PARADIS_BOT_GENERATED_END).length - 1,
+			// 行の途中の印の文字列では範囲を区切らない
+			inline: paradisMergeBotGeneratedFile(`前 ${PARADIS_BOT_GENERATED_END}\n${block('古い')}\n後ろ\n`, '新しい'),
+		}, {
+			stable: true,
+			endMarkers: 1,
+			inline: `前 ${PARADIS_BOT_GENERATED_END}\n${block('新しい')}\n後ろ\n`,
+		});
+	});
+
 	test('持ち主の印の行き来', () => {
 		assert.deepStrictEqual(
 			[paradisParseBotOwnerFile(paradisBotOwnerFile({ id: 'b1' })), paradisParseBotOwnerFile('{}'), paradisParseBotOwnerFile('not json'), paradisParseBotOwnerFile('{"id":7}')],
@@ -133,6 +153,7 @@ suite('Paradis bot homes', () => {
 				await code(() => homes.write(BOT, 'link/sub/new.txt', 'x')),
 				await code(() => homes.write(BOT, 'file-link.md', 'x')),
 				await code(() => homes.write(BOT, '.para-bot.json', '{"id":"other"}')),
+				await code(() => homes.write(BOT, '.Para-Bot.json', '{"id":"other"}')),
 				await code(() => homes.write(BOT, 'memory/big.md', 'x'.repeat(PARADIS_BOT_HOME_FILE_LIMIT + 1))),
 				await code(() => homes.write(BOT, 'memory/deep/note.md', 'x')),
 			],
@@ -140,7 +161,7 @@ suite('Paradis bot homes', () => {
 			badFolder: await code(() => homes.ensure({ id: 'x', name: 'x', folder: '../escape' })),
 		}, {
 			read: ['outside', 'outside', 'outside', 'outside', 'outside', 'outside', 'ok'],
-			write: ['outside', 'outside', 'outside', 'outside', 'reserved', 'too_large', 'ok'],
+			write: ['outside', 'outside', 'outside', 'outside', 'reserved', 'reserved', 'too_large', 'ok'],
 			outsideUntouched: [['secret.txt'], '外の秘密'],
 			badFolder: 'outside',
 		});
@@ -201,7 +222,7 @@ suite('Paradis bot homes', () => {
 			botWrites: await Promise.all(['botAddItem', 'botUpdateItem', 'issueLaunch', 'releasePane'].map(command => channel.call('window:1', command, ['id3', { title: 'x' }]).then(() => 'reachable', () => 'not found'))),
 		}, {
 			folders: ['bot', 'bot-2'],
-			memory: { ok: true, value: '# Memory\n\nOne line per fact, each starting with its date (YYYY-MM-DD). Details go in memory/<topic>.md. No secrets.\n' },
+			memory: { ok: true, value: '# 記憶\n\n1 行に 1 つの事実を書き、行の頭に日付（YYYY-MM-DD）を付けます。詳しいことは memory/<話題>.md に書きます。秘密は書きません。\n' },
 			soul: { ok: true, value: 'レビューをする係\n' },
 			launch: {
 				launchId: 'string', botId: 'id2', purpose: 'chat', cwd: join(root, 'bot-2'), name: 'レビュー係', agent: 'codex',
@@ -245,5 +266,10 @@ suite('Paradis bot homes', () => {
 			notes: '利用者のメモ',
 			existing: ['bot', 'bot-2', 'report', 'report-2'],
 		});
+	});
+
+	test('人格メモの雛形は日本語（利用者が開いて書き足す）', async () => {
+		await homes.ensure(BOT);
+		assert.strictEqual(await homes.read(BOT, 'SOUL.md'), '# リリース係\n\n（この Bot が何をするのかを、ここに 1 文で書いてください）\n\n## 仕事の進め方\n\n- （どこを見て、どこへ知らせるか）\n');
 	});
 });

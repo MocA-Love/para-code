@@ -17,7 +17,7 @@ import { DataTransfers } from '../../../../base/browser/dnd.js';
 import { ActionBar } from '../../../../base/browser/ui/actionbar/actionbar.js';
 import { Button } from '../../../../base/browser/ui/button/button.js';
 import { renderIcon } from '../../../../base/browser/ui/iconLabel/iconLabels.js';
-import { IntervalTimer, RunOnceScheduler } from '../../../../base/common/async.js';
+import { disposableTimeout, IntervalTimer, RunOnceScheduler } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Action, IAction, toAction } from '../../../../base/common/actions.js';
@@ -36,13 +36,17 @@ import { DraggedEditorGroupIdentifier, DraggedEditorIdentifier } from '../../../
 import { ParadisAgentQuestionAnswer } from '../../mobileRelay/common/paradisAgentQuestionKeys.js';
 import { IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentInteraction, IParadisAgentLiveState, paradisIsCodexDaemonApprovalInteraction } from '../common/paradisAgentChat.js';
 import { paradisAgentChatImagesToLinks } from '../common/paradisAgentChatMarkdown.js';
+import { paradisAgentChatTimeLabel, paradisAgentChatUsageCacheDetail, paradisAgentChatUsageLabel } from '../common/paradisAgentChatTime.js';
+import { paradisAppendAgentLogoSvg } from './paradisAgentChatFace.js';
 import { PARADIS_AGENT_DESCRIPTORS, paradisAgentDescriptor } from '../common/paradisAgentDescriptor.js';
 import { IParadisAgentChatState } from '../common/paradisAgentChatState.js';
 import { IParadisAgentChatEditDiff, paradisAgentChatEditDiff, paradisBuildAgentChatItems, paradisPendingCodexQuestion, paradisDescribeAgentChatTool, paradisGroupAgentChatItems, paradisIsFileWriteTool, paradisIsPendingApprovalItem, paradisIsPendingQuestionItem, paradisPathBasename, paradisSummarizeAgentChatGroup, ParadisAgentChatEntry, ParadisAgentChatItem } from '../common/paradisAgentChatTimeline.js';
 import { paradisAgentChatButton } from './paradisAgentChatButton.js';
+import { IParadisAgentChoiceMenu } from '../../agentIde/common/paradisAgentChoiceMenu.js';
 import { IParadisAgentChatComposerHost, ParadisAgentChatComposer } from './paradisAgentChatComposer.js';
 import { IParadisAgentChatAsyncDrafts, paradisAsyncQuestionsSignature, paradisBuildAsyncReplyFromDrafts, paradisGroupAsyncQuestions, paradisNewAgentChatAsyncDrafts, paradisRenderAsyncQuestionCard, paradisRenderQuestionReplies } from './paradisAgentChatAsyncQuestions.js';
 import { ParadisAgentChatSession } from './paradisAgentChatSession.js';
+import { ParadisAgentChatDraftInsert } from '../common/paradisAgentChatComposerLogic.js';
 
 /** チャット表示が呼び出し側（electron-browser の contribution）へ求めるもの。 */
 export interface IParadisAgentChatViewHost extends IParadisAgentChatComposerHost {
@@ -59,12 +63,20 @@ export interface IParadisAgentChatViewHost extends IParadisAgentChatComposerHost
 	/** ペインごとのカードの状態（同じペインなら同じものを返す）。 */
 	cardStates(token: string): IParadisAgentChatCardStates;
 	readonly onDidChangeSettings: Event<void>;
+	/** ペインの画面に出ている Codex の選択画面（「Implement this plan?」など）。無ければ undefined。省けば帯を出さない。 */
+	readChoiceMenu?(instanceId: number): IParadisAgentChoiceMenu | undefined;
+	/** PC の Claude Code で画面（/model など）が開いているか。分からなければ undefined。省けば聞かない。 */
+	isDialogOpen?(token: string): Promise<boolean | undefined>;
 }
 
 /** 差分カードで最初から見せる行数。超えた分は「すべて表示」で開く。 */
 const DIFF_PREVIEW_ROWS = 14;
 /** ツールの出力を展開したときに見せる上限（文字数）。長い出力は全文の取り寄せで読む。 */
 const TOOL_DETAIL_PREVIEW_CHARS = 4000;
+/** チャットから / で始まる文を送ってから、Claude Code の画面が開いたかを聞くまで（mod の送信の見届けと同じ 1.5 秒）。 */
+const PANEL_CHECK_AFTER_SEND_MS = 1500;
+/** 帯を出している間に、画面がまだ開いているかを聞き直す間隔（秒）。モバイルの帯（2 秒）より少し長くし、mod への問い合わせを重ねない。 */
+const PANEL_RECHECK_TICKS = 3;
 /** 最下部にいるとみなす余白。この範囲にいれば、新しい発言で最下部へ追従する。 */
 const STICK_TO_BOTTOM_THRESHOLD = 48;
 /** 生成中の返答を描き直す最短の間隔。本文が伸びるたびに全文の Markdown を描き直さないよう間引く。 */
@@ -120,6 +132,9 @@ export class ParadisAgentChatView extends Disposable {
 
 	private readonly _onDidRequestTerminal = this._register(new Emitter<void>());
 	readonly onDidRequestTerminal = this._onDidRequestTerminal.event;
+	/** 帯の「ターミナルを開く」で開いた（選択画面が消えたらチャット表示へ戻してよい）。 */
+	private readonly _onDidRequestTerminalForChoice = this._register(new Emitter<void>());
+	readonly onDidRequestTerminalForChoice = this._onDidRequestTerminalForChoice.event;
 
 	readonly element: HTMLElement;
 	private readonly headerAgent: HTMLElement;
@@ -131,6 +146,21 @@ export class ParadisAgentChatView extends Disposable {
 	private readonly notice: HTMLElement;
 	private readonly liveElement: HTMLElement;
 	private readonly fallbackCard: HTMLElement;
+	/** 吹き出しで扱えない画面（Codex の選択画面）が出ている間の、入力欄の上の帯。 */
+	private readonly terminalBand: HTMLElement;
+	private terminalBandSignature = '';
+	private choiceMenu: IParadisAgentChoiceMenu | undefined;
+	/** PC の Claude Code で開いている画面（mod に聞いた答え）。分からない・閉じているなら undefined。 */
+	private panel: { readonly command?: string } | undefined;
+	/** 帯に Claude Code の画面を出しているか（送れない理由に使う）。 */
+	private panelShown = false;
+	private panelAsking = false;
+	/** 開いたときに聞こうとしたが会話がまだ読めていなかった。読めたら聞く。 */
+	private panelAskWhenLoaded = false;
+	/** チャットから最後に送ったスラッシュコマンドの名前（帯の題に使う）。 */
+	private panelCommand: string | undefined;
+	private panelTicks = 0;
+	private readonly panelAfterSend = this._register(new MutableDisposable());
 	/** Codex の非同期の質問のカード（承認・質問の枠とは別に、答えるまで残る）。 */
 	private readonly asyncCard: HTMLElement;
 	private readonly jumpButton: HTMLButtonElement;
@@ -161,6 +191,7 @@ export class ParadisAgentChatView extends Disposable {
 	private liveClock: HTMLElement | undefined;
 	private readonly liveMarkdown = this._register(new MutableDisposable<IDisposable>());
 	private readonly fallbackStore = this._register(new DisposableStore());
+	private readonly terminalBandStore = this._register(new DisposableStore());
 	private readonly asyncStore = this._register(new DisposableStore());
 	private lastLiveSignature = '';
 	/** 生成中の返答を描いている間、その返答の startedAt。同じ返答の本文が伸びただけなら描き直しを間引く。 */
@@ -272,6 +303,9 @@ export class ParadisAgentChatView extends Disposable {
 		resizeObserver.observe(this.scroller);
 		this._register(toDisposable(() => resizeObserver.disconnect()));
 
+		this.terminalBand = append(this.element, $('.paradis-agent-chat-terminal-band'));
+		this.terminalBand.setAttribute('role', 'status');
+		this.terminalBand.style.display = 'none';
 		this.composer = this._register(new ParadisAgentChatComposer(this.element, host));
 		this._register(this.composer.onDidSubmit(text => this.submit(text)));
 		this._register(host.onDidChangeSettings(() => {
@@ -382,6 +416,10 @@ export class ParadisAgentChatView extends Disposable {
 			}
 			this.resetRendered();
 			this.token = token;
+			this.panel = undefined;
+			this.panelCommand = undefined;
+			this.panelAskWhenLoaded = false;
+			this.panelAfterSend.clear();
 			this.session = token !== undefined ? this.host.session(token) : undefined;
 			this.sessionListener.value = this.session?.onDidChange(() => this.renderScheduler.schedule());
 			const saved = token !== undefined ? this.host.cardStates(token).scroll : undefined;
@@ -397,7 +435,16 @@ export class ParadisAgentChatView extends Disposable {
 			this.visible = visible;
 			this.element.style.display = visible ? '' : 'none';
 			if (visible) {
-				this.ticker.cancelAndSet(() => this.updateLiveClock(), 1000);
+				this.ticker.cancelAndSet(() => {
+					this.updateLiveClock();
+					// 選択画面は hook も会話の記録も知らせないので、見えている間だけ毎秒画面を読む
+					if (this.updateChoiceMenu(this.session?.state)) {
+						this.render();
+					}
+					if (this.panel !== undefined && ++this.panelTicks % PANEL_RECHECK_TICKS === 0) {
+						this.askPanel();
+					}
+				}, 1000);
 			} else {
 				this.ticker.cancel();
 				this.liveTextScheduler.cancel();
@@ -406,6 +453,8 @@ export class ParadisAgentChatView extends Disposable {
 		if (visible) {
 			void this.session?.refresh();
 			this.render();
+			// チャットを開いた時点で Claude Code の画面が開いていれば帯を出す（会話がまだ読めていなければ、次に開いたとき）
+			this.askPanel();
 			if (restoreScrollTop !== undefined) {
 				this.scroller.scrollTop = restoreScrollTop;
 				this.jumpButton.classList.toggle('visible', !this.isAtBottom());
@@ -415,6 +464,11 @@ export class ParadisAgentChatView extends Disposable {
 
 	focusInput(): void {
 		this.composer.focus();
+	}
+
+	/** 入力欄へ下書きを入れる（送らない）。チャット表示が見えていなければ undefined。 */
+	insertDraft(text: string): ParadisAgentChatDraftInsert | undefined {
+		return this.visible ? this.composer.insertDraft(text) : undefined;
 	}
 
 	private updateBackLabel(): void {
@@ -478,6 +532,10 @@ export class ParadisAgentChatView extends Disposable {
 		this.renderLive(state);
 		this.renderFallbackApproval(state);
 		this.renderAsyncQuestions(state);
+		if (this.panelAskWhenLoaded && state !== undefined) {
+			this.askPanel();
+		}
+		this.updateChoiceMenu(state);
 		this.composer.setBusy(state?.busy === true);
 		// この画面から答え終えた質問・承認は、中継が消すのを待たずに送れるようにする
 		// （tool_use_id の無い承認は、ターンが終わるまで中継に残るため）。
@@ -492,13 +550,17 @@ export class ParadisAgentChatView extends Disposable {
 				? localize('paradisAgentChat.blockedExited', "エージェントは終了しました。ターミナルに戻って確かめてください")
 				: codexQuestion
 					? localize('paradisAgentChat.blockedCodexQuestion', "Codex が質問しています。ターミナルで答えてください")
-					: answeredHere
-						? undefined
-						: state.interaction?.kind === 'question'
-							? localize('paradisAgentChat.blockedQuestion', "質問に答えてから送ってください")
-							: state.interaction?.kind === 'approval'
-								? localize('paradisAgentChat.blockedApproval', "許可の確認に答えてから送ってください")
-								: undefined);
+					: this.choiceMenu !== undefined
+						? localize('paradisAgentChat.blockedChoiceMenu', "ターミナルで選んでから送ってください")
+						: this.panelShown
+							? localize('paradisAgentChat.blockedPanel', "ターミナルで開いている画面を閉じてから送ってください")
+							: answeredHere
+								? undefined
+								: state.interaction?.kind === 'question'
+									? localize('paradisAgentChat.blockedQuestion', "質問に答えてから送ってください")
+									: state.interaction?.kind === 'approval'
+										? localize('paradisAgentChat.blockedApproval', "許可の確認に答えてから送ってください")
+										: undefined);
 		// 送れなかった理由は、会話の状態が変わったら消す（次に送るまで残ると、今も送れないように読める）。
 		const stateSignature = state === undefined ? '' : `${state.epoch}:${state.rev}:${state.interaction?.id ?? ''}:${state.busy}`;
 		if (this.errorStateSignature !== undefined && this.errorStateSignature !== stateSignature) {
@@ -672,6 +734,7 @@ export class ParadisAgentChatView extends Disposable {
 					append(bubble, $('.paradis-agent-chat-plain')).textContent = item.message.text;
 				}
 				this.appendImages(bubble, item.message, state, store);
+				this.appendTime(element, item.message.ts);
 				return element;
 			}
 			case 'assistant': {
@@ -692,11 +755,18 @@ export class ParadisAgentChatView extends Disposable {
 					append(notice, $('span.paradis-agent-chat-system-text')).textContent = item.message.noticeSource === 'compact-summary' ? `${text}\n${item.message.text}` : text;
 					return notice;
 				}
-				const element = $('.paradis-agent-chat-message.assistant');
-				const body = append(element, $('.paradis-agent-chat-markdown'));
+				const { element, column, bubble } = this.renderAgentMessage(state);
+				const body = append(bubble, $('.paradis-agent-chat-markdown'));
 				const rendered = store.add(this.renderMarkdown(item.message.text, false));
 				body.appendChild(rendered.element);
-				this.appendImages(element, item.message, state, store);
+				this.appendImages(column, item.message, state, store);
+				this.appendTime(column, item.message.ts);
+				if (item.message.usage !== undefined) {
+					// 費用は出さない（手元に単価の表を持たない。使用量の画面の ccusage は外のツールが値段を付ける）
+					const usage = append(column, $('span.paradis-agent-chat-usage'));
+					usage.textContent = paradisAgentChatUsageLabel(item.message.usage);
+					store.add(this.hoverService.setupDelayedHover(usage, { content: paradisAgentChatUsageCacheDetail(item.message.usage) }));
+				}
 				return element;
 			}
 			case 'thinking':
@@ -716,6 +786,37 @@ export class ParadisAgentChatView extends Disposable {
 			case 'approval':
 				return this.renderApproval(item.message, state, store);
 		}
+	}
+
+	/**
+	 * エージェントの発言の形（左に小さい丸い顔、右に吹き出し）。吹き出しの下（column）に画像と時刻を足す。
+	 * 生成中の返答も同じ形で描き、確定したときに形が跳ねないようにする。
+	 */
+	private renderAgentMessage(state: IParadisAgentChatState | undefined): { element: HTMLElement; column: HTMLElement; bubble: HTMLElement } {
+		const element = $('.paradis-agent-chat-message.assistant');
+		const face = append(element, $('.paradis-agent-chat-face'));
+		face.setAttribute('aria-hidden', 'true');
+		// 顔は種類のロゴ（ターミナルのタブ・起動の一覧と同じ）。ドットの顔は Bot のもので、エージェントの CLI には使わない
+		const logo = state === undefined ? undefined : paradisAgentDescriptor(state.agent)?.logo;
+		if (logo !== undefined) {
+			face.classList.add(logo);
+			paradisAppendAgentLogoSvg(face, logo);
+		} else {
+			face.appendChild(renderIcon(Codicon.robot));
+		}
+		const column = append(element, $('.paradis-agent-chat-message-column'));
+		const bubble = append(column, $('.paradis-agent-chat-bubble'));
+		return { element, column, bubble };
+	}
+
+	/** 発言の下の小さい時刻（記録に時刻があるときだけ）。 */
+	private appendTime(parent: HTMLElement, ts: number | undefined): void {
+		if (ts === undefined) {
+			return;
+		}
+		const time = append(parent, $('time.paradis-agent-chat-time')) as HTMLTimeElement;
+		time.dateTime = new Date(ts).toISOString();
+		time.textContent = paradisAgentChatTimeLabel(ts, Date.now());
 	}
 
 	/**
@@ -787,7 +888,7 @@ export class ParadisAgentChatView extends Disposable {
 		}
 		row.setAttribute('aria-label', aria.join(localize('paradisAgentChat.groupAriaSeparator', "、")));
 		row.append(renderIcon(open ? Codicon.chevronDown : Codicon.chevronRight));
-		append(row, $('span.paradis-agent-chat-group-count')).textContent = localize('paradisAgentChat.groupCount', "{0}×", summary.count);
+		append(row, $('span.paradis-agent-chat-group-count')).textContent = localize('paradisAgentChat.groupSteps', "{0} 手順", summary.count);
 		append(row, $('span.paradis-agent-chat-group-names')).textContent = summary.names.join(', ');
 		if (summary.files.length > 0) {
 			// ファイル名は3件まで出し、それより多ければ2件と残りの件数にする。すべてのパスはホバーで見せる。
@@ -1509,7 +1610,10 @@ export class ParadisAgentChatView extends Disposable {
 		const bubble = append(this.liveElement, $('.paradis-agent-chat-live'));
 		bubble.dataset.phase = live.phase;
 		if (live.phase === 'message' && live.text !== undefined && live.text.length > 0) {
-			const body = append(bubble, $('.paradis-agent-chat-markdown'));
+			const message = this.renderAgentMessage(state);
+			bubble.classList.add('with-face');
+			bubble.appendChild(message.element);
+			const body = append(message.bubble, $('.paradis-agent-chat-markdown'));
 			const rendered = this.renderMarkdown(live.text, true);
 			this.liveMarkdown.value = rendered;
 			this.liveTextRenderedAt = Date.now();
@@ -1524,6 +1628,69 @@ export class ParadisAgentChatView extends Disposable {
 			append(bubble, $('.paradis-agent-chat-live-detail')).textContent = live.detail;
 		}
 		this.updateLiveClock();
+	}
+
+	/**
+	 * Codex の選択画面を読み直し、帯を合わせる。変わったら true（送れない理由も変わるので描き直す）。承認・質問・Codex の
+	 * 質問を待っている間は、それぞれのカードと文言が出るので帯は出さない。
+	 */
+	private updateChoiceMenu(state: IParadisAgentChatState | undefined): boolean {
+		const waiting = this.visible && this.instanceId !== undefined && state !== undefined && !state.agentExited && state.interaction === null;
+		const menu = waiting && state.agent === 'codex' && paradisPendingCodexQuestion(state.messages) === undefined
+			? this.host.readChoiceMenu?.(this.instanceId!)
+			: undefined;
+		this.choiceMenu = menu;
+		// Claude Code の画面（/model など）は mod に聞いた答え（askPanel）。承認・質問が出たら帯は出さない
+		const panel = waiting && state.agent === 'claude' ? this.panel : undefined;
+		this.panelShown = panel !== undefined;
+		const detail = menu !== undefined ? menu.title : panel?.command !== undefined ? `/${panel.command}` : undefined;
+		const signature = menu !== undefined ? JSON.stringify(['menu', menu.kind, detail ?? '']) : panel !== undefined ? JSON.stringify(['panel', detail ?? '']) : '';
+		if (signature === this.terminalBandSignature) {
+			return false;
+		}
+		this.terminalBandSignature = signature;
+		this.terminalBandStore.clear();
+		clearNode(this.terminalBand);
+		this.terminalBand.style.display = signature === '' ? 'none' : '';
+		if (signature !== '') {
+			this.terminalBand.append(renderIcon(Codicon.terminal));
+			const text = append(this.terminalBand, $('.paradis-agent-chat-terminal-band-text'));
+			append(text, $('span.paradis-agent-chat-terminal-band-title')).textContent = localize('paradisAgentChat.terminalBand', "この操作はターミナルで続けます");
+			if (detail !== undefined && detail.length > 0) {
+				append(text, $('span.paradis-agent-chat-terminal-band-detail')).textContent = detail;
+			}
+			const open = paradisAgentChatButton(this.terminalBand, 'secondary', this.terminalBandStore);
+			open.label = localize('paradisAgentChat.openTerminal', "ターミナルを開く");
+			// Codex の選択画面は消えたのを画面で見られるので、選び終えたらチャットへ戻す。Claude Code の画面は戻さない
+			this.terminalBandStore.add(open.onDidClick(() => menu !== undefined ? this._onDidRequestTerminalForChoice.fire() : this._onDidRequestTerminal.fire()));
+		}
+		return true;
+	}
+
+	/**
+	 * PC の Claude Code で画面（/model など）が開いているかを mod に聞く。聞くのは、Claude Code のペインのチャットを開いたとき、
+	 * チャットから / で始まる文を送った少し後、帯を出している間（{@link PANEL_RECHECK_TICKS} 秒ごと）だけ。分からない
+	 * （mod が無い・古い・作業中など）ときは帯を出さない。
+	 */
+	private askPanel(): void {
+		const token = this.token;
+		const state = this.session?.state;
+		this.panelAskWhenLoaded = token !== undefined && this.visible && state === undefined;
+		if (token === undefined || this.panelAsking || !this.visible || state?.agent !== 'claude' || this.host.isDialogOpen === undefined) {
+			return;
+		}
+		this.panelAsking = true;
+		void this.host.isDialogOpen(token).catch(() => undefined).then(open => {
+			this.panelAsking = false;
+			if (this._store.isDisposed || this.token !== token) {
+				return;
+			}
+			const next = open === true ? { command: this.panel?.command ?? this.panelCommand } : undefined;
+			if (next?.command !== this.panel?.command || (next === undefined) !== (this.panel === undefined)) {
+				this.panel = next;
+				this.render();
+			}
+		});
 	}
 
 	private liveLabel(live: IParadisAgentLiveState): string {
@@ -1567,6 +1734,7 @@ export class ParadisAgentChatView extends Disposable {
 			return;
 		}
 		this.composer.showNotice(undefined);
+		const command = /^\/([A-Za-z0-9:_-]+)/.exec(text.trim())?.[1];
 		const states = this.host.cardStates(token);
 		states.composer.sending = true;
 		this.composer.setSending(true);
@@ -1590,6 +1758,11 @@ export class ParadisAgentChatView extends Disposable {
 			this.composer.clearAfterSend(text);
 			this.stickToBottom = true;
 			void this.session?.refresh();
+			if (command !== undefined && this.session?.state?.agent === 'claude') {
+				// /model などは送った後に画面を開く。開き終えた頃に聞く
+				this.panelCommand = command;
+				this.panelAfterSend.value = disposableTimeout(() => this.askPanel(), PANEL_CHECK_AFTER_SEND_MS);
+			}
 		});
 	}
 }

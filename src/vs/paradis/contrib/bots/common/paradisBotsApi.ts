@@ -22,6 +22,12 @@ import { IParadisBot, IParadisBotPatch, ParadisBotFaceColor, ParadisBotFaceShape
  * - `working`: 会話のペインでエージェントが動いている
  * - `patrolling`: 見回り（定期実行）のペインでエージェントが動いている
  */
+/**
+ * Bot の機能を使えるようにするか（試験中、既定 false）。設定の登録は Bot の一覧の帯の側にあり、ここは id だけを
+ * 持つ（帯・Bot の道具・管理の道具が同じ id を読む）。
+ */
+export const PARADIS_BOTS_ENABLED_SETTING = 'paradis.bots.enabled';
+
 export type ParadisBotActivity = 'stopped' | 'idle' | 'working' | 'patrolling';
 
 /** ペインを起動した目的。`chat` は Bot の会話、`patrol` は見回り（PR 12 が使う）。 */
@@ -37,7 +43,9 @@ export interface IParadisBotPaneState {
 }
 
 /** 一覧の 1 行に要る値。最後の発言の本文は会話の記録の側（agentChat）から取るので、ここには持たない。 */
-export interface IParadisBotSummary extends IParadisBot {
+export interface IParadisBotSummary extends Omit<IParadisBot, 'preserved'> {
+	/** 新しい Para Code が足した欄を持っていて、この版からは変えられない。 */
+	readonly readOnly?: true;
 	/** 「あなたの番」の件数（Needs you の項目。後回し中と、一時停止中の Bot の分は数えない）。 */
 	readonly needsYou: number;
 	readonly openItems: number;
@@ -66,8 +74,11 @@ export function paradisBotActivity(bot: Pick<IParadisBot, 'paused'>, panes: read
 
 export function paradisBotSummary(bot: IParadisBot, items: IParadisBotItemsState, panes: readonly IParadisBotPaneState[], now: number): IParadisBotSummary {
 	const counts = paradisBotItemCounts(items, bot.id, now);
+	// 読んだ値（知らない欄）は画面へ送らず、読み取り専用の印だけにする
+	const { preserved, ...known } = bot;
 	return {
-		...bot,
+		...known,
+		...(preserved !== undefined ? { readOnly: true } : {}),
 		needsYou: bot.paused ? 0 : counts.needsYou,
 		openItems: counts.open,
 		activity: paradisBotActivity(bot, panes),
@@ -101,12 +112,6 @@ export interface IParadisBotLaunch {
 // ---- ウィンドウ側のサービス ---------------------------------------------------------------------
 
 export const PARADIS_BOTS_CHANNEL = 'paradisBots';
-
-/**
- * Bot の機能を使えるようにするか（試験中、既定 false）。設定の登録は Bot の一覧の帯の側にあり、ここは id だけを
- * 持つ（帯・管理の道具が同じ id を読む）。
- */
-export const PARADIS_BOTS_ENABLED_SETTING = 'paradis.bots.enabled';
 
 export const EMPTY_PARADIS_BOTS_SNAPSHOT: IParadisBotsSnapshot = Object.freeze({ revision: 0, readOnly: false, bots: Object.freeze([]) });
 

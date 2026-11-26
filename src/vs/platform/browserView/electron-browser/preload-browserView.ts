@@ -452,7 +452,10 @@ function init() {
 	const mainWorldHelpers = {
 		getElement,
 		/** Opaque token exposed for CDP-side frame matching. */
-		getFrameToken(): string { return frameToken; }
+		getFrameToken(): string { return frameToken; },
+		// PARA-PATCH: the two steps of window.prompt() around the confirm that stands in for it (Electron has no prompt; see common/paradisBrowserViewPrompt.ts)
+		paradisPromptBegin(message: string, defaultValue: string): string | null { return paradisPromptStep(() => ipcRenderer.sendSync(PARADIS_BROWSER_VIEW_PROMPT_BEGIN_CHANNEL, String(message), String(defaultValue))); },
+		paradisPromptEnd(accepted: boolean): string | null { return paradisPromptStep(() => ipcRenderer.sendSync(PARADIS_BROWSER_VIEW_PROMPT_END_CHANNEL, accepted === true)); }
 	};
 
 	try {
@@ -463,6 +466,8 @@ function init() {
 		// Expose helpers on `window.__vscode_helpers` in the page's main world
 		// for CDP `Runtime.evaluate` (which runs against the main world) to use.
 		contextBridge.exposeInMainWorld('__vscode_helpers', mainWorldHelpers);
+		// PARA-PATCH: replace Electron's throwing window.prompt in the page's main world with the helper above
+		contextBridge.executeInMainWorld({ func: paradisInstallPromptOverride });
 	} catch (error) {
 		console.error(error);
 	}
@@ -2496,6 +2501,50 @@ class AreaPicker {
 		return style;
 	}
 }
+
+// PARA-PATCH: BEGIN window.prompt() for the built-in browser. Electron replaces window.prompt with a function that throws
+// ("prompt() is and will not be supported"), so a page that asks with prompt() stopped with an exception. Para Code shows
+// a prompt as a confirm() that stands in for it; a CDP client can accept that confirm with a text. The flow is described
+// in common/paradisBrowserViewPrompt.ts.
+/** Channels of the two synchronous IPCs. Keep in sync with common/paradisBrowserViewPrompt.ts (a test checks it). */
+export const PARADIS_BROWSER_VIEW_PROMPT_BEGIN_CHANNEL = 'vscode:browserView:paradisPromptBegin';
+export const PARADIS_BROWSER_VIEW_PROMPT_END_CHANNEL = 'vscode:browserView:paradisPromptEnd';
+
+/** One synchronous IPC of a prompt. Anything but a string (also a failed IPC) is null. */
+export function paradisPromptStep(sendSync: () => unknown): string | null {
+	try {
+		const answer = sendSync();
+		return typeof answer === 'string' ? answer : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Runs in the page's main world (serialized by contextBridge.executeInMainWorld, so it must not use anything
+ * from this file; `target` is the page's global there). The page's confirm is captured here, before any script of
+ * the page runs. Arguments are converted the way the DOM does: a missing message or default is "".
+ */
+export function paradisInstallPromptOverride(target: {
+	__vscode_helpers?: { paradisPromptBegin?: (message: string, defaultValue: string) => string | null; paradisPromptEnd?: (accepted: boolean) => string | null };
+	confirm?: (message?: string) => boolean;
+	prompt?: unknown;
+} = globalThis): void {
+	const begin = target.__vscode_helpers?.paradisPromptBegin;
+	const end = target.__vscode_helpers?.paradisPromptEnd;
+	const confirm = target.confirm;
+	if (typeof begin !== 'function' || typeof end !== 'function' || typeof confirm !== 'function') {
+		return;
+	}
+	target.prompt = function prompt(message?: unknown, defaultValue?: unknown): string | null {
+		const shown = begin(message === undefined ? '' : String(message), defaultValue === undefined ? '' : String(defaultValue));
+		if (typeof shown !== 'string') {
+			return null;
+		}
+		return end(confirm.call(target, shown) === true);
+	};
+}
+// PARA-PATCH: END window.prompt() for the built-in browser
 
 // PARA-PATCH: only initialize the preload in Electron so Node tests can import its extracted automation-key state machine safely (Para Browser MCP automation input isolation)
 // NOTE: sandboxed preloads receive `process` as an injected wrapper argument, not as a property of

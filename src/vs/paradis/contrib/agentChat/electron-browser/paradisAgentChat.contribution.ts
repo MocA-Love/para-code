@@ -26,6 +26,7 @@ import { localize, localize2 } from '../../../../nls.js';
 import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ContextKeyExpr, IContextKey, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
+import { IFileDialogService } from '../../../../platform/dialogs/common/dialogs.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
@@ -41,6 +42,7 @@ import { ITerminalInstance, ITerminalService, terminalEditorId } from '../../../
 import { TerminalEditorInput } from '../../../../workbench/contrib/terminal/browser/terminalEditorInput.js';
 import { DEFAULT_COMMANDS_TO_SKIP_SHELL } from '../../../../workbench/contrib/terminal/common/terminal.js';
 import { TerminalContextKeys } from '../../../../workbench/contrib/terminal/common/terminalContextKey.js';
+import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IEditorGroup, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
@@ -54,8 +56,11 @@ import { IParadisAgentChatService } from '../browser/paradisAgentChatService.js'
 import { ParadisAgentChatSession } from '../browser/paradisAgentChatSession.js';
 import { IParadisAgentChatCardStates, IParadisAgentChatViewHost, ParadisAgentChatView } from '../browser/paradisAgentChatView.js';
 import { paradisVisibleTerminalText } from '../browser/paradisAgentTuiInput.js';
+import { IParadisAgentChoiceMenu, paradisAgentChoiceMenu } from '../../agentIde/common/paradisAgentChoiceMenu.js';
+import { ParadisAgentChatChoiceReturn } from '../browser/paradisAgentChatChoiceReturn.js';
 import { IParadisAgentChatCommand, IParadisAgentChatImageData, IParadisAgentChatSource, PARADIS_AGENT_CHAT_ENABLED_SETTING, PARADIS_AGENT_CHAT_SEND_KEY_SETTING } from '../common/paradisAgentChat.js';
-import { paradisPushAgentChatHistory } from '../common/paradisAgentChatComposerLogic.js';
+import { ParadisAgentChatDraftInsert, paradisInsertAgentChatDraft, paradisPushAgentChatHistory, paradisSendToAgentPane } from '../common/paradisAgentChatComposerLogic.js';
+import { paradisAgentChatAttachDialogOptions, paradisAgentChatAttachPaths } from '../common/paradisAgentChatAttach.js';
 import { paradisParseCodexAsyncReply } from '../../mobileRelay/common/paradisCodexAsyncQuestions.js';
 import { ParadisAgentChatDictation } from './paradisAgentChatDictation.js';
 import type { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
@@ -118,6 +123,11 @@ class ParadisAgentChatOverlay extends Disposable implements IParadisEditorTermin
 					this.controller.setChatMode(this.instanceId, false, true);
 				}
 			}));
+			this._register(this.view.onDidRequestTerminalForChoice(() => {
+				if (this.instanceId !== undefined) {
+					this.controller.openTerminalForChoice(this.instanceId);
+				}
+			}));
 			this._register(this.view);
 		}
 		this.view?.setTarget(show ? instanceId : undefined, show ? token : undefined);
@@ -131,6 +141,10 @@ class ParadisAgentChatOverlay extends Disposable implements IParadisEditorTermin
 		}
 		this.view.focusInput();
 		return true;
+	}
+
+	insertDraft(text: string): ParadisAgentChatDraftInsert | undefined {
+		return this.view === undefined || this.instanceId === undefined || !this.controller.isChatMode(this.instanceId) ? undefined : this.view.insertDraft(text);
 	}
 
 	override dispose(): void {
@@ -151,6 +165,12 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 	private readonly watcherId = generateUuid();
 	private readonly sessions = this._register(new DisposableMap<string, ParadisAgentChatSession>());
 	private readonly chatModeInstances = new Set<number>();
+	private readonly choiceReturn = this._register(new ParadisAgentChatChoiceReturn({
+		showsChoiceMenu: instanceId => this.readChoiceMenu(instanceId) !== undefined,
+		exists: instanceId => this.terminalService.getInstanceFromId(instanceId) !== undefined,
+		isChatMode: instanceId => this.isChatMode(instanceId),
+		returnToChat: instanceId => this.setChatMode(instanceId, true, this.isActiveInstance(instanceId)),
+	}));
 	private readonly overlays = new Set<ParadisAgentChatOverlay>();
 	/** {@link openChatWhenReady} の待ち。窓を閉じるときにまとめて外す。 */
 	private readonly pendingChatOpens = new Set<DisposableStore>();
@@ -177,6 +197,8 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@IEditorService private readonly editorService: IEditorService,
 		@IParadisAgentStatusStore private readonly agentStatusStore: IParadisAgentStatusStore,
+		@IFileDialogService private readonly fileDialogService: IFileDialogService,
+		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 	) {
 		super();
 		this.source = ProxyChannel.toService<IParadisAgentChatSource>(sharedProcessService.getChannel(PARADIS_MOBILE_RELAY_CHANNEL));
@@ -273,7 +295,15 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 		return this.enabled && this.insightsService.getForInstance(instanceId) !== undefined;
 	}
 
+	/** 帯の「ターミナルを開く」。選択画面が消えたらチャット表示へ戻す（フォーカスは、そのタブが前に出ているときだけ入力欄へ）。 */
+	openTerminalForChoice(instanceId: number): void {
+		this.setChatMode(instanceId, false, true);
+		this.choiceReturn.watch(instanceId);
+	}
+
 	setChatMode(instanceId: number, chat: boolean, moveFocus: boolean): void {
+		// 自分で切り替えたら、帯から開いたときの見張りはやめる
+		this.choiceReturn.cancel(instanceId);
 		if (chat === this.chatModeInstances.has(instanceId)) {
 			return;
 		}
@@ -366,6 +396,24 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 			return;
 		}
 		this.setChatMode(instanceId, chat, true);
+	}
+
+	insertDraft(instanceId: number, text: string): ParadisAgentChatDraftInsert | false {
+		const token = this.tokenFor(instanceId);
+		return paradisInsertAgentChatDraft(text, {
+			chatShown: this.enabled && this.isChatMode(instanceId) && token !== undefined,
+			insertIntoVisibleInput: value => {
+				for (const overlay of this.overlays) {
+					const result = overlay.currentInstanceId === instanceId ? overlay.insertDraft(value) : undefined;
+					if (result !== undefined) {
+						return result;
+					}
+				}
+				return undefined;
+			},
+			getDraft: () => this.getDraft(token!),
+			setDraft: value => this.setDraft(token!, value),
+		});
 	}
 
 	private focusChatInput(instanceId: number): void {
@@ -500,6 +548,12 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 		return this.instantiationService.createInstance(ParadisAgentChatDictation, target);
 	}
 
+	async pickFiles(): Promise<readonly string[] | undefined> {
+		const remoteAuthority = this.environmentService.remoteAuthority;
+		const uris = await this.fileDialogService.showOpenDialog(paradisAgentChatAttachDialogOptions(remoteAuthority, localize('paradisAgentChat.attachTitle', "エージェントに添えるファイル")));
+		return uris === undefined ? undefined : paradisAgentChatAttachPaths(uris, remoteAuthority);
+	}
+
 	getCommands(token: string): Promise<readonly IParadisAgentChatCommand[]> {
 		const cached = this.commandCache.get(token);
 		if (cached !== undefined && Date.now() - cached.at < COMMAND_CACHE_TTL) {
@@ -549,6 +603,15 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 		this.setChatMode(instanceId, false, true);
 	}
 
+	isDialogOpen(token: string): Promise<boolean | undefined> {
+		return this.source.isAgentChatDialogOpen?.(token) ?? Promise.resolve(undefined);
+	}
+
+	readChoiceMenu(instanceId: number): IParadisAgentChoiceMenu | undefined {
+		const instance = this.terminalService.getInstanceFromId(instanceId);
+		return instance === undefined || instance.isDisposed ? undefined : paradisAgentChoiceMenu(paradisVisibleTerminalText(instance));
+	}
+
 	// ---- ターミナルへの入力（ParadisAgentChatInput） ---------------------------------------------
 
 	/** 入力先のターミナル。タブが閉じた・ペインが別の会話に替わったなら undefined。 */
@@ -574,6 +637,10 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 			this.histories.set(token, paradisPushAgentChatHistory(this.getHistory(token), text, PARADIS_AGENT_CHAT_HISTORY_LIMIT));
 		}
 		return error;
+	}
+
+	sendMessageToPane(instanceId: number, text: string): Promise<string | undefined> {
+		return paradisSendToAgentPane(this.tokenFor(instanceId), text, (token, value) => this.sendMessage(instanceId, token, value));
 	}
 
 	answerQuestions(instanceId: number, token: string, group: string, answers: readonly ParadisAgentQuestionAnswer[]): Promise<string | undefined> {
