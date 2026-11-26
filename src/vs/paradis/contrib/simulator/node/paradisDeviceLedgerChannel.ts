@@ -40,7 +40,8 @@ export class ParadisMobileCanvasChannel implements IServerChannel<string> {
 			}
 			case 'detach': {
 				const request = requireObject(arg);
-				this.service.detach(requireString(request, 'paneToken'));
+				// `deviceId` を省くと、そのペインの全部を外す（ターミナルを閉じたとき）
+				this.service.detach(requireString(request, 'paneToken'), optionalString(request, 'deviceId'));
 				return Promise.resolve(undefined as T);
 			}
 			default:
