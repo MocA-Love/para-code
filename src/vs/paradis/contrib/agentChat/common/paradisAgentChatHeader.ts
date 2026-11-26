@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { ParadisAgentKind, PARADIS_AGENT_DESCRIPTORS, paradisAgentDescriptor } from './paradisAgentDescriptor.js';
 import { IParadisAgentChatState } from './paradisAgentChatState.js';
@@ -73,5 +73,69 @@ export class ParadisAgentChatHeaderWatch extends Disposable {
 				this._onDidChange.fire();
 			}
 		}));
+	}
+}
+
+/**
+ * 見出しを畳んだ側（{@link IParadisAgentChatService.setHeaderHidden}）の台帳。畳んだ側が返された IDisposable を dispose すると
+ * 戻る。畳んだ側が戻し忘れても「ターミナルに戻る」と「最新を取得できていません」が見えないままにならないよう、ペインが閉じた・
+ * チャット表示が閉じた・別の会話に替わったときも、そのペインの畳みを全部戻す（その後の dispose は何もしない）。
+ */
+export class ParadisAgentChatHeaderHides extends Disposable {
+
+	private readonly _onDidChange = this._register(new Emitter<number>());
+	/** 畳むかどうかが変わったペイン。 */
+	readonly onDidChange: Event<number> = this._onDidChange.event;
+	/** ペインごとの、畳んでいる側と、畳んだときの会話（まだ無ければ undefined。最初に現れた会話を覚える）。 */
+	private readonly holds = new Map<number, { readonly owners: Set<object>; token: string | undefined }>();
+
+	isHidden(instanceId: number): boolean {
+		return this.holds.has(instanceId);
+	}
+
+	/** 畳む。返り値を dispose すると、ほかに畳んでいる側が無ければ戻る。 */
+	hide(instanceId: number, token: string | undefined): IDisposable {
+		const owner = {};
+		let entry = this.holds.get(instanceId);
+		const changed = entry === undefined;
+		if (entry === undefined) {
+			entry = { owners: new Set(), token };
+			this.holds.set(instanceId, entry);
+		}
+		entry.owners.add(owner);
+		if (changed) {
+			this._onDidChange.fire(instanceId);
+		}
+		return toDisposable(() => {
+			const current = this.holds.get(instanceId);
+			if (current?.owners.delete(owner) && current.owners.size === 0) {
+				this.holds.delete(instanceId);
+				this._onDidChange.fire(instanceId);
+			}
+		});
+	}
+
+	/** そのペインの畳みを全部戻す（ペインが閉じた・チャット表示が閉じた）。 */
+	release(instanceId: number): void {
+		if (this.holds.delete(instanceId)) {
+			this._onDidChange.fire(instanceId);
+		}
+	}
+
+	/** ペインの会話が替わっていたら、そのペインの畳みを全部戻す。 */
+	checkTokens(tokenFor: (instanceId: number) => string | undefined): void {
+		for (const [instanceId, entry] of [...this.holds]) {
+			const token = tokenFor(instanceId);
+			if (entry.token === undefined) {
+				entry.token = token;
+			} else if (token !== entry.token) {
+				this.release(instanceId);
+			}
+		}
+	}
+
+	override dispose(): void {
+		this.holds.clear();
+		super.dispose();
 	}
 }

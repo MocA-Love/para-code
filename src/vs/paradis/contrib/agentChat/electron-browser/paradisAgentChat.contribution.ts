@@ -60,7 +60,8 @@ import { IParadisAgentChoiceMenu, paradisAgentChoiceMenu } from '../../agentIde/
 import { ParadisAgentChatChoiceReturn } from '../browser/paradisAgentChatChoiceReturn.js';
 import { IParadisAgentChatCommand, IParadisAgentChatImageData, IParadisAgentChatSource, PARADIS_AGENT_CHAT_ENABLED_SETTING, PARADIS_AGENT_CHAT_SEND_KEY_SETTING } from '../common/paradisAgentChat.js';
 import { ParadisAgentChatDraftInsert, paradisInsertAgentChatDraft, paradisPushAgentChatHistory, paradisSendToAgentPane } from '../common/paradisAgentChatComposerLogic.js';
-import { IParadisAgentChatHeaderState, ParadisAgentChatHeaderWatch, paradisAgentChatHeaderState } from '../common/paradisAgentChatHeader.js';
+import { ParadisAgentChatActiveTracker, paradisAgentChatActive } from '../common/paradisAgentChatActive.js';
+import { IParadisAgentChatHeaderState, ParadisAgentChatHeaderHides, ParadisAgentChatHeaderWatch, paradisAgentChatHeaderState } from '../common/paradisAgentChatHeader.js';
 import { paradisAgentChatAttachDialogOptions, paradisAgentChatAttachPaths } from '../common/paradisAgentChatAttach.js';
 import { paradisParseCodexAsyncReply } from '../../mobileRelay/common/paradisCodexAsyncQuestions.js';
 import { ParadisAgentChatDictation } from './paradisAgentChatDictation.js';
@@ -115,8 +116,8 @@ class ParadisAgentChatOverlay extends Disposable implements IParadisEditorTermin
 	/** 対象のペインがチャット表示なら重ね、そうでなければ外す。 */
 	update(): void {
 		const instanceId = this.instanceId;
-		const token = instanceId !== undefined && this.controller.isChatMode(instanceId) ? this.controller.tokenFor(instanceId) : undefined;
-		const show = instanceId !== undefined && token !== undefined;
+		const show = instanceId !== undefined && this.controller.isChatActive(instanceId);
+		const token = show ? this.controller.tokenFor(instanceId) : undefined;
 		if (show && this.view === undefined) {
 			this.view = this.controller.createView(this.container);
 			this._register(this.view.onDidRequestTerminal(() => {
@@ -170,9 +171,12 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 	private readonly headerWatches = this._register(new DisposableMap<string, ParadisAgentChatHeaderWatch>());
 	private readonly _onDidChangeHeader = this._register(new Emitter<number>());
 	readonly onDidChangeHeader = this._onDidChangeHeader.event;
-	/** 見出しを畳んだペイン。 */
-	private readonly hiddenHeaders = new Set<number>();
+	/** 見出しを畳んだ側の台帳（ペインが閉じた・チャット表示が閉じた・会話が替わったら戻す）。 */
+	private readonly headerHides = this._register(new ParadisAgentChatHeaderHides());
 	private readonly chatModeInstances = new Set<number>();
+	/** 今チャット表示で見えているペイン（{@link isChatActive}）。 */
+	private readonly chatActive = this._register(new ParadisAgentChatActiveTracker());
+	readonly onDidChangeChatActive = this.chatActive.onDidChange;
 	private readonly choiceReturn = this._register(new ParadisAgentChatChoiceReturn({
 		showsChoiceMenu: instanceId => this.readChoiceMenu(instanceId) !== undefined,
 		exists: instanceId => this.terminalService.getInstanceFromId(instanceId) !== undefined,
@@ -232,7 +236,9 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 				}
 			}
 		}));
+		this._register(this.headerHides.onDidChange(() => this.updateAll()));
 		this._register(this.paneTokenService.onDidChange(() => {
+			this.headerHides.checkTokens(instanceId => this.tokenFor(instanceId));
 			this.pruneSessions();
 			this.watchScheduler.schedule();
 			this.updateAll();
@@ -294,6 +300,10 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 		return this.enabled && this.chatModeInstances.has(instanceId);
 	}
 
+	isChatActive(instanceId: number): boolean {
+		return paradisAgentChatActive(this.isChatMode(instanceId), this.tokenFor(instanceId));
+	}
+
 	tokenFor(instanceId: number): string | undefined {
 		return this.paneTokenService.getTokenForInstance(instanceId);
 	}
@@ -330,6 +340,7 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 		} else {
 			this.chatModeInstances.delete(instanceId);
 			this.instanceListeners.deleteAndDispose(instanceId);
+			this.headerHides.release(instanceId);
 		}
 		this.updateAll();
 		// 変化の知らせを受けるペイン（チャット表示中）が変わったので、中継へすぐ知らせ直す。
@@ -442,8 +453,9 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 
 	private forgetInstance(instanceId: number): void {
 		this.chatModeInstances.delete(instanceId);
-		this.hiddenHeaders.delete(instanceId);
+		this.headerHides.release(instanceId);
 		this.instanceListeners.deleteAndDispose(instanceId);
+		this.updateChatActive();
 	}
 
 	private updateAll(): void {
@@ -451,6 +463,12 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 			overlay.update();
 		}
 		this.updateContextKeys();
+		this.updateChatActive();
+	}
+
+	/** 見えているかの判定は、入れ物の印（{@link ParadisAgentChatOverlay.update}）と同じ {@link isChatActive}。 */
+	private updateChatActive(): void {
+		this.chatActive.update(this.chatModeInstances, instanceId => this.isChatActive(instanceId));
 	}
 
 	// ---- グループごとのコンテキストキー（ボタンの出し分けと押下状態） ------------------------------------
@@ -517,20 +535,12 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 		return token === undefined ? undefined : paradisAgentChatHeaderState(this.session(token).state);
 	}
 
-	setHeaderHidden(instanceId: number, hidden: boolean): void {
-		if (hidden === this.hiddenHeaders.has(instanceId)) {
-			return;
-		}
-		if (hidden) {
-			this.hiddenHeaders.add(instanceId);
-		} else {
-			this.hiddenHeaders.delete(instanceId);
-		}
-		this.updateAll();
+	setHeaderHidden(instanceId: number): IDisposable {
+		return this.headerHides.hide(instanceId, this.tokenFor(instanceId));
 	}
 
 	isHeaderHidden(instanceId: number): boolean {
-		return this.hiddenHeaders.has(instanceId);
+		return this.headerHides.isHidden(instanceId);
 	}
 
 	private pruneSessions(): void {
@@ -640,10 +650,6 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 
 	showTerminal(instanceId: number): void {
 		this.setChatMode(instanceId, false, true);
-	}
-
-	isDialogOpen(token: string): Promise<boolean | undefined> {
-		return this.source.isAgentChatDialogOpen?.(token) ?? Promise.resolve(undefined);
 	}
 
 	readChoiceMenu(instanceId: number): IParadisAgentChoiceMenu | undefined {

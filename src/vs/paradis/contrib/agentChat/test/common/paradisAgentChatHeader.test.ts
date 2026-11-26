@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { Emitter } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { ParadisAgentChatHeaderWatch, paradisAgentChatHeaderState } from '../../common/paradisAgentChatHeader.js';
+import { ParadisAgentChatHeaderHides, ParadisAgentChatHeaderWatch, paradisAgentChatHeaderState } from '../../common/paradisAgentChatHeader.js';
 import { IParadisAgentChatState } from '../../common/paradisAgentChatState.js';
 
 suite('paradisAgentChatHeaderState', () => {
@@ -52,5 +52,47 @@ suite('paradisAgentChatHeaderState', () => {
 		current = state({ rev: 2, busy: true });
 		changed.fire();
 		assert.deepStrictEqual({ sameHeader, afterBusy: fired }, { sameHeader: 0, afterBusy: 1 });
+	});
+
+	test('header hides come back on dispose, and also when the pane closes, the chat view closes or the conversation changes', () => {
+		const hides = store.add(new ParadisAgentChatHeaderHides());
+		const changes: number[] = [];
+		store.add(hides.onDidChange(instanceId => changes.push(instanceId)));
+		const shown = () => [1, 2, 3, 4].filter(instanceId => hides.isHidden(instanceId));
+		const log: number[][] = [];
+
+		// 2 人が畳んだら、2 人とも戻すまで畳んだまま。dispose を 2 回呼んでも害は無い
+		const first = hides.hide(1, 'a');
+		const second = hides.hide(1, 'a');
+		first.dispose();
+		first.dispose();
+		log.push(shown());
+		second.dispose();
+		log.push(shown());
+
+		// ペインが閉じた・チャット表示が閉じた（release）。その後の dispose は、新しく畳んだ側を戻さない
+		const forgotten = hides.hide(2, 'b');
+		hides.release(2);
+		const again = hides.hide(2, 'b');
+		forgotten.dispose();
+		log.push(shown());
+		again.dispose();
+
+		// 会話が替わったら戻る。畳んだときに会話が無ければ、最初に現れた会話を覚える
+		const tokens = new Map<number, string | undefined>([[3, 'c'], [4, undefined]]);
+		const conversationHides = [hides.hide(3, 'c'), hides.hide(4, undefined)];
+		tokens.set(4, 'd');
+		hides.checkTokens(instanceId => tokens.get(instanceId));
+		log.push(shown());
+		tokens.set(3, 'c2');
+		tokens.set(4, 'd2');
+		hides.checkTokens(instanceId => tokens.get(instanceId));
+		log.push(shown());
+		conversationHides.forEach(hide => hide.dispose());
+
+		assert.deepStrictEqual({ log, changes }, {
+			log: [[1], [], [2], [3, 4], []],
+			changes: [1, 1, 2, 2, 2, 2, 3, 4, 3, 4],
+		});
 	});
 });
