@@ -8,6 +8,10 @@
 
 // タイトルバーのベルから開く受信箱。全スペースの完了・許可待ち・質問を1か所にため、行からペインへ移る。
 //
+// 中は 2 つの一覧に分かれる。「あなたの番」は「人が答えるもの」の台帳（humanAsk）の待ちをカードで出し、小さい問いは
+// 行の中のボタンで、大きい問いは S のモーダル（paradisNotificationInboxAskDialog.ts）で答える。「通知」は今までの一覧
+// （完了を含む記録。行を押すとペインへ移る）。
+//
 // 作りはサービスステータスのポップオーバー（paradisServiceStatusPopover.ts）と同じ自前の DOM
 // （position: fixed、layoutService.activeContainer 直下）。重なりは小窓の段（共通の印 `paradis-overlay-popover`、
 // vs/paradis/browser/paradisModal.ts の表）で、ワークベンチの確認ダイアログ（2575）より下。内蔵ブラウザの上に出せるのも、
@@ -22,8 +26,11 @@ import { IntervalTimer } from '../../../../base/common/async.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { fromNow } from '../../../../base/common/date.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
-import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { paradisCloseWhenModalOpens } from '../../../browser/paradisAnchoredPopover.js';
+import { createParadisChip } from '../../../browser/paradisBadges.js';
+import { ParadisButton, ParadisButtonKind } from '../../../browser/paradisButton.js';
+import { ParadisSegmented } from '../../../browser/paradisSegmented.js';
 import { isMacintosh, isWindows } from '../../../../base/common/platform.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
@@ -32,6 +39,15 @@ import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+import { IParadisHumanAskEntry, IParadisHumanAskService, ParadisHumanAskAnswer } from '../../humanAsk/common/paradisHumanAsk.js';
+import {
+	paradisInboxAskDangerLabels,
+	paradisInboxAskKindLabel,
+	paradisInboxAskLayout,
+	paradisInboxAskRefusedText,
+	paradisInboxAskSettledText,
+	paradisInboxAskSourceLabel,
+} from '../common/paradisNotificationInboxAsk.js';
 import {
 	IParadisInboxEntry,
 	IParadisNotificationInboxService,
@@ -43,11 +59,27 @@ import {
 
 const $ = dom.$;
 
-const POPOVER_WIDTH = 380;
+const POPOVER_WIDTH = 460;
 /** 画面の端との余白。 */
 const EDGE_MARGIN = 8;
 /** 開いている間に相対時刻（「3 分前」）を書き直す間隔（paradis-16-17）。 */
 const TIME_REFRESH_INTERVAL = 60_000;
+/** ほかの場所で答えられたカードを、答えを出したまま残す時間（押そうとした行が突然ずれないように、すぐには消さない）。 */
+const SETTLED_LINGER = 4_000;
+/** カードが増減して行が動いた直後に、ボタンを押しても送らない時間（動く前の行を押すつもりだった指を、別の行の「許可」に通さない）。 */
+const SHIFT_GUARD = 600;
+
+type ParadisInboxTab = 'asks' | 'notifications';
+
+interface IAskCard extends IDisposable {
+	readonly element: HTMLElement;
+	readonly signature: string;
+	/** 時刻の欄と、聞かれた時刻。 */
+	readonly time: HTMLElement;
+	readonly askedAt: number;
+	/** カードの中のボタン（役目の名前 → 要素）。作り直したときに、同じ役目のボタンへフォーカスを戻す。 */
+	readonly controls: Map<string, HTMLElement>;
+}
 
 /**
  * 受信箱のポップアップの左端と幅（px）。幅は既定の 380px か、ウィンドウの幅から両端の余白を引いた狭いほう
@@ -65,6 +97,10 @@ export interface IParadisNotificationInboxPopoverOptions {
 	/** ベルのボタン。無ければ（ベルを隠している・コマンドから開いた）ウィンドウの右上に出す。 */
 	readonly anchor: HTMLElement | undefined;
 	readonly onClose: () => void;
+	/** 大きい問いのモーダルを開く。小窓はモーダルが開くと閉じるので、モーダルは開いた側（ベルの係）が持つ。 */
+	readonly onOpenAsk?: (key: string, focusText: boolean) => void;
+	/** 今の時刻（行が動いた直後の押し間違いの守り。テストで差し替える）。 */
+	readonly now?: () => number;
 }
 
 /**
@@ -75,7 +111,25 @@ export class ParadisNotificationInboxPopover extends Disposable {
 	private readonly element: HTMLElement;
 	private readonly header: HTMLElement;
 	private readonly list: HTMLElement;
+	private readonly asks: HTMLElement;
 	private readonly footer: HTMLElement;
+	private readonly tabs: ParadisSegmented<ParadisInboxTab>;
+	private readonly headerActions: HTMLElement;
+	private tab: ParadisInboxTab;
+	/** 「あなたの番」のカード（鍵 → カード）。台帳が変わっても、中身の変わらないカードは作り直さない（フォーカスを残す）。 */
+	private readonly askCards = this._register(new DisposableMap<string, IAskCard>());
+	/** この小窓に「待ち」として出したことのある鍵。開いている間に回答済みになったものだけ、答えを 1 行出して残す。 */
+	private readonly shownWaiting = new Set<string>();
+	/** 回答済みを出し終えて、一覧から消した鍵。 */
+	private readonly dismissed = new Set<string>();
+	private readonly lingerTimers = this._register(new DisposableMap<string, IDisposable>());
+	/** ここから送って、台帳が受け取るのを待っている鍵と、送った時刻。 */
+	private readonly sending = new Map<string, number>();
+	/** ここから送って断られた鍵と、その理由の 1 行。 */
+	private readonly refused = new Map<string, string>();
+	private askOrder = '';
+	private asksEmpty: HTMLElement | undefined;
+	private guardUntil = 0;
 	private readonly renderDisposables = this._register(new DisposableStore());
 	private rows: HTMLElement[] = [];
 	/** 時刻の欄と、その行の通知。開いている間だけ 60 秒ごとに書き直す。 */
@@ -95,6 +149,7 @@ export class ParadisNotificationInboxPopover extends Disposable {
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@ICommandService private readonly commandService: ICommandService,
 		@IHoverService private readonly hoverService: IHoverService,
+		@IParadisHumanAskService private readonly humanAskService: IParadisHumanAskService,
 	) {
 		super();
 
@@ -103,7 +158,25 @@ export class ParadisNotificationInboxPopover extends Disposable {
 		this.element.setAttribute('role', 'dialog');
 		this.element.setAttribute('aria-label', localize('paradis.inbox.ariaLabel', "通知の受信箱"));
 		this.header = dom.append(this.element, $('.pnip-header'));
-		this.list = dom.append(this.element, $('.pnip-list'));
+		dom.append(this.header, $('span.pnip-title')).textContent = localize('paradis.inbox.title', "受信箱");
+		// 待っているものがあれば「あなたの番」から開く
+		this.tab = this.visibleAsks().length > 0 ? 'asks' : 'notifications';
+		this.tabs = this._register(new ParadisSegmented<ParadisInboxTab>(this.header, {
+			items: [{ value: 'asks', label: localize('paradis.inbox.tab.asks', "あなたの番") }, { value: 'notifications', label: localize('paradis.inbox.tab.notifications', "通知") }],
+			value: this.tab,
+			ariaLabel: localize('paradis.inbox.tabs', "受信箱の表示"),
+		}));
+		this.tabs.element.classList.add('pnip-tabs');
+		this._register(this.tabs.onDidChange(tab => {
+			this.tab = tab;
+			this.render();
+		}));
+		dom.append(this.header, $('span.pnip-grow'));
+		this.headerActions = dom.append(this.header, $('span.pnip-header-actions'));
+		this.asks = dom.append(this.element, $('.pnip-list.pnip-asks'));
+		this.asks.setAttribute('role', 'list');
+		this.asks.setAttribute('aria-label', localize('paradis.inbox.asksAriaLabel', "あなたの番の一覧"));
+		this.list = dom.append(this.element, $('.pnip-list.pnip-notifications'));
 		// ダイアログと同じ名前だと、一覧に入るたびに同じ名前が二度読まれる
 		this.list.setAttribute('aria-label', localize('paradis.inbox.listAriaLabel', "通知の一覧"));
 		this.footer = dom.append(this.element, $('.pnip-footer'));
@@ -118,6 +191,7 @@ export class ParadisNotificationInboxPopover extends Disposable {
 		this.element.focus();
 
 		this._register(this.inboxService.onDidChange(() => this.render()));
+		this._register(this.humanAskService.onDidChange(() => this.render()));
 		this._register(this.configurationService.onDidChangeConfiguration(e => {
 			if (e.affectsConfiguration(PARADIS_NOTIFICATION_MENU_BAR_SETTING)) {
 				this.render();
@@ -195,6 +269,9 @@ export class ParadisNotificationInboxPopover extends Disposable {
 		for (const { element, entry } of this.times) {
 			element.textContent = this.timeText(entry);
 		}
+		for (const card of this.askCards.values()) {
+			card.time.textContent = fromNow(card.askedAt, true);
+		}
 	}
 
 	private timeText(entry: IParadisInboxEntry): string {
@@ -222,7 +299,7 @@ export class ParadisNotificationInboxPopover extends Disposable {
 		const focusWasInside = !!active && dom.isAncestor(active, this.element);
 		this.renderDisposables.clear();
 		const scrollTop = this.list.scrollTop;
-		dom.clearNode(this.header);
+		dom.clearNode(this.headerActions);
 		dom.clearNode(this.list);
 		dom.clearNode(this.footer);
 		this.rows = [];
@@ -231,14 +308,26 @@ export class ParadisNotificationInboxPopover extends Disposable {
 		const snapshot = this.inboxService.snapshot;
 
 		// --- 見出し ---
-		dom.append(this.header, $('span.pnip-title')).textContent = localize('paradis.inbox.title', "受信箱");
-		const unread = dom.append(this.header, $('span.pnip-unread'));
-		unread.textContent = localize('paradis.inbox.unreadCount', "未読 {0}", snapshot.unreadCount);
-		dom.append(this.header, $('span.pnip-grow'));
-		const readAll = dom.append(this.header, $('button.pnip-link')) as HTMLButtonElement;
-		readAll.textContent = localize('paradis.inbox.markAllRead', "すべて既読にする");
-		readAll.disabled = snapshot.unreadCount === 0;
-		this.renderDisposables.add(dom.addDisposableListener(readAll, dom.EventType.CLICK, () => void this.inboxService.markAllRead()));
+		// 切り替えの文字に件数を入れる（切り替えの部品は文字だけを持つので、ボタンの文字を書き直す）。数は台帳の数え方
+		// （待ちで、ほかの 1 件に寄せていないもの）。「通知」は未読があるときだけ点を出す
+		const [asksTab, notificationsTab] = this.tabs.element.children;
+		const waiting = this.humanAskService.snapshot.counts.total;
+		asksTab.textContent = waiting > 0 ? localize('paradis.inbox.tab.asksCount', "あなたの番 {0}", waiting) : localize('paradis.inbox.tab.asks', "あなたの番");
+		notificationsTab.classList.toggle('pnip-tab-unread', snapshot.unreadCount > 0);
+		notificationsTab.setAttribute('aria-label', snapshot.unreadCount > 0
+			? localize('paradis.inbox.tab.notificationsUnread', "通知（未読 {0}）", snapshot.unreadCount)
+			: localize('paradis.inbox.tab.notifications', "通知"));
+		this.asks.classList.toggle('pnip-hidden', this.tab !== 'asks');
+		this.list.classList.toggle('pnip-hidden', this.tab !== 'notifications');
+		this.renderAsks(focusWasInside);
+		if (this.tab === 'notifications') {
+			const unread = dom.append(this.headerActions, $('span.pnip-unread'));
+			unread.textContent = localize('paradis.inbox.unreadCount', "未読 {0}", snapshot.unreadCount);
+			const readAll = dom.append(this.headerActions, $('button.pnip-link')) as HTMLButtonElement;
+			readAll.textContent = localize('paradis.inbox.markAllRead', "すべて既読にする");
+			readAll.disabled = snapshot.unreadCount === 0;
+			this.renderDisposables.add(dom.addDisposableListener(readAll, dom.EventType.CLICK, () => void this.inboxService.markAllRead()));
+		}
 
 		// --- 一覧 ---
 		// 行を option にした listbox（paradis-16-14 案 A）。空のときは案内の文だけなので listbox にしない
@@ -267,7 +356,9 @@ export class ParadisNotificationInboxPopover extends Disposable {
 		}
 
 		// --- 下の段 ---
-		if (isMacintosh || isWindows) {
+		if (this.tab === 'asks') {
+			dom.append(this.footer, $('span')).textContent = localize('paradis.inbox.asksFooter', "答えは元のペイン・項目・タスクへ送ります");
+		} else if (isMacintosh || isWindows) {
 			const menuBar = dom.append(this.footer, $('label.pnip-menubar'));
 			const checkbox = dom.append(menuBar, $('input')) as HTMLInputElement;
 			checkbox.type = 'checkbox';
@@ -288,6 +379,218 @@ export class ParadisNotificationInboxPopover extends Disposable {
 			void this.commandService.executeCommand('paradis.notifications.openSettings');
 		}));
 	}
+
+	// ---- あなたの番 ------------------------------------------------------------------------------
+
+	/**
+	 * 一覧に出す台帳の 1 件。待ちのものと、この小窓に待ちとして出している間に回答済み・取り下げになったもの
+	 * （答えを 1 行出して数秒残す）。ほかの 1 件に寄せたものは出さない。
+	 */
+	private visibleAsks(): IParadisHumanAskEntry[] {
+		return this.humanAskService.snapshot.entries.filter(entry => entry.foldedInto === undefined && !this.dismissed.has(entry.key)
+			&& (entry.state === 'waiting' || this.shownWaiting.has(entry.key)));
+	}
+
+	private renderAsks(focusWasInside: boolean): void {
+		const entries = this.visibleAsks();
+		const keys = new Set(entries.map(entry => entry.key));
+		for (const key of [...this.askCards.keys()]) {
+			if (!keys.has(key)) {
+				this.askCards.deleteAndDispose(key);
+				this.lingerTimers.deleteAndDispose(key);
+				this.sending.delete(key);
+				this.refused.delete(key);
+			}
+		}
+		// 行が増減・入れ替わったら、少しの間ボタンを効かせない
+		const order = entries.map(entry => entry.key).join('\n');
+		if (order !== this.askOrder) {
+			if (this.askOrder.length > 0) {
+				this.guardUntil = (this.options.now ?? Date.now)() + SHIFT_GUARD;
+			}
+			this.askOrder = order;
+		}
+		this.asksEmpty?.remove();
+		this.asksEmpty = undefined;
+		if (entries.length === 0) {
+			this.asksEmpty = dom.append(this.asks, $('.pnip-empty'));
+			this.asksEmpty.textContent = localize('paradis.inbox.asksEmpty', "あなたの番はありません。エージェントの質問と許可の確認が、全スペースの分ここに並びます。");
+		}
+		let previous: Element | null = null;
+		for (const entry of entries) {
+			if (entry.state === 'waiting') {
+				this.shownWaiting.add(entry.key);
+				// 台帳が受け取った（届けている最中になった）・届かずに戻ってきたら、ここの「送っています」は役目を終える
+				// （前の回答の「届かなかった」の印は、送った時刻より古いので見ない）
+				if (entry.pending !== undefined || (entry.failedAt ?? 0) >= (this.sending.get(entry.key) ?? Infinity)) {
+					this.sending.delete(entry.key);
+				}
+			} else if (!this.lingerTimers.has(entry.key)) {
+				const key = entry.key;
+				const timer = setTimeout(() => {
+					this.dismissed.add(key);
+					this.render();
+				}, SETTLED_LINGER);
+				this.lingerTimers.set(key, { dispose: () => clearTimeout(timer) });
+			}
+			const signature = JSON.stringify([entry, this.sending.has(entry.key), this.refused.get(entry.key)]);
+			let card = this.askCards.get(entry.key);
+			if (card === undefined || card.signature !== signature) {
+				// 作り直すカードの中にフォーカスがあれば、同じ役目のボタンへ戻す
+				const active = dom.getActiveElement();
+				const focused = card !== undefined ? [...card.controls].find(([, control]) => control === active)?.[0] : undefined;
+				const next = this.buildAskCard(entry, signature);
+				if (card !== undefined) {
+					card.element.replaceWith(next.element);
+				}
+				this.askCards.set(entry.key, next);
+				card = next;
+				if (focused !== undefined) {
+					(card.controls.get(focused) ?? (focusWasInside ? this.element : undefined))?.focus();
+				}
+			}
+			// 並びを台帳の順に合わせる（もう正しい位置にあるカードは動かさない。動かすとフォーカスが外れる）
+			const expected: Element | null = previous === null ? this.asks.firstElementChild : previous.nextElementSibling;
+			if (expected !== card.element) {
+				this.asks.insertBefore(card.element, expected);
+			}
+			previous = card.element;
+		}
+	}
+
+	private buildAskCard(entry: IParadisHumanAskEntry, signature: string): IAskCard {
+		const store = new DisposableStore();
+		const card = $('.pnip-ask');
+		const time = $('span.pnip-time');
+		const controls = new Map<string, HTMLElement>();
+		const built: IAskCard = { element: card, signature, time, askedAt: entry.askedAt, controls, dispose: () => { store.dispose(); card.remove(); } };
+		card.setAttribute('role', 'listitem');
+		card.dataset.askKey = entry.key;
+		const layout = paradisInboxAskLayout(entry);
+		card.classList.toggle('settled', layout === 'settled');
+
+		// 1 段目: 種類の札・出どころの札・だれから・時刻
+		const top = dom.append(card, $('.pnip-row-top'));
+		dom.append(top, $(`span.pnip-kind.${entry.kind}`)).textContent = paradisInboxAskKindLabel(entry.kind);
+		createParadisChip(top, paradisInboxAskSourceLabel(entry.source));
+		const title = dom.append(top, $('span.pnip-space'));
+		title.textContent = entry.from.title;
+		store.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), title, entry.from.detail ? `${entry.from.title} (${entry.from.detail})` : entry.from.title));
+		dom.append(top, $('span.pnip-grow'));
+		top.appendChild(time);
+		time.textContent = fromNow(entry.askedAt, true);
+		store.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), time, new Date(entry.askedAt).toLocaleString()));
+		if (entry.from.detail) {
+			dom.append(card, $('.pnip-detail')).textContent = entry.from.detail;
+		}
+		card.setAttribute('aria-label', [paradisInboxAskKindLabel(entry.kind), paradisInboxAskSourceLabel(entry.source), entry.from.title, entry.from.detail].filter(part => !!part).join(' '));
+
+		if (layout === 'settled') {
+			const settled = dom.append(card, $('.pnip-ask-settled'));
+			settled.setAttribute('role', 'status');
+			dom.append(settled, $(`span${ThemeIcon.asCSSSelector(Codicon.check)}`)).setAttribute('aria-hidden', 'true');
+			dom.append(settled, $('span')).textContent = paradisInboxAskSettledText(entry);
+			return built;
+		}
+
+		// 中身: 許可は何を許可するのか（コマンドなど）を等幅で 6 行まで、質問は前置きと問い
+		if (entry.kind === 'permission') {
+			const dangers = paradisInboxAskDangerLabels(entry.preface);
+			if (dangers.length > 0) {
+				const row = dom.append(card, $('.pnip-ask-dangers'));
+				for (const label of dangers) {
+					createParadisChip(row, label, 'danger');
+				}
+			}
+			if (entry.preface) {
+				dom.append(card, $('pre.pnip-ask-command')).textContent = entry.preface;
+			}
+		} else if (entry.preface) {
+			dom.append(card, $('.pnip-ask-preface')).textContent = entry.preface;
+		}
+		if (entry.questions.length === 1) {
+			dom.append(card, $('.pnip-ask-question')).textContent = entry.questions[0].text;
+		} else if (entry.questions.length > 1) {
+			dom.append(card, $('.pnip-ask-question')).textContent = localize('paradis.inbox.ask.questionCount', "{0}（ほか {1} 問）", entry.questions[0].text, entry.questions.length - 1);
+		}
+
+		const busy = this.sending.has(entry.key) || entry.pending !== undefined;
+		const buttons = dom.append(card, $('.pnip-ask-buttons'));
+		const add = (control: string, kind: ParadisButtonKind, label: string, run: () => void, guarded = true, hint?: string) => {
+			const button = store.add(new ParadisButton(buttons, { kind, label, small: true, disabled: guarded && busy, title: hint }));
+			button.element.dataset.askControl = control;
+			controls.set(control, button.element);
+			store.add(button.onDidClick(() => {
+				// 答えを送るボタンは、行が動いた直後には効かせない
+				if (!guarded || (this.options.now ?? Date.now)() >= this.guardUntil) {
+					run();
+				}
+			}));
+		};
+		if (layout === 'inline-options') {
+			const question = entry.questions[0];
+			for (const option of question.options) {
+				add(`option:${option.id}`, option.recommended ? 'primary' : 'secondary', option.recommended ? localize('paradis.inbox.ask.recommendedOption', "{0}（おすすめ）", option.label) : option.label,
+					() => this.answer(entry.key, { type: 'answers', answers: [{ questionId: question.id, optionIds: [option.id] }] }), true, option.detail);
+			}
+			if (question.allowText) {
+				add('write', 'ghost', localize('paradis.inbox.ask.writeOwn', "自分で書く"), () => this.options.onOpenAsk?.(entry.key, true), false);
+			}
+		} else if (layout === 'inline-actions') {
+			entry.actions.forEach((action, index) => {
+				add(`action:${action.id}`, index === 0 ? 'primary' : 'secondary', action.label, () => this.answer(entry.key, { type: 'action', actionId: action.id }));
+			});
+		} else if (layout === 'dialog') {
+			add('open', 'secondary', entry.questions.length > 0 ? localize('paradis.inbox.ask.openToAnswer', "開いて答える") : localize('paradis.inbox.ask.openToCheck', "中身を確かめて答える"), () => this.options.onOpenAsk?.(entry.key, false), false);
+		}
+		const paneKey = entry.paneKey;
+		const windowId = entry.windowId;
+		if (paneKey !== undefined && windowId !== undefined) {
+			add('reveal', layout === 'unanswerable' ? 'secondary' : 'ghost', localize('paradis.inbox.ask.revealPane', "ペインへ移動"), () => {
+				this.options.onClose();
+				void this.inboxService.revealPane({ paneKey, windowId, ...(entry.stateKey !== undefined ? { stateKey: entry.stateKey } : {}) });
+			}, false);
+		}
+		if (entry.canSkip && layout !== 'unanswerable') {
+			add('skip', 'ghost', localize('paradis.inbox.ask.skip', "飛ばす"), () => this.answer(entry.key, { type: 'skip' }));
+		}
+
+		const refused = this.refused.get(entry.key);
+		const note = refused
+			?? (busy ? localize('paradis.inbox.ask.delivering', "回答を届けています…")
+				: entry.failedAt !== undefined ? localize('paradis.inbox.ask.failed', "回答を届けられませんでした。元の場所で確かめてください")
+					: layout === 'unanswerable' ? (entry.source === 'pane' ? localize('paradis.inbox.ask.paneOnly', "この種類はペインで答えます") : localize('paradis.inbox.ask.elsewhereOnly', "ここからは答えられません。元の場所で答えてください"))
+						: undefined);
+		if (note !== undefined) {
+			const line = dom.append(card, $('.pnip-ask-note'));
+			line.setAttribute('role', 'status');
+			line.classList.toggle('error', refused !== undefined || (!busy && entry.failedAt !== undefined));
+			line.textContent = note;
+		}
+		return built;
+	}
+
+	/** 行の中のボタンで答える。結果（断られた理由）はカードに 1 行出す。届いたかどうかは台帳の知らせで分かる。 */
+	private answer(key: string, answer: ParadisHumanAskAnswer): void {
+		if (this.sending.has(key)) {
+			return;
+		}
+		this.sending.set(key, (this.options.now ?? Date.now)());
+		this.refused.delete(key);
+		this.render();
+		void this.humanAskService.answer(key, answer, 'inbox').then(result => {
+			if (this._store.isDisposed) {
+				return;
+			}
+			if (!result.ok) {
+				this.sending.delete(key);
+				this.refused.set(key, paradisInboxAskRefusedText(result.reason));
+			}
+			this.render();
+		});
+	}
+
+	// ---- 通知 -------------------------------------------------------------------------------------
 
 	private renderRow(entry: IParadisInboxEntry): void {
 		const row = dom.append(this.list, $('.pnip-row.paradis-focus-subtle'));

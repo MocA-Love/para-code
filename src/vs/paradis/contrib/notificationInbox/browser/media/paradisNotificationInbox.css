@@ -230,6 +230,244 @@
 	opacity: 0.6;
 }
 
+/* ---------------------------------------------------------------- "your turn" cards */
+
+/* The two lists (your turn / notifications) share the scrolling area; only the chosen one is shown. */
+.monaco-workbench .paradis-notification-inbox-popover .pnip-list.pnip-hidden {
+	display: none;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-header-actions {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	min-width: 0;
+}
+
+/* Unread notifications show as a dot on the "notifications" tab, never as a number (the number is "your turn"). */
+.monaco-workbench .paradis-notification-inbox-popover .pnip-tabs > button.pnip-tab-unread::after {
+	content: '';
+	display: inline-block;
+	width: 6px;
+	height: 6px;
+	margin-left: var(--vscode-spacing-size60);
+	border-radius: var(--vscode-cornerRadius-circle);
+	background-color: var(--vscode-activityBarBadge-background);
+	vertical-align: middle;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-ask {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size40);
+	padding: var(--vscode-spacing-size80);
+	border-radius: var(--vscode-cornerRadius-medium);
+	min-width: 0;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-ask + .pnip-ask {
+	border-top: 1px solid var(--vscode-paradis-lineSubtle);
+	border-top-left-radius: 0;
+	border-top-right-radius: 0;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-ask.settled {
+	opacity: 0.75;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-ask .pnip-space {
+	font-weight: var(--vscode-fontWeight-semiBold);
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-ask .pnip-detail {
+	margin-left: 0;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-kind.approval {
+	background-color: color-mix(in srgb, var(--vscode-charts-green) 20%, transparent);
+	color: var(--vscode-charts-green);
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-kind.stalled {
+	background-color: color-mix(in srgb, var(--vscode-charts-red) 20%, transparent);
+	color: var(--vscode-charts-red);
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-ask-preface {
+	color: var(--vscode-descriptionForeground);
+	line-height: 1.4;
+	display: -webkit-box;
+	-webkit-line-clamp: 3;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+	overflow-wrap: anywhere;
+}
+
+/* What a permission is for (the command): monospace, up to 6 lines like the mobile permission card. A request that
+	does not fit gets no in-row "allow"; it is answered from the dialog, which shows all of it. */
+.monaco-workbench .paradis-notification-inbox-popover .pnip-ask-command,
+.monaco-workbench .paradis-inbox-ask-dialog .pniad-detail {
+	margin: 0;
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size80);
+	border-radius: var(--vscode-cornerRadius-small);
+	background-color: var(--vscode-paradis-sunken);
+	color: var(--vscode-paradis-text);
+	font-family: var(--monaco-monospace-font);
+	font-size: var(--vscode-fontSize-label1);
+	line-height: 1.45;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-ask-command {
+	display: -webkit-box;
+	-webkit-line-clamp: 6;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-ask-dangers,
+.monaco-workbench .paradis-inbox-ask-dialog .pniad-dangers {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--vscode-spacing-size40);
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-ask-question {
+	color: var(--vscode-foreground);
+	line-height: 1.4;
+	overflow-wrap: anywhere;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-ask-buttons {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	margin-top: var(--vscode-spacing-size20);
+	min-width: 0;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-ask-buttons:empty {
+	display: none;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-ask-note,
+.monaco-workbench .paradis-inbox-ask-dialog .pniad-status {
+	color: var(--vscode-descriptionForeground);
+	font-size: var(--vscode-fontSize-label2);
+	line-height: 1.4;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-ask-note.error,
+.monaco-workbench .paradis-inbox-ask-dialog .pniad-status.error {
+	color: var(--vscode-paradis-danger);
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-ask-settled,
+.monaco-workbench .paradis-inbox-ask-dialog .pniad-settled {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	color: var(--vscode-descriptionForeground);
+	line-height: 1.4;
+	overflow-wrap: anywhere;
+}
+
+.monaco-workbench .paradis-notification-inbox-popover .pnip-ask-settled > .codicon,
+.monaco-workbench .paradis-inbox-ask-dialog .pniad-settled > .codicon {
+	flex: none;
+	color: var(--vscode-paradis-success);
+}
+
+/* ---------------------------------------------------------------- "your turn" dialog (S modal) */
+
+.paradis-inbox-ask-backdrop {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: var(--vscode-paradis-scrim);
+}
+
+.monaco-workbench .paradis-inbox-ask-dialog .pniad-chips {
+	display: inline-flex;
+	flex: none;
+	gap: var(--vscode-spacing-size40);
+}
+
+.monaco-workbench .paradis-inbox-ask-dialog .pniad-body {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size120);
+	padding-top: var(--vscode-spacing-size120);
+}
+
+.monaco-workbench .paradis-inbox-ask-dialog .pniad-from,
+.monaco-workbench .paradis-inbox-ask-dialog .pniad-preface {
+	color: var(--vscode-paradis-textMuted);
+	line-height: 1.5;
+	overflow-wrap: anywhere;
+	white-space: pre-wrap;
+}
+
+.monaco-workbench .paradis-inbox-ask-dialog .pniad-question {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size60);
+	min-width: 0;
+}
+
+.monaco-workbench .paradis-inbox-ask-dialog .pniad-question-text {
+	color: var(--vscode-paradis-textStrong);
+	line-height: 1.5;
+	overflow-wrap: anywhere;
+}
+
+.monaco-workbench .paradis-inbox-ask-dialog .pniad-options {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--vscode-spacing-size60);
+	min-width: 0;
+}
+
+.monaco-workbench .paradis-inbox-ask-dialog .pniad-options:empty {
+	display: none;
+}
+
+/* Long options wrap instead of being cut: the answer has to be readable before it is chosen. */
+.monaco-workbench .paradis-inbox-ask-dialog .paradis-button.pniad-option {
+	height: auto;
+	min-height: var(--paradis-height-md);
+	padding-top: var(--vscode-spacing-size40);
+	padding-bottom: var(--vscode-spacing-size40);
+	line-height: 1.4;
+	white-space: normal;
+	text-align: left;
+	justify-content: flex-start;
+	overflow-wrap: anywhere;
+}
+
+.monaco-workbench .paradis-inbox-ask-dialog .paradis-button.pniad-option > span {
+	overflow: visible;
+}
+
+.monaco-workbench .paradis-inbox-ask-dialog .paradis-button.pniad-option.checked {
+	border-color: var(--vscode-paradis-accent);
+}
+
+.monaco-workbench .paradis-inbox-ask-dialog .pniad-recommended {
+	flex: none;
+	color: var(--vscode-paradis-textMuted);
+	font-size: var(--vscode-fontSize-label2);
+}
+
+.monaco-workbench .paradis-inbox-ask-dialog .pniad-foot > .pniad-status {
+	flex: 1;
+	min-width: 0;
+}
+
 /*
  * Window transparency: like the other light-DOM overlays (paradisWindowTransparency.css), paint the
  * theme background over an opaque base so a translucent editorWidget background never shows the desktop.

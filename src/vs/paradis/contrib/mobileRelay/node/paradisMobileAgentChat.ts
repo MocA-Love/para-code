@@ -81,6 +81,7 @@ import { paradisClaudeDraftState, paradisIsDisplayOnlyModRow } from '../../claud
 import { runInParadisSpan } from '../../sentry/common/paradisSentryDiagnostics.js';
 import type { IParadisNotifyPaneContent } from './paradisNotifyContentSource.js';
 import { IParadisAgentPaneInsight, IParadisAgentPaneInteraction, IParadisAgentPromptCache, PARADIS_PROMPT_CACHE_TTL_5M, paradisOneLine, paradisReadClaudePromptCacheUsage, paradisReadClaudeRequestStart, paradisSelectInsightSubagents, paradisSummarizePermissionInput, paradisSummarizeQuestionInput } from '../../agentInsights/common/paradisAgentInsights.js';
+import type { IParadisHumanAskPaneState } from '../../humanAsk/common/paradisHumanAskPane.js';
 import { IParadisAgentApprovalChoice, IParadisAgentChatCommand, IParadisAgentChatCursor, IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentChatView, IParadisAgentInteraction, IParadisAgentLiveState, IParadisAgentPanel, IParadisAgentSessionInfo, PARADIS_ADVISOR_TOOL, ParadisAgentKind, ParadisOpenCodeDesktopActionResult, paradisAgentQuestionHasPreview, paradisIsCodexDaemonApprovalInteraction, paradisPickCurrentInteraction } from '../../agentChat/common/paradisAgentChat.js';
 import { newParadisAntigravityParseState, paradisAntigravityQuestionInput, parseAntigravityLine } from '../../agentChat/common/paradisAntigravityTranscript.js';
 import { PARADIS_AGENT_SETTINGS_ON_PC_MESSAGE, PARADIS_ANTIGRAVITY_ANSWER_ON_PC_MESSAGE, PARADIS_ANTIGRAVITY_APPROVAL_ON_PC_MESSAGE, PARADIS_ANTIGRAVITY_SEND_BLOCK_MESSAGES, paradisAgentChatActionSupport } from '../../agentChat/common/paradisAgentChatActionSupport.js';
@@ -8610,6 +8611,31 @@ export class ParadisMobileAgentChat extends Disposable {
 		if (changed) {
 			this._onDidChangeDesktopPaneInsights.fire();
 		}
+	}
+
+	/**
+	 * 人の答えを待っている質問・承認（いま tailer が持っているものだけ。読むために tailer を起こさない）。
+	 * 「人が答えるもの」の台帳の書き手（humanAsk/node/paradisHumanAskPaneOwner.ts）が shared process の中で読む。
+	 * モバイルへは何も送らない。
+	 */
+	humanAskPanes(): IParadisHumanAskPaneState[] {
+		const panes: IParadisHumanAskPaneState[] = [];
+		for (const [token, session] of this.paneSessions) {
+			const tailer = this.tailers.get(token);
+			const interaction = tailer?.currentInteraction() ?? null;
+			if (tailer === undefined || interaction === null || this.isPaneStopped(token)) {
+				continue;
+			}
+			panes.push({
+				token,
+				agent: session.agent,
+				epoch: tailer.epoch,
+				interaction,
+				questions: interaction.kind === 'question' ? tailer.pendingQuestionMessages(interaction.id) : [],
+				personOnly: interaction.kind === 'approval' && this.isPersonOnlyApproval(token, interaction.id),
+			});
+		}
+		return panes;
 	}
 
 	// ---- デスクトップのチャット表示向けの読み取り口（agentChat） ------------------------------------
