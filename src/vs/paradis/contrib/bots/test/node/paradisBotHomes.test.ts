@@ -199,9 +199,11 @@ suite('Paradis bot homes', () => {
 			folders: ['bot', 'bot-2'],
 			memory: { ok: true, value: '# Memory\n\nOne line per fact, each starting with its date (YYYY-MM-DD). Details go in memory/<topic>.md. No secrets.\n' },
 			soul: { ok: true, value: 'レビューをする係\n' },
-			launch: { launchId: 'string', botId: 'id2', purpose: 'chat', cwd: join(root, 'bot-2'), name: 'レビュー係', agent: 'codex',
+			launch: {
+				launchId: 'string', botId: 'id2', purpose: 'chat', cwd: join(root, 'bot-2'), name: 'レビュー係', agent: 'codex',
 				// Codex の Bot だけ、道具の許可をこの起動の引数で渡す（利用者の config.toml には書かない）
-				extraFlags: '-c \'mcp_servers.para-browser.tools.bot_item_list.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_item_show.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_item_add.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_item_update.approval_mode=approve\'' },
+				extraFlags: '-c \'mcp_servers.para-browser.tools.bot_item_list.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_item_show.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_item_add.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_item_update.approval_mode=approve\'',
+			},
 			bound: [false, true, false, 'レビュー係', undefined, 'idle'],
 			stops: [true, ['id1', 'id2']],
 			paused: { ok: false, code: 'paused', message: 'The bot is paused.' },
