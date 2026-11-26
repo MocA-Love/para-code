@@ -12,7 +12,8 @@ import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisMcpOwningWindowRequest, IParadisMcpToolCallContext, ParadisMcpCallerKind } from '../../../agentBrowser/common/paradisMcpToolProvider.js';
 import { ParadisHumanAskService } from '../../../humanAsk/node/paradisHumanAskChannel.js';
 import { EMPTY_PARADIS_BOT_ITEMS_STATE, IParadisBotItemsState } from '../../common/paradisBotItems.js';
-import { EMPTY_PARADIS_BOTS_STATE, IParadisBotsState } from '../../common/paradisBots.js';
+import { EMPTY_PARADIS_BOTS_STATE, IParadisBot, IParadisBotsState } from '../../common/paradisBots.js';
+import { paradisApplyBotChange } from '../../common/paradisBotManageTools.js';
 import { ParadisBotManageToolProvider } from '../../node/paradisBotManageToolProvider.js';
 import { ParadisBotsService } from '../../node/paradisBotsService.js';
 import { IParadisBotsJsonFile } from '../../node/paradisBotsStore.js';
@@ -143,6 +144,29 @@ suite('Paradis bot manage tools', () => {
 			agentToo: 'unknown',
 			calls: ['paradisBotsWindow.confirmChange', 'paradisBotsWindow.confirmChange'],
 			unchanged: [undefined, false],
+		});
+	});
+
+	test('確かめた変更を当てる: 台帳の変更の後に役割を書く。台帳に断られたら役割は書かない', async () => {
+		const calls: string[] = [];
+		const service = {
+			updateBot: async (botId: string, patch: object) => {
+				calls.push(`update ${botId} ${JSON.stringify(patch)}`);
+				return botId === 'locked' ? { ok: false as const, code: 'read_only', message: 'x' } : { ok: true as const, value: {} as IParadisBot };
+			},
+			writeHomeFile: async (botId: string, path: string, text: string) => {
+				calls.push(`write ${botId} ${path} ${text}`);
+				return { ok: true as const, value: undefined };
+			},
+		};
+		const applied = await paradisApplyBotChange(service, { botId: 'b1', patch: { permissionId: 'bypass' }, role: '# A' });
+		const roleOnly = await paradisApplyBotChange(service, { botId: 'b1', patch: {}, role: '# B' });
+		const refused = await paradisApplyBotChange(service, { botId: 'locked', patch: { agent: 'claude' }, role: '# C' });
+		assert.deepStrictEqual({ applied, roleOnly, refused, calls }, {
+			applied: { ok: true, value: undefined },
+			roleOnly: { ok: true, value: undefined },
+			refused: { ok: false, code: 'read_only', message: 'x' },
+			calls: ['update b1 {"permissionId":"bypass"}', 'write b1 SOUL.md # A', 'write b1 SOUL.md # B', 'update locked {"agent":"claude"}'],
 		});
 	});
 });

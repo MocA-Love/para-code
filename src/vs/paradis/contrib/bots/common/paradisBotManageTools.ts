@@ -24,7 +24,7 @@ import { isPlainRecord } from '../../../common/paradisGuards.js';
 import type { IParadisMcpToolDefinition } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { PARADIS_AGENT_KINDS, ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 import { IParadisBotPatch, PARADIS_BOT_FACE_COLORS, PARADIS_BOT_FACE_SHAPES, PARADIS_BOT_LIMITS, ParadisBotFaceColor, ParadisBotFaceShape } from './paradisBots.js';
-import { IParadisBotSummary } from './paradisBotsApi.js';
+import { IParadisBotsService, IParadisBotSummary, ParadisBotsServiceResult } from './paradisBotsApi.js';
 
 export const PARADIS_BOT_LIST_TOOL = 'list_bots';
 export const PARADIS_BOT_CREATE_TOOL = 'create_bot';
@@ -328,4 +328,24 @@ export function paradisBotManageRow(bot: IParadisBotSummary): object {
 		needs_user: bot.needsYou,
 		open_items: bot.openItems,
 	};
+}
+
+/**
+ * 確かめた変更を当てる（台帳の変更の後に、役割があれば SOUL.md を書く）。エージェントの道具の確認と、Bot の
+ * 設定のタブの両方がこれを呼ぶ。台帳の変更を断られたら、役割は書かない。
+ */
+export async function paradisApplyBotChange(botsService: Pick<IParadisBotsService, 'updateBot' | 'writeHomeFile'>, request: Pick<IParadisBotChangeRequest, 'botId' | 'patch' | 'role'>): Promise<ParadisBotsServiceResult<void>> {
+	if (Object.keys(request.patch).length > 0) {
+		const updated = await botsService.updateBot(request.botId, request.patch);
+		if (!updated.ok) {
+			return updated;
+		}
+	}
+	if (request.role !== undefined) {
+		const written = await botsService.writeHomeFile(request.botId, 'SOUL.md', request.role);
+		if (!written.ok) {
+			return written;
+		}
+	}
+	return { ok: true, value: undefined };
 }

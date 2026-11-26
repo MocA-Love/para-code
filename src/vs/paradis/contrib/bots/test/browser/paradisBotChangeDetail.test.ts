@@ -30,4 +30,8 @@ suite('Paradis bot change detail', () => {
 			'権限が広がります。Bot が確認なしでできることが増えます。',
 		].join('\n'));
 	});
+
+	test('持ち主が画面から変えるとき（依頼したターミナルなし）は、依頼の行を出さない', () => {
+		assert.strictEqual(paradisBotChangeDetail({ changes: [{ field: 'name', from: 'A', to: 'B' }] }), '名前: A → B');
+	});
 });
