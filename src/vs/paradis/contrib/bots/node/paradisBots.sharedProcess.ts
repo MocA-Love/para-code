@@ -54,9 +54,6 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 		homes,
 	}));
 	server.registerChannel(PARADIS_BOTS_CHANNEL, new ParadisBotsChannel(service));
-	// ウィンドウを閉じたとき、そのウィンドウのペインは終了を知らせない（終了の理由が Shutdown など）。接続が切れたら、
-	// そのウィンドウが報告したペインを「まだ現れていない」に戻す（閉じたウィンドウの会話のせいで Bot を開けなくしない）
-	store.add(server.onDidRemoveConnection(connection => service.detachWindow(connection.ctx)));
 	shared = service;
 	store.add(configurationService.onDidChangeConfiguration(event => {
 		if (event.affectsConfiguration(PARADIS_BOTS_ENABLED_SETTING)) {
