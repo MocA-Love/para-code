@@ -194,7 +194,11 @@ export class ParadisMobileAttachmentBook {
 			}
 			if (!found) {
 				// 一覧の今の id・番号（UDID / シリアル）・名前でも引く（起動して id が替わった Android、名前を変えた端末）
-				const devices = await listDevices().catch(() => []);
+				// 一覧を読めないときは、名前では決めない（id の形の文字列を、同じ名前を付けた別の端末へ当てないため）
+				const devices = await listDevices().catch(() => undefined);
+				if (!devices) {
+					throw new Error(`Para Code could not read the device list, so it cannot tell which device "${quoted(wanted)}" is. Pass the id of an attached device exactly as mobile_list_devices shows it (attachedDevices): ${paradisDescribeAttachedDevices((this._panes.get(paneToken) ?? []).map(entry => entry.attachment))}.`);
+				}
 				const live = (this._panes.get(paneToken) ?? []).map(entry => ({ entry, device: paradisFindMobileDevice(devices, entry.attachment.deviceId) }));
 				const byId = live.filter(candidate => candidate.device !== undefined && (candidate.device.id === wanted || candidate.device.udid === wanted || candidate.device.avdId === wanted));
 				found = onlyOne((byId.length ? byId : live.filter(candidate => candidate.entry.attachment.deviceName === wanted || candidate.device?.name === wanted)).map(candidate => candidate.entry), wanted);

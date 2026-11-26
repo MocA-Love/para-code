@@ -169,7 +169,12 @@ suite('Paradis mobile: the devices of one terminal pane (up to ten)', () => {
 			byUdid: await resolve('A1B2C3D4-0000-1111-2222-333344445555'),
 			// id の形でない名前は、名前で引ける
 			byName: await resolve('Real'),
+			// 一覧を読めないときは、id の形の文字列を名前では決めない（同じ名前を付けた端末へ当てない）。台帳の id はそのまま引ける
+			listFails: await failure(book.resolve(PANE, 'emulator-5556', async () => { throw new Error('adb is gone'); }, 10)).then(message => message.startsWith('Para Code could not read the device list')),
+			storedIdWhenListFails: (await book.resolve(PANE, 'ios:impostor-1', async () => { throw new Error('adb is gone'); }, 10)).attachment.deviceName,
 		}, {
+			listFails: true,
+			storedIdWhenListFails: 'emulator-5556',
 			byLiveId: 'android:avd:Para_Code_CLI_Test',
 			bySerial: 'android:avd:Para_Code_CLI_Test',
 			byUdid: 'ios:real',
