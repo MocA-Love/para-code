@@ -255,7 +255,7 @@ const TOOL_NAMES: ReadonlySet<string> = new Set(PARADIS_MOBILE_DEVICE_OPS_TOOLS.
 /**
  * mobile_* の道具の決まり（MCP のサーバーの説明と `para help mobile` に出る）。複数の端末を割り当てたときの取り違えを防ぐ。
  */
-export const PARADIS_MOBILE_INSTRUCTIONS = `Mobile tools (mobile_*) act on the iOS simulators and Android emulators the user attached to this terminal pane (up to ${PARADIS_MOBILE_MAX_DEVICES_PER_PANE}; mobile_request_device adds one, the user approves each). When more than one is attached, pass device (an id or exact name from attachedDevices in mobile_list_devices) on every mobile tool call; without it the tool acts on the pane's current device, which is the one attached last. Every result names the device it acted on: check it before the next step. When you split work across subagents, tell each subagent its device.`;
+export const PARADIS_MOBILE_INSTRUCTIONS = `Mobile tools (mobile_*) act on the iOS simulators and Android emulators the user attached to this terminal pane (up to ${PARADIS_MOBILE_MAX_DEVICES_PER_PANE}). When more than one is attached, pass device (an id or exact name from attachedDevices in mobile_list_devices) on every call; without it a tool acts on the device attached last. Every result names the device it acted on: check it. Tell each subagent which device is its own.`;
 
 /**
  * 接続元を確かめるツール（端末の割り当て・アプリの操作）。`unverified` は断る。SSH の接続先（`tunnel`）は
