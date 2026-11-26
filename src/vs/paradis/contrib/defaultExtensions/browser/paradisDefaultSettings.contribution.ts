@@ -179,6 +179,8 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		// process から hybrid へ書き換える。hybrid は検出から一度でも外れたポートを閉じたまま張り直さないため、
 		// 負荷で検出が揺れただけでポートパネルから行が消えて戻らなくなる。ポートの多い開発機ではすぐ超えるので、切り替えを止める。
 		'remote.autoForwardPortsFallback': 0,
+		// ここから下の拡張機能ごとの設定は、既定では入れなくなった拡張機能（GitLens は 2026-11-01、ほかは 2026-11-27）を
+		// 自分で入れた人のために残している。入れていない人では、スキーマの無い既定値として何もしない。
 		'gitlens.showWhatsNewAfterUpgrades': false,
 		'go.showWelcome': false,
 		'dependi.extras.silenceUpdateMessages': true,
