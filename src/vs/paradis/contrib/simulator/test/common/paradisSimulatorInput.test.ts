@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisSimulatorDuoPanel, paradisSimulatorIsFoldable, paradisSimulatorDisplayGeometry, paradisSimulatorKeystrokes, paradisSimulatorStallReason, paradisSimulatorStallRetryDelay, paradisSimulatorFitSize, paradisSimulatorHidUsage, paradisSimulatorNextOrientation, paradisSimulatorPointFromClient, paradisSimulatorRawPoint, paradisSimulatorShouldSendKey, paradisSimulatorTouchEdge } from '../../common/paradisSimulatorInput.js';
+import { paradisPickSimctlDisplay, paradisSimulatorTextPlan, paradisSimulatorDuoPanel, paradisSimulatorIsFoldable, paradisSimulatorDisplayGeometry, paradisSimulatorKeystrokes, paradisSimulatorStallReason, paradisSimulatorStallRetryDelay, paradisSimulatorFitSize, paradisSimulatorHidUsage, paradisSimulatorNextOrientation, paradisSimulatorPointFromClient, paradisSimulatorRawPoint, paradisSimulatorShouldSendKey, paradisSimulatorTouchEdge } from '../../common/paradisSimulatorInput.js';
 
 suite('Paradis simulator: human input', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -87,6 +87,23 @@ suite('Paradis simulator: human input', () => {
 		});
 	});
 
+	test('plans digits and line breaks as keys and every other run of text as a paste', () => {
+		const enter = { usage: 0x28, shift: false };
+		assert.deepStrictEqual([
+			paradisSimulatorTextPlan('42'),
+			paradisSimulatorTextPlan('wifi'),
+			paradisSimulatorTextPlan('a 1\nb\r\n'),
+			paradisSimulatorTextPlan('\n'),
+			paradisSimulatorTextPlan(''),
+		], [
+			[{ kind: 'keys', strokes: [{ usage: 0x21, shift: false }, { usage: 0x1f, shift: false }] }],
+			[{ kind: 'paste', text: 'wifi' }],
+			[{ kind: 'paste', text: 'a 1' }, { kind: 'keys', strokes: [enter] }, { kind: 'paste', text: 'b' }, { kind: 'keys', strokes: [enter] }],
+			[{ kind: 'keys', strokes: [enter] }],
+			[],
+		]);
+	});
+
 	// 途切れたら 5・10・20・40 秒待って読み直し、使い切ったら止める（止める・始めるを繰り返さない）
 	test('backs off before re-reading a stalled stream and then gives up', () => {
 		assert.deepStrictEqual([0, 1, 2, 3, 4].map(paradisSimulatorStallRetryDelay), [5000, 10_000, 20_000, 40_000, undefined]);
@@ -150,5 +167,16 @@ suite('Paradis simulator: human input', () => {
 			undefined,
 			undefined,
 		]);
+	});
+	// 文は Xcode 27.2 の iPhone Duo で実測したもの
+	test('picks the display simctl must be told to capture on a device with two screens', () => {
+		const refusal = 'xcrun simctl io failed: An error was encountered processing the command (domain=NSPOSIXErrorDomain, code=22):\nCannot choose between 2 displays. Specify one with --display:\n    --display=3  LCD-1 (primary-1) 2007x2853\n    --display=1  LCD (primary) 1398x2034\nInvalid argument';
+		assert.deepStrictEqual([
+			paradisPickSimctlDisplay(refusal, { width: 2007, height: 2853 }),
+			paradisPickSimctlDisplay(refusal, { width: 2034, height: 1398 }),
+			paradisPickSimctlDisplay(refusal, { width: 10, height: 10 }),
+			paradisPickSimctlDisplay(refusal),
+			paradisPickSimctlDisplay('xcrun simctl io failed: Invalid device'),
+		], ['3', '1', '1', '1', undefined]);
 	});
 });

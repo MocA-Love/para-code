@@ -13,7 +13,7 @@
 // Android の `adb shell` は引数をつないで端末側のシェルに解釈させるので、引数配列で呼んでも
 // 値に空白や `;` があれば端末側でコマンドとして動いてしまう。形の検査がその唯一の防ぎになる。
 
-import { IParadisMobileAttachment, IParadisMobileDevice } from './paradisMobileCanvas.js';
+import { IParadisMobileAttachment, IParadisMobileDevice, paradisFindMobileDevice } from './paradisMobileCanvas.js';
 
 /** 端末の割り当てとアプリのインストールの承認を、呼び出し元ペインを所有するウィンドウへ頼むチャネル。 */
 export const PARADIS_MOBILE_DEVICE_REQUEST_CHANNEL = 'paradisMobileDeviceRequest';
@@ -270,9 +270,19 @@ export function paradisDeviceHeldByAnotherPane(paneToken: string, device: IParad
 		if (entry.deviceId === device.id) {
 			return true;
 		}
-		const held = devices.find(candidate => candidate.id === entry.deviceId);
-		return !!device.udid && held?.udid === device.udid;
+		const held = paradisFindMobileDevice(devices, entry.deviceId);
+		return held === device || (!!device.udid && held?.udid === device.udid);
 	});
+}
+
+// --- 打った文字の読み返し ---
+
+/**
+ * 打った文字が ASCII だけなのに、欄に ASCII 以外の文字が入ったか（日本語のローマ字入力が「wifi」を「うぃふぃ」に
+ * 変える。iOS のシミュレータはキーを HID で送るので、端末のキーボードの言語を通る）。
+ */
+export function paradisTypedTextWasConverted(typed: string, fieldValue: string): boolean {
+	return /^[\x00-\x7f]+$/.test(typed) && !fieldValue.includes(typed) && /[^\x00-\x7f]/.test(fieldValue);
 }
 
 // --- インストールするファイル ---

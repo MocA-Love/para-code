@@ -247,6 +247,55 @@ export function paradisSimulatorKeystrokes(input: string): IParadisSimulatorKeys
 	return strokes;
 }
 
+/** mobile_type_text の 1 段。キーで打つか、クリップボードへ写して貼るか。 */
+export type ParadisSimulatorTextStep =
+	| { readonly kind: 'keys'; readonly strokes: readonly IParadisSimulatorKeystroke[] }
+	| { readonly kind: 'paste'; readonly text: string };
+
+/**
+ * 文字列の入れ方を決める。HID のキーは端末のキーボードの言語を通る（日本語のシミュレータでは、外付けキーボードが
+ * ローマ字入力になり、`wifi` が「うぃふぃ」、`a.b-c` が「あ。bーc」になる。Mac で実測）。貼り付けは IME を通らない。
+ *  - 数字・改行・タブだけなら、キーで打つ（数字は変換されない。貼り付けを受けない暗証番号の欄にも入る）
+ *  - それ以外は、改行とタブで区切り、文字の並びは貼り付け、改行（Enter）とタブはキーで送る
+ * 何も入れるものが無ければ空の配列。
+ */
+export function paradisSimulatorTextPlan(input: string): ParadisSimulatorTextStep[] {
+	const text = input.replace(/\r\n?/g, '\n');
+	const keys = (part: string): ParadisSimulatorTextStep[] => {
+		const strokes = part ? paradisSimulatorKeystrokes(part) : undefined;
+		return strokes ? [{ kind: 'keys', strokes }] : [];
+	};
+	if (/^[0-9\n\t]*$/.test(text)) {
+		return keys(text);
+	}
+	return text.split(/([\n\t]+)/).flatMap<ParadisSimulatorTextStep>(part => /^[\n\t]+$/.test(part) ? keys(part) : part ? [{ kind: 'paste', text: part }] : []);
+}
+
+/**
+ * `xcrun simctl io <udid> screenshot` が、画面が 2 つある端末（iPhone Duo）で返す断りの文から、撮る画面の番号を選ぶ。
+ * 文の形（Xcode 27.2 で実測）:
+ *
+ *     Cannot choose between 2 displays. Specify one with --display:
+ *         --display=3  LCD-1 (primary-1) 2007x2853
+ *         --display=1  LCD (primary) 1398x2034
+ *
+ * `shown`（serve-sim が映している画面の画素数）と同じ大きさのもの（向きは問わない）を選ぶ。無ければ `(primary)` の
+ * もの、それも無ければ先頭。この断りの文でなければ undefined。
+ */
+export function paradisPickSimctlDisplay(message: string, shown?: { readonly width: number; readonly height: number }): string | undefined {
+	if (!/Cannot choose between \d+ displays/.test(message)) {
+		return undefined;
+	}
+	const displays = [...message.matchAll(/--display=(?<id>\S+)\s+(?<label>.*?)\s+(?<width>\d+)x(?<height>\d+)\s*$/gm)].map(match => ({
+		id: match.groups!.id,
+		primary: /\(primary\)/.test(match.groups!.label),
+		width: Number(match.groups!.width),
+		height: Number(match.groups!.height),
+	}));
+	const sameSize = shown && displays.find(display => (display.width === shown.width && display.height === shown.height) || (display.width === shown.height && display.height === shown.width));
+	return (sameSize ?? displays.find(display => display.primary) ?? displays[0])?.id;
+}
+
 /** iPhone Duo の外と内の画面の画素数（serve-sim 0.1.49 の device-pose.ts の DUO_COVER_SIZE・DUO_INNER_SIZE）。 */
 const DUO_COVER_LONG_SIDE = 2034;
 const DUO_INNER_LONG_SIDE = 2853;

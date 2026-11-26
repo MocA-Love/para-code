@@ -28,7 +28,7 @@
 
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider, ParadisMcpCallerKind } from '../../agentBrowser/common/paradisMcpToolProvider.js';
-import { IParadisMobileAttachment, IParadisMobileDevice } from '../common/paradisMobileCanvas.js';
+import { IParadisMobileAttachment, IParadisMobileDevice, paradisFindMobileDevice } from '../common/paradisMobileCanvas.js';
 import {
 	IParadisMobileDeviceRequestPrompt,
 	IParadisMobileInstallPrompt,
@@ -331,7 +331,7 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 			return errorResult(`There is no device "${wanted}". Call mobile_list_devices to see the devices on this computer.`);
 		}
 		const current = this._ledger.getAttachment(paneToken);
-		if (current?.deviceId === device.id) {
+		if (current && paradisFindMobileDevice(devices, current.deviceId) === device) {
 			return jsonResult({ attached: true, alreadyAttached: true, device: describeDevice(device) });
 		}
 		if (paradisDeviceHeldByAnotherPane(paneToken, device, devices, this._ledger.listAttachments())) {
@@ -345,6 +345,7 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 			...(reason ? { reason } : {}),
 			...(current ? { replacingDeviceName: current.deviceName } : {}),
 		};
+		const askedAt = Date.now();
 		const call = await context.callOwningWindow<unknown>({
 			channelName: PARADIS_MOBILE_DEVICE_REQUEST_CHANNEL,
 			method: PARADIS_MOBILE_DEVICE_REQUEST_METHOD,
@@ -359,6 +360,8 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 		}
 		const answer = paradisParseMobileDeviceRequestAnswer(call.value);
 		if (answer?.outcome !== 'approved') {
+			// 画面を出さずに返る経路（paneUnresolved・recentlyDenied・busy）も含めて、承認されなかった結果を残す
+			this._logService?.info(`[paradis-mobile-canvas] a device request was not approved: outcome=${answer?.outcome ?? 'malformed'}, elapsedMs=${Date.now() - askedAt}`);
 			return refusal(answer?.outcome, 'The user declined to attach this device. Do not ask for it again for now, and do not switch to another device to ask again: Para Code turns down requests from this pane for this device for a few minutes, and for any device for a few seconds. Browser pages are not affected.', 'The user declined a request from this pane a short while ago (for this device in the last few minutes, or for any device in the last few seconds), so Para Code turned this one down without asking. Do not switch to another device to ask again; wait, or ask the user in the conversation.');
 		}
 		// 承認を待つ間に別のペインへ渡っていたら割り当てない（ほかのペインの端末は奪わない）。確かめと書き込みは台帳が一度に行う
@@ -659,7 +662,8 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 	 */
 	private async _resolve(paneToken: string, signal: AbortSignal | undefined): Promise<IResolvedDevice> {
 		const attachment = this._requireAttachment(paneToken);
-		const device = (await this._ledger.listDevices(signal)).find(candidate => candidate.id === attachment.deviceId);
+		// 起動前の AVD で割り当てた Android は、起動すると id が serial に替わる（同じ端末として引く）
+		const device = paradisFindMobileDevice(await this._ledger.listDevices(signal), attachment.deviceId);
 		if (!device) {
 			throw new Error(`${attachment.deviceName} is attached to this pane but Para Code cannot find it any more (it may have been deleted). Ask the user.`);
 		}

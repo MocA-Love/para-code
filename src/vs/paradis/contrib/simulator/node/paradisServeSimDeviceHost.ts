@@ -25,7 +25,7 @@ import { IParadisSimulatorDevice, IParadisSimulatorScreenConfig, PARADIS_SIMULAT
 import { paradisFindSimulatorAx, paradisMarkTypedSimulatorField, paradisNormalizeSimulatorAx, paradisPickSimulatorAxTarget, paradisSimulatorFieldValues, IParadisSimulatorAxSnapshot, paradisSimulatorAxQueryOf } from '../common/paradisSimulatorAx.js';
 import { paradisPngSize, paradisRequireNumber } from '../common/paradisMobileDeviceOps.js';
 import { paradisSimulatorButtonFrame, paradisSimulatorKeyFrame, paradisSimulatorMultiTouchFrame, paradisSimulatorRotateFrame, paradisSimulatorTouchFrame } from '../common/paradisSimulatorFrames.js';
-import { paradisSimulatorDisplayGeometry, paradisSimulatorDuoPanel, paradisSimulatorIsFoldable, paradisSimulatorKeystrokes, paradisSimulatorRawPoint } from '../common/paradisSimulatorInput.js';
+import { paradisPickSimctlDisplay, paradisSimulatorDisplayGeometry, paradisSimulatorDuoPanel, paradisSimulatorIsFoldable, paradisSimulatorRawPoint, paradisSimulatorTextPlan } from '../common/paradisSimulatorInput.js';
 import { ParadisServeSimBackend } from './paradisServeSimBackend.js';
 
 export const PARADIS_SERVE_SIM_DEVICE_PREFIX = PARADIS_SIMULATOR_DEVICE_ID_PREFIX;
@@ -37,7 +37,9 @@ export const paradisServeSimUdidOf = paradisSimulatorUdidOfDeviceId;
 export type ParadisServeSimSimctl = (args: readonly string[], options: { readonly timeoutMs: number; readonly input?: string; readonly binary?: boolean }) => Promise<string | Uint8Array>;
 
 const realSimctl: ParadisServeSimSimctl = (args, options) => new Promise((resolve, reject) => {
-	const child = execFile('xcrun', ['simctl', ...args], { timeout: options.timeoutMs, maxBuffer: 64 * 1024 * 1024, encoding: options.binary ? 'buffer' : 'utf8' }, (error, stdout, stderr) => {
+	// ロケールを UTF-8 にする。`simctl pbcopy` は stdin をロケールの文字コードで読むので、shared process のように
+	// LANG の無い環境では日本語が「The file couldn't be opened using the specified text encoding」で落ちる（Mac で実測）
+	const child = execFile('xcrun', ['simctl', ...args], { timeout: options.timeoutMs, maxBuffer: 64 * 1024 * 1024, encoding: options.binary ? 'buffer' : 'utf8', env: { ...process.env, LC_ALL: 'en_US.UTF-8' } }, (error, stdout, stderr) => {
 		if (error) {
 			reject(new Error(`xcrun simctl ${args[0]} failed: ${String(stderr).trim() || error.message}`));
 		} else {
@@ -55,12 +57,25 @@ const realSimctl: ParadisServeSimSimctl = (args, options) => new Promise((resolv
  */
 export type ParadisServeSimScreenshot = (udid: string) => Promise<Uint8Array>;
 
-function realScreenshot(simctl: ParadisServeSimSimctl): ParadisServeSimScreenshot {
+/** 映している画面の画素数（serve-sim の `/config`）。画面が 2 つある端末で、どちらを撮るか選ぶのに使う。 */
+export type ParadisServeSimShownSize = (udid: string) => Promise<{ readonly width: number; readonly height: number } | undefined>;
+
+export function paradisRealSimulatorScreenshot(simctl: ParadisServeSimSimctl, shownSize?: ParadisServeSimShownSize): ParadisServeSimScreenshot {
 	return async udid => {
 		const dir = await fs.mkdtemp(join(tmpdir(), 'paradis-simulator-shot-'));
 		try {
 			const file = join(dir, 'screen.png');
-			await simctl(['io', udid, 'screenshot', '--type=png', file], { timeoutMs: 30_000 });
+			try {
+				await simctl(['io', udid, 'screenshot', '--type=png', file], { timeoutMs: 30_000 });
+			} catch (error) {
+				// 画面が 2 つある端末（iPhone Duo）は、simctl が「Cannot choose between 2 displays」で断る。
+				// serve-sim が映している画面と同じ大きさのものを選んで撮り直す
+				const display = paradisPickSimctlDisplay(error instanceof Error ? error.message : String(error), await shownSize?.(udid).catch(() => undefined));
+				if (display === undefined) {
+					throw error;
+				}
+				await simctl(['io', udid, 'screenshot', '--type=png', `--display=${display}`, file], { timeoutMs: 30_000 });
+			}
 			return new Uint8Array(await fs.readFile(file));
 		} finally {
 			await fs.rm(dir, { recursive: true, force: true });
@@ -72,6 +87,9 @@ export type ParadisServeSimSleep = (ms: number, signal?: AbortSignal) => Promise
 
 /** キーを送った後、ホストの「旧来の HID で送った」の出力が届くのを待つ時間。 */
 const KEYBOARD_FALLBACK_WAIT_MS = 80;
+
+/** 貼り付けを続けて行うとき、前の貼り付けが端末で済むのを待つ時間。 */
+const PASTE_SETTLE_MS = 300;
 
 /** mobile_type_text の結果に添える知らせ（キーが届いていないことがある）。 */
 export const PARADIS_SIMULATOR_KEYS_MAY_BE_LOST = 'Device Hub is running and Para Code could not send keys through it, so they were sent the older way and may not have reached the simulator (taps and the home button still work). Check the field with mobile_ui_snapshot. If the text is missing, ask the user to close Device Hub and try again.';
@@ -137,7 +155,7 @@ export class ParadisServeSimDeviceHost {
 		private readonly _sleep: ParadisServeSimSleep = realSleep,
 		screenshot?: ParadisServeSimScreenshot,
 	) {
-		this._screenshot = screenshot ?? realScreenshot(this._simctl);
+		this._screenshot = screenshot ?? paradisRealSimulatorScreenshot(this._simctl, udid => this._backend.getScreenConfig(udid));
 	}
 
 	/** この端末の id をこちらで受け持つか。 */
@@ -338,8 +356,9 @@ export class ParadisServeSimDeviceHost {
 	}
 
 	/**
-	 * 文字を入れる。US 配列のキーで打てる文字だけなら HID のキーで打つ。日本語などが混じれば、シミュレータの
-	 * クリップボードへ写して Command+V で貼る（ソフトウェアキーボードの IME を通さないので、打った文字のまま入る）。
+	 * 文字を入れる。数字・改行・タブだけなら HID のキーで打つ。それ以外の文字は、シミュレータのクリップボードへ写して
+	 * Command+V で貼る（HID のキーは端末のキーボードの言語を通り、日本語のシミュレータでは英字がかなになる。貼り付けは
+	 * IME を通らないので、打った文字のまま入る）。改行とタブは貼らずにキーで送る。
 	 */
 	private async _typeText(udid: string, text: string): Promise<unknown> {
 		if (!text) {
@@ -350,26 +369,33 @@ export class ParadisServeSimDeviceHost {
 		if (before) {
 			this._typedFields.set(udid, before);
 		}
-		const strokes = paradisSimulatorKeystrokes(text);
-		if (strokes) {
-			for (const stroke of strokes) {
-				if (stroke.shift) {
-					await this._backend.send(udid, paradisSimulatorKeyFrame('down', USAGE_SHIFT));
+		let pasted = false;
+		for (const step of paradisSimulatorTextPlan(text)) {
+			if (step.kind === 'keys') {
+				for (const stroke of step.strokes) {
+					if (stroke.shift) {
+						await this._backend.send(udid, paradisSimulatorKeyFrame('down', USAGE_SHIFT));
+					}
+					await this._backend.send(udid, paradisSimulatorKeyFrame('down', stroke.usage));
+					await this._backend.send(udid, paradisSimulatorKeyFrame('up', stroke.usage));
+					if (stroke.shift) {
+						await this._backend.send(udid, paradisSimulatorKeyFrame('up', USAGE_SHIFT));
+					}
 				}
-				await this._backend.send(udid, paradisSimulatorKeyFrame('down', stroke.usage));
-				await this._backend.send(udid, paradisSimulatorKeyFrame('up', stroke.usage));
-				if (stroke.shift) {
-					await this._backend.send(udid, paradisSimulatorKeyFrame('up', USAGE_SHIFT));
-				}
+				continue;
 			}
-			return { method: 'keys', ...await this._keysNote(udid) };
+			if (pasted) {
+				// 前の貼り付けが端末で済む前にクリップボードを書き換えないよう、少し待つ（pbcopy はキーの列の外を通る）
+				await this._sleep(PASTE_SETTLE_MS);
+			}
+			await this._simctl(['pbcopy', udid], { timeoutMs: 10_000, input: step.text });
+			await this._backend.send(udid, paradisSimulatorKeyFrame('down', USAGE_COMMAND));
+			await this._backend.send(udid, paradisSimulatorKeyFrame('down', USAGE_V));
+			await this._backend.send(udid, paradisSimulatorKeyFrame('up', USAGE_V));
+			await this._backend.send(udid, paradisSimulatorKeyFrame('up', USAGE_COMMAND));
+			pasted = true;
 		}
-		await this._simctl(['pbcopy', udid], { timeoutMs: 10_000, input: text });
-		await this._backend.send(udid, paradisSimulatorKeyFrame('down', USAGE_COMMAND));
-		await this._backend.send(udid, paradisSimulatorKeyFrame('down', USAGE_V));
-		await this._backend.send(udid, paradisSimulatorKeyFrame('up', USAGE_V));
-		await this._backend.send(udid, paradisSimulatorKeyFrame('up', USAGE_COMMAND));
-		return { method: 'paste', ...await this._keysNote(udid) };
+		return { method: pasted ? 'paste' : 'keys', ...await this._keysNote(udid) };
 	}
 
 	/**
