@@ -38,6 +38,9 @@ import { IParadisBot, paradisBotHomeRelativePath, paradisIsBotFolderName } from 
 /** 読み書きする 1 ファイルの大きさの上限。 */
 export const PARADIS_BOT_HOME_FILE_LIMIT = 1024 * 1024;
 
+/** 記憶の整理の写しに取るファイルの数の上限。 */
+export const PARADIS_BOT_MEMORY_FILES_LIMIT = 200;
+
 /** 専用フォルダの読み書きを断った理由。 */
 export class ParadisBotHomeError extends Error {
 	constructor(readonly code: 'outside' | 'not_owner' | 'too_large' | 'reserved', message: string) {
@@ -144,6 +147,30 @@ export class ParadisBotHomes {
 		}
 		const path = await this.resolve(bot, relative, true);
 		await paradisWriteFileAtomic(path, text, { rejectSymlink: true });
+	}
+
+	/**
+	 * 記憶のファイル（`MEMORY.md` と `memory/` の直下の通常のファイル）の相対パス。symlink とフォルダは数えない。
+	 * 記憶の整理の写しを取るのに使う。多すぎるときは {@link PARADIS_BOT_MEMORY_FILES_LIMIT} 件で打ち切る。
+	 */
+	async memoryFiles(bot: HomeBot): Promise<string[]> {
+		const home = this.folder(bot);
+		const files: string[] = [];
+		if ((await fs.lstat(join(home, PARADIS_BOT_MEMORY_FILE)).catch(() => undefined))?.isFile()) {
+			files.push(PARADIS_BOT_MEMORY_FILE);
+		}
+		const entries = await fs.readdir(join(home, PARADIS_BOT_MEMORY_FOLDER), { withFileTypes: true }).catch(error => {
+			if (missing(error)) {
+				return [];
+			}
+			throw error;
+		});
+		for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+			if (entry.isFile() && files.length < PARADIS_BOT_MEMORY_FILES_LIMIT) {
+				files.push(`${PARADIS_BOT_MEMORY_FOLDER}/${entry.name}`);
+			}
+		}
+		return files;
 	}
 
 	/**

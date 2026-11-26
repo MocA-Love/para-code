@@ -50,7 +50,9 @@ import {
 import { EMPTY_PARADIS_BOTS_STATE, IParadisBot, IParadisBotCreateInput, IParadisBotPatch, IParadisBotsState, PARADIS_BOTS_VERSION, paradisBotCreate, paradisBotRemove, paradisBotUpdate } from '../common/paradisBots.js';
 import { IParadisBotLaunch, IParadisBotsSnapshot, IParadisBotStopRequest, ParadisBotPanePurpose, ParadisBotsServiceResult, paradisBotSummary } from '../common/paradisBotsApi.js';
 import { IParadisBotItemAddArgs, paradisBotLaunchApprovalFlags } from '../common/paradisBotTools.js';
+import { EMPTY_PARADIS_BOT_SUGGESTIONS_STATE, IParadisBotSuggestion, IParadisBotSuggestionsState, paradisBotOpenSuggestions, paradisBotSuggestionAdd, paradisBotSuggestionDismiss, paradisBotSuggestionsRemoveBot, paradisBotSuggestionsRunEnded, paradisBotSuggestionStart } from '../common/paradisBotSuggestions.js';
 import { ParadisBotHomeError, ParadisBotHomes } from './paradisBotHomes.js';
+import { IParadisBotMemoryUndo, ParadisBotMemorySnapshots } from './paradisBotMemorySnapshots.js';
 import { IParadisBotPanesState, PARADIS_BOT_PANES_VERSION, ParadisBotPanes, paradisBotPaneTokenHash } from './paradisBotPanes.js';
 import { IParadisBotsJsonFile, IParadisBotsLoaded } from './paradisBotsStore.js';
 
@@ -78,6 +80,10 @@ export interface IParadisBotsServiceOptions {
 	readonly panesFile?: IParadisBotsJsonFile<IParadisBotPanesState>;
 	/** 専用フォルダの読み書き。渡さなければフォルダを作らず、起動の依頼とファイルの口は `unavailable` で断る。 */
 	readonly homes?: ParadisBotHomes;
+	/** 提案の台帳。渡さなければ提案は空で、見回りの提案は `unavailable` で断る。 */
+	readonly suggestionsFile?: IParadisBotsJsonFile<IParadisBotSuggestionsState>;
+	/** 記憶の整理の写し。渡さなければ整理の写しと取り消しは `unavailable` で断る。 */
+	readonly memorySnapshots?: ParadisBotMemorySnapshots;
 	/** 項目の台帳の大きさの上限（テストで小さくする）。既定は {@link PARADIS_BOT_ITEMS_BYTE_LIMIT}。 */
 	readonly itemsByteLimit?: number;
 }
@@ -99,6 +105,9 @@ export class ParadisBotsService extends Disposable {
 	private readonly uuid: () => string;
 	private readonly homes: ParadisBotHomes | undefined;
 	private readonly panesFile: IParadisBotsJsonFile<IParadisBotPanesState> | undefined;
+	private readonly suggestionsFile: IParadisBotsJsonFile<IParadisBotSuggestionsState> | undefined;
+	private readonly memorySnapshots: ParadisBotMemorySnapshots | undefined;
+	private suggestions: IParadisBotSuggestionsState = EMPTY_PARADIS_BOT_SUGGESTIONS_STATE;
 	private readonly itemsByteLimit: number;
 
 	/** 読み込みが終わった（壊れたファイルの退避も済んだ）。 */
@@ -133,6 +142,8 @@ export class ParadisBotsService extends Disposable {
 		this.uuid = options.uuid ?? generateUuid;
 		this.homes = options.homes;
 		this.panesFile = options.panesFile;
+		this.suggestionsFile = options.suggestionsFile;
+		this.memorySnapshots = options.memorySnapshots;
 		this.itemsByteLimit = options.itemsByteLimit ?? PARADIS_BOT_ITEMS_BYTE_LIMIT;
 		this._register(this.humanAsk.onDidRequestAnswer(request => this.onAnswerRequest(request)));
 		if (options.hookEvents) {
@@ -154,14 +165,15 @@ export class ParadisBotsService extends Disposable {
 
 	private async load(): Promise<void> {
 		try {
-			const [bots, items, panes] = await Promise.all([this.botsFile.read(), this.itemsFile.read(), this.readPanes()]);
-			for (const quarantined of [bots.quarantined, items.quarantined, panes?.quarantined]) {
+			const [bots, items, panes, suggestions] = await Promise.all([this.botsFile.read(), this.itemsFile.read(), this.readPanes(), this.suggestionsFile?.read()]);
+			for (const quarantined of [bots.quarantined, items.quarantined, panes?.quarantined, suggestions?.quarantined]) {
 				if (quarantined !== undefined) {
 					this.logService.error(`[ParadisBots] a saved file could not be read; it was moved to ${quarantined} and the list starts empty`);
 				}
 			}
 			this.bots = bots.state;
 			this.items = items.state;
+			this.suggestions = suggestions?.state ?? EMPTY_PARADIS_BOT_SUGGESTIONS_STATE;
 			// 消した Bot の結び付けは戻さない
 			this.panes.loadRemembered((panes?.state.panes ?? []).filter(record => this.getBot(record.botId) !== undefined));
 			this.panesVersion = panes?.state.version ?? PARADIS_BOT_PANES_VERSION;
@@ -184,7 +196,7 @@ export class ParadisBotsService extends Disposable {
 		return {
 			revision: this.revision,
 			readOnly: this.bots.version !== PARADIS_BOTS_VERSION || this.items.version !== PARADIS_BOT_ITEMS_VERSION,
-			bots: this.bots.bots.map(bot => paradisBotSummary(bot, this.items, this.panes.statesOf(bot.id), now)),
+			bots: this.bots.bots.map(bot => paradisBotSummary(bot, this.items, this.panes.statesOf(bot.id), now, paradisBotOpenSuggestions(this.suggestions, bot.id).length)),
 		};
 	}
 
@@ -302,6 +314,7 @@ export class ParadisBotsService extends Disposable {
 			this._onDidRequestStop.fire({ botId, paneHashes: this.paneHashesOf(botId) });
 			this.panes.releaseBot(botId);
 			await this.saveItems(paradisBotItemsRemoveBot(this.items, botId), undefined);
+			await this.saveSuggestions(paradisBotSuggestionsRemoveBot(this.suggestions, botId)).catch(error => this.logService.warn('[ParadisBots] could not remove the suggestions of a removed bot', error));
 			return removed;
 		});
 	}
@@ -495,11 +508,96 @@ export class ParadisBotsService extends Disposable {
 		this.panes.cancel(launchId);
 	}
 
-	/** ペインが閉じた。 */
+	/** ペインが閉じた。見回りのペインなら、その Bot はもう最初の見回りではない。 */
 	releasePane(paneToken: string): void {
-		if (this.panes.release(paneToken) !== undefined) {
+		const purpose = this.panes.purposeOf(paneToken);
+		const botId = this.panes.release(paneToken);
+		if (botId === undefined) {
+			return;
+		}
+		if (purpose === 'patrol') {
+			void this.write(async () => {
+				await this.saveSuggestions(paradisBotSuggestionsRunEnded(this.suggestions, botId));
+				return { ok: true, value: undefined };
+			});
+		}
+		this.notify();
+	}
+
+	// ---- 提案（見回りで見つけた「やってもよいこと」。ベルにも「あなたの番」にも数えない） --------------
+
+	/** その Bot のまだ決めていない提案（新しい順）。 */
+	listSuggestions(botId: string): IParadisBotSuggestion[] {
+		return paradisBotOpenSuggestions(this.suggestions, botId);
+	}
+
+	/** 見回りのペインが提案を足す（道具の提供元だけが呼ぶ）。会話のペインからは断る。 */
+	botSuggest(botId: string, paneToken: string, title: unknown, request: unknown): Promise<Result<IParadisBotSuggestion>> {
+		return this.write(async () => {
+			if (this.suggestionsFile === undefined) {
+				return { ok: false, code: 'unavailable', message: 'Suggestions are not available.' };
+			}
+			if (this.panes.purposeOf(paneToken) !== 'patrol') {
+				return { ok: false, code: 'not_patrol', message: 'Offer suggestions only in a look-around (a terminal Para Code started for you on a schedule). In a conversation, tell your owner in your reply.' };
+			}
+			const result = paradisBotSuggestionAdd(this.suggestions, { id: this.uuid(), botId, run: paradisBotPaneTokenHash(paneToken), title, request }, this.now());
+			return result.ok ? this.saveSuggestions(result.state, result.value) : result;
+		});
+	}
+
+	/** 「始める」。依頼の文を返す（会話の入力欄へ未送信で入れるのは画面の側）。 */
+	startSuggestion(id: string): Promise<Result<IParadisBotSuggestion>> {
+		return this.write(async () => {
+			const result = paradisBotSuggestionStart(this.suggestions, id, this.now());
+			return result.ok ? this.saveSuggestions(result.state, result.value) : result;
+		});
+	}
+
+	/** 「見送る」。同じ題を 30 日出さない。 */
+	dismissSuggestion(id: string): Promise<Result<IParadisBotSuggestion>> {
+		return this.write(async () => {
+			const result = paradisBotSuggestionDismiss(this.suggestions, id, this.now());
+			return result.ok ? this.saveSuggestions(result.state, result.value) : result;
+		});
+	}
+
+	private async saveSuggestions<T>(next: IParadisBotSuggestionsState, value?: T): Promise<Result<T>> {
+		if (next !== this.suggestions && this.suggestionsFile !== undefined) {
+			const previous = this.suggestions;
+			this.suggestions = next;
+			try {
+				await this.suggestionsFile.write(next);
+			} catch (error) {
+				this.suggestions = previous;
+				throw error;
+			}
 			this.notify();
 		}
+		return { ok: true, value: value as T };
+	}
+
+	// ---- 記憶の整理 ------------------------------------------------------------------------------
+
+	/** 記憶の整理を始める前に、記憶のファイルの写しを取る（写しは専用フォルダの外）。 */
+	snapshotMemory(botId: string): Promise<Result<{ readonly takenAt: number; readonly files: number }>> {
+		return this.memory(botId, (snapshots, bot) => snapshots.take(bot));
+	}
+
+	/** 記憶の整理を取り消す（一番新しい写しを書き戻す）。写しが無ければ `not_found`。 */
+	async undoMemoryTidy(botId: string): Promise<Result<IParadisBotMemoryUndo>> {
+		const result = await this.memory(botId, (snapshots, bot) => snapshots.undo(bot));
+		if (result.ok && result.value === undefined) {
+			return { ok: false, code: 'not_found', message: 'There is no copy of the memory to go back to.' };
+		}
+		return result as Result<IParadisBotMemoryUndo>;
+	}
+
+	private async memory<T>(botId: string, operation: (snapshots: ParadisBotMemorySnapshots, bot: IParadisBot) => Promise<T>): Promise<Result<T>> {
+		if (this.memorySnapshots === undefined) {
+			return { ok: false, code: 'unavailable', message: 'Memory copies are not available.' };
+		}
+		const snapshots = this.memorySnapshots;
+		return this.homeFile(botId, (_homes, bot) => operation(snapshots, bot));
 	}
 
 	// ---- 中身 -----------------------------------------------------------------------------------

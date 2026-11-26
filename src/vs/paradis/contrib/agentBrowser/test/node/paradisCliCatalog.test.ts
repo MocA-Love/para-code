@@ -36,7 +36,7 @@ const TOOLS_BY_PROVIDER_GROUP: Readonly<Record<string, readonly string[]>> = {
 	ide: [
 		'read_para_code_guide', 'list_spaces', 'create_space', 'remove_space', 'launch_agent', 'create_scheduled_run',
 		'list_terminals', 'read_terminal', 'wait_for_terminal', 'send_terminal_input', 'send_terminal_key', 'create_terminal', 'close_terminal',
-		'bot_item_list', 'bot_item_show', 'bot_item_add', 'bot_item_update',
+		'bot_item_list', 'bot_item_show', 'bot_item_add', 'bot_item_update', 'bot_suggest',
 		'list_bots', 'create_bot', 'update_bot', 'start_bot', 'stop_bot', 'remove_bot',
 	],
 	port: ['list_port_forwards', 'forward_port', 'stop_port_forward', 'reforward_port', 'clean_up_port_forwards'],
@@ -112,7 +112,7 @@ suite('paradisCliCatalog', () => {
 			port: ['list-port-forwards (list)', 'forward-port', 'stop-port-forward', 'reforward-port', 'clean-up-port-forwards'],
 			ide: [
 				'preview-file', 'read-para-code-guide', 'list-spaces', 'create-space', 'remove-space', 'launch-agent', 'create-scheduled-run',
-				'bot-item-list', 'bot-item-show', 'bot-item-add', 'bot-item-update', 'list-bots', 'create-bot', 'update-bot', 'start-bot', 'stop-bot', 'remove-bot',
+				'bot-item-list', 'bot-item-show', 'bot-item-add', 'bot-item-update', 'bot-suggest', 'list-bots', 'create-bot', 'update-bot', 'start-bot', 'stop-bot', 'remove-bot',
 			],
 			doc: ['list-docs', 'adopt-doc', 'read-doc-comments', 'reply-doc-comment'],
 			board: ['complete-step', 'ask-human'],

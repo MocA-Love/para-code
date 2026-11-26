@@ -26,7 +26,8 @@ import { ParadisBotManageToolProvider } from './paradisBotManageToolProvider.js'
 import { ParadisBotToolProvider } from './paradisBotToolProvider.js';
 import { ParadisBotsChannel } from './paradisBotsChannel.js';
 import { ParadisBotsService } from './paradisBotsService.js';
-import { createParadisBotItemsFile, createParadisBotPanesFile, createParadisBotsFile } from './paradisBotsStore.js';
+import { ParadisBotMemorySnapshots } from './paradisBotMemorySnapshots.js';
+import { createParadisBotItemsFile, createParadisBotPanesFile, createParadisBotsFile, createParadisBotSuggestionsFile, paradisBotsDataFolder } from './paradisBotsStore.js';
 
 let shared: ParadisBotsService | undefined;
 
@@ -38,7 +39,15 @@ export function paradisSharedBotsService(): ParadisBotsService | undefined {
 ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 	const userDataPath = accessor.get(INativeEnvironmentService).userDataPath;
 	const store = new DisposableStore();
-	const service = store.add(new ParadisBotsService(createParadisBotsFile(userDataPath), createParadisBotItemsFile(userDataPath), paradisSharedHumanAskService(), accessor.get(ILogService), { hookEvents: onParadisAgentHookEvent, panesFile: createParadisBotPanesFile(userDataPath), homes: new ParadisBotHomes(join(homedir(), '.para-code', 'bots')) }));
+	const homes = new ParadisBotHomes(join(homedir(), '.para-code', 'bots'));
+	const service = store.add(new ParadisBotsService(createParadisBotsFile(userDataPath), createParadisBotItemsFile(userDataPath), paradisSharedHumanAskService(), accessor.get(ILogService), {
+		hookEvents: onParadisAgentHookEvent,
+		panesFile: createParadisBotPanesFile(userDataPath),
+		suggestionsFile: createParadisBotSuggestionsFile(userDataPath),
+		// 記憶の写しは専用フォルダ（Bot が書ける）の外に置く
+		memorySnapshots: new ParadisBotMemorySnapshots(join(paradisBotsDataFolder(userDataPath), 'memory-snapshots'), homes),
+		homes,
+	}));
 	server.registerChannel(PARADIS_BOTS_CHANNEL, new ParadisBotsChannel(service));
 	shared = service;
 	store.add(paradisRegisterMcpToolProvider(new ParadisBotToolProvider(service)));
