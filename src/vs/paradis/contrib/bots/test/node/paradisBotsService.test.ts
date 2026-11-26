@@ -341,8 +341,8 @@ suite('Paradis bots service', () => {
 		const afterLaunchingTtl = await code(b, 'chat');
 		// 「起動中」の期限を過ぎた後に別のウィンドウで開いた会話があれば、遅れて届いた報告は断る
 		const other = first.service.issueLaunch(b, 'chat');
-		const otherReported = first.service.reportLaunch(other!, 'pane-B2', 'window:2');
-		const lateReported = first.service.reportLaunch(late!, 'pane-B1', 'window:1');
+		const otherReported = first.service.reportLaunch(other!, 'pane-B2');
+		const lateReported = first.service.reportLaunch(late!, 'pane-B1');
 
 		// 起動し直した後: 保存したハッシュはあるがまだ現れていないペインは数えない。現れたら数える。閉じたら外れる
 		const second = harness(store, first);
@@ -364,29 +364,24 @@ suite('Paradis bots service', () => {
 		});
 	});
 
-	test('ウィンドウを閉じた後は別のウィンドウから開ける。前に出す依頼に応えるウィンドウが無ければ、結び付けを外して起動へ進める', async () => {
+	test('前に出す依頼に応えるウィンドウが無ければ、結び付けを外して起動へ進める。再読み込みでは外さない。起動し直した後に古いペインを 2 つ目の会話として戻さない', async () => {
 		const h = harness(store, undefined, undefined, 20);
 		const created = await h.service.createBot({ name: 'A', agent: 'claude' });
 		assert.ok(created.ok);
 		const a = created.value.id;
-		const code = async () => {
-			const result = await h.service.requestLaunch(a, 'chat');
+		const code = async (service = h.service) => {
+			const result = await service.requestLaunch(a, 'chat');
 			return result.ok ? 'ok' : result.code;
 		};
-		const bind = (token: string, windowCtx: string) => {
-			const launchId = h.service.issueLaunch(a, 'chat');
-			assert.ok(launchId !== undefined && h.service.reportLaunch(launchId, token, windowCtx));
+		const bind = (token: string, service = h.service) => {
+			const launchId = service.issueLaunch(a, 'chat');
+			return launchId !== undefined && service.reportLaunch(launchId, token);
 		};
-		// ウィンドウ 1 を閉じた（ペインは終了を知らせない）。接続が切れたので「まだ現れていない」に戻る
-		bind('pane-1', 'window:1');
-		const beforeClose = await code();
-		h.service.detachWindow('window:2');
-		const otherWindowClosed = await code();
-		h.service.detachWindow('window:1');
-		const afterClose = await code();
-
+		bind('pane-1');
+		// ウィンドウを再読み込みした（shared process には何も来ない）。同じペインの hook が来ても会話は 1 つのまま
+		h.hooks.fire({ token: 'pane-1', event: 'SessionStart' });
+		const afterReload = await code();
 		// 応えたウィンドウがあれば、結び付けは残る
-		bind('pane-2', 'window:2');
 		const reveals: string[] = [];
 		const listener = h.service.onDidRequestReveal(request => {
 			reveals.push(request.paneHashes.length === 1 ? 'one pane' : 'other');
@@ -395,19 +390,29 @@ suite('Paradis bots service', () => {
 		const answered = await h.service.requestReveal(a);
 		const afterAnswer = await code();
 		listener.dispose();
-		// どのウィンドウも応えない（閉じたことが伝わらなかった）: 待ってから外し、起動へ進める
+		// どのウィンドウも応えない（ペインのあったウィンドウを閉じた）: 待ってから外し、起動へ進める
 		const unanswered = await h.service.requestReveal(a);
 		const afterTimeout = await code();
-		assert.deepStrictEqual({ beforeClose, otherWindowClosed, afterClose, reveals, answered, afterAnswer, unanswered, afterTimeout, nothingToReveal: await h.service.requestReveal(a) }, {
-			beforeClose: 'already_open',
-			otherWindowClosed: 'already_open',
-			afterClose: 'unavailable',
+
+		// 起動し直した後: 保存した古いペインがまだ現れないうちに新しい会話を開いた。後から古いペインの hook が来ても戻さない
+		const second = harness(store, h);
+		await second.service.ready;
+		const reopened = bind('pane-2', second.service);
+		second.hooks.fire({ token: 'pane-1', event: 'SessionStart' });
+		assert.deepStrictEqual({
+			afterReload, reveals, answered, afterAnswer, unanswered, afterTimeout, nothingToReveal: await h.service.requestReveal(a),
+			reopened, oldPane: second.service.botOfPane('pane-1')?.id, newPane: second.service.botOfPane('pane-2')?.id,
+		}, {
+			afterReload: 'already_open',
 			reveals: ['one pane'],
 			answered: true,
 			afterAnswer: 'already_open',
 			unanswered: false,
 			afterTimeout: 'unavailable',
 			nothingToReveal: false,
+			reopened: true,
+			oldPane: undefined,
+			newPane: a,
 		});
 	});
 
