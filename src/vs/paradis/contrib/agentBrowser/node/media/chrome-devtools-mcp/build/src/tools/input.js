@@ -26,6 +26,24 @@ function handleActionError(error, uid) {
         cause: error,
     });
 }
+// PARA-PATCH (Para Code): a click that opens alert() / confirm() / prompt() blocks the page, so the browser never
+// acknowledges the mouse release and the click was reported as "did not become interactive" after the timeout,
+// although the dialog was open. paraCodeWatchDialog resolves when a dialog opens during the action; the tool then
+// returns at once and the response carries "# Open dialog". See NOTES.md "vendored chrome-devtools-mcp への変更".
+class ParaCodeDialogOpened extends Error {
+}
+function paraCodeWatchDialog(pptrPage) {
+    let listener;
+    const opened = new Promise(resolve => {
+        listener = (dialog) => {
+            if (dialog.type() !== 'beforeunload') {
+                resolve(true);
+            }
+        };
+        pptrPage.on('dialog', listener);
+    });
+    return { opened, dispose: () => pptrPage.off('dialog', listener) };
+}
 async function selectNativeSelectOption(handle) {
     const selectHandle = await handle.evaluateHandle(node => {
         if (!(node instanceof HTMLOptionElement)) {
@@ -85,15 +103,21 @@ export const click = definePageTool({
         const handle = await request.page.getElementByUid(uid);
         const aXNode = request.page.getAXNodeByUid(uid);
         const shouldSelectNativeOption = !request.params.dblClick && aXNode?.role === 'option';
+        const paraCodeDialog = paraCodeWatchDialog(request.page.pptrPage);
         try {
             const result = await request.page.waitForEventsAfterAction(async () => {
                 if (shouldSelectNativeOption &&
                     (await selectNativeSelectOption(handle))) {
                     return;
                 }
-                await handle.asLocator().click({
+                const clicking = handle.asLocator().click({
                     count: request.params.dblClick ? 2 : 1,
                 });
+                if (await Promise.race([clicking.then(() => false), paraCodeDialog.opened])) {
+                    // The release is acknowledged (or the click times out) only after the dialog is answered.
+                    clicking.catch(() => undefined);
+                    throw new ParaCodeDialogOpened();
+                }
             });
             response.appendResponseLine(request.params.dblClick
                 ? `Successfully double clicked on the element`
@@ -104,9 +128,14 @@ export const click = definePageTool({
             }
         }
         catch (error) {
+            if (error instanceof ParaCodeDialogOpened) {
+                response.appendResponseLine(`${request.params.dblClick ? 'Double clicked' : 'Clicked'} on the element, and the click opened a JavaScript dialog, so the page waits for an answer. Answer it with handle_dialog before anything else on this page.`);
+                return;
+            }
             handleActionError(error, uid);
         }
         finally {
+            paraCodeDialog.dispose();
             void handle.dispose();
         }
     },

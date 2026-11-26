@@ -17,7 +17,7 @@ const SDK = '/Users/example/Library/Android/sdk';
 const ADB = `${SDK}/platform-tools/adb`;
 const EMULATOR = `${SDK}/emulator/emulator`;
 
-function setup(options: { files?: string[]; running?: boolean; now?: () => number; sleep?: (ms: number) => Promise<void>; scrcpy?: ConstructorParameters<typeof ParadisAdbDeviceHost>[0]['scrcpy']; dumpsysInput?: string; dumpsysWindow?: string } = {}) {
+function setup(options: { consoleAvdName?: string; propertyAvdName?: string; files?: string[]; running?: boolean; now?: () => number; sleep?: (ms: number) => Promise<void>; scrcpy?: ConstructorParameters<typeof ParadisAdbDeviceHost>[0]['scrcpy']; dumpsysInput?: string; dumpsysWindow?: string } = {}) {
 	const calls: string[] = [];
 	const launched: string[] = [];
 	const files = new Set(options.files ?? [ADB, EMULATOR]);
@@ -41,7 +41,10 @@ function setup(options: { files?: string[]; running?: boolean; now?: () => numbe
 				return 'Pixel_9_API_36\nMedium_Phone\n';
 			}
 			if (line.endsWith('emu avd name')) {
-				return 'Pixel_9_API_36\nOK\n';
+				return options.consoleAvdName ?? 'Pixel_9_API_36\nOK\n';
+			}
+			if (line.endsWith('getprop ro.boot.qemu.avd_name')) {
+				return options.propertyAvdName ?? '';
 			}
 			if (line.endsWith('getprop ro.build.version.release')) {
 				return '16\n';
@@ -78,6 +81,27 @@ suite('Paradis simulator: adb answers the Mobile Canvas REST for Android', () =>
 			{ id: 'android:serial:emulator-5554', udid: 'emulator-5554', name: 'Pixel 9 API 36', platform: 'android', runtimeName: 'Android 16', state: 'device', avdId: 'android:avd:Pixel_9_API_36' },
 			{ id: 'android:avd:Medium_Phone', name: 'Medium Phone', platform: 'android', state: 'shutdown' },
 		]);
+	});
+
+	// `adb emu avd name` はコンソールの認証トークン（利用者の HOME にある）を読めないと空を返す。そのときも、起動前の AVD で
+	// 割り当てた端末を起動後に引き当てられるよう、端末の中の値（認証なしで読める）で AVD の名前を読む
+	test('reads the AVD name from the device when the emulator console does not answer', async () => {
+		const silent = setup({ consoleAvdName: '', propertyAvdName: 'Pixel_9_API_36\n' });
+		const refused = setup({ consoleAvdName: 'KO: unknown command\n', propertyAvdName: 'Medium_Phone\n' });
+		const unknown = setup({ consoleAvdName: '', propertyAvdName: '' });
+		const byAvdId = await silent.host.request('GET', '/api/v1/devices/android%3Aavd%3APixel_9_API_36', undefined) as { id: string };
+		assert.deepStrictEqual({
+			silent: (await silent.host.listDevices() as { id: string; avdId?: string }[]).map(device => [device.id, device.avdId]),
+			byAvdId: byAvdId.id,
+			refused: (await refused.host.listDevices() as { id: string; avdId?: string }[]).map(device => [device.id, device.avdId]),
+			// どちらでも読めなければ、今までどおり（動いている行と、止まっている AVD の行の両方が出る）
+			unknown: (await unknown.host.listDevices() as { id: string; avdId?: string }[]).map(device => [device.id, device.avdId]),
+		}, {
+			silent: [['android:serial:emulator-5554', 'android:avd:Pixel_9_API_36'], ['android:avd:Medium_Phone', undefined]],
+			byAvdId: 'android:serial:emulator-5554',
+			refused: [['android:serial:emulator-5554', 'android:avd:Medium_Phone'], ['android:avd:Pixel_9_API_36', undefined]],
+			unknown: [['android:serial:emulator-5554', undefined], ['android:avd:Pixel_9_API_36', undefined], ['android:avd:Medium_Phone', undefined]],
+		});
 	});
 
 	// ポイント = 画素 ÷ (480/160 = 3)。adb の input は画素を受ける
