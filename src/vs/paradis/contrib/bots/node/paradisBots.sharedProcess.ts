@@ -38,15 +38,22 @@ export function paradisSharedBotsService(): ParadisBotsService | undefined {
 ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 	const userDataPath = accessor.get(INativeEnvironmentService).userDataPath;
 	const store = new DisposableStore();
-	const service = store.add(new ParadisBotsService(createParadisBotsFile(userDataPath), createParadisBotItemsFile(userDataPath), paradisSharedHumanAskService(), accessor.get(ILogService), { hookEvents: onParadisAgentHookEvent, panesFile: createParadisBotPanesFile(userDataPath), homes: new ParadisBotHomes(join(homedir(), '.para-code', 'bots')) }));
+	// Bot の機能は試験中の設定でオン・オフする（スキーマは画面側で登録されるので、生の値を読む）
+	const configurationService = accessor.get(IConfigurationService);
+	const enabled = () => configurationService.getValue(PARADIS_BOTS_ENABLED_SETTING) === true;
+	const service = store.add(new ParadisBotsService(createParadisBotsFile(userDataPath), createParadisBotItemsFile(userDataPath), paradisSharedHumanAskService(), accessor.get(ILogService), { hookEvents: onParadisAgentHookEvent, enabled, panesFile: createParadisBotPanesFile(userDataPath), homes: new ParadisBotHomes(join(homedir(), '.para-code', 'bots')) }));
 	server.registerChannel(PARADIS_BOTS_CHANNEL, new ParadisBotsChannel(service));
 	shared = service;
-	store.add(paradisRegisterMcpToolProvider(new ParadisBotToolProvider(service)));
+	store.add(configurationService.onDidChangeConfiguration(event => {
+		if (event.affectsConfiguration(PARADIS_BOTS_ENABLED_SETTING)) {
+			service.refresh();
+		}
+	}));
+	store.add(paradisRegisterMcpToolProvider(new ParadisBotToolProvider(service, enabled)));
 	// 管理の道具の書く側は、IDE 系の書く道具と同じ設定の下（スキーマは画面側でしか登録されないので生の値を読む）
-	const configurationService = accessor.get(IConfigurationService);
 	store.add(paradisRegisterMcpToolProvider(new ParadisBotManageToolProvider(service, {
 		actionsEnabled: () => paradisAgentIdeActionsAllowed(configurationService.getValue(PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING)),
-		botsEnabled: () => configurationService.getValue(PARADIS_BOTS_ENABLED_SETTING) === true,
+		botsEnabled: enabled,
 	})));
 	store.add({
 		dispose: () => {

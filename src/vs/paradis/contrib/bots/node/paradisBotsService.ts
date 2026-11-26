@@ -78,6 +78,11 @@ export interface IParadisBotsServiceOptions {
 	readonly panesFile?: IParadisBotsJsonFile<IParadisBotPanesState>;
 	/** 専用フォルダの読み書き。渡さなければフォルダを作らず、起動の依頼とファイルの口は `unavailable` で断る。 */
 	readonly homes?: ParadisBotHomes;
+	/**
+	 * Bot の機能（試験中の設定 `paradis.bots.enabled`）がオンか。オフのあいだは「聞く・答える」の台帳へ問いを
+	 * 出さない（出していた分は取り下げる）。変わったら {@link ParadisBotsService.refresh} を呼ぶ。既定はオン。
+	 */
+	readonly enabled?: () => boolean;
 	/** 項目の台帳の大きさの上限（テストで小さくする）。既定は {@link PARADIS_BOT_ITEMS_BYTE_LIMIT}。 */
 	readonly itemsByteLimit?: number;
 }
@@ -100,6 +105,7 @@ export class ParadisBotsService extends Disposable {
 	private readonly homes: ParadisBotHomes | undefined;
 	private readonly panesFile: IParadisBotsJsonFile<IParadisBotPanesState> | undefined;
 	private readonly itemsByteLimit: number;
+	private readonly enabled: () => boolean;
 
 	/** 読み込みが終わった（壊れたファイルの退避も済んだ）。 */
 	readonly ready: Promise<void>;
@@ -134,6 +140,7 @@ export class ParadisBotsService extends Disposable {
 		this.homes = options.homes;
 		this.panesFile = options.panesFile;
 		this.itemsByteLimit = options.itemsByteLimit ?? PARADIS_BOT_ITEMS_BYTE_LIMIT;
+		this.enabled = options.enabled ?? (() => true);
 		this._register(this.humanAsk.onDidRequestAnswer(request => this.onAnswerRequest(request)));
 		if (options.hookEvents) {
 			this._register(options.hookEvents(event => {
@@ -235,6 +242,16 @@ export class ParadisBotsService extends Disposable {
 		this.panesFile.write({ version: PARADIS_BOT_PANES_VERSION, panes: this.panes.rememberedPanes() }).catch(error => {
 			this.logService.warn('[ParadisBots] could not save the bot panes', error);
 		});
+	}
+
+	/** 項目の台帳に書けるか（新しい版の台帳なら false。届けた印も外せない）。 */
+	itemsWritable(): boolean {
+		return this.items.version === PARADIS_BOT_ITEMS_VERSION;
+	}
+
+	/** 設定（Bot の機能のオン・オフ）が変わった。「聞く・答える」の台帳へ出す問いを数え直す。 */
+	refresh(): void {
+		this.changed();
 	}
 
 	/** Bot へまだ届けていない、持ち主の書き込み。 */
@@ -585,7 +602,8 @@ export class ParadisBotsService extends Disposable {
 		const now = this.now();
 		const asks: unknown[] = [];
 		let wakeAt: number | undefined;
-		for (const item of this.items.items) {
+		// Bot の機能がオフなら、問いを 1 つも出さない（出していた分は空の一覧で取り下げる）
+		for (const item of this.enabled() ? this.items.items : []) {
 			const bot = this.getBot(item.botId);
 			if (bot === undefined || bot.paused || item.status !== 'needs_you') {
 				continue;
