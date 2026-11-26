@@ -36,7 +36,7 @@ import { DraggedEditorGroupIdentifier, DraggedEditorIdentifier } from '../../../
 import { ParadisAgentQuestionAnswer } from '../../mobileRelay/common/paradisAgentQuestionKeys.js';
 import { IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMessage, IParadisAgentInteraction, IParadisAgentLiveState, paradisIsCodexDaemonApprovalInteraction } from '../common/paradisAgentChat.js';
 import { paradisAgentChatImagesToLinks } from '../common/paradisAgentChatMarkdown.js';
-import { paradisAgentChatTimeLabel } from '../common/paradisAgentChatTime.js';
+import { paradisAgentChatTimeLabel, paradisAgentChatUsageCacheDetail, paradisAgentChatUsageLabel } from '../common/paradisAgentChatTime.js';
 import { paradisAppendAgentLogoSvg } from './paradisAgentChatFace.js';
 import { PARADIS_AGENT_DESCRIPTORS, paradisAgentDescriptor } from '../common/paradisAgentDescriptor.js';
 import { IParadisAgentChatState } from '../common/paradisAgentChatState.js';
@@ -701,6 +701,12 @@ export class ParadisAgentChatView extends Disposable {
 				body.appendChild(rendered.element);
 				this.appendImages(column, item.message, state, store);
 				this.appendTime(column, item.message.ts);
+				if (item.message.usage !== undefined) {
+					// 費用は出さない（手元に単価の表を持たない。使用量の画面の ccusage は外のツールが値段を付ける）
+					const usage = append(column, $('span.paradis-agent-chat-usage'));
+					usage.textContent = paradisAgentChatUsageLabel(item.message.usage);
+					store.add(this.hoverService.setupDelayedHover(usage, { content: paradisAgentChatUsageCacheDetail(item.message.usage) }));
+				}
 				return element;
 			}
 			case 'thinking':

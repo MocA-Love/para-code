@@ -260,11 +260,13 @@
 	border-top-left-radius: var(--vscode-cornerRadius-small);
 }
 
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-usage,
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-time {
 	padding: 0 var(--vscode-spacing-size20);
 	color: var(--vscode-descriptionForeground);
 	font-size: var(--vscode-fontSize-label2);
 	font-variant-numeric: tabular-nums;
+	overflow-wrap: anywhere;
 }
 
 /* 顔の無い行（手順・考えた内容・カード・知らせ・生成中の行）は、吹き出しの左端（顔 24 と間 8 の右）にそろえる。 */
