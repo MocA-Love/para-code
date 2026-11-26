@@ -123,6 +123,17 @@ export interface IParadisExistingBranchChoice {
 }
 
 /**
+ * 作ったワークツリーに、エージェント（Claude Code・Codex）のフォルダの信頼を先に書いてよいか。fork から来た PR は、
+ * リポジトリに push できない第三者が書いたコードなので、設定（`paradis.workspaceSwitch.trustClaudeFolder`）が有効でも書かない
+ * （信頼済みにすると、その中の `.claude/settings.json` の hook などが確認なしで動く。起動したエージェントが自分で確かめる）。
+ * 同じリポジトリのブランチは、origin に push できる人が書いたもので、リポジトリ本体と同じ扱いにする。
+ * git を動かす側（`addWorktreeFromBranch`）も同じ判定をする。こちらは、その判定を持たない古い接続先のための網。
+ */
+export function paradisPreTrustsExistingBranch(configured: boolean, choice: Pick<IParadisExistingBranchChoice, 'pullRequestNumber'>): boolean {
+	return configured && choice.pullRequestNumber === undefined;
+}
+
+/**
  * fork から来た PR を開くローカルブランチの名前。fork の元のブランチ名（`main` のこともある）をそのまま使うと、手元の
  * 同じ名前のブランチとぶつかるので、番号を前に置いた別の名前にする。git の ref として通らない名前なら undefined。
  */
@@ -158,7 +169,10 @@ export interface IParadisAddBranchWorktreeRequest<TPath extends string = Paradis
 	 * `sync` は受けない）。ローカルに同じ名前があって早送りできなければ、ローカルをそのまま開く。
 	 */
 	readonly pullRequestNumber?: number;
-	/** 作った後に Claude Code と Codex のフォルダの信頼を済ませるか（{@link IParadisAddWorktreeRequest} と同じ）。 */
+	/**
+	 * 作った後に Claude Code と Codex のフォルダの信頼を済ませるか（{@link IParadisAddWorktreeRequest} と同じ）。
+	 * fork から来た PR のブランチ（`pullRequestNumber` のあるもの・前に取って印の付いたもの）には、true でも書かない。
+	 */
 	readonly trustClaudeFolder?: boolean;
 }
 

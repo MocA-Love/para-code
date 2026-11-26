@@ -99,8 +99,12 @@ class FakeHost implements IParadisDocRelocatorHost {
 			if (record.path !== path) {
 				return record;
 			}
-			const { missingSince: _missingSince, ...present } = record;
-			return missing ? { ...present, missingSince: this.time } : present;
+			// 台帳（ParadisDocLedger.setMissing）と同じ: 既に見つからない記録で数え始めが無ければ、数え始めだけを入れる
+			if (missing && record.missingSince !== undefined) {
+				return record.missingCountedFrom === undefined ? { ...record, missingCountedFrom: this.time } : record;
+			}
+			const { missingSince: _missingSince, missingCountedFrom: _missingCountedFrom, ...present } = record;
+			return missing ? { ...present, missingSince: this.time, missingCountedFrom: this.time } : present;
 		});
 	}
 
@@ -222,11 +226,11 @@ suite('ParadisAgentDocsRelocate', () => {
 	test('a document already missing is searched once; without a fingerprint or a full search nothing is decided; a file that shows up later is checked by itself', async () => {
 		const host = new FakeHost();
 		const fingerprint = (content: string) => ({ size: content.length, mtime: 10, hash: `hash of ${content}`, at: 900 });
-		host.doc('/repo/old.md', undefined, { missingSince: 800 });
-		host.doc('/repo/moved.md', undefined, { missingSince: 800, fingerprint: fingerprint('moved') });
-		host.doc('/repo/later.html', undefined, { missingSince: 800, fingerprint: fingerprint('later') });
-		host.doc('/repo/back.md', undefined, { missingSince: 800, fingerprint: fingerprint('back') });
-		host.doc('/elsewhere/gone.md', undefined, { missingSince: 800, fingerprint: fingerprint('moved') });
+		host.doc('/repo/old.md', undefined, { missingSince: 800, missingCountedFrom: 800 });
+		host.doc('/repo/moved.md', undefined, { missingSince: 800, missingCountedFrom: 800, fingerprint: fingerprint('moved') });
+		host.doc('/repo/later.html', undefined, { missingSince: 800, missingCountedFrom: 800, fingerprint: fingerprint('later') });
+		host.doc('/repo/back.md', undefined, { missingSince: 800, missingCountedFrom: 800, fingerprint: fingerprint('back') });
+		host.doc('/elsewhere/gone.md', undefined, { missingSince: 800, missingCountedFrom: 800, fingerprint: fingerprint('moved') });
 		host.files.set('/repo/sub/moved.md', { content: 'moved', mtime: 10 });
 		// 見張りが先に載せた、持ち主の無い記録は移動先にできる
 		host.doc('/repo/sub/moved.md', undefined, { registeredBy: 'watch', owner: undefined });
@@ -258,15 +262,38 @@ suite('ParadisAgentDocsRelocate', () => {
 	test('a document missing for seven days is removed after one more look; one that is back is kept', async () => {
 		const host = new FakeHost();
 		host.time = PARADIS_DOC_MISSING_RETENTION_MS + 10_000;
-		host.doc('/repo/long-gone.md', undefined, { missingSince: 5_000 });
-		host.doc('/tmp/outside-gone.html', undefined, { missingSince: 10_000 });
-		host.doc('/repo/recent.md', undefined, { missingSince: 10_001 });
-		host.doc('/repo/back.md', 'back again', { missingSince: 5_000 });
+		host.doc('/repo/long-gone.md', undefined, { missingSince: 5_000, missingCountedFrom: 5_000 });
+		host.doc('/tmp/outside-gone.html', undefined, { missingSince: 10_000, missingCountedFrom: 10_000 });
+		host.doc('/repo/recent.md', undefined, { missingSince: 10_001, missingCountedFrom: 10_001 });
+		// 見つからなくなったのは古いが、数え始めは新しい（前の版の間に見つからなくなった資料）
+		host.doc('/repo/counted-late.md', undefined, { missingSince: 5_000, missingCountedFrom: 10_001 });
+		host.doc('/repo/back.md', 'back again', { missingSince: 5_000, missingCountedFrom: 5_000 });
 		const relocator = new ParadisDocRelocator(host);
 		await relocator.sync();
 		assert.deepStrictEqual({ state: host.state(), log: host.log }, {
-			state: ['/repo/recent.md (missing)', '/repo/back.md'],
+			state: ['/repo/recent.md (missing)', '/repo/counted-late.md (missing)', '/repo/back.md'],
 			log: ['found /repo/back.md', 'remove /repo/long-gone.md /tmp/outside-gone.html'],
+		});
+	});
+
+	test('a document that went missing before the count was recorded is counted from the first look, kept across restarts, and removed seven days after that', async () => {
+		const host = new FakeHost();
+		// 前の版の間に、7 日より前から見つからない資料（数え始めの記録が無い）
+		host.time = 3 * PARADIS_DOC_MISSING_RETENTION_MS;
+		host.doc('/repo/old-record.md', undefined, { missingSince: 5_000 });
+		await new ParadisDocRelocator(host).sync();
+		const first = { state: host.state(), countedFrom: host.records[0].missingCountedFrom, since: host.records[0].missingSince };
+		// 開き直しても（追従を作り直しても）、数え始めは台帳に残っていて進まない
+		host.time += PARADIS_DOC_MISSING_RETENTION_MS - 1;
+		await new ParadisDocRelocator(host).sync();
+		const beforeDue = { state: host.state(), countedFrom: host.records[0]?.missingCountedFrom };
+		host.time += 1;
+		await new ParadisDocRelocator(host).sync();
+		assert.deepStrictEqual({ first, beforeDue, state: host.state(), log: host.log }, {
+			first: { state: ['/repo/old-record.md (missing)'], countedFrom: 3 * PARADIS_DOC_MISSING_RETENTION_MS, since: 5_000 },
+			beforeDue: { state: ['/repo/old-record.md (missing)'], countedFrom: 3 * PARADIS_DOC_MISSING_RETENTION_MS },
+			state: [],
+			log: ['missing /repo/old-record.md', 'remove /repo/old-record.md'],
 		});
 	});
 
@@ -274,8 +301,8 @@ suite('ParadisAgentDocsRelocate', () => {
 		const host = new FakeHost();
 		host.rootList = ['/repo', '/repo/worktrees/a'];
 		const fingerprint = { size: 5, mtime: 10, hash: 'hash of moved', at: 900 };
-		host.doc('/repo/moved.md', undefined, { missingSince: 800, fingerprint });
-		host.doc('/repo/tracked.md', undefined, { missingSince: 800, fingerprint: { ...fingerprint, hash: 'hash of track' } });
+		host.doc('/repo/moved.md', undefined, { missingSince: 800, missingCountedFrom: 800, fingerprint });
+		host.doc('/repo/tracked.md', undefined, { missingSince: 800, missingCountedFrom: 800, fingerprint: { ...fingerprint, hash: 'hash of track' } });
 		host.files.set('/repo/sub/moved.md', { content: 'moved', mtime: 10 });
 		// 入れ子のワークツリーにある、同じ中身の別のファイル
 		host.files.set('/repo/worktrees/a/tracked.md', { content: 'track', mtime: 10 });
@@ -300,8 +327,8 @@ suite('ParadisAgentDocsRelocate', () => {
 	test('a document on a removable volume that is not mounted is not removed', async () => {
 		const host = new FakeHost();
 		host.time = PARADIS_DOC_MISSING_RETENTION_MS + 10_000;
-		host.doc('/Volumes/SSD/work/a.md', undefined, { missingSince: 5_000 });
-		host.doc('/Volumes/Mounted/work/b.md', undefined, { missingSince: 5_000 });
+		host.doc('/Volumes/SSD/work/a.md', undefined, { missingSince: 5_000, missingCountedFrom: 5_000 });
+		host.doc('/Volumes/Mounted/work/b.md', undefined, { missingSince: 5_000, missingCountedFrom: 5_000 });
 		host.folders.add('/Volumes/Mounted');
 		await new ParadisDocRelocator(host).sync();
 		assert.deepStrictEqual({

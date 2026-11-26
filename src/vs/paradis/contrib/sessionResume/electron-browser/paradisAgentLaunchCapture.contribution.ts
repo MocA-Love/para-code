@@ -25,7 +25,7 @@ import { IRemoteAgentService } from '../../../../workbench/services/remote/commo
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisAgentPaneSession } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
-import { paradisAgentLaunchesToRecord } from '../common/paradisAgentLaunchProfile.js';
+import { paradisAgentLaunchesToRecord, paradisCreateAgentLaunchCaptureOrigins } from '../common/paradisAgentLaunchProfile.js';
 import { PARADIS_SESSION_RESUME_CHANNEL } from '../common/paradisSessionResume.js';
 
 class ParadisAgentLaunchCapture extends Disposable implements IWorkbenchContribution {
@@ -34,6 +34,10 @@ class ParadisAgentLaunchCapture extends Disposable implements IWorkbenchContribu
 
 	/** 知らせ済みの `ペイントークン\n会話 ID`。 */
 	private readonly sent = new Set<string>();
+	/** 会話を初めて見たときに実行中だったコマンド（前の起動の会話を、後から打った起動のものとして控えないため）。 */
+	private readonly origins = paradisCreateAgentLaunchCaptureOrigins();
+	private readonly commandIds = new WeakMap<object, string>();
+	private lastCommandId = 0;
 
 	constructor(
 		@IParadisAgentStatusSnapshotService snapshotService: IParadisAgentStatusSnapshotService,
@@ -51,16 +55,34 @@ class ParadisAgentLaunchCapture extends Disposable implements IWorkbenchContribu
 		}));
 	}
 
+	/**
+	 * 実行中のコマンドを見分ける ID。シェル統合はコマンドごとに「今のコマンド」のオブジェクトを作り直すので、
+	 * オブジェクトごとに番号を振る（時刻は使わない）。
+	 */
+	private commandIdOf(command: object | undefined): string | undefined {
+		if (command === undefined) {
+			return undefined;
+		}
+		let id = this.commandIds.get(command);
+		if (id === undefined) {
+			id = String(++this.lastCommandId);
+			this.commandIds.set(command, id);
+		}
+		return id;
+	}
+
 	private record(sessions: readonly IParadisAgentPaneSession[]): void {
 		const launches = paradisAgentLaunchesToRecord(sessions, this.sent, token => {
 			const instanceId = this.paneTokenService.getInstanceForToken(token);
 			const instance = instanceId === undefined ? undefined : this.terminalService.getInstanceFromId(instanceId);
+			const detection = instance?.capabilities.get(TerminalCapability.CommandDetection);
 			return instance === undefined ? undefined : {
-				commandLine: instance.capabilities.get(TerminalCapability.CommandDetection)?.executingCommand,
+				commandLine: detection?.executingCommand,
+				commandId: this.commandIdOf(detection?.currentCommand),
 				shellPid: instance.processId,
 				remote: instance.remoteAuthority !== undefined,
 			};
-		});
+		}, this.origins);
 		for (const { remote, ...request } of launches) {
 			const channel: IChannel | undefined = remote
 				? this.remoteAgentService.getConnection()?.getChannel(PARADIS_SESSION_RESUME_CHANNEL)

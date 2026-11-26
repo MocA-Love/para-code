@@ -362,6 +362,22 @@ export function paradisApprovalOptionKey(agent: 'claude' | 'codex', option: IPar
 	return option.shortcut === 'esc' ? '\u001b' : option.shortcut;
 }
 
+/**
+ * Claude Code の「許可」（1 回だけの許可。スマホの「許可」・PC のカードの「はい」）で送る番号。画面（か、許可の確認の
+ * 見出しより後の行）の選択肢を読み、`Yes` で始まり auto mode に入らない最初の行の番号を返す。
+ *
+ * 番号を決め打ちにしない理由（Claude Code 2.1.332 の実画面）: 計画の確定（Would you like to proceed?）の 1 番は、auto mode が
+ * 使える環境では `Yes, and use auto mode` で、`1` を送ると許可 1 回で auto mode に入る（2 番が `Yes, manually approve edits`）。
+ * 承認が保留された計画（200,000 字超）の 1 番は `Tell Claude what to change` で、`1` は確定にならない。
+ *
+ * 選択肢を読めない・当てはまる `Yes` の行が無いときは undefined（呼び出し側は打たずに、ターミナルで答えてもらう）。
+ * `Yes, and auto-accept edits` のような auto mode 以外の `Yes` は、今までどおり最初の行を選ぶ。
+ */
+export function paradisClaudeApprovalAllowKey(screen: string): string | undefined {
+	const option = paradisParseApprovalOptions(screen)?.find(candidate => /^yes\b/i.test(candidate.label) && !/\bauto mode\b/i.test(candidate.label));
+	return option !== undefined ? String(option.n) : undefined;
+}
+
 /** Codex の MCP のツールの許可のフォームの選択肢の名前（その後ろは説明）。長いものから照らす。 */
 const CODEX_FORM_OPTION_NAMES: readonly string[] = ['Allow for this session', 'Always allow', 'Allow', 'Deny', 'Cancel'];
 

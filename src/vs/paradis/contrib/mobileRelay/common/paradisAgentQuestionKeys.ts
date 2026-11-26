@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { paradisApprovalOptionKey, paradisCodexApprovalFormShown, paradisCodexApprovalFormShows, paradisParseApprovalOptionChoice, paradisParseApprovalOptions } from './paradisAgentApprovalOptions.js';
+import { paradisApprovalOptionKey, paradisClaudeApprovalAllowKey, paradisCodexApprovalFormShown, paradisCodexApprovalFormShows, paradisParseApprovalOptionChoice, paradisParseApprovalOptions } from './paradisAgentApprovalOptions.js';
 
 /**
  * モバイルからの AskUserQuestion 回答を、Claude Code のTUIへ流し込むキー列に変換する。
@@ -244,7 +244,7 @@ export function paradisAgentQuestionNeedsReviewSubmit(questions: readonly IParad
 /**
  * 許可の確認（Claude Code の「Do you want to proceed?」、Codex の承認プロンプト）への回答をキー列にする。
  *
- * Claude は `1`（Yes）で許可、Esc で拒否。`1` だけを送り、Enter は送らない: Claude Code 2.1.283 の許可画面は
+ * Claude は `Yes` の行の番号（ふつうは `1`。画面から決める）で許可、Esc で拒否。番号だけを送り、Enter は送らない: Claude Code 2.1.283 の許可画面は
  * 数字キーで即確定するので、後から送った Enter が次の入力に漏れ、次に出た同じ内容の許可を確定した
  * （フェーズ6の実機確認 NG-2）。以前はモバイルだけ `1` の後に Enter も送っていたが、デスクトップのチャット表示と
  * 揃えた（Orca の `mobile-native-chat-permission-send.ts` も `1` だけ）。`confirmWithEnter: true` は、
@@ -288,7 +288,14 @@ export function paradisAgentApprovalKeySequence(agent: 'claude' | 'codex', choic
 	if (choice === 'no') {
 		return ['\u001b'];
 	}
-	return options?.confirmWithEnter === true ? ['1', ENTER] : ['1'];
+	// 許可の番号は画面の選択肢から決める（{@link paradisClaudeApprovalAllowKey}。1 番が auto mode に入る行・自由入力の行のことがある）。
+	// 画面が渡されて読めなければ空（呼び出し側は断る）。画面が無いとき（画面を読めない中継が組み立てる仮の列）だけ `1` を置き、
+	// 送る直前に、画面を読める側がこの関数で決め直す
+	const allow = options?.screen !== undefined ? paradisClaudeApprovalAllowKey(options.screen) : '1';
+	if (allow === undefined) {
+		return [];
+	}
+	return options?.confirmWithEnter === true ? [allow, ENTER] : [allow];
 }
 
 /**

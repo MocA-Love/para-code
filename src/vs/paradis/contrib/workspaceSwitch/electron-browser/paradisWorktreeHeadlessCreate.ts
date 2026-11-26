@@ -59,7 +59,7 @@ import {
 	paradisSanitizeBranchName,
 	paradisShouldCreateDefaultTerminal,
 } from '../common/paradisWorktreeCreate.js';
-import { IParadisAddBranchWorktreeRequest, IParadisExistingBranchChoice } from '../common/paradisWorktreeExistingBranch.js';
+import { IParadisAddBranchWorktreeRequest, IParadisExistingBranchChoice, paradisPreTrustsExistingBranch } from '../common/paradisWorktreeExistingBranch.js';
 import { IParadisCopyWorktreeIncludesRequest, IParadisWorktreeIncludeResult, PARADIS_WORKTREE_INCLUDE_FILE, paradisParseWorktreeIncludeConfig, paradisSummarizeWorktreeIncludeFailure, paradisSummarizeWorktreeIncludeSkips } from '../common/paradisWorktreeInclude.js';
 import { paradisCompleteCreatedWorktree } from './paradisCreateWorktreeDialog.js';
 import { IParadisWorktreeImage, paradisAgentImageMode } from '../common/paradisWorktreeImageAttach.js';
@@ -633,6 +633,10 @@ export interface IParadisResumeAgentInWorkspaceRequest {
 	readonly sessionId: string;
 	readonly dangerouslyBypassPermissions?: boolean;
 	/**
+	 * 権限の確認を必ず残す（スマホからの再開。Q121）。会話を始めたときの控えに確認を省くフラグがあっても、確認ありで起動する。
+	 */
+	readonly keepPermissionChecks?: boolean;
+	/**
 	 * Codex の会話が見つかったホーム（既定のホームを含む）。この PC のターミナルに限り `CODEX_HOME`
 	 * として渡し、選んでいるアカウントより優先する（その会話はそのホームにしか無いことがあるため）。
 	 */
@@ -669,6 +673,7 @@ export async function paradisResumeAgentInWorkspace(accessor: ServicesAccessor, 
 		request.rootUri.scheme === Schemas.vscodeRemote,
 		{
 			agent: request.agent, sessionId: request.sessionId, mode: request.mode ?? 'resume', dangerouslyBypassPermissions: request.dangerouslyBypassPermissions, cli: request.cli,
+			...(request.keepPermissionChecks === true ? { keepPermissionChecks: true } : {}),
 			cwd: request.rootUri.scheme === Schemas.file ? request.rootUri.fsPath : request.rootUri.path,
 		});
 	const wsl = paradisResolveWslAgentHome(request.rootUri.fsPath);
@@ -871,7 +876,8 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 			...(existingBranch.sync !== undefined ? { sync: existingBranch.sync } : {}),
 			...(existingBranch.expectedLocalSha !== undefined ? { expectedLocalSha: existingBranch.expectedLocalSha } : {}),
 			...(existingBranch.pullRequestNumber !== undefined ? { pullRequestNumber: existingBranch.pullRequestNumber } : {}),
-			trustClaudeFolder,
+			// fork から来た PR（第三者のコード）には信頼を渡さない。起動したエージェントが自分の信頼の確認を出す
+			trustClaudeFolder: paradisPreTrustsExistingBranch(trustClaudeFolder, existingBranch),
 		};
 		await paradisCallNewerGitHost(gitHost.channel.call('addWorktreeFromBranch', [branchRequest]));
 	} else {

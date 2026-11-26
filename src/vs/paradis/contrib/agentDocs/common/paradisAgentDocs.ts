@@ -86,6 +86,12 @@ export interface IParadisDocRecord {
 	readonly firstSeen: number;
 	/** ファイルが見つからなくなったのを見た時刻（消された・移された）。見つかれば外す。 */
 	readonly missingSince?: number;
+	/**
+	 * 見つからないまま自動で一覧から外すまでの日数の、数え始め（`missingSince` がある間だけ持つ）。この項目を書く版が
+	 * 「見つからない」と初めて記録した時刻で、項目の無い古い記録（paracode-194 までに見つからなくなったもの）には、
+	 * 見直したときの時刻を入れる（更新した直後に、古い `missingSince` から数えてまとめて外さないため）。
+	 */
+	readonly missingCountedFrom?: number;
 	/** 最後に取った指紋。取れていない資料（大きすぎる・スペースの外・まだ取っていない）には無い。 */
 	readonly fingerprint?: IParadisDocFingerprint;
 }
@@ -541,6 +547,7 @@ function parseRecord(value: unknown): IParadisDocRecord | undefined {
 		registeredBy: record.registeredBy as ParadisDocRegisteredBy,
 		firstSeen: record.firstSeen,
 		...(isTime(record.missingSince) ? { missingSince: record.missingSince } : {}),
+		...(isTime(record.missingSince) && isTime(record.missingCountedFrom) ? { missingCountedFrom: record.missingCountedFrom } : {}),
 		...(fingerprint !== undefined ? { fingerprint } : {}),
 	};
 }

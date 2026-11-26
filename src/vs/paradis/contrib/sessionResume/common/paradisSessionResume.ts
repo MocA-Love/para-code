@@ -10,7 +10,7 @@ import { PARADIS_OPENCODE_COMMAND, paradisIsOpenCodeResumeCli } from '../../../.
 import { ParadisHostPath } from '../../../common/paradisHostPath.js';
 import { PARADIS_AGENT_DESCRIPTORS, paradisAgentDescriptor, type ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 import { paradisClaudeModelDisplayName } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
-import { IParadisAgentLaunchResume, paradisAgentLaunchBypassedPermissions, paradisAgentLaunchEnvPrefix, paradisAgentLaunchFlagArguments } from './paradisAgentLaunchProfile.js';
+import { IParadisAgentLaunchResume, paradisAgentLaunchBypassedPermissions, paradisAgentLaunchEnvPrefix, paradisAgentLaunchFlagArguments, paradisLaunchProfileWithoutPermissionWidening } from './paradisAgentLaunchProfile.js';
 import { PARADIS_CLAUDE_DEFAULT_PERMISSION_FLAG, PARADIS_CODEX_FULL_AUTO_FLAGS } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 
 export const PARADIS_SESSION_RESUME_CHANNEL = 'paradisSessionResume';
@@ -279,7 +279,18 @@ export const PARADIS_RESUME_SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,
  * ID はホワイトリスト（先頭に `-` を許さない）を通ったものだけを使い、シェルの特殊文字を含まない。
  * 通らなければ undefined。
  */
-export function paradisAgentResumeCommandLine(agent: ParadisResumeAgent, sessionId: string, mode: 'resume' | 'fork', options?: { readonly dangerouslyBypassPermissions?: boolean; readonly cli?: ParadisResumeCli; readonly claudeCodeMode?: IParadisClaudeCodeModeShell; readonly launch?: IParadisAgentLaunchResume }): string | undefined {
+export function paradisAgentResumeCommandLine(agent: ParadisResumeAgent, sessionId: string, mode: 'resume' | 'fork', options?: {
+	readonly dangerouslyBypassPermissions?: boolean;
+	readonly cli?: ParadisResumeCli;
+	readonly claudeCodeMode?: IParadisClaudeCodeModeShell;
+	readonly launch?: IParadisAgentLaunchResume;
+	/**
+	 * 権限の確認を必ず残す（スマホからの再開。Q121: 無人の PC で確認なしに動かさない）。`dangerouslyBypassPermissions` と、
+	 * 控えの権限を広げるもの（確認を省くフラグ・`--allow-dangerously-skip-permissions`・それにあたる環境変数）を使わない。
+	 * モデルなどの控えは付け直す。
+	 */
+	readonly keepPermissionChecks?: boolean;
+}): string | undefined {
 	if (!PARADIS_RESUME_SESSION_ID_PATTERN.test(sessionId)) {
 		return undefined;
 	}
@@ -300,8 +311,10 @@ export function paradisAgentResumeCommandLine(agent: ParadisResumeAgent, session
 	// 会話を始めた起動の控え（`paradisAgentLaunchProfile.ts`）。許可リストの環境変数をコマンドの前に、フラグを権限の指定の
 	// 後ろに付け直す。確認を省くフラグが元の起動に付いていた会話は、普通の再開・分岐でも確認を省く（文字列を足さず、
 	// 下の権限の指定に写す。確認ありの指定と並べない）
-	const launch = options?.launch;
-	const bypass = options?.dangerouslyBypassPermissions === true || paradisAgentLaunchBypassedPermissions(agent, launch);
+	// スマホからの再開は、控えに確認を省くものがあっても確認ありで起動する（{@link keepPermissionChecks}）
+	const keepChecks = options?.keepPermissionChecks === true;
+	const launch = keepChecks && options.launch !== undefined ? { ...options.launch, profile: paradisLaunchProfileWithoutPermissionWidening(options.launch.profile) } : options?.launch;
+	const bypass = !keepChecks && (options?.dangerouslyBypassPermissions === true || paradisAgentLaunchBypassedPermissions(agent, launch));
 	const envPrefix = paradisAgentLaunchEnvPrefix(agent, launch);
 	const launchFlags = paradisAgentLaunchFlagArguments(agent, launch);
 	if (agent === 'claude') {

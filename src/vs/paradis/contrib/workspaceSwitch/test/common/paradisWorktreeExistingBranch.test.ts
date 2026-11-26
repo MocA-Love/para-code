@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisExistingBranchState, paradisExistingBranchSyncAllowed, paradisParseBranchRefs, paradisParseWorktreeBranchUse, paradisPlanExistingBranch, paradisWorktreeBranchArgs } from '../../common/paradisWorktreeExistingBranch.js';
+import { IParadisExistingBranchState, paradisExistingBranchSyncAllowed, paradisParseBranchRefs, paradisParseWorktreeBranchUse, paradisPlanExistingBranch, paradisPreTrustsExistingBranch, paradisWorktreeBranchArgs } from '../../common/paradisWorktreeExistingBranch.js';
 
 suite('paradisWorktreeExistingBranch', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -67,6 +67,15 @@ suite('paradisWorktreeExistingBranch', () => {
 			['--no-track', '-b', 'b', '/w', 'main'],
 			['--track', '-c', 'b', 'refs/remotes/origin/b'],
 		]);
+	});
+
+	test('pre-trusts a worktree for the agents only when the setting is on and the branch is not a pull request from a fork', () => {
+		assert.deepStrictEqual([
+			paradisPreTrustsExistingBranch(true, {}),
+			paradisPreTrustsExistingBranch(true, { pullRequestNumber: 7 }),
+			paradisPreTrustsExistingBranch(false, {}),
+			paradisPreTrustsExistingBranch(false, { pullRequestNumber: 7 }),
+		], [true, false, false, false]);
 	});
 
 	test('parses refs and worktree records', () => {

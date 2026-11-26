@@ -378,7 +378,7 @@ const ROWS: readonly IParadisSettingRowSpec[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.settings.trustClaudeFolder', "Para が作ったスペースでは、エージェントのフォルダの信頼を済ませておく"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.settings.trustClaudeFolderDesc', "Claude Code の ~/.claude.json と Codex の config.toml に、このスペースを信頼済みとして書きます。スペースを削除すると取り消します。"),
+		description: localize('paradis.settings.trustClaudeFolderDesc', "Claude Code の ~/.claude.json と Codex の config.toml に、このスペースを信頼済みとして書きます。スペースを削除すると取り消します。fork から来たプルリクエストを開いたスペースには書きません。"),
 		keywords: 'claude codex trust folder worktree space agent',
 	},
 	{

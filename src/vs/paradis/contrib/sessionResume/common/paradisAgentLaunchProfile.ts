@@ -314,9 +314,17 @@ export function paradisMergeAgentLaunchProfile(existing: IParadisAgentLaunchProf
 	if (mode === 'new') {
 		return captured;
 	}
+	return paradisLaunchProfileWithoutPermissionWidening(captured);
+}
+
+/**
+ * 控えから、権限を広げるもの（確認を省くフラグ、`--allow-dangerously-skip-permissions`、
+ * `CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS`）を外したもの。モデルなどの指定は残す。
+ */
+export function paradisLaunchProfileWithoutPermissionWidening(profile: IParadisAgentLaunchProfile): IParadisAgentLaunchProfile {
 	return {
-		env: Object.fromEntries(Object.entries(captured.env).filter(([name]) => !PERMISSION_WIDENING_ENV.has(name))),
-		flags: Object.fromEntries(Object.entries(captured.flags).filter(([name]) => !PERMISSION_WIDENING_FLAGS.has(name))),
+		env: Object.fromEntries(Object.entries(profile.env).filter(([name]) => !PERMISSION_WIDENING_ENV.has(name))),
+		flags: Object.fromEntries(Object.entries(profile.flags).filter(([name]) => !PERMISSION_WIDENING_FLAGS.has(name))),
 	};
 }
 
@@ -447,6 +455,11 @@ export function paradisPruneAgentLaunchLedger(entries: Readonly<Record<string, I
 export interface IParadisAgentLaunchCaptureTerminal {
 	/** シェル統合が報告した実行中のコマンド行。 */
 	readonly commandLine: string | undefined;
+	/**
+	 * 実行中のコマンドを見分ける ID（シェル統合がコマンドごとに振るもの）。会話が、今のコマンドが始まる前からそのペインに
+	 * 見えていたかの判定に使う。分からなければ undefined。
+	 */
+	readonly commandId?: string;
 	/** シェルの pid（ターミナルのあるマシンの上のもの）。 */
 	readonly shellPid: number | undefined;
 	/** 接続先（SSH 先など）のターミナル。 */
@@ -465,14 +478,40 @@ export interface IParadisAgentLaunchToRecord {
 }
 
 /**
+ * ペインの会話を初めて見たときの様子（{@link paradisAgentLaunchesToRecord} が持ち回る）。
+ *
+ * 会話は、コマンドの実行より後にそのペインへ現れたものだけが「その起動が作った会話」。Codex の hook には SessionEnd が無く
+ * （Claude Code も異常終了では届かない）、CLI を終えた後もペインに前の会話が残る。そのまま同じペインで
+ * `codex --yolo` を打つと、新しい会話の SessionStart が届くまでの間、「前の会話」と「確認を省く起動のコマンド行」が並ぶ。
+ * これを組にして控えると、確認ありで始めた会話に確認の省略が付く。時計は比べない（hook を受けるマシンとウィンドウで
+ * 別のことがある）。ウィンドウの中での順序だけで決める。
+ */
+export interface IParadisAgentLaunchCaptureOrigins {
+	/** 最初のスナップショットを見終えたか。その時点で既にあった会話は、どのコマンドの間に現れたか分からない。 */
+	primed: boolean;
+	/** `ペイントークン\n会話 ID` → 初めて見たときに実行中だったコマンドの ID（分からなければ undefined）と、最初から居たか。 */
+	readonly sessions: Map<string, { readonly commandId: string | undefined; readonly preexisting: boolean }>;
+}
+
+export function paradisCreateAgentLaunchCaptureOrigins(): IParadisAgentLaunchCaptureOrigins {
+	return { primed: false, sessions: new Map() };
+}
+
+/**
  * ペインの会話のうち、まだ知らせていないものを選ぶ（純粋な判定。テストから直接呼ぶ）。
  * 知らせるのは、実行中のコマンド行がその種類のエージェントの対話の起動のときだけ。コマンド行がまだ届いていない
  * ペインは次のスナップショットで見直すので、`sent` に入れない。`sent` からは、消えたペインの分を外す。
+ *
+ * `origins` を渡すと、会話を初めて見たときのコマンドと今のコマンドを比べる（{@link IParadisAgentLaunchCaptureOrigins}）:
+ * - 別のコマンドの間に現れた会話（前の起動の会話がペインに残っているだけ）は、知らせない。今の起動の会話が届けば、それを知らせる
+ * - 最初のスナップショットに既にあった会話と、初めて見たときにコマンドが分からなかった会話は、今の起動が作ったと示せない。
+ *   `startSource` を外して知らせる（前からある会話として扱われ、権限を広げるものは控えられない）
  */
 export function paradisAgentLaunchesToRecord(
 	sessions: readonly IParadisAgentPaneSession[],
 	sent: Set<string>,
 	terminalFor: (token: string) => IParadisAgentLaunchCaptureTerminal | undefined,
+	origins?: IParadisAgentLaunchCaptureOrigins,
 ): IParadisAgentLaunchToRecord[] {
 	const live = new Set<string>();
 	const result: IParadisAgentLaunchToRecord[] = [];
@@ -487,14 +526,30 @@ export function paradisAgentLaunchesToRecord(
 			continue;
 		}
 		const terminal = terminalFor(session.token);
+		let origin = origins?.sessions.get(key);
+		if (origins !== undefined && origin === undefined) {
+			origin = { commandId: terminal?.commandId, preexisting: !origins.primed };
+			origins.sessions.set(key, origin);
+		}
 		if (terminal?.commandLine === undefined || paradisAgentLaunchFromCommandLine(terminal.commandLine)?.agent !== agent) {
 			continue;
 		}
+		if (origin !== undefined && origin.commandId !== undefined && terminal.commandId !== undefined && origin.commandId !== terminal.commandId) {
+			// 前のコマンドの間に現れた会話。今のコマンド行はこの会話の起動ではない
+			continue;
+		}
+		const createdByThisCommand = origin === undefined || (!origin.preexisting && origin.commandId !== undefined && origin.commandId === terminal.commandId);
 		sent.add(key);
-		result.push({ agent, sessionId: session.sessionId, commandLine: terminal.commandLine, ...(terminal.shellPid !== undefined ? { shellPid: terminal.shellPid } : {}), ...(session.startSource !== undefined ? { startSource: session.startSource } : {}), remote: terminal.remote });
+		result.push({ agent, sessionId: session.sessionId, commandLine: terminal.commandLine, ...(terminal.shellPid !== undefined ? { shellPid: terminal.shellPid } : {}), ...(session.startSource !== undefined && createdByThisCommand ? { startSource: session.startSource } : {}), remote: terminal.remote });
 	}
 	for (const key of sent) {
 		if (!live.has(key)) { sent.delete(key); }
+	}
+	if (origins !== undefined) {
+		for (const key of origins.sessions.keys()) {
+			if (!live.has(key)) { origins.sessions.delete(key); }
+		}
+		origins.primed = true;
 	}
 	return result;
 }

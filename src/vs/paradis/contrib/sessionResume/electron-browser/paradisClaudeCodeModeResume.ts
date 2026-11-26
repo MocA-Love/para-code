@@ -27,6 +27,8 @@ export interface IParadisTerminalResumeCommandRequest {
 	readonly sessionId: string;
 	readonly mode: 'resume' | 'fork';
 	readonly dangerouslyBypassPermissions?: boolean;
+	/** 権限の確認を必ず残す（スマホからの再開。{@link paradisAgentResumeCommandLine} の `keepPermissionChecks`）。 */
+	readonly keepPermissionChecks?: boolean;
 	readonly cli?: ParadisResumeCli;
 	/** 会話を始めたフォルダ（ターミナルのあるマシンの上のパス）。記録を探す手がかりにする。 */
 	readonly cwd?: string;
@@ -53,7 +55,7 @@ export interface IParadisTerminalResumeCommandServices {
  * 待ちが増えない（待っている間に利用者が打った文字の後ろへ、コマンドと Enter をつなげないため）。
  */
 export function paradisPrepareAgentResumeCommand(services: IParadisTerminalResumeCommandServices, remote: boolean, request: IParadisTerminalResumeCommandRequest): (instance: ITerminalInstance) => Promise<string | undefined> {
-	const options = { dangerouslyBypassPermissions: request.dangerouslyBypassPermissions, cli: request.cli };
+	const options = { dangerouslyBypassPermissions: request.dangerouslyBypassPermissions, cli: request.cli, ...(request.keepPermissionChecks === true ? { keepPermissionChecks: true } : {}) };
 	const plain = paradisAgentResumeCommandLine(request.agent, request.sessionId, request.mode, options);
 	const agent = request.agent;
 	const channel = plain === undefined || !paradisIsLaunchAgent(agent) ? undefined : paradisResumeChannel(services, remote);

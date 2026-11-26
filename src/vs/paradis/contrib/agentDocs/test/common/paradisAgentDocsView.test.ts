@@ -37,7 +37,7 @@ suite('ParadisAgentDocsView', () => {
 
 	test('the ledger keeps documents the user opened and the missing mark across a reload', () => {
 		const records: IParadisDocRecord[] = [
-			{ hostId: '', path: '/repo/old.md', kind: 'md', previousOwners: [], writes: [], registeredBy: 'user_opened', firstSeen: 5, missingSince: 9, fingerprint: { size: 12, mtime: 3, hash: 'ab'.repeat(32), at: 4 } },
+			{ hostId: '', path: '/repo/old.md', kind: 'md', previousOwners: [], writes: [], registeredBy: 'user_opened', firstSeen: 5, missingSince: 9, missingCountedFrom: 11, fingerprint: { size: 12, mtime: 3, hash: 'ab'.repeat(32), at: 4 } },
 			{ hostId: '', path: '/repo/given.html', kind: 'html', owner: { agent: 'claude', session: 's1', via: 'user', since: 7 }, previousOwners: [], writes: [], registeredBy: 'user_opened', firstSeen: 6 },
 		];
 		assert.deepStrictEqual(paradisParseDocLedger(paradisSerializeDocLedger(records)), records);

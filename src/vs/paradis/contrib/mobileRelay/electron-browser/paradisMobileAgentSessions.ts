@@ -425,8 +425,10 @@ async function resumeFromMobile(
 			stateKey: space.stateKey,
 			agent: session.agent,
 			sessionId: session.id,
-			// スマホからは権限の省略を決して付けない（PC の既定の権限モードで起動する。Q121）。
+			// スマホからは権限の省略を決して付けない（確認ありで起動する。Q121）。会話を始めたときの控え
+			// （`paradisAgentLaunchProfile.ts`）に確認を省くフラグがあっても付け直さない。モデルなどの控えは付け直す
 			dangerouslyBypassPermissions: false,
+			keepPermissionChecks: true,
 			preserveFocus: true,
 			...(session.agent === 'opencode' && session.cli !== undefined ? { cli: session.cli } : {}),
 			...(codexHome !== undefined ? { codexHome } : {}),

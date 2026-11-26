@@ -14,6 +14,7 @@
 //    決めるのは中身のハッシュの一致だけ（大きさ・ファイルの変化の知らせは候補を絞るだけで、名前は見ない）。
 //    一致が 2 つ以上・探しきれなかった・指紋が無い資料は決めない
 //  - 後片付け: 見つからないまま {@link PARADIS_DOC_MISSING_RETENTION_MS} が過ぎた資料は、もう一度確かめてから一覧から外す
+//    （数えるのは `missingCountedFrom` から。この項目の無い古い記録は、初めて見直したときから数える）
 
 import { IParadisDocFingerprint, PARADIS_DOC_BACKGROUND_WATCH_EXCLUDES, paradisDocKey, paradisDocKind, paradisIsInsideFolder, paradisIsWatchableDocPath } from './paradisAgentDocs.js';
 import { IParadisDocViewRecord } from './paradisAgentDocsView.js';
@@ -166,6 +167,8 @@ export class ParadisDocRelocator {
 	private readonly _scanned = new Set<string>();
 	/** 後片付けで確かめた時刻（キー → 時刻）。 */
 	private readonly _pruneChecked = new Map<string, number>();
+	/** 数え始め（`missingCountedFrom`）を台帳に頼んだ資料（数え始めを書かない古い台帳へ、見直しのたびに頼み直さない）。 */
+	private readonly _countRequested = new Set<string>();
 	/** 探索に失敗したスペース（フォルダ → 失敗した時刻）。 */
 	private readonly _searchFailed = new Map<string, number>();
 	private _pendingAdded = new Set<string>();
@@ -253,6 +256,7 @@ export class ParadisDocRelocator {
 			if (record.missingSince === undefined) {
 				this._scanned.delete(key);
 				this._pruneChecked.delete(key);
+				this._countRequested.delete(key);
 			}
 		}
 		for (const tracked of [this._fingerprintTried, this._pruneChecked]) {
@@ -262,10 +266,11 @@ export class ParadisDocRelocator {
 				}
 			}
 		}
-		for (const key of [...this._dirty, ...this._scanned]) {
+		for (const key of [...this._dirty, ...this._scanned, ...this._countRequested]) {
 			if (!known.has(key)) {
 				this._dirty.delete(key);
 				this._scanned.delete(key);
+				this._countRequested.delete(key);
 			}
 		}
 
@@ -444,7 +449,14 @@ export class ParadisDocRelocator {
 	private async _prune(missing: readonly IParadisDocViewRecord[]): Promise<void> {
 		const host = this._host;
 		const now = host.now();
-		const due = missing.filter(record => now - record.missingSince! >= PARADIS_DOC_MISSING_RETENTION_MS && now - (this._pruneChecked.get(this._key(record)) ?? Number.NEGATIVE_INFINITY) >= PRUNE_RECHECK_MS);
+		// 数え始めの無い記録（数え始めを書かない版が「見つからない」と記録したもの）は、ここから数える。台帳に書いてもらう
+		// （メモリに持つと、開き直すたびに数え直しになる）。古い `missingSince` からは数えない: 更新した直後の最初の見直しで、
+		// 前の版の間に 7 日を過ぎていた資料がまとめて外れるため
+		await forEachLimited(missing.filter(record => record.missingCountedFrom === undefined && !this._countRequested.has(this._key(record))), async record => {
+			this._countRequested.add(this._key(record));
+			await host.setMissing(record.path, true);
+		});
+		const due = missing.filter(record => record.missingCountedFrom !== undefined && now - record.missingCountedFrom >= PARADIS_DOC_MISSING_RETENTION_MS && now - (this._pruneChecked.get(this._key(record)) ?? Number.NEGATIVE_INFINITY) >= PRUNE_RECHECK_MS);
 		const removals: string[] = [];
 		await forEachLimited(due.slice(0, PRUNES_PER_PASS), async record => {
 			this._pruneChecked.set(this._key(record), now);

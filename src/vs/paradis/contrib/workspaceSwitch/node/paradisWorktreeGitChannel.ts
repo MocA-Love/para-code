@@ -125,6 +125,12 @@ function paradisPrStatusCacheKey(worktreePath: string, branch: string): string {
 const PARADIS_GITHUB_STATUS_CACHE_MAX_ENTRIES = 1000;
 
 /**
+ * fork から来た PR を取ったローカルブランチに付ける git の設定の名前（`branch.<ブランチ>.<これ>` = PR の番号）。
+ * 付いているブランチのワークツリーには、エージェントのフォルダの信頼を書かない。
+ */
+const PARADIS_FORK_PULL_REQUEST_BRANCH_KEY = 'paradisForkPullRequest';
+
+/**
  * git 実行の上限時間。WSL へ振り分けるようになって初めて必要になった。停止中のディストロへ
  * 最初の1本を打つと VM の起動を待つことになり、`/etc/wsl.conf` の boot.command 次第では
  * そのまま返ってこない。呼び出し側（Workspaces ビュー）は単一の in-flight ガードで守られて
@@ -1076,9 +1082,43 @@ export class ParadisWorktreeGitService {
 		}
 		const checkoutWorkers = await this.checkoutWorkersArgs(request.repoPath);
 		await this.exec(['-C', paradisWslPathArg(request.repoPath), ...checkoutWorkers, 'worktree', 'add', '--no-track', '-b', request.newBranch, paradisWslPathArg(request.worktreePath), request.baseRef]);
-		if (request.trustClaudeFolder === true) {
+		// fork から来た PR のブランチを元に切ったブランチも、他人のコードを含む。印を引き継ぎ、信頼は書かない
+		const foreign = await this.forkPullRequestOfBranch(request.repoPath, request.baseRef.replace(/^refs\/heads\//, ''));
+		if (foreign !== undefined && /^\d+$/.test(foreign)) {
+			await this.markForkPullRequestBranch(request.repoPath, request.newBranch, foreign);
+		}
+		if (request.trustClaudeFolder === true && foreign === undefined) {
 			await this.grantClaudeTrust(request.worktreePath);
 			await this.grantCodexTrust(request.worktreePath);
+		}
+	}
+
+	/**
+	 * fork から来た PR を取ったローカルブランチに付ける印（`branch.<名前>.paradisforkpullrequest = <番号>`）を読む。
+	 * 印のあるブランチ（と、それを元に切ったブランチ）のワークツリーには、エージェントのフォルダの信頼を書かない: 中身は
+	 * リポジトリに push できない第三者が書いたもので、信頼済みにすると、その中の `.claude/settings.json` の hook などが
+	 * 確認なしで動く。印はブランチの設定なので、ブランチを消せば一緒に消える。
+	 * 読めないとき（`git config --get` の「未設定」= 終了コード 1 以外の失敗）は、印がある側に倒す（信頼を書かない）。
+	 * @returns PR の番号の文字列（読めなかったときは `unknown`）。印が無ければ undefined
+	 */
+	private async forkPullRequestOfBranch(repoPath: string, branch: string): Promise<string | undefined> {
+		if (branch.length === 0 || branch.startsWith('-')) {
+			return undefined;
+		}
+		try {
+			const value = (await this.exec(['-C', paradisWslPathArg(repoPath), 'config', '--get', `branch.${branch}.${PARADIS_FORK_PULL_REQUEST_BRANCH_KEY}`], undefined, { quiet: true })).trim();
+			return value.length > 0 ? value : undefined;
+		} catch (error) {
+			return error instanceof ParadisGitExecError && error.exitCode === 1 ? undefined : 'unknown';
+		}
+	}
+
+	/** {@link forkPullRequestOfBranch} の印を付ける。失敗しても作成は止めない（この作成では、印に頼らず信頼を書かない）。 */
+	private async markForkPullRequestBranch(repoPath: string, branch: string, pullRequest: string): Promise<void> {
+		try {
+			await this.exec(['-C', paradisWslPathArg(repoPath), 'config', `branch.${branch}.${PARADIS_FORK_PULL_REQUEST_BRANCH_KEY}`, pullRequest], undefined, { quiet: true });
+		} catch (error) {
+			this.logService.warn('[ParadisWorktreeGit] could not mark the branch as fetched from a fork pull request', String(error));
 		}
 	}
 
@@ -1195,6 +1235,10 @@ export class ParadisWorktreeGitService {
 			}
 		}
 		const state = await this.inspectExistingBranch(request.repoPath, request.branch);
+		if (pullRequestNumber !== undefined && state.localSha !== undefined) {
+			// 後で PR のカードなしに「既存のブランチ」やベースブランチとして選んでも、fork のコードだと分かるようにする
+			await this.markForkPullRequestBranch(request.repoPath, request.branch, String(pullRequestNumber));
+		}
 		const source = request.source === 'auto' ? (state.localSha !== undefined ? 'local' : 'origin') : request.source;
 		const plan = paradisPlanExistingBranch(source, state);
 		if (plan.kind === 'missing' && pullRequestNumber !== undefined) {
@@ -1234,7 +1278,11 @@ export class ParadisWorktreeGitService {
 			}
 			await this.exec(['-C', repo, ...checkoutWorkers, 'worktree', 'add', ...paradisWorktreeBranchArgs('existing', request.branch, worktreePath, undefined)]);
 		}
-		if (request.trustClaudeFolder === true) {
+		// fork から来た PR のブランチ（今回取ったもの・前に取って印の付いたもの）には、信頼を書かない。起動したエージェントが
+		// 自分の信頼の確認を出す（指示は起動コマンドの引数で渡すので、確認に Enter が打たれることは無い）。
+		// 同じリポジトリのブランチは、origin に push できる人が書いたもので、リポジトリ本体と同じ扱い（信頼を書く）
+		const foreign = pullRequestNumber !== undefined || await this.forkPullRequestOfBranch(request.repoPath, request.branch) !== undefined;
+		if (request.trustClaudeFolder === true && !foreign) {
 			await this.grantClaudeTrust(request.worktreePath);
 			await this.grantCodexTrust(request.worktreePath);
 		}

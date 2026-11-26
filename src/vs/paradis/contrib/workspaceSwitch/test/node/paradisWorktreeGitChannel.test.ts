@@ -99,11 +99,13 @@ suite('ParadisWorktreeGitService', () => {
 		});
 
 		// 偽の git は `config --get` にも成功で答える（＝利用者が checkout.workers を決めている）ので、-c は足さない
-		assert.deepStrictEqual(calls.map(call => call.command), ['git', 'git', 'git']);
+		// 最後は、ベースブランチが fork から来た PR のものか（エージェントの信頼を先に書いてよいか）の確かめ
+		assert.deepStrictEqual(calls.map(call => call.command), ['git', 'git', 'git', 'git']);
 		assert.deepStrictEqual(calls.map(call => call.args), [
 			['-C', '/repo', 'worktree', 'prune'],
 			['-C', '/repo', 'config', '--get', 'checkout.workers'],
 			['-C', '/repo', 'worktree', 'add', '--no-track', '-b', 'feature-lfs', '/repo-worktrees/feature-lfs', 'main'],
+			['-C', '/repo', 'config', '--get', 'branch.main.paradisForkPullRequest'],
 		]);
 		assert.strictEqual(calls[0].env?.PATH, '/opt/homebrew/bin:/usr/bin');
 		assert.strictEqual(calls[2].env?.PATH, '/opt/homebrew/bin:/usr/bin');
@@ -158,7 +160,7 @@ suite('ParadisWorktreeGitService', () => {
 
 		assert.deepStrictEqual({ resolverCalls, paths: calls.map(call => call.env?.PATH) }, {
 			resolverCalls: 1,
-			paths: [process.env.PATH, process.env.PATH, process.env.PATH],
+			paths: [process.env.PATH, process.env.PATH, process.env.PATH, process.env.PATH],
 		});
 	});
 

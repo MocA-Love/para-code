@@ -14,7 +14,7 @@
 
 import { localize } from '../../../../nls.js';
 import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeySequence, ParadisAgentQuestionAnswer } from '../../mobileRelay/common/paradisAgentQuestionKeys.js';
-import { IParadisAgentApprovalOption, paradisApprovalOptionLabelsMatch, paradisApprovalScreenPiece, paradisCodexApprovalFormShown, paradisParseApprovalOptionChoice, paradisParseApprovalOptions } from '../../mobileRelay/common/paradisAgentApprovalOptions.js';
+import { IParadisAgentApprovalOption, paradisApprovalOptionLabelsMatch, paradisApprovalScreenPiece, paradisClaudeApprovalAllowKey, paradisCodexApprovalFormShown, paradisParseApprovalOptionChoice, paradisParseApprovalOptions } from '../../mobileRelay/common/paradisAgentApprovalOptions.js';
 import { paradisSendAgentMessageToTui } from '../../mobileRelay/common/paradisAgentMessageSender.js';
 import { paradisBuildPresetInsertText } from '../../terminalPresets/common/paradisTerminalPresets.js';
 import { IParadisAgentChatSource, IParadisAgentInteraction, paradisAgentQuestionHasPreview, paradisIsCodexDaemonApprovalInteraction } from '../common/paradisAgentChat.js';
@@ -321,14 +321,21 @@ export class ParadisAgentChatInput {
 		// 番号の選択肢で答えるときは、その番号が選んだときと同じ文言で画面に出ていることも確かめる
 		const optionShown = (screen: string) => optionNumber === undefined || expectOptionLabel === undefined
 			|| paradisApprovalOptionAt(screen, optionNumber, expectOptionLabel);
-		const ready = (screen: string) => paradisScreenShowsPermissionPrompt(screen) && (piece === undefined || paradisPromptRegionShows(screen, piece)) && optionShown(screen);
+		// Claude Code の「はい」の番号は、画面の選択肢から決める（1 番が auto mode に入る行・自由入力の行のことがある）。
+		// 許可にあたる `Yes` の行を読めるまで待ち、読めなければ打たない
+		const claudeAllow = agent === 'claude' && choiceId === 'yes';
+		const allowShown = (screen: string) => !claudeAllow || paradisClaudeApprovalAllowKey(paradisPermissionPromptParts(screen)?.options ?? '') !== undefined;
+		const ready = (screen: string) => paradisScreenShowsPermissionPrompt(screen) && (piece === undefined || paradisPromptRegionShows(screen, piece)) && optionShown(screen) && allowShown(screen);
 		// 各キーの前にも確かめる。`1` で確定して確認が消えたら、残りの Enter は送らずに終える（次に出た画面を
 		// 確定したり、入力欄の書きかけを送信したりしないように）。
 		// Claude は `1` だけで確定する（Enter は送らない。後から届いた Enter が次の許可を確定するため）。
 		// Codex の拒否のキー・MCP のツールの許可のフォームのキーは、画面の選択肢の表記から選ぶ（版・画面で違う）。
 		// 最初の打鍵の直前に、確かめた画面でもう一度決める（待っている間に画面が変わることがある）。
-		const keysFor = (screen: string) => paradisAgentApprovalKeySequence(agent, choiceId as 'yes' | 'no' | `opt:${number}`, { screen, confirmWithEnter: false });
-		const error = await this.sendInteractionKeys(instanceId, token, terminal, 'approval', interactionId, keysFor(terminal.readScreen()), ready,
+		// Claude Code の「はい」は、許可の確認の見出しより後の行だけから読む（上に残った本文の番号付きの箇条書きを拾わない）
+		const keysFor = (screen: string) => paradisAgentApprovalKeySequence(agent, choiceId as 'yes' | 'no' | `opt:${number}`, { screen: claudeAllow ? paradisPermissionPromptParts(screen)?.options ?? '' : screen, confirmWithEnter: false });
+		// 確認がまだ描かれていないときは仮の 1 打鍵を置き、描かれるのを待つ（最初の打鍵の直前に keysFor で決め直し、読めなければ送らない）
+		const initialKeys = keysFor(terminal.readScreen());
+		const error = await this.sendInteractionKeys(instanceId, token, terminal, 'approval', interactionId, claudeAllow && initialKeys.length === 0 ? ['1'] : initialKeys, ready,
 			(screen, keysSent) => ready(screen) ? 'continue' : keysSent > 0 ? 'done' : 'stop', keysFor);
 		if (error === undefined) {
 			this.answeredApprovals.add(`${token}\0${interactionId}`);

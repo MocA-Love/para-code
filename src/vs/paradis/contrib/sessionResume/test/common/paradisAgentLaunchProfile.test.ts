@@ -17,7 +17,9 @@ import {
 	paradisAgentLaunchFromCommandLine,
 	paradisAgentLaunchRecordMode,
 	paradisAgentLaunchesToRecord,
+	paradisCreateAgentLaunchCaptureOrigins,
 	paradisLaunchAllowList,
+	paradisLaunchProfileWithoutPermissionWidening,
 	paradisMergeAgentLaunchProfile,
 	paradisPruneAgentLaunchLedger,
 	paradisSanitizeAgentLaunchProfile,
@@ -288,6 +290,65 @@ suite('ParadisAgentLaunchProfile', () => {
 			third: [{ agent: 'claude', sessionId: 's2', commandLine: 'claude --model opus', shellPid: 10, startSource: 'clear', remote: false }],
 			fourth: [],
 			sent: ['b\nt1'],
+		});
+	});
+
+	test('does not pair a conversation left in the pane with a launch typed after it, and trusts the start source only for a conversation that appeared during the running command', () => {
+		const session = (token: string, sessionId: string, startSource?: IParadisAgentPaneSession['startSource']): IParadisAgentPaneSession => ({ token, agent: 'codex', sessionId, at: 1, ...(startSource !== undefined ? { startSource } : {}) });
+		const terminals = new Map<string, { commandLine: string | undefined; commandId?: string; shellPid: number | undefined; remote: boolean }>([
+			// 窓を開き直す前から動いていたペイン
+			['old', { commandLine: 'codex --yolo', commandId: 'c0', shellPid: undefined, remote: false }],
+		]);
+		const sent = new Set<string>();
+		const origins = paradisCreateAgentLaunchCaptureOrigins();
+		const step = (sessions: IParadisAgentPaneSession[]) => paradisAgentLaunchesToRecord(sessions, sent, token => terminals.get(token), origins).map(launch => `${launch.sessionId}:${launch.commandLine}:${launch.startSource ?? '-'}`);
+		// 最初のスナップショットに既にあった会話は、どのコマンドが作ったか分からない（前からある会話として知らせる）
+		const preexisting = step([session('old', 'p1', 'startup')]);
+		// エイリアス（読めない名前）で確認ありの Codex を始める。控える起動ではない
+		terminals.set('a', { commandLine: 'cx', commandId: 'c1', shellPid: undefined, remote: false });
+		const alias = step([session('old', 'p1', 'startup'), session('a', 'x1', 'startup')]);
+		// Codex を終えても SessionEnd は届かず、会話 x1 はペインに残る。同じペインで確認を省く起動を打つ
+		terminals.set('a', { commandLine: 'codex --yolo', commandId: 'c2', shellPid: undefined, remote: false });
+		const stale = step([session('old', 'p1', 'startup'), session('a', 'x1', 'startup')]);
+		// その起動が作った会話が届く
+		const fresh = step([session('old', 'p1', 'startup'), session('a', 'y1', 'startup')]);
+		// コマンドの見分けが付かないターミナル（シェル統合がまだ無い）で初めて見た会話は、作った起動を示せない
+		terminals.set('b', { commandLine: undefined, shellPid: undefined, remote: false });
+		const unknownFirst = step([session('b', 'z1', 'startup')]);
+		terminals.set('b', { commandLine: 'codex --yolo', commandId: 'c3', shellPid: undefined, remote: false });
+		const unknownLater = step([session('b', 'z1', 'startup')]);
+		assert.deepStrictEqual({ preexisting, alias, stale, fresh, unknownFirst, unknownLater, sent: [...sent], origins: [...origins.sessions.keys()] }, {
+			preexisting: ['p1:codex --yolo:-'],
+			alias: [],
+			stale: [],
+			fresh: ['y1:codex --yolo:startup'],
+			unknownFirst: [],
+			unknownLater: ['z1:codex --yolo:-'],
+			sent: ['b\nz1'],
+			origins: ['b\nz1'],
+		});
+	});
+
+	test('a resume from the phone keeps the permission checks whatever the conversation was started with, and still restores the model', () => {
+		const id = '11111111-2222-4333-8444-555555555555';
+		const claudeProfile = { env: { CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS: '1', CLAUDE_CODE_EFFORT_LEVEL: 'high' }, flags: { '--dangerously-skip-permissions': true as const, '--allow-dangerously-skip-permissions': true as const, '--model': 'opus' } };
+		const codexProfile = { env: {}, flags: { '--dangerously-bypass-approvals-and-sandbox': true as const, '--model': 'gpt-6.2-sol' } };
+		const launch = (profile: IParadisAgentLaunchProfile) => ({ profile, shellType: 'zsh', windows: false });
+		assert.deepStrictEqual({
+			pcClaude: paradisAgentResumeCommandLine('claude', id, 'resume', { launch: launch(claudeProfile) }),
+			phoneClaude: paradisAgentResumeCommandLine('claude', id, 'resume', { dangerouslyBypassPermissions: false, keepPermissionChecks: true, launch: launch(claudeProfile) }),
+			// 呼び出し側が誤って省略を頼んでも、確認を残す
+			phoneClaudeAskedToBypass: paradisAgentResumeCommandLine('claude', id, 'resume', { dangerouslyBypassPermissions: true, keepPermissionChecks: true, launch: launch(claudeProfile) }),
+			pcCodex: paradisAgentResumeCommandLine('codex', id, 'resume', { launch: launch(codexProfile) }),
+			phoneCodex: paradisAgentResumeCommandLine('codex', id, 'resume', { keepPermissionChecks: true, launch: launch(codexProfile) }),
+			stripped: paradisLaunchProfileWithoutPermissionWidening(claudeProfile),
+		}, {
+			pcClaude: `CLAUDE_CODE_EFFORT_LEVEL=high CLAUDE_CODE_EVEN_MORE_DANGEROUSLY_SKIP_PERMISSIONS=1 claude --dangerously-skip-permissions --allow-dangerously-skip-permissions --model opus --resume ${id}`,
+			phoneClaude: `CLAUDE_CODE_EFFORT_LEVEL=high claude --permission-mode manual --model opus --resume ${id}`,
+			phoneClaudeAskedToBypass: `CLAUDE_CODE_EFFORT_LEVEL=high claude --permission-mode manual --model opus --resume ${id}`,
+			pcCodex: `codex resume --dangerously-bypass-approvals-and-sandbox --model gpt-6.2-sol ${id}`,
+			phoneCodex: paradisAgentResumeCommandLine('codex', id, 'resume', { launch: launch({ env: {}, flags: { '--model': 'gpt-6.2-sol' } }) }),
+			stripped: { env: { CLAUDE_CODE_EFFORT_LEVEL: 'high' }, flags: { '--model': 'opus' } },
 		});
 	});
 });

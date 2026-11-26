@@ -65,6 +65,8 @@ export interface IParadisDocViewRecord {
 	/** 最後に動いた時刻（書き込み・持ち主の交代・初めて載った時刻の新しい方）。 */
 	readonly lastActivity: number;
 	readonly missingSince?: number;
+	/** 自動で一覧から外すまでの日数の数え始め（{@link IParadisDocRecord.missingCountedFrom}）。 */
+	readonly missingCountedFrom?: number;
 	/** 最後に取った指紋（移動先の追従に使う）。 */
 	readonly fingerprint?: IParadisDocFingerprint;
 	/** 未回答のコメントの数（0 なら無い）。 */
@@ -94,6 +96,7 @@ export function paradisDocViewRecord(record: IParadisDocRecord, liveness: Paradi
 		registeredBy: record.registeredBy,
 		lastActivity: paradisDocLastActivity(record),
 		...(record.missingSince !== undefined ? { missingSince: record.missingSince } : {}),
+		...(record.missingSince !== undefined && record.missingCountedFrom !== undefined ? { missingCountedFrom: record.missingCountedFrom } : {}),
 		...(record.fingerprint !== undefined ? { fingerprint: record.fingerprint } : {}),
 		...(openComments > 0 ? { openComments } : {}),
 	};
