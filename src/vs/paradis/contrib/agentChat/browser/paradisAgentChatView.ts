@@ -125,6 +125,9 @@ export class ParadisAgentChatView extends Disposable {
 
 	private readonly _onDidRequestTerminal = this._register(new Emitter<void>());
 	readonly onDidRequestTerminal = this._onDidRequestTerminal.event;
+	/** 帯の「ターミナルを開く」で開いた（選択画面が消えたらチャット表示へ戻してよい）。 */
+	private readonly _onDidRequestTerminalForChoice = this._register(new Emitter<void>());
+	readonly onDidRequestTerminalForChoice = this._onDidRequestTerminalForChoice.event;
 
 	readonly element: HTMLElement;
 	private readonly headerAgent: HTMLElement;
@@ -1615,7 +1618,7 @@ export class ParadisAgentChatView extends Disposable {
 			}
 			const open = paradisAgentChatButton(this.terminalBand, 'secondary', this.terminalBandStore);
 			open.label = localize('paradisAgentChat.openTerminal', "ターミナルを開く");
-			this.terminalBandStore.add(open.onDidClick(() => this._onDidRequestTerminal.fire()));
+			this.terminalBandStore.add(open.onDidClick(() => this._onDidRequestTerminalForChoice.fire()));
 		}
 		return true;
 	}

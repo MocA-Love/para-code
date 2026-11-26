@@ -214,7 +214,10 @@ suite('ParadisAgentChatView', () => {
 	});
 
 	test('shows the terminal band while Codex shows its choice menu, keeps the same button across ticks, and stops sending until it closes', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
-		const { host, container, disposables } = await createView([{ token: 'pane', agent: 'codex', epoch: 'e', rev: 0, reset: true, busy: false, live: null, interaction: null, messages: [] }]);
+		const { view, host, container, disposables } = await createView([{ token: 'pane', agent: 'codex', epoch: 'e', rev: 0, reset: true, busy: false, live: null, interaction: null, messages: [] }]);
+		const requests: string[] = [];
+		disposables.add(view.onDidRequestTerminal(() => requests.push('terminal')));
+		disposables.add(view.onDidRequestTerminalForChoice(() => requests.push('choice')));
 		let menu: IParadisAgentChoiceMenu | undefined = { kind: 'plan_implement', title: 'Implement this plan?', options: [], enterWould: '' };
 		host.readChoiceMenu = () => menu;
 		await new Promise(resolve => setTimeout(resolve, 1000));
@@ -223,13 +226,16 @@ suite('ParadisAgentChatView', () => {
 		const shown = { visible: band.style.display !== 'none', text: band.textContent, notice: container.querySelector('.paradis-agent-chat-composer-notice.visible')?.textContent };
 		await new Promise(resolve => setTimeout(resolve, 1000));
 		const sameButton = band.querySelector('.monaco-button') === button;
+		(button as HTMLElement).click();
 		menu = undefined;
 		await new Promise(resolve => setTimeout(resolve, 1000));
 		const closed = { visible: band.style.display !== 'none', notice: container.querySelector('.paradis-agent-chat-composer-notice.visible')?.textContent ?? null };
 		disposables.dispose();
-		assert.deepStrictEqual({ shown, sameButton, closed }, {
+		assert.deepStrictEqual({ shown, sameButton, requests, closed }, {
 			shown: { visible: true, text: 'この操作はターミナルで続けますImplement this plan?ターミナルを開く', notice: 'ターミナルで選んでから送ってください' },
 			sameButton: true,
+			// 帯から開いたときだけ、選択画面が消えたらチャットへ戻してよい印の方を知らせる
+			requests: ['choice'],
 			closed: { visible: false, notice: null },
 		});
 	}));
