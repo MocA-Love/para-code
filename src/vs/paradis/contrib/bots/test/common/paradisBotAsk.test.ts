@@ -204,6 +204,7 @@ suite('Paradis bot ask', () => {
 				owner_updates: [{ id: 2, kind: 'commented', actor: 'owner', text: '先にこれを', at: '1970-01-02T00:00:00.000Z' }],
 				events: [{ id: 2, kind: 'commented', actor: 'owner', text: '先にこれを', at: '1970-01-02T00:00:00.000Z' }],
 			},
-		]);
+		]);		// 台帳が新しい版で書けないときは、印を外せないので未配達を出さない
+		assert.deepStrictEqual([(paradisBotItemListRow(item, false) as { owner_updates?: number }).owner_updates, (paradisBotItemView(item, 1, false) as { owner_updates: unknown[] }).owner_updates], [undefined, []]);
 	});
 });
