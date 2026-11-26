@@ -32,8 +32,7 @@ import { IsSessionsWindowContext } from '../../../../workbench/common/contextkey
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { renderParadisActionButton } from '../../../browser/paradisActionButton.js';
-import { IParadisHumanAskService } from '../../humanAsk/common/paradisHumanAsk.js';
-import { paradisInboxBadgeCounts } from '../../notificationInbox/common/paradisNotificationInboxCounts.js';
+import { IParadisHumanAskService, paradisHumanAskCounts } from '../../humanAsk/common/paradisHumanAsk.js';
 import { IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { PARADIS_TASK_BOARD_BRIDGE_CHANNEL, PARADIS_TASK_BOARD_BRIDGE_ENABLED_SETTING } from '../common/paradisTaskBoardBridge.js';
 import { IParadisTaskBoardHostService, PARADIS_TASK_BOARD_HOST_CHANNEL, ParadisTaskBoardOpenResult } from '../common/paradisTaskBoardHost.js';
@@ -257,7 +256,7 @@ class ParadisToggleTaskBoardTitleBarAction extends ToggleTitleBarConfigAction {
 
 /**
  * タイトルバーのボタン。UI キットの素のボタン（paradisActionButton.ts）で、「エージェント一覧」と同じ見た目。
- * 数のバッジは台帳の「あなたの番」のうちボードの分（paradisInboxBadgeCounts の board）。
+ * 数のバッジは台帳の「あなたの番」のうちボードの分（paradisHumanAskCounts の board）。
  */
 class ParadisTaskBoardTitleBarWidget extends BaseActionViewItem {
 
@@ -284,7 +283,7 @@ class ParadisTaskBoardTitleBarWidget extends BaseActionViewItem {
 		const label = localize('paradis.taskBoard.titleBarTasksLabel', "タスク");
 		const count = renderParadisActionButton(container, { icon: 'paradis-task-board-titlebar-icon', label, count: true }).count;
 		const update = () => {
-			const { board } = paradisInboxBadgeCounts(this.humanAskService.snapshot.entries, 0, new Set());
+			const { board } = paradisHumanAskCounts(this.humanAskService.snapshot.entries);
 			count?.update(board, 'attention');
 			// allow-any-unicode-next-line
 			container.setAttribute('aria-label', board > 0 ? localize('paradis.taskBoard.titleBarTasksYourTurn', "タスク（あなたの番 {0} 件）", board) : label);

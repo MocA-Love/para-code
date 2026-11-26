@@ -191,11 +191,11 @@ class ParadisNotificationInboxTitleBarWidget extends BaseActionViewItem {
 
 		const hover = this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), container, ''));
 		const update = () => {
-			const { unreadCount } = this.inboxService.snapshot;
-			// 数は「あなたの番」の件数。完了などの未読の通知は数えず点だけを出す。正確な数はホバーと読み上げの名前に出る
-			const { bell, bellDot } = paradisInboxBadgeCounts(this.humanAskService.snapshot.entries, unreadCount, new Set());
+			const inbox = this.inboxService.snapshot;
+			// 数は「あなたの番」の件数（台帳に載っていないペインの許可待ち・質問も含む）。完了の未読は数えず点だけを出す。正確な数はホバーと読み上げの名前に出る
+			const { bell, bellDot } = paradisInboxBadgeCounts(this.humanAskService.snapshot.entries, inbox, new Set());
 			this.count?.update(bell, 'attention', bellDot);
-			const text = this.hoverText(bell, unreadCount);
+			const text = this.hoverText(bell, inbox.unreadCount);
 			container.setAttribute('aria-label', text);
 			hover.update(text);
 		};
