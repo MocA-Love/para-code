@@ -312,7 +312,7 @@ export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBan
 			case 'pin': return new Action('paradis.bots.row.pin', localize('paradis.bots.row.pin', "ピン留め"), `paradis-menu-icon ${ThemeIcon.asClassName(Codicon.pin)}`, true, () => this.setPinned(bot, true));
 			case 'unpin': return new Action('paradis.bots.row.unpin', localize('paradis.bots.row.unpin', "ピン留めを解除"), `paradis-menu-icon ${ThemeIcon.asClassName(Codicon.pinned)}`, true, () => this.setPinned(bot, false));
 			case 'rename': return new Action('paradis.bots.row.rename', localize('paradis.bots.row.rename', "名前を変更..."), `paradis-menu-icon ${ThemeIcon.asClassName(Codicon.edit)}`, true, () => this.rename(bot));
-			case 'pause': return new Action('paradis.bots.row.pause', localize('paradis.bots.row.pause', "停止"), `paradis-menu-icon ${ThemeIcon.asClassName(Codicon.debugPause)}`, true, () => this.setPaused(bot, true));
+			case 'pause': return new Action('paradis.bots.row.pause', localize('paradis.bots.row.pause', "停止"), `paradis-menu-icon ${ThemeIcon.asClassName(Codicon.stopCircle)}`, true, () => this.setPaused(bot, true));
 			case 'resume': return new Action('paradis.bots.row.resume', localize('paradis.bots.row.resume', "再開"), `paradis-menu-icon ${ThemeIcon.asClassName(Codicon.play)}`, true, () => this.setPaused(bot, false));
 			case 'remove': return new Action('paradis.bots.row.remove', localize('paradis.bots.row.remove', "削除..."), `paradis-menu-icon ${ThemeIcon.asClassName(Codicon.trash)}`, true, () => this.remove(bot));
 		}
