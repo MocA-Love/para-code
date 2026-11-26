@@ -6,17 +6,20 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// エージェントへ出している mobile_* の 17 本の名前と引数（inputSchema）を固定する（q.html Q585・設計書 4 節）。
+// エージェントへ出している mobile_* の名前と引数（inputSchema）を固定する（q.html Q585・設計書 4 節）。
 //
-// シミュレータの作り直し（③）でツールの実装を simulator 側へ移しても、エージェントから見た名前と引数は
-// 変えない。③ でこのテストに手を入れてよいのは、ツールを持つクラスの import と組み立ての行
-// （`currentMobileTools`）だけで、下の `EXPECTED` の表は変えないこと。説明（description）は固定の外
-// （Mobile Canvas の名前を含む文を直すため）。新しく足す mobile_fold は別の固定にする。
+// 下の `EXPECTED` の表は、1 ペイン 1 台だった頃からの 17 本の名前と引数で、変えないこと（今の呼び方を壊さない）。
+// 1 ペインに複数の端末を割り当てられるようにしたとき（2026-11-27、利用者の決定）に足したのは次の 2 つで、
+// どちらもこのテストの中で表に重ねて確かめる:
+//  - 割り当てた端末を操作する 15 本に、任意の引数 `device`（id か名前）。省けば今までどおり動く
+//  - 端末を手放す mobile_release_device
+// 説明（description）は固定の外。mobile_fold は別の固定（paradisServeSimDeviceHost.test.ts）。
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisMcpToolDefinition } from '../../../agentBrowser/common/paradisMcpToolProvider.js';
+import { PARADIS_MOBILE_DEVICE_ARGUMENT } from '../../common/paradisMobileAttachmentBook.js';
 import { ParadisMobileCanvasService } from '../../node/paradisDeviceLedger.js';
 import { ParadisMobileDeviceCommands } from '../../node/paradisMobileDeviceCommands.js';
 import { IParadisMobileHostRequester, ParadisMobileDeviceOpsToolProvider } from '../../node/paradisSimulatorDeviceOps.js';
@@ -188,10 +191,29 @@ suite('Paradis simulator: the mobile_* tool names and arguments stay fixed', () 
 		return [...ledger.listTools(), ...deviceOps.listTools()];
 	}
 
-	test('the 17 tools keep their names and input schemas', () => {
-		assert.deepStrictEqual(
-			currentMobileTools().map(tool => ({ name: tool.name, inputSchema: tool.inputSchema })),
-			EXPECTED,
-		);
+	/** `device` を受けない道具: 一覧（端末を選ばない）と要求（`device` は頼む端末の名指しで、元からある）。 */
+	const WITHOUT_DEVICE_ARGUMENT = new Set(['mobile_list_devices', 'mobile_request_device']);
+
+	test('the 17 tools keep their names and arguments; the ones that act on a device also take an optional "device"', () => {
+		const expected = [
+			...EXPECTED.map(tool => {
+				const schema = tool.inputSchema as { readonly properties: object };
+				return WITHOUT_DEVICE_ARGUMENT.has(tool.name) ? tool : { name: tool.name, inputSchema: { ...schema, properties: { ...schema.properties, device: PARADIS_MOBILE_DEVICE_ARGUMENT } } };
+			}),
+			{
+				name: 'mobile_release_device', inputSchema: {
+					type: OBJECT,
+					properties: { device: { type: 'string', description: 'The id or the exact name of a device attached to this terminal pane (attachedDevices in mobile_list_devices).' } },
+					required: ['device'],
+					additionalProperties: false,
+				},
+			},
+		];
+		const current = currentMobileTools().map(tool => ({ name: tool.name, inputSchema: tool.inputSchema }));
+		assert.deepStrictEqual({
+			current,
+			// `device` は必須にしない（省いた呼び出しは今までどおり通る）
+			deviceRequired: current.filter(tool => tool.name !== 'mobile_request_device' && tool.name !== 'mobile_release_device' && ((tool.inputSchema as { required?: string[] }).required ?? []).includes('device')).map(tool => tool.name),
+		}, { current: expected, deviceRequired: [] });
 	});
 });

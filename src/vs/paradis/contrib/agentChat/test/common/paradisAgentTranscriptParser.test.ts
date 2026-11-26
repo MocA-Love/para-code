@@ -94,6 +94,17 @@ suite('paradisAgentTranscriptParser', () => {
 		});
 	});
 
+	test('puts the model and the input, cache read, cache write and output tokens of the request on a Claude reply, but not on a synthetic one', () => {
+		const line = (model: string) => JSON.stringify({ type: 'assistant', timestamp: '2026-11-27T01:00:00.000Z', message: { id: 'msg_1', model, content: [{ type: 'text', text: '直しました' }], usage: { input_tokens: 12, cache_read_input_tokens: 19_000, cache_creation_input_tokens: 647, output_tokens: 581 } } });
+		assert.deepStrictEqual([
+			paradisParseClaudeTranscriptLineForTest(line('claude-opus-4-5')).messages.map(message => message.usage),
+			paradisParseClaudeTranscriptLineForTest(line('<synthetic>')).messages.map(message => message.usage),
+		], [
+			[{ model: 'claude-opus-4-5', inputTokens: 12, cacheReadTokens: 19_000, cacheCreationTokens: 647, outputTokens: 581 }],
+			[undefined],
+		]);
+	});
+
 	test('shows a manual /compact as one divider with the tokens and a folded summary, without the two /compact bubbles (Claude Code 2.1.289)', () => {
 		const at = '2026-10-04T09:00:00.000Z';
 		const user = (content: string, extra: Record<string, unknown> = {}) => JSON.stringify({ type: 'user', timestamp: at, message: { role: 'user', content }, ...extra });

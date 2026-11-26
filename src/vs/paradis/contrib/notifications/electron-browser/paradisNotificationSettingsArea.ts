@@ -187,14 +187,14 @@ const INBOX_ROWS: readonly IParadisMovedSettingRow[] = [
 		// allow-any-unicode-next-line
 		label: localize('paradis.notif.inboxTitleBar', "タイトルバーに通知の受信箱（ベル）を表示"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.notif.inboxTitleBarDesc', "全スペースの完了・許可待ち・質問をまとめて見られます。数字はまだ確認していないペインの数です。"),
+		description: localize('paradis.notif.inboxTitleBarDesc', "全スペースの完了・許可待ち・質問をまとめて見られます。数字はあなたの番（答えを待っている質問・許可）の数で、未読の通知は点で知らせます。"),
 	},
 	{
 		key: 'paradis.notifications.dockBadge.enabled',
 		// allow-any-unicode-next-line
-		label: localize('paradis.notif.dockBadge', "Dock のアイコンに確認が必要なペインの数を表示"),
+		label: localize('paradis.notif.dockBadge', "Dock のアイコンにあなたの番の数を表示"),
 		// allow-any-unicode-next-line
-		description: localize('paradis.notif.dockBadgeDesc', "Windows ではウィンドウごとに、そのウィンドウのペインの数をタスクバーに表示します。おやすみモードの間は表示しません。"),
+		description: localize('paradis.notif.dockBadgeDesc', "Windows ではウィンドウごとに、そのウィンドウのペインの分をタスクバーに表示します。おやすみモードの間は表示しません。"),
 	},
 ];
 
