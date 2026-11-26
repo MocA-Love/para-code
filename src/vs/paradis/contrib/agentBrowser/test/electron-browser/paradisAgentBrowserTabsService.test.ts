@@ -31,6 +31,7 @@ import { IParadisAuxiliaryWindowScopeService, IParadisBrowserScopeService, IPara
 import { IParadisPaneTokenService } from '../../browser/paradisPaneTokenService.js';
 import { IParadisAgentBrowserBindingModel } from '../../electron-browser/paradisAgentBrowserBindingModel.js';
 import { IParadisAgentApprovalRequest, ParadisAgentBrowserTabsService, ParadisApprovalDeadline } from '../../electron-browser/paradisAgentBrowserTabsService.js';
+import { paradisNoteComputerUseCommandInput, paradisResetComputerUseCommandInput } from '../../../computerUse/common/paradisComputerUseInputClock.js';
 import { IParadisBrowserExtensionsService } from '../../../browserExtensions/electron-browser/paradisBrowserExtensionsService.js';
 
 interface IShownPrompt {
@@ -180,6 +181,21 @@ suite('ParadisAgentBrowserTabsService approval', () => {
 			await fast.service.askApproval('pane-token', request, cts.token),
 			fast.shown.length,
 		], ['approve', 2, true, 'unanswered', 3]);
+	}));
+
+	// Computer Use は Para Code を直接は押せないが、操作を許したターミナルの osascript は押せる（NOTES.md「Computer Use の間接の経路」）
+	test('asks again when the approval comes during or right after Computer Use input to an app that can run commands', () => runWithFakedTimers(fakedTimers, async () => {
+		// 1 回目は入力の 2 秒後の承認、2 回目は入力から 11 秒後の承認
+		const { service, shown } = createService([{ button: 1, afterMs: 2000 }, { button: 1, afterMs: 9000 }]);
+		store.add(service);
+		const cts = store.add(new CancellationTokenSource());
+		paradisNoteComputerUseCommandInput();
+		try {
+			const outcome = await service.askApproval('pane-token', request, cts.token);
+			assert.deepStrictEqual([outcome, shown.length, shown[1].detail?.includes('Computer Use'), shown[1].detail?.endsWith('detail')], ['approve', 2, true, true]);
+		} finally {
+			paradisResetComputerUseCommandInput();
+		}
 	}));
 
 	test('treats Deny and Escape as a refusal, and refuses the same pane for a while afterwards', () => runWithFakedTimers(fakedTimers, async () => {

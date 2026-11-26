@@ -473,6 +473,18 @@
 	min-width: 0;
 }
 
+/* The confirmation before a button that the owner's screen also confirms (the board's "mark as done"): title over body. */
+.monaco-workbench .paradis-inbox-ask-dialog .pniad-status.confirm {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size20);
+	color: var(--vscode-foreground);
+}
+
+.monaco-workbench .paradis-inbox-ask-dialog .pniad-status.confirm .pniad-confirm-body {
+	color: var(--vscode-descriptionForeground);
+}
+
 /*
  * Window transparency: like the other light-DOM overlays (paradisWindowTransparency.css), paint the
  * theme background over an opaque base so a translucent editorWidget background never shows the desktop.

@@ -64,6 +64,7 @@ import {
 	ParadisComputerUseReadOnlyReason,
 	paradisComputerUseBlockReason,
 	paradisComputerUseReadOnlyReason,
+	paradisComputerUseRunsCommands,
 	paradisParseComputerUseApprovalOutcome,
 	paradisParseComputerUseForegroundOutcome,
 } from '../common/paradisComputerUse.js';
@@ -405,8 +406,11 @@ export interface IParadisComputerUseToolOptions {
 	allowOperatingReadOnlyApps?(): boolean;
 	/** 利用者が Esc の 2 回押しで止めた・再開したときに呼ぶ（変わったときに 1 回だけ）。ウィンドウへの通知に使う。 */
 	onDidChangeStopped?(stopped: boolean): void;
-	/** 入力の要求を補助アプリへ送ったとき・答えが返ったときに呼ぶ（ステータスバーの「操作中」に使う）。 */
-	onDidSendInput?(): void;
+	/**
+	 * 入力の要求を補助アプリへ送ったとき・答えが返ったときに呼ぶ（ステータスバーの「操作中」に使う）。
+	 * `commandApp` は、的がコマンドを打てるアプリ（ターミナル類など）のとき true（承認の画面が聞き直すのに使う）。
+	 */
+	onDidSendInput?(commandApp: boolean): void;
 	/** 操作の後、最初に状態を読むまで待つ時間（テストで 0 にする。0 なら読み直しもしない）。 */
 	readonly settleMs?: number;
 	/** 画面が落ち着くのを待つ上限（既定 1.5 秒。0 なら読み直さない）。`settleMs` が 0 で省くと 0。 */
@@ -578,9 +582,11 @@ export class ParadisComputerUseToolProvider implements IParadisMcpToolProvider {
 	 */
 	private async _request(method: string, params: object = {}, signal?: AbortSignal): Promise<unknown> {
 		const input = INPUT_METHODS.has(method);
+		const targetBundleId = (params as { readonly bundleId?: unknown }).bundleId;
+		const commandApp = input && typeof targetBundleId === 'string' && paradisComputerUseRunsCommands(targetBundleId);
 		const notifyInput = () => {
 			try {
-				this._options.onDidSendInput?.();
+				this._options.onDidSendInput?.(commandApp);
 			} catch {
 				// 知らせの失敗で操作の結果を変えない
 			}

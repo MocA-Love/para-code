@@ -48,6 +48,7 @@ import {
 	paradisComputerUseNextActivity,
 	paradisParseComputerUseActivity,
 } from '../common/paradisComputerUse.js';
+import { paradisNoteComputerUseCommandInput } from '../common/paradisComputerUseInputClock.js';
 import { paradisComputerUseIsNoticeWindow } from './paradisComputerUseStatus.contribution.js';
 
 const ENTRY_ID = 'paradis.computerUse.activity';
@@ -136,6 +137,10 @@ class ParadisComputerUseActivityContribution extends Disposable implements IWork
 	}
 
 	private apply(activity: IParadisComputerUseActivity): void {
+		if (activity.input && activity.commandApp === true) {
+			// 承認の画面が、ターミナル類への入力の最中と直後の承認を聞き直すのに使う（paradisComputerUseInputClock.ts）
+			paradisNoteComputerUseCommandInput();
+		}
 		const next = paradisComputerUseNextActivity(this.state, activity);
 		this.state = next.state;
 		if (next.armActiveTimer) {

@@ -46,10 +46,10 @@ suite('paradisAgentCliInstall', () => {
 	test('the skill is a short entry that carries the promises of the MCP instructions, and both files carry the mark', () => {
 		assert.deepStrictEqual({
 			// 日本語は 1 文字 3 バイトなので、英語のとき（3500）より上限を上げている
-			short: Buffer.byteLength(PARADIS_AGENT_CLI_SKILL_CONTENT) < 6000,
+			short: Buffer.byteLength(PARADIS_AGENT_CLI_SKILL_CONTENT) < 7000,
 			frontmatter: PARADIS_AGENT_CLI_SKILL_CONTENT.startsWith('---\nname: para-cli\ndescription: >-\n'),
 			// 本文は日本語。MCP の説明文と同じ約束（名札、共有ページの送信・削除は頼まれたときだけ）を日本語で持つ
-			promises: ['`set_cursor_label`', '利用者が共有したページでは、送信・購入・送付・削除は、利用者が頼んだときだけ行います。', '`write_site_note`', '`para help browser`', '環境変数を表示しません', '何もインストールせず'].filter(text => !PARADIS_AGENT_CLI_SKILL_CONTENT.includes(text)),
+			promises: ['`set_cursor_label`', '利用者が共有したページでは、送信・購入・送付・削除は、利用者が頼んだときだけ行います。', '`write_site_note`', '`para help browser`', '環境変数を表示しません', '何もインストールせず', '`para browser handle_dialog --action accept`', '`para browser handle_permission_request --action allow`', '許可できるのは自分で開いたタブだけです', '`--handle-before-unload decline`'].filter(text => !PARADIS_AGENT_CLI_SKILL_CONTENT.includes(text)),
 			// description は日本語と英語の依頼の両方の語を持ち、1 行ずつが文の切れ目で終わる（`>-` は継ぎ目に空白を入れる）
 			description: (() => {
 				const lines = PARADIS_AGENT_CLI_SKILL_CONTENT.split('\n---\n')[0].split('\n').slice(3);
