@@ -85,3 +85,30 @@ export function paradisAppendAgentChatDraft(current: string, text: string): { re
 	}
 	return { value: `${current.replace(/\s+$/, '')}\n\n${text}`, result: 'appended' };
 }
+
+/** {@link paradisInsertAgentChatDraft} が読む、ペインのチャット表示の今の状態。 */
+export interface IParadisAgentChatDraftTarget {
+	/** チャット表示が使え（設定で切っていない）、そのペインがチャット表示で、会話のトークンがある。 */
+	readonly chatShown: boolean;
+	/** そのペインのチャット表示が見えていれば、入力欄へ入れた結果。見えていなければ undefined。 */
+	insertIntoVisibleInput(text: string): ParadisAgentChatDraftInsert | undefined;
+	getDraft(): string;
+	setDraft(text: string): void;
+}
+
+/**
+ * 外からチャット表示の入力欄へ下書きを入れる（送らない）。見えていれば入力欄へ、見えていなければペインの下書きへ入れる
+ * （タブを開いたときに入力欄へ出る）。空白だけの文、チャット表示でないペインは何もせず false。
+ */
+export function paradisInsertAgentChatDraft(text: string, target: IParadisAgentChatDraftTarget): ParadisAgentChatDraftInsert | false {
+	if (!target.chatShown || text.trim().length === 0) {
+		return false;
+	}
+	const shown = target.insertIntoVisibleInput(text);
+	if (shown !== undefined) {
+		return shown;
+	}
+	const { value, result } = paradisAppendAgentChatDraft(target.getDraft(), text);
+	target.setDraft(value);
+	return result;
+}

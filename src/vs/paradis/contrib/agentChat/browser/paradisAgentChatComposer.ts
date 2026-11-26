@@ -218,7 +218,7 @@ export class ParadisAgentChatComposer extends Disposable {
 		}
 	}
 
-	/** 外から下書きを入れる（送らない）。書きかけの文があれば後ろへ足す。入力欄へフォーカスし、カーソルを末尾へ置く。 */
+	/** 外から下書きを入れる（送らない）。書きかけの文があれば後ろへ足す。入力欄へフォーカスし、カーソルを末尾へ置く。空白だけの文は呼ぶ側で外す。 */
 	insertDraft(text: string): ParadisAgentChatDraftInsert {
 		const { value, result } = paradisAppendAgentChatDraft(this.textarea.value, text);
 		this.textarea.value = value;

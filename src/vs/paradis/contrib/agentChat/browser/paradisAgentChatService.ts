@@ -28,7 +28,8 @@ export interface IParadisAgentChatService {
 	/**
 	 * そのターミナルのチャット表示の入力欄へ、送らずに下書きを入れる（Bot のホームの提案の「始める」など）。書きかけの文は
 	 * 消さず、空行を挟んで後ろへ足す（`appended`）。見えていれば入力欄へフォーカスする。チャット表示でない・切っている・
-	 * エージェントの会話が無いペインは false（呼ぶ側がターミナルへの貼り付けに落とす）。
+	 * エージェントの会話が無いペインと、空白だけの文は何もせず false（呼ぶ側がターミナルへの貼り付けに落とす。空白だけの文を
+	 * 貼っても害は無い）。
 	 */
 	insertDraft(instanceId: number, text: string): ParadisAgentChatDraftInsert | false;
 }

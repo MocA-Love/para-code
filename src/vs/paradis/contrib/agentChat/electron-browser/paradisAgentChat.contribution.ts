@@ -57,7 +57,7 @@ import { ParadisAgentChatSession } from '../browser/paradisAgentChatSession.js';
 import { IParadisAgentChatCardStates, IParadisAgentChatViewHost, ParadisAgentChatView } from '../browser/paradisAgentChatView.js';
 import { paradisVisibleTerminalText } from '../browser/paradisAgentTuiInput.js';
 import { IParadisAgentChatCommand, IParadisAgentChatImageData, IParadisAgentChatSource, PARADIS_AGENT_CHAT_ENABLED_SETTING, PARADIS_AGENT_CHAT_SEND_KEY_SETTING } from '../common/paradisAgentChat.js';
-import { paradisAppendAgentChatDraft, ParadisAgentChatDraftInsert, paradisPushAgentChatHistory } from '../common/paradisAgentChatComposerLogic.js';
+import { ParadisAgentChatDraftInsert, paradisInsertAgentChatDraft, paradisPushAgentChatHistory } from '../common/paradisAgentChatComposerLogic.js';
 import { paradisAgentChatAttachDialogOptions, paradisAgentChatAttachPaths } from '../common/paradisAgentChatAttach.js';
 import { paradisParseCodexAsyncReply } from '../../mobileRelay/common/paradisCodexAsyncQuestions.js';
 import { ParadisAgentChatDictation } from './paradisAgentChatDictation.js';
@@ -379,21 +379,20 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 
 	insertDraft(instanceId: number, text: string): ParadisAgentChatDraftInsert | false {
 		const token = this.tokenFor(instanceId);
-		if (!this.enabled || !this.isChatMode(instanceId) || token === undefined || text.length === 0) {
-			return false;
-		}
-		for (const overlay of this.overlays) {
-			if (overlay.currentInstanceId === instanceId) {
-				const result = overlay.insertDraft(text);
-				if (result !== undefined) {
-					return result;
+		return paradisInsertAgentChatDraft(text, {
+			chatShown: this.enabled && this.isChatMode(instanceId) && token !== undefined,
+			insertIntoVisibleInput: value => {
+				for (const overlay of this.overlays) {
+					const result = overlay.currentInstanceId === instanceId ? overlay.insertDraft(value) : undefined;
+					if (result !== undefined) {
+						return result;
+					}
 				}
-			}
-		}
-		// チャット表示のタブが前に出ていない。ペインの下書きへ入れておき、タブを開いたときに入力欄へ出す
-		const { value, result } = paradisAppendAgentChatDraft(this.getDraft(token), text);
-		this.setDraft(token, value);
-		return result;
+				return undefined;
+			},
+			getDraft: () => this.getDraft(token!),
+			setDraft: value => this.setDraft(token!, value),
+		});
 	}
 
 	private focusChatInput(instanceId: number): void {

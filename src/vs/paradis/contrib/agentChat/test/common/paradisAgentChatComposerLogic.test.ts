@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisAgentChatSlashQuery, paradisAppendAgentChatDraft, paradisFilterAgentChatCommands, paradisPushAgentChatHistory } from '../../common/paradisAgentChatComposerLogic.js';
+import { paradisAgentChatSlashQuery, paradisAppendAgentChatDraft, paradisInsertAgentChatDraft, paradisFilterAgentChatCommands, paradisPushAgentChatHistory } from '../../common/paradisAgentChatComposerLogic.js';
 
 suite('paradisAgentChatComposerLogic', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -44,5 +44,30 @@ suite('paradisAgentChatComposerLogic', () => {
 			{ value: 'リリースをまとめて', result: 'inserted' },
 			{ value: '書きかけ\n\nリリースをまとめて', result: 'appended' },
 		]);
+	});
+
+	test('inserts a draft into the visible input, else into the pane draft, and does nothing for a pane not in the chat view or a blank text', () => {
+		const run = (chatShown: boolean, visible: boolean, text: string, draft = '') => {
+			const calls: string[] = [];
+			let stored = draft;
+			const result = paradisInsertAgentChatDraft(text, {
+				chatShown,
+				insertIntoVisibleInput: value => { calls.push(`input:${value}`); return visible ? 'inserted' : undefined; },
+				getDraft: () => stored,
+				setDraft: value => { stored = value; calls.push(`draft:${value}`); },
+			});
+			return { result, calls };
+		};
+		assert.deepStrictEqual({
+			visible: run(true, true, '始めて'),
+			background: run(true, false, '始めて', '書きかけ'),
+			notChat: run(false, true, '始めて'),
+			blank: run(true, true, '  \n '),
+		}, {
+			visible: { result: 'inserted', calls: ['input:始めて'] },
+			background: { result: 'appended', calls: ['input:始めて', 'draft:書きかけ\n\n始めて'] },
+			notChat: { result: false, calls: [] },
+			blank: { result: false, calls: [] },
+		});
 	});
 });
