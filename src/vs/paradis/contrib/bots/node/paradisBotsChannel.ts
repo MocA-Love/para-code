@@ -36,11 +36,11 @@ export class ParadisBotsChannel implements IServerChannel<string> {
 		}
 	}
 
-	async call<T>(_ctx: string, command: string, arg?: unknown): Promise<T> {
-		return await this.dispatch(command, ParadisChannelArgs.from(arg)) as T;
+	async call<T>(ctx: string, command: string, arg?: unknown): Promise<T> {
+		return await this.dispatch(command, ParadisChannelArgs.from(arg), ctx) as T;
 	}
 
-	private async dispatch(command: string, args: ParadisChannelArgs): Promise<unknown> {
+	private async dispatch(command: string, args: ParadisChannelArgs, ctx: string): Promise<unknown> {
 		const service = this.service;
 		await service.ready;
 		const id = args.string(0);
@@ -91,7 +91,7 @@ export class ParadisBotsChannel implements IServerChannel<string> {
 			}
 			case 'reportLaunch': {
 				const paneToken = args.string(1);
-				return id !== undefined && paneToken !== undefined && service.reportLaunch(id, paneToken);
+				return id !== undefined && paneToken !== undefined && service.reportLaunch(id, paneToken, ctx);
 			}
 			case 'cancelLaunch': {
 				if (id !== undefined) {
@@ -101,6 +101,12 @@ export class ParadisBotsChannel implements IServerChannel<string> {
 			}
 			case 'requestStop': return id !== undefined && service.requestStop(id);
 			case 'requestReveal': return id !== undefined && service.requestReveal(id);
+			case 'ackReveal': {
+				if (id !== undefined) {
+					service.ackReveal(id);
+				}
+				return undefined;
+			}
 			case 'paneHashesOf': return id !== undefined ? service.paneHashesOf(id) : [];
 			case 'listSuggestions': return id !== undefined ? service.listSuggestions(id) : [];
 			case 'startSuggestion': return id !== undefined ? service.startSuggestion(id) : INVALID;

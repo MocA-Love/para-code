@@ -119,8 +119,14 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 		if (environmentService.remoteAuthority !== undefined) {
 			return { ok: false, error: 'remote' };
 		}
-		const launch = await botsService.requestLaunch(botId, 'chat');
-		// 会話は 1 つの Bot に 1 つだけ。別のウィンドウで開いている・起動している途中（呼んだ側が案内を出し分ける）
+		let launch = await botsService.requestLaunch(botId, 'chat');
+		// 会話は 1 つの Bot に 1 つだけ。利用者が開いたときは、開いているウィンドウに前へ出してもらう。どのウィンドウも
+		// 応えなければ（閉じたことが伝わらなかったペイン）、shared process がその結び付けを外すので、起動し直す。
+		// エージェントの道具からはフォーカスを奪わないので前に出さない
+		if (!launch.ok && launch.code === 'already_open' && !fromAgent && !await botsService.requestReveal(botId)) {
+			launch = await botsService.requestLaunch(botId, 'chat');
+		}
+		// 別のウィンドウで開いている・起動している途中（呼んだ側が案内を出し分ける）
 		if (!launch.ok && (launch.code === 'already_open' || launch.code === 'launching')) {
 			return { ok: false, error: launch.code };
 		}
@@ -171,11 +177,8 @@ registerAction2(class extends Action2 {
 			return;
 		}
 		const notificationService = accessor.get(INotificationService);
-		const botsService = accessor.get(IParadisBotsService);
 		const result = await paradisOpenBot(accessor, botId);
 		if (!result.ok && result.error === 'already_open') {
-			// そのペインを持つウィンドウに前へ出してもらう（利用者が開こうとしたときだけ）
-			await botsService.requestReveal(botId);
 			// allow-any-unicode-next-line
 			notificationService.info(localize('paradisBots.alreadyOpen', "この Bot は別のウィンドウで開いています。そのウィンドウに出しました。"));
 			return;
@@ -368,6 +371,8 @@ class ParadisBotsWindowWorker extends Disposable {
 			stateKeyOf: instanceId => this.terminalScopeService.getStateKeyForInstance(instanceId),
 		}, request.paneHashes);
 		if (existing !== undefined) {
+			// 持っていると先に応える（応えるウィンドウが無ければ、shared process はその結び付けを外して起動へ進める）
+			await this.botsService.ackReveal(request.revealId);
 			await paradisRevealNotifiedPane({ hostService: this.hostService, terminalService: this.terminalService, workspaceSwitchService: this.switchService }, existing.stateKey, existing.instanceId);
 		}
 	}
