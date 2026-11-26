@@ -28,6 +28,34 @@ export const PARADIS_BOT_LIMITS = Object.freeze({
 	id: 200,
 });
 
+/** 顔の色（8 色。画面が色の値へ引き直す。保存するのは名前だけ）。 */
+export const PARADIS_BOT_FACE_COLORS = ['blue', 'teal', 'green', 'amber', 'pink', 'violet', 'red', 'orange'] as const;
+export type ParadisBotFaceColor = typeof PARADIS_BOT_FACE_COLORS[number];
+/** 顔の形（6 種）。 */
+export const PARADIS_BOT_FACE_SHAPES = ['circle', 'squircle', 'hex', 'blob', 'drop', 'penta'] as const;
+export type ParadisBotFaceShape = typeof PARADIS_BOT_FACE_SHAPES[number];
+
+function faceColor(value: unknown): ParadisBotFaceColor | undefined {
+	return PARADIS_BOT_FACE_COLORS.find(color => color === value);
+}
+
+function faceShape(value: unknown): ParadisBotFaceShape | undefined {
+	return PARADIS_BOT_FACE_SHAPES.find(shape => shape === value);
+}
+
+/** 選んでいないときの顔。名前から決まる（同じ名前なら毎回同じ）。 */
+export function paradisBotDefaultFace(name: string): { readonly faceColor: ParadisBotFaceColor; readonly faceShape: ParadisBotFaceShape } {
+	// FNV-1a（32 ビット）。色と形で別の桁を使い、同じ色の Bot が同じ形に揃わないようにする
+	let hash = 0x811c9dc5;
+	for (let index = 0; index < name.length; index++) {
+		hash = Math.imul(hash ^ name.charCodeAt(index), 0x01000193) >>> 0;
+	}
+	return {
+		faceColor: PARADIS_BOT_FACE_COLORS[hash % PARADIS_BOT_FACE_COLORS.length],
+		faceShape: PARADIS_BOT_FACE_SHAPES[Math.floor(hash / PARADIS_BOT_FACE_COLORS.length) % PARADIS_BOT_FACE_SHAPES.length],
+	};
+}
+
 export interface IParadisBot {
 	readonly id: string;
 	readonly name: string;
@@ -39,13 +67,39 @@ export interface IParadisBot {
 	readonly permissionId?: string;
 	/** 一時停止。止めている間は起動せず、問いも「あなたの番」に出さない。 */
 	readonly paused: boolean;
+	/** ピン留め。Bot の帯を閉じていても見える（どのウィンドウ・スマホでも同じ）。古い保存は false として読む。 */
+	readonly pinned: boolean;
+	/** 顔の色と形。古い保存・選んでいない Bot は名前から決まる既定（{@link paradisBotDefaultFace}）。 */
+	readonly faceColor: ParadisBotFaceColor;
+	readonly faceShape: ParadisBotFaceShape;
 	readonly createdAt: number;
 	readonly updatedAt: number;
+	/**
+	 * 新しい Para Code が足した欄を持っていた（この版の知らない欄）。読んだ値をそのまま持ち、書き戻すときも
+	 * そのまま書く。この Bot は読み取り専用（{@link paradisBotUpdate} が断る）。
+	 */
+	readonly preserved?: Readonly<Record<string, unknown>>;
 }
 
 export interface IParadisBotsState {
 	readonly version: number;
 	readonly bots: readonly IParadisBot[];
+	/**
+	 * この版の知らないエージェントの Bot（新しい Para Code が作ったもの）。一覧には出さず、読んだ値をそのまま
+	 * 書き戻す。フォルダの名前と id は使用中に数える。
+	 */
+	readonly unknown?: readonly Readonly<Record<string, unknown>>[];
+}
+
+/** この版が知っている Bot の欄。ほかの欄があれば、その Bot は読み取り専用。 */
+export const PARADIS_BOT_KNOWN_KEYS: ReadonlySet<string> = new Set(['id', 'name', 'folder', 'agent', 'modelId', 'effortId', 'permissionId', 'paused', 'pinned', 'faceColor', 'faceShape', 'createdAt', 'updatedAt']);
+
+function unknownFolders(state: IParadisBotsState): string[] {
+	return (state.unknown ?? []).map(value => value.folder).filter((folder): folder is string => typeof folder === 'string');
+}
+
+function unknownIds(state: IParadisBotsState): string[] {
+	return (state.unknown ?? []).map(value => value.id).filter((id): id is string => typeof id === 'string');
 }
 
 export const EMPTY_PARADIS_BOTS_STATE: IParadisBotsState = Object.freeze({ version: PARADIS_BOTS_VERSION, bots: Object.freeze([]) });
@@ -139,6 +193,14 @@ export interface IParadisBotCreateInput {
 	readonly modelId?: unknown;
 	readonly effortId?: unknown;
 	readonly permissionId?: unknown;
+	/** 顔。渡さなければ名前から決まる既定。 */
+	readonly faceColor?: unknown;
+	readonly faceShape?: unknown;
+	/**
+	 * 台帳に無くても「使用中」に数えるフォルダ名（ディスクにもうあるフォルダ）。Bot を消してもフォルダは残るので、
+	 * 数えないと、消した Bot の人格と記憶のフォルダを新しい Bot が引き継いでしまう。
+	 */
+	readonly takenFolders?: readonly string[];
 }
 
 export interface IParadisBotPatch {
@@ -149,6 +211,9 @@ export interface IParadisBotPatch {
 	readonly effortId?: unknown;
 	readonly permissionId?: unknown;
 	readonly paused?: unknown;
+	readonly pinned?: unknown;
+	readonly faceColor?: unknown;
+	readonly faceShape?: unknown;
 }
 
 function agentKind(value: unknown): ParadisAgentKind | undefined {
@@ -189,18 +254,22 @@ export function paradisBotCreate(state: IParadisBotsState, input: IParadisBotCre
 	}
 	const name = paradisSanitizeBotName(input.name);
 	const agent = agentKind(input.agent);
-	if (name === undefined || agent === undefined || input.id.length === 0 || state.bots.some(bot => bot.id === input.id)) {
+	if (name === undefined || agent === undefined || input.id.length === 0 || state.bots.some(bot => bot.id === input.id) || unknownIds(state).includes(input.id)
+		|| (input.faceColor !== undefined && faceColor(input.faceColor) === undefined) || (input.faceShape !== undefined && faceShape(input.faceShape) === undefined)) {
 		return refuse('invalid_argument', `A bot needs a name of up to ${PARADIS_BOT_LIMITS.name} characters and one of these agents: ${PARADIS_AGENT_KINDS.join(', ')}.`);
 	}
-	if (state.bots.length >= PARADIS_BOT_LIMITS.bots) {
+	if (state.bots.length + (state.unknown?.length ?? 0) >= PARADIS_BOT_LIMITS.bots) {
 		return refuse('limit', `There are already ${PARADIS_BOT_LIMITS.bots} bots. Remove one first.`);
 	}
 	const bot = withOptionalIds({
 		id: input.id,
 		name,
-		folder: paradisReserveBotFolder(name, state.bots.map(existing => existing.folder)),
+		folder: paradisReserveBotFolder(name, [...state.bots.map(existing => existing.folder), ...unknownFolders(state), ...(input.takenFolders ?? [])]),
 		agent,
 		paused: false,
+		pinned: false,
+		faceColor: faceColor(input.faceColor) ?? paradisBotDefaultFace(name).faceColor,
+		faceShape: faceShape(input.faceShape) ?? paradisBotDefaultFace(name).faceShape,
 		createdAt: now,
 		updatedAt: now,
 	}, input);
@@ -218,13 +287,26 @@ export function paradisBotUpdate(state: IParadisBotsState, id: string, patch: IP
 	if (current === undefined) {
 		return refuse('not_found', 'There is no such bot.');
 	}
+	if (current.preserved !== undefined) {
+		return refuse('read_only', 'This bot was changed by a newer Para Code, so this version does not change it.');
+	}
 	const name = patch.name === undefined ? current.name : paradisSanitizeBotName(patch.name);
 	const agent = patch.agent === undefined ? current.agent : agentKind(patch.agent);
 	const next = withOptionalIds(current, patch);
-	if (name === undefined || agent === undefined || next === undefined || (patch.paused !== undefined && typeof patch.paused !== 'boolean')) {
+	if (name === undefined || agent === undefined || next === undefined || (patch.paused !== undefined && typeof patch.paused !== 'boolean') || (patch.pinned !== undefined && typeof patch.pinned !== 'boolean')
+		|| (patch.faceColor !== undefined && faceColor(patch.faceColor) === undefined) || (patch.faceShape !== undefined && faceShape(patch.faceShape) === undefined)) {
 		return refuse('invalid_argument', 'The change to the bot is not valid.');
 	}
-	const bot: IParadisBot = { ...next, name, agent, paused: typeof patch.paused === 'boolean' ? patch.paused : current.paused, updatedAt: now };
+	const bot: IParadisBot = {
+		...next,
+		name,
+		agent,
+		paused: typeof patch.paused === 'boolean' ? patch.paused : current.paused,
+		pinned: typeof patch.pinned === 'boolean' ? patch.pinned : current.pinned,
+		faceColor: faceColor(patch.faceColor) ?? current.faceColor,
+		faceShape: faceShape(patch.faceShape) ?? current.faceShape,
+		updatedAt: now,
+	};
 	return { ok: true, state: { ...state, bots: state.bots.map(existing => existing.id === id ? bot : existing) }, bot };
 }
 
@@ -242,9 +324,13 @@ export function paradisBotRemove(state: IParadisBotsState, id: string): ParadisB
 
 // ---- 保存した値の読み込み ------------------------------------------------------------------------
 
-function storedBot(value: unknown): IParadisBot | undefined {
+/** 読んだ 1 件。この版の知らないエージェントなら `unknown`（読んだ値のまま残す）。 */
+function storedBot(value: unknown): { readonly kind: 'bot'; readonly bot: IParadisBot } | { readonly kind: 'unknown'; readonly value: Readonly<Record<string, unknown>>; readonly id: string; readonly folder: string } | undefined {
 	if (!isRecord(value)) {
 		return undefined;
+	}
+	if (agentKind(value.agent) === undefined && typeof value.agent === 'string' && typeof value.id === 'string' && value.id.length > 0 && value.id.length <= PARADIS_BOT_LIMITS.id && paradisIsBotFolderName(value.folder)) {
+		return { kind: 'unknown', value, id: value.id, folder: value.folder };
 	}
 	const name = paradisSanitizeBotName(value.name);
 	const agent = agentKind(value.agent);
@@ -255,11 +341,34 @@ function storedBot(value: unknown): IParadisBot | undefined {
 		|| !paradisIsBotFolderName(value.folder) || typeof value.paused !== 'boolean' || createdAt === undefined || updatedAt === undefined) {
 		return undefined;
 	}
-	return withOptionalIds({ id: value.id, name, folder: value.folder, agent, paused: value.paused, createdAt, updatedAt }, {
+	// ピン留めは後から足した欄なので、無い（古い保存）・形の違う値は false として読む
+	// 顔も後から足した欄なので、無い・選べる値でないときは名前から決まる既定として読む
+	const face = paradisBotDefaultFace(name);
+	const bot = withOptionalIds({
+		id: value.id,
+		name,
+		folder: value.folder,
+		agent,
+		paused: value.paused,
+		pinned: value.pinned === true,
+		faceColor: faceColor(value.faceColor) ?? face.faceColor,
+		faceShape: faceShape(value.faceShape) ?? face.faceShape,
+		createdAt,
+		updatedAt,
+	}, {
 		modelId: value.modelId ?? undefined,
 		effortId: value.effortId ?? undefined,
 		permissionId: value.permissionId ?? undefined,
 	});
+	if (bot === undefined) {
+		return undefined;
+	}
+	return { kind: 'bot', bot: Object.keys(value).some(key => !PARADIS_BOT_KNOWN_KEYS.has(key)) ? { ...bot, preserved: value } : bot };
+}
+
+/** 書き出す形。知らない欄を持っていた Bot と知らないエージェントの Bot は、読んだ値をそのまま書く。 */
+export function paradisBotsToStored(state: IParadisBotsState): unknown {
+	return { version: state.version, bots: [...state.bots.map(bot => bot.preserved ?? bot), ...(state.unknown ?? [])] };
 }
 
 /**
@@ -272,15 +381,22 @@ export function paradisParseBotsState(value: unknown): IParadisBotsState | undef
 		return undefined;
 	}
 	const bots: IParadisBot[] = [];
+	const unknown: Readonly<Record<string, unknown>>[] = [];
 	const ids = new Set<string>();
 	const folders = new Set<string>();
 	for (const candidate of value.bots) {
-		const bot = storedBot(candidate);
-		if (bot !== undefined && !ids.has(bot.id) && !folders.has(bot.folder) && bots.length < PARADIS_BOT_LIMITS.bots) {
-			ids.add(bot.id);
-			folders.add(bot.folder);
-			bots.push(bot);
+		const read = storedBot(candidate);
+		const key = read?.kind === 'bot' ? read.bot : read;
+		if (read === undefined || key === undefined || ids.has(key.id) || folders.has(key.folder) || bots.length + unknown.length >= PARADIS_BOT_LIMITS.bots) {
+			continue;
+		}
+		ids.add(key.id);
+		folders.add(key.folder);
+		if (read.kind === 'unknown') {
+			unknown.push(read.value);
+		} else {
+			bots.push(read.bot);
 		}
 	}
-	return { version: value.version, bots };
+	return { version: value.version, bots, ...(unknown.length > 0 ? { unknown } : {}) };
 }

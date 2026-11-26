@@ -50,8 +50,10 @@ export interface IParadisMobileDeviceRequestPrompt {
 	readonly runtime?: string;
 	/** エージェントが書いた理由。 */
 	readonly reason?: string;
-	/** 承認するとこのペインから外れる端末の名前（別の端末を持っているとき）。 */
-	readonly replacingDeviceName?: string;
+	/** このペインが今持っている端末（割り当てた順）。承認すると、ここに 1 台足される。 */
+	readonly attachedDevices?: readonly { readonly id: string; readonly name: string }[];
+	/** 上限まで持っているので、承認の画面で {@link attachedDevices} から外す 1 台を利用者に選んでもらう。 */
+	readonly mustRelease?: boolean;
 }
 
 /**
@@ -84,6 +86,8 @@ export interface IParadisMobileDeviceRequestAnswer {
 	readonly outcome: ParadisMobileDeviceRequestOutcome;
 	/** 承認したときの、ペインが属するスペース（台帳に残す）。 */
 	readonly stateKey?: string;
+	/** 上限のときに利用者が選んだ、外す端末の id（台帳が、そのペインの割り当てかを確かめる）。 */
+	readonly releaseDeviceId?: string;
 }
 
 const REQUEST_OUTCOMES: ReadonlySet<string> = new Set<ParadisMobileDeviceRequestOutcome>(['approved', 'denied', 'cancelled', 'timedOut', 'unanswered', 'busy', 'recentlyDenied', 'paneUnresolved']);
@@ -98,7 +102,8 @@ export function paradisParseMobileDeviceRequestAnswer(value: unknown): IParadisM
 		return undefined;
 	}
 	const stateKey = typeof record.stateKey === 'string' && record.stateKey ? record.stateKey : undefined;
-	return { outcome: record.outcome as ParadisMobileDeviceRequestOutcome, ...(stateKey !== undefined ? { stateKey } : {}) };
+	const releaseDeviceId = typeof record.releaseDeviceId === 'string' && record.releaseDeviceId ? record.releaseDeviceId : undefined;
+	return { outcome: record.outcome as ParadisMobileDeviceRequestOutcome, ...(stateKey !== undefined ? { stateKey } : {}), ...(releaseDeviceId !== undefined ? { releaseDeviceId } : {}) };
 }
 
 // --- 端末の種類 ---

@@ -96,6 +96,27 @@ suite('ParadisAgentChatComposer', () => {
 		});
 	});
 
+	test('puts a draft from outside into the input without sending it, keeping what the user wrote, and focuses the input', () => {
+		const host = new TestComposerHost();
+		const composer = store.add(new ParadisAgentChatComposer(container, host));
+		const sent: string[] = [];
+		store.add(composer.onDidSubmit(text => sent.push(text)));
+		composer.setToken('pane-1');
+		const first = composer.insertDraft('リリースをまとめて');
+		const textarea = container.querySelector('textarea')!;
+		textarea.value = '書きかけ';
+		textarea.dispatchEvent(new Event('input'));
+		const second = composer.insertDraft('テストも');
+		assert.deepStrictEqual({ first, second, value: textarea.value, draft: host.drafts.get('pane-1'), sent, focused: mainWindow.document.activeElement === textarea }, {
+			first: 'inserted',
+			second: 'appended',
+			value: '書きかけ\n\nテストも',
+			draft: '書きかけ\n\nテストも',
+			sent: [],
+			focused: true,
+		});
+	});
+
 	test('keeps a draft per pane, recalls sent messages with the up arrow, and blocks sending while the agent waits for an answer', () => {
 		const host = new TestComposerHost();
 		host.history = ['first', 'second'];

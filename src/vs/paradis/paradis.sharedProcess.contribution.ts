@@ -63,6 +63,7 @@ import './contrib/agentModelCatalog/node/paradisAgentModelCatalog.sharedProcess.
 import './contrib/agentActivity/node/paradisAgentActivityChannel.js';
 import './contrib/notificationInbox/node/paradisNotificationInboxChannel.js';
 import './contrib/humanAsk/node/paradisHumanAskChannel.js';
+import { registerParadisHumanAskPaneOwner } from './contrib/humanAsk/node/paradisHumanAskPaneOwner.js';
 import './contrib/agentIde/node/paradisAgentIde.sharedProcess.js';
 import './contrib/scheduledRuns/node/paradisScheduledRunsChannel.js';
 import './contrib/taskBoard/node/paradisTaskBoardBridge.sharedProcess.js';
@@ -77,6 +78,8 @@ import './contrib/notifications/node/paradisAgentDictionary.sharedProcess.js';
 import './contrib/claudeMod/node/paradisClaudeContext.sharedProcess.js';
 import './contrib/tasks/node/paradisTasksGithub.sharedProcess.js';
 import './contrib/agentDocs/node/paradisAgentDocs.sharedProcess.js';
+// Bot の道具の説明は MCP の説明の最後に足す（長い説明は途中で切られるので、前からある段を押し出さない）
+import './contrib/bots/node/paradisBots.sharedProcess.js';
 
 /**
  * shared process へ fork のチャネルをすべて登録する。`sharedProcessMain.ts` から1回だけ呼ばれる。
@@ -133,7 +136,9 @@ export function registerParadisSharedProcessContributions(server: IPCServer<stri
 	store.add(registerParadisWorktreeGit(server, accessor.get(ILogService), accessor.get(IConfigurationService), args));
 
 	// モバイルリレーサービス（src/vs/paradis/contrib/mobileRelay/ 参照）
-	store.add(registerParadisMobileRelay(server, accessor.get(INativeEnvironmentService).userDataPath, accessor.get(IMainProcessService), accessor.get(ILogService), accessor.get(IConfigurationService), args, paradisAgentBrowser, paradisNotifications.onDidCreateMobileVoiceClip, probe => paradisNotifications.setMobileVoiceListenerProbe(probe)));
+	store.add(registerParadisMobileRelay(server, accessor.get(INativeEnvironmentService).userDataPath, accessor.get(IMainProcessService), accessor.get(ILogService), accessor.get(IConfigurationService), args, paradisAgentBrowser, paradisNotifications.onDidCreateMobileVoiceClip, probe => paradisNotifications.setMobileVoiceListenerProbe(probe),
+		// ペインの質問・許可を「人が答えるもの」の台帳へ載せる書き手（src/vs/paradis/contrib/humanAsk/ 参照）
+		source => registerParadisHumanAskPaneOwner(server, source, accessor.get(ILogService))));
 	// モバイルの find/grep 用 ripgrep チャネル
 	store.add(registerParadisRemoteSearch(server, accessor.get(ILogService)));
 

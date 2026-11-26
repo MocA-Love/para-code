@@ -13,7 +13,7 @@ import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { EMPTY_PARADIS_BOT_ITEMS_STATE, paradisBotItemAdd } from '../../common/paradisBotItems.js';
 import { EMPTY_PARADIS_BOTS_STATE, paradisBotCreate } from '../../common/paradisBots.js';
-import { createParadisBotItemsFile, createParadisBotsFile, paradisBotsDataFolder } from '../../node/paradisBotsStore.js';
+import { createParadisBotItemsFile, createParadisBotPanesFile, createParadisBotsFile, paradisBotsDataFolder } from '../../node/paradisBotsStore.js';
 
 suite('Paradis bots store', () => {
 
@@ -88,5 +88,33 @@ suite('Paradis bots store', () => {
 		await file.write(added.state);
 		const written = JSON.parse(await fs.readFile(join(folder, 'items.json'), 'utf8'));
 		assert.deepStrictEqual([written.nextNumber, written.items[0], written.items[1].number], [3, waiting, 2]);
+	});
+
+	test('ペインとの結び付け: 形の違う 1 件だけ捨て、新しい版は読まずに書き込みを断る', async () => {
+		const folder = paradisBotsDataFolder(userData);
+		await fs.mkdir(folder, { recursive: true });
+		const hash = '1b780c2005e24c7adab28a00c48fd437c37580c140f7b9585d87f54e78b59cff';
+		await fs.writeFile(join(folder, 'panes.json'), JSON.stringify({ version: 1, panes: [{ hash, botId: 'b1', purpose: 'chat', boundAt: 1000 }, { hash: 'pane-A', botId: 'b1', purpose: 'chat', boundAt: 1000 }, { hash, botId: 'b1', purpose: 'root', boundAt: 1000 }] }));
+		const current = await createParadisBotPanesFile(userData).read();
+		await fs.writeFile(join(folder, 'panes.json'), JSON.stringify({ version: 2, panes: [{ hash, botId: 'b1', purpose: 'chat', boundAt: 1000 }] }));
+		const newer = await createParadisBotPanesFile(userData).read();
+		const refused = await createParadisBotPanesFile(userData).write(newer.state).then(() => 'written', () => 'refused');
+		assert.deepStrictEqual({ current, newer, refused }, {
+			current: { state: { version: 1, panes: [{ hash, botId: 'b1', purpose: 'chat', boundAt: 1000 }] } },
+			newer: { state: { version: 2, panes: [] } },
+			refused: 'refused',
+		});
+	});
+
+	test('フォルダを作れなかった書き込みの後も、次の書き込みでやり直す', async () => {
+		// 台帳のフォルダの親（paradis）の場所にファイルがあると、フォルダを作れない
+		await fs.writeFile(join(userData, 'paradis'), 'x');
+		const bots = createParadisBotsFile(userData);
+		const created = paradisBotCreate(EMPTY_PARADIS_BOTS_STATE, { id: 'b1', name: 'A', agent: 'claude' }, 1000);
+		assert.ok(created.ok);
+		const first = await bots.write(created.state).then(() => 'written', () => 'failed');
+		await fs.rm(join(userData, 'paradis'));
+		const second = await bots.write(created.state).then(() => 'written', () => 'failed');
+		assert.deepStrictEqual({ first, second, read: (await bots.read()).state.bots.map(bot => bot.id) }, { first: 'failed', second: 'written', read: ['b1'] });
 	});
 });

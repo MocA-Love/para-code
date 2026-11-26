@@ -42,7 +42,8 @@ const ID_LIMIT = 400;
 const TITLE_LIMIT = 200;
 const LABEL_LIMIT = 400;
 const QUESTION_TEXT_LIMIT = 2000;
-const PREFACE_LIMIT = 4000;
+/** 前置きの上限（許可の中身の全部が入る長さ。コマンド 10,000 字・MCP の引数 20 個 × 500 字など。paradisAgentApprovalRequest.ts）。 */
+const PREFACE_LIMIT = 16_000;
 /** 自由入力の答えの長さの上限。 */
 export const PARADIS_HUMAN_ASK_ANSWER_TEXT_LIMIT = 8000;
 /** 「どこで・何と答えたか」の要約の長さ。 */
@@ -99,6 +100,19 @@ export interface IParadisHumanAskAction {
 	readonly label: string;
 	/** 押したときにひとこと添えられるか（差し戻しの理由など）。 */
 	readonly allowText?: boolean;
+	/**
+	 * 押す前に確かめる文（持ち主の画面がそのボタンで出す確認と同じ文）。付いたボタンは行の中で 1 押しでは送らず、
+	 * モーダルでこの確認を通してから送る。
+	 */
+	readonly confirm?: IParadisHumanAskConfirm;
+}
+
+/** ボタンを押す前の確認。 */
+export interface IParadisHumanAskConfirm {
+	readonly title: string;
+	readonly body?: string;
+	/** 確認のボタンの名前。 */
+	readonly ok: string;
 }
 
 /** だれから（1 行）。Bot 名と項目の番号、ボードのタスクの番号と工程、スペース・worktree・エージェント名。 */
@@ -125,8 +139,13 @@ export interface IParadisHumanAskInput {
 	readonly id: string;
 	readonly kind: ParadisHumanAskKind;
 	readonly from: IParadisHumanAskFrom;
-	/** なぜ聞くかの前置き（短い 5 行までを勧める）。 */
+	/** なぜ聞くかの前置き（短い 5 行までを勧める）。許可では操作の全文（コマンド・引数）を入れる。 */
 	readonly preface?: string;
+	/**
+	 * 許可を行の中のボタンで 1 押しで答えてよい（許可リスト）。形が分かっていて、全文を切り詰めずに前置きへ入れたものにだけ
+	 * 持ち主が付ける（Bash のコマンド・読むだけの道具）。付いていない許可は、モーダルで全文を見てから答える。
+	 */
+	readonly inlineAllowed?: boolean;
 	readonly questions: readonly IParadisHumanAskQuestion[];
 	readonly actions: readonly IParadisHumanAskAction[];
 	/** 「飛ばす」を出すか（Bot の項目）。 */
@@ -409,6 +428,18 @@ function sanitizeQuestions(value: unknown, optionLimit: number): IParadisHumanAs
 	return questions;
 }
 
+/** 確認の文を検める。形が違えば false（その 1 件ごと断る。確認を落として 1 押しで送れるようにはしない）。 */
+function sanitizeConfirm(value: unknown): IParadisHumanAskConfirm | false {
+	const input = record(value);
+	const title = shown(input?.title, TITLE_LIMIT);
+	const ok = shown(input?.ok, TITLE_LIMIT);
+	const body = input?.body === undefined ? undefined : shown(input.body, LABEL_LIMIT);
+	if (title === undefined || ok === undefined || (input?.body !== undefined && body === undefined)) {
+		return false;
+	}
+	return { title, ...(body !== undefined ? { body } : {}), ok };
+}
+
 function sanitizeActions(value: unknown): IParadisHumanAskAction[] | undefined {
 	if (value === undefined) {
 		return [];
@@ -425,8 +456,12 @@ function sanitizeActions(value: unknown): IParadisHumanAskAction[] | undefined {
 		if (input === undefined || id === undefined || label === undefined || ids.has(id)) {
 			return undefined;
 		}
+		const confirm = input.confirm === undefined ? undefined : sanitizeConfirm(input.confirm);
+		if (confirm === false) {
+			return undefined;
+		}
 		ids.add(id);
-		actions.push({ id, label, ...(input.allowText === true ? { allowText: true } : {}) });
+		actions.push({ id, label, ...(input.allowText === true ? { allowText: true } : {}), ...(confirm ? { confirm } : {}) });
 	}
 	return actions;
 }
@@ -463,6 +498,7 @@ export function paradisSanitizeHumanAskInput(value: unknown): IParadisHumanAskIn
 		kind,
 		from: { title, ...(detail !== undefined ? { detail } : {}) },
 		...(preface !== undefined ? { preface } : {}),
+		...(input.inlineAllowed === true ? { inlineAllowed: true } : {}),
 		questions,
 		actions,
 		canSkip: input.canSkip === true,
