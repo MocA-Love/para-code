@@ -25,6 +25,7 @@ import { ParadisAntigravitySendBlock, paradisAntigravitySendBlock } from '../com
 import { IParadisAgentDescriptor, PARADIS_AGENT_DESCRIPTORS, ParadisAgentKind, paradisAgentDescriptor } from '../common/paradisAgentDescriptor.js';
 import { ParadisAgentChatSession } from './paradisAgentChatSession.js';
 import { paradisPermissionPromptParts, paradisPromptRegionShows, paradisScreenShowsAgentPrompt, paradisScreenShowsMarker, paradisScreenShowsPermissionPrompt, paradisScreenShowsQuestionPrompt, paradisSendAgentInteractionKeys } from './paradisAgentTuiInput.js';
+import { paradisAgentChoiceMenu } from '../../agentIde/common/paradisAgentChoiceMenu.js';
 
 /** 入力先のターミナル（ITerminalInstance から要るところだけ。テストで差し替える）。 */
 export interface IParadisAgentChatTerminal {
@@ -135,6 +136,11 @@ export class ParadisAgentChatInput {
 		}
 		if (state.agent === 'codex' && paradisPendingCodexQuestion(state.messages) !== undefined) {
 			return localize('paradisAgentChat.errorCodexQuestion', "Codex が質問しています。ターミナルで答えてください");
+		}
+		// Codex の選択画面（「Implement this plan?」など）は Enter で既定の選択肢（実装に進む・今すぐ更新する）を選ぶ。
+		// hook も会話の記録も知らせないので、画面で見て打たない
+		if (state.agent === 'codex' && paradisAgentChoiceMenu(terminal.readScreen()) !== undefined) {
+			return localize('paradisAgentChat.errorChoiceMenu', "ターミナルに選択の画面が出ています。ターミナルで選んでから送ってください");
 		}
 		// hook が届かない構成・中継が見落とした確認画面にも Enter を送らない。
 		if (paradisScreenShowsAgentPrompt(terminal.readScreen(), state.agent)) {
