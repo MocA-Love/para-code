@@ -44,9 +44,11 @@ suite('Paradis notification inbox: your turn cards', () => {
 			// 行の中では切れてしまう長い選択肢
 			paradisInboxAskLayout(entry({ questions: [{ ...question('a', 2), options: [{ id: '0', label: '受信箱のカードとボードの既定のフローを確かめてから出す' }, { id: '1', label: '出す' }] }] })),
 			// 許可: 短くて危険の札が無ければ行の中
+			paradisInboxAskLayout(entry({ kind: 'permission', preface: 'Bash: npm run typecheck-client', actions: ALLOW_DENY, inlineAllowed: true })),
+			// 持ち主が許可リストに入れていない許可（形が分からない・書き込む道具）は、短くてもモーダル
 			paradisInboxAskLayout(entry({ kind: 'permission', preface: 'Bash: npm run typecheck-client', actions: ALLOW_DENY })),
 			// 危険な操作を含む・中身が 6 行に収まらない許可は、行の中に「許可」を出さない
-			paradisInboxAskLayout(entry({ kind: 'permission', preface: 'Bash: rm -rf build && npm run build', actions: ALLOW_DENY })),
+			paradisInboxAskLayout(entry({ kind: 'permission', preface: 'Bash: rm -rf build && npm run build', actions: ALLOW_DENY, inlineAllowed: true })),
 			paradisInboxAskLayout(entry({ kind: 'permission', preface: `Write: ${'長い中身 '.repeat(100)}`, actions: ALLOW_DENY })),
 			// 押す前に確認が要るボタン（ボードの「完了扱いにする」）がある: 1 押しで送らずモーダルへ
 			paradisInboxAskLayout(entry({ source: 'board', kind: 'stalled', actions: [{ id: 'nudge', label: '報告を促す' }, { id: 'complete', label: '完了扱いにする', confirm: { title: '完了にしますか', ok: '完了にする' } }] })),
@@ -54,7 +56,7 @@ suite('Paradis notification inbox: your turn cards', () => {
 			paradisInboxAskLayout(entry({ kind: 'permission', preface: 'MCP: db.run' })),
 			// 待ちでなくなった
 			paradisInboxAskLayout(entry({ state: 'answered', questions: [question('a', 2)] })),
-		], ['inline-options', 'inline-options', 'dialog', 'dialog', 'dialog', 'dialog', 'dialog', 'inline-actions', 'dialog', 'dialog', 'dialog', 'unanswerable', 'settled']);
+		], ['inline-options', 'inline-options', 'dialog', 'dialog', 'dialog', 'dialog', 'dialog', 'inline-actions', 'dialog', 'dialog', 'dialog', 'dialog', 'unanswerable', 'settled']);
 	});
 
 	test('one single-choice question sends on pick; anything else is chosen first and then sent', () => {

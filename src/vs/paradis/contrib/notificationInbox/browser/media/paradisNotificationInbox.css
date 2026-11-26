@@ -324,6 +324,12 @@
 	overflow-wrap: anywhere;
 }
 
+/* The dialog keeps the whole request (up to the ledger's limit) and scrolls it instead of cutting it. */
+.monaco-workbench .paradis-inbox-ask-dialog .pniad-detail {
+	max-height: 50vh;
+	overflow: auto;
+}
+
 .monaco-workbench .paradis-notification-inbox-popover .pnip-ask-command {
 	display: -webkit-box;
 	-webkit-line-clamp: 6;

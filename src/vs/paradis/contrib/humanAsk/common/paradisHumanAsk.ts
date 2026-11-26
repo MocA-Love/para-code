@@ -42,8 +42,8 @@ const ID_LIMIT = 400;
 const TITLE_LIMIT = 200;
 const LABEL_LIMIT = 400;
 const QUESTION_TEXT_LIMIT = 2000;
-/** 前置きの上限（許可のコマンドの上限と同じ。paradisAgentApprovalRequest.ts の COMMAND_LIMIT）。 */
-const PREFACE_LIMIT = 10_000;
+/** 前置きの上限（許可の中身の全部が入る長さ。コマンド 10,000 字・MCP の引数 20 個 × 500 字など。paradisAgentApprovalRequest.ts）。 */
+const PREFACE_LIMIT = 16_000;
 /** 自由入力の答えの長さの上限。 */
 export const PARADIS_HUMAN_ASK_ANSWER_TEXT_LIMIT = 8000;
 /** 「どこで・何と答えたか」の要約の長さ。 */
@@ -142,10 +142,10 @@ export interface IParadisHumanAskInput {
 	/** なぜ聞くかの前置き（短い 5 行までを勧める）。許可では操作の全文（コマンド・引数）を入れる。 */
 	readonly preface?: string;
 	/**
-	 * 答える前に前置きの全文を見せる（行の中のボタンで 1 押しでは答えさせない）。MCP の道具・形を知らない道具の許可など、
-	 * 何を書き込むのかを文字の規則では見分けられないものに付ける。
+	 * 許可を行の中のボタンで 1 押しで答えてよい（許可リスト）。形が分かっていて、全文を切り詰めずに前置きへ入れたものにだけ
+	 * 持ち主が付ける（Bash のコマンド・読むだけの道具）。付いていない許可は、モーダルで全文を見てから答える。
 	 */
-	readonly fullTextFirst?: boolean;
+	readonly inlineAllowed?: boolean;
 	readonly questions: readonly IParadisHumanAskQuestion[];
 	readonly actions: readonly IParadisHumanAskAction[];
 	/** 「飛ばす」を出すか（Bot の項目）。 */
@@ -498,7 +498,7 @@ export function paradisSanitizeHumanAskInput(value: unknown): IParadisHumanAskIn
 		kind,
 		from: { title, ...(detail !== undefined ? { detail } : {}) },
 		...(preface !== undefined ? { preface } : {}),
-		...(input.fullTextFirst === true ? { fullTextFirst: true } : {}),
+		...(input.inlineAllowed === true ? { inlineAllowed: true } : {}),
 		questions,
 		actions,
 		canSkip: input.canSkip === true,
