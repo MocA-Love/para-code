@@ -332,10 +332,19 @@ export class ParadisHumanAskLedger {
 	/** 残しておく時間を過ぎた・上限を超えた回答済み・取り下げを捨てる。 */
 	private prune(): boolean {
 		const at = this.now();
+		let expired = false;
+		for (const entry of this.entries.values()) {
+			// 届けている最中に消え、持ち主から何も来ないまま時間切れを過ぎた（持ち主が二度と一覧を知らせなくても、台帳の
+			// どこかが変わるたびにここで決める。ボードは出番が変わらないと一覧を知らせない）
+			if (entry.state === 'waiting' && entry.unlisted && entry.pending && at - entry.pending.at >= this.options.claimTimeoutMs) {
+				this.settle(entry, 'answered', { at, surface: entry.pending.surface, ...(entry.pending.summary !== undefined ? { summary: entry.pending.summary } : {}) });
+				expired = true;
+			}
+		}
 		const settled = [...this.entries.values()]
 			.filter(entry => entry.state !== 'waiting')
 			.sort((a, b) => (b.resolution?.at ?? 0) - (a.resolution?.at ?? 0) || b.order - a.order);
-		let changed = false;
+		let changed = expired;
 		settled.forEach((entry, index) => {
 			if (index >= this.options.recentLimit || at - (entry.resolution?.at ?? 0) >= this.options.recentTtlMs) {
 				this.entries.delete(entry.key);

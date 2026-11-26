@@ -276,6 +276,19 @@ suite('Paradis human ask ledger', () => {
 		});
 	});
 
+	test('an answer on the way whose owner never speaks again is settled by the next change from anyone after the timeout', () => {
+		const time = clock();
+		const ledger = new ParadisHumanAskLedger(time.now, { claimTimeoutMs: 20_000 });
+		ledger.sync('board:1', [ask('board', 'L:t1:q1')]);
+		assert.ok(ledger.claim('board:L:t1:q1', pick('a'), 'mobile').ok);
+		// ボードは一覧から外したきり、届いたとも届かなかったとも言わず、次の一覧も送らない
+		ledger.sync('board:1', []);
+		time.advance(21_000);
+		// ほかの持ち主（ペイン）の知らせで台帳が動いたときに決まる
+		ledger.sync('panes', [permission('pane', 'p1')]);
+		assert.deepStrictEqual(view(ledger).entries, ['pane:p1 waiting', 'board:L:t1:q1 answered by mobile 残す']);
+	});
+
 	test('does not let another owner take over a waiting key, and stops taking entries at the limit', () => {
 		const ledger = new ParadisHumanAskLedger(clock().now, { waitingLimit: 2 });
 		ledger.sync('board', [ask('board', 't1:q1')]);

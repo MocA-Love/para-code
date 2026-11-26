@@ -63,9 +63,10 @@ export class ParadisTaskBoardAskBridge extends Disposable {
 	private readonly boards = new Map<string, { connections: number; readonly owner: string }>();
 	private boardSequence = 0;
 	/**
-	 * id の頭（ボードの台帳の名前。リポジトリごとに違う）と、それを最初に使ったボードの鍵（の hash）。頭はボードが自分で
-	 * 名乗るので、別の鍵のボードが同じ頭を名乗ったら断る（別のリポジトリの待ちに成り代わって答えを受け取らせない）。
-	 * 接続が切れても忘れない（同じリポジトリのボードは同じ鍵でつなぎ直す）。
+	 * id の頭（ボードの台帳の名前。リポジトリごとに違う）と、それを使っているボードの鍵（の hash）。頭はボードが自分で
+	 * 名乗るので、その頭を使っているボードがつながっている間は、別の鍵のボードが同じ頭を名乗っても断る（別のリポジトリの
+	 * 待ちに成り代わって答えを受け取らせない）。ボードの鍵は起動ごとに変わるので、使っていたボードの接続が全部切れた後
+	 * （その待ちはもう取り下げてある）なら、開き直したボードの新しい鍵に結び付け直す。
 	 */
 	private readonly prefixOwners = new Map<string, string>();
 	/** 届けてもらっている最中の依頼（依頼の番号 → 持ち主と鍵）。 */
@@ -140,11 +141,17 @@ export class ParadisTaskBoardAskBridge extends Disposable {
 		}
 		const prefix = id.slice(0, separator);
 		const holder = this.prefixOwners.get(prefix);
-		if (holder === undefined && this.prefixOwners.size < TASK_BOARD_ASKS_LIMIT) {
-			this.prefixOwners.set(prefix, keyHash);
+		if (holder === keyHash) {
 			return true;
 		}
-		return holder === keyHash;
+		if (holder !== undefined && this.boards.has(holder)) {
+			return false;
+		}
+		if (holder === undefined && this.prefixOwners.size >= TASK_BOARD_ASKS_LIMIT) {
+			return false;
+		}
+		this.prefixOwners.set(prefix, keyHash);
+		return true;
 	}
 
 	/** ボードの 1 件を台帳の入力にする。出どころは `board` に固定し、ターミナルの id をペインの鍵と窓に引き直す。 */
