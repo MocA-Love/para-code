@@ -35,10 +35,11 @@ import { IHostService } from '../../../../workbench/services/host/browser/host.j
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisDialogService, paradisNotifyConfirmation } from '../../confirmDialog/browser/paradisDialogService.js';
 import { paradisCollectAllTerminalInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
-import { IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisLaunchedAgentTerminal, paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { paradisBotChangeDetail } from '../browser/paradisBotChangeDetail.js';
-import { paradisBotInstancesInWindow } from '../browser/paradisBotPaneHash.js';
+import { paradisRevealNotifiedPane } from '../../notifications/electron-browser/paradisNotificationReveal.js';
+import { paradisBotInstancesInWindow, paradisFindBotPane } from '../browser/paradisBotPaneHash.js';
 import { IParadisBotChangeRequest } from '../common/paradisBotManageTools.js';
 import { IParadisBotsService, IParadisBotStopRequest, PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
 
@@ -67,6 +68,8 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 	const terminalGroupService = accessor.get(ITerminalGroupService);
 	const instantiationService = accessor.get(IInstantiationService);
 	const switchService = accessor.get(IParadisWorkspaceSwitchService);
+	const terminalScopeService = accessor.get(IParadisTerminalScopeService);
+	const hostService = accessor.get(IHostService);
 	const environmentService = accessor.get(IWorkbenchEnvironmentService);
 	const logService = accessor.get(ILogService);
 
@@ -75,12 +78,16 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 	}
 	opening.add(botId);
 	try {
-		const existing = (await paradisBotInstancesInWindow(paneTokenService, await botsService.paneHashesOf(botId)))
-			.map(instanceId => findInstance(terminalService, terminalGroupService, instanceId))
-			.find(instance => instance !== undefined && !instance.isDisposed);
+		// 待避中（別のスペース）のペインも探す。見つからずに今のスペースで 2 つ目を起動しないため
+		const existing = await paradisFindBotPane({
+			paneTokenService,
+			findInstance: instanceId => findInstance(terminalService, terminalGroupService, instanceId),
+			stateKeyOf: instanceId => terminalScopeService.getStateKeyForInstance(instanceId),
+		}, await botsService.paneHashesOf(botId));
 		if (existing !== undefined) {
 			if (!fromAgent) {
-				await terminalService.focusInstance(existing);
+				// そのペインのスペースへ切り替えてから前に出す（通知のクリックと同じ動き）
+				await paradisRevealNotifiedPane({ hostService, terminalService, workspaceSwitchService: switchService }, existing.stateKey, existing.instanceId);
 			}
 			return { ok: true, state: 'running', focused: !fromAgent };
 		}

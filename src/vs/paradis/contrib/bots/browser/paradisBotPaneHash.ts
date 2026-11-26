@@ -31,3 +31,26 @@ export async function paradisBotInstancesInWindow(paneTokenService: Pick<IParadi
 	}
 	return matched;
 }
+
+/**
+ * このウィンドウにある Bot のペイン（ハッシュが合い、閉じていないもの）と、その所属スペース。待避中（別のスペースへ
+ * 切り替えて park された）ペインも数える（`listPaneTokens` は表示に関係なく全部を返す）。無ければ undefined。
+ */
+export async function paradisFindBotPane<T extends { readonly isDisposed: boolean }>(
+	services: {
+		readonly paneTokenService: Pick<IParadisPaneTokenService, 'listPaneTokens'>;
+		/** 待避中のものも含めて、このウィンドウのターミナルを引く。 */
+		findInstance(instanceId: number): T | undefined;
+		/** ペインの所属スペース（スペースの外なら undefined）。 */
+		stateKeyOf(instanceId: number): string | undefined;
+	},
+	hashes: readonly string[],
+): Promise<{ readonly instanceId: number; readonly instance: T; readonly stateKey: string | undefined } | undefined> {
+	for (const instanceId of await paradisBotInstancesInWindow(services.paneTokenService, hashes)) {
+		const instance = services.findInstance(instanceId);
+		if (instance !== undefined && !instance.isDisposed) {
+			return { instanceId, instance, stateKey: services.stateKeyOf(instanceId) };
+		}
+	}
+	return undefined;
+}
