@@ -24,6 +24,12 @@ import { IParadisBotPaneState, PARADIS_BOT_PANE_PURPOSES, ParadisBotPanePurpose 
 /** 起動の番号が有効な時間。起動に失敗して報告が来なかった番号を残さない。 */
 export const PARADIS_BOT_LAUNCH_TTL_MS = 5 * 60_000;
 
+/**
+ * 発行して報告がまだの会話の起動を「起動中」と数える時間。2 つのウィンドウから同時に開いたとき 1 つにするためで、
+ * 起動に失敗して取り消しも来なかった番号が、その Bot をいつまでも開けなくしないよう短くする。
+ */
+export const PARADIS_BOT_LAUNCHING_TTL_MS = 2 * 60_000;
+
 /** 保存する結び付けの上限（古いものから落とす）。 */
 export const PARADIS_BOT_REMEMBERED_PANES_LIMIT = 200;
 
@@ -169,6 +175,19 @@ export class ParadisBotPanes {
 	/** 起動をやめた（失敗した）番号を捨てる。 */
 	cancel(launchId: string): boolean {
 		return this.pending.delete(launchId);
+	}
+
+	/**
+	 * その Bot の会話が使われているか。数えるのは、現れたペイン（報告・hook・道具の呼び出しで確かめたもの）と、
+	 * 発行して報告がまだの会話の起動（{@link PARADIS_BOT_LAUNCHING_TTL_MS} の間）だけ。起動し直した後でまだ現れていない
+	 * 保存した結び付けは数えない（閉じたことが伝わらなかった古いペインで、その Bot を開けなくしないため）。見回りは数えない。
+	 */
+	chatInUse(botId: string, now: number): { readonly state: 'open'; readonly tokens: readonly string[] } | { readonly state: 'launching' } | undefined {
+		const tokens = [...this.panes].filter(([, pane]) => pane.botId === botId && pane.purpose === 'chat').map(([token]) => token);
+		if (tokens.length > 0) {
+			return { state: 'open', tokens };
+		}
+		return [...this.pending.values()].some(entry => entry.botId === botId && entry.purpose === 'chat' && now - entry.issuedAt <= PARADIS_BOT_LAUNCHING_TTL_MS) ? { state: 'launching' } : undefined;
 	}
 
 	botOf(paneToken: string): string | undefined {
