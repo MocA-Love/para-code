@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import { Event } from '../../../../base/common/event.js';
+import { IParadisMobileHumanAskSummary } from '../common/paradisMobileHumanAsks.js';
 import { IDisposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { IPCServer, ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
@@ -35,8 +36,9 @@ import { ParadisMobileRelayService } from './paradisMobileRelayService.js';
  * 1 本まるごとの MP3）で、音声通知を開始しているモバイルへ配るために注入する。
  * OS のスリープ復帰は main の 'nativeHost' チャネルから受け、リレーの接続を即座に確かめさせる。
  * humanAskPanes は「人が答えるもの」の台帳の書き手の登録口（同じ shared process の中だけ）。
+ * humanAskSummary はスマホの要対応に出す台帳の件数と印の出どころ（同じ shared process の台帳。human-ask.v1）。
  */
-export function registerParadisMobileRelay(server: IPCServer, userDataPath: string, mainProcessService: IMainProcessService, logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs, sharedPageBindings?: IParadisSharedPageBindings, voiceClips?: Event<ParadisMobileVoiceEvent>, voiceListenerProbe?: (probe: () => number) => IDisposable, humanAskPanes?: (source: IParadisHumanAskPaneSource) => IDisposable): IDisposable {
+export function registerParadisMobileRelay(server: IPCServer, userDataPath: string, mainProcessService: IMainProcessService, logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs, sharedPageBindings?: IParadisSharedPageBindings, voiceClips?: Event<ParadisMobileVoiceEvent>, voiceListenerProbe?: (probe: () => number) => IDisposable, humanAskPanes?: (source: IParadisHumanAskPaneSource) => IDisposable, humanAskSummary?: { readonly onDidChange: Event<unknown>; read(): IParadisMobileHumanAskSummary }): IDisposable {
 	const store = new DisposableStore();
 	const encryptionService = ProxyChannel.toService<IEncryptionService>(mainProcessService.getChannel('encryption'));
 	// ブラウザミラーの再描画プッシュ購読（electron-main の beginFrameSubscription を中継）
@@ -56,6 +58,11 @@ export function registerParadisMobileRelay(server: IPCServer, userDataPath: stri
 	// ペインの質問・許可を「人が答えるもの」の台帳へ載せる書き手（humanAsk）へ、今の待ちの読むだけの口を渡す
 	if (humanAskPanes !== undefined) {
 		store.add(humanAskPanes(service.humanAskPaneSource()));
+	}
+	if (humanAskSummary !== undefined) {
+		const publish = () => service.setHumanAsks(humanAskSummary.read()).catch(error => logService.trace('[paradisMobileRelay] human asks summary failed', String(error)));
+		store.add(humanAskSummary.onDidChange(publish));
+		void publish();
 	}
 	server.registerChannel(PARADIS_MOBILE_RELAY_CHANNEL, ProxyChannel.fromService(service, store));
 	return store;

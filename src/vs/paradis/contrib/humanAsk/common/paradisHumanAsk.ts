@@ -285,7 +285,7 @@ export interface IParadisHumanAskService {
 	 * 答える。`ok` は「持ち主へ届ける依頼を出した」で、届いたかどうかはスナップショットで分かる
 	 * （回答済みになるか、`failedAt` が付いて待ちへ戻る）。
 	 */
-	answer(key: string, answer: ParadisHumanAskAnswer, surface?: 'inbox' | 'bot'): Promise<ParadisHumanAskClientResult>;
+	answer(key: string, answer: ParadisHumanAskAnswer, surface?: 'inbox' | 'bot' | 'mobile'): Promise<ParadisHumanAskClientResult>;
 }
 
 // ---- 補助 -------------------------------------------------------------------------------------

@@ -24,6 +24,7 @@ import { PARADIS_MOBILE_PROTOCOL_VERSION } from './paradisMobileCompat.js';
 import { IParadisMobileWindowLease } from './paradisMobileWindowLease.js';
 import { ParadisAgentCommandDeliveryResult } from './paradisAgentCommandLifecycle.js';
 import type { IParadisMobileDoNotDisturbState } from './paradisMobileDoNotDisturb.js';
+import type { IParadisMobileHumanAskSummary } from './paradisMobileHumanAsks.js';
 import type { IParadisMobileLinkMetricsRaw, IParadisMobileLinkMetricsSnapshot } from './paradisMobileLinkMetrics.js';
 import type { ParadisBindingScope } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import type { IParadisRemoteShellOutputRequest } from './paradisRemoteShellOutput.js';
@@ -239,6 +240,8 @@ export interface IParadisMobileDesktopStateV3 {
 	 * 状態が変わったときだけ revision を進めて送り直す（`paradisMobileDoNotDisturb.ts`）。
 	 */
 	readonly doNotDisturb?: IParadisMobileDoNotDisturbState;
+	/** スマホの要対応に出す「人が答えるもの」の台帳の件数と印（human-ask.v1。中身は fs の `humanAsks`）。 */
+	readonly humanAsks?: IParadisMobileHumanAskSummary;
 }
 
 /** shared process の接続状態。 */
