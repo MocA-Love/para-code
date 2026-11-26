@@ -32,12 +32,13 @@ import { registerWorkbenchContribution2, WorkbenchPhase } from '../../../../work
 import { ITerminalGroupService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
+import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisDialogService, paradisNotifyConfirmation } from '../../confirmDialog/browser/paradisDialogService.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisBotChangeDetail } from '../browser/paradisBotChangeDetail.js';
 import { paradisRevealNotifiedPane } from '../../notifications/electron-browser/paradisNotificationReveal.js';
-import { paradisBotInstancesInWindow, paradisFindBotPane } from '../browser/paradisBotPaneHash.js';
+import { paradisBotInstancesInWindow, paradisBotPatrolInstancesInWindow, paradisFindBotPane } from '../browser/paradisBotPaneHash.js';
 import { paradisFindBotTerminalInstance, paradisLaunchBotTerminal, paradisNameBotTab } from './paradisBotTerminalLaunch.js';
 import { IParadisBotChangeRequest, paradisApplyBotChange } from '../common/paradisBotManageTools.js';
 import { IParadisBotsService, IParadisBotStopRequest, PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
@@ -244,6 +245,13 @@ class ParadisBotsWindowContribution extends Disposable {
 
 	/** 前回タブ名を合わせたときの Bot の名前と様子（変わったときだけ合わせ直す）。 */
 	private namedSignature = '';
+	/** このウィンドウにある見回りのペイン（Bot の様子が変わるたびに調べ直す）。 */
+	private patrolInstances: readonly number[] = [];
+	private readonly patrolScheduler = this._register(new RunOnceScheduler(() => {
+		paradisBotPatrolInstancesInWindow(this.botsService, this.paneTokenService).then(
+			instances => { this.patrolInstances = instances; },
+			error => this.logService.warn('[paradisBots] finding the look-around terminals failed', error));
+	}, 500));
 	private readonly nameScheduler = this._register(new RunOnceScheduler(() => {
 		this.nameTabs().catch(error => this.logService.warn('[paradisBots] naming the bot tabs failed', error));
 	}, 500));
@@ -256,8 +264,21 @@ class ParadisBotsWindowContribution extends Disposable {
 		@ISharedProcessService sharedProcessService: ISharedProcessService,
 		@IInstantiationService instantiationService: IInstantiationService,
 		@ILogService private readonly logService: ILogService,
+		@ILifecycleService lifecycleService: ILifecycleService,
 	) {
 		super();
+		// 見回りのペインは次の回の直前に閉じるが、Para Code を閉じるときに開いたままのものも閉じる（次の起動で
+		// 見回りの残骸を復元しない）。閉じるときは待てないので、どれが見回りのペインかを先に調べておく
+		this._register(botsService.onDidChange(() => this.patrolScheduler.schedule()));
+		this.patrolScheduler.schedule();
+		this._register(lifecycleService.onWillShutdown(() => {
+			for (const instanceId of this.patrolInstances) {
+				const instance = findInstance(this.terminalService, this.terminalGroupService, instanceId);
+				if (instance !== undefined && !instance.isDisposed) {
+					instance.dispose(TerminalExitReason.User);
+				}
+			}
+		}));
 		sharedProcessService.registerChannel(PARADIS_BOTS_WINDOW_CHANNEL, instantiationService.createInstance(ParadisBotsWindowChannel));
 		this._register(botsService.onDidRequestStop(request => {
 			this.stop(request).catch(error => this.logService.warn('[paradisBots] stopping the bot terminals failed', error));
