@@ -110,12 +110,18 @@ export const PARADIS_BOTS_CHANNEL = 'paradisBots';
 
 /**
  * ウィンドウが shared process へ登録する窓口（エージェントの管理の道具が `callOwningWindow` で呼ぶ）。
- * 引数は `[呼び出し元のペイントークン, Bot の id, …]`。`start`（Bot のターミナルを裏で起動）と `confirmRemove`
- * （利用者に削除を確かめる。確かめる前に返る）。
+ * 引数は `[呼び出し元のペイントークン, …]`。`start`（Bot のターミナルを裏で起動）、`confirmRemove`（利用者に削除を
+ * 確かめる）、`confirmChange`（エージェント・権限・役割の変更を確かめる）。確かめるものは確かめる前に返る。
  */
 export const PARADIS_BOTS_WINDOW_CHANNEL = 'paradisBotsWindow';
 
 export type ParadisBotsWindowResult = { readonly ok: true; readonly data: object } | { readonly ok: false; readonly error: string };
+
+/**
+ * Bot の機能を使えるようにするか（試験中、既定 false）。設定の登録は Bot の一覧の帯の側にあり、ここは id だけを
+ * 持つ（帯・管理の道具が同じ id を読む）。
+ */
+export const PARADIS_BOTS_ENABLED_SETTING = 'paradis.bots.enabled';
 
 export const EMPTY_PARADIS_BOTS_SNAPSHOT: IParadisBotsSnapshot = Object.freeze({ revision: 0, readOnly: false, bots: Object.freeze([]) });
 
