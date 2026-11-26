@@ -1,0 +1,230 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments)
+
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+// 「どのペインがどの Bot か」の表。shared process のメモリに持ち、アプリを起動し直しても結び付けを戻せるよう、
+// ペイントークンのハッシュ（SHA-256）だけを `<userData>/paradis/bots/panes.json` に保存する。トークンの値は書かない。
+// ペイントークンは復元をまたいで同じ値に戻る（paradisPaneTokenService.ts が shellIntegrationNonce から作り直す）ので、
+// 起動し直した後に同じトークンのペインが hook か道具の呼び出しで現れたら、保存したハッシュと照らして結び付けを戻す。
+//
+// 表に書けるのは起動の経路だけにする。Bot のサービスが起動の番号（launchId）を発行し、ウィンドウが
+// 起動したターミナルのペイントークンをその番号付きで報告したときだけ結び付く。発行していない番号、
+// 2 回目の報告、もう別の Bot に結び付いているトークンは断る。Bot の道具（bot_item_*）は引数で Bot を
+// 受けず、この表から引くので、ほかのペインのエージェントが Bot を名乗って項目を書くことはできない。
+
+import { createHash } from 'crypto';
+import { isPlainRecord } from '../../../common/paradisGuards.js';
+import { paradisNormalizeAgentHookEvent } from '../../agentBrowser/common/paradisAgentBrowser.js';
+import { IParadisBotPaneState, PARADIS_BOT_PANE_PURPOSES, ParadisBotPanePurpose } from '../common/paradisBotsApi.js';
+
+/** 起動の番号が有効な時間。起動に失敗して報告が来なかった番号を残さない。 */
+export const PARADIS_BOT_LAUNCH_TTL_MS = 5 * 60_000;
+
+/** 保存する結び付けの上限（古いものから落とす）。 */
+export const PARADIS_BOT_REMEMBERED_PANES_LIMIT = 200;
+
+/** 保存する結び付け 1 件。トークンの値は持たない。 */
+export interface IParadisBotPaneRecord {
+	/** ペイントークンの SHA-256（16 進 64 字）。 */
+	readonly hash: string;
+	readonly botId: string;
+	readonly purpose: ParadisBotPanePurpose;
+	readonly boundAt: number;
+}
+
+export interface IParadisBotPanesState {
+	readonly version: number;
+	readonly panes: readonly IParadisBotPaneRecord[];
+}
+
+export const PARADIS_BOT_PANES_VERSION = 1;
+export const EMPTY_PARADIS_BOT_PANES_STATE: IParadisBotPanesState = Object.freeze({ version: PARADIS_BOT_PANES_VERSION, panes: Object.freeze([]) });
+
+export function paradisBotPaneTokenHash(paneToken: string): string {
+	return createHash('sha256').update(paneToken).digest('hex');
+}
+
+/** 保存した結び付けを読む。全体の形が違えば undefined（退避される）、1 件だけ違えばその 1 件を捨てる。 */
+export function paradisParseBotPanesState(value: unknown): IParadisBotPanesState | undefined {
+	if (!isPlainRecord(value) || typeof value.version !== 'number' || !Number.isSafeInteger(value.version) || !Array.isArray(value.panes)) {
+		return undefined;
+	}
+	if (value.version > PARADIS_BOT_PANES_VERSION) {
+		// 新しい版は読まずに書き込みだけ断る（結び付けは戻らないが、ファイルは残る）
+		return { version: value.version, panes: [] };
+	}
+	const panes: IParadisBotPaneRecord[] = [];
+	for (const entry of value.panes.slice(-PARADIS_BOT_REMEMBERED_PANES_LIMIT)) {
+		if (isPlainRecord(entry) && typeof entry.hash === 'string' && /^[0-9a-f]{64}$/.test(entry.hash) && typeof entry.botId === 'string' && entry.botId.length > 0
+			&& PARADIS_BOT_PANE_PURPOSES.some(purpose => purpose === entry.purpose) && typeof entry.boundAt === 'number' && Number.isFinite(entry.boundAt)) {
+			panes.push({ hash: entry.hash, botId: entry.botId, purpose: entry.purpose as ParadisBotPanePurpose, boundAt: entry.boundAt });
+		}
+	}
+	return { version: PARADIS_BOT_PANES_VERSION, panes };
+}
+
+interface IPending {
+	readonly botId: string;
+	readonly purpose: ParadisBotPanePurpose;
+	readonly issuedAt: number;
+}
+
+interface IPane {
+	readonly botId: string;
+	readonly purpose: ParadisBotPanePurpose;
+	working: boolean;
+	lastSeenAt: number;
+}
+
+export class ParadisBotPanes {
+
+	private readonly pending = new Map<string, IPending>();
+	private readonly panes = new Map<string, IPane>();
+	/** 保存した結び付け（ハッシュ → Bot）。生きているかは分からないので、現れるまで {@link statesOf} に数えない。 */
+	private readonly remembered = new Map<string, IParadisBotPaneRecord>();
+
+	/** @param onDidChangeRemembered 保存する結び付けが変わった（保存し直す）。 */
+	constructor(private readonly onDidChangeRemembered: () => void = () => { }) { }
+
+	/** 保存した結び付けを読み込む（起動時に 1 回）。 */
+	loadRemembered(records: readonly IParadisBotPaneRecord[]): void {
+		this.remembered.clear();
+		for (const record of records) {
+			this.remembered.set(record.hash, record);
+		}
+	}
+
+	/** 保存する結び付け（古い順）。 */
+	rememberedPanes(): IParadisBotPaneRecord[] {
+		return [...this.remembered.values()];
+	}
+
+	/**
+	 * 起動し直した後に現れたペイン。保存した結び付けがあり、その Bot がまだあれば結び付けを戻して Bot の id を返す。
+	 * もう結び付いているペインは今の Bot の id を返す。
+	 */
+	restore(paneToken: string, botExists: (botId: string) => boolean, now: number): string | undefined {
+		const bound = this.panes.get(paneToken)?.botId;
+		if (bound !== undefined || paneToken.length === 0) {
+			return bound;
+		}
+		const record = this.remembered.get(paradisBotPaneTokenHash(paneToken));
+		if (record === undefined || !botExists(record.botId)) {
+			return undefined;
+		}
+		this.panes.set(paneToken, { botId: record.botId, purpose: record.purpose, working: false, lastSeenAt: now });
+		return record.botId;
+	}
+
+	private forget(predicate: (record: IParadisBotPaneRecord) => boolean): void {
+		let changed = false;
+		for (const [hash, record] of this.remembered) {
+			if (predicate(record)) {
+				this.remembered.delete(hash);
+				changed = true;
+			}
+		}
+		if (changed) {
+			this.onDidChangeRemembered();
+		}
+	}
+
+	/** 起動の番号を控える（番号はサービスが作る）。 */
+	issue(launchId: string, botId: string, purpose: ParadisBotPanePurpose, now: number): void {
+		for (const [id, entry] of this.pending) {
+			if (now - entry.issuedAt > PARADIS_BOT_LAUNCH_TTL_MS) {
+				this.pending.delete(id);
+			}
+		}
+		this.pending.set(launchId, { botId, purpose, issuedAt: now });
+	}
+
+	/** 起動の報告。結び付けたら Bot の id、断ったら undefined。番号は 1 回で使い切る。 */
+	report(launchId: string, paneToken: string, now: number): string | undefined {
+		const entry = this.pending.get(launchId);
+		if (entry === undefined) {
+			return undefined;
+		}
+		this.pending.delete(launchId);
+		const hash = paneToken.length > 0 ? paradisBotPaneTokenHash(paneToken) : '';
+		// 保存した結び付けで別の Bot のものになっているトークンも断る（起動し直した後、まだ現れていないペイン）
+		const remembered = this.remembered.get(hash);
+		if (now - entry.issuedAt > PARADIS_BOT_LAUNCH_TTL_MS || paneToken.length === 0 || this.panes.has(paneToken) || (remembered !== undefined && remembered.botId !== entry.botId)) {
+			return undefined;
+		}
+		this.panes.set(paneToken, { botId: entry.botId, purpose: entry.purpose, working: false, lastSeenAt: now });
+		this.remembered.delete(hash);
+		this.remembered.set(hash, { hash, botId: entry.botId, purpose: entry.purpose, boundAt: now });
+		while (this.remembered.size > PARADIS_BOT_REMEMBERED_PANES_LIMIT) {
+			this.remembered.delete(this.remembered.keys().next().value!);
+		}
+		this.onDidChangeRemembered();
+		return entry.botId;
+	}
+
+	/** 起動をやめた（失敗した）番号を捨てる。 */
+	cancel(launchId: string): boolean {
+		return this.pending.delete(launchId);
+	}
+
+	botOf(paneToken: string): string | undefined {
+		return this.panes.get(paneToken)?.botId;
+	}
+
+	statesOf(botId: string): IParadisBotPaneState[] {
+		return [...this.panes.values()].filter(pane => pane.botId === botId).map(pane => ({ purpose: pane.purpose, working: pane.working, lastSeenAt: pane.lastSeenAt }));
+	}
+
+	tokensOf(botId: string): string[] {
+		return [...this.panes].filter(([, pane]) => pane.botId === botId).map(([token]) => token);
+	}
+
+	/** ペインが閉じた。結び付けがあれば Bot の id。まだ現れていない（戻していない）保存した結び付けも忘れる。 */
+	release(paneToken: string): string | undefined {
+		const botId = this.panes.get(paneToken)?.botId;
+		this.panes.delete(paneToken);
+		const hash = paradisBotPaneTokenHash(paneToken);
+		this.forget(record => record.hash === hash);
+		return botId;
+	}
+
+	/** Bot を消した・止めた。そのペインの結び付けと、使っていない番号を全部外す。 */
+	releaseBot(botId: string): boolean {
+		let changed = false;
+		for (const [token, pane] of this.panes) {
+			if (pane.botId === botId) {
+				this.panes.delete(token);
+				changed = true;
+			}
+		}
+		for (const [id, entry] of this.pending) {
+			if (entry.botId === botId) {
+				this.pending.delete(id);
+			}
+		}
+		this.forget(record => record.botId === botId);
+		return changed;
+	}
+
+	/**
+	 * hook を 1 つ見る。Bot のペインのものなら、その Bot の id と、様子（動いている・待っている）が変わったか。
+	 * hook の名前は CLI ごとに違うので、ペインの状態と同じ正規化（paradisNormalizeAgentHookEvent）を通す。
+	 * 許可待ち・質問中・完了は「待っている」、知らない hook は様子を変えない。
+	 */
+	noteHook(paneToken: string, event: string, now: number): { readonly botId: string; readonly changed: boolean } | undefined {
+		const pane = this.panes.get(paneToken);
+		if (pane === undefined) {
+			return undefined;
+		}
+		pane.lastSeenAt = now;
+		const status = paradisNormalizeAgentHookEvent(event);
+		const working = status === undefined ? pane.working : status === 'working';
+		const changed = working !== pane.working;
+		pane.working = working;
+		return { botId: pane.botId, changed };
+	}
+}

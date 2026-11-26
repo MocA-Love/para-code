@@ -89,6 +89,17 @@ const BODY_LIST_SCREEN = [
 	'  ▸▸ accept edits on (shift+tab to cycle) · ← for agents',
 ].join('\n');
 
+/** codex-cli 0.160.0 の Plan モードの後の選択画面（Enter で「実装に進む」が選ばれる）。 */
+const CODEX_PLAN_MENU_SCREEN = [
+	'  Implement this plan?',
+	'',
+	'\u203a 1. Yes, implement this plan          Switch to Default and start coding',
+	'  2. Yes, clear context and implement  Start a fresh thread',
+	'  3. No, stay in Plan mode             Continue planning with the model',
+	'',
+	'  enter select \u00b7 esc back',
+].join('\n');
+
 suite('ParadisAgentChatInput', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
@@ -134,6 +145,29 @@ suite('ParadisAgentChatInput', () => {
 			sent: undefined,
 			answerRefused: true,
 			keys: ['paste:"続けて"', '"\\r"'],
+		});
+	});
+
+	test('does not type into Claude Code while the mod says a screen like /model is open', async () => {
+		const fixture = setup({ agent: 'claude' });
+		let open: boolean | undefined = true;
+		fixture.source.isAgentChatDialogOpen = async () => open;
+		const refused = await fixture.input.sendMessage(1, 't', '続けて');
+		open = undefined;
+		const sent = await fixture.input.sendMessage(1, 't', '続けて');
+		assert.deepStrictEqual({ refused, sent }, { refused: 'ターミナルで画面が開いています。閉じてから送ってください', sent: undefined });
+	});
+
+	test('does not type into Codex while its choice menu is on the screen, since Enter would pick the default choice', async () => {
+		const fixture = setup({ agent: 'codex' });
+		fixture.terminal.screen = CODEX_PLAN_MENU_SCREEN;
+		const refused = await fixture.input.sendMessage(1, 't', '続けて');
+		fixture.terminal.screen = CODEX_WORKING_SCREEN;
+		const sent = await fixture.input.sendMessage(1, 't', '続けて');
+		assert.deepStrictEqual({ refused, sent, typed: fixture.terminal.sent.length > 0 }, {
+			refused: 'ターミナルに選択の画面が出ています。ターミナルで選んでから送ってください',
+			sent: undefined,
+			typed: true,
 		});
 	});
 

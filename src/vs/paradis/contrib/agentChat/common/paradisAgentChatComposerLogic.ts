@@ -8,6 +8,7 @@
 
 // チャット表示の入力欄の、画面に依存しない判断（補完を出すか・候補の並べ方・送信履歴の積み方）。
 
+import { localize } from '../../../../nls.js';
 import { IParadisAgentChatCommand } from './paradisAgentChat.js';
 
 /**
@@ -70,4 +71,59 @@ export function paradisDuplicateAgentChatCommandNames(commands: readonly IParadi
 		seen.add(key);
 	}
 	return duplicates;
+}
+
+/** 外から入れた下書きの結果。`inserted` は空の入力欄へ入れた、`appended` は書きかけの文の後ろへ足した。 */
+export type ParadisAgentChatDraftInsert = 'inserted' | 'appended';
+
+/**
+ * 入力欄へ外から下書きを入れたときの文（Bot のホームの提案の「始める」など）。書きかけの文は消さずに残し、空行を挟んで
+ * 後ろへ足す。
+ */
+export function paradisAppendAgentChatDraft(current: string, text: string): { readonly value: string; readonly result: ParadisAgentChatDraftInsert } {
+	if (current.trim().length === 0) {
+		return { value: text, result: 'inserted' };
+	}
+	return { value: `${current.replace(/\s+$/, '')}\n\n${text}`, result: 'appended' };
+}
+
+/** {@link paradisInsertAgentChatDraft} が読む、ペインのチャット表示の今の状態。 */
+export interface IParadisAgentChatDraftTarget {
+	/** チャット表示が使え（設定で切っていない）、そのペインがチャット表示で、会話のトークンがある。 */
+	readonly chatShown: boolean;
+	/** そのペインのチャット表示が見えていれば、入力欄へ入れた結果。見えていなければ undefined。 */
+	insertIntoVisibleInput(text: string): ParadisAgentChatDraftInsert | undefined;
+	getDraft(): string;
+	setDraft(text: string): void;
+}
+
+/**
+ * 外からチャット表示の入力欄へ下書きを入れる（送らない）。見えていれば入力欄へ、見えていなければペインの下書きへ入れる
+ * （タブを開いたときに入力欄へ出る）。空白だけの文、チャット表示でないペインは何もせず false。
+ */
+export function paradisInsertAgentChatDraft(text: string, target: IParadisAgentChatDraftTarget): ParadisAgentChatDraftInsert | false {
+	if (!target.chatShown || text.trim().length === 0) {
+		return false;
+	}
+	const shown = target.insertIntoVisibleInput(text);
+	if (shown !== undefined) {
+		return shown;
+	}
+	const { value, result } = paradisAppendAgentChatDraft(target.getDraft(), text);
+	target.setDraft(value);
+	return result;
+}
+
+/**
+ * ペイン（ターミナル）を指して、そのエージェントへ発言を送る（{@link IParadisAgentChatService.sendMessageToPane}）。エージェントの会話が
+ * 無いペインと、空白だけの文は送らずに理由を返す。送るのは `send`（チャット表示の入力欄と同じ確認を通る）。
+ */
+export async function paradisSendToAgentPane(token: string | undefined, text: string, send: (token: string, text: string) => Promise<string | undefined>): Promise<string | undefined> {
+	if (token === undefined) {
+		return localize('paradisAgentChat.paneNoAgent', "このターミナルにはエージェントの会話がありません");
+	}
+	if (text.trim().length === 0) {
+		return localize('paradisAgentChat.errorEmpty', "送る文がありません");
+	}
+	return send(token, text);
 }

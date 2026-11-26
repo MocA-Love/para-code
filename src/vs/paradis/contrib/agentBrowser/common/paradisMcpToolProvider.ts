@@ -45,8 +45,10 @@ export interface IParadisMcpToolProvider {
 	/**
 	 * このプロバイダが提供するツールの一覧。`tools/list` のたびに呼ばれるため、
 	 * 実行時の状態によって出し分けてよい（例: 前提となるバックエンドが無ければ空を返す）。
+	 *
+	 * @param paneToken 一覧を求めたペイン（分かるとき）。特定のペインにだけ出す道具（Bot の道具など）が使う
 	 */
-	listTools(): readonly IParadisMcpToolDefinition[];
+	listTools(paneToken?: string): readonly IParadisMcpToolDefinition[];
 
 	/**
 	 * `name` が自分の提供するツールなら実行して結果を返す。自分のツールでなければ
@@ -61,7 +63,7 @@ export interface IParadisMcpToolProvider {
 	 * MCP の `initialize` 応答の `instructions`（サーバーの説明）へ足す文。無ければ何も足さない。
 	 * エージェントCLIは接続のたびにこれを読むので、短く保つこと（詳しい説明はツールで返す）。
 	 */
-	instructions?(): string | undefined;
+	instructions?(paneToken?: string): string | undefined;
 
 	/**
 	 * `para` コマンド（CLI）でこの提供元の道具と説明を置く分野（`para <分野> <コマンド>`、`para help <分野>`）。

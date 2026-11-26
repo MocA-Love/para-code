@@ -80,6 +80,8 @@ import './contrib/notifications/node/paradisAgentDictionary.sharedProcess.js';
 import './contrib/claudeMod/node/paradisClaudeContext.sharedProcess.js';
 import './contrib/tasks/node/paradisTasksGithub.sharedProcess.js';
 import './contrib/agentDocs/node/paradisAgentDocs.sharedProcess.js';
+// Bot の道具の説明は MCP の説明の最後に足す（長い説明は途中で切られるので、前からある段を押し出さない）
+import './contrib/bots/node/paradisBots.sharedProcess.js';
 
 /**
  * shared process へ fork のチャネルをすべて登録する。`sharedProcessMain.ts` から1回だけ呼ばれる。
