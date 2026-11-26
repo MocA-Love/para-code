@@ -14,6 +14,7 @@
 // - 止める: shared process の止める依頼（onDidRequestStop）に載ったトークンのハッシュと、このウィンドウの生きた
 //   ペインのトークンのハッシュを照らし、合ったターミナルを閉じる。トークンの値はウィンドウの外へ出さない。
 
+import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize, localize2 } from '../../../../nls.js';
@@ -29,12 +30,30 @@ import { IHostService } from '../../../../workbench/services/host/browser/host.j
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { paradisCollectAllTerminalInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import { IParadisLaunchedAgentTerminal, paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
+import { paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { paradisRevealNotifiedPane } from '../../notifications/electron-browser/paradisNotificationReveal.js';
 import { paradisBotInstancesInWindow, paradisFindBotPane } from '../browser/paradisBotPaneHash.js';
+import { paradisBotTabTitle, paradisRunBotLaunch } from '../common/paradisBotLaunchSteps.js';
 import { IParadisBotsService, IParadisBotStopRequest } from '../common/paradisBotsApi.js';
 
 export const PARADIS_BOTS_OPEN_COMMAND = 'paradis.bots.open';
+
+/** タブ名を Bot の名前にする（雛形で付ける。固定の名前にするとエージェントのタイトルの購読が止まるため）。 */
+function paradisNameBotTab(instance: ITerminalInstance | undefined, name: string): void {
+	if (instance === undefined || instance.isDisposed) {
+		return;
+	}
+	const title = paradisBotTabTitle(name);
+	if (instance.shellLaunchConfig.titleTemplate === title) {
+		return;
+	}
+	instance.shellLaunchConfig.titleTemplate = title;
+	// 利用者が手で付けた名前（固定タイトル）があればそちらを残す。無ければラベルを計算し直させる
+	// （paradisPresetService.ts と同じやり方。rename(undefined) は固定タイトルが無い端末では再計算だけ）
+	if (!instance.staticTitle) {
+		void instance.rename(undefined);
+	}
+}
 
 function findInstance(terminalService: ITerminalService, terminalGroupService: ITerminalGroupService, instanceId: number): ITerminalInstance | undefined {
 	return paradisCollectAllTerminalInstances(terminalService, terminalGroupService).find(instance => instance.instanceId === instanceId);
@@ -83,29 +102,33 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string):
 			notificationService.warn(localize('paradisBots.launchRefused', "Could not start the bot: {0}", launch.message));
 			return;
 		}
-		let launched: IParadisLaunchedAgentTerminal | undefined;
-		try {
-			launched = await instantiationService.invokeFunction(paradisLaunchAgentInWorkspace, {
-				rootUri: URI.file(launch.value.cwd),
-				stateKey: switchService.activeStateKey,
-				agentId: launch.value.agent,
-				...(launch.value.modelId !== undefined ? { modelId: launch.value.modelId } : {}),
-				...(launch.value.effortId !== undefined ? { effortId: launch.value.effortId } : {}),
-				...(launch.value.permissionId !== undefined ? { permissionId: launch.value.permissionId } : {}),
-				...(launch.value.extraFlags !== undefined ? { extraFlags: launch.value.extraFlags } : {}),
-			});
-		} catch (error) {
-			logService.error('[paradisBots] starting the bot terminal failed', error);
-		}
-		if (launched?.paneToken === undefined) {
-			await botsService.cancelLaunch(launch.value.launchId);
-			notificationService.warn(localize('paradisBots.launchFailed', "Could not start the terminal for the bot."));
-			return;
-		}
-		if (!await botsService.reportLaunch(launch.value.launchId, launched.paneToken)) {
-			// 結び付けを断られた（番号の期限切れなど）。Bot の道具が使えないターミナルを残さない
-			findInstance(terminalService, terminalGroupService, launched.instanceId)?.dispose(TerminalExitReason.User);
-			notificationService.warn(localize('paradisBots.reportRefused', "Could not connect the terminal to the bot. Try again."));
+		// コマンドを送る前にペインを報告する（エージェントの MCP の接続より先に、Bot の道具が出るように）
+		const outcome = await paradisRunBotLaunch({
+			reportLaunch: (launchId, paneToken) => botsService.reportLaunch(launchId, paneToken),
+			cancelLaunch: launchId => botsService.cancelLaunch(launchId),
+			launchAgent: async beforeCommand => {
+				try {
+					return await instantiationService.invokeFunction(paradisLaunchAgentInWorkspace, {
+						rootUri: URI.file(launch.value.cwd),
+						stateKey: switchService.activeStateKey,
+						agentId: launch.value.agent,
+						...(launch.value.modelId !== undefined ? { modelId: launch.value.modelId } : {}),
+						...(launch.value.effortId !== undefined ? { effortId: launch.value.effortId } : {}),
+						...(launch.value.permissionId !== undefined ? { permissionId: launch.value.permissionId } : {}),
+						...(launch.value.extraFlags !== undefined ? { extraFlags: launch.value.extraFlags } : {}),
+						beforeCommand,
+					});
+				} catch (error) {
+					logService.error('[paradisBots] starting the bot terminal failed', error);
+					throw error;
+				}
+			},
+			nameTab: instanceId => paradisNameBotTab(findInstance(terminalService, terminalGroupService, instanceId), launch.value.name),
+		}, launch.value.launchId);
+		if (!outcome.ok) {
+			notificationService.warn(outcome.reason === 'refused'
+				? localize('paradisBots.reportRefused', "Could not connect the terminal to the bot. Try again.")
+				: localize('paradisBots.launchFailed', "Could not start the terminal for the bot."));
 		}
 	} finally {
 		opening.delete(botId);
@@ -126,8 +149,14 @@ class ParadisBotsStopContribution extends Disposable {
 
 	static readonly ID = 'workbench.contrib.paradisBotsStop';
 
+	/** 前回タブ名を合わせたときの Bot の名前と様子（変わったときだけ合わせ直す）。 */
+	private namedSignature = '';
+	private readonly nameScheduler = this._register(new RunOnceScheduler(() => {
+		this.nameTabs().catch(error => this.logService.warn('[paradisBots] naming the bot tabs failed', error));
+	}, 500));
+
 	constructor(
-		@IParadisBotsService botsService: IParadisBotsService,
+		@IParadisBotsService private readonly botsService: IParadisBotsService,
 		@IParadisPaneTokenService private readonly paneTokenService: IParadisPaneTokenService,
 		@ITerminalService private readonly terminalService: ITerminalService,
 		@ITerminalGroupService private readonly terminalGroupService: ITerminalGroupService,
@@ -137,6 +166,26 @@ class ParadisBotsStopContribution extends Disposable {
 		this._register(botsService.onDidRequestStop(request => {
 			this.stop(request).catch(error => this.logService.warn('[paradisBots] stopping the bot terminals failed', error));
 		}));
+		// 起動し直した後に戻ったペインと、Bot の名前を変えたときも、タブ名を Bot の名前に合わせる
+		this._register(botsService.onDidChange(() => this.nameScheduler.schedule()));
+		this.nameScheduler.schedule();
+	}
+
+	private async nameTabs(): Promise<void> {
+		const bots = this.botsService.snapshot.bots;
+		const signature = JSON.stringify(bots.map(bot => [bot.id, bot.name, bot.activity]));
+		if (signature === this.namedSignature) {
+			return;
+		}
+		this.namedSignature = signature;
+		for (const bot of bots) {
+			if (bot.activity === 'stopped') {
+				continue;
+			}
+			for (const instanceId of await paradisBotInstancesInWindow(this.paneTokenService, await this.botsService.paneHashesOf(bot.id))) {
+				paradisNameBotTab(findInstance(this.terminalService, this.terminalGroupService, instanceId), bot.name);
+			}
+		}
 	}
 
 	private async stop(request: IParadisBotStopRequest): Promise<void> {
