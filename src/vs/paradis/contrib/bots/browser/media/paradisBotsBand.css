@@ -201,13 +201,22 @@
 	font-size: var(--vscode-codiconFontSize-compact);
 }
 
-/* The dot face (ParaDot-like): a body in the bot's color (set as `color` from the space palette) with two eyes in the sidebar color. */
+/* The dot face (ParaDot-like): a body in the bot's color (the ledger's color name, mapped to theme colors) with two eyes in the sidebar color. */
 .paradis-bot-face {
 	display: inline-block;
 	flex: none;
 	width: 18px;
 	height: 18px;
 }
+
+.paradis-bot-face[data-color="blue"] { color: var(--vscode-charts-blue); }
+.paradis-bot-face[data-color="teal"] { color: var(--vscode-terminal-ansiCyan); }
+.paradis-bot-face[data-color="green"] { color: var(--vscode-charts-green); }
+.paradis-bot-face[data-color="amber"] { color: var(--vscode-charts-yellow); }
+.paradis-bot-face[data-color="pink"] { color: var(--vscode-terminal-ansiMagenta); }
+.paradis-bot-face[data-color="violet"] { color: var(--vscode-charts-purple); }
+.paradis-bot-face[data-color="red"] { color: var(--vscode-charts-red); }
+.paradis-bot-face[data-color="orange"] { color: var(--vscode-charts-orange); }
 
 .paradis-bot-face svg {
 	display: block;
@@ -292,7 +301,44 @@
 	margin-top: var(--vscode-spacing-size80);
 }
 
-.paradis-bot-create .pbcd-role textarea {
+.paradis-bot-create .pbcd-name-row {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size100);
+}
+
+.paradis-bot-create .pbcd-name-row > .paradis-field {
+	flex: 1;
+	min-width: 0;
+}
+
+.paradis-bot-create .pbcd-face {
+	display: flex;
+	flex: none;
+}
+
+.paradis-bot-create .pbcd-face > .paradis-bot-face {
+	width: 34px;
+	height: 34px;
+}
+
+.monaco-workbench .paradis-bot-create .paradis-field.pbcd-role {
+	height: auto;
+	align-items: stretch;
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size100);
+}
+
+.paradis-bot-create .pbcd-role > textarea {
+	flex: 1;
+	min-width: 0;
+	min-height: 60px;
+	padding: 0;
+	border: none;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-size: var(--vscode-fontSize-body1);
+	line-height: 20px;
 	resize: vertical;
 }
 

@@ -12,7 +12,7 @@
 
 import { localize } from '../../../../nls.js';
 import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
-import { PARADIS_BOT_LIMITS, paradisSanitizeBotName } from './paradisBots.js';
+import { PARADIS_BOT_LIMITS, ParadisBotFaceColor, ParadisBotFaceShape, paradisSanitizeBotName } from './paradisBots.js';
 import { IParadisBotSummary } from './paradisBotsApi.js';
 
 /** Bot の行を押したときに呼ぶコマンド（引数は Bot の id）。中身（Bot のページを開く）は後の PR が同じ id で登録する。 */
@@ -123,38 +123,20 @@ export function paradisBotStatusLine(bot: IParadisBotSummary): string {
 
 // ---- 顔 -------------------------------------------------------------------------------------------
 
-export type ParadisBotFaceShape = 'circle' | 'squircle' | 'drop' | 'penta' | 'blob' | 'hex';
-export const PARADIS_BOT_FACE_SHAPES: readonly ParadisBotFaceShape[] = ['drop', 'penta', 'circle', 'squircle', 'blob', 'hex'];
-
 /** 顔の動き。`ask` は跳ねる、`work` は揺れる、`paused` は止まって薄い。 */
 export type ParadisBotFaceState = 'idle' | 'work' | 'ask' | 'paused';
 
 export interface IParadisBotFace {
+	/** 体の形と色の名前（台帳の faceShape・faceColor。色の値は CSS がテーマの色から決める）。 */
 	readonly shape: ParadisBotFaceShape;
-	/** 色の番号（スペースの色のパレット PARADIS_WORKSPACE_COLORS の並び）。 */
-	readonly colorIndex: number;
+	readonly color: ParadisBotFaceColor;
 	readonly state: ParadisBotFaceState;
 }
 
-/** 文字列から決まる小さい数（FNV-1a）。並び順で決めると、Bot を消したときにほかの顔が変わる。 */
-function hash(text: string): number {
-	let value = 0x811c9dc5;
-	for (let i = 0; i < text.length; i++) {
-		value ^= text.charCodeAt(i);
-		value = Math.imul(value, 0x01000193) >>> 0;
-	}
-	return value;
-}
-
-/** 顔の形と色は Bot の id から決める（名前を変えても変わらない）。 */
-export function paradisBotFace(bot: Pick<IParadisBotSummary, 'id' | 'paused' | 'needsYou' | 'activity'>, colorCount: number): IParadisBotFace {
-	const value = hash(bot.id);
+/** 顔の形と色は台帳のまま、動きは今の様子から決める。 */
+export function paradisBotFace(bot: Pick<IParadisBotSummary, 'faceShape' | 'faceColor' | 'paused' | 'needsYou' | 'activity'>): IParadisBotFace {
 	const state: ParadisBotFaceState = bot.paused ? 'paused' : bot.needsYou > 0 ? 'ask' : bot.activity === 'working' || bot.activity === 'patrolling' ? 'work' : 'idle';
-	return {
-		shape: PARADIS_BOT_FACE_SHAPES[value % PARADIS_BOT_FACE_SHAPES.length],
-		colorIndex: colorCount > 0 ? Math.floor(value / PARADIS_BOT_FACE_SHAPES.length) % colorCount : 0,
-		state,
-	};
+	return { shape: bot.faceShape, color: bot.faceColor, state };
 }
 
 // ---- 作成 -----------------------------------------------------------------------------------------

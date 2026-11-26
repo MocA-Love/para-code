@@ -32,7 +32,8 @@ import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescri
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { IParadisBotsService } from '../common/paradisBotsApi.js';
 import { PARADIS_BOT_CREATE_AGENTS, PARADIS_BOT_ROLE_MAX_LENGTH, PARADIS_BOT_TEMPLATES, paradisBotCreateSoul, paradisBotNameProblemMessage, paradisValidateBotName } from '../common/paradisBotsBandModel.js';
-import { PARADIS_BOT_LIMITS } from '../common/paradisBots.js';
+import { PARADIS_BOT_LIMITS, paradisBotDefaultFace } from '../common/paradisBots.js';
+import { renderParadisBotFace } from './paradisBotFace.js';
 
 const $ = dom.$;
 
@@ -48,6 +49,8 @@ export class ParadisBotCreateDialog extends Disposable {
 
 	private readonly backdrop: HTMLElement;
 	private readonly nameField: ParadisInputField;
+	/** 名前の左の顔の見本（名前から決まる既定の顔。作るときに同じ顔を渡す）。 */
+	private readonly facePreview: HTMLElement;
 	private readonly roleInput: HTMLTextAreaElement;
 	private readonly agents: ParadisSegmented<ParadisAgentKind>;
 	private readonly note: HTMLElement;
@@ -97,10 +100,12 @@ export class ParadisBotCreateDialog extends Disposable {
 		const template = this._register(new ParadisSelect(body, contextViewService, configurationService,
 			PARADIS_BOT_TEMPLATES.map(item => ({ value: item.id, label: item.label })), PARADIS_BOT_TEMPLATES[0].id, { ariaLabel: templateLabel }));
 
-		// 名前
-		const nameLabel = localize('paradis.bots.create.name', "名前");
+		// 絵と名前
+		const nameLabel = localize('paradis.bots.create.name', "絵と名前");
 		dom.append(body, $('label.pbcd-label')).textContent = nameLabel;
-		this.nameField = this._register(new ParadisInputField(body, { ariaLabel: nameLabel, placeholder: localize('paradis.bots.create.namePlaceholder', "例: CI の見張り") }));
+		const nameRow = dom.append(body, $('.pbcd-name-row'));
+		this.facePreview = dom.append(nameRow, $('.pbcd-face'));
+		this.nameField = this._register(new ParadisInputField(nameRow, { ariaLabel: nameLabel, placeholder: localize('paradis.bots.create.namePlaceholder', "例: CI の見張り") }));
 		this._register(this.nameField.onDidChange(() => {
 			this.nameTouched = true;
 			this.update();
@@ -176,6 +181,9 @@ export class ParadisBotCreateDialog extends Disposable {
 
 	/** 名前を検め、下の帯の文と「作る」の可否を合わせる。 */
 	private update(): void {
+		dom.clearNode(this.facePreview);
+		const face = this.face();
+		renderParadisBotFace(this.facePreview, { shape: face.faceShape, color: face.faceColor });
 		const checked = paradisValidateBotName(this.nameField.value, this.botsService.snapshot.bots);
 		this.createButton.enabled = checked.ok && !this.creating;
 		const showProblem = !checked.ok && (this.nameTouched || checked.problem !== 'empty');
@@ -194,7 +202,8 @@ export class ParadisBotCreateDialog extends Disposable {
 		}
 		this.creating = true;
 		this.update();
-		const result = await this.botsService.createBot({ name: checked.name, agent: this.agents.value ?? PARADIS_BOT_CREATE_AGENTS[0] }, paradisBotCreateSoul(checked.name, this.roleInput.value));
+		const face = this.face();
+		const result = await this.botsService.createBot({ name: checked.name, agent: this.agents.value ?? PARADIS_BOT_CREATE_AGENTS[0], faceColor: face.faceColor, faceShape: face.faceShape }, paradisBotCreateSoul(checked.name, this.roleInput.value));
 		if (this._store.isDisposed) {
 			return;
 		}
@@ -207,6 +216,11 @@ export class ParadisBotCreateDialog extends Disposable {
 		}
 		this.dispose();
 		this.onDidCreate(result.value.id);
+	}
+
+	/** 見本の顔。名前がまだ空なら「新」から決まる顔。 */
+	private face(): ReturnType<typeof paradisBotDefaultFace> {
+		return paradisBotDefaultFace(this.nameField.value.trim() || localize('paradis.bots.create.faceSeed', "新"));
 	}
 
 	override dispose(): void {

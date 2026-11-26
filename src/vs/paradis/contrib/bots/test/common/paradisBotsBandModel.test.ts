@@ -25,7 +25,7 @@ import {
 
 function bot(id: string, name: string, patch: Partial<IParadisBotSummary> = {}): IParadisBotSummary {
 	return {
-		id, name, folder: id, agent: 'claude', paused: false, pinned: false, createdAt: 1, updatedAt: 1,
+		id, name, folder: id, agent: 'claude', paused: false, pinned: false, faceColor: 'blue', faceShape: 'drop', createdAt: 1, updatedAt: 1,
 		needsYou: 0, openItems: 0, activity: 'stopped', lastActivityAt: 1,
 		...patch,
 	};
@@ -102,17 +102,14 @@ suite('Paradis bots band', () => {
 		]);
 	});
 
-	test('顔は id で決まり、様子で動きが変わる', () => {
-		const a = paradisBotFace(bot('bot-1', 'x'), 12);
-		const renamed = paradisBotFace(bot('bot-1', 'y'), 12);
+	test('顔は台帳の形と色、動きは様子から', () => {
 		assert.deepStrictEqual([
-			a.shape === renamed.shape && a.colorIndex === renamed.colorIndex,
-			a.colorIndex >= 0 && a.colorIndex < 12,
-			paradisBotFace(bot('x', 'x', { needsYou: 1 }), 12).state,
-			paradisBotFace(bot('x', 'x', { activity: 'working' }), 12).state,
-			paradisBotFace(bot('x', 'x', { paused: true, needsYou: 1 }), 12).state,
-			paradisBotFace(bot('x', 'x'), 12).state,
-		], [true, true, 'ask', 'work', 'paused', 'idle']);
+			paradisBotFace(bot('x', 'x', { faceColor: 'pink', faceShape: 'hex', needsYou: 1 })),
+			paradisBotFace(bot('x', 'x', { activity: 'working' })).state,
+			paradisBotFace(bot('x', 'x', { activity: 'patrolling' })).state,
+			paradisBotFace(bot('x', 'x', { paused: true, needsYou: 1 })).state,
+			paradisBotFace(bot('x', 'x')).state,
+		], [{ shape: 'hex', color: 'pink', state: 'ask' }, 'work', 'work', 'paused', 'idle']);
 	});
 
 	test('作成と名前の変更の入力の検査', () => {
