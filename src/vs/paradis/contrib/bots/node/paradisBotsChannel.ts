@@ -36,11 +36,11 @@ export class ParadisBotsChannel implements IServerChannel<string> {
 		}
 	}
 
-	async call<T>(ctx: string, command: string, arg?: unknown): Promise<T> {
-		return await this.dispatch(command, ParadisChannelArgs.from(arg), ctx) as T;
+	async call<T>(_ctx: string, command: string, arg?: unknown): Promise<T> {
+		return await this.dispatch(command, ParadisChannelArgs.from(arg)) as T;
 	}
 
-	private async dispatch(command: string, args: ParadisChannelArgs, ctx: string): Promise<unknown> {
+	private async dispatch(command: string, args: ParadisChannelArgs): Promise<unknown> {
 		const service = this.service;
 		await service.ready;
 		const id = args.string(0);
@@ -91,7 +91,7 @@ export class ParadisBotsChannel implements IServerChannel<string> {
 			}
 			case 'reportLaunch': {
 				const paneToken = args.string(1);
-				return id !== undefined && paneToken !== undefined && service.reportLaunch(id, paneToken, ctx);
+				return id !== undefined && paneToken !== undefined && service.reportLaunch(id, paneToken);
 			}
 			case 'cancelLaunch': {
 				if (id !== undefined) {
