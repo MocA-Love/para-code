@@ -13,6 +13,9 @@ import { Registry } from '../../../../../platform/registry/common/platform.js';
 import { ChatConfiguration } from '../../../../../workbench/contrib/chat/common/constants.js';
 import { MenuSettings, MenuStyleConfiguration } from '../../../../../platform/window/common/window.js';
 import { template } from '../../../../../base/common/labels.js';
+import { ActivityBarPosition, LayoutSettings } from '../../../../../workbench/services/layout/browser/layoutService.js';
+// Registers the schema of `workbench.activityBar.location`.
+import '../../../../../workbench/browser/workbench.contribution.js';
 import { PARADIS_WINDOW_TITLE, PARADIS_WINDOW_TITLE_MAC } from '../../browser/paradisDefaultSettings.contribution.js';
 
 suite('Paradis default settings', () => {
@@ -28,6 +31,19 @@ suite('Paradis default settings', () => {
 		}, {
 			copilotCliCommand: false,
 			welcomePageSignIn: false,
+		});
+	});
+
+	// The side bar icons sit on top of both side bars by default (upstream's default is the vertical rail).
+	// The registered schema must still offer the value, or the override would be an invalid default.
+	test('puts the side bar icons on top of the side bars by default', () => {
+		const registry = Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration);
+		assert.deepStrictEqual({
+			override: registry.getConfigurationDefaultsOverrides().get(LayoutSettings.ACTIVITY_BAR_LOCATION)?.value,
+			offered: registry.getConfigurationProperties()[LayoutSettings.ACTIVITY_BAR_LOCATION]?.enum,
+		}, {
+			override: ActivityBarPosition.TOP,
+			offered: [ActivityBarPosition.DEFAULT, ActivityBarPosition.TOP, ActivityBarPosition.BOTTOM, ActivityBarPosition.HIDDEN],
 		});
 	});
 
