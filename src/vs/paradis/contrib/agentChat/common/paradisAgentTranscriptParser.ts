@@ -1413,8 +1413,8 @@ export function parseClaudeLine(obj: Record<string, unknown>, signals: IParseSig
 }
 
 /**
- * Claude の assistant の行の usage（入力はキャッシュの読み書きを含めた合計）。中断・エラーで Claude Code が作る行
- * （モデルが `<synthetic>`、API を呼んでいない）と、数の無い行は undefined。
+ * Claude の assistant の行の usage（入力・キャッシュの読み・キャッシュの書き・出力を分けて持つ）。中断・エラーで Claude Code が
+ * 作る行（モデルが `<synthetic>`、API を呼んでいない）と、数の無い行は undefined。
  */
 function paradisClaudeMessageUsage(message: Record<string, unknown>, model: string | undefined): IParadisAgentMessageUsage | undefined {
 	const usage = rec(message.usage);
@@ -1425,9 +1425,11 @@ function paradisClaudeMessageUsage(message: Record<string, unknown>, model: stri
 		const count = num(value);
 		return count !== undefined && Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
 	};
-	const inputTokens = tokens(usage.input_tokens) + tokens(usage.cache_read_input_tokens) + tokens(usage.cache_creation_input_tokens);
+	const inputTokens = tokens(usage.input_tokens);
+	const cacheReadTokens = tokens(usage.cache_read_input_tokens);
+	const cacheCreationTokens = tokens(usage.cache_creation_input_tokens);
 	const outputTokens = tokens(usage.output_tokens);
-	return inputTokens + outputTokens > 0 ? { model, inputTokens, outputTokens } : undefined;
+	return inputTokens + cacheReadTokens + cacheCreationTokens + outputTokens > 0 ? { model, inputTokens, cacheReadTokens, cacheCreationTokens, outputTokens } : undefined;
 }
 
 /** Advisor の暗号化された返答の説明（モバイル・デスクトップ・古いアプリで同じ文を出す）。 */
