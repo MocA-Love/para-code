@@ -54,6 +54,7 @@ import { paradisStripAgentInvisibleCharacters } from '../../mobileRelay/common/p
 import { paradisSendAgentMessageToTui } from '../../mobileRelay/common/paradisAgentMessageSender.js';
 import { ParadisAgentQuestionAnswer } from '../../mobileRelay/common/paradisAgentQuestionKeys.js';
 import { PARADIS_MOBILE_RELAY_CHANNEL } from '../../mobileRelay/common/paradisMobileRelay.js';
+import { paradisInboxPaneKey } from '../../notificationInbox/common/paradisNotificationInbox.js';
 import { paradisScheduledRunLaunchPrompt } from '../../scheduledRuns/common/paradisScheduledRuns.js';
 import { paradisBuildPresetInsertText } from '../../terminalPresets/common/paradisTerminalPresets.js';
 import { IParadisAgentStatusStore, IParadisWorkspaceSwitchService, IParadisWorktreeService, paradisListSpaces } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
@@ -604,7 +605,7 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 
 	// --- 起動 ----------------------------------------------------------------------------------
 
-	private async launch(request: IParadisTaskBoardLaunchRequest, token: CancellationToken): Promise<Result<{ readonly terminal: string }>> {
+	private async launch(request: IParadisTaskBoardLaunchRequest, token: CancellationToken): Promise<Result<{ readonly terminal: string; readonly paneKey: string }>> {
 		await this.ready;
 		// SSH の窓で起動するのは、この窓の中継のセッションの作業場所だけ（URI はセッションの authority とパスから組み立てる）。
 		// 手元のフォルダは起動しない（接続先用のランチャーとポートファイルが付き、MCP と hook が別のペインへ流れたため。PR #425）
@@ -694,7 +695,8 @@ export class ParadisTaskBoardBridgeWindow extends Disposable implements IWorkben
 		}
 		const terminal = this.idOf(launched.paneToken);
 		this.watch(terminal, Date.now(), prompt.length > 0);
-		return success({ terminal });
+		// ペインの鍵（「人が答えるもの」の台帳で、同じペインの待ちをボードの 1 件に寄せ、「ペインへ移動」に使う）
+		return success({ terminal, paneKey: paradisInboxPaneKey(launched.paneToken) });
 	}
 
 	// --- 入力 ----------------------------------------------------------------------------------
