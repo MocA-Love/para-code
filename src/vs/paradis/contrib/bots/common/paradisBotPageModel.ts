@@ -65,9 +65,9 @@ export function paradisBotItemStatusLabel(item: Pick<IParadisBotItem, 'status'>)
 	}
 }
 
-/** 記録の 1 行の文。 */
-export function paradisBotItemEventLabel(event: IParadisBotItem['events'][number]): string {
-	const who = event.actor === 'owner' ? localize('paradis.botPage.event.owner', "あなた") : event.actor === 'bot' ? localize('paradis.botPage.event.bot', "Bot") : localize('paradis.botPage.event.system', "Para Code");
+/** 記録の 1 行の文。Bot の書き込みは Bot の名前で書く。 */
+export function paradisBotItemEventLabel(event: IParadisBotItem['events'][number], botName: string): string {
+	const who = event.actor === 'owner' ? localize('paradis.botPage.event.owner', "あなた") : event.actor === 'bot' ? botName : localize('paradis.botPage.event.system', "Para Code");
 	switch (event.kind) {
 		case 'made': return localize('paradis.botPage.event.made', "{0}が作りました", who);
 		case 'edited': return localize('paradis.botPage.event.edited', "{0}が書き換えました", who);

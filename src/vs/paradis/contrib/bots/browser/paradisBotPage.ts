@@ -426,7 +426,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		for (const event of item.events.slice(-50)) {
 			const line = DOM.append(events, $('.paradis-bot-page-event'));
 			DOM.append(line, $('span.paradis-bot-page-event-time')).textContent = clock(event.at);
-			DOM.append(line, $('span.paradis-bot-page-event-text')).textContent = paradisBotItemEventLabel(event);
+			DOM.append(line, $('span.paradis-bot-page-event-text')).textContent = paradisBotItemEventLabel(event, (this.botId !== undefined ? this.bot(this.botId)?.name : undefined) ?? 'Bot');
 		}
 
 		const locked = paradisIsBotItemLocked(item);

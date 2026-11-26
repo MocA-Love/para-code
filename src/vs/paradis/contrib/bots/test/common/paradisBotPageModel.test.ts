@@ -43,13 +43,13 @@ suite('Paradis bots page', () => {
 	test('状態と記録の文', () => {
 		assert.deepStrictEqual([
 			['planned', 'working', 'needs_you', 'done', 'canceled', 'later'].map(status => paradisBotItemStatusLabel({ status })),
-			paradisBotItemEventLabel({ id: 1, kind: 'made', actor: 'bot', at: 0 }),
-			paradisBotItemEventLabel({ id: 2, kind: 'status', actor: 'owner', at: 0, from: 'working', to: 'done' }),
-			paradisBotItemEventLabel({ id: 3, kind: 'commented', actor: 'owner', at: 0, text: 'A', answers: 2 }),
-			paradisBotItemEventLabel({ id: 4, kind: 'commented', actor: 'owner', at: 0, skipped: true }),
+			paradisBotItemEventLabel({ id: 1, kind: 'made', actor: 'bot', at: 0 }, 'リリース係'),
+			paradisBotItemEventLabel({ id: 2, kind: 'status', actor: 'owner', at: 0, from: 'working', to: 'done' }, 'x'),
+			paradisBotItemEventLabel({ id: 3, kind: 'commented', actor: 'owner', at: 0, text: 'A', answers: 2 }, 'x'),
+			paradisBotItemEventLabel({ id: 4, kind: 'commented', actor: 'owner', at: 0, skipped: true }, 'x'),
 		], [
 			['予定', '進行中', 'あなたの番', '完了', '取りやめ', 'later'],
-			'Botが作りました',
+			'リリース係が作りました',
 			'あなたが「完了」にしました',
 			'あなたが答えました: A',
 			'あなたが問いを飛ばしました',
