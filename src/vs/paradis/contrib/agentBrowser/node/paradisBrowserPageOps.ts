@@ -686,7 +686,7 @@ export class ParadisBrowserPageOps {
 			return error(this.failureMessage('download_by_click', result.reason, result.message));
 		}
 		if (!result.started) {
-			return error('The click was sent, but no download started within 15 seconds. The element may open a page instead of downloading (check with take_snapshot), or need a different element.');
+			return error(`The click was sent, but no download started within ${Math.round(Math.min(15_000, totalMs) / 100) / 10} seconds. The element may open a page instead of downloading (check with take_snapshot), or need a different element.`);
 		}
 		const size = result.totalBytes > 0 ? `${result.receivedBytes} of ${result.totalBytes} bytes` : `${result.receivedBytes} bytes`;
 		switch (result.state) {

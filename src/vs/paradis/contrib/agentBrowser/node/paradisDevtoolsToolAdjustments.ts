@@ -123,7 +123,7 @@ const PARADIS_DEVTOOLS_TOOL_DESCRIPTIONS: ReadonlyMap<string, string> = new Map(
 
 /** 引数の説明の差し替え（道具 → 引数 → 説明）。単位と、上流の文の意味の通らないところを直す。 */
 const PARADIS_DEVTOOLS_PROPERTY_DESCRIPTIONS: ReadonlyMap<string, ReadonlyMap<string, string>> = new Map([
-	['navigate_page', new Map([['handleBeforeUnload', 'Accept or dismiss beforeunload dialogs from this navigation (default accept).']])],
+	['navigate_page', new Map([['handleBeforeUnload', 'How to report a beforeunload dialog ("Leave site?") from this navigation. Para Code always lets the page leave, so "decline" cannot keep the page; it only changes the line in the result (default accept).']])],
 	['click_at', new Map([['x', 'X in CSS pixels of the viewport.'], ['y', 'Y in CSS pixels of the viewport.']])],
 	['get_network_request', new Map([['reqid', 'The reqid from list_network_requests.']])],
 ]);

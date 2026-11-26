@@ -77,6 +77,8 @@ suite('paradisRemoteFileBridge (common)', () => {
 			paradisReplaceRemoteFileExtension('/tmp/shot.jpg', '.png'),
 			paradisReplaceRemoteFileExtension('/tmp/shot', '.png'),
 			paradisReplaceRemoteFileExtension('/tmp/snapshot.txt', '.txt'),
-		], ['/tmp/shot.png', '/tmp/shot.png', '/tmp/snapshot.txt']);
+			paradisReplaceRemoteFileExtension('/tmp/trace.json.gz', '.json.gz'),
+			paradisReplaceRemoteFileExtension('/tmp/trace.gz', '.json.gz'),
+		], ['/tmp/shot.png', '/tmp/shot.png', '/tmp/snapshot.txt', '/tmp/trace.json.gz', '/tmp/trace.json.gz']);
 	});
 });

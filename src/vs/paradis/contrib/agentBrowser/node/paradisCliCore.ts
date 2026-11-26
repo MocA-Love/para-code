@@ -431,15 +431,41 @@ export interface IParadisCliParsedFlags {
 }
 
 /**
+ * ファイルの場所を受ける引数。相対パスは、Para Code の側ではなく `para` を打ったフォルダから解く（道具は絶対パスを
+ * 受け取る）。read_download の `path` は道具が返した絶対パスだけを受けるので、ここには入れない。
+ */
+const PATH_ARGUMENTS: ReadonlySet<string> = new Set(['filePath', 'requestFilePath', 'responseFilePath', 'saveTo', 'outputDirPath']);
+
+function resolvePathArguments(args: Record<string, unknown>, cwd: string | undefined): Record<string, unknown> {
+	if (cwd === undefined) {
+		return args;
+	}
+	const resolved: Record<string, unknown> = { ...args };
+	for (const name of PATH_ARGUMENTS) {
+		const value = resolved[name];
+		// `~/` で始まるパスはそのまま送る（接続先のペインでは、本体が接続先のホームへ展開する）
+		if (typeof value === 'string' && value.length > 0 && !isAbsolute(value) && !value.startsWith('~')) {
+			resolved[name] = resolvePath(cwd, value);
+		}
+	}
+	return resolved;
+}
+
+/**
  * コマンドのフラグを道具の引数にする。`--tab-id x`・`--tab_id x`・`--tab-id=x` のどれでもよい。真偽値は値なしで true、
  * `--no-<名前>` で false。知らないフラグは断る（黙って捨てない）。CLI 自身のフラグ（--json・--out・--raw・--help）と
  * 同じ名前の引数を持つ道具では、引数が勝つ。
  */
-export function paradisCliParseFlags(argv: readonly string[], command: IParadisCliCommand): IParadisCliParsedFlags {
+export function paradisCliParseFlags(argv: readonly string[], command: IParadisCliCommand, cwd?: string): IParadisCliParsedFlags {
 	const properties = schemaProperties(command);
 	const byFlag = new Map<string, string>();
 	for (const name of Object.keys(properties)) {
 		byFlag.set(kebab(name), name);
+		// 引数の名前が camelCase の道具（close_browser_tab の tabId など）でも、ほかの道具と同じ `--tab_id` で渡せるようにする
+		byFlag.set(kebab(name).replace(/-/g, '_'), name);
+	}
+	// 引数そのものの名前は、別の引数の別名より強い（tab_id と tabId の両方を持つ道具でも取り違えない）
+	for (const name of Object.keys(properties)) {
 		byFlag.set(name, name);
 	}
 	const args: Record<string, unknown> = {};
@@ -511,14 +537,15 @@ export function paradisCliParseFlags(argv: readonly string[], command: IParadisC
 			if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
 				throw new ParadisCliUsageError('--json takes a JSON object with the arguments, for example --json \'{"url":"https://example.com"}\'.');
 			}
-			base = parsed as Record<string, unknown>;
+			// --json のキーも、フラグと同じ別名（tab_id・tab-id → tabId）で受ける。道具の引数に無い名前はそのまま送る（道具が断る）
+			base = Object.fromEntries(Object.entries(parsed as Record<string, unknown>).map(([key, value]) => [byFlag.get(key) ?? key, value]));
 		} else if (flag.startsWith('no-') && byFlag.has(flag.slice(3)) && typesOf(properties[byFlag.get(flag.slice(3))!]).includes('boolean')) {
 			args[byFlag.get(flag.slice(3))!] = false;
 		} else {
 			throw new ParadisCliUsageError(`Unknown flag --${flag}. ${flagList(command)}`);
 		}
 	}
-	const merged = { ...base, ...args };
+	const merged = resolvePathArguments({ ...base, ...args }, cwd);
 	if (!help) {
 		const missing = schemaRequired(command).filter(name => merged[name] === undefined);
 		if (missing.length > 0) {
@@ -847,7 +874,7 @@ async function run(runtime: IParadisCliRuntime): Promise<ParadisCliExit> {
 			throw unknownCommand(catalog, group.name, second);
 		}
 	}
-	const flags = paradisCliParseFlags(rest, command);
+	const flags = paradisCliParseFlags(rest, command, runtime.cwd);
 	if (flags.help) {
 		runtime.stdout(`${paradisCliHelpCommand(command)}\n`);
 		return ParadisCliExit.Ok;

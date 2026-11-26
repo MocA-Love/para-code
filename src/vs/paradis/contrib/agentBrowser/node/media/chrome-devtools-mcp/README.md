@@ -26,7 +26,7 @@ node build/src/bin/chrome-devtools-mcp.js --version  # 動作確認
 # .eslint-allowed-javascript-files の当ディレクトリ分を再生成すること（手順は同ファイル内コメント参照）
 ```
 
-Para Code の変更（`PARA-PATCH`）は次のファイルにある: `build/src/McpContext.js`（`waitForTextOnPage`・`detectOpenDevToolsWindows`）、`build/src/McpResponse.js`（`handle`）、
+Para Code の変更（`PARA-PATCH`）は次のファイルにある: `build/src/McpContext.js`（`waitForTextOnPage`・`detectOpenDevToolsWindows`・`ensureExtension`）、`build/src/McpResponse.js`（`handle`）、
 `build/src/ToolHandler.js`（`handle`）、`build/src/WaitForHelper.js`（`waitForStableDom`）、`build/src/tools/pages.js`（`navigate_page`・`handle_dialog`）、
 `build/src/tools/script.js`（`evaluate_script`）、`build/src/tools/snapshot.js`（`take_snapshot`）、`build/src/tools/lighthouse.js`（`lighthouse_audit`）、`build/src/tools/performance.js`（`performance_start_trace`・`performance_analyze_insight`・保存の処理）。
 `paradis/paradisTraceExtras.js` は Para Code が足したファイル（上流には無い）で、`performance.js` の PARA-PATCH が読み込む。`build/` の外にあるので、`build/` を入れ替えても消さないこと。

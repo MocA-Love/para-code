@@ -34,6 +34,13 @@ const TOOLS = [
 const CATALOG: IParadisCliCatalog = paradisBuildCliCatalog(TOOLS, [{ group: 'browser', parts: [{ text: 'Call set_cursor_label before your first click.' }] }]);
 const command = (tool: string) => CATALOG.commands.find(candidate => candidate.tool === tool)!;
 
+/** 引数の名前が camelCase の道具（ほかのテストの品書きには足さない）。 */
+const CAMEL_CASE_CATALOG: IParadisCliCatalog = paradisBuildCliCatalog([
+	{ name: 'close_browser_tab', description: 'Close a tab.', inputSchema: { type: 'object', properties: { tabId: { type: 'string' } }, required: ['tabId'] } },
+	{ name: 'take_snapshot', description: 'Take a snapshot.', annotations: { readOnlyHint: true }, inputSchema: { type: 'object', properties: { filePath: { type: 'string' }, saveTo: { type: 'string' }, path: { type: 'string' } } } },
+], []);
+const camelCaseCommand = (tool: string) => CAMEL_CASE_CATALOG.commands.find(candidate => candidate.tool === tool)!;
+
 suite('paradisCliCore', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
@@ -215,6 +222,41 @@ suite('paradisCliCore', () => {
 			// 受け口ごしでも、処理した後の 404 では直結へ落として送り直さない
 			handled: ['3: Para Code did not confirm the request after it was sent (the terminal changed while the request was handled)', 1],
 			sandbox: ['4: Your sandbox blocked the connection to Para Code (Para Code is running; do not restart it)', 1],
+		});
+	});
+
+	test('a camelCase argument takes the same flag spellings as a snake_case one, in flags and in --json', () => {
+		const parse = (...argv: string[]) => paradisCliParseFlags(argv, camelCaseCommand('close_browser_tab')).args;
+		assert.deepStrictEqual([
+			parse('--tab-id', 'a'),
+			parse('--tab_id', 'a'),
+			parse('--tabId', 'a'),
+			parse('--json', '{"tab_id":"a"}'),
+			parse('--json', '{"tab-id":"a"}'),
+			parse('--json', '{"tabId":"a","other":1}'),
+		], [{ tabId: 'a' }, { tabId: 'a' }, { tabId: 'a' }, { tabId: 'a' }, { tabId: 'a' }, { tabId: 'a', other: 1 }]);
+	});
+
+	test('relative file arguments are resolved from the folder para was run in', () => {
+		// Windows でも通るよう、期待する値は同じ path の関数で作る
+		const cwd = join(root, 'repo');
+		const parse = (...argv: string[]) => paradisCliParseFlags(argv, camelCaseCommand('take_snapshot'), cwd).args;
+		assert.deepStrictEqual({
+			relative: parse('--file-path', 'out/snap.txt', '--save-to', '../shot.png'),
+			absolute: parse('--file-path', join(root, 'snap.txt')),
+			json: parse('--json', '{"filePath":"snap.txt"}'),
+			// `~/` は本体が展開する（接続先のペインでは接続先のホーム）
+			home: parse('--file-path', '~/snap.txt'),
+			// read_download の path のように、道具が返した絶対パスだけを受ける引数は変えない
+			otherArguments: parse('--path', 'sample.csv'),
+			withoutCwd: paradisCliParseFlags(['--file-path', 'snap.txt'], camelCaseCommand('take_snapshot')).args,
+		}, {
+			relative: { filePath: join(cwd, 'out', 'snap.txt'), saveTo: join(root, 'shot.png') },
+			absolute: { filePath: join(root, 'snap.txt') },
+			json: { filePath: join(cwd, 'snap.txt') },
+			home: { filePath: '~/snap.txt' },
+			otherArguments: { path: 'sample.csv' },
+			withoutCwd: { filePath: 'snap.txt' },
 		});
 	});
 
