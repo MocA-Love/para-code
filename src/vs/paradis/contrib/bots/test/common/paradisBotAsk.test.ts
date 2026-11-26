@@ -177,7 +177,6 @@ suite('Paradis bot ask', () => {
 			'refused',
 			'refused',
 			'refused',
-			'refused',
 		]);
 	});
 

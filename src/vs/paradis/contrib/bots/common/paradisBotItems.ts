@@ -233,11 +233,22 @@ export function paradisBotItemCounts(state: IParadisBotItemsState, botId: string
 	return { open, needsYou, lastActivityAt };
 }
 
-/** Bot へまだ届けていないイベントのある項目と、そのイベント。 */
+/**
+ * Bot へまだ届けていないイベント。読み取り専用の項目（知らない状態）は印を外せないので、数えも配りもしない
+ * （出すと、新しい版が書いた項目が古い版で開くたびに「未配達」に出続ける）。
+ */
+export function paradisBotItemUndelivered(item: IParadisBotItem): IParadisBotItemEvent[] {
+	return paradisIsBotItemLocked(item) ? [] : item.events.filter(event => event.toBot === true);
+}
+
+/** Bot へまだ届けていないイベントのある項目と、そのイベント。新しい版の台帳（書けない）では何も出さない。 */
 export function paradisBotItemsPendingMail(state: IParadisBotItemsState, botId: string): { readonly item: IParadisBotItem; readonly events: readonly IParadisBotItemEvent[] }[] {
 	const pending: { item: IParadisBotItem; events: IParadisBotItemEvent[] }[] = [];
+	if (state.version !== PARADIS_BOT_ITEMS_VERSION) {
+		return pending;
+	}
 	for (const item of state.items) {
-		const events = item.botId === botId ? item.events.filter(event => event.toBot === true) : [];
+		const events = item.botId === botId ? paradisBotItemUndelivered(item) : [];
 		if (events.length > 0) {
 			pending.push({ item, events });
 		}
