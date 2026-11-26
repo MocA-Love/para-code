@@ -182,7 +182,8 @@ export class ParadisBotHomes {
 		if (clean === undefined) {
 			throw new ParadisBotHomeError('outside', 'The path must be a relative path inside the bot\'s home folder.');
 		}
-		if (forWrite && clean === PARADIS_BOT_OWNER_FILE) {
+		// 大文字と小文字を区別しないファイルシステム（macOS の既定）では `.Para-Bot.json` も同じファイル
+		if (forWrite && clean.toLowerCase() === PARADIS_BOT_OWNER_FILE) {
 			throw new ParadisBotHomeError('reserved', `${PARADIS_BOT_OWNER_FILE} is written by Para Code.`);
 		}
 		const home = this.folder(bot);
