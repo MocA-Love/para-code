@@ -85,4 +85,32 @@ suite('Paradis human ask: pane source (relay)', () => {
 			chat.dispose();
 		}
 	});
+
+	test('with the ledger reading, a pane nobody watches still gets its wait (no phone, chat display off)', async () => {
+		const token = 'pane-human-ask-unwatched';
+		const sessionId = 'session-human-ask-unwatched';
+		const transcriptPath = join(paradisClaudeConfigDir(), 'projects', 'para-code-tests', 'human-ask-unwatched.jsonl');
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const base = { token, sessionId, transcriptPath, cwd: '/workspace' };
+		try {
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			// 読む側がいないうちは、見られていないペインの許可で tailer を起こさない（今までどおり）
+			fireParadisAgentHookEvent({ ...base, event: 'UserPromptSubmit', at: Date.now() });
+			fireParadisAgentHookEvent({ ...base, event: 'PreToolUse', at: Date.now(), toolName: 'Bash', toolInput: { command: 'npm test' }, toolUseId: 'toolu_1' });
+			fireParadisAgentHookEvent({ ...base, event: 'PermissionRequest', at: Date.now(), toolName: 'Bash', toolInput: { command: 'npm test' } });
+			const before = chat.humanAskPanes().length;
+			fireParadisAgentHookEvent({ ...base, event: 'PostToolUse', at: Date.now(), toolName: 'Bash', toolUseId: 'toolu_1' });
+
+			// 台帳の書き手が読み始めた: ウィンドウもスマホも見ていないペインの許可が一覧に出る
+			chat.setHumanAskTailing(true);
+			fireParadisAgentHookEvent({ ...base, event: 'PreToolUse', at: Date.now(), toolName: 'Bash', toolInput: { command: 'npm run build' }, toolUseId: 'toolu_2' });
+			fireParadisAgentHookEvent({ ...base, event: 'PermissionRequest', at: Date.now(), toolName: 'Bash', toolInput: { command: 'npm run build' } });
+			await until(chat, () => chat.humanAskPanes().length > 0);
+			const listed = chat.humanAskPanes().map(pane => ({ id: pane.interaction.id, detail: pane.interaction.kind === 'approval' ? pane.interaction.detail : undefined }));
+			assert.deepStrictEqual({ before, listed }, { before: 0, listed: [{ id: 'toolu_2', detail: 'Bash: npm run build' }] });
+		} finally {
+			chat.setHumanAskTailing(false);
+			chat.dispose();
+		}
+	});
 });
