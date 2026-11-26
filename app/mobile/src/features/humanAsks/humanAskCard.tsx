@@ -5,7 +5,7 @@ import { StyleSheet, Text, View } from 'react-native';
 import { QuestionCard, QuestionGroupCard } from '../../components/questionCard.js';
 import { haptic } from '../../haptics.js';
 import { useParaToast } from '../../paraToast.js';
-import type { AgentChatMessage, AgentMessageSendResult, AgentQuestionAnswer } from '../../store.js';
+import type { AgentMessageSendResult, AgentQuestionAnswer } from '../../store.js';
 import { formatRelativeTime } from '../../time.js';
 import { Button, ConfirmDrawer } from '../../ui/index.js';
 import { TextInputDrawer } from '../../ui/textInputDrawer.js';
@@ -13,6 +13,7 @@ import { colors, radius, space, type } from '../../theme.js';
 import { answerHumanAsk } from './humanAskStore.js';
 import {
 	humanAskQuestionAnswer,
+	humanAskQuestionMessages,
 	humanAskRefusalText,
 	humanAskSourceLabel,
 	newHumanAskOpId,
@@ -21,25 +22,6 @@ import {
 	type HumanAskAnswer,
 	type HumanAskQuestionAnswer,
 } from './humanAsks.js';
-
-/** 台帳の問いを、質問カードが読む形にする（おすすめは選択肢の説明の頭に書く）。 */
-function questionMessages(ask: HumanAsk): AgentChatMessage[] {
-	return ask.questions.map((question, index) => ({
-		rev: 0,
-		role: 'assistant',
-		kind: 'question',
-		text: question.text,
-		options: question.options.map(option => {
-			const description = option.recommended === true ? (option.detail !== undefined ? `おすすめ。${option.detail}` : 'おすすめ') : option.detail;
-			return { label: option.label, ...(description !== undefined ? { description } : {}) };
-		}),
-		...(question.multiSelect === true ? { multiSelect: true } : {}),
-		toolUseId: `${ask.key}\u0000${question.id}`,
-		questionGroup: ask.key,
-		questionIndex: index,
-		questionCount: ask.questions.length,
-	}));
-}
 
 /**
  * 要対応の台帳の 1 件のカード（ボードの質問・承認・止まった、Bot の質問、ask_human の質問）。
@@ -52,7 +34,7 @@ export const HumanAskCard = memo(function HumanAskCard({ pcId, ask, now }: { pcI
 	const [sending, setSending] = useState(false);
 	const [confirming, setConfirming] = useState<HumanAskAction | undefined>(undefined);
 	const [writing, setWriting] = useState<HumanAskAction | undefined>(undefined);
-	const messages = useMemo(() => questionMessages(ask), [ask]);
+	const messages = useMemo(() => humanAskQuestionMessages(ask), [ask]);
 	const locked = answered || sending || ask.busy;
 
 	const send = useCallback(async (answer: HumanAskAnswer): Promise<AgentMessageSendResult> => {

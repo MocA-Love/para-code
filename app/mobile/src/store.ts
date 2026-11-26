@@ -1032,6 +1032,8 @@ export interface AgentChatMessage {
 	options?: AgentQuestionOption[];
 	/** kind==='question': 複数選択可能な質問か（TUIではトグル選択 + Enter確定）。 */
 	multiSelect?: boolean;
+	/** kind==='question': false なら自分で書いて答えられない（「その他」を出さない）。要対応の台帳の質問だけが付ける。 */
+	allowFreeText?: boolean;
 	/** kind==='question' | 'tool_result': 対応付け用ID。同IDの tool_result が後続にあれば回答済み。 */
 	toolUseId?: string;
 	/** kind==='question': 同一 AskUserQuestion 呼び出しのグループキー（複数質問の集約表示用）。 */

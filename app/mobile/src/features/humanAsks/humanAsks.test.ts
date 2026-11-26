@@ -3,9 +3,11 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { questionAllowsFreeText } from '../../agentQuestionMod.js';
 import {
 	humanAskAnswerRequest,
 	humanAskQuestionAnswer,
+	humanAskQuestionMessages,
 	humanAskRefusalText,
 	parseHumanAskAnswerReply,
 	parseHumanAskSummary,
@@ -66,5 +68,18 @@ describe('humanAsks', () => {
 			textNotAllowed: undefined,
 			gone: 'PC で回答済み、または対象外になりました',
 		});
+	});
+	it('書けない問いの質問カードには「その他（入力して回答）」を出さない', () => {
+		const messages = humanAskQuestionMessages({
+			key: 'bot:i.e',
+			questions: [
+				{ id: 'q0', text: '残す?', options: [{ id: '0', label: '残す', recommended: true }], allowText: true },
+				{ id: 'q1', text: 'どれ?', options: [{ id: '0', label: 'A', detail: '速い' }, { id: '1', label: 'B' }], allowText: false, multiSelect: true },
+			],
+		});
+		expect(messages.map(message => ({ freeText: questionAllowsFreeText(message), options: message.options, multi: message.multiSelect === true, group: message.questionGroup }))).toEqual([
+			{ freeText: true, options: [{ label: '残す', description: 'おすすめ' }], multi: false, group: 'bot:i.e' },
+			{ freeText: false, options: [{ label: 'A', description: '速い' }, { label: 'B' }], multi: true, group: 'bot:i.e' },
+		]);
 	});
 });

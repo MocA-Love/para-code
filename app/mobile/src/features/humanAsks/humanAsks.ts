@@ -8,7 +8,7 @@
  * `ask_human` の質問だけで、許可とペインの質問は今までの許可カード・質問カードのまま（PC が一覧から外す）。
  */
 
-import type { AgentQuestionAnswer } from '../../store.js';
+import type { AgentChatMessage, AgentQuestionAnswer } from '../../store.js';
 
 // 形は PC の `IParadisMobileHumanAsk`（paradisMobileHumanAsks.ts）と同じ。PC のモジュールは型でも読まない（VS Code の土台まで
 // 型検査に入ってしまうため）。一致はゴールデン（app/protocol/test/golden/human-asks.json）で両側から確かめる。
@@ -213,6 +213,29 @@ export function humanAskQuestionAnswer(question: HumanAskQuestion, answer: Agent
 		return body.length > 0 && question.allowText ? { questionId: question.id, text: body } : undefined;
 	}
 	return undefined;
+}
+
+/**
+ * 台帳の問いを、今の質問カードが読む形にする。おすすめは選択肢の説明の頭に書き、書けない問い（`allowText: false`）には
+ * 「その他（入力して回答）」を出さない（送っても PC が断るため）。
+ */
+export function humanAskQuestionMessages(ask: Pick<HumanAsk, 'key' | 'questions'>): AgentChatMessage[] {
+	return ask.questions.map((question, index) => ({
+		rev: 0,
+		role: 'assistant',
+		kind: 'question',
+		text: question.text,
+		options: question.options.map(option => {
+			const description = option.recommended === true ? (option.detail !== undefined ? `おすすめ。${option.detail}` : 'おすすめ') : option.detail;
+			return { label: option.label, ...(description !== undefined ? { description } : {}) };
+		}),
+		...(question.multiSelect === true ? { multiSelect: true } : {}),
+		...(question.allowText ? {} : { allowFreeText: false }),
+		toolUseId: `${ask.key}\u0000${question.id}`,
+		questionGroup: ask.key,
+		questionIndex: index,
+		questionCount: ask.questions.length,
+	}));
 }
 
 /** 出どころの札（スマホの要対応のカードの左上）。 */
