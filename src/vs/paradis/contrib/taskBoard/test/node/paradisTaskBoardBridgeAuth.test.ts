@@ -76,7 +76,7 @@ suite('Paradis task board bridge - board key and caller', function () {
 		await fsp.rm(dir, { recursive: true, force: true });
 	});
 
-	async function request(route: string, method: 'GET' | 'POST', key: string | undefined, body?: unknown): Promise<number> {
+	async function request(route: string, method: 'GET' | 'POST' | 'PUT', key: string | undefined, body?: unknown): Promise<number> {
 		const abort = new AbortController();
 		const res = await fetch(`http://127.0.0.1:${port}${route}`, {
 			method,
@@ -89,10 +89,11 @@ suite('Paradis task board bridge - board key and caller', function () {
 		return res.status;
 	}
 
-	const ROUTES: readonly [string, 'GET' | 'POST', unknown?][] = [
+	const ROUTES: readonly [string, 'GET' | 'POST' | 'PUT', unknown?][] = [
 		['/v1/health', 'GET'], ['/v1/terminals', 'GET'], ['/v1/screen?terminal=t_x', 'GET'], ['/v1/events', 'GET'],
 		['/v1/launch', 'POST', {}], ['/v1/send', 'POST', {}], ['/v1/key', 'POST', {}], ['/v1/answer', 'POST', {}], ['/v1/close', 'POST', {}], ['/v1/reply', 'POST', {}],
 		['/v1/relay', 'POST', { sessionId: SESSION, op: { kind: 'git', git: { kind: 'status' } } }],
+		['/v1/asks', 'PUT', { asks: [] }], ['/v1/asks/settle', 'POST', { claim: 'c', ok: true }],
 	];
 
 	test('every route refuses the discovery token alone, a wrong board key, and a process that is not the board', async () => {
