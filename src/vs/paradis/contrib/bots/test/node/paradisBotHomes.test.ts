@@ -196,7 +196,7 @@ suite('Paradis bot homes', () => {
 			// ピン留めと顔はチャネルから変えられ、一覧の値に載る（色は選べる名前だけ）
 			pinned: [service.getSnapshot().bots.map(bot => [bot.pinned, bot.faceColor, bot.faceShape]), badPin, badFace],
 			outside: await channel.call('window:1', 'writeHomeFile', [second.value.id, '../../escape.md', 'x']),
-			badArgs: [await channel.call('window:1', 'requestLaunch', [second.value.id, 'root']), await channel.call('window:1', 'ownerSetStatus', ['uid', 'waiting']), await channel.call('window:1', 'createBot', ['x'])],
+			badArgs: [await channel.call('window:1', 'requestLaunch', [second.value.id, 'root']), await channel.call('window:1', 'ownerSetStatus', ['uid', 'blocked']), await channel.call('window:1', 'createBot', ['x'])],
 			// Bot の名義の書き込みは、チャネルには無い
 			botWrites: await Promise.all(['botAddItem', 'botUpdateItem', 'issueLaunch', 'releasePane'].map(command => channel.call('window:1', command, ['id3', { title: 'x' }]).then(() => 'reachable', () => 'not found'))),
 		}, {
