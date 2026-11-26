@@ -27,5 +27,6 @@ import './paradisMobileDoNotDisturbRequests.js'; // PC のおやすみモード�
 import './paradisMobileHtmlImageRequests.js'; // HTML の埋め込み画像を 1 枚ずつ（fs.html-images.v1）
 import './paradisMobileAbsolutePathRequests.js'; // 行の長押しの「絶対パスをコピー」（fs.absolute-path.v1）
 import '../../bots/electron-browser/paradisBotsMobileRequests.js'; // スマホの Bot の画面（bots.page.v1）
+import './paradisMobileHumanAskRequests.js'; // 要対応の台帳の 1 件の一覧と答え（human-ask.v1）
 
 export { };

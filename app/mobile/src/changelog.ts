@@ -40,6 +40,18 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.31',
+		date: '2026-11-27',
+		items: [
+			{
+				icon: 'help-circle-outline',
+				title: '要対応に、タスクボードと Bot の質問・承認が並び、その場で答えられるようになりました',
+				body: 'PC の Para Code の更新が要ります。',
+				tone: 'yellow',
+			},
+		],
+	},
+	{
 		version: '0.12.30',
 		date: '2026-11-26',
 		items: [

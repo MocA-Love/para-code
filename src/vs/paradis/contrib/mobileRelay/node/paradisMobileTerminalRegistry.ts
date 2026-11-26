@@ -13,6 +13,7 @@ import { paradisMobileResourcesEqual } from '../common/paradisMobileHostResource
 import { IParadisMobileWindowHost } from '../common/paradisMobileHost.js';
 import { PARADIS_FS_BINARY_UPLOAD_ENCODING } from '../common/paradisMobileFileUpload.js';
 import { IParadisMobileDoNotDisturbState, paradisSameMobileDoNotDisturbState } from '../common/paradisMobileDoNotDisturb.js';
+import { IParadisMobileHumanAskSummary, paradisSameMobileHumanAskSummary } from '../common/paradisMobileHumanAsks.js';
 import { PARADIS_MOBILE_MIN_COMPATIBLE_MOBILE, PARADIS_MOBILE_PC_CAPABILITIES } from '../common/paradisMobileCompat.js';
 import { IParadisMobileRendererManifest, IParadisMobileWindowLease, IParadisMobileWindowLeaseValidation } from '../common/paradisMobileWindowLease.js';
 import type { IParadisMobileBotsFeed } from './paradisMobileBotsFeed.js';
@@ -56,6 +57,7 @@ export class ParadisMobileTerminalRegistry {
 	// Bot の一覧（bots.page.v1）。Bot の台帳が paradisMobileBotsFeed.ts へ置いた値。
 	private botsFeed: IParadisMobileBotsFeed | undefined;
 	private botsKey: string | undefined;
+	private humanAsks: IParadisMobileHumanAskSummary | undefined;
 	private highestValidatedManifestRevision = 0;
 	private fullManifestRevision = 0;
 	private readonly observedManifestEntries = new Map<number, { entry: IParadisMobileRendererManifest['entries'][number]; observedAtManifestRevision: number }>();
@@ -150,6 +152,19 @@ export class ParadisMobileTerminalRegistry {
 			return false;
 		}
 		this.pcName = next;
+		this.revision++;
+		return true;
+	}
+
+	/**
+	 * スマホの要対応に出す台帳の件数と印を差し替える。実際に変わったときだけ revision を進め、
+	 * true（＝再ブロードキャストが要る）を返す。
+	 */
+	setHumanAsks(summary: IParadisMobileHumanAskSummary | undefined): boolean {
+		if (paradisSameMobileHumanAskSummary(this.humanAsks, summary)) {
+			return false;
+		}
+		this.humanAsks = summary;
 		this.revision++;
 		return true;
 	}
@@ -390,6 +405,7 @@ export class ParadisMobileTerminalRegistry {
 			...(this.machineIdHash !== undefined ? { machineIdHash: this.machineIdHash } : {}),
 			...(this.doNotDisturb !== undefined ? { doNotDisturb: this.doNotDisturb } : {}),
 			...(this.botsFeed !== undefined ? { bots: this.botsFeed.bots } : {}),
+			...(this.humanAsks !== undefined && this.humanAsks.count > 0 ? { humanAsks: this.humanAsks } : {}),
 		};
 	}
 

@@ -14,9 +14,10 @@ import { ParadisAgentBrowserService } from '../../node/paradisAgentBrowserServic
 import { PARADIS_MCP_LOCAL_TOOLS } from '../../node/paradisBrowserMcpShimCore.js';
 import { PARADIS_SITE_NOTE_TOOLS } from '../../node/paradisBrowserSiteNotes.js';
 import { PARADIS_SITE_RECIPE_TOOLS } from '../../node/paradisBrowserSiteRecipes.js';
+import { PARADIS_ASK_HUMAN_TOOL_DEFINITION } from '../../../humanAsk/common/paradisAskHumanTool.js';
 
 /**
- * 本物のペインの tools/list に出る道具の名前（2026-11-22）。提供元を持つものは、その提供元が名乗る分野を添える。
+ * 本物のペインの tools/list に出る道具の名前（2026-11-27）。提供元を持つものは、その提供元が名乗る分野を添える。
  * 道具を足したらここにも足す（分野とコマンド名の重なりをここで見る）。
  */
 const TOOLS_BY_PROVIDER_GROUP: Readonly<Record<string, readonly string[]>> = {
@@ -39,6 +40,7 @@ const TOOLS_BY_PROVIDER_GROUP: Readonly<Record<string, readonly string[]>> = {
 		'list_terminals', 'read_terminal', 'wait_for_terminal', 'send_terminal_input', 'send_terminal_key', 'create_terminal', 'close_terminal',
 		'bot_item_list', 'bot_item_show', 'bot_item_add', 'bot_item_update', 'bot_suggest',
 		'list_bots', 'create_bot', 'update_bot', 'start_bot', 'stop_bot', 'remove_bot',
+		'ask_human',
 	],
 	port: ['list_port_forwards', 'forward_port', 'stop_port_forward', 'reforward_port', 'clean_up_port_forwards'],
 	doc: ['list_docs', 'adopt_doc', 'read_doc_comments', 'reply_doc_comment'],
@@ -114,7 +116,7 @@ suite('paradisCliCatalog', () => {
 			ide: [
 				'preview-file', 'read-para-code-guide', 'list-spaces', 'create-space', 'remove-space', 'launch-agent', 'create-scheduled-run',
 				'create-space-section', 'update-space-section', 'remove-space-section', 'move-space-to-section',
-				'bot-item-list', 'bot-item-show', 'bot-item-add', 'bot-item-update', 'bot-suggest', 'list-bots', 'create-bot', 'update-bot', 'start-bot', 'stop-bot', 'remove-bot',
+				'bot-item-list', 'bot-item-show', 'bot-item-add', 'bot-item-update', 'bot-suggest', 'list-bots', 'create-bot', 'update-bot', 'start-bot', 'stop-bot', 'remove-bot', 'ask-human',
 			],
 			doc: ['list-docs', 'adopt-doc', 'read-doc-comments', 'reply-doc-comment'],
 			board: ['complete-step', 'ask-human'],
@@ -147,7 +149,7 @@ suite('paradisCliCatalog', () => {
 
 	test('no argument of the tools defined in this repository has the name of a flag of the CLI itself', () => {
 		const collisions: string[] = [];
-		for (const tool of [...PARADIS_MCP_LOCAL_TOOLS, ...PARADIS_SITE_NOTE_TOOLS, ...PARADIS_SITE_RECIPE_TOOLS]) {
+		for (const tool of [...PARADIS_MCP_LOCAL_TOOLS, ...PARADIS_SITE_NOTE_TOOLS, ...PARADIS_SITE_RECIPE_TOOLS, PARADIS_ASK_HUMAN_TOOL_DEFINITION]) {
 			const properties = (tool.inputSchema as { readonly properties?: Record<string, unknown> }).properties ?? {};
 			for (const name of Object.keys(properties)) {
 				if (PARADIS_CLI_RESERVED_FLAGS.includes(name.replace(/_/g, '-'))) {

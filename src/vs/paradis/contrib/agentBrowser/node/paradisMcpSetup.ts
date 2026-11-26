@@ -17,7 +17,8 @@ import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js'
 import { paradisWriteRollingBackup } from '../../../node/paradisRollingFileBackup.js';
 import { IParadisMcpCliConfigStatus, IParadisMcpConfigStatus, IParadisMcpSetupResult, PARADIS_PANE_TOKEN_ENV_VAR, ParadisMcpCli } from '../common/paradisAgentBrowser.js';
 import { IParadisAntigravityMcpServerEntry, IParadisMcpStdioBridgeLocation, inspectParadisMcpTomlSection, paradisAntigravityMcpServerEntry, paradisClaudeMcpServerEntry, paradisCodexMcpTableBody, paradisMcpServerUrl, paradisUpsertAntigravityMcpJson, paradisUpsertCodexMcpToml } from '../common/paradisMcpSetupEncoding.js';
-import { computeParadisCodexTableRewrite, inspectParadisAntigravityMcpJson, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml, paradisAddCodexMissingTableLines, paradisAntigravityMcpEntryToRelocate, paradisClaudeMcpEntryNeedsToolTimeout, paradisReadClaudeMcpEntry } from './paradisMcpConfigStatus.js';
+import { PARADIS_ASK_HUMAN_TOOL } from '../../humanAsk/common/paradisAskHumanTool.js';
+import { computeParadisCodexTableRewrite, inspectParadisAntigravityMcpJson, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml, paradisAddCodexMissingTableLines, paradisAddCodexToolApproval, paradisAntigravityMcpEntryToRelocate, paradisClaudeMcpEntryNeedsToolTimeout, paradisReadClaudeMcpEntry } from './paradisMcpConfigStatus.js';
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_OUTPUT_LIMIT_BYTES = 64 * 1024;
@@ -767,6 +768,17 @@ export class ParadisMcpSetupController {
 			} catch {
 				this.options.log('Codex MCP tool timeout upgrade failed');
 			}
+			try {
+				// セットアップ済みの人に、人に聞く道具の許可を 1 回だけ足す（後で利用者が消したら足し直さない）
+				const configPath = join(codexHome, 'config.toml');
+				const snapshot = await readConfigSnapshot(configPath, this.options.configReadFileSystem);
+				const approved = snapshot.exists ? paradisAddCodexToolApproval(snapshot.text, gatewayPort, PARADIS_ASK_HUMAN_TOOL) : undefined;
+				if (approved !== undefined) {
+					await attempt(`codex:${configPath}:approve:${PARADIS_ASK_HUMAN_TOOL}`, () => writeConfigAtomic(configPath, snapshot, approved, this.options.configReadFileSystem));
+				}
+			} catch {
+				this.options.log('Codex MCP tool approval upgrade failed');
+			}
 		}
 	}
 
@@ -1083,7 +1095,11 @@ export class ParadisMcpSetupController {
 				if (inspectParadisMcpTomlSection(original.text) === 'ambiguous') {
 					throw new ParadisCodexConfigError('ambiguous', 'Ambiguous Codex MCP configuration');
 				}
-				const content = paradisUpsertCodexMcpToml(original.text, gatewayPort);
+				const upserted = paradisUpsertCodexMcpToml(original.text, gatewayPort);
+				// 人に聞く道具（ask_human）だけは Codex の許可のメニューを出さない（既にその道具の表があれば触らない）。足すのは
+				// 利用者がボタンで頼んだ既定のホームだけ。裏で動く切り替え先のホームへの反映（アカウントの追加・ログインのたび）
+				// では足さず、起動時の入れ直し（upgradeToolTimeouts、ホームごとに 1 回だけ）に任せる（利用者が消した表を足し直さない）
+				const content = home === 'primary' ? paradisAddCodexToolApproval(upserted, gatewayPort, PARADIS_ASK_HUMAN_TOOL) ?? upserted : upserted;
 				if (content === original.text) {
 					return { cli: 'codex', cliAvailable: true, target: configPath, servers: [{ server: 'para-browser', outcome: 'already' }] };
 				}

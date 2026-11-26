@@ -530,6 +530,10 @@ suite('Para Browser MCP setup', () => {
 					'[mcp_servers.other]',
 					'command = "keep"',
 					'',
+					// 人に聞く道具だけを Codex の許可なしにする表（1 回だけ足す）
+					'[mcp_servers.para-browser.tools.ask_human]',
+					'approval_mode = "approve"',
+					'',
 				].join('\n'),
 			});
 		} finally {
@@ -566,11 +570,12 @@ suite('Para Browser MCP setup', () => {
 			});
 			await create().upgradeToolTimeouts(PORT);
 			const afterFirst = await fs.readFile(configPath, 'utf8');
-			// The user takes the line out again: the next start does not put it back.
+			// The user takes the line and the ask_human table out again: the next start does not put them back.
 			await fs.writeFile(configPath, original);
 			await create().upgradeToolTimeouts(PORT);
 			assert.deepStrictEqual({ afterFirst, afterSecond: await fs.readFile(configPath, 'utf8') }, {
-				afterFirst: original.replace('tool_timeout_sec = 300\n', 'tool_timeout_sec = 300\nsupports_parallel_tool_calls = true\n'),
+				afterFirst: `${original.replace('tool_timeout_sec = 300\n', 'tool_timeout_sec = 300\nsupports_parallel_tool_calls = true\n')}\n[mcp_servers.para-browser.tools.ask_human]\napproval_mode = "approve"\n`,
+				// 利用者が消した行と表は、次の起動で足し直さない
 				afterSecond: original,
 			});
 		} finally {

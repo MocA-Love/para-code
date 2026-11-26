@@ -37,6 +37,7 @@ import { FrameMux, IParadisMobileFrameSubmitOptions, IParadisMobileFrameTrafficS
 import { IParadisMobileSendHandle, ParadisMobileSendQueue, paradisMobileRejectedSend } from '../common/paradisMobileSendQueue.js';
 import { ParadisMobileAuthorityLanes } from '../common/paradisMobileAuthorityLanes.js';
 import { IParadisMobileDoNotDisturbState, paradisParseMobileDoNotDisturbState } from '../common/paradisMobileDoNotDisturb.js';
+import { IParadisMobileHumanAskSummary, paradisParseMobileHumanAskSummary } from '../common/paradisMobileHumanAsks.js';
 import { paradisMobileResponseRequestId } from './paradisMobileResponseRequestId.js';
 import { IParadisCdpFrameSubscription, IParadisSharedPageBindings } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { ParadisCdpUpstream } from '../../agentBrowser/node/paradisCdpUpstream.js';
@@ -2839,6 +2840,14 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		this.pcName = next;
 		this._onDidChangeStatus.fire(this.snapshot());
 		if (this.terminalRegistry.setPcName(next)) {
+			await this.enqueueRendererAuthority(() => this.broadcastDesktopState());
+		}
+	}
+
+	/** スマホの要対応に出す台帳の件数と印（同じ shared process の台帳から。human-ask.v1）。変わったときだけ State を送り直す。 */
+	async setHumanAsks(summary: IParadisMobileHumanAskSummary): Promise<void> {
+		const parsed = paradisParseMobileHumanAskSummary(summary);
+		if (parsed !== undefined && this.terminalRegistry.setHumanAsks(parsed)) {
 			await this.enqueueRendererAuthority(() => this.broadcastDesktopState());
 		}
 	}

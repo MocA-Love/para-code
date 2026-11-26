@@ -13,6 +13,7 @@ import type { AgentShellOutput } from './agentShells.js';
 import { releaseArchivedOnAttention } from './archivedAgents.js';
 import { PcCapability, pcHasCapability, type UpdateTarget } from './pcCompat.js';
 import type { PcDoNotDisturb } from './features/doNotDisturb/pcDoNotDisturb.js';
+import type { HumanAskSummary } from './features/humanAsks/humanAsks.js';
 import { DEFAULT_HOME_PREFERENCES, parseHomePreferences, type HomeListPreferences } from './homeSort.js';
 import { nextPcAgentSources, summarizeAgentCounts, type PcAgentSource } from './pcAgentSources.js';
 import { toolImageCache } from './agentToolImages.js';
@@ -137,6 +138,10 @@ export interface PcSummary {
 	readonly remoteDoNotDisturb?: boolean | undefined;
 	/** その PC のおやすみモード（PC から届いた最新値。未対応の PC・まだ届いていなければ undefined）。 */
 	readonly doNotDisturb?: PcDoNotDisturb | undefined;
+	/** その PC が要対応の台帳の 1 件（`human-ask.v1`）を出せるか。一度も State を受けていなければ undefined。 */
+	readonly humanAskSupported?: boolean | undefined;
+	/** 台帳の件数と印（`waiting` には既に足してある）。 */
+	readonly humanAsks?: HumanAskSummary | undefined;
 }
 
 /** PC の CPU・メモリ・SSD の使用率（0〜100 の整数。取れていない項目は undefined）。 */
@@ -616,6 +621,7 @@ function summarizeRuntime(runtime: PcRuntime): PcSummary {
 	const workspace = runtime.state.workspace;
 	// 件数の数え方（要対応・実行中）は pcAgentSources.ts の純関数に置く（単体テストのため）。
 	const counts = summarizeAgentCounts(workspace?.terminals, archivedRecord[runtime.pc.id] ?? NO_KEYS);
+	const humanAskSupported = workspace === undefined ? undefined : pcHasCapability(workspace, PcCapability.HumanAsk);
 	return {
 		id: runtime.pc.id,
 		name: runtime.pc.name,
@@ -627,7 +633,8 @@ function summarizeRuntime(runtime: PcRuntime): PcSummary {
 		workspaces: workspace?.workspaces.length ?? 0,
 		terminals: counts.terminals,
 		// 要対応の数え方はタブのバッジ・ドロワーと同じ（`attentionCount.ts`）。
-		waiting: counts.waiting,
+		// 台帳の 1 件（ボード・Bot・ask_human）も要対応に数える（`human-ask.v1` の PC だけ）
+		waiting: counts.waiting + (humanAskSupported ? workspace?.humanAsks?.count ?? 0 : 0),
 		running: counts.running,
 		// 起動直後でまだ繋がっていなければ、前回の一覧を受け取った時刻を最後の接続として出す。
 		lastOnlineAt: runtime.lastOnlineAt ?? runtime.lastKnown?.savedAt,
@@ -637,6 +644,8 @@ function summarizeRuntime(runtime: PcRuntime): PcSummary {
 		machineIdHash: pcHasCapability(workspace, USAGE_MACHINE_ID_CAPABILITY) ? workspace?.machineIdHash : undefined,
 		remoteDoNotDisturb: workspace === undefined ? undefined : pcHasCapability(workspace, PcCapability.NotifyDoNotDisturbRemote),
 		doNotDisturb: workspace?.doNotDisturb,
+		humanAskSupported,
+		humanAsks: humanAskSupported ? workspace?.humanAsks : undefined,
 	};
 }
 
@@ -730,7 +739,8 @@ function sameSummary(a: PcSummary, b: PcSummary): boolean {
 		&& a.battery?.level === b.battery?.level && a.battery?.charging === b.battery?.charging
 		&& a.machineIdHash === b.machineIdHash
 		&& a.remoteDoNotDisturb === b.remoteDoNotDisturb
-		&& a.doNotDisturb?.enabled === b.doNotDisturb?.enabled && a.doNotDisturb?.until === b.doNotDisturb?.until;
+		&& a.doNotDisturb?.enabled === b.doNotDisturb?.enabled && a.doNotDisturb?.until === b.doNotDisturb?.until
+		&& a.humanAskSupported === b.humanAskSupported && a.humanAsks?.signature === b.humanAsks?.signature && a.humanAsks?.count === b.humanAsks?.count;
 }
 
 /**

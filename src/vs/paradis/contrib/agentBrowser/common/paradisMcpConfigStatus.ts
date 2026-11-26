@@ -15,6 +15,7 @@
 
 import { PARADIS_PANE_TOKEN_ENV_VAR, ParadisMcpConfigState } from './paradisAgentBrowser.js';
 import { IParadisAntigravityMcpServerEntry, MultilineDelimiter, PARADIS_CODEX_MCP_MANAGED_LINES, PARADIS_MCP_SERVER_NAME, findTomlAssignment, parseTomlKeyPath, scanTomlLine } from './paradisMcpSetupEncoding.js';
+import { scanTomlLines } from './paradisTomlScan.js';
 import { isRecord } from '../../../common/paradisGuards.js';
 
 /** stdioシムのファイル名断片。設定値がこれを含めば para-browser（旧shim方式）とみなす。 */
@@ -396,6 +397,79 @@ export function paradisAddCodexMissingTableLines(text: string, gatewayPort: numb
 	const lines = text.split(/\r?\n/);
 	lines.splice(target.table.endLine + 1, 0, ...target.missing.map(line => `${line.key} = ${line.value}`));
 	return { text: lines.join(eol), keys: target.missing.map(line => line.key) };
+}
+
+/** パスが `prefix` で始まるか。 */
+function startsWithPath(path: readonly string[], prefix: readonly string[]): boolean {
+	return path.length >= prefix.length && prefix.every((part, index) => path[index] === part);
+}
+
+/**
+ * Para Code の道具 1 つ（`ask_human` など）を、Codex で許可なしに使えるようにする（Codex のメニューの
+ * Always allow と同じ形の表を末尾へ足す）。
+ *
+ *   [mcp_servers.para-browser.tools.<tool>]
+ *   approval_mode = "approve"
+ *
+ * 足すのは、`[mcp_servers.para-browser]` が 1 つだけあり、それが今の Para Code（`gatewayPort`）を指すときだけ。
+ * 次のときは何も書かない（undefined）:
+ * - その道具の表が既にある（中身が何でも。利用者が `approval_mode = "prompt"` にしていればそれに従う）
+ * - para-browser の `tools` をドット付きのキー・インラインテーブル・`[mcp_servers.para-browser.tools]` で書いている
+ *   （同じ表を二重に定義すると Codex は設定ごと読めなくなる）
+ * - 読めない見出し・行が para-browser か tools に触れている、ファイルが複数行の文字列・配列の中で終わる
+ * ほかの道具の表と、ほかの行は 1 文字も変えない。
+ */
+export function paradisAddCodexToolApproval(text: string, gatewayPort: number, tool: string): string | undefined {
+	const tables = collectCodexServerTables(text.split(/\r?\n/)).filter(table => table.name === PARADIS_MCP_SERVER_NAME);
+	if (tables.length !== 1 || detectCodexTableUrlPort(tables[0].code) !== gatewayPort || !/^[A-Za-z0-9_-]+$/.test(tool)) {
+		return undefined;
+	}
+	const toolsPath = ['mcp_servers', PARADIS_MCP_SERVER_NAME, 'tools'];
+	const lines = text.split(/\r?\n/);
+	const infos = scanTomlLines(lines);
+	let table: readonly string[] | undefined = [];
+	for (let index = 0; index < lines.length; index++) {
+		const info = infos[index];
+		if (info.continued) {
+			continue;
+		}
+		if (info.header !== undefined) {
+			const path = info.header.path;
+			if (path === undefined) {
+				if (/mcp_servers|para-browser|tools/.test(lines[index])) {
+					return undefined;
+				}
+				table = undefined;
+				continue;
+			}
+			if (startsWithPath(path, toolsPath) && (path.length === toolsPath.length || path[toolsPath.length] === tool || info.header.array)) {
+				return undefined;
+			}
+			table = info.header.array ? undefined : path;
+			continue;
+		}
+		if (info.key !== undefined) {
+			// ドット付きのキー・インラインテーブルで tools か tools.<道具> を書いている（ほかの道具の表の中の行は除く）。
+			// 配列の表（`[[...]]`）の中のキーは para-browser を定義できない
+			if (table !== undefined && startsWithPath([...table, ...info.key], toolsPath) && !(table.length > toolsPath.length && startsWithPath(table, toolsPath))) {
+				return undefined;
+			}
+			continue;
+		}
+		const code = lines[index].trim();
+		if (code.length > 0 && !code.startsWith('#') && /mcp_servers|para-browser|tools/.test(code)) {
+			return undefined;
+		}
+	}
+	if (infos.length > 0 && infos[infos.length - 1].continued) {
+		return undefined;
+	}
+	const eol = text.includes('\r\n') ? '\r\n' : '\n';
+	const kept = [...lines];
+	while (kept.length > 0 && kept[kept.length - 1].trim().length === 0) {
+		kept.pop();
+	}
+	return [...kept, '', `[mcp_servers.${PARADIS_MCP_SERVER_NAME}.tools.${tool}]`, 'approval_mode = "approve"', ''].join(eol);
 }
 
 /** Antigravity CLI の mcp_config.json の判定結果。 */
