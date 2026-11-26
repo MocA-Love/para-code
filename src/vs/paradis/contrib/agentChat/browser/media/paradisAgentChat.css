@@ -969,6 +969,51 @@
 	display: block;
 }
 
+/* 吹き出しで扱えない画面（Codex の選択画面）が出ている間の帯。入力欄の上に置く。 */
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-terminal-band {
+	flex: none;
+	display: flex;
+	align-items: center;
+	/* 狭い幅では、ボタンを次の行へ回して文を 1 字ずつ折り返さない。 */
+	flex-wrap: wrap;
+	gap: var(--vscode-spacing-size80);
+	max-width: 880px;
+	width: calc(100% - var(--vscode-spacing-size320));
+	box-sizing: border-box;
+	margin: var(--vscode-spacing-size80) auto 0;
+	padding: var(--vscode-spacing-size80) var(--vscode-spacing-size120);
+	color: var(--vscode-foreground);
+	background-color: var(--vscode-editorWidget-background);
+	border: var(--vscode-strokeThickness) solid var(--vscode-editorWidget-border, var(--vscode-widget-border, transparent));
+	border-radius: var(--vscode-cornerRadius-xLarge);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-terminal-band > .codicon {
+	flex: none;
+	color: var(--vscode-editorWarning-foreground, var(--vscode-charts-yellow));
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-terminal-band-text {
+	flex: 1 1 calc(var(--vscode-spacing-size400) * 5);
+	min-width: 0;
+	display: flex;
+	flex-wrap: wrap;
+	column-gap: var(--vscode-spacing-size80);
+	overflow-wrap: anywhere;
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-terminal-band-detail {
+	color: var(--vscode-descriptionForeground);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-terminal-band > .monaco-text-button {
+	flex: none;
+	width: auto;
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size120);
+	border-radius: var(--vscode-cornerRadius-circle);
+}
+
 /* ＋・入力の丸い欄・丸い送信の 1 行（ParaDot の入力欄の形）。高さは 36、欄は複数行に伸びる。 */
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-composer-row {
 	display: flex;

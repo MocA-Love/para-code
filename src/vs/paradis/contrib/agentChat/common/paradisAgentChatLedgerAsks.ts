@@ -12,7 +12,8 @@ import { IParadisHumanAskEntry } from '../../humanAsk/common/paradisHumanAsk.js'
 import { paradisInboxPaneKey } from '../../notificationInbox/common/paradisNotificationInbox.js';
 
 /**
- * そのペイン（トークン）のチャット表示に出す台帳の問い（古い順）。
+ * そのペイン（トークン）のチャット表示に出す台帳の問い（古い順）。`lingering` は、待っている間に出していて答えられた
+ * ・取り下げになったもの（{@link PARADIS_AGENT_CHAT_LEDGER_LINGER_MS} の間「回答済み」として同じ位置に残す）。
  *
  * - 出すのはボード・Bot（`ask_human` も Bot・ボードの出どころで入る）の問い。ペインの出どころの質問・許可は、チャット表示が
  *   会話の記録と画面から自前のカードを出すので出さない
@@ -20,12 +21,17 @@ import { paradisInboxPaneKey } from '../../notificationInbox/common/paradisNotif
  * - 待っているものだけ。どこかで答えられたら台帳が回答済みにするので、ここからも消える
  * - ペインが自分の質問を待っている間は出さない（同じペインの同じ待ちはボード・Bot の 1 件に寄せられるので、二重になる）
  */
-export function paradisAgentChatLedgerAsks(entries: readonly IParadisHumanAskEntry[], token: string, paneWaitsForQuestion: boolean): IParadisHumanAskEntry[] {
+export function paradisAgentChatLedgerAsks(entries: readonly IParadisHumanAskEntry[], token: string, paneWaitsForQuestion: boolean, lingering: ReadonlySet<string> = new Set()): IParadisHumanAskEntry[] {
 	if (paneWaitsForQuestion) {
 		return [];
 	}
 	const paneKey = paradisInboxPaneKey(token);
 	return entries
-		.filter(entry => entry.paneKey === paneKey && entry.state === 'waiting' && entry.source !== 'pane' && entry.kind !== 'permission' && entry.foldedInto === undefined)
+		.filter(entry => entry.paneKey === paneKey && (entry.state === 'waiting' || lingering.has(entry.key)) && entry.source !== 'pane' && entry.kind !== 'permission' && entry.foldedInto === undefined)
 		.sort((a, b) => a.askedAt - b.askedAt);
 }
+
+/** 答えられた・取り下げになったカードを「回答済み」として残す時間（受信箱と同じ）。その間は後ろのカードが上がってこない。 */
+export const PARADIS_AGENT_CHAT_LEDGER_LINGER_MS = 4_000;
+/** カードが出た・並びが動いた・自動で末尾へスクロールした直後に、答えを送るボタンを効かせない時間（受信箱と同じ）。 */
+export const PARADIS_AGENT_CHAT_LEDGER_SHIFT_GUARD_MS = 600;

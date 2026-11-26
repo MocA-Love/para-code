@@ -21,6 +21,8 @@ export interface IParadisAgentChatLedgerAskCardHost {
 	answer(key: string, answer: ParadisHumanAskAnswer): void;
 	/** 受信箱と同じモーダルで答える（問いが多い・長い選択肢・自分で書く答え・確認の要るボタン）。 */
 	openDialog(key: string, focusText: boolean): void;
+	/** この時刻までは答えを送るボタンを効かせない（カードが出た・並びが動いた・自動で末尾へスクロールした直後）。 */
+	guardUntil(): number;
 }
 
 /** カードの今の状態（送っている最中・断られた理由・許可の中身が枠から溢れた）。 */
@@ -38,8 +40,7 @@ export function paradisRenderAgentChatLedgerAskCard(entry: IParadisHumanAskEntry
 		refused: state.refused,
 		overflowing: state.overflowing === true,
 		now: () => Date.now(),
-		// 会話の中のカードは、受信箱の一覧のように並びが入れ替わらないので、押してすぐ効かせる
-		guardUntil: () => 0,
+		guardUntil: () => host.guardUntil(),
 		answer: (key, answer) => host.answer(key, answer),
 		openAsk: (key, focusText) => host.openDialog(key, focusText),
 	}, hoverService));
