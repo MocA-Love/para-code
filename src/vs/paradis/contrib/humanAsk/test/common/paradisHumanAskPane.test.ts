@@ -63,23 +63,49 @@ suite('Paradis human ask: pane asks', () => {
 		});
 	});
 
-	test('a permission shows the operation itself, not the agent\'s own description, and decides the danger labels and the full-text step from it', () => {
+	test('only known, complete and harmless permissions may be allowed from the row; the rest go to the dialog or the pane', () => {
 		type Request = NonNullable<Extract<IParadisAgentInteraction, { kind: 'approval' }>['request']>;
-		const approval = (request: Request) => paradisHumanAskPaneInput(state({ ...APPROVAL, detail: `${request.tool}: ${request.description ?? ''}`, request }), LABEL);
-		const shape = (input: IParadisHumanAskInput | undefined) => input === undefined ? undefined : {
-			preface: input.preface, fullTextFirst: input.fullTextFirst === true,
-			dangers: paradisInboxAskDangerLabels(input.preface), layout: paradisInboxAskLayout({ ...input, state: 'waiting' }),
+		const approval = (request: Request | undefined, detail = 'Bash: something') => paradisHumanAskPaneInput(state({ ...APPROVAL, detail, request }), LABEL);
+		const row = (input: IParadisHumanAskInput | undefined) => input === undefined ? 'none' : `${paradisInboxAskLayout({ ...input, state: 'waiting' })} [${input.actions.map(action => action.id).join(',')}] ${paradisInboxAskDangerLabels(input.preface).join('|')}`.trim();
+		const table = {
+			// 許可リスト: Bash（全文が短く札なし）・読むだけの道具
+			bash: row(approval({ tool: 'Bash', kind: 'bash', command: 'npm test' })),
+			read: row(approval({ tool: 'Read', kind: 'other', path: '/w/a.ts', args: [{ key: 'file_path', value: '/w/a.ts' }] })),
+			// 説明で隠した rm -rf・1500 字より後ろの強制 push: 札が付くのでモーダル
+			bashHidden: row(approval({ tool: 'Bash', kind: 'bash', description: 'Clean junk', command: 'rm -rf ./junk' }, 'Bash: Clean junk')),
+			bashLate: row(approval({ tool: 'Bash', kind: 'bash', command: `echo ${'a'.repeat(1600)} && git push --force origin main` })),
+			// 形は分かるが書き込む・外へ出る・形が分からない: モーダル
+			edit: row(approval({ tool: 'Edit', kind: 'edit', path: '/w/a.ts', oldText: 'a', newText: 'b' })),
+			write: row(approval({ tool: 'Write', kind: 'write', path: '/w/a.ts', content: 'x', contentLines: 1 })),
+			fetch: row(approval({ tool: 'WebFetch', kind: 'fetch', url: 'https://example.com' })),
+			mcp: row(approval({ tool: 'mcp__db__run_query', kind: 'mcp', mcpServer: 'db', mcpTool: 'run_query', args: [{ key: 'sql', value: 'select 1' }] })),
+			other: row(approval({ tool: 'Task', kind: 'other', args: [{ key: 'prompt', value: 'do it' }] })),
+			noRequest: row(approval(undefined, 'Bash: Clean junk')),
+			// 中継で切られた中身: 受信箱からは答えさせない（ペインへ）
+			truncated: row(approval({ tool: 'Write', kind: 'write', path: '/w/a.ts', content: 'x', contentLines: 900, truncated: true })),
 		};
-		// 説明が「Clean junk」でもコマンドは rm -rf。説明で操作を隠せない
-		const hidden = approval({ tool: 'Bash', kind: 'bash', description: 'Clean junk', command: 'rm -rf ./junk' });
-		// 1500 字より後ろの危ない操作も見る
-		const late = approval({ tool: 'Bash', kind: 'bash', description: 'Long build', command: `echo ${'a'.repeat(1600)} && git push --force origin main` });
-		// MCP の引数は全部前置きに入れ、全文を見てから答えさせる
 		const mcp = approval({ tool: 'mcp__db__run_query', kind: 'mcp', mcpServer: 'db', mcpTool: 'run_query', args: [{ key: 'sql', value: 'DROP TABLE users' }, { key: 'database', value: 'prod' }] });
-		assert.deepStrictEqual({ hidden: shape(hidden), late: { ...shape(late), preface: shape(late)?.preface?.length }, mcp: shape(mcp) }, {
-			hidden: { preface: 'Bash: rm -rf ./junk\n（説明: Clean junk）', fullTextFirst: false, dangers: ['削除を含む'], layout: 'dialog' },
-			late: { preface: 1660, fullTextFirst: false, dangers: ['強制 push'], layout: 'dialog' },
-			mcp: { preface: 'mcp__db__run_query\nsql: DROP TABLE users\ndatabase: prod', fullTextFirst: true, dangers: ['DB を削除'], layout: 'dialog' },
+		const edit = approval({ tool: 'Edit', kind: 'edit', path: '/w/a.ts', oldText: 'const a = 1;\nconst b = 2;', newText: 'const a = 3;' });
+		const truncated = approval({ tool: 'Bash', kind: 'bash', command: 'x'.repeat(20), truncated: true });
+		assert.deepStrictEqual({ table, mcp: mcp?.preface, edit: edit?.preface, truncated: truncated?.preface?.split('\n').pop() }, {
+			table: {
+				bash: 'inline-actions [yes,no]',
+				read: 'inline-actions [yes,no]',
+				bashHidden: 'dialog [yes,no] 削除を含む',
+				bashLate: 'dialog [yes,no] 強制 push',
+				edit: 'dialog [yes,no]',
+				write: 'dialog [yes,no]',
+				fetch: 'dialog [yes,no]',
+				mcp: 'dialog [yes,no]',
+				other: 'dialog [yes,no]',
+				noRequest: 'dialog [yes,no]',
+				truncated: 'unanswerable []',
+			},
+			// MCP の引数は全部、数と長さを添えて出す
+			mcp: 'mcp__db__run_query\n引数 2 個\nsql（16 字）: DROP TABLE users\ndatabase（4 字）: prod',
+			// Edit は置き換え前と置き換え後
+			edit: 'Edit: /w/a.ts\n- const a = 1;\n- const b = 2;\n+ const a = 3;',
+			truncated: '（中身が長いため途中までの表示です。全文を見て答えるにはペインを開いてください）',
 		});
 	});
 

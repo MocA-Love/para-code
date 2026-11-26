@@ -89,8 +89,8 @@ suite('Paradis notification inbox popover', () => {
 	test('your turn: one card per waiting ask, with buttons only for what can be answered here', async () => {
 		const t = open([
 			ask('1', { questions: [{ id: '0', text: 'どちらにしますか?', options: [{ id: '0', label: '残す', recommended: true }, { id: '1', label: 'ログアウトさせる' }], allowText: true }] }),
-			ask('2', { kind: 'permission', preface: 'Bash: npm run typecheck-client', actions: ALLOW_DENY }),
-			ask('3', { kind: 'permission', preface: 'Bash: rm -rf build', actions: ALLOW_DENY }),
+			ask('2', { kind: 'permission', preface: 'Bash: npm run typecheck-client', actions: ALLOW_DENY, inlineAllowed: true }),
+			ask('3', { kind: 'permission', preface: 'Bash: rm -rf build', actions: ALLOW_DENY, inlineAllowed: true }),
 			ask('4', { questions: [{ id: '0', text: '1 つ目', options: [], allowText: true }, { id: '1', text: '2 つ目', options: [], allowText: true }] }),
 			ask('5', { kind: 'permission', preface: 'MCP: para-browser.take_screenshot' }),
 			// ほかの 1 件に寄せたもの・開く前に回答済みになったものは出さない
@@ -128,8 +128,8 @@ suite('Paradis notification inbox popover', () => {
 	});
 
 	test('your turn: an ask answered elsewhere keeps its row without buttons, and a row that just moved cannot be pressed', async () => {
-		const first = ask('1', { kind: 'permission', preface: 'Bash: npm test', actions: ALLOW_DENY });
-		const second = ask('2', { kind: 'permission', preface: 'Bash: npm run build', actions: ALLOW_DENY });
+		const first = ask('1', { kind: 'permission', preface: 'Bash: npm test', actions: ALLOW_DENY, inlineAllowed: true });
+		const second = ask('2', { kind: 'permission', preface: 'Bash: npm run build', actions: ALLOW_DENY, inlineAllowed: true });
 		const t = open([first, second]);
 		// スマホで 1 件目に答えた: ボタンを外して答えを出す。ターミナルで 2 件目に答えた（取り下げ）: 答えたとは言い切らない
 		t.ledger.set([
@@ -139,8 +139,8 @@ suite('Paradis notification inbox popover', () => {
 		const settled = cards(t.container).map(card => ({ body: card.body, buttons: card.buttons }));
 
 		// 新しい許可が上に入って行が動いた直後の「許可」は送らない。少し経てば送れる
-		const third = ask('3', { kind: 'permission', preface: 'Bash: git push', actions: ALLOW_DENY });
-		const fourth = ask('4', { kind: 'permission', preface: 'Bash: npm publish', actions: ALLOW_DENY });
+		const third = ask('3', { kind: 'permission', preface: 'Bash: git push', actions: ALLOW_DENY, inlineAllowed: true });
+		const fourth = ask('4', { kind: 'permission', preface: 'Bash: npm publish', actions: ALLOW_DENY, inlineAllowed: true });
 		t.ledger.set([third]);
 		t.clock.now += 5_000;
 		t.ledger.set([fourth, third]);
@@ -161,7 +161,7 @@ suite('Paradis notification inbox popover', () => {
 	});
 
 	test('your turn: a refused answer and an undelivered answer are shown on the card', async () => {
-		const entry = ask('1', { kind: 'permission', preface: 'Bash: npm test', actions: ALLOW_DENY });
+		const entry = ask('1', { kind: 'permission', preface: 'Bash: npm test', actions: ALLOW_DENY, inlineAllowed: true });
 		const t = open([entry], { ok: false, reason: 'busy' });
 		t.press('pane:1', 'action:yes');
 		await new Promise(resolve => setTimeout(resolve, 0));
@@ -186,7 +186,7 @@ suite('Paradis notification inbox popover', () => {
 				{ id: '1', text: 'ほかに入れたいものは?', options: [], allowText: true },
 			],
 		});
-		const danger = ask('2', { kind: 'permission', preface: 'Bash: sudo rm -rf /tmp/build', actions: ALLOW_DENY });
+		const danger = ask('2', { kind: 'permission', preface: 'Bash: sudo rm -rf /tmp/build', actions: ALLOW_DENY, inlineAllowed: true });
 		const ledger = store.add(humanAsk([two, danger]));
 		const closed: string[] = [];
 		const foot = () => [...container.querySelectorAll<HTMLElement>('.pniad-foot .paradis-button')].map(button => `${button.textContent}${button.classList.contains('disabled') ? ' (disabled)' : ''}`);
@@ -232,7 +232,7 @@ suite('Paradis notification inbox popover', () => {
 		const tabs = () => [...t.container.querySelectorAll('.pnip-tabs button')].map(button => `${button.textContent}${button.getAttribute('aria-pressed') === 'true' ? '*' : ''}`);
 		const before = tabs();
 		// 開いている間に許可が届いた: 「通知」のまま、件数だけ出す
-		t.ledger.set([ask('1', { kind: 'permission', preface: 'Bash: npm test', actions: ALLOW_DENY })]);
+		t.ledger.set([ask('1', { kind: 'permission', preface: 'Bash: npm test', actions: ALLOW_DENY, inlineAllowed: true })]);
 		const arrived = tabs();
 		// 自分で「あなたの番」へ切り替えても、届いた直後のカードは少しの間押せない
 		t.container.querySelectorAll<HTMLElement>('.pnip-tabs button')[0].click();

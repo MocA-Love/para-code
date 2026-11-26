@@ -78,7 +78,7 @@ function routeHasKeys(routes: readonly string[] | undefined): boolean {
 	return routes?.includes('keys') === true;
 }
 
-const PREFACE_LIMIT = 10_000;
+const PREFACE_LIMIT = 16_000;
 
 /**
  * ペインの今の待ちを、台帳へ知らせる 1 件にする。形が台帳の上限に収まらない問い（6 問以上・選択肢 9 つ以上）は、
@@ -124,18 +124,24 @@ export function paradisHumanAskPaneInput(state: IParadisHumanAskPaneState, label
 		&& interaction.expired !== true && !paradisIsCodexDaemonApprovalInteraction(interaction.id) && !mcpOnCodex;
 	const allow = interaction.choices?.find(choice => choice.id === 'yes');
 	const deny = interaction.choices?.find(choice => choice.id === 'no');
-	const actions = pressable && allow !== undefined && deny !== undefined ? [{ id: 'yes', label: allow.label }, { id: 'no', label: deny.label }] : [];
 	const request = interaction.request;
+	// 中継の側で中身が切られている許可は、全文を見せられないので受信箱からは答えさせない（ペインで答える）
+	const complete = request?.truncated !== true;
+	const actions = pressable && complete && allow !== undefined && deny !== undefined ? [{ id: 'yes', label: allow.label }, { id: 'no', label: deny.label }] : [];
 	const preface = (request !== undefined ? paradisHumanAskApprovalText(request) : (interaction.detail ?? interaction.title ?? '')).slice(0, PREFACE_LIMIT);
-	// MCP の道具・形を知らない道具は、何を書き込むかを文字の規則で見分けられない。全文を見てから答えさせる
-	const fullTextFirst = request !== undefined && (request.kind === 'mcp' || request.kind === 'other' || request.truncated === true);
-	return paradisSanitizeHumanAskInput({ ...base, kind: 'permission', questions: [], actions, ...(preface.length > 0 ? { preface } : {}), ...(fullTextFirst ? { fullTextFirst: true } : {}) });
+	// 行の中で 1 押しで許可してよいのは、形が分かっていて全文を出せるものだけ（危険の札・長さは受信箱が前置きから決める）
+	// （request の無い承認は形が分からないので、モーダルで答える）
+	const inlineAllowed = request !== undefined && complete && actions.length > 0 && (request.kind === 'bash' || (request.kind === 'other' && PARADIS_READ_ONLY_TOOLS.has(request.tool)));
+	return paradisSanitizeHumanAskInput({ ...base, kind: 'permission', questions: [], actions, ...(preface.length > 0 ? { preface } : {}), ...(inlineAllowed ? { inlineAllowed: true } : {}) });
 }
 
+/** 読むだけの道具（行の中で許可してよい。ほかの形を知らない道具はモーダルへ回す）。 */
+const PARADIS_READ_ONLY_TOOLS: ReadonlySet<string> = new Set(['Read', 'Grep', 'Glob', 'LS', 'NotebookRead']);
+
 /**
- * 許可の前置き。操作そのもの（コマンドの全文・MCP の引数の全部）を入れる。説明（`description`）はエージェントが書いた
- * 文で、操作と食い違っても見分けられないので、操作の後ろに添えるだけにする（危険の札は前置きの全文から決める）。
- * スマホの許可カードが見ているのと同じ項目だけを使う（app/mobile/src/approvalDetail.ts）。
+ * 許可の前置き。操作そのもの（コマンドの全文・Edit の置き換え前後・Write の中身・MCP の引数の全部）を、スマホの許可カード
+ * （app/mobile/src/approvalDetail.ts）と同じ項目から作る。説明（`description`）はエージェントが書いた文で、操作と食い違っても
+ * 見分けられないので後ろに添えるだけにする（危険の札は前置きの全文から決める）。中継が切った中身は、切ったことを書く。
  */
 function paradisHumanAskApprovalText(request: IParadisAgentApprovalRequest): string {
 	const lines: string[] = [];
@@ -144,20 +150,35 @@ function paradisHumanAskApprovalText(request: IParadisAgentApprovalRequest): str
 			lines.push(`${request.tool}: ${request.command ?? ''}`);
 			break;
 		case 'edit':
+			// allow-any-unicode-next-line
+			lines.push(`${request.tool}: ${request.path ?? ''}${request.replaceAll ? '（すべて置き換え）' : ''}`, ...prefixed('- ', request.oldText), ...prefixed('+ ', request.newText));
+			break;
 		case 'write':
-			lines.push(`${request.tool}: ${request.path ?? ''}`);
+			// allow-any-unicode-next-line
+			lines.push(`${request.tool}: ${request.path ?? ''}${request.contentLines !== undefined ? `（全 ${request.contentLines} 行）` : ''}`, ...(request.content !== undefined ? request.content.split('\n') : []));
 			break;
 		case 'fetch':
-			lines.push(`${request.tool}: ${request.url ?? ''}`);
+			lines.push(`${request.tool}: ${request.url ?? ''}`, ...(request.prompt !== undefined ? [request.prompt] : []));
 			break;
-		default:
-			lines.push(request.tool, ...(request.args ?? []).map(arg => `${arg.key}: ${arg.value}`));
+		default: {
+			const args = request.args ?? [];
+			// allow-any-unicode-next-line
+			lines.push(`${request.tool}${request.path !== undefined ? `: ${request.path}` : ''}`, `引数 ${args.length} 個`, ...args.map(arg => `${arg.key}（${arg.value.length} 字）: ${arg.value}`));
+		}
 	}
 	if (request.description) {
 		// allow-any-unicode-next-line
 		lines.push(`（説明: ${request.description}）`);
 	}
+	if (request.truncated === true) {
+		// allow-any-unicode-next-line
+		lines.push('（中身が長いため途中までの表示です。全文を見て答えるにはペインを開いてください）');
+	}
 	return lines.join('\n');
+}
+
+function prefixed(mark: string, text: string | undefined): string[] {
+	return text === undefined || text.length === 0 ? [] : text.split('\n').map(line => `${mark}${line}`);
 }
 
 /**

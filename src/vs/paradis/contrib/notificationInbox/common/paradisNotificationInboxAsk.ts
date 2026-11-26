@@ -92,7 +92,7 @@ export function paradisInboxAskDetailIsLong(text: string | undefined): boolean {
  */
 export type ParadisInboxAskLayout = 'settled' | 'unanswerable' | 'inline-options' | 'inline-actions' | 'dialog';
 
-type AskShape = Pick<IParadisHumanAskEntry, 'state' | 'kind' | 'questions' | 'actions' | 'preface' | 'fullTextFirst'>;
+type AskShape = Pick<IParadisHumanAskEntry, 'state' | 'kind' | 'questions' | 'actions' | 'preface' | 'inlineAllowed'>;
 
 export function paradisInboxAskLayout(entry: AskShape): ParadisInboxAskLayout {
 	if (entry.state !== 'waiting') {
@@ -109,7 +109,8 @@ export function paradisInboxAskLayout(entry: AskShape): ParadisInboxAskLayout {
 			? 'inline-options'
 			: 'dialog';
 	}
-	const needsFullText = entry.kind === 'permission' && (entry.fullTextFirst === true || paradisInboxAskDangerLabels(entry.preface).length > 0 || paradisInboxAskDetailIsLong(entry.preface));
+	// 許可を行の中で 1 押しで答えてよいのは、持ち主が許可リストに入れたもの（inlineAllowed）で、危険の札が付かず短いものだけ
+	const needsFullText = entry.kind === 'permission' && (entry.inlineAllowed !== true || paradisInboxAskDangerLabels(entry.preface).length > 0 || paradisInboxAskDetailIsLong(entry.preface));
 	// 押す前に確認が要るボタン（ボードの「完了扱いにする」など）は、モーダルで確認を通してから送る
 	return needsFullText || entry.actions.some(action => action.allowText || action.confirm !== undefined) || entry.actions.length > PARADIS_INBOX_ASK_INLINE_OPTION_LIMIT ? 'dialog' : 'inline-actions';
 }
