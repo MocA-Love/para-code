@@ -10,6 +10,7 @@
 // （paradis.electron-browser.contribution.ts から読み込む。Web のビューには帯が出ない）。
 
 import { registerParadisWorkspacesBand } from '../../workspaceSwitch/browser/paradisWorkspacesBands.js';
-import { ParadisBotsBand } from '../browser/paradisBotsBand.js';
+import '../browser/paradisBotsSettings.contribution.js';
+import { ParadisBotsBandSlot } from '../browser/paradisBotsBand.js';
 
-registerParadisWorkspacesBand(ParadisBotsBand);
+registerParadisWorkspacesBand(ParadisBotsBandSlot);

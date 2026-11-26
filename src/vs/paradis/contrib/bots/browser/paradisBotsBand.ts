@@ -24,10 +24,11 @@ import { Action, IAction, Separator } from '../../../../base/common/actions.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { KeyCode } from '../../../../base/common/keyCodes.js';
-import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
 import { CommandsRegistry, ICommandService } from '../../../../platform/commands/common/commands.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
@@ -37,11 +38,66 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../platfo
 import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 import { IParadisWorkspacesBand } from '../../workspaceSwitch/browser/paradisWorkspacesBands.js';
 import { IParadisBotSummary, IParadisBotsService, ParadisBotsServiceResult } from '../common/paradisBotsApi.js';
-import { IParadisBotsBandState, PARADIS_BOTS_BAND_SIZES, PARADIS_BOTS_BAND_STORAGE_KEY, PARADIS_BOTS_OPEN_COMMAND, paradisBotFace, paradisBotNameProblemMessage, paradisBotRowMenu, ParadisBotRowMenuItem, paradisBotsBandDraggedHeight, paradisBotsBandListHeight, paradisBotsBandRows, paradisBotStatusLine, paradisBotsNeedsYouTotal, paradisParseBotsBandState, paradisSerializeBotsBandState, paradisValidateBotName } from '../common/paradisBotsBandModel.js';
+import { IParadisBotsBandState, PARADIS_BOTS_BAND_SIZES, PARADIS_BOTS_ENABLED_SETTING, PARADIS_BOTS_BAND_STORAGE_KEY, PARADIS_BOTS_OPEN_COMMAND, paradisBotFace, paradisBotNameProblemMessage, paradisBotRowMenu, ParadisBotRowMenuItem, paradisBotsBandDraggedHeight, paradisBotsBandListHeight, paradisBotsBandRows, paradisBotStatusLine, paradisBotsNeedsYouTotal, paradisParseBotsBandState, paradisSerializeBotsBandState, paradisValidateBotName } from '../common/paradisBotsBandModel.js';
 import { ParadisBotCreateDialog } from './paradisBotCreateDialog.js';
 import { renderParadisBotFace } from './paradisBotFace.js';
 
 const $ = DOM.$;
+/**
+ * ビューへ登録する帯の入れ物。設定 {@link PARADIS_BOTS_ENABLED_SETTING} がオンの間だけ {@link ParadisBotsBand} を作る。
+ * オフの間は何も描かず、Bot のサービス（作られると shared process へつなぐ）にも触れない。
+ */
+export class ParadisBotsBandSlot extends Disposable implements IParadisWorkspacesBand {
+
+	private readonly _onDidChangeHeight = this._register(new Emitter<void>());
+	readonly onDidChangeHeight: Event<void> = this._onDidChangeHeight.event;
+
+	private readonly band = this._register(new MutableDisposable<ParadisBotsBand>());
+	private readonly bandListener = this._register(new MutableDisposable());
+	private viewHeight = 0;
+
+	constructor(
+		private readonly container: HTMLElement,
+		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IInstantiationService private readonly instantiationService: IInstantiationService,
+	) {
+		super();
+		this.update();
+		this._register(this.configurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration(PARADIS_BOTS_ENABLED_SETTING)) {
+				this.update();
+				this._onDidChangeHeight.fire();
+			}
+		}));
+	}
+
+	/** 帯を出しているか。 */
+	get shown(): boolean {
+		return this.band.value !== undefined;
+	}
+
+	private update(): void {
+		const enabled = this.configurationService.getValue<boolean>(PARADIS_BOTS_ENABLED_SETTING) === true;
+		if (enabled === this.shown) {
+			return;
+		}
+		if (enabled) {
+			const band = this.instantiationService.createInstance(ParadisBotsBand, this.container);
+			this.band.value = band;
+			this.bandListener.value = band.onDidChangeHeight(() => this._onDidChangeHeight.fire());
+			band.layout(this.viewHeight);
+		} else {
+			this.bandListener.clear();
+			this.band.clear();
+		}
+	}
+
+	layout(viewHeight: number): boolean {
+		this.viewHeight = viewHeight;
+		return this.band.value?.layout(viewHeight) ?? false;
+	}
+}
+
 export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBand {
 
 	private readonly _onDidChangeHeight = this._register(new Emitter<void>());
@@ -150,6 +206,12 @@ export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBan
 			}
 		}));
 		this.render();
+	}
+
+	override dispose(): void {
+		// 設定をオフにしたら帯ごと外す
+		this.root.remove();
+		super.dispose();
 	}
 
 	private get bots(): readonly IParadisBotSummary[] {

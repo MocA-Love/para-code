@@ -18,6 +18,12 @@ import { IParadisBotSummary } from './paradisBotsApi.js';
 /** Bot の行を押したときに呼ぶコマンド（引数は Bot の id）。中身（Bot のページを開く）は後の PR が同じ id で登録する。 */
 export const PARADIS_BOTS_OPEN_COMMAND = 'paradis.bots.open';
 
+/**
+ * Bot の帯を出すかどうか（試験中。既定はオフ）。Bot のページ・会話・設定のタブがそろうまで、利用者に半端な画面を見せないため。
+ * オフの間は帯を作らず、Bot のサービスにも触れない。
+ */
+export const PARADIS_BOTS_ENABLED_SETTING = 'paradis.bots.enabled';
+
 /** 帯の開閉と高さを覚えるキー（APPLICATION。どの窓でも同じ帯にする）。 */
 export const PARADIS_BOTS_BAND_STORAGE_KEY = 'paradis.bots.band.v1';
 
