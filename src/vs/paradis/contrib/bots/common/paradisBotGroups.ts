@@ -275,12 +275,6 @@ export function paradisResolveBotGroupMentions(text: string, members: readonly {
 
 // ---- Bot 同士の伝言 ------------------------------------------------------------------------------
 
-/** 伝言の頭に付ける出どころ。受け取った側のエージェントと利用者が、あなたの指示と見分けられるようにする。 */
-export function paradisBotGroupRelayText(fromName: string, kind: 'asked' | 'told', text: string): string {
-	// allow-any-unicode-next-line
-	return `${fromName}（Bot）からの${kind === 'asked' ? '質問' : '伝言'}: ${text}`;
-}
-
 /** 同じ宛先へ 1 分あたりに届ける伝言の上限。 */
 export const PARADIS_BOT_GROUP_RELAY_PER_MINUTE = 3;
 

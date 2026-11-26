@@ -16,7 +16,6 @@ import {
 	paradisBotGroupCreate,
 	paradisBotGroupDeliverRefusal,
 	paradisBotGroupMembers,
-	paradisBotGroupRelayText,
 	paradisBotGroupRemove,
 	paradisBotGroupUpdate,
 	paradisParseBotGroupsState,
@@ -177,7 +176,7 @@ suite('Paradis bot groups', () => {
 		assert.deepStrictEqual(paradisBotGroupMembers({ members: ['a', 'gone', 'b'] }, new Set(['a', 'b'])), ['a', 'b']);
 	});
 
-	test('伝言の可否と出どころの頭', () => {
+	test('伝言の可否', () => {
 		const group = { members: ['a', 'b'] };
 		const base = { group, from: 'a', to: 'b', toActivity: 'idle' as const, toRunningHere: true, takeRate: () => true };
 		assert.deepStrictEqual([
@@ -190,8 +189,6 @@ suite('Paradis bot groups', () => {
 			paradisBotGroupDeliverRefusal({ ...base, toActivity: 'working' }),
 			paradisBotGroupDeliverRefusal({ ...base, toActivity: 'patrolling' }),
 			paradisBotGroupDeliverRefusal({ ...base, takeRate: () => false }),
-			paradisBotGroupRelayText('リリース係', 'asked', '#1108 は入れてよい?'),
-			paradisBotGroupRelayText('リリース係', 'told', '終わりました'),
 		], [
 			undefined,
 			'not_a_member',
@@ -202,8 +199,6 @@ suite('Paradis bot groups', () => {
 			'busy',
 			'busy',
 			'rate_limited',
-			'リリース係（Bot）からの質問: #1108 は入れてよい?',
-			'リリース係（Bot）からの伝言: 終わりました',
 		]);
 	});
 

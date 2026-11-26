@@ -8,6 +8,7 @@
 
 // shared process で Bot グループの台帳のサービスを作り、ウィンドウへチャネルを出す。
 // `paradis.sharedProcess.contribution.ts` から、Bot の台帳（paradisBots.sharedProcess.ts）の後に副作用 import される。
+// Bot 同士の伝言の道具へは、`paradisRegisterBotGroupsPort` で口（グループの引き当てと「聞きました・伝えました」の記録）を渡す。
 
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
@@ -15,14 +16,12 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
 import { PARADIS_BOT_GROUPS_CHANNEL } from '../common/paradisBotGroupsApi.js';
 import { ParadisBotGroupsChannel } from './paradisBotGroupsChannel.js';
+import { paradisRegisterBotGroupsPort } from './paradisBotMessageToolProvider.js';
 import { createParadisBotGroupsFile, ParadisBotGroupsService } from './paradisBotGroupsService.js';
 
 let shared: ParadisBotGroupsService | undefined;
 
-/**
- * shared process に 1 つだけの Bot グループのサービス。登録の前は undefined。Bot 同士の伝言の道具はここから
- * `groupsOf`（呼び出し元の Bot のグループ）と `appendRecord`（「聞きました・伝えました」）を呼ぶ。
- */
+/** shared process に 1 つだけの Bot グループのサービス。登録の前は undefined。 */
 export function paradisSharedBotGroupsService(): ParadisBotGroupsService | undefined {
 	return shared;
 }
@@ -32,6 +31,14 @@ ParadisSharedProcessContributions.register('botGroups', ({ server, accessor }) =
 	const service = store.add(new ParadisBotGroupsService(createParadisBotGroupsFile(accessor.get(INativeEnvironmentService).userDataPath), accessor.get(ILogService)));
 	server.registerChannel(PARADIS_BOT_GROUPS_CHANNEL, new ParadisBotGroupsChannel(service));
 	shared = service;
+	// Bot 同士の伝言の道具（paradisBotMessageToolProvider.ts）へ、グループの台帳の口を差し込む
+	store.add(paradisRegisterBotGroupsPort({
+		groupsOf: botId => service.groupsOf(botId).map(group => ({ id: group.id, memberIds: group.members })),
+		appendRecord: async (groupId, record) => {
+			const result = await service.appendRecord(groupId, { kind: record.kind, from: record.from, to: [record.to], text: record.text });
+			return result.ok ? { ok: true } : { ok: false, message: result.message };
+		},
+	}));
 	store.add({
 		dispose: () => {
 			if (shared === service) {

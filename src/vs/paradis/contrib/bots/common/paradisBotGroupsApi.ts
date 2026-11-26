@@ -18,11 +18,6 @@ export const PARADIS_BOTS_OPEN_GROUP_COMMAND = 'paradis.bots.openGroup';
 
 export const PARADIS_BOT_GROUPS_CHANNEL = 'paradisBotGroups';
 
-/**
- * ウィンドウが shared process へ登録する窓口（Bot 同士の伝言の道具が `callOwningWindow` で呼ぶ）。
- * `deliver` の引数は `[呼び出し元のペイントークン, グループの id, 宛先の Bot の id, 種類（asked・told）, 文]`。
- */
-export const PARADIS_BOT_GROUPS_WINDOW_CHANNEL = 'paradisBotGroupsWindow';
 
 export interface IParadisBotGroupsSnapshot {
 	readonly revision: number;
