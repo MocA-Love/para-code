@@ -262,6 +262,8 @@ export const navigatePage = definePageTool(args => {
                 request.params.type = 'url';
             }
             const handleBeforeUnload = request.params.handleBeforeUnload ?? 'accept';
+            let paraCodeDeclinedBeforeUnload = false;
+            const paraCodeUrlBefore = page.pptrPage.url();
             const dialogHandler = (dialog) => {
                 if (dialog.type() === 'beforeunload') {
                     if (handleBeforeUnload === 'accept') {
@@ -269,9 +271,11 @@ export const navigatePage = definePageTool(args => {
                         void dialog.accept();
                     }
                     else {
-                        // PARA-PATCH (Para Code): Para Code answers beforeunload itself (the page always leaves), so
-                        // "decline" cannot keep the page. Say so instead of "Declined a beforeunload dialog."
-                        response.appendResponseLine(`The page asked to confirm leaving (beforeunload). Para Code always lets the page leave, so "decline" could not stop this navigation.`);
+                        // PARA-PATCH (Para Code): Para Code decides beforeunload in the main process before this dialog
+                        // event arrives. For "decline" the caller (paradisAgentBrowserService.ts) tells Para Code to keep
+                        // the page for this one navigation, so the page stays and the navigation ends with ERR_ABORTED.
+                        // The line is written after the navigation, from where the page ended up.
+                        paraCodeDeclinedBeforeUnload = true;
                         void dialog.dismiss();
                     }
                     // We are not going to report the dialog like regular dialogs.
@@ -344,6 +348,11 @@ export const navigatePage = definePageTool(args => {
             finally {
                 page.pptrPage.off('dialog', dialogHandler);
                 page.pptrPage._client().off('Page.frameNavigated', paraCodeOnFrameNavigated);
+                if (paraCodeDeclinedBeforeUnload) {
+                    response.appendResponseLine(!paraCodeCommitted && page.pptrPage.url() === paraCodeUrlBefore
+                        ? `The page asked to confirm leaving (beforeunload) and "decline" kept it: the navigation was cancelled (that is the error above, if any) and the page stays at ${paraCodeUrlBefore}.`
+                        : `The page asked to confirm leaving (beforeunload), but "decline" could not stop this navigation: the page left.`);
+                }
                 if (initScriptId) {
                     await page.pptrPage
                         .removeScriptToEvaluateOnNewDocument(initScriptId)

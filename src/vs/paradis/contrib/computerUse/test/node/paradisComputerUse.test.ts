@@ -9,6 +9,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { Emitter } from '../../../../../base/common/event.js';
 import { IParadisComputerUseActivity, paradisComputerUseActivityView, paradisComputerUseAllowOperatingReadOnlyApps, paradisComputerUseBlockReason, paradisComputerUseConfirmForeground, paradisComputerUseEnabled, paradisComputerUseNextActivity, paradisComputerUseNoticeWindowId, paradisComputerUseReadOnlyReason, paradisComputerUseRunsCommands, paradisParseComputerUseActivity, paradisParseComputerUseApprovalOutcome, paradisParseComputerUseStatus } from '../../common/paradisComputerUse.js';
+import { PARADIS_COMPUTER_USE_COMMAND_INPUT_GUARD_MS, paradisComputerUseCommandInputNear, paradisNoteComputerUseCommandInput, paradisResetComputerUseCommandInput } from '../../common/paradisComputerUseInputClock.js';
 import { createParadisComputerUseCallDiagnostics, PARADIS_COMPUTER_USE_FAILURES, paradisComputerUseCallAttributes, paradisComputerUseFailureCode } from '../../common/paradisComputerUseDiagnostics.js';
 import { ParadisComputerUseGrantLedger } from '../../node/paradisComputerUseGrantLedger.js';
 import { ParadisComputerUseStatusChannel } from '../../node/paradisComputerUse.sharedProcess.js';
@@ -17,6 +18,31 @@ import { isParadisSentryScrubbedWord } from '../../../sentry/common/paradisSentr
 
 suite('ParadisComputerUse common', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('an approval is asked again during and right after input to an app that can run commands', () => {
+		paradisResetComputerUseCommandInput();
+		const never = paradisComputerUseCommandInputNear(1_000, 2_000);
+		paradisNoteComputerUseCommandInput(5_000);
+		const results = {
+			never,
+			// 承認の画面を出す 3 秒前の入力（直後）
+			rightAfter: paradisComputerUseCommandInputNear(8_000, 9_000),
+			// 承認の画面を出した後の入力（最中）。答えるまでに時間が経っていても聞き直す
+			during: paradisComputerUseCommandInputNear(4_000, 60_000),
+			// 入力から十分に経ってから出した承認の画面
+			longAfter: paradisComputerUseCommandInputNear(20_000, 5_000 + PARADIS_COMPUTER_USE_COMMAND_INPUT_GUARD_MS),
+			parsed: [
+				paradisParseComputerUseActivity({ stopped: false, input: true, commandApp: true }),
+				paradisParseComputerUseActivity({ stopped: false, input: true, commandApp: 'yes' }),
+				paradisParseComputerUseActivity({ stopped: false, input: false, commandApp: true }),
+			],
+		};
+		paradisResetComputerUseCommandInput();
+		assert.deepStrictEqual(results, {
+			never: false, rightAfter: true, during: true, longAfter: false,
+			parsed: [{ stopped: false, input: true, commandApp: true }, { stopped: false, input: true }, { stopped: false, input: false }],
+		});
+	});
 
 	test('blocks password managers, Keychain Access, Para Code itself and the Q97 system surfaces, and knows the apps that run commands', () => {
 		const ids = [

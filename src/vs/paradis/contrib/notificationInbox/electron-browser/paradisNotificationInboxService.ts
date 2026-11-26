@@ -104,6 +104,10 @@ export class ParadisNotificationInboxClient extends Disposable implements IParad
 		return this.send('requestReveal', [entry.id]);
 	}
 
+	revealPane(pane: { readonly paneKey: string; readonly windowId: number; readonly stateKey?: string }): Promise<void> {
+		return this.send('requestRevealPane', [{ paneKey: pane.paneKey, windowId: pane.windowId, ...(pane.stateKey !== undefined ? { stateKey: pane.stateKey } : {}) }]);
+	}
+
 	requestOpenInbox(): void {
 		this._onDidRequestOpenInbox.fire();
 	}
