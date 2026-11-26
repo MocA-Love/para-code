@@ -35,6 +35,7 @@ const TOOLS_BY_PROVIDER_GROUP: Readonly<Record<string, readonly string[]>> = {
 	],
 	ide: [
 		'read_para_code_guide', 'list_spaces', 'create_space', 'remove_space', 'launch_agent', 'create_scheduled_run',
+		'create_space_section', 'update_space_section', 'remove_space_section', 'move_space_to_section',
 		'list_terminals', 'read_terminal', 'wait_for_terminal', 'send_terminal_input', 'send_terminal_key', 'create_terminal', 'close_terminal',
 	],
 	port: ['list_port_forwards', 'forward_port', 'stop_port_forward', 'reforward_port', 'clean_up_port_forwards'],
@@ -108,7 +109,7 @@ suite('paradisCliCatalog', () => {
 			terminal: ['list-terminals (list)', 'read-terminal (read)', 'wait-for-terminal (wait)', 'send-terminal-input (send)', 'send-terminal-key (key)', 'create-terminal (create)', 'close-terminal (close)'],
 			note: ['list-space-notes (list)', 'read-space-note (read)', 'write-space-note (write)', 'add-space-note-task', 'check-space-note-task', 'delete-space-note-task'],
 			port: ['list-port-forwards (list)', 'forward-port', 'stop-port-forward', 'reforward-port', 'clean-up-port-forwards'],
-			ide: ['preview-file', 'read-para-code-guide', 'list-spaces', 'create-space', 'remove-space', 'launch-agent', 'create-scheduled-run'],
+			ide: ['preview-file', 'read-para-code-guide', 'list-spaces', 'create-space', 'remove-space', 'launch-agent', 'create-scheduled-run', 'create-space-section', 'update-space-section', 'remove-space-section', 'move-space-to-section'],
 			doc: ['list-docs', 'adopt-doc', 'read-doc-comments', 'reply-doc-comment'],
 			board: ['complete-step', 'ask-human'],
 			computerFirst: ['activate-app', 'click'],
