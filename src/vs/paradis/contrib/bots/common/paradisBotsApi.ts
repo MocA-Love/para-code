@@ -108,6 +108,12 @@ export interface IParadisBotStopRequest {
 
 export const PARADIS_BOTS_CHANNEL = 'paradisBots';
 
+/**
+ * Bot の機能を使えるようにするか（試験中、既定 false）。設定の登録は Bot の一覧の帯の側にあり、ここは id だけを
+ * 持つ（帯・管理の道具が同じ id を読む）。
+ */
+export const PARADIS_BOTS_ENABLED_SETTING = 'paradis.bots.enabled';
+
 export const EMPTY_PARADIS_BOTS_SNAPSHOT: IParadisBotsSnapshot = Object.freeze({ revision: 0, readOnly: false, bots: Object.freeze([]) });
 
 export const IParadisBotsService = createDecorator<IParadisBotsService>('paradisBotsService');
