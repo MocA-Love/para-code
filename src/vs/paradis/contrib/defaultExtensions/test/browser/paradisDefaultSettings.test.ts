@@ -47,6 +47,21 @@ suite('Paradis default settings', () => {
 		});
 	});
 
+	// Only the two themes that are installed by default are set as defaults. The product icon theme of
+	// pixl-garden.BongoCat is no longer a default, because the extension is no longer installed by default.
+	test('defaults to the installed color and file icon themes, and to no product icon theme', () => {
+		const overrides = Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).getConfigurationDefaultsOverrides();
+		assert.deepStrictEqual({
+			colorTheme: overrides.get('workbench.colorTheme')?.value,
+			iconTheme: overrides.get('workbench.iconTheme')?.value,
+			productIconTheme: overrides.get('workbench.productIconTheme')?.value,
+		}, {
+			colorTheme: 'Houston',
+			iconTheme: 'material-icon-theme',
+			productIconTheme: undefined,
+		});
+	});
+
 	// macOS stable defaults to native menus upstream, which hide the theme colors and the fork's menu icons.
 	// Other platforms keep upstream's default (inherit), so a native title bar keeps its native menu bar.
 	test('draws the in-app menus with the theme by default on macOS only', () => {
