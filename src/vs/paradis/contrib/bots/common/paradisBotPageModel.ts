@@ -125,12 +125,6 @@ export function paradisBotAskToggle(current: readonly number[], option: number, 
 }
 
 /**
- * チャット表示が、表示している間ターミナルの入れ物に付ける印。Bot の帯はこれでチャット表示かターミナル表示かを見分ける
- * （帯の CSS もこの表示の `.paradis-agent-chat` の位置を下げている）。
- */
-export const PARADIS_AGENT_CHAT_ACTIVE_CLASS = 'paradis-agent-chat-active';
-
-/**
  * 帯の状態・モデル。`header` はチャット表示の見出しの値（チャット表示を見ている間だけ渡す）。見出しの状態の文があれば
  * それ（許可待ち・質問待ちは attention）、無ければ Bot の台帳の 1 行。モデルは見出しの値だけ（台帳には実際のモデルが無い）。
  */
