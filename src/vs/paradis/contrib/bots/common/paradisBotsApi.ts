@@ -8,8 +8,11 @@
 
 // Bot のサービスが画面（一覧・ページ・スマホ）へ見せる形。台帳そのものではなく、Bot ごとにまとめた値。
 
-import { IParadisBotItemsState, paradisBotItemCounts } from './paradisBotItems.js';
-import { IParadisBot } from './paradisBots.js';
+import { Event } from '../../../../base/common/event.js';
+import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
+import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
+import { IParadisBotItem, IParadisBotItemOwnerComment, IParadisBotItemsState, ParadisBotItemStatus, paradisBotItemCounts } from './paradisBotItems.js';
+import { IParadisBot, IParadisBotPatch } from './paradisBots.js';
 
 /**
  * Bot の今の様子。
@@ -74,3 +77,62 @@ export function paradisBotSummary(bot: IParadisBot, items: IParadisBotItemsState
 
 /** サービスの結果。断った理由は `code`（台帳の関数の code、または `storage`・`not_a_bot`）と英文。 */
 export type ParadisBotsServiceResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly code: string; readonly message: string };
+
+/** ターミナルを起動するのに要るもの（{@link IParadisBotsService.requestLaunch} の結果）。 */
+export interface IParadisBotLaunch {
+	/** 起動の番号。起動したペインを知らせるときに返す（1 回だけ使える。5 分で切れる）。 */
+	readonly launchId: string;
+	readonly botId: string;
+	readonly purpose: ParadisBotPanePurpose;
+	/** Bot の専用フォルダ。ここを cwd にして起動する（常設の指示文と人格メモ・記憶がある）。 */
+	readonly cwd: string;
+	readonly name: string;
+	readonly agent: ParadisAgentKind;
+	readonly modelId?: string;
+	readonly effortId?: string;
+	readonly permissionId?: string;
+}
+
+// ---- ウィンドウ側のサービス ---------------------------------------------------------------------
+
+export const PARADIS_BOTS_CHANNEL = 'paradisBots';
+
+export const EMPTY_PARADIS_BOTS_SNAPSHOT: IParadisBotsSnapshot = Object.freeze({ revision: 0, readOnly: false, bots: Object.freeze([]) });
+
+export const IParadisBotsService = createDecorator<IParadisBotsService>('paradisBotsService');
+
+/**
+ * ウィンドウ（renderer）から見た Bot のサービス。実体は shared process にあり、ここからできるのは読むこと、
+ * 持ち主の操作、起動の依頼と報告だけ。Bot の名義の書き込み（bot_item_* の道具）と、任意のペインを Bot に
+ * 結び付けることはできない。shared process に届かなかったときは code `unavailable` で返る。
+ */
+export interface IParadisBotsService {
+	readonly _serviceBrand: undefined;
+
+	/** 今の一覧（Bot ごとの「あなたの番」の件数・様子・最後に動いた時刻）。 */
+	readonly snapshot: IParadisBotsSnapshot;
+	readonly onDidChange: Event<void>;
+	/** Bot を止めてほしい（どのウィンドウからの依頼も全ウィンドウへ届く）。そのターミナルを持つウィンドウが閉じる。 */
+	readonly onDidRequestStop: Event<{ readonly botId: string }>;
+
+	createBot(input: { readonly name: string; readonly agent: ParadisAgentKind; readonly modelId?: string; readonly effortId?: string; readonly permissionId?: string }, soul?: string): Promise<ParadisBotsServiceResult<IParadisBot>>;
+	updateBot(botId: string, patch: IParadisBotPatch): Promise<ParadisBotsServiceResult<IParadisBot>>;
+	removeBot(botId: string): Promise<ParadisBotsServiceResult<IParadisBot>>;
+
+	listItems(filter?: { readonly botId?: string; readonly open?: boolean }): Promise<readonly IParadisBotItem[]>;
+	getItem(uid: string): Promise<IParadisBotItem | undefined>;
+	ownerComment(uid: string, input: IParadisBotItemOwnerComment): Promise<ParadisBotsServiceResult<IParadisBotItem>>;
+	ownerSetStatus(uid: string, to: ParadisBotItemStatus, note?: string): Promise<ParadisBotsServiceResult<IParadisBotItem>>;
+	ownerSnooze(uid: string, until: number | undefined): Promise<ParadisBotsServiceResult<IParadisBotItem>>;
+
+	/** 起動の依頼。返ったフォルダを cwd にエージェントを起動し、{@link reportLaunch} でペインを知らせる。 */
+	requestLaunch(botId: string, purpose?: ParadisBotPanePurpose): Promise<ParadisBotsServiceResult<IParadisBotLaunch>>;
+	/** 起動したターミナルのペイントークンを知らせる。結び付いたら true。 */
+	reportLaunch(launchId: string, paneToken: string): Promise<boolean>;
+	/** 起動できなかった。 */
+	cancelLaunch(launchId: string): Promise<void>;
+	requestStop(botId: string): Promise<boolean>;
+
+	readHomeFile(botId: string, relativePath: string): Promise<ParadisBotsServiceResult<string | undefined>>;
+	writeHomeFile(botId: string, relativePath: string, text: string): Promise<ParadisBotsServiceResult<void>>;
+}

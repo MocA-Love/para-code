@@ -1,0 +1,111 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+// allow-any-unicode-comment-file (Para Code: this file contains Japanese PARA-CODE comments)
+
+// PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
+
+// Bot のサービスを、ウィンドウ（renderer）へ出すチャネル。
+//
+// 通すのは、読むこと、持ち主の操作（Bot の作成・変更・削除、項目へのコメント・状態・後回し、専用フォルダの
+// ファイル）、起動の依頼と報告だけ。Bot の名義の書き込み（項目の追加・書き換え）はここに無く、para-browser MCP の
+// 道具（ペイントークンで Bot を見分ける）からしか呼べない。ペインと Bot の結び付けも、サービスが発行した
+// 起動の番号を付けた報告でしか作れない。引数は別のプロセスから届くので、形を確かめてからサービスへ渡す。
+
+import { Event } from '../../../../base/common/event.js';
+import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
+import { ParadisChannelArgs } from '../../../common/paradisChannelArgs.js';
+import { asRecord } from '../../../common/paradisGuards.js';
+import { PARADIS_BOT_ITEM_STATUSES } from '../common/paradisBotItems.js';
+import { PARADIS_BOT_PANE_PURPOSES, ParadisBotsServiceResult } from '../common/paradisBotsApi.js';
+import { ParadisBotsService } from './paradisBotsService.js';
+
+const INVALID: ParadisBotsServiceResult<never> = { ok: false, code: 'invalid_argument', message: 'The arguments are not valid.' };
+
+export class ParadisBotsChannel implements IServerChannel<string> {
+
+	constructor(private readonly service: ParadisBotsService) { }
+
+	listen<T>(_ctx: string, event: string): Event<T> {
+		switch (event) {
+			case 'onDidChange': return this.service.onDidChange as Event<T>;
+			case 'onDidRequestStop': return this.service.onDidRequestStop as Event<T>;
+			default: throw new Error(`Event not found: ${event}`);
+		}
+	}
+
+	async call<T>(_ctx: string, command: string, arg?: unknown): Promise<T> {
+		return await this.dispatch(command, ParadisChannelArgs.from(arg)) as T;
+	}
+
+	private async dispatch(command: string, args: ParadisChannelArgs): Promise<unknown> {
+		const service = this.service;
+		await service.ready;
+		const id = args.string(0);
+		switch (command) {
+			case 'getSnapshot': return service.getSnapshot();
+
+			case 'createBot': {
+				const input = asRecord(args.at(0));
+				const soul = args.string(1);
+				return input ? service.createBot({ name: input.name, agent: input.agent, modelId: input.modelId, effortId: input.effortId, permissionId: input.permissionId }, soul) : INVALID;
+			}
+			case 'updateBot': {
+				const patch = asRecord(args.at(1));
+				return id !== undefined && patch ? service.updateBot(id, { name: patch.name, agent: patch.agent, modelId: patch.modelId, effortId: patch.effortId, permissionId: patch.permissionId, paused: patch.paused }) : INVALID;
+			}
+			case 'removeBot': return id !== undefined ? service.removeBot(id) : INVALID;
+
+			case 'listItems': {
+				const filter = asRecord(args.at(0));
+				return service.listItems({ ...(typeof filter?.botId === 'string' ? { botId: filter.botId } : {}), ...(typeof filter?.open === 'boolean' ? { open: filter.open } : {}) });
+			}
+			case 'getItem': return id !== undefined ? service.getItem(id) : undefined;
+			case 'ownerComment': {
+				const input = asRecord(args.at(1));
+				if (id === undefined || !input || typeof input.text !== 'string') {
+					return INVALID;
+				}
+				return service.ownerComment(id, {
+					text: input.text,
+					...(typeof input.askEventId === 'number' && Number.isSafeInteger(input.askEventId) ? { askEventId: input.askEventId } : {}),
+					...(input.plain === true ? { plain: true } : {}),
+					...(input.skipped === true ? { skipped: true } : {}),
+				});
+			}
+			case 'ownerSetStatus': {
+				const to = PARADIS_BOT_ITEM_STATUSES.find(status => status === args.at(1));
+				const note = args.at(2);
+				return id !== undefined && to !== undefined && (note === undefined || note === null || typeof note === 'string') ? service.ownerSetStatus(id, to, typeof note === 'string' ? note : undefined) : INVALID;
+			}
+			case 'ownerSnooze': {
+				const until = args.at(1);
+				return id !== undefined && (until === undefined || until === null || typeof until === 'number') ? service.ownerSnooze(id, typeof until === 'number' ? until : undefined) : INVALID;
+			}
+
+			case 'requestLaunch': {
+				const purpose = PARADIS_BOT_PANE_PURPOSES.find(candidate => candidate === (args.at(1) ?? 'chat'));
+				return id !== undefined && purpose !== undefined ? service.requestLaunch(id, purpose) : INVALID;
+			}
+			case 'reportLaunch': {
+				const paneToken = args.string(1);
+				return id !== undefined && paneToken !== undefined && service.reportLaunch(id, paneToken);
+			}
+			case 'cancelLaunch': {
+				if (id !== undefined) {
+					service.cancelLaunch(id);
+				}
+				return undefined;
+			}
+			case 'requestStop': return id !== undefined && service.requestStop(id);
+
+			case 'readHomeFile': return id !== undefined ? service.readHomeFile(id, args.at(1)) : INVALID;
+			case 'writeHomeFile': {
+				const text = args.string(2);
+				return id !== undefined && text !== undefined ? service.writeHomeFile(id, args.at(1), text) : INVALID;
+			}
+			default: throw new Error(`Method not found: ${command}`);
+		}
+	}
+}

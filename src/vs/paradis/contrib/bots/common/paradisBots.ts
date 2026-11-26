@@ -139,6 +139,11 @@ export interface IParadisBotCreateInput {
 	readonly modelId?: unknown;
 	readonly effortId?: unknown;
 	readonly permissionId?: unknown;
+	/**
+	 * 台帳に無くても「使用中」に数えるフォルダ名（ディスクにもうあるフォルダ）。Bot を消してもフォルダは残るので、
+	 * 数えないと、消した Bot の人格と記憶のフォルダを新しい Bot が引き継いでしまう。
+	 */
+	readonly takenFolders?: readonly string[];
 }
 
 export interface IParadisBotPatch {
@@ -198,7 +203,7 @@ export function paradisBotCreate(state: IParadisBotsState, input: IParadisBotCre
 	const bot = withOptionalIds({
 		id: input.id,
 		name,
-		folder: paradisReserveBotFolder(name, state.bots.map(existing => existing.folder)),
+		folder: paradisReserveBotFolder(name, [...state.bots.map(existing => existing.folder), ...(input.takenFolders ?? [])]),
 		agent,
 		paused: false,
 		createdAt: now,
