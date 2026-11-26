@@ -227,6 +227,29 @@ suite('Paradis notification inbox popover', () => {
 		});
 	});
 
+	test('your turn: a wait that arrives while the inbox is open does not switch the tab, and its first card is guarded too', async () => {
+		const t = open([]);
+		const tabs = () => [...t.container.querySelectorAll('.pnip-tabs button')].map(button => `${button.textContent}${button.getAttribute('aria-pressed') === 'true' ? '*' : ''}`);
+		const before = tabs();
+		// 開いている間に許可が届いた: 「通知」のまま、件数だけ出す
+		t.ledger.set([ask('1', { kind: 'permission', preface: 'Bash: npm test', actions: ALLOW_DENY })]);
+		const arrived = tabs();
+		// 自分で「あなたの番」へ切り替えても、届いた直後のカードは少しの間押せない
+		t.container.querySelectorAll<HTMLElement>('.pnip-tabs button')[0].click();
+		t.press('pane:1', 'action:yes');
+		const guarded = t.ledger.answers.length;
+		t.clock.now += 600;
+		t.press('pane:1', 'action:yes');
+		await Promise.resolve();
+		assert.deepStrictEqual({ before, arrived, guarded, answers: t.ledger.answers }, {
+			before: ['あなたの番', '通知*'],
+			arrived: ['あなたの番 1', '通知*'],
+			guarded: 0,
+			answers: [{ key: 'pane:1', answer: { type: 'action', actionId: 'yes' } }],
+		});
+		t.popover.dispose();
+	});
+
 	test('dialog: a button the board confirms asks the same confirmation before it sends', async () => {
 		const container = mainWindow.document.createElement('div');
 		mainWindow.document.body.appendChild(container);
