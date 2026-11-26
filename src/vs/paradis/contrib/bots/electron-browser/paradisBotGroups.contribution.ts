@@ -189,12 +189,11 @@ class ParadisBotGroupSender implements IParadisBotGroupSender {
  */
 class ParadisBotGroupsWindowChannel implements IServerChannel {
 
-	private readonly limiter = new ParadisBotGroupRelayLimiter();
+	/** 届ける役。設定がオンで最初に届いたときに作る（それまで Bot とグループのサービスに触れない）。 */
+	private deliverer: ParadisBotGroupsDeliverer | undefined;
 
 	constructor(
-		@IParadisBotGroupSender private readonly sender: IParadisBotGroupSender,
-		@IParadisBotsService private readonly botsService: IParadisBotsService,
-		@IParadisBotGroupsService private readonly groupsService: IParadisBotGroupsService,
+		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 	) { }
 
@@ -210,8 +209,24 @@ class ParadisBotGroupsWindowChannel implements IServerChannel {
 		if (typeof callerToken !== 'string' || typeof to !== 'string' || typeof text !== 'string' || text.trim().length === 0) {
 			return 'The arguments are not valid.' as T;
 		}
-		return await this.deliver(callerToken, to, text) as T;
+		if (this.configurationService.getValue(PARADIS_BOTS_ENABLED_SETTING) !== true) {
+			return 'Bots are turned off in this Para Code.' as T;
+		}
+		this.deliverer ??= this.instantiationService.createInstance(ParadisBotGroupsDeliverer);
+		return await this.deliverer.deliver(callerToken, to, text) as T;
 	}
+}
+
+/** Bot 同士の伝言を、守り（同じグループ・起動中・作業中は後で・回数の上限）を通してから届ける。 */
+class ParadisBotGroupsDeliverer {
+
+	private readonly limiter = new ParadisBotGroupRelayLimiter();
+
+	constructor(
+		@IParadisBotGroupSender private readonly sender: IParadisBotGroupSender,
+		@IParadisBotsService private readonly botsService: IParadisBotsService,
+		@IParadisBotGroupsService private readonly groupsService: IParadisBotGroupsService,
+	) { }
 
 	private async callerBot(callerToken: string): Promise<string | undefined> {
 		const hash = await paradisBotPaneTokenHashInWindow(callerToken);
@@ -223,10 +238,7 @@ class ParadisBotGroupsWindowChannel implements IServerChannel {
 		return undefined;
 	}
 
-	private async deliver(callerToken: string, to: string, text: string): Promise<string | undefined> {
-		if (this.configurationService.getValue(PARADIS_BOTS_ENABLED_SETTING) !== true) {
-			return 'Bots are turned off in this Para Code.';
-		}
+	async deliver(callerToken: string, to: string, text: string): Promise<string | undefined> {
 		const from = await this.callerBot(callerToken);
 		// 送り手と宛先の両方が入っているグループ（無ければメンバーでない）
 		const group = this.groupsService.snapshot.groups.find(candidate => from !== undefined && candidate.members.includes(from) && candidate.members.includes(to));
