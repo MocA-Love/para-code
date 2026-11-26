@@ -167,6 +167,11 @@ export const PARADIS_COMPUTER_USE_ACTIVITY_EVENT = 'onDidChangeActivity';
 export interface IParadisComputerUseActivity {
 	readonly stopped: boolean;
 	readonly input: boolean;
+	/**
+	 * その入力の的が、コマンドを打てるアプリ（{@link PARADIS_COMPUTER_USE_COMMAND_APPS}）のとき true。承認の画面が、
+	 * その最中と直後の承認を聞き直すのに使う（paradisComputerUseInputClock.ts）。
+	 */
+	readonly commandApp?: boolean;
 }
 
 export function paradisParseComputerUseActivity(value: unknown): IParadisComputerUseActivity | undefined {
@@ -174,7 +179,7 @@ export function paradisParseComputerUseActivity(value: unknown): IParadisCompute
 		return undefined;
 	}
 	const record = value as Record<string, unknown>;
-	return typeof record.stopped === 'boolean' ? { stopped: record.stopped, input: record.input === true } : undefined;
+	return typeof record.stopped === 'boolean' ? { stopped: record.stopped, input: record.input === true, ...(record.input === true && record.commandApp === true ? { commandApp: true } : {}) } : undefined;
 }
 
 /** ステータスバーに出すもの。 */

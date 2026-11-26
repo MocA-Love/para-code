@@ -580,6 +580,11 @@ extension ParadisDesktop {
 			press = false
 		}
 		if press {
+			// この送り口のイベントは「送った時点で前面のアプリ」に届く。確かめてから送るまでの隙に、常に断るアプリ
+			// （Para Code 自身の承認の画面など）が前面へ来ていたら送らない（paradisPressBlockedByFrontmost）
+			if let failure = paradisPressBlockedByFrontmost(frontmostBundleId: paradisOnMain { NSWorkspace.shared.frontmostApplication?.bundleIdentifier }) {
+				throw failure
+			}
 			try emergencyStop.sendUnlessStopped {
 				event.post(tap: .cghidEventTap)
 			}

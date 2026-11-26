@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// 既定拡張のうち「動作は必要だが通知トーストが騒がしい」ものに、ソース単位の通知フィルタ
+// 「動作は必要だが通知トーストが騒がしい」拡張機能に、ソース単位の通知フィルタ
 // (エラーのみ表示 = それ以外は通知センターへ静かに積まれる) を一度だけ既定設定する。
 //
 // 代表例: Dart 拡張はワークスペースフォルダが変わるたびに自身を再起動してプロジェクトを再走査し、
@@ -17,6 +17,9 @@
 // 歯車) からいつでも解除・変更でき、その選択は APPLICATION スコープで永続される。ここでは
 // 「まだユーザーがそのソースのフィルタを一度も設定していない」場合に限り一度だけ既定値を入れ、
 // 以後は二度と触らない (storage に記録)。
+//
+// Dart の拡張機能は既定では入れなくなった (2026-11-27)。自分で入れた人のために残している。入れていない人でも
+// フィルタは入り、通知センターのソースの一覧に「Dart」の行が出る (通知は出ないので、ほかに影響は無い)。
 
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { INotificationService, NotificationsFilter } from '../../../../platform/notification/common/notification.js';

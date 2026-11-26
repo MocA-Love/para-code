@@ -123,7 +123,8 @@ const PARADIS_DEVTOOLS_TOOL_DESCRIPTIONS: ReadonlyMap<string, string> = new Map(
 
 /** 引数の説明の差し替え（道具 → 引数 → 説明）。単位と、上流の文の意味の通らないところを直す。 */
 const PARADIS_DEVTOOLS_PROPERTY_DESCRIPTIONS: ReadonlyMap<string, ReadonlyMap<string, string>> = new Map([
-	['navigate_page', new Map([['handleBeforeUnload', 'How to report a beforeunload dialog ("Leave site?") from this navigation. Para Code always lets the page leave, so "decline" cannot keep the page; it only changes the line in the result (default accept).']])],
+	['navigate_page', new Map([['handleBeforeUnload', 'What to do when the page asks to confirm leaving (beforeunload, "Leave site?") during this navigation. "accept" (default): leave. "decline": keep the page; the navigation is cancelled and the result says so. A page can only ask after something was done on it (a click or a key), and "decline" applies to this navigation only.']])],
+	['handle_dialog', new Map([['promptText', 'Text to answer a prompt() dialog with (only with action "accept"; omit it to answer with the default value of the prompt). Not used for alert and confirm.']])],
 	['click_at', new Map([['x', 'X in CSS pixels of the viewport.'], ['y', 'Y in CSS pixels of the viewport.']])],
 	['get_network_request', new Map([['reqid', 'The reqid from list_network_requests.']])],
 ]);

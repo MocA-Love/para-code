@@ -7,7 +7,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IParadisMobileDevice, paradisFindMobileDevice } from '../../common/paradisMobileCanvas.js';
+import { IParadisMobileDevice, paradisFindMobileDevice, paradisMobileAttachmentIsFor } from '../../common/paradisMobileCanvas.js';
 import {
 	paradisDeviceHeldByAnotherPane,
 	paradisIsValidAppId,
@@ -157,7 +157,10 @@ suite('ParadisMobileDeviceOps', () => {
 			byNewId: paradisFindMobileDevice(devices, 'android:serial:emulator-5556')?.id,
 			unknown: [paradisFindMobileDevice(devices, 'android:avd:Gone'), paradisFindMobileDevice(devices, undefined)],
 			heldByAnotherPane: devices.map(entry => paradisDeviceHeldByAnotherPane('pane-a', entry, devices, attachments)),
+			// 共有ダイアログとタブの名前は、起動後の端末の行に「割り当て済み」を出す
+			attachmentIsFor: devices.map(entry => paradisMobileAttachmentIsFor(devices, 'android:avd:Test', entry.id)),
 		}, {
+			attachmentIsFor: [false, true, false],
 			byOldId: 'android:serial:emulator-5556',
 			byNewId: 'android:serial:emulator-5556',
 			unknown: [undefined, undefined],

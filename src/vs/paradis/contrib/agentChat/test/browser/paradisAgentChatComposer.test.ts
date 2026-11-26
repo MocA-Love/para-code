@@ -78,6 +78,45 @@ suite('ParadisAgentChatComposer', () => {
 		});
 	});
 
+	test('shows the + button only when files can be picked, and puts the picked paths into the input', async () => {
+		const without = store.add(new ParadisAgentChatComposer(container, new TestComposerHost()));
+		const plain = container.querySelectorAll('.paradis-agent-chat-attach').length;
+		without.dispose();
+		container.textContent = '';
+		const host = new TestComposerHost() as TestComposerHost & { pickFiles(): Promise<readonly string[] | undefined> };
+		host.pickFiles = async () => ['/repo/a.ts', '/repo/my notes.md'];
+		const composer = store.add(new ParadisAgentChatComposer(container, host));
+		composer.setToken('pane-1');
+		container.querySelector<HTMLButtonElement>('.paradis-agent-chat-attach')!.click();
+		await new Promise(resolve => setTimeout(resolve, 0));
+		assert.deepStrictEqual({ plain, input: container.querySelector('textarea')!.value, draft: host.drafts.get('pane-1') }, {
+			plain: 0,
+			input: '/repo/a.ts "/repo/my notes.md"',
+			draft: '/repo/a.ts "/repo/my notes.md"',
+		});
+	});
+
+	test('puts a draft from outside into the input without sending it, keeping what the user wrote, and focuses the input', () => {
+		const host = new TestComposerHost();
+		const composer = store.add(new ParadisAgentChatComposer(container, host));
+		const sent: string[] = [];
+		store.add(composer.onDidSubmit(text => sent.push(text)));
+		composer.setToken('pane-1');
+		const first = composer.insertDraft('リリースをまとめて');
+		const textarea = container.querySelector('textarea')!;
+		textarea.value = '書きかけ';
+		textarea.dispatchEvent(new Event('input'));
+		const second = composer.insertDraft('テストも');
+		assert.deepStrictEqual({ first, second, value: textarea.value, draft: host.drafts.get('pane-1'), sent, focused: mainWindow.document.activeElement === textarea }, {
+			first: 'inserted',
+			second: 'appended',
+			value: '書きかけ\n\nテストも',
+			draft: '書きかけ\n\nテストも',
+			sent: [],
+			focused: true,
+		});
+	});
+
 	test('keeps a draft per pane, recalls sent messages with the up arrow, and blocks sending while the agent waits for an answer', () => {
 		const host = new TestComposerHost();
 		host.history = ['first', 'second'];
