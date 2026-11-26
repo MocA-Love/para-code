@@ -335,10 +335,8 @@ suite('Paradis simulator: mobile_fold', () => {
 		duo.backend.config = { width: 2007, height: 2853, orientation: 'portrait', hingeDegrees: 180 };
 		const closed = textOf(await duo.fold.callTool('pane-a', 'mobile_fold', { pose: 'closed' }));
 		const both = textOf(await duo.fold.callTool('pane-a', 'mobile_fold', { pose: 'open', angle: 90 }));
-		const flat = provider({ ...attachment, deviceName: 'iPhone 17' });
+		const flat = provider(attachment);
 		const notFoldable = textOf(await flat.fold.callTool('pane-a', 'mobile_fold', { angle: 90 }));
-		// iPhone Duo なのにホストが開き具合を返さないとき（Mac の iOS 27.2 で実測）は、「Duo しか折れない」とは返さない
-		const duoWithoutHinge = textOf(await provider(attachment).fold.callTool('pane-a', 'mobile_fold', { angle: 90 }));
 		const refusedDuo = provider(attachment);
 		refusedDuo.backend.config = { width: 2007, height: 2853, orientation: 'portrait', hingeDegrees: 180 };
 		refusedDuo.backend.foldAccepted = false;
@@ -355,7 +353,6 @@ suite('Paradis simulator: mobile_fold', () => {
 			forgotten: duo.forgotten,
 			both: both.isError,
 			notFoldable: [notFoldable.isError, notFoldable.content[0].text.includes('not a foldable')],
-			duoWithoutHinge: [duoWithoutHinge.isError, duoWithoutHinge.content[0].text.includes('did not report a hinge angle')],
 			refused: [refused.isError, refused.content[0].text.includes('Device Hub')],
 			noHub: [noHub.isError, noHub.content[0].text.startsWith('Device Hub is not running')],
 			none: [none.isError, none.content[0].text.includes('No mobile device is attached')],
@@ -367,7 +364,6 @@ suite('Paradis simulator: mobile_fold', () => {
 			forgotten: [ID],
 			both: true,
 			notFoldable: [true, true],
-			duoWithoutHinge: [true, true],
 			refused: [true, true],
 			noHub: [true, true],
 			none: [true, true],

@@ -101,10 +101,7 @@ export class ParadisSimulatorFoldToolProvider implements IParadisMcpToolProvider
 		}
 		const before = await this._backend.getScreenConfig(udid);
 		if (before.hingeDegrees === undefined) {
-			// iPhone Duo でも、ホストが開き具合を返さないことがある（Mac の iOS 27.2 で実測。そのときに「Duo しか折れない」と返すと矛盾する）
-			return errorResult(/\bDuo\b/.test(attachment.deviceName)
-				? `The simulator host did not report a hinge angle for ${attachment.deviceName}, so Para Code cannot fold it right now. Ask the user to check that Device Hub is running (the simulator tab of Para Code has a button) and that the device is shown in the simulator tab, then try again.`
-				: `${attachment.deviceName} is not a foldable device (only the iPhone Duo simulator folds).`);
+			return errorResult(`${attachment.deviceName} is not a foldable device (only the iPhone Duo simulator folds).`);
 		}
 		const accepted = await this._backend.fold(udid, fold);
 		if (!accepted) {
