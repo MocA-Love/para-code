@@ -21,7 +21,6 @@ import { Emitter } from '../../../../base/common/event.js';
 import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableMap, DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
-import { Schemas } from '../../../../base/common/network.js';
 import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
@@ -43,6 +42,7 @@ import { ITerminalInstance, ITerminalService, terminalEditorId } from '../../../
 import { TerminalEditorInput } from '../../../../workbench/contrib/terminal/browser/terminalEditorInput.js';
 import { DEFAULT_COMMANDS_TO_SKIP_SHELL } from '../../../../workbench/contrib/terminal/common/terminal.js';
 import { TerminalContextKeys } from '../../../../workbench/contrib/terminal/common/terminalContextKey.js';
+import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IEditorGroup, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
@@ -58,6 +58,7 @@ import { IParadisAgentChatCardStates, IParadisAgentChatViewHost, ParadisAgentCha
 import { paradisVisibleTerminalText } from '../browser/paradisAgentTuiInput.js';
 import { IParadisAgentChatCommand, IParadisAgentChatImageData, IParadisAgentChatSource, PARADIS_AGENT_CHAT_ENABLED_SETTING, PARADIS_AGENT_CHAT_SEND_KEY_SETTING } from '../common/paradisAgentChat.js';
 import { paradisPushAgentChatHistory } from '../common/paradisAgentChatComposerLogic.js';
+import { paradisAgentChatAttachDialogOptions, paradisAgentChatAttachPaths } from '../common/paradisAgentChatAttach.js';
 import { paradisParseCodexAsyncReply } from '../../mobileRelay/common/paradisCodexAsyncQuestions.js';
 import { ParadisAgentChatDictation } from './paradisAgentChatDictation.js';
 import type { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentBrowser.js';
@@ -180,6 +181,7 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 		@IEditorService private readonly editorService: IEditorService,
 		@IParadisAgentStatusStore private readonly agentStatusStore: IParadisAgentStatusStore,
 		@IFileDialogService private readonly fileDialogService: IFileDialogService,
+		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 	) {
 		super();
 		this.source = ProxyChannel.toService<IParadisAgentChatSource>(sharedProcessService.getChannel(PARADIS_MOBILE_RELAY_CHANNEL));
@@ -504,15 +506,9 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 	}
 
 	async pickFiles(): Promise<readonly string[] | undefined> {
-		const uris = await this.fileDialogService.showOpenDialog({
-			title: localize('paradisAgentChat.attachTitle', "エージェントに添えるファイル"),
-			// Windows と Linux はファイルとフォルダを同じ画面で選べない（両方を許すとフォルダだけの画面になる）ので、ファイルだけにする
-			canSelectFiles: true,
-			canSelectFolders: false,
-			canSelectMany: true,
-		});
-		// SSH の窓では接続先のファイルを選ぶ。エージェントも接続先で動くので、接続先のパスを渡す
-		return uris?.map(uri => uri.scheme === Schemas.file ? uri.fsPath : uri.scheme === Schemas.vscodeRemote ? uri.path : uri.toString());
+		const remoteAuthority = this.environmentService.remoteAuthority;
+		const uris = await this.fileDialogService.showOpenDialog(paradisAgentChatAttachDialogOptions(remoteAuthority, localize('paradisAgentChat.attachTitle', "エージェントに添えるファイル")));
+		return uris === undefined ? undefined : paradisAgentChatAttachPaths(uris, remoteAuthority);
 	}
 
 	getCommands(token: string): Promise<readonly IParadisAgentChatCommand[]> {

@@ -225,6 +225,8 @@
 	justify-content: center;
 	width: var(--vscode-spacing-size240);
 	height: var(--vscode-spacing-size240);
+	/* 吹き出しの 1 行目の文字の中心（枠 1・余白 8・行 13×1.5 の半分）にそろえる。 */
+	margin-top: var(--vscode-spacing-size60);
 	box-sizing: border-box;
 	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border, var(--vscode-panel-border, transparent));
 	border-radius: var(--vscode-cornerRadius-circle);

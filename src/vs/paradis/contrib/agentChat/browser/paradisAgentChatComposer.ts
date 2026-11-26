@@ -265,9 +265,10 @@ export class ParadisAgentChatComposer extends Disposable {
 	 */
 	private updateHint(): void {
 		const modifier = isMacintosh ? '⌘' : 'Ctrl+';
+		// 狭い幅でも 1 行に収まるよう、送るキーだけを書く（改行はもう片方のキー）。
 		this.textarea.placeholder = this.host.getSendKey() === 'modEnter'
-			? localize('paradisAgentChat.placeholderModEnter', "メッセージ（{0}Enter で送信 · Enter で改行）", modifier)
-			: localize('paradisAgentChat.placeholder', "メッセージ（Enter で送信 · Shift+Enter で改行）");
+			? localize('paradisAgentChat.placeholderModEnterShort', "メッセージ（{0}Enter で送信）", modifier)
+			: localize('paradisAgentChat.placeholderShort', "メッセージ（Enter で送信）");
 		this.busyNote.textContent = this.busy ? localize('paradisAgentChat.busyNote', "作業中です。送ると終わってから読まれます") : '';
 	}
 
