@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { Fragment, memo, useCallback, useRef, useState } from 'react';
+import { Fragment, memo, useCallback, useRef, useState, type ReactElement } from 'react';
 import { ScrollView, StyleSheet, View } from 'react-native';
 import { useIsFocused, useNavigation, useRouter } from 'expo-router';
 import { Layers, SlidersHorizontal } from 'lucide-react-native';
@@ -10,6 +10,8 @@ import { unreadQuestionNotificationCount } from '../../components/notificationCo
 import { batteryLine, pcConnectionLine } from '../home/homeSummary.js';
 import { useLastSession } from '../home/lastSessionStore.js';
 import { LaunchDrawer, type LaunchPreset } from '../launch/launchDrawer.js';
+import { BotSection } from '../bots/botSection.js';
+import { botSectionRows } from '../bots/bots.js';
 import { AgentListRow, EmptySpaceRow, RowSeparator } from './agentListRow.js';
 import { ArchiveDrawer } from './archiveDrawer.js';
 import { LastKnownPcList } from './lastKnownPcList.js';
@@ -47,6 +49,8 @@ import { useShortcutSlot } from '../../ipad/shortcutRegistry.js';
 import { stepKey } from '../../ipad/shortcuts.js';
 import { useParaToast } from '../../paraToast.js';
 import { isPairingRejected, shouldShowBattery } from '../../pcStatus.js';
+import { PcCapability, pcHasCapability } from '../../pcCompat.js';
+import { resetDetailColumnFor } from '../../ipad/detailColumn.js';
 import { QueuedSendsBanner } from '../session/queuedSends.js';
 import { routes } from '../../routes.js';
 import type { WorkspaceState } from '../../store.js';
@@ -64,6 +68,8 @@ type Space = WorkspaceState['workspaces'][number];
 
 const NO_TERMINALS: Terminal[] = [];
 const NO_SPACES: Space[] = [];
+/** Bot の節の開閉の鍵（段の開閉と同じ保存先）。 */
+const BOT_SECTION_KEY = 'bots';
 
 type Sheet = 'filter' | 'sort' | 'group' | 'archive' | 'launch';
 
@@ -103,6 +109,8 @@ export const PcScreen = memo(function PcScreen({ placement, onCollapse }: {
 	const spaces = useAppStore(s => (active ? s.workspace?.workspaces ?? NO_SPACES : NO_SPACES));
 	const activeWs = useAppStore(s => (active ? s.workspace?.activeWs : undefined));
 	const loaded = useAppStore(s => active && s.workspace !== undefined);
+	// Bot の一覧（`bots.page.v1` の PC で、PC の設定で Bot がオンの間だけ届く）。古い PC・オフでは節を出さない
+	const bots = useAppStore(s => (active && pcHasCapability(s.workspace, PcCapability.BotsPage) ? s.workspace?.bots : undefined));
 	const { archivedKeys, pinnedKeys, preferences, setPreferences, notifications, setArchived, connectRelay } = useAppStore(useShallow(s => ({
 		archivedKeys: s.archivedKeys, pinnedKeys: s.pinnedKeys, preferences: s.homePreferences, setPreferences: s.setHomePreferences,
 		notifications: s.notifications, setArchived: s.setArchived, connectRelay: s.connectRelay,
@@ -177,6 +185,19 @@ export const PcScreen = memo(function PcScreen({ placement, onCollapse }: {
 		connectRelay();
 		toast({ key: 'pc-reconnect', text: `${pc?.name ?? 'PC'} に再接続しています…`, icon: 'refresh-outline', tone: 'info' }, 2_500);
 	};
+	// 絞り込み（状態・スペース・種類）をしている間は Bot の節を出さない（検索語は Bot の名前にも効かせる）
+	const botsShown = bots !== undefined && filterCount(filter) === 0 && filter.kind === 'all' && (() => {
+		const rows = botSectionRows(bots, filter.query);
+		return rows.active.length + rows.paused.length > 0;
+	})();
+	const openBot = (botId: string) => {
+		if (pcId === undefined) {
+			return;
+		}
+		// iPad の 2 列では詳細の列の中身を入れ替える（行の「ソース管理」「メモ」と同じ開き方）
+		resetDetailColumnFor(pcId);
+		router.push(routes.bot(pcId, botId));
+	};
 	const toggleSection = (key: string) => {
 		if (pcId !== undefined) {
 			toggleListSection(pcId, key);
@@ -219,6 +240,23 @@ export const PcScreen = memo(function PcScreen({ placement, onCollapse }: {
 		}
 	};
 
+	const botBlock = botsShown && bots !== undefined ? (
+		<BotSection
+			bots={bots}
+			query={filter.query}
+			collapsed={collapsed.has(BOT_SECTION_KEY)}
+			onToggle={() => toggleSection(BOT_SECTION_KEY)}
+			onOpen={openBot}
+		/>
+	) : null;
+	// スペースや一致する行が無くても、Bot の節は出す（空の案内はその下）
+	const withBots = (empty: ReactElement) => (botBlock === null ? empty : (
+		<ScrollView contentContainerStyle={[{ paddingBottom: insets.bottom + space.xl + FAB_SIZE + space.lg }, column]}>
+			{botBlock}
+			{empty}
+		</ScrollView>
+	));
+
 	const renderBody = () => {
 		if (status === 'unknown') {
 			return <EmptyState title="この PC は見つかりません" body="ペアリングを解除した PC かもしれません。" />;
@@ -246,10 +284,10 @@ export const PcScreen = memo(function PcScreen({ placement, onCollapse }: {
 			);
 		}
 		if (spaces.length === 0 && terminals.length === 0) {
-			return <EmptyState title="スペースはまだありません" body="PC の Para Code でフォルダやリポジトリを開くと、ここに表示されます。右下の ＋ から新しいスペースも作れます。" />;
+			return withBots(<EmptyState title="スペースはまだありません" body="PC の Para Code でフォルダやリポジトリを開くと、ここに表示されます。右下の ＋ から新しいスペースも作れます。" />);
 		}
 		if (sections.length === 0) {
-			return (
+			return withBots(
 				<EmptyState
 					title="該当するエージェント・ターミナルがありません"
 					body="検索語や絞り込みを変えてください。"
@@ -262,7 +300,7 @@ export const PcScreen = memo(function PcScreen({ placement, onCollapse }: {
 							}
 						},
 					}}
-				/>
+				/>,
 			);
 		}
 		return (
@@ -271,6 +309,7 @@ export const PcScreen = memo(function PcScreen({ placement, onCollapse }: {
 				keyboardShouldPersistTaps="handled"
 				keyboardDismissMode="on-drag"
 			>
+				{botBlock}
 				{sections.map(section => {
 					const isCollapsed = collapsed.has(section.key);
 					const hideSpace = section.kind === 'space';
