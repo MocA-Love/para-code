@@ -41,6 +41,7 @@ import {
 	paradisBotItemsPendingMail,
 	paradisBotItemsRemoveBot,
 	paradisBotItemUpdate,
+	paradisBotItemWaitsForOwner,
 	paradisIsBotItemSnoozed,
 } from '../common/paradisBotItems.js';
 import { EMPTY_PARADIS_BOTS_STATE, IParadisBot, IParadisBotCreateInput, IParadisBotPatch, IParadisBotsState, PARADIS_BOTS_VERSION, paradisBotCreate, paradisBotRemove, paradisBotUpdate } from '../common/paradisBots.js';
@@ -499,6 +500,9 @@ export class ParadisBotsService extends Disposable {
 			}
 			if (paradisIsBotItemSnoozed(item, now)) {
 				wakeAt = Math.min(wakeAt ?? Infinity, item.snoozedUntil ?? Infinity);
+			}
+			// Bot の行の「あなたの番」と同じ式で選ぶ（件数が割れないように）
+			if (!paradisBotItemWaitsForOwner(item, now)) {
 				continue;
 			}
 			const input = paradisBotAskInput(bot, item);
