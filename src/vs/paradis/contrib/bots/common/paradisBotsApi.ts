@@ -115,6 +115,12 @@ export interface IParadisBotStopRequest {
 	readonly paneHashes: readonly string[];
 }
 
+/** 開いている Bot のペインを前に出してほしい（別のウィンドウから開こうとした）。ハッシュで渡す。 */
+export interface IParadisBotRevealRequest {
+	readonly botId: string;
+	readonly paneHashes: readonly string[];
+}
+
 // ---- ウィンドウ側のサービス ---------------------------------------------------------------------
 
 export const PARADIS_BOTS_CHANNEL = 'paradisBots';
@@ -139,6 +145,11 @@ export interface IParadisBotsService {
 	 * SHA-256（16 進）。自分の生きたペインのトークンをハッシュにして照らし、合ったターミナルを閉じる。
 	 */
 	readonly onDidRequestStop: Event<IParadisBotStopRequest>;
+	/**
+	 * 別のウィンドウでその Bot を開こうとして断られた（会話は 1 つだけ）。そのペインを持つウィンドウが、ペインのスペースへ
+	 * 切り替えて前に出す。
+	 */
+	readonly onDidRequestReveal: Event<IParadisBotRevealRequest>;
 
 	createBot(input: { readonly name: string; readonly agent: ParadisAgentKind; readonly modelId?: string; readonly effortId?: string; readonly permissionId?: string; readonly faceColor?: ParadisBotFaceColor; readonly faceShape?: ParadisBotFaceShape }, soul?: string): Promise<ParadisBotsServiceResult<IParadisBot>>;
 	updateBot(botId: string, patch: IParadisBotPatch): Promise<ParadisBotsServiceResult<IParadisBot>>;

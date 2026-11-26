@@ -15,10 +15,11 @@
 //   ペインのトークンのハッシュを照らし、合ったターミナルを閉じる。トークンの値はウィンドウの外へ出さない。
 
 import { RunOnceScheduler } from '../../../../base/common/async.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
@@ -34,11 +35,15 @@ import { paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-br
 import { paradisRevealNotifiedPane } from '../../notifications/electron-browser/paradisNotificationReveal.js';
 import { paradisBotInstancesInWindow, paradisFindBotPane } from '../browser/paradisBotPaneHash.js';
 import { paradisBotTabTitle, paradisRunBotLaunch } from '../common/paradisBotLaunchSteps.js';
-import { IParadisBotsService, IParadisBotStopRequest } from '../common/paradisBotsApi.js';
+import { IParadisBotRevealRequest, IParadisBotsService, IParadisBotStopRequest, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
 
 export const PARADIS_BOTS_OPEN_COMMAND = 'paradis.bots.open';
 
-/** タブ名を Bot の名前にする（雛形で付ける。固定の名前にするとエージェントのタイトルの購読が止まるため）。 */
+/**
+ * タブ名の雛形を Bot の名前にする（固定の名前にするとエージェントのタイトルの購読が止まるため、雛形で付ける）。
+ * terminalInstance.ts の PARA-PATCH でエージェントの CLI のタイトルが雛形より先に立つので、エージェントが動いている間は
+ * エージェントの出すタイトルが、動いていない間（起動の直後・終わった後）は Bot の名前がタブに出る。
+ */
 function paradisNameBotTab(instance: ITerminalInstance | undefined, name: string): void {
 	if (instance === undefined || instance.isDisposed) {
 		return;
@@ -98,6 +103,15 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string):
 			return;
 		}
 		const launch = await botsService.requestLaunch(botId, 'chat');
+		// 会話は 1 つの Bot に 1 つだけ。別のウィンドウで開いている（そのウィンドウが前に出る）・起動している途中
+		if (!launch.ok && launch.code === 'already_open') {
+			notificationService.info(localize('paradisBots.alreadyOpen', "This bot is already open in another window. That window shows it now."));
+			return;
+		}
+		if (!launch.ok && launch.code === 'launching') {
+			notificationService.info(localize('paradisBots.launching', "This bot is starting in another window."));
+			return;
+		}
 		if (!launch.ok) {
 			notificationService.warn(localize('paradisBots.launchRefused', "Could not start the bot: {0}", launch.message));
 			return;
@@ -144,10 +158,11 @@ registerAction2(class extends Action2 {
 	}
 });
 
-/** 止める依頼を受けて、このウィンドウにあるその Bot のターミナルを閉じる。 */
-class ParadisBotsStopContribution extends Disposable {
-
-	static readonly ID = 'workbench.contrib.paradisBotsStop';
+/**
+ * 止める依頼を受けて、このウィンドウにあるその Bot のターミナルを閉じる。別のウィンドウから開こうとした Bot のペインを前に出す。
+ * Bot のタブ名を合わせる。Bot の機能の窓口（shared process へのつなぎ）は、設定がオンになるまで作らない。
+ */
+class ParadisBotsWindowWorker extends Disposable {
 
 	/** 前回タブ名を合わせたときの Bot の名前と様子（変わったときだけ合わせ直す）。 */
 	private namedSignature = '';
@@ -160,11 +175,17 @@ class ParadisBotsStopContribution extends Disposable {
 		@IParadisPaneTokenService private readonly paneTokenService: IParadisPaneTokenService,
 		@ITerminalService private readonly terminalService: ITerminalService,
 		@ITerminalGroupService private readonly terminalGroupService: ITerminalGroupService,
+		@IParadisTerminalScopeService private readonly terminalScopeService: IParadisTerminalScopeService,
+		@IParadisWorkspaceSwitchService private readonly switchService: IParadisWorkspaceSwitchService,
+		@IHostService private readonly hostService: IHostService,
 		@ILogService private readonly logService: ILogService,
 	) {
 		super();
 		this._register(botsService.onDidRequestStop(request => {
 			this.stop(request).catch(error => this.logService.warn('[paradisBots] stopping the bot terminals failed', error));
+		}));
+		this._register(botsService.onDidRequestReveal(request => {
+			this.reveal(request).catch(error => this.logService.warn('[paradisBots] showing the bot terminal failed', error));
 		}));
 		// 起動し直した後に戻ったペインと、Bot の名前を変えたときも、タブ名を Bot の名前に合わせる
 		this._register(botsService.onDidChange(() => this.nameScheduler.schedule()));
@@ -188,6 +209,18 @@ class ParadisBotsStopContribution extends Disposable {
 		}
 	}
 
+	/** このウィンドウにその Bot のペインがあれば、そのスペースへ切り替えて前に出す（通知のクリックと同じ動き）。 */
+	private async reveal(request: IParadisBotRevealRequest): Promise<void> {
+		const existing = await paradisFindBotPane({
+			paneTokenService: this.paneTokenService,
+			findInstance: instanceId => findInstance(this.terminalService, this.terminalGroupService, instanceId),
+			stateKeyOf: instanceId => this.terminalScopeService.getStateKeyForInstance(instanceId),
+		}, request.paneHashes);
+		if (existing !== undefined) {
+			await paradisRevealNotifiedPane({ hostService: this.hostService, terminalService: this.terminalService, workspaceSwitchService: this.switchService }, existing.stateKey, existing.instanceId);
+		}
+	}
+
 	private async stop(request: IParadisBotStopRequest): Promise<void> {
 		for (const instanceId of await paradisBotInstancesInWindow(this.paneTokenService, request.paneHashes)) {
 			const instance = findInstance(this.terminalService, this.terminalGroupService, instanceId);
@@ -195,6 +228,35 @@ class ParadisBotsStopContribution extends Disposable {
 				// 確認のダイアログは出さない（止めると決めたのは利用者で、閉じるのは Bot のターミナルだけ）
 				instance.dispose(TerminalExitReason.User);
 			}
+		}
+	}
+}
+
+/** 設定 `paradis.bots.enabled` がオンの間だけ {@link ParadisBotsWindowWorker} を置く（オフなら Bot の窓口を作らない）。 */
+class ParadisBotsStopContribution extends Disposable {
+
+	static readonly ID = 'workbench.contrib.paradisBotsStop';
+
+	private readonly worker = this._register(new MutableDisposable<ParadisBotsWindowWorker>());
+
+	constructor(
+		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IInstantiationService private readonly instantiationService: IInstantiationService,
+	) {
+		super();
+		this._register(configurationService.onDidChangeConfiguration(event => {
+			if (event.affectsConfiguration(PARADIS_BOTS_ENABLED_SETTING)) {
+				this.apply();
+			}
+		}));
+		this.apply();
+	}
+
+	private apply(): void {
+		if (this.configurationService.getValue(PARADIS_BOTS_ENABLED_SETTING) !== true) {
+			this.worker.clear();
+		} else if (this.worker.value === undefined) {
+			this.worker.value = this.instantiationService.createInstance(ParadisBotsWindowWorker);
 		}
 	}
 }

@@ -322,6 +322,46 @@ suite('Paradis bots service', () => {
 		});
 	});
 
+	test('会話は 1 つの Bot に 1 つだけ: 現れたペインと起動中の番号で断り、前に出す依頼を出す。見回りと、まだ現れていない保存したペインでは断らない', async () => {
+		const first = harness(store);
+		const a = await first.bot('A');
+		const reveals: unknown[] = [];
+		store.add(first.service.onDidRequestReveal(request => reveals.push(request)));
+		const code = async (botId: string, purpose: 'chat' | 'patrol', service = first.service) => {
+			const result = await service.requestLaunch(botId, purpose);
+			return result.ok ? 'ok' : result.code;
+		};
+		// フォルダの口が無いこの試験では、断られなければ 'unavailable' まで進む
+		const open = [await code(a, 'chat'), await code(a, 'patrol')];
+		const created = await first.service.createBot({ name: 'B', agent: 'claude' });
+		assert.ok(created.ok);
+		const b = created.value.id;
+		// 2 つのウィンドウから同時に開いた: 先に発行した番号が報告前でも「起動中」
+		const issued = first.service.issueLaunch(b, 'chat');
+		const concurrent = await Promise.all([code(b, 'chat'), code(b, 'chat')]);
+		first.clock.now += 2 * 60_000 + 1;
+		const afterLaunchingTtl = await code(b, 'chat');
+		first.service.cancelLaunch(issued!);
+
+		// 起動し直した後: 保存したハッシュはあるがまだ現れていないペインは数えない。現れたら数える。閉じたら外れる
+		const second = harness(store, first);
+		await second.service.ready;
+		const notAppeared = await code(a, 'chat', second.service);
+		second.hooks.fire({ token: 'pane-A', event: 'SessionStart' });
+		const appeared = await code(a, 'chat', second.service);
+		second.hooks.fire({ token: 'pane-A', event: 'TerminalExit' });
+		const closed = await code(a, 'chat', second.service);
+		assert.deepStrictEqual({ open, reveals, concurrent, afterLaunchingTtl, notAppeared, appeared, closed }, {
+			open: ['already_open', 'unavailable'],
+			reveals: [{ botId: a, paneHashes: ['1b780c2005e24c7adab28a00c48fd437c37580c140f7b9585d87f54e78b59cff'] }],
+			concurrent: ['launching', 'launching'],
+			afterLaunchingTtl: 'unavailable',
+			notAppeared: 'unavailable',
+			appeared: 'already_open',
+			closed: 'unavailable',
+		});
+	});
+
 	test('設定がオフの間は、Bot を作る・起動する・フォルダへ書く口を断る', async () => {
 		const h = harness(store);
 		await h.bot('A');

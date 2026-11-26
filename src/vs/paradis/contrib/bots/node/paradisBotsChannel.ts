@@ -31,6 +31,7 @@ export class ParadisBotsChannel implements IServerChannel<string> {
 		switch (event) {
 			case 'onDidChange': return this.service.onDidChange as Event<T>;
 			case 'onDidRequestStop': return this.service.onDidRequestStop as Event<T>;
+			case 'onDidRequestReveal': return this.service.onDidRequestReveal as Event<T>;
 			default: throw new Error(`Event not found: ${event}`);
 		}
 	}

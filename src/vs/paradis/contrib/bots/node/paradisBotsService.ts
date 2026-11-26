@@ -48,7 +48,7 @@ import {
 	paradisIsBotItemSnoozed,
 } from '../common/paradisBotItems.js';
 import { EMPTY_PARADIS_BOTS_STATE, IParadisBot, IParadisBotCreateInput, IParadisBotPatch, IParadisBotsState, PARADIS_BOTS_VERSION, paradisBotCreate, paradisBotRemove, paradisBotUpdate } from '../common/paradisBots.js';
-import { IParadisBotLaunch, IParadisBotsSnapshot, IParadisBotStopRequest, ParadisBotPanePurpose, ParadisBotsServiceResult, paradisBotSummary } from '../common/paradisBotsApi.js';
+import { IParadisBotLaunch, IParadisBotRevealRequest, IParadisBotsSnapshot, IParadisBotStopRequest, ParadisBotPanePurpose, ParadisBotsServiceResult, paradisBotSummary } from '../common/paradisBotsApi.js';
 import { IParadisBotItemAddArgs, paradisBotLaunchApprovalFlags } from '../common/paradisBotTools.js';
 import { ParadisBotHomeError, ParadisBotHomes } from './paradisBotHomes.js';
 import { IParadisBotPanesState, PARADIS_BOT_PANES_VERSION, ParadisBotPanes, paradisBotPaneTokenHash } from './paradisBotPanes.js';
@@ -125,6 +125,10 @@ export class ParadisBotsService extends Disposable {
 	private readonly _onDidRequestStop = this._register(new Emitter<IParadisBotStopRequest>());
 	/** Bot を止めてほしい。そのターミナルを持つウィンドウが閉じる（閉じると結び付けが外れる）。 */
 	readonly onDidRequestStop: Event<IParadisBotStopRequest> = this._onDidRequestStop.event;
+
+	private readonly _onDidRequestReveal = this._register(new Emitter<IParadisBotRevealRequest>());
+	/** 開いている Bot のペインを前に出してほしい（別のウィンドウから開こうとして断った）。 */
+	readonly onDidRequestReveal: Event<IParadisBotRevealRequest> = this._onDidRequestReveal.event;
 
 	private readonly changeScheduler = this._register(new RunOnceScheduler(() => this._onDidChange.fire(this.getSnapshot()), CHANGE_DELAY));
 	/** 後回しの期限が来たら、件数と「あなたの番」を数え直す。 */
@@ -425,6 +429,19 @@ export class ParadisBotsService extends Disposable {
 			if (bot.preserved !== undefined) {
 				// 新しい版が足した設定（権限など）を、この版は分からないまま起動しない
 				return { ok: false, code: 'read_only', message: 'This bot was changed by a newer Para Code, so this version does not start it.' };
+			}
+			// 会話は 1 つの Bot に 1 つだけ（2 つのエージェントが同じ記憶と項目を書かないように）。この口は書き込みの列で
+			// 1 つずつ走るので、2 つのウィンドウから同時に開いても、先に発行した番号が「起動中」になって 2 つ目は断る。
+			// 見回りは別のペインなので、会話があっても断らない
+			if (purpose === 'chat') {
+				const inUse = this.panes.chatInUse(botId, this.now());
+				if (inUse?.state === 'open') {
+					this._onDidRequestReveal.fire({ botId, paneHashes: inUse.tokens.map(paradisBotPaneTokenHash) });
+					return { ok: false, code: 'already_open', message: 'This bot is already open in another window.' };
+				}
+				if (inUse?.state === 'launching') {
+					return { ok: false, code: 'launching', message: 'This bot is starting in another window.' };
+				}
 			}
 			if (this.homes === undefined) {
 				return { ok: false, code: 'unavailable', message: 'Bot home folders are not available.' };
