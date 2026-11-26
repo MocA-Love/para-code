@@ -140,9 +140,9 @@ function completeConfirm(task: ITaskBoardTask, flow: ITaskBoardFlow): NonNullabl
 	return { title: `「${stepOf(task, flow)?.name ?? task.step}」を終わったことにして進めますか`.slice(0, TITLE_LIMIT), body: 'エージェントからの完了の報告を待たずに、次の工程を始めます。', ok: '進める' };
 }
 
-/** 「〜へ戻す」: 差し戻す。戻す先の工程が分からなければ、工程名を入れずに確かめる。 */
-function sendBackConfirm(back: ITaskBoardStep | undefined): NonNullable<ITaskBoardAskAction['confirm']> {
-	return { title: '差し戻す', body: back ? `${back.name}からやり直します`.slice(0, LABEL_LIMIT) : '前の工程からやり直します', ok: '差し戻す' };
+/** 「〜へ戻す」: 差し戻す。 */
+function sendBackConfirm(back: ITaskBoardStep): NonNullable<ITaskBoardAskAction['confirm']> {
+	return { title: '差し戻す', body: `${back.name}からやり直します`.slice(0, LABEL_LIMIT), ok: '差し戻す' };
 }
 
 /**
@@ -175,11 +175,11 @@ export function taskBoardAskOf(task: ITaskBoardTask, flow: ITaskBoardFlow, ledge
 		const preface = taskBoardActivityText(task, flow);
 		const common = { ...base, id, ...(preface ? { preface } : {}), questions: [], askedAt: task.stepSince };
 		if (task.status === 'approval') {
-			// 差し戻す先はエンジンの既定と同じ（工程の onFail、無ければ手前のエージェントの工程）。先が無くても確認は付け、文に工程名を入れない
+			// 差し戻す先はエンジンの既定と同じ（工程の onFail、無ければ手前のエージェントの工程）。先が無ければエンジンが断るので「差し戻す」を出さない（ボードの画面も戻す先が無いと差し戻せない）
 			const index = flow.steps.findIndex(candidate => candidate.id === task.step);
 			const backId = step?.onFail ?? [...flow.steps.slice(0, Math.max(0, index))].reverse().find(candidate => candidate.kind === 'agent')?.id;
 			const back = backId !== undefined ? flow.steps.find(candidate => candidate.id === backId) : undefined;
-			ask = { ...common, kind: 'approval', actions: step?.kind === 'human' ? [{ id: ACTION_APPROVE, label: '承認して次へ', allowText: true }, { id: ACTION_SEND_BACK, label: '差し戻す', allowText: true, confirm: sendBackConfirm(back) }] : [] };
+			ask = { ...common, kind: 'approval', actions: step?.kind === 'human' ? [{ id: ACTION_APPROVE, label: '承認して次へ', allowText: true }, ...(back ? [{ id: ACTION_SEND_BACK, label: '差し戻す', allowText: true, confirm: sendBackConfirm(back) }] : [])] : [] };
 		} else if (task.status === 'failed') {
 			const back = step?.onFail !== undefined ? flow.steps.find(candidate => candidate.id === step.onFail) : undefined;
 			ask = { ...common, kind: 'stalled', actions: step ? [...(back ? [{ id: ACTION_SEND_BACK, label: `${back.name}へ戻す`.slice(0, LABEL_LIMIT), allowText: true, confirm: sendBackConfirm(back) }] : []), { id: ACTION_RETRY, label: 'やり直す' }] : [] };

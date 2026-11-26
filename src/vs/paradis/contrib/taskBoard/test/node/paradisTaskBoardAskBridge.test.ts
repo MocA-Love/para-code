@@ -249,13 +249,13 @@ suite('ParadisTaskBoardAskBridge', () => {
 		assert.deepStrictEqual([result, entry?.state, entry?.paneKey, entry?.windowId], ['200 {"ok":true,"refused":0}', 'waiting', undefined, undefined]);
 	});
 
-	test('sending an approval back asks for confirmation, naming the step it returns to only when there is one', () => {
-		// 手前にエージェントの工程が無く、onFail も無い承認の工程（戻す先が分からない）
+	test('an approval offers sending back, with a confirmation naming the step, only when there is a step to return to', () => {
+		// 手前にエージェントの工程が無く、onFail も無い承認の工程（戻す先が無く、エンジンが断る）
 		const lone: ITaskBoardFlow = { ...TASK_BOARD_DEFAULT_FLOW, steps: [{ id: 'approve', name: '承認', kind: 'human', gate: 'approve' }] };
-		const confirmOf = (flow: ITaskBoardFlow) => taskBoardAskOf(task({ status: 'approval', step: 'approve' }), flow, LEDGER)?.actions.find(action => action.id === 'sendBack')?.confirm;
-		assert.deepStrictEqual([confirmOf(TASK_BOARD_DEFAULT_FLOW), confirmOf(lone)], [
-			{ title: '差し戻す', body: '調査・計画からやり直します', ok: '差し戻す' },
-			{ title: '差し戻す', body: '前の工程からやり直します', ok: '差し戻す' },
+		const actionsOf = (flow: ITaskBoardFlow) => taskBoardAskOf(task({ status: 'approval', step: 'approve' }), flow, LEDGER)?.actions.map(action => ({ id: action.id, confirm: action.confirm }));
+		assert.deepStrictEqual([actionsOf(TASK_BOARD_DEFAULT_FLOW), actionsOf(lone)], [
+			[{ id: 'approve', confirm: undefined }, { id: 'sendBack', confirm: { title: '差し戻す', body: '調査・計画からやり直します', ok: '差し戻す' } }],
+			[{ id: 'approve', confirm: undefined }],
 		]);
 	});
 
