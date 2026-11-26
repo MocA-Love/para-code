@@ -21,12 +21,15 @@ import { ParadisSharedProcessContributions } from '../../../common/paradisProces
 import { paradisRegisterMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { onParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING, paradisAgentIdeActionsAllowed } from '../../agentIde/common/paradisAgentIde.js';
+import { paradisGithubRateLimitPause } from '../../githubMetrics/common/paradisGithubRateLimitPause.js';
 import { paradisSharedHumanAskService } from '../../humanAsk/node/paradisHumanAskChannel.js';
 import { paradisSharedScheduledRunsService } from '../../scheduledRuns/node/paradisScheduledRunsChannel.js';
 import { IParadisTaskBoardBotHost, PARADIS_TASK_BOARD_BOT_HOST_CHANNEL } from '../../taskBoard/common/paradisTaskBoardHost.js';
 import { onParadisTaskBoardStepCompleted } from '../../taskBoard/node/paradisTaskBoardStepEvents.js';
 import { PARADIS_BOTS_CHANNEL, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
 import { ParadisBotBoardToolProvider } from './paradisBotBoardToolProvider.js';
+import { createParadisBotGhRunner, ParadisBotGithubWatcher } from './paradisBotGithubWatcher.js';
+import { ParadisBotGithubToolProvider } from './paradisBotGithubToolProvider.js';
 import { ParadisBotHomes } from './paradisBotHomes.js';
 import { ParadisBotManageToolProvider } from './paradisBotManageToolProvider.js';
 import { ParadisBotToolProvider } from './paradisBotToolProvider.js';
@@ -86,6 +89,24 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 	store.add(onParadisTaskBoardStepCompleted(event => {
 		service.noteBoardStep(event.launchId, event.summary).catch(error => logService.warn('[ParadisBots] could not note a task board step on an item', error));
 	}));
+	// GitHub の見張り（gh のポーリング）。見張る Bot がいなければタイマーを立てず gh も呼ばない。新着で見回りを起こす
+	const githubWatcher = store.add(new ParadisBotGithubWatcher({
+		enabled,
+		bots: () => service.listBots(),
+		pullRequestRefs: () => service.githubPullRequestRefs(),
+		runGh: createParadisBotGhRunner(logService, configurationService, accessor.get(INativeEnvironmentService).args),
+		rateLimitPause: paradisGithubRateLimitPause(),
+		wake: async botId => (await scheduledRuns?.runBotPatrolNow(botId))?.ok === true,
+		publish: view => service.setGithubView(view),
+	}));
+	store.add(service.onDidChange(() => githubWatcher.refresh()));
+	store.add(configurationService.onDidChangeConfiguration(event => {
+		if (event.affectsConfiguration(PARADIS_BOTS_ENABLED_SETTING)) {
+			githubWatcher.refresh();
+		}
+	}));
+	void service.ready.then(() => githubWatcher.refresh());
+	store.add(paradisRegisterMcpToolProvider(new ParadisBotGithubToolProvider(service, enabled, { getNotices: () => githubWatcher.getNotices(), getStatus: () => githubWatcher.getView().status })));
 	// Bot 同士の伝言（宛先とグループの記録はグループの機能が差し込む口から引く）
 	store.add(paradisRegisterMcpToolProvider(new ParadisBotMessageToolProvider(service, enabled)));
 	// 管理の道具の書く側は、IDE 系の書く道具と同じ設定の下（スキーマは画面側でしか登録されないので生の値を読む）

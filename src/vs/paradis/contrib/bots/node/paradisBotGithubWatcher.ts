@@ -17,10 +17,16 @@
 //   再起動するまで読み直さない
 // - トークンは gh が持ち、ここでは扱わない。gh の出力はログに出さない（失敗の文は切ってから様子に出す）
 
+import * as cp from 'child_process';
 import { Disposable, IDisposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { NativeParsedArgs } from '../../../../platform/environment/common/argv.js';
+import { ILogService } from '../../../../platform/log/common/log.js';
+import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
+import { reportParadisShellEnvDiagnosticError } from '../../sentry/common/paradisSentryDiagnostics.js';
 import { paradisIsGithubRateLimitMessage, paradisRecordGithubCall, paradisTruncateGithubErrorMessage } from '../../githubMetrics/common/paradisGithubMetrics.js';
 import { ParadisGithubRateLimitPause } from '../../githubMetrics/common/paradisGithubRateLimitPause.js';
-import { IParadisBot } from '../../bots/common/paradisBots.js';
+import { IParadisBot } from '../common/paradisBots.js';
 import {
 	IParadisBotGithubNotice,
 	IParadisBotGithubPullRequest,
@@ -67,6 +73,35 @@ export interface IParadisBotGithubWatcherOptions {
 }
 
 const CALL_SITE = 'gh api graphql (bot github)';
+const GH_TIMEOUT_MS = 30_000;
+const GH_MAX_BUFFER = 4 * 1024 * 1024;
+
+/**
+ * gh を手元のログインシェルの env で起動する口を作る（「タスク」の画面の gh と同じやり方。あちらの口は contribution の
+ * ファイルの中にあり、読み込むと登録の副作用ごと読むので、同じ形をここに置く）。env は最初に gh を呼ぶときまで解決しない。
+ */
+export function createParadisBotGhRunner(logService: ILogService, configurationService: IConfigurationService, args: NativeParsedArgs): ParadisBotGhRunner {
+	let shellEnv: ParadisCachedShellEnv | undefined;
+	return async ghArgs => {
+		shellEnv ??= new ParadisCachedShellEnv(logService, 'ParadisBotsGithub', createParadisShellEnvResolver(logService, configurationService, args), Date.now, reportParadisShellEnvDiagnosticError);
+		const env = await shellEnv.getEnv();
+		return new Promise<IParadisBotGhOutput>(resolve => {
+			cp.execFile('gh', [...ghArgs], {
+				encoding: 'utf8',
+				timeout: GH_TIMEOUT_MS,
+				maxBuffer: GH_MAX_BUFFER,
+				killSignal: 'SIGKILL',
+				windowsHide: true,
+				env: { ...env, GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1' },
+			}, (err, stdout, stderr) => {
+				const notFound = (err as { code?: unknown } | null)?.code === 'ENOENT';
+				// execFile の timeout で止めたときは killed が立つ（SIGKILL）
+				const timedOut = Boolean(err && (err as { killed?: boolean }).killed);
+				resolve({ stdout: stdout ?? '', stderr: stderr ?? (err?.message ?? ''), failed: Boolean(err), notFound, timedOut });
+			});
+		});
+	};
+}
 
 function defaultTimer(callback: () => void, ms: number): IDisposable {
 	const handle = setTimeout(callback, ms);

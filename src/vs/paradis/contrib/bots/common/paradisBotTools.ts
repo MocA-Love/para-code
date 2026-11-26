@@ -11,6 +11,7 @@
 // どの Bot の項目かは引数で受けない。呼び出したペインがどの Bot かは shared process が持つ表から引く
 // （paradisBotToolProvider.ts）。ここは引数の形を確かめて、台帳の関数へ渡す形に直すだけ。
 
+import { PARADIS_BOT_GITHUB_NEWS_TOOL } from './paradisBotGithub.js';
 import { isPlainRecord } from '../../../common/paradisGuards.js';
 import type { IParadisMcpToolDefinition } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { PARADIS_BOT_SUGGESTION_LIMITS } from './paradisBotSuggestions.js';
@@ -153,7 +154,7 @@ export function paradisBotLaunchApprovalFlags(agent: string): string | undefined
 }
 
 /** 見回りのペインで使える Bot の道具（読む道具と提案だけ。項目は書かない）。 */
-export const PARADIS_BOT_PATROL_TOOLS: ReadonlySet<string> = new Set([PARADIS_BOT_ITEM_LIST_TOOL, PARADIS_BOT_ITEM_SHOW_TOOL, PARADIS_BOT_SUGGEST_TOOL]);
+export const PARADIS_BOT_PATROL_TOOLS: ReadonlySet<string> = new Set([PARADIS_BOT_ITEM_LIST_TOOL, PARADIS_BOT_ITEM_SHOW_TOOL, PARADIS_BOT_SUGGEST_TOOL, PARADIS_BOT_GITHUB_NEWS_TOOL]);
 
 /**
  * 見回り（読むだけ）のペインを起動する引数。確認のプロンプトを出さずに、書く道具を呼び出しの段階で断る形にする

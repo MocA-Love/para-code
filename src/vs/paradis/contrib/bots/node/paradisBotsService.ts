@@ -50,6 +50,7 @@ import {
 	paradisIsBotItemSnoozed,
 } from '../common/paradisBotItems.js';
 import { EMPTY_PARADIS_BOTS_STATE, IParadisBot, IParadisBotCreateInput, IParadisBotPatch, IParadisBotsState, PARADIS_BOTS_VERSION, paradisBotCreate, paradisBotRemove, paradisBotUpdate } from '../common/paradisBots.js';
+import { IParadisBotGithubView, PARADIS_BOT_GITHUB_OFF_VIEW } from '../common/paradisBotGithub.js';
 import { IParadisBotLaunch, IParadisBotRevealRequest, IParadisBotsSnapshot, IParadisBotStopRequest, ParadisBotPanePurpose, ParadisBotsServiceResult, paradisBotSummary } from '../common/paradisBotsApi.js';
 import { IParadisBotItemAddArgs, paradisBotLaunchApprovalFlags, paradisBotPatrolLaunchFlags } from '../common/paradisBotTools.js';
 import { PARADIS_READ_ONLY_MCP_TOOL_NAMES } from '../../agentBrowser/common/paradisMcpReadOnlyTools.js';
@@ -107,6 +108,7 @@ const BOTS_DISABLED = { ok: false, code: 'disabled', message: 'Para Code bots ar
 export class ParadisBotsService extends Disposable {
 
 	private bots: IParadisBotsState = EMPTY_PARADIS_BOTS_STATE;
+	private githubView: IParadisBotGithubView = PARADIS_BOT_GITHUB_OFF_VIEW;
 	private items: IParadisBotItemsState = EMPTY_PARADIS_BOT_ITEMS_STATE;
 	private revision = 0;
 	private loaded = false;
@@ -219,7 +221,25 @@ export class ParadisBotsService extends Disposable {
 			revision: this.revision,
 			readOnly: this.bots.version !== PARADIS_BOTS_VERSION || this.items.version !== PARADIS_BOT_ITEMS_VERSION,
 			bots: this.bots.bots.map(bot => paradisBotSummary(bot, this.items, this.panes.statesOf(bot.id), now, paradisBotOpenSuggestions(this.suggestions, bot.id).length)),
+			...(this.githubView.status.state !== 'off' ? { github: this.githubView } : {}),
 		};
+	}
+
+	/** GitHub の見張りの様子が変わった（見張りだけが呼ぶ）。画面へ知らせる。 */
+	setGithubView(view: IParadisBotGithubView): void {
+		this.githubView = view;
+		this.notify();
+	}
+
+	/** 見張る Bot（GitHub の入り切りがオンで一時停止していない）の開いている項目に結んだ PR（`owner/repo#n`、重なりなし）。 */
+	githubPullRequestRefs(): string[] {
+		const watching = new Set(this.bots.bots.filter(bot => bot.watchGithub === true && !bot.paused).map(bot => bot.id));
+		return [...new Set(paradisBotItemsOf(this.items, { open: true }).filter(item => watching.has(item.botId)).flatMap(item => item.links.filter(link => link.kind === 'pr').map(link => link.ref)))];
+	}
+
+	/** 台帳の Bot（知らない欄を持つものも含む）。 */
+	listBots(): readonly IParadisBot[] {
+		return this.bots.bots;
 	}
 
 	getBot(botId: string): IParadisBot | undefined {
