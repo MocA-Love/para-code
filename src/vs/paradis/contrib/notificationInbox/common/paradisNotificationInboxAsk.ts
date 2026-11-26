@@ -110,7 +110,8 @@ export function paradisInboxAskLayout(entry: AskShape): ParadisInboxAskLayout {
 			: 'dialog';
 	}
 	const needsFullText = entry.kind === 'permission' && (paradisInboxAskDangerLabels(entry.preface).length > 0 || paradisInboxAskDetailIsLong(entry.preface));
-	return needsFullText || entry.actions.some(action => action.allowText) || entry.actions.length > PARADIS_INBOX_ASK_INLINE_OPTION_LIMIT ? 'dialog' : 'inline-actions';
+	// 押す前に確認が要るボタン（ボードの「完了扱いにする」など）は、モーダルで確認を通してから送る
+	return needsFullText || entry.actions.some(action => action.allowText || action.confirm !== undefined) || entry.actions.length > PARADIS_INBOX_ASK_INLINE_OPTION_LIMIT ? 'dialog' : 'inline-actions';
 }
 
 /** モーダルの中で、選択肢を押してすぐ送るか（問いが 1 つで、1 つだけ選ぶもの）。それ以外は選んでから「回答する」。 */

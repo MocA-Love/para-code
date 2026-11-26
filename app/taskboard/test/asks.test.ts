@@ -121,9 +121,9 @@ describe('task board asks for the Para Code ledger', () => {
 			{ id: `${LEDGER}:${ID}:Q`, kind: 'question', from: { title: '#7 Issue 7', detail: '調査・計画' }, preface: undefined, questions: [{ id: 'Q', text: 'Which one?', options: [{ id: '0', label: 'A', detail: 'first' }, { id: '1', label: 'B' }], allowText: true }], actions: [] },
 			{ id: `${LEDGER}:${ID}:Q`, kind: 'permission', from: { title: '#7 Issue 7', detail: '調査・計画' }, preface: 'Bash: npm test', questions: [], actions: [{ id: '0', label: '許可する' }, { id: '1', label: '拒否する' }] },
 			{ id: `${LEDGER}:${ID}:Q`, kind: 'permission', from: { title: '#7 Issue 7', detail: '調査・計画' }, preface: 'Pick', questions: [], actions: [] },
-			{ id: `${LEDGER}:${ID}:stalled:1`, kind: 'stalled', from: { title: '#7 Issue 7', detail: '調査・計画' }, preface: 'board_complete_step の報告がないまま止まりました', questions: [], actions: [{ id: 'nudge', label: '報告を促す' }, { id: 'complete', label: '完了扱いにする' }] },
+			{ id: `${LEDGER}:${ID}:stalled:1`, kind: 'stalled', from: { title: '#7 Issue 7', detail: '調査・計画' }, preface: 'board_complete_step の報告がないまま止まりました', questions: [], actions: [{ id: 'nudge', label: '報告を促す' }, { id: 'complete', label: '完了扱いにする', confirm: { title: '「調査・計画」を終わったことにして進めますか', body: 'エージェントからの完了の報告を待たずに、次の工程を始めます。', ok: '進める' } }] },
 			{ id: `${LEDGER}:${ID}:approval:2`, kind: 'approval', from: { title: '#7 Issue 7', detail: '計画の承認' }, preface: '承認を待っています', questions: [], actions: [{ id: 'approve', label: '承認して次へ', allowText: true }, { id: 'sendBack', label: '差し戻す', allowText: true }] },
-			{ id: `${LEDGER}:${ID}:failed:4`, kind: 'stalled', from: { title: '#7 Issue 7', detail: 'レビュー' }, preface: 'boom', questions: [], actions: [{ id: 'sendBack', label: '実装へ戻す', allowText: true }, { id: 'retry', label: 'やり直す' }] },
+			{ id: `${LEDGER}:${ID}:failed:4`, kind: 'stalled', from: { title: '#7 Issue 7', detail: 'レビュー' }, preface: 'boom', questions: [], actions: [{ id: 'sendBack', label: '実装へ戻す', allowText: true, confirm: { title: '差し戻す', body: '実装からやり直します', ok: '差し戻す' } }, { id: 'retry', label: 'やり直す' }] },
 		]);
 	});
 

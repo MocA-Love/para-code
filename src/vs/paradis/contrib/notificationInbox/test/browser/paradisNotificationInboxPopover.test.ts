@@ -227,6 +227,39 @@ suite('Paradis notification inbox popover', () => {
 		});
 	});
 
+	test('dialog: a button the board confirms asks the same confirmation before it sends', async () => {
+		const container = mainWindow.document.createElement('div');
+		mainWindow.document.body.appendChild(container);
+		store.add({ dispose: () => container.remove() });
+		const stalled = ask('1', {
+			source: 'board', key: 'board:L:t1:stalled:1', kind: 'stalled', preface: 'board_complete_step の報告がないまま止まりました',
+			actions: [{ id: 'nudge', label: '報告を促す' }, { id: 'complete', label: '完了扱いにする', confirm: { title: '#7 を完了にしますか', body: 'PR はマージしません。ボード上で完了として扱い、作業場所を返します。', ok: '完了にする' } }],
+		});
+		const ledger = store.add(humanAsk([stalled]));
+		const dialog = store.add(new ParadisInboxAskDialog({ container, key: stalled.key, onClose: () => { } }, ledger.service));
+		const view = () => ({
+			status: [...container.querySelectorAll('.pniad-status > *')].map(part => part.textContent),
+			foot: [...container.querySelectorAll<HTMLElement>('.pniad-foot .paradis-button')].map(button => button.textContent),
+		});
+		const press = (label: string) => [...container.querySelectorAll<HTMLElement>('.pniad-foot .paradis-button')].find(button => button.textContent === label)?.click();
+		const before = view();
+		// 「完了扱いにする」は送らずに確認を出す。「やめる」でボタンの一覧へ戻る
+		press('完了扱いにする');
+		const confirming = { ...view(), answers: ledger.answers.length };
+		press('やめる');
+		const back = view();
+		press('完了扱いにする');
+		press('完了にする');
+		await new Promise(resolve => setTimeout(resolve, 0));
+		dialog.dispose();
+		assert.deepStrictEqual({ before, confirming, back, answers: ledger.answers }, {
+			before: { status: [], foot: ['やめる', '報告を促す', '完了扱いにする'] },
+			confirming: { status: ['#7 を完了にしますか', 'PR はマージしません。ボード上で完了として扱い、作業場所を返します。'], foot: ['やめる', '完了にする'], answers: 0 },
+			back: { status: [], foot: ['やめる', '報告を促す', '完了扱いにする'] },
+			answers: [{ key: 'board:L:t1:stalled:1', answer: { type: 'action', actionId: 'complete' } }],
+		});
+	});
+
 	test('fits the popover into narrow windows instead of running off the right edge', () => {
 		assert.deepStrictEqual([
 			// 広いウィンドウ: ベルの右端にそろえる・ベルが無ければ右上

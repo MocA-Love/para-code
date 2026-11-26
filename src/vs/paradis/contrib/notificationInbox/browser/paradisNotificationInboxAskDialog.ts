@@ -24,7 +24,7 @@ import { createParadisChip } from '../../../browser/paradisBadges.js';
 import { ParadisButton } from '../../../browser/paradisButton.js';
 import { ParadisInputField } from '../../../browser/paradisInputField.js';
 import { PARADIS_MODAL_BACKDROP_CLASS, PARADIS_MODAL_BODY_CLASS, PARADIS_MODAL_FOOT_CLASS, paradisModalClasses, ParadisModalSize, renderParadisModalHead } from '../../../browser/paradisModal.js';
-import { IParadisHumanAskEntry, IParadisHumanAskService, ParadisHumanAskAnswer } from '../../humanAsk/common/paradisHumanAsk.js';
+import { IParadisHumanAskAction, IParadisHumanAskEntry, IParadisHumanAskService, ParadisHumanAskAnswer } from '../../humanAsk/common/paradisHumanAsk.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import {
 	IParadisInboxAskDraft,
@@ -70,6 +70,8 @@ export class ParadisInboxAskDialog extends Disposable {
 	private sending = false;
 	private refused: string | undefined;
 	private closed = false;
+	/** 確認の途中のボタン（押す前の確認が付いたボタンを押した）。 */
+	private confirming: IParadisHumanAskAction | undefined;
 
 	constructor(
 		private readonly options: IParadisInboxAskDialogOptions,
@@ -279,6 +281,29 @@ export class ParadisInboxAskDialog extends Disposable {
 		if (entry.canSkip) {
 			add('skip', 'ghost', localize('paradis.inbox.ask.skip', "飛ばす"), !delivering, () => void this.send({ type: 'skip' }));
 		}
+		const confirming = this.confirming !== undefined && entry.questions.length === 0 ? entry.actions.find(action => action.id === this.confirming!.id && action.confirm !== undefined) : undefined;
+		if (confirming?.confirm !== undefined) {
+			// 押す前の確認（ボードの画面と同じ文）。「やめる」はボタンの一覧へ戻るだけ
+			if (this.refused === undefined && !delivering) {
+				status.textContent = '';
+				status.classList.add('confirm');
+				dom.append(status, $('strong.pniad-confirm-title')).textContent = confirming.confirm.title;
+				if (confirming.confirm.body) {
+					dom.append(status, $('span.pniad-confirm-body')).textContent = confirming.confirm.body;
+				}
+			}
+			add('cancel', 'secondary', localize('paradis.inbox.ask.cancel', "やめる"), true, () => {
+				this.confirming = undefined;
+				this.renderFoot(entry);
+			});
+			add('confirm', 'primary', confirming.confirm.ok, !delivering, () => void this.send({ type: 'action', actionId: confirming.id }));
+			// 確認を開いた直後は「やめる」に置く（Enter の押し続けで確認まで通さない）
+			if (focusedClass?.startsWith('pniad-foot-action-')) {
+				this.cancelButton?.focus();
+			}
+			return;
+		}
+		this.confirming = undefined;
 		add('cancel', 'secondary', localize('paradis.inbox.ask.cancel', "やめる"), true, () => this.close());
 		if (entry.questions.length > 0) {
 			// 押してすぐ送る問いでも、自分で書いた答えは「回答する」で送る
@@ -288,7 +313,14 @@ export class ParadisInboxAskDialog extends Disposable {
 		} else {
 			entry.actions.forEach((action, index) => {
 				// 主のボタンは 1 つだけ。拒否にあたるもの（2 つ目以降）は副のボタン
-				add(`action-${index}`, index === 0 ? 'primary' : 'secondary', action.label, !delivering, () => void this.send({ type: 'action', actionId: action.id }));
+				add(`action-${index}`, index === 0 ? 'primary' : 'secondary', action.label, !delivering, () => {
+					if (action.confirm !== undefined) {
+						this.confirming = action;
+						this.renderFoot(entry);
+						return;
+					}
+					void this.send({ type: 'action', actionId: action.id });
+				});
 			});
 		}
 	}

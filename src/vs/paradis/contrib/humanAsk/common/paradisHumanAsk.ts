@@ -99,6 +99,19 @@ export interface IParadisHumanAskAction {
 	readonly label: string;
 	/** 押したときにひとこと添えられるか（差し戻しの理由など）。 */
 	readonly allowText?: boolean;
+	/**
+	 * 押す前に確かめる文（持ち主の画面がそのボタンで出す確認と同じ文）。付いたボタンは行の中で 1 押しでは送らず、
+	 * モーダルでこの確認を通してから送る。
+	 */
+	readonly confirm?: IParadisHumanAskConfirm;
+}
+
+/** ボタンを押す前の確認。 */
+export interface IParadisHumanAskConfirm {
+	readonly title: string;
+	readonly body?: string;
+	/** 確認のボタンの名前。 */
+	readonly ok: string;
 }
 
 /** だれから（1 行）。Bot 名と項目の番号、ボードのタスクの番号と工程、スペース・worktree・エージェント名。 */
@@ -409,6 +422,18 @@ function sanitizeQuestions(value: unknown, optionLimit: number): IParadisHumanAs
 	return questions;
 }
 
+/** 確認の文を検める。形が違えば false（その 1 件ごと断る。確認を落として 1 押しで送れるようにはしない）。 */
+function sanitizeConfirm(value: unknown): IParadisHumanAskConfirm | false {
+	const input = record(value);
+	const title = shown(input?.title, TITLE_LIMIT);
+	const ok = shown(input?.ok, TITLE_LIMIT);
+	const body = input?.body === undefined ? undefined : shown(input.body, LABEL_LIMIT);
+	if (title === undefined || ok === undefined || (input?.body !== undefined && body === undefined)) {
+		return false;
+	}
+	return { title, ...(body !== undefined ? { body } : {}), ok };
+}
+
 function sanitizeActions(value: unknown): IParadisHumanAskAction[] | undefined {
 	if (value === undefined) {
 		return [];
@@ -425,8 +450,12 @@ function sanitizeActions(value: unknown): IParadisHumanAskAction[] | undefined {
 		if (input === undefined || id === undefined || label === undefined || ids.has(id)) {
 			return undefined;
 		}
+		const confirm = input.confirm === undefined ? undefined : sanitizeConfirm(input.confirm);
+		if (confirm === false) {
+			return undefined;
+		}
 		ids.add(id);
-		actions.push({ id, label, ...(input.allowText === true ? { allowText: true } : {}) });
+		actions.push({ id, label, ...(input.allowText === true ? { allowText: true } : {}), ...(confirm ? { confirm } : {}) });
 	}
 	return actions;
 }
