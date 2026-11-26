@@ -300,21 +300,52 @@ export function paradisPickSimctlDisplay(message: string, shown?: { readonly wid
 const DUO_COVER_LONG_SIDE = 2034;
 const DUO_INNER_LONG_SIDE = 2853;
 
-/**
- * 映している画面（外 cover / 内 inner）を、映像の大きさから決める。大きさが Duo のどちらでもなければ、開き具合
- * （90° より閉じていれば外）で推定する。折りたたみでなければ undefined。
- * iOS 27.2 では閉じても内のまま映ることがある（Mac で実測）ので、開き具合だけでは決めない。
- */
-export function paradisSimulatorDuoPanel(config: { readonly width: number; readonly height: number; readonly hingeDegrees?: number }): 'cover' | 'inner' | undefined {
-	if (config.hingeDegrees === undefined) {
-		return undefined;
-	}
+function duoPanelBySize(config: { readonly width: number; readonly height: number }): 'cover' | 'inner' | undefined {
 	const long = Math.max(config.width, config.height);
 	if (Math.abs(long - DUO_INNER_LONG_SIDE) <= 2) {
 		return 'inner';
 	}
 	if (Math.abs(long - DUO_COVER_LONG_SIDE) <= 2) {
 		return 'cover';
+	}
+	return undefined;
+}
+
+/** simctl の端末の型が iPhone Duo か（`com.apple.CoreSimulator.SimDeviceType.iPhone-Duo`。Xcode 27.2 で実測）。 */
+const DUO_DEVICE_TYPE = /\.SimDeviceType\.iPhone-Duo(?:-|$)/;
+
+/**
+ * 折りたたみの端末（iPhone Duo）か。開閉のバーと mobile_fold はどちらもここで見る。
+ *
+ * 開き具合（`hingeDegrees`）の有無では決めない: Xcode 27.2 では serve-sim が開き具合を読めず、1 度開閉するまで
+ * 入らない。材料は次の順:
+ *  1. 開き具合が入っていれば折りたたみ（serve-sim が折りたたみの端末にだけ入れる）
+ *  2. simctl の端末の型が分かれば、それが iPhone Duo かどうか（映像の大きさは見ない）
+ *  3. 型が分からないときだけ、映像の長い辺が Duo の外か内の画面の画素数か
+ */
+export function paradisSimulatorIsFoldable(
+	device: { readonly deviceTypeIdentifier?: string } | undefined,
+	config: { readonly width: number; readonly height: number; readonly hingeDegrees?: number } | undefined,
+): boolean {
+	if (config?.hingeDegrees !== undefined) {
+		return true;
+	}
+	if (device?.deviceTypeIdentifier !== undefined) {
+		return DUO_DEVICE_TYPE.test(device.deviceTypeIdentifier);
+	}
+	return !!config && duoPanelBySize(config) !== undefined;
+}
+
+/**
+ * 映している画面（外 cover / 内 inner）を、映像の大きさから決める。大きさが Duo のどちらでもなければ、開き具合
+ * （90° より閉じていれば外）で推定する。大きさでも開き具合でも決まらなければ undefined。
+ * iOS 27.2 では閉じても内のまま映ることがある（Mac で実測）ので、開き具合だけでは決めない。
+ * 折りたたみの端末かどうかは見ない（呼ぶ側が先に `paradisSimulatorIsFoldable` で確かめる）。
+ */
+export function paradisSimulatorDuoPanel(config: { readonly width: number; readonly height: number; readonly hingeDegrees?: number }): 'cover' | 'inner' | undefined {
+	const bySize = duoPanelBySize(config);
+	if (bySize || config.hingeDegrees === undefined) {
+		return bySize;
 	}
 	return config.hingeDegrees < 90 ? 'cover' : 'inner';
 }

@@ -306,9 +306,12 @@ function deviceState(value: unknown): ParadisSimulatorDeviceState {
 	}
 }
 
-/** `com.apple.CoreSimulator.SimRuntime.iOS-27-1` → `iOS 27.1`。 */
+/**
+ * `com.apple.CoreSimulator.SimRuntime.iOS-27-1` → `iOS 27.1`。版の後ろに端末の名前が付くもの
+ * （`…SimRuntime.iOS-27-2-iPhone19-4`。iPhone Duo の runtime）は、版までを読む。
+ */
 export function paradisSimulatorRuntimeName(runtimeKey: string): string {
-	const match = /SimRuntime\.(?<os>[A-Za-z]+)-(?<version>[0-9-]+)$/.exec(runtimeKey);
+	const match = /SimRuntime\.(?<os>[A-Za-z]+)-(?<version>[0-9]+(?:-[0-9]+)*)(?:-[A-Za-z][A-Za-z0-9-]*)?$/.exec(runtimeKey);
 	if (!match?.groups) {
 		return runtimeKey;
 	}
@@ -338,7 +341,13 @@ export function paradisParseSimctlDevices(stdout: string): IParadisSimulatorDevi
 			if (record.isAvailable === false || typeof record.udid !== 'string' || typeof record.name !== 'string') {
 				continue;
 			}
-			devices.push({ udid: record.udid, name: record.name, runtime: paradisSimulatorRuntimeName(runtimeKey), state: deviceState(record.state) });
+			devices.push({
+				udid: record.udid,
+				name: record.name,
+				runtime: paradisSimulatorRuntimeName(runtimeKey),
+				state: deviceState(record.state),
+				...(typeof record.deviceTypeIdentifier === 'string' ? { deviceTypeIdentifier: record.deviceTypeIdentifier } : {}),
+			});
 		}
 	}
 	return devices.sort((a, b) => Number(b.state === 'Booted') - Number(a.state === 'Booted') || a.name.localeCompare(b.name) || a.runtime.localeCompare(b.runtime));

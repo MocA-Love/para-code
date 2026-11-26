@@ -14,6 +14,9 @@
 //  - 開閉は Device Hub が起動していないと効かない（Mac で実測）。起動していなければその旨と「Device Hub を起動」の
 //    ボタンを出す（押したときだけ裏で起動する）
 //  - iOS 27.2 などでは、角度が変わっても外と内の画面が切り替わらず内のまま映る（Mac で実測）。そのときはその旨を出す
+//  - 開き具合が分からない間（Xcode 27.2 では、serve-sim が 1 度開閉するまで開き具合を読めない）は「開き具合は不明」と
+//    出し、姿勢の組だけを出す（どれも選んでいない状態）。角度のスライダーは、今の値が無いので出さない。姿勢を押して
+//    開閉が通ると、serve-sim が送った値を覚えて返すので、いつもの表示になる
 // 状態の読み取りと開閉の送り先はエディタのペイン（paradisSimulatorEditor.ts）が持ち、ここは表示とボタンだけ。
 
 import * as dom from '../../../../base/browser/dom.js';
@@ -28,8 +31,10 @@ const $ = dom.$;
 
 /** バーに出す様子。 */
 export interface IParadisSimulatorFoldState {
-	readonly hingeDegrees: number;
-	readonly activeDisplay: 'cover' | 'inner';
+	/** 開き具合（度）。分からなければ undefined。 */
+	readonly hingeDegrees: number | undefined;
+	/** 映している画面。映像の大きさでも開き具合でも決まらなければ undefined。 */
+	readonly activeDisplay: 'cover' | 'inner' | undefined;
 	/** Device Hub が起動しているか（分からなければ undefined）。 */
 	readonly deviceHubRunning: boolean | undefined;
 	/** 開閉を送っている最中か。 */
@@ -38,8 +43,11 @@ export interface IParadisSimulatorFoldState {
 	readonly error?: string;
 }
 
-/** 開き具合から見込まれる画面と、実際に映っている画面が食い違うか（閉じたのに内のまま、など）。 */
+/** 開き具合から見込まれる画面と、実際に映っている画面が食い違うか（閉じたのに内のまま、など）。どちらかが分からなければ false。 */
 export function paradisSimulatorPanelMismatch(state: Pick<IParadisSimulatorFoldState, 'hingeDegrees' | 'activeDisplay'>): boolean {
+	if (state.hingeDegrees === undefined || state.activeDisplay === undefined) {
+		return false;
+	}
 	const expected = state.hingeDegrees < 90 ? 'cover' : 'inner';
 	return expected !== state.activeDisplay;
 }
@@ -141,30 +149,37 @@ export class ParadisSimulatorFoldBar extends Disposable {
 		if (!state) {
 			return;
 		}
-		const showSlider = this._sliderPinned || this._optionHeld;
+		const hinge = state.hingeDegrees;
+		// 開き具合が分からない間は、姿勢の組だけを出す（スライダーは今の値が無いので出さない）
+		const showSlider = hinge !== undefined && (this._sliderPinned || this._optionHeld);
 		this._poses.element.style.display = showSlider ? 'none' : '';
 		this._slider.style.display = showSlider ? '' : 'none';
 		this._sliderLabel.style.display = showSlider ? '' : 'none';
-		if (dom.getActiveElement() !== this._slider) {
-			this._slider.value = String(Math.round(state.hingeDegrees));
-			this._sliderLabel.textContent = `${Math.round(state.hingeDegrees)}°`;
+		this._angleButton.element.style.display = hinge === undefined ? 'none' : '';
+		if (hinge !== undefined && dom.getActiveElement() !== this._slider) {
+			this._slider.value = String(Math.round(hinge));
+			this._sliderLabel.textContent = `${Math.round(hinge)}°`;
 		}
-		// 今の開き具合に合う姿勢を選んでいる状態にする（どれにも合わない角度ならどれも選ばない）
-		this._poses.value = PARADIS_SIMULATOR_POSES.find(pose => Math.abs(state.hingeDegrees - pose.hingeDegrees) < 1)?.id;
+		// 今の開き具合に合う姿勢を選んでいる状態にする（どれにも合わない角度・分からないときはどれも選ばない）
+		this._poses.value = hinge === undefined ? undefined : PARADIS_SIMULATOR_POSES.find(pose => Math.abs(hinge - pose.hingeDegrees) < 1)?.id;
 		for (const { id } of PARADIS_SIMULATOR_POSES) {
 			this._poses.setItemEnabled(id, !state.busy);
 		}
 		this._slider.disabled = state.busy;
+		const shown = state.activeDisplay === 'cover'
+			? localize('paradis.simulator.fold.cover', "外の画面")
+			: state.activeDisplay === 'inner' ? localize('paradis.simulator.fold.inner', "内の画面") : undefined;
+		const angle = hinge === undefined ? localize('paradis.simulator.fold.unknown', "開き具合は不明") : `${Math.round(hinge)}°`;
 		this._status.textContent = state.busy
 			? localize('paradis.simulator.fold.busy', "開閉しています…")
-			: state.activeDisplay === 'cover'
-				? localize('paradis.simulator.fold.coverShown', "{0}° · 外の画面", Math.round(state.hingeDegrees))
-				: localize('paradis.simulator.fold.innerShown', "{0}° · 内の画面", Math.round(state.hingeDegrees));
+			: shown ? localize('paradis.simulator.fold.angleAndScreen', "{0} · {1}", angle, shown) : angle;
 
 		const note = state.error
 			?? (paradisSimulatorPanelMismatch(state)
-				? localize('paradis.simulator.fold.noSwitch', "開き具合は変わりましたが、このシミュレータは{0}のまま映っています（iOS 27.2 では外と内が切り替わりません）。タップの位置は映っている画面に合わせます。", state.activeDisplay === 'inner' ? localize('paradis.simulator.fold.inner', "内の画面") : localize('paradis.simulator.fold.cover', "外の画面"))
-				: undefined);
+				? localize('paradis.simulator.fold.noSwitch', "開き具合は変わりましたが、このシミュレータは{0}のまま映っています（iOS 27.2 では外と内が切り替わりません）。タップの位置は映っている画面に合わせます。", shown)
+				: hinge === undefined
+					? localize('paradis.simulator.fold.unknownNote', "この Xcode では今の開き具合を読み取れません。姿勢を選ぶと、その姿勢に動かして表示を合わせます。")
+					: undefined);
 		this._note.style.display = note ? '' : 'none';
 		this._note.textContent = note ?? '';
 		this._deviceHub.style.display = state.deviceHubRunning === false ? '' : 'none';
