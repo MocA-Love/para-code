@@ -32,7 +32,7 @@ import { defaultButtonStyles } from '../../../../platform/theme/browser/defaultS
 import { IBrowserViewModel } from '../../../../workbench/contrib/browserView/common/browserView.js';
 import { appendParadisAgentLogoSvg } from '../../limitsMonitor/electron-browser/paradisLimitsLogos.js';
 import { IParadisBrowserExtensionsService } from '../../browserExtensions/electron-browser/paradisBrowserExtensionsService.js';
-import { IParadisMobileAttachment } from '../../simulator/common/paradisMobileCanvas.js';
+import { IParadisMobileAttachment, IParadisMobileDevice, paradisMobileAttachmentIsFor } from '../../simulator/common/paradisMobileCanvas.js';
 import { IParadisMobileCanvasModel } from '../../simulator/electron-browser/paradisMobileCanvasModel.js';
 import { IParadisTerminalScopeService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { setParadisHoveredPaneInstanceId } from '../browser/paradisPaneIndicator.js';
@@ -1178,7 +1178,8 @@ export class ParadisBindingDialog extends Disposable {
 		for (const device of snapshot.devices) {
 			// 1台の端末を複数のペインへ同時にアタッチできる（1ペイン1台だけを守る）ので、
 			// ここは配列で受ける。
-			const attached = snapshot.attachments.filter(entry => entry.deviceId === device.id);
+			// 起動前の AVD で割り当てた Android は、起動すると id が替わる（同じ端末として引く）
+			const attached = snapshot.attachments.filter(entry => paradisMobileAttachmentIsFor(snapshot.devices, entry.deviceId, device.id));
 
 			const row = dom.append(list, $('.pbd-pane-row.paradis-focus-subtle'));
 			const main = dom.append(row, $('.pbd-row-main'));
@@ -1215,7 +1216,7 @@ export class ParadisBindingDialog extends Disposable {
 			}));
 
 			if (this._attachTargetDeviceId === device.id) {
-				this._renderAttachTargets(list, device.id, panes, snapshot.attachments);
+				this._renderAttachTargets(list, device.id, panes, snapshot.attachments, snapshot.devices);
 			}
 		}
 	}
@@ -1235,6 +1236,7 @@ export class ParadisBindingDialog extends Disposable {
 		deviceId: string,
 		panes: readonly IParadisPaneDescriptor[],
 		attachments: readonly IParadisMobileAttachment[],
+		devices: readonly IParadisMobileDevice[],
 	): void {
 		if (panes.length === 0) {
 			dom.append(list, $('.pbd-empty')).textContent = STR_DEVICES_NO_PANE;
@@ -1243,7 +1245,7 @@ export class ParadisBindingDialog extends Disposable {
 		dom.append(list, $('.pbd-scope-note')).textContent = STR_DEVICES_PICK_PANE;
 		for (const pane of panes) {
 			const current = attachments.find(entry => entry.paneToken === pane.token);
-			const holdsThisDevice = current?.deviceId === deviceId;
+			const holdsThisDevice = current !== undefined && paradisMobileAttachmentIsFor(devices, current.deviceId, deviceId);
 
 			const row = dom.append(list, $('.pbd-pane-row.paradis-focus-subtle'));
 			const main = dom.append(row, $('.pbd-row-main'));

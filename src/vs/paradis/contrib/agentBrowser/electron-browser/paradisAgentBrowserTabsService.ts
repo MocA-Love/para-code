@@ -179,7 +179,8 @@ export type ParadisAgentApprovalChoice = 'approve' | 'alternative';
 
 /**
  * 承認の結果。承認以外は次のとおり:
- *  - denied: ユーザーが拒否した（拒否・Esc・閉じる）。しばらくは同じペインからの求めを自動で断る
+ *  - denied: ユーザーが拒否した（拒否・Esc・閉じる）。しばらくは同じペインからの求めを自動で断る。
+ *    ダイアログが画面に出る前に閉じたものは拒否に数えず、聞き直す（続けば unanswered）
  *  - cancelled: 呼び出し側が取り消した（締め切り・MCP の取り消し）
  *  - unanswered: 表示直後やショートカットでの承認が続き、確かな答えが得られなかった。拒否としては数えない
  *  （続けて出したダイアログへの連続クリックで起きるので、後の求めを黙って断る理由にしない）
@@ -1240,17 +1241,23 @@ export class ParadisAgentBrowserTabsService extends Disposable implements IParad
 					return 'cancelled';
 				}
 				if (result === undefined || result === 'deny') {
-					return 'denied';
-				}
-				const elapsed = Date.now() - (shownAt ?? calledAt);
-				if (!shortcutUsed && elapsed >= PARADIS_AGENT_APPROVAL_GUARD_MS) {
-					return result;
+					if (shownAt !== undefined) {
+						return 'denied';
+					}
+					// 画面に一度も出ないまま閉じた（出る前に、ほかへ打っていた Enter・Esc が当たったなど）。利用者は
+					// 確認を見ていないので、拒否としては扱わない（3 分の自動の断りも始めない）。下で聞き直す
+					notice = localize('paradis.agentTabs.approval.closedBeforeShown', "前の確認は、画面に出る前に閉じられました。もう一度確認しています。ボタンをクリックして答えてください。");
+				} else {
+					const elapsed = Date.now() - (shownAt ?? calledAt);
+					if (!shortcutUsed && elapsed >= PARADIS_AGENT_APPROVAL_GUARD_MS) {
+						return result;
+					}
+					// 表示直後の承認や ⌘D での承認は、ほかの場所へ打っていたキーが当たった可能性が高い。もう一度聞く。
+					notice = localize('paradis.agentTabs.approval.tooFast', "表示された直後、またはキーボードのショートカットで押されたため、もう一度確認しています。ボタンをクリックして答えてください。");
 				}
 			} finally {
 				watch.dispose();
 			}
-			// 表示直後の承認や ⌘D での承認は、ほかの場所へ打っていたキーが当たった可能性が高い。もう一度聞く。
-			notice = localize('paradis.agentTabs.approval.tooFast', "表示された直後、またはキーボードのショートカットで押されたため、もう一度確認しています。ボタンをクリックして答えてください。");
 			detail = [notice, ...request.detail];
 		}
 		return 'unanswered';

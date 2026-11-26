@@ -109,7 +109,7 @@ const REQUEST_TIMEOUT_MESSAGE = 'The user did not answer in time. Ask the user i
 const REQUEST_CANCELLED_MESSAGE = 'The request was cancelled before the user answered.';
 const INSTALL_DENIED_MESSAGE = 'The user declined to install this app. Do not try again straight away: Para Code turns down installs from this pane onto this device for a few minutes.';
 const INSTALL_RECENTLY_DENIED_MESSAGE = 'The user declined an install from this pane onto this device a short while ago, so Para Code turned this one down without asking. Wait a few minutes, or ask the user in the conversation.';
-const REQUEST_UNANSWERED_MESSAGE = 'Para Code could not get a clear answer: the dialog was answered right after it appeared or with a keyboard shortcut. Ask the user to click a button in the dialog, then ask again.';
+const REQUEST_UNANSWERED_MESSAGE = 'Para Code could not get a clear answer: the dialog was closed before it appeared on screen, answered right after it appeared, or answered with a keyboard shortcut. This does not count as a refusal. Ask the user to click a button in the dialog, then ask again.';
 
 /** 回転の後、画面（スクショ）が新しい向きに変わるのを待つ回数と間隔（ホストは画面が回る前に応答する）。 */
 /**
@@ -243,6 +243,11 @@ interface IResolvedDevice {
 	readonly platform: ParadisMobilePlatform;
 	/** 形を確かめた UDID / シリアル。 */
 	readonly nativeId: string;
+	/**
+	 * 台帳に残っている id。起動前の AVD で割り当てた Android は、起動すると一覧の id（`device.id`）が serial に
+	 * 替わるので、台帳と比べるとき・覚えた画面の大きさを引くときは、こちらを使う。
+	 */
+	readonly attachedId: string;
 }
 
 export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvider {
@@ -600,7 +605,7 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 				return refusal(answer?.outcome, INSTALL_DENIED_MESSAGE, INSTALL_RECENTLY_DENIED_MESSAGE);
 			}
 			// 承認を待つ間に割り当てが変わっていたら入れない（利用者が見た端末と違う端末へ入れないように）
-			if (this._ledger.getAttachment(paneToken)?.deviceId !== resolved.device.id) {
+			if (this._ledger.getAttachment(paneToken)?.deviceId !== resolved.attachedId) {
 				return errorResult('The device attached to this pane changed while the user was answering, so nothing was installed.');
 			}
 			await this._commands.install(resolved.platform, resolved.nativeId, staged, signal);
@@ -622,7 +627,7 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 		const appId = requireAppId(resolved.platform, args.appId);
 		await this._commands.launch(resolved.platform, resolved.nativeId, appId, args.relaunch === true, signal);
 		// 前面のアプリが変わると画面の向きも変わりうるので、覚えた大きさは捨てる（次のジェスチャーで取り直す）
-		this._screenSizes.delete(resolved.device.id);
+		this._screenSizes.delete(resolved.attachedId);
 		return textResult(`Launched ${appId} on ${resolved.device.name}.`);
 	}
 
@@ -677,7 +682,7 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 		if (!paradisIsValidNativeDeviceId(platform, device.udid)) {
 			throw new Error(`Para Code could not read the ${platform === 'ios' ? 'UDID' : 'serial'} of ${device.name}.`);
 		}
-		return { device, platform, nativeId: device.udid };
+		return { device, platform, nativeId: device.udid, attachedId: attachment.deviceId };
 	}
 }
 

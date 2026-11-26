@@ -50,6 +50,15 @@ export function paradisFindMobileDevice<T extends { readonly id: string; readonl
 	return devices.find(candidate => candidate.id === deviceId) ?? devices.find(candidate => candidate.avdId !== undefined && candidate.avdId === deviceId);
 }
 
+/**
+ * 割り当ての `deviceId`（{@link attachedDeviceId}）が、一覧のその端末（{@link deviceId}）を指すか。
+ * 起動前の AVD で割り当てた Android は、起動すると一覧の id が替わるので、id の一致だけでは見ない
+ * （共有ダイアログとタブの名前が、起動後の端末を「未割り当て」と出さないように）。
+ */
+export function paradisMobileAttachmentIsFor(devices: readonly { readonly id: string; readonly avdId?: string }[], attachedDeviceId: string, deviceId: string): boolean {
+	return attachedDeviceId === deviceId || paradisFindMobileDevice(devices, attachedDeviceId)?.id === deviceId;
+}
+
 /** 端末画面の寸法。ピクセル空間とポイント空間の対応を表す。 */
 export interface IParadisMobileDisplay {
 	readonly pixelWidth: number;
