@@ -451,6 +451,18 @@ suite('Paradis bot items', () => {
 		});
 	});
 
+	test('読み込み: 知っている状態でも新しい版が足した欄のある項目は、その項目だけ読み取り専用にして欄を残す', () => {
+		const base = JSON.parse(JSON.stringify(paradisBotItemsToStored(one())));
+		const extended = { ...base.items[0], priority: 'high' };
+		const state = paradisParseBotItemsState({ version: 1, nextNumber: 2, items: [extended] });
+		assert.ok(state);
+		assert.deepStrictEqual({
+			locked: state.items.map(paradisIsBotItemLocked),
+			botWrite: code(paradisBotItemUpdate(state, 'b1', 1, { comment: 'x' }, 4000)),
+			roundTrip: JSON.parse(JSON.stringify(paradisBotItemsToStored(state))).items[0],
+		}, { locked: [true], botWrite: 'read_only', roundTrip: extended });
+	});
+
 	test('読み込み: 新しい版の台帳は中身を読めるが、どの書き込みも断る', () => {
 		const stored = JSON.parse(JSON.stringify(paradisBotItemsToStored(one())));
 		const state = paradisParseBotItemsState({ ...stored, version: 2 });
