@@ -45,9 +45,18 @@ suite('paradisAgentCliInstall', () => {
 
 	test('the skill is a short entry that carries the promises of the MCP instructions, and both files carry the mark', () => {
 		assert.deepStrictEqual({
-			short: Buffer.byteLength(PARADIS_AGENT_CLI_SKILL_CONTENT) < 3500,
+			// 日本語は 1 文字 3 バイトなので、英語のとき（3500）より上限を上げている
+			short: Buffer.byteLength(PARADIS_AGENT_CLI_SKILL_CONTENT) < 6000,
 			frontmatter: PARADIS_AGENT_CLI_SKILL_CONTENT.startsWith('---\nname: para-cli\ndescription: >-\n'),
-			promises: [PARADIS_CURSOR_LABEL_INSTRUCTION, PARADIS_SHARED_PAGE_ACTION_INSTRUCTION, 'write_site_note', 'para help browser', 'Never print the environment', 'Do not install anything'].filter(text => !PARADIS_AGENT_CLI_SKILL_CONTENT.includes(text)),
+			// 本文は日本語。MCP の説明文と同じ約束（名札、共有ページの送信・削除は頼まれたときだけ）を日本語で持つ
+			promises: ['`set_cursor_label`', '利用者が共有したページでは、送信・購入・送付・削除は、利用者が頼んだときだけ行います。', '`write_site_note`', '`para help browser`', '環境変数を表示しません', '何もインストールせず'].filter(text => !PARADIS_AGENT_CLI_SKILL_CONTENT.includes(text)),
+			// description は日本語と英語の依頼の両方の語を持ち、1 行ずつが文の切れ目で終わる（`>-` は継ぎ目に空白を入れる）
+			description: (() => {
+				const lines = PARADIS_AGENT_CLI_SKILL_CONTENT.split('\n---\n')[0].split('\n').slice(3);
+				return { words: ['スクショ', 'ブラウザで開いて', 'take a screenshot', '`para`'].filter(word => !lines.join('').includes(word)), brokenAtSentenceEnd: lines.every(line => line.startsWith('  ') && line.endsWith('。')) };
+			})(),
+			// 道具の説明と共有する定数は英語のまま（訳すと MCP の説明文と `para help` まで変わる）
+			sharedConstantsStayEnglish: [PARADIS_CURSOR_LABEL_INSTRUCTION, PARADIS_SHARED_PAGE_ACTION_INSTRUCTION].map(text => /^[\x20-\x7E]*("注文入力")?[\x20-\x7E]*$/.test(text)),
 			// 1 段目では MCP も並んでいる。「MCP は無い」とは書かない
 			mcp: /no MCP|only way/i.test(PARADIS_AGENT_CLI_SKILL_CONTENT),
 			marks: [PARADIS_AGENT_CLI_SKILL_CONTENT, PARADIS_AGENT_CLI_CODEX_RULES_CONTENT].map(content => content.includes(PARADIS_AGENT_CLI_MANAGED_MARK)),
@@ -57,10 +66,37 @@ suite('paradisAgentCliInstall', () => {
 			short: true,
 			frontmatter: true,
 			promises: [],
+			description: { words: [], brokenAtSentenceEnd: true },
+			sharedConstantsStayEnglish: [true, true],
 			mcp: false,
 			marks: [true, true],
 			rule: ['prefix_rule(pattern=["para"], decision="allow")'],
 			enabled: [true, false, false],
+		});
+	});
+
+	test('an English skill placed by an earlier version is replaced while the setting is on, and left alone once the user removed the mark', async () => {
+		// paracode-195 までが置いた英語の手引き（頭と印の行だけ。印の文字列は今と同じ）
+		const english = ['---', 'name: para-cli', 'description: >-', '  Use the tools of Para Code, the editor this terminal runs in, with the `para` shell command:', '---', '', '# para', '', `<!-- ${PARADIS_AGENT_CLI_MANAGED_MARK} (setting "paradis.agentCli.enabled"). It rewrites this file and removes it when the setting is turned off. To keep your own version, delete this line. -->`, ''].join('\n');
+		const kept = english.replace(PARADIS_AGENT_CLI_MANAGED_MARK, 'my own copy');
+		fs.mkdirSync(join(home, '.claude', 'skills', 'para-cli'), { recursive: true });
+		fs.writeFileSync(join(home, ...claudeSkill), english);
+		const first = await paradisSyncAgentCliFiles(await files(), true);
+		const replaced = read(...claudeSkill) === PARADIS_AGENT_CLI_SKILL_CONTENT;
+		fs.writeFileSync(join(home, ...claudeSkill), kept);
+		const second = await paradisSyncAgentCliFiles(await files(), true);
+		assert.deepStrictEqual({
+			actions: [paradisAgentCliFileAction(english, PARADIS_AGENT_CLI_SKILL_CONTENT), paradisAgentCliFileAction(kept, PARADIS_AGENT_CLI_SKILL_CONTENT)],
+			first: first.map(result => `${result.kind} ${result.outcome}`),
+			replaced,
+			second: second.map(result => `${result.kind} ${result.outcome}`),
+			keptAsIs: read(...claudeSkill) === kept,
+		}, {
+			actions: ['write', 'keep'],
+			first: ['claude-skill written'],
+			replaced: true,
+			second: ['claude-skill skipped'],
+			keptAsIs: true,
 		});
 	});
 
