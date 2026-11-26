@@ -45,6 +45,8 @@ suite('Paradis notification inbox: your turn cards', () => {
 			paradisInboxAskLayout(entry({ questions: [{ ...question('a', 2), options: [{ id: '0', label: '受信箱のカードとボードの既定のフローを確かめてから出す' }, { id: '1', label: '出す' }] }] })),
 			// 許可: 短くて危険の札が無ければ行の中
 			paradisInboxAskLayout(entry({ kind: 'permission', preface: 'Bash: npm run typecheck-client', actions: ALLOW_DENY, inlineAllowed: true })),
+			// 全角の多いコマンドは、全角を半角 2 文字分と見積もる（200 字でも 6 行に収まらない）
+			paradisInboxAskLayout(entry({ kind: 'permission', preface: `Bash: echo ${'あ'.repeat(200)}`, actions: ALLOW_DENY, inlineAllowed: true })),
 			// 持ち主が許可リストに入れていない許可（形が分からない・書き込む道具）は、短くてもモーダル
 			paradisInboxAskLayout(entry({ kind: 'permission', preface: 'Bash: npm run typecheck-client', actions: ALLOW_DENY })),
 			// 危険な操作を含む・中身が 6 行に収まらない許可は、行の中に「許可」を出さない
@@ -56,7 +58,7 @@ suite('Paradis notification inbox: your turn cards', () => {
 			paradisInboxAskLayout(entry({ kind: 'permission', preface: 'MCP: db.run' })),
 			// 待ちでなくなった
 			paradisInboxAskLayout(entry({ state: 'answered', questions: [question('a', 2)] })),
-		], ['inline-options', 'inline-options', 'dialog', 'dialog', 'dialog', 'dialog', 'dialog', 'inline-actions', 'dialog', 'dialog', 'dialog', 'dialog', 'unanswerable', 'settled']);
+		], ['inline-options', 'inline-options', 'dialog', 'dialog', 'dialog', 'dialog', 'dialog', 'inline-actions', 'dialog', 'dialog', 'dialog', 'dialog', 'dialog', 'unanswerable', 'settled']);
 	});
 
 	test('one single-choice question sends on pick; anything else is chosen first and then sent', () => {
