@@ -35,6 +35,15 @@ export function paradisIsHarnessNotificationPrompt(prompt: unknown): boolean {
 	return typeof prompt === 'string' && prompt.trimStart().startsWith('<task-notification>');
 }
 
+/**
+ * 利用者が始めた新しいターンの印（開始時刻）。完了の通知を 1 ターン 1 回にする鍵なので、前のターンと同じ値に
+ * しない: 同じミリ秒に続けて届いたターンの始まりや、時計が戻ったときは、前の印の次の値にする（同じ値だと、
+ * 新しいターンの最初の完了が「同じターンの 2 回目」と読まれて鳴らない）。
+ */
+export function paradisNextUserTurn(previous: number | undefined, now: number): number {
+	return previous !== undefined && now <= previous ? previous + 1 : now;
+}
+
 /** 同じターンで前に出した完了の通知（ターンと、そのときバックグラウンドタスクが残っていなかったか）。 */
 export interface IParadisAnnouncedReview {
 	readonly turn: number;

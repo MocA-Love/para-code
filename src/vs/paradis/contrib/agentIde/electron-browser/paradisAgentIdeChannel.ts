@@ -83,6 +83,11 @@ import {
 	paradisAgentIdeUntrustedTitle,
 } from '../common/paradisAgentIde.js';
 import { IParadisAgentChoiceMenu, paradisAgentChoiceMenuMessage } from '../common/paradisAgentChoiceMenu.js';
+import { ParadisAgentIdeSections, ParadisAgentIdeSectionScope } from '../browser/paradisAgentIdeSections.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
+import { IParadisSpaceSectionsService } from '../../workspaceSwitch/common/paradisSpaceSections.js';
+import { IParadisWorkspaceSectionsService } from '../../workspaceSwitch/common/paradisWorkspaceSections.js';
+import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { PARADIS_AGENT_TRUST_DIALOG_MESSAGE, paradisAgentStartupScreenState } from '../common/paradisAgentStartupScreen.js';
 
 /** 台帳の保存先（ワークスペースの保存領域）。中身はターミナル ID とスペースのキーだけで、トークンは入れない。 */
@@ -154,6 +159,8 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 	private readonly _createSequencer = new Sequencer();
 	/** 利用者に確認を出している削除の依頼（同時に1件まで）。 */
 	private _pendingRemoval = false;
+	/** 「スペース」の一覧のセクションの道具。 */
+	private readonly _sections: ParadisAgentIdeSections;
 
 	constructor(
 		@IParadisPaneTokenService private readonly paneTokenService: IParadisPaneTokenService,
@@ -172,8 +179,13 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 		@IStorageService private readonly storageService: IStorageService,
 		@ILifecycleService private readonly lifecycleService: ILifecycleService,
 		@ILogService private readonly logService: ILogService,
+		@IParadisWorkspaceSectionsService sectionsService: IParadisWorkspaceSectionsService,
+		@IParadisSpaceSectionsService spaceSectionsService: IParadisSpaceSectionsService,
+		@IParadisDialogService dialogService: IParadisDialogService,
+		@IHostService hostService: IHostService,
 	) {
 		super();
+		this._sections = new ParadisAgentIdeSections(workspaceSwitchService, worktreeService, sectionsService, spaceSectionsService, dialogService, hostService, logService);
 		this._loadLedger();
 		// 再読み込みの直後は、前のセッションで作ったターミナルがまだ一覧に戻っていない（常駐から再接続する）。
 		// 端末の接続（SSH の再接続を含む）が済んでから、さらに少し待って、もう居ないものを台帳から掃除する
@@ -257,9 +269,38 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 			case 'createSpace': return this._createSpace(callerToken, request);
 			case 'closeTerminal': return this._closeTerminal(callerToken, request.terminal);
 			case 'removeSpace': return this._removeSpace(callerToken, request.space);
+			case 'createSection':
+			case 'updateSection':
+			case 'removeSection':
+			case 'moveSpaceToSection': return this._runSectionOperation(callerToken, request);
 			default:
 				return fail(`Unsupported operation: ${String((request as { op?: unknown }).op)}`);
 		}
+	}
+
+	/**
+	 * セクションの作成・変更・削除・出し入れ。範囲の設定（actionScope）が「同じスペースだけ」なら、create_space と
+	 * 同じく呼び出し元のスペースのリポジトリ（と自分が作ったスペース）だけに触れる。判定はセクションの側で行う。
+	 */
+	private _runSectionOperation(callerToken: string, request: Extract<ParadisAgentIdeRequest, { op: 'createSection' | 'updateSection' | 'removeSection' | 'moveSpaceToSection' }>): ParadisAgentIdeResult {
+		const caller = this._caller(callerToken);
+		if (!caller) {
+			return fail(CALLER_UNKNOWN);
+		}
+		const scope: ParadisAgentIdeSectionScope = this._windowScope()
+			? 'window'
+			: { repository: this._callerRepository(caller), createdSpaces: this._createdBy(callerToken)?.spaces ?? new Set() };
+		switch (request.op) {
+			case 'createSection': return this._sections.create(request, scope);
+			case 'updateSection': return this._sections.update(request, scope);
+			case 'removeSection': return this._sections.remove(request, this._describeCaller(callerToken), scope);
+			case 'moveSpaceToSection': return this._sections.move(request, scope);
+		}
+	}
+
+	/** 呼び出し元のスペースのリポジトリ。スペースが分からなければ undefined。 */
+	private _callerRepository(caller: IResolvedTerminal, spaces: readonly IParadisSpaceEntry[] = this._spaces()): string | undefined {
+		return caller.space !== undefined ? spaces.find(entry => entry.space === caller.space)?.repositoryId : undefined;
 	}
 
 	// --- 設定 ----------------------------------------------------------------------------------
@@ -568,7 +609,7 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 			...(created?.spaces.has(entry.space) ? { created_by_you: true } : {}),
 		}));
 		const agents = this.modelCatalogService.getAgentTemplates().map(agent => this._describeAgent(agent));
-		return { ok: true, data: { spaces, agents } };
+		return { ok: true, data: { spaces, sections: this._sections.list(), agents } };
 	}
 
 	private _describeAgent(agent: IParadisAgentCommandTemplate): object {
@@ -894,7 +935,7 @@ export class ParadisAgentIdeChannel extends Disposable implements IServerChannel
 		if (request.runSetup === true && !this._setting(PARADIS_AGENT_IDE_ALLOW_SHELL_COMMANDS_SETTING)) {
 			return fail(`run_setup=true runs the repository's setup script outside your sandbox. ${PARADIS_AGENT_IDE_SHELL_DISABLED_MESSAGE}`);
 		}
-		const callerRepository = spaces.find(entry => entry.space === caller.space)?.repositoryId;
+		const callerRepository = this._callerRepository(caller, spaces);
 		const repositoryId = request.repository ?? callerRepository;
 		if (repositoryId === undefined) {
 			return fail('Para Code cannot tell which repository your terminal belongs to. Pass "repository" (a space key of kind "repository" from list_spaces).');

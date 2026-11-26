@@ -46,7 +46,7 @@ import { PARADIS_ANTIGRAVITY_APPROVAL_HTTP_PREFIX, PARADIS_ANTIGRAVITY_APPROVAL_
 import { paradisAntigravityApprovalHold } from './paradisAntigravityApprovalHold.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
 import { paradisBindingMatchesGeneration } from '../common/paradisBrowserBindingLifecycle.js';
-import { IParadisAnnouncedReview, paradisIsHarnessNotificationPrompt, paradisIsRepeatedReview, paradisShouldSweepStaleWorkingStatus } from '../common/paradisAgentStatusStale.js';
+import { IParadisAnnouncedReview, paradisIsHarnessNotificationPrompt, paradisIsRepeatedReview, paradisNextUserTurn, paradisShouldSweepStaleWorkingStatus } from '../common/paradisAgentStatusStale.js';
 import { IParadisExactViewBackgroundThrottlingEffect, PARADIS_EXACT_VIEW_BACKGROUND_THROTTLING_MAX_BINDINGS, ParadisExactViewBackgroundThrottlingCoordinator, ParadisExactViewBackgroundThrottlingDispatcher } from '../common/paradisExactViewBackgroundThrottling.js';
 import { IParadisMobileRendererManifest, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } from '../../mobileRelay/common/paradisMobileWindowLease.js';
 import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, getParadisAgentPaneIssueUrls, onParadisAgentAwaitingUser, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, ParadisAgentTurnEndCause, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
@@ -1925,7 +1925,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		// 待ちや完了の後でない working は、新しいターンの始まり（完了の知らせを同じターンで二度出さないための印）
 		if (next === 'working' && (previous === undefined || previous.status === 'review')) {
-			this._userTurnStarts.set(token, now);
+			this._userTurnStarts.set(token, paradisNextUserTurn(this._userTurnStarts.get(token), now));
 		}
 		this._paneStatuses.set(token, { status: next, changedAt: now, ...(previous?.cwd !== undefined ? { cwd: previous.cwd } : {}) });
 		return true;
@@ -1958,7 +1958,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			return this._paneStatuses.delete(token);
 		}
 		if (next === 'working' && (previous === undefined || previous.status === 'review')) {
-			this._userTurnStarts.set(token, now);
+			this._userTurnStarts.set(token, paradisNextUserTurn(this._userTurnStarts.get(token), now));
 		}
 		if (withHooks) {
 			this._paneStatuses.set(token, next === 'review' ? this._reviewEntry(token, now, previous?.cwd) : { status: next, changedAt: now, ...(previous?.cwd !== undefined ? { cwd: previous.cwd } : {}) });
@@ -3714,8 +3714,9 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * 両方をここから作る（paradisCliCatalog.ts）。
 	 *
 	 * @param remotePane 呼び出し元が接続先（SSH など）のペインなら、ファイルの受け渡しの説明に言い換える
+	 * @param paneToken 呼び出し元のペイン。特定のペインにだけ説明を出す提供元（Bot の道具など）が使う
 	 */
-	private _instructionSections(remotePane = false): IParadisAgentInstructionSection[] {
+	private _instructionSections(remotePane = false, paneToken?: string): IParadisAgentInstructionSection[] {
 		// ブラウザの説明はこのサーバー自身のものなので、プロバイダの有無に関係なく先頭に置く
 		const sections: IParadisAgentInstructionSection[] = [{
 			group: 'browser',
@@ -3730,7 +3731,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		for (const provider of this._allToolProviders()) {
 			try {
-				const text = provider.instructions?.();
+				const text = provider.instructions?.(paneToken);
 				if (text && text.trim().length > 0) {
 					sections.push({ group: provider.cliGroup ?? 'browser', parts: [{ text: text.trim() }] });
 				}
@@ -3745,8 +3746,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	/** MCP の `initialize` の `instructions`（サーバーの説明）。 */
-	private _serverInstructions(remotePane = false): string {
-		return paradisMcpInstructionsText(this._instructionSections(remotePane));
+	private _serverInstructions(remotePane = false, paneToken?: string): string {
+		return paradisMcpInstructionsText(this._instructionSections(remotePane, paneToken));
 	}
 
 	/**
@@ -3774,12 +3775,12 @@ export class ParadisAgentBrowserService extends Disposable {
 		const providerGroups = new Map<string, ParadisCliGroup>();
 		for (const provider of this._allToolProviders()) {
 			if (provider.cliGroup !== undefined) {
-				for (const tool of provider.listTools()) {
+				for (const tool of provider.listTools(ingressLease.token)) {
 					providerGroups.set(tool.name, provider.cliGroup);
 				}
 			}
 		}
-		return paradisBuildCliCatalog(tools, this._instructionSections(this._paneRemoteAuthorityOf(ingressLease.token) !== undefined), providerGroups);
+		return paradisBuildCliCatalog(tools, this._instructionSections(this._paneRemoteAuthorityOf(ingressLease.token) !== undefined, ingressLease.token), providerGroups);
 	}
 
 	/** 呼び出し元ペインが使えるタブ（今のタブと、利用者が共有したものの印つき）。一覧を取れなければ undefined。 */
@@ -5316,7 +5317,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				this._elicitationWaits.delete(token);
 			}
 			if (eventType === 'UserPromptSubmit' && !paradisIsHarnessNotificationPrompt(hookPayload?.prompt)) {
-				this._userTurnStarts.set(token, Date.now());
+				this._userTurnStarts.set(token, paradisNextUserTurn(this._userTurnStarts.get(token), Date.now()));
 			}
 			if (normalized === 'idle') {
 				this._paneStatuses.delete(token);
@@ -5691,7 +5692,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				this._noteConversationStart(ingressLease.token);
 				const params = rpc.params as { protocolVersion?: unknown } | undefined;
 				const requested = typeof params?.protocolVersion === 'string' ? params.protocolVersion : '2025-03-26';
-				const instructions: string | undefined = this._serverInstructions(this._paneRemoteAuthorityOf(ingressLease.token) !== undefined);
+				const instructions: string | undefined = this._serverInstructions(this._paneRemoteAuthorityOf(ingressLease.token) !== undefined, ingressLease.token);
 				return {
 					protocolVersion: requested,
 					capabilities: { tools: { listChanged: false } },
@@ -5728,7 +5729,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		const devtoolsTools = await this._listDevtoolsTools(ingressLease, signal);
 		this._requireIngressLease(ingressLease);
 		// PARA-PATCH: 登録されたツールプロバイダ（モバイル端末操作など）のツールも1本のサーバーに混ぜて出す
-		const provided = this._allToolProviders().flatMap(provider => [...provider.listTools()]);
+		const provided = this._allToolProviders().flatMap(provider => [...provider.listTools(ingressLease.token)]);
 		// ページを操作するツールには、どのタブかを選ぶ `tab_id` を足す（サブエージェントごとに別のタブを使える）
 		const listed = [
 			// run_steps は手順書（E6。参照・expect・for_each・repeat_until）の説明と引数で出す。引数を丸ごと置き換えるので、
