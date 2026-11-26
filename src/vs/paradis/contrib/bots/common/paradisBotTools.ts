@@ -13,7 +13,7 @@
 
 import { isPlainRecord } from '../../../common/paradisGuards.js';
 import type { IParadisMcpToolDefinition } from '../../agentBrowser/common/paradisMcpToolProvider.js';
-import { IParadisBotItem, IParadisBotItemChanges, IParadisBotItemEvent, IParadisBotItemLink, PARADIS_BOT_ITEM_LIMITS, PARADIS_BOT_ITEM_STATUSES, ParadisBotItemStatus, paradisSanitizeBotItemLink, paradisSanitizeBotItemQuestions } from './paradisBotItems.js';
+import { IParadisBotItem, IParadisBotItemChanges, IParadisBotItemEvent, IParadisBotItemLink, PARADIS_BOT_ITEM_LIMITS, PARADIS_BOT_ITEM_STATUSES, ParadisBotItemStatus, paradisBotItemUndelivered, paradisSanitizeBotItemLink, paradisSanitizeBotItemQuestions } from './paradisBotItems.js';
 
 export const PARADIS_BOT_ITEM_LIST_TOOL = 'bot_item_list';
 export const PARADIS_BOT_ITEM_SHOW_TOOL = 'bot_item_show';
@@ -336,7 +336,7 @@ function eventView(event: IParadisBotItemEvent): object {
 
 /** 一覧の 1 行。 */
 export function paradisBotItemListRow(item: IParadisBotItem): object {
-	const unread = item.events.filter(event => event.toBot === true).length;
+	const unread = paradisBotItemUndelivered(item).length;
 	return {
 		number: item.number,
 		title: item.title,
@@ -359,7 +359,7 @@ export function paradisBotItemView(item: IParadisBotItem, after = 0): object {
 		...(item.closeNote !== undefined ? { close_note: item.closeNote } : {}),
 		links: item.links.map(link => link.ref),
 		last_event: item.lastEventId,
-		owner_updates: item.events.filter(event => event.toBot === true).map(eventView),
+		owner_updates: paradisBotItemUndelivered(item).map(eventView),
 		events: item.events.filter(event => event.id > after).map(eventView),
 	};
 }
