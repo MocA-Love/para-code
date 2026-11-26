@@ -121,7 +121,7 @@ export const PARADIS_BOT_MANAGE_TOOLS: readonly IParadisMcpToolDefinition[] = [
 export const PARADIS_BOT_MANAGE_TOOL_NAMES: ReadonlySet<string> = new Set(PARADIS_BOT_MANAGE_TOOLS.map(tool => tool.name));
 
 /** MCP の `initialize` の説明と `para help ide` の手引きに足す 1 段。 */
-export const PARADIS_BOT_MANAGE_INSTRUCTIONS = 'Bot management tools (list_bots, create_bot, update_bot, start_bot, stop_bot, remove_bot): manage the user\'s Para Code bots when the user asks you to. Changing anything needs the same user setting as the other IDE actions (paradis.agentIde.allowActions); a bot\'s own terminal cannot use them. A new bot runs with the user\'s default permission mode. Changing a bot\'s agent, permission mode or role, and remove_bot, only ask the user, who confirms in a dialog.';
+export const PARADIS_BOT_MANAGE_INSTRUCTIONS = 'Bot management tools (list_bots, create_bot, update_bot, start_bot, stop_bot, remove_bot): manage the user\'s Para Code bots when the user asks you to. Bots are experimental: the tools work only while the user\'s setting paradis.bots.enabled is on. Changing anything needs the same user setting as the other IDE actions (paradis.agentIde.allowActions); a bot\'s own terminal cannot use them. A new bot runs with the user\'s default permission mode. Changing a bot\'s agent, permission mode or role, and remove_bot, only ask the user, who confirms in a dialog.';
 
 export type ParadisBotManageArgs<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly message: string };
 

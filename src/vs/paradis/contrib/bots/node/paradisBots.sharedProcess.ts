@@ -20,7 +20,7 @@ import { paradisRegisterMcpToolProvider } from '../../agentBrowser/common/paradi
 import { onParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING, paradisAgentIdeActionsAllowed } from '../../agentIde/common/paradisAgentIde.js';
 import { paradisSharedHumanAskService } from '../../humanAsk/node/paradisHumanAskChannel.js';
-import { PARADIS_BOTS_CHANNEL } from '../common/paradisBotsApi.js';
+import { PARADIS_BOTS_CHANNEL, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
 import { ParadisBotHomes } from './paradisBotHomes.js';
 import { ParadisBotManageToolProvider } from './paradisBotManageToolProvider.js';
 import { ParadisBotToolProvider } from './paradisBotToolProvider.js';
@@ -46,6 +46,7 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 	const configurationService = accessor.get(IConfigurationService);
 	store.add(paradisRegisterMcpToolProvider(new ParadisBotManageToolProvider(service, {
 		actionsEnabled: () => paradisAgentIdeActionsAllowed(configurationService.getValue(PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING)),
+		botsEnabled: () => configurationService.getValue(PARADIS_BOTS_ENABLED_SETTING) === true,
 	})));
 	store.add({
 		dispose: () => {

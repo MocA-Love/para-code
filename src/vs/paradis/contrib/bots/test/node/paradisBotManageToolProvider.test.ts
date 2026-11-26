@@ -34,8 +34,8 @@ suite('Paradis bot manage tools', () => {
 	function harness() {
 		let ids = 0;
 		const service = store.add(new ParadisBotsService(new MemoryFile<IParadisBotsState>(EMPTY_PARADIS_BOTS_STATE), new MemoryFile<IParadisBotItemsState>(EMPTY_PARADIS_BOT_ITEMS_STATE), store.add(new ParadisHumanAskService()), new NullLogService(), { now: () => 1000, uuid: () => `id${++ids}` }));
-		const settings = { allow: true };
-		const provider = new ParadisBotManageToolProvider(service, { actionsEnabled: () => settings.allow });
+		const settings = { allow: true, bots: true };
+		const provider = new ParadisBotManageToolProvider(service, { actionsEnabled: () => settings.allow, botsEnabled: () => settings.bots });
 		const windowCalls: string[] = [];
 		const windowArgs: unknown[][] = [];
 		const context = (caller: ParadisMcpCallerKind): IParadisMcpToolCallContext => ({
@@ -103,13 +103,17 @@ suite('Paradis bot manage tools', () => {
 		h.settings.allow = false;
 		const off = await h.call('update_bot', { bot: 'id1', pinned: true });
 		const readWhileOff = (await h.call('list_bots')).bots !== undefined;
-		assert.deepStrictEqual({ fromBot: fromBot.map(result => result.error), overTunnel, readOverTunnel, readUnverified, off, readWhileOff, pinned: h.service.getBot('id1')?.pinned }, {
+		// Bot の機能（試験中）がオフなら、読む道具も断る
+		h.settings.bots = false;
+		const botsOff = [await h.call('list_bots'), await h.call('create_bot', { name: 'B', agent: 'claude' })];
+		assert.deepStrictEqual({ fromBot: fromBot.map(result => result.error), overTunnel, readOverTunnel, readUnverified, off, readWhileOff, botsOff, pinned: h.service.getBot('id1')?.pinned }, {
 			fromBot: Array(5).fill('This terminal is a Para Code bot. A bot cannot create, chang'),
 			overTunnel: { error: 'Para Code could not confirm that this request comes from a p' },
 			readOverTunnel: true,
 			readUnverified: { error: 'Para Code could not confirm that this request comes from a p' },
 			off: { error: 'Para Code does not allow agents to send input to terminals o' },
 			readWhileOff: true,
+			botsOff: Array(2).fill({ error: 'Para Code bots are still experimental and turned off. The us' }),
 			pinned: false,
 		});
 	});
@@ -118,7 +122,7 @@ suite('Paradis bot manage tools', () => {
 		const h = harness();
 		await h.call('create_bot', { name: 'A', agent: 'codex' });
 		const asked = await h.call('update_bot', { bot: 'id1', permission: 'bypass', role: '# A\n\nリリースを見張る。', pinned: true });
-		const agentToo = await h.call('update_bot', { bot: 'id1', agent: 'claude', permission: 'skip-permissions' });
+		await h.call('update_bot', { bot: 'id1', agent: 'claude', permission: 'skip-permissions' });
 		assert.deepStrictEqual({
 			asked,
 			request: h.windowArgs[0][1],

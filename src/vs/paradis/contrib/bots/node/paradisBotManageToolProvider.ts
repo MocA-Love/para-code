@@ -27,12 +27,13 @@ import {
 	paradisParseBotUpdateArgs,
 } from '../common/paradisBotManageTools.js';
 import { IParadisBot } from '../common/paradisBots.js';
-import { PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsServiceResult, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
+import { PARADIS_BOTS_ENABLED_SETTING, PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsServiceResult, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
 import { ParadisBotsService } from './paradisBotsService.js';
 
 const CALLER_UNVERIFIED_MESSAGE = 'Para Code could not confirm that this request comes from a process inside your own terminal pane, so it refuses changes to bots. This always happens for agents connected over SSH.';
 const READ_CALLER_UNVERIFIED_MESSAGE = 'Para Code could not confirm that this request comes from a process inside a Para Code terminal pane, so it refuses the request. Start this agent CLI from a terminal inside Para Code.';
 const FROM_BOT_MESSAGE = 'This terminal is a Para Code bot. A bot cannot create, change, start, stop or remove bots (including itself); only the user or an agent outside the bots can. Tell your owner what you would change.';
+const BOTS_DISABLED_MESSAGE = `Para Code bots are still experimental and turned off. The user can turn them on with the setting ${PARADIS_BOTS_ENABLED_SETTING}; do not try to change the setting yourself.`;
 const UNKNOWN_BOT_MESSAGE = 'There is no bot with that id. Call list_bots for the ids.';
 /** 起動はターミナルの起動とエージェントの立ち上がりを待つ。 */
 const START_TIMEOUT_MS = 60_000;
@@ -40,6 +41,8 @@ const START_TIMEOUT_MS = 60_000;
 /** 書く道具を許すか（IDE 系の書く道具と同じ設定）。 */
 export interface IParadisBotManageSettings {
 	actionsEnabled(): boolean;
+	/** Bot の機能（試験中）。オフのときは読む道具も断る。 */
+	botsEnabled(): boolean;
 }
 
 function failure(result: { readonly code: string; readonly message: string }): unknown {
@@ -65,6 +68,9 @@ export class ParadisBotManageToolProvider implements IParadisMcpToolProvider {
 	async callTool(paneToken: string, name: string, args: unknown, signal?: AbortSignal, context?: IParadisMcpToolCallContext): Promise<unknown | undefined> {
 		if (!PARADIS_BOT_MANAGE_TOOL_NAMES.has(name)) {
 			return undefined;
+		}
+		if (!this.settings.botsEnabled()) {
+			return toolError(BOTS_DISABLED_MESSAGE);
 		}
 		await this.service.ready;
 		const write = name !== PARADIS_BOT_LIST_TOOL;
