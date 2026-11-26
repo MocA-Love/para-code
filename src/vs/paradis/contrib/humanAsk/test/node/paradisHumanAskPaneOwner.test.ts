@@ -146,10 +146,13 @@ suite('Paradis human ask: pane owner', () => {
 		await timeout(120);
 		const stillWaiting = t.entries();
 
-		// もう一度答え、今度は返事が来る前にペインの待ちが消えた（キーは届いて先へ進んだ）
+		// もう一度答え、今度は返事が来る前にペインの待ちが消えた（キーは届いて先へ進んだ）。台帳は持ち主の知らせを待ち、
+		// 返事が来ないまま時間切れを過ぎた後の一覧で回答済みにする
 		t.service.answer(key, { type: 'action', actionId: 'yes' }, 'inbox');
 		t.world.panes = [];
 		await timeout(120);
+		t.advance(21_000);
+		await t.changePanes([]);
 		assert.deepStrictEqual({ stillWaiting, gone: t.entries(), requests: t.toOwnerWindow.length }, {
 			stillWaiting: ['permission waiting failed'],
 			gone: ['permission answered by inbox: 許可'],
