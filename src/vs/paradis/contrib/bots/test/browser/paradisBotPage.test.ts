@@ -305,7 +305,7 @@ suite('Paradis bots page overlay', () => {
 	});
 
 	test('チャット表示を見ている間だけ、見出しの状態とモデルを帯に出して見出しを畳む（会話が替われば畳み直し、離れたら戻す）', async () => {
-		const { container, page, headerCalls, setHeader, setChatActive } = setup();
+		const { container, page, headerCalls, setHeader, setChatActive, changed } = setup();
 		const strip = () => ({
 			status: container.getElementsByClassName('paradis-bot-page-status')[0]?.textContent,
 			attention: container.getElementsByClassName('paradis-bot-page-status')[0]?.classList.contains('attention'),
@@ -320,6 +320,9 @@ suite('Paradis bots page overlay', () => {
 		const chatView = strip();
 		// 会話が替わった（チャット表示の側が畳みを戻した）ときも、見出しの知らせで畳み直す
 		setHeader({ status: '入力を待っています', attention: false, busy: false, model: 'claude-opus-4-5 · high', agent: undefined, agentName: 'Claude Code' });
+		// 見出しの値が変わらなくても、ペインのトークンが替われば Bot の照らし直しで畳み直す
+		changed.fire();
+		await settle();
 		(container.getElementsByClassName('paradis-bot-page-terminal')[0] as HTMLElement).click();
 		setChatActive(1, false);
 		const backToTerminal = strip();
@@ -331,7 +334,7 @@ suite('Paradis bots page overlay', () => {
 			terminalView: { status: '1 件があなたの番', attention: false, model: '', terminal: false },
 			chatView: { status: '許可を待っています', attention: true, model: 'claude-opus-4-5 · high', terminal: true },
 			backToTerminal: { status: '1 件があなたの番', attention: false, model: '', terminal: false },
-			calls: ['hide 1 #1', 'hide 1 #2', 'unhide 1 #1', 'terminal 1', 'unhide 1 #2', 'hide 1 #3', 'unhide 1 #3'],
+			calls: ['hide 1 #1', 'hide 1 #2', 'unhide 1 #1', 'hide 1 #3', 'unhide 1 #2', 'terminal 1', 'unhide 1 #3', 'hide 1 #4', 'unhide 1 #4'],
 		});
 	});
 });

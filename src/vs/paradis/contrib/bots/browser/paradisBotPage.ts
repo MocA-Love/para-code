@@ -301,7 +301,8 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 	 * Bot の帯を出していてチャット表示を見ているペインだけ、チャット表示の見出しを畳む（帯と合わせて 1 段にする）。畳んだ
 	 * 見出しの知らせ（許可待ち・質問待ちなど）とターミナルへ戻る口は帯が出す。ターミナル表示の間は見出し自体が出ていない。
 	 * チャット表示が閉じた・会話が替わったときはチャット表示の側が畳みを戻すので、そのつど取り直す（新しく畳んでから古い
-	 * 印を捨てるので、畳んだままのときは見出しが一瞬も戻らない）。
+	 * 印を捨てるので、畳んだままのときは見出しが一瞬も戻らない）。会話が替わるとペインのトークンが変わり、Bot の照らし直し
+	 * （`resolver.onDidChange` → {@link resolve} → {@link setBot}）でも取り直すので、見出しの値が前の会話と同じでも畳み直る。
 	 */
 	private syncHeaderHidden(): void {
 		if (this.botId === undefined || this.instanceId === undefined || !this.chatShown()) {
