@@ -10,7 +10,9 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
 	EMPTY_PARADIS_BOTS_STATE,
+	IParadisBot,
 	IParadisBotsState,
+	PARADIS_BOT_KNOWN_KEYS,
 	PARADIS_BOT_LIMITS,
 	paradisBotCreate,
 	paradisBotDefaultFace,
@@ -165,5 +167,13 @@ suite('Paradis bots', () => {
 			sameId: 'invalid_argument',
 			stored: { version: 1, bots: [withNewField, created.bot, newAgent] },
 		});
+	});
+
+	test('知っている欄の一覧が Bot の型の欄と一致する（足し忘れると自分の Bot が読み取り専用になる）', () => {
+		// 型の欄を全部持つ見本。IParadisBot に欄を足すと、ここが型の検査で落ちる
+		const sample: { [K in keyof Required<Omit<IParadisBot, 'preserved'>>]: true } = {
+			id: true, name: true, folder: true, agent: true, modelId: true, effortId: true, permissionId: true, paused: true, pinned: true, faceColor: true, faceShape: true, createdAt: true, updatedAt: true,
+		};
+		assert.deepStrictEqual([...PARADIS_BOT_KNOWN_KEYS].sort(), Object.keys(sample).sort());
 	});
 });
