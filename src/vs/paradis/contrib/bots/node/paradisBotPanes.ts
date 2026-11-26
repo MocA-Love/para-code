@@ -82,8 +82,6 @@ interface IPending {
 interface IPane {
 	readonly botId: string;
 	readonly purpose: ParadisBotPanePurpose;
-	/** 報告してきたウィンドウ（接続の ctx）。起動し直した後に hook や道具で戻したペインは分からない（undefined）。 */
-	readonly windowCtx?: string;
 	working: boolean;
 	lastSeenAt: number;
 }
@@ -124,6 +122,10 @@ export class ParadisBotPanes {
 		if (record === undefined || !botExists(record.botId)) {
 			return undefined;
 		}
+		// その Bot に別の会話のペインがもう結び付いていれば戻さない（会話を 2 つ結び付けない。古いペインは Bot として扱わない）
+		if (record.purpose === 'chat' && [...this.panes.values()].some(pane => pane.botId === record.botId && pane.purpose === 'chat')) {
+			return undefined;
+		}
 		this.panes.set(paneToken, { botId: record.botId, purpose: record.purpose, working: false, lastSeenAt: now });
 		return record.botId;
 	}
@@ -152,7 +154,7 @@ export class ParadisBotPanes {
 	}
 
 	/** 起動の報告。結び付けたら Bot の id、断ったら undefined。番号は 1 回で使い切る。 */
-	report(launchId: string, paneToken: string, now: number, windowCtx?: string): string | undefined {
+	report(launchId: string, paneToken: string, now: number): string | undefined {
 		const entry = this.pending.get(launchId);
 		if (entry === undefined) {
 			return undefined;
@@ -169,7 +171,7 @@ export class ParadisBotPanes {
 		if (entry.purpose === 'chat' && [...this.panes.values()].some(pane => pane.botId === entry.botId && pane.purpose === 'chat')) {
 			return undefined;
 		}
-		this.panes.set(paneToken, { botId: entry.botId, purpose: entry.purpose, working: false, lastSeenAt: now, ...(windowCtx !== undefined ? { windowCtx } : {}) });
+		this.panes.set(paneToken, { botId: entry.botId, purpose: entry.purpose, working: false, lastSeenAt: now });
 		this.remembered.delete(hash);
 		this.remembered.set(hash, { hash, botId: entry.botId, purpose: entry.purpose, boundAt: now });
 		while (this.remembered.size > PARADIS_BOT_REMEMBERED_PANES_LIMIT) {
@@ -195,21 +197,6 @@ export class ParadisBotPanes {
 			return { state: 'open', tokens };
 		}
 		return [...this.pending.values()].some(entry => entry.botId === botId && entry.purpose === 'chat' && now - entry.issuedAt <= PARADIS_BOT_LAUNCHING_TTL_MS) ? { state: 'launching' } : undefined;
-	}
-
-	/**
-	 * ウィンドウが閉じた（接続が切れた）。そのウィンドウが報告したペインを「まだ現れていない」に戻す（保存した結び付けは
-	 * 残すので、次に開いたときに復元されて現れたら戻る）。外したものがあれば true。
-	 */
-	detachWindow(windowCtx: string): boolean {
-		let changed = false;
-		for (const [token, pane] of this.panes) {
-			if (pane.windowCtx === windowCtx) {
-				this.panes.delete(token);
-				changed = true;
-			}
-		}
-		return changed;
 	}
 
 	/** その Bot の会話のペインを「まだ現れていない」に戻す（前に出す依頼にどのウィンドウも応えなかった）。 */
