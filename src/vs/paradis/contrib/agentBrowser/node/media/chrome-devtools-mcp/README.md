@@ -12,6 +12,7 @@ DevToolsツール群（click / take_screenshot / navigate_page 等）をプロ�
 - `LICENSE` — Apache-2.0 ライセンス全文
 - `build/` — 実行コード一式（エントリは `build/src/bin/chrome-devtools-mcp.js`。
   依存パッケージはすべて `build/src/third_party/` にバンドル済みで、node_modules 不要）
+- `paradis/` — Para Code が足したコード（`paradisTraceExtras.js`。上流のパッケージには無い）
 - 上流の `README.md` と `skills/`（エージェント向けドキュメント）はランタイム不要のため除外
 
 ## 更新手順
@@ -27,7 +28,8 @@ node build/src/bin/chrome-devtools-mcp.js --version  # 動作確認
 
 Para Code の変更（`PARA-PATCH`）は次のファイルにある: `build/src/McpContext.js`（`waitForTextOnPage`・`detectOpenDevToolsWindows`）、`build/src/McpResponse.js`（`handle`）、
 `build/src/ToolHandler.js`（`handle`）、`build/src/WaitForHelper.js`（`waitForStableDom`）、`build/src/tools/pages.js`（`navigate_page`・`handle_dialog`）、
-`build/src/tools/script.js`（`evaluate_script`）、`build/src/tools/snapshot.js`（`take_snapshot`）、`build/src/tools/lighthouse.js`（`lighthouse_audit`）。
+`build/src/tools/script.js`（`evaluate_script`）、`build/src/tools/snapshot.js`（`take_snapshot`）、`build/src/tools/lighthouse.js`（`lighthouse_audit`）、`build/src/tools/performance.js`（`performance_start_trace`・`performance_analyze_insight`・保存の処理）。
+`paradis/paradisTraceExtras.js` は Para Code が足したファイル（上流には無い）で、`performance.js` の PARA-PATCH が読み込む。`build/` の外にあるので、`build/` を入れ替えても消さないこと。
 更新したら当て直すこと（理由と内容は NOTES.md「vendored chrome-devtools-mcp への変更」）。
 
 更新時はこの README のバージョン表記と、`paradisDevtoolsMcpProxy.ts` が前提とする

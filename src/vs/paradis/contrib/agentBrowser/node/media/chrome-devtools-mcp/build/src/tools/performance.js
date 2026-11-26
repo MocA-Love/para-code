@@ -9,6 +9,12 @@ import { zod, DevTools } from '../third_party/index.js';
 import { parseRawTraceBuffer, traceResultIsSuccess, } from '../trace-processing/parse.js';
 import { ToolCategory } from './categories.js';
 import { definePageTool } from './ToolDefinition.js';
+// PARA-PATCH: saving the script content and the source maps with the trace, and the original source positions of
+// the call frames an insight prints. The logic is in a fork-owned file outside build/ (see NOTES.md).
+import { paradisCollectSourceMaps, paradisExtraTraceCategories, paradisOriginalLocationLines, paradisRewriteTraceForSave, paradisTraceSaveOptions, } from '../../../paradis/paradisTraceExtras.js';
+// PARA-PATCH: the save options of the running trace. The trace categories are fixed at the start, so
+// performance_stop_trace saves with what performance_start_trace asked for.
+let paradisRunningSaveOptions = paradisTraceSaveOptions(undefined);
 const filePathSchema = zod
     .string()
     .optional()
@@ -30,6 +36,15 @@ export const startTrace = definePageTool({
             .default(true)
             .describe('Determines if the trace recording should be automatically stopped.'),
         filePath: filePathSchema,
+        // PARA-PATCH: the two options of "Save performance trace" in Chrome DevTools (off by default).
+        includeScriptContent: zod
+            .boolean()
+            .optional()
+            .describe('Keep the text of the scripts of the page (inline scripts too; the page as it is when the trace stops) in the saved file, like "Include script content" in Chrome DevTools, so that the file still shows the code after the page changes. Needs filePath. The file grows by the size of the scripts and holds whatever they contain, so treat it like the page source. Applies to the file performance_stop_trace saves as well.'),
+        includeSourceMaps: zod
+            .boolean()
+            .optional()
+            .describe('Keep the source maps of the page in the saved file (metadata.sourceMaps), like "Include script source maps" in Chrome DevTools, so that the file can be read in original source positions offline. Needs filePath. Source maps often embed the original source code (sourcesContent), which then is in the file too. Applies to the file performance_stop_trace saves as well.'),
     },
     blockedByDialog: true,
     verifyFilesSchema: ['filePath'],
@@ -68,6 +83,9 @@ export const startTrace = definePageTool({
             'v8.execute',
             'v8',
         ];
+        // PARA-PATCH: record the list of scripts (and their text) only when the saved file should carry them.
+        paradisRunningSaveOptions = paradisTraceSaveOptions(request.params);
+        categories.push(...paradisExtraTraceCategories(paradisRunningSaveOptions));
         await page.pptrPage.tracing.start({
             categories,
         });
@@ -128,17 +146,60 @@ export const analyzeInsight = definePageTool({
             response.appendResponseLine('No recorded traces found. Record a performance trace so you have Insights to analyze.');
             return;
         }
+        // PARA-PATCH: the formatter prints positions in the generated (minified) code; add the original ones.
+        try {
+            const paradisInsight = lastRecording.insights?.get(request.params.insightSetId)?.model?.[request.params.insightName];
+            for (const line of paradisOriginalLocationLines(paradisInsight, lastRecording.paradisSourceMaps)) {
+                response.appendResponseLine(line);
+            }
+        }
+        catch (error) {
+            logger?.(`Para Code: resolving original source positions failed: ${error}`);
+        }
         response.attachTraceInsight(lastRecording, request.params.insightSetId, request.params.insightName);
     },
 });
 async function stopTracingAndAppendOutput(page, response, context, filePath) {
     try {
         const traceEventsBuffer = await page.pptrPage.tracing.stop();
+        // PARA-PATCH: take the source maps the DevTools universe of the page has loaded, before the page moves on.
+        const paradisSaveOptions = paradisRunningSaveOptions;
+        paradisRunningSaveOptions = paradisTraceSaveOptions(undefined);
+        let paradisSourceMaps;
+        try {
+            paradisSourceMaps = await paradisCollectSourceMaps(context.getDevToolsUniverse(page)?.target.model(DevTools.DebuggerModel));
+        }
+        catch (error) {
+            logger?.(`Para Code: collecting source maps failed: ${error}`);
+        }
+        const paradisWantsExtras = paradisSaveOptions.includeScriptContent || paradisSaveOptions.includeSourceMaps;
+        if (paradisWantsExtras && !filePath) {
+            response.appendResponseLine('includeScriptContent and includeSourceMaps only change the saved file; no filePath was given, so nothing was saved.');
+        }
         if (filePath && traceEventsBuffer) {
             let dataToWrite = traceEventsBuffer;
+            // PARA-PATCH: without the options the file stays the raw buffer, byte for byte.
+            if (paradisWantsExtras) {
+                try {
+                    const rewritten = paradisRewriteTraceForSave(traceEventsBuffer, paradisSaveOptions, paradisSourceMaps);
+                    dataToWrite = rewritten.data;
+                    const parts = [];
+                    if (paradisSaveOptions.includeScriptContent) {
+                        parts.push(`the text of ${rewritten.scriptSourceCount} script(s) of the page as it is now (scripts of earlier documents and of other frames are not included)`);
+                    }
+                    if (paradisSaveOptions.includeSourceMaps) {
+                        parts.push(`${rewritten.sourceMapCount} source map(s)`);
+                    }
+                    response.appendResponseLine(`The saved trace includes ${parts.join(' and ')}. It can hold anything those contain; do not share it more widely than the page source.`);
+                }
+                catch (error) {
+                    response.appendResponseLine(`The script content and source maps could not be added (${error instanceof Error ? error.message : error}); the raw trace was saved without them.`);
+                }
+            }
+            const paradisBufferToCompress = dataToWrite;
             if (filePath.endsWith('.gz')) {
                 dataToWrite = await new Promise((resolve, reject) => {
-                    zlib.gzip(traceEventsBuffer, (error, result) => {
+                    zlib.gzip(paradisBufferToCompress, (error, result) => {
                         if (error) {
                             reject(error);
                         }
@@ -160,6 +221,8 @@ async function stopTracingAndAppendOutput(page, response, context, filePath) {
             if (context.isCruxEnabled()) {
                 await populateCruxData(result);
             }
+            // PARA-PATCH: kept with the recording for performance_analyze_insight.
+            result.paradisSourceMaps = paradisSourceMaps;
             context.storeTraceRecording(result);
             response.attachTraceSummary(result);
         }
