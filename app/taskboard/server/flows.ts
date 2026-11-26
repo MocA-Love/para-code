@@ -81,6 +81,14 @@ async function readJson(io: IFlowIo, relativePath: string, label: string): Promi
 	}
 }
 
+/**
+ * Para Code が開くボード（`--embedded`）の、組み込みのフローの作業場所。クローンの場所は起動時に渡せないので、
+ * 設定なしで始められるワークツリーを既定にする。リポジトリや個人の設定に保存したフローは書かれたとおりに使う。
+ */
+export function embeddedFlows(flows: readonly ITaskBoardFlow[]): ITaskBoardFlow[] {
+	return flows.map(flow => flow.scope === 'builtin' && flow.workspace.kind !== 'worktree' ? { ...flow, workspace: { ...flow.workspace, kind: 'worktree' as const } } : flow);
+}
+
 export interface ILoadedFlows {
 	readonly flows: ITaskBoardFlow[];
 	readonly active?: string;

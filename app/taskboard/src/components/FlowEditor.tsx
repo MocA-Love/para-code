@@ -170,6 +170,19 @@ export function FlowEditor() {
 	const setIntake = (patch: Partial<ITaskBoardFlow['intake']>) => setDraft(d => ({ ...d, intake: { ...d.intake, ...patch } }));
 	const setWorkspace = (patch: Partial<ITaskBoardFlow['workspace']>) => setDraft(d => ({ ...d, workspace: { ...d.workspace, ...patch } }));
 	const clones = snapshot.slots.filter(s => s.kind === 'clone-pool');
+	const [addingClone, setAddingClone] = useState(false);
+	/** クローンの作業場所を足す。フォルダは Para Code の選択のダイアログで選び、同じリポジトリの clone かはサーバーが確かめる。 */
+	const addClone = async () => {
+		setAddingClone(true);
+		try {
+			const result = await app.call('addClone', {});
+			if (result?.added) {
+				app.toast({ title: 'クローンを足しました', body: result.added, tone: 'green' });
+			}
+		} finally {
+			setAddingClone(false);
+		}
+	};
 
 	/* ---------------- Projects の軸の欄 ---------------- */
 	const [fields, setFields] = useState<readonly ITaskBoardProjectField[]>();
@@ -329,10 +342,15 @@ export function FlowEditor() {
 							<button className={draft.workspace.kind === 'clone-pool' ? 'on' : ''} onClick={() => setWorkspace({ kind: 'clone-pool' })}>クローンを使い回す</button>
 							<button className={draft.workspace.kind === 'worktree' ? 'on' : ''} onClick={() => setWorkspace({ kind: 'worktree' })}>ワークツリー</button>
 						</div>
-						{draft.workspace.kind === 'clone-pool' && <>
+						{(draft.workspace.kind === 'clone-pool' || snapshot.runtime.canAddClone) && <>
 							<label>クローン</label>
-							<span className="muted" style={{ fontSize: 'var(--fs-sm)' }}>{clones.length ? clones.map(c => c.name).join('、') : '未設定'}</span>
-							<span className="hint">クローンの場所は人ごとに違うので、リポジトリには書かず個人の設定（起動時の --clones）に置きます</span>
+							<div className="clone-row">
+								<span className="muted" style={{ fontSize: 'var(--fs-sm)' }}>{clones.length ? `${clones.length} 個（${clones.map(c => c.name).join('、')}）` : snapshot.runtime.canAddClone ? '0 個' : '未設定'}</span>
+								{snapshot.runtime.canAddClone && <button className="btn sm" disabled={addingClone} onClick={addClone}><Icon name="plus" size={13} />フォルダを足す…</button>}
+							</div>
+							<span className="hint">{snapshot.runtime.canAddClone
+								? 'クローンの場所は人ごとに違うので、この PC の設定に置きます。足すと「クローンを使い回す」を選べます'
+								: 'クローンの場所は人ごとに違うので、リポジトリには書かず個人の設定（起動時の --clones）に置きます'}</span>
 						</>}
 						<label>返すとき</label>
 						<div className="seg">

@@ -416,6 +416,7 @@ kbd { font: var(--fs-xs) var(--mono); color: var(--faint); border: 1px solid var
 .empty-big { text-align: center; color: var(--faint); padding: 90px 0; }
 .empty-big svg.i { width: 36px; height: 36px; color: var(--line-hover); margin-bottom: 10px; }
 .empty-big b { display: block; color: var(--muted); font-size: var(--fs-lg); margin-bottom: 6px; }
+.empty-big .empty-act { margin-top: 14px; }
 
 /* ======================================================================
    一覧
@@ -441,10 +442,17 @@ kbd { font: var(--fs-xs) var(--mono); color: var(--faint); border: 1px solid var
 .flow-chart svg { width: 100%; max-width: 460px; display: block; }
 .sec-title { font-size: var(--fs-sm); font-weight: var(--fw-semibold); color: var(--muted); margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
 .sec-title .grow { text-align: right; }
-.form { display: grid; grid-template-columns: 100px 1fr; gap: 9px 10px; align-items: center; margin-bottom: 18px; }
+.form { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 9px 10px; align-items: center; margin-bottom: 18px; }
 .form > label { color: var(--muted); font-size: var(--fs-sm); }
 .form .full { grid-column: 1 / -1; }
 .form .hint { grid-column: 2; color: var(--faint); font-size: var(--fs-xs); margin-top: -4px; }
+/* 欄より長い選択肢の並びは折り返す。行の間の線は欄の幅いっぱいに引き（ボタンの高さ 28px ＋ 行の間 1px の繰り返し）、
+   ボタンの間の線は各ボタンの左の外側に引く（行の先頭の分は枠の外へ出て隠れるので、枠と重ならない） */
+.form .seg { flex-wrap: wrap; row-gap: 1px; background-image: repeating-linear-gradient(to bottom, transparent 0 28px, var(--line) 28px 29px); }
+.form .seg button { box-shadow: -1px 0 0 var(--line); }
+.form .seg button + button { border-left: 0; }
+.form .clone-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; min-width: 0; }
+.form .clone-row .muted { min-width: 0; overflow-wrap: anywhere; }
 .steplist { display: flex; flex-direction: column; gap: 6px; }
 .stepitem { display: grid; grid-template-columns: 16px 22px 1fr auto auto; gap: 8px; align-items: center; background: var(--card); border: 1px solid var(--line); border-radius: var(--r-md); padding: 8px 10px; cursor: pointer; text-align: left; width: 100%; color: inherit; }
 .stepitem:hover { border-color: var(--line-strong); }
