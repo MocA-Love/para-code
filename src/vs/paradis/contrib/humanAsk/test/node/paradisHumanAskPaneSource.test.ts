@@ -96,7 +96,7 @@ suite('Paradis human ask: pane source (relay)', () => {
 		let reading: IDisposable | undefined;
 		try {
 			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
-			// 読む側がいないうちは、見られていないペインの許可で tailer を起こさない（今までどおり）
+			// 読む側がいないうちは、見られていないペインの許可のカードを tailer へ入れない（今までどおり）
 			fireParadisAgentHookEvent({ ...base, event: 'UserPromptSubmit', at: Date.now() });
 			fireParadisAgentHookEvent({ ...base, event: 'PreToolUse', at: Date.now(), toolName: 'Bash', toolInput: { command: 'npm test' }, toolUseId: 'toolu_1' });
 			fireParadisAgentHookEvent({ ...base, event: 'PermissionRequest', at: Date.now(), toolName: 'Bash', toolInput: { command: 'npm test' } });
@@ -144,6 +144,8 @@ suite('Paradis human ask: pane source (relay)', () => {
 			second.dispose();
 			fireParadisAgentHookEvent({ ...base, event: 'PreToolUse', at: Date.now(), toolName: 'Bash', toolInput: { command: 'npm run build' }, toolUseId: 'toolu_2' });
 			fireParadisAgentHookEvent({ ...base, event: 'PermissionRequest', at: Date.now(), toolName: 'Bash', toolInput: { command: 'npm run build' } });
+			// hook の反映は非同期なので、処理され終わってから読む（入らなかった許可では知らせが鳴らないので時間で待つ）
+			await new Promise<void>(resolve => setTimeout(resolve, 500));
 			const afterBoth = chat.humanAskPanes().length;
 
 			// また読み始めると、次の許可は入る
