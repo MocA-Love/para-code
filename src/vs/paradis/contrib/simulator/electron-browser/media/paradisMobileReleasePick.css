@@ -49,14 +49,19 @@
 	background-color: var(--vscode-paradis-sunken);
 }
 
+/*
+	The rows are <a role="radio"> (upstream's dialog only puts the <a> of the message into its Tab order), and upstream's
+	dialog styles every <a> of the message inline as a link (link color, underlined). A row is a choice, not a link, so
+	the two declarations below override those inline styles; nothing but !important wins over an inline style.
+*/
 .monaco-dialog-box.paradis-mobile-release-pick .pmrp-option {
 	display: flex;
 	align-items: flex-start;
 	gap: var(--vscode-spacing-size80);
 	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size80);
 	border-radius: var(--paradis-radius-inner);
-	color: var(--vscode-paradis-text);
-	text-decoration: none;
+	color: var(--vscode-paradis-text) !important;
+	text-decoration: none !important;
 	cursor: pointer;
 }
 
@@ -66,7 +71,7 @@
 
 .monaco-dialog-box.paradis-mobile-release-pick .pmrp-option.checked {
 	background-color: var(--vscode-paradis-fillSelected);
-	color: var(--vscode-paradis-textStrong);
+	color: var(--vscode-paradis-textStrong) !important;
 }
 
 /* The focus ring is drawn inside the row so that it is not clipped by the scrolling list. */

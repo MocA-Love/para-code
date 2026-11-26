@@ -97,6 +97,12 @@ export function paradisRenderMobileReleasePickBody(container: HTMLElement, pick:
 				key.preventDefault();
 				key.stopPropagation();
 				select(device.id);
+			} else if (key.equals(KeyCode.DownArrow) || key.equals(KeyCode.UpArrow)) {
+				// 上下の矢印で、隣の行へフォーカスを移す（選ぶのは Enter・Space・クリック。Tab と左右の矢印は本家の Dialog が回す）
+				key.preventDefault();
+				key.stopPropagation();
+				const index = options.findIndex(option => option.row === row);
+				options[index + (key.equals(KeyCode.DownArrow) ? 1 : -1)]?.row.focus();
 			}
 		}));
 	}

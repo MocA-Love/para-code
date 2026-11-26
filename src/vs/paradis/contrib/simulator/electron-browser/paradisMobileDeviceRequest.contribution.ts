@@ -135,7 +135,7 @@ export class ParadisMobileDeviceRequestChannel implements IServerChannel {
 			pickRelease
 				? localize('paradis.mobileDeviceRequest.full', "このターミナルには、上限の {0} 台を渡しています。渡すには、下から外す端末を 1 台選んでください。", PARADIS_MOBILE_MAX_DEVICES_PER_PANE)
 				: held.length > 0
-					? localize('paradis.mobileDeviceRequest.adding', "このターミナルには今 {0} 台を渡しています（{1}）。承認すると {2} 台目として足されます（1 つのターミナルに {3} 台まで）。今の端末は外れません。", held.length, heldNames, held.length + 1, PARADIS_MOBILE_MAX_DEVICES_PER_PANE)
+					? localize('paradis.mobileDeviceRequest.adding', "このターミナルには今 {0} 台を渡しています（{1}）。承認すると {2} 台目として足されます（1 つのターミナルに {3} 台まで）。渡してある端末は外れません。", held.length, heldNames, held.length + 1, PARADIS_MOBILE_MAX_DEVICES_PER_PANE)
 					: undefined,
 			localize('paradis.mobileDeviceRequest.effect', "承認すると、このターミナルのエージェントはこの端末の画面を読み、タップ・入力・回転などの操作と、アプリの起動・権限の付与ができます。共有ダイアログの「モバイル端末」タブからいつでも外せます。"),
 			localize('paradis.mobileDeviceRequest.install', "アプリのインストールは、そのたびに確認します。エージェントが入れたアプリは Para Code の権限で動き、エージェントの作業フォルダの制限の外に出られます。"),

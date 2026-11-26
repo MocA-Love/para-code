@@ -70,10 +70,16 @@ suite('Paradis mobile: the confirmation that asks which device to detach', () =>
 		// Enter は行を選ぶだけで、ダイアログのボタン（拒否）を押さない
 		rows[7].dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
 		const afterEnter = [checked(), model.selectedId, container.querySelector('.monaco-dialog-box') !== null];
+		// 上下の矢印は隣の行へフォーカスを移すだけ（選択は変えない）
+		rows[7].focus();
+		rows[7].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40, bubbles: true }));
+		const afterDown = [mainWindow.document.activeElement?.textContent, model.selectedId];
+		rows[8].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', code: 'ArrowUp', keyCode: 38, bubbles: true }));
+		const afterUp = mainWindow.document.activeElement?.textContent;
 		for (const type of ['keydown', 'keyup']) {
 			box.dispatchEvent(new KeyboardEvent(type, { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
 		}
-		assert.deepStrictEqual({ shown, afterClick, afterEnter, result: await pending, closed: container.querySelector('.monaco-dialog-box') === null }, {
+		assert.deepStrictEqual({ shown, afterClick, afterEnter, afterDown, afterUp, result: await pending, closed: container.querySelector('.monaco-dialog-box') === null }, {
 			shown: {
 				classes: [true, true, true, true],
 				focused: '拒否',
@@ -86,6 +92,8 @@ suite('Paradis mobile: the confirmation that asks which device to detach', () =>
 			},
 			afterClick: [[3], 'ios:sim-3'],
 			afterEnter: [[7], 'ios:sim-7', true],
+			afterDown: ['Sim 8', 'ios:sim-7'],
+			afterUp: 'Sim 7',
 			result: undefined,
 			closed: true,
 		});
