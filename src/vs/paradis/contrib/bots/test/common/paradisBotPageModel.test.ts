@@ -35,20 +35,21 @@ suite('Paradis bots page', () => {
 			item(6, { status: 'canceled' }),
 			item(7, { status: 'needs_you', ask: ASK, snoozedUntil: 2000 }),
 			item(8),
+			item(9, { status: 'waiting' }),
 		], 1000);
 		const ids = (list: readonly IParadisBotItem[]) => list.map(entry => entry.number);
-		assert.deepStrictEqual([ids(groups.you), ids(groups.working), ids(groups.planned), ids(groups.snoozed), ids(groups.closed)], [[1], [8, 2], [3], [7, 4], [6, 5]]);
+		assert.deepStrictEqual([ids(groups.you), ids(groups.working), ids(groups.planned), ids(groups.snoozed), ids(groups.closed)], [[1], [9, 8, 2], [3], [7, 4], [6, 5]]);
 	});
 
 	test('状態と記録の文', () => {
 		assert.deepStrictEqual([
-			['planned', 'working', 'needs_you', 'done', 'canceled', 'later'].map(status => paradisBotItemStatusLabel({ status })),
+			['planned', 'working', 'waiting', 'needs_you', 'done', 'canceled', 'later'].map(status => paradisBotItemStatusLabel({ status })),
 			paradisBotItemEventLabel({ id: 1, kind: 'made', actor: 'bot', at: 0 }, 'リリース係'),
 			paradisBotItemEventLabel({ id: 2, kind: 'status', actor: 'owner', at: 0, from: 'working', to: 'done' }, 'x'),
 			paradisBotItemEventLabel({ id: 3, kind: 'commented', actor: 'owner', at: 0, text: 'A', answers: 2 }, 'x'),
 			paradisBotItemEventLabel({ id: 4, kind: 'commented', actor: 'owner', at: 0, skipped: true }, 'x'),
 		], [
-			['予定', '進行中', 'あなたの番', '完了', '取りやめ', 'later'],
+			['予定', '進行中', '外の返事待ち', 'あなたの番', '完了', '取りやめ', 'later'],
 			'リリース係が作りました',
 			'あなたが「完了」にしました',
 			'あなたが答えました: A',

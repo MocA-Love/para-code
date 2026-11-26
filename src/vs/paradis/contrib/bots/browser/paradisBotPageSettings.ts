@@ -266,6 +266,10 @@ export class ParadisBotSettingsPanel {
 		const foot = DOM.append(body, $('.paradis-bot-settings-foot'));
 		const note = DOM.append(foot, $('span.paradis-bot-settings-help'));
 		note.textContent = localize('paradis.botPage.files.memoryHint', "Bot も書き足します。保存の前に読み直し、開いた後に書き換わっていたら上書きしません。");
+		if (entry.path === 'MEMORY.md') {
+			const undo = store.add(new ParadisButton(foot, { kind: 'secondary', label: localize('paradis.botPage.files.undoTidy', "記憶の整理を取り消す...") }));
+			store.add(undo.onDidClick(() => void this.undoMemoryTidy(bot)));
+		}
 		const save = store.add(new ParadisButton(foot, { kind: 'primary', label: localize('paradis.botPage.files.save', "保存") }));
 		save.enabled = this.fileEdits.has(entry.path) && !this.saving;
 		store.add(DOM.addDisposableListener(editor, DOM.EventType.INPUT, () => {
@@ -273,6 +277,30 @@ export class ParadisBotSettingsPanel {
 			save.enabled = !this.saving;
 		}));
 		store.add(save.onDidClick(() => void this.saveFile(entry.path)));
+	}
+
+	/** 記憶の整理を取り消す（一番新しい写しを書き戻す。整理でできたファイルは消さずに知らせる）。 */
+	private async undoMemoryTidy(bot: IParadisBotSummary): Promise<void> {
+		const { confirmed } = await this.services.paradisDialogService.confirm({
+			message: localize('paradis.botPage.files.undoTidyConfirm', "「{0}」の記憶の整理を取り消しますか?", bot.name),
+			detail: localize('paradis.botPage.files.undoTidyDetail', "整理の前に取った写しを書き戻します。整理の後に書き足した記憶も、写しの時点に戻ります。"),
+			primaryButton: localize('paradis.botPage.files.undoTidyAction', "取り消す"),
+			destructive: true,
+		});
+		if (!confirmed) {
+			return;
+		}
+		const result = await this.services.botsService.undoMemoryTidy(this.botId);
+		if (!result.ok) {
+			this.services.notificationService.warn(localize('paradis.botPage.files.undoTidyFailed', "記憶の整理を取り消せませんでした: {0}", result.message));
+			return;
+		}
+		this.services.notificationService.info(result.value.added.length > 0
+			? localize('paradis.botPage.files.undoTidyDoneAdded', "記憶を {0} の写しに戻しました（{1} 件）。整理でできたファイル {2} は残しています。", new Date(result.value.takenAt).toLocaleString(), result.value.restored.length, result.value.added.join(', '))
+			: localize('paradis.botPage.files.undoTidyDone', "記憶を {0} の写しに戻しました（{1} 件）。", new Date(result.value.takenAt).toLocaleString(), result.value.restored.length));
+		this.files.clear();
+		this.fileEdits.clear();
+		this.rerender();
 	}
 
 	private async loadFile(path: string): Promise<void> {

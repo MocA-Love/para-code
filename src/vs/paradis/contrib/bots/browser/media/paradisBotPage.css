@@ -579,3 +579,30 @@ button.paradis-bot-page-link:hover {
 	flex: 1;
 	min-width: 0;
 }
+
+/* The suggestions section (only on the bot's page; not counted on the bell). */
+.paradis-bot-page-suggestion {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size80);
+	margin-top: var(--vscode-spacing-size80);
+	padding: var(--vscode-spacing-size120) var(--vscode-spacing-size160);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner, 8px);
+	background: var(--vscode-paradis-raised);
+}
+
+.paradis-bot-page-suggestion-title {
+	color: var(--vscode-paradis-textStrong);
+	overflow-wrap: anywhere;
+}
+
+.paradis-bot-page-suggestion-text {
+	color: var(--vscode-paradis-textMuted);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	display: -webkit-box;
+	-webkit-line-clamp: 3;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+}

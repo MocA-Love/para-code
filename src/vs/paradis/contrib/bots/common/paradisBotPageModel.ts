@@ -22,7 +22,7 @@ export const PARADIS_BOT_PAGE_TABS: readonly ParadisBotPageTab[] = ['chat', 'ite
 export interface IParadisBotItemGroups {
 	/** あなたの番（Bot が問いを出して待っているもの）。 */
 	readonly you: readonly IParadisBotItem[];
-	/** 進行中（作業中と、問いの無い Needs you）。 */
+	/** 進行中（作業中・外の返事待ち・問いの無い Needs you）。 */
 	readonly working: readonly IParadisBotItem[];
 	readonly planned: readonly IParadisBotItem[];
 	/** 後回し中（期限まで群から外す）。 */
@@ -60,6 +60,7 @@ export function paradisBotItemStatusLabel(item: Pick<IParadisBotItem, 'status'>)
 	switch (paradisBotItemStatus(item)) {
 		case 'planned': return localize('paradis.botPage.status.planned', "予定");
 		case 'working': return localize('paradis.botPage.status.working', "進行中");
+		case 'waiting': return localize('paradis.botPage.status.waiting', "外の返事待ち");
 		case 'needs_you': return localize('paradis.botPage.status.needsYou', "あなたの番");
 		case 'done': return localize('paradis.botPage.status.done', "完了");
 		case 'canceled': return localize('paradis.botPage.status.canceled', "取りやめ");

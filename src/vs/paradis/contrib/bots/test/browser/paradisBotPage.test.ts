@@ -20,6 +20,7 @@ import { TestNotificationService } from '../../../../../platform/notification/te
 import { IOpenerService } from '../../../../../platform/opener/common/opener.js';
 import { IParadisConfirmation, IParadisDialogService } from '../../../confirmDialog/browser/paradisDialogService.js';
 import { IParadisHumanAskService, ParadisHumanAskAnswer } from '../../../humanAsk/common/paradisHumanAsk.js';
+import { ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisBotPaneResolver, ParadisBotPage } from '../../browser/paradisBotPage.js';
 import { IParadisBotItem } from '../../common/paradisBotItems.js';
 import { IParadisBotSummary, IParadisBotsService, PARADIS_BOTS_ENABLED_SETTING } from '../../common/paradisBotsApi.js';
@@ -27,7 +28,7 @@ import { IParadisBotSummary, IParadisBotsService, PARADIS_BOTS_ENABLED_SETTING }
 function bot(id: string, name: string, patch: Partial<IParadisBotSummary> = {}): IParadisBotSummary {
 	return {
 		id, name, folder: id, agent: 'claude', paused: false, pinned: false, faceColor: 'blue', faceShape: 'drop', createdAt: 1, updatedAt: 1,
-		needsYou: 0, openItems: 0, activity: 'idle', lastActivityAt: 1,
+		needsYou: 0, openItems: 0, openSuggestions: 0, activity: 'idle', lastActivityAt: 1,
 		...patch,
 	};
 }
@@ -57,6 +58,10 @@ suite('Paradis bots page overlay', () => {
 			onDidChange: Event.None,
 			onDidRequestStop: Event.None,
 			listItems: async () => ITEMS,
+			listSuggestions: async () => [{ id: 's1', botId: 'release', title: 'PR #1108 のレビューの指摘 2 件に返事が無い', request: '#1108 の指摘を読んで、直すか理由を返すか決めて', run: 'r', state: 'open', createdAt: 1 }],
+			startSuggestion: async (id: string) => { calls.push(`start ${id}`); return { ok: true, value: { id, botId: 'release', title: 't', request: '#1108 の指摘を読んで、直すか理由を返すか決めて', run: 'r', state: 'started', createdAt: 1 } }; },
+			dismissSuggestion: async (id: string) => { calls.push(`dismiss ${id}`); return { ok: true, value: {} }; },
+			undoMemoryTidy: async () => { calls.push('undo'); return { ok: true, value: { restored: ['MEMORY.md'], added: [], takenAt: 1 } }; },
 			readHomeFile: async (_bot: string, path: string) => ({ ok: true, value: files.get(path) }),
 			writeHomeFile: async (_bot: string, path: string, text: string) => { calls.push(`write ${path}: ${text}`); files.set(path, text); return { ok: true, value: undefined }; },
 			updateBot: async (_bot: string, patch: object) => { calls.push(`update ${JSON.stringify(patch)}`); return { ok: true, value: bots[0] }; },
@@ -67,6 +72,7 @@ suite('Paradis bots page overlay', () => {
 		} as Partial<IParadisHumanAskService> as IParadisHumanAskService);
 		instantiation.stub(IParadisDialogService, { confirm: async (confirmation: IParadisConfirmation) => { confirms.push(confirmation); return { confirmed: true }; } } as unknown as IParadisDialogService);
 		instantiation.stub(IContextViewService, {});
+		instantiation.stub(ITerminalService, { getInstanceFromId: (id: number) => id === 1 ? { isDisposed: false, sendText: async (text: string, execute: boolean, paste: boolean) => { calls.push(`send ${text} ${execute} ${paste}`); } } : undefined } as unknown as ITerminalService);
 		instantiation.stub(IContextMenuService, {});
 		instantiation.stub(IOpenerService, {});
 		instantiation.stub(INotificationService, new TestNotificationService());
@@ -199,5 +205,40 @@ suite('Paradis bots page overlay', () => {
 		await settle();
 		await settle();
 		assert.deepStrictEqual([calls, files.get('MEMORY.md')], [[], '# Memory\n- Bot が足した行\n']);
+	});
+
+	test('提案: 「始める」は依頼の文を送らずに入れて会話へ戻し、「見送る」は台帳へ知らせる', async () => {
+		const { container, page, calls } = setup();
+		page.setInstance(1);
+		await settle();
+		tab(container, 1);
+		await settle();
+		const titles = Array.from(container.getElementsByClassName('paradis-bot-page-suggestion-title')).map(title => title.textContent);
+		(container.querySelector('.paradis-bot-page-suggestion .paradis-button-secondary') as HTMLElement).click();
+		await settle();
+		(container.querySelector('.paradis-bot-page-suggestion .paradis-button-primary') as HTMLElement).click();
+		await settle();
+		await settle();
+		const selected = Array.from(container.getElementsByClassName('paradis-bot-page-tab')).map(element => element.getAttribute('aria-selected'));
+		assert.deepStrictEqual([titles, calls, selected], [
+			['PR #1108 のレビューの指摘 2 件に返事が無い'],
+			['dismiss s1', 'start s1', 'send #1108 の指摘を読んで、直すか理由を返すか決めて false true'],
+			['true', 'false', 'false', 'false'],
+		]);
+	});
+
+	test('ファイル: 記憶の整理を確かめてから取り消す', async () => {
+		const { container, page, calls, confirms } = setup();
+		page.setInstance(1);
+		await settle();
+		tab(container, 2);
+		await settle();
+		(container.getElementsByClassName('paradis-bot-page-row')[1] as HTMLElement).click();
+		await settle();
+		await settle();
+		(container.querySelector('.paradis-bot-settings-foot .paradis-button-secondary') as HTMLElement).click();
+		await settle();
+		await settle();
+		assert.deepStrictEqual([calls, confirms.map(confirmation => [confirmation.primaryButton, confirmation.destructive])], [['undo'], [['取り消す', true]]]);
 	});
 });
