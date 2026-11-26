@@ -385,3 +385,22 @@
 .paradis-bots-group-faces > .paradis-bot-face + .paradis-bot-face {
 	margin-left: -5px;
 }
+
+/* The template row of the create dialog: the chosen template's name, then the button that opens the template list. */
+.paradis-bot-create .pbcd-template-row {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size100);
+	min-width: 0;
+}
+
+.paradis-bot-create .pbcd-template-name {
+	flex: 1;
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+/* The button keeps its whole label; the template name wraps instead. */
+.paradis-bot-create .pbcd-template-row > .monaco-button {
+	flex: none;
+}
