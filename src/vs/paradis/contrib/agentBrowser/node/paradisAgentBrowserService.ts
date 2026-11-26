@@ -105,7 +105,7 @@ import { PARADIS_PAGE_OPS_TOOL_NAME_SET, ParadisBrowserPageOps, paradisPageOpsOw
 import { paradisAdjustDevtoolsToolResult, paradisStripInternalDevtoolsArguments, paradisWithScriptHints } from './paradisDevtoolsToolAdjustments.js';
 import { PARADIS_BROWSER_QUERY_TOOL_NAME_SET, ParadisBrowserQuery } from './paradisBrowserQuery.js';
 import { PARADIS_BROWSER_ACT_TOOL_NAME_SET, ParadisBrowserActBy } from './paradisBrowserActBy.js';
-import { IParadisObserveHost, IParadisObserveOptions, PARADIS_FAILED_STATE_DEADLINE_MS, PARADIS_SETTLE_NETWORK_WINDOW_MS, ParadisBrowserObserver, paradisFailureWasUnanswered, paradisObserveOptionsFor, paradisTakeObserveArguments, paradisWithObserveArguments } from './paradisBrowserObserve.js';
+import { IParadisObserveHost, IParadisObserveOptions, PARADIS_FAILED_STATE_DEADLINE_MS, PARADIS_SETTLE_NETWORK_WINDOW_MS, ParadisBrowserObserver, paradisFailureWasUnanswered, PARADIS_SETTLE_TOOLS, paradisObserveOptionsFor, paradisParseListPages, paradisTakeObserveArguments, paradisWithObserveArguments } from './paradisBrowserObserve.js';
 import { paradisFillFallbackArgs, paradisFillNeedsInsertTextFallback, paradisMergeFillFallbackResult } from './paradisBrowserFillFallback.js';
 import { IParadisSiteNote, PARADIS_SITE_NOTE_TOOL_NAMES, PARADIS_SITE_NOTE_TOOLS, ParadisSiteNotesStore, paradisFormatSiteNotesHint, paradisSiteNoteCommit, paradisSiteNoteContainsCardNumber, paradisSiteNoteLooksSecret, paradisSiteMemoryInstructions, paradisSiteNoteOrigin, paradisSiteNotesDefaultPath } from './paradisBrowserSiteNotes.js';
 import { paradisRunStepsFlow, paradisRunStepsFlowDescriptor } from './paradisBrowserRunStepsFlow.js';
@@ -121,7 +121,7 @@ import { paradisToolArgumentProblem } from './paradisToolArgumentCheck.js';
 import { paradisDevtoolsArgumentsForChild, paradisMentionLegacyArgumentNames, paradisNormalizeLegacyToolArguments, paradisRenamedLegacyArguments } from './paradisToolArgumentAliases.js';
 import { IParadisRemoteFileFolders, PARADIS_REMOTE_FILE_FOLDERS_METHOD } from '../common/paradisRemoteFileBridge.js';
 import { PARADIS_REMOTE_PANE_FILE_INSTRUCTIONS, PARADIS_REMOTE_READ_DOWNLOAD_OWN_TOOLS_INSTRUCTION, ParadisRemoteFileTransfer, paradisDescribeToolsForRemotePane, paradisRemoteFileToolDirection } from './paradisRemoteFileTransfer.js';
-import { paradisPaneStorageAffinity } from '../common/paradisBrowserPageOps.js';
+import { IParadisPermissionNote, paradisPaneStorageAffinity, paradisPermissionNotesText } from '../common/paradisBrowserPageOps.js';
 import { URI } from '../../../../base/common/uri.js';
 import { AgentNetworkFilterService } from '../../../../platform/networkFilter/common/networkFilterService.js';
 import { IParadisResolvedDropTarget, PARADIS_FILE_DROP_MAX_BYTES_LABEL, PARADIS_RESOLVE_ELEMENT_CENTER_FUNCTION, ParadisFileDropStaging, paradisBuildFileDropDragCancelCommand, paradisBuildFileDropDragCommands, paradisDecodeFileDropContent, paradisParseResolvedDropTarget, paradisSanitizeFileDropName } from './paradisFileDropUpload.js';
@@ -508,6 +508,18 @@ const PARADIS_AGENT_ACTIVITY_MAX_VIEWS = 512;
 const PARADIS_SITE_NOTE_SPACE_CACHE_MS = 60_000;
 /** ヒントを添えるために窓のタブの一覧を待つ上限（ミリ秒）。 */
 const PARADIS_SITE_HINT_TABS_TIMEOUT_MS = 1000;
+/** navigate_page の handleBeforeUnload "decline" で、ページを残す指定を main に置いておく上限（移動が済んだら外す）。 */
+const PARADIS_KEEP_PAGE_ARM_MS = 30_000;
+/** 許可の求めの知らせを main から受け取るのを待つ上限（道具の結果を遅らせない）。 */
+const PARADIS_PERMISSION_NOTES_TIMEOUT_MS = 1000;
+/**
+ * 結果に、そのタブで待っている許可の求め（位置情報・通知など）を添える道具。ページを動かす道具と、動かした後によく呼ぶ
+ * 読む・待つ道具。
+ */
+const PARADIS_PERMISSION_NOTE_TOOLS: ReadonlySet<string> = new Set([
+	...PARADIS_SETTLE_TOOLS, 'evaluate_script', 'take_snapshot', 'take_screenshot', 'capture_screenshot', 'wait_until', 'wait_for', 'get_text',
+	'inspect_element', 'scroll_to', 'hover', 'drag', 'download_by_click', 'emulate',
+]);
 
 /** run_recipe が止まったときに添える、ページのスナップショットの頭の長さ。 */
 const PARADIS_SITE_RECIPE_SNAPSHOT_CHARS = 6000;
@@ -5940,15 +5952,73 @@ export class ParadisAgentBrowserService extends Disposable {
 			}
 			// 注記を付けるタブは呼び出しの前に決める（open_browser_tab などで current が動いても、呼んだタブに付ける）
 			const evictionNoteKey = nested ? undefined : this._evictionNoteKey(ingressLease, params?.arguments);
-			const result = paradisMentionLegacyArgumentNames(await this._callToolRouted(ingressLease, name, params, signal, socket, nested), legacyRenames);
+			const result = paradisMentionLegacyArgumentNames(await this._keepingPageOnDecline(ingressLease, name, params?.arguments, () => this._callToolRouted(ingressLease, name, params, signal, socket, nested)), legacyRenames);
 			callFailed = isExactRecord(result) && result.isError === true;
 			// run_steps の中の手順では見ない（run_steps 全体の後に 1 回だけ）
-			return nested ? result : this._withEvictionNote(evictionNoteKey, await this._withHumanCheck(ingressLease, name, params?.arguments, result, signal, this._isSubagentCall(ingressLease, params)));
+			return nested ? result : this._withEvictionNote(evictionNoteKey, await this._withPermissionNotes(evictionNoteKey, name, await this._withHumanCheck(ingressLease, name, params?.arguments, result, signal, this._isSubagentCall(ingressLease, params))));
 		} finally {
 			pacing.dispose();
 			if (!nested && name.length > 0) {
 				this._browserUsage?.noteCall(callFailed);
 			}
+		}
+	}
+
+	/**
+	 * navigate_page の handleBeforeUnload "decline": ページが「このサイトを離れますか」を出したら、ページを残す。
+	 * Electron は beforeunload を main で同期に決める（ダイアログの知らせが CDP に届く前に済んでいる）ので、移動の前に
+	 * main へ頼んでおき、移動が済んだら必ず外す。効くのはそのタブの次の 1 回だけ（paradisBrowserViewDialogs.ts）。
+	 */
+	private async _keepingPageOnDecline<T>(ingressLease: IParadisAgentBrowserIngressLease, name: string, args: unknown, run: () => Promise<T>): Promise<T> {
+		if (name !== 'navigate_page' || !isExactRecord(args) || args.handleBeforeUnload !== 'decline') {
+			return run();
+		}
+		const key = this._evictionNoteKey(ingressLease, args);
+		const binding = key !== undefined ? this._bindingForKey(key) : undefined;
+		if (binding === undefined) {
+			return run();
+		}
+		const channel = this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL);
+		const armed = await channel.call<boolean>('armExactViewKeepPage', [binding.exactView, PARADIS_KEEP_PAGE_ARM_MS]).catch(() => false);
+		this._requireIngressLease(ingressLease);
+		try {
+			return await run();
+		} finally {
+			if (armed) {
+				void channel.call<boolean>('disarmExactViewKeepPage', [binding.exactView]).catch(() => false);
+			}
+		}
+	}
+
+	/**
+	 * 呼び出したタブでページが許可（位置情報・通知など）を求めて待っていたら、結果の末尾にそう添える。利用者が答えた・
+	 * 誰も答えずに断られたものは 1 回だけ添える。待っている求めは、handle_permission_request で答えられる。
+	 */
+	private async _withPermissionNotes(key: string | undefined, name: string, result: unknown): Promise<unknown> {
+		if (key === undefined || !PARADIS_PERMISSION_NOTE_TOOLS.has(name) || typeof result !== 'object' || result === null || !Array.isArray((result as { content?: unknown }).content)) {
+			return result;
+		}
+		const binding = this._bindingForKey(key);
+		if (binding === undefined) {
+			return result;
+		}
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			// 添えるのはおまけなので、main の答えを長く待たない（道具の結果を遅らせない）
+			const notes = await Promise.race([
+				this.mainProcessService.getChannel(PARADIS_CDP_TARGET_CHANNEL).call<IParadisPermissionNote[]>('takeExactViewPermissionNotes', [binding.exactView]),
+				new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), PARADIS_PERMISSION_NOTES_TIMEOUT_MS); }),
+			]);
+			const text = Array.isArray(notes) ? paradisPermissionNotesText(notes) : undefined;
+			if (text === undefined) {
+				return result;
+			}
+			const typed = result as { content: unknown[] };
+			return { ...typed, content: [...typed.content, { type: 'text', text }] };
+		} catch {
+			return result;
+		} finally {
+			clearTimeout(timer);
 		}
 	}
 
@@ -7029,7 +7099,12 @@ export class ParadisAgentBrowserService extends Disposable {
 		if (name === 'get_session_health') {
 			// バインド有無・接続の生死そのものを切り分けるためのツールなので、バインド必須の
 			// ガード（この直後の `if (!binding)`）より前で扱う。
-			return this._toolText(JSON.stringify(this._buildSessionHealthReport(token), null, 2));
+			// binding の pageInfo は共有した時点の値（開いた直後は空）なので、今の URL と題名を窓から読む（get_shared_page と同じ）。
+			// 読めなければ pageInfo のまま返す（窓が答えないときも、この道具は返す）
+			const healthBinding = this._bindings.get(token);
+			const healthLive = healthBinding !== undefined ? await this._liveTabInfo(ingressLease, healthBinding.pageId, signal) : undefined;
+			this._requireIngressLease(ingressLease);
+			return this._toolText(JSON.stringify(this._buildSessionHealthReport(token, healthLive), null, 2));
 		}
 
 		if (name === 'get_cdp_endpoint') {
@@ -7043,16 +7118,20 @@ export class ParadisAgentBrowserService extends Disposable {
 				// allow-any-unicode-next-line
 				return this._toolError('CDPゲートウェイのHTTPサーバーがまだ起動していません。少し待って再試行してください。');
 			}
+			// binding の pageInfo は共有した時点の値（開いた直後は空）なので、今の URL と題名を窓から読む（get_shared_page と同じ）
+			const boundLive = boundEntry !== undefined ? await this._liveTabInfo(ingressLease, boundEntry.pageId, signal) : undefined;
+			const tabLive = tabEntry === undefined ? undefined : tabEntry.pageId === boundEntry?.pageId ? boundLive : await this._liveTabInfo(ingressLease, tabEntry.pageId, signal);
+			this._requireIngressLease(ingressLease);
 			return this._toolText(JSON.stringify({
 				httpBase,
 				// allow-any-unicode-next-line
 				note: 'browser-use など外部の生CDPクライアントのCDP URLにこの httpBase を指定してください。chrome-devtools系ツール（take_snapshot / click / navigate_page 等）はこのMCPサーバーに内蔵済みなので、通常このエンドポイントを直接使う必要はありません。操作できるのはこのターミナルペインに共有されたページのみです。',
 				limitations: CDP_LIMITATIONS_NOTE,
-				boundPage: boundEntry ? { url: boundEntry.pageInfo.url, title: boundEntry.pageInfo.title, pageId: boundEntry.pageId } : null,
+				boundPage: boundEntry ? { url: boundLive?.url ?? boundEntry.pageInfo.url, title: boundLive?.title ?? boundEntry.pageInfo.title, pageId: boundEntry.pageId } : null,
 				// tab_id で選んだタブだけを見せる接続（httpBase はペインの共有中のページだけを見せる）。ペインは接続元の
 				// プロセスから決めるので、URL にペインのトークンは載せない
 				...(scopedTab !== undefined && tabEntry !== undefined && this._port !== undefined
-					? { tab: { tabId: scopedTab, url: tabEntry.pageInfo.url, title: tabEntry.pageInfo.title }, tabWebSocketDebuggerUrl: `ws://127.0.0.1:${this._port}/cdp/devtools/browser/${EMBEDDED_DEVTOOLS_WS_ID}?tab=${encodeURIComponent(scopedTab)}` }
+					? { tab: { tabId: scopedTab, url: tabLive?.url ?? tabEntry.pageInfo.url, title: tabLive?.title ?? tabEntry.pageInfo.title }, tabWebSocketDebuggerUrl: `ws://127.0.0.1:${this._port}/cdp/devtools/browser/${EMBEDDED_DEVTOOLS_WS_ID}?tab=${encodeURIComponent(scopedTab)}` }
 					: {}),
 				...(boundEntry ? {} : { hint: NOT_BOUND_MESSAGE }),
 			}, null, 2));
@@ -7120,10 +7199,14 @@ export class ParadisAgentBrowserService extends Disposable {
 		// 接続先のペインには、手元に保存した PDF・ダウンロードを接続先のホームの受け渡し用フォルダへ写す
 		const remoteAuthority = this._paneRemoteAuthorityOf(ingressLease.token);
 		try {
+			const pageOpsBinding = this._bindingForKey(this._pageKeyOf(ingressLease));
 			return await this._pageOps.call({
 				// タブのスコープキー: マウスの状態・上書きの持ち主・init scripts はタブごと
 				token: this._pageKeyOf(ingressLease),
 				signal,
+				// 許可の求めを許可できるのは、open_browser_tab で自分で開いたタブだけ。利用者が共有したページと、タブが開いた
+				// 子のページ（target=_blank・window.open。共有したページから開いたものも含む）では断るだけ
+				...(pageOpsBinding !== undefined ? { userSharedTab: !this._isAgentOwnTab(ingressLease.token, pageOpsBinding.pageId) } : {}),
 				requireCurrent: () => this._requireIngressLease(ingressLease),
 				resolveElement: uid => this._resolveElementForPageOps(ingressLease, uid, signal),
 				confirmPaneProfile: async profileId => {
@@ -7232,6 +7315,8 @@ export class ParadisAgentBrowserService extends Disposable {
 			},
 			dispatch: (method, params) => this._dispatchBoundPageInput(token, {}, binding.exactView.targetId, method, JSON.stringify(params), () => this._bindingForKey(token) === binding).response,
 			noteCursor: note => this._noteCursorStatus(ingressLease, note, binding),
+			// 押したことで開いたダイアログ（vendored が記録した Page.javascriptDialogOpening。ページには尋ねない）
+			openDialog: async () => paradisParseListPages(await this._callDevtoolsTool(ingressLease, 'list_pages', {}, signal, true, 'observe'))?.dialog,
 		}, name, args);
 	}
 
@@ -7742,7 +7827,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * `get_session_health` の実体。バインド有無・接続状態に関わらず動作する
 	 * （そもそもそれを切り分けるためのツールなので）。秘密情報（生トークン等）は含めない。
 	 */
-	private _buildSessionHealthReport(token: string): unknown {
+	private _buildSessionHealthReport(token: string, live?: { readonly url: string; readonly title: string }): unknown {
 		const binding = this._bindings.get(token);
 		const currentTabId = this._defaultTabId(token);
 		const paneShell = this._paneShells.get(token);
@@ -7764,8 +7849,8 @@ export class ParadisAgentBrowserService extends Disposable {
 				bound: true,
 				generation: binding.generation,
 				boundAtEpochMs: binding.boundAt,
-				pageUrl: binding.pageInfo.url,
-				pageTitle: binding.pageInfo.title,
+				pageUrl: live?.url ?? binding.pageInfo.url,
+				pageTitle: live?.title ?? binding.pageInfo.title,
 				// ユーザーがこのペインへ共有している 2 枚目以降のページ（tab_id で使える）
 				additionalSharedTabIds: this._userSharedPageEntries(token).map(entry => entry.pageId),
 			} : { bound: false },

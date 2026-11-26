@@ -79,6 +79,53 @@ suite('paradisBrowserActBy (shared process)', () => {
 		});
 	});
 
+	// 押すと alert・confirm・prompt が開くボタン: ページがダイアログで止まり、離しの返事が来ない
+	test('click_by returns as soon as the click opened a dialog, names the dialog and does not send the release again', async () => {
+		const page = new FakePage({ locate: [button] });
+		const call = page.call();
+		const dispatch = call.dispatch;
+		let answerRelease: ((result: IParadisCdpInputDispatchResult) => void) | undefined;
+		let asked = 0;
+		const result = await new ParadisBrowserActBy(() => 'ref').call({
+			...call,
+			dispatch: async (method, params) => {
+				const sent = await dispatch(method, params);
+				// 離しは届く（click のイベントが出てダイアログが開く）が、返事はダイアログに答えるまで来ない
+				return params.type === 'mouseReleased' ? new Promise<IParadisCdpInputDispatchResult>(resolve => { answerRelease = resolve; }) : sent;
+			},
+			openDialog: async () => ++asked >= 2 ? 'confirm: Delete the draft?' : undefined,
+		}, 'click_by', { role: 'button', name: 'Save' });
+		// 遅れて届く返事（ダイアログに答えた後）は捨てられ、何も起こさない
+		answerRelease?.({ status: 'outcome-unknown', message: 'late' });
+		assert.deepStrictEqual({ error: isError(result), lines: [textOf(result).split('\n')[0], textOf(result).split('\n').at(-1)], sent: page.sent, asked }, {
+			error: false,
+			lines: ['Clicked at (50, 20).', 'The click opened a JavaScript dialog (confirm: Delete the draft?), so the page waits for an answer. Answer it with handle_dialog (action "accept" or "dismiss"; for a prompt also promptText) before anything else on this page.'],
+			sent: ['mouseMoved@50,20', 'mousePressed@50,20#1', 'mouseReleased@50,20#1'],
+			asked: 2,
+		});
+	});
+
+	test('click_by reports a release that timed out as a success when a dialog is open, and as a failure when none is', async () => {
+		const run = async (dialog: string | undefined) => {
+			const page = new FakePage({ locate: [button] });
+			const call = page.call();
+			const dispatch = call.dispatch;
+			const result = await new ParadisBrowserActBy(() => 'ref').call({
+				...call,
+				dispatch: async (method, params) => {
+					const sent = await dispatch(method, params);
+					return params.type === 'mouseReleased' ? { status: 'outcome-unknown', message: 'PARA_BROWSER_OUTCOME_UNKNOWN: timed out' } : sent;
+				},
+				openDialog: async () => dialog,
+			}, 'click_by', { role: 'button', name: 'Save' });
+			return { error: isError(result), releases: page.sent.filter(sent => sent.startsWith('mouseReleased')).length, dialog: textOf(result).includes('opened a JavaScript dialog (alert: Saved)') };
+		};
+		assert.deepStrictEqual([await run('alert: Saved'), await run(undefined)], [
+			{ error: false, releases: 1, dialog: true },
+			{ error: true, releases: 2, dialog: false },
+		]);
+	});
+
 	test('click_by stops pressing again once the request is cancelled, after releasing what it pressed', async () => {
 		const page = new FakePage({ locate: [button] });
 		const cancelled = new AbortController();

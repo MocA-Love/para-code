@@ -42,6 +42,8 @@ import { paraNoteBrowserViewFocusRequest } from './paraBrowserViewFocusRequest.j
 // PARA-PATCH: import the fork's genuine Chrome identity, which gives every tab the UA and Client Hints of Google Chrome (Para Code)
 import { paradisAttachChromeIdentity } from '../../../paradis/contrib/browserUserAgent/electron-main/paradisChromeIdentity.js';
 import { paradisDeniesExtensionWindowOpen } from '../common/paradisExtensionPageHold.js'; // PARA-PATCH: block window.open of extension pages from agent-held tabs
+// PARA-PATCH: import the fork's window.prompt() stand-in and the beforeunload "keep the page" request (paradisBrowserViewDialogs.ts)
+import { paradisAttachPromptStandIn, paradisTakeKeepPage } from './paradisBrowserViewDialogs.js';
 
 enum NewPageLocation {
 	Foreground = 'foreground',
@@ -296,6 +298,7 @@ export class BrowserView extends Disposable {
 		this.emulator = this._register(new BrowserViewEmulator(this, this.logService));
 		this._register(paradisAttachChromeIdentity(this)); // PARA-PATCH: present the UA and Client Hints of Google Chrome over CDP (Para Code genuine Chrome identity)
 		this.inspector = this._register(new BrowserViewInspector(this));
+		this._register(paradisAttachPromptStandIn(this)); // PARA-PATCH: window.prompt() as a confirm that a CDP client can answer with a text (Electron has no prompt)
 
 		this._register(this.session.permissions.onDidRequestPermission(e => {
 			if (e.webContents === this.webContents && !this._isDisposed) {
@@ -621,6 +624,7 @@ export class BrowserView extends Disposable {
 		// In the future we may want to show a dialog to ask the user,
 		// with heavy restrictions regarding interaction and repeated prompts.
 		webContents.on('will-prevent-unload', (e) => {
+			if (paradisTakeKeepPage(webContents)) { return; } // PARA-PATCH: a navigation that asked to keep the page on beforeunload (navigate_page handleBeforeUnload "decline") does not override the page
 			e.preventDefault();
 		});
 

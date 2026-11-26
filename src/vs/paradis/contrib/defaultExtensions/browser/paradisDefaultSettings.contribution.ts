@@ -44,14 +44,11 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		'accessibility.dimUnfocused.enabled': true,
 		'workbench.iconTheme': 'material-icon-theme',
 		'workbench.colorTheme': 'Houston',
-		// ステータスバーの Bongo Cat（pixl-garden.BongoCat）を表示するための必須設定。
-		// 拡張は `$(bg-leftup)` 等のアイコンで猫を描画するが、拡張本体の contributes.icons が参照する
-		// フォント（./theme/icomoon.woff）は vsix に同梱されておらず、猫が正しく描画されるのは拡張が
-		// 提供する productIconTheme「bongocat」が有効なときだけ。ここで default レイヤーへ既定値として
-		// 注入するため、ユーザーが settings.json で別の productIconTheme を選んでいる場合はそちらが優先され、
-		// 上書きは一切しない。BongoCat 拡張自体はこの contribution とは別に初回起動時にインストールされる
-		// （paradisDefaultExtensions.contribution.ts）が、colorTheme「Houston」と同様、拡張のスキーマ登録後に
-		// テーマサービスが settings 値へ合流させるため、後追いインストールでも問題なく反映される。
+		// ステータスバーの Bongo Cat（pixl-garden.BongoCat）の猫を描くための設定。猫の字形（`$(bg-leftup)` 等）は、拡張機能が
+		// 提供する productIconTheme「bongocat」が有効なときだけ描ける（拡張本体の contributes.icons が指すフォントは vsix に無い）。
+		// BongoCat は既定では入れない（2026-11-27）。この既定は入れている人だけに効き、未導入なら標準のテーマに落ちる
+		// （workbenchThemeService.ts の initializeProductIconTheme / restoreProductIconTheme。設定は書かれず、警告も出ない）。
+		// default レイヤーなので、settings.json で別の productIconTheme を選んでいる人はそちらが優先される。
 		'workbench.productIconTheme': 'bongocat',
 		// macOS の stable は upstream の既定が native で、右クリック・⌄・プルダウンの一覧が OS のメニューになり、テーマの色や
 		// Para Code のメニューのアイコン・赤字・色の丸が出ない。アプリの中のメニューをテーマで描く（Q575-2）。
@@ -179,6 +176,8 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 		// process から hybrid へ書き換える。hybrid は検出から一度でも外れたポートを閉じたまま張り直さないため、
 		// 負荷で検出が揺れただけでポートパネルから行が消えて戻らなくなる。ポートの多い開発機ではすぐ超えるので、切り替えを止める。
 		'remote.autoForwardPortsFallback': 0,
+		// ここから下の拡張機能ごとの設定は、既定では入れなくなった拡張機能（GitLens は 2026-11-01、ほかは 2026-11-27）を
+		// 自分で入れた人のために残している。入れていない人では、スキーマの無い既定値として何もしない。
 		'gitlens.showWhatsNewAfterUpgrades': false,
 		'go.showWelcome': false,
 		'dependi.extras.silenceUpdateMessages': true,
