@@ -57,7 +57,7 @@ import { ParadisAgentChatSession } from '../browser/paradisAgentChatSession.js';
 import { IParadisAgentChatCardStates, IParadisAgentChatViewHost, ParadisAgentChatView } from '../browser/paradisAgentChatView.js';
 import { paradisVisibleTerminalText } from '../browser/paradisAgentTuiInput.js';
 import { IParadisAgentChatCommand, IParadisAgentChatImageData, IParadisAgentChatSource, PARADIS_AGENT_CHAT_ENABLED_SETTING, PARADIS_AGENT_CHAT_SEND_KEY_SETTING } from '../common/paradisAgentChat.js';
-import { paradisPushAgentChatHistory } from '../common/paradisAgentChatComposerLogic.js';
+import { ParadisAgentChatDraftInsert, paradisInsertAgentChatDraft, paradisPushAgentChatHistory } from '../common/paradisAgentChatComposerLogic.js';
 import { paradisAgentChatAttachDialogOptions, paradisAgentChatAttachPaths } from '../common/paradisAgentChatAttach.js';
 import { paradisParseCodexAsyncReply } from '../../mobileRelay/common/paradisCodexAsyncQuestions.js';
 import { ParadisAgentChatDictation } from './paradisAgentChatDictation.js';
@@ -134,6 +134,10 @@ class ParadisAgentChatOverlay extends Disposable implements IParadisEditorTermin
 		}
 		this.view.focusInput();
 		return true;
+	}
+
+	insertDraft(text: string): ParadisAgentChatDraftInsert | undefined {
+		return this.view === undefined || this.instanceId === undefined || !this.controller.isChatMode(this.instanceId) ? undefined : this.view.insertDraft(text);
 	}
 
 	override dispose(): void {
@@ -371,6 +375,24 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 			return;
 		}
 		this.setChatMode(instanceId, chat, true);
+	}
+
+	insertDraft(instanceId: number, text: string): ParadisAgentChatDraftInsert | false {
+		const token = this.tokenFor(instanceId);
+		return paradisInsertAgentChatDraft(text, {
+			chatShown: this.enabled && this.isChatMode(instanceId) && token !== undefined,
+			insertIntoVisibleInput: value => {
+				for (const overlay of this.overlays) {
+					const result = overlay.currentInstanceId === instanceId ? overlay.insertDraft(value) : undefined;
+					if (result !== undefined) {
+						return result;
+					}
+				}
+				return undefined;
+			},
+			getDraft: () => this.getDraft(token!),
+			setDraft: value => this.setDraft(token!, value),
+		});
 	}
 
 	private focusChatInput(instanceId: number): void {
