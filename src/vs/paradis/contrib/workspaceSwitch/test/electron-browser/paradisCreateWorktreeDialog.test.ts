@@ -638,7 +638,7 @@ suite('create worktree dialog: issues and pull requests pasted into the prompt',
 				mode: '既存のブランチ',
 				path: URI.file('/repo-worktrees/pr-2241-main').fsPath,
 				// allow-any-unicode-next-line
-				note: 'fork から来たプルリクエスト #2241 です。作るときに origin から取得し、ローカルブランチ pr-2241-main を作って開きます。push しても、fork の元のブランチには載りません。',
+				note: 'fork から来たプルリクエスト #2241 です。作るときに origin から取得し、ローカルブランチ pr-2241-main を作って開きます。push しても、fork の元のブランチには載りません。ほかの人のコードなので、エージェントのフォルダの信頼は Para Code からは書きません。',
 				existingBranch: { branch: 'pr-2241-main', source: 'local', pullRequestNumber: 2241 },
 			},
 			// 別のリポジトリの PR: 元のブランチは当てず、番号を足す今までの付け方

@@ -1664,7 +1664,7 @@ export class ParadisCreateWorktreeDialog extends Disposable {
 			// allow-any-unicode-next-line
 			sub(localize('paradis.createWorktree.note.forkPullRequestSub', "push しても、fork の元のブランチには載りません。"));
 			// allow-any-unicode-next-line
-			sub(localize('paradis.createWorktree.note.forkPullRequestTrust', "ほかの人のコードなので、エージェントのフォルダの信頼は済ませません。起動したエージェントが、フォルダを信頼するかを確かめます。"));
+			sub(localize('paradis.createWorktree.note.forkPullRequestTrust', "ほかの人のコードなので、エージェントのフォルダの信頼は Para Code からは書きません。"));
 			return;
 		}
 		icon.className = ThemeIcon.asClassName(plan.kind === 'behind' || plan.kind === 'diverged' || plan.kind === 'missing' ? Codicon.warning : Codicon.info);

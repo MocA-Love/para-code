@@ -1278,8 +1278,10 @@ export class ParadisWorktreeGitService {
 			}
 			await this.exec(['-C', repo, ...checkoutWorkers, 'worktree', 'add', ...paradisWorktreeBranchArgs('existing', request.branch, worktreePath, undefined)]);
 		}
-		// fork から来た PR のブランチ（今回取ったもの・前に取って印の付いたもの）には、信頼を書かない。起動したエージェントが
-		// 自分の信頼の確認を出す（指示は起動コマンドの引数で渡すので、確認に Enter が打たれることは無い）。
+		// fork から来た PR のブランチ（今回取ったもの・前に取って印の付いたもの）には、信頼を書かない。信頼するかは、起動した
+		// エージェントの確認に任せる（指示は起動コマンドの引数で渡すので、その確認に Enter が打たれることは無い）。
+		// 【要確認】エージェントが確認を出すかは CLI しだい: 親のフォルダや本体のリポジトリを信頼済みにしていると、配下・
+		// ワークツリーを信頼済みと見なす CLI では確認が出ない。ここで塞げるのは、Para Code が自分で信頼を書く分だけ。
 		// 同じリポジトリのブランチは、origin に push できる人が書いたもので、リポジトリ本体と同じ扱い（信頼を書く）
 		const foreign = pullRequestNumber !== undefined || await this.forkPullRequestOfBranch(request.repoPath, request.branch) !== undefined;
 		if (request.trustClaudeFolder === true && !foreign) {

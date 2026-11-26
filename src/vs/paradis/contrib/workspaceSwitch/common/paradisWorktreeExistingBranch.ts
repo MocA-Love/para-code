@@ -125,7 +125,7 @@ export interface IParadisExistingBranchChoice {
 /**
  * 作ったワークツリーに、エージェント（Claude Code・Codex）のフォルダの信頼を先に書いてよいか。fork から来た PR は、
  * リポジトリに push できない第三者が書いたコードなので、設定（`paradis.workspaceSwitch.trustClaudeFolder`）が有効でも書かない
- * （信頼済みにすると、その中の `.claude/settings.json` の hook などが確認なしで動く。起動したエージェントが自分で確かめる）。
+ * （信頼済みにすると、その中の `.claude/settings.json` の hook などが確認なしで動く。信頼するかはエージェントの確認に任せる）。
  * 同じリポジトリのブランチは、origin に push できる人が書いたもので、リポジトリ本体と同じ扱いにする。
  * git を動かす側（`addWorktreeFromBranch`）も同じ判定をする。こちらは、その判定を持たない古い接続先のための網。
  */

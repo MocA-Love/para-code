@@ -876,7 +876,7 @@ export async function paradisRunWorktreeCreateFlow(accessor: ServicesAccessor, r
 			...(existingBranch.sync !== undefined ? { sync: existingBranch.sync } : {}),
 			...(existingBranch.expectedLocalSha !== undefined ? { expectedLocalSha: existingBranch.expectedLocalSha } : {}),
 			...(existingBranch.pullRequestNumber !== undefined ? { pullRequestNumber: existingBranch.pullRequestNumber } : {}),
-			// fork から来た PR（第三者のコード）には信頼を渡さない。起動したエージェントが自分の信頼の確認を出す
+			// fork から来た PR（第三者のコード）には信頼を渡さない。信頼するかは、起動したエージェントの確認に任せる
 			trustClaudeFolder: paradisPreTrustsExistingBranch(trustClaudeFolder, existingBranch),
 		};
 		await paradisCallNewerGitHost(gitHost.channel.call('addWorktreeFromBranch', [branchRequest]));
