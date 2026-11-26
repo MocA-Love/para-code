@@ -40,6 +40,7 @@ import {
 	paradisBotItemsOf,
 	paradisBotItemsPendingMail,
 	paradisBotItemsRemoveBot,
+	paradisBotItemUndelivered,
 	paradisBotItemUpdate,
 	paradisBotItemWaitsForOwner,
 	paradisIsBotItemSnoozed,
@@ -350,7 +351,7 @@ export class ParadisBotsService extends Disposable {
 			if (item === undefined || item.botId !== botId) {
 				return { ok: false, code: item === undefined ? 'not_found' : 'not_owner', message: item === undefined ? `There is no item #${number}.` : `Item #${number} belongs to another bot.` };
 			}
-			const pending = item.events.filter(event => event.toBot === true).map(event => event.id);
+			const pending = paradisBotItemUndelivered(item).map(event => event.id);
 			if (pending.length > 0) {
 				// 印を外せなくても読むことは通す（次に読んだときにもう一度出るだけ）
 				await this.saveItems(paradisBotItemsMarkDelivered(this.items, item.uid, pending), undefined);
@@ -371,6 +372,10 @@ export class ParadisBotsService extends Disposable {
 			const bot = this.getBot(botId);
 			if (bot === undefined || bot.paused) {
 				return { ok: false, code: bot === undefined ? 'not_found' : 'paused', message: bot === undefined ? 'There is no such bot.' : 'The bot is paused.' };
+			}
+			if (bot.preserved !== undefined) {
+				// 新しい版が足した設定（権限など）を、この版は分からないまま起動しない
+				return { ok: false, code: 'read_only', message: 'This bot was changed by a newer Para Code, so this version does not start it.' };
 			}
 			if (this.homes === undefined) {
 				return { ok: false, code: 'unavailable', message: 'Bot home folders are not available.' };
