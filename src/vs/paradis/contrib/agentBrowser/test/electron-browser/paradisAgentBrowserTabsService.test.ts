@@ -212,6 +212,25 @@ suite('ParadisAgentBrowserTabsService approval', () => {
 		], ['denied', 'recentlyDenied', 1, 'denied']);
 	}));
 
+	// 画面に出る前に閉じたダイアログ（出る前に、ほかへ打っていた Enter・Esc が当たった）は、利用者が見ていないので拒否に数えない
+	test('a dialog that closed before it appeared is asked again and never counts as a refusal', () => runWithFakedTimers(fakedTimers, async () => {
+		const unseen = { button: undefined, afterMs: 0 };
+		const once = createService([unseen, { button: 0, afterMs: 1500 }]);
+		const always = createService([unseen, { button: 0, afterMs: 0 }, unseen, { button: 1, afterMs: 1500 }]);
+		store.add(once.service);
+		store.add(always.service);
+		const cts = store.add(new CancellationTokenSource());
+		assert.deepStrictEqual([
+			await once.service.askApproval('pane-token', request, cts.token),
+			once.shown.length,
+			once.shown[1].detail?.endsWith('detail'),
+			await always.service.askApproval('pane-token', request, cts.token),
+			// 拒否ではないので、次の求めはダイアログを出して聞く
+			await always.service.askApproval('pane-token', request, cts.token),
+			always.shown.length,
+		], ['denied', 2, true, 'unanswered', 'approve', 4]);
+	}));
+
 	test('a denial with a cooldown key only refuses that key for that pane', () => runWithFakedTimers(fakedTimers, async () => {
 		const { service, shown } = createService([{ button: 0, afterMs: 1500 }, { button: 1, afterMs: 1500 }, { button: 1, afterMs: 1500 }]);
 		store.add(service);

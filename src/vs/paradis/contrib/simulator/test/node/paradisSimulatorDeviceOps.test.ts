@@ -289,7 +289,7 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 			unverified: { isError: true, windowCalls: 0, attached: false },
 			denied: { isError: false, windowCalls: 1, attached: false },
 			recentlyDenied: { isError: true, windowCalls: 1, attached: false },
-			unanswered: { isError: false, windowCalls: 1, attached: false, body: 'Para Code could not get a clear answer: the dialog was answered right after it appeared or with a keyboard shortcut. Ask the user to click a button in the dialog, then ask again.' },
+			unanswered: { isError: false, windowCalls: 1, attached: false, body: 'Para Code could not get a clear answer: the dialog was closed before it appeared on screen, answered right after it appeared, or answered with a keyboard shortcut. This does not count as a refusal. Ask the user to click a button in the dialog, then ask again.' },
 			timedOut: { isError: false, windowCalls: 1, attached: false, body: 'The user did not answer in time. Ask the user in the conversation before asking again.' },
 			cancelled: { isError: false, windowCalls: 1, attached: false, body: 'The request was cancelled before the user answered.' },
 			malformed: { isError: false, windowCalls: 1, attached: false },
@@ -508,6 +508,20 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 			// どちらも写しは消す
 			[...declined.staging.removed, ...switched.staging.removed],
 		], [false, true, 0, ['/tmp/stage-1', '/tmp/stage-1']]);
+	});
+
+	// 起動前の AVD で割り当てた Android は、起動すると一覧の id が serial に替わる。台帳の id は元のままなので、
+	// 「答えを待つ間に端末が替わった」と取り違えてインストールを断っていた
+	test('install: an Android emulator attached before it booted still gets the app', async () => {
+		const { ledger, runner, call } = setup();
+		const booted: IParadisMobileDevice = { id: 'android:serial:emulator-5556', udid: 'emulator-5556', name: 'Test', platform: 'Android', state: 'device', isRunning: true, avdId: 'android:avd:Test' };
+		ledger.devices = [IPHONE, booted];
+		ledger.attachments.set(PANE, { paneToken: PANE, deviceId: 'android:avd:Test', deviceName: 'Test', stateKey: undefined, attachedAt: 0 });
+		const result = await call('mobile_install_app', { path: '/Users/example/Build/app.apk' });
+		assert.deepStrictEqual([result.isError, runner.runs.filter(run => run.args.includes('install'))], [
+			false,
+			[{ file: ADB, args: ['-s', 'emulator-5556', 'install', '-r', '/tmp/stage-1/app.apk'] }],
+		]);
 	});
 
 	test('install: checks the automatic refusal and a pending answer before copying, and runs one install per pane at a time', async () => {

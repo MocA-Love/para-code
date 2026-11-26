@@ -347,7 +347,9 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 		switch (name) {
 			case 'mobile_get_attached_device': {
 				const device = await this._hostClient.request('GET', `/api/v1/devices/${id}`, undefined, signal);
-				return jsonResult(device);
+				// mobile_list_devices は OS の版を `runtime` で返す。ここでも同じ名前で読めるようにする（ホストの `runtimeName` も残す）
+				const runtime = device && typeof device === 'object' ? firstString((device as Record<string, unknown>).runtimeName, (device as Record<string, unknown>).osVersion) : undefined;
+				return jsonResult(runtime !== undefined && device && typeof device === 'object' && !Array.isArray(device) ? { ...device, runtime } : device);
 			}
 			case 'mobile_screenshot': {
 				const png = await this._hostClient.requestBinary(`/api/v1/devices/${id}/screenshot`, signal);
@@ -411,7 +413,8 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 			case 'mobile_press_button': {
 				const button = requireString(args, 'button');
 				await this._hostClient.request('POST', `/api/v1/devices/${id}/input/button`, { button }, signal);
-				return textResult(`Pressed "${button}" on ${attachment.deviceName}.`);
+				// ホームなどで画面が切り替わる間は、アクセシビリティの木が前のアプリのままのことがある（iOS で実測）
+				return textResult(`Pressed "${button}" on ${attachment.deviceName}. If the screen changes, mobile_ui_snapshot may show the previous screen for a moment: read it again if it does.`);
 			}
 			case 'mobile_ui_find': {
 				const result = await this._hostClient.request('POST', `/api/v1/devices/${id}/ui/find`, buildUiQuery(args), signal);
