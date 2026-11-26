@@ -239,6 +239,7 @@ suite('Paradis bot items', () => {
 		for (let index = 1; index < PARADIS_BOT_ITEM_LIMITS.events; index++) {
 			busy = update(busy, { comment: `報告 ${index}` });
 		}
+		const closedOnFull = paradisBotItemUpdate(busy, 'b1', 1, { status: 'done', comment: '残りは次の項目で' }, 3000);
 		const ownerOnFull = ok(paradisBotItemOwnerComment(busy, 'u1', { text: '持ち主は書ける' }, 3000));
 		const links = Array.from({ length: PARADIS_BOT_ITEM_LIMITS.links + 1 }, (_, index) => ({ kind: 'url' as const, ref: `https://example.com/${index}` }));
 		assert.deepStrictEqual({
@@ -246,6 +247,8 @@ suite('Paradis bot items', () => {
 			otherBot: code(paradisBotItemAdd(state, { uid: 'more', botId: 'b2', title: 'ほかの Bot は足せる' }, 2000)),
 			afterClose: code(paradisBotItemAdd(update(state, { status: 'done' }), { uid: 'more', botId: 'b1', title: '閉じれば足せる' }, 2000)),
 			events: code(paradisBotItemUpdate(busy, 'b1', 1, { comment: '501 件目' }, 3000)),
+			// いっぱいになった項目も、Bot は閉じられる
+			closeOnFull: [code(closedOnFull), closedOnFull.ok ? closedOnFull.item.events.length : 0, closedOnFull.ok ? closedOnFull.item.status : ''],
 			// 持ち主の書き込みは通し、作成の 1 件を残して古いものから落とす
 			ownerOnFull: [ownerOnFull.item.events.length, ownerOnFull.item.events[0].kind, ownerOnFull.item.events[1].id, ownerOnFull.item.events.at(-1)?.text],
 			links: code(paradisBotItemUpdate(one(), 'b1', 1, { links }, 2000)),
@@ -254,6 +257,7 @@ suite('Paradis bot items', () => {
 			otherBot: 'ok',
 			afterClose: 'ok',
 			events: 'limit',
+			closeOnFull: ['ok', 500, 'done'],
 			ownerOnFull: [500, 'made', 3, '持ち主は書ける'],
 			links: 'limit',
 		});

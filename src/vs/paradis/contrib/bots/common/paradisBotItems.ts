@@ -526,7 +526,8 @@ export function paradisBotItemUpdate(state: IParadisBotItemsState, botId: string
 			? { ok: true, state, item: current, unchanged: true }
 			: refuse('item_closed', `Item #${number} is closed. Set its status to "working" to reopen it, or add a new item.`);
 	}
-	if (current.events.length >= L.events) {
+	// 閉じる書き込みは上限でも通す（通さないと、いっぱいになった項目を Bot が閉じられない。古いイベントは commit が落とす）
+	if (current.events.length >= L.events && !closing) {
 		return refuse('limit', `Item #${number} has ${L.events} events. Close it and add a new item for what is left.`);
 	}
 

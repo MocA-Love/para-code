@@ -228,7 +228,7 @@ export function paradisBotUpdate(state: IParadisBotsState, id: string, patch: IP
 	return { ok: true, state: { ...state, bots: state.bots.map(existing => existing.id === id ? bot : existing) }, bot };
 }
 
-/** 台帳から外す。専用フォルダは消さない（人格メモと記憶は利用者のもの。同じ名前で作り直すと別のフォルダになる）。 */
+/** 台帳から外す。専用フォルダは消さない（人格メモと記憶は利用者のもの）。 */
 export function paradisBotRemove(state: IParadisBotsState, id: string): ParadisBotsResult {
 	if (!writable(state)) {
 		return refuse('read_only', 'The bot list was written by a newer Para Code, so this version does not change it.');
