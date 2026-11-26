@@ -202,7 +202,7 @@ suite('Paradis bot homes', () => {
 			botWrites: await Promise.all(['botAddItem', 'botUpdateItem', 'issueLaunch', 'releasePane'].map(command => channel.call('window:1', command, ['id3', { title: 'x' }]).then(() => 'reachable', () => 'not found'))),
 		}, {
 			folders: ['bot', 'bot-2'],
-			memory: { ok: true, value: '# Memory\n\nOne line per fact, each starting with its date (YYYY-MM-DD). Details go in memory/<topic>.md. No secrets.\n' },
+			memory: { ok: true, value: '# 記憶\n\n1 行に 1 つの事実を書き、行の頭に日付（YYYY-MM-DD）を付けます。詳しいことは memory/<話題>.md に書きます。秘密は書きません。\n' },
 			soul: { ok: true, value: 'レビューをする係\n' },
 			launch: {
 				launchId: 'string', botId: 'id2', purpose: 'chat', cwd: join(root, 'bot-2'), name: 'レビュー係', agent: 'codex',
@@ -296,5 +296,10 @@ suite('Paradis bot homes', () => {
 			memory: { ok: true, value: '- 2026-11-27 古い記憶\n' },
 			homeFiles: ['.para-bot.json'],
 		});
+	});
+
+	test('人格メモの雛形は日本語（利用者が開いて書き足す）', async () => {
+		await homes.ensure(BOT);
+		assert.strictEqual(await homes.read(BOT, 'SOUL.md'), '# リリース係\n\n（この Bot が何をするのかを、ここに 1 文で書いてください）\n\n## 仕事の進め方\n\n- （どこを見て、どこへ知らせるか）\n');
 	});
 });
