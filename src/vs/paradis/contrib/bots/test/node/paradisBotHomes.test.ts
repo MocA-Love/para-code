@@ -182,8 +182,9 @@ suite('Paradis bot homes', () => {
 		const again = await channel.call('window:1', 'reportLaunch', [launch.value.launchId, 'pane-2']);
 		const activity = service.getSnapshot().bots[0].activity;
 		const stopped = await channel.call('window:1', 'requestStop', [second.value.id]);
-		await channel.call('window:1', 'updateBot', [second.value.id, { paused: true, pinned: true }]);
+		await channel.call('window:1', 'updateBot', [second.value.id, { paused: true, pinned: true, faceShape: 'hex' }]);
 		const badPin = await channel.call('window:1', 'updateBot', [second.value.id, { pinned: 'yes' }]);
+		const badFace = await channel.call('window:1', 'updateBot', [second.value.id, { faceColor: '#3b82f6' }]);
 		assert.deepStrictEqual({
 			folders: [first.value.folder, second.value.folder],
 			memory,
@@ -192,8 +193,8 @@ suite('Paradis bot homes', () => {
 			bound: [forged, reported, again, service.botOfPane('pane-1')?.name, service.botOfPane('pane-2')?.name, activity],
 			stops: [stopped, stops],
 			paused: await channel.call('window:1', 'requestLaunch', [second.value.id, 'chat']),
-			// ピン留めはチャネルから変えられ、一覧の値に載る
-			pinned: [service.getSnapshot().bots.map(bot => bot.pinned), badPin],
+			// ピン留めと顔はチャネルから変えられ、一覧の値に載る（色は選べる名前だけ）
+			pinned: [service.getSnapshot().bots.map(bot => [bot.pinned, bot.faceColor, bot.faceShape]), badPin, badFace],
 			outside: await channel.call('window:1', 'writeHomeFile', [second.value.id, '../../escape.md', 'x']),
 			badArgs: [await channel.call('window:1', 'requestLaunch', [second.value.id, 'root']), await channel.call('window:1', 'ownerSetStatus', ['uid', 'waiting']), await channel.call('window:1', 'createBot', ['x'])],
 			// Bot の名義の書き込みは、チャネルには無い
@@ -210,7 +211,7 @@ suite('Paradis bot homes', () => {
 			bound: [false, true, false, 'レビュー係', undefined, 'idle'],
 			stops: [true, ['id1', 'id2']],
 			paused: { ok: false, code: 'paused', message: 'The bot is paused.' },
-			pinned: [[true], { ok: false, code: 'invalid_argument', message: 'The change to the bot is not valid.' }],
+			pinned: [[[true, 'teal', 'hex']], { ok: false, code: 'invalid_argument', message: 'The change to the bot is not valid.' }, { ok: false, code: 'invalid_argument', message: 'The change to the bot is not valid.' }],
 			outside: { ok: false, code: 'outside', message: 'The path must be a relative path inside the bot\'s home folder.' },
 			badArgs: [{ ok: false, code: 'invalid_argument', message: 'The arguments are not valid.' }, { ok: false, code: 'invalid_argument', message: 'The arguments are not valid.' }, { ok: false, code: 'invalid_argument', message: 'The arguments are not valid.' }],
 			botWrites: ['not found', 'not found', 'not found', 'not found'],
