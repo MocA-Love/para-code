@@ -57,7 +57,7 @@ import { ParadisAgentChatSession } from '../browser/paradisAgentChatSession.js';
 import { IParadisAgentChatCardStates, IParadisAgentChatViewHost, ParadisAgentChatView } from '../browser/paradisAgentChatView.js';
 import { paradisVisibleTerminalText } from '../browser/paradisAgentTuiInput.js';
 import { IParadisAgentChatCommand, IParadisAgentChatImageData, IParadisAgentChatSource, PARADIS_AGENT_CHAT_ENABLED_SETTING, PARADIS_AGENT_CHAT_SEND_KEY_SETTING } from '../common/paradisAgentChat.js';
-import { ParadisAgentChatDraftInsert, paradisInsertAgentChatDraft, paradisPushAgentChatHistory } from '../common/paradisAgentChatComposerLogic.js';
+import { ParadisAgentChatDraftInsert, paradisInsertAgentChatDraft, paradisPushAgentChatHistory, paradisSendToAgentPane } from '../common/paradisAgentChatComposerLogic.js';
 import { paradisAgentChatAttachDialogOptions, paradisAgentChatAttachPaths } from '../common/paradisAgentChatAttach.js';
 import { paradisParseCodexAsyncReply } from '../../mobileRelay/common/paradisCodexAsyncQuestions.js';
 import { ParadisAgentChatDictation } from './paradisAgentChatDictation.js';
@@ -607,6 +607,10 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 			this.histories.set(token, paradisPushAgentChatHistory(this.getHistory(token), text, PARADIS_AGENT_CHAT_HISTORY_LIMIT));
 		}
 		return error;
+	}
+
+	sendMessageToPane(instanceId: number, text: string): Promise<string | undefined> {
+		return paradisSendToAgentPane(this.tokenFor(instanceId), text, (token, value) => this.sendMessage(instanceId, token, value));
 	}
 
 	answerQuestions(instanceId: number, token: string, group: string, answers: readonly ParadisAgentQuestionAnswer[]): Promise<string | undefined> {
