@@ -250,8 +250,9 @@ export class ParadisScheduledRunsService extends Disposable {
 			const parsed = paradisParseCron(definition.schedule);
 			nextRuns[definition.id] = parsed.schedule ? paradisNextCronOccurrence(parsed.schedule, now) : undefined;
 		}
-		const ids = new Set(definitions.map(definition => definition.id));
-		return { definitions, runs: this.runs.filter(run => ids.has(run.definitionId)), nextRuns };
+		// 定義を消した後に終わりを待っている回は残す（Bot の見回りの回だけを除く）
+		const patrolIds = new Set(this.definitions.filter(definition => paradisIsBotPatrolDefinition(definition)).map(definition => definition.id));
+		return { definitions, runs: this.runs.filter(run => !patrolIds.has(run.definitionId)), nextRuns };
 	}
 
 	// ---------- Bot の見回り ----------
