@@ -49,4 +49,10 @@ export interface IParadisAgentChatService {
 	 * {@link headerState} から自分で出す。ターミナルへ戻る口も見出しと一緒に消えるので、{@link showTerminal} を呼べる所を置く。
 	 */
 	setHeaderHidden(instanceId: number, hidden: boolean): void;
+	/**
+	 * そのターミナルのエージェントへ発言を送る（チャット表示の入力欄から送るのと同じ確認を通る: 許可・質問の画面が出ている間・
+	 * エージェントが前面にいない・空白だけの文は送らない。作業中なら TUI の待ち行列に入る）。送れたら undefined、送れなければ
+	 * 理由の文。チャット表示を開いていなくても送れる。送った文はそのペインの入力欄の履歴に残る。
+	 */
+	sendMessageToPane(instanceId: number, text: string): Promise<string | undefined>;
 }
