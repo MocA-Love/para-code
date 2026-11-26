@@ -443,7 +443,8 @@ function resolvePathArguments(args: Record<string, unknown>, cwd: string | undef
 	const resolved: Record<string, unknown> = { ...args };
 	for (const name of PATH_ARGUMENTS) {
 		const value = resolved[name];
-		if (typeof value === 'string' && value.length > 0 && !isAbsolute(value)) {
+		// `~/` で始まるパスはそのまま送る（接続先のペインでは、本体が接続先のホームへ展開する）
+		if (typeof value === 'string' && value.length > 0 && !isAbsolute(value) && !value.startsWith('~')) {
 			resolved[name] = resolvePath(cwd, value);
 		}
 	}
