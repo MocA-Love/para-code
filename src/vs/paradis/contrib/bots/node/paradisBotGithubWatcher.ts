@@ -213,8 +213,15 @@ export class ParadisBotGithubWatcher extends Disposable {
 		const watching = this.watching;
 		try {
 			await this.pollOnce(watching);
+		} catch {
+			// 次の回を立て直す下で拾う（ここで止めない）
 		} finally {
 			this.polling = false;
+			// 読んでいる間に鳴ったタイマーは空振りして消えている（入り切りが変わった・途中で投げた）。見張っている間は
+			// 次の回を必ず残す
+			if (this.watching !== '' && !this.halted && this.timer.value === undefined && !this._store.isDisposed) {
+				this.schedule(PARADIS_BOT_GITHUB_POLL_MS);
+			}
 		}
 	}
 
@@ -285,7 +292,7 @@ export class ParadisBotGithubWatcher extends Disposable {
 			this.options.rateLimitPause.noteRateLimits([{ resource: 'graphql', limit: parsed.rateLimit.limit, used: parsed.rateLimit.limit - parsed.rateLimit.remaining, remaining: parsed.rateLimit.remaining, resetAt: parsed.rateLimit.resetAt }]);
 		}
 		const now = this.now();
-		const { seen, fresh } = paradisBotGithubDiff(this.seen, parsed.found, now, this.baseline);
+		const { seen, fresh } = paradisBotGithubDiff(this.seen, parsed.found, now, this.baseline, parsed.complete);
 		this.seen = seen;
 		this.baseline = false;
 		this.failures = 0;

@@ -144,11 +144,17 @@ export interface IParadisBotGithubFound {
 
 export interface IParadisBotGithubResponse {
 	readonly found: readonly IParadisBotGithubFound[];
+	/** 件数で切れずに全部読めた検索の理由（応答に無いものは、もう自分宛てではない）。 */
+	readonly complete: readonly ParadisBotGithubReason[];
 	readonly pullRequests: Readonly<Record<string, IParadisBotGithubPullRequest>>;
 	readonly rateLimit?: { readonly limit: number; readonly remaining: number; readonly resetAt: number };
 }
 
 const REPO_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/;
+
+function searchComplete(value: unknown): boolean {
+	return isRecord(value) && Array.isArray(value.nodes) && typeof value.issueCount === 'number' && value.issueCount <= value.nodes.length;
+}
 
 function searchNodes(value: unknown, reason: ParadisBotGithubReason): IParadisBotGithubFound[] | undefined {
 	if (!isRecord(value) || !Array.isArray(value.nodes)) {
@@ -206,7 +212,14 @@ export function paradisBotGithubParseResponse(data: unknown, prRefs: readonly st
 	const limit = isRecord(data.rateLimit) ? data.rateLimit : undefined;
 	const resetAt = typeof limit?.resetAt === 'string' ? Date.parse(limit.resetAt) : NaN;
 	const rateLimit = limit && typeof limit.limit === 'number' && typeof limit.remaining === 'number' && !isNaN(resetAt) ? { limit: limit.limit, remaining: limit.remaining, resetAt } : undefined;
-	return { found: [...reviewRequested, ...assigned], pullRequests, ...(rateLimit !== undefined ? { rateLimit } : {}) };
+	const complete: ParadisBotGithubReason[] = [];
+	if (searchComplete(data.reviewRequested)) {
+		complete.push('review_requested');
+	}
+	if (searchComplete(data.assigned)) {
+		complete.push('assigned');
+	}
+	return { found: [...reviewRequested, ...assigned], complete, pullRequests, ...(rateLimit !== undefined ? { rateLimit } : {}) };
 }
 
 // ---- 新着の判定 ---------------------------------------------------------------------------------
@@ -217,11 +230,13 @@ export function paradisBotGithubKey(found: Pick<IParadisBotGithubFound, 'reason'
 
 /**
  * 読んだものを見た印と比べる。`baseline` の回（見張りを始めた最初の回）は印を付けるだけで新着を返さない。
- * 印は「最後に見た時刻」で持ち、古いもの・多すぎる分を落とす。検索が件数で切れていても、印は足すだけなので
- * 「切れて見えなくなった → また見えた」で起こし直さない（落とすのは時間が経ったものだけ）。
+ * 印は「最後に見た時刻」で持ち、古いもの・多すぎる分を落とす。件数で切れた検索では印を足すだけにする
+ * （「切れて見えなくなった → また見えた」で起こし直さない）。全部読めた検索（`complete`）では、応答に無い印を落とす
+ * （レビューを返した後にまた依頼されたら、新着として起こす）。
  */
-export function paradisBotGithubDiff(seen: ReadonlyMap<string, number>, found: readonly IParadisBotGithubFound[], now: number, baseline: boolean): { readonly seen: Map<string, number>; readonly fresh: IParadisBotGithubNotice[] } {
-	const next = new Map([...seen].filter(([, at]) => now - at <= PARADIS_BOT_GITHUB_LIMITS.seenMs));
+export function paradisBotGithubDiff(seen: ReadonlyMap<string, number>, found: readonly IParadisBotGithubFound[], now: number, baseline: boolean, complete: readonly ParadisBotGithubReason[] = []): { readonly seen: Map<string, number>; readonly fresh: IParadisBotGithubNotice[] } {
+	const present = new Set(found.map(paradisBotGithubKey));
+	const next = new Map([...seen].filter(([key, at]) => now - at <= PARADIS_BOT_GITHUB_LIMITS.seenMs && (present.has(key) || !complete.some(reason => key.startsWith(`${reason}:`)))));
 	const fresh: IParadisBotGithubNotice[] = [];
 	for (const item of found) {
 		const key = paradisBotGithubKey(item);
