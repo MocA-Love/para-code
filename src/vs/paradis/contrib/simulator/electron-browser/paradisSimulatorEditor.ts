@@ -37,7 +37,7 @@ import { EditorInput } from '../../../../workbench/common/editor/editorInput.js'
 import { IEditorGroup } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { ParadisButton } from '../../../browser/paradisButton.js';
 import { IParadisSimulatorDevice } from '../common/paradisSimulator.js';
-import { paradisSimulatorDuoPanel, paradisSimulatorNextOrientation, paradisSimulatorStallReason, paradisSimulatorStallRetryDelay } from '../common/paradisSimulatorInput.js';
+import { paradisSimulatorDuoPanel, paradisSimulatorIsFoldable, paradisSimulatorNextOrientation, paradisSimulatorStallReason, paradisSimulatorStallRetryDelay } from '../common/paradisSimulatorInput.js';
 import { ParadisSimulatorFoldBar, ParadisSimulatorFoldRequest } from './paradisSimulatorFoldBar.js';
 import { IParadisSimulatorClient } from './paradisSimulatorClient.js';
 import { PARADIS_SIMULATOR_EDITOR_ID, ParadisSimulatorEditorInput } from './paradisSimulatorEditorInput.js';
@@ -68,7 +68,8 @@ class ParadisSimulatorEditorSession extends DisposableStore {
 	device: IParadisSimulatorDevice | undefined;
 	readonly frameView: ParadisSimulatorFrameView;
 	/** 折りたたみの端末の、最後に読んだ様子（折りたたみでなければ undefined）。 */
-	fold: { hingeDegrees: number; activeDisplay: 'cover' | 'inner' } | undefined;
+	/** 折りたたみの端末のときだけ。開き具合と映している画面は、分からない間は undefined。 */
+	fold: { hingeDegrees: number | undefined; activeDisplay: 'cover' | 'inner' | undefined } | undefined;
 	deviceHubRunning: boolean | undefined;
 	folding = false;
 	foldError: string | undefined;
@@ -405,9 +406,9 @@ export class ParadisSimulatorEditor extends EditorPane {
 			const config = await this._client.getScreenConfig(session.input.udid);
 			if (this._session.value === session) {
 				session.frameView.setScreenConfig(config);
-				const panel = paradisSimulatorDuoPanel(config);
 				const wasFoldable = !!session.fold;
-				session.fold = config.hingeDegrees !== undefined && panel ? { hingeDegrees: config.hingeDegrees, activeDisplay: panel } : undefined;
+				// 折りたたみかどうかは端末の型で見る（開き具合は、Xcode 27.2 では 1 度開閉するまで読めない）
+				session.fold = paradisSimulatorIsFoldable(session.device, config) ? { hingeDegrees: config.hingeDegrees, activeDisplay: paradisSimulatorDuoPanel(config) } : undefined;
 				if (session.fold && (!wasFoldable || session.deviceHubRunning === undefined)) {
 					session.deviceHubRunning = await this._client.deviceHubRunning().catch(() => undefined);
 				}

@@ -55,6 +55,8 @@ export interface IParadisSimulatorDevice {
 	/** 表示用の OS の名前（例 `iOS 27.1`）。 */
 	readonly runtime: string;
 	readonly state: ParadisSimulatorDeviceState;
+	/** 端末の型（例 `com.apple.CoreSimulator.SimDeviceType.iPhone-Duo`）。simctl が返したときだけ。 */
+	readonly deviceTypeIdentifier?: string;
 }
 
 /** 映している画面の大きさと向き（serve-sim の `/helper/<udid>/config`）。 */
@@ -62,7 +64,11 @@ export interface IParadisSimulatorScreenConfig {
 	readonly width: number;
 	readonly height: number;
 	readonly orientation: string;
-	/** 折りたたみの端末だけ。 */
+	/**
+	 * 折りたたみの端末だけ。折りたたみでも、serve-sim が開き具合を読めないと入らない（Xcode 27.2 の devicectl は
+	 * `device motion hinge-angle` を受け付けない。開閉を 1 度送ると、serve-sim が送った値を覚えて入るようになる）。
+	 * 折りたたみかどうかはこの値で決めず、`paradisSimulatorIsFoldable` で見る。
+	 */
 	readonly hingeDegrees?: number;
 }
 
