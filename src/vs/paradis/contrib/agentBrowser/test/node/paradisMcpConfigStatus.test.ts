@@ -12,7 +12,7 @@ import { tmpdir } from 'os';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ParadisMcpSetupController } from '../../node/paradisMcpSetup.js';
-import { computeParadisCodexTableRewrite, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml, paradisAddCodexMissingTableLines } from '../../node/paradisMcpConfigStatus.js';
+import { computeParadisCodexTableRewrite, inspectParadisClaudeMcpJson, inspectParadisCodexMcpToml, paradisAddCodexMissingTableLines, paradisAddCodexToolApproval } from '../../node/paradisMcpConfigStatus.js';
 import { paradisCodexMcpTableBody } from '../../common/paradisMcpSetupEncoding.js';
 
 const PORT = 47286;
@@ -279,6 +279,59 @@ suite('Para Browser MCP config status', () => {
 		} finally {
 			await fs.rm(directory, { recursive: true, force: true });
 		}
+	});
+
+	test('pre-approves ask_human only in our own table, never touches another tool or a table the user already wrote, and runs once', () => {
+		const ours = [
+			'model = "gpt"',
+			'',
+			'[mcp_servers.para-browser]',
+			`url = "http://127.0.0.1:${PORT}/"`,
+			'bearer_token_env_var = "PARA_CODE_TERMINAL_PANE_ID"',
+			'',
+			'[mcp_servers.para-browser.tools.board_ask_human] # mine',
+			'approval_mode = "prompt"',
+			'',
+			'[mcp_servers.other]',
+			'command = "x"',
+			'',
+		].join('\n');
+		const add = (text: string) => paradisAddCodexToolApproval(text, PORT, 'ask_human');
+		const added = add(ours);
+		assert.deepStrictEqual({
+			added,
+			// 2 回目は何もしない
+			again: added !== undefined ? add(added) : 'not added',
+			crlf: add(ours.replace(/\n/g, '\r\n'))?.endsWith('[mcp_servers.para-browser.tools.ask_human]\r\napproval_mode = "approve"\r\n'),
+			userPrompt: add(`${ours}[mcp_servers.para-browser.tools.ask_human]\napproval_mode = "prompt"\n`),
+			userEmptyTable: add(`${ours}[mcp_servers.para-browser.tools."ask_human"]\n`),
+			toolsTable: add(`${ours}[mcp_servers.para-browser.tools]\nother = { approval_mode = "approve" }\n`),
+			dottedTools: add(ours.replace('bearer_token_env_var', 'tools.ask_human.approval_mode = "prompt"\nbearer_token_env_var')),
+			inlineTools: add(ours.replace('bearer_token_env_var', 'tools = { }\nbearer_token_env_var')),
+			dottedOutside: add(`mcp_servers.para-browser.tools.ask_human.approval_mode = "prompt"\n${ours}`),
+			unreadableHeader: add(`${ours}[mcp_servers.para-browser.tools.ask_human\n`),
+			endsInString: add(`${ours}note = """\nnot closed\n`),
+			otherPort: add(ours.replace(String(PORT), '1')),
+			notOurs: add('[mcp_servers.other]\ncommand = "x"\n'),
+			twoTables: add(`${ours}[mcp_servers."para-browser"]\nurl = "x"\n`),
+		}, {
+			added: `${ours}\n[mcp_servers.para-browser.tools.ask_human]\napproval_mode = "approve"\n`,
+			again: undefined,
+			crlf: true,
+			userPrompt: undefined,
+			userEmptyTable: undefined,
+			toolsTable: undefined,
+			dottedTools: undefined,
+			inlineTools: undefined,
+			dottedOutside: undefined,
+			unreadableHeader: undefined,
+			endsInString: undefined,
+			otherPort: undefined,
+			notOurs: undefined,
+			twoTables: undefined,
+		});
+		// 足した後も、ほかの行は 1 文字も変わらず、私たちの節は「設定済み」のまま
+		assert.deepStrictEqual({ prefix: added?.startsWith(ours.trimEnd()), status: added !== undefined ? inspectParadisCodexMcpToml(added, PORT) : undefined }, { prefix: true, status: { state: 'configured' } });
 	});
 
 	test('adds tool_timeout_sec only when no key anywhere already defines it, so the TOML never gets a duplicate key', () => {

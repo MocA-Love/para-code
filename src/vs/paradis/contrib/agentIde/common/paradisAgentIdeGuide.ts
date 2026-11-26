@@ -96,6 +96,12 @@ When your terminal runs on an SSH host, these tools act on the port forwards of 
 - The local side always listens on 127.0.0.1, and new forwards go to localhost on the SSH host.
 - Changing a local port number breaks browser tabs that use the old address.
 
+## Ask the person
+
+- When you need the person to decide and they may not be watching your terminal, call ask_human: context (a few short lines on why), then up to 5 questions with up to 8 options each and an optional recommended option. The question shows in the Para Code inbox, and the answer arrives as the user's next message, so end your turn after calling it. A new call replaces your earlier question if it is still unanswered.
+- If you have a built-in tool for asking the user (Claude Code's AskUserQuestion), use it instead: Para Code shows those questions in its inbox too. In a terminal the task board started, use board_ask_human.
+- Do not use ask_human for a permission that a tool or the CLI asks for itself.
+
 ## Common mistakes
 
 - Sending a prompt to an agent that is still starting: wait with until="agent_stopped" (it allows a launched agent 90 seconds to start) or read_terminal until its input box shows.
