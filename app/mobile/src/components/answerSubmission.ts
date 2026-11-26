@@ -13,6 +13,9 @@ import type { AgentMessageSendResult } from '../store.js';
  *  - PCが受け付けたあとに規定時間を過ぎた（受け付けたのにカードが消えない）→「PC は受け付けました」
  *    （acceptedNoResponse）。**再送は出さない。** PCは本文を受け取っているので、再送すると
  *    同じ回答が二重に入力される（次の質問やプロンプトへ流れ込む）
+ *  - さらに待ってもカードが消えない（acceptedStale）→「PC でまだ反映されていません」と「選び直す」を出す。
+ *    この頃には PC が同じ回答の送り直しを受け付ける（PC は渡した回答を 60 秒覚えていて、その間の二度目は断る）。
+ *    アプリのストアはこの手前で会話と一覧を PC から取り直しているので、ここまで残るカードは PC でも残っている
  *  - 送信が拒否されたら理由を添えて押せる状態へ戻す（idle + error）
  * のように、利用者が次にすべきことが必ず見える形にする。
  *
@@ -23,16 +26,24 @@ export type AnswerSubmissionState =
 	| { readonly phase: 'sending' }
 	| { readonly phase: 'sent' }
 	| { readonly phase: 'noResponse' }
-	| { readonly phase: 'acceptedNoResponse' };
+	| { readonly phase: 'acceptedNoResponse' }
+	| { readonly phase: 'acceptedStale' };
 
 export type AnswerSubmissionEvent =
 	| { readonly type: 'submit' }
 	| { readonly type: 'result'; readonly result: AgentMessageSendResult }
 	| { readonly type: 'timeout' }
+	| { readonly type: 'stale' }
 	| { readonly type: 'reset' };
 
 /** PC の反映を待つ時間。これを過ぎたら「応答がありません」に替える。 */
 export const ANSWER_RESPONSE_TIMEOUT_MS = 15_000;
+
+/**
+ * PC が受け付けた回答のカードが、これだけ待っても消えなければ「選び直す」を出す。PC が同じ回答の送り直しを断る 60 秒と、
+ * ストアの 2 回目の取り直し（70 秒）の後にする。
+ */
+export const ANSWER_STALE_TIMEOUT_MS = 80_000;
 
 export const IDLE_SUBMISSION: AnswerSubmissionState = { phase: 'idle' };
 
@@ -60,6 +71,8 @@ export function reduceAnswerSubmission(state: AnswerSubmissionState, event: Answ
 			return state.phase === 'sending' ? { phase: 'noResponse' }
 				: state.phase === 'sent' ? { phase: 'acceptedNoResponse' }
 					: state;
+		case 'stale':
+			return state.phase === 'acceptedNoResponse' || state.phase === 'sent' ? { phase: 'acceptedStale' } : state;
 		case 'reset':
 			return state.phase === 'idle' && state.error === undefined ? state : IDLE_SUBMISSION;
 	}
@@ -73,4 +86,9 @@ export function isSubmissionLocked(state: AnswerSubmissionState): boolean {
 /** 再送・選び直しを出してよい状態か。PCが受け付けたかどうか分からないまま時間切れになったときだけ。 */
 export function canRetrySubmission(state: AnswerSubmissionState): boolean {
 	return state.phase === 'noResponse';
+}
+
+/** 選び直しだけを出す状態か。PC は受け付けたが、長く待ってもカードが消えなかったとき（同じ回答の再送は出さない）。 */
+export function canReselectSubmission(state: AnswerSubmissionState): boolean {
+	return state.phase === 'acceptedStale';
 }
