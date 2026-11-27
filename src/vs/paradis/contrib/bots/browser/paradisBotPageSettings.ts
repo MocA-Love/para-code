@@ -394,7 +394,6 @@ export class ParadisBotSettingsPanel {
 		}
 	}
 
-	/** 記憶の整理を取り消す（一番新しい写しを書き戻す。整理でできたファイルは消さずに知らせる）。 */
 	/** 選んだ写し（`takenAt`）に記憶を戻す。 */
 	private async undoMemoryTidy(bot: IParadisBotSummary, takenAt: number): Promise<void> {
 		const { confirmed } = await this.services.paradisDialogService.confirm({
