@@ -1,5 +1,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
+import { botFileKey, botKey, useBotPages } from '../features/bots/botStore.js';
+import type { MobileBot } from '../features/bots/bots.js';
 import { useHumanAsks } from '../features/humanAsks/humanAskStore.js';
 import type { HumanAsk } from '../features/humanAsks/humanAsks.js';
 import { useAppStore, usePcAgentSources } from '../appState.js';
@@ -54,7 +56,11 @@ function demoWorkspace(): WorkspaceState {
 			terminal(6, 'demo-build', 'ビルド設定の整理', 'ws-web'),
 			terminal(7, 'demo-readme', 'README の更新', 'ws-docs', 'done'),
 			terminal(8, 'demo-notes', '調査メモ', 'ws-docs'),
+			{ ...terminal(9, 'demo-bot-release', 'リリース係', 'ws-para'), botId: 'bot-release' },
 		],
+		// Bot の節（bots.page.v1）と要対応の台帳（human-ask.v1）を見るための広告だけ
+		capabilities: ['bots.page.v1', 'human-ask.v1'],
+		bots: DEMO_BOTS,
 		battery: { level: 82, charging: true },
 		pcName: 'MacBook Pro',
 	};
@@ -137,7 +143,50 @@ export function installDemoData(): void {
 	});
 	// 要対応の「質問と承認」の段（human-ask.v1）。印が同じなので取り直しには行かない
 	useHumanAsks.setState({ byPc: { [MBP]: { signature: 'demo', asks: DEMO_HUMAN_ASKS.map(ask => ({ ...ask, askedAt: now - ask.askedAt })) } } });
+	// Bot のページ（項目・提案・項目のページ・ファイル）。PC が無いので取り直しは失敗し、この値のまま残る
+	const release = botKey(MBP, 'bot-release');
+	useBotPages.setState({
+		items: {
+			[release]: [
+				{ uid: 'item42', number: 42, title: 'Safari でログインが切れる', status: 'needs_you', waits: true, lastActivityAt: now - 2 * 60_000 },
+				{ uid: 'item43', number: 43, title: 'paracode-184 の変更履歴をまとめる', status: 'working', waits: false, lastActivityAt: now - 4 * 60_000 },
+				{ uid: 'item44', number: 44, title: 'CSV の書き出しを直す', status: 'waiting', waits: false, lastActivityAt: now - 8 * 60_000 },
+				{ uid: 'item45', number: 45, title: 'ベータの告知文を下書きする', status: 'planned', waits: false, lastActivityAt: now - 30 * 60_000 },
+				{ uid: 'item40', number: 40, title: 'paracode-183 のタグを打つ', status: 'done', waits: false, lastActivityAt: now - 26 * 3_600_000, closedAt: now - 26 * 3_600_000 },
+			],
+		},
+		suggestions: {
+			[release]: [
+				{ id: 'sug1', title: 'PR #1108 の指摘 2 件に返事が無い', request: '#1108 のレビューの指摘を読んで、直すか理由を返すか決めて', state: 'open', createdAt: now - 3_600_000 },
+			],
+		},
+		pages: {
+			[botKey(MBP, 'item42')]: {
+				uid: 'item42', number: 42, botId: 'bot-release', title: 'Safari でログインが切れる', status: 'needs_you', waits: true, lastActivityAt: now - 2 * 60_000,
+				description: 'Safari だけログイン後にセッションが切れます。原因は Cookie の SameSite です。',
+				doneMeans: 'Safari・Chrome・Firefox でログインが 1 日続く',
+				askEventId: 7, links: [{ kind: 'pr', ref: 'MocA-Love/example#1120' }], locked: false,
+				events: [
+					{ id: 1, kind: 'made', actor: 'owner', at: now - 3 * 3_600_000 },
+					{ id: 4, kind: 'commented', actor: 'bot', at: now - 20 * 60_000, text: '原因は Cookie の SameSite=None が Safari で落ちることでした。' },
+					{ id: 7, kind: 'status', actor: 'bot', at: now - 2 * 60_000, from: 'working', to: 'needs_you' },
+				],
+			},
+		},
+		files: {
+			[botFileKey(MBP, 'bot-release', 'SOUL.md')]: '# リリース係\n\nリリースの手前の確認と、変更履歴をまとめる係です。\nタグを打つ前に必ず確かめます。\n',
+			[botFileKey(MBP, 'bot-release', 'MEMORY.md')]: '# Memory\n\n- paracode-183 は 2026-11-26 に出した\n- ベータは macOS だけ\n',
+		},
+	});
 }
+
+/** Bot の見本（リリース係のペインは terminal 9）。 */
+const DEMO_BOTS: MobileBot[] = [
+	{ id: 'bot-release', name: 'リリース係', agent: 'claude', modelId: 'opus', permissionId: 'default', faceColor: 'blue', faceShape: 'drop', paused: false, pinned: true, needsYou: 1, openItems: 4, openSuggestions: 1, activity: 'idle', lastActivityAt: 0 },
+	{ id: 'bot-review', name: 'レビュー係', agent: 'codex', faceColor: 'teal', faceShape: 'squircle', paused: false, pinned: false, needsYou: 1, openItems: 2, openSuggestions: 0, activity: 'working', lastActivityAt: 0 },
+	{ id: 'bot-patrol', name: '見回り係', agent: 'claude', faceColor: 'amber', faceShape: 'hex', paused: false, pinned: false, needsYou: 0, openItems: 0, openSuggestions: 0, activity: 'patrolling', lastActivityAt: 0 },
+	{ id: 'bot-translate', name: '翻訳係', agent: 'claude', faceColor: 'violet', faceShape: 'blob', paused: true, pinned: false, needsYou: 0, openItems: 0, openSuggestions: 0, activity: 'stopped', lastActivityAt: 0 },
+];
 
 /** 要対応の台帳の 1 件の見本（`askedAt` は今からの差）。 */
 const DEMO_HUMAN_ASKS: readonly HumanAsk[] = [

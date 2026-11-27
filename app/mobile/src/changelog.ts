@@ -40,6 +40,12 @@ export interface MobileRelease {
 /** 新しい順に並べる。 */
 export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
+		version: '0.12.32',
+		date: '2026-11-27',
+		// Bot の画面は PC の設定（既定オフ）の下なので、まだ知らせない。既定をオンにする版でまとめて書く
+		items: [],
+	},
+	{
 		version: '0.12.31',
 		date: '2026-11-27',
 		items: [
