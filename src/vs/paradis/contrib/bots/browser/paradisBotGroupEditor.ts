@@ -316,10 +316,9 @@ export class ParadisBotGroupEditor extends EditorPane {
 			dom.append(row, dom.$('span.pbgr-who')).textContent = paradisBotGroupRecordHead(record, id => this.nameOf(id));
 			const mark = paradisBotGroupRecordMark(record);
 			if (mark !== undefined) {
-				const chip = dom.append(row, dom.$('span.pbgr-undelivered'));
+				const chip = dom.append(row, dom.$('span.pbgr-mark'));
 				chip.textContent = mark;
-				chip.classList.toggle('read', record.undelivered === undefined && record.readAt !== undefined);
-				chip.classList.toggle('unread', record.undelivered === undefined && record.readAt === undefined);
+				chip.classList.toggle('unread', record.readAt === undefined);
 			}
 			const text = dom.append(row, dom.$('span.pbgr-text'));
 			text.textContent = record.text;

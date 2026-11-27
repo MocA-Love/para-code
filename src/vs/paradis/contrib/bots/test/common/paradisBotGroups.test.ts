@@ -13,11 +13,8 @@ import {
 	IParadisBotGroupsState,
 	paradisBotGroupAppendRecord,
 	paradisBotGroupCreate,
-	paradisBotGroupDeliverRefusal,
-	paradisBotGroupDeliverRefusalMessage,
 	paradisBotGroupInbox,
 	paradisBotGroupMarkRead,
-	paradisBotGroupMarkUndelivered,
 	paradisBotGroupMembers,
 	paradisBotGroupRemove,
 	paradisBotGroupUpdate,
@@ -179,28 +176,7 @@ suite('Paradis bot groups', () => {
 		assert.deepStrictEqual(paradisBotGroupMembers({ members: ['a', 'gone', 'b'] }, new Set(['a', 'b'])), ['a', 'b']);
 	});
 
-	test('伝言を受け箱に入れてよいか: 同じグループのメンバーで、自分宛てでないときだけ。断る理由は送り直さないと言う', () => {
-		const group = { members: ['a', 'b'] };
-		const base = { group, from: 'a', to: 'b' };
-		assert.deepStrictEqual({
-			refusals: [
-				paradisBotGroupDeliverRefusal(base),
-				paradisBotGroupDeliverRefusal({ ...base, from: undefined }),
-				paradisBotGroupDeliverRefusal({ ...base, to: 'z' }),
-				paradisBotGroupDeliverRefusal({ ...base, to: 'a' }),
-				paradisBotGroupDeliverRefusal({ ...base, group: undefined }),
-			],
-			messages: (['not_a_member', 'self'] as const).map(paradisBotGroupDeliverRefusalMessage),
-		}, {
-			refusals: [undefined, 'not_a_member', 'not_a_member', 'self', 'not_a_member'],
-			messages: [
-				'you and that bot are not in the same group, so do not send it again',
-				'it was addressed to yourself, so do not send it again',
-			],
-		});
-	});
-
-	test('受け箱: 宛先の未読の伝言だけ（あなたの sent・ほかの Bot 宛て・届けられなかった・抜けたグループは入れない）。既読はその Bot の受け箱の分だけ', () => {
+	test('受け箱: 宛先の未読の伝言だけ（あなたの sent・ほかの Bot 宛て・抜けたグループは入れない）。既読はその Bot の受け箱の分だけ', () => {
 		let state = withGroup();
 		const append = (input: Parameters<typeof paradisBotGroupAppendRecord>[2]) => {
 			const result = paradisBotGroupAppendRecord(state, 'g1', input, 2000);
@@ -211,10 +187,6 @@ suite('Paradis bot groups', () => {
 		append({ kind: 'told', from: 'a', to: ['b'], text: '終わった' });
 		append({ kind: 'asked', from: 'a', to: ['b'], text: 'どう?' });
 		append({ kind: 'told', from: 'b', to: ['a'], text: 'a 宛て' });
-		append({ kind: 'told', from: 'a', to: ['b'], text: '届かなかった' });
-		const undelivered = paradisBotGroupMarkUndelivered(state, 'g1', '5', 'unreachable');
-		assert.ok(undelivered.ok);
-		state = undelivered.state;
 		const inboxB = paradisBotGroupInbox(state, 'b');
 		// a は b 宛ての伝言を既読にできない。b は自分の分を既読にする（知らない id・sent の id は数えない）
 		const byOther = paradisBotGroupMarkRead(state, 'a', ['2'], 3000);

@@ -59,44 +59,7 @@ suite('Paradis bot groups service', () => {
 		}, { created: 'g1', recorded: 1, failed: 'storage', name: '班', groupsOfB: ['g1'], groupsOfZ: 0, writes: 2 });
 	});
 
-	test('伝言の道具の口: 記録の id を文字列で返し、その id で届かなかった理由の印を付ける。印は読み直しても残る', async () => {
-		const file = new MemoryFile();
-		const groups = service(file);
-		await groups.createGroup({ name: '班', members: ['a', 'b'] });
-		await groups.createGroup({ name: '別', members: ['a', 'b'] });
-		const sent = await groups.appendRecord('g1', { kind: 'sent', from: 'owner', to: ['a'], text: 'どうぞ' });
-		const port = paradisBotGroupsMessagePort(groups);
-		const told = await port.appendRecord('g1', { kind: 'told', from: 'a', to: 'b', text: '終わった' });
-		const refused = await port.appendRecord('g1', { kind: 'told', from: 'a', to: 'z', text: 'x' });
-		// 別のグループ・知らない id・数字でない id・あなたの sent の id は何も変えない
-		for (const [groupId, recordId] of [['g2', '2'], ['g1', '99'], ['g1', '2.0'], ['g1', '02'], ['g1', 'x'], ['g1', String(sent.ok && sent.value.id)]]) {
-			await port.markUndelivered!(groupId, recordId);
-		}
-		const asked = await port.appendRecord('g1', { kind: 'asked', from: 'b', to: 'a', text: 'どう?' });
-		const writesBefore = file.written.length;
-		await port.markUndelivered!('g1', told.recordId!, 'refused');
-		await port.markUndelivered!('g1', told.recordId!, 'unknown');
-		await port.markUndelivered!('g1', asked.recordId!, 'unknown');
-		const queued = await port.appendRecord('g1', { kind: 'told', from: 'a', to: 'b', text: 'あとで読んで' });
-		await port.markQueued('g1', queued.recordId!);
-		await port.markUndelivered!('g1', queued.recordId!, 'refused');
-		const reread = paradisParseBotGroupsState(JSON.parse(JSON.stringify(file.written.at(-1))));
-		assert.deepStrictEqual({
-			told,
-			refused: refused.ok,
-			writes: file.written.length - writesBefore,
-			records: groups.getSnapshot().records.map(record => [record.id, record.kind, record.undelivered ?? false, record.queued ?? false]),
-			reread: reread?.records.map(record => [record.id, record.undelivered ?? false, record.queued ?? false]),
-		}, {
-			told: { ok: true, recordId: '2' },
-			refused: false,
-			writes: 4,
-			records: [[1, 'sent', false, false], [2, 'told', 'refused', false], [3, 'asked', 'unknown', false], [4, 'told', false, true]],
-			reread: [[1, false, false], [2, 'refused', false], [3, 'unknown', false], [4, false, true]],
-		});
-	});
-
-	test('伝言の道具の口: 受け箱は宛先の未読を返し、markRead で既読にする（保存して読み直しても既読のまま）', async () => {
+	test('伝言の道具の口: appendRecord で記録した伝言が宛先の受け箱に 1 通ずつ入り、markRead で既読にする（保存して読み直しても既読のまま）', async () => {
 		const file = new MemoryFile();
 		const groups = service(file);
 		await groups.createGroup({ name: '班', members: ['a', 'b'] });
