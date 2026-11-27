@@ -67,7 +67,9 @@ export interface IParadisHumanAskPaneAnswerRequest {
 
 export type ParadisHumanAskPaneDelivery =
 	| { readonly kind: 'question'; readonly answers: readonly ParadisAgentQuestionAnswer[] }
-	| { readonly kind: 'approval'; readonly choiceId: 'yes' | 'no' };
+	| { readonly kind: 'approval'; readonly choiceId: 'yes' | 'no' }
+	/** `ask_human` の答え。次の発言として送る（paradisAskHumanTool.ts）。 */
+	| { readonly kind: 'message'; readonly text: string };
 
 /** 台帳の id。1 回の問いごとに別の値になる（中継の対話の id は 1 回ごとに別。世代も入れて、読み直しの前後を混ぜない）。 */
 export function paradisHumanAskPaneId(paneKey: string, epoch: string, interactionId: string): string {

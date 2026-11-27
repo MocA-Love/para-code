@@ -9,12 +9,12 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
-import { IParadisMcpOwningWindowRequest, IParadisMcpToolCallContext, ParadisMcpCallerKind } from '../../../agentBrowser/common/paradisMcpToolProvider.js';
+import { IParadisMcpOwningWindowRequest, IParadisMcpToolCallContext, ParadisMcpCallerKind, paradisMcpCallRefusalFor, paradisRegisterMcpCallRefusal } from '../../../agentBrowser/common/paradisMcpToolProvider.js';
 import { ParadisHumanAskService } from '../../../humanAsk/node/paradisHumanAskChannel.js';
 import { EMPTY_PARADIS_BOT_ITEMS_STATE, IParadisBotItemsState } from '../../common/paradisBotItems.js';
 import { EMPTY_PARADIS_BOTS_STATE, IParadisBot, IParadisBotsState } from '../../common/paradisBots.js';
 import { paradisApplyBotChange } from '../../common/paradisBotManageTools.js';
-import { ParadisBotManageToolProvider, paradisBotIdeActionRefusal } from '../../node/paradisBotManageToolProvider.js';
+import { ParadisBotManageToolProvider, paradisBotIdeActionRefusal, paradisBotPatrolToolRefusal } from '../../node/paradisBotManageToolProvider.js';
 import { ParadisBotsService } from '../../node/paradisBotsService.js';
 import { IParadisBotsJsonFile } from '../../node/paradisBotsStore.js';
 
@@ -205,6 +205,30 @@ suite('Paradis bot manage tools', () => {
 			'This terminal is a Para Code bot. A bot cannot start, open, type into or close other terminals, or change spaces, with the IDE tools: a terminal it started would not be a bot and could change bots. The reading tools still work. Tell your owner what you would do.',
 			undefined,
 		]);
+	});
+
+	test('見回りのペインからの para-browser の呼び出しは、読むだけの道具と見回りの Bot の道具だけを通す', async () => {
+		const h = harness();
+		await h.call('create_bot', { name: 'A', agent: 'claude' });
+		const patrol = h.service.issueLaunch('id1', 'patrol');
+		const chat = h.service.issueLaunch('id1', 'chat');
+		assert.ok(patrol !== undefined && chat !== undefined && h.service.reportLaunch(patrol, 'pane-patrol') && h.service.reportLaunch(chat, 'pane-chat'));
+		const registration = paradisRegisterMcpCallRefusal(paradisBotPatrolToolRefusal(h.service));
+		const tools = ['get_text', 'take_snapshot', 'list_browser_tabs', 'bot_suggest', 'bot_item_list', 'click_by', 'fill_by', 'navigate_page', 'evaluate_script', 'run_steps', 'write_space_note', 'send_terminal_input', 'create_scheduled_run', 'update_bot', 'computer_click'];
+		const answers = async (pane: string) => Object.fromEntries(await Promise.all(tools.map(async tool => [tool, await paradisMcpCallRefusalFor(pane, tool) === undefined ? 'ok' : 'refused'])));
+		const result = { patrol: await answers('pane-patrol'), chat: await answers('pane-chat'), user: await answers('pane-user') };
+		registration.dispose();
+		const afterDispose = await paradisMcpCallRefusalFor('pane-patrol', 'click_by');
+		const allowed = { get_text: 'ok', take_snapshot: 'ok', list_browser_tabs: 'ok', bot_suggest: 'ok', bot_item_list: 'ok' };
+		const everything = { ...allowed, click_by: 'ok', fill_by: 'ok', navigate_page: 'ok', evaluate_script: 'ok', run_steps: 'ok', write_space_note: 'ok', send_terminal_input: 'ok', create_scheduled_run: 'ok', update_bot: 'ok', computer_click: 'ok' };
+		assert.deepStrictEqual({ ...result, afterDispose, message: await paradisBotPatrolToolRefusal(h.service)('pane-patrol', 'click_by') }, {
+			patrol: { ...allowed, click_by: 'refused', fill_by: 'refused', navigate_page: 'refused', evaluate_script: 'refused', run_steps: 'refused', write_space_note: 'refused', send_terminal_input: 'refused', create_scheduled_run: 'refused', update_bot: 'refused', computer_click: 'refused' },
+			// 会話の Bot のペインと利用者のペインは、この口では断らない（会話の Bot の IDE の操作は別の口が断る）
+			chat: everything,
+			user: everything,
+			afterDispose: undefined,
+			message: 'This is a look-around, which only reads. Para Code refuses every tool that clicks, types, moves, writes, sends or starts something here, even if it is always allowed in your settings. Offer what you would do with bot_suggest.',
+		});
 	});
 
 	test('確かめた変更を当てる: 台帳の変更の後に役割を書く。台帳に断られたら役割は書かない', async () => {

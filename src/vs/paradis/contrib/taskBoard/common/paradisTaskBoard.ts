@@ -295,15 +295,40 @@ export interface ITaskBoardSlot {
 
 export type TaskBoardManualStatus = 'working' | 'question' | 'permission' | 'idle';
 
+/**
+ * ボードの外のペインの、人の答えを待っている 1 件（Para Code の「人が答えるもの」の台帳の写し。接続口が SSE で手元のボードへ流す）。
+ * ボードの画面で押せるのは質問の `options`（問い 1 つ・1 つ選ぶもの）だけ。許可と、それ以外の質問は Para Code の受信箱で答える
+ * （ボードの接続口から許可に答えられる場所を増やさない）。
+ */
+export interface ITaskBoardPaneAsk {
+	/** 台帳の鍵。答えるときに返す。 */
+	readonly key: string;
+	readonly kind: 'question' | 'permission';
+	/** だれから（スペース、worktree・タブ・エージェント）。 */
+	readonly from: { readonly title: string; readonly detail?: string };
+	/** 問いの本文か、許可の中身（コマンドなど）。 */
+	readonly text: string;
+	readonly askedAt: number;
+	/** ほかの場所で答えて届けている最中。 */
+	readonly busy: boolean;
+	/** 直前の答えが届かなかった。 */
+	readonly failed: boolean;
+	readonly questionId?: string;
+	readonly options?: readonly { readonly id: string; readonly label: string; readonly recommended?: boolean }[];
+}
+
 /** ボードの外で手で起動したエージェント。 */
 export interface ITaskBoardManualSession {
 	readonly id: string;
 	readonly name: string;
 	readonly branch?: string;
-	readonly agent: TaskBoardAgentKind;
+	/** 見本のセッションだけ。台帳から来た 1 件（`ask`）はエージェントの名前を `branch` の側に書く。 */
+	readonly agent?: TaskBoardAgentKind;
 	readonly status: TaskBoardManualStatus;
 	readonly text: string;
 	readonly since: number;
+	/** Para Code の台帳から来た 1 件（本物のボード）。無ければ見本のセッション。 */
+	readonly ask?: ITaskBoardPaneAsk;
 }
 
 export type TaskBoardGitHubMode = 'off' | 'connecting' | 'ok' | 'error';
@@ -526,7 +551,8 @@ export interface ITaskBoardRpc {
 	archivedTasks: { params: Record<string, never>; result: readonly ITaskBoardArchivedTask[] };
 	/** ファイルへ移したタスクをボードの「完了」に戻す。 */
 	restoreArchivedTask: { params: { taskId: string }; result: void };
-	answerManual: { params: { sessionId: string; allow: boolean }; result: void };
+	/** 見本のセッションは `allow`。台帳から来た 1 件は `optionId`（出した選択肢）。 */
+	answerManual: { params: { sessionId: string; allow?: boolean; optionId?: string }; result: void };
 	adoptManual: { params: { sessionId: string; title: string }; result: { id: string } };
 	saveFlow: { params: { flow: ITaskBoardFlow; scope: 'team' | 'personal' }; result: { path: string } };
 	setActiveFlow: { params: { flowId: string }; result: void };

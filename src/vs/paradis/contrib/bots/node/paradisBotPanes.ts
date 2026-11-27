@@ -199,6 +199,18 @@ export class ParadisBotPanes {
 		return [...this.pending.values()].some(entry => entry.botId === botId && entry.purpose === 'chat' && now - entry.issuedAt <= PARADIS_BOT_LAUNCHING_TTL_MS) ? { state: 'launching' } : undefined;
 	}
 
+	/**
+	 * その Bot の見回りが、起動の途中（発行して報告がまだ。{@link PARADIS_BOT_LAUNCHING_TTL_MS} の間）か、動いている
+	 * ペインがあるか。見回りは Bot ごとに 1 つのフォルダを起動のたびに空にして使うので、2 つ目を起動しない。
+	 * 動いていない（終わった）見回りのペインは数えない（次の回の前に閉じる）。
+	 */
+	patrolInUse(botId: string, now: number): 'working' | 'launching' | undefined {
+		if ([...this.panes.values()].some(pane => pane.botId === botId && pane.purpose === 'patrol' && pane.working)) {
+			return 'working';
+		}
+		return [...this.pending.values()].some(entry => entry.botId === botId && entry.purpose === 'patrol' && now - entry.issuedAt <= PARADIS_BOT_LAUNCHING_TTL_MS) ? 'launching' : undefined;
+	}
+
 	/** その Bot の会話のペインを「まだ現れていない」に戻す（前に出す依頼にどのウィンドウも応えなかった）。 */
 	detachChat(botId: string): boolean {
 		let changed = false;
