@@ -63,7 +63,7 @@ suite('paradisScheduleCron', () => {
 		const schedule = cron('0,30 9-10 * * 1-5');
 		assert.deepStrictEqual({ minutes: schedule.minutes, hours: schedule.hours, dow: [...schedule.daysOfWeek] }, { minutes: [0, 30], hours: [9, 10], dow: [1, 2, 3, 4, 5] });
 		assert.strictEqual(cron('0 0 * * 7').daysOfWeek.has(0), true);
-		for (const bad of ['', '* * * *', '60 * * * *', '* 24 * * *', 'a * * * *', '5-1 * * * *', '*/0 * * * *']) {
+		for (const bad of ['', '* * * *', '60 * * * *', '* 24 * * *', 'a * * * *', '5-1 * * * *', '*/0 * * * *', '*/90 * * * *', '0 */24 * * *']) {
 			assert.ok(paradisParseCron(bad).error, bad);
 		}
 	});
@@ -189,6 +189,19 @@ suite('paradisScheduledRuns decisions', () => {
 			userConcurrency: 'globalConcurrency',
 			userDaily: 'globalDailyLimit',
 		});
+	});
+
+	test('Bot の見回りは手動の「今すぐ見回る」を 1 日の回数に数えない（利用者の定期実行は数える）', () => {
+		const now = at(2026, 9, 25, 12, 0);
+		const isBotPatrol = (definitionId: string) => definitionId.startsWith('patrol');
+		const own = (id: string) => [
+			run({ id: `${id}-a`, definitionId: id, trigger: 'schedule', status: 'completed', createdAt: now - 3 * HOUR, scheduledFor: now - 3 * HOUR }),
+			run({ id: `${id}-b`, definitionId: id, trigger: 'manual', status: 'completed', createdAt: now - 2 * HOUR, scheduledFor: undefined }),
+		];
+		assert.deepStrictEqual({
+			patrol: paradisCheckRunGuards(definition({ id: 'patrol-me', dailyLimit: 2 }), own('patrol-me'), 'schedule', now, now, isBotPatrol),
+			user: paradisCheckRunGuards(definition({ id: 'user-me', dailyLimit: 2 }), own('user-me'), 'schedule', now, now, isBotPatrol),
+		}, { patrol: undefined, user: 'dailyLimit' });
 	});
 
 	test('strips control characters from prompts', () => {

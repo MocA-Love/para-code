@@ -59,6 +59,8 @@ suite('ParadisScheduledRunsService: bot look-arounds', () => {
 			badInput: [(await service.setBotPatrol('b1', { ...PATROL, schedule: { everyHours: 5, fromHour: 8, toHour: 20, weekdaysOnly: true } })).ok, (await service.setBotPatrol('b1', 'x')).ok],
 			// 見回りの間隔の下限（60 分）より短い式は断る
 			tooShort: await service.setBotPatrol('b1', { ...PATROL, schedule: '*/30 * * * *' }),
+			// 間隔が分の幅を超える式（*/90 は毎時 0 分になる）は断る
+			tooLargeStep: (await service.setBotPatrol('b1', { ...PATROL, schedule: '*/90 * * * *' })).ok,
 			// 汎用の保存（定期実行の画面・エージェントの道具）は Bot の見回りを作れず、変えられない
 			genericCreate: (await service.save({ ...draft })).ok,
 			genericOverwrite: (await service.save({ ...draft, id: definition.id, target: { kind: 'repository', repositoryUri: 'file:///repo', repositoryName: 'repo' }, agentId: 'claude', prompt: 'x' })).ok,
@@ -73,19 +75,22 @@ suite('ParadisScheduledRunsService: bot look-arounds', () => {
 			view: {
 				definitionId: definition.id, enabled: true,
 				schedule: { everyHours: 4, fromHour: 8, toHour: 20, weekdaysOnly: true },
-				cron: '0 8-20/4 * * 1-5', lookFor: '失敗した CI', nextRunAt: at(2026, 11, 27, 12, 0), gate: 'ok',
+				cron: '0 8-20/4 * * 1-5', lookFor: '失敗した CI', nextRunAt: at(2026, 11, 27, 12, 0), gate: 'ok', otherPatrolsRunsPerDay: 0,
 			},
 			unknownBot: false,
 			badInput: [false, false],
 			tooShort: { ok: false, error: '見回りの間隔は 60 分以上あけてください。' },
+			tooLargeStep: false,
 			genericCreate: false,
 			genericOverwrite: false,
 		});
 	});
 
 	test('分まで決めた時刻（cron 式）で保存し、その分に開始待ちを作る。前の形で保存した式は同じ形で送り直しても変わらない', async () => {
-		const { service, requests } = setup(at(2026, 11, 27, 9, 0));
+		const { service, requests, gate } = setup(at(2026, 11, 27, 9, 0));
+		gate.bots.set('b2', '見張り');
 		await service.whenReady();
+		await service.setBotPatrol('b2', { ...PATROL, schedule: '0 * * * *' });
 		const legacy = (await service.setBotPatrol('b1', PATROL)).definition!;
 		const resent = (await service.setBotPatrol('b1', { ...PATROL, schedule: '0 8-20/4 * * 1-5' })).definition!;
 		const minutes = (await service.setBotPatrol('b1', { ...PATROL, schedule: '30 9 * * 1-5' })).definition!;
@@ -94,13 +99,13 @@ suite('ParadisScheduledRunsService: bot look-arounds', () => {
 			legacy: legacy.schedule,
 			resentSame: resent.schedule === legacy.schedule,
 			minutes: minutes.schedule,
-			view: [view.cron, view.schedule, view.nextRunAt],
+			view: [view.cron, view.schedule, view.nextRunAt, view.otherPatrolsRunsPerDay],
 			requests: requests.length,
 		}, {
 			legacy: '0 8-20/4 * * 1-5',
 			resentSame: true,
 			minutes: '30 9 * * 1-5',
-			view: ['30 9 * * 1-5', undefined, at(2026, 11, 27, 9, 30)],
+			view: ['30 9 * * 1-5', undefined, at(2026, 11, 27, 9, 30), 24],
 			requests: 0,
 		});
 	});
@@ -303,7 +308,7 @@ suite('ParadisScheduledRunsService: bot look-arounds', () => {
 		disposables.add(service.onDidRequestStop(request => stops.push(request.runId)));
 		await service.deleteBotPatrols('b1');
 		assert.deepStrictEqual({ definitions: state.stored!.definitions.length, stops: stops.length, view: await service.getBotPatrol('b1') }, {
-			definitions: 0, stops: 1, view: { enabled: false, lookFor: '', gate: 'ok' },
+			definitions: 0, stops: 1, view: { enabled: false, lookFor: '', gate: 'ok', otherPatrolsRunsPerDay: 0 },
 		});
 	});
 

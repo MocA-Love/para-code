@@ -71,6 +71,7 @@ import {
 	paradisBotPatrolScheduleInput,
 	paradisBotPatrolView,
 	paradisIsBotPatrolDefinition,
+	paradisOtherBotPatrolsRunsPerDay,
 	paradisSanitizeBotPatrolLookFor,
 } from '../common/paradisScheduledRunBotPatrol.js';
 import { paradisSanitizeScheduledRunDraft, paradisSanitizeScheduledRunPrecheckShape, paradisSanitizeScheduledRunReport, paradisSanitizeScheduledRunSpace } from '../common/paradisScheduledRunsSanitize.js';
@@ -274,7 +275,8 @@ export class ParadisScheduledRunsService extends Disposable {
 	/** Bot のページの「定期実行」の節が読むもの（次の時刻・最後の結果）。 */
 	async getBotPatrol(botId: string): Promise<IParadisBotPatrolView> {
 		await this.ready;
-		return paradisBotPatrolView(this.botPatrolOf(botId), this.runs, this.botGate?.check(botId), this.clock.now());
+		const view = paradisBotPatrolView(this.botPatrolOf(botId), this.runs, this.botGate?.check(botId), this.clock.now());
+		return { ...view, otherPatrolsRunsPerDay: paradisOtherBotPatrolsRunsPerDay(this.definitions, botId) };
 	}
 
 	/**

@@ -17,7 +17,7 @@
 
 import { localize } from '../../../../nls.js';
 import { isRecord } from '../../../common/paradisGuards.js';
-import { IParadisScheduleFields, paradisCronToSchedulePreset, paradisNextCronOccurrence, paradisParseCron, paradisScheduleFieldsFromCron, paradisScheduleFieldsToCron, paradisSchedulePresetToCron, PARADIS_SCHEDULE_EVERY_HOURS } from './paradisScheduleCron.js';
+import { IParadisScheduleFields, paradisCronRunsPerDay, paradisCronToSchedulePreset, paradisNextCronOccurrence, paradisParseCron, paradisScheduleFieldsFromCron, paradisScheduleFieldsToCron, paradisSchedulePresetToCron, PARADIS_SCHEDULE_EVERY_HOURS } from './paradisScheduleCron.js';
 import {
 	IParadisScheduledRunDefinition,
 	IParadisScheduledRunRecord,
@@ -154,12 +154,20 @@ export function paradisBotPatrolScheduleFromCron(expression: string): IParadisBo
 	return paradisSanitizeBotPatrolSchedule({ everyHours, fromHour, toHour, weekdaysOnly: match.groups.days === '1-5', minute: Number(match.groups.minute) });
 }
 
-/** 見回りの時刻の欄の種類（汎用の定期実行の種類に、前の画面の「時間帯の中で n 時間ごと」を足したもの）。 */
-export type ParadisBotPatrolScheduleKind = IParadisScheduleFields['scheduleKind'] | 'window';
+/** 見回りの時刻の欄の種類（汎用の定期実行の種類に、前の画面の「時間帯の中で n 時間ごと」と「n 分ごと」を足したもの）。 */
+export type ParadisBotPatrolScheduleKind = IParadisScheduleFields['scheduleKind'] | 'window' | 'minutes';
+
+/**
+ * 「n 分ごと」で選べる間隔（分）。時刻は cron 式で持つので、1 日（1440 分）を割り切る 60 分の倍数だけ（90 分ごとは
+ * cron 式で書けない）。下限は見回りの間隔の下限（60 分）。
+ */
+export const PARADIS_BOT_PATROL_EVERY_MINUTES: readonly number[] = PARADIS_SCHEDULE_EVERY_HOURS.map(hours => hours * 60);
 
 /** 見回りの時刻の欄の値（Bot のページの設定のタブが持つ）。 */
 export interface IParadisBotPatrolScheduleFields extends Omit<IParadisScheduleFields, 'scheduleKind'> {
 	readonly scheduleKind: ParadisBotPatrolScheduleKind;
+	/** n 分ごとの n（{@link PARADIS_BOT_PATROL_EVERY_MINUTES} のどれかのときだけ式にできる）。 */
+	readonly everyMinutes: number;
 	readonly fromHour: number;
 	readonly toHour: number;
 	readonly weekdaysOnly: boolean;
@@ -172,7 +180,7 @@ export interface IParadisBotPatrolScheduleFields extends Omit<IParadisScheduleFi
 export function paradisBotPatrolFieldsFromCron(expression: string | undefined): IParadisBotPatrolScheduleFields {
 	const window = PARADIS_BOT_PATROL_DEFAULT_SCHEDULE;
 	const defaults: IParadisBotPatrolScheduleFields = {
-		scheduleKind: 'window', time: '09:00', dayOfWeek: 1, everyHours: window.everyHours, minute: 0, cron: paradisBotPatrolCron(window),
+		scheduleKind: 'window', time: '09:00', dayOfWeek: 1, everyHours: window.everyHours, everyMinutes: 60, minute: 0, cron: paradisBotPatrolCron(window),
 		fromHour: window.fromHour, toHour: window.toHour, weekdaysOnly: window.weekdaysOnly,
 	};
 	if (expression === undefined) {
@@ -189,8 +197,14 @@ export function paradisBotPatrolFieldsFromCron(expression: string | undefined): 
 	return { ...defaults, scheduleKind: 'cron', cron: generic.cron };
 }
 
-/** 見回りの欄の値を cron 式にする。時間帯の始めと終わりが逆なら undefined。 */
+/** 見回りの欄の値を cron 式にする。時間帯の始めと終わりが逆・式にできない「n 分ごと」なら undefined。 */
 export function paradisBotPatrolFieldsToCron(fields: IParadisBotPatrolScheduleFields): string | undefined {
+	if (fields.scheduleKind === 'minutes') {
+		if (!PARADIS_BOT_PATROL_EVERY_MINUTES.includes(fields.everyMinutes)) {
+			return undefined;
+		}
+		return paradisScheduleFieldsToCron({ ...fields, scheduleKind: 'hourly', everyHours: fields.everyMinutes / 60 });
+	}
 	if (fields.scheduleKind === 'window') {
 		if (fields.toHour < fields.fromHour) {
 			return undefined;
@@ -273,6 +287,8 @@ export interface IParadisBotPatrolView {
 	readonly nextRunAt?: number;
 	/** 門の答え（画面が「一時停止中のため見回りません」などを出す）。台帳を読み終える前は無し。 */
 	readonly gate?: ParadisBotPatrolGateState;
+	/** ほかの Bot の有効な見回りの、1 日あたりの回数の合計（見回り全体の 1 日の枠と比べて画面に出す）。 */
+	readonly otherPatrolsRunsPerDay?: number;
 	/** 動いている回（開始待ち・起動中・実行中・要対応）。止めるときは定期実行の `stop` にこの id を渡す。 */
 	readonly activeRunId?: string;
 	/** 最後に終わった回。 */
@@ -287,6 +303,18 @@ export interface IParadisBotPatrolView {
 		/** エージェントの最後の発言（秘密らしい値は伏せてある）。 */
 		readonly lastMessage?: string;
 	};
+}
+
+/** ほかの Bot の有効な見回りの、1 日あたりの回数の合計（走る日の回数。曜日は見ず多めに数える）。 */
+export function paradisOtherBotPatrolsRunsPerDay(definitions: readonly IParadisScheduledRunDefinition[], botId: string): number {
+	let total = 0;
+	for (const definition of definitions) {
+		if (definition.enabled && paradisIsBotPatrolDefinition(definition) && definition.target.botId !== botId) {
+			const parsed = paradisParseCron(definition.schedule);
+			total += parsed.schedule ? paradisCronRunsPerDay(parsed.schedule) : 0;
+		}
+	}
+	return total;
 }
 
 /** Bot の見回りの定義か。 */

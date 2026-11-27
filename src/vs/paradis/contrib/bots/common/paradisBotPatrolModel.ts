@@ -11,9 +11,9 @@
 // 画面に出す文だけを作る。
 
 import { localize } from '../../../../nls.js';
-import { IParadisBotPatrolSchedule, IParadisBotPatrolScheduleFields, IParadisBotPatrolView, paradisBotPatrolFieldsToCron, paradisBotPatrolScheduleFromCron } from '../../scheduledRuns/common/paradisScheduledRunBotPatrol.js';
-import { paradisCronToSchedulePreset, paradisDescribeCron, paradisNextCronOccurrence, paradisParseCron } from '../../scheduledRuns/common/paradisScheduleCron.js';
-import { paradisScheduledRunRecordStatusLabel, paradisValidateBotPatrolScheduleGap } from '../../scheduledRuns/common/paradisScheduledRuns.js';
+import { IParadisBotPatrolSchedule, IParadisBotPatrolScheduleFields, IParadisBotPatrolView, paradisBotPatrolFieldsToCron, paradisBotPatrolScheduleFromCron, PARADIS_BOT_PATROL_EVERY_MINUTES } from '../../scheduledRuns/common/paradisScheduledRunBotPatrol.js';
+import { paradisCronRunsPerDay, paradisCronToSchedulePreset, paradisDescribeCron, paradisNextCronOccurrence, paradisParseCron } from '../../scheduledRuns/common/paradisScheduleCron.js';
+import { PARADIS_BOT_PATROL_MAX_DAILY_TOTAL, paradisScheduledRunRecordStatusLabel, paradisValidateBotPatrolScheduleGap } from '../../scheduledRuns/common/paradisScheduledRuns.js';
 
 /** 時間帯の形の 1 行（「平日 8〜20 時・4 時間ごと」「毎日 9 時」。分があれば「平日 8:30〜20:30・4 時間ごと」）。 */
 export function paradisBotPatrolScheduleLabel(schedule: IParadisBotPatrolSchedule): string {
@@ -56,17 +56,28 @@ export function paradisBotPatrolTime(time: number, now: number): string {
 export interface IParadisBotPatrolScheduleCheck {
 	/** 保存する cron 式（欄から式を作れなければ無し）。 */
 	readonly cron?: string;
-	/** 保存できない理由（式の誤り・間隔が短すぎる・時間帯が逆）。 */
+	/** 保存できない理由（式の誤り・間隔が短すぎる・時間帯が逆・走る日が無い）。 */
 	readonly problem?: string;
-	/** 保存できるときの 1 行（「平日 9:30（30 9 * * 1-5）· 有効なら次は 12/1 9:30」）。 */
+	/** 保存できるときの 1 行（「平日 9:30（30 9 * * 1-5）· 1 日 1 回 · 有効なら次は 12/1 9:30」）。 */
 	readonly summary: string;
+	/** 1 日の回数（走る日）。 */
+	readonly runsPerDay?: number;
+	/** ほかの Bot と合わせて見回り全体の 1 日の枠を超えるときの知らせ（保存はできる）。 */
+	readonly overall?: string;
 }
 
 /**
- * 時刻の欄を cron 式にして確かめる。式の正しさと間隔の下限は、保存のときに shared process が見るものと同じ
- * （`paradisParseCron` と見回りの下限）。画面は先に知らせるだけ。
+ * 時刻の欄を cron 式にして確かめる。式の正しさ・間隔の下限・1 日の回数の上限は、保存のときに shared process が見るものと
+ * 同じ（`paradisParseCron` と見回りの検証）。画面は先に知らせるだけ。`otherRunsPerDay` はほかの Bot の有効な見回りの
+ * 1 日の回数の合計で、合わせて全体の枠（{@link PARADIS_BOT_PATROL_MAX_DAILY_TOTAL}）を超えるなら `overall` で知らせる。
  */
-export function paradisBotPatrolScheduleCheck(fields: IParadisBotPatrolScheduleFields, now: number): IParadisBotPatrolScheduleCheck {
+export function paradisBotPatrolScheduleCheck(fields: IParadisBotPatrolScheduleFields, now: number, otherRunsPerDay = 0): IParadisBotPatrolScheduleCheck {
+	if ((fields.scheduleKind === 'window' || fields.scheduleKind === 'hourly') && !(Number.isInteger(fields.minute) && fields.minute >= 0 && fields.minute <= 59)) {
+		return { problem: localize('paradis.botPatrol.badMinute', "分は 0〜59 で指定してください"), summary: '' };
+	}
+	if (fields.scheduleKind === 'minutes' && !PARADIS_BOT_PATROL_EVERY_MINUTES.includes(fields.everyMinutes)) {
+		return { problem: localize('paradis.botPatrol.badEveryMinutes', "n 分ごとは {0} 分のどれかにしてください（1 日を割り切れない間隔は時刻の式で書けません）", PARADIS_BOT_PATROL_EVERY_MINUTES.join('・')), summary: '' };
+	}
 	const cron = paradisBotPatrolFieldsToCron(fields);
 	if (cron === undefined) {
 		return { problem: localize('paradis.botPatrol.badRange', "時間帯の終わりは始め以降にしてください"), summary: '' };
@@ -80,11 +91,20 @@ export function paradisBotPatrolScheduleCheck(fields: IParadisBotPatrolScheduleF
 		return { cron, problem: gap, summary: '' };
 	}
 	const next = paradisNextCronOccurrence(parsed.schedule, now);
+	if (next === undefined) {
+		return { cron, problem: localize('paradis.botPatrol.never', "この式では見回る日がありません"), summary: '' };
+	}
+	const runsPerDay = paradisCronRunsPerDay(parsed.schedule);
 	const label = paradisBotPatrolCronLabel(cron);
 	const described = label === cron ? cron : localize('paradis.botPatrol.described', "{0}（{1}）", label, cron);
+	const total = otherRunsPerDay + runsPerDay;
 	return {
 		cron,
-		summary: next !== undefined ? localize('paradis.botPatrol.preview', "{0} · 有効なら次は {1}", described, paradisBotPatrolTime(next, now)) : described,
+		runsPerDay,
+		summary: localize('paradis.botPatrol.preview', "{0} · 1 日 {1} 回 · 有効なら次は {2}", described, runsPerDay, paradisBotPatrolTime(next, now)),
+		...(total > PARADIS_BOT_PATROL_MAX_DAILY_TOTAL ? {
+			overall: localize('paradis.botPatrol.overall', "ほかの Bot と合わせて 1 日 {0} 回になり、見回り全体の上限（{1} 回）を超えます。超えた回は見送ります", total, PARADIS_BOT_PATROL_MAX_DAILY_TOTAL),
+		} : {}),
 	};
 }
 

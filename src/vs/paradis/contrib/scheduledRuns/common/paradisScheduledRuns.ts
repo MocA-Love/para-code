@@ -20,7 +20,7 @@
 import { localize } from '../../../../nls.js';
 import { URI } from '../../../../base/common/uri.js';
 import { paradisRedactTextSecrets } from '../../../common/paradisSecretRedaction.js';
-import { IParadisCronSchedule, paradisCronMinimumGapMinutes, paradisCronOccurrencesBetween, paradisParseCron, PARADIS_MINUTE_MS } from './paradisScheduleCron.js';
+import { IParadisCronSchedule, paradisCronMinimumGapMinutes, paradisCronRunsPerDay, paradisCronOccurrencesBetween, paradisParseCron, PARADIS_MINUTE_MS } from './paradisScheduleCron.js';
 
 export const PARADIS_SCHEDULED_RUNS_CHANNEL = 'paradisScheduledRuns';
 
@@ -49,7 +49,8 @@ export const PARADIS_BOT_PATROL_MAX_CONCURRENT = 3;
 export const PARADIS_BOT_PATROL_MAX_DAILY_TOTAL = 100;
 /**
  * Bot の見回りの間隔の下限（分）。見回りの定義の 1 日の回数は {@link PARADIS_SCHEDULED_RUN_MAX_DAILY_LIMIT}（24 回）
- * なので、1 時間より短い式は数の上限で黙って見送られる回が出る。式の段階で断る。
+ * なので、1 時間より短い式は数の上限で黙って見送られる回が出る。式の段階で断る。手動の「今すぐ見回る」は見回りの
+ * 1 日の回数に数えない（{@link paradisCheckRunGuards}）ので、1 時間ごと（24 回）でも時刻の回は落ちない。
  */
 export const PARADIS_BOT_PATROL_MIN_INTERVAL_MINUTES = 60;
 /** 遅れて作った開始待ちにも、少なくともこれだけは拾われる猶予を残す。 */
@@ -468,9 +469,13 @@ export function paradisValidateScheduledRunDraft(draft: IParadisScheduledRunDraf
 
 /** Bot の見回りの時刻の間隔が下限（{@link PARADIS_BOT_PATROL_MIN_INTERVAL_MINUTES}）より短ければ、表示用の文を返す。 */
 export function paradisValidateBotPatrolScheduleGap(schedule: IParadisCronSchedule): string | undefined {
-	return paradisCronMinimumGapMinutes(schedule) < PARADIS_BOT_PATROL_MIN_INTERVAL_MINUTES
-		? localize('paradis.scheduledRuns.validate.patrolInterval', "見回りの間隔は {0} 分以上あけてください。", PARADIS_BOT_PATROL_MIN_INTERVAL_MINUTES)
-		: undefined;
+	if (paradisCronMinimumGapMinutes(schedule) < PARADIS_BOT_PATROL_MIN_INTERVAL_MINUTES) {
+		return localize('paradis.scheduledRuns.validate.patrolInterval', "見回りの間隔は {0} 分以上あけてください。", PARADIS_BOT_PATROL_MIN_INTERVAL_MINUTES);
+	}
+	if (paradisCronRunsPerDay(schedule) > PARADIS_SCHEDULED_RUN_MAX_DAILY_LIMIT) {
+		return localize('paradis.scheduledRuns.validate.patrolPerDay', "見回りは 1 日 {0} 回までです。", PARADIS_SCHEDULED_RUN_MAX_DAILY_LIMIT);
+	}
+	return undefined;
 }
 
 /** Bot の見回りの定義の検証（指示・エージェント・リポジトリは定義に持たないので見ない）。 */
@@ -657,7 +662,9 @@ export function paradisCheckRunGuards(
 	const dayStart = paradisStartOfLocalDay(current);
 	const dayEnd = paradisStartOfLocalDay(dayStart + 36 * 60 * PARADIS_MINUTE_MS);
 	const sameDay = (run: IParadisScheduledRunRecord) => countsTowardLimit(run) && limitTime(run) >= dayStart && limitTime(run) < dayEnd;
-	if (own.filter(sameDay).length >= definition.dailyLimit) {
+	// Bot の見回りは、手動の「今すぐ見回る」を 1 日の回数に数えない（1 時間ごとの見回りで朝に 1 回押すと、その日の最後の
+	// 回が落ちるため）。手動の回は全体の枠にも数えないので、見回りの回数は式が決める
+	if (own.filter(run => sameDay(run) && !(pool.botPatrol && run.trigger === 'manual')).length >= definition.dailyLimit) {
 		return 'dailyLimit';
 	}
 	// 全体の 1 日の上限は自動の回だけで数える（手動の回は数えない）

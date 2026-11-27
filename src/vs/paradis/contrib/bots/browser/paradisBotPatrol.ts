@@ -21,7 +21,7 @@ import { ParadisButton } from '../../../browser/paradisButton.js';
 import { ParadisInputField } from '../../../browser/paradisInputField.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
-import { IParadisBotPatrolInput, IParadisBotPatrolScheduleFields, IParadisBotPatrolView, ParadisBotPatrolScheduleKind, paradisBotPatrolFieldsFromCron, PARADIS_BOT_PATROL_INTERVAL_HOURS } from '../../scheduledRuns/common/paradisScheduledRunBotPatrol.js';
+import { IParadisBotPatrolInput, IParadisBotPatrolScheduleFields, IParadisBotPatrolView, ParadisBotPatrolScheduleKind, paradisBotPatrolFieldsFromCron, PARADIS_BOT_PATROL_EVERY_MINUTES, PARADIS_BOT_PATROL_INTERVAL_HOURS } from '../../scheduledRuns/common/paradisScheduledRunBotPatrol.js';
 import { paradisDayOfWeekLabel } from '../../scheduledRuns/common/paradisScheduleCron.js';
 import { PARADIS_BOT_PATROL_MAX_LOOK_FOR_LENGTH } from '../../scheduledRuns/common/paradisScheduledRuns.js';
 import { paradisBotPatrolHeadline, paradisBotPatrolLastRun, paradisBotPatrolScheduleCheck } from '../common/paradisBotPatrolModel.js';
@@ -172,7 +172,10 @@ export class ParadisBotPatrolSection {
 
 		// 時刻（汎用の定期実行と同じ種類と欄。前の画面の「時間帯の中で n 時間ごと」も選べる）
 		const whenLabel = localize('paradis.botPatrol.when', "時刻");
-		const whenCell = row(whenLabel);
+		const when = rowPair(whenLabel);
+		// 見出しは欄の 1 行目に合わせる（下に説明の行が付くので、真ん中に揃えると欄とずれる）
+		when.key.classList.add('top');
+		const whenCell = when.value;
 		const whenLine = DOM.append(whenCell, $('.paradis-bot-patrol-range'));
 		const kind = select(whenLine, [
 			['window', localize('paradis.botPatrol.kind.window', "時間帯の中で数時間ごと")],
@@ -180,6 +183,7 @@ export class ParadisBotPatrolSection {
 			['weekdays', localize('paradis.scheduledRuns.kind.weekdays', "平日（月〜金）")],
 			['weekly', localize('paradis.scheduledRuns.kind.weekly', "毎週")],
 			['hourly', localize('paradis.scheduledRuns.kind.hourly', "数時間ごと")],
+			['minutes', localize('paradis.botPatrol.kind.minutes', "n 分ごと")],
 			['cron', localize('paradis.scheduledRuns.kind.cron', "cron 式")],
 		], draft.fields.scheduleKind, localize('paradis.botPatrol.aria.kind', "見回りの時刻の種類"));
 		store.add(kind.onDidChange(value => setFields({ scheduleKind: value as ParadisBotPatrolScheduleKind })));
@@ -191,6 +195,8 @@ export class ParadisBotPatrolSection {
 		store.add(time.onDidChange(value => setFields({ time: value })));
 		const everyHours = select(whenLine, PARADIS_BOT_PATROL_INTERVAL_HOURS.map(hours => [String(hours), localize('paradis.botPatrol.everyHours', "{0} 時間ごと", hours)] as const), String(draft.fields.everyHours), localize('paradis.botPatrol.every', "間隔"));
 		store.add(everyHours.onDidChange(value => setFields({ everyHours: Number(value) })));
+		const everyMinutes = select(whenLine, PARADIS_BOT_PATROL_EVERY_MINUTES.map(minutes => [String(minutes), localize('paradis.botPatrol.everyMinutes', "{0} 分ごと", minutes)] as const), String(draft.fields.everyMinutes), localize('paradis.botPatrol.aria.everyMinutes', "何分ごと"));
+		store.add(everyMinutes.onDidChange(value => setFields({ everyMinutes: Number(value) })));
 		const minuteLabel = DOM.append(whenLine, $('span'));
 		minuteLabel.textContent = localize('paradis.scheduledRuns.atMinute', "の");
 		const minute = store.add(new ParadisInputField(whenLine, { ariaLabel: localize('paradis.botPatrol.aria.minute', "分"), value: String(draft.fields.minute) }));
@@ -204,8 +210,11 @@ export class ParadisBotPatrolSection {
 		const cron = store.add(new ParadisInputField(whenLine, { ariaLabel: localize('paradis.scheduledRuns.kind.cron', "cron 式"), value: draft.fields.cron, placeholder: '30 9 * * 1-5' }));
 		cron.element.classList.add('paradis-bot-patrol-cron');
 		store.add(cron.onDidChange(value => setFields({ cron: value })));
+		const cronHint = DOM.append(whenCell, $('span.paradis-bot-patrol-preview'));
+		cronHint.textContent = localize('paradis.botPatrol.cronHint', "時刻の式（分 時 日 月 曜日）の間隔は、分や時の中でだけ繰り返します。90 分ごとのように 1 時間で割り切れない間隔は書けません。");
 		const preview = DOM.append(whenCell, $('span.paradis-bot-patrol-preview'));
 		preview.setAttribute('aria-live', 'polite');
+		const overall = DOM.append(whenCell, $('span.paradis-bot-patrol-preview.paradis-bot-patrol-problem'));
 
 		const range = rowPair(localize('paradis.botPatrol.rangeLabel', "時間帯"));
 		const rangeLine = DOM.append(range.value, $('.paradis-bot-patrol-range'));
@@ -225,14 +234,19 @@ export class ParadisBotPatrolSection {
 			const fields = draft.fields;
 			const showTime = fields.scheduleKind === 'daily' || fields.scheduleKind === 'weekdays' || fields.scheduleKind === 'weekly';
 			const showEvery = fields.scheduleKind === 'hourly' || fields.scheduleKind === 'window';
+			const showMinute = showEvery || fields.scheduleKind === 'minutes';
 			DOM.setVisibility(fields.scheduleKind === 'weekly', dayOfWeek.element);
 			DOM.setVisibility(showTime, time.element);
-			DOM.setVisibility(showEvery, everyHours.element, minuteLabel, minute.element, minuteSuffix);
-			DOM.setVisibility(fields.scheduleKind === 'cron', cron.element);
+			DOM.setVisibility(showEvery, everyHours.element);
+			DOM.setVisibility(fields.scheduleKind === 'minutes', everyMinutes.element);
+			DOM.setVisibility(showMinute, minuteLabel, minute.element, minuteSuffix);
+			DOM.setVisibility(fields.scheduleKind === 'cron', cron.element, cronHint);
 			DOM.setVisibility(fields.scheduleKind === 'window', range.key, range.value, weekdaysRow.key, weekdaysRow.value);
-			const result = paradisBotPatrolScheduleCheck(fields, Date.now());
+			const result = paradisBotPatrolScheduleCheck(fields, Date.now(), view.otherPatrolsRunsPerDay);
 			preview.textContent = result.problem ?? result.summary;
 			preview.classList.toggle('paradis-bot-patrol-problem', result.problem !== undefined);
+			overall.textContent = result.overall ?? '';
+			DOM.setVisibility(result.overall !== undefined, overall);
 		};
 		update();
 
@@ -243,7 +257,7 @@ export class ParadisBotPatrolSection {
 
 		// 設定の欄の下の帯と同じ形（説明の文と、右にボタン）
 		const actions = DOM.append(body, $('.paradis-bot-settings-foot'));
-		DOM.append(actions, $('span.paradis-bot-settings-help')).textContent = localize('paradis.botPatrol.help', "見回りは読むだけです。見つけたことは提案としてホームに出します。時刻を過ぎた回（スリープ中など）は後から走らせません。");
+		DOM.append(actions, $('span.paradis-bot-settings-help')).textContent = localize('paradis.botPatrol.help', "見回りは読むだけです。見つけたことは提案としてホームに出します。時刻を過ぎた回（スリープ中など）は後から走らせません。「今すぐ見回る」は 1 日の回数に数えません。");
 		const save = store.add(new ParadisButton(actions, { kind: 'primary', label: localize('paradis.botPatrol.save', "見回りを保存") }));
 		save.enabled = !this.busy;
 		store.add(save.onDidClick(() => void this.save()));
@@ -259,7 +273,7 @@ export class ParadisBotPatrolSection {
 		if (draft === undefined || this.busy) {
 			return;
 		}
-		const result = paradisBotPatrolScheduleCheck(draft.fields, Date.now());
+		const result = paradisBotPatrolScheduleCheck(draft.fields, Date.now(), this.view?.otherPatrolsRunsPerDay);
 		if (result.problem !== undefined || result.cron === undefined) {
 			this.services.notificationService.warn(result.problem ?? '');
 			return;
@@ -269,6 +283,10 @@ export class ParadisBotPatrolSection {
 		await this.act(() => this.port.set(this.botId, { schedule, lookFor: draft.lookFor, enabled: draft.enabled }), error => localize('paradis.botPatrol.saveFailed', "見回りを保存できませんでした: {0}", error), () => {
 			if (this.draft === draft) {
 				this.draft = undefined;
+			}
+			// 全体の枠は超えた回をその日に見送るだけ（記録に理由が残る）なので保存は断らず、保存した後に知らせる
+			if (draft.enabled && result.overall !== undefined) {
+				this.services.notificationService.warn(result.overall);
 			}
 		});
 	}

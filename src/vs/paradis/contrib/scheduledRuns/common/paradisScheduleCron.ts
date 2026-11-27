@@ -80,6 +80,10 @@ function parseField(text: string, spec: IFieldSpec): { values: Set<number>; rest
 		if (from < spec.min || to > spec.max || from > to || step < 1) {
 			return localize('paradis.scheduledRuns.cron.outOfRange', "{0}の指定「{1}」が範囲（{2}〜{3}）を外れています。", spec.label, part, spec.min, spec.max);
 		}
+		// 間隔が欄の幅を超えると 1 つの値にしかならない（`*/90` は毎時 0 分）。書いた意図と違うので断る
+		if (stepText !== undefined && step > spec.max - spec.min) {
+			return localize('paradis.scheduledRuns.cron.stepTooLarge', "{0}の間隔「{1}」は {2} 以下にしてください（cron 式の間隔は{0}の中でだけ繰り返します）。", spec.label, part, spec.max - spec.min);
+		}
 		for (let value = from; value <= to; value += step) {
 			values.add(value);
 		}
@@ -160,6 +164,11 @@ export function paradisNextCronOccurrence(schedule: IParadisCronSchedule, after:
 		}
 	}
 	return undefined;
+}
+
+/** 走る日の 1 日あたりの回数（どの日も時と分の組み合わせの数だけ走る）。 */
+export function paradisCronRunsPerDay(schedule: IParadisCronSchedule): number {
+	return schedule.hours.length * schedule.minutes.length;
 }
 
 /**
