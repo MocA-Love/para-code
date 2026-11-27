@@ -530,6 +530,10 @@ suite('Para Browser MCP setup', () => {
 					'[mcp_servers.other]',
 					'command = "keep"',
 					'',
+					// 人に聞く道具だけを Codex の許可なしにする表（1 回だけ足す）
+					'[mcp_servers.para-browser.tools.ask_human]',
+					'approval_mode = "approve"',
+					'',
 				].join('\n'),
 			});
 		} finally {
@@ -566,12 +570,46 @@ suite('Para Browser MCP setup', () => {
 			});
 			await create().upgradeToolTimeouts(PORT);
 			const afterFirst = await fs.readFile(configPath, 'utf8');
-			// The user takes the line out again: the next start does not put it back.
+			// The user takes the line and the ask_human table out again: the next start does not put them back.
 			await fs.writeFile(configPath, original);
 			await create().upgradeToolTimeouts(PORT);
 			assert.deepStrictEqual({ afterFirst, afterSecond: await fs.readFile(configPath, 'utf8') }, {
-				afterFirst: original.replace('tool_timeout_sec = 300\n', 'tool_timeout_sec = 300\nsupports_parallel_tool_calls = true\n'),
+				afterFirst: `${original.replace('tool_timeout_sec = 300\n', 'tool_timeout_sec = 300\nsupports_parallel_tool_calls = true\n')}\n[mcp_servers.para-browser.tools.ask_human]\napproval_mode = "approve"\n`,
+				// 利用者が消した行と表は、次の起動で足し直さない
 				afterSecond: original,
+			});
+		} finally {
+			await fs.rm(directory, { recursive: true, force: true });
+		}
+	});
+
+	test('the ask_human table added by the setup button is not put back at the next start after the user removes it', async () => {
+		const directory = await fs.mkdtemp(join(tmpdir(), 'paradis-mcp-approve-'));
+		try {
+			const codexHome = join(directory, 'codex');
+			await fs.mkdir(codexHome);
+			const configPath = join(codexHome, 'config.toml');
+			const create = () => new ParadisMcpSetupController({
+				platform: 'darwin',
+				resolveShellEnv: async () => ({}),
+				findExecutable: async () => undefined,
+				runCommand: async (): Promise<IParadisMcpSetupCommandResult> => ({ kind: 'failure', output: '' }),
+				codexHome,
+				claudeConfigJsonPath: join(directory, '.claude.json'),
+				upgradeMarkerPath: join(directory, 'marker.json'),
+				log: () => undefined,
+			});
+			const outcome = (await create().setup('codex', PORT)).servers[0]?.outcome;
+			const afterButton = await fs.readFile(configPath, 'utf8');
+			// The user takes the ask_human table out; the next start must leave it out.
+			const removed = afterButton.replace('\n[mcp_servers.para-browser.tools.ask_human]\napproval_mode = "approve"\n', '');
+			await fs.writeFile(configPath, removed);
+			await create().upgradeToolTimeouts(PORT);
+			assert.deepStrictEqual({ outcome, added: afterButton.includes('[mcp_servers.para-browser.tools.ask_human]'), removedApplied: removed !== afterButton, afterStart: await fs.readFile(configPath, 'utf8') === removed }, {
+				outcome: 'success',
+				added: true,
+				removedApplied: true,
+				afterStart: true,
 			});
 		} finally {
 			await fs.rm(directory, { recursive: true, force: true });
