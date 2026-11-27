@@ -35,7 +35,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { isAbsolute, join, resolve, sep } from '../../../../base/common/path.js';
 import { Emitter } from '../../../../base/common/event.js';
 import { disposableTimeout } from '../../../../base/common/async.js';
-import { Disposable, DisposableMap, toDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService, LogLevel } from '../../../../platform/log/common/log.js';
 import { BACKGROUND_TASK_ID_MAX_LENGTH, BACKGROUND_TASK_MAX_ENTRIES, fireParadisAgentAwaitingUser, fireParadisAgentTurnEnded, fireParadisAgentTurnStarted, getParadisAgentPaneActivity, IParadisAgentHookEvent, IParadisAgentNestedHookEvent, onParadisAgentHookEvent, onParadisAgentNestedHookEvent, setParadisAgentPaneActivity, setParadisAgentPaneIssueUrls } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { IParadisAgentHomes, paradisClaudeConfigDir, paradisCodexHomes, paradisEachCodexHome, paradisIsWithinCodexHome, paradisLocalAgentPath, paradisResolveAgentHomes } from '../../agentBrowser/node/paradisAgentHome.js';
@@ -4514,6 +4514,27 @@ export class ParadisMobileAgentChat extends Disposable {
 	}
 
 	/**
+	 * 「人が答えるもの」の台帳を読んでいる側の数（{@link retainHumanAskTailing}）。1 つ以上いる間は、スマホ・チャット表示が
+	 * 見ていないペインでも、質問・承認の hook の中身を tailer へ入れて待ちを持つ（受信箱から答えられるかを、スマホの登録や
+	 * チャット表示の設定で変えないため）。tailer そのものはセッションが確定した生きているペインに常駐している（status 用。
+	 * {@link stopTailerIfUnsubscribed}）ので、ここで増えるのは hook のカードを入れることだけで、読み手の数は増えない。
+	 */
+	private humanAskReaders = 0;
+
+	/** 台帳を読み始める。返り値を dispose すると読むのをやめる（読む側が複数いても、全員がやめるまで続く）。 */
+	retainHumanAskTailing(): IDisposable {
+		this.humanAskReaders++;
+		return toDisposable(() => {
+			this.humanAskReaders--;
+		});
+	}
+
+	/** 台帳を読んでいる側がいるか。 */
+	private get humanAskTailing(): boolean {
+		return this.humanAskReaders > 0;
+	}
+
+	/**
 	 * ペアリング済みモバイル向けのライブ質問/承認注入を切り替える。CodexのStopなし終了を
 	 * 検出するstatus用tailerはモバイル接続から独立しているため、無効化しても停止しない。
 	 */
@@ -8761,6 +8782,21 @@ export class ParadisMobileAgentChat extends Disposable {
 		};
 	}
 
+	/**
+	 * デスクトップのチャット表示が聞く: PC の Claude Code で承認・質問以外の画面が開いているか。モバイルの帯（agent.panel.v1）と
+	 * 同じく mod に聞く。聞けない（mod が無い・古い）・入力待ちでない（作業中・承認や質問の待ち・圧縮中）ときは undefined。
+	 */
+	async isDesktopDialogOpen(token: string): Promise<boolean | undefined> {
+		const session = this.paneSessions.get(token);
+		const sessionId = session?.sessionId;
+		const tailer = this.tailers.get(token);
+		if (session === undefined || sessionId === undefined || tailer === undefined || !this.isLiveToken(token) || paradisAgentDescriptor(session.agent)?.features.panel !== true
+			|| !this.isAgentPrompt(token, tailer) || this.isCompacting(token) || !this.claudeModBridge.supports(token, sessionId, 'prompt.dialog')) {
+			return undefined;
+		}
+		return this.claudeModBridge.isDialogOpen(token, sessionId).catch(() => undefined);
+	}
+
 	/** 切り詰めて渡したメッセージの全文（tailer が退避しておいた分だけ。読み直さない）。 */
 	getDesktopChatFullText(token: string, epoch: string, rev: number): string | undefined {
 		const tailer = this.isLiveToken(token) ? this.tailers.get(token) : undefined;
@@ -10609,7 +10645,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		// transcript へ flush しないため、PreToolUse hook の tool_input から合成質問カードを
 		// 注入する（チャット表示・回答待ちバッジ・プッシュ通知の唯一のライブな供給源）。
 		if (event.event === 'PreToolUse' && event.toolName === 'AskUserQuestion' && event.toolInput !== undefined
-			&& (this.eagerTailing || this.subscribers.has(event.token) || this.isDesktopChatWatched(event.token))) {
+			&& (this.eagerTailing || this.humanAskTailing || this.subscribers.has(event.token) || this.isDesktopChatWatched(event.token))) {
 			// デスクトップのチャット表示のためだけに入れる（モバイル向けの注入が動いていない）ときは、
 			// モバイルへの質問通知を出さない。モバイルから見た振る舞いを変えないため。
 			const mobileWants = this.eagerTailing || this.subscribers.has(event.token);
@@ -10619,7 +10655,7 @@ export class ParadisMobileAgentChat extends Disposable {
 		// Codex の非同期の質問（request_user_input_async）。rollout の item_completed が正で、ここは早く知るための補助
 		// （tool_use_id が call_id。rollout が同じ呼び出しを書いたら同じ質問として扱う）。返信の発言は UserPromptSubmit の
 		// prompt にも来るので、rollout を待たずに答えた質問を外す。
-		if (info.agent === 'codex' && (this.eagerTailing || this.subscribers.has(event.token) || this.isDesktopChatWatched(event.token))) {
+		if (info.agent === 'codex' && (this.eagerTailing || this.humanAskTailing || this.subscribers.has(event.token) || this.isDesktopChatWatched(event.token))) {
 			if (event.event === 'PreToolUse' && event.toolName === PARADIS_CODEX_ASYNC_QUESTION_TOOL && event.toolInput !== undefined) {
 				this.ensureTailer(event.token, this.paneSessions.get(event.token) ?? info).addAsyncQuestionsFromHook(event.toolUseId, event.toolInput, event.at);
 			} else if (event.event === 'PostToolUseFailure' && event.toolName === PARADIS_CODEX_ASYNC_QUESTION_TOOL && event.toolUseId !== undefined) {
@@ -10645,7 +10681,7 @@ export class ParadisMobileAgentChat extends Disposable {
 			&& !getParadisAgentPaneActivity(event.token).pendingQuestion
 			&& !((this.tailers.get(event.token)?.pendingQuestions.size ?? 0) > 0)
 			&& (event.toolName !== undefined || event.toolInput !== undefined)
-			&& (this.eagerTailing || this.subscribers.has(event.token) || this.isDesktopChatWatched(event.token))) {
+			&& (this.eagerTailing || this.humanAskTailing || this.subscribers.has(event.token) || this.isDesktopChatWatched(event.token))) {
 			const mobileWants = this.eagerTailing || this.subscribers.has(event.token);
 			// Antigravity CLI の引数（`CommandLine` など）は、カードが読む名前に写す
 			const card = info.agent === 'antigravity' ? paradisAntigravityApprovalCardInput(event.toolName, event.toolInput) : { toolName: event.toolName, toolInput: event.toolInput };

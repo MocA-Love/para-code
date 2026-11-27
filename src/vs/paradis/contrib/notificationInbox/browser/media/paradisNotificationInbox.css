@@ -62,7 +62,7 @@
 	color: var(--vscode-descriptionForeground);
 }
 
-.monaco-workbench .paradis-notification-inbox-popover .pnip-grow {
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-grow {
 	flex: 1;
 }
 
@@ -136,7 +136,7 @@
 	border: 1px solid var(--vscode-contrastBorder);
 }
 
-.monaco-workbench .paradis-notification-inbox-popover .pnip-row-top {
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-row-top {
 	display: flex;
 	align-items: center;
 	gap: var(--vscode-spacing-size60);
@@ -155,7 +155,7 @@
 	background-color: var(--vscode-activityBarBadge-background);
 }
 
-.monaco-workbench .paradis-notification-inbox-popover .pnip-kind {
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-kind {
 	flex: none;
 	padding: 0 var(--vscode-spacing-size60);
 	border-radius: var(--vscode-cornerRadius-small);
@@ -163,17 +163,17 @@
 	line-height: 16px;
 }
 
-.monaco-workbench .paradis-notification-inbox-popover .pnip-kind.permission {
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-kind.permission {
 	background-color: color-mix(in srgb, var(--vscode-charts-yellow) 20%, transparent);
 	color: var(--vscode-charts-yellow);
 }
 
-.monaco-workbench .paradis-notification-inbox-popover .pnip-kind.question {
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-kind.question {
 	background-color: color-mix(in srgb, var(--vscode-charts-blue) 20%, transparent);
 	color: var(--vscode-charts-blue);
 }
 
-.monaco-workbench .paradis-notification-inbox-popover .pnip-space {
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-space {
 	flex: 0 1 auto;
 	min-width: 0;
 	overflow: hidden;
@@ -185,7 +185,7 @@
 	font-weight: var(--vscode-fontWeight-semiBold);
 }
 
-.monaco-workbench .paradis-notification-inbox-popover .pnip-detail {
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-detail {
 	margin: 0 0 0 var(--vscode-spacing-size120);
 	color: var(--vscode-descriptionForeground);
 	font-size: var(--vscode-fontSize-label2);
@@ -194,7 +194,7 @@
 	white-space: nowrap;
 }
 
-.monaco-workbench .paradis-notification-inbox-popover .pnip-time {
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-time {
 	flex: none;
 	color: var(--vscode-descriptionForeground);
 	font-size: var(--vscode-fontSize-label2);
@@ -256,7 +256,7 @@
 	vertical-align: middle;
 }
 
-.monaco-workbench .paradis-notification-inbox-popover .pnip-ask {
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-ask {
 	display: flex;
 	flex-direction: column;
 	gap: var(--vscode-spacing-size40);
@@ -265,40 +265,40 @@
 	min-width: 0;
 }
 
-.monaco-workbench .paradis-notification-inbox-popover .pnip-ask + .pnip-ask {
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-ask + .pnip-ask {
 	border-top: 1px solid var(--vscode-paradis-lineSubtle);
 	border-top-left-radius: 0;
 	border-top-right-radius: 0;
 }
 
-.monaco-workbench .paradis-notification-inbox-popover .pnip-ask.settled {
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-ask.settled {
 	opacity: 0.75;
 }
 
-.monaco-workbench .paradis-notification-inbox-popover .pnip-ask .pnip-space {
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-ask .pnip-space {
 	font-weight: var(--vscode-fontWeight-semiBold);
 }
 
 /* The source chip keeps its width; a long title is the one cut with an ellipsis. */
-.monaco-workbench .paradis-notification-inbox-popover .pnip-ask .pnip-row-top > .paradis-chip {
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-ask .pnip-row-top > .paradis-chip {
 	flex: none;
 }
 
-.monaco-workbench .paradis-notification-inbox-popover .pnip-ask .pnip-detail {
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-ask .pnip-detail {
 	margin-left: 0;
 }
 
-.monaco-workbench .paradis-notification-inbox-popover .pnip-kind.approval {
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-kind.approval {
 	background-color: color-mix(in srgb, var(--vscode-charts-green) 20%, transparent);
 	color: var(--vscode-charts-green);
 }
 
-.monaco-workbench .paradis-notification-inbox-popover .pnip-kind.stalled {
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-kind.stalled {
 	background-color: color-mix(in srgb, var(--vscode-charts-red) 20%, transparent);
 	color: var(--vscode-charts-red);
 }
 
-.monaco-workbench .paradis-notification-inbox-popover .pnip-ask-preface {
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-ask-preface {
 	color: var(--vscode-descriptionForeground);
 	line-height: 1.4;
 	display: -webkit-box;
@@ -310,7 +310,7 @@
 
 /* What a permission is for (the command): monospace, up to 6 lines like the mobile permission card. A request that
 	does not fit gets no in-row "allow"; it is answered from the dialog, which shows all of it. */
-.monaco-workbench .paradis-notification-inbox-popover .pnip-ask-command,
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-ask-command,
 .monaco-workbench .paradis-inbox-ask-dialog .pniad-detail {
 	margin: 0;
 	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size80);
@@ -330,27 +330,27 @@
 	overflow: auto;
 }
 
-.monaco-workbench .paradis-notification-inbox-popover .pnip-ask-command {
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-ask-command {
 	display: -webkit-box;
 	-webkit-line-clamp: 6;
 	-webkit-box-orient: vertical;
 	overflow: hidden;
 }
 
-.monaco-workbench .paradis-notification-inbox-popover .pnip-ask-dangers,
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-ask-dangers,
 .monaco-workbench .paradis-inbox-ask-dialog .pniad-dangers {
 	display: flex;
 	flex-wrap: wrap;
 	gap: var(--vscode-spacing-size40);
 }
 
-.monaco-workbench .paradis-notification-inbox-popover .pnip-ask-question {
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-ask-question {
 	color: var(--vscode-foreground);
 	line-height: 1.4;
 	overflow-wrap: anywhere;
 }
 
-.monaco-workbench .paradis-notification-inbox-popover .pnip-ask-buttons {
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-ask-buttons {
 	display: flex;
 	flex-wrap: wrap;
 	align-items: center;
@@ -359,23 +359,23 @@
 	min-width: 0;
 }
 
-.monaco-workbench .paradis-notification-inbox-popover .pnip-ask-buttons:empty {
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-ask-buttons:empty {
 	display: none;
 }
 
-.monaco-workbench .paradis-notification-inbox-popover .pnip-ask-note,
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-ask-note,
 .monaco-workbench .paradis-inbox-ask-dialog .pniad-status {
 	color: var(--vscode-descriptionForeground);
 	font-size: var(--vscode-fontSize-label2);
 	line-height: 1.4;
 }
 
-.monaco-workbench .paradis-notification-inbox-popover .pnip-ask-note.error,
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-ask-note.error,
 .monaco-workbench .paradis-inbox-ask-dialog .pniad-status.error {
 	color: var(--vscode-paradis-danger);
 }
 
-.monaco-workbench .paradis-notification-inbox-popover .pnip-ask-settled,
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-ask-settled,
 .monaco-workbench .paradis-inbox-ask-dialog .pniad-settled {
 	display: flex;
 	align-items: center;
@@ -385,7 +385,7 @@
 	overflow-wrap: anywhere;
 }
 
-.monaco-workbench .paradis-notification-inbox-popover .pnip-ask-settled > .codicon,
+.monaco-workbench :is(.paradis-notification-inbox-popover, .paradis-inbox-ask-scope) .pnip-ask-settled > .codicon,
 .monaco-workbench .paradis-inbox-ask-dialog .pniad-settled > .codicon {
 	flex: none;
 	color: var(--vscode-paradis-success);
