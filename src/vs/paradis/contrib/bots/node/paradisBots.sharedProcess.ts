@@ -18,6 +18,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
 import { paradisRegisterMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { onParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHookBus.js';
+import { paradisSetAskHumanBotPaneCheck } from '../../humanAsk/node/paradisAskHumanToolProvider.js';
 import { paradisSharedHumanAskService } from '../../humanAsk/node/paradisHumanAskChannel.js';
 import { PARADIS_BOTS_CHANNEL, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
 import { ParadisBotHomes } from './paradisBotHomes.js';
@@ -48,6 +49,12 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 		}
 	}));
 	store.add(paradisRegisterMcpToolProvider(new ParadisBotToolProvider(service, enabled)));
+	// Bot のペインからの ask_human は断る（Bot は作業項目の Needs you で聞く）
+	// 起動し直した直後は、保存した結び付けを読み終えるまで Bot のペインと分からないので待つ
+	store.add(paradisSetAskHumanBotPaneCheck(async paneToken => {
+		await service.ready;
+		return service.isBotPane(paneToken);
+	}));
 	store.add({
 		dispose: () => {
 			if (shared === service) {

@@ -14,12 +14,13 @@ import { ParadisSharedProcessContributions } from '../../../common/paradisProces
 import { paradisRegisterMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { onParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { PARADIS_ASK_HUMAN_CHANNEL } from '../common/paradisAskHumanTool.js';
-import { ParadisAskHumanChannel, ParadisAskHumanToolProvider } from './paradisAskHumanToolProvider.js';
+import { ParadisAskHumanChannel, ParadisAskHumanToolProvider, paradisAskHumanIsBotPane } from './paradisAskHumanToolProvider.js';
 import { paradisSharedHumanAskService } from './paradisHumanAskChannel.js';
 
 ParadisSharedProcessContributions.register('askHuman', ({ server }) => {
 	const store = new DisposableStore();
-	const provider = store.add(new ParadisAskHumanToolProvider(paradisSharedHumanAskService()));
+	// Bot のペインかは、Bot の登録（MCP の説明の順のため最後に登録する）が渡す口で、呼ばれたときに引く
+	const provider = store.add(new ParadisAskHumanToolProvider(paradisSharedHumanAskService(), { isBotPane: paradisAskHumanIsBotPane }));
 	store.add(onParadisAgentHookEvent(event => provider.onHookEvent(event)));
 	server.registerChannel(PARADIS_ASK_HUMAN_CHANNEL, new ParadisAskHumanChannel(provider));
 	store.add(paradisRegisterMcpToolProvider(provider));

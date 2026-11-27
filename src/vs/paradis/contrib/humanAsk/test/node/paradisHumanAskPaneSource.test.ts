@@ -10,6 +10,7 @@
 // 台帳の持ち主は「知らせが来たら読む」だけなので、待ちが出たとき・消えたときに知らせが来ないと、カードが出ない・残る。
 
 import assert from 'assert';
+import { IDisposable } from '../../../../../base/common/lifecycle.js';
 import { join } from '../../../../../base/common/path.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
@@ -92,9 +93,10 @@ suite('Paradis human ask: pane source (relay)', () => {
 		const transcriptPath = join(paradisClaudeConfigDir(), 'projects', 'para-code-tests', 'human-ask-unwatched.jsonl');
 		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
 		const base = { token, sessionId, transcriptPath, cwd: '/workspace' };
+		let reading: IDisposable | undefined;
 		try {
 			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
-			// 読む側がいないうちは、見られていないペインの許可で tailer を起こさない（今までどおり）
+			// 読む側がいないうちは、見られていないペインの許可のカードを tailer へ入れない（今までどおり）
 			fireParadisAgentHookEvent({ ...base, event: 'UserPromptSubmit', at: Date.now() });
 			fireParadisAgentHookEvent({ ...base, event: 'PreToolUse', at: Date.now(), toolName: 'Bash', toolInput: { command: 'npm test' }, toolUseId: 'toolu_1' });
 			fireParadisAgentHookEvent({ ...base, event: 'PermissionRequest', at: Date.now(), toolName: 'Bash', toolInput: { command: 'npm test' } });
@@ -102,7 +104,7 @@ suite('Paradis human ask: pane source (relay)', () => {
 			fireParadisAgentHookEvent({ ...base, event: 'PostToolUse', at: Date.now(), toolName: 'Bash', toolUseId: 'toolu_1' });
 
 			// 台帳の書き手が読み始めた: ウィンドウもスマホも見ていないペインの許可が一覧に出る
-			chat.setHumanAskTailing(true);
+			reading = chat.retainHumanAskTailing();
 			fireParadisAgentHookEvent({ ...base, event: 'PreToolUse', at: Date.now(), toolName: 'Bash', toolInput: { command: 'npm run build' }, toolUseId: 'toolu_2' });
 			fireParadisAgentHookEvent({ ...base, event: 'PermissionRequest', at: Date.now(), toolName: 'Bash', toolInput: { command: 'npm run build' } });
 			await until(chat, () => chat.humanAskPanes().length > 0);
@@ -112,7 +114,55 @@ suite('Paradis human ask: pane source (relay)', () => {
 			chat.releaseDesktopInteraction(token, 'approval', 'toolu_2', false);
 			assert.deepStrictEqual({ before, listed, claimed }, { before: 0, listed: [{ id: 'toolu_2', detail: 'Bash: npm run build' }], claimed: true });
 		} finally {
-			chat.setHumanAskTailing(false);
+			reading?.dispose();
+			chat.dispose();
+		}
+	});
+
+	test('two readers: the first one to stop does not stop the other; after both stop, a new approval is not taken in', async () => {
+		const token = 'pane-human-ask-two-readers';
+		const sessionId = 'session-human-ask-two-readers';
+		const transcriptPath = join(paradisClaudeConfigDir(), 'projects', 'para-code-tests', 'human-ask-two-readers.jsonl');
+		const chat = new ParadisMobileAgentChat(() => { }, () => { }, () => { }, new NullLogService());
+		const base = { token, sessionId, transcriptPath, cwd: '/workspace' };
+		const first = chat.retainHumanAskTailing();
+		const second = chat.retainHumanAskTailing();
+		try {
+			assert.strictEqual(chat.syncPanes(1, 'window-session', 1, 1, [{ terminalId: 1, token }]), true);
+			fireParadisAgentHookEvent({ ...base, event: 'UserPromptSubmit', at: Date.now() });
+			// 片方がやめた（二度 dispose しても、もう片方の分は減らない）
+			first.dispose();
+			first.dispose();
+			fireParadisAgentHookEvent({ ...base, event: 'PreToolUse', at: Date.now(), toolName: 'Bash', toolInput: { command: 'npm test' }, toolUseId: 'toolu_1' });
+			fireParadisAgentHookEvent({ ...base, event: 'PermissionRequest', at: Date.now(), toolName: 'Bash', toolInput: { command: 'npm test' } });
+			await until(chat, () => chat.humanAskPanes().length > 0);
+			const whileOneReads = chat.humanAskPanes().map(pane => pane.interaction.id);
+			fireParadisAgentHookEvent({ ...base, event: 'PostToolUse', at: Date.now(), toolName: 'Bash', toolUseId: 'toolu_1' });
+			await until(chat, () => chat.humanAskPanes().length === 0);
+
+			// 両方やめた: 見られていないペインの次の許可は入れない（今までどおり）
+			second.dispose();
+			fireParadisAgentHookEvent({ ...base, event: 'PreToolUse', at: Date.now(), toolName: 'Bash', toolInput: { command: 'npm run build' }, toolUseId: 'toolu_2' });
+			fireParadisAgentHookEvent({ ...base, event: 'PermissionRequest', at: Date.now(), toolName: 'Bash', toolInput: { command: 'npm run build' } });
+			// hook の反映は非同期なので、処理され終わってから読む（入らなかった許可では知らせが鳴らないので時間で待つ）
+			await new Promise<void>(resolve => setTimeout(resolve, 500));
+			const afterBoth = chat.humanAskPanes().length;
+
+			// また読み始めると、次の許可は入る
+			const again = chat.retainHumanAskTailing();
+			try {
+				fireParadisAgentHookEvent({ ...base, event: 'PostToolUse', at: Date.now(), toolName: 'Bash', toolUseId: 'toolu_2' });
+				fireParadisAgentHookEvent({ ...base, event: 'PreToolUse', at: Date.now(), toolName: 'Bash', toolInput: { command: 'npm run lint' }, toolUseId: 'toolu_3' });
+				fireParadisAgentHookEvent({ ...base, event: 'PermissionRequest', at: Date.now(), toolName: 'Bash', toolInput: { command: 'npm run lint' } });
+				await until(chat, () => chat.humanAskPanes().length > 0);
+				const readAgain = chat.humanAskPanes().map(pane => pane.interaction.id);
+				assert.deepStrictEqual({ whileOneReads, afterBoth, readAgain }, { whileOneReads: ['toolu_1'], afterBoth: 0, readAgain: ['toolu_3'] });
+			} finally {
+				again.dispose();
+			}
+		} finally {
+			first.dispose();
+			second.dispose();
 			chat.dispose();
 		}
 	});
