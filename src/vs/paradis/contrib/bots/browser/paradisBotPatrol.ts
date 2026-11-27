@@ -24,6 +24,7 @@ import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 import { IParadisBotPatrolInput, IParadisBotPatrolSchedule, IParadisBotPatrolView, PARADIS_BOT_PATROL_DEFAULT_SCHEDULE, PARADIS_BOT_PATROL_INTERVAL_HOURS } from '../../scheduledRuns/common/paradisScheduledRunBotPatrol.js';
 import { PARADIS_BOT_PATROL_MAX_LOOK_FOR_LENGTH } from '../../scheduledRuns/common/paradisScheduledRuns.js';
 import { paradisBotPatrolHeadline, paradisBotPatrolLastRun } from '../common/paradisBotPatrolModel.js';
+import { paradisSanitizeDisplayText } from '../../agentBrowser/common/paradisAgentBrowserTabs.js';
 
 const $ = DOM.$;
 
@@ -52,10 +53,15 @@ interface IPatrolDraft {
 const HOURS = Array.from({ length: 24 }, (_, hour) => hour);
 
 /** Bot 1 つ分の見回りの表示。読み込みが終わったら `rerender` を呼ぶ。 */
+/** 前回の最後の発言をツールチップに出すときの長さの上限。 */
+const LAST_MESSAGE_TITLE_LIMIT = 300;
+
 export class ParadisBotPatrolSection {
 
 	private view: IParadisBotPatrolView | undefined;
 	private loading = false;
+	/** 読み込み中に知らせが来た（読み終えたらもう一度読む）。 */
+	private stale = false;
 	private draft: IPatrolDraft | undefined;
 	private busy = false;
 
@@ -67,20 +73,35 @@ export class ParadisBotPatrolSection {
 		private readonly openSettings: () => void,
 	) { }
 
-	/** 口の知らせを受けて読み直す。 */
+	/** 口の知らせを受けて読み直す（読み込み中なら、読み終えた後にもう一度読む）。 */
 	invalidate(): void {
 		void this.load();
 	}
 
+	/** 表示していない Bot の分: 持っている状態を捨て、次に描くときに読む（読み込み中なら、読み終えた後にもう一度読む）。 */
+	forget(): void {
+		if (this.loading) {
+			this.stale = true;
+		} else {
+			this.view = undefined;
+		}
+	}
+
 	private async load(): Promise<void> {
 		if (this.loading) {
+			this.stale = true;
 			return;
 		}
 		this.loading = true;
 		try {
-			this.view = await this.port.get(this.botId);
-		} catch {
-			this.view = undefined;
+			do {
+				this.stale = false;
+				try {
+					this.view = await this.port.get(this.botId);
+				} catch {
+					this.view = undefined;
+				}
+			} while (this.stale);
 		} finally {
 			this.loading = false;
 		}
@@ -105,14 +126,16 @@ export class ParadisBotPatrolSection {
 		if (last !== undefined) {
 			const lastLine = DOM.append(card, $('.paradis-bot-patrol-last'));
 			lastLine.textContent = last;
-			if (view?.lastRun?.lastMessage) {
-				lastLine.title = view.lastRun.lastMessage;
+			// Bot の言葉そのままなので、制御文字・書字方向の制御を落として短くしてから出す
+			const message = paradisSanitizeDisplayText(view?.lastRun?.lastMessage, LAST_MESSAGE_TITLE_LIMIT);
+			if (message) {
+				lastLine.title = message;
 			}
 		}
 		const actions = DOM.append(card, $('.paradis-bot-page-ask-actions'));
 		if (view?.definitionId !== undefined) {
 			const runButton = store.add(new ParadisButton(actions, { kind: 'secondary', label: localize('paradis.botPatrol.runNow', "今すぐ見回る") }));
-			runButton.enabled = !this.busy && view.activeRunId === undefined;
+			runButton.enabled = !this.busy && view.activeRunId === undefined && (view.gate === undefined || view.gate === 'ok');
 			store.add(runButton.onDidClick(() => void this.runNow()));
 		}
 		const change = store.add(new ParadisButton(actions, { kind: 'secondary', label: view?.definitionId === undefined ? localize('paradis.botPatrol.setUp', "見回りを決める...") : localize('paradis.botPatrol.change', "変える...") }));
@@ -142,7 +165,7 @@ export class ParadisBotPatrolSection {
 			PARADIS_BOT_PATROL_INTERVAL_HOURS.map(hours => ({ value: String(hours), label: localize('paradis.botPatrol.everyHours', "{0} 時間ごと", hours) })), String(draft.schedule.everyHours), { ariaLabel: everyLabel }));
 		store.add(every.onDidChange(value => draft.schedule = { ...draft.schedule, everyHours: Number(value) }));
 
-		const rangeLabel = localize('paradis.botPatrol.range', "時間帯");
+		const rangeLabel = localize('paradis.botPatrol.rangeLabel', "時間帯");
 		const range = DOM.append(row(rangeLabel), $('.paradis-bot-patrol-range'));
 		const from = store.add(new ParadisSelect(range, this.services.contextViewService, this.services.configurationService,
 			HOURS.map(hour => ({ value: String(hour), label: localize('paradis.botPatrol.hour', "{0} 時", hour) })), String(draft.schedule.fromHour), { ariaLabel: localize('paradis.botPatrol.from', "始め") }));
@@ -169,7 +192,7 @@ export class ParadisBotPatrolSection {
 		store.add(save.onDidClick(() => void this.save()));
 		if (view.definitionId !== undefined) {
 			const runButton = store.add(new ParadisButton(actions, { kind: 'secondary', label: localize('paradis.botPatrol.runNow', "今すぐ見回る") }));
-			runButton.enabled = !this.busy && view.activeRunId === undefined;
+			runButton.enabled = !this.busy && view.activeRunId === undefined && (view.gate === undefined || view.gate === 'ok');
 			store.add(runButton.onDidClick(() => void this.runNow()));
 		}
 	}
@@ -183,20 +206,30 @@ export class ParadisBotPatrolSection {
 			this.services.notificationService.warn(localize('paradis.botPatrol.badRange', "時間帯の終わりは始め以降にしてください"));
 			return;
 		}
-		await this.act(() => this.port.set(this.botId, { schedule: draft.schedule, lookFor: draft.lookFor, enabled: draft.enabled }), error => localize('paradis.botPatrol.saveFailed', "見回りを保存できませんでした: {0}", error));
-		this.draft = undefined;
+		// 断られたら書きかけを残す（選んだ時間帯や探すものを保存済みの値に戻さない）。保存できたら、読み直して描く前に捨てる
+		await this.act(() => this.port.set(this.botId, { schedule: draft.schedule, lookFor: draft.lookFor, enabled: draft.enabled }), error => localize('paradis.botPatrol.saveFailed', "見回りを保存できませんでした: {0}", error), () => {
+			if (this.draft === draft) {
+				this.draft = undefined;
+			}
+		});
 	}
 
 	private async runNow(): Promise<void> {
+		if (this.busy) {
+			return;
+		}
 		await this.act(() => this.port.runNow(this.botId), error => localize('paradis.botPatrol.runFailed', "見回りを始められませんでした: {0}", error));
 	}
 
-	private async act(work: () => Promise<{ readonly ok: boolean; readonly error?: string }>, failure: (error: string) => string): Promise<void> {
+	/** 口を呼び、断られたら理由を出す。うまくいったら `succeeded` を呼んでから読み直す。 */
+	private async act(work: () => Promise<{ readonly ok: boolean; readonly error?: string }>, failure: (error: string) => string, succeeded?: () => void): Promise<void> {
 		this.busy = true;
 		this.rerender();
 		try {
 			const result = await work();
-			if (!result.ok) {
+			if (result.ok) {
+				succeeded?.();
+			} else {
 				this.services.notificationService.warn(failure(result.error ?? ''));
 			}
 		} catch (error) {

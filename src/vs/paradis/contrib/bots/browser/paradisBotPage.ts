@@ -260,6 +260,12 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 			}
 		}));
 		this._register(this.botsService.onDidChange(() => {
+			// 消した Bot の見回りの欄を残さない
+			for (const botId of [...this.patrolSections.keys()]) {
+				if (this.bot(botId) === undefined) {
+					this.patrolSections.delete(botId);
+				}
+			}
 			this.renderStrip();
 			if (this.botId !== undefined && this.currentTab() === 'items') {
 				void this.loadItems();
@@ -270,8 +276,13 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		}));
 		if (this.patrolPort !== undefined) {
 			this._register(this.patrolPort.onDidChange(() => {
-				if (this.botId !== undefined) {
-					this.patrolSections.get(this.botId)?.invalidate();
+				// 表示中の Bot は読み直し、ほかの Bot の分は捨てる（戻ったときに古い状態を出さない）
+				for (const [botId, section] of this.patrolSections) {
+					if (botId === this.botId) {
+						section.invalidate();
+					} else {
+						section.forget();
+					}
 				}
 			}));
 		}
