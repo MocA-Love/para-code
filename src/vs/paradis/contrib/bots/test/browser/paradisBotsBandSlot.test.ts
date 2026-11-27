@@ -122,7 +122,7 @@ suite('Paradis bots band slot', () => {
 		const record = (id: number, to: string, readAt?: number) => ({ id, groupId: 'g1', kind: 'told' as const, from: to === 'a' ? 'b' : 'a', to: [to], text: 't', at: 1, ...(readAt !== undefined ? { readAt } : {}) });
 		const records = [record(1, 'b'), record(2, 'b'), record(3, 'b', 5), record(4, 'a'), { ...record(5, 'b'), groupId: 'gone' }];
 		const unread = (container: HTMLElement) => Array.from(container.getElementsByClassName('paradis-bots-row')).map(row => row.getElementsByClassName('paradis-bots-row-unread')[0]?.textContent ?? '');
-		assert.deepStrictEqual([unread(setup(true, '{"open":true}', [group], records).container), unread(setup(true, '{"open":false}', [group], records).container)], [['1', '2', ''], ['2']]);
+		assert.deepStrictEqual([unread(setup(true, '{"open":true}', [group], records).container), unread(setup(true, '{"open":false}', [group], records).container)], [['1', '2', '', ''], ['2']]);
 	});
 
 	test('作成のモーダルは、開いている間に設定をオフにすると閉じる', () => {
