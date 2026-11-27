@@ -154,7 +154,7 @@ export function paradisSharedHumanAskService(): ParadisHumanAskService {
 	return shared;
 }
 
-/** ウィンドウ（renderer）へ出すチャネル。読むことと答えることだけ。答えた場所は `inbox`・`bot` に限る。 */
+/** ウィンドウ（renderer）へ出すチャネル。読むことと答えることだけ。答えた場所は `inbox`・`bot`・`mobile` に限る。 */
 export class ParadisHumanAskChannel implements IServerChannel<string> {
 
 	constructor(private readonly service: ParadisHumanAskService) { }
@@ -172,7 +172,8 @@ export class ParadisHumanAskChannel implements IServerChannel<string> {
 			case 'getSnapshot': return this.service.getSnapshot() as T;
 			case 'answer': {
 				// ウィンドウの画面は受信箱と Bot のページだけ。スマホ・ボード・ペインを名乗らせない
-				const surface = args[2] === 'bot' ? 'bot' : 'inbox';
+				// ウィンドウが名乗れる場所は受信箱・Bot のページ・スマホ（スマホの要求をウィンドウが中継する。paradisMobileHumanAskRequests.ts）
+				const surface = args[2] === 'bot' || args[2] === 'mobile' ? args[2] : 'inbox';
 				const result = this.service.answer(args[0], args[1], surface);
 				// 依頼の中身（答えの本文）はウィンドウへ返さない
 				return (result.ok ? { ok: true } : { ok: false, reason: result.reason }) as T;
