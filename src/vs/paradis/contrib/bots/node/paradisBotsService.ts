@@ -622,7 +622,7 @@ export class ParadisBotsService extends Disposable {
 		if (bot.paused) {
 			return 'paused';
 		}
-		if (bot.preserved !== undefined || this.homes === undefined || paradisBotPatrolLaunchFlags(bot.agent, PARADIS_READ_ONLY_MCP_TOOL_NAMES) === undefined) {
+		if (bot.preserved !== undefined || this.homes === undefined || !paradisBotPatrolSupported(bot.agent)) {
 			return 'unsupported';
 		}
 		return this.panes.statesOf(botId).some(pane => pane.purpose === 'patrol' && pane.working) ? 'busy' : 'ok';
