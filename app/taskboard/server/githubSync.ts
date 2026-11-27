@@ -23,7 +23,8 @@ import type { ITaskBoardIntakeItem, TaskBoardEngine } from '@engine/paradisTaskB
 import { GitHubClient, GitHubError } from './github.js';
 
 /*
- * GitHub との同期（読むだけ。フェーズ 2 では GitHub へ書き込まない）。
+ * GitHub との同期。読み取りが主で、書き込むのは Issue・PR へのコメントと、Projects の軸の欄（工程が進んだときの
+ * 書き戻しと、選択肢の追加）。
  * - 取り込み: 5 分ごと（と「今すぐ同期」）に、担当が自分の未着手を Projects か Issue 検索から読む
  * - PR: Issue を閉じる PR（closedByPullRequestsReferences）をタスクに結び付け、
  *   工程が外部待ち（wait 工程・マージ待ち）のタスクの PR だけを 60 秒ごとに読み直す。ほかの進行中のタスクの PR は取り込みのときに読む

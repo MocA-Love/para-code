@@ -132,6 +132,7 @@ import { paradisGetMachineIdHash } from '../../../node/paradisMachineId.js';
 import { paradisClaudeModBridge } from '../../claudeMod/node/paradisClaudeModBridge.js';
 import { paradisAntigravityApprovalHold } from '../../agentBrowser/node/paradisAntigravityApprovalHold.js';
 import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
+import { onDidChangeParadisMobileBots, paradisMobileBotsFeed } from './paradisMobileBotsFeed.js';
 import type { IParadisHumanAskPaneSource } from '../../humanAsk/common/paradisHumanAskPane.js';
 
 /** 重なった Codex の承認の通知を待ち直す回数の上限（超えたら出す）。 */
@@ -1057,6 +1058,13 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		if (voiceClips !== undefined) {
 			this._register(voiceClips(event => this.voiceDelivery.handle(event)));
 		}
+		// Bot の一覧（bots.page.v1）。台帳の側が paradisMobileBotsFeed.ts へ置いたら State に載せて送り直す
+		this.terminalRegistry.setBots(paradisMobileBotsFeed());
+		this._register(onDidChangeParadisMobileBots(() => {
+			if (this.terminalRegistry.setBots(paradisMobileBotsFeed())) {
+				this.enqueueRendererAuthority(() => this.broadcastDesktopState()).catch(error => this.logService.warn('[paradisMobileRelay] bots state broadcast failed', error));
+			}
+		}));
 		const trafficDiagnosticsSession = startParadisMobileTrafficDiagnostics(
 			process.env.PARADIS_MOBILE_TRAFFIC_DIAGNOSTICS,
 			line => this.logService.info(`[paradisMobileRelay][traffic] ${line}`),

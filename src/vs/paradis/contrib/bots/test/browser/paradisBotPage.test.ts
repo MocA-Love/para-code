@@ -7,22 +7,25 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { mainWindow } from '../../../../../base/browser/window.js';
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { DisposableStore, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IConfigurationChangeEvent, IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
-import { IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
+import { IContextMenuService, IContextViewService } from '../../../../../platform/contextview/browser/contextView.js';
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
-import { INotificationService } from '../../../../../platform/notification/common/notification.js';
+import { INotificationHandle, INotificationService, NotificationMessage } from '../../../../../platform/notification/common/notification.js';
 import { TestNotificationService } from '../../../../../platform/notification/test/common/testNotificationService.js';
 import { IOpenerService } from '../../../../../platform/opener/common/opener.js';
-import { IParadisDialogService } from '../../../confirmDialog/browser/paradisDialogService.js';
+import { IParadisConfirmation, IParadisDialogService } from '../../../confirmDialog/browser/paradisDialogService.js';
 import { IParadisHumanAskEntry, IParadisHumanAskService, ParadisHumanAskAnswer, paradisHumanAskCounts } from '../../../humanAsk/common/paradisHumanAsk.js';
 import { IParadisInboxClampSize } from '../../../notificationInbox/browser/paradisNotificationInboxAskCard.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { NullHoverService } from '../../../../../platform/hover/test/browser/nullHoverService.js';
 import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
+import { ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
+import { IParadisAgentChatService } from '../../../agentChat/browser/paradisAgentChatService.js';
 import { IParadisBotPaneResolver, ParadisBotPage } from '../../browser/paradisBotPage.js';
 import { IParadisBotItem } from '../../common/paradisBotItems.js';
 import { IParadisBotSummary, IParadisBotsService, PARADIS_BOTS_ENABLED_SETTING } from '../../common/paradisBotsApi.js';
@@ -30,7 +33,7 @@ import { IParadisBotSummary, IParadisBotsService, PARADIS_BOTS_ENABLED_SETTING }
 function bot(id: string, name: string, patch: Partial<IParadisBotSummary> = {}): IParadisBotSummary {
 	return {
 		id, name, folder: id, agent: 'claude', paused: false, pinned: false, faceColor: 'blue', faceShape: 'drop', createdAt: 1, updatedAt: 1,
-		needsYou: 0, openItems: 0, activity: 'idle', lastActivityAt: 1,
+		needsYou: 0, openItems: 0, openSuggestions: 0, activity: 'idle', lastActivityAt: 1,
 		...patch,
 	};
 }
@@ -42,6 +45,9 @@ const ASK: IParadisHumanAskEntry = {
 	questions: [{ id: 'q1', text: '全員を一度ログアウトさせますか?', options: [{ id: 'o1', label: '一度ログアウトさせる' }, { id: 'o2', label: '今のセッションを残す', recommended: true }], allowText: false }],
 	actions: [], canSkip: true, askedAt: 1, state: 'waiting',
 };
+
+const SNAPSHOT_AT = new Date(2026, 10, 27, 21, 4).getTime();
+const OLDER_AT = new Date(2026, 10, 27, 20, 4).getTime();
 
 const ITEMS: IParadisBotItem[] = [
 	{ uid: 'u42', number: 42, botId: 'release', title: 'Safari でログインが切れる', status: 'needs_you', ask: { eventId: 3, questions: [{ prompt: '全員を一度ログアウトさせますか?', options: [{ label: '一度ログアウトさせる' }, { label: '今のセッションを残す' }], recommended: 1 }] }, links: [], events: [{ id: 1, kind: 'made', actor: 'bot', at: now }], lastEventId: 3, lastActivityAt: now, createdAt: now, updatedAt: now },
@@ -59,25 +65,69 @@ suite('Paradis bots page overlay', () => {
 		instantiation.stub(IConfigurationService, configuration);
 		const bots = [bot('release', 'リリース係', { needsYou: 1 })];
 		const answered: { key: string; answer: ParadisHumanAskAnswer }[] = [];
+		const failAnswer = { value: false };
+		const sendFails = { value: false };
+		const snapshotGone = { value: false };
+		const calls: string[] = [];
+		const confirms: IParadisConfirmation[] = [];
+		const files = new Map<string, string>([['SOUL.md', '# リリース係\n'], ['MEMORY.md', '# Memory\n']]);
 		const statuses: string[] = [];
-		const confirms: string[] = [];
 		const botsChanged = disposables.add(new Emitter<void>());
 		instantiation.stub(IParadisBotsService, {
 			get snapshot() { return { revision: 1, readOnly: false, bots }; },
 			onDidChange: botsChanged.event,
 			onDidRequestStop: Event.None,
 			listItems: async () => items,
+			listSuggestions: async () => [{ id: 's1', botId: 'release', title: 'PR #1108 のレビューの指摘 2 件に返事が無い', request: '#1108 の指摘を読んで、直すか理由を返すか決めて', run: 'r', state: 'open', createdAt: 1 }],
+			startSuggestion: async (id: string) => { calls.push(`start ${id}`); return { ok: true, value: { id, botId: 'release', title: 't', request: '#1108 の指摘を読んで、直すか理由を返すか決めて', run: 'r', state: 'started', createdAt: 1 } }; },
+			markSuggestionStarted: async (id: string) => { calls.push(`started ${id}`); return { ok: true, value: { id, botId: 'release', title: 't', request: 'r', run: 'r', state: 'started', createdAt: 1 } }; },
+			dismissSuggestion: async (id: string) => { calls.push(`dismiss ${id}`); return { ok: true, value: {} }; },
+			undoMemoryTidy: async (_bot: string, takenAt: number) => {
+				calls.push(`undo ${takenAt === SNAPSHOT_AT ? 'newest' : 'older'}`);
+				return snapshotGone.value ? { ok: false, code: 'not_found', message: 'gone' } : { ok: true, value: { restored: ['MEMORY.md'], added: ['memory/new.md'], takenAt, skipped: ['SOUL.md'] } };
+			},
+			listMemorySnapshots: async () => {
+				return { ok: true, value: [{ takenAt: SNAPSHOT_AT, files: 200, total: 206, partial: true, kind: 'auto' }, { takenAt: OLDER_AT, files: 3, total: 3, partial: false, kind: 'manual' }] };
+			},
 			ownerSetStatus: async (uid: string, to: string) => { statuses.push(`${uid}:${to}`); return { ok: true, value: items[0] }; },
-		} as Partial<IParadisBotsService> as IParadisBotsService);
+			readHomeFile: async (_bot: string, path: string) => ({ ok: true, value: files.get(path) }),
+			writeHomeFile: async (_bot: string, path: string, text: string) => { calls.push(`write ${path}: ${text}`); files.set(path, text); return { ok: true, value: undefined }; },
+			updateBot: async (_bot: string, patch: object) => { calls.push(`update ${JSON.stringify(patch)}`); return { ok: true, value: bots[0] }; },
+		} as unknown as IParadisBotsService);
 		instantiation.stub(IParadisHumanAskService, {
 			onDidChange: Event.None,
 			get snapshot() { return { entries, counts: paradisHumanAskCounts(entries), revision: 1 }; },
-			answer: async (key: string, answer: ParadisHumanAskAnswer) => { answered.push({ key, answer }); return { ok: true }; },
+			answer: async (key: string, answer: ParadisHumanAskAnswer) => {
+				answered.push({ key, answer });
+				if (failAnswer.value) {
+					throw new Error('the ledger is gone');
+				}
+				return { ok: true };
+			},
 		} as Partial<IParadisHumanAskService> as IParadisHumanAskService);
-		instantiation.stub(IParadisDialogService, { confirm: async (options: { message: string }) => { confirms.push(options.message); return { confirmed: true }; } } as Partial<IParadisDialogService> as IParadisDialogService);
+		instantiation.stub(IParadisDialogService, { confirm: async (confirmation: IParadisConfirmation) => { confirms.push(confirmation); return { confirmed: true }; } } as unknown as IParadisDialogService);
+		instantiation.stub(IContextViewService, {});
+		let draftTaken = false;
+		instantiation.stub(IParadisAgentChatService, { insertDraft: (id: number, text: string) => { calls.push(`draft ${id} ${text}`); return draftTaken ? 'inserted' : false; } } as unknown as IParadisAgentChatService);
+		instantiation.stub(ITerminalService, {
+			getInstanceFromId: (id: number) => id === 1 ? {
+				isDisposed: false, sendText: async (text: string, execute: boolean, paste: boolean) => {
+					calls.push(`send ${text} ${execute} ${paste}`);
+					if (sendFails.value) {
+						throw new Error('the terminal is gone');
+					}
+				}
+			} : undefined
+		} as unknown as ITerminalService);
 		instantiation.stub(IContextMenuService, {});
 		instantiation.stub(IOpenerService, {});
-		instantiation.stub(INotificationService, new TestNotificationService());
+		const warnings: string[] = [];
+		instantiation.stub(INotificationService, new class extends TestNotificationService {
+			override warn(message: NotificationMessage): INotificationHandle {
+				warnings.push(String(message));
+				return super.warn(message);
+			}
+		}());
 		instantiation.stub(IHoverService, NullHoverService);
 		// ペイン 1 だけが Bot のペイン。`ended` でペインが終わったことにする
 		const changed = disposables.add(new Emitter<void>());
@@ -85,7 +135,7 @@ suite('Paradis bots page overlay', () => {
 		const resolver: IParadisBotPaneResolver = { onDidChange: changed.event, botFor: async instanceId => panes.get(instanceId) };
 		const container = document.createElement('div');
 		const page = disposables.add(instantiation.createInstance(ParadisBotPage, container, resolver, measureClamp));
-		return { container, page, configuration, panes, changed, answered, disposables, bots, botsChanged, statuses, confirms };
+		return { container, page, configuration, panes, changed, answered, disposables, snapshotGone, sendFails, warnings, failAnswer, calls, confirms, files, bots, botsChanged, statuses, chatShown: () => { draftTaken = true; } };
 	}
 
 	const settle = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -200,6 +250,130 @@ suite('Paradis bots page overlay', () => {
 		assert.deepStrictEqual([container.childElementCount, container.className], [0, '']);
 	});
 
+	function tab(container: HTMLElement, index: number): void {
+		(container.getElementsByClassName('paradis-bot-page-tab')[index] as HTMLElement).click();
+	}
+
+	function primary(container: HTMLElement): HTMLElement {
+		return container.querySelector('.paradis-bot-settings-foot .paradis-button-primary') as HTMLElement;
+	}
+
+	test('設定: 名前だけなら確かめずに当て、役割を変えるときは管理の道具と同じ本文で確かめてから書く', async () => {
+		const { container, page, calls, confirms } = setup();
+		page.setInstance(1);
+		await settle();
+		tab(container, 3);
+		await settle();
+		await settle();
+		const name = container.querySelector('.paradis-bot-settings-value input') as HTMLInputElement;
+		name.value = '出荷係';
+		name.dispatchEvent(new mainWindow.Event('input'));
+		primary(container).click();
+		await settle();
+		const role = container.querySelector('.paradis-bot-settings-role textarea') as HTMLTextAreaElement;
+		role.value = '# 新しい役割\n';
+		role.dispatchEvent(new mainWindow.Event('input'));
+		primary(container).click();
+		await settle();
+		await settle();
+		assert.deepStrictEqual([calls, confirms.map(confirmation => [confirmation.primaryButton, String(confirmation.detail).includes('依頼'), String(confirmation.detail).includes('# 新しい役割')])], [
+			['update {"name":"出荷係"}', 'write SOUL.md: # 新しい役割\n'],
+			[['変える', false, true]],
+		]);
+	});
+
+	test('ファイル: 開いた後に書き換わった記憶は上書きしない', async () => {
+		const { container, page, calls, files } = setup();
+		page.setInstance(1);
+		await settle();
+		tab(container, 2);
+		await settle();
+		(container.getElementsByClassName('paradis-bot-page-row')[1] as HTMLElement).click();
+		await settle();
+		await settle();
+		const editor = container.querySelector('.paradis-bot-files-editor textarea') as HTMLTextAreaElement;
+		editor.value = '# Memory\n- 自分の編集\n';
+		editor.dispatchEvent(new mainWindow.Event('input'));
+		files.set('MEMORY.md', '# Memory\n- Bot が足した行\n');
+		primary(container).click();
+		await settle();
+		await settle();
+		assert.deepStrictEqual([calls, files.get('MEMORY.md')], [[], '# Memory\n- Bot が足した行\n']);
+	});
+
+	test('提案: 「始める」は文を取り、チャット表示の入力欄へ下書きを入れ（無ければターミナルへ貼り付け）、入れられたら「始めた」にして会話へ戻す。「見送る」は台帳へ知らせる', async () => {
+		const { container, page, calls, chatShown } = setup();
+		page.setInstance(1);
+		await settle();
+		tab(container, 1);
+		await settle();
+		const titles = Array.from(container.getElementsByClassName('paradis-bot-page-suggestion-title')).map(title => title.textContent);
+		(container.querySelector('.paradis-bot-page-suggestion .paradis-button-secondary') as HTMLElement).click();
+		await settle();
+		(container.querySelector('.paradis-bot-page-suggestion .paradis-button-primary') as HTMLElement).click();
+		await settle();
+		await settle();
+		chatShown();
+		tab(container, 1);
+		await settle();
+		(container.querySelector('.paradis-bot-page-suggestion .paradis-button-primary') as HTMLElement).click();
+		await settle();
+		await settle();
+		const selected = Array.from(container.getElementsByClassName('paradis-bot-page-tab')).map(element => element.getAttribute('aria-selected'));
+		assert.deepStrictEqual([titles, calls, selected], [
+			['PR #1108 のレビューの指摘 2 件に返事が無い'],
+			['dismiss s1', 'start s1', 'draft 1 #1108 の指摘を読んで、直すか理由を返すか決めて', 'send #1108 の指摘を読んで、直すか理由を返すか決めて false true', 'started s1', 'start s1', 'draft 1 #1108 の指摘を読んで、直すか理由を返すか決めて', 'started s1'],
+			['true', 'false', 'false', 'false'],
+		]);
+	});
+
+	test('ファイル: 記憶の写しを時刻・件数・整理の前・一部だけで並べ、どの行からも確かめてその写しに戻し、結果と書き戻せなかったファイルを一覧の下に出す。消えた写しは知らせる', async () => {
+		const { container, page, calls, confirms, warnings, snapshotGone } = setup();
+		page.setInstance(1);
+		await settle();
+		tab(container, 2);
+		await settle();
+		(container.getElementsByClassName('paradis-bot-page-row')[1] as HTMLElement).click();
+		await settle();
+		await settle();
+		const title = container.querySelector('.paradis-bot-snapshots .paradis-bot-page-section')?.textContent;
+		const rows = Array.from(container.getElementsByClassName('paradis-bot-snapshots-row')).map(row => [
+			row.getElementsByClassName('paradis-bot-snapshots-count')[0].textContent,
+			Array.from(row.getElementsByClassName('paradis-chip')).map(chip => chip.textContent),
+			row.getElementsByClassName('paradis-button').length,
+		]);
+		const undo = (index: number) => (container.getElementsByClassName('paradis-bot-snapshots-row')[index].getElementsByClassName('paradis-button')[0] as HTMLElement).click();
+		undo(1);
+		await settle();
+		await settle();
+		await settle();
+		const result = Array.from(container.querySelectorAll('.paradis-bot-snapshots-result > *')).map(line => [line.textContent, line.classList.contains('attention')]);
+		snapshotGone.value = true;
+		undo(0);
+		await settle();
+		await settle();
+		await settle();
+		assert.deepStrictEqual({
+			title,
+			rows,
+			calls,
+			confirm: confirms.map(confirmation => [confirmation.primaryButton, String(confirmation.detail).includes(new Date(OLDER_AT).toLocaleString()), String(confirmation.detail).includes(new Date(SNAPSHOT_AT).toLocaleString())]),
+			result,
+			warnings,
+		}, {
+			title: '記憶の写し',
+			rows: [['206 件中 200 件だけ写しました', ['一部だけ'], 1], ['3 件', ['整理の前'], 1]],
+			calls: ['undo older', 'undo newest'],
+			confirm: [['取り消す', true, false], ['取り消す', false, true]],
+			result: [
+				[`${new Date(OLDER_AT).toLocaleString()} の写しに戻しました（1 件）。`, false],
+				['整理でできたファイルは消さずに残しています: memory/new.md', false],
+				['取り消せなかったファイルがあります（記憶のファイルではないので書き戻していません）: SOUL.md', true],
+			],
+			warnings: [`${new Date(SNAPSHOT_AT).toLocaleString()} の写しはもうありません（古い写しから消えていきます）。写しの一覧を読み直しました。`],
+		});
+	});
+
 	test('書きかけのコメントは、別の Bot が変わっても値とフォーカスが残る（中身の変わらない描き直しはしない）', async () => {
 		const { container, page, bots, botsChanged, disposables } = setup();
 		document.body.appendChild(container);
@@ -241,11 +415,204 @@ suite('Paradis bots page overlay', () => {
 		const closedLabels = labels();
 		(container.querySelector('.paradis-bot-page-item-actions .paradis-button') as HTMLElement).click();
 		await settle();
-		assert.deepStrictEqual({ open, confirms, closedLabels, statuses }, {
+		assert.deepStrictEqual({ open, confirms: confirms.map(confirmation => confirmation.message), closedLabels, statuses }, {
 			open: ['完了にする...', '後回し...', '取りやめる...'],
 			confirms: ['項目 #43 を完了にしますか?'],
 			closedLabels: ['戻す'],
 			statuses: ['u43:done', 'u44:working'],
 		});
+	});
+
+	test('設定: 入力中の名前は、別の Bot が変わっても作り直さず、この Bot の名前がほかで変わっても上書きせずに知らせる', async () => {
+		const { container, page, bots, botsChanged, disposables } = setup();
+		document.body.appendChild(container);
+		disposables.add(toDisposable(() => container.remove()));
+		page.setInstance(1);
+		await settle();
+		tab(container, 3);
+		await settle();
+		await settle();
+		const name = container.querySelector('.paradis-bot-settings-value input') as HTMLInputElement;
+		name.focus();
+		name.value = '出荷係';
+		name.dispatchEvent(new mainWindow.Event('input'));
+		name.setSelectionRange(1, 2);
+		bots.push(bot('other', '別の係'));
+		botsChanged.fire();
+		await settle();
+		const afterOther = { same: container.querySelector('.paradis-bot-settings-value input') === name, notice: container.getElementsByClassName('paradis-bot-settings-elsewhere').length };
+		bots[0] = { ...bots[0], name: '台帳で変えた名前', pinned: true };
+		botsChanged.fire();
+		await settle();
+		const input = container.querySelector('.paradis-bot-settings-value input') as HTMLInputElement;
+		assert.deepStrictEqual({
+			afterOther,
+			value: input.value,
+			focused: document.activeElement === input,
+			selection: [input.selectionStart, input.selectionEnd],
+			notice: container.getElementsByClassName('paradis-bot-settings-elsewhere')[0]?.textContent,
+		}, {
+			afterOther: { same: true, notice: 0 },
+			value: '出荷係',
+			focused: true,
+			selection: [1, 2],
+			notice: '書きかけの間に、ほかの場所で名前が変わりました。保存すると、この画面の値で上書きします。',
+		});
+	});
+
+	test('問いを一覧から開き直したときも守りを張り直し、台帳へ届かなかった答えは「送っている最中」を戻して理由を出す', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const { container, page, answered, failAnswer } = setup();
+		page.setInstance(1);
+		await settle();
+		(container.getElementsByClassName('paradis-bot-page-tab')[1] as HTMLElement).click();
+		await settle();
+		const open = async () => {
+			(container.getElementsByClassName('paradis-bot-page-row')[0] as HTMLElement).click();
+			await settle();
+		};
+		const buttons = () => Array.from(container.querySelectorAll<HTMLElement>('.paradis-bot-page-ask .pnip-ask-buttons .paradis-button'));
+		await open();
+		await new Promise(resolve => setTimeout(resolve, 600));
+		(container.querySelector('.paradis-bot-page-back') as HTMLElement).click();
+		await settle();
+		await open();
+		// 開き直した直後の押下は効かない
+		buttons()[1].click();
+		await settle();
+		const whileGuarded = answered.length;
+		await new Promise(resolve => setTimeout(resolve, 600));
+		failAnswer.value = true;
+		buttons()[1].click();
+		await settle();
+		await settle();
+		assert.deepStrictEqual({
+			whileGuarded,
+			sent: answered.length,
+			note: container.querySelector('.paradis-bot-page-ask .pnip-ask-note')?.textContent,
+			enabled: buttons().map(button => !button.classList.contains('disabled') && button.getAttribute('aria-disabled') !== 'true'),
+		}, {
+			whileGuarded: 0,
+			sent: 1,
+			note: '回答を送れませんでした。少し待ってからもう一度試してください',
+			enabled: [true, true, true],
+		});
+	}));
+
+	test('ファイル: 開いた後に Bot が書き足したら、差分を見せて「読み直す」「上書きする」を選ばせ、タブを開き直したときも読み直す', async () => {
+		const { container, page, calls, files } = setup();
+		page.setInstance(1);
+		await settle();
+		const openMemory = async () => {
+			tab(container, 2);
+			await settle();
+			(container.getElementsByClassName('paradis-bot-page-row')[1] as HTMLElement).click();
+			await settle();
+			await settle();
+		};
+		const editor = () => container.querySelector('.paradis-bot-files-editor textarea') as HTMLTextAreaElement;
+		const type = (value: string) => {
+			editor().value = value;
+			editor().dispatchEvent(new mainWindow.Event('input'));
+		};
+		const button = (label: string) => Array.from(container.querySelectorAll<HTMLElement>('.paradis-bot-files-conflict .paradis-button')).find(element => element.textContent === label)!;
+		const diff = () => Array.from(container.getElementsByClassName('paradis-bot-files-diff-line')).map(line => line.textContent);
+		await openMemory();
+		// 書きかけの無いまま Bot が書き足し、タブを開き直した: 新しい中身になる
+		files.set('MEMORY.md', '# Memory\n- 一つ目\n');
+		tab(container, 3);
+		await settle();
+		await openMemory();
+		const refreshed = editor().value;
+		// 書きかけの間に Bot が書き足した: 保存は書かずに差分を出す
+		type('# Memory\n- 一つ目\n- 自分の編集\n');
+		files.set('MEMORY.md', '# Memory\n- 一つ目\n- Bot が足した行\n');
+		primary(container).click();
+		await settle();
+		await settle();
+		const shown = diff();
+		button('読み直す（書きかけを捨てる）').click();
+		await settle();
+		const reloaded = editor().value;
+		// もう一度書きかけ、タブを開き直したら差分を出し、上書きを選ぶと書く
+		type('# Memory\n- 上書きする\n');
+		files.set('MEMORY.md', '# Memory\n- また Bot\n');
+		tab(container, 3);
+		await settle();
+		await openMemory();
+		const again = diff();
+		button('上書きする').click();
+		await settle();
+		await settle();
+		assert.deepStrictEqual({ refreshed, shown, reloaded, again, calls, conflicts: container.getElementsByClassName('paradis-bot-files-conflict').length }, {
+			refreshed: '# Memory\n- 一つ目\n',
+			shown: ['+ - Bot が足した行'],
+			reloaded: '# Memory\n- 一つ目\n- Bot が足した行\n',
+			again: ['- - 一つ目', '- - Bot が足した行', '+ - また Bot'],
+			calls: ['write MEMORY.md: # Memory\n- 上書きする\n'],
+			conflicts: 0,
+		});
+	});
+
+	test('設定: 役割が上限を超えたら黙って切り詰めず、保存を断って何文字多いかを出す', async () => {
+		const { container, page } = setup();
+		page.setInstance(1);
+		await settle();
+		tab(container, 3);
+		await settle();
+		await settle();
+		const role = container.querySelector('.paradis-bot-settings-role textarea') as HTMLTextAreaElement;
+		role.value = 'x'.repeat(4005);
+		role.dispatchEvent(new mainWindow.Event('input'));
+		const errors = Array.from(container.getElementsByClassName('paradis-bot-settings-error')).map(error => error.textContent).filter(text => !!text);
+		assert.deepStrictEqual({ errors, saveEnabled: !primary(container).classList.contains('disabled') && primary(container).getAttribute('aria-disabled') !== 'true' }, {
+			errors: ['役割が 5 文字多すぎます（4000 文字まで）。'],
+			saveEnabled: false,
+		});
+	});
+
+	test('提案: 入力欄にもターミナルにも入れられなければ「始めた」にせず、一覧に残すと知らせる', async () => {
+		const { container, page, calls, sendFails, warnings } = setup();
+		sendFails.value = true;
+		page.setInstance(1);
+		await settle();
+		tab(container, 1);
+		await settle();
+		(container.querySelector('.paradis-bot-page-suggestion .paradis-button-primary') as HTMLElement).click();
+		await settle();
+		await settle();
+		assert.deepStrictEqual({ started: calls.filter(call => call.startsWith('started')), warnings }, {
+			started: [],
+			warnings: ['提案の依頼を会話の入力欄へ入れられませんでした。提案は一覧に残しています。'],
+		});
+	});
+
+	test('提案: 文を取る間に別のペインへ替わったら、どこにも入れず「始めた」にしない', async () => {
+		const { container, page, calls } = setup();
+		page.setInstance(1);
+		await settle();
+		tab(container, 1);
+		await settle();
+		(container.querySelector('.paradis-bot-page-suggestion .paradis-button-primary') as HTMLElement).click();
+		page.setInstance(2);
+		await settle();
+		await settle();
+		assert.deepStrictEqual(calls.filter(call => !call.startsWith('start ')), []);
+	});
+
+	test('ファイル: 保存していない記憶の書きかけがあれば、写しに戻す確認の文に捨てることを出す', async () => {
+		const { container, page, confirms } = setup();
+		page.setInstance(1);
+		await settle();
+		tab(container, 2);
+		await settle();
+		(container.getElementsByClassName('paradis-bot-page-row')[1] as HTMLElement).click();
+		await settle();
+		await settle();
+		const editor = container.querySelector('.paradis-bot-files-editor textarea') as HTMLTextAreaElement;
+		editor.value = '# Memory\n- 書きかけ\n';
+		editor.dispatchEvent(new mainWindow.Event('input'));
+		(container.getElementsByClassName('paradis-bot-snapshots-row')[1].getElementsByClassName('paradis-button')[0] as HTMLElement).click();
+		await settle();
+		assert.deepStrictEqual(confirms.map(confirmation => [String(confirmation.detail).includes(new Date(OLDER_AT).toLocaleString()), String(confirmation.detail).includes('保存していない MEMORY.md の書きかけは捨てます。')]), [[true, true]]);
 	});
 });

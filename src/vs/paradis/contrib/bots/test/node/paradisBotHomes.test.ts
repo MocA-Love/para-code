@@ -15,10 +15,13 @@ import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { ParadisHumanAskService } from '../../../humanAsk/node/paradisHumanAskChannel.js';
 import { PARADIS_BOT_CLAUDE_BODY, PARADIS_BOT_GENERATED_BEGIN, PARADIS_BOT_GENERATED_END, paradisBotInstructionName, paradisBotInstructions, paradisBotOwnerFile, paradisMergeBotGeneratedFile, paradisParseBotOwnerFile } from '../../common/paradisBotHome.js';
 import { IParadisBotLaunch } from '../../common/paradisBotsApi.js';
+import { PARADIS_READ_ONLY_MCP_TOOL_NAMES } from '../../../agentBrowser/common/paradisMcpReadOnlyTools.js';
+import { paradisBotPatrolLaunchArgs } from '../../common/paradisBotTools.js';
 import { ParadisBotHomeError, ParadisBotHomes, PARADIS_BOT_HOME_FILE_LIMIT } from '../../node/paradisBotHomes.js';
 import { ParadisBotsChannel } from '../../node/paradisBotsChannel.js';
 import { ParadisBotsService } from '../../node/paradisBotsService.js';
 import { ParadisBotMemorySnapshots } from '../../node/paradisBotMemorySnapshots.js';
+import { paradisForgetBotPatrol, paradisPrepareBotPatrolLaunch, paradisTrustBotPatrolFolder } from '../../node/paradisBotPatrolLaunch.js';
 import { createParadisBotItemsFile, createParadisBotsFile, createParadisBotSuggestionsFile } from '../../node/paradisBotsStore.js';
 
 const BOT = { id: 'b1', name: 'リリース係', folder: 'bot' };
@@ -314,7 +317,7 @@ suite('Paradis bot homes', () => {
 		const taken = await service.snapshotMemory(botId);
 		await service.writeHomeFile(botId, 'MEMORY.md', '- 整理した記憶\n');
 		await service.writeHomeFile(botId, 'memory/release.md', '細かい話\n');
-		const undone = await service.undoMemoryTidy(botId);
+		const undone = await service.undoMemoryTidy(botId, 5000);
 		assert.deepStrictEqual({
 			fromChat: fromChat.ok ? 'ok' : fromChat.code,
 			fromPatrol: fromPatrol.ok ? fromPatrol.value.title : fromPatrol.code,
@@ -336,7 +339,7 @@ suite('Paradis bot homes', () => {
 			openAfterStart: 1,
 			marked: 'started',
 			afterMark: 0,
-			taken: { ok: true, value: { takenAt: 5000, files: 1, total: 1, partial: false } },
+			taken: { ok: true, value: { takenAt: 5000, files: 1, total: 1, partial: false, kind: 'manual' } },
 			undone: { ok: true, value: { restored: ['MEMORY.md'], added: ['memory/release.md'], takenAt: 5000, skipped: [] } },
 			memory: { ok: true, value: '- 2026-11-27 古い記憶\n' },
 			homeFiles: ['.para-bot.json'],
@@ -362,7 +365,7 @@ suite('Paradis bot homes', () => {
 
 		enabled = false;
 		const offSnapshot = await service.snapshotMemory(botId);
-		const offUndo = await service.undoMemoryTidy(botId);
+		const offUndo = await service.undoMemoryTidy(botId, 7000);
 		const folderWhileOff = await fs.readdir(snapshotRoot).catch(() => 'none');
 		enabled = true;
 
@@ -374,7 +377,7 @@ suite('Paradis bot homes', () => {
 		// 写しを書き換えて、人格メモ・指示文・フォルダの外を書き戻させようとする
 		const snapshotFile = join(snapshotRoot, botId, '7000.json');
 		await fs.writeFile(snapshotFile, JSON.stringify({ version: 1, takenAt: 7000, files: { 'MEMORY.md': '- 戻した記憶\n', 'SOUL.md': '乗っ取り', 'AGENTS.md': '乗っ取り', 'memory/a/b.md': 'x', 'memory/n000.md': '戻した\n' } }));
-		const undone = await service.undoMemoryTidy(botId);
+		const undone = await service.undoMemoryTidy(botId, 7000);
 		const removed = await service.removeBot(botId);
 		assert.deepStrictEqual({
 			offSnapshot,
@@ -393,7 +396,7 @@ suite('Paradis bot homes', () => {
 			offUndo: { ok: false, code: 'disabled', message: 'Para Code bots are turned off. Turn on the bot setting (paradis.bots.enabled) first.' },
 			folderWhileOff: 'none',
 			// MEMORY.md と memory/ の 205 件のうち、上限の 200 件だけ
-			taken: { takenAt: 7000, files: 200, total: 206, partial: true },
+			taken: { takenAt: 7000, files: 200, total: 206, partial: true, kind: 'manual' },
 			undone: { restored: ['MEMORY.md', 'memory/n000.md'], skipped: ['SOUL.md', 'AGENTS.md', 'memory/a/b.md'] },
 			soulKept: true,
 			memory: '- 戻した記憶\n',
@@ -401,6 +404,112 @@ suite('Paradis bot homes', () => {
 			removed: true,
 			snapshotsAfterRemove: 'gone',
 			homeAfterRemove: true,
+		});
+	});
+
+	test('サービス: 会話を起動するたびに記憶の写しを取る（中身が直前と同じなら取らない。見回り・設定オフでは取らない）。一覧は新しい順で 5 件まで', async () => {
+		const userData = join(root, '..', 'userData');
+		let ids = 0;
+		let clock = 10_000;
+		let enabled = true;
+		const service = store.add(new ParadisBotsService(createParadisBotsFile(userData), createParadisBotItemsFile(userData), store.add(new ParadisHumanAskService()), new NullLogService(), {
+			homes,
+			uuid: () => `id${++ids}`,
+			enabled: () => enabled,
+			memorySnapshots: new ParadisBotMemorySnapshots(join(userData, 'snapshots'), homes, () => clock),
+			// 見回りは読むだけの用意ができたものとして起動する
+			preparePatrol: async () => ({ agent: 'claude', runFolder: join(userData, 'run'), homeFolder: root, instructionsFile: join(userData, 'run', 'AGENTS.md'), settingsFile: join(userData, 's.json'), mcpConfigFile: join(userData, 'm.json') }),
+		}));
+		const created = await service.createBot({ name: 'リリース係', agent: 'claude' });
+		assert.ok(created.ok);
+		const botId = created.value.id;
+		const chat = async () => {
+			clock += 1000;
+			const launched = await service.requestLaunch(botId, 'chat');
+			if (launched.ok) {
+				service.cancelLaunch(launched.value.launchId);
+			}
+			return launched.ok;
+		};
+		const firstChat = await chat();
+		// 記憶が変わらないまま会話を開き直しても、写しは増えない
+		await chat();
+		await chat();
+		const unchanged = await service.listMemorySnapshots(botId);
+		await service.writeHomeFile(botId, 'memory/release.md', '細かい話\n');
+		clock += 1000;
+		const patrol = await service.requestLaunch(botId, 'patrol');
+		const afterPatrol = await service.listMemorySnapshots(botId);
+		// 記憶が変わるたびに増え、6 件目で一番古いものが消える
+		for (let index = 0; index < 5; index++) {
+			await service.writeHomeFile(botId, 'memory/release.md', `細かい話 ${index}\n`);
+			await chat();
+		}
+		const listed = await service.listMemorySnapshots(botId);
+		enabled = false;
+		const offLaunch = await service.requestLaunch(botId, 'chat');
+		const offList = await service.listMemorySnapshots(botId);
+		assert.deepStrictEqual({
+			firstChat,
+			unchanged,
+			patrol: patrol.ok,
+			afterPatrol,
+			listed,
+			offLaunch: offLaunch.ok ? 'ok' : offLaunch.code,
+			offList: offList.ok ? 'ok' : offList.code,
+		}, {
+			firstChat: true,
+			unchanged: { ok: true, value: [{ takenAt: 11000, files: 1, total: 1, partial: false, kind: 'auto' }] },
+			patrol: true,
+			// 見回りでは取らない（記憶は変わったが、会話の起動の 1 件だけ）
+			afterPatrol: { ok: true, value: [{ takenAt: 11000, files: 1, total: 1, partial: false, kind: 'auto' }] },
+			// 6 件になって、古い 1 件（11000）が消えた
+			listed: { ok: true, value: [19000, 18000, 17000, 16000, 15000].map(takenAt => ({ takenAt, files: 2, total: 2, partial: false, kind: 'auto' })) },
+			offLaunch: 'disabled',
+			offList: 'disabled',
+		});
+	});
+
+	test('サービス: 明示に取った写しは自動の写しで押し出されず、取り消しは選んだ写しを書き戻す（無い写しは断る）', async () => {
+		const userData = join(root, '..', 'userData');
+		let ids = 0;
+		let clock = 20_000;
+		const service = store.add(new ParadisBotsService(createParadisBotsFile(userData), createParadisBotItemsFile(userData), store.add(new ParadisHumanAskService()), new NullLogService(), {
+			homes,
+			uuid: () => `id${++ids}`,
+			memorySnapshots: new ParadisBotMemorySnapshots(join(userData, 'snapshots'), homes, () => clock),
+		}));
+		const created = await service.createBot({ name: 'リリース係', agent: 'claude' });
+		assert.ok(created.ok);
+		const botId = created.value.id;
+		await service.writeHomeFile(botId, 'MEMORY.md', '- 整理の前\n');
+		clock += 1000;
+		const manual = await service.snapshotMemory(botId);
+		// 整理の後、記憶が変わる会話を 6 回開く（自動の写しは 5 件まで。明示の写しは残る）
+		for (let index = 0; index < 6; index++) {
+			await service.writeHomeFile(botId, 'MEMORY.md', `- 整理の後 ${index}\n`);
+			clock += 1000;
+			const launched = await service.requestLaunch(botId, 'chat');
+			if (launched.ok) {
+				service.cancelLaunch(launched.value.launchId);
+			}
+		}
+		const listed = await service.listMemorySnapshots(botId);
+		const gone = await service.undoMemoryTidy(botId, 22000);
+		const undone = await service.undoMemoryTidy(botId, 21000);
+		assert.deepStrictEqual({
+			manual: manual.ok ? manual.value.kind : manual.code,
+			listed: listed.ok ? listed.value.map(snapshot => `${snapshot.takenAt} ${snapshot.kind}`) : listed.code,
+			gone,
+			undone: undone.ok ? undone.value.takenAt : undone.code,
+			memory: await service.readHomeFile(botId, 'MEMORY.md'),
+		}, {
+			manual: 'manual',
+			listed: ['27000 auto', '26000 auto', '25000 auto', '24000 auto', '23000 auto', '21000 manual'],
+			// 22000 の自動の写しは上限で消えた
+			gone: { ok: false, code: 'not_found', message: 'There is no copy of the memory to go back to.' },
+			undone: 21000,
+			memory: { ok: true, value: '- 整理の前\n' },
 		});
 	});
 
@@ -421,5 +530,178 @@ suite('Paradis bot homes', () => {
 	test('人格メモの雛形は日本語（利用者が開いて書き足す）', async () => {
 		await homes.ensure(BOT);
 		assert.strictEqual(await homes.read(BOT, 'SOUL.md'), '# リリース係\n\n（この Bot が何をするのかを、ここに 1 文で書いてください）\n\n## 仕事の進め方\n\n- （どこを見て、どこへ知らせるか）\n');
+	});
+
+	test('見回りの起動: 読むだけの引数で、Bot の権限の設定を使わない。設定がオフ・制限できないエージェント・用意できない・危ない雛形は断る', async () => {
+		const userData = join(root, '..', 'userData');
+		const settings = { enabled: true, prepared: true, command: 'claude {model} {prompt}', modelFlag: '--model m1' };
+		const context = { agent: 'claude', runFolder: '/data/runs/r1', homeFolder: '/home/bot', instructionsFile: '/data/runs/r1/AGENTS.md', settingsFile: '/data/s.json', mcpConfigFile: '/data/m.json' } as const;
+		const prepared: string[] = [];
+		const forgotten: string[] = [];
+		let ids = 0;
+		const service = store.add(new ParadisBotsService(createParadisBotsFile(userData), createParadisBotItemsFile(userData), store.add(new ParadisHumanAskService()), new NullLogService(), {
+			homes, uuid: () => `id${++ids}`, enabled: () => settings.enabled,
+			preparePatrol: async (agent, botId, home) => {
+				prepared.push(`${agent}:${botId}:${home.folder.startsWith(root)}:${home.files.map(file => file.name).join(',')}`);
+				return settings.prepared ? context : 'not ready';
+			},
+			agentTemplate: id => ({ id, label: id, command: settings.command, models: [{ id: 'm1', flag: settings.modelFlag }] }),
+			forgetPatrol: async botId => { forgotten.push(botId); },
+		}));
+		const claude = await service.createBot({ name: 'リリース係', agent: 'claude', permissionId: 'skip-permissions' });
+		const other = await service.createBot({ name: 'B', agent: 'opencode' });
+		assert.ok(claude.ok && other.ok);
+		const patrol = await service.requestLaunch(claude.value.id, 'patrol');
+		// 同じ Bot の見回りは同時に 1 つまで（起動の途中なら 2 つ目を断り、やめれば起動できる）
+		const second = await service.requestLaunch(claude.value.id, 'patrol');
+		assert.ok(patrol.ok);
+		await service.cancelLaunch(patrol.value.launchId);
+		const chat = await service.requestLaunch(claude.value.id, 'chat');
+		const unsupported = await service.requestLaunch(other.value.id, 'patrol');
+		settings.command = 'claude --dangerously-skip-permissions {prompt}';
+		const unsafe = await service.requestLaunch(claude.value.id, 'patrol');
+		settings.command = 'claude {prompt}';
+		settings.modelFlag = '--model m1 --dangerously-skip-permissions';
+		const modelOk = await service.requestLaunch(claude.value.id, 'patrol');
+		if (modelOk.ok) {
+			await service.cancelLaunch(modelOk.value.launchId);
+		}
+		await service.updateBot(claude.value.id, { modelId: 'm1' });
+		const unsafeModel = await service.requestLaunch(claude.value.id, 'patrol');
+		settings.modelFlag = '--model m1';
+		settings.prepared = false;
+		const unprepared = await service.requestLaunch(claude.value.id, 'patrol');
+		settings.enabled = false;
+		const off = await service.requestLaunch(claude.value.id, 'patrol');
+		await service.removeBot(other.value.id);
+		assert.deepStrictEqual({
+			forgotten,
+			second: !second.ok && second.code,
+			patrol: patrol.ok && [patrol.value.permissionId, patrol.value.extraFlags, patrol.value.cwd],
+			chat: chat.ok && chat.value.permissionId,
+			unsupported: !unsupported.ok && unsupported.code,
+			unsafe: !unsafe.ok && unsafe.code,
+			modelOk: modelOk.ok,
+			unsafeModel: !unsafeModel.ok && unsafeModel.code,
+			unprepared: !unprepared.ok && [unprepared.code, unprepared.message],
+			off: !off.ok && off.code,
+			prepared,
+		}, {
+			patrol: [undefined, paradisBotPatrolLaunchArgs(context, PARADIS_READ_ONLY_MCP_TOOL_NAMES), '/data/runs/r1'],
+			chat: 'skip-permissions',
+			unsupported: 'unsupported',
+			forgotten: ['id2'],
+			second: 'launching',
+			unsafe: 'unsafe_template',
+			modelOk: true,
+			unsafeModel: 'unsafe_template',
+			unprepared: ['patrol_unavailable', 'not ready'],
+			off: 'disabled',
+			prepared: ['claude:id1:true:AGENTS.md,SOUL.md,MEMORY.md', 'claude:id1:true:AGENTS.md,SOUL.md,MEMORY.md', 'claude:id1:true:AGENTS.md,SOUL.md,MEMORY.md'],
+		});
+	});
+
+	test('見回りの用意: cwd は Bot ごとに 1 つのフォルダを空にして指示文の写しだけを置き、設定は 0600 でトークンを含まず、Codex は全部のホームのサーバーを集める', async () => {
+		const base = join(root, '..');
+		const data = join(base, 'data');
+		const codexA = join(base, 'codexA.toml');
+		const codexB = join(base, 'codexB.toml');
+		await fs.writeFile(codexA, '[mcp_servers.slack]\nurl = "https://example.invalid/"\n[mcp_servers.para-browser]\nurl = "http://127.0.0.1:1/"\n');
+		await fs.writeFile(codexB, 'mcp_servers.x.command = "a"\n');
+		const trusted: string[] = [];
+		const environment = (port: number | undefined, codex: string[], runsFolder = join(data, 'patrol-runs')) => ({
+			folder: join(data, 'patrol'), runsFolder, stopFolder: base, gatewayPort: async () => port, codexConfigFiles: () => codex,
+			trustClaudeFolder: async (folder: string) => { trusted.push(folder.slice(base.length)); },
+		});
+		const home = { folder: '/home/bot', files: [{ name: 'AGENTS.md', text: '# Kiwi\nThis folder is your home.' }, { name: 'SOUL.md', text: 'I am Kiwi.' }] };
+		const claude = await paradisPrepareBotPatrolLaunch(environment(4321, []), 'claude', 'b/1', home);
+		const noGateway = await paradisPrepareBotPatrolLaunch(environment(undefined, []), 'claude', 'b1', home);
+		const codex = await paradisPrepareBotPatrolLaunch(environment(1, [codexA, join(base, 'missing.toml')]), 'codex', 'b1', home);
+		const unreadable = await paradisPrepareBotPatrolLaunch(environment(1, [codexA, codexB]), 'codex', 'b1', home);
+		// 前の回の後に置かれたもの（会話の Bot がシェルで置いた設定など）は、次の回の前に消える
+		assert.ok(typeof codex !== 'string');
+		await fs.mkdir(join(codex.runFolder, '.claude'), { recursive: true });
+		await fs.writeFile(join(codex.runFolder, '.claude', 'settings.json'), '{}');
+		const again = await paradisPrepareBotPatrolLaunch(environment(1, []), 'codex', 'b1', home);
+		// 見回りのフォルダの親に `.claude/` があれば断る
+		await fs.mkdir(join(data, 'planted', '.claude'), { recursive: true });
+		const planted = await paradisPrepareBotPatrolLaunch(environment(1, [], join(data, 'planted', 'runs')), 'codex', 'b1', home);
+		// userData のパスが symlink のときは、実体のパスの親も確かめる
+		await fs.mkdir(join(data, 'real', '.claude'), { recursive: true });
+		await fs.mkdir(join(data, 'real', 'inner'), { recursive: true });
+		await fs.symlink(join(data, 'real', 'inner'), join(data, 'link'));
+		const linked = await paradisPrepareBotPatrolLaunch(environment(1, [], join(data, 'link', 'runs')), 'codex', 'b1', home);
+		assert.ok(typeof claude !== 'string' && claude.agent === 'claude' && typeof again !== 'string');
+		assert.deepStrictEqual({
+			files: [claude.runFolder, claude.instructionsFile, claude.settingsFile, claude.mcpConfigFile].map(path => path.slice(data.length)),
+			runEntries: await fs.readdir(claude.runFolder),
+			modes: process.platform === 'win32' ? ['700', '600', '600', '600'] : await Promise.all([claude.runFolder, claude.instructionsFile, claude.settingsFile, claude.mcpConfigFile].map(async path => ((await fs.stat(path)).mode & 0o777).toString(8))),
+			instructions: await fs.readFile(claude.instructionsFile, 'utf8'),
+			settings: JSON.parse(await fs.readFile(claude.settingsFile, 'utf8')),
+			mcp: JSON.parse(await fs.readFile(claude.mcpConfigFile, 'utf8')),
+			homeFolder: claude.homeFolder,
+			trusted,
+			noGateway: typeof noGateway === 'string' && noGateway.includes('Restart Para Code'),
+			codex: { ...codex, runFolder: codex.runFolder.slice(data.length) },
+			unreadable: typeof unreadable === 'string' && unreadable.includes('[mcp_servers.<name>]'),
+			again: [again.runFolder === codex.runFolder, await fs.readdir(again.runFolder)],
+			planted: typeof planted === 'string' && planted.includes('.claude') && planted.includes('Remove it'),
+			linked: typeof linked === 'string' && linked.includes(join('real', '.claude')),
+			runs: await fs.readdir(join(data, 'patrol-runs')),
+		}, {
+			files: ['/patrol-runs/b_1', '/patrol-runs/b_1/AGENTS.md', '/patrol/b_1.claude-settings.json', '/patrol/b_1.claude-mcp.json'],
+			runEntries: ['AGENTS.md'],
+			modes: ['700', '600', '600', '600'],
+			instructions: '# Look-around\n\nThis terminal is a look-around that Para Code started on a schedule. Your home folder is /home/bot. This working folder is not your home: read your files (SOUL.md, MEMORY.md, memory/) in your home folder. Below are copies of your instruction files from your home folder, taken when this look-around started; where they say "this folder", they mean your home folder.\n\n## AGENTS.md (copy)\n\n# Kiwi\nThis folder is your home.\n\n## SOUL.md (copy)\n\nI am Kiwi.\n',
+			settings: { permissions: { disableBypassPermissionsMode: 'disable' } },
+			mcp: { mcpServers: { 'para-browser': { type: 'http', url: 'http://127.0.0.1:4321/', headers: { Authorization: 'Bearer ${PARA_CODE_TERMINAL_PANE_ID}' }, timeout: 300000 } } },
+			homeFolder: '/home/bot',
+			trusted: ['/data/patrol-runs/b_1'],
+			noGateway: true,
+			codex: { agent: 'codex', runFolder: '/patrol-runs/b1', disabledServers: [{ name: 'slack', transport: 'url' }] },
+			unreadable: true,
+			again: [true, ['AGENTS.md']],
+			planted: true,
+			linked: true,
+			runs: ['b1', 'b_1'],
+		});
+	});
+
+	test('見回りのフォルダの信頼: 設定ファイルには信頼の 1 項目だけを書き、壊れていれば書かず、Bot を消すと項目とフォルダを外す', async () => {
+		const base = await fs.realpath(join(root, '..'));
+		const config = join(base, 'claude.json');
+		const environment = { folder: join(base, 'patrol'), runsFolder: join(base, 'patrol-runs') };
+		const runFolder = join(environment.runsFolder, 'b1');
+		await fs.mkdir(runFolder, { recursive: true });
+		await fs.mkdir(environment.folder, { recursive: true });
+		await fs.writeFile(join(environment.folder, 'b1.claude-settings.json'), '{}');
+		const original = { numStartups: 5, projects: { '/other': { hasTrustDialogAccepted: true, allowedTools: ['x'] } }, oauthAccount: { name: 'n' } };
+		await fs.writeFile(config, JSON.stringify(original, undefined, 2));
+		const granted = await paradisTrustBotPatrolFolder(config, runFolder);
+		const afterTrust = JSON.parse(await fs.readFile(config, 'utf8'));
+		const again = await paradisTrustBotPatrolFolder(config, runFolder);
+		await paradisForgetBotPatrol(environment, 'b1', config);
+		const afterForget = JSON.parse(await fs.readFile(config, 'utf8'));
+		const broken = join(base, 'broken.json');
+		await fs.writeFile(broken, '{ "projects": ');
+		const brokenOutcome = await paradisTrustBotPatrolFolder(broken, runFolder);
+		assert.deepStrictEqual({
+			granted, again, afterTrust, afterForget, brokenOutcome,
+			broken: await fs.readFile(broken, 'utf8'),
+			left: await Promise.all([runFolder, join(environment.folder, 'b1.claude-settings.json')].map(path => fs.stat(path).then(() => true, () => false))),
+		}, {
+			granted: 'granted',
+			again: 'unchanged',
+			afterTrust: { ...original, projects: { ...original.projects, [runFolder]: { hasTrustDialogAccepted: true } } },
+			afterForget: original,
+			brokenOutcome: 'unreadable',
+			broken: '{ "projects": ',
+			left: [false, false],
+		});
+	});
+
+	test('専用フォルダには、エージェントがフォルダから読む設定の置き場を書かせない', async () => {
+		await homes.ensure(BOT);
+		assert.deepStrictEqual(await Promise.all(['.claude/settings.json', '.Claude/settings.local.json', '.codex/config.toml', '.mcp.json', 'AGENTS.override.md', 'notes/.claude.md'].map(path => code(() => homes.write(BOT, path, 'x')))), ['reserved', 'reserved', 'reserved', 'reserved', 'reserved', 'ok']);
 	});
 });

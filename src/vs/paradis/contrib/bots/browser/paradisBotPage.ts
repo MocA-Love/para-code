@@ -31,13 +31,15 @@ import { ThemeIcon } from '../../../../base/common/themables.js';
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
+import { IContextMenuService, IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
+import { ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { createParadisChip } from '../../../browser/paradisBadges.js';
 import { ParadisButton } from '../../../browser/paradisButton.js';
 import { IParadisEditorTerminalOverlay } from '../../agentBrowser/browser/paradisPaneIndicator.js';
+import { IParadisAgentChatService } from '../../agentChat/browser/paradisAgentChatService.js';
 import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 import { IParadisHumanAskService, ParadisHumanAskAnswer, paradisHumanAskKey } from '../../humanAsk/common/paradisHumanAsk.js';
 import { IParadisInboxAskCardOptions, PARADIS_INBOX_ASK_SCOPE_CLASS, paradisBuildInboxAskCard } from '../../notificationInbox/browser/paradisNotificationInboxAskCard.js';
@@ -47,8 +49,10 @@ import { paradisBotAskId } from '../common/paradisBotAsk.js';
 import { IParadisBotItem, IParadisBotItemLink, paradisBotItemWaitsForOwner, paradisIsBotItemClosed, paradisIsBotItemLocked, paradisIsBotItemSnoozed } from '../common/paradisBotItems.js';
 import { IParadisBotSummary, IParadisBotsService, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
 import { paradisBotFace, paradisBotStatusLine } from '../common/paradisBotsBandModel.js';
-import { paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel, ParadisBotPageTab } from '../common/paradisBotPageModel.js';
+import { paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel, PARADIS_BOT_PAGE_TABS, ParadisBotPageTab, paradisBotSuggestionText } from '../common/paradisBotPageModel.js';
+import { ParadisBotSettingsPanel } from './paradisBotPageSettings.js';
 import { renderParadisBotFace } from './paradisBotFace.js';
+import type { IParadisBotSuggestion } from '../common/paradisBotSuggestions.js';
 
 const $ = DOM.$;
 
@@ -107,8 +111,10 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 	private readonly stripFace: HTMLElement;
 	private readonly stripName: HTMLElement;
 	private readonly stripStatus: HTMLElement;
-	private readonly chatTab: HTMLElement;
+	private readonly tabElements = new Map<ParadisBotPageTab, HTMLElement>();
 	private readonly itemsTab: HTMLElement;
+	/** Bot ごとの設定・ファイルのタブ（入力中の値を描き直しの間も持つ）。 */
+	private readonly settingsPanels = new Map<string, ParadisBotSettingsPanel>();
 	private readonly itemsCount: HTMLElement;
 	private readonly panel: HTMLElement;
 	private readonly panelStore = this._register(new DisposableStore());
@@ -122,10 +128,10 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 	private readonly tabs = new Map<string, ParadisBotPageTab>();
 	private readonly openItems = new Map<string, string>();
 	private items: readonly IParadisBotItem[] = [];
+	private suggestions: readonly IParadisBotSuggestion[] = [];
 	/** 問いのカードの状態（台帳の鍵ごと）。 */
 	private readonly askStates = new Map<string, IParadisBotPageAskState>();
-	/** 今出している問いの鍵と、その守りの終わる時刻。 */
-	private askShown: string | undefined;
+	/** 今出している問いの守りの終わる時刻。 */
 	private askGuardUntil = 0;
 	/** 描いた後に問いのカードが枠から溢れた（描き直してモーダルへ回す）。 */
 	private askOverflowed = false;
@@ -138,7 +144,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 	private composing = false;
 	private renderAfterComposition = false;
 	/** 今の面の入力欄（作り直したときに、同じ欄へフォーカスを戻す）。 */
-	private readonly focusTargets = new Map<string, HTMLTextAreaElement>();
+	private readonly focusTargets = new Map<string, HTMLInputElement | HTMLTextAreaElement>();
 	private readonly focusKeys = new WeakMap<HTMLElement, string>();
 
 	constructor(
@@ -153,6 +159,9 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		@INotificationService private readonly notificationService: INotificationService,
 		@IOpenerService private readonly openerService: IOpenerService,
 		@IConfigurationService private readonly configurationService: IConfigurationService,
+		@IContextViewService private readonly contextViewService: IContextViewService,
+		@ITerminalService private readonly terminalService: ITerminalService,
+		@IParadisAgentChatService private readonly agentChatService: IParadisAgentChatService,
 		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super();
@@ -165,16 +174,19 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		const tabs = DOM.append(this.strip, $('.paradis-bot-page-tabs'));
 		tabs.setAttribute('role', 'tablist');
 		tabs.setAttribute('aria-label', localize('paradis.botPage.tabs', "Bot のページ"));
-		this.chatTab = this.tab(tabs, 'chat', localize('paradis.botPage.tab.chat', "会話"));
+		this.tab(tabs, 'chat', localize('paradis.botPage.tab.chat', "会話"));
 		this.itemsTab = this.tab(tabs, 'items', localize('paradis.botPage.tab.items', "項目"));
+		this.tab(tabs, 'files', localize('paradis.botPage.tab.files', "ファイル"));
+		this.tab(tabs, 'settings', localize('paradis.botPage.tab.settings', "設定"));
 		this.itemsCount = DOM.append(this.itemsTab, $('span.paradis-bot-page-tab-count'));
 		this._register(DOM.addDisposableListener(tabs, DOM.EventType.KEY_DOWN, e => {
 			const event = new StandardKeyboardEvent(e);
 			if (event.equals(KeyCode.LeftArrow) || event.equals(KeyCode.RightArrow)) {
 				DOM.EventHelper.stop(e, true);
-				const next = this.currentTab() === 'chat' ? 'items' : 'chat';
+				const index = PARADIS_BOT_PAGE_TABS.indexOf(this.currentTab());
+				const next = PARADIS_BOT_PAGE_TABS[(index + (event.equals(KeyCode.RightArrow) ? 1 : PARADIS_BOT_PAGE_TABS.length - 1)) % PARADIS_BOT_PAGE_TABS.length];
 				this.setTab(next);
-				(next === 'chat' ? this.chatTab : this.itemsTab).focus();
+				this.tabElements.get(next)?.focus();
 			}
 		}));
 
@@ -201,6 +213,9 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 			this.renderStrip();
 			if (this.botId !== undefined && this.currentTab() === 'items') {
 				void this.loadItems();
+			} else if (this.botId !== undefined && this.currentTab() === 'settings') {
+				// その Bot の設定の値が変わったときだけ描き直す（入力中の値はパネルが持ち、書きかけは台帳の値で上書きしない）
+				this.renderPanel();
 			}
 		}));
 		// 問いが答えられた・取り下げられた・届けている最中になった（カードを描き直し、項目の側も読み直す。中身が同じなら描き直さない）
@@ -271,6 +286,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		}
 		if (changed) {
 			this.items = [];
+			this.suggestions = [];
 		}
 		this.renderStrip();
 		this.applyTab();
@@ -282,6 +298,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		element.setAttribute('role', 'tab');
 		DOM.append(element, $('span')).textContent = label;
 		this._register(DOM.addDisposableListener(element, DOM.EventType.CLICK, () => this.setTab(tab)));
+		this.tabElements.set(tab, element);
 		return element;
 	}
 
@@ -299,7 +316,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 
 	private applyTab(): void {
 		const tab = this.currentTab();
-		for (const [element, value] of [[this.chatTab, 'chat'], [this.itemsTab, 'items']] as const) {
+		for (const [value, element] of this.tabElements) {
 			element.classList.toggle('selected', tab === value);
 			element.setAttribute('aria-selected', String(tab === value));
 			element.tabIndex = tab === value ? 0 : -1;
@@ -309,6 +326,12 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		if (tab === 'items') {
 			this.renderPanel();
 			void this.loadItems();
+		} else if (tab !== 'chat') {
+			this.renderPanel();
+			// ファイルのタブを開き直したら読み直す（開いている間に Bot が記憶を書き足していても、古いまま保存しようとしない）
+			if (tab === 'files' && this.botId !== undefined) {
+				this.settingsPanel(this.botId).reloadFiles();
+			}
 		} else {
 			this.clearPanel();
 		}
@@ -350,11 +373,12 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 			return;
 		}
 		const seq = ++this.loadSeq;
-		const items = await this.botsService.listItems({ botId });
+		const [items, suggestions] = await Promise.all([this.botsService.listItems({ botId }), this.botsService.listSuggestions(botId)]);
 		if (seq !== this.loadSeq || this.botId !== botId || this._store.isDisposed) {
 			return;
 		}
 		this.items = items;
+		this.suggestions = suggestions;
 		if (this.currentTab() === 'items') {
 			this.renderPanel();
 		}
@@ -367,21 +391,26 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		return item.ask !== undefined ? paradisHumanAskKey('bot', paradisBotAskId(item.uid, item.ask.eventId)) : undefined;
 	}
 
-	/** 面に出す中身の印。開いている項目・一覧の項目・問いの台帳の中身とカードの状態が変わったときだけ描き直す。 */
+	/** 面に出す中身の印。開いている項目・一覧の項目と提案・問いの台帳の中身とカードの状態が変わったときだけ描き直す。 */
 	private signature(item: IParadisBotItem | undefined): string {
 		const key = item !== undefined ? this.askKey(item) : undefined;
 		const entry = key !== undefined ? this.humanAskService.snapshot.entries.find(candidate => candidate.key === key) : undefined;
-		return JSON.stringify([this.botId, item !== undefined ? item : this.items, entry, key !== undefined ? this.askStates.get(key) : undefined]);
+		return JSON.stringify([this.botId, item !== undefined ? item : [this.items, this.suggestions], entry, key !== undefined ? this.askStates.get(key) : undefined]);
 	}
 
-	private renderPanel(): void {
+	/** @param force 中身の印が同じでも描き直す（設定・ファイルのパネルが自分の状態を変えたとき）。 */
+	private renderPanel(force = false): void {
 		if (this.botId === undefined) {
 			return;
 		}
+		const tab = this.currentTab();
+		const settings = tab === 'files' || tab === 'settings';
+		const bot = this.bot(this.botId);
 		const uid = this.openItems.get(this.botId);
 		const item = uid !== undefined ? this.items.find(candidate => candidate.uid === uid) : undefined;
-		const signature = this.signature(item);
-		if (signature === this.panelSignature) {
+		// 設定・ファイルの面は、そのタブに出す台帳の値の印（入力中の値はパネルが持つ）
+		const signature = settings ? (bot !== undefined ? this.settingsPanel(bot.id).signature(tab, bot) : undefined) : this.signature(item);
+		if (!force && signature !== undefined && signature === this.panelSignature) {
 			return;
 		}
 		// 変換中に作り直すと確定前の文字が消えるので、確定を待つ
@@ -393,14 +422,24 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		const focused = DOM.isHTMLElement(active) && this.panel.contains(active) ? active : undefined;
 		// 入力欄にいたら、作り直した同じ欄へ戻す（値は項目ごとの書きかけから戻る）
 		const focusKey = focused !== undefined ? this.focusKeys.get(focused) : undefined;
-		const selection = focusKey !== undefined && DOM.isHTMLTextAreaElement(focused) ? [focused.selectionStart, focused.selectionEnd] as const : undefined;
+		const selection = focusKey !== undefined && (DOM.isHTMLTextAreaElement(focused) || DOM.isHTMLInputElement(focused)) ? [focused.selectionStart, focused.selectionEnd] as const : undefined;
 		const scrollTop = this.panel.scrollTop;
 		this.panelStore.clear();
 		DOM.clearNode(this.panel);
 		this.focusTargets.clear();
 		this.panelSignature = signature;
 		const body = DOM.append(this.panel, $('.paradis-bot-page-body'));
-		if (item !== undefined) {
+		const track = (element: HTMLInputElement | HTMLTextAreaElement, key: string) => this.trackFocus(element, key);
+		if (settings) {
+			if (bot !== undefined) {
+				const panel = this.settingsPanel(bot.id);
+				if (tab === 'files') {
+					panel.renderFiles(body, bot, this.panelStore, track);
+				} else {
+					panel.renderSettings(body, bot, this.panelStore, track);
+				}
+			}
+		} else if (item !== undefined) {
 			this.renderItem(body, item);
 		} else {
 			this.renderList(body);
@@ -409,7 +448,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		const again = focusKey !== undefined ? this.focusTargets.get(focusKey) : undefined;
 		if (again) {
 			again.focus();
-			if (selection) {
+			if (selection && selection[0] !== null && selection[1] !== null) {
 				again.setSelectionRange(selection[0], selection[1]);
 			}
 		} else if (focused) {
@@ -422,7 +461,26 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		}
 	}
 
-	private trackFocus(text: HTMLTextAreaElement, key: string): void {
+	private settingsPanel(botId: string): ParadisBotSettingsPanel {
+		let panel = this.settingsPanels.get(botId);
+		if (panel === undefined) {
+			panel = new ParadisBotSettingsPanel(botId, {
+				botsService: this.botsService,
+				paradisDialogService: this.paradisDialogService,
+				notificationService: this.notificationService,
+				contextViewService: this.contextViewService,
+				configurationService: this.configurationService,
+			}, () => {
+				if (!this._store.isDisposed && this.botId === botId) {
+					this.renderPanel(true);
+				}
+			});
+			this.settingsPanels.set(botId, panel);
+		}
+		return panel;
+	}
+
+	private trackFocus(text: HTMLInputElement | HTMLTextAreaElement, key: string): void {
 		this.focusTargets.set(key, text);
 		this.focusKeys.set(text, key);
 	}
@@ -457,6 +515,80 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		if (this.items.length === 0) {
 			DOM.append(body, $('.paradis-bot-page-hint')).textContent = localize('paradis.botPage.noItems', "Bot が作業を項目にすると、ここに並びます。");
 		}
+		this.renderSuggestions(body);
+	}
+
+	/** 提案の節（Q677 の 8）。Bot のホームにだけ出し、ベルにも「あなたの番」にも数えない。 */
+	private renderSuggestions(body: HTMLElement): void {
+		if (this.suggestions.length === 0) {
+			return;
+		}
+		DOM.append(body, $('.paradis-bot-page-section')).textContent = localize('paradis.botPage.sectionCount', "{0} · {1}", localize('paradis.botPage.suggestions', "提案"), this.suggestions.length);
+		for (const suggestion of this.suggestions) {
+			const card = DOM.append(body, $('.paradis-bot-page-suggestion'));
+			DOM.append(card, $('.paradis-bot-page-suggestion-title')).textContent = suggestion.title;
+			DOM.append(card, $('.paradis-bot-page-suggestion-text')).textContent = suggestion.request;
+			const actions = DOM.append(card, $('.paradis-bot-page-suggestion-actions'));
+			const start = this.panelStore.add(new ParadisButton(actions, { kind: 'primary', label: localize('paradis.botPage.suggestion.start', "始める") }));
+			this.panelStore.add(start.onDidClick(() => void this.startSuggestion(suggestion)));
+			const dismiss = this.panelStore.add(new ParadisButton(actions, { kind: 'secondary', label: localize('paradis.botPage.suggestion.dismiss', "見送る") }));
+			this.panelStore.add(dismiss.onDidClick(() => void this.dismissSuggestion(suggestion)));
+		}
+	}
+
+	/**
+	 * 「始める」: 依頼の文を、送らずに Bot の会話の入力欄へ入れて会話のタブへ戻す（持ち主が読んで直してから送る）。
+	 * チャット表示の入力欄へ下書きとして入れ（書きかけは消さずに後ろへ足す）、チャット表示でないペインでは
+	 * ターミナルの入力へ貼り付けとして入れる（改行のある文も途中で送られない）。
+	 */
+	private async startSuggestion(suggestion: IParadisBotSuggestion): Promise<void> {
+		// 押したときのペインを控える（文を取る間にタブが別のペインへ替わったら、そのペインには入れない）
+		const instanceId = this.instanceId;
+		// 文を取るだけ（まだ「始めた」にはならない）
+		const result = await this.botsService.startSuggestion(suggestion.id);
+		if (!result.ok) {
+			this.notificationService.warn(localize('paradis.botPage.suggestion.failed', "提案を始められませんでした: {0}", result.message));
+			void this.loadItems();
+			return;
+		}
+		if (instanceId === undefined || this.instanceId !== instanceId || this._store.isDisposed) {
+			void this.loadItems();
+			return;
+		}
+		// 先に会話のタブへ戻す（チャット表示が見えていれば、入れた下書きへフォーカスが移る）
+		this.setTab('chat');
+		let inserted = this.agentChatService.insertDraft(instanceId, paradisBotSuggestionText(result.value.request, true)) !== false;
+		if (!inserted) {
+			const instance = this.terminalService.getInstanceFromId(instanceId);
+			if (instance !== undefined && !instance.isDisposed) {
+				// bracketed paste のモードでなければ（素のシェル・起動途中の TUI）改行が Enter になるので、1 行にして貼る
+				const multiline = instance.xterm?.raw.modes.bracketedPasteMode === true;
+				try {
+					await instance.sendText(paradisBotSuggestionText(result.value.request, multiline), false, true);
+					inserted = true;
+				} catch {
+					// 貼り付けられなかった。提案は一覧に残す
+				}
+			}
+		}
+		if (!inserted) {
+			this.notificationService.warn(localize('paradis.botPage.suggestion.notInserted', "提案の依頼を会話の入力欄へ入れられませんでした。提案は一覧に残しています。"));
+		} else {
+			// 入れられたときだけ「始めた」にする（入れ損ねた提案は一覧に残る）
+			const marked = await this.botsService.markSuggestionStarted(suggestion.id);
+			if (!marked.ok) {
+				this.notificationService.warn(localize('paradis.botPage.suggestion.markFailed', "提案を「始めた」にできませんでした: {0}", marked.message));
+			}
+		}
+		void this.loadItems();
+	}
+
+	private async dismissSuggestion(suggestion: IParadisBotSuggestion): Promise<void> {
+		const result = await this.botsService.dismissSuggestion(suggestion.id);
+		if (!result.ok) {
+			this.notificationService.warn(localize('paradis.botPage.suggestion.dismissFailed', "提案を見送れませんでした: {0}", result.message));
+		}
+		void this.loadItems();
 	}
 
 	private renderRow(list: HTMLElement, item: IParadisBotItem): void {
@@ -466,7 +598,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		DOM.append(row, $('span.paradis-bot-page-row-title')).textContent = item.title;
 		if (paradisBotItemWaitsForOwner(item, Date.now())) {
 			createParadisChip(row, localize('paradis.botPage.chip.you', "あなたの番"), 'info');
-		} else if (paradisIsBotItemClosed(item)) {
+		} else if (paradisIsBotItemClosed(item) || item.status === 'waiting') {
 			createParadisChip(row, paradisBotItemStatusLabel(item));
 		}
 		DOM.append(row, $('span.paradis-bot-page-row-time')).textContent = fromNow(item.lastActivityAt, true);
@@ -557,10 +689,8 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		if (key === undefined || entry === undefined) {
 			return;
 		}
-		if (this.askShown !== key) {
-			this.askShown = key;
-			this.askGuardUntil = Date.now() + ASK_GUARD_MS;
-		}
+		// 面に問いを出し直すたび（初めて出した・一覧から開き直した・中身が変わって描き直した）に守りを張り直す
+		this.askGuardUntil = Date.now() + ASK_GUARD_MS;
 		const state = this.askStates.get(key) ?? { sending: false };
 		const holder = DOM.append(body, $(`.paradis-bot-page-ask.${PARADIS_INBOX_ASK_SCOPE_CLASS}`));
 		const card = this.panelStore.add(paradisBuildInboxAskCard(entry, '', {
@@ -590,19 +720,26 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		if (this.askStates.get(key)?.sending) {
 			return;
 		}
-		this.askStates.set(key, { ...this.askStates.get(key), sending: true });
+		this.askStates.set(key, { ...this.askStates.get(key), sending: true, refused: undefined });
 		this.renderPanel();
-		const result = await this.humanAskService.answer(key, answer, 'bot');
-		if (this._store.isDisposed) {
-			return;
+		let refused: string | undefined = paradisInboxAskRefusedText('unavailable');
+		try {
+			const result = await this.humanAskService.answer(key, answer, 'bot');
+			refused = result.ok ? undefined : paradisInboxAskRefusedText(result.reason);
+		} catch {
+			// 台帳へ届かなかった。「送れませんでした」のまま、もう一度押せるように戻す
+		} finally {
+			// 届けられなかった（断られた・台帳へ届かなかった）ら「送っている最中」を戻し、理由をカードに出す
+			if (!this._store.isDisposed) {
+				if (refused === undefined) {
+					this.askStates.delete(key);
+				} else {
+					this.askStates.set(key, { ...this.askStates.get(key), sending: false, refused });
+				}
+				this.renderPanel();
+				void this.loadItems();
+			}
 		}
-		if (result.ok) {
-			this.askStates.delete(key);
-		} else {
-			this.askStates.set(key, { ...this.askStates.get(key), sending: false, refused: paradisInboxAskRefusedText(result.reason) });
-		}
-		this.renderPanel();
-		void this.loadItems();
 	}
 
 	private renderComment(body: HTMLElement, item: IParadisBotItem): void {

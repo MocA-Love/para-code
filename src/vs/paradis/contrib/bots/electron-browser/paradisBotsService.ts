@@ -175,12 +175,16 @@ export class ParadisBotsClient extends Disposable implements IParadisBotsService
 		return this.result('dismissSuggestion', [id]);
 	}
 
-	snapshotMemory(botId: string): Promise<ParadisBotsServiceResult<{ readonly takenAt: number; readonly files: number; readonly total: number; readonly partial: boolean }>> {
+	snapshotMemory(botId: string): Promise<ParadisBotsServiceResult<{ readonly takenAt: number; readonly files: number; readonly total: number; readonly partial: boolean; readonly kind: 'auto' | 'manual' }>> {
 		return this.result('snapshotMemory', [botId]);
 	}
 
-	undoMemoryTidy(botId: string): Promise<ParadisBotsServiceResult<{ readonly restored: readonly string[]; readonly added: readonly string[]; readonly takenAt: number; readonly skipped: readonly string[] }>> {
-		return this.result('undoMemoryTidy', [botId]);
+	listMemorySnapshots(botId: string): Promise<ParadisBotsServiceResult<readonly { readonly takenAt: number; readonly files: number; readonly total: number; readonly partial: boolean; readonly kind: 'auto' | 'manual' }[]>> {
+		return this.result('listMemorySnapshots', [botId]);
+	}
+
+	undoMemoryTidy(botId: string, takenAt: number): Promise<ParadisBotsServiceResult<{ readonly restored: readonly string[]; readonly added: readonly string[]; readonly takenAt: number; readonly skipped: readonly string[] }>> {
+		return this.result('undoMemoryTidy', [botId, takenAt]);
 	}
 
 	readHomeFile(botId: string, relativePath: string): Promise<ParadisBotsServiceResult<string | undefined>> {
