@@ -108,13 +108,21 @@ export function paradisBotsNeedsYouTotal(bots: readonly IParadisBotSummary[]): n
 /** 会話のペインのエージェントが動いていない・止まっている理由の短い文。理由が無ければ undefined（「待機中」を出す）。 */
 function paradisBotHaltLine(halt: IParadisBotSummary['halt']): string | undefined {
 	switch (halt?.kind) {
-		case 'notFound': return localize('paradis.bots.status.notFound', "エージェントが見つかりません");
+		case 'notFound': return localize('paradis.bots.status.notFound', "見つかりません");
 		case 'exited': return halt.exitCode !== undefined && halt.exitCode !== 0
 			? localize('paradis.bots.status.exitedCode', "終了しました（コード {0}）", halt.exitCode)
 			: localize('paradis.bots.status.exited', "終了しました");
 		case 'needsUser': return localize('paradis.bots.status.needsUser', "操作が要ります");
 		default: return undefined;
 	}
+}
+
+/** 様子の文の全文（帯の幅で切れたときにホバーで出す）。エージェントが見つからないときは、何が見つからないかも書く。 */
+export function paradisBotStatusDetail(bot: IParadisBotSummary): string {
+	if (!bot.paused && bot.needsYou === 0 && bot.activity === 'idle' && bot.halt?.kind === 'notFound') {
+		return localize('paradis.bots.status.notFoundDetail', "エージェントのコマンドが見つかりません");
+	}
+	return paradisBotStatusLine(bot);
 }
 
 /** 行の名前の後ろに出す、今の様子の短い文。 */
