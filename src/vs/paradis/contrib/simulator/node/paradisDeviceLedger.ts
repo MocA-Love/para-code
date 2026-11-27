@@ -28,7 +28,8 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisMcpToolDefinition, IParadisMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { IParadisMobileAttachment, IParadisMobileCanvasSnapshot, IParadisMobileDevice, IParadisMobileDisplay, paradisFindMobileDevice } from '../common/paradisMobileCanvas.js';
 import { IParadisMobileToolResult, IParadisMobileTarget, PARADIS_MOBILE_MAX_DEVICES_PER_PANE, ParadisMobileAttachResult, ParadisMobileAttachmentBook, paradisStampMobileDevice, paradisWithMobileDeviceArgument } from '../common/paradisMobileAttachmentBook.js';
-import { PARADIS_MOBILE_SWIPE_DEFAULT_SECONDS, paradisDeviceHeldByAnotherPane, paradisTypedTextWasConverted } from '../common/paradisMobileDeviceOps.js';
+import { PARADIS_MOBILE_SWIPE_DEFAULT_SECONDS, paradisCheckTypedText, paradisDeviceHeldByAnotherPane } from '../common/paradisMobileDeviceOps.js';
+import { PARADIS_SIMULATOR_DEVICE_ID_PREFIX } from '../common/paradisSimulator.js';
 import { IParadisMobileDeviceLedger, IParadisMobileHostRequester } from './paradisSimulatorDeviceOps.js';
 
 /** MCPツールが返す標準形。`isError` を立てるとエージェント側で失敗として扱われる。 */
@@ -414,6 +415,9 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 			}
 			case 'mobile_type_text': {
 				const text = requireString(args, 'text');
+				// 打つ前の欄の値（増えた部分だけを打った文字と比べるため）。iOS の木にはフォーカスの印が無く、打った後の木に
+				// ホストが打つ前の値（valueBefore）を添えるので、ここでは読まない
+				const before = attachment.deviceId.startsWith(PARADIS_SIMULATOR_DEVICE_ID_PREFIX) ? undefined : await this._readFocusedValue(id, signal);
 				// 入れ方の知らせ（例: 端末のクリップボードを戻せなかった。シミュレータの作り直し ⑥b）があれば結果に添える
 				const typedResponse = await this._hostClient.request('POST', `/api/v1/devices/${id}/input/text`, { text }, signal);
 				const typedNote = typedResponse && typeof typedResponse === 'object' && typeof (typedResponse as { note?: unknown }).note === 'string' ? (typedResponse as { note: string }).note : undefined;
@@ -423,13 +427,16 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 				if (focused === undefined) {
 					return textResult(`Typed ${text.length} characters into ${attachment.deviceName}. Could not read the field back to confirm what it now contains.${typedNote ? ` ${typedNote}` : ''}`);
 				}
+				const valueBefore = focused.valueBefore ?? before?.value;
+				const check = paradisCheckTypedText(text, valueBefore, focused.value);
 				return jsonResult({
 					typed: text,
 					fieldValue: focused.value,
+					...(valueBefore !== undefined ? { insertedText: check.inserted } : {}),
 					fieldLabel: focused.label,
-					matchesWhatWasTyped: focused.value === text,
+					matchesWhatWasTyped: check.matches,
 					...(typedNote ? { note: typedNote } : {}),
-					...(paradisTypedTextWasConverted(text, focused.value) ? { converted: TYPED_TEXT_CONVERTED_NOTE } : {}),
+					...(check.converted ? { converted: TYPED_TEXT_CONVERTED_NOTE } : {}),
 				});
 			}
 			case 'mobile_press_button': {
@@ -470,7 +477,7 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 	 * いまフォーカスされている入力欄の値を読む。アクセシビリティツリーを1回取って
 	 * `focused` の要素を探すだけで、専用のAPIは無い。
 	 */
-	private async _readFocusedValue(encodedDeviceId: string, signal?: AbortSignal): Promise<{ value: string; label: string | undefined } | undefined> {
+	private async _readFocusedValue(encodedDeviceId: string, signal?: AbortSignal): Promise<{ value: string; label: string | undefined; valueBefore?: string } | undefined> {
 		try {
 			const snapshot = await this._hostClient.request('GET', `/api/v1/devices/${encodedDeviceId}/ui`, undefined, signal);
 			const root = (snapshot as { root?: unknown } | undefined)?.root;
@@ -481,6 +488,7 @@ export class ParadisMobileCanvasService extends Disposable implements IParadisMc
 			return {
 				value: typeof focused.value === 'string' ? focused.value : '',
 				label: typeof focused.label === 'string' ? focused.label : undefined,
+				...(typeof focused.valueBefore === 'string' ? { valueBefore: focused.valueBefore } : {}),
 			};
 		} catch {
 			// 読み返しはおまけ。取れなくても入力自体は済んでいるので失敗させない。

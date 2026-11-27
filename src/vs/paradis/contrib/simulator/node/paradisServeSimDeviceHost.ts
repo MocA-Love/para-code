@@ -116,6 +116,23 @@ interface IServeSimDisplay {
 interface IMeasuredDisplay {
 	readonly display: IServeSimDisplay;
 	readonly measuredWith: string;
+	/**
+	 * 向きとスクショの縦横が食い違っていたとき（回っている途中か、縦にしか回らないアプリ）、この時刻までは使うたびに
+	 * 測り直す。過ぎたら、食い違ったままの値を使う（縦にしか回らないアプリでは、ずっと食い違う。毎回測り直すと、
+	 * タップごとに木とスクショを撮り直してピンチが成り立たない）。
+	 */
+	readonly recheckUntil?: number;
+}
+
+/** 向きとスクショの縦横が食い違うとき、測り直し続ける時間（向きが変わってから。アプリの起動直後の回転は 6.4 秒かかった）。 */
+const MISMATCH_RECHECK_MS = 10_000;
+
+/** スクショの縦横が、向きの名前と合っているか（横の向きなら横長、縦の向きなら縦長。正方形はどちらにも合う）。 */
+export function paradisScreenMatchesOrientation(display: { readonly pixelWidth: number; readonly pixelHeight: number; readonly orientation: string }): boolean {
+	if (display.pixelWidth === display.pixelHeight) {
+		return true;
+	}
+	return display.orientation.startsWith('landscape') === display.pixelWidth > display.pixelHeight;
 }
 
 function configKey(config: IParadisSimulatorScreenConfig): string {
@@ -154,6 +171,7 @@ export class ParadisServeSimDeviceHost {
 		private readonly _simctl: ParadisServeSimSimctl = realSimctl,
 		private readonly _sleep: ParadisServeSimSleep = realSleep,
 		screenshot?: ParadisServeSimScreenshot,
+		private readonly _now: () => number = Date.now,
 	) {
 		this._screenshot = screenshot ?? paradisRealSimulatorScreenshot(this._simctl, udid => this._backend.getScreenConfig(udid));
 	}
@@ -281,8 +299,10 @@ export class ParadisServeSimDeviceHost {
 	 */
 	private async _display(deviceId: string, udid: string, fresh: boolean, screenshot?: Uint8Array): Promise<IServeSimDisplay> {
 		const config = await this._backend.getScreenConfig(udid);
-		const remembered = fresh ? undefined : this._displays.get(deviceId);
-		if (remembered && remembered.measuredWith === configKey(config)) {
+		const key = configKey(config);
+		const previous = this._displays.get(deviceId);
+		const remembered = fresh ? undefined : previous;
+		if (remembered && remembered.measuredWith === key && (remembered.recheckUntil === undefined || this._now() >= remembered.recheckUntil)) {
 			return remembered.display;
 		}
 		const [snapshot, png] = await Promise.all([this._snapshot(udid), screenshot ?? this._screenshot(udid)]);
@@ -301,7 +321,13 @@ export class ParadisServeSimDeviceHost {
 			scale,
 			orientation: hyphenOrientation(config.orientation),
 		};
-		this._displays.set(deviceId, { display, measuredWith: configKey(config) });
+		// 回している途中に測ると、向き（serve-sim の映像の設定）はもう横なのにスクショは縦のまま、ということがある（アプリの
+		// 起動の直後はスクショが遅い）。その大きさを新しい向きの値として覚え切ると、次に向きが変わるまで縦の寸法を返し続けた
+		// （mobile_get_attached_device が landscape-left で 402x874。paracode-196 の確認）。食い違うときは、その向きを初めて
+		// 見てから {@link MISMATCH_RECHECK_MS} の間だけ使うたびに測り直し、過ぎたら食い違ったままの値を使う
+		const matches = paradisScreenMatchesOrientation(display);
+		const mismatchSince = previous?.measuredWith === key && previous.recheckUntil !== undefined ? previous.recheckUntil - MISMATCH_RECHECK_MS : this._now();
+		this._displays.set(deviceId, matches ? { display, measuredWith: key } : { display, measuredWith: key, recheckUntil: mismatchSince + MISMATCH_RECHECK_MS });
 		return display;
 	}
 

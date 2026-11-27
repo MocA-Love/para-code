@@ -78,10 +78,12 @@ class FakeBackend {
 
 interface ISimctlCall { readonly args: readonly string[]; readonly input?: string }
 
-function setup() {
+function setup(clock: { t: number } = { t: 0 }) {
 	const backend = new FakeBackend();
 	const simctl: ISimctlCall[] = [];
 	const screenshots: string[] = [];
+	/** 次のスクショの画素数（回している途中を真似る）。 */
+	const shot = { width: 1206, height: 2622 };
 	const host = new ParadisServeSimDeviceHost(backend as unknown as ParadisServeSimBackend, new NullLogService(), async (args, options) => {
 		simctl.push({ args, ...(options.input !== undefined ? { input: options.input } : {}) });
 		if (args[0] === 'spawn') {
@@ -90,9 +92,9 @@ function setup() {
 		return '';
 	}, async () => { }, async udid => {
 		screenshots.push(udid);
-		return pngHeader(1206, 2622);
-	});
-	return { backend, simctl, host, screenshots };
+		return pngHeader(shot.width, shot.height);
+	}, () => clock.t);
+	return { backend, simctl, host, screenshots, shot };
 }
 
 suite('Paradis simulator: serve-sim answers the Mobile Canvas REST for iOS', () => {
@@ -230,6 +232,43 @@ suite('Paradis simulator: serve-sim answers the Mobile Canvas REST for iOS', () 
 		]);
 	});
 
+	// 回している途中に測ると、向きはもう横なのにスクショと木は縦のまま。その寸法を横の値として覚えず、次に測り直す
+	// （paracode-196 の確認で、mobile_get_attached_device が landscape-left なのに 402x874 を返し続けた）
+	test('does not remember a size measured while the screen is still turning', async () => {
+		const { host, backend, shot } = setup();
+		backend.config = { width: 1206, height: 2622, orientation: 'landscape_left' };
+		const turning = await host.request('GET', `${PATH}/display`, undefined);
+		shot.width = 2622;
+		shot.height = 1206;
+		backend.ax = [{ ...AX[0], frame: { x: 0, y: 0, width: 874, height: 402 }, children: [] }];
+		const turned = await host.request('GET', PATH, undefined) as { display: unknown };
+		assert.deepStrictEqual({ turning, turned: turned.display }, {
+			turning: { pointWidth: 402, pointHeight: 874, pixelWidth: 1206, pixelHeight: 2622, scale: 3, orientation: 'landscape-left' },
+			turned: { pointWidth: 874, pointHeight: 402, pixelWidth: 2622, pixelHeight: 1206, scale: 3, orientation: 'landscape-left' },
+		});
+	});
+
+	// 縦にしか回らないアプリ（ホーム画面など）では、向きは横・スクショは縦のまま止まる。向きが変わってから 10 秒の間だけ
+	// 測り直し、過ぎたら食い違ったままの値を使う（タップのたびに木とスクショを撮り直さない）
+	test('stops measuring again once a screen that does not turn has stayed so for a while', async () => {
+		const clock = { t: 0 };
+		const { host, backend, screenshots } = setup(clock);
+		backend.config = { width: 1206, height: 2622, orientation: 'landscape_left' };
+		const counts: number[] = [];
+		for (const at of [0, 3_000, 9_000, 10_500, 12_000, 20_000]) {
+			clock.t = at;
+			await host.request('GET', PATH, undefined);
+			counts.push(screenshots.length);
+		}
+		// 向きを縦へ戻すと、新しい向きとして測る
+		backend.config = { width: 1206, height: 2622, orientation: 'portrait' };
+		await host.request('GET', PATH, undefined);
+		await host.request('GET', PATH, undefined);
+		counts.push(screenshots.length);
+		// 0・3・9 秒は測り直し、10 秒を過ぎたら覚えた値。縦へ戻すと 1 回測って、次は覚えた値
+		assert.deepStrictEqual(counts, [1, 2, 3, 3, 3, 3, 4]);
+	});
+
 	// serve-sim の木にはフォーカスの印が無いので、打つ前と値が変わった欄を入力中とみなす（mobile_type_text の読み返し）
 	test('marks the field whose value changed after typing as focused', async () => {
 		const { host, backend } = setup();
@@ -239,7 +278,7 @@ suite('Paradis simulator: serve-sim answers the Mobile Canvas REST for iOS', () 
 		backend.ax = [{ ...AX[0], children: [field('a')] }];
 		const snapshot = await host.request('GET', `${PATH}/ui`, undefined) as { root: { children: { focused?: boolean; value: string }[] } };
 		const again = await host.request('GET', `${PATH}/ui`, undefined) as { root: { children: { focused?: boolean }[] } };
-		assert.deepStrictEqual({ first: snapshot.root.children.map(child => [child.value, child.focused]), second: again.root.children.map(child => child.focused) }, { first: [['a', true]], second: [undefined] });
+		assert.deepStrictEqual({ first: snapshot.root.children.map(child => [child.value, child.focused, (child as { valueBefore?: string }).valueBefore]), second: again.root.children.map(child => child.focused) }, { first: [['a', true, '']], second: [undefined] });
 	});
 });
 
