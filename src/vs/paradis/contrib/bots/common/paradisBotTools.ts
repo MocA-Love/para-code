@@ -178,14 +178,19 @@ export interface IParadisCodexMcpServerRef {
 
 /**
  * 見回りの起動に要る、起動のたびに用意するもの（shared process が用意する。paradisBotPatrolLaunch.ts）。
+ * - `runFolder`: 見回りの cwd。起動ごとに作る空のフォルダで、Bot の指示文の写し（`AGENTS.md`）だけを置く。Bot の専用
+ *   フォルダは会話の Bot が書けるので cwd にしない（そこに置かれた `.claude/settings*.json` の allow・hook、
+ *   `.codex/config.toml` の MCP サーバー、`AGENTS.override.md` を見回りが読まないように）
  * - Claude Code: `--settings` のファイル（{@link PARADIS_BOT_PATROL_CLAUDE_SETTINGS}）と、para-browser だけを書いた
  *   `--mcp-config` のファイル。どちらもトークンを含まない（Authorization は `${PARA_CODE_TERMINAL_PANE_ID}` のまま書き、
- *   Claude Code が起動した時に自分の環境変数で展開する）
- * - Codex: 止める MCP サーバー（利用者の `config.toml` にある para-browser 以外の全部）
+ *   Claude Code が起動した時に自分の環境変数で展開する）。指示文は `--append-system-prompt-file` で渡し、専用フォルダは
+ *   `--add-dir` で読めるようにする
+ * - Codex: 止める MCP サーバー（利用者の `config.toml` にある para-browser 以外の全部）。指示文は cwd の `AGENTS.md`、
+ *   専用フォルダは read-only の sandbox のまま読める
  */
 export type ParadisBotPatrolLaunchContext =
-	| { readonly agent: 'claude'; readonly settingsFile: string; readonly mcpConfigFile: string }
-	| { readonly agent: 'codex'; readonly disabledServers: readonly IParadisCodexMcpServerRef[] };
+	| { readonly agent: 'claude'; readonly runFolder: string; readonly homeFolder: string; readonly instructionsFile: string; readonly settingsFile: string; readonly mcpConfigFile: string }
+	| { readonly agent: 'codex'; readonly runFolder: string; readonly disabledServers: readonly IParadisCodexMcpServerRef[] };
 
 /** 見回り（読むだけ）に制限できるエージェントか。ほかのエージェント（OpenCode・Antigravity）は見回りを起動しない。 */
 export function paradisBotPatrolSupported(agent: string): agent is 'claude' | 'codex' {
@@ -201,7 +206,8 @@ const PARADIS_CODEX_DISABLED_URL = 'http://127.0.0.1:9/';
  * 出るとそのまま打ち切りまで止まる）。Bot の権限の設定（permissionId）は見回りでは使わない。
  *
  * - Claude Code: `--permission-mode dontAsk`（許可していない道具はプロンプトにせず断る）、`--settings`（bypass を
- *   効かなくする）、`--strict-mcp-config --mcp-config`（MCP は para-browser だけ。利用者が常に許可している別の MCP の
+ *   効かなくする）、`--setting-sources=user`（フォルダの設定を読まない）、`--add-dir`（専用フォルダを読む）、
+ *   `--append-system-prompt-file`（指示文）、`--strict-mcp-config --mcp-config`（MCP は para-browser だけ。利用者が常に許可している別の MCP の
  *   書く道具を、読んだページの文に誘導されて呼ばないように）、`--tools`（組み込みの道具を読むものだけにする。MCP の
  *   道具は外れない）、`--allowedTools`（para-browser の読む道具と見回りの Bot の道具だけを許可する）。値を取る引数は
  *   `=` で 1 つにする（`--mcp-config` などは複数の値を取るので、後ろの指示まで値として読まれないように）
@@ -219,6 +225,11 @@ export function paradisBotPatrolLaunchArgs(context: ParadisBotPatrolLaunchContex
 		return [
 			'--permission-mode', 'dontAsk',
 			`--settings=${context.settingsFile}`,
+			// 利用者の設定（Para Code の hook を含む）だけを読み、フォルダの `.claude/` の設定・hook・skills・agents・
+			// commands を読まない（cwd は空のフォルダだが、`--add-dir` の専用フォルダの分も含めて二重に止める）
+			'--setting-sources=user',
+			`--add-dir=${context.homeFolder}`,
+			`--append-system-prompt-file=${context.instructionsFile}`,
 			'--strict-mcp-config',
 			`--mcp-config=${context.mcpConfigFile}`,
 			'--tools=Read,Grep,Glob',

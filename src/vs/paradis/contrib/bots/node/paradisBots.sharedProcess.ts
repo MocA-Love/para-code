@@ -40,9 +40,28 @@ import { ParadisBotsChannel } from './paradisBotsChannel.js';
 import { ParadisBotsService } from './paradisBotsService.js';
 import { ParadisBotMemorySnapshots } from './paradisBotMemorySnapshots.js';
 import { paradisPrepareBotPatrolLaunch } from './paradisBotPatrolLaunch.js';
+import { paradisApplyClaudeFolderTrust, paradisClaudeTrustKeysFor, paradisIsTooBroadToTrust, paradisResolveClaudeGlobalConfigFile, paradisUpdateClaudeConfig } from '../../workspaceSwitch/node/paradisClaudeFolderTrust.js';
 import { createParadisBotItemsFile, createParadisBotPanesFile, createParadisBotsFile, createParadisBotSuggestionsFile, paradisBotsDataFolder } from './paradisBotsStore.js';
 
 let shared: ParadisBotsService | undefined;
+
+/**
+ * 見回りのフォルダの親を Claude Code の信頼済みにする（見回りのフォルダは起動ごとに新しいので、無いと毎回「このフォルダを
+ * 信頼しますか」で止まる。信頼は配下のフォルダにも効く）。ワークツリーの信頼と同じロックと書き方。失敗しても投げない。
+ */
+async function trustClaudeFolder(folder: string): Promise<void> {
+	try {
+		const configDir = process.env.CLAUDE_CONFIG_DIR ? process.env.CLAUDE_CONFIG_DIR : join(homedir(), '.claude');
+		const legacyExists = await fs.access(join(configDir.normalize('NFC'), '.config.json')).then(() => true, () => false);
+		const configFile = paradisResolveClaudeGlobalConfigFile(process.env, homedir(), () => legacyExists);
+		const keys = await paradisClaudeTrustKeysFor(folder);
+		if (configFile !== undefined && keys.length > 0 && !paradisIsTooBroadToTrust(keys, homedir())) {
+			await paradisUpdateClaudeConfig(configFile, config => paradisApplyClaudeFolderTrust(config, keys));
+		}
+	} catch {
+		// 信頼が書けなければ、見回りは信頼の確認で止まり、打ち切りで終わる
+	}
+}
 
 /** para-browser の MCP の口のポート（Para Code が書くポートのファイルから読む。動いていなければ undefined）。 */
 async function readGatewayPort(userDataPath: string): Promise<number | undefined> {
@@ -76,11 +95,14 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 		memorySnapshots: new ParadisBotMemorySnapshots(join(paradisBotsDataFolder(userDataPath), 'memory-snapshots'), homes),
 		homes,
 		// 見回りの設定ファイルも専用フォルダ（Bot が書ける）の外に置く
-		preparePatrol: (agent, botId) => paradisPrepareBotPatrolLaunch({
+		preparePatrol: (agent, botId, home) => paradisPrepareBotPatrolLaunch({
 			folder: join(paradisBotsDataFolder(userDataPath), 'patrol'),
+			runsFolder: join(paradisBotsDataFolder(userDataPath), 'patrol-runs'),
+			stopFolder: homedir(),
 			gatewayPort: () => readGatewayPort(userDataPath),
-			codexConfigFiles: () => paradisCodexHomeCandidates().map(home => join(home, 'config.toml')),
-		}, agent, botId),
+			codexConfigFiles: () => paradisCodexHomeCandidates().map(codexHome => join(codexHome, 'config.toml')),
+			trustClaudeFolder: folder => trustClaudeFolder(folder),
+		}, agent, botId, home),
 		agentTemplate: agentId => paradisResolveAgentTemplates(configurationService, []).find(template => template.id === agentId),
 	}));
 	server.registerChannel(PARADIS_BOTS_CHANNEL, new ParadisBotsChannel(service));
