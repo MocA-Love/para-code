@@ -87,7 +87,7 @@ export function paradisBotSettingsChange(bot: Pick<IParadisBot, 'id' | 'name' | 
 	if (permission !== before) {
 		patch.permissionId = permission ?? null;
 	}
-	const role = draft.role !== undefined && draft.role !== currentRole ? draft.role.slice(0, PARADIS_BOT_ROLE_LIMIT) : undefined;
+	const role = draft.role !== undefined && draft.role !== currentRole ? draft.role : undefined;
 	if (Object.keys(patch).length === 0 && role === undefined) {
 		return undefined;
 	}
@@ -113,4 +113,52 @@ export const PARADIS_BOT_HOME_FILES: readonly IParadisBotHomeFileEntry[] = [
 /** 保存の前に読み直した中身が、開いたときと違えば、ほかの場所（Bot 自身など）が書き換えた。 */
 export function paradisBotHomeFileConflict(base: string | undefined, latest: string | undefined): boolean {
 	return (base ?? '') !== (latest ?? '');
+}
+
+/** 役割が上限（{@link PARADIS_BOT_ROLE_LIMIT}）を何文字超えているか。超えていなければ 0（黙って切り詰めず、保存を断る）。 */
+export function paradisBotRoleOverflow(role: string | undefined): number {
+	return Math.max(0, (role?.length ?? 0) - PARADIS_BOT_ROLE_LIMIT);
+}
+
+/** 差分の 1 行。`removed` は開いたときにあって今は無い行、`added` は今だけにある行。 */
+export interface IParadisBotHomeFileDiffLine {
+	readonly kind: 'same' | 'removed' | 'added';
+	readonly text: string;
+}
+
+/** 差分を出す行数の上限（これを超える長さの比べは、全部を消して全部を足した形にする）。 */
+const DIFF_LINE_LIMIT = 2000;
+
+/** 開いたときの中身と今の中身の行の差分（最長共通部分列）。開いた後に書き換わったとき、何が変わったかを見せる。 */
+export function paradisBotHomeFileDiff(base: string | undefined, latest: string | undefined): readonly IParadisBotHomeFileDiffLine[] {
+	const before = (base ?? '').split('\n');
+	const after = (latest ?? '').split('\n');
+	if (before.length > DIFF_LINE_LIMIT || after.length > DIFF_LINE_LIMIT) {
+		return [...before.map(text => ({ kind: 'removed' as const, text })), ...after.map(text => ({ kind: 'added' as const, text }))];
+	}
+	// lengths[i][j] は before[i..] と after[j..] の最長共通部分列の長さ
+	const lengths = Array.from({ length: before.length + 1 }, () => new Array<number>(after.length + 1).fill(0));
+	for (let i = before.length - 1; i >= 0; i--) {
+		for (let j = after.length - 1; j >= 0; j--) {
+			lengths[i][j] = before[i] === after[j] ? lengths[i + 1][j + 1] + 1 : Math.max(lengths[i + 1][j], lengths[i][j + 1]);
+		}
+	}
+	const lines: IParadisBotHomeFileDiffLine[] = [];
+	let i = 0;
+	let j = 0;
+	while (i < before.length || j < after.length) {
+		if (i < before.length && j < after.length && before[i] === after[j]) {
+			lines.push({ kind: 'same', text: before[i] });
+			i++;
+			j++;
+		} else if (i < before.length && (j >= after.length || lengths[i + 1][j] >= lengths[i][j + 1])) {
+			// 同じ長さなら消えた行を先に出す（差分の見慣れた並び）
+			lines.push({ kind: 'removed', text: before[i] });
+			i++;
+		} else {
+			lines.push({ kind: 'added', text: after[j] });
+			j++;
+		}
+	}
+	return lines;
 }

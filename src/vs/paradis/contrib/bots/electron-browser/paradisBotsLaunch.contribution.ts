@@ -253,7 +253,7 @@ class ParadisBotsWindowChannel implements IServerChannel {
 			// allow-any-unicode-next-line
 			message: localize('paradisBots.removeConfirm', "Bot「{0}」を削除しますか？", botName),
 			// allow-any-unicode-next-line
-			detail: localize('paradisBots.removeAgentRequest', "この削除は、あなたではなくターミナル「{0}」のエージェントからの依頼です。\n\nBot の作業項目は消えます。専用フォルダ（人格メモと記憶）は残ります。", caller),
+			detail: localize('paradisBots.removeAgentRequest', "この削除は、あなたではなくターミナル「{0}」のエージェントからの依頼です。\n\nBot の作業項目と、記憶の整理の前に取った写しは消えます。専用フォルダ（人格メモと記憶）は残ります。", caller),
 			// allow-any-unicode-next-line
 			primaryButton: localize('paradisBots.removeAction', "削除"),
 		});

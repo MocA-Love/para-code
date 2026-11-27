@@ -393,6 +393,10 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 			void this.loadItems();
 		} else if (tab !== 'chat') {
 			this.renderPanel();
+			// ファイルのタブを開き直したら読み直す（開いている間に Bot が記憶を書き足していても、古いまま保存しようとしない）
+			if (tab === 'files' && this.botId !== undefined) {
+				this.settingsPanel(this.botId).reloadFiles();
+			}
 		} else {
 			this.clearPanel();
 		}
@@ -641,6 +645,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 	 * ターミナルの入力へ貼り付けとして入れる（改行のある文も途中で送られない）。
 	 */
 	private async startSuggestion(suggestion: IParadisBotSuggestion): Promise<void> {
+		// 文を取るだけ（まだ「始めた」にはならない）
 		const result = await this.botsService.startSuggestion(suggestion.id);
 		if (!result.ok) {
 			this.notificationService.warn(localize('paradis.botPage.suggestion.failed', "提案を始められませんでした: {0}", result.message));
@@ -649,10 +654,26 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		}
 		// 先に会話のタブへ戻す（チャット表示が見えていれば、入れた下書きへフォーカスが移る）
 		this.setTab('chat');
-		const inserted = this.instanceId !== undefined && this.agentChatService.insertDraft(this.instanceId, result.value.request) !== false;
-		const instance = !inserted && this.instanceId !== undefined ? this.terminalService.getInstanceFromId(this.instanceId) : undefined;
-		if (instance !== undefined && !instance.isDisposed) {
-			await instance.sendText(result.value.request, false, true);
+		let inserted = this.instanceId !== undefined && this.agentChatService.insertDraft(this.instanceId, result.value.request) !== false;
+		if (!inserted && this.instanceId !== undefined) {
+			const instance = this.terminalService.getInstanceFromId(this.instanceId);
+			if (instance !== undefined && !instance.isDisposed) {
+				try {
+					await instance.sendText(result.value.request, false, true);
+					inserted = true;
+				} catch {
+					// 貼り付けられなかった。提案は一覧に残す
+				}
+			}
+		}
+		if (!inserted) {
+			this.notificationService.warn(localize('paradis.botPage.suggestion.notInserted', "提案の依頼を会話の入力欄へ入れられませんでした。提案は一覧に残しています。"));
+		} else {
+			// 入れられたときだけ「始めた」にする（入れ損ねた提案は一覧に残る）
+			const marked = await this.botsService.markSuggestionStarted(suggestion.id);
+			if (!marked.ok) {
+				this.notificationService.warn(localize('paradis.botPage.suggestion.markFailed', "提案を「始めた」にできませんでした: {0}", marked.message));
+			}
 		}
 		void this.loadItems();
 	}
