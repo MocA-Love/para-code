@@ -92,10 +92,11 @@ export function paradisSanitizeBotTaskInput(value: unknown): IParadisBotTaskInpu
 }
 
 /**
- * 「Bot の権限」の段にするのに、利用者の確認が要るか。前から「Bot の権限」だった定義を変えるときは要らない。
+ * 「Bot の権限」の段にするのに、利用者の確認が要るか。利用者が前に確かめた「Bot の権限」の定義を変えるときは要らない。
+ * エージェントが作って利用者がまだ確かめていない定義（`agentReviewPending`）は、前から「Bot の権限」でも確かめる。
  */
 export function paradisBotTaskNeedsConfirmation(input: Pick<IParadisBotTaskInput, 'tools' | 'confirmedBotTools'>, existing: IParadisScheduledRunDefinition | undefined): boolean {
-	return input.tools === 'bot' && input.confirmedBotTools !== true && existing?.target.botTask?.tools !== 'bot';
+	return input.tools === 'bot' && input.confirmedBotTools !== true && (existing?.target.botTask?.tools !== 'bot' || existing.agentReviewPending === true);
 }
 
 // ---------- 回数の上限 ----------

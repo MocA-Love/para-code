@@ -17,7 +17,8 @@ import { paradisBotTaskLaunchArgs } from '../../common/paradisBotTools.js';
 import { ParadisBotHomes } from '../../node/paradisBotHomes.js';
 import { paradisPrepareBotTaskLaunch } from '../../node/paradisBotPatrolLaunch.js';
 import { ParadisBotsService } from '../../node/paradisBotsService.js';
-import { createParadisBotItemsFile, createParadisBotsFile } from '../../node/paradisBotsStore.js';
+import { paradisBotPatrolToolRefusal } from '../../node/paradisBotManageToolProvider.js';
+import { createParadisBotItemsFile, createParadisBotPanesFile, createParadisBotsFile, paradisBotsDataFolder } from '../../node/paradisBotsStore.js';
 
 const READ_ONLY = new Set(['take_snapshot', 'get_text']);
 
@@ -77,6 +78,24 @@ suite('Paradis bot scheduled tasks: launching', () => {
 		});
 	});
 
+	test('眠った会話があれば続けて起こす（制限の引数の後ろに --resume）。結果は同じ会話に残る', async () => {
+		const userData = join(root, '..', 'userData');
+		await fs.mkdir(paradisBotsDataFolder(userData), { recursive: true });
+		// 会話の記録は台帳にある Bot の分だけ読むので、Bot も先に置く
+		await fs.writeFile(join(paradisBotsDataFolder(userData), 'bots.json'), JSON.stringify({ version: 1, bots: [{ id: 'id1', name: '天気係', folder: 'tenki', agent: 'claude', paused: false, pinned: false, faceColor: 'blue', faceShape: 'blob', createdAt: 1, updatedAt: 1 }] }));
+		await fs.writeFile(join(paradisBotsDataFolder(userData), 'panes.json'), JSON.stringify({ version: 1, panes: [], sessions: [{ botId: 'id1', agent: 'claude', sessionId: '38032a17-8d2f-4e54-8032-9913ffa81623', at: 1 }], boardTasks: [], boardPanes: [] }));
+		let ids = 0;
+		const service = store.add(new ParadisBotsService(createParadisBotsFile(userData), createParadisBotItemsFile(userData), store.add(new ParadisHumanAskService()), new NullLogService(), {
+			homes, enabled: () => true, uuid: () => `launch${++ids}`, panesFile: createParadisBotPanesFile(userData),
+			prepareTask: async agent => agent === 'claude' ? { agent, settingsFile: '/d/s.json', mcpConfigFile: '/d/m.json' } : 'no',
+		}));
+		const web = await service.requestLaunch('id1', 'chat', { task: 'web' });
+		assert.ok(web.ok);
+		await service.cancelLaunch(web.value.launchId);
+		const flags = web.value.extraFlags as readonly string[];
+		assert.deepStrictEqual([flags.slice(-2), web.value.resumed], [['--resume', '38032a17-8d2f-4e54-8032-9913ffa81623'], true]);
+	});
+
 	test('起こし方: 制限した段は制限の引数と続ける会話・権限の設定を使わない。Bot の権限は会話と同じ。会話のペインがあれば門が busy', async () => {
 		const userData = join(root, '..', 'userData');
 		const service = store.add(new ParadisBotsService(createParadisBotsFile(userData), createParadisBotItemsFile(userData), store.add(new ParadisHumanAskService()), new NullLogService(), {
@@ -101,6 +120,20 @@ suite('Paradis bot scheduled tasks: launching', () => {
 		if (patrolOption.ok) {
 			await service.cancelLaunch(patrolOption.value.launchId);
 		}
+		// 制限した段の会話のペインは、見回りと同じく読む道具だけを通す。Bot の権限の段のペインは絞らない
+		const limited = await service.requestLaunch(id, 'chat', { task: 'read' });
+		assert.ok(limited.ok && service.reportLaunch(limited.value.launchId, 'pane-limited'));
+		const refusal = paradisBotPatrolToolRefusal(service);
+		const limitedAnswers = [await refusal('pane-limited', 'get_text'), await refusal('pane-limited', 'click_by'), service.isReadOnlyPane('pane-limited')];
+		service.releasePane('pane-limited');
+		const full = await service.requestLaunch(id, 'chat', { task: 'bot' });
+		assert.ok(full.ok && service.reportLaunch(full.value.launchId, 'pane-full'));
+		const fullAnswers = [await refusal('pane-full', 'click_by'), service.isReadOnlyPane('pane-full')];
+		service.releasePane('pane-full');
+		assert.deepStrictEqual({ limitedAnswers: limitedAnswers.map(answer => typeof answer === 'string' ? answer.slice(0, 40) : answer), fullAnswers }, {
+			limitedAnswers: [undefined, 'This is a scheduled task that your owner', true],
+			fullAnswers: [undefined, false],
+		});
 		assert.deepStrictEqual({
 			gateBefore,
 			gateLaunching,

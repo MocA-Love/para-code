@@ -88,7 +88,7 @@ export class ParadisBotMessageToolProvider implements IParadisMcpToolProvider {
 			return [];
 		}
 		const purpose = this.service.purposeOfPane(paneToken);
-		return purpose === 'chat' ? [...PARADIS_BOT_MESSAGE_TOOLS, PARADIS_BOT_INBOX_TOOL_DEFINITION] : purpose === 'patrol' ? [PARADIS_BOT_INBOX_TOOL_DEFINITION] : [];
+		return purpose === 'chat' && !this.service.isReadOnlyPane(paneToken) ? [...PARADIS_BOT_MESSAGE_TOOLS, PARADIS_BOT_INBOX_TOOL_DEFINITION] : purpose !== undefined ? [PARADIS_BOT_INBOX_TOOL_DEFINITION] : [];
 	}
 
 	instructions(paneToken?: string): string | undefined {
@@ -124,9 +124,9 @@ export class ParadisBotMessageToolProvider implements IParadisMcpToolProvider {
 		if (name === PARADIS_BOT_INBOX_TOOL) {
 			// 見回りは覗くだけで既読にしない（見回りからは返事を送れないので、既読にすると質問が会話に出なくなる。
 			// 見回りは台帳に書かない約束とも揃える）
-			return this.readInbox(bot.id, args, groups, this.service.purposeOfPane(paneToken) !== 'patrol');
+			return this.readInbox(bot.id, args, groups, !this.service.isReadOnlyPane(paneToken));
 		}
-		if (this.service.purposeOfPane(paneToken) === 'patrol') {
+		if (this.service.isReadOnlyPane(paneToken)) {
 			return toolError(PATROL_MESSAGE);
 		}
 		if (bot.paused) {

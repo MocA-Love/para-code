@@ -225,7 +225,7 @@ export class ParadisBotTasksSection {
 		const edit = store.add(new ParadisButton(actions, { kind: 'secondary', label: localize('paradis.botTasks.edit', "変える...") }));
 		edit.enabled = !this.busy && this.draft === undefined;
 		store.add(edit.onDidClick(() => {
-			this.draft = { id: view.id, name: view.name, fields: paradisBotPatrolFieldsFromCron(view.cron), prompt: view.prompt, tools: view.tools, enabled: view.enabled, previousTools: view.tools };
+			this.draft = { id: view.id, name: view.name, fields: paradisBotPatrolFieldsFromCron(view.cron), prompt: view.prompt, tools: view.tools, enabled: view.enabled, ...(view.agentReviewPending ? {} : { previousTools: view.tools }) };
 			this.rerender();
 		}));
 		const remove = store.add(new ParadisButton(actions, { kind: 'secondary', label: localize('paradis.botTasks.remove', "消す") }));

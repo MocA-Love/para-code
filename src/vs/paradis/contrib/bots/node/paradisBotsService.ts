@@ -163,6 +163,9 @@ export class ParadisBotsService extends Disposable {
 	private readonly enabled: () => boolean;
 	private readonly preparePatrol: IParadisBotsServiceOptions['preparePatrol'];
 	private readonly prepareTask: IParadisBotsServiceOptions['prepareTask'];
+	/** 制限した段の定期実行として発行した起動の番号と、そのペイン（見回りと同じく、読む道具と見回りの Bot の道具だけを通す）。 */
+	private readonly limitedLaunches = new Set<string>();
+	private readonly limitedPanes = new Set<string>();
 	private readonly agentTemplate: IParadisBotsServiceOptions['agentTemplate'];
 	private readonly forgetPatrol: IParadisBotsServiceOptions['forgetPatrol'];
 	private readonly codexBrowserRegistration: IParadisBotsServiceOptions['codexBrowserRegistration'];
@@ -343,6 +346,14 @@ export class ParadisBotsService extends Disposable {
 	}
 
 	/** そのペインの用途（会話か見回りか）。Bot のペインでなければ undefined。 */
+	/**
+	 * 道具を見回りと同じ（読む道具と見回りの Bot の道具だけ）に絞るペインか。見回りのペインと、「読むだけ」「読む＋Web」の段で
+	 * 起こした定期実行の会話のペイン（purpose は chat のまま）。
+	 */
+	isReadOnlyPane(paneToken: string): boolean {
+		return this.panes.purposeOf(paneToken) === 'patrol' || this.limitedPanes.has(paneToken);
+	}
+
 	purposeOfPane(paneToken: string): ParadisBotPanePurpose | undefined {
 		return this.panes.purposeOf(paneToken);
 	}
@@ -747,6 +758,9 @@ export class ParadisBotsService extends Disposable {
 			const session = purpose === 'chat' ? this.resumableSession(bot) : undefined;
 			const resumeArgs = session !== undefined ? paradisBotResumeArgs(bot.agent, session.sessionId) : undefined;
 			const launchId = this.issueLaunch(botId, purpose, resumeArgs !== undefined);
+			if (launchId !== undefined && taskArgs !== undefined) {
+				this.limitedLaunches.add(launchId);
+			}
 			const approvalFlags = purpose === 'patrol' || taskArgs !== undefined ? undefined : paradisBotLaunchApprovalFlags(bot.agent, browser?.registration, browser?.url);
 			const chatFlags = [approvalFlags, resumeArgs].filter((flag): flag is string => flag !== undefined).join(' ');
 			// 制限した段の定期実行は、制限の引数（配列）の後ろに続ける会話の引数を置く（id は英数字と - だけの形に限ってある）
@@ -940,9 +954,13 @@ export class ParadisBotsService extends Disposable {
 
 	/** 起動したペインの報告。発行していない番号・2 回目・もう結び付いているトークンは断る（false）。 */
 	reportLaunch(launchId: string, paneToken: string): boolean {
+		const limited = this.limitedLaunches.delete(launchId);
 		const botId = this.panes.report(launchId, paneToken, this.now());
 		if (botId === undefined) {
 			return false;
+		}
+		if (limited) {
+			this.limitedPanes.add(paneToken);
 		}
 		this.notify();
 		this.scheduleSetupCheck();
@@ -976,12 +994,14 @@ export class ParadisBotsService extends Disposable {
 
 	/** 起動に失敗した番号を捨てる。 */
 	cancelLaunch(launchId: string): void {
+		this.limitedLaunches.delete(launchId);
 		this.panes.cancel(launchId);
 	}
 
 	/** ペインが閉じた。見回りのペインなら、その Bot はもう最初の見回りではない。 */
 	releasePane(paneToken: string): void {
 		this.idleStopRequested.delete(paneToken);
+		this.limitedPanes.delete(paneToken);
 		const purpose = this.panes.purposeOf(paneToken);
 		const botId = this.panes.release(paneToken);
 		if (botId === undefined) {

@@ -88,7 +88,10 @@ suite('ParadisScheduledRunsService: bot scheduled tasks', () => {
 		const { service } = setup();
 		await service.whenReady();
 		const created = await service.setBotTask('b1', { ...WEATHER, tools: 'bot' }, true);
-		assert.deepStrictEqual([created.ok, created.definition?.enabled, created.definition?.agentReviewPending, created.definition?.createdByAgent], [true, false, true, true]);
+		// 利用者がまだ確かめていない「Bot の権限」は、変えて保存するときも確かめた印が要る
+		const editedWithoutConfirm = await service.setBotTask('b1', { ...WEATHER, id: created.definition!.id, tools: 'bot' });
+		const editedConfirmed = await service.setBotTask('b1', { ...WEATHER, id: created.definition!.id, tools: 'bot', confirmedBotTools: true });
+		assert.deepStrictEqual([created.ok, created.definition?.enabled, created.definition?.agentReviewPending, created.definition?.createdByAgent, editedWithoutConfirm.ok, editedConfirmed.definition?.enabled, editedConfirmed.definition?.agentReviewPending], [true, false, true, true, false, true, undefined]);
 	});
 
 	test('時刻が来たら Bot の会話の 1 ターンとして頼み、会話のペインが開いていればその回は見送る', async () => {

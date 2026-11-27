@@ -23,6 +23,7 @@
 
 import { disposableTimeout, IntervalTimer } from '../../../../base/common/async.js';
 import { toErrorMessage } from '../../../../base/common/errorMessage.js';
+import { Event } from '../../../../base/common/event.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
@@ -90,6 +91,8 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 	static readonly ID = 'paradis.scheduledRunsRunner';
 
 	private readonly active = new Map<string, IActiveRun>();
+	/** Bot の定期実行のペインが閉じたら結び付けを外す見張り。 */
+	private readonly botPaneReleases = this._register(new DisposableStore());
 	/** 制限した段の定期実行の会話のペインを閉じる時計。 */
 	private readonly limitedTaskCloseTimers = new Set<ReturnType<typeof setTimeout>>();
 	/** claim を投げている最中の実行（同じ依頼が2回届いても1回しか試さない）。 */
@@ -274,12 +277,20 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 
 	/** 起動したターミナルを見張り始める（起動している間に止められていたら閉じる）。 */
 	private watchLaunched(run: IActiveRun, instanceId: number, paneToken: string | undefined, space?: IParadisScheduledRunSpace): void {
+		const launchedInstance = this.findInstance(instanceId);
+		// Bot の定期実行は会話のペインで走るので、閉じたら（止める・打ち切り・終わった後に閉じる・利用者が閉じる）その場で
+		// 結び付けを外す。外れないままだと次の回が「会話が開いている」で見送られる
+		if (run.definition.target.botTask !== undefined && launchedInstance !== undefined && paneToken !== undefined) {
+			this.botPaneReleases.add(Event.once(launchedInstance.onDisposed)(() => {
+				this.botsService.releasePane(paneToken).catch(error => this.logService.warn('[ParadisScheduledRuns] releasing a bot task pane failed', error));
+			}));
+		}
 		if (run.finished) {
 			// 起動している間に打ち切り・停止が決まった
-			this.killTerminal(this.findInstance(instanceId));
+			this.killTerminal(launchedInstance);
 			return;
 		}
-		run.instance = this.findInstance(instanceId);
+		run.instance = launchedInstance;
 		if (run.instance) {
 			const instance = run.instance;
 			run.store.add(instance.onDisposed(() => {

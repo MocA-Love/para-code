@@ -47,6 +47,7 @@ const FROM_BOARD_TASK_MESSAGE = 'This terminal runs a task board task that a Par
 const IDE_ACTION_FROM_BOARD_TASK_MESSAGE = 'This terminal runs a task board task that a Para Code bot put on the board, so Para Code treats it like the bot: it cannot start, open, type into or close other terminals, change spaces, or create scheduled runs. The reading tools still work. Tell the user what you would do. The mark stays on this terminal; work the user wants to do without it belongs in a new terminal.';
 
 const PATROL_WRITE_MESSAGE = 'This is a look-around, which only reads. Para Code refuses every tool that clicks, types, moves, writes, sends or starts something here, even if it is always allowed in your settings. Offer what you would do with bot_suggest.';
+const TASK_WRITE_MESSAGE = 'This is a scheduled task that your owner limited to reading (and the web). Para Code refuses every tool that clicks, types, moves, writes, sends or starts something here, even if it is always allowed in your settings. Say in your report what you would do.';
 
 /**
  * Bot の見回りのペインからの para-browser の呼び出しを、読むだけの道具（`PARADIS_READ_ONLY_MCP_TOOL_NAMES`）と見回りの
@@ -54,14 +55,17 @@ const PATROL_WRITE_MESSAGE = 'This is a look-around, which only reads. Para Code
  * 見回りの起動の引数（`paradisBotPatrolLaunchArgs`）と同じ一覧で、利用者がエージェントの側で常に許可した書く道具も
  * サーバーの側で断る（見回りは誰も見ていない時間に外の文を読むので、読んだ文に誘導されて書かないように）。
  */
-export function paradisBotPatrolToolRefusal(service: Pick<ParadisBotsService, 'ready' | 'botOfPane' | 'purposeOfPane'>): (paneToken: string, toolName: string) => Promise<string | undefined> {
+export function paradisBotPatrolToolRefusal(service: Pick<ParadisBotsService, 'ready' | 'botOfPane' | 'purposeOfPane' | 'isReadOnlyPane'>): (paneToken: string, toolName: string) => Promise<string | undefined> {
 	return async (paneToken, toolName) => {
 		if (PARADIS_READ_ONLY_MCP_TOOL_NAMES.has(toolName) || PARADIS_BOT_PATROL_TOOLS.has(toolName)) {
 			return undefined;
 		}
 		await service.ready;
 		// 起動し直した後に初めて現れたペインの結び付けを戻してから、用途を引く
-		return service.botOfPane(paneToken) !== undefined && service.purposeOfPane(paneToken) === 'patrol' ? PATROL_WRITE_MESSAGE : undefined;
+		if (service.botOfPane(paneToken) === undefined || !service.isReadOnlyPane(paneToken)) {
+			return undefined;
+		}
+		return service.purposeOfPane(paneToken) === 'patrol' ? PATROL_WRITE_MESSAGE : TASK_WRITE_MESSAGE;
 	};
 }
 
