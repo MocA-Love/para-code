@@ -19,11 +19,11 @@ import {
 	IParadisMobileHumanAsksReply,
 	PARADIS_MOBILE_HUMAN_ASK_ANSWER_KIND,
 	PARADIS_MOBILE_HUMAN_ASKS_KIND,
-	ParadisMobileHumanAskOpResults,
 	paradisMobileHumanAskSummary,
 	paradisMobileHumanAsks,
 	paradisParseMobileHumanAskAnswerRequest,
 } from '../common/paradisMobileHumanAsks.js';
+import { ParadisMobileOpResults } from '../common/paradisMobileOpResults.js';
 import { IParadisMobileRequestHandler, registerParadisMobileRequestHandler } from './paradisMobileRequestHandlers.js';
 
 type HumanAsks = Pick<IParadisHumanAskService, 'snapshot' | 'answer'>;
@@ -44,10 +44,10 @@ export function paradisCreateMobileHumanAsksHandler(serviceOf: (accessor: Servic
  *
  * - 形の合わない要求は `code: 'invalid'`、送ってきたモバイルが分からない要求は `code: 'forbidden'` で断る
  * - 同じモバイルの同じ `opId` の 2 回目は何もせず、1 回目と同じ返事を返す（受けた 1 回目なら `duplicate: true` を足す。
- *   断った 1 回目の再送に「答えた」と返さないため。覚える件数と期間は {@link ParadisMobileHumanAskOpResults}）
+ *   断った 1 回目の再送に「答えた」と返さないため。覚える件数と期間は {@link ParadisMobileOpResults}）
  * - スマホの一覧に無い 1 件（もう待っていない・許可・ペインの質問）は `reason: 'gone'`
  */
-export function paradisCreateMobileHumanAskAnswerHandler(serviceOf: (accessor: ServicesAccessor) => HumanAsks, results = new ParadisMobileHumanAskOpResults()): IParadisMobileRequestHandler {
+export function paradisCreateMobileHumanAskAnswerHandler(serviceOf: (accessor: ServicesAccessor) => HumanAsks, results = new ParadisMobileOpResults<IParadisMobileHumanAskAnswerReply>()): IParadisMobileRequestHandler {
 	return {
 		async handle(accessor, request, context) {
 			const service = serviceOf(accessor);

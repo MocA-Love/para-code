@@ -76,7 +76,7 @@ export interface IParadisMobileHumanAskAnswerReply {
 	readonly ok: boolean;
 	/** 断った理由。`gone` はもう待っていない（ほかで答えた・取り下げ）、`busy` はほかの場所が届けている最中。 */
 	readonly reason?: 'gone' | 'busy' | 'invalid' | 'unavailable';
-	/** 同じ opId の 2 回目で、1 回目が答えを受けていた（2 回目は何もしていない）。断った 1 回目の再送は 1 回目と同じ返事のまま。 */
+	/** 同じ opId の 2 回目で、1 回目が答えを受けていた（2 回目は何もしていない）。断った 1 回目の再送は 1 回目と同じ返事のまま（`ParadisMobileOpResults`）。 */
 	readonly duplicate?: true;
 }
 
@@ -148,66 +148,4 @@ export function paradisParseMobileHumanAskAnswerRequest(value: unknown): IParadi
 		&& request.answer !== null && typeof request.answer === 'object' && !Array.isArray(request.answer)
 		? { opId: request.opId, key: request.key, answer: request.answer }
 		: undefined;
-}
-
-/** opId ごとの結果を覚える件数（全モバイル合わせて。古いものから忘れる）。 */
-export const PARADIS_MOBILE_HUMAN_ASK_OP_RESULT_LIMIT = 256;
-/** opId ごとの結果を覚える期間。アプリの送り直し（応答待ち 15 秒）と中継の再送より十分長く。 */
-export const PARADIS_MOBILE_HUMAN_ASK_OP_RESULT_TTL_MS = 10 * 60 * 1000;
-
-/**
- * `humanAskAnswer` の opId ごとの結果（同じモバイルの同じ opId）。
- *
- * 1 回目が断られた（busy・gone など）のに返事が届かず送り直された場合に「答えた」と返さないよう、1 回目の返事を覚えて
- * 再送にも同じ返事を返す（受けた 1 回目の再送だけ `duplicate: true` を足す）。覚えるのは返事の Promise で、1 回目が
- * 届けている最中の再送も同じ返事を待つ。1 回目が例外で終わったら忘れる（再送でやり直せる。二重に届けないのは台帳の claim）。
- */
-export class ParadisMobileHumanAskOpResults {
-	private readonly results = new Map<string, { readonly reply: Promise<IParadisMobileHumanAskAnswerReply>; readonly at: number }>();
-
-	constructor(
-		private readonly now: () => number = Date.now,
-		private readonly limit = PARADIS_MOBILE_HUMAN_ASK_OP_RESULT_LIMIT,
-		private readonly ttlMs = PARADIS_MOBILE_HUMAN_ASK_OP_RESULT_TTL_MS,
-	) { }
-
-	/** 初めての opId なら `work` の返事を覚えて返し、覚えている opId なら 1 回目の返事を返す（`work` は呼ばない）。 */
-	async run(mobileId: string, opId: string, work: () => Promise<IParadisMobileHumanAskAnswerReply>): Promise<IParadisMobileHumanAskAnswerReply> {
-		const at = this.now();
-		this.forgetExpired(at);
-		const key = `${mobileId}\u0000${opId}`;
-		const known = this.results.get(key);
-		if (known !== undefined) {
-			const reply = await known.reply;
-			return reply.ok ? { ...reply, duplicate: true } : reply;
-		}
-		const reply = work();
-		const record = { reply, at };
-		this.results.set(key, record);
-		while (this.results.size > this.limit) {
-			const oldest = this.results.keys().next().value;
-			if (oldest === undefined) {
-				break;
-			}
-			this.results.delete(oldest);
-		}
-		try {
-			return await reply;
-		} catch (error) {
-			if (this.results.get(key) === record) {
-				this.results.delete(key);
-			}
-			throw error;
-		}
-	}
-
-	private forgetExpired(now: number): void {
-		// 入れた順 = 時刻の順なので、先頭から期限切れを捨てる
-		for (const [key, record] of this.results) {
-			if (now - record.at < this.ttlMs) {
-				break;
-			}
-			this.results.delete(key);
-		}
-	}
 }
