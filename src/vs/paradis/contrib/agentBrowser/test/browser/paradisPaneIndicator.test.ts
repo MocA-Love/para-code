@@ -144,4 +144,27 @@ suite('ParadisEditorTerminalIndicator', () => {
 		other.dispose();
 		changed.dispose();
 	});
+
+	test('unregistering disposes the overlays it attached, so registering again does not attach twice', () => {
+		setParadisPaneIndicatorHost(new TestHost());
+		const live = new Set<number>();
+		let next = 0;
+		const factory = () => {
+			const id = next++;
+			live.add(id);
+			return { setInstance: () => { }, topInset: () => 40, dispose: () => live.delete(id) };
+		};
+		const controller = createParadisEditorTerminalIndicator(document.createElement('div'));
+		let fired = 0;
+		const listener = controller.onDidChangeTopInset(() => fired++);
+		const first = paradisRegisterEditorTerminalOverlay(factory);
+		const attached = [...live];
+		first.dispose();
+		const afterOff = { live: [...live], inset: controller.topInset(), fired };
+		const second = paradisRegisterEditorTerminalOverlay(factory);
+		assert.deepStrictEqual({ attached, afterOff, afterOn: [...live] }, { attached: [0], afterOff: { live: [], inset: 0, fired: 1 }, afterOn: [1] });
+		listener.dispose();
+		controller.dispose();
+		second.dispose();
+	});
 });
