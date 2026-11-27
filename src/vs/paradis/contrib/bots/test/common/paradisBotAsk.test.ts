@@ -214,10 +214,10 @@ suite('Paradis bot ask', () => {
 	test('見回りの起動の引数: 書く道具は確認を出さずに断る形。MCP は para-browser だけで、読む道具と見回りの Bot の道具だけを許す', () => {
 		const read = new Set(['get_text', 'take_snapshot']);
 		assert.deepStrictEqual([
-			paradisBotPatrolLaunchArgs({ agent: 'claude', settingsFile: '/data/patrol/b1.claude-settings.json', mcpConfigFile: '/data/patrol/b1.claude-mcp.json' }, read),
-			paradisBotPatrolLaunchArgs({ agent: 'codex', disabledServers: [{ name: 'slack', transport: 'url' }, { name: 'aivis', transport: 'command' }] }, read),
+			paradisBotPatrolLaunchArgs({ agent: 'claude', runFolder: '/data/runs/r1', homeFolder: '/home/bot', instructionsFile: '/data/runs/r1/AGENTS.md', settingsFile: '/data/patrol/b1.claude-settings.json', mcpConfigFile: '/data/patrol/b1.claude-mcp.json' }, read),
+			paradisBotPatrolLaunchArgs({ agent: 'codex', runFolder: '/data/runs/r1', disabledServers: [{ name: 'slack', transport: 'url' }, { name: 'aivis', transport: 'command' }] }, read),
 		], [
-			['--permission-mode', 'dontAsk', '--settings=/data/patrol/b1.claude-settings.json', '--strict-mcp-config', '--mcp-config=/data/patrol/b1.claude-mcp.json', '--tools=Read,Grep,Glob', '--allowedTools=mcp__para-browser__bot_item_list,mcp__para-browser__bot_item_show,mcp__para-browser__bot_suggest,mcp__para-browser__bot_github_news,mcp__para-browser__get_text,mcp__para-browser__take_snapshot'],
+			['--permission-mode', 'dontAsk', '--settings=/data/patrol/b1.claude-settings.json', '--setting-sources=user', '--add-dir=/home/bot', '--append-system-prompt-file=/data/runs/r1/AGENTS.md', '--strict-mcp-config', '--mcp-config=/data/patrol/b1.claude-mcp.json', '--tools=Read,Grep,Glob', '--allowedTools=mcp__para-browser__bot_item_list,mcp__para-browser__bot_item_show,mcp__para-browser__bot_suggest,mcp__para-browser__bot_github_news,mcp__para-browser__get_text,mcp__para-browser__take_snapshot'],
 			['-s', 'read-only', '-a', 'never', '-c', 'features.plugins=false', '-c', 'features.apps=false',
 				'-c', 'mcp_servers.slack={url=\'http://127.0.0.1:9/\',enabled=false}',
 				'-c', 'mcp_servers.aivis={command=\'false\',enabled=false}',
@@ -288,8 +288,8 @@ suite('Paradis bot ask', () => {
 		const claude = { id: 'claude', label: 'Claude Code', command: 'claude {prompt}' };
 		const codex = { id: 'codex', label: 'Codex', command: 'codex {prompt}' };
 		const read = new Set(['get_text']);
-		const claudeArgs = paradisBotPatrolLaunchArgs({ agent: 'claude', settingsFile: '/Users/a b/Library/Application Support/s.json', mcpConfigFile: '/Users/a b/m.json' }, read);
-		const codexArgs = paradisBotPatrolLaunchArgs({ agent: 'codex', disabledServers: [{ name: 'slack', transport: 'url' }] }, read);
+		const claudeArgs = paradisBotPatrolLaunchArgs({ agent: 'claude', runFolder: '/Users/a b/r', homeFolder: '/Users/a b/.para-code/bots/bot', instructionsFile: '/Users/a b/r/AGENTS.md', settingsFile: '/Users/a b/Library/Application Support/s.json', mcpConfigFile: '/Users/a b/m.json' }, read);
+		const codexArgs = paradisBotPatrolLaunchArgs({ agent: 'codex', runFolder: '/r', disabledServers: [{ name: 'slack', transport: 'url' }] }, read);
 		const powerShellScript = (command: string) => {
 			const bytes = decodeBase64(/-EncodedCommand (?<script>[A-Za-z0-9+/=]+)$/.exec(command)?.groups?.script ?? '').buffer;
 			let script = '';
@@ -307,7 +307,7 @@ suite('Paradis bot ask', () => {
 			codexCmd: powerShellScript(paradisBuildAgentCommand(codex, 'look', WindowsShellType.CommandPrompt, { extraFlags: codexArgs })),
 			claudePowerShell: paradisBuildAgentCommand(claude, 'look', GeneralShellType.PowerShell, { extraFlags: ['--settings=C:\\Users\\o\'k\\s.json'] }),
 		}, {
-			claudeBash: 'claude \'--permission-mode\' \'dontAsk\' \'--settings=/Users/a b/Library/Application Support/s.json\' \'--strict-mcp-config\' \'--mcp-config=/Users/a b/m.json\' \'--tools=Read,Grep,Glob\' \'--allowedTools=mcp__para-browser__bot_item_list,mcp__para-browser__bot_item_show,mcp__para-browser__bot_suggest,mcp__para-browser__bot_github_news,mcp__para-browser__get_text\' \' look\'',
+			claudeBash: 'claude \'--permission-mode\' \'dontAsk\' \'--settings=/Users/a b/Library/Application Support/s.json\' \'--setting-sources=user\' \'--add-dir=/Users/a b/.para-code/bots/bot\' \'--append-system-prompt-file=/Users/a b/r/AGENTS.md\' \'--strict-mcp-config\' \'--mcp-config=/Users/a b/m.json\' \'--tools=Read,Grep,Glob\' \'--allowedTools=mcp__para-browser__bot_item_list,mcp__para-browser__bot_item_show,mcp__para-browser__bot_suggest,mcp__para-browser__bot_github_news,mcp__para-browser__get_text\' \' look\'',
 			codexBash: `codex '-s' 'read-only' '-a' 'never' '-c' 'features.plugins=false' '-c' 'features.apps=false' '-c' 'mcp_servers.slack={url='\\''http://127.0.0.1:9/'\\'',enabled=false}' '-c' 'mcp_servers.para-browser.enabled_tools=['\\''bot_item_list'\\'','\\''bot_item_show'\\'','\\''bot_suggest'\\'','\\''bot_github_news'\\'','\\''get_text'\\'']' '-c' 'mcp_servers.para-browser.tools.bot_item_list.approval_mode=approve' '-c' 'mcp_servers.para-browser.tools.bot_item_show.approval_mode=approve' '-c' 'mcp_servers.para-browser.tools.bot_suggest.approval_mode=approve' '-c' 'mcp_servers.para-browser.tools.bot_github_news.approval_mode=approve' ' look'`,
 			codexFish: `codex '-s' 'read-only' '-a' 'never' '-c' 'features.plugins=false' '-c' 'features.apps=false' '-c' 'mcp_servers.slack={url=\\'http://127.0.0.1:9/\\',enabled=false}' '-c' 'mcp_servers.para-browser.enabled_tools=[\\'bot_item_list\\',\\'bot_item_show\\',\\'bot_suggest\\',\\'bot_github_news\\',\\'get_text\\']' '-c' 'mcp_servers.para-browser.tools.bot_item_list.approval_mode=approve' '-c' 'mcp_servers.para-browser.tools.bot_item_show.approval_mode=approve' '-c' 'mcp_servers.para-browser.tools.bot_suggest.approval_mode=approve' '-c' 'mcp_servers.para-browser.tools.bot_github_news.approval_mode=approve' ' look'`,
 			codexPowerShell: `codex '-s' 'read-only' '-a' 'never' '-c' 'features.plugins=false' '-c' 'features.apps=false' '-c' 'mcp_servers.slack={url=''http://127.0.0.1:9/'',enabled=false}' '-c' 'mcp_servers.para-browser.enabled_tools=[''bot_item_list'',''bot_item_show'',''bot_suggest'',''bot_github_news'',''get_text'']' '-c' 'mcp_servers.para-browser.tools.bot_item_list.approval_mode=approve' '-c' 'mcp_servers.para-browser.tools.bot_item_show.approval_mode=approve' '-c' 'mcp_servers.para-browser.tools.bot_suggest.approval_mode=approve' '-c' 'mcp_servers.para-browser.tools.bot_github_news.approval_mode=approve' ' look'`,
