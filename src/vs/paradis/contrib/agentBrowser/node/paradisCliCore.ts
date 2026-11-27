@@ -363,10 +363,12 @@ export async function paradisCliLoadCatalog(runtime: IParadisCliRuntime, refresh
 interface ISchemaProperty {
 	readonly type?: string | readonly string[];
 	readonly enum?: readonly unknown[];
-	readonly items?: { readonly type?: string };
+	readonly items?: { readonly type?: string; readonly enum?: readonly unknown[] };
 	readonly description?: string;
 	readonly minimum?: number;
 	readonly maximum?: number;
+	readonly exclusiveMinimum?: number;
+	readonly exclusiveMaximum?: number;
 }
 
 function schemaProperties(command: IParadisCliCommand): Record<string, ISchemaProperty> {
@@ -436,19 +438,66 @@ export interface IParadisCliParsedFlags {
  */
 const PATH_ARGUMENTS: ReadonlySet<string> = new Set(['filePath', 'requestFilePath', 'responseFilePath', 'saveTo', 'outputDirPath']);
 
-function resolvePathArguments(args: Record<string, unknown>, cwd: string | undefined): Record<string, unknown> {
+/**
+ * 道具ごとのファイルの場所の引数。`path` は read_download（道具が返した絶対パスだけを受ける）にもあるので、
+ * 名前だけでは決めず、道具を限って解く。
+ */
+const TOOL_PATH_ARGUMENTS: ReadonlyMap<string, readonly string[]> = new Map([
+	['preview_file', ['path']],
+	['mobile_install_app', ['path']],
+	['adopt_doc', ['paths']],
+]);
+
+function resolvePathArguments(args: Record<string, unknown>, cwd: string | undefined, tool: string): Record<string, unknown> {
 	if (cwd === undefined) {
 		return args;
 	}
+	// `~/` で始まるパスはそのまま送る（接続先のペインでは、本体が接続先のホームへ展開する）
+	const resolveOne = (value: unknown) => typeof value === 'string' && value.length > 0 && !isAbsolute(value) && !value.startsWith('~') ? resolvePath(cwd, value) : value;
 	const resolved: Record<string, unknown> = { ...args };
-	for (const name of PATH_ARGUMENTS) {
+	for (const name of [...PATH_ARGUMENTS, ...(TOOL_PATH_ARGUMENTS.get(tool) ?? [])]) {
 		const value = resolved[name];
-		// `~/` で始まるパスはそのまま送る（接続先のペインでは、本体が接続先のホームへ展開する）
-		if (typeof value === 'string' && value.length > 0 && !isAbsolute(value) && !value.startsWith('~')) {
-			resolved[name] = resolvePath(cwd, value);
+		if (value !== undefined) {
+			resolved[name] = Array.isArray(value) ? value.map(resolveOne) : resolveOne(value);
 		}
 	}
 	return resolved;
+}
+
+/**
+ * 値が道具のスキーマの選択肢（enum）と範囲（minimum・maximum）に入っているかを確かめる。外れた値を道具へ送ると、
+ * 道具の誤り（exit 1）や MCP の検査の生の文になるので、ここで使い方の誤り（exit 2）として断る。
+ * null（`number|null` の引数で「無し」の意味）とスキーマに無い名前（--json で渡された分。道具が断る）は見ない。
+ */
+function checkValues(args: Record<string, unknown>, command: IParadisCliCommand): void {
+	const properties = schemaProperties(command);
+	for (const [name, value] of Object.entries(args)) {
+		const schema = Object.prototype.hasOwnProperty.call(properties, name) ? properties[name] : undefined;
+		if (schema === undefined || value === null || value === undefined) {
+			continue;
+		}
+		const flag = kebab(name);
+		const choices = schema.enum ?? (Array.isArray(value) ? schema.items?.enum : undefined);
+		if (choices !== undefined) {
+			const wrong = (Array.isArray(value) && schema.enum === undefined ? value : [value]).find(item => !choices.includes(item));
+			if (wrong !== undefined) {
+				throw new ParadisCliUsageError(`--${flag} takes ${choices.join('|')}, got ${JSON.stringify(wrong)}. ${flagList(command)}`);
+			}
+		}
+		if (typeof value === 'number') {
+			const tooSmall = (schema.minimum !== undefined && value < schema.minimum) || (schema.exclusiveMinimum !== undefined && value <= schema.exclusiveMinimum);
+			const tooLarge = (schema.maximum !== undefined && value > schema.maximum) || (schema.exclusiveMaximum !== undefined && value >= schema.exclusiveMaximum);
+			if (tooSmall || tooLarge) {
+				const range = schema.minimum !== undefined && schema.maximum !== undefined
+					? `from ${schema.minimum} to ${schema.maximum}`
+					: [
+						schema.minimum !== undefined ? `at least ${schema.minimum}` : schema.exclusiveMinimum !== undefined ? `more than ${schema.exclusiveMinimum}` : undefined,
+						schema.maximum !== undefined ? `at most ${schema.maximum}` : schema.exclusiveMaximum !== undefined ? `less than ${schema.exclusiveMaximum}` : undefined,
+					].filter(part => part !== undefined).join(' and ');
+				throw new ParadisCliUsageError(`--${flag} takes a number ${range}, got ${value}. ${flagList(command)}`);
+			}
+		}
+	}
 }
 
 /**
@@ -545,12 +594,13 @@ export function paradisCliParseFlags(argv: readonly string[], command: IParadisC
 			throw new ParadisCliUsageError(`Unknown flag --${flag}. ${flagList(command)}`);
 		}
 	}
-	const merged = resolvePathArguments({ ...base, ...args }, cwd);
+	const merged = resolvePathArguments({ ...base, ...args }, cwd, command.tool);
 	if (!help) {
 		const missing = schemaRequired(command).filter(name => merged[name] === undefined);
 		if (missing.length > 0) {
 			throw new ParadisCliUsageError(`Missing ${missing.map(name => `--${kebab(name)}`).join(', ')}. ${flagList(command)}`);
 		}
+		checkValues(merged, command);
 	}
 	return { args: merged, help, raw, out };
 }
@@ -882,6 +932,19 @@ async function run(runtime: IParadisCliRuntime): Promise<ParadisCliExit> {
 	const out = flags.out !== undefined ? await paradisCliCheckOutputPath(flags.out, runtime.cwd, runtime.home) : undefined;
 	const result = await paradisCliRpc(runtime, 'tools/call', { name: command.tool, arguments: flags.args }, command.readOnly);
 	return paradisCliPrintResult(runtime, result, { raw: flags.raw, out });
+}
+
+/**
+ * 出力の読み手が先に閉じた（`para … | head -1`）ときの EPIPE を黙って受ける。受け手が無いと、Node が
+ * 「Unhandled 'error' event」のスタックを出して落ちる。読み手はもう居ないので、残りの出力は捨てる。
+ * 閉じた後に書いた分の誤り（ERR_STREAM_DESTROYED）も同じ。ほかの誤りは今までどおり投げる。
+ */
+export function paradisCliIgnoreClosedOutput(stream: Pick<NodeJS.EventEmitter, 'on'>): void {
+	stream.on('error', (error: NodeJS.ErrnoException) => {
+		if (error.code !== 'EPIPE' && error.code !== 'ERR_STREAM_DESTROYED') {
+			throw error;
+		}
+	});
 }
 
 /** `para` の 1 回の実行。終了コードを返す（例外は文にして stderr へ出す）。 */

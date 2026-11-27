@@ -12,6 +12,8 @@ import * as fs from 'fs';
 import type * as http from 'http';
 import type { AddressInfo } from 'net';
 import { tmpdir } from 'os';
+import { EventEmitter } from 'events';
+import { Writable } from 'stream';
 import { dirname, join } from '../../../../../base/common/path.js';
 import { isWindows } from '../../../../../base/common/platform.js';
 import { FileAccess } from '../../../../../base/common/network.js';
@@ -19,7 +21,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { PARADIS_AGENT_GATEWAY_AFTER_DISPATCH_HEADER, PARADIS_AGENT_GATEWAY_FILE_NAME, PARADIS_AGENT_GATEWAY_TIMEOUT_CODE, PARADIS_AGENT_GATEWAY_WAIT_SECONDS_HEADER } from '../../common/paradisAgentGateway.js';
 import { IParadisCliCatalog, PARADIS_CLI_CATALOG_METHOD, PARADIS_CLI_META_KEY, PARADIS_CLI_PROTOCOL_VERSION, paradisBuildCliCatalog } from '../../common/paradisCliCatalog.js';
 import { PARADIS_CLI_LAUNCHER_FOLDER_SEGMENTS, PARADIS_CLI_LAUNCHER_NAME, PARADIS_CLI_REMOTE_TARGET_NAME, paradisAddParaCliToPaneEnvironment, paradisCliRemoteTargetContent } from '../../common/paradisCliPaneEnvironment.js';
-import { IParadisCliEndpoint, IParadisCliRuntime, PARADIS_CLI_AFTER_DISPATCH_HEADER, PARADIS_CLI_GATEWAY_WAIT_HEADER, PARADIS_CLI_PORT_FILE_ENV, PARADIS_CLI_TOKEN_ENV, ParadisCliAttempt, ParadisCliUsageError, paradisCliCallMeta, paradisCliCheckOutputPath, paradisCliClaudePermissions, paradisCliEndpoints, paradisCliParseFlags, paradisCliRpc, paradisCliVerdict, paradisRunCli } from '../../node/paradisCliCore.js';
+import { IParadisCliEndpoint, IParadisCliRuntime, PARADIS_CLI_AFTER_DISPATCH_HEADER, PARADIS_CLI_GATEWAY_WAIT_HEADER, PARADIS_CLI_PORT_FILE_ENV, PARADIS_CLI_TOKEN_ENV, ParadisCliAttempt, ParadisCliUsageError, paradisCliCallMeta, paradisCliCheckOutputPath, paradisCliClaudePermissions, paradisCliEndpoints, paradisCliIgnoreClosedOutput, paradisCliParseFlags, paradisCliRpc, paradisCliVerdict, paradisRunCli } from '../../node/paradisCliCore.js';
 
 const PNG = Buffer.from('89504e470d0a1a0a', 'hex');
 
@@ -40,6 +42,17 @@ const CAMEL_CASE_CATALOG: IParadisCliCatalog = paradisBuildCliCatalog([
 	{ name: 'take_snapshot', description: 'Take a snapshot.', annotations: { readOnlyHint: true }, inputSchema: { type: 'object', properties: { filePath: { type: 'string' }, saveTo: { type: 'string' }, path: { type: 'string' } } } },
 ], []);
 const camelCaseCommand = (tool: string) => CAMEL_CASE_CATALOG.commands.find(candidate => candidate.tool === tool)!;
+
+/** 選択肢・範囲を持つ引数と、道具を限って相対パスを解く引数（ほかのテストの品書きには足さない）。 */
+const CHECKED_CATALOG: IParadisCliCatalog = paradisBuildCliCatalog([
+	{ name: 'emulate', description: 'Emulate.', inputSchema: { type: 'object', properties: { colorScheme: { type: 'string', enum: ['dark', 'light', 'auto'] }, cpuThrottlingRate: { type: 'number', minimum: 1, maximum: 20 }, delay: { type: 'number', exclusiveMinimum: 0 }, settle_seconds: { type: ['number', 'null'], minimum: 0 }, kinds: { type: 'array', items: { type: 'string', enum: ['a', 'b'] } } } } },
+	{ name: 'forward_port', description: 'Forward a port.', inputSchema: { type: 'object', properties: { remote_port: { type: 'integer', minimum: 1, maximum: 65535 } }, required: ['remote_port'] } },
+	{ name: 'preview_file', description: 'Preview a file.', inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } },
+	{ name: 'mobile_install_app', description: 'Install an app.', inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } },
+	{ name: 'adopt_doc', description: 'Adopt documents.', inputSchema: { type: 'object', properties: { paths: { type: 'array', items: { type: 'string' } } }, required: ['paths'] } },
+	{ name: 'read_download', description: 'Read a download.', annotations: { readOnlyHint: true }, inputSchema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } },
+], []);
+const checkedCommand = (tool: string) => CHECKED_CATALOG.commands.find(candidate => candidate.tool === tool)!;
 
 suite('paradisCliCore', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
@@ -258,6 +271,74 @@ suite('paradisCliCore', () => {
 			otherArguments: { path: 'sample.csv' },
 			withoutCwd: { filePath: 'snap.txt' },
 		});
+	});
+
+	test('the file arguments of preview_file, mobile_install_app and adopt_doc are resolved too, but not the path of read_download', () => {
+		const cwd = join(root, 'repo');
+		const parse = (tool: string, ...argv: string[]) => paradisCliParseFlags(argv, checkedCommand(tool), cwd).args;
+		assert.deepStrictEqual({
+			preview: parse('preview_file', '--path', 'docs/report.html'),
+			install: parse('mobile_install_app', '--path', '../build/App.app'),
+			adopt: parse('adopt_doc', '--paths', 'a.md', '--paths', join(root, 'b.md'), '--paths', '~/c.md'),
+			adoptJson: parse('adopt_doc', '--json', '{"paths":["a.md"]}'),
+			download: parse('read_download', '--path', 'sample.csv'),
+		}, {
+			preview: { path: join(cwd, 'docs', 'report.html') },
+			install: { path: join(root, 'build', 'App.app') },
+			adopt: { paths: [join(cwd, 'a.md'), join(root, 'b.md'), '~/c.md'] },
+			adoptJson: { paths: [join(cwd, 'a.md')] },
+			download: { path: 'sample.csv' },
+		});
+	});
+
+	test('a value outside the choices or the range of the tool is a usage error (exit 2) that points to the help', () => {
+		const parse = (tool: string, ...argv: string[]) => {
+			try {
+				return paradisCliParseFlags(argv, checkedCommand(tool)).args;
+			} catch (error) {
+				return error instanceof ParadisCliUsageError ? `usage: ${error.message}` : `other: ${error}`;
+			}
+		};
+		const emulate = (message: string) => `usage: ${message} Flags of para browser emulate: --color-scheme --cpu-throttling-rate --delay --settle-seconds --kinds. See para help browser emulate.`;
+		const port = checkedCommand('forward_port');
+		const forward = (message: string) => `usage: ${message} Flags of para ${port.group} ${port.verb}: --remote-port. See para help ${port.group} ${port.verb}.`;
+		assert.deepStrictEqual({
+			choice: parse('emulate', '--color-scheme', 'dark'),
+			wrongChoice: parse('emulate', '--color-scheme', 'purple'),
+			wrongChoiceInJson: parse('emulate', '--json', '{"colorScheme":"purple"}'),
+			wrongItem: parse('emulate', '--kinds', 'a', '--kinds', 'c'),
+			inRange: parse('forward_port', '--remote-port', '65535'),
+			tooLarge: parse('forward_port', '--remote-port', '70000'),
+			tooSmall: parse('forward_port', '--remote-port', '0'),
+			exclusive: parse('emulate', '--delay', '0'),
+			range: parse('emulate', '--cpu-throttling-rate', '21'),
+			nullAllowed: parse('emulate', '--settle-seconds', 'null'),
+			help: paradisCliParseFlags(['--color-scheme', 'purple', '--help'], checkedCommand('emulate')).help,
+		}, {
+			choice: { colorScheme: 'dark' },
+			wrongChoice: emulate('--color-scheme takes dark|light|auto, got "purple".'),
+			wrongChoiceInJson: emulate('--color-scheme takes dark|light|auto, got "purple".'),
+			wrongItem: emulate('--kinds takes a|b, got "c".'),
+			inRange: { remote_port: 65535 },
+			tooLarge: forward('--remote-port takes a number from 1 to 65535, got 70000.'),
+			tooSmall: forward('--remote-port takes a number from 1 to 65535, got 0.'),
+			exclusive: emulate('--delay takes a number more than 0, got 0.'),
+			range: emulate('--cpu-throttling-rate takes a number from 1 to 20, got 21.'),
+			nullAllowed: { settle_seconds: null },
+			help: true,
+		});
+	});
+
+	test('a reader that closes the output early (para ... | head -1) ends the command quietly', async () => {
+		const closed = new Writable({ write: (_chunk, _encoding, callback) => callback(Object.assign(new Error('write EPIPE'), { code: 'EPIPE' })) });
+		paradisCliIgnoreClosedOutput(closed);
+		closed.write('first line\n');
+		closed.write('second line\n');
+		await new Promise<void>(resolve => setImmediate(resolve));
+		// ほかの誤りは握りつぶさない
+		const other = new EventEmitter();
+		paradisCliIgnoreClosedOutput(other);
+		assert.deepStrictEqual([closed.destroyed, (() => { try { other.emit('error', Object.assign(new Error('disk full'), { code: 'ENOSPC' })); return 'ignored'; } catch (error) { return (error as NodeJS.ErrnoException).code; } })()], [true, 'ENOSPC']);
 	});
 
 	test('flags become the arguments of the tool; unknown flags, wrong types and missing ones are refused', () => {
