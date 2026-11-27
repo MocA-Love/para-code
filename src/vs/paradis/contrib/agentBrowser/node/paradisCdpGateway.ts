@@ -17,9 +17,8 @@
 // 呼び出し元の識別は接続ごとに行う（paradisCdpPeerResolver.ts参照）:
 //   1. URLクエリ `?pane=<token>`（最優先）
 //   2. loopbackピアPID → 祖先チェーンのenv / 既知シェルPID表 → ペイントークン
-// どちらで決めても、接続を持つプロセスがそのペインのシェルの子孫（接続先のペインは戻り経路の `ssh -R`、
-// 内蔵 chrome-devtools-mcp はそのペインのために起こした子）かを確かめてから通す（verifyIngressPeer）。
-// トークンは同じ利用者のプロセスなら `ps -wwE` で読めるので、名乗っただけでは通さない。
+// どちらで決めても、接続を持つプロセスがほかのペインのシェルの子孫だと分かったら断る（verifyIngressPeer）。
+// トークンは同じ利用者のプロセスなら `ps -wwE` で読めるので、ほかのペインの中から名乗っただけでは通さない。
 // 解決したトークンをバインディングレジストリと突合し、バインド済みページの
 // targetId（とその子孫）だけが見える・触れるようにフィルタする（paradisCdpFilterProxy.ts）。
 //
@@ -112,10 +111,9 @@ export interface IParadisCdpGatewayDelegate {
 	 */
 	isTunnelPeer(remotePort: number, localPort: number): Promise<boolean>;
 	/**
-	 * この loopback 接続を持つプロセスが、`token`（ペインのトークンかタブのスコープキー）のペインを使ってよい相手か。
-	 * 手元のペインならそのシェルの子孫、接続先のペインなら戻り経路の `ssh -R`、どちらでもそのペインのために Para Code が
-	 * 起こした chrome-devtools-mcp の子なら true。確かめられないときは false（paradisPaneCallerCheck.ts）。
-	 * トークンは同じ利用者のプロセスなら読めるので、`?pane=` や環境変数で名乗っただけでは通さない。
+	 * この loopback 接続を、`token`（ペインのトークンかタブのスコープキー）のペインとして通してよいか。接続を持つプロセスが
+	 * ほかの（手元の）ペインのシェルの子孫だと分かったときだけ false（ほかのペインの中のプロセスがトークンを名乗った）。
+	 * どのペインの子孫でもない・確かめが取れないときは true（paradisPaneCallerCheck.ts）。
 	 */
 	verifyIngressPeer(token: string, socket: Socket): Promise<boolean>;
 	/** 接続先のペインの upload_file が写した一時ファイルだけを指す `DOM.setFileInputFiles` の `files` か。 */
@@ -806,7 +804,7 @@ export class ParadisCdpGateway extends Disposable {
 		if (access === undefined) {
 			return undefined;
 		}
-		// どの経路で決めたペインでも（`?pane=`、環境変数、シェルの表）、接続を持つプロセスがそのペインの中のものかを確かめる
+		// どの経路で決めたペインでも（`?pane=`、環境変数、シェルの表）、接続を持つプロセスがほかのペインの中のものなら断る
 		let allowed = false;
 		try {
 			allowed = await this.delegate.verifyIngressPeer(access.token, req.socket as Socket);
@@ -814,7 +812,7 @@ export class ParadisCdpGateway extends Disposable {
 			allowed = false;
 		}
 		if (!allowed) {
-			this._debugNonThrowing('[ParadisCdpGateway] Refused a connection whose process is not inside the terminal pane it named');
+			this._debugNonThrowing('[ParadisCdpGateway] Refused a connection from a process inside another terminal pane than the one it named');
 			this._socketTokens.delete(req.socket as Socket);
 			return undefined;
 		}

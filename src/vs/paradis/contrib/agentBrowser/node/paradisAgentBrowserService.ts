@@ -83,7 +83,7 @@ import { IParadisBrowserDiagnosticNote } from '../common/paradisBrowserDiagnosti
 import { ParadisCdpGateway, paradisGatewayPaneQuery } from './paradisCdpGateway.js';
 import { PARADIS_TAB_ID_ARGUMENT, paradisAgentTabScopeKey, paradisIsValidAgentTabId, paradisPaneTokenOfScopeKey, paradisParseAgentTabScopeKey, paradisTakeTabIdArgument, paradisWithTabIdArgument } from '../common/paradisAgentTabScope.js';
 import { paradisClassifyPeer, paradisPeerIsOneOf, ParadisPeerUnknownReason } from './paradisCdpPeerResolver.js';
-import { paradisGatewayPeerAllowed, paradisGatewayPeerExpectation, paradisToolNeedsPaneCaller } from './paradisPaneCallerCheck.js';
+import { paradisIsOtherPaneCaller, paradisOtherPaneShellPids, paradisToolNeedsPaneCaller } from './paradisPaneCallerCheck.js';
 import { PARADIS_CONFINED_PANE_IMPERSONATION_MESSAGE, paradisCallerIsFromConfinedPane, paradisConfinedShellPids } from './paradisConfinedPaneCaller.js';
 import { IParadisCdpInputQueueDiagnostic, IParadisCdpInputQueueOperation, ParadisCdpInputQueue } from './paradisCdpInputQueue.js';
 import { PARADIS_PROGRAM_STATUS_MAX_CHANGES_PER_SECOND, ParadisProgramState, paradisAntigravityProgramStatusTransition, paradisCodexProgramStatusTransition, paradisCopyProgramStatus, paradisProgramStatusApplies, paradisProgramStatusToAgentStatus } from '../common/paradisProgramStatus.js';
@@ -548,8 +548,8 @@ const PARADIS_CALLER_VERIFIED_TOOL_NAMES: ReadonlySet<string> = new Set([
 /** 追加のブラウザ操作（B7）で接続元を確かめられなかったときの文。 */
 const CALLER_UNVERIFIED_PAGE_OPS_MESSAGE = 'Para Code could not confirm that this request comes from a process inside a Para Code terminal pane (or from Para Code\'s SSH port forwarding), so it does not send mouse input, change headers, credentials or request rules, save files or draw on the shared page for it. Start this agent CLI from a terminal inside Para Code.';
 
-/** ペインのタブを読む・操作する道具で、接続元を確かめられなかったときの文（paradisPaneCallerCheck.ts）。 */
-const CALLER_UNVERIFIED_PANE_TABS_MESSAGE = 'Para Code could not confirm that this request comes from a process inside the Para Code terminal pane named by PARA_CODE_TERMINAL_PANE_ID (or from Para Code\'s SSH port forwarding), so it does not read or operate that pane\'s browser tabs for it. Call the tools from your own terminal without changing that variable; processes detached from the terminal (tmux, nohup with setsid, launchd) are not recognized.';
+/** ほかのペインの中のプロセスが、このペインのトークンでタブを読む・操作しようとしたときの文（paradisPaneCallerCheck.ts）。 */
+const PARADIS_OTHER_PANE_CALLER_MESSAGE = 'This call came from a process inside another Para Code terminal but used this terminal\'s identity (PARA_CODE_TERMINAL_PANE_ID). Para Code refuses it, so a terminal cannot read or operate another terminal\'s browser tabs. Call the tools from your own terminal without changing that variable.';
 
 const CALLER_UNVERIFIED_BROWSER_MESSAGE = 'Para Code could not confirm that this request comes from a process inside a Para Code terminal pane (or from Para Code\'s SSH port forwarding), so it does not open, switch or delete browser pages or profiles for it. Start this agent CLI from a terminal inside Para Code.';
 
@@ -855,10 +855,8 @@ export class ParadisAgentBrowserService extends Disposable {
 	private readonly _callerClassifications = new WeakMap<Socket, Map<string, { readonly kind: ParadisMcpCallerKind; readonly key: string }>>();
 	/** 同じ接続・トークン・照合の鍵で走っている照合（同時に来た道具の呼び出しが lsof / ps を重ねて起こさないように）。 */
 	private readonly _callerClassificationsInFlight = new WeakMap<Socket, Map<string, Promise<ParadisMcpCallerKind>>>();
-	/** CDP ゲートウェイの接続ごとの、確かめられたペイン（キーは照合の期待値。確かめられたものだけ覚える）。 */
-	private readonly _gatewayPeerChecks = new WeakMap<Socket, Map<string, string>>();
-	/** 同じ接続・ペイン・期待値で走っている CDP ゲートウェイの照合。 */
-	private readonly _gatewayPeerChecksInFlight = new WeakMap<Socket, Map<string, Promise<boolean>>>();
+	/** 接続とトークンの組ごとの「ほかのペインの中のプロセスか」（キーは照合したシェルの PID の並び）。 */
+	private readonly _otherPaneCallerChecks = new WeakMap<Socket, Map<string, { readonly key: string; readonly result: Promise<boolean> }>>();
 	/** 接続とトークンの組ごとの「制限するペインからのなりすましか」（キーは照合したシェルの PID の並び）。 */
 	private readonly _confinedCallerChecks = new WeakMap<Socket, Map<string, { readonly key: string; readonly result: Promise<boolean> }>>();
 	/** 接続元を確かめられなかった回数（ペインと理由の組ごと）。ログを初回と 2 の累乗の回だけに間引く。 */
@@ -1105,7 +1103,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				releaseBoundPageEmulation: connection => this._releaseBoundPageEmulation(connection),
 				isRemotePane: key => this._isRemotePaneForGateway(paradisPaneTokenOfScopeKey(key)),
 				isTunnelPeer: (remotePort, localPort) => this._isTunnelPeer(remotePort, localPort),
-				verifyIngressPeer: (key, socket) => this._verifyGatewayPeer(paradisPaneTokenOfScopeKey(key), socket),
+				verifyIngressPeer: async (key, socket) => !await this._isOtherPaneCaller(paradisPaneTokenOfScopeKey(key), socket),
 				permitsRemoteFileInput: (key, files) => this._remoteFileTransfer.permitsFileInput(paradisPaneTokenOfScopeKey(key), files),
 			},
 			// 冷スタート（起動時点で `DevToolsActivePort` が他インスタンスに上書きされていた）でも
@@ -3926,61 +3924,56 @@ export class ParadisAgentBrowserService extends Disposable {
 	}
 
 	/**
-	 * CDP ゲートウェイの接続を持つプロセスが、`paneToken` のペインを使ってよい相手か（paradisPaneCallerCheck.ts）。
-	 * 手元のペインはシェルの子孫、接続先のペインは戻り経路の `ssh -R`、どちらもそのペインのための chrome-devtools-mcp の子を通す。
-	 * 確かめられた結果だけを接続ごとに覚える（シェル・子・戻り経路が変わったら照合し直す）。
+	 * 接続を持つプロセスが、`paneToken` 以外の手元のペインのシェルの子孫だと分かったか（paradisPaneCallerCheck.ts）。
+	 * 分かったときだけ true（ほかのペインの中のプロセスがこのペインのトークンを名乗った）。どのペインの子孫でもない・
+	 * 確かめが取れないときは false（今までどおり通す）。結果は接続とトークンの組ごとに、照合したシェルが変わるまで覚える
+	 * （確かめが取れなかった結果は覚えない）。MCP の道具と CDP ゲートウェイの両方が使う。
 	 */
-	private async _verifyGatewayPeer(paneToken: string, socket: Socket): Promise<boolean> {
+	private async _isOtherPaneCaller(paneToken: string, socket: Socket | undefined, signal?: AbortSignal): Promise<boolean> {
 		const port = this._port;
-		if (port === undefined || typeof socket.remotePort !== 'number' || socket.localPort !== port) {
+		if (!socket || port === undefined || typeof socket.remotePort !== 'number' || socket.localPort !== port) {
 			return false;
 		}
-		const pane = this._paneShells.get(paneToken);
-		const tunnelPids = pane?.remoteAuthority !== undefined ? this._remoteTunnels.processPidsFor(pane.remoteAuthority) : [];
-		const expectation = paradisGatewayPeerExpectation(pane, this._devtoolsProxy.childPidsForPane(paneToken), tunnelPids);
-		if (expectation === undefined) {
-			this._noteCallerUnverified(paneToken, 'pane-not-registered', 0);
+		const pids = paradisOtherPaneShellPids(paneToken, this._paneShells.values());
+		if (pids.length === 0) {
 			return false;
 		}
-		const key = `${pane?.remoteAuthority ?? ''}|${expectation.ancestorPids?.join(',') ?? ''}|${expectation.tunnelPids?.join(',') ?? ''}`;
-		if (this._gatewayPeerChecks.get(socket)?.get(paneToken) === key) {
-			return true;
-		}
-		const flightKey = `${paneToken}\n${key}`;
-		let flights = this._gatewayPeerChecksInFlight.get(socket);
-		const running = flights?.get(flightKey);
-		if (running) {
-			return running;
+		const key = pids.join(',');
+		let checks = this._otherPaneCallerChecks.get(socket);
+		const hit = checks?.get(paneToken);
+		if (hit && hit.key === key) {
+			const cached = await hit.result;
+			signal?.throwIfAborted();
+			return cached;
 		}
 		const remotePort = socket.remotePort;
-		const flight = (async (): Promise<boolean> => {
+		let settled = true;
+		const result = (async (): Promise<boolean> => {
 			try {
-				const peer = await paradisClassifyPeer(remotePort, port, process.pid, expectation, undefined, {
-					onUnknown: (reason, attempts) => this._noteCallerUnverified(paneToken, reason, attempts),
+				const peer = await paradisClassifyPeer(remotePort, port, process.pid, { ancestorPids: pids }, undefined, {
+					onUnknown: reason => { settled = reason === 'not-expected'; },
 				});
-				return paradisGatewayPeerAllowed(peer, pane);
+				return paradisIsOtherPaneCaller(peer);
 			} catch {
+				settled = false;
 				return false;
 			}
 		})();
-		if (!flights) {
-			flights = new Map();
-			this._gatewayPeerChecksInFlight.set(socket, flights);
+		if (!checks) {
+			checks = new Map();
+			this._otherPaneCallerChecks.set(socket, checks);
 		}
-		flights.set(flightKey, flight);
-		const allowed = await flight;
-		if (flights.get(flightKey) === flight) {
-			flights.delete(flightKey);
-		}
-		if (allowed) {
-			let checks = this._gatewayPeerChecks.get(socket);
-			if (!checks) {
-				checks = new Map();
-				this._gatewayPeerChecks.set(socket, checks);
+		const entry = { key, result };
+		checks.set(paneToken, entry);
+		void result.then(() => {
+			// 確かめが取れなかった（コマンドの失敗・持ち主が見つからない）結果は、次の呼び出しで照合し直す
+			if (!settled && checks.get(paneToken) === entry) {
+				checks.delete(paneToken);
 			}
-			checks.set(paneToken, key);
-		}
-		return allowed;
+		});
+		const fromOtherPane = await result;
+		signal?.throwIfAborted();
+		return fromOtherPane;
 	}
 
 	/**
@@ -6762,8 +6755,11 @@ export class ParadisAgentBrowserService extends Disposable {
 			message = CALLER_UNVERIFIED_PAGE_OPS_MESSAGE;
 		} else if (paradisToolNeedsPaneCaller(name, { local, provider: !local && this._isProviderTool(ingressLease.token, name) })) {
 			// トークンだけでほかのペインのタブを読ませない（para-browser の残りの道具、内蔵 chrome-devtools-mcp の道具、
-			// サイトのメモと手順）。プロバイダの道具は各自の決まりで確かめる
-			message = CALLER_UNVERIFIED_PANE_TABS_MESSAGE;
+			// サイトのメモと手順）。断るのは、接続元がほかのペインの中だと分かったときだけ（paradisPaneCallerCheck.ts）。
+			// プロバイダの道具は各自の決まりで確かめる
+			const fromOtherPane = await this._isOtherPaneCaller(ingressLease.token, socket, signal);
+			this._requireIngressLease(ingressLease);
+			return fromOtherPane ? this._toolError(PARADIS_OTHER_PANE_CALLER_MESSAGE) : undefined;
 		}
 		if (message === undefined) {
 			return undefined;

@@ -271,15 +271,15 @@ suite('Paradis CDP gateway ingress authority', () => {
 		}
 	});
 
-	test('refuses a pane named by ?pane= or by a peer\'s environment when the connecting process is not inside that pane', async () => {
+	test('refuses a pane named by ?pane= or by a peer\'s environment when the connecting process is inside another pane, and keeps other connections working', async () => {
 		const checked: string[] = [];
-		const run = async (includeQuery: boolean, inside: boolean) => {
+		const run = async (includeQuery: boolean, fromOtherPane: boolean) => {
 			const fixture = createHttpFixture('/json/protocol', {
 				includeQuery,
 				remotePort: 47_001,
 				// 接続元からの解決（環境変数・シェルの表）で、名乗ったペインに決まった
 				peerResolver: async () => 'pane-token',
-				verifyPeer: async token => { checked.push(token); return inside; },
+				verifyPeer: async token => { checked.push(token); return !fromOtherPane; },
 			});
 			try {
 				await fixture.gateway.handleRequest(fixture.request, fixture.response);
@@ -289,10 +289,10 @@ suite('Paradis CDP gateway ingress authority', () => {
 			}
 		};
 		assert.deepStrictEqual({
-			stolenQuery: await run(true, false),
-			stolenEnv: await run(false, false),
-			ownQuery: await run(true, true),
-			ownPeer: await run(false, true),
+			stolenQuery: await run(true, true),
+			stolenEnv: await run(false, true),
+			ownQuery: await run(true, false),
+			ownPeer: await run(false, false),
 			checked,
 		}, {
 			stolenQuery: { status: 403, upstream: 0 },

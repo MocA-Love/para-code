@@ -12,12 +12,12 @@ import { createServer, Server, Socket } from 'net';
 import { isWindows } from '../../../../../base/common/platform.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { paradisClassifyPeer } from '../../node/paradisCdpPeerResolver.js';
-import { paradisGatewayPeerAllowed, paradisGatewayPeerExpectation, paradisToolNeedsPaneCaller } from '../../node/paradisPaneCallerCheck.js';
+import { paradisIsOtherPaneCaller, paradisOtherPaneShellPids, paradisToolNeedsPaneCaller } from '../../node/paradisPaneCallerCheck.js';
 
 suite('paradisPaneCallerCheck', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('ブラウザの道具・内蔵 chrome-devtools-mcp の道具は接続元を確かめ、プロバイダの道具とタブに触れない道具は確かめない', () => {
+	test('ブラウザの道具・内蔵 chrome-devtools-mcp の道具は接続元を調べ、プロバイダの道具とタブに触れない道具は調べない', () => {
 		assert.deepStrictEqual({
 			takeSnapshot: paradisToolNeedsPaneCaller('take_snapshot', { local: false, provider: false }),
 			evaluateScript: paradisToolNeedsPaneCaller('evaluate_script', { local: false, provider: false }),
@@ -41,35 +41,33 @@ suite('paradisPaneCallerCheck', () => {
 		});
 	});
 
-	test('CDP ゲートウェイは手元のペインのシェルの子孫・そのペインの chrome-devtools-mcp の子・接続先のペインの戻り経路だけを通す', () => {
-		const local = { shellPid: 90 };
-		const remote = { shellPid: 70, remoteAuthority: 'ssh-remote+host' };
+	test('照合するのは名乗ったペイン以外の手元のペインのシェルだけ（接続先のペイン・シェルの分からないペイン・名乗ったペインと同じシェルは外す）', () => {
+		const panes = [
+			{ token: 'bot', shellPid: 50 },
+			{ token: 'user', shellPid: 90 },
+			{ token: 'remote', shellPid: 70, remoteAuthority: 'ssh-remote+host' },
+			{ token: 'starting', shellPid: undefined },
+			{ token: 'board', shellPid: 60 },
+			{ token: 'user-again', shellPid: 90 },
+		];
 		assert.deepStrictEqual({
-			local: paradisGatewayPeerExpectation(local, [300], [500]),
-			remote: paradisGatewayPeerExpectation(remote, [301], [500, 501]),
-			unknownPane: paradisGatewayPeerExpectation(undefined, [], []),
-			unknownPaneWithChild: paradisGatewayPeerExpectation(undefined, [302], []),
-			localWithoutShell: paradisGatewayPeerExpectation({ shellPid: undefined }, [], [500]),
-			allowed: [
-				paradisGatewayPeerAllowed('descendant', local),
-				paradisGatewayPeerAllowed('tunnel', local),
-				paradisGatewayPeerAllowed('tunnel', remote),
-				paradisGatewayPeerAllowed('unknown', local),
-				paradisGatewayPeerAllowed('unknown', remote),
-			],
+			user: paradisOtherPaneShellPids('user', panes),
+			bot: paradisOtherPaneShellPids('bot', panes),
+			remote: paradisOtherPaneShellPids('remote', panes),
+			unknown: paradisOtherPaneShellPids('nobody', [{ token: 'user', shellPid: 90 }]),
+			refused: (['descendant', 'unknown', 'tunnel'] as const).map(kind => paradisIsOtherPaneCaller(kind)),
 		}, {
-			local: { ancestorPids: [90, 300], tunnelPids: [] },
-			remote: { ancestorPids: [301], tunnelPids: [500, 501] },
-			unknownPane: undefined,
-			unknownPaneWithChild: { ancestorPids: [302], tunnelPids: [] },
-			localWithoutShell: undefined,
-			allowed: [true, false, true, false, false],
+			user: [50, 60],
+			bot: [60, 90],
+			remote: [50, 60, 90],
+			unknown: [90],
+			refused: [true, false, false],
 		});
 	});
 
-	// 実際のプロセス表で確かめる（Playwright のような外部の道具が、ペインのシェルの子孫として通るか）。
-	// このテストのプロセスをペインのシェルに見立て、子プロセスから loopback で繋ぐ
-	(isWindows ? test.skip : test)('子プロセスの接続は、親を祖先に持つので通り、関係の無いプロセスを祖先にすると通らない', async function () {
+	// 実際のプロセス表で確かめる。このテストのプロセスを Bot のペインのシェルに見立て、その子（Playwright や curl の
+	// 代わり）から loopback で繋ぐ。利用者のペインのシェルは関係の無い別のプロセス
+	(isWindows ? test.skip : test)('Bot のペインの中のプロセスが利用者のペインのトークンを名乗ると断り、自分のトークン・どのペインの外のプロセスは通す', async function () {
 		this.timeout(60_000);
 		const accepted: Socket[] = [];
 		const server: Server = createServer(socket => { accepted.push(socket); });
@@ -95,15 +93,20 @@ suite('paradisPaneCallerCheck', () => {
 				}, 50);
 			});
 			const remotePort = socket.remotePort!;
-			const classify = (ancestorPids: number[]) => paradisClassifyPeer(remotePort, serverPort, process.pid, { ancestorPids }, undefined, { budgetMs: 20_000 });
+			const otherPane = async (claimed: string, panes: { token: string; shellPid: number }[]) => paradisIsOtherPaneCaller(
+				await paradisClassifyPeer(remotePort, serverPort, process.pid, { ancestorPids: paradisOtherPaneShellPids(claimed, panes) }, undefined, { budgetMs: 20_000 }));
+			const panes = [{ token: 'bot', shellPid: process.pid }, { token: 'user', shellPid: unrelated.pid! }];
 			assert.deepStrictEqual({
-				parent: await classify([process.pid]),
-				devtoolsChild: await classify([client.pid!]),
-				unrelated: await classify([unrelated.pid!]),
+				// Bot のペインの中から、利用者のペインのトークンを名乗った
+				stolen: await otherPane('user', panes),
+				// Bot のペインの中から、自分のトークンで呼んだ
+				own: await otherPane('bot', panes),
+				// どのペインの中でもない（tmux などで切り離した）プロセスが名乗った。見分けられないので通す
+				detached: await otherPane('user', [{ token: 'user', shellPid: unrelated.pid! }, { token: 'bot', shellPid: client.pid! + 100_000 }]),
 			}, {
-				parent: 'descendant',
-				devtoolsChild: 'descendant',
-				unrelated: 'unknown',
+				stolen: true,
+				own: false,
+				detached: false,
 			});
 		} finally {
 			for (const child of children) {
