@@ -1034,6 +1034,23 @@ export class ParadisAgentHookOwnership {
 		return snapshot.get(owner.pid)?.command;
 	}
 
+	/**
+	 * ペインの所有者（hook の発信元のエージェント）が、手元で同じプロセスとして生きているか。所有者が分からない・pid が無い・
+	 * 接続先のペイン・プロセス表が取れないときは undefined。
+	 */
+	async ownerAlive(token: string): Promise<boolean | undefined> {
+		const owner = this.owners.get(token);
+		if (owner === undefined || owner.pid === undefined || owner.attachedHost !== undefined) {
+			return undefined;
+		}
+		const snapshot = await this.inspector.snapshot({ pids: [owner.pid] }).catch(() => undefined);
+		const current = this.owners.get(token);
+		if (snapshot === undefined || current?.pid !== owner.pid) {
+			return undefined;
+		}
+		return this.isOwnerAlive(current, snapshot);
+	}
+
 	/** 休止のために止めたプロセスのうち、まだ同じプロセスとして生きているもの。表が取れなければ undefined。 */
 	async aliveHibernationTargets(targets: readonly IProcessIdentity[]): Promise<readonly IProcessIdentity[] | undefined> {
 		if (targets.length === 0) {

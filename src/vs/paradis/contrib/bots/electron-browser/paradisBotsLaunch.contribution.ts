@@ -115,6 +115,8 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 	const environmentService = accessor.get(IWorkbenchEnvironmentService);
 	const agentChatService = accessor.get(IParadisAgentChatService);
 	const editorService = accessor.get(IEditorService);
+	const paradisDialogService = accessor.get(IParadisDialogService);
+	const notificationService = accessor.get(INotificationService);
 
 	if (opening.has(botId)) {
 		// 同じウィンドウで起動している途中（作った直後の挨拶など）。別のウィンドウの起動中と同じ案内にする
@@ -135,6 +137,11 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 			existing.instance.dispose(TerminalExitReason.User);
 			await paradisWaitForBotChatRelease(botsService, botId);
 		} else if (existing !== undefined) {
+			// 前に出す依頼に応えなかったペインがこのウィンドウにあった（生きていた）なら、会話のペインとして結び付け直す
+			const existingToken = paneTokenService.getTokenForInstance(existing.instanceId);
+			if (existingToken !== undefined) {
+				await botsService.reclaimPane(existingToken);
+			}
 			// 眠った会話の入力欄から送った直後に、別の経路で会話が起きていた: 送った文はそのペインへ渡す（捨てない）
 			if (options.prompt !== undefined && options.prompt.trim().length > 0) {
 				const error = await agentChatService.sendMessageToPane(existing.instanceId, options.prompt);
@@ -164,8 +171,21 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 		if (!launch.ok && launch.code === 'already_open' && !fromAgent && !await botsService.requestReveal(botId)) {
 			launch = await botsService.requestLaunch(botId, 'chat');
 		}
+		// 応えの無かったペインで、前の会話のエージェントがまだ動いているかもしれない。新しく起こすと同じ会話が 2 つ動くので、
+		// 利用者が「止めて起こし直す」を選んだときだけ起こす（エージェントの道具からは起こさない）
+		if (!launch.ok && launch.code === 'detached_alive') {
+			if (fromAgent || !await paradisConfirmRestartDetachedBot(paradisDialogService, summary?.name ?? '')) {
+				return { ok: false, error: 'detached_alive' };
+			}
+			// 止まったのを確かめられなければ起こさない（同じ会話を 2 つ動かさない）
+			if (!await botsService.restartChat(botId)) {
+				notificationService.warn(localize('paradisBots.detachedNotStopped', "前の会話のエージェントを止められませんでした。そのペインのあるウィンドウで閉じてから、もう一度話しかけてください。"));
+				return { ok: false, error: 'detached_alive' };
+			}
+			launch = await botsService.requestLaunch(botId, 'chat');
+		}
 		// 別のウィンドウで開いている・起動している途中（呼んだ側が案内を出し分ける）
-		if (!launch.ok && (launch.code === 'already_open' || launch.code === 'launching')) {
+		if (!launch.ok && (launch.code === 'already_open' || launch.code === 'launching' || launch.code === 'detached_alive')) {
 			return { ok: false, error: launch.code };
 		}
 		if (!launch.ok) {
@@ -191,6 +211,20 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 	} finally {
 		opening.delete(botId);
 	}
+}
+
+/** 応えの無かったペインのエージェントがまだ動いているかもしれないとき、止めて起こし直すかを利用者に聞く。 */
+async function paradisConfirmRestartDetachedBot(paradisDialogService: IParadisDialogService, botName: string): Promise<boolean> {
+	const { confirmed } = await paradisDialogService.confirm({
+		type: 'warning',
+		// allow-any-unicode-next-line
+		message: localize('paradisBots.detachedAlive', "「{0}」の前の会話のエージェントが、まだ動いているかもしれません", botName),
+		// allow-any-unicode-next-line
+		detail: localize('paradisBots.detachedAliveDetail', "応えの無かったペインで、同じ会話のエージェントが動いている可能性があります。そのペインが別のウィンドウにあれば、そのウィンドウで開いてください。\n\n止めて起こし直すと、そのペインのエージェントを止め、止まったのを確かめてから、同じ会話の続きで起こします。"),
+		// allow-any-unicode-next-line
+		primaryButton: localize('paradisBots.detachedAliveRestart', "止めて起こし直す"),
+	});
+	return confirmed;
 }
 
 /** 閉じたペインの結び付けが shared process で外れる（TerminalExit が届く）のを待つ。 */
@@ -223,6 +257,10 @@ registerAction2(class extends Action2 {
 		if (!result.ok && result.error === 'already_open') {
 			// allow-any-unicode-next-line
 			notificationService.info(localize('paradisBots.alreadyOpen', "この Bot は別のウィンドウで開いています。そのウィンドウに出しました。"));
+			return false;
+		}
+		// 前の会話のエージェントがまだ動いているかもしれず、利用者が起こし直さなかった（確かめの画面で答えた）
+		if (!result.ok && result.error === 'detached_alive') {
 			return false;
 		}
 		if (!result.ok && result.error === 'launching') {
@@ -281,7 +319,8 @@ class ParadisBotsWindowChannel implements IServerChannel {
 			const error = result.error === 'remote' ? 'This Para Code window is connected over SSH, and a bot runs on this computer. Ask the user to open the bot from a local window.'
 				: result.error === 'already_open' ? 'This bot is already open in another Para Code window. A bot has one chat at a time.'
 					: result.error === 'launching' ? 'This bot is starting in another Para Code window. Wait for it.'
-						: result.error;
+						: result.error === 'detached_alive' ? 'The previous agent of this bot may still be running in a pane that did not answer. Ask the user to open that pane or to stop it and start the bot again from Para Code.'
+							: result.error;
 			return { ok: false, error };
 		}
 		return { ok: true, data: { state: result.state } };

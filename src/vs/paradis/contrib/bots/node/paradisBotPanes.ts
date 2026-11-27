@@ -211,6 +211,11 @@ export class ParadisBotPanes {
 	 * 動き続けないように）。
 	 */
 	private readonly detached = new Map<string, string>();
+	/**
+	 * {@link detached} のうち、利用者が「止めて起こし直す」を選んだもの。生きているかを確かめずに新しい会話を起こしてよい
+	 * （止める依頼は出してある）。Bot の制限は本物の終了まで残す。
+	 */
+	private readonly waived = new Set<string>();
 
 	/** Bot ごとの最後の会話。 */
 	private readonly sessions = new Map<string, IParadisBotChatSessionRecord>();
@@ -430,6 +435,35 @@ export class ParadisBotPanes {
 		return [...this.detached].filter(([, owner]) => owner === botId).map(([token]) => token);
 	}
 
+	/** その Bot の、会話として数えるのをやめたペインのうち、新しい会話を起こす前に生きているかを確かめるもの。 */
+	uncheckedDetachedTokensOf(botId: string): string[] {
+		return this.detachedTokensOf(botId).filter(token => !this.waived.has(token));
+	}
+
+	/** 利用者が「止めて起こし直す」を選んだ。その Bot の会話として数えるのをやめたペインを、確かめずに起こしてよいものにする。 */
+	waiveDetachedChat(botId: string): void {
+		for (const token of this.detachedTokensOf(botId)) {
+			this.waived.add(token);
+		}
+	}
+
+	/**
+	 * 会話として数えるのをやめたペインが、ウィンドウで見つかった（生きていた）。その Bot に別の会話のペインがまだ無ければ、
+	 * 会話のペインとして結び付け直して Bot の id を返す（同じ会話を新しく起こさない）。
+	 */
+	reclaimChat(paneToken: string, now: number): string | undefined {
+		const botId = this.detached.get(paneToken);
+		if (botId === undefined || [...this.panes.values()].some(pane => pane.botId === botId && pane.purpose === 'chat')) {
+			return undefined;
+		}
+		this.detached.delete(paneToken);
+		this.waived.delete(paneToken);
+		const pane = newPane(botId, 'chat', now);
+		pane.hookSeen = true;
+		this.panes.set(paneToken, pane);
+		return botId;
+	}
+
 	/** そのペインの用途（会話か見回りか）。Bot のペインでなければ undefined。 */
 	/** 定期実行を制限した段で起こしたペインか（起動し直した後は、保存した印から戻す）。 */
 	isLimited(paneToken: string): boolean {
@@ -497,6 +531,7 @@ export class ParadisBotPanes {
 		const botId = this.panes.get(paneToken)?.botId ?? this.detached.get(paneToken);
 		this.panes.delete(paneToken);
 		this.detached.delete(paneToken);
+		this.waived.delete(paneToken);
 		const hash = paradisBotPaneTokenHash(paneToken);
 		this.forget(record => record.hash === hash);
 		return botId;
@@ -519,6 +554,7 @@ export class ParadisBotPanes {
 		for (const [token, owner] of this.detached) {
 			if (owner === botId) {
 				this.detached.delete(token);
+				this.waived.delete(token);
 				changed = true;
 			}
 		}

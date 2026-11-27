@@ -23,6 +23,7 @@ import { PARADIS_MCP_PORT_FILE_NAME } from '../../agentBrowser/common/paradisAge
 import { paradisRegisterMcpCallRefusal, paradisRegisterMcpConfinedPanes, paradisRegisterMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { paradisCodexHomeCandidates } from '../../agentBrowser/node/paradisAgentHome.js';
 import { onParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHookBus.js';
+import { paradisAgentPaneAlive } from '../../agentBrowser/node/paradisAgentPaneLiveness.js';
 import { PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING, paradisAgentIdeActionsAllowed } from '../../agentIde/common/paradisAgentIde.js';
 import { paradisRegisterAgentIdeActionRefusal } from '../../agentIde/node/paradisAgentIdeToolProvider.js';
 import { paradisResolveAgentTemplates } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
@@ -97,6 +98,7 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 	const homes = new ParadisBotHomes(join(homedir(), '.para-code', 'bots'));
 	const service = store.add(new ParadisBotsService(createParadisBotsFile(userDataPath), createParadisBotItemsFile(userDataPath), paradisSharedHumanAskService(), accessor.get(ILogService), {
 		hookEvents: onParadisAgentHookEvent,
+		paneAlive: paradisAgentPaneAlive,
 		enabled,
 		panesFile: createParadisBotPanesFile(userDataPath),
 		suggestionsFile: createParadisBotSuggestionsFile(userDataPath),
