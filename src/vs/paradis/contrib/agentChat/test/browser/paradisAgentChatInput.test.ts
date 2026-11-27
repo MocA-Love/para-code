@@ -14,7 +14,7 @@ import { NullLogService } from '../../../../../platform/log/common/log.js';
 import type { ParadisAgentStatus } from '../../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentChatSource, IParadisAgentChatView } from '../../common/paradisAgentChat.js';
 import { PARADIS_AGENT_KINDS, ParadisAgentKind } from '../../common/paradisAgentDescriptor.js';
-import { IParadisAgentChatTerminal, ParadisAgentChatInput, paradisCodexApprovalFormOptions, paradisIsShellProcessName } from '../../browser/paradisAgentChatInput.js';
+import { IParadisAgentChatTerminal, ParadisAgentChatInput, paradisCodexApprovalFormOptions, paradisIsShellProcessName, paradisDraftIsOnly } from '../../browser/paradisAgentChatInput.js';
 import { paradisScreenShowsAgentPrompt, paradisScreenShowsPermissionPrompt } from '../../browser/paradisAgentTuiInput.js';
 import { ParadisAgentChatSession } from '../../browser/paradisAgentChatSession.js';
 import { CODEX_EXEC_APPROVAL_DETAIL, CODEX_EXEC_APPROVAL_SCREEN, CODEX_MCP_APPROVAL_DETAIL, CODEX_MCP_APPROVAL_SCREEN, CODEX_WORKING_SCREEN } from './paradisCodexPromptScreens.js';
@@ -156,6 +156,53 @@ suite('ParadisAgentChatInput', () => {
 		open = undefined;
 		const sent = await fixture.input.sendMessage(1, 't', '続けて');
 		assert.deepStrictEqual({ refused, sent }, { refused: 'ターミナルで画面が開いています。閉じてから送ってください', sent: undefined });
+	});
+
+	test('delivers a bot message to a working agent only when it holds messages until its next turn, and never on top of the owner\'s draft', async () => {
+		const claude = setup({ agent: 'claude' });
+		const codex = setup({ agent: 'codex' });
+		const working = { working: true, refuseDraft: true };
+		const results = {
+			claudeWorking: await claude.input.sendMessageOutcome(1, 't', 'hi', working),
+			codexWorking: await codex.input.sendMessageOutcome(1, 't', 'hi', working),
+			codexIdle: await codex.input.sendMessageOutcome(1, 't', 'hi', { working: false, refuseDraft: true }),
+		};
+		const drafting = setup({ agent: 'claude' });
+		let draft: string | undefined = 'まだ途中の指示';
+		drafting.source.getAgentChatDraft = async () => draft;
+		const draftRefused = await drafting.input.sendMessageOutcome(1, 't', 'hi', working);
+		const typedBeforeDraftRefused = drafting.terminal.sent.length;
+		draft = '';
+		const draftEmpty = await drafting.input.sendMessageOutcome(1, 't', 'hi', working);
+		// 貼った後に利用者が打ち足した: Enter を送らない（届いたか分からない）
+		const appended = setup({ agent: 'claude' });
+		let appendedDraft = '';
+		appended.source.getAgentChatDraft = async () => appendedDraft;
+		appended.terminal.onKey = text => { appendedDraft = `${text} と追記`; };
+		const appendedResult = await appended.input.sendMessageOutcome(1, 't', 'hi', working);
+		assert.deepStrictEqual({
+			...results,
+			typedClaude: claude.terminal.sent,
+			typedCodex: codex.terminal.sent,
+			draftRefused,
+			typedBeforeDraftRefused,
+			draftEmpty: draftEmpty.kind,
+			appended: appendedResult.kind,
+			appendedTyped: appended.terminal.sent,
+			draftOnly: [paradisDraftIsOnly('', undefined), paradisDraftIsOnly('hi', undefined), paradisDraftIsOnly('hi', 'hi'), paradisDraftIsOnly('[Pasted text #1 +4 lines]', 'long'), paradisDraftIsOnly('x hi', 'hi')],
+		}, {
+			claudeWorking: { kind: 'sent' },
+			codexWorking: { kind: 'refused', code: 'working', message: 'エージェントが作業中です。終わってから送ってください' },
+			codexIdle: { kind: 'sent' },
+			typedClaude: ['paste:"hi"', '"\\r"'],
+			typedCodex: ['paste:"hi"', '"\\r"'],
+			draftRefused: { kind: 'refused', code: 'draft', message: '入力欄に書きかけの文があります' },
+			typedBeforeDraftRefused: 0,
+			draftEmpty: 'sent',
+			appended: 'unknown',
+			appendedTyped: ['paste:"hi"'],
+			draftOnly: [true, false, true, true, false],
+		});
 	});
 
 	test('does not type into Codex while its choice menu is on the screen, since Enter would pick the default choice', async () => {
