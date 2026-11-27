@@ -304,13 +304,15 @@ export class ParadisBotsService extends Disposable {
 	// ---- Bot が載せたタスクのペイン ----------------------------------------------------------------
 
 	/** Bot がタスクボードへタスクを載せた（bot_board_add_task の提供元だけが呼ぶ）。項目への結び付けとは別に控える。 */
-	async noteBotBoardTask(botId: string, taskId: string): Promise<void> {
+	async noteBotBoardTask(botId: string, taskId: string): Promise<boolean> {
 		if (!this.loaded) {
 			await this.ready;
 		}
 		if (this.boardOrigins.noteTask(taskId, botId, this.now())) {
 			this.savePanes();
 		}
+		// 控えに入ったか（形の違う id は控えない）。入っていれば 1 時間の数はここから数える
+		return this.boardOrigins.botOfTask(taskId) === botId;
 	}
 
 	/** その Bot がボードへ載せて控えたタスクのうち、`after` より後に控えた数（1 時間あたりの上限を、再起動をまたいで数える）。 */

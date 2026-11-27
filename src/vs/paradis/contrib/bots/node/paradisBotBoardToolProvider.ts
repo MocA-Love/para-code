@@ -136,9 +136,10 @@ export class ParadisBotBoardToolProvider implements IParadisMcpToolProvider {
 				return toolError(paradisBotBoardRefusalMessage(result));
 			}
 			// ボードがこのタスクを動かすペインに「Bot が起こした」印を付けるため、項目へ結ぶ前に控える（結べなくても残す）。
-			// 控えた後は控えから数えるので、待ちの分を外す
-			await this.service.noteBotBoardTask(bot.id, result.taskId);
-			settle();
+			// 控えた後は控えから数えるので、待ちの分を外す（控えに入らなかったら待ちの分のまま数える）
+			if (await this.service.noteBotBoardTask(bot.id, result.taskId)) {
+				settle();
+			}
 			const linked = await this.service.linkBoardTask(bot.id, item.uid, result.taskId);
 			if (!linked.ok) {
 				return toolError(`The task board added the task (${result.taskId}), but Para Code could not link it to item #${item.number}: ${linked.message} Do not add it again; tell your owner.`);

@@ -41,6 +41,9 @@ ParadisSharedProcessContributions.register('botGroups', ({ server, accessor }) =
 		store.add(bots.onDidRemoveBot(botId => {
 			service.forgetBot(botId).catch(error => logService.warn('[ParadisBotGroups] could not drop the unread messages of a removed bot', error));
 		}));
+	} else {
+		// Bot の台帳（paradisBots.sharedProcess.ts）が先に登録されていない。消した Bot 宛ての未読は上限で刈られるまで残る
+		accessor.get(ILogService).warn('[ParadisBotGroups] the bots service is not registered; unread messages of removed bots are kept');
 	}
 	store.add({
 		dispose: () => {
