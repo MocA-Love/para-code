@@ -38,6 +38,7 @@ import { ParadisBotMemorySnapshots } from './paradisBotMemorySnapshots.js';
 import { paradisForgetBotPatrol, paradisPrepareBotPatrolLaunch, paradisTrustBotPatrolFolder } from './paradisBotPatrolLaunch.js';
 import { paradisClaudeTrustKeysFor, paradisIsTooBroadToTrust, paradisResolveClaudeGlobalConfigFile } from '../../workspaceSwitch/node/paradisClaudeFolderTrust.js';
 import { createParadisBotItemsFile, createParadisBotPanesFile, createParadisBotsFile, createParadisBotSuggestionsFile, paradisBotsDataFolder } from './paradisBotsStore.js';
+import { ParadisBotsMobileFeed } from './paradisBotsMobileFeed.js';
 
 let shared: ParadisBotsService | undefined;
 
@@ -134,6 +135,8 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 		actionsEnabled: () => paradisAgentIdeActionsAllowed(configurationService.getValue(PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING)),
 		botsEnabled: enabled,
 	})));
+	// スマホへ送る Bot の一覧（PR 16、bots.page.v1）
+	store.add(new ParadisBotsMobileFeed(service, configurationService));
 	// Bot のペインからは、別のペインを起こす・動かす IDE の道具を断る
 	store.add(paradisRegisterAgentIdeActionRefusal(paradisBotIdeActionRefusal(service)));
 	// Bot のペインからの ask_human は断る（Bot は作業項目の Needs you で聞く）

@@ -295,6 +295,14 @@ export const ParadisMobileCapability = {
 	 * 購読へ今までと同じ 6,000 字の形で送る。
 	 */
 	AgentLiveAppendV2: 'agent.live-append.v2',
+	/**
+	 * Bot の画面（設計の PR 16。`paradisBotsMobileFeed.ts` / `paradisBotsMobileRequests.ts`）。Desktop State の任意項目 `bots`
+	 * （Bot の一覧。PC の設定 `paradis.bots.enabled` がオンの間だけ載る）とターミナルの任意項目 `botId`（そのペインの Bot）、
+	 * fs の `botItems`・`botItem`・`botItemAct`・`botSuggestions`・`botSuggestionAct`・`botFile`・`botUpdate`・`botOpen`。
+	 * PC だけが広告する。アプリは広告していて `bots` が届いている PC にだけ Bot の節を出す（設定がオフの PC は `bots` を送らず、
+	 * 要求は `code: 'disabled'` で断る）。
+	 */
+	BotsPage: 'bots.page.v1',
 } as const;
 
 /** この PC のビルドが実装している capability。State の `capabilities` で広告する。 */
@@ -361,6 +369,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.AgentContextBreakdown,
 	ParadisMobileCapability.FsFindDir,
 	ParadisMobileCapability.AgentLiveAppendV2,
+	ParadisMobileCapability.BotsPage,
 ];
 
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */
