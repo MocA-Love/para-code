@@ -17,8 +17,8 @@ type Terminal = WorkspaceState['terminals'][number];
 /** PC にペインを頼んでから現れるまで待つ長さ。 */
 const OPEN_WAIT_MS = 30_000;
 
-/** 入力欄へ足す下書き。関数なら、ペインが確かにあると分かってから呼ぶ（提案の「始める」は PC で「始めた」にするので、
- * ペインが現れないまま呼ぶと依頼の文が行き場を失う）。`false` を返したら開かない（断られた。知らせは呼ぶ側が出す）。 */
+/** 入力欄へ足す下書き。関数なら、ペインが確かにあると分かってから呼ぶ。`false` を返したら開かない（断られた。知らせは
+ * 呼ぶ側が出す）。入力欄へ入れられたかは `open` の `onInserted` で知る（提案はそのときだけ「始めた」にする）。 */
 export type BotDraft = string | (() => Promise<string | false>);
 
 /**
@@ -28,12 +28,12 @@ export type BotDraft = string | (() => Promise<string | false>);
 export function useBotConversation(router: Router, pcId: string | undefined, botId: string | undefined, active: boolean) {
 	const terminals = useAppStore(s => (active ? s.workspace?.terminals : undefined));
 	const pane = botId !== undefined && terminals !== undefined ? botPaneOf(terminals, botId) : undefined;
-	const [waiting, setWaiting] = useState<{ readonly draft: BotDraft | undefined; readonly until: number } | undefined>(undefined);
+	const [waiting, setWaiting] = useState<{ readonly draft: BotDraft | undefined; readonly onInserted: (() => void) | undefined; readonly until: number } | undefined>(undefined);
 	const routerRef = useRef(router);
 	routerRef.current = router;
 
 	const [preparing, setPreparing] = useState(false);
-	const enter = async (terminal: Terminal, draftSource: BotDraft | undefined) => {
+	const enter = async (terminal: Terminal, draftSource: BotDraft | undefined, onInserted: (() => void) | undefined) => {
 		if (pcId === undefined) {
 			return;
 		}
@@ -62,6 +62,7 @@ export function useBotConversation(router: Router, pcId: string | undefined, bot
 		}
 		if (draft !== undefined && store.activePcId === pcId) {
 			store.setAgentDraft(terminal.terminalKey, appendBotDraft(store.agentDrafts[terminal.terminalKey] ?? '', draft));
+			onInserted?.();
 		}
 		openSession(routerRef.current, {
 			pcId,
@@ -81,7 +82,7 @@ export function useBotConversation(router: Router, pcId: string | undefined, bot
 		}
 		if (pane !== undefined) {
 			setWaiting(undefined);
-			void enter(pane, waiting.draft);
+			void enter(pane, waiting.draft, waiting.onInserted);
 			return undefined;
 		}
 		const timer = setTimeout(() => {
@@ -92,15 +93,16 @@ export function useBotConversation(router: Router, pcId: string | undefined, bot
 		// eslint-disable-next-line react-hooks/exhaustive-deps -- enter は最新の値を読む
 	}, [waiting, pane]);
 
-	const open = async (draft?: BotDraft): Promise<void> => {
+	/** `onInserted` は下書きを入力欄へ入れられたときだけ呼ぶ（ペインが現れない・断られた・別の PC を見ているときは呼ばない）。 */
+	const open = async (draft?: BotDraft, onInserted?: () => void): Promise<void> => {
 		if (pcId === undefined || botId === undefined) {
 			return;
 		}
 		if (pane !== undefined) {
-			await enter(pane, draft);
+			await enter(pane, draft, onInserted);
 			return;
 		}
-		setWaiting({ draft, until: Date.now() + OPEN_WAIT_MS });
+		setWaiting({ draft, onInserted, until: Date.now() + OPEN_WAIT_MS });
 		const result = await openBotOnPc(pcId, botId, newBotOpId());
 		if (!result.ok) {
 			setWaiting(undefined);

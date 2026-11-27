@@ -19,6 +19,7 @@ import {
 	botItemsRequest,
 	botOpenRequest,
 	botSuggestionActRequest,
+	type BotSuggestionAction,
 	botSuggestionsRequest,
 	botUpdateRequest,
 	newBotOpId,
@@ -123,7 +124,7 @@ export async function actOnBotItem(pcId: string, botId: string, uid: string, act
 }
 
 /** 提案を始める・見送る。始めたら依頼の文を返す（会話の入力欄へ送らずに入れる）。 */
-export async function actOnBotSuggestion(pcId: string, botId: string, id: string, action: 'start' | 'dismiss', opId: string = newBotOpId()): Promise<BotResult<string | undefined>> {
+export async function actOnBotSuggestion(pcId: string, botId: string, id: string, action: BotSuggestionAction, opId: string = newBotOpId()): Promise<BotResult<string | undefined>> {
 	const result = await call(pcId, botSuggestionActRequest(opId, id, action), WRITE_TIMEOUT_MS, parseBotSuggestionActReply);
 	if (!result.ok) {
 		return result;

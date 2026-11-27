@@ -11,6 +11,7 @@ import {
 	botSectionRows,
 	botFieldChange,
 	botStatusLine,
+	botSuggestionActRequest,
 	botUpdateRequest,
 	parseBotFileReply,
 	parseBotItemReply,
@@ -144,5 +145,12 @@ describe('Bot の会話', () => {
 			none: botPaneOf(terminals, 'c'),
 			drafts: [appendBotDraft('', 'X'), appendBotDraft('  \n', 'X'), appendBotDraft('書きかけ\n', 'X')],
 		}).toEqual({ pane: 't2', none: undefined, drafts: ['X', 'X', '書きかけ\n\nX'] });
+	});
+
+	test('提案は「始める」で文を取り、入力欄へ入れた後の started で「始めた」にする', () => {
+		expect([botSuggestionActRequest('o1', 's1', 'start'), botSuggestionActRequest('o2', 's1', 'started')]).toEqual([
+			{ t: 'botSuggestionAct', opId: 'o1', id: 's1', action: 'start' },
+			{ t: 'botSuggestionAct', opId: 'o2', id: 's1', action: 'started' },
+		]);
 	});
 });

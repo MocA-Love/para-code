@@ -161,7 +161,8 @@ function ItemsTab({ pcId, bot }: { pcId: string; bot: MobileBot }) {
 	}
 	const start = (id: string) => {
 		setBusy(id);
-		// 提案は、会話のペインがあると分かってから始める（始めると PC で「始めた」になるので、依頼の文を失わない）
+		// 会話のペインがあると分かってから依頼の文を取り、入力欄へ入れられたときだけ PC で「始めた」にする
+		// （入れ損ねた提案は一覧に残る）
 		void conversation.open(async () => {
 			const result = await actOnBotSuggestion(pcId, bot.id, id, 'start', newBotOpId());
 			if (!result.ok) {
@@ -169,6 +170,12 @@ function ItemsTab({ pcId, bot }: { pcId: string; bot: MobileBot }) {
 				return false;
 			}
 			return result.value ?? '';
+		}, () => {
+			void actOnBotSuggestion(pcId, bot.id, id, 'started', newBotOpId()).then(marked => {
+				if (!marked.ok) {
+					warn(`bot-suggest-${id}`, '提案を「始めた」にできませんでした', botRefusalText(marked.code));
+				}
+			});
 		}).finally(() => setBusy(undefined));
 	};
 	const dismiss = async (id: string) => {

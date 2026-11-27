@@ -470,7 +470,10 @@ export function botSuggestionsRequest(botId: string) {
 	return { t: BOT_REQUEST_KINDS.suggestions, botId };
 }
 
-export function botSuggestionActRequest(opId: string, id: string, action: 'start' | 'dismiss') {
+/** 提案への操作。`start` は依頼の文を取るだけ、`started` は入力欄へ入れた後に「始めた」にする、`dismiss` は見送る。 */
+export type BotSuggestionAction = 'start' | 'started' | 'dismiss';
+
+export function botSuggestionActRequest(opId: string, id: string, action: BotSuggestionAction) {
 	return { t: BOT_REQUEST_KINDS.suggestionAct, opId, id, action };
 }
 
