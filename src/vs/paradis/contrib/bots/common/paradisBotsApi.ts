@@ -12,6 +12,7 @@ import type { IParadisBotGithubView } from './paradisBotGithub.js';
 import { Event } from '../../../../base/common/event.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
+import type { ParadisBotTaskTools } from '../../scheduledRuns/common/paradisScheduledRuns.js';
 import type { IParadisAgentChatMessage } from '../../agentChat/common/paradisAgentChat.js';
 import { IParadisBotItem, IParadisBotItemOwnerComment, IParadisBotItemsState, ParadisBotItemStatus, paradisBotItemCounts } from './paradisBotItems.js';
 import type { IParadisBotSuggestion } from './paradisBotSuggestions.js';
@@ -40,8 +41,9 @@ export const PARADIS_BOT_IDLE_STOP_MS = 30 * 60_000;
 export type ParadisBotActivity = 'stopped' | 'idle' | 'working' | 'patrolling';
 
 /** ペインを起動した目的。`chat` は Bot の会話、`patrol` は見回り（PR 12 が使う）。 */
-export type ParadisBotPanePurpose = 'chat' | 'patrol';
-export const PARADIS_BOT_PANE_PURPOSES: readonly ParadisBotPanePurpose[] = ['chat', 'patrol'];
+export type ParadisBotPanePurpose = 'chat' | 'patrol' | 'task';
+/** `task` は定期実行（報告書の D6 (a)）。会話とは別の会話（セッション）で走り、会話の数には入れない。 */
+export const PARADIS_BOT_PANE_PURPOSES: readonly ParadisBotPanePurpose[] = ['chat', 'patrol', 'task'];
 
 /**
  * Bot のペインでエージェントが動いていない・止まっている理由（`activity` が待機中のときに、帯とページへ「待機中」の代わりに出す）。
@@ -192,6 +194,17 @@ export interface IParadisBotLaunch {
 	readonly extraFlags?: string | readonly string[];
 	/** 眠った会話を続けて起こす（`extraFlags` に続ける引数が入っている）。 */
 	readonly resumed?: true;
+	/** 定期実行（会話の 1 ターン）として起こす。値は道具の段。 */
+	readonly task?: ParadisBotTaskTools;
+}
+
+/** 起動の依頼に添えるもの。 */
+export interface IParadisBotLaunchOptions {
+	/**
+	 * 定期実行（報告書の D6 (a)）として会話を起こす。値は道具の段で、`read`・`web` は制限の引数で起動し、`bot` は会話と
+	 * 同じ権限で起動する。会話のペインが開いている・起動中なら断られる（`already_open`・`launching`）。
+	 */
+	readonly task?: ParadisBotTaskTools;
 }
 
 /** Bot を止める依頼。トークンの値は出さず、ハッシュで渡す。 */
@@ -263,7 +276,7 @@ export interface IParadisBotsService {
 	ownerSnooze(uid: string, until: number | undefined): Promise<ParadisBotsServiceResult<IParadisBotItem>>;
 
 	/** 起動の依頼。返ったフォルダを cwd にエージェントを起動し、{@link reportLaunch} でペインを知らせる。 */
-	requestLaunch(botId: string, purpose?: ParadisBotPanePurpose): Promise<ParadisBotsServiceResult<IParadisBotLaunch>>;
+	requestLaunch(botId: string, purpose?: ParadisBotPanePurpose, options?: IParadisBotLaunchOptions): Promise<ParadisBotsServiceResult<IParadisBotLaunch>>;
 	/** 起動したターミナルのペイントークンを知らせる。結び付いたら true。 */
 	reportLaunch(launchId: string, paneToken: string): Promise<boolean>;
 	/** 起動できなかった。 */

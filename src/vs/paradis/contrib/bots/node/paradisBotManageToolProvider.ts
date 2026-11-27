@@ -11,6 +11,7 @@
 
 import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider, paradisMcpToolError as toolError, paradisMcpToolJson as toolJson } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { PARADIS_AGENT_IDE_ACTIONS_DISABLED_MESSAGE } from '../../agentIde/common/paradisAgentIde.js';
+import { isPlainRecord } from '../../../common/paradisGuards.js';
 import {
 	PARADIS_BOT_CREATE_TOOL,
 	PARADIS_BOT_LIST_TOOL,
@@ -23,6 +24,7 @@ import {
 	paradisBotChangeRequest,
 	paradisBotManageRow,
 	paradisBotUpdateNeedsConfirmation,
+	PARADIS_BOT_SCHEDULE_TASK_TOOL,
 	paradisParseBotCreateArgs,
 	paradisParseBotRefArgs,
 	paradisParseBotUpdateArgs,
@@ -45,6 +47,7 @@ const FROM_BOARD_TASK_MESSAGE = 'This terminal runs a task board task that a Par
 const IDE_ACTION_FROM_BOARD_TASK_MESSAGE = 'This terminal runs a task board task that a Para Code bot put on the board, so Para Code treats it like the bot: it cannot start, open, type into or close other terminals, change spaces, or create scheduled runs. The reading tools still work. Tell the user what you would do. The mark stays on this terminal; work the user wants to do without it belongs in a new terminal.';
 
 const PATROL_WRITE_MESSAGE = 'This is a look-around, which only reads. Para Code refuses every tool that clicks, types, moves, writes, sends or starts something here, even if it is always allowed in your settings. Offer what you would do with bot_suggest.';
+const TASK_WRITE_MESSAGE = 'This is a scheduled task that your owner limited to reading (and the web). Para Code refuses every tool that clicks, types, moves, writes, sends or starts something here, even if it is always allowed in your settings. Say in your report what you would do.';
 
 /**
  * Bot の見回りのペインからの para-browser の呼び出しを、読むだけの道具（`PARADIS_READ_ONLY_MCP_TOOL_NAMES`）と見回りの
@@ -52,14 +55,17 @@ const PATROL_WRITE_MESSAGE = 'This is a look-around, which only reads. Para Code
  * 見回りの起動の引数（`paradisBotPatrolLaunchArgs`）と同じ一覧で、利用者がエージェントの側で常に許可した書く道具も
  * サーバーの側で断る（見回りは誰も見ていない時間に外の文を読むので、読んだ文に誘導されて書かないように）。
  */
-export function paradisBotPatrolToolRefusal(service: Pick<ParadisBotsService, 'ready' | 'botOfPane' | 'purposeOfPane'>): (paneToken: string, toolName: string) => Promise<string | undefined> {
+export function paradisBotPatrolToolRefusal(service: Pick<ParadisBotsService, 'ready' | 'botOfPane' | 'purposeOfPane' | 'isReadOnlyPane'>): (paneToken: string, toolName: string) => Promise<string | undefined> {
 	return async (paneToken, toolName) => {
 		if (PARADIS_READ_ONLY_MCP_TOOL_NAMES.has(toolName) || PARADIS_BOT_PATROL_TOOLS.has(toolName)) {
 			return undefined;
 		}
 		await service.ready;
 		// 起動し直した後に初めて現れたペインの結び付けを戻してから、用途を引く
-		return service.botOfPane(paneToken) !== undefined && service.purposeOfPane(paneToken) === 'patrol' ? PATROL_WRITE_MESSAGE : undefined;
+		if (service.botOfPane(paneToken) === undefined || !service.isReadOnlyPane(paneToken)) {
+			return undefined;
+		}
+		return service.purposeOfPane(paneToken) === 'patrol' ? PATROL_WRITE_MESSAGE : TASK_WRITE_MESSAGE;
 	};
 }
 
@@ -87,6 +93,11 @@ export interface IParadisBotManageSettings {
 	actionsEnabled(): boolean;
 	/** Bot の機能（試験中）。オフのときは読む道具も断る。 */
 	botsEnabled(): boolean;
+	/**
+	 * Bot の定期実行を作る（定期実行のサービスの `setBotTask` をエージェントの印付きで呼ぶ。無効で作られ、利用者が有効にする）。
+	 * 無ければ schedule_bot_task は断る。
+	 */
+	scheduleTask?(botId: string, input: unknown): Promise<{ readonly ok: boolean; readonly error?: string; readonly definition?: { readonly id: string; readonly name: string } }>;
 }
 
 function failure(result: { readonly code: string; readonly message: string }): unknown {
@@ -154,6 +165,22 @@ export class ParadisBotManageToolProvider implements IParadisMcpToolProvider {
 				const created = await this.service.createBot(input, role);
 				// ピン留めは作成の欄に無いので、作った後に変える（画面の作成と同じく、既定は外したまま）
 				return this.bot(created.ok && pinned === true ? await this.service.updateBot(created.value.id, { pinned: true }) : created);
+			}
+			case PARADIS_BOT_SCHEDULE_TASK_TOOL: {
+				const input = isPlainRecord(args) ? args : {};
+				const botId = typeof input.bot === 'string' ? input.bot : '';
+				if (this.service.getBot(botId) === undefined) {
+					return toolError(UNKNOWN_BOT_MESSAGE);
+				}
+				if (this.settings.scheduleTask === undefined) {
+					return toolError('Scheduled tasks are not available in this Para Code.');
+				}
+				// Codex の Bot は「Web だけ」で動かせないので、既定を「読む＋Web」にする（有効にするときに利用者が確かめる）
+				const tools = input.tools === undefined ? (this.service.getBot(botId)?.agent === 'codex' ? 'readWeb' : 'web') : input.tools;
+				const result = await this.settings.scheduleTask(botId, { name: typeof input.name === 'string' ? input.name : '', schedule: input.schedule, prompt: input.request, tools, enabled: false });
+				return result.ok && result.definition !== undefined
+					? toolJson({ bot: botId, task: result.definition.id, name: result.definition.name, enabled: false, note: 'Created turned off. Tell the user to read it and turn it on in the bot\'s settings tab.' })
+					: toolError(result.error ?? 'Para Code could not add the scheduled task.');
 			}
 			default:
 				break;

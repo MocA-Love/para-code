@@ -10,7 +10,10 @@
 // コマンドを送る前にペインを shared process へ報告する（paradisRunBotLaunch）。会話を開く（paradisBotsLaunch.contribution.ts）と
 // 定期実行の見回り（scheduledRuns の runner）の両方が使う。
 
+import { raceTimeout, timeout } from '../../../../base/common/async.js';
+import { Event } from '../../../../base/common/event.js';
 import { URI } from '../../../../base/common/uri.js';
+import { TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
@@ -44,12 +47,42 @@ export function paradisFindBotTerminalInstance(terminalService: ITerminalService
 	return paradisCollectAllTerminalInstances(terminalService, terminalGroupService).find(instance => instance.instanceId === instanceId);
 }
 
+/** 長い起動の行（見回り・定期実行）を打つ前に、シェルの最初のプロンプトを待つ上限。 */
+const SHELL_PROMPT_WAIT_MS = 10_000;
+/** プロンプトが出てから行の編集が始まるまでの間（その間に届いた文字も 1 行の上限に掛からないように）。 */
+const SHELL_PROMPT_SETTLE_MS = 300;
+
+/**
+ * シェルの最初のプロンプト（シェル統合のコマンドの検出が付いた時点）を待つ。起動の直後のシェルは、設定ファイルを読み終えて
+ * 行の編集を始めるまで端末を 1 行ずつ受ける形（canonical）にしており、macOS ではその間に届いた 1 行は 1024 バイトで
+ * 切られる。見回り・定期実行の起動の行は制限の引数と指示で 1024 バイトを超えるので、プロンプトが出てから打つ。
+ * シェル統合が無いシェルでは上限まで待って打つ。
+ */
+async function paradisWaitForShellPrompt(instance: ITerminalInstance | undefined): Promise<void> {
+	if (instance === undefined || instance.isDisposed) {
+		return;
+	}
+	if (instance.capabilities.get(TerminalCapability.CommandDetection) === undefined) {
+		const added = Event.toPromise(instance.capabilities.onDidAddCommandDetectionCapability);
+		await raceTimeout(added, SHELL_PROMPT_WAIT_MS, () => added.cancel());
+	}
+	await timeout(SHELL_PROMPT_SETTLE_MS);
+}
+
+/**
+ * 起動の行を打つ前にシェルのプロンプトを待つか。見回り・定期実行（制限の引数や長い指示が付き、段に関係なく 1024 バイトを
+ * 超えうる）と、最初の指示を渡す起動は待つ。指示の無い会話の起動（短い行）は待たない。
+ */
+export function paradisBotLaunchWaitsForPrompt(launch: Pick<IParadisBotLaunch, 'purpose'>, prompt: string | undefined): boolean {
+	return launch.purpose !== 'chat' || (prompt !== undefined && prompt.length > 0);
+}
+
 export interface IParadisBotTerminalLaunchOptions {
 	/** 起動するスペース。 */
 	readonly stateKey: string | undefined;
 	/** 前に出さず、利用者の入力を奪わない裏のタブで起動する（スペースが要る）。 */
 	readonly background: boolean;
-	/** エージェントへ最初に渡す指示（見回り）。 */
+	/** エージェントへ最初に渡す指示（見回り・定期実行）。 */
 	readonly prompt?: string;
 }
 
@@ -82,7 +115,14 @@ export async function paradisLaunchBotTerminal(accessor: ServicesAccessor, launc
 					...(launch.extraFlags !== undefined ? { extraFlags: launch.extraFlags } : {}),
 					...(options.prompt !== undefined ? { prompt: options.prompt } : {}),
 					...(options.background && options.stateKey !== undefined ? { preserveFocus: true } : {}),
-					beforeCommand,
+					// 見回り・定期実行・最初の指示つきの長い起動の行は、シェルのプロンプトが出てから打つ
+					beforeCommand: paradisBotLaunchWaitsForPrompt(launch, options.prompt) ? async launched => {
+						if (!await beforeCommand(launched)) {
+							return false;
+						}
+						await paradisWaitForShellPrompt(paradisFindBotTerminalInstance(terminalService, terminalGroupService, launched.instanceId));
+						return true;
+					} : beforeCommand,
 				});
 				return terminal;
 			} catch (error) {

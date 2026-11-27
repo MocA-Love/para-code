@@ -106,14 +106,14 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 		memorySnapshots: new ParadisBotMemorySnapshots(join(paradisBotsDataFolder(userDataPath), 'memory-snapshots'), homes),
 		homes,
 		// 見回りの設定ファイルも専用フォルダ（Bot が書ける）の外に置く
-		preparePatrol: (agent, botId, home) => paradisPrepareBotPatrolLaunch({
+		preparePatrol: (agent, botId, home, options) => paradisPrepareBotPatrolLaunch({
 			folder: join(paradisBotsDataFolder(userDataPath), 'patrol'),
 			runsFolder: join(paradisBotsDataFolder(userDataPath), 'patrol-runs'),
 			stopFolder: homedir(),
 			gatewayPort: () => readGatewayPort(userDataPath),
 			codexConfigFiles: () => paradisCodexHomeCandidates().map(codexHome => join(codexHome, 'config.toml')),
 			trustClaudeFolder: folder => trustClaudeFolder(folder),
-		}, agent, botId, home),
+		}, agent, botId, home, options),
 		forgetPatrol: async botId => paradisForgetBotPatrol({ folder: join(paradisBotsDataFolder(userDataPath), 'patrol'), runsFolder: join(paradisBotsDataFolder(userDataPath), 'patrol-runs') }, botId, await claudeConfigFile().catch(() => undefined)),
 		agentTemplate: agentId => paradisResolveAgentTemplates(configurationService, []).find(template => template.id === agentId),
 		paneFolderRoots: [join(homedir(), '.para-code', 'bots'), join(paradisBotsDataFolder(userDataPath), 'patrol-runs')],
@@ -137,6 +137,7 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 			check: botId => service.patrolGateState(botId),
 			botName: botId => service.getBot(botId)?.name,
 			closeIdlePatrolPanes: botId => service.closeIdlePatrolPanes(botId),
+			checkTask: (botId, tools) => service.taskGateState(botId, tools),
 		}));
 		store.add(service.onDidRemoveBot(botId => {
 			scheduledRuns.deleteBotPatrols(botId).catch(error => logService.warn('[ParadisBots] could not remove the look-around schedule of a removed bot', error));
@@ -178,6 +179,7 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 	store.add(paradisRegisterMcpToolProvider(new ParadisBotManageToolProvider(service, {
 		actionsEnabled: () => paradisAgentIdeActionsAllowed(configurationService.getValue(PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING)),
 		botsEnabled: enabled,
+		...(scheduledRuns !== undefined ? { scheduleTask: (botId: string, input: unknown) => scheduledRuns.setBotTask(botId, input, true) } : {}),
 	})));
 	// スマホへ送る Bot の一覧（PR 16、bots.page.v1）
 	store.add(new ParadisBotsMobileFeed(service, configurationService));

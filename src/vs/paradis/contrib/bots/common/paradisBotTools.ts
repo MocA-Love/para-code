@@ -363,6 +363,50 @@ export function paradisBotPatrolLaunchArgs(context: ParadisBotPatrolLaunchContex
 	];
 }
 
+/** Claude Code の組み込みの道具のうち、Web を読む道具。 */
+const PARADIS_BOT_TASK_WEB_TOOLS: readonly string[] = ['WebFetch', 'WebSearch'];
+
+/** 定期実行の作業フォルダ（と設定ファイル）の鍵。見回りと同じ置き場で、Bot ごとに見回りとは別の 1 つ。 */
+export function paradisBotTaskFolderKey(botId: string): string {
+	return `${botId}-task`;
+}
+
+/**
+ * Bot の定期実行を「Web だけ」「読む＋Web」の段で起動する引数（生の引数の配列。指示はこの後ろ）。どちらも見回りと同じく
+ * 空の作業フォルダで、Bot の会話とは別の新しい会話（セッション）として起動する（`--resume` しない。Web から読んだ文を
+ * 強い権限の会話に残さないため。#1271 の決め）。
+ *
+ * - 「Web だけ」（既定）: Claude Code は組み込みの道具を `WebFetch`・`WebSearch` だけにし、MCP は 1 つも渡さない
+ *   （`--strict-mcp-config` で `--mcp-config` 無し。手元を読む道具も para-browser も無い）。`--add-dir`・指示文の写しも渡さない。
+ *   Codex は read-only の sandbox でも読むコマンドで手元を読めるので、この段では起動しない（呼ぶ側が断る）
+ * - 「読む＋Web」: 見回りの引数（専用フォルダを読む・para-browser の読む道具・見回りの Bot の道具）に、Claude Code は
+ *   `WebFetch`・`WebSearch` を `--tools` と `--allowedTools` の両方へ、Codex は `--search` を足す
+ */
+export function paradisBotTaskLaunchArgs(context: ParadisBotPatrolLaunchContext, tools: 'web' | 'readWeb', readOnlyBrowserTools: ReadonlySet<string>): readonly string[] {
+	if (tools === 'web') {
+		if (context.agent !== 'claude') {
+			throw new Error('a web-only scheduled task runs only with Claude Code');
+		}
+		return [
+			'--permission-mode', 'dontAsk',
+			// 利用者の設定（~/.claude の CLAUDE.md・hook・許可）を読まない。Para Code の状態の hook は `--settings` のファイルに
+			// 書いてある（paradisBotPatrolClaudeSettingsText）。Claude Code 2.1.332 で、空の値なら利用者の hook が走らず
+			// `--settings` の hook が走ることを確かめた
+			`--settings=${context.settingsFile}`,
+			'--setting-sources=',
+			'--strict-mcp-config',
+			`--tools=${PARADIS_BOT_TASK_WEB_TOOLS.join(',')}`,
+			`--allowedTools=${PARADIS_BOT_TASK_WEB_TOOLS.join(',')}`,
+		];
+	}
+	const patrol = paradisBotPatrolLaunchArgs(context, readOnlyBrowserTools);
+	if (context.agent === 'claude') {
+		return patrol.map(arg => arg === '--tools=Read,Grep,Glob' ? `--tools=Read,Grep,Glob,${PARADIS_BOT_TASK_WEB_TOOLS.join(',')}`
+			: arg.startsWith('--allowedTools=') ? `--allowedTools=${PARADIS_BOT_TASK_WEB_TOOLS.join(',')},${arg.slice('--allowedTools='.length)}` : arg);
+	}
+	return [...patrol.slice(0, 4), '--search', ...patrol.slice(4)];
+}
+
 /** 見回りで引数に載せてよい MCP サーバーの名前（TOML の裸のキーで書け、シェルの引用で崩れない）。 */
 const SAFE_MCP_SERVER_NAME = /^[A-Za-z0-9_-]+$/;
 const CODEX_MCP_HEADER = /^\[\s*mcp_servers\s*\.\s*(?:"(?<double>[A-Za-z0-9_-]+)"|'(?<single>[A-Za-z0-9_-]+)'|(?<bare>[A-Za-z0-9_-]+))\s*(?<sub>\.[^\]]*)?\]\s*(?:#.*)?$/;

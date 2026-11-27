@@ -20,6 +20,9 @@ import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPane
 import { paradisBotPaneTokenHashInWindow } from '../browser/paradisBotPaneHash.js';
 import { IParadisBotPaneResolver, ParadisBotPage } from '../browser/paradisBotPage.js';
 import { IParadisBotPatrolPort } from '../browser/paradisBotPatrol.js';
+import { IParadisBotTasksPort, paradisRegisterBotTasksPort } from '../browser/paradisBotTasks.js';
+import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
+import { localize } from '../../../../nls.js';
 import { IParadisBotPatrolInput } from '../../scheduledRuns/common/paradisScheduledRunBotPatrol.js';
 import { IParadisScheduledRunsClient } from '../../scheduledRuns/electron-browser/paradisScheduledRunsClient.js';
 import { IParadisBotsService, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
@@ -99,13 +102,37 @@ class ParadisBotPaneResolver extends Disposable implements IParadisBotPaneResolv
 class ParadisBotPatrolPort extends Disposable implements IParadisBotPatrolPort {
 
 	readonly onDidChange: Event<void>;
+	readonly tasks: IParadisBotTasksPort;
 
 	constructor(
 		@IParadisScheduledRunsClient private readonly scheduledRunsClient: IParadisScheduledRunsClient,
 		@IParadisBotsService botsService: IParadisBotsService,
+		@IParadisDialogService private readonly paradisDialogService: IParadisDialogService,
 	) {
 		super();
 		this.onDidChange = Event.any(this.scheduledRunsClient.onDidChange, botsService.onDidChange);
+		const client = this.scheduledRunsClient;
+		this.tasks = {
+			get: botId => client.getBotTasks(botId),
+			set: (botId, input) => client.setBotTask(botId, input),
+			remove: (botId, id) => client.deleteBotTask(botId, id),
+			setEnabled: (id, enabled) => client.setEnabled(id, enabled),
+			runNow: id => client.runNow(id),
+			stop: runId => client.stop(runId),
+			confirmBotTools: async (name, tools) => (await this.paradisDialogService.confirm(tools === 'readWeb' ? {
+				message: localize('paradis.botTasks.confirmReadWeb', "定期実行「{0}」に手元のファイルを読ませますか?", name),
+				detail: localize('paradis.botTasks.confirmReadWebDetail', "誰も見ていない時刻に、Bot のフォルダのファイルと Web の両方を使います。読んだページの文に誘導されて、手元のファイルの中身が Web へ送られるおそれがあります。調べて知らせるだけなら「Web だけ」で足ります。"),
+				primaryButton: localize('paradis.botTasks.confirmReadWebAction', "読む＋Web にする"),
+			} : {
+				message: localize('paradis.botTasks.confirmBotTools', "定期実行「{0}」を Bot の権限で動かしますか?", name),
+				detail: localize('paradis.botTasks.confirmBotToolsDetail', "誰も見ていない時刻に、会話と同じ権限で動きます。Web から読んだ文に誘導されて、ファイルの書き換えやコマンドを使うおそれがあります。調べて知らせるだけなら「Web だけ」で足ります。"),
+				primaryButton: localize('paradis.botTasks.confirmBotToolsAction', "Bot の権限で動かす"),
+			})).confirmed,
+			confirmRemove: async name => (await this.paradisDialogService.confirm({
+				message: localize('paradis.botTasks.confirmRemove', "定期実行「{0}」を消しますか?", name),
+				primaryButton: localize('paradis.botTasks.confirmRemoveAction', "消す"),
+			})).confirmed,
+		};
 	}
 
 	get(botId: string) {
@@ -152,10 +179,12 @@ class ParadisBotPageContribution extends Disposable {
 		}
 		const resolver = this.instantiationService.createInstance(ParadisBotPaneResolver);
 		const patrol = this.instantiationService.createInstance(ParadisBotPatrolPort);
+		const tasksRegistration = paradisRegisterBotTasksPort(patrol.tasks);
 		const overlay = paradisRegisterEditorTerminalOverlay(container => this.instantiationService.createInstance(ParadisBotPage, container, resolver, patrol, undefined));
 		this.registration.value = {
 			dispose: () => {
 				overlay.dispose();
+				tasksRegistration.dispose();
 				patrol.dispose();
 				resolver.dispose();
 			},

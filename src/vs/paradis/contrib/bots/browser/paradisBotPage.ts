@@ -58,6 +58,7 @@ import { onDidRequestParadisBotPageTab, paradisTakeRequestedBotPageTab } from '.
 import { ParadisBotSettingsPanel } from './paradisBotPageSettings.js';
 import { renderParadisBotFace } from './paradisBotFace.js';
 import { IParadisBotPatrolPort, ParadisBotPatrolSection } from './paradisBotPatrol.js';
+import { ParadisBotTaskResultsTray } from './paradisBotTasks.js';
 import type { IParadisBotSuggestion } from '../common/paradisBotSuggestions.js';
 
 const $ = DOM.$;
@@ -148,6 +149,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 	private readonly patrolSections = new Map<string, ParadisBotPatrolSection>();
 	private readonly itemsCount: HTMLElement;
 	private readonly panel: HTMLElement;
+	private readonly taskResults: ParadisBotTaskResultsTray | undefined;
 	private readonly panelStore = this._register(new DisposableStore());
 
 	private instanceId: number | undefined;
@@ -268,6 +270,9 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 
 		this.panel = DOM.append(container, $('.paradis-bot-page-panel'));
 		this.panel.hidden = true;
+		// 会話の欄の「定期実行の結果」のカード（Bot の会話には入れず、利用者が送るときだけ入力欄へ入れる）
+		const tasks = this.patrolPort?.tasks;
+		this.taskResults = tasks !== undefined ? this._register(new ParadisBotTaskResultsTray(container, tasks, text => this.insertIntoConversation(text, text))) : undefined;
 		this.panel.setAttribute('role', 'tabpanel');
 		this.panel.tabIndex = -1;
 		this._register(DOM.addDisposableListener(this.panel, 'compositionstart', () => this.composing = true));
@@ -303,6 +308,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		if (this.patrolPort !== undefined) {
 			this._register(this.patrolPort.onDidChange(() => {
 				// 表示中の Bot は読み直し、ほかの Bot の分は捨てる（戻ったときに古い状態を出さない）
+				this.taskResults?.invalidate();
 				for (const [botId, section] of this.patrolSections) {
 					if (botId === this.botId) {
 						section.invalidate();
@@ -494,6 +500,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		}
 		this.panel.hidden = tab === 'chat';
 		this.container.classList.toggle(ITEMS_CLASS, tab !== 'chat');
+		this.taskResults?.show(this.botId, tab === 'chat');
 		if (tab === 'items') {
 			this.renderPanel();
 			void this.loadItems();
@@ -803,22 +810,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 			void this.loadItems();
 			return;
 		}
-		// 先に会話のタブへ戻す（チャット表示が見えていれば、入れた下書きへフォーカスが移る）
-		this.setTab('chat');
-		let inserted = this.agentChatService.insertDraft(instanceId, paradisBotSuggestionText(result.value.request, true)) !== false;
-		if (!inserted) {
-			const instance = this.terminalService.getInstanceFromId(instanceId);
-			if (instance !== undefined && !instance.isDisposed) {
-				// bracketed paste のモードでなければ（素のシェル・起動途中の TUI）改行が Enter になるので、1 行にして貼る
-				const multiline = instance.xterm?.raw.modes.bracketedPasteMode === true;
-				try {
-					await instance.sendText(paradisBotSuggestionText(result.value.request, multiline), false, true);
-					inserted = true;
-				} catch {
-					// 貼り付けられなかった。提案は一覧に残す
-				}
-			}
-		}
+		const inserted = await this.insertIntoConversation(paradisBotSuggestionText(result.value.request, true), paradisBotSuggestionText(result.value.request, false));
 		if (!inserted) {
 			this.notificationService.warn(localize('paradis.botPage.suggestion.notInserted', "提案の依頼を会話の入力欄へ入れられませんでした。提案は一覧に残しています。"));
 		} else {
@@ -829,6 +821,33 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 			}
 		}
 		void this.loadItems();
+	}
+
+	/**
+	 * 文を、送らずに Bot の会話の入力欄へ入れて会話のタブへ戻す（利用者が読んで直してから送る）。チャット表示の入力欄へ
+	 * 下書きとして入れ（書きかけは消さずに後ろへ足す）、チャット表示でないペインではターミナルの入力へ貼り付けとして入れる。
+	 * bracketed paste のモードでなければ（素のシェル・起動途中の TUI）改行が Enter になるので、1 行の文（`singleLine`）を貼る。
+	 */
+	private async insertIntoConversation(text: string, singleLine: string): Promise<boolean> {
+		const instanceId = this.instanceId;
+		if (instanceId === undefined || this._store.isDisposed) {
+			return false;
+		}
+		// 先に会話のタブへ戻す（チャット表示が見えていれば、入れた下書きへフォーカスが移る）
+		this.setTab('chat');
+		if (this.agentChatService.insertDraft(instanceId, text) !== false) {
+			return true;
+		}
+		const instance = this.terminalService.getInstanceFromId(instanceId);
+		if (instance === undefined || instance.isDisposed) {
+			return false;
+		}
+		try {
+			await instance.sendText(instance.xterm?.raw.modes.bracketedPasteMode === true ? text : singleLine, false, true);
+			return true;
+		} catch {
+			return false;
+		}
 	}
 
 	private async dismissSuggestion(suggestion: IParadisBotSuggestion): Promise<void> {

@@ -55,6 +55,8 @@ export interface IParadisBotPaneRecord {
 	readonly botId: string;
 	readonly purpose: ParadisBotPanePurpose;
 	readonly boundAt: number;
+	/** 定期実行を制限した段で起こしたペイン（読む道具だけを通す）。起動し直しても印を残すため保存する。 */
+	readonly limited?: true;
 }
 
 /**
@@ -100,7 +102,7 @@ export function paradisParseBotPanesState(value: unknown): IParadisBotPanesState
 	for (const entry of value.panes.slice(-PARADIS_BOT_REMEMBERED_PANES_LIMIT)) {
 		if (isPlainRecord(entry) && typeof entry.hash === 'string' && /^[0-9a-f]{64}$/.test(entry.hash) && typeof entry.botId === 'string' && entry.botId.length > 0
 			&& PARADIS_BOT_PANE_PURPOSES.some(purpose => purpose === entry.purpose) && typeof entry.boundAt === 'number' && Number.isFinite(entry.boundAt)) {
-			panes.push({ hash: entry.hash, botId: entry.botId, purpose: entry.purpose as ParadisBotPanePurpose, boundAt: entry.boundAt });
+			panes.push({ hash: entry.hash, botId: entry.botId, purpose: entry.purpose as ParadisBotPanePurpose, boundAt: entry.boundAt, ...(entry.limited === true ? { limited: true as const } : {}) });
 		}
 	}
 	const sessions: IParadisBotChatSessionRecord[] = [];
@@ -117,6 +119,7 @@ export function paradisParseBotPanesState(value: unknown): IParadisBotPanesState
 interface IPending {
 	readonly botId: string;
 	readonly purpose: ParadisBotPanePurpose;
+	readonly limited?: true;
 	readonly issuedAt: number;
 	readonly agent?: string;
 	readonly resumed?: boolean;
@@ -125,6 +128,8 @@ interface IPending {
 interface IPane {
 	readonly botId: string;
 	readonly purpose: ParadisBotPanePurpose;
+	/** 定期実行を制限した段で起こした（{@link IParadisBotPaneRecord.limited}）。 */
+	limited?: true;
 	working: boolean;
 	lastSeenAt: number;
 	/** 結び付けた時刻（シェルでコマンドを起動し直したらその時刻）。 */
@@ -261,7 +266,7 @@ export class ParadisBotPanes {
 	 */
 	idleChatTokens(now: number, idleMs = PARADIS_BOT_IDLE_STOP_MS): { readonly botId: string; readonly token: string }[] {
 		return [...this.panes]
-			.filter(([, pane]) => pane.purpose === 'chat' && !pane.asking && now - Math.max(pane.lastSeenAt, pane.boundAt, pane.activeAt ?? 0) >= idleMs)
+			.filter(([, pane]) => (pane.purpose === 'chat' || pane.purpose === 'task') && !pane.asking && now - Math.max(pane.lastSeenAt, pane.boundAt, pane.activeAt ?? 0) >= idleMs)
 			.map(([token, pane]) => ({ botId: pane.botId, token }));
 	}
 
@@ -300,6 +305,9 @@ export class ParadisBotPanes {
 		// 戻したペインは hook で現れたもの（エージェントが動いている）
 		const pane = newPane(record.botId, record.purpose, now);
 		pane.hookSeen = true;
+		if (record.limited === true) {
+			pane.limited = true;
+		}
 		this.panes.set(paneToken, pane);
 		return record.botId;
 	}
@@ -318,13 +326,13 @@ export class ParadisBotPanes {
 	}
 
 	/** 起動の番号を控える（番号はサービスが作る）。 */
-	issue(launchId: string, botId: string, purpose: ParadisBotPanePurpose, now: number, agent?: string, resumed?: boolean): void {
+	issue(launchId: string, botId: string, purpose: ParadisBotPanePurpose, now: number, agent?: string, resumed?: boolean, limited?: boolean): void {
 		for (const [id, entry] of this.pending) {
 			if (now - entry.issuedAt > PARADIS_BOT_LAUNCH_TTL_MS) {
 				this.pending.delete(id);
 			}
 		}
-		this.pending.set(launchId, { botId, purpose, issuedAt: now, ...(agent !== undefined ? { agent } : {}), ...(resumed === true ? { resumed } : {}) });
+		this.pending.set(launchId, { botId, purpose, issuedAt: now, ...(agent !== undefined ? { agent } : {}), ...(resumed === true ? { resumed } : {}), ...(limited === true ? { limited: true as const } : {}) });
 	}
 
 	/** 起動の報告。結び付けたら Bot の id、断ったら undefined。番号は 1 回で使い切る。 */
@@ -351,7 +359,10 @@ export class ParadisBotPanes {
 		}
 		this.panes.set(paneToken, pane);
 		this.remembered.delete(hash);
-		this.remembered.set(hash, { hash, botId: entry.botId, purpose: entry.purpose, boundAt: now });
+		if (entry.limited === true) {
+			pane.limited = true;
+		}
+		this.remembered.set(hash, { hash, botId: entry.botId, purpose: entry.purpose, boundAt: now, ...(entry.limited === true ? { limited: true as const } : {}) });
 		while (this.remembered.size > PARADIS_BOT_REMEMBERED_PANES_LIMIT) {
 			this.remembered.delete(this.remembered.keys().next().value!);
 		}
@@ -454,6 +465,18 @@ export class ParadisBotPanes {
 	}
 
 	/** そのペインの用途（会話か見回りか）。Bot のペインでなければ undefined。 */
+	/** 定期実行を制限した段で起こしたペインか（起動し直した後は、保存した印から戻す）。 */
+	isLimited(paneToken: string): boolean {
+		return this.panes.get(paneToken)?.limited === true;
+	}
+
+	/** その Bot の定期実行が動いている・起動中か（定期実行は Bot ごとに同時に 1 つ）。 */
+	taskInUse(botId: string, now: number): boolean {
+		// 結び付けてから最初の hook までは、シェルのプロンプトを待って起動している最中なので動いていると数える
+		return [...this.panes.values()].some(pane => pane.botId === botId && pane.purpose === 'task' && (pane.working || !pane.hookSeen))
+			|| [...this.pending.values()].some(entry => entry.botId === botId && entry.purpose === 'task' && now - entry.issuedAt <= PARADIS_BOT_LAUNCHING_TTL_MS);
+	}
+
 	purposeOf(paneToken: string): ParadisBotPanePurpose | undefined {
 		return this.panes.get(paneToken)?.purpose;
 	}

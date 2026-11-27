@@ -96,6 +96,41 @@ suite('Paradis bot manage tools', () => {
 		});
 	});
 
+	test('schedule_bot_task: 定期実行のサービスへエージェントの印付きで渡し、無効で作られたことを返す。Bot のペインからは断る', async () => {
+		let ids = 0;
+		const service = store.add(new ParadisBotsService(new MemoryFile<IParadisBotsState>(EMPTY_PARADIS_BOTS_STATE), new MemoryFile<IParadisBotItemsState>(EMPTY_PARADIS_BOT_ITEMS_STATE), store.add(new ParadisHumanAskService()), new NullLogService(), { now: () => 1000, uuid: () => `id${++ids}` }));
+		const received: unknown[] = [];
+		const provider = new ParadisBotManageToolProvider(service, {
+			actionsEnabled: () => true, botsEnabled: () => true,
+			scheduleTask: async (botId, input) => {
+				received.push([botId, input]);
+				return { ok: true, definition: { id: 't1', name: '下北沢の天気' } };
+			},
+		});
+		const created = await service.createBot({ name: '天気係', agent: 'claude' });
+		assert.ok(created.ok);
+		const context: IParadisMcpToolCallContext = {
+			callOwningWindow: async () => { throw new Error('not used'); },
+			getPaneAgentStatus: () => undefined,
+			getUnconfirmedRelease: () => undefined,
+			hasAgentHookHistory: () => false,
+			classifyCaller: async () => 'pane',
+		};
+		const call = async (args: unknown) => {
+			const result = await provider.callTool('pane-user', 'schedule_bot_task', args, undefined, context) as { content: { text: string }[]; isError?: boolean };
+			return result.isError ? { error: result.content[0].text.slice(0, 40) } : JSON.parse(result.content[0].text);
+		};
+		assert.deepStrictEqual({
+			ok: await call({ bot: created.value.id, name: '下北沢の天気', schedule: '30 0 * * *', request: '天気を調べて' }),
+			unknown: await call({ bot: 'nope', schedule: '30 0 * * *', request: 'x' }),
+			received,
+		}, {
+			ok: { bot: created.value.id, task: 't1', name: '下北沢の天気', enabled: false, note: 'Created turned off. Tell the user to read it and turn it on in the bot\'s settings tab.' },
+			unknown: { error: 'There is no bot with that id. Call list_' },
+			received: [[created.value.id, { name: '下北沢の天気', schedule: '30 0 * * *', prompt: '天気を調べて', tools: 'web', enabled: false }]],
+		});
+	});
+
 	test('設定がオフ・確かめられない接続元・Bot のペインからの書き込みを断る。読むのは通す', async () => {
 		const h = harness();
 		await h.call('create_bot', { name: 'A', agent: 'claude' });
@@ -213,7 +248,7 @@ suite('Paradis bot manage tools', () => {
 		const on = shown();
 		h.settings.bots = false;
 		assert.deepStrictEqual({ on, off: shown() }, {
-			on: { user: [6, true], bot: [0, false], noPane: [0, false] },
+			on: { user: [7, true], bot: [0, false], noPane: [0, false] },
 			off: { user: [0, false], bot: [0, false], noPane: [0, false] },
 		});
 	});
@@ -278,7 +313,7 @@ suite('Paradis bot manage tools', () => {
 			toolsForTask: 0,
 			ideFromUserTask: undefined,
 			updateFromUserTask: { id: 'id1', name: 'A', agent: 'claude', face_color: 'pink', face_shape: 'squircle', paused: false, pinned: true, activity: 'idle', needs_user: 0, open_items: 0 },
-			toolsForUserTask: 6,
+			toolsForUserTask: 7,
 			saved: {
 				boardTasks: [{ taskId: 't-bot', botId: 'id1', at: 1000 }],
 				boardPanes: [{ terminal: 't_ae2fafd8fa42', taskId: 't-bot', botId: 'id1', at: 1000 }, { terminal: 't_1eba5bf2fb52', taskId: 't-late', botId: 'id1', at: 1000 }],

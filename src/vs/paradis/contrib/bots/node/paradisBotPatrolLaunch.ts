@@ -19,11 +19,14 @@
 // Bot を消したら、その項目とフォルダを外す（{@link paradisForgetBotPatrol}）。
 
 import { promises as fs } from 'fs';
+import { homedir } from 'os';
 import { dirname, join } from '../../../../base/common/path.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 import { paradisClaudeMcpServerEntry, paradisMcpServerUrl } from '../../agentBrowser/common/paradisMcpSetupEncoding.js';
+import { PARADIS_CLAUDE_HOOK_EVENTS, paradisManagedAgentHookCommandWindows } from '../../agentBrowser/common/paradisAgentHooks.js';
+import { paradisMergeAgentHooksJson } from '../../agentBrowser/node/paradisAgentHooksSetup.js';
 import { ParadisClaudeTrustOutcome, paradisApplyClaudeFolderTrust, paradisClaudeTrustKeysFor, paradisRevokeClaudeFolderTrust, paradisUpdateClaudeConfig } from '../../workspaceSwitch/node/paradisClaudeFolderTrust.js';
-import { IParadisCodexMcpServerRef, PARADIS_BOT_PATROL_CLAUDE_SETTINGS, ParadisBotPatrolLaunchContext, ParadisCodexBrowserRegistration, paradisBotPatrolCodexDisabledServers, paradisCodexBrowserRegistration } from '../common/paradisBotTools.js';
+import { IParadisCodexMcpServerRef, PARADIS_BOT_PATROL_CLAUDE_SETTINGS, ParadisBotPatrolLaunchContext, paradisBotTaskFolderKey, ParadisCodexBrowserRegistration, paradisBotPatrolCodexDisabledServers, paradisCodexBrowserRegistration } from '../common/paradisBotTools.js';
 
 /** 読む `config.toml` の大きさの上限（Para Code の MCP の設定と同じ）。 */
 const MAX_CODEX_CONFIG_BYTES = 1024 * 1024;
@@ -127,7 +130,23 @@ async function agentConfigAbove(folder: string, stopFolder: string): Promise<str
 }
 
 /** 見回りの起動に要るものを用意する。用意できなければ断る理由（英文。エージェントと定期実行の記録に出る）。 */
-export async function paradisPrepareBotPatrolLaunch(environment: IParadisBotPatrolLaunchEnvironment, agent: 'claude' | 'codex', botId: string, home: IParadisBotPatrolHome): Promise<ParadisBotPatrolLaunchContext | string> {
+/**
+ * 用意の選び方（定期実行の「Web だけ」の段が使う）。
+ * - `webOnly`: 作業フォルダに指示文の写し（`AGENTS.md`）を置かない。Claude Code の `--settings` のファイルに Para Code の
+ *   状態の hook も書く（利用者の設定を読まない起動 `--setting-sources=` でも、起動・終了・待機の表示が動くように）
+ */
+export interface IParadisBotPatrolPrepareOptions {
+	readonly webOnly?: boolean;
+}
+
+/** `--settings` に渡す設定の文。`webOnly` なら Para Code の状態の hook（利用者の hook ではない）も足す。 */
+export function paradisBotPatrolClaudeSettingsText(webOnly: boolean, hookCommand?: string): string {
+	const base = JSON.stringify(PARADIS_BOT_PATROL_CLAUDE_SETTINGS);
+	const text = webOnly ? paradisMergeAgentHooksJson(base, PARADIS_CLAUDE_HOOK_EVENTS, hookCommand) ?? base : base;
+	return JSON.stringify(JSON.parse(text), undefined, '\t') + '\n';
+}
+
+export async function paradisPrepareBotPatrolLaunch(environment: IParadisBotPatrolLaunchEnvironment, agent: 'claude' | 'codex', botId: string, home: IParadisBotPatrolHome, options: IParadisBotPatrolPrepareOptions = {}): Promise<ParadisBotPatrolLaunchContext | string> {
 	let disabledServers: readonly IParadisCodexMcpServerRef[] = [];
 	let browser: { readonly registration: ParadisCodexBrowserRegistration; readonly url: string | undefined } | undefined;
 	let port = 0;
@@ -169,10 +188,13 @@ export async function paradisPrepareBotPatrolLaunch(environment: IParadisBotPatr
 		// 同じ Bot の見回りは同時に 1 つだけ）
 		await fs.rm(runFolder, { recursive: true, force: true });
 		await fs.mkdir(runFolder, { mode: 0o700 });
-		await paradisWriteFileAtomic(instructionsFile, paradisBotPatrolInstructions(home), { rejectSymlink: true, forceMode: 0o600 });
+		if (options.webOnly !== true) {
+			await paradisWriteFileAtomic(instructionsFile, paradisBotPatrolInstructions(home), { rejectSymlink: true, forceMode: 0o600 });
+		}
 		// 起動の直前に、置いたのが指示文の写しだけで、親にもエージェントがフォルダから読む設定が無いことを確かめる
 		const entries = await fs.readdir(runFolder);
-		const above = entries.length === 1 && entries[0] === 'AGENTS.md' ? await agentConfigAbove(runFolder, environment.stopFolder) : join(runFolder, entries.find(entry => entry !== 'AGENTS.md') ?? '');
+		const expected = options.webOnly === true ? [] : ['AGENTS.md'];
+		const above = entries.length === expected.length && entries.every(entry => expected.includes(entry)) ? await agentConfigAbove(runFolder, environment.stopFolder) : join(runFolder, entries.find(entry => !expected.includes(entry)) ?? '');
 		if (above !== undefined) {
 			return `Para Code found ${above} in or above the look-around folder, so it does not start a look-around there (Claude Code or Codex could read settings from it). Remove it to start look-arounds again.`;
 		}
@@ -186,7 +208,7 @@ export async function paradisPrepareBotPatrolLaunch(environment: IParadisBotPatr
 	const mcpConfigFile = join(environment.folder, `${stem}.claude-mcp.json`);
 	try {
 		await fs.mkdir(environment.folder, { recursive: true, mode: 0o700 });
-		await paradisWriteFileAtomic(settingsFile, JSON.stringify(PARADIS_BOT_PATROL_CLAUDE_SETTINGS, undefined, '\t') + '\n', { rejectSymlink: true, forceMode: 0o600 });
+		await paradisWriteFileAtomic(settingsFile, paradisBotPatrolClaudeSettingsText(options.webOnly === true, process.platform === 'win32' ? paradisManagedAgentHookCommandWindows(homedir()) : undefined), { rejectSymlink: true, forceMode: 0o600 });
 		await paradisWriteFileAtomic(mcpConfigFile, JSON.stringify({ mcpServers: { 'para-browser': paradisClaudeMcpServerEntry(port) } }, undefined, '\t') + '\n', { rejectSymlink: true, forceMode: 0o600 });
 	} catch {
 		return 'Para Code could not write the read-only settings for a look-around.';
@@ -209,6 +231,12 @@ export async function paradisTrustBotPatrolFolder(configFile: string, folder: st
  * 信頼は外さない）。失敗しても投げない。
  */
 export async function paradisForgetBotPatrol(environment: Pick<IParadisBotPatrolLaunchEnvironment, 'folder' | 'runsFolder'>, botId: string, configFile: string | undefined): Promise<void> {
+	// 見回りと定期実行（paradisBotTaskFolderKey）の作業フォルダの両方
+	await forgetBotRunFolder(environment, botId, configFile);
+	await forgetBotRunFolder(environment, paradisBotTaskFolderKey(botId), configFile);
+}
+
+async function forgetBotRunFolder(environment: Pick<IParadisBotPatrolLaunchEnvironment, 'folder' | 'runsFolder'>, botId: string, configFile: string | undefined): Promise<void> {
 	const runFolder = paradisBotPatrolRunFolder(environment.runsFolder, botId);
 	if (configFile !== undefined) {
 		const keys = await paradisClaudeTrustKeysFor(runFolder).catch(() => [] as string[]);

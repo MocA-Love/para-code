@@ -93,6 +93,10 @@ export class ParadisScheduledRunsChannel implements IServerChannel<string> {
 			case 'getBotPatrol': return this.service.getBotPatrol(text(0)) as Promise<T>;
 			case 'setBotPatrol': return this.service.setBotPatrol(text(0), args[1]) as Promise<T>;
 			case 'runBotPatrolNow': return this.service.runBotPatrolNow(text(0)) as Promise<T>;
+			case 'getBotTasks': return this.service.getBotTasks(text(0)) as Promise<T>;
+			// ウィンドウの画面（Bot のページ）からの保存。エージェントの道具からは byAgent を付けて呼ぶ（ここからは付けさせない）
+			case 'setBotTask': return this.service.setBotTask(text(0), args[1]) as Promise<T>;
+			case 'deleteBotTask': return this.service.deleteBotTask(text(0), text(1)) as Promise<T>;
 		}
 		throw new Error(`Call not found: ${command}`);
 	}
@@ -159,6 +163,10 @@ export function paradisScheduledRunDefinitionDigest(definition: IParadisSchedule
 	// Bot の見回りは、どの Bot かも見分ける（ほかの kind の指紋は前と同じまま）
 	if (target.kind === 'bot') {
 		fields.push('bot', target.botId ?? '');
+		// 定期実行は道具の段も見分ける（外で「読むだけ」から「Bot の権限」へ書き換えたものを有効のまま残さない）
+		if (target.botTask !== undefined) {
+			fields.push('botTask', target.botTask.tools);
+		}
 	}
 	return createHash('sha256').update(JSON.stringify(fields)).digest('hex');
 }

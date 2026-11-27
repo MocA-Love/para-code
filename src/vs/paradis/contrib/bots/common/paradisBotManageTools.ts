@@ -33,6 +33,7 @@ export const PARADIS_BOT_UPDATE_TOOL = 'update_bot';
 export const PARADIS_BOT_START_TOOL = 'start_bot';
 export const PARADIS_BOT_STOP_TOOL = 'stop_bot';
 export const PARADIS_BOT_REMOVE_TOOL = 'remove_bot';
+export const PARADIS_BOT_SCHEDULE_TASK_TOOL = 'schedule_bot_task';
 
 /** 役割（人格メモの種）の長さ。 */
 export const PARADIS_BOT_ROLE_LIMIT = 4000;
@@ -117,6 +118,23 @@ export const PARADIS_BOT_MANAGE_TOOLS: readonly IParadisMcpToolDefinition[] = [
 		description: `Ask the user to remove a bot. Para Code shows the user a confirmation dialog saying an agent asked for it, and removes the bot (its items too; its home folder stays) only if they agree, so this returns before anything is removed. Only one request can be pending at a time. ${ACTIONS_NOTE}`,
 		inputSchema: { type: 'object', properties: { bot: BOT_ARGUMENT }, required: ['bot'], additionalProperties: false },
 		annotations: DESTRUCTIVE,
+	},
+	{
+		name: PARADIS_BOT_SCHEDULE_TASK_TOOL,
+		description: `Add a scheduled task to a bot: at the times you give, Para Code runs the request in a new conversation of the bot (not its usual conversation); the result shows as a card on the bot's page and the user is notified (bell). The task is created turned off: the user reads it and turns it on in the bot's settings tab, and confirms there unless it is web-only. ${ACTIONS_NOTE}`,
+		inputSchema: {
+			type: 'object',
+			properties: {
+				bot: BOT_ARGUMENT,
+				name: { type: 'string', maxLength: 80, description: 'Short name shown in the list and the notification.' },
+				schedule: { type: 'string', maxLength: 200, description: 'Five-field cron expression in local time, e.g. "30 0 * * *" for every day at 0:30. At least 60 minutes apart, at most 24 runs a day for all tasks of a bot.' },
+				request: { type: 'string', maxLength: 2000, description: 'What the bot should do each time, in the user\'s words.' },
+				tools: { type: 'string', enum: ['web', 'readWeb', 'bot'], description: '"web" (default): only fetch and search the web, no local files. "readWeb": also read the bot\'s files (their content could be sent to the web, so the user confirms when turning it on). "bot": the bot\'s own permissions (the user confirms when turning it on). Every run is a new conversation of its own; its result shows as a card in the bot\'s page.' },
+			},
+			required: ['bot', 'schedule', 'request'],
+			additionalProperties: false,
+		},
+		annotations: WRITE,
 	},
 ];
 

@@ -36,6 +36,7 @@ import { ParadisAgentChatSession } from '../../agentChat/browser/paradisAgentCha
 import { IParadisAgentChatCardStates, IParadisAgentChatViewHost, ParadisAgentChatView } from '../../agentChat/browser/paradisAgentChatView.js';
 import { IParadisBotSleepingChat, IParadisBotsService } from '../common/paradisBotsApi.js';
 import { PARADIS_BOTS_OPEN_COMMAND, paradisBotFace } from '../common/paradisBotsBandModel.js';
+import { ParadisBotTaskResultsTray, paradisBotTasksPort } from './paradisBotTasks.js';
 import { renderParadisBotFace } from './paradisBotFace.js';
 import './media/paradisBotPage.css';
 
@@ -129,6 +130,7 @@ export class ParadisBotSleepingChatEditor extends EditorPane implements IParadis
 	private chatContainer!: HTMLElement;
 	private readonly view = this._register(new MutableDisposable<ParadisAgentChatView>());
 	private readonly inputStore = this._register(new DisposableStore());
+	private taskResults: ParadisBotTaskResultsTray | undefined;
 	private chatSession: ParadisAgentChatSession | undefined;
 	private chat: IParadisBotSleepingChat | undefined;
 	private readonly drafts = new Map<string, string>();
@@ -173,11 +175,17 @@ export class ParadisBotSleepingChatEditor extends EditorPane implements IParadis
 		this.status = dom.append(title, dom.$('span.paradis-bot-page-status'));
 		this.chatContainer = this.root;
 		this._register(this.botsService.onDidChange(() => this.renderStrip()));
+		// 定期実行の結果のカード（Bot の会話には入れず、利用者が「会話に送る」を押したときだけ入力欄へ入れる）
+		const tasks = paradisBotTasksPort();
+		if (tasks !== undefined) {
+			this.taskResults = this._register(new ParadisBotTaskResultsTray(this.root, tasks, async text => this.view.value?.insertDraft(text) !== undefined));
+		}
 	}
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
 		await super.setInput(input, options, context, token);
 		this.inputStore.clear();
+		this.taskResults?.show(input instanceof ParadisBotSleepingChatEditorInput ? input.botId : undefined, true);
 		this.waking = false;
 		this.chat = undefined;
 		this.renderStrip();

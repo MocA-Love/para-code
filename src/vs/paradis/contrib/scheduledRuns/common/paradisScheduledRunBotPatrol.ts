@@ -21,6 +21,7 @@ import { IParadisScheduleFields, paradisCronRunsPerDay, paradisCronToSchedulePre
 import {
 	IParadisScheduledRunDefinition,
 	IParadisScheduledRunRecord,
+	ParadisBotTaskTools,
 	ParadisScheduledRunReason,
 	ParadisScheduledRunStatus,
 	ParadisScheduledRunTrigger,
@@ -47,6 +48,11 @@ export interface IParadisBotPatrolGate {
 	botName(botId: string): string | undefined;
 	/** 起動の前に、前の回の見回りのペイン（もう動いていないもの）を閉じてもらう。 */
 	closeIdlePatrolPanes(botId: string): void;
+	/**
+	 * Bot の定期実行（会話の 1 ターン）を走らせてよいか。答えの意味は {@link check} と同じで、会話のペインが開いている・
+	 * 起動中なら `busy`。台帳をまだ読み終えていなければ undefined。
+	 */
+	checkTask(botId: string, tools: ParadisBotTaskTools): ParadisBotPatrolGateState | undefined;
 }
 
 /** 門の答えを、記録に残す理由にする（残さないものは undefined）。 */
@@ -317,9 +323,9 @@ export function paradisOtherBotPatrolsRunsPerDay(definitions: readonly IParadisS
 	return total;
 }
 
-/** Bot の見回りの定義か。 */
+/** Bot の見回りの定義か（Bot の定期実行 `target.botTask` は含めない。両方は paradisIsBotDefinition）。 */
 export function paradisIsBotPatrolDefinition(definition: IParadisScheduledRunDefinition, botId?: string): boolean {
-	return definition.target.kind === 'bot' && (botId === undefined || definition.target.botId === botId);
+	return definition.target.kind === 'bot' && definition.target.botTask === undefined && (botId === undefined || definition.target.botId === botId);
 }
 
 /** 画面が読む形を作る。`gate` は今の門の答え（読み終える前は undefined）。 */

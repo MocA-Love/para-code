@@ -90,8 +90,8 @@ export class ParadisBotToolProvider implements IParadisMcpToolProvider {
 		if (bot === undefined) {
 			return toolError(NOT_A_BOT_MESSAGE);
 		}
-		// 見回りのペインは読むだけ（項目は書かず、提案だけ出せる）
-		if (this.service.purposeOfPane(paneToken) === 'patrol' && !PARADIS_BOT_PATROL_TOOLS.has(name)) {
+		// 見回りのペインと、制限した段の定期実行のペインは読むだけ（項目は書かず、提案だけ出せる）
+		if (this.service.isReadOnlyPane(paneToken) && !PARADIS_BOT_PATROL_TOOLS.has(name)) {
 			return toolError(PATROL_READ_ONLY_MESSAGE);
 		}
 		if (bot.paused && !PARADIS_BOT_READ_TOOLS.has(name)) {
