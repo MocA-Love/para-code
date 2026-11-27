@@ -166,6 +166,13 @@ export interface IParadisTaskBoardStepCompleted {
 	readonly summary: string;
 }
 
+/** ボードが、タスクのためにターミナルを起動した・工程の指示を送った。`launchId` は `<タスクの id>:<試行番号>`。 */
+export interface IParadisTaskBoardTerminalTask {
+	/** ターミナルの id（ペイントークンのハッシュ。{@link paradisTaskBoardTerminalId}）。 */
+	readonly terminal: string;
+	readonly launchId: string;
+}
+
 export class ParadisTaskBoardBridgeService extends Disposable implements IParadisMcpToolProvider {
 	readonly cliGroup = 'board';
 
@@ -187,6 +194,12 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 	 * 工程 1 つの報告で、タスクの完了ではない。時間切れで返事の来なかった報告は流さない。
 	 */
 	readonly onDidCompleteStep: Event<IParadisTaskBoardStepCompleted> = this._onDidCompleteStep.event;
+	private readonly _onDidAssignTask = this._register(new Emitter<IParadisTaskBoardTerminalTask>());
+	/**
+	 * ボードがタスクのためにターミナルを起動した・そのターミナルへ印付きの指示を送る（Bot が載せたタスクのペインに印を付けるため）。
+	 * 送るときは送る前に流す（指示を受けたエージェントが道具を呼ぶより先に印が付くように）。
+	 */
+	readonly onDidAssignTask: Event<IParadisTaskBoardTerminalTask> = this._onDidAssignTask.event;
 
 	constructor(
 		private readonly router: IParadisTaskBoardWindowRouter,
@@ -238,6 +251,9 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 					return error('invalid', parsed.message);
 				}
 				const { tag, ...request } = parsed.value;
+				if (tag !== undefined && this.terminals.has(request.terminal)) {
+					this._onDidAssignTask.fire({ terminal: request.terminal, launchId: tag });
+				}
 				const response = await this.forward(request.terminal, 'send', request, OPERATION_TIMEOUT_MS);
 				const entry = this.terminals.get(request.terminal);
 				if (response.status === 200 && tag !== undefined && entry) {
@@ -460,6 +476,7 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 			status: request.prompt.trim().length > 0 ? 'working' : 'idle',
 		};
 		this.terminals.set(terminal, entry);
+		this._onDidAssignTask.fire({ terminal, launchId: entry.launchId });
 		this.emit({ type: 'status', terminal, launchId: entry.launchId, status: entry.status });
 		return ok({ terminal });
 	}

@@ -56,6 +56,8 @@ import { IParadisBotItemAddArgs, paradisBotLaunchApprovalFlags, paradisBotPatrol
 import { PARADIS_READ_ONLY_MCP_TOOL_NAMES } from '../../agentBrowser/common/paradisMcpReadOnlyTools.js';
 import { ParadisBotPatrolGateState } from '../../scheduledRuns/common/paradisScheduledRunBotPatrol.js';
 import { EMPTY_PARADIS_BOT_SUGGESTIONS_STATE, IParadisBotSuggestion, PARADIS_BOT_SUGGESTIONS_VERSION, IParadisBotSuggestionsState, paradisBotOpenSuggestions, paradisBotSuggestionAdd, paradisBotSuggestionDismiss, paradisBotSuggestionsRemoveBot, paradisBotSuggestionsRunEnded, paradisBotSuggestionStart } from '../common/paradisBotSuggestions.js';
+import { paradisTaskBoardTerminalId } from '../../taskBoard/common/paradisTaskBoardBridge.js';
+import { ParadisBotBoardOrigins, paradisBoardTaskIdOf } from './paradisBotBoardOrigins.js';
 import { ParadisBotHomeError, ParadisBotHomes } from './paradisBotHomes.js';
 import { IParadisBotMemorySnapshot, IParadisBotMemoryUndo, ParadisBotMemorySnapshots } from './paradisBotMemorySnapshots.js';
 import { IParadisBotPanesState, PARADIS_BOT_PANES_VERSION, ParadisBotPanes, paradisBotPaneTokenHash } from './paradisBotPanes.js';
@@ -120,6 +122,8 @@ export class ParadisBotsService extends Disposable {
 	private panesVersion = PARADIS_BOT_PANES_VERSION;
 
 	protected readonly panes = new ParadisBotPanes(() => this.savePanes());
+	/** Bot が載せたタスクと、そのタスクのためにボードが動かしたペインの印（Bot の結び付けと一緒に保存する）。 */
+	private readonly boardOrigins = new ParadisBotBoardOrigins();
 	private readonly now: () => number;
 	private readonly uuid: () => string;
 	private readonly homes: ParadisBotHomes | undefined;
@@ -210,6 +214,8 @@ export class ParadisBotsService extends Disposable {
 			// 消した Bot の結び付けは戻さない
 			this.panes.loadRemembered((panes?.state.panes ?? []).filter(record => this.getBot(record.botId) !== undefined));
 			this.panesVersion = panes?.state.version ?? PARADIS_BOT_PANES_VERSION;
+			// 印は Bot を消した後も残す（消した Bot が書いたタスクのペインも、Bot を変える道具を断る）
+			this.boardOrigins.load(panes?.state.boardTasks ?? [], panes?.state.boardPanes ?? []);
 		} catch (error) {
 			// 読めなかったときは空で動かすが、上書きはしない（次の起動で読めるかもしれない）
 			this.logService.error('[ParadisBots] could not read the saved bots; they are read-only until the next start', error);
@@ -277,6 +283,42 @@ export class ParadisBotsService extends Disposable {
 		return botId !== undefined ? this.getBot(botId) : undefined;
 	}
 
+	// ---- Bot が載せたタスクのペイン ----------------------------------------------------------------
+
+	/** Bot がタスクボードへタスクを載せた（bot_board_add_task の提供元だけが呼ぶ）。項目への結び付けとは別に控える。 */
+	async noteBotBoardTask(botId: string, taskId: string): Promise<void> {
+		if (!this.loaded) {
+			await this.ready;
+		}
+		if (this.boardOrigins.noteTask(taskId, botId, this.now())) {
+			this.savePanes();
+		}
+	}
+
+	/**
+	 * ボードの接続口が、ターミナル（`terminal` はペイントークンのハッシュ）をタスクのために起動した・工程の指示を送った。
+	 * `launchId` は `<タスクの id>:<試行番号>`。Bot が載せたタスクなら、そのペインに印を付ける（外さない）。
+	 */
+	async noteBoardTerminalTask(terminal: string, launchId: string): Promise<void> {
+		if (!this.loaded) {
+			await this.ready;
+		}
+		const taskId = paradisBoardTaskIdOf(launchId);
+		if (taskId === undefined) {
+			return;
+		}
+		// 控えが無ければ（控える前に載せたタスク）、項目の結び付けからも引く。閉じた項目も見る
+		const botId = this.boardOrigins.botOfTask(taskId) ?? this.items.items.find(item => item.links.some(link => link.kind === 'task' && link.ref === taskId))?.botId;
+		if (botId !== undefined && this.boardOrigins.notePane(terminal, taskId, botId, this.now())) {
+			this.savePanes();
+		}
+	}
+
+	/** そのペインが、Bot の載せたタスクのためにボードが動かしたペインなら、タスクを載せた Bot の id。 */
+	boardOriginOfPane(paneToken: string): string | undefined {
+		return paneToken.length > 0 ? this.boardOrigins.paneOrigin(paradisTaskBoardTerminalId(paneToken))?.botId : undefined;
+	}
+
 	/** 保存した結び付けを戻した（このペインが今 Bot になった）か。 */
 	private restorePane(paneToken: string): boolean {
 		if (!this.loaded || this.panes.botOf(paneToken) !== undefined) {
@@ -310,7 +352,7 @@ export class ParadisBotsService extends Disposable {
 		if (!this.loaded || this.panesFile === undefined || this.panesVersion !== PARADIS_BOT_PANES_VERSION) {
 			return;
 		}
-		this.panesFile.write({ version: PARADIS_BOT_PANES_VERSION, panes: this.panes.rememberedPanes() }).catch(error => {
+		this.panesFile.write({ version: PARADIS_BOT_PANES_VERSION, panes: this.panes.rememberedPanes(), boardTasks: this.boardOrigins.boardTasks(), boardPanes: this.boardOrigins.boardPanes() }).catch(error => {
 			this.logService.warn('[ParadisBots] could not save the bot panes', error);
 		});
 	}

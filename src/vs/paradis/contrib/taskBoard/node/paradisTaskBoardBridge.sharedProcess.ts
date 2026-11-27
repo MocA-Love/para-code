@@ -42,7 +42,7 @@ import { ParadisTaskBoardBoardAuth } from './paradisTaskBoardBoardAuth.js';
 import { ParadisTaskBoardBridgeServer } from './paradisTaskBoardBridgeServer.js';
 import { ParadisTaskBoardRelayRouter } from './paradisTaskBoardRelayRouter.js';
 import { IParadisTaskBoardWindowRouter, ParadisTaskBoardBridgeService } from './paradisTaskBoardBridgeService.js';
-import { paradisFireTaskBoardStepCompleted } from './paradisTaskBoardStepEvents.js';
+import { paradisFireTaskBoardStepCompleted, paradisFireTaskBoardTerminalTask } from './paradisTaskBoardStepEvents.js';
 import { paradisTaskBoardWorktreeIncludes } from './paradisTaskBoardWorktreeIncludes.js';
 import { ParadisWorktreeGitService } from '../../workspaceSwitch/node/paradisWorktreeGitChannel.js';
 
@@ -144,6 +144,7 @@ ParadisSharedProcessContributions.register('taskBoard', ({ server, accessor }) =
 	store.add(onParadisAgentHookEvent(event => service.onHookEvent(event)));
 	// 工程の終わりの報告を、Bot の項目（ボードのタスクを結んだもの）へ渡す
 	store.add(service.onDidCompleteStep(event => paradisFireTaskBoardStepCompleted(event)));
+	store.add(service.onDidAssignTask(event => paradisFireTaskBoardTerminalTask(event)));
 	store.add(server.onDidAddConnection(connection => service.onWindowConnected(connection.ctx)));
 	store.add(server.onDidRemoveConnection(connection => service.onWindowDisconnected(connection.ctx)));
 	const auth = new ParadisTaskBoardBoardAuth((clientPort, serverPort, pids) => paradisPeerIsOneOf(clientPort, serverPort, process.pid, pids));

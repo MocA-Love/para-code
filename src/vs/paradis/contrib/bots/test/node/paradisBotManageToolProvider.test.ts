@@ -17,6 +17,10 @@ import { paradisApplyBotChange } from '../../common/paradisBotManageTools.js';
 import { ParadisBotManageToolProvider, paradisBotIdeActionRefusal } from '../../node/paradisBotManageToolProvider.js';
 import { ParadisBotsService } from '../../node/paradisBotsService.js';
 import { IParadisBotsJsonFile } from '../../node/paradisBotsStore.js';
+import { EMPTY_PARADIS_BOT_PANES_STATE, IParadisBotPanesState } from '../../node/paradisBotPanes.js';
+import { paradisRegisterAgentIdeActionRefusal } from '../../../agentIde/node/paradisAgentIdeToolProvider.js';
+import { ParadisScheduledRunToolProvider } from '../../../scheduledRuns/node/paradisScheduledRunToolProvider.js';
+import { paradisTaskBoardTerminalId } from '../../../taskBoard/common/paradisTaskBoardBridge.js';
 
 class MemoryFile<T> implements IParadisBotsJsonFile<T> {
 	constructor(public state: T) { }
@@ -32,9 +36,9 @@ suite('Paradis bot manage tools', () => {
 
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function harness() {
+	function harness(files?: { readonly bots: MemoryFile<IParadisBotsState>; readonly panes: MemoryFile<IParadisBotPanesState> }) {
 		let ids = 0;
-		const service = store.add(new ParadisBotsService(new MemoryFile<IParadisBotsState>(EMPTY_PARADIS_BOTS_STATE), new MemoryFile<IParadisBotItemsState>(EMPTY_PARADIS_BOT_ITEMS_STATE), store.add(new ParadisHumanAskService()), new NullLogService(), { now: () => 1000, uuid: () => `id${++ids}` }));
+		const service = store.add(new ParadisBotsService(files?.bots ?? new MemoryFile<IParadisBotsState>(EMPTY_PARADIS_BOTS_STATE), new MemoryFile<IParadisBotItemsState>(EMPTY_PARADIS_BOT_ITEMS_STATE), store.add(new ParadisHumanAskService()), new NullLogService(), { now: () => 1000, uuid: () => `id${++ids}`, ...(files ? { panesFile: files.panes } : {}) }));
 		const settings = { allow: true, bots: true };
 		const provider = new ParadisBotManageToolProvider(service, { actionsEnabled: () => settings.allow, botsEnabled: () => settings.bots });
 		const windowCalls: string[] = [];
@@ -54,7 +58,7 @@ suite('Paradis bot manage tools', () => {
 			const result = await provider.callTool(pane, name, args, undefined, context(caller)) as { content: { text: string }[]; isError?: boolean };
 			return result.isError ? { error: result.content[0].text.slice(0, 60) } : JSON.parse(result.content[0].text);
 		};
-		return { service, settings, provider, call, windowCalls, windowArgs };
+		return { service, settings, provider, call, context, windowCalls, windowArgs };
 	}
 
 	test('作る・変える・止める・起動と削除はウィンドウへ。顔は選べる名前だけ、権限とエージェントは受けない', async () => {
@@ -219,10 +223,62 @@ suite('Paradis bot manage tools', () => {
 		const launchId = h.service.issueLaunch('id1', 'chat');
 		assert.ok(launchId !== undefined && h.service.reportLaunch(launchId, 'pane-bot'));
 		const refusal = paradisBotIdeActionRefusal(h.service);
-		assert.deepStrictEqual([await refusal('pane-bot'), await refusal('pane-user')], [
+		assert.deepStrictEqual([await refusal('pane-bot', 'launch_agent'), await refusal('pane-user', 'launch_agent')], [
 			'This terminal is a Para Code bot. A bot cannot start, open, type into or close other terminals, or change spaces, with the IDE tools: a terminal it started would not be a bot and could change bots. The reading tools still work. Tell your owner what you would do.',
 			undefined,
 		]);
+	});
+
+	test('後で別のペインを起こす道具: Bot のペインからの定期実行を断り、Bot が載せたタスクのペインからは Bot を変える道具も断る', async () => {
+		const files = { bots: new MemoryFile<IParadisBotsState>(EMPTY_PARADIS_BOTS_STATE), panes: new MemoryFile<IParadisBotPanesState>(EMPTY_PARADIS_BOT_PANES_STATE) };
+		const h = harness(files);
+		await h.call('create_bot', { name: 'A', agent: 'claude' });
+		const launchId = h.service.issueLaunch('id1', 'chat');
+		assert.ok(launchId !== undefined && h.service.reportLaunch(launchId, 'pane-bot'));
+		const registration = paradisRegisterAgentIdeActionRefusal(paradisBotIdeActionRefusal(h.service));
+		const scheduled = new ParadisScheduledRunToolProvider();
+		const schedule = async (pane: string) => {
+			const result = await scheduled.callTool(pane, 'create_scheduled_run', { name: 'x' }, undefined, h.context('pane')) as { content: { text: string }[] };
+			return result.content[0].text.slice(0, 60);
+		};
+		// Bot が載せたタスク（t-bot）と、利用者が載せたタスク（t-user）を、ボードがそれぞれのペインで動かした
+		await h.service.noteBotBoardTask('id1', 't-bot');
+		await h.service.noteBoardTerminalTask(paradisTaskBoardTerminalId('pane-task'), 't-bot:1');
+		await h.service.noteBoardTerminalTask(paradisTaskBoardTerminalId('pane-board-user'), 't-user:1');
+		const refusal = paradisBotIdeActionRefusal(h.service);
+		const result = {
+			scheduleFromBot: await schedule('pane-bot'),
+			scheduleFromTask: await schedule('pane-task'),
+			ideFromTask: await refusal('pane-task', 'launch_agent'),
+			updateFromTask: await h.call('update_bot', { bot: 'id1', pinned: true }, 'pane', 'pane-task'),
+			listFromTask: (await h.call('list_bots', {}, 'pane', 'pane-task')).bots !== undefined,
+			toolsForTask: h.provider.listTools('pane-task').length,
+			ideFromUserTask: await refusal('pane-board-user', 'launch_agent'),
+			updateFromUserTask: await h.call('update_bot', { bot: 'id1', pinned: true }, 'pane', 'pane-board-user'),
+			toolsForUserTask: h.provider.listTools('pane-board-user').length,
+			// 印は保存され、起動し直しても残る（Bot を消しても残す）
+			saved: { boardTasks: files.panes.state.boardTasks, boardPanes: files.panes.state.boardPanes },
+		};
+		registration.dispose();
+		await h.service.removeBot('id1');
+		const reloaded = harness(files);
+		await reloaded.service.ready;
+		assert.deepStrictEqual({ ...result, afterReload: [reloaded.service.boardOriginOfPane('pane-task'), reloaded.service.boardOriginOfPane('pane-board-user')] }, {
+			scheduleFromBot: 'This terminal is a Para Code bot. A bot cannot create schedu',
+			scheduleFromTask: 'This terminal runs a task board task that a Para Code bot pu',
+			ideFromTask: 'This terminal runs a task board task that a Para Code bot put on the board, so Para Code treats it like the bot: it cannot start, open, type into or close other terminals, change spaces, or create scheduled runs. The reading tools still work. Tell the user what you would do.',
+			updateFromTask: { error: 'This terminal runs a task board task that a Para Code bot pu' },
+			listFromTask: true,
+			toolsForTask: 0,
+			ideFromUserTask: undefined,
+			updateFromUserTask: { id: 'id1', name: 'A', agent: 'claude', face_color: 'pink', face_shape: 'squircle', paused: false, pinned: true, activity: 'idle', needs_user: 0, open_items: 0 },
+			toolsForUserTask: 6,
+			saved: {
+				boardTasks: [{ taskId: 't-bot', botId: 'id1', at: 1000 }],
+				boardPanes: [{ terminal: paradisTaskBoardTerminalId('pane-task'), taskId: 't-bot', botId: 'id1', at: 1000 }],
+			},
+			afterReload: ['id1', undefined],
+		});
 	});
 
 	test('確かめた変更を当てる: 台帳の変更の後に役割を書く。台帳に断られたら役割は書かない', async () => {

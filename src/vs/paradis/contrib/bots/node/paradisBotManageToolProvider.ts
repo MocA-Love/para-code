@@ -29,6 +29,7 @@ import {
 } from '../common/paradisBotManageTools.js';
 import { IParadisBot } from '../common/paradisBots.js';
 import { PARADIS_BOTS_ENABLED_SETTING, PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsServiceResult, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
+import { PARADIS_CREATE_SCHEDULED_RUN_TOOL } from '../../scheduledRuns/common/paradisScheduledRunTools.js';
 import { ParadisBotsService } from './paradisBotsService.js';
 
 const CALLER_UNVERIFIED_MESSAGE = 'Para Code could not confirm that this request comes from a process inside your own terminal pane, so it refuses changes to bots. This always happens for agents connected over SSH.';
@@ -37,17 +38,24 @@ const FROM_BOT_MESSAGE = 'This terminal is a Para Code bot. A bot cannot create,
 const BOTS_DISABLED_MESSAGE = `Para Code bots are still experimental and turned off. The user can turn them on with the setting ${PARADIS_BOTS_ENABLED_SETTING}; do not try to change the setting yourself.`;
 const UNKNOWN_BOT_MESSAGE = 'There is no bot with that id. Call list_bots for the ids.';
 const IDE_ACTION_FROM_BOT_MESSAGE = 'This terminal is a Para Code bot. A bot cannot start, open, type into or close other terminals, or change spaces, with the IDE tools: a terminal it started would not be a bot and could change bots. The reading tools still work. Tell your owner what you would do.';
+const SCHEDULE_FROM_BOT_MESSAGE = 'This terminal is a Para Code bot. A bot cannot create scheduled runs: the run would start later in a terminal that is not a bot and could change bots. Tell your owner what you would schedule.';
+const FROM_BOARD_TASK_MESSAGE = 'This terminal runs a task board task that a Para Code bot put on the board, so Para Code treats it like the bot: it cannot create, change, start, stop or remove bots. Tell the user what you would change.';
+const IDE_ACTION_FROM_BOARD_TASK_MESSAGE = 'This terminal runs a task board task that a Para Code bot put on the board, so Para Code treats it like the bot: it cannot start, open, type into or close other terminals, change spaces, or create scheduled runs. The reading tools still work. Tell the user what you would do.';
 
 /**
- * IDE の操作の道具（launch_agent・create_terminal・send_terminal_input ほか）を、Bot のペインからは断る
+ * IDE の操作の道具（launch_agent・create_terminal・send_terminal_input ほか）と、後で別のペインを起こす道具
+ * （create_scheduled_run）を、Bot のペインと、Bot が載せたタスクのためにボードが動かしたペインからは断る
  * （{@link paradisRegisterAgentIdeActionRefusal} に渡す）。Bot が Bot でないペインを起こす・動かして、そこから
  * Bot を変える道具を呼ぶ穴を塞ぐ。
  */
-export function paradisBotIdeActionRefusal(service: Pick<ParadisBotsService, 'ready' | 'botOfPane'>): (paneToken: string) => Promise<string | undefined> {
-	return async paneToken => {
+export function paradisBotIdeActionRefusal(service: Pick<ParadisBotsService, 'ready' | 'botOfPane' | 'boardOriginOfPane'>): (paneToken: string, toolName: string) => Promise<string | undefined> {
+	return async (paneToken, toolName) => {
 		// 起動の直後は結び付けの表を読み終えていないので、待ってから引く（待たないと門が開いたままになる）
 		await service.ready;
-		return service.botOfPane(paneToken) !== undefined ? IDE_ACTION_FROM_BOT_MESSAGE : undefined;
+		if (service.botOfPane(paneToken) !== undefined) {
+			return toolName === PARADIS_CREATE_SCHEDULED_RUN_TOOL ? SCHEDULE_FROM_BOT_MESSAGE : IDE_ACTION_FROM_BOT_MESSAGE;
+		}
+		return service.boardOriginOfPane(paneToken) !== undefined ? IDE_ACTION_FROM_BOARD_TASK_MESSAGE : undefined;
 	};
 }
 /** 起動はターミナルの起動とエージェントの立ち上がりを待つ。 */
@@ -73,11 +81,11 @@ export class ParadisBotManageToolProvider implements IParadisMcpToolProvider {
 	) { }
 
 	/**
-	 * Bot の機能がオンのとき、Bot でないペインにだけ出す（オフの利用者の全ペインの一覧と説明を埋めない。Bot のペインは
-	 * どうせ書く道具を断られる）。出さなくても、呼ばれたときの門（callTool）はそのまま。
+	 * Bot の機能がオンのとき、Bot でも、Bot が載せたタスクのペインでもないペインにだけ出す（オフの利用者の全ペインの
+	 * 一覧と説明を埋めない。Bot のペインはどうせ書く道具を断られる）。出さなくても、呼ばれたときの門（callTool）はそのまま。
 	 */
 	private shownTo(paneToken: string | undefined): boolean {
-		return this.settings.botsEnabled() && paneToken !== undefined && paneToken.length > 0 && this.service.botOfPane(paneToken) === undefined;
+		return this.settings.botsEnabled() && paneToken !== undefined && paneToken.length > 0 && this.service.botOfPane(paneToken) === undefined && this.service.boardOriginOfPane(paneToken) === undefined;
 	}
 
 	listTools(paneToken?: string): readonly IParadisMcpToolDefinition[] {
@@ -108,6 +116,10 @@ export class ParadisBotManageToolProvider implements IParadisMcpToolProvider {
 		// Bot のペインからは書かせない（自分や他の Bot の設定を変えて、できることを広げる穴を塞ぐ）
 		if (write && this.service.botOfPane(paneToken) !== undefined) {
 			return toolError(FROM_BOT_MESSAGE);
+		}
+		// Bot が載せたタスクのためにボードが動かしたペインも同じ（Bot の書いた指示で動いている）
+		if (write && this.service.boardOriginOfPane(paneToken) !== undefined) {
+			return toolError(FROM_BOARD_TASK_MESSAGE);
 		}
 		switch (name) {
 			case PARADIS_BOT_LIST_TOOL:

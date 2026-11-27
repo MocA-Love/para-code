@@ -26,7 +26,7 @@ import { paradisGithubRateLimitPause } from '../../githubMetrics/common/paradisG
 import { paradisSharedHumanAskService } from '../../humanAsk/node/paradisHumanAskChannel.js';
 import { paradisSharedScheduledRunsService } from '../../scheduledRuns/node/paradisScheduledRunsChannel.js';
 import { IParadisTaskBoardBotHost, PARADIS_TASK_BOARD_BOT_HOST_CHANNEL } from '../../taskBoard/common/paradisTaskBoardHost.js';
-import { onParadisTaskBoardStepCompleted } from '../../taskBoard/node/paradisTaskBoardStepEvents.js';
+import { onParadisTaskBoardStepCompleted, onParadisTaskBoardTerminalTask } from '../../taskBoard/node/paradisTaskBoardStepEvents.js';
 import { PARADIS_BOTS_CHANNEL, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
 import { ParadisBotBoardToolProvider } from './paradisBotBoardToolProvider.js';
 import { createParadisBotGhRunner, ParadisBotGithubWatcher } from './paradisBotGithubWatcher.js';
@@ -87,6 +87,11 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 	// Bot の項目をタスクボードへ載せる（main のボードの host の、shared process にだけ出した口）。工程の報告を項目へ写す
 	const boardHost = ProxyChannel.toService<IParadisTaskBoardBotHost>(accessor.get(IMainProcessService).getChannel(PARADIS_TASK_BOARD_BOT_HOST_CHANNEL));
 	store.add(paradisRegisterMcpToolProvider(new ParadisBotBoardToolProvider(service, enabled, request => boardHost.addTask(request))));
+	// Bot が載せたタスクのためにボードが動かしたペインに印を付ける（そこからは Bot を変える道具と IDE の操作を断る）。
+	// 設定がオフでも付ける（オンに戻したときに印が抜けないように）
+	store.add(onParadisTaskBoardTerminalTask(event => {
+		service.noteBoardTerminalTask(event.terminal, event.launchId).catch(error => logService.warn('[ParadisBots] could not mark a task board terminal of a bot task', error));
+	}));
 	store.add(onParadisTaskBoardStepCompleted(event => {
 		service.noteBoardStep(event.launchId, event.summary).catch(error => logService.warn('[ParadisBots] could not note a task board step on an item', error));
 	}));
@@ -115,7 +120,7 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 		actionsEnabled: () => paradisAgentIdeActionsAllowed(configurationService.getValue(PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING)),
 		botsEnabled: enabled,
 	})));
-	// Bot のペインからは、別のペインを起こす・動かす IDE の道具を断る
+	// Bot のペインと、Bot が載せたタスクのペインからは、別のペインを起こす・動かす IDE の道具と定期実行の作成を断る
 	store.add(paradisRegisterAgentIdeActionRefusal(paradisBotIdeActionRefusal(service)));
 	store.add({
 		dispose: () => {

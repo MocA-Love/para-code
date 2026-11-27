@@ -112,6 +112,7 @@ const TOO_MANY_WAITS_MESSAGE = 'Too many wait_for_terminal calls are running at 
 /**
  * ほかの機能が、呼び出し元のペインごとに IDE の操作（送る・起動する・作る・閉じるなど）を断る口。理由の文を返すと断る。
  * Bot の機能が、Bot のペインから Bot でないペインを起こす・動かすのを断るのに使う（そのペインからは Bot を変える道具を呼べるため）。
+ * 後で別のペインを起こす道具（定期実行の create_scheduled_run）も、{@link paradisAgentIdeActionRefusalFor} で同じ口に聞く。
  */
 export type ParadisAgentIdeActionRefusal = (paneToken: string, toolName: string) => Promise<string | undefined>;
 
@@ -121,6 +122,17 @@ const actionRefusals = new Set<ParadisAgentIdeActionRefusal>();
 export function paradisRegisterAgentIdeActionRefusal(refusal: ParadisAgentIdeActionRefusal): IDisposable {
 	actionRefusals.add(refusal);
 	return toDisposable(() => actionRefusals.delete(refusal));
+}
+
+/** 登録された口に順に聞き、最初に返った断る理由（無ければ undefined）。 */
+export async function paradisAgentIdeActionRefusalFor(paneToken: string, toolName: string): Promise<string | undefined> {
+	for (const refusal of [...actionRefusals]) {
+		const reason = await refusal(paneToken, toolName);
+		if (reason !== undefined) {
+			return reason;
+		}
+	}
+	return undefined;
 }
 
 function toolText(value: string | object): unknown {
@@ -185,11 +197,9 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 			return toolError(action ? CALLER_UNVERIFIED_MESSAGE : READ_CALLER_UNVERIFIED_MESSAGE);
 		}
 		if (action) {
-			for (const refusal of [...actionRefusals]) {
-				const reason = await refusal(paneToken, name);
-				if (reason !== undefined) {
-					return toolError(reason);
-				}
+			const reason = await paradisAgentIdeActionRefusalFor(paneToken, name);
+			if (reason !== undefined) {
+				return toolError(reason);
 			}
 		}
 		if (parsed.kind === 'wait') {
