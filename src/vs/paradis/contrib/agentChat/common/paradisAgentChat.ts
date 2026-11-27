@@ -469,9 +469,4 @@ export interface IParadisAgentChatSource {
 	 * undefined（分からない）。古い shared process には無い。
 	 */
 	isAgentChatDialogOpen?(token: string): Promise<boolean | undefined>;
-	/**
-	 * PC の入力欄の書きかけ（入力欄の `draft/` の mod がこの会話で入力欄の文を一度でも送ってきた Claude Code だけ）。
-	 * undefined は分からない（mod が無い・古い・読み直した直後・まだ何も送っていない・Claude Code 以外）。古い shared process には無い。
-	 */
-	getAgentChatDraft?(token: string): Promise<string | undefined>;
 }

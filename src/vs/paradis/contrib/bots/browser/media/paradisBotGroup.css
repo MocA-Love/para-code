@@ -192,7 +192,8 @@
 	white-space: nowrap;
 }
 
-.paradis-bot-group-room .pbgr-undelivered.queued {
+.paradis-bot-group-room .pbgr-undelivered.unread,
+.paradis-bot-group-room .pbgr-undelivered.read {
 	border-color: color-mix(in srgb, var(--vscode-descriptionForeground) 40%, transparent);
 	color: var(--vscode-descriptionForeground);
 }
@@ -291,13 +292,6 @@
 .paradis-bot-group-dialog .pbgd-member > .paradis-check {
 	flex: 1;
 	min-width: 0;
-}
-
-.paradis-bot-group-dialog .pbgd-member-note {
-	flex: none;
-	font-size: var(--vscode-fontSize-label1);
-	color: var(--vscode-descriptionForeground);
-	white-space: nowrap;
 }
 
 .paradis-bot-group-dialog .pbgd-help,

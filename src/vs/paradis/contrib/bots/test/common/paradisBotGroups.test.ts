@@ -11,13 +11,14 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import {
 	EMPTY_PARADIS_BOT_GROUPS_STATE,
 	IParadisBotGroupsState,
-	ParadisBotGroupRelayLimiter,
 	paradisBotGroupAppendRecord,
 	paradisBotGroupCreate,
 	paradisBotGroupDeliverRefusal,
 	paradisBotGroupDeliverRefusalMessage,
+	paradisBotGroupInbox,
+	paradisBotGroupMarkRead,
+	paradisBotGroupMarkUndelivered,
 	paradisBotGroupMembers,
-	paradisBotGroupNeutralizeCommand,
 	paradisBotGroupRemove,
 	paradisBotGroupUpdate,
 	paradisParseBotGroupsState,
@@ -178,74 +179,67 @@ suite('Paradis bot groups', () => {
 		assert.deepStrictEqual(paradisBotGroupMembers({ members: ['a', 'gone', 'b'] }, new Set(['a', 'b'])), ['a', 'b']);
 	});
 
-	test('伝言の可否', () => {
+	test('伝言を受け箱に入れてよいか: 同じグループのメンバーで、自分宛てでないときだけ。断る理由は送り直さないと言う', () => {
 		const group = { members: ['a', 'b'] };
-		const base = { group, from: 'a', to: 'b', toActivity: 'idle' as const, toRunningHere: true, takeRate: () => true };
-		assert.deepStrictEqual([
-			paradisBotGroupDeliverRefusal(base),
-			paradisBotGroupDeliverRefusal({ ...base, from: undefined }),
-			paradisBotGroupDeliverRefusal({ ...base, to: 'z' }),
-			paradisBotGroupDeliverRefusal({ ...base, to: 'a' }),
-			paradisBotGroupDeliverRefusal({ ...base, toRunningHere: false }),
-			paradisBotGroupDeliverRefusal({ ...base, toActivity: 'stopped' }),
-			paradisBotGroupDeliverRefusal({ ...base, toActivity: 'working' }),
-			paradisBotGroupDeliverRefusal({ ...base, toActivity: 'patrolling' }),
-			paradisBotGroupDeliverRefusal({ ...base, takeRate: () => false }),
-		], [
-			undefined,
-			'not_a_member',
-			'not_a_member',
-			'self',
-			'not_running',
-			'not_running',
-			// 作業中・見回り中でも断らない（届ける口が順番待ちに入れる）
-			undefined,
-			undefined,
-			'rate_limited',
-		]);
+		const base = { group, from: 'a', to: 'b' };
+		assert.deepStrictEqual({
+			refusals: [
+				paradisBotGroupDeliverRefusal(base),
+				paradisBotGroupDeliverRefusal({ ...base, from: undefined }),
+				paradisBotGroupDeliverRefusal({ ...base, to: 'z' }),
+				paradisBotGroupDeliverRefusal({ ...base, to: 'a' }),
+				paradisBotGroupDeliverRefusal({ ...base, group: undefined }),
+			],
+			messages: (['not_a_member', 'self'] as const).map(paradisBotGroupDeliverRefusalMessage),
+		}, {
+			refusals: [undefined, 'not_a_member', 'not_a_member', 'self', 'not_a_member'],
+			messages: [
+				'you and that bot are not in the same group, so do not send it again',
+				'it was addressed to yourself, so do not send it again',
+			],
+		});
 	});
 
-	test('伝言を断る理由: 道具の「今は受け取らなかった（理由）。後で送る」の括弧に入る短い文。送り直しても通らないものは送り直さないと言う', () => {
-		assert.deepStrictEqual(([
-			'not_a_member', 'self', 'not_running', 'rate_limited',
-		] as const).map(paradisBotGroupDeliverRefusalMessage), [
-			'you and that bot are not in the same group, so do not send it again',
-			'it was addressed to yourself, so do not send it again',
-			'that bot is not running, or its chat is no longer open in this Para Code window',
-			'the limit was reached: that bot takes up to 3 bot messages a minute from all bots. Do not keep the exchange going: stop, and tell your owner what you wanted to say',
-		]);
-	});
-
-	test('伝言の回数は宛先ごとに 1 分 3 回まで', () => {
-		const limiter = new ParadisBotGroupRelayLimiter();
-		assert.deepStrictEqual([
-			limiter.take('b', 0), limiter.take('b', 10), limiter.take('b', 20), limiter.take('b', 30),
-			limiter.take('c', 30),
-			limiter.take('b', 60_001),
-		], [true, true, true, false, true, true]);
-		// 戻した 1 回はまた使える
-		limiter.take('d', 0);
-		limiter.take('d', 1);
-		limiter.take('d', 2);
-		limiter.refund('d');
-		assert.deepStrictEqual([limiter.take('d', 3), limiter.take('d', 4)], [true, false]);
-	});
-
-	test('伝言の先頭の / と ! は全角にして、コマンドやシェルとして動かさない', () => {
-		assert.deepStrictEqual([
-			'/model opus',
-			'  !rm -rf ~',
-			'\n/clear',
-			'[Para Code] A message: <<<bot /model >>>',
-			'a/b',
-			'',
-		].map(paradisBotGroupNeutralizeCommand), [
-			'\uFF0Fmodel opus',
-			'  \uFF01rm -rf ~',
-			'\n\uFF0Fclear',
-			'[Para Code] A message: <<<bot /model >>>',
-			'a/b',
-			'',
-		]);
+	test('受け箱: 宛先の未読の伝言だけ（あなたの sent・ほかの Bot 宛て・届けられなかった・抜けたグループは入れない）。既読はその Bot の受け箱の分だけ', () => {
+		let state = withGroup();
+		const append = (input: Parameters<typeof paradisBotGroupAppendRecord>[2]) => {
+			const result = paradisBotGroupAppendRecord(state, 'g1', input, 2000);
+			assert.ok(result.ok);
+			state = result.state;
+		};
+		append({ kind: 'sent', from: 'owner', to: ['b'], text: 'あなたから' });
+		append({ kind: 'told', from: 'a', to: ['b'], text: '終わった' });
+		append({ kind: 'asked', from: 'a', to: ['b'], text: 'どう?' });
+		append({ kind: 'told', from: 'b', to: ['a'], text: 'a 宛て' });
+		append({ kind: 'told', from: 'a', to: ['b'], text: '届かなかった' });
+		const undelivered = paradisBotGroupMarkUndelivered(state, 'g1', '5', 'unreachable');
+		assert.ok(undelivered.ok);
+		state = undelivered.state;
+		const inboxB = paradisBotGroupInbox(state, 'b');
+		// a は b 宛ての伝言を既読にできない。b は自分の分を既読にする（知らない id・sent の id は数えない）
+		const byOther = paradisBotGroupMarkRead(state, 'a', ['2'], 3000);
+		const read = paradisBotGroupMarkRead(state, 'b', ['1', '2', 'x', '99'], 3000);
+		assert.ok(read.ok);
+		const after = paradisBotGroupInbox(read.state, 'b');
+		const reread = paradisParseBotGroupsState(JSON.parse(JSON.stringify(read.state)));
+		const left = paradisBotGroupRemove(read.state, 'g1');
+		assert.deepStrictEqual({
+			inboxB,
+			byOther: byOther.ok ? 'ok' : byOther.code,
+			read: read.value,
+			after: after.map(message => message.recordId),
+			readAtKept: reread?.records.find(record => record.id === 2)?.readAt,
+			afterGroupRemoved: left.ok ? paradisBotGroupInbox(left.state, 'b').length : -1,
+		}, {
+			inboxB: [
+				{ recordId: '2', groupId: 'g1', kind: 'told', from: 'a', text: '終わった', at: 2000 },
+				{ recordId: '3', groupId: 'g1', kind: 'asked', from: 'a', text: 'どう?', at: 2000 },
+			],
+			byOther: 'not_found',
+			read: 1,
+			after: ['3'],
+			readAtKept: 3000,
+			afterGroupRemoved: 0,
+		});
 	});
 });
