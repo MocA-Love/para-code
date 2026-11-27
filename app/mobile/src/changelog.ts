@@ -42,14 +42,8 @@ export const MOBILE_CHANGELOG: readonly MobileRelease[] = [
 	{
 		version: '0.12.32',
 		date: '2026-11-27',
-		items: [
-			{
-				icon: 'happy-outline',
-				title: 'PC の画面に Bot の節が出て、Bot の項目・会話・ファイル・設定をスマホから開けるようになりました',
-				body: 'PC の Para Code の更新と、PC の設定で Bot をオンにすることが要ります。',
-				tone: 'yellow',
-			},
-		],
+		// Bot の画面は PC の設定（既定オフ）の下なので、まだ知らせない。既定をオンにする版でまとめて書く
+		items: [],
 	},
 	{
 		version: '0.12.31',
