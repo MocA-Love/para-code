@@ -34,6 +34,8 @@ import {
 	ParadisBotItemsResult,
 	ParadisBotItemStatus,
 	paradisBotItemAdd,
+	paradisBotItemLinkBoardTask,
+	paradisBotItemNoteBoardStep,
 	paradisBotItemOwnerComment,
 	paradisBotItemOwnerSnooze,
 	paradisBotItemOwnerStatus,
@@ -476,6 +478,29 @@ export class ParadisBotsService extends Disposable {
 				await this.saveItems(paradisBotItemsMarkDelivered(this.items, item.uid, pending), undefined);
 			}
 			return { ok: true, value: item };
+		});
+	}
+
+	// ---- タスクボードとの行き来（Para Code が書く） ----------------------------------------------------
+
+	/** Bot が自分の項目からボードへ載せたタスクを項目に結ぶ。ボードへ載せた道具だけが呼ぶ。 */
+	linkBoardTask(botId: string, uid: string, taskId: string): Promise<Result<IParadisBotItem>> {
+		return this.write(async () => this.apply(paradisBotItemLinkBoardTask(this.items, botId, uid, taskId, this.now())));
+	}
+
+	/**
+	 * ボードのエージェントの工程の終わりの報告を、そのタスクを結んだ項目へ写す（`launchId` は `<タスクの id>:<試行番号>`）。
+	 * Bot の機能がオフ・写す先が無いときは何もしない。
+	 */
+	async noteBoardStep(launchId: string, summary: string): Promise<void> {
+		const at = launchId.lastIndexOf(':');
+		if (!this.enabled() || at <= 0) {
+			return;
+		}
+		const taskId = launchId.slice(0, at);
+		await this.write<IParadisBotItem | undefined>(async () => {
+			const result = paradisBotItemNoteBoardStep(this.items, taskId, launchId, summary, this.now());
+			return result === undefined ? { ok: true, value: undefined } : this.apply(result);
 		});
 	}
 

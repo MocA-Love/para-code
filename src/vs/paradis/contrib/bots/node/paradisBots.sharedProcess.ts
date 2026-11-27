@@ -13,8 +13,10 @@ import { promises as fs } from 'fs';
 import { homedir } from 'os';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { join } from '../../../../base/common/path.js';
+import { ProxyChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';
+import { IMainProcessService } from '../../../../platform/ipc/common/mainProcessService.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
 import { PARADIS_MCP_PORT_FILE_NAME } from '../../agentBrowser/common/paradisAgentBrowser.js';
@@ -27,7 +29,10 @@ import { paradisResolveAgentTemplates } from '../../agentModelCatalog/common/par
 import { paradisSetAskHumanBotPaneCheck } from '../../humanAsk/node/paradisAskHumanToolProvider.js';
 import { paradisSharedHumanAskService } from '../../humanAsk/node/paradisHumanAskChannel.js';
 import { paradisSharedScheduledRunsService } from '../../scheduledRuns/node/paradisScheduledRunsChannel.js';
+import { IParadisTaskBoardBotHost, PARADIS_TASK_BOARD_BOT_HOST_CHANNEL } from '../../taskBoard/common/paradisTaskBoardHost.js';
+import { onParadisTaskBoardStepCompleted } from '../../taskBoard/node/paradisTaskBoardStepEvents.js';
 import { PARADIS_BOTS_CHANNEL, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
+import { ParadisBotBoardToolProvider } from './paradisBotBoardToolProvider.js';
 import { ParadisBotHomes } from './paradisBotHomes.js';
 import { ParadisBotManageToolProvider, paradisBotIdeActionRefusal, paradisBotPatrolToolRefusal } from './paradisBotManageToolProvider.js';
 import { ParadisBotToolProvider } from './paradisBotToolProvider.js';
@@ -128,6 +133,12 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 		}));
 	}
 	store.add(paradisRegisterMcpToolProvider(new ParadisBotToolProvider(service, enabled)));
+	// Bot の項目をタスクボードへ載せる（main のボードの host の、shared process にだけ出した口）。工程の報告を項目へ写す
+	const boardHost = ProxyChannel.toService<IParadisTaskBoardBotHost>(accessor.get(IMainProcessService).getChannel(PARADIS_TASK_BOARD_BOT_HOST_CHANNEL));
+	store.add(paradisRegisterMcpToolProvider(new ParadisBotBoardToolProvider(service, enabled, request => boardHost.addTask(request))));
+	store.add(onParadisTaskBoardStepCompleted(event => {
+		service.noteBoardStep(event.launchId, event.summary).catch(error => logService.warn('[ParadisBots] could not note a task board step on an item', error));
+	}));
 	// Bot 同士の伝言（宛先とグループの記録はグループの機能が差し込む口から引く）
 	store.add(paradisRegisterMcpToolProvider(new ParadisBotMessageToolProvider(service, enabled)));
 	// 管理の道具の書く側は、IDE 系の書く道具と同じ設定の下（スキーマは画面側でしか登録されないので生の値を読む）

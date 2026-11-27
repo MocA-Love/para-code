@@ -8,8 +8,8 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { WebSocket, WebSocketServer } from 'ws';
-import type { ITaskBoardAddIssuesRequest, ITaskBoardArtifact, ITaskBoardFlow, ITaskBoardManualSession, ITaskBoardPrRef, ITaskBoardPullDetail, ITaskBoardRpc, ITaskBoardSnapshot, ITaskBoardTask, TaskBoardAddIssuesResult, TaskBoardRpcMethod, TaskBoardServerMessage } from '@engine/paradisTaskBoard.js';
-import { TaskBoardError } from '@engine/paradisTaskBoard.js';
+import type { ITaskBoardAddIssuesRequest, ITaskBoardAddTaskRequest, ITaskBoardArtifact, ITaskBoardFlow, ITaskBoardManualSession, ITaskBoardPrRef, ITaskBoardPullDetail, ITaskBoardRpc, ITaskBoardSnapshot, ITaskBoardTask, TaskBoardAddIssuesResult, TaskBoardAddTaskResult, TaskBoardRpcMethod, TaskBoardServerMessage } from '@engine/paradisTaskBoard.js';
+import { TaskBoardError, taskBoardSanitizeAddTask } from '@engine/paradisTaskBoard.js';
 import { TaskBoardEngine } from '@engine/paradisTaskBoardEngine.js';
 import { parseTaskBoardFlow } from '@engine/paradisTaskBoardFlow.js';
 import { TASK_BOARD_PANE_ASK_ANSWER_ROUTE } from '@engine/paradisTaskBoardAsks.js';
@@ -155,6 +155,7 @@ type EmbeddedMessage =
 	| { readonly type: 'ready'; readonly port: number; readonly repo: string | undefined }
 	| { readonly type: 'failed'; readonly reason: 'busy' | 'error'; readonly message: string }
 	| { readonly type: 'add-issues-result'; readonly requestId: string; readonly result: TaskBoardAddIssuesResult }
+	| { readonly type: 'add-task-result'; readonly requestId: string; readonly result: TaskBoardAddTaskResult }
 	| { readonly type: 'pick-folder'; readonly requestId: string };
 
 // Para Code は Electron を Node として動かして（ELECTRON_RUN_AS_NODE）このサーバーを起こす。消さないと、工程のコマンド
@@ -173,6 +174,9 @@ function tellParent(message: EmbeddedMessage, sent?: () => void): void {
 
 /** 今動いているボードへ Issue を載せる処理（main() が開くたびに差し替える）。Para Code の「タスク」の画面から IPC で届く。 */
 let addIssuesCurrent: ((request: ITaskBoardAddIssuesRequest) => Promise<TaskBoardAddIssuesResult>) | undefined;
+
+/** 今動いているボードへ、Para Code の Bot が出したタスクを載せる処理（main() が開くたびに差し替える）。 */
+let addTaskCurrent: ((request: ITaskBoardAddTaskRequest) => TaskBoardAddTaskResult) | undefined;
 
 /** Para Code に頼んだフォルダの選択の、返事の待ち（requestId → 受け取り）。 */
 const folderPicks = new Map<string, (folder: string | undefined) => void>();
@@ -489,6 +493,9 @@ async function main(restart?: IRestart): Promise<void> {
 		onState: broadcastSoon,
 		onSynced: r => { if (r.added || r.removed) { send({ type: 'notice', notice: { id: randomBytes(4).toString('hex'), kind: 'synced', at: Date.now(), detail: `${r.added}/${r.updated}/${r.removed}` } }); } },
 	}) : undefined;
+
+	// Bot のタスクは GitHub が無くても載せる（手で足すタスクと同じ。出どころの札だけ付く）
+	addTaskCurrent = request => ({ ok: true, taskId: engine.addTask({ title: request.title, body: request.body }, request.origin) });
 
 	addIssuesCurrent = async request => {
 		if (!sync || !remote) {
@@ -1299,6 +1306,18 @@ async function handleAddIssues(requestId: string, raw: unknown): Promise<void> {
 	tellParent({ type: 'add-issues-result', requestId, result });
 }
 
+/** 本体から届いた「タスクを載せる」の値を確かめて今のボードへ渡し、結果を返す（形が違えば載せない）。 */
+function handleAddTask(requestId: string, raw: unknown): void {
+	const request = taskBoardSanitizeAddTask(raw);
+	let result: TaskBoardAddTaskResult;
+	try {
+		result = request === undefined ? { ok: false, reason: 'failed', message: 'invalid task' } : addTaskCurrent ? addTaskCurrent(request) : { ok: false, reason: 'not-running' };
+	} catch (err) {
+		result = { ok: false, reason: 'failed', message: (err as Error).message?.slice(0, 500) };
+	}
+	tellParent({ type: 'add-task-result', requestId, result });
+}
+
 async function start(): Promise<void> {
 	if (args.embedded) {
 		if (!process.send) {
@@ -1320,6 +1339,9 @@ async function start(): Promise<void> {
 			const { requestId, request } = (message ?? {}) as { requestId?: unknown; request?: unknown };
 			if (type === 'add-issues' && typeof requestId === 'string' && requestId.length <= 64) {
 				void handleAddIssues(requestId, request);
+			}
+			if (type === 'add-task' && typeof requestId === 'string' && requestId.length <= 64) {
+				handleAddTask(requestId, request);
 			}
 			if (type === 'pick-folder-result' && typeof requestId === 'string') {
 				const folder = (message as { path?: unknown }).path;

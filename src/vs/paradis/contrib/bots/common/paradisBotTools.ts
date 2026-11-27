@@ -13,6 +13,7 @@
 
 import { isPlainRecord } from '../../../common/paradisGuards.js';
 import type { IParadisMcpToolDefinition } from '../../agentBrowser/common/paradisMcpToolProvider.js';
+import { PARADIS_BOT_BOARD_ADD_TASK_TOOL } from './paradisBotBoard.js';
 import { PARADIS_BOT_ASK_TOOL, PARADIS_BOT_INBOX_TOOL, PARADIS_BOT_TELL_TOOL } from './paradisBotMessages.js';
 import { PARADIS_BOT_SUGGESTION_LIMITS } from './paradisBotSuggestions.js';
 import { IParadisBotItem, IParadisBotItemChanges, IParadisBotItemEvent, IParadisBotItemLink, PARADIS_BOT_ITEM_LIMITS, PARADIS_BOT_ITEM_STATUSES, ParadisBotItemStatus, paradisBotItemUndelivered, paradisSanitizeBotItemLink, paradisSanitizeBotItemQuestions } from './paradisBotItems.js';
@@ -142,9 +143,9 @@ export const PARADIS_BOT_SERVER_INSTRUCTIONS = 'Bot tools (bot_item_list, bot_it
 
 /**
  * 会話の Bot のペインで前もって許可する Bot の道具（どれも Bot のペインにだけ出し、呼び出し元のペインの Bot として
- * 動く）。項目の道具と提案に、Bot どうしの伝言（bot_tell・bot_ask）と受け箱（bot_inbox）を足す。管理の道具（list_bots ほか）は入れない。
+ * 動く）。項目の道具と提案に、Bot どうしの伝言（bot_tell・bot_ask）と受け箱（bot_inbox）、ボードへタスクを載せる道具（bot_board_add_task）を足す。管理の道具（list_bots ほか）は入れない。
  */
-const PARADIS_BOT_CHAT_APPROVAL_TOOLS: readonly string[] = [...PARADIS_BOT_TOOL_NAMES, PARADIS_BOT_TELL_TOOL, PARADIS_BOT_ASK_TOOL, PARADIS_BOT_INBOX_TOOL];
+const PARADIS_BOT_CHAT_APPROVAL_TOOLS: readonly string[] = [...PARADIS_BOT_TOOL_NAMES, PARADIS_BOT_TELL_TOOL, PARADIS_BOT_ASK_TOOL, PARADIS_BOT_INBOX_TOOL, PARADIS_BOT_BOARD_ADD_TASK_TOOL];
 
 /**
  * Bot のペインを Codex で起動するときにだけ渡す、Bot の道具の前もっての許可（`-c` の引数。シェルの 1 行に足す形）。
