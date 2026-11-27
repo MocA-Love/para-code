@@ -22,7 +22,7 @@ import { paradisSanitizeDisplayText } from '../../agentBrowser/common/paradisAge
 import { IParadisBotPatrolScheduleFields, paradisBotPatrolFieldsFromCron } from '../../scheduledRuns/common/paradisScheduledRunBotPatrol.js';
 import { IParadisBotTaskInput, IParadisBotTaskView } from '../../scheduledRuns/common/paradisScheduledRunBotTask.js';
 import { paradisDayOfWeekLabel } from '../../scheduledRuns/common/paradisScheduleCron.js';
-import { ParadisBotTaskTools, PARADIS_BOT_TASK_MAX_PROMPT_LENGTH, PARADIS_SCHEDULED_RUN_MAX_NAME_LENGTH, paradisScheduledRunReasonLabel } from '../../scheduledRuns/common/paradisScheduledRuns.js';
+import { ParadisBotTaskTools, ParadisScheduledRunReason, PARADIS_BOT_PATROL_MAX_CONCURRENT, PARADIS_BOT_PATROL_MAX_DAILY_TOTAL, PARADIS_BOT_TASK_MAX_PROMPT_LENGTH, PARADIS_SCHEDULED_RUN_MAX_NAME_LENGTH, paradisScheduledRunReasonLabel } from '../../scheduledRuns/common/paradisScheduledRuns.js';
 import { paradisBotPatrolCronLabel, paradisBotPatrolScheduleCheck, paradisBotPatrolTime } from '../common/paradisBotPatrolModel.js';
 import type { IParadisBotPatrolServices } from './paradisBotPatrol.js';
 
@@ -59,6 +59,24 @@ export function paradisBotTaskToolsHelp(tools: ParadisBotTaskTools): string {
 		case 'read': return localize('paradis.botTasks.toolsHelp.read', "手元のファイルを読むだけです。Web も書き換えもしません。");
 		case 'web': return localize('paradis.botTasks.toolsHelp.web', "「読む＋Web」は Web のページを読めますが、ファイルの書き換えやコマンドは使いません。読んだページの文は指示として扱いません。");
 		case 'bot': return localize('paradis.botTasks.toolsHelp.bot', "会話と同じ権限で動きます。Web から読んだ文に誘導されて、ファイルの書き換えやコマンドを使うおそれがあります。");
+	}
+}
+
+/**
+ * 定期実行の回が終わらなかった理由（見回りの言い回しの理由を、定期実行の言葉に直す。ほかは定期実行の共通の文）。
+ */
+export function paradisBotTaskReasonLabel(reason: ParadisScheduledRunReason): string {
+	switch (reason) {
+		case 'botsOff': return localize('paradis.botTasks.reason.botsOff', "Bot の機能がオフのため見送りました");
+		case 'botPaused': return localize('paradis.botTasks.reason.botPaused', "Bot を一時停止しているため見送りました");
+		case 'botUnsupported': return localize('paradis.botTasks.reason.botUnsupported', "この Bot のエージェントでは定期実行を動かせないため見送りました");
+		case 'botMissed': return localize('paradis.botTasks.reason.botMissed', "スリープ中・終了中に時刻が過ぎたため見送りました");
+		case 'botNoWindow': return localize('paradis.botTasks.reason.botNoWindow', "起動できるウィンドウ（この PC のウィンドウ）が開いていなかったため見送りました");
+		case 'botBusy': return localize('paradis.botTasks.reason.botBusy', "Bot の会話が開いていたため見送りました");
+		case 'botConcurrency': return localize('paradis.botTasks.reason.botConcurrency', "ほかの Bot の見回り・定期実行が {0} つ動いていたため見送りました", PARADIS_BOT_PATROL_MAX_CONCURRENT);
+		case 'botDailyLimit': return localize('paradis.botTasks.reason.botDailyLimit', "Bot の見回り・定期実行の 1 日の上限（{0} 回）に達したため見送りました", PARADIS_BOT_PATROL_MAX_DAILY_TOTAL);
+		case 'botsTurnedOff': return localize('paradis.botTasks.reason.botsTurnedOff', "Bot の機能がオフになったため止めました");
+		default: return paradisScheduledRunReasonLabel(reason);
 	}
 }
 
@@ -186,14 +204,14 @@ export class ParadisBotTasksSection {
 			const message = paradisSanitizeDisplayText(view.lastRun.lastMessage, LAST_MESSAGE_LINE_LIMIT);
 			const status = view.lastRun.status === 'completed'
 				? localize('paradis.botTasks.lastDone', "前回 {0}", view.lastRun.finishedAt !== undefined ? paradisBotPatrolTime(view.lastRun.finishedAt, now) : '')
-				: localize('paradis.botTasks.lastOther', "前回は終わりませんでした: {0}", view.lastRun.reason !== undefined ? paradisScheduledRunReasonLabel(view.lastRun.reason) : view.lastRun.status);
+				: localize('paradis.botTasks.lastOther', "前回: {0}", view.lastRun.reason !== undefined ? paradisBotTaskReasonLabel(view.lastRun.reason) : view.lastRun.status);
 			last.textContent = message ? localize('paradis.botTasks.lastWithMessage', "{0} · {1}", status, message) : status;
 			const title = paradisSanitizeDisplayText(view.lastRun.lastMessage, LAST_MESSAGE_TITLE_LIMIT);
 			if (title) {
 				last.title = title;
 			}
 		}
-		const actions = DOM.append(row, $('.paradis-bot-page-ask-actions'));
+		const actions = DOM.append(row, $('.paradis-bot-task-actions'));
 		if (view.activeRunId !== undefined) {
 			const stop = store.add(new ParadisButton(actions, { kind: 'secondary', label: localize('paradis.botTasks.stop', "止める") }));
 			stop.enabled = !this.busy;

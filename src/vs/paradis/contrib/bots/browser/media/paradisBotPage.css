@@ -887,3 +887,9 @@ button.paradis-bot-page-link:hover {
 .paradis-bot-task-prompt {
 	color: var(--vscode-paradis-text);
 }
+
+.paradis-bot-task-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--vscode-spacing-size60);
+}
