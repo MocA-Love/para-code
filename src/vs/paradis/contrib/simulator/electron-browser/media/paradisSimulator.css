@@ -13,10 +13,15 @@
 }
 
 .paradis-simulator-bar {
+	/* The narrow layout below reads this width. */
+	container-type: inline-size;
 	display: flex;
+	/* When the title and the buttons do not fit on one line, the buttons move to a second line as a group (the key hint
+		takes no width of its own, see below), instead of squeezing the title or running out of the header. */
+	flex-wrap: wrap;
 	align-items: center;
 	justify-content: space-between;
-	gap: 8px;
+	gap: 4px 8px;
 	padding: 6px 12px;
 	/* The kit's line between surfaces: panel.border is the editor's own color in some themes (Houston), which hid the
 		line under the header. */
@@ -44,7 +49,8 @@
 }
 
 .paradis-simulator-key-hint {
-	flex: 1 1 auto;
+	/* No width of its own: it fills what the title and the buttons leave, so it never makes the buttons wrap. */
+	flex: 1 1 0;
 	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -59,6 +65,8 @@
 	align-items: center;
 	gap: 4px;
 	flex: 0 0 auto;
+	/* On the second line, keep the buttons at the right edge. */
+	margin-left: auto;
 }
 
 /* "Give to a pane" (paradisSimulatorShareButton.ts): the browser toolbar's share button (plug, count, chevron), sized to
@@ -92,18 +100,35 @@
 	pointer-events: none;
 }
 
-.paradis-simulator-share-list {
+.paradis-simulator-share .paradis-simulator-share-list.codicon {
 	display: flex;
 	align-items: center;
 	justify-content: center;
 	width: 16px;
+	/* More specific than codicon.css (16px), as in the browser's button. */
 	font-size: var(--vscode-codiconFontSize-compact);
 	color: var(--vscode-icon-foreground);
 	border-radius: 0 var(--paradis-radius-control) var(--paradis-radius-control) 0;
 }
 
-.paradis-simulator-share-list[hidden] {
+.paradis-simulator-share .paradis-simulator-share-list[hidden] {
 	display: none;
+}
+
+/* Very narrow header (a split editor): the buttons need about 240px (iOS, with "give to a pane"). Drop the key hint, and
+	when even a line of their own is too narrow, let the buttons wrap among themselves. */
+@container (max-width: 300px) {
+	.paradis-simulator-key-hint {
+		display: none;
+	}
+
+	.paradis-simulator-actions {
+		flex: 0 1 auto;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+		row-gap: 4px;
+		min-width: 0;
+	}
 }
 
 .paradis-simulator-share:not(.checked) .paradis-simulator-share-main:hover {
