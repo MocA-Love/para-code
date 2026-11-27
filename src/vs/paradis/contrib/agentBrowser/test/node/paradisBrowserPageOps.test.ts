@@ -173,6 +173,14 @@ suite('paradisBrowserPageOps (shared process)', () => {
 		assert.notStrictEqual(paradisPageOpsOwnerKey('pane-token'), 'pane-token');
 	});
 
+	test('the answer of set_http_credentials calls the tab "this tab", since it may be a private tab of the agent and not a shared one', async () => {
+		const host = new FakeHost();
+		host.mainResults.set('applyExactViewPageOverrides', { ok: true, summary: { extraHeaderNames: [], rules: [] } });
+		const ops = new ParadisBrowserPageOps(host);
+		const result = await ops.call(createCall(), 'set_http_credentials', { origin: 'https://intranet.example.com', username: 'u', password: 'p' });
+		assert.deepStrictEqual([isError(result), textOf(result).startsWith('This tab now answers HTTP authentication prompts from https://intranet.example.com'), textOf(result).includes('shared')], [false, true, false]);
+	});
+
 	test('a user tab is refused with a reason that points to the agent\'s own tabs', async () => {
 		const host = new FakeHost();
 		host.mainResults.set('applyExactViewPageOverrides', { ok: false, reason: 'userStorage' });

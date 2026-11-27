@@ -612,7 +612,7 @@ export class ParadisBrowserPageOps {
 			return applied;
 		}
 		return text(request.credentials
-			? `The shared tab now answers HTTP authentication prompts from ${request.credentials.origin} with the given user name and password (at most twice per realm and minute, so a wrong password does not loop). Reload or navigate the page to use them.`
+			? `This tab now answers HTTP authentication prompts from ${request.credentials.origin} with the given user name and password (at most twice per realm and minute, so a wrong password does not loop). Reload or navigate the page to use them.`
 			: 'Removed the HTTP credentials of this tab.');
 	}
 

@@ -206,7 +206,7 @@ export const PARADIS_MCP_LOCAL_TOOLS = [
 	},
 	{
 		name: 'delete_browser_profile',
-		description: 'Delete a named browser profile that was created from this terminal pane with create_browser_profile, together with its stored cookies and data. Profiles of the user (including ones an agent created but the user has since used) and profiles created from other terminal panes are never deleted; for those, the answer is the same as for a name that does not exist. Fails while the user or another terminal pane has a tab open in that profile.',
+		description: 'Delete a named browser profile that was created from this terminal pane with create_browser_profile, together with its stored cookies and data. Profiles of the user (including ones an agent created but the user has since used) and profiles created from other terminal panes are never deleted; for those, the answer is the same as for a name that does not exist. Fails while the user or another terminal pane has a tab open in that profile. Your own tabs in that profile are closed with it, and the answer lists their tabIds.',
 		inputSchema: {
 			type: 'object',
 			properties: {
