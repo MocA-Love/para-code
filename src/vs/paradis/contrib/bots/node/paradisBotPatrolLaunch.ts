@@ -7,36 +7,35 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // 見回り（読むだけ）の起動のたびに、制限に要るものを用意する（shared process）。
-// - 見回りの cwd: 起動ごとに作る空のフォルダ（Bot のデータのフォルダの下。0700）。Bot の専用フォルダは会話の Bot が
+// - 見回りの cwd: Bot ごとに決まった 1 つのフォルダ（Bot のデータのフォルダの下。0700）を、起動のたびに空にして使う。Bot の専用フォルダは会話の Bot が
 //   書けるので cwd にしない（そこに置かれた `.claude/settings*.json` の allow・hook、`.codex/config.toml`、
 //   `AGENTS.override.md` を見回りが読まないように）。中には Bot の指示文の写し（`AGENTS.md`）だけを置く
 // - Claude Code: `--settings`（bypass を効かなくする）と、para-browser だけを書いた `--mcp-config` のファイルを、
 //   一時ファイルに書いてから置き換える（0600）。中身にトークンは無い（Authorization は `${PARA_CODE_TERMINAL_PANE_ID}` の
 //   まま書き、Claude Code が起動した時に展開する。利用者の `~/.claude.json` と同じ形）
 // - Codex: 全部のホーム（アカウント）の `config.toml` を読み、para-browser 以外の MCP サーバーの名前と形を集める
-// 利用者の設定ファイルへは、見回りのフォルダの親を Claude Code の信頼済みにする 1 項目だけを書く（呼び出し側。
-// 起動ごとに新しいフォルダなので、無いと毎回「このフォルダを信頼しますか」で止まる）。
+// 利用者の設定ファイルへは、見回りのフォルダを Claude Code の信頼済みにする 1 項目（Bot ごとに 1 つ）だけを書く
+// （無いと TUI が「このフォルダを信頼しますか」で止まる）。書き方はワークツリーの信頼と同じ（paradisClaudeFolderTrust.ts）。
+// Bot を消したら、その項目とフォルダを外す（{@link paradisForgetBotPatrol}）。
 
 import { promises as fs } from 'fs';
-import { generateUuid } from '../../../../base/common/uuid.js';
 import { dirname, join } from '../../../../base/common/path.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 import { paradisClaudeMcpServerEntry } from '../../agentBrowser/common/paradisMcpSetupEncoding.js';
+import { ParadisClaudeTrustOutcome, paradisApplyClaudeFolderTrust, paradisClaudeTrustKeysFor, paradisRevokeClaudeFolderTrust, paradisUpdateClaudeConfig } from '../../workspaceSwitch/node/paradisClaudeFolderTrust.js';
 import { IParadisCodexMcpServerRef, PARADIS_BOT_PATROL_CLAUDE_SETTINGS, ParadisBotPatrolLaunchContext, paradisBotPatrolCodexDisabledServers } from '../common/paradisBotTools.js';
 
 /** 読む `config.toml` の大きさの上限（Para Code の MCP の設定と同じ）。 */
 const MAX_CODEX_CONFIG_BYTES = 1024 * 1024;
 /** 指示文の写しに入れる 1 ファイルの上限（文字数）。超えた分は切る。 */
 const MAX_INSTRUCTION_FILE_CHARS = 64 * 1024;
-/** 消さずに残す、前の回の見回りのフォルダの数（Bot ごと。今の回を除く）。 */
-const KEEP_PREVIOUS_RUNS = 2;
 /** 見回りのフォルダとその親にあってはならないもの（Claude Code・Codex がフォルダから設定・hook・MCP を読む所）。 */
 const AGENT_CONFIG_ENTRIES: readonly string[] = ['.claude', '.codex', '.mcp.json', '.git', 'AGENTS.override.md', 'CLAUDE.local.md'];
 
 export interface IParadisBotPatrolLaunchEnvironment {
 	/** 設定ファイルを書くフォルダ（Bot のデータのフォルダの中。専用フォルダの外）。 */
 	readonly folder: string;
-	/** 見回りのフォルダを作る親のフォルダ。 */
+	/** 見回りのフォルダ（Bot ごとに 1 つ）を置く親のフォルダ。 */
 	readonly runsFolder: string;
 	/** 親を確かめるのを止める所（利用者のホーム。ここより上は見ない）。 */
 	readonly stopFolder: string;
@@ -46,8 +45,11 @@ export interface IParadisBotPatrolLaunchEnvironment {
 	readonly codexConfigFiles: () => readonly string[];
 	/** そのフォルダ（と配下）を Claude Code の信頼済みにする。失敗しても投げない。 */
 	readonly trustClaudeFolder?: (folder: string) => Promise<void>;
-	readonly now?: () => number;
-	readonly uuid?: () => string;
+}
+
+/** Bot の見回りのフォルダ。 */
+export function paradisBotPatrolRunFolder(runsFolder: string, botId: string): string {
+	return join(runsFolder, fileStem(botId));
 }
 
 /** 見回りに渡す Bot の専用フォルダと、写す指示文（名前と中身）。 */
@@ -91,13 +93,6 @@ export function paradisBotPatrolInstructions(home: IParadisBotPatrolHome): strin
 	return parts.join('\n') + '\n';
 }
 
-/** 同じ Bot の前の回の見回りのフォルダを、新しい方から {@link KEEP_PREVIOUS_RUNS} 個だけ残して消す。 */
-async function pruneRuns(runsFolder: string, stem: string): Promise<void> {
-	const names = (await fs.readdir(runsFolder).catch(() => [] as string[])).filter(name => name.startsWith(`${stem}-`)).sort();
-	for (const name of names.slice(0, Math.max(0, names.length - KEEP_PREVIOUS_RUNS))) {
-		await fs.rm(join(runsFolder, name), { recursive: true, force: true }).catch(() => undefined);
-	}
-}
 
 /** 見回りのフォルダの親に、エージェントがフォルダから読む設定があればその場所を返す。 */
 async function agentConfigAbove(folder: string, stopFolder: string): Promise<string | undefined> {
@@ -120,7 +115,7 @@ export async function paradisPrepareBotPatrolLaunch(environment: IParadisBotPatr
 		for (const path of environment.codexConfigFiles()) {
 			const text = await readCodexConfig(path);
 			if (text === false) {
-				return 'Para Code could not read a Codex config.toml, so it cannot turn off the other MCP servers for a look-around.';
+				return `Para Code could not read ${path}, so it cannot turn off the other MCP servers for a look-around. Make the file readable (and under 1 MB) to start look-arounds again.`;
 			}
 			if (text !== undefined) {
 				texts.push(text);
@@ -128,31 +123,34 @@ export async function paradisPrepareBotPatrolLaunch(environment: IParadisBotPatr
 		}
 		const servers = paradisBotPatrolCodexDisabledServers(texts);
 		if (servers === undefined) {
-			return 'Para Code could not list the MCP servers in a Codex config.toml for certain, so it does not start a look-around (it could not turn the others off).';
+			return 'Para Code could not list the MCP servers in a Codex config.toml for certain, so it does not start a look-around (it could not turn the others off). Write each MCP server as its own [mcp_servers.<name>] table with url or command, using a name of letters, digits, "-" or "_", to start look-arounds again.';
 		}
 		disabledServers = servers;
 	} else {
 		const gatewayPort = await environment.gatewayPort();
 		if (gatewayPort === undefined) {
-			return 'The Para Code browser tools are not running, so a look-around cannot start.';
+			return 'The Para Code browser tools are not running, so a look-around cannot start. Restart Para Code to start look-arounds again.';
 		}
 		port = gatewayPort;
 	}
 	const stem = fileStem(botId);
-	const runFolder = join(environment.runsFolder, `${stem}-${(environment.now ?? Date.now)()}-${(environment.uuid ?? generateUuid)().slice(0, 8)}`);
+	const runFolder = paradisBotPatrolRunFolder(environment.runsFolder, botId);
 	const instructionsFile = join(runFolder, 'AGENTS.md');
 	try {
 		await fs.mkdir(environment.runsFolder, { recursive: true, mode: 0o700 });
-		await pruneRuns(environment.runsFolder, stem);
-		// 新しく作る（既にあれば失敗する）。中は空なので、置くのは指示文の写しだけ
+		// Bot ごとに 1 つのフォルダを、起動のたびに空にして使う（前の回の残りや、後から置かれたものを持ち越さない。
+		// 同じ Bot の見回りは同時に 1 つだけ）
+		await fs.rm(runFolder, { recursive: true, force: true });
 		await fs.mkdir(runFolder, { mode: 0o700 });
-		const above = await agentConfigAbove(runFolder, environment.stopFolder);
-		if (above !== undefined) {
-			return `Para Code found ${above} above the look-around folder, so it does not start a look-around there (Claude Code or Codex could read settings from it).`;
-		}
 		await paradisWriteFileAtomic(instructionsFile, paradisBotPatrolInstructions(home), { rejectSymlink: true, forceMode: 0o600 });
+		// 起動の直前に、置いたのが指示文の写しだけで、親にもエージェントがフォルダから読む設定が無いことを確かめる
+		const entries = await fs.readdir(runFolder);
+		const above = entries.length === 1 && entries[0] === 'AGENTS.md' ? await agentConfigAbove(runFolder, environment.stopFolder) : join(runFolder, entries.find(entry => entry !== 'AGENTS.md') ?? '');
+		if (above !== undefined) {
+			return `Para Code found ${above} in or above the look-around folder, so it does not start a look-around there (Claude Code or Codex could read settings from it). Remove it to start look-arounds again.`;
+		}
 	} catch {
-		return 'Para Code could not prepare the folder for a look-around.';
+		return `Para Code could not prepare the folder for a look-around (${runFolder}). Check that Para Code can write there to start look-arounds again.`;
 	}
 	if (agent === 'codex') {
 		return { agent, runFolder, disabledServers };
@@ -166,6 +164,31 @@ export async function paradisPrepareBotPatrolLaunch(environment: IParadisBotPatr
 	} catch {
 		return 'Para Code could not write the read-only settings for a look-around.';
 	}
-	await environment.trustClaudeFolder?.(environment.runsFolder);
+	await environment.trustClaudeFolder?.(runFolder);
 	return { agent, runFolder, homeFolder: home.folder, instructionsFile, settingsFile, mcpConfigFile };
+}
+
+/**
+ * 見回りのフォルダを Claude Code の信頼済みにする（`configFile` の `projects.<フォルダ>.hasTrustDialogAccepted` の 1 項目
+ * だけ。ワークツリーの信頼と同じロック・原子的な書き込みで、設定が壊れていれば書かない）。
+ */
+export async function paradisTrustBotPatrolFolder(configFile: string, folder: string): Promise<ParadisClaudeTrustOutcome> {
+	const keys = await paradisClaudeTrustKeysFor(folder);
+	return (await paradisUpdateClaudeConfig(configFile, config => paradisApplyClaudeFolderTrust(config, keys))).outcome;
+}
+
+/**
+ * Bot を消したときに、見回りのフォルダ・設定ファイルと、そのフォルダの信頼の項目を外す（`configFile` が undefined なら
+ * 信頼は外さない）。失敗しても投げない。
+ */
+export async function paradisForgetBotPatrol(environment: Pick<IParadisBotPatrolLaunchEnvironment, 'folder' | 'runsFolder'>, botId: string, configFile: string | undefined): Promise<void> {
+	const runFolder = paradisBotPatrolRunFolder(environment.runsFolder, botId);
+	if (configFile !== undefined) {
+		const keys = await paradisClaudeTrustKeysFor(runFolder).catch(() => [] as string[]);
+		await paradisUpdateClaudeConfig(configFile, config => paradisRevokeClaudeFolderTrust(config, keys)).catch(() => undefined);
+	}
+	const stem = fileStem(botId);
+	for (const path of [runFolder, join(environment.folder, `${stem}.claude-settings.json`), join(environment.folder, `${stem}.claude-mcp.json`)]) {
+		await fs.rm(path, { recursive: true, force: true }).catch(() => undefined);
+	}
 }
