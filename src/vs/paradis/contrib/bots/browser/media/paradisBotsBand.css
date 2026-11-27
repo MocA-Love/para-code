@@ -179,6 +179,27 @@
 	color: var(--vscode-badge-foreground);
 }
 
+/* Unread bot messages in the bot's inbox (opens the bot's page on the conversation). */
+.paradis-bots-row-unread {
+	display: flex;
+	flex-shrink: 0;
+	align-items: center;
+	gap: 2px;
+	height: 16px;
+	padding: 0 4px;
+	border: 1px solid color-mix(in srgb, var(--vscode-textLink-foreground) 40%, transparent);
+	border-radius: var(--vscode-cornerRadius-circle);
+	font-size: var(--vscode-fontSize-label2);
+	line-height: 14px;
+	font-variant-numeric: tabular-nums;
+	color: var(--vscode-textLink-foreground);
+	cursor: pointer;
+}
+
+.paradis-bots-row-unread > .codicon {
+	font-size: 12px;
+}
+
 /* The pin looks like the space row's pin (.paradis-worktree-pin): hidden until hover, blue when pinned. */
 .paradis-bots-row-pin {
 	display: flex;
@@ -358,4 +379,30 @@
 
 .paradis-bot-create .pbcd-note.error {
 	color: var(--vscode-paradis-danger);
+}
+
+/* --- Groups (paradisBotGroupDialog.ts): a small heading row, then one 28px row per group with up to three faces overlapped. --- */
+
+.paradis-bots-band-section {
+	display: flex;
+	align-items: center;
+	height: 28px;
+	padding: 0 8px;
+	font-size: var(--vscode-fontSize-label2);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-bots-group-faces {
+	display: flex;
+	flex: none;
+}
+
+.paradis-bots-group-faces > .paradis-bot-face {
+	width: 14px;
+	height: 14px;
+}
+
+.paradis-bots-group-faces > .paradis-bot-face + .paradis-bot-face {
+	margin-left: -5px;
 }

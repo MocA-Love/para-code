@@ -28,6 +28,11 @@ export function questionHasPreview(question: { readonly multiSelect?: boolean; r
 	return question.multiSelect !== true && (question.options ?? []).some(option => option.preview !== undefined);
 }
 
+/** 質問カードに「その他（入力して回答）」・自分で書く欄を出すか（要対応の台帳の、書けない問いでは出さない）。 */
+export function questionAllowsFreeText(question: { readonly allowFreeText?: boolean }): boolean {
+	return question.allowFreeText !== false;
+}
+
 /** この質問のカードで使えるもの。 */
 export interface AskQuestionFeatures {
 	/** メモ（preview のある質問だけ）。 */

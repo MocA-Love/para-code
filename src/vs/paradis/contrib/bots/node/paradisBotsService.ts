@@ -167,7 +167,6 @@ export class ParadisBotsService extends Disposable {
 	private readonly _onDidRemoveBot = this._register(new Emitter<string>());
 	/** Bot を台帳から外した（定期実行の見回りの定義を消すのに使う）。 */
 	readonly onDidRemoveBot: Event<string> = this._onDidRemoveBot.event;
-
 	private readonly _onDidRequestReveal = this._register(new Emitter<IParadisBotRevealRequest>());
 	/** 開いている Bot のペインを前に出してほしい（別のウィンドウから開こうとして断った）。 */
 	readonly onDidRequestReveal: Event<IParadisBotRevealRequest> = this._onDidRequestReveal.event;
@@ -702,6 +701,7 @@ export class ParadisBotsService extends Disposable {
 		if (bot.paused) {
 			return 'paused';
 		}
+		// 読むだけに制限できるエージェントか（main の paradisBotPatrolSupported。起動の引数は paradisBotPatrolLaunchArgs が組む）
 		if (bot.preserved !== undefined || this.homes === undefined || !paradisBotPatrolSupported(bot.agent)) {
 			return 'unsupported';
 		}
