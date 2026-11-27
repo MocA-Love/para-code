@@ -121,7 +121,7 @@ export const PARADIS_BOT_MANAGE_TOOLS: readonly IParadisMcpToolDefinition[] = [
 	},
 	{
 		name: PARADIS_BOT_SCHEDULE_TASK_TOOL,
-		description: `Add a scheduled task to a bot: at the times you give, Para Code continues the bot's conversation and sends it the request as one turn; the bot's reply stays in its conversation and the user is notified (bell). The task is created turned off: the user reads it and turns it on in the bot's settings tab, and confirms there if it uses the bot's own permissions. A run is skipped while the bot's conversation is open. ${ACTIONS_NOTE}`,
+		description: `Add a scheduled task to a bot: at the times you give, Para Code runs the request in a new conversation of the bot (not its usual conversation); the result shows as a card on the bot's page and the user is notified (bell). The task is created turned off: the user reads it and turns it on in the bot's settings tab, and confirms there unless it is web-only. ${ACTIONS_NOTE}`,
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -129,7 +129,7 @@ export const PARADIS_BOT_MANAGE_TOOLS: readonly IParadisMcpToolDefinition[] = [
 				name: { type: 'string', maxLength: 80, description: 'Short name shown in the list and the notification.' },
 				schedule: { type: 'string', maxLength: 200, description: 'Five-field cron expression in local time, e.g. "30 0 * * *" for every day at 0:30. At least 60 minutes apart, at most 24 runs a day for all tasks of a bot.' },
 				request: { type: 'string', maxLength: 2000, description: 'What the bot should do each time, in the user\'s words.' },
-				tools: { type: 'string', enum: ['read', 'web', 'bot'], description: '"read": read files only. "web" (default): read files and read or search the web, no writing or commands. "bot": the bot\'s own permissions (the user confirms when turning it on).' },
+				tools: { type: 'string', enum: ['web', 'readWeb', 'bot'], description: '"web" (default): only fetch and search the web, no local files. "readWeb": also read the bot\'s files (their content could be sent to the web, so the user confirms when turning it on). "bot": the bot\'s own permissions (the user confirms when turning it on). Every run is a new conversation of its own; its result shows as a card in the bot\'s page.' },
 			},
 			required: ['bot', 'schedule', 'request'],
 			additionalProperties: false,

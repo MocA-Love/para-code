@@ -41,8 +41,9 @@ export const PARADIS_BOT_IDLE_STOP_MS = 30 * 60_000;
 export type ParadisBotActivity = 'stopped' | 'idle' | 'working' | 'patrolling';
 
 /** ペインを起動した目的。`chat` は Bot の会話、`patrol` は見回り（PR 12 が使う）。 */
-export type ParadisBotPanePurpose = 'chat' | 'patrol';
-export const PARADIS_BOT_PANE_PURPOSES: readonly ParadisBotPanePurpose[] = ['chat', 'patrol'];
+export type ParadisBotPanePurpose = 'chat' | 'patrol' | 'task';
+/** `task` は定期実行（報告書の D6 (a)）。会話とは別の会話（セッション）で走り、会話の数には入れない。 */
+export const PARADIS_BOT_PANE_PURPOSES: readonly ParadisBotPanePurpose[] = ['chat', 'patrol', 'task'];
 
 /**
  * Bot のペインでエージェントが動いていない・止まっている理由（`activity` が待機中のときに、帯とページへ「待機中」の代わりに出す）。

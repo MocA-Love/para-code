@@ -52,7 +52,8 @@ import {
 import { IParadisRunWatchState, PARADIS_RUN_WATCH_INITIAL, paradisAdvanceRunWatch, paradisRunWatchTimeoutReason } from '../common/paradisScheduledRunWatch.js';
 import { IParadisScheduledRunsClient } from './paradisScheduledRunsClient.js';
 import { paradisBotPatrolPrompt } from '../common/paradisScheduledRunBotPatrol.js';
-import { paradisBotTaskPrompt } from '../common/paradisScheduledRunBotTask.js';
+import { paradisBotTaskPaneClosable, paradisBotTaskPrompt } from '../common/paradisScheduledRunBotTask.js';
+import { paradisBotDraftAfterInput } from '../../bots/browser/paradisBotPaneHide.js';
 import { IParadisBotsService } from '../../bots/common/paradisBotsApi.js';
 import { IParadisBotLaunchedTerminal } from '../../bots/common/paradisBotLaunchSteps.js';
 import { paradisLaunchBotTerminal } from '../../bots/electron-browser/paradisBotTerminalLaunch.js';
@@ -61,6 +62,8 @@ import { IWorkbenchEnvironmentService } from '../../../../workbench/services/env
 /** このウィンドウで動かしている1回分。 */
 /** 制限した段の定期実行が終わってから、その会話のペインを閉じるまで（ベルの台帳へ記録する処理が終わる時間を見込む）。 */
 const PARADIS_BOT_TASK_CLOSE_DELAY_MS = 60_000;
+/** 使われていて閉じなかったときに見直す回数（1 分ごと。尽きたら Bot の 30 分の停止に任せる）。 */
+const PARADIS_BOT_TASK_CLOSE_ATTEMPTS = 30;
 
 interface IActiveRun {
 	readonly runId: string;
@@ -93,7 +96,9 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 	private readonly active = new Map<string, IActiveRun>();
 	/** Bot の定期実行のペインが閉じたら結び付けを外す見張り。 */
 	private readonly botPaneReleases = this._register(new DisposableStore());
-	/** 制限した段の定期実行の会話のペインを閉じる時計。 */
+	/** 定期実行の会話のペインに、利用者の打ちかけがあるか（入力から推し量る。paradisBotDraftAfterInput）。 */
+	private readonly taskPaneDrafts = new Map<ITerminalInstance, boolean>();
+	/** 定期実行の会話のペインを閉じる時計。 */
 	private readonly limitedTaskCloseTimers = new Set<ReturnType<typeof setTimeout>>();
 	/** claim を投げている最中の実行（同じ依頼が2回届いても1回しか試さない）。 */
 	private readonly claiming = new Set<string>();
@@ -196,7 +201,7 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 
 		if (definition.target.kind === 'bot') {
 			const task = definition.target.botTask;
-			// 定期実行は Bot の会話の 1 ターン（眠った会話を続けて起こし、指示を最初の指示として渡す）。見回りは読むだけのペイン
+			// 定期実行は Bot の会話とは別の新しい会話で走らせる。見回りは読むだけのペイン
 			await this.executeBotPatrol(run, definition.target.botId ?? '', task !== undefined
 				? { task: task.tools, prompt: paradisBotTaskPrompt(definition.name, request.definition.prompt, task.tools) }
 				: { prompt: paradisBotPatrolPrompt(request.definition.prompt) });
@@ -281,7 +286,11 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 		// Bot の定期実行は会話のペインで走るので、閉じたら（止める・打ち切り・終わった後に閉じる・利用者が閉じる）その場で
 		// 結び付けを外す。外れないままだと次の回が「会話が開いている」で見送られる
 		if (run.definition.target.botTask !== undefined && launchedInstance !== undefined && paneToken !== undefined) {
+			const input = launchedInstance.onDidInputData(data => this.taskPaneDrafts.set(launchedInstance, paradisBotDraftAfterInput(this.taskPaneDrafts.get(launchedInstance) === true, data)));
+			this.botPaneReleases.add(input);
 			this.botPaneReleases.add(Event.once(launchedInstance.onDisposed)(() => {
+				input.dispose();
+				this.taskPaneDrafts.delete(launchedInstance);
 				this.botsService.releasePane(paneToken).catch(error => this.logService.warn('[ParadisScheduledRuns] releasing a bot task pane failed', error));
 			}));
 		}
@@ -310,7 +319,7 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 	private async executeBotPatrol(run: IActiveRun, botId: string, options: { readonly task?: ParadisBotTaskTools; readonly prompt: string }): Promise<void> {
 		let launched: IParadisBotLaunchedTerminal;
 		try {
-			const launch = options.task !== undefined ? await this.botsService.requestLaunch(botId, 'chat', { task: options.task }) : await this.botsService.requestLaunch(botId, 'patrol');
+			const launch = options.task !== undefined ? await this.botsService.requestLaunch(botId, 'task', { task: options.task }) : await this.botsService.requestLaunch(botId, 'patrol');
 			if (!launch.ok) {
 				this.finish(run, { runId: run.runId, status: 'failed', reason: 'launchFailed', detail: launch.message });
 				return;
@@ -360,11 +369,9 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 		if (step.report === 'completed') {
 			// 完了してもターミナルは閉じない（結果を確かめられるよう残す）
 			this.finish(run, { runId: run.runId, status: 'completed', sawAgentStatus: true });
-			// Bot の定期実行を制限した段で起こした会話は、ベルに記録が残った後で閉じる（制限したまま利用者が話し続けないように。
-			// 結果は会話の記録に残り、次に開いたときに続きから読める）
-			const tools = run.definition.target.botTask?.tools;
-			if (tools === 'read' || tools === 'web') {
-				this.closeLimitedTaskPane(instance);
+			// Bot の定期実行の会話（Bot の会話とは別）は、ベルに記録が残った後で閉じる。結果は Bot のページのカードに残る
+			if (run.definition.target.botTask !== undefined) {
+				this.closeTaskPaneWhenUnused(instance);
 			}
 		} else if (step.report !== undefined) {
 			this.report({ runId: run.runId, status: step.report, sawAgentStatus: true });
@@ -403,12 +410,21 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 		this.killTerminal(instance);
 	}
 
-	/** 制限した段の定期実行の会話のペインを、ベルの記録が済む頃に閉じる。利用者が前で使っていれば閉じない。 */
-	private closeLimitedTaskPane(instance: ITerminalInstance): void {
+	/**
+	 * 定期実行の会話のペインを、ベルの記録が済む頃に閉じる。利用者が開いて使っている（前にある・フォーカスがある・打ちかけが
+	 * ある）間は閉じず、少し後に見直す（30 分の停止と同じ判定。打ちかけごと消さない）。
+	 */
+	private closeTaskPaneWhenUnused(instance: ITerminalInstance, attempt = 0): void {
 		const handle = setTimeout(() => {
 			this.limitedTaskCloseTimers.delete(handle);
-			if (!instance.isDisposed && !(this.terminalService.activeInstance === instance && instance.hasFocus)) {
+			if (instance.isDisposed) {
+				return;
+			}
+			const use = { visible: this.terminalService.activeInstance === instance, focused: instance.hasFocus, draft: this.taskPaneDrafts.get(instance) === true };
+			if (paradisBotTaskPaneClosable(use)) {
 				this.killTerminal(instance);
+			} else if (attempt < PARADIS_BOT_TASK_CLOSE_ATTEMPTS) {
+				this.closeTaskPaneWhenUnused(instance, attempt + 1);
 			}
 		}, PARADIS_BOT_TASK_CLOSE_DELAY_MS);
 		this.limitedTaskCloseTimers.add(handle);

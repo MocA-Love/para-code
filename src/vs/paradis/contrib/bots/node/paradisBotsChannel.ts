@@ -92,7 +92,7 @@ export class ParadisBotsChannel implements IServerChannel<string> {
 				const options = args.at(2);
 				if (options !== undefined && options !== null) {
 					const task = isRecord(options) ? PARADIS_BOT_TASK_TOOLS.find(candidate => candidate === options.task) : undefined;
-					return id !== undefined && purpose === 'chat' && task !== undefined ? service.requestLaunch(id, purpose, { task }) : INVALID;
+					return id !== undefined && purpose === 'task' && task !== undefined ? service.requestLaunch(id, purpose, { task }) : INVALID;
 				}
 				return id !== undefined && purpose !== undefined ? service.requestLaunch(id, purpose) : INVALID;
 			}

@@ -69,12 +69,20 @@ async function paradisWaitForShellPrompt(instance: ITerminalInstance | undefined
 	await timeout(SHELL_PROMPT_SETTLE_MS);
 }
 
+/**
+ * 起動の行を打つ前にシェルのプロンプトを待つか。見回り・定期実行（制限の引数や長い指示が付き、段に関係なく 1024 バイトを
+ * 超えうる）と、最初の指示を渡す起動は待つ。指示の無い会話の起動（短い行）は待たない。
+ */
+export function paradisBotLaunchWaitsForPrompt(launch: Pick<IParadisBotLaunch, 'purpose'>, prompt: string | undefined): boolean {
+	return launch.purpose !== 'chat' || (prompt !== undefined && prompt.length > 0);
+}
+
 export interface IParadisBotTerminalLaunchOptions {
 	/** 起動するスペース。 */
 	readonly stateKey: string | undefined;
 	/** 前に出さず、利用者の入力を奪わない裏のタブで起動する（スペースが要る）。 */
 	readonly background: boolean;
-	/** エージェントへ最初に渡す指示（見回り）。 */
+	/** エージェントへ最初に渡す指示（見回り・定期実行）。 */
 	readonly prompt?: string;
 }
 
@@ -107,8 +115,8 @@ export async function paradisLaunchBotTerminal(accessor: ServicesAccessor, launc
 					...(launch.extraFlags !== undefined ? { extraFlags: launch.extraFlags } : {}),
 					...(options.prompt !== undefined ? { prompt: options.prompt } : {}),
 					...(options.background && options.stateKey !== undefined ? { preserveFocus: true } : {}),
-					// 見回り・定期実行の長い起動の行（引数の配列）は、シェルのプロンプトが出てから打つ
-					beforeCommand: Array.isArray(launch.extraFlags) ? async launched => {
+					// 見回り・定期実行・最初の指示つきの長い起動の行は、シェルのプロンプトが出てから打つ
+					beforeCommand: paradisBotLaunchWaitsForPrompt(launch, options.prompt) ? async launched => {
 						if (!await beforeCommand(launched)) {
 							return false;
 						}

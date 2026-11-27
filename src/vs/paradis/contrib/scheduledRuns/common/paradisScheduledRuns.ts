@@ -171,13 +171,14 @@ export interface IParadisScheduledRunTarget {
 }
 
 /**
- * Bot の定期実行で使える道具の段。
- * - `read`: 読むだけ（見回りと同じ。手元のファイルを読む道具だけ）
- * - `web`: 読む＋Web（読む道具に、Web のページの取得・検索を足す。書く道具・コマンドは使わない）
- * - `bot`: Bot の権限のまま（会話と同じ。選ぶときに確かめる）
+ * Bot の定期実行で使える道具の段（#1271 の決め）。
+ * - `web`: Web だけ（既定）。Web のページの取得・検索だけで、手元のファイルは読まない（空の作業フォルダで走る）
+ * - `readWeb`: 読む＋Web。手元のファイル（Bot の専用フォルダ）も読める。読んだ中身が Web の道具で外へ送られうるので、選ぶときに確かめる
+ * - `bot`: Bot の権限のまま（会話と同じ）。選ぶときに確かめる
+ * どの段も Bot の会話とは別の新しい会話で走る。
  */
-export type ParadisBotTaskTools = 'read' | 'web' | 'bot';
-export const PARADIS_BOT_TASK_TOOLS: readonly ParadisBotTaskTools[] = ['read', 'web', 'bot'];
+export type ParadisBotTaskTools = 'web' | 'readWeb' | 'bot';
+export const PARADIS_BOT_TASK_TOOLS: readonly ParadisBotTaskTools[] = ['web', 'readWeb', 'bot'];
 
 /** Bot の定期実行の中身（定義の `target.botTask`）。 */
 export interface IParadisBotTaskTarget {

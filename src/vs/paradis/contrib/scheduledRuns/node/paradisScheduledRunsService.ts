@@ -391,7 +391,7 @@ export class ParadisScheduledRunsService extends Disposable {
 		}
 		// エージェントが作る・変えるものは無効で始めるので、ここでは確かめない（利用者が有効にするときに画面が確かめる）
 		if (!byAgent && paradisBotTaskNeedsConfirmation(input, existing)) {
-			return { ok: false, error: localize('paradis.scheduledRuns.error.botTaskConfirm', "「Bot の権限」の段は、確認してから選んでください。") };
+			return { ok: false, error: localize('paradis.scheduledRuns.error.botTaskConfirm', "「読む＋Web」と「Bot の権限」の段は、確認してから選んでください。") };
 		}
 		if (!existing) {
 			if (this.definitions.filter(definition => paradisIsBotTaskDefinition(definition, botId)).length >= PARADIS_BOT_TASK_MAX_PER_BOT) {

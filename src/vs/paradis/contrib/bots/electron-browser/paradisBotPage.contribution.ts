@@ -119,9 +119,13 @@ class ParadisBotPatrolPort extends Disposable implements IParadisBotPatrolPort {
 			setEnabled: (id, enabled) => client.setEnabled(id, enabled),
 			runNow: id => client.runNow(id),
 			stop: runId => client.stop(runId),
-			confirmBotTools: async name => (await this.paradisDialogService.confirm({
+			confirmBotTools: async (name, tools) => (await this.paradisDialogService.confirm(tools === 'readWeb' ? {
+				message: localize('paradis.botTasks.confirmReadWeb', "定期実行「{0}」に手元のファイルを読ませますか?", name),
+				detail: localize('paradis.botTasks.confirmReadWebDetail', "誰も見ていない時刻に、Bot のフォルダのファイルと Web の両方を使います。読んだページの文に誘導されて、手元のファイルの中身が Web へ送られるおそれがあります。調べて知らせるだけなら「Web だけ」で足ります。"),
+				primaryButton: localize('paradis.botTasks.confirmReadWebAction', "読む＋Web にする"),
+			} : {
 				message: localize('paradis.botTasks.confirmBotTools', "定期実行「{0}」を Bot の権限で動かしますか?", name),
-				detail: localize('paradis.botTasks.confirmBotToolsDetail', "誰も見ていない時刻に、会話と同じ権限で動きます。Web から読んだ文に誘導されて、ファイルの書き換えやコマンドを使うおそれがあります。調べて知らせるだけなら「読む＋Web」で足ります。"),
+				detail: localize('paradis.botTasks.confirmBotToolsDetail', "誰も見ていない時刻に、会話と同じ権限で動きます。Web から読んだ文に誘導されて、ファイルの書き換えやコマンドを使うおそれがあります。調べて知らせるだけなら「Web だけ」で足ります。"),
 				primaryButton: localize('paradis.botTasks.confirmBotToolsAction', "Bot の権限で動かす"),
 			})).confirmed,
 			confirmRemove: async name => (await this.paradisDialogService.confirm({

@@ -23,7 +23,7 @@ import { dirname, join } from '../../../../base/common/path.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 import { paradisClaudeMcpServerEntry, paradisMcpServerUrl } from '../../agentBrowser/common/paradisMcpSetupEncoding.js';
 import { ParadisClaudeTrustOutcome, paradisApplyClaudeFolderTrust, paradisClaudeTrustKeysFor, paradisRevokeClaudeFolderTrust, paradisUpdateClaudeConfig } from '../../workspaceSwitch/node/paradisClaudeFolderTrust.js';
-import { IParadisCodexMcpServerRef, PARADIS_BOT_PATROL_CLAUDE_SETTINGS, ParadisBotPatrolLaunchContext, ParadisBotTaskLaunchContext, ParadisCodexBrowserRegistration, paradisBotPatrolCodexDisabledServers, paradisCodexBrowserRegistration } from '../common/paradisBotTools.js';
+import { IParadisCodexMcpServerRef, PARADIS_BOT_PATROL_CLAUDE_SETTINGS, ParadisBotPatrolLaunchContext, paradisBotTaskFolderKey, ParadisCodexBrowserRegistration, paradisBotPatrolCodexDisabledServers, paradisCodexBrowserRegistration } from '../common/paradisBotTools.js';
 
 /** 読む `config.toml` の大きさの上限（Para Code の MCP の設定と同じ）。 */
 const MAX_CODEX_CONFIG_BYTES = 1024 * 1024;
@@ -196,65 +196,6 @@ export async function paradisPrepareBotPatrolLaunch(environment: IParadisBotPatr
 }
 
 /**
- * Bot の専用フォルダの直下にあれば、制限した段の定期実行を起動しないもの（小文字で比べる）。cwd が専用フォルダなので、
- * Codex はそこの `.codex/config.toml`（信頼したフォルダ）・`AGENTS.override.md` を読み、Claude Code は `.mcp.json` を
- * 読みうる（`--strict-mcp-config` で使わないが、二重に止める）。`.claude/` は `--setting-sources=user` で読まないので許す
- * （同梱のスキルを置く所）。
- */
-const TASK_HOME_FORBIDDEN: ReadonlySet<string> = new Set(['.codex', '.mcp.json', 'agents.override.md', 'claude.local.md']);
-
-/**
- * Bot の定期実行を「読むだけ」「読む＋Web」の段で起動するのに要るものを用意する（会話を続けるので cwd は専用フォルダ）。
- * 用意できなければ断る理由（英文。定期実行の記録に出る）。
- */
-export async function paradisPrepareBotTaskLaunch(environment: IParadisBotPatrolLaunchEnvironment, agent: 'claude' | 'codex', botId: string, homeFolder: string): Promise<ParadisBotTaskLaunchContext | string> {
-	try {
-		const found = (await fs.readdir(homeFolder)).find(entry => TASK_HOME_FORBIDDEN.has(entry.toLowerCase()));
-		if (found !== undefined) {
-			return `Para Code found ${join(homeFolder, found)} in the bot's home folder, so it does not start a limited scheduled task there (the agent could read settings from it). Remove it to start scheduled tasks again.`;
-		}
-	} catch {
-		return 'Para Code could not read the bot\'s home folder.';
-	}
-	if (agent === 'codex') {
-		const texts: string[] = [];
-		for (const path of environment.codexConfigFiles()) {
-			const text = await readCodexConfig(path);
-			if (text === false) {
-				return `Para Code could not read ${path}, so it cannot turn off the other MCP servers for a scheduled task. Make the file readable (and under 1 MB) to start scheduled tasks again.`;
-			}
-			if (text !== undefined) {
-				texts.push(text);
-			}
-		}
-		const disabledServers = paradisBotPatrolCodexDisabledServers(texts);
-		if (disabledServers === undefined) {
-			return 'Para Code could not list the MCP servers in a Codex config.toml for certain, so it does not start a limited scheduled task.';
-		}
-		const browser = await paradisReadCodexBrowserRegistration(environment);
-		if (browser.registration.kind === 'unknown' || (browser.registration.kind === 'nowhere' && browser.url === undefined)) {
-			return 'Para Code could not set up its browser tools for a Codex scheduled task. Register para-browser with its url, or restart Para Code.';
-		}
-		return { agent, disabledServers, browser };
-	}
-	const port = await environment.gatewayPort();
-	if (port === undefined) {
-		return 'The Para Code browser tools are not running, so a scheduled task cannot start. Restart Para Code to start scheduled tasks again.';
-	}
-	const stem = fileStem(botId);
-	const settingsFile = join(environment.folder, `${stem}.task-claude-settings.json`);
-	const mcpConfigFile = join(environment.folder, `${stem}.task-claude-mcp.json`);
-	try {
-		await fs.mkdir(environment.folder, { recursive: true, mode: 0o700 });
-		await paradisWriteFileAtomic(settingsFile, JSON.stringify(PARADIS_BOT_PATROL_CLAUDE_SETTINGS, undefined, '\t') + '\n', { rejectSymlink: true, forceMode: 0o600 });
-		await paradisWriteFileAtomic(mcpConfigFile, JSON.stringify({ mcpServers: { 'para-browser': paradisClaudeMcpServerEntry(port) } }, undefined, '\t') + '\n', { rejectSymlink: true, forceMode: 0o600 });
-	} catch {
-		return 'Para Code could not write the limited settings for a scheduled task.';
-	}
-	return { agent, settingsFile, mcpConfigFile };
-}
-
-/**
  * 見回りのフォルダを Claude Code の信頼済みにする（`configFile` の `projects.<フォルダ>.hasTrustDialogAccepted` の 1 項目
  * だけ。ワークツリーの信頼と同じロック・原子的な書き込みで、設定が壊れていれば書かない）。
  */
@@ -268,13 +209,19 @@ export async function paradisTrustBotPatrolFolder(configFile: string, folder: st
  * 信頼は外さない）。失敗しても投げない。
  */
 export async function paradisForgetBotPatrol(environment: Pick<IParadisBotPatrolLaunchEnvironment, 'folder' | 'runsFolder'>, botId: string, configFile: string | undefined): Promise<void> {
+	// 見回りと定期実行（paradisBotTaskFolderKey）の作業フォルダの両方
+	await forgetBotRunFolder(environment, botId, configFile);
+	await forgetBotRunFolder(environment, paradisBotTaskFolderKey(botId), configFile);
+}
+
+async function forgetBotRunFolder(environment: Pick<IParadisBotPatrolLaunchEnvironment, 'folder' | 'runsFolder'>, botId: string, configFile: string | undefined): Promise<void> {
 	const runFolder = paradisBotPatrolRunFolder(environment.runsFolder, botId);
 	if (configFile !== undefined) {
 		const keys = await paradisClaudeTrustKeysFor(runFolder).catch(() => [] as string[]);
 		await paradisUpdateClaudeConfig(configFile, config => paradisRevokeClaudeFolderTrust(config, keys)).catch(() => undefined);
 	}
 	const stem = fileStem(botId);
-	for (const path of [runFolder, join(environment.folder, `${stem}.claude-settings.json`), join(environment.folder, `${stem}.claude-mcp.json`), join(environment.folder, `${stem}.task-claude-settings.json`), join(environment.folder, `${stem}.task-claude-mcp.json`)]) {
+	for (const path of [runFolder, join(environment.folder, `${stem}.claude-settings.json`), join(environment.folder, `${stem}.claude-mcp.json`)]) {
 		await fs.rm(path, { recursive: true, force: true }).catch(() => undefined);
 	}
 }
