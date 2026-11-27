@@ -222,4 +222,9 @@ export interface IParadisBotsService {
 
 	readHomeFile(botId: string, relativePath: string): Promise<ParadisBotsServiceResult<string | undefined>>;
 	writeHomeFile(botId: string, relativePath: string, text: string): Promise<ParadisBotsServiceResult<void>>;
+	/**
+	 * 同梱のテンプレートのスキルを専用フォルダに置き（Claude Code と Codex の両方の置き場）、人格メモにスキルの節を足す。
+	 * 渡すのはテンプレートの id だけ（中身は shared process が同梱のカタログから引く）。置いたスキルの名前を返す。
+	 */
+	installTemplateSkill(botId: string, templateId: string): Promise<ParadisBotsServiceResult<string>>;
 }
