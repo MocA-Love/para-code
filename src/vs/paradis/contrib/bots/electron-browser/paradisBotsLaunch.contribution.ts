@@ -39,6 +39,7 @@ import { IWorkbenchEnvironmentService } from '../../../../workbench/services/env
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { ILifecycleService, ShutdownReason } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
+import { IParadisAgentChatService } from '../../agentChat/browser/paradisAgentChatService.js';
 import { IParadisDialogService, paradisNotifyConfirmation } from '../../confirmDialog/browser/paradisDialogService.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisBotChangeDetail } from '../browser/paradisBotChangeDetail.js';
@@ -104,6 +105,7 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 	const terminalScopeService = accessor.get(IParadisTerminalScopeService);
 	const hostService = accessor.get(IHostService);
 	const environmentService = accessor.get(IWorkbenchEnvironmentService);
+	const agentChatService = accessor.get(IParadisAgentChatService);
 
 	if (opening.has(botId)) {
 		// 同じウィンドウで起動している途中（作った直後の挨拶など）。別のウィンドウの起動中と同じ案内にする
@@ -156,6 +158,8 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 		if (outcome.ok) {
 			// 閉じても止めず隠すペインとして、すぐ控える（Bot の様子の見直しを待つ間に閉じられても確認を出さない）
 			paradisAddTerminalHiddenOnClose(outcome.terminal.instanceId);
+			// 会話はいつも吹き出しで見せる（会話が見つかる前から。最初の挨拶・続けた会話もそのまま吹き出しに出る）。ターミナルは裏に持つ
+			agentChatService.pinChatMode(outcome.terminal.instanceId, !fromAgent);
 		}
 		if (!outcome.ok) {
 			return { ok: false, error: outcome.reason === 'refused' ? 'Para Code could not connect the terminal to the bot. Try again.' : 'Para Code could not start the terminal for the bot.' };

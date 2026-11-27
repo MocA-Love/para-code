@@ -402,6 +402,16 @@ export interface IParadisAgentChatCommand {
 	readonly plugin?: string;
 }
 
+/**
+ * 会話がまだ見つからない間に、チャット表示が出す案内（Bot の会話のペインなど、いつもチャット表示にするペインで呼ぶ側が渡す）。
+ * `notice` は会話の欄に出す 1 行。`band` があれば、入力欄の上に「ターミナルを開く」の帯を出す（初回設定・ログイン・許可の
+ * 画面で止まっているときなど、吹き出しでは進められない場面）。
+ */
+export interface IParadisAgentChatGuide {
+	readonly notice: string;
+	readonly band?: { readonly title: string; readonly detail?: string };
+}
+
 /** 取り寄せた画像の実体。 */
 export interface IParadisAgentChatImageData {
 	readonly mediaType: string;

@@ -58,7 +58,7 @@ import { IParadisAgentChatCardStates, IParadisAgentChatViewHost, ParadisAgentCha
 import { paradisVisibleTerminalText } from '../browser/paradisAgentTuiInput.js';
 import { IParadisAgentChoiceMenu, paradisAgentChoiceMenu } from '../../agentIde/common/paradisAgentChoiceMenu.js';
 import { ParadisAgentChatChoiceReturn } from '../browser/paradisAgentChatChoiceReturn.js';
-import { IParadisAgentChatCommand, IParadisAgentChatImageData, IParadisAgentChatSource, PARADIS_AGENT_CHAT_ENABLED_SETTING, PARADIS_AGENT_CHAT_SEND_KEY_SETTING } from '../common/paradisAgentChat.js';
+import { IParadisAgentChatCommand, IParadisAgentChatGuide, IParadisAgentChatImageData, IParadisAgentChatSource, PARADIS_AGENT_CHAT_ENABLED_SETTING, PARADIS_AGENT_CHAT_SEND_KEY_SETTING } from '../common/paradisAgentChat.js';
 import { ParadisAgentChatDraftInsert, paradisInsertAgentChatDraft, paradisPushAgentChatHistory, paradisSendToAgentPane } from '../common/paradisAgentChatComposerLogic.js';
 import { ParadisAgentChatActiveTracker, paradisAgentChatActive } from '../common/paradisAgentChatActive.js';
 import { IParadisAgentChatHeaderState, ParadisAgentChatHeaderHides, ParadisAgentChatHeaderWatch, paradisAgentChatHeaderState } from '../common/paradisAgentChatHeader.js';
@@ -175,6 +175,12 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 	/** 見出しを畳んだ側の台帳（ペインが閉じた・チャット表示が閉じた・会話が替わったら戻す）。 */
 	private readonly headerHides = this._register(new ParadisAgentChatHeaderHides());
 	private readonly chatModeInstances = new Set<number>();
+	/** いつもチャット表示にするペイン（{@link pinChatMode}。Bot の会話のペイン）。会話が見つかる前でもチャット表示にできる。 */
+	private readonly pinnedInstances = new Set<number>();
+	/** 会話が見つかるまで出す案内（{@link setChatGuide}）。 */
+	private readonly guides = new Map<number, IParadisAgentChatGuide>();
+	private readonly _onDidChangeGuide = this._register(new Emitter<number>());
+	readonly onDidChangeGuide = this._onDidChangeGuide.event;
 	/** 今チャット表示で見えているペイン（{@link isChatActive}）。 */
 	private readonly chatActive = this._register(new ParadisAgentChatActiveTracker());
 	readonly onDidChangeChatActive = this.chatActive.onDidChange;
@@ -310,9 +316,40 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 		return this.paneTokenService.getTokenForInstance(instanceId);
 	}
 
-	/** そのペインでエージェントの会話が確定していて、チャットに切り替えられるか。 */
+	/** そのペインでエージェントの会話が確定していて、チャットに切り替えられるか（いつもチャット表示にするペインは、確定を待たない）。 */
 	isAvailable(instanceId: number): boolean {
-		return this.enabled && this.insightsService.getForInstance(instanceId) !== undefined;
+		return this.enabled && (this.pinnedInstances.has(instanceId) || this.insightsService.getForInstance(instanceId) !== undefined);
+	}
+
+	pinChatMode(instanceId: number, moveFocus: boolean): void {
+		if (!this.enabled || this.terminalService.getInstanceFromId(instanceId) === undefined) {
+			return;
+		}
+		this.pinnedInstances.add(instanceId);
+		this.setChatMode(instanceId, true, moveFocus && this.isActiveInstance(instanceId));
+	}
+
+	isChatPinned(instanceId: number): boolean {
+		return this.enabled && this.pinnedInstances.has(instanceId);
+	}
+
+	setChatGuide(instanceId: number, guide: IParadisAgentChatGuide | undefined): void {
+		const previous = this.guides.get(instanceId);
+		if (guide === undefined ? previous === undefined : JSON.stringify(guide) === JSON.stringify(previous)) {
+			return;
+		}
+		if (guide === undefined) {
+			this.guides.delete(instanceId);
+		} else if (this.terminalService.getInstanceFromId(instanceId) !== undefined) {
+			this.guides.set(instanceId, guide);
+		} else {
+			return;
+		}
+		this._onDidChangeGuide.fire(instanceId);
+	}
+
+	chatGuide(instanceId: number): IParadisAgentChatGuide | undefined {
+		return this.guides.get(instanceId);
 	}
 
 	/** 帯の「ターミナルを開く」。選択画面が消えたらチャット表示へ戻す（フォーカスは、そのタブが前に出ているときだけ入力欄へ）。 */
@@ -455,6 +492,8 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 
 	private forgetInstance(instanceId: number): void {
 		this.chatModeInstances.delete(instanceId);
+		this.pinnedInstances.delete(instanceId);
+		this.guides.delete(instanceId);
 		this.headerHides.release(instanceId);
 		this.instanceListeners.deleteAndDispose(instanceId);
 		this.updateChatActive();

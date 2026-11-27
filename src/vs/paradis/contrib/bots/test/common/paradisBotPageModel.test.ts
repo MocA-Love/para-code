@@ -10,7 +10,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { ParadisBotGithubStatus } from '../../common/paradisBotGithub.js';
 import { IParadisBotItem } from '../../common/paradisBotItems.js';
-import { paradisBotGithubStatusText, paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel, paradisBotSuggestionText } from '../../common/paradisBotPageModel.js';
+import { paradisBotChatGuide, paradisBotGithubStatusText, paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel, paradisBotSuggestionText } from '../../common/paradisBotPageModel.js';
 
 function item(number: number, patch: Partial<IParadisBotItem> = {}): IParadisBotItem {
 	return {
@@ -80,6 +80,26 @@ suite('Paradis bots page', () => {
 			'一行目\n二行目rm -rf ~',
 			'一行目 二行目rm -rf ~',
 			'a b',
+		]);
+	});
+
+	test('会話が見つかるまでの案内: 止まっている理由があるか、しばらく見つからなければ「ターミナルを開く」の帯を出す', () => {
+		const guide = (halt: Parameters<typeof paradisBotChatGuide>[0]['halt'], waitedLong = false, agent: 'claude' | 'codex' = 'codex') => {
+			const value = paradisBotChatGuide({ agent, halt }, waitedLong);
+			return value.band !== undefined ? `${value.notice} / ${value.band.title} / ${value.band.detail}` : value.notice;
+		};
+		assert.deepStrictEqual([
+			guide(undefined),
+			guide(undefined, true),
+			guide({ kind: 'needsUser' }),
+			guide({ kind: 'notFound' }),
+			guide({ kind: 'exited', exitCode: 1 }, false, 'claude'),
+		], [
+			'起こしています…',
+			'まだ会話はありません / ターミナルで操作が要ります / 会話を吹き出しで読めません。起動の画面で止まっていないか確かめてください',
+			'まだ会話はありません / ターミナルで操作が要ります / 初回設定・ログイン・許可の画面で止まっています',
+			'まだ会話はありません / Codex が見つかりません / ターミナルで確かめてください',
+			'まだ会話はありません / エージェントは終了しました / ターミナルで確かめてください',
 		]);
 	});
 });

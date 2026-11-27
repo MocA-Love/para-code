@@ -21,7 +21,7 @@ import { IOpenerService } from '../../../../../platform/opener/common/opener.js'
 import { NullOpenerService } from '../../../../../platform/opener/test/common/nullOpenerService.js';
 import { ParadisAgentQuestionAnswer } from '../../../mobileRelay/common/paradisAgentQuestionKeys.js';
 import { paradisCodexAsyncQuestionItemId, paradisParseCodexAsyncReply } from '../../../mobileRelay/common/paradisCodexAsyncQuestions.js';
-import { IParadisAgentChatImageData, IParadisAgentChatSource, IParadisAgentChatView } from '../../common/paradisAgentChat.js';
+import { IParadisAgentChatGuide, IParadisAgentChatImageData, IParadisAgentChatSource, IParadisAgentChatView } from '../../common/paradisAgentChat.js';
 import { ParadisAgentChatSendKey } from '../../browser/paradisAgentChatComposer.js';
 import { ParadisAgentChatSession } from '../../browser/paradisAgentChatSession.js';
 import { IParadisAgentChatCardStates, IParadisAgentChatViewHost, ParadisAgentChatView } from '../../browser/paradisAgentChatView.js';
@@ -53,6 +53,10 @@ class TestHost implements IParadisAgentChatViewHost {
 	getToggleKeybindingLabel(): string | undefined { return '⌘⇧J'; }
 	readChoiceMenu: ((instanceId: number) => IParadisAgentChoiceMenu | undefined) | undefined;
 	isDialogOpen: ((token: string) => Promise<boolean | undefined>) | undefined;
+	guide: IParadisAgentChatGuide | undefined;
+	readonly guideChanged = new Emitter<number>();
+	readonly onDidChangeGuide = this.guideChanged.event;
+	chatGuide(): IParadisAgentChatGuide | undefined { return this.guide; }
 	private readonly states = new Map<string, IParadisAgentChatCardStates>();
 	cardStates(token: string): IParadisAgentChatCardStates {
 		let states = this.states.get(token);
@@ -67,7 +71,7 @@ class TestHost implements IParadisAgentChatViewHost {
 	setDraft(token: string, text: string): void { this.drafts.set(token, text); }
 	getHistory(): readonly string[] { return []; }
 	async getCommands() { return []; }
-	dispose(): void { this._onDidChangeSettings.dispose(); }
+	dispose(): void { this._onDidChangeSettings.dispose(); this.guideChanged.dispose(); }
 }
 
 function sourceReturning(views: IParadisAgentChatView[]): IParadisAgentChatSource {
@@ -343,6 +347,37 @@ suite('ParadisAgentChatView', () => {
 			closed: { visible: false, notice: null },
 		});
 	}));
+
+	test('shows the guide of the caller while no conversation is found, with the terminal band only when the agent is stuck on a screen the bubbles cannot show', async () => {
+		const { view, host, container, disposables } = await createView([]);
+		const requests: string[] = [];
+		disposables.add(view.onDidRequestTerminal(() => requests.push('terminal')));
+		const look = () => {
+			const band = container.querySelector<HTMLElement>('.paradis-agent-chat-terminal-band')!;
+			return { notice: container.querySelector('.paradis-agent-chat-notice')?.textContent, band: band.style.display !== 'none' ? band.textContent : null };
+		};
+		const plain = look();
+		host.guide = { notice: '起こしています…' };
+		host.guideChanged.fire(1);
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const waking = look();
+		host.guide = { notice: 'まだ会話はありません', band: { title: 'ターミナルで操作が要ります', detail: '初回設定・ログイン・許可の画面で止まっています' } };
+		// ほかのペインの案内が変わっても描き直さない
+		host.guideChanged.fire(2);
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const otherPane = look();
+		host.guideChanged.fire(1);
+		await new Promise(resolve => setTimeout(resolve, 0));
+		const stuck = look();
+		container.querySelector<HTMLElement>('.paradis-agent-chat-terminal-band .monaco-button')!.click();
+		assert.deepStrictEqual({ plain, waking, otherPane, stuck, requests }, {
+			plain: { notice: 'このターミナルのエージェントの会話が見つかりません。エージェントが会話を始めると、ここに表示されます。', band: null },
+			waking: { notice: '起こしています…', band: null },
+			otherPane: { notice: '起こしています…', band: null },
+			stuck: { notice: 'まだ会話はありません', band: 'ターミナルで操作が要ります初回設定・ログイン・許可の画面で止まっていますターミナルを開く' },
+			requests: ['terminal'],
+		});
+	});
 
 	test('folds the header when asked, keeping the conversation and the input', async () => {
 		const { view, container } = await createView([{ token: 'pane', agent: 'claude', epoch: 'e', rev: 0, reset: true, busy: false, live: null, interaction: null, messages: [] }]);
