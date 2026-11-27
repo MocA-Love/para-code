@@ -13,6 +13,7 @@
 
 import { isPlainRecord } from '../../../common/paradisGuards.js';
 import type { IParadisMcpToolDefinition } from '../../agentBrowser/common/paradisMcpToolProvider.js';
+import { PARADIS_BOT_ASK_TOOL, PARADIS_BOT_TELL_TOOL } from './paradisBotMessages.js';
 import { PARADIS_BOT_SUGGESTION_LIMITS } from './paradisBotSuggestions.js';
 import { IParadisBotItem, IParadisBotItemChanges, IParadisBotItemEvent, IParadisBotItemLink, PARADIS_BOT_ITEM_LIMITS, PARADIS_BOT_ITEM_STATUSES, ParadisBotItemStatus, paradisBotItemUndelivered, paradisSanitizeBotItemLink, paradisSanitizeBotItemQuestions } from './paradisBotItems.js';
 
@@ -140,6 +141,12 @@ export const PARADIS_BOT_TOOLS: readonly IParadisMcpToolDefinition[] = [
 export const PARADIS_BOT_SERVER_INSTRUCTIONS = 'Bot tools (bot_item_list, bot_item_show, bot_item_add, bot_item_update, bot_suggest): use them only when this terminal is a Para Code bot (the AGENTS.md or CLAUDE.md of your home folder says so). Keep one item per deliverable; when your owner has to decide, set the item to "needs_you" with your questions, then end your turn.';
 
 /**
+ * 会話の Bot のペインで前もって許可する Bot の道具（どれも Bot のペインにだけ出し、呼び出し元のペインの Bot として
+ * 動く）。項目の道具と提案に、Bot どうしの伝言（bot_tell・bot_ask）を足す。管理の道具（list_bots ほか）は入れない。
+ */
+const PARADIS_BOT_CHAT_APPROVAL_TOOLS: readonly string[] = [...PARADIS_BOT_TOOL_NAMES, PARADIS_BOT_TELL_TOOL, PARADIS_BOT_ASK_TOOL];
+
+/**
  * Bot のペインを Codex で起動するときにだけ渡す、Bot の道具の前もっての許可（`-c` の引数。シェルの 1 行に足す形）。
  * 利用者の `config.toml` には書かず、その起動にだけ効かせる。どれも英数字と `_.=-` だけの固定の文字列を単一引用符で
  * 囲むので、POSIX・fish・PowerShell のどれでも 1 つの引数になる。Codex 以外は undefined（Claude Code は MCP の
@@ -149,7 +156,7 @@ export function paradisBotLaunchApprovalFlags(agent: string): string | undefined
 	if (agent !== 'codex') {
 		return undefined;
 	}
-	return [...PARADIS_BOT_TOOL_NAMES].map(tool => `-c 'mcp_servers.para-browser.tools.${tool}.approval_mode=approve'`).join(' ');
+	return PARADIS_BOT_CHAT_APPROVAL_TOOLS.map(tool => `-c 'mcp_servers.para-browser.tools.${tool}.approval_mode=approve'`).join(' ');
 }
 
 /** 見回りのペインで使える Bot の道具（読む道具と提案だけ。項目は書かない）。 */
