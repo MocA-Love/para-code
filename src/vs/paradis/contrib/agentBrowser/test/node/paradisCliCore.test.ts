@@ -18,6 +18,7 @@ import { dirname, join } from '../../../../../base/common/path.js';
 import { isWindows } from '../../../../../base/common/platform.js';
 import { FileAccess } from '../../../../../base/common/network.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { PARADIS_AGENT_IDE_TOOLS } from '../../../agentIde/common/paradisAgentIde.js';
 import { PARADIS_AGENT_GATEWAY_AFTER_DISPATCH_HEADER, PARADIS_AGENT_GATEWAY_FILE_NAME, PARADIS_AGENT_GATEWAY_TIMEOUT_CODE, PARADIS_AGENT_GATEWAY_WAIT_SECONDS_HEADER } from '../../common/paradisAgentGateway.js';
 import { IParadisCliCatalog, PARADIS_CLI_CATALOG_METHOD, PARADIS_CLI_META_KEY, PARADIS_CLI_PROTOCOL_VERSION, paradisBuildCliCatalog } from '../../common/paradisCliCatalog.js';
 import { PARADIS_CLI_LAUNCHER_FOLDER_SEGMENTS, PARADIS_CLI_LAUNCHER_NAME, PARADIS_CLI_REMOTE_TARGET_NAME, paradisAddParaCliToPaneEnvironment, paradisCliRemoteTargetContent } from '../../common/paradisCliPaneEnvironment.js';
@@ -326,6 +327,38 @@ suite('paradisCliCore', () => {
 			range: emulate('--cpu-throttling-rate takes a number from 1 to 20, got 21.'),
 			nullAllowed: { settle_seconds: null },
 			help: true,
+		});
+	});
+
+	test('arguments that the tool lowers or raises to its range are passed through, not refused', () => {
+		const catalog = paradisBuildCliCatalog([
+			...PARADIS_AGENT_IDE_TOOLS.filter(tool => tool.name === 'read_terminal' || tool.name === 'wait_for_terminal'),
+			{ name: 'evaluate_script', description: 'Evaluate.', inputSchema: { type: 'object', properties: { function: { type: 'string' }, timeout_seconds: { type: 'number', minimum: 1, maximum: 120 } }, required: ['function'] } },
+			{ name: 'take_snapshot', description: 'Snapshot.', annotations: { readOnlyHint: true }, inputSchema: { type: 'object', properties: { offset: { type: 'integer', minimum: 0 } } } },
+			{ name: 'click', description: 'Click.', inputSchema: { type: 'object', properties: { uid: { type: 'string' }, settle_seconds: { type: 'number', minimum: 0, maximum: 2 } }, required: ['uid'] } },
+		], []);
+		const parse = (tool: string, ...argv: string[]) => {
+			try {
+				return paradisCliParseFlags(argv, catalog.commands.find(candidate => candidate.tool === tool)!).args;
+			} catch (error) {
+				return error instanceof ParadisCliUsageError ? `usage: ${error.message.split('. ')[0]}` : `other: ${error}`;
+			}
+		};
+		assert.deepStrictEqual({
+			scrollback: parse('read_terminal', '--terminal', 't_1', '--scrollback-lines', '9999'),
+			wait: parse('wait_for_terminal', '--terminal', 't_1', '--until', 'agent_stopped', '--timeout-seconds', '9999'),
+			// 選択肢の検査はする
+			waitUntil: parse('wait_for_terminal', '--terminal', 't_1', '--until', 'nope'),
+			evaluate: parse('evaluate_script', '--function', '() => 1', '--timeout-seconds', '0'),
+			snapshot: parse('take_snapshot', '--offset', '-5'),
+			settle: parse('click', '--uid', 'e1', '--settle-seconds', '10'),
+		}, {
+			scrollback: { terminal: 't_1', scrollback_lines: 9999 },
+			wait: { terminal: 't_1', until: 'agent_stopped', timeout_seconds: 9999 },
+			waitUntil: 'usage: --until takes agent_stopped|needs_input|text, got "nope"',
+			evaluate: { function: '() => 1', timeout_seconds: 0 },
+			snapshot: { offset: -5 },
+			settle: { uid: 'e1', settle_seconds: 10 },
 		});
 	});
 

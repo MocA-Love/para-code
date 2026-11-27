@@ -465,9 +465,30 @@ function resolvePathArguments(args: Record<string, unknown>, cwd: string | undef
 }
 
 /**
+ * 範囲の外の値を、道具の側で端に寄せて受ける（断らない）引数。道具名（`*` はすべての道具）→ 引数名。
+ * ここに挙げた引数は、CLI でも範囲の外を断らずに道具へ渡す（選択肢の検査はする）。
+ * - read_terminal の scrollback_lines・wait_for_terminal の timeout_seconds: `paradisAgentIde.ts` の optionalInteger が端に寄せる
+ * - evaluate_script の timeout_seconds: `paradisDevtoolsToolAdjustments.ts` の paradisDevtoolsTimeoutMs が端に寄せる（0 以下は既定）
+ * - take_snapshot の offset: 負の値は 0 として読む
+ * - settle_seconds（E1 が足す引数。どの道具でも同じ）: `paradisBrowserObserve.ts` が端に寄せる
+ */
+const CLAMPED_ARGUMENTS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+	['read_terminal', new Set(['scrollback_lines'])],
+	['wait_for_terminal', new Set(['timeout_seconds'])],
+	['evaluate_script', new Set(['timeout_seconds'])],
+	['take_snapshot', new Set(['offset'])],
+	['*', new Set(['settle_seconds'])],
+]);
+
+function isClamped(tool: string, name: string): boolean {
+	return CLAMPED_ARGUMENTS.get(tool)?.has(name) === true || CLAMPED_ARGUMENTS.get('*')?.has(name) === true;
+}
+
+/**
  * 値が道具のスキーマの選択肢（enum）と範囲（minimum・maximum）に入っているかを確かめる。外れた値を道具へ送ると、
  * 道具の誤り（exit 1）や MCP の検査の生の文になるので、ここで使い方の誤り（exit 2）として断る。
  * null（`number|null` の引数で「無し」の意味）とスキーマに無い名前（--json で渡された分。道具が断る）は見ない。
+ * 道具の側で端に寄せる引数（{@link CLAMPED_ARGUMENTS}）は、範囲を見ない。
  */
 function checkValues(args: Record<string, unknown>, command: IParadisCliCommand): void {
 	const properties = schemaProperties(command);
@@ -484,7 +505,7 @@ function checkValues(args: Record<string, unknown>, command: IParadisCliCommand)
 				throw new ParadisCliUsageError(`--${flag} takes ${choices.join('|')}, got ${JSON.stringify(wrong)}. ${flagList(command)}`);
 			}
 		}
-		if (typeof value === 'number') {
+		if (typeof value === 'number' && !isClamped(command.tool, name)) {
 			const tooSmall = (schema.minimum !== undefined && value < schema.minimum) || (schema.exclusiveMinimum !== undefined && value <= schema.exclusiveMinimum);
 			const tooLarge = (schema.maximum !== undefined && value > schema.maximum) || (schema.exclusiveMaximum !== undefined && value >= schema.exclusiveMaximum);
 			if (tooSmall || tooLarge) {

@@ -179,16 +179,18 @@ suite('ParadisBrowserProfileMcpChannel', () => {
 
 	test('deleting a profile names the tabs of this pane it closed, and is refused while the user has a tab in it', async () => {
 		const own = () => profile('b1c2d3e4f506', 'scratch', { createdByAgent: true, agentOwner: paradisAgentOwnerMark('pane-a') });
-		const mine = createChannel([own()], 'denied', true, undefined, undefined, { tabs: [
+		const ownTabs = [
 			{ id: 'view-1', profileId: 'b1c2d3e4f506', openedBy: 'pane-a' },
 			{ id: 'view-2', profileId: 'b1c2d3e4f506', openedBy: 'pane-a' },
 			{ id: 'view-3', profileId: 'other-profile', openedBy: 'pane-a' },
-		] });
-		store.add(mine.channel);
-		const userTab = createChannel([own()], 'denied', true, undefined, undefined, { tabs: [
+		];
+		const withUserTab = [
 			{ id: 'view-1', profileId: 'b1c2d3e4f506', openedBy: 'pane-a' },
 			{ id: 'view-4', profileId: 'b1c2d3e4f506' },
-		] });
+		];
+		const mine = createChannel([own()], 'denied', true, undefined, undefined, { tabs: ownTabs });
+		store.add(mine.channel);
+		const userTab = createChannel([own()], 'denied', true, undefined, undefined, { tabs: withUserTab });
 		store.add(userTab.channel);
 		const deleted = await mine.channel.call<IParadisDeleteProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, ['pane-a', 'scratch']);
 		const refused = await userTab.channel.call<IParadisDeleteProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, ['pane-a', 'scratch']);
