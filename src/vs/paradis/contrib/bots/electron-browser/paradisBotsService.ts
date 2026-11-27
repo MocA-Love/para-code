@@ -179,6 +179,10 @@ export class ParadisBotsClient extends Disposable implements IParadisBotsService
 		return this.result('snapshotMemory', [botId]);
 	}
 
+	listMemorySnapshots(botId: string): Promise<ParadisBotsServiceResult<readonly { readonly takenAt: number; readonly files: number; readonly total: number; readonly partial: boolean }[]>> {
+		return this.result('listMemorySnapshots', [botId]);
+	}
+
 	undoMemoryTidy(botId: string): Promise<ParadisBotsServiceResult<{ readonly restored: readonly string[]; readonly added: readonly string[]; readonly takenAt: number; readonly skipped: readonly string[] }>> {
 		return this.result('undoMemoryTidy', [botId]);
 	}

@@ -204,6 +204,11 @@ export interface IParadisBotsService {
 	/** 記憶の整理の前に、記憶のファイルの写しを取る。`partial` なら上限で打ち切り、`total` 件のうち `files` 件だけを写した。 */
 	snapshotMemory(botId: string): Promise<ParadisBotsServiceResult<{ readonly takenAt: number; readonly files: number; readonly total: number; readonly partial: boolean }>>;
 	/**
+	 * 記憶の写しの一覧（新しい順。時刻・写したファイルの数・記憶のファイルの数・一部だけか）。写しは会話を起動するたびに
+	 * 本体が取り、古いものから消える（5 件まで）。`undoMemoryTidy` が戻すのは先頭の写し。
+	 */
+	listMemorySnapshots(botId: string): Promise<ParadisBotsServiceResult<readonly { readonly takenAt: number; readonly files: number; readonly total: number; readonly partial: boolean }[]>>;
+	/**
 	 * 記憶の整理を取り消す（一番新しい写しを書き戻す。整理でできたファイルは `added` で知らせ、消さない）。
 	 * 書き戻すのは `MEMORY.md` と `memory/` の直下だけ。写しにほかのパスがあれば `skipped` で知らせる。
 	 */

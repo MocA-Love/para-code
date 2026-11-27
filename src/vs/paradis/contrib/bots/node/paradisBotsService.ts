@@ -486,6 +486,10 @@ export class ParadisBotsService extends Disposable {
 				this.logService.warn('[ParadisBots] could not prepare the home folder', error);
 				return { ok: false, code: error instanceof ParadisBotHomeError ? error.code : 'storage', message: error instanceof ParadisBotHomeError ? error.message : 'Para Code could not prepare the bot\'s home folder.' };
 			}
+			if (purpose === 'chat') {
+				// 会話で Bot が記憶を書き換える前の状態を写しておく（記憶の整理の取り消しで戻す先）。取れなくても起動は止めない
+				await this.memorySnapshots?.take(bot).catch(error => this.logService.warn('[ParadisBots] could not copy the memory before a conversation', error));
+			}
 			const launchId = this.issueLaunch(botId, purpose);
 			const extraFlags = paradisBotLaunchApprovalFlags(bot.agent);
 			if (launchId === undefined) {
@@ -700,6 +704,11 @@ export class ParadisBotsService extends Disposable {
 	/** 記憶の整理を始める前に、記憶のファイルの写しを取る（写しは専用フォルダの外）。 */
 	snapshotMemory(botId: string): Promise<Result<IParadisBotMemorySnapshot>> {
 		return this.memory(botId, (snapshots, bot) => snapshots.take(bot));
+	}
+
+	/** 記憶の写しの一覧（新しい順）。写しは会話を起動するたびに取る（上限の数を超えたら古いものから消える）。 */
+	listMemorySnapshots(botId: string): Promise<Result<IParadisBotMemorySnapshot[]>> {
+		return this.memory(botId, (snapshots, bot) => snapshots.listSnapshots(bot));
 	}
 
 	/** 記憶の整理を取り消す（一番新しい写しを書き戻す）。写しが無ければ `not_found`。 */

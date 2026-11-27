@@ -404,6 +404,59 @@ suite('Paradis bot homes', () => {
 		});
 	});
 
+	test('サービス: 会話を起動するたびに記憶の写しを取る（見回り・設定オフでは取らない）。一覧は新しい順で 5 件まで', async () => {
+		const userData = join(root, '..', 'userData');
+		let ids = 0;
+		let clock = 10_000;
+		let enabled = true;
+		const service = store.add(new ParadisBotsService(createParadisBotsFile(userData), createParadisBotItemsFile(userData), store.add(new ParadisHumanAskService()), new NullLogService(), {
+			homes,
+			uuid: () => `id${++ids}`,
+			enabled: () => enabled,
+			memorySnapshots: new ParadisBotMemorySnapshots(join(userData, 'snapshots'), homes, () => clock),
+		}));
+		const created = await service.createBot({ name: 'リリース係', agent: 'claude' });
+		assert.ok(created.ok);
+		const botId = created.value.id;
+		const chat = async () => {
+			clock += 1000;
+			const launched = await service.requestLaunch(botId, 'chat');
+			if (launched.ok) {
+				service.cancelLaunch(launched.value.launchId);
+			}
+			return launched.ok;
+		};
+		const firstChat = await chat();
+		await service.writeHomeFile(botId, 'memory/release.md', '細かい話\n');
+		clock += 1000;
+		const patrol = await service.requestLaunch(botId, 'patrol');
+		const afterPatrol = await service.listMemorySnapshots(botId);
+		for (let index = 0; index < 5; index++) {
+			await chat();
+		}
+		const listed = await service.listMemorySnapshots(botId);
+		enabled = false;
+		const offLaunch = await service.requestLaunch(botId, 'chat');
+		const offList = await service.listMemorySnapshots(botId);
+		assert.deepStrictEqual({
+			firstChat,
+			patrol: patrol.ok,
+			afterPatrol,
+			listed,
+			offLaunch: offLaunch.ok ? 'ok' : offLaunch.code,
+			offList: offList.ok ? 'ok' : offList.code,
+		}, {
+			firstChat: true,
+			patrol: true,
+			// 見回りでは取らない（会話の起動の 1 件だけ）
+			afterPatrol: { ok: true, value: [{ takenAt: 11000, files: 1, total: 1, partial: false }] },
+			// 6 件取って、古い 1 件（11000）が消えた
+			listed: { ok: true, value: [17000, 16000, 15000, 14000, 13000].map(takenAt => ({ takenAt, files: 2, total: 2, partial: false })) },
+			offLaunch: 'disabled',
+			offList: 'disabled',
+		});
+	});
+
 	test('サービス: 提案の台帳が読めなくても、Bot と項目は書ける（提案だけが読むだけになる）', async () => {
 		const userData = join(root, '..', 'userData');
 		const service = store.add(new ParadisBotsService(createParadisBotsFile(userData), createParadisBotItemsFile(userData), store.add(new ParadisHumanAskService()), new NullLogService(), {
