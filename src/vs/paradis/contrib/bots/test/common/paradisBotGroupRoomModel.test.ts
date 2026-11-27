@@ -8,11 +8,15 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisBotGroupDialogProblem, paradisBotGroupMentionProblem, paradisBotGroupRecordHead, paradisBotGroupRecordMark, paradisBotGroupSendSummary } from '../../common/paradisBotGroupRoomModel.js';
+import { paradisBotCanReceiveBotMessages, paradisBotCannotReceiveLabel, paradisBotGroupDialogProblem, paradisBotGroupMentionProblem, paradisBotGroupRecordHead, paradisBotGroupRecordMark, paradisBotGroupSendSummary } from '../../common/paradisBotGroupRoomModel.js';
 
 suite('Paradis bot group room model', () => {
 
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+	test('伝言を受け取れる Bot は、作業中の発言を次の番まで待たせられるエージェント（Claude Code）だけ', () => {
+		assert.deepStrictEqual([...['claude', 'codex', 'opencode', 'antigravity', 'unknown'].map(paradisBotCanReceiveBotMessages), paradisBotCannotReceiveLabel()], [true, false, false, false, false, '伝言を受け取れません']);
+	});
 
 	test('記録の頭・名指しの断り・送った結果の文', () => {
 		const names: Record<string, string> = { a: 'リリース係', b: 'レビュー係' };

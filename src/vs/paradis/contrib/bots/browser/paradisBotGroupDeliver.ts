@@ -67,13 +67,16 @@ export interface IParadisBotGroupDeliverDependencies {
 	now(): number;
 }
 
+/** 打ち込みで安全に届けられない宛先への断り（送り直しても通らない）。 */
+export const PARADIS_BOT_GROUP_UNSAFE_REASON = 'Para Code cannot deliver bot messages safely to that bot\'s agent (it needs Claude Code with Para Code\'s input mod), so do not send it again';
+
 /**
  * 伝言を届ける。順は「台帳の読み込み → 送り手と宛先が同じグループ → 宛先がこのウィンドウで動いている → 回数の上限 →
- * 送る」。宛先が作業中なら、今のターンを止めずに次の番まで待たせられるエージェント（`queuesWhileWorking`。Claude Code）
- * にだけ送って `queued`。待たせられないエージェント（作業中の Enter が応答を打ち切る Codex など）・入力欄に利用者の
- * 書きかけがある（書きかけを読めない宛先では、利用者がそのターミナルを操作中）・許可や質問の画面が出ているときは、届ける口がペインへ何も書かずに断るので `refused` にして回数を戻す。
- * 文を書いたかもしれない失敗（貼り付けた後に Enter を送れなかった等）は `unknown`（送り直すと重なる）。
- * 同じ宛先へ並んで来た伝言は {@link ParadisBotGroupDeliverQueue} で 1 つずつにする。
+ * 送る」。届けるのは打ち込みで安全に届けられる宛先だけ（作業中の発言を次の番まで待たせられ、入力欄の書きかけを読める:
+ * 今は入力欄の mod のある Claude Code）。宛先が作業中なら `queued`（今のターンを止めない）。ほかのエージェント・mod の
+ * 無い Claude Code・入力欄に利用者の書きかけがある・許可や質問の画面が出ているときは、届ける口がペインへ何も書かずに
+ * 断るので `refused` にして回数を戻す。文を書いたかもしれない失敗（貼り付けた後に Enter を送れなかった等）は `unknown`
+ * （送り直すと重なる）。同じ宛先へ並んで来た伝言は {@link ParadisBotGroupDeliverQueue} で 1 つずつにする。
  */
 export async function paradisBotGroupDeliver(deps: IParadisBotGroupDeliverDependencies, callerHash: string, to: string, text: string): Promise<ParadisBotGroupDeliverResult> {
 	if (!(await deps.waitForLoaded())) {
@@ -96,7 +99,7 @@ export async function paradisBotGroupDeliver(deps: IParadisBotGroupDeliverDepend
 	}
 	// 先頭の / と ! はコマンド・シェルとして動くので崩してから届ける（利用者が部屋から送る文はそのまま）
 	const working = activity === 'working';
-	const outcome = await deps.send(to, paradisBotGroupNeutralizeCommand(text), { working, refuseDraft: true });
+	const outcome = await deps.send(to, paradisBotGroupNeutralizeCommand(text), { safeOnly: true });
 	switch (outcome.kind) {
 		case 'sent':
 			return working ? { kind: 'queued' } : { kind: 'delivered' };
@@ -105,10 +108,9 @@ export async function paradisBotGroupDeliver(deps: IParadisBotGroupDeliverDepend
 			deps.limiter.refund(to);
 			return {
 				kind: 'refused',
-				reason: outcome.code === 'working' ? 'that bot is working, and its agent cannot hold messages until its next turn'
+				reason: outcome.code === 'unsafe' ? PARADIS_BOT_GROUP_UNSAFE_REASON
 					: outcome.code === 'draft' ? 'its owner is typing in that bot\'s input'
-						: outcome.code === 'focused' ? 'its owner is using that bot\'s terminal now'
-							: 'that bot cannot take a message now, for example while a question or permission prompt is open',
+						: 'that bot cannot take a message now, for example while a question or permission prompt is open',
 			};
 		case 'unknown':
 			return { kind: 'unknown', reason: 'Para Code may have typed the message into that bot\'s input without sending it' };
