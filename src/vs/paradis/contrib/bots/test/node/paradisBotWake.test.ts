@@ -7,6 +7,9 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { join } from '../../../../../base/common/path.js';
+import { tmpdir } from 'os';
+import { promises as fs } from 'fs';
 import { Emitter } from '../../../../../base/common/event.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -237,6 +240,60 @@ suite('Paradis bot wake and sleep', () => {
 			afterIdleStop: [false, '眠っています'],
 			afterWindowRelease: [false, '眠っています'],
 			off: [true, true],
+		});
+	});
+
+	test('前に出す依頼に応えが無かった（detach した）会話のペインが実は終わっていても行き止まりにならない: 眠っていると出し、前の会話を読め、話しかければ続けて起こせる。本物の終了の後も同じ', async () => {
+		const disposables = store.add(new DisposableStore());
+		const root = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'paradis-bot-detached-')));
+		disposables.add({ dispose: () => void fs.rm(root, { recursive: true, force: true }) });
+		await fs.mkdir(join(root, 'claude', 'projects', '-bot-home'), { recursive: true });
+		await fs.writeFile(join(root, 'claude', 'projects', '-bot-home', `${SESSION}.jsonl`), JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-opus-4-5', content: [{ type: 'text', text: '前の返事' }] }, uuid: 'a1', timestamp: '2026-11-28T03:06:01.000Z', sessionId: SESSION }) + '\n');
+		const clock = { now: 1_000 };
+		const homes = { ensure: async () => '/tmp/bot-home', read: async () => undefined, existingFolders: async () => [] } as unknown as ParadisBotHomes;
+		const hooks = disposables.add(new Emitter<{ token: string; event: string; sessionId?: string; observedExit?: true }>());
+		const humanAsk = disposables.add(new ParadisHumanAskService(new ParadisHumanAskLedger(() => clock.now)));
+		const service = disposables.add(new ParadisBotsService(new MemoryFile<IParadisBotsState>(EMPTY_PARADIS_BOTS_STATE), new MemoryFile<IParadisBotItemsState>(EMPTY_PARADIS_BOT_ITEMS_STATE), humanAsk, new NullLogService(), {
+			now: () => clock.now, hookEvents: hooks.event, panesFile: new MemoryFile<IParadisBotPanesState>(EMPTY_PARADIS_BOT_PANES_STATE), homes, revealTimeoutMs: 10,
+			transcriptRoots: { claudeConfigDir: join(root, 'claude'), codexHomes: [] },
+		}));
+		await service.ready;
+		const created = await service.createBot({ name: 'A', agent: 'claude' });
+		assert.ok(created.ok, created.ok ? '' : created.message);
+		const botId = created.value.id;
+		const launch = await service.requestLaunch(botId, 'chat');
+		assert.ok(launch.ok);
+		service.reportLaunch(launch.value.launchId, 'pane-1');
+		hooks.fire({ token: 'pane-1', event: 'SessionStart', sessionId: SESSION });
+		hooks.fire({ token: 'pane-1', event: 'UserPromptSubmit', sessionId: SESSION });
+		hooks.fire({ token: 'pane-1', event: 'Stop', sessionId: SESSION });
+		const whileBound = await service.sleepingChat(botId);
+		// どのウィンドウも前に出す依頼に応えない（ペインのあったウィンドウが応えないまま終わった）
+		const answered = await service.requestReveal(botId);
+		const look = async () => {
+			const summary = service.getSnapshot().bots[0];
+			const chat = await service.sleepingChat(botId);
+			const wake = await service.requestLaunch(botId, 'chat');
+			if (wake.ok) {
+				service.cancelLaunch(wake.value.launchId);
+			}
+			return {
+				status: [summary.activity, summary.sleeping ?? false, paradisBotStatusLine(summary)],
+				read: chat?.messages.map(message => message.text),
+				wake: wake.ok ? wake.value.extraFlags : wake.code,
+				// 止める依頼では、応えの無かったペインも一緒に閉じる（#1266）
+				stopsIt: service.paneHashesOf(botId, 'chat').includes(paradisBotPaneTokenHash('pane-1')),
+			};
+		};
+		const detached = await look();
+		// 本物の終了が届いた後も同じ（終了の知らせが来なくても上のとおり行き止まりにならない）
+		hooks.fire({ token: 'pane-1', event: 'TerminalExit', observedExit: true });
+		const exited = await look();
+		assert.deepStrictEqual({ whileBound, answered, detached, exited }, {
+			whileBound: undefined,
+			answered: false,
+			detached: { status: ['stopped', true, '眠っています'], read: ['前の返事'], wake: `--resume ${SESSION}`, stopsIt: true },
+			exited: { status: ['stopped', true, '眠っています'], read: ['前の返事'], wake: `--resume ${SESSION}`, stopsIt: false },
 		});
 	});
 
