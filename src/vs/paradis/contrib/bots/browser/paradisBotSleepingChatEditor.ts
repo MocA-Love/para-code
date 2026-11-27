@@ -238,9 +238,11 @@ export class ParadisBotSleepingChatEditor extends EditorPane implements IParadis
 		this.status.textContent = this.waking
 			? localize('paradis.botSleeping.waking', "起こしています…")
 			: localize('paradis.botSleeping.status', "眠っています。話しかけると続きから起きます");
-		// 別の経路（スマホ・エージェントの道具など）で会話が起きた・続けられなくなったら、このタブは役目を終える。
-		// 見回りのペインが動いても会話は眠ったままなので閉じない（書きかけを消さない）
-		if (!this.waking && bot.sleeping !== true && this.input !== undefined) {
+		// 別の経路（スマホ・エージェントの道具・別のウィンドウ）で会話が起きた・続けられなくなったら、このタブは役目を終える。
+		// 見回りのペインが動いても会話は眠ったままなので閉じない。書きかけがあるときも閉じない（消さない）
+		const token = this.token;
+		const draft = token !== undefined ? (this.drafts.get(token) ?? '') : '';
+		if (!this.waking && bot.sleeping !== true && draft.trim().length === 0 && this.input !== undefined) {
 			void this.group.closeEditor(this.input);
 		}
 	}

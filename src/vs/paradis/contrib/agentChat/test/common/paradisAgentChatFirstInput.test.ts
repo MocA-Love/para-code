@@ -8,13 +8,13 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisWaitForAgentFirstInput } from '../../common/paradisAgentChatFirstInput.js';
+import { IParadisAgentFirstInputProbe, paradisAgentReadyForFirstInput, paradisWaitForAgentFirstInput } from '../../common/paradisAgentChatFirstInput.js';
 
 suite('Paradis agent chat first input', () => {
 
 	ensureNoDisposablesAreLeakedInTestSuite();
 
-	type Probe = { readonly foreground: 'agent' | 'shell' | 'unknown'; readonly bracketedPasteMode: boolean } | undefined;
+	type Probe = IParadisAgentFirstInputProbe | undefined;
 
 	async function run(steps: readonly Probe[], timeoutMs = 10_000): Promise<{ ready: boolean; probes: number }> {
 		let index = 0;
@@ -22,20 +22,29 @@ suite('Paradis agent chat first input', () => {
 		return { ready, probes: index };
 	}
 
-	test('最初の 1 文は、エージェントが前面に出て入力欄の準備（貼り付けのモード）ができてから送る。起動前のシェルでは諦めず、エージェントが終わった・ペインが消えた・時間切れなら送らない', async () => {
-		const shell = { foreground: 'shell' as const, bracketedPasteMode: false };
-		const booting = { foreground: 'agent' as const, bracketedPasteMode: false };
-		const ready = { foreground: 'agent' as const, bracketedPasteMode: true };
+	test('最初の 1 文は、入力欄が空で見えていて選択画面が無いと確かに分かってから送る。信頼の確認・更新の案内の選択画面や、入力欄が分からない間は送らずに待ち、時間切れなら送らない', async () => {
+		const shell: Probe = { foreground: 'shell', composer: 'unknown', choiceMenu: false };
+		const booting: Probe = { foreground: 'agent', composer: 'unknown', choiceMenu: false };
+		const trust: Probe = { foreground: 'agent', composer: 'unknown', choiceMenu: true };
+		// 選択画面の行に入力欄の印が紛れても、選択画面があれば送らない
+		const trustWithMarker: Probe = { foreground: 'agent', composer: 'empty', choiceMenu: true };
+		const ready: Probe = { foreground: 'agent', composer: 'empty', choiceMenu: false };
+		const typed: Probe = { foreground: 'agent', composer: 'text', choiceMenu: false };
 		assert.deepStrictEqual([
-			await run([shell, booting, booting, ready]),
+			paradisAgentReadyForFirstInput(ready!),
+			paradisAgentReadyForFirstInput(trust!),
+			paradisAgentReadyForFirstInput(trustWithMarker!),
+			paradisAgentReadyForFirstInput(typed!),
+			await run([shell, booting, trust, ready]),
+			await run([trust], 1000),
 			await run([booting, shell]),
 			await run([booting, undefined]),
-			await run([booting], 1000),
 		], [
+			true, false, false, false,
 			{ ready: true, probes: 4 },
-			{ ready: false, probes: 2 },
-			{ ready: false, probes: 2 },
 			{ ready: false, probes: 5 },
+			{ ready: false, probes: 2 },
+			{ ready: false, probes: 2 },
 		]);
 	});
 });

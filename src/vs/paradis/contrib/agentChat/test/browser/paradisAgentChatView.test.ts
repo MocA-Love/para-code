@@ -44,7 +44,8 @@ class TestHost implements IParadisAgentChatViewHost {
 	constructor(private readonly chat: ParadisAgentChatSession) { }
 
 	session(): ParadisAgentChatSession { return this.chat; }
-	async sendMessage(_instanceId: number, _token: string, text: string): Promise<string | undefined> { await this.sendGate; this.sent.push(text); return undefined; }
+	sendError: string | undefined;
+	async sendMessage(_instanceId: number, _token: string, text: string): Promise<string | undefined> { await this.sendGate; if (this.sendError !== undefined) { return this.sendError; } this.sent.push(text); return undefined; }
 	async answerQuestions(_instanceId: number, _token: string, group: string, answers: readonly ParadisAgentQuestionAnswer[]): Promise<string | undefined> { this.answers.push({ group, answers }); return undefined; }
 	async answerApproval(_instanceId: number, _token: string, id: string, choice: string): Promise<string | undefined> { this.approvals.push({ id, choice }); return undefined; }
 	showTerminal(): void { }
@@ -654,6 +655,23 @@ suite('ParadisAgentChatView', () => {
 			sent: ['run the tests'],
 			draftAfterSend: '',
 			input: '',
+		});
+	});
+
+	test('keeps the first message in the input with the reason when the agent never got ready to take it (a choice screen such as the trust prompt)', async () => {
+		const { host, container } = await createView([]);
+		host.guide = { notice: '起こしています…', sendable: true };
+		host.guideChanged.fire(1);
+		await new Promise(resolve => setTimeout(resolve, 0));
+		host.sendError = 'ターミナルで操作が要ります。初回設定や確認の画面で止まっていないか確かめてください';
+		const input = container.querySelector<HTMLTextAreaElement>('textarea.paradis-agent-chat-input')!;
+		input.value = '見回りの結果を教えて';
+		input.dispatchEvent(new InputEvent('input'));
+		container.querySelector<HTMLElement>('.paradis-agent-chat-send')!.click();
+		await new Promise(resolve => setTimeout(resolve, 0));
+		assert.deepStrictEqual({ input: input.value, notice: container.querySelector('.paradis-agent-chat-composer-notice.visible')?.textContent }, {
+			input: '見回りの結果を教えて',
+			notice: 'ターミナルで操作が要ります。初回設定や確認の画面で止まっていないか確かめてください',
 		});
 	});
 });

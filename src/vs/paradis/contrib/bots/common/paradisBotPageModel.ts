@@ -123,10 +123,11 @@ export function paradisBotChatGuide(bot: Pick<IParadisBotSummary, 'agent' | 'hal
 		case 'needsUser':
 			return { notice: empty, band: { title: localize('paradis.botPage.chat.needsUser', "ターミナルで操作が要ります"), detail: localize('paradis.botPage.chat.needsUserDetail', "初回設定・ログイン・許可の画面で止まっています") } };
 	}
-	// Claude Code は起動の hook が来なければ止まっている理由（needsUser）が付く。Codex は最初の発言まで会話の記録を作らない
-	// ので、会話が見つからないことを「止まっている」と読まない（準備のできたエージェントを見誤る）
-	if (waitedLong && bot.agent !== 'claude' && bot.agent !== 'codex') {
-		return { notice: empty, band: { title: localize('paradis.botPage.chat.needsUser', "ターミナルで操作が要ります"), detail: localize('paradis.botPage.chat.unreadable', "会話を吹き出しで読めません。起動の画面で止まっていないか確かめてください") } };
+	// Claude Code は起動の hook が来なければ止まっている理由（needsUser）が付くので、ここでは出さない。Codex は起動の hook が無い
+	// ので、しばらく会話が見つからなければ帯を出す（更新の案内・信頼の確認で止まっていることがある）。最初の発言まで会話の記録を
+	// 作らないだけのこともあるので、入力欄は止めない（送る文は、入力欄が受け付ける状態になってから渡す）
+	if (waitedLong && bot.agent !== 'claude') {
+		return { notice: empty, band: { title: localize('paradis.botPage.chat.needsUser', "ターミナルで操作が要ります"), detail: localize('paradis.botPage.chat.unreadable', "会話を吹き出しで読めません。起動の画面で止まっていないか確かめてください") }, ...(bot.agent === 'codex' ? { sendable: true } : {}) };
 	}
 	// 会話が見つかる前でも入力欄から最初の 1 文を送れる（エージェントの入力欄の準備ができてから送る）
 	return { notice: localize('paradis.botPage.chat.waking', "起こしています…"), sendable: true };

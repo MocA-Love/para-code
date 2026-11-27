@@ -86,18 +86,20 @@ suite('Paradis bots page', () => {
 	test('会話が見つかるまでの案内: 止まっている理由があるか、しばらく見つからなければ「ターミナルを開く」の帯を出す', () => {
 		const guide = (halt: Parameters<typeof paradisBotChatGuide>[0]['halt'], waitedLong = false, agent: 'claude' | 'codex' | 'antigravity' = 'codex') => {
 			const value = paradisBotChatGuide({ agent, halt }, waitedLong);
-			return value.band !== undefined ? `${value.notice} / ${value.band.title} / ${value.band.detail}` : `${value.notice}${value.sendable ? '（送れる）' : ''}`;
+			return `${value.notice}${value.band !== undefined ? ` / ${value.band.title} / ${value.band.detail}` : ''}${value.sendable ? '（送れる）' : ''}`;
 		};
 		assert.deepStrictEqual([
 			guide(undefined),
-			// Codex・Claude Code は最初の発言まで会話の記録が無いので、待っても「止まっている」と読まない
+			// Codex は起動の hook が無いので、しばらく会話が無ければ帯を出す（入力欄は止めない）。Claude Code は hook の needsUser に任せる
 			guide(undefined, true),
+			guide(undefined, true, 'claude'),
 			guide(undefined, true, 'antigravity'),
 			guide({ kind: 'needsUser' }),
 			guide({ kind: 'notFound' }),
 			guide({ kind: 'exited', exitCode: 1 }, false, 'claude'),
 		], [
 			'起こしています…（送れる）',
+			'まだ会話はありません / ターミナルで操作が要ります / 会話を吹き出しで読めません。起動の画面で止まっていないか確かめてください（送れる）',
 			'起こしています…（送れる）',
 			'まだ会話はありません / ターミナルで操作が要ります / 会話を吹き出しで読めません。起動の画面で止まっていないか確かめてください',
 			'まだ会話はありません / ターミナルで操作が要ります / 初回設定・ログイン・許可の画面で止まっています',
