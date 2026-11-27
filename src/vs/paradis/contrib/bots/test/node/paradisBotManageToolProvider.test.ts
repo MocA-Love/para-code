@@ -10,6 +10,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisMcpOwningWindowRequest, IParadisMcpToolCallContext, ParadisMcpCallerKind, paradisMcpCallRefusalFor, paradisRegisterMcpCallRefusal } from '../../../agentBrowser/common/paradisMcpToolProvider.js';
+import { ParadisAgentBrowserService } from '../../../agentBrowser/node/paradisAgentBrowserService.js';
 import { ParadisHumanAskService } from '../../../humanAsk/node/paradisHumanAskChannel.js';
 import { EMPTY_PARADIS_BOT_ITEMS_STATE, IParadisBotItemsState } from '../../common/paradisBotItems.js';
 import { EMPTY_PARADIS_BOTS_STATE, IParadisBot, IParadisBotsState } from '../../common/paradisBots.js';
@@ -223,6 +224,38 @@ suite('Paradis bot manage tools', () => {
 			'This terminal is a Para Code bot. A bot cannot start, open, type into or close other terminals, or change spaces, with the IDE tools: a terminal it started would not be a bot and could change bots. The reading tools still work. Tell your owner what you would do.',
 			undefined,
 		]);
+	});
+
+	test('para-browser の道具の入口（_callTool）が、見回りのペインからの書く道具を断る（道具を回す前に）', async () => {
+		const h = harness();
+		await h.call('create_bot', { name: 'A', agent: 'claude' });
+		const patrol = h.service.issueLaunch('id1', 'patrol');
+		assert.ok(patrol !== undefined && h.service.reportLaunch(patrol, 'pane-patrol'));
+		const registration = paradisRegisterMcpCallRefusal(paradisBotPatrolToolRefusal(h.service));
+		// 断る口より後ろ（引数の突き合わせ）まで来たら、道具は回さずに印を返す
+		const reached: string[] = [];
+		const server = Object.assign(Object.create(ParadisAgentBrowserService.prototype) as object, {
+			_requireIngressLease: () => { },
+			_cursorPacing: { begin: () => ({ dispose: () => { } }) },
+			_callerRefusalBeforeLane: async () => undefined,
+			_toolArgumentRefusal: async (_lease: unknown, name: string) => {
+				reached.push(name);
+				return { content: [{ type: 'text', text: 'reached' }] };
+			},
+		}) as unknown as { _callTool(lease: { token: string }, params: { name: string; arguments: object }): Promise<{ content: { text: string }[]; isError?: boolean }> };
+		const call = async (pane: string, name: string) => {
+			const result = await server._callTool({ token: pane }, { name, arguments: {} });
+			return result.isError ? `refused: ${result.content[0].text.slice(0, 26)}` : result.content[0].text;
+		};
+		const result = { patrolClick: await call('pane-patrol', 'click_by'), patrolEvaluate: await call('pane-patrol', 'evaluate_script'), patrolRead: await call('pane-patrol', 'get_text'), userClick: await call('pane-user', 'click_by') };
+		registration.dispose();
+		assert.deepStrictEqual({ ...result, reached }, {
+			patrolClick: 'refused: This is a look-around, whi',
+			patrolEvaluate: 'refused: This is a look-around, whi',
+			patrolRead: 'reached',
+			userClick: 'reached',
+			reached: ['get_text', 'click_by'],
+		});
 	});
 
 	test('見回りのペインからの para-browser の呼び出しは、読むだけの道具と見回りの Bot の道具だけを通す', async () => {
