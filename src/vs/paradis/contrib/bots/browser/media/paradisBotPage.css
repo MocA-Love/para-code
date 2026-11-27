@@ -534,6 +534,12 @@ button.paradis-bot-page-link:hover {
 	padding-top: var(--vscode-spacing-size100);
 }
 
+/* Next to a switch with a note under it, the label sits on the switch's line. */
+.paradis-bot-settings-key.top.switch {
+	padding-top: 0;
+	line-height: 18px;
+}
+
 .paradis-bot-settings-value {
 	display: flex;
 	flex-direction: column;
@@ -715,6 +721,10 @@ button.paradis-bot-page-link:hover {
 	font-size: var(--vscode-fontSize-label1);
 	color: var(--vscode-paradis-textMuted);
 	overflow-wrap: anywhere;
+}
+
+.paradis-bot-settings-help.attention {
+	color: var(--vscode-paradis-warning);
 }
 
 .paradis-bot-settings-elsewhere {

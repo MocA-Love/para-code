@@ -343,6 +343,22 @@ suite('Paradis bots page overlay', () => {
 		]);
 	});
 
+	test('設定: GitHub の見張りはオンにするときだけ確かめてから当てる', async () => {
+		const { container, page, calls, confirms } = setup();
+		page.setInstance(1);
+		await settle();
+		tab(container, 3);
+		await settle();
+		const switches = () => [...container.querySelectorAll('.paradis-bot-settings [role="switch"]')] as HTMLElement[];
+		switches()[2].click();
+		await settle();
+		await settle();
+		assert.deepStrictEqual([calls, confirms.map(confirmation => [confirmation.primaryButton, String(confirmation.detail).includes('5 分ごとに gh で GitHub を確かめます')])], [
+			['update {"watchGithub":true}'],
+			[['見張らせる', true]],
+		]);
+	});
+
 	test('ファイル: 開いた後に書き換わった記憶は上書きしない', async () => {
 		const { container, page, calls, files } = setup();
 		page.setInstance(1);
