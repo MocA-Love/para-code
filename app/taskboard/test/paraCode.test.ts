@@ -214,12 +214,23 @@ describe('ParaCodeAgents', () => {
 		expect({ asked, before, terminal: agents.terminalOf(engine.getTask(id)!) }).toEqual({ asked: [event], before: undefined, terminal: expect.stringMatching(/^t_/) });
 	});
 
+	// Bot が載せたカードは、起動の本文に Bot の id を載せる（Para Code がそのペインに「Bot が起こした」印を付ける）
+	test('a card a Para Code bot added carries the bot id in the launch request', async () => {
+		// 作業場所は 1 つなので、カードを 1 枚ずつ確かめる（利用者のカードは下の試験の起動で印が無いことを見る）
+		const { engine, bridge } = await setup();
+		const botTask = engine.addTask({ title: 'Bot の仕事' }, { kind: 'bot', botId: 'bot-1', botName: 'レビュー係', itemNumber: 3 });
+		engine.start(botTask, { agent: 'claude' });
+		await until(() => bridge.routes().includes('/v1/launch'));
+		const launch = bridge.requests.find(r => r.route === '/v1/launch')!.body;
+		expect({ launchId: launch.launchId, botOrigin: launch.botOrigin }).toEqual({ launchId: `${botTask}:1`, botOrigin: 'bot-1' });
+	});
+
 	test('launches in the workspace, carries the next agent step into the same terminal, and reads artifacts from files', async () => {
 		const { engine, bridge, id, place } = await setup();
 		engine.start(id, { agent: 'claude' });
 		await until(() => bridge.routes().includes('/v1/launch'));
 		const launch = bridge.requests.find(r => r.route === '/v1/launch')!.body;
-		expect({ repoPath: launch.repoPath, agent: launch.agent, launchId: launch.launchId }).toEqual({ repoPath: place, agent: 'claude', launchId: `${id}:1` });
+		expect({ repoPath: launch.repoPath, agent: launch.agent, launchId: launch.launchId, botOrigin: launch.botOrigin }).toEqual({ repoPath: place, agent: 'claude', launchId: `${id}:1`, botOrigin: undefined });
 		await until(() => engine.getTask(id)!.activities.some(a => a.label.includes('始めました')));
 
 		bridge.emit({ type: 'status', terminal: 't_1', status: 'working' });

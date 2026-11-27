@@ -557,7 +557,7 @@ export class ParaCodeAgents implements ITaskBoardAgentPort {
 		let terminal: string | undefined;
 		let failure: Error | undefined;
 		try {
-			terminal = (await this.client.request<{ terminal: string }>('POST', '/v1/launch', { launchId, repoPath, agent, prompt, ...(this.options.relaySessionId?.() ? { relaySessionId: this.options.relaySessionId(), ...(this.options.launchApprovals?.() ? { toolApprovals: true } : {}) } : {}) }, LAUNCH_TIMEOUT_MS)).terminal;
+			terminal = (await this.client.request<{ terminal: string }>('POST', '/v1/launch', { launchId, repoPath, agent, prompt, ...(task.origin?.kind === 'bot' ? { botOrigin: task.origin.botId } : {}), ...(this.options.relaySessionId?.() ? { relaySessionId: this.options.relaySessionId(), ...(this.options.launchApprovals?.() ? { toolApprovals: true } : {}) } : {}) }, LAUNCH_TIMEOUT_MS)).terminal;
 		} catch (err) {
 			failure = err as Error;
 			// 返事が途切れても、Para Code 側では起動していることがある。起動 id で探して、あれば結び付ける

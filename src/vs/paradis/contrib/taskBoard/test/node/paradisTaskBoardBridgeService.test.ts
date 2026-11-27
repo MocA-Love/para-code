@@ -210,6 +210,20 @@ suite('ParadisTaskBoardBridgeService', () => {
 		});
 	});
 
+	test('launch and a tagged send tell which task a terminal runs, before the send goes out', async () => {
+		const router = new FakeRouter();
+		const service = create(router);
+		const assigned: string[] = [];
+		const listener = service.onDidAssignTask(event => assigned.push(`${event.terminal} ${event.launchId} bot:${event.botOrigin ?? '-'} sends:${router.calls.filter(call => call.method === 'send').length}`));
+		// ボードのカードが「Bot が載せた」印を持っていれば、起動の本文に Bot の id が来る
+		await service.handle('POST', '/v1/launch', new URLSearchParams(), { launchId: 't-abc:1', repoPath: '/repo', agent: 'claude', prompt: 'work', botOrigin: 'bot-1' });
+		await service.handle('POST', '/v1/send', new URLSearchParams(), { terminal: TERMINAL, text: 'next', tag: 't-abc:2' });
+		await service.handle('POST', '/v1/send', new URLSearchParams(), { terminal: TERMINAL, text: 'no tag' });
+		await service.handle('POST', '/v1/send', new URLSearchParams(), { terminal: 't_000000000000', text: 'unknown', tag: 't-zzz:1' });
+		listener.dispose();
+		assert.deepStrictEqual(assigned, [`${TERMINAL} t-abc:1 bot:bot-1 sends:0`, `${TERMINAL} t-abc:2 bot:- sends:0`]);
+	});
+
 	test('board_complete_step reports to the board and returns its reply; other panes are refused', async () => {
 		const router = new FakeRouter();
 		const service = create(router);

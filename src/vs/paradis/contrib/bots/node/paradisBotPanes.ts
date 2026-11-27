@@ -20,6 +20,7 @@ import { createHash } from 'crypto';
 import { isPlainRecord } from '../../../common/paradisGuards.js';
 import { paradisNormalizeAgentHookEvent } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisBotPaneState, PARADIS_BOT_PANE_PURPOSES, ParadisBotPanePurpose } from '../common/paradisBotsApi.js';
+import { IParadisBotBoardPaneRecord, IParadisBotBoardTaskRecord, paradisParseBotBoardOrigins } from './paradisBotBoardOrigins.js';
 
 /** 起動の番号が有効な時間。起動に失敗して報告が来なかった番号を残さない。 */
 export const PARADIS_BOT_LAUNCH_TTL_MS = 5 * 60_000;
@@ -45,6 +46,10 @@ export interface IParadisBotPaneRecord {
 export interface IParadisBotPanesState {
 	readonly version: number;
 	readonly panes: readonly IParadisBotPaneRecord[];
+	/** Bot がタスクボードへ載せたタスク（paradisBotBoardOrigins.ts）。 */
+	readonly boardTasks?: readonly IParadisBotBoardTaskRecord[];
+	/** Bot が載せたタスクのためにボードが動かしたペイン（ターミナルの id。paradisBotBoardOrigins.ts）。 */
+	readonly boardPanes?: readonly IParadisBotBoardPaneRecord[];
 }
 
 export const PARADIS_BOT_PANES_VERSION = 1;
@@ -70,7 +75,8 @@ export function paradisParseBotPanesState(value: unknown): IParadisBotPanesState
 			panes.push({ hash: entry.hash, botId: entry.botId, purpose: entry.purpose as ParadisBotPanePurpose, boundAt: entry.boundAt });
 		}
 	}
-	return { version: PARADIS_BOT_PANES_VERSION, panes };
+	const { boardTasks, boardPanes } = paradisParseBotBoardOrigins(value.boardTasks, value.boardPanes);
+	return { version: PARADIS_BOT_PANES_VERSION, panes, ...(boardTasks.length > 0 ? { boardTasks } : {}), ...(boardPanes.length > 0 ? { boardPanes } : {}) };
 }
 
 interface IPending {

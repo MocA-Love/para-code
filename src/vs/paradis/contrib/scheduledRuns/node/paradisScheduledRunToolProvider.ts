@@ -12,6 +12,7 @@
 // （paradisScheduledRunsMcpChannel.ts）が行う。ペインのスペースとエージェントの一覧を知っているのはウィンドウだけのため。
 
 import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider, paradisMcpToolError as toolError, paradisMcpToolJson as toolText } from '../../agentBrowser/common/paradisMcpToolProvider.js';
+import { paradisAgentIdeActionRefusalFor } from '../../agentIde/node/paradisAgentIdeToolProvider.js';
 import {
 	PARADIS_CREATE_SCHEDULED_RUN_TOOL,
 	PARADIS_SCHEDULED_RUN_TOOL_CREATE_LIMIT,
@@ -46,6 +47,11 @@ export class ParadisScheduledRunToolProvider implements IParadisMcpToolProvider 
 		// トークンは同じユーザーの別プロセスからも読めるので、手元のペインの中からの呼び出しだけを受ける
 		if (!context || await context.classifyCaller() !== 'pane') {
 			return toolError(CALLER_UNVERIFIED_MESSAGE);
+		}
+		// 定期実行は後で別のペインを起こすので、IDE の操作と同じ口で断る（Bot のペインなど）
+		const refused = await paradisAgentIdeActionRefusalFor(paneToken, name);
+		if (refused !== undefined) {
+			return toolError(refused);
 		}
 		const parsed = paradisParseCreateScheduledRun(args);
 		if (!parsed.ok) {

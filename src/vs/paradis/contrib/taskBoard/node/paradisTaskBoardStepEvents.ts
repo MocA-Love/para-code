@@ -10,7 +10,7 @@
 // 接続口と Bot はそれぞれ別に登録されるので、モジュールに 1 つの Emitter でつなぐ（paradisAgentHookBus と同じ形）。
 
 import { Emitter, Event } from '../../../../base/common/event.js';
-import type { IParadisTaskBoardStepCompleted } from './paradisTaskBoardBridgeService.js';
+import type { IParadisTaskBoardStepCompleted, IParadisTaskBoardTerminalTask } from './paradisTaskBoardBridgeService.js';
 
 const emitter = new Emitter<IParadisTaskBoardStepCompleted>();
 
@@ -20,4 +20,14 @@ export const onParadisTaskBoardStepCompleted: Event<IParadisTaskBoardStepComplet
 /** 接続口の登録だけが呼ぶ。 */
 export function paradisFireTaskBoardStepCompleted(event: IParadisTaskBoardStepCompleted): void {
 	emitter.fire(event);
+}
+
+const terminalTaskEmitter = new Emitter<IParadisTaskBoardTerminalTask>();
+
+/** ボードがタスクのためにターミナルを起動した・印付きの指示を送る（shared process の中だけ。Bot が載せたタスクのペインに印を付ける）。 */
+export const onParadisTaskBoardTerminalTask: Event<IParadisTaskBoardTerminalTask> = terminalTaskEmitter.event;
+
+/** 接続口の登録だけが呼ぶ。 */
+export function paradisFireTaskBoardTerminalTask(event: IParadisTaskBoardTerminalTask): void {
+	terminalTaskEmitter.fire(event);
 }

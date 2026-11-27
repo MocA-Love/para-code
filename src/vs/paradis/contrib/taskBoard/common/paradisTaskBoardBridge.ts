@@ -237,6 +237,11 @@ export interface IParadisTaskBoardLaunchRequest {
 	 * 窓がリポジトリごとに 1 回確かめる。ボードから受けるのはこの真偽だけ。
 	 */
 	readonly toolApprovals?: boolean;
+	/**
+	 * そのタスクを Para Code の Bot が載せたなら、その Bot の id（ボードのカードの印）。接続口はこれも見て、起動したペインに
+	 * 「Bot が起こした」印を付ける（印は断る向きにだけ効くので、ボードの言うことをそのまま使ってよい）。
+	 */
+	readonly botOrigin?: string;
 }
 
 export interface IParadisTaskBoardSendRequest {
@@ -320,6 +325,10 @@ export function paradisParseTaskBoardLaunch(body: unknown): Parsed<IParadisTaskB
 	if (!modelId.ok || !effortId.ok || !permissionId.ok) {
 		return invalid('modelId, effortId and permissionId must be short strings.');
 	}
+	const botOrigin = optionalShortText(body, 'botOrigin', 200);
+	if (!botOrigin.ok) {
+		return invalid('botOrigin must be a short string.');
+	}
 	const relaySessionId = body.relaySessionId;
 	if (relaySessionId !== undefined && (typeof relaySessionId !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(relaySessionId) || !repoPath.startsWith('/'))) {
 		return invalid('relaySessionId must be a relay session id, with a POSIX repoPath.');
@@ -336,6 +345,7 @@ export function paradisParseTaskBoardLaunch(body: unknown): Parsed<IParadisTaskB
 			...(permissionId.value !== undefined ? { permissionId: permissionId.value } : {}),
 			...(relaySessionId !== undefined ? { relaySessionId } : {}),
 			...(relaySessionId !== undefined && body.toolApprovals === true ? { toolApprovals: true } : {}),
+			...(botOrigin.value !== undefined ? { botOrigin: botOrigin.value } : {}),
 		},
 	};
 }
