@@ -13,6 +13,7 @@ import { colors, radius, space, type } from '../../theme.js';
 import { answerHumanAsk } from './humanAskStore.js';
 import {
 	humanAskActionSheet,
+	humanAskAnswerStands,
 	humanAskQuestionAnswer,
 	humanAskQuestionMessages,
 	humanAskRefusalText,
@@ -32,7 +33,9 @@ import {
  * ボタンは確認のシート、文を添えられるボタンは入力のシート）。許可はここに出ない（今の許可カードのまま）。
  */
 export const HumanAskCard = memo(function HumanAskCard({ pcId, ask, now }: { pcId: string; ask: HumanAsk; now: number }) {
-	const [answered, setAnswered] = useState(false);
+	// 答えたときの 1 件。一覧が「届けられず待ちへ戻った」に変わったら下ろす（humanAskAnswerStands）
+	const [answeredOn, setAnsweredOn] = useState<HumanAsk | undefined>(undefined);
+	const answered = answeredOn !== undefined && humanAskAnswerStands(answeredOn, ask);
 	const [sending, setSending] = useState(false);
 	const [sheet, setSheet] = useState<{ readonly action: HumanAskAction; readonly sheet: Exclude<HumanAskActionSheet, { kind: 'send' }> } | undefined>(undefined);
 	const messages = useMemo(() => humanAskQuestionMessages(ask), [ask]);
@@ -43,18 +46,18 @@ export const HumanAskCard = memo(function HumanAskCard({ pcId, ask, now }: { pcI
 		const outcome = await answerHumanAsk(pcId, ask.key, answer, newHumanAskOpId());
 		setSending(false);
 		if (outcome.ok) {
-			setAnswered(true);
+			setAnsweredOn(ask);
 			haptic('success');
 			useParaToast.getState().show({ key: `human-ask-${ask.key}`, text: '回答を送りました', sub: ask.from.title, icon: 'checkmark-circle-outline', tone: 'done' }, 2_500);
 			return { status: 'accepted' };
 		}
 		if (outcome.reason === 'gone') {
-			setAnswered(true);
+			setAnsweredOn(ask);
 		}
 		const message = humanAskRefusalText(outcome.reason);
 		useParaToast.getState().show({ key: `human-ask-${ask.key}`, text: message, icon: 'alert-circle-outline', tone: 'warn' }, 3_500);
 		return { status: 'rejected', message };
-	}, [pcId, ask.key, ask.from.title]);
+	}, [pcId, ask]);
 
 	const answerOne = useCallback((index: number, answer: AgentQuestionAnswer) => {
 		const question = ask.questions[index];

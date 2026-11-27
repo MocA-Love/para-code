@@ -272,6 +272,15 @@ export function humanAskDuplicateOutcome(asks: readonly Pick<HumanAsk, 'key' | '
 	return ask?.busy === true ? { ok: false, reason: 'busy' } : { ok: false, reason: 'unconfirmed' };
 }
 
+/**
+ * カードの「答えた」がまだ有効か。`answeredOn` は答えたときの 1 件、`current` は今の一覧の同じ鍵の 1 件。
+ * 一覧を取り直して、届けている最中でなく「前の答えを届けられませんでした」（`failed`）で待ちへ戻っていたら下ろす
+ * （スマホから答え直せるように）。取り直す前（同じ 1 件のまま）と、届けている最中は「答えた」のまま。
+ */
+export function humanAskAnswerStands(answeredOn: HumanAsk, current: HumanAsk): boolean {
+	return current === answeredOn || current.busy || !current.failed;
+}
+
 /** ボタンを押したときに挟むシート。PC が載せた確認の文（`confirm`）があればそれを出す。 */
 export type HumanAskActionSheet =
 	| { readonly kind: 'text'; readonly title: string; readonly body?: string; readonly ok: string }

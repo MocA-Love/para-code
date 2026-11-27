@@ -7,6 +7,7 @@ import { questionAllowsFreeText } from '../../agentQuestionMod.js';
 import {
 	humanAskActionSheet,
 	humanAskAnswerRequest,
+	humanAskAnswerStands,
 	humanAskDuplicateOutcome,
 	humanAskQuestionAnswer,
 	humanAskQuestionMessages,
@@ -14,6 +15,7 @@ import {
 	parseHumanAskAnswerReply,
 	parseHumanAskSummary,
 	parseHumanAsksReply,
+	type HumanAsk,
 	type HumanAskAction,
 	type HumanAskAnswer,
 } from './humanAsks.js';
@@ -125,5 +127,19 @@ describe('humanAsks', () => {
 			approvalWithoutConfirm: { kind: 'confirm', title: '承認する', body: 'レビューの結果を確かめてください', ok: '承認する' },
 			approvalButtonsSentDirectly: [],
 		});
+	});
+
+	it('答えたあと PC が届けられずに待ちへ戻したら「答えた」を下ろし、答え直せるようにする', () => {
+		const waiting = parseHumanAsksReply(golden.reply)?.asks[0] as HumanAsk;
+		const answeredOn = { ...waiting, busy: false, failed: false };
+		const failedBefore = { ...waiting, busy: false, failed: true };
+		expect({
+			sameAsk: humanAskAnswerStands(answeredOn, answeredOn),
+			delivering: humanAskAnswerStands(answeredOn, { ...waiting, busy: true, failed: false }),
+			failedBack: humanAskAnswerStands(answeredOn, { ...waiting, busy: false, failed: true }),
+			// 前にも届けられなかった 1 件へ答え直した場合も、取り直した一覧で failed なら下ろす
+			failedAgain: humanAskAnswerStands(failedBefore, { ...waiting, busy: false, failed: true }),
+			waitingNotFailed: humanAskAnswerStands(answeredOn, { ...waiting, busy: false, failed: false }),
+		}).toEqual({ sameAsk: true, delivering: true, failedBack: false, failedAgain: false, waitingNotFailed: true });
 	});
 });
