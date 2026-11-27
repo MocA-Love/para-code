@@ -186,7 +186,7 @@ suite('ParadisAgentChatInput', () => {
 		appended.source.getAgentChatDraft = async () => appendedDraft;
 		appended.terminal.onKey = text => { appendedDraft = `${text} と追記`; };
 		const appendedResult = await appended.input.sendMessageOutcome(1, 't', 'hi', safe);
-		const unsafe = { kind: 'refused', code: 'unsafe', message: 'このエージェントには外から安全に届けられません（Claude Code と Para Code の入力欄の mod が要ります）' };
+		const unsafe = { kind: 'refused', code: 'unsafe', message: 'このエージェントには外から安全に届けられません（Claude Code と、入力欄を読む Para Code の mod が要ります）' };
 		assert.deepStrictEqual({
 			...results,
 			typedModClaude: modClaude.terminal.sent,

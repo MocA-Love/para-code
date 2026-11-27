@@ -84,7 +84,7 @@ export type ParadisAgentChatSendOutcome =
 export interface IParadisAgentChatDeliverOptions {
 	/**
 	 * 打ち込みで安全に届けられる宛先にだけ送る。安全なのは、作業中の発言を次の番まで待たせられ（`queuesWhileWorking`）、
-	 * 入力欄の書きかけを読める（入力欄の mod がある）会話だけ（今は mod のある Claude Code）。それ以外は何も書かずに
+	 * 入力欄の書きかけを読める（入力欄の `draft/` の mod が入力欄の文を送ってきている）会話だけ（今は Claude Code）。それ以外は何も書かずに
 	 * `unsafe` で断る。送るときも、貼る前に入力欄が空、Enter の前に貼った文だけのときに進み、書きかけがあれば `draft` で断る。
 	 * 作業中かを先に読んでも、届く前に始まったターンを打ち切らない（待たせられる種類だけに送る）。
 	 */
@@ -200,7 +200,7 @@ export class ParadisAgentChatInput {
 	 */
 	async sendMessageOutcome(instanceId: number, token: string, rawText: string, options?: IParadisAgentChatDeliverOptions): Promise<ParadisAgentChatSendOutcome> {
 		const refused = (message: string): ParadisAgentChatSendOutcome => ({ kind: 'refused', message });
-		const refusedUnsafe: ParadisAgentChatSendOutcome = { kind: 'refused', code: 'unsafe', message: localize('paradisAgentChat.errorUnsafeDelivery', "このエージェントには外から安全に届けられません（Claude Code と Para Code の入力欄の mod が要ります）") };
+		const refusedUnsafe: ParadisAgentChatSendOutcome = { kind: 'refused', code: 'unsafe', message: localize('paradisAgentChat.errorUnsafeDelivery', "このエージェントには外から安全に届けられません（Claude Code と、入力欄を読む Para Code の mod が要ります）") };
 		const refusedDraft: ParadisAgentChatSendOutcome = { kind: 'refused', code: 'draft', message: localize('paradisAgentChat.errorDraft', "入力欄に書きかけの文があります") };
 		const safeOnly = options?.safeOnly === true;
 		const terminal = this.dependencies.terminal(instanceId, token);
