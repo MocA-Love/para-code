@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { isEqualOrParent } from '../../../../../base/common/extpath.js';
-import { paradisBotSummary, paradisIsLeftoverBotTerminal } from '../../common/paradisBotsApi.js';
+import { paradisBotCommandStateOnAttach, paradisBotSummary, paradisIsLeftoverBotTerminal } from '../../common/paradisBotsApi.js';
 import { EMPTY_PARADIS_BOT_ITEMS_STATE } from '../../common/paradisBotItems.js';
 import { IParadisBot } from '../../common/paradisBots.js';
 import { PARADIS_BOT_SETUP_STALL_MS, ParadisBotPanes } from '../../node/paradisBotPanes.js';
@@ -109,5 +109,21 @@ suite('Paradis bot panes', () => {
 			leftover(undefined, false),
 			panes.boundTokens(),
 		], [true, true, false, false, false, false, ['token-live']]);
+	});
+
+	test('見張りを付けたときの様子: 中身の空の「実行中」が残っていても、終わった最後のコマンドの終了コードを知らせる（実機の zsh で claude が見つからなかったとき）', () => {
+		assert.deepStrictEqual([
+			paradisBotCommandStateOnAttach({ executingCommand: '', lastExitCode: 127, hasLast: true, reattached: false }),
+			paradisBotCommandStateOnAttach({ executingCommand: 'claude', lastExitCode: 127, hasLast: true, reattached: false }),
+			paradisBotCommandStateOnAttach({ executingCommand: undefined, lastExitCode: 1, hasLast: true, reattached: false }),
+			paradisBotCommandStateOnAttach({ executingCommand: '', lastExitCode: 0, hasLast: true, reattached: true }),
+			paradisBotCommandStateOnAttach({ executingCommand: '', lastExitCode: undefined, hasLast: false, reattached: false }),
+		], [
+			{ exitCode: 127, finished: true },
+			{ exitCode: undefined, finished: false },
+			{ exitCode: 1, finished: true },
+			undefined,
+			undefined,
+		]);
 	});
 });
