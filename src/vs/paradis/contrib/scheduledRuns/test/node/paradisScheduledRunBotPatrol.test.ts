@@ -200,6 +200,53 @@ suite('ParadisScheduledRunsService: bot look-arounds', () => {
 		});
 	});
 
+	test('見回りの枠と利用者の枠は受け持ちでも別。今すぐ見回るは枠の理由で断り、枠が空いた後に流れた回はウィンドウが無かったと記録する', async () => {
+		const { state, gate, service, requests, statuses } = setup(at(2026, 11, 27, 7, 0));
+		await service.whenReady();
+		for (const botId of ['b1', 'b2', 'b3', 'b4']) {
+			gate.bots.set(botId, botId);
+			await service.setBotPatrol(botId, PATROL);
+		}
+		state.now = at(2026, 11, 27, 8, 0) + 20_000;
+		service.tick();
+		const patrols = [...requests];
+		const claims: boolean[] = [];
+		for (const request of patrols) {
+			claims.push((await service.claim('window:1', request.run.id)) !== undefined);
+		}
+		// 見回りが 3 つ動いていても、利用者の定期実行は受け持てる
+		const user = await service.save({ name: '依存の更新確認', schedule: '0 9 * * *', target: { kind: 'repository', repositoryUri: 'file:///repo', repositoryName: 'repo' }, agentId: 'claude', prompt: '確認して', dailyLimit: 3 });
+		const userRun = await service.runNow(user.definition!.id);
+		const userClaimed = (await service.claim('window:1', userRun.run!.id)) !== undefined;
+		// 見回りの枠が埋まっているあいだの「今すぐ見回る」は、前の回ではなく枠の理由で断る
+		gate.bots.set('b5', 'b5');
+		await service.setBotPatrol('b5', PATROL);
+		const patrolNow = await service.runBotPatrolNow('b5');
+		// 1 つ終わって枠が空いた後、4 つ目を誰も受け持たないまま期限が来たら、ウィンドウが無かったと記録する
+		await service.report('window:1', { runId: patrols[0].run.id, status: 'completed' });
+		state.now = at(2026, 11, 27, 8, 11);
+		service.tick();
+		const runs = (await statuses()).map(([status, reason, trigger]) => `${status}:${reason}:${trigger}`);
+		assert.deepStrictEqual({ claims, userClaimed, patrolNow, runs }, {
+			claims: [true, true, true, false],
+			userClaimed: true,
+			patrolNow: { ok: false, error: 'ほかの Bot の見回りが 3 つ動いていたため見回りませんでした' },
+			runs: ['completed::schedule', 'starting::schedule', 'starting::schedule', 'skipped:botNoWindow:schedule', 'starting::manual'],
+		});
+	});
+
+	test('開始待ちの間に Bot の機能をオフにすると、受け持つウィンドウを待たずに設定オフで見送る', async () => {
+		const { state, gate, service, statuses } = setup(at(2026, 11, 27, 7, 0));
+		await service.whenReady();
+		await service.setBotPatrol('b1', PATROL);
+		state.now = at(2026, 11, 27, 8, 0) + 20_000;
+		service.tick();
+		gate.state = 'off';
+		state.now += 30_000;
+		service.tick();
+		assert.deepStrictEqual(await statuses(), [['skipped', 'botsOff', 'schedule']]);
+	});
+
 	test('動いている間に Bot の機能をオフにすると、見回りを止めて「オフになったため止めた」と記録する', async () => {
 		const { state, gate, service, statuses } = setup(at(2026, 11, 27, 7, 0));
 		await service.whenReady();

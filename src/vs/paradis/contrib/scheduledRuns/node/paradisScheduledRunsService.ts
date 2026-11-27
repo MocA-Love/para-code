@@ -354,13 +354,16 @@ export class ParadisScheduledRunsService extends Disposable {
 		}
 	}
 
-	/** 見回りの門の答え。門がまだ無い・Bot の台帳を読み終えていなければ undefined。 */
 	/** その定義が Bot の見回りか（上限を数える枠を分けるのに使う）。 */
 	private readonly isBotPatrolDefinitionId = (definitionId: string): boolean => this.definitions.some(definition => definition.id === definitionId && paradisIsBotPatrolDefinition(definition));
 
-	/** 同時実行の枠が空かずに受け持てなかった見回りの開始待ち（期限が来たら、その理由で見送ったと記録する）。 */
+	/**
+	 * 同時実行の枠が空かずに受け持てなかった見回りの開始待ち。期限が来たとき、今も見回りの枠が埋まっていれば、その理由で
+	 * 見送ったと記録する（枠が空いた後にウィンドウが無かったせいで流れたなら、ウィンドウが無かったと記録する）。
+	 */
 	private readonly patrolConcurrencyBlocked = new Set<string>();
 
+	/** 見回りの門の答え。門がまだ無い・Bot の台帳を読み終えていなければ undefined。 */
 	private botGateState(definition: IParadisScheduledRunDefinition): ParadisBotPatrolGateState | undefined {
 		const botId = definition.target.botId;
 		return botId !== undefined ? this.botGate?.check(botId) : undefined;
@@ -519,7 +522,8 @@ export class ParadisScheduledRunsService extends Disposable {
 		}
 		const guard = paradisCheckRunGuards(definition, this.runs, 'manual', now, undefined, this.isBotPatrolDefinitionId);
 		if (guard !== undefined) {
-			return { ok: false, error: localize('paradis.scheduledRuns.error.alreadyRunning', "前の回がまだ動いています。終わってから実行してください。") };
+			// 同じものが動いているとき以外（同時実行の枠など）は、その理由を出す
+			return { ok: false, error: guard === 'overlap' ? localize('paradis.scheduledRuns.error.alreadyRunning', "前の回がまだ動いています。終わってから実行してください。") : paradisScheduledRunReasonLabel(guard) };
 		}
 		const run = this.createPending(definition, 'manual', undefined, now, 0);
 		this.commit();
@@ -880,14 +884,24 @@ export class ParadisScheduledRunsService extends Disposable {
 		for (const run of [...this.runs]) {
 			if (run.status === 'pending') {
 				// 予定から 12 時間、ただし遅れて作った開始待ちにも作成から最低 1 時間は残す。Bot の見回りは短く残す
-				const botPatrol = this.definitions.some(definition => definition.id === run.definitionId && paradisIsBotPatrolDefinition(definition));
+				const patrolDefinition = this.definitions.find(definition => definition.id === run.definitionId && paradisIsBotPatrolDefinition(definition));
+				const botPatrol = patrolDefinition !== undefined;
+				if (patrolDefinition !== undefined && this.botGateState(patrolDefinition) === 'off') {
+					// 開始待ちの間に Bot の機能をオフにした: 受け持つウィンドウを待たずに、設定オフで見送る
+					changed = true;
+					this.patrolConcurrencyBlocked.delete(run.id);
+					this.updateRun(run.id, { status: 'skipped', reason: 'botsOff', finishedAt: now });
+					continue;
+				}
 				const expiresAt = botPatrol
 					? run.createdAt + PARADIS_BOT_PATROL_PENDING_MS
 					: Math.max((run.scheduledFor ?? run.createdAt) + PARADIS_SCHEDULED_RUN_CATCH_UP_MS, run.createdAt + PARADIS_SCHEDULED_RUN_MIN_PENDING_MS);
 				if (now > expiresAt) {
 					changed = true;
 					// 見回りは、同時実行の枠が空かずに受け持てなかったなら、ウィンドウが無かったのではなくその理由で記録する
-					const reason = !botPatrol ? 'noWindowTooOld' : this.patrolConcurrencyBlocked.has(run.id) ? 'botConcurrency' : 'botNoWindow';
+					const pool = paradisScheduledRunPool(run.definitionId, this.runs, this.isBotPatrolDefinitionId);
+					const stillFull = this.patrolConcurrencyBlocked.has(run.id) && paradisCountRunningRuns(pool.runs) >= pool.maxConcurrent;
+					const reason = !botPatrol ? 'noWindowTooOld' : stillFull ? 'botConcurrency' : 'botNoWindow';
 					this.patrolConcurrencyBlocked.delete(run.id);
 					this.updateRun(run.id, { status: 'skipped', reason, finishedAt: now });
 				} else if (!toRequest.includes(run)) {
