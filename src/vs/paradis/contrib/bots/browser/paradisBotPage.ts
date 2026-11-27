@@ -321,6 +321,10 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 			void this.loadItems();
 		} else if (tab !== 'chat') {
 			this.renderPanel();
+			// ファイルのタブを開き直したら読み直す（開いている間に Bot が記憶を書き足していても、古いまま保存しようとしない）
+			if (tab === 'files' && this.botId !== undefined) {
+				this.settingsPanel(this.botId).reloadFiles();
+			}
 		} else {
 			this.clearPanel();
 		}

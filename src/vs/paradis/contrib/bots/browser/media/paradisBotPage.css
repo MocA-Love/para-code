@@ -81,10 +81,13 @@
 	gap: var(--vscode-spacing-size80);
 	min-width: 0;
 	flex: 0 1 auto;
+	overflow: hidden;
 }
 
+/* On a narrow tab the status line gives way first, then the name is cut with an ellipsis (the tabs keep their size). */
 .paradis-bot-page-name {
-	flex: none;
+	flex: 0 1 auto;
+	min-width: 0;
 	max-width: 240px;
 	overflow: hidden;
 	white-space: nowrap;
@@ -95,6 +98,7 @@
 }
 
 .paradis-bot-page-status {
+	flex: 0 100 auto;
 	min-width: 0;
 	overflow: hidden;
 	white-space: nowrap;
@@ -488,6 +492,40 @@ button.paradis-bot-page-link:hover {
 
 .paradis-bot-files-editor {
 	margin-top: var(--vscode-spacing-size120);
+}
+
+/* The memory file changed elsewhere after it was opened: what changed, and overwrite or reload. */
+.paradis-bot-files-conflict {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size80);
+	margin-bottom: var(--vscode-spacing-size120);
+	padding: var(--vscode-spacing-size120);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner, 8px);
+	background: var(--vscode-paradis-raised);
+}
+
+.paradis-bot-files-conflict-title {
+	color: var(--vscode-paradis-warning, var(--vscode-editorWarning-foreground));
+	overflow-wrap: anywhere;
+}
+
+.paradis-bot-files-diff {
+	max-height: 160px;
+	overflow: auto;
+	font-family: var(--monaco-monospace-font);
+	font-size: var(--vscode-fontSize-label1);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.paradis-bot-files-diff-line.added {
+	color: var(--vscode-gitDecoration-addedResourceForeground);
+}
+
+.paradis-bot-files-diff-line.removed {
+	color: var(--vscode-gitDecoration-deletedResourceForeground);
 }
 
 .paradis-bot-files-view {

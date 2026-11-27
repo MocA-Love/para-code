@@ -388,4 +388,76 @@ suite('Paradis bots page overlay', () => {
 			enabled: [true, true, true],
 		});
 	}));
+
+	test('ファイル: 開いた後に Bot が書き足したら、差分を見せて「読み直す」「上書きする」を選ばせ、タブを開き直したときも読み直す', async () => {
+		const { container, page, calls, files } = setup();
+		page.setInstance(1);
+		await settle();
+		const openMemory = async () => {
+			tab(container, 2);
+			await settle();
+			(container.getElementsByClassName('paradis-bot-page-row')[1] as HTMLElement).click();
+			await settle();
+			await settle();
+		};
+		const editor = () => container.querySelector('.paradis-bot-files-editor textarea') as HTMLTextAreaElement;
+		const type = (value: string) => {
+			editor().value = value;
+			editor().dispatchEvent(new mainWindow.Event('input'));
+		};
+		const button = (label: string) => Array.from(container.querySelectorAll<HTMLElement>('.paradis-bot-files-conflict .paradis-button')).find(element => element.textContent === label)!;
+		const diff = () => Array.from(container.getElementsByClassName('paradis-bot-files-diff-line')).map(line => line.textContent);
+		await openMemory();
+		// 書きかけの無いまま Bot が書き足し、タブを開き直した: 新しい中身になる
+		files.set('MEMORY.md', '# Memory\n- 一つ目\n');
+		tab(container, 3);
+		await settle();
+		await openMemory();
+		const refreshed = editor().value;
+		// 書きかけの間に Bot が書き足した: 保存は書かずに差分を出す
+		type('# Memory\n- 一つ目\n- 自分の編集\n');
+		files.set('MEMORY.md', '# Memory\n- 一つ目\n- Bot が足した行\n');
+		primary(container).click();
+		await settle();
+		await settle();
+		const shown = diff();
+		button('読み直す（書きかけを捨てる）').click();
+		await settle();
+		const reloaded = editor().value;
+		// もう一度書きかけ、タブを開き直したら差分を出し、上書きを選ぶと書く
+		type('# Memory\n- 上書きする\n');
+		files.set('MEMORY.md', '# Memory\n- また Bot\n');
+		tab(container, 3);
+		await settle();
+		await openMemory();
+		const again = diff();
+		button('上書きする').click();
+		await settle();
+		await settle();
+		assert.deepStrictEqual({ refreshed, shown, reloaded, again, calls, conflicts: container.getElementsByClassName('paradis-bot-files-conflict').length }, {
+			refreshed: '# Memory\n- 一つ目\n',
+			shown: ['+ - Bot が足した行'],
+			reloaded: '# Memory\n- 一つ目\n- Bot が足した行\n',
+			again: ['- - 一つ目', '- - Bot が足した行', '+ - また Bot'],
+			calls: ['write MEMORY.md: # Memory\n- 上書きする\n'],
+			conflicts: 0,
+		});
+	});
+
+	test('設定: 役割が上限を超えたら黙って切り詰めず、保存を断って何文字多いかを出す', async () => {
+		const { container, page } = setup();
+		page.setInstance(1);
+		await settle();
+		tab(container, 3);
+		await settle();
+		await settle();
+		const role = container.querySelector('.paradis-bot-settings-role textarea') as HTMLTextAreaElement;
+		role.value = 'x'.repeat(4005);
+		role.dispatchEvent(new mainWindow.Event('input'));
+		const errors = Array.from(container.getElementsByClassName('paradis-bot-settings-error')).map(error => error.textContent).filter(text => !!text);
+		assert.deepStrictEqual({ errors, saveEnabled: !primary(container).classList.contains('disabled') && primary(container).getAttribute('aria-disabled') !== 'true' }, {
+			errors: ['役割が 5 文字多すぎます（4000 文字まで）。'],
+			saveEnabled: false,
+		});
+	});
 });
