@@ -85,12 +85,12 @@ describe('Bot の項目', () => {
 		expect({
 			page: parseBotItemReply({ item: { uid: 'u1', number: 42, botId: 'b', title: 'T', status: 'needs_you', ask: { eventId: 3, questions: [] }, links: [{ kind: 'pr', ref: 'o/r#1' }, { kind: 1 }], events: [{ id: 1, kind: 'made', actor: 'bot', at: 1 }, { id: 'x' }], lastActivityAt: 1, locked: true } }),
 			suggestions: parseBotSuggestionsReply({ suggestions: [{ id: 's1', title: 'T', request: 'R', state: 'open', createdAt: 1 }, { id: 's2', title: 'T', request: 'R', state: 'dismissed', createdAt: 1 }] })?.map(entry => entry.id),
-			file: [parseBotFileReply({ text: 'a', conflict: true }), parseBotFileReply({ duplicate: true }), parseBotFileReply({})],
+			file: [parseBotFileReply({ text: 'a', conflict: true }), parseBotFileReply({ duplicate: true }), parseBotFileReply({}), parseBotFileReply({ text: 'b', conflict: true, duplicate: true })],
 			update: [parseBotUpdateReply({ applied: true }), parseBotUpdateReply({ duplicate: true }), parseBotUpdateReply({ needsConfirmation: true, detail: 'D', permission: 'wider' }), parseBotUpdateReply({ needsConfirmation: true })],
 		}).toEqual({
 			page: { uid: 'u1', number: 42, botId: 'b', title: 'T', status: 'needs_you', waits: true, lastActivityAt: 1, askEventId: 3, links: [{ kind: 'pr', ref: 'o/r#1' }], events: [{ id: 1, kind: 'made', actor: 'bot', at: 1 }], locked: true },
 			suggestions: ['s1'],
-			file: [{ text: 'a', conflict: true }, 'duplicate', undefined],
+			file: [{ text: 'a', conflict: true }, 'duplicate', undefined, { text: 'b', conflict: true }],
 			update: [{ kind: 'applied' }, { kind: 'applied' }, { kind: 'confirm', detail: 'D', wider: true }, undefined],
 		});
 	});

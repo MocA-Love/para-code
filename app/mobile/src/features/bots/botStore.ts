@@ -116,6 +116,7 @@ export async function refreshBotItem(pcId: string, uid: string): Promise<BotResu
 export async function actOnBotItem(pcId: string, botId: string, uid: string, act: BotItemAction, opId: string = newBotOpId()): Promise<BotResult<true>> {
 	const result = await call(pcId, botItemActRequest(opId, uid, act), WRITE_TIMEOUT_MS, parseBotItemActReply);
 	if (result.ok) {
+		// 当たった（再送の duplicate でも）。一覧とページを読み直して、今の値で確かめる
 		void refreshBotPage(pcId, botId);
 		void refreshBotItem(pcId, uid);
 		return { ok: true, value: true };
@@ -129,6 +130,7 @@ export async function actOnBotSuggestion(pcId: string, botId: string, id: string
 	if (!result.ok) {
 		return result;
 	}
+	// 再送の duplicate でも一覧を読み直して確かめる（中身の無い duplicate は古い PC。依頼の文は返らない）
 	void refreshBotPage(pcId, botId);
 	return { ok: true, value: result.value === 'duplicate' ? undefined : result.value.request };
 }
@@ -153,8 +155,12 @@ export async function writeBotFile(pcId: string, botId: string, path: BotFile, t
 		return result;
 	}
 	if (result.value === 'duplicate') {
-		put('files', botFileKey(pcId, botId, path), text);
-		return { ok: true, value: 'written' };
+		// 前の送信の結果が分からない（古い PC）。読み直して、書いた中身になっていれば書けた、違えば書いていない
+		const now = await readBotFile(pcId, botId, path);
+		if (!now.ok) {
+			return now;
+		}
+		return { ok: true, value: now.value === text ? 'written' : 'conflict' };
 	}
 	put('files', botFileKey(pcId, botId, path), result.value.text);
 	return { ok: true, value: result.value.conflict ? 'conflict' : 'written' };

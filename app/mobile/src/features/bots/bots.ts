@@ -335,13 +335,14 @@ export function parseBotItemsReply(value: unknown): BotItemRow[] | undefined {
 	return input.items.slice(0, MAX_ITEMS).map(parseItemRow).filter((row): row is BotItemRow => row !== undefined);
 }
 
-/** botItemAct の応答（変わった後の行）。 */
+/**
+ * botItemAct の応答（変わった後の行）。同じ opId の再送には、PC が 1 回目の返事に `duplicate: true` を足して返す。
+ * 返事の中身があればそれを使い、中身の無い `duplicate`（古い PC）は `'duplicate'`（呼ぶ側が読み直して確かめる）。
+ */
 export function parseBotItemActReply(value: unknown): BotItemRow | 'duplicate' | undefined {
 	const input = record(value);
-	if (input?.duplicate === true) {
-		return 'duplicate';
-	}
-	return parseItemRow(input?.item);
+	const row = parseItemRow(input?.item);
+	return row ?? (input?.duplicate === true ? 'duplicate' : undefined);
 }
 
 function parseEvent(value: unknown): BotItemEvent | undefined {
@@ -412,19 +413,20 @@ export function parseBotSuggestionsReply(value: unknown): BotSuggestion[] | unde
 	return input.suggestions.slice(0, MAX_SUGGESTIONS).map(parseSuggestion).filter((entry): entry is BotSuggestion => entry !== undefined && entry.state === 'open');
 }
 
-/** botSuggestionAct の応答。 */
+/** botSuggestionAct の応答。再送の扱いは {@link parseBotItemActReply} と同じ。 */
 export function parseBotSuggestionActReply(value: unknown): BotSuggestion | 'duplicate' | undefined {
 	const input = record(value);
-	return input?.duplicate === true ? 'duplicate' : parseSuggestion(input?.suggestion);
+	return parseSuggestion(input?.suggestion) ?? (input?.duplicate === true ? 'duplicate' : undefined);
 }
 
 /** botFile の応答。`conflict` はほかの場所が書き換えていた（書いていない。`text` は今の中身）。 */
 export function parseBotFileReply(value: unknown): { readonly text: string; readonly conflict: boolean } | 'duplicate' | undefined {
 	const input = record(value);
-	if (input?.duplicate === true) {
-		return 'duplicate';
+	if (typeof input?.text === 'string' && input.text.length <= MAX_FILE) {
+		return { text: input.text, conflict: input.conflict === true };
 	}
-	return typeof input?.text === 'string' && input.text.length <= MAX_FILE ? { text: input.text, conflict: input.conflict === true } : undefined;
+	// 再送で、中身の無い duplicate（古い PC）。書けたかどうかは呼ぶ側が読み直して確かめる
+	return input?.duplicate === true ? 'duplicate' : undefined;
 }
 
 /** botUpdate の応答。`duplicate` は前の送信で当たっている。 */
