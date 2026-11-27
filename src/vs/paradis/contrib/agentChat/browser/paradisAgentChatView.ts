@@ -587,7 +587,9 @@ export class ParadisAgentChatView extends Disposable {
 		const answeredHere = interaction?.kind === 'approval' && this.approvalStates.get(interaction.id)?.sent === true;
 		const codexQuestion = state?.agent === 'codex' && paradisPendingCodexQuestion(state.messages) !== undefined;
 		this.composer.setBlockedReason(state === undefined
-			? localize('paradisAgentChat.blockedNoSession', "エージェントの会話が見つかりません")
+			? this.guide() !== undefined
+				? localize('paradisAgentChat.blockedWaitingSession', "会話が始まると話しかけられます")
+				: localize('paradisAgentChat.blockedNoSession', "エージェントの会話が見つかりません")
 			: state.agentExited
 				? localize('paradisAgentChat.blockedExited', "エージェントは終了しました。ターミナルに戻って確かめてください")
 				: codexQuestion
