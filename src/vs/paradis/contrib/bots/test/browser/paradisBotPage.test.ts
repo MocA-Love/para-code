@@ -27,6 +27,7 @@ import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelSc
 import { ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisAgentChatService } from '../../../agentChat/browser/paradisAgentChatService.js';
 import { IParadisBotPaneResolver, ParadisBotPage } from '../../browser/paradisBotPage.js';
+import { IParadisBotPatrolPort } from '../../browser/paradisBotPatrol.js';
 import { paradisRequestBotPageTab } from '../../browser/paradisBotPageTabRequest.js';
 import { IParadisBotGroupsService } from '../../common/paradisBotGroupsApi.js';
 import { IParadisBotItem } from '../../common/paradisBotItems.js';
@@ -60,7 +61,7 @@ suite('Paradis bots page overlay', () => {
 
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function setup(items: IParadisBotItem[] = ITEMS, entries: IParadisHumanAskEntry[] = [ASK], measureClamp?: (element: HTMLElement) => IParadisInboxClampSize | undefined) {
+	function setup(items: IParadisBotItem[] = ITEMS, entries: IParadisHumanAskEntry[] = [ASK], measureClamp?: (element: HTMLElement) => IParadisInboxClampSize | undefined, patrol?: IParadisBotPatrolPort) {
 		const disposables = store.add(new DisposableStore());
 		const instantiation = disposables.add(new TestInstantiationService());
 		const configuration = new TestConfigurationService({ [PARADIS_BOTS_ENABLED_SETTING]: true });
@@ -147,7 +148,7 @@ suite('Paradis bots page overlay', () => {
 		const panes = new Map<number, string>([[1, 'release']]);
 		const resolver: IParadisBotPaneResolver = { onDidChange: changed.event, botFor: async instanceId => panes.get(instanceId) };
 		const container = document.createElement('div');
-		const page = disposables.add(instantiation.createInstance(ParadisBotPage, container, resolver, measureClamp));
+		const page = disposables.add(instantiation.createInstance(ParadisBotPage, container, resolver, patrol, measureClamp));
 		return { groupsSnapshot, groupsChanged, container, page, configuration, panes, changed, answered, disposables, snapshotGone, sendFails, warnings, failAnswer, calls, confirms, files, bots, botsChanged, statuses, chatShown: () => { draftTaken = true; } };
 	}
 
@@ -415,6 +416,56 @@ suite('Paradis bots page overlay', () => {
 				['取り消せなかったファイルがあります（記憶のファイルではないので書き戻していません）: SOUL.md', true],
 			],
 			warnings: [`${new Date(SNAPSHOT_AT).toLocaleString()} の写しはもうありません（古い写しから消えていきます）。写しの一覧を読み直しました。`],
+		});
+	});
+
+	test('見回り: ホームの「定期実行」の節と、設定のタブの欄から保存・今すぐ見回る。保存を断られたら書きかけを残して理由を出す', async () => {
+		const patrolCalls: string[] = [];
+		let saveFails = false;
+		const port: IParadisBotPatrolPort = {
+			onDidChange: Event.None,
+			get: async () => ({ definitionId: 'd', enabled: true, schedule: { everyHours: 4, fromHour: 8, toHour: 20, weekdaysOnly: true }, cron: '0 8-20/4 * * 1-5', lookFor: '返事の無い指摘', gate: 'ok' }),
+			set: async (botId, input) => { patrolCalls.push(`set ${botId} ${JSON.stringify(input)}`); return saveFails ? { ok: false, error: '定期実行は 20 件までです' } : { ok: true }; },
+			runNow: async botId => { patrolCalls.push(`run ${botId}`); return { ok: true }; },
+		};
+		const { container, page, warnings } = setup(ITEMS, [ASK], undefined, port);
+		page.setInstance(1);
+		await settle();
+		(container.getElementsByClassName('paradis-bot-page-tab')[1] as HTMLElement).click();
+		await settle();
+		await settle();
+		const home = Array.from(container.getElementsByClassName('paradis-bot-patrol-line')).map(line => line.textContent);
+		const homeButtons = Array.from(container.querySelectorAll('.paradis-bot-patrol .monaco-button')).map(button => button.textContent);
+		(container.querySelectorAll('.paradis-bot-patrol .monaco-button')[0] as HTMLElement).click();
+		await settle();
+		(container.querySelectorAll('.paradis-bot-patrol .monaco-button')[1] as HTMLElement).click();
+		await settle();
+		await settle();
+		const sections = Array.from(container.getElementsByClassName('paradis-bot-page-section')).map(section => section.textContent);
+		const save = () => (Array.from(container.querySelectorAll('.monaco-button')).find(button => button.textContent === '見回りを保存') as HTMLElement).click();
+		const lookForInput = () => container.querySelector('.paradis-bot-patrol-settings input[aria-label="探すもの"]') as HTMLInputElement;
+		save();
+		await settle();
+		await settle();
+		// 断られた保存: 書いた「探すもの」が残り、理由が出る
+		saveFails = true;
+		lookForInput().value = 'CI の落ちたチェック';
+		lookForInput().dispatchEvent(new InputEvent('input'));
+		save();
+		await settle();
+		await settle();
+		const kept = lookForInput().value;
+		assert.deepStrictEqual({ home, homeButtons, sections: sections.slice(-1), patrolCalls, kept, warned: warnings.slice(-1) }, {
+			kept: 'CI の落ちたチェック',
+			warned: ['見回りを保存できませんでした: 定期実行は 20 件までです'],
+			home: ['平日 8〜20 時・4 時間ごと'],
+			homeButtons: ['今すぐ見回る', '変える...'],
+			sections: ['見回り'],
+			patrolCalls: [
+				'run release',
+				'set release {"schedule":{"everyHours":4,"fromHour":8,"toHour":20,"weekdaysOnly":true},"lookFor":"返事の無い指摘","enabled":true}',
+				'set release {"schedule":{"everyHours":4,"fromHour":8,"toHour":20,"weekdaysOnly":true},"lookFor":"CI の落ちたチェック","enabled":true}',
+			],
 		});
 	});
 

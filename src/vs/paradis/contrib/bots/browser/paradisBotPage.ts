@@ -55,6 +55,7 @@ import { paradisBotGroupUnreadCount } from '../common/paradisBotGroups.js';
 import { onDidRequestParadisBotPageTab, paradisTakeRequestedBotPageTab } from './paradisBotPageTabRequest.js';
 import { ParadisBotSettingsPanel } from './paradisBotPageSettings.js';
 import { renderParadisBotFace } from './paradisBotFace.js';
+import { IParadisBotPatrolPort, ParadisBotPatrolSection } from './paradisBotPatrol.js';
 import type { IParadisBotSuggestion } from '../common/paradisBotSuggestions.js';
 
 const $ = DOM.$;
@@ -123,6 +124,8 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 	private readonly itemsTab: HTMLElement;
 	/** Bot ごとの設定・ファイルのタブ（入力中の値を描き直しの間も持つ）。 */
 	private readonly settingsPanels = new Map<string, ParadisBotSettingsPanel>();
+	/** Bot ごとの見回りの表示（書きかけの値を描き直しの間も持つ）。 */
+	private readonly patrolSections = new Map<string, ParadisBotPatrolSection>();
 	private readonly itemsCount: HTMLElement;
 	private readonly panel: HTMLElement;
 	private readonly panelStore = this._register(new DisposableStore());
@@ -158,6 +161,8 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 	constructor(
 		private readonly container: HTMLElement,
 		private readonly resolver: IParadisBotPaneResolver,
+		/** 見回りの口（定期実行の側）。無ければ「定期実行」の節と見回りの欄を出さない。 */
+		private readonly patrolPort: IParadisBotPatrolPort | undefined,
 		/** 問いのカードの、行数を切り詰めた欄の測り方（テストで差し替える。既定は実物の DOM を測る）。 */
 		private readonly measureClamp: IParadisInboxAskCardOptions['measureClamp'] | undefined,
 		@IParadisBotsService private readonly botsService: IParadisBotsService,
@@ -223,6 +228,12 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 			}
 		}));
 		this._register(this.botsService.onDidChange(() => {
+			// 消した Bot の見回りの欄を残さない
+			for (const botId of [...this.patrolSections.keys()]) {
+				if (this.bot(botId) === undefined) {
+					this.patrolSections.delete(botId);
+				}
+			}
 			this.renderStrip();
 			if (this.botId !== undefined && this.currentTab() === 'items') {
 				void this.loadItems();
@@ -231,6 +242,18 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 				this.renderPanel();
 			}
 		}));
+		if (this.patrolPort !== undefined) {
+			this._register(this.patrolPort.onDidChange(() => {
+				// 表示中の Bot は読み直し、ほかの Bot の分は捨てる（戻ったときに古い状態を出さない）
+				for (const [botId, section] of this.patrolSections) {
+					if (botId === this.botId) {
+						section.invalidate();
+					} else {
+						section.forget();
+					}
+				}
+			}));
+		}
 		// 受け箱の未読が変わった
 		this._register(this.groupsService.onDidChange(() => this.renderStrip()));
 		// 帯の受け箱の印から開いた: その Bot のページを「会話」で見せる
@@ -455,7 +478,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		return JSON.stringify([this.botId, item !== undefined ? item : [this.items, this.suggestions], entry, key !== undefined ? this.askStates.get(key) : undefined]);
 	}
 
-	/** @param force 中身の印が同じでも描き直す（設定・ファイルのパネルが自分の状態を変えたとき）。 */
+	/** @param force 中身の印が同じでも描き直す（設定・ファイルのパネルや見回りの節が自分の状態を変えたとき）。 */
 	private renderPanel(force = false): void {
 		if (this.botId === undefined) {
 			return;
@@ -494,6 +517,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 					panel.renderFiles(body, bot, this.panelStore, track);
 				} else {
 					panel.renderSettings(body, bot, this.panelStore, track);
+					this.patrolSection(bot.id)?.renderSettings(body, this.panelStore);
 				}
 			}
 		} else if (item !== undefined) {
@@ -537,6 +561,30 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		return panel;
 	}
 
+	private patrolSection(botId: string): ParadisBotPatrolSection | undefined {
+		if (this.patrolPort === undefined) {
+			return undefined;
+		}
+		let section = this.patrolSections.get(botId);
+		if (section === undefined) {
+			section = new ParadisBotPatrolSection(botId, this.patrolPort, {
+				notificationService: this.notificationService,
+				contextViewService: this.contextViewService,
+				configurationService: this.configurationService,
+			}, () => {
+				if (!this._store.isDisposed && this.botId === botId && (this.currentTab() === 'items' || this.currentTab() === 'settings')) {
+					this.renderPanel(true);
+				}
+			}, () => {
+				if (this.botId === botId) {
+					this.setTab('settings');
+				}
+			});
+			this.patrolSections.set(botId, section);
+		}
+		return section;
+	}
+
 	private trackFocus(text: HTMLInputElement | HTMLTextAreaElement, key: string): void {
 		this.focusTargets.set(key, text);
 		this.focusKeys.set(text, key);
@@ -571,6 +619,9 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		section(localize('paradis.botPage.group.closed', "終了"), groups.closed, { collapsed: true });
 		if (this.items.length === 0) {
 			DOM.append(body, $('.paradis-bot-page-hint')).textContent = localize('paradis.botPage.noItems', "Bot が作業を項目にすると、ここに並びます。");
+		}
+		if (this.botId !== undefined) {
+			this.patrolSection(this.botId)?.renderHome(body, this.panelStore);
 		}
 		this.renderSuggestions(body);
 	}
