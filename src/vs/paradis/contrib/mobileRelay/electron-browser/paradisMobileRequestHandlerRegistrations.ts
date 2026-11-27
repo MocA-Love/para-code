@@ -26,5 +26,6 @@ import './paradisMobileVoiceUsageRequests.js'; // 読み上げ（Aivis・ElevenL
 import './paradisMobileDoNotDisturbRequests.js'; // PC のおやすみモードの切り替え（notify.dnd-remote.v1）
 import './paradisMobileHtmlImageRequests.js'; // HTML の埋め込み画像を 1 枚ずつ（fs.html-images.v1）
 import './paradisMobileAbsolutePathRequests.js'; // 行の長押しの「絶対パスをコピー」（fs.absolute-path.v1）
+import '../../bots/electron-browser/paradisBotsMobileRequests.js'; // スマホの Bot の画面（bots.page.v1）
 
 export { };
