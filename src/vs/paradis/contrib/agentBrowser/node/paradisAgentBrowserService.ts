@@ -46,7 +46,7 @@ import { PARADIS_ANTIGRAVITY_APPROVAL_HTTP_PREFIX, PARADIS_ANTIGRAVITY_APPROVAL_
 import { paradisAntigravityApprovalHold } from './paradisAntigravityApprovalHold.js';
 import { IParadisBindingAuthorityManifest, IParadisBindingCommitPreparation, IParadisBindingManifestAcceptance, IParadisBindingOwnedTokenLease, IParadisBindingOwnerRelease, IParadisBindingPrepareSnapshot, ParadisBindingAuthority, ParadisBindingAuthorityStableScope, paradisParseBindingAuthorityManifest } from '../common/paradisBindingAuthority.js';
 import { paradisBindingMatchesGeneration } from '../common/paradisBrowserBindingLifecycle.js';
-import { IParadisAnnouncedReview, paradisIsHarnessNotificationPrompt, paradisIsRepeatedReview, paradisShouldSweepStaleWorkingStatus } from '../common/paradisAgentStatusStale.js';
+import { IParadisAnnouncedReview, paradisIsHarnessNotificationPrompt, paradisIsRepeatedReview, paradisNextUserTurn, paradisShouldSweepStaleWorkingStatus } from '../common/paradisAgentStatusStale.js';
 import { IParadisExactViewBackgroundThrottlingEffect, PARADIS_EXACT_VIEW_BACKGROUND_THROTTLING_MAX_BINDINGS, ParadisExactViewBackgroundThrottlingCoordinator, ParadisExactViewBackgroundThrottlingDispatcher } from '../common/paradisExactViewBackgroundThrottling.js';
 import { IParadisMobileRendererManifest, PARADIS_MOBILE_WINDOW_LEASE_CHANNEL } from '../../mobileRelay/common/paradisMobileWindowLease.js';
 import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, fireParadisAgentHookEvent, fireParadisAgentNestedHookEvent, getParadisAgentPaneActivity, getParadisAgentPaneIssueUrls, onParadisAgentAwaitingUser, onParadisAgentPaneActivity, onParadisAgentTurnEnded, onParadisAgentTurnStarted, ParadisAgentTurnEndCause, paradisCountLiveBackgroundTasks, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard } from './paradisAgentHookBus.js';
@@ -1925,7 +1925,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		}
 		// 待ちや完了の後でない working は、新しいターンの始まり（完了の知らせを同じターンで二度出さないための印）
 		if (next === 'working' && (previous === undefined || previous.status === 'review')) {
-			this._userTurnStarts.set(token, now);
+			this._userTurnStarts.set(token, paradisNextUserTurn(this._userTurnStarts.get(token), now));
 		}
 		this._paneStatuses.set(token, { status: next, changedAt: now, ...(previous?.cwd !== undefined ? { cwd: previous.cwd } : {}) });
 		return true;
@@ -1958,7 +1958,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			return this._paneStatuses.delete(token);
 		}
 		if (next === 'working' && (previous === undefined || previous.status === 'review')) {
-			this._userTurnStarts.set(token, now);
+			this._userTurnStarts.set(token, paradisNextUserTurn(this._userTurnStarts.get(token), now));
 		}
 		if (withHooks) {
 			this._paneStatuses.set(token, next === 'review' ? this._reviewEntry(token, now, previous?.cwd) : { status: next, changedAt: now, ...(previous?.cwd !== undefined ? { cwd: previous.cwd } : {}) });
@@ -5317,7 +5317,7 @@ export class ParadisAgentBrowserService extends Disposable {
 				this._elicitationWaits.delete(token);
 			}
 			if (eventType === 'UserPromptSubmit' && !paradisIsHarnessNotificationPrompt(hookPayload?.prompt)) {
-				this._userTurnStarts.set(token, Date.now());
+				this._userTurnStarts.set(token, paradisNextUserTurn(this._userTurnStarts.get(token), Date.now()));
 			}
 			if (normalized === 'idle') {
 				this._paneStatuses.delete(token);

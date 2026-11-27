@@ -153,9 +153,9 @@ test/unit/reporter.js
 # PARA-PATCH: vendored React DevTools Chrome extension shipped with the built-in browser (Para Code)
 src/vs/paradis/contrib/browserExtensions/electron-main/media/react-devtools/build/backendManager.js
 src/vs/paradis/contrib/browserExtensions/electron-main/media/react-devtools/build/background.js
+src/vs/paradis/contrib/browserExtensions/electron-main/media/react-devtools/build/fallbackEvalContext.js
 src/vs/paradis/contrib/browserExtensions/electron-main/media/react-devtools/build/fileFetcher.js
 src/vs/paradis/contrib/browserExtensions/electron-main/media/react-devtools/build/hookSettingsInjector.js
-src/vs/paradis/contrib/browserExtensions/electron-main/media/react-devtools/build/importFile.worker.worker.js
 src/vs/paradis/contrib/browserExtensions/electron-main/media/react-devtools/build/installHook.js
 src/vs/paradis/contrib/browserExtensions/electron-main/media/react-devtools/build/main.js
 src/vs/paradis/contrib/browserExtensions/electron-main/media/react-devtools/build/panel.js
