@@ -190,6 +190,56 @@ suite('Paradis bot wake and sleep', () => {
 		});
 	});
 
+	test('終了の印と眠る・隠す・30 分の停止・設定のオフ: 本物の終了だけで外れ、偽の終了・隠したペインでは制限も会話も残る', async () => {
+		const disposables = store.add(new DisposableStore());
+		const clock = { now: 1_000 };
+		const homes = { ensure: async () => '/tmp/bot-home', read: async () => undefined, existingFolders: async () => [] } as unknown as ParadisBotHomes;
+		const hooks = disposables.add(new Emitter<{ token: string; event: string; sessionId?: string; observedExit?: true }>());
+		const settings = { enabled: true };
+		const service = disposables.add(new ParadisBotsService(new MemoryFile<IParadisBotsState>(EMPTY_PARADIS_BOTS_STATE), new MemoryFile<IParadisBotItemsState>(EMPTY_PARADIS_BOT_ITEMS_STATE), disposables.add(new ParadisHumanAskService(new ParadisHumanAskLedger(() => clock.now))), new NullLogService(), {
+			now: () => clock.now, hookEvents: hooks.event, panesFile: new MemoryFile<IParadisBotPanesState>(EMPTY_PARADIS_BOT_PANES_STATE), homes, enabled: () => settings.enabled,
+		}));
+		await service.ready;
+		const created = await service.createBot({ name: 'A', agent: 'claude' });
+		assert.ok(created.ok, created.ok ? '' : created.message);
+		const botId = created.value.id;
+		const bind = async (token: string) => {
+			const launch = await service.requestLaunch(botId, 'chat');
+			assert.ok(launch.ok);
+			assert.ok(service.reportLaunch(launch.value.launchId, token));
+			for (const event of ['SessionStart', 'UserPromptSubmit', 'Stop']) {
+				hooks.fire({ token, event, sessionId: SESSION });
+			}
+		};
+		const stops: IParadisBotStopRequest[] = [];
+		disposables.add(service.onDidRequestStop(request => stops.push(request)));
+		await bind('pane-1');
+		// 隠した（タブを閉じても裏で動き続ける）ペインには終了が届かない。エージェントの偽の TerminalExit も外さない
+		hooks.fire({ token: 'pane-1', event: 'TerminalExit' });
+		const hiddenOrForged = service.isBotPane('pane-1');
+		// 何もしない 30 分: 窓へ止める依頼（idle）を出し、窓が閉じたら本物の終了として外れ、眠った会話として残る
+		clock.now += PARADIS_BOT_IDLE_STOP_MS;
+		service.stopIdleChats();
+		const idleStop = stops.map(stop => [stop.paneHashes, stop.idle]);
+		hooks.fire({ token: 'pane-1', event: 'TerminalExit', observedExit: true });
+		const afterIdleStop = [service.isBotPane('pane-1'), paradisBotStatusLine(service.getSnapshot().bots[0])];
+		// 起こした会話を、窓の再読み込みの前に窓が外す（releasePane はウィンドウだけが呼べる口）
+		await bind('pane-2');
+		service.releasePane('pane-2');
+		const afterWindowRelease = [service.isBotPane('pane-2'), paradisBotStatusLine(service.getSnapshot().bots[0])];
+		// 設定のオフ: 結び付いたペインは Bot のまま（制限が残る）。窓が閉じるペインのハッシュに載る
+		await bind('pane-3');
+		settings.enabled = false;
+		const off = [service.isBotPane('pane-3'), service.allPaneHashes().includes(paradisBotPaneTokenHash('pane-3'))];
+		assert.deepStrictEqual({ hiddenOrForged, idleStop, afterIdleStop, afterWindowRelease, off }, {
+			hiddenOrForged: true,
+			idleStop: [[[paradisBotPaneTokenHash('pane-1')], true]],
+			afterIdleStop: [false, '眠っています'],
+			afterWindowRelease: [false, '眠っています'],
+			off: [true, true],
+		});
+	});
+
 	test('bot_tell: 宛先が止まっていても起こさない（受け箱に入れるだけ。利用者の居ない所で頼まれたことを実行させない）', async () => {
 		const disposables = store.add(new DisposableStore());
 		let ids = 0;
