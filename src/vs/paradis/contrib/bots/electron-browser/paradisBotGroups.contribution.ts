@@ -14,6 +14,7 @@
 //   別のスペースで動いている Bot は動かさない（開くとスペースが切り替わるため）。部屋に「別のスペースで動作中」と出す。
 // - 送る: 部屋の入力欄の文を、名指しした Bot のペインへ送る。送る口はチャット表示と同じ
 //   （IParadisAgentChatService.sendMessageToPane。許可・質問の画面が出ている間などは断られる）。新しい入力の経路は作らない。
+//   Bot 同士の伝言は同じ確認の `deliverToPane`（結果を種類つきで返し、入力欄の履歴に残さない）。
 // - Bot 同士の伝言を届ける窓口 `paradisBotGroupsWindow`（伝言の道具 paradisBotMessageToolProvider.ts が呼ぶ）。
 //
 // どれも設定 paradis.bots.enabled（既定オフ）の下。
@@ -33,13 +34,15 @@ import { ITerminalGroupService, ITerminalService } from '../../../../workbench/c
 import { TerminalEditorInput } from '../../../../workbench/contrib/terminal/browser/terminalEditorInput.js';
 import { GroupDirection, IEditorGroup, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
+import type { ParadisAgentChatSendOutcome } from '../../agentChat/browser/paradisAgentChatInput.js';
 import { IParadisAgentChatService } from '../../agentChat/browser/paradisAgentChatService.js';
 import { paradisCollectAllTerminalInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisBotGroupSender, ParadisBotGroupEditorInput } from '../browser/paradisBotGroupEditor.js';
 import { paradisBotIdByPaneHash, paradisFindBotChatPane } from '../browser/paradisBotPaneHash.js';
-import { ParadisBotGroupRelayLimiter, paradisBotGroupDeliverRefusal, paradisBotGroupDeliverRefusalMessage, paradisBotGroupMembers, paradisBotGroupNeutralizeCommand } from '../common/paradisBotGroups.js';
-import { PARADIS_BOT_GROUPS_WINDOW_CHANNEL } from '../common/paradisBotMessages.js';
+import { ParadisBotGroupRelayLimiter, paradisBotGroupMembers } from '../common/paradisBotGroups.js';
+import { PARADIS_BOT_GROUP_DELIVER_LOAD_WAIT, paradisBotGroupDeliver, paradisWaitForLoaded } from '../browser/paradisBotGroupDeliver.js';
+import { PARADIS_BOT_GROUPS_WINDOW_CHANNEL, ParadisBotGroupDeliverResult } from '../common/paradisBotMessages.js';
 import { IParadisBotGroupsService, PARADIS_BOTS_OPEN_GROUP_COMMAND } from '../common/paradisBotGroupsApi.js';
 import { IParadisBotsService, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
 import { paradisOpenBot } from './paradisBotsLaunch.contribution.js';
@@ -180,16 +183,23 @@ class ParadisBotGroupSender implements IParadisBotGroupSender {
 		}
 		return this.chatService.sendMessageToPane(where.instanceId, text);
 	}
+
+	async deliver(botId: string, text: string): Promise<ParadisAgentChatSendOutcome> {
+		const where = await this.instantiationService.invokeFunction(botPaneWhere, botId);
+		if (where.kind === 'none') {
+			return { kind: 'refused', message: 'its chat is not open in this window' };
+		}
+		return this.chatService.deliverToPane(where.instanceId, text);
+	}
 }
 
 /**
  * Bot 同士の伝言を届ける窓口（伝言の道具 paradisBotMessageToolProvider.ts が `callPaneWindow` で呼ぶ）。呼ぶのは
  * 宛先の Bot の会話のペインを持つウィンドウで、呼び出し元（送り手）のペインは別のウィンドウにあってよい。引数は
  * `[送り手のペイントークンのハッシュ, 宛先の Bot の id, 文]`（生のトークンは別のウィンドウへ渡さない）。文は道具の側が
- * 出どころ（どの Bot からの伝言か）を付けて渡す。送れたら undefined、送れなければ理由の文（英文。道具がエージェントへ
- * 返す）。送り手の Bot はそのハッシュをそのまま台帳と照らして見分ける（もう一度ハッシュにしない。ウィンドウを問わない。
- * 引数の名乗りは信じない）。宛先の会話のペインがこのウィンドウに無ければ
- * （閉じた・別のウィンドウへ移った直後）理由を返す。記録は道具の側が届ける前に書く。
+ * 出どころ（どの Bot からの伝言か）を付けて渡す。戻り値は {@link ParadisBotGroupDeliverResult}（届けた・順番待ちに入れた・
+ * 受け取らなかった・届いたか分からない）。送り手の Bot はハッシュをそのまま台帳と照らして見分ける（もう一度ハッシュに
+ * しない。引数の名乗りは信じない）。記録は道具の側が届ける前に書く。手順は {@link paradisBotGroupDeliver}。
  */
 class ParadisBotGroupsWindowChannel implements IServerChannel {
 
@@ -210,18 +220,20 @@ class ParadisBotGroupsWindowChannel implements IServerChannel {
 			throw new Error(`unknown command ${command}`);
 		}
 		const [callerHash, to, text] = Array.isArray(arg) ? arg : [];
+		let result: ParadisBotGroupDeliverResult;
 		if (typeof callerHash !== 'string' || typeof to !== 'string' || typeof text !== 'string' || text.trim().length === 0) {
-			return 'The arguments are not valid.' as T;
+			result = { kind: 'refused', reason: 'Para Code could not read the message, so do not send it again' };
+		} else if (this.configurationService.getValue(PARADIS_BOTS_ENABLED_SETTING) !== true) {
+			result = { kind: 'refused', reason: 'bots are turned off in that bot\'s Para Code window, so do not send it again' };
+		} else {
+			this.deliverer ??= this.instantiationService.createInstance(ParadisBotGroupsDeliverer);
+			result = await this.deliverer.deliver(callerHash, to, text);
 		}
-		if (this.configurationService.getValue(PARADIS_BOTS_ENABLED_SETTING) !== true) {
-			return 'Bots are turned off in this Para Code.' as T;
-		}
-		this.deliverer ??= this.instantiationService.createInstance(ParadisBotGroupsDeliverer);
-		return await this.deliverer.deliver(callerHash, to, text) as T;
+		return result as T;
 	}
 }
 
-/** Bot 同士の伝言を、守り（同じグループ・起動中・作業中は後で・回数の上限）を通してから届ける。 */
+/** {@link paradisBotGroupDeliver} にこのウィンドウのサービスをつなぐ。 */
 class ParadisBotGroupsDeliverer {
 
 	private readonly limiter = new ParadisBotGroupRelayLimiter();
@@ -232,27 +244,18 @@ class ParadisBotGroupsDeliverer {
 		@IParadisBotGroupsService private readonly groupsService: IParadisBotGroupsService,
 	) { }
 
-	async deliver(callerHash: string, to: string, text: string): Promise<string | undefined> {
-		const from = await paradisBotIdByPaneHash(this.botsService, callerHash);
-		// 送り手と宛先の両方が入っているグループ（無ければメンバーでない）
-		const group = this.groupsService.snapshot.groups.find(candidate => from !== undefined && candidate.members.includes(from) && candidate.members.includes(to));
-		const target = this.botsService.snapshot.bots.find(bot => bot.id === to);
-		const refusal = paradisBotGroupDeliverRefusal({
-			group,
-			from,
-			to,
-			toActivity: target === undefined ? undefined : target.paused ? 'stopped' : target.activity,
-			// 宛先の会話のペインはこのウィンドウにあるはず（道具が宛先のペインを持つウィンドウへ送る）。無ければ断る
-			toRunningHere: await this.sender.whereIs(to) !== 'none',
-			takeRate: () => this.limiter.take(to, Date.now()),
-		});
-		if (refusal !== undefined) {
-			return paradisBotGroupDeliverRefusalMessage(refusal);
-		}
-		// 先頭の / と ! はコマンド・シェルとして動くので崩してから届ける（利用者が部屋から送る文はそのまま）
-		const error = await this.sender.send(to, paradisBotGroupNeutralizeCommand(text));
-		// 許可・質問の画面が出ている・エージェントが前面にいないなど。割り込まずに「作業中、しばらくしてから」で断る（#1231 の道具の文とそろえる）
-		return error === undefined ? undefined : `that bot is busy now: ${error}`;
+	deliver(callerHash: string, to: string, text: string): Promise<ParadisBotGroupDeliverResult> {
+		return paradisBotGroupDeliver({
+			// このウィンドウで台帳のクライアントを初めて作った直後は空なので、最初の取得を待つ
+			waitForLoaded: () => paradisWaitForLoaded([this.botsService, this.groupsService], PARADIS_BOT_GROUP_DELIVER_LOAD_WAIT),
+			groups: () => this.groupsService.snapshot.groups,
+			bot: botId => this.botsService.snapshot.bots.find(bot => bot.id === botId),
+			botIdByPaneHash: hash => paradisBotIdByPaneHash(this.botsService, hash),
+			whereIs: botId => this.sender.whereIs(botId),
+			send: (botId, value) => this.sender.deliver(botId, value),
+			limiter: this.limiter,
+			now: Date.now,
+		}, callerHash, to, text);
 	}
 }
 
