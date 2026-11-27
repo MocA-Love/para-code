@@ -198,17 +198,21 @@ suite('Paradis bot groups', () => {
 			'self',
 			'not_running',
 			'not_running',
-			'busy',
-			'busy',
+			// 作業中・見回り中でも断らない（届ける口が順番待ちに入れる）
+			undefined,
+			undefined,
 			'rate_limited',
 		]);
 	});
 
-	test('伝言を断る理由: 道具の「今は受け取らなかった（理由）。後で送る」の括弧に入る短い文。上限だけは止まって利用者へ', () => {
-		assert.deepStrictEqual([paradisBotGroupDeliverRefusalMessage('busy'), paradisBotGroupDeliverRefusalMessage('rate_limited'), paradisBotGroupDeliverRefusalMessage('not_running')], [
-			'that bot is busy now',
-			'you reached the limit: that bot takes up to 3 bot messages a minute. Do not keep the exchange going: stop, and tell your owner what you wanted to say',
+	test('伝言を断る理由: 道具の「今は受け取らなかった（理由）。後で送る」の括弧に入る短い文。送り直しても通らないものは送り直さないと言う', () => {
+		assert.deepStrictEqual(([
+			'not_a_member', 'self', 'not_running', 'rate_limited',
+		] as const).map(paradisBotGroupDeliverRefusalMessage), [
+			'you and that bot are not in the same group, so do not send it again',
+			'it was addressed to yourself, so do not send it again',
 			'that bot is not running, or its chat is no longer open in this Para Code window',
+			'the limit was reached: that bot takes up to 3 bot messages a minute from all bots. Do not keep the exchange going: stop, and tell your owner what you wanted to say',
 		]);
 	});
 
@@ -219,6 +223,12 @@ suite('Paradis bot groups', () => {
 			limiter.take('c', 30),
 			limiter.take('b', 60_001),
 		], [true, true, true, false, true, true]);
+		// 戻した 1 回はまた使える
+		limiter.take('d', 0);
+		limiter.take('d', 1);
+		limiter.take('d', 2);
+		limiter.refund('d');
+		assert.deepStrictEqual([limiter.take('d', 3), limiter.take('d', 4)], [true, false]);
 	});
 
 	test('伝言の先頭の / と ! は全角にして、コマンドやシェルとして動かさない', () => {

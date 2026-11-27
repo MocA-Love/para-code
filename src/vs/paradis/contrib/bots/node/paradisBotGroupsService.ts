@@ -22,7 +22,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { ParadisJsonStateWriter } from '../../../node/paradisJsonStateWriter.js';
 import {
 	EMPTY_PARADIS_BOT_GROUPS_STATE, IParadisBotGroup, IParadisBotGroupInput, IParadisBotGroupRecord, IParadisBotGroupRecordInput, IParadisBotGroupsState,
-	PARADIS_BOT_GROUPS_VERSION, ParadisBotGroupsResult, paradisBotGroupAppendRecord, paradisBotGroupCreate, paradisBotGroupMarkUndelivered, paradisBotGroupRemove, paradisBotGroupUpdate, paradisParseBotGroupsState,
+	PARADIS_BOT_GROUPS_VERSION, ParadisBotGroupsResult, paradisBotGroupAppendRecord, paradisBotGroupCreate, paradisBotGroupMarkQueued, paradisBotGroupMarkUndelivered, paradisBotGroupRemove, paradisBotGroupUpdate, paradisParseBotGroupsState,
 } from '../common/paradisBotGroups.js';
 import { IParadisBotGroupsSnapshot } from '../common/paradisBotGroupsApi.js';
 import { IParadisBotGroupsPort, ParadisBotMessageUndeliveredReason } from '../common/paradisBotMessages.js';
@@ -151,6 +151,12 @@ export class ParadisBotGroupsService extends Disposable {
 		return this.apply(paradisBotGroupMarkUndelivered(this.state, groupId, recordId, reason));
 	}
 
+	/** Bot 同士の伝言の記録に「順番待ちに入れた」の印を付ける（宛先が作業中だったとき）。 */
+	async markQueued(groupId: string, recordId: string): Promise<ParadisBotsServiceResult<IParadisBotGroupRecord>> {
+		await this.ready;
+		return this.apply(paradisBotGroupMarkQueued(this.state, groupId, recordId));
+	}
+
 	private async apply<T>(result: ParadisBotGroupsResult<T>): Promise<ParadisBotsServiceResult<T>> {
 		if (!result.ok) {
 			return result;
@@ -175,9 +181,10 @@ export class ParadisBotGroupsService extends Disposable {
 
 /**
  * Bot 同士の伝言の道具（paradisBotMessageToolProvider.ts）へ差し込む口。記録の id は口では文字列で返し、
- * `markUndelivered` で同じ文字列と届かなかった理由を受ける。
+ * `markUndelivered` で同じ文字列と届かなかった理由を受ける。`markQueued` は口の型（#1231）にまだ無い足し分で、道具が
+ * `queued` を受けたときに呼べば部屋に「順番待ち」と出る。
  */
-export function paradisBotGroupsMessagePort(service: Pick<ParadisBotGroupsService, 'groupsOf' | 'appendRecord' | 'markUndelivered'>): IParadisBotGroupsPort {
+export function paradisBotGroupsMessagePort(service: Pick<ParadisBotGroupsService, 'groupsOf' | 'appendRecord' | 'markUndelivered' | 'markQueued'>): IParadisBotGroupsPort & { markQueued(groupId: string, recordId: string): Promise<void> } {
 	return {
 		groupsOf: botId => service.groupsOf(botId).map(group => ({ id: group.id, memberIds: group.members })),
 		appendRecord: async (groupId, record) => {
@@ -186,6 +193,9 @@ export function paradisBotGroupsMessagePort(service: Pick<ParadisBotGroupsServic
 		},
 		markUndelivered: async (groupId, recordId, reason) => {
 			await service.markUndelivered(groupId, recordId, reason);
+		},
+		markQueued: async (groupId, recordId) => {
+			await service.markQueued(groupId, recordId);
 		},
 	};
 }

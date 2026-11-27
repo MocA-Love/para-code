@@ -192,6 +192,11 @@
 	white-space: nowrap;
 }
 
+.paradis-bot-group-room .pbgr-undelivered.queued {
+	border-color: color-mix(in srgb, var(--vscode-descriptionForeground) 40%, transparent);
+	color: var(--vscode-descriptionForeground);
+}
+
 .paradis-bot-group-room .pbgr-text {
 	flex: 1;
 	min-width: 0;

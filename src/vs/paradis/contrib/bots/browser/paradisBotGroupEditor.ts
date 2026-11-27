@@ -24,6 +24,7 @@ import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { createDecorator, IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import type { ParadisAgentChatSendOutcome } from '../../agentChat/browser/paradisAgentChatInput.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
@@ -61,6 +62,8 @@ export interface IParadisBotGroupSender {
 	whereIs(botId: string): Promise<'here' | 'elsewhere' | 'none'>;
 	/** 送れたら undefined、送れなければ理由の文。 */
 	send(botId: string, text: string): Promise<string | undefined>;
+	/** Bot 同士の伝言を送る（同じ確認。結果を種類つきで返し、入力欄の履歴に残さない）。 */
+	deliver(botId: string, text: string): Promise<ParadisAgentChatSendOutcome>;
 }
 
 function clock(time: number): string {
@@ -316,7 +319,9 @@ export class ParadisBotGroupEditor extends EditorPane {
 			dom.append(row, dom.$('span.pbgr-who')).textContent = paradisBotGroupRecordHead(record, id => this.nameOf(id));
 			const mark = paradisBotGroupRecordMark(record);
 			if (mark !== undefined) {
-				dom.append(row, dom.$('span.pbgr-undelivered')).textContent = mark;
+				const chip = dom.append(row, dom.$('span.pbgr-undelivered'));
+				chip.textContent = mark;
+				chip.classList.toggle('queued', record.queued === true);
 			}
 			const text = dom.append(row, dom.$('span.pbgr-text'));
 			text.textContent = record.text;

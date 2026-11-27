@@ -59,6 +59,15 @@ function paradisAntigravitySendBlockReason(block: ParadisAntigravitySendBlock): 
 	}
 }
 
+/**
+ * 発言を送った結果。`refused` はペインへ何も書いていない（`message` は理由）。`unknown` は文を書いたかもしれず、送り直すと
+ * 入力欄で重なりうる。
+ */
+export type ParadisAgentChatSendOutcome =
+	| { readonly kind: 'sent' }
+	| { readonly kind: 'refused'; readonly message: string }
+	| { readonly kind: 'unknown'; readonly message: string };
+
 export interface IParadisAgentChatInputDependencies {
 	readonly source: IParadisAgentChatSource;
 	/** タブが閉じた・ペインが別の会話に替わったなら undefined。呼ぶたびに今のものを返す。 */
@@ -158,15 +167,25 @@ export class ParadisAgentChatInput {
 	}
 
 	async sendMessage(instanceId: number, token: string, rawText: string): Promise<string | undefined> {
+		const outcome = await this.sendMessageOutcome(instanceId, token, rawText);
+		return outcome.kind === 'sent' ? undefined : outcome.message;
+	}
+
+	/**
+	 * {@link sendMessage} と同じ確認を通して送り、結果を種類つきで返す。`refused` はペインへ何も書いていない、`unknown` は
+	 * 文を書いたかもしれない（貼り付けた後に Enter を送れなかった、OpenCode が結果を返さなかった、書く途中で失敗した）。
+	 */
+	async sendMessageOutcome(instanceId: number, token: string, rawText: string): Promise<ParadisAgentChatSendOutcome> {
+		const refused = (message: string): ParadisAgentChatSendOutcome => ({ kind: 'refused', message });
 		const terminal = this.dependencies.terminal(instanceId, token);
 		if (terminal === undefined) {
-			return localize('paradisAgentChat.errorNoTerminal', "送り先のターミナルが見つかりません");
+			return refused(localize('paradisAgentChat.errorNoTerminal', "送り先のターミナルが見つかりません"));
 		}
 		// 制御文字を落とす（ESC が残ると貼り付けの終わりを偽造でき、残りが打鍵として解釈される）。
 		// 改行は貼り付けモードで送るので残す（上の確認で、貼り付けモードでなければ送らない）。
 		const text = paradisBuildPresetInsertText(rawText, true);
 		if (text === undefined) {
-			return localize('paradisAgentChat.errorEmpty', "送る文がありません");
+			return refused(localize('paradisAgentChat.errorEmpty', "送る文がありません"));
 		}
 		const session = this.dependencies.session(token);
 		// OpenCode（または種類がまだ分からない会話）だけは送る前に写しを取り直し、会話の ID が今のものか確かめる。
@@ -177,17 +196,17 @@ export class ParadisAgentChatInput {
 		const state = session.state;
 		if (state !== undefined && descriptorOf(state.agent).send.includes('api')) {
 			if (this.dependencies.terminal(instanceId, token) !== terminal || state.agentExited || !state.sessionId || state.interaction !== null) {
-				return localize('paradisAgentChat.errorOpenCodeNotReady', "OpenCode の会話が変わったか、回答を待っています");
+				return refused(localize('paradisAgentChat.errorOpenCodeNotReady', "OpenCode の会話が変わったか、回答を待っています"));
 			}
 			const sent = await this.dependencies.source.sendOpenCodeAgentMessage?.(token, state.sessionId, text).catch(() => false);
 			if (sent === 'unconfirmed') {
-				return localize('paradisAgentChat.errorOpenCodeUnconfirmed', "OpenCode が結果を返しませんでした。届いたかを PC のターミナルで確かめてください（もう一度送ると二重になることがあります）");
+				return { kind: 'unknown', message: localize('paradisAgentChat.errorOpenCodeUnconfirmed', "OpenCode が結果を返しませんでした。届いたかを PC のターミナルで確かめてください（もう一度送ると二重になることがあります）") };
 			}
-			return sent ? undefined : localize('paradisAgentChat.errorOpenCodeSend', "OpenCode へ送れませんでした。接続を確かめてください");
+			return sent ? { kind: 'sent' } : refused(localize('paradisAgentChat.errorOpenCodeSend', "OpenCode へ送れませんでした。接続を確かめてください"));
 		}
 		const reason = await this.messageBlockReason(instanceId, token, terminal, text);
 		if (reason !== undefined) {
-			return reason;
+			return refused(reason);
 		}
 		let lateReason: string | undefined;
 		try {
@@ -201,13 +220,14 @@ export class ParadisAgentChatInput {
 			);
 			if (!outcome.executed) {
 				return outcome.consumed
-					? localize('paradisAgentChat.errorPastedNotSent', "貼り付けた後に状態が変わったため、Enter を送りませんでした（{0}）", lateReason ?? '')
-					: lateReason ?? localize('paradisAgentChat.errorChanged', "送る前にターミナルの状態が変わりました");
+					? { kind: 'unknown', message: localize('paradisAgentChat.errorPastedNotSent', "貼り付けた後に状態が変わったため、Enter を送りませんでした（{0}）", lateReason ?? '') }
+					: refused(lateReason ?? localize('paradisAgentChat.errorChanged', "送る前にターミナルの状態が変わりました"));
 			}
 		} catch {
-			return localize('paradisAgentChat.errorSend', "ターミナルへ送れませんでした");
+			// 書く途中で失敗した: 一部が入力欄に入ったかもしれない
+			return { kind: 'unknown', message: localize('paradisAgentChat.errorSend', "ターミナルへ送れませんでした") };
 		}
-		return undefined;
+		return { kind: 'sent' };
 	}
 
 	/** 待っている interaction がまだ同じか（中継から取り直して確かめる）。 */
