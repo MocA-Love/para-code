@@ -91,10 +91,12 @@ export class ParadisBotSettingsPanel {
 		const pin = store.add(new ParadisSwitch(row(localize('paradis.botPage.settings.pin', "ピン留め")), { checked: bot.pinned, ariaLabel: localize('paradis.botPage.settings.pin', "ピン留め") }));
 		store.add(pin.onDidChange(checked => void this.quick({ pinned: checked }, false)));
 		// GitHub の見張り（既定オフ）。オンにするときだけ、管理の道具 update_bot の watch_github と同じ本文で確かめる
-		const githubValue = row(localize('paradis.botPage.settings.github', "GitHub を見張る"));
+		const githubStatus = paradisBotGithubStatusText(bot, this.services.botsService.snapshot.github, at => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+		// 様子の文が下に付くときは、見出しをスイッチの行（上端）に揃える
+		const githubValue = row(localize('paradis.botPage.settings.github', "GitHub を見張る"), githubStatus !== undefined);
+		githubValue.previousElementSibling?.classList.toggle('switch', githubStatus !== undefined);
 		const github = store.add(new ParadisSwitch(githubValue, { checked: bot.watchGithub === true, ariaLabel: localize('paradis.botPage.settings.github', "GitHub を見張る") }));
 		store.add(github.onDidChange(checked => void this.setWatchGithub(bot, checked)));
-		const githubStatus = paradisBotGithubStatusText(bot, this.services.botsService.snapshot.github, at => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
 		if (githubStatus !== undefined) {
 			const help = DOM.append(githubValue, $('.paradis-bot-settings-help'));
 			help.textContent = githubStatus.text;
