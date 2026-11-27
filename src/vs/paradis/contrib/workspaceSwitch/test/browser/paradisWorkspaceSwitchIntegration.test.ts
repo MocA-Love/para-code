@@ -45,6 +45,7 @@ import { ACTIVE_GROUP } from '../../../../../workbench/services/editor/common/ed
 import { createEditorParts, registerTestEditor, TestFileEditorInput, workbenchInstantiationService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
 import { TestContextService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import { ParadisEditorScopeService } from '../../browser/paradisEditorScopeService.js';
+import { paradisMarkTerminalSpaceFree, paradisResetSpaceFreeTerminalsForTest } from '../../browser/paradisSpaceFreeTerminals.js';
 import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisMarkTerminalEditorOpeningForScope, paradisParkTerminalEditorInstance, paradisHoldBackTerminalEditorReveal, paradisRegisterTerminalEditorOwnerProbe, paradisResetOrphanTerminalRevivalForTest, paradisShouldHoldBackTerminalEditorReveal, paradisTakeParkedTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from '../../browser/paradisTerminalEditorPark.js';
 import { paradisCreateDeserializedTerminalEditorInput } from './paradisTerminalEditorInputFixture.js';
 import { PARADIS_TERMINAL_EDITOR_PLACEMENTS_STORAGE_KEY, paradisParseTerminalEditorPlacements, paradisSerializeTerminalEditorPlacements } from '../../common/paradisTerminalEditorPlacement.js';
@@ -216,6 +217,76 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 				paradisTakeParkedTerminalEditorInstance(paradisCreateDeserializedTerminalEditorInput(ids.persistentProcessId, ids.shellIntegrationNonce));
 			}
 			testDisposables.dispose();
+		}
+	});
+
+	// Bot の会話のペイン（どのスペースにも属さないターミナル）は、切り替えで退避せず着いたスペースの画面へ持ち越す。
+	// 切り替え元の working set にも載せない（戻ったときに 2 つ目のタブとして開き直されない）。ほかの端末は今までどおり退避する。
+	test('carries a terminal that belongs to no space across switches instead of parking it, and keeps it out of the working set', async () => {
+		const testDisposables = new DisposableStore();
+		const botIds = createUniqueTerminalIds();
+		const shellIds = createUniqueTerminalIds();
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		try {
+			harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			const file = harness.createEditor('/workspace-a/saved.txt', false);
+			const shellInput = harness.createCleanTerminalEditor('/workspace-a/shell');
+			const botInput = harness.createCleanTerminalEditor('/bots/bot');
+			await harness.parts.activeGroup.openEditor(file, { pinned: true });
+			await harness.parts.activeGroup.openEditor(shellInput, { pinned: true });
+			await harness.parts.activeGroup.openEditor(botInput, { pinned: true });
+			const shell = harness.addTerminal(shellInput, shellIds.instanceId, shellIds.persistentProcessId, shellIds.shellIntegrationNonce);
+			const bot = harness.addTerminal(botInput, botIds.instanceId, botIds.persistentProcessId, botIds.shellIntegrationNonce);
+			paradisMarkTerminalSpaceFree(bot.instanceId);
+
+			await harness.workspaceSwitchService.switchRepository('space-b');
+			const inSpaceB = {
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+				fileVisible: harness.parts.activeGroup.contains(file),
+				botVisible: harness.parts.activeGroup.contains(botInput),
+				botIsActiveTab: harness.parts.activeGroup.activeEditor === botInput,
+				botParkedIn: paradisGetParkedTerminalEditorStateKey(bot.instanceId),
+				shellParkedIn: paradisGetParkedTerminalEditorStateKey(shell.instanceId),
+				detachedTerminalInstanceIds: harness.detachedTerminalInstanceIds,
+				workingSetTerminalsOfA: (harness.workspaceSwitchService as unknown as { _workingSetTerminals: Map<string, number> })._workingSetTerminals.get('space-a'),
+			};
+
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			const backInSpaceA = {
+				activeStateKey: harness.workspaceSwitchService.activeStateKey,
+				fileVisible: harness.parts.activeGroup.contains(file),
+				botTabs: harness.parts.activeGroup.editors.filter(editor => editor === botInput).length,
+				botParkedIn: paradisGetParkedTerminalEditorStateKey(bot.instanceId),
+			};
+
+			assert.deepStrictEqual({ inSpaceB, backInSpaceA }, {
+				inSpaceB: {
+					activeStateKey: 'space-b',
+					fileVisible: false,
+					botVisible: true,
+					botIsActiveTab: true,
+					botParkedIn: undefined,
+					shellParkedIn: 'space-a',
+					detachedTerminalInstanceIds: [shellIds.instanceId],
+					workingSetTerminalsOfA: 1,
+				},
+				backInSpaceA: {
+					activeStateKey: 'space-a',
+					fileVisible: true,
+					botTabs: 1,
+					botParkedIn: undefined,
+				},
+			});
+		} finally {
+			paradisResetSpaceFreeTerminalsForTest();
+			paradisTakeParkedTerminalEditorInstance(paradisCreateDeserializedTerminalEditorInput(shellIds.persistentProcessId, shellIds.shellIntegrationNonce));
+			try {
+				for (const group of harness?.parts.groups ?? []) {
+					await group.closeAllEditors();
+				}
+			} finally {
+				testDisposables.dispose();
+			}
 		}
 	});
 

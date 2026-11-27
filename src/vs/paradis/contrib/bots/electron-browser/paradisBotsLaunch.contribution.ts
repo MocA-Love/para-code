@@ -57,6 +57,7 @@ import { IEditorService } from '../../../../workbench/services/editor/common/edi
 import { paradisClaudeComposerState } from '../../agentHibernation/common/paradisAgentHibernation.js';
 import { paradisCodexComposerState } from '../../mobileRelay/electron-browser/paradisCodexAutoContinueWindow.js';
 import { paradisAddTerminalHiddenOnClose } from '../../workspaceSwitch/browser/paradisTerminalHideOnClose.js';
+import { paradisMarkTerminalSpaceFree } from '../../workspaceSwitch/browser/paradisSpaceFreeTerminals.js';
 import { IParadisBotRevealRequest, IParadisBotsService, paradisBotCommandStateOnAttach, paradisIsLeftoverBotTerminal, IParadisBotStopRequest, PARADIS_BOT_IDLE_STOP_MS, PARADIS_BOTS_ENABLED_SETTING, PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
 
 const findInstance = paradisFindBotTerminalInstance;
@@ -73,15 +74,16 @@ export type ParadisOpenBotResult =
 const RELEASE_WAIT_MS = 3_000;
 
 /**
- * そのペインのスペースへ切り替えて前に出す。閉じて裏に回したペインは、切り替えてからエディタのタブへ戻す（今のスペースの
- * タブとして紛れ込ませない。paradisNotificationReveal.ts）。
+ * ペインを今のスペースのまま前に出す（Bot のペインはどのスペースにも属さない。報告書の D3 (a)）。別のスペースに退避されていた
+ * ペイン（控える前に退避されたもの）は、控えたときに今のスペースへ戻る。閉じて裏に回したペインはエディタのタブへ戻す。
  */
 async function paradisRevealBotPane(
 	services: { readonly hostService: IHostService; readonly terminalService: ITerminalService; readonly switchService: IParadisWorkspaceSwitchService },
 	pane: { readonly instanceId: number; readonly instance: ITerminalInstance; readonly stateKey: string | undefined },
 ): Promise<void> {
-	// 裏に回したペインは、paradisRevealNotifiedPane がスペースを切り替えた後でエディタのタブへ戻す
-	await paradisRevealNotifiedPane({ hostService: services.hostService, terminalService: services.terminalService, workspaceSwitchService: services.switchService }, pane.stateKey, pane.instanceId);
+	paradisMarkTerminalSpaceFree(pane.instanceId);
+	// スペースは切り替えない（stateKey を渡さない）。裏に回したペインは paradisRevealNotifiedPane がエディタのタブへ戻す
+	await paradisRevealNotifiedPane({ hostService: services.hostService, terminalService: services.terminalService, workspaceSwitchService: services.switchService }, undefined, pane.instanceId);
 }
 
 /** 開くときに渡せるもの。 */
@@ -158,6 +160,8 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 		if (outcome.ok) {
 			// 閉じても止めず隠すペインとして、すぐ控える（Bot の様子の見直しを待つ間に閉じられても確認を出さない）
 			paradisAddTerminalHiddenOnClose(outcome.terminal.instanceId);
+			// どのスペースにも属さないペインとして控える（スペースを切り替えても退避せず、着いたスペースの画面へ持ち越す）
+			paradisMarkTerminalSpaceFree(outcome.terminal.instanceId);
 			// 会話はいつも吹き出しで見せる（会話が見つかる前から。最初の挨拶・続けた会話もそのまま吹き出しに出る）。ターミナルは裏に持つ
 			agentChatService.pinChatMode(outcome.terminal.instanceId, !fromAgent);
 		}
@@ -521,6 +525,8 @@ class ParadisBotsWindowWorker extends Disposable {
 		for (const bot of this.botsService.snapshot.bots) {
 			for (const instanceId of await paradisBotInstancesInWindow(this.paneTokenService, await this.botsService.paneHashesOf(bot.id, 'chat'))) {
 				paradisAddTerminalHiddenOnClose(instanceId);
+				// 再読み込みの後に戻ったペインも、どのスペースにも属さないペインとして控え直す
+				paradisMarkTerminalSpaceFree(instanceId);
 				this.watchPaneUse(instanceId, bot.agent);
 			}
 		}

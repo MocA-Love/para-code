@@ -33,6 +33,7 @@ import { paradisWaitForProcessReady } from '../../../common/paradisProcessReady.
 import { IParadisScopedTerminalInstanceLike, IParadisTerminalScopeRoot, paradisCollectRetiringTerminalInstanceIds, paradisLookupInstanceScope, paradisMergePersistentProcessScopesForStorage, paradisParseTerminalProcessScopeStorage, paradisPartitionPersistentProcessScopesByKnownScope, paradisPrunePersistentProcessScopes, paradisRecordInstanceScopes, paradisRecordPersistentProcessScopes, paradisResolveInitialCwdScope, paradisShouldMoveGuessedScopeToCwdScope, paradisResolveTerminalScopeCandidate, paradisShouldParkUnattributedGroup, paradisRestorePersistentProcessScope, paradisRetireInstanceScope, paradisRetireTerminalScope, paradisSerializeTerminalProcessScopeStorage } from '../common/paradisTerminalProcessScope.js';
 import { IParadisTerminalNonceScopeDisagreement, paradisLookupProcessDetailScope, paradisMigrateProcessScopesToNonceScopes, paradisProcessDetailScopeLookupId, paradisParseTerminalNonceScopeStorage, paradisPruneNonceScopes, paradisResolveNonceScope, paradisRetireScopeFromNonceScopeStorage, paradisSerializeTerminalNonceScopeStorage } from '../common/paradisTerminalNonceScope.js';
 import { ParadisPtyAdoptionState, paradisOrphanListingIsComplete, paradisPtyAdoptionState } from '../../ptyDaemon/common/paradisPtyHandover.js';
+import { onDidMarkTerminalSpaceFree, paradisIsTerminalSpaceFree } from './paradisSpaceFreeTerminals.js';
 import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisListParkedTerminalEditorInstances, paradisMarkOrphanTerminalRevivalComplete, paradisParkTerminalEditorInstance, paradisRegisterParkedTerminalGroupProbe, paradisRegisterTerminalEditorOwnerProbe, paradisUnparkTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from './paradisTerminalEditorPark.js';
 import { IParadisTerminalOrphanPty, paradisDuplicatedNonces, paradisOrphanAttachTarget, paradisRegisterTerminalReviveIndexSource, paradisTerminalRestoreStateKey } from './paradisTerminalEditorRevive.js';
 import { ParadisTerminalInstanceRecords } from './paradisTerminalInstanceRecords.js';
@@ -428,6 +429,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		this._register(paradisRegisterParkedTerminalGroupProbe(stateKey => this._parkedGroups.has(stateKey)));
 		// 切り替えの最中に別のスペースへ割り当てられたエディタターミナルを、切り替え元へ park させない
 		this._register(paradisRegisterTerminalEditorOwnerProbe(instance => this.explicitEditorScope(instance)));
+		// どのスペースにも属さないターミナル（Bot の会話のペイン）として控えられたら、付いていた所属を捨てる
+		this._register(onDidMarkTerminalSpaceFree(instanceId => this.releaseSpaceFreeInstance(instanceId)));
 
 		this._register(this.workspaceSwitchService.registerSwitchCompletionParticipant(async stateKey => {
 			await this.applyScope(stateKey);
@@ -526,7 +529,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	}
 
 	getStateKeyForInstance(instanceId: number): string | undefined {
-		if (this.isSharedPanelInstanceId(instanceId)) {
+		if (this.isSharedPanelInstanceId(instanceId) || paradisIsTerminalSpaceFree(instanceId)) {
 			// 台帳には書かず、今のスペースとして答える（`_sharedPanel` のコメント参照）。
 			return this.workspaceSwitchService.isSwitching ? undefined : this.workspaceSwitchService.activeStateKey;
 		}
@@ -559,7 +562,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		}
 		// 共通ターミナルは今のスペースとして答える。起動中・切り替え中の未確定だけは通常の端末と
 		// 同じく pending にする（binding authority がその間の操作を止める前提のため）。
-		if (this.isSharedPanelInstanceId(instanceId)) {
+		if (this.isSharedPanelInstanceId(instanceId) || paradisIsTerminalSpaceFree(instanceId)) {
 			const activeStateKey = this.workspaceSwitchService.activeStateKey;
 			if (this.workspaceSwitchService.isSwitching || !this._terminalRestoreComplete || this.terminalService.connectionState !== TerminalConnectionState.Connected) {
 				return { kind: 'pending' };
@@ -614,8 +617,8 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		}
 		// 共通ターミナルには所属を付けない。付けるとそのスペースを離れた時点で park され、
 		// スペースの削除で破棄される＝共通の置き場ではなくなる。
-		if (this.isSharedPanelInstance(instance)) {
-			this.logService.trace(`[paradisTerminalScope] ignored a space assignment for the shared panel terminal ${instanceId}`);
+		if (this.isSharedPanelInstance(instance) || paradisIsTerminalSpaceFree(instanceId)) {
+			this.logService.trace(`[paradisTerminalScope] ignored a space assignment for the terminal ${instanceId} that belongs to no space`);
 			return;
 		}
 		this._instanceScopes.set(instanceId, stateKey);
@@ -1382,7 +1385,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 
 	private recordRecoveredScopeIfUnassigned(instance: ITerminalInstance): void {
 		this.ensureScopeCandidate(instance);
-		if (this._instanceScopes.has(instance.instanceId) || this.isSharedPanelInstance(instance)) {
+		if (this._instanceScopes.has(instance.instanceId) || this.isSharedPanelInstance(instance) || paradisIsTerminalSpaceFree(instance.instanceId)) {
 			return;
 		}
 		// タグ付け済みのグループへ後から加わった端末（split、background からの復帰、park 台帳から
@@ -2298,7 +2301,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 
 	/** 明示的に割り当てられた所属。推測（今のスペースへ寄せた分）や同居からの借り物は返さない。 */
 	private explicitEditorScope(instance: ITerminalInstance): string | undefined {
-		if (this._activeFallbackInstances.has(instance.instanceId) || this._inheritedGroupScopes.has(instance.instanceId)) {
+		if (paradisIsTerminalSpaceFree(instance.instanceId) || this._activeFallbackInstances.has(instance.instanceId) || this._inheritedGroupScopes.has(instance.instanceId)) {
 			return undefined;
 		}
 		return this._instanceScopes.get(instance.instanceId);
@@ -2533,7 +2536,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		this.persistActiveGroup(stateKey, undefined);
 		// 共通ターミナルはスペースを消しても閉じない。前のバージョンの台帳に所属が残っていても
 		// 巻き添えにしないよう、突き合わせの対象から先に外す。
-		const liveInstances = [...this.collectLiveInstances().values()].filter(instance => !this.isSharedPanelInstance(instance));
+		const liveInstances = [...this.collectLiveInstances().values()].filter(instance => !this.isSharedPanelInstance(instance) && !paradisIsTerminalSpaceFree(instance.instanceId));
 		const retiringInstanceIds = paradisCollectRetiringTerminalInstanceIds(
 			this._instanceScopes,
 			this._persistentProcessScopes,
@@ -2720,7 +2723,34 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 	}
 
 	isSharedPanelTerminal(instanceId: number): boolean {
-		return this.isSharedPanelInstanceId(instanceId);
+		// どのスペースにも属さないターミナル（Bot の会話のペイン）も、スペースへ紐付ける処理から外す
+		return this.isSharedPanelInstanceId(instanceId) || paradisIsTerminalSpaceFree(instanceId);
+	}
+
+	/**
+	 * どのスペースにも属さないターミナルとして控えられた端末の所属を捨てる（起動したときに付いた今のスペースの所属）。
+	 * 別のスペースに退避されていれば、今のスペースの裏のタブとして開き直す（退避されたままだと、どのスペースからも見えない）。
+	 */
+	private releaseSpaceFreeInstance(instanceId: number): void {
+		const instance = this.findLiveInstance(instanceId);
+		this._instanceScopes.delete(instanceId);
+		this._activeFallbackInstances.delete(instanceId);
+		this._inheritedGroupScopes.delete(instanceId);
+		const nonce = instance !== undefined ? this.instanceNonce(instance) : undefined;
+		if (nonce !== undefined && this._nonceScopes.delete(nonce)) {
+			this.persistNonceMapping();
+		}
+		const persistentProcessId = instance !== undefined ? this.getPersistentProcessId(instance) : undefined;
+		if (persistentProcessId !== undefined) {
+			this._persistentProcessScopes.delete(persistentProcessId);
+		}
+		this.persistMapping();
+		this._stableScopeTracker.observe(instanceId, this.resolveScope(instanceId));
+		const activeStateKey = this.workspaceSwitchService.activeStateKey;
+		if (instance !== undefined && !this.workspaceSwitchService.isSwitching && activeStateKey !== undefined
+			&& this.getParkedEditorStateKey(instanceId) !== undefined && paradisUnparkTerminalEditorInstance(instance)) {
+			void this.reopenReassignedEditorTerminal(instance, activeStateKey);
+		}
 	}
 
 	private isSharedPanelInstanceId(instanceId: number): boolean {
@@ -3035,7 +3065,7 @@ export class ParadisTerminalWorkspaceScope extends Disposable implements IParadi
 		for (const instance of instances) {
 			const nonce = this.instanceNonce(instance);
 			const stateKey = this._instanceScopes.get(instance.instanceId);
-			if (nonce === undefined || stateKey === undefined
+			if (nonce === undefined || stateKey === undefined || paradisIsTerminalSpaceFree(instance.instanceId)
 				|| this._activeFallbackInstances.has(instance.instanceId)
 				|| this._inheritedGroupScopes.has(instance.instanceId)
 				|| this._nonceScopes.get(nonce) === stateKey) {
