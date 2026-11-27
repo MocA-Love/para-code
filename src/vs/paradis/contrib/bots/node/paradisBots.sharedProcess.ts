@@ -28,7 +28,8 @@ import { ParadisBotManageToolProvider, paradisBotIdeActionRefusal } from './para
 import { ParadisBotToolProvider } from './paradisBotToolProvider.js';
 import { ParadisBotsChannel } from './paradisBotsChannel.js';
 import { ParadisBotsService } from './paradisBotsService.js';
-import { createParadisBotItemsFile, createParadisBotPanesFile, createParadisBotsFile } from './paradisBotsStore.js';
+import { ParadisBotMemorySnapshots } from './paradisBotMemorySnapshots.js';
+import { createParadisBotItemsFile, createParadisBotPanesFile, createParadisBotsFile, createParadisBotSuggestionsFile, paradisBotsDataFolder } from './paradisBotsStore.js';
 
 let shared: ParadisBotsService | undefined;
 
@@ -43,7 +44,16 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 	// Bot の機能は試験中の設定でオン・オフする（スキーマは画面側で登録されるので、生の値を読む）
 	const configurationService = accessor.get(IConfigurationService);
 	const enabled = () => configurationService.getValue(PARADIS_BOTS_ENABLED_SETTING) === true;
-	const service = store.add(new ParadisBotsService(createParadisBotsFile(userDataPath), createParadisBotItemsFile(userDataPath), paradisSharedHumanAskService(), accessor.get(ILogService), { hookEvents: onParadisAgentHookEvent, enabled, panesFile: createParadisBotPanesFile(userDataPath), homes: new ParadisBotHomes(join(homedir(), '.para-code', 'bots')) }));
+	const homes = new ParadisBotHomes(join(homedir(), '.para-code', 'bots'));
+	const service = store.add(new ParadisBotsService(createParadisBotsFile(userDataPath), createParadisBotItemsFile(userDataPath), paradisSharedHumanAskService(), accessor.get(ILogService), {
+		hookEvents: onParadisAgentHookEvent,
+		enabled,
+		panesFile: createParadisBotPanesFile(userDataPath),
+		suggestionsFile: createParadisBotSuggestionsFile(userDataPath),
+		// 記憶の写しは専用フォルダ（Bot が書ける）の外に置く
+		memorySnapshots: new ParadisBotMemorySnapshots(join(paradisBotsDataFolder(userDataPath), 'memory-snapshots'), homes),
+		homes,
+	}));
 	server.registerChannel(PARADIS_BOTS_CHANNEL, new ParadisBotsChannel(service));
 	shared = service;
 	store.add(configurationService.onDidChangeConfiguration(event => {

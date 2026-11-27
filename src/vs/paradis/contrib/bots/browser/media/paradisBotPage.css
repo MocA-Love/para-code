@@ -1,0 +1,397 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+	The bot page (paradisBotPage.ts) laid over a bot's terminal editor tab: a 40px strip on top (face, name, status,
+	the Chat and Items tabs), the chat display (or the terminal) moved down below it, and the items panel covering the
+	conversation while the Items tab is open. The chat and the terminal are hidden, not removed, under the panel.
+*/
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-bot-page-strip {
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	z-index: 3;
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size100);
+	box-sizing: border-box;
+	height: 40px;
+	padding: 0 var(--vscode-spacing-size160);
+	background: var(--vscode-editor-background);
+	border-bottom: 1px solid var(--vscode-panel-border, transparent);
+}
+
+.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-bot-page-strip[hidden],
+.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-bot-page-panel[hidden] {
+	display: none;
+}
+
+/* The terminal itself is laid out 40px shorter and pushed down by the editor (topInset); the chat display starts below the strip. */
+.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-active > .paradis-agent-chat {
+	top: 40px;
+}
+
+/* While the items panel is open, the chat display and the terminal under it are hidden (they keep running). */
+.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-items > .paradis-agent-chat,
+.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-items > .terminal-wrapper {
+	visibility: hidden;
+}
+
+/*
+	The share dot sits below the strip. The chat display (paradisAgentChat.css, loaded later) moves the dot and the
+	countdown to 8px with the same specificity, so the chat display state is spelled out to win over it.
+*/
+.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-active > .paradis-pane-indicator,
+.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-active.paradis-agent-chat-active > .paradis-pane-indicator {
+	top: 48px;
+}
+
+/*
+	The other corner badges of the terminal tab (the prompt cache countdown and the context usage ring of agentInsights,
+	and the restored tab banner) move below the strip too, so they neither cover the Items tab nor take its clicks.
+	They line up with the share dot (48px). The chat display state is spelled out for the same reason as above.
+*/
+.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-active .paradis-prompt-cache-badge,
+.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-active.paradis-agent-chat-active .paradis-prompt-cache-badge,
+.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-active .paradis-context-usage-badge,
+.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-active.paradis-agent-chat-active .paradis-context-usage-badge,
+.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-active > .paradis-terminal-resume-banner {
+	top: 48px;
+}
+
+.paradis-bot-page-face {
+	display: flex;
+	flex: none;
+}
+
+.paradis-bot-page-face > .paradis-bot-face {
+	width: 22px;
+	height: 22px;
+}
+
+.paradis-bot-page-title {
+	display: flex;
+	align-items: baseline;
+	gap: var(--vscode-spacing-size80);
+	min-width: 0;
+	flex: 0 1 auto;
+}
+
+.paradis-bot-page-name {
+	flex: none;
+	max-width: 240px;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+	font-size: var(--vscode-fontSize-body1);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-bot-page-status {
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+}
+
+/* Pill tabs, as in the mock: the selected one is filled with the raised surface. */
+.paradis-bot-page-tabs {
+	display: flex;
+	flex: none;
+	gap: 2px;
+	margin-left: auto;
+	padding: 2px;
+	border-radius: var(--vscode-cornerRadius-large, 8px);
+	background: var(--vscode-paradis-raised);
+}
+
+.paradis-bot-page-tab {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	height: 26px;
+	padding: 0 var(--vscode-spacing-size120);
+	border: none;
+	border-radius: var(--vscode-cornerRadius-medium, 6px);
+	background: transparent;
+	color: var(--vscode-paradis-textMuted);
+	font: inherit;
+	font-size: var(--vscode-fontSize-body1);
+	cursor: pointer;
+}
+
+.paradis-bot-page-tab:hover {
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-bot-page-tab.selected {
+	background: var(--vscode-list-activeSelectionBackground, var(--vscode-list-hoverBackground));
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-bot-page-tab-count {
+	box-sizing: border-box;
+	min-width: 16px;
+	height: 16px;
+	padding: 0 4px;
+	border-radius: var(--vscode-cornerRadius-circle);
+	font-size: var(--vscode-fontSize-label2);
+	line-height: 16px;
+	text-align: center;
+	font-variant-numeric: tabular-nums;
+	background-color: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+}
+
+.paradis-bot-page-tab-count[hidden] {
+	display: none;
+}
+
+/* The items panel covers the conversation below the strip. */
+.monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-bot-page-panel {
+	position: absolute;
+	top: 40px;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	z-index: 3;
+	overflow-y: auto;
+	background: var(--vscode-editor-background);
+	color: var(--vscode-foreground);
+	outline: none;
+}
+
+.paradis-bot-page-body {
+	box-sizing: border-box;
+	max-width: 880px;
+	margin: 0 auto;
+	padding: var(--vscode-spacing-size160) var(--vscode-spacing-size240) var(--vscode-spacing-size400);
+	font-size: var(--vscode-fontSize-body1);
+}
+
+.paradis-bot-page-section {
+	margin: var(--vscode-spacing-size160) 0 var(--vscode-spacing-size60);
+	font-size: var(--vscode-fontSize-label1);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textMuted);
+}
+
+summary.paradis-bot-page-section {
+	cursor: pointer;
+	list-style-position: inside;
+}
+
+.paradis-bot-page-list {
+	display: flex;
+	flex-direction: column;
+}
+
+.paradis-bot-page-row {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	height: 30px;
+	padding: 0 var(--vscode-spacing-size80);
+	border: none;
+	border-radius: var(--vscode-cornerRadius-medium, 6px);
+	background: transparent;
+	color: var(--vscode-foreground);
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+
+.paradis-bot-page-row:hover {
+	background: var(--vscode-list-hoverBackground);
+}
+
+.paradis-bot-page-row-number,
+.paradis-bot-page-row-time {
+	flex: none;
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+	font-variant-numeric: tabular-nums;
+}
+
+.paradis-bot-page-row-title {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.paradis-bot-page-empty,
+.paradis-bot-page-hint {
+	padding: 0 var(--vscode-spacing-size80);
+	color: var(--vscode-paradis-textMuted);
+}
+
+.paradis-bot-page-hint {
+	margin-top: var(--vscode-spacing-size160);
+}
+
+.paradis-bot-page-nav {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	flex-wrap: wrap;
+}
+
+.paradis-bot-page-back {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size40);
+	height: 24px;
+	padding: 0 var(--vscode-spacing-size60) 0 var(--vscode-spacing-size20);
+	border: none;
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	background: transparent;
+	color: var(--vscode-paradis-textMuted);
+	font: inherit;
+	font-size: var(--vscode-fontSize-label1);
+	cursor: pointer;
+}
+
+.paradis-bot-page-back:hover {
+	background: var(--vscode-list-hoverBackground);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-bot-page-meta {
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+}
+
+.paradis-bot-page-item-title {
+	margin: var(--vscode-spacing-size160) 0 var(--vscode-spacing-size80);
+	font-size: var(--vscode-fontSize-heading3, 15px);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textStrong);
+	overflow-wrap: anywhere;
+}
+
+.paradis-bot-page-label {
+	margin: var(--vscode-spacing-size160) 0 var(--vscode-spacing-size60);
+	font-size: var(--vscode-fontSize-label1);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textMuted);
+}
+
+.paradis-bot-page-text {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	line-height: 1.6;
+}
+
+.paradis-bot-page-links,
+.paradis-bot-page-events {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.paradis-bot-page-link {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	min-height: 26px;
+	padding: 0 var(--vscode-spacing-size60);
+	border: none;
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	background: transparent;
+	color: var(--vscode-foreground);
+	font: inherit;
+	text-align: left;
+	overflow-wrap: anywhere;
+}
+
+button.paradis-bot-page-link {
+	cursor: pointer;
+}
+
+button.paradis-bot-page-link:hover {
+	background: var(--vscode-list-hoverBackground);
+	color: var(--vscode-textLink-foreground);
+}
+
+.paradis-bot-page-event {
+	display: flex;
+	gap: var(--vscode-spacing-size120);
+	padding: 0 var(--vscode-spacing-size60);
+	line-height: 26px;
+}
+
+.paradis-bot-page-event-time {
+	flex: none;
+	font-family: var(--monaco-monospace-font);
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+}
+
+.paradis-bot-page-event-text {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+/*
+	The question card: the inbox's "your turn" card itself (paradisBuildInboxAskCard, styled by the inbox CSS through
+	.paradis-inbox-ask-scope). Only the bot's questions; tool approvals stay in the chat display and the inbox.
+*/
+.paradis-bot-page-ask {
+	margin-top: var(--vscode-spacing-size200);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner, 8px);
+	background: var(--vscode-paradis-raised);
+}
+
+.monaco-workbench .paradis-field.paradis-bot-page-comment {
+	height: auto;
+	align-items: stretch;
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size100);
+}
+
+.paradis-bot-page-comment > textarea {
+	flex: 1;
+	min-width: 0;
+	padding: 0;
+	border: none;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	font-size: var(--vscode-fontSize-body1);
+	line-height: 20px;
+	resize: vertical;
+}
+
+.paradis-bot-page-comment > textarea::placeholder {
+	color: var(--vscode-paradis-textFaint);
+}
+
+.paradis-bot-page-comment-actions,
+.paradis-bot-page-item-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--vscode-spacing-size80);
+}
+
+.paradis-bot-page-comment {
+	margin-top: var(--vscode-spacing-size200);
+}
+
+.paradis-bot-page-comment-actions {
+	margin-top: var(--vscode-spacing-size80);
+}
+
+.paradis-bot-page-item-actions {
+	margin-top: var(--vscode-spacing-size160);
+}

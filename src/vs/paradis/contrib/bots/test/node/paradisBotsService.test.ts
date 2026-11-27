@@ -327,7 +327,7 @@ suite('Paradis bots service', () => {
 		h.service.refresh();
 		const off = { bot: shown('pane-A'), asks: h.humanAsk.getSnapshot().counts.bot, call: String((await h.call('pane-A', 'bot_item_list')).error).slice(0, 40) };
 		assert.deepStrictEqual({ on, off }, {
-			on: { bot: [4, true], other: [0, false], unknown: [0, false], asks: 1 },
+			on: { bot: [5, true], other: [0, false], unknown: [0, false], asks: 1 },
 			off: { bot: [0, false], asks: 0, call: 'Para Code bots are turned off in this Pa' },
 		});
 	});
