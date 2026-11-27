@@ -17,6 +17,8 @@
 // 呼び出し元の識別は接続ごとに行う（paradisCdpPeerResolver.ts参照）:
 //   1. URLクエリ `?pane=<token>`（最優先）
 //   2. loopbackピアPID → 祖先チェーンのenv / 既知シェルPID表 → ペイントークン
+// どちらで決めても、接続を持つプロセスがほかのペインのシェルの子孫だと分かったら断る（verifyIngressPeer）。
+// トークンは同じ利用者のプロセスなら `ps -wwE` で読めるので、ほかのペインの中から名乗っただけでは通さない。
 // 解決したトークンをバインディングレジストリと突合し、バインド済みページの
 // targetId（とその子孫）だけが見える・触れるようにフィルタする（paradisCdpFilterProxy.ts）。
 //
@@ -108,6 +110,12 @@ export interface IParadisCdpGatewayDelegate {
 	 * できないときは true。プロセス表を調べるので、手元のファイルに触れるコマンドが来たときにだけ呼ぶ。
 	 */
 	isTunnelPeer(remotePort: number, localPort: number): Promise<boolean>;
+	/**
+	 * この loopback 接続を、`token`（ペインのトークンかタブのスコープキー）のペインとして通してよいか。接続を持つプロセスが
+	 * ほかの（手元の）ペインのシェルの子孫だと分かったときだけ false（ほかのペインの中のプロセスがトークンを名乗った）。
+	 * どのペインの子孫でもない・確かめが取れないときは true（paradisPaneCallerCheck.ts）。
+	 */
+	verifyIngressPeer(token: string, socket: Socket): Promise<boolean>;
 	/** 接続先のペインの upload_file が写した一時ファイルだけを指す `DOM.setFileInputFiles` の `files` か。 */
 	permitsRemoteFileInput?(token: string, files: unknown): boolean;
 }
@@ -792,6 +800,27 @@ export class ParadisCdpGateway extends Disposable {
 	 * 負の結果は一時的なレース—lsofの追い越し等—でありうるためメモ化しない）。
 	 */
 	private async _resolveIngress(req: http.IncomingMessage): Promise<IParadisCdpIngressAccess | undefined> {
+		const access = await this._resolveClaimedIngress(req);
+		if (access === undefined) {
+			return undefined;
+		}
+		// どの経路で決めたペインでも（`?pane=`、環境変数、シェルの表）、接続を持つプロセスがほかのペインの中のものなら断る
+		let allowed = false;
+		try {
+			allowed = await this.delegate.verifyIngressPeer(access.token, req.socket as Socket);
+		} catch {
+			allowed = false;
+		}
+		if (!allowed) {
+			this._debugNonThrowing('[ParadisCdpGateway] Refused a connection from a process inside another terminal pane than the one it named');
+			this._socketTokens.delete(req.socket as Socket);
+			return undefined;
+		}
+		return access;
+	}
+
+	/** 接続が名乗ったペイン（`?pane=` → 接続元の祖先の環境変数・シェルの表）。接続元がそのペインの中かはまだ確かめない。 */
+	private async _resolveClaimedIngress(req: http.IncomingMessage): Promise<IParadisCdpIngressAccess | undefined> {
 		if (this._disposed) {
 			return undefined;
 		}

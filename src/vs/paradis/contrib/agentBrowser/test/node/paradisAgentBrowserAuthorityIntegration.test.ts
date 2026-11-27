@@ -3463,6 +3463,51 @@ suite('ParadisAgentBrowser authority integration', () => {
 		assert.strictEqual(Reflect.get(fixture.authority, 'connectionStates').size, 0);
 	});
 
+	test('a process inside another pane cannot read or operate a pane\'s tabs with its token through the embedded DevTools tools or the para-browser tools, and provider tools keep their own checks', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'victim', shellPid: 123 }]));
+		const forwarded: string[] = [];
+		const providerCalls: string[] = [];
+		Reflect.set(fixture.service, '_toolProviders', [{
+			listTools: () => [{ name: 'provider_tool', description: '', inputSchema: { type: 'object' } }],
+			callTool: async (_token: string, name: string) => { if (name !== 'provider_tool') { return undefined; } providerCalls.push(name); return { content: [{ type: 'text', text: 'ok' }] }; },
+		}]);
+		// 接続元がほかのペイン（Bot のペインなど）の中だと分かった／分からない
+		let fromOtherPane = true;
+		Reflect.set(fixture.service, '_isOtherPaneCaller', async () => fromOtherPane);
+		Reflect.set(fixture.service, '_callDevtoolsTool', async (_lease: { token: string }, name: string) => {
+			forwarded.push(name);
+			return { content: [{ type: 'text', text: 'ok' }] };
+		});
+		const call = async (name: string, args: unknown) => {
+			const request = mcpRequest('victim');
+			const response = new TestResponse();
+			const pending = Reflect.get(fixture.service, '_handleRequest').call(fixture.service, request, response) as Promise<void>;
+			request.emit('data', Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } })));
+			request.emit('end');
+			await pending;
+			return response.body.includes('cannot read or operate another terminal') ? 'refused' : response.body.includes('"ok"') ? 'passed' : 'other';
+		};
+		const stolen = {
+			evaluateScript: await call('evaluate_script', { function: '() => document.cookie' }),
+			takeSnapshot: await call('take_snapshot', {}),
+			getSharedPage: await call('get_shared_page', {}),
+			getCdpEndpoint: await call('get_cdp_endpoint', {}),
+			providerTool: await call('provider_tool', {}),
+		};
+		fromOtherPane = false;
+		const own = { takeSnapshot: await call('take_snapshot', {}) };
+		assert.deepStrictEqual({ stolen, own, forwarded, providerCalls }, {
+			stolen: { evaluateScript: 'refused', takeSnapshot: 'refused', getSharedPage: 'refused', getCdpEndpoint: 'refused', providerTool: 'passed' },
+			own: { takeSnapshot: 'passed' },
+			forwarded: ['take_snapshot'],
+			providerCalls: ['provider_tool'],
+		});
+		fixture.service.dispose();
+	});
+
 	test('local file arguments of the embedded DevTools tools are refused for a remote pane before reaching the bridge (upload_file reads the remote machine through the owning window instead), and forwarded for a local pane', async () => {
 		const fixture = createFixture();
 		const connection = {};

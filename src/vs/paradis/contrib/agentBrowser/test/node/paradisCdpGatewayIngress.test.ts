@@ -271,6 +271,38 @@ suite('Paradis CDP gateway ingress authority', () => {
 		}
 	});
 
+	test('refuses a pane named by ?pane= or by a peer\'s environment when the connecting process is inside another pane, and keeps other connections working', async () => {
+		const checked: string[] = [];
+		const run = async (includeQuery: boolean, fromOtherPane: boolean) => {
+			const fixture = createHttpFixture('/json/protocol', {
+				includeQuery,
+				remotePort: 47_001,
+				// 接続元からの解決（環境変数・シェルの表）で、名乗ったペインに決まった
+				peerResolver: async () => 'pane-token',
+				verifyPeer: async token => { checked.push(token); return !fromOtherPane; },
+			});
+			try {
+				await fixture.gateway.handleRequest(fixture.request, fixture.response);
+				return { status: fixture.result().status, upstream: fixture.upstreamCalls() };
+			} finally {
+				fixture.gateway.dispose();
+			}
+		};
+		assert.deepStrictEqual({
+			stolenQuery: await run(true, true),
+			stolenEnv: await run(false, true),
+			ownQuery: await run(true, false),
+			ownPeer: await run(false, false),
+			checked,
+		}, {
+			stolenQuery: { status: 403, upstream: 0 },
+			stolenEnv: { status: 403, upstream: 0 },
+			ownQuery: { status: 200, upstream: 1 },
+			ownPeer: { status: 200, upstream: 1 },
+			checked: ['pane-token', 'pane-token', 'pane-token', 'pane-token'],
+		});
+	});
+
 	test('invalidates a cached socket token before any later upstream access', async () => {
 		const fixture = createHttpFixture('/json/protocol', { owned: false, includeQuery: false });
 		const state = fixture.gateway as unknown as { _socketTokens: WeakMap<object, { token: string; lease: ITestLease }> };
@@ -584,6 +616,7 @@ suite('Paradis CDP gateway ingress authority', () => {
 			ensureBoundTargetId: async () => boundTarget,
 			getTokenForShellPid: () => lease.token,
 			isRemotePane: () => false,
+			verifyIngressPeer: async () => true,
 			isTunnelPeer: async () => false,
 			captureBoundPageScreenshot: async () => 'image',
 			isBoundPageVisible: async () => true,
@@ -928,6 +961,7 @@ suite('Paradis CDP gateway ingress authority', () => {
 function createDelegate(options: {
 	readonly owned?: boolean;
 	readonly ensure?: () => Promise<string | undefined>;
+	readonly verifyPeer?: (token: string) => Promise<boolean>;
 } = {}): {
 	readonly delegate: IParadisCdpGatewayDelegate;
 	readonly lease: ITestLease;
@@ -959,6 +993,7 @@ function createDelegate(options: {
 		},
 		getTokenForShellPid: () => currentLease.token,
 		isRemotePane: () => false,
+		verifyIngressPeer: options.verifyPeer ?? (async () => true),
 		isTunnelPeer: async () => false,
 		captureBoundPageScreenshot: async () => 'image',
 		isBoundPageVisible: async () => true,
@@ -994,6 +1029,7 @@ function createHttpFixture(path: string, options: {
 	readonly localPort?: number;
 	readonly throwingDebug?: boolean;
 	readonly throwingWarn?: boolean;
+	readonly verifyPeer?: (token: string) => Promise<boolean>;
 } = {}): {
 	readonly gateway: ParadisCdpGateway;
 	readonly request: import('http').IncomingMessage;
