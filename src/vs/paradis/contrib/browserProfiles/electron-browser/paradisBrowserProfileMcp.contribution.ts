@@ -42,6 +42,7 @@ import { IParadisAgentBrowserTabsService, ParadisApprovalDeadline } from '../../
 import { IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import {
 	IParadisAgentProfileInfo,
+	IParadisDeleteProfileResult,
 	IParadisListProfilesResult,
 	IParadisManageProfileResult,
 	IParadisOpenProfileResult,
@@ -448,7 +449,7 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 		return stats.openViewCount <= ownTabs;
 	}
 
-	private async _deleteProfile(token: string | undefined, profileName: string): Promise<IParadisManageProfileResult<{ readonly profileName: string }>> {
+	private async _deleteProfile(token: string | undefined, profileName: string): Promise<IParadisDeleteProfileResult> {
 		if (token === undefined) {
 			return { ok: false, reason: 'paneUnresolved' };
 		}
@@ -459,10 +460,10 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 		}
 		// 削除はそのプロファイルのタブを全部閉じる。ユーザーや別のペインが使っているタブがあれば断る
 		// （このウィンドウ以外で開いているタブも main が数えている）。
-		const ownTabs = [...this.browserViewWorkbenchService.getKnownBrowserViews().keys()]
-			.filter(viewId => this.profilesService.getProfileForView(viewId) === profile.id && this.agentTabsService.isOpenedBy(token, viewId)).length;
+		const ownTabs = () => [...this.browserViewWorkbenchService.getKnownBrowserViews().keys()]
+			.filter(viewId => this.profilesService.getProfileForView(viewId) === profile.id && this.agentTabsService.isOpenedBy(token, viewId));
 		const stats = await this.profilesService.getProfileStats(profile.id);
-		if (stats.openViewCount > ownTabs) {
+		if (stats.openViewCount > ownTabs().length) {
 			return { ok: false, reason: 'inUse' };
 		}
 		// main の答えを待つ間に、ユーザーが自分用として使い始めた（印が外れた）・消されたなら消さない。
@@ -470,8 +471,10 @@ export class ParadisBrowserProfileMcpChannel extends Disposable implements IServ
 		if (!current || !isOwnProfile(current, token)) {
 			return { ok: false, reason: 'unknownProfile' };
 		}
+		// 一緒に閉じる自分のタブを、消す直前に控える（エージェントへ、もう使えない tabId として知らせる）
+		const closedTabIds = ownTabs();
 		await this.profilesService.remove(profile.id);
-		return { ok: true, profileName: profile.name };
+		return { ok: true, profileName: profile.name, closedTabIds };
 	}
 
 	// #endregion

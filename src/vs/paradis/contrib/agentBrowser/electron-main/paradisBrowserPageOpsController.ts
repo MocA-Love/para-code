@@ -739,7 +739,7 @@ export class ParadisBrowserPageOpsController {
 					if (!this.hasAnything(state)) {
 						this.clear(target);
 					}
-					return { ok: false, reason: 'invalid', message: 'The shared page is not an http(s) page yet, so there is no origin to send the headers to. Navigate first, or pass "origins".' };
+					return { ok: false, reason: 'invalid', message: 'This tab is not an http(s) page yet, so there is no origin to send the headers to. Navigate first, or pass "origins".' };
 				}
 				state.extraHeaders = { headers: extra.headers, origins: [origin] };
 			}
