@@ -15,6 +15,7 @@
 //  - エージェントへ返す文面の組み立て（ペイントークンは絶対に載せない）
 // を受け持ち、範囲（同じスペースか・自分が作ったものか）の判断はウィンドウ側が行う。
 
+import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider, paradisMcpToolError as toolError } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import {
@@ -108,6 +109,20 @@ const SCREEN_UNREADABLE_MESSAGE = 'Para Code cannot read that terminal\'s screen
 const PROMPT_ON_SCREEN_MESSAGE = 'That terminal shows a confirmation prompt on screen (for example a permission question), so Para Code does not press Enter there. Tell the user instead.';
 const TOO_MANY_WAITS_MESSAGE = 'Too many wait_for_terminal calls are running at once. Wait for the current ones to return before starting another.';
 
+/**
+ * ほかの機能が、呼び出し元のペインごとに IDE の操作（送る・起動する・作る・閉じるなど）を断る口。理由の文を返すと断る。
+ * Bot の機能が、Bot のペインから Bot でないペインを起こす・動かすのを断るのに使う（そのペインからは Bot を変える道具を呼べるため）。
+ */
+export type ParadisAgentIdeActionRefusal = (paneToken: string, toolName: string) => Promise<string | undefined>;
+
+const actionRefusals = new Set<ParadisAgentIdeActionRefusal>();
+
+/** {@link ParadisAgentIdeActionRefusal} を登録する。 */
+export function paradisRegisterAgentIdeActionRefusal(refusal: ParadisAgentIdeActionRefusal): IDisposable {
+	actionRefusals.add(refusal);
+	return toDisposable(() => actionRefusals.delete(refusal));
+}
+
 function toolText(value: string | object): unknown {
 	return { content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }] };
 }
@@ -168,6 +183,14 @@ export class ParadisAgentIdeToolProvider implements IParadisMcpToolProvider {
 		const caller = await context.classifyCaller();
 		if (caller === 'unverified' || (action && caller !== 'pane')) {
 			return toolError(action ? CALLER_UNVERIFIED_MESSAGE : READ_CALLER_UNVERIFIED_MESSAGE);
+		}
+		if (action) {
+			for (const refusal of [...actionRefusals]) {
+				const reason = await refusal(paneToken, name);
+				if (reason !== undefined) {
+					return toolError(reason);
+				}
+			}
 		}
 		if (parsed.kind === 'wait') {
 			// 待機の枠は、接続元を確かめた後で数える（偽のトークンで枠を埋められないように）
