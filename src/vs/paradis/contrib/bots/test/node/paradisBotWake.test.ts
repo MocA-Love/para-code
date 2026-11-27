@@ -297,6 +297,80 @@ suite('Paradis bot wake and sleep', () => {
 		});
 	});
 
+	test('応えの無かった会話のペインのエージェントが動いている・分からないときは同じ会話を新しく起こさない。終わっていれば起こす。「止めて起こし直す」は止める依頼を出してから起こす。ウィンドウで見つかったら結び付け直す', async () => {
+		const disposables = store.add(new DisposableStore());
+		const clock = { now: 1_000 };
+		const homes = { ensure: async () => '/tmp/bot-home', read: async () => undefined, existingFolders: async () => [] } as unknown as ParadisBotHomes;
+		const alive = new Map<string, boolean | undefined>();
+		const start = async () => {
+			const hooks = disposables.add(new Emitter<{ token: string; event: string; sessionId?: string; observedExit?: true }>());
+			const humanAsk = disposables.add(new ParadisHumanAskService(new ParadisHumanAskLedger(() => clock.now)));
+			const service = disposables.add(new ParadisBotsService(new MemoryFile<IParadisBotsState>(EMPTY_PARADIS_BOTS_STATE), new MemoryFile<IParadisBotItemsState>(EMPTY_PARADIS_BOT_ITEMS_STATE), humanAsk, new NullLogService(), {
+				now: () => clock.now, hookEvents: hooks.event, panesFile: new MemoryFile<IParadisBotPanesState>(EMPTY_PARADIS_BOT_PANES_STATE), homes, revealTimeoutMs: 10,
+				paneAlive: async token => alive.get(token),
+			}));
+			await service.ready;
+			const created = await service.createBot({ name: 'A', agent: 'claude' });
+			assert.ok(created.ok, created.ok ? '' : created.message);
+			const botId = created.value.id;
+			const launch = await service.requestLaunch(botId, 'chat');
+			assert.ok(launch.ok);
+			service.reportLaunch(launch.value.launchId, 'pane-1');
+			hooks.fire({ token: 'pane-1', event: 'SessionStart', sessionId: SESSION });
+			hooks.fire({ token: 'pane-1', event: 'UserPromptSubmit', sessionId: SESSION });
+			hooks.fire({ token: 'pane-1', event: 'Stop', sessionId: SESSION });
+			// どのウィンドウも前に出す依頼に応えない
+			assert.strictEqual(await service.requestReveal(botId), false);
+			return { service, botId };
+		};
+		const launchCode = async (service: ParadisBotsService, botId: string) => {
+			const result = await service.requestLaunch(botId, 'chat');
+			if (result.ok) {
+				service.cancelLaunch(result.value.launchId);
+			}
+			return result.ok ? result.value.extraFlags : result.code;
+		};
+
+		// 動いている・分からない: 起こさない（同じ会話が 2 つ動く）
+		const a = await start();
+		alive.set('pane-1', true);
+		const whileAlive = await launchCode(a.service, a.botId);
+		alive.set('pane-1', undefined);
+		const whileUnknown = await launchCode(a.service, a.botId);
+		// 「止めて起こし直す」: 応えの無かったペインへ止める依頼を出してから、確かめずに起こす（制限は本物の終了まで残す）
+		const stops: IParadisBotStopRequest[] = [];
+		disposables.add(a.service.onDidRequestStop(request => stops.push(request)));
+		a.service.restartChat(a.botId);
+		const afterRestart = await launchCode(a.service, a.botId);
+		const restrictedAfterRestart = a.service.isBotPane('pane-1');
+
+		// 終わっていた: 起こす（そのペインの制限は本物の終了まで残す）
+		const b = await start();
+		alive.set('pane-1', false);
+		const whenEnded = await launchCode(b.service, b.botId);
+		const restrictedWhenEnded = b.service.isBotPane('pane-1');
+
+		// このウィンドウで見つかった（生きていた）: 会話のペインとして結び付け直し、新しく起こさない
+		const c = await start();
+		alive.set('pane-1', true);
+		c.service.reclaimPane('pane-1');
+		const reclaimed = [c.service.getSnapshot().bots[0].activity, await launchCode(c.service, c.botId)];
+		// 応えの無かったペインでないなら何もしない
+		c.service.reclaimPane('pane-x');
+
+		assert.deepStrictEqual({ whileAlive, whileUnknown, stops, afterRestart, restrictedAfterRestart, whenEnded, restrictedWhenEnded, reclaimed, stray: c.service.isBotPane('pane-x') }, {
+			whileAlive: 'detached_alive',
+			whileUnknown: 'detached_alive',
+			stops: [{ botId: a.botId, paneHashes: [paradisBotPaneTokenHash('pane-1')] }],
+			afterRestart: `--resume ${SESSION}`,
+			restrictedAfterRestart: true,
+			whenEnded: `--resume ${SESSION}`,
+			restrictedWhenEnded: true,
+			reclaimed: ['idle', 'already_open'],
+			stray: false,
+		});
+	});
+
 	test('bot_tell: 宛先が止まっていても起こさない（受け箱に入れるだけ。利用者の居ない所で頼まれたことを実行させない）', async () => {
 		const disposables = store.add(new DisposableStore());
 		let ids = 0;

@@ -15,6 +15,7 @@
 // ペイン分離はこのレジストリ層で保証する（トークン→バインド済みページ以外へはアクセス不可）。
 // upstreamの playwrightService.ts（_trackedPages等）は一切改造しない。
 
+import { setParadisAgentPaneLivenessProbe } from './paradisAgentPaneLiveness.js';
 import type * as http from 'http';
 import type { Socket } from 'net';
 import { createHash, randomUUID, timingSafeEqual } from 'crypto';
@@ -1041,6 +1042,9 @@ export class ParadisAgentBrowserService extends Disposable {
 		private readonly localVoiceOutput?: IParadisLocalVoiceOutput & { readonly shellEnv?: ParadisCachedShellEnv },
 	) {
 		super();
+		// Bot が、前に出す依頼に応えなかったペインのエージェントがまだ動いているかを聞く（同じ会話を 2 つ起こさないため）
+		setParadisAgentPaneLivenessProbe(token => this._hookOwnership.ownerAlive(token));
+		this._register(toDisposable(() => setParadisAgentPaneLivenessProbe(undefined)));
 		this._portFilePath = join(this._userDataPath, PARADIS_MCP_PORT_FILE_NAME);
 		this._hookSpoolDir = join(this._userDataPath, PARADIS_AGENT_HOOK_SPOOL_DIR_NAME);
 		void paradisOpenCodeCliRegistry.initialize(join(this._userDataPath, PARADIS_OPENCODE_CLI_REGISTRY_FILE_NAME));

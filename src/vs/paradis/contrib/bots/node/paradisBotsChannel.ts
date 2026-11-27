@@ -103,6 +103,19 @@ export class ParadisBotsChannel implements IServerChannel<string> {
 				}
 				return undefined;
 			}
+			case 'reclaimPane': {
+				const paneToken = args.string(0);
+				if (paneToken !== undefined) {
+					service.reclaimPane(paneToken);
+				}
+				return undefined;
+			}
+			case 'restartChat': {
+				if (id !== undefined) {
+					service.restartChat(id);
+				}
+				return undefined;
+			}
 			case 'releasePane': {
 				const paneToken = args.string(0);
 				if (paneToken !== undefined) {

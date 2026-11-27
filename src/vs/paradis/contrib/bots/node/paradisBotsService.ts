@@ -108,6 +108,11 @@ export interface IParadisBotsServiceOptions {
 	readonly itemsByteLimit?: number;
 	/** 前に出す依頼にウィンドウが応えるのを待つ時間。既定は {@link PARADIS_BOT_REVEAL_TIMEOUT_MS}。 */
 	readonly revealTimeoutMs?: number;
+	/**
+	 * そのペインのエージェント（hook の所有者）が動いているか（分からなければ undefined）。前に出す依頼に応えなかった会話の
+	 * ペインがあるときに、新しい会話を起こす前に聞く。渡さなければ確かめない。
+	 */
+	readonly paneAlive?: (paneToken: string) => Promise<boolean | undefined>;
 	/** 眠った会話の記録の置き場（テストで差し替える。既定は Claude Code の設定と Codex のホーム）。 */
 	readonly transcriptRoots?: IParadisBotTranscriptRoots;
 	/**
@@ -160,6 +165,7 @@ export class ParadisBotsService extends Disposable {
 	private readonly itemsByteLimit: number;
 	private readonly revealTimeoutMs: number;
 	private readonly givenTranscriptRoots: IParadisBotTranscriptRoots | undefined;
+	private readonly paneAlive: ((paneToken: string) => Promise<boolean | undefined>) | undefined;
 	/** 前に出す依頼の番号 → ウィンドウが応えたときに呼ぶもの。 */
 	private readonly pendingReveals = new Map<string, () => void>();
 	private readonly enabled: () => boolean;
@@ -214,6 +220,7 @@ export class ParadisBotsService extends Disposable {
 		this.itemsByteLimit = options.itemsByteLimit ?? PARADIS_BOT_ITEMS_BYTE_LIMIT;
 		this.revealTimeoutMs = options.revealTimeoutMs ?? PARADIS_BOT_REVEAL_TIMEOUT_MS;
 		this.givenTranscriptRoots = options.transcriptRoots;
+		this.paneAlive = options.paneAlive;
 		this.enabled = options.enabled ?? (() => true);
 		this.preparePatrol = options.preparePatrol;
 		this.agentTemplate = options.agentTemplate;
@@ -690,6 +697,18 @@ export class ParadisBotsService extends Disposable {
 				if (inUse?.state === 'launching') {
 					return { ok: false, code: 'launching', message: 'This bot is starting in another window.' };
 				}
+				// 前に出す依頼に応えなかった会話のペインのエージェントが、実はまだ動いているかもしれない。動いている・分からない
+				// ときは新しく起こさない（`--resume` で同じ会話が 2 つ動く）。終わっていれば起こす（そのペインの Bot の制限は、
+				// 本物の終了まで残す）
+				const unchecked = this.paneAlive !== undefined ? this.panes.uncheckedDetachedTokensOf(botId) : [];
+				if (unchecked.length > 0) {
+					const paneAlive = this.paneAlive!;
+					const alive = await Promise.all(unchecked.map(token => paneAlive(token).catch(() => undefined)));
+					if (alive.some(value => value !== false)) {
+						return { ok: false, code: 'detached_alive', message: 'The previous agent of this bot may still be running in a pane that did not answer. Open that pane, or stop it and start again.' };
+					}
+					this.panes.waiveDetachedChat(botId);
+				}
 			}
 			if (this.homes === undefined) {
 				return { ok: false, code: 'unavailable', message: 'Bot home folders are not available.' };
@@ -987,6 +1006,22 @@ export class ParadisBotsService extends Disposable {
 	/** 起動に失敗した番号を捨てる。 */
 	cancelLaunch(launchId: string): void {
 		this.panes.cancel(launchId);
+	}
+
+	/** 応えの無かった会話のペインがウィンドウで見つかった（生きていた）。会話のペインとして結び付け直す。 */
+	reclaimPane(paneToken: string): void {
+		if (this.panes.reclaimChat(paneToken, this.now()) !== undefined) {
+			this.notify();
+		}
+	}
+
+	/** 利用者が「止めて起こし直す」を選んだ。応えの無かった会話のペインへ止める依頼を出し、次は確かめずに起こす。 */
+	restartChat(botId: string): void {
+		const paneHashes = this.panes.detachedTokensOf(botId).map(paradisBotPaneTokenHash);
+		if (paneHashes.length > 0) {
+			this._onDidRequestStop.fire({ botId, paneHashes });
+		}
+		this.panes.waiveDetachedChat(botId);
 	}
 
 	/** ペインが閉じた。見回りのペインなら、その Bot はもう最初の見回りではない。 */
