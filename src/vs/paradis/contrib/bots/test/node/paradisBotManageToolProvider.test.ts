@@ -10,6 +10,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisMcpOwningWindowRequest, IParadisMcpToolCallContext, ParadisMcpCallerKind, paradisMcpCallRefusalFor, paradisRegisterMcpCallRefusal } from '../../../agentBrowser/common/paradisMcpToolProvider.js';
+import { ParadisAgentBrowserService } from '../../../agentBrowser/node/paradisAgentBrowserService.js';
 import { ParadisHumanAskService } from '../../../humanAsk/node/paradisHumanAskChannel.js';
 import { EMPTY_PARADIS_BOT_ITEMS_STATE, IParadisBotItemsState } from '../../common/paradisBotItems.js';
 import { EMPTY_PARADIS_BOTS_STATE, IParadisBot, IParadisBotsState } from '../../common/paradisBots.js';
@@ -282,6 +283,38 @@ suite('Paradis bot manage tools', () => {
 		});
 	});
 
+	test('para-browser の道具の入口（_callTool）が、見回りのペインからの書く道具を断る（道具を回す前に）', async () => {
+		const h = harness();
+		await h.call('create_bot', { name: 'A', agent: 'claude' });
+		const patrol = h.service.issueLaunch('id1', 'patrol');
+		assert.ok(patrol !== undefined && h.service.reportLaunch(patrol, 'pane-patrol'));
+		const registration = paradisRegisterMcpCallRefusal(paradisBotPatrolToolRefusal(h.service));
+		// 断る口より後ろ（引数の突き合わせ）まで来たら、道具は回さずに印を返す
+		const reached: string[] = [];
+		const server = Object.assign(Object.create(ParadisAgentBrowserService.prototype) as object, {
+			_requireIngressLease: () => { },
+			_cursorPacing: { begin: () => ({ dispose: () => { } }) },
+			_callerRefusalBeforeLane: async () => undefined,
+			_toolArgumentRefusal: async (_lease: unknown, name: string) => {
+				reached.push(name);
+				return { content: [{ type: 'text', text: 'reached' }] };
+			},
+		}) as unknown as { _callTool(lease: { token: string }, params: { name: string; arguments: object }): Promise<{ content: { text: string }[]; isError?: boolean }> };
+		const call = async (pane: string, name: string) => {
+			const result = await server._callTool({ token: pane }, { name, arguments: {} });
+			return result.isError ? `refused: ${result.content[0].text.slice(0, 26)}` : result.content[0].text;
+		};
+		const result = { patrolClick: await call('pane-patrol', 'click_by'), patrolEvaluate: await call('pane-patrol', 'evaluate_script'), patrolRead: await call('pane-patrol', 'get_text'), userClick: await call('pane-user', 'click_by') };
+		registration.dispose();
+		assert.deepStrictEqual({ ...result, reached }, {
+			patrolClick: 'refused: This is a look-around, whi',
+			patrolEvaluate: 'refused: This is a look-around, whi',
+			patrolRead: 'reached',
+			userClick: 'reached',
+			reached: ['get_text', 'click_by'],
+		});
+	});
+
 	test('見回りのペインからの para-browser の呼び出しは、読むだけの道具と見回りの Bot の道具だけを通す', async () => {
 		const h = harness();
 		await h.call('create_bot', { name: 'A', agent: 'claude' });
@@ -289,12 +322,12 @@ suite('Paradis bot manage tools', () => {
 		const chat = h.service.issueLaunch('id1', 'chat');
 		assert.ok(patrol !== undefined && chat !== undefined && h.service.reportLaunch(patrol, 'pane-patrol') && h.service.reportLaunch(chat, 'pane-chat'));
 		const registration = paradisRegisterMcpCallRefusal(paradisBotPatrolToolRefusal(h.service));
-		const tools = ['get_text', 'take_snapshot', 'list_browser_tabs', 'bot_suggest', 'bot_item_list', 'click_by', 'fill_by', 'navigate_page', 'evaluate_script', 'run_steps', 'write_space_note', 'send_terminal_input', 'create_scheduled_run', 'update_bot', 'computer_click'];
+		const tools = ['get_text', 'take_snapshot', 'list_browser_tabs', 'bot_suggest', 'bot_item_list', 'bot_github_news', 'click_by', 'fill_by', 'navigate_page', 'evaluate_script', 'run_steps', 'write_space_note', 'send_terminal_input', 'create_scheduled_run', 'update_bot', 'computer_click'];
 		const answers = async (pane: string) => Object.fromEntries(await Promise.all(tools.map(async tool => [tool, await paradisMcpCallRefusalFor(pane, tool) === undefined ? 'ok' : 'refused'])));
 		const result = { patrol: await answers('pane-patrol'), chat: await answers('pane-chat'), user: await answers('pane-user') };
 		registration.dispose();
 		const afterDispose = await paradisMcpCallRefusalFor('pane-patrol', 'click_by');
-		const allowed = { get_text: 'ok', take_snapshot: 'ok', list_browser_tabs: 'ok', bot_suggest: 'ok', bot_item_list: 'ok' };
+		const allowed = { get_text: 'ok', take_snapshot: 'ok', list_browser_tabs: 'ok', bot_suggest: 'ok', bot_item_list: 'ok', bot_github_news: 'ok' };
 		const everything = { ...allowed, click_by: 'ok', fill_by: 'ok', navigate_page: 'ok', evaluate_script: 'ok', run_steps: 'ok', write_space_note: 'ok', send_terminal_input: 'ok', create_scheduled_run: 'ok', update_bot: 'ok', computer_click: 'ok' };
 		assert.deepStrictEqual({ ...result, afterDispose, message: await paradisBotPatrolToolRefusal(h.service)('pane-patrol', 'click_by') }, {
 			patrol: { ...allowed, click_by: 'refused', fill_by: 'refused', navigate_page: 'refused', evaluate_script: 'refused', run_steps: 'refused', write_space_note: 'refused', send_terminal_input: 'refused', create_scheduled_run: 'refused', update_bot: 'refused', computer_click: 'refused' },
