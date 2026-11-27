@@ -18,10 +18,13 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
 import { paradisRegisterMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { onParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHookBus.js';
+import { PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING, paradisAgentIdeActionsAllowed } from '../../agentIde/common/paradisAgentIde.js';
+import { paradisRegisterAgentIdeActionRefusal } from '../../agentIde/node/paradisAgentIdeToolProvider.js';
 import { paradisSetAskHumanBotPaneCheck } from '../../humanAsk/node/paradisAskHumanToolProvider.js';
 import { paradisSharedHumanAskService } from '../../humanAsk/node/paradisHumanAskChannel.js';
 import { PARADIS_BOTS_CHANNEL, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
 import { ParadisBotHomes } from './paradisBotHomes.js';
+import { ParadisBotManageToolProvider, paradisBotIdeActionRefusal } from './paradisBotManageToolProvider.js';
 import { ParadisBotToolProvider } from './paradisBotToolProvider.js';
 import { ParadisBotsChannel } from './paradisBotsChannel.js';
 import { ParadisBotsService } from './paradisBotsService.js';
@@ -49,6 +52,13 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 		}
 	}));
 	store.add(paradisRegisterMcpToolProvider(new ParadisBotToolProvider(service, enabled)));
+	// 管理の道具の書く側は、IDE 系の書く道具と同じ設定の下（スキーマは画面側でしか登録されないので生の値を読む）
+	store.add(paradisRegisterMcpToolProvider(new ParadisBotManageToolProvider(service, {
+		actionsEnabled: () => paradisAgentIdeActionsAllowed(configurationService.getValue(PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING)),
+		botsEnabled: enabled,
+	})));
+	// Bot のペインからは、別のペインを起こす・動かす IDE の道具を断る
+	store.add(paradisRegisterAgentIdeActionRefusal(paradisBotIdeActionRefusal(service)));
 	// Bot のペインからの ask_human は断る（Bot は作業項目の Needs you で聞く）
 	// 起動し直した直後は、保存した結び付けを読み終えるまで Bot のペインと分からないので待つ
 	store.add(paradisSetAskHumanBotPaneCheck(async paneToken => {
