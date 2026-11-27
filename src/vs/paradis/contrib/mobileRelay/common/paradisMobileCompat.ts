@@ -372,6 +372,14 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.BotsPage,
 ];
 
+/**
+ * State で広告する capability。設定でオン・オフする機能（`bots.page.v1` は `paradis.bots.enabled`）は、オンの間だけ
+ * 広告する（オフの PC に Bot の画面を出させない。設定が変わると State が送り直され、広告も変わる）。
+ */
+export function paradisMobilePcCapabilities(options: { readonly botsPage: boolean }): readonly string[] {
+	return options.botsPage ? PARADIS_MOBILE_PC_CAPABILITIES : PARADIS_MOBILE_PC_CAPABILITIES.filter(capability => capability !== ParadisMobileCapability.BotsPage);
+}
+
 /** このアプリのビルドが実装している capability。State の要求の `capabilities` で広告する。 */
 export const PARADIS_MOBILE_APP_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.StateGzip,

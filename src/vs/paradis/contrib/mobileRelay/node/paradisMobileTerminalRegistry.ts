@@ -13,7 +13,7 @@ import { paradisMobileResourcesEqual } from '../common/paradisMobileHostResource
 import { IParadisMobileWindowHost } from '../common/paradisMobileHost.js';
 import { PARADIS_FS_BINARY_UPLOAD_ENCODING } from '../common/paradisMobileFileUpload.js';
 import { IParadisMobileDoNotDisturbState, paradisSameMobileDoNotDisturbState } from '../common/paradisMobileDoNotDisturb.js';
-import { PARADIS_MOBILE_MIN_COMPATIBLE_MOBILE, PARADIS_MOBILE_PC_CAPABILITIES } from '../common/paradisMobileCompat.js';
+import { PARADIS_MOBILE_MIN_COMPATIBLE_MOBILE, paradisMobilePcCapabilities } from '../common/paradisMobileCompat.js';
 import { IParadisMobileRendererManifest, IParadisMobileWindowLease, IParadisMobileWindowLeaseValidation } from '../common/paradisMobileWindowLease.js';
 import type { IParadisMobileBotsFeed } from './paradisMobileBotsFeed.js';
 
@@ -374,7 +374,8 @@ export class ParadisMobileTerminalRegistry {
 		return {
 			protocolVersion: PARADIS_MOBILE_PROTOCOL_VERSION,
 			minCompatibleMobile: PARADIS_MOBILE_MIN_COMPATIBLE_MOBILE,
-			capabilities: PARADIS_MOBILE_PC_CAPABILITIES,
+			// Bot の画面は設定がオンで一覧が置かれている間だけ広告する
+			capabilities: paradisMobilePcCapabilities({ botsPage: this.botsFeed !== undefined }),
 			fsUploadEncoding: PARADIS_FS_BINARY_UPLOAD_ENCODING,
 			voiceClips: 'relay-v1',
 			desktopEpoch: this.desktopEpoch,

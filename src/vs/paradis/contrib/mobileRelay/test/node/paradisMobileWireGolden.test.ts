@@ -131,6 +131,16 @@ suite('ParadisMobileWireGolden', () => {
 		assert.deepStrictEqual({ shape: shapeOf(built), values: pick(built) }, { shape: shapeOf(golden.current), values: pick(golden.current) });
 	});
 
+	test('Bot の画面（bots.page.v1）は、Bot の一覧が置かれている間（設定がオンの間）だけ広告する', () => {
+		const registry = new ParadisMobileTerminalRegistry('bots-capability-epoch');
+		const advertised = () => (registry.desktopState().capabilities as readonly string[]).includes('bots.page.v1');
+		const off = advertised();
+		registry.setBots({ bots: [], botOfToken: () => undefined, panesKey: '' });
+		const on = advertised();
+		registry.setBots(undefined);
+		assert.deepStrictEqual({ off, on, offAgain: advertised() }, { off: false, on: true, offAgain: false });
+	});
+
 	test('State の要求: 今のアプリは通り、版 3 のアプリ（W2-17 より前を含む）は通さない（mux の版 4）', function () {
 		const golden = readGolden<{ current: object; preW217: object }>(this, 'state-request.json');
 		const session = new MobileSession('mobile-a', new Uint8Array(16), new Uint8Array(32), {} as MobileIdentity, () => true, () => { }, undefined, new NullLogService());

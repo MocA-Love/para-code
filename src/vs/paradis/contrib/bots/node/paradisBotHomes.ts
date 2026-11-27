@@ -16,7 +16,7 @@
 //   フォルダは残るので、消した Bot の人格と記憶を、後から作った別の Bot が引き継がないようにするため
 
 import { promises as fs } from 'fs';
-import { dirname, join, sep } from '../../../../base/common/path.js';
+import { basename, dirname, join, sep } from '../../../../base/common/path.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
 import {
 	PARADIS_BOT_AGENTS_FILE,
@@ -108,11 +108,11 @@ export class ParadisBotHomes {
 		if (owner === undefined) {
 			// 印の無い、中身のあるフォルダは他人のもの（消した Bot・利用者が置いたもの）として使わない
 			if ((await fs.readdir(home)).length > 0) {
-				throw new ParadisBotHomeError('not_owner', `The folder ${home} already has files and does not belong to this bot.`);
+				throw new ParadisBotHomeError('not_owner', `The folder ${basename(home)} already has files and does not belong to this bot.`);
 			}
 			await paradisWriteFileAtomic(ownerPath, paradisBotOwnerFile(bot), { rejectSymlink: true });
 		} else if (paradisParseBotOwnerFile(owner) !== bot.id) {
-			throw new ParadisBotHomeError('not_owner', `The folder ${home} belongs to another bot.`);
+			throw new ParadisBotHomeError('not_owner', `The folder ${basename(home)} belongs to another bot.`);
 		}
 		await fs.mkdir(join(home, PARADIS_BOT_MEMORY_FOLDER), { recursive: true });
 		await this.seed(join(home, PARADIS_BOT_SOUL_FILE), paradisBotSoulSeed(bot, soul));
@@ -146,7 +146,15 @@ export class ParadisBotHomes {
 			throw new ParadisBotHomeError('too_large', 'The text is too large to save here.');
 		}
 		const path = await this.resolve(bot, relative, true);
-		await paradisWriteFileAtomic(path, text, { rejectSymlink: true });
+		try {
+			await paradisWriteFileAtomic(path, text, { rejectSymlink: true });
+		} catch (error) {
+			// symlink の断りは、絶対パスを含めずにファイル名だけで返す（スマホや道具の結果へ届くため）
+			if ((error as { code?: unknown } | undefined)?.code === 'ELOOP') {
+				throw new ParadisBotHomeError('outside', `${basename(path)} is a symbolic link; Para Code does not write through it.`);
+			}
+			throw error;
+		}
 	}
 
 	/**
@@ -235,7 +243,8 @@ export class ParadisBotHomes {
 	/** 生成の範囲だけを書き直す。中身が変わらなければ書かない。 */
 	private async generate(path: string, body: string): Promise<void> {
 		if ((await fs.lstat(path).catch(() => undefined))?.isSymbolicLink()) {
-			throw new ParadisBotHomeError('outside', `${path} is a symbolic link; Para Code does not write through it.`);
+			// 断りの文はスマホや道具の結果へも届くので、絶対パスではなくファイル名だけを書く
+			throw new ParadisBotHomeError('outside', `${basename(path)} is a symbolic link; Para Code does not write through it.`);
 		}
 		const existing = await readText(path);
 		const next = paradisMergeBotGeneratedFile(existing, body);
