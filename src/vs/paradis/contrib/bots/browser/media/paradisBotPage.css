@@ -577,6 +577,12 @@ button.paradis-bot-page-link:hover {
 	color: var(--vscode-paradis-warning);
 }
 
+.paradis-bot-settings-elsewhere {
+	margin-top: var(--vscode-spacing-size120);
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-warning, var(--vscode-editorWarning-foreground));
+}
+
 .paradis-bot-settings-error {
 	font-size: var(--vscode-fontSize-label1);
 	color: var(--vscode-paradis-danger);

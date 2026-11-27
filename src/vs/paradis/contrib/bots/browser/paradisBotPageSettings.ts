@@ -31,7 +31,7 @@ import { paradisApplyBotChange, paradisBotChangeRequest } from '../common/paradi
 import { IParadisBotPatch, PARADIS_BOT_FACE_COLORS, PARADIS_BOT_FACE_SHAPES } from '../common/paradisBots.js';
 import { IParadisBotSummary, IParadisBotsService } from '../common/paradisBotsApi.js';
 import { paradisBotNameProblemMessage, paradisValidateBotName } from '../common/paradisBotsBandModel.js';
-import { IParadisBotSettingsDraft, PARADIS_BOT_HOME_FILES, paradisBotHomeFileConflict, paradisBotPermissionOptions, paradisBotSettingsAgents, paradisBotSettingsChange } from '../common/paradisBotSettingsModel.js';
+import { IParadisBotSettingsDraft, PARADIS_BOT_HOME_FILES, paradisBotHomeFileConflict, paradisBotPermissionOptions, ParadisBotSettingsBase, paradisBotSettingsAgents, paradisBotSettingsChange, ParadisBotSettingsField, paradisBotSettingsRebase } from '../common/paradisBotSettingsModel.js';
 import { paradisBotGithubStatusText } from '../common/paradisBotPageModel.js';
 import { paradisBotChangeDetail } from './paradisBotChangeDetail.js';
 import { renderParadisBotFace } from './paradisBotFace.js';
@@ -49,12 +49,20 @@ export interface IParadisBotPageSettingsServices {
 	readonly configurationService: IConfigurationService;
 }
 
+/** 作り直したときにフォーカスと選択範囲を戻す入力欄を、ページへ知らせる。 */
+export type ParadisBotSettingsFocusTracker = (element: HTMLInputElement | HTMLTextAreaElement, key: string) => void;
+
 /**
  * 1 つの Bot の設定とファイルのタブ。描き直し（台帳の知らせ）をまたいで、入力中の値と読み込んだファイルを持つ。
+ * 保存前の書きかけは台帳の値で上書きしない（手を付けていない欄だけ台帳に合わせ、書き換えた欄はほかで変わったと知らせる）。
  */
 export class ParadisBotSettingsPanel {
 
 	private draft: IParadisBotSettingsDraft | undefined;
+	/** 書きかけを始めたときの台帳の値。 */
+	private base: ParadisBotSettingsBase | undefined;
+	/** 書きかけの間に、ほかの場所で変わった欄（保存するまで知らせ続ける）。 */
+	private readonly changedElsewhere = new Set<ParadisBotSettingsField>();
 	/** 読み込んだ SOUL.md（役割の元）。読めるまで undefined。 */
 	private role: string | undefined;
 	private roleLoaded = false;
@@ -69,14 +77,40 @@ export class ParadisBotSettingsPanel {
 		private readonly rerender: () => void,
 	) { }
 
+	/**
+	 * タブに出す台帳の値の印。ページはこれが変わったときだけ描き直す（ほかの Bot の変化では描き直さない）。パネル自身の
+	 * 状態が変わったときは、作るときに渡された `rerender` で描き直させる。
+	 */
+	signature(tab: 'settings' | 'files', bot: IParadisBotSummary): string {
+		return JSON.stringify(tab === 'settings'
+			? [tab, bot.name, bot.agent, bot.permissionId, bot.paused, bot.pinned, bot.faceColor, bot.faceShape, bot.watchGithub, this.githubStatus(bot)]
+			: [tab, bot.folder]);
+	}
+
+	/** GitHub の見張りの様子の文（見張っていない Bot は undefined）。 */
+	private githubStatus(bot: IParadisBotSummary): ReturnType<typeof paradisBotGithubStatusText> {
+		return paradisBotGithubStatusText(bot, this.services.botsService.snapshot.github, at => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+	}
+
 	// ---- 設定 ---------------------------------------------------------------------------------
 
-	renderSettings(body: HTMLElement, bot: IParadisBotSummary, store: DisposableStore): void {
+	renderSettings(body: HTMLElement, bot: IParadisBotSummary, store: DisposableStore, track: ParadisBotSettingsFocusTracker): void {
 		if (!this.roleLoaded) {
 			this.roleLoaded = true;
 			void this.loadRole();
 		}
-		const draft = this.draft ??= { name: bot.name, agent: bot.agent, permissionId: bot.permissionId, role: this.role };
+		const current: ParadisBotSettingsBase = { name: bot.name, agent: bot.agent, permissionId: bot.permissionId };
+		if (this.draft === undefined || this.base === undefined) {
+			this.draft = { ...current, role: this.draft?.role ?? this.role };
+		} else {
+			const rebased = paradisBotSettingsRebase(this.base, this.draft, current);
+			this.draft = rebased.draft;
+			for (const field of rebased.changedElsewhere) {
+				this.changedElsewhere.add(field);
+			}
+		}
+		this.base = current;
+		const draft = this.draft;
 		const grid = DOM.append(body, $('.paradis-bot-settings'));
 		const row = (label: string, top?: boolean): HTMLElement => {
 			const key = DOM.append(grid, $('span.paradis-bot-settings-key'));
@@ -91,7 +125,7 @@ export class ParadisBotSettingsPanel {
 		const pin = store.add(new ParadisSwitch(row(localize('paradis.botPage.settings.pin', "ピン留め")), { checked: bot.pinned, ariaLabel: localize('paradis.botPage.settings.pin', "ピン留め") }));
 		store.add(pin.onDidChange(checked => void this.quick({ pinned: checked }, false)));
 		// GitHub の見張り（既定オフ）。オンにするときだけ、管理の道具 update_bot の watch_github と同じ本文で確かめる
-		const githubStatus = paradisBotGithubStatusText(bot, this.services.botsService.snapshot.github, at => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+		const githubStatus = this.githubStatus(bot);
 		// 様子の文が下に付くときは、見出しをスイッチの行（上端）に揃える
 		const githubValue = row(localize('paradis.botPage.settings.github', "GitHub を見張る"), githubStatus !== undefined);
 		githubValue.previousElementSibling?.classList.toggle('switch', githubStatus !== undefined);
@@ -131,6 +165,7 @@ export class ParadisBotSettingsPanel {
 		// 保存で当てるもの
 		const nameValue = row(localize('paradis.botPage.settings.name', "名前"));
 		const name = store.add(new ParadisInputField(nameValue, { ariaLabel: localize('paradis.botPage.settings.name', "名前"), value: draft.name }));
+		track(name.inputElement, 'settings-name');
 		const nameError = DOM.append(nameValue, $('.paradis-bot-settings-error'));
 		const agents = store.add(new ParadisSegmented<ParadisAgentKind>(row(localize('paradis.botPage.settings.agent', "エージェント")), {
 			items: paradisBotSettingsAgents(bot.agent).map(kind => ({ value: kind, label: AGENT_LABELS[kind] ?? kind })),
@@ -152,9 +187,16 @@ export class ParadisBotSettingsPanel {
 		role.spellcheck = false;
 		role.setAttribute('aria-label', localize('paradis.botPage.settings.role', "役割（SOUL.md）"));
 		role.value = draft.role ?? '';
+		track(role, 'settings-role');
 		role.disabled = draft.role === undefined;
 		role.placeholder = draft.role === undefined ? localize('paradis.botPage.settings.roleLoading', "読み込んでいます…") : '';
 
+		if (this.changedElsewhere.size > 0) {
+			const labels = [...this.changedElsewhere].map(field => field === 'name' ? localize('paradis.botPage.settings.name', "名前") : field === 'agent' ? localize('paradis.botPage.settings.agent', "エージェント") : localize('paradis.botPage.settings.permission', "権限"));
+			const elsewhere = DOM.append(body, $('.paradis-bot-settings-elsewhere'));
+			elsewhere.setAttribute('role', 'status');
+			elsewhere.textContent = localize('paradis.botPage.settings.changedElsewhere', "書きかけの間に、ほかの場所で{0}が変わりました。保存すると、この画面の値で上書きします。", labels.join('・'));
+		}
 		const foot = DOM.append(body, $('.paradis-bot-settings-foot'));
 		const note = DOM.append(foot, $('span.paradis-bot-settings-help'));
 		note.textContent = localize('paradis.botPage.settings.confirmNote', "エージェント・権限・役割を変えるときは、保存の前に確かめます。");
@@ -250,6 +292,8 @@ export class ParadisBotSettingsPanel {
 				this.files.set('SOUL.md', change.role);
 			}
 			this.draft = undefined;
+			this.base = undefined;
+			this.changedElsewhere.clear();
 		} finally {
 			this.saving = false;
 			this.rerender();
@@ -258,7 +302,7 @@ export class ParadisBotSettingsPanel {
 
 	// ---- ファイル -------------------------------------------------------------------------------
 
-	renderFiles(body: HTMLElement, bot: IParadisBotSummary, store: DisposableStore): void {
+	renderFiles(body: HTMLElement, bot: IParadisBotSummary, store: DisposableStore, track: ParadisBotSettingsFocusTracker): void {
 		DOM.append(body, $('.paradis-bot-page-section')).textContent = localize('paradis.botPage.files.folder', "専用フォルダ ~/.para-code/bots/{0}/", bot.folder);
 		const list = DOM.append(body, $('.paradis-bot-page-list'));
 		for (const entry of PARADIS_BOT_HOME_FILES) {
@@ -292,6 +336,7 @@ export class ParadisBotSettingsPanel {
 		editor.spellcheck = false;
 		editor.setAttribute('aria-label', entry.path);
 		editor.value = this.fileEdits.get(entry.path) ?? text ?? '';
+		track(editor, `files-${entry.path}`);
 		const foot = DOM.append(body, $('.paradis-bot-settings-foot'));
 		const note = DOM.append(foot, $('span.paradis-bot-settings-help'));
 		note.textContent = localize('paradis.botPage.files.memoryHint', "Bot も書き足します。保存の前に読み直し、開いた後に書き換わっていたら上書きしません。");
