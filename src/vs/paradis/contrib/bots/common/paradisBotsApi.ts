@@ -71,6 +71,11 @@ export interface IParadisBotSummary extends Omit<IParadisBot, 'preserved'> {
 	readonly halt?: ParadisBotPaneHalt;
 	/** 最後に動いた時刻（項目の動き・ペインのエージェントの動き・Bot の作成のうち一番新しいもの）。 */
 	readonly lastActivityAt: number;
+	/**
+	 * 眠っている（`activity` が `stopped` で、続けられる前の会話がある）。話しかけたら同じ会話を続けて起こす。
+	 * 再起動の後・何もしない 30 分で止めた後・止めた後に付く。
+	 */
+	readonly sleeping?: true;
 }
 
 export interface IParadisBotsSnapshot {
@@ -105,7 +110,7 @@ export function paradisBotActivity(bot: Pick<IParadisBot, 'paused'>, panes: read
 	return panes.some(pane => pane.working) ? 'patrolling' : 'idle';
 }
 
-export function paradisBotSummary(bot: IParadisBot, items: IParadisBotItemsState, panes: readonly IParadisBotPaneState[], now: number, openSuggestions = 0): IParadisBotSummary {
+export function paradisBotSummary(bot: IParadisBot, items: IParadisBotItemsState, panes: readonly IParadisBotPaneState[], now: number, openSuggestions = 0, resumable = false): IParadisBotSummary {
 	const counts = paradisBotItemCounts(items, bot.id, now);
 	// 読んだ値（知らない欄）は画面へ送らず、読み取り専用の印だけにする
 	const { preserved, ...known } = bot;
@@ -119,6 +124,7 @@ export function paradisBotSummary(bot: IParadisBot, items: IParadisBotItemsState
 		openSuggestions,
 		activity,
 		...(halt !== undefined ? { halt } : {}),
+		...(activity === 'stopped' && !bot.paused && resumable ? { sleeping: true } : {}),
 		lastActivityAt: Math.max(bot.createdAt, counts.lastActivityAt, ...panes.map(pane => pane.lastSeenAt)),
 	};
 }
@@ -146,6 +152,8 @@ export interface IParadisBotLaunch {
 	 * 合わせて引用する（設定ファイルのパスが空白を含みうるため。paradisBotPatrolLaunchArgs）。
 	 */
 	readonly extraFlags?: string | readonly string[];
+	/** 眠った会話を続けて起こす（`extraFlags` に続ける引数が入っている）。 */
+	readonly resumed?: true;
 }
 
 /** Bot を止める依頼。トークンの値は出さず、ハッシュで渡す。 */

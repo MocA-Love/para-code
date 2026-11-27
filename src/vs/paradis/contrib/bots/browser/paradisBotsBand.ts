@@ -583,6 +583,10 @@ export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBan
 				this.persist();
 			}
 			this.render();
+			// 新しい Bot は自分から最初に話す（作った直後に起こして、人格メモに沿って挨拶させる。報告書の D1 (a)）
+			if (CommandsRegistry.getCommand(PARADIS_BOTS_OPEN_COMMAND)) {
+				void this.commandService.executeCommand(PARADIS_BOTS_OPEN_COMMAND, botId, { greet: true });
+			}
 		}, openTemplates);
 	}
 }

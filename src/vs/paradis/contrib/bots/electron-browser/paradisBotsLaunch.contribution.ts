@@ -31,7 +31,10 @@ import { INotificationService } from '../../../../platform/notification/common/n
 import { ICommandDetectionCapability, TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
 import { TerminalExitReason } from '../../../../platform/terminal/common/terminal.js';
 import { registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { ITerminalGroupService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { TerminalEditorInput } from '../../../../workbench/contrib/terminal/browser/terminalEditorInput.js';
+import { EditorCloseContext } from '../../../../workbench/common/editor.js';
+import { IEditorGroup, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { ILifecycleService, ShutdownReason } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
@@ -47,6 +50,9 @@ import { isEqualOrParent } from '../../../../base/common/extpath.js';
 import { isLinux } from '../../../../base/common/platform.js';
 import { paradisFindBotTerminalInstance, paradisLaunchBotTerminal, paradisNameBotTab } from './paradisBotTerminalLaunch.js';
 import { IParadisBotChangeRequest, paradisApplyBotChange } from '../common/paradisBotManageTools.js';
+import { PARADIS_BOT_GREETING_PROMPT, PARADIS_BOT_INBOX_WAKE_PROMPT } from '../common/paradisBotTools.js';
+import { paradisHiddenBotPanes, paradisIsBotPaneHidden, paradisMarkBotPaneHidden, paradisShowHiddenBotPane } from '../browser/paradisBotPaneHide.js';
+import { paradisAddTerminalHiddenOnClose, paradisIsTerminalHiddenOnClose } from '../../workspaceSwitch/browser/paradisTerminalHideOnClose.js';
 import { IParadisBotRevealRequest, IParadisBotsService, paradisIsLeftoverBotTerminal, IParadisBotStopRequest, PARADIS_BOTS_ENABLED_SETTING, PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
 
 const findInstance = paradisFindBotTerminalInstance;
@@ -59,11 +65,40 @@ export type ParadisOpenBotResult =
 	| { readonly ok: true; readonly state: 'running' | 'started'; readonly focused: boolean }
 	| { readonly ok: false; readonly error: string };
 
+/** 終わったエージェントのペインを閉じてから、結び付けが外れるのを待つ上限。 */
+const RELEASE_WAIT_MS = 3_000;
+
 /**
- * Bot を開く。このウィンドウにペインがあればそれを使い、無ければ起動する。
- * @param fromAgent エージェントの道具（start_bot）から。前に出さず、利用者の入力を奪わない裏のタブで起動する
+ * そのペインのスペースへ切り替えて前に出す。閉じて裏に回したペイン（{@link paradisShowHiddenBotPane}）は、切り替えてから
+ * エディタのタブへ戻す（今のスペースのタブとして紛れ込ませない）。
  */
-export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, fromAgent = false): Promise<ParadisOpenBotResult> {
+async function paradisRevealBotPane(
+	services: { readonly hostService: IHostService; readonly terminalService: ITerminalService; readonly switchService: IParadisWorkspaceSwitchService },
+	pane: { readonly instanceId: number; readonly instance: ITerminalInstance; readonly stateKey: string | undefined },
+): Promise<void> {
+	if (paradisIsBotPaneHidden(pane.instanceId)) {
+		if (pane.stateKey !== undefined && pane.stateKey !== services.switchService.activeStateKey) {
+			await services.switchService.switchToStateKey(pane.stateKey);
+		}
+		await paradisShowHiddenBotPane(services.terminalService, pane.instance);
+	}
+	await paradisRevealNotifiedPane({ hostService: services.hostService, terminalService: services.terminalService, workspaceSwitchService: services.switchService }, pane.stateKey, pane.instanceId);
+}
+
+/** 開くときに渡せるもの。 */
+export interface IParadisOpenBotOptions {
+	/** 作った直後の Bot。起こして、最初の挨拶をさせる（眠った会話があれば渡さない）。 */
+	readonly greet?: boolean;
+	/** ほかの Bot からの伝言で起こす。受け箱を読ませる。 */
+	readonly inbox?: boolean;
+}
+
+/**
+ * Bot を開く。このウィンドウにペインがあればそれを使い、無ければ起動する（眠った会話があれば、その続きとして起こす）。
+ * ペインがあってもエージェントが終わっている（見つからない・終わった）なら、そのペインを閉じて起こし直す。
+ * @param fromAgent エージェントの道具（start_bot）と、ほかの Bot からの伝言から。前に出さず、利用者の入力を奪わない裏のタブで起動する
+ */
+export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, fromAgent = false, options: IParadisOpenBotOptions = {}): Promise<ParadisOpenBotResult> {
 	const botsService = accessor.get(IParadisBotsService);
 	const paneTokenService = accessor.get(IParadisPaneTokenService);
 	const terminalService = accessor.get(ITerminalService);
@@ -85,10 +120,16 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 			findInstance: instanceId => findInstance(terminalService, terminalGroupService, instanceId),
 			stateKeyOf: instanceId => terminalScopeService.getStateKeyForInstance(instanceId),
 		}, await botsService.paneHashesOf(botId, 'chat'));
-		if (existing !== undefined) {
+		const summary = botsService.snapshot.bots.find(bot => bot.id === botId);
+		const ended = summary?.activity === 'idle' && (summary.halt?.kind === 'exited' || summary.halt?.kind === 'notFound');
+		if (existing !== undefined && ended) {
+			// エージェントが終わってシェルだけが残っている。話しかけられたので、そのペインを閉じて起こし直す
+			existing.instance.dispose(TerminalExitReason.User);
+			await paradisWaitForBotChatRelease(botsService, botId);
+		} else if (existing !== undefined) {
 			if (!fromAgent) {
 				// そのペインのスペースへ切り替えてから前に出す（通知のクリックと同じ動き）
-				await paradisRevealNotifiedPane({ hostService, terminalService, workspaceSwitchService: switchService }, existing.stateKey, existing.instanceId);
+				await paradisRevealBotPane({ hostService, terminalService, switchService }, existing);
 			}
 			return { ok: true, state: 'running', focused: !fromAgent };
 		}
@@ -112,7 +153,13 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 		}
 		const stateKey = switchService.activeStateKey;
 		// 裏のタブで開くにはスペースが要る（スペースを使っていないウィンドウでは、今のウィンドウに開く）
-		const outcome = await instantiationService.invokeFunction(paradisLaunchBotTerminal, launch.value, { stateKey, background: fromAgent });
+		// 最初の指示: 作った直後なら挨拶、伝言で起こしたなら受け箱。眠った会話を続けるときは挨拶しない
+		const prompt = options.inbox === true ? PARADIS_BOT_INBOX_WAKE_PROMPT : options.greet === true && launch.value.resumed !== true ? PARADIS_BOT_GREETING_PROMPT : undefined;
+		const outcome = await instantiationService.invokeFunction(paradisLaunchBotTerminal, launch.value, { stateKey, background: fromAgent, ...(prompt !== undefined ? { prompt } : {}) });
+		if (outcome.ok) {
+			// 閉じても止めず隠すペインとして、すぐ控える（Bot の様子の見直しを待つ間に閉じられても確認を出さない）
+			paradisAddTerminalHiddenOnClose(outcome.terminal.instanceId);
+		}
 		if (!outcome.ok) {
 			return { ok: false, error: outcome.reason === 'refused' ? 'Para Code could not connect the terminal to the bot. Try again.' : 'Para Code could not start the terminal for the bot.' };
 		}
@@ -122,16 +169,29 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 	}
 }
 
+/** 閉じたペインの結び付けが shared process で外れる（TerminalExit が届く）のを待つ。 */
+async function paradisWaitForBotChatRelease(botsService: IParadisBotsService, botId: string): Promise<void> {
+	const deadline = Date.now() + RELEASE_WAIT_MS;
+	while (Date.now() < deadline) {
+		const summary = botsService.snapshot.bots.find(bot => bot.id === botId);
+		if (summary === undefined || summary.activity === 'stopped' || (await botsService.paneHashesOf(botId, 'chat')).length === 0) {
+			return;
+		}
+		await new Promise(resolve => setTimeout(resolve, 150));
+	}
+}
+
 registerAction2(class extends Action2 {
 	constructor() {
 		super({ id: PARADIS_BOTS_OPEN_COMMAND, title: localize2('paradisBots.open', "Open Bot"), f1: false });
 	}
-	async run(accessor: ServicesAccessor, botId: unknown): Promise<void> {
+	async run(accessor: ServicesAccessor, botId: unknown, options?: unknown): Promise<void> {
 		if (typeof botId !== 'string' || botId.length === 0) {
 			return;
 		}
 		const notificationService = accessor.get(INotificationService);
-		const result = await paradisOpenBot(accessor, botId);
+		const greet = typeof options === 'object' && options !== null && (options as IParadisOpenBotOptions).greet === true;
+		const result = await paradisOpenBot(accessor, botId, false, greet ? { greet } : {});
 		if (!result.ok && result.error === 'already_open') {
 			// allow-any-unicode-next-line
 			notificationService.info(localize('paradisBots.alreadyOpen', "この Bot は別のウィンドウで開いています。そのウィンドウに出しました。"));
@@ -178,15 +238,16 @@ class ParadisBotsWindowChannel implements IServerChannel {
 		const callerToken = typeof args[0] === 'string' ? args[0] : '';
 		const botId = typeof args[1] === 'string' ? args[1] : '';
 		switch (command) {
-			case 'start': return await this.start(botId) as T;
+			case 'start': return await this.start(botId, args[2] === 'inbox') as T;
 			case 'confirmRemove': return this.confirmRemove(callerToken, botId, typeof args[2] === 'string' ? args[2] : '') as T;
 			case 'confirmChange': return this.confirmChange(callerToken, args[1]) as T;
 		}
 		throw new Error(`unknown command ${command}`);
 	}
 
-	private async start(botId: string): Promise<ParadisBotsWindowResult> {
-		const result = await this.instantiationService.invokeFunction(paradisOpenBot, botId, true);
+	/** @param inbox ほかの Bot からの伝言で起こす（受け箱を読ませる）。 */
+	private async start(botId: string, inbox = false): Promise<ParadisBotsWindowResult> {
+		const result = await this.instantiationService.invokeFunction(paradisOpenBot, botId, true, inbox ? { inbox } : {});
 		if (!result.ok) {
 			const error = result.error === 'remote' ? 'This Para Code window is connected over SSH, and a bot runs on this computer. Ask the user to open the bot from a local window.'
 				: result.error === 'already_open' ? 'This bot is already open in another Para Code window. A bot has one chat at a time.'
@@ -288,7 +349,10 @@ class ParadisBotsWindowWorker extends Disposable {
 				this.watchCommands(instances);
 			},
 			error => this.logService.warn('[paradisBots] finding the bot terminals failed', error));
+		this.noteChatPanes().catch(error => this.logService.warn('[paradisBots] finding the bot conversation terminals failed', error));
 	}, 500));
+	/** エディタグループごとの、閉じる直前の見張り。 */
+	private readonly groupWatchers = this._register(new DisposableMap<number>());
 	private readonly nameScheduler = this._register(new RunOnceScheduler(() => {
 		this.nameTabs().catch(error => this.logService.warn('[paradisBots] naming the bot tabs failed', error));
 	}, 500));
@@ -302,9 +366,16 @@ class ParadisBotsWindowWorker extends Disposable {
 		@IParadisWorkspaceSwitchService private readonly switchService: IParadisWorkspaceSwitchService,
 		@IHostService private readonly hostService: IHostService,
 		@ILogService private readonly logService: ILogService,
-		@ILifecycleService lifecycleService: ILifecycleService,
+		@ILifecycleService private readonly lifecycleService: ILifecycleService,
+		@IEditorGroupsService editorGroupsService: IEditorGroupsService,
 	) {
 		super();
+		// Bot の会話のタブを閉じても止めず、裏に回す（報告書の D4 (a)）
+		for (const group of editorGroupsService.groups) {
+			this.watchGroup(group);
+		}
+		this._register(editorGroupsService.onDidAddGroup(group => this.watchGroup(group)));
+		this._register(editorGroupsService.onDidRemoveGroup(group => this.groupWatchers.deleteAndDispose(group.id)));
 		// Para Code を終了するときに、Bot のペイン（会話と見回り）を閉じる。閉じないと次の起動でターミナルの復元が
 		// 帯の無い普通のタブ（「zsh bot」）として戻し、そのタブは Bot のペインとして見つからない（推測: 復元でペイントークンが
 		// 変わる。観察で保存した結び付けは残っていたのに合わなかった）ので、Bot を開くと別のタブが増えていた。会話の続きはターミナルの復元ではなく Bot のページから起動し直して戻す。
@@ -322,6 +393,12 @@ class ParadisBotsWindowWorker extends Disposable {
 		this._register(lifecycleService.onBeforeShutdown(event => {
 			if (paradisBotClosesPanesOnShutdown(event.reason)) {
 				this.closeBotPanes();
+			} else {
+				// 裏に回したペインは、再読み込みの後に繋ぎ直すエディタのタブが無い。エージェントが残ると次に開いたときに同じ会話を
+				// 2 つ続けてしまうので、閉じる（眠った会話として残り、話しかければ続きから起きる）
+				for (const instance of paradisHiddenBotPanes()) {
+					instance.dispose(TerminalExitReason.User);
+				}
 			}
 		}));
 		this._register(botsService.onDidRequestStop(request => {
@@ -416,6 +493,43 @@ class ParadisBotsWindowWorker extends Disposable {
 		}
 	}
 
+	/** このウィンドウの Bot の会話のペインを、閉じても隠すペインとして控える。 */
+	private async noteChatPanes(): Promise<void> {
+		for (const bot of this.botsService.snapshot.bots) {
+			for (const instanceId of await paradisBotInstancesInWindow(this.paneTokenService, await this.botsService.paneHashesOf(bot.id, 'chat'))) {
+				paradisAddTerminalHiddenOnClose(instanceId);
+			}
+		}
+	}
+
+	private watchGroup(group: IEditorGroup): void {
+		if (this.groupWatchers.has(group.id)) {
+			return;
+		}
+		this.groupWatchers.set(group.id, group.onWillCloseEditor(event => this.onWillCloseEditor(event.editor, event.context)));
+	}
+
+	/**
+	 * Bot の会話のタブを閉じる直前に、入力からターミナルを外す（入力を dispose してもターミナルは終わらない）。閉じ終えてから
+	 * upstream の裏の置き場所へ移す。スペースの切り替え（MOVE）・置き換え・終了の途中は触らない。
+	 */
+	private onWillCloseEditor(editor: unknown, context: EditorCloseContext): void {
+		if (!(editor instanceof TerminalEditorInput) || context !== EditorCloseContext.UNKNOWN || this.lifecycleService.willShutdown || this.switchService.isSwitching) {
+			return;
+		}
+		const instance = editor.terminalInstance;
+		if (instance === undefined || instance.isDisposed || !paradisIsTerminalHiddenOnClose(instance.instanceId)) {
+			return;
+		}
+		editor.detachInstance();
+		setTimeout(() => {
+			if (!instance.isDisposed && !this._store.isDisposed) {
+				this.terminalService.moveToBackground(instance);
+				paradisMarkBotPaneHidden(instance);
+			}
+		}, 0);
+	}
+
 	private closeBotPanes(): void {
 		for (const instanceId of this.botInstances) {
 			const instance = findInstance(this.terminalService, this.terminalGroupService, instanceId);
@@ -452,7 +566,7 @@ class ParadisBotsWindowWorker extends Disposable {
 		if (existing !== undefined) {
 			// 持っていると先に応える（応えるウィンドウが無ければ、shared process はその結び付けを外して起動へ進める）
 			await this.botsService.ackReveal(request.revealId);
-			await paradisRevealNotifiedPane({ hostService: this.hostService, terminalService: this.terminalService, workspaceSwitchService: this.switchService }, existing.stateKey, existing.instanceId);
+			await paradisRevealBotPane({ hostService: this.hostService, terminalService: this.terminalService, switchService: this.switchService }, existing);
 		}
 	}
 

@@ -32,7 +32,11 @@ import {
 	paradisBotMessageTarget,
 	paradisParseBotMessageArgs,
 } from '../common/paradisBotMessages.js';
+import { PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
 import { ParadisBotsService } from './paradisBotsService.js';
+
+/** 宛先を起こすのを待つ上限（返事は待たないので、ウィンドウの側の打ち切りだけに効く）。 */
+const WAKE_TIMEOUT_MS = 60_000;
 
 let groupsPort: IParadisBotGroupsPort | undefined;
 
@@ -162,12 +166,33 @@ export class ParadisBotMessageToolProvider implements IParadisMcpToolProvider {
 		if (!recorded.ok) {
 			return toolError(recorded.message ?? 'Para Code could not record this message in the group.');
 		}
+		// 宛先の会話が動いていなければ（起動していない・眠っている）、裏のタブで起こして受け箱を読ませる（報告書の D1 (a)）。
+		// 起動を待つと道具の返事が遅れるので待たない。起こせなくても伝言は受け箱に残る
+		const woke = this.wakeRecipient(paneToken, recipient.id, context);
 		return toolJson({
 			to: recipient.name,
 			sent: kind === 'asked' ? 'question' : 'message',
-			inbox: `Put in the inbox of "${recipient.name}". It reads it the next time it checks its inbox.`,
+			inbox: woke
+				? `Put in the inbox of "${recipient.name}". It was not running, so Para Code is starting it to read the message.`
+				: `Put in the inbox of "${recipient.name}". It reads it the next time it checks its inbox.`,
 			...(kind === 'asked' ? { note: `The answer comes to your inbox as a message from "${recipient.name}"; check bot_inbox at your next break.` } : {}),
 		});
+	}
+
+	/** 宛先の会話のペインが無ければ、送り手のウィンドウに裏で起こしてもらう（受け箱を読ませる）。起こしにいったら true。 */
+	private wakeRecipient(paneToken: string, recipientId: string, context: IParadisMcpToolCallContext): boolean {
+		if (this.service.getSnapshot().bots.find(summary => summary.id === recipientId)?.activity !== 'stopped') {
+			return false;
+		}
+		context.callOwningWindow<ParadisBotsWindowResult>({
+			channelName: PARADIS_BOTS_WINDOW_CHANNEL,
+			method: 'start',
+			args: [paneToken, recipientId, 'inbox'],
+			failureLabel: 'bot_tell',
+			failureMessage: 'Para Code could not start the bot.',
+			timeoutMs: WAKE_TIMEOUT_MS,
+		}).catch(() => undefined);
+		return true;
 	}
 
 	/** 受け箱を読む（古い順に {@link PARADIS_BOT_MESSAGE_LIMITS.read} 通まで）。`markRead` なら読んだ分を既読にする。 */
