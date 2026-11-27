@@ -49,7 +49,7 @@ import { paradisBotAskId } from '../common/paradisBotAsk.js';
 import { IParadisBotItem, IParadisBotItemLink, paradisBotItemWaitsForOwner, paradisIsBotItemClosed, paradisIsBotItemLocked, paradisIsBotItemSnoozed } from '../common/paradisBotItems.js';
 import { IParadisBotSummary, IParadisBotsService, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
 import { paradisBotFace, paradisBotStatusLine } from '../common/paradisBotsBandModel.js';
-import { paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel, PARADIS_BOT_PAGE_TABS, ParadisBotPageTab } from '../common/paradisBotPageModel.js';
+import { paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel, PARADIS_BOT_PAGE_TABS, ParadisBotPageTab, paradisBotSuggestionText } from '../common/paradisBotPageModel.js';
 import { ParadisBotSettingsPanel } from './paradisBotPageSettings.js';
 import { renderParadisBotFace } from './paradisBotFace.js';
 import type { IParadisBotSuggestion } from '../common/paradisBotSuggestions.js';
@@ -542,6 +542,8 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 	 * ターミナルの入力へ貼り付けとして入れる（改行のある文も途中で送られない）。
 	 */
 	private async startSuggestion(suggestion: IParadisBotSuggestion): Promise<void> {
+		// 押したときのペインを控える（文を取る間にタブが別のペインへ替わったら、そのペインには入れない）
+		const instanceId = this.instanceId;
 		// 文を取るだけ（まだ「始めた」にはならない）
 		const result = await this.botsService.startSuggestion(suggestion.id);
 		if (!result.ok) {
@@ -549,14 +551,20 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 			void this.loadItems();
 			return;
 		}
+		if (instanceId === undefined || this.instanceId !== instanceId || this._store.isDisposed) {
+			void this.loadItems();
+			return;
+		}
 		// 先に会話のタブへ戻す（チャット表示が見えていれば、入れた下書きへフォーカスが移る）
 		this.setTab('chat');
-		let inserted = this.instanceId !== undefined && this.agentChatService.insertDraft(this.instanceId, result.value.request) !== false;
-		if (!inserted && this.instanceId !== undefined) {
-			const instance = this.terminalService.getInstanceFromId(this.instanceId);
+		let inserted = this.agentChatService.insertDraft(instanceId, paradisBotSuggestionText(result.value.request, true)) !== false;
+		if (!inserted) {
+			const instance = this.terminalService.getInstanceFromId(instanceId);
 			if (instance !== undefined && !instance.isDisposed) {
+				// bracketed paste のモードでなければ（素のシェル・起動途中の TUI）改行が Enter になるので、1 行にして貼る
+				const multiline = instance.xterm?.raw.modes.bracketedPasteMode === true;
 				try {
-					await instance.sendText(result.value.request, false, true);
+					await instance.sendText(paradisBotSuggestionText(result.value.request, multiline), false, true);
 					inserted = true;
 				} catch {
 					// 貼り付けられなかった。提案は一覧に残す
