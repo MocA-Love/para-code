@@ -95,6 +95,25 @@ export function paradisIsLeftoverBotTerminal(cwd: string | undefined, roots: rea
 	return !bound && cwd !== undefined && cwd.length > 0 && roots.some(root => root.length > 0 && isEqualOrParent(cwd, root));
 }
 
+/**
+ * Bot のペインのコマンドの見張りを付けたときに、今の様子として知らせるもの（`finished` が false なら実行中、true なら最後の
+ * コマンドの終わり）。知らせるものが無ければ undefined。
+ *
+ * 実行中かは `executingCommand`（コマンドの文字列）で見る。シェル統合は、プロンプトに戻った後も中身が空の「実行中」の
+ * コマンド（`executingCommandObject`）を持ち続けることがあり（実機の zsh で、`claude` が見つからずに終わった後に見た）、
+ * それを実行中と読むと、終わったコマンドの終了コードを捨てて「待機中」のままになる。
+ * つなぎ直したペイン（`reattached`）は前のコマンドだけが戻ることがあるので、終わりは知らせない。
+ */
+export function paradisBotCommandStateOnAttach(state: { readonly executingCommand: string | undefined; readonly lastExitCode: number | undefined; readonly hasLast: boolean; readonly reattached: boolean }): { readonly exitCode: number | undefined; readonly finished: boolean } | undefined {
+	if (state.executingCommand !== undefined && state.executingCommand.trim().length > 0) {
+		return { exitCode: undefined, finished: false };
+	}
+	if (state.hasLast && !state.reattached) {
+		return { exitCode: state.lastExitCode, finished: true };
+	}
+	return undefined;
+}
+
 export function paradisBotActivity(bot: Pick<IParadisBot, 'paused'>, panes: readonly IParadisBotPaneState[]): ParadisBotActivity {
 	if (bot.paused || panes.length === 0) {
 		return 'stopped';

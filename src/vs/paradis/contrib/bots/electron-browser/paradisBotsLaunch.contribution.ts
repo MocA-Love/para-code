@@ -47,7 +47,7 @@ import { isEqualOrParent } from '../../../../base/common/extpath.js';
 import { isLinux } from '../../../../base/common/platform.js';
 import { paradisFindBotTerminalInstance, paradisLaunchBotTerminal, paradisNameBotTab } from './paradisBotTerminalLaunch.js';
 import { IParadisBotChangeRequest, paradisApplyBotChange } from '../common/paradisBotManageTools.js';
-import { IParadisBotRevealRequest, IParadisBotsService, paradisIsLeftoverBotTerminal, IParadisBotStopRequest, PARADIS_BOTS_ENABLED_SETTING, PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
+import { IParadisBotRevealRequest, IParadisBotsService, paradisBotCommandStateOnAttach, paradisIsLeftoverBotTerminal, IParadisBotStopRequest, PARADIS_BOTS_ENABLED_SETTING, PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
 
 const findInstance = paradisFindBotTerminalInstance;
 
@@ -397,13 +397,21 @@ class ParadisBotsWindowWorker extends Disposable {
 			const watch = (detection: ICommandDetectionCapability) => {
 				// 見張る前に起動のコマンドがもう終わっていること（コマンドが見つからないときはすぐ終わる）があるので、今の様子を先に知らせる
 				const last = detection.commands.at(-1);
-				if (detection.executingCommandObject !== undefined) {
-					note(undefined, false);
-				} else if (last !== undefined && instance.shellLaunchConfig.attachPersistentProcess === undefined) {
-					// つなぎ直したペイン（窓の再読み込み）は、前のコマンドだけが戻って実行中のコマンドが戻らないことがあるので知らせない
-					note(last.exitCode, true);
+				const now = paradisBotCommandStateOnAttach({
+					executingCommand: detection.executingCommand,
+					lastExitCode: last?.exitCode,
+					hasLast: last !== undefined,
+					reattached: instance.shellLaunchConfig.attachPersistentProcess !== undefined,
+				});
+				if (now !== undefined) {
+					note(now.exitCode, now.finished);
 				}
-				store.add(detection.onCommandExecuted(() => note(undefined, false)));
+				// 中身の空のコマンド（プロンプトで Enter だけ押したもの）では、終わった様子を外さない
+				store.add(detection.onCommandExecuted(command => {
+					if (command.command.trim().length > 0) {
+						note(undefined, false);
+					}
+				}));
 				store.add(detection.onCommandFinished(command => note(command.exitCode, true)));
 			};
 			const detection = instance.capabilities.get(TerminalCapability.CommandDetection);
