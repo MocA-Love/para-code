@@ -53,6 +53,9 @@ import './contrib/dictation/browser/paradisDictationAvailability.contribution.js
 import './contrib/dictation/electron-browser/paradisLocalTranscriptionService.js';
 import './contrib/notificationInbox/electron-browser/paradisNotificationInbox.contribution.js';
 import './contrib/humanAsk/electron-browser/paradisHumanAskService.js';
+import './contrib/bots/electron-browser/paradisBotsService.js';
+import './contrib/bots/electron-browser/paradisBotsLaunch.contribution.js';
+import './contrib/humanAsk/electron-browser/paradisHumanAskPaneAnswer.contribution.js';
 import './contrib/menuBar/browser/paradisMenuBarSettings.contribution.js';
 import './contrib/menuBar/electron-browser/paradisMenuBarFeed.contribution.js';
 import './contrib/defaultExtensions/electron-browser/paradisDefaultExtensions.contribution.js';

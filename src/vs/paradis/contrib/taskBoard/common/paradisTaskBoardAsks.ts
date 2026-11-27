@@ -51,6 +51,8 @@ export interface ITaskBoardAskAction {
 	readonly id: string;
 	readonly label: string;
 	readonly allowText?: boolean;
+	/** 押す前の確認（ボードの画面がそのボタンで出す確認と同じ文）。受信箱はこれを通してから送る。 */
+	readonly confirm?: { readonly title: string; readonly body?: string; readonly ok: string };
 }
 
 /** ボードが接続口へ知らせる 1 件。`terminal` は、その問いが出ているターミナル（接続口がペインの鍵と窓に引き直す）。 */
@@ -126,6 +128,23 @@ function usableLabels(options: readonly { readonly label: string }[], limit: num
 	return options.length <= limit && options.every(option => option.label.trim().length > 0 && option.label.length <= LABEL_LIMIT);
 }
 
+// ボードの画面（app/taskboard/src/actions.tsx の move・SendBackDialog）が同じボタンで出す確認と同じ文。
+// 受信箱から押すときもこれを通す（台帳の側からはボードの確認のダイアログが出ないため）。
+
+/** 「完了扱いにする」: 次の工程へ進める（最後の工程なら完了にする）。 */
+function completeConfirm(task: ITaskBoardTask, flow: ITaskBoardFlow): NonNullable<ITaskBoardAskAction['confirm']> {
+	const index = flow.steps.findIndex(step => step.id === task.step);
+	if (flow.steps[index + 1] === undefined) {
+		return { title: `${task.issue ? `#${task.issue.number}` : 'このタスク'} を完了にしますか`, body: 'PR はマージしません。ボード上で完了として扱い、作業場所を返します。', ok: '完了にする' };
+	}
+	return { title: `「${stepOf(task, flow)?.name ?? task.step}」を終わったことにして進めますか`.slice(0, TITLE_LIMIT), body: 'エージェントからの完了の報告を待たずに、次の工程を始めます。', ok: '進める' };
+}
+
+/** 「〜へ戻す」: 差し戻す。 */
+function sendBackConfirm(back: ITaskBoardStep): NonNullable<ITaskBoardAskAction['confirm']> {
+	return { title: '差し戻す', body: `${back.name}からやり直します`.slice(0, LABEL_LIMIT), ok: '差し戻す' };
+}
+
 /**
  * タスクの今の「人の出番」を台帳の 1 件にする。出番でなければ undefined。
  *
@@ -156,12 +175,16 @@ export function taskBoardAskOf(task: ITaskBoardTask, flow: ITaskBoardFlow, ledge
 		const preface = taskBoardActivityText(task, flow);
 		const common = { ...base, id, ...(preface ? { preface } : {}), questions: [], askedAt: task.stepSince };
 		if (task.status === 'approval') {
-			ask = { ...common, kind: 'approval', actions: step?.kind === 'human' ? [{ id: ACTION_APPROVE, label: '承認して次へ', allowText: true }, { id: ACTION_SEND_BACK, label: '差し戻す', allowText: true }] : [] };
+			// 差し戻す先はエンジンの既定と同じ（工程の onFail、無ければ手前のエージェントの工程）。先が無ければエンジンが断るので「差し戻す」を出さない（ボードの画面も戻す先が無いと差し戻せない）
+			const index = flow.steps.findIndex(candidate => candidate.id === task.step);
+			const backId = step?.onFail ?? [...flow.steps.slice(0, Math.max(0, index))].reverse().find(candidate => candidate.kind === 'agent')?.id;
+			const back = backId !== undefined ? flow.steps.find(candidate => candidate.id === backId) : undefined;
+			ask = { ...common, kind: 'approval', actions: step?.kind === 'human' ? [{ id: ACTION_APPROVE, label: '承認して次へ', allowText: true }, ...(back ? [{ id: ACTION_SEND_BACK, label: '差し戻す', allowText: true, confirm: sendBackConfirm(back) }] : [])] : [] };
 		} else if (task.status === 'failed') {
 			const back = step?.onFail !== undefined ? flow.steps.find(candidate => candidate.id === step.onFail) : undefined;
-			ask = { ...common, kind: 'stalled', actions: step ? [...(back ? [{ id: ACTION_SEND_BACK, label: `${back.name}へ戻す`.slice(0, LABEL_LIMIT), allowText: true }] : []), { id: ACTION_RETRY, label: 'やり直す' }] : [] };
+			ask = { ...common, kind: 'stalled', actions: step ? [...(back ? [{ id: ACTION_SEND_BACK, label: `${back.name}へ戻す`.slice(0, LABEL_LIMIT), allowText: true, confirm: sendBackConfirm(back) }] : []), { id: ACTION_RETRY, label: 'やり直す' }] : [] };
 		} else if (task.status === 'stalled') {
-			ask = { ...common, kind: 'stalled', actions: step ? [task.error === 'restarted' ? { id: ACTION_RETRY, label: '工程をやり直す' } : { id: ACTION_NUDGE, label: '報告を促す' }, { id: ACTION_COMPLETE, label: '完了扱いにする' }] : [] };
+			ask = { ...common, kind: 'stalled', actions: step ? [task.error === 'restarted' ? { id: ACTION_RETRY, label: '工程をやり直す' } : { id: ACTION_NUDGE, label: '報告を促す' }, { id: ACTION_COMPLETE, label: '完了扱いにする', confirm: completeConfirm(task, flow) }] : [] };
 		} else {
 			// マージは GitHub で行うので、ここからは答えられない（タスクを開くだけ）
 			ask = { ...common, kind: 'approval', actions: [] };

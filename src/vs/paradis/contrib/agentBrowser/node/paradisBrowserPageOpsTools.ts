@@ -17,6 +17,7 @@ export const PARADIS_PAGE_OPS_TOOL_NAMES = [
 	'get_page_network_overrides',
 	'download_by_click',
 	'highlight_element',
+	'handle_permission_request',
 	'add_init_script',
 	'remove_init_script',
 	'list_init_scripts',
@@ -158,6 +159,19 @@ export const PARADIS_MCP_PAGE_OPS_TOOLS = [
 				duration_seconds: { type: 'number', minimum: 1, maximum: 30, description: 'Seconds to show it (default 3).' },
 				clear: { type: 'boolean', description: 'Remove the current highlight instead.' },
 			},
+			additionalProperties: false,
+		},
+	},
+	{
+		name: 'handle_permission_request',
+		description: 'Answer a permission prompt of this pane\'s current tab (or tab_id): the page asked for location, notifications, clipboard, sensors, camera, microphone or a device, and it waits for the answer. Tool results on that tab tell you when a prompt waits ("Permission request: ..."); without an answer Para Code denies it after about 30 seconds. "deny" works on any tab. "allow" works only on tabs you opened yourself with open_browser_tab (not on pages the user shared, and not on pages that a tab opened by itself), and never for camera, microphone or devices: for those, deny it or tell the user to answer in Para Code. Your answer is not saved in the browser profile: "allow" lasts for that site in that tab until the tab is closed, and "deny" only ends this prompt.',
+		inputSchema: {
+			type: 'object',
+			properties: {
+				action: { type: 'string', enum: ['allow', 'deny'], description: 'allow: grant it for this tab. deny: refuse this prompt.' },
+				permission: { type: 'string', enum: ['location', 'camera', 'microphone', 'notifications', 'sensors', 'clipboard', 'devices'], description: 'Which prompt to answer, when several kinds wait at once. Omit it to answer the only waiting prompt.' },
+			},
+			required: ['action'],
 			additionalProperties: false,
 		},
 	},

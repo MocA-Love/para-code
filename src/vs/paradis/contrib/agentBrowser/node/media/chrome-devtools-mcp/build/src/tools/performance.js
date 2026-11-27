@@ -117,6 +117,8 @@ export const stopTrace = definePageTool({
     verifyFilesSchema: ['filePath'],
     handler: async (request, response, context) => {
         if (!context.isRunningPerformanceTrace()) {
+            // PARA-PATCH (Para Code): say that nothing was running instead of an empty result.
+            response.appendResponseLine('No performance trace is running, so there is nothing to stop. Start one with performance_start_trace (with autoStop false to stop it yourself).');
             return;
         }
         const page = request.page;

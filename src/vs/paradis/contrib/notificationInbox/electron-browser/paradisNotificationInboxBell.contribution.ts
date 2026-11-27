@@ -6,7 +6,7 @@
 
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-// タイトルバーのベル（未読数ならぬ「要対応のペイン数」のバッジ付き）と、受信箱を開くコマンド。
+// タイトルバーのベル（「あなたの番」の数のバッジ付き。未読の通知は点だけ）と、受信箱を開くコマンド。
 // ベルは「エージェント一覧」「ブラウザ一覧」の右に並ぶ。
 
 import { getActiveWindow, getWindow } from '../../../../base/browser/dom.js';
@@ -21,13 +21,17 @@ import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/c
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
+import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
 import { ToggleTitleBarConfigAction } from '../../../../workbench/browser/parts/titlebar/titlebarActions.js';
 import { IsSessionsWindowContext } from '../../../../workbench/common/contextkeys.js';
 import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { renderParadisActionButton } from '../../../browser/paradisActionButton.js';
 import { ParadisCountBadge } from '../../../browser/paradisBadges.js';
+import { IParadisHumanAskService } from '../../humanAsk/common/paradisHumanAsk.js';
+import { ParadisInboxAskDialog } from '../browser/paradisNotificationInboxAskDialog.js';
 import { ParadisNotificationInboxPopover } from '../browser/paradisNotificationInboxPopover.js';
 import { IParadisNotificationInboxService, PARADIS_NOTIFICATION_INBOX_TITLE_BAR_SETTING } from '../common/paradisNotificationInbox.js';
+import { paradisInboxBadgeCounts } from '../common/paradisNotificationInboxCounts.js';
 
 const OPEN_COMMAND_ID = 'paradis.notificationInbox.open';
 
@@ -75,11 +79,17 @@ class ParadisToggleNotificationInboxTitleBarAction extends ToggleTitleBarConfigA
 class ParadisNotificationInboxPopoverController extends Disposable {
 
 	private readonly popover = this._register(new MutableDisposable<ParadisNotificationInboxPopover>());
+	/** 大きい問いに答えるモーダル。小窓はモーダルが開くと閉じるので、ここで持つ。 */
+	private readonly askDialog = this._register(new MutableDisposable<ParadisInboxAskDialog>());
 	/** 描かれているベル。補助ウィンドウのタイトルバーにも同じボタンが出るので複数ある。 */
 	private readonly anchors = new Set<HTMLElement>();
 	private openAnchor: HTMLElement | undefined;
 
-	constructor(@IInstantiationService private readonly instantiationService: IInstantiationService) {
+	constructor(
+		@IInstantiationService private readonly instantiationService: IInstantiationService,
+		@ILayoutService private readonly layoutService: ILayoutService,
+		@IParadisHumanAskService private readonly humanAskService: IParadisHumanAskService,
+	) {
 		super();
 	}
 
@@ -131,7 +141,14 @@ class ParadisNotificationInboxPopoverController extends Disposable {
 		this.popover.value = this.instantiationService.createInstance(ParadisNotificationInboxPopover, {
 			anchor,
 			onClose: () => this.close(),
+			onOpenAsk: (key, focusText) => this.openAsk(key, focusText, anchor),
 		});
+	}
+
+	/** 「開いて答える」。押されたベルのあるウィンドウにモーダルを開く（小窓はモーダルが開くと自分で閉じる）。 */
+	private openAsk(key: string, focusText: boolean, anchor: HTMLElement | undefined): void {
+		const container = anchor?.isConnected ? this.layoutService.getContainer(getWindow(anchor)) : this.layoutService.activeContainer;
+		this.askDialog.value = new ParadisInboxAskDialog({ container, key, focusText, onClose: () => this.askDialog.clear() }, this.humanAskService);
 	}
 
 	close(): void {
@@ -143,7 +160,7 @@ class ParadisNotificationInboxPopoverController extends Disposable {
 }
 
 /**
- * タイトルバーのベル本体。UI キットのアイコンのボタン（paradisActionButton.ts）。数は「人の対応を待っているペイン」の
+ * タイトルバーのベル本体。UI キットのアイコンのボタン（paradisActionButton.ts）。数は「あなたの番」（台帳の待ち）の
  * 数なので、要対応の意味の警告の色で右上に重ねる（10 件から 9+。重ねるのでベルの幅は数で変わらない）。
  */
 class ParadisNotificationInboxTitleBarWidget extends BaseActionViewItem {
@@ -156,6 +173,7 @@ class ParadisNotificationInboxTitleBarWidget extends BaseActionViewItem {
 		private readonly controller: ParadisNotificationInboxPopoverController,
 		@IHoverService private readonly hoverService: IHoverService,
 		@IParadisNotificationInboxService private readonly inboxService: IParadisNotificationInboxService,
+		@IParadisHumanAskService private readonly humanAskService: IParadisHumanAskService,
 	) {
 		super(undefined, action, options);
 	}
@@ -173,14 +191,16 @@ class ParadisNotificationInboxTitleBarWidget extends BaseActionViewItem {
 
 		const hover = this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('element'), container, ''));
 		const update = () => {
-			const { attentionPaneCount, unreadCount } = this.inboxService.snapshot;
-			// 正確な数はホバーと読み上げの名前に出る
-			this.count?.update(attentionPaneCount, 'attention');
-			const text = this.hoverText(attentionPaneCount, unreadCount);
+			const inbox = this.inboxService.snapshot;
+			// 数は「あなたの番」の件数（台帳に載っていないペインの許可待ち・質問も含む）。完了の未読は数えず点だけを出す。正確な数はホバーと読み上げの名前に出る
+			const { bell, bellDot } = paradisInboxBadgeCounts(this.humanAskService.snapshot.entries, inbox, new Set());
+			this.count?.update(bell, 'attention', bellDot);
+			const text = this.hoverText(bell, inbox.unreadCount);
 			container.setAttribute('aria-label', text);
 			hover.update(text);
 		};
 		this._register(this.inboxService.onDidChange(update));
+		this._register(this.humanAskService.onDidChange(update));
 		update();
 	}
 
@@ -190,14 +210,14 @@ class ParadisNotificationInboxTitleBarWidget extends BaseActionViewItem {
 		}
 	}
 
-	private hoverText(attentionPanes: number, unread: number): string {
+	private hoverText(yourTurn: number, unread: number): string {
 		// 隣の「エージェント一覧」の黄色いバッジ（いま許可待ち・質問中の数）や、右下の VS Code の
 		// 通知センター（同じベルの形）と意味が違うことを書く。
-		if (attentionPanes > 0) {
-			return localize('paradis.inbox.hoverAttention', "エージェントの通知の受信箱: 確認していないペイン {0} 件（未読の通知 {1} 件）", attentionPanes, unread);
+		if (yourTurn > 0) {
+			return localize('paradis.inbox.hoverYourTurn', "エージェントの通知の受信箱: あなたの番 {0} 件（未読の通知 {1} 件）", yourTurn, unread);
 		}
 		if (unread > 0) {
-			return localize('paradis.inbox.hoverUnread', "エージェントの通知の受信箱（未読の通知 {0} 件。ペインはすべて閉じています）", unread);
+			return localize('paradis.inbox.hoverUnreadOnly', "エージェントの通知の受信箱（あなたの番はありません。未読の通知 {0} 件）", unread);
 		}
 		return localize('paradis.inbox.hoverIdle', "エージェントの通知の受信箱（完了・許可待ち・質問）");
 	}
