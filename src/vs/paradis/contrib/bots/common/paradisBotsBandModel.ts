@@ -144,20 +144,6 @@ export function paradisBotFace(bot: Pick<IParadisBotSummary, 'faceShape' | 'face
 /** 役割の文の上限（人格メモの種になる）。 */
 export const PARADIS_BOT_ROLE_MAX_LENGTH = 2000;
 
-export interface IParadisBotTemplate {
-	readonly id: string;
-	readonly label: string;
-	readonly name: string;
-	readonly role: string;
-}
-
-export const PARADIS_BOT_TEMPLATES: readonly IParadisBotTemplate[] = [
-	{ id: 'blank', label: localize('paradis.bots.template.blank', "白紙の Bot"), name: '', role: '' },
-	{ id: 'review', label: localize('paradis.bots.template.review', "PR のレビュー係"), name: localize('paradis.bots.template.reviewName', "PR のレビュー係"), role: localize('paradis.bots.template.reviewRole', "開いた PR を読み、危ない変更と足りないテストを挙げる。") },
-	{ id: 'ci', label: localize('paradis.bots.template.ci', "CI の見張り"), name: localize('paradis.bots.template.ciName', "CI の見張り"), role: localize('paradis.bots.template.ciRole', "落ちたチェックを調べ、原因と直し方をまとめる。") },
-	{ id: 'repro', label: localize('paradis.bots.template.repro', "不具合の再現係"), name: localize('paradis.bots.template.reproName', "不具合の再現係"), role: localize('paradis.bots.template.reproRole', "報告から再現の手順を作る。") },
-];
-
 /** 作成の画面で選べるエージェント（モックどおり 2 つ）。 */
 export const PARADIS_BOT_CREATE_AGENTS: readonly ParadisAgentKind[] = ['claude', 'codex'];
 

@@ -714,6 +714,17 @@ export class ParadisBotsService extends Disposable {
 		return this.homeFile(botId, (homes, bot) => homes.write(bot, relative, text));
 	}
 
+	/**
+	 * 同梱のテンプレートのスキルを専用フォルダに置き、人格メモにスキルの節を足す（{@link ParadisBotHomes.writeTemplateSkill}）。
+	 * 受けるのはテンプレートの id だけで、中身は同梱のカタログから引く。置いたスキルの名前を返す。
+	 */
+	installTemplateSkill(botId: string, templateId: string): Promise<Result<string>> {
+		if (!this.enabled()) {
+			return Promise.resolve(BOTS_DISABLED);
+		}
+		return this.homeFile(botId, (homes, bot) => homes.writeTemplateSkill(bot, templateId));
+	}
+
 	private async homeFile<T>(botId: string, operation: (homes: ParadisBotHomes, bot: IParadisBot) => Promise<T>): Promise<Result<T>> {
 		await this.ready;
 		const bot = this.getBot(botId);

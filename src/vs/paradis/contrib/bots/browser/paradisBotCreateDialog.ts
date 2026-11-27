@@ -16,22 +16,24 @@ import * as dom from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { Codicon } from '../../../../base/common/codicons.js';
 import { KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
-import { Disposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { ThemeIcon } from '../../../../base/common/themables.js';
 import { localize } from '../../../../nls.js';
-import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
-import { IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
+import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { ParadisButton, paradisButtonClasses } from '../../../browser/paradisButton.js';
 import { ParadisInputField } from '../../../browser/paradisInputField.js';
 import { PARADIS_MODAL_BACKDROP_CLASS, PARADIS_MODAL_BODY_CLASS, PARADIS_MODAL_FOOT_CLASS, paradisModalClasses, ParadisModalSize, renderParadisModalHead } from '../../../browser/paradisModal.js';
 import { ParadisSegmented } from '../../../browser/paradisSegmented.js';
-import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
 import { IParadisBotsService, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
-import { PARADIS_BOT_CREATE_AGENTS, PARADIS_BOT_ROLE_MAX_LENGTH, PARADIS_BOT_TEMPLATES, paradisBotCreateSoul, paradisBotNameProblemMessage, paradisValidateBotName } from '../common/paradisBotsBandModel.js';
+import { PARADIS_BOT_CREATE_AGENTS, PARADIS_BOT_ROLE_MAX_LENGTH, paradisBotCreateSoul, paradisBotNameProblemMessage, paradisValidateBotName } from '../common/paradisBotsBandModel.js';
+import { IParadisBotTemplate, paradisBotTemplateDefaultName, paradisBotTemplateSoul } from '../common/paradisBotTemplates.js';
+import { IParadisBotTemplatePick, ParadisBotTemplatesDialog } from './paradisBotTemplatesDialog.js';
 import { PARADIS_BOT_LIMITS, paradisBotDefaultFace } from '../common/paradisBots.js';
 import { renderParadisBotFace } from './paradisBotFace.js';
 
@@ -58,14 +60,24 @@ export class ParadisBotCreateDialog extends Disposable {
 	/** 名前を一度でも触ったか（触る前は空でも誤りの文を出さない）。 */
 	private nameTouched = false;
 	private creating = false;
+	/** 選んだテンプレート（白紙なら undefined）と、付属のスキルを入れるか。 */
+	private template: IParadisBotTemplate | undefined;
+	private withSkill = false;
+	private readonly templateName: HTMLElement;
+	private readonly templateButton: ParadisButton;
+	/** 重ねて開いたテンプレートの一覧（作成のモーダルを閉じたら一緒に閉じる）。 */
+	private readonly templatesDialog = this._register(new MutableDisposable<ParadisBotTemplatesDialog>());
 
 	constructor(
 		restoreFocusTo: HTMLElement | undefined,
 		private readonly onDidCreate: (botId: string) => void,
+		/** 開いてすぐテンプレートの一覧を重ねる（帯の ＋ の「テンプレートから選ぶ...」）。 */
+		openTemplates: boolean,
 		@ILayoutService layoutService: ILayoutService,
 		@IParadisBotsService private readonly botsService: IParadisBotsService,
 		@IHoverService hoverService: IHoverService,
-		@IContextViewService contextViewService: IContextViewService,
+		@IInstantiationService private readonly instantiationService: IInstantiationService,
+		@INotificationService private readonly notificationService: INotificationService,
 		@IConfigurationService configurationService: IConfigurationService,
 	) {
 		super();
@@ -94,11 +106,13 @@ export class ParadisBotCreateDialog extends Disposable {
 
 		const body = dom.append(modal, $(`.${PARADIS_MODAL_BODY_CLASS}`));
 
-		// テンプレート（選ぶと名前と役割を埋める）
+		// テンプレート（M のモーダルで選ぶと、名前と役割を埋める）
 		const templateLabel = localize('paradis.bots.create.template', "テンプレート");
 		dom.append(body, $('label.pbcd-label')).textContent = templateLabel;
-		const template = this._register(new ParadisSelect(body, contextViewService, configurationService,
-			PARADIS_BOT_TEMPLATES.map(item => ({ value: item.id, label: item.label })), PARADIS_BOT_TEMPLATES[0].id, { ariaLabel: templateLabel }));
+		const templateRow = dom.append(body, $('.pbcd-template-row'));
+		this.templateName = dom.append(templateRow, $('span.pbcd-template-name'));
+		this.templateButton = this._register(new ParadisButton(templateRow, { kind: 'secondary', label: localize('paradis.bots.create.pickTemplate', "テンプレートから選ぶ...") }));
+		this._register(this.templateButton.onDidClick(() => this.openTemplates()));
 
 		// 絵と名前
 		const nameLabel = localize('paradis.bots.create.name', "絵と名前");
@@ -132,15 +146,6 @@ export class ParadisBotCreateDialog extends Disposable {
 
 		dom.append(body, $('.pbcd-help')).textContent = localize('paradis.bots.create.help', "専用フォルダ ~/.para-code/bots/ に人格メモ（SOUL.md）と記憶（MEMORY.md）を作ります。");
 
-		this._register(template.onDidChange(id => {
-			const picked = PARADIS_BOT_TEMPLATES.find(item => item.id === id);
-			if (picked) {
-				this.nameField.value = picked.name;
-				this.roleInput.value = picked.role;
-				this.nameTouched = picked.name.length > 0;
-				this.update();
-			}
-		}));
 
 		// 下の帯
 		const foot = dom.append(modal, $(`.${PARADIS_MODAL_FOOT_CLASS}`));
@@ -183,10 +188,42 @@ export class ParadisBotCreateDialog extends Disposable {
 		}));
 		this.update();
 		this.nameField.focus();
+		if (openTemplates) {
+			this.openTemplates();
+		}
+	}
+
+	private openTemplates(): void {
+		this.templatesDialog.value = this.instantiationService.createInstance(ParadisBotTemplatesDialog, this.templateButton.element, this.template?.id, (pick: IParadisBotTemplatePick) => this.applyTemplate(pick));
+	}
+
+	/** テンプレートを当てる。名前と役割は、空か前のテンプレートのままなら書き換える（自分で書いた文は消さない）。 */
+	private applyTemplate(pick: IParadisBotTemplatePick): void {
+		if (this._store.isDisposed) {
+			return;
+		}
+		const previous = this.template;
+		const name = this.nameField.value.trim();
+		const role = this.roleInput.value.trim();
+		if (name.length === 0 || name === previous?.name || (previous !== undefined && name === paradisBotTemplateDefaultName(previous.name, this.takenNames()))) {
+			// 同じテンプレートから 2 体目を作るときは「名前 2」のように番号を足す
+			this.nameField.value = pick.template !== undefined ? paradisBotTemplateDefaultName(pick.template.name, this.takenNames()) : '';
+		}
+		if (role.length === 0 || role === previous?.role) {
+			this.roleInput.value = pick.template?.role ?? '';
+		}
+		this.template = pick.template;
+		this.withSkill = pick.withSkill;
+		this.nameTouched = this.nameField.value.length > 0;
+		this.update();
+		this.nameField.focus();
 	}
 
 	/** 名前を検め、下の帯の文と「作る」の可否を合わせる。 */
 	private update(): void {
+		this.templateName.textContent = this.template !== undefined
+			? (this.withSkill && this.template.skill !== undefined ? localize('paradis.bots.create.templateWithSkill', "{0}（スキル {1}）", this.template.name, this.template.skill.name) : this.template.name)
+			: localize('paradis.bots.create.blank', "白紙");
 		dom.clearNode(this.facePreview);
 		const face = this.face();
 		renderParadisBotFace(this.facePreview, { shape: face.faceShape, color: face.faceColor });
@@ -209,7 +246,9 @@ export class ParadisBotCreateDialog extends Disposable {
 		this.creating = true;
 		this.update();
 		const face = this.face();
-		const result = await this.botsService.createBot({ name: checked.name, agent: this.agents.value ?? PARADIS_BOT_CREATE_AGENTS[0], faceColor: face.faceColor, faceShape: face.faceShape }, paradisBotCreateSoul(checked.name, this.roleInput.value));
+		const template = this.template;
+		const soul = template !== undefined ? paradisBotTemplateSoul(checked.name, this.roleInput.value, template) : paradisBotCreateSoul(checked.name, this.roleInput.value);
+		const result = await this.botsService.createBot({ name: checked.name, agent: this.agents.value ?? PARADIS_BOT_CREATE_AGENTS[0], faceColor: face.faceColor, faceShape: face.faceShape }, soul);
 		if (this._store.isDisposed) {
 			return;
 		}
@@ -220,8 +259,27 @@ export class ParadisBotCreateDialog extends Disposable {
 			this.note.classList.add('error');
 			return;
 		}
+		if (template?.skill !== undefined && this.withSkill) {
+			void this.writeSkill(result.value.id, result.value.name, template);
+		}
 		this.dispose();
 		this.onDidCreate(result.value.id);
+	}
+
+	/**
+	 * 付属のスキルを専用フォルダへ置く（shared process が同梱のカタログから中身を引き、置けたら人格メモにスキルの節を足す）。
+	 * 書けなくても Bot は作れているので、知らせるだけ（人格メモにスキルの節は残らない）。
+	 */
+	private async writeSkill(botId: string, botName: string, template: IParadisBotTemplate): Promise<void> {
+		const installed = await this.botsService.installTemplateSkill(botId, template.id);
+		if (!installed.ok) {
+			this.notificationService.warn(localize('paradis.bots.create.skillFailed', "Bot「{0}」のスキル {1} を置けませんでした: {2}", botName, template.skill?.name ?? '', installed.message));
+		}
+	}
+
+	/** 今いる Bot の名前（テンプレートの名前に番号を足すときに避ける）。 */
+	private takenNames(): string[] {
+		return this.botsService.snapshot.bots.map(bot => bot.name);
 	}
 
 	/** 見本の顔。名前がまだ空なら「新」から決まる顔。 */
