@@ -257,6 +257,8 @@ export type ParadisPeerKind =
 export interface IParadisPeerExpectation {
 	/** 手元のペインのシェル。接続を持つプロセスがこの子孫なら `descendant`。 */
 	readonly ancestorPid?: number;
+	/** `ancestorPid` に加えて照合するシェル。接続を持つプロセスがどれかの子孫なら `descendant`（Bot のペインの見分けに使う）。 */
+	readonly ancestorPids?: readonly number[];
 	/**
 	 * Para Code が張った `ssh -R` の PID。接続を持つプロセスが**これそのもの**なら `tunnel`。
 	 * 祖先に shared process がいるかでは決めない（shared process は git や codex app-server なども起こし、
@@ -358,9 +360,12 @@ async function classifyPeerOnce(clientPort: number, serverPort: number, ownPid: 
 		let kind: ParadisPeerKind = 'unknown';
 		if ((expectation.tunnelPid !== undefined && peerPid === expectation.tunnelPid) || expectation.tunnelPids?.includes(peerPid)) {
 			kind = 'tunnel';
-		} else if (expectation.ancestorPid !== undefined) {
-			const ancestorPid = expectation.ancestorPid;
-			if (await walkAncestors(peerPid, probe, pid => pid === ancestorPid)) {
+		} else if (expectation.ancestorPid !== undefined || (expectation.ancestorPids?.length ?? 0) > 0) {
+			const ancestors = new Set(expectation.ancestorPids ?? []);
+			if (expectation.ancestorPid !== undefined) {
+				ancestors.add(expectation.ancestorPid);
+			}
+			if (await walkAncestors(peerPid, probe, pid => ancestors.has(pid))) {
 				kind = 'descendant';
 			}
 		}

@@ -406,7 +406,19 @@ export class ParadisBotsService extends Disposable {
 	 * ペインとして断り続ける（オフにしたら、ウィンドウが Bot のペインを閉じる。{@link allPaneHashes}）。
 	 */
 	isBotPane(paneToken: string): boolean {
-		return paneToken.length > 0 && this.botOfPane(paneToken) !== undefined;
+		return paneToken.length > 0 && this.restrictedBotIdOfPane(paneToken) !== undefined;
+	}
+
+	/**
+	 * Bot の制限を掛けるペインなら、その Bot の id。結び付いたペインに加えて、前に出す依頼に応えが無く会話として数えるのを
+	 * やめたペインも返す（閉じたと分かるまで制限の外に出さない）。Bot の道具・項目の持ち主には {@link botOfPane} を使う。
+	 * 設定のオン・オフは見ない（{@link isBotPane} と同じ）。
+	 */
+	restrictedBotIdOfPane(paneToken: string): string | undefined {
+		if (this.restorePane(paneToken)) {
+			this.notify();
+		}
+		return this.panes.restrictedBotOf(paneToken);
 	}
 
 	/** 保存した結び付けを戻した（このペインが今 Bot になった）か。 */
@@ -773,8 +785,8 @@ export class ParadisBotsService extends Disposable {
 			});
 			this._onDidRequestReveal.fire({ revealId, botId, paneHashes: inUse.tokens.map(paradisBotPaneTokenHash) });
 		});
-		// どのウィンドウもそのペインを持っていなかった（閉じたことが伝わらなかった）。会話のペインを「まだ現れていない」に
-		// 戻し、呼んだ側が起動へ進めるようにする（本当に生きていれば、hook か道具の呼び出しで現れたときに戻る）
+		// どのウィンドウも応えなかった（閉じたことが伝わらなかったか、応えが遅れた）。会話として数えるのをやめ、呼んだ側が
+		// 起動へ進めるようにする。応えが無いだけでは閉じたと言えないので、Bot の制限は本物の終了まで残す（detachChat）
 		if (!answered && this.panes.detachChat(botId)) {
 			this.notify();
 		}
@@ -808,6 +820,7 @@ export class ParadisBotsService extends Disposable {
 	paneHashesOf(botId: string, purpose?: ParadisBotPanePurpose): string[] {
 		return [...new Set([
 			...this.panes.tokensOf(botId, { purpose }).map(paradisBotPaneTokenHash),
+			...(purpose === undefined || purpose === 'chat' ? this.panes.detachedTokensOf(botId).map(paradisBotPaneTokenHash) : []),
 			...this.panes.rememberedPanes().filter(record => record.botId === botId && (purpose === undefined || record.purpose === purpose)).map(record => record.hash),
 		])];
 	}
