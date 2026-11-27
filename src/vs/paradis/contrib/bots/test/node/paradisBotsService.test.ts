@@ -427,7 +427,7 @@ suite('Paradis bots service', () => {
 		});
 	});
 
-	test('前に出す依頼に応えるウィンドウが無ければ、結び付けを外して起動へ進める。再読み込みでは外さない。起動し直した後に古いペインを 2 つ目の会話として戻さない', async () => {
+	test('前に出す依頼に応えるウィンドウが無ければ、会話として数えるのをやめて起動へ進める（Bot の制限は本物の終了まで残す）。再読み込みでは外さない。起動し直した後に古いペインを 2 つ目の会話として戻さない', async () => {
 		const h = harness(store, undefined, undefined, 20);
 		const created = await h.service.createBot({ name: 'A', agent: 'claude' });
 		assert.ok(created.ok);
@@ -456,15 +456,33 @@ suite('Paradis bots service', () => {
 		// どのウィンドウも応えない（ペインのあったウィンドウを閉じた）: 待ってから外し、起動へ進める
 		const unanswered = await h.service.requestReveal(a);
 		const afterTimeout = await code();
+		// 応えが無かった古いペインは、会話・Bot の道具には数えないが、Bot の制限は残る。止める依頼では一緒に閉じる
+		const detached = { bot: h.service.botOfPane('pane-1')?.id, restricted: h.service.isBotPane('pane-1'), stopHashes: h.service.paneHashesOf(a).length };
+		// 古いペインのエージェントが偽の TerminalExit（observedExit の無いもの）を送っても、制限は外れない（#1264 と両立）
+		h.hooks.fire({ token: 'pane-1', event: 'TerminalExit' });
+		const afterForgedExit = { restricted: h.service.isBotPane('pane-1'), ideRefused: await paradisBotIdeActionRefusal(h.service)('pane-1', 'launch_agent') !== undefined };
+		// 設定をオフにしても、閉じ切るまで制限は残る（#1264 と同じ）
+		h.settings.enabled = false;
+		const whileDisabled = h.service.isBotPane('pane-1');
+		h.settings.enabled = true;
+		// 新しい会話のペインが開いた後も、古いペインの制限は残る
+		const reopenedHere = bind('pane-3');
+		const afterReopen = [h.service.isBotPane('pane-1'), h.service.botOfPane('pane-3')?.id === a];
 
 		// 起動し直した後: 保存した古いペインがまだ現れないうちに新しい会話を開いた。後から古いペインの hook が来ても戻さない
 		const second = harness(store, h);
 		await second.service.ready;
 		const reopened = bind('pane-2', second.service);
 		second.hooks.fire({ token: 'pane-1', event: 'SessionStart' });
+		const oldPaneRestricted = second.service.isBotPane('pane-1');
+		// 偽の TerminalExit では外れず、Para Code が見た終了（observedExit）で外れる
+		second.hooks.fire({ token: 'pane-1', event: 'TerminalExit' });
+		const secondAfterForgedExit = second.service.isBotPane('pane-1');
+		second.hooks.fire({ token: 'pane-1', event: 'TerminalExit', observedExit: true });
+		const afterExit = second.service.isBotPane('pane-1');
 		assert.deepStrictEqual({
-			afterReload, reveals, answered, afterAnswer, unanswered, afterTimeout, nothingToReveal: await h.service.requestReveal(a),
-			reopened, oldPane: second.service.botOfPane('pane-1')?.id, newPane: second.service.botOfPane('pane-2')?.id,
+			afterReload, reveals, answered, afterAnswer, unanswered, afterTimeout, detached, afterForgedExit, whileDisabled, secondAfterForgedExit, reopenedHere, afterReopen, afterExit, nothingToReveal: await h.service.requestReveal(a),
+			reopened, oldPane: second.service.botOfPane('pane-1')?.id, oldPaneRestricted, newPane: second.service.botOfPane('pane-2')?.id,
 		}, {
 			afterReload: 'already_open',
 			reveals: ['one pane'],
@@ -472,9 +490,17 @@ suite('Paradis bots service', () => {
 			afterAnswer: 'already_open',
 			unanswered: false,
 			afterTimeout: 'unavailable',
+			detached: { bot: undefined, restricted: true, stopHashes: 1 },
+			afterForgedExit: { restricted: true, ideRefused: true },
+			whileDisabled: true,
+			secondAfterForgedExit: true,
+			reopenedHere: true,
+			afterReopen: [true, true],
+			afterExit: false,
 			nothingToReveal: false,
 			reopened: true,
 			oldPane: undefined,
+			oldPaneRestricted: true,
 			newPane: a,
 		});
 	});

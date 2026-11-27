@@ -20,7 +20,7 @@ import { IMainProcessService } from '../../../../platform/ipc/common/mainProcess
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
 import { PARADIS_MCP_PORT_FILE_NAME } from '../../agentBrowser/common/paradisAgentBrowser.js';
-import { paradisRegisterMcpCallRefusal, paradisRegisterMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
+import { paradisRegisterMcpCallRefusal, paradisRegisterMcpConfinedPanes, paradisRegisterMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { paradisCodexHomeCandidates } from '../../agentBrowser/node/paradisAgentHome.js';
 import { onParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING, paradisAgentIdeActionsAllowed } from '../../agentIde/common/paradisAgentIde.js';
@@ -189,6 +189,15 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 	}));
 	// 見回りのペインからは、para-browser の読むだけの道具と見回りの Bot の道具だけを通す（利用者が常に許可した書く道具も断る）
 	store.add(paradisRegisterMcpCallRefusal(paradisBotPatrolToolRefusal(service)));
+	// Bot のペインと、Bot が載せたタスクのペインの中のプロセスが、ほかのペインのトークン（ps で読める）を名乗った呼び出しは断る
+	// 設定をオフにしても、閉じ切るまで Bot のペインとして断り続ける（isBotPane と同じ）ので、設定では止めない
+	store.add(paradisRegisterMcpConfinedPanes({
+		active: () => true,
+		isConfined: async paneToken => {
+			await service.ready;
+			return service.restrictedBotIdOfPane(paneToken) !== undefined || service.boardOriginOfPane(paneToken) !== undefined;
+		},
+	}));
 	store.add({
 		dispose: () => {
 			if (shared === service) {
