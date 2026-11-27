@@ -30,7 +30,7 @@ import { ParadisSegmented } from '../../../browser/paradisSegmented.js';
 import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
-import { IParadisBotsService } from '../common/paradisBotsApi.js';
+import { IParadisBotsService, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
 import { PARADIS_BOT_CREATE_AGENTS, PARADIS_BOT_ROLE_MAX_LENGTH, PARADIS_BOT_TEMPLATES, paradisBotCreateSoul, paradisBotNameProblemMessage, paradisValidateBotName } from '../common/paradisBotsBandModel.js';
 import { PARADIS_BOT_LIMITS, paradisBotDefaultFace } from '../common/paradisBots.js';
 import { renderParadisBotFace } from './paradisBotFace.js';
@@ -174,6 +174,12 @@ export class ParadisBotCreateDialog extends Disposable {
 			onEscape: () => this.dispose(),
 			close: () => this.dispose(),
 			restoreFallback: () => restoreFocusTo?.isConnected ? restoreFocusTo : undefined,
+		}));
+		// 開いている間に設定で Bot をオフにしたら閉じる（帯と一緒に消えた Bot の作成を残さない）
+		this._register(configurationService.onDidChangeConfiguration(e => {
+			if (e.affectsConfiguration(PARADIS_BOTS_ENABLED_SETTING) && configurationService.getValue<boolean>(PARADIS_BOTS_ENABLED_SETTING) !== true) {
+				this.dispose();
+			}
 		}));
 		this.update();
 		this.nameField.focus();
