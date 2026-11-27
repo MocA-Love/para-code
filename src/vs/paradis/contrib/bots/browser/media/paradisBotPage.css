@@ -562,6 +562,61 @@ button.paradis-bot-page-link:hover {
 	margin-top: var(--vscode-spacing-size120);
 }
 
+/* The memory copies (taken when the bot's chat starts, and before a tidy-up): time, count, kind, partial; each row restores its copy. */
+.paradis-bot-snapshots {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size60);
+	margin-top: var(--vscode-spacing-size200);
+}
+
+.paradis-bot-snapshots-list {
+	display: flex;
+	flex-direction: column;
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner, 8px);
+}
+
+.paradis-bot-snapshots-row {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: var(--vscode-spacing-size80);
+	min-height: 32px;
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size120);
+}
+
+.paradis-bot-snapshots-row + .paradis-bot-snapshots-row {
+	border-top: 1px solid var(--vscode-paradis-lineSubtle);
+}
+
+/* The restore button keeps to the right edge, also when a narrow row wraps it onto its own line. */
+.paradis-bot-snapshots-row > .paradis-button {
+	margin-left: auto;
+}
+
+.paradis-bot-snapshots-time {
+	font-variant-numeric: tabular-nums;
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-bot-snapshots-count {
+	flex: 1;
+	min-width: 0;
+	color: var(--vscode-paradis-textMuted);
+	overflow-wrap: anywhere;
+}
+
+.paradis-bot-snapshots-result {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size40);
+}
+
+.paradis-bot-snapshots-result > .attention {
+	color: var(--vscode-paradis-warning, var(--vscode-editorWarning-foreground));
+}
+
 /* The memory file changed elsewhere after it was opened: what changed, and overwrite or reload. */
 .paradis-bot-files-conflict {
 	display: flex;

@@ -9,7 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisBotItem } from '../../common/paradisBotItems.js';
-import { paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel } from '../../common/paradisBotPageModel.js';
+import { paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel, paradisBotSuggestionText } from '../../common/paradisBotPageModel.js';
 
 function item(number: number, patch: Partial<IParadisBotItem> = {}): IParadisBotItem {
 	return {
@@ -54,6 +54,15 @@ suite('Paradis bots page', () => {
 			'あなたが「完了」にしました',
 			'あなたが答えました: A',
 			'あなたが問いを飛ばしました',
+		]);
+	});
+
+	test('提案の文: 制御文字と貼り付けの囲いを落とし、bracketed paste で無ければ 1 行にする', () => {
+		const text = '一行目\r\n二行目\x1b[201~rm -rf ~\x1b]0;title\x07\x00';
+		assert.deepStrictEqual([paradisBotSuggestionText(text, true), paradisBotSuggestionText(text, false), paradisBotSuggestionText('  a\n\n  b  ', false)], [
+			'一行目\n二行目rm -rf ~',
+			'一行目 二行目rm -rf ~',
+			'a b',
 		]);
 	});
 });
