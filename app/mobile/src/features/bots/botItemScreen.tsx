@@ -96,7 +96,7 @@ export function BotItemScreen() {
 						<Text style={styles.text} selectable>{page.doneMeans}</Text>
 					</View>
 				) : null}
-				{ask !== undefined && pcId !== undefined ? <HumanAskCard pcId={pcId} ask={ask} now={now} /> : page.waits ? <Text style={styles.note}>この項目は質問への答えを待っています。PC か要対応から答えてください。</Text> : null}
+				{ask !== undefined && pcId !== undefined ? <View style={styles.askCard}><HumanAskCard pcId={pcId} ask={ask} now={now} /></View> : page.waits ? <Text style={styles.note}>この項目は質問への答えを待っています。PC か要対応から答えてください。</Text> : null}
 				{page.closeNote !== undefined ? <Text style={styles.note}>{`閉じた理由: ${page.closeNote}`}</Text> : null}
 				{page.links.length > 0 ? (
 					<View style={styles.group}>
@@ -179,6 +179,10 @@ export function BotItemScreen() {
 }
 
 const styles = StyleSheet.create({
+	// 要対応のカードは画面の端から余白を取る作り（要対応の一覧と同じ）。本文の余白と二重にしない
+	askCard: {
+		marginHorizontal: -space.lg,
+	},
 	fill: {
 		flex: 1,
 	},

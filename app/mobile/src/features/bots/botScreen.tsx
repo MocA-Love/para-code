@@ -176,9 +176,9 @@ function ItemsTab({ pcId, bot }: { pcId: string; bot: MobileBot }) {
 			warn(`bot-suggest-${id}`, '見送れませんでした', botRefusalText(result.code));
 		}
 	};
-	const plain = (title: string, list: readonly BotItemRow[]) => list.length === 0 ? null : (
+	const plain = (title: string | undefined, list: readonly BotItemRow[]) => list.length === 0 ? null : (
 		<View style={styles.group}>
-			<SectionHeader title={title} count={list.length} />
+			{title !== undefined ? <SectionHeader title={title} count={list.length} /> : null}
 			<ListGroup>
 				{list.map(row => (
 					<ListRow
@@ -209,7 +209,7 @@ function ItemsTab({ pcId, bot }: { pcId: string; bot: MobileBot }) {
 									<Text style={styles.askTitleText} numberOfLines={2}>{row.title}</Text>
 									<Icon icon={ChevronRight} size={iconSize.xs} color={colors.textMuted} />
 								</Pressable>
-								{ask !== undefined ? <HumanAskCard pcId={pcId} ask={ask} now={now} /> : (
+								{ask !== undefined ? <View style={styles.askCard}><HumanAskCard pcId={pcId} ask={ask} now={now} /></View> : (
 									<Text style={styles.note}>{pc?.humanAskSupported === true ? '質問を読み込んでいます…' : '質問には項目のページか PC で答えてください。'}</Text>
 								)}
 							</View>
@@ -242,7 +242,7 @@ function ItemsTab({ pcId, bot }: { pcId: string; bot: MobileBot }) {
 						<Icon icon={showClosed ? ChevronDown : ChevronRight} size={iconSize.xs} color={colors.textMuted} />
 						<Text style={styles.toggleText}>{`終わった項目 ${groups.closed.length}`}</Text>
 					</Pressable>
-					{showClosed ? plain('終わった', groups.closed) : null}
+					{showClosed ? plain(undefined, groups.closed) : null}
 				</View>
 			) : null}
 		</Body>
@@ -468,6 +468,10 @@ function SettingsTab({ pcId, bot }: { pcId: string; bot: MobileBot }) {
 }
 
 const styles = StyleSheet.create({
+	// 要対応のカードは画面の端から余白を取る作り（要対応の一覧と同じ）。本文の余白と二重にしない
+	askCard: {
+		marginHorizontal: -space.lg,
+	},
 	fill: {
 		flex: 1,
 	},
@@ -520,6 +524,7 @@ const styles = StyleSheet.create({
 	},
 	card: {
 		gap: space.sm,
+		padding: space.md,
 	},
 	cardTitle: {
 		flexShrink: 1,
