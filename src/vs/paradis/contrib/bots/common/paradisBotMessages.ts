@@ -12,6 +12,7 @@
 // （{@link IParadisBotGroupsPort}・ウィンドウのチャネル {@link PARADIS_BOT_GROUPS_WINDOW_CHANNEL} の `deliver`）。
 // 伝言はペインへ打ち込む 1 行になるので、制御文字と改行を落とし、囲いの印を崩してから渡す。
 
+import { paradisSanitizeDisplayText } from '../../agentBrowser/common/paradisAgentBrowserTabs.js';
 import { IParadisMcpToolDefinition } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { isRecord } from '../../../common/paradisGuards.js';
 
@@ -19,7 +20,10 @@ export const PARADIS_BOT_TELL_TOOL = 'bot_tell';
 export const PARADIS_BOT_ASK_TOOL = 'bot_ask';
 export const PARADIS_BOT_MESSAGE_TOOL_NAMES: ReadonlySet<string> = new Set([PARADIS_BOT_TELL_TOOL, PARADIS_BOT_ASK_TOOL]);
 
-/** 伝言を届けるウィンドウのチャネル（グループの機能が登録する）。`deliver` の引数は `[呼び出し元のペイントークン, 宛先の Bot の id, 文]`。 */
+/**
+ * 伝言を届けるウィンドウのチャネル（グループの機能が登録する）。道具は、宛先の Bot の会話のペインを持つウィンドウの
+ * `deliver` を呼ぶ（呼び出し元のウィンドウではない）。引数は `[呼び出し元のペイントークン, 宛先の Bot の id, 文]`。
+ */
 export const PARADIS_BOT_GROUPS_WINDOW_CHANNEL = 'paradisBotGroupsWindow';
 
 export const PARADIS_BOT_MESSAGE_LIMITS = {
@@ -84,14 +88,51 @@ export const PARADIS_BOT_MESSAGE_TOOLS: readonly IParadisMcpToolDefinition[] = [
 	},
 ];
 
-/** 伝言の本文を 1 行に整える（制御文字・改行を空白にし、続く空白を 1 つにまとめ、囲いの印を崩す）。 */
+/**
+ * 伝言の本文を 1 行に整える。制御文字・改行と、見た目を偽れる不可視文字（幅のない文字、書字方向の制御、BOM）を
+ * 空白にし（ブラウザのタブの題名と同じ `paradisSanitizeDisplayText`）、囲いの印を崩す。
+ */
 export function paradisBotMessageCleanText(text: string): string {
-	return text
-		.replace(/[\x00-\x1f\x7f-\x9f\u2028\u2029]+/g, ' ')
+	return (paradisSanitizeDisplayText(text, Number.MAX_SAFE_INTEGER) ?? '')
 		.replace(/<{3,}/g, '<<')
 		.replace(/>{3,}/g, '>>')
 		.replace(/ {2,}/g, ' ')
 		.trim();
+}
+
+/**
+ * 伝言の回数の上限（道具の側で数える。グループの機能の側の上限とは別）。Codex では `bot_tell`・`bot_ask` を前もって
+ * 許可するので、2 つの Bot が利用者の確認なしに往復し続けないように、送り手ごとと、送り手と宛先の組ごとに数える。
+ */
+export const PARADIS_BOT_MESSAGE_RATE_LIMITS = {
+	senderPerMinute: 5,
+	senderPerHour: 30,
+	pairPerMinute: 3,
+	pairPerHour: 15,
+} as const;
+
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+
+/** 伝言の回数を数える（shared process のメモリだけ。アプリを再起動すると数え直す）。 */
+export class ParadisBotMessageRateLimiter {
+	private readonly sent: { readonly from: string; readonly to: string; readonly at: number }[] = [];
+
+	/** 送ってよければ数えて undefined、上限なら断る文（英文）。 */
+	take(from: string, to: string, now: number): string | undefined {
+		while (this.sent.length > 0 && now - this.sent[0].at >= HOUR_MS) {
+			this.sent.shift();
+		}
+		const L = PARADIS_BOT_MESSAGE_RATE_LIMITS;
+		const mine = this.sent.filter(entry => entry.from === from);
+		const pair = mine.filter(entry => entry.to === to);
+		const lastMinute = (entries: readonly { readonly at: number }[]) => entries.filter(entry => now - entry.at < MINUTE_MS).length;
+		if (lastMinute(mine) >= L.senderPerMinute || lastMinute(pair) >= L.pairPerMinute || mine.length >= L.senderPerHour || pair.length >= L.pairPerHour) {
+			return `You have sent too many bot messages for now (up to ${L.pairPerMinute} a minute and ${L.pairPerHour} an hour to one bot, ${L.senderPerMinute} a minute and ${L.senderPerHour} an hour in all). Do not keep the exchange going: stop, and tell your owner what you wanted to say.`;
+		}
+		this.sent.push({ from, to, at: now });
+		return undefined;
+	}
 }
 
 export type ParadisBotMessageArgs =
@@ -111,6 +152,10 @@ export function paradisParseBotMessageArgs(name: string, args: unknown): Paradis
 	}
 	if (typeof raw !== 'string') {
 		return { ok: false, message: `"${field}" must be text.` };
+	}
+	// 整える前に、桁外れに長い文は断る（全文に正規表現を掛けないように）
+	if (raw.length > PARADIS_BOT_MESSAGE_LIMITS.text * 4) {
+		return { ok: false, message: `"${field}" is longer than ${PARADIS_BOT_MESSAGE_LIMITS.text} characters. Shorten it, or write the details in a file in your home folder and point to it.` };
 	}
 	const text = paradisBotMessageCleanText(raw);
 	if (text.length === 0) {
