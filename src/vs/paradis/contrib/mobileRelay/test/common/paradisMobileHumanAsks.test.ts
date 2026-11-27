@@ -10,7 +10,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IParadisHumanAskInput } from '../../../humanAsk/common/paradisHumanAsk.js';
 import { ParadisHumanAskLedger } from '../../../humanAsk/common/paradisHumanAskLedger.js';
-import { paradisMobileHumanAskSummary, paradisMobileHumanAsks, paradisParseMobileHumanAskAnswerRequest, paradisParseMobileHumanAskSummary } from '../../common/paradisMobileHumanAsks.js';
+import { ParadisMobileHumanAskOpResults, paradisMobileHumanAskSummary, paradisMobileHumanAsks, paradisParseMobileHumanAskAnswerRequest, paradisParseMobileHumanAskSummary } from '../../common/paradisMobileHumanAsks.js';
 
 const QUESTION = [{ id: 'q0', text: '残しますか?', options: [{ id: '0', label: '残す' }], allowText: true }];
 
@@ -75,5 +75,29 @@ suite('Paradis mobile human asks', () => {
 			request: { opId: 'op', key: 'bot:i.e', answer: { type: 'skip' } },
 			badRequests: [undefined, undefined, undefined],
 		});
+	});
+
+	test('op results: the same reply for a resent opId, per mobile, forgotten after the limit or the period', async () => {
+		let now = 0;
+		const results = new ParadisMobileHumanAskOpResults(() => now, 2, 100);
+		const ok = { t: 'humanAskAnswer', ok: true } as const;
+		const busy = { t: 'humanAskAnswer', ok: false, reason: 'busy' } as const;
+		const run = (mobileId: string, opId: string) => results.run(mobileId, opId, async () => opId.startsWith('busy') ? busy : ok);
+		const replies = [
+			await run('phone', 'ok-1'),
+			await run('phone', 'ok-1'),
+			await run('phone', 'busy-1'),
+			await run('phone', 'busy-1'),
+			// 上限 2 件: 3 件目で ok-1 を忘れる（busy-1 は残る）
+			await run('tablet', 'busy-2'),
+			await run('phone', 'busy-1'),
+			await results.run('phone', 'ok-1', async () => busy),
+		];
+		// 期間 100: 過ぎたら忘れる（busy-2 は上限では残っていた）
+		now = 99;
+		replies.push(await run('tablet', 'busy-2'));
+		now = 100;
+		replies.push(await results.run('tablet', 'busy-2', async () => ok));
+		assert.deepStrictEqual(replies, [ok, { ...ok, duplicate: true }, busy, busy, busy, busy, busy, busy, ok]);
 	});
 });
