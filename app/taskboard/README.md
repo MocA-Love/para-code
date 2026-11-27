@@ -1,8 +1,8 @@
 <!-- PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. -->
 
-# タスクボード（開発用サーバーと画面）
+# タスクボード（サーバーと画面）
 
-工程の流れ（フロー）どおりにエージェントを回し、どこで人の出番かを 1 画面で見るためのボードです。今はブラウザで動く開発版で、後で Para Code の専用ウィンドウに載せます（エンジンと画面はそのまま使い、受け渡しの口だけを IPC に替えます）。
+工程の流れ（フロー）どおりにエージェントを回し、どこで人の出番かを 1 画面で見るためのボードです。Para Code には同梱してあり、「タスク」の画面の「タスクボードを開く」から専用ウィンドウで開きます（`build/paradis/taskboard/buildTaskBoard.ts` がこのフォルダをまとめ、Para Code がサーバーを子プロセスとして起こします）。ここに書くのは、ブラウザで動かす開発用の起動です。
 
 ## 起動
 
@@ -18,11 +18,9 @@ pnpm dev --repo ~/projects/para-code
 
 # クローンの使い回しで使うディレクトリを指定する（個人の設定として覚える）
 pnpm dev --repo ~/projects/para-code --clones ~/projects/para-code-1,~/projects/para-code-2
-
-# 本物の Claude Code / Codex を Para Code で動かす
-# （Para Code を先に起動し、設定 `paradis.taskBoard.bridge.enabled` をオンにしておく。既定はオフ）
-pnpm dev --repo ~/projects/para-code --clones ~/projects/para-code-1,~/projects/para-code-2 --agents para-code
 ```
+
+本物の Claude Code / Codex を動かす `--agents para-code` は、Para Code が同梱のボードを起こすときに付けます。手で起動したボードに付けても、Para Code の接続口が断るのでエージェントは動きません（下の「本物のエージェント」）。
 
 起動するとターミナルに `http://127.0.0.1:4870/?token=…` が出るので、それを開きます。
 
@@ -44,25 +42,26 @@ pnpm dev --repo ~/projects/para-code --clones ~/projects/para-code-1,~/projects/
 
 - フローの工程を列にしたボード、あなたの番、一覧、フロー編集
 - タスクの詳細: Issue（本文・経過・コメント）、PR（会話・チェック・変更ファイルの差分・コミット）、進捗、計画、モック、成果物、ターミナル
-- GitHub からの取り込み（Issue か Projects）と、Issue を閉じる PR の状態の追跡（読むだけ。GitHub へは書き込まない）
+- GitHub からの取り込み（Issue か Projects）と、Issue を閉じる PR の状態の追跡
+- GitHub への書き込み: Issue・PR へのコメント、工程が進んだときの Projects の欄の書き戻し、「ドラフト PR」の工程での push と PR の作成、ドラフトの解除
 - 既定ではエージェント・コマンド・作業場所はシミュレーション（画面に「シミュレーション」と出る）。`--agents para-code` で本物になる
 - ダーク・ライト・OS に合わせる、デスクトップ・タブレット・電話の幅
 
-## 本物のエージェント（`--agents para-code`、フェーズ 3）
+## 本物のエージェント（`--agents para-code`）
 
-Para Code の shared process が `127.0.0.1` に接続口を立て、`<userData>/paradis-taskboard-bridge.json`（0600）にポートとトークンを書きます。ボードサーバーはそれを読んで次のことをします。
+Para Code の shared process が `127.0.0.1` に接続口を立て（設定 `paradis.taskBoard.bridge.enabled`、既定はオン）、`<userData>/paradis-taskboard-bridge.json`（0600）にポートとトークンを書きます。ボードサーバーはそれを読んで次のことをします。
 
 | ボードの動き | Para Code 側 |
 | --- | --- |
 | エージェント工程を始める | 作業場所のスペースで Claude Code / Codex を起動（フォーカスは奪わない）。同じタスクの次のエージェント工程は同じターミナルで続け、ターンの途中なら終わるまで指示を預かる |
 | 進捗・質問・許可待ち | hook と画面の状態を `GET /v1/events`（SSE）で受け取る |
 | エージェントの報告 | para-browser の MCP ツール `board_complete_step` / `board_ask_human` |
-| 回答・入力・キー | `/v1/answer`・`/v1/send`・`/v1/key`。回答の口はボードのトークンを持つ側だけが使え、エージェントからは呼べない |
+| 回答・入力・キー | `/v1/answer`・`/v1/send`・`/v1/key` |
 | 自動の工程 | ボードサーバーが作業場所で直接実行（`sh -c`、`git push`。ドラフト PR は GitHub の API で作る） |
 
 やり直しの直後に届いた、止める前のターンの `board_complete_step` は断ります（新しい指示を送るまで）。成果物の `path` は作業場所の中のファイルだけ読みます。
 
-接続口の鍵（`paradis-taskboard-bridge.json`）は同じ PC のプログラムなら読めるので、オンの間は、ペインの中のエージェントが鍵を読んで回答の口を叩くことを防げません（確認を全部飛ばす権限での起動は断ります）。このため設定は既定でオフにし、タスクボードを使うときだけオンにします。ボードを Para Code の中に載せる段階（フェーズ 4）で、ファイルの鍵をやめてこの穴を塞ぎます。
+接続口は、ファイルのトークンだけでは通しません。どの要求でも、Para Code がボードを起こすたびに作って IPC で渡す鍵（`x-para-board-key`）と、接続元のプロセスがそのボードであること（pid）を確かめます。ファイルを読めるほかのプログラム（ペインの中のエージェントを含む）や、手で起動したボードからの要求は 403 で断ります。SSH のウィンドウから開いたボードは、接続先で起こしたターミナルにだけ触れます。
 
 ## 作り
 

@@ -16,6 +16,7 @@ import { IParadisMobileDoNotDisturbState, paradisSameMobileDoNotDisturbState } f
 import { IParadisMobileHumanAskSummary, paradisSameMobileHumanAskSummary } from '../common/paradisMobileHumanAsks.js';
 import { PARADIS_MOBILE_MIN_COMPATIBLE_MOBILE, PARADIS_MOBILE_PC_CAPABILITIES } from '../common/paradisMobileCompat.js';
 import { IParadisMobileRendererManifest, IParadisMobileWindowLease, IParadisMobileWindowLeaseValidation } from '../common/paradisMobileWindowLease.js';
+import type { IParadisMobileBotsFeed } from './paradisMobileBotsFeed.js';
 
 export interface IParadisMobileTerminalOwner extends IParadisMobileWindowLease {
 	readonly terminalId: number;
@@ -53,6 +54,9 @@ export class ParadisMobileTerminalRegistry {
 	private machineIdHash: string | undefined;
 	// PC のおやすみモード（notify.dnd-remote.v1）。renderer が通知設定から読んで入れる（全ウィンドウで同じ値）。
 	private doNotDisturb: IParadisMobileDoNotDisturbState | undefined;
+	// Bot の一覧（bots.page.v1）。Bot の台帳が paradisMobileBotsFeed.ts へ置いた値。
+	private botsFeed: IParadisMobileBotsFeed | undefined;
+	private botsKey: string | undefined;
 	private humanAsks: IParadisMobileHumanAskSummary | undefined;
 	private highestValidatedManifestRevision = 0;
 	private fullManifestRevision = 0;
@@ -174,6 +178,18 @@ export class ParadisMobileTerminalRegistry {
 			return false;
 		}
 		this.doNotDisturb = state;
+		this.revision++;
+		return true;
+	}
+
+	/** Bot の一覧を差し替える。実際に変わったときだけ revision を進め、true を返す。 */
+	setBots(feed: IParadisMobileBotsFeed | undefined): boolean {
+		const key = feed === undefined ? undefined : `${JSON.stringify(feed.bots)}\u0000${feed.panesKey}`;
+		if (key === this.botsKey) {
+			return false;
+		}
+		this.botsFeed = feed;
+		this.botsKey = key;
 		this.revision++;
 		return true;
 	}
@@ -339,11 +355,13 @@ export class ParadisMobileTerminalRegistry {
 				if (this.conflicts.has(terminal.terminalKey)) {
 					continue;
 				}
+				const botId = terminal.agentToken !== undefined ? this.botsFeed?.botOfToken(terminal.agentToken) : undefined;
 				terminals.push({
 					...terminal,
 					windowId,
 					rendererGeneration: lease.rendererGeneration,
 					...(terminal.ws !== undefined ? { ws: this.workspaceKey(windowId, terminal.ws) } : {}),
+					...(botId !== undefined ? { botId } : {}),
 				});
 			}
 		}
@@ -386,6 +404,7 @@ export class ParadisMobileTerminalRegistry {
 			...(this.pcName !== undefined ? { pcName: this.pcName } : {}),
 			...(this.machineIdHash !== undefined ? { machineIdHash: this.machineIdHash } : {}),
 			...(this.doNotDisturb !== undefined ? { doNotDisturb: this.doNotDisturb } : {}),
+			...(this.botsFeed !== undefined ? { bots: this.botsFeed.bots } : {}),
 			...(this.humanAsks !== undefined && this.humanAsks.count > 0 ? { humanAsks: this.humanAsks } : {}),
 		};
 	}

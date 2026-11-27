@@ -107,10 +107,12 @@ export interface IParadisBotLaunch {
 	readonly effortId?: string;
 	readonly permissionId?: string;
 	/**
-	 * 起動のコマンドに足す引数（Codex だけ。Bot の道具の前もっての許可）。利用者の設定ファイルには書かず、この起動に
-	 * だけ渡す。起動する側（paradisBotsLaunch.contribution.ts）が `paradisLaunchAgentInWorkspace` の `extraFlags` へ渡す。
+	 * 起動のコマンドに足す引数。利用者の設定ファイルには書かず、この起動にだけ渡す。起動する側
+	 * （paradisBotsLaunch.contribution.ts）が `paradisLaunchAgentInWorkspace` の `extraFlags` へ渡す。
+	 * 会話は引用済みの文字列（Codex だけ。Bot の道具の前もっての許可）。見回りは生の引数の配列で、起動するシェルに
+	 * 合わせて引用する（設定ファイルのパスが空白を含みうるため。paradisBotPatrolLaunchArgs）。
 	 */
-	readonly extraFlags?: string;
+	readonly extraFlags?: string | readonly string[];
 }
 
 /** Bot を止める依頼。トークンの値は出さず、ハッシュで渡す。 */
@@ -201,13 +203,22 @@ export interface IParadisBotsService {
 	markSuggestionStarted(id: string): Promise<ParadisBotsServiceResult<IParadisBotSuggestion>>;
 	/** 「見送る」。同じ題を 30 日出さない。 */
 	dismissSuggestion(id: string): Promise<ParadisBotsServiceResult<IParadisBotSuggestion>>;
-	/** 記憶の整理の前に、記憶のファイルの写しを取る。`partial` なら上限で打ち切り、`total` 件のうち `files` 件だけを写した。 */
-	snapshotMemory(botId: string): Promise<ParadisBotsServiceResult<{ readonly takenAt: number; readonly files: number; readonly total: number; readonly partial: boolean }>>;
 	/**
-	 * 記憶の整理を取り消す（一番新しい写しを書き戻す。整理でできたファイルは `added` で知らせ、消さない）。
-	 * 書き戻すのは `MEMORY.md` と `memory/` の直下だけ。写しにほかのパスがあれば `skipped` で知らせる。
+	 * 記憶の整理の前に、記憶のファイルの写しを取る（`kind: 'manual'`。会話の起動ごとの自動の写しでは押し出されない）。
+	 * `partial` なら上限で打ち切り、`total` 件のうち `files` 件だけを写した。
 	 */
-	undoMemoryTidy(botId: string): Promise<ParadisBotsServiceResult<{ readonly restored: readonly string[]; readonly added: readonly string[]; readonly takenAt: number; readonly skipped: readonly string[] }>>;
+	snapshotMemory(botId: string): Promise<ParadisBotsServiceResult<{ readonly takenAt: number; readonly files: number; readonly total: number; readonly partial: boolean; readonly kind: 'auto' | 'manual' }>>;
+	/**
+	 * 記憶の写しの一覧（新しい順。時刻・写したファイルの数・記憶のファイルの数・一部だけか・種類）。`auto` は会話を起動する
+	 * たびに本体が取る写し、`manual` は {@link snapshotMemory} で取った写し。種類ごとに 5 件までで、古いものから消える。
+	 */
+	listMemorySnapshots(botId: string): Promise<ParadisBotsServiceResult<readonly { readonly takenAt: number; readonly files: number; readonly total: number; readonly partial: boolean; readonly kind: 'auto' | 'manual' }[]>>;
+	/**
+	 * 記憶の整理を取り消す。{@link listMemorySnapshots} から選んだ写し（`takenAt`）を書き戻す。その写しが無い（消えた・
+	 * 古すぎる）なら `not_found`。整理でできたファイルは `added` で知らせ、消さない。書き戻すのは `MEMORY.md` と
+	 * `memory/` の直下だけ。写しにほかのパスがあれば `skipped` で知らせる。
+	 */
+	undoMemoryTidy(botId: string, takenAt: number): Promise<ParadisBotsServiceResult<{ readonly restored: readonly string[]; readonly added: readonly string[]; readonly takenAt: number; readonly skipped: readonly string[] }>>;
 
 	readHomeFile(botId: string, relativePath: string): Promise<ParadisBotsServiceResult<string | undefined>>;
 	writeHomeFile(botId: string, relativePath: string, text: string): Promise<ParadisBotsServiceResult<void>>;
