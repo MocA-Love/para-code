@@ -27,11 +27,11 @@ import { ParadisSelect } from '../../../browser/paradisSelect.js';
 import { ParadisSwitch } from '../../../browser/paradisSwitch.js';
 import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
 import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
-import { paradisApplyBotChange, paradisBotChangeRequest } from '../common/paradisBotManageTools.js';
+import { paradisApplyBotChange, paradisBotChangeRequest, PARADIS_BOT_ROLE_LIMIT } from '../common/paradisBotManageTools.js';
 import { IParadisBotPatch, PARADIS_BOT_FACE_COLORS, PARADIS_BOT_FACE_SHAPES } from '../common/paradisBots.js';
 import { IParadisBotSummary, IParadisBotsService } from '../common/paradisBotsApi.js';
 import { paradisBotNameProblemMessage, paradisValidateBotName } from '../common/paradisBotsBandModel.js';
-import { IParadisBotSettingsDraft, PARADIS_BOT_HOME_FILES, paradisBotHomeFileConflict, paradisBotPermissionOptions, ParadisBotSettingsBase, paradisBotSettingsAgents, paradisBotSettingsChange, ParadisBotSettingsField, paradisBotSettingsRebase } from '../common/paradisBotSettingsModel.js';
+import { IParadisBotSettingsDraft, PARADIS_BOT_HOME_FILES, paradisBotHomeFileConflict, paradisBotHomeFileDiff, paradisBotRoleOverflow, paradisBotPermissionOptions, ParadisBotSettingsBase, paradisBotSettingsAgents, paradisBotSettingsChange, ParadisBotSettingsField, paradisBotSettingsRebase } from '../common/paradisBotSettingsModel.js';
 import { paradisBotGithubStatusText } from '../common/paradisBotPageModel.js';
 import { paradisBotChangeDetail } from './paradisBotChangeDetail.js';
 import { renderParadisBotFace } from './paradisBotFace.js';
@@ -68,6 +68,8 @@ export class ParadisBotSettingsPanel {
 	private roleLoaded = false;
 	private readonly files = new Map<string, string | undefined>();
 	private readonly fileEdits = new Map<string, string>();
+	/** 書きかけの間に、開いた後でほかの場所（Bot 自身など）が書き換えたファイルの今の中身（上書きするか読み直すかを選ばせる）。 */
+	private readonly fileConflicts = new Map<string, string | undefined>();
 	private openFile = PARADIS_BOT_HOME_FILES[0].path;
 	private saving = false;
 
@@ -190,6 +192,7 @@ export class ParadisBotSettingsPanel {
 		track(role, 'settings-role');
 		role.disabled = draft.role === undefined;
 		role.placeholder = draft.role === undefined ? localize('paradis.botPage.settings.roleLoading', "読み込んでいます…") : '';
+		const roleError = DOM.append(roleValue, $('.paradis-bot-settings-error'));
 
 		if (this.changedElsewhere.size > 0) {
 			const labels = [...this.changedElsewhere].map(field => field === 'name' ? localize('paradis.botPage.settings.name', "名前") : field === 'agent' ? localize('paradis.botPage.settings.agent', "エージェント") : localize('paradis.botPage.settings.permission', "権限"));
@@ -206,7 +209,10 @@ export class ParadisBotSettingsPanel {
 			this.draft = { name: name.value, agent: agents.value ?? draft.agent, permissionId: permission.value, role: this.draft?.role === undefined && this.role === undefined ? undefined : role.value };
 			const checked = paradisValidateBotName(name.value, this.services.botsService.snapshot.bots, bot.id);
 			nameError.textContent = checked.ok ? '' : paradisBotNameProblemMessage(checked.problem);
-			save.enabled = checked.ok && !this.saving && paradisBotSettingsChange(bot, this.role, this.draft) !== undefined;
+			// 上限を超えた役割は黙って切り詰めず、保存を断る
+			const overflow = paradisBotRoleOverflow(this.draft.role);
+			roleError.textContent = overflow > 0 ? localize('paradis.botPage.settings.roleTooLong', "役割が {0} 文字多すぎます（{1} 文字まで）。", overflow, PARADIS_BOT_ROLE_LIMIT) : '';
+			save.enabled = checked.ok && overflow === 0 && !this.saving && paradisBotSettingsChange(bot, this.role, this.draft) !== undefined;
 		};
 		store.add(name.onDidChange(update));
 		store.add(agents.onDidChange(() => {
@@ -261,9 +267,11 @@ export class ParadisBotSettingsPanel {
 	private async save(bot: IParadisBotSummary): Promise<void> {
 		const draft = this.draft;
 		const change = draft !== undefined ? paradisBotSettingsChange(bot, this.role, draft) : undefined;
-		if (change === undefined || this.saving) {
+		if (change === undefined || this.saving || paradisBotRoleOverflow(change.role) > 0) {
 			return;
 		}
+		// 確かめるのはエージェント・権限・役割だけ。名前の変更と止めた Bot の再開に確認を付けたのは、エージェント（管理の道具）
+		// からの変更を利用者に見せるため（paradisBotUpdateNeedsConfirmation）。利用者が画面で自分で行うときは確かめない
 		if (change.needsConfirmation) {
 			const request = paradisBotChangeRequest(bot, change);
 			// 確かめる本文は管理の道具と同じ。持ち主が自分で変えるので、依頼元（caller）は渡さない
@@ -316,6 +324,7 @@ export class ParadisBotSettingsPanel {
 			store.add(DOM.addDisposableListener(row, DOM.EventType.CLICK, () => {
 				this.openFile = entry.path;
 				this.rerender();
+				this.reloadFiles();
 			}));
 		}
 		const entry = PARADIS_BOT_HOME_FILES.find(candidate => candidate.path === this.openFile)!;
@@ -330,6 +339,9 @@ export class ParadisBotSettingsPanel {
 			DOM.append(body, $('.paradis-bot-page-hint')).textContent = localize('paradis.botPage.files.soulHint', "人格メモ（役割）は設定のタブで書き換えます。");
 			return;
 		}
+		if (this.fileConflicts.has(entry.path)) {
+			this.renderFileConflict(body, entry.path, store);
+		}
 		const frame = DOM.append(body, $('.paradis-field.paradis-field-area.paradis-focus-subtle-within.paradis-bot-files-editor'));
 		const editor = DOM.append(frame, $('textarea')) as HTMLTextAreaElement;
 		editor.rows = 16;
@@ -339,16 +351,16 @@ export class ParadisBotSettingsPanel {
 		track(editor, `files-${entry.path}`);
 		const foot = DOM.append(body, $('.paradis-bot-settings-foot'));
 		const note = DOM.append(foot, $('span.paradis-bot-settings-help'));
-		note.textContent = localize('paradis.botPage.files.memoryHint', "Bot も書き足します。保存の前に読み直し、開いた後に書き換わっていたら上書きしません。");
+		note.textContent = localize('paradis.botPage.files.memoryHint', "Bot も書き足します。保存の前に読み直し、開いた後に書き換わっていたら上書きするか読み直すかを選びます。");
 		if (entry.path === 'MEMORY.md') {
 			const undo = store.add(new ParadisButton(foot, { kind: 'secondary', label: localize('paradis.botPage.files.undoTidy', "記憶の整理を取り消す...") }));
 			store.add(undo.onDidClick(() => void this.undoMemoryTidy(bot)));
 		}
 		const save = store.add(new ParadisButton(foot, { kind: 'primary', label: localize('paradis.botPage.files.save', "保存") }));
-		save.enabled = this.fileEdits.has(entry.path) && !this.saving;
+		save.enabled = this.fileEdits.has(entry.path) && !this.saving && !this.fileConflicts.has(entry.path);
 		store.add(DOM.addDisposableListener(editor, DOM.EventType.INPUT, () => {
 			this.fileEdits.set(entry.path, editor.value);
-			save.enabled = !this.saving;
+			save.enabled = !this.saving && !this.fileConflicts.has(entry.path);
 		}));
 		store.add(save.onDidClick(() => void this.saveFile(entry.path)));
 	}
@@ -372,9 +384,68 @@ export class ParadisBotSettingsPanel {
 		this.services.notificationService.info(result.value.added.length > 0
 			? localize('paradis.botPage.files.undoTidyDoneAdded', "記憶を {0} の写しに戻しました（{1} 件）。整理でできたファイル {2} は残しています。", new Date(result.value.takenAt).toLocaleString(), result.value.restored.length, result.value.added.join(', '))
 			: localize('paradis.botPage.files.undoTidyDone', "記憶を {0} の写しに戻しました（{1} 件）。", new Date(result.value.takenAt).toLocaleString(), result.value.restored.length));
+		// 写しに記憶のファイル以外があった（書き戻すのは MEMORY.md と memory/ の直下だけ）
+		if (result.value.skipped.length > 0) {
+			this.services.notificationService.warn(localize('paradis.botPage.files.undoTidySkipped', "取り消せなかったファイルがあります（記憶のファイルではないので書き戻していません）: {0}", result.value.skipped.join(', ')));
+		}
 		this.files.clear();
 		this.fileEdits.clear();
+		this.fileConflicts.clear();
 		this.rerender();
+	}
+
+	/** 開いた後に書き換わったファイルの差分と、「上書きする」「読み直す（書きかけを捨てる）」の選び。 */
+	private renderFileConflict(body: HTMLElement, path: string, store: DisposableStore): void {
+		const latest = this.fileConflicts.get(path);
+		const box = DOM.append(body, $('.paradis-bot-files-conflict'));
+		box.setAttribute('role', 'status');
+		DOM.append(box, $('.paradis-bot-files-conflict-title')).textContent = localize('paradis.botPage.files.conflictTitle', "{0} は開いた後にほかの場所で書き換わりました。変わったところ:", path);
+		const diff = DOM.append(box, $('.paradis-bot-files-diff'));
+		for (const line of paradisBotHomeFileDiff(this.files.get(path), latest)) {
+			if (line.kind === 'same') {
+				continue;
+			}
+			const row = DOM.append(diff, $(`.paradis-bot-files-diff-line.${line.kind}`));
+			row.textContent = `${line.kind === 'added' ? '+' : '-'} ${line.text}`;
+		}
+		const actions = DOM.append(box, $('.paradis-bot-settings-foot'));
+		const overwrite = store.add(new ParadisButton(actions, { kind: 'secondary', label: localize('paradis.botPage.files.overwrite', "上書きする"), disabled: this.saving }));
+		store.add(overwrite.onDidClick(() => void this.saveFile(path, { expected: latest })));
+		const reload = store.add(new ParadisButton(actions, { kind: 'secondary', label: localize('paradis.botPage.files.reloadDiscard', "読み直す（書きかけを捨てる）"), disabled: this.saving }));
+		store.add(reload.onDidClick(() => {
+			this.files.set(path, latest);
+			this.fileEdits.delete(path);
+			this.fileConflicts.delete(path);
+			this.rerender();
+		}));
+	}
+
+	/**
+	 * ファイルのタブを開き直した・ファイルを選び直したときに読み直す。書きかけが無ければ新しい中身にし、書きかけがあって
+	 * ほかの場所で書き換わっていれば、上書きするか読み直すかを選ばせる。
+	 */
+	reloadFiles(): void {
+		if (this.files.has(this.openFile)) {
+			void this.refreshFile(this.openFile);
+		}
+	}
+
+	private async refreshFile(path: string): Promise<void> {
+		const result = await this.services.botsService.readHomeFile(this.botId, path);
+		if (!result.ok) {
+			return;
+		}
+		if (!this.fileEdits.has(path)) {
+			if (this.files.get(path) !== result.value) {
+				this.files.set(path, result.value);
+				this.rerender();
+			}
+			return;
+		}
+		if (paradisBotHomeFileConflict(this.files.get(path), result.value)) {
+			this.fileConflicts.set(path, result.value);
+			this.rerender();
+		}
 	}
 
 	private async loadFile(path: string): Promise<void> {
@@ -383,7 +454,11 @@ export class ParadisBotSettingsPanel {
 		this.rerender();
 	}
 
-	private async saveFile(path: string): Promise<void> {
+	/**
+	 * 保存の前に読み直し、開いた後に書き換わっていたら書かずに、上書きするか読み直すかを選ばせる。読み直せなければ
+	 * 比べられないので書かない。`overwrite.expected` は「上書きする」を選んだときに見せた今の中身（その後にまた変わっていたら選び直させる）。
+	 */
+	private async saveFile(path: string, overwrite?: { readonly expected: string | undefined }): Promise<void> {
 		const edited = this.fileEdits.get(path);
 		if (edited === undefined || this.saving) {
 			return;
@@ -391,8 +466,12 @@ export class ParadisBotSettingsPanel {
 		this.saving = true;
 		try {
 			const latest = await this.services.botsService.readHomeFile(this.botId, path);
-			if (latest.ok && paradisBotHomeFileConflict(this.files.get(path), latest.value)) {
-				this.services.notificationService.warn(localize('paradis.botPage.files.conflict', "{0} は開いた後に書き換わっていたので、保存しませんでした。自分の編集を写してから開き直してください。", path));
+			if (!latest.ok) {
+				this.services.notificationService.warn(localize('paradis.botPage.files.readFailed', "{0} を読み直せなかったので、保存しませんでした: {1}", path, latest.message));
+				return;
+			}
+			if (paradisBotHomeFileConflict(overwrite !== undefined ? overwrite.expected : this.files.get(path), latest.value)) {
+				this.fileConflicts.set(path, latest.value);
 				return;
 			}
 			const written = await this.services.botsService.writeHomeFile(this.botId, path, edited);
@@ -402,6 +481,7 @@ export class ParadisBotSettingsPanel {
 			}
 			this.files.set(path, edited);
 			this.fileEdits.delete(path);
+			this.fileConflicts.delete(path);
 		} finally {
 			this.saving = false;
 			this.rerender();
