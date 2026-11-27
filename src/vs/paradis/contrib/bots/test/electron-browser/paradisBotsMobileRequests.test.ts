@@ -34,6 +34,8 @@ suite('Paradis bots mobile requests', () => {
 			writeHomeFile: async (_bot: string, path: string, text: string) => { calls.push(`write ${path}`); files.set(path, text); return { ok: true, value: undefined }; },
 			updateBot: async (_bot: string, patch: object) => { calls.push(`update ${JSON.stringify(patch)}`); return { ok: true, value: BOT }; },
 			requestStop: async () => { calls.push('stop'); return true; },
+			startSuggestion: async (id: string) => { calls.push(`start ${id}`); return { ok: true, value: { id, botId: 'bot-1', title: 't', request: '依頼', run: 'r', state: 'open', createdAt: 1 } }; },
+			markSuggestionStarted: async (id: string) => { calls.push(`started ${id}`); return { ok: true, value: { id, botId: 'bot-1', title: 't', request: '依頼', run: 'r', state: 'started', createdAt: 1 } }; },
 		} as unknown as IParadisBotsService;
 		const services = new Map<unknown, unknown>([
 			[IConfigurationService, new TestConfigurationService({ [PARADIS_BOTS_ENABLED_SETTING]: enabled })],
@@ -86,5 +88,16 @@ suite('Paradis bots mobile requests', () => {
 			{ error: 'botFile reads SOUL.md or MEMORY.md', code: 'invalid' },
 			{ t: 'botOpen', ok: true },
 		], ['command paradis.bots.open bot-1']]);
+	});
+
+	test('提案の「始める」は文を返すだけで、アプリが入力欄へ入れた後の started で「始めた」にする', async () => {
+		const { send, replies, calls } = setup();
+		await send('botSuggestionAct', { id: 's1', action: 'start', opId: 'a1' });
+		await send('botSuggestionAct', { id: 's1', action: 'started', opId: 'a2' });
+		await send('botSuggestionAct', { id: 's1', action: 'other', opId: 'a3' });
+		assert.deepStrictEqual([calls, replies.map(reply => (reply as { suggestion?: { state: string }; code?: string }).suggestion?.state ?? (reply as { code?: string }).code)], [
+			['start s1', 'started s1'],
+			['open', 'started', 'invalid'],
+		]);
 	});
 });
