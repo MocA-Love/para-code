@@ -154,7 +154,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 	private composing = false;
 	private renderAfterComposition = false;
 	/** 今の面の入力欄（作り直したときに、同じ欄へフォーカスを戻す）。 */
-	private readonly focusTargets = new Map<string, HTMLTextAreaElement>();
+	private readonly focusTargets = new Map<string, HTMLInputElement | HTMLTextAreaElement>();
 	private readonly focusKeys = new WeakMap<HTMLElement, string>();
 
 	constructor(
@@ -252,7 +252,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 			if (this.botId !== undefined && this.currentTab() === 'items') {
 				void this.loadItems();
 			} else if (this.botId !== undefined && this.currentTab() === 'settings') {
-				// 動かす・ピン留め・顔は台帳の値で描き直す（入力中の値はパネルが持つ）
+				// その Bot の設定の値が変わったときだけ描き直す（入力中の値はパネルが持ち、書きかけは台帳の値で上書きしない）
 				this.renderPanel();
 			}
 		}));
@@ -470,17 +470,18 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		return JSON.stringify([this.botId, item !== undefined ? item : [this.items, this.suggestions], entry, key !== undefined ? this.askStates.get(key) : undefined]);
 	}
 
-	/** @param force 中身の印が同じでも描き直す（見回りの節など、印に入らない部品が変わったとき）。 */
+	/** @param force 中身の印が同じでも描き直す（設定・ファイルのパネルや見回りの節が自分の状態を変えたとき）。 */
 	private renderPanel(force = false): void {
 		if (this.botId === undefined) {
 			return;
 		}
 		const tab = this.currentTab();
-		// ファイル・設定の面は、入力中の値をパネル（ParadisBotSettingsPanel）が持つので、呼ばれるたびに描き直す
 		const settings = tab === 'files' || tab === 'settings';
+		const bot = this.bot(this.botId);
 		const uid = this.openItems.get(this.botId);
 		const item = uid !== undefined ? this.items.find(candidate => candidate.uid === uid) : undefined;
-		const signature = settings ? undefined : this.signature(item);
+		// 設定・ファイルの面は、そのタブに出す台帳の値の印（入力中の値はパネルが持つ）
+		const signature = settings ? (bot !== undefined ? this.settingsPanel(bot.id).signature(tab, bot) : undefined) : this.signature(item);
 		if (!force && signature !== undefined && signature === this.panelSignature) {
 			return;
 		}
@@ -493,28 +494,25 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		const focused = DOM.isHTMLElement(active) && this.panel.contains(active) ? active : undefined;
 		// 入力欄にいたら、作り直した同じ欄へ戻す（値は項目ごとの書きかけから戻る）
 		const focusKey = focused !== undefined ? this.focusKeys.get(focused) : undefined;
-		const selection = focusKey !== undefined && DOM.isHTMLTextAreaElement(focused) ? [focused.selectionStart, focused.selectionEnd] as const : undefined;
+		const selection = focusKey !== undefined && (DOM.isHTMLTextAreaElement(focused) || DOM.isHTMLInputElement(focused)) ? [focused.selectionStart, focused.selectionEnd] as const : undefined;
 		const scrollTop = this.panel.scrollTop;
 		this.panelStore.clear();
 		DOM.clearNode(this.panel);
 		this.focusTargets.clear();
 		this.panelSignature = signature;
 		const body = DOM.append(this.panel, $('.paradis-bot-page-body'));
+		const track = (element: HTMLInputElement | HTMLTextAreaElement, key: string) => this.trackFocus(element, key);
 		if (settings) {
-			const bot = this.bot(this.botId);
 			if (bot !== undefined) {
 				const panel = this.settingsPanel(bot.id);
 				if (tab === 'files') {
-					panel.renderFiles(body, bot, this.panelStore);
+					panel.renderFiles(body, bot, this.panelStore, track);
 				} else {
-					panel.renderSettings(body, bot, this.panelStore);
+					panel.renderSettings(body, bot, this.panelStore, track);
 					this.patrolSection(bot.id)?.renderSettings(body, this.panelStore);
 				}
 			}
-			this.panel.scrollTop = scrollTop;
-			return;
-		}
-		if (item !== undefined) {
+		} else if (item !== undefined) {
 			this.renderItem(body, item);
 		} else {
 			this.renderList(body);
@@ -523,7 +521,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		const again = focusKey !== undefined ? this.focusTargets.get(focusKey) : undefined;
 		if (again) {
 			again.focus();
-			if (selection) {
+			if (selection && selection[0] !== null && selection[1] !== null) {
 				again.setSelectionRange(selection[0], selection[1]);
 			}
 		} else if (focused) {
@@ -547,7 +545,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 				configurationService: this.configurationService,
 			}, () => {
 				if (!this._store.isDisposed && this.botId === botId) {
-					this.renderPanel();
+					this.renderPanel(true);
 				}
 			});
 			this.settingsPanels.set(botId, panel);
@@ -579,7 +577,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		return section;
 	}
 
-	private trackFocus(text: HTMLTextAreaElement, key: string): void {
+	private trackFocus(text: HTMLInputElement | HTMLTextAreaElement, key: string): void {
 		this.focusTargets.set(key, text);
 		this.focusKeys.set(text, key);
 	}
