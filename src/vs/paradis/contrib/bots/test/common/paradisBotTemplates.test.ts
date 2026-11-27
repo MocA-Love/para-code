@@ -10,7 +10,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { PARADIS_BOT_ROLE_MAX_LENGTH } from '../../common/paradisBotsBandModel.js';
 import { paradisBotHomeRelativePath, PARADIS_BOT_LIMITS } from '../../common/paradisBots.js';
-import { PARADIS_BOT_TEMPLATE_CATALOG, paradisBotTemplate, paradisBotTemplateSkillFile, paradisBotTemplateSkillPaths, paradisBotTemplateSoul, paradisFilterBotTemplates } from '../../common/paradisBotTemplates.js';
+import { PARADIS_BOT_TEMPLATE_CATALOG, paradisBotTemplate, paradisBotTemplateDefaultName, paradisBotTemplateSkillFile, paradisBotTemplateSkillPaths, paradisBotTemplateSkillSection, paradisBotTemplateSoul, paradisFilterBotTemplates } from '../../common/paradisBotTemplates.js';
 
 suite('Paradis bot templates', () => {
 
@@ -46,8 +46,9 @@ suite('Paradis bot templates', () => {
 	test('人格メモとスキルのファイル', () => {
 		const review = paradisBotTemplate('review')!;
 		assert.deepStrictEqual({
-			soul: paradisBotTemplateSoul('レビュー係', ' 自分の言葉の役割 ', review, true),
-			soulWithoutSkill: paradisBotTemplateSoul('レビュー係', '', review, false).includes('## スキル'),
+			soul: `${paradisBotTemplateSoul('レビュー係', ' 自分の言葉の役割 ', review)}\n${paradisBotTemplateSkillSection(review.skill!)}`,
+			// スキルの節は人格メモの側には入れない（置けたときに shared process が足す）
+			soulWithoutSkill: paradisBotTemplateSoul('レビュー係', '', review).includes('## スキル'),
 			paths: paradisBotTemplateSkillPaths(review.skill!),
 			skillHead: paradisBotTemplateSkillFile(review.skill!).split('\n').slice(0, 6),
 		}, {
@@ -82,11 +83,27 @@ suite('Paradis bot templates', () => {
 			skillHead: [
 				'---',
 				'name: pr-review-checklist',
-				'description: PR の差分を読み、危ない変更と足りないテストをファイルと行つきで挙げるときの手順。',
+				'description: "PR の差分を読み、危ない変更と足りないテストをファイルと行つきで挙げるときの手順。"',
 				'---',
 				'',
 				'# PR のレビュー',
 			],
 		});
+	});
+
+	test('SKILL.md の front matter は name と description だけ（allowed-tools などで道具の許可を足さない）。説明は引用符で囲む', () => {
+		const heads = PARADIS_BOT_TEMPLATE_CATALOG.flatMap(template => template.skill ? [paradisBotTemplateSkillFile(template.skill)] : [])
+			.map(file => file.split('\n---\n')[0].split('\n').slice(1).map(line => line.split(':')[0]));
+		const quoted = PARADIS_BOT_TEMPLATE_CATALOG.flatMap(template => template.skill ? [paradisBotTemplateSkillFile(template.skill).split('\n')[2]] : [])
+			.every(line => /^description: ".*"$/u.test(line));
+		assert.deepStrictEqual({ heads: [...new Set(heads.map(keys => keys.join(',')))], quoted }, { heads: ['name,description'], quoted: true });
+	});
+
+	test('同じテンプレートから 2 体目を作るときは名前に番号を足す', () => {
+		assert.deepStrictEqual([
+			paradisBotTemplateDefaultName('PR のレビュー係', ['別の Bot']),
+			paradisBotTemplateDefaultName('PR のレビュー係', ['PR のレビュー係']),
+			paradisBotTemplateDefaultName('PR のレビュー係', ['ｐｒ のレビュー係', 'PR のレビュー係 2']),
+		], ['PR のレビュー係', 'PR のレビュー係 2', 'PR のレビュー係 3']);
 	});
 });

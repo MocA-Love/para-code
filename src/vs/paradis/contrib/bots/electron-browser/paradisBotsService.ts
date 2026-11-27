@@ -195,6 +195,10 @@ export class ParadisBotsClient extends Disposable implements IParadisBotsService
 		return this.result('writeHomeFile', [botId, relativePath, text]);
 	}
 
+	installTemplateSkill(botId: string, templateId: string): Promise<ParadisBotsServiceResult<string>> {
+		return this.result('installTemplateSkill', [botId, templateId]);
+	}
+
 	private result<T>(command: string, args: unknown[]): Promise<ParadisBotsServiceResult<T>> {
 		return this.value<ParadisBotsServiceResult<T>>(command, args, UNAVAILABLE);
 	}

@@ -24,7 +24,7 @@ import { ParadisCheck } from '../../../browser/paradisCheck.js';
 import { ParadisInputField } from '../../../browser/paradisInputField.js';
 import { PARADIS_MODAL_BACKDROP_CLASS, PARADIS_MODAL_BODY_CLASS, PARADIS_MODAL_FOOT_CLASS, paradisModalClasses, ParadisModalSize, renderParadisModalHead } from '../../../browser/paradisModal.js';
 import { ParadisModalFocus } from '../../paradisSettings/browser/paradisModalFocus.js';
-import { IParadisBotTemplate, PARADIS_BOT_TEMPLATE_CATALOG, PARADIS_BOT_TEMPLATE_CATEGORIES, ParadisBotTemplateCategory, paradisBotTemplate, paradisBotTemplateCategoryLabel, paradisFilterBotTemplates } from '../common/paradisBotTemplates.js';
+import { IParadisBotTemplate, PARADIS_BOT_TEMPLATE_CATALOG, PARADIS_BOT_TEMPLATE_CATEGORIES, paradisBotTemplate, ParadisBotTemplateCategory, paradisBotTemplateCategoryLabel, paradisBotTemplateSkillFile, paradisFilterBotTemplates } from '../common/paradisBotTemplates.js';
 
 /** 一覧の「白紙の Bot」の行の id（テンプレートを外す）。 */
 export const PARADIS_BOT_BLANK_TEMPLATE_ID = 'blank';
@@ -209,6 +209,7 @@ export class ParadisBotTemplatesDialog extends Disposable {
 			[localize('paradis.bots.templates.watches', "見るもの"), template.watches],
 			[localize('paradis.bots.templates.does', "すること"), template.does],
 			[localize('paradis.bots.templates.reports', "知らせること"), template.reports],
+			[localize('paradis.bots.templates.firstChat', "最初の会話で"), template.firstChat],
 		]) {
 			dom.append(kv, dom.$('span.pbtd-key')).textContent = label;
 			dom.append(kv, dom.$('span.pbtd-value')).textContent = value;
@@ -219,6 +220,10 @@ export class ParadisBotTemplatesDialog extends Disposable {
 			skill.element.classList.add('pbtd-skill');
 			this.detailDisposables.add(skill.onDidChange(checked => this.withSkill = checked));
 			dom.append(this.detail, dom.$('.pbtd-note')).textContent = localize('paradis.bots.templates.skillNote', "Bot の専用フォルダに置きます。チェックを外すと入れません");
+			// 置く中身（SKILL.md）を作る前に読めるように
+			const details = dom.append(this.detail, dom.$('details.pbtd-skill-body'));
+			dom.append(details, dom.$('summary')).textContent = localize('paradis.bots.templates.skillBody', "スキルの中身を見る");
+			dom.append(details, dom.$('pre')).textContent = paradisBotTemplateSkillFile(template.skill);
 		}
 		if (template.note !== undefined) {
 			dom.append(this.detail, dom.$('.pbtd-note')).textContent = template.note;

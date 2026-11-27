@@ -34,6 +34,7 @@ import {
 	paradisParseBotOwnerFile,
 } from '../common/paradisBotHome.js';
 import { IParadisBot, paradisBotHomeRelativePath, paradisIsBotFolderName } from '../common/paradisBots.js';
+import { paradisBotTemplate, paradisBotTemplateSkillFile, paradisBotTemplateSkillPaths, paradisBotTemplateSkillSection } from '../common/paradisBotTemplates.js';
 
 /** 読み書きする 1 ファイルの大きさの上限。 */
 export const PARADIS_BOT_HOME_FILE_LIMIT = 1024 * 1024;
@@ -161,6 +162,37 @@ export class ParadisBotHomes {
 	}
 
 	/**
+	 * 同梱のテンプレートのスキルを置く（`.claude/skills/<名前>/SKILL.md` と `.agents/skills/<名前>/SKILL.md`）。`.claude` は
+	 * エージェントの設定の置き場なので {@link write} では断るが、ここだけは同梱のカタログ（`templateId` で引く）の中身に限って
+	 * 書く。呼び出し元の文字列は書かない。置けたら人格メモ（SOUL.md）の末尾にスキルの節を足す（置けなかったら足さない）。
+	 * カタログに無い・スキルの無いテンプレートは断る。
+	 */
+	async writeTemplateSkill(bot: HomeBot, templateId: string): Promise<string> {
+		const skill = paradisBotTemplate(templateId)?.skill;
+		if (skill === undefined || !/^[a-z][a-z0-9-]{0,63}$/u.test(skill.name)) {
+			throw new ParadisBotHomeError('outside', 'There is no such bot template skill.');
+		}
+		const home = this.folder(bot);
+		const text = paradisBotTemplateSkillFile(skill);
+		for (const relative of paradisBotTemplateSkillPaths(skill)) {
+			const clean = paradisBotHomeRelativePath(relative);
+			if (clean === undefined) {
+				throw new ParadisBotHomeError('outside', 'The skill path is not valid.');
+			}
+			// 置き場の外へ出ないこと（symlink を解いた先）は {@link write} と同じに確かめる。予約の検査だけを飛ばす
+			const path = await this.resolveInside(home, clean, true);
+			await paradisWriteFileAtomic(path, text, { rejectSymlink: true });
+		}
+		const soulPath = join(home, PARADIS_BOT_SOUL_FILE);
+		const soul = await readText(soulPath) ?? '';
+		const section = paradisBotTemplateSkillSection(skill);
+		if (!soul.includes(section.trim())) {
+			await paradisWriteFileAtomic(soulPath, `${soul.replace(/\n*$/u, '\n\n')}${section}`, { rejectSymlink: true });
+		}
+		return skill.name;
+	}
+
+	/**
 	 * 記憶のファイル（`MEMORY.md` と `memory/` の直下の通常のファイル）の相対パス。symlink とフォルダは数えない。
 	 * 記憶の整理の写しを取るのに使う。多すぎるときは {@link PARADIS_BOT_MEMORY_FILES_LIMIT} 件で打ち切る。
 	 */
@@ -210,7 +242,11 @@ export class ParadisBotHomes {
 		if (forWrite && AGENT_CONFIG_ENTRIES.has(clean.split('/')[0].toLowerCase())) {
 			throw new ParadisBotHomeError('reserved', `${clean.split('/')[0]} holds settings that Claude Code or Codex read from a folder, so bots do not write it.`);
 		}
-		const home = this.folder(bot);
+		return this.resolveInside(this.folder(bot), clean, forWrite);
+	}
+
+	/** 字面を確かめた相対パスを、symlink を解いた先がフォルダの中にあると確かめてから絶対パスにする。 */
+	private async resolveInside(home: string, clean: string, forWrite: boolean): Promise<string> {
 		const path = join(home, ...clean.split('/'));
 		const realHome = await fs.realpath(home);
 		let existing = path;
