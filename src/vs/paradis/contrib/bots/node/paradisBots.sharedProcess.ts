@@ -20,7 +20,7 @@ import { IMainProcessService } from '../../../../platform/ipc/common/mainProcess
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { ParadisSharedProcessContributions } from '../../../common/paradisProcessContributions.js';
 import { PARADIS_MCP_PORT_FILE_NAME } from '../../agentBrowser/common/paradisAgentBrowser.js';
-import { paradisRegisterMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
+import { paradisRegisterMcpCallRefusal, paradisRegisterMcpToolProvider } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { paradisCodexHomeCandidates } from '../../agentBrowser/node/paradisAgentHome.js';
 import { onParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING, paradisAgentIdeActionsAllowed } from '../../agentIde/common/paradisAgentIde.js';
@@ -37,7 +37,7 @@ import { ParadisBotBoardToolProvider } from './paradisBotBoardToolProvider.js';
 import { createParadisBotGhRunner, ParadisBotGithubWatcher } from './paradisBotGithubWatcher.js';
 import { ParadisBotGithubToolProvider } from './paradisBotGithubToolProvider.js';
 import { ParadisBotHomes } from './paradisBotHomes.js';
-import { ParadisBotManageToolProvider, paradisBotIdeActionRefusal } from './paradisBotManageToolProvider.js';
+import { ParadisBotManageToolProvider, paradisBotIdeActionRefusal, paradisBotPatrolToolRefusal } from './paradisBotManageToolProvider.js';
 import { ParadisBotToolProvider } from './paradisBotToolProvider.js';
 import { ParadisBotMessageToolProvider } from './paradisBotMessageToolProvider.js';
 import { ParadisBotsChannel } from './paradisBotsChannel.js';
@@ -174,6 +174,8 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 		await service.ready;
 		return service.isBotPane(paneToken);
 	}));
+	// 見回りのペインからは、para-browser の読むだけの道具と見回りの Bot の道具だけを通す（利用者が常に許可した書く道具も断る）
+	store.add(paradisRegisterMcpCallRefusal(paradisBotPatrolToolRefusal(service)));
 	store.add({
 		dispose: () => {
 			if (shared === service) {
