@@ -154,8 +154,14 @@ export class ParadisBotHomes {
 	 * 記憶の整理の写しを取るのに使う。多すぎるときは {@link PARADIS_BOT_MEMORY_FILES_LIMIT} 件で打ち切る。
 	 */
 	async memoryFiles(bot: HomeBot): Promise<string[]> {
+		return (await this.memoryFilesWithTotal(bot)).files;
+	}
+
+	/** {@link memoryFiles} と、打ち切る前の数（`total` が `files.length` より多ければ一部だけ）。 */
+	async memoryFilesWithTotal(bot: HomeBot): Promise<{ readonly files: string[]; readonly total: number }> {
 		const home = this.folder(bot);
 		const files: string[] = [];
+		let total = 0;
 		if ((await fs.lstat(join(home, PARADIS_BOT_MEMORY_FILE)).catch(() => undefined))?.isFile()) {
 			files.push(PARADIS_BOT_MEMORY_FILE);
 		}
@@ -166,11 +172,14 @@ export class ParadisBotHomes {
 			throw error;
 		});
 		for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-			if (entry.isFile() && files.length < PARADIS_BOT_MEMORY_FILES_LIMIT) {
-				files.push(`${PARADIS_BOT_MEMORY_FOLDER}/${entry.name}`);
+			if (entry.isFile()) {
+				total++;
+				if (files.length < PARADIS_BOT_MEMORY_FILES_LIMIT) {
+					files.push(`${PARADIS_BOT_MEMORY_FOLDER}/${entry.name}`);
+				}
 			}
 		}
-		return files;
+		return { files, total: total + (files[0] === PARADIS_BOT_MEMORY_FILE ? 1 : 0) };
 	}
 
 	/**
