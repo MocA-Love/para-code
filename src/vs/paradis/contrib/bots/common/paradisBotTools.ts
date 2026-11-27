@@ -144,7 +144,7 @@ export const PARADIS_BOT_SERVER_INSTRUCTIONS = 'Bot tools (bot_item_list, bot_it
 
 /**
  * 会話の Bot のペインで前もって許可する Bot の道具（どれも Bot のペインにだけ出し、呼び出し元のペインの Bot として
- * 動く）。項目の道具と提案に、Bot どうしの伝言（bot_tell・bot_ask）、ボードへタスクを載せる道具（bot_board_add_task）、GitHub の新着を読む道具（bot_github_news。見張りがオンの Bot にだけ出る）を足す。管理の道具（list_bots ほか）は入れない。
+ * 動く）。項目の道具と提案に、Bot どうしの伝言（bot_tell・bot_ask）と受け箱（bot_inbox）、ボードへタスクを載せる道具（bot_board_add_task）、GitHub の新着を読む道具（bot_github_news。見張りがオンの Bot にだけ出る）を足す。管理の道具（list_bots ほか）は入れない。
  */
 const PARADIS_BOT_CHAT_APPROVAL_TOOLS: readonly string[] = [...PARADIS_BOT_TOOL_NAMES, PARADIS_BOT_TELL_TOOL, PARADIS_BOT_ASK_TOOL, PARADIS_BOT_INBOX_TOOL, PARADIS_BOT_BOARD_ADD_TASK_TOOL, PARADIS_BOT_GITHUB_NEWS_TOOL];
 
