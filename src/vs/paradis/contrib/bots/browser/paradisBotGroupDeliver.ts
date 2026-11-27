@@ -71,7 +71,7 @@ export interface IParadisBotGroupDeliverDependencies {
  * 伝言を届ける。順は「台帳の読み込み → 送り手と宛先が同じグループ → 宛先がこのウィンドウで動いている → 回数の上限 →
  * 送る」。宛先が作業中なら、今のターンを止めずに次の番まで待たせられるエージェント（`queuesWhileWorking`。Claude Code）
  * にだけ送って `queued`。待たせられないエージェント（作業中の Enter が応答を打ち切る Codex など）・入力欄に利用者の
- * 書きかけがある・許可や質問の画面が出ているときは、届ける口がペインへ何も書かずに断るので `refused` にして回数を戻す。
+ * 書きかけがある（書きかけを読めない宛先では、利用者がそのターミナルを操作中）・許可や質問の画面が出ているときは、届ける口がペインへ何も書かずに断るので `refused` にして回数を戻す。
  * 文を書いたかもしれない失敗（貼り付けた後に Enter を送れなかった等）は `unknown`（送り直すと重なる）。
  * 同じ宛先へ並んで来た伝言は {@link ParadisBotGroupDeliverQueue} で 1 つずつにする。
  */
@@ -107,7 +107,8 @@ export async function paradisBotGroupDeliver(deps: IParadisBotGroupDeliverDepend
 				kind: 'refused',
 				reason: outcome.code === 'working' ? 'that bot is working, and its agent cannot hold messages until its next turn'
 					: outcome.code === 'draft' ? 'its owner is typing in that bot\'s input'
-						: 'that bot cannot take a message now, for example while a question or permission prompt is open',
+						: outcome.code === 'focused' ? 'its owner is using that bot\'s terminal now'
+							: 'that bot cannot take a message now, for example while a question or permission prompt is open',
 			};
 		case 'unknown':
 			return { kind: 'unknown', reason: 'Para Code may have typed the message into that bot\'s input without sending it' };
