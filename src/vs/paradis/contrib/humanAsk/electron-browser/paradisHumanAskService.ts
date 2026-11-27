@@ -52,7 +52,7 @@ export class ParadisHumanAskClient extends Disposable implements IParadisHumanAs
 		return this._snapshot;
 	}
 
-	async answer(key: string, answer: ParadisHumanAskAnswer, surface: 'inbox' | 'bot' = 'inbox'): Promise<ParadisHumanAskClientResult> {
+	async answer(key: string, answer: ParadisHumanAskAnswer, surface: 'inbox' | 'bot' | 'mobile' = 'inbox'): Promise<ParadisHumanAskClientResult> {
 		try {
 			return await this.channel.call<ParadisHumanAskClientResult>('answer', [key, answer, surface]);
 		} catch (error) {
