@@ -118,6 +118,14 @@ interface IMeasuredDisplay {
 	readonly measuredWith: string;
 }
 
+/** スクショの縦横が、向きの名前と合っているか（横の向きなら横長、縦の向きなら縦長。正方形はどちらにも合う）。 */
+export function paradisScreenMatchesOrientation(display: { readonly pixelWidth: number; readonly pixelHeight: number; readonly orientation: string }): boolean {
+	if (display.pixelWidth === display.pixelHeight) {
+		return true;
+	}
+	return display.orientation.startsWith('landscape') === display.pixelWidth > display.pixelHeight;
+}
+
 function configKey(config: IParadisSimulatorScreenConfig): string {
 	return `${config.width}x${config.height}:${config.orientation}`;
 }
@@ -301,7 +309,13 @@ export class ParadisServeSimDeviceHost {
 			scale,
 			orientation: hyphenOrientation(config.orientation),
 		};
-		this._displays.set(deviceId, { display, measuredWith: configKey(config) });
+		// 回している途中に測ると、向き（serve-sim の映像の設定）はもう横なのにスクショは縦のまま、ということがある（アプリの
+		// 起動の直後はスクショが遅い）。その大きさを新しい向きの値として覚えると、次に向きが変わるまで縦の寸法を返し続けた
+		// （mobile_get_attached_device が landscape-left で 402x874。paracode-196 の確認）。向きとスクショの縦横が食い違う
+		// ときは覚えず、次に測り直す
+		if (paradisScreenMatchesOrientation(display)) {
+			this._displays.set(deviceId, { display, measuredWith: configKey(config) });
+		}
 		return display;
 	}
 

@@ -39,6 +39,8 @@ export interface IParadisSimulatorAxNode {
 	 * 変わった欄に付ける（{@link paradisMarkTypedSimulatorField}）。
 	 */
 	readonly focused?: true;
+	/** `focused` を付けた欄の、文字を入れる前の値（mobile_type_text の読み返しが、増えた部分だけを比べるため）。 */
+	readonly valueBefore?: string;
 }
 
 export interface IParadisSimulatorAxSnapshot {
@@ -264,8 +266,8 @@ function fieldKey(node: IParadisSimulatorAxNode): string {
 }
 
 /**
- * 文字を入れる前の欄の値（`before`）と比べて、値が変わった最初の欄に `focused` を付けた木を返す。
- * 変わった欄が無ければそのまま返す。
+ * 文字を入れる前の欄の値（`before`）と比べて、値が変わった最初の欄に `focused` と打つ前の値 `valueBefore` を付けた木を
+ * 返す（mobile_type_text の読み返しが、打って増えた部分だけを比べるため）。変わった欄が無ければそのまま返す。
  */
 export function paradisMarkTypedSimulatorField(snapshot: IParadisSimulatorAxSnapshot, before: ReadonlyMap<string, string>): IParadisSimulatorAxSnapshot {
 	let marked = false;
@@ -275,7 +277,7 @@ export function paradisMarkTypedSimulatorField(snapshot: IParadisSimulatorAxSnap
 		if (changed) {
 			marked = true;
 		}
-		return changed ? { ...node, children, focused: true } : children.some((child, index) => child !== node.children[index]) ? { ...node, children } : node;
+		return changed ? { ...node, children, focused: true, valueBefore: before.get(fieldKey(node)) } : children.some((child, index) => child !== node.children[index]) ? { ...node, children } : node;
 	};
 	// 子から先に見るので、入れ子の欄では内側が先に印を受ける
 	const root = visit(snapshot.root);

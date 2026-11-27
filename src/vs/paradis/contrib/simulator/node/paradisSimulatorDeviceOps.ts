@@ -134,6 +134,14 @@ const ROTATE_FIRST_WAIT_MS = 500;
 const ROTATE_MAX_SHOTS = 3;
 const ROTATE_SETTLE_INTERVAL_MS = 250;
 const ROTATE_BUDGET_MS = 2_000;
+/**
+ * アプリを起動した直後は、スクショも回転も遅い（Safari を起動した直後の landscape-left で、1 回の呼び出しが 4.7 秒
+ * かかり、2 秒では回り切る前に見るのをやめていた。paracode-196 の確認。2026-11-28 の iPhone 17・iOS 27.2 では、起動の
+ * 1.5 秒後に回すとスクショは 1 枚 2〜5 秒かかり、横になったのは 6.4 秒後）。起動からこの時間の間は、待つ上限と枚数を増やす。
+ */
+const ROTATE_AFTER_LAUNCH_WINDOW_MS = 20_000;
+const ROTATE_AFTER_LAUNCH_BUDGET_MS = 8_000;
+const ROTATE_AFTER_LAUNCH_MAX_SHOTS = 6;
 /** ピンチの指を動かす回数と間隔。 */
 const PINCH_STEPS = 12;
 const PINCH_STEP_INTERVAL_MS = 16;
@@ -175,7 +183,7 @@ const RELEASE_DEVICE_TOOL: IParadisMcpToolDefinition = {
 const DEVICE_TOOLS: readonly IParadisMcpToolDefinition[] = [
 	{
 		name: 'mobile_rotate',
-		description: 'Rotate the mobile device attached to this terminal pane. Returns the new screen size in points: every coordinate you pass to input tools afterwards must use this new size.',
+		description: 'Rotate the mobile device attached to this terminal pane. Returns the new screen size in points: every coordinate you pass to input tools afterwards must use this new size. If the result says "confirmed": false, Para Code could not see the screen turn in time: take mobile_screenshot before you use coordinates.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -300,6 +308,8 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 	 * 断る前に一度取り直す（利用者が手で回した・画面が変わった場合に備えて）。
 	 */
 	private readonly _screenSizes = new Map<string, IParadisScreen>();
+	/** 端末の id → アプリを起動した時刻（回転を待つ上限を延ばすため）。 */
+	private readonly _launchedAt = new Map<string, number>();
 
 	/** インストール（写し・承認・インストール）の最中のペイン。写しを並べて作らせない。 */
 	private readonly _installsInFlight = new Set<string>();
@@ -478,9 +488,13 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 		// 前面のアプリがその向きに回らないこと（縦しか無いアプリ、上下逆さに回らない iPhone）もあるので、
 		// 返すのは端末の向きではなく、実際の画面（スクショ）の大きさ。見た大きさは次のジェスチャー用に覚える
 		const started = this._now();
+		const launchedAt = this._launchedAt.get(attachment.deviceId);
+		const afterLaunch = launchedAt !== undefined && started - launchedAt < ROTATE_AFTER_LAUNCH_WINDOW_MS;
+		const budget = afterLaunch ? ROTATE_AFTER_LAUNCH_BUDGET_MS : ROTATE_BUDGET_MS;
+		const maxShots = afterLaunch ? ROTATE_AFTER_LAUNCH_MAX_SHOTS : ROTATE_MAX_SHOTS;
 		let screen: IParadisScreen | undefined;
 		await this._sleep(ROTATE_FIRST_WAIT_MS, signal);
-		for (let shot = 0; shot < ROTATE_MAX_SHOTS && !signal?.aborted; shot++) {
+		for (let shot = 0; shot < maxShots && !signal?.aborted; shot++) {
 			const shotStarted = this._now();
 			screen = await this._screen(attachment.deviceId, signal, true);
 			if (screen && orientationSettled(orientation, screen)) {
@@ -488,15 +502,19 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 			}
 			// 次の1枚が締め切りを越えるなら見るのをやめる
 			const shotTook = this._now() - shotStarted;
-			if (this._now() - started + ROTATE_SETTLE_INTERVAL_MS + shotTook > ROTATE_BUDGET_MS) {
+			if (this._now() - started + ROTATE_SETTLE_INTERVAL_MS + shotTook > budget) {
 				break;
 			}
 			await this._sleep(ROTATE_SETTLE_INTERVAL_MS, signal);
 		}
+		// 見ている間に新しい向きにならなかった。回らないアプリのこともあるが、まだ回っている途中のこともある（起動の直後など）
+		// ので「回らなかった」とは言い切らない。最後に見た大きさは覚えず、次の操作で測り直す
+		this._screenSizes.delete(attachment.deviceId);
 		return jsonResult({
 			orientation,
-			screen: screen ? describeScreen(screen) : null,
-			note: 'The device was turned, but the screen did not change to that orientation: the app on screen probably does not support it. Coordinates for input tools follow the screen size above, which matches the screenshot.',
+			confirmed: false,
+			lastSeenScreen: screen ? describeScreen(screen) : null,
+			note: `The device was turned, but Para Code could not confirm within ${Math.round((this._now() - started) / 100) / 10} s that the screen changed to ${orientation}: the app on screen may still be turning (it is slow right after an app starts), or it may not support this orientation. Take mobile_screenshot to see which way the screen is before you use coordinates. Input tools measure the screen again on their next call.`,
 		});
 	}
 
@@ -714,6 +732,10 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 		// 台帳の id と一覧の今の id の両方（同じ端末を、起動前の id で持つペインと起動後の id で持つペインがありうる）
 		this._screenSizes.delete(resolved.attachedId);
 		this._screenSizes.delete(resolved.device.id);
+		// 起動の直後は回転も遅いので、しばらくは回転を待つ上限を延ばす
+		const launchedAt = this._now();
+		this._launchedAt.set(resolved.attachedId, launchedAt);
+		this._launchedAt.set(resolved.device.id, launchedAt);
 		return textResult(`Launched ${appId} on ${resolved.device.name}.`);
 	}
 

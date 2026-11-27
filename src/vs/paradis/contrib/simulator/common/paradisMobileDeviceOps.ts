@@ -285,9 +285,57 @@ export function paradisDeviceHeldByAnotherPane(paneToken: string, device: IParad
 /**
  * 打った文字が ASCII だけなのに、欄に ASCII 以外の文字が入ったか（日本語のローマ字入力が「wifi」を「うぃふぃ」に
  * 変える。iOS のシミュレータはキーを HID で送るので、端末のキーボードの言語を通る）。
+ * `fieldValue` は、打って増えた部分（{@link paradisCheckTypedText}）を渡す。欄の全体を渡すと、前からあった日本語で
+ * 「変換された」と誤る。改行とタブは比べない（欄に入らないことがある）。
  */
 export function paradisTypedTextWasConverted(typed: string, fieldValue: string): boolean {
-	return /^[\x00-\x7f]+$/.test(typed) && !fieldValue.includes(typed) && /[^\x00-\x7f]/.test(fieldValue);
+	const want = withoutLineBreaks(typed);
+	const got = withoutLineBreaks(fieldValue);
+	return /^[\x00-\x7f]+$/.test(want) && !got.includes(want) && /[^\x00-\x7f]/.test(got);
+}
+
+/** 改行とタブを外す（打った文字と欄の値を比べる前に。改行は送信に、タブは次の欄への移動に使われ、欄に残らないことがある）。 */
+function withoutLineBreaks(text: string): string {
+	return text.replace(/[\r\n\t]/g, '');
+}
+
+/** 打った文字の読み返しの結果。 */
+export interface IParadisTypedTextCheck {
+	/** 打って欄に増えた部分。打つ前の値が分からないときは欄の全体。 */
+	readonly inserted: string;
+	/** 増えた部分が打った文字と同じか（改行とタブを外し、前後に足された空白は無視する）。 */
+	readonly matches: boolean;
+	/** 打った英数字が、端末のキーボードの言語で別の文字に変わったか。 */
+	readonly converted: boolean;
+}
+
+/**
+ * 打つ前と後の欄の値から、打って増えた部分を出し、打った文字と比べる。増えた部分は、前と後の共通の頭と尻を除いた所
+ * （欄の途中にカーソルがあっても取れる）。前の値が分からなければ欄の全体と比べる。
+ * iOS は貼り付けた語の前に空白を足すことがある（「wifi」の後へ「x」を貼ると「wifi x」）ので、前後の空白は無視する。
+ */
+export function paradisCheckTypedText(typed: string, before: string | undefined, after: string): IParadisTypedTextCheck {
+	let inserted = after;
+	if (before !== undefined) {
+		const old = Array.from(before);
+		const now = Array.from(after);
+		let head = 0;
+		while (head < old.length && head < now.length && old[head] === now[head]) {
+			head++;
+		}
+		let tail = 0;
+		while (tail < old.length - head && tail < now.length - head && old[old.length - 1 - tail] === now[now.length - 1 - tail]) {
+			tail++;
+		}
+		inserted = now.slice(head, now.length - tail).join('');
+	}
+	const want = withoutLineBreaks(typed);
+	const got = withoutLineBreaks(inserted);
+	return {
+		inserted,
+		matches: got === want || got.trim() === want.trim(),
+		converted: paradisTypedTextWasConverted(typed, inserted),
+	};
 }
 
 // --- インストールするファイル ---

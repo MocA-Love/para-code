@@ -22,6 +22,7 @@ import {
 	paradisPinchFrames,
 	paradisResolveMobilePermission,
 	paradisSwipeEndpoints,
+	paradisCheckTypedText,
 	paradisTypedTextWasConverted,
 } from '../../common/paradisMobileDeviceOps.js';
 
@@ -178,6 +179,40 @@ suite('ParadisMobileDeviceOps', () => {
 			paradisTypedTextWasConverted('日本語', 'にほんご'),
 			paradisTypedTextWasConverted('123', ''),
 		], [true, true, false, false, false, false]);
+	});
+
+	// 打って増えた部分だけを打った文字と比べる（paracode-196 の確認で、欄に前からある文字と改行のために誤報していた）
+	test('compares only the part that typing added to the field', () => {
+		const check = (typed: string, before: string | undefined, after: string) => {
+			const result = paradisCheckTypedText(typed, before, after);
+			return [result.inserted, result.matches, result.converted];
+		};
+		assert.deepStrictEqual([
+			// 「wifi」の欄に足す（前は欄の全体と比べて false だった）
+			check(' 日本語a.b-c123', 'wifi', 'wifi 日本語a.b-c123'),
+			// iOS が貼り付けた語の前に空白を足す。改行は欄に残らない
+			check('x\n', 'wifi 日本語a.b-c123', 'wifi 日本語a.b-c123 x'),
+			// 欄に前からある日本語で「変換された」と言わない
+			check('x', '日本語', '日本語x'),
+			// カーソルが途中にある
+			check('bc', 'ad', 'abcd'),
+			// 本当に変換された
+			check('wifi', '', 'うぃふぃ'),
+			check('wifi', '検索', '検索うぃふぃ'),
+			// 打つ前の値が分からなければ欄の全体と比べる
+			check('wifi', undefined, 'wifi'),
+			// 入らなかった
+			check('wifi', 'abc', 'abc'),
+		], [
+			[' 日本語a.b-c123', true, false],
+			[' x', true, false],
+			['x', true, false],
+			['bc', true, false],
+			['うぃふぃ', false, true],
+			['うぃふぃ', false, true],
+			['wifi', true, false],
+			['', false, false],
+		]);
 	});
 
 	test('request answers: anything malformed is not an approval', () => {
