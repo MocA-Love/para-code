@@ -264,14 +264,6 @@ export class ParadisBotsService extends Disposable {
 		return this.panes.purposeOf(paneToken);
 	}
 
-	/**
-	 * その Bot の会話のペインのトークン（shared process の中だけで使う。外へ出さない）。Bot 同士の伝言を宛先のペインの
-	 * ウィンドウへ届けるのに使う。現れたペインだけで、起動し直した後にまだ現れていない結び付けは含めない。
-	 */
-	chatPaneTokensOf(botId: string): string[] {
-		return this.panes.tokensOf(botId).filter(token => this.panes.purposeOf(token) === 'chat');
-	}
-
 	/** そのペインの Bot（Bot のペインでなければ undefined）。起動し直した後に初めて現れたペインは、保存した結び付けを戻す。 */
 	botOfPane(paneToken: string): IParadisBot | undefined {
 		if (this.restorePane(paneToken)) {
