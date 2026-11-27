@@ -8,6 +8,7 @@
 
 // チャット表示の入力欄の、画面に依存しない判断（補完を出すか・候補の並べ方・送信履歴の積み方）。
 
+import { localize } from '../../../../nls.js';
 import { IParadisAgentChatCommand } from './paradisAgentChat.js';
 
 /**
@@ -111,4 +112,18 @@ export function paradisInsertAgentChatDraft(text: string, target: IParadisAgentC
 	const { value, result } = paradisAppendAgentChatDraft(target.getDraft(), text);
 	target.setDraft(value);
 	return result;
+}
+
+/**
+ * ペイン（ターミナル）を指して、そのエージェントへ発言を送る（{@link IParadisAgentChatService.sendMessageToPane}）。エージェントの会話が
+ * 無いペインと、空白だけの文は送らずに理由を返す。送るのは `send`（チャット表示の入力欄と同じ確認を通る）。
+ */
+export async function paradisSendToAgentPane(token: string | undefined, text: string, send: (token: string, text: string) => Promise<string | undefined>): Promise<string | undefined> {
+	if (token === undefined) {
+		return localize('paradisAgentChat.paneNoAgent', "このターミナルにはエージェントの会話がありません");
+	}
+	if (text.trim().length === 0) {
+		return localize('paradisAgentChat.errorEmpty', "送る文がありません");
+	}
+	return send(token, text);
 }

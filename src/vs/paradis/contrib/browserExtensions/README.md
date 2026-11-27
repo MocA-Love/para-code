@@ -10,13 +10,14 @@
 
 | ディレクトリ | 拡張 | バージョン | 取得元 | ライセンス |
 |---|---|---|---|---|
-| `media/react-devtools/` | React Developer Tools | 7.0.1 (2026-07-04 取得) | Chrome Web Store `fmkadmapgofadopljbjfkapdkoienihi` の CRX3 を展開 | MIT (facebook/react) |
+| `media/react-devtools/` | React Developer Tools | 8.0.0 (2026-11-27 取得) | Chrome Web Store `fmkadmapgofadopljbjfkapdkoienihi` の CRX3 を展開（CRX の sha256: `d92e1122a16362cc5510927068a5b1a8d50b43e1f3be25c3117f7c005807b302`、revision `1d34f91dfd`） | MIT (facebook/react) |
 
 ## 更新手順
 
 1. CRX を取得: `https://clients2.google.com/service/update2/crx?response=redirect&prodversion=<Chromeバージョン>&acceptformat=crx2,crx3&x=id%3D<拡張ID>%26uc`
 2. CRX3 ヘッダ（`Cr24` マジック + 4byte version + 4byte header 長 + header）を除去して ZIP として展開
-3. `media/<拡張名>/` を丸ごと差し替え、この表のバージョンと取得日を更新
+3. `media/<拡張名>/` を丸ごと差し替え（CRX に入っている `_metadata/` は写さない。理由は `NOTES.md` の「コメントを書けないファイルへの変更一覧」）、この表のバージョンと取得日を更新。`.js` のファイルが増減したら `.eslint-allowed-javascript-files` の一覧も合わせる（合わせないと hygiene が落ちる）
+4. manifest の権限・`key`・chrome.* の使い方を前の版と比べ、dev の内蔵ブラウザで Components / Profiler のタブと木が出ることを確かめる。確かめるタブは利用者として開く（エージェントが開いたタブは Ephemeral のセッションなので拡張が入らない）。セッションを作った直後に開いたページにはフックが入らないので、1 回読み込み直してから開発者ツールを開く
 4. 展開した中の `_metadata/` フォルダは消してから入れる（`git rm -r`）。Electron は展開済みの拡張機能を `loadExtension` で読み込むたびに `_metadata/` を消すので（`shell/browser/extensions/electron_extension_loader.cc` の `LoadUnpacked`）、アプリの中に残すと起動のたびに macOS の署名の封が破れる。`build/lib/test/paradisBundledBrowserExtensions.test.ts` がこれを検査する
 
 ## 制約（Electron の拡張サポートは部分実装）
