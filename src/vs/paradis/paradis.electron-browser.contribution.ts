@@ -58,6 +58,7 @@ import './contrib/bots/electron-browser/paradisBotsBand.contribution.js';
 import './contrib/bots/electron-browser/paradisBotsLaunch.contribution.js';
 import './contrib/bots/electron-browser/paradisBotPage.contribution.js';
 import './contrib/humanAsk/electron-browser/paradisHumanAskPaneAnswer.contribution.js';
+import './contrib/humanAsk/electron-browser/paradisAskHumanWindow.contribution.js';
 import './contrib/menuBar/browser/paradisMenuBarSettings.contribution.js';
 import './contrib/menuBar/electron-browser/paradisMenuBarFeed.contribution.js';
 import './contrib/defaultExtensions/electron-browser/paradisDefaultExtensions.contribution.js';

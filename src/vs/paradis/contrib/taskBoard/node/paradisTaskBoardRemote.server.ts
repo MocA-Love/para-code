@@ -7,7 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 // タスクボードの SSH 中継の、接続先（REH）のチャネル（q.html Q472 = A）。`paradis.server.contribution.ts` から
-// 副作用 import で読み込まれる。呼ぶのは手元のウィンドウだけで、ウィンドウ側はまだ無い（設計書の PR 2 で足す）。
+// 副作用 import で読み込まれる。呼ぶのは手元の SSH のウィンドウ（paradisTaskBoardRelaySessionsService.ts）だけ。
 
 import { combinedDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
