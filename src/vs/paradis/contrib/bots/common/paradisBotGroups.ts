@@ -324,6 +324,7 @@ export function paradisBotGroupDeliverRefusal(input: {
 	readonly from: string | undefined;
 	readonly to: string;
 	readonly toActivity: 'stopped' | 'idle' | 'working' | 'patrolling' | undefined;
+	/** 宛先の会話のペインがこのウィンドウにあるか（伝言は宛先の会話のペインを持つウィンドウへ送られるので、無ければ閉じた・移った直後）。 */
 	readonly toRunningHere: boolean;
 	readonly takeRate: () => boolean;
 }): ParadisBotGroupDeliverRefusal | undefined {
@@ -348,7 +349,7 @@ export function paradisBotGroupDeliverRefusalMessage(refusal: ParadisBotGroupDel
 	switch (refusal) {
 		case 'not_a_member': return 'You can only send messages to other bots in a group you are in.';
 		case 'self': return 'You cannot send a message to yourself.';
-		case 'not_running': return 'That bot is not running in this Para Code window. Ask the user to open the group, or write it in an item instead.';
+		case 'not_running': return 'That bot is not running, or its chat is no longer open in the Para Code window it was in. Try again later, or write it in an item instead.';
 		case 'busy': return 'That bot is busy now. Try again later; the message was not sent.';
 		case 'rate_limited': return `You already sent ${PARADIS_BOT_GROUP_RELAY_PER_MINUTE} messages to that bot in the last minute. Wait and try again later; the message was not sent.`;
 	}
