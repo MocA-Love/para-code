@@ -114,6 +114,7 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 	const agentChatService = accessor.get(IParadisAgentChatService);
 	const editorService = accessor.get(IEditorService);
 	const paradisDialogService = accessor.get(IParadisDialogService);
+	const notificationService = accessor.get(INotificationService);
 
 	if (opening.has(botId)) {
 		// 同じウィンドウで起動している途中（作った直後の挨拶など）。別のウィンドウの起動中と同じ案内にする
@@ -174,7 +175,11 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 			if (fromAgent || !await paradisConfirmRestartDetachedBot(paradisDialogService, summary?.name ?? '')) {
 				return { ok: false, error: 'detached_alive' };
 			}
-			await botsService.restartChat(botId);
+			// 止まったのを確かめられなければ起こさない（同じ会話を 2 つ動かさない）
+			if (!await botsService.restartChat(botId)) {
+				notificationService.warn(localize('paradisBots.detachedNotStopped', "前の会話のエージェントを止められませんでした。そのペインのあるウィンドウで閉じてから、もう一度話しかけてください。"));
+				return { ok: false, error: 'detached_alive' };
+			}
 			launch = await botsService.requestLaunch(botId, 'chat');
 		}
 		// 別のウィンドウで開いている・起動している途中（呼んだ側が案内を出し分ける）
@@ -211,7 +216,7 @@ async function paradisConfirmRestartDetachedBot(paradisDialogService: IParadisDi
 		// allow-any-unicode-next-line
 		message: localize('paradisBots.detachedAlive', "「{0}」の前の会話のエージェントが、まだ動いているかもしれません", botName),
 		// allow-any-unicode-next-line
-		detail: localize('paradisBots.detachedAliveDetail', "応えの無かったペインで、同じ会話のエージェントが動いている可能性があります。そのペインが別のウィンドウにあれば、そのウィンドウで開いてください。\n\n止めて起こし直すと、そのペインへ止める依頼を出してから、同じ会話の続きで起こします。"),
+		detail: localize('paradisBots.detachedAliveDetail', "応えの無かったペインで、同じ会話のエージェントが動いている可能性があります。そのペインが別のウィンドウにあれば、そのウィンドウで開いてください。\n\n止めて起こし直すと、そのペインのエージェントを止め、止まったのを確かめてから、同じ会話の続きで起こします。"),
 		// allow-any-unicode-next-line
 		primaryButton: localize('paradisBots.detachedAliveRestart', "止めて起こし直す"),
 	});

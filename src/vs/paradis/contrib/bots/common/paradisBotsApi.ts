@@ -294,9 +294,10 @@ export interface IParadisBotsService {
 	reclaimPane(paneToken: string): Promise<void>;
 	/**
 	 * 応えの無かった会話のペインのエージェントがまだ動いているかもしれない（`requestLaunch` が `detached_alive` で断った）ときに、
-	 * 利用者が「止めて起こし直す」を選んだ。そのペインへ止める依頼を出し、次の `requestLaunch` では確かめずに起こす。
+	 * 利用者が「止めて起こし直す」を選んだ。そのペインへ止める依頼を出し、エージェントが終わったのを確かめられたら true（次の
+	 * `requestLaunch` では確かめずに起こす）。決まった時間待っても確かめられなければ false（起こさない）。
 	 */
-	restartChat(botId: string): Promise<void>;
+	restartChat(botId: string): Promise<boolean>;
 	requestStop(botId: string): Promise<boolean>;
 	/**
 	 * 別のウィンドウで開いている会話のペインを前に出してもらう（利用者の操作からだけ）。どのウィンドウも 2 秒以内に

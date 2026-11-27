@@ -78,6 +78,11 @@ const CREATE_FOLDER_ATTEMPTS = 5;
 const IDLE_CHECK_INTERVAL_MS = 60_000;
 
 /** Bot へ渡す、持ち主の書き込み 1 項目ぶん。 */
+/** 「止めて起こし直す」で、止まったのを確かめるまで待つ時間。 */
+const PARADIS_BOT_RESTART_TIMEOUT_MS = 10_000;
+/** 止まったかを確かめ直す間隔。 */
+const RESTART_POLL_MS = 250;
+
 export interface IParadisBotMail {
 	readonly uid: string;
 	readonly number: number;
@@ -113,6 +118,8 @@ export interface IParadisBotsServiceOptions {
 	 * ペインがあるときに、新しい会話を起こす前に聞く。渡さなければ確かめない。
 	 */
 	readonly paneAlive?: (paneToken: string) => Promise<boolean | undefined>;
+	/** 「止めて起こし直す」で、止まったのを確かめるまで待つ上限（テストで短くする）。 */
+	readonly restartTimeoutMs?: number;
 	/** 眠った会話の記録の置き場（テストで差し替える。既定は Claude Code の設定と Codex のホーム）。 */
 	readonly transcriptRoots?: IParadisBotTranscriptRoots;
 	/**
@@ -166,6 +173,7 @@ export class ParadisBotsService extends Disposable {
 	private readonly revealTimeoutMs: number;
 	private readonly givenTranscriptRoots: IParadisBotTranscriptRoots | undefined;
 	private readonly paneAlive: ((paneToken: string) => Promise<boolean | undefined>) | undefined;
+	private readonly restartTimeoutMs: number;
 	/** 前に出す依頼の番号 → ウィンドウが応えたときに呼ぶもの。 */
 	private readonly pendingReveals = new Map<string, () => void>();
 	private readonly enabled: () => boolean;
@@ -221,6 +229,7 @@ export class ParadisBotsService extends Disposable {
 		this.revealTimeoutMs = options.revealTimeoutMs ?? PARADIS_BOT_REVEAL_TIMEOUT_MS;
 		this.givenTranscriptRoots = options.transcriptRoots;
 		this.paneAlive = options.paneAlive;
+		this.restartTimeoutMs = options.restartTimeoutMs ?? PARADIS_BOT_RESTART_TIMEOUT_MS;
 		this.enabled = options.enabled ?? (() => true);
 		this.preparePatrol = options.preparePatrol;
 		this.agentTemplate = options.agentTemplate;
@@ -1015,13 +1024,30 @@ export class ParadisBotsService extends Disposable {
 		}
 	}
 
-	/** 利用者が「止めて起こし直す」を選んだ。応えの無かった会話のペインへ止める依頼を出し、次は確かめずに起こす。 */
-	restartChat(botId: string): void {
-		const paneHashes = this.panes.detachedTokensOf(botId).map(paradisBotPaneTokenHash);
-		if (paneHashes.length > 0) {
-			this._onDidRequestStop.fire({ botId, paneHashes });
+	/**
+	 * 利用者が「止めて起こし直す」を選んだ。応えの無かった会話のペインへ止める依頼を出し、そのエージェントが終わった（同じ pid と
+	 * 開始時刻のプロセスが無くなった、またはペインの終了が届いた）のを確かめてから、次の起動で確かめずに起こせるようにする。
+	 * {@link restartTimeoutMs} 待っても終わったと確かめられなければ false（起こさない。同じ会話を 2 つ動かさない）。
+	 */
+	async restartChat(botId: string): Promise<boolean> {
+		const tokens = this.panes.detachedTokensOf(botId);
+		if (tokens.length > 0) {
+			this._onDidRequestStop.fire({ botId, paneHashes: tokens.map(paradisBotPaneTokenHash) });
 		}
-		this.panes.waiveDetachedChat(botId);
+		const deadline = Date.now() + this.restartTimeoutMs;
+		for (; ;) {
+			// 終了が届いて外れたペインは終わった。残っているペインは、所有者のプロセスで確かめる（分からなければ終わったと言えない）
+			const remaining = this.panes.detachedTokensOf(botId).filter(token => tokens.includes(token));
+			const alive = this.paneAlive === undefined ? [] : await Promise.all(remaining.map(token => this.paneAlive!(token).catch(() => undefined)));
+			if (alive.every(value => value === false)) {
+				this.panes.waiveDetachedChat(botId);
+				return true;
+			}
+			if (Date.now() >= deadline) {
+				return false;
+			}
+			await new Promise(resolve => setTimeout(resolve, RESTART_POLL_MS));
+		}
 	}
 
 	/** ペインが閉じた。見回りのペインなら、その Bot はもう最初の見回りではない。 */

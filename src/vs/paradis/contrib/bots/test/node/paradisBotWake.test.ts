@@ -308,6 +308,7 @@ suite('Paradis bot wake and sleep', () => {
 			const service = disposables.add(new ParadisBotsService(new MemoryFile<IParadisBotsState>(EMPTY_PARADIS_BOTS_STATE), new MemoryFile<IParadisBotItemsState>(EMPTY_PARADIS_BOT_ITEMS_STATE), humanAsk, new NullLogService(), {
 				now: () => clock.now, hookEvents: hooks.event, panesFile: new MemoryFile<IParadisBotPanesState>(EMPTY_PARADIS_BOT_PANES_STATE), homes, revealTimeoutMs: 10,
 				paneAlive: async token => alive.get(token),
+				restartTimeoutMs: 600,
 			}));
 			await service.ready;
 			const created = await service.createBot({ name: 'A', agent: 'claude' });
@@ -337,10 +338,16 @@ suite('Paradis bot wake and sleep', () => {
 		const whileAlive = await launchCode(a.service, a.botId);
 		alive.set('pane-1', undefined);
 		const whileUnknown = await launchCode(a.service, a.botId);
-		// 「止めて起こし直す」: 応えの無かったペインへ止める依頼を出してから、確かめずに起こす（制限は本物の終了まで残す）
+		// 「止めて起こし直す」: 止める依頼を出す。止まらない（動き続ける・分からない）なら起こさない
 		const stops: IParadisBotStopRequest[] = [];
 		disposables.add(a.service.onDidRequestStop(request => stops.push(request)));
-		a.service.restartChat(a.botId);
+		const notStopped = await a.service.restartChat(a.botId);
+		const afterNotStopped = await launchCode(a.service, a.botId);
+		// 止める依頼の後にエージェントが終わった: 終わったのを確かめてから起こす（制限は本物の終了まで残す）
+		const restarting = a.service.restartChat(a.botId);
+		const pendingLaunch = await launchCode(a.service, a.botId);
+		alive.set('pane-1', false);
+		const stopped = await restarting;
 		const afterRestart = await launchCode(a.service, a.botId);
 		const restrictedAfterRestart = a.service.isBotPane('pane-1');
 
@@ -358,10 +365,14 @@ suite('Paradis bot wake and sleep', () => {
 		// 応えの無かったペインでないなら何もしない
 		c.service.reclaimPane('pane-x');
 
-		assert.deepStrictEqual({ whileAlive, whileUnknown, stops, afterRestart, restrictedAfterRestart, whenEnded, restrictedWhenEnded, reclaimed, stray: c.service.isBotPane('pane-x') }, {
+		assert.deepStrictEqual({ whileAlive, whileUnknown, stops: stops.length, notStopped, afterNotStopped, pendingLaunch, stopped, afterRestart, restrictedAfterRestart, whenEnded, restrictedWhenEnded, reclaimed, stray: c.service.isBotPane('pane-x') }, {
 			whileAlive: 'detached_alive',
 			whileUnknown: 'detached_alive',
-			stops: [{ botId: a.botId, paneHashes: [paradisBotPaneTokenHash('pane-1')] }],
+			stops: 2,
+			notStopped: false,
+			afterNotStopped: 'detached_alive',
+			pendingLaunch: 'detached_alive',
+			stopped: true,
 			afterRestart: `--resume ${SESSION}`,
 			restrictedAfterRestart: true,
 			whenEnded: `--resume ${SESSION}`,
