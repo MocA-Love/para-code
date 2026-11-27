@@ -293,6 +293,13 @@
 	min-width: 0;
 }
 
+.paradis-bot-group-dialog .pbgd-member-note {
+	flex: none;
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+}
+
 .paradis-bot-group-dialog .pbgd-help,
 .paradis-bot-group-dialog .pbgd-empty {
 	margin: var(--vscode-spacing-size160) 0 var(--vscode-spacing-size80);
