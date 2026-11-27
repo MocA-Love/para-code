@@ -65,6 +65,17 @@
 	top: 48px;
 }
 
+/*
+	While a panel other than the chat (items, files, settings) covers the tab, the corner badges belong to the hidden
+	conversation: hide them so they do not sit on the panel's fields. They come back with the chat tab.
+*/
+.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-items > .paradis-pane-indicator,
+.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-items .paradis-prompt-cache-badge,
+.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-items .paradis-context-usage-badge,
+.monaco-workbench .terminal-overflow-guard.terminal-editor.paradis-bot-page-items > .paradis-terminal-resume-banner {
+	display: none;
+}
+
 .paradis-bot-page-face {
 	display: flex;
 	flex: none;
