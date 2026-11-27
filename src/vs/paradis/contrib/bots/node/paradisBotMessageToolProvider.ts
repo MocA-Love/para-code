@@ -26,6 +26,7 @@ import {
 	paradisBotMessageTarget,
 	paradisParseBotMessageArgs,
 } from '../common/paradisBotMessages.js';
+import { paradisBotPaneTokenHash } from './paradisBotPanes.js';
 import { ParadisBotsService } from './paradisBotsService.js';
 
 let groupsPort: IParadisBotGroupsPort | undefined;
@@ -135,8 +136,9 @@ export class ParadisBotMessageToolProvider implements IParadisMcpToolProvider {
 		if (recipient.paused) {
 			return toolError(`Your owner paused "${recipient.name}", so it does not take messages now.`);
 		}
-		// 宛先の会話のペインを持つウィンドウへ届ける（呼び出し元のウィンドウとは限らない）。開いていなければ記録もしない
-		const recipientPane = this.service.chatPaneTokensOf(recipient.id)[0];
+		// 宛先の会話のペインを持つウィンドウへ届ける（呼び出し元のウィンドウとは限らない）。台帳にペインがあっても、
+		// そのウィンドウが閉じた・読み込み直し中ならつながっていないので、記録も回数も使わずに断る
+		const recipientPane = this.service.chatPaneTokensOf(recipient.id).find(token => context.paneWindowReachable?.(token) === true);
 		if (recipientPane === undefined || context.callPaneWindow === undefined) {
 			return toolError(`"${recipient.name}" is not open in a Para Code window now, so Para Code did not send the message. Try again later, or tell your owner.`);
 		}
@@ -150,19 +152,23 @@ export class ParadisBotMessageToolProvider implements IParadisMcpToolProvider {
 		if (!recorded.ok) {
 			return toolError(recorded.message ?? 'Para Code could not record this message in the group.');
 		}
-		const notDelivered = `Para Code recorded the message in the group but could not deliver it to "${recipient.name}". Do not send it again; tell your owner if it matters.`;
+		const notDelivered = `Para Code recorded the message in the group as not delivered: it could not deliver it to "${recipient.name}". Do not send it again; tell your owner if it matters.`;
 		const delivered = await context.callPaneWindow<string | undefined>(recipientPane, {
 			channelName: PARADIS_BOT_GROUPS_WINDOW_CHANNEL,
 			method: 'deliver',
-			args: [paneToken, recipient.id, paradisBotMessageDeliveryText(kind, bot.name, parsed.value.text)],
+			// 宛先のウィンドウは送り手のペインを持たないので、生のトークンではなくハッシュを渡す
+			args: [paradisBotPaneTokenHash(paneToken), recipient.id, paradisBotMessageDeliveryText(kind, bot.name, parsed.value.text)],
 			failureLabel: name,
 			failureMessage: notDelivered,
 		}, signal);
-		if (!delivered.ok) {
-			return toolError(notDelivered);
-		}
-		if (typeof delivered.value === 'string' && delivered.value.length > 0) {
-			return toolError(`Para Code recorded the message in the group but could not deliver it to "${recipient.name}": ${delivered.value.slice(0, 300)}`);
+		const refusal = !delivered.ok ? '' : typeof delivered.value === 'string' && delivered.value.length > 0 ? delivered.value : undefined;
+		if (refusal !== undefined) {
+			// 届かなかった: 記録を「届けられなかった」に直し、回数を戻す（届かなかった分で上限に近づけない）
+			this.limiter.refund(bot.id, recipient.id);
+			if (recorded.recordId !== undefined) {
+				await groups.markUndelivered?.(target.groupId, recorded.recordId).catch(() => undefined);
+			}
+			return toolError(refusal.length > 0 ? `${notDelivered} The reason: ${refusal.slice(0, 300)}` : notDelivered);
 		}
 		return toolJson({ to: recipient.name, sent: kind === 'asked' ? 'question' : 'message', ...(kind === 'asked' ? { note: `The answer comes back to this terminal as a message from "${recipient.name}".` } : {}) });
 	}
