@@ -271,6 +271,8 @@ export function paradisParseBotUpdateArgs(value: unknown): ParadisBotManageArgs<
  * この変更を利用者に確かめるか。引数だけでわかるもの（{@link IParadisBotUpdateArgs.needsConfirmation}）に加えて、
  * 名前を変えること（常設の指示文の「You are …」に入る）と、止めてある Bot の一時停止を解くこと。止める（false → true）
  * のは安全側なので確かめない。今と同じ値を渡しただけなら確かめない。
+ * 名前と再開の確認はエージェント（管理の道具）からの変更を利用者に見せるためのもの。画面（設定のタブ・帯の右クリック・
+ * スマホ）で利用者が自分で行う名前の変更と再開は確かめない（エージェント・権限・役割だけ {@link paradisBotChangeRequest} で確かめる）。
  */
 export function paradisBotUpdateNeedsConfirmation(bot: { readonly name: string; readonly paused: boolean }, args: Pick<IParadisBotUpdateArgs, 'patch' | 'needsConfirmation'>): boolean {
 	const renames = args.patch.name !== undefined && args.patch.name !== bot.name;

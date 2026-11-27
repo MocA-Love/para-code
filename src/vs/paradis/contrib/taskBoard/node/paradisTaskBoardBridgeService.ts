@@ -63,7 +63,7 @@ import {
 	paradisTaskBoardTerminalId,
 	paradisTaskBoardToolDetail,
 } from '../common/paradisTaskBoardBridge.js';
-import { TASK_BOARD_ASKS_ROUTE, TASK_BOARD_ASKS_SETTLE_ROUTE } from '../common/paradisTaskBoardAsks.js';
+import { TASK_BOARD_ASKS_ROUTE, TASK_BOARD_ASKS_SETTLE_ROUTE, TASK_BOARD_PANE_ASK_ANSWER_ROUTE } from '../common/paradisTaskBoardAsks.js';
 import { IParadisTaskBoardAskLedger, ParadisTaskBoardAskBridge, ParadisTaskBoardAskResponse } from './paradisTaskBoardAskBridge.js';
 import type { IParadisTaskBoardWorktreeIncludes } from './paradisTaskBoardWorktreeIncludes.js';
 
@@ -197,6 +197,8 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 		this.asks = options.asks ? this._register(new ParadisTaskBoardAskBridge(options.asks, {
 			writeToBoard: (keyHash, chunk) => this.writeToBoard(keyHash, chunk),
 			terminalPane: (terminal, remoteBoard) => this.terminalPane(terminal, remoteBoard),
+			writeToLocalBoards: chunk => this.writeToLocalBoards(chunk),
+			boardPaneKeys: () => new Set([...this.terminals.values()].flatMap(entry => entry.paneKey !== undefined ? [entry.paneKey] : [])),
 		})) : undefined;
 		this._register(toDisposable(() => {
 			for (const timer of this.disconnectTimers.values()) {
@@ -263,9 +265,11 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 			switch (route) {
 				case `PUT ${TASK_BOARD_ASKS_ROUTE}`: return this.askResponse(this.asks.put(body, keyHash, remoteBoard));
 				case `POST ${TASK_BOARD_ASKS_SETTLE_ROUTE}`: return this.askResponse(this.asks.settle(body, keyHash));
+				// ボードの外のペインの待ちに答える（手元のボードだけ。台帳の claim を通すだけで、ターミナルには触れない）
+				case `POST ${TASK_BOARD_PANE_ASK_ANSWER_ROUTE}`: return this.askResponse(this.asks.answerPane(body, keyHash, remoteBoard));
 			}
 		}
-		const known = ['/v1/health', '/v1/terminals', '/v1/screen', '/v1/events', '/v1/launch', '/v1/send', '/v1/key', '/v1/answer', '/v1/close', '/v1/reply', '/v1/worktree-includes', '/v1/worktree-release', ...(this.asks ? [TASK_BOARD_ASKS_ROUTE, TASK_BOARD_ASKS_SETTLE_ROUTE] : [])];
+		const known = ['/v1/health', '/v1/terminals', '/v1/screen', '/v1/events', '/v1/launch', '/v1/send', '/v1/key', '/v1/answer', '/v1/close', '/v1/reply', '/v1/worktree-includes', '/v1/worktree-release', ...(this.asks ? [TASK_BOARD_ASKS_ROUTE, TASK_BOARD_ASKS_SETTLE_ROUTE, TASK_BOARD_PANE_ASK_ANSWER_ROUTE] : [])];
 		return known.includes(pathname) ? { status: 405, body: { error: 'method-not-allowed' } } : error('not-found');
 	}
 
@@ -281,6 +285,15 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 		}
 		const windowId = /^window:(?<id>\d+)$/.exec(entry.ctx)?.groups?.id;
 		return { ...(entry.paneKey !== undefined ? { paneKey: entry.paneKey } : {}), ...(windowId !== undefined ? { windowId: Number(windowId) } : {}) };
+	}
+
+	/** 手元のボード（鍵を確かめたもの。SSH の窓のボードを除く）の SSE の受け手の全部に書く。 */
+	private writeToLocalBoards(chunk: string): void {
+		for (const [write, viewer] of [...this.clients]) {
+			if (!viewer.remote && viewer.keyHash !== undefined) {
+				this.write(write, chunk);
+			}
+		}
 	}
 
 	/** そのボード（鍵の hash）の SSE の受け手にだけ書く。受け手が無ければ false。 */
@@ -318,6 +331,10 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 		if (route === 'POST /v1/worktree-includes' || route === 'POST /v1/worktree-release') {
 			// SSH のボードのワークツリーは接続先の REH が持ち込む。手元のパスには触らせない
 			return forbidden('A task board for an SSH window manages its worktrees on the SSH host.');
+		}
+		if (route === `POST ${TASK_BOARD_PANE_ASK_ANSWER_ROUTE}`) {
+			// 手元のペインの待ちに、接続先から答えさせない
+			return forbidden('A task board for an SSH window cannot answer the panes on this computer.');
 		}
 		let terminal: unknown;
 		if (route === 'GET /v1/screen') {

@@ -8,7 +8,7 @@
 
 // shared process でタスクボードの接続口を立ち上げる。`paradis.sharedProcess.contribution.ts` から副作用 import される。
 //
-//  - HTTP の受け口（設定 `paradis.taskBoard.bridge.enabled` がオンの間だけ）
+//  - HTTP の受け口（設定 `paradis.taskBoard.bridge.enabled` がオンの間だけ。既定はオン）
 //  - ウィンドウが呼ぶチャネル（状態の報告・自分のターミナルの一覧）
 //  - ウィンドウへの振り分け（各ウィンドウが shared process の接続へ登録したチャネルを ctx で選んで呼ぶ）
 //  - para-browser MCP のツール（board_complete_step / board_ask_human）と hook のツールの開始
@@ -139,7 +139,7 @@ ParadisSharedProcessContributions.register('taskBoard', ({ server, accessor }) =
 		// ボードの質問と承認を「人が答えるもの」の台帳へ載せる（受信箱・スマホが同じ 1 件を出せるように）
 		asks: paradisSharedHumanAskService(),
 	}, logService));
-	// ボード用のツールは、設定がオンのときだけ para-browser に出す（使わない人のエージェントに説明を載せない）
+	// ボード用のツールは、設定がオンのときだけ para-browser に出す
 	const toolProvider = store.add(new MutableDisposable());
 	store.add(onParadisAgentHookEvent(event => service.onHookEvent(event)));
 	// 工程の終わりの報告を、Bot の項目（ボードのタスクを結んだもの）へ渡す
@@ -151,8 +151,9 @@ ParadisSharedProcessContributions.register('taskBoard', ({ server, accessor }) =
 	server.registerChannel(PARADIS_TASK_BOARD_BRIDGE_CHANNEL, new ParadisTaskBoardBridgeChannel(service, auth, relay));
 
 	const httpServer = store.add(new ParadisTaskBoardBridgeServer(service, join(environmentService.userDataPath, PARADIS_TASK_BOARD_BRIDGE_DISCOVERY_FILE), logService, auth, relay));
-	// 設定のスキーマは画面側でしか登録されないので、生の値を読む。既定はオフ（使う人だけが有効にする）なので、true のときだけ立てる
-	const enabled = () => configurationService.getValue(PARADIS_TASK_BOARD_BRIDGE_ENABLED_SETTING) === true;
+	// 設定のスキーマは画面側でしか登録されないので、生の値を読む（何も書いていなければ undefined）。既定はオンなので、
+	// オフと書いたときだけ立てない。受け口は、Para Code が起動したボード（起動ごとの鍵と接続元の pid）からの要求だけを通す
+	const enabled = () => configurationService.getValue(PARADIS_TASK_BOARD_BRIDGE_ENABLED_SETTING) !== false;
 	let applying = Promise.resolve();
 	const apply = () => {
 		const on = enabled();
