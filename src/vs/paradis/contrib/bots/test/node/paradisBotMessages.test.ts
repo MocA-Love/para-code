@@ -12,7 +12,7 @@ import { NullLogService } from '../../../../../platform/log/common/log.js';
 import { IParadisMcpToolCallContext, ParadisMcpCallerKind } from '../../../agentBrowser/common/paradisMcpToolProvider.js';
 import { ParadisHumanAskService } from '../../../humanAsk/node/paradisHumanAskChannel.js';
 import { EMPTY_PARADIS_BOT_ITEMS_STATE, IParadisBotItemsState } from '../../common/paradisBotItems.js';
-import { IParadisBotGroup, IParadisBotGroupMessageRecord, IParadisBotInboxEntry, PARADIS_BOT_MESSAGE_RATE_LIMITS, ParadisBotMessageRateLimiter, paradisBotInboxView, paradisBotMessageCleanText, paradisBotMessageTarget, paradisParseBotMessageArgs } from '../../common/paradisBotMessages.js';
+import { IParadisBotMessageGroup, IParadisBotGroupMessageRecord, IParadisBotInboxEntry, PARADIS_BOT_MESSAGE_RATE_LIMITS, ParadisBotMessageRateLimiter, paradisBotInboxView, paradisBotMessageCleanText, paradisBotMessageTarget, paradisParseBotMessageArgs } from '../../common/paradisBotMessages.js';
 import { EMPTY_PARADIS_BOTS_STATE, IParadisBotsState } from '../../common/paradisBots.js';
 import { ParadisBotMessageToolProvider } from '../../node/paradisBotMessageToolProvider.js';
 import { ParadisBotsService } from '../../node/paradisBotsService.js';
@@ -65,7 +65,7 @@ suite('Paradis bot messages', () => {
 
 	test('宛先は同じグループのメンバーだけ。名前か id で当て、同じ名前は id を求める', () => {
 		const names: Record<string, string> = { a: 'リリース係', b: 'レビュー係', c: 'Review', d: 'review', e: '別グループ' };
-		const groups: IParadisBotGroup[] = [{ id: 'g1', memberIds: ['a', 'b', 'c', 'd', 'gone'] }, { id: 'g2', memberIds: ['e', 'b'] }];
+		const groups: IParadisBotMessageGroup[] = [{ id: 'g1', memberIds: ['a', 'b', 'c', 'd', 'gone'] }, { id: 'g2', memberIds: ['e', 'b'] }];
 		const target = (to: string, from = 'a') => {
 			const result = paradisBotMessageTarget(from, to, groups.filter(group => group.memberIds.includes(from)), botId => names[botId]);
 			return result.ok ? `${result.botId}@${result.groupId}` : result.message;
@@ -132,7 +132,7 @@ suite('Paradis bot messages', () => {
 		const port = {
 			members: ['id1', 'id2'],
 			refuse: false,
-			groupsOf: (botId: string) => port.members.includes(botId) ? [{ id: 'g1', memberIds: port.members }] : [],
+			groupsOf: async (botId: string) => port.members.includes(botId) ? [{ id: 'g1', memberIds: port.members }] : [],
 			appendRecord: async (_groupId: string, record: IParadisBotGroupMessageRecord) => {
 				if (port.refuse) {
 					return { ok: false, message: 'Not a member of this group.' };
@@ -141,12 +141,17 @@ suite('Paradis bot messages', () => {
 				return { ok: true, recordId: `r${records.length}` };
 			},
 			inboxOf: async (botId: string): Promise<IParadisBotInboxEntry[]> => records.filter(record => record.to === botId && !record.read).map(record => ({ recordId: record.id, groupId: 'g1', kind: record.kind, from: record.from, text: record.text, at: Date.UTC(2026, 10, 28) })),
+			failMark: false,
 			markRead: async (botId: string, recordIds: readonly string[]) => {
+				if (port.failMark) {
+					return false;
+				}
 				for (const record of records) {
 					if (record.to === botId && recordIds.includes(record.id)) {
 						record.read = true;
 					}
 				}
+				return true;
 			},
 		};
 		let available = true;
@@ -220,6 +225,9 @@ suite('Paradis bot messages', () => {
 		}
 		clock += 61_000;
 		const full = await call('pane-1', 'bot_tell', { to: 'レビュー係', text: '溢れる' });
+		port.failMark = true;
+		const unmarked = await call('pane-2', 'bot_inbox', {});
+		port.failMark = false;
 		const firstPage = await call('pane-2', 'bot_inbox', {});
 		clock += 61_000;
 		await service.updateBot('id2', { paused: true });
@@ -237,7 +245,7 @@ suite('Paradis bot messages', () => {
 		turnOffWhileChecking = false;
 		const off = { listed: tools.listTools('pane-1').length, call: await call('pane-1', 'bot_tell', { to: 'レビュー係', text: 'x' }), inbox: await call('pane-2p', 'bot_inbox', {}) };
 
-		assert.deepStrictEqual({ listed, told, asked, refusals, limited, recordRefused, patrolPeek: [patrolPeek.note.includes('This is a look-around, so they stay unread'), patrolPeek.messages.length], unreadAfterPeek, inbox, inboxAgain, full, firstPage: [firstPage.messages.length, firstPage.more], pausedRecipient, pausedSender, noGroups, turnedOff, off, recorded: records.filter(record => !record.id.startsWith('old')).map(record => `${record.kind}:${record.text}:${record.read ? 'read' : 'unread'}`) }, {
+		assert.deepStrictEqual({ listed, told, asked, refusals, limited, recordRefused, patrolPeek: [patrolPeek.note.includes('This is a look-around, so they stay unread'), patrolPeek.messages.length], unreadAfterPeek, inbox, inboxAgain, full, unmarked: [unmarked.note.includes('could not mark them read'), unmarked.messages.length], firstPage: [firstPage.messages.length, firstPage.more], pausedRecipient, pausedSender, noGroups, turnedOff, off, recorded: records.filter(record => !record.id.startsWith('old')).map(record => `${record.kind}:${record.text}:${record.read ? 'read' : 'unread'}`) }, {
 			listed: { chat: ['bot_tell', 'bot_ask', 'bot_inbox'], patrol: ['bot_inbox'], outsider: 3, stranger: 0, instructions: 'Bot messages (bot_tell, bot_ask, bot_inb' },
 			told: { to: 'レビュー係', sent: 'message', inbox: 'Put in the inbox of "レビュー係". It reads it the next time it checks its inbox.' },
 			asked: { to: 'レビュー係', sent: 'question', inbox: 'Put in the inbox of "レビュー係". It reads it the next time it checks its inbox.', note: 'The answer comes to your inbox as a message from "レビュー係"; check bot_inbox at your next break.' },
@@ -263,6 +271,7 @@ suite('Paradis bot messages', () => {
 			},
 			inboxAgain: { messages: [], note: 'Your inbox is empty.' },
 			full: 'error: The inbox of "レビュー係" is full (30 unread ',
+			unmarked: [true, 20],
 			firstPage: [20, '10 more unread; call bot_inbox again.'],
 			pausedRecipient: 'error: Your owner paused "レビュー係", so it does no',
 			pausedSender: 'error: Your owner paused this bot, so Para Code',

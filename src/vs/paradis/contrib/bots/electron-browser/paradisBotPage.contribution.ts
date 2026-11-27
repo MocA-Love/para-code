@@ -31,6 +31,8 @@ class ParadisBotPaneResolver extends Disposable implements IParadisBotPaneResolv
 	readonly onDidChange: Event<void> = this._onDidChange.event;
 
 	private hashes: Promise<ReadonlyMap<string, readonly string[]>> | undefined;
+	/** 見回りのペインのハッシュ（{@link hashes} と一緒に読み直す）。 */
+	private patrolHashes: Promise<ReadonlySet<string>> | undefined;
 
 	constructor(
 		@IParadisBotsService private readonly botsService: IParadisBotsService,
@@ -39,6 +41,7 @@ class ParadisBotPaneResolver extends Disposable implements IParadisBotPaneResolv
 		super();
 		const changed = () => {
 			this.hashes = undefined;
+			this.patrolHashes = undefined;
 			this._onDidChange.fire();
 		};
 		this._register(this.botsService.onDidChange(changed));
@@ -54,6 +57,24 @@ class ParadisBotPaneResolver extends Disposable implements IParadisBotPaneResolv
 			return map;
 		})();
 		return this.hashes;
+	}
+
+	private patrolPaneHashes(): Promise<ReadonlySet<string>> {
+		this.patrolHashes ??= (async () => {
+			const set = new Set<string>();
+			for (const bot of this.botsService.snapshot.bots) {
+				for (const hash of await this.botsService.paneHashesOf(bot.id, 'patrol')) {
+					set.add(hash);
+				}
+			}
+			return set;
+		})();
+		return this.patrolHashes;
+	}
+
+	async isPatrolPane(instanceId: number): Promise<boolean> {
+		const token = this.paneTokenService.getTokenForInstance(instanceId);
+		return token !== undefined && (await this.patrolPaneHashes()).has(await paradisBotPaneTokenHashInWindow(token));
 	}
 
 	async botFor(instanceId: number): Promise<string | undefined> {

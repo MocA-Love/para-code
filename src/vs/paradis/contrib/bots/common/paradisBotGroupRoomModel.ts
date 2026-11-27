@@ -24,11 +24,14 @@ export function paradisBotGroupRecordHead(record: Pick<IParadisBotGroupRecord, '
 
 /**
  * 記録の 1 行に添える印。Bot 同士の伝言（`asked`・`told`）は受け箱の未読・既読（「まだ読まれていない」「読まれた」）。
- * あなたの `sent` には付けない。
+ * 読まれる前に宛先が外れた・消えた伝言は「読まれなかった」。あなたの `sent` には付けない。
  */
-export function paradisBotGroupRecordMark(record: Pick<IParadisBotGroupRecord, 'kind' | 'readAt'>): string | undefined {
+export function paradisBotGroupRecordMark(record: Pick<IParadisBotGroupRecord, 'kind' | 'readAt' | 'droppedAt'>): string | undefined {
 	if (record.kind === 'sent') {
 		return undefined;
+	}
+	if (record.droppedAt !== undefined) {
+		return localize('paradis.botGroups.record.dropped', "宛先が外れた（消えた）ので読まれなかった");
 	}
 	return record.readAt !== undefined
 		? localize('paradis.botGroups.record.read', "読まれた")

@@ -17,6 +17,7 @@ import { ParadisSharedProcessContributions } from '../../../common/paradisProces
 import { PARADIS_BOT_GROUPS_CHANNEL } from '../common/paradisBotGroupsApi.js';
 import { ParadisBotGroupsChannel } from './paradisBotGroupsChannel.js';
 import { paradisRegisterBotGroupsPort } from './paradisBotMessageToolProvider.js';
+import { paradisSharedBotsService } from './paradisBots.sharedProcess.js';
 import { createParadisBotGroupsFile, ParadisBotGroupsService, paradisBotGroupsMessagePort } from './paradisBotGroupsService.js';
 
 let shared: ParadisBotGroupsService | undefined;
@@ -33,6 +34,17 @@ ParadisSharedProcessContributions.register('botGroups', ({ server, accessor }) =
 	shared = service;
 	// Bot 同士の伝言の道具（paradisBotMessageToolProvider.ts）へ、グループの台帳の口を差し込む
 	store.add(paradisRegisterBotGroupsPort(paradisBotGroupsMessagePort(service)));
+	// Bot を消したら、その Bot 宛ての未読を捨てる（読む者がいないまま、1 体につき最大 30 通が残り続けないように）
+	const bots = paradisSharedBotsService();
+	if (bots !== undefined) {
+		const logService = accessor.get(ILogService);
+		store.add(bots.onDidRemoveBot(botId => {
+			service.forgetBot(botId).catch(error => logService.warn('[ParadisBotGroups] could not drop the unread messages of a removed bot', error));
+		}));
+	} else {
+		// Bot の台帳（paradisBots.sharedProcess.ts）が先に登録されていない。消した Bot 宛ての未読は上限で刈られるまで残る
+		accessor.get(ILogService).warn('[ParadisBotGroups] the bots service is not registered; unread messages of removed bots are kept');
+	}
 	store.add({
 		dispose: () => {
 			if (shared === service) {

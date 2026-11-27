@@ -66,6 +66,8 @@ export interface IParadisBotPaneResolver {
 	/** Bot のペインの組み合わせが変わったかもしれない（Bot の増減・ペインの起動と終了）。 */
 	readonly onDidChange: Event<void>;
 	botFor(instanceId: number): Promise<string | undefined>;
+	/** 見回りのペインか（会話のペインでないので「読ませる」を出さない）。無ければ会話のペインとみなす。 */
+	isPatrolPane?(instanceId: number): Promise<boolean>;
 }
 
 /** 帯を重ねたターミナルの入れ物に付ける印（CSS で、下の会話を帯の分だけ下げる）。 */
@@ -139,6 +141,8 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 
 	private instanceId: number | undefined;
 	private botId: string | undefined;
+	/** 今のペインが見回りのペインか（見回りは受け箱を既読にしないので「読ませる」を出さない）。 */
+	private patrolPane = false;
 	/** 対象の解決の番号（古い解決の結果で上書きしない）。 */
 	private resolveSeq = 0;
 	private loadSeq = 0;
@@ -329,8 +333,11 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 			this.setBot(undefined);
 			return;
 		}
-		this.resolver.botFor(instanceId).then(botId => {
+		// 見回りのペインかを引けなくても帯は出し続ける（会話のペインとみなす。帯を出すかは botFor だけで決める）
+		const patrolPane = this.resolver.isPatrolPane?.(instanceId).catch(() => false) ?? false;
+		Promise.all([this.resolver.botFor(instanceId), patrolPane]).then(([botId, patrolPane]) => {
 			if (seq === this.resolveSeq && !this._store.isDisposed) {
+				this.patrolPane = patrolPane;
 				this.setBot(botId !== undefined && this.bot(botId) !== undefined ? botId : undefined);
 			}
 		}, () => {
@@ -499,9 +506,9 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 			: localize('paradis.botPage.inbox.waitTooltip', "ほかの Bot からの伝言が届いています。この Bot が待機中になったら読ませられます");
 	}
 
-	/** 待機中（作業中・見回り中・一時停止中でない）で、会話のペインに送れるときだけ「読ませる」を出す。 */
+	/** 待機中（作業中・見回り中・一時停止中でない）で、会話のペインに送れるときだけ「読ませる」を出す（見回りのペインには送らない）。 */
 	private canAskToReadInbox(bot: IParadisBotSummary): boolean {
-		return this.instanceId !== undefined && !bot.paused && bot.activity === 'idle';
+		return this.instanceId !== undefined && !this.patrolPane && !bot.paused && bot.activity === 'idle';
 	}
 
 	/** 利用者の操作として、受け箱を見るようこの Bot に頼む（チャット表示の入力欄から送るのと同じ確認を通る）。 */

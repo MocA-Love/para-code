@@ -72,6 +72,7 @@ suite('Paradis bots page overlay', () => {
 		const failAnswer = { value: false };
 		const sendFails = { value: false };
 		const snapshotGone = { value: false };
+		const updateFails = { value: false };
 		const calls: string[] = [];
 		const confirms: IParadisConfirmation[] = [];
 		const files = new Map<string, string>([['SOUL.md', '# リリース係\n'], ['MEMORY.md', '# Memory\n']]);
@@ -96,7 +97,7 @@ suite('Paradis bots page overlay', () => {
 			ownerSetStatus: async (uid: string, to: string) => { statuses.push(`${uid}:${to}`); return { ok: true, value: items[0] }; },
 			readHomeFile: async (_bot: string, path: string) => ({ ok: true, value: files.get(path) }),
 			writeHomeFile: async (_bot: string, path: string, text: string) => { calls.push(`write ${path}: ${text}`); files.set(path, text); return { ok: true, value: undefined }; },
-			updateBot: async (_bot: string, patch: object) => { calls.push(`update ${JSON.stringify(patch)}`); return { ok: true, value: bots[0] }; },
+			updateBot: async (_bot: string, patch: object) => { calls.push(`update ${JSON.stringify(patch)}`); return updateFails.value ? { ok: false, code: 'io', message: 'disk full' } : { ok: true, value: bots[0] }; },
 		} as unknown as IParadisBotsService);
 		instantiation.stub(IParadisHumanAskService, {
 			onDidChange: Event.None,
@@ -162,10 +163,18 @@ suite('Paradis bots page overlay', () => {
 		// ペイン 1 だけが Bot のペイン。`ended` でペインが終わったことにする
 		const changed = disposables.add(new Emitter<void>());
 		const panes = new Map<number, string>([[1, 'release']]);
-		const resolver: IParadisBotPaneResolver = { onDidChange: changed.event, botFor: async instanceId => panes.get(instanceId) };
+		const patrolPanes = new Set<number>();
+		// -1 を入れると、見回りのペインかの引き当てに失敗したことにする
+		const isPatrolPane = async (instanceId: number) => {
+			if (patrolPanes.has(-1)) {
+				throw new Error('the bots service is gone');
+			}
+			return patrolPanes.has(instanceId);
+		};
+		const resolver: IParadisBotPaneResolver = { onDidChange: changed.event, botFor: async instanceId => panes.get(instanceId), isPatrolPane };
 		const container = document.createElement('div');
 		const page = disposables.add(instantiation.createInstance(ParadisBotPage, container, resolver, patrol, measureClamp));
-		return { groupsSnapshot, groupsChanged, container, page, configuration, panes, changed, answered, disposables, snapshotGone, sendFails, warnings, failAnswer, calls, confirms, files, bots, botsChanged, statuses, chatShown: () => { draftTaken = true; }, headerCalls, setHeader: (value: typeof header) => { header = value; headerChanged.fire(1); }, setChatActive: (id: number, active: boolean) => { if (active) { chatActive.add(id); } else { chatActive.delete(id); } chatActiveChanged.fire(id); } };
+		return { groupsSnapshot, groupsChanged, container, page, configuration, panes, patrolPanes, changed, answered, disposables, snapshotGone, updateFails, sendFails, warnings, failAnswer, calls, confirms, files, bots, botsChanged, statuses, chatShown: () => { draftTaken = true; }, headerCalls, setHeader: (value: typeof header) => { header = value; headerChanged.fire(1); }, setChatActive: (id: number, active: boolean) => { if (active) { chatActive.add(id); } else { chatActive.delete(id); } chatActiveChanged.fire(id); } };
 	}
 
 	const settle = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -211,6 +220,26 @@ suite('Paradis bots page overlay', () => {
 			empty: true,
 			selectedAfterRequest: '会話',
 		});
+	});
+
+	test('見回りのペインでは「読ませる」を押せない（見回りは受け箱を既読にしないので、会話のペインにだけ送る）', async () => {
+		const { container, page, calls, patrolPanes } = setup();
+		patrolPanes.add(1);
+		page.setInstance(1);
+		await settle();
+		const button = container.getElementsByClassName('paradis-bot-page-inbox')[0] as HTMLButtonElement;
+		button.click();
+		await settle();
+		assert.deepStrictEqual([button.hidden, button.disabled, button.textContent, calls.filter(call => call.startsWith('message'))], [false, true, '受け箱に 2 通', []]);
+	});
+
+	test('見回りのペインかを引けなくても、帯は出し続ける（会話のペインとみなす）', async () => {
+		const { container, page, patrolPanes } = setup();
+		patrolPanes.add(-1);
+		page.setInstance(1);
+		await settle();
+		const button = container.getElementsByClassName('paradis-bot-page-inbox')[0] as HTMLButtonElement;
+		assert.deepStrictEqual([state(container).strip, button.disabled], [true, false]);
 	});
 
 	test('Bot のペインだけに帯を出し、ペインが替わる・終わる・設定を切るたびに外す', async () => {
@@ -356,6 +385,24 @@ suite('Paradis bots page overlay', () => {
 		assert.deepStrictEqual([calls, confirms.map(confirmation => [confirmation.primaryButton, String(confirmation.detail).includes('5 分ごとに gh で GitHub を確かめます')])], [
 			['update {"watchGithub":true}'],
 			[['見張らせる', true]],
+		]);
+	});
+
+	test('設定: 変えられなかったらスイッチを台帳の値へ戻して理由を出す', async () => {
+		const { container, page, calls, warnings, updateFails } = setup();
+		updateFails.value = true;
+		page.setInstance(1);
+		await settle();
+		tab(container, 3);
+		await settle();
+		const switches = () => [...container.querySelectorAll('.paradis-bot-settings [role="switch"]')] as HTMLElement[];
+		switches()[1].click();
+		await settle();
+		await settle();
+		assert.deepStrictEqual([calls, warnings, switches().map(element => element.getAttribute('aria-checked'))], [
+			['update {"pinned":true}'],
+			['Bot を変えられませんでした: disk full'],
+			['true', 'false', 'false'],
 		]);
 	});
 

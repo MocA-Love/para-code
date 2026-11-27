@@ -22,7 +22,7 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { ParadisJsonStateWriter } from '../../../node/paradisJsonStateWriter.js';
 import {
 	EMPTY_PARADIS_BOT_GROUPS_STATE, IParadisBotGroup, IParadisBotGroupInput, IParadisBotGroupRecord, IParadisBotGroupRecordInput, IParadisBotGroupsState,
-	PARADIS_BOT_GROUPS_VERSION, ParadisBotGroupsResult, paradisBotGroupAppendRecord, paradisBotGroupCreate, paradisBotGroupInbox, paradisBotGroupMarkRead, paradisBotGroupRemove, paradisBotGroupUpdate, paradisParseBotGroupsState,
+	PARADIS_BOT_GROUPS_VERSION, ParadisBotGroupsResult, paradisBotGroupAppendRecord, paradisBotGroupCreate, paradisBotGroupForgetBot, paradisBotGroupInbox, paradisBotGroupMarkRead, paradisBotGroupRemove, paradisBotGroupUpdate, paradisParseBotGroupsState,
 } from '../common/paradisBotGroups.js';
 import { IParadisBotGroupsSnapshot } from '../common/paradisBotGroupsApi.js';
 import { IParadisBotGroupsPort, IParadisBotInboxEntry } from '../common/paradisBotMessages.js';
@@ -151,6 +151,15 @@ export class ParadisBotGroupsService extends Disposable {
 		return paradisBotGroupInbox(this.state, botId);
 	}
 
+	/** Bot を消した。その Bot 宛てのまだ読まれていない伝言を「読まれなかった」にする（付ける物が無ければ書かない）。 */
+	async forgetBot(botId: string): Promise<void> {
+		await this.ready;
+		const result = paradisBotGroupForgetBot(this.state, botId, this.now());
+		if (result.ok) {
+			await this.apply(result);
+		}
+	}
+
 	/** その Bot が読んだ伝言を既読にする（その Bot の受け箱にあるものだけ）。 */
 	async markRead(botId: string, recordIds: readonly string[]): Promise<ParadisBotsServiceResult<number>> {
 		await this.ready;
@@ -183,16 +192,22 @@ export class ParadisBotGroupsService extends Disposable {
  * Bot 同士の伝言の道具（paradisBotMessageToolProvider.ts）へ差し込む口。記録の id は口では文字列で返す。`appendRecord` で
  * 記録した伝言は、そのまま宛先の受け箱に入る（読まれるまで未読）。`inboxOf` で未読を返し、`markRead` で既読にする。
  */
-export function paradisBotGroupsMessagePort(service: Pick<ParadisBotGroupsService, 'groupsOf' | 'appendRecord' | 'inboxOf' | 'markRead'>): IParadisBotGroupsPort {
+export function paradisBotGroupsMessagePort(service: Pick<ParadisBotGroupsService, 'ready' | 'groupsOf' | 'appendRecord' | 'inboxOf' | 'markRead'>): IParadisBotGroupsPort {
 	return {
-		groupsOf: botId => service.groupsOf(botId).map(group => ({ id: group.id, memberIds: group.members })),
+		groupsOf: async botId => {
+			// 起動の直後に呼ばれても「グループに入っていない」と答えないよう、台帳を読み終えるのを待つ
+			await service.ready;
+			return service.groupsOf(botId).map(group => ({ id: group.id, memberIds: group.members }));
+		},
 		appendRecord: async (groupId, record) => {
 			const result = await service.appendRecord(groupId, { kind: record.kind, from: record.from, to: [record.to], text: record.text });
 			return result.ok ? { ok: true, recordId: String(result.value.id) } : { ok: false, message: result.message };
 		},
 		inboxOf: botId => service.inboxOf(botId),
 		markRead: async (botId, recordIds) => {
-			await service.markRead(botId, recordIds);
+			const result = await service.markRead(botId, recordIds);
+			// `not_found` は、ほかの呼び出しが先に既読にした（もう受け箱に出ない）ので、既読にできたのと同じ
+			return result.ok || result.code === 'not_found';
 		},
 	};
 }

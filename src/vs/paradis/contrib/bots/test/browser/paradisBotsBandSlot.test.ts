@@ -24,6 +24,7 @@ import { IQuickInputService } from '../../../../../platform/quickinput/common/qu
 import { InMemoryStorageService, IStorageService, StorageScope, StorageTarget } from '../../../../../platform/storage/common/storage.js';
 import { IParadisDialogService } from '../../../confirmDialog/browser/paradisDialogService.js';
 import { ParadisBotsBandSlot } from '../../browser/paradisBotsBand.js';
+import { paradisTakeRequestedBotPageTab } from '../../browser/paradisBotPageTabRequest.js';
 import { IParadisBotGroup } from '../../common/paradisBotGroups.js';
 import { IParadisBotGroupsService, IParadisBotGroupsSnapshot } from '../../common/paradisBotGroupsApi.js';
 import { IParadisBotSummary, IParadisBotsService, IParadisBotsSnapshot, PARADIS_BOTS_ENABLED_SETTING } from '../../common/paradisBotsApi.js';
@@ -124,6 +125,16 @@ suite('Paradis bots band slot', () => {
 		const records = [record(1, 'b'), record(2, 'b'), record(3, 'b', 5), record(4, 'a'), { ...record(5, 'b'), groupId: 'gone' }];
 		const unread = (container: HTMLElement) => Array.from(container.getElementsByClassName('paradis-bots-row')).map(row => row.getElementsByClassName('paradis-bots-row-unread')[0]?.textContent ?? '');
 		assert.deepStrictEqual([unread(setup(true, '{"open":true}', [group], records).container), unread(setup(true, '{"open":false}', [group], records).container)], [['1', '2', '', ''], ['2']]);
+	});
+
+	test('未読の印はキーボードでも押せ、Enter で会話のタブを開く（行の Enter と取り違えない）', () => {
+		const group: IParadisBotGroup = { id: 'g1', name: '班', members: ['a', 'b'], replyMode: 'mentioned', createdAt: 1, updatedAt: 1 };
+		const { container } = setup(true, '{"open":true}', [group], [{ id: 1, groupId: 'g1', kind: 'told', from: 'a', to: ['b'], text: 't', at: 1 }]);
+		const chip = container.getElementsByClassName('paradis-bots-row-unread')[0] as HTMLElement;
+		let rowKeys = 0;
+		chip.parentElement!.addEventListener('keydown', () => rowKeys++);
+		chip.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true }));
+		assert.deepStrictEqual([chip.tabIndex, chip.getAttribute('role'), paradisTakeRequestedBotPageTab('b'), rowKeys], [0, 'button', 'chat', 0]);
 	});
 
 	test('作成のモーダルは、開いている間に設定をオフにすると閉じる', () => {

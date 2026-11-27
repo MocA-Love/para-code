@@ -171,7 +171,6 @@ export class ParadisBotsService extends Disposable {
 	private readonly _onDidRemoveBot = this._register(new Emitter<string>());
 	/** Bot を台帳から外した（定期実行の見回りの定義を消すのに使う）。 */
 	readonly onDidRemoveBot: Event<string> = this._onDidRemoveBot.event;
-
 	private readonly _onDidRequestReveal = this._register(new Emitter<IParadisBotRevealRequest>());
 	/** 開いている Bot のペインを前に出してほしい（別のウィンドウから開こうとして断った）。 */
 	readonly onDidRequestReveal: Event<IParadisBotRevealRequest> = this._onDidRequestReveal.event;
@@ -266,7 +265,8 @@ export class ParadisBotsService extends Disposable {
 
 	/** 見張る Bot（GitHub の入り切りがオンで一時停止していない）の開いている項目に結んだ PR（`owner/repo#n`、重なりなし）。 */
 	githubPullRequestRefs(): string[] {
-		const watching = new Set(this.bots.bots.filter(bot => bot.watchGithub === true && !bot.paused).map(bot => bot.id));
+		// 見張る Bot の決め方は見張りの側（paradisBotGithubWatcher.ts の watchers）と揃える（新しい版の欄を持つ Bot は見張らない）
+		const watching = new Set(this.bots.bots.filter(bot => bot.watchGithub === true && !bot.paused && bot.preserved === undefined).map(bot => bot.id));
 		return [...new Set(paradisBotItemsOf(this.items, { open: true }).filter(item => watching.has(item.botId)).flatMap(item => item.links.filter(link => link.kind === 'pr').map(link => link.ref)))];
 	}
 
@@ -304,13 +304,20 @@ export class ParadisBotsService extends Disposable {
 	// ---- Bot が載せたタスクのペイン ----------------------------------------------------------------
 
 	/** Bot がタスクボードへタスクを載せた（bot_board_add_task の提供元だけが呼ぶ）。項目への結び付けとは別に控える。 */
-	async noteBotBoardTask(botId: string, taskId: string): Promise<void> {
+	async noteBotBoardTask(botId: string, taskId: string): Promise<boolean> {
 		if (!this.loaded) {
 			await this.ready;
 		}
 		if (this.boardOrigins.noteTask(taskId, botId, this.now())) {
 			this.savePanes();
 		}
+		// 控えに入ったか（形の違う id は控えない）。入っていれば 1 時間の数はここから数える
+		return this.boardOrigins.botOfTask(taskId) === botId;
+	}
+
+	/** その Bot がボードへ載せて控えたタスクのうち、`after` より後に控えた数（1 時間あたりの上限を、再起動をまたいで数える）。 */
+	boardTasksAddedAfter(botId: string, after: number): number {
+		return this.boardOrigins.boardTasks().filter(record => record.botId === botId && record.at > after).length;
 	}
 
 	/**
