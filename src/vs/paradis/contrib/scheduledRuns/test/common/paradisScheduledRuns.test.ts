@@ -9,6 +9,7 @@
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import {
+	paradisCronLegacyWarning,
 	paradisCronMinimumGapMinutes,
 	paradisCronOccurrencesBetween,
 	paradisCronToSchedulePreset,
@@ -24,6 +25,7 @@ import {
 	paradisCheckRunGuards,
 	paradisCleanupCandidateSpaces,
 	paradisDecideDue,
+	paradisRevalidateStoredDefinition,
 	paradisSanitizeScheduledRunPrompt,
 	paradisScheduledRunLaunchPrompt,
 	paradisValidateScheduledRunDraft,
@@ -66,6 +68,30 @@ suite('paradisScheduleCron', () => {
 		for (const bad of ['', '* * * *', '60 * * * *', '* 24 * * *', 'a * * * *', '5-1 * * * *', '*/0 * * * *']) {
 			assert.ok(paradisParseCron(bad).error, bad);
 		}
+	});
+
+	test('間隔が欄の幅を超える式: 新しく保存するときは断り、保存済みの定義は前と同じ時刻で走らせ続けて注意を出す', () => {
+		const stored = definition({ schedule: '*/90 * * * *' });
+		const { id: _id, enabled: _enabled, createdAt: _c, updatedAt: _u, ...draft } = stored;
+		const revalidated = paradisRevalidateStoredDefinition(stored);
+		assert.deepStrictEqual({
+			lenient: paradisParseCron('*/90 * * * *').schedule?.minutes,
+			strict: [paradisParseCron('*/90 * * * *', { strict: true }).error, paradisParseCron('0 */24 * * *', { strict: true }).error !== undefined, paradisParseCron('*/59 * * * *', { strict: true }).error],
+			newSave: paradisValidateScheduledRunDraft(draft),
+			storedStillRuns: [revalidated.problem, revalidated.definition.enabled, revalidated.definition.disabledReason],
+			warning: [paradisCronLegacyWarning('*/90 * * * *'), paradisCronLegacyWarning('15 */30 * * 1-5'), paradisCronLegacyWarning('0 * * * *'), paradisCronLegacyWarning('bad')],
+		}, {
+			lenient: [0],
+			strict: ['分の間隔「*/90」は 59 以下にしてください（cron 式の間隔は分の中でだけ繰り返します）。', true, undefined],
+			newSave: '分の間隔「*/90」は 59 以下にしてください（cron 式の間隔は分の中でだけ繰り返します）。',
+			storedStillRuns: [undefined, true, undefined],
+			warning: [
+				'この式は意図どおりに動いていません（毎時 0 分 に走っています）。直してください。',
+				'この式は意図どおりに動いていません（平日 0:15 に走っています）。直してください。',
+				undefined,
+				undefined,
+			],
+		});
 	});
 
 	test('finds the next occurrence, including weekdays and month ends', () => {
@@ -189,6 +215,19 @@ suite('paradisScheduledRuns decisions', () => {
 			userConcurrency: 'globalConcurrency',
 			userDaily: 'globalDailyLimit',
 		});
+	});
+
+	test('Bot の見回りは手動の「今すぐ見回る」を 1 日の回数に数えない（利用者の定期実行は数える）', () => {
+		const now = at(2026, 9, 25, 12, 0);
+		const isBotPatrol = (definitionId: string) => definitionId.startsWith('patrol');
+		const own = (id: string) => [
+			run({ id: `${id}-a`, definitionId: id, trigger: 'schedule', status: 'completed', createdAt: now - 3 * HOUR, scheduledFor: now - 3 * HOUR }),
+			run({ id: `${id}-b`, definitionId: id, trigger: 'manual', status: 'completed', createdAt: now - 2 * HOUR, scheduledFor: undefined }),
+		];
+		assert.deepStrictEqual({
+			patrol: paradisCheckRunGuards(definition({ id: 'patrol-me', dailyLimit: 2 }), own('patrol-me'), 'schedule', now, now, isBotPatrol),
+			user: paradisCheckRunGuards(definition({ id: 'user-me', dailyLimit: 2 }), own('user-me'), 'schedule', now, now, isBotPatrol),
+		}, { patrol: undefined, user: 'dailyLimit' });
 	});
 
 	test('strips control characters from prompts', () => {
