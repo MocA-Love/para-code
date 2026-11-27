@@ -463,4 +463,10 @@ export interface IParadisAgentChatSource {
 	 * （空の `interactionIds` で、残りがあるかだけを確かめられる）。古い shared process には無い。
 	 */
 	settleAgentChatApprovalsOffScreen?(token: string, interactionIds: readonly string[]): Promise<boolean>;
+	/**
+	 * PC の Claude Code で、承認・質問以外の画面（`/model`・`/config` など）が開いているか（agent.panel.v1 と同じく
+	 * Claude Mod に聞く）。mod が入っていない・古い・答えない、作業中・承認や質問を待っている・圧縮中、Claude Code 以外は
+	 * undefined（分からない）。古い shared process には無い。
+	 */
+	isAgentChatDialogOpen?(token: string): Promise<boolean | undefined>;
 }
