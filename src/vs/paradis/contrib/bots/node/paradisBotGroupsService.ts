@@ -151,10 +151,10 @@ export class ParadisBotGroupsService extends Disposable {
 		return paradisBotGroupInbox(this.state, botId);
 	}
 
-	/** Bot を消した。その Bot 宛てのまだ読まれていない伝言を捨てる（捨てる物が無ければ書かない）。 */
+	/** Bot を消した。その Bot 宛てのまだ読まれていない伝言を「読まれなかった」にする（付ける物が無ければ書かない）。 */
 	async forgetBot(botId: string): Promise<void> {
 		await this.ready;
-		const result = paradisBotGroupForgetBot(this.state, botId);
+		const result = paradisBotGroupForgetBot(this.state, botId, this.now());
 		if (result.ok) {
 			await this.apply(result);
 		}
@@ -204,6 +204,10 @@ export function paradisBotGroupsMessagePort(service: Pick<ParadisBotGroupsServic
 			return result.ok ? { ok: true, recordId: String(result.value.id) } : { ok: false, message: result.message };
 		},
 		inboxOf: botId => service.inboxOf(botId),
-		markRead: async (botId, recordIds) => (await service.markRead(botId, recordIds)).ok,
+		markRead: async (botId, recordIds) => {
+			const result = await service.markRead(botId, recordIds);
+			// `not_found` は、ほかの呼び出しが先に既読にした（もう受け箱に出ない）ので、既読にできたのと同じ
+			return result.ok || result.code === 'not_found';
+		},
 	};
 }

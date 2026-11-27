@@ -246,7 +246,7 @@ suite('Paradis bot groups', () => {
 		});
 	});
 
-	test('消した Bot・グループから外した Bot 宛ての未読は捨て、既読・ほかの宛先・あなたの sent は残す（入れ直しても古い未読は戻らない）', () => {
+	test('消した Bot・グループから外した Bot 宛ての未読は記録に残して「読まれなかった」にし、受け箱と上限の守りから外す（入れ直しても古い未読は戻らない）', () => {
 		const created = paradisBotGroupCreate(EMPTY_PARADIS_BOT_GROUPS_STATE, 'g1', { name: '班', members: ['a', 'b', 'c'] }, 1000);
 		assert.ok(created.ok);
 		let state = created.state;
@@ -261,28 +261,38 @@ suite('Paradis bot groups', () => {
 		append({ kind: 'sent', from: 'owner', to: ['b'], text: 'あなたから' });
 		const read = paradisBotGroupMarkRead(state, 'b', ['1'], 3000);
 		assert.ok(read.ok);
-		const forgot = paradisBotGroupForgetBot(read.state, 'b');
+		const forgot = paradisBotGroupForgetBot(read.state, 'b', 3500);
 		assert.ok(forgot.ok);
-		const again = paradisBotGroupForgetBot(forgot.state, 'b');
+		const again = paradisBotGroupForgetBot(forgot.state, 'b', 3600);
 		// c をグループから外して入れ直す
 		const left = paradisBotGroupUpdate(read.state, 'g1', { members: ['a', 'b'] }, 4000);
 		assert.ok(left.ok);
 		const back = paradisBotGroupUpdate(left.state, 'g1', { members: ['a', 'b', 'c'] }, 5000);
 		assert.ok(back.ok);
+		const marks = (records: readonly { text: string; readAt?: number; droppedAt?: number }[]) => records.map(record => `${record.text}:${record.readAt ?? '-'}:${record.droppedAt ?? '-'}`);
+		const reread = paradisParseBotGroupsState(JSON.parse(JSON.stringify(forgot.state)));
+		// 保存した中身にも `to` が空の記録が紛れていたら、消した Bot に巻き込まない
+		const emptyTo = paradisBotGroupForgetBot({ ...read.state, records: [{ id: 9, groupId: 'g1', kind: 'told', from: 'a', to: [], text: '宛先なし', at: 1 }] }, 'b', 1);
 		assert.deepStrictEqual({
 			forgot: forgot.value,
-			kept: forgot.state.records.map(record => record.text),
+			forgotRecords: marks(forgot.state.records),
+			reread: marks(reread?.records ?? []),
+			inboxB: paradisBotGroupInbox(forgot.state, 'b').length,
 			members: forgot.state.groups[0].members,
 			again: again.ok ? 'ok' : again.code,
 			afterRejoin: paradisBotGroupInbox(back.state, 'c').length,
-			keptForB: back.state.records.map(record => record.text),
+			rejoinRecords: marks(back.state.records),
+			emptyTo: emptyTo.ok ? 'ok' : emptyTo.code,
 		}, {
 			forgot: 1,
-			kept: ['b へ 1', 'c へ', 'あなたから'],
+			forgotRecords: ['b へ 1:3000:-', 'b へ 2:-:3500', 'c へ:-:-', 'あなたから:-:-'],
+			reread: ['b へ 1:3000:-', 'b へ 2:-:3500', 'c へ:-:-', 'あなたから:-:-'],
+			inboxB: 0,
 			members: ['a', 'b', 'c'],
 			again: 'not_found',
 			afterRejoin: 0,
-			keptForB: ['b へ 1', 'b へ 2', 'あなたから'],
+			rejoinRecords: ['b へ 1:3000:-', 'b へ 2:-:-', 'c へ:-:4000', 'あなたから:-:-'],
+			emptyTo: 'not_found',
 		});
 	});
 });

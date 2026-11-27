@@ -181,7 +181,8 @@ export class ParadisBotHomes {
 				throw new ParadisBotHomeError('outside', 'The skill path is not valid.');
 			}
 			// 置き場の外へ出ないこと（symlink を解いた先）は {@link write} と同じに確かめる。予約の検査だけを飛ばす
-			const path = await this.resolveInside(home, clean, true);
+			// 断ったときに空のフォルダを残さないよう、ここではフォルダを作らない（書く直前に作る）
+			const path = await this.resolveInside(home, clean, false);
 			// 同じ名前のスキルが既にあれば上書きしない（利用者や Bot が書いた手順を消さない）。同梱の文と同じなら書かずに済ます。
 			// 2 本とも確かめてから書く（片方だけ置き換わらないように）
 			const stat = await fs.lstat(path).catch(error => {
@@ -198,11 +199,11 @@ export class ParadisBotHomes {
 				throw new ParadisBotHomeError('exists', `A skill named ${skill.name} is already in the bot's home folder (${clean}), so Para Code did not replace it.`);
 			}
 			if (current === undefined) {
-				targets.push(path);
+				targets.push(clean);
 			}
 		}
-		for (const path of targets) {
-			await paradisWriteFileAtomic(path, text, { rejectSymlink: true });
+		for (const clean of targets) {
+			await paradisWriteFileAtomic(await this.resolveInside(home, clean, true), text, { rejectSymlink: true });
 		}
 		const soulPath = join(home, PARADIS_BOT_SOUL_FILE);
 		const soul = await readText(soulPath) ?? '';

@@ -73,6 +73,11 @@ export interface IParadisBotGroupRecord {
 	readonly at: number;
 	/** 宛先の Bot が受け箱から読んだ時刻（{@link paradisBotGroupMarkRead}）。 */
 	readonly readAt?: number;
+	/**
+	 * 読まれる前に宛先の Bot がグループから外れた・消えた時刻。記録は部屋に残し（「読まれなかった」）、受け箱と未読の数からは
+	 * 外す。上限で刈るときは既読と同じに扱う。
+	 */
+	readonly droppedAt?: number;
 }
 
 export interface IParadisBotGroupsState {
@@ -164,30 +169,38 @@ export function paradisBotGroupUpdate(state: IParadisBotGroupsState, id: string,
 		return refuse('invalid_argument', 'The change to the group is not valid.');
 	}
 	const group: IParadisBotGroup = { ...current, name, members, replyMode: mode, updatedAt: now };
-	// 外した Bot 宛てのまだ読まれていない伝言は捨てる（入れ直したときに古い未読が受け箱へ戻らないように）
+	// 外した Bot 宛てのまだ読まれていない伝言は「読まれなかった」にする（入れ直したときに古い未読が受け箱へ戻らないように。
+	// 記録は部屋に残す）
 	const removed = new Set(current.members.filter(member => !members.includes(member)));
-	const records = removed.size === 0 ? state.records : state.records.filter(record => !(record.groupId === id && isUnreadOnlyFor(record, removed)));
+	const records = removed.size === 0 ? state.records : state.records.map(record => record.groupId === id && isUnreadOnlyFor(record, removed) ? { ...record, droppedAt: now } : record);
 	return { ok: true, state: { ...state, groups: state.groups.map(existing => existing.id === id ? group : existing), records }, value: group };
 }
 
 /**
- * 消した Bot 宛てのまだ読まれていない伝言を、すべてのグループから捨てる（消した Bot は読めず、メンバーの並びには id が
- * 残るので、上限で刈る対象にも入らない）。捨てた数を返す。捨てる物が無ければ書かない（`not_found`）。メンバーの並びは
- * 変えない（2 人のグループが 1 人になると読み込みで捨てられるため。画面は {@link paradisBotGroupMembers} で除いて見せる）。
+ * 消した Bot 宛てのまだ読まれていない伝言を、すべてのグループで「読まれなかった」にする（消した Bot は読めず、メンバーの
+ * 並びには id が残るので、そのままでは上限で刈る対象にも入らない）。記録は部屋に残す。印を付けた数を返す。付ける物が
+ * 無ければ書かない（`not_found`）。メンバーの並びは変えない（2 人のグループが 1 人になると読み込みで捨てられるため。
+ * 画面は {@link paradisBotGroupMembers} で除いて見せる）。
  */
-export function paradisBotGroupForgetBot(state: IParadisBotGroupsState, botId: string): ParadisBotGroupsResult<number> {
+export function paradisBotGroupForgetBot(state: IParadisBotGroupsState, botId: string, now: number): ParadisBotGroupsResult<number> {
 	if (!writable(state)) {
 		return refuse('read_only', READ_ONLY);
 	}
 	const removed = new Set([botId]);
-	const records = state.records.filter(record => !isUnreadOnlyFor(record, removed));
-	const count = state.records.length - records.length;
+	let count = 0;
+	const records = state.records.map(record => {
+		if (!isUnreadOnlyFor(record, removed)) {
+			return record;
+		}
+		count++;
+		return { ...record, droppedAt: now };
+	});
 	return count === 0 ? refuse('not_found', 'There is no unread message for the bot.') : { ok: true, state: { ...state, records }, value: count };
 }
 
-/** まだ読まれていない Bot 同士の伝言で、宛先がすべて `botIds` の中か。 */
+/** まだ読まれていない Bot 同士の伝言で、宛先（1 つ以上）がすべて `botIds` の中か。 */
 function isUnreadOnlyFor(record: IParadisBotGroupRecord, botIds: ReadonlySet<string>): boolean {
-	return record.kind !== 'sent' && record.readAt === undefined && record.to.every(id => botIds.has(id));
+	return record.kind !== 'sent' && record.readAt === undefined && record.droppedAt === undefined && record.to.length > 0 && record.to.every(id => botIds.has(id));
 }
 
 /** グループと、その記録を消す（Bot と Bot の専用フォルダには触れない）。 */
@@ -258,7 +271,7 @@ function trimRecords(records: readonly IParadisBotGroupRecord[], groups: readonl
 
 /** まだ読まれていない Bot 同士の伝言で、宛先が今もグループのメンバーか。 */
 function isUnreadBotMessage(record: IParadisBotGroupRecord, members: readonly string[]): boolean {
-	return record.kind !== 'sent' && record.readAt === undefined && record.to.some(id => members.includes(id));
+	return record.kind !== 'sent' && record.readAt === undefined && record.droppedAt === undefined && record.to.some(id => members.includes(id));
 }
 
 /** 台帳に残っている Bot だけのメンバー（消した Bot を並べない）。 */
@@ -331,7 +344,7 @@ export function paradisResolveBotGroupMentions(text: string, members: readonly {
 
 /** その Bot の受け箱にある伝言か（Bot からの伝言で、宛先にその Bot がいて、まだ読まれていない）。 */
 function inInbox(record: IParadisBotGroupRecord, botId: string): boolean {
-	return record.kind !== 'sent' && record.to.includes(botId) && record.readAt === undefined;
+	return record.kind !== 'sent' && record.to.includes(botId) && record.readAt === undefined && record.droppedAt === undefined;
 }
 
 /** その Bot の受け箱にある伝言の数（帯と Bot のページに出す）。 */
@@ -395,7 +408,10 @@ function storedRecord(value: unknown, groups: ReadonlySet<string>): IParadisBotG
 		return undefined;
 	}
 	const record: IParadisBotGroupRecord = { id: value.id, groupId: value.groupId, kind, from: value.from, to: value.to, text: value.text.slice(0, PARADIS_BOT_GROUP_LIMITS.recordText), at: value.at };
-	return kind !== 'sent' && typeof value.readAt === 'number' && Number.isFinite(value.readAt) ? { ...record, readAt: value.readAt } : record;
+	const time = (candidate: unknown) => typeof candidate === 'number' && Number.isFinite(candidate) ? candidate : undefined;
+	const readAt = kind !== 'sent' ? time(value.readAt) : undefined;
+	const droppedAt = kind !== 'sent' && readAt === undefined ? time(value.droppedAt) : undefined;
+	return readAt !== undefined ? { ...record, readAt } : droppedAt !== undefined ? { ...record, droppedAt } : record;
 }
 
 /**

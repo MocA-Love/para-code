@@ -333,7 +333,9 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 			this.setBot(undefined);
 			return;
 		}
-		Promise.all([this.resolver.botFor(instanceId), this.resolver.isPatrolPane?.(instanceId) ?? false]).then(([botId, patrolPane]) => {
+		// 見回りのペインかを引けなくても帯は出し続ける（会話のペインとみなす。帯を出すかは botFor だけで決める）
+		const patrolPane = this.resolver.isPatrolPane?.(instanceId).catch(() => false) ?? false;
+		Promise.all([this.resolver.botFor(instanceId), patrolPane]).then(([botId, patrolPane]) => {
 			if (seq === this.resolveSeq && !this._store.isDisposed) {
 				this.patrolPane = patrolPane;
 				this.setBot(botId !== undefined && this.bot(botId) !== undefined ? botId : undefined);

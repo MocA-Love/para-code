@@ -59,7 +59,7 @@ suite('Paradis bot groups service', () => {
 		}, { created: 'g1', recorded: 1, failed: 'storage', name: '班', groupsOfB: ['g1'], groupsOfZ: 0, writes: 2 });
 	});
 
-	test('Bot を消したら、その Bot 宛ての未読を捨てて保存する。捨てる物が無ければ書かない', async () => {
+	test('Bot を消したら、その Bot 宛ての未読を「読まれなかった」にして保存する（記録は残す）。付ける物が無ければ書かない', async () => {
 		const file = new MemoryFile();
 		const groups = service(file);
 		await groups.createGroup({ name: '班', members: ['a', 'b'] });
@@ -69,7 +69,7 @@ suite('Paradis bot groups service', () => {
 		await groups.forgetBot('b');
 		await groups.forgetBot('b');
 		const reread = paradisParseBotGroupsState(JSON.parse(JSON.stringify(file.written.at(-1))));
-		assert.deepStrictEqual({ added: file.written.length - writes, kept: reread?.records.map(record => record.text), inboxB: (await groups.inboxOf('b')).length }, { added: 1, kept: ['a へ'], inboxB: 0 });
+		assert.deepStrictEqual({ added: file.written.length - writes, kept: reread?.records.map(record => `${record.text}:${record.droppedAt ?? '-'}`), inboxB: (await groups.inboxOf('b')).length, inboxA: (await groups.inboxOf('a')).length }, { added: 1, kept: ['b へ:100', 'a へ:-'], inboxB: 0, inboxA: 1 });
 	});
 
 	test('伝言の道具の口: appendRecord で記録した伝言が宛先の受け箱に 1 通ずつ入り、markRead で既読にする（保存して読み直しても既読のまま）', async () => {

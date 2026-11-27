@@ -185,7 +185,7 @@ export class ParadisBotMessageToolProvider implements IParadisMcpToolProvider {
 		return toolJson({
 			note: !markRead ? PARADIS_BOT_INBOX_PATROL_NOTE : marked ? PARADIS_BOT_INBOX_NOTE : PARADIS_BOT_INBOX_UNMARKED_NOTE,
 			messages: paradisBotInboxView(entries, id => this.service.getBot(id)?.name),
-			...(left > 0 ? { more: markRead ? `${left} more unread; call bot_inbox again.` : `${left} more unread.` } : {}),
+			...(left > 0 ? { more: markRead && marked ? `${left} more unread; call bot_inbox again.` : markRead ? `${left} more unread. The same messages come back until Para Code can mark them read, so do not call bot_inbox again now.` : `${left} more unread.` } : {}),
 		});
 	}
 }

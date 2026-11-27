@@ -318,7 +318,7 @@ export class ParadisBotGroupEditor extends EditorPane {
 			if (mark !== undefined) {
 				const chip = dom.append(row, dom.$('span.pbgr-mark'));
 				chip.textContent = mark;
-				chip.classList.toggle('unread', record.readAt === undefined);
+				chip.classList.toggle('unread', record.readAt === undefined && record.droppedAt === undefined);
 			}
 			const text = dom.append(row, dom.$('span.pbgr-text'));
 			text.textContent = record.text;

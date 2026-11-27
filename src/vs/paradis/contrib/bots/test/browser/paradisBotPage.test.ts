@@ -164,7 +164,14 @@ suite('Paradis bots page overlay', () => {
 		const changed = disposables.add(new Emitter<void>());
 		const panes = new Map<number, string>([[1, 'release']]);
 		const patrolPanes = new Set<number>();
-		const resolver: IParadisBotPaneResolver = { onDidChange: changed.event, botFor: async instanceId => panes.get(instanceId), isPatrolPane: async instanceId => patrolPanes.has(instanceId) };
+		// -1 を入れると、見回りのペインかの引き当てに失敗したことにする
+		const isPatrolPane = async (instanceId: number) => {
+			if (patrolPanes.has(-1)) {
+				throw new Error('the bots service is gone');
+			}
+			return patrolPanes.has(instanceId);
+		};
+		const resolver: IParadisBotPaneResolver = { onDidChange: changed.event, botFor: async instanceId => panes.get(instanceId), isPatrolPane };
 		const container = document.createElement('div');
 		const page = disposables.add(instantiation.createInstance(ParadisBotPage, container, resolver, patrol, measureClamp));
 		return { groupsSnapshot, groupsChanged, container, page, configuration, panes, patrolPanes, changed, answered, disposables, snapshotGone, updateFails, sendFails, warnings, failAnswer, calls, confirms, files, bots, botsChanged, statuses, chatShown: () => { draftTaken = true; }, headerCalls, setHeader: (value: typeof header) => { header = value; headerChanged.fire(1); }, setChatActive: (id: number, active: boolean) => { if (active) { chatActive.add(id); } else { chatActive.delete(id); } chatActiveChanged.fire(id); } };
@@ -224,6 +231,15 @@ suite('Paradis bots page overlay', () => {
 		button.click();
 		await settle();
 		assert.deepStrictEqual([button.hidden, button.disabled, button.textContent, calls.filter(call => call.startsWith('message'))], [false, true, '受け箱に 2 通', []]);
+	});
+
+	test('見回りのペインかを引けなくても、帯は出し続ける（会話のペインとみなす）', async () => {
+		const { container, page, patrolPanes } = setup();
+		patrolPanes.add(-1);
+		page.setInstance(1);
+		await settle();
+		const button = container.getElementsByClassName('paradis-bot-page-inbox')[0] as HTMLButtonElement;
+		assert.deepStrictEqual([state(container).strip, button.disabled], [true, false]);
 	});
 
 	test('Bot のペインだけに帯を出し、ペインが替わる・終わる・設定を切るたびに外す', async () => {
