@@ -89,6 +89,12 @@ describe('embeddedFlows', () => {
 	// Para Code が開くボードは、組み込みのフローだけをワークツリーで始める（保存したフローは書かれたとおり）
 	test('starts the built-in flow in worktrees and leaves saved flows as written', () => {
 		const saved = { ...TASK_BOARD_DEFAULT_FLOW, id: 'team', scope: 'team' as const };
-		expect([TASK_BOARD_DEFAULT_FLOW.workspace.kind, ...embeddedFlows([TASK_BOARD_DEFAULT_FLOW, saved]).map(flow => `${flow.id} ${flow.workspace.kind} ${flow.workspace.maxRunning}`)]).toEqual(['clone-pool', 'default worktree 4', 'team clone-pool 4']);
+		expect([TASK_BOARD_DEFAULT_FLOW.workspace.kind, ...embeddedFlows([TASK_BOARD_DEFAULT_FLOW, saved], undefined).map(flow => `${flow.id} ${flow.workspace.kind} ${flow.workspace.maxRunning}`)]).toEqual(['clone-pool', 'default worktree 4', 'team clone-pool 4']);
+	});
+
+	// この PC の設定にクローンの場所を残している人は、クローンを使い回すと決めているので、組み込みのフローも替えない
+	test('keeps the built-in flow on reused clones when the settings already list clones', () => {
+		const kinds = (clones: readonly string[] | undefined) => embeddedFlows([TASK_BOARD_DEFAULT_FLOW], clones).map(flow => flow.workspace.kind);
+		expect({ saved: kinds(['/repo-clone-1']), empty: kinds([]), none: kinds(undefined) }).toEqual({ saved: ['clone-pool'], empty: ['worktree'], none: ['worktree'] });
 	});
 });

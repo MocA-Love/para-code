@@ -570,8 +570,8 @@ async function main(restart?: IRestart): Promise<void> {
 	for (const problem of loaded.problems) {
 		log(`flow: ${problem.path}: ${problem.message}`);
 	}
-	// Para Code が開くボードにはクローンの場所を渡せないので、組み込みのフローはワークツリーで始める
-	engine.setFlows(args.embedded ? embeddedFlows(loaded.flows) : loaded.flows, loaded.active, true);
+	// Para Code が開くボードにはクローンの場所を渡せないので、組み込みのフローはワークツリーで始める（設定にクローンを残している人は除く）
+	engine.setFlows(args.embedded ? embeddedFlows(loaded.flows, clones) : loaded.flows, loaded.active, true);
 
 	const slots = clones?.length ? await inspectClones(clones) : paraCodeMode ? [] : demoSlots();
 	if (!realWorkspaces) {
