@@ -9,8 +9,8 @@
 // shared process の Bot グループのサービス。台帳は `<userData>/paradis/bots/groups.json`（0600、一時ファイル＋rename）。
 // 壊れたファイルは `groups.json.broken-<時刻>` へ退避して空で始める（Bot の台帳と同じ扱い）。
 //
-// Bot 同士の伝言の道具（本体の担当が作る MCP の道具）は、`groupsOf` で呼び出し元の Bot のグループを引き、届けた後に
-// `appendRecord` で「聞きました・伝えました」を残す。
+// Bot 同士の伝言の道具（paradisBotMessageToolProvider.ts）は、`groupsOf` で呼び出し元の Bot のグループを引き、届ける前に
+// `appendRecord` で「聞きました・伝えました」を残し、届けられなかったら `markUndelivered` で印を付ける。
 
 import { promises as fs } from 'fs';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
@@ -22,9 +22,10 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { ParadisJsonStateWriter } from '../../../node/paradisJsonStateWriter.js';
 import {
 	EMPTY_PARADIS_BOT_GROUPS_STATE, IParadisBotGroup, IParadisBotGroupInput, IParadisBotGroupRecord, IParadisBotGroupRecordInput, IParadisBotGroupsState,
-	PARADIS_BOT_GROUPS_VERSION, ParadisBotGroupsResult, paradisBotGroupAppendRecord, paradisBotGroupCreate, paradisBotGroupRemove, paradisBotGroupUpdate, paradisParseBotGroupsState,
+	PARADIS_BOT_GROUPS_VERSION, ParadisBotGroupsResult, paradisBotGroupAppendRecord, paradisBotGroupCreate, paradisBotGroupMarkUndelivered, paradisBotGroupRemove, paradisBotGroupUpdate, paradisParseBotGroupsState,
 } from '../common/paradisBotGroups.js';
 import { IParadisBotGroupsSnapshot } from '../common/paradisBotGroupsApi.js';
+import { IParadisBotGroupsPort } from '../common/paradisBotMessages.js';
 import { ParadisBotsServiceResult } from '../common/paradisBotsApi.js';
 import { paradisBotsDataFolder } from './paradisBotsStore.js';
 
@@ -144,6 +145,12 @@ export class ParadisBotGroupsService extends Disposable {
 		return this.apply(paradisBotGroupAppendRecord(this.state, groupId, input, this.now()));
 	}
 
+	/** Bot 同士の伝言の記録に「届けられなかった」の印を付ける（伝言の道具が届けに失敗した後）。 */
+	async markUndelivered(groupId: string, recordId: string): Promise<ParadisBotsServiceResult<IParadisBotGroupRecord>> {
+		await this.ready;
+		return this.apply(paradisBotGroupMarkUndelivered(this.state, groupId, recordId));
+	}
+
 	private async apply<T>(result: ParadisBotGroupsResult<T>): Promise<ParadisBotsServiceResult<T>> {
 		if (!result.ok) {
 			return result;
@@ -164,4 +171,21 @@ export class ParadisBotGroupsService extends Disposable {
 		this.changeScheduler.schedule();
 		return { ok: true, value: result.value };
 	}
+}
+
+/**
+ * Bot 同士の伝言の道具（paradisBotMessageToolProvider.ts）へ差し込む口。記録の id は口では文字列で返し、
+ * `markUndelivered` で同じ文字列を受ける。
+ */
+export function paradisBotGroupsMessagePort(service: Pick<ParadisBotGroupsService, 'groupsOf' | 'appendRecord' | 'markUndelivered'>): IParadisBotGroupsPort {
+	return {
+		groupsOf: botId => service.groupsOf(botId).map(group => ({ id: group.id, memberIds: group.members })),
+		appendRecord: async (groupId, record) => {
+			const result = await service.appendRecord(groupId, { kind: record.kind, from: record.from, to: [record.to], text: record.text });
+			return result.ok ? { ok: true, recordId: String(result.value.id) } : { ok: false, message: result.message };
+		},
+		markUndelivered: async (groupId, recordId) => {
+			await service.markUndelivered(groupId, recordId);
+		},
+	};
 }

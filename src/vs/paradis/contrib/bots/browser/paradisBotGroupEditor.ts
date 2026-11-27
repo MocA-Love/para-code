@@ -38,7 +38,7 @@ import { ParadisInputField } from '../../../browser/paradisInputField.js';
 import { ParadisSegmented } from '../../../browser/paradisSegmented.js';
 import { IParadisBotItem } from '../common/paradisBotItems.js';
 import { paradisBotItemGroups } from '../common/paradisBotPageModel.js';
-import { paradisBotGroupMentionProblem, paradisBotGroupRecordHead, paradisBotGroupSendSummary } from '../common/paradisBotGroupRoomModel.js';
+import { paradisBotGroupMentionProblem, paradisBotGroupRecordHead, paradisBotGroupRecordMark, paradisBotGroupSendSummary } from '../common/paradisBotGroupRoomModel.js';
 import { IParadisBotGroup, paradisBotGroupMembers, paradisResolveBotGroupMentions, ParadisBotGroupReplyMode } from '../common/paradisBotGroups.js';
 import { IParadisBotGroupsService } from '../common/paradisBotGroupsApi.js';
 import { IParadisBotsService, IParadisBotSummary, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
@@ -314,6 +314,10 @@ export class ParadisBotGroupEditor extends EditorPane {
 			row.dataset.kind = record.kind;
 			dom.append(row, dom.$('span.pbgr-time')).textContent = clock(record.at);
 			dom.append(row, dom.$('span.pbgr-who')).textContent = paradisBotGroupRecordHead(record, id => this.nameOf(id));
+			const mark = paradisBotGroupRecordMark(record);
+			if (mark !== undefined) {
+				dom.append(row, dom.$('span.pbgr-undelivered')).textContent = mark;
+			}
 			const text = dom.append(row, dom.$('span.pbgr-text'));
 			text.textContent = record.text;
 			text.title = record.text;
