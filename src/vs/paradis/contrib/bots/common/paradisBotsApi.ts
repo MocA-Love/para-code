@@ -30,6 +30,12 @@ import { IParadisBot, IParadisBotPatch, ParadisBotFaceColor, ParadisBotFaceShape
  */
 export const PARADIS_BOTS_ENABLED_SETTING = 'paradis.bots.enabled';
 
+/**
+ * 会話のペインのエージェントが、何もしないままこの時間が過ぎたら止める（Orca と同じ 30 分。待機中の CPU とメモリを返す）。
+ * 止めた後は「眠っている」になり、話しかけたら同じ会話を続けて起こす（報告書の D1 (a)）。
+ */
+export const PARADIS_BOT_IDLE_STOP_MS = 30 * 60_000;
+
 export type ParadisBotActivity = 'stopped' | 'idle' | 'working' | 'patrolling';
 
 /** ペインを起動した目的。`chat` は Bot の会話、`patrol` は見回り（PR 12 が使う）。 */
@@ -71,6 +77,11 @@ export interface IParadisBotSummary extends Omit<IParadisBot, 'preserved'> {
 	readonly halt?: ParadisBotPaneHalt;
 	/** 最後に動いた時刻（項目の動き・ペインのエージェントの動き・Bot の作成のうち一番新しいもの）。 */
 	readonly lastActivityAt: number;
+	/**
+	 * 眠っている（`activity` が `stopped` で、続けられる前の会話がある）。話しかけたら同じ会話を続けて起こす。
+	 * 再起動の後・何もしない 30 分で止めた後・止めた後に付く。
+	 */
+	readonly sleeping?: true;
 }
 
 export interface IParadisBotsSnapshot {
@@ -125,7 +136,7 @@ export function paradisBotActivity(bot: Pick<IParadisBot, 'paused'>, panes: read
 	return panes.some(pane => pane.working) ? 'patrolling' : 'idle';
 }
 
-export function paradisBotSummary(bot: IParadisBot, items: IParadisBotItemsState, panes: readonly IParadisBotPaneState[], now: number, openSuggestions = 0): IParadisBotSummary {
+export function paradisBotSummary(bot: IParadisBot, items: IParadisBotItemsState, panes: readonly IParadisBotPaneState[], now: number, openSuggestions = 0, resumable = false): IParadisBotSummary {
 	const counts = paradisBotItemCounts(items, bot.id, now);
 	// 読んだ値（知らない欄）は画面へ送らず、読み取り専用の印だけにする
 	const { preserved, ...known } = bot;
@@ -139,6 +150,7 @@ export function paradisBotSummary(bot: IParadisBot, items: IParadisBotItemsState
 		openSuggestions,
 		activity,
 		...(halt !== undefined ? { halt } : {}),
+		...(activity === 'stopped' && !bot.paused && resumable ? { sleeping: true } : {}),
 		lastActivityAt: Math.max(bot.createdAt, counts.lastActivityAt, ...panes.map(pane => pane.lastSeenAt)),
 	};
 }
@@ -166,12 +178,19 @@ export interface IParadisBotLaunch {
 	 * 合わせて引用する（設定ファイルのパスが空白を含みうるため。paradisBotPatrolLaunchArgs）。
 	 */
 	readonly extraFlags?: string | readonly string[];
+	/** 眠った会話を続けて起こす（`extraFlags` に続ける引数が入っている）。 */
+	readonly resumed?: true;
 }
 
 /** Bot を止める依頼。トークンの値は出さず、ハッシュで渡す。 */
 export interface IParadisBotStopRequest {
 	readonly botId: string;
 	readonly paneHashes: readonly string[];
+	/**
+	 * 何もしない 30 分で止める依頼（利用者の操作ではない）。ウィンドウは、見えている・フォーカスがある・打ちかけの入力が
+	 * ある・最近出力のあったペインは止めず、{@link IParadisBotsService.notePaneActive} で「まだ使っている」と返す。
+	 */
+	readonly idle?: true;
 }
 
 /** 開いている Bot のペインを前に出してほしい（別のウィンドウから開こうとした）。ハッシュで渡す。 */
@@ -246,6 +265,16 @@ export interface IParadisBotsService {
 	 * 終わったことは hook では分からないので、ウィンドウがシェル統合から知らせる。Bot のペインでなければ何もしない。
 	 */
 	notePaneCommand(paneToken: string, exitCode: number | undefined, finished: boolean): Promise<void>;
+	/**
+	 * Bot の会話のペインを利用者がまだ使っている（見えていた・入力した・出力があった）。何もしない 30 分の数え直しを、ここから
+	 * 始める。Bot のペインでなければ何もしない。
+	 */
+	notePaneActive(paneToken: string): Promise<void>;
+	/**
+	 * Bot のペインを閉じた（ウィンドウを再読み込みする前に、隠したペインを閉じる）。シェルの終わりの知らせ（TerminalExit）は
+	 * 再読み込みの間に届かないことがあるので、ウィンドウから先に結び付けを外す。会話の控えは残るので「眠っています」になる。
+	 */
+	releasePane(paneToken: string): Promise<void>;
 	requestStop(botId: string): Promise<boolean>;
 	/**
 	 * 別のウィンドウで開いている会話のペインを前に出してもらう（利用者の操作からだけ）。どのウィンドウも 2 秒以内に

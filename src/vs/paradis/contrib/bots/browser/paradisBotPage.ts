@@ -508,7 +508,8 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 
 	/** 待機中（作業中・見回り中・一時停止中でない）で、会話のペインに送れるときだけ「読ませる」を出す（見回りのペインには送らない）。 */
 	private canAskToReadInbox(bot: IParadisBotSummary): boolean {
-		return this.instanceId !== undefined && !this.patrolPane && !bot.paused && bot.activity === 'idle';
+		// エージェントが終わった・止まっているペイン（シェルだけ）には送らない（シェルのコマンドとして打ち込まれる）
+		return this.instanceId !== undefined && !this.patrolPane && !bot.paused && bot.activity === 'idle' && bot.halt === undefined;
 	}
 
 	/** 利用者の操作として、受け箱を見るようこの Bot に頼む（チャット表示の入力欄から送るのと同じ確認を通る）。 */

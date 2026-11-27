@@ -137,7 +137,10 @@ export function paradisBotStatusLine(bot: IParadisBotSummary): string {
 		case 'working': return localize('paradis.bots.status.working', "作業中");
 		case 'patrolling': return localize('paradis.bots.status.patrolling', "見回り中");
 		case 'idle': return paradisBotHaltLine(bot.halt) ?? localize('paradis.bots.status.idle', "待機中");
-		default: return localize('paradis.bots.status.stopped', "起動していません");
+		// 前の会話を残して止まっている（再起動の後・何もしない 30 分の後）。話しかけると続きから起きる
+		default: return bot.sleeping === true
+			? localize('paradis.bots.status.sleeping', "眠っています")
+			: localize('paradis.bots.status.stopped', "起動していません");
 	}
 }
 
