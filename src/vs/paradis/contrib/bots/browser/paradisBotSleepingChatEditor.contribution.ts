@@ -13,9 +13,13 @@ import { SyncDescriptor } from '../../../../platform/instantiation/common/descri
 import { Registry } from '../../../../platform/registry/common/platform.js';
 import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../../../workbench/browser/editor.js';
 import { EditorExtensions } from '../../../../workbench/common/editor.js';
-import { ParadisBotSleepingChatEditor, ParadisBotSleepingChatEditorInput, PARADIS_BOT_SLEEPING_CHAT_EDITOR_ID } from './paradisBotSleepingChatEditor.js';
+import { paradisRegisterSpaceFreeEditorType } from '../../workspaceSwitch/browser/paradisSpaceFreeTerminals.js';
+import { ParadisBotSleepingChatEditor, ParadisBotSleepingChatEditorInput, PARADIS_BOT_SLEEPING_CHAT_EDITOR_ID, PARADIS_BOT_SLEEPING_CHAT_INPUT_TYPE_ID } from './paradisBotSleepingChatEditor.js';
 
 Registry.as<IEditorPaneRegistry>(EditorExtensions.EditorPane).registerEditorPane(
 	EditorPaneDescriptor.create(ParadisBotSleepingChatEditor, PARADIS_BOT_SLEEPING_CHAT_EDITOR_ID, localize('paradis.botSleeping.editorName', "眠った Bot の会話")),
 	[new SyncDescriptor(ParadisBotSleepingChatEditorInput)],
 );
+
+// 眠った会話のタブもスペースに縛らない（Bot の会話のペインと同じく、スペースを切り替えても今の画面へ持ち越す。報告書の D3 (a)）
+paradisRegisterSpaceFreeEditorType(PARADIS_BOT_SLEEPING_CHAT_INPUT_TYPE_ID);

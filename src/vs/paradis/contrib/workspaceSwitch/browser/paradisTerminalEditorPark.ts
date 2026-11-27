@@ -13,6 +13,7 @@ import { IDeserializedTerminalEditorInput, ITerminalGroupService, ITerminalInsta
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
 import { paradisReleaseTerminalLayout } from '../../terminalRenderer/browser/paradisTerminalLayoutHold.js';
 import { paradisIsTerminalRestoreInputAmbiguous, paradisTerminalRestoreStateKey } from './paradisTerminalEditorRevive.js';
+import { paradisIsTerminalSpaceFree } from './paradisSpaceFreeTerminals.js';
 
 /**
  * エディタエリアのターミナルを Paradis ワークスペース切り替えを跨いで生かすためのパーク台帳 (機能1)。
@@ -225,6 +226,10 @@ export function paradisTerminalEditorOpening(instance: ITerminalInstance): { rea
  * 使うための単一の口。ここを通さずに所属を引くと、場所ごとに持ち主が食い違う。
  */
 export function paradisTerminalEditorOwnerScope(instance: ITerminalInstance): string | undefined {
+	// どのスペースにも属さないターミナル（Bot の会話のペイン）に持ち主は無い（どのスペースの画面にも出してよい）
+	if (paradisIsTerminalSpaceFree(instance.instanceId)) {
+		return undefined;
+	}
 	return paradisTerminalEditorOpening(instance)?.stateKey ?? paradisTerminalEditorOwner(instance);
 }
 
