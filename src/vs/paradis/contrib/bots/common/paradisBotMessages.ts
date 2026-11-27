@@ -102,6 +102,8 @@ export interface IParadisBotGroupsPort {
 	 * 渡らなかった）・`unknown`（時間切れ・中断で、届いたか分からない）。
 	 */
 	markUndelivered?(groupId: string, recordId: string, reason?: ParadisBotMessageUndeliveredReason): Promise<void>;
+	/** 記録した伝言を、宛先が作業中なので順番待ちに入れた、と記録の印を付ける（記録は増やさない。省略できる）。 */
+	markQueued?(groupId: string, recordId: string): Promise<void>;
 }
 
 export const PARADIS_BOT_MESSAGE_TOOLS: readonly IParadisMcpToolDefinition[] = [
