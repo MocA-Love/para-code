@@ -142,7 +142,7 @@ export const PARADIS_BOT_SERVER_INSTRUCTIONS = 'Bot tools (bot_item_list, bot_it
 
 /**
  * 会話の Bot のペインで前もって許可する Bot の道具（どれも Bot のペインにだけ出し、呼び出し元のペインの Bot として
- * 動く）。項目の道具と提案に、Bot どうしの伝言（bot_tell・bot_ask・受け箱を読む bot_inbox）を足す。管理の道具（list_bots ほか）は入れない。
+ * 動く）。項目の道具と提案に、Bot どうしの伝言（bot_tell・bot_ask）と受け箱（bot_inbox）を足す。管理の道具（list_bots ほか）は入れない。
  */
 const PARADIS_BOT_CHAT_APPROVAL_TOOLS: readonly string[] = [...PARADIS_BOT_TOOL_NAMES, PARADIS_BOT_TELL_TOOL, PARADIS_BOT_ASK_TOOL, PARADIS_BOT_INBOX_TOOL];
 
