@@ -356,11 +356,16 @@ class ParadisBotsWindowWorker extends Disposable {
 			return;
 		}
 		const [roots, bound] = await Promise.all([this.botsService.paneFolderRoots(), this.botsService.boundPaneHashes()]);
+		// 結び付いたペインの一覧が取れなければ何も捨てない（確かめ終えた印も付けず、次の機会にもう一度見る）
+		if (bound === undefined) {
+			return;
+		}
 		const boundHashes = new Set(bound);
 		for (const instance of candidates) {
 			this.checkedRestored.add(instance.instanceId);
 			const token = this.paneTokenService.getTokenForInstance(instance.instanceId);
-			const isBound = token !== undefined && boundHashes.has(await paradisBotPaneTokenHashInWindow(token));
+			// トークンが分からないペインは、結び付いているかが分からないので捨てない
+			const isBound = token === undefined ? undefined : boundHashes.has(await paradisBotPaneTokenHashInWindow(token));
 			const configCwd = instance.shellLaunchConfig.cwd;
 			const cwd = instance.shellLaunchConfig.attachPersistentProcess?.cwd || (typeof configCwd === 'string' ? configCwd : configCwd?.fsPath);
 			if (!instance.isDisposed && paradisIsLeftoverBotTerminal(cwd, roots, isBound, (path, parent) => isEqualOrParent(path, parent, !isLinux))) {
