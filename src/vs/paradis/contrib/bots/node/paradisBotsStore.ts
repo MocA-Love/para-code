@@ -19,6 +19,7 @@ import { dirname, join } from '../../../../base/common/path.js';
 import { ParadisJsonStateWriter } from '../../../node/paradisJsonStateWriter.js';
 import { EMPTY_PARADIS_BOT_ITEMS_STATE, IParadisBotItemsState, PARADIS_BOT_ITEMS_VERSION, paradisBotItemsToStored, paradisParseBotItemsState } from '../common/paradisBotItems.js';
 import { EMPTY_PARADIS_BOTS_STATE, IParadisBotsState, PARADIS_BOTS_VERSION, paradisBotsToStored, paradisParseBotsState } from '../common/paradisBots.js';
+import { EMPTY_PARADIS_BOT_SUGGESTIONS_STATE, IParadisBotSuggestionsState, PARADIS_BOT_SUGGESTIONS_VERSION, paradisParseBotSuggestionsState } from '../common/paradisBotSuggestions.js';
 import { EMPTY_PARADIS_BOT_PANES_STATE, IParadisBotPanesState, PARADIS_BOT_PANES_VERSION, paradisParseBotPanesState } from './paradisBotPanes.js';
 
 export interface IParadisBotsLoaded<T> {
@@ -99,4 +100,9 @@ export function createParadisBotItemsFile(userDataPath: string, now: () => numbe
 /** ペインとの結び付け（ペイントークンの SHA-256 と Bot の id だけ。トークンの値は書かない）。 */
 export function createParadisBotPanesFile(userDataPath: string, now: () => number = Date.now): IParadisBotsJsonFile<IParadisBotPanesState> {
 	return jsonFile(join(paradisBotsDataFolder(userDataPath), 'panes.json'), { empty: EMPTY_PARADIS_BOT_PANES_STATE, version: PARADIS_BOT_PANES_VERSION, parse: paradisParseBotPanesState, stored: state => state }, now);
+}
+
+/** 提案（見回りで見つけた「やってもよいこと」）と、見送った題。 */
+export function createParadisBotSuggestionsFile(userDataPath: string, now: () => number = Date.now): IParadisBotsJsonFile<IParadisBotSuggestionsState> {
+	return jsonFile(join(paradisBotsDataFolder(userDataPath), 'suggestions.json'), { empty: EMPTY_PARADIS_BOT_SUGGESTIONS_STATE, version: PARADIS_BOT_SUGGESTIONS_VERSION, parse: paradisParseBotSuggestionsState, stored: state => state }, now);
 }

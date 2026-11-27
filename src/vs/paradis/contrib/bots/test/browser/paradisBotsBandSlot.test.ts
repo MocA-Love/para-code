@@ -31,7 +31,7 @@ import { ILayoutService } from '../../../../../platform/layout/browser/layoutSer
 function bot(id: string, name: string, patch: Partial<IParadisBotSummary> = {}): IParadisBotSummary {
 	return {
 		id, name, folder: id, agent: 'claude', paused: false, pinned: false, faceColor: 'blue', faceShape: 'drop', createdAt: 1, updatedAt: 1,
-		needsYou: 0, openItems: 0, activity: 'stopped', lastActivityAt: 1,
+		needsYou: 0, openItems: 0, openSuggestions: 0, activity: 'stopped', lastActivityAt: 1,
 		...patch,
 	};
 }
