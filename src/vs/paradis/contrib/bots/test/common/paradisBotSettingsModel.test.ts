@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisBotHomeFileConflict, paradisBotPermissionOptions, paradisBotSettingsAgents, paradisBotSettingsChange, paradisBotSettingsRebase, paradisBotHomeFileDiff, paradisBotRoleOverflow } from '../../common/paradisBotSettingsModel.js';
+import { paradisBotHomeFileConflict, paradisBotPermissionOptions, paradisBotSettingsAgents, paradisBotSettingsChange, paradisBotSettingsRebase, paradisBotHomeFileDiff, paradisBotMemorySnapshotCount, paradisBotRoleOverflow, paradisBotUndoTidyLines } from '../../common/paradisBotSettingsModel.js';
 
 const BOT = { id: 'b', name: 'リリース係', agent: 'claude' as const, permissionId: undefined };
 const SAME = { name: 'リリース係', agent: 'claude' as const, permissionId: undefined, role: '# リリース係\n' };
@@ -75,6 +75,18 @@ suite('Paradis bots settings', () => {
 			0,
 			3,
 			0,
+		]);
+	});
+
+	test('写しの件数の文と、取り消しの結果の行', () => {
+		assert.deepStrictEqual([
+			paradisBotMemorySnapshotCount({ takenAt: 1, files: 4, total: 4, partial: false, kind: 'auto' }),
+			paradisBotMemorySnapshotCount({ takenAt: 1, files: 200, total: 250, partial: true, kind: 'manual' }),
+			paradisBotUndoTidyLines({ restored: ['MEMORY.md', 'memory/a.md'], added: [], takenAt: 5, skipped: [] }, at => `t${at}`),
+		], [
+			'4 件',
+			'250 件中 200 件だけ写しました',
+			[{ text: 't5 の写しに戻しました（2 件）。', attention: false }],
 		]);
 	});
 });
