@@ -410,6 +410,8 @@ export interface IParadisAgentChatCommand {
 export interface IParadisAgentChatGuide {
 	readonly notice: string;
 	readonly band?: { readonly title: string; readonly detail?: string };
+	/** 会話が無くても入力欄から送れる（眠った会話: 送ると起こす）。既定は送れない。 */
+	readonly sendable?: boolean;
 }
 
 /** 取り寄せた画像の実体。 */

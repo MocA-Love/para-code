@@ -12,6 +12,7 @@ import type { IParadisBotGithubView } from './paradisBotGithub.js';
 import { Event } from '../../../../base/common/event.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescriptor.js';
+import type { IParadisAgentChatMessage } from '../../agentChat/common/paradisAgentChat.js';
 import { IParadisBotItem, IParadisBotItemOwnerComment, IParadisBotItemsState, ParadisBotItemStatus, paradisBotItemCounts } from './paradisBotItems.js';
 import type { IParadisBotSuggestion } from './paradisBotSuggestions.js';
 import { IParadisBot, IParadisBotPatch, ParadisBotFaceColor, ParadisBotFaceShape } from './paradisBots.js';
@@ -82,6 +83,16 @@ export interface IParadisBotSummary extends Omit<IParadisBot, 'preserved'> {
 	 * 再起動の後・何もしない 30 分で止めた後・止めた後に付く。
 	 */
 	readonly sleeping?: true;
+}
+
+/** 眠っている Bot の前の会話（{@link IParadisBotsService.sleepingChat}）。 */
+export interface IParadisBotSleepingChat {
+	readonly agent: 'claude' | 'codex';
+	readonly messages: readonly IParadisAgentChatMessage[];
+	/** 読んだ範囲より前を落とした。 */
+	readonly truncated: boolean;
+	/** 会話の記録が見つからない・読めない（話しかければ続きから起きる）。 */
+	readonly unreadable?: true;
 }
 
 export interface IParadisBotsSnapshot {
@@ -285,6 +296,11 @@ export interface IParadisBotsService {
 	ackReveal(revealId: string): Promise<void>;
 	/** その Bot のペインのトークンの SHA-256（16 進）。開くときに、このウィンドウにもうあるかを照らす。`purpose` を渡せばその用途だけ。 */
 	paneHashesOf(botId: string, purpose?: ParadisBotPanePurpose): Promise<readonly string[]>;
+	/**
+	 * 眠っている Bot の前の会話を、エージェントを起こさずに会話の記録のファイルから読む（読むだけの吹き出しに出す）。
+	 * 続けられる会話が無ければ undefined。
+	 */
+	sleepingChat(botId: string): Promise<IParadisBotSleepingChat | undefined>;
 
 	/** その Bot のまだ決めていない提案（新しい順）。Bot のホームの節にだけ出す。 */
 	listSuggestions(botId: string): Promise<readonly IParadisBotSuggestion[]>;
