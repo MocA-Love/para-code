@@ -23,8 +23,8 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { IStateService } from '../../../../platform/state/node/state.js';
 import { createParadisShellEnvResolver, ParadisCachedShellEnv } from '../../../../platform/shell/node/paradisCachedShellEnv.js';
 import { PARADIS_TASK_BOARD_BRIDGE_DISCOVERY_FILE } from '../common/paradisTaskBoardBridge.js';
-import type { ITaskBoardAddIssuesRequest, TaskBoardAddIssuesResult } from '../common/paradisTaskBoard.js';
-import { IParadisTaskBoardHost, IParadisTaskBoardRemoteTarget, PARADIS_TASK_BOARD_EMBEDDED_PORT, PARADIS_TASK_BOARD_HOST_CHANNEL, ParadisTaskBoardOpenResult, ParadisTaskBoardServerMessage, paradisTaskBoardIsRemoteTarget, paradisTaskBoardWindowBackground } from '../common/paradisTaskBoardHost.js';
+import { ITaskBoardAddIssuesRequest, ITaskBoardAddTaskRequest, TaskBoardAddIssuesResult, TaskBoardAddTaskResult, taskBoardSanitizeAddTask } from '../common/paradisTaskBoard.js';
+import { IParadisTaskBoardBotHost, IParadisTaskBoardHost, IParadisTaskBoardRemoteTarget, PARADIS_TASK_BOARD_BOT_HOST_CHANNEL, PARADIS_TASK_BOARD_EMBEDDED_PORT, PARADIS_TASK_BOARD_HOST_CHANNEL, ParadisTaskBoardOpenResult, ParadisTaskBoardServerMessage, paradisTaskBoardIsRemoteTarget, paradisTaskBoardWindowBackground } from '../common/paradisTaskBoardHost.js';
 
 /** サーバーが起動の合図を返すまで待つ時間（GitHub の認証と台帳の読み込みが先に走る）。 */
 const READY_TIMEOUT_MS = 60_000;
@@ -177,6 +177,39 @@ class ParadisTaskBoardHost extends Disposable implements IParadisTaskBoardHost {
 			this.showWindow(running, taskId ? `#/board/task/${encodeURIComponent(taskId)}` : undefined);
 		}
 		return result;
+	}
+
+	/**
+	 * Bot が出したタスクを、動いている手元のボードの未着手に載せる。ボードの窓は出さない（利用者の作業を遮らない）。
+	 * 動いていなければ起こさずに `not-running`、SSH の窓のボードなら `remote`（Bot は手元のもの）。
+	 */
+	async addTask(request: ITaskBoardAddTaskRequest): Promise<TaskBoardAddTaskResult> {
+		const running = this.running;
+		if (!running || this.quitting) {
+			return { ok: false, reason: 'not-running' };
+		}
+		if (running.remote !== undefined) {
+			return { ok: false, reason: 'remote' };
+		}
+		const requestId = randomBytes(12).toString('base64url');
+		return new Promise<TaskBoardAddTaskResult>(resolve => {
+			const timer = setTimeout(() => finish({ ok: false, reason: 'failed', message: 'the task board did not answer in time' }), ADD_ISSUES_TIMEOUT_MS);
+			const onMessage = (message: ParadisTaskBoardServerMessage) => {
+				if (message?.type === 'add-task-result' && message.requestId === requestId) {
+					finish(message.result);
+				}
+			};
+			const onExit = () => finish({ ok: false, reason: 'not-running' });
+			const finish = (value: TaskBoardAddTaskResult) => {
+				clearTimeout(timer);
+				running.child.off('message', onMessage);
+				running.child.off('exit', onExit);
+				resolve(value);
+			};
+			running.child.on('message', onMessage);
+			running.child.once('exit', onExit);
+			running.child.send({ type: 'add-task', requestId, request }, error => error && finish({ ok: false, reason: 'failed', message: error.message }));
+		});
 	}
 
 	/**
@@ -575,8 +608,11 @@ interface IParadisTaskBoardHostChannelHost {
 	registerChannel(channelName: string, channel: IServerChannel<string>): void;
 }
 
-/** app.ts から 1 行で登録する。 */
-export function paradisRegisterTaskBoardHost(channelHost: IParadisTaskBoardHostChannelHost, configurationService: IConfigurationService, environmentMainService: IEnvironmentMainService, lifecycleMainService: ILifecycleMainService, logService: ILogService, stateService: IStateService): IDisposable {
+/**
+ * app.ts から 1 行で登録する。`sharedProcessClient` を渡すと、Bot がタスクを載せる口を shared process にだけ出す
+ * （窓の `channelHost` には出さない）。
+ */
+export function paradisRegisterTaskBoardHost(channelHost: IParadisTaskBoardHostChannelHost, configurationService: IConfigurationService, environmentMainService: IEnvironmentMainService, lifecycleMainService: ILifecycleMainService, logService: ILogService, stateService: IStateService, sharedProcessClient?: Promise<IParadisTaskBoardHostChannelHost>): IDisposable {
 	const store = new DisposableStore();
 	const host = store.add(new ParadisTaskBoardHost(configurationService, environmentMainService, lifecycleMainService, logService, stateService));
 	// 画面から呼べるのはここに並べたものだけにする（ProxyChannel はクラスのほかのメソッドも呼べてしまう）
@@ -588,5 +624,15 @@ export function paradisRegisterTaskBoardHost(channelHost: IParadisTaskBoardHostC
 		stop: () => host.stop(),
 	};
 	channelHost.registerChannel(PARADIS_TASK_BOARD_HOST_CHANNEL, ProxyChannel.fromService(surface, store));
+	if (sharedProcessClient) {
+		const botSurface: IParadisTaskBoardBotHost = {
+			addTask: request => {
+				const sanitized = taskBoardSanitizeAddTask(request);
+				return sanitized ? host.addTask(sanitized) : Promise.resolve({ ok: false, reason: 'failed', message: 'invalid task' });
+			},
+		};
+		const botChannel = ProxyChannel.fromService(botSurface, store);
+		sharedProcessClient.then(client => client.registerChannel(PARADIS_TASK_BOARD_BOT_HOST_CHANNEL, botChannel), error => logService.warn('[ParadisTaskBoardHost] could not reach the shared process', String(error)));
+	}
 	return store;
 }

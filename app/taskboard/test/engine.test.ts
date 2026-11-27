@@ -338,6 +338,16 @@ describe('TaskBoardEngine', () => {
 		expect(fresh.getTask(id)).toMatchObject({ step: 'todo', status: 'todo' });
 	});
 
+	// Para Code の Bot が IPC で載せたタスクだけが出どころを持ち、保存して読み直しても残る。画面の RPC の形（引数 1 つ）では付かない
+	test('keeps the bot origin of a task through save and restore, and only through the second argument', () => {
+		const { engine } = setup();
+		const id = engine.addTask({ title: 'From a bot', body: 'Do it' }, { kind: 'bot', botId: 'b1', botName: 'リリース係', itemNumber: 35 });
+		const rpcLike = engine.addTask({ title: 'From the page', origin: { kind: 'bot', botId: 'b2', botName: 'x', itemNumber: 1 } } as { title: string });
+		const { engine: fresh } = setup();
+		fresh.restore(JSON.parse(JSON.stringify(engine.serialize())));
+		expect([fresh.getTask(id)?.origin, fresh.getTask(id)?.source, fresh.getTask(rpcLike)?.origin]).toEqual([{ kind: 'bot', botId: 'b1', botName: 'リリース係', itemNumber: 35 }, 'manual', undefined]);
+	});
+
 	test('worktree flows create a slot per task and remove it on release', async () => {
 		const flow: ITaskBoardFlow = { ...TASK_BOARD_DEFAULT_FLOW, workspace: { kind: 'worktree', releaseOn: 'merged', maxRunning: 1 } };
 		const { engine, ports } = setup(flow, 0);
