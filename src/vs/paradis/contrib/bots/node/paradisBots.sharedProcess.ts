@@ -190,8 +190,9 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 	// 見回りのペインからは、para-browser の読むだけの道具と見回りの Bot の道具だけを通す（利用者が常に許可した書く道具も断る）
 	store.add(paradisRegisterMcpCallRefusal(paradisBotPatrolToolRefusal(service)));
 	// Bot のペインと、Bot が載せたタスクのペインの中のプロセスが、ほかのペインのトークン（ps で読める）を名乗った呼び出しは断る
+	// 設定をオフにしても、閉じ切るまで Bot のペインとして断り続ける（isBotPane と同じ）ので、設定では止めない
 	store.add(paradisRegisterMcpConfinedPanes({
-		active: () => enabled(),
+		active: () => true,
 		isConfined: async paneToken => {
 			await service.ready;
 			return service.restrictedBotIdOfPane(paneToken) !== undefined || service.boardOriginOfPane(paneToken) !== undefined;

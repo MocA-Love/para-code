@@ -88,7 +88,7 @@ export interface IParadisBotsServiceOptions {
 	readonly now?: () => number;
 	readonly uuid?: () => string;
 	/** shared process の hook のバス。Bot のペインの様子（動いている・待っている）を追う。 */
-	readonly hookEvents?: Event<{ readonly token: string; readonly event: string; readonly sessionId?: string }>;
+	readonly hookEvents?: Event<{ readonly token: string; readonly event: string; readonly sessionId?: string; readonly observedExit?: true }>;
 	/** ペインとの結び付けの保存先（トークンのハッシュだけ）。渡さなければ結び付けはメモリだけ。 */
 	readonly panesFile?: IParadisBotsJsonFile<IParadisBotPanesState>;
 	/** 専用フォルダの読み書き。渡さなければフォルダを作らず、起動の依頼とファイルの口は `unavailable` で断る。 */
@@ -217,8 +217,12 @@ export class ParadisBotsService extends Disposable {
 		this._register(this.humanAsk.onDidRequestAnswer(request => this.onAnswerRequest(request)));
 		if (options.hookEvents) {
 			this._register(options.hookEvents(event => {
-				// ペインのシェルが終わった（ウィンドウが shared process へ知らせ、hook のバスに流れる）。結び付けを外す
-				if (event.event === 'TerminalExit') {
+				// ペインのシェルが終わった（ウィンドウが shared process へ知らせ、hook のバスに流れる）。結び付けを外す。
+				// 外すのは Para Code が終了を見たもの（observedExit）だけ。agent-hook の HTTP の TerminalExit は、Bot の
+				// エージェントが自分のトークンで送れる（結び付けを外して、IDE の操作や見回りの読むだけの制限を外せてしまう）。
+				// HTTP の TerminalExit（OpenCode のブリッジの CLI が終わるときに送る）は、下の noteHook で「作業中ではない」に
+				// するだけにする（偽の Stop でもできることなので、偽れることは増えない）
+				if (event.event === 'TerminalExit' && event.observedExit === true) {
 					this.releasePane(event.token);
 					return;
 				}
@@ -396,25 +400,25 @@ export class ParadisBotsService extends Disposable {
 		return paneToken.length > 0 ? this.boardOrigins.paneOrigin(paradisTaskBoardTerminalId(paneToken))?.botId : undefined;
 	}
 
-	/** Bot の機能がオンで、そのペインが Bot のペインか（ほかの道具が Bot のペインを見分けるため）。 */
+	/**
+	 * そのペインが Bot のペインか（ほかの道具が Bot のペインを見分けるため）。Bot の機能の設定は見ない。設定は利用者の
+	 * `settings.json` にあり、Bot のエージェントが書き換えられることがあるので、オフにしても結び付いたペインの間は Bot の
+	 * ペインとして断り続ける（オフにしたら、ウィンドウが Bot のペインを閉じる。{@link allPaneHashes}）。
+	 */
 	isBotPane(paneToken: string): boolean {
-		return this.enabled() && paneToken.length > 0 && this.restrictedBotIdOfPane(paneToken) !== undefined;
+		return paneToken.length > 0 && this.restrictedBotIdOfPane(paneToken) !== undefined;
 	}
 
 	/**
 	 * Bot の制限を掛けるペインなら、その Bot の id。結び付いたペインに加えて、前に出す依頼に応えが無く会話として数えるのを
 	 * やめたペインも返す（閉じたと分かるまで制限の外に出さない）。Bot の道具・項目の持ち主には {@link botOfPane} を使う。
+	 * 設定のオン・オフは見ない（{@link isBotPane} と同じ）。
 	 */
 	restrictedBotIdOfPane(paneToken: string): string | undefined {
 		if (this.restorePane(paneToken)) {
 			this.notify();
 		}
 		return this.panes.restrictedBotOf(paneToken);
-	}
-
-	/** 制限を掛けるペインのトークン（全部の Bot）。Bot の機能がオフなら空。 */
-	restrictedPaneTokens(): string[] {
-		return this.enabled() ? this.panes.boundTokens() : [];
 	}
 
 	/** 保存した結び付けを戻した（このペインが今 Bot になった）か。 */
@@ -819,6 +823,11 @@ export class ParadisBotsService extends Disposable {
 			...(purpose === undefined || purpose === 'chat' ? this.panes.detachedTokensOf(botId).map(paradisBotPaneTokenHash) : []),
 			...this.panes.rememberedPanes().filter(record => record.botId === botId && (purpose === undefined || record.purpose === purpose)).map(record => record.hash),
 		])];
+	}
+
+	/** すべての Bot のペインのトークンの SHA-256（Bot の機能をオフにしたとき、ウィンドウが Bot のペインを閉じるのに使う）。 */
+	allPaneHashes(): string[] {
+		return [...new Set(this.bots.bots.flatMap(bot => this.paneHashesOf(bot.id)))];
 	}
 
 	// ---- 定期実行の見回りの門（定期実行のサービスが呼ぶ） -------------------------------------------

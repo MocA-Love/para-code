@@ -5450,7 +5450,7 @@ export class ParadisAgentBrowserService extends Disposable {
 		this._hibernatingTokens.delete(token);
 		this._cleanupTokenLocalState(token, generation, true);
 		this._hookOwnership.clear(token);
-		this._runNonThrowingCleanup('terminal-exit-hook', () => fireParadisAgentHookEvent({ token, event: 'TerminalExit', sessionId: undefined, transcriptPath: undefined, cwd: undefined, at: Date.now() }));
+		this._runNonThrowingCleanup('terminal-exit-hook', () => fireParadisAgentHookEvent({ token, event: 'TerminalExit', sessionId: undefined, transcriptPath: undefined, cwd: undefined, observedExit: true, at: Date.now() }));
 		this._runNonThrowingCleanup('terminal-exit-acknowledgement', () => this._onDidAcknowledgePane.fire(token));
 		return true;
 	}

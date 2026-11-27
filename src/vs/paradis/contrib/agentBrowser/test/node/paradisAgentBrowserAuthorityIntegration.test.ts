@@ -2669,6 +2669,24 @@ suite('ParadisAgentBrowser authority integration', () => {
 		assert.deepStrictEqual({ afterHttpExit, afterWindowExit }, { afterHttpExit: [true, true], afterWindowExit: [false, false] });
 	});
 
+	// Bot のサービスは observedExit の付いた TerminalExit でだけ結び付けを外す。HTTP の TerminalExit はペインの
+	// エージェント自身が送れるので、本文やクエリで名乗っても印は付かない（付くと Bot の制限を外せる）
+	test('only the window\'s terminal exit marks the TerminalExit on the hook bus as observed', async () => {
+		const fixture = createFixture();
+		const connection = {};
+		fixture.service.registerRendererConnection('window:1', connection);
+		await fixture.service.syncBindingAuthority(connection, authorityManifest(1, true, [{ token: 'token', shellPid: 123 }]));
+		const events: string[] = [];
+		const listener = onParadisAgentHookEvent(event => { if (event.token === 'token' && event.event === 'TerminalExit') { events.push(`${event.observedExit ?? 'unmarked'}`); } });
+		try {
+			await sendHook(fixture.service, 'token', 'TerminalExit', JSON.stringify({ observedExit: true, observed_exit: true }));
+			await fixture.service.notifyTerminalExit(connection, 'token');
+		} finally {
+			listener.dispose();
+		}
+		assert.deepStrictEqual(events, ['unmarked', 'true']);
+	});
+
 	// Interrupt (Codex's Esc) returns the pane to no status (idle); it never enters a wait.
 	test('the hooks accepted without a verified caller only ever move a pane toward working, review or no status', () => {
 		const events = ['PostToolUse', 'PostToolUseFailure', 'PermissionDenied', 'UserPromptSubmit', 'task_started', 'Stop', 'StopFailure', 'SubagentStop', 'agent-turn-complete', 'task_complete', 'SessionEnd', 'Interrupt', 'SubagentStart',
