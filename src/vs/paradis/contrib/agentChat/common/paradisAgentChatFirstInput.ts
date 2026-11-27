@@ -8,16 +8,27 @@
 
 // 会話がまだ見つからないペイン（最初の指示なしで起こした Bot の会話）へ、最初の 1 文を送るときの待ち。
 // Claude Code も Codex も最初の発言まで会話の記録を作らないので、チャット表示は会話を待つ間も入力欄から送れるようにし、
-// 送るのはエージェントの入力欄の準備ができてから（TUI が前面にいて、貼り付けのモードを有効にした後）にする。
+// 送るのはエージェントの入力欄が受け付ける状態だと確かに分かってから（前面がエージェントで、画面の入力欄が空で見えていて、
+// 信頼の確認・更新の案内などの選択画面が出ていない）にする。分からない間は送らない（選択画面に Enter を送ると既定の項目を
+// 選んでしまい、文も消える）。
 
 /** 準備を待つ上限。 */
 export const PARADIS_AGENT_FIRST_INPUT_TIMEOUT_MS = 60_000;
 /** 準備を見直す間隔。 */
 const POLL_MS = 250;
 
-/** エージェントの入力欄が最初の 1 文を受け取れるか（前面がエージェントで、TUI が貼り付けのモードを有効にした）。 */
-export function paradisAgentReadyForFirstInput(foreground: 'agent' | 'shell' | 'unknown', bracketedPasteMode: boolean): boolean {
-	return foreground === 'agent' && bracketedPasteMode;
+/** 最初の 1 文を送る前に見るもの。 */
+export interface IParadisAgentFirstInputProbe {
+	readonly foreground: 'agent' | 'shell' | 'unknown';
+	/** 画面の入力欄（Claude Code の `❯`・Codex の `›`）。空で見えていれば `empty`、見つからなければ `unknown`。 */
+	readonly composer: 'empty' | 'text' | 'unknown';
+	/** 選択画面（信頼の確認・更新の案内・Plan の後の問いなど）が出ている。 */
+	readonly choiceMenu: boolean;
+}
+
+/** エージェントの入力欄が最初の 1 文を受け取れると確かに分かるか。 */
+export function paradisAgentReadyForFirstInput(probe: IParadisAgentFirstInputProbe): boolean {
+	return probe.foreground === 'agent' && probe.composer === 'empty' && !probe.choiceMenu;
 }
 
 /**
@@ -25,7 +36,7 @@ export function paradisAgentReadyForFirstInput(foreground: 'agent' | 'shell' | '
  * `wait` はテストで差し替える。
  */
 export async function paradisWaitForAgentFirstInput(
-	probe: () => { readonly foreground: 'agent' | 'shell' | 'unknown'; readonly bracketedPasteMode: boolean } | undefined,
+	probe: () => IParadisAgentFirstInputProbe | undefined,
 	timeoutMs = PARADIS_AGENT_FIRST_INPUT_TIMEOUT_MS,
 	wait: (ms: number) => Promise<void> = ms => new Promise(resolve => setTimeout(resolve, ms)),
 ): Promise<boolean> {
@@ -37,7 +48,7 @@ export async function paradisWaitForAgentFirstInput(
 		if (state === undefined) {
 			return false;
 		}
-		if (paradisAgentReadyForFirstInput(state.foreground, state.bracketedPasteMode)) {
+		if (paradisAgentReadyForFirstInput(state)) {
 			return true;
 		}
 		if (state.foreground === 'agent') {

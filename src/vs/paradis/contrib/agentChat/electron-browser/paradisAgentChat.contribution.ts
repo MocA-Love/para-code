@@ -69,7 +69,9 @@ import type { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentB
 import { IParadisAgentStatusStore } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisAntigravityPaneStatus } from '../common/paradisAgentChatActionSupport.js';
 import { paradisLatestProgramStatus } from '../../agentBrowser/browser/paradisLatestProgramStatus.js';
-import { paradisWaitForAgentFirstInput } from '../common/paradisAgentChatFirstInput.js';
+import { paradisAgentReadyForFirstInput, paradisWaitForAgentFirstInput } from '../common/paradisAgentChatFirstInput.js';
+import { paradisClaudeComposerState } from '../../agentHibernation/common/paradisAgentHibernation.js';
+import { paradisCodexComposerState } from '../../mobileRelay/electron-browser/paradisCodexAutoContinueWindow.js';
 import { paradisSendAgentMessageToTui } from '../../mobileRelay/common/paradisAgentMessageSender.js';
 import { paradisBuildPresetInsertText } from '../../terminalPresets/common/paradisTerminalPresets.js';
 import { IParadisHumanAskService } from '../../humanAsk/common/paradisHumanAsk.js';
@@ -757,15 +759,36 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 			return localize('paradisAgentChat.errorEmpty', "送る文がありません");
 		}
 		const terminal = () => this.chatTerminal(instanceId, token);
-		const ready = await paradisWaitForAgentFirstInput(() => {
+		const probe = () => {
 			const current = terminal();
-			return current === undefined ? undefined : { foreground: current.foreground(), bracketedPasteMode: current.bracketedPasteMode() };
-		});
+			const instance = this.terminalService.getInstanceFromId(instanceId);
+			const buffer = instance?.xterm?.raw.buffer.active;
+			if (current === undefined || instance === undefined || buffer === undefined) {
+				return undefined;
+			}
+			// Claude Code の `❯` か Codex の `›` の入力欄が空で見えているときだけ送る（どちらでも無ければ分からない）
+			const claude = paradisClaudeComposerState(buffer);
+			const composer = claude !== 'unknown' ? claude : paradisCodexComposerState(buffer);
+			return { foreground: current.foreground(), composer, choiceMenu: this.readChoiceMenu(instanceId) !== undefined };
+		};
+		const ready = await paradisWaitForAgentFirstInput(probe);
 		const target = terminal();
 		if (!ready || target === undefined) {
-			return localize('paradisAgentChat.errorFirstInputNotReady', "エージェントの準備ができませんでした。ターミナルで確かめてください");
+			// 文は入力欄に残る（送れなかったので消さない）
+			return localize('paradisAgentChat.errorFirstInputNotReady', "ターミナルで操作が要ります。初回設定や確認の画面で止まっていないか確かめてください");
 		}
-		const outcome = await paradisSendAgentMessageToTui(value, (value, execute, bracketedPasteMode) => target.sendText(value, execute ?? false, bracketedPasteMode), async () => terminal() === target && target.foreground() === 'agent');
+		// 貼る直前は入力欄が空で受け付ける状態か、Enter の直前は（貼った文で入力欄はもう空ではないので）選択画面が出ていないかを見直す
+		let pasted = false;
+		const validate = async () => {
+			const state = probe();
+			if (terminal() !== target || state === undefined) {
+				return false;
+			}
+			const ok = pasted ? state.foreground === 'agent' && !state.choiceMenu : paradisAgentReadyForFirstInput(state);
+			pasted = true;
+			return ok;
+		};
+		const outcome = await paradisSendAgentMessageToTui(value, (value, execute, bracketedPasteMode) => target.sendText(value, execute ?? false, bracketedPasteMode), validate);
 		return outcome.executed ? '' : localize('paradisAgentChat.errorChanged', "送る前にターミナルの状態が変わりました");
 	}
 

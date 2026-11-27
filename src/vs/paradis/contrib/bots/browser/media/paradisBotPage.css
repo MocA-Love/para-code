@@ -25,6 +25,8 @@
 	padding: 0 var(--vscode-spacing-size160);
 	background: var(--vscode-editor-background);
 	border-bottom: 1px solid var(--vscode-panel-border, transparent);
+	/* Narrow splits shrink the strip; the rules at the end of this file tighten it by its own width. */
+	container: paradis-bot-strip / inline-size;
 }
 
 .monaco-workbench .terminal-overflow-guard.terminal-editor > .paradis-bot-page-strip[hidden],
@@ -219,10 +221,12 @@
 	display: none;
 }
 
-/* Pill tabs, as in the mock: the selected one is filled with the raised surface. */
+/* Pill tabs, as in the mock: the selected one is filled with the raised surface. On a narrow split they shrink and cut their labels instead of running past the strip. */
 .paradis-bot-page-tabs {
 	display: flex;
-	flex: none;
+	flex: 0 1 auto;
+	min-width: 0;
+	overflow: hidden;
 	gap: 2px;
 	margin-left: auto;
 	padding: 2px;
@@ -232,6 +236,8 @@
 
 .paradis-bot-page-tab {
 	display: flex;
+	flex: 0 1 auto;
+	min-width: 0;
 	align-items: center;
 	gap: var(--vscode-spacing-size60);
 	height: 26px;
@@ -840,3 +846,39 @@ button.paradis-bot-page-link:hover {
 .paradis-bot-patrol-preview.paradis-bot-patrol-problem {
 	color: var(--vscode-paradis-danger);
 }
+
+.paradis-bot-page-tab > span:first-child {
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+/* Narrow split: drop the status and model (the band row says the same), and tighten the padding so all four tabs fit. */
+@container paradis-bot-strip (max-width: 460px) {
+	.paradis-bot-page-status,
+	.paradis-bot-page-model {
+		display: none;
+	}
+
+	.paradis-bot-page-tab {
+		padding: 0 var(--vscode-spacing-size60);
+	}
+}
+
+@container paradis-bot-strip (max-width: 340px) {
+	.paradis-bot-page-name {
+		display: none;
+	}
+}
+
+/* Very narrow: the face also gives way so the tab labels keep a readable width. */
+@container paradis-bot-strip (max-width: 300px) {
+	.paradis-bot-page-face {
+		display: none;
+	}
+
+	.paradis-bot-page-tab {
+		padding: 0 var(--vscode-spacing-size40);
+	}
+}
+
