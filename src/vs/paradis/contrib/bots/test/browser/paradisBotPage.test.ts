@@ -419,15 +419,16 @@ suite('Paradis bots page overlay', () => {
 		});
 	});
 
-	test('見回り: ホームの「定期実行」の節と、設定のタブの欄から保存・今すぐ見回る', async () => {
+	test('見回り: ホームの「定期実行」の節と、設定のタブの欄から保存・今すぐ見回る。保存を断られたら書きかけを残して理由を出す', async () => {
 		const patrolCalls: string[] = [];
+		let saveFails = false;
 		const port: IParadisBotPatrolPort = {
 			onDidChange: Event.None,
-			get: async () => ({ definitionId: 'd', enabled: true, schedule: { everyHours: 4, fromHour: 8, toHour: 20, weekdaysOnly: true }, cron: '0 8-20/4 * * 1-5', lookFor: '返事の無い指摘', gate: 'paused' }),
-			set: async (botId, input) => { patrolCalls.push(`set ${botId} ${JSON.stringify(input)}`); return { ok: true }; },
+			get: async () => ({ definitionId: 'd', enabled: true, schedule: { everyHours: 4, fromHour: 8, toHour: 20, weekdaysOnly: true }, cron: '0 8-20/4 * * 1-5', lookFor: '返事の無い指摘', gate: 'ok' }),
+			set: async (botId, input) => { patrolCalls.push(`set ${botId} ${JSON.stringify(input)}`); return saveFails ? { ok: false, error: '定期実行は 20 件までです' } : { ok: true }; },
 			runNow: async botId => { patrolCalls.push(`run ${botId}`); return { ok: true }; },
 		};
-		const { container, page } = setup(ITEMS, [ASK], undefined, port);
+		const { container, page, warnings } = setup(ITEMS, [ASK], undefined, port);
 		page.setInstance(1);
 		await settle();
 		(container.getElementsByClassName('paradis-bot-page-tab')[1] as HTMLElement).click();
@@ -441,15 +442,30 @@ suite('Paradis bots page overlay', () => {
 		await settle();
 		await settle();
 		const sections = Array.from(container.getElementsByClassName('paradis-bot-page-section')).map(section => section.textContent);
-		const save = Array.from(container.querySelectorAll('.monaco-button')).find(button => button.textContent === '見回りを保存') as HTMLElement;
-		save.click();
+		const save = () => (Array.from(container.querySelectorAll('.monaco-button')).find(button => button.textContent === '見回りを保存') as HTMLElement).click();
+		const lookForInput = () => container.querySelector('.paradis-bot-patrol-settings input[aria-label="探すもの"]') as HTMLInputElement;
+		save();
 		await settle();
 		await settle();
-		assert.deepStrictEqual({ home, homeButtons, sections: sections.slice(-1), patrolCalls }, {
-			home: ['一時停止中のため見回りません'],
+		// 断られた保存: 書いた「探すもの」が残り、理由が出る
+		saveFails = true;
+		lookForInput().value = 'CI の落ちたチェック';
+		lookForInput().dispatchEvent(new InputEvent('input'));
+		save();
+		await settle();
+		await settle();
+		const kept = lookForInput().value;
+		assert.deepStrictEqual({ home, homeButtons, sections: sections.slice(-1), patrolCalls, kept, warned: warnings.slice(-1) }, {
+			kept: 'CI の落ちたチェック',
+			warned: ['見回りを保存できませんでした: 定期実行は 20 件までです'],
+			home: ['平日 8〜20 時・4 時間ごと'],
 			homeButtons: ['今すぐ見回る', '変える...'],
 			sections: ['見回り'],
-			patrolCalls: ['run release', 'set release {"schedule":{"everyHours":4,"fromHour":8,"toHour":20,"weekdaysOnly":true},"lookFor":"返事の無い指摘","enabled":true}'],
+			patrolCalls: [
+				'run release',
+				'set release {"schedule":{"everyHours":4,"fromHour":8,"toHour":20,"weekdaysOnly":true},"lookFor":"返事の無い指摘","enabled":true}',
+				'set release {"schedule":{"everyHours":4,"fromHour":8,"toHour":20,"weekdaysOnly":true},"lookFor":"CI の落ちたチェック","enabled":true}',
+			],
 		});
 	});
 
