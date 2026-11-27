@@ -248,7 +248,7 @@ suite('Paradis bot homes', () => {
 			launch: {
 				launchId: 'string', botId: 'id2', purpose: 'chat', cwd: join(root, 'bot-2'), name: 'レビュー係', agent: 'codex',
 				// Codex の Bot だけ、道具の許可をこの起動の引数で渡す（利用者の config.toml には書かない）
-				extraFlags: '-c \'mcp_servers.para-browser.tools.bot_item_list.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_item_show.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_item_add.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_item_update.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_suggest.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_tell.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_ask.approval_mode=approve\'',
+				extraFlags: '-c \'mcp_servers.para-browser.tools.bot_item_list.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_item_show.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_item_add.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_item_update.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_suggest.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_tell.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_ask.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_board_add_task.approval_mode=approve\'',
 			},
 			bound: [false, true, false, 'レビュー係', undefined, 'idle'],
 			stops: [true, ['id1', 'id2']],
