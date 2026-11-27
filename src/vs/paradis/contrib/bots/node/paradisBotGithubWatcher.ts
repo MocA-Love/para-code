@@ -95,8 +95,9 @@ export function createParadisBotGhRunner(logService: ILogService, configurationS
 				env: { ...env, GH_PROMPT_DISABLED: '1', GH_NO_UPDATE_NOTIFIER: '1' },
 			}, (err, stdout, stderr) => {
 				const notFound = (err as { code?: unknown } | null)?.code === 'ENOENT';
-				// execFile の timeout で止めたときは killed が立つ（SIGKILL）
-				const timedOut = Boolean(err && (err as { killed?: boolean }).killed);
+				// execFile の timeout で止めたときは killed が立つ（SIGKILL）。maxBuffer を超えて止めたときも立つので、それは除く
+				const tooLarge = (err as { code?: unknown } | null)?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+				const timedOut = Boolean(err && (err as { killed?: boolean }).killed) && !tooLarge;
 				resolve({ stdout: stdout ?? '', stderr: stderr ?? (err?.message ?? ''), failed: Boolean(err), notFound, timedOut });
 			});
 		});

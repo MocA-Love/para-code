@@ -25,8 +25,8 @@ import { paradisCodexHomeCandidates } from '../../agentBrowser/node/paradisAgent
 import { onParadisAgentHookEvent } from '../../agentBrowser/node/paradisAgentHookBus.js';
 import { PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING, paradisAgentIdeActionsAllowed } from '../../agentIde/common/paradisAgentIde.js';
 import { paradisRegisterAgentIdeActionRefusal } from '../../agentIde/node/paradisAgentIdeToolProvider.js';
-import { paradisGithubRateLimitPause } from '../../githubMetrics/common/paradisGithubRateLimitPause.js';
 import { paradisResolveAgentTemplates } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
+import { paradisGithubRateLimitPause } from '../../githubMetrics/common/paradisGithubRateLimitPause.js';
 import { paradisSetAskHumanBotPaneCheck } from '../../humanAsk/node/paradisAskHumanToolProvider.js';
 import { paradisSharedHumanAskService } from '../../humanAsk/node/paradisHumanAskChannel.js';
 import { paradisSharedScheduledRunsService } from '../../scheduledRuns/node/paradisScheduledRunsChannel.js';
