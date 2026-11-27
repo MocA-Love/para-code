@@ -993,7 +993,7 @@ upstream 取り込み時に確認すること:
 | `mobile_launch_app` | `pane` だけ | なし | `xcrun simctl launch` / `adb shell monkey -p <pkg> -c android.intent.category.LAUNCHER 1`（`relaunch` は `--terminate-running-process` / `am force-stop`） |
 | `mobile_grant_permission` | `pane` だけ | なし | `xcrun simctl privacy <udid> grant <service> <bundle>` / `adb shell pm grant <pkg> <permission>` |
 | `mobile_release_device` | 掛けない | なし | 台帳の `detach`（そのペインの、その端末だけ。外すだけなので、tmux・WSL からも使える） |
-| `mobile_rotate` | 掛けない | なし | ホストの `input/rotate`。0.5 秒待ってから、スクショの縦横が頼んだ向きになったかを最大3枚見る（次の1枚が全体で2秒を越えるなら見ない）。画面の大きさを返し、ならなければ「前面のアプリがその向きに回らなかった」と添える |
+| `mobile_rotate` | 掛けない | なし | ホストの `input/rotate`。0.5 秒待ってから、スクショの縦横が頼んだ向きになったかを最大3枚見る（次の1枚が全体で2秒を越えるなら見ない。`mobile_launch_app` から 20 秒の間は最大6枚・8秒）。なれば画面の大きさを返す。ならなければ「回らなかった」とは言い切らず（まだ回っている途中のことがある）、`confirmed: false` と最後に見た大きさ（`lastSeenScreen`）を返して mobile_screenshot で確かめるよう添え、覚えた大きさを捨てて次の操作で測り直す |
 | `mobile_gesture` | 掛けない | なし | 向きのスワイプ `input/swipe`（`duration` は既定 0.4 秒、0.05〜10 秒）、長押し `input/tap` の `duration`（0.5〜10 秒）、ピンチ `input/touch` の `fingerId` 0 / 1 |
 | 既存の `mobile_tap`・`mobile_swipe`・`mobile_type_text`・`mobile_press_button`・`mobile_ui_tap` と読み取り系 | 掛けない | なし | 変更なし |
 
