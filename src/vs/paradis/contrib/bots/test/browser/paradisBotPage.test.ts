@@ -46,6 +46,8 @@ const ASK: IParadisHumanAskEntry = {
 	actions: [], canSkip: true, askedAt: 1, state: 'waiting',
 };
 
+const SNAPSHOT_AT = new Date(2026, 10, 27, 21, 4).getTime();
+
 const ITEMS: IParadisBotItem[] = [
 	{ uid: 'u42', number: 42, botId: 'release', title: 'Safari でログインが切れる', status: 'needs_you', ask: { eventId: 3, questions: [{ prompt: '全員を一度ログアウトさせますか?', options: [{ label: '一度ログアウトさせる' }, { label: '今のセッションを残す' }], recommended: 1 }] }, links: [], events: [{ id: 1, kind: 'made', actor: 'bot', at: now }], lastEventId: 3, lastActivityAt: now, createdAt: now, updatedAt: now },
 	{ uid: 'u43', number: 43, botId: 'release', title: '変更履歴をまとめる', status: 'working', links: [], events: [], lastEventId: 0, lastActivityAt: now - 1000, createdAt: now, updatedAt: now },
@@ -78,7 +80,10 @@ suite('Paradis bots page overlay', () => {
 			startSuggestion: async (id: string) => { calls.push(`start ${id}`); return { ok: true, value: { id, botId: 'release', title: 't', request: '#1108 の指摘を読んで、直すか理由を返すか決めて', run: 'r', state: 'started', createdAt: 1 } }; },
 			markSuggestionStarted: async (id: string) => { calls.push(`started ${id}`); return { ok: true, value: { id, botId: 'release', title: 't', request: 'r', run: 'r', state: 'started', createdAt: 1 } }; },
 			dismissSuggestion: async (id: string) => { calls.push(`dismiss ${id}`); return { ok: true, value: {} }; },
-			undoMemoryTidy: async () => { calls.push('undo'); return { ok: true, value: { restored: ['MEMORY.md'], added: [], takenAt: 1, skipped: ['SOUL.md'] } }; },
+			undoMemoryTidy: async () => { calls.push('undo'); return { ok: true, value: { restored: ['MEMORY.md'], added: ['memory/new.md'], takenAt: SNAPSHOT_AT, skipped: ['SOUL.md'] } }; },
+			listMemorySnapshots: async () => {
+				return { ok: true, value: [{ takenAt: SNAPSHOT_AT, files: 200, total: 206, partial: true }, { takenAt: SNAPSHOT_AT - 3_600_000, files: 3, total: 3, partial: false }] };
+			},
 			ownerSetStatus: async (uid: string, to: string) => { statuses.push(`${uid}:${to}`); return { ok: true, value: items[0] }; },
 			readHomeFile: async (_bot: string, path: string) => ({ ok: true, value: files.get(path) }),
 			writeHomeFile: async (_bot: string, path: string, text: string) => { calls.push(`write ${path}: ${text}`); files.set(path, text); return { ok: true, value: undefined }; },
@@ -317,7 +322,7 @@ suite('Paradis bots page overlay', () => {
 		]);
 	});
 
-	test('ファイル: 記憶の整理を確かめてから取り消し、書き戻せなかったファイルを知らせる', async () => {
+	test('ファイル: 整理の前の写しを時刻・件数・一部だけで並べ、一番新しい写しから確かめて取り消し、結果と書き戻せなかったファイルを一覧の下に出す', async () => {
 		const { container, page, calls, confirms, warnings } = setup();
 		page.setInstance(1);
 		await settle();
@@ -326,10 +331,33 @@ suite('Paradis bots page overlay', () => {
 		(container.getElementsByClassName('paradis-bot-page-row')[1] as HTMLElement).click();
 		await settle();
 		await settle();
-		(container.querySelector('.paradis-bot-settings-foot .paradis-button-secondary') as HTMLElement).click();
+		const rows = Array.from(container.getElementsByClassName('paradis-bot-snapshots-row')).map(row => [
+			row.getElementsByClassName('paradis-bot-snapshots-count')[0].textContent,
+			row.getElementsByClassName('paradis-chip').length,
+			row.getElementsByClassName('paradis-button').length,
+		]);
+		(container.querySelector('.paradis-bot-snapshots-row .paradis-button') as HTMLElement).click();
 		await settle();
 		await settle();
-		assert.deepStrictEqual([calls, confirms.map(confirmation => [confirmation.primaryButton, confirmation.destructive]), warnings], [['undo'], [['取り消す', true]], ['取り消せなかったファイルがあります（記憶のファイルではないので書き戻していません）: SOUL.md']]);
+		await settle();
+		const result = Array.from(container.querySelectorAll('.paradis-bot-snapshots-result > *')).map(line => [line.textContent, line.classList.contains('attention')]);
+		assert.deepStrictEqual({
+			rows,
+			calls,
+			confirm: confirms.map(confirmation => [confirmation.primaryButton, confirmation.destructive, String(confirmation.detail).includes(new Date(SNAPSHOT_AT).toLocaleString())]),
+			result,
+			warnings,
+		}, {
+			rows: [['206 件中 200 件だけ写しました', 1, 1], ['3 件', 0, 0]],
+			calls: ['undo'],
+			confirm: [['取り消す', true, true]],
+			result: [
+				[`${new Date(SNAPSHOT_AT).toLocaleString()} の写しに戻しました（1 件）。`, false],
+				['整理でできたファイルは消さずに残しています: memory/new.md', false],
+				['取り消せなかったファイルがあります（記憶のファイルではないので書き戻していません）: SOUL.md', true],
+			],
+			warnings: [],
+		});
 	});
 
 	test('書きかけのコメントは、別の Bot が変わっても値とフォーカスが残る（中身の変わらない描き直しはしない）', async () => {
