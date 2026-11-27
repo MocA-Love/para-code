@@ -11,7 +11,7 @@
 // 足した `tasks`（{@link IParadisBotTasksPort}）を通す。
 
 import * as DOM from '../../../../base/browser/dom.js';
-import { DisposableStore } from '../../../../base/common/lifecycle.js';
+import { DisposableStore, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { ParadisButton } from '../../../browser/paradisButton.js';
 import { createParadisChip } from '../../../browser/paradisBadges.js';
@@ -42,6 +42,22 @@ export interface IParadisBotTasksPort {
 	confirmBotTools(taskName: string, tools: ParadisBotTaskTools): Promise<boolean>;
 	/** 消してよいかを利用者に確かめる。 */
 	confirmRemove(taskName: string): Promise<boolean>;
+}
+
+/** 定期実行の口（設定がオンの間、Bot のページの登録の側が差し込む。眠った会話のエディタが結果のカードを読むのに使う）。 */
+let registeredTasksPort: IParadisBotTasksPort | undefined;
+
+export function paradisRegisterBotTasksPort(port: IParadisBotTasksPort): IDisposable {
+	registeredTasksPort = port;
+	return toDisposable(() => {
+		if (registeredTasksPort === port) {
+			registeredTasksPort = undefined;
+		}
+	});
+}
+
+export function paradisBotTasksPort(): IParadisBotTasksPort | undefined {
+	return registeredTasksPort;
 }
 
 /** 道具の段の表示名。 */

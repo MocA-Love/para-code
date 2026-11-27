@@ -20,7 +20,7 @@ import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPane
 import { paradisBotPaneTokenHashInWindow } from '../browser/paradisBotPaneHash.js';
 import { IParadisBotPaneResolver, ParadisBotPage } from '../browser/paradisBotPage.js';
 import { IParadisBotPatrolPort } from '../browser/paradisBotPatrol.js';
-import { IParadisBotTasksPort } from '../browser/paradisBotTasks.js';
+import { IParadisBotTasksPort, paradisRegisterBotTasksPort } from '../browser/paradisBotTasks.js';
 import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 import { localize } from '../../../../nls.js';
 import { IParadisBotPatrolInput } from '../../scheduledRuns/common/paradisScheduledRunBotPatrol.js';
@@ -179,10 +179,12 @@ class ParadisBotPageContribution extends Disposable {
 		}
 		const resolver = this.instantiationService.createInstance(ParadisBotPaneResolver);
 		const patrol = this.instantiationService.createInstance(ParadisBotPatrolPort);
+		const tasksRegistration = paradisRegisterBotTasksPort(patrol.tasks);
 		const overlay = paradisRegisterEditorTerminalOverlay(container => this.instantiationService.createInstance(ParadisBotPage, container, resolver, patrol, undefined));
 		this.registration.value = {
 			dispose: () => {
 				overlay.dispose();
+				tasksRegistration.dispose();
 				patrol.dispose();
 				resolver.dispose();
 			},
