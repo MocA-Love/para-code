@@ -33,11 +33,11 @@ function isError(result: unknown): boolean {
 suite('Paradis human ask: ask_human provider', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function setup(settleTimeoutMs = 60_000) {
+	function setup(settleTimeoutMs = 60_000, isBotPane?: (paneToken: string) => Promise<boolean>) {
 		let now = 1_000;
 		let id = 0;
 		const service = store.add(new ParadisHumanAskService(new ParadisHumanAskLedger(() => now)));
-		const provider = store.add(new ParadisAskHumanToolProvider(service, { now: () => now, newId: () => String(++id), settleTimeoutMs }));
+		const provider = store.add(new ParadisAskHumanToolProvider(service, { now: () => now, newId: () => String(++id), settleTimeoutMs, ...(isBotPane ? { isBotPane } : {}) }));
 		const channel = new ParadisAskHumanChannel(provider);
 		const toOwnerWindow: IParadisHumanAskPaneAnswerRequest[] = [];
 		const toOtherWindow: IParadisHumanAskPaneAnswerRequest[] = [];
@@ -88,6 +88,23 @@ suite('Paradis human ask: ask_human provider', () => {
 				source: 'pane', owner: 'askHuman', kind: 'question', actions: [], from: { title: 'api', detail: 'codex ／ Codex' }, paneKey: true, windowId: 7,
 				preface: 'Cookie の SameSite が原因。', options: [{ id: '0', label: 'させる' }, { id: '1', label: '残す', recommended: true }],
 			},
+		});
+	});
+
+	test('a bot pane is refused and told to ask on its work item; other panes still ask', async () => {
+		const t = setup(60_000, async paneToken => paneToken === TOKEN);
+		const bot = await t.provider.callTool(TOKEN, 'ask_human', ASK, undefined, t.context());
+		const other = await t.provider.callTool('pane-token-2', 'ask_human', ASK, undefined, t.context());
+		assert.deepStrictEqual({
+			bot: [isError(bot), /bot_item_update/.test(text(bot)) && /needs_you/.test(text(bot))],
+			other: text(other).split('.')[0],
+			entries: t.entries(),
+			window: t.windowCalls.map(call => call.args),
+		}, {
+			bot: [true, true],
+			other: 'Asked',
+			entries: ['waiting'],
+			window: [['pane-token-2']],
 		});
 	});
 

@@ -24,7 +24,7 @@
 //  - そのペインで利用者が次の発言を送った・会話が終わった・ターミナルが閉じたら取り下げる
 
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { Disposable, DisposableMap, toDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider, paradisMcpToolError as toolError } from '../../agentBrowser/common/paradisMcpToolProvider.js';
@@ -58,6 +58,27 @@ const RATE_MESSAGE = `Too many questions from this terminal (up to ${PARADIS_ASK
 const WINDOW_MESSAGE = 'Para Code could not identify the window and space of this terminal. Retry in a few seconds, or ask in the conversation.';
 const BUSY_MESSAGE = 'The person\'s answer to your earlier question is being delivered to this terminal right now. Wait for it instead of asking again.';
 const FULL_MESSAGE = 'Para Code could not add the question (too many questions are waiting). Ask in the conversation instead.';
+const BOT_MESSAGE = 'ask_human is not for bots. Ask your owner on the item it is about: call bot_item_update with status "needs_you" and your questions, then end your turn.';
+
+let botPaneCheck: ((paneToken: string) => Promise<boolean>) | undefined;
+
+/**
+ * Bot の登録（shared process）が、Bot のペインを見分ける口を渡す。Bot の登録は MCP の説明の順のため最後に行うので、
+ * こちらから Bot の側を import せず、あちらから渡してもらう。
+ */
+export function paradisSetAskHumanBotPaneCheck(check: (paneToken: string) => Promise<boolean>): IDisposable {
+	botPaneCheck = check;
+	return toDisposable(() => {
+		if (botPaneCheck === check) {
+			botPaneCheck = undefined;
+		}
+	});
+}
+
+/** そのペインが Bot のペインか（Bot の登録の前・Bot の機能がオフのときは false）。 */
+export async function paradisAskHumanIsBotPane(paneToken: string): Promise<boolean> {
+	return botPaneCheck !== undefined && await botPaneCheck(paneToken);
+}
 
 interface IPaneAsk {
 	readonly key: string;
@@ -72,6 +93,8 @@ export interface IParadisAskHumanToolOptions {
 	readonly newId?: () => string;
 	/** 返事を待つ時間。台帳の「届かなかった」とみなす時間より少し長くする。 */
 	readonly settleTimeoutMs?: number;
+	/** そのペインが Bot のペインか（Bot は作業項目の Needs you で聞くので、ask_human は断る）。 */
+	readonly isBotPane?: (paneToken: string) => Promise<boolean>;
 }
 
 export class ParadisAskHumanToolProvider extends Disposable implements IParadisMcpToolProvider {
@@ -90,12 +113,14 @@ export class ParadisAskHumanToolProvider extends Disposable implements IParadisM
 	private readonly now: () => number;
 	private readonly newId: () => string;
 	private readonly settleTimeoutMs: number;
+	private readonly isBotPane: (paneToken: string) => Promise<boolean>;
 
 	constructor(private readonly ledger: IParadisAskHumanLedger, options: IParadisAskHumanToolOptions = {}) {
 		super();
 		this.now = options.now ?? Date.now;
 		this.newId = options.newId ?? generateUuid;
 		this.settleTimeoutMs = options.settleTimeoutMs ?? PARADIS_HUMAN_ASK_LEDGER_DEFAULTS.claimTimeoutMs + 1_000;
+		this.isBotPane = options.isBotPane ?? (async () => false);
 		this._register(ledger.onDidRequestAnswer(request => this.deliver(request)));
 		this._register(toDisposable(() => ledger.removeOwner(PARADIS_ASK_HUMAN_OWNER)));
 	}
@@ -111,6 +136,10 @@ export class ParadisAskHumanToolProvider extends Disposable implements IParadisM
 		// 問いの答えはそのペインへ打ち込まれる。そのペインの中から来たと確かめられないものは受けない
 		if (context === undefined || (await context.classifyCaller()) !== 'pane') {
 			return toolError(CALLER_MESSAGE);
+		}
+		// Bot は持ち主に作業項目の Needs you で聞く（受信箱に同じ問いが 2 通りに出ないように）
+		if (await this.isBotPane(paneToken)) {
+			return toolError(BOT_MESSAGE);
 		}
 		const parsed = paradisParseAskHumanArgs(args);
 		if (!parsed.ok) {

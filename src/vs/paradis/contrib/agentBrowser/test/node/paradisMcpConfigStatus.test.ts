@@ -332,6 +332,19 @@ suite('Para Browser MCP config status', () => {
 		});
 		// 足した後も、ほかの行は 1 文字も変わらず、私たちの節は「設定済み」のまま
 		assert.deepStrictEqual({ prefix: added?.startsWith(ours.trimEnd()), status: added !== undefined ? inspectParadisCodexMcpToml(added, PORT) : undefined }, { prefix: true, status: { state: 'configured' } });
+		// 改行が混ざったファイルでも元の行の改行はそろえず、足す行だけ主な改行に合わせる
+		const mostlyLf = ours.replace('[mcp_servers.other]\n', '[mcp_servers.other]\r\n');
+		const mostlyCrlf = ours.replace(/\n/g, '\r\n').replace('[mcp_servers.other]\r\n', '[mcp_servers.other]\n');
+		const table = (eol: string) => `${eol}[mcp_servers.para-browser.tools.ask_human]${eol}approval_mode = "approve"${eol}`;
+		const lastLineCrlf = ours.replace(/\n$/, '\r\n');
+		const noFinalNewline = ours.replace(/\n$/, '');
+		assert.deepStrictEqual({ mostlyLf: add(mostlyLf), mostlyCrlf: add(mostlyCrlf), lastLineCrlf: add(lastLineCrlf), noFinalNewline: add(noFinalNewline), trailingBlank: add(`${ours}\r\n  \n`) }, {
+			mostlyLf: `${mostlyLf}${table('\n')}`,
+			mostlyCrlf: `${mostlyCrlf}${table('\r\n')}`,
+			lastLineCrlf: `${lastLineCrlf}${table('\n')}`,
+			noFinalNewline: `${noFinalNewline}\n${table('\n')}`,
+			trailingBlank: `${ours}${table('\n')}`,
+		});
 	});
 
 	test('adds tool_timeout_sec only when no key anywhere already defines it, so the TOML never gets a duplicate key', () => {
