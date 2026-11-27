@@ -170,7 +170,7 @@ suite('Paradis bot board', () => {
 			systemEvents: item.events.filter(event => event.actor === 'system').map(event => event.kind === 'commented' ? `note:${event.note}` : `${event.kind}:${event.refs?.join(',')}`),
 		}, {
 			listed: { chat: ['bot_board_add_task'], patrol: 0, stranger: 0 },
-			added: { item: 1, task: 't-1', note: 'The task waits in the to-do column of the task board. Its step reports appear as comments on your item.' },
+			added: { item: 1, task: 't-1', note: 'The task waits in the to-do column of the task board until your owner starts it. The board agent gets only the title; the body stays on the card for people to read. Its step reports appear as comments on your item.' },
 			refusals: {
 				stranger: 'error: This terminal is not a Para Code bot, so',
 				unverified: 'error: Para Code could not confirm that this re',
@@ -180,7 +180,7 @@ suite('Paradis bot board', () => {
 				extra: 'error: bot_board_add_task takes "number", and o',
 			},
 			notRunning: 'error: The Para Code task board is not open, so',
-			full: 'error: Item #1 already has 5 task board tasks. ',
+			full: 'error: Item #1 already has 5 task board tasks, ',
 			paused: 'error: Your owner paused this bot, so Para Code',
 			off: { listed: 0, call: 'error: Para Code bots are turned off in this Pa' },
 			requests: [
@@ -189,6 +189,56 @@ suite('Paradis bot board', () => {
 			],
 			links: ['task:t-1', 'task:t-2', 'task:t-3', 'task:t-4', 'task:t-5'],
 			systemEvents: ['linked:t-1', 'note:計画を書いた', 'note:実装した', 'linked:t-2', 'linked:t-3', 'linked:t-4', 'linked:t-5'],
+		});
+	});
+
+	test('Bot ごとの上限: 1 時間に 10 件、まだ閉じていない項目に結んだタスクは 20 件まで', async () => {
+		let ids = 0;
+		let clock = 1_000_000;
+		const service = store.add(new ParadisBotsService(new MemoryFile<IParadisBotsState>(EMPTY_PARADIS_BOTS_STATE), new MemoryFile<IParadisBotItemsState>(EMPTY_PARADIS_BOT_ITEMS_STATE), store.add(new ParadisHumanAskService()), new NullLogService(), { uuid: () => `id${++ids}`, now: () => clock }));
+		let tasks = 0;
+		const tools = new ParadisBotBoardToolProvider(service, () => true, async () => ({ ok: true, taskId: `t-${++tasks}` }), () => clock);
+		const context: IParadisMcpToolCallContext = {
+			callOwningWindow: async () => ({ ok: false, error: 'unused' }),
+			getPaneAgentStatus: () => undefined,
+			getUnconfirmedRelease: () => undefined,
+			hasAgentHookHistory: () => false,
+			classifyCaller: async () => 'pane',
+		};
+		const call = async (number: number) => {
+			const result = await tools.callTool('pane-1', 'bot_board_add_task', { number }, undefined, context) as { content: { text: string }[]; isError?: boolean };
+			return result.isError ? result.content[0].text.slice(0, 50) : 'ok';
+		};
+		assert.ok((await service.createBot({ name: 'リリース係', agent: 'claude' })).ok);
+		const launchId = service.issueLaunch('id1', 'chat');
+		assert.ok(launchId !== undefined && service.reportLaunch(launchId, 'pane-1'));
+		const numbers: number[] = [];
+		for (let index = 0; index < 5; index++) {
+			const item = await service.botAddItem('id1', { title: `項目 ${index}` });
+			assert.ok(item.ok);
+			numbers.push(item.value.number);
+		}
+		const results: string[] = [];
+		// 1 時間に 10 件まで（11 件目は断る）
+		for (let index = 0; index < 11; index++) {
+			results.push(await call(numbers[Math.floor(index / 5)]));
+		}
+		// 1 時間たつと、また載せられる。まだ閉じていない項目のタスクが 20 件になると断る
+		clock += 60 * 60_000;
+		for (let index = 10; index < 21; index++) {
+			results.push(await call(numbers[Math.floor(index / 5)]));
+		}
+		// 項目を閉じると、その項目のタスクは数えない（次の 1 時間に）
+		clock += 60 * 60_000;
+		await service.botUpdateItem('id1', numbers[0], { status: 'done' });
+		results.push(await call(numbers[4]));
+		assert.deepStrictEqual({ results, tasks }, {
+			results: [
+				...Array.from({ length: 10 }, () => 'ok'), 'You put 10 tasks on the board in the last hour, so',
+				...Array.from({ length: 10 }, () => 'ok'), 'Your open items already have 20 task board tasks, ',
+				'ok',
+			],
+			tasks: 21,
 		});
 	});
 });

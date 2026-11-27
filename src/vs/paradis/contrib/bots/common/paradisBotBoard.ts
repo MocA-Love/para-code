@@ -19,16 +19,22 @@ import { TASK_BOARD_ADD_TASK_LIMITS, TaskBoardAddTaskResult } from '../../taskBo
 export const PARADIS_BOT_BOARD_ADD_TASK_TOOL = 'bot_board_add_task';
 export const PARADIS_BOT_BOARD_TOOL_NAMES: ReadonlySet<string> = new Set([PARADIS_BOT_BOARD_ADD_TASK_TOOL]);
 
+/**
+ * Bot ごとの上限（項目ごとの上限 `PARADIS_BOT_ITEM_LIMITS.boardTasks` とは別）。1 つの Bot がボードを埋めないように、
+ * まだ閉じていない自分の項目に結んだタスクの数と、1 時間あたりに載せる数を数える。
+ */
+export const PARADIS_BOT_BOARD_LIMITS = Object.freeze({ openTasks: 20, perHour: 10 });
+
 export const PARADIS_BOT_BOARD_TOOLS: readonly IParadisMcpToolDefinition[] = [
 	{
 		name: PARADIS_BOT_BOARD_ADD_TASK_TOOL,
-		description: 'Para Code bots only. Put one of your open items on the Para Code task board as a new to-do task, so the board\'s flow (an agent in a workspace) does the work. The task shows which bot and item it came from, and the item gets a link to it. Only works while your owner has the task board open on this computer. You see the board agent\'s step reports as comments on the item; a report is not the end of the task, so check the work before you close the item.',
+		description: `Para Code bots only. Put one of your open items on the Para Code task board as a new to-do task. Your owner starts it from the board, and the board's flow (an agent in a workspace) does the work. The board agent gets only the title (with the board's own step instructions); the body is shown on the card for people to read. The task shows which bot and item it came from, and the item gets a link to it. Only works while your owner has the task board open on this computer. Up to ${PARADIS_BOT_BOARD_LIMITS.perHour} an hour and ${PARADIS_BOT_BOARD_LIMITS.openTasks} on your open items. You see the board agent's step reports as comments on the item; a report is not the end of the task, so check the work before you close the item.`,
 		inputSchema: {
 			type: 'object',
 			properties: {
 				number: { type: 'integer', minimum: 1, description: 'The number of your item (e.g. 35 for #35).' },
 				title: { type: 'string', maxLength: TASK_BOARD_ADD_TASK_LIMITS.title, description: 'The task title. Defaults to the item title.' },
-				body: { type: 'string', maxLength: TASK_BOARD_ADD_TASK_LIMITS.body, description: 'What the board agent should do and how to tell it is done. Defaults to the item description.' },
+				body: { type: 'string', maxLength: TASK_BOARD_ADD_TASK_LIMITS.body, description: 'A description shown on the card for your owner (the board agent does not see it). Defaults to the item description.' },
 			},
 			required: ['number'],
 			additionalProperties: false,
@@ -73,6 +79,6 @@ export function paradisBotBoardRefusalMessage(result: Exclude<TaskBoardAddTaskRe
 		case 'remote':
 			return 'The open task board belongs to an SSH window, so the task was not added. Bots only put tasks on the task board of this computer.';
 		default:
-			return `The task board did not add the task${result.message ? ` (${result.message.slice(0, 200)})` : ''}. Tell your owner in your reply.`;
+			return `The task board did not confirm that it added the task${result.message ? ` (${result.message.slice(0, 200)})` : ''}, so it may or may not be on the board. Tell your owner in your reply instead of trying again.`;
 	}
 }

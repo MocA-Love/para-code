@@ -14,7 +14,7 @@
 
 import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider, paradisMcpToolError as toolError, paradisMcpToolJson as toolJson } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import type { ITaskBoardAddTaskRequest, TaskBoardAddTaskResult } from '../../taskBoard/common/paradisTaskBoard.js';
-import { PARADIS_BOT_BOARD_TOOL_NAMES, PARADIS_BOT_BOARD_TOOLS, paradisBotBoardRefusalMessage, paradisParseBotBoardAddTaskArgs } from '../common/paradisBotBoard.js';
+import { PARADIS_BOT_BOARD_LIMITS, PARADIS_BOT_BOARD_TOOL_NAMES, PARADIS_BOT_BOARD_TOOLS, paradisBotBoardRefusalMessage, paradisParseBotBoardAddTaskArgs } from '../common/paradisBotBoard.js';
 import { PARADIS_BOT_ITEM_LIMITS, paradisBotItemBoardTaskCount, paradisIsBotItemClosed } from '../common/paradisBotItems.js';
 import { ParadisBotsService } from './paradisBotsService.js';
 
@@ -42,7 +42,11 @@ export class ParadisBotBoardToolProvider implements IParadisMcpToolProvider {
 		private readonly service: ParadisBotsService,
 		private readonly enabled: () => boolean,
 		private readonly addTask: ParadisBotBoardAddTask,
+		private readonly now: () => number = Date.now,
 	) { }
+
+	/** Bot ごとに、ボードへ載せた時刻（1 時間あたりの上限を数える。shared process のメモリだけ）。 */
+	private readonly addedAt = new Map<string, number[]>();
 
 	/** 会話の Bot のペインにだけ出す。 */
 	listTools(paneToken?: string): readonly IParadisMcpToolDefinition[] {
@@ -68,7 +72,8 @@ export class ParadisBotBoardToolProvider implements IParadisMcpToolProvider {
 		if (bot === undefined) {
 			return toolError(NOT_A_BOT_MESSAGE);
 		}
-		if (this.service.purposeOfPane(paneToken) === 'patrol') {
+		// 会話のペインからだけ（見回りのほか、知らない用途のペインも断る）
+		if (this.service.purposeOfPane(paneToken) !== 'chat') {
 			return toolError(PATROL_MESSAGE);
 		}
 		if (bot.paused) {
@@ -89,7 +94,17 @@ export class ParadisBotBoardToolProvider implements IParadisMcpToolProvider {
 			return toolError('The items were written by a newer Para Code, so this version does not change them.');
 		}
 		if (paradisBotItemBoardTaskCount(item) >= PARADIS_BOT_ITEM_LIMITS.boardTasks) {
-			return toolError(`Item #${item.number} already has ${PARADIS_BOT_ITEM_LIMITS.boardTasks} task board tasks. Finish or close those first.`);
+			return toolError(`Item #${item.number} already has ${PARADIS_BOT_ITEM_LIMITS.boardTasks} task board tasks, so no more can be put on the board from it. Make a new item for more work, or ask your owner.`);
+		}
+		// Bot ごとの上限: まだ閉じていない自分の項目に結んだタスクの数と、1 時間あたりの数
+		const openTasks = this.service.listItems({ botId: bot.id }).filter(candidate => !paradisIsBotItemClosed(candidate)).reduce((sum, candidate) => sum + paradisBotItemBoardTaskCount(candidate), 0);
+		if (openTasks >= PARADIS_BOT_BOARD_LIMITS.openTasks) {
+			return toolError(`Your open items already have ${PARADIS_BOT_BOARD_LIMITS.openTasks} task board tasks, so Para Code did not add another. Close the items whose tasks are done, or ask your owner.`);
+		}
+		const now = this.now();
+		const recent = (this.addedAt.get(bot.id) ?? []).filter(at => now - at < 60 * 60_000);
+		if (recent.length >= PARADIS_BOT_BOARD_LIMITS.perHour) {
+			return toolError(`You put ${PARADIS_BOT_BOARD_LIMITS.perHour} tasks on the board in the last hour, so Para Code did not add another now. Try again later, or tell your owner.`);
 		}
 		if (this.adding.has(item.uid)) {
 			return toolError(BUSY_MESSAGE);
@@ -98,6 +113,8 @@ export class ParadisBotBoardToolProvider implements IParadisMcpToolProvider {
 		try {
 			const title = parsed.value.title ?? item.title;
 			const body = parsed.value.body ?? item.description;
+			// 回数は呼ぶ前に数える（載ったか分からない時間切れも数える）
+			this.addedAt.set(bot.id, [...recent, now]);
 			const result = await this.addTask({ title, ...(body !== undefined ? { body } : {}), origin: { kind: 'bot', botId: bot.id, botName: bot.name, itemNumber: item.number } });
 			if (!result.ok) {
 				return toolError(paradisBotBoardRefusalMessage(result));
@@ -108,7 +125,7 @@ export class ParadisBotBoardToolProvider implements IParadisMcpToolProvider {
 			if (!linked.ok) {
 				return toolError(`The task board added the task (${result.taskId}), but Para Code could not link it to item #${item.number}: ${linked.message} Do not add it again; tell your owner.`);
 			}
-			return toolJson({ item: item.number, task: result.taskId, note: 'The task waits in the to-do column of the task board. Its step reports appear as comments on your item.' });
+			return toolJson({ item: item.number, task: result.taskId, note: 'The task waits in the to-do column of the task board until your owner starts it. The board agent gets only the title; the body stays on the card for people to read. Its step reports appear as comments on your item.' });
 		} catch (error) {
 			return toolError(`Para Code could not reach the task board, so the task may not have been added. Tell your owner instead of calling again. (${String(error).slice(0, 200)})`);
 		} finally {
