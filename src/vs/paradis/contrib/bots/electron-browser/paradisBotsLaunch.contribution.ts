@@ -51,8 +51,10 @@ import { isLinux } from '../../../../base/common/platform.js';
 import { paradisFindBotTerminalInstance, paradisLaunchBotTerminal, paradisNameBotTab } from './paradisBotTerminalLaunch.js';
 import { IParadisBotChangeRequest, paradisApplyBotChange } from '../common/paradisBotManageTools.js';
 import { paradisBotFirstPrompt } from '../common/paradisBotTools.js';
-import { paradisBotPaneHidesOnClose, paradisBotPaneIdleStopAllowed, paradisHiddenBotPanes, paradisMarkBotPaneHidden } from '../browser/paradisBotPaneHide.js';
+import { paradisBotDraftAfterInput, paradisBotHasDraft, paradisBotPaneHidesOnClose, paradisBotPaneIdleStopAllowed, paradisHiddenBotPanes, paradisMarkBotPaneHidden } from '../browser/paradisBotPaneHide.js';
 import { IEditorService } from '../../../../workbench/services/editor/common/editorService.js';
+import { paradisClaudeComposerState } from '../../agentHibernation/common/paradisAgentHibernation.js';
+import { paradisCodexComposerState } from '../../mobileRelay/electron-browser/paradisCodexAutoContinueWindow.js';
 import { paradisAddTerminalHiddenOnClose } from '../../workspaceSwitch/browser/paradisTerminalHideOnClose.js';
 import { IParadisBotRevealRequest, IParadisBotsService, paradisBotCommandStateOnAttach, paradisIsLeftoverBotTerminal, IParadisBotStopRequest, PARADIS_BOT_IDLE_STOP_MS, PARADIS_BOTS_ENABLED_SETTING, PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
 
@@ -348,7 +350,7 @@ class ParadisBotsWindowWorker extends Disposable {
 	/** エディタグループごとの、閉じる直前の見張り。 */
 	private readonly groupWatchers = this._register(new DisposableMap<number>());
 	/** Bot の会話のペインごとの、利用者の使い方（何もしない 30 分の停止で、使っているペインを止めないため）。 */
-	private readonly paneUse = new Map<number, { draft: boolean; lastOutputAt?: number; lastHiddenAt?: number; visible: boolean }>();
+	private readonly paneUse = new Map<number, { draft: boolean; agent: string; lastOutputAt?: number; lastHiddenAt?: number; visible: boolean }>();
 	private readonly paneUseWatchers = this._register(new DisposableMap<number>());
 	private readonly nameScheduler = this._register(new RunOnceScheduler(() => {
 		this.nameTabs().catch(error => this.logService.warn('[paradisBots] naming the bot tabs failed', error));
@@ -515,29 +517,37 @@ class ParadisBotsWindowWorker extends Disposable {
 		for (const bot of this.botsService.snapshot.bots) {
 			for (const instanceId of await paradisBotInstancesInWindow(this.paneTokenService, await this.botsService.paneHashesOf(bot.id, 'chat'))) {
 				paradisAddTerminalHiddenOnClose(instanceId);
-				this.watchPaneUse(instanceId);
+				this.watchPaneUse(instanceId, bot.agent);
 			}
 		}
 	}
 
-	private watchPaneUse(instanceId: number): void {
+	private watchPaneUse(instanceId: number, agent: string): void {
 		const instance = findInstance(this.terminalService, this.terminalGroupService, instanceId);
 		if (this.paneUseWatchers.has(instanceId) || instance === undefined || instance.isDisposed) {
 			return;
 		}
-		const use: { draft: boolean; lastOutputAt?: number; lastHiddenAt?: number; visible: boolean } = { draft: false, visible: this.isVisible(instance) };
+		const use: { draft: boolean; agent: string; lastOutputAt?: number; lastHiddenAt?: number; visible: boolean } = { draft: false, agent, visible: this.isVisible(instance) };
 		this.paneUse.set(instanceId, use);
 		const store = new DisposableStore();
 		store.add(instance.onData(() => { use.lastOutputAt = Date.now(); }));
 		store.add(instance.onDidInputData(data => {
-			// Enter で送ったら打ちかけは無い。それ以外の入力（文字・貼り付け）が最後なら打ちかけがある
-			use.draft = !/[\r\n]$/.test(data);
+			use.draft = paradisBotDraftAfterInput(use.draft, data);
 		}));
 		store.add(instance.onDisposed(() => {
 			this.paneUse.delete(instanceId);
 			this.paneUseWatchers.deleteAndDispose(instanceId);
 		}));
 		this.paneUseWatchers.set(instanceId, store);
+	}
+
+	/** 画面のエージェントの入力欄の中身（読めなければ `unknown`）。 */
+	private composerState(instance: ITerminalInstance, agent: string | undefined): 'empty' | 'text' | 'unknown' {
+		const buffer = instance.xterm?.raw.buffer.active;
+		if (buffer === undefined) {
+			return 'unknown';
+		}
+		return agent === 'claude' ? paradisClaudeComposerState(buffer) : agent === 'codex' ? paradisCodexComposerState(buffer) : 'unknown';
 	}
 
 	private isVisible(instance: ITerminalInstance): boolean {
@@ -646,7 +656,7 @@ class ParadisBotsWindowWorker extends Disposable {
 				const allowed = paradisBotPaneIdleStopAllowed({
 					visible: this.isVisible(instance),
 					focused: instance.hasFocus,
-					draft: use?.draft ?? false,
+					draft: paradisBotHasDraft(this.composerState(instance, use?.agent), use?.draft ?? false),
 					...(use?.lastOutputAt !== undefined ? { lastOutputAt: use.lastOutputAt } : {}),
 					...(use?.lastHiddenAt !== undefined ? { lastHiddenAt: use.lastHiddenAt } : {}),
 				}, Date.now(), PARADIS_BOT_IDLE_STOP_MS);

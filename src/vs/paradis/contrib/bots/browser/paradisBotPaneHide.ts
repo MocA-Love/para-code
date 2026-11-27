@@ -58,6 +58,33 @@ export function paradisBotPaneIdleStopAllowed(use: IParadisBotPaneUse, now: numb
 	return now - Math.max(use.lastOutputAt ?? 0, use.lastHiddenAt ?? 0) >= idleMs;
 }
 
+/**
+ * 利用者の入力 1 回分で、入力欄に打ちかけが残りうるかを更新する（入力欄の中身を画面から読めないときの代わり）。
+ * 印字できる文字（貼り付けを含む）を打てば立て、Enter で送る・Esc・Ctrl+C で下ろす。矢印・フォーカスの知らせなどの
+ * エスケープの並びと、Backspace などの制御文字だけの入力は変えない。
+ */
+export function paradisBotDraftAfterInput(previous: boolean, data: string): boolean {
+	if (data.length === 0) {
+		return previous;
+	}
+	if (/[\r\n]$/.test(data) || data === '\x1b' || data.includes('\x03')) {
+		return false;
+	}
+	const text = data
+		.replace(/\x1b\[[0-9;?<>]*[ -\/]*[@-~]/g, '')
+		.replace(/\x1bO./g, '')
+		.replace(/\x1b./g, '');
+	return /[^\x00-\x1f\x7f]/.test(text) ? true : previous;
+}
+
+/**
+ * 打ちかけがあるか。入力欄の中身を画面から読めればそれで決め（`text` ならある、`empty` なら無い）、読めなければ
+ * {@link paradisBotDraftAfterInput} で数えた入力で決める。
+ */
+export function paradisBotHasDraft(composer: 'empty' | 'text' | 'unknown', typed: boolean): boolean {
+	return composer === 'unknown' ? typed : composer === 'text';
+}
+
 /** 閉じて裏に回したペインとして控える。 */
 export function paradisMarkBotPaneHidden(instance: ITerminalInstance): void {
 	forgetHidden(instance.instanceId);

@@ -12,7 +12,7 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { EditorCloseContext } from '../../../../../workbench/common/editor.js';
 import { ITerminalInstance, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { PARADIS_BOT_GREETING_PROMPT, paradisBotFirstPrompt } from '../../common/paradisBotTools.js';
-import { paradisBotPaneHidesOnClose, paradisBotPaneIdleStopAllowed, paradisIsBotPaneHidden, paradisMarkBotPaneHidden, paradisResetBotPaneHideForTest, paradisShowHiddenBotPane } from '../../browser/paradisBotPaneHide.js';
+import { paradisBotDraftAfterInput, paradisBotHasDraft, paradisBotPaneHidesOnClose, paradisBotPaneIdleStopAllowed, paradisIsBotPaneHidden, paradisMarkBotPaneHidden, paradisResetBotPaneHideForTest, paradisShowHiddenBotPane } from '../../browser/paradisBotPaneHide.js';
 import { paradisAddTerminalHiddenOnClose, paradisResetTerminalHiddenOnCloseForTest, paradisTerminalEditorsHideOnClose } from '../../../workspaceSwitch/browser/paradisTerminalHideOnClose.js';
 
 suite('Paradis bot pane hide on close', () => {
@@ -89,5 +89,27 @@ suite('Paradis bot pane hide on close', () => {
 			paradisBotPaneIdleStopAllowed({ ...quiet, lastOutputAt: 80 }, 100, idle),
 			paradisBotPaneIdleStopAllowed({ ...quiet, lastHiddenAt: 80 }, 100, idle),
 		], [true, false, false, false, false, false]);
+	});
+
+	test('打ちかけ: Esc・矢印・Ctrl+C・フォーカスの知らせだけでは立たない。文字・貼り付けで立ち、Enter・Esc・Ctrl+C で下りる。入力欄を読めればその中身で決める', () => {
+		const after = (inputs: readonly string[]) => inputs.reduce(paradisBotDraftAfterInput, false);
+		assert.deepStrictEqual({
+			esc: after(['\x1b']),
+			arrows: after(['\x1b[A', '\x1bOB']),
+			ctrlC: after(['\x03']),
+			focus: after(['\x1b[I', '\x1b[O']),
+			typed: after(['h', 'i']),
+			pasted: after(['\x1b[200~long text\x1b[201~']),
+			typedThenArrow: after(['h', '\x1b[D']),
+			sent: after(['hi', '\r']),
+			typedThenEsc: after(['hi', '\x1b']),
+			typedThenCtrlC: after(['hi', '\x03']),
+			backspaceOnly: after(['\x7f']),
+			composer: [paradisBotHasDraft('text', false), paradisBotHasDraft('empty', true), paradisBotHasDraft('unknown', true), paradisBotHasDraft('unknown', false)],
+		}, {
+			esc: false, arrows: false, ctrlC: false, focus: false, typed: true, pasted: true, typedThenArrow: true,
+			sent: false, typedThenEsc: false, typedThenCtrlC: false, backspaceOnly: false,
+			composer: [true, false, true, false],
+		});
 	});
 });
