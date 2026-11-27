@@ -15,7 +15,7 @@
 //
 // 持ち主はボードのまま（元の記録は台帳ファイル state.json）。ここで作るのは、その写し。
 
-import { ITaskBoardFlow, ITaskBoardStep, ITaskBoardTask, TASK_BOARD_DONE, TaskBoardError } from './paradisTaskBoard.js';
+import { ITaskBoardFlow, ITaskBoardPaneAsk, ITaskBoardStep, ITaskBoardTask, TASK_BOARD_DONE, TaskBoardError } from './paradisTaskBoard.js';
 import type { TaskBoardEngine } from './paradisTaskBoardEngine.js';
 
 /** 接続口の口。ボード → Para Code（今の人の出番の丸ごとの一覧）。 */
@@ -24,6 +24,10 @@ export const TASK_BOARD_ASKS_ROUTE = '/v1/asks';
 export const TASK_BOARD_ASKS_SETTLE_ROUTE = '/v1/asks/settle';
 /** SSE のイベントの種類。Para Code → ボード（台帳の側で答えられたので、届けてほしい）。 */
 export const TASK_BOARD_ASK_ANSWER_EVENT = 'ask-answer';
+/** 接続口の口。手元のボード → Para Code（ボードの外のペインの待ちに、ボードの画面で答える）。 */
+export const TASK_BOARD_PANE_ASK_ANSWER_ROUTE = '/v1/asks/pane-answer';
+/** SSE のイベントの種類。Para Code → 手元のボード（ボードの外のペインの今の待ち、丸ごと）。 */
+export const TASK_BOARD_PANE_ASKS_EVENT = 'pane-asks';
 /** 1 回に知らせる件数の上限（台帳の待ちの上限と同じ）。 */
 export const TASK_BOARD_ASKS_LIMIT = 500;
 
@@ -73,6 +77,12 @@ export type TaskBoardAskAnswer =
 	| { readonly type: 'answers'; readonly answers: readonly { readonly questionId: string; readonly optionIds?: readonly string[]; readonly text?: string }[] }
 	| { readonly type: 'action'; readonly actionId: string; readonly text?: string }
 	| { readonly type: 'skip' };
+
+/** SSE で届く、ボードの外のペインの今の待ち（丸ごと）。 */
+export interface ITaskBoardPaneAsksEvent {
+	readonly type: typeof TASK_BOARD_PANE_ASKS_EVENT;
+	readonly asks: readonly ITaskBoardPaneAsk[];
+}
 
 /** SSE で届く、答えを届けてほしいという依頼。`claim` は結果を返すときに添える。 */
 export interface ITaskBoardAskAnswerEvent {

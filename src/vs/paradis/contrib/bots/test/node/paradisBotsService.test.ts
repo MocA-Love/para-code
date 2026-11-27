@@ -127,6 +127,16 @@ suite('Paradis bots service', () => {
 		});
 	});
 
+	test('isBotPane: Bot として起動したペインだけ true、Bot の機能がオフなら false', async () => {
+		const h = harness(store);
+		await h.service.ready;
+		await h.bot('見張り係');
+		const check = () => ({ bot: h.service.isBotPane('pane-見張り係'), other: h.service.isBotPane('pane-other'), empty: h.service.isBotPane('') });
+		const on = check();
+		h.settings.enabled = false;
+		assert.deepStrictEqual({ on, off: check() }, { on: { bot: true, other: false, empty: false }, off: { bot: false, other: false, empty: false } });
+	});
+
 	test('Needs you → 「聞く・答える」に 1 件 → 回答 → 項目が作業中へ戻る', async () => {
 		const h = harness(store);
 		await h.bot('リリース係');
