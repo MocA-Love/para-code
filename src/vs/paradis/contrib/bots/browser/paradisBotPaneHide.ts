@@ -33,6 +33,31 @@ export function paradisBotPaneHidesOnClose(facts: { readonly context: EditorClos
 	return facts.context === EditorCloseContext.UNKNOWN && !facts.shuttingDown && !facts.switching && !facts.instance.isDisposed && paradisIsTerminalHiddenOnClose(facts.instance.instanceId);
 }
 
+/** Bot の会話のペインを、利用者がどう使っているか（ウィンドウの側で見る）。 */
+export interface IParadisBotPaneUse {
+	/** エディタのタブとして見えている。 */
+	readonly visible: boolean;
+	/** フォーカスがある。 */
+	readonly focused: boolean;
+	/** 送っていない打ちかけの入力がある（最後の入力が Enter で終わっていない）。 */
+	readonly draft: boolean;
+	/** 最後にターミナルへ出力があった時刻（エージェントが動いている間は出力が続く）。 */
+	readonly lastOutputAt?: number;
+	/** 最後に見えなくなった時刻。 */
+	readonly lastHiddenAt?: number;
+}
+
+/**
+ * 何もしない 30 分の停止で、このペインを止めてよいか。見えている・フォーカスがある・打ちかけがあるペインは止めない。
+ * 数え始めは、最後の出力と最後に見えなくなった時刻の遅い方（最後の発言は shared process の側で数えている）。
+ */
+export function paradisBotPaneIdleStopAllowed(use: IParadisBotPaneUse, now: number, idleMs: number): boolean {
+	if (use.visible || use.focused || use.draft) {
+		return false;
+	}
+	return now - Math.max(use.lastOutputAt ?? 0, use.lastHiddenAt ?? 0) >= idleMs;
+}
+
 /** 閉じて裏に回したペインとして控える。 */
 export function paradisMarkBotPaneHidden(instance: ITerminalInstance): void {
 	forgetHidden(instance.instanceId);

@@ -16,10 +16,10 @@ import { ParadisHumanAskService } from '../../../humanAsk/node/paradisHumanAskCh
 import { EMPTY_PARADIS_BOT_ITEMS_STATE, IParadisBotItemsState } from '../../common/paradisBotItems.js';
 import { EMPTY_PARADIS_BOTS_STATE, IParadisBotsState } from '../../common/paradisBots.js';
 import { paradisBotStatusLine } from '../../common/paradisBotsBandModel.js';
-import { IParadisBotStopRequest } from '../../common/paradisBotsApi.js';
+import { IParadisBotStopRequest, PARADIS_BOT_IDLE_STOP_MS } from '../../common/paradisBotsApi.js';
 import { paradisBotResumeArgs } from '../../common/paradisBotTools.js';
 import { ParadisBotHomes } from '../../node/paradisBotHomes.js';
-import { EMPTY_PARADIS_BOT_PANES_STATE, IParadisBotPanesState, PARADIS_BOT_IDLE_STOP_MS, paradisBotPaneTokenHash, paradisParseBotPanesState, ParadisBotPanes } from '../../node/paradisBotPanes.js';
+import { EMPTY_PARADIS_BOT_PANES_STATE, IParadisBotPanesState, paradisBotPaneTokenHash, paradisParseBotPanesState, ParadisBotPanes } from '../../node/paradisBotPanes.js';
 import { ParadisBotsService } from '../../node/paradisBotsService.js';
 import { ParadisBotMessageToolProvider } from '../../node/paradisBotMessageToolProvider.js';
 import { IParadisMcpOwningWindowRequest, IParadisMcpToolCallContext } from '../../../agentBrowser/common/paradisMcpToolProvider.js';
@@ -56,7 +56,7 @@ suite('Paradis bot wake and sleep', () => {
 		panes.report('l2', 'token-2', 4);
 		panes.noteHook('token-2', 'SessionStart', 5, 'patrol-session');
 		panes.noteHook('token-2', 'UserPromptSubmit', 6, 'patrol-session');
-		// ペインを閉じても会話は残る（止めた・30 分で止めた後も続けられる）
+		// ペインを閉じても会話は残る（止めた・30 分で止めた・再読み込みの前に隠したペインを閉じた後も、眠った会話として続けられる）
 		panes.release('token-1');
 		panes.releaseBot('b1');
 		assert.deepStrictEqual({ beforeTurn, afterTurn, afterRelease: panes.chatSessionOf('b1') }, {
@@ -76,7 +76,7 @@ suite('Paradis bot wake and sleep', () => {
 		assert.strictEqual(panes.chatSessionOf('b1'), undefined);
 	});
 
-	test('何もしないまま 30 分たった会話のペインだけを止める候補にする（動いている・答えを待っている・見回りは除く）', () => {
+	test('何もしないまま 30 分たった会話のペインを止める候補にする。作業中のまま hook が途絶えたもの（Esc の中断）も数え、答え待ち・見回り・まだ使っていると知らされたものは除く', () => {
 		const panes = new ParadisBotPanes();
 		const bind = (launchId: string, botId: string, token: string, purpose: 'chat' | 'patrol') => {
 			panes.issue(launchId, botId, purpose, 0, 'claude');
@@ -90,7 +90,9 @@ suite('Paradis bot wake and sleep', () => {
 		panes.noteHook('working-token', 'UserPromptSubmit', 10);
 		panes.noteHook('asking-token', 'PermissionRequest', 10);
 		panes.noteHook('recent-token', 'Stop', PARADIS_BOT_IDLE_STOP_MS);
-		assert.deepStrictEqual(panes.idleChatTokens(PARADIS_BOT_IDLE_STOP_MS + 10), [{ botId: 'idle', token: 'idle-token' }]);
+		bind('l6', 'used', 'used-token', 'chat');
+		panes.noteActive('used-token', PARADIS_BOT_IDLE_STOP_MS);
+		assert.deepStrictEqual(panes.idleChatTokens(PARADIS_BOT_IDLE_STOP_MS + 10), [{ botId: 'idle', token: 'idle-token' }, { botId: 'working', token: 'working-token' }]);
 	});
 
 	test('続きを開いて読んだだけで終えた（hook は来た）なら、眠った会話は残す', () => {
@@ -179,7 +181,7 @@ suite('Paradis bot wake and sleep', () => {
 		}, {
 			freshFlags: undefined,
 			stopsBefore: 0,
-			stops: [{ botId, paneHashes: [paradisBotPaneTokenHash('pane-1')] }],
+			stops: [{ botId, paneHashes: [paradisBotPaneTokenHash('pane-1')], idle: true }],
 			afterStop: '眠っています',
 			sleeping: ['stopped', true, '眠っています'],
 			resumed: [`--resume ${SESSION}`, true],
@@ -187,7 +189,7 @@ suite('Paradis bot wake and sleep', () => {
 		});
 	});
 
-	test('bot_tell: 宛先が起動していなければ、送り手のウィンドウに裏で起こして受け箱を読ませる。動いている宛先は起こさない', async () => {
+	test('bot_tell: 宛先が止まっていても起こさない（受け箱に入れるだけ。利用者の居ない所で頼まれたことを実行させない）', async () => {
 		const disposables = store.add(new DisposableStore());
 		let ids = 0;
 		const service = disposables.add(new ParadisBotsService(new MemoryFile<IParadisBotsState>(EMPTY_PARADIS_BOTS_STATE), new MemoryFile<IParadisBotItemsState>(EMPTY_PARADIS_BOT_ITEMS_STATE), disposables.add(new ParadisHumanAskService()), new NullLogService(), { uuid: () => `id${++ids}` }));
@@ -224,9 +226,9 @@ suite('Paradis bot wake and sleep', () => {
 		clock += 61_000;
 		const awake = await tell();
 		assert.deepStrictEqual({ asleep, awake, windowCalls }, {
-			asleep: 'Put in the inbox of "B". It was not runn',
+			asleep: 'Put in the inbox of "B". It reads it the',
 			awake: 'Put in the inbox of "B". It reads it the',
-			windowCalls: [['paradisBotsWindow', 'start', ['pane-a', 'id2', 'inbox']]],
+			windowCalls: [],
 		});
 	});
 });

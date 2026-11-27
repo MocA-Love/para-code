@@ -19,7 +19,7 @@
 import { createHash } from 'crypto';
 import { isPlainRecord } from '../../../common/paradisGuards.js';
 import { paradisNormalizeAgentHookEvent } from '../../agentBrowser/common/paradisAgentBrowser.js';
-import { IParadisBotPaneState, PARADIS_BOT_PANE_PURPOSES, ParadisBotPaneHalt, ParadisBotPanePurpose } from '../common/paradisBotsApi.js';
+import { IParadisBotPaneState, PARADIS_BOT_IDLE_STOP_MS, PARADIS_BOT_PANE_PURPOSES, ParadisBotPaneHalt, ParadisBotPanePurpose } from '../common/paradisBotsApi.js';
 import { IParadisBotBoardPaneRecord, IParadisBotBoardTaskRecord, paradisParseBotBoardOrigins } from './paradisBotBoardOrigins.js';
 
 /** 起動の番号が有効な時間。起動に失敗して報告が来なかった番号を残さない。 */
@@ -41,11 +41,6 @@ export const PARADIS_BOT_SETUP_STALL_MS = 30_000;
 /** 起動してすぐ hook を出すので、hook が来ないことを「止まっている」と読めるエージェント。 */
 const AGENTS_WITH_START_HOOK: ReadonlySet<string> = new Set(['claude']);
 
-/**
- * 会話のペインのエージェントが、何もしないままこの時間が過ぎたら止める（Orca と同じ 30 分。待機中の CPU とメモリを返す）。
- * 止めた後は「眠っている」になり、話しかけたら同じ会話を続けて起こす（報告書の D1 (a)）。
- */
-export const PARADIS_BOT_IDLE_STOP_MS = 30 * 60_000;
 
 /** 会話の id として受け取る形（Claude Code・Codex の UUID。引数に置くのでシェルの文字を通さない）。 */
 const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/;
@@ -148,6 +143,8 @@ interface IPane {
 	resumed?: boolean;
 	/** 結び付けてから、エージェントが 1 回でも動いた。 */
 	workedSinceBound?: boolean;
+	/** ウィンドウが「利用者がまだ使っている」と知らせた最後の時刻。 */
+	activeAt?: number;
 }
 
 function newPane(botId: string, purpose: ParadisBotPanePurpose, now: number, agent?: string): IPane {
@@ -245,13 +242,23 @@ export class ParadisBotPanes {
 	}
 
 	/**
-	 * 何もしないまま {@link PARADIS_BOT_IDLE_STOP_MS} が過ぎた会話のペイン（止める）。動いている・利用者の答えを待っている
-	 * ペインは数えない。最後に動いた時刻は hook が届いた時刻（無ければ結び付けた時刻）。
+	 * 何もしないまま {@link PARADIS_BOT_IDLE_STOP_MS} が過ぎた会話のペイン（止める候補）。利用者の答えを待っているペインは
+	 * 数えない。最後に動いた時刻は、hook が届いた時刻・結び付けた時刻・ウィンドウが「まだ使っている」と知らせた時刻
+	 * （{@link noteActive}）の一番遅いもの。作業中のままのペインも数える（Claude Code は Esc の中断で Stop を出さないので、
+	 * 作業中のまま残る）。本当に動いているペインは出力が続くので、ウィンドウが出力を見て止めずに返す。
 	 */
 	idleChatTokens(now: number, idleMs = PARADIS_BOT_IDLE_STOP_MS): { readonly botId: string; readonly token: string }[] {
 		return [...this.panes]
-			.filter(([, pane]) => pane.purpose === 'chat' && !pane.working && !pane.asking && now - Math.max(pane.lastSeenAt, pane.boundAt) >= idleMs)
+			.filter(([, pane]) => pane.purpose === 'chat' && !pane.asking && now - Math.max(pane.lastSeenAt, pane.boundAt, pane.activeAt ?? 0) >= idleMs)
 			.map(([token, pane]) => ({ botId: pane.botId, token }));
+	}
+
+	/** 利用者がまだそのペインを使っている（見えていた・入力した・出力があった）。 */
+	noteActive(paneToken: string, now: number): void {
+		const pane = this.panes.get(paneToken);
+		if (pane !== undefined) {
+			pane.activeAt = now;
+		}
 	}
 
 	/** 保存する結び付け（古い順）。 */

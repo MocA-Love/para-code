@@ -11,8 +11,8 @@ import { Emitter } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { EditorCloseContext } from '../../../../../workbench/common/editor.js';
 import { ITerminalInstance, ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
-import { PARADIS_BOT_GREETING_PROMPT, PARADIS_BOT_INBOX_WAKE_PROMPT, paradisBotFirstPrompt } from '../../common/paradisBotTools.js';
-import { paradisBotPaneHidesOnClose, paradisIsBotPaneHidden, paradisMarkBotPaneHidden, paradisResetBotPaneHideForTest, paradisShowHiddenBotPane } from '../../browser/paradisBotPaneHide.js';
+import { PARADIS_BOT_GREETING_PROMPT, paradisBotFirstPrompt } from '../../common/paradisBotTools.js';
+import { paradisBotPaneHidesOnClose, paradisBotPaneIdleStopAllowed, paradisIsBotPaneHidden, paradisMarkBotPaneHidden, paradisResetBotPaneHideForTest, paradisShowHiddenBotPane } from '../../browser/paradisBotPaneHide.js';
 import { paradisAddTerminalHiddenOnClose, paradisResetTerminalHiddenOnCloseForTest, paradisTerminalEditorsHideOnClose } from '../../../workspaceSwitch/browser/paradisTerminalHideOnClose.js';
 
 suite('Paradis bot pane hide on close', () => {
@@ -70,12 +70,24 @@ suite('Paradis bot pane hide on close', () => {
 		], [true, false, false, false, false, false, false]);
 	});
 
-	test('最初の指示: 作った直後は挨拶、伝言で起こしたら受け箱。眠った会話を続けるときは挨拶しない', () => {
+	test('最初の指示: 作った直後は挨拶。眠った会話を続けるときは挨拶しない', () => {
 		assert.deepStrictEqual([
 			paradisBotFirstPrompt({ greet: true }, false),
 			paradisBotFirstPrompt({ greet: true }, true),
-			paradisBotFirstPrompt({ inbox: true }, true),
 			paradisBotFirstPrompt({}, false),
-		], [PARADIS_BOT_GREETING_PROMPT, undefined, PARADIS_BOT_INBOX_WAKE_PROMPT, undefined]);
+		], [PARADIS_BOT_GREETING_PROMPT, undefined, undefined]);
+	});
+
+	test('何もしない 30 分の停止は、見えている・フォーカスがある・打ちかけがある・最近出力のあったペインを止めない。数え始めは見えなくなった時刻と最後の出力の遅い方', () => {
+		const idle = 30;
+		const quiet = { visible: false, focused: false, draft: false, lastOutputAt: 0, lastHiddenAt: 0 };
+		assert.deepStrictEqual([
+			paradisBotPaneIdleStopAllowed(quiet, 100, idle),
+			paradisBotPaneIdleStopAllowed({ ...quiet, visible: true }, 100, idle),
+			paradisBotPaneIdleStopAllowed({ ...quiet, focused: true }, 100, idle),
+			paradisBotPaneIdleStopAllowed({ ...quiet, draft: true }, 100, idle),
+			paradisBotPaneIdleStopAllowed({ ...quiet, lastOutputAt: 80 }, 100, idle),
+			paradisBotPaneIdleStopAllowed({ ...quiet, lastHiddenAt: 80 }, 100, idle),
+		], [true, false, false, false, false, false]);
 	});
 });

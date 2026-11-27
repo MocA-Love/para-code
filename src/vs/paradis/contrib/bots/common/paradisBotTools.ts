@@ -231,18 +231,11 @@ export function paradisCodexBrowserConfigValues(registration: ParadisCodexBrowse
 export const PARADIS_BOT_GREETING_PROMPT = 'You were just created as a Para Code bot. Read SOUL.md (your role and personality) and greet your owner now: introduce yourself in two or three sentences, in the language SOUL.md is written in, and say what you can help with. Then wait for their reply.';
 
 /**
- * ほかの Bot からの伝言で起こしたときに最初に渡す指示（受け箱を読む）。
+ * 起こすときに最初に渡す指示。作った直後なら挨拶させる。眠った会話を続けるときは挨拶しない（もう話したことのある Bot）。
+ * それ以外は渡さない（利用者の入力を待つ）。ほかの Bot からの伝言では起こさない（受け箱に入れて未読の数を出すだけ。#1232 の
+ * 決め。利用者の居ない所で頼まれたことを実行させない）。
  */
-export const PARADIS_BOT_INBOX_WAKE_PROMPT = 'Another bot left you a message. Read your inbox with bot_inbox and handle what it asks, then end your turn.';
-
-/**
- * 起こすときに最初に渡す指示。伝言で起こしたなら受け箱を読ませ、作った直後なら挨拶させる。眠った会話を続けるときは
- * 挨拶しない（もう話したことのある Bot）。どれでもなければ渡さない（利用者の入力を待つ）。
- */
-export function paradisBotFirstPrompt(options: { readonly greet?: boolean; readonly inbox?: boolean }, resumed: boolean): string | undefined {
-	if (options.inbox === true) {
-		return PARADIS_BOT_INBOX_WAKE_PROMPT;
-	}
+export function paradisBotFirstPrompt(options: { readonly greet?: boolean }, resumed: boolean): string | undefined {
 	return options.greet === true && !resumed ? PARADIS_BOT_GREETING_PROMPT : undefined;
 }
 

@@ -256,8 +256,14 @@ export class ParadisBotsService extends Disposable {
 		}
 		for (const [botId, paneHashes] of byBot) {
 			this.logService.info(`[ParadisBots] stopping an idle bot conversation (${paneHashes.length} pane)`);
-			this._onDidRequestStop.fire({ botId, paneHashes });
+			this._onDidRequestStop.fire({ botId, paneHashes, idle: true });
 		}
+	}
+
+	/** 利用者がまだ使っている会話のペイン（ウィンドウが知らせる）。何もしない 30 分をここから数え直す。 */
+	notePaneActive(paneToken: string): void {
+		this.idleStopRequested.delete(paneToken);
+		this.panes.noteActive(paneToken, this.now());
 	}
 
 	private async load(): Promise<void> {
