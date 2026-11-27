@@ -450,10 +450,14 @@ export interface IParadisAgentLaunchOptions {
 	readonly effortId?: string;
 	readonly permissionId?: string;
 	/**
-	 * 呼び出し元が固定の一覧から組み立てた、引用済みの追加の引数（タスクボードの SSH の担当に、起動のときだけ許可を渡す。
+	 * 呼び出し元が固定の一覧から組み立てた追加の引数（タスクボードの SSH の担当に、起動のときだけ許可を渡す。
 	 * paradisTaskBoardLaunchApprovalFlags）。利用者や担当の入力から作らないこと。
+	 *
+	 * 文字列はシェルの 1 行にそのまま足す引用済みの形。配列は 1 つずつの生の引数で、起動するシェル（POSIX・fish・
+	 * PowerShell、cmd.exe は中で動く PowerShell）の引用で包んで足す（パスなど、空白やシェルごとに違う文字を含む値を
+	 * 渡すため。Bot の見回り）。
 	 */
-	readonly extraFlags?: string;
+	readonly extraFlags?: string | readonly string[];
 }
 
 /**
@@ -668,7 +672,15 @@ function paradisEncodeUtf16LeBase64(value: string): string {
 	return encodeBase64(VSBuffer.wrap(bytes));
 }
 
-function paradisApplyPromptToTemplate(template: IParadisAgentCommandTemplate, promptExpression: string, options: IParadisAgentLaunchOptions | undefined, imageFlag?: string): string {
+/** {@link IParadisAgentLaunchOptions.extraFlags} を、そのシェルの 1 行に足せる形にする（配列は 1 つずつ引用する）。 */
+function paradisExtraFlagsText(extraFlags: string | readonly string[] | undefined, quote: (value: string) => string): string | undefined {
+	if (extraFlags === undefined || typeof extraFlags === 'string') {
+		return extraFlags;
+	}
+	return extraFlags.length > 0 ? extraFlags.map(quote).join(' ') : undefined;
+}
+
+function paradisApplyPromptToTemplate(template: IParadisAgentCommandTemplate, promptExpression: string, options: IParadisAgentLaunchOptions | undefined, imageFlag: string | undefined, quote: (value: string) => string): string {
 	const flags = paradisResolveAgentLaunchFlags(template, options);
 	let command = template.command;
 	// プレースホルダがあるフラグはその位置へ置換し、無いフラグはプロンプトの直前
@@ -682,8 +694,9 @@ function paradisApplyPromptToTemplate(template: IParadisAgentCommandTemplate, pr
 			leftoverFlags.push(flag);
 		}
 	}
-	if (options?.extraFlags) {
-		leftoverFlags.push(options.extraFlags);
+	const extraFlags = paradisExtraFlagsText(options?.extraFlags, quote);
+	if (extraFlags) {
+		leftoverFlags.push(extraFlags);
 	}
 	// 画像のフラグ（引用済み）。指示の直前に置き、後ろの指示が画像の名前として読まれないよう `=` で 1 つの引数にしてある
 	if (imageFlag) {
@@ -714,7 +727,7 @@ function paradisApplyPromptToTemplate(template: IParadisAgentCommandTemplate, pr
 function paradisBuildCommandPromptAgentCommand(template: IParadisAgentCommandTemplate, prompt: string, options: IParadisAgentLaunchOptions | undefined, imagePaths: readonly string[]): string {
 	const promptBase64 = encodeBase64(VSBuffer.fromString(prompt));
 	// 中で動くのは PowerShell なので、画像のフラグも PowerShell の引用にする（裸の `a,b` は配列として読まれる）
-	const command = paradisApplyPromptToTemplate(template, '$paradisPrompt', options, paradisImageFlag(imagePaths, paradisQuotePowerShellArg));
+	const command = paradisApplyPromptToTemplate(template, '$paradisPrompt', options, paradisImageFlag(imagePaths, paradisQuotePowerShellArg), paradisQuotePowerShellArg);
 	const script = `$paradisPrompt = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${promptBase64}')); ${command}`;
 	return `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${paradisEncodeUtf16LeBase64(script)}`;
 }
@@ -757,7 +770,7 @@ export function paradisBuildAgentCommand(template: IParadisAgentCommandTemplate,
 			: shellType === GeneralShellType.PowerShell ? paradisQuotePowerShellArg
 				: shellType === PosixShellType.Fish ? paradisQuoteFishArg
 					: paradisQuotePosixShellArg;
-		return paradisApplyPromptToTemplate(template, '', options, paradisImageFlag(flagImages, quoteFlag)).replace(/ {2,}/g, ' ').trim();
+		return paradisApplyPromptToTemplate(template, '', options, paradisImageFlag(flagImages, quoteFlag), quoteFlag).replace(/ {2,}/g, ' ').trim();
 	}
 	if (shellType === WindowsShellType.CommandPrompt) {
 		return paradisBuildCommandPromptAgentCommand(template, prompt, options, flagImages);
@@ -765,7 +778,7 @@ export function paradisBuildAgentCommand(template: IParadisAgentCommandTemplate,
 	// シェルの種類が分からない（tmux や `exec fish` などのラッパー経由の起動）と POSIX 式で引用するが、
 	// fish はシングルクオートの中のバックスラッシュをエスケープとして読むので、`\` を含む指示は
 	// 閉じ損ねて後ろがコマンドとして動きうる。確かめられないものは起動しない
-	if (shellType === undefined && prompt.includes('\\')) {
+	if (shellType === undefined && (prompt.includes('\\') || (Array.isArray(options?.extraFlags) && options.extraFlags.some(flag => flag.includes('\\'))))) {
 		throw new ParadisAgentPromptQuotingError();
 	}
 	const quote = shellType === GeneralShellType.PowerShell
@@ -773,7 +786,7 @@ export function paradisBuildAgentCommand(template: IParadisAgentCommandTemplate,
 		: shellType === PosixShellType.Fish
 			? paradisQuoteFishArg
 			: paradisQuotePosixShellArg;
-	return paradisApplyPromptToTemplate(template, quote(prompt), options, paradisImageFlag(flagImages, quote));
+	return paradisApplyPromptToTemplate(template, quote(prompt), options, paradisImageFlag(flagImages, quote), quote);
 }
 
 /**
