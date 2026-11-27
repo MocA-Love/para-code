@@ -114,11 +114,23 @@ export function paradisMobileHumanAsks(snapshot: IParadisHumanAskSnapshot): IPar
 	return visibleEntries(snapshot).map(toMobile);
 }
 
-/** Desktop State に載せる件数と印。中身（問いの文など）は印に入れない。 */
+/**
+ * Desktop State に載せる件数と印。中身（問いの文など）は印に入れない。
+ *
+ * 届けられずに待ちへ戻った 1 件は、その時刻（`failedAt`）も印に混ぜる。一覧の 1 件は `failed` の真偽しか持たないため、
+ * 前にも失敗した 1 件へ答え直してまた失敗すると一覧が答える前と同じに戻り、印が変わらずスマホが取り直さない
+ * （カードが「答えた」のまま固まる）。一覧の 1 件の形は変えず、失敗の無いときの印は今までと同じ。
+ */
 export function paradisMobileHumanAskSummary(snapshot: IParadisHumanAskSnapshot): IParadisMobileHumanAskSummary {
-	const asks = paradisMobileHumanAsks(snapshot);
+	const entries = visibleEntries(snapshot);
+	const asks = entries.map(toMobile);
 	const sha = new StringSHA1();
 	sha.update(JSON.stringify(asks));
+	for (const entry of entries) {
+		if (entry.failedAt !== undefined) {
+			sha.update(`\u0000${entry.key}\u0000${entry.failedAt}`);
+		}
+	}
 	return { count: asks.length, signature: sha.digest().slice(0, 16) };
 }
 
