@@ -24,6 +24,12 @@ import { IParadisBotPaneState, PARADIS_BOT_PANE_PURPOSES, ParadisBotPanePurpose 
 /** 起動の番号が有効な時間。起動に失敗して報告が来なかった番号を残さない。 */
 export const PARADIS_BOT_LAUNCH_TTL_MS = 5 * 60_000;
 
+/**
+ * 発行して報告がまだの会話の起動を「起動中」と数える時間。2 つのウィンドウから同時に開いたとき 1 つにするためで、
+ * 起動に失敗して取り消しも来なかった番号が、その Bot をいつまでも開けなくしないよう短くする。
+ */
+export const PARADIS_BOT_LAUNCHING_TTL_MS = 2 * 60_000;
+
 /** 保存する結び付けの上限（古いものから落とす）。 */
 export const PARADIS_BOT_REMEMBERED_PANES_LIMIT = 200;
 
@@ -116,6 +122,10 @@ export class ParadisBotPanes {
 		if (record === undefined || !botExists(record.botId)) {
 			return undefined;
 		}
+		// その Bot に別の会話のペインがもう結び付いていれば戻さない（会話を 2 つ結び付けない。古いペインは Bot として扱わない）
+		if (record.purpose === 'chat' && [...this.panes.values()].some(pane => pane.botId === record.botId && pane.purpose === 'chat')) {
+			return undefined;
+		}
 		this.panes.set(paneToken, { botId: record.botId, purpose: record.purpose, working: false, lastSeenAt: now });
 		return record.botId;
 	}
@@ -156,6 +166,11 @@ export class ParadisBotPanes {
 		if (now - entry.issuedAt > PARADIS_BOT_LAUNCH_TTL_MS || paneToken.length === 0 || this.panes.has(paneToken) || (remembered !== undefined && remembered.botId !== entry.botId)) {
 			return undefined;
 		}
+		// 「起動中」の期限（2 分）を過ぎてから遅れて届いた会話の報告は、その間に別のウィンドウで開いた会話があれば断る
+		// （断られたウィンドウはそのターミナルを閉じる。会話を 2 つにしない）
+		if (entry.purpose === 'chat' && [...this.panes.values()].some(pane => pane.botId === entry.botId && pane.purpose === 'chat')) {
+			return undefined;
+		}
 		this.panes.set(paneToken, { botId: entry.botId, purpose: entry.purpose, working: false, lastSeenAt: now });
 		this.remembered.delete(hash);
 		this.remembered.set(hash, { hash, botId: entry.botId, purpose: entry.purpose, boundAt: now });
@@ -169,6 +184,31 @@ export class ParadisBotPanes {
 	/** 起動をやめた（失敗した）番号を捨てる。 */
 	cancel(launchId: string): boolean {
 		return this.pending.delete(launchId);
+	}
+
+	/**
+	 * その Bot の会話が使われているか。数えるのは、現れたペイン（報告・hook・道具の呼び出しで確かめたもの）と、
+	 * 発行して報告がまだの会話の起動（{@link PARADIS_BOT_LAUNCHING_TTL_MS} の間）だけ。起動し直した後でまだ現れていない
+	 * 保存した結び付けは数えない（閉じたことが伝わらなかった古いペインで、その Bot を開けなくしないため）。見回りは数えない。
+	 */
+	chatInUse(botId: string, now: number): { readonly state: 'open'; readonly tokens: readonly string[] } | { readonly state: 'launching' } | undefined {
+		const tokens = [...this.panes].filter(([, pane]) => pane.botId === botId && pane.purpose === 'chat').map(([token]) => token);
+		if (tokens.length > 0) {
+			return { state: 'open', tokens };
+		}
+		return [...this.pending.values()].some(entry => entry.botId === botId && entry.purpose === 'chat' && now - entry.issuedAt <= PARADIS_BOT_LAUNCHING_TTL_MS) ? { state: 'launching' } : undefined;
+	}
+
+	/** その Bot の会話のペインを「まだ現れていない」に戻す（前に出す依頼にどのウィンドウも応えなかった）。 */
+	detachChat(botId: string): boolean {
+		let changed = false;
+		for (const [token, pane] of this.panes) {
+			if (pane.botId === botId && pane.purpose === 'chat') {
+				this.panes.delete(token);
+				changed = true;
+			}
+		}
+		return changed;
 	}
 
 	botOf(paneToken: string): string | undefined {
