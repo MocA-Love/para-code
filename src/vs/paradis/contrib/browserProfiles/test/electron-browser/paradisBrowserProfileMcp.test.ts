@@ -18,7 +18,7 @@ import { IEditorGroup } from '../../../../../workbench/services/editor/common/ed
 import { IParadisAgentBrowserBindingModel } from '../../../agentBrowser/electron-browser/paradisAgentBrowserBindingModel.js';
 import { IParadisAgentBrowserTabsService, ParadisAgentApprovalOutcome } from '../../../agentBrowser/electron-browser/paradisAgentBrowserTabsService.js';
 import { IParadisWorkspaceSwitchService } from '../../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import { IParadisListProfilesResult, IParadisManageProfileResult, IParadisOpenProfileResult, PARADIS_AGENT_CREATED_PROFILE_LIMIT, PARADIS_BROWSER_PROFILE_ACCESS_SETTING, paradisReadProfileAccess, PARADIS_AGENT_CREATED_PROFILE_TOTAL_LIMIT, PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD, PARADIS_BROWSER_PROFILE_MCP_METHOD } from '../../common/paradisBrowserProfileMcp.js';
+import { IParadisDeleteProfileResult, IParadisListProfilesResult, IParadisManageProfileResult, IParadisOpenProfileResult, PARADIS_AGENT_CREATED_PROFILE_LIMIT, PARADIS_BROWSER_PROFILE_ACCESS_SETTING, paradisReadProfileAccess, PARADIS_AGENT_CREATED_PROFILE_TOTAL_LIMIT, PARADIS_BROWSER_PROFILE_MCP_CREATE_METHOD, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, PARADIS_BROWSER_PROFILE_MCP_LIST_METHOD, PARADIS_BROWSER_PROFILE_MCP_METHOD, paradisDeletedProfileMessage } from '../../common/paradisBrowserProfileMcp.js';
 import { IParadisBrowserProfile } from '../../common/paradisBrowserProfileModel.js';
 import { paradisAgentOwnerMark, ParadisBrowserProfileMcpChannel } from '../../electron-browser/paradisBrowserProfileMcp.contribution.js';
 import { IParadisBrowserProfilesService, IParadisCreateProfileOptions } from '../../electron-browser/paradisBrowserProfilesService.js';
@@ -36,6 +36,8 @@ interface IChannelOptions {
 	readonly hidden?: boolean;
 	/** ネットワークの制限が有効。 */
 	readonly networkFilter?: boolean;
+	/** 開いているタブ（openedBy はそのタブを開いたペイン。無ければ利用者のタブ）。 */
+	readonly tabs?: readonly { readonly id: string; readonly profileId: string; readonly openedBy?: string }[];
 }
 
 /** `onStats` は main へ数を聞いている間に起きることを差し込む口。 */
@@ -43,6 +45,7 @@ function createChannel(profiles: IParadisBrowserProfile[], approval: ParadisAgen
 	const calls: string[] = [];
 	const registrations: string[] = [];
 	const allowed = options.allowed ?? new Set<string>();
+	const tabs = options.tabs ?? [];
 	const profilesService = {
 		isAgentAllowed: (id: string) => allowed.has(id),
 		setAgentAllowed: (id: string, value: boolean) => { calls.push(`allow:${id}:${value}`); if (value) { allowed.add(id); } else { allowed.delete(id); } },
@@ -50,8 +53,8 @@ function createChannel(profiles: IParadisBrowserProfile[], approval: ParadisAgen
 		list: () => profiles,
 		findByName: (name: string) => profiles.find(candidate => candidate.name === name),
 		canUseProfiles: () => true,
-		getProfileStats: async () => { onStats?.(); return { cookieCount: 3, openViewCount: 0 }; },
-		getProfileForView: () => undefined,
+		getProfileStats: async (id: string) => { onStats?.(); return { cookieCount: 3, openViewCount: tabs.filter(tab => tab.profileId === id).length }; },
+		getProfileForView: (viewId: string) => tabs.find(tab => tab.id === viewId)?.profileId,
 		create: (name: string, color: string, options?: IParadisCreateProfileOptions) => {
 			const created = profile(`00000000000${profiles.length}`, name, { color, ...(options?.createdByAgent ? { createdByAgent: true, agentOwner: options.agentOwner } : {}) });
 			profiles.push(created);
@@ -72,7 +75,7 @@ function createChannel(profiles: IParadisBrowserProfile[], approval: ParadisAgen
 		registerAgentTab: (token: string, input: BrowserEditorInput, options?: { readonly approvedProfile?: boolean }) => { registrations.push(`${token}:${input.id}:${options?.approvedProfile === true ? 'approved-profile' : 'own'}`); },
 		bindTab: async () => true,
 		bindTabWithin: async () => true,
-		isOpenedBy: () => false,
+		isOpenedBy: (token: string, viewId: string) => tabs.some(tab => tab.id === viewId && tab.openedBy === token),
 	} as unknown as IParadisAgentBrowserTabsService;
 	const channel = new ParadisBrowserProfileMcpChannel(
 		profilesService,
@@ -81,7 +84,7 @@ function createChannel(profiles: IParadisBrowserProfile[], approval: ParadisAgen
 		{ isEnabled: () => options.networkFilter === true } as unknown as IAgentNetworkFilterService,
 		new NullLogService(),
 		agentTabsService,
-		{ getKnownBrowserViews: () => new Map() } as unknown as IBrowserViewWorkbenchService,
+		{ getKnownBrowserViews: () => new Map(tabs.map(tab => [tab.id, {}])) } as unknown as IBrowserViewWorkbenchService,
 		{ getShareWarning: async () => shareWarning },
 		{ getValue: (key?: unknown) => key === PARADIS_BROWSER_PROFILE_ACCESS_SETTING ? options.access ?? 'ask' : undefined } as unknown as IConfigurationService,
 	);
@@ -172,6 +175,42 @@ suite('ParadisBrowserProfileMcpChannel', () => {
 			[created.ok, profiles[1].agentOwner === paradisAgentOwnerMark('pane-a'), results, calls],
 			[true, true, [{ ok: false, reason: 'unknownProfile' }, { ok: false, reason: 'unknownProfile' }, { ok: false, reason: 'unknownProfile' }, true], [`remove:${profiles[1].id}`]],
 		);
+	});
+
+	test('deleting a profile names the tabs of this pane it closed, and is refused while the user has a tab in it', async () => {
+		const own = () => profile('b1c2d3e4f506', 'scratch', { createdByAgent: true, agentOwner: paradisAgentOwnerMark('pane-a') });
+		const ownTabs = [
+			{ id: 'view-1', profileId: 'b1c2d3e4f506', openedBy: 'pane-a' },
+			{ id: 'view-2', profileId: 'b1c2d3e4f506', openedBy: 'pane-a' },
+			{ id: 'view-3', profileId: 'other-profile', openedBy: 'pane-a' },
+		];
+		const withUserTab = [
+			{ id: 'view-1', profileId: 'b1c2d3e4f506', openedBy: 'pane-a' },
+			{ id: 'view-4', profileId: 'b1c2d3e4f506' },
+		];
+		const mine = createChannel([own()], 'denied', true, undefined, undefined, { tabs: ownTabs });
+		store.add(mine.channel);
+		const userTab = createChannel([own()], 'denied', true, undefined, undefined, { tabs: withUserTab });
+		store.add(userTab.channel);
+		const deleted = await mine.channel.call<IParadisDeleteProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, ['pane-a', 'scratch']);
+		const refused = await userTab.channel.call<IParadisDeleteProfileResult>(undefined, PARADIS_BROWSER_PROFILE_MCP_DELETE_METHOD, ['pane-a', 'scratch']);
+		assert.deepStrictEqual([deleted, refused, userTab.calls], [
+			{ ok: true, profileName: 'scratch', closedTabIds: ['view-1', 'view-2'] },
+			{ ok: false, reason: 'inUse' },
+			[],
+		]);
+	});
+
+	test('the answer of delete_browser_profile lists the closed tabs so the agent stops using them', () => {
+		assert.deepStrictEqual([
+			paradisDeletedProfileMessage('scratch', []),
+			paradisDeletedProfileMessage('scratch', ['view-1']),
+			paradisDeletedProfileMessage('scratch', ['view-1', 'view-2']),
+		], [
+			'Deleted the "scratch" browser profile and its stored data.',
+			'Deleted the "scratch" browser profile and its stored data. Closed your tab in that profile: view-1. That tabId no longer works; use list_browser_tabs to see the tabs you still have.',
+			'Deleted the "scratch" browser profile and its stored data. Closed your tabs in that profile: view-1, view-2. Those tabIds no longer work; use list_browser_tabs to see the tabs you still have.',
+		]);
 	});
 
 	// main へ開いているタブの数を聞いている間に、ユーザーが自分用として使い始めたら消さない（A61）。

@@ -17,6 +17,7 @@ import { DisposableStore, MutableDisposable } from '../../../../base/common/life
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { localize } from '../../../../nls.js';
 import { IEditorOptions } from '../../../../platform/editor/common/editor.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
@@ -31,6 +32,7 @@ import { PARADIS_ANDROID_EDITOR_ID, ParadisAndroidEditorInput } from './paradisA
 import { ParadisAndroidVideoView } from './paradisAndroidVideoView.js';
 import { IParadisSimulatorClient } from './paradisSimulatorClient.js';
 import { paradisLabelSimulatorScreen } from './paradisSimulatorFrameView.js';
+import { ParadisSimulatorShareButton } from './paradisSimulatorShareButton.js';
 
 const $ = dom.$;
 
@@ -57,6 +59,8 @@ export class ParadisAndroidEditor extends EditorPane {
 	private _stage: HTMLElement | undefined;
 	private _back: ParadisButton | undefined;
 	private _keyHint: HTMLElement | undefined;
+	/** 見出しの「ペインに渡す」ボタン（iOS のシミュレータのタブと同じ。q.html Q688）。 */
+	private _share: ParadisSimulatorShareButton | undefined;
 	private readonly _session = this._register(new MutableDisposable<ParadisAndroidEditorSession>());
 	private _lastDimension: dom.Dimension | undefined;
 
@@ -67,6 +71,7 @@ export class ParadisAndroidEditor extends EditorPane {
 		@IStorageService storageService: IStorageService,
 		@IParadisSimulatorClient private readonly _client: IParadisSimulatorClient,
 		@INotificationService private readonly _notificationService: INotificationService,
+		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 	) {
 		super(PARADIS_ANDROID_EDITOR_ID, group, telemetryService, themeService, storageService);
 	}
@@ -82,6 +87,7 @@ export class ParadisAndroidEditor extends EditorPane {
 		// 映像の枠の読み上げの説明（aria-describedby）。id はペインごとに替える
 		this._keyHint.id = `paradis-android-key-hint-${generateUuid()}`;
 		const actions = dom.append(bar, $('.paradis-simulator-actions'));
+		this._share = this._register(this._instantiationService.createInstance(ParadisSimulatorShareButton, actions));
 		const button = (label: string, deviceButton: string) => {
 			const created = this._register(new ParadisButton(actions, { kind: 'secondary', small: true, label, title: label }));
 			this._register(created.onDidClick(() => {
@@ -115,7 +121,11 @@ export class ParadisAndroidEditor extends EditorPane {
 
 	override async setInput(input: EditorInput, options: IEditorOptions | undefined, context: IEditorOpenContext, token: CancellationToken): Promise<void> {
 		await super.setInput(input, options, context, token);
-		if (!(input instanceof ParadisAndroidEditorInput) || !this._stage || this._session.value?.input === input) {
+		if (!(input instanceof ParadisAndroidEditorInput) || !this._stage) {
+			return;
+		}
+		this._share?.setDevice(input.deviceId);
+		if (this._session.value?.input === input) {
 			return;
 		}
 		const session = new ParadisAndroidEditorSession(input, this._stage, this._client);
@@ -149,11 +159,15 @@ export class ParadisAndroidEditor extends EditorPane {
 	override clearInput(): void {
 		// タブを閉じた・別のタブへ替えた: 映像の購読と復号を放す
 		this._session.clear();
+		this._share?.setDevice(undefined);
 		super.clearInput();
 	}
 
 	protected override setEditorVisible(visible: boolean): void {
 		super.setEditorVisible(visible);
+		if (!visible) {
+			this._share?.closePopover();
+		}
 		this._updateStreaming();
 	}
 
@@ -218,7 +232,9 @@ export class ParadisAndroidEditor extends EditorPane {
 
 	private _renderHeader(): void {
 		if (this._title) {
-			this._title.textContent = this._session.value?.input.getName() ?? '';
+			// 題は端末の名前だけ（渡しているペインはタブの名前と「ペインに渡す」ボタンの一覧で見える）
+			const input = this._session.value?.input;
+			this._title.textContent = input ? (input.deviceName || localize('paradis.android.inputName', "Android")) : '';
 		}
 		const session = this._session.value;
 		if (session) {

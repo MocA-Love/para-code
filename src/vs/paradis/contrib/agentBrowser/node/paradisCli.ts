@@ -12,7 +12,9 @@
 // サービスや DI への依存は禁止（配布版では 1 ファイルに束ねられ、dev では out/ の相対 import で動く）。中身は paradisCliCore.ts。
 
 import { homedir } from 'os';
-import { paradisRunCli } from './paradisCliCore.js';
+import { paradisCliIgnoreClosedOutput, paradisRunCli } from './paradisCliCore.js';
+
+paradisCliIgnoreClosedOutput(process.stdout);
 
 paradisRunCli({
 	env: process.env,

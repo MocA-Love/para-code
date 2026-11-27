@@ -177,8 +177,13 @@
 }
 
 .monaco-workbench .paradis-browser-share-popover button {
-	font: inherit;
 	cursor: pointer;
+}
+
+/* Text buttons take the popover's font. Icon buttons (.codicon) keep the codicon font: this rule is more specific than
+	codicon.css, so without :not() the close glyph of "Stop sharing" was drawn in the system font. */
+.monaco-workbench .paradis-browser-share-popover button:not(.codicon) {
+	font: inherit;
 }
 
 /* "Stop sharing": the stage 3 icon button (close, 24px). */
