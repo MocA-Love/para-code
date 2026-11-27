@@ -50,14 +50,21 @@ export interface IParadisBotGroupMessageRecord {
 	readonly text: string;
 }
 
+/** 届かなかった伝言の記録の印の理由（{@link IParadisBotGroupsPort.markUndelivered}）。 */
+export type ParadisBotMessageUndeliveredReason = 'refused' | 'unreachable' | 'unknown';
+
 /** shared process のグループの機能の口（グループのレーンが差し込む）。 */
 export interface IParadisBotGroupsPort {
 	/** その Bot が入っているグループ。 */
 	groupsOf(botId: string): readonly IParadisBotGroup[];
 	/** グループの記録に伝言を足す。メンバーでない Bot の伝言は断る（`ok: false` と理由）。足した記録の id を返せる。 */
 	appendRecord(groupId: string, record: IParadisBotGroupMessageRecord): Promise<{ readonly ok: boolean; readonly message?: string; readonly recordId?: string }>;
-	/** 記録した伝言を届けられなかった、と記録を直す（グループの機能が持たなければ省略できる）。 */
-	markUndelivered?(groupId: string, recordId: string): Promise<void>;
+	/**
+	 * 記録した伝言が届かなかった、と記録の印を直す（記録は増やさない。グループの機能が持たなければ省略できる）。
+	 * `reason` は `refused`（宛先が受け取って断った。作業中など）・`unreachable`（宛先のウィンドウにつながらず何も
+	 * 渡らなかった）・`unknown`（時間切れ・中断で、届いたか分からない）。
+	 */
+	markUndelivered?(groupId: string, recordId: string, reason?: ParadisBotMessageUndeliveredReason): Promise<void>;
 }
 
 export const PARADIS_BOT_MESSAGE_TOOLS: readonly IParadisMcpToolDefinition[] = [
@@ -92,11 +99,19 @@ export const PARADIS_BOT_MESSAGE_TOOLS: readonly IParadisMcpToolDefinition[] = [
 ];
 
 /**
- * 伝言の本文を 1 行に整える。制御文字・改行と、見た目を偽れる不可視文字（幅のない文字、書字方向の制御、BOM）を
- * 空白にし（ブラウザのタブの題名と同じ `paradisSanitizeDisplayText`）、囲いの印を崩す。
+ * 表示の共通の関数（`paradisSanitizeDisplayText`）が残す、見えない文字。伝言では見た目より安全を優先して取り除く
+ * （ソフトハイフン U+00AD、アラビア文字の書字方向の印 U+061C、モンゴル文字の母音区切り U+180E、語結合子と見えない
+ * 演算子 U+2060〜U+2064、タグ文字 U+E0000〜U+E007F。タグ文字は画面では見えず、受け手のモデルには読める文字として届く）。
+ * 共通の関数はブラウザのタブの題名にも効く（語や地域の旗を割らないよう、そちらでは取り除かない）。
+ */
+const MESSAGE_INVISIBLE_CHARACTERS = /[\u00ad\u061c\u180e\u2060-\u2064\u{E0000}-\u{E007F}]/gu;
+
+/**
+ * 伝言の本文を 1 行に整える。上の見えない文字を取り除き、制御文字・改行と、見た目を偽れる不可視文字（幅のない文字、
+ * 書字方向の制御、BOM）を空白にし（ブラウザのタブの題名と同じ `paradisSanitizeDisplayText`）、囲いの印を崩す。
  */
 export function paradisBotMessageCleanText(text: string): string {
-	return (paradisSanitizeDisplayText(text, Number.MAX_SAFE_INTEGER) ?? '')
+	return (paradisSanitizeDisplayText(text.replace(MESSAGE_INVISIBLE_CHARACTERS, ''), Number.MAX_SAFE_INTEGER) ?? '')
 		.replace(/<{3,}/g, '<<')
 		.replace(/>{3,}/g, '>>')
 		.replace(/ {2,}/g, ' ')
@@ -131,7 +146,7 @@ export class ParadisBotMessageRateLimiter {
 		const pair = mine.filter(entry => entry.to === to);
 		const lastMinute = (entries: readonly { readonly at: number }[]) => entries.filter(entry => now - entry.at < MINUTE_MS).length;
 		if (lastMinute(mine) >= L.senderPerMinute || lastMinute(pair) >= L.pairPerMinute || mine.length >= L.senderPerHour || pair.length >= L.pairPerHour) {
-			return `You have sent too many bot messages for now (up to ${L.pairPerMinute} a minute and ${L.pairPerHour} an hour to one bot, ${L.senderPerMinute} a minute and ${L.senderPerHour} an hour in all). Do not keep the exchange going: stop, and tell your owner what you wanted to say.`;
+			return `You reached the limit for bot messages for now (up to ${L.pairPerMinute} a minute and ${L.pairPerHour} an hour to one bot, ${L.senderPerMinute} a minute and ${L.senderPerHour} an hour in all). Do not keep the exchange going: stop, and tell your owner what you wanted to say.`;
 		}
 		this.sent.push({ from, to, at: now });
 		return undefined;

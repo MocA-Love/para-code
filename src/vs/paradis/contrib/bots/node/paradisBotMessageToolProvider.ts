@@ -14,10 +14,11 @@
 // → 宛先の会話のペインを持つウィンドウへ届ける（呼び出し元のウィンドウではない。宛先は別のウィンドウにありうる）。
 
 import { IDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
-import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider, paradisMcpToolError as toolError, paradisMcpToolJson as toolJson } from '../../agentBrowser/common/paradisMcpToolProvider.js';
+import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider, ParadisMcpOwningWindowResult, paradisMcpToolError as toolError, paradisMcpToolJson as toolJson } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import {
 	IParadisBotGroupsPort,
 	ParadisBotMessageRateLimiter,
+	ParadisBotMessageUndeliveredReason,
 	PARADIS_BOT_ASK_TOOL,
 	PARADIS_BOT_GROUPS_WINDOW_CHANNEL,
 	PARADIS_BOT_MESSAGE_TOOL_NAMES,
@@ -152,23 +153,44 @@ export class ParadisBotMessageToolProvider implements IParadisMcpToolProvider {
 		if (!recorded.ok) {
 			return toolError(recorded.message ?? 'Para Code could not record this message in the group.');
 		}
-		const notDelivered = `Para Code recorded the message in the group as not delivered: it could not deliver it to "${recipient.name}". Do not send it again; tell your owner if it matters.`;
-		const delivered = await context.callPaneWindow<string | undefined>(recipientPane, {
-			channelName: PARADIS_BOT_GROUPS_WINDOW_CHANNEL,
-			method: 'deliver',
-			// 宛先のウィンドウは送り手のペインを持たないので、生のトークンではなくハッシュを渡す
-			args: [paradisBotPaneTokenHash(paneToken), recipient.id, paradisBotMessageDeliveryText(kind, bot.name, parsed.value.text)],
-			failureLabel: name,
-			failureMessage: notDelivered,
-		}, signal);
-		const refusal = !delivered.ok ? '' : typeof delivered.value === 'string' && delivered.value.length > 0 ? delivered.value : undefined;
-		if (refusal !== undefined) {
-			// 届かなかった: 記録を「届けられなかった」に直し、回数を戻す（届かなかった分で上限に近づけない）
-			this.limiter.refund(bot.id, recipient.id);
+		const unreachable = `Para Code could not reach "${recipient.name}" (its window closed or is reloading), so the message was not delivered and does not count toward your limit. Try again later, or tell your owner.`;
+		const unknown = `Para Code could not tell whether the message reached "${recipient.name}". Do not send it again; tell your owner if it matters.`;
+		const mark = async (reason: ParadisBotMessageUndeliveredReason) => {
 			if (recorded.recordId !== undefined) {
-				await groups.markUndelivered?.(target.groupId, recorded.recordId).catch(() => undefined);
+				await groups.markUndelivered?.(target.groupId, recorded.recordId, reason).catch(() => undefined);
 			}
-			return toolError(refusal.length > 0 ? `${notDelivered} The reason: ${refusal.slice(0, 300)}` : notDelivered);
+		};
+		let delivered: ParadisMcpOwningWindowResult<string | undefined>;
+		try {
+			delivered = await context.callPaneWindow<string | undefined>(recipientPane, {
+				channelName: PARADIS_BOT_GROUPS_WINDOW_CHANNEL,
+				method: 'deliver',
+				// 宛先のウィンドウは送り手のペインを持たないので、生のトークンではなくハッシュを渡す
+				args: [paradisBotPaneTokenHash(paneToken), recipient.id, paradisBotMessageDeliveryText(kind, bot.name, parsed.value.text)],
+				failureLabel: name,
+				failureMessage: unreachable,
+				// 時間切れは、宛先のウィンドウが届け続けているかもしれない（届いたか分からない）
+				timeoutMessage: unknown,
+			}, signal);
+		} catch (error) {
+			// 中断（MCP の取り消し・接続の入れ替わり）: 届いたか分からない
+			await mark('unknown');
+			throw error;
+		}
+		if (!delivered.ok) {
+			if (delivered.error === unknown) {
+				await mark('unknown');
+				return toolError(unknown);
+			}
+			// 宛先のウィンドウにつながらず、何も渡らなかった: 回数を戻す
+			this.limiter.refund(bot.id, recipient.id);
+			await mark('unreachable');
+			return toolError(unreachable);
+		}
+		if (typeof delivered.value === 'string' && delivered.value.length > 0) {
+			// 宛先が受け取ってから断った（作業中など）: 回数は戻さない（断られ続けても上限で止まるように）。記録は印だけ直す
+			await mark('refused');
+			return toolError(`"${recipient.name}" did not take the message now (${delivered.value.slice(0, 300)}). Send it again later if it still matters; each try counts toward your limit.`);
 		}
 		return toolJson({ to: recipient.name, sent: kind === 'asked' ? 'question' : 'message', ...(kind === 'asked' ? { note: `The answer comes back to this terminal as a message from "${recipient.name}".` } : {}) });
 	}
