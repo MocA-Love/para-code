@@ -451,9 +451,7 @@ export class ParadisAgentChatView extends Disposable {
 			restoreScrollTop = saved !== undefined && !saved.stick ? saved.top : undefined;
 		}
 		this.instanceId = instanceId;
-		this.composer.setToken(visible ? token : undefined);
-		// 送っている途中のペインへ戻ったら、送り終わるまで送れないままにする（二重に送らないため）。
-		this.composer.setSending(visible && token !== undefined && this.host.cardStates(token).composer.sending);
+		// 先に見える状態にしてから下書きを戻す（隠れたままでは入力欄の高さが測れず、複数行の下書きが 1 行に見える）。
 		if (this.visible !== visible) {
 			this.visible = visible;
 			this.element.style.display = visible ? '' : 'none';
@@ -473,6 +471,9 @@ export class ParadisAgentChatView extends Disposable {
 				this.liveTextScheduler.cancel();
 			}
 		}
+		this.composer.setToken(visible ? token : undefined);
+		// 送っている途中のペインへ戻ったら、送り終わるまで送れないままにする（二重に送らないため）。
+		this.composer.setSending(visible && token !== undefined && this.host.cardStates(token).composer.sending);
 		if (visible) {
 			void this.session?.refresh();
 			this.render();

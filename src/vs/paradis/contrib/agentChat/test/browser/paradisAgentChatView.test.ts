@@ -561,6 +561,17 @@ suite('ParadisAgentChatView', () => {
 		]);
 	});
 
+	test('grows the input to fit a multi-line draft restored when the chat comes back into view', async () => {
+		const { view, host, container } = await createView([{ token: 'pane', agent: 'claude', epoch: 'e', rev: 0, reset: true, busy: false, live: null, interaction: null, messages: [] }]);
+		const input = container.querySelector<HTMLTextAreaElement>('textarea.paradis-agent-chat-input')!;
+		host.setDraft('other', '1 行目\n2 行目\n3 行目');
+		// ターミナルへ戻って（隠れて）から、下書きのあるペインのチャットを開く
+		view.setTarget(undefined, undefined);
+		view.setTarget(2, 'other');
+		// 隠れたまま測ると scrollHeight が 0 で、高さが 0px（min-height の 1 行）になる
+		assert.deepStrictEqual({ value: input.value, fits: parseFloat(input.style.height) > 0 && input.scrollHeight <= input.clientHeight + 1 }, { value: '1 行目\n2 行目\n3 行目', fits: true });
+	});
+
 	test('clears the draft of a message that was sent while the user switched to another pane', async () => {
 		const { view, host, container } = await createView([{ token: 'pane', agent: 'claude', epoch: 'e', rev: 1, reset: true, busy: false, live: null, interaction: null, messages: [{ rev: 0, role: 'user', kind: 'text', text: 'a' }] }]);
 		let release: (() => void) | undefined;
