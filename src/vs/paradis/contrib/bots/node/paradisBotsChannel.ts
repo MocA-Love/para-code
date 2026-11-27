@@ -110,6 +110,7 @@ export class ParadisBotsChannel implements IServerChannel<string> {
 			case 'paneHashesOf': return id !== undefined ? service.paneHashesOf(id) : [];
 			case 'listSuggestions': return id !== undefined ? service.listSuggestions(id) : [];
 			case 'startSuggestion': return id !== undefined ? service.startSuggestion(id) : INVALID;
+			case 'markSuggestionStarted': return id !== undefined ? service.markSuggestionStarted(id) : INVALID;
 			case 'dismissSuggestion': return id !== undefined ? service.dismissSuggestion(id) : INVALID;
 			case 'snapshotMemory': return id !== undefined ? service.snapshotMemory(id) : INVALID;
 			case 'undoMemoryTidy': return id !== undefined ? service.undoMemoryTidy(id) : INVALID;

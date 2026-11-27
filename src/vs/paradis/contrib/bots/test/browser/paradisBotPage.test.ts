@@ -15,7 +15,7 @@ import { IConfigurationChangeEvent, IConfigurationService } from '../../../../..
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { IContextMenuService, IContextViewService } from '../../../../../platform/contextview/browser/contextView.js';
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
-import { INotificationService } from '../../../../../platform/notification/common/notification.js';
+import { INotificationHandle, INotificationService, NotificationMessage } from '../../../../../platform/notification/common/notification.js';
 import { TestNotificationService } from '../../../../../platform/notification/test/common/testNotificationService.js';
 import { IOpenerService } from '../../../../../platform/opener/common/opener.js';
 import { IParadisConfirmation, IParadisDialogService } from '../../../confirmDialog/browser/paradisDialogService.js';
@@ -63,6 +63,7 @@ suite('Paradis bots page overlay', () => {
 		const bots = [bot('release', 'リリース係', { needsYou: 1 })];
 		const answered: { key: string; answer: ParadisHumanAskAnswer }[] = [];
 		const failAnswer = { value: false };
+		const sendFails = { value: false };
 		const calls: string[] = [];
 		const confirms: IParadisConfirmation[] = [];
 		const files = new Map<string, string>([['SOUL.md', '# リリース係\n'], ['MEMORY.md', '# Memory\n']]);
@@ -75,8 +76,9 @@ suite('Paradis bots page overlay', () => {
 			listItems: async () => items,
 			listSuggestions: async () => [{ id: 's1', botId: 'release', title: 'PR #1108 のレビューの指摘 2 件に返事が無い', request: '#1108 の指摘を読んで、直すか理由を返すか決めて', run: 'r', state: 'open', createdAt: 1 }],
 			startSuggestion: async (id: string) => { calls.push(`start ${id}`); return { ok: true, value: { id, botId: 'release', title: 't', request: '#1108 の指摘を読んで、直すか理由を返すか決めて', run: 'r', state: 'started', createdAt: 1 } }; },
+			markSuggestionStarted: async (id: string) => { calls.push(`started ${id}`); return { ok: true, value: { id, botId: 'release', title: 't', request: 'r', run: 'r', state: 'started', createdAt: 1 } }; },
 			dismissSuggestion: async (id: string) => { calls.push(`dismiss ${id}`); return { ok: true, value: {} }; },
-			undoMemoryTidy: async () => { calls.push('undo'); return { ok: true, value: { restored: ['MEMORY.md'], added: [], takenAt: 1 } }; },
+			undoMemoryTidy: async () => { calls.push('undo'); return { ok: true, value: { restored: ['MEMORY.md'], added: [], takenAt: 1, skipped: ['SOUL.md'] } }; },
 			ownerSetStatus: async (uid: string, to: string) => { statuses.push(`${uid}:${to}`); return { ok: true, value: items[0] }; },
 			readHomeFile: async (_bot: string, path: string) => ({ ok: true, value: files.get(path) }),
 			writeHomeFile: async (_bot: string, path: string, text: string) => { calls.push(`write ${path}: ${text}`); files.set(path, text); return { ok: true, value: undefined }; },
@@ -97,10 +99,25 @@ suite('Paradis bots page overlay', () => {
 		instantiation.stub(IContextViewService, {});
 		let draftTaken = false;
 		instantiation.stub(IParadisAgentChatService, { insertDraft: (id: number, text: string) => { calls.push(`draft ${id} ${text}`); return draftTaken ? 'inserted' : false; } } as unknown as IParadisAgentChatService);
-		instantiation.stub(ITerminalService, { getInstanceFromId: (id: number) => id === 1 ? { isDisposed: false, sendText: async (text: string, execute: boolean, paste: boolean) => { calls.push(`send ${text} ${execute} ${paste}`); } } : undefined } as unknown as ITerminalService);
+		instantiation.stub(ITerminalService, {
+			getInstanceFromId: (id: number) => id === 1 ? {
+				isDisposed: false, sendText: async (text: string, execute: boolean, paste: boolean) => {
+					calls.push(`send ${text} ${execute} ${paste}`);
+					if (sendFails.value) {
+						throw new Error('the terminal is gone');
+					}
+				}
+			} : undefined
+		} as unknown as ITerminalService);
 		instantiation.stub(IContextMenuService, {});
 		instantiation.stub(IOpenerService, {});
-		instantiation.stub(INotificationService, new TestNotificationService());
+		const warnings: string[] = [];
+		instantiation.stub(INotificationService, new class extends TestNotificationService {
+			override warn(message: NotificationMessage): INotificationHandle {
+				warnings.push(String(message));
+				return super.warn(message);
+			}
+		}());
 		instantiation.stub(IHoverService, NullHoverService);
 		// ペイン 1 だけが Bot のペイン。`ended` でペインが終わったことにする
 		const changed = disposables.add(new Emitter<void>());
@@ -108,7 +125,7 @@ suite('Paradis bots page overlay', () => {
 		const resolver: IParadisBotPaneResolver = { onDidChange: changed.event, botFor: async instanceId => panes.get(instanceId) };
 		const container = document.createElement('div');
 		const page = disposables.add(instantiation.createInstance(ParadisBotPage, container, resolver, measureClamp));
-		return { container, page, configuration, panes, changed, answered, disposables, failAnswer, calls, confirms, files, bots, botsChanged, statuses, chatShown: () => { draftTaken = true; } };
+		return { container, page, configuration, panes, changed, answered, disposables, sendFails, warnings, failAnswer, calls, confirms, files, bots, botsChanged, statuses, chatShown: () => { draftTaken = true; } };
 	}
 
 	const settle = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -274,7 +291,7 @@ suite('Paradis bots page overlay', () => {
 		assert.deepStrictEqual([calls, files.get('MEMORY.md')], [[], '# Memory\n- Bot が足した行\n']);
 	});
 
-	test('提案: 「始める」はチャット表示の入力欄へ下書きを入れ（無ければターミナルへ貼り付け）、会話へ戻す。「見送る」は台帳へ知らせる', async () => {
+	test('提案: 「始める」は文を取り、チャット表示の入力欄へ下書きを入れ（無ければターミナルへ貼り付け）、入れられたら「始めた」にして会話へ戻す。「見送る」は台帳へ知らせる', async () => {
 		const { container, page, calls, chatShown } = setup();
 		page.setInstance(1);
 		await settle();
@@ -295,13 +312,13 @@ suite('Paradis bots page overlay', () => {
 		const selected = Array.from(container.getElementsByClassName('paradis-bot-page-tab')).map(element => element.getAttribute('aria-selected'));
 		assert.deepStrictEqual([titles, calls, selected], [
 			['PR #1108 のレビューの指摘 2 件に返事が無い'],
-			['dismiss s1', 'start s1', 'draft 1 #1108 の指摘を読んで、直すか理由を返すか決めて', 'send #1108 の指摘を読んで、直すか理由を返すか決めて false true', 'start s1', 'draft 1 #1108 の指摘を読んで、直すか理由を返すか決めて'],
+			['dismiss s1', 'start s1', 'draft 1 #1108 の指摘を読んで、直すか理由を返すか決めて', 'send #1108 の指摘を読んで、直すか理由を返すか決めて false true', 'started s1', 'start s1', 'draft 1 #1108 の指摘を読んで、直すか理由を返すか決めて', 'started s1'],
 			['true', 'false', 'false', 'false'],
 		]);
 	});
 
-	test('ファイル: 記憶の整理を確かめてから取り消す', async () => {
-		const { container, page, calls, confirms } = setup();
+	test('ファイル: 記憶の整理を確かめてから取り消し、書き戻せなかったファイルを知らせる', async () => {
+		const { container, page, calls, confirms, warnings } = setup();
 		page.setInstance(1);
 		await settle();
 		tab(container, 2);
@@ -312,7 +329,7 @@ suite('Paradis bots page overlay', () => {
 		(container.querySelector('.paradis-bot-settings-foot .paradis-button-secondary') as HTMLElement).click();
 		await settle();
 		await settle();
-		assert.deepStrictEqual([calls, confirms.map(confirmation => [confirmation.primaryButton, confirmation.destructive])], [['undo'], [['取り消す', true]]]);
+		assert.deepStrictEqual([calls, confirms.map(confirmation => [confirmation.primaryButton, confirmation.destructive]), warnings], [['undo'], [['取り消す', true]], ['取り消せなかったファイルがあります（記憶のファイルではないので書き戻していません）: SOUL.md']]);
 	});
 
 	test('書きかけのコメントは、別の Bot が変わっても値とフォーカスが残る（中身の変わらない描き直しはしない）', async () => {
@@ -438,4 +455,92 @@ suite('Paradis bots page overlay', () => {
 			enabled: [true, true, true],
 		});
 	}));
+
+	test('ファイル: 開いた後に Bot が書き足したら、差分を見せて「読み直す」「上書きする」を選ばせ、タブを開き直したときも読み直す', async () => {
+		const { container, page, calls, files } = setup();
+		page.setInstance(1);
+		await settle();
+		const openMemory = async () => {
+			tab(container, 2);
+			await settle();
+			(container.getElementsByClassName('paradis-bot-page-row')[1] as HTMLElement).click();
+			await settle();
+			await settle();
+		};
+		const editor = () => container.querySelector('.paradis-bot-files-editor textarea') as HTMLTextAreaElement;
+		const type = (value: string) => {
+			editor().value = value;
+			editor().dispatchEvent(new mainWindow.Event('input'));
+		};
+		const button = (label: string) => Array.from(container.querySelectorAll<HTMLElement>('.paradis-bot-files-conflict .paradis-button')).find(element => element.textContent === label)!;
+		const diff = () => Array.from(container.getElementsByClassName('paradis-bot-files-diff-line')).map(line => line.textContent);
+		await openMemory();
+		// 書きかけの無いまま Bot が書き足し、タブを開き直した: 新しい中身になる
+		files.set('MEMORY.md', '# Memory\n- 一つ目\n');
+		tab(container, 3);
+		await settle();
+		await openMemory();
+		const refreshed = editor().value;
+		// 書きかけの間に Bot が書き足した: 保存は書かずに差分を出す
+		type('# Memory\n- 一つ目\n- 自分の編集\n');
+		files.set('MEMORY.md', '# Memory\n- 一つ目\n- Bot が足した行\n');
+		primary(container).click();
+		await settle();
+		await settle();
+		const shown = diff();
+		button('読み直す（書きかけを捨てる）').click();
+		await settle();
+		const reloaded = editor().value;
+		// もう一度書きかけ、タブを開き直したら差分を出し、上書きを選ぶと書く
+		type('# Memory\n- 上書きする\n');
+		files.set('MEMORY.md', '# Memory\n- また Bot\n');
+		tab(container, 3);
+		await settle();
+		await openMemory();
+		const again = diff();
+		button('上書きする').click();
+		await settle();
+		await settle();
+		assert.deepStrictEqual({ refreshed, shown, reloaded, again, calls, conflicts: container.getElementsByClassName('paradis-bot-files-conflict').length }, {
+			refreshed: '# Memory\n- 一つ目\n',
+			shown: ['+ - Bot が足した行'],
+			reloaded: '# Memory\n- 一つ目\n- Bot が足した行\n',
+			again: ['- - 一つ目', '- - Bot が足した行', '+ - また Bot'],
+			calls: ['write MEMORY.md: # Memory\n- 上書きする\n'],
+			conflicts: 0,
+		});
+	});
+
+	test('設定: 役割が上限を超えたら黙って切り詰めず、保存を断って何文字多いかを出す', async () => {
+		const { container, page } = setup();
+		page.setInstance(1);
+		await settle();
+		tab(container, 3);
+		await settle();
+		await settle();
+		const role = container.querySelector('.paradis-bot-settings-role textarea') as HTMLTextAreaElement;
+		role.value = 'x'.repeat(4005);
+		role.dispatchEvent(new mainWindow.Event('input'));
+		const errors = Array.from(container.getElementsByClassName('paradis-bot-settings-error')).map(error => error.textContent).filter(text => !!text);
+		assert.deepStrictEqual({ errors, saveEnabled: !primary(container).classList.contains('disabled') && primary(container).getAttribute('aria-disabled') !== 'true' }, {
+			errors: ['役割が 5 文字多すぎます（4000 文字まで）。'],
+			saveEnabled: false,
+		});
+	});
+
+	test('提案: 入力欄にもターミナルにも入れられなければ「始めた」にせず、一覧に残すと知らせる', async () => {
+		const { container, page, calls, sendFails, warnings } = setup();
+		sendFails.value = true;
+		page.setInstance(1);
+		await settle();
+		tab(container, 1);
+		await settle();
+		(container.querySelector('.paradis-bot-page-suggestion .paradis-button-primary') as HTMLElement).click();
+		await settle();
+		await settle();
+		assert.deepStrictEqual({ started: calls.filter(call => call.startsWith('started')), warnings }, {
+			started: [],
+			warnings: ['提案の依頼を会話の入力欄へ入れられませんでした。提案は一覧に残しています。'],
+		});
+	});
 });
