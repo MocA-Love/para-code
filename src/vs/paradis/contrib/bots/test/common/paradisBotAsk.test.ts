@@ -7,11 +7,14 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { decodeBase64 } from '../../../../../base/common/buffer.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { GeneralShellType, PosixShellType, WindowsShellType } from '../../../../../platform/terminal/common/terminal.js';
+import { paradisBuildAgentCommand } from '../../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { paradisSanitizeHumanAskInput } from '../../../humanAsk/common/paradisHumanAsk.js';
 import { paradisBotAnswerComment, paradisBotAskId, paradisBotAskInput, paradisBotAskTip, paradisBotItemMailText, paradisParseBotAskId } from '../../common/paradisBotAsk.js';
 import { EMPTY_PARADIS_BOT_ITEMS_STATE, IParadisBotItem, IParadisBotItemAsk, IParadisBotItemChanges, paradisBotItemAdd, paradisBotItemUpdate } from '../../common/paradisBotItems.js';
-import { paradisBotItemLinkOf, paradisBotItemListRow, paradisBotItemView, paradisParseBotItemAddArgs, paradisParseBotItemListArgs, paradisParseBotItemShowArgs, paradisParseBotItemUpdateArgs } from '../../common/paradisBotTools.js';
+import { paradisBotItemLinkOf, paradisBotPatrolCodexDisabledServers, paradisBotPatrolLaunchArgs, paradisBotPatrolTemplateRefusal, paradisCodexMcpServersOf, paradisBotItemListRow, paradisBotItemView, paradisParseBotItemAddArgs, paradisParseBotItemListArgs, paradisParseBotItemShowArgs, paradisParseBotItemUpdateArgs } from '../../common/paradisBotTools.js';
 
 const ASK: IParadisBotItemAsk = {
 	eventId: 2,
@@ -206,5 +209,113 @@ suite('Paradis bot ask', () => {
 			},
 		]);		// 台帳が新しい版で書けないときは、印を外せないので未配達を出さない
 		assert.deepStrictEqual([(paradisBotItemListRow(item, false) as { owner_updates?: number }).owner_updates, (paradisBotItemView(item, 1, false) as { owner_updates: unknown[] }).owner_updates], [undefined, []]);
+	});
+
+	test('見回りの起動の引数: 書く道具は確認を出さずに断る形。MCP は para-browser だけで、読む道具と見回りの Bot の道具だけを許す', () => {
+		const read = new Set(['get_text', 'take_snapshot']);
+		assert.deepStrictEqual([
+			paradisBotPatrolLaunchArgs({ agent: 'claude', runFolder: '/data/runs/r1', homeFolder: '/home/bot', instructionsFile: '/data/runs/r1/AGENTS.md', settingsFile: '/data/patrol/b1.claude-settings.json', mcpConfigFile: '/data/patrol/b1.claude-mcp.json' }, read),
+			paradisBotPatrolLaunchArgs({ agent: 'codex', runFolder: '/data/runs/r1', disabledServers: [{ name: 'slack', transport: 'url' }, { name: 'aivis', transport: 'command' }] }, read),
+		], [
+			['--permission-mode', 'dontAsk', '--settings=/data/patrol/b1.claude-settings.json', '--setting-sources=user', '--add-dir=/home/bot', '--append-system-prompt-file=/data/runs/r1/AGENTS.md', '--strict-mcp-config', '--mcp-config=/data/patrol/b1.claude-mcp.json', '--tools=Read,Grep,Glob', '--allowedTools=mcp__para-browser__bot_item_list,mcp__para-browser__bot_item_show,mcp__para-browser__bot_suggest,mcp__para-browser__get_text,mcp__para-browser__take_snapshot'],
+			['-s', 'read-only', '-a', 'never', '-c', 'features.plugins=false', '-c', 'features.apps=false',
+				'-c', 'mcp_servers.slack={url=\'http://127.0.0.1:9/\',enabled=false}',
+				'-c', 'mcp_servers.aivis={command=\'false\',enabled=false}',
+				'-c', 'mcp_servers.para-browser.enabled_tools=[\'bot_item_list\',\'bot_item_show\',\'bot_suggest\',\'get_text\',\'take_snapshot\']',
+				'-c', 'mcp_servers.para-browser.tools.bot_item_list.approval_mode=approve', '-c', 'mcp_servers.para-browser.tools.bot_item_show.approval_mode=approve', '-c', 'mcp_servers.para-browser.tools.bot_suggest.approval_mode=approve'],
+		]);
+	});
+
+	test('見回りで止める Codex の MCP サーバー: 全部のホームを合わせ、確かに読めないときは起動しない側へ倒す', () => {
+		const home1 = [
+			'model = "gpt"',
+			'[mcp_servers.aivis]',
+			'command = "npx"',
+			'[mcp_servers.aivis.env]',
+			'url = "not the transport"',
+			'[mcp_servers."slack"]',
+			'url = "https://example.invalid/mcp" # comment',
+			'[mcp_servers.para-browser]',
+			'url = "http://127.0.0.1:1/"',
+			'[mcp_servers.para-browser.tools.get_text]',
+			'approval_mode = "approve"',
+		].join('\n');
+		const home2 = '[mcp_servers.obsidian]\nurl = "http://x/"\n[mcp_servers.aivis]\ncommand = "node"\n';
+		assert.deepStrictEqual({
+			merged: paradisBotPatrolCodexDisabledServers([home1, home2]),
+			empty: paradisBotPatrolCodexDisabledServers([]),
+			dotted: paradisCodexMcpServersOf('mcp_servers.x.command = "a"\n'),
+			inline: paradisCodexMcpServersOf('[mcp_servers]\nx = { command = "a" }\n'),
+			arrayTable: paradisCodexMcpServersOf('[[mcp_servers.x]]\ncommand = "a"\n'),
+			quotedName: paradisCodexMcpServersOf('[mcp_servers."a.b"]\ncommand = "a"\n'),
+			noTransport: paradisCodexMcpServersOf('[mcp_servers.x]\nenabled = false\n'),
+			both: paradisCodexMcpServersOf('[mcp_servers.x]\ncommand = "a"\nurl = "b"\n'),
+			profile: paradisCodexMcpServersOf('[profiles.work.mcp_servers.x]\ncommand = "a"\n'),
+			mixed: paradisBotPatrolCodexDisabledServers(['[mcp_servers.x]\ncommand = "a"\n', '[mcp_servers.x]\nurl = "b"\n']),
+			oldParaBrowser: paradisBotPatrolCodexDisabledServers(['[mcp_servers.para-browser]\ncommand = "node"\n', '[mcp_servers.para-browser]\nurl = "b"\n']),
+		}, {
+			merged: [{ name: 'aivis', transport: 'command' }, { name: 'slack', transport: 'url' }, { name: 'obsidian', transport: 'url' }],
+			empty: [],
+			dotted: undefined,
+			inline: undefined,
+			arrayTable: undefined,
+			quotedName: undefined,
+			noTransport: undefined,
+			both: undefined,
+			profile: undefined,
+			mixed: undefined,
+			oldParaBrowser: [],
+		});
+	});
+
+	test('見回りは、制限を書き換えうる引数を書いた雛形では起動しない', () => {
+		assert.deepStrictEqual([
+			paradisBotPatrolTemplateRefusal('claude', 'claude {model} {effort} {permission} {prompt}'),
+			paradisBotPatrolTemplateRefusal('claude', 'claude --dangerously-skip-permissions {prompt}'),
+			paradisBotPatrolTemplateRefusal('claude', 'claude {prompt} --permission-mode=bypassPermissions'),
+			paradisBotPatrolTemplateRefusal('claude', 'claude --settings \'{"a":1}\' {prompt}'),
+			paradisBotPatrolTemplateRefusal('codex', 'codex {model} {effort} {prompt}'),
+			paradisBotPatrolTemplateRefusal('codex', 'codex --dangerously-bypass-approvals-and-sandbox {prompt}'),
+			paradisBotPatrolTemplateRefusal('codex', 'codex -p work {prompt}'),
+			paradisBotPatrolTemplateRefusal('codex', 'codex {prompt} -c mcp_servers.slack.enabled=true'),
+			paradisBotPatrolTemplateRefusal('codex', 'codex {prompt}', '--model gpt', '-c model_reasoning_effort=high'),
+			paradisBotPatrolTemplateRefusal('codex', 'codex {prompt}', '--model gpt -c features.apps=true'),
+			paradisBotPatrolTemplateRefusal('codex', 'codex {prompt}', '', '-c model_reasoning_effort=high -c features.plugins=true'),
+		], [undefined, '--dangerously-skip-permissions', '--permission-mode', '--settings', undefined, '--dangerously-bypass-approvals-and-sandbox', '-p', '-c', undefined, '-c', '-c']);
+	});
+
+	test('見回りの引数をシェルの 1 行にした形: 空白のあるパスは 1 つの引数、TOML の文字列は単一引用符のまま（二重引用符を使わない）', () => {
+		const claude = { id: 'claude', label: 'Claude Code', command: 'claude {prompt}' };
+		const codex = { id: 'codex', label: 'Codex', command: 'codex {prompt}' };
+		const read = new Set(['get_text']);
+		const claudeArgs = paradisBotPatrolLaunchArgs({ agent: 'claude', runFolder: '/Users/a b/r', homeFolder: '/Users/a b/.para-code/bots/bot', instructionsFile: '/Users/a b/r/AGENTS.md', settingsFile: '/Users/a b/Library/Application Support/s.json', mcpConfigFile: '/Users/a b/m.json' }, read);
+		const codexArgs = paradisBotPatrolLaunchArgs({ agent: 'codex', runFolder: '/r', disabledServers: [{ name: 'slack', transport: 'url' }] }, read);
+		const powerShellScript = (command: string) => {
+			const bytes = decodeBase64(/-EncodedCommand (?<script>[A-Za-z0-9+/=]+)$/.exec(command)?.groups?.script ?? '').buffer;
+			let script = '';
+			for (let index = 0; index + 1 < bytes.length; index += 2) {
+				script += String.fromCharCode(bytes[index] | (bytes[index + 1] << 8));
+			}
+			return script.slice(script.indexOf('; ') + 2);
+		};
+		const codexTail = '-c features.plugins=false -c features.apps=false';
+		assert.deepStrictEqual({
+			claudeBash: paradisBuildAgentCommand(claude, 'look', PosixShellType.Bash, { extraFlags: claudeArgs }),
+			codexBash: paradisBuildAgentCommand(codex, 'look', PosixShellType.Bash, { extraFlags: codexArgs }),
+			codexFish: paradisBuildAgentCommand(codex, 'look', PosixShellType.Fish, { extraFlags: codexArgs }),
+			codexPowerShell: paradisBuildAgentCommand(codex, 'look', GeneralShellType.PowerShell, { extraFlags: codexArgs }),
+			codexCmd: powerShellScript(paradisBuildAgentCommand(codex, 'look', WindowsShellType.CommandPrompt, { extraFlags: codexArgs })),
+			claudePowerShell: paradisBuildAgentCommand(claude, 'look', GeneralShellType.PowerShell, { extraFlags: ['--settings=C:\\Users\\o\'k\\s.json'] }),
+		}, {
+			claudeBash: 'claude \'--permission-mode\' \'dontAsk\' \'--settings=/Users/a b/Library/Application Support/s.json\' \'--setting-sources=user\' \'--add-dir=/Users/a b/.para-code/bots/bot\' \'--append-system-prompt-file=/Users/a b/r/AGENTS.md\' \'--strict-mcp-config\' \'--mcp-config=/Users/a b/m.json\' \'--tools=Read,Grep,Glob\' \'--allowedTools=mcp__para-browser__bot_item_list,mcp__para-browser__bot_item_show,mcp__para-browser__bot_suggest,mcp__para-browser__get_text\' \' look\'',
+			codexBash: `codex '-s' 'read-only' '-a' 'never' '-c' 'features.plugins=false' '-c' 'features.apps=false' '-c' 'mcp_servers.slack={url='\\''http://127.0.0.1:9/'\\'',enabled=false}' '-c' 'mcp_servers.para-browser.enabled_tools=['\\''bot_item_list'\\'','\\''bot_item_show'\\'','\\''bot_suggest'\\'','\\''get_text'\\'']' '-c' 'mcp_servers.para-browser.tools.bot_item_list.approval_mode=approve' '-c' 'mcp_servers.para-browser.tools.bot_item_show.approval_mode=approve' '-c' 'mcp_servers.para-browser.tools.bot_suggest.approval_mode=approve' ' look'`,
+			codexFish: `codex '-s' 'read-only' '-a' 'never' '-c' 'features.plugins=false' '-c' 'features.apps=false' '-c' 'mcp_servers.slack={url=\\'http://127.0.0.1:9/\\',enabled=false}' '-c' 'mcp_servers.para-browser.enabled_tools=[\\'bot_item_list\\',\\'bot_item_show\\',\\'bot_suggest\\',\\'get_text\\']' '-c' 'mcp_servers.para-browser.tools.bot_item_list.approval_mode=approve' '-c' 'mcp_servers.para-browser.tools.bot_item_show.approval_mode=approve' '-c' 'mcp_servers.para-browser.tools.bot_suggest.approval_mode=approve' ' look'`,
+			codexPowerShell: `codex '-s' 'read-only' '-a' 'never' '-c' 'features.plugins=false' '-c' 'features.apps=false' '-c' 'mcp_servers.slack={url=''http://127.0.0.1:9/'',enabled=false}' '-c' 'mcp_servers.para-browser.enabled_tools=[''bot_item_list'',''bot_item_show'',''bot_suggest'',''get_text'']' '-c' 'mcp_servers.para-browser.tools.bot_item_list.approval_mode=approve' '-c' 'mcp_servers.para-browser.tools.bot_item_show.approval_mode=approve' '-c' 'mcp_servers.para-browser.tools.bot_suggest.approval_mode=approve' ' look'`,
+			codexCmd: `codex '-s' 'read-only' '-a' 'never' '-c' 'features.plugins=false' '-c' 'features.apps=false' '-c' 'mcp_servers.slack={url=''http://127.0.0.1:9/'',enabled=false}' '-c' 'mcp_servers.para-browser.enabled_tools=[''bot_item_list'',''bot_item_show'',''bot_suggest'',''get_text'']' '-c' 'mcp_servers.para-browser.tools.bot_item_list.approval_mode=approve' '-c' 'mcp_servers.para-browser.tools.bot_item_show.approval_mode=approve' '-c' 'mcp_servers.para-browser.tools.bot_suggest.approval_mode=approve' $paradisPrompt`,
+			claudePowerShell: 'claude \'--settings=C:\\Users\\o\'\'k\\s.json\' \' look\'',
+		});
+		// 引数の中に二重引用符が無い（PowerShell 5.1 が外部のコマンドへ渡すときに落とす文字）
+		assert.deepStrictEqual([...claudeArgs, ...codexArgs].filter(arg => arg.includes('"')), []);
+		assert.ok(codexArgs.join(' ').includes(codexTail));
 	});
 });
