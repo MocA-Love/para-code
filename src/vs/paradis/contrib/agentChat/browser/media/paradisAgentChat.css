@@ -141,12 +141,19 @@
 	margin-top: var(--vscode-spacing-size80);
 }
 
-/* Codex の非同期の質問のカード（呼び出しごとに 1 枚）と、その返信の発言 */
+/* Codex の非同期の質問のカード（呼び出しごとに 1 枚）と、その返信の発言。台帳（ボード・Bot）の問いのカードも同じ並べ方 */
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-ledger:not(:empty),
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-async:not(:empty) {
 	display: flex;
 	flex-direction: column;
 	gap: var(--vscode-spacing-size80);
 	margin-top: var(--vscode-spacing-size80);
+}
+
+/* 台帳の問いのカード: 中身は受信箱のカード（.pnip-ask。自分の余白を持つ）なので、会話のカードの枠の余白は詰め、文字の大きさを受信箱にそろえる。 */
+.monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-card.ledger {
+	padding: var(--vscode-spacing-size40);
+	font-size: var(--vscode-fontSize-label1);
 }
 
 .monaco-workbench .terminal-overflow-guard.terminal-editor .paradis-agent-chat-card.async .paradis-agent-chat-card-title > .paradis-agent-chat-question-header {

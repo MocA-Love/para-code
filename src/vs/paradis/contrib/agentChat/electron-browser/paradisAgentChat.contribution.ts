@@ -67,6 +67,7 @@ import type { ParadisAgentStatus } from '../../agentBrowser/common/paradisAgentB
 import { IParadisAgentStatusStore } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisAntigravityPaneStatus } from '../common/paradisAgentChatActionSupport.js';
 import { paradisLatestProgramStatus } from '../../agentBrowser/browser/paradisLatestProgramStatus.js';
+import { IParadisHumanAskService } from '../../humanAsk/common/paradisHumanAsk.js';
 import '../browser/media/paradisAgentChat.css';
 
 export const PARADIS_AGENT_CHAT_TOGGLE_COMMAND = 'paradis.agentChat.toggle';
@@ -197,6 +198,7 @@ class ParadisAgentChatController extends Disposable implements IParadisAgentChat
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@IEditorService private readonly editorService: IEditorService,
 		@IParadisAgentStatusStore private readonly agentStatusStore: IParadisAgentStatusStore,
+		@IParadisHumanAskService public readonly humanAsk: IParadisHumanAskService,
 		@IFileDialogService private readonly fileDialogService: IFileDialogService,
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 	) {
