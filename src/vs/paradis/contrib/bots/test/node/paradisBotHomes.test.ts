@@ -521,8 +521,8 @@ suite('Paradis bot homes', () => {
 			uuid: () => `id${++ids}`,
 			enabled: () => enabled,
 			memorySnapshots: new ParadisBotMemorySnapshots(join(userData, 'snapshots'), homes, () => clock),
-			// 見回りは読むだけの用意ができたものとして起動する
-			preparePatrol: async () => ({ agent: 'claude', runFolder: join(userData, 'run'), homeFolder: root, instructionsFile: join(userData, 'run', 'AGENTS.md'), settingsFile: join(userData, 's.json'), mcpConfigFile: join(userData, 'm.json') }),
+			// 見回りを起動できるようにする（見回りでは写しを取らないことを確かめる）
+			preparePatrol: async () => ({ agent: 'claude', runFolder: '/patrol/run', homeFolder: '/patrol/home', instructionsFile: '/patrol/run/AGENTS.md', settingsFile: '/patrol/settings.json', mcpConfigFile: '/patrol/mcp.json' }),
 		}));
 		const created = await service.createBot({ name: 'リリース係', agent: 'claude' });
 		assert.ok(created.ok);
