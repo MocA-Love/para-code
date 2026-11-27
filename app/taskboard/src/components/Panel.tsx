@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 're
 import type { ITaskBoardFlow, ITaskBoardTask } from '@engine/paradisTaskBoard.js';
 import { useTaskActions } from '../actions.js';
 import { useApp, type TabId } from '../context.js';
-import { ago, desiredStage, needs, stageMismatch, STATUS, stepName } from '../format.js';
+import { ago, botOriginLabel, desiredStage, needs, stageMismatch, STATUS, stepName } from '../format.js';
 import { cachedRpc } from '../api.js';
 import { useAsync, useNarrow, useNow, usePhone } from '../hooks.js';
 import { Icon, type IconName } from '../icons.js';
@@ -70,6 +70,12 @@ function Side({ task, flow }: { task: ITaskBoardTask; flow: ITaskBoardFlow }) {
 				<div className="side-h"><Icon name="person" size={13} />担当者</div>
 				{task.assignees.length ? task.assignees.map(a => <div key={a} className="side-row"><Avatar name={a} src={task.avatars?.[a]} />{a}</div>) : <span className="faint">なし</span>}
 			</div>
+			{task.origin && (
+				<div className="side-sec">
+					<div className="side-h"><Icon name="person" size={13} />出どころ</div>
+					<div className="side-origin">{botOriginLabel(task.origin)}</div>
+				</div>
+			)}
 			<div className="side-sec">
 				<div className="side-h"><Icon name="label" size={13} />ラベル</div>
 				<div className="chips" style={{ marginTop: 0 }}>{task.labels.length ? task.labels.map(l => <LabelChip key={l.name} label={l} />) : <span className="faint">なし</span>}</div>

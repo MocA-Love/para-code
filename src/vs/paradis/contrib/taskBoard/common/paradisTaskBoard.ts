@@ -234,6 +234,8 @@ export interface ITaskBoardTask {
 	 * Para Code の「タスク」の画面から載せた Issue。取り込み元の一覧（担当が自分の Issue など）に無くても、未着手のまま外さない。
 	 */
 	readonly picked?: boolean;
+	/** Para Code の Bot が載せたタスク（カードに札を出す）。Bot の機能だけが IPC で付ける。 */
+	readonly origin?: ITaskBoardTaskOrigin;
 	/** 軸の欄の、GitHub 側の今の値。 */
 	readonly projectStage?: string;
 	readonly assignees: readonly string[];
@@ -664,6 +666,68 @@ export class TaskBoardError extends Error {
 		this.code = code;
 		this.name = 'TaskBoardError';
 	}
+}
+
+/** Bot が載せたタスクの出どころ。どの Bot の、どの項目から来たか。 */
+export interface ITaskBoardTaskOrigin {
+	readonly kind: 'bot';
+	readonly botId: string;
+	readonly botName: string;
+	/** Bot の項目の番号（`#35`）。 */
+	readonly itemNumber: number;
+}
+
+/** Bot からボードへタスクを載せる要求（本体の shared process → main → ボードのサーバー、IPC）。 */
+export interface ITaskBoardAddTaskRequest {
+	readonly title: string;
+	readonly body?: string;
+	readonly origin: ITaskBoardTaskOrigin;
+}
+
+/**
+ * タスクを載せた結果。失敗: `not-running` はボードが動いていない、`remote` は SSH の窓のボードが動いている
+ * （Bot は手元のものなので載せない）、`failed` はそれ以外。
+ */
+export type TaskBoardAddTaskResult =
+	| { readonly ok: true; readonly taskId: string }
+	| { readonly ok: false; readonly reason: 'not-running' | 'remote' | 'failed'; readonly message?: string };
+
+export const TASK_BOARD_ADD_TASK_LIMITS = Object.freeze({ title: 300, body: 20_000, botName: 64 });
+
+/** 制御文字を空白にし、続く空白を 1 つにして、前後の空白を落とす。 */
+function oneLine(value: string): string {
+	return value.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/** 出どころを検めて揃える。形が違えば undefined（名前は 1 行にして、長ければ切る）。 */
+export function taskBoardSanitizeOrigin(value: unknown): ITaskBoardTaskOrigin | undefined {
+	if (!value || typeof value !== 'object') {
+		return undefined;
+	}
+	const { kind, botId, botName, itemNumber } = value as Record<string, unknown>;
+	if (kind !== 'bot' || typeof botId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(botId) || typeof botName !== 'string'
+		|| typeof itemNumber !== 'number' || !Number.isSafeInteger(itemNumber) || itemNumber <= 0) {
+		return undefined;
+	}
+	const name = oneLine(botName).slice(0, TASK_BOARD_ADD_TASK_LIMITS.botName);
+	return name.length > 0 ? { kind: 'bot', botId, botName: name, itemNumber } : undefined;
+}
+
+/** Bot からの「タスクを載せる」の値を検めて揃える。形が違う・題が空・長すぎるときは undefined（切らずに断る）。 */
+export function taskBoardSanitizeAddTask(value: unknown): ITaskBoardAddTaskRequest | undefined {
+	if (!value || typeof value !== 'object') {
+		return undefined;
+	}
+	const { title, body, origin } = value as Record<string, unknown>;
+	const sanitizedOrigin = taskBoardSanitizeOrigin(origin);
+	if (typeof title !== 'string' || sanitizedOrigin === undefined || (body !== undefined && typeof body !== 'string')) {
+		return undefined;
+	}
+	const line = oneLine(title);
+	if (line.length === 0 || line.length > TASK_BOARD_ADD_TASK_LIMITS.title || (body !== undefined && body.length > TASK_BOARD_ADD_TASK_LIMITS.body)) {
+		return undefined;
+	}
+	return { title: line, ...(body !== undefined && body.trim().length > 0 ? { body } : {}), origin: sanitizedOrigin };
 }
 
 /** Para Code の「タスク」の画面からボードへ Issue を載せる要求（本体 → ボードのサーバー、IPC）。 */

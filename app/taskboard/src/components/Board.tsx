@@ -4,7 +4,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { ITaskBoardFlow, ITaskBoardManualSession, ITaskBoardTask, TaskBoardStepKind } from '@engine/paradisTaskBoard.js';
 import { useTaskActions } from '../actions.js';
 import { useApp } from '../context.js';
-import { KIND, needs, stageMismatch, STATUS, taskActivity } from '../format.js';
+import { botOriginLabel, KIND, needs, stageMismatch, STATUS, taskActivity } from '../format.js';
 import { usePhone, useStored } from '../hooks.js';
 import { Icon } from '../icons.js';
 import { activateOnKey, AgentTag, DueChip, Elapsed, LabelChip, Menu, PrChip, Status, tone } from './atoms.js';
@@ -61,7 +61,10 @@ export const Card = memo(function Card({ task, flow, selected }: { task: ITaskBo
 		>
 			<div className="card-ref">
 				<Icon name={task.status === 'done' ? 'issueClosed' : 'issue'} size={13} />
-				<span className="ellipsis">{ref}</span>
+				{task.origin
+					// Bot の名前が長くても項目の番号は切らない（名前だけを省略し、全体はツールチップで読める）
+					? <><span className="ellipsis" title={botOriginLabel(task.origin)}>Bot: {task.origin.botName}</span><span className="nowrap">· 項目 #{task.origin.itemNumber}</span></>
+					: <span className="ellipsis">{ref}</span>}
 				<Menu label="タスクの操作" items={actions.menuItems(task)} trigger={(open, toggle) => (
 					<button className="btn ghost icon sm menu-btn" aria-label="タスクの操作" aria-expanded={open} onClick={e => { e.stopPropagation(); toggle(); }}><Icon name="dots" /></button>
 				)} />
