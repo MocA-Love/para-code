@@ -184,6 +184,7 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 	store.add(paradisRegisterMcpToolProvider(new ParadisBotManageToolProvider(service, {
 		actionsEnabled: () => paradisAgentIdeActionsAllowed(configurationService.getValue(PARADIS_AGENT_IDE_ALLOW_ACTIONS_SETTING)),
 		botsEnabled: enabled,
+		...(scheduledRuns !== undefined ? { scheduleTask: (botId: string, input: unknown) => scheduledRuns.setBotTask(botId, input, true) } : {}),
 	})));
 	// スマホへ送る Bot の一覧（PR 16、bots.page.v1）
 	store.add(new ParadisBotsMobileFeed(service, configurationService));

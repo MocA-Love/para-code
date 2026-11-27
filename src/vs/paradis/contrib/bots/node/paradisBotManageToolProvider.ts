@@ -11,6 +11,7 @@
 
 import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolProvider, paradisMcpToolError as toolError, paradisMcpToolJson as toolJson } from '../../agentBrowser/common/paradisMcpToolProvider.js';
 import { PARADIS_AGENT_IDE_ACTIONS_DISABLED_MESSAGE } from '../../agentIde/common/paradisAgentIde.js';
+import { isPlainRecord } from '../../../common/paradisGuards.js';
 import {
 	PARADIS_BOT_CREATE_TOOL,
 	PARADIS_BOT_LIST_TOOL,
@@ -23,6 +24,7 @@ import {
 	paradisBotChangeRequest,
 	paradisBotManageRow,
 	paradisBotUpdateNeedsConfirmation,
+	PARADIS_BOT_SCHEDULE_TASK_TOOL,
 	paradisParseBotCreateArgs,
 	paradisParseBotRefArgs,
 	paradisParseBotUpdateArgs,
@@ -87,6 +89,11 @@ export interface IParadisBotManageSettings {
 	actionsEnabled(): boolean;
 	/** Bot の機能（試験中）。オフのときは読む道具も断る。 */
 	botsEnabled(): boolean;
+	/**
+	 * Bot の定期実行を作る（定期実行のサービスの `setBotTask` をエージェントの印付きで呼ぶ。無効で作られ、利用者が有効にする）。
+	 * 無ければ schedule_bot_task は断る。
+	 */
+	scheduleTask?(botId: string, input: unknown): Promise<{ readonly ok: boolean; readonly error?: string; readonly definition?: { readonly id: string; readonly name: string } }>;
 }
 
 function failure(result: { readonly code: string; readonly message: string }): unknown {
@@ -154,6 +161,21 @@ export class ParadisBotManageToolProvider implements IParadisMcpToolProvider {
 				const created = await this.service.createBot(input, role);
 				// ピン留めは作成の欄に無いので、作った後に変える（画面の作成と同じく、既定は外したまま）
 				return this.bot(created.ok && pinned === true ? await this.service.updateBot(created.value.id, { pinned: true }) : created);
+			}
+			case PARADIS_BOT_SCHEDULE_TASK_TOOL: {
+				const input = isPlainRecord(args) ? args : {};
+				const botId = typeof input.bot === 'string' ? input.bot : '';
+				if (this.service.getBot(botId) === undefined) {
+					return toolError(UNKNOWN_BOT_MESSAGE);
+				}
+				if (this.settings.scheduleTask === undefined) {
+					return toolError('Scheduled tasks are not available in this Para Code.');
+				}
+				const tools = input.tools === undefined ? 'web' : input.tools;
+				const result = await this.settings.scheduleTask(botId, { name: typeof input.name === 'string' ? input.name : '', schedule: input.schedule, prompt: input.request, tools, enabled: false });
+				return result.ok && result.definition !== undefined
+					? toolJson({ bot: botId, task: result.definition.id, name: result.definition.name, enabled: false, note: 'Created turned off. Tell the user to read it and turn it on in the bot\'s settings tab.' })
+					: toolError(result.error ?? 'Para Code could not add the scheduled task.');
 			}
 			default:
 				break;

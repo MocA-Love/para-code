@@ -58,6 +58,9 @@ import { paradisLaunchBotTerminal } from '../../bots/electron-browser/paradisBot
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 
 /** このウィンドウで動かしている1回分。 */
+/** 制限した段の定期実行が終わってから、その会話のペインを閉じるまで（ベルの台帳へ記録する処理が終わる時間を見込む）。 */
+const PARADIS_BOT_TASK_CLOSE_DELAY_MS = 60_000;
+
 interface IActiveRun {
 	readonly runId: string;
 	readonly definition: IParadisScheduledRunDefinition;
@@ -87,6 +90,8 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 	static readonly ID = 'paradis.scheduledRunsRunner';
 
 	private readonly active = new Map<string, IActiveRun>();
+	/** 制限した段の定期実行の会話のペインを閉じる時計。 */
+	private readonly limitedTaskCloseTimers = new Set<ReturnType<typeof setTimeout>>();
 	/** claim を投げている最中の実行（同じ依頼が2回届いても1回しか試さない）。 */
 	private readonly claiming = new Set<string>();
 	private ready = false;
@@ -336,13 +341,20 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 		if (run.finished || !run.instance) {
 			return;
 		}
-		const instanceId = run.instance.instanceId;
+		const instance = run.instance;
+		const instanceId = instance.instanceId;
 		const step = paradisAdvanceRunWatch(run.watch, this.statusStore.getInstanceStatus(instanceId), this.statusStore.wasReviewAcknowledged?.(instanceId) === true);
 		const sawFirstStatus = !run.watch.sawStatus && step.state.sawStatus;
 		run.watch = step.state;
 		if (step.report === 'completed') {
 			// 完了してもターミナルは閉じない（結果を確かめられるよう残す）
 			this.finish(run, { runId: run.runId, status: 'completed', sawAgentStatus: true });
+			// Bot の定期実行を制限した段で起こした会話は、ベルに記録が残った後で閉じる（制限したまま利用者が話し続けないように。
+			// 結果は会話の記録に残り、次に開いたときに続きから読める）
+			const tools = run.definition.target.botTask?.tools;
+			if (tools === 'read' || tools === 'web') {
+				this.closeLimitedTaskPane(instance);
+			}
 		} else if (step.report !== undefined) {
 			this.report({ runId: run.runId, status: step.report, sawAgentStatus: true });
 		} else if (sawFirstStatus) {
@@ -378,6 +390,17 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 		const instance = run.instance;
 		this.finish(run, { runId, status: 'cancelled', reason });
 		this.killTerminal(instance);
+	}
+
+	/** 制限した段の定期実行の会話のペインを、ベルの記録が済む頃に閉じる。利用者が前で使っていれば閉じない。 */
+	private closeLimitedTaskPane(instance: ITerminalInstance): void {
+		const handle = setTimeout(() => {
+			this.limitedTaskCloseTimers.delete(handle);
+			if (!instance.isDisposed && !(this.terminalService.activeInstance === instance && instance.hasFocus)) {
+				this.killTerminal(instance);
+			}
+		}, PARADIS_BOT_TASK_CLOSE_DELAY_MS);
+		this.limitedTaskCloseTimers.add(handle);
 	}
 
 	private killTerminal(instance: ITerminalInstance | undefined): void {
@@ -444,6 +467,10 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 	}
 
 	override dispose(): void {
+		for (const handle of this.limitedTaskCloseTimers) {
+			clearTimeout(handle);
+		}
+		this.limitedTaskCloseTimers.clear();
 		for (const run of this.active.values()) {
 			run.store.dispose();
 		}

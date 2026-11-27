@@ -33,6 +33,7 @@ export const PARADIS_BOT_UPDATE_TOOL = 'update_bot';
 export const PARADIS_BOT_START_TOOL = 'start_bot';
 export const PARADIS_BOT_STOP_TOOL = 'stop_bot';
 export const PARADIS_BOT_REMOVE_TOOL = 'remove_bot';
+export const PARADIS_BOT_SCHEDULE_TASK_TOOL = 'schedule_bot_task';
 
 /** 役割（人格メモの種）の長さ。 */
 export const PARADIS_BOT_ROLE_LIMIT = 4000;
@@ -117,6 +118,23 @@ export const PARADIS_BOT_MANAGE_TOOLS: readonly IParadisMcpToolDefinition[] = [
 		description: `Ask the user to remove a bot. Para Code shows the user a confirmation dialog saying an agent asked for it, and removes the bot (its items too; its home folder stays) only if they agree, so this returns before anything is removed. Only one request can be pending at a time. ${ACTIONS_NOTE}`,
 		inputSchema: { type: 'object', properties: { bot: BOT_ARGUMENT }, required: ['bot'], additionalProperties: false },
 		annotations: DESTRUCTIVE,
+	},
+	{
+		name: PARADIS_BOT_SCHEDULE_TASK_TOOL,
+		description: `Add a scheduled task to a bot: at the times you give, Para Code continues the bot's conversation and sends it the request as one turn; the bot's reply stays in its conversation and the user is notified (bell). The task is created turned off: the user reads it and turns it on in the bot's settings tab, and confirms there if it uses the bot's own permissions. A run is skipped while the bot's conversation is open. ${ACTIONS_NOTE}`,
+		inputSchema: {
+			type: 'object',
+			properties: {
+				bot: BOT_ARGUMENT,
+				name: { type: 'string', maxLength: 80, description: 'Short name shown in the list and the notification.' },
+				schedule: { type: 'string', maxLength: 200, description: 'Five-field cron expression in local time, e.g. "30 0 * * *" for every day at 0:30. At least 60 minutes apart, at most 24 runs a day for all tasks of a bot.' },
+				request: { type: 'string', maxLength: 2000, description: 'What the bot should do each time, in the user\'s words.' },
+				tools: { type: 'string', enum: ['read', 'web', 'bot'], description: '"read": read files only. "web" (default): read files and read or search the web, no writing or commands. "bot": the bot\'s own permissions (the user confirms when turning it on).' },
+			},
+			required: ['bot', 'schedule', 'request'],
+			additionalProperties: false,
+		},
+		annotations: WRITE,
 	},
 ];
 
