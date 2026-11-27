@@ -59,7 +59,7 @@ suite('Paradis bot groups service', () => {
 		}, { created: 'g1', recorded: 1, failed: 'storage', name: '班', groupsOfB: ['g1'], groupsOfZ: 0, writes: 2 });
 	});
 
-	test('伝言の道具の口: 記録の id を文字列で返し、その id で「届けられなかった」の印を付ける。印は読み直しても残る', async () => {
+	test('伝言の道具の口: 記録の id を文字列で返し、その id で届かなかった理由の印を付ける。印は読み直しても残る', async () => {
 		const file = new MemoryFile();
 		const groups = service(file);
 		await groups.createGroup({ name: '班', members: ['a', 'b'] });
@@ -72,8 +72,11 @@ suite('Paradis bot groups service', () => {
 		for (const [groupId, recordId] of [['g2', '2'], ['g1', '99'], ['g1', '2.0'], ['g1', '02'], ['g1', 'x'], ['g1', String(sent.ok && sent.value.id)]]) {
 			await port.markUndelivered!(groupId, recordId);
 		}
+		const asked = await port.appendRecord('g1', { kind: 'asked', from: 'b', to: 'a', text: 'どう?' });
 		const writesBefore = file.written.length;
-		await port.markUndelivered!('g1', told.recordId!);
+		await port.markUndelivered!('g1', told.recordId!, 'refused');
+		await port.markUndelivered!('g1', told.recordId!, 'unknown');
+		await port.markUndelivered!('g1', asked.recordId!, 'unknown');
 		const reread = paradisParseBotGroupsState(JSON.parse(JSON.stringify(file.written.at(-1))));
 		assert.deepStrictEqual({
 			told,
@@ -84,9 +87,9 @@ suite('Paradis bot groups service', () => {
 		}, {
 			told: { ok: true, recordId: '2' },
 			refused: false,
-			writes: 1,
-			records: [[1, 'sent', false], [2, 'told', true]],
-			reread: [[1, false], [2, true]],
+			writes: 2,
+			records: [[1, 'sent', false], [2, 'told', 'refused'], [3, 'asked', 'unknown']],
+			reread: [[1, false], [2, 'refused'], [3, 'unknown']],
 		});
 	});
 
