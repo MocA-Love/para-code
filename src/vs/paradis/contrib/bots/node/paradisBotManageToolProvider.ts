@@ -29,6 +29,8 @@ import {
 } from '../common/paradisBotManageTools.js';
 import { IParadisBot } from '../common/paradisBots.js';
 import { PARADIS_BOTS_ENABLED_SETTING, PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsServiceResult, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
+import { PARADIS_READ_ONLY_MCP_TOOL_NAMES } from '../../agentBrowser/common/paradisMcpReadOnlyTools.js';
+import { PARADIS_BOT_PATROL_TOOLS } from '../common/paradisBotTools.js';
 import { PARADIS_CREATE_SCHEDULED_RUN_TOOL } from '../../scheduledRuns/common/paradisScheduledRunTools.js';
 import { ParadisBotsService } from './paradisBotsService.js';
 
@@ -41,6 +43,25 @@ const IDE_ACTION_FROM_BOT_MESSAGE = 'This terminal is a Para Code bot. A bot can
 const SCHEDULE_FROM_BOT_MESSAGE = 'This terminal is a Para Code bot. A bot cannot create scheduled runs: the run would start later in a terminal that is not a bot and could change bots. Tell your owner what you would schedule.';
 const FROM_BOARD_TASK_MESSAGE = 'This terminal runs a task board task that a Para Code bot put on the board, so Para Code treats it like the bot: it cannot create, change, start, stop or remove bots. Tell the user what you would change.';
 const IDE_ACTION_FROM_BOARD_TASK_MESSAGE = 'This terminal runs a task board task that a Para Code bot put on the board, so Para Code treats it like the bot: it cannot start, open, type into or close other terminals, change spaces, or create scheduled runs. The reading tools still work. Tell the user what you would do.';
+
+const PATROL_WRITE_MESSAGE = 'This is a look-around, which only reads. Para Code refuses every tool that clicks, types, moves, writes, sends or starts something here, even if it is always allowed in your settings. Offer what you would do with bot_suggest.';
+
+/**
+ * Bot の見回りのペインからの para-browser の呼び出しを、読むだけの道具（`PARADIS_READ_ONLY_MCP_TOOL_NAMES`）と見回りの
+ * Bot の道具（`PARADIS_BOT_PATROL_TOOLS`。`bot_suggest` ほか）に限る（{@link paradisRegisterMcpCallRefusal} に渡す）。
+ * 見回りの起動の引数（`paradisBotPatrolLaunchArgs`）と同じ一覧で、利用者がエージェントの側で常に許可した書く道具も
+ * サーバーの側で断る（見回りは誰も見ていない時間に外の文を読むので、読んだ文に誘導されて書かないように）。
+ */
+export function paradisBotPatrolToolRefusal(service: Pick<ParadisBotsService, 'ready' | 'botOfPane' | 'purposeOfPane'>): (paneToken: string, toolName: string) => Promise<string | undefined> {
+	return async (paneToken, toolName) => {
+		if (PARADIS_READ_ONLY_MCP_TOOL_NAMES.has(toolName) || PARADIS_BOT_PATROL_TOOLS.has(toolName)) {
+			return undefined;
+		}
+		await service.ready;
+		// 起動し直した後に初めて現れたペインの結び付けを戻してから、用途を引く
+		return service.botOfPane(paneToken) !== undefined && service.purposeOfPane(paneToken) === 'patrol' ? PATROL_WRITE_MESSAGE : undefined;
+	};
+}
 
 /**
  * IDE の操作の道具（launch_agent・create_terminal・send_terminal_input ほか）と、後で別のペインを起こす道具
