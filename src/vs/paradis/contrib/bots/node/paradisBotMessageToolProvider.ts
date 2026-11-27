@@ -18,7 +18,9 @@ import { IParadisMcpToolCallContext, IParadisMcpToolDefinition, IParadisMcpToolP
 import {
 	IParadisBotGroupsPort,
 	ParadisBotMessageRateLimiter,
+	ParadisBotGroupDeliverResult,
 	ParadisBotMessageUndeliveredReason,
+	paradisBotGroupDeliverResultOf,
 	PARADIS_BOT_ASK_TOOL,
 	PARADIS_BOT_GROUPS_WINDOW_CHANNEL,
 	PARADIS_BOT_MESSAGE_TOOL_NAMES,
@@ -141,7 +143,7 @@ export class ParadisBotMessageToolProvider implements IParadisMcpToolProvider {
 		// そのウィンドウが閉じた・読み込み直し中ならつながっていないので、記録も回数も使わずに断る
 		const recipientPane = this.service.chatPaneTokensOf(recipient.id).find(token => context.paneWindowReachable?.(token) === true);
 		if (recipientPane === undefined || context.callPaneWindow === undefined) {
-			return toolError(`"${recipient.name}" is not open in a Para Code window now, so Para Code did not send the message. Try again later, or tell your owner.`);
+			return toolError(`"${recipient.name}" is not open in a Para Code window now (or has not started since Para Code restarted), so Para Code did not send the message. Try again later, or tell your owner.`);
 		}
 		// 回数の上限（送り手ごと・送り手と宛先の組ごと。Codex では前もって許可されるので、往復を道具の側で止める）
 		const limited = this.limiter.take(bot.id, recipient.id, this.now());
@@ -154,15 +156,16 @@ export class ParadisBotMessageToolProvider implements IParadisMcpToolProvider {
 			return toolError(recorded.message ?? 'Para Code could not record this message in the group.');
 		}
 		const unreachable = `Para Code could not reach "${recipient.name}" (its window closed or is reloading), so the message was not delivered and does not count toward your limit. Try again later, or tell your owner.`;
-		const unknown = `Para Code could not tell whether the message reached "${recipient.name}". Do not send it again; tell your owner if it matters.`;
+		const unknown = (reason?: string) => `Para Code could not tell whether the message reached "${recipient.name}"${reason !== undefined ? ` (${reason.slice(0, 300)})` : ''}. Do not send the same message again (it may already be in its input); if it matters, ask it whether it got it, or tell your owner.`;
+		const timedOut = unknown();
 		const mark = async (reason: ParadisBotMessageUndeliveredReason) => {
 			if (recorded.recordId !== undefined) {
 				await groups.markUndelivered?.(target.groupId, recorded.recordId, reason).catch(() => undefined);
 			}
 		};
-		let delivered: ParadisMcpOwningWindowResult<string | undefined>;
+		let delivered: ParadisMcpOwningWindowResult<ParadisBotGroupDeliverResult | undefined>;
 		try {
-			delivered = await context.callPaneWindow<string | undefined>(recipientPane, {
+			delivered = await context.callPaneWindow<ParadisBotGroupDeliverResult | undefined>(recipientPane, {
 				channelName: PARADIS_BOT_GROUPS_WINDOW_CHANNEL,
 				method: 'deliver',
 				// 宛先のウィンドウは送り手のペインを持たないので、生のトークンではなくハッシュを渡す
@@ -170,7 +173,7 @@ export class ParadisBotMessageToolProvider implements IParadisMcpToolProvider {
 				failureLabel: name,
 				failureMessage: unreachable,
 				// 時間切れは、宛先のウィンドウが届け続けているかもしれない（届いたか分からない）
-				timeoutMessage: unknown,
+				timeoutMessage: timedOut,
 			}, signal);
 		} catch (error) {
 			// 中断（MCP の取り消し・接続の入れ替わり）: 届いたか分からない
@@ -178,20 +181,31 @@ export class ParadisBotMessageToolProvider implements IParadisMcpToolProvider {
 			throw error;
 		}
 		if (!delivered.ok) {
-			if (delivered.error === unknown) {
+			if (delivered.error === timedOut) {
 				await mark('unknown');
-				return toolError(unknown);
+				return toolError(timedOut);
 			}
 			// 宛先のウィンドウにつながらず、何も渡らなかった: 回数を戻す
 			this.limiter.refund(bot.id, recipient.id);
 			await mark('unreachable');
 			return toolError(unreachable);
 		}
-		if (typeof delivered.value === 'string' && delivered.value.length > 0) {
-			// 宛先が受け取ってから断った（作業中など）: 回数は戻さない（断られ続けても上限で止まるように）。記録は印だけ直す
+		const result = paradisBotGroupDeliverResultOf(delivered.value);
+		if (result.kind === 'refused') {
+			// 宛先が受け取らなかった: 回数は戻さない（断られ続けても上限で止まるように）。記録は印だけ直す
 			await mark('refused');
-			return toolError(`"${recipient.name}" did not take the message now (${delivered.value.slice(0, 300)}). Send it again later if it still matters; each try counts toward your limit.`);
+			return toolError(`"${recipient.name}" did not take the message now (${result.reason.slice(0, 300)}). Send it again later if it still matters; each try counts toward your limit.`);
 		}
-		return toolJson({ to: recipient.name, sent: kind === 'asked' ? 'question' : 'message', ...(kind === 'asked' ? { note: `The answer comes back to this terminal as a message from "${recipient.name}".` } : {}) });
+		if (result.kind === 'unknown') {
+			// 貼り付けたが Enter を送れなかった等: 送り直すと宛先の入力に同じ文が重なるので、送り直させない
+			await mark('unknown');
+			return toolError(unknown(result.reason));
+		}
+		return toolJson({
+			to: recipient.name,
+			sent: kind === 'asked' ? 'question' : 'message',
+			...(result.kind === 'queued' ? { queued: `"${recipient.name}" is working, so it reads this at its next turn.` } : {}),
+			...(kind === 'asked' ? { note: `The answer comes back to this terminal as a message from "${recipient.name}".` } : {}),
+		});
 	}
 }
