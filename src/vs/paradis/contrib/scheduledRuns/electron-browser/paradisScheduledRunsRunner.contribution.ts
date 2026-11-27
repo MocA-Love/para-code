@@ -49,6 +49,11 @@ import {
 } from '../common/paradisScheduledRuns.js';
 import { IParadisRunWatchState, PARADIS_RUN_WATCH_INITIAL, paradisAdvanceRunWatch, paradisRunWatchTimeoutReason } from '../common/paradisScheduledRunWatch.js';
 import { IParadisScheduledRunsClient } from './paradisScheduledRunsClient.js';
+import { paradisBotPatrolPrompt } from '../common/paradisScheduledRunBotPatrol.js';
+import { IParadisBotsService } from '../../bots/common/paradisBotsApi.js';
+import { IParadisBotLaunchedTerminal } from '../../bots/common/paradisBotLaunchSteps.js';
+import { paradisLaunchBotTerminal } from '../../bots/electron-browser/paradisBotTerminalLaunch.js';
+import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 
 /** このウィンドウで動かしている1回分。 */
 interface IActiveRun {
@@ -96,6 +101,8 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 		@ILifecycleService lifecycleService: ILifecycleService,
 		@ILogService private readonly logService: ILogService,
 		@IWorkspaceTrustManagementService private readonly workspaceTrustManagementService: IWorkspaceTrustManagementService,
+		@IParadisBotsService private readonly botsService: IParadisBotsService,
+		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 	) {
 		super();
 		this._register(this.client.onDidRequestRun(request => this.onRequest(request)));
@@ -140,8 +147,14 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 		if (!this.ready || this.active.has(request.run.id) || this.claiming.has(request.run.id)) {
 			return;
 		}
-		// 対象のリポジトリを開いていないウィンドウは手を挙げない（開いている別のウィンドウに任せる）
-		if (!this.findRepository(request.definition)) {
+		if (request.definition.target.kind === 'bot') {
+			// Bot の専用フォルダはこの PC にあるので、SSH のウィンドウは手を挙げない。スペースを使っていないウィンドウも、
+			// 裏のタブで開けず利用者の入力を奪うので手を挙げない
+			if (this.environmentService.remoteAuthority !== undefined || this.switchService.activeStateKey === undefined) {
+				return;
+			}
+		} else if (!this.findRepository(request.definition)) {
+			// 対象のリポジトリを開いていないウィンドウは手を挙げない（開いている別のウィンドウに任せる）
 			return;
 		}
 		this.claiming.add(request.run.id);
@@ -171,6 +184,10 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 		// 起動に時間がかかっても、制限時間は起動を始めた時点から数える
 		run.store.add(disposableTimeout(() => this.onTimeout(run), PARADIS_SCHEDULED_RUN_TIMEOUT_MS));
 
+		if (definition.target.kind === 'bot') {
+			await this.executeBotPatrol(run, definition.target.botId ?? '', request.definition.prompt);
+			return;
+		}
 		const repository = this.findRepository(definition);
 		if (!repository) {
 			this.finish(run, { runId: run.runId, status: 'failed', reason: 'repositoryMissing' });
@@ -241,12 +258,17 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 			this.finish(run, { runId: run.runId, status: 'failed', reason: 'launchFailed', detail: toErrorMessage(error), space });
 			return;
 		}
+		this.watchLaunched(run, launched.instanceId, launched.paneToken, space);
+	}
+
+	/** 起動したターミナルを見張り始める（起動している間に止められていたら閉じる）。 */
+	private watchLaunched(run: IActiveRun, instanceId: number, paneToken: string | undefined, space?: IParadisScheduledRunSpace): void {
 		if (run.finished) {
 			// 起動している間に打ち切り・停止が決まった
-			this.killTerminal(this.findInstance(launched.instanceId));
+			this.killTerminal(this.findInstance(instanceId));
 			return;
 		}
-		run.instance = this.findInstance(launched.instanceId);
+		run.instance = this.findInstance(instanceId);
 		if (run.instance) {
 			const instance = run.instance;
 			run.store.add(instance.onDisposed(() => {
@@ -255,8 +277,43 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 				}
 			}));
 		}
-		this.report({ runId: run.runId, status: 'running', ...(launched.paneToken ? { paneToken: launched.paneToken } : {}), ...(space ? { space } : {}) });
+		this.report({ runId: run.runId, status: 'running', ...(paneToken ? { paneToken } : {}), ...(space ? { space } : {}) });
 		this.observe(run);
+	}
+
+	/**
+	 * Bot の見回りを起動する。エージェント・モデル・読むだけの引数は、定義ではなく今の Bot の台帳から取る
+	 * （`requestLaunch(botId, 'patrol')`。機能がオフ・一時停止ならここで断られる）。今のスペースの裏のタブで開く。
+	 */
+	private async executeBotPatrol(run: IActiveRun, botId: string, lookFor: string): Promise<void> {
+		let launched: IParadisBotLaunchedTerminal;
+		try {
+			const launch = await this.botsService.requestLaunch(botId, 'patrol');
+			if (!launch.ok) {
+				this.finish(run, { runId: run.runId, status: 'failed', reason: 'launchFailed', detail: launch.message });
+				return;
+			}
+			if (run.finished) {
+				await this.botsService.cancelLaunch(launch.value.launchId);
+				return;
+			}
+			const outcome = await this.instantiationService.invokeFunction(paradisLaunchBotTerminal, launch.value, {
+				stateKey: this.switchService.activeStateKey,
+				// 時刻で起動するので、利用者の入力を新しいターミナルへ横取りしない
+				background: true,
+				prompt: paradisBotPatrolPrompt(lookFor),
+			});
+			if (!outcome.ok) {
+				this.finish(run, { runId: run.runId, status: 'failed', reason: 'launchFailed', detail: outcome.reason });
+				return;
+			}
+			launched = outcome.terminal;
+		} catch (error) {
+			this.logService.error('[ParadisScheduledRuns] launching the bot look-around failed', error);
+			this.finish(run, { runId: run.runId, status: 'failed', reason: 'launchFailed', detail: toErrorMessage(error) });
+			return;
+		}
+		this.watchLaunched(run, launched.instanceId, launched.paneToken);
 	}
 
 	private findInstance(instanceId: number): ITerminalInstance | undefined {

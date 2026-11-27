@@ -20,7 +20,6 @@ import { getActiveWindow } from '../../../../base/browser/dom.js';
 import { Event } from '../../../../base/common/event.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
-import { URI } from '../../../../base/common/uri.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
@@ -31,47 +30,23 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { TerminalExitReason } from '../../../../platform/terminal/common/terminal.js';
 import { registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
-import { ITerminalGroupService, ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { ITerminalGroupService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
+import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisDialogService, paradisNotifyConfirmation } from '../../confirmDialog/browser/paradisDialogService.js';
-import { paradisCollectAllTerminalInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
-import { paradisLaunchAgentInWorkspace } from '../../workspaceSwitch/electron-browser/paradisWorktreeHeadlessCreate.js';
 import { paradisBotChangeDetail } from '../browser/paradisBotChangeDetail.js';
 import { paradisRevealNotifiedPane } from '../../notifications/electron-browser/paradisNotificationReveal.js';
-import { paradisBotInstancesInWindow, paradisFindBotPane } from '../browser/paradisBotPaneHash.js';
-import { paradisBotTabTitle, paradisRunBotLaunch } from '../common/paradisBotLaunchSteps.js';
+import { paradisBotInstancesInWindow, paradisBotPatrolInstancesInWindow, paradisFindBotPane } from '../browser/paradisBotPaneHash.js';
+import { paradisFindBotTerminalInstance, paradisLaunchBotTerminal, paradisNameBotTab } from './paradisBotTerminalLaunch.js';
 import { IParadisBotChangeRequest, paradisApplyBotChange } from '../common/paradisBotManageTools.js';
 import { IParadisBotRevealRequest, IParadisBotsService, IParadisBotStopRequest, PARADIS_BOTS_ENABLED_SETTING, PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
 
 export const PARADIS_BOTS_OPEN_COMMAND = 'paradis.bots.open';
 
-/**
- * タブ名の雛形を Bot の名前にする（固定の名前にするとエージェントのタイトルの購読が止まるため、雛形で付ける）。
- * terminalInstance.ts の PARA-PATCH でエージェントの CLI のタイトルが雛形より先に立つので、エージェントが動いている間は
- * エージェントの出すタイトルが、動いていない間（起動の直後・終わった後）は Bot の名前がタブに出る。
- */
-function paradisNameBotTab(instance: ITerminalInstance | undefined, name: string): void {
-	if (instance === undefined || instance.isDisposed) {
-		return;
-	}
-	const title = paradisBotTabTitle(name);
-	if (instance.shellLaunchConfig.titleTemplate === title) {
-		return;
-	}
-	instance.shellLaunchConfig.titleTemplate = title;
-	// 利用者が手で付けた名前（固定タイトル）があればそちらを残す。無ければラベルを計算し直させる
-	// （paradisPresetService.ts と同じやり方。rename(undefined) は固定タイトルが無い端末では再計算だけ）
-	if (!instance.staticTitle) {
-		void instance.rename(undefined);
-	}
-}
-
-function findInstance(terminalService: ITerminalService, terminalGroupService: ITerminalGroupService, instanceId: number): ITerminalInstance | undefined {
-	return paradisCollectAllTerminalInstances(terminalService, terminalGroupService).find(instance => instance.instanceId === instanceId);
-}
+const findInstance = paradisFindBotTerminalInstance;
 
 /** 起動の途中の Bot（同じ Bot を続けて押されても 2 つ起動しない）。 */
 const opening = new Set<string>();
@@ -95,7 +70,6 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 	const terminalScopeService = accessor.get(IParadisTerminalScopeService);
 	const hostService = accessor.get(IHostService);
 	const environmentService = accessor.get(IWorkbenchEnvironmentService);
-	const logService = accessor.get(ILogService);
 
 	if (opening.has(botId)) {
 		return { ok: false, error: 'Para Code is already starting this bot.' };
@@ -107,7 +81,7 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 			paneTokenService,
 			findInstance: instanceId => findInstance(terminalService, terminalGroupService, instanceId),
 			stateKeyOf: instanceId => terminalScopeService.getStateKeyForInstance(instanceId),
-		}, await botsService.paneHashesOf(botId));
+		}, await botsService.paneHashesOf(botId, 'chat'));
 		if (existing !== undefined) {
 			if (!fromAgent) {
 				// そのペインのスペースへ切り替えてから前に出す（通知のクリックと同じ動き）
@@ -134,31 +108,8 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 			return { ok: false, error: `${launch.message} (${launch.code})` };
 		}
 		const stateKey = switchService.activeStateKey;
-		// コマンドを送る前にペインを報告する（エージェントの MCP の接続より先に、Bot の道具が出るように）
-		const outcome = await paradisRunBotLaunch({
-			reportLaunch: (launchId, paneToken) => botsService.reportLaunch(launchId, paneToken),
-			cancelLaunch: launchId => botsService.cancelLaunch(launchId),
-			launchAgent: async beforeCommand => {
-				try {
-					return await instantiationService.invokeFunction(paradisLaunchAgentInWorkspace, {
-						rootUri: URI.file(launch.value.cwd),
-						stateKey,
-						agentId: launch.value.agent,
-						...(launch.value.modelId !== undefined ? { modelId: launch.value.modelId } : {}),
-						...(launch.value.effortId !== undefined ? { effortId: launch.value.effortId } : {}),
-						...(launch.value.permissionId !== undefined ? { permissionId: launch.value.permissionId } : {}),
-						...(launch.value.extraFlags !== undefined ? { extraFlags: launch.value.extraFlags } : {}),
-						// 裏のタブで開くにはスペースが要る（スペースを使っていないウィンドウでは、今のウィンドウに開く）
-						...(fromAgent && stateKey !== undefined ? { preserveFocus: true } : {}),
-						beforeCommand,
-					});
-				} catch (error) {
-					logService.error('[paradisBots] starting the bot terminal failed', error);
-					throw error;
-				}
-			},
-			nameTab: instanceId => paradisNameBotTab(findInstance(terminalService, terminalGroupService, instanceId), launch.value.name),
-		}, launch.value.launchId);
+		// 裏のタブで開くにはスペースが要る（スペースを使っていないウィンドウでは、今のウィンドウに開く）
+		const outcome = await instantiationService.invokeFunction(paradisLaunchBotTerminal, launch.value, { stateKey, background: fromAgent });
 		if (!outcome.ok) {
 			return { ok: false, error: outcome.reason === 'refused' ? 'Para Code could not connect the terminal to the bot. Try again.' : 'Para Code could not start the terminal for the bot.' };
 		}
@@ -314,12 +265,19 @@ class ParadisBotsWindowChannel implements IServerChannel {
 
 /**
  * 止める依頼を受けて、このウィンドウにあるその Bot のターミナルを閉じる。別のウィンドウから開こうとした Bot のペインを前に出す。
- * Bot のタブ名を合わせる。
+ * Bot のタブ名を合わせ、Para Code を閉じるときに見回りのペインを閉じる。
  */
 class ParadisBotsWindowWorker extends Disposable {
 
 	/** 前回タブ名を合わせたときの Bot の名前と様子（変わったときだけ合わせ直す）。 */
 	private namedSignature = '';
+	/** このウィンドウにある見回りのペイン（Bot の様子が変わるたびに調べ直す）。 */
+	private patrolInstances: readonly number[] = [];
+	private readonly patrolScheduler = this._register(new RunOnceScheduler(() => {
+		paradisBotPatrolInstancesInWindow(this.botsService, this.paneTokenService).then(
+			instances => { this.patrolInstances = instances; },
+			error => this.logService.warn('[paradisBots] finding the look-around terminals failed', error));
+	}, 500));
 	private readonly nameScheduler = this._register(new RunOnceScheduler(() => {
 		this.nameTabs().catch(error => this.logService.warn('[paradisBots] naming the bot tabs failed', error));
 	}, 500));
@@ -333,8 +291,21 @@ class ParadisBotsWindowWorker extends Disposable {
 		@IParadisWorkspaceSwitchService private readonly switchService: IParadisWorkspaceSwitchService,
 		@IHostService private readonly hostService: IHostService,
 		@ILogService private readonly logService: ILogService,
+		@ILifecycleService lifecycleService: ILifecycleService,
 	) {
 		super();
+		// 見回りのペインは次の回の直前に閉じるが、Para Code を閉じるときに開いたままのものも閉じる（次の起動で
+		// 見回りの残骸を復元しない）。閉じるときは待てないので、どれが見回りのペインかを先に調べておく
+		this._register(botsService.onDidChange(() => this.patrolScheduler.schedule()));
+		this.patrolScheduler.schedule();
+		this._register(lifecycleService.onWillShutdown(() => {
+			for (const instanceId of this.patrolInstances) {
+				const instance = findInstance(this.terminalService, this.terminalGroupService, instanceId);
+				if (instance !== undefined && !instance.isDisposed) {
+					instance.dispose(TerminalExitReason.User);
+				}
+			}
+		}));
 		this._register(botsService.onDidRequestStop(request => {
 			this.stop(request).catch(error => this.logService.warn('[paradisBots] stopping the bot terminals failed', error));
 		}));

@@ -26,6 +26,7 @@ import { paradisRegisterAgentIdeActionRefusal } from '../../agentIde/node/paradi
 import { paradisResolveAgentTemplates } from '../../agentModelCatalog/common/paradisAgentModelCatalog.js';
 import { paradisSetAskHumanBotPaneCheck } from '../../humanAsk/node/paradisAskHumanToolProvider.js';
 import { paradisSharedHumanAskService } from '../../humanAsk/node/paradisHumanAskChannel.js';
+import { paradisSharedScheduledRunsService } from '../../scheduledRuns/node/paradisScheduledRunsChannel.js';
 import { PARADIS_BOTS_CHANNEL, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
 import { ParadisBotHomes } from './paradisBotHomes.js';
 import { ParadisBotManageToolProvider, paradisBotIdeActionRefusal, paradisBotPatrolToolRefusal } from './paradisBotManageToolProvider.js';
@@ -112,6 +113,19 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 			service.refresh();
 		}
 	}));
+	// 見回りは定期実行の台帳に載せる。走らせる前の門（機能のオン・一時停止など）をこちらが答え、Bot を消したら定義も消す
+	const scheduledRuns = paradisSharedScheduledRunsService();
+	const logService = accessor.get(ILogService);
+	if (scheduledRuns !== undefined) {
+		store.add(scheduledRuns.setBotPatrolGate({
+			check: botId => service.patrolGateState(botId),
+			botName: botId => service.getBot(botId)?.name,
+			closeIdlePatrolPanes: botId => service.closeIdlePatrolPanes(botId),
+		}));
+		store.add(service.onDidRemoveBot(botId => {
+			scheduledRuns.deleteBotPatrols(botId).catch(error => logService.warn('[ParadisBots] could not remove the look-around schedule of a removed bot', error));
+		}));
+	}
 	store.add(paradisRegisterMcpToolProvider(new ParadisBotToolProvider(service, enabled)));
 	// 管理の道具の書く側は、IDE 系の書く道具と同じ設定の下（スキーマは画面側でしか登録されないので生の値を読む）
 	store.add(paradisRegisterMcpToolProvider(new ParadisBotManageToolProvider(service, {

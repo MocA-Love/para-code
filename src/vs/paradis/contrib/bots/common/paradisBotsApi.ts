@@ -192,8 +192,8 @@ export interface IParadisBotsService {
 	requestReveal(botId: string): Promise<boolean>;
 	/** 前に出す依頼に、そのペインを持つウィンドウが応える。 */
 	ackReveal(revealId: string): Promise<void>;
-	/** その Bot のペインのトークンの SHA-256（16 進）。開くときに、このウィンドウにもうあるかを照らす。 */
-	paneHashesOf(botId: string): Promise<readonly string[]>;
+	/** その Bot のペインのトークンの SHA-256（16 進）。開くときに、このウィンドウにもうあるかを照らす。`purpose` を渡せばその用途だけ。 */
+	paneHashesOf(botId: string, purpose?: ParadisBotPanePurpose): Promise<readonly string[]>;
 
 	/** その Bot のまだ決めていない提案（新しい順）。Bot のホームの節にだけ出す。 */
 	listSuggestions(botId: string): Promise<readonly IParadisBotSuggestion[]>;
