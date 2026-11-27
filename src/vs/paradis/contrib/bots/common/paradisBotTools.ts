@@ -152,10 +152,10 @@ const PARADIS_BOT_CHAT_APPROVAL_TOOLS: readonly string[] = [...PARADIS_BOT_TOOL_
  * Codex の `config.toml` に para-browser の MCP サーバーがあるか（見回り・会話の Bot の起動で、全部のホーム（アカウント）の
  * `config.toml` を合わせて決める）。
  * - `everywhere`: どのホームにも `[mcp_servers.para-browser]` がある（Para Code の自動セットアップ済み）
- * - `nowhere`: どのホームにも無い（ファイルが無いホームを含む）。`-c` で道具の許可だけを渡すと、Codex は定義の無い
+ * - `nowhere`: 無いホームがある（ファイルが無いホームを含む）。`-c` で道具の許可だけを渡すと、Codex は定義の無い
  *   `mcp_servers.para-browser` の表を作って `invalid transport` で起動しない（Codex 0.171.0 で確かめた）ので、
  *   url と認証の変数も一緒に渡して定義を完結させる
- * - `unknown`: 読めない・曖昧に書かれている・ホームによって違う。para-browser の `-c` は 1 つも渡さない（Codex が
+ * - `unknown`: 読めない・曖昧に書かれている・子プロセスの形で登録している。para-browser の `-c` は 1 つも渡さない（Codex が
  *   起動しないよりは、Bot の道具が確認付きになるか使えない方がよい）
  */
 export type ParadisCodexBrowserRegistration =
@@ -173,21 +173,21 @@ export function paradisCodexBrowserRegistration(configTexts: readonly (string | 
 		if (text === false) {
 			return { kind: 'unknown' };
 		}
-		if (text === undefined) {
-			continue;
-		}
-		const servers = paradisCodexMcpServersOf(text);
+		const servers = text === undefined ? [] : paradisCodexMcpServersOf(text);
 		if (servers === undefined) {
 			return { kind: 'unknown' };
 		}
-		if (servers.some(server => server.name === 'para-browser')) {
+		const browser = servers.find(server => server.name === 'para-browser');
+		// 子プロセスの形で登録したホームがあれば、url を足すと形が 2 つになって起動しない
+		if (browser?.transport === 'command') {
+			return { kind: 'unknown' };
+		}
+		if (browser !== undefined) {
 			defined++;
 		}
 	}
-	if (defined === 0) {
-		return { kind: 'nowhere' };
-	}
-	return defined === configTexts.length ? { kind: 'everywhere' } : { kind: 'unknown' };
+	// 登録の無いホームが 1 つでもあれば、定義を足す（url の形で登録したホームでは、同じ口を指し直すだけになる）
+	return defined > 0 && defined === configTexts.length ? { kind: 'everywhere' } : { kind: 'nowhere' };
 }
 
 /** url の値に使ってよい形（`-c` の値を TOML の文字列として引用せずに渡すので、引用を崩す文字が無いもの）。 */

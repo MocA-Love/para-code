@@ -105,6 +105,18 @@ export function paradisBotsNeedsYouTotal(bots: readonly IParadisBotSummary[]): n
 	return bots.reduce((total, bot) => total + Math.max(0, bot.needsYou), 0);
 }
 
+/** 会話のペインのエージェントが動いていない・止まっている理由の短い文。理由が無ければ undefined（「待機中」を出す）。 */
+function paradisBotHaltLine(halt: IParadisBotSummary['halt']): string | undefined {
+	switch (halt?.kind) {
+		case 'notFound': return localize('paradis.bots.status.notFound', "エージェントが見つかりません");
+		case 'exited': return halt.exitCode !== undefined && halt.exitCode !== 0
+			? localize('paradis.bots.status.exitedCode', "終了しました（コード {0}）", halt.exitCode)
+			: localize('paradis.bots.status.exited', "終了しました");
+		case 'needsUser': return localize('paradis.bots.status.needsUser', "操作が要ります");
+		default: return undefined;
+	}
+}
+
 /** 行の名前の後ろに出す、今の様子の短い文。 */
 export function paradisBotStatusLine(bot: IParadisBotSummary): string {
 	if (bot.paused) {
@@ -116,7 +128,7 @@ export function paradisBotStatusLine(bot: IParadisBotSummary): string {
 	switch (bot.activity) {
 		case 'working': return localize('paradis.bots.status.working', "作業中");
 		case 'patrolling': return localize('paradis.bots.status.patrolling', "見回り中");
-		case 'idle': return localize('paradis.bots.status.idle', "待機中");
+		case 'idle': return paradisBotHaltLine(bot.halt) ?? localize('paradis.bots.status.idle', "待機中");
 		default: return localize('paradis.bots.status.stopped', "起動していません");
 	}
 }

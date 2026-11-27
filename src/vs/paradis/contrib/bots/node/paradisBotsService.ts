@@ -15,7 +15,7 @@
 //   として項目に書き、作業中へ戻す。
 // - どのペインがどの Bot かは {@link ParadisBotPanes} が持つ。
 
-import { RunOnceScheduler } from '../../../../base/common/async.js';
+import { RunOnceScheduler, TimeoutTimer } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
@@ -63,7 +63,7 @@ import { ParadisBotHomeError, ParadisBotHomes } from './paradisBotHomes.js';
 import type { IParadisBotPatrolHome } from './paradisBotPatrolLaunch.js';
 import { PARADIS_BOT_AGENTS_FILE, PARADIS_BOT_MEMORY_FILE, PARADIS_BOT_SOUL_FILE } from '../common/paradisBotHome.js';
 import { IParadisBotMemorySnapshot, IParadisBotMemoryUndo, ParadisBotMemorySnapshots } from './paradisBotMemorySnapshots.js';
-import { IParadisBotPanesState, PARADIS_BOT_PANES_VERSION, ParadisBotPanes, paradisBotPaneTokenHash } from './paradisBotPanes.js';
+import { IParadisBotPanesState, PARADIS_BOT_PANES_VERSION, PARADIS_BOT_SETUP_STALL_MS, ParadisBotPanes, paradisBotPaneTokenHash } from './paradisBotPanes.js';
 import { IParadisBotsJsonFile, IParadisBotsLoaded } from './paradisBotsStore.js';
 
 /** 連続した変更をまとめてから知らせる間隔。 */
@@ -184,6 +184,7 @@ export class ParadisBotsService extends Disposable {
 	private readonly changeScheduler = this._register(new RunOnceScheduler(() => this._onDidChange.fire(this.getSnapshot()), CHANGE_DELAY));
 	/** 後回しの期限が来たら、件数と「あなたの番」を数え直す。 */
 	private readonly wakeScheduler = this._register(new RunOnceScheduler(() => this.changed(), 0));
+	private readonly setupCheck = this._register(new TimeoutTimer());
 
 	constructor(
 		private readonly botsFile: IParadisBotsJsonFile<IParadisBotsState>,
@@ -259,7 +260,7 @@ export class ParadisBotsService extends Disposable {
 		return {
 			revision: this.revision,
 			readOnly: this.bots.version !== PARADIS_BOTS_VERSION || this.items.version !== PARADIS_BOT_ITEMS_VERSION,
-			bots: this.bots.bots.map(bot => paradisBotSummary(bot, this.items, this.panes.statesOf(bot.id), now, paradisBotOpenSuggestions(this.suggestions, bot.id).length)),
+			bots: this.bots.bots.map(bot => paradisBotSummary(bot, this.items, this.panes.statesOf(bot.id, now), now, paradisBotOpenSuggestions(this.suggestions, bot.id).length)),
 			...(this.githubView.status.state !== 'off' ? { github: this.githubView } : {}),
 		};
 	}
@@ -831,7 +832,7 @@ export class ParadisBotsService extends Disposable {
 			return undefined;
 		}
 		const launchId = this.uuid();
-		this.panes.issue(launchId, botId, purpose, this.now());
+		this.panes.issue(launchId, botId, purpose, this.now(), bot.agent);
 		return launchId;
 	}
 
@@ -842,7 +843,23 @@ export class ParadisBotsService extends Disposable {
 			return false;
 		}
 		this.notify();
+		this.scheduleSetupCheck();
 		return true;
+	}
+
+	/** Bot のペインのシェルでコマンドが始まった・終わった（ウィンドウがシェル統合から知らせる）。 */
+	notePaneCommand(paneToken: string, exitCode: number | undefined, finished: boolean): void {
+		if (this.panes.noteCommand(paneToken, exitCode, finished, this.now()) !== undefined) {
+			this.notify();
+		}
+		if (!finished) {
+			this.scheduleSetupCheck();
+		}
+	}
+
+	/** 起動して hook が来ないまま止まっているペインを「操作が要ります」に変えるため、その時間が過ぎたら様子を出し直す。 */
+	private scheduleSetupCheck(): void {
+		this.setupCheck.cancelAndSet(() => this.notify(), PARADIS_BOT_SETUP_STALL_MS + 1_000);
 	}
 
 	/** 起動に失敗した番号を捨てる。 */

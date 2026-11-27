@@ -102,6 +102,16 @@ suite('Paradis bots band', () => {
 		]);
 	});
 
+	test('待機中のうち、エージェントが見つからない・終わった・操作が要るときはその様子を出す', () => {
+		assert.deepStrictEqual([
+			bot('x', 'x', { activity: 'idle', halt: { kind: 'notFound' } }),
+			bot('x', 'x', { activity: 'idle', halt: { kind: 'exited', exitCode: 1 } }),
+			bot('x', 'x', { activity: 'idle', halt: { kind: 'exited', exitCode: 0 } }),
+			bot('x', 'x', { activity: 'idle', halt: { kind: 'needsUser' } }),
+			bot('x', 'x', { activity: 'idle' }),
+		].map(paradisBotStatusLine), ['エージェントが見つかりません', '終了しました（コード 1）', '終了しました', '操作が要ります', '待機中']);
+	});
+
 	test('顔は台帳の形と色、動きは様子から', () => {
 		assert.deepStrictEqual([
 			paradisBotFace(bot('x', 'x', { faceColor: 'pink', faceShape: 'hex', needsYou: 1 })),

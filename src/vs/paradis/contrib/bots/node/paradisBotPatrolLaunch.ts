@@ -151,7 +151,7 @@ export async function paradisPrepareBotPatrolLaunch(environment: IParadisBotPatr
 		// 見回りを起動しない（para-browser の道具を読むものだけに絞れないため）
 		browser = await paradisReadCodexBrowserRegistration(environment);
 		if (browser.registration.kind === 'unknown' || (browser.registration.kind === 'nowhere' && browser.url === undefined)) {
-			return 'Para Code could not set up its browser tools for a Codex look-around (the para-browser MCP server is registered in some Codex homes but not in others, or the browser tools are not running). Register para-browser in every Codex config.toml or restart Para Code to start look-arounds again.';
+			return 'Para Code could not set up its browser tools for a Codex look-around (a Codex config.toml registers para-browser as a command, or the browser tools are not running). Register para-browser with its url, or restart Para Code, to start look-arounds again.';
 		}
 	} else {
 		const gatewayPort = await environment.gatewayPort();

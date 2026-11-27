@@ -93,6 +93,14 @@ export class ParadisBotsChannel implements IServerChannel<string> {
 				const paneToken = args.string(1);
 				return id !== undefined && paneToken !== undefined && service.reportLaunch(id, paneToken);
 			}
+			case 'notePaneCommand': {
+				const paneToken = args.string(0);
+				const exitCode = args.at(1);
+				if (paneToken !== undefined && (exitCode === undefined || exitCode === null || (typeof exitCode === 'number' && Number.isSafeInteger(exitCode))) && typeof args.at(2) === 'boolean') {
+					service.notePaneCommand(paneToken, typeof exitCode === 'number' ? exitCode : undefined, args.at(2) === true);
+				}
+				return undefined;
+			}
 			case 'cancelLaunch': {
 				if (id !== undefined) {
 					service.cancelLaunch(id);
