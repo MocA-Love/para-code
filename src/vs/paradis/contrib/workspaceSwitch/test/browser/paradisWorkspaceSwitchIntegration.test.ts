@@ -31,7 +31,7 @@ import { Workspace } from '../../../../../platform/workspace/test/common/testWor
 import { IWorkspaceFolderCreationData } from '../../../../../platform/workspaces/common/workspaces.js';
 import { SyncDescriptor } from '../../../../../platform/instantiation/common/descriptors.js';
 import { EditorExtensions, EditorsOrder, IEditorFactoryRegistry } from '../../../../../workbench/common/editor.js';
-import { GroupDirection, IEditorGroup, IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
+import { GroupDirection, GroupsOrder, IEditorGroup, IEditorGroupsService } from '../../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IWorkbenchLayoutService, Parts } from '../../../../../workbench/services/layout/browser/layoutService.js';
 import { FileOperationError, FileOperationResult, IFileService, IFileStat } from '../../../../../platform/files/common/files.js';
 import { paradisIsTerminalInputBlocked, paradisResetTerminalInputGateForTest } from '../../browser/paradisTerminalInputGate.js';
@@ -59,7 +59,7 @@ import { VSBuffer } from '../../../../../base/common/buffer.js';
 import { extUri, isEqual } from '../../../../../base/common/resources.js';
 import { IUriIdentityService } from '../../../../../platform/uriIdentity/common/uriIdentity.js';
 import { ConfirmResult } from '../../../../../platform/dialogs/common/dialogs.js';
-import { IEditorCloseHandler } from '../../../../../workbench/common/editor/editorInput.js';
+import { EditorInput, IEditorCloseHandler } from '../../../../../workbench/common/editor/editorInput.js';
 import { TerminalEditorInput } from '../../../../../workbench/contrib/terminal/browser/terminalEditorInput.js';
 import { ITextFileEditorModel, ITextFileService, TextFileEditorModelState } from '../../../../../workbench/services/textfile/common/textfiles.js';
 import { IParadisAuxiliaryWindowScopeService, IParadisWorktree, IParadisWorktreeService, PARADIS_WORKSPACE_ACTIVE_ENTRY_STORAGE_KEY, PARADIS_WORKSPACE_REPOSITORIES_STORAGE_KEY, paradisRegisterWorktreePresenceLookup, paradisSetManagedWorkspaceWindowForTest, paradisWorktreeStateKey } from '../../common/paradisWorkspaceSwitch.js';
@@ -288,6 +288,73 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		} finally {
 			paradisResetSpaceFreeTerminalsForTest();
 			paradisTakeParkedTerminalEditorInstance(paradisCreateDeserializedTerminalEditorInput(shellIds.persistentProcessId, shellIds.shellIntegrationNonce));
+			try {
+				for (const group of harness?.parts.groups ?? []) {
+					await group.closeAllEditors();
+				}
+			} finally {
+				testDisposables.dispose();
+			}
+		}
+	});
+
+	// 分割の片側に Bot だけを置いていたら、着いた先でも同じ側に分割して開く。ほかのタブと同じグループにあったなら、着いた先の
+	// 今のグループの後ろへ入れ、前に出ているファイルを隠さない。
+	test('keeps a carried bot tab on its own side of a split, and behind the open file when it shared a group', async () => {
+		const testDisposables = new DisposableStore();
+		const sideIds = createUniqueTerminalIds();
+		const sharedIds = createUniqueTerminalIds();
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		try {
+			harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			const parts = harness.parts;
+			const fileA = harness.createEditor('/workspace-a/saved.txt', false);
+			const fileB = harness.createEditor('/workspace-b/saved.txt', false);
+			await parts.activeGroup.openEditor(fileA, { pinned: true });
+			await harness.workspaceSwitchService.switchRepository('space-b');
+			await parts.activeGroup.openEditor(fileB, { pinned: true });
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			// A: 左にファイル、右に Bot だけ（右を見ている）
+			const sideInput = harness.createCleanTerminalEditor('/bots/side');
+			const right = parts.addGroup(parts.activeGroup, GroupDirection.RIGHT);
+			await right.openEditor(sideInput, { pinned: true });
+			parts.activateGroup(right);
+			const side = harness.addTerminal(sideInput, sideIds.instanceId, sideIds.persistentProcessId, sideIds.shellIntegrationNonce);
+			paradisMarkTerminalSpaceFree(side.instanceId);
+
+			// 戻ってきたファイルは working set から作り直された入力なので、パスで見分ける
+			const nameOf = (editor: EditorInput | undefined) => editor === sideInput ? 'bot' : editor?.resource?.path === fileA.resource.path ? 'fileA' : editor?.resource?.path === fileB.resource.path ? 'fileB' : 'other';
+			const layout = () => parts.getGroups(GroupsOrder.GRID_APPEARANCE).map(group => group.editors.map(nameOf));
+			await harness.workspaceSwitchService.switchRepository('space-b');
+			const inB = layout();
+			await harness.workspaceSwitchService.switchRepository('space-a');
+			const backInA = layout();
+
+			// 同じグループに置いた Bot は、着いた先の今のグループの後ろへ（ファイルを前に出したまま）
+			for (const group of parts.getGroups(GroupsOrder.GRID_APPEARANCE).filter(candidate => candidate.contains(sideInput))) {
+				group.closeEditor(sideInput);
+			}
+			const sharedInput = harness.createCleanTerminalEditor('/bots/shared');
+			const left = parts.getGroups(GroupsOrder.GRID_APPEARANCE)[0];
+			parts.activateGroup(left);
+			await left.openEditor(sharedInput, { pinned: true });
+			const shared = harness.addTerminal(sharedInput, sharedIds.instanceId, sharedIds.persistentProcessId, sharedIds.shellIntegrationNonce);
+			paradisMarkTerminalSpaceFree(shared.instanceId);
+			await harness.workspaceSwitchService.switchRepository('space-b');
+			const sharedInB = {
+				groups: parts.getGroups(GroupsOrder.GRID_APPEARANCE).length,
+				activeEditor: nameOf(parts.activeGroup.activeEditor ?? undefined),
+				botInActiveGroup: parts.activeGroup.contains(sharedInput),
+			};
+
+			assert.deepStrictEqual({ inB, backInA, sharedInB }, {
+				inB: [['fileB'], ['bot']],
+				backInA: [['fileA'], ['bot']],
+				sharedInB: { groups: 1, activeEditor: 'fileB', botInActiveGroup: true },
+			});
+		} finally {
+			paradisResetSpaceFreeTerminalsForTest();
 			try {
 				for (const group of harness?.parts.groups ?? []) {
 					await group.closeAllEditors();
