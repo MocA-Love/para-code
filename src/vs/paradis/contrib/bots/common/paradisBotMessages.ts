@@ -67,6 +67,9 @@ export interface IParadisBotInboxEntry {
 	readonly at: number;
 }
 
+/** 届かなかった伝言の記録の印の理由（{@link IParadisBotGroupsPort.markUndelivered}。打ち込み方式のときのもの）。 */
+export type ParadisBotMessageUndeliveredReason = 'refused' | 'unreachable' | 'unknown';
+
 /** ウィンドウの `deliver` の戻り値（グループの機能の中の約束。伝言の道具は呼ばない）。 */
 export type ParadisBotGroupDeliverResult =
 	| { readonly kind: 'queued' }
@@ -83,8 +86,15 @@ export interface IParadisBotGroupsPort {
 	appendRecord(groupId: string, record: IParadisBotGroupMessageRecord): Promise<{ readonly ok: boolean; readonly message?: string; readonly recordId?: string }>;
 	/** その Bot の受け箱（まだ読んでいない伝言。古い順）。 */
 	inboxOf(botId: string): Promise<readonly IParadisBotInboxEntry[]>;
-	/** その Bot が読んだ伝言を既読にする（その Bot 宛ての記録だけ）。 */
+	/** その Bot が読んだ伝言を既読にする（その Bot の受け箱にある伝言だけ）。 */
 	markRead(botId: string, recordIds: readonly string[]): Promise<void>;
+	/**
+	 * 記録した伝言が届かなかった、と記録の印を直す（打ち込み方式のときの口。伝言の道具はもう呼ばないが、グループの
+	 * 機能が持っているので型だけ残す。省略できる）。
+	 */
+	markUndelivered?(groupId: string, recordId: string, reason?: ParadisBotMessageUndeliveredReason): Promise<void>;
+	/** 記録した伝言を順番待ちに入れた、と記録の印を付ける（同上。伝言の道具は呼ばない。省略できる）。 */
+	markQueued?(groupId: string, recordId: string): Promise<void>;
 }
 
 export const PARADIS_BOT_MESSAGE_TOOLS: readonly IParadisMcpToolDefinition[] = [
