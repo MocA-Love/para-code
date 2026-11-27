@@ -13,16 +13,18 @@
 
 import { isPlainRecord } from '../../../common/paradisGuards.js';
 import type { IParadisMcpToolDefinition } from '../../agentBrowser/common/paradisMcpToolProvider.js';
+import { PARADIS_BOT_SUGGESTION_LIMITS } from './paradisBotSuggestions.js';
 import { IParadisBotItem, IParadisBotItemChanges, IParadisBotItemEvent, IParadisBotItemLink, PARADIS_BOT_ITEM_LIMITS, PARADIS_BOT_ITEM_STATUSES, ParadisBotItemStatus, paradisBotItemUndelivered, paradisSanitizeBotItemLink, paradisSanitizeBotItemQuestions } from './paradisBotItems.js';
 
 export const PARADIS_BOT_ITEM_LIST_TOOL = 'bot_item_list';
 export const PARADIS_BOT_ITEM_SHOW_TOOL = 'bot_item_show';
 export const PARADIS_BOT_ITEM_ADD_TOOL = 'bot_item_add';
 export const PARADIS_BOT_ITEM_UPDATE_TOOL = 'bot_item_update';
+export const PARADIS_BOT_SUGGEST_TOOL = 'bot_suggest';
 
 /** 項目を書き換えない道具（一時停止中の Bot でも使える）。`bot_item_show` は「読んだ」の印だけを書く。 */
 export const PARADIS_BOT_READ_TOOLS: ReadonlySet<string> = new Set([PARADIS_BOT_ITEM_LIST_TOOL, PARADIS_BOT_ITEM_SHOW_TOOL]);
-export const PARADIS_BOT_TOOL_NAMES: ReadonlySet<string> = new Set([PARADIS_BOT_ITEM_LIST_TOOL, PARADIS_BOT_ITEM_SHOW_TOOL, PARADIS_BOT_ITEM_ADD_TOOL, PARADIS_BOT_ITEM_UPDATE_TOOL]);
+export const PARADIS_BOT_TOOL_NAMES: ReadonlySet<string> = new Set([PARADIS_BOT_ITEM_LIST_TOOL, PARADIS_BOT_ITEM_SHOW_TOOL, PARADIS_BOT_ITEM_ADD_TOOL, PARADIS_BOT_ITEM_UPDATE_TOOL, PARADIS_BOT_SUGGEST_TOOL]);
 
 /** 一覧の 1 ページ。 */
 export const PARADIS_BOT_ITEM_LIST_PAGE = 50;
@@ -118,10 +120,24 @@ export const PARADIS_BOT_TOOLS: readonly IParadisMcpToolDefinition[] = [
 		},
 		annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
 	},
+	{
+		name: PARADIS_BOT_SUGGEST_TOOL,
+		description: `Para Code bots only, in a look-around (a terminal Para Code started for you on a schedule). Offer your owner something worth doing: a short title and the request they would send you, in their words. Your owner sees it on your home page and starts or dismisses it. At most ${PARADIS_BOT_SUGGESTION_LIMITS.perRun} per look-around (${PARADIS_BOT_SUGGESTION_LIMITS.firstRun} the first time); a dismissed title is refused for ${PARADIS_BOT_SUGGESTION_LIMITS.dismissDays} days.`,
+		inputSchema: {
+			type: 'object',
+			properties: {
+				title: { type: 'string', maxLength: PARADIS_BOT_SUGGESTION_LIMITS.title, description: 'What to do, in one line.' },
+				request: { type: 'string', maxLength: PARADIS_BOT_SUGGESTION_LIMITS.request, description: 'The request your owner would send you to start it.' },
+			},
+			required: ['title', 'request'],
+			additionalProperties: false,
+		},
+		annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+	},
 ];
 
 /** MCP の `initialize` の説明と `para help ide` の手引きに足す 1 段。 */
-export const PARADIS_BOT_SERVER_INSTRUCTIONS = 'Bot tools (bot_item_list, bot_item_show, bot_item_add, bot_item_update): use them only when this terminal is a Para Code bot (the AGENTS.md or CLAUDE.md of your home folder says so). Keep one item per deliverable; when your owner has to decide, set the item to "needs_you" with your questions, then end your turn.';
+export const PARADIS_BOT_SERVER_INSTRUCTIONS = 'Bot tools (bot_item_list, bot_item_show, bot_item_add, bot_item_update, bot_suggest): use them only when this terminal is a Para Code bot (the AGENTS.md or CLAUDE.md of your home folder says so). Keep one item per deliverable; when your owner has to decide, set the item to "needs_you" with your questions, then end your turn.';
 
 /**
  * Bot のペインを Codex で起動するときにだけ渡す、Bot の道具の前もっての許可（`-c` の引数。シェルの 1 行に足す形）。
@@ -207,6 +223,12 @@ export function paradisParseBotItemShowArgs(args: unknown): ParadisBotToolArgs<{
 		return bad('number is the item number and after is an event id.');
 	}
 	return { ok: true, value: { number, after: typeof input.after === 'number' ? input.after : 0 } };
+}
+
+/** bot_suggest の引数。形と長さは台帳の関数が確かめる。 */
+export function paradisParseBotSuggestArgs(args: unknown): ParadisBotToolArgs<{ readonly title: unknown; readonly request: unknown }> {
+	const input = fields(args, ['title', 'request']);
+	return typeof input === 'string' ? bad(input) : { ok: true, value: { title: input.title, request: input.request } };
 }
 
 export interface IParadisBotItemAddArgs {

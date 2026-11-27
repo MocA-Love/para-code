@@ -17,7 +17,7 @@ import { $, addDisposableListener } from '../../../../base/browser/dom.js';
 import { getBaseLayerHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegate2.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
-import { DisposableStore, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { DisposableMap, DisposableStore, IDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
 
 /** インジケータの表示状態。 */
 export type ParadisPaneIndicatorState = 'bound' | 'unbound';
@@ -173,6 +173,10 @@ export function createParadisPaneIndicator(instanceId: number): { readonly eleme
 export interface IParadisEditorTerminalIndicatorController extends IDisposable {
 	/** インジケータの対象ペインを差し替える。`undefined` なら非表示にする。 */
 	setInstance(instanceId: number | undefined): void;
+	/** 重ねた部品がターミナルの上端に取っている高さ（px、一番大きいもの）。エディタはその分ターミナルを縮めて下げる。 */
+	topInset(): number;
+	/** {@link topInset} が変わった。 */
+	readonly onDidChangeTopInset: Event<void>;
 }
 
 /**
@@ -187,18 +191,36 @@ export function createParadisEditorTerminalIndicator(container: HTMLElement): IP
 	// 登録は起動後の contribution から来ることがあり、そのときには復元済みのタブがもう開いて
 	// いるので、後から来た登録にも今の対象ペインを渡す。
 	const overlays = new DisposableStore();
-	const overlayInstances: IParadisEditorTerminalOverlay[] = [];
+	const onDidChangeTopInset = overlays.add(new Emitter<void>());
+	// 登録ごとに付けた部品（登録を外したら、付けた部品もここで破棄する）
+	const attached = overlays.add(new DisposableMap<ParadisEditorTerminalOverlayFactory>());
+	const overlayInstances = new Map<ParadisEditorTerminalOverlayFactory, IParadisEditorTerminalOverlay>();
 	let currentInstanceId: number | undefined;
 	const attachOverlay = (factory: ParadisEditorTerminalOverlayFactory): void => {
-		const overlay = factory(container);
-		overlays.add(overlay);
-		overlayInstances.push(overlay);
+		const store = new DisposableStore();
+		const overlay = store.add(factory(container));
+		if (overlay.onDidChangeTopInset) {
+			store.add(overlay.onDidChangeTopInset(() => onDidChangeTopInset.fire()));
+		}
+		store.add(toDisposable(() => overlayInstances.delete(factory)));
+		overlayInstances.set(factory, overlay);
+		attached.set(factory, store);
 		overlay.setInstance(currentInstanceId);
 	};
 	for (const factory of editorTerminalOverlayFactories) {
 		attachOverlay(factory);
 	}
 	overlays.add(onDidRegisterEditorTerminalOverlay.event(attachOverlay));
+	overlays.add(onDidUnregisterEditorTerminalOverlay.event(factory => {
+		if (!overlayInstances.has(factory)) {
+			return;
+		}
+		const inset = overlayInstances.get(factory)?.topInset?.() ?? 0;
+		attached.deleteAndDispose(factory);
+		if (inset > 0) {
+			onDidChangeTopInset.fire();
+		}
+	}));
 	return {
 		setInstance(instanceId) {
 			currentInstanceId = instanceId;
@@ -206,10 +228,12 @@ export function createParadisEditorTerminalIndicator(container: HTMLElement): IP
 			if (current.value) {
 				container.appendChild(current.value.element);
 			}
-			for (const overlay of overlayInstances) {
+			for (const overlay of [...overlayInstances.values()]) {
 				overlay.setInstance(instanceId);
 			}
 		},
+		topInset: () => Math.max(0, ...[...overlayInstances.values()].map(overlay => overlay.topInset?.() ?? 0)),
+		onDidChangeTopInset: onDidChangeTopInset.event,
 		dispose: () => {
 			current.dispose();
 			overlays.dispose();
@@ -220,19 +244,30 @@ export function createParadisEditorTerminalIndicator(container: HTMLElement): IP
 /** エディタタブのターミナルの上に重ねる部品。対象ペインはタブの切り替えのたびに差し替わる。 */
 export interface IParadisEditorTerminalOverlay extends IDisposable {
 	setInstance(instanceId: number | undefined): void;
+	/**
+	 * ターミナルの上端に取る高さ（px。帯などを上に置く部品）。エディタはこの分ターミナルの描画の高さを縮めて下げるので、
+	 * 部品はターミナルの行を隠さない。省くと 0。
+	 */
+	topInset?(): number;
+	readonly onDidChangeTopInset?: Event<void>;
 }
 
 export type ParadisEditorTerminalOverlayFactory = (container: HTMLElement) => IParadisEditorTerminalOverlay;
 
 const editorTerminalOverlayFactories = new Set<ParadisEditorTerminalOverlayFactory>();
 const onDidRegisterEditorTerminalOverlay = new Emitter<ParadisEditorTerminalOverlayFactory>();
+const onDidUnregisterEditorTerminalOverlay = new Emitter<ParadisEditorTerminalOverlayFactory>();
 
 /**
  * エディタタブのターミナルに重ねる部品を登録する。すでに開いているタブにもすぐ付く。
- * 外した後は新しいタブには付かない（付いている分は、そのタブのエディタと一緒に破棄される）。
+ * 外すと、新しいタブには付かず、開いているタブに付けた部品も破棄する（設定をオフ→オンにしても二重に付かない）。
  */
 export function paradisRegisterEditorTerminalOverlay(factory: ParadisEditorTerminalOverlayFactory): IDisposable {
 	editorTerminalOverlayFactories.add(factory);
 	onDidRegisterEditorTerminalOverlay.fire(factory);
-	return toDisposable(() => editorTerminalOverlayFactories.delete(factory));
+	return toDisposable(() => {
+		if (editorTerminalOverlayFactories.delete(factory)) {
+			onDidUnregisterEditorTerminalOverlay.fire(factory);
+		}
+	});
 }

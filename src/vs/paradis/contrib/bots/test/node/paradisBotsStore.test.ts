@@ -80,7 +80,7 @@ suite('Paradis bots store', () => {
 	test('知らない状態の項目は、書き戻しても読んだ値のまま残る', async () => {
 		const folder = paradisBotsDataFolder(userData);
 		await fs.mkdir(folder, { recursive: true });
-		const waiting = { uid: 'u1', number: 1, botId: 'b1', title: '待ち', status: 'waiting', wait: { text: 'CI', at: 5 }, links: [], events: [], lastEventId: 0, lastActivityAt: 1, createdAt: 1, updatedAt: 1 };
+		const waiting = { uid: 'u1', number: 1, botId: 'b1', title: '待ち', status: 'blocked', wait: { text: 'CI', at: 5 }, links: [], events: [], lastEventId: 0, lastActivityAt: 1, createdAt: 1, updatedAt: 1 };
 		await fs.writeFile(join(folder, 'items.json'), JSON.stringify({ version: 1, nextNumber: 2, items: [waiting] }));
 		const file = createParadisBotItemsFile(userData);
 		const added = paradisBotItemAdd((await file.read()).state, { uid: 'u2', botId: 'b1', title: '次' }, 1000);
