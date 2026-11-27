@@ -33,27 +33,31 @@ import { ParadisBotToolProvider } from './paradisBotToolProvider.js';
 import { ParadisBotsChannel } from './paradisBotsChannel.js';
 import { ParadisBotsService } from './paradisBotsService.js';
 import { ParadisBotMemorySnapshots } from './paradisBotMemorySnapshots.js';
-import { paradisPrepareBotPatrolLaunch } from './paradisBotPatrolLaunch.js';
-import { paradisApplyClaudeFolderTrust, paradisClaudeTrustKeysFor, paradisIsTooBroadToTrust, paradisResolveClaudeGlobalConfigFile, paradisUpdateClaudeConfig } from '../../workspaceSwitch/node/paradisClaudeFolderTrust.js';
+import { paradisForgetBotPatrol, paradisPrepareBotPatrolLaunch, paradisTrustBotPatrolFolder } from './paradisBotPatrolLaunch.js';
+import { paradisClaudeTrustKeysFor, paradisIsTooBroadToTrust, paradisResolveClaudeGlobalConfigFile } from '../../workspaceSwitch/node/paradisClaudeFolderTrust.js';
 import { createParadisBotItemsFile, createParadisBotPanesFile, createParadisBotsFile, createParadisBotSuggestionsFile, paradisBotsDataFolder } from './paradisBotsStore.js';
 
 let shared: ParadisBotsService | undefined;
 
+/** 利用者の Claude Code の全体の設定ファイル（`~/.claude.json` など）。決められなければ undefined。 */
+async function claudeConfigFile(): Promise<string | undefined> {
+	const configDir = process.env.CLAUDE_CONFIG_DIR ? process.env.CLAUDE_CONFIG_DIR : join(homedir(), '.claude');
+	const legacyExists = await fs.access(join(configDir.normalize('NFC'), '.config.json')).then(() => true, () => false);
+	return paradisResolveClaudeGlobalConfigFile(process.env, homedir(), () => legacyExists);
+}
+
 /**
- * 見回りのフォルダの親を Claude Code の信頼済みにする（見回りのフォルダは起動ごとに新しいので、無いと毎回「このフォルダを
- * 信頼しますか」で止まる。信頼は配下のフォルダにも効く）。ワークツリーの信頼と同じロックと書き方。失敗しても投げない。
+ * 見回りのフォルダを Claude Code の信頼済みにする（無いと TUI が「このフォルダを信頼しますか」で止まる）。Bot ごとに
+ * 1 項目。ワークツリーの信頼と同じロックと書き方。失敗しても投げない（見回りは信頼の確認で止まり、打ち切りで終わる）。
  */
 async function trustClaudeFolder(folder: string): Promise<void> {
 	try {
-		const configDir = process.env.CLAUDE_CONFIG_DIR ? process.env.CLAUDE_CONFIG_DIR : join(homedir(), '.claude');
-		const legacyExists = await fs.access(join(configDir.normalize('NFC'), '.config.json')).then(() => true, () => false);
-		const configFile = paradisResolveClaudeGlobalConfigFile(process.env, homedir(), () => legacyExists);
-		const keys = await paradisClaudeTrustKeysFor(folder);
-		if (configFile !== undefined && keys.length > 0 && !paradisIsTooBroadToTrust(keys, homedir())) {
-			await paradisUpdateClaudeConfig(configFile, config => paradisApplyClaudeFolderTrust(config, keys));
+		const configFile = await claudeConfigFile();
+		if (configFile !== undefined && !paradisIsTooBroadToTrust(await paradisClaudeTrustKeysFor(folder), homedir())) {
+			await paradisTrustBotPatrolFolder(configFile, folder);
 		}
 	} catch {
-		// 信頼が書けなければ、見回りは信頼の確認で止まり、打ち切りで終わる
+		// 書けなければ書かない
 	}
 }
 
@@ -97,6 +101,7 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 			codexConfigFiles: () => paradisCodexHomeCandidates().map(codexHome => join(codexHome, 'config.toml')),
 			trustClaudeFolder: folder => trustClaudeFolder(folder),
 		}, agent, botId, home),
+		forgetPatrol: async botId => paradisForgetBotPatrol({ folder: join(paradisBotsDataFolder(userDataPath), 'patrol'), runsFolder: join(paradisBotsDataFolder(userDataPath), 'patrol-runs') }, botId, await claudeConfigFile().catch(() => undefined)),
 		agentTemplate: agentId => paradisResolveAgentTemplates(configurationService, []).find(template => template.id === agentId),
 	}));
 	server.registerChannel(PARADIS_BOTS_CHANNEL, new ParadisBotsChannel(service));
