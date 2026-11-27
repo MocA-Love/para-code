@@ -9,6 +9,7 @@ import assert from 'assert';
 import { EventEmitter } from 'events';
 import { PARADIS_AGENT_GATEWAY_REQUEST_HEADER, PARADIS_AGENT_GATEWAY_UNSYNCED_HEADER, PARADIS_AGENT_GATEWAY_AFTER_DISPATCH_HEADER } from '../../common/paradisAgentGateway.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelScheduler.js';
 import { IParadisExactBrowserViewDescriptor, paradisIsAgentHookReleaseEvent, paradisNormalizeAgentHookEvent } from '../../common/paradisAgentBrowser.js';
 import { IParadisBindingAuthorityManifest, ParadisBindingAuthority } from '../../common/paradisBindingAuthority.js';
 import { ParadisExactViewBackgroundThrottlingCoordinator } from '../../common/paradisExactViewBackgroundThrottling.js';
@@ -1265,6 +1266,36 @@ suite('ParadisAgentBrowser authority integration', () => {
 			'answered after a Stop: review',
 		]);
 	});
+
+	// 完了の通知を 1 ターン 1 回にする鍵はターンの開始時刻。時計が進まないうちに次のターンが始まっても（同じミリ秒・
+	// 時計の巻き戻り）、新しいターンの最初の完了は鳴らす。同じターンで重ねて止まった分だけ鳴らさない。
+	test('the first completion of a new user turn is announced even when the clock has not advanced since the turn before', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const { fixture, connection, send, status } = await codexPaneFixture();
+		const claude = (event: string, extra: Readonly<Record<string, unknown>> = {}) =>
+			send('claude-switch', 201, event, { session_id: 'claude-turns', transcript_path: '/Users/example/.claude/projects/work/claude-turns.jsonl', cwd: '/Users/example/work', ...extra });
+		const quiet = async () => (await fixture.service.listPaneStatuses(connection)).find(entry => entry.token === 'claude-switch')?.quiet === true;
+		const observed: string[] = [];
+		const observe = async (label: string) => observed.push(`${label}: ${await status('claude-switch')}${await quiet() ? ' (quiet)' : ''}`);
+		const startedAt = Date.now();
+		await claude('UserPromptSubmit', { prompt: 'first' });
+		await claude('Stop');
+		await observe('first turn');
+		await claude('UserPromptSubmit', { prompt: 'second' });
+		await claude('Stop');
+		await observe('second turn');
+		// バックグラウンドの完了の知らせで起きて止まるのは、同じターンの 2 回目
+		await claude('UserPromptSubmit', { prompt: '<task-notification>done</task-notification>' });
+		await claude('Stop');
+		await observe('woken in the second turn');
+		assert.deepStrictEqual({ observed, clockAdvancedBy: Date.now() - startedAt }, {
+			observed: [
+				'first turn: review',
+				'second turn: review',
+				'woken in the second turn: review (quiet)',
+			],
+			clockAdvancedBy: 0,
+		});
+	}));
 
 	// Para Code が止まっている間の hook の控え（W2-20）は、ペインの同期の後に流し直す。完了は鳴らさない印、
 	// 許可要求は画面を確かめてもらうまで状態にもカードにもしない。この起動で本物の hook が届いたペインと
