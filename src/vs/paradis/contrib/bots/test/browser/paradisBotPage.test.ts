@@ -549,8 +549,8 @@ suite('Paradis bots page overlay', () => {
 			sections: ['見回り'],
 			patrolCalls: [
 				'run release',
-				'set release {"schedule":{"everyHours":4,"fromHour":8,"toHour":20,"weekdaysOnly":true},"lookFor":"返事の無い指摘","enabled":true}',
-				'set release {"schedule":{"everyHours":4,"fromHour":8,"toHour":20,"weekdaysOnly":true},"lookFor":"CI の落ちたチェック","enabled":true}',
+				'set release {"schedule":"0 8-20/4 * * 1-5","lookFor":"返事の無い指摘","enabled":true}',
+				'set release {"schedule":"0 8-20/4 * * 1-5","lookFor":"CI の落ちたチェック","enabled":true}',
 			],
 		});
 	});

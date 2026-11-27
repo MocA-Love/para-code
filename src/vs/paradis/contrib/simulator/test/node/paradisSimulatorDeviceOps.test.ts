@@ -468,12 +468,14 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 		const longPress = await call('mobile_gesture', { kind: 'long_press', x: 339, y: 422 });
 		const outside = await call('mobile_gesture', { kind: 'long_press', x: 500, y: 200 });
 		assert.deepStrictEqual({
-			screen: rotated.screen,
+			confirmed: rotated.confirmed,
+			lastSeenScreen: rotated.lastSeenScreen,
 			noted: typeof rotated.note === 'string',
 			longPress: longPress.isError,
 			outside: outside.isError,
 		}, {
-			screen: { pointWidth: 402, pointHeight: 874, scale: 3 },
+			confirmed: false,
+			lastSeenScreen: { pointWidth: 402, pointHeight: 874, scale: 3 },
 			noted: true,
 			longPress: false,
 			outside: true,
@@ -497,6 +499,49 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 		const sideways = await call('mobile_gesture', { kind: 'long_press', x: 700, y: 100 });
 		shots.push(host.screenshots);
 		assert.deepStrictEqual([shots, sideways.isError], [[1, 1, 2, 3], false]);
+	});
+
+	// 時間切れのときは「回らなかった」と言い切らず、覚えた大きさを捨てて次の操作で測り直す。アプリを起動した直後は
+	// 長く待つ（paracode-196 の確認: Safari の起動直後の landscape-left は 2 秒では回り切っておらず、縦の大きさを返していた）
+	test('a rotation that is still turning is not reported as refused, and waits longer right after an app starts', async () => {
+		const clock = { t: 0 };
+		const { ledger, host, call } = setup({ clock });
+		ledger.give(PANE, IPHONE);
+		// スクショ 1 枚に 0.9 秒、画面は 3 枚目で横になる
+		host.appRotates = false;
+		host.onScreenshot = () => {
+			clock.t += 900;
+			if (host.screenshots === 3) {
+				host.screenshot = { width: 2400, height: 1200 };
+			}
+		};
+		const early = JSON.parse((await call('mobile_rotate', { orientation: 'landscape-left' })).body);
+		const shotsAfterEarly = host.screenshots;
+		// 覚えた大きさは捨てたので、次のジェスチャーは測り直す
+		await call('mobile_gesture', { kind: 'long_press', x: 100, y: 100 });
+		const remeasured = host.screenshots - shotsAfterEarly;
+		// アプリを起動した直後なら、同じ遅さでも横になるまで待つ
+		const launched = setup({ clock });
+		launched.ledger.give(PANE, IPHONE);
+		await launched.call('mobile_launch_app', { appId: 'com.example.myapp' });
+		launched.host.appRotates = false;
+		launched.host.screenshots = 0;
+		launched.host.onScreenshot = () => {
+			clock.t += 900;
+			if (launched.host.screenshots === 3) {
+				launched.host.screenshot = { width: 2400, height: 1200 };
+			}
+		};
+		const afterLaunch = JSON.parse((await launched.call('mobile_rotate', { orientation: 'landscape-left' })).body);
+		assert.deepStrictEqual({
+			early: { confirmed: early.confirmed, screen: early.screen, lastSeenScreen: early.lastSeenScreen, says: /could not confirm/.test(early.note) && /mobile_screenshot/.test(early.note) },
+			remeasured,
+			afterLaunch: { confirmed: afterLaunch.confirmed, screen: afterLaunch.screen, shots: launched.host.screenshots },
+		}, {
+			early: { confirmed: false, screen: undefined, lastSeenScreen: { pointWidth: 400, pointHeight: 800, scale: 3 }, says: true },
+			remeasured: 1,
+			afterLaunch: { confirmed: undefined, screen: { pointWidth: 800, pointHeight: 400, scale: 3 }, shots: 3 },
+		});
 	});
 
 	test('rotation that the app does not follow stops looking within about two seconds', async () => {
@@ -811,6 +856,49 @@ suite('ParadisMobileDeviceOpsToolProvider', () => {
 
 suite('ParadisMobileCanvasService screen tools', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
+
+	// 打つ前の欄の値と比べ、増えた部分だけを打った文字と比べる。iOS はホストが打つ前の値（valueBefore）を添え、
+	// Android は打つ前に読む
+	test('type_text compares only what typing added to the field', async () => {
+		const devices = [
+			{ id: 'ios:core-simulator:' + IOS_UDID, udid: IOS_UDID, name: 'iPhone 17', platform: 'iOS', state: 'Booted' },
+			{ id: 'android:serial:emulator-5554', udid: 'emulator-5554', name: 'Pixel', platform: 'android', state: 'device' },
+		];
+		let field = '検索';
+		const uiReads: string[] = [];
+		const hostClient = {
+			request: async (method: string, path: string, body?: { text?: string }) => {
+				if (path === '/api/v1/devices') {
+					return devices;
+				}
+				if (path.endsWith('/input/text')) {
+					field = path.includes('ios') ? `${field} ${body?.text}` : `${field}${body?.text}`;
+					return undefined;
+				}
+				if (path.endsWith('/ui')) {
+					uiReads.push(path.includes('ios') ? 'ios' : 'android');
+					return { root: { role: 'application', children: [path.includes('ios') ? { role: 'field', value: field, focused: true, valueBefore: '検索' } : { role: 'field', value: field, focused: true }] } };
+				}
+				return {};
+			},
+		} as unknown as IParadisMobileHostRequester;
+		const service = store.add(new ParadisMobileCanvasService(hostClient, new NullLogService()));
+		const typed = async (deviceId: string, text: string) => {
+			await service.attach(PANE, deviceId, undefined);
+			const result = await service.callTool(PANE, 'mobile_type_text', { text, device: deviceId }) as { content: { text: string }[] };
+			const body = JSON.parse(result.content[0].text) as Record<string, unknown>;
+			return [body.insertedText, body.matchesWhatWasTyped, body.converted === undefined ? false : true];
+		};
+		const ios = await typed(devices[0].id, 'x\n');
+		field = '検索';
+		const android = await typed(devices[1].id, 'wifi');
+		assert.deepStrictEqual({ ios, android, uiReads }, {
+			ios: [' x\n', true, false],
+			android: ['wifi', true, false],
+			// iOS は打った後だけ読む。Android は打つ前と後に読む
+			uiReads: ['ios', 'android', 'android'],
+		});
+	});
 
 	test('screen input works with the token alone, and an agent request cannot take a device another pane holds', async () => {
 		const requests: string[] = [];

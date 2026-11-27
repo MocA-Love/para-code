@@ -194,6 +194,21 @@ export type IParadisManageProfileResult<T = {}> =
 	| ({ readonly ok: true } & T)
 	| { readonly ok: false; readonly reason: ParadisProfileManageFailure };
 
+export type IParadisDeleteProfileResult = IParadisManageProfileResult<{
+	readonly profileName: string;
+	/** 削除と一緒に閉じた、そのペインのタブの ID（もう使えない）。 */
+	readonly closedTabIds: readonly string[];
+}>;
+
+/** delete_browser_profile の返事。一緒に閉じた自分のタブを並べる（黙って閉じると、エージェントが消えた tabId を使い続ける）。 */
+export function paradisDeletedProfileMessage(profileName: string, closedTabIds: readonly string[] | undefined): string {
+	const deleted = `Deleted the "${profileName}" browser profile and its stored data.`;
+	if (closedTabIds === undefined || closedTabIds.length === 0) {
+		return deleted;
+	}
+	return `${deleted} Closed your ${closedTabIds.length === 1 ? 'tab' : 'tabs'} in that profile: ${closedTabIds.join(', ')}. ${closedTabIds.length === 1 ? 'That tabId no longer works' : 'Those tabIds no longer work'}; use list_browser_tabs to see the tabs you still have.`;
+}
+
 export type IParadisSwitchProfileResult = IParadisManageProfileResult<{
 	readonly profileName: string;
 	/** 新しく作り直したタブの ID（元の ID は使えなくなる）。 */

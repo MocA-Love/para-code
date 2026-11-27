@@ -808,3 +808,35 @@ button.paradis-bot-page-link:hover {
 	align-items: center;
 	gap: var(--vscode-spacing-size60);
 }
+
+/* The look-around time fields (same kinds as the scheduled runs dialog): narrow time and minute fields, a wider cron field. */
+.paradis-bot-patrol-settings .paradis-bot-patrol-range {
+	flex-wrap: wrap;
+}
+
+.paradis-bot-patrol-time {
+	width: 120px;
+}
+
+.paradis-bot-patrol-minute {
+	width: 72px;
+}
+
+.paradis-bot-patrol-cron {
+	flex: 1 1 200px;
+	min-width: 160px;
+}
+
+.paradis-bot-patrol-cron input {
+	font-family: var(--monaco-monospace-font);
+}
+
+.paradis-bot-patrol-preview {
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+	overflow-wrap: anywhere;
+}
+
+.paradis-bot-patrol-preview.paradis-bot-patrol-problem {
+	color: var(--vscode-paradis-danger);
+}
