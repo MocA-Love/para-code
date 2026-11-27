@@ -37,7 +37,7 @@ import { IParadisAgentChatService } from '../../agentChat/browser/paradisAgentCh
 import { paradisCollectAllTerminalInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisBotGroupSender, ParadisBotGroupEditorInput } from '../browser/paradisBotGroupEditor.js';
-import { paradisBotPaneTokenHashInWindow, paradisFindBotPane } from '../browser/paradisBotPaneHash.js';
+import { paradisBotIdByPaneHash, paradisFindBotChatPane } from '../browser/paradisBotPaneHash.js';
 import { ParadisBotGroupRelayLimiter, paradisBotGroupDeliverRefusal, paradisBotGroupDeliverRefusalMessage, paradisBotGroupMembers, paradisBotGroupNeutralizeCommand } from '../common/paradisBotGroups.js';
 import { PARADIS_BOT_GROUPS_WINDOW_CHANNEL } from '../common/paradisBotMessages.js';
 import { IParadisBotGroupsService, PARADIS_BOTS_OPEN_GROUP_COMMAND } from '../common/paradisBotGroupsApi.js';
@@ -63,11 +63,11 @@ async function botPaneWhere(accessor: ServicesAccessor, botId: string): Promise<
 	const terminalScopeService = accessor.get(IParadisTerminalScopeService);
 	const switchService = accessor.get(IParadisWorkspaceSwitchService);
 	// 会話のペインだけを見る（見回りのペインへは送らない。伝言の道具も会話のペインを持つウィンドウへ届ける）
-	const found = await paradisFindBotPane({
+	const found = await paradisFindBotChatPane({
 		paneTokenService,
 		findInstance: instanceId => paradisCollectAllTerminalInstances(terminalService, terminalGroupService).find(instance => instance.instanceId === instanceId),
 		stateKeyOf: instanceId => terminalScopeService.getStateKeyForInstance(instanceId),
-	}, await botsService.paneHashesOf(botId, 'chat'));
+	}, botsService, botId);
 	if (found === undefined) {
 		return { kind: 'none' };
 	}
@@ -185,9 +185,10 @@ class ParadisBotGroupSender implements IParadisBotGroupSender {
 /**
  * Bot 同士の伝言を届ける窓口（伝言の道具 paradisBotMessageToolProvider.ts が `callPaneWindow` で呼ぶ）。呼ぶのは
  * 宛先の Bot の会話のペインを持つウィンドウで、呼び出し元（送り手）のペインは別のウィンドウにあってよい。引数は
- * `[呼び出し元のペイントークン, 宛先の Bot の id, 文]`。文は道具の側が出どころ（どの Bot からの伝言か）を付けて渡す。
- * 送れたら undefined、送れなければ理由の文（英文。道具がエージェントへ返す）。呼び出し元の Bot はトークンのハッシュを
- * 台帳と照らして見分ける（ウィンドウを問わない。引数の名乗りは信じない）。宛先の会話のペインがこのウィンドウに無ければ
+ * `[送り手のペイントークンのハッシュ, 宛先の Bot の id, 文]`（生のトークンは別のウィンドウへ渡さない）。文は道具の側が
+ * 出どころ（どの Bot からの伝言か）を付けて渡す。送れたら undefined、送れなければ理由の文（英文。道具がエージェントへ
+ * 返す）。送り手の Bot はそのハッシュをそのまま台帳と照らして見分ける（もう一度ハッシュにしない。ウィンドウを問わない。
+ * 引数の名乗りは信じない）。宛先の会話のペインがこのウィンドウに無ければ
  * （閉じた・別のウィンドウへ移った直後）理由を返す。記録は道具の側が届ける前に書く。
  */
 class ParadisBotGroupsWindowChannel implements IServerChannel {
@@ -208,15 +209,15 @@ class ParadisBotGroupsWindowChannel implements IServerChannel {
 		if (command !== 'deliver') {
 			throw new Error(`unknown command ${command}`);
 		}
-		const [callerToken, to, text] = Array.isArray(arg) ? arg : [];
-		if (typeof callerToken !== 'string' || typeof to !== 'string' || typeof text !== 'string' || text.trim().length === 0) {
+		const [callerHash, to, text] = Array.isArray(arg) ? arg : [];
+		if (typeof callerHash !== 'string' || typeof to !== 'string' || typeof text !== 'string' || text.trim().length === 0) {
 			return 'The arguments are not valid.' as T;
 		}
 		if (this.configurationService.getValue(PARADIS_BOTS_ENABLED_SETTING) !== true) {
 			return 'Bots are turned off in this Para Code.' as T;
 		}
 		this.deliverer ??= this.instantiationService.createInstance(ParadisBotGroupsDeliverer);
-		return await this.deliverer.deliver(callerToken, to, text) as T;
+		return await this.deliverer.deliver(callerHash, to, text) as T;
 	}
 }
 
@@ -231,18 +232,8 @@ class ParadisBotGroupsDeliverer {
 		@IParadisBotGroupsService private readonly groupsService: IParadisBotGroupsService,
 	) { }
 
-	private async callerBot(callerToken: string): Promise<string | undefined> {
-		const hash = await paradisBotPaneTokenHashInWindow(callerToken);
-		for (const bot of this.botsService.snapshot.bots) {
-			if ((await this.botsService.paneHashesOf(bot.id)).includes(hash)) {
-				return bot.id;
-			}
-		}
-		return undefined;
-	}
-
-	async deliver(callerToken: string, to: string, text: string): Promise<string | undefined> {
-		const from = await this.callerBot(callerToken);
+	async deliver(callerHash: string, to: string, text: string): Promise<string | undefined> {
+		const from = await paradisBotIdByPaneHash(this.botsService, callerHash);
 		// 送り手と宛先の両方が入っているグループ（無ければメンバーでない）
 		const group = this.groupsService.snapshot.groups.find(candidate => from !== undefined && candidate.members.includes(from) && candidate.members.includes(to));
 		const target = this.botsService.snapshot.bots.find(bot => bot.id === to);
@@ -260,8 +251,8 @@ class ParadisBotGroupsDeliverer {
 		}
 		// 先頭の / と ! はコマンド・シェルとして動くので崩してから届ける（利用者が部屋から送る文はそのまま）
 		const error = await this.sender.send(to, paradisBotGroupNeutralizeCommand(text));
-		// 許可・質問の画面が出ている・エージェントが前面にいないなど。割り込まずに断る
-		return error === undefined ? undefined : `That bot cannot take a message now (${error}). Try again later.`;
+		// 許可・質問の画面が出ている・エージェントが前面にいないなど。割り込まずに「作業中、しばらくしてから」で断る（#1231 の道具の文とそろえる）
+		return error === undefined ? undefined : `That bot is busy now (${error}). Send the message again after a while.`;
 	}
 }
 

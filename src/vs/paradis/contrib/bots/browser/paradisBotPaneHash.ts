@@ -55,12 +55,46 @@ export async function paradisFindBotPane<T extends { readonly isDisposed: boolea
 	return undefined;
 }
 
+/** Bot の台帳のうち、ペインの引き当てに要る所。 */
+interface IParadisBotPaneLookup {
+	readonly snapshot: { readonly bots: readonly { readonly id: string }[] };
+	paneHashesOf(botId: string, purpose?: 'chat' | 'patrol'): Promise<readonly string[]>;
+}
+
+/**
+ * このウィンドウにある、その Bot の会話のペイン（見回りのペインは選ばない。部屋から送る先と、伝言を届ける先）。
+ * 無ければ undefined。
+ */
+export async function paradisFindBotChatPane<T extends { readonly isDisposed: boolean }>(
+	services: Parameters<typeof paradisFindBotPane<T>>[0],
+	botsService: Pick<IParadisBotPaneLookup, 'paneHashesOf'>,
+	botId: string,
+): Promise<{ readonly instanceId: number; readonly instance: T; readonly stateKey: string | undefined } | undefined> {
+	return paradisFindBotPane(services, await botsService.paneHashesOf(botId, 'chat'));
+}
+
+/**
+ * ペイントークンのハッシュ（16 進の SHA-256）から、そのペインの Bot の id を引く（会話・見回りのどちらのペインでも）。
+ * ハッシュはそのまま台帳と照らす（受け取ったハッシュをもう一度ハッシュにしない）。形の違う値・見つからなければ undefined。
+ */
+export async function paradisBotIdByPaneHash(botsService: IParadisBotPaneLookup, paneHash: string): Promise<string | undefined> {
+	if (!/^[0-9a-f]{64}$/u.test(paneHash)) {
+		return undefined;
+	}
+	for (const bot of botsService.snapshot.bots) {
+		if ((await botsService.paneHashesOf(bot.id)).includes(paneHash)) {
+			return bot.id;
+		}
+	}
+	return undefined;
+}
+
 /**
  * このウィンドウにある見回りのペイン（全部の Bot）。ウィンドウを閉じるときに閉じて、次の起動で見回りの残骸を
  * 復元しないために使う。
  */
 export async function paradisBotPatrolInstancesInWindow(
-	botsService: { readonly snapshot: { readonly bots: readonly { readonly id: string }[] }; paneHashesOf(botId: string, purpose: 'patrol'): Promise<readonly string[]> },
+	botsService: IParadisBotPaneLookup,
 	paneTokenService: Pick<IParadisPaneTokenService, 'listPaneTokens'>,
 ): Promise<number[]> {
 	const hashes: string[] = [];

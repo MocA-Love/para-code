@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisBotInstancesInWindow, paradisBotPaneTokenHashInWindow, paradisBotPatrolInstancesInWindow, paradisFindBotPane } from '../../browser/paradisBotPaneHash.js';
+import { paradisBotIdByPaneHash, paradisBotInstancesInWindow, paradisBotPaneTokenHashInWindow, paradisBotPatrolInstancesInWindow, paradisFindBotChatPane, paradisFindBotPane } from '../../browser/paradisBotPaneHash.js';
 
 suite('Paradis bot pane hash', () => {
 
@@ -57,5 +57,49 @@ suite('Paradis bot pane hash', () => {
 		};
 		const panes = { listPaneTokens: () => [{ instanceId: 1, token: 'pane-chat' }, { instanceId: 2, token: 'pane-p1' }, { instanceId: 3, token: 'pane-p2' }] };
 		assert.deepStrictEqual(await paradisBotPatrolInstancesInWindow(botsService, panes), [2, 3]);
+	});
+
+	test('部屋と伝言の送り先は Bot の会話のペインだけ（見回りのペインが先に並んでいても選ばない）', async () => {
+		const hashes: Record<string, string[]> = {
+			chat: [await paradisBotPaneTokenHashInWindow('pane-chat')],
+			patrol: [await paradisBotPaneTokenHashInWindow('pane-patrol')],
+			all: [await paradisBotPaneTokenHashInWindow('pane-patrol'), await paradisBotPaneTokenHashInWindow('pane-chat')],
+		};
+		const asked: string[] = [];
+		const botsService = {
+			paneHashesOf: async (botId: string, purpose?: 'chat' | 'patrol') => {
+				asked.push(`${botId}:${purpose ?? 'all'}`);
+				return botId === 'b1' ? hashes[purpose ?? 'all'] : [];
+			},
+		};
+		const services = {
+			paneTokenService: { listPaneTokens: () => [{ instanceId: 7, token: 'pane-patrol' }, { instanceId: 8, token: 'pane-chat' }] },
+			findInstance: (instanceId: number) => ({ isDisposed: false, instanceId }),
+			stateKeyOf: () => undefined,
+		};
+		const found = await paradisFindBotChatPane(services, botsService, 'b1');
+		assert.deepStrictEqual({
+			found: found?.instanceId,
+			other: await paradisFindBotChatPane(services, botsService, 'b2'),
+			asked,
+		}, {
+			found: 8,
+			other: undefined,
+			asked: ['b1:chat', 'b2:chat'],
+		});
+	});
+
+	test('伝言の送り手は、受け取ったハッシュをそのまま台帳と照らして引く（もう一度ハッシュにしない）', async () => {
+		const hashA = '1b780c2005e24c7adab28a00c48fd437c37580c140f7b9585d87f54e78b59cff';
+		const botsService = {
+			snapshot: { bots: [{ id: 'b1' }, { id: 'b2' }] },
+			paneHashesOf: async (botId: string) => botId === 'b2' ? [hashA] : [],
+		};
+		assert.deepStrictEqual([
+			await paradisBotIdByPaneHash(botsService, hashA),
+			await paradisBotIdByPaneHash(botsService, 'pane-A'),
+			await paradisBotIdByPaneHash(botsService, await paradisBotPaneTokenHashInWindow(hashA)),
+			await paradisBotIdByPaneHash(botsService, hashA.toUpperCase()),
+		], ['b2', undefined, undefined, undefined]);
 	});
 });
