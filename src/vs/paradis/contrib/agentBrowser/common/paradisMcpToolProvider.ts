@@ -192,6 +192,32 @@ export function paradisRegisterMcpToolProvider(provider: IParadisMcpToolProvider
 	return toDisposable(() => registeredProviders.delete(provider));
 }
 
+/**
+ * ほかの機能が、呼び出し元のペインごとに para-browser の道具の呼び出しを断る口（ブラウザの道具・プロバイダの道具・内蔵の
+ * chrome-devtools-mcp の道具の全部に効く）。理由の文を返すと断る。Bot の見回りのペインを読むだけの道具に限るのに使う
+ * （利用者がエージェントの側で常に許可した書く道具も、サーバーの側で断る）。
+ */
+export type ParadisMcpCallRefusal = (paneToken: string, toolName: string) => Promise<string | undefined>;
+
+const callRefusals = new Set<ParadisMcpCallRefusal>();
+
+/** {@link ParadisMcpCallRefusal} を登録する。 */
+export function paradisRegisterMcpCallRefusal(refusal: ParadisMcpCallRefusal): IDisposable {
+	callRefusals.add(refusal);
+	return toDisposable(() => callRefusals.delete(refusal));
+}
+
+/** 登録された口に順に聞き、最初に返った断る理由（無ければ undefined）。 */
+export async function paradisMcpCallRefusalFor(paneToken: string, toolName: string): Promise<string | undefined> {
+	for (const refusal of [...callRefusals]) {
+		const reason = await refusal(paneToken, toolName);
+		if (reason !== undefined) {
+			return reason;
+		}
+	}
+	return undefined;
+}
+
 /** 登録口から足されたプロバイダを登録順に返す。 */
 export function paradisRegisteredMcpToolProviders(): readonly IParadisMcpToolProvider[] {
 	return [...registeredProviders];

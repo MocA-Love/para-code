@@ -155,8 +155,8 @@ export class ParadisBotsClient extends Disposable implements IParadisBotsService
 		return this.value('requestStop', [botId], false);
 	}
 
-	paneHashesOf(botId: string): Promise<readonly string[]> {
-		return this.value<readonly string[]>('paneHashesOf', [botId], []);
+	paneHashesOf(botId: string, purpose?: ParadisBotPanePurpose): Promise<readonly string[]> {
+		return this.value<readonly string[]>('paneHashesOf', purpose !== undefined ? [botId, purpose] : [botId], []);
 	}
 
 	listSuggestions(botId: string): Promise<readonly IParadisBotSuggestion[]> {

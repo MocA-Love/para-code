@@ -52,6 +52,7 @@ import { IParadisBotLaunch, IParadisBotRevealRequest, IParadisBotsSnapshot, IPar
 import { IParadisAgentCommandTemplate, paradisResolveAgentLaunchFlags } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
 import { IParadisBotItemAddArgs, paradisBotLaunchApprovalFlags, paradisBotPatrolLaunchArgs, ParadisBotPatrolLaunchContext, paradisBotPatrolSupported, paradisBotPatrolTemplateRefusal } from '../common/paradisBotTools.js';
 import { PARADIS_READ_ONLY_MCP_TOOL_NAMES } from '../../agentBrowser/common/paradisMcpReadOnlyTools.js';
+import { ParadisBotPatrolGateState } from '../../scheduledRuns/common/paradisScheduledRunBotPatrol.js';
 import { EMPTY_PARADIS_BOT_SUGGESTIONS_STATE, IParadisBotSuggestion, PARADIS_BOT_SUGGESTIONS_VERSION, IParadisBotSuggestionsState, paradisBotOpenSuggestions, paradisBotSuggestionAdd, paradisBotSuggestionDismiss, paradisBotSuggestionsRemoveBot, paradisBotSuggestionsRunEnded, paradisBotSuggestionStart } from '../common/paradisBotSuggestions.js';
 import { ParadisBotHomeError, ParadisBotHomes } from './paradisBotHomes.js';
 import type { IParadisBotPatrolHome } from './paradisBotPatrolLaunch.js';
@@ -158,6 +159,10 @@ export class ParadisBotsService extends Disposable {
 	private readonly _onDidRequestStop = this._register(new Emitter<IParadisBotStopRequest>());
 	/** Bot を止めてほしい。そのターミナルを持つウィンドウが閉じる（閉じると結び付けが外れる）。 */
 	readonly onDidRequestStop: Event<IParadisBotStopRequest> = this._onDidRequestStop.event;
+
+	private readonly _onDidRemoveBot = this._register(new Emitter<string>());
+	/** Bot を台帳から外した（定期実行の見回りの定義を消すのに使う）。 */
+	readonly onDidRemoveBot: Event<string> = this._onDidRemoveBot.event;
 
 	private readonly _onDidRequestReveal = this._register(new Emitter<IParadisBotRevealRequest>());
 	/** 開いている Bot のペインを前に出してほしい（別のウィンドウから開こうとして断った）。 */
@@ -387,6 +392,7 @@ export class ParadisBotsService extends Disposable {
 			// Bot を先に消す（項目を先に消すと、Bot の保存に失敗したときに項目だけが消える）。項目の保存に失敗しても、
 			// 持ち主のいない項目は一覧にも「あなたの番」にも出ない
 			const removed = await this.saveBots(result.state, result.bot);
+			this._onDidRemoveBot.fire(botId);
 			this._onDidRequestStop.fire({ botId, paneHashes: this.paneHashesOf(botId) });
 			this.panes.releaseBot(botId);
 			await this.saveItems(paradisBotItemsRemoveBot(this.items, botId), undefined);
@@ -623,9 +629,51 @@ export class ParadisBotsService extends Disposable {
 		return true;
 	}
 
-	/** その Bot のペインのトークンの SHA-256（結び付いているものと、保存してまだ現れていないもの）。 */
-	paneHashesOf(botId: string): string[] {
-		return [...new Set([...this.panes.tokensOf(botId).map(paradisBotPaneTokenHash), ...this.panes.rememberedPanes().filter(record => record.botId === botId).map(record => record.hash)])];
+	/** その Bot のペインのトークンの SHA-256（結び付いているものと、保存してまだ現れていないもの）。`purpose` を渡せばその用途だけ。 */
+	paneHashesOf(botId: string, purpose?: ParadisBotPanePurpose): string[] {
+		return [...new Set([
+			...this.panes.tokensOf(botId, { purpose }).map(paradisBotPaneTokenHash),
+			...this.panes.rememberedPanes().filter(record => record.botId === botId && (purpose === undefined || record.purpose === purpose)).map(record => record.hash),
+		])];
+	}
+
+	// ---- 定期実行の見回りの門（定期実行のサービスが呼ぶ） -------------------------------------------
+
+	/**
+	 * 定期実行から見回りを走らせてよいか。台帳を読み終える前は undefined。Bot の機能がオフ・Bot が無い・一時停止・
+	 * 読むだけに制限できないエージェント・前の見回りのエージェントがまだ動いている、のどれかならその答え。
+	 */
+	patrolGateState(botId: string): ParadisBotPatrolGateState | undefined {
+		if (!this.loaded) {
+			return undefined;
+		}
+		if (!this.enabled()) {
+			return 'off';
+		}
+		const bot = this.getBot(botId);
+		if (bot === undefined) {
+			return 'missing';
+		}
+		if (bot.paused) {
+			return 'paused';
+		}
+		if (bot.preserved !== undefined || this.homes === undefined || !paradisBotPatrolSupported(bot.agent)) {
+			return 'unsupported';
+		}
+		return this.panes.statesOf(botId).some(pane => pane.purpose === 'patrol' && pane.working) ? 'busy' : 'ok';
+	}
+
+	/**
+	 * 前の回の見回りのペインのうち、もう動いていないものを閉じる依頼を全ウィンドウへ出す（会話のペインは閉じない）。
+	 * 起動し直した後でまだ結び付いていない（hook が来ていない）見回りのペインも、保存したハッシュで閉じる。
+	 */
+	closeIdlePatrolPanes(botId: string): void {
+		const idle = new Set(this.panes.tokensOf(botId, { purpose: 'patrol', idle: true }));
+		const working = new Set(this.panes.tokensOf(botId, { purpose: 'patrol' }).filter(token => !idle.has(token)).map(paradisBotPaneTokenHash));
+		const paneHashes = this.paneHashesOf(botId, 'patrol').filter(hash => !working.has(hash));
+		if (paneHashes.length > 0) {
+			this._onDidRequestStop.fire({ botId, paneHashes });
+		}
 	}
 
 	/** 専用フォルダの中のファイルを読む（人格メモ・記憶など。相対パスだけ）。無ければ `value` は undefined。 */

@@ -69,7 +69,7 @@ export type HumanAskAnswer =
 
 export type HumanAskAnswerOutcome =
 	| { readonly ok: true; readonly duplicate?: true }
-	| { readonly ok: false; readonly reason: 'gone' | 'busy' | 'invalid' | 'unavailable' };
+	| { readonly ok: false; readonly reason: 'gone' | 'busy' | 'invalid' | 'unavailable' | 'unconfirmed' };
 
 const SOURCES = new Set(['pane', 'board', 'bot']);
 const KINDS = new Set(['question', 'permission', 'approval', 'stalled']);
@@ -254,7 +254,56 @@ export function humanAskRefusalText(reason: Exclude<HumanAskAnswerOutcome, { ok:
 		case 'busy': return 'ほかの場所で答えて、届けている最中です';
 		case 'invalid': return 'この答えは送れません。選択肢から選んでください';
 		case 'unavailable': return 'PC に届きませんでした。つながりを確かめてください';
+		case 'unconfirmed': return '答えが届いたか確かめられませんでした。もう一度押してください';
 	}
+}
+
+/**
+ * PC が `duplicate`（同じ opId の 2 回目）と返したあと、取り直した一覧で答えが届いたかを決める。
+ * 一覧から消えていれば届いた。届けている最中（`busy`）は誰の答えか分からないので届いたとは言わず `busy`
+ * （カードは取り直した一覧の `busy` で押せなくなる）、まだ待っている・一覧が取れないときは `unconfirmed`。
+ * どちらもカードを「答えた」にしない（消さない）。
+ */
+export function humanAskDuplicateOutcome(asks: readonly Pick<HumanAsk, 'key' | 'busy'>[] | undefined, key: string): HumanAskAnswerOutcome {
+	const ask = asks?.find(candidate => candidate.key === key);
+	if (asks !== undefined && ask === undefined) {
+		return { ok: true };
+	}
+	return ask?.busy === true ? { ok: false, reason: 'busy' } : { ok: false, reason: 'unconfirmed' };
+}
+
+/**
+ * カードの「答えた」がまだ有効か。`answeredOn` は答えたときの 1 件、`current` は今の一覧の同じ鍵の 1 件。
+ * 一覧を取り直して、届けている最中でなく「前の答えを届けられませんでした」（`failed`）で待ちへ戻っていたら下ろす
+ * （スマホから答え直せるように）。取り直す前（同じ 1 件のまま）と、届けている最中は「答えた」のまま。
+ */
+export function humanAskAnswerStands(answeredOn: HumanAsk, current: HumanAsk): boolean {
+	return current === answeredOn || current.busy || !current.failed;
+}
+
+/** ボタンを押したときに挟むシート。PC が載せた確認の文（`confirm`）があればそれを出す。 */
+export type HumanAskActionSheet =
+	| { readonly kind: 'text'; readonly title: string; readonly body?: string; readonly ok: string }
+	| { readonly kind: 'confirm'; readonly title: string; readonly body?: string; readonly ok: string }
+	| { readonly kind: 'send' };
+
+/**
+ * ボタンを押したときの扱い。文を添えられるボタンは入力のシート（PC の確認の文を題と本文に出す）、確認のあるボタンは
+ * 確認のシート、どちらも無いボタンはそのまま送る。ただしボードの承認（`approval`）のボタンは、PC が確認を載せて
+ * いなくても確認のシートを挟む（承認・差し戻しを 1 押しで送らない）。
+ */
+export function humanAskActionSheet(ask: Pick<HumanAsk, 'kind' | 'preface'>, action: HumanAskAction): HumanAskActionSheet {
+	const confirm = action.confirm;
+	if (action.allowText === true) {
+		return { kind: 'text', title: confirm?.title ?? action.label, ...(confirm?.body !== undefined ? { body: confirm.body } : {}), ok: confirm?.ok ?? action.label };
+	}
+	if (confirm !== undefined) {
+		return { kind: 'confirm', title: confirm.title, ...(confirm.body !== undefined ? { body: confirm.body } : {}), ok: confirm.ok };
+	}
+	if (ask.kind === 'approval') {
+		return { kind: 'confirm', title: action.label, ...(ask.preface !== undefined ? { body: ask.preface } : {}), ok: action.label };
+	}
+	return { kind: 'send' };
 }
 
 let opSequence = 0;
