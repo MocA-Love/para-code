@@ -307,8 +307,9 @@ suite('Paradis bot homes', () => {
 			pinned: [service.getSnapshot().bots.map(bot => [bot.pinned, bot.faceColor, bot.faceShape]), badPin, badFace],
 			outside: await channel.call('window:1', 'writeHomeFile', [second.value.id, '../../escape.md', 'x']),
 			badArgs: [await channel.call('window:1', 'requestLaunch', [second.value.id, 'root']), await channel.call('window:1', 'ownerSetStatus', ['uid', 'blocked']), await channel.call('window:1', 'createBot', ['x'])],
-			// Bot の名義の書き込みは、チャネルには無い
-			botWrites: await Promise.all(['botAddItem', 'botUpdateItem', 'issueLaunch', 'releasePane'].map(command => channel.call('window:1', command, ['id3', { title: 'x' }]).then(() => 'reachable', () => 'not found'))),
+			// Bot の名義の書き込みは、チャネルには無い（releasePane はウィンドウが自分のペインのトークンを渡して結び付けを外す口なので、
+			// 再読み込みの前に隠したペインを閉じるために置いた。ターミナルを閉じるのと同じ効き目で、Bot の名義では書けない）
+			botWrites: await Promise.all(['botAddItem', 'botUpdateItem', 'issueLaunch'].map(command => channel.call('window:1', command, ['id3', { title: 'x' }]).then(() => 'reachable', () => 'not found'))),
 		}, {
 			folders: ['bot', 'bot-2'],
 			memory: { ok: true, value: '# 記憶\n\n1 行に 1 つの事実を書き、行の頭に日付（YYYY-MM-DD）を付けます。詳しいことは memory/<話題>.md に書きます。秘密は書きません。\n' },
@@ -324,7 +325,7 @@ suite('Paradis bot homes', () => {
 			pinned: [[[true, 'teal', 'hex']], { ok: false, code: 'invalid_argument', message: 'The change to the bot is not valid.' }, { ok: false, code: 'invalid_argument', message: 'The change to the bot is not valid.' }],
 			outside: { ok: false, code: 'outside', message: 'The path must be a relative path inside the bot\'s home folder.' },
 			badArgs: [{ ok: false, code: 'invalid_argument', message: 'The arguments are not valid.' }, { ok: false, code: 'invalid_argument', message: 'The arguments are not valid.' }, { ok: false, code: 'invalid_argument', message: 'The arguments are not valid.' }],
-			botWrites: ['not found', 'not found', 'not found', 'not found'],
+			botWrites: ['not found', 'not found', 'not found'],
 		});
 	});
 

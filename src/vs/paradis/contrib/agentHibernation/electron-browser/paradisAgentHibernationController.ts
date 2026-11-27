@@ -27,6 +27,7 @@ import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPane
 import { IParadisAgentStatusSnapshot, PARADIS_AGENT_BROWSER_CHANNEL } from '../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentStatusSnapshotService } from '../../agentBrowser/electron-browser/paradisAgentStatusSnapshotService.js';
 import { paradisCodexComposerState } from '../../mobileRelay/electron-browser/paradisCodexAutoContinueWindow.js';
+import { paradisIsTerminalHiddenOnClose } from '../../workspaceSwitch/browser/paradisTerminalHideOnClose.js';
 import { PARADIS_TASK_BOARD_BRIDGE_CHANNEL, paradisTaskBoardTerminalId } from '../../taskBoard/common/paradisTaskBoardBridge.js';
 import { paradisIsWorkbenchWindowFocused } from '../../workspaceSwitch/browser/paradisWindowFocus.js';
 import { paradisForgetRemoteTerminalViewing, paradisIsRemoteTerminalViewing, paradisLastRemoteTerminalViewAt, paradisSetHibernationWakeHandler } from '../browser/paradisAgentHibernationRemoteViews.js';
@@ -300,6 +301,7 @@ export class ParadisAgentHibernationController extends Disposable {
 				editorArea: instance.target === TerminalLocation.Editor,
 				remote: instance.remoteAuthority !== undefined || paneSession?.remote === true,
 				taskBoard: false,
+				bot: paradisIsTerminalHiddenOnClose(instance.instanceId),
 				hibernated: this.host.isHibernated(instance.instanceId),
 				busy: this.busy.has(instance.instanceId),
 				status: status?.status,

@@ -15,7 +15,7 @@
 //   として項目に書き、作業中へ戻す。
 // - どのペインがどの Bot かは {@link ParadisBotPanes} が持つ。
 
-import { RunOnceScheduler, TimeoutTimer } from '../../../../base/common/async.js';
+import { IntervalTimer, RunOnceScheduler, TimeoutTimer } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
@@ -53,7 +53,7 @@ import { EMPTY_PARADIS_BOTS_STATE, IParadisBot, IParadisBotCreateInput, IParadis
 import { IParadisBotGithubView, PARADIS_BOT_GITHUB_OFF_VIEW } from '../common/paradisBotGithub.js';
 import { IParadisBotLaunch, IParadisBotRevealRequest, IParadisBotsSnapshot, IParadisBotStopRequest, ParadisBotPanePurpose, ParadisBotsServiceResult, paradisBotSummary } from '../common/paradisBotsApi.js';
 import { IParadisAgentCommandTemplate, paradisResolveAgentLaunchFlags } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
-import { IParadisBotItemAddArgs, paradisBotLaunchApprovalFlags, ParadisCodexBrowserRegistration, paradisBotPatrolLaunchArgs, ParadisBotPatrolLaunchContext, paradisBotPatrolSupported, paradisBotPatrolTemplateRefusal } from '../common/paradisBotTools.js';
+import { IParadisBotItemAddArgs, paradisBotLaunchApprovalFlags, paradisBotResumeArgs, ParadisCodexBrowserRegistration, paradisBotPatrolLaunchArgs, ParadisBotPatrolLaunchContext, paradisBotPatrolSupported, paradisBotPatrolTemplateRefusal } from '../common/paradisBotTools.js';
 import { PARADIS_READ_ONLY_MCP_TOOL_NAMES } from '../../agentBrowser/common/paradisMcpReadOnlyTools.js';
 import { ParadisBotPatrolGateState } from '../../scheduledRuns/common/paradisScheduledRunBotPatrol.js';
 import { EMPTY_PARADIS_BOT_SUGGESTIONS_STATE, IParadisBotSuggestion, PARADIS_BOT_SUGGESTIONS_VERSION, IParadisBotSuggestionsState, paradisBotOpenSuggestions, paradisBotSuggestionAdd, paradisBotSuggestionDismiss, paradisBotSuggestionsRemoveBot, paradisBotSuggestionsRunEnded, paradisBotSuggestionStart } from '../common/paradisBotSuggestions.js';
@@ -72,6 +72,9 @@ const CHANGE_DELAY = 50;
 /** 新しい Bot のフォルダを取り直す回数の上限。 */
 const CREATE_FOLDER_ATTEMPTS = 5;
 
+/** 何もしない会話を止めるかを見る間隔。 */
+const IDLE_CHECK_INTERVAL_MS = 60_000;
+
 /** Bot へ渡す、持ち主の書き込み 1 項目ぶん。 */
 export interface IParadisBotMail {
 	readonly uid: string;
@@ -85,7 +88,7 @@ export interface IParadisBotsServiceOptions {
 	readonly now?: () => number;
 	readonly uuid?: () => string;
 	/** shared process の hook のバス。Bot のペインの様子（動いている・待っている）を追う。 */
-	readonly hookEvents?: Event<{ readonly token: string; readonly event: string; readonly observedExit?: true }>;
+	readonly hookEvents?: Event<{ readonly token: string; readonly event: string; readonly sessionId?: string; readonly observedExit?: true }>;
 	/** ペインとの結び付けの保存先（トークンのハッシュだけ）。渡さなければ結び付けはメモリだけ。 */
 	readonly panesFile?: IParadisBotsJsonFile<IParadisBotPanesState>;
 	/** 専用フォルダの読み書き。渡さなければフォルダを作らず、起動の依頼とファイルの口は `unavailable` で断る。 */
@@ -225,12 +228,46 @@ export class ParadisBotsService extends Disposable {
 				}
 				// 起動し直した後に現れた Bot のペインなら、保存した結び付けを戻す
 				const restored = this.restorePane(event.token);
-				if (this.panes.noteHook(event.token, event.event, this.now())?.changed || restored) {
+				if (this.panes.noteHook(event.token, event.event, this.now(), event.sessionId, botId => this.getBot(botId)?.agent)?.changed || restored) {
 					this.notify();
 				}
 			}));
 		}
+		// 何もしないまま 30 分が過ぎた会話を止める（1 分ごとに見る。止めた後は眠った会話として残る）
+		this._register(this.idleTimer).cancelAndSet(() => this.stopIdleChats(), IDLE_CHECK_INTERVAL_MS);
 		this.ready = this.load();
+	}
+
+	private readonly idleTimer = new IntervalTimer();
+	/** 止める依頼を出した会話のペイン（閉じたことが届くまで、毎分出し直さない）。 */
+	private readonly idleStopRequested = new Set<string>();
+
+	/**
+	 * 何もしないまま 30 分（`PARADIS_BOT_IDLE_STOP_MS`） が過ぎた会話のペインを止める依頼を出す（報告書の D1 (a)。Orca と同じ
+	 * 30 分）。会話の id は残るので、次に話しかけたら同じ会話を続けて起こす。見回りのペインは止めない（終わったら閉じる）。
+	 */
+	stopIdleChats(): void {
+		if (!this.loaded || !this.enabled()) {
+			return;
+		}
+		const byBot = new Map<string, string[]>();
+		for (const { botId, token } of this.panes.idleChatTokens(this.now())) {
+			if (this.idleStopRequested.has(token)) {
+				continue;
+			}
+			this.idleStopRequested.add(token);
+			byBot.set(botId, [...byBot.get(botId) ?? [], paradisBotPaneTokenHash(token)]);
+		}
+		for (const [botId, paneHashes] of byBot) {
+			this.logService.info(`[ParadisBots] stopping an idle bot conversation (${paneHashes.length} pane)`);
+			this._onDidRequestStop.fire({ botId, paneHashes, idle: true });
+		}
+	}
+
+	/** 利用者がまだ使っている会話のペイン（ウィンドウが知らせる）。何もしない 30 分をここから数え直す。 */
+	notePaneActive(paneToken: string): void {
+		this.idleStopRequested.delete(paneToken);
+		this.panes.noteActive(paneToken, this.now());
 	}
 
 	private async load(): Promise<void> {
@@ -246,6 +283,7 @@ export class ParadisBotsService extends Disposable {
 			this.suggestions = suggestions?.state ?? EMPTY_PARADIS_BOT_SUGGESTIONS_STATE;
 			// 消した Bot の結び付けは戻さない
 			this.panes.loadRemembered((panes?.state.panes ?? []).filter(record => this.getBot(record.botId) !== undefined));
+			this.panes.loadSessions((panes?.state.sessions ?? []).filter(record => this.getBot(record.botId) !== undefined));
 			this.panesVersion = panes?.state.version ?? PARADIS_BOT_PANES_VERSION;
 			// 印は Bot を消した後も残す（消した Bot が書いたタスクのペインも、Bot を変える道具を断る）
 			this.boardOrigins.load(panes?.state.boardTasks ?? [], panes?.state.boardPanes ?? []);
@@ -268,7 +306,7 @@ export class ParadisBotsService extends Disposable {
 		return {
 			revision: this.revision,
 			readOnly: this.bots.version !== PARADIS_BOTS_VERSION || this.items.version !== PARADIS_BOT_ITEMS_VERSION,
-			bots: this.bots.bots.map(bot => paradisBotSummary(bot, this.items, this.panes.statesOf(bot.id, now), now, paradisBotOpenSuggestions(this.suggestions, bot.id).length)),
+			bots: this.bots.bots.map(bot => paradisBotSummary(bot, this.items, this.panes.statesOf(bot.id, now), now, paradisBotOpenSuggestions(this.suggestions, bot.id).length, this.resumableSession(bot) !== undefined)),
 			...(this.githubView.status.state !== 'off' ? { github: this.githubView } : {}),
 		};
 	}
@@ -404,7 +442,7 @@ export class ParadisBotsService extends Disposable {
 		if (!this.loaded || this.panesFile === undefined || this.panesVersion !== PARADIS_BOT_PANES_VERSION) {
 			return;
 		}
-		this.panesFile.write({ version: PARADIS_BOT_PANES_VERSION, panes: this.panes.rememberedPanes(), boardTasks: this.boardOrigins.boardTasks(), boardPanes: this.boardOrigins.boardPanes() }).catch(error => {
+		this.panesFile.write({ version: PARADIS_BOT_PANES_VERSION, panes: this.panes.rememberedPanes(), sessions: this.panes.chatSessions(), boardTasks: this.boardOrigins.boardTasks(), boardPanes: this.boardOrigins.boardPanes() }).catch(error => {
 			this.logService.warn('[ParadisBots] could not save the bot panes', error);
 		});
 	}
@@ -470,7 +508,12 @@ export class ParadisBotsService extends Disposable {
 
 	updateBot(botId: string, patch: IParadisBotPatch): Promise<Result<IParadisBot>> {
 		return this.write(async () => {
+			const before = this.getBot(botId);
 			const result = paradisBotUpdate(this.bots, botId, patch, this.now());
+			// エージェントを変えたら、前のエージェントの会話は続けない（眠った会話も忘れる）
+			if (result.ok && before !== undefined && before.agent !== result.bot.agent && this.panes.forgetChatSession(botId)) {
+				this.notify();
+			}
 			return result.ok ? this.saveBots(result.state, result.bot) : result;
 		});
 	}
@@ -488,6 +531,7 @@ export class ParadisBotsService extends Disposable {
 			this._onDidRemoveBot.fire(botId);
 			this._onDidRequestStop.fire({ botId, paneHashes: this.paneHashesOf(botId) });
 			this.panes.releaseBot(botId);
+			this.panes.forgetChatSession(botId);
 			await this.saveItems(paradisBotItemsRemoveBot(this.items, botId), undefined);
 			await this.saveSuggestions(paradisBotSuggestionsRemoveBot(this.suggestions, botId)).catch(error => this.logService.warn('[ParadisBots] could not remove the suggestions of a removed bot', error));
 			// 記憶の整理の写し（専用フォルダの外）も消す。専用フォルダは残す
@@ -681,8 +725,13 @@ export class ParadisBotsService extends Disposable {
 			// Codex の会話は、para-browser を登録していない環境で道具の許可だけを渡すと起動しない（invalid transport）ので、
 			// 登録の様子を読んでから引数を決める
 			const browser = purpose === 'chat' && bot.agent === 'codex' && this.codexBrowserRegistration !== undefined ? await this.codexBrowserRegistration().catch(() => undefined) : undefined;
-			const launchId = this.issueLaunch(botId, purpose);
-			const extraFlags = purpose === 'patrol' ? patrolArgs : paradisBotLaunchApprovalFlags(bot.agent, browser?.registration, browser?.url);
+			// 眠った会話があれば、その会話を続けて起こす（報告書の D1 (a)）。見回りは毎回新しい会話
+			const session = purpose === 'chat' ? this.resumableSession(bot) : undefined;
+			const resumeArgs = session !== undefined ? paradisBotResumeArgs(bot.agent, session.sessionId) : undefined;
+			const launchId = this.issueLaunch(botId, purpose, resumeArgs !== undefined);
+			const approvalFlags = purpose === 'patrol' ? undefined : paradisBotLaunchApprovalFlags(bot.agent, browser?.registration, browser?.url);
+			const chatFlags = [approvalFlags, resumeArgs].filter((flag): flag is string => flag !== undefined).join(' ');
+			const extraFlags = purpose === 'patrol' ? patrolArgs : chatFlags.length > 0 ? chatFlags : undefined;
 			if (launchId === undefined) {
 				return { ok: false, code: 'not_found', message: 'There is no such bot.' };
 			}
@@ -695,6 +744,7 @@ export class ParadisBotsService extends Disposable {
 					// 見回りは Bot の権限の設定を使わない（読むだけの引数だけで起動する）
 					...(bot.permissionId !== undefined && purpose !== 'patrol' ? { permissionId: bot.permissionId } : {}),
 					...(extraFlags !== undefined ? { extraFlags } : {}),
+					...(resumeArgs !== undefined ? { resumed: true } : {}),
 				},
 			};
 		});
@@ -736,6 +786,12 @@ export class ParadisBotsService extends Disposable {
 		this.pendingReveals.get(revealId)?.();
 	}
 
+
+	/** 眠った会話（今の Bot のエージェントのもの）。無ければ undefined。 */
+	private resumableSession(bot: IParadisBot): { readonly sessionId: string } | undefined {
+		const session = this.panes.chatSessionOf(bot.id);
+		return session !== undefined && session.agent === bot.agent && paradisBotResumeArgs(bot.agent, session.sessionId) !== undefined ? session : undefined;
+	}
 
 	/** Bot を止める依頼を全ウィンドウへ出す。結び付いた・保存したペインが無ければ false。 */
 	requestStop(botId: string): boolean {
@@ -843,13 +899,13 @@ export class ParadisBotsService extends Disposable {
 	}
 
 	/** 起動の番号を発行する。ウィンドウはこの番号を付けて {@link reportLaunch} する。 */
-	issueLaunch(botId: string, purpose: ParadisBotPanePurpose): string | undefined {
+	issueLaunch(botId: string, purpose: ParadisBotPanePurpose, resumed = false): string | undefined {
 		const bot = this.getBot(botId);
 		if (bot === undefined || bot.paused) {
 			return undefined;
 		}
 		const launchId = this.uuid();
-		this.panes.issue(launchId, botId, purpose, this.now(), bot.agent);
+		this.panes.issue(launchId, botId, purpose, this.now(), bot.agent, resumed);
 		return launchId;
 	}
 
@@ -896,6 +952,7 @@ export class ParadisBotsService extends Disposable {
 
 	/** ペインが閉じた。見回りのペインなら、その Bot はもう最初の見回りではない。 */
 	releasePane(paneToken: string): void {
+		this.idleStopRequested.delete(paneToken);
 		const purpose = this.panes.purposeOf(paneToken);
 		const botId = this.panes.release(paneToken);
 		if (botId === undefined) {

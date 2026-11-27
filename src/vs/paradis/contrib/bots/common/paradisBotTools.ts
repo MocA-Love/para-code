@@ -226,6 +226,32 @@ export function paradisCodexBrowserConfigValues(registration: ParadisCodexBrowse
 }
 
 /**
+ * 作った直後の Bot へ最初に渡す指示（Bot から先に話す。報告書の D1 (a)）。エージェントへの指示なので訳さない。
+ */
+export const PARADIS_BOT_GREETING_PROMPT = 'You were just created as a Para Code bot. Read SOUL.md (your role and personality) and greet your owner now: introduce yourself in two or three sentences, in the language SOUL.md is written in, and say what you can help with. Then wait for their reply.';
+
+/**
+ * 起こすときに最初に渡す指示。作った直後なら挨拶させる。眠った会話を続けるときは挨拶しない（もう話したことのある Bot）。
+ * それ以外は渡さない（利用者の入力を待つ）。ほかの Bot からの伝言では起こさない（受け箱に入れて未読の数を出すだけ。#1232 の
+ * 決め。利用者の居ない所で頼まれたことを実行させない）。
+ */
+export function paradisBotFirstPrompt(options: { readonly greet?: boolean }, resumed: boolean): string | undefined {
+	return options.greet === true && !resumed ? PARADIS_BOT_GREETING_PROMPT : undefined;
+}
+
+/**
+ * 眠った会話を続けて起こす引数（Bot の起動の引数の後ろ、最初の指示の前に置く）。Claude Code は `--resume <id>`、Codex は
+ * サブコマンド `resume <id>`（その前に `-c`・`-m` を置いた形を Codex 0.171.0 が受け付けることは確かめた。resume の会話にも効くかは【要確認】）。id はシェルの文字を含まない形だけ
+ * 通す。ほかのエージェントは続けられない（undefined）。
+ */
+export function paradisBotResumeArgs(agent: string, sessionId: string): string | undefined {
+	if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/.test(sessionId)) {
+		return undefined;
+	}
+	return agent === 'claude' ? `--resume ${sessionId}` : agent === 'codex' ? `resume ${sessionId}` : undefined;
+}
+
+/**
  * Bot のペインを Codex で起動するときにだけ渡す、Bot の道具の前もっての許可（`-c` の引数。シェルの 1 行に足す形）。
  * 利用者の `config.toml` には書かず、その起動にだけ効かせる。どれも英数字と `_.=-:/` だけの文字列を単一引用符で
  * 囲むので、POSIX・fish・PowerShell のどれでも 1 つの引数になる。Codex 以外は undefined（Claude Code は MCP の

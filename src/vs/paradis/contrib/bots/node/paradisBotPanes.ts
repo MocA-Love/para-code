@@ -19,7 +19,7 @@
 import { createHash } from 'crypto';
 import { isPlainRecord } from '../../../common/paradisGuards.js';
 import { paradisNormalizeAgentHookEvent } from '../../agentBrowser/common/paradisAgentBrowser.js';
-import { IParadisBotPaneState, PARADIS_BOT_PANE_PURPOSES, ParadisBotPaneHalt, ParadisBotPanePurpose } from '../common/paradisBotsApi.js';
+import { IParadisBotPaneState, PARADIS_BOT_IDLE_STOP_MS, PARADIS_BOT_PANE_PURPOSES, ParadisBotPaneHalt, ParadisBotPanePurpose } from '../common/paradisBotsApi.js';
 import { IParadisBotBoardPaneRecord, IParadisBotBoardTaskRecord, paradisParseBotBoardOrigins } from './paradisBotBoardOrigins.js';
 
 /** 起動の番号が有効な時間。起動に失敗して報告が来なかった番号を残さない。 */
@@ -41,6 +41,10 @@ export const PARADIS_BOT_SETUP_STALL_MS = 30_000;
 /** 起動してすぐ hook を出すので、hook が来ないことを「止まっている」と読めるエージェント。 */
 const AGENTS_WITH_START_HOOK: ReadonlySet<string> = new Set(['claude']);
 
+
+/** 会話の id として受け取る形（Claude Code・Codex の UUID。引数に置くのでシェルの文字を通さない）。 */
+const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9-]{0,99}$/;
+
 /** 保存する結び付けの上限（古いものから落とす）。 */
 export const PARADIS_BOT_REMEMBERED_PANES_LIMIT = 200;
 
@@ -53,9 +57,23 @@ export interface IParadisBotPaneRecord {
 	readonly boundAt: number;
 }
 
+/**
+ * Bot ごとの最後の会話（眠った会話を続けるのに使う。`--resume <id>` / `codex resume <id>`）。会話が 1 ターン以上動いたときに
+ * 控え、ペインを閉じても・止めても消さない。消すのは Bot を消したとき、エージェントを変えたとき、続けられなかったときだけ。
+ */
+export interface IParadisBotChatSessionRecord {
+	readonly botId: string;
+	/** その会話を動かしたエージェント（Bot のエージェントが変わっていたら続けない）。 */
+	readonly agent: string;
+	readonly sessionId: string;
+	readonly at: number;
+}
+
 export interface IParadisBotPanesState {
 	readonly version: number;
 	readonly panes: readonly IParadisBotPaneRecord[];
+	/** Bot ごとの最後の会話（{@link IParadisBotChatSessionRecord}）。 */
+	readonly sessions?: readonly IParadisBotChatSessionRecord[];
 	/** Bot がタスクボードへ載せたタスク（paradisBotBoardOrigins.ts）。 */
 	readonly boardTasks?: readonly IParadisBotBoardTaskRecord[];
 	/** Bot が載せたタスクのためにボードが動かしたペイン（ターミナルの id。paradisBotBoardOrigins.ts）。 */
@@ -85,8 +103,15 @@ export function paradisParseBotPanesState(value: unknown): IParadisBotPanesState
 			panes.push({ hash: entry.hash, botId: entry.botId, purpose: entry.purpose as ParadisBotPanePurpose, boundAt: entry.boundAt });
 		}
 	}
+	const sessions: IParadisBotChatSessionRecord[] = [];
+	for (const entry of Array.isArray(value.sessions) ? value.sessions.slice(-PARADIS_BOT_REMEMBERED_PANES_LIMIT) : []) {
+		if (isPlainRecord(entry) && typeof entry.botId === 'string' && entry.botId.length > 0 && typeof entry.agent === 'string' && entry.agent.length > 0
+			&& typeof entry.sessionId === 'string' && SESSION_ID_PATTERN.test(entry.sessionId) && typeof entry.at === 'number' && Number.isFinite(entry.at)) {
+			sessions.push({ botId: entry.botId, agent: entry.agent, sessionId: entry.sessionId, at: entry.at });
+		}
+	}
 	const { boardTasks, boardPanes } = paradisParseBotBoardOrigins(value.boardTasks, value.boardPanes);
-	return { version: PARADIS_BOT_PANES_VERSION, panes, ...(boardTasks.length > 0 ? { boardTasks } : {}), ...(boardPanes.length > 0 ? { boardPanes } : {}) };
+	return { version: PARADIS_BOT_PANES_VERSION, panes, ...(sessions.length > 0 ? { sessions } : {}), ...(boardTasks.length > 0 ? { boardTasks } : {}), ...(boardPanes.length > 0 ? { boardPanes } : {}) };
 }
 
 interface IPending {
@@ -94,6 +119,7 @@ interface IPending {
 	readonly purpose: ParadisBotPanePurpose;
 	readonly issuedAt: number;
 	readonly agent?: string;
+	readonly resumed?: boolean;
 }
 
 interface IPane {
@@ -111,6 +137,14 @@ interface IPane {
 	asking: boolean;
 	/** エージェントが見つからなかった・終わった（シェルのコマンドの終わりか SessionEnd で付け、次のコマンドか動いた hook で外す）。 */
 	ended?: ParadisBotPaneHalt;
+	/** このペインの会話の id（最初の hook か SessionStart の id。子エージェントの hook の id で上書きしない）。 */
+	sessionId?: string;
+	/** 前の会話を続けて起動した（`resume`）。動く前に終わったら、その会話は続けられなかったと読む。 */
+	resumed?: boolean;
+	/** 結び付けてから、エージェントが 1 回でも動いた。 */
+	workedSinceBound?: boolean;
+	/** ウィンドウが「利用者がまだ使っている」と知らせた最後の時刻。 */
+	activeAt?: number;
 }
 
 function newPane(botId: string, purpose: ParadisBotPanePurpose, now: number, agent?: string): IPane {
@@ -136,10 +170,38 @@ function haltOf(pane: IPane, now: number): ParadisBotPaneHalt | undefined {
 
 export class ParadisBotPanes {
 
+	/**
+	 * 会話のペインの会話の id を控え、1 ターン動いたら Bot の最後の会話にする（Claude Code も Codex も、最初の指示を受けるまで
+	 * 会話の記録を作らないので、動く前の id では続けられない）。子エージェントの hook は親の会話の後に届くので、id は
+	 * そのペインで最初に見たものか SessionStart のものだけを使う。
+	 */
+	private noteChatSession(pane: IPane, event: string, working: boolean, now: number, sessionId: string | undefined, agentOf: ((botId: string) => string | undefined) | undefined): void {
+		if (sessionId !== undefined && SESSION_ID_PATTERN.test(sessionId) && (pane.sessionId === undefined || event === 'SessionStart')) {
+			pane.sessionId = sessionId;
+		}
+		if (!working) {
+			return;
+		}
+		pane.workedSinceBound = true;
+		const agent = pane.agent ?? agentOf?.(pane.botId);
+		if (pane.sessionId === undefined || agent === undefined) {
+			return;
+		}
+		const previous = this.sessions.get(pane.botId);
+		if (previous?.sessionId === pane.sessionId && previous.agent === agent) {
+			return;
+		}
+		this.sessions.set(pane.botId, { botId: pane.botId, agent, sessionId: pane.sessionId, at: now });
+		this.onDidChangeRemembered();
+	}
+
 	private readonly pending = new Map<string, IPending>();
 	private readonly panes = new Map<string, IPane>();
 	/** 保存した結び付け（ハッシュ → Bot）。生きているかは分からないので、現れるまで {@link statesOf} に数えない。 */
 	private readonly remembered = new Map<string, IParadisBotPaneRecord>();
+
+	/** Bot ごとの最後の会話。 */
+	private readonly sessions = new Map<string, IParadisBotChatSessionRecord>();
 
 	/** @param onDidChangeRemembered 保存する結び付けが変わった（保存し直す）。 */
 	constructor(private readonly onDidChangeRemembered: () => void = () => { }) { }
@@ -149,6 +211,53 @@ export class ParadisBotPanes {
 		this.remembered.clear();
 		for (const record of records) {
 			this.remembered.set(record.hash, record);
+		}
+	}
+
+	/** 保存した最後の会話を読み込む（起動時に 1 回）。 */
+	loadSessions(records: readonly IParadisBotChatSessionRecord[]): void {
+		this.sessions.clear();
+		for (const record of records) {
+			this.sessions.set(record.botId, record);
+		}
+	}
+
+	/** 保存する最後の会話。 */
+	chatSessions(): IParadisBotChatSessionRecord[] {
+		return [...this.sessions.values()];
+	}
+
+	/** その Bot の最後の会話（無ければ undefined）。 */
+	chatSessionOf(botId: string): IParadisBotChatSessionRecord | undefined {
+		return this.sessions.get(botId);
+	}
+
+	/** その Bot の最後の会話を忘れる（Bot を消した・エージェントを変えた・続けられなかった）。忘れたら true。 */
+	forgetChatSession(botId: string): boolean {
+		if (!this.sessions.delete(botId)) {
+			return false;
+		}
+		this.onDidChangeRemembered();
+		return true;
+	}
+
+	/**
+	 * 何もしないまま {@link PARADIS_BOT_IDLE_STOP_MS} が過ぎた会話のペイン（止める候補）。利用者の答えを待っているペインは
+	 * 数えない。最後に動いた時刻は、hook が届いた時刻・結び付けた時刻・ウィンドウが「まだ使っている」と知らせた時刻
+	 * （{@link noteActive}）の一番遅いもの。作業中のままのペインも数える（Claude Code は Esc の中断で Stop を出さないので、
+	 * 作業中のまま残る）。本当に動いているペインは出力が続くので、ウィンドウが出力を見て止めずに返す。
+	 */
+	idleChatTokens(now: number, idleMs = PARADIS_BOT_IDLE_STOP_MS): { readonly botId: string; readonly token: string }[] {
+		return [...this.panes]
+			.filter(([, pane]) => pane.purpose === 'chat' && !pane.asking && now - Math.max(pane.lastSeenAt, pane.boundAt, pane.activeAt ?? 0) >= idleMs)
+			.map(([token, pane]) => ({ botId: pane.botId, token }));
+	}
+
+	/** 利用者がまだそのペインを使っている（見えていた・入力した・出力があった）。 */
+	noteActive(paneToken: string, now: number): void {
+		const pane = this.panes.get(paneToken);
+		if (pane !== undefined) {
+			pane.activeAt = now;
 		}
 	}
 
@@ -195,13 +304,13 @@ export class ParadisBotPanes {
 	}
 
 	/** 起動の番号を控える（番号はサービスが作る）。 */
-	issue(launchId: string, botId: string, purpose: ParadisBotPanePurpose, now: number, agent?: string): void {
+	issue(launchId: string, botId: string, purpose: ParadisBotPanePurpose, now: number, agent?: string, resumed?: boolean): void {
 		for (const [id, entry] of this.pending) {
 			if (now - entry.issuedAt > PARADIS_BOT_LAUNCH_TTL_MS) {
 				this.pending.delete(id);
 			}
 		}
-		this.pending.set(launchId, { botId, purpose, issuedAt: now, ...(agent !== undefined ? { agent } : {}) });
+		this.pending.set(launchId, { botId, purpose, issuedAt: now, ...(agent !== undefined ? { agent } : {}), ...(resumed === true ? { resumed } : {}) });
 	}
 
 	/** 起動の報告。結び付けたら Bot の id、断ったら undefined。番号は 1 回で使い切る。 */
@@ -222,7 +331,11 @@ export class ParadisBotPanes {
 		if (entry.purpose === 'chat' && [...this.panes.values()].some(pane => pane.botId === entry.botId && pane.purpose === 'chat')) {
 			return undefined;
 		}
-		this.panes.set(paneToken, newPane(entry.botId, entry.purpose, now, entry.agent));
+		const pane = newPane(entry.botId, entry.purpose, now, entry.agent);
+		if (entry.resumed === true) {
+			pane.resumed = true;
+		}
+		this.panes.set(paneToken, pane);
 		this.remembered.delete(hash);
 		this.remembered.set(hash, { hash, botId: entry.botId, purpose: entry.purpose, boundAt: now });
 		while (this.remembered.size > PARADIS_BOT_REMEMBERED_PANES_LIMIT) {
@@ -308,6 +421,12 @@ export class ParadisBotPanes {
 		const before = JSON.stringify(haltOf(pane, now));
 		if (finished) {
 			pane.ended = exitCode === 127 ? { kind: 'notFound' } : { kind: 'exited', ...(exitCode !== undefined ? { exitCode } : {}) };
+			// 前の会話を続けて起動したのに、hook を 1 つも出さずに終わった（会話が消えた・別の PC の会話だった）。次は新しい
+			// 会話で起こす。続きを開いて読んだだけで終えた（SessionStart は来た）なら控えは残す
+			if (pane.resumed === true && !pane.hookSeen && pane.purpose === 'chat') {
+				this.forgetChatSession(pane.botId);
+			}
+			pane.resumed = false;
 			pane.working = false;
 			pane.asking = false;
 		} else if (pane.ended !== undefined) {
@@ -359,7 +478,7 @@ export class ParadisBotPanes {
 	 * hook の名前は CLI ごとに違うので、ペインの状態と同じ正規化（paradisNormalizeAgentHookEvent）を通す。
 	 * 許可待ち・質問中・完了は「待っている」、知らない hook は様子を変えない。
 	 */
-	noteHook(paneToken: string, event: string, now: number): { readonly botId: string; readonly changed: boolean } | undefined {
+	noteHook(paneToken: string, event: string, now: number, sessionId?: string, agentOf?: (botId: string) => string | undefined): { readonly botId: string; readonly changed: boolean } | undefined {
 		const pane = this.panes.get(paneToken);
 		if (pane === undefined) {
 			return undefined;
@@ -381,6 +500,9 @@ export class ParadisBotPanes {
 			pane.ended = { kind: 'exited' };
 		} else if (status === 'working' || event === 'SessionStart') {
 			pane.ended = undefined;
+		}
+		if (pane.purpose === 'chat') {
+			this.noteChatSession(pane, event, status === 'working', now, sessionId, agentOf);
 		}
 		return { botId: pane.botId, changed: changed || JSON.stringify(haltOf(pane, now)) !== before };
 	}

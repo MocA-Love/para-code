@@ -17,10 +17,11 @@ import { FocusMode } from '../../../../platform/native/common/native.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
 import { ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisWorkspaceSwitchService, paradisIsSettledOnSpace } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
+import { paradisShowHiddenBotPane } from '../../bots/browser/paradisBotPaneHide.js';
 
 export interface IParadisNotificationRevealServices {
 	readonly hostService: Pick<IHostService, 'focus'>;
-	readonly terminalService: Pick<ITerminalService, 'getInstanceFromId' | 'focusInstance'>;
+	readonly terminalService: Pick<ITerminalService, 'getInstanceFromId' | 'focusInstance' | 'showBackgroundTerminal'>;
 	readonly workspaceSwitchService: Pick<IParadisWorkspaceSwitchService, 'activeStateKey' | 'pendingSwitchTargetKey' | 'switchToStateKey'>;
 }
 
@@ -64,6 +65,8 @@ export async function paradisRevealNotifiedPane(services: IParadisNotificationRe
 	if (!instance || instance.isDisposed) {
 		return;
 	}
+	// タブを閉じて裏に回した Bot の会話のペインは、エディタのタブへ戻してから前に出す
+	await paradisShowHiddenBotPane(terminalService, instance);
 	await terminalService.focusInstance(instance);
 	const finalWindow = windowOf(instance);
 	if (finalWindow !== initialWindow) {

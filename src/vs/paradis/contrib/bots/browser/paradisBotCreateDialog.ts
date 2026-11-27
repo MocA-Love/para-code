@@ -260,7 +260,11 @@ export class ParadisBotCreateDialog extends Disposable {
 			return;
 		}
 		if (template?.skill !== undefined && this.withSkill) {
-			void this.writeSkill(result.value.id, result.value.name, template);
+			// 作った直後に Bot が最初に話すので、人格メモにスキルの節を足し終えてから閉じる
+			await this.writeSkill(result.value.id, result.value.name, template);
+			if (this._store.isDisposed) {
+				return;
+			}
 		}
 		this.dispose();
 		this.onDidCreate(result.value.id);
