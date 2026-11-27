@@ -74,22 +74,6 @@ export async function paradisFindBotChatPane<T extends { readonly isDisposed: bo
 }
 
 /**
- * ペイントークンのハッシュ（16 進の SHA-256）から、そのペインの Bot の id を引く（会話・見回りのどちらのペインでも）。
- * ハッシュはそのまま台帳と照らす（受け取ったハッシュをもう一度ハッシュにしない）。形の違う値・見つからなければ undefined。
- */
-export async function paradisBotIdByPaneHash(botsService: IParadisBotPaneLookup, paneHash: string): Promise<string | undefined> {
-	if (!/^[0-9a-f]{64}$/u.test(paneHash)) {
-		return undefined;
-	}
-	for (const bot of botsService.snapshot.bots) {
-		if ((await botsService.paneHashesOf(bot.id)).includes(paneHash)) {
-			return bot.id;
-		}
-	}
-	return undefined;
-}
-
-/**
  * このウィンドウにある見回りのペイン（全部の Bot）。ウィンドウを閉じるときに閉じて、次の起動で見回りの残骸を
  * 復元しないために使う。
  */

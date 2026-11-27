@@ -23,16 +23,10 @@ export function paradisBotGroupRecordHead(record: Pick<IParadisBotGroupRecord, '
 }
 
 /**
- * 記録の 1 行に添える印。Bot 同士の伝言（`asked`・`told`）は受け箱の未読・既読（「まだ読まれていない」「読まれた」）、
- * 受け付けられなかった伝言はその理由。あなたの `sent` には付けない。
+ * 記録の 1 行に添える印。Bot 同士の伝言（`asked`・`told`）は受け箱の未読・既読（「まだ読まれていない」「読まれた」）。
+ * あなたの `sent` には付けない。
  */
-export function paradisBotGroupRecordMark(record: Pick<IParadisBotGroupRecord, 'kind' | 'undelivered' | 'readAt'>): string | undefined {
-	switch (record.undelivered) {
-		case 'refused': return localize('paradis.botGroups.record.refused', "宛先が受け取らなかった");
-		case 'unreachable': return localize('paradis.botGroups.record.unreachable', "届けられなかった");
-		case 'unknown': return localize('paradis.botGroups.record.unknown', "届いたか分からない");
-		case undefined: break;
-	}
+export function paradisBotGroupRecordMark(record: Pick<IParadisBotGroupRecord, 'kind' | 'readAt'>): string | undefined {
 	if (record.kind === 'sent') {
 		return undefined;
 	}

@@ -9,8 +9,8 @@
 // shared process の Bot グループのサービス。台帳は `<userData>/paradis/bots/groups.json`（0600、一時ファイル＋rename）。
 // 壊れたファイルは `groups.json.broken-<時刻>` へ退避して空で始める（Bot の台帳と同じ扱い）。
 //
-// Bot 同士の伝言の道具（paradisBotMessageToolProvider.ts）は、`groupsOf` で呼び出し元の Bot のグループを引き、届ける前に
-// `appendRecord` で「聞きました・伝えました」を残し、届けられなかったら `markUndelivered` で印を付ける。
+// Bot 同士の伝言の道具（paradisBotMessageToolProvider.ts）は、`groupsOf` で呼び出し元の Bot のグループを引き、
+// `appendRecord` で「聞きました・伝えました」を残す（宛先の受け箱に入る）。宛先は `inboxOf`・`markRead` で読む。
 
 import { promises as fs } from 'fs';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
@@ -22,10 +22,10 @@ import { ILogService } from '../../../../platform/log/common/log.js';
 import { ParadisJsonStateWriter } from '../../../node/paradisJsonStateWriter.js';
 import {
 	EMPTY_PARADIS_BOT_GROUPS_STATE, IParadisBotGroup, IParadisBotGroupInput, IParadisBotGroupRecord, IParadisBotGroupRecordInput, IParadisBotGroupsState,
-	PARADIS_BOT_GROUPS_VERSION, ParadisBotGroupsResult, paradisBotGroupAppendRecord, paradisBotGroupCreate, IParadisBotInboxMessage, paradisBotGroupInbox, paradisBotGroupMarkQueued, paradisBotGroupMarkRead, paradisBotGroupMarkUndelivered, paradisBotGroupRemove, paradisBotGroupUpdate, paradisParseBotGroupsState,
+	PARADIS_BOT_GROUPS_VERSION, ParadisBotGroupsResult, paradisBotGroupAppendRecord, paradisBotGroupCreate, paradisBotGroupInbox, paradisBotGroupMarkRead, paradisBotGroupRemove, paradisBotGroupUpdate, paradisParseBotGroupsState,
 } from '../common/paradisBotGroups.js';
 import { IParadisBotGroupsSnapshot } from '../common/paradisBotGroupsApi.js';
-import { IParadisBotGroupsPort, ParadisBotMessageUndeliveredReason } from '../common/paradisBotMessages.js';
+import { IParadisBotGroupsPort, IParadisBotInboxEntry } from '../common/paradisBotMessages.js';
 import { ParadisBotsServiceResult } from '../common/paradisBotsApi.js';
 import { paradisBotsDataFolder } from './paradisBotsStore.js';
 
@@ -145,14 +145,8 @@ export class ParadisBotGroupsService extends Disposable {
 		return this.apply(paradisBotGroupAppendRecord(this.state, groupId, input, this.now()));
 	}
 
-	/** Bot 同士の伝言の記録に、届かなかった理由の印を付ける（伝言の道具が届けに失敗した後）。 */
-	async markUndelivered(groupId: string, recordId: string, reason?: ParadisBotMessageUndeliveredReason): Promise<ParadisBotsServiceResult<IParadisBotGroupRecord>> {
-		await this.ready;
-		return this.apply(paradisBotGroupMarkUndelivered(this.state, groupId, recordId, reason));
-	}
-
 	/** その Bot の受け箱（まだ読んでいない伝言、古い順）。 */
-	async inboxOf(botId: string): Promise<IParadisBotInboxMessage[]> {
+	async inboxOf(botId: string): Promise<IParadisBotInboxEntry[]> {
 		await this.ready;
 		return paradisBotGroupInbox(this.state, botId);
 	}
@@ -161,12 +155,6 @@ export class ParadisBotGroupsService extends Disposable {
 	async markRead(botId: string, recordIds: readonly string[]): Promise<ParadisBotsServiceResult<number>> {
 		await this.ready;
 		return this.apply(paradisBotGroupMarkRead(this.state, botId, recordIds, this.now()));
-	}
-
-	/** Bot 同士の伝言の記録に「順番待ちに入れた」の印を付ける（宛先が作業中だったとき）。 */
-	async markQueued(groupId: string, recordId: string): Promise<ParadisBotsServiceResult<IParadisBotGroupRecord>> {
-		await this.ready;
-		return this.apply(paradisBotGroupMarkQueued(this.state, groupId, recordId));
 	}
 
 	private async apply<T>(result: ParadisBotGroupsResult<T>): Promise<ParadisBotsServiceResult<T>> {
@@ -192,31 +180,15 @@ export class ParadisBotGroupsService extends Disposable {
 }
 
 /**
- * 受け箱の口（伝言の道具の `bot_inbox` が使う）。#1231 の口の型（`IParadisBotGroupsPort`）に同じ形で足す約束。
- * - `inboxOf(botId)`: その Bot がまだ読んでいない伝言（古い順）
- * - `markRead(botId, recordIds)`: 読んだ伝言を既読にする（その Bot の受け箱にあるものだけ）
+ * Bot 同士の伝言の道具（paradisBotMessageToolProvider.ts）へ差し込む口。記録の id は口では文字列で返す。`appendRecord` で
+ * 記録した伝言は、そのまま宛先の受け箱に入る（読まれるまで未読）。`inboxOf` で未読を返し、`markRead` で既読にする。
  */
-export interface IParadisBotInboxPort {
-	inboxOf(botId: string): Promise<readonly IParadisBotInboxMessage[]>;
-	markRead(botId: string, recordIds: readonly string[]): Promise<void>;
-}
-
-/**
- * Bot 同士の伝言の道具（paradisBotMessageToolProvider.ts）へ差し込む口。記録の id は口では文字列で返し、
- * `markUndelivered` で同じ文字列と届かなかった理由を、`markQueued` で順番待ちに入れたことを受ける（部屋に印が出る）。
- */
-export function paradisBotGroupsMessagePort(service: Pick<ParadisBotGroupsService, 'groupsOf' | 'appendRecord' | 'markUndelivered' | 'markQueued' | 'inboxOf' | 'markRead'>): Required<IParadisBotGroupsPort> & IParadisBotInboxPort {
+export function paradisBotGroupsMessagePort(service: Pick<ParadisBotGroupsService, 'groupsOf' | 'appendRecord' | 'inboxOf' | 'markRead'>): IParadisBotGroupsPort {
 	return {
 		groupsOf: botId => service.groupsOf(botId).map(group => ({ id: group.id, memberIds: group.members })),
 		appendRecord: async (groupId, record) => {
 			const result = await service.appendRecord(groupId, { kind: record.kind, from: record.from, to: [record.to], text: record.text });
 			return result.ok ? { ok: true, recordId: String(result.value.id) } : { ok: false, message: result.message };
-		},
-		markUndelivered: async (groupId, recordId, reason) => {
-			await service.markUndelivered(groupId, recordId, reason);
-		},
-		markQueued: async (groupId, recordId) => {
-			await service.markQueued(groupId, recordId);
 		},
 		inboxOf: botId => service.inboxOf(botId),
 		markRead: async (botId, recordIds) => {

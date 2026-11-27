@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisBotIdByPaneHash, paradisBotInstancesInWindow, paradisBotPaneTokenHashInWindow, paradisBotPatrolInstancesInWindow, paradisFindBotChatPane, paradisFindBotPane } from '../../browser/paradisBotPaneHash.js';
+import { paradisBotInstancesInWindow, paradisBotPaneTokenHashInWindow, paradisBotPatrolInstancesInWindow, paradisFindBotChatPane, paradisFindBotPane } from '../../browser/paradisBotPaneHash.js';
 
 suite('Paradis bot pane hash', () => {
 
@@ -89,17 +89,4 @@ suite('Paradis bot pane hash', () => {
 		});
 	});
 
-	test('伝言の送り手は、受け取ったハッシュをそのまま台帳と照らして引く（もう一度ハッシュにしない）', async () => {
-		const hashA = '1b780c2005e24c7adab28a00c48fd437c37580c140f7b9585d87f54e78b59cff';
-		const botsService = {
-			snapshot: { bots: [{ id: 'b1' }, { id: 'b2' }] },
-			paneHashesOf: async (botId: string) => botId === 'b2' ? [hashA] : [],
-		};
-		assert.deepStrictEqual([
-			await paradisBotIdByPaneHash(botsService, hashA),
-			await paradisBotIdByPaneHash(botsService, 'pane-A'),
-			await paradisBotIdByPaneHash(botsService, await paradisBotPaneTokenHashInWindow(hashA)),
-			await paradisBotIdByPaneHash(botsService, hashA.toUpperCase()),
-		], ['b2', undefined, undefined, undefined]);
-	});
 });
