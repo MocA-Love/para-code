@@ -239,8 +239,9 @@ suite('Paradis bot manage tools', () => {
 		const scheduled = new ParadisScheduledRunToolProvider();
 		const schedule = async (pane: string) => {
 			const result = await scheduled.callTool(pane, 'create_scheduled_run', { name: 'x' }, undefined, h.context('pane')) as { content: { text: string }[] };
-			return result.content[0].text.slice(0, 60);
+			return result.content[0].text;
 		};
+		const fullText = async (pane: string, name: string, args: object) => ((await h.provider.callTool(pane, name, args, undefined, h.context('pane'))) as { content: { text: string }[] }).content[0].text;
 		// Bot が載せたタスク（t-bot）と、利用者が載せたタスク（t-user）を、ボードがそれぞれのペインで動かした
 		await h.service.noteBotBoardTask('id1', 't-bot');
 		await h.service.noteBoardTerminalTask(paradisTaskBoardTerminalId('pane-task'), 't-bot:1');
@@ -250,7 +251,7 @@ suite('Paradis bot manage tools', () => {
 			scheduleFromBot: await schedule('pane-bot'),
 			scheduleFromTask: await schedule('pane-task'),
 			ideFromTask: await refusal('pane-task', 'launch_agent'),
-			updateFromTask: await h.call('update_bot', { bot: 'id1', pinned: true }, 'pane', 'pane-task'),
+			updateFromTask: await fullText('pane-task', 'update_bot', { bot: 'id1', pinned: true }),
 			listFromTask: (await h.call('list_bots', {}, 'pane', 'pane-task')).bots !== undefined,
 			toolsForTask: h.provider.listTools('pane-task').length,
 			ideFromUserTask: await refusal('pane-board-user', 'launch_agent'),
@@ -264,10 +265,10 @@ suite('Paradis bot manage tools', () => {
 		const reloaded = harness(files);
 		await reloaded.service.ready;
 		assert.deepStrictEqual({ ...result, afterReload: [reloaded.service.boardOriginOfPane('pane-task'), reloaded.service.boardOriginOfPane('pane-board-user')] }, {
-			scheduleFromBot: 'This terminal is a Para Code bot. A bot cannot create schedu',
-			scheduleFromTask: 'This terminal runs a task board task that a Para Code bot pu',
+			scheduleFromBot: 'This terminal is a Para Code bot. A bot cannot create scheduled runs: the run would start later in a terminal that is not a bot and could change bots. Tell your owner what you would schedule.',
+			scheduleFromTask: 'This terminal runs a task board task that a Para Code bot put on the board, so Para Code treats it like the bot: it cannot start, open, type into or close other terminals, change spaces, or create scheduled runs. The reading tools still work. Tell the user what you would do.',
 			ideFromTask: 'This terminal runs a task board task that a Para Code bot put on the board, so Para Code treats it like the bot: it cannot start, open, type into or close other terminals, change spaces, or create scheduled runs. The reading tools still work. Tell the user what you would do.',
-			updateFromTask: { error: 'This terminal runs a task board task that a Para Code bot pu' },
+			updateFromTask: 'This terminal runs a task board task that a Para Code bot put on the board, so Para Code treats it like the bot: it cannot create, change, start, stop or remove bots. Tell the user what you would change.',
 			listFromTask: true,
 			toolsForTask: 0,
 			ideFromUserTask: undefined,
@@ -275,7 +276,7 @@ suite('Paradis bot manage tools', () => {
 			toolsForUserTask: 6,
 			saved: {
 				boardTasks: [{ taskId: 't-bot', botId: 'id1', at: 1000 }],
-				boardPanes: [{ terminal: paradisTaskBoardTerminalId('pane-task'), taskId: 't-bot', botId: 'id1', at: 1000 }],
+				boardPanes: [{ terminal: 't_ae2fafd8fa42', taskId: 't-bot', botId: 'id1', at: 1000 }],
 			},
 			afterReload: ['id1', undefined],
 		});
