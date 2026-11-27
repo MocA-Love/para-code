@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisBotInstancesInWindow, paradisBotPaneTokenHashInWindow, paradisBotPatrolInstancesInWindow, paradisFindBotChatPane, paradisFindBotPane } from '../../browser/paradisBotPaneHash.js';
+import { paradisBotInstancesInWindow, paradisBotPaneTokenHashInWindow, paradisBotShutdownInstancesInWindow, paradisFindBotChatPane, paradisFindBotPane } from '../../browser/paradisBotPaneHash.js';
 
 suite('Paradis bot pane hash', () => {
 
@@ -48,15 +48,15 @@ suite('Paradis bot pane hash', () => {
 		});
 	});
 
-	test('閉じるときに閉じる見回りのペインは、全部の Bot の見回りのペインだけ（会話のペインは含めない）', async () => {
+	test('終了するときに閉じるのは、全部の Bot の会話と見回りのペイン（再起動で帯の無いタブとして戻さない）。ほかのターミナルは閉じない', async () => {
 		const hashOf = (token: string) => paradisBotPaneTokenHashInWindow(token);
-		const patrol: Record<string, string[]> = { b1: [await hashOf('pane-p1')], b2: [await hashOf('pane-p2'), 'not-here'] };
+		const all: Record<string, string[]> = { b1: [await hashOf('pane-chat'), await hashOf('pane-p1')], b2: [await hashOf('pane-p2'), 'not-here'] };
 		const botsService = {
 			snapshot: { bots: [{ id: 'b1' }, { id: 'b2' }, { id: 'b3' }] },
-			paneHashesOf: async (botId: string, purpose: 'patrol') => purpose === 'patrol' ? patrol[botId] ?? [] : [],
+			paneHashesOf: async (botId: string, purpose?: 'chat' | 'patrol') => purpose === undefined ? all[botId] ?? [] : [],
 		};
-		const panes = { listPaneTokens: () => [{ instanceId: 1, token: 'pane-chat' }, { instanceId: 2, token: 'pane-p1' }, { instanceId: 3, token: 'pane-p2' }] };
-		assert.deepStrictEqual(await paradisBotPatrolInstancesInWindow(botsService, panes), [2, 3]);
+		const panes = { listPaneTokens: () => [{ instanceId: 1, token: 'pane-chat' }, { instanceId: 2, token: 'pane-p1' }, { instanceId: 3, token: 'pane-p2' }, { instanceId: 4, token: 'pane-user' }] };
+		assert.deepStrictEqual(await paradisBotShutdownInstancesInWindow(botsService, panes), [1, 2, 3]);
 	});
 
 	test('部屋と伝言の送り先は Bot の会話のペインだけ（見回りのペインが先に並んでいても選ばない）', async () => {

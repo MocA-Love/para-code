@@ -15,7 +15,7 @@
 //   として項目に書き、作業中へ戻す。
 // - どのペインがどの Bot かは {@link ParadisBotPanes} が持つ。
 
-import { RunOnceScheduler } from '../../../../base/common/async.js';
+import { RunOnceScheduler, TimeoutTimer } from '../../../../base/common/async.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
@@ -53,7 +53,7 @@ import { EMPTY_PARADIS_BOTS_STATE, IParadisBot, IParadisBotCreateInput, IParadis
 import { IParadisBotGithubView, PARADIS_BOT_GITHUB_OFF_VIEW } from '../common/paradisBotGithub.js';
 import { IParadisBotLaunch, IParadisBotRevealRequest, IParadisBotsSnapshot, IParadisBotStopRequest, ParadisBotPanePurpose, ParadisBotsServiceResult, paradisBotSummary } from '../common/paradisBotsApi.js';
 import { IParadisAgentCommandTemplate, paradisResolveAgentLaunchFlags } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
-import { IParadisBotItemAddArgs, paradisBotLaunchApprovalFlags, paradisBotPatrolLaunchArgs, ParadisBotPatrolLaunchContext, paradisBotPatrolSupported, paradisBotPatrolTemplateRefusal } from '../common/paradisBotTools.js';
+import { IParadisBotItemAddArgs, paradisBotLaunchApprovalFlags, ParadisCodexBrowserRegistration, paradisBotPatrolLaunchArgs, ParadisBotPatrolLaunchContext, paradisBotPatrolSupported, paradisBotPatrolTemplateRefusal } from '../common/paradisBotTools.js';
 import { PARADIS_READ_ONLY_MCP_TOOL_NAMES } from '../../agentBrowser/common/paradisMcpReadOnlyTools.js';
 import { ParadisBotPatrolGateState } from '../../scheduledRuns/common/paradisScheduledRunBotPatrol.js';
 import { EMPTY_PARADIS_BOT_SUGGESTIONS_STATE, IParadisBotSuggestion, PARADIS_BOT_SUGGESTIONS_VERSION, IParadisBotSuggestionsState, paradisBotOpenSuggestions, paradisBotSuggestionAdd, paradisBotSuggestionDismiss, paradisBotSuggestionsRemoveBot, paradisBotSuggestionsRunEnded, paradisBotSuggestionStart } from '../common/paradisBotSuggestions.js';
@@ -63,7 +63,7 @@ import { ParadisBotHomeError, ParadisBotHomes } from './paradisBotHomes.js';
 import type { IParadisBotPatrolHome } from './paradisBotPatrolLaunch.js';
 import { PARADIS_BOT_AGENTS_FILE, PARADIS_BOT_MEMORY_FILE, PARADIS_BOT_SOUL_FILE } from '../common/paradisBotHome.js';
 import { IParadisBotMemorySnapshot, IParadisBotMemoryUndo, ParadisBotMemorySnapshots } from './paradisBotMemorySnapshots.js';
-import { IParadisBotPanesState, PARADIS_BOT_PANES_VERSION, ParadisBotPanes, paradisBotPaneTokenHash } from './paradisBotPanes.js';
+import { IParadisBotPanesState, PARADIS_BOT_PANES_VERSION, PARADIS_BOT_SETUP_STALL_MS, ParadisBotPanes, paradisBotPaneTokenHash } from './paradisBotPanes.js';
 import { IParadisBotsJsonFile, IParadisBotsLoaded } from './paradisBotsStore.js';
 
 /** 連続した変更をまとめてから知らせる間隔。 */
@@ -112,6 +112,13 @@ export interface IParadisBotsServiceOptions {
 	readonly forgetPatrol?: (botId: string) => Promise<void>;
 	/** そのエージェントの起動の雛形（利用者の設定 `paradis.workspaceSwitch.agents` を反映したもの）。 */
 	readonly agentTemplate?: (agentId: string) => IParadisAgentCommandTemplate | undefined;
+	/**
+	 * 会話の Bot を Codex で起動するときに、para-browser が Codex の `config.toml` に登録されているかと MCP の口を読む。
+	 * 無ければ登録済みとして扱う（今までどおり道具の許可だけを渡す）。
+	 */
+	/** Bot のペインを起動するフォルダの親（会話の専用フォルダの親と、見回りのフォルダの親）。 */
+	readonly paneFolderRoots?: readonly string[];
+	readonly codexBrowserRegistration?: () => Promise<{ readonly registration: ParadisCodexBrowserRegistration; readonly url: string | undefined }>;
 }
 
 /** 前に出す依頼にウィンドウが応えるのを待つ時間。 */
@@ -151,6 +158,8 @@ export class ParadisBotsService extends Disposable {
 	private readonly preparePatrol: IParadisBotsServiceOptions['preparePatrol'];
 	private readonly agentTemplate: IParadisBotsServiceOptions['agentTemplate'];
 	private readonly forgetPatrol: IParadisBotsServiceOptions['forgetPatrol'];
+	private readonly codexBrowserRegistration: IParadisBotsServiceOptions['codexBrowserRegistration'];
+	private readonly folderRoots: readonly string[];
 
 	/** 読み込みが終わった（壊れたファイルの退避も済んだ）。 */
 	readonly ready: Promise<void>;
@@ -178,6 +187,7 @@ export class ParadisBotsService extends Disposable {
 	private readonly changeScheduler = this._register(new RunOnceScheduler(() => this._onDidChange.fire(this.getSnapshot()), CHANGE_DELAY));
 	/** 後回しの期限が来たら、件数と「あなたの番」を数え直す。 */
 	private readonly wakeScheduler = this._register(new RunOnceScheduler(() => this.changed(), 0));
+	private readonly setupCheck = this._register(new TimeoutTimer());
 
 	constructor(
 		private readonly botsFile: IParadisBotsJsonFile<IParadisBotsState>,
@@ -199,6 +209,8 @@ export class ParadisBotsService extends Disposable {
 		this.preparePatrol = options.preparePatrol;
 		this.agentTemplate = options.agentTemplate;
 		this.forgetPatrol = options.forgetPatrol;
+		this.codexBrowserRegistration = options.codexBrowserRegistration;
+		this.folderRoots = options.paneFolderRoots ?? [];
 		this._register(this.humanAsk.onDidRequestAnswer(request => this.onAnswerRequest(request)));
 		if (options.hookEvents) {
 			this._register(options.hookEvents(event => {
@@ -256,7 +268,7 @@ export class ParadisBotsService extends Disposable {
 		return {
 			revision: this.revision,
 			readOnly: this.bots.version !== PARADIS_BOTS_VERSION || this.items.version !== PARADIS_BOT_ITEMS_VERSION,
-			bots: this.bots.bots.map(bot => paradisBotSummary(bot, this.items, this.panes.statesOf(bot.id), now, paradisBotOpenSuggestions(this.suggestions, bot.id).length)),
+			bots: this.bots.bots.map(bot => paradisBotSummary(bot, this.items, this.panes.statesOf(bot.id, now), now, paradisBotOpenSuggestions(this.suggestions, bot.id).length)),
 			...(this.githubView.status.state !== 'off' ? { github: this.githubView } : {}),
 		};
 	}
@@ -666,8 +678,11 @@ export class ParadisBotsService extends Disposable {
 				// 会話で Bot が記憶を書き換える前の状態を写しておく（記憶の整理の取り消しで戻す先）。取れなくても起動は止めない
 				await this.memorySnapshots?.take(bot, 'auto').catch(error => this.logService.warn('[ParadisBots] could not copy the memory before a conversation', error));
 			}
+			// Codex の会話は、para-browser を登録していない環境で道具の許可だけを渡すと起動しない（invalid transport）ので、
+			// 登録の様子を読んでから引数を決める
+			const browser = purpose === 'chat' && bot.agent === 'codex' && this.codexBrowserRegistration !== undefined ? await this.codexBrowserRegistration().catch(() => undefined) : undefined;
 			const launchId = this.issueLaunch(botId, purpose);
-			const extraFlags = purpose === 'patrol' ? patrolArgs : paradisBotLaunchApprovalFlags(bot.agent);
+			const extraFlags = purpose === 'patrol' ? patrolArgs : paradisBotLaunchApprovalFlags(bot.agent, browser?.registration, browser?.url);
 			if (launchId === undefined) {
 				return { ok: false, code: 'not_found', message: 'There is no such bot.' };
 			}
@@ -834,7 +849,7 @@ export class ParadisBotsService extends Disposable {
 			return undefined;
 		}
 		const launchId = this.uuid();
-		this.panes.issue(launchId, botId, purpose, this.now());
+		this.panes.issue(launchId, botId, purpose, this.now(), bot.agent);
 		return launchId;
 	}
 
@@ -845,7 +860,33 @@ export class ParadisBotsService extends Disposable {
 			return false;
 		}
 		this.notify();
+		this.scheduleSetupCheck();
 		return true;
+	}
+
+	/** Bot のペインを起動するフォルダの親。 */
+	paneFolderRoots(): readonly string[] {
+		return this.folderRoots;
+	}
+
+	/** 今 Bot に結び付いているペインのトークンの SHA-256（全部の Bot）。 */
+	boundPaneHashes(): string[] {
+		return this.panes.boundTokens().map(paradisBotPaneTokenHash);
+	}
+
+	/** Bot のペインのシェルでコマンドが始まった・終わった（ウィンドウがシェル統合から知らせる）。 */
+	notePaneCommand(paneToken: string, exitCode: number | undefined, finished: boolean): void {
+		if (this.panes.noteCommand(paneToken, exitCode, finished, this.now()) !== undefined) {
+			this.notify();
+		}
+		if (!finished) {
+			this.scheduleSetupCheck();
+		}
+	}
+
+	/** 起動して hook が来ないまま止まっているペインを「操作が要ります」に変えるため、その時間が過ぎたら様子を出し直す。 */
+	private scheduleSetupCheck(): void {
+		this.setupCheck.cancelAndSet(() => this.notify(), PARADIS_BOT_SETUP_STALL_MS + 1_000);
 	}
 
 	/** 起動に失敗した番号を捨てる。 */

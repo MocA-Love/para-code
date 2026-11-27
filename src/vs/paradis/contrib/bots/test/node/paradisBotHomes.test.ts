@@ -775,7 +775,8 @@ suite('Paradis bot homes', () => {
 			homeFolder: '/home/bot',
 			trusted: ['/data/patrol-runs/b_1'],
 			noGateway: true,
-			codex: { agent: 'codex', runFolder: '/patrol-runs/b1', disabledServers: [{ name: 'slack', transport: 'url' }] },
+			// 2 つ目のホームには config.toml が無い（para-browser が無い）ので、見回りの引数で para-browser の定義を足す
+			codex: { agent: 'codex', runFolder: '/patrol-runs/b1', disabledServers: [{ name: 'slack', transport: 'url' }], browser: { registration: { kind: 'nowhere' }, url: 'http://127.0.0.1:1/' } },
 			unreadable: true,
 			again: [true, ['AGENTS.md']],
 			planted: true,

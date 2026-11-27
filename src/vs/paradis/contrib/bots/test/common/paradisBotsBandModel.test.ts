@@ -16,6 +16,7 @@ import {
 	paradisBotsBandDraggedHeight,
 	paradisBotsBandListHeight,
 	paradisBotsBandRows,
+	paradisBotStatusDetail,
 	paradisBotStatusLine,
 	paradisBotsNeedsYouTotal,
 	paradisParseBotsBandState,
@@ -100,6 +101,16 @@ suite('Paradis bots band', () => {
 			3,
 			['1 件があなたの番', '2 件があなたの番', '見回り中', '停止中', '待機中', '起動していません'],
 		]);
+	});
+
+	test('待機中のうち、エージェントが見つからない・終わった・操作が要るときはその様子を出す', () => {
+		assert.deepStrictEqual([
+			bot('x', 'x', { activity: 'idle', halt: { kind: 'notFound' } }),
+			bot('x', 'x', { activity: 'idle', halt: { kind: 'exited', exitCode: 1 } }),
+			bot('x', 'x', { activity: 'idle', halt: { kind: 'exited', exitCode: 0 } }),
+			bot('x', 'x', { activity: 'idle', halt: { kind: 'needsUser' } }),
+			bot('x', 'x', { activity: 'idle' }),
+		].map(paradisBotStatusLine).concat(paradisBotStatusDetail(bot('x', 'x', { activity: 'idle', halt: { kind: 'notFound' } }))), ['見つかりません', '終了しました（コード 1）', '終了しました', '操作が要ります', '待機中', 'エージェントのコマンドが見つかりません']);
 	});
 
 	test('顔は台帳の形と色、動きは様子から', () => {

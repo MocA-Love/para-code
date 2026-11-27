@@ -14,7 +14,7 @@ import { paradisBuildAgentCommand } from '../../../workspaceSwitch/common/paradi
 import { paradisSanitizeHumanAskInput } from '../../../humanAsk/common/paradisHumanAsk.js';
 import { paradisBotAnswerComment, paradisBotAskId, paradisBotAskInput, paradisBotAskTip, paradisBotItemMailText, paradisParseBotAskId } from '../../common/paradisBotAsk.js';
 import { EMPTY_PARADIS_BOT_ITEMS_STATE, IParadisBotItem, IParadisBotItemAsk, IParadisBotItemChanges, paradisBotItemAdd, paradisBotItemUpdate } from '../../common/paradisBotItems.js';
-import { paradisBotItemLinkOf, paradisBotPatrolCodexDisabledServers, paradisBotPatrolLaunchArgs, paradisBotPatrolTemplateRefusal, paradisCodexMcpServersOf, paradisBotItemListRow, paradisBotItemView, paradisParseBotItemAddArgs, paradisParseBotItemListArgs, paradisParseBotItemShowArgs, paradisParseBotItemUpdateArgs } from '../../common/paradisBotTools.js';
+import { paradisBotItemLinkOf, paradisBotLaunchApprovalFlags, paradisCodexBrowserRegistration, paradisBotPatrolCodexDisabledServers, paradisBotPatrolLaunchArgs, paradisBotPatrolTemplateRefusal, paradisCodexMcpServersOf, paradisBotItemListRow, paradisBotItemView, paradisParseBotItemAddArgs, paradisParseBotItemListArgs, paradisParseBotItemShowArgs, paradisParseBotItemUpdateArgs } from '../../common/paradisBotTools.js';
 
 const ASK: IParadisBotItemAsk = {
 	eventId: 2,
@@ -224,6 +224,43 @@ suite('Paradis bot ask', () => {
 				'-c', 'mcp_servers.para-browser.enabled_tools=[\'bot_item_list\',\'bot_item_show\',\'bot_suggest\',\'bot_github_news\',\'bot_inbox\',\'get_text\',\'take_snapshot\']',
 				'-c', 'mcp_servers.para-browser.tools.bot_item_list.approval_mode=approve', '-c', 'mcp_servers.para-browser.tools.bot_item_show.approval_mode=approve', '-c', 'mcp_servers.para-browser.tools.bot_suggest.approval_mode=approve', '-c', 'mcp_servers.para-browser.tools.bot_github_news.approval_mode=approve', '-c', 'mcp_servers.para-browser.tools.bot_inbox.approval_mode=approve'],
 		]);
+	});
+
+	test('Codex の会話の起動: para-browser を登録していないときは定義も渡す（道具の許可だけだと invalid transport で起動しない）', () => {
+		const registered = '[mcp_servers.para-browser]\nurl = "http://127.0.0.1:1/"\n';
+		const other = '[mcp_servers.slack]\nurl = "https://example.invalid/mcp"\n';
+		assert.deepStrictEqual([
+			paradisCodexBrowserRegistration([registered, registered]).kind,
+			paradisCodexBrowserRegistration([undefined, other]).kind,
+			paradisCodexBrowserRegistration([]).kind,
+			paradisCodexBrowserRegistration([registered, other]).kind,
+			paradisCodexBrowserRegistration([registered, false]).kind,
+			paradisCodexBrowserRegistration(['mcp_servers.para-browser.url = "x"']).kind,
+			paradisCodexBrowserRegistration(['[mcp_servers.para-browser]\ncommand = "npx"\n', undefined]).kind,
+			paradisCodexBrowserRegistration(['[mcp_servers.para-browser]\ncommand = "npx"\n']).kind,
+		], ['everywhere', 'nowhere', 'nowhere', 'nowhere', 'unknown', 'unknown', 'unknown', 'everywhere']);
+		const flags = (kind: 'everywhere' | 'nowhere' | 'unknown', url?: string) => paradisBotLaunchApprovalFlags('codex', { kind }, url)?.split(' -c ').slice(0, 3);
+		assert.deepStrictEqual([
+			flags('everywhere'),
+			flags('nowhere', 'http://127.0.0.1:4567/'),
+			flags('nowhere'),
+			flags('nowhere', 'http://127.0.0.1:4567/\';rm'),
+			flags('unknown', 'http://127.0.0.1:4567/'),
+			paradisBotLaunchApprovalFlags('claude', { kind: 'nowhere' }, 'http://127.0.0.1:4567/'),
+		], [
+			['-c \'mcp_servers.para-browser.tools.bot_item_list.approval_mode=approve\'', '\'mcp_servers.para-browser.tools.bot_item_show.approval_mode=approve\'', '\'mcp_servers.para-browser.tools.bot_item_add.approval_mode=approve\''],
+			['-c \'mcp_servers.para-browser.url=http://127.0.0.1:4567/\'', '\'mcp_servers.para-browser.bearer_token_env_var=PARA_CODE_TERMINAL_PANE_ID\'', '\'mcp_servers.para-browser.tools.bot_item_list.approval_mode=approve\''],
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+		]);
+	});
+
+	test('見回りの Codex: para-browser を登録していないときは定義を足してから読む道具に絞る', () => {
+		const args = paradisBotPatrolLaunchArgs({ agent: 'codex', runFolder: '/r', disabledServers: [], browser: { registration: { kind: 'nowhere' }, url: 'http://127.0.0.1:4567/' } }, new Set(['get_text']));
+		assert.deepStrictEqual(args.slice(0, 12), ['-s', 'read-only', '-a', 'never', '-c', 'features.plugins=false', '-c', 'features.apps=false',
+			'-c', 'mcp_servers.para-browser.url=http://127.0.0.1:4567/', '-c', 'mcp_servers.para-browser.bearer_token_env_var=PARA_CODE_TERMINAL_PANE_ID']);
 	});
 
 	test('見回りで止める Codex の MCP サーバー: 全部のホームを合わせ、確かに読めないときは起動しない側へ倒す', () => {

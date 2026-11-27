@@ -19,7 +19,7 @@
 import { getActiveWindow } from '../../../../base/browser/dom.js';
 import { Event } from '../../../../base/common/event.js';
 import { RunOnceScheduler } from '../../../../base/common/async.js';
-import { Disposable, MutableDisposable } from '../../../../base/common/lifecycle.js';
+import { Disposable, DisposableMap, DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Action2, registerAction2 } from '../../../../platform/actions/common/actions.js';
@@ -28,23 +28,26 @@ import { IInstantiationService, ServicesAccessor } from '../../../../platform/in
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
+import { ICommandDetectionCapability, TerminalCapability } from '../../../../platform/terminal/common/capabilities/capabilities.js';
 import { TerminalExitReason } from '../../../../platform/terminal/common/terminal.js';
 import { registerWorkbenchContribution2, WorkbenchPhase } from '../../../../workbench/common/contributions.js';
 import { ITerminalGroupService, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IWorkbenchEnvironmentService } from '../../../../workbench/services/environment/common/environmentService.js';
 import { IHostService } from '../../../../workbench/services/host/browser/host.js';
-import { ILifecycleService } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
+import { ILifecycleService, ShutdownReason } from '../../../../workbench/services/lifecycle/common/lifecycle.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
 import { IParadisDialogService, paradisNotifyConfirmation } from '../../confirmDialog/browser/paradisDialogService.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { paradisBotChangeDetail } from '../browser/paradisBotChangeDetail.js';
+import { PARADIS_BOTS_OPEN_COMMAND } from '../common/paradisBotsBandModel.js';
 import { paradisRevealNotifiedPane } from '../../notifications/electron-browser/paradisNotificationReveal.js';
-import { paradisBotInstancesInWindow, paradisBotPatrolInstancesInWindow, paradisFindBotPane } from '../browser/paradisBotPaneHash.js';
+import { paradisBotInstancesInWindow, paradisBotPaneTokenHashInWindow, paradisBotShutdownInstancesInWindow, paradisFindBotPane } from '../browser/paradisBotPaneHash.js';
+import { paradisCollectAllTerminalInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
+import { isEqualOrParent } from '../../../../base/common/extpath.js';
+import { isLinux } from '../../../../base/common/platform.js';
 import { paradisFindBotTerminalInstance, paradisLaunchBotTerminal, paradisNameBotTab } from './paradisBotTerminalLaunch.js';
 import { IParadisBotChangeRequest, paradisApplyBotChange } from '../common/paradisBotManageTools.js';
-import { IParadisBotRevealRequest, IParadisBotsService, IParadisBotStopRequest, PARADIS_BOTS_CHANNEL, PARADIS_BOTS_ENABLED_SETTING, PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
-
-export const PARADIS_BOTS_OPEN_COMMAND = 'paradis.bots.open';
+import { IParadisBotRevealRequest, IParadisBotsService, paradisBotCommandStateOnAttach, paradisIsLeftoverBotTerminal, IParadisBotStopRequest, PARADIS_BOTS_CHANNEL, PARADIS_BOTS_ENABLED_SETTING, PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
 
 const findInstance = paradisFindBotTerminalInstance;
 
@@ -263,20 +266,28 @@ class ParadisBotsWindowChannel implements IServerChannel {
 	}
 }
 
+/** 終了のときに Bot のペインを閉じるか（窓の再読み込みでは閉じない。ペインはそのまま次の窓につなぎ直される）。 */
+function paradisBotClosesPanesOnShutdown(reason: ShutdownReason): boolean {
+	return reason !== ShutdownReason.RELOAD;
+}
+
 /**
  * 止める依頼を受けて、このウィンドウにあるその Bot のターミナルを閉じる。別のウィンドウから開こうとした Bot のペインを前に出す。
- * Bot のタブ名を合わせ、Para Code を閉じるときに見回りのペインを閉じる。
+ * Bot のタブ名を合わせ、Para Code を終了するときに Bot のペイン（会話と見回り）を閉じる。
  */
 class ParadisBotsWindowWorker extends Disposable {
 
 	/** 前回タブ名を合わせたときの Bot の名前と様子（変わったときだけ合わせ直す）。 */
 	private namedSignature = '';
-	/** このウィンドウにある見回りのペイン（Bot の様子が変わるたびに調べ直す）。 */
-	private patrolInstances: readonly number[] = [];
-	private readonly patrolScheduler = this._register(new RunOnceScheduler(() => {
-		paradisBotPatrolInstancesInWindow(this.botsService, this.paneTokenService).then(
-			instances => { this.patrolInstances = instances; },
-			error => this.logService.warn('[paradisBots] finding the look-around terminals failed', error));
+	/** このウィンドウにある Bot のペイン（会話と見回り。Bot の様子が変わるたびに調べ直す）。 */
+	private botInstances: readonly number[] = [];
+	private readonly instancesScheduler = this._register(new RunOnceScheduler(() => {
+		paradisBotShutdownInstancesInWindow(this.botsService, this.paneTokenService).then(
+			instances => {
+				this.botInstances = instances;
+				this.watchCommands(instances);
+			},
+			error => this.logService.warn('[paradisBots] finding the bot terminals failed', error));
 	}, 500));
 	private readonly nameScheduler = this._register(new RunOnceScheduler(() => {
 		this.nameTabs().catch(error => this.logService.warn('[paradisBots] naming the bot tabs failed', error));
@@ -295,16 +306,23 @@ class ParadisBotsWindowWorker extends Disposable {
 		@ILifecycleService lifecycleService: ILifecycleService,
 	) {
 		super();
-		// 見回りのペインは次の回の直前に閉じるが、Para Code を閉じるときに開いたままのものも閉じる（次の起動で
-		// 見回りの残骸を復元しない）。閉じるときは待てないので、どれが見回りのペインかを先に調べておく
-		this._register(botsService.onDidChange(() => this.patrolScheduler.schedule()));
-		this.patrolScheduler.schedule();
-		this._register(lifecycleService.onWillShutdown(() => {
-			for (const instanceId of this.patrolInstances) {
-				const instance = findInstance(this.terminalService, this.terminalGroupService, instanceId);
-				if (instance !== undefined && !instance.isDisposed) {
-					instance.dispose(TerminalExitReason.User);
-				}
+		// Para Code を終了するときに、Bot のペイン（会話と見回り）を閉じる。閉じないと次の起動でターミナルの復元が
+		// 帯の無い普通のタブ（「zsh bot」）として戻し、そのタブは Bot のペインとして見つからない（推測: 復元でペイントークンが
+		// 変わる。観察で保存した結び付けは残っていたのに合わなかった）ので、Bot を開くと別のタブが増えていた。会話の続きはターミナルの復元ではなく Bot のページから起動し直して戻す。
+		// エディタの状態は onWillShutdown でストレージを閉じるときに保存される（desktop.main.ts の join.closeStorage。
+		// 推測: 保存の知らせはこの処理より先に出る）ので、onWillShutdown で閉じても復元の対象に残りうる。保存より前の onBeforeShutdown で閉じる（ほかの拒否で終了が取り消されたときも閉じて
+		// いるが、Bot は帯から開けば起動し直す）。窓の再読み込みは、ペインがそのままつなぎ直されるので閉じない。
+		// どれが Bot のペインかは、閉じるときに待てないので先に調べておく
+		this._register(botsService.onDidChange(() => this.instancesScheduler.schedule()));
+		this._register(terminalService.onDidCreateInstance(() => {
+			this.instancesScheduler.schedule();
+			this.leftoverScheduler.schedule();
+		}));
+		this.instancesScheduler.schedule();
+		this.leftoverScheduler.schedule();
+		this._register(lifecycleService.onBeforeShutdown(event => {
+			if (paradisBotClosesPanesOnShutdown(event.reason)) {
+				this.closeBotPanes();
 			}
 		}));
 		this._register(botsService.onDidRequestStop(request => {
@@ -316,6 +334,109 @@ class ParadisBotsWindowWorker extends Disposable {
 		// 起動し直した後に戻ったペインと、Bot の名前を変えたときも、タブ名を Bot の名前に合わせる
 		this._register(botsService.onDidChange(() => this.nameScheduler.schedule()));
 		this.nameScheduler.schedule();
+	}
+
+	/** 復元・つなぎ直しで戻ったターミナルのうち、Bot のペインの残りを捨てる（{@link discardLeftovers}）。 */
+	private readonly leftoverScheduler = this._register(new RunOnceScheduler(() => {
+		this.discardLeftovers().catch(error => this.logService.warn('[paradisBots] discarding restored bot terminals failed', error));
+	}, 1000));
+	/** 残りかを確かめ終えたターミナル。 */
+	private readonly checkedRestored = new Set<number>();
+
+	/**
+	 * 復元・つなぎ直しで戻ったターミナル（`attachPersistentProcess` で作られたもの）のうち、Bot のペインを起動するフォルダで
+	 * 起動していて、今の Bot に結び付いていないものを閉じる。終了時に閉じても、閉じる前に保存された待避のスペースの一覧
+	 * （別のスペースへ切り替えたときに保存される）や pty の常駐からは戻りうるので、戻った側でも捨てる。復元したタブは
+	 * ペイントークンで Bot のペインと分からないので、起動したフォルダで見分ける。窓の再読み込みでつなぎ直したペインは
+	 * 結び付いたままなので閉じない。会話の続きは Bot のページから起動し直して戻す。
+	 */
+	private async discardLeftovers(): Promise<void> {
+		const candidates = paradisCollectAllTerminalInstances(this.terminalService, this.terminalGroupService)
+			.filter(instance => !instance.isDisposed && !this.checkedRestored.has(instance.instanceId) && instance.shellLaunchConfig.attachPersistentProcess !== undefined);
+		if (candidates.length === 0) {
+			return;
+		}
+		const [roots, bound] = await Promise.all([this.botsService.paneFolderRoots(), this.botsService.boundPaneHashes()]);
+		// 結び付いたペインの一覧が取れなければ何も捨てない（確かめ終えた印も付けず、次の機会にもう一度見る）
+		if (bound === undefined) {
+			return;
+		}
+		const boundHashes = new Set(bound);
+		for (const instance of candidates) {
+			this.checkedRestored.add(instance.instanceId);
+			const token = this.paneTokenService.getTokenForInstance(instance.instanceId);
+			// トークンが分からないペインは、結び付いているかが分からないので捨てない
+			const isBound = token === undefined ? undefined : boundHashes.has(await paradisBotPaneTokenHashInWindow(token));
+			const configCwd = instance.shellLaunchConfig.cwd;
+			const cwd = instance.shellLaunchConfig.attachPersistentProcess?.cwd || (typeof configCwd === 'string' ? configCwd : configCwd?.fsPath);
+			if (!instance.isDisposed && paradisIsLeftoverBotTerminal(cwd, roots, isBound, (path, parent) => isEqualOrParent(path, parent, !isLinux))) {
+				instance.dispose(TerminalExitReason.User);
+			}
+		}
+	}
+
+	/** Bot のペインごとの、シェルのコマンドの始まりと終わりの見張り。 */
+	private readonly commandWatchers = this._register(new DisposableMap<number>());
+
+	/**
+	 * Bot のペインのシェルでコマンドが始まった・終わったことを shared process へ知らせる（エージェントのコマンドが
+	 * 見つからない・終わったことは hook では分からず、帯が「待機中」のままになっていたため）。シェル統合が無い
+	 * シェルでは知らせない（今までどおりの様子になる）。
+	 */
+	private watchCommands(instanceIds: readonly number[]): void {
+		const wanted = new Set(instanceIds);
+		for (const [instanceId] of this.commandWatchers) {
+			if (!wanted.has(instanceId)) {
+				this.commandWatchers.deleteAndDispose(instanceId);
+			}
+		}
+		for (const instanceId of instanceIds) {
+			const instance = findInstance(this.terminalService, this.terminalGroupService, instanceId);
+			const token = this.paneTokenService.getTokenForInstance(instanceId);
+			if (this.commandWatchers.has(instanceId) || instance === undefined || instance.isDisposed || token === undefined) {
+				continue;
+			}
+			const store = new DisposableStore();
+			const note = (exitCode: number | undefined, finished: boolean) => {
+				this.botsService.notePaneCommand(token, exitCode, finished).catch(error => this.logService.warn('[paradisBots] noting a bot terminal command failed', error));
+			};
+			const watch = (detection: ICommandDetectionCapability) => {
+				// 見張る前に起動のコマンドがもう終わっていること（コマンドが見つからないときはすぐ終わる）があるので、今の様子を先に知らせる
+				const last = detection.commands.at(-1);
+				const now = paradisBotCommandStateOnAttach({
+					executingCommand: detection.executingCommand,
+					lastExitCode: last?.exitCode,
+					hasLast: last !== undefined,
+					reattached: instance.shellLaunchConfig.attachPersistentProcess !== undefined,
+				});
+				if (now !== undefined) {
+					note(now.exitCode, now.finished);
+				}
+				// 中身の空のコマンド（プロンプトで Enter だけ押したもの）では、終わった様子を外さない
+				store.add(detection.onCommandExecuted(command => {
+					if (command.command.trim().length > 0) {
+						note(undefined, false);
+					}
+				}));
+				store.add(detection.onCommandFinished(command => note(command.exitCode, true)));
+			};
+			const detection = instance.capabilities.get(TerminalCapability.CommandDetection);
+			if (detection !== undefined) {
+				watch(detection);
+			} else {
+				store.add(Event.once(instance.capabilities.onDidAddCommandDetectionCapability)(watch));
+			}
+			this.commandWatchers.set(instanceId, store);
+		}
+	}
+
+	private closeBotPanes(): void {
+		for (const instanceId of this.botInstances) {
+			const instance = findInstance(this.terminalService, this.terminalGroupService, instanceId);
+			if (instance !== undefined && !instance.isDisposed) {
+				instance.dispose(TerminalExitReason.User);
+			}
+		}
 	}
 
 	private async nameTabs(): Promise<void> {
