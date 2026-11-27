@@ -3806,6 +3806,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			hasAgentHookHistory: (paneToken: string): boolean => this._hookReportedTokens.has(paneToken),
 			classifyCaller: (): Promise<ParadisMcpCallerKind> => this._classifyCaller(ingressLease.token, socket),
 			callOwningWindow: <T>(request: IParadisMcpOwningWindowRequest, signal?: AbortSignal): Promise<ParadisMcpOwningWindowResult<T>> => this._callOwningWindow<T>(ingressLease, request, signal),
+			callPaneWindow: <T>(paneToken: string, request: IParadisMcpOwningWindowRequest, signal?: AbortSignal): Promise<ParadisMcpOwningWindowResult<T>> => this._callOwningWindow<T>(ingressLease, request, signal, paneToken),
 			getPaneAgentStatus: (paneToken: string): IParadisMcpPaneAgentStatus | undefined => {
 				const entry = this._paneStatuses.get(paneToken);
 				const unconfirmedRelease = this._unconfirmedReleaseOf(paneToken);
@@ -8500,9 +8501,11 @@ export class ParadisAgentBrowserService extends Disposable {
 		ingressLease: IParadisAgentBrowserIngressLease,
 		request: IParadisMcpOwningWindowRequest,
 		signal?: AbortSignal,
+		// 呼び出し元ではなく、このペインを所有するウィンドウを呼ぶ（Bot 同士の伝言の宛先）
+		targetPaneToken?: string,
 	): Promise<ParadisMcpOwningWindowResult<T>> {
 		this._requireIngressLease(ingressLease);
-		const token = ingressLease.token;
+		const token = targetPaneToken ?? ingressLease.token;
 		// 接続先のペインはシェルの PID が分からず `_paneShells` に載らないことがある（SSH の再読み込み直後など）
 		const remoteWindowCtx = this._remotePaneWindows.get(token);
 		const pane = this._paneShells.get(token) ?? (remoteWindowCtx !== undefined ? { windowCtx: remoteWindowCtx } : undefined);
