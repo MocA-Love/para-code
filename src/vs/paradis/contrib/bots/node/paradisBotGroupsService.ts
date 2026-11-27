@@ -181,10 +181,9 @@ export class ParadisBotGroupsService extends Disposable {
 
 /**
  * Bot 同士の伝言の道具（paradisBotMessageToolProvider.ts）へ差し込む口。記録の id は口では文字列で返し、
- * `markUndelivered` で同じ文字列と届かなかった理由を受ける。`markQueued` は口の型（#1231）にまだ無い足し分で、道具が
- * `queued` を受けたときに呼べば部屋に「順番待ち」と出る。
+ * `markUndelivered` で同じ文字列と届かなかった理由を、`markQueued` で順番待ちに入れたことを受ける（部屋に印が出る）。
  */
-export function paradisBotGroupsMessagePort(service: Pick<ParadisBotGroupsService, 'groupsOf' | 'appendRecord' | 'markUndelivered' | 'markQueued'>): IParadisBotGroupsPort & { markQueued(groupId: string, recordId: string): Promise<void> } {
+export function paradisBotGroupsMessagePort(service: Pick<ParadisBotGroupsService, 'groupsOf' | 'appendRecord' | 'markUndelivered' | 'markQueued'>): Required<IParadisBotGroupsPort> {
 	return {
 		groupsOf: botId => service.groupsOf(botId).map(group => ({ id: group.id, memberIds: group.members })),
 		appendRecord: async (groupId, record) => {
