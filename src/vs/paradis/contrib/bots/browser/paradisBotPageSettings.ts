@@ -32,6 +32,7 @@ import { IParadisBotPatch, PARADIS_BOT_FACE_COLORS, PARADIS_BOT_FACE_SHAPES } fr
 import { IParadisBotSummary, IParadisBotsService } from '../common/paradisBotsApi.js';
 import { paradisBotNameProblemMessage, paradisValidateBotName } from '../common/paradisBotsBandModel.js';
 import { IParadisBotSettingsDraft, PARADIS_BOT_HOME_FILES, paradisBotHomeFileConflict, paradisBotPermissionOptions, paradisBotSettingsAgents, paradisBotSettingsChange } from '../common/paradisBotSettingsModel.js';
+import { paradisBotGithubStatusText } from '../common/paradisBotPageModel.js';
 import { paradisBotChangeDetail } from './paradisBotChangeDetail.js';
 import { renderParadisBotFace } from './paradisBotFace.js';
 
@@ -89,6 +90,16 @@ export class ParadisBotSettingsPanel {
 		store.add(run.onDidChange(checked => void this.quick({ paused: !checked }, !checked)));
 		const pin = store.add(new ParadisSwitch(row(localize('paradis.botPage.settings.pin', "ピン留め")), { checked: bot.pinned, ariaLabel: localize('paradis.botPage.settings.pin', "ピン留め") }));
 		store.add(pin.onDidChange(checked => void this.quick({ pinned: checked }, false)));
+		// GitHub の見張り（既定オフ）。オンにするときだけ、管理の道具 update_bot の watch_github と同じ本文で確かめる
+		const githubValue = row(localize('paradis.botPage.settings.github', "GitHub を見張る"));
+		const github = store.add(new ParadisSwitch(githubValue, { checked: bot.watchGithub === true, ariaLabel: localize('paradis.botPage.settings.github', "GitHub を見張る") }));
+		store.add(github.onDidChange(checked => void this.setWatchGithub(bot, checked)));
+		const githubStatus = paradisBotGithubStatusText(bot, this.services.botsService.snapshot.github, at => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+		if (githubStatus !== undefined) {
+			const help = DOM.append(githubValue, $('.paradis-bot-settings-help'));
+			help.textContent = githubStatus.text;
+			help.classList.toggle('attention', githubStatus.attention);
+		}
 
 		const colors = DOM.append(row(localize('paradis.botPage.settings.color', "色")), $('.paradis-bot-settings-swatches'));
 		colors.setAttribute('role', 'radiogroup');
@@ -178,6 +189,22 @@ export class ParadisBotSettingsPanel {
 	}
 
 	/** 動かす・ピン留め・顔。確かめずに当てる（update_bot でも確かめないもの）。 */
+	/** GitHub の見張りを入り切りする。オンにするときは確かめ、やめたらスイッチを戻す（描き直す）。 */
+	private async setWatchGithub(bot: IParadisBotSummary, on: boolean): Promise<void> {
+		if (on) {
+			const { confirmed } = await this.services.paradisDialogService.confirm({
+				message: localize('paradis.botPage.settings.githubConfirm', "Bot「{0}」に GitHub を見張らせますか?", bot.name),
+				detail: paradisBotChangeDetail({ changes: [{ field: 'watch_github', from: 'false', to: 'true' }] }),
+				primaryButton: localize('paradis.botPage.settings.githubConfirmAction', "見張らせる"),
+			});
+			if (!confirmed) {
+				this.rerender();
+				return;
+			}
+		}
+		await this.quick({ watchGithub: on }, false);
+	}
+
 	private async quick(patch: IParadisBotPatch, stop: boolean): Promise<void> {
 		const result = await this.services.botsService.updateBot(this.botId, patch);
 		if (!result.ok) {

@@ -8,8 +8,9 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import type { ParadisBotGithubStatus } from '../../common/paradisBotGithub.js';
 import { IParadisBotItem } from '../../common/paradisBotItems.js';
-import { paradisBotAskAnswer, paradisBotAskToggle, paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel } from '../../common/paradisBotPageModel.js';
+import { paradisBotAskAnswer, paradisBotAskToggle, paradisBotGithubStatusText, paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel } from '../../common/paradisBotPageModel.js';
 
 function item(number: number, patch: Partial<IParadisBotItem> = {}): IParadisBotItem {
 	return {
@@ -80,5 +81,21 @@ suite('Paradis bots page', () => {
 			paradisBotAskToggle([2], 0, true),
 			paradisBotAskToggle([0, 2], 2, true),
 		], [[1], [0], [], [0, 2], [0]]);
+	});
+
+	test('GitHub の見張りの様子（見張っていない Bot には出さない、止まっている理由は目立たせる）', () => {
+		const time = (at: number) => `t${at}`;
+		const view = (status: ParadisBotGithubStatus) => ({ status, pullRequests: {} });
+		const watching = { watchGithub: true as const, paused: false };
+		assert.deepStrictEqual([
+			paradisBotGithubStatusText({ paused: false }, view({ state: 'ok' }), time),
+			paradisBotGithubStatusText({ ...watching, paused: true }, view({ state: 'no-gh' }), time),
+			paradisBotGithubStatusText(watching, view({ state: 'ok' }), time)?.attention,
+			paradisBotGithubStatusText(watching, view({ state: 'no-gh' }), time)?.attention,
+			paradisBotGithubStatusText(watching, view({ state: 'auth', message: 'x' }), time)?.text.includes('gh auth login'),
+			paradisBotGithubStatusText(watching, view({ state: 'rate-limited', retryAt: 5 }), time)?.text.includes('t5'),
+			paradisBotGithubStatusText(watching, view({ state: 'failed', message: 'x', retryAt: 7 }), time)?.text.includes('t7'),
+			paradisBotGithubStatusText(watching, undefined, time)?.attention,
+		], [undefined, { text: '一時停止中は見張りません。', attention: false }, false, true, true, true, true, false]);
 	});
 });

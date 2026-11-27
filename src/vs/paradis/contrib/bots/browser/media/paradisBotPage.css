@@ -615,6 +615,10 @@ button.paradis-bot-page-link:hover {
 	overflow-wrap: anywhere;
 }
 
+.paradis-bot-settings-help.attention {
+	color: var(--vscode-paradis-warning);
+}
+
 .paradis-bot-settings-error {
 	font-size: var(--vscode-fontSize-label1);
 	color: var(--vscode-paradis-danger);

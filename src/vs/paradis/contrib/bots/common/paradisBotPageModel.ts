@@ -12,6 +12,7 @@
 import { localize } from '../../../../nls.js';
 import type { IParadisAgentChatHeaderState } from '../../agentChat/common/paradisAgentChatHeader.js';
 import type { IParadisBotSummary } from './paradisBotsApi.js';
+import type { IParadisBotGithubView } from './paradisBotGithub.js';
 import { paradisBotStatusLine } from './paradisBotsBandModel.js';
 import type { ParadisHumanAskAnswer } from '../../humanAsk/common/paradisHumanAsk.js';
 import { IParadisBotItem, IParadisBotItemAsk, paradisBotItemStatus, paradisBotItemWaitsForOwner, paradisIsBotItemClosed, paradisIsBotItemSnoozed } from './paradisBotItems.js';
@@ -134,4 +135,26 @@ export function paradisBotStripHeader(bot: IParadisBotSummary, header: Pick<IPar
 		return { status: line, attention: false, busy: false, model: '' };
 	}
 	return { status: header.status || line, attention: header.attention, busy: header.busy && !header.attention, model: header.model };
+}
+
+/**
+ * 設定のタブの「GitHub を見張る」の下に出す様子（止まっている理由）。見張っていない Bot には出さない。`time` は再開の時刻を
+ * 文にする（テストで固定するため渡す）。`attention` は止まっていて人の手が要るもの。
+ */
+export function paradisBotGithubStatusText(bot: Pick<IParadisBotSummary, 'watchGithub' | 'paused'>, view: IParadisBotGithubView | undefined, time: (at: number) => string): { readonly text: string; readonly attention: boolean } | undefined {
+	if (bot.watchGithub !== true) {
+		return undefined;
+	}
+	if (bot.paused) {
+		return { text: localize('paradis.botPage.github.paused', "一時停止中は見張りません。"), attention: false };
+	}
+	const status = view?.status;
+	switch (status?.state) {
+		case 'ok': return { text: localize('paradis.botPage.github.ok', "5 分ごとに確かめています。"), attention: false };
+		case 'no-gh': return { text: localize('paradis.botPage.github.noGh', "gh が見つからないため止まっています。gh を入れてから、見張りを入れ直すか Para Code を再起動してください。"), attention: true };
+		case 'auth': return { text: localize('paradis.botPage.github.auth', "gh にログインしていないため止まっています。ターミナルで gh auth login を実行してから、見張りを入れ直してください。"), attention: true };
+		case 'rate-limited': return { text: localize('paradis.botPage.github.rateLimited', "GitHub の枠を使い切ったため、{0} まで止まっています。", time(status.retryAt)), attention: true };
+		case 'failed': return { text: localize('paradis.botPage.github.failed', "読めませんでした。{0} に読み直します。", time(status.retryAt)), attention: true };
+		default: return { text: localize('paradis.botPage.github.starting', "見張りを始めています。"), attention: false };
+	}
 }
