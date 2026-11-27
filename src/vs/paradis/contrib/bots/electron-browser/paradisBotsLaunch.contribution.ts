@@ -396,6 +396,11 @@ class ParadisBotsWindowWorker extends Disposable {
 				// 裏に回したペインは、再読み込みの後に繋ぎ直すエディタのタブが無い。エージェントが残ると次に開いたときに同じ会話を
 				// 2 つ続けてしまうので、閉じる（眠った会話として残り、話しかければ続きから起きる）
 				for (const instance of paradisHiddenBotPanes()) {
+					// 終わりの知らせは再読み込みの間に届かないことがある（実機で「操作が要ります」のまま残った）ので、先に外す
+					const token = this.paneTokenService.getTokenForInstance(instance.instanceId);
+					if (token !== undefined) {
+						this.botsService.releasePane(token).catch(error => this.logService.warn('[paradisBots] releasing a hidden bot terminal failed', error));
+					}
 					instance.dispose(TerminalExitReason.User);
 				}
 			}

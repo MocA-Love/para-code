@@ -103,6 +103,13 @@ export class ParadisBotsChannel implements IServerChannel<string> {
 				}
 				return undefined;
 			}
+			case 'releasePane': {
+				const paneToken = args.string(0);
+				if (paneToken !== undefined) {
+					service.releasePane(paneToken);
+				}
+				return undefined;
+			}
 			case 'notePaneActive': {
 				const paneToken = args.string(0);
 				if (paneToken !== undefined) {

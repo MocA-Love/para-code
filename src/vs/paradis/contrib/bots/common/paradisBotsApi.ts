@@ -269,6 +269,11 @@ export interface IParadisBotsService {
 	 * 始める。Bot のペインでなければ何もしない。
 	 */
 	notePaneActive(paneToken: string): Promise<void>;
+	/**
+	 * Bot のペインを閉じた（ウィンドウを再読み込みする前に、隠したペインを閉じる）。シェルの終わりの知らせ（TerminalExit）は
+	 * 再読み込みの間に届かないことがあるので、ウィンドウから先に結び付けを外す。会話の控えは残るので「眠っています」になる。
+	 */
+	releasePane(paneToken: string): Promise<void>;
 	requestStop(botId: string): Promise<boolean>;
 	/**
 	 * 別のウィンドウで開いている会話のペインを前に出してもらう（利用者の操作からだけ）。どのウィンドウも 2 秒以内に

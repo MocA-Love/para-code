@@ -156,7 +156,8 @@ suite('Paradis bot wake and sleep', () => {
 		clock.now += 1;
 		first.service.stopIdleChats();
 		first.service.stopIdleChats();
-		first.hooks.fire({ token: 'pane-1', event: 'TerminalExit' });
+		// ウィンドウを再読み込みする前に隠したペインを閉じた（終わりの知らせより先にウィンドウが外す）。眠った会話として残る
+		first.service.releasePane('pane-1');
 		const afterStop = paradisBotStatusLine(first.service.getSnapshot().bots[0]);
 
 		// 起動し直した（新しいサービスが保存から読む）
