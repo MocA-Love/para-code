@@ -56,7 +56,7 @@ import { IEditorService } from '../../../../workbench/services/editor/common/edi
 import { paradisClaudeComposerState } from '../../agentHibernation/common/paradisAgentHibernation.js';
 import { paradisCodexComposerState } from '../../mobileRelay/electron-browser/paradisCodexAutoContinueWindow.js';
 import { paradisAddTerminalHiddenOnClose } from '../../workspaceSwitch/browser/paradisTerminalHideOnClose.js';
-import { IParadisBotRevealRequest, IParadisBotsService, paradisBotCommandStateOnAttach, paradisIsLeftoverBotTerminal, IParadisBotStopRequest, PARADIS_BOT_IDLE_STOP_MS, PARADIS_BOTS_ENABLED_SETTING, PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
+import { IParadisBotRevealRequest, IParadisBotsService, paradisBotCommandStateOnAttach, paradisIsLeftoverBotTerminal, IParadisBotStopRequest, PARADIS_BOT_IDLE_STOP_MS, PARADIS_BOTS_CHANNEL, PARADIS_BOTS_ENABLED_SETTING, PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
 
 const findInstance = paradisFindBotTerminalInstance;
 
@@ -365,6 +365,7 @@ class ParadisBotsWindowWorker extends Disposable {
 		@IParadisWorkspaceSwitchService private readonly switchService: IParadisWorkspaceSwitchService,
 		@IHostService private readonly hostService: IHostService,
 		@ILogService private readonly logService: ILogService,
+		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
 		@ILifecycleService private readonly lifecycleService: ILifecycleService,
 		@IEditorGroupsService editorGroupsService: IEditorGroupsService,
 		@IEditorService private readonly editorService: IEditorService,
@@ -647,7 +648,7 @@ class ParadisBotsWindowWorker extends Disposable {
 		}
 	}
 
-	private async stop(request: IParadisBotStopRequest): Promise<void> {
+	private async stop(request: Pick<IParadisBotStopRequest, 'paneHashes' | 'idle'>): Promise<void> {
 		for (const instanceId of await paradisBotInstancesInWindow(this.paneTokenService, request.paneHashes)) {
 			const instance = findInstance(this.terminalService, this.terminalGroupService, instanceId);
 			if (instance !== undefined && !instance.isDisposed && request.idle === true) {
@@ -671,6 +672,14 @@ class ParadisBotsWindowWorker extends Disposable {
 			}
 		}
 	}
+
+	/**
+	 * Bot の機能がオフになった: このウィンドウの Bot のペインを全部閉じる。閉じ終わるまでも、Bot の制限（IDE の操作の道具・
+	 * 見回りの読むだけ）は shared process が結び付けで断り続ける（設定は見ない）。
+	 */
+	async stopAll(): Promise<void> {
+		await this.stop({ paneHashes: await this.sharedProcessService.getChannel(PARADIS_BOTS_CHANNEL).call<readonly string[]>('allPaneHashes') });
+	}
 }
 
 /**
@@ -688,6 +697,7 @@ class ParadisBotsWindowContribution extends Disposable {
 		@IConfigurationService private readonly configurationService: IConfigurationService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@ISharedProcessService private readonly sharedProcessService: ISharedProcessService,
+		@ILogService private readonly logService: ILogService,
 	) {
 		super();
 		this._register(configurationService.onDidChangeConfiguration(event => {
@@ -700,7 +710,16 @@ class ParadisBotsWindowContribution extends Disposable {
 
 	private apply(): void {
 		if (this.configurationService.getValue(PARADIS_BOTS_ENABLED_SETTING) !== true) {
-			this.worker.clear();
+			// オンからオフにした: 動いている Bot のペインを閉じてから窓口を外す（利用者が切ったときも、Bot のエージェントが
+			// settings.json を書き換えたときも同じ）
+			const worker = this.worker.value;
+			if (worker !== undefined) {
+				worker.stopAll().catch(error => this.logService.warn('[paradisBots] closing the bot terminals after turning bots off failed', error)).finally(() => {
+					if (this.worker.value === worker && this.configurationService.getValue(PARADIS_BOTS_ENABLED_SETTING) !== true) {
+						this.worker.clear();
+					}
+				});
+			}
 			return;
 		}
 		if (!this.channelRegistered) {
