@@ -9,12 +9,15 @@
 // 記憶の整理の写しと取り消し。整理（Bot が MEMORY.md と memory/ を書き直す会話）を始める前に、記憶のファイルを
 // `<userData>/paradis/bots/memory-snapshots/<Bot の id>/<時刻>.json` へ写す。写しは専用フォルダの外に置く
 // （専用フォルダは Bot が自由に書けるので、写しを書き換えられないように）。取り消しは一番新しい写しの中身を
-// 書き戻す。整理で新しくできたファイルは消さず、`added` で知らせる。
+// 書き戻す。整理で新しくできたファイルは消さず、`added` で知らせる。書き戻すのは記憶のファイル（`MEMORY.md` と
+// `memory/` の直下）だけで、写しに別のパス（`SOUL.md`・`AGENTS.md` など）があっても書かない（`skipped` で知らせる）。
+// Bot を消したら写しも消す。
 
 import { promises as fs } from 'fs';
 import { join } from '../../../../base/common/path.js';
 import { isRecord } from '../../../common/paradisGuards.js';
 import { paradisWriteFileAtomic } from '../../../node/paradisWriteFileAtomic.js';
+import { PARADIS_BOT_MEMORY_FILE, PARADIS_BOT_MEMORY_FOLDER } from '../common/paradisBotHome.js';
 import { IParadisBot } from '../common/paradisBots.js';
 import { ParadisBotHomeError, ParadisBotHomes } from './paradisBotHomes.js';
 
@@ -32,6 +35,27 @@ export interface IParadisBotMemoryUndo {
 	readonly added: readonly string[];
 	/** 写しを取った時刻。 */
 	readonly takenAt: number;
+	/** 写しにあったが、記憶のファイルではないので書き戻さなかったパス。 */
+	readonly skipped: readonly string[];
+}
+
+export interface IParadisBotMemorySnapshot {
+	readonly takenAt: number;
+	/** 写したファイルの数。 */
+	readonly files: number;
+	/** 記憶のファイルの数（上限で打ち切る前）。 */
+	readonly total: number;
+	/** 上限で打ち切り、一部だけを写したか。 */
+	readonly partial: boolean;
+}
+
+/** 書き戻してよい記憶のファイルか（`MEMORY.md` か、`memory/` の直下のファイル）。 */
+function isMemoryPath(path: string): boolean {
+	if (path === PARADIS_BOT_MEMORY_FILE) {
+		return true;
+	}
+	const name = path.startsWith(`${PARADIS_BOT_MEMORY_FOLDER}/`) ? path.slice(PARADIS_BOT_MEMORY_FOLDER.length + 1) : '';
+	return /^[^/\\]+$/.test(name) && name !== '.' && name !== '..';
 }
 
 function missing(error: unknown): boolean {
@@ -64,11 +88,15 @@ export class ParadisBotMemorySnapshots {
 		return names.map(name => /^(?<time>\d+)\.json$/.exec(name)?.groups?.time).filter((time): time is string => time !== undefined).map(Number).sort((a, b) => b - a);
 	}
 
-	/** 記憶のファイルを写す。写したファイルの数を返す。古い写しは {@link PARADIS_BOT_MEMORY_SNAPSHOTS_KEEP} 件を残して消す。 */
-	async take(bot: SnapshotBot): Promise<{ readonly takenAt: number; readonly files: number }> {
+	/**
+	 * 記憶のファイルを写す。写したファイルの数と、上限で打ち切って一部だけになったかを返す。古い写しは
+	 * {@link PARADIS_BOT_MEMORY_SNAPSHOTS_KEEP} 件を残して消す。
+	 */
+	async take(bot: SnapshotBot): Promise<IParadisBotMemorySnapshot> {
 		const files: Record<string, string> = {};
 		let size = 0;
-		for (const path of await this.homes.memoryFiles(bot)) {
+		const listed = await this.homes.memoryFilesWithTotal(bot);
+		for (const path of listed.files) {
 			const text = await this.homes.read(bot, path);
 			if (text === undefined) {
 				continue;
@@ -91,7 +119,16 @@ export class ParadisBotMemorySnapshots {
 		for (const old of [takenAt, ...existing].sort((a, b) => b - a).slice(PARADIS_BOT_MEMORY_SNAPSHOTS_KEEP)) {
 			await fs.unlink(join(folder, `${old}.json`)).catch(() => undefined);
 		}
-		return { takenAt, files: Object.keys(files).length };
+		const count = Object.keys(files).length;
+		return { takenAt, files: count, total: listed.total, partial: listed.files.length < listed.total };
+	}
+
+	/** その Bot の写しを全部消す（Bot を消したとき）。 */
+	async remove(bot: Pick<IParadisBot, 'id'>): Promise<void> {
+		if (!/^[A-Za-z0-9_-]{1,200}$/.test(bot.id)) {
+			return;
+		}
+		await fs.rm(join(this.root, bot.id), { recursive: true, force: true });
 	}
 
 	/** 一番新しい写しを書き戻す。写しが無ければ undefined。 */
@@ -103,7 +140,13 @@ export class ParadisBotMemorySnapshots {
 		const value: unknown = JSON.parse(await fs.readFile(join(this.folder(bot), `${latest}.json`), 'utf8'));
 		const files = isRecord(value) && isRecord(value.files) ? value.files : {};
 		const restored: string[] = [];
+		const skipped: string[] = [];
 		for (const [path, text] of Object.entries(files)) {
+			if (!isMemoryPath(path)) {
+				// 写しのファイルが書き換えられていても、人格メモや指示文を上書きしない
+				skipped.push(path);
+				continue;
+			}
 			if (typeof text === 'string') {
 				// 専用フォルダへの書き込みは、いつもと同じ検査（フォルダの外・symlink・持ち主の印）を通す
 				await this.homes.write(bot, path, text);
@@ -111,6 +154,6 @@ export class ParadisBotMemorySnapshots {
 			}
 		}
 		const added = (await this.homes.memoryFiles(bot)).filter(path => !restored.includes(path));
-		return { restored, added, takenAt: latest };
+		return { restored, added, takenAt: latest, skipped };
 	}
 }
