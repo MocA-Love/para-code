@@ -16,7 +16,8 @@
 import { Event } from '../../../../base/common/event.js';
 import { IServerChannel } from '../../../../base/parts/ipc/common/ipc.js';
 import { ParadisChannelArgs } from '../../../common/paradisChannelArgs.js';
-import { asRecord } from '../../../common/paradisGuards.js';
+import { asRecord, isRecord } from '../../../common/paradisGuards.js';
+import { PARADIS_BOT_TASK_TOOLS } from '../../scheduledRuns/common/paradisScheduledRuns.js';
 import { PARADIS_BOT_ITEM_STATUSES } from '../common/paradisBotItems.js';
 import { PARADIS_BOT_PANE_PURPOSES, ParadisBotsServiceResult } from '../common/paradisBotsApi.js';
 import { ParadisBotsService } from './paradisBotsService.js';
@@ -87,6 +88,12 @@ export class ParadisBotsChannel implements IServerChannel<string> {
 
 			case 'requestLaunch': {
 				const purpose = PARADIS_BOT_PANE_PURPOSES.find(candidate => candidate === (args.at(1) ?? 'chat'));
+				// 定期実行の段（`{ task }`）。読めない値は断る
+				const options = args.at(2);
+				if (options !== undefined && options !== null) {
+					const task = isRecord(options) ? PARADIS_BOT_TASK_TOOLS.find(candidate => candidate === options.task) : undefined;
+					return id !== undefined && purpose === 'chat' && task !== undefined ? service.requestLaunch(id, purpose, { task }) : INVALID;
+				}
 				return id !== undefined && purpose !== undefined ? service.requestLaunch(id, purpose) : INVALID;
 			}
 			case 'reportLaunch': {

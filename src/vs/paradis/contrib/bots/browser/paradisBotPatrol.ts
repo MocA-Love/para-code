@@ -26,6 +26,7 @@ import { paradisDayOfWeekLabel } from '../../scheduledRuns/common/paradisSchedul
 import { PARADIS_BOT_PATROL_MAX_LOOK_FOR_LENGTH } from '../../scheduledRuns/common/paradisScheduledRuns.js';
 import { paradisBotPatrolHeadline, paradisBotPatrolLastRun, paradisBotPatrolScheduleCheck } from '../common/paradisBotPatrolModel.js';
 import { paradisSanitizeDisplayText } from '../../agentBrowser/common/paradisAgentBrowserTabs.js';
+import { IParadisBotTasksPort, ParadisBotTasksSection } from './paradisBotTasks.js';
 
 const $ = DOM.$;
 
@@ -36,6 +37,8 @@ export interface IParadisBotPatrolPort {
 	get(botId: string): Promise<IParadisBotPatrolView>;
 	set(botId: string, input: IParadisBotPatrolInput): Promise<{ readonly ok: boolean; readonly error?: string }>;
 	runNow(botId: string): Promise<{ readonly ok: boolean; readonly error?: string }>;
+	/** Bot の定期実行の口（報告書の D6 (a)）。有れば設定のタブの見回りの欄の上に「定期実行」の欄を描く。 */
+	readonly tasks?: IParadisBotTasksPort;
 }
 
 export interface IParadisBotPatrolServices {
@@ -65,6 +68,8 @@ export class ParadisBotPatrolSection {
 	private stale = false;
 	private draft: IPatrolDraft | undefined;
 	private busy = false;
+	/** 設定のタブの「定期実行」の欄（口に `tasks` があるときだけ）。 */
+	private readonly tasks: ParadisBotTasksSection | undefined;
 
 	constructor(
 		private readonly botId: string,
@@ -72,15 +77,19 @@ export class ParadisBotPatrolSection {
 		private readonly services: IParadisBotPatrolServices,
 		private readonly rerender: () => void,
 		private readonly openSettings: () => void,
-	) { }
+	) {
+		this.tasks = port.tasks !== undefined ? new ParadisBotTasksSection(botId, port.tasks, services, rerender) : undefined;
+	}
 
 	/** 口の知らせを受けて読み直す（読み込み中なら、読み終えた後にもう一度読む）。 */
 	invalidate(): void {
 		void this.load();
+		this.tasks?.invalidate();
 	}
 
 	/** 表示していない Bot の分: 持っている状態を捨て、次に描くときに読む（読み込み中なら、読み終えた後にもう一度読む）。 */
 	forget(): void {
+		this.tasks?.forget();
 		if (this.loading) {
 			this.stale = true;
 		} else {
@@ -145,6 +154,8 @@ export class ParadisBotPatrolSection {
 
 	/** 設定のタブの「見回り」の欄（見回る・時刻の種類と欄・探すもの、保存、今すぐ見回る）。 */
 	renderSettings(body: HTMLElement, store: DisposableStore): void {
+		// 定期実行（会話に結果を書く）の欄を見回りの欄の上に描く
+		this.tasks?.renderSettings(body, store);
 		const view = this.ensureLoaded();
 		DOM.append(body, $('.paradis-bot-page-section')).textContent = localize('paradis.botPatrol.settingsSection', "見回り");
 		if (view === undefined) {

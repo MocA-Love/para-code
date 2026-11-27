@@ -840,3 +840,50 @@ button.paradis-bot-page-link:hover {
 .paradis-bot-patrol-preview.paradis-bot-patrol-problem {
 	color: var(--vscode-paradis-danger);
 }
+
+/* Scheduled tasks of a bot (settings tab, above the look-around): one card per task, the form uses the look-around grid. */
+.paradis-bot-tasks {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size80);
+}
+
+.paradis-bot-task {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size60);
+	min-width: 0;
+	padding: var(--vscode-spacing-size120) var(--vscode-spacing-size160);
+	border: 1px solid var(--vscode-paradis-lineSubtle);
+	border-radius: var(--paradis-radius-inner, 8px);
+	background: var(--vscode-paradis-raised);
+}
+
+.paradis-bot-task-head {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	min-width: 0;
+}
+
+.paradis-bot-task-name {
+	flex: 0 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-bot-task-when,
+.paradis-bot-task-prompt,
+.paradis-bot-task-last,
+.paradis-bot-task-result {
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+	overflow-wrap: anywhere;
+}
+
+.paradis-bot-task-prompt {
+	color: var(--vscode-paradis-text);
+}

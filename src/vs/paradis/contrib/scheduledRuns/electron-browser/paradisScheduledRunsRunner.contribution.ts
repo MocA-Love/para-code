@@ -46,10 +46,12 @@ import {
 	PARADIS_SCHEDULED_RUN_TIMEOUT_MS,
 	paradisScheduledRunLaunchPrompt,
 	paradisScheduledRunReasonLabel,
+	ParadisBotTaskTools,
 } from '../common/paradisScheduledRuns.js';
 import { IParadisRunWatchState, PARADIS_RUN_WATCH_INITIAL, paradisAdvanceRunWatch, paradisRunWatchTimeoutReason } from '../common/paradisScheduledRunWatch.js';
 import { IParadisScheduledRunsClient } from './paradisScheduledRunsClient.js';
 import { paradisBotPatrolPrompt } from '../common/paradisScheduledRunBotPatrol.js';
+import { paradisBotTaskPrompt } from '../common/paradisScheduledRunBotTask.js';
 import { IParadisBotsService } from '../../bots/common/paradisBotsApi.js';
 import { IParadisBotLaunchedTerminal } from '../../bots/common/paradisBotLaunchSteps.js';
 import { paradisLaunchBotTerminal } from '../../bots/electron-browser/paradisBotTerminalLaunch.js';
@@ -185,7 +187,11 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 		run.store.add(disposableTimeout(() => this.onTimeout(run), PARADIS_SCHEDULED_RUN_TIMEOUT_MS));
 
 		if (definition.target.kind === 'bot') {
-			await this.executeBotPatrol(run, definition.target.botId ?? '', request.definition.prompt);
+			const task = definition.target.botTask;
+			// 定期実行は Bot の会話の 1 ターン（眠った会話を続けて起こし、指示を最初の指示として渡す）。見回りは読むだけのペイン
+			await this.executeBotPatrol(run, definition.target.botId ?? '', task !== undefined
+				? { task: task.tools, prompt: paradisBotTaskPrompt(definition.name, request.definition.prompt, task.tools) }
+				: { prompt: paradisBotPatrolPrompt(request.definition.prompt) });
 			return;
 		}
 		const repository = this.findRepository(definition);
@@ -285,10 +291,10 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 	 * Bot の見回りを起動する。エージェント・モデル・読むだけの引数は、定義ではなく今の Bot の台帳から取る
 	 * （`requestLaunch(botId, 'patrol')`。機能がオフ・一時停止ならここで断られる）。今のスペースの裏のタブで開く。
 	 */
-	private async executeBotPatrol(run: IActiveRun, botId: string, lookFor: string): Promise<void> {
+	private async executeBotPatrol(run: IActiveRun, botId: string, options: { readonly task?: ParadisBotTaskTools; readonly prompt: string }): Promise<void> {
 		let launched: IParadisBotLaunchedTerminal;
 		try {
-			const launch = await this.botsService.requestLaunch(botId, 'patrol');
+			const launch = options.task !== undefined ? await this.botsService.requestLaunch(botId, 'chat', { task: options.task }) : await this.botsService.requestLaunch(botId, 'patrol');
 			if (!launch.ok) {
 				this.finish(run, { runId: run.runId, status: 'failed', reason: 'launchFailed', detail: launch.message });
 				return;
@@ -301,7 +307,7 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 				stateKey: this.switchService.activeStateKey,
 				// 時刻で起動するので、利用者の入力を新しいターミナルへ横取りしない
 				background: true,
-				prompt: paradisBotPatrolPrompt(lookFor),
+				prompt: options.prompt,
 			});
 			if (!outcome.ok) {
 				this.finish(run, { runId: run.runId, status: 'failed', reason: 'launchFailed', detail: outcome.reason });
@@ -309,7 +315,7 @@ export class ParadisScheduledRunsRunner extends Disposable implements IWorkbench
 			}
 			launched = outcome.terminal;
 		} catch (error) {
-			this.logService.error('[ParadisScheduledRuns] launching the bot look-around failed', error);
+			this.logService.error('[ParadisScheduledRuns] launching the bot look-around or task failed', error);
 			this.finish(run, { runId: run.runId, status: 'failed', reason: 'launchFailed', detail: toErrorMessage(error) });
 			return;
 		}

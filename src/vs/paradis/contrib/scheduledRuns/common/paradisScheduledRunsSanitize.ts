@@ -16,6 +16,7 @@ import {
 	IParadisScheduledRunSpace,
 	IParadisScheduledRunTarget,
 	ParadisScheduledRunReason,
+	PARADIS_BOT_TASK_TOOLS,
 } from './paradisScheduledRuns.js';
 import { isRecord } from '../../../common/paradisGuards.js';
 
@@ -49,6 +50,11 @@ function sanitizeTarget(value: unknown, allowBot: boolean): IParadisScheduledRun
 		const botId = optionalString(value.botId);
 		if (!allowBot || typeof botId !== 'string' || repositoryUri !== '' || typeof repositoryName !== 'string' || repositoryName.length > 200 || value.baseRef !== undefined) {
 			return undefined;
+		}
+		// 定期実行（botTask）は道具の段だけを持つ。読めない段の定義は通さない
+		if (value.botTask !== undefined) {
+			const tools = isRecord(value.botTask) ? PARADIS_BOT_TASK_TOOLS.find(candidate => candidate === (value.botTask as Record<string, unknown>).tools) : undefined;
+			return tools !== undefined ? { kind, repositoryUri, repositoryName, botId, botTask: { tools } } : undefined;
 		}
 		return { kind, repositoryUri, repositoryName, botId };
 	}

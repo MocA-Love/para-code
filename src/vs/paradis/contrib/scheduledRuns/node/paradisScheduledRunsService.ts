@@ -48,6 +48,7 @@ import {
 	paradisScheduledRunPool,
 	paradisCountRunningRuns,
 	PARADIS_SCHEDULED_RUN_MIN_PENDING_MS,
+	PARADIS_BOT_TASK_MAX_PER_BOT,
 	PARADIS_SCHEDULED_RUN_MAX_DAILY_LIMIT,
 	PARADIS_SCHEDULED_RUN_MAX_DEFINITIONS,
 	PARADIS_SCHEDULED_RUN_TIMEOUT_MS,
@@ -74,6 +75,7 @@ import {
 	paradisOtherBotPatrolsRunsPerDay,
 	paradisSanitizeBotPatrolLookFor,
 } from '../common/paradisScheduledRunBotPatrol.js';
+import { IParadisBotTaskView, paradisBotTaskDailyProblem, paradisBotTaskName, paradisBotTaskNeedsConfirmation, paradisBotTaskViews, paradisIsBotDefinition, paradisIsBotTaskDefinition, paradisSanitizeBotTaskInput } from '../common/paradisScheduledRunBotTask.js';
 import { paradisSanitizeScheduledRunDraft, paradisSanitizeScheduledRunPrecheckShape, paradisSanitizeScheduledRunReport, paradisSanitizeScheduledRunSpace } from '../common/paradisScheduledRunsSanitize.js';
 import { ParadisScheduledRunPrecheckRunner } from './paradisScheduledRunPrecheck.js';
 
@@ -243,7 +245,7 @@ export class ParadisScheduledRunsService extends Disposable {
 	getState(): IParadisScheduledRunsState {
 		const now = this.clock.now();
 		const nextRuns: Record<string, number | undefined> = {};
-		const definitions = this.definitions.filter(definition => !paradisIsBotPatrolDefinition(definition));
+		const definitions = this.definitions.filter(definition => !paradisIsBotDefinition(definition));
 		for (const definition of definitions) {
 			if (!definition.enabled) {
 				continue;
@@ -252,7 +254,7 @@ export class ParadisScheduledRunsService extends Disposable {
 			nextRuns[definition.id] = parsed.schedule ? paradisNextCronOccurrence(parsed.schedule, now) : undefined;
 		}
 		// 定義を消した後に終わりを待っている回は残す（Bot の見回りの回だけを除く）
-		const patrolIds = new Set(this.definitions.filter(definition => paradisIsBotPatrolDefinition(definition)).map(definition => definition.id));
+		const patrolIds = new Set(this.definitions.filter(definition => paradisIsBotDefinition(definition)).map(definition => definition.id));
 		return { definitions, runs: this.runs.filter(run => !patrolIds.has(run.definitionId)), nextRuns };
 	}
 
@@ -352,13 +354,105 @@ export class ParadisScheduledRunsService extends Disposable {
 	/** Bot を消したときに、その見回りの定義と記録を消す（動いている回は止める）。 */
 	async deleteBotPatrols(botId: string): Promise<void> {
 		await this.ready;
-		for (const definition of this.definitions.filter(candidate => paradisIsBotPatrolDefinition(candidate, botId))) {
+		for (const definition of this.definitions.filter(candidate => paradisIsBotDefinition(candidate, botId))) {
 			await this.delete(definition.id);
 		}
 	}
 
+	// ---------- Bot の定期実行（報告書の D6 (a)） ----------
+
+	/** Bot のページの「定期実行」の欄が読む一覧。 */
+	async getBotTasks(botId: string): Promise<IParadisBotTaskView[]> {
+		await this.ready;
+		return paradisBotTaskViews(this.definitions, this.runs, botId, this.botGate?.check(botId) === 'ok', this.clock.now());
+	}
+
+	/**
+	 * Bot の定期実行を作る・変える（Bot のページ・para-browser の道具から）。「Bot の権限」の段は、利用者の確認
+	 * （`confirmedBotTools`）が無ければ断る。エージェントの道具から作ったもの（`byAgent`）は無効で始め、利用者が中身を
+	 * 確かめて有効にするまで走らせない（汎用の定期実行の `agentReviewPending` と同じ）。
+	 */
+	async setBotTask(botId: string, value: unknown, byAgent = false): Promise<IParadisScheduledRunsResult> {
+		await this.ready;
+		const input = paradisSanitizeBotTaskInput(value);
+		if (input === undefined) {
+			return { ok: false, error: localize('paradis.scheduledRuns.error.badBotTask', "定期実行の設定を読めませんでした。") };
+		}
+		if (this.botGate?.check(botId) === 'off') {
+			return { ok: false, error: STR_BOTS_OFF };
+		}
+		const botName = this.botGate?.botName(botId);
+		if (botName === undefined) {
+			return { ok: false, error: localize('paradis.scheduledRuns.error.noBot', "この Bot は見つかりません。") };
+		}
+		const existing = input.id !== undefined ? this.definitions.find(definition => definition.id === input.id) : undefined;
+		if (input.id !== undefined && (existing === undefined || !paradisIsBotTaskDefinition(existing, botId))) {
+			return { ok: false, error: localize('paradis.scheduledRuns.error.notFound', "この定期実行は削除されています。") };
+		}
+		// エージェントが作る・変えるものは無効で始めるので、ここでは確かめない（利用者が有効にするときに画面が確かめる）
+		if (!byAgent && paradisBotTaskNeedsConfirmation(input, existing)) {
+			return { ok: false, error: localize('paradis.scheduledRuns.error.botTaskConfirm', "「Bot の権限」の段は、確認してから選んでください。") };
+		}
+		if (!existing) {
+			if (this.definitions.filter(definition => paradisIsBotTaskDefinition(definition, botId)).length >= PARADIS_BOT_TASK_MAX_PER_BOT) {
+				return { ok: false, error: localize('paradis.scheduledRuns.error.tooManyBotTasks', "1 つの Bot の定期実行は {0} 件までです。", PARADIS_BOT_TASK_MAX_PER_BOT) };
+			}
+			if (this.definitions.length >= PARADIS_SCHEDULED_RUN_MAX_DEFINITIONS) {
+				return { ok: false, error: localize('paradis.scheduledRuns.error.tooMany', "定期実行は {0} 件までです。", PARADIS_SCHEDULED_RUN_MAX_DEFINITIONS) };
+			}
+		}
+		// エージェントが作ったものは、利用者が初めて有効にするまで無効のまま
+		const reviewPending = byAgent ? (existing === undefined || existing.agentReviewPending === true || existing.target.botTask?.tools !== input.tools) : existing?.agentReviewPending === true && !input.enabled;
+		const enabled = input.enabled && !reviewPending;
+		const fields = {
+			name: paradisBotTaskName(input.name, input.prompt),
+			schedule: input.schedule,
+			target: { kind: 'bot' as const, repositoryUri: '', repositoryName: botName.slice(0, 200), botId, botTask: { tools: input.tools } },
+			agentId: '',
+			prompt: input.prompt,
+			dailyLimit: PARADIS_SCHEDULED_RUN_MAX_DAILY_LIMIT,
+		};
+		const problem = paradisValidateScheduledRunDraft(fields) ?? (enabled ? paradisBotTaskDailyProblem(this.definitions, botId, input.schedule, existing?.id) : undefined);
+		if (problem !== undefined) {
+			return { ok: false, error: problem };
+		}
+		const now = this.clock.now();
+		const id = existing?.id ?? generateUuid();
+		const definition: IParadisScheduledRunDefinition = {
+			id, ...fields, enabled,
+			...(byAgent || existing?.createdByAgent ? { createdByAgent: true } : {}),
+			...(reviewPending ? { agentReviewPending: true } : {}),
+			createdAt: existing?.createdAt ?? now, updatedAt: now,
+		};
+		const lastBefore = this.lastEvaluatedAtOf(id);
+		const restart = !existing || existing.schedule !== definition.schedule || (enabled && !existing.enabled);
+		this.definitions = existing ? this.definitions.map(candidate => candidate === existing ? definition : candidate) : [...this.definitions, definition];
+		if (restart) {
+			this.lastEvaluatedAt[id] = now;
+		}
+		const cancelled = enabled ? [] : this.cancelPending(id, 'disabled');
+		if (!await this.commitForUser(() => {
+			this.undoDefinition(id, definition, existing);
+			this.undoLastEvaluatedAt(id, restart ? now : undefined, lastBefore);
+			this.undoCancelled(cancelled);
+		})) {
+			return { ok: false, error: STR_SAVE_FAILED };
+		}
+		return { ok: true, definition };
+	}
+
+	/** Bot の定期実行を消す（その Bot のものだけ）。 */
+	async deleteBotTask(botId: string, id: string): Promise<IParadisScheduledRunsResult> {
+		await this.ready;
+		const existing = this.definitions.find(definition => definition.id === id);
+		if (existing === undefined || !paradisIsBotTaskDefinition(existing, botId)) {
+			return { ok: false, error: localize('paradis.scheduledRuns.error.notFound', "この定期実行は削除されています。") };
+		}
+		return this.delete(id);
+	}
+
 	/** その定義が Bot の見回りか（上限を数える枠を分けるのに使う）。 */
-	private readonly isBotPatrolDefinitionId = (definitionId: string): boolean => this.definitions.some(definition => definition.id === definitionId && paradisIsBotPatrolDefinition(definition));
+	private readonly isBotPatrolDefinitionId = (definitionId: string): boolean => this.definitions.some(definition => definition.id === definitionId && paradisIsBotDefinition(definition));
 
 	/**
 	 * 同時実行の枠が空かずに受け持てなかった見回りの開始待ち。期限が来たとき、今も見回りの枠が埋まっていれば、その理由で
@@ -369,7 +463,11 @@ export class ParadisScheduledRunsService extends Disposable {
 	/** 見回りの門の答え。門がまだ無い・Bot の台帳を読み終えていなければ undefined。 */
 	private botGateState(definition: IParadisScheduledRunDefinition): ParadisBotPatrolGateState | undefined {
 		const botId = definition.target.botId;
-		return botId !== undefined ? this.botGate?.check(botId) : undefined;
+		if (botId === undefined) {
+			return undefined;
+		}
+		// 定期実行は会話の 1 ターンとして走るので、会話のペインが開いている間は走らせない（門が別に答える）
+		return definition.target.botTask !== undefined ? this.botGate?.checkTask(botId, definition.target.botTask.tools) : this.botGate?.check(botId);
 	}
 
 	// ---------- 定義の操作（画面から） ----------
@@ -389,7 +487,7 @@ export class ParadisScheduledRunsService extends Disposable {
 		if (draft.id !== undefined && !existing) {
 			return { ok: false, error: localize('paradis.scheduledRuns.error.notFound', "この定期実行は削除されています。") };
 		}
-		if (existing && paradisIsBotPatrolDefinition(existing)) {
+		if (existing && paradisIsBotDefinition(existing)) {
 			// Bot の見回りは Bot のページ（setBotPatrol）でだけ変える
 			return { ok: false, error: localize('paradis.scheduledRuns.error.botPatrol', "Bot の見回りは Bot のページで変えてください。") };
 		}
@@ -445,8 +543,14 @@ export class ParadisScheduledRunsService extends Disposable {
 			return { ok: false, error: localize('paradis.scheduledRuns.error.notFound', "この定期実行は削除されています。") };
 		}
 		const now = this.clock.now();
-		if (enabled && paradisIsBotPatrolDefinition(existing) && this.botGateState(existing) === 'off') {
+		if (enabled && paradisIsBotDefinition(existing) && this.botGateState(existing) === 'off') {
 			return { ok: false, error: STR_BOTS_OFF };
+		}
+		if (enabled && !existing.enabled && paradisIsBotTaskDefinition(existing) && existing.target.botId !== undefined) {
+			const problem = paradisBotTaskDailyProblem(this.definitions, existing.target.botId, existing.schedule, existing.id);
+			if (problem !== undefined) {
+				return { ok: false, error: problem };
+			}
 		}
 		if (existing.enabled === enabled) {
 			// 押し直しでは判定の起点を動かさない（直前の時刻を黙って逃さないように）
@@ -516,7 +620,7 @@ export class ParadisScheduledRunsService extends Disposable {
 			return { ok: false, error: localize('paradis.scheduledRuns.error.notFound', "この定期実行は削除されています。") };
 		}
 		const now = this.clock.now();
-		if (paradisIsBotPatrolDefinition(definition)) {
+		if (paradisIsBotDefinition(definition)) {
 			const gate = this.botGateState(definition);
 			if (gate !== 'ok') {
 				const reason = gate !== undefined ? paradisBotPatrolGateReason(gate) : undefined;
@@ -668,7 +772,7 @@ export class ParadisScheduledRunsService extends Disposable {
 		}
 		this.patrolConcurrencyBlocked.delete(runId);
 		const now = this.clock.now();
-		if (paradisIsBotPatrolDefinition(definition)) {
+		if (paradisIsBotDefinition(definition)) {
 			// 開始待ちの間に Bot の機能をオフにした・一時停止した・消したなら、起動しない
 			const gate = this.botGateState(definition);
 			if (gate === undefined) {
@@ -680,8 +784,11 @@ export class ParadisScheduledRunsService extends Disposable {
 				this.commit();
 				return undefined;
 			}
-			// 前の回の見回りのペイン（もう動いていないもの）を閉じてから起動する（4 時間ごとにペインが溜まらないように）
-			this.botGate?.closeIdlePatrolPanes(definition.target.botId!);
+			// 前の回の見回りのペイン（もう動いていないもの）を閉じてから起動する（4 時間ごとにペインが溜まらないように）。
+			// 定期実行は会話のペインで走るので閉じない
+			if (definition.target.botTask === undefined) {
+				this.botGate?.closeIdlePatrolPanes(definition.target.botId!);
+			}
 		}
 		const claimed = this.updateRun(runId, { status: 'starting', claimedBy: ctx, startedAt: now, heartbeatAt: now });
 		this.commit();
@@ -837,7 +944,7 @@ export class ParadisScheduledRunsService extends Disposable {
 				continue;
 			}
 			let gate: ParadisBotPatrolGateState | undefined;
-			if (paradisIsBotPatrolDefinition(definition)) {
+			if (paradisIsBotDefinition(definition)) {
 				gate = this.botGateState(definition);
 				if (gate === undefined) {
 					// Bot の台帳をまだ読み終えていない。判定の起点は動かさず、次の判定で見る
@@ -887,7 +994,7 @@ export class ParadisScheduledRunsService extends Disposable {
 		for (const run of [...this.runs]) {
 			if (run.status === 'pending') {
 				// 予定から 12 時間、ただし遅れて作った開始待ちにも作成から最低 1 時間は残す。Bot の見回りは短く残す
-				const patrolDefinition = this.definitions.find(definition => definition.id === run.definitionId && paradisIsBotPatrolDefinition(definition));
+				const patrolDefinition = this.definitions.find(definition => definition.id === run.definitionId && paradisIsBotDefinition(definition));
 				const botPatrol = patrolDefinition !== undefined;
 				if (patrolDefinition !== undefined && this.botGateState(patrolDefinition) === 'off') {
 					// 開始待ちの間に Bot の機能をオフにした: 受け持つウィンドウを待たずに、設定オフで見送る
@@ -913,7 +1020,7 @@ export class ParadisScheduledRunsService extends Disposable {
 				}
 			} else if (paradisIsActiveRunStatus(run.status)) {
 				const definition = this.definitions.find(candidate => candidate.id === run.definitionId);
-				if (definition !== undefined && paradisIsBotPatrolDefinition(definition) && this.botGateState(definition) === 'off') {
+				if (definition !== undefined && paradisIsBotDefinition(definition) && this.botGateState(definition) === 'off') {
 					// 動いている間に Bot の機能をオフにした。見回りを止め（受け持ちのウィンドウがペインを閉じる）、その理由で記録する
 					changed = true;
 					this.updateRun(run.id, { status: 'cancelled', reason: 'botsTurnedOff', finishedAt: now });

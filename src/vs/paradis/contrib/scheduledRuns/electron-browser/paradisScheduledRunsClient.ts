@@ -15,6 +15,7 @@ import { InstantiationType, registerSingleton } from '../../../../platform/insta
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { ISharedProcessService } from '../../../../platform/ipc/electron-browser/services.js';
 import { IParadisBotPatrolInput, IParadisBotPatrolView } from '../common/paradisScheduledRunBotPatrol.js';
+import { IParadisBotTaskInput, IParadisBotTaskView } from '../common/paradisScheduledRunBotTask.js';
 import {
 	IParadisScheduledRunDraft,
 	IParadisScheduledRunPrecheck,
@@ -61,6 +62,11 @@ export interface IParadisScheduledRunsClient {
 	setBotPatrol(botId: string, input: IParadisBotPatrolInput): Promise<IParadisScheduledRunsResult>;
 	/** 「今すぐ見回る」。 */
 	runBotPatrolNow(botId: string): Promise<IParadisScheduledRunsResult>;
+	/** Bot の定期実行の一覧（Bot のページの設定のタブ）。 */
+	getBotTasks(botId: string): Promise<IParadisBotTaskView[]>;
+	/** Bot の定期実行を作る・変える。「Bot の権限」の段は `confirmedBotTools` が要る。 */
+	setBotTask(botId: string, input: IParadisBotTaskInput): Promise<IParadisScheduledRunsResult>;
+	deleteBotTask(botId: string, id: string): Promise<IParadisScheduledRunsResult>;
 }
 
 class ParadisScheduledRunsClient implements IParadisScheduledRunsClient {
@@ -96,6 +102,9 @@ class ParadisScheduledRunsClient implements IParadisScheduledRunsClient {
 	getBotPatrol(botId: string): Promise<IParadisBotPatrolView> { return this.channel.call('getBotPatrol', [botId]); }
 	setBotPatrol(botId: string, input: IParadisBotPatrolInput): Promise<IParadisScheduledRunsResult> { return this.channel.call('setBotPatrol', [botId, input]); }
 	runBotPatrolNow(botId: string): Promise<IParadisScheduledRunsResult> { return this.channel.call('runBotPatrolNow', [botId]); }
+	getBotTasks(botId: string): Promise<IParadisBotTaskView[]> { return this.channel.call('getBotTasks', [botId]); }
+	setBotTask(botId: string, input: IParadisBotTaskInput): Promise<IParadisScheduledRunsResult> { return this.channel.call('setBotTask', [botId, input]); }
+	deleteBotTask(botId: string, id: string): Promise<IParadisScheduledRunsResult> { return this.channel.call('deleteBotTask', [botId, id]); }
 }
 
 registerSingleton(IParadisScheduledRunsClient, ParadisScheduledRunsClient, InstantiationType.Delayed);

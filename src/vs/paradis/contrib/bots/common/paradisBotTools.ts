@@ -359,6 +359,62 @@ export function paradisBotPatrolLaunchArgs(context: ParadisBotPatrolLaunchContex
 	];
 }
 
+/**
+ * Bot の定期実行（会話の 1 ターン）の起動に要る、起動のたびに用意するもの（shared process が用意する。
+ * paradisBotPatrolLaunch.ts の paradisPrepareBotTaskLaunch）。見回りと違い、cwd は Bot の専用フォルダ（会話を続けるため）。
+ * - Claude Code: `--settings`（bypass を効かなくする）と、para-browser だけを書いた `--mcp-config` のファイル
+ * - Codex: 止める MCP サーバー（利用者の `config.toml` にある para-browser 以外の全部）と、para-browser の登録の様子
+ */
+export type ParadisBotTaskLaunchContext =
+	| { readonly agent: 'claude'; readonly settingsFile: string; readonly mcpConfigFile: string }
+	| { readonly agent: 'codex'; readonly disabledServers: readonly IParadisCodexMcpServerRef[]; readonly browser?: { readonly registration: ParadisCodexBrowserRegistration; readonly url: string | undefined } };
+
+/** Claude Code の組み込みの道具のうち、Web を読む道具（「読む＋Web」の段で足す）。 */
+const PARADIS_BOT_TASK_WEB_TOOLS: readonly string[] = ['WebFetch', 'WebSearch'];
+
+/**
+ * Bot の定期実行を「読むだけ」「読む＋Web」の段で起動する引数（生の引数の配列。続ける会話の引数と最初の指示はこの後ろ）。
+ * 制限の作りは見回り（{@link paradisBotPatrolLaunchArgs}）と同じで、確認のプロンプトを出さずに書く道具を断る。
+ * 違うのは、cwd が Bot の専用フォルダ（指示文はフォルダから読む。`--append-system-prompt-file`・`--add-dir` は要らない）
+ * なことと、「読む＋Web」で Web の道具を足すこと。
+ *
+ * - Claude Code: `--tools` と `--allowedTools` に `WebFetch`・`WebSearch` を足す（`dontAsk` は許可の一覧に無い道具を断るので、
+ *   両方に要る）
+ * - Codex: `--search`（Responses の `web_search` を使えるようにする。呼び出しごとの承認は無い。Codex 0.171.0 の
+ *   `codex --help` で確かめた）。シェルと書き込みは read-only の sandbox で断られる
+ *
+ * Bot の道具は見回りと同じ読む道具だけにする（項目を書き換えない・伝言を送らない）。
+ */
+export function paradisBotTaskLaunchArgs(context: ParadisBotTaskLaunchContext, tools: 'read' | 'web', readOnlyBrowserTools: ReadonlySet<string>): readonly string[] {
+	const allowed = [...PARADIS_BOT_PATROL_TOOLS, ...readOnlyBrowserTools];
+	const web = tools === 'web';
+	if (context.agent === 'claude') {
+		return [
+			'--permission-mode', 'dontAsk',
+			`--settings=${context.settingsFile}`,
+			// 専用フォルダの `.claude/` の設定・hook を読まない（Bot が書いた allow で書く道具を通さないように）
+			'--setting-sources=user',
+			'--strict-mcp-config',
+			`--mcp-config=${context.mcpConfigFile}`,
+			`--tools=${['Read', 'Grep', 'Glob', ...(web ? PARADIS_BOT_TASK_WEB_TOOLS : [])].join(',')}`,
+			`--allowedTools=${[...(web ? PARADIS_BOT_TASK_WEB_TOOLS : []), ...allowed.map(tool => `mcp__para-browser__${tool}`)].join(',')}`,
+		];
+	}
+	return [
+		'-s', 'read-only', '-a', 'never',
+		...(web ? ['--search'] : []),
+		'-c', 'features.plugins=false',
+		'-c', 'features.apps=false',
+		...context.disabledServers.flatMap(server => ['-c', server.transport === 'url'
+			? `mcp_servers.${server.name}={url='${PARADIS_CODEX_DISABLED_URL}',enabled=false}`
+			: `mcp_servers.${server.name}={command='false',enabled=false}`]),
+		...paradisCodexBrowserConfigValues(context.browser?.registration ?? { kind: 'everywhere' }, context.browser?.url, [
+			`mcp_servers.para-browser.enabled_tools=[${allowed.map(tool => `'${tool}'`).join(',')}]`,
+			...[...PARADIS_BOT_PATROL_TOOLS].map(tool => `mcp_servers.para-browser.tools.${tool}.approval_mode=approve`),
+		]).flatMap(value => ['-c', value]),
+	];
+}
+
 /** 見回りで引数に載せてよい MCP サーバーの名前（TOML の裸のキーで書け、シェルの引用で崩れない）。 */
 const SAFE_MCP_SERVER_NAME = /^[A-Za-z0-9_-]+$/;
 const CODEX_MCP_HEADER = /^\[\s*mcp_servers\s*\.\s*(?:"(?<double>[A-Za-z0-9_-]+)"|'(?<single>[A-Za-z0-9_-]+)'|(?<bare>[A-Za-z0-9_-]+))\s*(?<sub>\.[^\]]*)?\]\s*(?:#.*)?$/;

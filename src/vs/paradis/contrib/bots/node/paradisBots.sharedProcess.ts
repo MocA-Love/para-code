@@ -43,7 +43,7 @@ import { ParadisBotMessageToolProvider } from './paradisBotMessageToolProvider.j
 import { ParadisBotsChannel } from './paradisBotsChannel.js';
 import { ParadisBotsService } from './paradisBotsService.js';
 import { ParadisBotMemorySnapshots } from './paradisBotMemorySnapshots.js';
-import { paradisForgetBotPatrol, paradisPrepareBotPatrolLaunch, paradisTrustBotPatrolFolder, paradisReadCodexBrowserRegistration } from './paradisBotPatrolLaunch.js';
+import { paradisForgetBotPatrol, paradisPrepareBotPatrolLaunch, paradisPrepareBotTaskLaunch, paradisTrustBotPatrolFolder, paradisReadCodexBrowserRegistration } from './paradisBotPatrolLaunch.js';
 import { paradisClaudeTrustKeysFor, paradisIsTooBroadToTrust, paradisResolveClaudeGlobalConfigFile } from '../../workspaceSwitch/node/paradisClaudeFolderTrust.js';
 import { createParadisBotItemsFile, createParadisBotPanesFile, createParadisBotsFile, createParadisBotSuggestionsFile, paradisBotsDataFolder } from './paradisBotsStore.js';
 import { ParadisBotsMobileFeed } from './paradisBotsMobileFeed.js';
@@ -112,6 +112,13 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 			codexConfigFiles: () => paradisCodexHomeCandidates().map(codexHome => join(codexHome, 'config.toml')),
 			trustClaudeFolder: folder => trustClaudeFolder(folder),
 		}, agent, botId, home),
+		prepareTask: (agent, botId, homeFolder) => paradisPrepareBotTaskLaunch({
+			folder: join(paradisBotsDataFolder(userDataPath), 'patrol'),
+			runsFolder: join(paradisBotsDataFolder(userDataPath), 'patrol-runs'),
+			stopFolder: homedir(),
+			gatewayPort: () => readGatewayPort(userDataPath),
+			codexConfigFiles: () => paradisCodexHomeCandidates().map(codexHome => join(codexHome, 'config.toml')),
+		}, agent, botId, homeFolder),
 		forgetPatrol: async botId => paradisForgetBotPatrol({ folder: join(paradisBotsDataFolder(userDataPath), 'patrol'), runsFolder: join(paradisBotsDataFolder(userDataPath), 'patrol-runs') }, botId, await claudeConfigFile().catch(() => undefined)),
 		agentTemplate: agentId => paradisResolveAgentTemplates(configurationService, []).find(template => template.id === agentId),
 		paneFolderRoots: [join(homedir(), '.para-code', 'bots'), join(paradisBotsDataFolder(userDataPath), 'patrol-runs')],
@@ -135,6 +142,7 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 			check: botId => service.patrolGateState(botId),
 			botName: botId => service.getBot(botId)?.name,
 			closeIdlePatrolPanes: botId => service.closeIdlePatrolPanes(botId),
+			checkTask: (botId, tools) => service.taskGateState(botId, tools),
 		}));
 		store.add(service.onDidRemoveBot(botId => {
 			scheduledRuns.deleteBotPatrols(botId).catch(error => logService.warn('[ParadisBots] could not remove the look-around schedule of a removed bot', error));

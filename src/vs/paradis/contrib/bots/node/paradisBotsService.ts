@@ -51,11 +51,12 @@ import {
 } from '../common/paradisBotItems.js';
 import { EMPTY_PARADIS_BOTS_STATE, IParadisBot, IParadisBotCreateInput, IParadisBotPatch, IParadisBotsState, PARADIS_BOTS_VERSION, paradisBotCreate, paradisBotRemove, paradisBotUpdate } from '../common/paradisBots.js';
 import { IParadisBotGithubView, PARADIS_BOT_GITHUB_OFF_VIEW } from '../common/paradisBotGithub.js';
-import { IParadisBotLaunch, IParadisBotRevealRequest, IParadisBotsSnapshot, IParadisBotStopRequest, ParadisBotPanePurpose, ParadisBotsServiceResult, paradisBotSummary } from '../common/paradisBotsApi.js';
+import { IParadisBotLaunch, IParadisBotLaunchOptions, IParadisBotRevealRequest, IParadisBotsSnapshot, IParadisBotStopRequest, ParadisBotPanePurpose, ParadisBotsServiceResult, paradisBotSummary } from '../common/paradisBotsApi.js';
 import { IParadisAgentCommandTemplate, paradisResolveAgentLaunchFlags } from '../../workspaceSwitch/common/paradisWorktreeCreate.js';
-import { IParadisBotItemAddArgs, paradisBotLaunchApprovalFlags, paradisBotResumeArgs, ParadisCodexBrowserRegistration, paradisBotPatrolLaunchArgs, ParadisBotPatrolLaunchContext, paradisBotPatrolSupported, paradisBotPatrolTemplateRefusal } from '../common/paradisBotTools.js';
+import { IParadisBotItemAddArgs, paradisBotLaunchApprovalFlags, paradisBotResumeArgs, ParadisCodexBrowserRegistration, paradisBotPatrolLaunchArgs, ParadisBotPatrolLaunchContext, paradisBotPatrolSupported, paradisBotTaskLaunchArgs, ParadisBotTaskLaunchContext, paradisBotPatrolTemplateRefusal } from '../common/paradisBotTools.js';
 import { PARADIS_READ_ONLY_MCP_TOOL_NAMES } from '../../agentBrowser/common/paradisMcpReadOnlyTools.js';
 import { ParadisBotPatrolGateState } from '../../scheduledRuns/common/paradisScheduledRunBotPatrol.js';
+import type { ParadisBotTaskTools } from '../../scheduledRuns/common/paradisScheduledRuns.js';
 import { EMPTY_PARADIS_BOT_SUGGESTIONS_STATE, IParadisBotSuggestion, PARADIS_BOT_SUGGESTIONS_VERSION, IParadisBotSuggestionsState, paradisBotOpenSuggestions, paradisBotSuggestionAdd, paradisBotSuggestionDismiss, paradisBotSuggestionsRemoveBot, paradisBotSuggestionsRunEnded, paradisBotSuggestionStart } from '../common/paradisBotSuggestions.js';
 import { paradisTaskBoardTerminalId } from '../../taskBoard/common/paradisTaskBoardBridge.js';
 import { ParadisBotBoardOrigins, paradisBoardTaskIdOf } from './paradisBotBoardOrigins.js';
@@ -111,6 +112,8 @@ export interface IParadisBotsServiceOptions {
 	 * 用意する（paradisBotPatrolLaunch.ts）。用意できなければ断る理由（英文）。渡さなければ見回りは `unavailable` で断る。
 	 */
 	readonly preparePatrol?: (agent: 'claude' | 'codex', botId: string, home: IParadisBotPatrolHome) => Promise<ParadisBotPatrolLaunchContext | string>;
+	/** 定期実行を制限した段で起動するのに要るものを用意する（paradisPrepareBotTaskLaunch）。 */
+	readonly prepareTask?: (agent: 'claude' | 'codex', botId: string, homeFolder: string) => Promise<ParadisBotTaskLaunchContext | string>;
 	/** Bot を消したときに、見回りのフォルダ・設定ファイルと Claude Code の信頼の項目を外す。 */
 	readonly forgetPatrol?: (botId: string) => Promise<void>;
 	/** そのエージェントの起動の雛形（利用者の設定 `paradis.workspaceSwitch.agents` を反映したもの）。 */
@@ -159,6 +162,7 @@ export class ParadisBotsService extends Disposable {
 	private readonly pendingReveals = new Map<string, () => void>();
 	private readonly enabled: () => boolean;
 	private readonly preparePatrol: IParadisBotsServiceOptions['preparePatrol'];
+	private readonly prepareTask: IParadisBotsServiceOptions['prepareTask'];
 	private readonly agentTemplate: IParadisBotsServiceOptions['agentTemplate'];
 	private readonly forgetPatrol: IParadisBotsServiceOptions['forgetPatrol'];
 	private readonly codexBrowserRegistration: IParadisBotsServiceOptions['codexBrowserRegistration'];
@@ -210,6 +214,7 @@ export class ParadisBotsService extends Disposable {
 		this.revealTimeoutMs = options.revealTimeoutMs ?? PARADIS_BOT_REVEAL_TIMEOUT_MS;
 		this.enabled = options.enabled ?? (() => true);
 		this.preparePatrol = options.preparePatrol;
+		this.prepareTask = options.prepareTask;
 		this.agentTemplate = options.agentTemplate;
 		this.forgetPatrol = options.forgetPatrol;
 		this.codexBrowserRegistration = options.codexBrowserRegistration;
@@ -639,7 +644,9 @@ export class ParadisBotsService extends Disposable {
 	 * 起動するのに要るものを返す。呼んだウィンドウがそのフォルダを cwd にエージェントを起動し、
 	 * {@link reportLaunch} でペインを知らせる（起動できなければ {@link cancelLaunch}）。
 	 */
-	requestLaunch(botId: string, purpose: ParadisBotPanePurpose): Promise<Result<IParadisBotLaunch>> {
+	requestLaunch(botId: string, purpose: ParadisBotPanePurpose, options: IParadisBotLaunchOptions = {}): Promise<Result<IParadisBotLaunch>> {
+		// 定期実行は会話の 1 ターン（会話のペインとして起こす）。見回りの口からは受けない
+		const task = purpose === 'chat' ? options.task : undefined;
 		return this.write(async () => {
 			// Bot の機能がオフの間は、フォルダを整えず、起動の番号も出さない
 			if (!this.enabled()) {
@@ -667,6 +674,10 @@ export class ParadisBotsService extends Disposable {
 			}
 			if (this.homes === undefined) {
 				return { ok: false, code: 'unavailable', message: 'Bot home folders are not available.' };
+			}
+			// 定期実行は、続けられる会話の引数を作れるエージェント（Claude Code・Codex）だけ
+			if (task !== undefined && !paradisBotPatrolSupported(bot.agent)) {
+				return { ok: false, code: 'unsupported', message: 'Para Code cannot run a scheduled task with this agent.' };
 			}
 			// 見回りは、読むだけに制限できるエージェントのときだけ起動する（機能がオフなら上で断っている）
 			const patrolAgent = purpose === 'patrol' ? bot.agent : undefined;
@@ -710,6 +721,21 @@ export class ParadisBotsService extends Disposable {
 				patrolArgs = paradisBotPatrolLaunchArgs(context, PARADIS_READ_ONLY_MCP_TOOL_NAMES);
 				cwd = context.runFolder;
 			}
+			let taskArgs: readonly string[] | undefined;
+			if (task !== undefined && task !== 'bot' && paradisBotPatrolSupported(bot.agent)) {
+				// 制限を外しうる引数を雛形に書いていれば起動しない（見回りと同じ確かめ）
+				const template = this.agentTemplate?.(bot.agent);
+				const templateFlags = template !== undefined ? paradisResolveAgentLaunchFlags(template, { modelId: bot.modelId, effortId: bot.effortId }) : undefined;
+				const forbidden = template !== undefined ? paradisBotPatrolTemplateRefusal(bot.agent, template.command, templateFlags?.model, templateFlags?.effort) : undefined;
+				if (forbidden !== undefined) {
+					return { ok: false, code: 'unsafe_template', message: `The command template for this agent contains ${forbidden}, which can lift the limits of a scheduled task, so Para Code does not start it.` };
+				}
+				const context = this.prepareTask === undefined ? 'Para Code cannot prepare the limited settings here.' : await this.prepareTask(bot.agent, bot.id, cwd);
+				if (typeof context === 'string') {
+					return { ok: false, code: 'task_unavailable', message: context };
+				}
+				taskArgs = paradisBotTaskLaunchArgs(context, task, PARADIS_READ_ONLY_MCP_TOOL_NAMES);
+			}
 			if (purpose === 'chat') {
 				// 会話で Bot が記憶を書き換える前の状態を写しておく（記憶の整理の取り消しで戻す先）。取れなくても起動は止めない
 				await this.memorySnapshots?.take(bot, 'auto').catch(error => this.logService.warn('[ParadisBots] could not copy the memory before a conversation', error));
@@ -721,9 +747,10 @@ export class ParadisBotsService extends Disposable {
 			const session = purpose === 'chat' ? this.resumableSession(bot) : undefined;
 			const resumeArgs = session !== undefined ? paradisBotResumeArgs(bot.agent, session.sessionId) : undefined;
 			const launchId = this.issueLaunch(botId, purpose, resumeArgs !== undefined);
-			const approvalFlags = purpose === 'patrol' ? undefined : paradisBotLaunchApprovalFlags(bot.agent, browser?.registration, browser?.url);
+			const approvalFlags = purpose === 'patrol' || taskArgs !== undefined ? undefined : paradisBotLaunchApprovalFlags(bot.agent, browser?.registration, browser?.url);
 			const chatFlags = [approvalFlags, resumeArgs].filter((flag): flag is string => flag !== undefined).join(' ');
-			const extraFlags = purpose === 'patrol' ? patrolArgs : chatFlags.length > 0 ? chatFlags : undefined;
+			// 制限した段の定期実行は、制限の引数（配列）の後ろに続ける会話の引数を置く（id は英数字と - だけの形に限ってある）
+			const extraFlags = purpose === 'patrol' ? patrolArgs : taskArgs !== undefined ? [...taskArgs, ...(resumeArgs?.split(' ') ?? [])] : chatFlags.length > 0 ? chatFlags : undefined;
 			if (launchId === undefined) {
 				return { ok: false, code: 'not_found', message: 'There is no such bot.' };
 			}
@@ -734,7 +761,9 @@ export class ParadisBotsService extends Disposable {
 					...(bot.modelId !== undefined ? { modelId: bot.modelId } : {}),
 					...(bot.effortId !== undefined ? { effortId: bot.effortId } : {}),
 					// 見回りは Bot の権限の設定を使わない（読むだけの引数だけで起動する）
-					...(bot.permissionId !== undefined && purpose !== 'patrol' ? { permissionId: bot.permissionId } : {}),
+					// 制限した段の定期実行も Bot の権限の設定を使わない（制限の引数だけで起動する）
+					...(bot.permissionId !== undefined && purpose !== 'patrol' && taskArgs === undefined ? { permissionId: bot.permissionId } : {}),
+					...(task !== undefined ? { task } : {}),
 					...(extraFlags !== undefined ? { extraFlags } : {}),
 					...(resumeArgs !== undefined ? { resumed: true } : {}),
 				},
@@ -829,6 +858,19 @@ export class ParadisBotsService extends Disposable {
 			return 'unsupported';
 		}
 		return this.panes.statesOf(botId).some(pane => pane.purpose === 'patrol' && pane.working) ? 'busy' : 'ok';
+	}
+
+	/**
+	 * 定期実行（会話の 1 ターン）を走らせてよいか。見回りの門に加えて、会話のペインが開いている・起動中なら `busy`
+	 * （利用者と話している会話へ割り込まない。2 つのエージェントが同じ会話を書かないように）。どの段も、続ける会話の
+	 * 引数を作れる Claude Code・Codex だけ（ほかは `unsupported`）。
+	 */
+	taskGateState(botId: string, _tools: ParadisBotTaskTools): ParadisBotPatrolGateState | undefined {
+		const state = this.patrolGateState(botId);
+		if (state !== 'ok') {
+			return state;
+		}
+		return this.panes.chatInUse(botId, this.now()) !== undefined ? 'busy' : 'ok';
 	}
 
 	/**

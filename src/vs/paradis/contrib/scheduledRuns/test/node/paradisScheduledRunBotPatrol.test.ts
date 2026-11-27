@@ -36,6 +36,7 @@ suite('ParadisScheduledRunsService: bot look-arounds', () => {
 			check: botId => gate.bots.has(botId) ? gate.state : (gate.state === undefined ? undefined : 'missing'),
 			botName: botId => gate.bots.get(botId),
 			closeIdlePatrolPanes: botId => gate.closed.push(botId),
+			checkTask: botId => gate.bots.has(botId) ? gate.state : (gate.state === undefined ? undefined : 'missing'),
 		}));
 		const requests: IParadisScheduledRunRequest[] = [];
 		disposables.add(service.onDidRequestRun(request => requests.push(request)));

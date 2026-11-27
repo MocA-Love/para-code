@@ -163,7 +163,36 @@ export interface IParadisScheduledRunTarget {
 	readonly baseRef?: string;
 	/** 見回りの Bot（`kind` が `'bot'` のときだけ）。`repositoryUri` は空、`repositoryName` は Bot の名前（表示用）。 */
 	readonly botId?: string;
+	/**
+	 * Bot の定期実行（`kind` が `'bot'` のときだけ）。有れば見回りではなく、利用者が書いた指示を Bot の会話の 1 ターンとして
+	 * 走らせる（結果は会話に残り、終わりはベルで知らせる）。無ければ見回り。
+	 */
+	readonly botTask?: IParadisBotTaskTarget;
 }
+
+/**
+ * Bot の定期実行で使える道具の段。
+ * - `read`: 読むだけ（見回りと同じ。手元のファイルを読む道具だけ）
+ * - `web`: 読む＋Web（読む道具に、Web のページの取得・検索を足す。書く道具・コマンドは使わない）
+ * - `bot`: Bot の権限のまま（会話と同じ。選ぶときに確かめる）
+ */
+export type ParadisBotTaskTools = 'read' | 'web' | 'bot';
+export const PARADIS_BOT_TASK_TOOLS: readonly ParadisBotTaskTools[] = ['read', 'web', 'bot'];
+
+/** Bot の定期実行の中身（定義の `target.botTask`）。 */
+export interface IParadisBotTaskTarget {
+	readonly tools: ParadisBotTaskTools;
+}
+
+/** 1 つの Bot が持てる定期実行の数。 */
+export const PARADIS_BOT_TASK_MAX_PER_BOT = 10;
+/**
+ * 1 つの Bot の有効な定期実行の、1 日あたりの回数の合計の上限（走る日の回数。見回りの 1 日の回数の上限と同じ 24 回）。
+ * 全体の上限は見回りと同じ枠（{@link PARADIS_BOT_PATROL_MAX_DAILY_TOTAL}）で数える。
+ */
+export const PARADIS_BOT_TASK_MAX_RUNS_PER_BOT_PER_DAY = 24;
+/** Bot の定期実行の指示の長さの上限。 */
+export const PARADIS_BOT_TASK_MAX_PROMPT_LENGTH = 2000;
 
 /** 1 つの定期実行の定義（利用者が作るもの）。 */
 export interface IParadisScheduledRunDefinition {
@@ -443,7 +472,7 @@ export function paradisValidateScheduledRunDraft(draft: IParadisScheduledRunDraf
 		return localize('paradis.scheduledRuns.validate.interval', "実行の間隔は {0} 分以上あけてください。", PARADIS_SCHEDULED_RUN_MIN_INTERVAL_MINUTES);
 	}
 	if (draft.target.kind === 'bot') {
-		return paradisValidateBotPatrolScheduleGap(parsed.schedule) ?? validateBotPatrolDraft(draft);
+		return paradisValidateBotPatrolScheduleGap(parsed.schedule, draft.target.botTask !== undefined) ?? validateBotPatrolDraft(draft);
 	}
 	if (draft.prompt.trim().length === 0) {
 		return localize('paradis.scheduledRuns.validate.prompt', "エージェントへの指示を入れてください。");
@@ -470,7 +499,10 @@ export function paradisValidateScheduledRunDraft(draft: IParadisScheduledRunDraf
 }
 
 /** Bot の見回りの時刻の間隔が下限（{@link PARADIS_BOT_PATROL_MIN_INTERVAL_MINUTES}）より短ければ、表示用の文を返す。 */
-export function paradisValidateBotPatrolScheduleGap(schedule: IParadisCronSchedule): string | undefined {
+export function paradisValidateBotPatrolScheduleGap(schedule: IParadisCronSchedule, task = false): string | undefined {
+	if (task && paradisCronMinimumGapMinutes(schedule) < PARADIS_BOT_PATROL_MIN_INTERVAL_MINUTES) {
+		return localize('paradis.scheduledRuns.validate.taskInterval', "Bot の定期実行の間隔は {0} 分以上あけてください。", PARADIS_BOT_PATROL_MIN_INTERVAL_MINUTES);
+	}
 	if (paradisCronMinimumGapMinutes(schedule) < PARADIS_BOT_PATROL_MIN_INTERVAL_MINUTES) {
 		return localize('paradis.scheduledRuns.validate.patrolInterval', "見回りの間隔は {0} 分以上あけてください。", PARADIS_BOT_PATROL_MIN_INTERVAL_MINUTES);
 	}
@@ -485,7 +517,17 @@ function validateBotPatrolDraft(draft: IParadisScheduledRunDraft): string | unde
 	if (typeof draft.target.botId !== 'string' || draft.target.botId.length === 0 || draft.target.repositoryUri !== '') {
 		return localize('paradis.scheduledRuns.validate.bot', "見回りの Bot が分かりません。");
 	}
-	if (draft.prompt.length > PARADIS_BOT_PATROL_MAX_LOOK_FOR_LENGTH) {
+	if (draft.target.botTask !== undefined) {
+		if (!PARADIS_BOT_TASK_TOOLS.includes(draft.target.botTask.tools)) {
+			return localize('paradis.scheduledRuns.validate.botTaskTools', "道具の段を選んでください。");
+		}
+		if (draft.prompt.trim().length === 0) {
+			return localize('paradis.scheduledRuns.validate.botTaskPrompt', "Bot に頼むことを入れてください。");
+		}
+		if (draft.prompt.length > PARADIS_BOT_TASK_MAX_PROMPT_LENGTH) {
+			return localize('paradis.scheduledRuns.validate.botTaskPromptLong', "頼むことは {0} 文字以内にしてください。", PARADIS_BOT_TASK_MAX_PROMPT_LENGTH);
+		}
+	} else if (draft.prompt.length > PARADIS_BOT_PATROL_MAX_LOOK_FOR_LENGTH) {
 		return localize('paradis.scheduledRuns.validate.lookForLong', "探すものは {0} 文字以内にしてください。", PARADIS_BOT_PATROL_MAX_LOOK_FOR_LENGTH);
 	}
 	if (draft.precheck !== undefined) {

@@ -21,7 +21,7 @@ import type { ParadisAgentKind } from '../../agentChat/common/paradisAgentDescri
 import { IParadisBotItem, IParadisBotItemOwnerComment, ParadisBotItemStatus } from '../common/paradisBotItems.js';
 import { IParadisBotSuggestion } from '../common/paradisBotSuggestions.js';
 import { IParadisBot, IParadisBotPatch, ParadisBotFaceColor, ParadisBotFaceShape } from '../common/paradisBots.js';
-import { EMPTY_PARADIS_BOTS_SNAPSHOT, IParadisBotLaunch, IParadisBotRevealRequest, IParadisBotsService, IParadisBotsSnapshot, IParadisBotStopRequest, PARADIS_BOTS_CHANNEL, PARADIS_BOTS_ENABLED_SETTING, ParadisBotPanePurpose, ParadisBotsServiceResult } from '../common/paradisBotsApi.js';
+import { EMPTY_PARADIS_BOTS_SNAPSHOT, IParadisBotLaunch, IParadisBotLaunchOptions, IParadisBotRevealRequest, IParadisBotsService, IParadisBotsSnapshot, IParadisBotStopRequest, PARADIS_BOTS_CHANNEL, PARADIS_BOTS_ENABLED_SETTING, ParadisBotPanePurpose, ParadisBotsServiceResult } from '../common/paradisBotsApi.js';
 
 const UNAVAILABLE: ParadisBotsServiceResult<never> = { ok: false, code: 'unavailable', message: 'Para Code could not reach the bot service.' };
 
@@ -122,8 +122,8 @@ export class ParadisBotsClient extends Disposable implements IParadisBotsService
 		return this.result('ownerSnooze', [uid, until]);
 	}
 
-	requestLaunch(botId: string, purpose: ParadisBotPanePurpose = 'chat'): Promise<ParadisBotsServiceResult<IParadisBotLaunch>> {
-		return this.result('requestLaunch', [botId, purpose]);
+	requestLaunch(botId: string, purpose: ParadisBotPanePurpose = 'chat', options?: IParadisBotLaunchOptions): Promise<ParadisBotsServiceResult<IParadisBotLaunch>> {
+		return this.result('requestLaunch', options?.task !== undefined ? [botId, purpose, { task: options.task }] : [botId, purpose]);
 	}
 
 	/**
