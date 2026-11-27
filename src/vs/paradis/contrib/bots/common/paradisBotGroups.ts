@@ -24,7 +24,7 @@ export const PARADIS_BOT_GROUP_LIMITS = Object.freeze({
 	/** 1 つのグループの Bot の数（ペインを並べて読める数）。 */
 	members: 4,
 	name: 64,
-	/** 記録はグループをまたいで新しい方からこの数だけ残す。 */
+	/** 記録はグループをまたいで新しい方からこの数だけ残す（まだ読まれていない Bot 同士の伝言は数を超えても残す）。 */
 	records: 300,
 	/** 記録の 1 件の本文（長い文は切って残す。送る文そのものは切らない）。 */
 	recordText: 2000,
@@ -210,7 +210,32 @@ export function paradisBotGroupAppendRecord(state: IParadisBotGroupsState, group
 	}
 	const record: IParadisBotGroupRecord = { id: state.nextRecordId, groupId, kind: input.kind, from: input.from, to, text: input.text.slice(0, PARADIS_BOT_GROUP_LIMITS.recordText), at: now };
 	const records = [...state.records, record];
-	return { ok: true, state: { ...state, records: records.slice(Math.max(0, records.length - PARADIS_BOT_GROUP_LIMITS.records)), nextRecordId: state.nextRecordId + 1 }, value: record };
+	return { ok: true, state: { ...state, records: trimRecords(records, state.groups), nextRecordId: state.nextRecordId + 1 }, value: record };
+}
+
+/**
+ * 記録を上限（{@link PARADIS_BOT_GROUP_LIMITS.records}）までに刈る。捨てるのは古い方からで、まだ読まれていない Bot 同士の
+ * 伝言（宛先が今もそのグループのメンバー）は捨てない（未読は宛先ごとに伝言の道具が数で抑える）。あなたの `sent`・既読の
+ * 伝言・メンバーから外れた Bot 宛ての未読を先に捨てる。
+ */
+function trimRecords(records: readonly IParadisBotGroupRecord[], groups: readonly IParadisBotGroup[]): IParadisBotGroupRecord[] {
+	let excess = records.length - PARADIS_BOT_GROUP_LIMITS.records;
+	if (excess <= 0) {
+		return [...records];
+	}
+	const members = new Map(groups.map(group => [group.id, group.members]));
+	return records.filter(record => {
+		if (excess > 0 && !isUnreadBotMessage(record, members.get(record.groupId) ?? [])) {
+			excess--;
+			return false;
+		}
+		return true;
+	});
+}
+
+/** まだ読まれていない Bot 同士の伝言で、宛先が今もグループのメンバーか。 */
+function isUnreadBotMessage(record: IParadisBotGroupRecord, members: readonly string[]): boolean {
+	return record.kind !== 'sent' && record.readAt === undefined && record.to.some(id => members.includes(id));
 }
 
 /** 台帳に残っている Bot だけのメンバー（消した Bot を並べない）。 */
@@ -286,8 +311,13 @@ function inInbox(record: IParadisBotGroupRecord, botId: string): boolean {
 	return record.kind !== 'sent' && record.to.includes(botId) && record.readAt === undefined;
 }
 
+/** その Bot の受け箱にある伝言の数（帯と Bot のページに出す）。 */
+export function paradisBotGroupUnreadCount(state: Pick<IParadisBotGroupsState, 'groups' | 'records'>, botId: string): number {
+	return paradisBotGroupInbox(state, botId).length;
+}
+
 /** その Bot の受け箱（古い順）。今もその Bot が入っているグループの伝言だけ。 */
-export function paradisBotGroupInbox(state: IParadisBotGroupsState, botId: string): IParadisBotInboxEntry[] {
+export function paradisBotGroupInbox(state: Pick<IParadisBotGroupsState, 'groups' | 'records'>, botId: string): IParadisBotInboxEntry[] {
 	const groups = new Set(state.groups.filter(group => group.members.includes(botId)).map(group => group.id));
 	return state.records
 		.filter(record => groups.has(record.groupId) && inInbox(record, botId))
@@ -368,7 +398,7 @@ export function paradisParseBotGroupsState(value: unknown): IParadisBotGroupsSta
 			records.push(record);
 		}
 	}
-	const kept = records.slice(Math.max(0, records.length - PARADIS_BOT_GROUP_LIMITS.records));
+	const kept = trimRecords(records, groups);
 	const highest = kept.reduce((max, record) => Math.max(max, record.id), 0);
 	const next = typeof value.nextRecordId === 'number' && Number.isSafeInteger(value.nextRecordId) && value.nextRecordId > highest ? value.nextRecordId : highest + 1;
 	return { version: value.version, groups, records: kept, nextRecordId: next };
