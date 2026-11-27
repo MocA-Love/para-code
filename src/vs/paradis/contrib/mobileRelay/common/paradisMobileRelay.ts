@@ -188,6 +188,31 @@ export interface IParadisMobileWorkspaceV2 extends Omit<IParadisMobileWindowWork
 export interface IParadisMobileTerminalV3 extends IParadisMobileWindowTerminalV2 {
 	readonly windowId: number;
 	readonly rendererGeneration: number;
+	/** そのペインが Bot のペインなら Bot の id（`bots.page.v1`。設定がオフ・Bot でないなら無い）。 */
+	readonly botId?: string;
+}
+
+/**
+ * Desktop State に載せる Bot 1 つ（`bots.page.v1`。PC の画面の帯と同じ値）。専用フォルダの名前・パス・ペインのトークンは
+ * 載せない。数は台帳の上限（50）までで、名前は 64 字まで。
+ */
+export interface IParadisMobileBot {
+	readonly id: string;
+	readonly name: string;
+	readonly agent: string;
+	readonly modelId?: string;
+	readonly effortId?: string;
+	readonly permissionId?: string;
+	readonly faceColor: string;
+	readonly faceShape: string;
+	readonly paused: boolean;
+	readonly pinned: boolean;
+	/** 「あなたの番」の数（PC の帯の数の丸と同じ）。 */
+	readonly needsYou: number;
+	readonly openItems: number;
+	readonly openSuggestions: number;
+	readonly activity: string;
+	readonly lastActivityAt: number;
 }
 
 /** protocol v3: Main manifest上のRendererと、そのstate同期barrier。 */
@@ -239,6 +264,8 @@ export interface IParadisMobileDesktopStateV3 {
 	 * 状態が変わったときだけ revision を進めて送り直す（`paradisMobileDoNotDisturb.ts`）。
 	 */
 	readonly doNotDisturb?: IParadisMobileDoNotDisturbState;
+	/** Bot の一覧（`bots.page.v1` の PC で、設定 `paradis.bots.enabled` がオンの間だけ。並びは台帳のまま）。 */
+	readonly bots?: readonly IParadisMobileBot[];
 }
 
 /** shared process の接続状態。 */
