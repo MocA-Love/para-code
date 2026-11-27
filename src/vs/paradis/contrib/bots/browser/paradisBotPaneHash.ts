@@ -74,16 +74,17 @@ export async function paradisFindBotChatPane<T extends { readonly isDisposed: bo
 }
 
 /**
- * このウィンドウにある見回りのペイン（全部の Bot）。ウィンドウを閉じるときに閉じて、次の起動で見回りの残骸を
- * 復元しないために使う。
+ * Para Code を終了するときに閉じる、このウィンドウの Bot のペイン（全部の Bot の会話と見回り）。終了時に閉じて、次の起動で
+ * Bot の帯の付かない普通のターミナル（「zsh bot」）として復元しないために使う。会話は次の起動で Bot のページから
+ * 起動し直す（再起動の後の会話の続きは、ターミナルの復元ではなく会話の id から戻す）。
  */
-export async function paradisBotPatrolInstancesInWindow(
+export async function paradisBotShutdownInstancesInWindow(
 	botsService: IParadisBotPaneLookup,
 	paneTokenService: Pick<IParadisPaneTokenService, 'listPaneTokens'>,
 ): Promise<number[]> {
 	const hashes: string[] = [];
 	for (const bot of botsService.snapshot.bots) {
-		hashes.push(...await botsService.paneHashesOf(bot.id, 'patrol'));
+		hashes.push(...await botsService.paneHashesOf(bot.id));
 	}
 	return paradisBotInstancesInWindow(paneTokenService, hashes);
 }

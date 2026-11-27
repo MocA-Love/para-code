@@ -36,12 +36,25 @@ export type ParadisBotActivity = 'stopped' | 'idle' | 'working' | 'patrolling';
 export type ParadisBotPanePurpose = 'chat' | 'patrol';
 export const PARADIS_BOT_PANE_PURPOSES: readonly ParadisBotPanePurpose[] = ['chat', 'patrol'];
 
+/**
+ * Bot のペインでエージェントが動いていない・止まっている理由（`activity` が待機中のときに、帯とページへ「待機中」の代わりに出す）。
+ * - `notFound`: 起動のコマンドが見つからなかった（シェルの終了コード 127）
+ * - `exited`: エージェントが終わり、シェルだけが残っている（`exitCode` は分かれば）
+ * - `needsUser`: 許可・質問で利用者の答えを待っている、または起動してから hook が 1 つも来ない（初回設定・ログインの画面で止まっている）
+ */
+export type ParadisBotPaneHalt =
+	| { readonly kind: 'notFound' }
+	| { readonly kind: 'exited'; readonly exitCode?: number }
+	| { readonly kind: 'needsUser' };
+
 /** Bot のペイン 1 つの様子（shared process のメモリだけに持つ。ペイントークンは外へ出さない）。 */
 export interface IParadisBotPaneState {
 	readonly purpose: ParadisBotPanePurpose;
 	readonly working: boolean;
 	/** そのペインのエージェントが最後に動いた時刻（hook が届いた時刻）。 */
 	readonly lastSeenAt: number;
+	/** エージェントが動いていない・止まっている理由（分からなければ無い）。 */
+	readonly halt?: ParadisBotPaneHalt;
 }
 
 /** 一覧の 1 行に要る値。最後の発言の本文は会話の記録の側（agentChat）から取るので、ここには持たない。 */
@@ -54,6 +67,8 @@ export interface IParadisBotSummary extends Omit<IParadisBot, 'preserved'> {
 	/** まだ決めていない提案の数（Bot のホームの節だけに出す。ベルにも「あなたの番」にも数えない）。 */
 	readonly openSuggestions: number;
 	readonly activity: ParadisBotActivity;
+	/** `activity` が待機中のときの、会話のペインのエージェントが動いていない・止まっている理由（{@link ParadisBotPaneHalt}）。 */
+	readonly halt?: ParadisBotPaneHalt;
 	/** 最後に動いた時刻（項目の動き・ペインのエージェントの動き・Bot の作成のうち一番新しいもの）。 */
 	readonly lastActivityAt: number;
 }
@@ -71,6 +86,35 @@ export interface IParadisBotsSnapshot {
 	readonly github?: IParadisBotGithubView;
 }
 
+/**
+ * 復元・つなぎ直しで戻ったターミナルが、捨てるべき Bot のペインの残りか。Bot のペインを起動するフォルダ（`roots` の下）で
+ * 起動したもので、今の Bot の台帳に結び付いていない（窓の再読み込みでつなぎ直したペインは結び付いたまま）もの。
+ * Bot のペインは終了時に閉じるが、閉じる前に保存された待避のスペースの一覧や pty の常駐から戻ることがあるので、戻った側でも捨てる。
+ * 結び付いているかが分からない（`bound` が undefined。shared process から取れなかった）ときは捨てない（生きた Bot のペインを閉じない側へ倒す）。
+ */
+export function paradisIsLeftoverBotTerminal(cwd: string | undefined, roots: readonly string[], bound: boolean | undefined, isEqualOrParent: (path: string, parent: string) => boolean): boolean {
+	return bound === false && cwd !== undefined && cwd.length > 0 && roots.some(root => root.length > 0 && isEqualOrParent(cwd, root));
+}
+
+/**
+ * Bot のペインのコマンドの見張りを付けたときに、今の様子として知らせるもの（`finished` が false なら実行中、true なら最後の
+ * コマンドの終わり）。知らせるものが無ければ undefined。
+ *
+ * 実行中かは `executingCommand`（コマンドの文字列）で見る。シェル統合は、プロンプトに戻った後も中身が空の「実行中」の
+ * コマンド（`executingCommandObject`）を持ち続けることがあり（実機の zsh で、`claude` が見つからずに終わった後に見た）、
+ * それを実行中と読むと、終わったコマンドの終了コードを捨てて「待機中」のままになる。
+ * つなぎ直したペイン（`reattached`）は前のコマンドだけが戻ることがあるので、終わりは知らせない。
+ */
+export function paradisBotCommandStateOnAttach(state: { readonly executingCommand: string | undefined; readonly lastExitCode: number | undefined; readonly hasLast: boolean; readonly reattached: boolean }): { readonly exitCode: number | undefined; readonly finished: boolean } | undefined {
+	if (state.executingCommand !== undefined && state.executingCommand.trim().length > 0) {
+		return { exitCode: undefined, finished: false };
+	}
+	if (state.hasLast && !state.reattached) {
+		return { exitCode: state.lastExitCode, finished: true };
+	}
+	return undefined;
+}
+
 export function paradisBotActivity(bot: Pick<IParadisBot, 'paused'>, panes: readonly IParadisBotPaneState[]): ParadisBotActivity {
 	if (bot.paused || panes.length === 0) {
 		return 'stopped';
@@ -85,13 +129,16 @@ export function paradisBotSummary(bot: IParadisBot, items: IParadisBotItemsState
 	const counts = paradisBotItemCounts(items, bot.id, now);
 	// 読んだ値（知らない欄）は画面へ送らず、読み取り専用の印だけにする
 	const { preserved, ...known } = bot;
+	const activity = paradisBotActivity(bot, panes);
+	const halt = activity === 'idle' ? panes.find(pane => pane.purpose === 'chat' && pane.halt !== undefined)?.halt : undefined;
 	return {
 		...known,
 		...(preserved !== undefined ? { readOnly: true } : {}),
 		needsYou: bot.paused ? 0 : counts.needsYou,
 		openItems: counts.open,
 		openSuggestions,
-		activity: paradisBotActivity(bot, panes),
+		activity,
+		...(halt !== undefined ? { halt } : {}),
 		lastActivityAt: Math.max(bot.createdAt, counts.lastActivityAt, ...panes.map(pane => pane.lastSeenAt)),
 	};
 }
@@ -190,6 +237,15 @@ export interface IParadisBotsService {
 	reportLaunch(launchId: string, paneToken: string): Promise<boolean>;
 	/** 起動できなかった。 */
 	cancelLaunch(launchId: string): Promise<void>;
+	/** Bot のペインを起動するフォルダの親（会話の専用フォルダの親と、見回りのフォルダの親）。 */
+	paneFolderRoots(): Promise<readonly string[]>;
+	/** 今 Bot に結び付いているペインのトークンの SHA-256（全部の Bot。保存しただけでまだ現れていないものは含めない）。取れなければ undefined。 */
+	boundPaneHashes(): Promise<readonly string[] | undefined>;
+	/**
+	 * Bot のペインのシェルでコマンドが始まった（`exitCode` が無い）か終わった（終了コード）。エージェントが見つからない・
+	 * 終わったことは hook では分からないので、ウィンドウがシェル統合から知らせる。Bot のペインでなければ何もしない。
+	 */
+	notePaneCommand(paneToken: string, exitCode: number | undefined, finished: boolean): Promise<void>;
 	requestStop(botId: string): Promise<boolean>;
 	/**
 	 * 別のウィンドウで開いている会話のペインを前に出してもらう（利用者の操作からだけ）。どのウィンドウも 2 秒以内に

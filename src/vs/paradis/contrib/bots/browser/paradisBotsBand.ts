@@ -11,7 +11,8 @@
 // 並び、帯の中だけスクロールし、下の境の線で高さを変えられる。開閉と高さは覚える。閉じても、ピン留めした Bot の行だけは
 // 見出しの下に残る（スペースのピン留めと同じ）。ピン留めは Bot の台帳（IParadisBot.pinned）に持つので、別の窓・スマホでも同じ。
 //
-// 行を押すと {@link PARADIS_BOTS_OPEN_COMMAND} を呼ぶ（中身の Bot のページは後の PR が登録する。登録が無ければ何もしない）。
+// 行を押すと {@link PARADIS_BOTS_OPEN_COMMAND} を呼ぶ（Bot のページを開く。登録は paradisBotsLaunch.contribution.ts。Web のビューには
+// 登録が無いので、無ければ何もしない）。
 // 帯は paradisBots.contribution の electron-browser から登録するので、Web のビューには出ない。
 
 import './media/paradisBotsBand.css';
@@ -38,7 +39,7 @@ import { IStorageService, StorageScope, StorageTarget } from '../../../../platfo
 import { IParadisDialogService } from '../../confirmDialog/browser/paradisDialogService.js';
 import { IParadisWorkspacesBand } from '../../workspaceSwitch/browser/paradisWorkspacesBands.js';
 import { IParadisBotSummary, IParadisBotsService, ParadisBotsServiceResult, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
-import { IParadisBotsBandState, PARADIS_BOTS_BAND_SIZES, PARADIS_BOTS_BAND_STORAGE_KEY, PARADIS_BOTS_OPEN_COMMAND, paradisBotFace, paradisBotNameProblemMessage, paradisBotRowMenu, ParadisBotRowMenuItem, paradisBotsBandDraggedHeight, paradisBotsBandListHeight, paradisBotsBandRows, paradisBotStatusLine, paradisBotsNeedsYouTotal, paradisParseBotsBandState, paradisSerializeBotsBandState, paradisValidateBotName } from '../common/paradisBotsBandModel.js';
+import { IParadisBotsBandState, PARADIS_BOTS_BAND_SIZES, PARADIS_BOTS_BAND_STORAGE_KEY, PARADIS_BOTS_OPEN_COMMAND, paradisBotFace, paradisBotNameProblemMessage, paradisBotRowMenu, ParadisBotRowMenuItem, paradisBotsBandDraggedHeight, paradisBotsBandListHeight, paradisBotsBandRows, paradisBotStatusDetail, paradisBotStatusLine, paradisBotsNeedsYouTotal, paradisParseBotsBandState, paradisSerializeBotsBandState, paradisValidateBotName } from '../common/paradisBotsBandModel.js';
 import { ParadisBotCreateDialog } from './paradisBotCreateDialog.js';
 import { ParadisBotGroupDialog } from './paradisBotGroupDialog.js';
 import { paradisRequestBotPageTab } from './paradisBotPageTabRequest.js';
@@ -327,10 +328,13 @@ export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBan
 		row.dataset.botId = bot.id;
 		row.classList.toggle('paused', bot.paused);
 		const status = paradisBotStatusLine(bot);
-		row.setAttribute('aria-label', localize('paradis.bots.row.ariaLabel', "{0}、{1}", bot.name, status));
+		row.setAttribute('aria-label', localize('paradis.bots.row.ariaLabel', "{0}、{1}", bot.name, paradisBotStatusDetail(bot)));
 		renderParadisBotFace(row, paradisBotFace(bot));
 		DOM.append(row, $('span.paradis-bots-row-name')).textContent = bot.name;
-		DOM.append(row, $('span.paradis-bots-row-status')).textContent = status;
+		const statusElement = DOM.append(row, $('span.paradis-bots-row-status'));
+		statusElement.textContent = status;
+		// 帯の幅で「…」に切れても全文を読めるように
+		this.rowDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), statusElement, paradisBotStatusDetail(bot)));
 		if (bot.needsYou > 0) {
 			DOM.append(row, $('span.paradis-bots-row-count')).textContent = bot.needsYou > 99 ? '99+' : String(bot.needsYou);
 		}

@@ -19,7 +19,7 @@
 import { createHash } from 'crypto';
 import { isPlainRecord } from '../../../common/paradisGuards.js';
 import { paradisNormalizeAgentHookEvent } from '../../agentBrowser/common/paradisAgentBrowser.js';
-import { IParadisBotPaneState, PARADIS_BOT_PANE_PURPOSES, ParadisBotPanePurpose } from '../common/paradisBotsApi.js';
+import { IParadisBotPaneState, PARADIS_BOT_PANE_PURPOSES, ParadisBotPaneHalt, ParadisBotPanePurpose } from '../common/paradisBotsApi.js';
 import { IParadisBotBoardPaneRecord, IParadisBotBoardTaskRecord, paradisParseBotBoardOrigins } from './paradisBotBoardOrigins.js';
 
 /** 起動の番号が有効な時間。起動に失敗して報告が来なかった番号を残さない。 */
@@ -30,6 +30,16 @@ export const PARADIS_BOT_LAUNCH_TTL_MS = 5 * 60_000;
  * 起動に失敗して取り消しも来なかった番号が、その Bot をいつまでも開けなくしないよう短くする。
  */
 export const PARADIS_BOT_LAUNCHING_TTL_MS = 2 * 60_000;
+
+/**
+ * 起動してから hook が 1 つも来ないまま、この時間が過ぎたら「操作が要ります」にする（Claude Code の初回設定・ログイン・
+ * フォルダの信頼の画面で止まっている）。Claude Code は起動するとすぐ SessionStart を出すので、普通に待っている会話は
+ * これにかからない。起動の直後に hook を出さないエージェント（Codex など）では見ない。
+ */
+export const PARADIS_BOT_SETUP_STALL_MS = 30_000;
+
+/** 起動してすぐ hook を出すので、hook が来ないことを「止まっている」と読めるエージェント。 */
+const AGENTS_WITH_START_HOOK: ReadonlySet<string> = new Set(['claude']);
 
 /** 保存する結び付けの上限（古いものから落とす）。 */
 export const PARADIS_BOT_REMEMBERED_PANES_LIMIT = 200;
@@ -83,6 +93,7 @@ interface IPending {
 	readonly botId: string;
 	readonly purpose: ParadisBotPanePurpose;
 	readonly issuedAt: number;
+	readonly agent?: string;
 }
 
 interface IPane {
@@ -90,6 +101,37 @@ interface IPane {
 	readonly purpose: ParadisBotPanePurpose;
 	working: boolean;
 	lastSeenAt: number;
+	/** 結び付けた時刻（シェルでコマンドを起動し直したらその時刻）。 */
+	boundAt: number;
+	/** 起動したエージェント（分からなければ無い。初回設定で止まっているかを見るのに使う）。 */
+	readonly agent?: string;
+	/** hook を 1 つでも受けた。 */
+	hookSeen: boolean;
+	/** 許可・質問で利用者の答えを待っている。 */
+	asking: boolean;
+	/** エージェントが見つからなかった・終わった（シェルのコマンドの終わりか SessionEnd で付け、次のコマンドか動いた hook で外す）。 */
+	ended?: ParadisBotPaneHalt;
+}
+
+function newPane(botId: string, purpose: ParadisBotPanePurpose, now: number, agent?: string): IPane {
+	return { botId, purpose, working: false, lastSeenAt: now, boundAt: now, ...(agent !== undefined ? { agent } : {}), hookSeen: false, asking: false };
+}
+
+/** ペインの止まっている理由（{@link ParadisBotPaneHalt}）。動いている・分からないときは undefined。 */
+function haltOf(pane: IPane, now: number): ParadisBotPaneHalt | undefined {
+	if (pane.working) {
+		return undefined;
+	}
+	if (pane.ended !== undefined) {
+		return pane.ended;
+	}
+	if (pane.asking) {
+		return { kind: 'needsUser' };
+	}
+	if (!pane.hookSeen && pane.agent !== undefined && AGENTS_WITH_START_HOOK.has(pane.agent) && now - pane.boundAt >= PARADIS_BOT_SETUP_STALL_MS) {
+		return { kind: 'needsUser' };
+	}
+	return undefined;
 }
 
 export class ParadisBotPanes {
@@ -132,7 +174,10 @@ export class ParadisBotPanes {
 		if (record.purpose === 'chat' && [...this.panes.values()].some(pane => pane.botId === record.botId && pane.purpose === 'chat')) {
 			return undefined;
 		}
-		this.panes.set(paneToken, { botId: record.botId, purpose: record.purpose, working: false, lastSeenAt: now });
+		// 戻したペインは hook で現れたもの（エージェントが動いている）
+		const pane = newPane(record.botId, record.purpose, now);
+		pane.hookSeen = true;
+		this.panes.set(paneToken, pane);
 		return record.botId;
 	}
 
@@ -150,13 +195,13 @@ export class ParadisBotPanes {
 	}
 
 	/** 起動の番号を控える（番号はサービスが作る）。 */
-	issue(launchId: string, botId: string, purpose: ParadisBotPanePurpose, now: number): void {
+	issue(launchId: string, botId: string, purpose: ParadisBotPanePurpose, now: number, agent?: string): void {
 		for (const [id, entry] of this.pending) {
 			if (now - entry.issuedAt > PARADIS_BOT_LAUNCH_TTL_MS) {
 				this.pending.delete(id);
 			}
 		}
-		this.pending.set(launchId, { botId, purpose, issuedAt: now });
+		this.pending.set(launchId, { botId, purpose, issuedAt: now, ...(agent !== undefined ? { agent } : {}) });
 	}
 
 	/** 起動の報告。結び付けたら Bot の id、断ったら undefined。番号は 1 回で使い切る。 */
@@ -177,7 +222,7 @@ export class ParadisBotPanes {
 		if (entry.purpose === 'chat' && [...this.panes.values()].some(pane => pane.botId === entry.botId && pane.purpose === 'chat')) {
 			return undefined;
 		}
-		this.panes.set(paneToken, { botId: entry.botId, purpose: entry.purpose, working: false, lastSeenAt: now });
+		this.panes.set(paneToken, newPane(entry.botId, entry.purpose, now, entry.agent));
 		this.remembered.delete(hash);
 		this.remembered.set(hash, { hash, botId: entry.botId, purpose: entry.purpose, boundAt: now });
 		while (this.remembered.size > PARADIS_BOT_REMEMBERED_PANES_LIMIT) {
@@ -229,6 +274,11 @@ export class ParadisBotPanes {
 		return changed;
 	}
 
+	/** 結び付いているペインのトークン（全部の Bot）。 */
+	boundTokens(): string[] {
+		return [...this.panes.keys()];
+	}
+
 	botOf(paneToken: string): string | undefined {
 		return this.panes.get(paneToken)?.botId;
 	}
@@ -238,8 +288,36 @@ export class ParadisBotPanes {
 		return this.panes.get(paneToken)?.purpose;
 	}
 
-	statesOf(botId: string): IParadisBotPaneState[] {
-		return [...this.panes.values()].filter(pane => pane.botId === botId).map(pane => ({ purpose: pane.purpose, working: pane.working, lastSeenAt: pane.lastSeenAt }));
+	statesOf(botId: string, now = Number.MAX_SAFE_INTEGER): IParadisBotPaneState[] {
+		return [...this.panes.values()].filter(pane => pane.botId === botId).map(pane => {
+			const halt = haltOf(pane, now);
+			return { purpose: pane.purpose, working: pane.working, lastSeenAt: pane.lastSeenAt, ...(halt !== undefined ? { halt } : {}) };
+		});
+	}
+
+	/**
+	 * ペインのシェルでコマンドが始まった・終わった（ウィンドウがシェル統合から知らせる）。終わったら、終了コードが 127 なら
+	 * 「見つからない」、それ以外は「終わった」にする。始まったら外す（利用者がシェルでエージェントを起動し直した）。
+	 * Bot のペインで、様子が変わったら Bot の id。
+	 */
+	noteCommand(paneToken: string, exitCode: number | undefined, finished: boolean, now: number): string | undefined {
+		const pane = this.panes.get(paneToken);
+		if (pane === undefined) {
+			return undefined;
+		}
+		const before = JSON.stringify(haltOf(pane, now));
+		if (finished) {
+			pane.ended = exitCode === 127 ? { kind: 'notFound' } : { kind: 'exited', ...(exitCode !== undefined ? { exitCode } : {}) };
+			pane.working = false;
+			pane.asking = false;
+		} else if (pane.ended !== undefined) {
+			// 終わった後にシェルで起動し直した。そのエージェントの hook を待ち直す（初回設定で止まっているかを、ここから数える）。
+			// 終わっていないときは戻さない（見張りを付けたときの「実行中」が、もう届いた SessionStart の後に来ることがある）
+			pane.ended = undefined;
+			pane.hookSeen = false;
+			pane.boundAt = now;
+		}
+		return JSON.stringify(haltOf(pane, now)) !== before ? pane.botId : undefined;
 	}
 
 	/** その Bot のペインのトークン。`purpose` を渡せばその用途だけ、`idle` が true なら動いていないものだけ。 */
@@ -287,10 +365,23 @@ export class ParadisBotPanes {
 			return undefined;
 		}
 		pane.lastSeenAt = now;
+		const before = JSON.stringify(haltOf(pane, now));
 		const status = paradisNormalizeAgentHookEvent(event);
 		const working = status === undefined ? pane.working : status === 'working';
 		const changed = working !== pane.working;
 		pane.working = working;
-		return { botId: pane.botId, changed };
+		pane.hookSeen = true;
+		if (status === 'permission') {
+			pane.asking = true;
+		} else if (status !== undefined) {
+			pane.asking = false;
+		}
+		if (event === 'SessionEnd') {
+			// エージェントの会話が終わった（/exit など）。シェルのコマンドの終わりが来れば終了コードで上書きされる
+			pane.ended = { kind: 'exited' };
+		} else if (status === 'working' || event === 'SessionStart') {
+			pane.ended = undefined;
+		}
+		return { botId: pane.botId, changed: changed || JSON.stringify(haltOf(pane, now)) !== before };
 	}
 }
