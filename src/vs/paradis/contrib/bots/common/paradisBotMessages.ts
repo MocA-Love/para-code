@@ -24,6 +24,7 @@ export const PARADIS_BOT_MESSAGE_TOOL_NAMES: ReadonlySet<string> = new Set([PARA
  * 伝言を届けるウィンドウのチャネル（グループの機能が登録する）。道具は、宛先の Bot の会話のペインを持つウィンドウの
  * `deliver` を呼ぶ（呼び出し元のウィンドウではない）。引数は `[送り手のペイントークンのハッシュ, 宛先の Bot の id, 文]`。
  * 宛先のウィンドウは送り手のペインを持たないので、生のトークンは渡さない（受け口はハッシュで送り手の Bot を照らす）。
+ * 戻り値は {@link ParadisBotGroupDeliverResult}。
  */
 export const PARADIS_BOT_GROUPS_WINDOW_CHANNEL = 'paradisBotGroupsWindow';
 
@@ -48,6 +49,42 @@ export interface IParadisBotGroupMessageRecord {
 	readonly from: string;
 	readonly to: string;
 	readonly text: string;
+}
+
+/**
+ * ウィンドウの `deliver` の戻り値（グループの機能と道具の約束）。
+ * - `delivered`: 宛先のペインへ打ち込んで送った
+ * - `queued`: 宛先が作業中なので順番待ちに入れた（次の番に読まれる）
+ * - `refused`: 宛先が受け取らなかった（順番待ちに入れられないエージェントなど）。`reason` は英文
+ * - `unknown`: 貼り付けたが Enter を送れなかった等、届いたか確かめられない（送り直すと重なる）。`reason` は英文
+ */
+export type ParadisBotGroupDeliverResult =
+	| { readonly kind: 'delivered' }
+	| { readonly kind: 'queued' }
+	| { readonly kind: 'refused'; readonly reason: string }
+	| { readonly kind: 'unknown'; readonly reason: string };
+
+/**
+ * ウィンドウが返した値を {@link ParadisBotGroupDeliverResult} として読む。何も返さなければ届けた扱い、文だけなら
+ * 受け取らなかった扱い（約束の前の形）。分からない形は、送り直させないよう「届いたか分からない」にする。
+ */
+export function paradisBotGroupDeliverResultOf(value: unknown): ParadisBotGroupDeliverResult {
+	if (value === undefined || value === null) {
+		return { kind: 'delivered' };
+	}
+	if (typeof value === 'string') {
+		return value.length > 0 ? { kind: 'refused', reason: value } : { kind: 'delivered' };
+	}
+	if (isRecord(value)) {
+		const reason = typeof value.reason === 'string' && value.reason.length > 0 ? value.reason : undefined;
+		switch (value.kind) {
+			case 'delivered': return { kind: 'delivered' };
+			case 'queued': return { kind: 'queued' };
+			case 'refused': return { kind: 'refused', reason: reason ?? 'no reason was given' };
+			case 'unknown': return { kind: 'unknown', reason: reason ?? 'no reason was given' };
+		}
+	}
+	return { kind: 'unknown', reason: 'the window gave an answer Para Code does not know' };
 }
 
 /** 届かなかった伝言の記録の印の理由（{@link IParadisBotGroupsPort.markUndelivered}）。 */
