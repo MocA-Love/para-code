@@ -8797,13 +8797,17 @@ export class ParadisMobileAgentChat extends Disposable {
 		return this.claudeModBridge.isDialogOpen(token, sessionId).catch(() => undefined);
 	}
 
-	/** PC の入力欄の書きかけ（入力欄の mod が知らせる種類だけ。分からなければ undefined）。 */
+	/**
+	 * PC の入力欄の書きかけ（入力欄の mod が知らせる種類だけ。分からなければ undefined）。入力欄の mod（`draft.fill` を
+	 * 名乗る）が生きていて、まだ一度も入力欄が変わっていない会話は空。
+	 */
 	desktopDraft(token: string): string | undefined {
 		const session = this.paneSessions.get(token);
-		if (session?.sessionId === undefined || !this.isLiveToken(token) || paradisAgentDescriptor(session.agent)?.features.pcDraft !== true) {
+		if (session?.sessionId === undefined || !this.isLiveToken(token) || paradisAgentDescriptor(session.agent)?.features.pcDraft !== true
+			|| !this.claudeModBridge.supports(token, session.sessionId, 'draft.fill')) {
 			return undefined;
 		}
-		return this.claudeModBridge.draftOf(token, session.sessionId)?.text;
+		return this.claudeModBridge.draftOf(token, session.sessionId)?.text ?? '';
 	}
 
 	/** 切り詰めて渡したメッセージの全文（tailer が退避しておいた分だけ。読み直さない）。 */
