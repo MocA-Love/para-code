@@ -14,7 +14,7 @@ import { NullLogService } from '../../../../../platform/log/common/log.js';
 import type { ParadisAgentStatus } from '../../../agentBrowser/common/paradisAgentBrowser.js';
 import { IParadisAgentChatSource, IParadisAgentChatView } from '../../common/paradisAgentChat.js';
 import { PARADIS_AGENT_KINDS, ParadisAgentKind } from '../../common/paradisAgentDescriptor.js';
-import { IParadisAgentChatTerminal, ParadisAgentChatInput, paradisCodexApprovalFormOptions, paradisIsShellProcessName, paradisDraftIsOnly } from '../../browser/paradisAgentChatInput.js';
+import { IParadisAgentChatTerminal, ParadisAgentChatInput, paradisCodexApprovalFormOptions, paradisIsShellProcessName } from '../../browser/paradisAgentChatInput.js';
 import { paradisScreenShowsAgentPrompt, paradisScreenShowsPermissionPrompt } from '../../browser/paradisAgentTuiInput.js';
 import { ParadisAgentChatSession } from '../../browser/paradisAgentChatSession.js';
 import { CODEX_EXEC_APPROVAL_DETAIL, CODEX_EXEC_APPROVAL_SCREEN, CODEX_MCP_APPROVAL_DETAIL, CODEX_MCP_APPROVAL_SCREEN, CODEX_WORKING_SCREEN } from './paradisCodexPromptScreens.js';
@@ -156,61 +156,6 @@ suite('ParadisAgentChatInput', () => {
 		open = undefined;
 		const sent = await fixture.input.sendMessage(1, 't', '続けて');
 		assert.deepStrictEqual({ refused, sent }, { refused: 'ターミナルで画面が開いています。閉じてから送ってください', sent: undefined });
-	});
-
-	test('delivers a bot message only to an agent that holds messages while working and whose draft can be read, and never on top of the owner\'s draft', async () => {
-		const safe = { safeOnly: true };
-		const modClaude = setup({ agent: 'claude' });
-		modClaude.source.getAgentChatDraft = async () => '';
-		const noModClaude = setup({ agent: 'claude' });
-		noModClaude.source.getAgentChatDraft = async () => undefined;
-		const codex = setup({ agent: 'codex' });
-		codex.source.getAgentChatDraft = async () => '';
-		const results = {
-			modClaude: await modClaude.input.sendMessageOutcome(1, 't', 'hi', safe),
-			noModClaude: await noModClaude.input.sendMessageOutcome(1, 't', 'hi', safe),
-			codex: await codex.input.sendMessageOutcome(1, 't', 'hi', safe),
-			// 利用者自身の送信は今までどおり（mod の無い Claude Code・Codex にも送る）
-			ownNoMod: await noModClaude.input.sendMessage(1, 't', 'mine'),
-		};
-		const drafting = setup({ agent: 'claude' });
-		let draft: string | undefined = 'まだ途中の指示';
-		drafting.source.getAgentChatDraft = async () => draft;
-		const draftRefused = await drafting.input.sendMessageOutcome(1, 't', 'hi', safe);
-		const typedBeforeDraftRefused = drafting.terminal.sent.length;
-		draft = '';
-		const draftEmpty = await drafting.input.sendMessageOutcome(1, 't', 'hi', safe);
-		// 貼った後に利用者が打ち足した: Enter を送らない（届いたか分からない）
-		const appended = setup({ agent: 'claude' });
-		let appendedDraft = '';
-		appended.source.getAgentChatDraft = async () => appendedDraft;
-		appended.terminal.onKey = text => { appendedDraft = `${text} と追記`; };
-		const appendedResult = await appended.input.sendMessageOutcome(1, 't', 'hi', safe);
-		const unsafe = { kind: 'refused', code: 'unsafe', message: 'このエージェントには外から安全に届けられません（Claude Code と、入力欄を読む Para Code の mod が要ります）' };
-		assert.deepStrictEqual({
-			...results,
-			typedModClaude: modClaude.terminal.sent,
-			typedCodex: codex.terminal.sent,
-			draftRefused,
-			typedBeforeDraftRefused,
-			draftEmpty: draftEmpty.kind,
-			appended: appendedResult.kind,
-			appendedTyped: appended.terminal.sent,
-			draftOnly: [paradisDraftIsOnly('', undefined), paradisDraftIsOnly('hi', undefined), paradisDraftIsOnly('hi', 'hi'), paradisDraftIsOnly('[Pasted text #1 +4 lines]', 'long'), paradisDraftIsOnly('x hi', 'hi')],
-		}, {
-			modClaude: { kind: 'sent' },
-			noModClaude: unsafe,
-			codex: unsafe,
-			ownNoMod: undefined,
-			typedModClaude: ['paste:"hi"', '"\\r"'],
-			typedCodex: [],
-			draftRefused: { kind: 'refused', code: 'draft', message: '入力欄に書きかけの文があります' },
-			typedBeforeDraftRefused: 0,
-			draftEmpty: 'sent',
-			appended: 'unknown',
-			appendedTyped: ['paste:"hi"'],
-			draftOnly: [true, false, true, true, false],
-		});
 	});
 
 	test('does not type into Codex while its choice menu is on the screen, since Enter would pick the default choice', async () => {

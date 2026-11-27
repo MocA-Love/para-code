@@ -8797,19 +8797,6 @@ export class ParadisMobileAgentChat extends Disposable {
 		return this.claudeModBridge.isDialogOpen(token, sessionId).catch(() => undefined);
 	}
 
-	/**
-	 * PC の入力欄の書きかけ。入力欄の文を送る `draft/` の mod から、この会話で（mod が読み直された後に）入力欄の文が一度でも
-	 * 届いているときだけ返す。届いていなければ undefined（分からない）。本体の mod の `draft.fill` の名乗りは版に関係なく
-	 * 付くので、入力欄を読める印には使わない。
-	 */
-	desktopDraft(token: string): string | undefined {
-		const session = this.paneSessions.get(token);
-		if (session?.sessionId === undefined || !this.isLiveToken(token) || paradisAgentDescriptor(session.agent)?.features.pcDraft !== true) {
-			return undefined;
-		}
-		return this.claudeModBridge.draftOf(token, session.sessionId)?.text;
-	}
-
 	/** 切り詰めて渡したメッセージの全文（tailer が退避しておいた分だけ。読み直さない）。 */
 	getDesktopChatFullText(token: string, epoch: string, rev: number): string | undefined {
 		const tailer = this.isLiveToken(token) ? this.tailers.get(token) : undefined;

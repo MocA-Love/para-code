@@ -49,11 +49,6 @@ export interface IParadisAgentDescriptor {
 	readonly modelControl: 'mod-or-keys' | 'none';
 	/** 発言を送る経路（候補の順）。空は送れない。 */
 	readonly send: readonly ParadisAgentRoute[];
-	/**
-	 * 作業中に送った発言を、今のターンを止めずに次の番まで待たせるか。`false` の種類は作業中の Enter で書きかけの応答を
-	 * 打ち切る（Codex 0.163 以降の instant_interrupt）か、作業中の入力を確かめていない。
-	 */
-	readonly queuesWhileWorking: boolean;
 	/** 質問のカードに答える経路（候補の順）。空は答えられない。 */
 	readonly answerQuestion: readonly ParadisAgentRoute[];
 	/** 許可の確認に答える経路（候補の順）。空は答えられない。 */
@@ -88,7 +83,6 @@ export const PARADIS_AGENT_DESCRIPTORS: Readonly<Record<ParadisAgentKind, IParad
 		resume: { fork: true, bypassFlag: '--dangerously-skip-permissions', deliverPromptAfterResume: true, sendQueuedWithoutConfirm: true },
 		modelControl: 'mod-or-keys',
 		send: ['mod', 'keys'],
-		queuesWhileWorking: true,
 		answerQuestion: ['mod', 'keys'],
 		answerApproval: ['mod', 'keys'],
 		interrupt: 'ctrl-c',
@@ -102,7 +96,6 @@ export const PARADIS_AGENT_DESCRIPTORS: Readonly<Record<ParadisAgentKind, IParad
 		resume: { fork: true, bypassFlag: '--dangerously-bypass-approvals-and-sandbox', deliverPromptAfterResume: true, sendQueuedWithoutConfirm: true },
 		modelControl: 'none',
 		send: ['keys'],
-		queuesWhileWorking: false,
 		answerQuestion: ['keys'],
 		answerApproval: ['keys'],
 		interrupt: 'ctrl-c',
@@ -116,7 +109,6 @@ export const PARADIS_AGENT_DESCRIPTORS: Readonly<Record<ParadisAgentKind, IParad
 		resume: { fork: true, bypassFlag: undefined, deliverPromptAfterResume: true, sendQueuedWithoutConfirm: true },
 		modelControl: 'none',
 		send: ['api'],
-		queuesWhileWorking: false,
 		answerQuestion: ['api'],
 		answerApproval: ['api'],
 		interrupt: 'api',
@@ -130,7 +122,6 @@ export const PARADIS_AGENT_DESCRIPTORS: Readonly<Record<ParadisAgentKind, IParad
 		resume: { fork: false, bypassFlag: undefined, deliverPromptAfterResume: false, sendQueuedWithoutConfirm: false },
 		modelControl: 'none',
 		send: ['keys'],
-		queuesWhileWorking: false,
 		answerQuestion: [],
 		answerApproval: ['hook'],
 		interrupt: 'ctrl-c',

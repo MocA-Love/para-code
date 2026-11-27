@@ -96,6 +96,26 @@ suite('Paradis bot groups service', () => {
 		});
 	});
 
+	test('伝言の道具の口: 受け箱は宛先の未読を返し、markRead で既読にする（保存して読み直しても既読のまま）', async () => {
+		const file = new MemoryFile();
+		const groups = service(file);
+		await groups.createGroup({ name: '班', members: ['a', 'b'] });
+		const port = paradisBotGroupsMessagePort(groups);
+		const first = await port.appendRecord('g1', { kind: 'told', from: 'a', to: 'b', text: '終わった' });
+		await port.appendRecord('g1', { kind: 'asked', from: 'a', to: 'b', text: 'どう?' });
+		const before = (await port.inboxOf('b')).map(message => [message.recordId, message.kind, message.from, message.text]);
+		await port.markRead('a', [first.recordId!]);
+		await port.markRead('b', [first.recordId!]);
+		const after = (await port.inboxOf('b')).map(message => message.recordId);
+		const reread = paradisParseBotGroupsState(JSON.parse(JSON.stringify(file.written.at(-1))));
+		assert.deepStrictEqual({ before, after, readAt: reread?.records[0].readAt, inboxA: (await port.inboxOf('a')).length }, {
+			before: [['1', 'told', 'a', '終わった'], ['2', 'asked', 'a', 'どう?']],
+			after: ['2'],
+			readAt: 100,
+			inboxA: 0,
+		});
+	});
+
 	test('ウィンドウからは あなたの sent だけ書ける', async () => {
 		const groups = service(new MemoryFile());
 		const channel = new ParadisBotGroupsChannel(groups);

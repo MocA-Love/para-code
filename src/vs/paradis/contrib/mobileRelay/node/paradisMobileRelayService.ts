@@ -1690,11 +1690,6 @@ export class ParadisMobileRelayService extends Disposable implements IParadisMob
 		return paradisIsAgentChatToken(token) ? this.agentChat.isDesktopDialogOpen(token) : undefined;
 	}
 
-	/** Bot 同士の伝言を届ける前に、PC の入力欄に利用者の書きかけが無いかを聞く（{@link IParadisAgentChatSource.getAgentChatDraft}）。 */
-	async getAgentChatDraft(token: string): Promise<string | undefined> {
-		return paradisIsAgentChatToken(token) ? this.agentChat.desktopDraft(token) : undefined;
-	}
-
 	async claimAgentChatInteraction(token: string, kind: 'question' | 'approval', id: string): Promise<boolean> {
 		return paradisIsAgentChatToken(token) && (kind === 'question' || kind === 'approval') && typeof id === 'string' && id.length <= 500
 			? this.agentChat.claimDesktopInteraction(token, kind, id)
