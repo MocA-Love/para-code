@@ -114,7 +114,10 @@ export class ParadisBotsChannel implements IServerChannel<string> {
 			case 'dismissSuggestion': return id !== undefined ? service.dismissSuggestion(id) : INVALID;
 			case 'snapshotMemory': return id !== undefined ? service.snapshotMemory(id) : INVALID;
 			case 'listMemorySnapshots': return id !== undefined ? service.listMemorySnapshots(id) : INVALID;
-			case 'undoMemoryTidy': return id !== undefined ? service.undoMemoryTidy(id) : INVALID;
+			case 'undoMemoryTidy': {
+				const takenAt = args.at(1);
+				return id !== undefined && typeof takenAt === 'number' && Number.isSafeInteger(takenAt) ? service.undoMemoryTidy(id, takenAt) : INVALID;
+			}
 
 			case 'readHomeFile': return id !== undefined ? service.readHomeFile(id, args.at(1)) : INVALID;
 			case 'writeHomeFile': {

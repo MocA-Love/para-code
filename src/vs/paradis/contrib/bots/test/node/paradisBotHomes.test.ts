@@ -314,7 +314,7 @@ suite('Paradis bot homes', () => {
 		const taken = await service.snapshotMemory(botId);
 		await service.writeHomeFile(botId, 'MEMORY.md', '- 整理した記憶\n');
 		await service.writeHomeFile(botId, 'memory/release.md', '細かい話\n');
-		const undone = await service.undoMemoryTidy(botId);
+		const undone = await service.undoMemoryTidy(botId, 5000);
 		assert.deepStrictEqual({
 			fromChat: fromChat.ok ? 'ok' : fromChat.code,
 			fromPatrol: fromPatrol.ok ? fromPatrol.value.title : fromPatrol.code,
@@ -336,7 +336,7 @@ suite('Paradis bot homes', () => {
 			openAfterStart: 1,
 			marked: 'started',
 			afterMark: 0,
-			taken: { ok: true, value: { takenAt: 5000, files: 1, total: 1, partial: false } },
+			taken: { ok: true, value: { takenAt: 5000, files: 1, total: 1, partial: false, kind: 'manual' } },
 			undone: { ok: true, value: { restored: ['MEMORY.md'], added: ['memory/release.md'], takenAt: 5000, skipped: [] } },
 			memory: { ok: true, value: '- 2026-11-27 古い記憶\n' },
 			homeFiles: ['.para-bot.json'],
@@ -362,7 +362,7 @@ suite('Paradis bot homes', () => {
 
 		enabled = false;
 		const offSnapshot = await service.snapshotMemory(botId);
-		const offUndo = await service.undoMemoryTidy(botId);
+		const offUndo = await service.undoMemoryTidy(botId, 7000);
 		const folderWhileOff = await fs.readdir(snapshotRoot).catch(() => 'none');
 		enabled = true;
 
@@ -374,7 +374,7 @@ suite('Paradis bot homes', () => {
 		// 写しを書き換えて、人格メモ・指示文・フォルダの外を書き戻させようとする
 		const snapshotFile = join(snapshotRoot, botId, '7000.json');
 		await fs.writeFile(snapshotFile, JSON.stringify({ version: 1, takenAt: 7000, files: { 'MEMORY.md': '- 戻した記憶\n', 'SOUL.md': '乗っ取り', 'AGENTS.md': '乗っ取り', 'memory/a/b.md': 'x', 'memory/n000.md': '戻した\n' } }));
-		const undone = await service.undoMemoryTidy(botId);
+		const undone = await service.undoMemoryTidy(botId, 7000);
 		const removed = await service.removeBot(botId);
 		assert.deepStrictEqual({
 			offSnapshot,
@@ -393,7 +393,7 @@ suite('Paradis bot homes', () => {
 			offUndo: { ok: false, code: 'disabled', message: 'Para Code bots are turned off. Turn on the bot setting (paradis.bots.enabled) first.' },
 			folderWhileOff: 'none',
 			// MEMORY.md と memory/ の 205 件のうち、上限の 200 件だけ
-			taken: { takenAt: 7000, files: 200, total: 206, partial: true },
+			taken: { takenAt: 7000, files: 200, total: 206, partial: true, kind: 'manual' },
 			undone: { restored: ['MEMORY.md', 'memory/n000.md'], skipped: ['SOUL.md', 'AGENTS.md', 'memory/a/b.md'] },
 			soulKept: true,
 			memory: '- 戻した記憶\n',
@@ -454,14 +454,57 @@ suite('Paradis bot homes', () => {
 			offList: offList.ok ? 'ok' : offList.code,
 		}, {
 			firstChat: true,
-			unchanged: { ok: true, value: [{ takenAt: 11000, files: 1, total: 1, partial: false }] },
+			unchanged: { ok: true, value: [{ takenAt: 11000, files: 1, total: 1, partial: false, kind: 'auto' }] },
 			patrol: true,
 			// 見回りでは取らない（記憶は変わったが、会話の起動の 1 件だけ）
-			afterPatrol: { ok: true, value: [{ takenAt: 11000, files: 1, total: 1, partial: false }] },
+			afterPatrol: { ok: true, value: [{ takenAt: 11000, files: 1, total: 1, partial: false, kind: 'auto' }] },
 			// 6 件になって、古い 1 件（11000）が消えた
-			listed: { ok: true, value: [19000, 18000, 17000, 16000, 15000].map(takenAt => ({ takenAt, files: 2, total: 2, partial: false })) },
+			listed: { ok: true, value: [19000, 18000, 17000, 16000, 15000].map(takenAt => ({ takenAt, files: 2, total: 2, partial: false, kind: 'auto' })) },
 			offLaunch: 'disabled',
 			offList: 'disabled',
+		});
+	});
+
+	test('サービス: 明示に取った写しは自動の写しで押し出されず、取り消しは選んだ写しを書き戻す（無い写しは断る）', async () => {
+		const userData = join(root, '..', 'userData');
+		let ids = 0;
+		let clock = 20_000;
+		const service = store.add(new ParadisBotsService(createParadisBotsFile(userData), createParadisBotItemsFile(userData), store.add(new ParadisHumanAskService()), new NullLogService(), {
+			homes,
+			uuid: () => `id${++ids}`,
+			memorySnapshots: new ParadisBotMemorySnapshots(join(userData, 'snapshots'), homes, () => clock),
+		}));
+		const created = await service.createBot({ name: 'リリース係', agent: 'claude' });
+		assert.ok(created.ok);
+		const botId = created.value.id;
+		await service.writeHomeFile(botId, 'MEMORY.md', '- 整理の前\n');
+		clock += 1000;
+		const manual = await service.snapshotMemory(botId);
+		// 整理の後、記憶が変わる会話を 6 回開く（自動の写しは 5 件まで。明示の写しは残る）
+		for (let index = 0; index < 6; index++) {
+			await service.writeHomeFile(botId, 'MEMORY.md', `- 整理の後 ${index}\n`);
+			clock += 1000;
+			const launched = await service.requestLaunch(botId, 'chat');
+			if (launched.ok) {
+				service.cancelLaunch(launched.value.launchId);
+			}
+		}
+		const listed = await service.listMemorySnapshots(botId);
+		const gone = await service.undoMemoryTidy(botId, 22000);
+		const undone = await service.undoMemoryTidy(botId, 21000);
+		assert.deepStrictEqual({
+			manual: manual.ok ? manual.value.kind : manual.code,
+			listed: listed.ok ? listed.value.map(snapshot => `${snapshot.takenAt} ${snapshot.kind}`) : listed.code,
+			gone,
+			undone: undone.ok ? undone.value.takenAt : undone.code,
+			memory: await service.readHomeFile(botId, 'MEMORY.md'),
+		}, {
+			manual: 'manual',
+			listed: ['27000 auto', '26000 auto', '25000 auto', '24000 auto', '23000 auto', '21000 manual'],
+			// 22000 の自動の写しは上限で消えた
+			gone: { ok: false, code: 'not_found', message: 'There is no copy of the memory to go back to.' },
+			undone: 21000,
+			memory: { ok: true, value: '- 整理の前\n' },
 		});
 	});
 
