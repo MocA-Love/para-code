@@ -134,8 +134,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 	private suggestions: readonly IParadisBotSuggestion[] = [];
 	/** 問いのカードの状態（台帳の鍵ごと）。 */
 	private readonly askStates = new Map<string, IParadisBotPageAskState>();
-	/** 今出している問いの鍵と、その守りの終わる時刻。 */
-	private askShown: string | undefined;
+	/** 今出している問いの守りの終わる時刻。 */
 	private askGuardUntil = 0;
 	/** 描いた後に問いのカードが枠から溢れた（描き直してモーダルへ回す）。 */
 	private askOverflowed = false;
@@ -701,10 +700,8 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		if (key === undefined || entry === undefined) {
 			return;
 		}
-		if (this.askShown !== key) {
-			this.askShown = key;
-			this.askGuardUntil = Date.now() + ASK_GUARD_MS;
-		}
+		// 面に問いを出し直すたび（初めて出した・一覧から開き直した・中身が変わって描き直した）に守りを張り直す
+		this.askGuardUntil = Date.now() + ASK_GUARD_MS;
 		const state = this.askStates.get(key) ?? { sending: false };
 		const holder = DOM.append(body, $(`.paradis-bot-page-ask.${PARADIS_INBOX_ASK_SCOPE_CLASS}`));
 		const card = this.panelStore.add(paradisBuildInboxAskCard(entry, '', {
@@ -734,19 +731,26 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		if (this.askStates.get(key)?.sending) {
 			return;
 		}
-		this.askStates.set(key, { ...this.askStates.get(key), sending: true });
+		this.askStates.set(key, { ...this.askStates.get(key), sending: true, refused: undefined });
 		this.renderPanel();
-		const result = await this.humanAskService.answer(key, answer, 'bot');
-		if (this._store.isDisposed) {
-			return;
+		let refused: string | undefined = paradisInboxAskRefusedText('unavailable');
+		try {
+			const result = await this.humanAskService.answer(key, answer, 'bot');
+			refused = result.ok ? undefined : paradisInboxAskRefusedText(result.reason);
+		} catch {
+			// 台帳へ届かなかった。「送れませんでした」のまま、もう一度押せるように戻す
+		} finally {
+			// 届けられなかった（断られた・台帳へ届かなかった）ら「送っている最中」を戻し、理由をカードに出す
+			if (!this._store.isDisposed) {
+				if (refused === undefined) {
+					this.askStates.delete(key);
+				} else {
+					this.askStates.set(key, { ...this.askStates.get(key), sending: false, refused });
+				}
+				this.renderPanel();
+				void this.loadItems();
+			}
 		}
-		if (result.ok) {
-			this.askStates.delete(key);
-		} else {
-			this.askStates.set(key, { ...this.askStates.get(key), sending: false, refused: paradisInboxAskRefusedText(result.reason) });
-		}
-		this.renderPanel();
-		void this.loadItems();
 	}
 
 	private renderComment(body: HTMLElement, item: IParadisBotItem): void {

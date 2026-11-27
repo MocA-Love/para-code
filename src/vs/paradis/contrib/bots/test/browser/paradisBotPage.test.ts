@@ -63,6 +63,7 @@ suite('Paradis bots page overlay', () => {
 		instantiation.stub(IConfigurationService, configuration);
 		const bots = [bot('release', 'リリース係', { needsYou: 1 })];
 		const answered: { key: string; answer: ParadisHumanAskAnswer }[] = [];
+		const failAnswer = { value: false };
 		const calls: string[] = [];
 		const confirms: IParadisConfirmation[] = [];
 		const files = new Map<string, string>([['SOUL.md', '# リリース係\n'], ['MEMORY.md', '# Memory\n']]);
@@ -85,7 +86,13 @@ suite('Paradis bots page overlay', () => {
 		instantiation.stub(IParadisHumanAskService, {
 			onDidChange: Event.None,
 			get snapshot() { return { entries, counts: paradisHumanAskCounts(entries), revision: 1 }; },
-			answer: async (key: string, answer: ParadisHumanAskAnswer) => { answered.push({ key, answer }); return { ok: true }; },
+			answer: async (key: string, answer: ParadisHumanAskAnswer) => {
+				answered.push({ key, answer });
+				if (failAnswer.value) {
+					throw new Error('the ledger is gone');
+				}
+				return { ok: true };
+			},
 		} as Partial<IParadisHumanAskService> as IParadisHumanAskService);
 		instantiation.stub(IParadisDialogService, { confirm: async (confirmation: IParadisConfirmation) => { confirms.push(confirmation); return { confirmed: true }; } } as unknown as IParadisDialogService);
 		instantiation.stub(IContextViewService, {});
@@ -102,7 +109,7 @@ suite('Paradis bots page overlay', () => {
 		const resolver: IParadisBotPaneResolver = { onDidChange: changed.event, botFor: async instanceId => panes.get(instanceId) };
 		const container = document.createElement('div');
 		const page = disposables.add(instantiation.createInstance(ParadisBotPage, container, resolver, patrol, measureClamp));
-		return { container, page, configuration, panes, changed, answered, disposables, calls, confirms, files, bots, botsChanged, statuses, chatShown: () => { draftTaken = true; } };
+		return { container, page, configuration, panes, changed, answered, disposables, failAnswer, calls, confirms, files, bots, botsChanged, statuses, chatShown: () => { draftTaken = true; } };
 	}
 
 	const settle = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -428,4 +435,42 @@ suite('Paradis bots page overlay', () => {
 			notice: '書きかけの間に、ほかの場所で名前が変わりました。保存すると、この画面の値で上書きします。',
 		});
 	});
+
+	test('問いを一覧から開き直したときも守りを張り直し、台帳へ届かなかった答えは「送っている最中」を戻して理由を出す', () => runWithFakedTimers({ useFakeTimers: true }, async () => {
+		const { container, page, answered, failAnswer } = setup();
+		page.setInstance(1);
+		await settle();
+		(container.getElementsByClassName('paradis-bot-page-tab')[1] as HTMLElement).click();
+		await settle();
+		const open = async () => {
+			(container.getElementsByClassName('paradis-bot-page-row')[0] as HTMLElement).click();
+			await settle();
+		};
+		const buttons = () => Array.from(container.querySelectorAll<HTMLElement>('.paradis-bot-page-ask .pnip-ask-buttons .paradis-button'));
+		await open();
+		await new Promise(resolve => setTimeout(resolve, 600));
+		(container.querySelector('.paradis-bot-page-back') as HTMLElement).click();
+		await settle();
+		await open();
+		// 開き直した直後の押下は効かない
+		buttons()[1].click();
+		await settle();
+		const whileGuarded = answered.length;
+		await new Promise(resolve => setTimeout(resolve, 600));
+		failAnswer.value = true;
+		buttons()[1].click();
+		await settle();
+		await settle();
+		assert.deepStrictEqual({
+			whileGuarded,
+			sent: answered.length,
+			note: container.querySelector('.paradis-bot-page-ask .pnip-ask-note')?.textContent,
+			enabled: buttons().map(button => !button.classList.contains('disabled') && button.getAttribute('aria-disabled') !== 'true'),
+		}, {
+			whileGuarded: 0,
+			sent: 1,
+			note: '回答を送れませんでした。少し待ってからもう一度試してください',
+			enabled: [true, true, true],
+		});
+	}));
 });
