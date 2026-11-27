@@ -30,7 +30,7 @@ import {
 	botItemGroups,
 	botItemStatusLabel,
 	botRefusalText,
-	botSettingsChanges,
+	botFieldChange,
 	botStatusLine,
 	newBotOpId,
 	type BotChanges,
@@ -38,7 +38,7 @@ import {
 	type BotItemRow,
 	type MobileBot,
 } from './bots.js';
-import { actOnBotSuggestion, botFileKey, botKey, readBotFile, updateBot, useBotPages, useBotPageSync, writeBotFile } from './botStore.js';
+import { actOnBotSuggestion, botFileKey, botKey, readBotFile, refreshBotPage, updateBot, useBotPages, useBotPageSync, writeBotFile } from './botStore.js';
 
 type Tab = 'items' | 'chat' | 'files' | 'settings';
 
@@ -147,6 +147,7 @@ function ItemsTab({ pcId, bot }: { pcId: string; bot: MobileBot }) {
 	const asks = useHumanAsks(s => (pc?.humanAskSupported === true ? s.byPc[pcId]?.asks : undefined) ?? NO_ASKS);
 	const rows = useBotPages(s => s.items[botKey(pcId, bot.id)]);
 	const suggestions = useBotPages(s => s.suggestions[botKey(pcId, bot.id)]);
+	const failed = useBotPages(s => s.failed[botKey(pcId, bot.id)] === true);
 	const [showClosed, setShowClosed] = useState(false);
 	const [busy, setBusy] = useState<string | undefined>(undefined);
 	const conversation = useBotConversation(router, pcId, bot.id, true);
@@ -154,7 +155,9 @@ function ItemsTab({ pcId, bot }: { pcId: string; bot: MobileBot }) {
 	const openItem = (uid: string) => { haptic('move'); router.push(routes.botItem(pcId, bot.id, uid)); };
 
 	if (rows === undefined) {
-		return <EmptyState title="読み込んでいます…" />;
+		return failed
+			? <EmptyState title="項目を読めませんでした" body="PC とのつながりを確かめてください。" action={{ label: '読み直す', onPress: () => void refreshBotPage(pcId, bot.id) }} />
+			: <EmptyState title="読み込んでいます…" />;
 	}
 	const start = (id: string) => {
 		setBusy(id);
@@ -163,9 +166,9 @@ function ItemsTab({ pcId, bot }: { pcId: string; bot: MobileBot }) {
 			const result = await actOnBotSuggestion(pcId, bot.id, id, 'start', newBotOpId());
 			if (!result.ok) {
 				warn(`bot-suggest-${id}`, '始められませんでした', botRefusalText(result.code));
-				return undefined;
+				return false;
 			}
-			return result.value;
+			return result.value ?? '';
 		}).finally(() => setBusy(undefined));
 	};
 	const dismiss = async (id: string) => {
@@ -397,10 +400,6 @@ function SettingsTab({ pcId, bot }: { pcId: string; bot: MobileBot }) {
 			void send(changes, false, newBotOpId());
 		}
 	};
-	const draft = (patch: Partial<{ name: string; agent: string; permissionId: string | undefined }>) => {
-		const next = { name: bot.name, agent: bot.agent, permissionId: bot.permissionId, ...patch };
-		return botSettingsChanges(bot, next, permissionsOf(next.agent).map(option => option.id));
-	};
 
 	const agentIds = ['claude', 'codex', ...(bot.agent === 'claude' || bot.agent === 'codex' ? [] : [bot.agent])];
 	const agentOptions: PickerOption[] = agentIds.map(id => ({ value: id, label: botAgentLabel(id) }));
@@ -423,13 +422,13 @@ function SettingsTab({ pcId, bot }: { pcId: string; bot: MobileBot }) {
 					onPress={() => setSheet('permission')}
 				/>
 			</ListGroup>
-			<Text style={styles.note}>エージェントと権限を変えるときは、PC と同じ確認を出します。顔の色と形・役割（SOUL.md）は PC で変えます。</Text>
+			<Text style={styles.note}>エージェントと権限を変えるときは、PC と同じ確認を出します。エージェントを変えると権限は既定に戻ります。顔の色と形・役割（SOUL.md）は PC で変えます。</Text>
 			<TextInputDrawer
 				visible={sheet === 'name'}
 				title="名前"
 				defaultValue={bot.name}
 				maxLength={64}
-				onSubmit={value => { setSheet(undefined); change(draft({ name: value })); }}
+				onSubmit={value => { setSheet(undefined); change(botFieldChange(bot, { name: value })); }}
 				onClose={() => setSheet(undefined)}
 			/>
 			<PickerDrawer<string>
@@ -437,7 +436,7 @@ function SettingsTab({ pcId, bot }: { pcId: string; bot: MobileBot }) {
 				title="エージェント"
 				options={agentOptions}
 				selected={bot.agent}
-				onSelect={value => change(draft({ agent: value }))}
+				onSelect={value => change(botFieldChange(bot, { agent: value }))}
 				onClose={() => setSheet(undefined)}
 			/>
 			<PickerDrawer<string>
@@ -445,7 +444,7 @@ function SettingsTab({ pcId, bot }: { pcId: string; bot: MobileBot }) {
 				title="権限"
 				options={permissionOptions}
 				selected={bot.permissionId ?? 'default'}
-				onSelect={value => change(draft({ permissionId: value }))}
+				onSelect={value => change(botFieldChange(bot, { permissionId: value }))}
 				onClose={() => setSheet(undefined)}
 			/>
 			<ConfirmDrawer

@@ -9,7 +9,7 @@ import {
 	botItemGroups,
 	botPaneOf,
 	botSectionRows,
-	botSettingsChanges,
+	botFieldChange,
 	botStatusLine,
 	botUpdateRequest,
 	parseBotFileReply,
@@ -112,16 +112,26 @@ describe('Bot の要求', () => {
 		});
 	});
 
-	test('設定のタブの差は PC と同じ規則（default と選択肢に無い権限は既定）', () => {
-		const current = { name: 'リリース係', agent: 'claude', permissionId: undefined };
+	test('設定のタブは触った欄だけを送る（名前を変えても既定でない権限は送らない）', () => {
+		const current = { name: 'リリース係', agent: 'claude', permissionId: 'bypass' };
 		expect([
-			botSettingsChanges(current, { name: ' リリース係 ', agent: 'claude', permissionId: 'default' }, ['default', 'bypass']),
-			botSettingsChanges(current, { name: '係', agent: 'claude', permissionId: 'bypass' }, ['default', 'bypass']),
-			botSettingsChanges({ ...current, permissionId: 'bypass' }, { name: 'リリース係', agent: 'codex', permissionId: 'bypass' }, ['default', 'full-auto']),
+			botFieldChange(current, { name: ' リリース係 ' }),
+			botFieldChange(current, { name: '  ' }),
+			botFieldChange(current, { name: '係' }),
+			botFieldChange(current, { permissionId: 'bypass' }),
+			botFieldChange(current, { permissionId: 'default' }),
+			botFieldChange({ ...current, permissionId: undefined }, { permissionId: 'default' }),
+			botFieldChange(current, { agent: 'codex' }),
+			botFieldChange(current, { agent: 'claude' }),
 		]).toEqual([
 			undefined,
-			{ name: '係', permission: 'bypass' },
+			undefined,
+			{ name: '係' },
+			undefined,
+			{ permission: null },
+			undefined,
 			{ agent: 'codex', permission: null },
+			undefined,
 		]);
 	});
 });

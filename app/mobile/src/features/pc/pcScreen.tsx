@@ -251,7 +251,7 @@ export const PcScreen = memo(function PcScreen({ placement, onCollapse }: {
 	) : null;
 	// スペースや一致する行が無くても、Bot の節は出す（空の案内はその下）
 	const withBots = (empty: ReactElement) => (botBlock === null ? empty : (
-		<ScrollView contentContainerStyle={[{ paddingBottom: insets.bottom + space.xl + FAB_SIZE + space.lg }, column]}>
+		<ScrollView contentContainerStyle={[{ paddingBottom: insets.bottom + space.xl + FAB_SIZE + space.lg }, column]} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
 			{botBlock}
 			{empty}
 		</ScrollView>

@@ -53,9 +53,11 @@ interface BotPageState {
 	readonly pages: Readonly<Record<string, BotItemPage>>;
 	/** `pcId\0botId\0path` ごとのファイルの中身。 */
 	readonly files: Readonly<Record<string, string>>;
+	/** `pcId\0botId` ごとの、項目の一覧を最後に取りに行って取れなかった印（取れたら外す）。 */
+	readonly failed: Readonly<Record<string, true>>;
 }
 
-export const useBotPages = create<BotPageState>(() => ({ items: {}, suggestions: {}, pages: {}, files: {} }));
+export const useBotPages = create<BotPageState>(() => ({ items: {}, suggestions: {}, pages: {}, files: {}, failed: {} }));
 
 export function botKey(pcId: string, botId: string): string {
 	return `${pcId}\u0000${botId}`;
@@ -88,6 +90,13 @@ export async function refreshBotPage(pcId: string, botId: string): Promise<void>
 	if (items.ok) {
 		put('items', key, items.value);
 	}
+	useBotPages.setState(state => {
+		if (items.ok === !(key in state.failed)) {
+			return state;
+		}
+		const { [key]: _removed, ...rest } = state.failed;
+		return { failed: items.ok ? rest : { ...rest, [key]: true } };
+	});
 	if (suggestions.ok) {
 		put('suggestions', key, suggestions.value);
 	}

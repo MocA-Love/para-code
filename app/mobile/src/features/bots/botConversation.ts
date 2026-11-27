@@ -18,8 +18,8 @@ type Terminal = WorkspaceState['terminals'][number];
 const OPEN_WAIT_MS = 30_000;
 
 /** 入力欄へ足す下書き。関数なら、ペインが確かにあると分かってから呼ぶ（提案の「始める」は PC で「始めた」にするので、
- * ペインが現れないまま呼ぶと依頼の文が行き場を失う）。undefined を返したら足さずに開く。 */
-export type BotDraft = string | (() => Promise<string | undefined>);
+ * ペインが現れないまま呼ぶと依頼の文が行き場を失う）。`false` を返したら開かない（断られた。知らせは呼ぶ側が出す）。 */
+export type BotDraft = string | (() => Promise<string | false>);
 
 /**
  * Bot の会話を開く。会話は新しい画面を作らず、その Bot のペインの今のセッションの画面へ移る。ペインが State に無ければ
@@ -40,11 +40,16 @@ export function useBotConversation(router: Router, pcId: string | undefined, bot
 		let draft: string | undefined;
 		if (typeof draftSource === 'function') {
 			setPreparing(true);
+			let prepared: string | false;
 			try {
-				draft = await draftSource();
+				prepared = await draftSource();
 			} finally {
 				setPreparing(false);
 			}
+			if (prepared === false) {
+				return;
+			}
+			draft = prepared.length > 0 ? prepared : undefined;
 		} else {
 			draft = draftSource;
 		}
@@ -52,6 +57,7 @@ export function useBotConversation(router: Router, pcId: string | undefined, bot
 		const workspace = store.workspace;
 		const owner = workspace !== undefined ? resolveTerminalSpace(terminal, workspace.workspaces, workspace.activeWs) : undefined;
 		if (owner === undefined) {
+			useParaToast.getState().show({ key: `bot-open-${botId ?? ''}`, text: 'Bot のペインのスペースが見つかりませんでした', icon: 'alert-circle-outline', tone: 'warn' }, 3_500);
 			return;
 		}
 		if (draft !== undefined && store.activePcId === pcId) {

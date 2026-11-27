@@ -498,24 +498,22 @@ export function newBotOpId(): string {
 }
 
 /**
- * 設定のタブの入力と今の値の差（PC の `paradisBotSettingsChange` と同じ規則: 名前は前後の空白を落とす、権限の `default` と
- * 選択肢に無い権限は既定（null）として比べる）。`permissionIds` はそのエージェントの権限の選択肢。何も変わらなければ undefined。
+ * 設定のタブで 1 つの欄を変えたときに送る変更（触った欄だけを送る。ほかの欄の今の値を一緒に送ると、権限の一覧が届いて
+ * いない間に名前を変えただけで権限が既定に戻る）。規則は PC の `paradisBotSettingsChange` と同じ: 名前は前後の空白を落とし、
+ * 空なら変えない。権限の `default` は既定（null）。エージェントを変えるときは権限を既定へ戻す（前のエージェントの権限は
+ * 持ち越さない）。何も変わらなければ undefined。
  */
-export function botSettingsChanges(bot: Pick<MobileBot, 'name' | 'agent' | 'permissionId'>, draft: { readonly name: string; readonly agent: string; readonly permissionId: string | undefined }, permissionIds: readonly string[]): BotChanges | undefined {
-	const name = draft.name.trim();
-	const changes: { -readonly [K in keyof BotChanges]: BotChanges[K] } = {};
-	if (name.length > 0 && name !== bot.name) {
-		changes.name = name;
+export function botFieldChange(bot: Pick<MobileBot, 'name' | 'agent' | 'permissionId'>, change: { readonly name: string } | { readonly agent: string } | { readonly permissionId: string }): BotChanges | undefined {
+	if ('name' in change) {
+		const name = change.name.trim();
+		return name.length > 0 && name !== bot.name ? { name } : undefined;
 	}
-	if (draft.agent !== bot.agent) {
-		changes.agent = draft.agent;
+	if ('agent' in change) {
+		return change.agent !== bot.agent ? { agent: change.agent, permission: null } : undefined;
 	}
-	const permission = draft.permissionId === undefined || draft.permissionId === 'default' || !permissionIds.includes(draft.permissionId) ? undefined : draft.permissionId;
+	const permission = change.permissionId === 'default' ? undefined : change.permissionId;
 	const before = bot.permissionId === 'default' ? undefined : bot.permissionId;
-	if (permission !== before) {
-		changes.permission = permission ?? null;
-	}
-	return Object.keys(changes).length > 0 ? changes : undefined;
+	return permission !== before ? { permission: permission ?? null } : undefined;
 }
 
 /** エージェント・権限を変えるときは PC の確認の本文で確かめる（PC の update_bot と同じ）。 */
