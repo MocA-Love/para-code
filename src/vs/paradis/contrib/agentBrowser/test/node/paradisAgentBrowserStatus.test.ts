@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { PARADIS_AGENT_STATUS_POLL_FAILURE_CLEAR_THRESHOLD, paradisIsHarnessNotificationPrompt, paradisIsRepeatedReview, paradisShouldClearAgentStatusAfterPollFailures, paradisShouldSweepStaleWorkingStatus } from '../../common/paradisAgentStatusStale.js';
+import { PARADIS_AGENT_STATUS_POLL_FAILURE_CLEAR_THRESHOLD, paradisIsHarnessNotificationPrompt, paradisIsRepeatedReview, paradisNextUserTurn, paradisShouldClearAgentStatusAfterPollFailures, paradisShouldSweepStaleWorkingStatus } from '../../common/paradisAgentStatusStale.js';
 import { clearParadisAgentPaneActivity, clearParadisAgentPaneIssueUrls, paradisCountLiveBackgroundTasks, fireParadisAgentHookEvent, getParadisAgentPaneActivity, getParadisAgentPaneIssueUrls, IParadisAgentHookEvent, onParadisAgentHookEvent, onParadisAgentPaneActivity, paradisSanitizeAgentHookPayload, registerParadisAgentPaneActivityGuard, setParadisAgentPaneActivity, setParadisAgentPaneIssueUrls } from '../../node/paradisAgentHookBus.js';
 
 suite('ParadisAgentBrowserStatus', () => {
@@ -59,6 +59,15 @@ suite('ParadisAgentBrowserStatus', () => {
 			guard.dispose();
 			clearParadisAgentPaneActivity('sign-pane');
 		}
+	});
+
+	test('a new user turn never reuses the key of the turn before', () => {
+		assert.deepStrictEqual({
+			first: paradisNextUserTurn(undefined, 1_000),
+			clockAdvanced: paradisNextUserTurn(1_000, 1_001),
+			sameMillisecond: paradisNextUserTurn(1_000, 1_000),
+			clockMovedBack: paradisNextUserTurn(1_000, 900),
+		}, { first: 1_000, clockAdvanced: 1_001, sameMillisecond: 1_001, clockMovedBack: 1_001 });
 	});
 
 	test('announces a completion once per user turn, plus once more when a background-task completion becomes certain', () => {
