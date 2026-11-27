@@ -2912,6 +2912,13 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			this._carriedSpaceFreeRetentions.set(editor, this.editorGroupsService.retainEditor(editor));
 			group.detachEditor!(editor);
 		}
+		// 持ち出して空にした分割の片側は閉じる（`workbench.editor.closeEmptyGroups` が切ってあると残り、切り替えのたびに空の
+		// グループが増える）。閉じるのはここで空にしたグループだけ。利用者が自分で空にしておいたグループには触らない
+		for (const { group, side } of new Set(placements.values())) {
+			if (side !== undefined && group.isEmpty && mainPart.groups.includes(group) && mainPart.count > 1) {
+				mainPart.removeGroup(group);
+			}
+		}
 	}
 
 	/**

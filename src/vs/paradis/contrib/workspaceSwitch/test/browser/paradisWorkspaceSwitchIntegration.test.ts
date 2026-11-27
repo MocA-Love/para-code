@@ -365,6 +365,50 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 		}
 	});
 
+	// 空のグループを閉じない設定でも、Bot だけの分割を持ち越すたびに空のグループが増えない
+	test('does not pile up empty groups when a bot-only split is carried and empty groups are kept open', async () => {
+		const testDisposables = new DisposableStore();
+		const ids = createUniqueTerminalIds();
+		let harness: IWorkspaceSwitchIntegrationHarness | undefined;
+		try {
+			harness = await createHarness(['space-a', 'space-b'], testDisposables);
+			const parts = harness.parts;
+			testDisposables.add(parts.mainPart.enforcePartOptions({ closeEmptyGroups: false }));
+			const fileA = harness.createEditor('/workspace-a/saved.txt', false);
+			const fileB = harness.createEditor('/workspace-b/saved.txt', false);
+			await parts.activeGroup.openEditor(fileA, { pinned: true });
+			await harness.workspaceSwitchService.switchRepository('space-b');
+			await parts.activeGroup.openEditor(fileB, { pinned: true });
+			await harness.workspaceSwitchService.switchRepository('space-a');
+
+			const botInput = harness.createCleanTerminalEditor('/bots/side');
+			const right = parts.addGroup(parts.activeGroup, GroupDirection.RIGHT);
+			await right.openEditor(botInput, { pinned: true });
+			const bot = harness.addTerminal(botInput, ids.instanceId, ids.persistentProcessId, ids.shellIntegrationNonce);
+			paradisMarkTerminalSpaceFree(bot.instanceId);
+
+			const counts: number[] = [];
+			for (const target of ['space-b', 'space-a', 'space-b', 'space-a']) {
+				await harness.workspaceSwitchService.switchRepository(target);
+				counts.push(parts.mainPart.count);
+			}
+
+			assert.deepStrictEqual({ counts, botInLastGroup: parts.getGroups(GroupsOrder.GRID_APPEARANCE).at(-1)?.contains(botInput) }, {
+				counts: [2, 2, 2, 2],
+				botInLastGroup: true,
+			});
+		} finally {
+			paradisResetSpaceFreeTerminalsForTest();
+			try {
+				for (const group of harness?.parts.groups ?? []) {
+					await group.closeAllEditors();
+				}
+			} finally {
+				testDisposables.dispose();
+			}
+		}
+	});
+
 	test('gives up waiting for a terminal whose PTY never starts, and leaves it to the working set', () => runWithFakedTimers({ maxTaskCount: 10_000 }, async () => {
 		const testDisposables = new DisposableStore();
 		const ids = createUniqueTerminalIds();
