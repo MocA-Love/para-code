@@ -201,6 +201,10 @@ export class ParadisBotMessageToolProvider implements IParadisMcpToolProvider {
 			await mark('unknown');
 			return toolError(unknown(result.reason));
 		}
+		if (result.kind === 'queued' && recorded.recordId !== undefined) {
+			// 部屋の記録に「順番待ちに入れた」の印を付ける（付けられなくても伝言の扱いは変えない）
+			await groups.markQueued?.(target.groupId, recorded.recordId).catch(() => undefined);
+		}
 		return toolJson({
 			to: recipient.name,
 			sent: kind === 'asked' ? 'question' : 'message',
