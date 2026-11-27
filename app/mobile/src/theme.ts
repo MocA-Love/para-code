@@ -67,6 +67,9 @@ export const colors = {
 	/** 危険な面（赤）の上の文字。 */
 	onRed: '#ffffff',
 	purple: '#a78bfa',
+	/** Bot の顔の色（PC の顔の色 `teal`・`pink` に当たる。ほかの色は既存の色を使う）。 */
+	teal: '#2dd4bf',
+	pink: '#f472b6',
 	/** ソース管理の「変更」。 */
 	mod: '#a1a1a1',
 	/** 差分の追加行・ソース管理の「追加」（Orca の gitDecorationAdded）。 */

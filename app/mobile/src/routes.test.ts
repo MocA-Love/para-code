@@ -54,6 +54,8 @@ describe('routes', () => {
 
 	test('メモはスペースの下、サブエージェントはセッションの下（ターミナルと会話のセッションはクエリ）', () => {
 		expect(routes.note('p', 's')).toEqual({ pathname: '/pc/[pcId]/note/[spaceId]', params: { pcId: 'p', spaceId: 's' } });
+		expect(routes.bot('p', 'b')).toEqual({ pathname: '/pc/[pcId]/bot/[botId]', params: { pcId: 'p', botId: 'b' } });
+		expect(routes.botItem('p', 'b', 'u')).toEqual({ pathname: '/pc/[pcId]/bot/[botId]/item/[uid]', params: { pcId: 'p', botId: 'b', uid: 'u' } });
 		expect(routes.activity('p', 's', 'k', 'e1')).toEqual({
 			pathname: '/pc/[pcId]/session/[spaceId]/activity',
 			params: { pcId: 'p', spaceId: 's', terminal: 'k', epoch: 'e1' },

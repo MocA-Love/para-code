@@ -1,0 +1,48 @@
+{
+	"$comment": "PC <-> mobile の human-ask.v1 の固定形。summary は Desktop State の humanAsks、reply は fs の humanAsks の応答、answerRequest は fs の humanAskAnswer の要求、answerReplies はその応答。PC の組み立て（src/vs/paradis/contrib/mobileRelay/common/paradisMobileHumanAsks.ts）とアプリの読み取りを両方このファイルで確かめる。",
+	"summary": { "count": 2, "signature": "0123456789abcdef" },
+	"reply": {
+		"t": "humanAsks",
+		"signature": "0123456789abcdef",
+		"asks": [
+			{
+				"key": "bot:item42.ev7",
+				"source": "bot",
+				"kind": "question",
+				"from": { "title": "リリース係", "detail": "項目 #42" },
+				"preface": "Safari だけログイン後にセッションが切れます。",
+				"questions": [
+					{ "id": "q0", "text": "全員を一度ログアウトさせますか、今のセッションを残しますか?", "options": [{ "id": "0", "label": "一度ログアウトさせる" }, { "id": "1", "label": "今のセッションを残す", "detail": "影響は小さい", "recommended": true }], "allowText": true },
+					{ "id": "q1", "text": "どれを直しますか?", "options": [{ "id": "0", "label": "A" }, { "id": "1", "label": "B" }], "allowText": false, "multiSelect": true }
+				],
+				"actions": [],
+				"canSkip": true,
+				"askedAt": 1791000000000,
+				"busy": false,
+				"failed": false
+			},
+			{
+				"key": "board:0123456789abcdef:gh:o/r#415:approval:3",
+				"source": "board",
+				"kind": "approval",
+				"from": { "title": "#415 計画の承認" },
+				"preface": "計画を確かめてください",
+				"questions": [],
+				"actions": [
+					{ "id": "approve", "label": "承認して次へ" },
+					{ "id": "sendBack", "label": "差し戻す", "allowText": true, "confirm": { "title": "差し戻しますか", "body": "担当が計画を書き直します", "ok": "差し戻す" } }
+				],
+				"canSkip": false,
+				"askedAt": 1790999990000,
+				"busy": true,
+				"failed": false
+			}
+		]
+	},
+	"answerRequest": { "t": "humanAskAnswer", "id": "r1", "opId": "op-1", "key": "bot:item42.ev7", "answer": { "type": "answers", "answers": [{ "questionId": "q0", "optionIds": ["1"] }, { "questionId": "q1", "optionIds": ["0", "1"] }] } },
+	"answerReplies": [
+		{ "t": "humanAskAnswer", "ok": true },
+		{ "t": "humanAskAnswer", "ok": true, "duplicate": true },
+		{ "t": "humanAskAnswer", "ok": false, "reason": "gone" }
+	]
+}

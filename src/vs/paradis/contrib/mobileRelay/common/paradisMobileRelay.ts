@@ -24,6 +24,7 @@ import { PARADIS_MOBILE_PROTOCOL_VERSION } from './paradisMobileCompat.js';
 import { IParadisMobileWindowLease } from './paradisMobileWindowLease.js';
 import { ParadisAgentCommandDeliveryResult } from './paradisAgentCommandLifecycle.js';
 import type { IParadisMobileDoNotDisturbState } from './paradisMobileDoNotDisturb.js';
+import type { IParadisMobileHumanAskSummary } from './paradisMobileHumanAsks.js';
 import type { IParadisMobileLinkMetricsRaw, IParadisMobileLinkMetricsSnapshot } from './paradisMobileLinkMetrics.js';
 import type { ParadisBindingScope } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import type { IParadisRemoteShellOutputRequest } from './paradisRemoteShellOutput.js';
@@ -266,6 +267,8 @@ export interface IParadisMobileDesktopStateV3 {
 	readonly doNotDisturb?: IParadisMobileDoNotDisturbState;
 	/** Bot の一覧（`bots.page.v1` の PC で、設定 `paradis.bots.enabled` がオンの間だけ。並びは台帳のまま）。 */
 	readonly bots?: readonly IParadisMobileBot[];
+	/** スマホの要対応に出す「人が答えるもの」の台帳の件数と印（human-ask.v1。中身は fs の `humanAsks`）。 */
+	readonly humanAsks?: IParadisMobileHumanAskSummary;
 }
 
 /** shared process の接続状態。 */

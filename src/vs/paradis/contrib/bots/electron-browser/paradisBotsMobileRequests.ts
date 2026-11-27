@@ -14,7 +14,7 @@
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
-import { ParadisMobileDoNotDisturbOpLedger } from '../../mobileRelay/common/paradisMobileDoNotDisturb.js';
+import { ParadisMobileOpResults } from '../../mobileRelay/common/paradisMobileOpResults.js';
 import { IParadisMobileRequest, IParadisMobileRequestContext, IParadisMobileRequestHandler, registerParadisMobileRequestHandler } from '../../mobileRelay/electron-browser/paradisMobileRequestHandlers.js';
 import { paradisBotChangeDetail } from '../browser/paradisBotChangeDetail.js';
 import { paradisApplyBotChange, paradisBotChangeRequest } from '../common/paradisBotManageTools.js';
@@ -24,24 +24,31 @@ import { PARADIS_MOBILE_BOT_FILES, PARADIS_MOBILE_BOT_KINDS, PARADIS_MOBILE_BOT_
 
 type Handle = (services: { readonly bots: IParadisBotsService; readonly commands: ICommandService }, request: IParadisMobileRequest, context: IParadisMobileRequestContext) => Promise<void>;
 
-/** 書き込みの opId の台帳（端末ごと。同じ操作が 2 回届いても 1 回だけ当てる）。 */
-const ledger = new ParadisMobileDoNotDisturbOpLedger();
+/** 書き込みの opId ごとの返事（端末と opId の組ごとに 1 回目の返事を覚え、再送には同じ返事を返す）。 */
+const opResults = new ParadisMobileOpResults();
 
 function refuse(context: IParadisMobileRequestContext, code: string, error: string): void {
 	context.reply({ error, code });
 }
 
-/** 書き込みの前の検め。断ったら false。 */
-function claimWrite(context: IParadisMobileRequestContext, opId: string | undefined): boolean {
-	if (context.mobileId === undefined) {
-		refuse(context, 'forbidden', 'unknown device');
-		return false;
+/**
+ * 書き込みを 1 回だけ当てる。同じ端末の同じ opId の再送には、1 回目の返事をそのまま返す（1 回目を断っていれば同じ断り、
+ * 当てていれば `duplicate: true` を足した同じ返事。アプリは duplicate を受けたら読み直して確かめる）。
+ */
+async function writeOnce(context: IParadisMobileRequestContext, opId: string | undefined, work: (context: IParadisMobileRequestContext) => Promise<void>): Promise<void> {
+	const mobileId = context.mobileId;
+	if (mobileId === undefined) {
+		return refuse(context, 'forbidden', 'unknown device');
 	}
-	if (opId !== undefined && !ledger.claim(context.mobileId, opId)) {
-		context.reply({ duplicate: true });
-		return false;
+	if (opId === undefined) {
+		return work(context);
 	}
-	return true;
+	const reply = await opResults.run(mobileId, opId, async () => {
+		let captured: object | undefined;
+		await work({ ...context, reply: body => { captured ??= body; } });
+		return captured ?? { error: 'no reply', code: 'failed' };
+	});
+	context.reply(reply);
 }
 
 /** 設定を見て、オンなら処理へ渡す（サービスの取り出しは同期の先頭だけ）。 */
@@ -81,18 +88,17 @@ export const PARADIS_MOBILE_BOT_HANDLERS: Readonly<Record<string, Handle>> = {
 		if (parsed === undefined) {
 			return refuse(context, 'invalid', 'invalid botItemAct');
 		}
-		if (!claimWrite(context, parsed.opId)) {
-			return;
-		}
-		const act = parsed.act;
-		const result = act.action === 'comment' ? await bots.ownerComment(parsed.uid, { text: act.text, plain: true })
-			: act.action === 'done' ? await bots.ownerSetStatus(parsed.uid, 'done')
-				: act.action === 'cancel' ? await bots.ownerSetStatus(parsed.uid, 'canceled')
-					: await bots.ownerSnooze(parsed.uid, act.action === 'snooze' ? act.until : undefined);
-		if (!result.ok) {
-			return refuse(context, result.code, result.message);
-		}
-		context.reply({ t: PARADIS_MOBILE_BOT_KINDS.itemAct, item: paradisMobileBotItemRow(result.value, Date.now()) });
+		return writeOnce(context, parsed.opId, async context => {
+			const act = parsed.act;
+			const result = act.action === 'comment' ? await bots.ownerComment(parsed.uid, { text: act.text, plain: true })
+				: act.action === 'done' ? await bots.ownerSetStatus(parsed.uid, 'done')
+					: act.action === 'cancel' ? await bots.ownerSetStatus(parsed.uid, 'canceled')
+						: await bots.ownerSnooze(parsed.uid, act.action === 'snooze' ? act.until : undefined);
+			if (!result.ok) {
+				return refuse(context, result.code, result.message);
+			}
+			context.reply({ t: PARADIS_MOBILE_BOT_KINDS.itemAct, item: paradisMobileBotItemRow(result.value, Date.now()) });
+		});
 	},
 	[PARADIS_MOBILE_BOT_KINDS.suggestions]: async ({ bots }, request, context) => {
 		const botId = paradisMobileBotId(request.botId);
@@ -107,18 +113,17 @@ export const PARADIS_MOBILE_BOT_HANDLERS: Readonly<Record<string, Handle>> = {
 		if (id === undefined || opId === undefined || (request.action !== 'start' && request.action !== 'started' && request.action !== 'dismiss')) {
 			return refuse(context, 'invalid', 'invalid botSuggestionAct');
 		}
-		if (!claimWrite(context, opId)) {
-			return;
-		}
-		// 「始める」は依頼の文を返すだけ。アプリがその Bot の会話の入力欄へ、送らずに入れ、入れられたら `started` で
-		// 「始めた」にする（入れ損ねた提案は一覧に残る）
-		const result = request.action === 'start' ? await bots.startSuggestion(id)
-			: request.action === 'started' ? await bots.markSuggestionStarted(id)
-				: await bots.dismissSuggestion(id);
-		if (!result.ok) {
-			return refuse(context, result.code, result.message);
-		}
-		context.reply({ t: PARADIS_MOBILE_BOT_KINDS.suggestionAct, suggestion: paradisMobileBotSuggestion(result.value) });
+		return writeOnce(context, opId, async context => {
+			// 「始める」は依頼の文を返すだけ。アプリがその Bot の会話の入力欄へ、送らずに入れ、入れられたら `started` で
+			// 「始めた」にする（入れ損ねた提案は一覧に残る）
+			const result = request.action === 'start' ? await bots.startSuggestion(id)
+				: request.action === 'started' ? await bots.markSuggestionStarted(id)
+					: await bots.dismissSuggestion(id);
+			if (!result.ok) {
+				return refuse(context, result.code, result.message);
+			}
+			context.reply({ t: PARADIS_MOBILE_BOT_KINDS.suggestionAct, suggestion: paradisMobileBotSuggestion(result.value) });
+		});
 	},
 	[PARADIS_MOBILE_BOT_KINDS.file]: async ({ bots }, request, context) => {
 		const botId = paradisMobileBotId(request.botId);
@@ -142,19 +147,20 @@ export const PARADIS_MOBILE_BOT_HANDLERS: Readonly<Record<string, Handle>> = {
 		if (opId === undefined) {
 			return refuse(context, 'invalid', 'writing needs opId');
 		}
-		if (!claimWrite(context, opId)) {
-			return;
-		}
-		// 開いた後にほかの場所（Bot 自身・PC）が書き換えていたら上書きしない
-		if ((current.value ?? '') !== request.base) {
-			context.reply({ t: PARADIS_MOBILE_BOT_KINDS.file, path, text: current.value ?? '', conflict: true });
-			return;
-		}
-		const written = await bots.writeHomeFile(botId, path, request.text);
-		if (!written.ok) {
-			return refuse(context, written.code, written.message);
-		}
-		context.reply({ t: PARADIS_MOBILE_BOT_KINDS.file, path, text: request.text });
+		const text = request.text;
+		const base = request.base;
+		return writeOnce(context, opId, async context => {
+			// 開いた後にほかの場所（Bot 自身・PC）が書き換えていたら上書きしない
+			if ((current.value ?? '') !== base) {
+				context.reply({ t: PARADIS_MOBILE_BOT_KINDS.file, path, text: current.value ?? '', conflict: true });
+				return;
+			}
+			const written = await bots.writeHomeFile(botId, path, text);
+			if (!written.ok) {
+				return refuse(context, written.code, written.message);
+			}
+			context.reply({ t: PARADIS_MOBILE_BOT_KINDS.file, path, text });
+		});
 	},
 	[PARADIS_MOBILE_BOT_KINDS.update]: async ({ bots }, request, context) => {
 		const parsed = paradisParseMobileBotUpdate(request);
@@ -171,29 +177,27 @@ export const PARADIS_MOBILE_BOT_HANDLERS: Readonly<Record<string, Handle>> = {
 			context.reply({ t: PARADIS_MOBILE_BOT_KINDS.update, needsConfirmation: true, detail: paradisBotChangeDetail(change), ...(change.permission !== undefined ? { permission: change.permission } : {}) });
 			return;
 		}
-		if (!claimWrite(context, parsed.opId)) {
-			return;
-		}
-		const applied = await paradisApplyBotChange(bots, change);
-		if (!applied.ok) {
-			return refuse(context, applied.code, applied.message);
-		}
-		if (parsed.args.patch.paused === true) {
-			await bots.requestStop(bot.id);
-		}
-		context.reply({ t: PARADIS_MOBILE_BOT_KINDS.update, applied: true });
+		return writeOnce(context, parsed.opId, async context => {
+			const applied = await paradisApplyBotChange(bots, change);
+			if (!applied.ok) {
+				return refuse(context, applied.code, applied.message);
+			}
+			if (parsed.args.patch.paused === true) {
+				await bots.requestStop(bot.id);
+			}
+			context.reply({ t: PARADIS_MOBILE_BOT_KINDS.update, applied: true });
+		});
 	},
 	[PARADIS_MOBILE_BOT_KINDS.open]: async ({ bots, commands }, request, context) => {
 		const botId = paradisMobileBotId(request.botId);
 		if (botId === undefined || !bots.snapshot.bots.some(bot => bot.id === botId)) {
 			return refuse(context, 'not_found', 'no such bot');
 		}
-		if (!claimWrite(context, paradisMobileBotOpId(request.opId))) {
-			return;
-		}
-		// PC で開く（このウィンドウにペインがあれば前に出し、無ければ起動する。#1207 のコマンド）
-		await commands.executeCommand(PARADIS_BOTS_OPEN_COMMAND, botId);
-		context.reply({ t: PARADIS_MOBILE_BOT_KINDS.open, ok: true });
+		return writeOnce(context, paradisMobileBotOpId(request.opId), async context => {
+			// PC で開く（このウィンドウにペインがあれば前に出し、無ければ起動する。#1207 のコマンド）
+			await commands.executeCommand(PARADIS_BOTS_OPEN_COMMAND, botId);
+			context.reply({ t: PARADIS_MOBILE_BOT_KINDS.open, ok: true });
+		});
 	},
 };
 
