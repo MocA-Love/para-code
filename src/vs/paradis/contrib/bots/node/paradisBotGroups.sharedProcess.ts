@@ -8,7 +8,7 @@
 
 // shared process で Bot グループの台帳のサービスを作り、ウィンドウへチャネルを出す。
 // `paradis.sharedProcess.contribution.ts` から、Bot の台帳（paradisBots.sharedProcess.ts）の後に副作用 import される。
-// Bot 同士の伝言の道具へは、`paradisRegisterBotGroupsPort` で口（グループの引き当て・「聞きました・伝えました」の記録・届けられなかった印）を渡す。
+// Bot 同士の伝言の道具へは、`paradisRegisterBotGroupsPort` で口（グループの引き当て・「聞きました・伝えました」の記録＝宛先の受け箱・受け箱を読む・既読にする）を渡す。
 
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import { INativeEnvironmentService } from '../../../../platform/environment/common/environment.js';

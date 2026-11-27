@@ -57,7 +57,7 @@ async function botPaneWhere(accessor: ServicesAccessor, botId: string): Promise<
 	const terminalGroupService = accessor.get(ITerminalGroupService);
 	const terminalScopeService = accessor.get(IParadisTerminalScopeService);
 	const switchService = accessor.get(IParadisWorkspaceSwitchService);
-	// 会話のペインだけを見る（見回りのペインへは送らない。伝言の道具も会話のペインを持つウィンドウへ届ける）
+	// 会話のペインだけを見る（部屋から送る先。見回りのペインへは送らない）
 	const found = await paradisFindBotChatPane({
 		paneTokenService,
 		findInstance: instanceId => paradisCollectAllTerminalInstances(terminalService, terminalGroupService).find(instance => instance.instanceId === instanceId),

@@ -24,7 +24,7 @@ import { InMemoryStorageService, IStorageService, StorageScope, StorageTarget } 
 import { IParadisDialogService } from '../../../confirmDialog/browser/paradisDialogService.js';
 import { ParadisBotsBandSlot } from '../../browser/paradisBotsBand.js';
 import { IParadisBotGroup } from '../../common/paradisBotGroups.js';
-import { IParadisBotGroupsService } from '../../common/paradisBotGroupsApi.js';
+import { IParadisBotGroupsService, IParadisBotGroupsSnapshot } from '../../common/paradisBotGroupsApi.js';
 import { IParadisBotSummary, IParadisBotsService, IParadisBotsSnapshot, PARADIS_BOTS_ENABLED_SETTING } from '../../common/paradisBotsApi.js';
 import { PARADIS_BOTS_BAND_STORAGE_KEY } from '../../common/paradisBotsBandModel.js';
 import { ParadisBotCreateDialog } from '../../browser/paradisBotCreateDialog.js';
@@ -42,7 +42,7 @@ suite('Paradis bots band slot', () => {
 
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function setup(enabled: boolean, bandState?: string, groups: readonly IParadisBotGroup[] = []): { container: HTMLElement; configuration: TestConfigurationService; slot: ParadisBotsBandSlot; snapshotReads: () => number } {
+	function setup(enabled: boolean, bandState?: string, groups: readonly IParadisBotGroup[] = [], records: IParadisBotGroupsSnapshot['records'] = []): { container: HTMLElement; configuration: TestConfigurationService; slot: ParadisBotsBandSlot; snapshotReads: () => number } {
 		const disposables = store.add(new DisposableStore());
 		const instantiation = disposables.add(new TestInstantiationService());
 		const configuration = new TestConfigurationService({ [PARADIS_BOTS_ENABLED_SETTING]: enabled });
@@ -66,7 +66,7 @@ suite('Paradis bots band slot', () => {
 			onDidRequestStop: Event.None,
 		} as Partial<IParadisBotsService> as IParadisBotsService);
 		instantiation.stub(IParadisBotGroupsService, {
-			snapshot: { revision: 1, readOnly: false, groups, records: [] },
+			snapshot: { revision: 1, readOnly: false, groups, records },
 			onDidChange: Event.None,
 		} as Partial<IParadisBotGroupsService> as IParadisBotGroupsService);
 		instantiation.stub(ICommandService, {});
@@ -115,6 +115,14 @@ suite('Paradis bots band slot', () => {
 			['グループ'],
 			['レビュー係、1 件があなたの番'],
 		]);
+	});
+
+	test('受け箱の未読を Bot の行に出す（ピン留めの行も）。読んだ伝言・抜けたグループの伝言は数えない', () => {
+		const group: IParadisBotGroup = { id: 'g1', name: '班', members: ['a', 'b'], replyMode: 'mentioned', createdAt: 1, updatedAt: 1 };
+		const record = (id: number, to: string, readAt?: number) => ({ id, groupId: 'g1', kind: 'told' as const, from: to === 'a' ? 'b' : 'a', to: [to], text: 't', at: 1, ...(readAt !== undefined ? { readAt } : {}) });
+		const records = [record(1, 'b'), record(2, 'b'), record(3, 'b', 5), record(4, 'a'), { ...record(5, 'b'), groupId: 'gone' }];
+		const unread = (container: HTMLElement) => Array.from(container.getElementsByClassName('paradis-bots-row')).map(row => row.getElementsByClassName('paradis-bots-row-unread')[0]?.textContent ?? '');
+		assert.deepStrictEqual([unread(setup(true, '{"open":true}', [group], records).container), unread(setup(true, '{"open":false}', [group], records).container)], [['1', '2', ''], ['2']]);
 	});
 
 	test('作成のモーダルは、開いている間に設定をオフにすると閉じる', () => {

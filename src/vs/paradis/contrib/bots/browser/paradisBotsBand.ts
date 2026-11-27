@@ -41,7 +41,8 @@ import { IParadisBotSummary, IParadisBotsService, ParadisBotsServiceResult, PARA
 import { IParadisBotsBandState, PARADIS_BOTS_BAND_SIZES, PARADIS_BOTS_BAND_STORAGE_KEY, PARADIS_BOTS_OPEN_COMMAND, paradisBotFace, paradisBotNameProblemMessage, paradisBotRowMenu, ParadisBotRowMenuItem, paradisBotsBandDraggedHeight, paradisBotsBandListHeight, paradisBotsBandRows, paradisBotStatusLine, paradisBotsNeedsYouTotal, paradisParseBotsBandState, paradisSerializeBotsBandState, paradisValidateBotName } from '../common/paradisBotsBandModel.js';
 import { ParadisBotCreateDialog } from './paradisBotCreateDialog.js';
 import { ParadisBotGroupDialog } from './paradisBotGroupDialog.js';
-import { IParadisBotGroup, paradisBotGroupMembers } from '../common/paradisBotGroups.js';
+import { paradisRequestBotPageTab } from './paradisBotPageTabRequest.js';
+import { IParadisBotGroup, paradisBotGroupMembers, paradisBotGroupUnreadCount } from '../common/paradisBotGroups.js';
 import { IParadisBotGroupsService, PARADIS_BOTS_OPEN_GROUP_COMMAND } from '../common/paradisBotGroupsApi.js';
 import { renderParadisBotFace } from './paradisBotFace.js';
 
@@ -332,6 +333,22 @@ export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBan
 		DOM.append(row, $('span.paradis-bots-row-status')).textContent = status;
 		if (bot.needsYou > 0) {
 			DOM.append(row, $('span.paradis-bots-row-count')).textContent = bot.needsYou > 99 ? '99+' : String(bot.needsYou);
+		}
+		// 受け箱の未読（ほかの Bot からの伝言）。押すと Bot のページの会話を開く（話しかけて読ませられるように）
+		const unread = paradisBotGroupUnreadCount(this.groupsService.snapshot, bot.id);
+		if (unread > 0) {
+			const unreadLabel = localize('paradis.bots.row.unread', "受け箱にまだ読まれていない伝言が {0} 通あります", unread);
+			const chip = DOM.append(row, $('span.paradis-bots-row-unread'));
+			chip.setAttribute('role', 'button');
+			chip.setAttribute('aria-label', unreadLabel);
+			DOM.append(chip, $(ThemeIcon.asCSSSelector(Codicon.mail)));
+			DOM.append(chip, $('span')).textContent = unread > 99 ? '99+' : String(unread);
+			this.rowDisposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), chip, unreadLabel));
+			this.rowDisposables.add(DOM.addDisposableListener(chip, DOM.EventType.CLICK, e => {
+				DOM.EventHelper.stop(e, true);
+				paradisRequestBotPageTab(bot.id, 'chat');
+				this.open(bot);
+			}));
 		}
 
 		// ピンの留め外し（スペースの行の .paradis-worktree-pin と同じ見た目。行を押したことにしない）
