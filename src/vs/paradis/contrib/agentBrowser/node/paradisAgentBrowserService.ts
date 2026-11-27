@@ -98,7 +98,7 @@ import { IParadisDevtoolsPathCaller, paradisDevtoolsCaptureOverwriteRefusal, par
 // PARA-PATCH: 他のparadis contribがこのMCPサーバーへ自前のツールを足すための拡張点（モバイル端末操作など）
 import { PARADIS_AGENT_CLI_ENABLED_SETTING, PARADIS_CURSOR_LABEL_INSTRUCTION, PARADIS_SHARED_PAGE_ACTION_INSTRUCTION, paradisAgentCliEnabled } from '../common/paradisAgentCliSkill.js';
 import { IParadisAgentInstructionPart, IParadisAgentInstructionSection, IParadisCliCatalog, PARADIS_CLI_CATALOG_METHOD, ParadisCliConversations, ParadisCliGroup, paradisBuildCliCatalog, paradisCliCallMetaOf, paradisMcpInstructionsText } from '../common/paradisCliCatalog.js';
-import { IParadisMcpCursorIdentity, IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpPaneTab, IParadisMcpToolCallContext, IParadisMcpToolProvider, ParadisMcpCallerKind, ParadisMcpOwningWindowResult, paradisRegisteredMcpToolProviders } from '../common/paradisMcpToolProvider.js';
+import { IParadisMcpCursorIdentity, IParadisMcpOwningWindowRequest, IParadisMcpPaneAgentStatus, IParadisMcpPaneTab, IParadisMcpToolCallContext, IParadisMcpToolProvider, ParadisMcpCallerKind, ParadisMcpOwningWindowResult, paradisMcpCallRefusalFor, paradisRegisteredMcpToolProviders } from '../common/paradisMcpToolProvider.js';
 import { paradisWithReadOnlyToolAnnotation } from '../common/paradisMcpReadOnlyTools.js';
 import { PARADIS_SCREENSHOT_FETCH_PATH, ParadisScreenshotHandoff, paradisAppendScreenshotFetchHint, paradisReadScreenshotFile, paradisScreenshotContentType, paradisScreenshotIdFromUrl, paradisScreenshotPathsFromToolResult } from './paradisScreenshotHandoff.js';
 import { PARADIS_PAGE_OPS_TOOL_NAME_SET, ParadisBrowserPageOps, paradisPageOpsOwnerKey } from './paradisBrowserPageOps.js';
@@ -3806,6 +3806,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			hasAgentHookHistory: (paneToken: string): boolean => this._hookReportedTokens.has(paneToken),
 			classifyCaller: (): Promise<ParadisMcpCallerKind> => this._classifyCaller(ingressLease.token, socket),
 			callOwningWindow: <T>(request: IParadisMcpOwningWindowRequest, signal?: AbortSignal): Promise<ParadisMcpOwningWindowResult<T>> => this._callOwningWindow<T>(ingressLease, request, signal),
+			callPaneWindow: <T>(paneToken: string, request: IParadisMcpOwningWindowRequest, signal?: AbortSignal): Promise<ParadisMcpOwningWindowResult<T>> => this._callOwningWindow<T>(ingressLease, request, signal, paneToken),
 			getPaneAgentStatus: (paneToken: string): IParadisMcpPaneAgentStatus | undefined => {
 				const entry = this._paneStatuses.get(paneToken);
 				const unconfirmedRelease = this._unconfirmedReleaseOf(paneToken);
@@ -5936,6 +5937,12 @@ export class ParadisAgentBrowserService extends Disposable {
 			const refusal = await this._callerRefusalBeforeLane(ingressLease, name, socket, signal);
 			if (refusal !== undefined) {
 				return refusal;
+			}
+			// ほかの機能がペインごとに断る道具（Bot の見回りのペインは読むだけの道具だけ）。run_steps の中の手順にも聞く
+			const paneRefusal = await paradisMcpCallRefusalFor(ingressLease.token, name);
+			this._requireIngressLease(ingressLease);
+			if (paneRefusal !== undefined) {
+				return this._toolError(paneRefusal);
 			}
 			// 知らない引数・型の違う値は、黙って捨てずに断る（run_steps の中の手順は run_steps の手順ごとに見る）
 			const argumentRefusal = nested ? undefined : await this._toolArgumentRefusal(ingressLease, name, params?.arguments, signal);
@@ -8494,9 +8501,11 @@ export class ParadisAgentBrowserService extends Disposable {
 		ingressLease: IParadisAgentBrowserIngressLease,
 		request: IParadisMcpOwningWindowRequest,
 		signal?: AbortSignal,
+		// 呼び出し元ではなく、このペインを所有するウィンドウを呼ぶ（Bot 同士の伝言の宛先）
+		targetPaneToken?: string,
 	): Promise<ParadisMcpOwningWindowResult<T>> {
 		this._requireIngressLease(ingressLease);
-		const token = ingressLease.token;
+		const token = targetPaneToken ?? ingressLease.token;
 		// 接続先のペインはシェルの PID が分からず `_paneShells` に載らないことがある（SSH の再読み込み直後など）
 		const remoteWindowCtx = this._remotePaneWindows.get(token);
 		const pane = this._paneShells.get(token) ?? (remoteWindowCtx !== undefined ? { windowCtx: remoteWindowCtx } : undefined);

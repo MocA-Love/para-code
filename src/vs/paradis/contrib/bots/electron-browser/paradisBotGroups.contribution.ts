@@ -62,11 +62,12 @@ async function botPaneWhere(accessor: ServicesAccessor, botId: string): Promise<
 	const terminalGroupService = accessor.get(ITerminalGroupService);
 	const terminalScopeService = accessor.get(IParadisTerminalScopeService);
 	const switchService = accessor.get(IParadisWorkspaceSwitchService);
+	// 会話のペインだけを見る（見回りのペインへは送らない。伝言の道具も会話のペインを持つウィンドウへ届ける）
 	const found = await paradisFindBotPane({
 		paneTokenService,
 		findInstance: instanceId => paradisCollectAllTerminalInstances(terminalService, terminalGroupService).find(instance => instance.instanceId === instanceId),
 		stateKeyOf: instanceId => terminalScopeService.getStateKeyForInstance(instanceId),
-	}, await botsService.paneHashesOf(botId));
+	}, await botsService.paneHashesOf(botId, 'chat'));
 	if (found === undefined) {
 		return { kind: 'none' };
 	}
@@ -182,10 +183,12 @@ class ParadisBotGroupSender implements IParadisBotGroupSender {
 }
 
 /**
- * Bot 同士の伝言を届ける窓口（伝言の道具 paradisBotMessageToolProvider.ts が `callOwningWindow` で呼ぶ）。引数は
+ * Bot 同士の伝言を届ける窓口（伝言の道具 paradisBotMessageToolProvider.ts が `callPaneWindow` で呼ぶ）。呼ぶのは
+ * 宛先の Bot の会話のペインを持つウィンドウで、呼び出し元（送り手）のペインは別のウィンドウにあってよい。引数は
  * `[呼び出し元のペイントークン, 宛先の Bot の id, 文]`。文は道具の側が出どころ（どの Bot からの伝言か）を付けて渡す。
- * 送れたら undefined、送れなければ理由の文（英文。道具がエージェントへ返す）。呼び出し元の Bot はトークンのハッシュで
- * 見分ける（引数の名乗りは信じない）。記録は道具の側が届ける前に書く。
+ * 送れたら undefined、送れなければ理由の文（英文。道具がエージェントへ返す）。呼び出し元の Bot はトークンのハッシュを
+ * 台帳と照らして見分ける（ウィンドウを問わない。引数の名乗りは信じない）。宛先の会話のペインがこのウィンドウに無ければ
+ * （閉じた・別のウィンドウへ移った直後）理由を返す。記録は道具の側が届ける前に書く。
  */
 class ParadisBotGroupsWindowChannel implements IServerChannel {
 
@@ -248,6 +251,7 @@ class ParadisBotGroupsDeliverer {
 			from,
 			to,
 			toActivity: target === undefined ? undefined : target.paused ? 'stopped' : target.activity,
+			// 宛先の会話のペインはこのウィンドウにあるはず（道具が宛先のペインを持つウィンドウへ送る）。無ければ断る
 			toRunningHere: await this.sender.whereIs(to) !== 'none',
 			takeRate: () => this.limiter.take(to, Date.now()),
 		});
