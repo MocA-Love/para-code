@@ -103,6 +103,8 @@ export interface IParadisBotsServiceOptions {
 	 * 用意する（paradisBotPatrolLaunch.ts）。用意できなければ断る理由（英文）。渡さなければ見回りは `unavailable` で断る。
 	 */
 	readonly preparePatrol?: (agent: 'claude' | 'codex', botId: string, home: IParadisBotPatrolHome) => Promise<ParadisBotPatrolLaunchContext | string>;
+	/** Bot を消したときに、見回りのフォルダ・設定ファイルと Claude Code の信頼の項目を外す。 */
+	readonly forgetPatrol?: (botId: string) => Promise<void>;
 	/** そのエージェントの起動の雛形（利用者の設定 `paradis.workspaceSwitch.agents` を反映したもの）。 */
 	readonly agentTemplate?: (agentId: string) => IParadisAgentCommandTemplate | undefined;
 }
@@ -140,6 +142,7 @@ export class ParadisBotsService extends Disposable {
 	private readonly enabled: () => boolean;
 	private readonly preparePatrol: IParadisBotsServiceOptions['preparePatrol'];
 	private readonly agentTemplate: IParadisBotsServiceOptions['agentTemplate'];
+	private readonly forgetPatrol: IParadisBotsServiceOptions['forgetPatrol'];
 
 	/** 読み込みが終わった（壊れたファイルの退避も済んだ）。 */
 	readonly ready: Promise<void>;
@@ -188,6 +191,7 @@ export class ParadisBotsService extends Disposable {
 		this.enabled = options.enabled ?? (() => true);
 		this.preparePatrol = options.preparePatrol;
 		this.agentTemplate = options.agentTemplate;
+		this.forgetPatrol = options.forgetPatrol;
 		this._register(this.humanAsk.onDidRequestAnswer(request => this.onAnswerRequest(request)));
 		if (options.hookEvents) {
 			this._register(options.hookEvents(event => {
@@ -390,6 +394,8 @@ export class ParadisBotsService extends Disposable {
 			await this.saveSuggestions(paradisBotSuggestionsRemoveBot(this.suggestions, botId)).catch(error => this.logService.warn('[ParadisBots] could not remove the suggestions of a removed bot', error));
 			// 記憶の整理の写し（専用フォルダの外）も消す。専用フォルダは残す
 			await this.memorySnapshots?.remove(result.bot).catch(error => this.logService.warn('[ParadisBots] could not remove the memory copies of a removed bot', error));
+			// 見回りのフォルダ・設定ファイルと、Claude Code の信頼の項目を外す
+			await this.forgetPatrol?.(botId).catch(error => this.logService.warn('[ParadisBots] could not remove the look-around folder of a removed bot', error));
 			return removed;
 		});
 	}
