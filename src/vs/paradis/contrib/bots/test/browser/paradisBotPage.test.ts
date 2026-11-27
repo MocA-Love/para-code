@@ -585,4 +585,34 @@ suite('Paradis bots page overlay', () => {
 			warnings: ['提案の依頼を会話の入力欄へ入れられませんでした。提案は一覧に残しています。'],
 		});
 	});
+
+	test('提案: 文を取る間に別のペインへ替わったら、どこにも入れず「始めた」にしない', async () => {
+		const { container, page, calls } = setup();
+		page.setInstance(1);
+		await settle();
+		tab(container, 1);
+		await settle();
+		(container.querySelector('.paradis-bot-page-suggestion .paradis-button-primary') as HTMLElement).click();
+		page.setInstance(2);
+		await settle();
+		await settle();
+		assert.deepStrictEqual(calls.filter(call => !call.startsWith('start ')), []);
+	});
+
+	test('ファイル: 保存していない記憶の書きかけがあれば、写しに戻す確認の文に捨てることを出す', async () => {
+		const { container, page, confirms } = setup();
+		page.setInstance(1);
+		await settle();
+		tab(container, 2);
+		await settle();
+		(container.getElementsByClassName('paradis-bot-page-row')[1] as HTMLElement).click();
+		await settle();
+		await settle();
+		const editor = container.querySelector('.paradis-bot-files-editor textarea') as HTMLTextAreaElement;
+		editor.value = '# Memory\n- 書きかけ\n';
+		editor.dispatchEvent(new mainWindow.Event('input'));
+		(container.getElementsByClassName('paradis-bot-snapshots-row')[1].getElementsByClassName('paradis-button')[0] as HTMLElement).click();
+		await settle();
+		assert.deepStrictEqual(confirms.map(confirmation => [String(confirmation.detail).includes(new Date(OLDER_AT).toLocaleString()), String(confirmation.detail).includes('保存していない MEMORY.md の書きかけは捨てます。')]), [[true, true]]);
+	});
 });

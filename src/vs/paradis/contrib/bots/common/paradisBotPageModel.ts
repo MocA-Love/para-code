@@ -88,3 +88,17 @@ export function paradisBotItemEventLabel(event: IParadisBotItem['events'][number
 		default: return localize('paradis.botPage.event.other', "{0}: {1}", who, event.kind);
 	}
 }
+
+/**
+ * 提案の依頼の文を、入力欄・ターミナルへ入れる形にする。端末を操作する制御文字（ESC の列・CR など）は落とす
+ * （`ESC[201~` で貼り付けの囲いを閉じて、残りを打ち込ませない）。`multiline` が false（ターミナルが bracketed paste の
+ * モードでない）なら改行を空白にする（改行が Enter になり、1 行目から実行されるため）。
+ */
+export function paradisBotSuggestionText(text: string, multiline: boolean): string {
+	const plain = text
+		.replace(/\r\n?/g, '\n')
+		// CSI・OSC などのエスケープの列を丸ごと落とし、残りの制御文字（改行とタブは残す）も落とす
+		.replace(/\x1b(?:\[[0-?]*[ -\/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-_])?/g, '')
+		.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, '');
+	return multiline ? plain : plain.replace(/\s*\n\s*/g, ' ').trim();
+}

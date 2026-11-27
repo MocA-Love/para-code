@@ -399,7 +399,9 @@ export class ParadisBotSettingsPanel {
 	private async undoMemoryTidy(bot: IParadisBotSummary, takenAt: number): Promise<void> {
 		const { confirmed } = await this.services.paradisDialogService.confirm({
 			message: localize('paradis.botPage.files.undoTidyConfirm', "「{0}」の記憶を写しに戻しますか?", bot.name),
-			detail: localize('paradis.botPage.files.undoTidyDetailAt', "{0} に取った写しを書き戻します。その後に書き足した記憶も、写しの時点に戻ります。", new Date(takenAt).toLocaleString()),
+			detail: this.fileEdits.has('MEMORY.md')
+				? localize('paradis.botPage.files.undoTidyDetailDraft', "{0} に取った写しを書き戻します。その後に書き足した記憶も、写しの時点に戻ります。\n\n保存していない MEMORY.md の書きかけは捨てます。", new Date(takenAt).toLocaleString())
+				: localize('paradis.botPage.files.undoTidyDetailAt', "{0} に取った写しを書き戻します。その後に書き足した記憶も、写しの時点に戻ります。", new Date(takenAt).toLocaleString()),
 			primaryButton: localize('paradis.botPage.files.undoTidyAction', "取り消す"),
 			destructive: true,
 		});
