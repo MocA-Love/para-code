@@ -189,6 +189,20 @@ suite('Paradis bot homes', () => {
 		});
 	});
 
+	test('MEMORY.md が symlink なら書かず、断りの文には絶対パスを入れずファイル名だけを書く', async () => {
+		const home = await homes.ensure(BOT);
+		await fs.mkdir(join(home, 'memory'), { recursive: true });
+		await fs.writeFile(join(home, 'memory', 'real.md'), '本物\n');
+		await fs.rm(join(home, 'MEMORY.md'), { force: true });
+		await fs.symlink(join(home, 'memory', 'real.md'), join(home, 'MEMORY.md'));
+		const error = await homes.write(BOT, 'MEMORY.md', '書き換え').then(() => undefined, (error: Error) => error);
+		assert.deepStrictEqual({
+			message: error?.message,
+			hasPath: error?.message.includes(home) === true,
+			real: await fs.readFile(join(home, 'memory', 'real.md'), 'utf8'),
+		}, { message: 'MEMORY.md is a symbolic link; Para Code does not write through it.', hasPath: false, real: '本物\n' });
+	});
+
 	test('ほかの Bot のフォルダ・印の無い中身のあるフォルダは使わない', async () => {
 		await homes.ensure(BOT);
 		await fs.mkdir(join(root, 'manual'), { recursive: true });
@@ -249,7 +263,7 @@ suite('Paradis bot homes', () => {
 			launch: {
 				launchId: 'string', botId: 'id2', purpose: 'chat', cwd: join(root, 'bot-2'), name: 'レビュー係', agent: 'codex',
 				// Codex の Bot だけ、道具の許可をこの起動の引数で渡す（利用者の config.toml には書かない）
-				extraFlags: '-c \'mcp_servers.para-browser.tools.bot_item_list.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_item_show.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_item_add.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_item_update.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_suggest.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_tell.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_ask.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_board_add_task.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_github_news.approval_mode=approve\'',
+				extraFlags: '-c \'mcp_servers.para-browser.tools.bot_item_list.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_item_show.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_item_add.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_item_update.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_suggest.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_tell.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_ask.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_inbox.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_board_add_task.approval_mode=approve\' -c \'mcp_servers.para-browser.tools.bot_github_news.approval_mode=approve\'',
 			},
 			bound: [false, true, false, 'レビュー係', undefined, 'idle'],
 			stops: [true, ['id1', 'id2']],

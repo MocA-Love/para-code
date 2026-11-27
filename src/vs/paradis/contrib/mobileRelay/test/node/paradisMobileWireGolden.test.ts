@@ -7,6 +7,8 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { ParadisHumanAskLedger } from '../../../humanAsk/common/paradisHumanAskLedger.js';
+import { paradisMobileHumanAsks, paradisParseMobileHumanAskAnswerRequest } from '../../common/paradisMobileHumanAsks.js';
 import { existsSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { VSBuffer } from '../../../../../base/common/buffer.js';
@@ -129,6 +131,16 @@ suite('ParadisMobileWireGolden', () => {
 		// （PC がこれらを変えたら、アプリの判定が変わるのでゴールデンも同じ変更で直す）。
 		const pick = (state: Record<string, unknown>) => Object.fromEntries(['protocolVersion', 'minCompatibleMobile', 'capabilities', 'fsUploadEncoding', 'voiceClips'].map(key => [key, state[key]]));
 		assert.deepStrictEqual({ shape: shapeOf(built), values: pick(built) }, { shape: shapeOf(golden.current), values: pick(golden.current) });
+	});
+
+	test('Bot の画面（bots.page.v1）は、Bot の一覧が置かれている間（設定がオンの間）だけ広告する', () => {
+		const registry = new ParadisMobileTerminalRegistry('bots-capability-epoch');
+		const advertised = () => (registry.desktopState().capabilities as readonly string[]).includes('bots.page.v1');
+		const off = advertised();
+		registry.setBots({ bots: [], botOfToken: () => undefined, panesKey: '' });
+		const on = advertised();
+		registry.setBots(undefined);
+		assert.deepStrictEqual({ off, on, offAgain: advertised() }, { off: false, on: true, offAgain: false });
 	});
 
 	test('State の要求: 今のアプリは通り、版 3 のアプリ（W2-17 より前を含む）は通さない（mux の版 4）', function () {
@@ -474,6 +486,26 @@ suite('ParadisMobileWireGolden', () => {
 		assert.deepStrictEqual(
 			{ current: shapeOf(JSON.parse(JSON.stringify(current))), failed: shapeOf(JSON.parse(JSON.stringify(failed))) },
 			{ current: shapeOf(golden.current), failed: shapeOf(golden.failed) },
+		);
+	});
+	test('humanAsks: PC が組み立てるスマホの要対応の台帳の 1 件と要求の読み方はゴールデンと同じ', function () {
+		const golden = readGolden<{ reply: { asks: unknown[] }; answerRequest: Record<string, unknown> }>(this, 'human-asks.json');
+		let now = 1790999990000;
+		const ledger = new ParadisHumanAskLedger(() => now);
+		ledger.upsert('board:1', { source: 'board', id: '0123456789abcdef:gh:o/r#415:approval:3', kind: 'approval', from: { title: '#415 計画の承認' }, preface: '計画を確かめてください', questions: [], actions: [{ id: 'approve', label: '承認して次へ' }, { id: 'sendBack', label: '差し戻す', allowText: true, confirm: { title: '差し戻しますか', body: '担当が計画を書き直します', ok: '差し戻す' } }], canSkip: false });
+		ledger.claim('board:0123456789abcdef:gh:o/r#415:approval:3', { type: 'action', actionId: 'approve' }, 'inbox');
+		now = 1791000000000;
+		ledger.upsert('bot', {
+			source: 'bot', id: 'item42.ev7', kind: 'question', from: { title: 'リリース係', detail: '項目 #42' }, preface: 'Safari だけログイン後にセッションが切れます。', canSkip: true, actions: [],
+			questions: [
+				{ id: 'q0', text: '全員を一度ログアウトさせますか、今のセッションを残しますか?', options: [{ id: '0', label: '一度ログアウトさせる' }, { id: '1', label: '今のセッションを残す', detail: '影響は小さい', recommended: true }], allowText: true },
+				{ id: 'q1', text: 'どれを直しますか?', options: [{ id: '0', label: 'A' }, { id: '1', label: 'B' }], allowText: false, multiSelect: true },
+			],
+		});
+		const { t: _t, id: _id, ...request } = golden.answerRequest;
+		assert.deepStrictEqual(
+			{ asks: JSON.parse(JSON.stringify(paradisMobileHumanAsks(ledger.snapshot()))), request: paradisParseMobileHumanAskAnswerRequest(golden.answerRequest) },
+			{ asks: golden.reply.asks, request },
 		);
 	});
 });

@@ -50,6 +50,9 @@ import { IParadisBotItem, IParadisBotItemLink, paradisBotItemWaitsForOwner, para
 import { IParadisBotSummary, IParadisBotsService, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
 import { paradisBotFace, paradisBotStatusLine } from '../common/paradisBotsBandModel.js';
 import { paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel, PARADIS_BOT_PAGE_TABS, ParadisBotPageTab, paradisBotSuggestionText } from '../common/paradisBotPageModel.js';
+import { IParadisBotGroupsService } from '../common/paradisBotGroupsApi.js';
+import { paradisBotGroupUnreadCount } from '../common/paradisBotGroups.js';
+import { onDidRequestParadisBotPageTab, paradisTakeRequestedBotPageTab } from './paradisBotPageTabRequest.js';
 import { ParadisBotSettingsPanel } from './paradisBotPageSettings.js';
 import { renderParadisBotFace } from './paradisBotFace.js';
 import type { IParadisBotSuggestion } from '../common/paradisBotSuggestions.js';
@@ -102,6 +105,9 @@ interface IParadisBotPageAskState {
 /** 帯の高さ（CSS の `.paradis-bot-page-strip` と同じ）。ターミナルはこの分縮めて下げる。 */
 const STRIP_HEIGHT = 40;
 
+/** 「読ませる」で Bot へ送る文（利用者の発言として送る）。 */
+const PARADIS_BOT_READ_INBOX_REQUEST = localize('paradis.botPage.inbox.request', "受け箱（bot_inbox）を見て、ほかの Bot から届いた伝言に対応してください。");
+
 export class ParadisBotPage extends Disposable implements IParadisEditorTerminalOverlay {
 
 	private readonly _onDidChangeTopInset = this._register(new Emitter<void>());
@@ -111,6 +117,8 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 	private readonly stripFace: HTMLElement;
 	private readonly stripName: HTMLElement;
 	private readonly stripStatus: HTMLElement;
+	/** 受け箱の未読と「読ませる」（Bot が待機中のとき、利用者の操作として受け箱を見るよう頼む）。 */
+	private readonly stripInbox: HTMLButtonElement;
 	private readonly tabElements = new Map<ParadisBotPageTab, HTMLElement>();
 	private readonly itemsTab: HTMLElement;
 	/** Bot ごとの設定・ファイルのタブ（入力中の値を描き直しの間も持つ）。 */
@@ -163,6 +171,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		@ITerminalService private readonly terminalService: ITerminalService,
 		@IParadisAgentChatService private readonly agentChatService: IParadisAgentChatService,
 		@IHoverService private readonly hoverService: IHoverService,
+		@IParadisBotGroupsService private readonly groupsService: IParadisBotGroupsService,
 	) {
 		super();
 		this.strip = DOM.append(container, $('.paradis-bot-page-strip'));
@@ -171,6 +180,10 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		const title = DOM.append(this.strip, $('.paradis-bot-page-title'));
 		this.stripName = DOM.append(title, $('span.paradis-bot-page-name'));
 		this.stripStatus = DOM.append(title, $('span.paradis-bot-page-status'));
+		this.stripInbox = DOM.append(this.strip, $('button.paradis-bot-page-inbox.paradis-focus-ring-inset')) as HTMLButtonElement;
+		this.stripInbox.type = 'button';
+		this.stripInbox.hidden = true;
+		this._register(DOM.addDisposableListener(this.stripInbox, DOM.EventType.CLICK, () => void this.askToReadInbox()));
 		const tabs = DOM.append(this.strip, $('.paradis-bot-page-tabs'));
 		tabs.setAttribute('role', 'tablist');
 		tabs.setAttribute('aria-label', localize('paradis.botPage.tabs', "Bot のページ"));
@@ -216,6 +229,17 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 			} else if (this.botId !== undefined && this.currentTab() === 'settings') {
 				// その Bot の設定の値が変わったときだけ描き直す（入力中の値はパネルが持ち、書きかけは台帳の値で上書きしない）
 				this.renderPanel();
+			}
+		}));
+		// 受け箱の未読が変わった
+		this._register(this.groupsService.onDidChange(() => this.renderStrip()));
+		// 帯の受け箱の印から開いた: その Bot のページを「会話」で見せる
+		this._register(onDidRequestParadisBotPageTab(botId => {
+			if (botId === this.botId) {
+				const tab = paradisTakeRequestedBotPageTab(botId);
+				if (tab !== undefined) {
+					this.setTab(tab);
+				}
 			}
 		}));
 		// 問いが答えられた・取り下げられた・届けている最中になった（カードを描き直し、項目の側も読み直す。中身が同じなら描き直さない）
@@ -287,6 +311,10 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		if (changed) {
 			this.items = [];
 			this.suggestions = [];
+		}
+		const requested = paradisTakeRequestedBotPageTab(botId);
+		if (requested !== undefined) {
+			this.tabs.set(botId, requested);
 		}
 		this.renderStrip();
 		this.applyTab();
@@ -365,6 +393,35 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		this.itemsTab.setAttribute('aria-label', bot.needsYou > 0
 			? localize('paradis.botPage.tab.itemsCount', "項目、{0} 件があなたの番", bot.needsYou)
 			: localize('paradis.botPage.tab.items', "項目"));
+		const unread = paradisBotGroupUnreadCount(this.groupsService.snapshot, bot.id);
+		const canAsk = this.canAskToReadInbox(bot);
+		this.stripInbox.hidden = unread === 0;
+		this.stripInbox.disabled = !canAsk;
+		this.stripInbox.textContent = canAsk
+			? localize('paradis.botPage.inbox.ask', "受け箱に {0} 通あります。読ませる", unread)
+			: localize('paradis.botPage.inbox.count', "受け箱に {0} 通", unread);
+		this.stripInbox.title = canAsk
+			? localize('paradis.botPage.inbox.askTooltip', "ほかの Bot からの伝言を読むよう、この Bot に頼みます")
+			: localize('paradis.botPage.inbox.waitTooltip', "ほかの Bot からの伝言が届いています。この Bot が待機中になったら読ませられます");
+	}
+
+	/** 待機中（作業中・見回り中・一時停止中でない）で、会話のペインに送れるときだけ「読ませる」を出す。 */
+	private canAskToReadInbox(bot: IParadisBotSummary): boolean {
+		return this.instanceId !== undefined && !bot.paused && bot.activity === 'idle';
+	}
+
+	/** 利用者の操作として、受け箱を見るようこの Bot に頼む（チャット表示の入力欄から送るのと同じ確認を通る）。 */
+	private async askToReadInbox(): Promise<void> {
+		const bot = this.botId !== undefined ? this.bot(this.botId) : undefined;
+		const instanceId = this.instanceId;
+		if (bot === undefined || instanceId === undefined || !this.canAskToReadInbox(bot)) {
+			return;
+		}
+		this.setTab('chat');
+		const error = await this.agentChatService.sendMessageToPane(instanceId, PARADIS_BOT_READ_INBOX_REQUEST);
+		if (error !== undefined) {
+			this.notificationService.warn(localize('paradis.botPage.inbox.failed', "受け箱を読むよう頼めませんでした: {0}", error));
+		}
 	}
 
 	private async loadItems(): Promise<void> {

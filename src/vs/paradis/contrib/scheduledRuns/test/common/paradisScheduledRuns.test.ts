@@ -160,6 +160,37 @@ suite('paradisScheduledRuns decisions', () => {
 		], ['globalConcurrency', undefined, 'globalDailyLimit', undefined, undefined]);
 	});
 
+	test('Bot の見回りと利用者の定期実行は、同時実行と 1 日の回数を別の枠で数える', () => {
+		const now = at(2026, 9, 25, 12, 0);
+		// patrol* は Bot の見回りの定義、ほかは利用者の定期実行
+		const isBotPatrol = (definitionId: string) => definitionId.startsWith('patrol');
+		const runs = (prefix: string, status: IParadisScheduledRunRecord['status'], count: number) => Array.from({ length: count }, (_, index) => run({ id: `${prefix}${index}`, definitionId: `${prefix}${index}`, status, createdAt: now - HOUR, scheduledFor: now - HOUR }));
+		const user = definition();
+		const patrol = definition({ id: 'patrol-me', dailyLimit: 24 });
+		assert.deepStrictEqual({
+			// 見回りが同時に 3 つ・1 日に 100 回動いていても、利用者の定期実行は止めない
+			userWhilePatrolsRun: paradisCheckRunGuards(user, runs('patrol', 'running', 3), 'schedule', now, now, isBotPatrol),
+			userAfterManyPatrols: paradisCheckRunGuards(user, runs('patrol', 'completed', 100), 'schedule', now, now, isBotPatrol),
+			// 利用者の定期実行が枠を使っていても、見回りは止めない
+			patrolWhileUserRuns: paradisCheckRunGuards(patrol, runs('user', 'running', 3), 'schedule', now, now, isBotPatrol),
+			patrolAfterUserDay: paradisCheckRunGuards(patrol, runs('user', 'completed', 30), 'schedule', now, now, isBotPatrol),
+			// 見回りの枠が埋まれば、見回りの理由で止める
+			patrolConcurrency: paradisCheckRunGuards(patrol, runs('patrol', 'running', 3), 'schedule', now, now, isBotPatrol),
+			patrolDaily: paradisCheckRunGuards(patrol, runs('patrol', 'completed', 100), 'schedule', now, now, isBotPatrol),
+			userConcurrency: paradisCheckRunGuards(user, runs('user', 'running', 3), 'schedule', now, now, isBotPatrol),
+			userDaily: paradisCheckRunGuards(user, runs('user', 'completed', 30), 'schedule', now, now, isBotPatrol),
+		}, {
+			userWhilePatrolsRun: undefined,
+			userAfterManyPatrols: undefined,
+			patrolWhileUserRuns: undefined,
+			patrolAfterUserDay: undefined,
+			patrolConcurrency: 'botConcurrency',
+			patrolDaily: 'botDailyLimit',
+			userConcurrency: 'globalConcurrency',
+			userDaily: 'globalDailyLimit',
+		});
+	});
+
 	test('strips control characters from prompts', () => {
 		assert.deepStrictEqual([
 			paradisSanitizeScheduledRunPrompt('a\x03b\x15c\x1bd\r\ne\tf\x9b'),

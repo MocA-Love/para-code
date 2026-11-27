@@ -1,0 +1,313 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+	The bot group room (paradisBotGroupEditor.ts): a short editor above the members' terminals. A 28px head
+	(faces, name, reply mode, members), the one-line composer, a status line, then the records and the group's
+	items side by side (one column when narrow). And the group dialog (paradisBotGroupDialog.ts), the kit's S box.
+*/
+
+.paradis-bot-group-room {
+	box-sizing: border-box;
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size60);
+	height: 100%;
+	padding: var(--vscode-spacing-size60) var(--vscode-spacing-size120);
+	overflow: hidden;
+	color: var(--vscode-foreground);
+	container-type: inline-size;
+}
+
+.paradis-bot-group-room .pbgr-head,
+.paradis-bot-group-room .pbgr-composer,
+.paradis-bot-group-room .pbgr-status-row {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	flex: none;
+	min-width: 0;
+}
+
+.paradis-bot-group-room .pbgr-head {
+	height: 28px;
+}
+
+.paradis-bot-group-room .pbgr-faces {
+	display: flex;
+	flex: none;
+}
+
+.paradis-bot-group-room .pbgr-faces > .paradis-bot-face {
+	width: 18px;
+	height: 18px;
+}
+
+.paradis-bot-group-room .pbgr-faces > .paradis-bot-face + .paradis-bot-face {
+	margin-left: -6px;
+}
+
+.paradis-bot-group-room .pbgr-title {
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-bot-group-room .pbgr-grow {
+	flex: 1;
+}
+
+.paradis-bot-group-room .pbgr-label {
+	flex: none;
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-descriptionForeground);
+	white-space: nowrap;
+}
+
+.paradis-bot-group-room .pbgr-composer > .paradis-field {
+	flex: 1;
+	min-width: 0;
+}
+
+.paradis-bot-group-room .pbgr-status-row {
+	min-height: 16px;
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-bot-group-room .pbgr-status,
+.paradis-bot-group-room .pbgr-where {
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.paradis-bot-group-room .pbgr-status {
+	flex: 1;
+}
+
+.paradis-bot-group-room .pbgr-status.error {
+	color: var(--vscode-paradis-danger);
+}
+
+.paradis-bot-group-room .pbgr-where {
+	flex: none;
+	max-width: 50%;
+	color: var(--vscode-paradis-warning, var(--vscode-descriptionForeground));
+}
+
+.paradis-bot-group-room .pbgr-body {
+	display: grid;
+	grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+	gap: var(--vscode-spacing-size120);
+	flex: 1;
+	min-height: 0;
+}
+
+@container (max-width: 560px) {
+	.paradis-bot-group-room .pbgr-body {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.paradis-bot-group-room .pbgr-column + .pbgr-column {
+		display: none;
+	}
+
+	.paradis-bot-group-room .pbgr-label {
+		display: none;
+	}
+}
+
+.paradis-bot-group-room .pbgr-column {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	min-width: 0;
+}
+
+.paradis-bot-group-room .pbgr-column-title {
+	flex: none;
+	font-size: var(--vscode-fontSize-label2);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-bot-group-room .pbgr-records,
+.paradis-bot-group-room .pbgr-items {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+}
+
+.paradis-bot-group-room .pbgr-empty {
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-descriptionForeground);
+	overflow-wrap: anywhere;
+}
+
+.paradis-bot-group-room .pbgr-record {
+	display: flex;
+	gap: var(--vscode-spacing-size60);
+	height: 20px;
+	align-items: center;
+	font-size: var(--vscode-fontSize-label1);
+	min-width: 0;
+}
+
+.paradis-bot-group-room .pbgr-time {
+	flex: none;
+	color: var(--vscode-descriptionForeground);
+	font-variant-numeric: tabular-nums;
+}
+
+.paradis-bot-group-room .pbgr-who {
+	flex: none;
+	max-width: 45%;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-bot-group-room .pbgr-record[data-kind="asked"] .pbgr-who,
+.paradis-bot-group-room .pbgr-record[data-kind="told"] .pbgr-who {
+	color: var(--vscode-textLink-foreground);
+}
+
+.paradis-bot-group-room .pbgr-mark {
+	flex: none;
+	padding: 0 var(--vscode-spacing-size40);
+	border: 1px solid color-mix(in srgb, var(--vscode-descriptionForeground) 40%, transparent);
+	border-radius: var(--vscode-cornerRadius-small);
+	color: var(--vscode-descriptionForeground);
+	line-height: 14px;
+	white-space: nowrap;
+}
+
+.paradis-bot-group-room .pbgr-mark.unread {
+	border-color: color-mix(in srgb, var(--vscode-textLink-foreground) 40%, transparent);
+	color: var(--vscode-textLink-foreground);
+}
+
+.paradis-bot-group-room .pbgr-text {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.paradis-bot-group-room .pbgr-item {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size60);
+	height: 22px;
+	padding: 0 var(--vscode-spacing-size40);
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	font-size: var(--vscode-fontSize-label1);
+	cursor: pointer;
+}
+
+.paradis-bot-group-room .pbgr-item:hover {
+	background-color: var(--vscode-list-hoverBackground);
+}
+
+.paradis-bot-group-room .pbgr-item > .paradis-bot-face {
+	width: 14px;
+	height: 14px;
+}
+
+.paradis-bot-group-room .pbgr-item-number {
+	flex: none;
+	color: var(--vscode-descriptionForeground);
+	font-variant-numeric: tabular-nums;
+}
+
+.paradis-bot-group-room .pbgr-item-title {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+
+.paradis-bot-group-room .pbgr-item-tag {
+	flex: none;
+	color: var(--vscode-paradis-warning, var(--vscode-descriptionForeground));
+}
+
+/* The face's eyes use the sidebar color; in the editor they sit on the editor background. */
+.paradis-bot-group-room .paradis-bot-face-eye {
+	fill: var(--vscode-editor-background);
+}
+
+/* --- The group dialog (S box) --- */
+
+.paradis-bot-group-dialog-backdrop {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: var(--vscode-paradis-scrim);
+}
+
+.paradis-bot-group-dialog .pbgd-label {
+	display: block;
+	margin: var(--vscode-spacing-size160) 0 var(--vscode-spacing-size60);
+	font-size: var(--vscode-fontSize-label1);
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-bot-group-dialog .pbgd-label:first-child {
+	margin-top: var(--vscode-spacing-size80);
+}
+
+.paradis-bot-group-dialog .pbgd-members {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size40);
+	max-height: 180px;
+	overflow-y: auto;
+}
+
+.paradis-bot-group-dialog .pbgd-member {
+	display: flex;
+	align-items: center;
+	gap: var(--vscode-spacing-size80);
+	min-height: 24px;
+	min-width: 0;
+}
+
+.paradis-bot-group-dialog .pbgd-member > .paradis-check {
+	flex: 1;
+	min-width: 0;
+}
+
+.paradis-bot-group-dialog .pbgd-help,
+.paradis-bot-group-dialog .pbgd-empty {
+	margin: var(--vscode-spacing-size160) 0 var(--vscode-spacing-size80);
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+	overflow-wrap: anywhere;
+}
+
+.paradis-bot-group-dialog .pbgd-note {
+	flex: 1;
+	min-width: 0;
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+}
+
+.paradis-bot-group-dialog .pbgd-note.error {
+	color: var(--vscode-paradis-danger);
+}
