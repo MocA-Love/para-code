@@ -15,6 +15,7 @@
 import { localize } from '../../../../nls.js';
 import { paradisAgentApprovalKeySequence, paradisAgentQuestionKeySequence, ParadisAgentQuestionAnswer } from '../../mobileRelay/common/paradisAgentQuestionKeys.js';
 import { IParadisAgentApprovalOption, paradisApprovalOptionLabelsMatch, paradisApprovalScreenPiece, paradisClaudeApprovalAllowKey, paradisCodexApprovalFormShown, paradisParseApprovalOptionChoice, paradisParseApprovalOptions } from '../../mobileRelay/common/paradisAgentApprovalOptions.js';
+import { paradisStripAgentInvisibleCharacters } from '../../mobileRelay/common/paradisAgentInvisibleText.js';
 import { paradisSendAgentMessageToTui } from '../../mobileRelay/common/paradisAgentMessageSender.js';
 import { paradisBuildPresetInsertText } from '../../terminalPresets/common/paradisTerminalPresets.js';
 import { IParadisAgentChatSource, IParadisAgentInteraction, paradisAgentQuestionHasPreview, paradisIsCodexDaemonApprovalInteraction } from '../common/paradisAgentChat.js';
@@ -44,6 +45,14 @@ export interface IParadisAgentChatTerminal {
 }
 
 /** その種類の記述。種類が分からない会話は Claude Code と同じに扱う（キーで渡す）。 */
+/**
+ * 入力欄の書きかけが、空か貼った文だけか（`typed` が undefined なら空だけ）。Claude Code は長い貼り付けを
+ * `[Pasted text #1 …]` に畳んで見せるので、その形も貼った文だけとみなす。
+ */
+export function paradisDraftIsOnly(draft: string, typed: string | undefined): boolean {
+	return draft.length === 0 || (typed !== undefined && (draft === typed || /^\[Pasted text #\d+[^\]]*\]$/u.test(draft)));
+}
+
 function descriptorOf(agent: ParadisAgentKind | undefined): IParadisAgentDescriptor {
 	return paradisAgentDescriptor(agent) ?? PARADIS_AGENT_DESCRIPTORS.claude;
 }
@@ -65,8 +74,20 @@ function paradisAntigravitySendBlockReason(block: ParadisAntigravitySendBlock): 
  */
 export type ParadisAgentChatSendOutcome =
 	| { readonly kind: 'sent' }
-	| { readonly kind: 'refused'; readonly message: string }
+	/** `code` は呼ぶ側が分けたい断り（`working` 作業中で順番待ちに入れられない、`draft` 利用者が入力欄に書きかけ）。 */
+	| { readonly kind: 'refused'; readonly message: string; readonly code?: 'working' | 'draft' }
 	| { readonly kind: 'unknown'; readonly message: string };
+
+/** 外から届ける発言（Bot 同士の伝言）の追加の確認。 */
+export interface IParadisAgentChatDeliverOptions {
+	/** 宛先が作業中か。作業中なら、今のターンを止めずに次の番まで待たせられる種類（`queuesWhileWorking`）にだけ送る。 */
+	readonly working: boolean;
+	/**
+	 * 入力欄に利用者の書きかけがあれば送らない（貼る前は空、Enter の前は貼った文だけ）。書きかけを読めない種類・mod の
+	 * 無い会話は確かめずに送る。
+	 */
+	readonly refuseDraft: boolean;
+}
 
 export interface IParadisAgentChatInputDependencies {
 	readonly source: IParadisAgentChatSource;
@@ -175,8 +196,10 @@ export class ParadisAgentChatInput {
 	 * {@link sendMessage} と同じ確認を通して送り、結果を種類つきで返す。`refused` はペインへ何も書いていない、`unknown` は
 	 * 文を書いたかもしれない（貼り付けた後に Enter を送れなかった、OpenCode が結果を返さなかった、書く途中で失敗した）。
 	 */
-	async sendMessageOutcome(instanceId: number, token: string, rawText: string): Promise<ParadisAgentChatSendOutcome> {
+	async sendMessageOutcome(instanceId: number, token: string, rawText: string, options?: IParadisAgentChatDeliverOptions): Promise<ParadisAgentChatSendOutcome> {
 		const refused = (message: string): ParadisAgentChatSendOutcome => ({ kind: 'refused', message });
+		const refusedWorking: ParadisAgentChatSendOutcome = { kind: 'refused', code: 'working', message: localize('paradisAgentChat.errorWorkingNoQueue', "エージェントが作業中です。終わってから送ってください") };
+		const refusedDraft: ParadisAgentChatSendOutcome = { kind: 'refused', code: 'draft', message: localize('paradisAgentChat.errorDraft', "入力欄に書きかけの文があります") };
 		const terminal = this.dependencies.terminal(instanceId, token);
 		if (terminal === undefined) {
 			return refused(localize('paradisAgentChat.errorNoTerminal', "送り先のターミナルが見つかりません"));
@@ -195,6 +218,9 @@ export class ParadisAgentChatInput {
 		}
 		const state = session.state;
 		if (state !== undefined && descriptorOf(state.agent).send.includes('api')) {
+			if (options?.working === true && !descriptorOf(state.agent).queuesWhileWorking) {
+				return refusedWorking;
+			}
 			if (this.dependencies.terminal(instanceId, token) !== terminal || state.agentExited || !state.sessionId || state.interaction !== null) {
 				return refused(localize('paradisAgentChat.errorOpenCodeNotReady', "OpenCode の会話が変わったか、回答を待っています"));
 			}
@@ -208,19 +234,39 @@ export class ParadisAgentChatInput {
 		if (reason !== undefined) {
 			return refused(reason);
 		}
+		// messageBlockReason が取り直した後の種類で、作業中の扱いを決める
+		if (options?.working === true && !descriptorOf(session.state?.agent).queuesWhileWorking) {
+			return refusedWorking;
+		}
 		let lateReason: string | undefined;
+		let draftBlocked = false;
+		let checks = 0;
 		try {
 			const outcome = await paradisSendAgentMessageToTui(
 				text,
 				(value, execute, bracketedPasteMode) => terminal.sendText(value, execute ?? false, bracketedPasteMode),
 				async () => {
 					lateReason = await this.messageBlockReason(instanceId, token, terminal, text);
-					return lateReason === undefined;
+					if (lateReason !== undefined) {
+						return false;
+					}
+					// 貼る前（1 回目）は入力欄が空、Enter の前（2 回目）は貼った文だけのときに進む
+					if (options?.refuseDraft === true) {
+						const draft = (await this.dependencies.source.getAgentChatDraft?.(token).catch(() => undefined))?.trim();
+						if (draft !== undefined && !paradisDraftIsOnly(draft, checks++ === 0 ? undefined : paradisStripAgentInvisibleCharacters(text).trim())) {
+							draftBlocked = true;
+							return false;
+						}
+					}
+					return true;
 				},
 			);
+			if (!outcome.executed && !outcome.consumed && draftBlocked) {
+				return refusedDraft;
+			}
 			if (!outcome.executed) {
 				return outcome.consumed
-					? { kind: 'unknown', message: localize('paradisAgentChat.errorPastedNotSent', "貼り付けた後に状態が変わったため、Enter を送りませんでした（{0}）", lateReason ?? '') }
+					? { kind: 'unknown', message: localize('paradisAgentChat.errorPastedNotSent', "貼り付けた後に状態が変わったため、Enter を送りませんでした（{0}）", lateReason ?? (draftBlocked ? refusedDraft.message : '')) }
 					: refused(lateReason ?? localize('paradisAgentChat.errorChanged', "送る前にターミナルの状態が変わりました"));
 			}
 		} catch {
