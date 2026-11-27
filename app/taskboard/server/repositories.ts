@@ -76,6 +76,34 @@ export async function isOtherBoardWorktree(toplevel: string): Promise<boolean> {
 		&& await fs.access(path.join(toplevel, '.para', '.task')).then(() => true, () => false);
 }
 
+/** 同じリポジトリの origin か（`git@github.com:o/r.git` と `https://github.com/o/r` を同じとみなす）。 */
+function sameOrigin(a: string, b: string): boolean {
+	const key = (url: string) => url.trim().replace(/\.git$/i, '').replace(/^[a-z+]+:\/\//i, '').replace(/^[^@/]+@/, '').replace(':', '/').replace(/\/+$/, '').toLowerCase();
+	return key(a) === key(b);
+}
+
+/**
+ * 画面から足すクローンの作業場所を確かめ、実体のパスを返す。使えないフォルダは、理由を添えて断る。
+ * クローンは工程のたびに fetch してブランチを作り直すので、リポジトリそのもの・そのワークツリー・別のリポジトリは受けない。
+ */
+export async function checkCloneFolder(repoPath: string, candidate: string): Promise<{ readonly ok: true; readonly path: string } | { readonly ok: false; readonly message: string }> {
+	const real = (p: string) => { try { return realpathSync(p); } catch { return path.resolve(p); } };
+	const folder = real(candidate);
+	const toplevel = await git(folder, ['rev-parse', '--show-toplevel'], 5000).then(real, () => undefined);
+	if (!toplevel || toplevel !== folder) {
+		return { ok: false, message: 'git のリポジトリの一番上のフォルダを選んでください' };
+	}
+	const common = await git(folder, ['rev-parse', '--path-format=absolute', '--git-common-dir'], 5000).then(real, () => undefined);
+	if (folder === real(repoPath) || common !== path.join(folder, '.git')) {
+		return { ok: false, message: 'このリポジトリそのものと、そのワークツリーは足せません。別の場所に clone したフォルダを選んでください' };
+	}
+	const [mine, theirs] = await Promise.all([git(repoPath, ['remote', 'get-url', 'origin'], 5000).catch(() => ''), git(folder, ['remote', 'get-url', 'origin'], 5000).catch(() => '')]);
+	if (!mine || !theirs || !sameOrigin(mine, theirs)) {
+		return { ok: false, message: 'このボードのリポジトリと同じ origin の clone を選んでください' };
+	}
+	return { ok: true, path: folder };
+}
+
 /** 開いたリポジトリを最近の一覧の先頭に入れる。 */
 export async function rememberRepository(repoPath: string, label: string): Promise<void> {
 	const list = [{ path: repoPath, label, at: Date.now() }, ...(await readRecent()).filter(r => r.path !== repoPath)].slice(0, MAX_RECENT);

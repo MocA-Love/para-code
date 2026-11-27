@@ -38,7 +38,7 @@ import { IParadisAgentChatImage, IParadisAgentChatImageData, IParadisAgentChatMe
 import { paradisAgentChatImagesToLinks } from '../common/paradisAgentChatMarkdown.js';
 import { paradisAgentChatTimeLabel, paradisAgentChatUsageCacheDetail, paradisAgentChatUsageLabel } from '../common/paradisAgentChatTime.js';
 import { paradisAppendAgentLogoSvg } from './paradisAgentChatFace.js';
-import { PARADIS_AGENT_DESCRIPTORS, paradisAgentDescriptor } from '../common/paradisAgentDescriptor.js';
+import { paradisAgentDescriptor } from '../common/paradisAgentDescriptor.js';
 import { IParadisAgentChatState } from '../common/paradisAgentChatState.js';
 import { IParadisAgentChatEditDiff, paradisAgentChatEditDiff, paradisBuildAgentChatItems, paradisPendingCodexQuestion, paradisDescribeAgentChatTool, paradisGroupAgentChatItems, paradisIsFileWriteTool, paradisIsPendingApprovalItem, paradisIsPendingQuestionItem, paradisPathBasename, paradisSummarizeAgentChatGroup, ParadisAgentChatEntry, ParadisAgentChatItem } from '../common/paradisAgentChatTimeline.js';
 import { paradisAgentChatButton } from './paradisAgentChatButton.js';
@@ -47,6 +47,7 @@ import { IParadisAgentChatComposerHost, ParadisAgentChatComposer } from './parad
 import { IParadisAgentChatAsyncDrafts, paradisAsyncQuestionsSignature, paradisBuildAsyncReplyFromDrafts, paradisGroupAsyncQuestions, paradisNewAgentChatAsyncDrafts, paradisRenderAsyncQuestionCard, paradisRenderQuestionReplies } from './paradisAgentChatAsyncQuestions.js';
 import { ParadisAgentChatSession } from './paradisAgentChatSession.js';
 import { ParadisAgentChatDraftInsert } from '../common/paradisAgentChatComposerLogic.js';
+import { paradisAgentChatHeaderState } from '../common/paradisAgentChatHeader.js';
 import { IParadisHumanAskService } from '../../humanAsk/common/paradisHumanAsk.js';
 import { ParadisInboxAskDialog } from '../../notificationInbox/browser/paradisNotificationInboxAskDialog.js';
 import { paradisInboxAskRefusedText } from '../../notificationInbox/common/paradisNotificationInboxAsk.js';
@@ -607,26 +608,18 @@ export class ParadisAgentChatView extends Disposable {
 	}
 
 	private renderHeader(state: IParadisAgentChatState | undefined): void {
-		this.headerAgent.textContent = state === undefined ? '' : (paradisAgentDescriptor(state.agent) ?? PARADIS_AGENT_DESCRIPTORS.claude).displayName;
-		const model = [state?.info?.model, state?.info?.effort].filter((part): part is string => part !== undefined && part.length > 0).join(' · ');
-		this.headerModel.textContent = model;
-		this.headerModel.style.display = model.length > 0 ? '' : 'none';
-		let status = '';
-		if (state?.interaction?.kind === 'question' || (state?.agent === 'codex' && paradisPendingCodexQuestion(state.messages) !== undefined)) {
-			status = localize('paradisAgentChat.statusQuestion', "質問に答えるのを待っています");
-		} else if (state?.interaction?.kind === 'approval') {
-			status = localize('paradisAgentChat.statusApproval', "許可を待っています");
-		} else if (state?.info?.transcriptStale === true) {
-			// SSH の接続先の会話を手元へ写せていない。下の会話は古いままのことがある
-			status = localize('paradisAgentChat.statusStale', "この会話は最新を取得できていません");
-		} else if (state?.agentExited) {
-			status = localize('paradisAgentChat.statusExited', "終了しました");
-		} else if (state?.busy) {
-			status = localize('paradisAgentChat.statusBusy', "作業中");
-		}
-		this.headerStatus.textContent = status;
-		this.headerStatus.classList.toggle('attention', (state?.interaction !== null && state?.interaction !== undefined) || state?.info?.transcriptStale === true);
-		this.headerStatus.classList.toggle('busy', state?.busy === true && (state.interaction === null || state.interaction === undefined));
+		const header = paradisAgentChatHeaderState(state);
+		this.headerAgent.textContent = header.agentName;
+		this.headerModel.textContent = header.model;
+		this.headerModel.style.display = header.model.length > 0 ? '' : 'none';
+		this.headerStatus.textContent = header.status;
+		this.headerStatus.classList.toggle('attention', header.attention);
+		this.headerStatus.classList.toggle('busy', header.busy);
+	}
+
+	/** 見出しを畳む（見出しの知らせは呼ぶ側が headerState で出す。Bot のタブの帯と 2 段にしないため）。 */
+	setHeaderHidden(hidden: boolean): void {
+		this.element.classList.toggle('header-hidden', hidden);
 	}
 
 	private renderEmpty(loaded: boolean): void {
