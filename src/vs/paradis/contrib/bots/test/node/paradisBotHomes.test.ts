@@ -404,7 +404,7 @@ suite('Paradis bot homes', () => {
 		});
 	});
 
-	test('サービス: 会話を起動するたびに記憶の写しを取る（見回り・設定オフでは取らない）。一覧は新しい順で 5 件まで', async () => {
+	test('サービス: 会話を起動するたびに記憶の写しを取る（中身が直前と同じなら取らない。見回り・設定オフでは取らない）。一覧は新しい順で 5 件まで', async () => {
 		const userData = join(root, '..', 'userData');
 		let ids = 0;
 		let clock = 10_000;
@@ -427,11 +427,17 @@ suite('Paradis bot homes', () => {
 			return launched.ok;
 		};
 		const firstChat = await chat();
+		// 記憶が変わらないまま会話を開き直しても、写しは増えない
+		await chat();
+		await chat();
+		const unchanged = await service.listMemorySnapshots(botId);
 		await service.writeHomeFile(botId, 'memory/release.md', '細かい話\n');
 		clock += 1000;
 		const patrol = await service.requestLaunch(botId, 'patrol');
 		const afterPatrol = await service.listMemorySnapshots(botId);
+		// 記憶が変わるたびに増え、6 件目で一番古いものが消える
 		for (let index = 0; index < 5; index++) {
+			await service.writeHomeFile(botId, 'memory/release.md', `細かい話 ${index}\n`);
 			await chat();
 		}
 		const listed = await service.listMemorySnapshots(botId);
@@ -440,6 +446,7 @@ suite('Paradis bot homes', () => {
 		const offList = await service.listMemorySnapshots(botId);
 		assert.deepStrictEqual({
 			firstChat,
+			unchanged,
 			patrol: patrol.ok,
 			afterPatrol,
 			listed,
@@ -447,11 +454,12 @@ suite('Paradis bot homes', () => {
 			offList: offList.ok ? 'ok' : offList.code,
 		}, {
 			firstChat: true,
+			unchanged: { ok: true, value: [{ takenAt: 11000, files: 1, total: 1, partial: false }] },
 			patrol: true,
-			// 見回りでは取らない（会話の起動の 1 件だけ）
+			// 見回りでは取らない（記憶は変わったが、会話の起動の 1 件だけ）
 			afterPatrol: { ok: true, value: [{ takenAt: 11000, files: 1, total: 1, partial: false }] },
-			// 6 件取って、古い 1 件（11000）が消えた
-			listed: { ok: true, value: [17000, 16000, 15000, 14000, 13000].map(takenAt => ({ takenAt, files: 2, total: 2, partial: false })) },
+			// 6 件になって、古い 1 件（11000）が消えた
+			listed: { ok: true, value: [19000, 18000, 17000, 16000, 15000].map(takenAt => ({ takenAt, files: 2, total: 2, partial: false })) },
 			offLaunch: 'disabled',
 			offList: 'disabled',
 		});

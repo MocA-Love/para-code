@@ -13,6 +13,7 @@
 // `memory/` の直下）だけで、写しに別のパス（`SOUL.md`・`AGENTS.md` など）があっても書かない（`skipped` で知らせる）。
 // Bot を消したら写しも消す。
 
+import { createHash } from 'crypto';
 import { promises as fs } from 'fs';
 import { join } from '../../../../base/common/path.js';
 import { isRecord } from '../../../common/paradisGuards.js';
@@ -58,6 +59,18 @@ function isMemoryPath(path: string): boolean {
 	return /^[^/\\]+$/.test(name) && name !== '.' && name !== '..';
 }
 
+/** 写しの中身（パスと文の組）のハッシュ。並びに依らない。 */
+function contentHash(files: Record<string, unknown>): string {
+	const hash = createHash('sha256');
+	for (const path of Object.keys(files).sort()) {
+		const text = files[path];
+		if (typeof text === 'string') {
+			hash.update(JSON.stringify([path, text]));
+		}
+	}
+	return hash.digest('hex');
+}
+
 function missing(error: unknown): boolean {
 	return (error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
 }
@@ -90,7 +103,8 @@ export class ParadisBotMemorySnapshots {
 
 	/**
 	 * 記憶のファイルを写す。写したファイルの数と、上限で打ち切って一部だけになったかを返す。古い写しは
-	 * {@link PARADIS_BOT_MEMORY_SNAPSHOTS_KEEP} 件を残して消す。
+	 * {@link PARADIS_BOT_MEMORY_SNAPSHOTS_KEEP} 件を残して消す。直前の写しとファイルの一覧も中身も同じなら新しく
+	 * 取らず、直前の写しを返す（記憶の変わらない会話を開くたびに、戻したい古い写しが押し出されないように）。
 	 */
 	async take(bot: SnapshotBot): Promise<IParadisBotMemorySnapshot> {
 		const files: Record<string, string> = {};
@@ -108,9 +122,13 @@ export class ParadisBotMemorySnapshots {
 			files[path] = text;
 		}
 		const folder = this.folder(bot);
+		const existing = await this.list(bot);
+		const previous = existing.length > 0 ? await this.read(bot, existing[0]) : undefined;
+		if (previous !== undefined && contentHash(previous.files) === contentHash(files)) {
+			return previous.record;
+		}
 		await fs.mkdir(folder, { recursive: true, mode: 0o700 });
 		let takenAt = this.now();
-		const existing = await this.list(bot);
 		// 同じミリ秒に 2 回取っても上書きしない
 		while (existing.includes(takenAt)) {
 			takenAt++;
@@ -131,16 +149,25 @@ export class ParadisBotMemorySnapshots {
 	async listSnapshots(bot: SnapshotBot): Promise<IParadisBotMemorySnapshot[]> {
 		const result: IParadisBotMemorySnapshot[] = [];
 		for (const takenAt of await this.list(bot)) {
-			try {
-				const value: unknown = JSON.parse(await fs.readFile(join(this.folder(bot), `${takenAt}.json`), 'utf8'));
-				const files = isRecord(value) && isRecord(value.files) ? Object.values(value.files).filter(text => typeof text === 'string').length : 0;
-				const total = isRecord(value) && typeof value.total === 'number' && Number.isSafeInteger(value.total) && value.total >= files ? value.total : files;
-				result.push({ takenAt, files, total, partial: isRecord(value) && value.partial === true });
-			} catch {
-				// 消えた・壊れた写しは一覧に出さない
+			const snapshot = await this.read(bot, takenAt);
+			if (snapshot !== undefined) {
+				result.push(snapshot.record);
 			}
 		}
 		return result;
+	}
+
+	/** 写しを 1 つ読む。消えた・壊れた写しは undefined。 */
+	private async read(bot: SnapshotBot, takenAt: number): Promise<{ readonly record: IParadisBotMemorySnapshot; readonly files: Record<string, unknown> } | undefined> {
+		try {
+			const value: unknown = JSON.parse(await fs.readFile(join(this.folder(bot), `${takenAt}.json`), 'utf8'));
+			const files = isRecord(value) && isRecord(value.files) ? value.files : {};
+			const count = Object.values(files).filter(text => typeof text === 'string').length;
+			const total = isRecord(value) && typeof value.total === 'number' && Number.isSafeInteger(value.total) && value.total >= count ? value.total : count;
+			return { record: { takenAt, files: count, total, partial: isRecord(value) && value.partial === true }, files };
+		} catch {
+			return undefined;
+		}
 	}
 
 	/** その Bot の写しを全部消す（Bot を消したとき）。 */
