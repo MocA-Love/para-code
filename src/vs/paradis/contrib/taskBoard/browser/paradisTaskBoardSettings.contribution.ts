@@ -21,11 +21,11 @@ Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Configuration).regis
 	properties: {
 		[PARADIS_TASK_BOARD_BRIDGE_ENABLED_SETTING]: {
 			type: 'boolean',
-			default: false,
+			default: true,
 			scope: ConfigurationScope.APPLICATION,
 			restricted: true,
 			// allow-any-unicode-next-line
-			markdownDescription: localize('paradis.taskBoard.bridge.enabled', "（開発中の機能）タスクボードが、この PC の Para Code でエージェントを起動し、その様子を見て、質問や許可に答えられるようにします。つなげるのは、この PC の中から、Para Code が作った鍵を読めるプログラムだけです。オンの間は、同じ PC で動くエージェントもその鍵を読めば答えを送れるので、タスクボードを使うときだけオンにしてください。"),
+			markdownDescription: localize('paradis.taskBoard.bridge.enabled', "タスクボードが、この PC でエージェントを起動し、質問や許可に答えられるようにします。つなげるのは、Para Code が起動したタスクボードだけです。オフにすると、タスクボードからエージェントを動かせません。"),
 		},
 	},
 });
