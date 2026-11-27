@@ -417,6 +417,8 @@ suite('Paradis bot homes', () => {
 			uuid: () => `id${++ids}`,
 			enabled: () => enabled,
 			memorySnapshots: new ParadisBotMemorySnapshots(join(userData, 'snapshots'), homes, () => clock),
+			// 見回りは読むだけの用意ができたものとして起動する
+			preparePatrol: async () => ({ agent: 'claude', runFolder: join(userData, 'run'), homeFolder: root, instructionsFile: join(userData, 'run', 'AGENTS.md'), settingsFile: join(userData, 's.json'), mcpConfigFile: join(userData, 'm.json') }),
 		}));
 		const created = await service.createBot({ name: 'リリース係', agent: 'claude' });
 		assert.ok(created.ok);
@@ -550,6 +552,10 @@ suite('Paradis bot homes', () => {
 		const other = await service.createBot({ name: 'B', agent: 'opencode' });
 		assert.ok(claude.ok && other.ok);
 		const patrol = await service.requestLaunch(claude.value.id, 'patrol');
+		// 同じ Bot の見回りは同時に 1 つまで（起動の途中なら 2 つ目を断り、やめれば起動できる）
+		const second = await service.requestLaunch(claude.value.id, 'patrol');
+		assert.ok(patrol.ok);
+		await service.cancelLaunch(patrol.value.launchId);
 		const chat = await service.requestLaunch(claude.value.id, 'chat');
 		const unsupported = await service.requestLaunch(other.value.id, 'patrol');
 		settings.command = 'claude --dangerously-skip-permissions {prompt}';
@@ -557,6 +563,9 @@ suite('Paradis bot homes', () => {
 		settings.command = 'claude {prompt}';
 		settings.modelFlag = '--model m1 --dangerously-skip-permissions';
 		const modelOk = await service.requestLaunch(claude.value.id, 'patrol');
+		if (modelOk.ok) {
+			await service.cancelLaunch(modelOk.value.launchId);
+		}
 		await service.updateBot(claude.value.id, { modelId: 'm1' });
 		const unsafeModel = await service.requestLaunch(claude.value.id, 'patrol');
 		settings.modelFlag = '--model m1';
@@ -567,6 +576,7 @@ suite('Paradis bot homes', () => {
 		await service.removeBot(other.value.id);
 		assert.deepStrictEqual({
 			forgotten,
+			second: !second.ok && second.code,
 			patrol: patrol.ok && [patrol.value.permissionId, patrol.value.extraFlags, patrol.value.cwd],
 			chat: chat.ok && chat.value.permissionId,
 			unsupported: !unsupported.ok && unsupported.code,
@@ -581,6 +591,7 @@ suite('Paradis bot homes', () => {
 			chat: 'skip-permissions',
 			unsupported: 'unsupported',
 			forgotten: ['id2'],
+			second: 'launching',
 			unsafe: 'unsafe_template',
 			modelOk: true,
 			unsafeModel: 'unsafe_template',
@@ -615,6 +626,11 @@ suite('Paradis bot homes', () => {
 		// 見回りのフォルダの親に `.claude/` があれば断る
 		await fs.mkdir(join(data, 'planted', '.claude'), { recursive: true });
 		const planted = await paradisPrepareBotPatrolLaunch(environment(1, [], join(data, 'planted', 'runs')), 'codex', 'b1', home);
+		// userData のパスが symlink のときは、実体のパスの親も確かめる
+		await fs.mkdir(join(data, 'real', '.claude'), { recursive: true });
+		await fs.mkdir(join(data, 'real', 'inner'), { recursive: true });
+		await fs.symlink(join(data, 'real', 'inner'), join(data, 'link'));
+		const linked = await paradisPrepareBotPatrolLaunch(environment(1, [], join(data, 'link', 'runs')), 'codex', 'b1', home);
 		assert.ok(typeof claude !== 'string' && claude.agent === 'claude' && typeof again !== 'string');
 		assert.deepStrictEqual({
 			files: [claude.runFolder, claude.instructionsFile, claude.settingsFile, claude.mcpConfigFile].map(path => path.slice(data.length)),
@@ -630,6 +646,7 @@ suite('Paradis bot homes', () => {
 			unreadable: typeof unreadable === 'string' && unreadable.includes('[mcp_servers.<name>]'),
 			again: [again.runFolder === codex.runFolder, await fs.readdir(again.runFolder)],
 			planted: typeof planted === 'string' && planted.includes('.claude') && planted.includes('Remove it'),
+			linked: typeof linked === 'string' && linked.includes(join('real', '.claude')),
 			runs: await fs.readdir(join(data, 'patrol-runs')),
 		}, {
 			files: ['/patrol-runs/b_1', '/patrol-runs/b_1/AGENTS.md', '/patrol/b_1.claude-settings.json', '/patrol/b_1.claude-mcp.json'],
@@ -645,6 +662,7 @@ suite('Paradis bot homes', () => {
 			unreadable: true,
 			again: [true, ['AGENTS.md']],
 			planted: true,
+			linked: true,
 			runs: ['b1', 'b_1'],
 		});
 	});

@@ -515,6 +515,11 @@ export class ParadisBotsService extends Disposable {
 			if (patrolAgent !== undefined && !paradisBotPatrolSupported(patrolAgent)) {
 				return { ok: false, code: 'unsupported', message: 'Para Code cannot limit this agent to reading, so it does not start a look-around with it.' };
 			}
+			// 同じ Bot の見回りは同時に 1 つまで（見回りのフォルダは Bot ごとに 1 つで、起動のたびに空にするため）
+			const patrolInUse = patrolAgent !== undefined ? this.panes.patrolInUse(botId, this.now()) : undefined;
+			if (patrolInUse !== undefined) {
+				return { ok: false, code: patrolInUse === 'working' ? 'patrol_busy' : 'launching', message: patrolInUse === 'working' ? 'A look-around of this bot is still running.' : 'A look-around of this bot is starting in another window.' };
+			}
 			if (patrolAgent !== undefined) {
 				const template = this.agentTemplate?.(patrolAgent);
 				const templateFlags = template !== undefined ? paradisResolveAgentLaunchFlags(template, { modelId: bot.modelId, effortId: bot.effortId }) : undefined;
