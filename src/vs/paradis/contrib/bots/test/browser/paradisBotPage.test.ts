@@ -335,6 +335,7 @@ suite('Paradis bots page overlay', () => {
 			row.getElementsByClassName('paradis-bot-snapshots-count')[0].textContent,
 			row.getElementsByClassName('paradis-chip').length,
 			row.getElementsByClassName('paradis-button').length,
+			row.classList.contains('older'),
 		]);
 		(container.querySelector('.paradis-bot-snapshots-row .paradis-button') as HTMLElement).click();
 		await settle();
@@ -348,7 +349,7 @@ suite('Paradis bots page overlay', () => {
 			result,
 			warnings,
 		}, {
-			rows: [['206 件中 200 件だけ写しました', 1, 1], ['3 件', 0, 0]],
+			rows: [['206 件中 200 件だけ写しました', 1, 1, false], ['3 件', 0, 0, true]],
 			calls: ['undo'],
 			confirm: [['取り消す', true, true]],
 			result: [

@@ -358,6 +358,8 @@ export class ParadisBotSettingsPanel {
 			const list = DOM.append(section, $('.paradis-bot-snapshots-list'));
 			snapshots.forEach((snapshot, index) => {
 				const row = DOM.append(list, $('.paradis-bot-snapshots-row'));
+				// 取り消しで戻せるのは一番新しい写しだけなので、古い写しの行は淡く出す
+				row.classList.toggle('older', index > 0);
 				DOM.append(row, $('span.paradis-bot-snapshots-time')).textContent = new Date(snapshot.takenAt).toLocaleString();
 				DOM.append(row, $('span.paradis-bot-snapshots-count')).textContent = paradisBotMemorySnapshotCount(snapshot);
 				if (snapshot.partial) {
