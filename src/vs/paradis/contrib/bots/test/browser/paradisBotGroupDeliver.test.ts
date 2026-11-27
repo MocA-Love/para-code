@@ -9,9 +9,7 @@
 import assert from 'assert';
 import { Emitter } from '../../../../../base/common/event.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import type { ParadisAgentChatSendOutcome } from '../../../agentChat/browser/paradisAgentChatInput.js';
-import { IParadisBotGroupDeliverDependencies, ParadisBotGroupDeliverQueue, paradisBotGroupDeliver, paradisWaitForLoaded } from '../../browser/paradisBotGroupDeliver.js';
-import { ParadisBotGroupRelayLimiter } from '../../common/paradisBotGroups.js';
+import { IParadisBotGroupDeliverDependencies, paradisBotGroupDeliver, paradisWaitForLoaded } from '../../browser/paradisBotGroupDeliver.js';
 
 const HASH_A = 'a'.repeat(64);
 
@@ -19,94 +17,27 @@ suite('Paradis bot group deliver', () => {
 
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function deps(overrides: Partial<IParadisBotGroupDeliverDependencies> & { activity?: 'idle' | 'working' | 'patrolling'; outcome?: ParadisAgentChatSendOutcome } = {}): IParadisBotGroupDeliverDependencies & { sent: string[] } {
-		const sent: string[] = [];
+	function deps(overrides: Partial<IParadisBotGroupDeliverDependencies> = {}): IParadisBotGroupDeliverDependencies {
 		return {
-			sent,
 			waitForLoaded: async () => true,
 			groups: () => [{ members: ['a', 'b'] }],
-			bot: botId => botId === 'b' ? { paused: false, activity: overrides.activity ?? 'idle' } : botId === 'a' ? { paused: false, activity: 'idle' } : undefined,
 			botIdByPaneHash: async hash => hash === HASH_A ? 'a' : undefined,
-			whereIs: async () => 'here',
-			send: async (botId, text, options) => {
-				sent.push(`${botId}:${text}:${options.safeOnly}`);
-				return overrides.outcome ?? { kind: 'sent' };
-			},
-			limiter: new ParadisBotGroupRelayLimiter(),
-			now: () => 0,
 			...overrides,
 		};
 	}
 
-	test('種類ごとの戻り値: 届けた・作業中は順番待ち・受け取らなかった・届いたか分からない。断ったら何も送らない', async () => {
-		const notMember = deps();
-		const elsewhereNone = deps({ whereIs: async () => 'none' });
+	test('同じグループのメンバーへの伝言は受け箱に入れる（queued）。メンバーでない・自分宛ては断る', async () => {
 		assert.deepStrictEqual({
-			delivered: await paradisBotGroupDeliver(deps(), HASH_A, 'b', '/model x'),
-			patrolling: await paradisBotGroupDeliver(deps({ activity: 'patrolling' }), HASH_A, 'b', 'x'),
-			queued: await paradisBotGroupDeliver(deps({ activity: 'working' }), HASH_A, 'b', 'x'),
-			unsafe: await paradisBotGroupDeliver(deps({ activity: 'working', outcome: { kind: 'refused', code: 'unsafe', message: '届けられない' } }), HASH_A, 'b', 'x'),
-			drafting: await paradisBotGroupDeliver(deps({ outcome: { kind: 'refused', code: 'draft', message: '書きかけ' } }), HASH_A, 'b', 'x'),
-			prompt: await paradisBotGroupDeliver(deps({ outcome: { kind: 'refused', message: '質問' } }), HASH_A, 'b', 'x'),
-			pastedNotSent: await paradisBotGroupDeliver(deps({ outcome: { kind: 'unknown', message: 'Enter なし' } }), HASH_A, 'b', 'x'),
-			notMember: await paradisBotGroupDeliver(notMember, 'b'.repeat(64), 'b', 'x'),
-			notRunning: await paradisBotGroupDeliver(elsewhereNone, HASH_A, 'b', 'x'),
-			sentWhenRefused: [...notMember.sent, ...elsewhereNone.sent],
+			queued: await paradisBotGroupDeliver(deps(), HASH_A, 'b'),
+			notMember: await paradisBotGroupDeliver(deps(), 'b'.repeat(64), 'b'),
+			otherGroup: await paradisBotGroupDeliver(deps(), HASH_A, 'c'),
+			self: await paradisBotGroupDeliver(deps(), HASH_A, 'a'),
 		}, {
-			delivered: { kind: 'delivered' },
-			patrolling: { kind: 'delivered' },
 			queued: { kind: 'queued' },
-			unsafe: { kind: 'refused', reason: 'Para Code cannot see that bot\'s input box, so it does not type bot messages into it. Only Claude Code bots with Para Code\'s input mod running can take them; sending it again only helps after that bot\'s owner has used its input once' },
-			drafting: { kind: 'refused', reason: 'its owner is typing in that bot\'s input' },
-			prompt: { kind: 'refused', reason: 'that bot cannot take a message now, for example while a question or permission prompt is open' },
-			pastedNotSent: { kind: 'unknown', reason: 'Para Code may have typed the message into that bot\'s input without sending it' },
 			notMember: { kind: 'refused', reason: 'you and that bot are not in the same group, so do not send it again' },
-			notRunning: { kind: 'refused', reason: 'that bot is not running, or its chat is no longer open in this Para Code window' },
-			sentWhenRefused: [],
+			otherGroup: { kind: 'refused', reason: 'you and that bot are not in the same group, so do not send it again' },
+			self: { kind: 'refused', reason: 'it was addressed to yourself, so do not send it again' },
 		});
-	});
-
-	test('先頭の / を全角にして送り、受け取らなかった伝言は宛先の回数に数えない', async () => {
-		const refusing = deps({ outcome: { kind: 'refused', message: '質問' } });
-		for (let i = 0; i < 4; i++) {
-			await paradisBotGroupDeliver(refusing, HASH_A, 'b', 'x');
-		}
-		const accepting = deps();
-		const results = [];
-		for (let i = 0; i < 4; i++) {
-			results.push((await paradisBotGroupDeliver(accepting, HASH_A, 'b', i === 0 ? '/model x' : 'x')).kind);
-		}
-		assert.deepStrictEqual({ refusedSends: refusing.sent.length, results, first: accepting.sent[0] }, { refusedSends: 4, results: ['delivered', 'delivered', 'delivered', 'refused'], first: 'b:\uFF0Fmodel x:true' });
-	});
-
-	test('同じ宛先へ並んで来た伝言は 1 つずつ送る（前の送信が終わるまで次を始めない）。別の宛先は待たない', async () => {
-		const log: string[] = [];
-		let release: () => void = () => { };
-		const first = new Promise<void>(resolve => { release = resolve; });
-		const waits: number[] = [];
-		let clock = 0;
-		const queue = new ParadisBotGroupDeliverQueue(deps({
-			now: () => clock,
-			groups: () => [{ members: ['a', 'b', 'c'] }],
-			bot: () => ({ paused: false, activity: 'idle' }),
-			send: async (botId, text) => {
-				log.push(`start ${botId}:${text}`);
-				if (text === '1') {
-					await first;
-				}
-				log.push(`end ${botId}:${text}`);
-				clock += 100;
-				return { kind: 'sent' };
-			},
-		}), 1000, async ms => { waits.push(ms); clock += ms; });
-		const one = queue.deliver(HASH_A, 'b', '1');
-		const two = queue.deliver(HASH_A, 'b', '2');
-		const other = queue.deliver(HASH_A, 'c', '3');
-		await other;
-		release();
-		await Promise.all([one, two]);
-		// 打ち込んだ宛先へは、入力欄が空になった知らせを待つ間（1 秒）を空けてから次を打つ
-		assert.deepStrictEqual({ log, waits }, { log: ['start b:1', 'start c:3', 'end c:3', 'end b:1', 'start b:2', 'end b:2'], waits: [1000] });
 	});
 
 	test('台帳を読み込む前に来た最初の伝言は、読み込みを待ってから照らす。読めなければ「同じグループでない」にしない', async () => {
@@ -118,15 +49,15 @@ suite('Paradis bot group deliver', () => {
 		const waiting = paradisBotGroupDeliver(deps({
 			waitForLoaded: () => paradisWaitForLoaded([botsLedger, groupsLedger], 1000),
 			groups: () => [{ members }],
-		}), HASH_A, 'b', 'x');
+		}), HASH_A, 'b');
 		botsLedger.snapshot.revision = 1;
 		bots.fire();
 		members = ['a', 'b'];
 		groupsLedger.snapshot.revision = 1;
 		groups.fire();
-		const notLoaded = await paradisBotGroupDeliver(deps({ waitForLoaded: () => paradisWaitForLoaded([{ snapshot: { revision: 0 }, onDidChange: groups.event }], 1) }), HASH_A, 'b', 'x');
+		const notLoaded = await paradisBotGroupDeliver(deps({ waitForLoaded: () => paradisWaitForLoaded([{ snapshot: { revision: 0 }, onDidChange: groups.event }], 1) }), HASH_A, 'b');
 		assert.deepStrictEqual({ first: await waiting, notLoaded }, {
-			first: { kind: 'delivered' },
+			first: { kind: 'queued' },
 			notLoaded: { kind: 'refused', reason: 'Para Code in that bot\'s window has not finished loading the bot groups yet' },
 		});
 	});

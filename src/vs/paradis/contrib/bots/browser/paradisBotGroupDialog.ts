@@ -29,7 +29,7 @@ import { IParadisBotGroup, PARADIS_BOT_GROUP_LIMITS, ParadisBotGroupReplyMode } 
 import { IParadisBotGroupsService } from '../common/paradisBotGroupsApi.js';
 import { IParadisBotsService } from '../common/paradisBotsApi.js';
 import { paradisBotFace } from '../common/paradisBotsBandModel.js';
-import { paradisBotCanReceiveBotMessages, paradisBotCannotReceiveLabel, paradisBotGroupDialogProblem } from '../common/paradisBotGroupRoomModel.js';
+import { paradisBotGroupDialogProblem } from '../common/paradisBotGroupRoomModel.js';
 import { renderParadisBotFace } from './paradisBotFace.js';
 
 let activeDialog: ParadisBotGroupDialog | undefined;
@@ -96,9 +96,6 @@ export class ParadisBotGroupDialog extends Disposable {
 			const row = dom.append(list, dom.$('.pbgd-member'));
 			renderParadisBotFace(row, paradisBotFace(bot));
 			const check = this._register(new ParadisCheck(row, { label: bot.name, checked: group?.members.includes(bot.id) ?? false }));
-			if (!paradisBotCanReceiveBotMessages(bot.agent)) {
-				dom.append(row, dom.$('span.pbgd-member-note')).textContent = paradisBotCannotReceiveLabel();
-			}
 			this._register(check.onDidChange(() => {
 				this.touched = true;
 				this.update();
