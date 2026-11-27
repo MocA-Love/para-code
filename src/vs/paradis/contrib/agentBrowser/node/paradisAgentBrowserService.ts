@@ -3807,6 +3807,7 @@ export class ParadisAgentBrowserService extends Disposable {
 			classifyCaller: (): Promise<ParadisMcpCallerKind> => this._classifyCaller(ingressLease.token, socket),
 			callOwningWindow: <T>(request: IParadisMcpOwningWindowRequest, signal?: AbortSignal): Promise<ParadisMcpOwningWindowResult<T>> => this._callOwningWindow<T>(ingressLease, request, signal),
 			callPaneWindow: <T>(paneToken: string, request: IParadisMcpOwningWindowRequest, signal?: AbortSignal): Promise<ParadisMcpOwningWindowResult<T>> => this._callOwningWindow<T>(ingressLease, request, signal, paneToken),
+			paneWindowReachable: (paneToken: string): boolean => this._paneWindowCtx(paneToken) !== undefined,
 			getPaneAgentStatus: (paneToken: string): IParadisMcpPaneAgentStatus | undefined => {
 				const entry = this._paneStatuses.get(paneToken);
 				const unconfirmedRelease = this._unconfirmedReleaseOf(paneToken);
@@ -8497,6 +8498,19 @@ export class ParadisAgentBrowserService extends Disposable {
 	 * `_paneShells`（トークン → ウィンドウctx）で行い、取り違えを防ぐ。
 	 * 失敗理由は LLM がそのまま読める英語メッセージで返し、内部例外は外へ出さない。
 	 */
+	/** そのペインを所有するウィンドウ（分からなければ undefined）。 */
+	private _paneOwner(token: string): { readonly windowCtx: string } | undefined {
+		// 接続先のペインはシェルの PID が分からず `_paneShells` に載らないことがある（SSH の再読み込み直後など）
+		const remoteWindowCtx = this._remotePaneWindows.get(token);
+		return this._paneShells.get(token) ?? (remoteWindowCtx !== undefined ? { windowCtx: remoteWindowCtx } : undefined);
+	}
+
+	/** そのペインを所有するウィンドウが分かり、今つながっていればその ctx。 */
+	private _paneWindowCtx(token: string): string | undefined {
+		const pane = this._paneOwner(token);
+		return pane !== undefined && this.ipcServer.connections.some(connection => connection.ctx === pane.windowCtx) ? pane.windowCtx : undefined;
+	}
+
 	private async _callOwningWindow<T>(
 		ingressLease: IParadisAgentBrowserIngressLease,
 		request: IParadisMcpOwningWindowRequest,
@@ -8506,9 +8520,7 @@ export class ParadisAgentBrowserService extends Disposable {
 	): Promise<ParadisMcpOwningWindowResult<T>> {
 		this._requireIngressLease(ingressLease);
 		const token = targetPaneToken ?? ingressLease.token;
-		// 接続先のペインはシェルの PID が分からず `_paneShells` に載らないことがある（SSH の再読み込み直後など）
-		const remoteWindowCtx = this._remotePaneWindows.get(token);
-		const pane = this._paneShells.get(token) ?? (remoteWindowCtx !== undefined ? { windowCtx: remoteWindowCtx } : undefined);
+		const pane = this._paneOwner(token);
 		if (!pane) {
 			return { ok: false, error: 'Para Code could not identify the window that owns this terminal pane (the pane may have just been created, or Para Code was restarted after this CLI started). Retry in a few seconds; if it keeps failing, re-launch this CLI in a terminal pane inside Para Code.' };
 		}

@@ -22,6 +22,11 @@ export function paradisBotGroupRecordHead(record: Pick<IParadisBotGroupRecord, '
 	}
 }
 
+/** 記録の 1 行に添える印（Bot 同士の伝言を届けられなかったとき）。無ければ undefined。 */
+export function paradisBotGroupRecordMark(record: Pick<IParadisBotGroupRecord, 'undelivered'>): string | undefined {
+	return record.undelivered === true ? localize('paradis.botGroups.record.undelivered', "届けられなかった") : undefined;
+}
+
 /** 名指しを読めなかったときの文。読めたら undefined。 */
 export function paradisBotGroupMentionProblem(result: ParadisBotGroupMentionResult): string | undefined {
 	if (result.ok) {

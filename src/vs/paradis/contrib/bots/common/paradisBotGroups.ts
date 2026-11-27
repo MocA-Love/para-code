@@ -63,10 +63,15 @@ export interface IParadisBotGroupRecord {
 	readonly kind: ParadisBotGroupRecordKind;
 	/** あなた（{@link PARADIS_BOT_GROUP_OWNER}）か、送った Bot の id。 */
 	readonly from: string;
-	/** 実際に届けた Bot の id（届かなかった Bot は入れない）。 */
+	/**
+	 * 宛先の Bot の id。あなたの `sent` は実際に届いた Bot だけを入れる。Bot 同士の伝言（`asked`・`told`）は道具が届ける前に
+	 * 書くので宛先を入れ、届けられなかったら {@link undelivered} が付く。
+	 */
 	readonly to: readonly string[];
 	readonly text: string;
 	readonly at: number;
+	/** Bot 同士の伝言を届けられなかった（伝言の道具が届けに失敗した後に {@link paradisBotGroupMarkUndelivered} で付ける）。 */
+	readonly undelivered?: true;
 }
 
 export interface IParadisBotGroupsState {
@@ -205,6 +210,23 @@ export function paradisBotGroupAppendRecord(state: IParadisBotGroupsState, group
 	const record: IParadisBotGroupRecord = { id: state.nextRecordId, groupId, kind: input.kind, from: input.from, to, text: input.text.slice(0, PARADIS_BOT_GROUP_LIMITS.recordText), at: now };
 	const records = [...state.records, record];
 	return { ok: true, state: { ...state, records: records.slice(Math.max(0, records.length - PARADIS_BOT_GROUP_LIMITS.records)), nextRecordId: state.nextRecordId + 1 }, value: record };
+}
+
+/**
+ * Bot 同士の伝言の記録に「届けられなかった」の印を付ける。記録の id は伝言の道具の口では文字列なので、整数に戻せない値・
+ * 見つからない記録（上限で既に捨てた分を含む）・別のグループの記録・あなたの `sent`・既に印のある記録は、変えずに断る。
+ */
+export function paradisBotGroupMarkUndelivered(state: IParadisBotGroupsState, groupId: string, recordId: string): ParadisBotGroupsResult<IParadisBotGroupRecord> {
+	if (!writable(state)) {
+		return refuse('read_only', READ_ONLY);
+	}
+	const id = /^[1-9]\d{0,15}$/u.test(recordId) ? Number(recordId) : undefined;
+	const record = id !== undefined && Number.isSafeInteger(id) ? state.records.find(existing => existing.id === id && existing.groupId === groupId) : undefined;
+	if (record === undefined || record.kind === 'sent' || record.undelivered === true) {
+		return refuse('not_found', 'There is no such message.');
+	}
+	const marked: IParadisBotGroupRecord = { ...record, undelivered: true };
+	return { ok: true, state: { ...state, records: state.records.map(existing => existing === record ? marked : existing) }, value: marked };
 }
 
 /** 台帳に残っている Bot だけのメンバー（消した Bot を並べない）。 */
@@ -349,9 +371,9 @@ export function paradisBotGroupDeliverRefusalMessage(refusal: ParadisBotGroupDel
 	switch (refusal) {
 		case 'not_a_member': return 'You can only send messages to other bots in a group you are in.';
 		case 'self': return 'You cannot send a message to yourself.';
-		case 'not_running': return 'That bot is not running, or its chat is no longer open in the Para Code window it was in. Try again later, or write it in an item instead.';
-		case 'busy': return 'That bot is busy now. Try again later; the message was not sent.';
-		case 'rate_limited': return `You already sent ${PARADIS_BOT_GROUP_RELAY_PER_MINUTE} messages to that bot in the last minute. Wait and try again later; the message was not sent.`;
+		case 'not_running': return 'That bot is not running, or its chat is no longer open in the Para Code window it was in. Send the message again after a while, or tell your owner.';
+		case 'busy': return 'That bot is busy now. Send the message again after a while.';
+		case 'rate_limited': return `The limit has been reached: that bot takes up to ${PARADIS_BOT_GROUP_RELAY_PER_MINUTE} messages a minute. Do not keep the exchange going: stop, and tell your owner what you wanted to say.`;
 	}
 }
 
@@ -382,7 +404,8 @@ function storedRecord(value: unknown, groups: ReadonlySet<string>): IParadisBotG
 		|| !isId(value.from) || !Array.isArray(value.to) || !value.to.every(isId) || typeof value.text !== 'string' || typeof value.at !== 'number' || !Number.isFinite(value.at)) {
 		return undefined;
 	}
-	return { id: value.id, groupId: value.groupId, kind, from: value.from, to: value.to, text: value.text.slice(0, PARADIS_BOT_GROUP_LIMITS.recordText), at: value.at };
+	const record: IParadisBotGroupRecord = { id: value.id, groupId: value.groupId, kind, from: value.from, to: value.to, text: value.text.slice(0, PARADIS_BOT_GROUP_LIMITS.recordText), at: value.at };
+	return value.undelivered === true && kind !== 'sent' ? { ...record, undelivered: true } : record;
 }
 
 /**
