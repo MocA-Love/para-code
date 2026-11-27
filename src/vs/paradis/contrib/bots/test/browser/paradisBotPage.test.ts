@@ -28,6 +28,8 @@ import { ITerminalService } from '../../../../../workbench/contrib/terminal/brow
 import { IParadisAgentChatService } from '../../../agentChat/browser/paradisAgentChatService.js';
 import { IParadisBotPaneResolver, ParadisBotPage } from '../../browser/paradisBotPage.js';
 import { IParadisBotPatrolPort } from '../../browser/paradisBotPatrol.js';
+import { paradisRequestBotPageTab } from '../../browser/paradisBotPageTabRequest.js';
+import { IParadisBotGroupsService } from '../../common/paradisBotGroupsApi.js';
 import { IParadisBotItem } from '../../common/paradisBotItems.js';
 import { IParadisBotSummary, IParadisBotsService, PARADIS_BOTS_ENABLED_SETTING } from '../../common/paradisBotsApi.js';
 
@@ -109,7 +111,18 @@ suite('Paradis bots page overlay', () => {
 		instantiation.stub(IParadisDialogService, { confirm: async (confirmation: IParadisConfirmation) => { confirms.push(confirmation); return { confirmed: true }; } } as unknown as IParadisDialogService);
 		instantiation.stub(IContextViewService, {});
 		let draftTaken = false;
-		instantiation.stub(IParadisAgentChatService, { insertDraft: (id: number, text: string) => { calls.push(`draft ${id} ${text}`); return draftTaken ? 'inserted' : false; } } as unknown as IParadisAgentChatService);
+		instantiation.stub(IParadisAgentChatService, {
+			insertDraft: (id: number, text: string) => { calls.push(`draft ${id} ${text}`); return draftTaken ? 'inserted' : false; },
+			sendMessageToPane: async (id: number, text: string) => { calls.push(`message ${id} ${text}`); return undefined; },
+		} as unknown as IParadisAgentChatService);
+		// 受け箱: リリース係宛ての未読 2 通と既読 1 通
+		const groupsChanged = disposables.add(new Emitter<void>());
+		const inboxRecord = (id: number, readAt?: number) => ({ id, groupId: 'g1', kind: 'told' as const, from: 'review', to: ['release'], text: 't', at: 1, ...(readAt !== undefined ? { readAt } : {}) });
+		const groupsSnapshot = { revision: 1, readOnly: false, groups: [{ id: 'g1', name: '班', members: ['release', 'review'], replyMode: 'mentioned' as const, createdAt: 1, updatedAt: 1 }], records: [inboxRecord(1), inboxRecord(2), inboxRecord(3, 9)] };
+		instantiation.stub(IParadisBotGroupsService, {
+			get snapshot() { return groupsSnapshot; },
+			onDidChange: groupsChanged.event,
+		} as Partial<IParadisBotGroupsService> as IParadisBotGroupsService);
 		instantiation.stub(ITerminalService, {
 			getInstanceFromId: (id: number) => id === 1 ? {
 				isDisposed: false, sendText: async (text: string, execute: boolean, paste: boolean) => {
@@ -136,7 +149,7 @@ suite('Paradis bots page overlay', () => {
 		const resolver: IParadisBotPaneResolver = { onDidChange: changed.event, botFor: async instanceId => panes.get(instanceId) };
 		const container = document.createElement('div');
 		const page = disposables.add(instantiation.createInstance(ParadisBotPage, container, resolver, patrol, measureClamp));
-		return { container, page, configuration, panes, changed, answered, disposables, snapshotGone, sendFails, warnings, failAnswer, calls, confirms, files, bots, botsChanged, statuses, chatShown: () => { draftTaken = true; } };
+		return { groupsSnapshot, groupsChanged, container, page, configuration, panes, changed, answered, disposables, snapshotGone, sendFails, warnings, failAnswer, calls, confirms, files, bots, botsChanged, statuses, chatShown: () => { draftTaken = true; } };
 	}
 
 	const settle = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -152,6 +165,37 @@ suite('Paradis bots page overlay', () => {
 			...(page ? { inset: page.topInset() } : {}),
 		};
 	}
+
+	test('受け箱の未読を見出しに出し、待機中なら「読ませる」で受け箱を見るよう Bot に送る。作業中は押せない。帯の印から開くと会話のタブ', async () => {
+		const { container, page, calls, bots, botsChanged, groupsSnapshot, groupsChanged } = setup();
+		page.setInstance(1);
+		await settle();
+		const button = () => container.getElementsByClassName('paradis-bot-page-inbox')[0] as HTMLButtonElement;
+		const look = () => [button().hidden, button().disabled, button().textContent];
+		const idle = look();
+		(container.getElementsByClassName('paradis-bot-page-tab')[1] as HTMLElement).click();
+		button().click();
+		await settle();
+		const selectedAfterAsk = (container.getElementsByClassName('paradis-bot-page-tab selected')[0] as HTMLElement).textContent;
+		bots[0] = { ...bots[0], activity: 'working' };
+		botsChanged.fire();
+		const working = look();
+		groupsSnapshot.records = [];
+		groupsChanged.fire();
+		const empty = button().hidden;
+		// 帯の受け箱の印から開いた（ほかのタブを見ていても会話を出す）
+		(container.getElementsByClassName('paradis-bot-page-tab')[2] as HTMLElement).click();
+		paradisRequestBotPageTab('release', 'chat');
+		const selectedAfterRequest = (container.getElementsByClassName('paradis-bot-page-tab selected')[0] as HTMLElement).textContent;
+		assert.deepStrictEqual({ idle, selectedAfterAsk, sent: calls.filter(call => call.startsWith('message')), working, empty, selectedAfterRequest }, {
+			idle: [false, false, '受け箱に 2 通あります。読ませる'],
+			selectedAfterAsk: '会話',
+			sent: ['message 1 受け箱（bot_inbox）を見て、ほかの Bot から届いた伝言に対応してください。'],
+			working: [false, true, '受け箱に 2 通'],
+			empty: true,
+			selectedAfterRequest: '会話',
+		});
+	});
 
 	test('Bot のペインだけに帯を出し、ペインが替わる・終わる・設定を切るたびに外す', async () => {
 		const { container, page, configuration, panes, changed } = setup();
