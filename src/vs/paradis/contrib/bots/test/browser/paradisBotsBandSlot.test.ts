@@ -7,6 +7,7 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
 import assert from 'assert';
+import { mainWindow } from '../../../../../base/browser/window.js';
 import { Event } from '../../../../../base/common/event.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
@@ -135,10 +136,31 @@ suite('Paradis bots band slot', () => {
 		instantiation.stub(IParadisBotsService, { snapshot: { revision: 1, readOnly: false, bots: [] }, onDidChange: Event.None } as Partial<IParadisBotsService> as IParadisBotsService);
 		instantiation.stub(IHoverService, NullHoverService);
 		instantiation.stub(IContextViewService, {});
-		disposables.add(instantiation.createInstance(ParadisBotCreateDialog, undefined, () => { }));
+		disposables.add(instantiation.createInstance(ParadisBotCreateDialog, undefined, () => { }, false));
 		const open = host.childElementCount;
 		configuration.setUserConfiguration(PARADIS_BOTS_ENABLED_SETTING, false);
 		configuration.onDidChangeConfigurationEmitter.fire({ affectsConfiguration: (key: string) => key === PARADIS_BOTS_ENABLED_SETTING } as unknown as IConfigurationChangeEvent);
 		assert.deepStrictEqual([open, host.childElementCount], [1, 0]);
+	});
+
+	test('テンプレートの一覧（入れ子の箱）で Esc を押すと一覧だけを閉じ、作成のモーダルは残る。もう一度押すと作成のモーダルを閉じる', () => {
+		const disposables = store.add(new DisposableStore());
+		const instantiation = disposables.add(new TestInstantiationService());
+		instantiation.stub(IConfigurationService, new TestConfigurationService({ [PARADIS_BOTS_ENABLED_SETTING]: true }));
+		const host = document.createElement('div');
+		mainWindow.document.body.appendChild(host);
+		disposables.add({ dispose: () => host.remove() });
+		instantiation.stub(ILayoutService, { activeContainer: host } as Partial<ILayoutService> as ILayoutService);
+		instantiation.stub(IParadisBotsService, { snapshot: { revision: 1, readOnly: false, bots: [] }, onDidChange: Event.None } as Partial<IParadisBotsService> as IParadisBotsService);
+		instantiation.stub(IHoverService, NullHoverService);
+		instantiation.stub(IContextViewService, {});
+		instantiation.stub(INotificationService, new TestNotificationService());
+		disposables.add(instantiation.createInstance(ParadisBotCreateDialog, undefined, () => { }, true));
+		const escape = () => mainWindow.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+		const open = host.childElementCount;
+		escape();
+		const afterFirst = host.childElementCount;
+		escape();
+		assert.deepStrictEqual([open, afterFirst, host.childElementCount], [2, 1, 0]);
 	});
 });

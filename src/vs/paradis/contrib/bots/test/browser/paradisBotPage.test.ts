@@ -27,6 +27,7 @@ import { runWithFakedTimers } from '../../../../../base/test/common/timeTravelSc
 import { ITerminalService } from '../../../../../workbench/contrib/terminal/browser/terminal.js';
 import { IParadisAgentChatService } from '../../../agentChat/browser/paradisAgentChatService.js';
 import { IParadisBotPaneResolver, ParadisBotPage } from '../../browser/paradisBotPage.js';
+import { IParadisBotPatrolPort } from '../../browser/paradisBotPatrol.js';
 import { paradisRequestBotPageTab } from '../../browser/paradisBotPageTabRequest.js';
 import { IParadisBotGroupsService } from '../../common/paradisBotGroupsApi.js';
 import { IParadisBotItem } from '../../common/paradisBotItems.js';
@@ -60,7 +61,8 @@ suite('Paradis bots page overlay', () => {
 
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function setup(items: IParadisBotItem[] = ITEMS, entries: IParadisHumanAskEntry[] = [ASK], measureClamp?: (element: HTMLElement) => IParadisInboxClampSize | undefined) {
+	function setup(items: IParadisBotItem[] = ITEMS, entries: IParadisHumanAskEntry[] = [ASK], measureClamp?: (element: HTMLElement) => IParadisInboxClampSize | undefined, patrol?: IParadisBotPatrolPort) {
+		let header: { status: string; attention: boolean; busy: boolean; model: string; agent: undefined; agentName: string } | undefined;
 		const disposables = store.add(new DisposableStore());
 		const instantiation = disposables.add(new TestInstantiationService());
 		const configuration = new TestConfigurationService({ [PARADIS_BOTS_ENABLED_SETTING]: true });
@@ -110,8 +112,23 @@ suite('Paradis bots page overlay', () => {
 		instantiation.stub(IParadisDialogService, { confirm: async (confirmation: IParadisConfirmation) => { confirms.push(confirmation); return { confirmed: true }; } } as unknown as IParadisDialogService);
 		instantiation.stub(IContextViewService, {});
 		let draftTaken = false;
+		const headerChanged = disposables.add(new Emitter<number>());
+		const headerCalls: string[] = [];
+		const chatActive = new Set<number>();
+		const chatActiveChanged = disposables.add(new Emitter<number>());
+		let holds = 0;
 		instantiation.stub(IParadisAgentChatService, {
 			insertDraft: (id: number, text: string) => { calls.push(`draft ${id} ${text}`); return draftTaken ? 'inserted' : false; },
+			onDidChangeHeader: headerChanged.event,
+			headerState: () => header,
+			isChatActive: (id: number) => chatActive.has(id),
+			onDidChangeChatActive: chatActiveChanged.event,
+			setHeaderHidden: (id: number) => {
+				const hold = ++holds;
+				headerCalls.push(`hide ${id} #${hold}`);
+				return toDisposable(() => headerCalls.push(`unhide ${id} #${hold}`));
+			},
+			showTerminal: (id: number) => headerCalls.push(`terminal ${id}`),
 			sendMessageToPane: async (id: number, text: string) => { calls.push(`message ${id} ${text}`); return undefined; },
 		} as unknown as IParadisAgentChatService);
 		// 受け箱: リリース係宛ての未読 2 通と既読 1 通
@@ -147,8 +164,8 @@ suite('Paradis bots page overlay', () => {
 		const panes = new Map<number, string>([[1, 'release']]);
 		const resolver: IParadisBotPaneResolver = { onDidChange: changed.event, botFor: async instanceId => panes.get(instanceId) };
 		const container = document.createElement('div');
-		const page = disposables.add(instantiation.createInstance(ParadisBotPage, container, resolver, measureClamp));
-		return { groupsSnapshot, groupsChanged, container, page, configuration, panes, changed, answered, disposables, snapshotGone, sendFails, warnings, failAnswer, calls, confirms, files, bots, botsChanged, statuses, chatShown: () => { draftTaken = true; } };
+		const page = disposables.add(instantiation.createInstance(ParadisBotPage, container, resolver, patrol, measureClamp));
+		return { groupsSnapshot, groupsChanged, container, page, configuration, panes, changed, answered, disposables, snapshotGone, sendFails, warnings, failAnswer, calls, confirms, files, bots, botsChanged, statuses, chatShown: () => { draftTaken = true; }, headerCalls, setHeader: (value: typeof header) => { header = value; headerChanged.fire(1); }, setChatActive: (id: number, active: boolean) => { if (active) { chatActive.add(id); } else { chatActive.delete(id); } chatActiveChanged.fire(id); } };
 	}
 
 	const settle = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -415,6 +432,98 @@ suite('Paradis bots page overlay', () => {
 				['取り消せなかったファイルがあります（記憶のファイルではないので書き戻していません）: SOUL.md', true],
 			],
 			warnings: [`${new Date(SNAPSHOT_AT).toLocaleString()} の写しはもうありません（古い写しから消えていきます）。写しの一覧を読み直しました。`],
+		});
+	});
+
+	test('見回り: ホームの「定期実行」の節と、設定のタブの欄から保存・今すぐ見回る。保存を断られたら書きかけを残して理由を出す', async () => {
+		const patrolCalls: string[] = [];
+		let saveFails = false;
+		const port: IParadisBotPatrolPort = {
+			onDidChange: Event.None,
+			get: async () => ({ definitionId: 'd', enabled: true, schedule: { everyHours: 4, fromHour: 8, toHour: 20, weekdaysOnly: true }, cron: '0 8-20/4 * * 1-5', lookFor: '返事の無い指摘', gate: 'ok' }),
+			set: async (botId, input) => { patrolCalls.push(`set ${botId} ${JSON.stringify(input)}`); return saveFails ? { ok: false, error: '定期実行は 20 件までです' } : { ok: true }; },
+			runNow: async botId => { patrolCalls.push(`run ${botId}`); return { ok: true }; },
+		};
+		const { container, page, warnings } = setup(ITEMS, [ASK], undefined, port);
+		page.setInstance(1);
+		await settle();
+		(container.getElementsByClassName('paradis-bot-page-tab')[1] as HTMLElement).click();
+		await settle();
+		await settle();
+		const home = Array.from(container.getElementsByClassName('paradis-bot-patrol-line')).map(line => line.textContent);
+		const homeButtons = Array.from(container.querySelectorAll('.paradis-bot-patrol .monaco-button')).map(button => button.textContent);
+		(container.querySelectorAll('.paradis-bot-patrol .monaco-button')[0] as HTMLElement).click();
+		await settle();
+		(container.querySelectorAll('.paradis-bot-patrol .monaco-button')[1] as HTMLElement).click();
+		await settle();
+		await settle();
+		const sections = Array.from(container.getElementsByClassName('paradis-bot-page-section')).map(section => section.textContent);
+		const save = () => (Array.from(container.querySelectorAll('.monaco-button')).find(button => button.textContent === '見回りを保存') as HTMLElement).click();
+		const lookForInput = () => container.querySelector('.paradis-bot-patrol-settings input[aria-label="探すもの"]') as HTMLInputElement;
+		save();
+		await settle();
+		await settle();
+		// 断られた保存: 書いた「探すもの」が残り、理由が出る
+		saveFails = true;
+		lookForInput().value = 'CI の落ちたチェック';
+		lookForInput().dispatchEvent(new InputEvent('input'));
+		save();
+		await settle();
+		await settle();
+		const kept = lookForInput().value;
+		assert.deepStrictEqual({ home, homeButtons, sections: sections.slice(-1), patrolCalls, kept, warned: warnings.slice(-1) }, {
+			kept: 'CI の落ちたチェック',
+			warned: ['見回りを保存できませんでした: 定期実行は 20 件までです'],
+			home: ['平日 8〜20 時・4 時間ごと'],
+			homeButtons: ['今すぐ見回る', '変える...'],
+			sections: ['見回り'],
+			patrolCalls: [
+				'run release',
+				'set release {"schedule":{"everyHours":4,"fromHour":8,"toHour":20,"weekdaysOnly":true},"lookFor":"返事の無い指摘","enabled":true}',
+				'set release {"schedule":{"everyHours":4,"fromHour":8,"toHour":20,"weekdaysOnly":true},"lookFor":"CI の落ちたチェック","enabled":true}',
+			],
+		});
+	});
+
+	test('チャット表示を見ている間だけ、見出しの状態とモデルを帯に出して見出しを畳む（会話が替われば畳み直し、離れたら戻す）', async () => {
+		const { container, page, headerCalls, setHeader, setChatActive, changed } = setup();
+		const strip = () => ({
+			status: container.getElementsByClassName('paradis-bot-page-status')[0]?.textContent,
+			attention: container.getElementsByClassName('paradis-bot-page-status')[0]?.classList.contains('attention'),
+			model: (container.getElementsByClassName('paradis-bot-page-model')[0] as HTMLElement | undefined)?.hidden ? '' : container.getElementsByClassName('paradis-bot-page-model')[0]?.textContent,
+			terminal: !(container.getElementsByClassName('paradis-bot-page-terminal')[0] as HTMLElement).hidden,
+		});
+		page.setInstance(1);
+		await settle();
+		setHeader({ status: '許可を待っています', attention: true, busy: false, model: 'claude-opus-4-5 · high', agent: undefined, agentName: 'Claude Code' });
+		const terminalView = strip();
+		setChatActive(1, true);
+		const chatView = strip();
+		// 項目のタブで下の会話が覆われている間は、戻るボタンを出さない
+		(container.getElementsByClassName('paradis-bot-page-tab')[1] as HTMLElement).click();
+		const itemsTab = strip().terminal;
+		(container.getElementsByClassName('paradis-bot-page-tab')[0] as HTMLElement).click();
+		// 戻るボタンはタブ列の左（帯が収まらない幅では右端から切れるため）
+		const beforeTabs = (container.getElementsByClassName('paradis-bot-page-terminal')[0] as HTMLElement).nextElementSibling?.classList.contains('paradis-bot-page-tabs');
+		// 会話が替わった（チャット表示の側が畳みを戻した）ときも、見出しの知らせで畳み直す
+		setHeader({ status: '入力を待っています', attention: false, busy: false, model: 'claude-opus-4-5 · high', agent: undefined, agentName: 'Claude Code' });
+		// 見出しの値が変わらなくても、ペインのトークンが替われば Bot の照らし直しで畳み直す
+		changed.fire();
+		await settle();
+		(container.getElementsByClassName('paradis-bot-page-terminal')[0] as HTMLElement).click();
+		setChatActive(1, false);
+		const backToTerminal = strip();
+		setChatActive(1, true);
+		page.setInstance(2);
+		await settle();
+		page.dispose();
+		assert.deepStrictEqual({ terminalView, chatView, itemsTab, beforeTabs, backToTerminal, calls: headerCalls }, {
+			itemsTab: false,
+			beforeTabs: true,
+			terminalView: { status: '1 件があなたの番', attention: false, model: '', terminal: false },
+			chatView: { status: '許可を待っています', attention: true, model: 'claude-opus-4-5 · high', terminal: true },
+			backToTerminal: { status: '1 件があなたの番', attention: false, model: '', terminal: false },
+			calls: ['hide 1 #1', 'hide 1 #2', 'unhide 1 #1', 'hide 1 #3', 'unhide 1 #2', 'terminal 1', 'unhide 1 #3', 'hide 1 #4', 'unhide 1 #4'],
 		});
 	});
 

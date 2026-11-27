@@ -1,0 +1,189 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md. */
+
+/*
+	The bot templates dialog (paradisBotTemplatesDialog.ts), the kit's M box nested over the create dialog:
+	a search field, the categories on the left, the list and the chosen template's detail on the right.
+*/
+
+.paradis-bot-templates-backdrop {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: var(--vscode-paradis-scrim);
+}
+
+.paradis-bot-templates .pbtd-body {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size100);
+	min-height: 0;
+}
+
+.paradis-bot-templates .pbtd-columns {
+	display: grid;
+	grid-template-columns: 148px minmax(0, 1fr);
+	gap: var(--vscode-spacing-size120);
+	min-height: 0;
+}
+
+.paradis-bot-templates .pbtd-categories {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size20);
+}
+
+.paradis-bot-templates .pbtd-category {
+	height: 28px;
+	padding: 0 var(--vscode-spacing-size80);
+	border: none;
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	background: transparent;
+	color: var(--vscode-foreground);
+	font: inherit;
+	font-size: var(--vscode-fontSize-body1);
+	text-align: left;
+	cursor: pointer;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.paradis-bot-templates .pbtd-category:hover {
+	background-color: var(--vscode-paradis-fillHover);
+}
+
+.paradis-bot-templates .pbtd-category[aria-pressed="true"] {
+	background-color: var(--vscode-paradis-fillSelected);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-bot-templates .pbtd-right {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size120);
+	min-width: 0;
+}
+
+.paradis-bot-templates .pbtd-list {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size20);
+	max-height: 220px;
+	overflow-y: auto;
+}
+
+.paradis-bot-templates .pbtd-row {
+	display: flex;
+	align-items: baseline;
+	gap: var(--vscode-spacing-size100);
+	min-height: 28px;
+	padding: var(--vscode-spacing-size40) var(--vscode-spacing-size80);
+	box-sizing: border-box;
+	border-radius: var(--vscode-cornerRadius-small, 4px);
+	cursor: pointer;
+	min-width: 0;
+}
+
+.paradis-bot-templates .pbtd-row:hover {
+	background-color: var(--vscode-paradis-fillHover);
+}
+
+.paradis-bot-templates .pbtd-row[aria-selected="true"] {
+	background-color: var(--vscode-paradis-fillSelected);
+}
+
+.paradis-bot-templates .pbtd-row-name {
+	flex: none;
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-bot-templates .pbtd-row-line {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+}
+
+.paradis-bot-templates .pbtd-empty,
+.paradis-bot-templates .pbtd-note,
+.paradis-bot-templates .pbtd-detail-text {
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-paradis-textMuted);
+	overflow-wrap: anywhere;
+}
+
+.paradis-bot-templates .pbtd-detail {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size60);
+	padding-top: var(--vscode-spacing-size100);
+	border-top: 1px solid var(--vscode-paradis-lineSubtle);
+	min-width: 0;
+}
+
+.paradis-bot-templates .pbtd-detail-title,
+.paradis-bot-templates .pbtd-comes-title {
+	font-weight: var(--vscode-fontWeight-semiBold);
+	color: var(--vscode-paradis-textStrong);
+}
+
+.paradis-bot-templates .pbtd-comes-title {
+	margin-top: var(--vscode-spacing-size60);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.paradis-bot-templates .pbtd-kv {
+	display: grid;
+	grid-template-columns: max-content minmax(0, 1fr);
+	gap: var(--vscode-spacing-size40) var(--vscode-spacing-size120);
+	font-size: var(--vscode-fontSize-label1);
+}
+
+.paradis-bot-templates .pbtd-key {
+	color: var(--vscode-paradis-textMuted);
+	white-space: nowrap;
+}
+
+.paradis-bot-templates .pbtd-value {
+	overflow-wrap: anywhere;
+}
+
+.paradis-bot-templates .pbtd-grow {
+	flex: 1;
+}
+
+.paradis-bot-templates .pbtd-skill-body {
+	margin-top: var(--vscode-spacing-size80);
+	font-size: var(--vscode-fontSize-label1);
+	color: var(--vscode-descriptionForeground);
+}
+
+.paradis-bot-templates .pbtd-skill-body > summary {
+	cursor: pointer;
+	color: var(--vscode-textLink-foreground);
+}
+
+.paradis-bot-templates .pbtd-skill-body > pre {
+	max-height: 160px;
+	margin: var(--vscode-spacing-size60) 0 0;
+	padding: var(--vscode-spacing-size80);
+	overflow: auto;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+	border-radius: var(--vscode-cornerRadius-small);
+	background: var(--vscode-textCodeBlock-background);
+	color: var(--vscode-foreground);
+	font-family: var(--monaco-monospace-font);
+}

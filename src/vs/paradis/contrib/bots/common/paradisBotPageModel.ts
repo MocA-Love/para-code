@@ -10,6 +10,9 @@
 // ここに集め、単体テストで値を確かめる（問いのカードは受信箱のカードそのものを使う）。
 
 import { localize } from '../../../../nls.js';
+import type { IParadisAgentChatHeaderState } from '../../agentChat/common/paradisAgentChatHeader.js';
+import type { IParadisBotSummary } from './paradisBotsApi.js';
+import { paradisBotStatusLine } from './paradisBotsBandModel.js';
 import { IParadisBotItem, paradisBotItemStatus, paradisBotItemWaitsForOwner, paradisIsBotItemClosed, paradisIsBotItemSnoozed } from './paradisBotItems.js';
 
 /** ページの上のタブ。`chat` は下にある会話（チャット表示かターミナル）をそのまま見せる。 */
@@ -87,6 +90,18 @@ export function paradisBotItemEventLabel(event: IParadisBotItem['events'][number
 			: localize('paradis.botPage.event.unsnoozed', "{0}が後回しを解きました", who);
 		default: return localize('paradis.botPage.event.other', "{0}: {1}", who, event.kind);
 	}
+}
+
+/**
+ * 帯の状態・モデル。`header` はチャット表示の見出しの値（チャット表示を見ている間だけ渡す）。見出しの状態の文があれば
+ * それ（許可待ち・質問待ちは attention）、無ければ Bot の台帳の 1 行。モデルは見出しの値だけ（台帳には実際のモデルが無い）。
+ */
+export function paradisBotStripHeader(bot: IParadisBotSummary, header: Pick<IParadisAgentChatHeaderState, 'status' | 'attention' | 'busy' | 'model'> | undefined): { readonly status: string; readonly attention: boolean; readonly busy: boolean; readonly model: string } {
+	const line = paradisBotStatusLine(bot);
+	if (header === undefined) {
+		return { status: line, attention: false, busy: false, model: '' };
+	}
+	return { status: header.status || line, attention: header.attention, busy: header.busy && !header.attention, model: header.model };
 }
 
 /**

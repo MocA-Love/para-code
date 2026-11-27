@@ -544,6 +544,7 @@ export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBan
 			getAnchor: () => anchor,
 			getActions: () => [
 				new Action('paradis.bots.add.bot', localize('paradis.bots.band.create', "新しい Bot..."), `paradis-menu-icon ${ThemeIcon.asClassName(Codicon.add)}`, true, async () => this.openCreateDialog(anchor)),
+				new Action('paradis.bots.add.template', localize('paradis.bots.band.fromTemplate', "テンプレートから選ぶ..."), `paradis-menu-icon ${ThemeIcon.asClassName(Codicon.library)}`, true, async () => this.openCreateDialog(anchor, true)),
 				new Action('paradis.bots.add.group', localize('paradis.bots.band.createGroup', "新しいグループ..."), `paradis-menu-icon ${ThemeIcon.asClassName(Codicon.commentDiscussion)}`, this.bots.length >= 2, async () => this.openGroupDialog(anchor)),
 			],
 		});
@@ -560,7 +561,7 @@ export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBan
 		});
 	}
 
-	private openCreateDialog(anchor: HTMLElement): void {
+	private openCreateDialog(anchor: HTMLElement, openTemplates = false): void {
 		this.instantiationService.createInstance(ParadisBotCreateDialog, anchor, (botId: string) => {
 			// 作ったら帯を開き、新しい行まで送る（行は台帳の知らせで現れる）
 			this.revealBotId = botId;
@@ -569,6 +570,6 @@ export class ParadisBotsBand extends Disposable implements IParadisWorkspacesBan
 				this.persist();
 			}
 			this.render();
-		});
+		}, openTemplates);
 	}
 }
