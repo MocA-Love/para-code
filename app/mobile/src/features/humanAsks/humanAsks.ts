@@ -260,12 +260,16 @@ export function humanAskRefusalText(reason: Exclude<HumanAskAnswerOutcome, { ok:
 
 /**
  * PC が `duplicate`（同じ opId の 2 回目）と返したあと、取り直した一覧で答えが届いたかを決める。
- * 一覧から消えた・届けている最中（`busy`）なら届いた、まだ待っていれば届いていない、一覧が取れなければ分からない。
- * 分からないときも「答えた」にはしない（カードを消さない）。
+ * 一覧から消えていれば届いた。届けている最中（`busy`）は誰の答えか分からないので届いたとは言わず `busy`
+ * （カードは取り直した一覧の `busy` で押せなくなる）、まだ待っている・一覧が取れないときは `unconfirmed`。
+ * どちらもカードを「答えた」にしない（消さない）。
  */
 export function humanAskDuplicateOutcome(asks: readonly Pick<HumanAsk, 'key' | 'busy'>[] | undefined, key: string): HumanAskAnswerOutcome {
 	const ask = asks?.find(candidate => candidate.key === key);
-	return asks !== undefined && (ask === undefined || ask.busy) ? { ok: true } : { ok: false, reason: 'unconfirmed' };
+	if (asks !== undefined && ask === undefined) {
+		return { ok: true };
+	}
+	return ask?.busy === true ? { ok: false, reason: 'busy' } : { ok: false, reason: 'unconfirmed' };
 }
 
 /** ボタンを押したときに挟むシート。PC が載せた確認の文（`confirm`）があればそれを出す。 */

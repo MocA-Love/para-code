@@ -95,7 +95,7 @@ describe('humanAsks', () => {
 			listFailed: humanAskDuplicateOutcome(undefined, 'board:b1'),
 		}).toEqual({
 			gone: { ok: true },
-			delivering: { ok: true },
+			delivering: { ok: false, reason: 'busy' },
 			stillWaiting: { ok: false, reason: 'unconfirmed' },
 			listFailed: { ok: false, reason: 'unconfirmed' },
 		});
