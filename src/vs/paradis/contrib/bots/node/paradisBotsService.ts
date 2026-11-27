@@ -52,7 +52,7 @@ import {
 import { EMPTY_PARADIS_BOTS_STATE, IParadisBot, IParadisBotCreateInput, IParadisBotPatch, IParadisBotsState, PARADIS_BOTS_VERSION, paradisBotCreate, paradisBotRemove, paradisBotUpdate } from '../common/paradisBots.js';
 import { IParadisBotGithubView, PARADIS_BOT_GITHUB_OFF_VIEW } from '../common/paradisBotGithub.js';
 import { IParadisBotLaunch, IParadisBotRevealRequest, IParadisBotsSnapshot, IParadisBotStopRequest, ParadisBotPanePurpose, ParadisBotsServiceResult, paradisBotSummary } from '../common/paradisBotsApi.js';
-import { IParadisBotItemAddArgs, paradisBotLaunchApprovalFlags, paradisBotPatrolLaunchFlags } from '../common/paradisBotTools.js';
+import { IParadisBotItemAddArgs, paradisBotLaunchApprovalFlags, paradisBotPatrolLaunchArgs, ParadisBotPatrolLaunchContext, paradisBotPatrolSupported, paradisBotPatrolTemplateRefusal } from '../common/paradisBotTools.js';
 import { PARADIS_READ_ONLY_MCP_TOOL_NAMES } from '../../agentBrowser/common/paradisMcpReadOnlyTools.js';
 import { ParadisBotPatrolGateState } from '../../scheduledRuns/common/paradisScheduledRunBotPatrol.js';
 import { EMPTY_PARADIS_BOT_SUGGESTIONS_STATE, IParadisBotSuggestion, PARADIS_BOT_SUGGESTIONS_VERSION, IParadisBotSuggestionsState, paradisBotOpenSuggestions, paradisBotSuggestionAdd, paradisBotSuggestionDismiss, paradisBotSuggestionsRemoveBot, paradisBotSuggestionsRunEnded, paradisBotSuggestionStart } from '../common/paradisBotSuggestions.js';
@@ -100,6 +100,13 @@ export interface IParadisBotsServiceOptions {
 	readonly itemsByteLimit?: number;
 	/** 前に出す依頼にウィンドウが応えるのを待つ時間。既定は {@link PARADIS_BOT_REVEAL_TIMEOUT_MS}。 */
 	readonly revealTimeoutMs?: number;
+	/**
+	 * 見回りの起動のたびに、読むだけに制限するのに要るもの（Claude Code の設定ファイル・Codex の止める MCP サーバー）を
+	 * 用意する（paradisBotPatrolLaunch.ts）。用意できなければ断る理由（英文）。渡さなければ見回りは `unavailable` で断る。
+	 */
+	readonly preparePatrol?: (agent: 'claude' | 'codex', botId: string) => Promise<ParadisBotPatrolLaunchContext | string>;
+	/** そのエージェントの起動の雛形（利用者の設定 `paradis.workspaceSwitch.agents` を反映した `command`）。 */
+	readonly agentCommand?: (agentId: string) => string | undefined;
 }
 
 /** 前に出す依頼にウィンドウが応えるのを待つ時間。 */
@@ -136,6 +143,8 @@ export class ParadisBotsService extends Disposable {
 	/** 前に出す依頼の番号 → ウィンドウが応えたときに呼ぶもの。 */
 	private readonly pendingReveals = new Map<string, () => void>();
 	private readonly enabled: () => boolean;
+	private readonly preparePatrol: IParadisBotsServiceOptions['preparePatrol'];
+	private readonly agentCommand: IParadisBotsServiceOptions['agentCommand'];
 
 	/** 読み込みが終わった（壊れたファイルの退避も済んだ）。 */
 	readonly ready: Promise<void>;
@@ -182,6 +191,8 @@ export class ParadisBotsService extends Disposable {
 		this.itemsByteLimit = options.itemsByteLimit ?? PARADIS_BOT_ITEMS_BYTE_LIMIT;
 		this.revealTimeoutMs = options.revealTimeoutMs ?? PARADIS_BOT_REVEAL_TIMEOUT_MS;
 		this.enabled = options.enabled ?? (() => true);
+		this.preparePatrol = options.preparePatrol;
+		this.agentCommand = options.agentCommand;
 		this._register(this.humanAsk.onDidRequestAnswer(request => this.onAnswerRequest(request)));
 		if (options.hookEvents) {
 			this._register(options.hookEvents(event => {
@@ -579,9 +590,22 @@ export class ParadisBotsService extends Disposable {
 				return { ok: false, code: 'unavailable', message: 'Bot home folders are not available.' };
 			}
 			// 見回りは、読むだけに制限できるエージェントのときだけ起動する（機能がオフなら上で断っている）
-			const patrolFlags = purpose === 'patrol' ? paradisBotPatrolLaunchFlags(bot.agent, PARADIS_READ_ONLY_MCP_TOOL_NAMES) : undefined;
-			if (purpose === 'patrol' && patrolFlags === undefined) {
-				return { ok: false, code: 'unsupported', message: 'Para Code cannot limit this agent to reading, so it does not start a look-around with it.' };
+			let patrolArgs: readonly string[] | undefined;
+			if (purpose === 'patrol') {
+				const agent = bot.agent;
+				if (!paradisBotPatrolSupported(agent)) {
+					return { ok: false, code: 'unsupported', message: 'Para Code cannot limit this agent to reading, so it does not start a look-around with it.' };
+				}
+				const command = this.agentCommand?.(agent);
+				const forbidden = command !== undefined ? paradisBotPatrolTemplateRefusal(agent, command) : undefined;
+				if (forbidden !== undefined) {
+					return { ok: false, code: 'unsafe_template', message: `The command template for this agent contains ${forbidden}, which can lift the read-only limits, so Para Code does not start a look-around with it.` };
+				}
+				const context = this.preparePatrol === undefined ? 'Para Code cannot prepare the read-only settings here.' : await this.preparePatrol(agent, bot.id);
+				if (typeof context === 'string') {
+					return { ok: false, code: 'patrol_unavailable', message: context };
+				}
+				patrolArgs = paradisBotPatrolLaunchArgs(context, PARADIS_READ_ONLY_MCP_TOOL_NAMES);
 			}
 			let cwd: string;
 			try {
@@ -591,7 +615,7 @@ export class ParadisBotsService extends Disposable {
 				return { ok: false, code: error instanceof ParadisBotHomeError ? error.code : 'storage', message: error instanceof ParadisBotHomeError ? error.message : 'Para Code could not prepare the bot\'s home folder.' };
 			}
 			const launchId = this.issueLaunch(botId, purpose);
-			const extraFlags = purpose === 'patrol' ? patrolFlags : paradisBotLaunchApprovalFlags(bot.agent);
+			const extraFlags = purpose === 'patrol' ? patrolArgs : paradisBotLaunchApprovalFlags(bot.agent);
 			if (launchId === undefined) {
 				return { ok: false, code: 'not_found', message: 'There is no such bot.' };
 			}
@@ -685,7 +709,7 @@ export class ParadisBotsService extends Disposable {
 		if (bot.paused) {
 			return 'paused';
 		}
-		if (bot.preserved !== undefined || this.homes === undefined || paradisBotPatrolLaunchFlags(bot.agent, PARADIS_READ_ONLY_MCP_TOOL_NAMES) === undefined) {
+		if (bot.preserved !== undefined || this.homes === undefined || !paradisBotPatrolSupported(bot.agent)) {
 			return 'unsupported';
 		}
 		return this.panes.statesOf(botId).some(pane => pane.purpose === 'patrol' && pane.working) ? 'busy' : 'ok';
