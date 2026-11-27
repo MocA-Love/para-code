@@ -312,6 +312,22 @@ suite('ParadisDevtoolsMcpProxy', () => {
 		assert.strictEqual(fixture.children[0].killCount, 1);
 	});
 
+	test('tells the CDP gateway the PIDs of the live children of a pane, including its tab-scoped children, and forgets a replaced child', async () => {
+		const fixture = createFakeDevtoolsChildren();
+		const proxy = disposables.add(new ParadisDevtoolsMcpProxy(new Set(), new NullLogService(), { temporaryDirectory: TEST_TEMPORARY_DIRECTORY, spawnChild: fixture.spawn }));
+		await proxy.tryCallTool('pane-a', 1, 'ws://one', 'take_snapshot', {});
+		await proxy.tryCallTool(paradisAgentTabScopeKey('pane-a', 'tab-1'), 1, 'ws://tab', 'take_snapshot', {});
+		await proxy.tryCallTool('pane-b', 1, 'ws://other', 'take_snapshot', {});
+		const before = { a: proxy.childPidsForPane('pane-a'), b: proxy.childPidsForPane('pane-b'), unknown: proxy.childPidsForPane('pane-c') };
+		// 世代が変わると子を入れ替える（前の子は止めたので数えない）
+		await proxy.tryCallTool('pane-b', 2, 'ws://other-2', 'take_snapshot', {});
+		assert.deepStrictEqual({ before, after: proxy.childPidsForPane('pane-b'), spawned: fixture.children.length }, {
+			before: { a: [1000, 1001], b: [1002], unknown: [] },
+			after: [1003],
+			spawned: 4,
+		});
+	});
+
 	test('asks the vendored child to redact cookie and other sensitive network headers', async () => {
 		const fixture = createFakeDevtoolsChildren();
 		let receivedArgs: string[] = [];
