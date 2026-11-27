@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { paradisBotInstancesInWindow, paradisBotPaneTokenHashInWindow } from '../../browser/paradisBotPaneHash.js';
+import { paradisBotInstancesInWindow, paradisBotPaneTokenHashInWindow, paradisFindBotPane } from '../../browser/paradisBotPaneHash.js';
 
 suite('Paradis bot pane hash', () => {
 
@@ -24,6 +24,27 @@ suite('Paradis bot pane hash', () => {
 			hash: '1b780c2005e24c7adab28a00c48fd437c37580c140f7b9585d87f54e78b59cff',
 			matched: [2],
 			none: [],
+		});
+	});
+
+	test('待避中（別のスペース）のペインも見つけ、そのスペースを返す。閉じたものと無いときは undefined', async () => {
+		const hashB = '595738e51f96f4da3b0bd4c0fa10ee3a1519a6d53e5632f5419c215b3d1740c4';
+		// pane-B はスペース A で待避中（今のスペースは B）。pane-A は閉じた
+		const instances = new Map([[1, { isDisposed: true, name: 'pane-A' }], [2, { isDisposed: false, name: 'pane-B' }]]);
+		const services = {
+			paneTokenService: { listPaneTokens: () => [{ instanceId: 1, token: 'pane-A' }, { instanceId: 2, token: 'pane-B' }] },
+			findInstance: (instanceId: number) => instances.get(instanceId),
+			stateKeyOf: (instanceId: number) => instanceId === 2 ? 'space-a' : undefined,
+		};
+		const found = await paradisFindBotPane(services, ['1b780c2005e24c7adab28a00c48fd437c37580c140f7b9585d87f54e78b59cff', hashB]);
+		assert.deepStrictEqual({
+			found: found && [found.instanceId, found.instance.name, found.stateKey],
+			closedOnly: await paradisFindBotPane(services, ['1b780c2005e24c7adab28a00c48fd437c37580c140f7b9585d87f54e78b59cff']),
+			none: await paradisFindBotPane(services, []),
+		}, {
+			found: [2, 'pane-B', 'space-a'],
+			closedOnly: undefined,
+			none: undefined,
 		});
 	});
 });
