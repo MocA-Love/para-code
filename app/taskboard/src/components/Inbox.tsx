@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react';
 import type { ITaskBoardTask, TaskBoardStatus } from '@engine/paradisTaskBoard.js';
 import { useTaskActions } from '../actions.js';
 import { useApp } from '../context.js';
-import { dueInfo, errorText, needs, STATUS, stepName, taskActivity } from '../format.js';
+import { dueInfo, emptyInboxText, errorText, needs, STATUS, stepName, taskActivity } from '../format.js';
 import { useNow } from '../hooks.js';
 import { Icon } from '../icons.js';
 import { activateOnKey, AgentTag, DueChip, Elapsed, LabelChip, PrChip, Status, tone } from './atoms.js';
@@ -87,6 +87,7 @@ export function Inbox() {
 	const tasks = app.snapshot.tasks.filter(t => app.matches(t));
 	const attention = tasks.filter(needs);
 	const running = tasks.filter(t => ['working', 'preparing', 'waiting', 'queued'].includes(t.status));
+	const todo = tasks.filter(t => t.step === 'todo').length;
 	const soon = tasks.filter(t => t.step === 'todo' && dueInfo(t.due, now)?.level !== 'normal' && t.due).sort((a, b) => (a.due ?? '').localeCompare(b.due ?? ''));
 	const manualWaiting = app.snapshot.manual.filter(m => m.status === 'permission' || m.status === 'question');
 	const groups = useMemo(() => GROUPS.map(g => ({ ...g, tasks: attention.filter(t => g.status.includes(t.status)).sort((a, b) => (a.question?.askedAt ?? a.stepSince) - (b.question?.askedAt ?? b.stepSince)) })).filter(g => g.tasks.length), [attention]);
@@ -96,7 +97,7 @@ export function Inbox() {
 				<div className="inbox-sum">
 					<div className="sum" style={tone('red')}><b>{attention.length + manualWaiting.length}</b><span>あなたの番</span></div>
 					<div className="sum" style={tone('blue')}><b>{running.length}</b><span>エージェントが進めている</span></div>
-					<div className="sum"><b>{tasks.filter(t => t.step === 'todo').length}</b><span>未着手</span></div>
+					<div className="sum"><b>{todo}</b><span>未着手</span></div>
 					<div className="sum" style={tone('amber')}><b>{soon.length}</b><span>締切が近い未着手</span></div>
 				</div>
 				{groups.map(g => (
@@ -119,7 +120,7 @@ export function Inbox() {
 						))}
 					</section>
 				)}
-				{!groups.length && !manualWaiting.length && <div className="empty-big"><Icon name="inbox" /><b>あなたの番はありません</b>エージェントが進めています。質問や承認が来たらここに並びます。</div>}
+				{!groups.length && !manualWaiting.length && <div className="empty-big"><Icon name="inbox" /><b>あなたの番はありません</b>{emptyInboxText(running.length, todo)}{running.length === 0 && <div className="empty-act"><button className="btn sm" onClick={() => app.setView('board')}>ボードを見る</button></div>}</div>}
 				{soon.length > 0 && (
 					<section>
 						<h2><span className="status" style={tone('amber')}>締切が近い未着手</span><span className="badge soft">{soon.length}</span></h2>

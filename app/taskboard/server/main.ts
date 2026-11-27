@@ -14,14 +14,14 @@ import { TaskBoardEngine } from '@engine/paradisTaskBoardEngine.js';
 import { parseTaskBoardFlow } from '@engine/paradisTaskBoardFlow.js';
 import { AskPublisher, askLedgerId } from './asks.js';
 import { buildDemo, demoSlots } from './demo.js';
-import { loadFlows, saveActiveFlow, saveFlow } from './flows.js';
+import { embeddedFlows, loadFlows, saveActiveFlow, saveFlow } from './flows.js';
 import { GitHubClient, GitHubError, ghTokenProvider, redactGitHubSecrets } from './github.js';
 import { GitHubSync, parseRemote, type IRepoSlug } from './githubSync.js';
 import { addClaudeApprovals, claudeApprovalStates, ClaudeConfigError } from './claudeApproval.js';
 import { addCodexApprovals, codexApprovalStates, CodexConfigError } from './codexApproval.js';
 import { ParaCodeAgents, ParaCodeBridgeClient } from './paraCode.js';
 import { RELAY_UNSUPPORTED, RelayClient, RemoteCommandRunner, RemoteWorkspaces, relayFlowIo, type IRelaySessionInfo } from './relay.js';
-import { boardPlaces, isOtherBoardWorktree, rememberRepository, repositoryChoices } from './repositories.js';
+import { boardPlaces, checkCloneFolder, isOtherBoardWorktree, rememberRepository, repositoryChoices } from './repositories.js';
 import { CommandRunner } from './runner.js';
 import { Simulation } from './sim.js';
 import { listTask, TaskDetailFeed } from './taskDetail.js';
@@ -153,7 +153,8 @@ const { values: args } = parseArgs({
 type EmbeddedMessage =
 	| { readonly type: 'ready'; readonly port: number; readonly repo: string | undefined }
 	| { readonly type: 'failed'; readonly reason: 'busy' | 'error'; readonly message: string }
-	| { readonly type: 'add-issues-result'; readonly requestId: string; readonly result: TaskBoardAddIssuesResult };
+	| { readonly type: 'add-issues-result'; readonly requestId: string; readonly result: TaskBoardAddIssuesResult }
+	| { readonly type: 'pick-folder'; readonly requestId: string };
 
 // Para Code は Electron を Node として動かして（ELECTRON_RUN_AS_NODE）このサーバーを起こす。消さないと、工程のコマンド
 // （Electron を起動するテストなど）にも渡って Node として動いてしまう。Electron は起動のときしかこれを読まない
@@ -171,6 +172,25 @@ function tellParent(message: EmbeddedMessage, sent?: () => void): void {
 
 /** 今動いているボードへ Issue を載せる処理（main() が開くたびに差し替える）。Para Code の「タスク」の画面から IPC で届く。 */
 let addIssuesCurrent: ((request: ITaskBoardAddIssuesRequest) => Promise<TaskBoardAddIssuesResult>) | undefined;
+
+/** Para Code に頼んだフォルダの選択の、返事の待ち（requestId → 受け取り）。 */
+const folderPicks = new Map<string, (folder: string | undefined) => void>();
+
+/** Para Code のフォルダの選択のダイアログを開いてもらう（`--embedded` のときだけ）。選ばずに閉じたら undefined。 */
+function pickFolder(): Promise<string | undefined> {
+	return new Promise(resolve => {
+		const requestId = randomBytes(12).toString('base64url');
+		// ダイアログは人が閉じるまで開いているので、長めに待つ（Para Code が答えないまま溜まらないように上限は置く）
+		const timer = setTimeout(() => finish(undefined), 10 * 60_000);
+		const finish = (folder: string | undefined) => {
+			clearTimeout(timer);
+			folderPicks.delete(requestId);
+			resolve(folder);
+		};
+		folderPicks.set(requestId, finish);
+		tellParent({ type: 'pick-folder', requestId });
+	});
+}
 
 /** 今動いているボードを止める処理（main() が開くたびに差し替える）。Para Code との IPC が切れたら呼ぶ。 */
 let stopCurrent: (() => void) | undefined;
@@ -356,7 +376,7 @@ async function main(restart?: IRestart): Promise<void> {
 	}
 	const settings: ILocalSettings = (await store.loadSettings()) ?? {};
 	// SSH のボードは clone を使わず、ワークツリーの置き場は窓が決めたもの
-	const clones = relayInfo ? undefined : args.clones && fresh ? args.clones.split(',').map(s => s.trim()).filter(Boolean) : settings.clones;
+	let clones = relayInfo ? undefined : args.clones && fresh ? args.clones.split(',').map(s => s.trim()).filter(Boolean) : settings.clones;
 	const worktreeRoot = relayInfo ? relayInfo.worktreeRoot : (fresh ? args['worktree-root'] : undefined) ?? settings.worktreeRoot ?? (repoPath ? path.join(path.dirname(repoPath), `${path.basename(repoPath)}-worktrees`) : '');
 	if (args.agents !== 'simulated' && args.agents !== 'para-code') {
 		throw new Error('--agents は simulated か para-code');
@@ -517,6 +537,7 @@ async function main(restart?: IRestart): Promise<void> {
 		codexApprovalMissing: paraCodeMode && !relay ? [...new Set(codexPending.flatMap(p => p.missing))] : undefined,
 		// SSH のボード: 起動のときだけ許可を渡すか（ボードの帯で頼み、SSH の窓でもリポジトリごとに 1 回確かめる）
 		launchApprovals: relay ? launchApprovals : undefined,
+		canAddClone: args.embedded && paraCodeMode && !relay ? true : undefined,
 		codexConfigPaths: paraCodeMode ? codexPending.filter(p => p.manual === undefined).map(p => p.path) : undefined,
 		codexManualConfigs: paraCodeMode ? codexPending.filter(p => p.manual !== undefined).map(p => ({ path: p.path, reason: p.manual! })) : undefined,
 		// Claude Code の帯は、ボードが Claude Code の担当を使うときだけ出す（~/.claude は Para Code の hook の設置でも作られるので、有無では決めない）
@@ -549,7 +570,8 @@ async function main(restart?: IRestart): Promise<void> {
 	for (const problem of loaded.problems) {
 		log(`flow: ${problem.path}: ${problem.message}`);
 	}
-	engine.setFlows(loaded.flows, loaded.active, true);
+	// Para Code が開くボードにはクローンの場所を渡せないので、組み込みのフローはワークツリーで始める（設定にクローンを残している人は除く）
+	engine.setFlows(args.embedded ? embeddedFlows(loaded.flows, clones) : loaded.flows, loaded.active, true);
 
 	const slots = clones?.length ? await inspectClones(clones) : paraCodeMode ? [] : demoSlots();
 	if (!realWorkspaces) {
@@ -578,9 +600,14 @@ async function main(restart?: IRestart): Promise<void> {
 		sync?.scheduleWriteBack();
 		broadcastSoon();
 	});
-	if (realWorkspaces && clones?.length) {
-		// 作業場所の汚れ（未コミットの変更）は、手で片付けられることもあるので 1 分ごとに調べ直す
-		timers.push(setInterval(() => void inspectClones(clones).then(slots => engine.setPoolSlots(slots)), 60000).unref());
+	if (realWorkspaces) {
+		// 作業場所の汚れ（未コミットの変更）は、手で片付けられることもあるので 1 分ごとに調べ直す（クローンは画面から足せる）
+		timers.push(setInterval(() => {
+			const current = clones;
+			if (current?.length) {
+				void inspectClones(current).then(slots => engine.setPoolSlots(slots));
+			}
+		}, 60000).unref());
 	}
 	engine.onDidNotice(notice => send({ type: 'notice', notice }));
 	sim.onEngineChange();
@@ -822,6 +849,27 @@ async function main(restart?: IRestart): Promise<void> {
 			engine.reportOutput(task.id, [`${cwd} $ git commit -m ${JSON.stringify(message)}`, `  ${sha}`]);
 			engine.retry(task.id, fromStep, fromAttempt);
 			return { sha };
+		},
+		addClone: async () => {
+			if (!args.embedded || !paraCodeMode || relay || !repoPath) {
+				throw new TaskBoardError('invalid-state', 'Para Code から開いた、この PC のリポジトリのボードでだけ足せます');
+			}
+			const picked = await pickFolder();
+			if (!picked) {
+				return {};
+			}
+			const checked = await checkCloneFolder(repoPath, picked);
+			if (!checked.ok) {
+				throw new TaskBoardError('invalid-params', checked.message);
+			}
+			const known = (clones ?? []).map(clone => { try { return realpathSync(clone); } catch { return path.resolve(clone); } });
+			if (!known.includes(checked.path)) {
+				clones = [...(clones ?? []), checked.path];
+				// クローンの場所は人ごとに違うので、リポジトリには書かず、この PC の設定に置く
+				await store.saveSettings({ ...((await store.loadSettings()) ?? {}), clones });
+			}
+			engine.setPoolSlots(await inspectClones(clones ?? []));
+			return { added: checked.path };
 		},
 		restartAgent: async p => {
 			const task = engine.getTask(p.taskId);
@@ -1247,6 +1295,10 @@ async function start(): Promise<void> {
 			const { requestId, request } = (message ?? {}) as { requestId?: unknown; request?: unknown };
 			if (type === 'add-issues' && typeof requestId === 'string' && requestId.length <= 64) {
 				void handleAddIssues(requestId, request);
+			}
+			if (type === 'pick-folder-result' && typeof requestId === 'string') {
+				const folder = (message as { path?: unknown }).path;
+				folderPicks.get(requestId)?.(typeof folder === 'string' && path.isAbsolute(folder) ? folder : undefined);
 			}
 		});
 	}
