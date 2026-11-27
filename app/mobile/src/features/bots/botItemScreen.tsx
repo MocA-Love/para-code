@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
 import { Clock } from 'lucide-react-native';
@@ -10,12 +10,13 @@ import { useRoutePc } from '../../hooks/useRouteTargets.js';
 import { useStableInsets } from '../../hooks/useStableInsets.js';
 import { useContentColumnStyle } from '../../ipad/useContentColumn.js';
 import { useParaToast } from '../../paraToast.js';
+import { PcCapability, pcHasCapability } from '../../pcCompat.js';
 import { colors, radius, space, type } from '../../theme.js';
 import { formatRelativeTime, useNow } from '../../time.js';
 import { Button, ConfirmDrawer, EmptyState, PickerDrawer, Screen, ScreenHeader, SectionHeader, TextInputDrawer } from '../../ui/index.js';
 import { HumanAskCard } from '../humanAsks/humanAskCard.js';
 import { useHumanAsks, useHumanAskSync } from '../humanAsks/humanAskStore.js';
-import { botAskFor, botItemEventLine, botItemStatusLabel, botRefusalText, isBotItemClosed, newBotOpId, type BotItemAction } from './bots.js';
+import { BotHeldChoice, botAskFor, botConfirmedItemAction, botItemEventLine, botItemStatusLabel, botRefusalText, isBotItemClosed, newBotOpId, type BotItemAction } from './bots.js';
 import { actOnBotItem, botKey, refreshBotItem, useBotPages } from './botStore.js';
 
 const NO_ASKS: readonly never[] = [];
@@ -50,9 +51,19 @@ export function BotItemScreen() {
 	useHumanAskSync(pcs);
 	const asks = useHumanAsks(s => (pc?.humanAskSupported === true && pcId !== undefined ? s.byPc[pcId]?.asks : undefined) ?? NO_ASKS);
 	const active = status === 'active';
+	// PC の設定がオフになった・古い PC へつなぎ直したときは、残っているページでも操作のボタンを止める
+	const supported = useAppStore(s => active && pcHasCapability(s.workspace, PcCapability.BotsPage) && s.workspace?.bots !== undefined);
 	const connected = useAppStore(s => s.pcs.find(candidate => candidate.id === pcId)?.connection === 'online');
 	const [failed, setFailed] = useState<string | undefined>(undefined);
 	const [sheet, setSheet] = useState<Sheet | undefined>(undefined);
+	// 確かめる操作。シートを閉じても消さない（見出しは閉じる途中も同じ文のまま、onConfirm は控えから送る）
+	const [confirmKind, setConfirmKind] = useState<'done' | 'cancel'>('done');
+	const held = useRef(new BotHeldChoice<'done' | 'cancel'>());
+	const askConfirm = (kind: 'done' | 'cancel') => {
+		held.current.hold(kind);
+		setConfirmKind(kind);
+		setSheet(kind);
+	};
 	const [sending, setSending] = useState(false);
 
 	useEffect(() => {
@@ -79,7 +90,7 @@ export function BotItemScreen() {
 	const ask = page !== undefined ? botAskFor(asks, page.uid) : undefined;
 	const closed = page !== undefined && isBotItemClosed(page);
 	const snoozed = page?.snoozedUntil !== undefined && page.snoozedUntil > now;
-	const canAct = page !== undefined && !page.locked && !closed && !sending;
+	const canAct = supported && page !== undefined && !page.locked && !closed && !sending;
 
 	const body = (() => {
 		if (page === undefined) {
@@ -121,8 +132,8 @@ export function BotItemScreen() {
 				) : null}
 				{!closed && !page.locked ? (
 					<View style={styles.actions}>
-						<Button label="完了にする" size="sm" variant="outline" style={styles.flex} disabled={!canAct} onPress={() => setSheet('done')} />
-						<Button label="取り消す" size="sm" variant="outline" style={styles.flex} disabled={!canAct} onPress={() => setSheet('cancel')} />
+						<Button label="完了にする" size="sm" variant="outline" style={styles.flex} disabled={!canAct} onPress={() => askConfirm('done')} />
+						<Button label="取り消す" size="sm" variant="outline" style={styles.flex} disabled={!canAct} onPress={() => askConfirm('cancel')} />
 					</View>
 				) : null}
 				<View style={styles.group}>
@@ -167,11 +178,17 @@ export function BotItemScreen() {
 			/>
 			<ConfirmDrawer
 				visible={sheet === 'done' || sheet === 'cancel'}
-				title={sheet === 'done' ? 'この項目を完了にしますか' : 'この項目を取り消しますか'}
+				title={confirmKind === 'done' ? 'この項目を完了にしますか' : 'この項目を取り消しますか'}
 				message="Bot に知らせます。"
-				confirmLabel={sheet === 'done' ? '完了にする' : '取り消す'}
-				destructive={sheet === 'cancel'}
-				onConfirm={() => { const action = sheet === 'done' ? 'done' : 'cancel'; setSheet(undefined); void act({ action }); }}
+				confirmLabel={confirmKind === 'done' ? '完了にする' : '取り消す'}
+				destructive={confirmKind === 'cancel'}
+				onConfirm={() => {
+					const action = botConfirmedItemAction(held.current);
+					if (action !== undefined) {
+						void act(action);
+					}
+				}}
+				onCancelled={() => held.current.take()}
 				onClose={() => setSheet(undefined)}
 			/>
 		</Screen>

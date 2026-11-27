@@ -1,6 +1,6 @@
 // PARA-CODE: fork-owned file (Para Code) — not present in upstream microsoft/vscode. See CLAUDE.md.
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { ChevronDown, ChevronRight, Shield, Bot as BotIcon } from 'lucide-react-native';
@@ -24,9 +24,10 @@ import { SettingsSwitch } from '../settings/settingsScaffold.js';
 import { useBotConversation } from './botConversation.js';
 import { BotFace } from './botFace.js';
 import {
+	BotHeldChoice,
 	botAgentLabel,
 	botAskFor,
-	botChangesNeedConfirmation,
+	botSendConfirmedChange,
 	botItemGroups,
 	botItemStatusLabel,
 	botRefusalText,
@@ -238,8 +239,8 @@ function ItemsTab({ pcId, bot }: { pcId: string; bot: MobileBot }) {
 							<Text style={styles.cardTitle}>{suggestion.title}</Text>
 							<Text style={styles.cardBody} numberOfLines={4}>{suggestion.request}</Text>
 							<View style={styles.buttons}>
-								<Button label="始める" size="sm" style={styles.flex} loading={busy === suggestion.id && conversation.opening} disabled={busy !== undefined} onPress={() => start(suggestion.id)} />
-								<Button label="見送る" size="sm" variant="secondary" style={styles.flex} disabled={busy !== undefined} onPress={() => void dismiss(suggestion.id)} />
+								<Button label="始める" size="sm" style={styles.flex} loading={busy === suggestion.id && conversation.opening} disabled={busy !== undefined || conversation.opening} onPress={() => start(suggestion.id)} />
+								<Button label="見送る" size="sm" variant="secondary" style={styles.flex} disabled={busy !== undefined || conversation.opening} onPress={() => void dismiss(suggestion.id)} />
 							</View>
 							<Text style={styles.note}>始めると、依頼の文を会話の入力欄に入れます（送りはしません）。</Text>
 						</Card>
@@ -294,7 +295,8 @@ function FilesTab({ pcId, bot, connected }: { pcId: string; bot: MobileBot; conn
 	const soul = useBotPages(s => s.files[botFileKey(pcId, bot.id, 'SOUL.md')]);
 	const memory = useBotPages(s => s.files[botFileKey(pcId, bot.id, 'MEMORY.md')]);
 	const [failed, setFailed] = useState(false);
-	const [editing, setEditing] = useState<{ readonly base: string; text: string } | undefined>(undefined);
+	// `theirs` は保存したときに PC で書き換わっていた今の中身（書いた文は残し、上書きか読み直しを選ばせる）
+	const [editing, setEditing] = useState<{ readonly base: string; text: string; readonly theirs?: string } | undefined>(undefined);
 	const [saving, setSaving] = useState(false);
 	useEffect(() => {
 		if (!connected) {
@@ -315,10 +317,13 @@ function FilesTab({ pcId, bot, connected }: { pcId: string; bot: MobileBot; conn
 			return;
 		}
 		if (result.value === 'conflict') {
-			warn('bot-memory', 'ほかの場所で書き換わっていました', '今の中身を読み直しました。もう一度書いてください。');
-		} else {
-			haptic('success');
+			// 書いた文は残す。土台を今の中身に替えるので、もう一度「保存」を押すと今の中身へ上書きする
+			const theirs = useBotPages.getState().files[botFileKey(pcId, bot.id, 'MEMORY.md')] ?? editing.base;
+			warn('bot-memory', 'ほかの場所で書き換わっていました', '書いた文は残しています。今の中身を見て、上書きするか読み直すかを選んでください。');
+			setEditing({ base: theirs, text: editing.text, theirs });
+			return;
 		}
+		haptic('success');
 		setEditing(undefined);
 	};
 
@@ -331,6 +336,15 @@ function FilesTab({ pcId, bot, connected }: { pcId: string; bot: MobileBot; conn
 			<Text style={styles.note}>{hint}</Text>
 			{editable && editing !== undefined ? (
 				<>
+					{editing.theirs !== undefined ? (
+						<>
+							<Text style={styles.note}>PC の今の中身（保存すると、下の書いた文で上書きします）</Text>
+							<View style={styles.fileBox}>
+								<Text style={styles.fileText} selectable>{editing.theirs.length > 0 ? editing.theirs : '（空）'}</Text>
+							</View>
+							<Button label="今の中身を読み直す" size="sm" variant="secondary" disabled={saving} onPress={() => setEditing({ base: editing.theirs ?? editing.base, text: editing.theirs ?? editing.base })} />
+						</>
+					) : null}
 					<TextInput
 						style={styles.editor}
 						multiline
@@ -341,7 +355,7 @@ function FilesTab({ pcId, bot, connected }: { pcId: string; bot: MobileBot; conn
 						accessibilityLabel={`${path} の本文`}
 					/>
 					<View style={styles.buttons}>
-						<Button label="保存" size="sm" style={styles.flex} loading={saving} disabled={editing.text === editing.base} onPress={() => void save()} />
+						<Button label={editing.theirs !== undefined ? '上書きする' : '保存'} size="sm" style={styles.flex} loading={saving} disabled={editing.text === editing.base} onPress={() => void save()} />
 						<Button label="やめる" size="sm" variant="secondary" style={styles.flex} disabled={saving} onPress={() => setEditing(undefined)} />
 					</View>
 				</>
@@ -368,7 +382,12 @@ type Sheet = 'name' | 'agent' | 'permission';
 function SettingsTab({ pcId, bot }: { pcId: string; bot: MobileBot }) {
 	const [agents, setAgents] = useState<readonly WorktreeAgentDef[] | undefined>(undefined);
 	const [sheet, setSheet] = useState<Sheet | undefined>(undefined);
-	const [confirming, setConfirming] = useState<{ readonly changes: BotChanges; readonly opId: string; readonly detail: string; readonly wider: boolean } | undefined>(undefined);
+	// 確認のシートの中身（閉じる途中も同じ文のまま出す）と、確かめたら送り直す変更（閉じても消えない控え）
+	const [confirmVisible, setConfirmVisible] = useState(false);
+	const [confirmText, setConfirmText] = useState<{ readonly detail: string; readonly wider: boolean }>({ detail: '', wider: false });
+	const heldChange = useRef(new BotHeldChoice<{ readonly changes: BotChanges; readonly opId: string }>());
+	// 選択のシートで選んだ変更（シートが閉じ切ってから送る。閉じる途中で確認のシートを開かない）
+	const picked = useRef(new BotHeldChoice<BotChanges | undefined>());
 	const [sending, setSending] = useState(false);
 	useEffect(() => {
 		let cancelled = false;
@@ -396,7 +415,9 @@ function SettingsTab({ pcId, bot }: { pcId: string; bot: MobileBot }) {
 			return;
 		}
 		if (result.value.kind === 'confirm') {
-			setConfirming({ changes, opId, detail: result.value.detail, wider: result.value.wider });
+			heldChange.current.hold({ changes, opId });
+			setConfirmText({ detail: result.value.detail, wider: result.value.wider });
+			setConfirmVisible(true);
 			return;
 		}
 		haptic('success');
@@ -443,31 +464,28 @@ function SettingsTab({ pcId, bot }: { pcId: string; bot: MobileBot }) {
 				title="エージェント"
 				options={agentOptions}
 				selected={bot.agent}
-				onSelect={value => change(botFieldChange(bot, { agent: value }))}
+				onSelect={value => picked.current.hold(botFieldChange(bot, { agent: value }))}
 				onClose={() => setSheet(undefined)}
+				onAfterClose={() => change(picked.current.take())}
 			/>
 			<PickerDrawer<string>
 				visible={sheet === 'permission'}
 				title="権限"
 				options={permissionOptions}
 				selected={bot.permissionId ?? 'default'}
-				onSelect={value => change(botFieldChange(bot, { permissionId: value }))}
+				onSelect={value => picked.current.hold(botFieldChange(bot, { permissionId: value }))}
 				onClose={() => setSheet(undefined)}
+				onAfterClose={() => change(picked.current.take())}
 			/>
 			<ConfirmDrawer
-				visible={confirming !== undefined}
+				visible={confirmVisible}
 				title={`${bot.name} の設定を変えますか`}
-				message={confirming !== undefined ? `${confirming.wider ? '権限が広がります。\n\n' : ''}${confirming.detail}` : undefined}
+				message={`${confirmText.wider ? '権限が広がります。\n\n' : ''}${confirmText.detail}`}
 				confirmLabel="変える"
-				destructive={confirming?.wider === true}
-				onConfirm={() => {
-					const held = confirming;
-					setConfirming(undefined);
-					if (held !== undefined && botChangesNeedConfirmation(held.changes)) {
-						void send(held.changes, true, held.opId);
-					}
-				}}
-				onClose={() => setConfirming(undefined)}
+				destructive={confirmText.wider}
+				onConfirm={() => botSendConfirmedChange(heldChange.current, (changes, confirmed, opId) => void send(changes, confirmed, opId))}
+				onCancelled={() => heldChange.current.take()}
+				onClose={() => setConfirmVisible(false)}
 			/>
 		</Body>
 	);

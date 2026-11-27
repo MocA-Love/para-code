@@ -3,7 +3,10 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, test } from 'vitest';
 import {
+	BotHeldChoice,
 	appendBotDraft,
+	botConfirmedItemAction,
+	botSendConfirmedChange,
 	botAskFor,
 	botItemActRequest,
 	botItemGroups,
@@ -19,6 +22,7 @@ import {
 	parseBotSuggestionsReply,
 	parseBotUpdateReply,
 	parseMobileBots,
+	type BotChanges,
 	type MobileBot,
 } from './bots.js';
 
@@ -133,6 +137,40 @@ describe('Bot の要求', () => {
 			undefined,
 			{ agent: 'codex', permission: null },
 			undefined,
+		]);
+	});
+});
+
+describe('確認のシート', () => {
+	// ConfirmDrawer は閉じ切ってから onConfirm を呼ぶ。表示用の state を閉じるときに消しても、控えた操作で送る
+	test('「完了にする」を確かめると done を送り、取り消して閉じたら何も送らない', () => {
+		const held = new BotHeldChoice<'done' | 'cancel'>();
+		let sheet: 'done' | 'cancel' | undefined = 'done';
+		held.hold('done');
+		sheet = undefined; // onClose が先に走る
+		const confirmed = botConfirmedItemAction(held);
+		held.hold('cancel');
+		held.take(); // 取り消して閉じた
+		expect({ sheet, confirmed, afterCancel: botConfirmedItemAction(held), request: botItemActRequest('o1', 'u1', confirmed!) }).toEqual({
+			sheet: undefined,
+			confirmed: { action: 'done' },
+			afterCancel: undefined,
+			request: { t: 'botItemAct', opId: 'o1', uid: 'u1', action: 'done' },
+		});
+	});
+
+	test('権限の変更を確かめると、同じ opId で confirmed: true を送り直す（名前の変更に確認を求められても捨てない）', () => {
+		const held = new BotHeldChoice<{ readonly changes: BotChanges; readonly opId: string }>();
+		const sent: unknown[] = [];
+		const send = (changes: BotChanges, confirmed: boolean, opId: string) => sent.push(botUpdateRequest(opId, 'b', changes, confirmed));
+		held.hold({ changes: { permission: 'bypass' }, opId: 'o7' });
+		botSendConfirmedChange(held, send);
+		held.hold({ changes: { name: '係' }, opId: 'o8' });
+		botSendConfirmedChange(held, send);
+		botSendConfirmedChange(held, send);
+		expect(sent).toEqual([
+			{ t: 'botUpdate', botId: 'b', changes: { permission: 'bypass' }, opId: 'o7', confirmed: true },
+			{ t: 'botUpdate', botId: 'b', changes: { name: '係' }, opId: 'o8', confirmed: true },
 		]);
 	});
 });

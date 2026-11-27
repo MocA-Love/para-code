@@ -521,9 +521,40 @@ export function botFieldChange(bot: Pick<MobileBot, 'name' | 'agent' | 'permissi
 	return permission !== before ? { permission: permission ?? null } : undefined;
 }
 
-/** エージェント・権限を変えるときは PC の確認の本文で確かめる（PC の update_bot と同じ）。 */
-export function botChangesNeedConfirmation(changes: BotChanges): boolean {
-	return changes.agent !== undefined || Object.prototype.hasOwnProperty.call(changes, 'permission');
+/**
+ * 確認のシートで確かめる操作を、閉じても消えない所に控える。`ConfirmDrawer` は閉じ切ってから `onConfirm` を呼ぶので、
+ * その時点では表示用の state（開いているシートなど）はもう空になっている。開くときに `hold` し、`onConfirm` で `take`
+ * する（取り出したら空に戻る。取り消して閉じたときも `take` で捨てる）。
+ */
+export class BotHeldChoice<T> {
+	private value: T | undefined;
+
+	hold(value: T): void {
+		this.value = value;
+	}
+
+	take(): T | undefined {
+		const value = this.value;
+		this.value = undefined;
+		return value;
+	}
+}
+
+/** 項目の「完了にする」「取り消す」を確かめた後に送る操作。控えが無ければ何も送らない。 */
+export function botConfirmedItemAction(held: BotHeldChoice<'done' | 'cancel'>): BotItemAction | undefined {
+	const action = held.take();
+	return action === undefined ? undefined : { action };
+}
+
+/**
+ * PC が確認を求めた設定の変更を、利用者が確かめた後に同じ opId・`confirmed: true` で送り直す。PC が確認を求めた
+ * 変更はどれも送り直す（どの欄に確認が要るかは PC が決める）。
+ */
+export function botSendConfirmedChange(held: BotHeldChoice<{ readonly changes: BotChanges; readonly opId: string }>, send: (changes: BotChanges, confirmed: boolean, opId: string) => void): void {
+	const change = held.take();
+	if (change !== undefined) {
+		send(change.changes, true, change.opId);
+	}
 }
 
 /** 断られたときの文（PcReplyError の `code`）。 */
