@@ -8,7 +8,7 @@
 
 import assert from 'assert';
 import { Emitter, Event } from '../../../../../base/common/event.js';
-import { DisposableStore } from '../../../../../base/common/lifecycle.js';
+import { DisposableStore, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IConfigurationChangeEvent, IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
@@ -41,24 +41,28 @@ suite('Paradis bots page overlay', () => {
 
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	function setup() {
+	function setup(items: IParadisBotItem[] = ITEMS) {
 		const disposables = store.add(new DisposableStore());
 		const instantiation = disposables.add(new TestInstantiationService());
 		const configuration = new TestConfigurationService({ [PARADIS_BOTS_ENABLED_SETTING]: true });
 		instantiation.stub(IConfigurationService, configuration);
 		const bots = [bot('release', 'リリース係', { needsYou: 1 })];
 		const answered: { key: string; answer: ParadisHumanAskAnswer }[] = [];
+		const statuses: string[] = [];
+		const confirms: string[] = [];
+		const botsChanged = disposables.add(new Emitter<void>());
 		instantiation.stub(IParadisBotsService, {
 			get snapshot() { return { revision: 1, readOnly: false, bots }; },
-			onDidChange: Event.None,
+			onDidChange: botsChanged.event,
 			onDidRequestStop: Event.None,
-			listItems: async () => ITEMS,
+			listItems: async () => items,
+			ownerSetStatus: async (uid: string, to: string) => { statuses.push(`${uid}:${to}`); return { ok: true, value: items[0] }; },
 		} as Partial<IParadisBotsService> as IParadisBotsService);
 		instantiation.stub(IParadisHumanAskService, {
 			onDidChange: Event.None,
 			answer: async (key: string, answer: ParadisHumanAskAnswer) => { answered.push({ key, answer }); return { ok: true }; },
 		} as Partial<IParadisHumanAskService> as IParadisHumanAskService);
-		instantiation.stub(IParadisDialogService, {});
+		instantiation.stub(IParadisDialogService, { confirm: async (options: { message: string }) => { confirms.push(options.message); return { confirmed: true }; } } as Partial<IParadisDialogService> as IParadisDialogService);
 		instantiation.stub(IContextMenuService, {});
 		instantiation.stub(IOpenerService, {});
 		instantiation.stub(INotificationService, new TestNotificationService());
@@ -68,7 +72,7 @@ suite('Paradis bots page overlay', () => {
 		const resolver: IParadisBotPaneResolver = { onDidChange: changed.event, botFor: async instanceId => panes.get(instanceId) };
 		const container = document.createElement('div');
 		const page = disposables.add(instantiation.createInstance(ParadisBotPage, container, resolver));
-		return { container, page, configuration, panes, changed, answered, disposables };
+		return { container, page, configuration, panes, changed, answered, disposables, bots, botsChanged, statuses, confirms };
 	}
 
 	const settle = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -140,5 +144,54 @@ suite('Paradis bots page overlay', () => {
 		await settle();
 		disposables.dispose();
 		assert.deepStrictEqual([container.childElementCount, container.className], [0, '']);
+	});
+
+	test('書きかけのコメントは、別の Bot が変わっても値とフォーカスが残る（中身の変わらない描き直しはしない）', async () => {
+		const { container, page, bots, botsChanged, disposables } = setup();
+		document.body.appendChild(container);
+		disposables.add(toDisposable(() => container.remove()));
+		page.setInstance(1);
+		await settle();
+		(container.getElementsByClassName('paradis-bot-page-tab')[1] as HTMLElement).click();
+		await settle();
+		(container.getElementsByClassName('paradis-bot-page-row')[1] as HTMLElement).click();
+		await settle();
+		const text = container.querySelector('.paradis-bot-page-comment textarea') as HTMLTextAreaElement;
+		text.focus();
+		text.value = '書きかけ';
+		text.dispatchEvent(new InputEvent('input'));
+		bots.push(bot('other', '別の係'));
+		botsChanged.fire();
+		await settle();
+		const after = container.querySelector('.paradis-bot-page-comment textarea') as HTMLTextAreaElement;
+		assert.deepStrictEqual({ same: after === text, value: after.value, focused: document.activeElement === after }, { same: true, value: '書きかけ', focused: true });
+	});
+
+	test('「完了にする」は確かめてから閉じ、閉じた項目には「戻す」を出す', async () => {
+		const closed: IParadisBotItem = { ...ITEMS[1], uid: 'u44', number: 44, status: 'done', closedAt: now };
+		const { container, page, statuses, confirms } = setup([ITEMS[1], closed]);
+		page.setInstance(1);
+		await settle();
+		(container.getElementsByClassName('paradis-bot-page-tab')[1] as HTMLElement).click();
+		await settle();
+		(container.getElementsByClassName('paradis-bot-page-row')[0] as HTMLElement).click();
+		await settle();
+		const labels = () => Array.from(container.querySelectorAll('.paradis-bot-page-item-actions .paradis-button')).map(button => button.textContent);
+		const open = labels();
+		(container.querySelector('.paradis-bot-page-item-actions .paradis-button') as HTMLElement).click();
+		await settle();
+		(container.querySelector('.paradis-bot-page-back') as HTMLElement).click();
+		await settle();
+		(container.querySelector('details.paradis-bot-page-fold .paradis-bot-page-row') as HTMLElement).click();
+		await settle();
+		const closedLabels = labels();
+		(container.querySelector('.paradis-bot-page-item-actions .paradis-button') as HTMLElement).click();
+		await settle();
+		assert.deepStrictEqual({ open, confirms, closedLabels, statuses }, {
+			open: ['完了にする...', '後回し...', '取りやめる...'],
+			confirms: ['項目 #43 を完了にしますか?'],
+			closedLabels: ['戻す'],
+			statuses: ['u43:done', 'u44:working'],
+		});
 	});
 });
