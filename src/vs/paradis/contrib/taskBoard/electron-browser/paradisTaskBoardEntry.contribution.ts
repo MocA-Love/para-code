@@ -83,8 +83,8 @@ function remoteSpaceFolder(switchService: IParadisWorkspaceSwitchService, contex
 
 /**
  * 同梱のタスクボードを開く。初めてなら、今のスペースのリポジトリでボードを起こす（ボードの上部のメニューで
- * 切り替えられる）。ボードはエージェントを起動するのに接続口（paradis.taskBoard.bridge.enabled）を使うので、
- * オフなら先にオンにするかを聞く。
+ * 切り替えられる）。ボードはエージェントを起動するのに接続口（paradis.taskBoard.bridge.enabled、既定はオン）を
+ * 使うので、自分でオフにしていたら先にオンにするかを聞く。
  *
  * タイトルバーの「エージェント一覧」(order -999) と「ブラウザ一覧」(-998) の間に並べる。
  */
@@ -127,7 +127,8 @@ class ParadisOpenTaskBoardAction extends Action2 {
 			notificationService.info(localize('paradis.taskBoard.noFolder', "タスクボードは、フォルダ（リポジトリ）を開いたウィンドウから開いてください。"));
 			return;
 		}
-		if (configurationService.getValue<boolean>(PARADIS_TASK_BOARD_BRIDGE_ENABLED_SETTING) !== true) {
+		// 接続口は既定でオン。自分でオフにした人にだけ、ボードを開くときにオンへ戻すかを聞く
+		if (configurationService.getValue<boolean>(PARADIS_TASK_BOARD_BRIDGE_ENABLED_SETTING) === false) {
 			const { confirmed } = await paradisDialogService.confirm({
 				// allow-any-unicode-next-line
 				message: localize('paradis.taskBoard.enableBridge', "タスクボードの接続口をオンにしますか？"),
@@ -175,6 +176,9 @@ class ParadisOpenTaskBoardAction extends Action2 {
 			case 'repo-busy':
 				// allow-any-unicode-next-line
 				notificationService.warn(localize('paradis.taskBoard.repoBusy', "このリポジトリは、ほかに起動したタスクボードで開かれています。そちらを閉じてから開いてください。"));
+				return;
+			case 'stopped':
+				// 起動を待つ間に「タスクボードを止める」で止めた。失敗ではないので知らせない
 				return;
 			case 'other-board':
 				// allow-any-unicode-next-line
