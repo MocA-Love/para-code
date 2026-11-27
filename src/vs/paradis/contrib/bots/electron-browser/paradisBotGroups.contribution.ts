@@ -34,14 +34,14 @@ import { ITerminalGroupService, ITerminalService } from '../../../../workbench/c
 import { TerminalEditorInput } from '../../../../workbench/contrib/terminal/browser/terminalEditorInput.js';
 import { GroupDirection, IEditorGroup, IEditorGroupsService } from '../../../../workbench/services/editor/common/editorGroupsService.js';
 import { IParadisPaneTokenService } from '../../agentBrowser/browser/paradisPaneTokenService.js';
-import type { ParadisAgentChatSendOutcome } from '../../agentChat/browser/paradisAgentChatInput.js';
+import type { IParadisAgentChatDeliverOptions, ParadisAgentChatSendOutcome } from '../../agentChat/browser/paradisAgentChatInput.js';
 import { IParadisAgentChatService } from '../../agentChat/browser/paradisAgentChatService.js';
 import { paradisCollectAllTerminalInstances } from '../../workspaceSwitch/browser/paradisTerminalEditorPark.js';
 import { IParadisTerminalScopeService, IParadisWorkspaceSwitchService } from '../../workspaceSwitch/common/paradisWorkspaceSwitch.js';
 import { IParadisBotGroupSender, ParadisBotGroupEditorInput } from '../browser/paradisBotGroupEditor.js';
 import { paradisBotIdByPaneHash, paradisFindBotChatPane } from '../browser/paradisBotPaneHash.js';
 import { ParadisBotGroupRelayLimiter, paradisBotGroupMembers } from '../common/paradisBotGroups.js';
-import { PARADIS_BOT_GROUP_DELIVER_LOAD_WAIT, paradisBotGroupDeliver, paradisWaitForLoaded } from '../browser/paradisBotGroupDeliver.js';
+import { PARADIS_BOT_GROUP_DELIVER_LOAD_WAIT, ParadisBotGroupDeliverQueue, paradisWaitForLoaded } from '../browser/paradisBotGroupDeliver.js';
 import { PARADIS_BOT_GROUPS_WINDOW_CHANNEL, ParadisBotGroupDeliverResult } from '../common/paradisBotMessages.js';
 import { IParadisBotGroupsService, PARADIS_BOTS_OPEN_GROUP_COMMAND } from '../common/paradisBotGroupsApi.js';
 import { IParadisBotsService, PARADIS_BOTS_ENABLED_SETTING } from '../common/paradisBotsApi.js';
@@ -184,12 +184,12 @@ class ParadisBotGroupSender implements IParadisBotGroupSender {
 		return this.chatService.sendMessageToPane(where.instanceId, text);
 	}
 
-	async deliver(botId: string, text: string): Promise<ParadisAgentChatSendOutcome> {
+	async deliver(botId: string, text: string, options: IParadisAgentChatDeliverOptions): Promise<ParadisAgentChatSendOutcome> {
 		const where = await this.instantiationService.invokeFunction(botPaneWhere, botId);
 		if (where.kind === 'none') {
 			return { kind: 'refused', message: 'its chat is not open in this window' };
 		}
-		return this.chatService.deliverToPane(where.instanceId, text);
+		return this.chatService.deliverToPane(where.instanceId, text, options);
 	}
 }
 
@@ -236,26 +236,28 @@ class ParadisBotGroupsWindowChannel implements IServerChannel {
 /** {@link paradisBotGroupDeliver} にこのウィンドウのサービスをつなぐ。 */
 class ParadisBotGroupsDeliverer {
 
-	private readonly limiter = new ParadisBotGroupRelayLimiter();
+	private readonly queue: ParadisBotGroupDeliverQueue;
 
 	constructor(
-		@IParadisBotGroupSender private readonly sender: IParadisBotGroupSender,
-		@IParadisBotsService private readonly botsService: IParadisBotsService,
-		@IParadisBotGroupsService private readonly groupsService: IParadisBotGroupsService,
-	) { }
+		@IParadisBotGroupSender sender: IParadisBotGroupSender,
+		@IParadisBotsService botsService: IParadisBotsService,
+		@IParadisBotGroupsService groupsService: IParadisBotGroupsService,
+	) {
+		this.queue = new ParadisBotGroupDeliverQueue({
+			// このウィンドウで台帳のクライアントを初めて作った直後は空なので、最初の取得を待つ
+			waitForLoaded: () => paradisWaitForLoaded([botsService, groupsService], PARADIS_BOT_GROUP_DELIVER_LOAD_WAIT),
+			groups: () => groupsService.snapshot.groups,
+			bot: botId => botsService.snapshot.bots.find(bot => bot.id === botId),
+			botIdByPaneHash: hash => paradisBotIdByPaneHash(botsService, hash),
+			whereIs: botId => sender.whereIs(botId),
+			send: (botId, value, options) => sender.deliver(botId, value, options),
+			limiter: new ParadisBotGroupRelayLimiter(),
+			now: Date.now,
+		});
+	}
 
 	deliver(callerHash: string, to: string, text: string): Promise<ParadisBotGroupDeliverResult> {
-		return paradisBotGroupDeliver({
-			// このウィンドウで台帳のクライアントを初めて作った直後は空なので、最初の取得を待つ
-			waitForLoaded: () => paradisWaitForLoaded([this.botsService, this.groupsService], PARADIS_BOT_GROUP_DELIVER_LOAD_WAIT),
-			groups: () => this.groupsService.snapshot.groups,
-			bot: botId => this.botsService.snapshot.bots.find(bot => bot.id === botId),
-			botIdByPaneHash: hash => paradisBotIdByPaneHash(this.botsService, hash),
-			whereIs: botId => this.sender.whereIs(botId),
-			send: (botId, value) => this.sender.deliver(botId, value),
-			limiter: this.limiter,
-			now: Date.now,
-		}, callerHash, to, text);
+		return this.queue.deliver(callerHash, to, text);
 	}
 }
 

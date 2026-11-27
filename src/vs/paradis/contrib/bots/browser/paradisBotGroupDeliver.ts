@@ -9,9 +9,10 @@
 // Bot 同士の伝言を、宛先の会話のペインを持つウィンドウで届ける手順（窓口 `paradisBotGroupsWindow` の `deliver` が呼ぶ）。
 // サービスに触れない形にして、断りの順・順番待ち・読み込み待ちを単体テストで固定する。
 
+import { SequencerByKey } from '../../../../base/common/async.js';
 import { Event } from '../../../../base/common/event.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
-import type { ParadisAgentChatSendOutcome } from '../../agentChat/browser/paradisAgentChatInput.js';
+import type { IParadisAgentChatDeliverOptions, ParadisAgentChatSendOutcome } from '../../agentChat/browser/paradisAgentChatInput.js';
 import { IParadisBotGroup, ParadisBotGroupRelayLimiter, paradisBotGroupDeliverRefusal, paradisBotGroupDeliverRefusalMessage, paradisBotGroupNeutralizeCommand } from '../common/paradisBotGroups.js';
 import { ParadisBotGroupDeliverResult } from '../common/paradisBotMessages.js';
 
@@ -60,17 +61,19 @@ export interface IParadisBotGroupDeliverDependencies {
 	botIdByPaneHash(paneHash: string): Promise<string | undefined>;
 	/** 宛先の会話のペインがこのウィンドウにあるか。 */
 	whereIs(botId: string): Promise<'here' | 'elsewhere' | 'none'>;
-	/** 宛先の会話のペインへ送る（チャット表示と同じ確認。入力欄の履歴には残さない）。 */
-	send(botId: string, text: string): Promise<ParadisAgentChatSendOutcome>;
+	/** 宛先の会話のペインへ送る（チャット表示と同じ確認に `options` を足す。入力欄の履歴には残さない）。 */
+	send(botId: string, text: string, options: IParadisAgentChatDeliverOptions): Promise<ParadisAgentChatSendOutcome>;
 	readonly limiter: ParadisBotGroupRelayLimiter;
 	now(): number;
 }
 
 /**
  * 伝言を届ける。順は「台帳の読み込み → 送り手と宛先が同じグループ → 宛先がこのウィンドウで動いている → 回数の上限 →
- * 送る」。宛先が作業中なら、エージェントの順番待ちに入れて `queued`（今のターンを止めない）。順番待ちの無いエージェント・
- * 許可や質問の画面が出ているときは、届ける口がペインへ何も書かずに断るので `refused` にして回数を戻す。文を書いたかも
- * しれない失敗（貼り付けた後に Enter を送れなかった等）は `unknown`（送り直すと重なる）。
+ * 送る」。宛先が作業中なら、今のターンを止めずに次の番まで待たせられるエージェント（`queuesWhileWorking`。Claude Code）
+ * にだけ送って `queued`。待たせられないエージェント（作業中の Enter が応答を打ち切る Codex など）・入力欄に利用者の
+ * 書きかけがある・許可や質問の画面が出ているときは、届ける口がペインへ何も書かずに断るので `refused` にして回数を戻す。
+ * 文を書いたかもしれない失敗（貼り付けた後に Enter を送れなかった等）は `unknown`（送り直すと重なる）。
+ * 同じ宛先へ並んで来た伝言は {@link ParadisBotGroupDeliverQueue} で 1 つずつにする。
  */
 export async function paradisBotGroupDeliver(deps: IParadisBotGroupDeliverDependencies, callerHash: string, to: string, text: string): Promise<ParadisBotGroupDeliverResult> {
 	if (!(await deps.waitForLoaded())) {
@@ -92,20 +95,33 @@ export async function paradisBotGroupDeliver(deps: IParadisBotGroupDeliverDepend
 		return { kind: 'refused', reason: paradisBotGroupDeliverRefusalMessage(refusal) };
 	}
 	// 先頭の / と ! はコマンド・シェルとして動くので崩してから届ける（利用者が部屋から送る文はそのまま）
-	const outcome = await deps.send(to, paradisBotGroupNeutralizeCommand(text));
+	const working = activity === 'working';
+	const outcome = await deps.send(to, paradisBotGroupNeutralizeCommand(text), { working, refuseDraft: true });
 	switch (outcome.kind) {
 		case 'sent':
-			return activity === 'working' ? { kind: 'queued' } : { kind: 'delivered' };
+			return working ? { kind: 'queued' } : { kind: 'delivered' };
 		case 'refused':
-			// ペインへ何も書いていないので回数を戻す
+			// ペインへ何も書いていないので回数を戻す。理由は英文だけ（エージェントが読む。画面向けの文は入れない）
 			deps.limiter.refund(to);
 			return {
 				kind: 'refused',
-				reason: activity === 'working'
-					? `that bot is working and its agent cannot hold messages until its next turn (${outcome.message})`
-					: `that bot cannot take a message now, for example while a question or permission prompt is open (${outcome.message})`,
+				reason: outcome.code === 'working' ? 'that bot is working, and its agent cannot hold messages until its next turn'
+					: outcome.code === 'draft' ? 'its owner is typing in that bot\'s input'
+						: 'that bot cannot take a message now, for example while a question or permission prompt is open',
 			};
 		case 'unknown':
-			return { kind: 'unknown', reason: `Para Code may have typed the message into that bot's input without sending it (${outcome.message})` };
+			return { kind: 'unknown', reason: 'Para Code may have typed the message into that bot\'s input without sending it' };
+	}
+}
+
+/** 同じ宛先への伝言を 1 つずつ届ける（並んだ 2 通が入力欄で 1 つの発言にまとまらないように）。 */
+export class ParadisBotGroupDeliverQueue {
+
+	private readonly sequencer = new SequencerByKey<string>();
+
+	constructor(private readonly deps: IParadisBotGroupDeliverDependencies) { }
+
+	deliver(callerHash: string, to: string, text: string): Promise<ParadisBotGroupDeliverResult> {
+		return this.sequencer.queue(to, () => paradisBotGroupDeliver(this.deps, callerHash, to, text));
 	}
 }
