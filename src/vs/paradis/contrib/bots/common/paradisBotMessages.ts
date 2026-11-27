@@ -22,7 +22,8 @@ export const PARADIS_BOT_MESSAGE_TOOL_NAMES: ReadonlySet<string> = new Set([PARA
 
 /**
  * 伝言を届けるウィンドウのチャネル（グループの機能が登録する）。道具は、宛先の Bot の会話のペインを持つウィンドウの
- * `deliver` を呼ぶ（呼び出し元のウィンドウではない）。引数は `[呼び出し元のペイントークン, 宛先の Bot の id, 文]`。
+ * `deliver` を呼ぶ（呼び出し元のウィンドウではない）。引数は `[送り手のペイントークンのハッシュ, 宛先の Bot の id, 文]`。
+ * 宛先のウィンドウは送り手のペインを持たないので、生のトークンは渡さない（受け口はハッシュで送り手の Bot を照らす）。
  */
 export const PARADIS_BOT_GROUPS_WINDOW_CHANNEL = 'paradisBotGroupsWindow';
 
@@ -53,8 +54,10 @@ export interface IParadisBotGroupMessageRecord {
 export interface IParadisBotGroupsPort {
 	/** その Bot が入っているグループ。 */
 	groupsOf(botId: string): readonly IParadisBotGroup[];
-	/** グループの記録に伝言を足す。メンバーでない Bot の伝言は断る（`ok: false` と理由）。 */
-	appendRecord(groupId: string, record: IParadisBotGroupMessageRecord): Promise<{ readonly ok: boolean; readonly message?: string }>;
+	/** グループの記録に伝言を足す。メンバーでない Bot の伝言は断る（`ok: false` と理由）。足した記録の id を返せる。 */
+	appendRecord(groupId: string, record: IParadisBotGroupMessageRecord): Promise<{ readonly ok: boolean; readonly message?: string; readonly recordId?: string }>;
+	/** 記録した伝言を届けられなかった、と記録を直す（グループの機能が持たなければ省略できる）。 */
+	markUndelivered?(groupId: string, recordId: string): Promise<void>;
 }
 
 export const PARADIS_BOT_MESSAGE_TOOLS: readonly IParadisMcpToolDefinition[] = [
@@ -132,6 +135,16 @@ export class ParadisBotMessageRateLimiter {
 		}
 		this.sent.push({ from, to, at: now });
 		return undefined;
+	}
+
+	/** 届けられなかった伝言の分を戻す（{@link take} で数えたうち、その組の最後の 1 通）。 */
+	refund(from: string, to: string): void {
+		for (let index = this.sent.length - 1; index >= 0; index--) {
+			if (this.sent[index].from === from && this.sent[index].to === to) {
+				this.sent.splice(index, 1);
+				return;
+			}
+		}
 	}
 }
 
