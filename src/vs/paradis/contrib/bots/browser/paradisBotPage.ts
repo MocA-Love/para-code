@@ -32,6 +32,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextMenuService, IContextViewService } from '../../../../platform/contextview/browser/contextView.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
@@ -205,10 +206,15 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		this.tab(tabs, 'settings', localize('paradis.botPage.tab.settings', "設定"));
 		this.itemsCount = DOM.append(this.itemsTab, $('span.paradis-bot-page-tab-count'));
 		const terminalLabel = localize('paradis.botPage.showTerminal', "ターミナルに戻る");
-		this.terminalButton = DOM.append(this.strip, $('button.paradis-bot-page-terminal.paradis-focus-ring-inset')) as HTMLButtonElement;
+		// タブ列の左に置く（帯が収まらない幅では右端から切れるので、戻るボタンを先に切らない）
+		this.terminalButton = this.strip.insertBefore($('button.paradis-bot-page-terminal.paradis-focus-ring-inset'), tabs) as HTMLButtonElement;
 		this.terminalButton.type = 'button';
 		this.terminalButton.setAttribute('aria-label', terminalLabel);
-		this.terminalButton.title = terminalLabel;
+		// チャット表示の見出しの戻るボタンと同じ文とキー
+		this._register(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), this.terminalButton, () => {
+			const keybinding = this.agentChatService.getToggleKeybindingLabel();
+			return keybinding !== undefined ? localize('paradis.botPage.showTerminalKey', "ターミナルに戻る ({0})", keybinding) : terminalLabel;
+		}));
 		DOM.append(this.terminalButton, $(ThemeIcon.asCSSSelector(Codicon.terminal)));
 		this._register(DOM.addDisposableListener(this.terminalButton, DOM.EventType.CLICK, () => {
 			if (this.instanceId !== undefined) {
@@ -420,6 +426,7 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 
 	private applyTab(): void {
 		const tab = this.currentTab();
+		this.renderStrip();
 		for (const [value, element] of this.tabElements) {
 			element.classList.toggle('selected', tab === value);
 			element.setAttribute('aria-selected', String(tab === value));
@@ -473,7 +480,8 @@ export class ParadisBotPage extends Disposable implements IParadisEditorTerminal
 		this.stripStatus.classList.toggle('busy', strip.busy);
 		this.stripModel.textContent = strip.model;
 		this.stripModel.hidden = strip.model.length === 0;
-		this.terminalButton.hidden = !chat;
+		// 項目・ファイル・設定のタブで下の会話が覆われている間は出さない
+		this.terminalButton.hidden = !chat || this.currentTab() !== 'chat';
 		this.itemsCount.textContent = bot.needsYou > 0 ? (bot.needsYou > 99 ? '99+' : String(bot.needsYou)) : '';
 		this.itemsCount.hidden = bot.needsYou === 0;
 		this.itemsTab.setAttribute('aria-label', bot.needsYou > 0

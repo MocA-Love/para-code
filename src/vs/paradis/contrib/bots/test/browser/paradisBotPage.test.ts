@@ -499,6 +499,12 @@ suite('Paradis bots page overlay', () => {
 		const terminalView = strip();
 		setChatActive(1, true);
 		const chatView = strip();
+		// 項目のタブで下の会話が覆われている間は、戻るボタンを出さない
+		(container.getElementsByClassName('paradis-bot-page-tab')[1] as HTMLElement).click();
+		const itemsTab = strip().terminal;
+		(container.getElementsByClassName('paradis-bot-page-tab')[0] as HTMLElement).click();
+		// 戻るボタンはタブ列の左（帯が収まらない幅では右端から切れるため）
+		const beforeTabs = (container.getElementsByClassName('paradis-bot-page-terminal')[0] as HTMLElement).nextElementSibling?.classList.contains('paradis-bot-page-tabs');
 		// 会話が替わった（チャット表示の側が畳みを戻した）ときも、見出しの知らせで畳み直す
 		setHeader({ status: '入力を待っています', attention: false, busy: false, model: 'claude-opus-4-5 · high', agent: undefined, agentName: 'Claude Code' });
 		// 見出しの値が変わらなくても、ペインのトークンが替われば Bot の照らし直しで畳み直す
@@ -511,7 +517,9 @@ suite('Paradis bots page overlay', () => {
 		page.setInstance(2);
 		await settle();
 		page.dispose();
-		assert.deepStrictEqual({ terminalView, chatView, backToTerminal, calls: headerCalls }, {
+		assert.deepStrictEqual({ terminalView, chatView, itemsTab, beforeTabs, backToTerminal, calls: headerCalls }, {
+			itemsTab: false,
+			beforeTabs: true,
 			terminalView: { status: '1 件があなたの番', attention: false, model: '', terminal: false },
 			chatView: { status: '許可を待っています', attention: true, model: 'claude-opus-4-5 · high', terminal: true },
 			backToTerminal: { status: '1 件があなたの番', attention: false, model: '', terminal: false },
