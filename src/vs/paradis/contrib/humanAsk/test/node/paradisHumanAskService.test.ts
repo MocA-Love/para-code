@@ -87,4 +87,16 @@ suite('Paradis human ask service', () => {
 			{ refused: ['sync', 'upsert', 'resolve', 'reject', 'withdraw', 'removeOwner'], state: 'waiting', upsertInvalid: false },
 		);
 	});
+	test('a window names only the inbox, the Bot page or the phone (it relays the phone) as where it answered', async () => {
+		const surfaces: string[] = [];
+		for (const surface of ['mobile', 'bot', 'board', 'pane', undefined]) {
+			const service = store.add(new ParadisHumanAskService());
+			store.add(service.onDidRequestAnswer(request => surfaces.push(request.surface)));
+			service.upsert('board', QUESTION);
+			const key = service.getSnapshot().entries[0].key;
+			const question = service.getSnapshot().entries[0].questions[0];
+			await new ParadisHumanAskChannel(service).call('window:1', 'answer', [key, { type: 'answers', answers: [{ questionId: question.id, optionIds: [question.options[0].id] }] }, surface]);
+		}
+		assert.deepStrictEqual(surfaces, ['mobile', 'bot', 'inbox', 'inbox', 'inbox']);
+	});
 });

@@ -192,6 +192,12 @@ export const ParadisMobileCapability = {
 	 */
 	AgentQueuedSendConfirm: 'agent.queued-send-confirm.v1',
 	/**
+	 * 「人が答えるもの」の台帳の 1 件をスマホの要対応に出す（`paradisMobileHumanAsks.ts`。PC だけが広告する）。Desktop State の
+	 * 任意項目 `humanAsks`（件数と印だけ）と、fs の `humanAsks`（一覧）・`humanAskAnswer`（opId 付きで答える）。中身は要求した
+	 * アプリにだけ返るので、古いアプリには届かない。アプリは広告している PC にだけ要求し、件数を要対応に足す。
+	 */
+	HumanAsk: 'human-ask.v1',
+	/**
 	 * fs の `voiceUsage`（読み上げの Aivis・ElevenLabs の使用量。キーは送らず、キーの印 `keyId` だけを付ける。
 	 * `paradisMobileVoiceUsage.ts`）。
 	 */
@@ -370,6 +376,7 @@ export const PARADIS_MOBILE_PC_CAPABILITIES: readonly string[] = [
 	ParadisMobileCapability.FsFindDir,
 	ParadisMobileCapability.AgentLiveAppendV2,
 	ParadisMobileCapability.BotsPage,
+	ParadisMobileCapability.HumanAsk,
 ];
 
 /**
