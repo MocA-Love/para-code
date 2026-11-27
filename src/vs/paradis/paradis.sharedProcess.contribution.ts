@@ -62,8 +62,9 @@ import './contrib/agentHookTrust/node/paradisCodexHookTrust.js';
 import './contrib/agentModelCatalog/node/paradisAgentModelCatalog.sharedProcess.js';
 import './contrib/agentActivity/node/paradisAgentActivityChannel.js';
 import './contrib/notificationInbox/node/paradisNotificationInboxChannel.js';
-import './contrib/humanAsk/node/paradisHumanAskChannel.js';
+import { paradisSharedHumanAskService } from './contrib/humanAsk/node/paradisHumanAskChannel.js'; // 登録（副作用）も兼ねる
 import { registerParadisHumanAskPaneOwner } from './contrib/humanAsk/node/paradisHumanAskPaneOwner.js';
+import { paradisMobileHumanAskSummary } from './contrib/mobileRelay/common/paradisMobileHumanAsks.js';
 import './contrib/humanAsk/node/paradisAskHumanTool.sharedProcess.js';
 import './contrib/agentIde/node/paradisAgentIde.sharedProcess.js';
 import './contrib/scheduledRuns/node/paradisScheduledRunsChannel.js';
@@ -139,7 +140,9 @@ export function registerParadisSharedProcessContributions(server: IPCServer<stri
 	// モバイルリレーサービス（src/vs/paradis/contrib/mobileRelay/ 参照）
 	store.add(registerParadisMobileRelay(server, accessor.get(INativeEnvironmentService).userDataPath, accessor.get(IMainProcessService), accessor.get(ILogService), accessor.get(IConfigurationService), args, paradisAgentBrowser, paradisNotifications.onDidCreateMobileVoiceClip, probe => paradisNotifications.setMobileVoiceListenerProbe(probe),
 		// ペインの質問・許可を「人が答えるもの」の台帳へ載せる書き手（src/vs/paradis/contrib/humanAsk/ 参照）
-		source => registerParadisHumanAskPaneOwner(server, source, accessor.get(ILogService))));
+		source => registerParadisHumanAskPaneOwner(server, source, accessor.get(ILogService)),
+		// スマホの要対応に出す台帳の件数と印（human-ask.v1。中身はウィンドウが fs の要求で返す）
+		{ onDidChange: paradisSharedHumanAskService().onDidChange, read: () => paradisMobileHumanAskSummary(paradisSharedHumanAskService().getSnapshot()) }));
 	// モバイルの find/grep 用 ripgrep チャネル
 	store.add(registerParadisRemoteSearch(server, accessor.get(ILogService)));
 
