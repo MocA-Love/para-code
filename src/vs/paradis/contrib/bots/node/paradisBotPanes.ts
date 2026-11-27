@@ -414,11 +414,12 @@ export class ParadisBotPanes {
 		const before = JSON.stringify(haltOf(pane, now));
 		if (finished) {
 			pane.ended = exitCode === 127 ? { kind: 'notFound' } : { kind: 'exited', ...(exitCode !== undefined ? { exitCode } : {}) };
-			// 前の会話を続けて起動したのに、動く前に終わった（会話が消えた・別の PC の会話だった）。次は新しい会話で起こす
-			if (pane.resumed === true && pane.workedSinceBound !== true && pane.purpose === 'chat') {
-				pane.resumed = false;
+			// 前の会話を続けて起動したのに、hook を 1 つも出さずに終わった（会話が消えた・別の PC の会話だった）。次は新しい
+			// 会話で起こす。続きを開いて読んだだけで終えた（SessionStart は来た）なら控えは残す
+			if (pane.resumed === true && !pane.hookSeen && pane.purpose === 'chat') {
 				this.forgetChatSession(pane.botId);
 			}
+			pane.resumed = false;
 			pane.working = false;
 			pane.asking = false;
 		} else if (pane.ended !== undefined) {

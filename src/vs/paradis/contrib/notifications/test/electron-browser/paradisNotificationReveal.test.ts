@@ -36,6 +36,9 @@ function createServices(activeStateKey: string | undefined, instances: Map<numbe
 			focusInstance: async (instance: ITerminalInstance) => {
 				calls.push(`focusInstance:${instance.instanceId}`);
 			},
+			showBackgroundTerminal: async (instance: ITerminalInstance) => {
+				calls.push(`showBackgroundTerminal:${instance.instanceId}`);
+			},
 		},
 		workspaceSwitchService,
 	};

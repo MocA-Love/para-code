@@ -236,8 +236,19 @@ export const PARADIS_BOT_GREETING_PROMPT = 'You were just created as a Para Code
 export const PARADIS_BOT_INBOX_WAKE_PROMPT = 'Another bot left you a message. Read your inbox with bot_inbox and handle what it asks, then end your turn.';
 
 /**
+ * 起こすときに最初に渡す指示。伝言で起こしたなら受け箱を読ませ、作った直後なら挨拶させる。眠った会話を続けるときは
+ * 挨拶しない（もう話したことのある Bot）。どれでもなければ渡さない（利用者の入力を待つ）。
+ */
+export function paradisBotFirstPrompt(options: { readonly greet?: boolean; readonly inbox?: boolean }, resumed: boolean): string | undefined {
+	if (options.inbox === true) {
+		return PARADIS_BOT_INBOX_WAKE_PROMPT;
+	}
+	return options.greet === true && !resumed ? PARADIS_BOT_GREETING_PROMPT : undefined;
+}
+
+/**
  * 眠った会話を続けて起こす引数（Bot の起動の引数の後ろ、最初の指示の前に置く）。Claude Code は `--resume <id>`、Codex は
- * サブコマンド `resume <id>`（その前の `-c`・`-m` は Codex 0.171.0 でそのまま読まれる）。id はシェルの文字を含まない形だけ
+ * サブコマンド `resume <id>`（その前に `-c`・`-m` を置いた形を Codex 0.171.0 が受け付けることは確かめた。resume の会話にも効くかは【要確認】）。id はシェルの文字を含まない形だけ
  * 通す。ほかのエージェントは続けられない（undefined）。
  */
 export function paradisBotResumeArgs(agent: string, sessionId: string): string | undefined {

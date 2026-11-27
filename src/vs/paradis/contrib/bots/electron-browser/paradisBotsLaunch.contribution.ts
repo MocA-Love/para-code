@@ -50,9 +50,9 @@ import { isEqualOrParent } from '../../../../base/common/extpath.js';
 import { isLinux } from '../../../../base/common/platform.js';
 import { paradisFindBotTerminalInstance, paradisLaunchBotTerminal, paradisNameBotTab } from './paradisBotTerminalLaunch.js';
 import { IParadisBotChangeRequest, paradisApplyBotChange } from '../common/paradisBotManageTools.js';
-import { PARADIS_BOT_GREETING_PROMPT, PARADIS_BOT_INBOX_WAKE_PROMPT } from '../common/paradisBotTools.js';
-import { paradisHiddenBotPanes, paradisIsBotPaneHidden, paradisMarkBotPaneHidden, paradisShowHiddenBotPane } from '../browser/paradisBotPaneHide.js';
-import { paradisAddTerminalHiddenOnClose, paradisIsTerminalHiddenOnClose } from '../../workspaceSwitch/browser/paradisTerminalHideOnClose.js';
+import { paradisBotFirstPrompt } from '../common/paradisBotTools.js';
+import { paradisBotPaneHidesOnClose, paradisHiddenBotPanes, paradisMarkBotPaneHidden } from '../browser/paradisBotPaneHide.js';
+import { paradisAddTerminalHiddenOnClose } from '../../workspaceSwitch/browser/paradisTerminalHideOnClose.js';
 import { IParadisBotRevealRequest, IParadisBotsService, paradisIsLeftoverBotTerminal, IParadisBotStopRequest, PARADIS_BOTS_ENABLED_SETTING, PARADIS_BOTS_WINDOW_CHANNEL, ParadisBotsWindowResult } from '../common/paradisBotsApi.js';
 
 const findInstance = paradisFindBotTerminalInstance;
@@ -69,19 +69,14 @@ export type ParadisOpenBotResult =
 const RELEASE_WAIT_MS = 3_000;
 
 /**
- * そのペインのスペースへ切り替えて前に出す。閉じて裏に回したペイン（{@link paradisShowHiddenBotPane}）は、切り替えてから
- * エディタのタブへ戻す（今のスペースのタブとして紛れ込ませない）。
+ * そのペインのスペースへ切り替えて前に出す。閉じて裏に回したペインは、切り替えてからエディタのタブへ戻す（今のスペースの
+ * タブとして紛れ込ませない。paradisNotificationReveal.ts）。
  */
 async function paradisRevealBotPane(
 	services: { readonly hostService: IHostService; readonly terminalService: ITerminalService; readonly switchService: IParadisWorkspaceSwitchService },
 	pane: { readonly instanceId: number; readonly instance: ITerminalInstance; readonly stateKey: string | undefined },
 ): Promise<void> {
-	if (paradisIsBotPaneHidden(pane.instanceId)) {
-		if (pane.stateKey !== undefined && pane.stateKey !== services.switchService.activeStateKey) {
-			await services.switchService.switchToStateKey(pane.stateKey);
-		}
-		await paradisShowHiddenBotPane(services.terminalService, pane.instance);
-	}
+	// 裏に回したペインは、paradisRevealNotifiedPane がスペースを切り替えた後でエディタのタブへ戻す
 	await paradisRevealNotifiedPane({ hostService: services.hostService, terminalService: services.terminalService, workspaceSwitchService: services.switchService }, pane.stateKey, pane.instanceId);
 }
 
@@ -154,7 +149,7 @@ export async function paradisOpenBot(accessor: ServicesAccessor, botId: string, 
 		const stateKey = switchService.activeStateKey;
 		// 裏のタブで開くにはスペースが要る（スペースを使っていないウィンドウでは、今のウィンドウに開く）
 		// 最初の指示: 作った直後なら挨拶、伝言で起こしたなら受け箱。眠った会話を続けるときは挨拶しない
-		const prompt = options.inbox === true ? PARADIS_BOT_INBOX_WAKE_PROMPT : options.greet === true && launch.value.resumed !== true ? PARADIS_BOT_GREETING_PROMPT : undefined;
+		const prompt = paradisBotFirstPrompt(options, launch.value.resumed === true);
 		const outcome = await instantiationService.invokeFunction(paradisLaunchBotTerminal, launch.value, { stateKey, background: fromAgent, ...(prompt !== undefined ? { prompt } : {}) });
 		if (outcome.ok) {
 			// 閉じても止めず隠すペインとして、すぐ控える（Bot の様子の見直しを待つ間に閉じられても確認を出さない）
@@ -514,11 +509,13 @@ class ParadisBotsWindowWorker extends Disposable {
 	 * upstream の裏の置き場所へ移す。スペースの切り替え（MOVE）・置き換え・終了の途中は触らない。
 	 */
 	private onWillCloseEditor(editor: unknown, context: EditorCloseContext): void {
-		if (!(editor instanceof TerminalEditorInput) || context !== EditorCloseContext.UNKNOWN || this.lifecycleService.willShutdown || this.switchService.isSwitching) {
-			return;
-		}
-		const instance = editor.terminalInstance;
-		if (instance === undefined || instance.isDisposed || !paradisIsTerminalHiddenOnClose(instance.instanceId)) {
+		const instance = editor instanceof TerminalEditorInput ? editor.terminalInstance : undefined;
+		if (!(editor instanceof TerminalEditorInput) || instance === undefined || !paradisBotPaneHidesOnClose({
+			context,
+			shuttingDown: this.lifecycleService.willShutdown,
+			switching: this.switchService.isSwitching,
+			instance,
+		})) {
 			return;
 		}
 		editor.detachInstance();

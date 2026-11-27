@@ -18,10 +18,20 @@
 
 import { Event } from '../../../../base/common/event.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
+import { EditorCloseContext } from '../../../../workbench/common/editor.js';
 import { ITerminalInstance, ITerminalService } from '../../../../workbench/contrib/terminal/browser/terminal.js';
+import { paradisIsTerminalHiddenOnClose } from '../../workspaceSwitch/browser/paradisTerminalHideOnClose.js';
 
 /** 閉じて裏に回した Bot の会話のペイン。 */
 const hiddenPanes = new Map<number, { readonly instance: ITerminalInstance; readonly listener: IDisposable }>();
+
+/**
+ * 閉じるタブのターミナルを、終わらせずに裏へ回すか。ユーザーが閉じた（MOVE・置き換えではない）Bot の会話のペインだけ。
+ * スペースの切り替え（タブを外して持ち越す）と終了の途中は触らない。
+ */
+export function paradisBotPaneHidesOnClose(facts: { readonly context: EditorCloseContext; readonly shuttingDown: boolean; readonly switching: boolean; readonly instance: Pick<ITerminalInstance, 'instanceId' | 'isDisposed'> }): boolean {
+	return facts.context === EditorCloseContext.UNKNOWN && !facts.shuttingDown && !facts.switching && !facts.instance.isDisposed && paradisIsTerminalHiddenOnClose(facts.instance.instanceId);
+}
 
 /** 閉じて裏に回したペインとして控える。 */
 export function paradisMarkBotPaneHidden(instance: ITerminalInstance): void {

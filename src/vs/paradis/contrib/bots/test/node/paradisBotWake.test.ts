@@ -21,6 +21,9 @@ import { paradisBotResumeArgs } from '../../common/paradisBotTools.js';
 import { ParadisBotHomes } from '../../node/paradisBotHomes.js';
 import { EMPTY_PARADIS_BOT_PANES_STATE, IParadisBotPanesState, PARADIS_BOT_IDLE_STOP_MS, paradisBotPaneTokenHash, paradisParseBotPanesState, ParadisBotPanes } from '../../node/paradisBotPanes.js';
 import { ParadisBotsService } from '../../node/paradisBotsService.js';
+import { ParadisBotMessageToolProvider } from '../../node/paradisBotMessageToolProvider.js';
+import { IParadisMcpOwningWindowRequest, IParadisMcpToolCallContext } from '../../../agentBrowser/common/paradisMcpToolProvider.js';
+import { IParadisBotGroupMessageRecord } from '../../common/paradisBotMessages.js';
 import { IParadisBotsJsonFile } from '../../node/paradisBotsStore.js';
 
 class MemoryFile<T> implements IParadisBotsJsonFile<T> {
@@ -88,6 +91,16 @@ suite('Paradis bot wake and sleep', () => {
 		panes.noteHook('asking-token', 'PermissionRequest', 10);
 		panes.noteHook('recent-token', 'Stop', PARADIS_BOT_IDLE_STOP_MS);
 		assert.deepStrictEqual(panes.idleChatTokens(PARADIS_BOT_IDLE_STOP_MS + 10), [{ botId: 'idle', token: 'idle-token' }]);
+	});
+
+	test('続きを開いて読んだだけで終えた（hook は来た）なら、眠った会話は残す', () => {
+		const panes = new ParadisBotPanes();
+		panes.loadSessions([{ botId: 'b1', agent: 'claude', sessionId: SESSION, at: 0 }]);
+		panes.issue('l1', 'b1', 'chat', 1, 'claude', true);
+		panes.report('l1', 'token-1', 1);
+		panes.noteHook('token-1', 'SessionStart', 2, SESSION);
+		panes.noteCommand('token-1', 0, true, 3);
+		assert.strictEqual(panes.chatSessionOf('b1')?.sessionId, SESSION);
 	});
 
 	test('保存した眠った会話を読み直せる。形の違う id は捨てる', () => {
@@ -171,6 +184,49 @@ suite('Paradis bot wake and sleep', () => {
 			sleeping: ['stopped', true, '眠っています'],
 			resumed: [`--resume ${SESSION}`, true],
 			afterAgentChange: [undefined, undefined],
+		});
+	});
+
+	test('bot_tell: 宛先が起動していなければ、送り手のウィンドウに裏で起こして受け箱を読ませる。動いている宛先は起こさない', async () => {
+		const disposables = store.add(new DisposableStore());
+		let ids = 0;
+		const service = disposables.add(new ParadisBotsService(new MemoryFile<IParadisBotsState>(EMPTY_PARADIS_BOTS_STATE), new MemoryFile<IParadisBotItemsState>(EMPTY_PARADIS_BOT_ITEMS_STATE), disposables.add(new ParadisHumanAskService()), new NullLogService(), { uuid: () => `id${++ids}` }));
+		for (const name of ['A', 'B']) {
+			assert.ok((await service.createBot({ name, agent: 'claude' })).ok);
+		}
+		const bind = (botId: string, token: string) => {
+			const launchId = service.issueLaunch(botId, 'chat');
+			assert.ok(launchId !== undefined && service.reportLaunch(launchId, token));
+		};
+		bind('id1', 'pane-a');
+		const port = {
+			groupsOf: async () => [{ id: 'g1', memberIds: ['id1', 'id2'] }],
+			appendRecord: async (_groupId: string, _record: IParadisBotGroupMessageRecord) => ({ ok: true, recordId: 'r1' }),
+			inboxOf: async () => [],
+			markRead: async () => true,
+		};
+		let clock = 1_000_000;
+		const tools = new ParadisBotMessageToolProvider(service, () => true, () => port, () => clock);
+		const windowCalls: unknown[] = [];
+		const context: IParadisMcpToolCallContext = {
+			callOwningWindow: async <T>(request: IParadisMcpOwningWindowRequest) => {
+				windowCalls.push([request.channelName, request.method, request.args]);
+				return { ok: true, value: { ok: true, data: {} } as T };
+			},
+			getPaneAgentStatus: () => undefined,
+			getUnconfirmedRelease: () => undefined,
+			hasAgentHookHistory: () => false,
+			classifyCaller: async () => 'pane',
+		};
+		const tell = async () => JSON.parse(((await tools.callTool('pane-a', 'bot_tell', { to: 'B', text: 'x' }, undefined, context)) as { content: { text: string }[] }).content[0].text).inbox.slice(0, 40);
+		const asleep = await tell();
+		bind('id2', 'pane-b');
+		clock += 61_000;
+		const awake = await tell();
+		assert.deepStrictEqual({ asleep, awake, windowCalls }, {
+			asleep: 'Put in the inbox of "B". It was not runn',
+			awake: 'Put in the inbox of "B". It reads it the',
+			windowCalls: [['paradisBotsWindow', 'start', ['pane-a', 'id2', 'inbox']]],
 		});
 	});
 });
