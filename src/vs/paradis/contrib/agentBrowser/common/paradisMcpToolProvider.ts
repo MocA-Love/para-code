@@ -134,6 +134,11 @@ export interface IParadisMcpToolCallContext {
 	 */
 	callPaneWindow?<T>(paneToken: string, request: IParadisMcpOwningWindowRequest, signal?: AbortSignal): Promise<ParadisMcpOwningWindowResult<T>>;
 	/**
+	 * そのペイン（トークン）を所有するウィンドウが分かり、今つながっているか（{@link callPaneWindow} が届けられる見込み）。
+	 * 閉じた・読み込み直し中のウィンドウのペインは false。古い呼び出し側は持たないので省略できる。
+	 */
+	paneWindowReachable?(paneToken: string): boolean;
+	/**
 	 * 任意のペイン（トークン）のエージェントの状態。hook が状態を報告していなければ undefined。
 	 * 画面側の表示は 2 秒ごとの取り直しで遅れるので、送ってよいかの判断はこちらで行う。
 	 */
