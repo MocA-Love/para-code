@@ -10,7 +10,7 @@ import assert from 'assert';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import type { ParadisBotGithubStatus } from '../../common/paradisBotGithub.js';
 import { IParadisBotItem } from '../../common/paradisBotItems.js';
-import { paradisBotGithubStatusText, paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel } from '../../common/paradisBotPageModel.js';
+import { paradisBotGithubStatusText, paradisBotItemEventLabel, paradisBotItemGroups, paradisBotItemStatusLabel, paradisBotSuggestionText } from '../../common/paradisBotPageModel.js';
 
 function item(number: number, patch: Partial<IParadisBotItem> = {}): IParadisBotItem {
 	return {
@@ -72,5 +72,14 @@ suite('Paradis bots page', () => {
 			paradisBotGithubStatusText(watching, view({ state: 'failed', message: 'x', retryAt: 7 }), time)?.text.includes('t7'),
 			paradisBotGithubStatusText(watching, undefined, time)?.attention,
 		], [undefined, { text: '一時停止中は見張りません。', attention: false }, false, true, true, true, true, false]);
+	});
+
+	test('提案の文: 制御文字と貼り付けの囲いを落とし、bracketed paste で無ければ 1 行にする', () => {
+		const text = '一行目\r\n二行目\x1b[201~rm -rf ~\x1b]0;title\x07\x00';
+		assert.deepStrictEqual([paradisBotSuggestionText(text, true), paradisBotSuggestionText(text, false), paradisBotSuggestionText('  a\n\n  b  ', false)], [
+			'一行目\n二行目rm -rf ~',
+			'一行目 二行目rm -rf ~',
+			'a b',
+		]);
 	});
 });

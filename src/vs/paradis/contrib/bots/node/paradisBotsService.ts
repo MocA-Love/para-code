@@ -553,6 +553,10 @@ export class ParadisBotsService extends Disposable {
 				this.logService.warn('[ParadisBots] could not prepare the home folder', error);
 				return { ok: false, code: error instanceof ParadisBotHomeError ? error.code : 'storage', message: error instanceof ParadisBotHomeError ? error.message : 'Para Code could not prepare the bot\'s home folder.' };
 			}
+			if (purpose === 'chat') {
+				// 会話で Bot が記憶を書き換える前の状態を写しておく（記憶の整理の取り消しで戻す先）。取れなくても起動は止めない
+				await this.memorySnapshots?.take(bot, 'auto').catch(error => this.logService.warn('[ParadisBots] could not copy the memory before a conversation', error));
+			}
 			const launchId = this.issueLaunch(botId, purpose);
 			const extraFlags = purpose === 'patrol' ? patrolFlags : paradisBotLaunchApprovalFlags(bot.agent);
 			if (launchId === undefined) {
@@ -807,14 +811,19 @@ export class ParadisBotsService extends Disposable {
 
 	// ---- 記憶の整理 ------------------------------------------------------------------------------
 
-	/** 記憶の整理を始める前に、記憶のファイルの写しを取る（写しは専用フォルダの外）。 */
+	/** 記憶の整理を始める前に、記憶のファイルの写しを取る（写しは専用フォルダの外。自動の写しでは押し出されない印付き）。 */
 	snapshotMemory(botId: string): Promise<Result<IParadisBotMemorySnapshot>> {
-		return this.memory(botId, (snapshots, bot) => snapshots.take(bot));
+		return this.memory(botId, (snapshots, bot) => snapshots.take(bot, 'manual'));
 	}
 
-	/** 記憶の整理を取り消す（一番新しい写しを書き戻す）。写しが無ければ `not_found`。 */
-	async undoMemoryTidy(botId: string): Promise<Result<IParadisBotMemoryUndo>> {
-		const result = await this.memory(botId, (snapshots, bot) => snapshots.undo(bot));
+	/** 記憶の写しの一覧（新しい順）。自動の写しは会話を起動するたびに取る（種類ごとに上限の数を超えたら古いものから消える）。 */
+	listMemorySnapshots(botId: string): Promise<Result<IParadisBotMemorySnapshot[]>> {
+		return this.memory(botId, (snapshots, bot) => snapshots.listSnapshots(bot));
+	}
+
+	/** 記憶の整理を取り消す（選んだ写しを書き戻す）。その写しが無い（消えた・古すぎる）なら `not_found`。 */
+	async undoMemoryTidy(botId: string, takenAt: number): Promise<Result<IParadisBotMemoryUndo>> {
+		const result = await this.memory(botId, (snapshots, bot) => snapshots.undo(bot, takenAt));
 		if (result.ok && result.value === undefined) {
 			return { ok: false, code: 'not_found', message: 'There is no copy of the memory to go back to.' };
 		}
