@@ -135,12 +135,22 @@
 	vertical-align: middle;
 }
 
+.paradis-bot-page-status.attention,
+.paradis-bot-page-status.busy {
+	flex-shrink: 1;
+}
+
+.paradis-bot-page-status.attention {
+	min-width: 6em;
+}
+
 .paradis-bot-page-status.busy {
 	color: var(--vscode-paradis-textStrong);
 }
 
 .paradis-bot-page-model {
-	flex: 0 1 auto;
+	/* Give way before the status line: once the chat header is folded, the status line is the only place that says the bot waits for you. */
+	flex: 0 1000 auto;
 	min-width: 0;
 	overflow: hidden;
 	white-space: nowrap;
@@ -152,6 +162,14 @@
 .paradis-bot-page-model[hidden],
 .paradis-bot-page-terminal[hidden] {
 	display: none;
+}
+
+.paradis-bot-page-terminal:not([hidden]) {
+	margin-left: auto;
+}
+
+.paradis-bot-page-terminal:not([hidden]) + .paradis-bot-page-tabs {
+	margin-left: 0;
 }
 
 .paradis-bot-page-terminal {
