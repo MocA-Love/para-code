@@ -45,7 +45,7 @@ import { ACTIVE_GROUP } from '../../../../../workbench/services/editor/common/ed
 import { createEditorParts, registerTestEditor, TestFileEditorInput, workbenchInstantiationService } from '../../../../../workbench/test/browser/workbenchTestServices.js';
 import { TestContextService } from '../../../../../workbench/test/common/workbenchTestServices.js';
 import { ParadisEditorScopeService } from '../../browser/paradisEditorScopeService.js';
-import { paradisMarkTerminalSpaceFree, paradisResetSpaceFreeTerminalsForTest } from '../../browser/paradisSpaceFreeTerminals.js';
+import { paradisMarkTerminalSpaceFree, paradisRegisterSpaceFreeEditorType, paradisResetSpaceFreeTerminalsForTest } from '../../browser/paradisSpaceFreeTerminals.js';
 import { paradisGetParkedTerminalEditorStateKey, paradisIsOrphanTerminalRevivalComplete, paradisMarkTerminalEditorOpeningForScope, paradisParkTerminalEditorInstance, paradisHoldBackTerminalEditorReveal, paradisRegisterTerminalEditorOwnerProbe, paradisResetOrphanTerminalRevivalForTest, paradisShouldHoldBackTerminalEditorReveal, paradisTakeParkedTerminalEditorInstance, paradisTakeParkedTerminalEditorInstancesForScope } from '../../browser/paradisTerminalEditorPark.js';
 import { paradisCreateDeserializedTerminalEditorInput } from './paradisTerminalEditorInputFixture.js';
 import { PARADIS_TERMINAL_EDITOR_PLACEMENTS_STORAGE_KEY, paradisParseTerminalEditorPlacements, paradisSerializeTerminalEditorPlacements } from '../../common/paradisTerminalEditorPlacement.js';
@@ -232,6 +232,10 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 			const file = harness.createEditor('/workspace-a/saved.txt', false);
 			const shellInput = harness.createCleanTerminalEditor('/workspace-a/shell');
 			const botInput = harness.createCleanTerminalEditor('/bots/bot');
+			// 眠った Bot の会話のタブの代わり（ターミナルでない、どのスペースにも属さない種類のタブ）
+			paradisRegisterSpaceFreeEditorType('paradisWorkspaceSwitchIntegration.spaceFreeEditor');
+			const sleepingInput = testDisposables.add(new TestFileEditorInput(URI.file('/bots/sleeping'), 'paradisWorkspaceSwitchIntegration.spaceFreeEditor'));
+			await harness.parts.activeGroup.openEditor(sleepingInput, { pinned: true });
 			await harness.parts.activeGroup.openEditor(file, { pinned: true });
 			await harness.parts.activeGroup.openEditor(shellInput, { pinned: true });
 			await harness.parts.activeGroup.openEditor(botInput, { pinned: true });
@@ -245,6 +249,7 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 				fileVisible: harness.parts.activeGroup.contains(file),
 				botVisible: harness.parts.activeGroup.contains(botInput),
 				botIsActiveTab: harness.parts.activeGroup.activeEditor === botInput,
+				sleepingVisible: harness.parts.activeGroup.contains(sleepingInput),
 				botParkedIn: paradisGetParkedTerminalEditorStateKey(bot.instanceId),
 				shellParkedIn: paradisGetParkedTerminalEditorStateKey(shell.instanceId),
 				detachedTerminalInstanceIds: harness.detachedTerminalInstanceIds,
@@ -256,6 +261,7 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 				activeStateKey: harness.workspaceSwitchService.activeStateKey,
 				fileVisible: harness.parts.activeGroup.contains(file),
 				botTabs: harness.parts.activeGroup.editors.filter(editor => editor === botInput).length,
+				sleepingTabs: harness.parts.activeGroup.editors.filter(editor => editor === sleepingInput).length,
 				botParkedIn: paradisGetParkedTerminalEditorStateKey(bot.instanceId),
 			};
 
@@ -265,6 +271,7 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 					fileVisible: false,
 					botVisible: true,
 					botIsActiveTab: true,
+					sleepingVisible: true,
 					botParkedIn: undefined,
 					shellParkedIn: 'space-a',
 					detachedTerminalInstanceIds: [shellIds.instanceId],
@@ -274,6 +281,7 @@ suite('ParadisWorkspaceSwitchService integration', () => {
 					activeStateKey: 'space-a',
 					fileVisible: true,
 					botTabs: 1,
+					sleepingTabs: 1,
 					botParkedIn: undefined,
 				},
 			});

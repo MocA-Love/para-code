@@ -14,6 +14,9 @@
 //   共通ターミナルと同じく「今のスペース」と答える。控えた時点で付いていた所属は捨てる（{@link onDidMarkTerminalSpaceFree}）。
 //
 // 番号（instanceId）は使い回されないので、終わったものが残っても害は無い。再読み込みの後は Bot の側が控え直す。
+//
+// ターミナルでないタブも、種類（typeId）で同じ扱いにできる（今は眠った Bot の会話を読むだけのタブ）。切り替えはそのタブも
+// 外して持ち越し、working set に載せない。
 
 import { Emitter, Event } from '../../../../base/common/event.js';
 
@@ -36,7 +39,19 @@ export function paradisIsTerminalSpaceFree(instanceId: number): boolean {
 	return spaceFree.has(instanceId);
 }
 
-/** テスト用に台帳を空にする。 */
+const spaceFreeEditorTypes = new Set<string>();
+
+/** その種類のタブを、どのスペースにも属さないタブとして扱う（読み込んだときに 1 回登録する）。 */
+export function paradisRegisterSpaceFreeEditorType(typeId: string): void {
+	spaceFreeEditorTypes.add(typeId);
+}
+
+/** どのスペースにも属さない種類のタブか。 */
+export function paradisIsSpaceFreeEditor(editor: { readonly typeId: string }): boolean {
+	return spaceFreeEditorTypes.has(editor.typeId);
+}
+
+/** テスト用にターミナルの台帳を空にする（タブの種類の登録は、読み込んだときの 1 回なので残す）。 */
 export function paradisResetSpaceFreeTerminalsForTest(): void {
 	spaceFree.clear();
 }

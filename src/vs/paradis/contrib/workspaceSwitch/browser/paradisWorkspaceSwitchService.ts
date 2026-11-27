@@ -42,7 +42,7 @@ import { IParadisEditorScopeService, ParadisScopeRetirementPreparation } from '.
 import { ParadisScopeRetirementJournal, ParadisScopeRetirementJournalLoadState } from '../common/paradisScopeRetirementJournal.js';
 import { paradisApplyDesiredOrder } from '../common/paradisWorkspaceTreeState.js';
 import { paradisHoldTerminalLayout } from '../../terminalRenderer/browser/paradisTerminalLayoutHold.js';
-import { paradisIsTerminalSpaceFree } from './paradisSpaceFreeTerminals.js';
+import { paradisIsSpaceFreeEditor, paradisIsTerminalSpaceFree } from './paradisSpaceFreeTerminals.js';
 import { paradisAreAllParkedForScope, paradisParkTerminalEditorInstance, paradisRegisterParkedTerminalEditorEndedListener, paradisRegisterTerminalEditorRevealGuard, paradisRetireParkedTerminalEditorInstances, paradisTerminalEditorOpening, paradisTerminalEditorOwnerScope } from './paradisTerminalEditorPark.js';
 import { paradisTerminalIdentityNonce } from '../../mobileRelay/common/paradisTerminalPersistence.js';
 import { IParadisTerminalEditorPlacement, PARADIS_TERMINAL_EDITOR_PLACEMENTS_STORAGE_KEY, paradisUpdateTerminalEditorPlacements } from '../common/paradisTerminalEditorPlacement.js';
@@ -2847,7 +2847,7 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 	}
 
 	/**
-	 * どのスペースにも属さないターミナル（Bot の会話のペイン）のタブを、メインのエディタ領域から外して握る。外したタブは
+	 * どのスペースにも属さないタブ（Bot の会話のペインと、眠った Bot の会話）を、メインのエディタ領域から外して握る。外したタブは
 	 * 切り替え元の working set にも預け先にも載らず、退避（park）もされない。同期で済ませる（直後の `captureScope` が
 	 * 同じ画面を読むため）。
 	 */
@@ -2856,12 +2856,22 @@ export class ParadisWorkspaceSwitchService extends Disposable implements IParadi
 			return;
 		}
 		const mainGroups = this.editorGroupsService.groups.filter(group => this.editorGroupsService.getPart(group) === this.editorGroupsService.mainPart);
-		const activeGroup = this.editorGroupsService.activeGroup;
+		// どのスペースにも属さないターミナルのタブと、どのスペースにも属さない種類のタブ（眠った Bot の会話）
+		const editors = new Set<EditorInput>();
 		for (const instance of this.terminalEditorService.instances) {
-			if (instance.isDisposed || !paradisIsTerminalSpaceFree(instance.instanceId)) {
-				continue;
+			if (!instance.isDisposed && paradisIsTerminalSpaceFree(instance.instanceId)) {
+				editors.add(this.terminalEditorService.getInputFromResource(instance.resource));
 			}
-			const editor = this.terminalEditorService.getInputFromResource(instance.resource);
+		}
+		for (const group of mainGroups) {
+			for (const editor of group.editors) {
+				if (paradisIsSpaceFreeEditor(editor)) {
+					editors.add(editor);
+				}
+			}
+		}
+		const activeGroup = this.editorGroupsService.activeGroup;
+		for (const editor of editors) {
 			const group = mainGroups.find(candidate => candidate.contains(editor, { strictEquals: true }));
 			if (group === undefined || !group.detachEditor || this.editorGroupsService.isEditorInputRetained?.(editor)) {
 				continue;
