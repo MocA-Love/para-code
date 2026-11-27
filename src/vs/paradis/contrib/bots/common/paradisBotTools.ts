@@ -156,28 +156,173 @@ export function paradisBotLaunchApprovalFlags(agent: string): string | undefined
 export const PARADIS_BOT_PATROL_TOOLS: ReadonlySet<string> = new Set([PARADIS_BOT_ITEM_LIST_TOOL, PARADIS_BOT_ITEM_SHOW_TOOL, PARADIS_BOT_SUGGEST_TOOL]);
 
 /**
- * 見回り（読むだけ）のペインを起動する引数。確認のプロンプトを出さずに、書く道具を呼び出しの段階で断る形にする
- * （見回りは誰も見ていない時間に走るので、プロンプトが出るとそのまま打ち切りまで止まる）。シェルの 1 行に足す形で、
- * どれも単一引用符で囲む。Bot の権限の設定（permissionId）は見回りでは使わない。
+ * 見回りの Claude Code に `--settings` で渡す設定。`--dangerously-skip-permissions`（利用者の雛形・シェルの alias・関数で
+ * 前に付いたもの）と `--permission-mode bypassPermissions` を効かなくする（付けたままでも `dontAsk` のまま動く。
+ * Claude Code 2.1.332 で確かめた。この設定が無いと `--dangerously-skip-permissions` が `dontAsk` に勝ち、書く道具が全部通る）。
+ */
+export const PARADIS_BOT_PATROL_CLAUDE_SETTINGS = { permissions: { disableBypassPermissionsMode: 'disable' } } as const;
+
+/** Codex の MCP サーバーの名前と、どちらの形で動くか（`url` = HTTP、`command` = 子プロセス）。 */
+export interface IParadisCodexMcpServerRef {
+	readonly name: string;
+	readonly transport: 'url' | 'command';
+}
+
+/**
+ * 見回りの起動に要る、起動のたびに用意するもの（shared process が用意する。paradisBotPatrolLaunch.ts）。
+ * - Claude Code: `--settings` のファイル（{@link PARADIS_BOT_PATROL_CLAUDE_SETTINGS}）と、para-browser だけを書いた
+ *   `--mcp-config` のファイル。どちらもトークンを含まない（Authorization は `${PARA_CODE_TERMINAL_PANE_ID}` のまま書き、
+ *   Claude Code が起動した時に自分の環境変数で展開する）
+ * - Codex: 止める MCP サーバー（利用者の `config.toml` にある para-browser 以外の全部）
+ */
+export type ParadisBotPatrolLaunchContext =
+	| { readonly agent: 'claude'; readonly settingsFile: string; readonly mcpConfigFile: string }
+	| { readonly agent: 'codex'; readonly disabledServers: readonly IParadisCodexMcpServerRef[] };
+
+/** 見回り（読むだけ）に制限できるエージェントか。ほかのエージェント（OpenCode・Antigravity）は見回りを起動しない。 */
+export function paradisBotPatrolSupported(agent: string): agent is 'claude' | 'codex' {
+	return agent === 'claude' || agent === 'codex';
+}
+
+/** 止めるときに足す、使われない接続先（止めたサーバーには接続しない。HTTP の形のサーバーに `command` を足すと Codex が起動しないため）。 */
+const PARADIS_CODEX_DISABLED_URL = 'http://127.0.0.1:9/';
+
+/**
+ * 見回り（読むだけ）のペインを起動する引数（生の引数の配列。起動するシェルに合わせて 1 つずつ引用する）。確認の
+ * プロンプトを出さずに、書く道具を呼び出しの段階で断る形にする（見回りは誰も見ていない時間に走るので、プロンプトが
+ * 出るとそのまま打ち切りまで止まる）。Bot の権限の設定（permissionId）は見回りでは使わない。
  *
- * - Claude Code: `--permission-mode dontAsk`（許可していない道具はプロンプトにせず断る）、`--tools`（組み込みの道具を
- *   読むものだけにする）、`--allowedTools`（para-browser の読む道具と見回りの Bot の道具だけを許可する）
- * - Codex: `-s read-only -a never`（シェルとファイルの書き込みは失敗としてモデルへ返る）、para-browser の道具を
- *   `enabled_tools` で読む道具と見回りの Bot の道具だけにする（MCP は sandbox の外で動き、`approval_mode` に拒否が無いため）
- *
- * 残る穴: 利用者の設定で許可している道具（Claude Code の `~/.claude/settings.json` の allow、Codex の para-browser 以外の
- * MCP サーバー）は、この引数だけでは塞げない。ほかのエージェントは見回りに対応しない（undefined）。
+ * - Claude Code: `--permission-mode dontAsk`（許可していない道具はプロンプトにせず断る）、`--settings`（bypass を
+ *   効かなくする）、`--strict-mcp-config --mcp-config`（MCP は para-browser だけ。利用者が常に許可している別の MCP の
+ *   書く道具を、読んだページの文に誘導されて呼ばないように）、`--tools`（組み込みの道具を読むものだけにする。MCP の
+ *   道具は外れない）、`--allowedTools`（para-browser の読む道具と見回りの Bot の道具だけを許可する）。値を取る引数は
+ *   `=` で 1 つにする（`--mcp-config` などは複数の値を取るので、後ろの指示まで値として読まれないように）
+ * - Codex: `-s read-only -a never`（シェルとファイルの書き込みは失敗としてモデルへ返る。承認が要る MCP の道具も断る）、
+ *   プラグインとアプリを止め、`config.toml` の para-browser 以外の MCP サーバーを止める（利用者が `approval_mode =
+ *   "approve"` にした道具は `-a never` でも通るため）。para-browser の道具は `enabled_tools` で読む道具と見回りの Bot の
+ *   道具だけにする。TOML の文字列は単一引用符で書く（二重引用符は Windows PowerShell 5.1 が外部のコマンドへ渡すときに
+ *   落とすため）
  *
  * @param readOnlyBrowserTools para-browser の読むだけの道具（`PARADIS_READ_ONLY_MCP_TOOL_NAMES`）
  */
-export function paradisBotPatrolLaunchFlags(agent: string, readOnlyBrowserTools: ReadonlySet<string>): string | undefined {
+export function paradisBotPatrolLaunchArgs(context: ParadisBotPatrolLaunchContext, readOnlyBrowserTools: ReadonlySet<string>): readonly string[] {
 	const allowed = [...PARADIS_BOT_PATROL_TOOLS, ...readOnlyBrowserTools];
-	if (agent === 'claude') {
-		return `--permission-mode dontAsk --tools 'Read,Grep,Glob' '--allowedTools=${allowed.map(tool => `mcp__para-browser__${tool}`).join(',')}'`;
+	if (context.agent === 'claude') {
+		return [
+			'--permission-mode', 'dontAsk',
+			`--settings=${context.settingsFile}`,
+			'--strict-mcp-config',
+			`--mcp-config=${context.mcpConfigFile}`,
+			'--tools=Read,Grep,Glob',
+			`--allowedTools=${allowed.map(tool => `mcp__para-browser__${tool}`).join(',')}`,
+		];
 	}
-	if (agent === 'codex') {
-		const approve = [...PARADIS_BOT_PATROL_TOOLS].map(tool => `-c 'mcp_servers.para-browser.tools.${tool}.approval_mode=approve'`).join(' ');
-		return `-s read-only -a never -c 'mcp_servers.para-browser.enabled_tools=[${allowed.map(tool => `"${tool}"`).join(',')}]' ${approve}`;
+	return [
+		'-s', 'read-only', '-a', 'never',
+		'-c', 'features.plugins=false',
+		'-c', 'features.apps=false',
+		...context.disabledServers.flatMap(server => ['-c', server.transport === 'url'
+			? `mcp_servers.${server.name}={url='${PARADIS_CODEX_DISABLED_URL}',enabled=false}`
+			: `mcp_servers.${server.name}={command='false',enabled=false}`]),
+		'-c', `mcp_servers.para-browser.enabled_tools=[${allowed.map(tool => `'${tool}'`).join(',')}]`,
+		...[...PARADIS_BOT_PATROL_TOOLS].flatMap(tool => ['-c', `mcp_servers.para-browser.tools.${tool}.approval_mode=approve`]),
+	];
+}
+
+/** 見回りで引数に載せてよい MCP サーバーの名前（TOML の裸のキーで書け、シェルの引用で崩れない）。 */
+const SAFE_MCP_SERVER_NAME = /^[A-Za-z0-9_-]+$/;
+const CODEX_MCP_HEADER = /^\[\s*mcp_servers\s*\.\s*(?:"(?<double>[A-Za-z0-9_-]+)"|'(?<single>[A-Za-z0-9_-]+)'|(?<bare>[A-Za-z0-9_-]+))\s*(?<sub>\.[^\]]*)?\]\s*(?:#.*)?$/;
+
+/**
+ * Codex の `config.toml` の文から、MCP サーバーの名前と形を読む。確かに読めないとき（`[mcp_servers.<名前>]` の節の
+ * 見出し以外で `mcp_servers` が出てくる・名前に引用を崩しうる文字がある・`url` と `command` のどちらも無い／両方ある）は
+ * undefined（見回りを起動しない側へ倒す。止め損ねたサーバーを見回りに使わせないため）。
+ */
+export function paradisCodexMcpServersOf(text: string): readonly IParadisCodexMcpServerRef[] | undefined {
+	const transports = new Map<string, Set<'url' | 'command'>>();
+	let current: string | undefined;
+	for (const line of text.split(/\r?\n/)) {
+		const trimmed = line.trim();
+		if (trimmed.startsWith('[')) {
+			current = undefined;
+			const header = CODEX_MCP_HEADER.exec(trimmed);
+			if (header?.groups !== undefined) {
+				const name = header.groups.double ?? header.groups.single ?? header.groups.bare;
+				if (!transports.has(name)) {
+					transports.set(name, new Set());
+				}
+				current = header.groups.sub === undefined ? name : undefined;
+				continue;
+			}
+		}
+		if (trimmed.includes('mcp_servers')) {
+			return undefined;
+		}
+		const key = current !== undefined ? /^(?<key>url|command)\s*=/.exec(trimmed)?.groups?.key : undefined;
+		if (current !== undefined && (key === 'url' || key === 'command')) {
+			transports.get(current)!.add(key);
+		}
+	}
+	const servers: IParadisCodexMcpServerRef[] = [];
+	for (const [name, kinds] of transports) {
+		if (kinds.size !== 1) {
+			return undefined;
+		}
+		servers.push({ name, transport: [...kinds][0] });
+	}
+	return servers;
+}
+
+/**
+ * 見回りで止める Codex の MCP サーバー（para-browser 以外の全部）。どのホーム（アカウント）で起動しても止まるよう、
+ * 全部のホームの `config.toml` を合わせる（無い名前を止めても起動は通る形で止める）。どれかが読めない・同じ名前が
+ * ホームごとに違う形のときは undefined（見回りを起動しない）。
+ */
+export function paradisBotPatrolCodexDisabledServers(configTexts: readonly string[]): readonly IParadisCodexMcpServerRef[] | undefined {
+	const merged = new Map<string, 'url' | 'command'>();
+	for (const text of configTexts) {
+		const servers = paradisCodexMcpServersOf(text);
+		if (servers === undefined) {
+			return undefined;
+		}
+		for (const server of servers) {
+			// para-browser は止めない（ホームによって古い形のまま残っていても、見回りは Para Code の登録を使う）
+			if (server.name === 'para-browser') {
+				continue;
+			}
+			if (!SAFE_MCP_SERVER_NAME.test(server.name)) {
+				return undefined;
+			}
+			const known = merged.get(server.name);
+			if (known !== undefined && known !== server.transport) {
+				return undefined;
+			}
+			merged.set(server.name, server.transport);
+		}
+	}
+	return [...merged].map(([name, transport]) => ({ name, transport }));
+}
+
+/**
+ * 見回りの起動の制限を後から書き換えうる引数。利用者がエージェントの雛形（設定 `paradis.workspaceSwitch.agents` の
+ * `command`）にこれを書いているときは、見回りを起動しない（雛形の引数は見回りの引数の前にも後ろにも入りうる。後ろに
+ * 入ると後の値が勝つ）。シェルの alias・関数で付いたものは、Claude Code は `--settings` で bypass を効かなくし、Codex は
+ * `--dangerously-bypass-approvals-and-sandbox`・`--approve-for-me` が `-a`・`-s` と並ぶと起動しない（Codex 0.171.0 で確かめた）。
+ */
+const PATROL_TEMPLATE_FORBIDDEN: Readonly<Record<'claude' | 'codex', readonly string[]>> = {
+	claude: ['--dangerously-skip-permissions', '--allow-dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', '--settings', '--setting-sources', '--mcp-config', '--allowedTools', '--allowed-tools', '--tools', '--plugin-dir', '--agents'],
+	codex: ['--dangerously-bypass-approvals-and-sandbox', '--yolo', '--full-auto', '--approve-for-me', '-s', '--sandbox', '-a', '--ask-for-approval', '-c', '--config', '-p', '--profile', '--enable', '--disable'],
+};
+
+/** 雛形の `command` に、見回りの制限を書き換えうる引数があればその引数を返す（無ければ undefined）。 */
+export function paradisBotPatrolTemplateRefusal(agent: 'claude' | 'codex', command: string): string | undefined {
+	const forbidden = PATROL_TEMPLATE_FORBIDDEN[agent];
+	for (const word of command.split(/\s+/)) {
+		const bare = word.replace(/^['"]+|['"]+$/g, '');
+		const name = bare.startsWith('--') ? bare.split('=')[0] : bare;
+		if (forbidden.includes(name) || (agent === 'claude' && bare.includes('bypassPermissions'))) {
+			return name.includes('bypassPermissions') ? 'bypassPermissions' : name;
+		}
 	}
 	return undefined;
 }
