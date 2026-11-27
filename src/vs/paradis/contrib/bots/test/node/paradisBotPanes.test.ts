@@ -96,7 +96,7 @@ suite('Paradis bot panes', () => {
 
 	test('復元・つなぎ直しで戻ったターミナルは、Bot のフォルダで起動していて結び付いていなければ捨てる（待避のスペース・pty の常駐から戻ったものも）', () => {
 		const roots = ['/Users/me/.para-code/bots', '/Users/me/Library/Application Support/Para Code/paradis/bots/patrol-runs'];
-		const leftover = (cwd: string | undefined, bound: boolean) => paradisIsLeftoverBotTerminal(cwd, roots, bound, (path, parent) => isEqualOrParent(path, parent, false, true));
+		const leftover = (cwd: string | undefined, bound: boolean | undefined) => paradisIsLeftoverBotTerminal(cwd, roots, bound, (path, parent) => isEqualOrParent(path, parent, false, true));
 		const panes = new ParadisBotPanes();
 		panes.issue('launch-1', 'b1', 'chat', 0, 'claude');
 		panes.report('launch-1', 'token-live', 0);
@@ -107,8 +107,10 @@ suite('Paradis bot panes', () => {
 			leftover('/Users/me/.para-code/botsX', false),
 			leftover('/Users/me/project', false),
 			leftover(undefined, false),
+			// 結び付いているかが分からない（一覧が取れなかった・トークンが無い）ときは捨てない
+			leftover('/Users/me/.para-code/bots/bot', undefined),
 			panes.boundTokens(),
-		], [true, true, false, false, false, false, ['token-live']]);
+		], [true, true, false, false, false, false, false, ['token-live']]);
 	});
 
 	test('見張りを付けたときの様子: 中身の空の「実行中」が残っていても、終わった最後のコマンドの終了コードを知らせる（実機の zsh で claude が見つからなかったとき）', () => {

@@ -147,8 +147,9 @@ export class ParadisBotsClient extends Disposable implements IParadisBotsService
 		return this.value<readonly string[]>('paneFolderRoots', [], []);
 	}
 
-	boundPaneHashes(): Promise<readonly string[]> {
-		return this.value<readonly string[]>('boundPaneHashes', [], []);
+	boundPaneHashes(): Promise<readonly string[] | undefined> {
+		// 取れなかったときに空の一覧を返すと、結び付いた Bot のペインまで残りと見なして閉じるので undefined にする
+		return this.value<readonly string[] | undefined>('boundPaneHashes', [], undefined);
 	}
 
 	async notePaneCommand(paneToken: string, exitCode: number | undefined, finished: boolean): Promise<void> {
