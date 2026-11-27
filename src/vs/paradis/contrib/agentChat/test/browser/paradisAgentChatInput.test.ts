@@ -35,6 +35,8 @@ class FakeTerminal implements IParadisAgentChatTerminal {
 	bracketedPasteMode(): boolean { return this.paste; }
 	status: ParadisAgentStatus | undefined;
 	agentStatus(): ParadisAgentStatus | undefined { return this.status; }
+	focused = false;
+	hasKeyboardFocus(): boolean { return this.focused; }
 }
 
 const PERMISSION_SCREEN = [
@@ -180,7 +182,19 @@ suite('ParadisAgentChatInput', () => {
 		appended.source.getAgentChatDraft = async () => appendedDraft;
 		appended.terminal.onKey = text => { appendedDraft = `${text} と追記`; };
 		const appendedResult = await appended.input.sendMessageOutcome(1, 't', 'hi', working);
+		// 書きかけを読めない宛先（Codex）: 利用者がそのターミナルを操作中なら送らない、離れていれば送る
+		const unreadable = setup({ agent: 'codex' });
+		unreadable.terminal.focused = true;
+		const focusedResult = await unreadable.input.sendMessageOutcome(1, 't', 'hi', { working: false, refuseDraft: true });
+		const typedWhileFocused = unreadable.terminal.sent.length;
+		const focusedOwnSend = await unreadable.input.sendMessage(1, 't', 'mine');
+		unreadable.terminal.focused = false;
+		const unfocusedResult = await unreadable.input.sendMessageOutcome(1, 't', 'hi', { working: false, refuseDraft: true });
 		assert.deepStrictEqual({
+			focusedResult,
+			typedWhileFocused,
+			focusedOwnSend,
+			unfocusedResult: unfocusedResult.kind,
 			...results,
 			typedClaude: claude.terminal.sent,
 			typedCodex: codex.terminal.sent,
@@ -202,6 +216,11 @@ suite('ParadisAgentChatInput', () => {
 			appended: 'unknown',
 			appendedTyped: ['paste:"hi"'],
 			draftOnly: [true, false, true, true, false],
+			focusedResult: { kind: 'refused', code: 'focused', message: '利用者がこのターミナルを操作中です' },
+			typedWhileFocused: 0,
+			// 利用者自身の送信（チャット表示・部屋）はフォーカスで止めない
+			focusedOwnSend: undefined,
+			unfocusedResult: 'sent',
 		});
 	});
 
