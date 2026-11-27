@@ -315,8 +315,10 @@ export class ParadisBotsService extends Disposable {
 	/**
 	 * ボードの接続口が、ターミナル（`terminal` はペイントークンのハッシュ）をタスクのために起動した・工程の指示を送った。
 	 * `launchId` は `<タスクの id>:<試行番号>`。Bot が載せたタスクなら、そのペインに印を付ける（外さない）。
+	 * `boardBotOrigin` はボードのカードの「Bot が載せた」印（起動のときだけ）。控えが無くても（`bot_board_add_task` の返事が
+	 * 時間切れになり、控える前に抜けた）これで印を付ける。印は断る向きにだけ効くので、ボードの言う Bot をそのまま使う。
 	 */
-	async noteBoardTerminalTask(terminal: string, launchId: string): Promise<void> {
+	async noteBoardTerminalTask(terminal: string, launchId: string, boardBotOrigin?: string): Promise<void> {
 		if (!this.loaded) {
 			await this.ready;
 		}
@@ -325,7 +327,7 @@ export class ParadisBotsService extends Disposable {
 			return;
 		}
 		// 控えが無ければ（控える前に載せたタスク）、項目の結び付けからも引く。閉じた項目も見る
-		const botId = this.boardOrigins.botOfTask(taskId) ?? this.items.items.find(item => item.links.some(link => link.kind === 'task' && link.ref === taskId))?.botId;
+		const botId = this.boardOrigins.botOfTask(taskId) ?? this.items.items.find(item => item.links.some(link => link.kind === 'task' && link.ref === taskId))?.botId ?? (boardBotOrigin !== undefined && boardBotOrigin.length > 0 ? boardBotOrigin : undefined);
 		if (botId !== undefined && this.boardOrigins.notePane(terminal, taskId, botId, this.now())) {
 			this.savePanes();
 		}

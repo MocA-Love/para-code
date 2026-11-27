@@ -171,6 +171,8 @@ export interface IParadisTaskBoardTerminalTask {
 	/** ターミナルの id（ペイントークンのハッシュ。{@link paradisTaskBoardTerminalId}）。 */
 	readonly terminal: string;
 	readonly launchId: string;
+	/** 起動のとき、ボードのカードに「Bot が載せた」印があれば、その Bot の id。 */
+	readonly botOrigin?: string;
 }
 
 export class ParadisTaskBoardBridgeService extends Disposable implements IParadisMcpToolProvider {
@@ -493,7 +495,7 @@ export class ParadisTaskBoardBridgeService extends Disposable implements IParadi
 			status: request.prompt.trim().length > 0 ? 'working' : 'idle',
 		};
 		this.terminals.set(terminal, entry);
-		this._onDidAssignTask.fire({ terminal, launchId: entry.launchId });
+		this._onDidAssignTask.fire({ terminal, launchId: entry.launchId, ...(request.botOrigin !== undefined ? { botOrigin: request.botOrigin } : {}) });
 		this.emit({ type: 'status', terminal, launchId: entry.launchId, status: entry.status });
 		return ok({ terminal });
 	}

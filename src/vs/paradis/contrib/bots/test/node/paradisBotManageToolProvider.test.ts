@@ -247,8 +247,11 @@ suite('Paradis bot manage tools', () => {
 		await h.service.noteBotBoardTask('id1', 't-bot');
 		await h.service.noteBoardTerminalTask(paradisTaskBoardTerminalId('pane-task'), 't-bot:1');
 		await h.service.noteBoardTerminalTask(paradisTaskBoardTerminalId('pane-board-user'), 't-user:1');
+		// bot_board_add_task の返事が時間切れで控えの無いタスク（t-late）でも、ボードのカードの印（Bot の id）で印を付ける
+		await h.service.noteBoardTerminalTask(paradisTaskBoardTerminalId('pane-late'), 't-late:1', 'id1');
 		const refusal = paradisBotIdeActionRefusal(h.service);
 		const result = {
+			ideFromLateTask: await refusal('pane-late', 'launch_agent') !== undefined,
 			scheduleFromBot: await schedule('pane-bot'),
 			scheduleFromTask: await schedule('pane-task'),
 			ideFromTask: await refusal('pane-task', 'launch_agent'),
@@ -266,6 +269,7 @@ suite('Paradis bot manage tools', () => {
 		const reloaded = harness(files);
 		await reloaded.service.ready;
 		assert.deepStrictEqual({ ...result, afterReload: [reloaded.service.boardOriginOfPane('pane-task'), reloaded.service.boardOriginOfPane('pane-board-user')] }, {
+			ideFromLateTask: true,
 			scheduleFromBot: 'This terminal is a Para Code bot. A bot cannot create scheduled runs: the run would start later in a terminal that is not a bot and could change bots. Tell your owner what you would schedule.',
 			scheduleFromTask: 'This terminal runs a task board task that a Para Code bot put on the board, so Para Code treats it like the bot: it cannot start, open, type into or close other terminals, change spaces, or create scheduled runs. The reading tools still work. Tell the user what you would do.',
 			ideFromTask: 'This terminal runs a task board task that a Para Code bot put on the board, so Para Code treats it like the bot: it cannot start, open, type into or close other terminals, change spaces, or create scheduled runs. The reading tools still work. Tell the user what you would do.',
@@ -277,7 +281,7 @@ suite('Paradis bot manage tools', () => {
 			toolsForUserTask: 6,
 			saved: {
 				boardTasks: [{ taskId: 't-bot', botId: 'id1', at: 1000 }],
-				boardPanes: [{ terminal: 't_ae2fafd8fa42', taskId: 't-bot', botId: 'id1', at: 1000 }],
+				boardPanes: [{ terminal: 't_ae2fafd8fa42', taskId: 't-bot', botId: 'id1', at: 1000 }, { terminal: 't_1eba5bf2fb52', taskId: 't-late', botId: 'id1', at: 1000 }],
 			},
 			afterReload: ['id1', undefined],
 		});

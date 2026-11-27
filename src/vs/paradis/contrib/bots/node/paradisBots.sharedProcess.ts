@@ -142,7 +142,7 @@ ParadisSharedProcessContributions.register('bots', ({ server, accessor }) => {
 	// Bot が載せたタスクのためにボードが動かしたペインに印を付ける（そこからは Bot を変える道具と IDE の操作を断る）。
 	// 設定がオフでも付ける（オンに戻したときに印が抜けないように）
 	store.add(onParadisTaskBoardTerminalTask(event => {
-		service.noteBoardTerminalTask(event.terminal, event.launchId).catch(error => logService.warn('[ParadisBots] could not mark a task board terminal of a bot task', error));
+		service.noteBoardTerminalTask(event.terminal, event.launchId, event.botOrigin).catch(error => logService.warn('[ParadisBots] could not mark a task board terminal of a bot task', error));
 	}));
 	store.add(onParadisTaskBoardStepCompleted(event => {
 		service.noteBoardStep(event.launchId, event.summary).catch(error => logService.warn('[ParadisBots] could not note a task board step on an item', error));

@@ -76,13 +76,21 @@ export class ParadisBotBoardOrigins {
 	private readonly panes = new Map<string, IParadisBotBoardPaneRecord>();
 
 	load(tasks: readonly IParadisBotBoardTaskRecord[], panes: readonly IParadisBotBoardPaneRecord[]): void {
-		// 読み込みの前に付けた印（起動の直後に届いたもの）は残し、保存した分を足す
-		for (const record of tasks) {
-			if (!this.tasks.has(record.taskId)) {
-				this.tasks.set(record.taskId, record);
-			}
+		// 保存した分を古い順に先へ入れ、読み込みの前に付けた印（起動の直後に届いた、新しいもの）を後ろへ入れ直す
+		// （上限を超えたときに古いものから落とすため）
+		const earlyTasks = [...this.tasks.values()];
+		const earlyPanes = [...this.panes.values()];
+		this.tasks.clear();
+		this.panes.clear();
+		for (const record of [...tasks, ...earlyTasks]) {
+			this.tasks.delete(record.taskId);
+			this.tasks.set(record.taskId, record);
 		}
 		for (const record of panes) {
+			this.panes.set(record.terminal, record);
+		}
+		for (const record of earlyPanes) {
+			// 印は付け替えない（保存した印があればそれを残す）
 			if (!this.panes.has(record.terminal)) {
 				this.panes.set(record.terminal, record);
 			}
