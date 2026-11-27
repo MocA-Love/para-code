@@ -203,6 +203,10 @@ suite('ParadisMobileDeviceOps', () => {
 			check('wifi', undefined, 'wifi'),
 			// 入らなかった
 			check('wifi', 'abc', 'abc'),
+			// 頭の空白 1 つだけを見逃す。打った末尾の空白が入らなかったのは違い
+			check('a ', 'x', 'xa'),
+			check(' x', 'a', 'a x'),
+			check('x', 'a', 'a  x'),
 		], [
 			[' 日本語a.b-c123', true, false],
 			[' x', true, false],
@@ -212,6 +216,9 @@ suite('ParadisMobileDeviceOps', () => {
 			['うぃふぃ', false, true],
 			['wifi', true, false],
 			['', false, false],
+			['a', false, false],
+			[' x', true, false],
+			['  x', false, false],
 		]);
 	});
 

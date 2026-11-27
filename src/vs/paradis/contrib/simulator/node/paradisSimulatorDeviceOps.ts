@@ -325,6 +325,7 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 	/** 覚えた画面の大きさを捨てる（mobile_fold で開閉した後。simulator/node/paradisSimulatorFoldTool.ts）。 */
 	forgetScreenSize(deviceId: string): void {
 		this._screenSizes.delete(deviceId);
+		this._launchedAt.delete(deviceId);
 	}
 
 	async callTool(paneToken: string, name: string, args: unknown, signal?: AbortSignal, context?: IParadisMcpToolCallContext): Promise<unknown | undefined> {
@@ -467,6 +468,7 @@ export class ParadisMobileDeviceOpsToolProvider implements IParadisMcpToolProvid
 		const target = await this._ledger.resolveTarget(paneToken, args.device, signal);
 		this._ledger.detach(paneToken, target.attachment.deviceId);
 		this._screenSizes.delete(target.attachment.deviceId);
+		this._launchedAt.delete(target.attachment.deviceId);
 		const remaining = this._ledger.listPaneAttachments(paneToken);
 		this._logService?.info(`[paradis-mobile-canvas] an agent released a device from its terminal pane (${remaining.length} left)`);
 		return jsonResult({

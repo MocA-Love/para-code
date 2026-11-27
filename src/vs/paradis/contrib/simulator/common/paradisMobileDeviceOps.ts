@@ -303,7 +303,7 @@ function withoutLineBreaks(text: string): string {
 export interface IParadisTypedTextCheck {
 	/** 打って欄に増えた部分。打つ前の値が分からないときは欄の全体。 */
 	readonly inserted: string;
-	/** 増えた部分が打った文字と同じか（改行とタブを外し、前後に足された空白は無視する）。 */
+	/** 増えた部分が打った文字と同じか（改行とタブを外す。iOS が貼り付けた語の前に足す空白 1 つは無視する）。 */
 	readonly matches: boolean;
 	/** 打った英数字が、端末のキーボードの言語で別の文字に変わったか。 */
 	readonly converted: boolean;
@@ -312,7 +312,8 @@ export interface IParadisTypedTextCheck {
 /**
  * 打つ前と後の欄の値から、打って増えた部分を出し、打った文字と比べる。増えた部分は、前と後の共通の頭と尻を除いた所
  * （欄の途中にカーソルがあっても取れる）。前の値が分からなければ欄の全体と比べる。
- * iOS は貼り付けた語の前に空白を足すことがある（「wifi」の後へ「x」を貼ると「wifi x」）ので、前後の空白は無視する。
+ * iOS は貼り付けた語の前に空白を 1 つ足すことがある（「wifi」の後へ「x」を貼ると「wifi x」）ので、増えた部分の頭の
+ * 空白 1 つは無視する。ほかの空白（打った文字の末尾の空白が入らなかった、など）は違いとして数える。
  */
 export function paradisCheckTypedText(typed: string, before: string | undefined, after: string): IParadisTypedTextCheck {
 	let inserted = after;
@@ -333,7 +334,7 @@ export function paradisCheckTypedText(typed: string, before: string | undefined,
 	const got = withoutLineBreaks(inserted);
 	return {
 		inserted,
-		matches: got === want || got.trim() === want.trim(),
+		matches: got === want || (got.startsWith(' ') && !want.startsWith(' ') && got.slice(1) === want),
 		converted: paradisTypedTextWasConverted(typed, inserted),
 	};
 }
