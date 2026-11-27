@@ -118,11 +118,11 @@ export const PARADIS_BOT_INBOX_TOOL_DEFINITION: IParadisMcpToolDefinition = {
 /**
  * 表示の共通の関数（`paradisSanitizeDisplayText`）が残す、見えない文字。伝言では見た目より安全を優先して取り除く
  * （ソフトハイフン U+00AD、アラビア文字の書字方向の印 U+061C、モンゴル文字の母音区切り U+180E、語結合子と見えない
- * 演算子 U+2060〜U+2064、異体字セレクタ U+FE00〜U+FE0F・U+E0100〜U+E01EF、タグ文字 U+E0000〜U+E007F。タグ文字と異体字
+ * 演算子 U+2060〜U+2064、異体字セレクタ（U+FE00〜U+FE0F・U+E0100〜U+E01EF ほか。`\p{Variation_Selector}`）、タグ文字 U+E0000〜U+E007F。タグ文字と異体字
  * セレクタは画面では見えず、受け手のモデルには文字として届くので、隠した文に使える）。
  * 共通の関数はブラウザのタブの題名にも効く（語や地域の旗を割らないよう、そちらでは取り除かない）。
  */
-const MESSAGE_INVISIBLE_CHARACTERS = /[\u00ad\u061c\u180e\u2060-\u2064\ufe00-\ufe0f\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}]/gu;
+const MESSAGE_INVISIBLE_CHARACTERS = /[\u00ad\u061c\u180e\u2060-\u2064\u{E0000}-\u{E007F}]|\p{Variation_Selector}/gu;
 
 /**
  * 伝言の本文を 1 行に整える。互換の文字を NFKC でそろえ（全角の `＜＜＜` も囲いの印として崩すため）、上の見えない
