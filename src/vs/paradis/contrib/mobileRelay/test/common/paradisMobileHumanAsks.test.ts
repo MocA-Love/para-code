@@ -59,6 +59,31 @@ suite('Paradis mobile human asks', () => {
 		}, { counts: [0, 1, 1, 1], sameAfterPermission: true, changedWhenBusy: true, changedWhenAdded: true });
 	});
 
+	test('the State summary changes on every failed delivery, even when the list looks the same as before the answer', () => {
+		let now = 10;
+		const ledger = new ParadisHumanAskLedger(() => now);
+		ledger.upsert('board:1', input('board', 'b1', 'question'));
+		const answer = { type: 'answers', answers: [{ questionId: 'q0', optionIds: ['0'] }] };
+		const fail = () => {
+			const claim = ledger.claim('board:b1', answer, 'mobile');
+			assert.ok(claim.ok);
+			now += 10;
+			ledger.reject('board:1', 'board:b1', claim.request.claim);
+		};
+		const waiting = paradisMobileHumanAskSummary(ledger.snapshot());
+		fail();
+		const firstFailure = paradisMobileHumanAskSummary(ledger.snapshot());
+		const firstList = JSON.stringify(paradisMobileHumanAsks(ledger.snapshot()));
+		// 答え直してまた失敗: 一覧は 1 回目の失敗と同じだが、印は変わる（スマホが取り直す）
+		fail();
+		const secondFailure = paradisMobileHumanAskSummary(ledger.snapshot());
+		assert.deepStrictEqual({
+			sameListAsFirstFailure: JSON.stringify(paradisMobileHumanAsks(ledger.snapshot())) === firstList,
+			changedOnFirstFailure: firstFailure.signature !== waiting.signature,
+			changedOnSecondFailure: secondFailure.signature !== firstFailure.signature,
+		}, { sameListAsFirstFailure: true, changedOnFirstFailure: true, changedOnSecondFailure: true });
+	});
+
 	test('reads the summary and the answer request strictly', () => {
 		assert.deepStrictEqual({
 			summary: paradisParseMobileHumanAskSummary({ count: 2, signature: 'abc' }),
